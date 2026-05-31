@@ -1267,6 +1267,11 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   }
 }
 
+.drawer[data-closing="true"],
+.scrim[data-closing="true"] {
+  pointer-events: none;
+}
+
 /* CSS_APPEND_ANCHOR */
 .pill.interrupted, .pill.cancelled { background: var(--red-soft); color: var(--red); }
 .pill.stale, .pill.slow, .pill.blocked { background: var(--amber-soft); color: var(--amber); }

@@ -1611,6 +1611,10 @@ function openDrawer(tab) {
   refs.drawerScrim.classList.add("show");
   refs.drawerClose.focus();
   renderDrawerBody();
+  motion.openDrawer(refs.drawer, refs.drawerScrim, {
+    body: refs.drawerBody,
+    tabs: refs.drawerTabs
+  });
 }
 
 function toggleDrawer() {
@@ -1625,12 +1629,20 @@ function openDrawerTab(tab) {
 }
 
 function closeDrawer() {
+  refs.drawer.dataset.closing = "true";
+  refs.drawerScrim.dataset.closing = "true";
+  motion.closeDrawer(refs.drawer, refs.drawerScrim, {
+    onComplete: () => {
+      delete refs.drawer.dataset.closing;
+      delete refs.drawerScrim.dataset.closing;
+      if (lastFocused && lastFocused.isConnected) lastFocused.focus();
+      lastFocused = null;
+    }
+  });
   refs.drawer.classList.remove("show");
   refs.drawer.setAttribute("aria-hidden", "true");
   refs.drawer.setAttribute("inert", "");
   refs.drawerScrim.classList.remove("show");
-  if (lastFocused && lastFocused.isConnected) lastFocused.focus();
-  lastFocused = null;
 }
 
 function setDrawerTab(tab) {
@@ -2573,5 +2585,6 @@ document.getElementById('qr-collapsed')?.addEventListener('click', () => {
 });
 
 motion.setupMotion();
+window.__wwritingMotionReady = true;
 
 await loadAll();
