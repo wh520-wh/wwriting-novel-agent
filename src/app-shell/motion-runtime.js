@@ -410,7 +410,7 @@ export function updateActivityStrip(root, previous, next) {
 
   safeAnimate(() => {
     for (const slotKey of changedSlots) {
-      const el = root.querySelector(`[data-slot="${slotKey}"]`);
+      const el = root.querySelector(`.as-${slotKey}`);
       if (!el) continue;
       if (isReducedMotion()) {
         gsap.set(el, { opacity: 1 });
