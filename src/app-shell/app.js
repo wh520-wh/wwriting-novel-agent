@@ -2037,9 +2037,14 @@ function openSettingsModal() {
 
 function closeSettingsModal() {
   refs.settingsScrim.dataset.closing = "true";
-  closeOverlay(refs.settingsScrim);
+  refs.settingsScrim.classList.remove("show");
+  refs.settingsScrim.setAttribute("inert", "");
   motion.closeModal(refs.settingsScrim, document.querySelector("#settings-modal"), {
-    onComplete: () => { delete refs.settingsScrim.dataset.closing; }
+    onComplete: () => {
+      delete refs.settingsScrim.dataset.closing;
+      if (lastFocused && lastFocused.isConnected) lastFocused.focus();
+      lastFocused = null;
+    }
   });
 }
 
@@ -2352,9 +2357,14 @@ function openCreateModal(prefillPath) {
 
 function closeCreateModal() {
   refs.createScrim.dataset.closing = "true";
-  closeOverlay(refs.createScrim);
+  refs.createScrim.classList.remove("show");
+  refs.createScrim.setAttribute("inert", "");
   motion.closeModal(refs.createScrim, document.querySelector("#create-card"), {
-    onComplete: () => { delete refs.createScrim.dataset.closing; }
+    onComplete: () => {
+      delete refs.createScrim.dataset.closing;
+      if (lastFocused && lastFocused.isConnected) lastFocused.focus();
+      lastFocused = null;
+    }
   });
 }
 // PLACEHOLDER_PRIVACY
