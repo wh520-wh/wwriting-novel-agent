@@ -1,5 +1,6 @@
-import { computeAgentTruth, deriveFailures } from "./agent-truth.mjs";
+import { computeAgentTruth, deriveFailures, deriveActivity } from "./agent-truth.mjs";
 import { renderFailureCard } from "./components/failure-card.js";
+import { renderActivityStrip } from "./components/activity-strip.js";
 
 // WWriting · Codex 风格对话式前端
 // 后端无消息/SSE 端点，对话流由前端用 /api/dashboard 的 events[] + chapters[] + summary 聚合而成。
@@ -343,6 +344,10 @@ function renderDashboard(data) {
 
   syncThread(data, firstLoad);
   syncFailureCards(data);
+
+  const stripEl = document.getElementById('activity-strip');
+  renderActivityStrip(stripEl, deriveActivity(data), { privacy: refs.privacyToggle?.checked });
+
   refreshDrawerIfOpen();
 }
 
