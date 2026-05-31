@@ -17,6 +17,8 @@ import { ProjectCancelledError, runProject } from "./agent-engine.mjs";
 import { handleSideQuestion } from "./side-question.mjs";
 import { expandInstruction, TaskQueue } from "./task-queue.mjs";
 import { resolveRetryCandidate, retryDashboardFields } from "./retry-candidates.mjs";
+import { validateFailureCommand } from "../shared/failure-commands.mjs";
+import { readFailures, markResolved } from "./failures-store.mjs";
 
 export function createAppShellServer({
   workspaceRoot = path.resolve("."),
@@ -122,6 +124,10 @@ export function createAppShellServer({
     }
     if (url.pathname === "/api/run/retry" && request.method === "POST") {
       await serveRunRetry(request, response, { workspace, selected, runJobs, getTaskQueue, testModel, testRunProject });
+      return;
+    }
+    if (url.pathname === "/api/failures/resolve" && request.method === "POST") {
+      await serveFailuresResolve(request, response, { workspace, selected });
       return;
     }
     if (url.pathname === "/api/run/stop" && request.method === "POST") {
@@ -822,6 +828,69 @@ async function serveRunRetry(request, response, context) {
     await serveJson(response, { ok: true, message: "已从中断处继续。", task });
   } catch (error) {
     await serveJson(response, { ok: false, message: error.message }, 500);
+  }
+}
+
+async function listAllowedModels(projectRoot) {
+  const project = await loadProject(projectRoot);
+  const config = await loadConfigLayers(projectRoot, project);
+  const list = config.effective?.allowed_models;
+  if (Array.isArray(list) && list.length > 0) return list;
+  return config.effective?.active_model ? [config.effective.active_model] : [];
+}
+
+async function serveFailuresResolve(request, response, context) {
+  try {
+    const body = await readJsonBody(request);
+    const { command, args = {}, failureId } = body;
+    if (!failureId) {
+      await serveJson(response, { ok: false, error: "缺少 failureId" }, 400);
+      return;
+    }
+    const projectRoot = await resolveActiveProjectRoot(context);
+    const valid = validateFailureCommand(command, args);
+    if (!valid.ok) {
+      await appendEvent(projectRoot, {
+        type: "failure_command_rejected",
+        severity: "warn",
+        message: valid.error,
+        data: { command, failureId }
+      });
+      await serveJson(response, { ok: false, error: valid.error }, 400);
+      return;
+    }
+    if (command === "switch-model") {
+      const allowed = await listAllowedModels(projectRoot);
+      if (!allowed.includes(args.modelId)) {
+        await serveJson(response, { ok: false, error: "modelId 不在允许列表" }, 400);
+        return;
+      }
+    }
+    const failures = readFailures(projectRoot);
+    const match = failures.find((f) => f.id === failureId);
+    if (!match) {
+      await serveJson(response, { ok: false, error: "故障卡不存在" }, 404);
+      return;
+    }
+    if (match.resolution) {
+      await serveJson(response, { ok: false, error: "故障卡已处理" }, 409);
+      return;
+    }
+    markResolved(projectRoot, failureId, {
+      action: command,
+      submittedAt: new Date().toISOString(),
+      args
+    });
+    await appendEvent(projectRoot, {
+      type: "failure_resolved",
+      project_id: (await loadProject(projectRoot)).project_id,
+      severity: "info",
+      message: command,
+      data: { failureId, args }
+    });
+    await serveJson(response, { ok: true });
+  } catch (err) {
+    await serveJson(response, { ok: false, error: err.message }, 500);
   }
 }
 

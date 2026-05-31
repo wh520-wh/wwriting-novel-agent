@@ -8,6 +8,7 @@ import { recordRecentProject } from "../src/core/app-state.mjs";
 import { readEvents } from "../src/core/event-log.mjs";
 import { createProject, loadState, saveState } from "../src/core/project-store.mjs";
 import { TaskQueue } from "../src/core/task-queue.mjs";
+import { appendFailure } from "../src/core/failures-store.mjs";
 
 async function setupServer(options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-probe-"));
@@ -714,4 +715,45 @@ test("server with no selected project does not scan workspace as implicit dashbo
   } finally {
     await closeServer(server);
   }
+});
+
+test("POST /api/failures/resolve 拒绝未知命令", async () => {
+  const ctx = await setupServer();
+  try {
+    const { res, data } = await postJson(ctx.port, "/api/failures/resolve",
+      { command: "evil-cmd", args: {}, failureId: "x" });
+    assert.equal(res.status, 400);
+    assert.match(data.error, /未知命令/);
+  } finally { await closeServer(ctx.server); }
+});
+
+test("POST /api/failures/resolve failureId 必须存在且未处理", async () => {
+  const ctx = await setupServer();
+  appendFailure(ctx.projectRoot, { id: "f1", kind: "unknown", resolution: null });
+  try {
+    const r1 = await postJson(ctx.port, "/api/failures/resolve",
+      { command: "pause-here", args: {}, failureId: "f1" });
+    assert.equal(r1.res.status, 200);
+    const r2 = await postJson(ctx.port, "/api/failures/resolve",
+      { command: "pause-here", args: {}, failureId: "f1" });
+    assert.equal(r2.res.status, 409);
+    const r3 = await postJson(ctx.port, "/api/failures/resolve",
+      { command: "pause-here", args: {}, failureId: "nonexistent" });
+    assert.equal(r3.res.status, 404);
+  } finally { await closeServer(ctx.server); }
+});
+
+test("POST /api/failures/resolve blocked 项目也能处理（不被 short-circuit）", async () => {
+  const ctx = await setupServer();
+  await saveState(ctx.projectRoot, {
+    project_status: "blocked", blocked_reason: "model_call_budget_exhausted",
+    current_chapter_no: 1, current_stage: "blocked"
+  });
+  appendFailure(ctx.projectRoot, { id: "fb", kind: "budget-exhausted", resolution: null });
+  try {
+    const { res, data } = await postJson(ctx.port, "/api/failures/resolve",
+      { command: "pause-here", args: {}, failureId: "fb" });
+    assert.equal(res.status, 200);
+    assert.equal(data.ok, true);
+  } finally { await closeServer(ctx.server); }
 });
