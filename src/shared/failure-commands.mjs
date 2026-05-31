@@ -26,8 +26,7 @@ export function validateFailureCommand(command, args = {}) {
       if (schema.maxLength && v.length > schema.maxLength) {
         return { ok: false, error: `${key} 超长 (>${schema.maxLength})` };
       }
-    }
-    if (schema.type === 'integer') {
+    } else if (schema.type === 'integer') {
       if (!Number.isInteger(v)) return { ok: false, error: `${key} 必须是整数` };
       if (schema.min !== undefined && v < schema.min) return { ok: false, error: `${key} 不能小于 ${schema.min}` };
       if (schema.max !== undefined && v > schema.max) return { ok: false, error: `${key} 不能大于 ${schema.max}` };
