@@ -101,6 +101,13 @@ async function main() {
     });
     true;
   `);
+  await win.webContents.executeJavaScript(`
+    window.__wwMotionProbe = {
+      loaded: Boolean(window.__wwritingMotionReady),
+      errors: []
+    };
+    true;
+  `);
 
   const clicks = [];
 
@@ -216,6 +223,19 @@ async function main() {
     expect: () => read(win, "document.getElementById('drawer').classList.contains('show') === false")
   }));
 
+  const drawerClosedState = await read(win, `
+    (() => {
+      const drawer = document.getElementById("drawer");
+      return drawer.getAttribute("aria-hidden") === "true" && drawer.hasAttribute("inert");
+    })()
+  `);
+  assert.equal(drawerClosedState, true, "drawer must be inert and aria-hidden after close");
+  await win.webContents.executeJavaScript(`
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    true;
+  `);
+
   clicks.push(await clickAndRead(win, '.quick-rail .qr-slot[data-key="skills"]', {
     label: "open-panel",
     expect: () => read(win, "document.getElementById('drawer').classList.contains('show') === true && document.querySelector('[data-dtab=\"skills\"]').getAttribute('aria-selected') === 'true'")
@@ -292,6 +312,13 @@ async function main() {
     label: "composer-submit-side-question",
     settleMs: 750
   }));
+
+  const motionReady = await read(win, "Boolean(window.__wwritingMotionReady)");
+  assert.equal(motionReady, true, "motion runtime must initialize in Electron");
+  for (const message of consoleMessages) {
+    assert.ok(!String(message.message).includes("Failed to resolve module specifier"), `module resolution error: ${message.message}`);
+    assert.ok(!String(message.message).includes("MIME"), `module MIME error: ${message.message}`);
+  }
 
   const visibleButtons = await read(win, `
     [...document.querySelectorAll('button')]
