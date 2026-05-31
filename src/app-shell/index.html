@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WWriting · 小说智能体</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app" id="app" data-privacy="off">
+      <!-- ============ 左栏 · 项目 ============ -->
+      <aside class="rail">
+        <div class="rail-top">
+          <div class="brand-mark">W</div>
+          <div class="brand-text">
+            <strong>WWriting</strong>
+            <span>小说智能体</span>
+          </div>
+          <button class="icon-btn" id="refresh" title="刷新" aria-label="刷新">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 12a8.5 8.5 0 1 1-2.4-5.9"/><path d="M20.5 4v4.5H16"/></svg>
+          </button>
+        </div>
+        <nav class="rail-nav" id="rail-nav"></nav>
+        <div class="rail-new">
+          <button class="new-btn" id="new-novel">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>新建小说
+          </button>
+        </div>
+        <div class="rail-scroll">
+          <div class="rail-group-label"><span>我的小说</span><span class="count" id="project-count">0</span></div>
+          <div id="project-list"></div>
+          <p id="project-open-status" class="rail-group-label" style="display:none"></p>
+        </div>
+        <div class="rail-foot">
+          <button class="foot-btn" id="open-folder">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h6l2 2h10v9a2 2 0 0 1-2 2H3z"/></svg>打开本地文件夹
+          </button>
+          <button class="foot-btn" id="open-settings">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5h9M17 6.5h3M4 12h3M11 12h9M4 17.5h7M15 17.5h5"/></svg>设置
+          </button>
+          <div class="foot-user">
+            <div class="foot-avatar">作</div>
+            <div class="who"><strong>本地作者</strong><span>离线 · 文件保存在本机</span></div>
+          </div>
+        </div>
+      </aside>
+      <!-- ============ 主列 ============ -->
+      <div class="main">
+        <header class="topbar">
+          <div class="topbar-id">
+            <div class="topbar-title-row">
+              <h1 id="project-title">开始创作</h1>
+              <span class="pill" id="project-status"><span class="pdot"></span>待命</span>
+            </div>
+            <div class="topbar-sub" id="topbar-sub">用一句话描述你的故事，应用会持续生成章节并保存到本地。</div>
+            <div class="topbar-progress" id="topbar-progress" hidden>
+              <div class="topbar-progress-bar" id="topbar-progress-bar"></div>
+            </div>
+          </div>
+          <div class="topbar-actions">
+            <button class="tbtn topbar-stop" id="topbar-stop" type="button" hidden>停止</button>
+            <button class="tbtn topbar-retry" id="topbar-retry" type="button" hidden>重试</button>
+            <button class="tbtn" id="privacy-toggle" title="隐私模式：模糊正文，防止旁人窥屏" aria-pressed="false">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg>
+              <span id="privacy-label">隐私</span>
+            </button>
+            <button class="tbtn" id="open-chapters"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h11a2 2 0 0 1 2 2v14H7a2 2 0 0 1-2-2z"/><path d="M5 17.5h13"/></svg>章节</button>
+            <button class="tbtn" id="open-panel"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v14H4z"/><path d="M14 5v14"/></svg>面板</button>
+          </div>
+        </header>
+
+        <div class="thread-wrap" id="thread-wrap">
+          <div class="thread" id="thread"></div>
+        </div>
+
+        <div class="composer-wrap" id="composer-wrap">
+          <div class="composer" id="composer">
+            <div class="slash" id="slash-menu" role="listbox" aria-label="斜杠命令" hidden></div>
+            <div class="composer-inner">
+              <textarea id="composer-input" rows="1" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="slash-menu" aria-haspopup="listbox" aria-label="给智能体下达指令" placeholder="给智能体下达指令：开始写作、续写下一章、调整方向…  输入 / 唤起命令" spellcheck="false"></textarea>
+              <div class="composer-bar">
+                <button class="cbar-btn" id="cbar-slash" title="斜杠命令"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 20l6-16"/></svg>命令</button>
+                <span class="cbar-spacer"></span>
+                <span class="cbar-hint" id="composer-hint">Enter 发送 · Shift+Enter 换行</span>
+                <button class="send" id="composer-submit" disabled aria-label="发送"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M6 11l6-6 6 6"/></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="scrim" id="drawer-scrim"></div>
+        <aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" aria-hidden="true" inert>
+          <div class="drawer-head">
+            <h3 id="drawer-title">项目面板</h3>
+            <button class="icon-btn" id="drawer-close" aria-label="关闭"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+          </div>
+          <div class="drawer-tabs" id="drawer-tabs" role="tablist">
+            <button class="dtab on" data-dtab="chapters" type="button" role="tab" aria-selected="true">章节</button>
+            <button class="dtab" data-dtab="model" type="button" role="tab" aria-selected="false">模型</button>
+            <button class="dtab" data-dtab="run" type="button" role="tab" aria-selected="false">运行</button>
+          </div>
+          <div class="drawer-body" id="drawer-body"></div>
+        </aside>
+      </div>
+
+      <!-- 章节阅读器 -->
+      <div class="reader-scrim" id="reader-scrim" inert>
+        <div class="reader" id="reader" role="dialog" aria-modal="true" aria-labelledby="reader-title">
+          <div class="reader-head">
+            <div style="min-width:0;flex:1">
+              <div class="path" id="reader-path"></div>
+              <h2 id="reader-title">章节</h2>
+              <div class="sub" id="reader-meta"></div>
+            </div>
+            <button class="icon-btn" id="reader-close" aria-label="关闭"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+          </div>
+          <div class="reader-body peek" id="reader-body"></div>
+        </div>
+      </div>
+
+      <!-- 设置弹窗 -->
+      <div class="settings-scrim" id="settings-scrim" inert>
+        <div class="settings-modal" id="settings-modal" role="dialog" aria-modal="true" aria-label="设置">
+          <aside class="sp-side">
+            <div class="sp-search">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14z"/><path d="M20.5 20.5 16 16"/></svg>
+              <input id="settings-search" placeholder="搜索模型平台…" aria-label="搜索模型平台" />
+            </div>
+            <div class="sp-list" id="settings-provider-list"></div>
+            <button class="sp-add" id="settings-add"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>添加</button>
+          </aside>
+          <section class="sp-detail">
+            <div class="sp-detail-scroll" id="settings-detail"></div>
+            <footer class="spd-foot">
+              <button class="spd-cancel" id="settings-cancel">关闭</button>
+              <button class="spd-save" id="settings-save">保存设置</button>
+            </footer>
+          </section>
+          <button class="settings-x icon-btn" id="settings-x" aria-label="关闭"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+        </div>
+      </div>
+
+      <!-- 新建/初始化项目弹窗 -->
+      <div class="settings-scrim" id="create-scrim" inert>
+        <div class="create-card" id="create-card" role="dialog" aria-modal="true" aria-labelledby="create-heading">
+          <p class="eyebrow">新的小说</p>
+          <h2 id="create-heading">开始一部新小说</h2>
+          <p class="lead">告诉我故事的种子，应用会规划、起草、审稿、定稿，并把每一章保存为本地文件。</p>
+          <label class="dfield"><span>小说名</span><input id="create-title" type="text" placeholder="未命名小说" /></label>
+          <label class="dfield"><span>故事设定 · 一句话或主体大纲</span><textarea id="create-seed" rows="3" placeholder="例如：一个钟表匠在午夜发现时间可以倒流，而代价是别人的记忆。"></textarea></label>
+          <div class="create-grid">
+            <label class="dfield"><span>章节数</span><input id="create-chapters" type="number" min="1" value="100" /></label>
+            <label class="dfield"><span>每章最低字数</span><input id="create-min-words" type="number" min="1" value="3000" /></label>
+          </div>
+          <label class="dfield"><span>保存到本地文件夹（需空文件夹）</span>
+            <div class="path-row" style="display:flex;gap:8px">
+              <input id="create-path" type="text" placeholder="D:\\写作项目\\我的小说" spellcheck="false" style="flex:1" />
+              <button class="spd-cancel" id="create-browse" type="button">选择…</button>
+            </div>
+          </label>
+          <button class="save-btn" id="create-submit" type="button">开始创作</button>
+          <p id="create-status" class="spd-hint"></p>
+          <button class="settings-x icon-btn" id="create-x" aria-label="关闭"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+        </div>
+      </div>
+
+      <div id="thread-status" class="sr-only" role="status" aria-live="polite"></div>
+      <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+    </div>
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>

@@ -1,0 +1,65 @@
+{
+  "name": "wwriting-novel-agent",
+  "version": "0.1.0",
+  "description": "Desktop long-form novel writing agent with durable local files and verification.",
+  "author": "WWriting",
+  "private": true,
+  "type": "module",
+  "main": "src/desktop/electron-main.cjs",
+  "scripts": {
+    "app:shell": "node scripts/serve-app-shell.mjs",
+    "assets:icon": "node scripts/generate-app-icon.mjs",
+    "desktop:electron": "electron src/desktop/electron-main.cjs",
+    "package:dir": "electron-builder --dir --win",
+    "package:installer": "node scripts/package-installer.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "verify:mvp": "node scripts/verify-mvp.mjs",
+    "verify:longrun": "node scripts/verify-longrun.mjs",
+    "verify:faults": "node scripts/verify-fault-injection.mjs",
+    "verify:local": "node scripts/verify-local-all.mjs",
+    "verify:desktop-shell": "node scripts/verify-desktop-shell.mjs",
+    "verify:electron-runtime": "node scripts/verify-electron-runtime.mjs",
+    "verify:app-clickability": "electron scripts/verify-app-clickability.cjs",
+    "verify:packaged-dir": "node scripts/verify-packaged-dir.mjs",
+    "verify:installer": "node scripts/verify-installer-artifact.mjs",
+    "verify:provider-online": "node scripts/verify-provider-online.mjs",
+    "verify:research-online": "node scripts/verify-research-online.mjs",
+    "verify:app-shell": "node scripts/verify-app-shell.mjs"
+  },
+  "build": {
+    "appId": "local.wwriting.novelagent",
+    "productName": "WWriting Novel Agent",
+    "asar": true,
+    "directories": {
+      "output": "dist-desktop"
+    },
+    "files": [
+      "package.json",
+      "src/**/*"
+    ],
+    "icon": "src/assets/app-icon.ico",
+    "win": {
+      "icon": "src/assets/app-icon.ico",
+      "signAndEditExecutable": false,
+      "target": [
+        "dir",
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "artifactName": "${productName}-${version}-Setup.${ext}"
+    }
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "devDependencies": {
+    "electron": "^42.3.0",
+    "electron-builder": "^26.8.1"
+  }
+}
