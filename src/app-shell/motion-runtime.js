@@ -16,11 +16,12 @@ const MOTION = Object.freeze({
   easeOut: "power2.out",
   easeIn: "power2.in",
   easeInOut: "power2.inOut",
-  emphasis: "back.out(1.4)",
+  emphasis: "back.out(1.35)",
 });
 
 let _reducedMotion = false;
 let _gsapLoaded = false;
+let _reduceQuery = null;
 
 /* ─── Setup & detection ─── */
 
@@ -36,6 +37,7 @@ export function setupMotion() {
       window.matchMedia &&
       window.matchMedia("(prefers-reduced-motion: reduce)");
     if (mq) {
+      _reduceQuery = mq;
       _reducedMotion = mq.matches;
       mq.addEventListener("change", (e) => {
         _reducedMotion = e.matches;
@@ -48,15 +50,13 @@ export function setupMotion() {
 }
 
 /**
- * Re-checks the reduced-motion preference each call.
+ * Re-checks the reduced-motion preference, reusing the cached MediaQueryList.
  */
 export function isReducedMotion() {
   try {
-    const mq =
-      typeof window !== "undefined" &&
-      window.matchMedia &&
-      window.matchMedia("(prefers-reduced-motion: reduce)");
-    if (mq) _reducedMotion = mq.matches;
+    if (_reduceQuery) {
+      _reducedMotion = _reduceQuery.matches;
+    }
   } catch {
     /* ignore */
   }
@@ -95,15 +95,47 @@ export function diffActivitySlots(previous, next) {
 
 /**
  * Normalizes badge data into a flat summary object with standard keys.
+ * Supports structured badge objects:
+ *   chapters: { done, total } -> "done/total"
+ *   skills:   { enabledCount } -> "count"
+ *   research: { newSinceLastVisit } -> "unread" | ""
+ *   cost:     { level } -> level string
+ *   reviewer: { hasUnread } -> "unread" | "read"
  */
 export function summarizeBadgesForMotion(badges) {
   if (!badges || typeof badges !== "object") return {};
+
+  const chapters = badges.chapters;
+  const skills = badges.skills;
+  const research = badges.research;
+  const cost = badges.cost;
+  const reviewer = badges.reviewer;
+
   return {
-    chapters: String(badges.chapters ?? ""),
-    skills: String(badges.skills ?? ""),
-    research: String(badges.research ?? ""),
-    cost: String(badges.cost ?? ""),
-    reviewer: String(badges.reviewer ?? ""),
+    chapters:
+      chapters && typeof chapters === "object"
+        ? `${chapters.done ?? 0}/${chapters.total ?? 0}`
+        : String(chapters ?? ""),
+    skills:
+      skills && typeof skills === "object"
+        ? String(skills.enabledCount ?? 0)
+        : String(skills ?? ""),
+    research:
+      research && typeof research === "object"
+        ? research.newSinceLastVisit
+          ? "unread"
+          : ""
+        : String(research ?? ""),
+    cost:
+      cost && typeof cost === "object"
+        ? String(cost.level ?? "")
+        : String(cost ?? ""),
+    reviewer:
+      reviewer && typeof reviewer === "object"
+        ? reviewer.hasUnread
+          ? "unread"
+          : "read"
+        : String(reviewer ?? ""),
   };
 }
 
@@ -143,7 +175,7 @@ export function safeAnimate(fn) {
 export function clearTemporaryProps(targets, props) {
   if (!_gsapLoaded || !gsap || !targets) return;
   safeAnimate(() => {
-    gsap.set(targets, { clearProps: props || "all" });
+    gsap.set(targets, { clearProps: props || "transform,opacity" });
   });
 }
 
@@ -307,14 +339,21 @@ export function insertFailureCard(node) {
     gsap.fromTo(
       node,
       { opacity: 0, y: 14 },
-      { opacity: 1, y: 0, duration: MOTION.slow, ease: MOTION.easeOut }
+      {
+        opacity: 1,
+        y: 0,
+        duration: MOTION.slow,
+        ease: MOTION.easeOut,
+        clearProps: "transform,opacity",
+        onComplete: () => node.classList.remove("motion-active"),
+      }
     );
     const actions = node.querySelectorAll(".failure-actions button");
     if (actions.length) {
       gsap.fromTo(
         actions,
         { opacity: 0, y: 8 },
-        { opacity: 1, y: 0, duration: MOTION.base, ease: MOTION.easeOut, stagger: 0.06, delay: 0.1 }
+        { opacity: 1, y: 0, duration: MOTION.base, ease: MOTION.easeOut, stagger: 0.06, delay: 0.1, clearProps: "transform,opacity" }
       );
     }
   });
@@ -350,8 +389,9 @@ export function resolveFailureCard(oldNode, nextNode, { commit } = {}) {
     });
 
     if (nextNode) {
+      const resolved = nextNode.querySelector(".failure-resolved") || nextNode;
       tl.fromTo(
-        nextNode,
+        resolved,
         { opacity: 0, y: 6 },
         { opacity: 1, y: 0, duration: MOTION.base, ease: MOTION.easeOut },
         "+=0.05"
