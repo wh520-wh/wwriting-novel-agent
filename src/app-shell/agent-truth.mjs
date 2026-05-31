@@ -69,3 +69,31 @@ export function deriveFailures(dashboard) {
     return { ...f, seq: n };
   });
 }
+
+export function deriveActivity(dashboard, now = Date.now()) {
+  if (!dashboard?.hasProject) return null;
+  const summary = dashboard.summary ?? {};
+  const state = dashboard.state ?? {};
+  const status = summary.projectStatus ?? state.project_status ?? 'idle';
+  const stage = summary.currentStage ?? state.current_stage ?? null;
+  const chapterNo = summary.currentChapterNo ?? state.current_chapter_no ?? null;
+  const segCurrent = null;
+  const segTotal = null;
+  const rt = Array.isArray(dashboard.recent_tool_events) && dashboard.recent_tool_events.length
+    ? dashboard.recent_tool_events[0] : null;
+  const lastTool = rt ? {
+    name: rt.data?.tool ?? rt.tool ?? '',
+    status: rt.type === 'tool_call_rejected' ? 'failed'
+          : (rt.type === 'tool_call_requested' ? 'pending' : 'ok'),
+    ts: rt.ts
+  } : null;
+  const enteredAt = state.stage_entered_at ? Date.parse(state.stage_entered_at) : NaN;
+  const elapsedMs = Number.isNaN(enteredAt) ? null : (now - enteredAt);
+  const spentCost = summary.estimatedCost ?? null;
+  let mode = 'idle';
+  if (status === 'running' && dashboard.agent_alive) mode = 'running';
+  else if (status === 'blocked') mode = 'blocked';
+  else if (status === 'interrupted') mode = 'interrupted';
+  else if (status === 'completed') mode = 'completed';
+  return { stage, chapterNo, segCurrent, segTotal, lastTool, elapsedMs, etaMs: null, spentCost, mode };
+}
