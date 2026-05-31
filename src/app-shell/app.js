@@ -346,7 +346,11 @@ function renderDashboard(data) {
   syncFailureCards(data);
 
   const stripEl = document.getElementById('activity-strip');
-  renderActivityStrip(stripEl, deriveActivity(data), { privacy: refs.privacyToggle?.checked });
+  renderActivityStrip(stripEl, deriveActivity(data), {
+    privacy: refs.privacyToggle?.checked,
+    onClickCost: () => openDrawerTab('run'),
+    onClickChapter: () => openDrawerTab('chapters')
+  });
 
   refreshDrawerIfOpen();
 }
@@ -1572,6 +1576,12 @@ function openDrawer(tab) {
 function toggleDrawer() {
   if (refs.drawer.classList.contains("show")) closeDrawer();
   else openDrawer();
+}
+
+function openDrawerTab(tab) {
+  const drawer = document.getElementById('drawer');
+  if (drawer?.getAttribute('aria-hidden') !== 'false') toggleDrawer();
+  setDrawerTab(tab);
 }
 
 function closeDrawer() {

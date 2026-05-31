@@ -4,7 +4,7 @@ const STAGE_LABEL = {
   finalizing: '定稿', summarizing: '摘要', blocked: '阻塞'
 };
 
-export function renderActivityStrip(root, activity, { privacy = false } = {}) {
+export function renderActivityStrip(root, activity, { privacy = false, onClickCost, onClickChapter } = {}) {
   if (!activity) {
     root.hidden = true;
     return;
@@ -19,7 +19,8 @@ export function renderActivityStrip(root, activity, { privacy = false } = {}) {
     const loc = activity.segCurrent != null
       ? `第 ${activity.chapterNo} 章 · seg ${activity.segCurrent}/${activity.segTotal ?? '?'}`
       : `第 ${activity.chapterNo} 章`;
-    appendSlot(root, 'loc', privacy ? '█████' : loc);
+    const locEl = appendSlot(root, 'loc', privacy ? '█████' : loc);
+    if (onClickChapter) { locEl.style.cursor = 'pointer'; locEl.addEventListener('click', onClickChapter); }
   }
   if (activity.lastTool) {
     const sym = activity.lastTool.status === 'pending' ? '→' : activity.lastTool.status === 'failed' ? '✗' : '✓';
@@ -29,7 +30,8 @@ export function renderActivityStrip(root, activity, { privacy = false } = {}) {
     appendSlot(root, 'time', `${formatDuration(activity.elapsedMs)} / ${activity.etaMs != null ? '~' + formatDuration(activity.etaMs) : '—'}`);
   }
   if (activity.spentCost != null) {
-    appendSlot(root, 'cost', `￥${activity.spentCost.toFixed(2)}`);
+    const costEl = appendSlot(root, 'cost', `￥${activity.spentCost.toFixed(2)}`);
+    if (onClickCost) { costEl.style.cursor = 'pointer'; costEl.addEventListener('click', onClickCost); }
   }
 }
 
@@ -38,6 +40,7 @@ function appendSlot(root, name, text) {
   s.className = `as-slot as-${name}`;
   s.textContent = text;
   root.appendChild(s);
+  return s;
 }
 
 function formatDuration(ms) {
