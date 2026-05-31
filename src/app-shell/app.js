@@ -1,6 +1,8 @@
-import { computeAgentTruth, deriveFailures, deriveActivity } from "./agent-truth.mjs";
+import { computeAgentTruth, deriveFailures, deriveActivity, deriveBadges } from "./agent-truth.mjs";
 import { renderFailureCard } from "./components/failure-card.js";
 import { renderActivityStrip } from "./components/activity-strip.js";
+import { renderQuickRail, bindQuickRailKeys } from "./components/quick-rail.js";
+import { getLastSeen, watchLastSeen } from "./components/last-seen.js";
 
 // WWriting · Codex 风格对话式前端
 // 后端无消息/SSE 端点，对话流由前端用 /api/dashboard 的 events[] + chapters[] + summary 聚合而成。
@@ -62,7 +64,8 @@ const refs = {
   createX: document.querySelector("#create-x"),
   toastStack: document.querySelector("#toast-stack"),
   threadStatus: document.querySelector("#thread-status"),
-  topbar: document.querySelector(".topbar")
+  topbar: document.querySelector(".topbar"),
+  quickRail: document.querySelector("#quick-rail")
 };
 
 let currentProjectRoot = null;
@@ -351,6 +354,15 @@ function renderDashboard(data) {
     onClickCost: () => openDrawerTab('run'),
     onClickChapter: () => openDrawerTab('chapters')
   });
+
+  if (refs.quickRail) {
+    const lastSeen = {
+      research: getLastSeen(currentProjectRoot, 'research'),
+      reviewer: getLastSeen(currentProjectRoot, 'reviewer')
+    };
+    const badges = deriveBadges(data, currentProjectRoot, lastSeen);
+    renderQuickRail(refs.quickRail, badges, { onOpenTab: openDrawerTab, projectRoot: currentProjectRoot });
+  }
 
   refreshDrawerIfOpen();
 }
@@ -1614,6 +1626,10 @@ function renderDrawerBody() {
   }
   if (drawerTab === "chapters") renderChapterPanel(lastDashboard);
   else if (drawerTab === "model") renderModelPanel(lastDashboard);
+  else if (drawerTab === "skills") renderSkillsPanel(lastDashboard);
+  else if (drawerTab === "research") renderResearchPanel(lastDashboard);
+  else if (drawerTab === "cost") renderCostPanel(lastDashboard);
+  else if (drawerTab === "reviewer") renderReviewerPanel(lastDashboard);
   else renderRunPanel(lastDashboard);
 }
 
@@ -1812,6 +1828,91 @@ function renderRunPanel(data) {
     }
   }
   refs.drawerBody.replaceChildren(progress.panel, events.panel, skills.panel, research.panel);
+}
+
+function renderSkillsPanel(data) {
+  const skillItems = data.skills?.items ?? [];
+  const enabledCount = skillItems.filter((s) => s.enabled_in_project).length;
+  const skills = dpanel("技能", `${enabledCount} 启用`);
+  if (skillItems.length === 0) {
+    skills.body.append(drawerEmpty("未发现技能。"));
+  } else {
+    for (const skill of skillItems) skills.body.append(buildSkillRow(skill));
+  }
+  refs.drawerBody.replaceChildren(skills.panel);
+}
+
+function renderResearchPanel(data) {
+  const sources = data.sources?.latest ?? [];
+  const research = dpanel("资料来源", formatNumber(data.sources?.count ?? 0));
+  const form = document.createElement("div");
+  form.className = "research-form";
+  const q = document.createElement("input");
+  q.type = "text"; q.placeholder = "搜索关键词"; q.className = "research-input";
+  const sBtn = document.createElement("button");
+  sBtn.type = "button"; sBtn.className = "small-button"; sBtn.textContent = "搜索";
+  sBtn.addEventListener("click", () => runResearch("search", { query: q.value.trim(), limit: 5 }, sBtn));
+  const u = document.createElement("input");
+  u.type = "url"; u.placeholder = "https://example.com"; u.className = "research-input";
+  const fBtn = document.createElement("button");
+  fBtn.type = "button"; fBtn.className = "small-button"; fBtn.textContent = "抓取";
+  fBtn.addEventListener("click", () => runResearch("fetch", { url: u.value.trim() }, fBtn));
+  form.append(q, sBtn, u, fBtn);
+  research.body.append(form);
+  if (sources.length === 0) {
+    research.body.append(drawerEmpty("暂无来源快照。"));
+  } else {
+    for (const source of sources) {
+      const row = document.createElement("div");
+      row.className = "evt";
+      const et = document.createElement("span");
+      et.className = "et";
+      et.textContent = translateSourceKind(source.kind);
+      const em = document.createElement("span");
+      em.className = "em peek";
+      em.textContent = source.title ?? source.file;
+      const ex = document.createElement("span");
+      ex.className = "ex";
+      ex.textContent = source.untrusted ? "不可信" : "资料";
+      row.append(et, em, ex);
+      research.body.append(row);
+    }
+  }
+  refs.drawerBody.replaceChildren(research.panel);
+}
+
+function renderCostPanel(data) {
+  const summary = data.summary;
+  const budget = dpanel("预算与用量");
+  const kv = document.createElement("dl");
+  kv.className = "kv";
+  appendKv(kv, "模型调用", `${formatNumber(summary.modelCalls)} / ${summary.maxModelCalls ?? "∞"}`);
+  appendKv(kv, "估算成本", formatMoney(summary.estimatedCost));
+  appendKv(kv, "累计字数", formatNumber(summary.totalWords));
+  appendKv(kv, "完成章节", `${summary.completedChapters} / ${summary.targetChapters}`);
+  budget.body.append(kv);
+  refs.drawerBody.replaceChildren(budget.panel);
+}
+
+function renderReviewerPanel(data) {
+  const review = data.review ?? {};
+  const panel = dpanel("审查报告");
+  if (!review.generated_at) {
+    panel.body.append(drawerEmpty("暂无审查报告。运行 /review 命令后生成。"));
+  } else {
+    const kv = document.createElement("dl");
+    kv.className = "kv";
+    appendKv(kv, "状态", translateReviewStatus(review.status));
+    appendKv(kv, "生成时间", formatTime(review.generated_at));
+    panel.body.append(kv);
+    if (review.summary) {
+      const p = document.createElement("p");
+      p.className = "agent-say";
+      p.textContent = review.summary;
+      panel.body.append(p);
+    }
+  }
+  refs.drawerBody.replaceChildren(panel.panel);
 }
 // PLACEHOLDER_DRAWER5
 
@@ -2421,4 +2522,11 @@ renderRailNav();
 initPrivacyMode();
 autoGrowComposer();
 updateSubmitState();
+
+// Quick Rail 初始化
+if (refs.quickRail) {
+  bindQuickRailKeys(refs.quickRail, openDrawerTab);
+  watchLastSeen(() => { if (lastDashboard) renderDashboard(lastDashboard); });
+}
+
 await loadAll();

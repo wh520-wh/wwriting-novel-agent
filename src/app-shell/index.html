@@ -46,6 +46,7 @@
       </aside>
       <!-- ============ 主列 ============ -->
       <div class="main">
+        <div class="main-inner">
         <header class="topbar">
           <div class="topbar-id">
             <div class="topbar-title-row">
@@ -88,6 +89,9 @@
             </div>
           </div>
         </div>
+        </div>
+
+        <nav class="quick-rail" id="quick-rail" aria-label="快捷面板"></nav>
 
         <div class="scrim" id="drawer-scrim"></div>
         <aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" aria-hidden="true" inert>
@@ -99,6 +103,10 @@
             <button class="dtab on" data-dtab="chapters" type="button" role="tab" aria-selected="true">章节</button>
             <button class="dtab" data-dtab="model" type="button" role="tab" aria-selected="false">模型</button>
             <button class="dtab" data-dtab="run" type="button" role="tab" aria-selected="false">运行</button>
+            <button class="dtab" data-dtab="skills" type="button" role="tab" aria-selected="false">技能</button>
+            <button class="dtab" data-dtab="research" type="button" role="tab" aria-selected="false">资料</button>
+            <button class="dtab" data-dtab="cost" type="button" role="tab" aria-selected="false">成本</button>
+            <button class="dtab" data-dtab="reviewer" type="button" role="tab" aria-selected="false">审查</button>
           </div>
           <div class="drawer-body" id="drawer-body"></div>
         </aside>

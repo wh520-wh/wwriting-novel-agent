@@ -293,7 +293,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 /* ============================================================
    Main column
    ============================================================ */
-.main { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0,1fr) auto; background: var(--bg); position: relative; overflow: hidden; }
+.main { min-width: 0; min-height: 0; display: flex; flex-direction: row; background: var(--bg); position: relative; overflow: hidden; }
 
 /* header */
 .topbar {
@@ -1196,6 +1196,51 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .as-slot { white-space: nowrap; }
 .as-slot:not(:last-child)::after {
   content: '\2502'; margin-left: 14px; color: var(--ghost);
+}
+
+/* Quick Rail */
+.main { display: flex; flex-direction: row; flex: 1; min-width: 0; min-height: 0; background: var(--bg); position: relative; overflow: hidden; }
+.main-inner { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.main-inner .thread-wrap { flex: 1; min-height: 0; }
+.quick-rail {
+  width: 48px; flex: 0 0 48px;
+  border-left: 1px solid var(--line);
+  background: var(--rail-2);
+  display: flex; flex-direction: column;
+  align-items: center; padding: 12px 0; gap: 6px;
+}
+.qr-slot {
+  width: 36px; height: 36px;
+  border-radius: 8px;
+  position: relative;
+  display: flex; align-items: center; justify-content: center;
+  border: none; background: transparent; cursor: pointer;
+}
+.qr-slot:hover { background: var(--hover); }
+.qr-icon { font-size: 16px; }
+.qr-badge {
+  position: absolute; bottom: 0; right: 0;
+  font-size: 9px; padding: 1px 4px;
+  border-radius: 6px;
+  background: var(--surface); border: 1px solid var(--line);
+}
+.qr-badge.level-warning { background: var(--amber-soft); color: var(--amber); border-color: transparent; }
+.qr-badge.level-over { background: var(--red-soft); color: var(--red); border-color: transparent; }
+.qr-badge.dot::after {
+  content: ''; position: absolute; top: -2px; right: -2px;
+  width: 6px; height: 6px; background: var(--red); border-radius: 50%;
+}
+.qr-popover {
+  position: fixed;
+  background: var(--ink); color: var(--surface);
+  font-size: 12px; padding: 8px 12px; border-radius: 8px;
+  white-space: pre-line;
+  box-shadow: var(--shadow);
+  pointer-events: none;
+  z-index: 1000;
+}
+@media (max-width: 1100px) {
+  .quick-rail { display: none; }
 }
 
 /* CSS_APPEND_ANCHOR */
