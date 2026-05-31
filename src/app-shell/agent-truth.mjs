@@ -97,3 +97,32 @@ export function deriveActivity(dashboard, now = Date.now()) {
   else if (status === 'completed') mode = 'completed';
   return { stage, chapterNo, segCurrent, segTotal, lastTool, elapsedMs, etaMs: null, spentCost, mode };
 }
+
+export function deriveBadges(dashboard, projectRoot = '', lastSeen = {}) {
+  const total = dashboard?.summary?.targetChapters ?? 0;
+  const done = dashboard?.summary?.completedChapters ?? 0;
+  const skillItems = dashboard?.skills?.items ?? [];
+  const enabledCount = skillItems.filter(s => s.enabled_in_project).length;
+  const sourcesCount = dashboard?.sources?.count ?? 0;
+  const sourcesLatestTs = dashboard?.sources?.latest?.[0]?.captured_at ?? null;
+  const reviewerTs = dashboard?.review?.generated_at ?? null;
+  const newResearch = sourcesLatestTs && lastSeen.research
+    ? sourcesLatestTs > lastSeen.research
+    : !!sourcesLatestTs;
+  const newReviewer = reviewerTs && lastSeen.reviewer
+    ? reviewerTs > lastSeen.reviewer
+    : !!reviewerTs;
+  const used = dashboard?.summary?.estimatedCost ?? 0;
+  const budget = dashboard?.project?.budget_config?.max_cost ?? 0;
+  const pct = budget > 0 ? used / budget : 0;
+  let level = 'normal';
+  if (pct >= 1) level = 'over';
+  else if (pct >= 0.8) level = 'warning';
+  return {
+    chapters: { done, total, ticking: false },
+    skills: { enabledCount },
+    research: { newSinceLastVisit: !!newResearch, count: sourcesCount },
+    cost: { used, budget, pct, level },
+    reviewer: { hasUnread: !!newReviewer, lastReportTs: reviewerTs }
+  };
+}
