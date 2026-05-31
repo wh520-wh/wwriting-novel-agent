@@ -76,6 +76,14 @@ try {
     fetchText(`http://127.0.0.1:${port}/styles.css`),
     fetchJson(`http://127.0.0.1:${port}/api/dashboard`)
   ]);
+  const [motionRuntime, gsapVendor] = await Promise.all([
+    fetchText(`http://127.0.0.1:${port}/motion-runtime.js`),
+    fetchText(`http://127.0.0.1:${port}/vendor/gsap.js`)
+  ]);
+  assert.ok(motionRuntime.includes("export const motion"));
+  assert.ok(motionRuntime.includes("./vendor/gsap.js"));
+  assert.ok(gsapVendor.includes("export const gsap"));
+
   // Codex 对话式信息架构：左栏项目 + 顶栏 + 对话流 + 单输入框（斜杠命令）+ 右侧抽屉
   assert.ok(html.includes("小说智能体"));
   assert.ok(html.includes("新建小说"));
