@@ -588,3 +588,41 @@ test("engine enforces model-call budget saved from settings panel", async () => 
   assert.equal(state.active_budget.model_calls, 1);
   assert.equal(state.blocked_reason, "model_call_budget_exhausted");
 });
+
+test("agent-engine 检测到 failure_resolved=pause-here 后立刻退出循环", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-pause-here-"));
+  const { projectRoot, project } = await createProject(root, {
+    slug: "project",
+    target_chapters: 1,
+    min_words_per_chapter: 200,
+    target_words_per_chapter: 260
+  });
+  // Write a failure_resolved event with message='pause-here' before starting the run
+  await appendEvent(projectRoot, {
+    type: "failure_resolved",
+    project_id: project.project_id,
+    severity: "info",
+    message: "pause-here",
+    data: { failureId: "flr_test_001", action: "pause-here" }
+  });
+
+  const result = await runProject(projectRoot);
+
+  // runProject should return undefined (not blocked, not completed)
+  assert.equal(result, undefined);
+
+  // A project_paused event should have been written
+  const events = await readEvents(projectRoot);
+  const pausedEvent = events.find(e => e.type === "project_paused");
+  assert.ok(pausedEvent, "expected a project_paused event");
+  assert.equal(pausedEvent.severity, "info");
+  assert.equal(pausedEvent.message, "用户在故障卡选择停在这里");
+  assert.equal(pausedEvent.data.source, "failure_resolved");
+  assert.equal(pausedEvent.data.failureId, "flr_test_001");
+
+  // State should still be "running" (no stage advancement happened)
+  const state = await loadState(projectRoot);
+  assert.equal(state.project_status, "running");
+  // No chapter should have been written
+  await assert.rejects(() => fs.readFile(path.join(projectRoot, "chapters", "001.md"), "utf8"), /ENOENT/u);
+});

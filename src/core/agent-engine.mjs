@@ -69,6 +69,19 @@ export async function runProject(projectRoot, options = {}) {
   try {
     for (let step = 0; step < (options.maxSteps ?? 500); step += 1) {
       throwIfAborted(options.signal);
+      {
+        const recentEvents = await readEvents(projectRoot, { limit: 5 });
+        const recentResolve = recentEvents.find(e => e.type === "failure_resolved");
+        if (recentResolve && recentResolve.message === "pause-here") {
+          await appendEvent(projectRoot, {
+            type: "project_paused",
+            severity: "info",
+            message: "用户在故障卡选择停在这里",
+            data: { source: "failure_resolved", failureId: recentResolve.data?.failureId }
+          });
+          return;  // exit runProject
+        }
+      }
       state = await loadState(projectRoot);
       state.last_heartbeat = new Date().toISOString();
       await saveState(projectRoot, state);
