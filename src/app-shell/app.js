@@ -23,8 +23,6 @@ const refs = {
   topbarProgressBar: document.querySelector("#topbar-progress-bar"),
   privacyToggle: document.querySelector("#privacy-toggle"),
   privacyLabel: document.querySelector("#privacy-label"),
-  openChapters: document.querySelector("#open-chapters"),
-  openPanel: document.querySelector("#open-panel"),
   threadWrap: document.querySelector("#thread-wrap"),
   thread: document.querySelector("#thread"),
   composer: document.querySelector("#composer"),
@@ -131,8 +129,6 @@ refs.refresh.addEventListener("click", () => loadAll());
 refs.newNovel.addEventListener("click", () => openCreateModal());
 refs.openFolder.addEventListener("click", () => openFromFolder());
 refs.openSettings.addEventListener("click", () => openSettingsModal());
-refs.openChapters.addEventListener("click", () => openDrawer("chapters"));
-refs.openPanel.addEventListener("click", () => toggleDrawer());
 refs.drawerClose.addEventListener("click", () => closeDrawer());
 refs.drawerScrim.addEventListener("click", () => closeDrawer());
 refs.drawerTabs.addEventListener("click", (event) => {
@@ -2528,5 +2524,20 @@ if (refs.quickRail) {
   bindQuickRailKeys(refs.quickRail, openDrawerTab);
   watchLastSeen(() => { if (lastDashboard) renderDashboard(lastDashboard); });
 }
+
+// 窄屏折叠逻辑：<1100px 隐藏 Quick Rail，显示折叠按钮
+function updateQuickRailLayout() {
+  const narrow = window.innerWidth < 1100;
+  const rail = document.getElementById('quick-rail');
+  const collapsed = document.getElementById('qr-collapsed');
+  if (rail) rail.hidden = narrow;
+  if (collapsed) collapsed.hidden = !narrow;
+}
+window.addEventListener('resize', updateQuickRailLayout);
+updateQuickRailLayout();
+
+document.getElementById('qr-collapsed')?.addEventListener('click', () => {
+  openDrawerTab('chapters');
+});
 
 await loadAll();
