@@ -184,6 +184,15 @@ async function main() {
     settleMs: 500
   }));
 
+  const modalClosedState = await read(win, `
+    (() => {
+      const settings = document.getElementById("settings-scrim");
+      const create = document.getElementById("create-scrim");
+      return settings.hasAttribute("inert") && create.hasAttribute("inert");
+    })()
+  `);
+  assert.equal(modalClosedState, true, "settings/create overlays must be inert after close");
+
   clicks.push(await clickAndRead(win, '.quick-rail .qr-slot[data-key="chapters"]', {
     label: "open-chapters",
     expect: () => read(win, "document.getElementById('drawer').classList.contains('show') && document.querySelector('[data-dtab=\"chapters\"]').getAttribute('aria-selected') === 'true'")
