@@ -1106,6 +1106,79 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   border-color: color-mix(in srgb, var(--red) 35%, var(--line));
 }
 
+/* 故障卡 */
+.failure-card {
+  margin: 12px 0;
+  border: 1px solid var(--amber-soft);
+  border-left: 3px solid var(--amber);
+  background: var(--amber-soft);
+  border-radius: var(--r, 12px);
+  padding: 14px 16px;
+}
+.failure-card.kind-budget-exhausted,
+.failure-card.kind-provider-error {
+  border-left-color: var(--red);
+  background: var(--red-soft);
+  border-color: var(--red-soft);
+}
+.failure-head {
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--ink);
+}
+.failure-body {
+  color: var(--ink-2);
+  margin-bottom: 10px;
+  white-space: pre-wrap;
+}
+.failure-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.failure-actions button {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.failure-actions button:hover:not(:disabled) {
+  background: var(--hover);
+}
+.failure-actions button.destructive {
+  border-color: var(--red);
+  color: var(--red);
+}
+.failure-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.failure-resolved {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 6px 0;
+}
+.failure-diagnostics {
+  margin-top: 8px;
+}
+.failure-diagnostics summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+}
+.failure-diagnostics pre {
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--ink-2);
+  background: var(--surface-3);
+  padding: 8px;
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
 /* CSS_APPEND_ANCHOR */
 .pill.interrupted, .pill.cancelled { background: var(--red-soft); color: var(--red); }
 .pill.stale, .pill.slow, .pill.blocked { background: var(--amber-soft); color: var(--amber); }
