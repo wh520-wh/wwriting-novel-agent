@@ -347,7 +347,7 @@ function renderDashboard(data) {
   const stripEl = document.getElementById('activity-strip');
   renderActivityStrip(stripEl, deriveActivity(data), {
     privacy: refs.privacyToggle?.checked,
-    onClickCost: () => openDrawerTab('run'),
+    onClickCost: () => openDrawerTab('cost'),
     onClickChapter: () => openDrawerTab('chapters')
   });
 
