@@ -2032,10 +2032,15 @@ function openSettingsModal() {
   renderSettingsProviders();
   renderSettingsDetail();
   openOverlay(refs.settingsScrim, refs.settingsSearch);
+  motion.openModal(refs.settingsScrim, document.querySelector("#settings-modal"));
 }
 
 function closeSettingsModal() {
+  refs.settingsScrim.dataset.closing = "true";
   closeOverlay(refs.settingsScrim);
+  motion.closeModal(refs.settingsScrim, document.querySelector("#settings-modal"), {
+    onComplete: () => { delete refs.settingsScrim.dataset.closing; }
+  });
 }
 
 function renderSettingsProviders() {
@@ -2342,10 +2347,15 @@ function openCreateModal(prefillPath) {
   setCreateStatus("", "");
   if (prefillPath) refs.createPath.value = prefillPath;
   openOverlay(refs.createScrim, refs.createTitle);
+  motion.openModal(refs.createScrim, document.querySelector("#create-card"));
 }
 
 function closeCreateModal() {
+  refs.createScrim.dataset.closing = "true";
   closeOverlay(refs.createScrim);
+  motion.closeModal(refs.createScrim, document.querySelector("#create-card"), {
+    onComplete: () => { delete refs.createScrim.dataset.closing; }
+  });
 }
 // PLACEHOLDER_PRIVACY
 
