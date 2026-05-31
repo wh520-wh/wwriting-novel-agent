@@ -6,6 +6,9 @@ import { readFailures } from "./failures-store.mjs";
 import { isPathInside, pathExists, readJson, safeJoin } from "./fs-utils.mjs";
 import { loadProject } from "./project-store.mjs";
 import { listProjectSkills } from "./skill-runtime.mjs";
+import { readRecentToolEvents, makeToolEventsCache } from "./recent-tool-events.mjs";
+
+const toolEventsCache = makeToolEventsCache();
 
 export async function loadDashboardData(workspaceRoot, options = {}) {
   const workspace = path.resolve(workspaceRoot);
@@ -105,6 +108,7 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
     skills,
     sources,
     review,
+    recent_tool_events: readRecentToolEvents(projectRoot, { cache: toolEventsCache }),
     failures: [
       ...failures.filter(f => !f.resolution).slice(-10),
       ...failures.filter(f => f.resolution).slice(-5)
