@@ -31,6 +31,15 @@
 - Modify: `scripts/verify-app-clickability.cjs`  
   Assert the Electron page imports motion runtime without console module errors and failure-card interactions remain clickable.
 
+## Execution Preconditions
+
+- Before executing any task, run `git status --short`.
+- Preferred execution environment: a fresh worktree or branch from commit `64ef722` so current local dirty files are not mixed into Motion Runtime commits.
+- If executing in the current dirty workspace, first inspect `git diff -- README.md scripts/verify-app-clickability.cjs src/core/app-server.mjs tests/app-server-probe.test.mjs CLAUDE.md`. Treat those changes as pre-existing user work.
+- Do not revert, overwrite, or commit pre-existing user changes.
+- For any task that touches a pre-dirty file, use `git diff -- <file>` before and after editing, then stage only Motion Runtime hunks with `git add -p`. If hunk-level staging is ambiguous, skip the task commit and report the conflict instead of committing unrelated changes.
+- Commit commands below assume the implementation workspace is clean except for the current task's intended files. In a dirty workspace, replace broad `git add <file>` commands with `git add -p`.
+
 ## Task 1: Install GSAP And Lock Local Vendor Loading
 
 **Files:**
@@ -82,7 +91,7 @@ Run:
 npm test
 ```
 
-Expected: FAIL because `/vendor/gsap.js` and `motion-runtime.js` do not exist yet.
+Expected: FAIL because the new app-server probe for `/vendor/gsap.js` returns 404.
 
 - [ ] **Step 3: Install GSAP**
 
@@ -191,10 +200,24 @@ test("diffActivitySlots reports only changed slots", async () => {
 test("diffBadgeKeys handles rebuilt quick rail summaries", async () => {
   installBrowserGlobals();
   const { diffBadgeKeys } = await import(`../src/app-shell/motion-runtime.js?badges=${Date.now()}`);
-  const before = { chapters: "1/10", cost: "20%", reviewer: "read" };
-  const after = { chapters: "2/10", cost: "85%", reviewer: "unread" };
+  const before = { chapters: "1/10", cost: "normal", reviewer: "read" };
+  const after = { chapters: "2/10", cost: "warning", reviewer: "unread" };
 
   assert.deepEqual(diffBadgeKeys(before, after).sort(), ["chapters", "cost", "reviewer"]);
+});
+
+test("reduced-motion close helpers still run completion callbacks", async () => {
+  installBrowserGlobals({ reduced: true });
+  const { setupMotion, closeDrawer, closeModal } = await import(`../src/app-shell/motion-runtime.js?reduced=${Date.now()}`);
+  setupMotion();
+  let drawerDone = false;
+  let modalDone = false;
+
+  closeDrawer(null, null, { onComplete: () => { drawerDone = true; } });
+  closeModal(null, null, { onComplete: () => { modalDone = true; } });
+
+  assert.equal(drawerDone, true);
+  assert.equal(modalDone, true);
 });
 ```
 
@@ -261,7 +284,7 @@ export function summarizeBadgesForMotion(badges = {}) {
     chapters: badges.chapters ? `${badges.chapters.done}/${badges.chapters.total}` : "",
     skills: badges.skills ? String(badges.skills.enabledCount ?? 0) : "",
     research: badges.research?.newSinceLastVisit ? "unread" : "read",
-    cost: badges.cost ? `${badges.cost.level}:${Math.round((badges.cost.pct ?? 0) * 100)}` : "",
+    cost: badges.cost?.level ?? "normal",
     reviewer: badges.reviewer?.hasUnread ? "unread" : "read"
   };
 }
@@ -296,9 +319,9 @@ export function openDrawer(drawer, scrim, { body, tabs } = {}) {
   return safeAnimate(() => {
     if (isReducedMotion()) return null;
     const tl = gsap.timeline({ defaults: { ease: MOTION.easeOut } });
-    tl.fromTo(scrim, { autoAlpha: 0 }, { autoAlpha: 1, duration: MOTION.fast }, 0)
+    tl.fromTo(scrim, { opacity: 0 }, { opacity: 1, duration: MOTION.fast, clearProps: "transform,opacity" }, 0)
       .fromTo(drawer, { xPercent: 100 }, { xPercent: 0, duration: MOTION.slow, clearProps: "transform,opacity" }, 0)
-      .fromTo([tabs, body].filter(Boolean), { y: 4, autoAlpha: 0.85 }, { y: 0, autoAlpha: 1, duration: MOTION.base, stagger: 0.035, clearProps: "transform,opacity" }, 0.08);
+      .fromTo([tabs, body].filter(Boolean), { y: 4, opacity: 0.85 }, { y: 0, opacity: 1, duration: MOTION.base, stagger: 0.035, clearProps: "transform,opacity" }, 0.08);
     return tl;
   });
 }
@@ -311,8 +334,8 @@ export function closeDrawer(drawer, scrim, { onComplete } = {}) {
       return null;
     }
     return gsap.timeline({ onComplete, defaults: { ease: MOTION.easeIn } })
-      .to(drawer, { xPercent: 100, duration: MOTION.base, clearProps: "transform,opacity" }, 0)
-      .to(scrim, { autoAlpha: 0, duration: MOTION.fast, clearProps: "transform,opacity" }, 0);
+      .fromTo(drawer, { xPercent: 0 }, { xPercent: 100, duration: MOTION.base, clearProps: "transform,opacity" }, 0)
+      .fromTo(scrim, { opacity: 1 }, { opacity: 0, duration: MOTION.fast, clearProps: "transform,opacity" }, 0);
   });
 }
 
@@ -320,7 +343,7 @@ export function openModal(scrim, panel) {
   return safeAnimate(() => animateOrSet([scrim, panel].filter(Boolean), {
     y: 0,
     scale: 1,
-    autoAlpha: 1,
+    opacity: 1,
     duration: MOTION.base,
     ease: MOTION.easeOut,
     clearProps: "transform,opacity"
@@ -334,35 +357,39 @@ export function closeModal(scrim, panel, { onComplete } = {}) {
       return null;
     }
     return gsap.timeline({ onComplete })
-      .to(panel, { y: 8, scale: 0.985, autoAlpha: 0, duration: MOTION.base, ease: MOTION.easeIn, clearProps: "transform,opacity" }, 0)
-      .to(scrim, { autoAlpha: 0, duration: MOTION.fast, clearProps: "transform,opacity" }, 0);
+      .to(panel, { y: 8, scale: 0.985, opacity: 0, duration: MOTION.base, ease: MOTION.easeIn, clearProps: "transform,opacity" }, 0)
+      .to(scrim, { opacity: 0, duration: MOTION.fast, clearProps: "transform,opacity" }, 0);
   });
 }
 
 export function insertFailureCard(node) {
   return safeAnimate(() => {
     if (isReducedMotion()) return null;
+    node.classList.add("motion-active");
     return gsap.timeline({ defaults: { ease: MOTION.easeOut } })
-      .fromTo(node, { y: 8, autoAlpha: 0 }, { y: 0, autoAlpha: 1, duration: MOTION.base, clearProps: "transform,opacity" })
-      .fromTo(node.querySelectorAll(".failure-actions button"), { y: 3, autoAlpha: 0 }, { y: 0, autoAlpha: 1, duration: MOTION.fast, stagger: 0.035, clearProps: "transform,opacity" }, 0.06);
+      .fromTo(node, { y: 8, opacity: 0 }, { y: 0, opacity: 1, duration: MOTION.base, clearProps: "transform,opacity" })
+      .fromTo(node.querySelectorAll(".failure-actions button"), { y: 3, opacity: 0 }, { y: 0, opacity: 1, duration: MOTION.fast, stagger: 0.035, clearProps: "transform,opacity" }, 0.06)
+      .eventCallback("onComplete", () => node.classList.remove("motion-active"));
   });
 }
 
 export function resolveFailureCard(oldNode, nextNode, { commit } = {}) {
   return safeAnimate(() => {
     const finish = () => {
+      oldNode.classList.remove("motion-active");
       commit?.();
       if (!isReducedMotion()) {
-        gsap.fromTo(nextNode.querySelector(".failure-resolved"), { y: 3, autoAlpha: 0 }, { y: 0, autoAlpha: 1, duration: MOTION.fast, clearProps: "transform,opacity" });
+        gsap.fromTo(nextNode.querySelector(".failure-resolved"), { y: 3, opacity: 0 }, { y: 0, opacity: 1, duration: MOTION.fast, clearProps: "transform,opacity" });
       }
     };
     if (isReducedMotion()) {
       finish();
       return null;
     }
+    oldNode.classList.add("motion-active");
     return gsap.to(oldNode.querySelectorAll(".failure-actions button"), {
       y: -2,
-      autoAlpha: 0,
+      opacity: 0,
       duration: MOTION.fast,
       stagger: 0.025,
       onComplete: finish,
@@ -377,7 +404,7 @@ export function updateActivityStrip(root, previous, next) {
     const changed = diffActivitySlots(previous, next);
     for (const key of changed) {
       const slot = root?.querySelector(`.as-${key}`);
-      if (slot) gsap.fromTo(slot, { y: -2, autoAlpha: 0.75 }, { y: 0, autoAlpha: 1, duration: MOTION.fast, ease: MOTION.easeOut, clearProps: "transform,opacity" });
+      if (slot) gsap.fromTo(slot, { y: -2, opacity: 0.75 }, { y: 0, opacity: 1, duration: MOTION.fast, ease: MOTION.easeOut, clearProps: "transform,opacity" });
     }
     return changed;
   });
@@ -387,7 +414,14 @@ export function bumpQuickRailBadge(button) {
   return safeAnimate(() => {
     const badge = button?.querySelector(".qr-badge");
     if (!badge || isReducedMotion()) return null;
-    return gsap.fromTo(badge, { scale: 0.92 }, { scale: 1, duration: MOTION.fast, ease: MOTION.emphasis, clearProps: "transform,opacity" });
+    badge.classList.add("motion-active");
+    return gsap.fromTo(badge, { scale: 0.92 }, {
+      scale: 1,
+      duration: MOTION.fast,
+      ease: MOTION.emphasis,
+      clearProps: "transform,opacity",
+      onComplete: () => badge.classList.remove("motion-active")
+    });
   });
 }
 
@@ -413,7 +447,7 @@ Add near the Quick Rail and Failure Card CSS:
 .drawer,
 .settings-modal,
 .create-card,
-.failure-card,
+.motion-active,
 .qr-badge {
   will-change: transform;
 }
@@ -422,7 +456,7 @@ Add near the Quick Rail and Failure Card CSS:
   .drawer,
   .settings-modal,
   .create-card,
-  .failure-card,
+  .motion-active,
   .qr-badge {
     will-change: auto;
   }
@@ -450,7 +484,6 @@ git commit -m "feat(app-shell): add motion runtime core"
 
 **Files:**
 - Modify: `src/app-shell/app.js`
-- Modify: `src/app-shell/components/quick-rail.js`
 - Modify: `tests/motion-runtime.test.mjs`
 
 - [ ] **Step 1: Add tests for badge summary helper**
@@ -473,7 +506,7 @@ test("summarizeBadgesForMotion creates stable quick rail keys", async () => {
     chapters: "2/10",
     skills: "3",
     research: "unread",
-    cost: "warning:82",
+    cost: "warning",
     reviewer: "read"
   });
 });
@@ -611,6 +644,10 @@ appendFailure(projectRoot, {
 After the drawer close checks in `scripts/verify-app-clickability.cjs`, add:
 
 ```js
+await win.webContents.executeJavaScript(`
+  document.querySelector('.failure-card[data-failure-id="click-failure-1"]')?.scrollIntoView({ block: "center" });
+  true;
+`);
 clicks.push(await clickAndRead(win, '.failure-card[data-failure-id="click-failure-1"] .failure-actions button', {
   label: "failure-action",
   settleMs: 850,
@@ -619,6 +656,16 @@ clicks.push(await clickAndRead(win, '.failure-card[data-failure-id="click-failur
 clicks.push(await clickAndRead(win, '.failure-card[data-failure-id="click-failure-1"] summary', {
   label: "failure-diagnostics-summary",
   expect: () => read(win, "document.querySelector('[data-failure-id=\"click-failure-1\"] details')?.open === true")
+}));
+```
+
+Add a second assertion to force a refresh during/after resolution and confirm the card is not duplicated:
+
+```js
+clicks.push(await clickAndRead(win, "#refresh", {
+  label: "failure-refresh-after-resolve",
+  settleMs: 450,
+  expect: () => read(win, "document.querySelectorAll('[data-failure-id=\"click-failure-1\"]').length === 1")
 }));
 ```
 
@@ -644,8 +691,13 @@ function syncFailureCards(data) {
     if (existing) {
       const next = renderFailureCard(card, { onAction: submitFailureAction });
       if (card.resolution && !existing.querySelector(".failure-resolved")) {
+        if (existing.dataset.motionResolving === "true") continue;
+        existing.dataset.motionResolving = "true";
         motion.resolveFailureCard(existing, next, {
-          commit: () => existing.replaceWith(next)
+          commit: () => {
+            delete existing.dataset.motionResolving;
+            existing.replaceWith(next);
+          }
         });
       } else {
         existing.replaceWith(next);
@@ -657,6 +709,12 @@ function syncFailureCards(data) {
     motion.insertFailureCard(node);
   }
 }
+```
+
+Also add this drift guard to `scripts/verify-app-shell.mjs` near the other `app.js` string assertions:
+
+```js
+assert.ok(js.includes("dataset.motionResolving"));
 ```
 
 - [ ] **Step 5: Run verification**
@@ -678,7 +736,7 @@ git add src/app-shell/app.js scripts/verify-app-clickability.cjs
 git commit -m "feat(app-shell): animate failure card lifecycle"
 ```
 
-## Task 5: Wire Drawer And Modal Motion Without Breaking Interaction State
+## Task 5: Wire Drawer Motion Without Breaking Interaction State
 
 **Files:**
 - Modify: `src/app-shell/app.js`
@@ -737,10 +795,6 @@ Replace `closeDrawer()` with:
 function closeDrawer() {
   refs.drawer.dataset.closing = "true";
   refs.drawerScrim.dataset.closing = "true";
-  refs.drawer.classList.remove("show");
-  refs.drawer.setAttribute("aria-hidden", "true");
-  refs.drawer.setAttribute("inert", "");
-  refs.drawerScrim.classList.remove("show");
   motion.closeDrawer(refs.drawer, refs.drawerScrim, {
     onComplete: () => {
       delete refs.drawer.dataset.closing;
@@ -749,10 +803,72 @@ function closeDrawer() {
       lastFocused = null;
     }
   });
+  refs.drawer.classList.remove("show");
+  refs.drawer.setAttribute("aria-hidden", "true");
+  refs.drawer.setAttribute("inert", "");
+  refs.drawerScrim.classList.remove("show");
 }
 ```
 
-- [ ] **Step 5: Wire modal open and close**
+- [ ] **Step 5: Add CSS for drawer closing state**
+
+Add:
+
+```css
+.drawer[data-closing="true"],
+.scrim[data-closing="true"] {
+  pointer-events: none;
+}
+```
+
+- [ ] **Step 6: Add drawer focus and repeated-close verification**
+
+In `scripts/verify-app-clickability.cjs`, after an existing drawer close click, add:
+
+```js
+const drawerClosedState = await read(win, `
+  (() => {
+    const drawer = document.getElementById("drawer");
+    return drawer.getAttribute("aria-hidden") === "true" && drawer.hasAttribute("inert");
+  })()
+`);
+assert.equal(drawerClosedState, true, "drawer must be inert and aria-hidden after close");
+await win.webContents.executeJavaScript(`
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  true;
+`);
+```
+
+- [ ] **Step 7: Run full drawer interaction verification**
+
+Run:
+
+```powershell
+npm test
+npm run verify:app-shell
+npm run verify:app-clickability
+npm run verify:desktop-shell
+npm run verify:electron-runtime
+```
+
+Expected: all PASS; drawer buttons remain clickable, repeated Escape does not throw, and no module loading errors appear in Electron console messages.
+
+- [ ] **Step 8: Commit**
+
+```powershell
+git add src/app-shell/app.js src/app-shell/styles.css scripts/verify-app-clickability.cjs
+git commit -m "feat(app-shell): animate drawer safely"
+```
+
+## Task 6: Wire Settings And Create Modal Motion Safely
+
+**Files:**
+- Modify: `src/app-shell/app.js`
+- Modify: `src/app-shell/styles.css`
+- Modify: `scripts/verify-app-clickability.cjs`
+
+- [ ] **Step 1: Wire modal open and close**
 
 In `openSettingsModal()` and `openCreateModal()`, after the existing class/aria/inert state is set, call:
 
@@ -766,31 +882,51 @@ and:
 motion.openModal(refs.createScrim, document.querySelector("#create-card"));
 ```
 
-In `closeSettingsModal()` and `closeCreateModal()`, keep the current immediate `inert`/hidden state changes, then call:
+In `closeSettingsModal()` and `closeCreateModal()`, keep the current immediate `inert`/hidden state changes, then call `closeModal()` with a completion callback that removes the temporary closing flag:
 
 ```js
-motion.closeModal(refs.settingsScrim, document.querySelector("#settings-modal"));
+refs.settingsScrim.dataset.closing = "true";
+motion.closeModal(refs.settingsScrim, document.querySelector("#settings-modal"), {
+  onComplete: () => { delete refs.settingsScrim.dataset.closing; }
+});
 ```
 
 and:
 
 ```js
-motion.closeModal(refs.createScrim, document.querySelector("#create-card"));
+refs.createScrim.dataset.closing = "true";
+motion.closeModal(refs.createScrim, document.querySelector("#create-card"), {
+  onComplete: () => { delete refs.createScrim.dataset.closing; }
+});
 ```
 
-- [ ] **Step 6: Add CSS for closing state**
+- [ ] **Step 2: Add CSS for modal closing state**
 
 Add:
 
 ```css
-.drawer[data-closing="true"],
-.scrim[data-closing="true"],
-.settings-scrim[data-closing="true"] {
+.settings-scrim[data-closing="true"],
+#create-scrim[data-closing="true"] {
   pointer-events: none;
 }
 ```
 
-- [ ] **Step 7: Run full interaction verification**
+- [ ] **Step 3: Add modal inert verification**
+
+In `scripts/verify-app-clickability.cjs`, after closing settings and create overlays, assert:
+
+```js
+const modalClosedState = await read(win, `
+  (() => {
+    const settings = document.getElementById("settings-scrim");
+    const create = document.getElementById("create-scrim");
+    return settings.hasAttribute("inert") && create.hasAttribute("inert");
+  })()
+`);
+assert.equal(modalClosedState, true, "settings/create overlays must be inert after close");
+```
+
+- [ ] **Step 4: Run full modal interaction verification**
 
 Run:
 
@@ -802,16 +938,16 @@ npm run verify:desktop-shell
 npm run verify:electron-runtime
 ```
 
-Expected: all PASS; visible buttons remain clickable, and no module loading errors appear in Electron console messages.
+Expected: all PASS; modal buttons remain clickable, overlays return to inert after close, and no module loading errors appear in Electron console messages.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 5: Commit**
 
 ```powershell
 git add src/app-shell/app.js src/app-shell/styles.css scripts/verify-app-clickability.cjs
-git commit -m "feat(app-shell): animate panels safely"
+git commit -m "feat(app-shell): animate modals safely"
 ```
 
-## Task 6: Final Review And Cleanup
+## Task 7: Final Review And Cleanup
 
 **Files:**
 - Modify only files already touched if verification exposes issues.
@@ -823,9 +959,10 @@ Run:
 ```powershell
 rg -n "from \"gsap\"|appendThreadNode|transitionAgentState|ScrollTrigger" src scripts tests
 rg -n "node_modules/gsap" src scripts
+rg -n "autoAlpha|visibility" src/app-shell/motion-runtime.js
 ```
 
-Expected: no `from "gsap"`, no unused Motion Runtime API names, no `ScrollTrigger`, and no runtime/script exposure of `node_modules/gsap`. The test suite may still contain a negative probe for `/node_modules/gsap/dist/gsap.js`.
+Expected: no `from "gsap"`, no unused Motion Runtime API names, no `ScrollTrigger`, no runtime/script exposure of `node_modules/gsap`, and no `autoAlpha` or direct `visibility` writes in `motion-runtime.js`. The test suite may still contain a negative probe for `/node_modules/gsap/dist/gsap.js`.
 
 - [ ] **Step 2: Run final verification**
 
