@@ -1248,6 +1248,25 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   .qr-collapsed-btn { display: inline-flex; }
 }
 
+/* Motion runtime will-change hints */
+.drawer,
+.settings-modal,
+.create-card,
+.motion-active,
+.qr-badge {
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drawer,
+  .settings-modal,
+  .create-card,
+  .motion-active,
+  .qr-badge {
+    will-change: auto;
+  }
+}
+
 /* CSS_APPEND_ANCHOR */
 .pill.interrupted, .pill.cancelled { background: var(--red-soft); color: var(--red); }
 .pill.stale, .pill.slow, .pill.blocked { background: var(--amber-soft); color: var(--amber); }
