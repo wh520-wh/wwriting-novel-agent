@@ -3,6 +3,7 @@ import { renderFailureCard } from "./components/failure-card.js";
 import { renderActivityStrip } from "./components/activity-strip.js";
 import { renderQuickRail, bindQuickRailKeys } from "./components/quick-rail.js";
 import { getLastSeen, watchLastSeen } from "./components/last-seen.js";
+import { motion, summarizeBadgesForMotion, diffBadgeKeys } from "./motion-runtime.js";
 
 // WWriting · Codex 风格对话式前端
 // 后端无消息/SSE 端点，对话流由前端用 /api/dashboard 的 events[] + chapters[] + summary 聚合而成。
@@ -79,6 +80,8 @@ const askEntries = new Map();
 let threadGreeted = false;
 let liveBlock = null;
 let sessionHeadEl = null;
+let previousActivity = null;
+let previousBadgeSummary = null;
 
 // 旁路询问命令前缀（与后端 side-question.mjs 保持一致；禁止使用 /btw）。
 const SIDE_QUESTION_PREFIXES = ["/ask", "/side", "/q"];
@@ -308,6 +311,8 @@ function renderDashboard(data) {
   lastDashboard = data;
   if (!data.hasProject) {
     currentProjectRoot = null;
+    previousActivity = null;
+    previousBadgeSummary = null;
     refs.title.textContent = "开始创作";
     refs.topbarSub.textContent = "新建或打开一部小说后，这里会显示模型与进度。";
     setStatus("idle");
@@ -345,11 +350,16 @@ function renderDashboard(data) {
   syncFailureCards(data);
 
   const stripEl = document.getElementById('activity-strip');
-  renderActivityStrip(stripEl, deriveActivity(data), {
-    privacy: refs.privacyToggle?.checked,
-    onClickCost: () => openDrawerTab('cost'),
-    onClickChapter: () => openDrawerTab('chapters')
-  });
+  if (stripEl) {
+    const activity = deriveActivity(data);
+    renderActivityStrip(stripEl, activity, {
+      privacy: refs.privacyToggle?.checked,
+      onClickCost: () => openDrawerTab('cost'),
+      onClickChapter: () => openDrawerTab('chapters')
+    });
+    motion.updateActivityStrip(stripEl, previousActivity, activity);
+    previousActivity = activity;
+  }
 
   if (refs.quickRail) {
     const lastSeen = {
@@ -357,7 +367,13 @@ function renderDashboard(data) {
       reviewer: getLastSeen(currentProjectRoot, 'reviewer')
     };
     const badges = deriveBadges(data, currentProjectRoot, lastSeen);
+    const nextBadgeSummary = summarizeBadgesForMotion(badges);
+    const changedBadgeKeys = diffBadgeKeys(previousBadgeSummary, nextBadgeSummary);
     renderQuickRail(refs.quickRail, badges, { onOpenTab: openDrawerTab, projectRoot: currentProjectRoot });
+    for (const key of changedBadgeKeys) {
+      motion.bumpQuickRailBadge(refs.quickRail.querySelector(`[data-key="${key}"]`));
+    }
+    previousBadgeSummary = nextBadgeSummary;
   }
 
   refreshDrawerIfOpen();
@@ -1346,6 +1362,8 @@ async function forgetProject(projectRoot) {
     const result = await postJson("/api/projects/forget", { projectRoot });
     showToast("已从列表移除。", "success");
     currentProjectRoot = result.selectedProjectRoot ?? null;
+    previousActivity = null;
+    previousBadgeSummary = null;
     await loadAll();
   } catch (error) {
     showToast(error.message, "error");
@@ -1363,6 +1381,8 @@ async function openProject(projectRoot) {
     refs.projectOpenStatus.style.display = "none";
     refs.projectOpenStatus.textContent = "";
     showToast("小说已打开。", "success");
+    previousActivity = null;
+    previousBadgeSummary = null;
     await loadAll();
   } catch (error) {
     refs.projectOpenStatus.style.display = "none";
@@ -1414,6 +1434,8 @@ async function initProject(projectRoot) {
     // 不在这里写 currentProjectRoot：renderDashboard 用旧值与新 data.projectRoot 比对来判定切换并清空对话流。
     closeCreateModal();
     showToast("小说已创建并打开。", "success");
+    previousActivity = null;
+    previousBadgeSummary = null;
     await loadAll();
   } catch (error) {
     setCreateStatus(error.message, "error");
@@ -2539,5 +2561,7 @@ updateQuickRailLayout();
 document.getElementById('qr-collapsed')?.addEventListener('click', () => {
   openDrawerTab('chapters');
 });
+
+motion.setupMotion();
 
 await loadAll();
