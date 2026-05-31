@@ -58,3 +58,14 @@ function agentPhaseLabel(status, stage) {
       return "运行中";
   }
 }
+
+export function deriveFailures(dashboard) {
+  const raw = Array.isArray(dashboard?.failures) ? dashboard.failures : [];
+  const seqByChapter = new Map();
+  return raw.map(f => {
+    const ch = f.chapterNo ?? 0;
+    const n = (seqByChapter.get(ch) ?? 0) + 1;
+    seqByChapter.set(ch, n);
+    return { ...f, seq: n };
+  });
+}
