@@ -13,6 +13,16 @@ import {
   SIDE_QUESTION_PREFIXES,
   WRITE_PREFIXES
 } from "../src/core/side-question.mjs";
+import { FAILURE_COMMANDS as BE_COMMANDS } from "../src/shared/failure-commands.mjs";
+import { FAILURE_COMMANDS as FE_COMMANDS } from "../src/app-shell/components/failure-card.js";
+
+// 故障卡命令白名单漂移守卫
+checkFailureCommandDrift();
+
+// styles.css 含故障卡样式
+const failureCss = await fs.readFile("src/app-shell/styles.css", "utf8");
+if (!failureCss.includes(".failure-card")) throw new Error("styles.css 缺失 .failure-card");
+console.log("[verify] styles.css 含故障卡样式");
 
 const port = await getFreePort();
 const root = path.resolve(".demo_runs", `app-shell-${Date.now()}`);
@@ -587,4 +597,13 @@ function assertSideQuestionParityWithBackend(js) {
 // 还原 app.js 里数组字面量的书写格式：["/ask", "/side", "/q"]（元素间带逗号空格）。
 function jsArrayLiteral(values) {
   return `[${values.map((value) => `"${value}"`).join(", ")}]`;
+}
+
+function checkFailureCommandDrift() {
+  const a = Object.keys(BE_COMMANDS).sort().join(",");
+  const b = Object.keys(FE_COMMANDS).sort().join(",");
+  if (a !== b) {
+    throw new Error(`故障卡命令白名单已漂移:\n  shared: ${a}\n  frontend: ${b}`);
+  }
+  console.log("[verify] 故障卡白名单一致:", Object.keys(BE_COMMANDS).length, "个命令");
 }
