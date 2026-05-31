@@ -26,6 +26,7 @@ async function main() {
   const { createAppShellServer } = await import(pathToFileURL(path.join(rootDir, "src", "core", "app-server.mjs")).href);
   const { createProject } = await import(pathToFileURL(path.join(rootDir, "src", "core", "project-store.mjs")).href);
   const { runProject } = await import(pathToFileURL(path.join(rootDir, "src", "core", "agent-engine.mjs")).href);
+  const { appendFailure } = await import(pathToFileURL(path.join(rootDir, "src", "core", "failures-store.mjs")).href);
   const demoRoot = path.join(rootDir, ".demo_runs", `clickability-${Date.now()}`);
   const { projectRoot } = await createProject(demoRoot, {
     slug: "clickability-novel",
@@ -37,6 +38,18 @@ async function main() {
     enabled_skills: ["suspense-chapter-end"]
   });
   await runProject(projectRoot);
+  appendFailure(projectRoot, {
+    id: "click-failure-1",
+    seq: 1,
+    chapterNo: 1,
+    kind: "unknown",
+    title: "Clickability probe failure",
+    body: "This card verifies failure actions remain clickable after motion.",
+    ts: new Date().toISOString(),
+    actions: [{ label: "停在这里", command: "pause-here", args: {} }],
+    diagnostics: { eventId: "click-failure-1", tool: null, promptHash: null, logPath: "run_log.jsonl", rawError: null },
+    resolution: null
+  });
 
   server = createAppShellServer({
     workspaceRoot: rootDir,
@@ -62,7 +75,18 @@ async function main() {
 
   const consoleMessages = [];
   win.webContents.on("console-message", (event) => {
-    consoleMessages.push(event.message);
+    consoleMessages.push({
+      level: event.level,
+      message: event.message,
+      line: event.lineNumber,
+      sourceId: event.sourceId
+    });
+  });
+  win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
+    consoleMessages.push({ level: "load", message: `${errorCode}: ${errorDescription}`, sourceId: validatedURL });
+  });
+  win.webContents.on("render-process-gone", (_event, details) => {
+    consoleMessages.push({ level: "render-process-gone", message: JSON.stringify(details) });
   });
 
   await win.loadURL(`http://127.0.0.1:${port}`);
@@ -85,7 +109,7 @@ async function main() {
     label: "privacy-toggle",
     expect: () => read(win, "document.getElementById('app').dataset.privacy === 'on'")
   }));
-  clicks.push(await clickAndRead(win, ".rail-nav .nav-item:nth-of-type(2)", { label: "nav-search" }));
+  clicks.push(await clickAndRead(win, ".rail-nav .nav-item:nth-of-type(2)", { label: "nav-search", consoleMessages }));
   clicks.push(await clickAndRead(win, ".rail-nav .nav-item:nth-of-type(3)", {
     label: "nav-skill",
     expect: () => read(win, "document.getElementById('drawer').classList.contains('show') === true && document.querySelector('[data-dtab=\"run\"]').getAttribute('aria-selected') === 'true'")
@@ -153,7 +177,7 @@ async function main() {
     settleMs: 500
   }));
 
-  clicks.push(await clickAndRead(win, "#open-chapters", {
+  clicks.push(await clickAndRead(win, '.quick-rail .qr-slot[data-key="chapters"]', {
     label: "open-chapters",
     expect: () => read(win, "document.getElementById('drawer').classList.contains('show') && document.querySelector('[data-dtab=\"chapters\"]').getAttribute('aria-selected') === 'true'")
   }));
@@ -192,13 +216,59 @@ async function main() {
     expect: () => read(win, "document.getElementById('drawer').classList.contains('show') === false")
   }));
 
-  clicks.push(await clickAndRead(win, "#open-panel", {
+  clicks.push(await clickAndRead(win, '.quick-rail .qr-slot[data-key="skills"]', {
     label: "open-panel",
-    expect: () => read(win, "document.getElementById('drawer').classList.contains('show') === true")
+    expect: () => read(win, "document.getElementById('drawer').classList.contains('show') === true && document.querySelector('[data-dtab=\"skills\"]').getAttribute('aria-selected') === 'true'")
   }));
   clicks.push(await clickAndRead(win, "#drawer-scrim", {
     label: "drawer-scrim-close",
     expect: () => read(win, "document.getElementById('drawer').classList.contains('show') === false")
+  }));
+
+  await win.webContents.executeJavaScript(`
+    document.querySelector('.failure-card[data-failure-id="click-failure-1"]')?.scrollIntoView({ block: "center" });
+    window.__wwDebugResolve = { started: false, ok: false, loadDashboardCalled: false, syncCardsFound: false };
+    const origFetch = window.fetch;
+    window.fetch = async function(...args) {
+      const url = typeof args[0] === 'string' ? args[0] : args[0]?.url;
+      if (url && url.includes('/api/failures/resolve')) {
+        window.__wwDebugResolve.started = true;
+        try {
+          const res = await origFetch.apply(this, args);
+          window.__wwDebugResolve.ok = res.ok;
+          return res;
+        } catch(e) { window.__wwDebugResolve.error = String(e); throw e; }
+      }
+      return origFetch.apply(this, args);
+    };
+    true;
+  `);
+  clicks.push(await clickAndRead(win, '.failure-card[data-failure-id="click-failure-1"] .failure-actions button', {
+    label: "failure-action",
+    settleMs: 3000,
+    expect: async () => {
+      const debug = await read(win, "window.__wwDebugResolve");
+      console.log("[debug] resolve flow:", JSON.stringify(debug));
+      const dom = await read(win, `(() => {
+        const card = document.querySelector('[data-failure-id="click-failure-1"]');
+        return {
+          exists: !!card,
+          hasResolved: !!card?.querySelector('.failure-resolved'),
+          outerSnippet: card?.outerHTML?.slice(0, 300) ?? null
+        };
+      })()`);
+      console.log("[debug] DOM after resolve:", JSON.stringify(dom));
+      return dom.hasResolved === true;
+    }
+  }));
+  clicks.push(await clickAndRead(win, '.failure-card[data-failure-id="click-failure-1"] summary', {
+    label: "failure-diagnostics-summary",
+    expect: () => read(win, "document.querySelector('[data-failure-id=\"click-failure-1\"] details')?.open === true")
+  }));
+  clicks.push(await clickAndRead(win, "#refresh", {
+    label: "failure-refresh-after-resolve",
+    settleMs: 450,
+    expect: () => read(win, "document.querySelectorAll('[data-failure-id=\"click-failure-1\"]').length === 1")
   }));
 
   clicks.push(await clickAndRead(win, "#cbar-slash", {
@@ -254,7 +324,7 @@ async function main() {
 
 app.on("window-all-closed", () => cleanup(0));
 
-async function clickAndRead(win, selector, { label = selector, expect = null, settleMs = 180 } = {}) {
+async function clickAndRead(win, selector, { label = selector, expect = null, settleMs = 180, consoleMessages = [] } = {}) {
   await win.webContents.executeJavaScript(`
     (() => {
       const selector = ${JSON.stringify(selector)};
@@ -267,7 +337,7 @@ async function clickAndRead(win, selector, { label = selector, expect = null, se
     })();
   `);
   const before = await probe(win, selector);
-  assert.ok(before.rect, `${label} must have a layout box`);
+  assert.ok(before.rect, `${label} must have a layout box: ${JSON.stringify({ ...before, consoleMessages }, null, 2)}`);
   win.webContents.sendInputEvent({ type: "mouseMove", x: before.center.x, y: before.center.y });
   win.webContents.sendInputEvent({ type: "mouseDown", x: before.center.x, y: before.center.y, button: "left", clickCount: 1 });
   win.webContents.sendInputEvent({ type: "mouseUp", x: before.center.x, y: before.center.y, button: "left", clickCount: 1 });
@@ -295,7 +365,26 @@ async function probe(win, selector) {
         center,
         targetAtCenter: target ? { id: target.id, className: String(target.className || ""), tag: target.tagName } : null,
         clickCount: window.__wwClickProbe?.clicks?.[${JSON.stringify(selector)}] ?? 0,
-        errors: window.__wwClickProbe?.errors ?? []
+        errors: window.__wwClickProbe?.errors ?? [],
+        railNavHtml: document.getElementById("rail-nav")?.innerHTML ?? null,
+        visibleButtons: [...document.querySelectorAll("button")]
+          .filter((el) => el.offsetParent !== null)
+          .map((el) => ({
+            id: el.id || null,
+            className: String(el.className || ""),
+            text: el.textContent.trim().replace(/\\s+/gu, " ").slice(0, 80)
+          })),
+        scripts: [...document.scripts].map((script) => ({
+          src: script.src,
+          type: script.type,
+          noModule: script.noModule
+        })),
+        resources: performance.getEntriesByType("resource").map((entry) => ({
+          name: entry.name,
+          initiatorType: entry.initiatorType,
+          transferSize: entry.transferSize,
+          decodedBodySize: entry.decodedBodySize
+        }))
       };
     })();
   `);
