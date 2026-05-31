@@ -259,7 +259,7 @@ export function closeDrawer(drawer, scrim, { onComplete } = {}) {
     }
     if (scrim) {
       tl.to(scrim, { opacity: 0, duration: MOTION.base, ease: MOTION.easeIn }, 0);
-      tl.set(scrim, { pointerEvents: "none" });
+      tl.set(scrim, { pointerEvents: "none" }, 0);
     }
   });
 }
@@ -316,7 +316,7 @@ export function closeModal(scrim, panel, { onComplete } = {}) {
     }
     if (scrim) {
       tl.to(scrim, { opacity: 0, duration: MOTION.base, ease: MOTION.easeIn }, 0);
-      tl.set(scrim, { pointerEvents: "none" });
+      tl.set(scrim, { pointerEvents: "none" }, 0);
     }
   });
 }
