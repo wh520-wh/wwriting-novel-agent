@@ -40,6 +40,26 @@ test("diffBadgeKeys handles rebuilt quick rail summaries", async () => {
   assert.deepEqual(diffBadgeKeys(before, after).sort(), ["chapters", "cost", "reviewer"]);
 });
 
+test("summarizeBadgesForMotion creates stable quick rail keys", async () => {
+  installBrowserGlobals();
+  const { summarizeBadgesForMotion } = await import(`../src/app-shell/motion-runtime.js?summary=${Date.now()}`);
+  const summary = summarizeBadgesForMotion({
+    chapters: { done: 2, total: 10 },
+    skills: { enabledCount: 3 },
+    research: { newSinceLastVisit: true },
+    cost: { level: "warning", pct: 0.82 },
+    reviewer: { hasUnread: false }
+  });
+
+  assert.deepEqual(summary, {
+    chapters: "2/10",
+    skills: "3",
+    research: "unread",
+    cost: "warning",
+    reviewer: "read"
+  });
+});
+
 test("reduced-motion close helpers still run completion callbacks", async () => {
   installBrowserGlobals({ reduced: true });
   const { setupMotion, closeDrawer, closeModal } = await import(`../src/app-shell/motion-runtime.js?reduced=${Date.now()}`);
