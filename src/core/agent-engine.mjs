@@ -842,7 +842,7 @@ async function requestChapterToolCall(projectRoot, project, state, runtime, requ
   await blockProject(projectRoot, project, state, "model_output_invalid", {
     last_validation: lastValidation,
     last_model_call: lastModelCall
-  });
+  }, { skipFailureCard: true });
   try {
     const fresh = await loadState(projectRoot).catch(() => state);
     const card = deriveFailureCard({
@@ -883,7 +883,7 @@ async function executeToolCall(projectRoot, project, state, toolCall, options) {
       });
       await blockProject(projectRoot, project, state, error.code, {
         message: error.message
-      });
+      }, { skipFailureCard: true });
       try {
         const fresh = await loadState(projectRoot).catch(() => state);
         const card = deriveFailureCard({
@@ -974,7 +974,7 @@ function withBudgetDefaults(state) {
   };
 }
 
-async function blockProject(projectRoot, project, state, reason, data = {}) {
+async function blockProject(projectRoot, project, state, reason, data = {}, opts = {}) {
   const current = await loadState(projectRoot).catch(() => state);
   if (current.project_status === "blocked") {
     return current;
@@ -1008,18 +1008,20 @@ async function blockProject(projectRoot, project, state, reason, data = {}) {
     code: reason,
     data
   }));
-  try {
-    const fresh = await loadState(projectRoot).catch(() => state);
-    const card = deriveFailureCard({
-      id: `flr_${Date.now()}_${Math.random().toString(36).slice(2,8)}`,
-      type: 'project_blocked',
-      chapter_no: current.current_chapter_no,
-      message: reason,
-      ts: new Date().toISOString(),
-      data
-    }, fresh);
-    appendFailure(projectRoot, card);
-  } catch (err) { console.warn('appendFailure failed:', err.message); }
+  if (!opts.skipFailureCard) {
+    try {
+      const fresh = await loadState(projectRoot).catch(() => state);
+      const card = deriveFailureCard({
+        id: `flr_${Date.now()}_${Math.random().toString(36).slice(2,8)}`,
+        type: 'project_blocked',
+        chapter_no: current.current_chapter_no,
+        message: reason,
+        ts: new Date().toISOString(),
+        data
+      }, fresh);
+      appendFailure(projectRoot, card);
+    } catch (err) { console.warn('appendFailure failed:', err.message); }
+  }
   return next;
 }
 
