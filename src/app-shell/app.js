@@ -1,4 +1,5 @@
-import { computeAgentTruth } from "./agent-truth.mjs";
+import { computeAgentTruth, deriveFailures } from "./agent-truth.mjs";
+import { renderFailureCard } from "./components/failure-card.js";
 
 // WWriting · Codex 风格对话式前端
 // 后端无消息/SSE 端点，对话流由前端用 /api/dashboard 的 events[] + chapters[] + summary 聚合而成。
@@ -341,6 +342,7 @@ function renderDashboard(data) {
   ensureRefreshLoop(truth.refresh || summary.projectStatus === "running" || Boolean(liveBlock && !liveBlock.done));
 
   syncThread(data, firstLoad);
+  syncFailureCards(data);
   refreshDrawerIfOpen();
 }
 
@@ -918,6 +920,57 @@ function finishAgentBlock(block, event, data) {
   block.body.append(buildQuickRow(block.chapter ? ["续写下一章", "查看章节正文"] : ["续写下一章"]));
 }
 // PLACEHOLDER_THREAD8
+
+function insertByTs(container, node, ts) {
+  const target = ts ? new Date(ts).getTime() : Date.now();
+  const children = Array.from(container.children);
+  for (const child of children) {
+    const childTs = child.dataset.ts ? new Date(child.dataset.ts).getTime() : 0;
+    if (childTs > target) {
+      container.insertBefore(node, child);
+      return;
+    }
+  }
+  container.appendChild(node);
+}
+
+async function submitFailureAction(card, action) {
+  try {
+    const res = await fetch('/api/failures/resolve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        command: action.command.command,
+        args: action.command.args,
+        failureId: card.id
+      })
+    });
+    if (!res.ok) {
+      const json = await res.json().catch(() => ({}));
+      console.error('提交失败:', json.error ?? res.status);
+      return;
+    }
+    loadDashboard();
+  } catch (err) {
+    console.error('提交失败:', err.message);
+  }
+}
+
+function syncFailureCards(data) {
+  const failures = deriveFailures(data);
+  for (const card of failures) {
+    const existing = document.querySelector(`[data-failure-id="${card.id}"]`);
+    if (existing) {
+      if (!existing.dataset.resolved && card.resolution) {
+        existing.replaceWith(renderFailureCard(card, { onAction: submitFailureAction }));
+      }
+      continue;
+    }
+    const node = renderFailureCard(card, { onAction: submitFailureAction });
+    if (card.resolution) node.dataset.resolved = '1';
+    insertByTs(refs.thread, node, card.ts);
+  }
+}
 
 // 轮询期间把最新阶段同步进运行气泡；运行结束则松开引用，等收尾事件定稿。
 function updateLiveAgentBlock(data) {
