@@ -973,8 +973,8 @@ async function submitFailureAction(card, action) {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        command: action.command.command,
-        args: action.command.args,
+        command: action.command,
+        args: action.args,
         failureId: card.id
       })
     });
@@ -992,16 +992,26 @@ async function submitFailureAction(card, action) {
 function syncFailureCards(data) {
   const failures = deriveFailures(data);
   for (const card of failures) {
-    const existing = document.querySelector(`[data-failure-id="${card.id}"]`);
+    const existing = document.querySelector(`[data-failure-id="${cssEscape(card.id)}"]`);
     if (existing) {
-      if (!existing.dataset.resolved && card.resolution) {
-        existing.replaceWith(renderFailureCard(card, { onAction: submitFailureAction }));
+      const next = renderFailureCard(card, { onAction: submitFailureAction });
+      if (card.resolution && !existing.querySelector(".failure-resolved")) {
+        if (existing.dataset.motionResolving === "true") continue;
+        existing.dataset.motionResolving = "true";
+        motion.resolveFailureCard(existing, next, {
+          commit: () => {
+            delete existing.dataset.motionResolving;
+            existing.replaceWith(next);
+          }
+        });
+      } else {
+        existing.replaceWith(next);
       }
       continue;
     }
     const node = renderFailureCard(card, { onAction: submitFailureAction });
-    if (card.resolution) node.dataset.resolved = '1';
     insertByTs(refs.thread, node, card.ts);
+    motion.insertFailureCard(node);
   }
 }
 

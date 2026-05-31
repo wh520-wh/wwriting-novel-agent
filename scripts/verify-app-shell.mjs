@@ -156,6 +156,7 @@ try {
   assert.ok(css.includes(".sr-only"));
   assert.ok(html.includes("id=\"thread-status\""));
   assert.ok(js.includes("function announce"));
+  assert.ok(js.includes("dataset.motionResolving"));
   // Task9: 补齐缺失/失效的样式
   assert.ok(css.includes(".reader-body p.reader-empty"));
   assert.ok(!css.includes("var(--paper)"));
