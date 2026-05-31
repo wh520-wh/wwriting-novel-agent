@@ -1,0 +1,165 @@
+const { app, BrowserWindow, Menu, dialog, ipcMain } = require("electron");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { pathToFileURL } = require("node:url");
+
+const rootDir = path.resolve(__dirname, "..", "..");
+const port = Number(process.env.PORT || 4173);
+const smokeMode = process.env.WWRITING_ELECTRON_SMOKE === "1";
+let server = null;
+let smokeUserDataDir = null;
+
+if (smokeMode) {
+  smokeUserDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "wwriting-electron-smoke-"));
+  app.setPath("userData", smokeUserDataDir);
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch("no-sandbox");
+  app.commandLine.appendSwitch("disable-gpu");
+  app.commandLine.appendSwitch("disable-gpu-sandbox");
+  app.commandLine.appendSwitch("disable-http-cache");
+  app.commandLine.appendSwitch("disk-cache-size", "1");
+}
+
+app.whenReady().then(async () => {
+  installLocalizedApplicationMenu();
+
+  ipcMain.handle("wwriting:select-project-folder", async () => {
+    const result = await dialog.showOpenDialog({
+      title: "打开本地项目文件夹",
+      properties: ["openDirectory"]
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+      return null;
+    }
+    return result.filePaths[0];
+  });
+
+  const { createAppShellServer } = await import(pathToFileURL(path.join(rootDir, "src", "core", "app-server.mjs")).href);
+  server = createAppShellServer({
+    workspaceRoot: process.env.WORKSPACE_ROOT || rootDir,
+    selectedProjectRoot: process.env.PROJECT_ROOT || null,
+    staticRoot: path.join(rootDir, "src", "app-shell"),
+    secretsRoot: app.getPath("userData"),
+    port
+  });
+  await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
+
+  await waitForServer(port);
+  if (smokeMode) {
+    const result = JSON.stringify({
+      ok: true,
+      desktopShell: "electron",
+      loaded: `http://127.0.0.1:${port}`
+    });
+    process.stdout.write(`${result}\n`, () => {
+      if (server) {
+        server.close();
+        server = null;
+      }
+      app.exit(0);
+    });
+    return;
+  }
+
+  const window = new BrowserWindow({
+    width: 1320,
+    height: 860,
+    minWidth: 980,
+    minHeight: 680,
+    show: true,
+    backgroundColor: "#f4f3f0",
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(__dirname, "electron-preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+
+  await window.loadURL(`http://127.0.0.1:${port}`);
+});
+
+app.on("window-all-closed", () => {
+  app.quit();
+});
+
+app.on("before-quit", () => {
+  if (server) {
+    server.close();
+    server = null;
+  }
+});
+
+app.on("will-quit", () => {
+  if (smokeUserDataDir) {
+    try {
+      fs.rmSync(smokeUserDataDir, { recursive: true, force: true });
+    } catch {
+      // Windows can briefly keep Chromium cache files locked after smoke exit.
+    }
+  }
+});
+
+async function waitForServer(targetPort) {
+  const started = Date.now();
+  while (Date.now() - started < 8000) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${targetPort}/api/dashboard`);
+      if (response.ok) {
+        return;
+      }
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    }
+  }
+  throw new Error("App shell server did not become ready.");
+}
+
+function installLocalizedApplicationMenu() {
+  const template = [
+    {
+      label: "文件",
+      submenu: [
+        {
+          label: "退出",
+          role: "quit"
+        }
+      ]
+    },
+    {
+      label: "编辑",
+      submenu: [
+        { label: "撤销", role: "undo" },
+        { label: "重做", role: "redo" },
+        { type: "separator" },
+        { label: "剪切", role: "cut" },
+        { label: "复制", role: "copy" },
+        { label: "粘贴", role: "paste" },
+        { label: "全选", role: "selectAll" }
+      ]
+    },
+    {
+      label: "视图",
+      submenu: [
+        { label: "重新加载", role: "reload" },
+        { label: "强制重新加载", role: "forceReload" },
+        { label: "切换开发者工具", role: "toggleDevTools" },
+        { type: "separator" },
+        { label: "实际大小", role: "resetZoom" },
+        { label: "放大", role: "zoomIn" },
+        { label: "缩小", role: "zoomOut" },
+        { type: "separator" },
+        { label: "切换全屏", role: "togglefullscreen" }
+      ]
+    },
+    {
+      label: "窗口",
+      submenu: [
+        { label: "最小化", role: "minimize" },
+        { label: "关闭窗口", role: "close" }
+      ]
+    }
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}

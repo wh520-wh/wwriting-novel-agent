@@ -1,0 +1,7 @@
+.demo_runs/
+.electron-builder-cache/
+dist-desktop/
+node_modules/
+npm-debug.log*
+*.tmp
+.gstack/

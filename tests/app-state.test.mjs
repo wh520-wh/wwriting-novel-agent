@@ -1,0 +1,56 @@
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { forgetRecentProject, loadAppState, loadAppStateSync, recordRecentProject } from "../src/core/app-state.mjs";
+
+test("recordRecentProject dedupes by path, preserves position, and updates metadata in place", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-appstate-"));
+  await recordRecentProject(root, { projectRoot: "/novels/a", title: "A", story_seed: "seed-a" });
+  await recordRecentProject(root, { projectRoot: "/novels/b", title: "B" });
+  let state = await recordRecentProject(root, { projectRoot: "/novels/a", title: "A2", story_seed: "seed-a2" });
+
+  // lastProjectRoot 仍然反映最近一次打开的项目（用于"启动时自动重开"）。
+  assert.equal(state.lastProjectRoot, path.resolve("/novels/a"));
+  assert.equal(state.recentProjects.length, 2);
+  // 顺序稳定：b 是后加入的新项目占第一位；重新打开 a 不会改变它在第二位的位置。
+  assert.equal(state.recentProjects[0].projectRoot, path.resolve("/novels/b"));
+  assert.equal(state.recentProjects[1].projectRoot, path.resolve("/novels/a"));
+  // 但 a 的元数据已经被原地更新。
+  assert.equal(state.recentProjects[1].title, "A2");
+  assert.equal(state.recentProjects[1].story_seed, "seed-a2");
+
+  const sync = loadAppStateSync(root);
+  assert.equal(sync.lastProjectRoot, path.resolve("/novels/a"));
+});
+
+test("recordRecentProject caps the recent list at 12 entries (newest project prepended)", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-appstate-cap-"));
+  for (let i = 0; i < 20; i += 1) {
+    await recordRecentProject(root, { projectRoot: `/novels/p${i}`, title: `P${i}` });
+  }
+  const state = await loadAppState(root);
+  assert.equal(state.recentProjects.length, 12);
+  // 新项目都是"未见过"，全部走 prepend 路径；最后一个加入的 p19 在最前。
+  assert.equal(state.recentProjects[0].projectRoot, path.resolve("/novels/p19"));
+  assert.equal(state.recentProjects[11].projectRoot, path.resolve("/novels/p8"));
+  assert.equal(state.lastProjectRoot, path.resolve("/novels/p19"));
+});
+
+test("forgetRecentProject removes an entry and updates last project", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-appstate-forget-"));
+  await recordRecentProject(root, { projectRoot: "/novels/x", title: "X" });
+  await recordRecentProject(root, { projectRoot: "/novels/y", title: "Y" });
+  const state = await forgetRecentProject(root, "/novels/y");
+  assert.equal(state.recentProjects.length, 1);
+  assert.equal(state.recentProjects[0].projectRoot, path.resolve("/novels/x"));
+  assert.equal(state.lastProjectRoot, path.resolve("/novels/x"));
+});
+
+test("loadAppState returns an empty baseline when no state file exists", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-appstate-empty-"));
+  const state = await loadAppState(root);
+  assert.equal(state.lastProjectRoot, null);
+  assert.deepEqual(state.recentProjects, []);
+});
