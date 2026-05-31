@@ -24,7 +24,7 @@ function actionsForKind(kind, event) {
     case 'words-short': {
       const expected = data.expected_words ?? null;
       const actual = data.actual_words ?? 0;
-      const gap = expected ? Math.max(1, expected - actual) : null;
+      const gap = expected != null ? Math.max(1, expected - actual) : null;
       return [
         gap
           ? { label: `补写 ${gap} 字`, command: { command: 'fill-words', args: { targetWords: gap } } }
@@ -84,7 +84,7 @@ function bodyForKind(kind, event, state) {
     case 'words-short':
       return `第 ${ch} 章本段写了 ${data.actual_words ?? '?'} 字，低于 ${data.expected_words ?? '?'} 字门槛。智能体没有继续，等你决定怎么处理。`;
     case 'tool-rejected':
-      return `第 ${ch} 章的工具调用 ${data.tool ?? ''} 被拒。智能体停在 ${state.current_stage} 阶段。`;
+      return `第 ${ch} 章的工具调用 ${data.tool ?? ''} 被拒。智能体停在 ${state.current_stage ?? '未知'} 阶段。`;
     case 'budget-exhausted':
       return `第 ${ch} 章已经用完模型调用预算 (${data.used ?? '?'} / ${data.max ?? '?'})，等你决定。`;
     case 'provider-error':

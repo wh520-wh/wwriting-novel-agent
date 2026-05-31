@@ -38,7 +38,7 @@ test('budget-exhausted kind 由 model_call_budget_exhausted 派生', () => {
   assert.equal(card.actions[0].command.command, 'raise-budget');
 });
 
-test('unknown 兜底 - 没匹配上的 project_blocked', () => {
+test('provider-error 兜底 - 没匹配上的 project_blocked', () => {
   const card = deriveFailureCard({
     id: 'e4', type: 'project_blocked', ts: '2026-05-31T00:00:03Z',
     chapter_no: 7, message: 'something_weird', data: {}
@@ -71,4 +71,33 @@ test('id 与 event.id 一致 - 幂等去重键', () => {
     data: { kind: 'word_count', actual_words: 2900, expected_words: 3000 }
   }, baseState);
   assert.equal(card.id, 'evt_123');
+});
+
+test('review-failed kind 由 skill quality gate failed 派生', () => {
+  const card = deriveFailureCard({
+    id: 'e7', type: 'quality_gate_failed', ts: '2026-05-31T00:00:07Z',
+    chapter_no: 7, message: 'skill quality gate failed',
+    data: { failed_gates: ['coherence'] }
+  }, baseState);
+  assert.equal(card.kind, 'review-failed');
+  assert.equal(card.actions.length, 3);
+  assert.equal(card.actions[0].command.command, 'apply-review-suggestions');
+});
+
+test('unknown kind - 完全未匹配的事件类型', () => {
+  const card = deriveFailureCard({
+    id: 'e8', type: 'some_random_type', ts: '2026-05-31T00:00:08Z',
+    chapter_no: 7, message: 'weird', data: {}
+  }, baseState);
+  assert.equal(card.kind, 'unknown');
+  assert.equal(card.actions.length, 2);
+  assert.match(card.title, /出现异常/);
+});
+
+test('tool-rejected kind 由 model_output_invalid 派生', () => {
+  const card = deriveFailureCard({
+    id: 'e9', type: 'project_blocked', ts: '2026-05-31T00:00:09Z',
+    chapter_no: 7, message: 'model_output_invalid', data: {}
+  }, baseState);
+  assert.equal(card.kind, 'tool-rejected');
 });
