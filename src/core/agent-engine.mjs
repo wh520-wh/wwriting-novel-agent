@@ -13,6 +13,8 @@ import { collectSkillPromptHooks, runPostProcessHooks, runSkillChecks } from "./
 import { appendChapterSegment, chapterFileName, finalizeChapterFile, readDraft, ToolValidationError } from "./tool-runtime.mjs";
 import { buildContinuityPromptContext, recordChapterMemory } from "./chapter-memory.mjs";
 import fs from "node:fs/promises";
+import { appendFailure } from "./failures-store.mjs";
+import { deriveFailureCard } from "./derive-failure-card.mjs";
 
 export class SimulatedInterrupt extends Error {
   constructor(message) {
@@ -308,6 +310,18 @@ async function reviewChapter(projectRoot, project, state) {
       data: gate
     });
     await writeCheckpoint(projectRoot, checkpointPayload(project, state, next));
+    try {
+      const fresh = await loadState(projectRoot).catch(() => state);
+      const card = deriveFailureCard({
+        id: `flr_${Date.now()}_${Math.random().toString(36).slice(2,8)}`,
+        type: 'quality_gate_failed',
+        chapter_no: state.current_chapter_no,
+        message: 'word-count gate failed',
+        ts: new Date().toISOString(),
+        data: gate
+      }, fresh);
+      appendFailure(projectRoot, card);
+    } catch (err) { console.warn('appendFailure failed:', err.message); }
     return;
   }
   const skillGateResults = await runSkillChecks(projectRoot, project, "reviewing", {
@@ -336,6 +350,18 @@ async function reviewChapter(projectRoot, project, state) {
       data: { failed_gates: failedSkillGates }
     });
     await writeCheckpoint(projectRoot, checkpointPayload(project, state, next, [], [], null, { skill_gate_results: skillGateResults }));
+    try {
+      const fresh = await loadState(projectRoot).catch(() => state);
+      const card = deriveFailureCard({
+        id: `flr_${Date.now()}_${Math.random().toString(36).slice(2,8)}`,
+        type: 'quality_gate_failed',
+        chapter_no: state.current_chapter_no,
+        message: 'skill quality gate failed',
+        ts: new Date().toISOString(),
+        data: { failed_gates: failedSkillGates }
+      }, fresh);
+      appendFailure(projectRoot, card);
+    } catch (err) { console.warn('appendFailure failed:', err.message); }
     return;
   }
   const next = { ...state, current_stage: "finalizing" };
@@ -817,6 +843,18 @@ async function requestChapterToolCall(projectRoot, project, state, runtime, requ
     last_validation: lastValidation,
     last_model_call: lastModelCall
   });
+  try {
+    const fresh = await loadState(projectRoot).catch(() => state);
+    const card = deriveFailureCard({
+      id: `flr_${Date.now()}_${Math.random().toString(36).slice(2,8)}`,
+      type: 'tool_call_rejected',
+      chapter_no: state.current_chapter_no,
+      message: lastValidation?.message ?? 'invalid arguments',
+      ts: new Date().toISOString(),
+      data: { tool: lastModelCall?.output?.tool ?? null, code: lastValidation?.code }
+    }, fresh);
+    appendFailure(projectRoot, card);
+  } catch (err) { console.warn('appendFailure failed:', err.message); }
   throw new ProjectBlockedError("model_output_invalid");
 }
 
@@ -846,6 +884,18 @@ async function executeToolCall(projectRoot, project, state, toolCall, options) {
       await blockProject(projectRoot, project, state, error.code, {
         message: error.message
       });
+      try {
+        const fresh = await loadState(projectRoot).catch(() => state);
+        const card = deriveFailureCard({
+          id: `flr_${Date.now()}_${Math.random().toString(36).slice(2,8)}`,
+          type: 'tool_call_rejected',
+          chapter_no: state.current_chapter_no,
+          message: error.message,
+          ts: new Date().toISOString(),
+          data: { tool: error.tool, code: error.code }
+        }, fresh);
+        appendFailure(projectRoot, card);
+      } catch (err) { console.warn('appendFailure failed:', err.message); }
       throw new ProjectBlockedError(error.code);
     }
     throw error;
@@ -958,6 +1008,18 @@ async function blockProject(projectRoot, project, state, reason, data = {}) {
     code: reason,
     data
   }));
+  try {
+    const fresh = await loadState(projectRoot).catch(() => state);
+    const card = deriveFailureCard({
+      id: `flr_${Date.now()}_${Math.random().toString(36).slice(2,8)}`,
+      type: 'project_blocked',
+      chapter_no: current.current_chapter_no,
+      message: reason,
+      ts: new Date().toISOString(),
+      data
+    }, fresh);
+    appendFailure(projectRoot, card);
+  } catch (err) { console.warn('appendFailure failed:', err.message); }
   return next;
 }
 
