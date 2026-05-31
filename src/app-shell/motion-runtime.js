@@ -408,6 +408,7 @@ export function bumpQuickRailBadge(button) {
 
 export const motion = {
   setupMotion,
+  isReducedMotion,
   openDrawer,
   closeDrawer,
   openModal,
