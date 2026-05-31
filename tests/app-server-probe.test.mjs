@@ -53,6 +53,64 @@ async function postJson(port, route, body = {}) {
   return { res, data };
 }
 
+test("static shell serves shared ESM dependencies", async () => {
+  const { server, port } = await setupServer();
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/shared/failure-commands.mjs`);
+    const body = await res.text();
+
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type") ?? "", /^text\/javascript\b/u);
+    assert.match(body, /FAILURE_COMMANDS/u);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("static shell serves local GSAP vendor entry but not node_modules", async () => {
+  const { server, port } = await setupServer();
+  try {
+    const vendor = await fetch(`http://127.0.0.1:${port}/vendor/gsap.js`);
+    const vendorBody = await vendor.text();
+    const nodeModules = await fetch(`http://127.0.0.1:${port}/node_modules/gsap/dist/gsap.js`);
+
+    assert.equal(vendor.status, 200);
+    assert.match(vendor.headers.get("content-type") ?? "", /^text\/javascript\b/u);
+    assert.match(vendorBody, /export const gsap/u);
+    assert.equal(nodeModules.status, 404);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("static shell does not expose non-module shared siblings", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-static-shared-"));
+  const staticRoot = path.join(root, "src", "app-shell");
+  const sharedRoot = path.join(root, "src", "shared");
+  await fs.mkdir(staticRoot, { recursive: true });
+  await fs.mkdir(sharedRoot, { recursive: true });
+  await fs.writeFile(path.join(staticRoot, "index.html"), "<!doctype html><title>test</title>");
+  await fs.writeFile(path.join(sharedRoot, "secret.json"), "{\"secret\":true}");
+  const { projectRoot } = await createProject(root, { slug: "project" });
+  const server = createAppShellServer({
+    workspaceRoot: root,
+    selectedProjectRoot: projectRoot,
+    stateRoot: path.join(root, ".state"),
+    secretsRoot: path.join(root, ".secrets"),
+    staticRoot,
+    port: 0
+  });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const port = server.address().port;
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/shared/secret.json`);
+
+    assert.equal(res.status, 404);
+  } finally {
+    await closeServer(server);
+  }
+});
+
 function deferredRun() {
   const calls = [];
   const deferreds = [];
