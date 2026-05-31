@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { loadDashboardData, loadProjectList, readChapterContent, validateProjectRoot } from "../src/core/app-dashboard.mjs";
+import { appendFailure } from "../src/core/failures-store.mjs";
 import { runProject } from "../src/core/agent-engine.mjs";
 import { createProject, loadState, saveState } from "../src/core/project-store.mjs";
 import { runReviewerAgent } from "../src/core/reviewer-agent.mjs";
@@ -212,4 +213,32 @@ test("loadDashboardData explains stable cache key without provider metrics", asy
   assert.equal(data.cacheSummary.available, true);
   assert.equal(data.cacheSummary.providerMetricsAvailable, false);
   assert.equal(data.cacheSummary.explanation, "缓存键稳定；供应商未返回命中指标");
+});
+
+test('loadDashboardData 包含 failures 字段（最近 10 未处理 + 5 已处理）', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'wwriting-dash-fail-'));
+  const { projectRoot } = await createProject(root, {
+    slug: 'p', target_chapters: 3, min_words_per_chapter: 300, target_words_per_chapter: 360
+  });
+  for (let i = 0; i < 20; i++) {
+    appendFailure(projectRoot, { id: `e${i}`, kind: 'unknown', resolution: null,
+      ts: `2026-05-31T00:00:${String(i).padStart(2,'0')}Z` });
+  }
+  for (let i = 0; i < 8; i++) {
+    appendFailure(projectRoot, { id: `r${i}`, kind: 'unknown',
+      resolution: { action: 'pause-here', submittedAt: '...' }, ts: '2026-05-30T00:00:00Z' });
+  }
+  const snap = await loadDashboardData(root, { projectRoot, allowExternalProjectRoot: true });
+  assert.ok(Array.isArray(snap.failures));
+  const pending = snap.failures.filter(f => !f.resolution);
+  const done = snap.failures.filter(f => f.resolution);
+  assert.equal(pending.length, 10);
+  assert.equal(done.length, 5);
+});
+
+test('loadDashboardData 在 hasProject=false 时不读 failures.jsonl', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'wwriting-no-project-'));
+  const snap = await loadDashboardData(root, { disableProjectFallback: true });
+  assert.equal(snap.hasProject, false);
+  assert.equal(snap.failures, undefined);
 });
