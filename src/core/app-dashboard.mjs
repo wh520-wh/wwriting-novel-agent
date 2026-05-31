@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { loadConfigLayers } from "./config-runtime.mjs";
 import { readEvents } from "./event-log.mjs";
+import { readFailures } from "./failures-store.mjs";
 import { isPathInside, pathExists, readJson, safeJoin } from "./fs-utils.mjs";
 import { loadProject } from "./project-store.mjs";
 import { listProjectSkills } from "./skill-runtime.mjs";
@@ -39,6 +40,7 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
     enabled_skills: config.effective.enabled_skills ?? project.enabled_skills ?? []
   };
   const [skills, sources] = await Promise.all([readSkills(projectRoot, effectiveProject), readSources(projectRoot)]);
+  const failures = readFailures(projectRoot);
 
   const chapters = chapterIndex.chapters ?? [];
   const totalWords = chapters.reduce((sum, chapter) => sum + Number(chapter.actual_words ?? 0), 0);
@@ -102,7 +104,11 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
     },
     skills,
     sources,
-    review
+    review,
+    failures: [
+      ...failures.filter(f => !f.resolution).slice(-10),
+      ...failures.filter(f => f.resolution).slice(-5)
+    ]
   };
 }
 
