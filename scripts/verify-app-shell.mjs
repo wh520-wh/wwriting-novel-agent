@@ -199,6 +199,12 @@ try {
   assert.ok(css.includes(".sidecard"));
   assert.ok(css.includes(".steps"));
   assert.ok(css.includes(".bubble-user"));
+  // transition timing consistency
+  assert.ok(!css.match(/transition[^;]*\.13s/), "no .13s transitions allowed");
+  assert.ok(!css.match(/transition[^;]*\.14s/), "no .14s transitions allowed");
+  assert.ok(!css.match(/transition[^;]*\.15s/), "no .15s transitions allowed");
+  assert.ok(!css.match(/transition[^;]*\.16s/), "no .16s transitions allowed");
+  assert.ok(!css.match(/transition[^;]*\.18s/), "no .18s transitions allowed");
   // 反向断言：旧的标签式信息架构与开发者面板术语不应回归
   assert.ok(!html.includes("data-view-button"));
   assert.ok(!html.includes("data-view-page"));
