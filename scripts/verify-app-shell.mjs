@@ -69,11 +69,12 @@ child.stderr.on("data", (chunk) => {
 
 try {
   await waitForServer(port);
-  const [html, js, truthJs, css, dashboard] = await Promise.all([
+  const [html, js, truthJs, css, quickRailJs, dashboard] = await Promise.all([
     fetchText(`http://127.0.0.1:${port}/`),
     fetchText(`http://127.0.0.1:${port}/app.js`),
     fetchText(`http://127.0.0.1:${port}/agent-truth.mjs`),
     fetchText(`http://127.0.0.1:${port}/styles.css`),
+    fetchText(`http://127.0.0.1:${port}/components/quick-rail.js`),
     fetchJson(`http://127.0.0.1:${port}/api/dashboard`)
   ]);
   const [motionRuntime, gsapVendor] = await Promise.all([
@@ -161,6 +162,9 @@ try {
   assert.ok(css.includes(".reader-body p.reader-empty"));
   assert.ok(!css.includes("var(--paper)"));
   assert.ok(css.includes(".toast.leaving"));
+  // border-radius consistency
+  assert.ok(!css.includes("border-radius: var(--r, 12px)"), "failure-card must not have fallback in var(--r)");
+  assert.ok(!css.includes("border-radius: 8px"), "all 8px border-radius must use var(--r-sm)");
   // Task10: 仅在贴底时自动滚动 + 抽屉重建保留滚动位置
   assert.ok(js.includes("clientHeight < 80"));
   assert.ok(js.includes("refs.drawerBody.scrollTop = "));
@@ -220,6 +224,20 @@ try {
   assert.ok(js.includes("openProject"));
   assert.ok(js.includes("initProject"));
   assert.ok(js.includes("openCreateModal"));
+  assert.ok(js.includes('createHeading: document.querySelector("#create-heading")'), "create modal heading ref must be wired");
+  assert.ok(js.includes('createLead: document.querySelector("#create-card .lead")'), "create modal lead ref must be wired");
+  assert.ok(js.includes('let createModalMode = "new"'), "create modal mode state must default to new");
+  assert.ok(js.includes("function renderCreateModalCopy"), "create modal copy must be rendered by mode");
+  assert.ok(js.includes('mode: "preview"'), "open folder browser fallback must use preview create mode");
+  assert.ok(js.includes('mode: "init-folder"'), "opening a non-project folder must use init-folder create mode");
+  assert.ok(cssRuleBlock(css, ".rail-new").includes("position: relative"), "new novel rail entry must have stable positioning");
+  assert.ok(cssRuleBlock(css, ".rail-new").includes("z-index:"), "new novel rail entry must set a stacking context");
+  assert.ok(cssRuleBlock(css, ".rail-new").includes("background:"), "new novel rail entry must paint over scroll content");
+  assert.ok(cssRuleBlock(css, ".rail-scroll").includes("position: relative"), "rail scroll area must have stable positioning");
+  assert.ok(cssRuleBlock(css, ".rail-scroll").includes("z-index:"), "rail scroll area must set a stacking context");
+  assert.ok(cssRuleBlock(css, ".rail-foot").includes("position: relative"), "rail foot must have stable positioning");
+  assert.ok(cssRuleBlock(css, ".rail-foot").includes("z-index:"), "rail foot must set a stacking context");
+  assert.ok(cssRuleBlock(css, ".rail-foot").includes("background:"), "rail foot must paint over scroll content");
   assert.ok(js.includes("updateEndpointPreview"));
   assert.ok(js.includes("resolveModelEndpoint"));
   // Task2: 资料联网搜索/抓取入口已恢复
@@ -229,6 +247,10 @@ try {
   // Task3: 设置可配置联网搜索端点
   assert.ok(js.includes("research_config"));
   assert.ok(js.includes("settingsFields.searchEndpoint"));
+  assert.ok(js.includes('settingField("模型", "model-id"'), "settings model field must be editable model-id input");
+  assert.ok(!js.includes('settingField("模型", "select"'), "settings model field must no longer be a select");
+  assert.ok(js.includes("settings-model-suggestions"), "settings model field must preserve preset suggestions with a datalist");
+  assert.ok(js.includes('document.createElement("datalist")'), "settings model field must create a datalist for suggestions");
   assert.ok(js.includes("openSettingsModal"));
   assert.ok(js.includes("PROVIDER_PRESETS"));
   assert.ok(js.includes("detectProviderPreset"));
@@ -244,6 +266,28 @@ try {
   assert.ok(js.includes("initPrivacyMode"));
   assert.ok(js.includes("setPrivacyMode"));
   assert.ok(js.includes("ww:privacy"));
+  // Task2: Quick Rail 气泡必须由模块级单例统一清理，且不叠加原生 title tooltip
+  assert.ok(quickRailJs.includes("let activePopover"));
+  assert.ok(quickRailJs.includes("let activeTimer"));
+  assert.ok(quickRailJs.includes("let activeOwner"));
+  assert.ok(quickRailJs.includes("function clearQuickRailPopover"));
+  assert.ok(quickRailJs.includes("clearTimeout(activeTimer)"));
+  assert.ok(quickRailJs.includes("activePopover.remove()"));
+  assert.ok(quickRailJs.includes("activeOwner = null"));
+  assert.ok(quickRailJs.includes("clearQuickRailPopover();"));
+  assert.ok(quickRailJs.includes("if (!text) return"));
+  assert.ok(quickRailJs.includes("btn.addEventListener('mouseenter'"));
+  assert.ok(quickRailJs.includes("btn.addEventListener('focus'"));
+  assert.ok(quickRailJs.includes("btn.addEventListener('mouseleave'"));
+  assert.ok(quickRailJs.includes("btn.addEventListener('blur'"));
+  assert.ok(quickRailJs.includes("btn.addEventListener('click'"));
+  assert.ok(quickRailJs.includes("btn.addEventListener('pointerdown'"));
+  assert.ok(quickRailJs.includes("window.addEventListener('blur'"));
+  assert.ok(quickRailJs.includes("window.addEventListener('resize'"));
+  assert.ok(quickRailJs.includes("window.addEventListener('scroll'"));
+  assert.ok(quickRailJs.includes("document.addEventListener('pointerdown'"));
+  assert.ok(quickRailJs.includes("activeOwner?.contains(event.target)"));
+  assert.ok(!quickRailJs.includes("btn.title = slot.label"));
   assert.ok(js.includes("parseUserCommand"));
   assert.ok(js.includes("submitSideQuestion"));
   assert.ok(js.includes("promoteAskEntry"));
@@ -537,8 +581,11 @@ function assertDomSelectorsExist(js, html) {
   const ids = new Set([...html.matchAll(/\sid="([^"]+)"/gu)].map((match) => match[1]));
   const selectors = [...js.matchAll(/document\.querySelector\("([^"]+)"\)/gu)].map((match) => match[1]);
   for (const selector of selectors) {
-    if (selector.startsWith("#")) {
+    if (/^#[\w-]+$/u.test(selector)) {
       assert.ok(ids.has(selector.slice(1)), `missing DOM id for selector ${selector}`);
+    } else if (selector.startsWith("#")) {
+      const id = selector.match(/^#([\w-]+)/u)?.[1];
+      assert.ok(!id || ids.has(id), `missing DOM id for selector ${selector}`);
     }
   }
 }
