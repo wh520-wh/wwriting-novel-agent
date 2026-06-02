@@ -77,6 +77,9 @@ export function normalizeSettingsPatch(patch = {}) {
   if (patch.research_config !== undefined) {
     normalized.research_config = normalizeResearchConfig(patch.research_config);
   }
+  if (patch.output_style !== undefined) {
+    normalized.output_style = normalizeOutputStyle(patch.output_style);
+  }
   return normalized;
 }
 
@@ -98,7 +101,27 @@ function mergeProjectSettings(project, patch) {
   if (patch.research_config !== undefined) {
     next.research_config = mergeNullableSection(project.research_config, patch.research_config);
   }
+  if (patch.output_style !== undefined) {
+    next.output_style = patch.output_style;
+  }
   return next;
+}
+
+function normalizeOutputStyle(value) {
+  if (value === null || value === "") {
+    return null;
+  }
+  if (typeof value !== "string") {
+    throw new SettingsValidationError("invalid_output_style", "output_style must be a string.");
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > 100) {
+    throw new SettingsValidationError("invalid_output_style", "output_style must be 1-100 characters.");
+  }
+  if (!/^[A-Za-z0-9_.\- ]+$/u.test(trimmed)) {
+    throw new SettingsValidationError("invalid_output_style", "output_style contains unsupported characters.");
+  }
+  return trimmed;
 }
 
 function normalizeActiveModel(activeModel) {

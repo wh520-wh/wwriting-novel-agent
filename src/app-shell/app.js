@@ -168,7 +168,7 @@ refs.settingsAdd.addEventListener("click", () => {
   settingsProviderId = "custom";
   refs.settingsSearch.value = "";
   renderSettingsProviders();
-  renderSettingsDetail();
+  void renderSettingsDetail();
 });
 refs.createX.addEventListener("click", closeCreateModal);
 refs.createScrim.addEventListener("click", (event) => {
@@ -1574,6 +1574,20 @@ async function getJson(url) {
   return data;
 }
 
+async function fetchOutputStyles() {
+  try {
+    const data = await getJson("/api/output-styles");
+    return Array.isArray(data.styles) ? data.styles : [];
+  } catch (error) {
+    console.warn("fetchOutputStyles failed:", error);
+    // Fallback to bundled names only
+    return [
+      { name: "creative", description: "创作模式", source: "bundled" },
+      { name: "review", description: "审稿模式", source: "bundled" }
+    ];
+  }
+}
+
 async function postJson(url, body) {
   const response = await fetch(url, {
     method: "POST",
@@ -2030,7 +2044,7 @@ function openSettingsModal() {
   }
   refs.settingsSearch.value = "";
   renderSettingsProviders();
-  renderSettingsDetail();
+  void renderSettingsDetail();
   openOverlay(refs.settingsScrim, refs.settingsSearch);
   motion.openModal(refs.settingsScrim, document.querySelector("#settings-modal"));
 }
@@ -2066,14 +2080,14 @@ function renderSettingsProviders() {
     button.addEventListener("click", () => {
       settingsProviderId = provider.id;
       renderSettingsProviders();
-      renderSettingsDetail();
+      void renderSettingsDetail();
     });
     return button;
   }));
 }
 // PLACEHOLDER_SETTINGS2
 
-function renderSettingsDetail() {
+async function renderSettingsDetail() {
   const provider = SETTINGS_PROVIDERS.find((p) => p.id === settingsProviderId) ?? SETTINGS_PROVIDERS[0];
   const preset = PROVIDER_PRESETS[provider.preset];
   const active = lastDashboard?.project?.active_model ?? {};
@@ -2118,11 +2132,36 @@ function renderSettingsDetail() {
   settingsFields.searchEndpoint = settingField("联网搜索接口地址", "text", { value: research.search_endpoint ?? "", placeholder: "https://api.example.com/search" });
   settingsFields.searchKeyEnv = settingField("搜索密钥环境变量名", "text", { value: research.search_api_key_env ?? "", placeholder: "SEARCH_API_KEY" });
 
+  // 输出风格下拉(bundled + user + project)
+  const currentOutputStyle = lastDashboard?.project?.output_style ?? "creative";
+  const outputStyles = await fetchOutputStyles();
+  const outputStyleField = document.createElement("div");
+  outputStyleField.className = "spd-field";
+  const outputStyleLabel = document.createElement("div");
+  outputStyleLabel.className = "spd-label";
+  const outputStyleSpan = document.createElement("span");
+  outputStyleSpan.textContent = "输出风格";
+  outputStyleLabel.append(outputStyleSpan);
+  const outputStyleSelect = document.createElement("select");
+  outputStyleSelect.className = "spd-input";
+  outputStyleSelect.id = "settings-output-style";
+  outputStyleSelect.setAttribute("aria-label", "输出风格");
+  for (const style of outputStyles) {
+    const opt = document.createElement("option");
+    opt.value = style.name;
+    opt.textContent = `${style.name} — ${style.description}`;
+    outputStyleSelect.append(opt);
+  }
+  outputStyleSelect.value = currentOutputStyle;
+  outputStyleField.append(outputStyleLabel, outputStyleSelect);
+  settingsFields.outputStyle = { field: outputStyleField, input: outputStyleSelect };
+
   refs.settingsDetail.append(
     settingsFields.model.field, settingsFields.baseUrl.field, endpointHint,
     settingsFields.apiKey.field, settingsFields.apiKeyEnv.field, keyHint,
     settingsFields.maxCalls.field, settingsFields.network.field,
-    settingsFields.searchEndpoint.field, settingsFields.searchKeyEnv.field
+    settingsFields.searchEndpoint.field, settingsFields.searchKeyEnv.field,
+    settingsFields.outputStyle.field
   );
   bindEndpointPreview();
   updateEndpointPreview();
@@ -2295,7 +2334,8 @@ async function saveSettings() {
       research_config: compactObject({
         search_endpoint: settingsFields.searchEndpoint.input.value.trim(),
         search_api_key_env: settingsFields.searchKeyEnv.input.value.trim()
-      })
+      }),
+      output_style: settingsFields.outputStyle?.input?.value ?? "creative"
     });
     const profile = result.model_profile ?? {};
     showToast(`模型设置已保存：${profile.display ?? provider.name}`, "success");

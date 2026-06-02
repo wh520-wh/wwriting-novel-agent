@@ -1,6 +1,7 @@
 import http from "node:http";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { canInitializeProjectRoot, loadDashboardData, readChapterContent, validateProjectRoot } from "./app-dashboard.mjs";
 import { forgetRecentProject, loadAppStateSync, loadAppState, recordRecentProject, samePath } from "./app-state.mjs";
@@ -13,6 +14,7 @@ import { createResearchAdapter } from "./research-adapters.mjs";
 import { fetchWebPage, searchWeb } from "./research-tools.mjs";
 import { updateProjectSettings } from "./settings-runtime.mjs";
 import { ensureBuiltinSkill, importProjectSkill, listProjectSkills } from "./skill-runtime.mjs";
+import { loadOutputStyles } from "../app-shell/output-style-loader.mjs";
 import { ProjectCancelledError, runProject } from "./agent-engine.mjs";
 import { handleSideQuestion } from "./side-question.mjs";
 import { expandInstruction, TaskQueue } from "./task-queue.mjs";
@@ -104,6 +106,10 @@ export function createAppShellServer({
     }
     if (url.pathname === "/api/skills/import" && request.method === "POST") {
       await serveSkillMutation(request, response, { workspace, selected, action: "import" });
+      return;
+    }
+    if (url.pathname === "/api/output-styles" && request.method === "GET") {
+      await serveOutputStyles(request, response, { workspace, selected });
       return;
     }
     if (url.pathname === "/api/research/search" && request.method === "POST") {
@@ -522,6 +528,23 @@ function queueSnapshot(queue, job) {
     queuedCount: tasks.filter((task) => task.status === "queued").length,
     completedCount: tasks.filter((task) => task.status === "completed").length
   };
+}
+
+async function serveOutputStyles(request, response, context) {
+  try {
+    const projectRoot = context.selected ?? null;
+    const userHome = os.homedir();
+    const styles = await loadOutputStyles({ projectRoot, userHome });
+    // Strip filePath / large body for browser; just expose name + description
+    const lite = styles.map((s) => ({
+      name: s.name,
+      description: s.description ?? "",
+      source: s.source
+    }));
+    await serveJson(response, { ok: true, styles: lite });
+  } catch (error) {
+    await serveJson(response, { ok: false, message: error.message }, 500);
+  }
 }
 
 async function serveSkillMutation(request, response, context) {
