@@ -1,7 +1,55 @@
 import fs from "node:fs/promises";
+import { realpath } from "node:fs/promises";
+import * as os from "node:os";
 import path from "node:path";
 import { stripMarkdown } from "./word-count.mjs";
 import { pathExists, safeJoin, writeFileAtomic, writeJsonAtomic } from "./fs-utils.mjs";
+
+export async function resolveSkillSources({
+  projectRoot,
+  userHome,
+  resourcesPath,
+} = {}) {
+  const sources = [
+    resourcesPath ? { base: resourcesPath, subdir: "skills", source: "bundled-dist", priority: 1 } : null,
+    userHome ? { base: userHome, subdir: path.join(".wwriting", "skills"), source: "user", priority: 2 } : null,
+    projectRoot ? { base: projectRoot, subdir: "skills", source: "project", priority: 3 } : null,
+  ].filter(Boolean);
+
+  const seen = new Map(); // realpath → first source
+  const result = [];
+
+  for (const src of sources) {
+    const baseDir = path.join(src.base, src.subdir);
+    let entries;
+    try {
+      entries = await fs.readdir(baseDir, { withFileTypes: true });
+    } catch {
+      continue; // missing or unreadable; skip
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+      const skillDir = path.join(baseDir, entry.name);
+      let realId;
+      try {
+        realId = await realpath(skillDir);
+      } catch {
+        continue;
+      }
+      if (seen.has(realId)) continue;
+      seen.set(realId, src.source);
+      result.push({
+        name: entry.name,
+        path: skillDir,
+        realId,
+        source: src.source,
+        priority: src.priority,
+      });
+    }
+  }
+
+  return result;
+}
 
 export const ALLOWED_SKILL_TYPES = new Set(["style", "flow-control", "quality-gate", "post-process"]);
 export const ALLOWED_HOOK_ACTIONS = new Set(["append_prompt", "check", "post_process"]);
@@ -60,6 +108,7 @@ export async function loadEnabledSkills(projectRoot, project = {}) {
   try {
     entries = await fs.readdir(skillRoot, { withFileTypes: true });
   } catch {
+    // skills 目录不存在，返回内置技能列表
     return sortSkills(dedupeSkills(skills));
   }
 
@@ -102,6 +151,7 @@ export async function listProjectSkills(projectRoot, project = {}) {
   try {
     entries = await fs.readdir(skillRoot, { withFileTypes: true });
   } catch {
+    // skills 目录不存在，返回内置技能列表
     return sortSkillList([...byName.values()]);
   }
 
@@ -246,6 +296,7 @@ export function parseSkillManifest(source, sourceName = "inline") {
   try {
     return JSON.parse(source);
   } catch {
+    // JSON 解析失败，尝试 YAML 格式
     return parseSkillYaml(source, sourceName);
   }
 }
