@@ -1,4 +1,7 @@
 import { setLastSeen } from './last-seen.js';
+// Register 5 built-in slash commands on module load (composer's table mirrors
+// quick-rail's SLOTS array; they are intentionally separate UI surfaces).
+import '../commands/index.mjs';
 
 const SLOTS = [
   { key: 'chapters', icon: '📖', label: '章节', tab: 'chapters' },
@@ -8,14 +11,30 @@ const SLOTS = [
   { key: 'reviewer', icon: '🔍', label: '审查', tab: 'reviewer' }
 ];
 
+let activePopover = null;
+let activeTimer = null;
+let activeOwner = null;
+
+export function clearQuickRailPopover() {
+  if (activeTimer) {
+    clearTimeout(activeTimer);
+    activeTimer = null;
+  }
+  if (activePopover) {
+    activePopover.remove();
+    activePopover = null;
+  }
+  activeOwner = null;
+}
+
 export function renderQuickRail(root, badges, { onOpenTab, projectRoot }) {
+  clearQuickRailPopover();
   root.innerHTML = '';
   for (const slot of SLOTS) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'qr-slot';
     btn.dataset.key = slot.key;
-    btn.title = slot.label;
     btn.setAttribute('aria-label', slot.label);
 
     const icon = document.createElement('span');
@@ -52,23 +71,29 @@ function badgeText(key, badges) {
 }
 
 function attachHoverPreview(btn, key, badges) {
-  let pop = null;
-  let timer = null;
-  btn.addEventListener('mouseenter', () => {
-    timer = setTimeout(() => {
-      pop = document.createElement('div');
-      pop.className = 'qr-popover';
-      pop.textContent = previewText(key, badges);
-      document.body.appendChild(pop);
+  const show = () => {
+    clearQuickRailPopover();
+    const text = previewText(key, badges);
+    if (!text) return;
+    activeOwner = btn;
+    activeTimer = setTimeout(() => {
+      activeTimer = null;
+      if (activeOwner !== btn) return;
+      activePopover = document.createElement('div');
+      activePopover.className = 'qr-popover';
+      activePopover.textContent = text;
+      document.body.appendChild(activePopover);
       const r = btn.getBoundingClientRect();
-      pop.style.right = `${window.innerWidth - r.left + 8}px`;
-      pop.style.top = `${r.top}px`;
+      activePopover.style.right = `${window.innerWidth - r.left + 8}px`;
+      activePopover.style.top = `${r.top}px`;
     }, 200);
-  });
-  btn.addEventListener('mouseleave', () => {
-    clearTimeout(timer);
-    if (pop) { pop.remove(); pop = null; }
-  });
+  };
+  btn.addEventListener('mouseenter', show);
+  btn.addEventListener('focus', show);
+  btn.addEventListener('mouseleave', clearQuickRailPopover);
+  btn.addEventListener('blur', clearQuickRailPopover);
+  btn.addEventListener('click', clearQuickRailPopover);
+  btn.addEventListener('pointerdown', clearQuickRailPopover);
 }
 
 function previewText(key, badges) {
@@ -91,4 +116,17 @@ export function bindQuickRailKeys(root, onOpenTab) {
       onOpenTab(SLOTS[idx].tab);
     }
   });
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('blur', clearQuickRailPopover);
+  window.addEventListener('resize', clearQuickRailPopover);
+  window.addEventListener('scroll', clearQuickRailPopover, true);
+}
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('pointerdown', (event) => {
+    if (activeOwner?.contains(event.target)) return;
+    clearQuickRailPopover();
+  }, true);
 }
