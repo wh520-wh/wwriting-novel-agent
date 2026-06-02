@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import { pathExists, safeJoin } from "./fs-utils.mjs";
+import { on, CORE_EVENTS } from "./event-bus.mjs";
 
 export async function appendEvent(projectRoot, event) {
   const entry = {
@@ -29,3 +30,38 @@ export async function readEvents(projectRoot, options = {}) {
     .map((line) => JSON.parse(line));
   return options.limit ? events.slice(-options.limit) : events;
 }
+
+on(CORE_EVENTS.TaskFailed, (payload) => {
+  try {
+    if (!payload || !payload.projectRoot) return;
+    const error = payload.error;
+    appendEvent(payload.projectRoot, {
+      type: "task-failed",
+      severity: "error",
+      message: error?.message ?? "task failed",
+      data: {
+        taskId: payload.taskId,
+        stage: payload.options?.stage ?? null,
+        error: error ? String(error.message || error) : undefined
+      }
+    });
+  } catch (e) {
+    console.error("event-log: failed to record task:failed:", e);
+  }
+});
+
+on(CORE_EVENTS.ChapterWritten, (payload) => {
+  try {
+    if (!payload || !payload.projectRoot) return;
+    appendEvent(payload.projectRoot, {
+      type: "chapter-written",
+      message: "chapter written",
+      data: {
+        path: payload.path,
+        chapterId: payload.chapterId
+      }
+    });
+  } catch (e) {
+    console.error("event-log: failed to record chapter:written:", e);
+  }
+});
