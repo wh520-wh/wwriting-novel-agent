@@ -12,7 +12,9 @@ import { assertToolCallForChapter, runWordCountGate } from "./quality-gates.mjs"
 import { collectSkillPromptHooks, runPostProcessHooks, runSkillChecks } from "./skill-runtime.mjs";
 import { appendChapterSegment, chapterFileName, finalizeChapterFile, readDraft, ToolValidationError } from "./tool-runtime.mjs";
 import { buildContinuityPromptContext, recordChapterMemory } from "./chapter-memory.mjs";
+import { loadOutputStyles } from "../app-shell/output-style-loader.mjs";
 import fs from "node:fs/promises";
+import os from "node:os";
 import { appendFailure } from "./failures-store.mjs";
 import { deriveFailureCard } from "./derive-failure-card.mjs";
 import { emit, CORE_EVENTS } from "./event-bus.mjs";
@@ -677,7 +679,15 @@ async function compileChapterPrompt(projectRoot, project, state, request) {
     "段落连续性：segment_no 大于 1 时，直接续写 selected_draft_fragment 的最后动作、对话或悬念，不要另起一个开头。",
     "去 AI 腔：减少抽象宣告，用具体动作、环境细节、人物选择和后果推进剧情。",
     "禁用高频套路词和套话，除非用户原始设定强制要求：普通大学生突然获得神力、不是梦、三天了、你不是唯一一个、代价、神性、命运逼近、神秘力量。"
-  ].join("\n");
+  ];
+  // 输出风格(project-level preference, default creative)
+  const selectedStyleName = project.output_style ?? "creative";
+  const outputStyles = await loadOutputStyles({ projectRoot, userHome: os.homedir() });
+  const selectedStyle = outputStyles.find((s) => s.name === selectedStyleName) ?? outputStyles[0];
+  if (selectedStyle) {
+    styleRules.push(`## 输出风格: ${selectedStyle.name}\n${selectedStyle.body}`);
+  }
+  const styleRulesText = styleRules.join("\n");
   const chapterContinuityRule = state.current_chapter_no > 1
     ? `第 ${state.current_chapter_no} 章必须从第 ${state.current_chapter_no - 1} 章留下的后果、线索或情绪压力继续推进。`
     : "第 1 章可以建立初始处境一次；不要在同一章后续段落重复开场。";
@@ -687,7 +697,7 @@ async function compileChapterPrompt(projectRoot, project, state, request) {
         promptTemplate ||
         "Chapter body must be written through the append_chapter_segment tool. Chat body text is not a valid deliverable.",
       goal: project.story_seed ?? project.title ?? "Untitled writing project",
-      style: styleRules,
+      style: styleRulesText,
       skill_instructions: skillInstructions,
       project_memory: [bookSummary, continuityContext].filter(Boolean).join("\n\n"),
       chapter_plan: [`Chapter ${state.current_chapter_no} of ${project.target_chapters}.`, chapterContinuityRule].join("\n")

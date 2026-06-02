@@ -47,6 +47,7 @@ export async function createProjectAt(projectRoot, options = {}) {
       enabled: false
     },
     enabled_skills: options.enabled_skills ?? [],
+    output_style: options.output_style ?? "creative",
     tool_permissions: {
       network_allowed: options.network_allowed ?? false,
       safe_edit: true,
