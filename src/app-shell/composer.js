@@ -1,6 +1,7 @@
 import { icon } from "./icons.js";
 import { postJson } from "./api-client.js";
 import { getCommand, listCommands } from "./command-registry.mjs";
+import { activateConditionalSkillsForPaths } from "../core/skill-runtime.mjs";
 import "./commands/index.mjs";  // side-effect: register 5 built-in commands
 
 // 旁路询问命令前缀（与后端 side-question.mjs 保持一致；禁止使用 /btw）。
@@ -75,6 +76,16 @@ export function createComposer(ctx) {
 
   function detectMainTaskImpact(text) {
     return MAIN_TASK_IMPACT_PATTERN.test(String(text ?? ""));
+  }
+
+  function extractFilePathsFromMessage(text) {
+    // 简易提取:markdown 链接 [text](path)
+    if (!text) return [];
+    const paths = [];
+    const mdLink = /\[[^\]]+\]\(([^)]+)\)/g;
+    let m;
+    while ((m = mdLink.exec(text)) !== null) paths.push(m[1]);
+    return paths;
   }
 
   function onComposerKeydown(event) {
@@ -211,6 +222,13 @@ export function createComposer(ctx) {
       if (!parsed.content) { ctx.showToast("请补充要提问的内容。", "info"); return; }
       await submitSideQuestion(parsed.content);
       return;
+    }
+    const involvedPaths = extractFilePathsFromMessage(parsed.content);
+    if (involvedPaths.length > 0) {
+      const projectRoot = ctx.getCurrentProjectRoot();
+      if (projectRoot) {
+        activateConditionalSkillsForPaths(involvedPaths, projectRoot);
+      }
     }
     await submitWritingCommand(parsed.content, parsed.type === "review" ? "review" : "write");
   }
