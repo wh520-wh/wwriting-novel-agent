@@ -15,6 +15,7 @@ import { icon } from "./icons.js";
 import { createThreadRenderer } from "./thread-renderer.js";
 import { createDrawerPanels } from "./drawer-panels.js";
 import { createSettingsModal } from "./settings-modal.js";
+import { createComposer } from "./composer.js";
 
 // WWriting · Codex 风格对话式前端
 // 后端无消息/SSE 端点，对话流由前端用 /api/dashboard 的 events[] + chapters[] + summary 聚合而成。
@@ -94,22 +95,6 @@ let sessionHeadEl = null;
 let previousActivity = null;
 let previousBadgeSummary = null;
 
-// 旁路询问命令前缀（与后端 side-question.mjs 保持一致；禁止使用 /btw）。
-const SIDE_QUESTION_PREFIXES = ["/ask", "/side", "/q"];
-const REVIEW_PREFIXES = ["/review", "/审稿"];
-const WRITE_PREFIXES = ["/write", "/写作"];
-// 命中则说明旁路询问其实包含修改主线设定/正文的诉求，需要确认后才转正式任务。
-const MAIN_TASK_IMPACT_PATTERN = /(改成|改为|改掉|改写|写成|换成|替换|删除|删掉|去掉|移除|重写|改编|不要写|不再写|别写|不写|推翻|重新设定|改设定|改人设|改世界观|改大纲|改结局|改剧情|黑化|洗白|复活|写死|赐死|领便当|降智|崩坏|让.{0,6}死|让.{0,6}活|让.{0,8}(在一起|分手|退场|出局|登场|加入|离开|背叛|反水))/u;
-
-// 斜杠命令面板（输入 / 唤起）。type 决定提交后走写作还是旁路询问。
-const SLASH_COMMANDS = [
-  { key: "/write", title: "开始/续写", desc: "把指令作为正式写作任务交给智能体", icon: "compose" },
-  { key: "/review", title: "审稿修订", desc: "检查节奏、连贯性、设定一致性", icon: "check" },
-  { key: "/ask", title: "旁路询问", desc: "临时提问，不修改正文、不打断写作", icon: "help" },
-  { key: "/chapters", title: "打开章节", desc: "在右侧面板查看本地章节文件", icon: "book" },
-  { key: "/settings", title: "模型设置", desc: "配置供应商、API Key、预算与联网", icon: "settings" }
-];
-
 const STAGE_ORDER = ["queued", "planning", "planned", "drafting", "reviewing", "needs_revision", "revising", "finalizing", "summarizing"];
 
 const PROVIDER_PRESETS = {
@@ -162,6 +147,21 @@ const { renderDrawerBody } = createDrawerPanels({
   showToast,
   showActionError,
 });
+
+composer = createComposer({
+  refs,
+  getCurrentProjectRoot: () => currentProjectRoot,
+  loadDashboard,
+  openCreateModal,
+  openSettingsModal,
+  openDrawer,
+  showToast,
+  showActionError,
+  ensureRefreshLoop,
+  threadRenderer,
+  getAskEntries: () => askEntries,
+});
+const { submitComposer, autoGrowComposer, updateSlashMenu, onComposerKeydown, updateSubmitState, promoteAskEntry } = composer;
 
 function openDrawer(tab) {
   if (tab) drawerTab = tab;
@@ -507,253 +507,6 @@ function handleQuick(label) {
   void submitComposer();
 }
 // PLACEHOLDER_COMPOSER
-
-// 前端命令解析镜像（后端 side-question.mjs 为权威实现）。
-function parseUserCommand(input, mode) {
-  const raw = String(input ?? "");
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    return { type: "empty", content: "", raw, shouldAffectMainTask: false };
-  }
-  const ask = matchCommandPrefix(trimmed, SIDE_QUESTION_PREFIXES);
-  if (ask !== null) {
-    return { type: "side_question", content: ask, raw, shouldAffectMainTask: detectMainTaskImpact(ask) };
-  }
-  const review = matchCommandPrefix(trimmed, REVIEW_PREFIXES);
-  if (review !== null) {
-    return { type: "review", content: review, raw, shouldAffectMainTask: true };
-  }
-  const write = matchCommandPrefix(trimmed, WRITE_PREFIXES);
-  if (write !== null) {
-    return { type: "main", content: write, raw, shouldAffectMainTask: true };
-  }
-  if (mode === "side_question") {
-    return { type: "side_question", content: trimmed, raw, shouldAffectMainTask: detectMainTaskImpact(trimmed) };
-  }
-  if (mode === "review") {
-    return { type: "review", content: trimmed, raw, shouldAffectMainTask: true };
-  }
-  return { type: "main", content: trimmed, raw, shouldAffectMainTask: true };
-}
-
-function matchCommandPrefix(trimmed, prefixes) {
-  const lower = trimmed.toLowerCase();
-  for (const prefix of prefixes) {
-    const lowerPrefix = prefix.toLowerCase();
-    if (lower === lowerPrefix) {
-      return "";
-    }
-    if (lower.startsWith(`${lowerPrefix} `) || trimmed.startsWith(`${prefix}\n`)) {
-      return trimmed.slice(prefix.length).trim();
-    }
-  }
-  return null;
-}
-
-function detectMainTaskImpact(text) {
-  return MAIN_TASK_IMPACT_PATTERN.test(String(text ?? ""));
-}
-// PLACEHOLDER_COMPOSER2
-
-function onComposerKeydown(event) {
-  if (!refs.slashMenu.hidden) {
-    const items = [...refs.slashMenu.querySelectorAll(".slash-item")];
-    if (event.key === "ArrowDown") { event.preventDefault(); setSlashActive(slashActiveIndex + 1); return; }
-    if (event.key === "ArrowUp") { event.preventDefault(); setSlashActive(slashActiveIndex - 1); return; }
-    if ((event.key === "Enter" || event.key === "Tab") && items[slashActiveIndex]) { event.preventDefault(); items[slashActiveIndex].click(); return; }
-    if (event.key === "Escape") {
-      hideSlashMenu();
-      return;
-    }
-  }
-  if (event.key === "Enter" && !event.shiftKey) {
-    event.preventDefault();
-    void submitComposer();
-  }
-}
-
-function autoGrowComposer() {
-  const input = refs.composerInput;
-  input.style.height = "auto";
-  input.style.height = `${Math.min(input.scrollHeight, 200)}px`;
-}
-
-function updateSubmitState() {
-  refs.composerSubmit.disabled = refs.composerInput.value.trim().length === 0;
-}
-
-function updateSlashMenu() {
-  const value = refs.composerInput.value;
-  if (!value.startsWith("/") || value.includes(" ") || value.includes("\n")) {
-    hideSlashMenu();
-    return;
-  }
-  const q = value.toLowerCase();
-  const matches = SLASH_COMMANDS.filter((cmd) => cmd.key.startsWith(q));
-  if (matches.length === 0) {
-    hideSlashMenu();
-    return;
-  }
-  refs.slashMenu.replaceChildren(buildSlashLabel(), ...matches.map(buildSlashItem));
-  refs.slashMenu.hidden = false;
-  refs.composerInput.setAttribute("aria-expanded", "true");
-  setSlashActive(0);
-}
-
-function buildSlashLabel() {
-  const label = document.createElement("div");
-  label.className = "slash-label";
-  label.textContent = "斜杠命令";
-  return label;
-}
-// PLACEHOLDER_COMPOSER3
-
-let slashActiveIndex = 0;
-function setSlashActive(i) {
-  const items = [...refs.slashMenu.querySelectorAll(".slash-item")];
-  if (!items.length) return;
-  slashActiveIndex = (i + items.length) % items.length;
-  items.forEach((el, idx) => {
-    const on = idx === slashActiveIndex;
-    el.classList.toggle("active", on);
-    el.setAttribute("aria-selected", on ? "true" : "false");
-    if (on) refs.composerInput.setAttribute("aria-activedescendant", el.id);
-  });
-}
-
-function buildSlashItem(cmd) {
-  const button = document.createElement("button");
-  button.className = "slash-item";
-  button.type = "button";
-  const ic = document.createElement("span");
-  ic.className = "slash-ic";
-  ic.append(icon(cmd.icon, 15));
-  const tx = document.createElement("span");
-  tx.className = "slash-tx";
-  const strong = document.createElement("strong");
-  strong.textContent = cmd.title;
-  const small = document.createElement("small");
-  small.textContent = cmd.desc;
-  tx.append(strong, small);
-  const key = document.createElement("span");
-  key.className = "slash-key";
-  key.textContent = cmd.key;
-  button.id = "slash-opt-" + cmd.key.slice(1);
-  button.setAttribute("role", "option");
-  button.setAttribute("aria-selected", "false");
-  button.append(ic, tx, key);
-  button.addEventListener("click", () => pickSlash(cmd));
-  return button;
-}
-
-function pickSlash(cmd) {
-  hideSlashMenu();
-  if (cmd.key === "/chapters") { refs.composerInput.value = ""; updateSubmitState(); return openDrawer("chapters"); }
-  if (cmd.key === "/settings") { refs.composerInput.value = ""; updateSubmitState(); return openSettingsModal(); }
-  refs.composerInput.value = `${cmd.key} `;
-  refs.composerInput.focus();
-  autoGrowComposer();
-  updateSubmitState();
-}
-
-function hideSlashMenu() {
-  refs.slashMenu.hidden = true;
-  refs.slashMenu.replaceChildren();
-  refs.composerInput.setAttribute("aria-expanded", "false");
-  refs.composerInput.removeAttribute("aria-activedescendant");
-  slashActiveIndex = 0;
-}
-
-async function submitComposer() {
-  const parsed = parseUserCommand(refs.composerInput.value, "main");
-  if (parsed.type === "empty") {
-    showToast("请输入要提交的内容。", "info");
-    return;
-  }
-  // 纯斜杠的导航命令在输入阶段已处理；这里若残留则当作普通文本。
-  if (!currentProjectRoot) {
-    showToast("请先新建或打开一部小说。", "info");
-    openCreateModal();
-    return;
-  }
-  hideSlashMenu();
-  if (parsed.type === "side_question") {
-    if (!parsed.content) { showToast("请补充要提问的内容。", "info"); return; }
-    await submitSideQuestion(parsed.content);
-    return;
-  }
-  await submitWritingCommand(parsed.content, parsed.type === "review" ? "review" : "write");
-}
-// PLACEHOLDER_COMPOSER4
-
-async function submitWritingCommand(message, mode, { fromSideQuestion = false } = {}) {
-  refs.composerSubmit.disabled = true;
-  refs.composerSubmit.setAttribute("aria-busy", "true");
-  try {
-    const result = await postJson("/api/commands/submit", { message, mode, fromSideQuestion });
-    refs.composerInput.value = "";
-    autoGrowComposer();
-    updateSubmitState();
-    showToast(resultMessageForCommand(result), result.blocked ? "error" : "success");
-    ensureRefreshLoop(true);
-    await loadDashboard();
-  } catch (error) {
-    showActionError(error);
-  } finally {
-    refs.composerSubmit.removeAttribute("aria-busy");
-    updateSubmitState();
-  }
-}
-
-async function submitSideQuestion(question) {
-  refs.composerSubmit.disabled = true;
-  refs.composerSubmit.setAttribute("aria-busy", "true");
-  try {
-    const result = await postJson("/api/commands/ask", { question });
-    refs.composerInput.value = "";
-    autoGrowComposer();
-    updateSubmitState();
-    // /api/commands/ask 返回 {askedAt, question, answer, ...}，没有 eventKey 期待的 type/timestamp 字段；
-    // 直接拼 eventKey 会让每条记录都得到相同 id，覆盖 askEntries。这里用 askedAt + map.size 兜底。
-    const entry = {
-      id: `ask-${result.askedAt ?? Date.now()}-${askEntries.size}`,
-      question: result.question ?? question,
-      answer: result.answer ?? "",
-      mainTaskAffecting: result.mainTaskAffecting === true,
-      suggestion: result.suggestion ?? null,
-      promoted: false
-    };
-    askEntries.set(entry.id, entry);
-    refs.thread.append(buildSideBubble(entry));
-    scrollThreadToBottom();
-    showToast(
-      result.mainTaskAffecting
-        ? "旁路询问已回复：检测到会影响主线的修改建议，请在对话内确认是否转正式任务。"
-        : "旁路询问已回复（未修改正文，也未打断写作）。",
-      result.mainTaskAffecting ? "info" : "success"
-    );
-  } catch (error) {
-    showActionError(error);
-  } finally {
-    refs.composerSubmit.removeAttribute("aria-busy");
-    updateSubmitState();
-  }
-}
-
-async function promoteAskEntry(entry) {
-  if (!currentProjectRoot) { showToast("请先打开一部小说。", "info"); return; }
-  await submitWritingCommand(entry.question, "write", { fromSideQuestion: true });
-  entry.promoted = true;
-  showToast("已将该修改建议转为正式写作任务。", "success");
-}
-
-function resultMessageForCommand(result) {
-  if (result.alreadyRunning) return "指令已记录；写作任务正在运行中。";
-  if (result.completed) return "项目已完成；如需继续写，请先增加目标章节数。";
-  if (result.blocked) return "项目已阻塞；请在右侧「运行」面板处理错误。";
-  if (result.started) return "写作任务已开始。";
-  return result.message ?? "指令已记录。";
-}
 // PLACEHOLDER_PROJECT
 
 async function forgetProject(projectRoot) {
