@@ -2108,9 +2108,10 @@ async function renderSettingsDetail() {
   head.append(av, h3);
   refs.settingsDetail.append(head);
 
-  settingsFields.model = settingField("模型", "select", {
+  settingsFields.model = settingField("模型", "model-id", {
     options: preset.models.includes(active.model_name) ? preset.models : (usingThisPreset && active.model_name ? [active.model_name, ...preset.models] : preset.models),
-    value: usingThisPreset ? active.model_name : preset.models[0]
+    value: usingThisPreset ? active.model_name : preset.models[0],
+    placeholder: "输入模型 ID，例如 deepseek-chat"
   });
   settingsFields.baseUrl = settingField("API 地址 · 基础 URL", "text", {
     value: usingThisPreset && active.base_url ? active.base_url : preset.baseUrl
@@ -2188,6 +2189,21 @@ function settingField(labelText, type, { value = "", placeholder = "", options =
       return option;
     }));
     input.value = value ?? "";
+  } else if (type === "model-id") {
+    input = document.createElement("input");
+    input.className = "spd-input";
+    input.type = "text";
+    input.value = value ?? "";
+    input.setAttribute("list", "settings-model-suggestions");
+    if (placeholder) input.placeholder = placeholder;
+    const suggestions = document.createElement("datalist");
+    suggestions.id = "settings-model-suggestions";
+    suggestions.replaceChildren(...(options ?? []).map((opt) => {
+      const option = document.createElement("option");
+      option.value = opt;
+      return option;
+    }));
+    field.append(suggestions);
   } else {
     input = document.createElement("input");
     input.className = "spd-input";
