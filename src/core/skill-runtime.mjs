@@ -103,30 +103,18 @@ export async function loadEnabledSkills(projectRoot, project = {}) {
     }
   }
 
-  const skillRoot = safeJoin(projectRoot, "skills");
-  let entries = [];
-  try {
-    entries = await fs.readdir(skillRoot, { withFileTypes: true });
-  } catch {
-    // skills 目录不存在，返回内置技能列表
-    return sortSkills(dedupeSkills(skills));
-  }
+  // Resolve additional sources via resolveSkillSources (bundled-dist, user, project)
+  const userHome = os.homedir();
+  const resourcesPath = process.resourcesPath;
+  const discovered = await resolveSkillSources({ projectRoot, userHome, resourcesPath });
 
-  for (const entry of entries) {
-    if (!entry.isDirectory()) {
-      continue;
-    }
-    const dirPath = safeJoin(skillRoot, entry.name);
-    const filePath = await findManifestFile(dirPath);
-    if (!filePath) {
-      continue;
-    }
+  for (const source of discovered) {
+    const filePath = await findManifestFile(source.path);
+    if (!filePath) continue;
     const manifest = await readSkillManifest(filePath);
     const normalized = normalizeSkillManifest(manifest, filePath);
-    if (!enabledNames.has(normalized.name)) {
-      continue;
-    }
-    if (normalized.enabled !== false) {
+    if (normalized.enabled === false) continue;
+    if (enabledNames.size === 0 || enabledNames.has(normalized.name)) {
       skills.push(normalized);
     }
   }
