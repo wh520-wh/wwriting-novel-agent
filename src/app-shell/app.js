@@ -4,6 +4,7 @@ import { renderActivityStrip } from "./components/activity-strip.js";
 import { renderQuickRail, bindQuickRailKeys } from "./components/quick-rail.js";
 import { getLastSeen, watchLastSeen } from "./components/last-seen.js";
 import { motion, summarizeBadgesForMotion, diffBadgeKeys } from "./motion-runtime.js";
+import { getJson, postJson } from "./api-client.js";
 
 // WWriting · Codex 风格对话式前端
 // 后端无消息/SSE 端点，对话流由前端用 /api/dashboard 的 events[] + chapters[] + summary 聚合而成。
@@ -1565,15 +1566,6 @@ function setCreateStatus(text, kind) {
   refs.createStatus.className = `spd-hint${kind ? ` ${kind}` : ""}`;
 }
 
-async function getJson(url) {
-  const response = await fetch(url, { cache: "no-store" });
-  const data = await readResponseJson(response);
-  if (!response.ok || data.ok === false) {
-    throw new Error(data.message ?? "请求失败");
-  }
-  return data;
-}
-
 async function fetchOutputStyles() {
   try {
     const data = await getJson("/api/output-styles");
@@ -1588,31 +1580,6 @@ async function fetchOutputStyles() {
   }
 }
 
-async function postJson(url, body) {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body)
-  });
-  const data = await readResponseJson(response);
-  if (!response.ok || data.ok === false) {
-    const error = new Error(data.message ?? "请求失败");
-    error.code = data.code;
-    error.status = response.status;
-    throw error;
-  }
-  return data;
-}
-
-async function readResponseJson(response) {
-  const text = await response.text();
-  if (!text) return { ok: response.ok };
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { ok: false, message: text.slice(0, 240) || `HTTP ${response.status}` };
-  }
-}
 // PLACEHOLDER_DRAWER
 
 function openDrawer(tab) {
