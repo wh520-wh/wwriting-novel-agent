@@ -5,6 +5,12 @@ import { renderQuickRail, bindQuickRailKeys } from "./components/quick-rail.js";
 import { getLastSeen, watchLastSeen } from "./components/last-seen.js";
 import { motion, summarizeBadgesForMotion, diffBadgeKeys } from "./motion-runtime.js";
 import { getJson, postJson } from "./api-client.js";
+import {
+  compactObject, formatNumber, formatCompact, formatMoney, formatTime,
+  statusClass, pathEquals, pathBaseName, resolveModelEndpoint, ensureTrailingSlash,
+  isEnvironmentVariableName, cssEscape, translateStage, translateReviewStatus,
+  translateSkillType, translateSourceKind, translateEventType
+} from "./utils.js";
 
 // WWriting · Codex 风格对话式前端
 // 后端无消息/SSE 端点，对话流由前端用 /api/dashboard 的 events[] + chapters[] + summary 聚合而成。
@@ -740,10 +746,6 @@ function translateTaskStatus(status) {
   }[status] ?? status;
 }
 
-function cssEscape(value) {
-  if (window.CSS?.escape) return window.CSS.escape(value);
-  return String(value).replace(/[^a-zA-Z0-9_-]/gu, (char) => `\\${char.codePointAt(0).toString(16)} `);
-}
 
 function buildQuickRow(items) {
   if (!items || items.length === 0) return null;
@@ -2485,120 +2487,6 @@ function announce(msg) {
   }
 }
 
-function compactObject(value) {
-  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== "" && item !== undefined));
-}
-
-function formatNumber(value) {
-  return new Intl.NumberFormat("zh-CN").format(Number(value ?? 0));
-}
-
-function formatCompact(value) {
-  const number = Number(value ?? 0);
-  if (number >= 1_000_000) return `${(number / 1_000_000).toFixed(1)}M`;
-  if (number >= 10_000) return `${(number / 10_000).toFixed(1)}万`;
-  if (number >= 1_000) return `${(number / 1_000).toFixed(1)}K`;
-  return formatNumber(number);
-}
-
-function formatMoney(value) {
-  return `$${Number(value ?? 0).toFixed(6)}`;
-}
-
-function formatTime(value) {
-  if (!value) return "-";
-  return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(value));
-}
-
-function statusClass(value) {
-  return String(value ?? "idle").replace(/[^a-z0-9_-]/giu, "-");
-}
-
-function pathEquals(a, b) {
-  return String(a ?? "").toLowerCase() === String(b ?? "").toLowerCase();
-}
-
-function pathBaseName(value) {
-  return String(value ?? "").replace(/[\\/]+$/u, "").split(/[\\/]/u).pop();
-}
-
-function resolveModelEndpoint(baseUrl) {
-  try {
-    return new URL("chat/completions", ensureTrailingSlash(baseUrl)).toString();
-  } catch {
-    return `${baseUrl.replace(/\/+$/u, "")}/chat/completions`;
-  }
-}
-
-function ensureTrailingSlash(value) {
-  return String(value).endsWith("/") ? String(value) : `${value}/`;
-}
-
-function isEnvironmentVariableName(value) {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/u.test(value);
-}
-// PLACEHOLDER_TRANSLATE
-
-function translateStage(stage) {
-  return {
-    "-": "-",
-    queued: "排队",
-    planned: "已规划",
-    planning: "规划",
-    drafting: "起草",
-    reviewing: "审稿",
-    revising: "修订",
-    needs_revision: "需修订",
-    finalizing: "定稿",
-    summarizing: "摘要",
-    completed: "已定稿",
-    blocked: "阻塞",
-    post_process: "后处理",
-    user_input: "用户输入",
-    run: "运行"
-  }[stage] ?? stage;
-}
-
-function translateReviewStatus(status) {
-  return { passed: "通过", failed: "失败" }[status] ?? status ?? "未运行";
-}
-
-function translateSkillType(type) {
-  return { style: "风格", "flow-control": "流程", "quality-gate": "质检", "post-process": "后处理" }[type] ?? type;
-}
-
-function translateSourceKind(kind) {
-  return { search: "搜索", fetch: "抓取", page: "网页", source: "资料" }[kind] ?? "资料";
-}
-
-function translateEventType(type) {
-  return {
-    project_created: "项目创建",
-    project_run_started: "运行开始",
-    project_run_finished: "运行结束",
-    project_run_failed: "运行失败",
-    project_run_skipped: "运行跳过",
-    project_started: "开始运行",
-    project_completed: "项目完成",
-    project_blocked: "项目阻塞",
-    checkpoint_written: "检查点",
-    model_call_started: "模型调用开始",
-    model_call_completed: "模型调用完成",
-    model_usage_recorded: "用量记录",
-    cache_report_updated: "缓存更新",
-    chapter_queued: "章节排队",
-    stage_started: "阶段开始",
-    chapter_finalized: "章节定稿",
-    chapter_completed: "章节完成",
-    quality_gate_failed: "质检失败",
-    tool_call_rejected: "工具调用拒绝",
-    skill_configuration_changed: "技能配置",
-    project_settings_updated: "设置更新",
-    web_search_completed: "搜索完成",
-    web_fetch_completed: "抓取完成",
-    user_instruction_received: "用户指令"
-  }[type] ?? type;
-}
 
 // 模块体执行完毕（所有 const/let 已离开 TDZ）后再启动；防止首屏渲染触达后置声明导致静默 ReferenceError。
 renderRailNav();
