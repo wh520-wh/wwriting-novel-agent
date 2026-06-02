@@ -428,7 +428,7 @@ keep-coding-instructions: false
 
 **保留不动:**
 - `BUILTIN_SKILLS` 字典与现有 stage/action hook 语义
-- 14 个 `app-state` 事件总线
+- 现有 `app-state` 事件总线(新事件总线是**并行补充**,不替换)
 - 现有 4 个 `app-shell/components/*.js`
 
 ---
