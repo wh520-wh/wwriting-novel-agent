@@ -2,8 +2,23 @@ import fs from "node:fs/promises";
 import { realpath } from "node:fs/promises";
 import * as os from "node:os";
 import path from "node:path";
+import ignoreLib from "ignore";
 import { stripMarkdown } from "./word-count.mjs";
 import { pathExists, safeJoin, writeFileAtomic, writeJsonAtomic } from "./fs-utils.mjs";
+
+export function parseSkillPaths(frontmatter) {
+  if (!frontmatter || !frontmatter.paths) return undefined;
+  const raw = Array.isArray(frontmatter.paths)
+    ? frontmatter.paths
+    : [frontmatter.paths];
+  const patterns = raw
+    .map((p) => String(p).trim())
+    .filter((p) => p.length > 0)
+    .map((p) => (p.endsWith("/**") ? p.slice(0, -3) : p))
+    .filter((p) => p.length > 0 && p !== "**");
+  if (patterns.length === 0) return undefined;
+  return patterns;
+}
 
 export async function resolveSkillSources({
   projectRoot,
