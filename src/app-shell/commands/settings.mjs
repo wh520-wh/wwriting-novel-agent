@@ -12,6 +12,7 @@ export const settingsCommand = {
   slashKey: "/settings",
   isConcurrencySafe: true,
   isReadOnly: true,
+  uiOnly: true,
   isEnabled: () => true,
   run: async (_input, ctx) => {
     if (typeof ctx?.openSettingsModal !== "function") {

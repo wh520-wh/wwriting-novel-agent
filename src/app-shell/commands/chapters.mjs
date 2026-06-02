@@ -12,6 +12,7 @@ export const chaptersCommand = {
   slashKey: "/chapters",
   isConcurrencySafe: true,
   isReadOnly: true,
+  uiOnly: true,
   isEnabled: () => true,
   run: async (_input, ctx) => {
     if (typeof ctx?.openDrawer !== "function") {

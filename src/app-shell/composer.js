@@ -174,7 +174,7 @@ export function createComposer(ctx) {
       return;
     }
     // UI-only 命令:直接 run,input 留空
-    if (registryCmd.isReadOnly && registryCmd.icon && (registryCmd.icon === "book" || registryCmd.icon === "settings")) {
+    if (registryCmd.uiOnly) {
       registryCmd.run({}, ctx).catch((err) => ctx.showActionError(err));
       ctx.refs.composerInput.value = "";
       updateSubmitState();
