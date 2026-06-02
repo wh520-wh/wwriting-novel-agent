@@ -2,8 +2,71 @@ import fs from "node:fs/promises";
 import { realpath } from "node:fs/promises";
 import * as os from "node:os";
 import path from "node:path";
+import ignoreLib from "ignore";
 import { stripMarkdown } from "./word-count.mjs";
 import { pathExists, safeJoin, writeFileAtomic, writeJsonAtomic } from "./fs-utils.mjs";
+
+export function parseSkillPaths(frontmatter) {
+  if (!frontmatter || !frontmatter.paths) return undefined;
+  const raw = Array.isArray(frontmatter.paths)
+    ? frontmatter.paths
+    : [frontmatter.paths];
+  const patterns = raw
+    .map((p) => String(p).trim())
+    .filter((p) => p.length > 0)
+    .map((p) => (p.endsWith("/**") ? p.slice(0, -3) : p))
+    .filter((p) => p.length > 0 && p !== "**");
+  if (patterns.length === 0) return undefined;
+  return patterns;
+}
+
+const conditionalSkills = new Map(); // name → { manifest, patterns }
+const activatedNames = new Set();
+
+export function registerProjectSkill({ projectRoot, name, version, type, paths, hooks }) {
+  if (!name) throw new Error("registerProjectSkill: name required");
+  const patterns = parseSkillPaths({ paths });
+  if (!patterns) return null; // unconditional skills don't need activation
+  conditionalSkills.set(name, {
+    name,
+    version,
+    type,
+    patterns,
+    projectRoot: projectRoot ?? null,
+    hooks: Array.isArray(hooks) ? hooks : [],
+  });
+  return { name, patterns };
+}
+
+export function _resetConditionalSkills() {
+  conditionalSkills.clear();
+  activatedNames.clear();
+}
+
+export function activateConditionalSkillsForPaths(filePaths, projectRoot) {
+  const activated = [];
+  if (!Array.isArray(filePaths) || filePaths.length === 0) return activated;
+  for (const [name, entry] of conditionalSkills) {
+    if (activatedNames.has(name)) continue;
+    if (entry.projectRoot && projectRoot && entry.projectRoot !== projectRoot) continue;
+    const matcher = ignoreLib().add(entry.patterns);
+    for (const fp of filePaths) {
+      if (!fp || typeof fp !== "string") continue;
+      // absolute paths: skip (caller should pass relative)
+      if (fp.startsWith("/") || /^[a-zA-Z]:[\\\/]/.test(fp)) continue;
+      if (matcher.ignores(fp)) {
+        activatedNames.add(name);
+        activated.push(name);
+        break;
+      }
+    }
+  }
+  return activated;
+}
+
+export function listActivatedSkills() {
+  return [...activatedNames];
+}
 
 export async function resolveSkillSources({
   projectRoot,
