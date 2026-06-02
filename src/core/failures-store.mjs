@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { on, CORE_EVENTS } from './event-bus.mjs';
 
 const FILE = 'failures.jsonl';
 
@@ -38,3 +39,12 @@ export function markResolved(projectRoot, id, resolution) {
 }
 
 export const FAILURES_FILE = FILE;
+
+on(CORE_EVENTS.TaskFailed, (payload) => {
+  try {
+    if (!payload || !payload.projectRoot || !payload.card) return;
+    appendFailure(payload.projectRoot, payload.card);
+  } catch (e) {
+    console.error("failures-store: failed to record task:failed:", e);
+  }
+});
