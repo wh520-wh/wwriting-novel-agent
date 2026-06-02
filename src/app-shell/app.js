@@ -4,7 +4,6 @@ import { renderActivityStrip } from "./components/activity-strip.js";
 import { renderQuickRail, bindQuickRailKeys } from "./components/quick-rail.js";
 import { getLastSeen, watchLastSeen } from "./components/last-seen.js";
 import { motion, summarizeBadgesForMotion, diffBadgeKeys } from "./motion-runtime.js";
-import { loadOutputStyles } from "./output-style-loader.mjs";
 
 // WWriting · Codex 风格对话式前端
 // 后端无消息/SSE 端点，对话流由前端用 /api/dashboard 的 events[] + chapters[] + summary 聚合而成。
@@ -1575,6 +1574,20 @@ async function getJson(url) {
   return data;
 }
 
+async function fetchOutputStyles() {
+  try {
+    const data = await getJson("/api/output-styles");
+    return Array.isArray(data.styles) ? data.styles : [];
+  } catch (error) {
+    console.warn("fetchOutputStyles failed:", error);
+    // Fallback to bundled names only
+    return [
+      { name: "creative", description: "创作模式", source: "bundled" },
+      { name: "review", description: "审稿模式", source: "bundled" }
+    ];
+  }
+}
+
 async function postJson(url, body) {
   const response = await fetch(url, {
     method: "POST",
@@ -2121,7 +2134,7 @@ async function renderSettingsDetail() {
 
   // 输出风格下拉(bundled + user + project)
   const currentOutputStyle = lastDashboard?.project?.output_style ?? "creative";
-  const outputStyles = await loadOutputStyles({ projectRoot: currentProjectRoot, userHome: null });
+  const outputStyles = await fetchOutputStyles();
   const outputStyleField = document.createElement("div");
   outputStyleField.className = "spd-field";
   const outputStyleLabel = document.createElement("div");
