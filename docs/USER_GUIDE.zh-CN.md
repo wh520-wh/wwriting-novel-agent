@@ -318,3 +318,63 @@ npm run package:dir
 - 不要把模型聊天正文当成章节交付。
 - 修改 Electron 主进程后，至少运行 `npm run verify:desktop-shell` 和 `npm run verify:electron-runtime`。
 - 修改 app shell 后，至少运行 `npm run verify:app-shell`。
+
+## 14. 技能系统（B1–B5 重构）
+
+### 14.1 自定义技能
+
+在 `~/.wwriting/skills/<my-skill>/skill.yaml`（或 `skill.json`）写一个 manifest：
+
+```yaml
+name: my-style
+version: 1.0.0
+type: style
+paths:
+  - chapters/poetry/**
+hooks:
+  - stage: drafting
+    action: append_prompt
+    content: "在每章草稿后追加：'请加入俳句式的短句。'"
+```
+
+重启应用后，这个技能会在 `chapters/poetry/**` 目录下自动激活。技能来源优先级：
+
+1. 内置（BUILTIN_SKILLS）
+2. bundled-dist（`process.resourcesPath/skills`）
+3. 用户（`~/.wwriting/skills`）
+4. 项目（`<projectRoot>/skills`）
+
+### 14.2 自定义输出风格
+
+在 `~/.wwriting/output-styles/my-style.md` 写：
+
+```markdown
+---
+name: My Style
+description: 我的写作风格
+---
+正文作为 prompt 片段，追加到 system prompt 末尾。
+```
+
+在设置面板的"输出风格"下拉里选它。Bundled 默认两种风格：`creative`（创作）和 `review`（审稿）。
+
+### 14.3 全局事件总线
+
+5 个 CORE_EVENTS：
+
+- `ModelCallStart` / `ModelCallComplete` — 模型调用生命周期
+- `ChapterWritten` — 章节定稿
+- `TaskFailed` — 任务失败
+- `BackupNeeded` — 备份触发
+
+订阅者：`cost-tracker`、`event-log`、`failures-store`。新订阅者只需 `on(CORE_EVENTS.X, handler)`。
+
+### 14.4 新增内置 slash 命令
+
+1. 创建 `src/app-shell/commands/<name>.mjs`，导出一个命令对象
+2. 在 `src/app-shell/commands/index.mjs` 中 import 并 `registerCommand(...)`
+3. 测试：`tests/command-registry.test.mjs` 增加用例
+
+### 14.5 路径条件激活
+
+技能 manifest 里的 `paths: [chapters/poetry/**]` 是 gitignore 风格匹配。当用户在 composer 提交时引用到匹配路径（如 markdown 链接），对应的技能会自动激活一次。
