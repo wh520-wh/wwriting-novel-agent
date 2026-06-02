@@ -5,12 +5,7 @@ import { renderQuickRail, bindQuickRailKeys } from "./components/quick-rail.js";
 import { getLastSeen, watchLastSeen } from "./components/last-seen.js";
 import { motion, summarizeBadgesForMotion, diffBadgeKeys } from "./motion-runtime.js";
 import { getJson, postJson } from "./api-client.js";
-import {
-  compactObject, formatNumber, formatCompact, formatMoney, formatTime,
-  statusClass, pathEquals, pathBaseName, resolveModelEndpoint, ensureTrailingSlash,
-  isEnvironmentVariableName, cssEscape, translateStage, translateReviewStatus,
-  translateSkillType, translateSourceKind, translateEventType
-} from "./utils.js";
+import { formatNumber, pathEquals, pathBaseName, statusClass, translateStage } from "./utils.js";
 import { icon } from "./icons.js";
 import { createThreadRenderer } from "./thread-renderer.js";
 import { createDrawerPanels } from "./drawer-panels.js";
@@ -76,7 +71,10 @@ const refs = {
   toastStack: document.querySelector("#toast-stack"),
   threadStatus: document.querySelector("#thread-status"),
   topbar: document.querySelector(".topbar"),
-  quickRail: document.querySelector("#quick-rail")
+  quickRail: document.querySelector("#quick-rail"),
+  topbarStop: document.querySelector("#topbar-stop"),
+  topbarRetry: document.querySelector("#topbar-retry"),
+  activityStrip: document.getElementById("activity-strip")
 };
 
 let currentProjectRoot = null;
@@ -88,20 +86,10 @@ let lastDashboard = null;
 const renderedKeys = new Set();
 // 本地内存里的旁路问答待确认条目（刷新即丢，与后端 side_questions.md 解耦）。
 const askEntries = new Map();
-let threadGreeted = false;
 let liveBlock = null;
 let lastFocused = null;
-let sessionHeadEl = null;
 let previousActivity = null;
 let previousBadgeSummary = null;
-
-const STAGE_ORDER = ["queued", "planning", "planned", "drafting", "reviewing", "needs_revision", "revising", "finalizing", "summarizing"];
-
-const PROVIDER_PRESETS = {
-  deepseek: { title: "DeepSeek 官方", provider: "openai-compatible", baseUrl: "https://api.deepseek.com", apiKeyEnv: "DEEPSEEK_API_KEY", models: ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat"] },
-  mimo: { title: "小米 MiMo 官方", provider: "openai-compatible", baseUrl: "https://api.xiaomimimo.com/v1", apiKeyEnv: "XIAOMI_MIMO_API_KEY", models: ["mimo-v2.5-pro", "mimo-v2-pro"] },
-  custom: { title: "自定义", provider: "openai-compatible", baseUrl: "", apiKeyEnv: "WWRITING_PROVIDER_API_KEY", models: ["custom-model"] }
-};
 
 // PLACEHOLDER_AFTER_CONST
 
@@ -185,8 +173,7 @@ function toggleDrawer() {
 }
 
 function openDrawerTab(tab) {
-  const drawer = document.getElementById('drawer');
-  if (drawer?.getAttribute('aria-hidden') !== 'false') toggleDrawer();
+  if (refs.drawer.getAttribute('aria-hidden') !== 'false') toggleDrawer();
   setDrawerTab(tab);
 }
 
@@ -416,7 +403,6 @@ function renderDashboard(data) {
     // 切换/首次打开项目：重置对话流，按事件重建历史。
     renderedKeys.clear();
     askEntries.clear();
-    threadGreeted = false;
     liveBlock = null;
     refs.thread.replaceChildren();
   }
@@ -429,24 +415,22 @@ function renderDashboard(data) {
   const callsText = `${formatNumber(summary.modelCalls)}/${summary.maxModelCalls ?? "∞"} 调用`;
   const modelLabel = modelProfile.is_mock ? "模型未配置 · 请在设置里选一个" : (modelProfile.display ?? "模型未配置");
   refs.topbarSub.textContent = `${modelLabel} · ${summary.completedChapters}/${summary.targetChapters} 章 · ${callsText}`;
-  setStatus(summary.projectStatus ?? "idle", summary.currentStage);
   const truth = computeAgentTruth(data);
   renderTruthIndicator(truth);
-  renderTopbarProgress(data);
+  renderTopbarProgress(truth, Number(data.summary?.activityProgressPercent ?? 0));
   ensureRefreshLoop(truth.refresh || summary.projectStatus === "running" || Boolean(liveBlock && !liveBlock.done));
 
   threadRenderer.syncThread(data, firstLoad);
   threadRenderer.syncFailureCards(data);
 
-  const stripEl = document.getElementById('activity-strip');
-  if (stripEl) {
+  if (refs.activityStrip) {
     const activity = deriveActivity(data);
-    renderActivityStrip(stripEl, activity, {
+    renderActivityStrip(refs.activityStrip, activity, {
       privacy: refs.privacyToggle?.checked,
       onClickCost: () => openDrawerTab('cost'),
       onClickChapter: () => openDrawerTab('chapters')
     });
-    motion.updateActivityStrip(stripEl, previousActivity, activity);
+    motion.updateActivityStrip(refs.activityStrip, previousActivity, activity);
     previousActivity = activity;
   }
 
@@ -618,12 +602,11 @@ function renderTruthIndicator(truth) {
   refs.status.replaceChildren(dot, document.createTextNode(truth.display));
   refs.status.title = truth.reason ?? "";
   if (refs.topbar) refs.topbar.classList.toggle("is-busy", truth.className === "running" || truth.className === "slow" || truth.className === "stale");
-  renderTopbarAction("topbar-stop", "停止", truth.showStop, handleStop, truth.reason);
-  renderTopbarAction("topbar-retry", "重试", truth.showRetry, handleRetry, truth.reason);
+  renderTopbarAction(refs.topbarStop, "停止", truth.showStop, handleStop, truth.reason);
+  renderTopbarAction(refs.topbarRetry, "重试", truth.showRetry, handleRetry, truth.reason);
 }
 
-function renderTopbarAction(id, label, visible, handler, title = "") {
-  const button = document.querySelector(`#${id}`);
+function renderTopbarAction(button, label, visible, handler, title = "") {
   if (!button) return;
   if (button.dataset.bound !== "true") {
     button.addEventListener("click", () => handler());
@@ -634,10 +617,8 @@ function renderTopbarAction(id, label, visible, handler, title = "") {
   button.hidden = !visible;
 }
 
-function renderTopbarProgress(data) {
+function renderTopbarProgress(truth, pct) {
   if (!refs.topbarProgress || !refs.topbarProgressBar) return;
-  const pct = Number(data.summary?.activityProgressPercent ?? 0);
-  const truth = computeAgentTruth(data);
   if (pct > 0 && ["running", "slow", "stale"].includes(truth.className)) {
     refs.topbarProgress.hidden = false;
     refs.topbarProgressBar.style.width = `${Math.max(0, Math.min(100, pct))}%`;
@@ -647,8 +628,7 @@ function renderTopbarProgress(data) {
 }
 
 async function handleRetry(taskId = null) {
-  const retry = document.querySelector("#topbar-retry");
-  if (retry) retry.disabled = true;
+  if (refs.topbarRetry) refs.topbarRetry.disabled = true;
   const resolvedTaskId = taskId ?? lastDashboard?.retry_task_id ?? null;
   try {
     const result = await postJson("/api/run/retry", resolvedTaskId ? { taskId: resolvedTaskId } : {});
@@ -659,13 +639,12 @@ async function handleRetry(taskId = null) {
     showToast(error.message, "error");
     await loadDashboard();
   } finally {
-    if (retry) retry.disabled = false;
+    if (refs.topbarRetry) refs.topbarRetry.disabled = false;
   }
 }
 
 async function handleStop() {
-  const stop = document.querySelector("#topbar-stop");
-  if (stop) stop.disabled = true;
+  if (refs.topbarStop) refs.topbarStop.disabled = true;
   try {
     const result = await postJson("/api/run/stop", {});
     showToast(result.message ?? "已请求停止。", "success");
@@ -674,7 +653,7 @@ async function handleStop() {
   } catch (error) {
     showToast(error.message, "error");
   } finally {
-    if (stop) stop.disabled = false;
+    if (refs.topbarStop) refs.topbarStop.disabled = false;
   }
 }
 
@@ -877,9 +856,8 @@ if (refs.quickRail) {
 // 窄屏折叠逻辑：<1100px 隐藏 Quick Rail，显示折叠按钮
 function updateQuickRailLayout() {
   const narrow = window.innerWidth < 1100;
-  const rail = document.getElementById('quick-rail');
+  if (refs.quickRail) refs.quickRail.hidden = narrow;
   const collapsed = document.getElementById('qr-collapsed');
-  if (rail) rail.hidden = narrow;
   if (collapsed) collapsed.hidden = !narrow;
 }
 window.addEventListener('resize', updateQuickRailLayout);
