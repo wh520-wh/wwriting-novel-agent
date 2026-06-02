@@ -15,6 +15,7 @@ import { buildContinuityPromptContext, recordChapterMemory } from "./chapter-mem
 import fs from "node:fs/promises";
 import { appendFailure } from "./failures-store.mjs";
 import { deriveFailureCard } from "./derive-failure-card.mjs";
+import { emit, CORE_EVENTS } from "./event-bus.mjs";
 
 export class SimulatedInterrupt extends Error {
   constructor(message) {
@@ -171,6 +172,19 @@ export async function runProject(projectRoot, options = {}) {
         message: error.message,
         data: { reason: "model_provider_unavailable" }
       });
+      await emit(CORE_EVENTS.TaskFailed, {
+        projectRoot,
+        taskId: state.current_stage,
+        error,
+        card: {
+          type: "model-error",
+          chapter_no: state.current_chapter_no,
+          message: error.message,
+          ts: new Date().toISOString(),
+          data: { reason: "model_provider_unavailable" }
+        },
+        options: { stage: state.current_stage }
+      }).catch(() => {});
       throw error;
     }
     state.project_status = "interrupted";
@@ -185,6 +199,19 @@ export async function runProject(projectRoot, options = {}) {
       severity: "error",
       message: error.message
     });
+    await emit(CORE_EVENTS.TaskFailed, {
+      projectRoot,
+      taskId: state.current_stage,
+      error,
+      card: {
+        type: "model-error",
+        chapter_no: state.current_chapter_no,
+        message: error.message,
+        ts: new Date().toISOString(),
+        data: { reason: "interrupted" }
+      },
+      options: { stage: state.current_stage }
+    }).catch(() => {});
     throw error;
   }
 }
@@ -435,6 +462,13 @@ async function finalizeChapter(projectRoot, project, state) {
     });
   }
   const result = await finalizeChapterFile(projectRoot, project, state.current_chapter_no);
+  await emit(CORE_EVENTS.ChapterWritten, {
+    projectRoot,
+    path: result?.path ?? result?.draft_path ?? null,
+    chapterId: state.current_chapter_no,
+    actualWords: result?.actual_words ?? null,
+    checksum: result?.checksum ?? null
+  });
   // 记忆写入早于 saveState：崩溃后 finalize 重跑时 recordChapterMemory 按 chapter_no 去重。
   await recordChapterMemory(projectRoot, {
     chapterNo: state.current_chapter_no,
@@ -528,6 +562,13 @@ async function runModelGatewayCall(projectRoot, project, state, runtime, request
       cache_key: cacheEntry.cacheKey
     }
   });
+  await emit(CORE_EVENTS.ModelCallStart, {
+    projectRoot,
+    model: runtime?.modelClient?.costTracker ? "configured" : "unknown",
+    request,
+    stage: state.current_stage,
+    chapter_no: state.current_chapter_no
+  });
   const gatewayResult = await runtime.modelClient.generate({
     project,
     stage: state.current_stage,
@@ -540,6 +581,13 @@ async function runModelGatewayCall(projectRoot, project, state, runtime, request
     }
   });
   throwIfAborted(request.signal);
+  await emit(CORE_EVENTS.ModelCallComplete, {
+    projectRoot,
+    model: gatewayResult?.modelConfig?.model ?? "unknown",
+    usage: gatewayResult?.usageReport ?? {},
+    costTracker: runtime.modelClient.costTracker,
+    options: { stage: state.current_stage, requestKind: request.kind, attempt: request.attempt }
+  });
   if (runtime.modelClient.costTracker?.writeProjectReport) {
     await runtime.modelClient.costTracker.writeProjectReport(projectRoot);
   }
