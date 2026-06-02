@@ -3,7 +3,7 @@ import { compactObject, isEnvironmentVariableName, resolveModelEndpoint } from "
 import { getJson, postJson } from "./api-client.js";
 import { motion } from "./motion-runtime.js";
 
-export const PROVIDER_PRESETS = {
+const PROVIDER_PRESETS = {
   deepseek: { title: "DeepSeek 官方", provider: "openai-compatible", baseUrl: "https://api.deepseek.com", apiKeyEnv: "DEEPSEEK_API_KEY", models: ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat"] },
   mimo: { title: "小米 MiMo 官方", provider: "openai-compatible", baseUrl: "https://api.xiaomimimo.com/v1", apiKeyEnv: "XIAOMI_MIMO_API_KEY", models: ["mimo-v2.5-pro", "mimo-v2-pro"] },
   custom: { title: "自定义", provider: "openai-compatible", baseUrl: "", apiKeyEnv: "WWRITING_PROVIDER_API_KEY", models: ["custom-model"] }
@@ -299,7 +299,9 @@ export function createSettingsModal(ctx) {
   }
 
   function bindEndpointPreview() {
+    if (settingsFields.baseUrl.input.dataset.boundPreview === "true") return;
     settingsFields.baseUrl.input.addEventListener("input", updateEndpointPreview);
+    settingsFields.baseUrl.input.dataset.boundPreview = "true";
   }
 
   function updateEndpointPreview() {

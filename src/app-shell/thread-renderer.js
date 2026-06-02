@@ -581,7 +581,7 @@ export function createThreadRenderer(ctx) {
   function syncFailureCards(data) {
     const failures = deriveFailures(data);
     for (const card of failures) {
-      const existing = document.querySelector(`[data-failure-id="${cssEscape(card.id)}"]`);
+      const existing = ctx.refs.thread.querySelector(`[data-failure-id="${cssEscape(card.id)}"]`);
       if (existing) {
         const next = renderFailureCard(card, { onAction: submitFailureAction });
         if (card.resolution && !existing.querySelector(".failure-resolved")) {
