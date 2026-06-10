@@ -309,8 +309,18 @@ test("OpenAICompatibleAdapter wraps invalid JSON success responses with provider
   );
 });
 
-test("OpenAICompatibleAdapter parses streaming SSE responses", async () => {
+test("OpenAICompatibleAdapter parses streaming SSE responses via ReadableStream", async () => {
   const tokens = [];
+  const sseText = [
+    'data: {"choices":[{"delta":{"content":"Hel"}}]}',
+    "",
+    'data: {"choices":[{"delta":{"content":"lo"}}]}',
+    "",
+    'data: {"choices":[],"usage":{"prompt_tokens":8,"completion_tokens":2,"total_tokens":10,"cache_read_input_tokens":3}}',
+    "",
+    "data: [DONE]",
+    ""
+  ].join("\n");
   const adapter = new OpenAICompatibleAdapter({
     baseUrl: "https://api.example.test/v1",
     fetchImpl: async (url, init) => {
@@ -319,17 +329,18 @@ test("OpenAICompatibleAdapter parses streaming SSE responses", async () => {
       return {
         ok: true,
         status: 200,
-        async text() {
-          return [
-            'data: {"choices":[{"delta":{"content":"Hel"}}]}',
-            "",
-            'data: {"choices":[{"delta":{"content":"lo"}}]}',
-            "",
-            'data: {"choices":[],"usage":{"prompt_tokens":8,"completion_tokens":2,"total_tokens":10,"cache_read_input_tokens":3}}',
-            "",
-            "data: [DONE]",
-            ""
-          ].join("\n");
+        text: async () => { throw new Error("streaming path should not call response.text()"); },
+        body: {
+          getReader() {
+            const chunks = [new TextEncoder().encode(sseText)];
+            let index = 0;
+            return {
+              read() {
+                if (index >= chunks.length) return Promise.resolve({ done: true, value: undefined });
+                return Promise.resolve({ done: false, value: chunks[index++] });
+              }
+            };
+          }
         }
       };
     }
@@ -348,4 +359,193 @@ test("OpenAICompatibleAdapter parses streaming SSE responses", async () => {
   assert.deepEqual(tokens, ["Hel", "lo"]);
   assert.equal(result.raw.stream, true);
   assert.equal(result.usage.cache_read_tokens, 3);
+});
+
+test("OpenAICompatibleAdapter real streaming fires onToken as chunks arrive", async () => {
+  const tokens = [];
+  const chunk1 = 'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n';
+  const chunk2 = 'data: {"choices":[{"delta":{"content":" World"}}]}\n\n';
+  const chunk3 = 'data: [DONE]\n\n';
+  const adapter = new OpenAICompatibleAdapter({
+    baseUrl: "https://api.example.test/v1",
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      text: async () => { throw new Error("fake streaming path should not call response.text()"); },
+      body: {
+        getReader() {
+          const chunks = [chunk1, chunk2, chunk3].map(c => new TextEncoder().encode(c));
+          let index = 0;
+          return {
+            read() {
+              if (index >= chunks.length) return Promise.resolve({ done: true, value: undefined });
+              return Promise.resolve({ done: false, value: chunks[index++] });
+            }
+          };
+        }
+      }
+    })
+  });
+  const result = await adapter.generate({
+    model: "writer-model",
+    prompt: "hello",
+    modelConfig: { stream: true },
+    metadata: {
+      onToken(token) {
+        tokens.push(token);
+      }
+    }
+  });
+  assert.deepEqual(tokens, ["Hello", " World"]);
+  assert.equal(result.text, "Hello World");
+  assert.equal(result.raw.stream, true);
+});
+
+test("OpenAICompatibleAdapter preserves final unterminated text streaming frame", async () => {
+  const tokens = [];
+  const adapter = new OpenAICompatibleAdapter({
+    baseUrl: "https://api.example.test/v1",
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      text: async () => { throw new Error("streaming path should not call response.text()"); },
+      body: {
+        getReader() {
+          const chunks = [new TextEncoder().encode('data: {"choices":[{"text":"tail"}]}')];
+          let index = 0;
+          return {
+            read() {
+              if (index >= chunks.length) return Promise.resolve({ done: true, value: undefined });
+              return Promise.resolve({ done: false, value: chunks[index++] });
+            }
+          };
+        }
+      }
+    })
+  });
+
+  const result = await adapter.generate({
+    model: "writer-model",
+    prompt: "hello",
+    modelConfig: { stream: true },
+    metadata: {
+      onToken(token) {
+        tokens.push(token);
+      }
+    }
+  });
+
+  assert.deepEqual(tokens, ["tail"]);
+  assert.equal(result.text, "tail");
+});
+
+test("OpenAICompatibleAdapter streams CRLF-delimited SSE frames before the response ends", async () => {
+  const tokens = [];
+  const chunk1 = 'data: {"choices":[{"delta":{"content":"Hello"}}]}\r\n\r\n';
+  const chunk2 = 'data: {"choices":[{"delta":{"content":" World"}}]}\r\n\r\n';
+  const chunk3 = "data: [DONE]\r\n\r\n";
+  const adapter = new OpenAICompatibleAdapter({
+    baseUrl: "https://api.example.test/v1",
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      text: async () => { throw new Error("streaming path should not call response.text()"); },
+      body: {
+        getReader() {
+          const chunks = [chunk1, chunk2, chunk3].map(c => new TextEncoder().encode(c));
+          let index = 0;
+          return {
+            read() {
+              if (index === 1) assert.deepEqual(tokens, ["Hello"]);
+              if (index >= chunks.length) return Promise.resolve({ done: true, value: undefined });
+              return Promise.resolve({ done: false, value: chunks[index++] });
+            }
+          };
+        }
+      }
+    })
+  });
+
+  const result = await adapter.generate({
+    model: "writer-model",
+    prompt: "hello",
+    modelConfig: { stream: true },
+    metadata: {
+      onToken(token) {
+        tokens.push(token);
+      }
+    }
+  });
+
+  assert.deepEqual(tokens, ["Hello", " World"]);
+  assert.equal(result.text, "Hello World");
+});
+
+test("OpenAICompatibleAdapter reports malformed streaming SSE frames without dropping valid tokens", async () => {
+  const chunk1 = "data: {bad json}\n\n";
+  const chunk2 = 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n';
+  const adapter = new OpenAICompatibleAdapter({
+    baseUrl: "https://api.example.test/v1",
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      text: async () => { throw new Error("streaming path should not call response.text()"); },
+      body: {
+        getReader() {
+          const chunks = [chunk1, chunk2].map(c => new TextEncoder().encode(c));
+          let index = 0;
+          return {
+            read() {
+              if (index >= chunks.length) return Promise.resolve({ done: true, value: undefined });
+              return Promise.resolve({ done: false, value: chunks[index++] });
+            }
+          };
+        }
+      }
+    })
+  });
+
+  const result = await adapter.generate({
+    model: "writer-model",
+    prompt: "hello",
+    modelConfig: { stream: true }
+  });
+
+  assert.equal(result.text, "ok");
+  assert.equal(result.raw.malformed_sse_frame_count, 1);
+});
+
+test("OpenAICompatibleAdapter sends stream_options with streaming requests", async () => {
+  let captured = null;
+  const adapter = new OpenAICompatibleAdapter({
+    baseUrl: "https://api.example.test/v1",
+    apiKey: "test-key",
+    fetchImpl: async (url, init) => {
+      captured = { url, init, body: JSON.parse(init.body) };
+      return {
+        ok: true,
+        status: 200,
+        text: async () => { throw new Error("should not be called"); },
+        body: {
+          getReader() {
+            const chunks = [new TextEncoder().encode('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n')];
+            let index = 0;
+            return {
+              read() {
+                if (index >= chunks.length) return Promise.resolve({ done: true, value: undefined });
+                return Promise.resolve({ done: false, value: chunks[index++] });
+              }
+            };
+          }
+        }
+      };
+    }
+  });
+  await adapter.generate({
+    model: "writer-model",
+    prompt: "hello",
+    modelConfig: { stream: true }
+  });
+  assert.equal(captured.body.stream, true);
+  assert.deepEqual(captured.body.stream_options, { include_usage: true });
 });

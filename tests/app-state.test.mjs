@@ -50,7 +50,68 @@ test("forgetRecentProject removes an entry and updates last project", async () =
 
 test("loadAppState returns an empty baseline when no state file exists", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-appstate-empty-"));
-  const state = await loadAppState(root);
-  assert.equal(state.lastProjectRoot, null);
-  assert.deepEqual(state.recentProjects, []);
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args);
+  try {
+    const state = await loadAppState(root);
+    assert.equal(state.lastProjectRoot, null);
+    assert.deepEqual(state.recentProjects, []);
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.deepEqual(warnings, []);
+});
+
+test("loadAppState warns when an existing state file is invalid", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-appstate-invalid-"));
+  await fs.writeFile(path.join(root, "app-state.json"), "{bad json", "utf8");
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args);
+  try {
+    const state = await loadAppState(root);
+    assert.equal(state.lastProjectRoot, null);
+    assert.deepEqual(state.recentProjects, []);
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(warnings.length, 1);
+  assert.match(String(warnings[0][0]), /\[app-state\]/u);
+});
+
+test("loadAppStateSync returns an empty baseline quietly when no state file exists", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-appstate-sync-empty-"));
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args);
+  try {
+    const state = loadAppStateSync(root);
+    assert.equal(state.lastProjectRoot, null);
+    assert.deepEqual(state.recentProjects, []);
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.deepEqual(warnings, []);
+});
+
+test("loadAppStateSync warns when an existing state file is invalid", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-appstate-sync-invalid-"));
+  await fs.writeFile(path.join(root, "app-state.json"), "{bad json", "utf8");
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args);
+  try {
+    const state = loadAppStateSync(root);
+    assert.equal(state.lastProjectRoot, null);
+    assert.deepEqual(state.recentProjects, []);
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(warnings.length, 1);
+  assert.match(String(warnings[0][0]), /\[app-state\]/u);
 });

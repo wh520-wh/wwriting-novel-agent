@@ -122,6 +122,43 @@ test("blocked marks a running task as terminal and not retryable", async () => {
   assert.equal(retried, null);
 });
 
+test("terminal tasks cannot be completed, blocked, interrupted, or cancelled again", async () => {
+  const { queue } = await makeQueue("wwriting-queue-terminal-");
+  const task = await queue.enqueue("write", { mode: "write" });
+  await queue.promoteNext();
+
+  await queue.complete(task.id, { ok: true });
+
+  assert.equal(await queue.complete(task.id, { ok: false }), null);
+  assert.equal(await queue.interrupt(task.id, new Error("late interrupt")), null);
+  assert.equal(await queue.cancel(task.id, "late cancel"), null);
+  assert.equal(await queue.block(task.id, "late block"), null);
+
+  const state = queue.getState();
+  assert.equal(state.tasks[0].status, "completed");
+  assert.deepEqual(state.tasks[0].result, { ok: true });
+});
+
+test("retry is allowed only for interrupted and cancelled tasks", async () => {
+  const { queue } = await makeQueue("wwriting-queue-retry-contract-");
+
+  const completed = await queue.enqueue("done", { mode: "write" });
+  await queue.promoteNext();
+  await queue.complete(completed.id, { ok: true });
+  assert.equal(await queue.retry(completed.id), null);
+
+  const blocked = await queue.enqueue("blocked", { mode: "write" });
+  await queue.promoteNext();
+  await queue.block(blocked.id, "missing provider");
+  assert.equal(await queue.retry(blocked.id), null);
+
+  const interrupted = await queue.enqueue("interrupted", { mode: "write" });
+  await queue.promoteNext();
+  await queue.interrupt(interrupted.id, new Error("timeout"));
+  const retried = await queue.retry(interrupted.id);
+  assert.equal(retried.status, "running");
+});
+
 test("retry does not create a second running task", async () => {
   const { projectRoot, queue } = await makeQueue();
   const running = await queue.enqueue("running task", { mode: "auto" });

@@ -3,11 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadOutputStyles, _resetOutputStyleCache } from "../src/app-shell/output-style-loader.mjs";
-
-test.beforeEach(() => {
-  _resetOutputStyleCache();
-});
+import { loadOutputStyles } from "../src/core/output-style-loader.mjs";
 
 test("loadOutputStyles returns at least 2 bundled styles", async () => {
   const styles = await loadOutputStyles({});
@@ -85,8 +81,12 @@ body`
   }
 });
 
-test("loadOutputStyles is cached (subsequent calls return same array)", async () => {
-  const a = await loadOutputStyles({});
-  const b = await loadOutputStyles({});
-  assert.equal(a, b);
+test("loadOutputStyles returns fresh array per call (no stale cross-project state)", async () => {
+  const a = await loadOutputStyles({ projectRoot: "/proj-a" });
+  const b = await loadOutputStyles({ projectRoot: "/proj-b" });
+  assert.notEqual(a, b);
+  // Bundled names present in both
+  for (const arr of [a, b]) {
+    assert.ok(arr.some((s) => s.name === "creative"));
+  }
 });

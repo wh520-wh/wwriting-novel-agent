@@ -10,6 +10,27 @@ import { createProject, loadState, saveState } from "../src/core/project-store.m
 import { TaskQueue } from "../src/core/task-queue.mjs";
 import { appendFailure } from "../src/core/failures-store.mjs";
 
+const FETCH_BLOCKED_PORTS = new Set([
+  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79,
+  87, 95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137,
+  139, 143, 161, 179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532,
+  540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723,
+  2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669,
+  6697, 10080
+]);
+
+async function listenOnFetchSafePort(server) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address();
+    if (!FETCH_BLOCKED_PORTS.has(port)) {
+      return port;
+    }
+    await closeServer(server);
+  }
+  throw new Error("Could not allocate a fetch-safe test port");
+}
+
 async function setupServer(options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-probe-"));
   const { projectRoot } = await createProject(root, {
@@ -28,8 +49,7 @@ async function setupServer(options = {}) {
     port: 0,
     ...options
   });
-  await new Promise((resolve) => server.listen(0, resolve));
-  const port = server.address().port;
+  const port = await listenOnFetchSafePort(server);
   return { root, projectRoot, stateRoot, secretsRoot, server, port };
 }
 
@@ -100,8 +120,7 @@ test("static shell does not expose non-module shared siblings", async () => {
     staticRoot,
     port: 0
   });
-  await new Promise((resolve) => server.listen(0, resolve));
-  const port = server.address().port;
+  const port = await listenOnFetchSafePort(server);
   try {
     const res = await fetch(`http://127.0.0.1:${port}/shared/secret.json`);
 
@@ -148,6 +167,26 @@ test("dashboard returns false liveness when no job is running", async () => {
     assert.equal(data.agent_last_heartbeat, null);
     assert.equal(data.agent_error, null);
     assert.equal(data.agent_task_id, null);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("GET /api/diagnostics returns plain recovery data for the selected project", async () => {
+  const { server, projectRoot, port } = await setupServer();
+  try {
+    await saveState(projectRoot, {
+      project_status: "interrupted",
+      current_stage: "drafting",
+      current_chapter_no: 1,
+      interrupted_reason: "provider timeout"
+    });
+
+    const { res, data } = await getJson(port, "/api/diagnostics");
+    assert.equal(res.status, 200);
+    assert.equal(data.ok, true);
+    assert.equal(data.project.status, "interrupted");
+    assert.equal(data.recoveryHint.action, "retry");
   } finally {
     await closeServer(server);
   }
@@ -256,6 +295,42 @@ test("POST /api/run/stop cancels the running task and leaves queued tasks untouc
     });
     const { data: queue } = await getJson(port, "/api/queue/state");
     assert.deepEqual(queue.tasks.map((task) => task.status), ["cancelled", "queued"]);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("stop and retry do not leave multiple running tasks", async () => {
+  let activeRun = null;
+  async function testRunProject(projectRoot, options) {
+    activeRun = {};
+    activeRun.promise = new Promise((resolve, reject) => {
+      activeRun.resolve = resolve;
+      activeRun.reject = reject;
+    });
+    options.onHeartbeat?.({ step: 0, stage: "queued", chapter: 1 });
+    options.signal?.addEventListener("abort", () => {
+      setTimeout(() => activeRun.reject(new Error(String(options.signal.reason ?? "cancelled"))), 50);
+    }, { once: true });
+    return activeRun.promise;
+  }
+
+  const { server, port } = await setupServer({ testRunProject });
+  try {
+    await postJson(port, "/api/commands/submit", { message: "write chapter" });
+    await waitFor(async () => {
+      const { data } = await getJson(port, "/api/queue/state");
+      return data.tasks.some((task) => task.status === "running") && data;
+    });
+
+    await Promise.allSettled([
+      postJson(port, "/api/run/stop", {}),
+      postJson(port, "/api/run/retry", {})
+    ]);
+
+    const { data: queue } = await getJson(port, "/api/queue/state");
+    const running = queue.tasks.filter((task) => task.status === "running");
+    assert.ok(running.length <= 1, `expected at most one running task, got ${running.length}`);
   } finally {
     await closeServer(server);
   }
@@ -668,8 +743,7 @@ test("POST /api/projects/forget removes stale recent paths", async () => {
     secretsRoot: path.join(root, ".secrets"),
     port: 0
   });
-  await new Promise((resolve) => server.listen(0, resolve));
-  const port = server.address().port;
+  const port = await listenOnFetchSafePort(server);
   try {
     const { res, data } = await postJson(port, "/api/projects/forget", { projectRoot: staleRoot });
 
@@ -714,8 +788,7 @@ test("forgetting selected project chooses the next valid recent project", async 
     secretsRoot,
     port: 0
   });
-  await new Promise((resolve) => server.listen(0, resolve));
-  const port = server.address().port;
+  const port = await listenOnFetchSafePort(server);
   try {
     const { data } = await postJson(port, "/api/projects/forget", { projectRoot: current.projectRoot });
     assert.equal(data.selectedProjectRoot, valid.projectRoot);
@@ -741,8 +814,7 @@ test("forgetting selected project returns null when remaining recents are invali
     secretsRoot,
     port: 0
   });
-  await new Promise((resolve) => server.listen(0, resolve));
-  const port = server.address().port;
+  const port = await listenOnFetchSafePort(server);
   try {
     const { data } = await postJson(port, "/api/projects/forget", { projectRoot: current.projectRoot });
     assert.equal(data.selectedProjectRoot, null);
@@ -764,8 +836,7 @@ test("server with no selected project does not scan workspace as implicit dashbo
     secretsRoot: path.join(root, ".secrets"),
     port: 0
   });
-  await new Promise((resolve) => server.listen(0, resolve));
-  const port = server.address().port;
+  const port = await listenOnFetchSafePort(server);
   try {
     const { data } = await getJson(port, "/api/dashboard");
     assert.equal(data.ok, true);
@@ -781,7 +852,7 @@ test("POST /api/failures/resolve 拒绝未知命令", async () => {
     const { res, data } = await postJson(ctx.port, "/api/failures/resolve",
       { command: "evil-cmd", args: {}, failureId: "x" });
     assert.equal(res.status, 400);
-    assert.match(data.error, /未知命令/);
+    assert.match(data.message, /未知命令/);
   } finally { await closeServer(ctx.server); }
 });
 

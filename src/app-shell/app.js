@@ -59,6 +59,8 @@ const refs = {
   settingsSave: document.querySelector("#settings-save"),
   settingsX: document.querySelector("#settings-x"),
   createScrim: document.querySelector("#create-scrim"),
+  createHeading: document.querySelector("#create-heading"),
+  createLead: document.querySelector("#create-card .lead"),
   createTitle: document.querySelector("#create-title"),
   createSeed: document.querySelector("#create-seed"),
   createChapters: document.querySelector("#create-chapters"),
@@ -88,6 +90,7 @@ const renderedKeys = new Set();
 const askEntries = new Map();
 let liveBlock = null;
 let lastFocused = null;
+let createModalMode = "new";
 let previousActivity = null;
 let previousBadgeSummary = null;
 
@@ -524,7 +527,7 @@ async function openProject(projectRoot) {
   } catch (error) {
     refs.projectOpenStatus.style.display = "none";
     if (error.code === "project_open_failed" && error.message.includes("不是有效的 WWriting 项目文件夹")) {
-      openCreateModal(projectRoot);
+      openCreateModal(projectRoot, { mode: "init-folder" });
       showToast("该文件夹不是项目，可初始化为新小说。", "info");
     } else {
       showActionError(error);
@@ -539,7 +542,7 @@ async function openFromFolder() {
     return;
   }
   if (!window.wwritingDesktop?.selectProjectFolder) {
-    openCreateModal();
+    openCreateModal("", { mode: "preview" });
     showToast("预览环境请在弹窗中手动输入文件夹路径。", "info");
   }
 }
@@ -727,9 +730,38 @@ function closeReader() {
   closeOverlay(refs.readerScrim);
 }
 
-function openCreateModal(prefillPath) {
+function renderCreateModalCopy() {
+  const copy = {
+    new: {
+      heading: "开始一部新小说",
+      lead: "告诉我故事的种子，应用会规划、起草、审稿、定稿，并把每一章保存为本地文件。",
+      submit: "创建并打开"
+    },
+    preview: {
+      heading: "手动填写本地文件夹",
+      lead: "当前环境不能打开系统文件夹选择器，请手动输入一个空文件夹路径来创建新小说。",
+      submit: "初始化文件夹"
+    },
+    "init-folder": {
+      heading: "初始化这个文件夹",
+      lead: "这个文件夹还不是 WWriting 项目。确认后会在其中创建小说配置和章节目录。",
+      submit: "初始化并打开"
+    }
+  }[createModalMode] ?? {
+    heading: "开始一部新小说",
+    lead: "告诉我故事的种子，应用会规划、起草、审稿、定稿，并把每一章保存为本地文件。",
+    submit: "创建并打开"
+  };
+  if (refs.createHeading) refs.createHeading.textContent = copy.heading;
+  if (refs.createLead) refs.createLead.textContent = copy.lead;
+  if (refs.createSubmit) refs.createSubmit.textContent = copy.submit;
+}
+
+function openCreateModal(prefillPath, options = {}) {
+  createModalMode = options.mode ?? "new";
   setCreateStatus("", "");
   if (prefillPath) refs.createPath.value = prefillPath;
+  renderCreateModalCopy();
   openOverlay(refs.createScrim, refs.createTitle);
   motion.openModal(refs.createScrim, document.querySelector("#create-card"));
 }

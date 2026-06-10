@@ -1,7 +1,7 @@
 (function (global, factory) {
   typeof exports === 'object' && typeof module !== 'undefined' ? factory(exports) :
   typeof define === 'function' && define.amd ? define(['exports'], factory) :
-  (global = global || self, factory(global.window = global.window || {}));
+  (global = global || self, factory(global));
 }(this, (function (exports) { 'use strict';
 
   function _inheritsLoose(subClass, superClass) {

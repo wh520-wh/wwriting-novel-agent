@@ -30,7 +30,8 @@ export function loadAppStateSync(stateRoot) {
   try {
     const raw = fs.readFileSync(stateFile(stateRoot), "utf8");
     return normalizeState(JSON.parse(raw));
-  } catch {
+  } catch (error) {
+    warnStateReadFailure(error);
     return { lastProjectRoot: null, recentProjects: [] };
   }
 }
@@ -39,7 +40,8 @@ export async function loadAppState(stateRoot) {
   try {
     const raw = await fsp.readFile(stateFile(stateRoot), "utf8");
     return normalizeState(JSON.parse(raw));
-  } catch {
+  } catch (error) {
+    warnStateReadFailure(error);
     return { lastProjectRoot: null, recentProjects: [] };
   }
 }
@@ -97,4 +99,11 @@ export function samePath(a, b) {
     return left.toLowerCase() === right.toLowerCase();
   }
   return left === right;
+}
+
+function warnStateReadFailure(error) {
+  if (error?.code === "ENOENT") {
+    return;
+  }
+  console.warn("[app-state] 读取状态失败:", error?.message ?? error);
 }

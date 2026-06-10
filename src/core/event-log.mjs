@@ -24,44 +24,83 @@ export async function readEvents(projectRoot, options = {}) {
   if (!(await pathExists(logPath))) {
     return [];
   }
-  const events = (await fs.readFile(logPath, "utf8"))
-    .split(/\r?\n/u)
-    .filter(Boolean)
-    .map((line) => JSON.parse(line));
-  return options.limit ? events.slice(-options.limit) : events;
+
+  // No limit = full read (backward compatible)
+  if (!options.limit) {
+    const events = (await fs.readFile(logPath, "utf8"))
+      .split(/\r?\n/u)
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    return events;
+  }
+
+  // With limit = tail read optimization
+  const stat = await fs.stat(logPath);
+  const fileSize = stat.size;
+  if (fileSize === 0) return [];
+
+  const CHUNK_SIZE = Math.min(fileSize, 64 * 1024);
+  const handle = await fs.open(logPath, "r");
+  try {
+    const lines = [];
+    let position = fileSize;
+    let remainder = "";
+
+    while (lines.length < options.limit && position > 0) {
+      const readSize = Math.min(CHUNK_SIZE, position);
+      position -= readSize;
+      const buffer = Buffer.alloc(readSize);
+      await handle.read(buffer, 0, readSize, position);
+      const chunk = buffer.toString("utf8");
+      const combined = chunk + remainder;
+      const parts = combined.split(/\r?\n/u);
+      remainder = parts.shift();
+      for (let i = parts.length - 1; i >= 0 && lines.length < options.limit; i--) {
+        if (parts[i].trim()) {
+          lines.unshift(parts[i]);
+        }
+      }
+    }
+
+    if (lines.length < options.limit && remainder.trim()) {
+      lines.unshift(remainder);
+    }
+
+    return lines.map((line) => JSON.parse(line));
+  } finally {
+    await handle.close();
+  }
+}
+
+export async function tailEvents(projectRoot, n) {
+  return readEvents(projectRoot, { limit: n });
 }
 
 on(CORE_EVENTS.TaskFailed, (payload) => {
-  try {
-    if (!payload || !payload.projectRoot) return;
-    const error = payload.error;
-    appendEvent(payload.projectRoot, {
-      type: "task-failed",
-      severity: "error",
-      message: error?.message ?? "task failed",
-      data: {
-        taskId: payload.taskId,
-        stage: payload.options?.stage ?? null,
-        error: error ? String(error.message || error) : undefined
-      }
-    });
-  } catch (e) {
-    console.error("event-log: failed to record task:failed:", e);
-  }
+  if (!payload || !payload.projectRoot) return;
+  const error = payload.error;
+  // Fire-and-forget: don't block the emit caller on a disk write.
+  // Errors are logged by the bus's Promise.allSettled path.
+  void appendEvent(payload.projectRoot, {
+    type: "task-failed",
+    severity: "error",
+    message: error?.message ?? "task failed",
+    data: {
+      taskId: payload.taskId,
+      stage: payload.options?.stage ?? null,
+      error: error ? String(error.message || error) : undefined
+    }
+  });
 });
 
 on(CORE_EVENTS.ChapterWritten, (payload) => {
-  try {
-    if (!payload || !payload.projectRoot) return;
-    appendEvent(payload.projectRoot, {
-      type: "chapter-written",
-      message: "chapter written",
-      data: {
-        path: payload.path,
-        chapterId: payload.chapterId
-      }
-    });
-  } catch (e) {
-    console.error("event-log: failed to record chapter:written:", e);
-  }
+  if (!payload || !payload.projectRoot) return;
+  void appendEvent(payload.projectRoot, {
+    type: "chapter-written",
+    message: "chapter written",
+    data: {
+      path: payload.path,
+      chapterId: payload.chapterId
+    }
+  });
 });

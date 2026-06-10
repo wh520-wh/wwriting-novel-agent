@@ -1,15 +1,13 @@
 // 全局事件总线
-// 5 个 CORE_EVENTS 是"跨模块副作用"的统一入口
+// 4 个 CORE_EVENTS 是"跨模块副作用"的统一入口
 // 平行于 skill-runtime 内部的 stage/action hook(那些不替换)
 
 const listeners = new Map();
 
 export const CORE_EVENTS = Object.freeze({
-  ModelCallStart: "model-call:start",
   ModelCallComplete: "model-call:complete",
   ChapterWritten: "chapter:written",
   TaskFailed: "task:failed",
-  BackupNeeded: "backup:needed",
 });
 
 export function on(event, fn) {

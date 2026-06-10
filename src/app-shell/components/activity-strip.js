@@ -13,7 +13,7 @@ export function renderActivityStrip(root, activity, { privacy = false, onClickCo
   root.classList.toggle('idle', activity.mode === 'idle' || activity.mode === 'completed');
   root.classList.toggle('blocked', activity.mode === 'blocked' || activity.mode === 'interrupted');
 
-  root.innerHTML = '';
+  root.replaceChildren();
   appendSlot(root, 'stage', `● ${STAGE_LABEL[activity.stage] ?? activity.stage ?? '—'}`);
   if (activity.chapterNo != null) {
     const loc = activity.segCurrent != null
