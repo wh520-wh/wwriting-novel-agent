@@ -19,10 +19,10 @@ export function createThreadRenderer(ctx) {
   //   getDashboard, getCurrentProjectRoot, loadDashboard, handleRetry, handleStop,
   //   handleQuick, openReader, showToast, showActionError, announce, promoteAskEntry
 
+  const MAX_VISIBLE_CHAPTER_CARDS = 3;
+
   let sessionHeadEl = null;
   let threadGreeted = false;
-
-  // PLACEHOLDER_TR_EMPTY
 
   function renderEmptyThread() {
     ctx.renderedKeys.clear();
@@ -87,7 +87,6 @@ export function createThreadRenderer(ctx) {
   function eventKey(event) {
     return `${event.type}|${event.timestamp ?? ""}|${event.stage ?? ""}|${event.chapter_no ?? ""}|${event.message ?? ""}`;
   }
-  // PLACEHOLDER_TR_SCROLL
 
   function scrollThreadToBottom() {
     requestAnimationFrame(() => { ctx.refs.threadWrap.scrollTop = ctx.refs.threadWrap.scrollHeight; });
@@ -224,7 +223,6 @@ export function createThreadRenderer(ctx) {
     wrap.append(bubble);
     return wrap;
   }
-  // PLACEHOLDER_TR_QUEUE
 
   function renderQueueCards(tasks, data) {
     for (const task of tasks) {
@@ -364,7 +362,6 @@ export function createThreadRenderer(ctx) {
     }
     return row;
   }
-  // PLACEHOLDER_TR_AGENT
 
   // 一次运行 = 一个智能体气泡：含步骤时间线 + 完成后的章节卡 + 汇报文字。
   function buildAgentBlock(startEvent, data) {
@@ -485,7 +482,6 @@ export function createThreadRenderer(ctx) {
       };
     });
   }
-  // PLACEHOLDER_TR_CHAPTER
 
   function attachChapterCard(block, chapterNo, data) {
     if (!chapterNo) return;
@@ -531,6 +527,28 @@ export function createThreadRenderer(ctx) {
     // 插在汇报文字之前。
     block.body.insertBefore(card, block.say);
     block.chapter = chapterNo;
+    collapseOldChapterCards(block);
+  }
+
+  function collapseOldChapterCards(block) {
+    const cards = [...block.body.querySelectorAll(".filecard")];
+    if (cards.length <= MAX_VISIBLE_CHAPTER_CARDS) return;
+    let rollup = block.body.querySelector(".filecard-rollup");
+    if (!rollup) {
+      rollup = document.createElement("button");
+      rollup.type = "button";
+      rollup.className = "filecard-rollup";
+      rollup.dataset.count = "0";
+      rollup.addEventListener("click", () => ctx.openDrawer?.("chapters"));
+      block.body.insertBefore(rollup, cards[0]);
+    }
+    let count = Number(rollup.dataset.count ?? 0);
+    for (const old of cards.slice(0, cards.length - MAX_VISIBLE_CHAPTER_CARDS)) {
+      old.remove();
+      count += 1;
+    }
+    rollup.dataset.count = String(count);
+    rollup.textContent = `已收起 ${count} 张章节卡 · 点击在「章节」面板查看全部`;
   }
 
   function finishAgentBlock(block, event, data) {
@@ -563,7 +581,6 @@ export function createThreadRenderer(ctx) {
     }
     container.appendChild(node);
   }
-  // PLACEHOLDER_TR_FAILURE
 
   async function submitFailureAction(card, action) {
     // 兼容历史 failures.jsonl 里的旧嵌套形状 { command: { command, args } }
