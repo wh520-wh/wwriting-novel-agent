@@ -12,6 +12,7 @@
 - [项目文件夹](#项目文件夹)
 - [模型与联网配置](#模型与联网配置)
 - [验证命令](#验证命令)
+- [按钮点击回归防线](#按钮点击回归防线)
 - [打包与桌面快捷方式](#打包与桌面快捷方式)
 - [目录结构](#目录结构)
 - [安全设计](#安全设计)
@@ -200,6 +201,7 @@ npm run verify:local
 | `npm run verify:app-shell` | 验证 GUI、项目打开、设置写回、技能和资料工具 |
 | `npm run verify:desktop-shell` | 验证 Electron 安全开关、中文原生菜单和打包配置 |
 | `npm run verify:electron-runtime` | 启动 Electron smoke 模式并加载本地仪表盘 |
+| `npm run verify:app-clickability` | 启动真实 Electron 窗口并逐项点击关键按钮，防止“按钮看得到但点不动”回归 |
 | `npm run verify:provider-online` | 使用真实 OpenAI-compatible provider 做在线验收 |
 | `npm run verify:research-online` | 验证真实网页抓取和可配置搜索接口 |
 
@@ -227,6 +229,33 @@ $env:WWRITING_SEARCH_URL_PATH="url"
 $env:WWRITING_SEARCH_SNIPPET_PATH="author"
 npm run verify:research-online
 ```
+
+## 按钮点击回归防线
+
+本项目多次出现过“按钮看得到但点不动”的回归，尤其是“设置”“新建小说”和抽屉/弹窗里的动态按钮。排查时不要只检查单个按钮的 `click` 监听，优先确认整个前端模块是否成功启动。
+
+常见根因：
+
+- `app.js` 的 ESM 依赖加载失败，导致动态导航没有渲染、事件监听没有绑定。已出现过的案例是 `components/failure-card.js` 引入 `../../shared/failure-commands.mjs`，但本地静态服务器没有正确服务 `/shared/*.mjs`。
+- `.mjs` 没有返回 `text/javascript`，浏览器/Electron 拒绝加载模块。
+- Electron 原生标题栏覆盖、CSS drag region、toast/scrim/隐藏弹窗拦截了鼠标事件。
+- UI 改版后测试选择器漂移，测试没有继续点击真实可见按钮。
+
+修 UI、静态资源服务、Electron 壳或打包配置后，至少运行：
+
+```powershell
+npm run verify:app-clickability
+npm run verify:app-shell
+npm run verify:desktop-shell
+```
+
+交付桌面快捷方式使用前运行：
+
+```powershell
+npm run verify:local
+```
+
+`verify:app-clickability` 会用真实 Electron 鼠标事件点击刷新、隐私、导航、新建小说、设置、API Key 控件、联网开关、章节/阅读器、资料按钮和命令栏。只有这项通过，才能说明关键按钮真的可点击。
 
 ## 打包与桌面快捷方式
 

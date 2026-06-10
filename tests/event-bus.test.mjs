@@ -71,7 +71,10 @@ test("on returns an unsubscribe function", async () => {
   assert.equal(count, 1);
 });
 
-test("CORE_EVENTS is frozen with 5 events", () => {
+test("CORE_EVENTS is frozen with 3 events", () => {
   assert.equal(Object.isFrozen(CORE_EVENTS), true);
-  assert.equal(Object.keys(CORE_EVENTS).length, 5);
+  assert.equal(Object.keys(CORE_EVENTS).length, 3);
+  assert.ok("ModelCallComplete" in CORE_EVENTS);
+  assert.ok("ChapterWritten" in CORE_EVENTS);
+  assert.ok("TaskFailed" in CORE_EVENTS);
 });

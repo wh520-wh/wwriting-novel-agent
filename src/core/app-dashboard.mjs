@@ -290,6 +290,7 @@ export async function findProjectRoots(workspaceRoot, options = {}) {
     try {
       entries = await fs.readdir(dirPath, { withFileTypes: true });
     } catch {
+      // 目录不存在或无权限，跳过
       return;
     }
     const projectFile = path.join(dirPath, "project.yaml");

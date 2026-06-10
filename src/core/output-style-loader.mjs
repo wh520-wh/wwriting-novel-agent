@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { parseSimpleYaml } from "./simple-yaml.mjs";
 
 // 内置 2 种风格(bundled 优先级最低,用户/项目同名会替换)
 const BUNDLED_STYLES = [
@@ -17,33 +18,16 @@ const BUNDLED_STYLES = [
   },
 ];
 
-let cache = null;
-let cacheKey = null;
-
-function makeCacheKey({ projectRoot, userHome }) {
-  return `${projectRoot ?? ""}::${userHome ?? ""}`;
-}
-
 export async function loadOutputStyles({ projectRoot, userHome } = {}) {
-  const key = makeCacheKey({ projectRoot, userHome });
-  if (cache && cacheKey === key) return cache;
-
   const styles = [...BUNDLED_STYLES];
 
-  // User-level (~/.wwriting/output-styles/*.md)
   if (userHome) {
-    const userDir = path.join(userHome, ".wwriting", "output-styles");
-    await loadFromDir(userDir, "user", styles);
+    await loadFromDir(path.join(userHome, ".wwriting", "output-styles"), "user", styles);
   }
-
-  // Project-level (<projectRoot>/.wwriting/output-styles/*.md)
   if (projectRoot) {
-    const projectDir = path.join(projectRoot, ".wwriting", "output-styles");
-    await loadFromDir(projectDir, "project", styles);
+    await loadFromDir(path.join(projectRoot, ".wwriting", "output-styles"), "project", styles);
   }
 
-  cache = styles;
-  cacheKey = key;
   return styles;
 }
 
@@ -52,19 +36,19 @@ async function loadFromDir(dir, source, out) {
   try {
     entries = await fs.readdir(dir, { withFileTypes: true });
   } catch {
-    return; // dir doesn't exist
+    return;
   }
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
     const filePath = path.join(dir, entry.name);
     try {
       const content = await fs.readFile(filePath, "utf8");
-      const parsed = parseStyleFrontmatter(content);
+      const parsed = parseStyleFile(content);
       if (!parsed.name) {
         console.warn(`output-style-loader: skipping ${filePath}: missing name in frontmatter`);
         continue;
       }
-      // Remove bundled style with same name (user/project override)
+      // User/project override a bundled style of the same name.
       const idx = out.findIndex((s) => s.name === parsed.name && s.source === "bundled");
       if (idx >= 0) out.splice(idx, 1);
       out.push({
@@ -80,27 +64,15 @@ async function loadFromDir(dir, source, out) {
   }
 }
 
-function parseStyleFrontmatter(content) {
-  // 简易 frontmatter 解析:第一段 --- ... --- 之间的 YAML
-  const match = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+function parseStyleFile(content) {
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!match) return { name: null, description: "", body: content };
-  const yamlPart = match[1];
-  const body = match[2] ?? "";
-  const result = { name: null, description: "", body };
-  for (const line of yamlPart.split(/\r?\n/)) {
-    const m = line.match(/^(\w[\w-]*)\s*:\s*(.*)$/);
-    if (!m) continue;
-    const [, key, valueRaw] = m;
-    const value = valueRaw.replace(/^["']|["']$/g, "").trim();
-    if (key === "name") result.name = value;
-    else if (key === "description") result.description = value;
-  }
-  return result;
-}
-
-export function _resetOutputStyleCache() {
-  cache = null;
-  cacheKey = null;
+  const meta = parseSimpleYaml(match[1]);
+  return {
+    name: typeof meta.name === "string" ? meta.name : null,
+    description: typeof meta.description === "string" ? meta.description : "",
+    body: match[2] ?? "",
+  };
 }
 
 export function listBuiltInStyleNames() {

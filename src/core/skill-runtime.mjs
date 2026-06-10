@@ -34,6 +34,7 @@ export function registerProjectSkill({ projectRoot, name, version, type, paths, 
     patterns,
     projectRoot: projectRoot ?? null,
     hooks: Array.isArray(hooks) ? hooks : [],
+    matcher: ignoreLib().add(patterns),
   });
   return { name, patterns };
 }
@@ -49,12 +50,11 @@ export function activateConditionalSkillsForPaths(filePaths, projectRoot) {
   for (const [name, entry] of conditionalSkills) {
     if (activatedNames.has(name)) continue;
     if (entry.projectRoot && projectRoot && entry.projectRoot !== projectRoot) continue;
-    const matcher = ignoreLib().add(entry.patterns);
     for (const fp of filePaths) {
       if (!fp || typeof fp !== "string") continue;
       // absolute paths: skip (caller should pass relative)
       if (fp.startsWith("/") || /^[a-zA-Z]:[\\\/]/.test(fp)) continue;
-      if (matcher.ignores(fp)) {
+      if (entry.matcher.ignores(fp)) {
         activatedNames.add(name);
         activated.push(name);
         break;

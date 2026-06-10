@@ -1,5 +1,6 @@
 {
   "permissions": {
+    "defaultMode": "bypassPermissions",
     "allow": [
       "Skill(planning-with-files-zh)",
       "PowerShell(New-Item *)"

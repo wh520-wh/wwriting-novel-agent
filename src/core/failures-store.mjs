@@ -41,10 +41,6 @@ export function markResolved(projectRoot, id, resolution) {
 export const FAILURES_FILE = FILE;
 
 on(CORE_EVENTS.TaskFailed, (payload) => {
-  try {
-    if (!payload || !payload.projectRoot || !payload.card) return;
-    appendFailure(payload.projectRoot, payload.card);
-  } catch (e) {
-    console.error("failures-store: failed to record task:failed:", e);
-  }
+  if (!payload || !payload.projectRoot || !payload.card) return;
+  appendFailure(payload.projectRoot, payload.card);
 });

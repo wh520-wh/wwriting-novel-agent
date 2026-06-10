@@ -43,6 +43,21 @@ export class ProviderTransportError extends Error {
     this.code = "provider_transport_error";
     this.status = details.status ?? null;
     this.body = details.body ?? null;
+    // reason: 'user-abort' | 'timeout' | 'network' | 'server-retryable' | 'server-fatal'
+    this.reason = details.reason ?? this.#inferReason(details);
+  }
+
+  #inferReason(details) {
+    // 只有 429/502/503/504 是可重试的服务器错误
+    if (details.status === 429 || details.status === 502 || details.status === 503 || details.status === 504) {
+      return "server-retryable";
+    }
+    // 其他 4xx 是客户端错误，不重试
+    if (details.status >= 400 && details.status < 500) return "server-fatal";
+    // 5xx 是服务器错误，可重试
+    if (details.status >= 500) return "server-retryable";
+    // 无 status = 网络错误
+    return "network";
   }
 }
 
@@ -80,7 +95,7 @@ export class OpenAICompatibleAdapter {
       ...optionalNumber("top_p", modelConfig.top_p),
       ...optionalNumber("max_tokens", modelConfig.max_output_tokens ?? modelConfig.max_tokens),
       ...buildChapterToolRequest(usesChapterTool, { ...modelConfig, base_url: baseUrl, model_name: selectedModel }),
-      ...(stream ? { stream: true } : {}),
+      ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
       ...(modelConfig.extra_body ?? {})
     };
     const response = await fetchImpl(resolveEndpoint(baseUrl, modelConfig.endpoint ?? this.endpoint), {
@@ -94,22 +109,86 @@ export class OpenAICompatibleAdapter {
       body: JSON.stringify(body),
       signal
     });
-    const responseText = await response.text();
     if (!response.ok) {
+      const errorText = await response.text();
       throw new ProviderTransportError(`OpenAI-compatible provider returned HTTP ${response.status}.`, {
         status: response.status,
-        body: responseText.slice(0, 2000)
+        body: errorText.slice(0, 2000)
       });
     }
     if (stream) {
-      const parsed = parseOpenAIStream(responseText, metadata.onToken);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let text = "";
+      let usage = null;
+      const events = [];
+      let malformedSseFrameCount = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const parts = buffer.split(/(?:\r?\n){2,}/);
+        buffer = parts.pop(); // keep incomplete part
+
+        for (const part of parts) {
+          const dataLines = part
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter((line) => line.startsWith("data:"))
+            .map((line) => line.slice(5).trim());
+
+          for (const data of dataLines) {
+            if (!data || data === "[DONE]") continue;
+            try {
+              const event = JSON.parse(data);
+              events.push(event);
+              if (event.usage) usage = event.usage;
+              const token = extractStreamToken(event);
+              if (token) {
+                text += token;
+                metadata.onToken?.(token, event);
+              }
+            } catch (error) {
+              malformedSseFrameCount += 1;
+              metadata.onMalformedSseFrame?.({ data, error });
+            }
+          }
+        }
+      }
+
+      // Handle remaining buffer
+      if (buffer.trim()) {
+        for (const line of buffer.split(/\r?\n/)) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:") || trimmed === "data: [DONE]") continue;
+          try {
+            const data = trimmed.slice(5).trim();
+            const event = JSON.parse(data);
+            events.push(event);
+            if (event.usage) usage = event.usage;
+            const token = extractStreamToken(event);
+            if (token) {
+              text += token;
+              metadata.onToken?.(token, event);
+            }
+          } catch (error) {
+            malformedSseFrameCount += 1;
+            metadata.onMalformedSseFrame?.({ data: trimmed.slice(5).trim(), error });
+          }
+        }
+      }
+
       return {
-        text: parsed.text,
-        raw: parsed.raw,
-        usage: normalizeOpenAIUsage(parsed.usage ?? {}),
+        text,
+        raw: { stream: true, events, malformed_sse_frame_count: malformedSseFrameCount },
+        usage: normalizeOpenAIUsage(usage ?? {}),
         cost: null
       };
     }
+    const responseText = await response.text();
     let raw = {};
     try {
       raw = responseText ? JSON.parse(responseText) : {};
@@ -259,6 +338,10 @@ function extractText(raw) {
   return "";
 }
 
+function extractStreamToken(event) {
+  return event.choices?.[0]?.delta?.content ?? event.choices?.[0]?.text ?? "";
+}
+
 function normalizeOpenAIUsage(usage) {
   return {
     ...usage,
@@ -269,38 +352,3 @@ function normalizeOpenAIUsage(usage) {
   };
 }
 
-function parseOpenAIStream(source, onToken) {
-  const events = [];
-  let text = "";
-  let usage = null;
-  for (const eventText of String(source).split(/\n\n+/u)) {
-    const dataLines = eventText
-      .split(/\r?\n/u)
-      .map((line) => line.trim())
-      .filter((line) => line.startsWith("data:"))
-      .map((line) => line.slice(5).trim());
-    for (const data of dataLines) {
-      if (!data || data === "[DONE]") {
-        continue;
-      }
-      const event = JSON.parse(data);
-      events.push(event);
-      if (event.usage) {
-        usage = event.usage;
-      }
-      const delta = event.choices?.[0]?.delta?.content ?? event.choices?.[0]?.text ?? "";
-      if (delta) {
-        text += delta;
-        onToken?.(delta, event);
-      }
-    }
-  }
-  return {
-    text,
-    usage,
-    raw: {
-      stream: true,
-      events
-    }
-  };
-}

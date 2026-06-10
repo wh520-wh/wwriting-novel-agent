@@ -41,6 +41,21 @@
   /* graphite button */
   --btn: #232220;
   --btn-2: #100f0e;
+  --btn-gradient: linear-gradient(135deg, #2b2a27, #141311);
+
+  /* scroll / focus tokens */
+  --scrollbar-thumb: #cdc8be;
+  --scrollbar-thumb-hover: #b8b3a8;
+  --focus-ring: rgba(58,110,208,0.1);
+
+  /* type scale (for future use) */
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 14px;
+  --text-lg: 15px;
+  --text-xl: 16px;
+  --text-2xl: 19px;
 
   --shadow-xs: 0 1px 2px rgba(28, 26, 22, 0.05);
   --shadow-sm: 0 1px 2px rgba(28, 26, 22, 0.06), 0 1px 1px rgba(28, 26, 22, 0.04);
@@ -108,11 +123,11 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 /* scrollbars — slim, fade in on hover */
 *::-webkit-scrollbar { width: 8px; height: 8px; }
 *::-webkit-scrollbar-thumb {
-  background: #cdc8be; border-radius: 99px;
+  background: var(--scrollbar-thumb); border-radius: 99px;
   border: 2px solid transparent; background-clip: padding-box;
   transition: background .2s;
 }
-*::-webkit-scrollbar-thumb:hover { background: #b8b3a8; background-clip: padding-box; }
+*::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); background-clip: padding-box; }
 *::-webkit-scrollbar-corner { background: transparent; }
 
 /* ============================================================
@@ -179,7 +194,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   width: 34px; height: 34px; flex: 0 0 auto;
   display: grid; place-items: center;
   border-radius: 10px;
-  background: linear-gradient(155deg, #34332f, #131210);
+  background: var(--btn-gradient);
   color: #fff;
   font-family: Georgia, "Times New Roman", serif;
   font-size: 19px; font-weight: 700;
@@ -217,7 +232,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   width: 100%; min-height: 38px;
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   border-radius: 10px;
-  background: linear-gradient(165deg, #2b2a27, #141311);
+  background: var(--btn-gradient);
   color: #fff; font-size: 13.5px; font-weight: 650;
   border: 1px solid #000;
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.13), 0 6px 16px -8px rgba(20,18,14,0.5);
@@ -308,7 +323,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 /* ============================================================
    Main column
    ============================================================ */
-.main { min-width: 0; min-height: 0; display: flex; flex-direction: row; background: var(--bg); position: relative; overflow: hidden; }
+.main { min-width: 0; min-height: 0; display: flex; flex-direction: row; flex: 1; background: var(--bg); position: relative; overflow: hidden; }
 
 /* header */
 .topbar {
@@ -387,8 +402,8 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 }
 .pill.completed { border-color: var(--green-line); background: var(--green-soft); color: var(--green); }
 .pill.completed .pdot { background: var(--green); }
-.pill.blocked { border-color: #ead3cf; background: var(--red-soft); color: var(--red); }
-.pill.blocked .pdot { background: var(--red); }
+.pill.blocked { border-color: #ead3cf; background: var(--amber-soft); color: var(--amber); }
+.pill.blocked .pdot { background: var(--amber); }
 .pill.mono { font-family: var(--mono); font-weight: 550; }
 
 .tbtn {
@@ -461,7 +476,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .msg-user { display: flex; justify-content: flex-end; }
 .bubble-user {
   max-width: 80%;
-  background: linear-gradient(180deg, #2c2b28, #1a1916);
+  background: var(--btn-gradient);
   color: #f3f1ec;
   padding: 11px 15px; border-radius: 15px 15px 4px 15px;
   font-size: 13.5px; line-height: 1.55; text-wrap: pretty;
@@ -478,7 +493,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .agent-avatar {
   width: 30px; height: 30px; border-radius: 9px; flex: 0 0 auto;
   display: grid; place-items: center;
-  background: linear-gradient(155deg, #34332f, #131210); color: #fff;
+  background: var(--btn-gradient); color: #fff;
   font-family: Georgia, serif; font-size: 15px; font-weight: 700;
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.14), var(--shadow-xs);
 }
@@ -662,7 +677,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .send {
   width: 34px; height: 34px; border-radius: 10px; flex: 0 0 auto;
   display: grid; place-items: center;
-  background: linear-gradient(165deg, #2b2a27, #141311); color: #fff;
+  background: var(--btn-gradient); color: #fff;
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.13), 0 4px 12px -6px rgba(20,18,14,0.6);
   transition: filter .12s, transform .1s, opacity .12s;
 }
@@ -788,7 +803,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   background: var(--surface); padding: 8px 11px; font-size: 13px; outline: none;
   transition: border-color .12s, box-shadow .12s;
 }
-.dfield input:focus, .dfield select:focus { border-color: var(--accent-line); box-shadow: 0 0 0 3px rgba(58,110,208,0.1); }
+.dfield input:focus, .dfield select:focus { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--focus-ring); }
 .dfield small { font-size: 11px; color: var(--faint); }
 .provider-row { display: grid; grid-template-columns: repeat(3,1fr); gap: 6px; margin-bottom: 12px; }
 .provider-pick {
@@ -801,7 +816,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .provider-pick span { font-size: 10.5px; color: var(--muted); }
 .save-btn {
   width: 100%; min-height: 38px; border-radius: 10px; margin-top: 4px;
-  background: linear-gradient(165deg, #2b2a27, #141311); color: #fff; font-weight: 650; font-size: 13px;
+  background: var(--btn-gradient); color: #fff; font-weight: 650; font-size: 13px;
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.13);
 }
 .save-btn:hover { filter: brightness(1.13); }
@@ -892,7 +907,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   transition: border-color .12s, box-shadow .12s;
 }
 .spd-key { position: relative; }
-.spd-key input:focus, .spd-input:focus { border-color: var(--accent-line); box-shadow: 0 0 0 3px rgba(58,110,208,0.1); }
+.spd-key input:focus, .spd-input:focus { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--focus-ring); }
 .spd-eye {
   position: absolute; right: 92px; top: 50%; transform: translateY(-50%);
   width: 28px; height: 28px; display: grid; place-items: center; border-radius: 7px; color: var(--muted);
@@ -965,7 +980,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .spd-foot { display: flex; align-items: center; gap: 10px; justify-content: flex-end; padding: 13px 22px; border-top: 1px solid var(--line); background: var(--surface-2); }
 .spd-cancel { height: 38px; padding: 0 16px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); font-size: 13px; font-weight: 600; color: var(--ink-2); white-space: nowrap; }
 .spd-cancel:hover { background: var(--hover); }
-.spd-save { height: 38px; padding: 0 20px; border-radius: 10px; background: linear-gradient(165deg,#2b2a27,#141311); color: #fff; font-size: 13px; font-weight: 650; box-shadow: inset 0 1px 0 rgba(255,255,255,0.13); white-space: nowrap; }
+.spd-save { height: 38px; padding: 0 20px; border-radius: 10px; background: var(--btn-gradient); color: #fff; font-size: 13px; font-weight: 650; box-shadow: inset 0 1px 0 rgba(255,255,255,0.13); white-space: nowrap; }
 .spd-save:hover { filter: brightness(1.13); }
 
 /* toggle switch */
@@ -1214,7 +1229,6 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 }
 
 /* Quick Rail */
-.main { display: flex; flex-direction: row; flex: 1; min-width: 0; min-height: 0; background: var(--bg); position: relative; overflow: hidden; }
 .main-inner { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .main-inner .thread-wrap { flex: 1; min-height: 0; }
 .quick-rail {
@@ -1292,10 +1306,8 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   pointer-events: none;
 }
 
-/* CSS_APPEND_ANCHOR */
 .pill.interrupted, .pill.cancelled { background: var(--red-soft); color: var(--red); }
-.pill.stale, .pill.slow, .pill.blocked { background: var(--amber-soft); color: var(--amber); }
-.pill.completed { background: var(--green-soft); color: var(--green); }
+.pill.stale, .pill.slow { background: var(--amber-soft); color: var(--amber); }
 .topbar-progress {
   height: 3px;
   background: var(--line);

@@ -12,7 +12,7 @@ import { assertToolCallForChapter, runWordCountGate } from "./quality-gates.mjs"
 import { collectSkillPromptHooks, runPostProcessHooks, runSkillChecks } from "./skill-runtime.mjs";
 import { appendChapterSegment, chapterFileName, finalizeChapterFile, readDraft, ToolValidationError } from "./tool-runtime.mjs";
 import { buildContinuityPromptContext, recordChapterMemory } from "./chapter-memory.mjs";
-import { loadOutputStyles } from "../app-shell/output-style-loader.mjs";
+import { loadOutputStyles } from "./output-style-loader.mjs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import { appendFailure } from "./failures-store.mjs";
@@ -519,23 +519,35 @@ async function createModelRuntime(projectRoot, project, options, fallbackModel) 
   const existingCost = await readJson(safeJoin(projectRoot, "cost.json"), null);
   const existingCacheReport = await readJson(safeJoin(projectRoot, "cache_report.json"), { entries: {} });
   const costTracker = options.costTracker ?? new CostTracker({ summary: existingCost });
+  const defaultAdapters = {
+    "openai-compatible": new OpenAICompatibleAdapter(),
+    mock: new MockProviderAdapter({
+      response: async (gatewayRequest) => {
+        const toolRequest = gatewayRequest.metadata?.toolRequest ?? {};
+        const output = await fallbackModel.generate(toolRequest);
+        return {
+          text: JSON.stringify(output),
+          raw: { output },
+          usage: estimateMockUsage(gatewayRequest.prompt, output)
+        };
+      }
+    })
+  };
+  const adapters = options.adapters
+    ? { ...defaultAdapters, ...options.adapters }
+    : defaultAdapters;
   const modelClient =
     options.modelClient ??
     new ModelClient({
       costTracker,
-      adapters: {
-        "openai-compatible": new OpenAICompatibleAdapter(),
-        mock: new MockProviderAdapter({
-          response: async (gatewayRequest) => {
-            const toolRequest = gatewayRequest.metadata?.toolRequest ?? {};
-            const output = await fallbackModel.generate(toolRequest);
-            return {
-              text: JSON.stringify(output),
-              raw: { output },
-              usage: estimateMockUsage(gatewayRequest.prompt, output)
-            };
-          }
-        })
+      adapters,
+      onRetry: (info) => {
+        appendEvent(projectRoot, {
+          type: "model_retry",
+          severity: "warning",
+          message: `模型调用重试 ${info.attempt}/${info.maxAttempts}（${info.reason}），等待 ${Math.round(info.delay)}ms`,
+          data: { attempt: info.attempt, reason: info.reason, model: info.model }
+        }).catch(() => {});
       }
     });
   return {
@@ -563,13 +575,6 @@ async function runModelGatewayCall(projectRoot, project, state, runtime, request
       attempt: request.attempt,
       cache_key: cacheEntry.cacheKey
     }
-  });
-  await emit(CORE_EVENTS.ModelCallStart, {
-    projectRoot,
-    model: runtime?.modelClient?.costTracker ? "configured" : "unknown",
-    request,
-    stage: state.current_stage,
-    chapter_no: state.current_chapter_no
   });
   const gatewayResult = await runtime.modelClient.generate({
     project,

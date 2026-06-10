@@ -14,13 +14,16 @@ import { createResearchAdapter } from "./research-adapters.mjs";
 import { fetchWebPage, searchWeb } from "./research-tools.mjs";
 import { updateProjectSettings } from "./settings-runtime.mjs";
 import { ensureBuiltinSkill, importProjectSkill, listProjectSkills } from "./skill-runtime.mjs";
-import { loadOutputStyles } from "../app-shell/output-style-loader.mjs";
+import { loadOutputStyles } from "./output-style-loader.mjs";
 import { ProjectCancelledError, runProject } from "./agent-engine.mjs";
 import { handleSideQuestion } from "./side-question.mjs";
 import { expandInstruction, TaskQueue } from "./task-queue.mjs";
 import { resolveRetryCandidate, retryDashboardFields } from "./retry-candidates.mjs";
 import { validateFailureCommand } from "../shared/failure-commands.mjs";
 import { readFailures, markResolved } from "./failures-store.mjs";
+import { HttpError, sendError } from "./http-error.mjs";
+import { createProjectLockRegistry } from "./project-lock.mjs";
+import { loadProjectDiagnostics } from "./project-diagnostics.mjs";
 
 export function createAppShellServer({
   workspaceRoot = path.resolve("."),
@@ -38,6 +41,7 @@ export function createAppShellServer({
   applyLocalSecretsToEnv(loadLocalSecretsSync(localSecretsRoot));
   const runJobs = new Map();
   const taskQueues = new Map();
+  const projectLocks = createProjectLockRegistry();
   async function getTaskQueue(projectRoot) {
     const key = path.resolve(projectRoot);
     let queue = taskQueues.get(key);
@@ -63,6 +67,10 @@ export function createAppShellServer({
       if (data?.hasProject && data.projectRoot) {
         selected = data.projectRoot;
       }
+      return;
+    }
+    if (url.pathname === "/api/diagnostics") {
+      await serveDiagnostics(response, { workspace, selected });
       return;
     }
     if (url.pathname === "/api/projects/list") {
@@ -125,11 +133,11 @@ export function createAppShellServer({
       return;
     }
     if (url.pathname === "/api/commands/submit" && request.method === "POST") {
-      await serveCommandSubmit(request, response, { workspace, selected, runJobs, getTaskQueue, testModel, testRunProject });
+      await serveCommandSubmit(request, response, { workspace, selected, runJobs, getTaskQueue, testModel, testRunProject, projectLocks });
       return;
     }
     if (url.pathname === "/api/run/retry" && request.method === "POST") {
-      await serveRunRetry(request, response, { workspace, selected, runJobs, getTaskQueue, testModel, testRunProject });
+      await serveRunRetry(request, response, { workspace, selected, runJobs, getTaskQueue, testModel, testRunProject, projectLocks });
       return;
     }
     if (url.pathname === "/api/failures/resolve" && request.method === "POST") {
@@ -137,7 +145,7 @@ export function createAppShellServer({
       return;
     }
     if (url.pathname === "/api/run/stop" && request.method === "POST") {
-      await serveRunStop(response, { workspace, selected, runJobs, getTaskQueue });
+      await serveRunStop(response, { workspace, selected, runJobs, getTaskQueue, projectLocks });
       return;
     }
     if (url.pathname === "/api/queue/state" && request.method === "GET") {
@@ -145,7 +153,7 @@ export function createAppShellServer({
       return;
     }
     if (url.pathname === "/api/queue/cancel" && request.method === "POST") {
-      await serveQueueCancel(request, response, { workspace, selected, getTaskQueue });
+      await serveQueueCancel(request, response, { workspace, selected, getTaskQueue, projectLocks });
       return;
     }
     if (url.pathname === "/api/commands/ask" && request.method === "POST") {
@@ -156,7 +164,7 @@ export function createAppShellServer({
       await serveChapterRead(url, response, { workspace, selected });
       return;
     }
-    await serveStatic(url.pathname, response, staticRoot);
+    await serveStatic(url.pathname, response, { staticRoot });
   });
   const originalClose = server.close.bind(server);
   server.close = (callback) => {
@@ -193,8 +201,18 @@ async function serveDashboard(response, context) {
     await serveJson(response, data);
     return data;
   } catch (error) {
-    await serveJson(response, { ok: false, message: error.message }, 500);
+    sendError(response, error);
     return null;
+  }
+}
+
+async function serveDiagnostics(response, context) {
+  try {
+    const projectRoot = await resolveActiveProjectRoot(context);
+    const diagnostics = await loadProjectDiagnostics(projectRoot);
+    await serveJson(response, diagnostics);
+  } catch (error) {
+    sendError(response, new HttpError(404, "no_project", error.message));
   }
 }
 
@@ -223,7 +241,9 @@ async function buildProjectList(context) {
       storySeed = project.story_seed ?? storySeed;
       const config = await loadConfigLayers(root, project).catch(() => null);
       activeModel = config?.effective?.active_model ?? project.active_model ?? null;
-    } catch {}
+    } catch (error) {
+      console.warn("[app-server] Failed to load project metadata:", error.message);
+    }
     projects.push({
       projectRoot: root,
       title,
@@ -248,7 +268,7 @@ async function serveProjectList(response, context) {
   try {
     await serveJson(response, await buildProjectList(context));
   } catch (error) {
-    await serveJson(response, { ok: false, message: error.message }, error instanceof SyntaxError ? 400 : 500);
+    sendError(response, error instanceof SyntaxError ? new HttpError(400, "BAD_REQUEST", error.message) : error);
   }
 }
 
@@ -257,6 +277,7 @@ async function rememberProject(stateRoot, projectRoot) {
     const project = await loadProject(projectRoot);
     await recordRecentProject(stateRoot, { projectRoot, title: project.title, story_seed: project.story_seed });
   } catch {
+    // 项目元数据读取失败（文件缺失或格式错误），仅记录路径
     await recordRecentProject(stateRoot, { projectRoot });
   }
 }
@@ -271,15 +292,7 @@ async function serveProjectOpen(request, response) {
     });
     return projectRoot;
   } catch (error) {
-    await serveJson(
-      response,
-      {
-        ok: false,
-        code: "project_open_failed",
-        message: error.message
-      },
-      400
-    );
+    sendError(response, new HttpError(400, "project_open_failed", error.message));
     return null;
   }
 }
@@ -289,7 +302,7 @@ async function serveProjectForget(request, response, context) {
     const body = await readJsonBody(request);
     const rawRoot = String(body.projectRoot ?? body.path ?? "").trim();
     if (!rawRoot) {
-      await serveJson(response, { ok: false, code: "project_forget_failed", message: "项目路径不能为空。" }, 400);
+      sendError(response, new HttpError(400, "project_forget_failed", "项目路径不能为空。"));
       return undefined;
     }
     const target = path.resolve(rawRoot);
@@ -312,7 +325,7 @@ async function serveProjectForget(request, response, context) {
     });
     return selectedProjectRoot ?? null;
   } catch (error) {
-    await serveJson(response, { ok: false, code: "project_forget_failed", message: error.message }, 400);
+    sendError(response, new HttpError(400, "project_forget_failed", error.message));
     return undefined;
   }
 }
@@ -361,15 +374,7 @@ async function serveProjectInit(request, response) {
     });
     return projectRoot;
   } catch (error) {
-    await serveJson(
-      response,
-      {
-        ok: false,
-        code: "project_init_failed",
-        message: error.message
-      },
-      400
-    );
+    sendError(response, new HttpError(400, "project_init_failed", error.message));
     return null;
   }
 }
@@ -392,15 +397,7 @@ async function serveResearch(request, response, context) {
         : await fetchWebPage(projectRoot, effectiveProject, { url: body.url, stage: "research" }, { adapter });
     await serveJson(response, result);
   } catch (error) {
-    await serveJson(
-      response,
-      {
-        ok: false,
-        code: error.code ?? "research_failed",
-        message: error.message
-      },
-      error.code === "network_not_allowed" ? 403 : 400
-    );
+    sendError(response, new HttpError(error.code === "network_not_allowed" ? 403 : 400, error.code ?? "research_failed", error.message));
   }
 }
 
@@ -428,15 +425,7 @@ async function serveSettingsUpdate(request, response, context) {
       secret_env: secretResult.envName
     });
   } catch (error) {
-    await serveJson(
-      response,
-      {
-        ok: false,
-        code: error.code ?? "settings_update_failed",
-        message: error.message
-      },
-      400
-    );
+    sendError(response, new HttpError(400, error.code ?? "settings_update_failed", error.message));
   }
 }
 
@@ -518,6 +507,13 @@ function abortActiveJobs(runJobs, reason) {
   }
 }
 
+async function withProjectLock(context, projectRoot, operation) {
+  if (!context.projectLocks) {
+    return operation();
+  }
+  return context.projectLocks.runExclusive(projectRoot, operation);
+}
+
 function queueSnapshot(queue, job) {
   const state = queue.getState();
   const tasks = state.tasks ?? [];
@@ -589,14 +585,7 @@ async function serveSkillMutation(request, response, context) {
       enabled_skills: project.enabled_skills
     });
   } catch (error) {
-    await serveJson(
-      response,
-      {
-        ok: false,
-        message: error.message
-      },
-      400
-    );
+    sendError(response, new HttpError(400, "BAD_REQUEST", error.message));
   }
 }
 
@@ -612,6 +601,7 @@ async function serveCommandSubmit(request, response, context) {
     }
     const mode = body.mode === "review" ? "review" : "write";
     const projectRoot = await resolveActiveProjectRoot(context);
+    return await withProjectLock(context, projectRoot, async () => {
     const project = await loadProject(projectRoot);
     const state = await loadState(projectRoot);
     if (state.project_status === "completed") {
@@ -714,16 +704,9 @@ async function serveCommandSubmit(request, response, context) {
         runStatus.message ??
         (runStatus.alreadyRunning ? "指令已记录；项目正在运行中。" : "指令已记录，写作任务已开始。")
     });
+    });
   } catch (error) {
-    await serveJson(
-      response,
-      {
-        ok: false,
-        code: "command_submit_failed",
-        message: error.message
-      },
-      400
-    );
+    sendError(response, new HttpError(400, "command_submit_failed", error.message));
   }
 }
 
@@ -739,15 +722,7 @@ async function serveSideQuestion(request, response, context) {
     const result = await handleSideQuestion(projectRoot, question);
     await serveJson(response, { ...result, projectRoot });
   } catch (error) {
-    await serveJson(
-      response,
-      {
-        ok: false,
-        code: error.code ?? "side_question_failed",
-        message: error.message
-      },
-      400
-    );
+    sendError(response, new HttpError(400, error.code ?? "side_question_failed", error.message));
   }
 }
 
@@ -758,7 +733,7 @@ async function serveQueueState(response, context) {
     await queue.load();
     await serveJson(response, queueSnapshot(queue, context.runJobs.get(path.resolve(projectRoot))));
   } catch (error) {
-    await serveJson(response, { ok: false, message: error.message }, 400);
+    sendError(response, new HttpError(400, "BAD_REQUEST", error.message));
   }
 }
 
@@ -766,30 +741,34 @@ async function serveQueueCancel(request, response, context) {
   try {
     const body = await readJsonBody(request);
     const projectRoot = await resolveActiveProjectRoot(context);
+    return await withProjectLock(context, projectRoot, async () => {
     const queue = await context.getTaskQueue(projectRoot);
     const task = await queue.cancel(String(body.taskId ?? ""), body.reason ?? "用户取消");
     if (!task) {
-      await serveJson(response, { ok: false, message: "只能取消排队中的任务；运行中的任务请使用停止。" }, 400);
+      sendError(response, new HttpError(400, "BAD_REQUEST", "只能取消排队中的任务；运行中的任务请使用停止。"));
       return;
     }
     await serveJson(response, { ok: true, task, ...queueSnapshot(queue, null) });
+    });
   } catch (error) {
-    await serveJson(response, { ok: false, message: error.message }, 400);
+    sendError(response, new HttpError(400, "BAD_REQUEST", error.message));
   }
 }
 
 async function serveRunStop(response, context) {
   try {
     const projectRoot = await resolveActiveProjectRoot(context);
+    return await withProjectLock(context, projectRoot, async () => {
     const job = context.runJobs.get(path.resolve(projectRoot));
     if (!isJobRunning(job)) {
-      await serveJson(response, { ok: false, message: "当前没有正在运行的写作任务。" }, 409);
+      sendError(response, new HttpError(409, "CONFLICT", "当前没有正在运行的写作任务。"));
       return;
     }
     job.controller.abort("用户停止");
     await serveJson(response, { ok: true, message: "已请求停止当前任务。" });
+    });
   } catch (error) {
-    await serveJson(response, { ok: false, message: error.message }, 400);
+    sendError(response, new HttpError(400, "BAD_REQUEST", error.message));
   }
 }
 
@@ -797,6 +776,7 @@ async function serveRunRetry(request, response, context) {
   try {
     const body = await readJsonBody(request);
     const projectRoot = await resolveActiveProjectRoot(context);
+    return await withProjectLock(context, projectRoot, async () => {
     const queue = await context.getTaskQueue(projectRoot);
     const candidate = await resolveRetryCandidate({
       projectRoot,
@@ -805,7 +785,7 @@ async function serveRunRetry(request, response, context) {
       taskId: body.taskId ? String(body.taskId) : null
     });
     if (!candidate.available) {
-      await serveJson(response, { ok: false, code: candidate.code, message: candidate.reason }, candidate.status ?? 400);
+      sendError(response, new HttpError(candidate.status ?? 400, candidate.code, candidate.reason));
       return;
     }
     let task = null;
@@ -823,7 +803,7 @@ async function serveRunRetry(request, response, context) {
       task = await queue.retry(candidate.taskId);
     }
     if (!task) {
-      await serveJson(response, { ok: false, code: "retry_no_candidate", message: "当前没有可重试的任务。" }, 400);
+      sendError(response, new HttpError(400, "retry_no_candidate", "当前没有可重试的任务。"));
       return;
     }
     const state = await loadState(projectRoot);
@@ -841,16 +821,17 @@ async function serveRunRetry(request, response, context) {
     try {
       const started = await startProjectRun(projectRoot, project, context, task, { source: "task_queue_retry" });
       if (started?.alreadyRunning) {
-        await serveJson(response, { ok: false, code: "retry_already_running", message: "智能体仍在运行，请先停止当前任务。" }, 409);
+        sendError(response, new HttpError(409, "retry_already_running", "智能体仍在运行，请先停止当前任务。"));
         return;
       }
     } catch (error) {
-      await serveJson(response, { ok: false, code: "retry_start_failed", message: error.message }, 500);
+      sendError(response, new HttpError(500, "retry_start_failed", error.message));
       return;
     }
     await serveJson(response, { ok: true, message: "已从中断处继续。", task });
+    });
   } catch (error) {
-    await serveJson(response, { ok: false, message: error.message }, 500);
+    sendError(response, error);
   }
 }
 
@@ -867,7 +848,7 @@ async function serveFailuresResolve(request, response, context) {
     const body = await readJsonBody(request);
     const { command, args = {}, failureId } = body;
     if (!failureId) {
-      await serveJson(response, { ok: false, error: "缺少 failureId" }, 400);
+      sendError(response, new HttpError(400, "BAD_REQUEST", "缺少 failureId"));
       return;
     }
     const projectRoot = await resolveActiveProjectRoot(context);
@@ -879,24 +860,24 @@ async function serveFailuresResolve(request, response, context) {
         message: valid.error,
         data: { command, failureId }
       });
-      await serveJson(response, { ok: false, error: valid.error }, 400);
+      sendError(response, new HttpError(400, "BAD_REQUEST", valid.error));
       return;
     }
     if (command === "switch-model") {
       const allowed = await listAllowedModels(projectRoot);
       if (!allowed.includes(args.modelId)) {
-        await serveJson(response, { ok: false, error: "modelId 不在允许列表" }, 400);
+        sendError(response, new HttpError(400, "BAD_REQUEST", "modelId 不在允许列表"));
         return;
       }
     }
     const failures = readFailures(projectRoot);
     const match = failures.find((f) => f.id === failureId);
     if (!match) {
-      await serveJson(response, { ok: false, error: "故障卡不存在" }, 404);
+      sendError(response, new HttpError(404, "NOT_FOUND", "故障卡不存在"));
       return;
     }
     if (match.resolution) {
-      await serveJson(response, { ok: false, error: "故障卡已处理" }, 409);
+      sendError(response, new HttpError(409, "CONFLICT", "故障卡已处理"));
       return;
     }
     markResolved(projectRoot, failureId, {
@@ -913,7 +894,7 @@ async function serveFailuresResolve(request, response, context) {
     });
     await serveJson(response, { ok: true });
   } catch (err) {
-    await serveJson(response, { ok: false, error: err.message }, 500);
+    sendError(response, err);
   }
 }
 
@@ -1003,6 +984,7 @@ async function startProjectRun(projectRoot, project, context, task, instructionM
     }
   })
     .then(async (result) => {
+      return await withProjectLock(context, projectRoot, async () => {
       const queue = await context.getTaskQueue(projectRoot);
       if (controller.signal.aborted) {
         throw new ProjectCancelledError(controller.signal.reason ?? "cancelled");
@@ -1051,8 +1033,10 @@ async function startProjectRun(projectRoot, project, context, task, instructionM
       } else {
         job.status = latestState.project_status === "blocked" ? "error" : "done";
       }
+      });
     })
     .catch(async (error) => {
+      return await withProjectLock(context, projectRoot, async () => {
       const queue = await context.getTaskQueue(projectRoot);
       const latestState = await loadState(projectRoot).catch(() => runningState);
       if (controller.signal.aborted || error instanceof ProjectCancelledError || latestState.project_status === "cancelled") {
@@ -1093,6 +1077,7 @@ async function startProjectRun(projectRoot, project, context, task, instructionM
           stack: error.stack?.slice(0, 2000)
         }
       });
+      });
     })
     .catch((error) => {
       job.status = "error";
@@ -1109,15 +1094,7 @@ async function serveChapterRead(url, response, context) {
     const data = await readChapterContent(projectRoot, chapterNo);
     await serveJson(response, { ...data, projectRoot });
   } catch (error) {
-    await serveJson(
-      response,
-      {
-        ok: false,
-        code: "chapter_read_failed",
-        message: error.message
-      },
-      400
-    );
+    sendError(response, new HttpError(400, "chapter_read_failed", error.message));
   }
 }
 
@@ -1149,9 +1126,22 @@ async function serveJson(response, data, status = 200) {
   response.end(JSON.stringify(data));
 }
 
-async function serveStatic(pathname, response, staticRoot) {
-  const root = path.resolve(staticRoot);
-  const requested = pathname === "/" ? "/index.html" : pathname;
+async function serveStatic(pathname, response, { staticRoot }) {
+  const sharedPrefix = "/shared/";
+  const isSharedModule = pathname.startsWith(sharedPrefix);
+  const root = pathname.startsWith(sharedPrefix)
+    ? path.resolve(staticRoot, "..", "shared")
+    : path.resolve(staticRoot);
+  const requested = pathname === "/"
+    ? "/index.html"
+    : pathname.startsWith(sharedPrefix)
+      ? pathname.slice(sharedPrefix.length - 1)
+      : pathname;
+  if (isSharedModule && ![".js", ".mjs"].includes(path.extname(requested))) {
+    response.writeHead(404);
+    response.end("鏈壘鍒?");
+    return;
+  }
   const target = path.resolve(root, `.${requested}`);
   if (!isPathInside(root, target)) {
     response.writeHead(403);

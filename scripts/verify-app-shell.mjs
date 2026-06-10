@@ -69,13 +69,19 @@ child.stderr.on("data", (chunk) => {
 
 try {
   await waitForServer(port);
-  const [html, js, truthJs, css, quickRailJs, dashboard] = await Promise.all([
+  const [html, js, truthJs, css, quickRailJs, dashboard, utilsJs, apiClientJs, threadRendererJs, drawerPanelsJs, settingsModalJs, composerJs] = await Promise.all([
     fetchText(`http://127.0.0.1:${port}/`),
     fetchText(`http://127.0.0.1:${port}/app.js`),
     fetchText(`http://127.0.0.1:${port}/agent-truth.mjs`),
     fetchText(`http://127.0.0.1:${port}/styles.css`),
     fetchText(`http://127.0.0.1:${port}/components/quick-rail.js`),
-    fetchJson(`http://127.0.0.1:${port}/api/dashboard`)
+    fetchJson(`http://127.0.0.1:${port}/api/dashboard`),
+    fetchText(`http://127.0.0.1:${port}/utils.js`),
+    fetchText(`http://127.0.0.1:${port}/api-client.js`),
+    fetchText(`http://127.0.0.1:${port}/thread-renderer.js`),
+    fetchText(`http://127.0.0.1:${port}/drawer-panels.js`),
+    fetchText(`http://127.0.0.1:${port}/settings-modal.js`),
+    fetchText(`http://127.0.0.1:${port}/composer.js`)
   ]);
   const [motionRuntime, gsapVendor] = await Promise.all([
     fetchText(`http://127.0.0.1:${port}/motion-runtime.js`),
@@ -143,21 +149,21 @@ try {
   assert.ok(js.includes("lastFocused"));
   assert.ok(js.includes("setAttribute(\"inert\""));
   // Task6: 动态生成的设置控件有可访问名称
-  assert.ok(js.includes("input.setAttribute(\"aria-label\", labelText)"));
-  assert.ok(js.includes("button.setAttribute(\"aria-label\", labelText)"));
+  assert.ok(settingsModalJs.includes("input.setAttribute(\"aria-label\", labelText)"));
+  assert.ok(settingsModalJs.includes("button.setAttribute(\"aria-label\", labelText)"));
   // Task7: 斜杠菜单 ARIA + 键盘导航
   assert.ok(html.includes("role=\"combobox\""));
   assert.ok(html.includes("aria-controls=\"slash-menu\""));
-  assert.ok(js.includes("aria-activedescendant"));
-  assert.ok(js.includes("setSlashActive"));
-  assert.ok(js.includes("ArrowDown"));
+  assert.ok(composerJs.includes("aria-activedescendant"));
+  assert.ok(composerJs.includes("setSlashActive"));
+  assert.ok(composerJs.includes("ArrowDown"));
   // Task8: reduced-motion / 焦点指示 / live region
   assert.ok(css.includes("prefers-reduced-motion"));
   assert.ok(css.includes(".composer:focus-within"));
   assert.ok(css.includes(".sr-only"));
   assert.ok(html.includes("id=\"thread-status\""));
   assert.ok(js.includes("function announce"));
-  assert.ok(js.includes("dataset.motionResolving"));
+  assert.ok(threadRendererJs.includes("dataset.motionResolving"));
   // Task9: 补齐缺失/失效的样式
   assert.ok(css.includes(".reader-body p.reader-empty"));
   assert.ok(!css.includes("var(--paper)"));
@@ -166,7 +172,7 @@ try {
   assert.ok(!css.includes("border-radius: var(--r, 12px)"), "failure-card must not have fallback in var(--r)");
   assert.ok(!css.includes("border-radius: 8px"), "all 8px border-radius must use var(--r-sm)");
   // Task10: 仅在贴底时自动滚动 + 抽屉重建保留滚动位置
-  assert.ok(js.includes("clientHeight < 80"));
+  assert.ok(threadRendererJs.includes("clientHeight < 80"));
   assert.ok(js.includes("refs.drawerBody.scrollTop = "));
   // Task11: 添加按钮已接线
   assert.ok(js.includes("refs.settingsAdd.addEventListener"));
@@ -175,12 +181,28 @@ try {
   assert.ok(css.includes(".slash-item.active"));
   assert.ok(css.includes("@keyframes writingDots"));
   assert.ok(css.includes(".step-meta.writing"));
-  assert.ok(js.includes("function writingStepLabel"));
-  assert.ok(js.includes("写入第"));
-  assert.ok(js.includes("metaKind"));
+  assert.ok(threadRendererJs.includes("function writingStepLabel"));
+  assert.ok(threadRendererJs.includes("写入第"));
+  assert.ok(threadRendererJs.includes("metaKind"));
   assert.ok(js.includes("if (!button) return;"));
-  assert.ok(js.includes("if (!text) return { ok: response.ok };"));
-  assert.ok(js.includes("data.ok === false"));
+  assert.ok(apiClientJs.includes("if (!text) return { ok: response.ok };"));
+  assert.ok(apiClientJs.includes("data.ok === false"));
+  // verify extracted modules are wired
+  assert.ok(js.includes('from "./utils.js"'), "app.js must import from utils.js");
+  assert.ok(js.includes('from "./api-client.js"'), "app.js must import from api-client.js");
+  assert.ok(js.includes('from "./thread-renderer.js"'), "app.js must import from thread-renderer.js");
+  assert.ok(js.includes('from "./drawer-panels.js"'), "app.js must import from drawer-panels.js");
+  assert.ok(js.includes('from "./settings-modal.js"'), "app.js must import from settings-modal.js");
+  assert.ok(js.includes('from "./composer.js"'), "app.js must import from composer.js");
+  assert.ok(threadRendererJs.includes("export function createThreadRenderer"), "thread-renderer.js must export createThreadRenderer");
+  assert.ok(drawerPanelsJs.includes("export function createDrawerPanels"), "drawer-panels.js must export createDrawerPanels");
+  assert.ok(settingsModalJs.includes("export function createSettingsModal"), "settings-modal.js must export createSettingsModal");
+  assert.ok(composerJs.includes("export function createComposer"), "composer.js must export createComposer");
+  assert.ok(utilsJs.includes("export function compactObject"));
+  assert.ok(utilsJs.includes("export function translateStage"));
+  assert.ok(utilsJs.includes("export function cssEscape"));
+  assert.ok(apiClientJs.includes("export async function getJson"));
+  assert.ok(apiClientJs.includes("export async function postJson"));
   assert.ok(css.includes("[data-privacy=\"on\"] .peek"));
   assert.ok(css.includes("backdrop-filter"));
   assert.ok(css.includes("--window-control-space"));
@@ -217,16 +239,17 @@ try {
   // 对话式表现层关键函数
   assert.ok(js.includes("loadDashboard"));
   assert.ok(js.includes("syncThread"));
-  assert.ok(js.includes("buildAgentBlock"));
-  assert.ok(js.includes("computeSteps"));
+  assert.ok(threadRendererJs.includes("buildAgentBlock"));
+  assert.ok(threadRendererJs.includes("computeSteps"));
   assert.ok(js.includes("ensureRefreshLoop"));
   // Task1: 轮询遇错自愈，不在瞬时错误时永久停表
   assert.ok(js.includes("ensureRefreshLoop(true)"));
   // Task1: 完成竞态——liveBlock 未定稿时维持轮询
   assert.ok(js.includes("Boolean(liveBlock && !liveBlock.done)"));
   // Task1: 切项目/切空重置 liveBlock
-  assert.ok((js.match(/liveBlock = null/g) || []).length >= 3);
-  assert.ok(js.includes("buildSideBubble"));
+  assert.ok((js.match(/liveBlock = null/g) || []).length >= 2);
+  assert.ok(threadRendererJs.includes("setLiveBlock(null)"));
+  assert.ok(composerJs.includes("buildSideBubble"));
   assert.ok(js.includes("openProject"));
   assert.ok(js.includes("initProject"));
   assert.ok(js.includes("openCreateModal"));
@@ -244,31 +267,31 @@ try {
   assert.ok(cssRuleBlock(css, ".rail-foot").includes("position: relative"), "rail foot must have stable positioning");
   assert.ok(cssRuleBlock(css, ".rail-foot").includes("z-index:"), "rail foot must set a stacking context");
   assert.ok(cssRuleBlock(css, ".rail-foot").includes("background:"), "rail foot must paint over scroll content");
-  assert.ok(js.includes("updateEndpointPreview"));
-  assert.ok(js.includes("resolveModelEndpoint"));
+  assert.ok(settingsModalJs.includes("updateEndpointPreview"));
+  assert.ok(settingsModalJs.includes("resolveModelEndpoint"));
   // Task2: 资料联网搜索/抓取入口已恢复
-  assert.ok(js.includes("/api/research/${action}"));
-  assert.ok(js.includes("function runResearch"));
+  assert.ok(drawerPanelsJs.includes("/api/research/${action}"));
+  assert.ok(drawerPanelsJs.includes("function runResearch"));
   assert.ok(css.includes(".research-form"));
   // Task3: 设置可配置联网搜索端点
-  assert.ok(js.includes("research_config"));
-  assert.ok(js.includes("settingsFields.searchEndpoint"));
-  assert.ok(js.includes('settingField("模型", "model-id"'), "settings model field must be editable model-id input");
-  assert.ok(!js.includes('settingField("模型", "select"'), "settings model field must no longer be a select");
-  assert.ok(js.includes("settings-model-suggestions"), "settings model field must preserve preset suggestions with a datalist");
-  assert.ok(js.includes('document.createElement("datalist")'), "settings model field must create a datalist for suggestions");
+  assert.ok(settingsModalJs.includes("research_config"));
+  assert.ok(settingsModalJs.includes("settingsFields.searchEndpoint"));
+  assert.ok(settingsModalJs.includes('settingField("模型", "model-id"'), "settings model field must be editable model-id input");
+  assert.ok(!settingsModalJs.includes('settingField("模型", "select"'), "settings model field must no longer be a select");
+  assert.ok(settingsModalJs.includes("settings-model-suggestions"), "settings model field must preserve preset suggestions with a datalist");
+  assert.ok(settingsModalJs.includes('document.createElement("datalist")'), "settings model field must create a datalist for suggestions");
   assert.ok(js.includes("openSettingsModal"));
-  assert.ok(js.includes("PROVIDER_PRESETS"));
-  assert.ok(js.includes("detectProviderPreset"));
-  assert.ok(js.includes("renderChapterPanel"));
+  assert.ok(settingsModalJs.includes("PROVIDER_PRESETS"));
+  assert.ok(settingsModalJs.includes("detectProviderPreset"));
+  assert.ok(drawerPanelsJs.includes("renderChapterPanel"));
   assert.ok(js.includes("setDrawerTab"));
   assert.ok(js.includes("/api/projects/open"));
   assert.ok(js.includes("/api/projects/init"));
-  assert.ok(js.includes("/api/commands/submit"));
+  assert.ok(composerJs.includes("/api/commands/submit"));
   assert.ok(js.includes("/api/chapters/read"));
   assert.ok(js.includes("openReader"));
   assert.ok(js.includes("showToast"));
-  assert.ok(js.includes("autoGrowComposer"));
+  assert.ok(composerJs.includes("autoGrowComposer"));
   assert.ok(js.includes("initPrivacyMode"));
   assert.ok(js.includes("setPrivacyMode"));
   assert.ok(js.includes("ww:privacy"));
@@ -294,12 +317,12 @@ try {
   assert.ok(quickRailJs.includes("document.addEventListener('pointerdown'"));
   assert.ok(quickRailJs.includes("activeOwner?.contains(event.target)"));
   assert.ok(!quickRailJs.includes("btn.title = slot.label"));
-  assert.ok(js.includes("parseUserCommand"));
-  assert.ok(js.includes("submitSideQuestion"));
-  assert.ok(js.includes("promoteAskEntry"));
+  assert.ok(composerJs.includes("parseUserCommand"));
+  assert.ok(composerJs.includes("submitSideQuestion"));
+  assert.ok(composerJs.includes("promoteAskEntry"));
   assert.ok(js.includes("agentPhaseLabel"));
-  assert.ok(js.includes("detectMainTaskImpact"));
-  assert.ok(js.includes("/api/commands/ask"));
+  assert.ok(composerJs.includes("detectMainTaskImpact"));
+  assert.ok(composerJs.includes("/api/commands/ask"));
   // Retry candidate, project list remove, and cache summary consistency.
   assert.ok(truthJs.includes("retry_available"));
   assert.ok(truthJs.includes("retry_unavailable_reason"));
@@ -310,11 +333,11 @@ try {
   assert.ok(js.includes('remove.addEventListener("click"'));
   assert.ok(js.includes("event.stopPropagation()"));
   assert.ok(js.includes("aria-label"));
-  assert.ok(js.includes("cacheSummary"));
-  assert.ok(js.includes("缓存键稳定") || js.includes("cacheSummary.explanation"));
+  assert.ok(drawerPanelsJs.includes("cacheSummary"));
+  assert.ok(drawerPanelsJs.includes("缓存键稳定") || drawerPanelsJs.includes("cacheSummary.explanation"));
   assert.ok(css.includes(".proj-menu"));
   assert.ok(css.includes(".proj-remove"));
-  assertSideQuestionParityWithBackend(js);
+  assertSideQuestionParityWithBackend(composerJs);
   assertDomSelectorsExist(js, html);
   assert.equal(dashboard.ok, true);
   assert.equal(dashboard.hasProject, true);

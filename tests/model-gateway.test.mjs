@@ -126,7 +126,10 @@ test("ModelClient forwards AbortSignal to provider adapters", async () => {
     signal: controller.signal
   });
 
-  assert.equal(captured.signal, controller.signal);
+  // After retry implementation, ModelClient wraps signal via AbortSignal.any()
+  // so the adapter receives a combined signal, not the original reference.
+  assert.ok(captured.signal instanceof AbortSignal, "adapter should receive an AbortSignal");
+  assert.ok(!captured.signal.aborted, "signal should not be aborted");
 });
 
 test("ModelClient resolves effective config before selecting a model", () => {

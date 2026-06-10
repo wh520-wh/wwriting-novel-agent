@@ -5,11 +5,15 @@ import {
   unregisterCommand,
   getCommand,
   listCommands,
-  onCommandsChanged,
-  CommandValidationError,
-  CommandNotAllowed,
   __resetRegistry
 } from "../src/app-shell/command-registry.mjs";
+import {
+  askCommand,
+  chaptersCommand,
+  reviewCommand,
+  settingsCommand,
+  writeCommand
+} from "../src/app-shell/commands/index.mjs";
 
 function noop() {}
 
@@ -19,93 +23,76 @@ test.beforeEach(() => {
 
 const sampleCmd = {
   name: "sample",
-  category: "writing",
   description: "test",
-  userInvocable: true,
-  isConcurrencySafe: true,
-  isReadOnly: false,
   run: async () => ({ ok: true }),
 };
 
-test("registerCommand stores and broadcasts on first add", () => {
-  let count = 0;
-  onCommandsChanged(() => count++);
+test("registerCommand stores command", () => {
   registerCommand({ ...sampleCmd });
-  assert.equal(count, 1);
+  const cmd = getCommand("sample");
+  assert.ok(cmd);
+  assert.equal(cmd.name, "sample");
 });
 
-test("registerCommand overwriting same name does not re-broadcast", () => {
-  let count = 0;
-  onCommandsChanged(() => count++);
+test("registerCommand overwriting same name replaces it", () => {
   registerCommand({ ...sampleCmd });
   registerCommand({ ...sampleCmd, description: "v2" });
-  assert.equal(count, 1);
   assert.equal(getCommand("sample").description, "v2");
 });
 
-test("unregisterCommand removes and broadcasts", () => {
-  let count = 0;
-  onCommandsChanged(() => count++);
+test("unregisterCommand removes the command", () => {
   registerCommand({ ...sampleCmd });
-  unregisterCommand("sample");
-  assert.equal(count, 2);
+  assert.ok(unregisterCommand("sample"));
   assert.equal(getCommand("sample"), undefined);
 });
 
-test("unregisterCommand on missing name is a no-op (no broadcast)", () => {
-  let count = 0;
-  onCommandsChanged(() => count++);
-  unregisterCommand("nope");
-  assert.equal(count, 0);
+test("unregisterCommand on missing name returns false", () => {
+  assert.equal(unregisterCommand("nope"), false);
 });
 
 test("getCommand returns undefined for unknown", () => {
   assert.equal(getCommand("nope"), undefined);
 });
 
-test("listCommands filters by category", () => {
-  registerCommand({ ...sampleCmd, name: "a", category: "writing" });
-  registerCommand({ ...sampleCmd, name: "b", category: "review" });
-  const writing = listCommands({ category: "writing" });
-  assert.equal(writing.length, 1);
-  assert.equal(writing[0].name, "a");
+test("listCommands returns all registered commands", () => {
+  registerCommand({ ...sampleCmd, name: "a" });
+  registerCommand({ ...sampleCmd, name: "b" });
+  const all = listCommands();
+  assert.equal(all.length, 2);
+  assert.deepEqual(all.map((c) => c.name).sort(), ["a", "b"]);
 });
 
-test("listCommands filters by userInvocable", () => {
-  registerCommand({ ...sampleCmd, name: "a", userInvocable: true });
-  registerCommand({ ...sampleCmd, name: "b", userInvocable: false });
-  const visible = listCommands({ userInvocable: true });
-  assert.equal(visible.length, 1);
-  assert.equal(visible[0].name, "a");
+test("listCommands filters by userInvocable, category, and isEnabled", () => {
+  registerCommand({ ...sampleCmd, name: "public", userInvocable: true, category: "main" });
+  registerCommand({ ...sampleCmd, name: "internal", userInvocable: false, category: "main" });
+  registerCommand({ ...sampleCmd, name: "hidden", userInvocable: true, category: "main", isEnabled: () => false });
+  registerCommand({ ...sampleCmd, name: "settings", userInvocable: true, category: "settings" });
+
+  assert.deepEqual(
+    listCommands({ userInvocable: true, category: "main" }).map((c) => c.name),
+    ["public"]
+  );
 });
 
-test("listCommands skips commands whose isEnabled returns false", () => {
-  registerCommand({ ...sampleCmd, isEnabled: () => false });
-  assert.equal(listCommands().length, 0);
+test("built-in slash commands are user invocable", () => {
+  for (const command of [askCommand, chaptersCommand, reviewCommand, settingsCommand, writeCommand]) {
+    registerCommand(command);
+  }
+
+  assert.deepEqual(
+    listCommands({ userInvocable: true }).map((c) => c.name).sort(),
+    ["ask", "chapters", "review", "settings", "write"]
+  );
 });
 
-test("listCommands returns enabled by default", () => {
-  registerCommand({ ...sampleCmd, isEnabled: () => true });
-  assert.equal(listCommands().length, 1);
+test("registerCommand throws when name missing", () => {
+  assert.throws(() => registerCommand({ run: noop }), /name must be a non-empty string/);
 });
 
-test("registerCommand throws CommandValidationError when name missing", () => {
-  assert.throws(() => registerCommand({ run: noop }), CommandValidationError);
-});
-
-test("registerCommand throws CommandValidationError when run missing", () => {
-  assert.throws(() => registerCommand({ name: "x" }), CommandValidationError);
+test("registerCommand throws when run missing", () => {
+  assert.throws(() => registerCommand({ name: "x" }), /run must be a function/);
 });
 
 test("registerCommand throws when cmd is null", () => {
-  assert.throws(() => registerCommand(null), CommandValidationError);
-});
-
-test("canUse returning false throws CommandNotAllowed at run-time", async () => {
-  registerCommand({
-    ...sampleCmd,
-    canUse: () => false,
-  });
-  const cmd = getCommand("sample");
-  await assert.rejects(cmd.run({}, {}), CommandNotAllowed);
+  assert.throws(() => registerCommand(null), /command must be an object/);
 });

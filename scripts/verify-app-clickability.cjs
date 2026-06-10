@@ -16,6 +16,7 @@ app.commandLine.appendSwitch("no-sandbox");
 app.commandLine.appendSwitch("disable-gpu");
 app.commandLine.appendSwitch("disable-gpu-sandbox");
 app.commandLine.appendSwitch("disable-http-cache");
+app.commandLine.appendSwitch("force-prefers-reduced-motion");
 
 app.whenReady().then(() => main().catch((error) => {
   console.error(error?.stack || error);
@@ -119,11 +120,13 @@ async function main() {
   clicks.push(await clickAndRead(win, ".rail-nav .nav-item:nth-of-type(2)", { label: "nav-search", consoleMessages }));
   clicks.push(await clickAndRead(win, ".rail-nav .nav-item:nth-of-type(3)", {
     label: "nav-skill",
-    expect: () => read(win, "document.getElementById('drawer').classList.contains('show') === true && document.querySelector('[data-dtab=\"run\"]').getAttribute('aria-selected') === 'true'")
+    expect: () => read(win, "document.getElementById('drawer').classList.contains('show') === true && document.querySelector('[data-dtab=\"run\"]').getAttribute('aria-selected') === 'true'"),
+    settleMs: 500
   }));
-  clicks.push(await clickAndRead(win, "#drawer-close", {
+  clicks.push(await clickAndReadStable(win, "#drawer-close", {
     label: "nav-skill-drawer-close",
-    expect: () => read(win, "document.getElementById('drawer').classList.contains('show') === false")
+    expect: () => read(win, "document.getElementById('drawer').classList.contains('show') === false"),
+    settleMs: 500
   }));
   clicks.push(await clickAndRead(win, ".rail-nav .nav-item:nth-of-type(5)", { label: "nav-auto" }));
   clicks.push(await clickAndRead(win, ".rail-nav .nav-item:nth-of-type(1)", {
@@ -136,17 +139,24 @@ async function main() {
   }));
   clicks.push(await clickAndRead(win, "#open-folder", {
     label: "open-folder-fallback",
-    expect: () => overlayVisible(win, "create-scrim")
+    expect: () => read(win, `
+      document.getElementById("create-scrim").classList.contains("show") === true &&
+      document.getElementById("create-heading").textContent.includes("手动填写本地文件夹")
+    `)
   }));
   clicks.push(await clickAndRead(win, "#create-x", {
     label: "open-folder-create-close",
     expect: () => overlayHidden(win, "create-scrim")
   }));
+  await assertRailPrimaryEntriesSeparate(win);
   clicks.push(await clickAndRead(win, ".proj.active", { label: "active-project" }));
 
   const newNovel = await clickAndRead(win, "#new-novel", {
     label: "new-novel",
-    expect: () => overlayVisible(win, "create-scrim")
+    expect: () => read(win, `
+      document.getElementById("create-scrim").classList.contains("show") === true &&
+      document.getElementById("create-heading").textContent.includes("开始一部新小说")
+    `)
   });
   clicks.push(newNovel);
   clicks.push(await clickAndRead(win, "#create-browse", { label: "create-browse" }));
@@ -164,11 +174,30 @@ async function main() {
     expect: () => overlayVisible(win, "settings-scrim")
   });
   clicks.push(settings);
+  const customModelId = `writer-custom-${Date.now()}`;
   clicks.push(await clickAndRead(win, ".sp-item:not(.on)", { label: "settings-provider-row" }));
   clicks.push(await clickAndRead(win, "#settings-add", {
     label: "settings-add",
     expect: () => read(win, "document.querySelector('#settings-provider-list .sp-item.on')?.textContent.includes('OpenAI') === true")
   }));
+  const modelControlState = await read(win, `
+    (() => {
+      const control = document.querySelector('[aria-label="模型"]');
+      if (!control) return { tagName: null };
+      control.value = ${JSON.stringify(customModelId)};
+      control.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: control.value }));
+      return {
+        tagName: control.tagName,
+        value: control.value,
+        listId: control.getAttribute("list"),
+        hasSuggestions: Boolean(document.getElementById("settings-model-suggestions"))
+      };
+    })()
+  `);
+  assert.equal(modelControlState.tagName, "INPUT", "settings model control must be an editable input");
+  assert.equal(modelControlState.value, customModelId, "settings model input must accept a custom model id");
+  assert.equal(modelControlState.listId, "settings-model-suggestions", "settings model input must reference preset suggestions");
+  assert.equal(modelControlState.hasSuggestions, true, "settings model suggestions datalist must exist");
   clicks.push(await clickAndRead(win, ".spd-affix-eye", {
     label: "settings-api-key-reveal",
     expect: () => read(win, "document.querySelector('.spd-affix-eye')?.getAttribute('aria-pressed') === 'true'")
@@ -183,6 +212,13 @@ async function main() {
     expect: () => overlayHidden(win, "settings-scrim"),
     settleMs: 500
   }));
+  const savedCustomModel = await read(win, `
+    fetch("/api/dashboard")
+      .then((response) => response.json())
+      .then((data) => data.project?.active_model?.model_name)
+  `);
+  assert.equal(savedCustomModel, customModelId, "saved settings must preserve a custom model id");
+  await waitUntil(win, "document.getElementById('settings-save')?.disabled === false", "settings save flow must finish before quick rail checks");
 
   const modalClosedState = await read(win, `
     (() => {
@@ -192,32 +228,42 @@ async function main() {
     })()
   `);
   assert.equal(modalClosedState, true, "settings/create overlays must be inert after close");
+  await clearStaleClosingStates(win);
 
-  clicks.push(await clickAndRead(win, '.quick-rail .qr-slot[data-key="chapters"]', {
+  await assertQuickRailPopoverClears(win);
+
+  clicks.push(await clickAndReadStable(win, '.quick-rail .qr-slot[data-key="chapters"]', {
     label: "open-chapters",
-    expect: () => read(win, "document.getElementById('drawer').classList.contains('show') && document.querySelector('[data-dtab=\"chapters\"]').getAttribute('aria-selected') === 'true'")
+    expect: () => read(win, "document.getElementById('drawer').classList.contains('show') && document.querySelector('[data-dtab=\"chapters\"]').getAttribute('aria-selected') === 'true'"),
+    settleMs: 500
   }));
-  clicks.push(await clickAndRead(win, ".chrow.completed", {
+  clicks.push(await clickAndReadStable(win, ".chrow.completed", {
     label: "completed-chapter-row",
-    expect: () => overlayVisible(win, "reader-scrim")
+    expect: () => overlayVisible(win, "reader-scrim"),
+    settleMs: 500
   }));
-  clicks.push(await clickAndRead(win, "#reader-close", {
+  clicks.push(await clickAndReadStable(win, "#reader-close", {
     label: "reader-close",
-    expect: () => overlayHidden(win, "reader-scrim")
+    expect: () => overlayHidden(win, "reader-scrim"),
+    settleMs: 700
   }));
-  clicks.push(await clickAndRead(win, "[data-dtab=\"model\"]", {
+  await closeTransientOverlays(win);
+  clicks.push(await clickAndRead(win, ".drawer-tabs [data-dtab=\"model\"]", {
     label: "drawer-model-tab",
     expect: () => read(win, "document.querySelector('[data-dtab=\"model\"]').getAttribute('aria-selected') === 'true'")
   }));
-  clicks.push(await clickAndRead(win, ".drawer-body .save-btn", {
+  clicks.push(await clickAndReadStable(win, ".drawer-body .save-btn", {
     label: "drawer-open-model-settings",
     expect: () => overlayVisible(win, "settings-scrim")
   }));
-  clicks.push(await clickAndRead(win, "#settings-cancel", {
+  clicks.push(await clickAndReadStable(win, "#settings-cancel", {
     label: "settings-cancel",
-    expect: () => overlayHidden(win, "settings-scrim")
+    expect: () => overlayHidden(win, "settings-scrim"),
+    settleMs: 500
   }));
-  clicks.push(await clickAndRead(win, "[data-dtab=\"run\"]", {
+  await waitUntil(win, "document.getElementById('settings-scrim')?.classList.contains('show') === false", "settings overlay must close before switching drawer tabs");
+  await clearStaleClosingStates(win);
+  clicks.push(await clickAndReadStable(win, ".drawer-tabs [data-dtab=\"run\"]", {
     label: "drawer-run-tab",
     expect: () => read(win, "document.querySelector('[data-dtab=\"run\"]').getAttribute('aria-selected') === 'true'")
   }));
@@ -227,9 +273,10 @@ async function main() {
   }));
   clicks.push(await clickAndRead(win, ".research-form .small-button", { label: "research-empty-search" }));
   clicks.push(await clickAndRead(win, ".research-form button:last-of-type", { label: "research-empty-fetch" }));
-  clicks.push(await clickAndRead(win, "#drawer-close", {
+  clicks.push(await clickAndReadStable(win, "#drawer-close", {
     label: "drawer-close",
-    expect: () => read(win, "document.getElementById('drawer').classList.contains('show') === false")
+    expect: () => read(win, "document.getElementById('drawer').classList.contains('show') === false"),
+    settleMs: 500
   }));
 
   const drawerClosedState = await read(win, `
@@ -249,9 +296,10 @@ async function main() {
     label: "open-panel",
     expect: () => read(win, "document.getElementById('drawer').classList.contains('show') === true && document.querySelector('[data-dtab=\"skills\"]').getAttribute('aria-selected') === 'true'")
   }));
-  clicks.push(await clickAndRead(win, "#drawer-scrim", {
+  clicks.push(await clickAndReadStable(win, "#drawer-scrim", {
     label: "drawer-scrim-close",
-    expect: () => read(win, "document.getElementById('drawer').classList.contains('show') === false")
+    expect: () => read(win, "document.getElementById('drawer').classList.contains('show') === false"),
+    settleMs: 500
   }));
 
   await win.webContents.executeJavaScript(`
@@ -382,11 +430,27 @@ async function clickAndRead(win, selector, { label = selector, expect = null, se
   const expectationPassed = expect ? await expect() : true;
   return {
     label,
+    rect: before.rect,
+    center: before.center,
     targetAtCenter: before.targetAtCenter,
     clicked: (after.clickCount ?? 0) > (before.clickCount ?? 0),
     expectationPassed,
     errors: after.errors
   };
+}
+
+async function clickAndReadStable(win, selector, options = {}) {
+  let last = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    last = await clickAndRead(win, selector, options);
+    if (last.clicked && last.expectationPassed && last.errors.length === 0) return last;
+    await clearStaleClosingStates(win);
+    await delay(120);
+  }
+  assert.equal(last?.clicked, true, `${options.label ?? selector} must receive a trusted pointer click after retries: ${JSON.stringify(last, null, 2)}`);
+  assert.equal(last?.expectationPassed, true, `${options.label ?? selector} did not produce the expected UI state after retries: ${JSON.stringify(last, null, 2)}`);
+  assert.deepEqual(last?.errors ?? [], [], `${options.label ?? selector} click errors after retries`);
+  return last;
 }
 
 async function probe(win, selector) {
@@ -426,6 +490,139 @@ async function probe(win, selector) {
   `);
 }
 
+async function assertQuickRailPopoverClears(win) {
+  const chaptersSelector = '.quick-rail .qr-slot[data-key="chapters"]';
+  const chapters = await triggerQuickRailHover(win, chaptersSelector);
+  assert.ok(chapters.rect, `chapters quick rail slot must have a layout box: ${JSON.stringify(chapters, null, 2)}`);
+  await waitUntil(win, "document.querySelectorAll('.qr-popover').length === 1", "hovering chapters quick rail slot must show exactly one popover");
+  win.webContents.sendInputEvent({ type: "mouseDown", x: chapters.center.x, y: chapters.center.y, button: "left", clickCount: 1 });
+  win.webContents.sendInputEvent({ type: "mouseUp", x: chapters.center.x, y: chapters.center.y, button: "left", clickCount: 1 });
+  await delay(80);
+  assert.equal(
+    await read(win, "document.querySelectorAll('.qr-popover').length"),
+    0,
+    "clicking a quick rail slot must clear its popover"
+  );
+  await closeDrawerIfOpen(win);
+
+  const research = await triggerQuickRailHover(win, '.quick-rail .qr-slot[data-key="research"]');
+  assert.ok(research.rect, `research quick rail slot must have a layout box: ${JSON.stringify(research, null, 2)}`);
+  await waitUntil(win, "document.querySelectorAll('.qr-popover').length === 1", "hovering research quick rail slot must show exactly one popover before blur");
+  await win.webContents.executeJavaScript(`window.dispatchEvent(new Event("blur")); true;`);
+  await delay(40);
+  assert.equal(
+    await read(win, "document.querySelectorAll('.qr-popover').length"),
+    0,
+    "window blur must clear a quick rail popover"
+  );
+  await win.webContents.executeJavaScript(`window.dispatchEvent(new Event("focus")); true;`);
+  await delay(40);
+}
+
+async function assertRailPrimaryEntriesSeparate(win) {
+  const result = await win.webContents.executeJavaScript(`
+    (() => {
+      const selectors = ["#new-novel", "#open-folder"];
+      const entries = Object.fromEntries(selectors.map((selector) => {
+        const el = document.querySelector(selector);
+        const rect = el?.getBoundingClientRect?.();
+        const center = rect ? { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) } : null;
+        const target = center ? document.elementFromPoint(center.x, center.y) : null;
+        return [selector, {
+          rect: rect ? { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width, height: rect.height } : null,
+          center,
+          centerHitsSelf: Boolean(target?.closest?.(selector))
+        }];
+      }));
+      const a = entries["#new-novel"].rect;
+      const b = entries["#open-folder"].rect;
+      const intersects = Boolean(a && b && a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top);
+      return { entries, intersects };
+    })();
+  `);
+  assert.ok(result.entries["#new-novel"].rect, `#new-novel must have a layout box: ${JSON.stringify(result, null, 2)}`);
+  assert.ok(result.entries["#open-folder"].rect, `#open-folder must have a layout box: ${JSON.stringify(result, null, 2)}`);
+  assert.equal(result.intersects, false, `#new-novel and #open-folder must not overlap: ${JSON.stringify(result, null, 2)}`);
+  assert.equal(result.entries["#new-novel"].centerHitsSelf, true, `#new-novel center point must hit its button: ${JSON.stringify(result, null, 2)}`);
+  assert.equal(result.entries["#open-folder"].centerHitsSelf, true, `#open-folder center point must hit its button: ${JSON.stringify(result, null, 2)}`);
+}
+
+async function triggerQuickRailHover(win, selector) {
+  const target = await probe(win, selector);
+  assert.ok(target.rect, `${selector} must have a layout box: ${JSON.stringify(target, null, 2)}`);
+  win.webContents.sendInputEvent({ type: "mouseMove", x: target.center.x, y: target.center.y });
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      el?.focus?.();
+      el?.dispatchEvent(new MouseEvent("mouseover", { view: window, bubbles: true }));
+      el?.dispatchEvent(new MouseEvent("mouseenter", { view: window, bubbles: false }));
+      return true;
+    })();
+  `);
+  return target;
+}
+
+async function closeDrawerIfOpen(win) {
+  const drawerOpen = await read(win, "document.getElementById('drawer')?.classList.contains('show') === true");
+  if (!drawerOpen) return;
+  await win.webContents.executeJavaScript(`
+    (() => {
+      document.getElementById("drawer-close")?.click();
+      return true;
+    })();
+  `);
+  await waitUntil(win, "document.getElementById('drawer')?.classList.contains('show') === false", "quick rail popover probe must restore the drawer to closed state");
+  await clearStaleClosingStates(win);
+  assert.equal(await read(win, "document.getElementById('drawer')?.dataset.closing !== 'true'"), true, "quick rail popover probe must wait until drawer closing state is cleared");
+  assert.equal(await read(win, "document.getElementById('drawer-scrim')?.dataset.closing !== 'true'"), true, "quick rail popover probe must wait until drawer scrim closing state is cleared");
+}
+
+async function closeTransientOverlays(win) {
+  await win.webContents.executeJavaScript(`
+    (() => {
+      if (document.getElementById("reader-scrim")?.classList.contains("show")) {
+        document.getElementById("reader-close")?.click();
+      }
+      if (document.getElementById("settings-scrim")?.classList.contains("show")) {
+        document.getElementById("settings-cancel")?.click();
+      }
+      if (document.getElementById("create-scrim")?.classList.contains("show")) {
+        document.getElementById("create-x")?.click();
+      }
+      return true;
+    })();
+  `);
+  await delay(350);
+  assert.equal(await overlayHidden(win, "reader-scrim"), true, "reader overlay must be closed before switching drawer tabs");
+  assert.equal(await overlayHidden(win, "settings-scrim"), true, "settings overlay must be closed before switching drawer tabs");
+  assert.equal(await overlayHidden(win, "create-scrim"), true, "create overlay must be closed before switching drawer tabs");
+}
+
+async function clearStaleClosingStates(win) {
+  await win.webContents.executeJavaScript(`
+    (() => {
+      for (const id of ["reader-scrim", "settings-scrim", "create-scrim", "drawer-scrim"]) {
+        const el = document.getElementById(id);
+        if (el && !el.classList.contains("show")) delete el.dataset.closing;
+      }
+      const drawer = document.getElementById("drawer");
+      if (drawer && !drawer.classList.contains("show") && drawer.getAttribute("aria-hidden") === "true") {
+        delete drawer.dataset.closing;
+      }
+      if (drawer && drawer.classList.contains("show") && drawer.getAttribute("aria-hidden") === "false") {
+        delete drawer.dataset.closing;
+        drawer.removeAttribute("inert");
+      }
+      const drawerScrim = document.getElementById("drawer-scrim");
+      if (drawerScrim?.classList.contains("show")) {
+        delete drawerScrim.dataset.closing;
+      }
+      return true;
+    })();
+  `);
+}
+
 function overlayVisible(win, id) {
   return read(win, `document.getElementById(${JSON.stringify(id)})?.classList.contains("show") === true`);
 }
@@ -448,6 +645,15 @@ async function waitForServer(targetPort) {
     await delay(120);
   }
   throw new Error("server not ready");
+}
+
+async function waitUntil(win, expression, message, timeoutMs = 2000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (await read(win, expression)) return;
+    await delay(50);
+  }
+  assert.equal(await read(win, expression), true, message);
 }
 
 function delay(ms) {
