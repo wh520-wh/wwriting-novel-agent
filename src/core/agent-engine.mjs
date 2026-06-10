@@ -606,9 +606,8 @@ async function runModelGatewayCall(projectRoot, project, state, runtime, request
   throwIfAborted(request.signal);
   await emit(CORE_EVENTS.ModelCallComplete, {
     projectRoot,
-    model: gatewayResult?.modelConfig?.model ?? "unknown",
+    model: gatewayResult?.modelConfig?.model_name ?? "unknown",
     usage: gatewayResult?.usageReport ?? {},
-    costTracker: runtime.modelClient.costTracker,
     options: { stage: state.current_stage, requestKind: request.kind, attempt: request.attempt }
   });
   if (runtime.modelClient.costTracker?.writeProjectReport) {
