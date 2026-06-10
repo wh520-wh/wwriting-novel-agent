@@ -1180,13 +1180,13 @@ async function serveStatic(pathname, response, { staticRoot }) {
       ? pathname.slice(sharedPrefix.length - 1)
       : pathname;
   if (isSharedModule && ![".js", ".mjs"].includes(path.extname(requested))) {
-    response.writeHead(404);
-    response.end("鏈壘鍒?");
+    response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+    response.end("未找到");
     return;
   }
   const target = path.resolve(root, `.${requested}`);
   if (!isPathInside(root, target)) {
-    response.writeHead(403);
+    response.writeHead(403, { "content-type": "text/plain; charset=utf-8" });
     response.end("禁止访问");
     return;
   }
@@ -1198,7 +1198,7 @@ async function serveStatic(pathname, response, { staticRoot }) {
     });
     response.end(content);
   } catch {
-    response.writeHead(404);
+    response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
     response.end("未找到");
   }
 }

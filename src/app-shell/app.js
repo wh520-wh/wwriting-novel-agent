@@ -1,4 +1,4 @@
-import { computeAgentTruth, deriveFailures, deriveActivity, deriveBadges } from "./agent-truth.mjs";
+import { computeAgentTruth, deriveFailures, deriveActivity, deriveBadges, agentPhaseLabel } from "./agent-truth.mjs";
 import { renderFailureCard } from "./components/failure-card.js";
 import { renderActivityStrip } from "./components/activity-strip.js";
 import { renderQuickRail, bindQuickRailKeys } from "./components/quick-rail.js";
@@ -668,30 +668,6 @@ async function handleStop() {
   }
 }
 
-// 顶栏 Agent 状态：待命 / 规划中 / 写作中 / 审稿中 / 保存中 / 已完成 / 需处理。
-function agentPhaseLabel(status, stage) {
-  if (status === "completed") return "已完成";
-  if (status === "blocked") return "需处理";
-  if (status === "loading") return "读取中";
-  if (status !== "running") return "待命";
-  switch (stage) {
-    case "queued":
-    case "planning":
-    case "planned":
-      return "规划中";
-    case "drafting":
-    case "needs_revision":
-    case "revising":
-      return "写作中";
-    case "reviewing":
-      return "审稿中";
-    case "finalizing":
-    case "summarizing":
-      return "保存中";
-    default:
-      return "运行中";
-  }
-}
 
 function setCreateStatus(text, kind) {
   refs.createStatus.textContent = text;
