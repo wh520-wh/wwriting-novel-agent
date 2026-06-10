@@ -202,3 +202,33 @@ test("runProject 返回 paused 结果时任务正常完结，不误标 interrupt
     await closeServer(ctx.server);
   }
 });
+
+test("dashboard 不下发明文 API Key，model-secret 端点按需返回", async () => {
+  const ctx = await setupServer();
+  try {
+    const save = await postJson(ctx.port, "/api/settings/update", {
+      active_model: {
+        provider: "openai-compatible",
+        model_name: "deepseek-chat",
+        base_url: "https://api.deepseek.com",
+        api_key: "sk-secret-abcd1234",
+        api_key_env: "WW_TEST_KEY"
+      }
+    });
+    assert.equal(save.res.status, 200, JSON.stringify(save.data));
+
+    const dashRes = await fetch(`http://127.0.0.1:${ctx.port}/api/dashboard`);
+    const dashText = await dashRes.text();
+    assert.ok(!dashText.includes("sk-secret-abcd1234"), "dashboard 响应不得包含明文 key");
+    const dash = JSON.parse(dashText);
+    assert.equal(dash.model_profile.api_key_saved, true);
+    assert.ok(dash.model_profile.api_key_masked.endsWith("1234"));
+
+    const secretRes = await fetch(`http://127.0.0.1:${ctx.port}/api/settings/model-secret`);
+    const secret = await secretRes.json();
+    assert.equal(secret.ok, true);
+    assert.equal(secret.value, "sk-secret-abcd1234");
+  } finally {
+    await closeServer(ctx.server);
+  }
+});

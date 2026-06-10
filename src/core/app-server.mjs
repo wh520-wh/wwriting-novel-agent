@@ -133,6 +133,10 @@ export function createAppShellServer({
       await serveSettingsUpdate(request, response, { workspace, selected, secretsRoot: localSecretsRoot });
       return;
     }
+    if (url.pathname === "/api/settings/model-secret" && request.method === "GET") {
+      await serveModelSecret(response, { workspace, selected, secretsRoot: localSecretsRoot });
+      return;
+    }
     if (url.pathname === "/api/commands/submit" && request.method === "POST") {
       await serveCommandSubmit(request, response, { workspace, selected, runJobs, getTaskQueue, testModel, testRunProject, projectLocks });
       return;
@@ -430,6 +434,19 @@ async function serveSettingsUpdate(request, response, context) {
   }
 }
 
+async function serveModelSecret(response, context) {
+  try {
+    const projectRoot = await resolveActiveProjectRoot(context);
+    const project = await loadProject(projectRoot);
+    const config = await loadConfigLayers(projectRoot, project);
+    const envName = config.effective?.active_model?.api_key_env ?? null;
+    const value = envName ? loadLocalSecretsSync(context.secretsRoot)[envName] ?? process.env[envName] ?? "" : "";
+    await serveJson(response, { ok: true, env: envName, value });
+  } catch (error) {
+    sendError(response, new HttpError(400, "model_secret_failed", error.message));
+  }
+}
+
 async function persistModelSecretIfPresent(body, secretsRoot) {
   const apiKey = body.active_model?.api_key ?? body.api_key;
   if (body.active_model) {
@@ -457,7 +474,7 @@ function buildModelProfile(activeModel = {}, secretsRoot) {
     endpoint: provider === "openai-compatible" ? modelEndpoint(activeModel?.base_url) : "",
     api_key_env: apiKeyEnv,
     api_key_saved: Boolean(secretValue),
-    api_key_value: secretValue,
+    api_key_masked: secretValue ? `••••${secretValue.slice(-4)}` : "",
     is_mock: provider === "mock",
     display: modelDisplayName(activeModel),
     saved_to: "project.yaml"

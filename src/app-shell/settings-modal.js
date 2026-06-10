@@ -22,6 +22,15 @@ export function createSettingsModal(ctx) {
   let settingsProviderId = "deepseek";
   const settingsFields = {};
 
+  async function fetchModelSecret() {
+    try {
+      const data = await getJson("/api/settings/model-secret");
+      return data.value ?? "";
+    } catch {
+      return "";
+    }
+  }
+
   async function fetchOutputStyles() {
     try {
       const data = await getJson("/api/output-styles");
@@ -121,7 +130,7 @@ export function createSettingsModal(ctx) {
     const endpointHint = document.createElement("div");
     endpointHint.className = "spd-hint";
     settingsFields.endpointHint = endpointHint;
-    settingsFields.apiKey = settingField("API Key", "password", { placeholder: "粘贴官方 API Key", value: profile.api_key_value ?? "", secret: true });
+    settingsFields.apiKey = settingField("API Key", "password", { placeholder: "粘贴官方 API Key", value: "", secret: true });
     settingsFields.apiKeyEnv = settingField("密钥环境变量名（不是密钥本身）", "text", {
       value: usingThisPreset && active.api_key_env ? active.api_key_env : preset.apiKeyEnv,
       placeholder: "XIAOMI_MIMO_API_KEY"
@@ -168,6 +177,14 @@ export function createSettingsModal(ctx) {
     );
     bindEndpointPreview();
     updateEndpointPreview();
+
+    if (usingThisPreset && profile.api_key_saved) {
+      void fetchModelSecret().then((value) => {
+        if (value && settingsFields.apiKey.input.isConnected && !settingsFields.apiKey.input.value) {
+          settingsFields.apiKey.input.value = value;
+        }
+      });
+    }
   }
 
   function settingField(labelText, type, { value = "", placeholder = "", options = null, secret = false } = {}) {
