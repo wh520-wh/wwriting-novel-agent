@@ -39,9 +39,10 @@ export function computeAgentTruth(data, now = Date.now()) {
   return { display: "待命", className: "idle", showRetry: false, showStop: false, refresh: false, reason: "" };
 }
 
-function agentPhaseLabel(status, stage) {
+export function agentPhaseLabel(status, stage) {
   if (status === "completed") return "已完成";
   if (status === "blocked") return "需处理";
+  if (status === "loading") return "读取中";
   if (status !== "running") return "待命";
   switch (stage) {
     case "queued":
