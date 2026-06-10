@@ -279,7 +279,7 @@ export function createComposer(ctx) {
 
   function resultMessageForCommand(result) {
     if (result.alreadyRunning) return "指令已记录；写作任务正在运行中。";
-    if (result.completed) return "项目已完成；如需继续写，请先增加目标章节数。";
+    if (result.completed) return "项目已完成；在「设置 → 写作目标」里提高目标章节数即可继续。";
     if (result.blocked) return "项目已阻塞；请在右侧「运行」面板处理错误。";
     if (result.started) return "写作任务已开始。";
     return result.message ?? "指令已记录。";
