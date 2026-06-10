@@ -95,8 +95,6 @@ let createModalMode = "new";
 let previousActivity = null;
 let previousBadgeSummary = null;
 
-// PLACEHOLDER_AFTER_CONST
-
 // --- extracted module instances (created before event bindings that reference their methods) ---
 let composer; // forward ref: thread-renderer's promote button calls composer.promoteAskEntry (assigned in Task 7)
 
@@ -265,7 +263,6 @@ refs.createScrim.addEventListener("click", (event) => {
 });
 refs.createBrowse.addEventListener("click", () => browseForCreatePath());
 refs.createSubmit.addEventListener("click", () => initProject(refs.createPath.value.trim()));
-// PLACEHOLDER_BOOTSTRAP
 
 document.addEventListener("keydown", (event) => {
   if ((event.ctrlKey || event.metaKey) && event.key === ".") {
@@ -304,7 +301,6 @@ function renderRailNav() {
     return button;
   }));
 }
-// PLACEHOLDER_LOAD
 
 async function loadAll() {
   await Promise.all([loadProjectList(), loadDashboard()]);
@@ -341,9 +337,11 @@ function renderProjectListFiltered() {
   );
 }
 
-async function loadDashboard() {
+async function loadDashboard(options = {}) {
   const requestId = ++dashboardRequestId;
-  setStatus("loading");
+  if (options.silent !== true) {
+    setStatus("loading");
+  }
   try {
     const data = await getJson("/api/dashboard");
     if (requestId !== dashboardRequestId) return;
@@ -400,7 +398,6 @@ function renderProjectEmpty(text) {
   empty.textContent = text;
   return empty;
 }
-// PLACEHOLDER_RENDER_DASHBOARD
 
 function renderDashboard(data) {
   lastDashboard = data;
@@ -487,7 +484,6 @@ function renderError(error) {
   setStatus("blocked");
   ensureRefreshLoop(true);
 }
-// PLACEHOLDER_THREAD
 
 function handleNav(key) {
   if (key === "new") return openCreateModal();
@@ -507,8 +503,6 @@ function handleQuick(label) {
   refs.composerInput.value = label;
   void submitComposer();
 }
-// PLACEHOLDER_COMPOSER
-// PLACEHOLDER_PROJECT
 
 async function forgetProject(projectRoot) {
   if (!projectRoot) return;
@@ -598,7 +592,6 @@ async function initProject(projectRoot) {
     refs.createSubmit.disabled = false;
   }
 }
-// PLACEHOLDER_STATUS
 
 function setStatus(status, stage = null) {
   const phase = agentPhaseLabel(status, stage);
@@ -679,8 +672,6 @@ function setCreateStatus(text, kind) {
   refs.createStatus.textContent = text;
   refs.createStatus.className = `spd-hint${kind ? ` ${kind}` : ""}`;
 }
-
-// PLACEHOLDER_READER
 
 async function openReader(chapterNo) {
   refs.readerPath.textContent = `chapters/${String(chapterNo).padStart(3, "0")}.md`;
@@ -768,7 +759,6 @@ function closeCreateModal() {
     }
   });
 }
-// PLACEHOLDER_PRIVACY
 
 function getFocusable(container) {
   return [...container.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
@@ -824,7 +814,7 @@ function applyPrivacyState(on) {
 
 function ensureRefreshLoop(active) {
   if (active && !refreshTimer) {
-    refreshTimer = window.setInterval(() => void loadDashboard(), 1800);
+    refreshTimer = window.setInterval(() => void loadDashboard({ silent: true }), 1800);
     return;
   }
   if (!active && refreshTimer) {
@@ -852,7 +842,6 @@ function showToast(message, type = "info") {
   };
   window.setTimeout(remove, type === "error" ? 5200 : 3200);
 }
-// PLACEHOLDER_UTILS
 
 let lastAnnounce = "";
 function announce(msg) {

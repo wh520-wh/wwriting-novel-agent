@@ -1446,3 +1446,18 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .spd-hint.error { color: #b4382f; }
 .spd-hint.success { color: #2f8f5b; }
 .spd-section { margin: 18px 0 4px; font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: 0.02em; }
+
+.filecard-rollup {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px dashed var(--line);
+  background: var(--surface-2);
+  color: var(--muted);
+  border-radius: var(--r-sm);
+  padding: 7px 10px;
+  font-size: 12px;
+  margin: 2px 0;
+  cursor: pointer;
+}
+.filecard-rollup:hover { background: var(--hover); color: var(--ink-2); }
