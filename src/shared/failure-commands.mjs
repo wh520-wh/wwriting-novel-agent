@@ -23,6 +23,7 @@ export function validateFailureCommand(command, args = {}) {
     }
     if (schema.type === 'string') {
       if (typeof v !== 'string') return { ok: false, error: `${key} 必须是字符串` };
+      if (schema.required && v.trim() === '') return { ok: false, error: `缺少必填参数: ${key}` };
       if (schema.maxLength && v.length > schema.maxLength) {
         return { ok: false, error: `${key} 超长 (>${schema.maxLength})` };
       }

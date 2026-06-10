@@ -20,6 +20,7 @@ import { handleSideQuestion } from "./side-question.mjs";
 import { expandInstruction, TaskQueue } from "./task-queue.mjs";
 import { resolveRetryCandidate, retryDashboardFields } from "./retry-candidates.mjs";
 import { validateFailureCommand } from "../shared/failure-commands.mjs";
+import { applyFailureResolution } from "./failure-actions.mjs";
 import { readFailures, markResolved } from "./failures-store.mjs";
 import { HttpError, sendError } from "./http-error.mjs";
 import { createProjectLockRegistry } from "./project-lock.mjs";
@@ -141,7 +142,7 @@ export function createAppShellServer({
       return;
     }
     if (url.pathname === "/api/failures/resolve" && request.method === "POST") {
-      await serveFailuresResolve(request, response, { workspace, selected });
+      await serveFailuresResolve(request, response, { workspace, selected, runJobs, getTaskQueue, testModel, testRunProject, projectLocks });
       return;
     }
     if (url.pathname === "/api/run/stop" && request.method === "POST") {
@@ -839,8 +840,14 @@ async function listAllowedModels(projectRoot) {
   const project = await loadProject(projectRoot);
   const config = await loadConfigLayers(projectRoot, project);
   const list = config.effective?.allowed_models;
-  if (Array.isArray(list) && list.length > 0) return list;
-  return config.effective?.active_model ? [config.effective.active_model] : [];
+  const models = Array.isArray(list) && list.length > 0
+    ? list
+    : config.effective?.active_model
+      ? [config.effective.active_model]
+      : [];
+  return models
+    .map((model) => (typeof model === "string" ? model : model?.model_name))
+    .filter(Boolean);
 }
 
 async function serveFailuresResolve(request, response, context) {
@@ -880,6 +887,7 @@ async function serveFailuresResolve(request, response, context) {
       sendError(response, new HttpError(409, "CONFLICT", "故障卡已处理"));
       return;
     }
+    return await withProjectLock(context, projectRoot, async () => {
     markResolved(projectRoot, failureId, {
       action: command,
       submittedAt: new Date().toISOString(),
@@ -892,7 +900,29 @@ async function serveFailuresResolve(request, response, context) {
       message: command,
       data: { failureId, args }
     });
-    await serveJson(response, { ok: true });
+    const applied = await applyFailureResolution(projectRoot, { command, args });
+    let resumed = false;
+    if (applied.resumeRun) {
+      const job = context.runJobs.get(path.resolve(projectRoot));
+      if (!isJobRunning(job)) {
+        const queue = await context.getTaskQueue(projectRoot);
+        const stateNow = await loadState(projectRoot);
+        const task =
+          (await queue.createRecoveryTask({
+            instruction: stateNow.last_user_instruction ?? "继续当前写作任务",
+            mode: "write",
+            currentStage: stateNow.current_stage ?? "queued",
+            recovery: { reason: `failure:${command}` }
+          })) ?? (await queue.promoteNext());
+        if (task) {
+          const project = await loadProject(projectRoot);
+          const started = await startProjectRun(projectRoot, project, context, task, { source: "failure_card" });
+          resumed = started.started === true;
+        }
+      }
+    }
+    await serveJson(response, { ok: true, resumed, message: applied.message });
+    });
   } catch (err) {
     sendError(response, err);
   }
@@ -1015,12 +1045,24 @@ async function startProjectRun(projectRoot, project, context, task, instructionM
         });
         return;
       }
+      if (result?.paused) {
+        job.status = "done";
+        await queue.complete(task.id, result);
+        await appendEvent(projectRoot, {
+          type: "project_run_finished",
+          project_id: project.project_id,
+          stage: "run",
+          message: "已按你的要求停在这里。",
+          data: result
+        });
+        return;
+      }
       await queue.complete(task.id, result);
       await appendEvent(projectRoot, {
         type: "project_run_finished",
         project_id: project.project_id,
         stage: "run",
-        message: result.completed ? "写作任务已完成。" : "写作任务已停止。",
+        message: result?.completed ? "写作任务已完成。" : "写作任务已停止。",
         data: result
       });
       const latestState = await loadState(projectRoot).catch(() => runningState);
