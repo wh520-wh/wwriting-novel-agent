@@ -58,7 +58,7 @@ export async function runProject(projectRoot, options = {}) {
 
   state.project_status = "running";
   if (!state.current_stage || state.current_stage === "idle") {
-    state.current_stage = "queued";
+    setStage(state, "queued");
   }
   await saveState(projectRoot, state);
   await appendEvent(projectRoot, {
@@ -90,8 +90,12 @@ export async function runProject(projectRoot, options = {}) {
         return { completed: false, paused: true, projectRoot };
       }
       state = await loadState(projectRoot);
-      state.last_heartbeat = new Date().toISOString();
-      await saveState(projectRoot, state);
+      const nowIso = new Date().toISOString();
+      const lastBeatMs = Date.parse(state.last_heartbeat ?? "");
+      if (Number.isNaN(lastBeatMs) || Date.now() - lastBeatMs > 1500) {
+        state.last_heartbeat = nowIso;
+        await saveState(projectRoot, state);
+      }
       if (typeof options.onHeartbeat === "function") {
         await options.onHeartbeat({ step, stage: state.current_stage, chapter: state.current_chapter_no });
       }
@@ -100,7 +104,7 @@ export async function runProject(projectRoot, options = {}) {
       }
       if (state.current_chapter_no > project.target_chapters) {
         state.project_status = "completed";
-        state.current_stage = "completed";
+        setStage(state, "completed");
         await saveState(projectRoot, state);
         await appendEvent(projectRoot, {
           type: "project_completed",
@@ -165,7 +169,7 @@ export async function runProject(projectRoot, options = {}) {
     }
     if (error.message?.startsWith("No provider adapter configured for ")) {
       state.project_status = "blocked";
-      state.current_stage = "blocked";
+      setStage(state, "blocked");
       state.blocked_reason = error.message;
       state.blocked_at = new Date().toISOString();
       await saveState(projectRoot, state);
@@ -254,7 +258,7 @@ function applyEffectiveProjectConfig(project, configLayers) {
 
 async function enterPlanning(projectRoot, project, state) {
   const stateBefore = { ...state };
-  state.current_stage = "planning";
+  setStage(state, "planning");
   await saveState(projectRoot, state);
   const skillPrompts = await collectSkillPromptHooks(projectRoot, project, "planning", {
     chapter_no: state.current_chapter_no,
@@ -285,14 +289,14 @@ async function enterPlanning(projectRoot, project, state) {
     stage: "planning",
     message: "chapter planning started"
   });
-  state.current_stage = "planned";
+  setStage(state, "planned");
   await saveState(projectRoot, state);
   await writeCheckpoint(projectRoot, checkpointPayload(project, stateBefore, state, [], [], null, { skill_hooks: skillPrompts.hooks }));
 }
 
 async function enterDrafting(projectRoot, project, state) {
   const stateBefore = { ...state };
-  state.current_stage = "drafting";
+  setStage(state, "drafting");
   await saveState(projectRoot, state);
   await upsertChapter(projectRoot, {
     chapter_no: state.current_chapter_no,
@@ -305,7 +309,7 @@ async function draftNextSegment(projectRoot, project, state, runtime, options) {
   const draft = await readDraft(projectRoot, project, state.current_chapter_no);
   const gate = runWordCountGate(draft, project.min_words_per_chapter);
   if (gate.status === "passed") {
-    const next = { ...state, current_stage: "reviewing" };
+    const next = setStage({ ...state }, "reviewing");
     await saveState(projectRoot, next);
     await writeCheckpoint(projectRoot, checkpointPayload(project, state, next));
     return;
@@ -325,7 +329,7 @@ async function draftNextSegment(projectRoot, project, state, runtime, options) {
     expectedSegmentNo: segmentNo
   });
   const latestState = await loadState(projectRoot);
-  const next = { ...latestState, current_stage: "drafting", current_segment_no: segmentNo };
+  const next = setStage({ ...latestState, current_segment_no: segmentNo }, "drafting");
   await saveState(projectRoot, next);
   await writeCheckpoint(projectRoot, checkpointPayload(project, state, next, [response.toolCall], [result], null, checkpointModelExtras(response.modelCall)));
 
@@ -350,7 +354,7 @@ async function reviewChapter(projectRoot, project, state) {
   const draft = await readDraft(projectRoot, project, state.current_chapter_no);
   const gate = runWordCountGate(draft, project.min_words_per_chapter);
   if (gate.status === "failed") {
-    const next = { ...state, current_stage: "needs_revision", last_quality_gate_results: [gate] };
+    const next = setStage({ ...state, last_quality_gate_results: [gate] }, "needs_revision");
     await saveState(projectRoot, next);
     await upsertChapter(projectRoot, {
       chapter_no: state.current_chapter_no,
@@ -390,7 +394,7 @@ async function reviewChapter(projectRoot, project, state) {
   const failedSkillGates = skillGateResults.filter((result) => result.status === "failed");
   if (failedSkillGates.length > 0) {
     const qualityResults = [gate, ...skillGateResults];
-    const next = { ...state, current_stage: "needs_revision", last_quality_gate_results: qualityResults };
+    const next = setStage({ ...state, last_quality_gate_results: qualityResults }, "needs_revision");
     await saveState(projectRoot, next);
     await upsertChapter(projectRoot, {
       chapter_no: state.current_chapter_no,
@@ -422,7 +426,7 @@ async function reviewChapter(projectRoot, project, state) {
     } catch (err) { console.warn('appendFailure failed:', err.message); }
     return;
   }
-  const next = { ...state, current_stage: "finalizing" };
+  const next = setStage({ ...state }, "finalizing");
   await saveState(projectRoot, next);
   await upsertChapter(projectRoot, {
     chapter_no: state.current_chapter_no,
@@ -453,7 +457,7 @@ async function reviseChapter(projectRoot, project, state, runtime, options = {})
     expectedSegmentNo: segmentNo
   });
   const latestState = await loadState(projectRoot);
-  const next = { ...latestState, current_stage: "reviewing", current_segment_no: segmentNo };
+  const next = setStage({ ...latestState, current_segment_no: segmentNo }, "reviewing");
   await saveState(projectRoot, next);
   await writeCheckpoint(projectRoot, checkpointPayload(project, state, next, [response.toolCall], [result], null, checkpointModelExtras(response.modelCall)));
 }
@@ -495,7 +499,7 @@ async function finalizeChapter(projectRoot, project, state) {
     checksum: result.checksum,
     content: postProcess.content
   });
-  const next = { ...state, current_stage: "summarizing" };
+  const next = setStage({ ...state }, "summarizing");
   await saveState(projectRoot, next);
   await upsertChapter(projectRoot, {
     chapter_no: state.current_chapter_no,
@@ -510,12 +514,12 @@ async function finalizeChapter(projectRoot, project, state) {
 
 async function completeChapter(projectRoot, project, state) {
   const nextChapter = state.current_chapter_no + 1;
-  const next = {
+  const targetStage = nextChapter > project.target_chapters ? "completed" : "queued";
+  const next = setStage({
     ...state,
     current_chapter_no: nextChapter,
-    current_stage: nextChapter > project.target_chapters ? "completed" : "queued",
     current_segment_no: 0
-  };
+  }, targetStage);
   await upsertChapter(projectRoot, {
     chapter_no: state.current_chapter_no,
     status: "completed"
@@ -1070,15 +1074,14 @@ async function blockProject(projectRoot, project, state, reason, data = {}, opts
   if (current.project_status === "blocked") {
     return current;
   }
-  const next = {
+  const next = setStage({
     ...current,
     project_status: "blocked",
-    current_stage: "blocked",
     blocked_reason: reason,
     blocked_at_stage: current.current_stage,
     blocked_at: new Date().toISOString(),
     blocked_data: data
-  };
+  }, "blocked");
   await saveState(projectRoot, next);
   if (Number.isInteger(current.current_chapter_no)) {
     await upsertChapter(projectRoot, {
@@ -1148,6 +1151,15 @@ function checkpointPayload(project, stateBefore, stateAfter, toolCalls = [], too
     state_after: stateAfter,
     error
   };
+}
+
+// 切换阶段时盖时间戳；同阶段重入不刷新（活动条耗时依赖它）。
+function setStage(state, stage) {
+  if (state.current_stage !== stage) {
+    state.stage_entered_at = new Date().toISOString();
+  }
+  state.current_stage = stage;
+  return state;
 }
 
 function hasEnabledStageOverrides(stageOverrides) {
