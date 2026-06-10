@@ -10,6 +10,7 @@ import { MockProviderAdapter, OpenAICompatibleAdapter } from "./provider-adapter
 import { PromptCompiler } from "./prompt-compiler.mjs";
 import { assertToolCallForChapter, runWordCountGate } from "./quality-gates.mjs";
 import { collectSkillPromptHooks, loadEnabledSkills, runPostProcessHooks, runSkillChecks } from "./skill-runtime.mjs";
+import { ensureDefaultToolHooks, runAfterToolUse, runBeforeToolUse } from "./tool-hooks.mjs";
 import { appendChapterSegment, chapterFileName, finalizeChapterFile, readDraft, ToolValidationError } from "./tool-runtime.mjs";
 import { buildContinuityPromptContext, recordChapterMemory } from "./chapter-memory.mjs";
 import { loadOutputStyles } from "./output-style-loader.mjs";
@@ -541,6 +542,7 @@ async function completeChapter(projectRoot, project, state) {
 }
 
 async function createModelRuntime(projectRoot, project, options, fallbackModel) {
+  ensureDefaultToolHooks();
   const existingCost = await readJson(safeJoin(projectRoot, "cost.json"), null);
   const existingCacheReport = await readJson(safeJoin(projectRoot, "cache_report.json"), { entries: {} });
   const costTracker = options.costTracker ?? new CostTracker({ summary: existingCost });
@@ -968,12 +970,48 @@ async function executeToolCall(projectRoot, project, state, toolCall, options) {
     });
     throw new ProjectBlockedError("unsupported_tool");
   }
+
+  const hookContext = { projectRoot, project, state, toolCall };
+
+  // BeforeToolUse: 可一票否决
+  const beforeResult = await runBeforeToolUse(hookContext);
+  if (!beforeResult.allow) {
+    await appendEvent(projectRoot, {
+      type: "tool_call_rejected",
+      project_id: project.project_id,
+      chapter_no: state.current_chapter_no,
+      stage: state.current_stage,
+      severity: "warn",
+      message: beforeResult.reason ?? "blocked by BeforeToolUse hook",
+      data: { tool: toolCall.tool, reason: beforeResult.reason }
+    });
+    await blockProject(projectRoot, project, state, "tool_hook_blocked", {
+      tool: toolCall.tool,
+      reason: beforeResult.reason
+    });
+    throw new ProjectBlockedError("tool_hook_blocked");
+  }
+
+  const startMs = Date.now();
   try {
-    return await appendChapterSegment(projectRoot, project, toolCall.input, {
+    const result = await appendChapterSegment(projectRoot, project, toolCall.input, {
       requireProjectId: true,
       ...options
     });
+    await runAfterToolUse({
+      ...hookContext,
+      result,
+      ok: true,
+      durationMs: Date.now() - startMs
+    });
+    return result;
   } catch (error) {
+    await runAfterToolUse({
+      ...hookContext,
+      ok: false,
+      durationMs: Date.now() - startMs,
+      error
+    });
     if (error instanceof ToolValidationError) {
       await appendEvent(projectRoot, {
         type: "tool_call_rejected",
