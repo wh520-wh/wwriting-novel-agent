@@ -20,6 +20,7 @@ const refs = {
   railNav: document.querySelector("#rail-nav"),
   newNovel: document.querySelector("#new-novel"),
   projectCount: document.querySelector("#project-count"),
+  projectFilter: document.querySelector("#project-filter"),
   projectList: document.querySelector("#project-list"),
   projectOpenStatus: document.querySelector("#project-open-status"),
   openFolder: document.querySelector("#open-folder"),
@@ -224,6 +225,7 @@ refs.refresh.addEventListener("click", () => loadAll());
 refs.newNovel.addEventListener("click", () => openCreateModal());
 refs.openFolder.addEventListener("click", () => openFromFolder());
 refs.openSettings.addEventListener("click", () => openSettingsModal());
+refs.projectFilter?.addEventListener("input", () => renderProjectListFiltered());
 refs.drawerClose.addEventListener("click", () => closeDrawer());
 refs.drawerScrim.addEventListener("click", () => closeDrawer());
 refs.drawerTabs.addEventListener("click", (event) => {
@@ -288,28 +290,17 @@ refs.privacyToggle.addEventListener("click", () => setPrivacyMode(refs.app.datas
 function renderRailNav() {
   const items = [
     { key: "new", icon: "compose", label: "新对话" },
-    { key: "search", icon: "search", label: "搜索" },
-    { key: "skill", icon: "skill", label: "技能" },
-    { key: "plugin", icon: "plugin", label: "插件", disabled: true },
-    { key: "auto", icon: "clock", label: "自动化" }
+    { key: "skill", icon: "skill", label: "技能" }
   ];
   refs.railNav.replaceChildren(...items.map((item) => {
     const button = document.createElement("button");
-    button.className = `nav-item${item.disabled ? " disabled" : ""}`;
+    button.className = "nav-item";
     button.type = "button";
-    button.disabled = Boolean(item.disabled);
     button.append(icon(item.icon, 16));
     const span = document.createElement("span");
     span.textContent = item.label;
     button.append(span);
-    if (item.disabled) {
-      const soon = document.createElement("span");
-      soon.className = "nav-soon";
-      soon.textContent = "即将上线";
-      button.append(soon);
-    } else {
-      button.addEventListener("click", () => handleNav(item.key));
-    }
+    button.addEventListener("click", () => handleNav(item.key));
     return button;
   }));
 }
@@ -319,18 +310,35 @@ async function loadAll() {
   await Promise.all([loadProjectList(), loadDashboard()]);
 }
 
+let projectListData = null;
+
 async function loadProjectList() {
   try {
     const data = await getJson("/api/projects/list");
-    refs.projectCount.textContent = formatNumber(data.projects.length);
-    refs.projectList.replaceChildren(
-      ...(data.projects.length > 0
-        ? data.projects.map((project) => renderProjectNav(project, data.selectedProjectRoot))
-        : [renderProjectEmpty("还没有小说，点上方「新建小说」开始")])
-    );
+    projectListData = data;
+    renderProjectListFiltered();
   } catch (error) {
+    projectListData = null;
     refs.projectList.replaceChildren(renderProjectEmpty(error.message));
   }
+}
+
+function renderProjectListFiltered() {
+  if (!projectListData) return;
+  const query = (refs.projectFilter?.value ?? "").trim().toLowerCase();
+  const filtered = query
+    ? projectListData.projects.filter((project) =>
+        [project.title, project.story_seed, project.model_label].some((text) =>
+          String(text ?? "").toLowerCase().includes(query)
+        )
+      )
+    : projectListData.projects;
+  refs.projectCount.textContent = formatNumber(filtered.length);
+  refs.projectList.replaceChildren(
+    ...(filtered.length > 0
+      ? filtered.map((project) => renderProjectNav(project, projectListData.selectedProjectRoot))
+      : [renderProjectEmpty(query ? "没有匹配的小说。" : "还没有小说，点上方「新建小说」开始")])
+  );
 }
 
 async function loadDashboard() {
@@ -483,9 +491,7 @@ function renderError(error) {
 
 function handleNav(key) {
   if (key === "new") return openCreateModal();
-  if (key === "search") return showToast("搜索：跨小说 / 章节检索即将上线。", "info");
   if (key === "skill") return openDrawer("run");
-  if (key === "auto") return showToast("自动化：长跑连续生成 / 定时任务即将上线。", "info");
 }
 
 function handleQuick(label) {

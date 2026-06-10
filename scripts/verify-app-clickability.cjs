@@ -117,8 +117,11 @@ async function main() {
     label: "privacy-toggle",
     expect: () => read(win, "document.getElementById('app').dataset.privacy === 'on'")
   }));
-  clicks.push(await clickAndRead(win, ".rail-nav .nav-item:nth-of-type(2)", { label: "nav-search", consoleMessages }));
-  clicks.push(await clickAndRead(win, ".rail-nav .nav-item:nth-of-type(3)", {
+  clicks.push(await clickAndRead(win, "#project-filter", {
+    label: "project-filter-focus",
+    expect: () => read(win, "document.activeElement?.id === 'project-filter'")
+  }));
+  clicks.push(await clickAndRead(win, ".rail-nav .nav-item:nth-of-type(2)", {
     label: "nav-skill",
     expect: () => read(win, "document.getElementById('drawer').classList.contains('show') === true && document.querySelector('[data-dtab=\"run\"]').getAttribute('aria-selected') === 'true'"),
     settleMs: 500
@@ -128,7 +131,6 @@ async function main() {
     expect: () => read(win, "document.getElementById('drawer').classList.contains('show') === false"),
     settleMs: 500
   }));
-  clicks.push(await clickAndRead(win, ".rail-nav .nav-item:nth-of-type(5)", { label: "nav-auto" }));
   clicks.push(await clickAndRead(win, ".rail-nav .nav-item:nth-of-type(1)", {
     label: "nav-new",
     expect: () => overlayVisible(win, "create-scrim")
