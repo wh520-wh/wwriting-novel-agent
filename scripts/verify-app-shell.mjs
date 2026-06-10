@@ -423,7 +423,7 @@ try {
   assert.equal(settingsDashboard.project.active_model.api_key_env, "WRITER_API_KEY");
   assert.equal(settingsDashboard.model_profile.display, "openai-compatible / writer-smoke");
   assert.equal(settingsDashboard.model_profile.api_key_saved, true);
-  assert.equal(settingsDashboard.model_profile.api_key_value, "sk-smoke-key-for-local-secret");
+  assert.ok(settingsDashboard.model_profile.api_key_masked.endsWith("cret"));
   assert.equal(settingsDashboard.project.tool_permissions.network_allowed, true);
   assert.equal(settingsDashboard.project.budget_config.max_model_calls, 77);
   assert.equal(settingsDashboard.project.research_config.search_endpoint, "https://search.example.test/api");
