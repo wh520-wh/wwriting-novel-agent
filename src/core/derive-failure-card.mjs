@@ -22,46 +22,46 @@ function actionsForKind(kind, event) {
   const data = event.data ?? {};
   switch (kind) {
     case 'words-short': {
-      const expected = data.expected_words ?? null;
+      const expected = data.min_words ?? data.expected_words ?? null;
       const actual = data.actual_words ?? 0;
       const gap = expected != null ? Math.max(1, expected - actual) : null;
       return [
         gap
-          ? { label: `补写 ${gap} 字`, command: { command: 'fill-words', args: { targetWords: gap } } }
-          : { label: '继续补写', command: { command: 'fill-words', args: { targetWords: 500 } } },
-        { label: '接受当前字数继续', command: { command: 'accept-current-words', args: {} } },
-        { label: '跳过本段', command: { command: 'skip-segment', args: {} }, destructive: true }
+          ? { label: `补写 ${gap} 字`, command: 'fill-words', args: { targetWords: gap } }
+          : { label: '继续补写', command: 'fill-words', args: { targetWords: 500 } },
+        { label: '接受当前字数继续', command: 'accept-current-words', args: {} },
+        { label: '跳过本段', command: 'skip-segment', args: {}, destructive: true }
       ];
     }
     case 'tool-rejected':
       return [
-        { label: '让它重试', command: { command: 'retry-segment', args: {} } },
-        { label: '改提示词后重试', command: { command: 'retry-with-prompt', args: { prompt: '' } } },
-        { label: '停在这里我手动处理', command: { command: 'pause-here', args: {} } }
+        { label: '让它重试', command: 'retry-segment', args: {} },
+        { label: '改提示词后重试', command: 'retry-with-prompt', args: { prompt: '' } },
+        { label: '停在这里我手动处理', command: 'pause-here', args: {} }
       ];
     case 'budget-exhausted': {
-      const current = data.max ?? 200;
+      const current = data.max_model_calls ?? data.max ?? 200;
       return [
-        { label: `提高预算到 ${current * 2}`, command: { command: 'raise-budget', args: { newMaxModelCalls: current * 2 } } },
-        { label: '停在这里', command: { command: 'pause-here', args: {} } }
+        { label: `提高预算到 ${current * 2}`, command: 'raise-budget', args: { newMaxModelCalls: current * 2 } },
+        { label: '停在这里', command: 'pause-here', args: {} }
       ];
     }
     case 'provider-error':
       return [
-        { label: '重试当前段', command: { command: 'retry-segment', args: {} } },
-        { label: '切换备用模型', command: { command: 'switch-model', args: { modelId: '' } } },
-        { label: '停在这里', command: { command: 'pause-here', args: {} } }
+        { label: '重试当前段', command: 'retry-segment', args: {} },
+        { label: '去设置切换模型', command: 'switch-model', args: { modelId: '' } },
+        { label: '停在这里', command: 'pause-here', args: {} }
       ];
     case 'review-failed':
       return [
-        { label: '让它按建议改写', command: { command: 'apply-review-suggestions', args: {} } },
-        { label: '接受当前稿', command: { command: 'accept-review-current', args: {} } },
-        { label: '我来人工改', command: { command: 'manual-review-handoff', args: {} } }
+        { label: '让它按建议改写', command: 'apply-review-suggestions', args: {} },
+        { label: '接受当前稿', command: 'accept-review-current', args: {} },
+        { label: '我来人工改', command: 'manual-review-handoff', args: {} }
       ];
     default:
       return [
-        { label: '重试', command: { command: 'retry-segment', args: {} } },
-        { label: '停在这里', command: { command: 'pause-here', args: {} } }
+        { label: '重试', command: 'retry-segment', args: {} },
+        { label: '停在这里', command: 'pause-here', args: {} }
       ];
   }
 }
@@ -82,11 +82,11 @@ function bodyForKind(kind, event, state) {
   const data = event.data ?? {};
   switch (kind) {
     case 'words-short':
-      return `第 ${ch} 章本段写了 ${data.actual_words ?? '?'} 字，低于 ${data.expected_words ?? '?'} 字门槛。智能体没有继续，等你决定怎么处理。`;
+      return `第 ${ch} 章本段写了 ${data.actual_words ?? '?'} 字，低于 ${data.min_words ?? data.expected_words ?? '?'} 字门槛。智能体没有继续，等你决定怎么处理。`;
     case 'tool-rejected':
       return `第 ${ch} 章的工具调用 ${data.tool ?? ''} 被拒。智能体停在 ${state.current_stage ?? '未知'} 阶段。`;
     case 'budget-exhausted':
-      return `第 ${ch} 章已经用完模型调用预算 (${data.used ?? '?'} / ${data.max ?? '?'})，等你决定。`;
+      return `第 ${ch} 章已经用完模型调用预算 (${data.model_calls ?? data.used ?? '?'} / ${data.max_model_calls ?? data.max ?? '?'})，等你决定。`;
     case 'provider-error':
       return `第 ${ch} 章遇到模型服务异常: ${event.message ?? '未知'}。`;
     case 'review-failed':
