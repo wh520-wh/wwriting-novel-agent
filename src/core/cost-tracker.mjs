@@ -1,5 +1,4 @@
 import { safeJoin, writeJsonAtomic } from "./fs-utils.mjs";
-import { on, CORE_EVENTS } from "./event-bus.mjs";
 
 export function estimateCost(usageReport, pricing = {}) {
   const inputPerMillion = pricing.input_per_million ?? 0;
@@ -64,19 +63,3 @@ function addToBucket(buckets, key, usageReport, cost) {
   buckets[key].estimatedCost = Number((buckets[key].estimatedCost + cost).toFixed(8));
 }
 
-// Subscribe to model-call:complete and call recordUsage
-on(CORE_EVENTS.ModelCallComplete, (payload) => {
-  try {
-    if (!payload || !payload.usage) return;
-    const costTracker = payload.costTracker;
-    if (!costTracker || typeof costTracker.record !== "function") return;
-    const stage = payload.options?.stage ?? "unknown";
-    const usageReport = {
-      ...payload.usage,
-      provider: payload.model
-    };
-    costTracker.record({ stage, usageReport });
-  } catch (e) {
-    console.error("cost-tracker: failed to record usage from event:", e);
-  }
-});
