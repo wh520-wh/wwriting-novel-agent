@@ -566,15 +566,23 @@ export function createThreadRenderer(ctx) {
   // PLACEHOLDER_TR_FAILURE
 
   async function submitFailureAction(card, action) {
+    // 兼容历史 failures.jsonl 里的旧嵌套形状 { command: { command, args } }
+    const command = typeof action.command === "string" ? action.command : action.command?.command;
+    const args = typeof action.command === "string" ? (action.args ?? {}) : (action.command?.args ?? {});
+    if (command === "switch-model" && !args.modelId) {
+      ctx.openSettingsModal?.();
+      return;
+    }
+    if (command === "retry-with-prompt" && !String(args.prompt ?? "").trim()) {
+      ctx.prefillComposer?.(`/write 重试第 ${card.chapterNo ?? ""} 章当前段，注意：`);
+      return;
+    }
     try {
-      await postJson("/api/failures/resolve", {
-        command: action.command,
-        args: action.args,
-        failureId: card.id
-      });
-      ctx.loadDashboard();
-    } catch (err) {
-      console.error("提交失败:", err.message);
+      const result = await postJson("/api/failures/resolve", { command, args, failureId: card.id });
+      ctx.showToast(result.message ?? "已提交处理。", result.resumed ? "success" : "info");
+      void ctx.loadDashboard();
+    } catch (error) {
+      ctx.showActionError(error);
     }
   }
 

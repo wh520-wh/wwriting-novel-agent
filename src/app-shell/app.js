@@ -114,6 +114,14 @@ const threadRenderer = createThreadRenderer({
   showToast,
   showActionError,
   announce,
+  openDrawer,
+  openSettingsModal: (...args) => settingsModal.openSettingsModal(...args),
+  prefillComposer: (text) => {
+    refs.composerInput.value = text;
+    refs.composerInput.focus();
+    composer.autoGrowComposer();
+    composer.updateSubmitState();
+  },
   promoteAskEntry: (entry) => composer.promoteAskEntry(entry),
 });
 
