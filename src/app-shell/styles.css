@@ -250,6 +250,19 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   padding: 4px 8px 8px;
   background: var(--rail);
 }
+.rail-filter { padding: 0 12px 8px; }
+.rail-filter input {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  border-radius: var(--r-sm);
+  padding: 6px 9px;
+  font-size: 12px;
+  color: var(--ink);
+  outline: none;
+}
+.rail-filter input::placeholder { color: var(--faint); }
+.rail-filter input:focus { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--focus-ring); }
 .rail-group-label {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding: 10px 8px 6px;
