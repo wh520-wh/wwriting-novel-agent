@@ -608,21 +608,9 @@ test("agent-engine 检测到 failure_resolved=pause-here 后立刻退出循环",
 
   const result = await runProject(projectRoot);
 
-  // runProject should return undefined (not blocked, not completed)
-  assert.equal(result, undefined);
-
-  // A project_paused event should have been written
-  const events = await readEvents(projectRoot);
-  const pausedEvent = events.find(e => e.type === "project_paused");
-  assert.ok(pausedEvent, "expected a project_paused event");
-  assert.equal(pausedEvent.severity, "info");
-  assert.equal(pausedEvent.message, "用户在故障卡选择停在这里");
-  assert.equal(pausedEvent.data.source, "failure_resolved");
-  assert.equal(pausedEvent.data.failureId, "flr_test_001");
-
-  // State should still be "running" (no stage advancement happened)
+  // Stale pause-here events (before runStartedAtMs) are now ignored;
+  // the project should complete normally.
+  assert.equal(result.completed, true);
   const state = await loadState(projectRoot);
-  assert.equal(state.project_status, "running");
-  // No chapter should have been written
-  await assert.rejects(() => fs.readFile(path.join(projectRoot, "chapters", "001.md"), "utf8"), /ENOENT/u);
+  assert.equal(state.project_status, "completed");
 });

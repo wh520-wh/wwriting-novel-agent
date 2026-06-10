@@ -27,6 +27,9 @@ export function computeAgentTruth(data, now = Date.now()) {
   if (status === "cancelled") {
     return { display: "已停止", className: "cancelled", showRetry: retryAvailable, showStop: false, refresh: false, reason: data.state?.cancelled_reason ?? retryReason ?? "用户停止" };
   }
+  if (status === "paused") {
+    return { display: "已暂停", className: "idle", showRetry: retryAvailable, showStop: false, refresh: false, reason: "你选择了停在这里，发送新指令或点继续即可恢复" };
+  }
   if (status === "blocked") {
     return { display: "需处理", className: "blocked", showRetry: false, showStop: false, refresh: false, reason: data.state?.blocked_reason ?? "" };
   }

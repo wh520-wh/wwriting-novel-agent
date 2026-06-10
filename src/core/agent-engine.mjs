@@ -69,21 +69,25 @@ export async function runProject(projectRoot, options = {}) {
     message: "project run started or resumed"
   });
 
+  const runStartedAtMs = Date.now();
+
   try {
     for (let step = 0; step < (options.maxSteps ?? 500); step += 1) {
       throwIfAborted(options.signal);
-      {
-        const recentEvents = await readEvents(projectRoot, { limit: 5 });
-        const recentResolve = recentEvents.find(e => e.type === "failure_resolved");
-        if (recentResolve && recentResolve.message === "pause-here") {
-          await appendEvent(projectRoot, {
-            type: "project_paused",
-            severity: "info",
-            message: "用户在故障卡选择停在这里",
-            data: { source: "failure_resolved", failureId: recentResolve.data?.failureId }
-          });
-          return;  // exit runProject
-        }
+      state = await loadState(projectRoot);
+      const pauseRequest = await findFreshPauseRequest(projectRoot, runStartedAtMs);
+      if (pauseRequest) {
+        const paused = { ...state, project_status: "paused", paused_at: new Date().toISOString() };
+        await saveState(projectRoot, paused);
+        await appendEvent(projectRoot, {
+          type: "project_paused",
+          severity: "info",
+          chapter_no: state.current_chapter_no,
+          stage: state.current_stage,
+          message: "用户在故障卡选择停在这里",
+          data: { source: "failure_resolved", failureId: pauseRequest.data?.failureId }
+        });
+        return { completed: false, paused: true, projectRoot };
       }
       state = await loadState(projectRoot);
       state.last_heartbeat = new Date().toISOString();
@@ -221,6 +225,18 @@ export async function runProject(projectRoot, options = {}) {
 function throwIfAborted(signal) {
   if (!signal?.aborted) return;
   throw new ProjectCancelledError(signal.reason ?? "cancelled");
+}
+
+async function findFreshPauseRequest(projectRoot, sinceMs) {
+  const recentEvents = await readEvents(projectRoot, { limit: 5 });
+  return (
+    recentEvents.find(
+      (event) =>
+        event.type === "failure_resolved" &&
+        event.message === "pause-here" &&
+        Date.parse(event.timestamp ?? "") >= sinceMs
+    ) ?? null
+  );
 }
 
 function applyEffectiveProjectConfig(project, configLayers) {
