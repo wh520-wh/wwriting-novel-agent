@@ -296,7 +296,7 @@ export async function runPostProcessHooks(projectRoot, project, context = {}) {
 }
 
 export async function collectHooks(projectRoot, project, stage, action, context = {}) {
-  const skills = await loadEnabledSkills(projectRoot, project);
+  const skills = Array.isArray(context.skills) ? context.skills : await loadEnabledSkills(projectRoot, project);
   const matches = [];
   for (const skill of skills) {
     for (const hook of skill.hooks) {

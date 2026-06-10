@@ -9,7 +9,7 @@ import { MockModel } from "./mock-model.mjs";
 import { MockProviderAdapter, OpenAICompatibleAdapter } from "./provider-adapters.mjs";
 import { PromptCompiler } from "./prompt-compiler.mjs";
 import { assertToolCallForChapter, runWordCountGate } from "./quality-gates.mjs";
-import { collectSkillPromptHooks, runPostProcessHooks, runSkillChecks } from "./skill-runtime.mjs";
+import { collectSkillPromptHooks, loadEnabledSkills, runPostProcessHooks, runSkillChecks } from "./skill-runtime.mjs";
 import { appendChapterSegment, chapterFileName, finalizeChapterFile, readDraft, ToolValidationError } from "./tool-runtime.mjs";
 import { buildContinuityPromptContext, recordChapterMemory } from "./chapter-memory.mjs";
 import { loadOutputStyles } from "./output-style-loader.mjs";
@@ -102,6 +102,8 @@ export async function runProject(projectRoot, options = {}) {
       if (state.project_status === "blocked") {
         return { completed: false, blocked: true, projectRoot, reason: state.blocked_reason };
       }
+      runtime.stepSkills = await loadEnabledSkills(projectRoot, project);
+
       if (state.current_chapter_no > project.target_chapters) {
         state.project_status = "completed";
         setStage(state, "completed");
@@ -116,7 +118,7 @@ export async function runProject(projectRoot, options = {}) {
 
       switch (state.current_stage) {
         case "queued":
-          await enterPlanning(projectRoot, project, state);
+          await enterPlanning(projectRoot, project, state, runtime);
           break;
         case "planning":
         case "planned":
@@ -126,14 +128,14 @@ export async function runProject(projectRoot, options = {}) {
           await draftNextSegment(projectRoot, project, state, runtime, options);
           break;
         case "reviewing":
-          await reviewChapter(projectRoot, project, state);
+          await reviewChapter(projectRoot, project, state, runtime);
           break;
         case "needs_revision":
         case "revising":
           await reviseChapter(projectRoot, project, state, runtime, options);
           break;
         case "finalizing":
-          await finalizeChapter(projectRoot, project, state);
+          await finalizeChapter(projectRoot, project, state, runtime);
           break;
         case "summarizing":
           await completeChapter(projectRoot, project, state);
@@ -256,13 +258,14 @@ function applyEffectiveProjectConfig(project, configLayers) {
   };
 }
 
-async function enterPlanning(projectRoot, project, state) {
+async function enterPlanning(projectRoot, project, state, runtime) {
   const stateBefore = { ...state };
   setStage(state, "planning");
   await saveState(projectRoot, state);
   const skillPrompts = await collectSkillPromptHooks(projectRoot, project, "planning", {
     chapter_no: state.current_chapter_no,
-    stage: "planning"
+    stage: "planning",
+    skills: runtime.stepSkills
   });
   if (skillPrompts.content) {
     await writeFileAtomic(
@@ -350,7 +353,7 @@ async function draftNextSegment(projectRoot, project, state, runtime, options) {
   }
 }
 
-async function reviewChapter(projectRoot, project, state) {
+async function reviewChapter(projectRoot, project, state, runtime) {
   const draft = await readDraft(projectRoot, project, state.current_chapter_no);
   const gate = runWordCountGate(draft, project.min_words_per_chapter);
   if (gate.status === "failed") {
@@ -389,7 +392,8 @@ async function reviewChapter(projectRoot, project, state) {
   const skillGateResults = await runSkillChecks(projectRoot, project, "reviewing", {
     chapter_no: state.current_chapter_no,
     stage: "reviewing",
-    content: draft
+    content: draft,
+    skills: runtime.stepSkills
   });
   const failedSkillGates = skillGateResults.filter((result) => result.status === "failed");
   if (failedSkillGates.length > 0) {
@@ -462,12 +466,13 @@ async function reviseChapter(projectRoot, project, state, runtime, options = {})
   await writeCheckpoint(projectRoot, checkpointPayload(project, state, next, [response.toolCall], [result], null, checkpointModelExtras(response.modelCall)));
 }
 
-async function finalizeChapter(projectRoot, project, state) {
+async function finalizeChapter(projectRoot, project, state, runtime) {
   const draft = await readDraft(projectRoot, project, state.current_chapter_no);
   const postProcess = await runPostProcessHooks(projectRoot, project, {
     chapter_no: state.current_chapter_no,
     stage: "post_process",
-    content: draft
+    content: draft,
+    skills: runtime.stepSkills
   });
   if (postProcess.results.some((result) => result.status === "applied")) {
     await writeFileAtomic(
@@ -572,13 +577,14 @@ async function createModelRuntime(projectRoot, project, options, fallbackModel) 
     });
   return {
     modelClient,
-    cacheKeyManager: options.cacheKeyManager ?? new CacheKeyManager({ entries: existingCacheReport.entries ?? {} })
+    cacheKeyManager: options.cacheKeyManager ?? new CacheKeyManager({ entries: existingCacheReport.entries ?? {} }),
+    stepSkills: null
   };
 }
 
 async function runModelGatewayCall(projectRoot, project, state, runtime, request) {
   throwIfAborted(request.signal);
-  const compiledPrompt = await compileChapterPrompt(projectRoot, project, state, request);
+  const compiledPrompt = await compileChapterPrompt(projectRoot, project, state, request, runtime);
   const cacheEntry = runtime.cacheKeyManager.update({
     projectId: project.project_id,
     templateVersion: compiledPrompt.templateVersion,
@@ -677,7 +683,7 @@ async function runModelGatewayCall(projectRoot, project, state, runtime, request
   return { output, ...modelCall };
 }
 
-async function compileChapterPrompt(projectRoot, project, state, request) {
+async function compileChapterPrompt(projectRoot, project, state, request, runtime) {
   const configuredVersion = project.prompt_template_versions?.drafting ?? "v1";
   const templateVersion = configuredVersion.startsWith("drafting.") ? configuredVersion : `drafting.${configuredVersion}`;
   const compiler = new PromptCompiler({ templateVersion });
@@ -688,11 +694,13 @@ async function compileChapterPrompt(projectRoot, project, state, request) {
     readLatestUserInstructions(projectRoot),
     collectSkillPromptHooks(projectRoot, project, "planning", {
       chapter_no: state.current_chapter_no,
-      stage: "planning"
+      stage: "planning",
+      skills: runtime?.stepSkills
     }),
     collectSkillPromptHooks(projectRoot, project, state.current_stage, {
       chapter_no: state.current_chapter_no,
-      stage: state.current_stage
+      stage: state.current_stage,
+      skills: runtime?.stepSkills
     }),
     buildContinuityPromptContext(projectRoot, state.current_chapter_no)
   ]);
