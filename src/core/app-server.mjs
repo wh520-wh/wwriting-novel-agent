@@ -651,7 +651,7 @@ async function serveCommandSubmit(request, response, context) {
         alreadyRunning: false,
         completed: true,
         blocked: false,
-        message: "项目已完成；如需继续写，请先增加目标章节数。"
+        message: "项目已完成；在「设置 → 写作目标」里提高目标章节数即可继续。"
       });
       return;
     }
@@ -976,7 +976,7 @@ async function startProjectRun(projectRoot, project, context, task, instructionM
       stage: state.current_stage,
       message: "项目已完成，未启动新的写作任务。"
     });
-    return { started: false, alreadyRunning: false, completed: true, message: "项目已完成；如需继续写，请先增加目标章节数。" };
+    return { started: false, alreadyRunning: false, completed: true, message: "项目已完成；在「设置 → 写作目标」里提高目标章节数即可继续。" };
   }
   if (state.project_status === "blocked") {
     job.status = "error";

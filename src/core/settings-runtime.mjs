@@ -19,6 +19,7 @@ export async function updateProjectSettings(projectRoot, patch = {}) {
   const next = mergeProjectSettings(project, normalized);
   await saveProject(projectRoot, next);
   await syncBudgetConfigToState(projectRoot, normalized.budget_config);
+  await maybeReopenCompletedProject(projectRoot, next, normalized.project_profile);
   await appendEvent(projectRoot, {
     type: "project_settings_updated",
     project_id: project.project_id,
@@ -54,6 +55,32 @@ async function syncBudgetConfigToState(projectRoot, budgetConfig) {
   await saveState(projectRoot, state);
 }
 
+async function maybeReopenCompletedProject(projectRoot, project, profile) {
+  if (!profile?.target_chapters) {
+    return;
+  }
+  const state = await loadState(projectRoot);
+  if (state.project_status !== "completed") {
+    return;
+  }
+  if ((state.current_chapter_no ?? 1) > project.target_chapters) {
+    return;
+  }
+  await saveState(projectRoot, {
+    ...state,
+    project_status: "idle",
+    current_stage: "queued",
+    stage_entered_at: new Date().toISOString()
+  });
+  await appendEvent(projectRoot, {
+    type: "project_reopened",
+    project_id: project.project_id,
+    chapter_no: state.current_chapter_no,
+    stage: "queued",
+    message: `目标章节数提高到 ${project.target_chapters}，项目可以继续写作。`
+  });
+}
+
 export function normalizeSettingsPatch(patch = {}) {
   if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
     throw new SettingsValidationError("invalid_settings_patch", "Settings patch must be an object.");
@@ -80,6 +107,9 @@ export function normalizeSettingsPatch(patch = {}) {
   if (patch.output_style !== undefined) {
     normalized.output_style = normalizeOutputStyle(patch.output_style);
   }
+  if (patch.project_profile !== undefined) {
+    normalized.project_profile = normalizeProjectProfile(patch.project_profile);
+  }
   return normalized;
 }
 
@@ -104,7 +134,35 @@ function mergeProjectSettings(project, patch) {
   if (patch.output_style !== undefined) {
     next.output_style = patch.output_style;
   }
+  if (patch.project_profile !== undefined) {
+    for (const [key, value] of Object.entries(patch.project_profile)) {
+      if (value !== null && value !== undefined) {
+        next[key] = value;
+      }
+    }
+    if (
+      Number.isInteger(next.min_words_per_chapter) &&
+      Number.isInteger(next.target_words_per_chapter) &&
+      next.target_words_per_chapter < next.min_words_per_chapter
+    ) {
+      next.target_words_per_chapter = next.min_words_per_chapter;
+    }
+  }
   return next;
+}
+
+function normalizeProjectProfile(profile) {
+  if (!profile || typeof profile !== "object" || Array.isArray(profile)) {
+    throw new SettingsValidationError("invalid_project_profile", "project_profile must be an object.");
+  }
+  const normalized = {};
+  if (profile.title !== undefined && profile.title !== null && profile.title !== "") {
+    normalized.title = safeNonEmptyString(profile.title, "title");
+  }
+  copyOptionalPositiveInteger(normalized, profile, "target_chapters");
+  copyOptionalPositiveInteger(normalized, profile, "min_words_per_chapter");
+  copyOptionalPositiveInteger(normalized, profile, "target_words_per_chapter");
+  return normalized;
 }
 
 function normalizeOutputStyle(value) {

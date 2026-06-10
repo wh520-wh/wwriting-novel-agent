@@ -1432,3 +1432,4 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .toast.error svg { color: #f4b8b2; }
 .spd-hint.error { color: #b4382f; }
 .spd-hint.success { color: #2f8f5b; }
+.spd-section { margin: 18px 0 4px; font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: 0.02em; }

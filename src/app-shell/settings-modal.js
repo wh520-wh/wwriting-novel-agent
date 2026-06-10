@@ -168,12 +168,20 @@ export function createSettingsModal(ctx) {
     outputStyleField.append(outputStyleLabel, outputStyleSelect);
     settingsFields.outputStyle = { field: outputStyleField, input: outputStyleSelect };
 
+    const profileHeading = document.createElement("h4");
+    profileHeading.className = "spd-section";
+    profileHeading.textContent = "写作目标";
+    settingsFields.profileTitle = settingField("小说名", "text", { value: dashboard?.project?.title ?? "" });
+    settingsFields.targetChapters = settingField("目标章节数（提高它可以继续已完成的小说）", "number", { value: dashboard?.project?.target_chapters ?? "" });
+    settingsFields.minWords = settingField("每章最低字数", "number", { value: dashboard?.project?.min_words_per_chapter ?? "" });
+
     ctx.refs.settingsDetail.append(
       settingsFields.model.field, settingsFields.baseUrl.field, endpointHint,
       settingsFields.apiKey.field, settingsFields.apiKeyEnv.field, keyHint,
       settingsFields.maxCalls.field, settingsFields.network.field,
       settingsFields.searchEndpoint.field, settingsFields.searchKeyEnv.field,
-      settingsFields.outputStyle.field
+      settingsFields.outputStyle.field,
+      profileHeading, settingsFields.profileTitle.field, settingsFields.targetChapters.field, settingsFields.minWords.field
     );
     bindEndpointPreview();
     updateEndpointPreview();
@@ -371,7 +379,12 @@ export function createSettingsModal(ctx) {
           search_endpoint: settingsFields.searchEndpoint.input.value.trim(),
           search_api_key_env: settingsFields.searchKeyEnv.input.value.trim()
         }),
-        output_style: settingsFields.outputStyle?.input?.value ?? "creative"
+        output_style: settingsFields.outputStyle?.input?.value ?? "creative",
+        project_profile: compactObject({
+          title: settingsFields.profileTitle.input.value.trim(),
+          target_chapters: settingsFields.targetChapters.input.value,
+          min_words_per_chapter: settingsFields.minWords.input.value
+        }),
       });
       const profile = result.model_profile ?? {};
       ctx.showToast(`模型设置已保存：${profile.display ?? provider.name}`, "success");
