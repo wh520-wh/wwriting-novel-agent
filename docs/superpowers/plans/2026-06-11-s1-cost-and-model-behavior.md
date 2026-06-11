@@ -4,7 +4,7 @@
 
 **Goal:** 让用户能回答"写这本书花了多少钱、钱花在哪、哪些是浪费"，并修复缓存前缀被每章破坏的问题，给预算加上金额/token 上限熔断。
 
-**Architecture:** 三条线推进——① 取证：新建 `cost-audit` 模块从真实 `run_log.jsonl`/`cost.json`/`cache_report.json` 产出每章成本、重试、补写、缓存失效统计，先落基线报告；② 修复：价格表+成本诚实化（无价格时显示"未配置"而非 0）、每章成本归因、把每章都变的 `project_memory`/`chapter_plan` 从 stable 块移到 dynamic 块以保住前缀缓存；③ 控制：金额/token 预算熔断接入既有 blocked→故障卡→恢复链路。
+**Architecture:** 四条线推进——① 取证：新建 `cost-audit` 模块从真实 `run_log.jsonl`/`cost.json`/`cache_report.json` 产出每章成本、重试、补写、缓存失效统计，先落基线报告；② 修复：价格表+成本诚实化（无价格时显示"未配置"而非 0）、每章成本归因、把每章都变的 `project_memory`/`chapter_plan` 从 stable 块移到 dynamic 块以保住前缀缓存；③ 控制：金额/token 预算熔断接入既有 blocked→故障卡→恢复链路；④ 可见：成本页签从 4 行 kv 升级为"用量总览 / 缓存健康（含命中率走势）/ 每章成本"三段视图，章节抽屉每章行显示成本，成本徽章对预警事件变色。后端任务（Task 1-7）全部先行，UI 重构（Task 8）一次消费所有新数据，避免同一个渲染函数被多个任务反复改。
 
 **Tech Stack:** Node.js 24 内置 test runner、原生 ESM、现有 verify 脚本防线（`verify:app-shell`/`verify:app-clickability`/`verify:local`）。
 
@@ -39,13 +39,13 @@
 | `tests/cache-prefix-stability.test.mjs` | 跨章 stableHash 不变、cacheVersion 不升的回归 |
 | `tests/budget-caps.test.mjs` | 金额/token 上限熔断 + 故障卡 + 恢复动作 |
 | `docs/superpowers/reports/2026-06-11-s1-cost-baseline.md` | 真实项目审计基线（Task 1 产出） |
-| `docs/superpowers/reports/2026-06-11-s1-delivery-report.md` | S1 交付报告（Task 8 产出） |
+| `docs/superpowers/reports/2026-06-11-s1-delivery-report.md` | S1 交付报告（Task 10 产出） |
 
 ### 修改文件
 
 | 文件 | 变更 |
 |------|------|
-| `src/core/cost-tracker.mjs` | estimateCost 缓存命中分价计费、无价格返回 null；record 增加 chapter/byModel/byChapter/unpricedCalls/costAvailable/retries；构造函数合并默认字段兼容旧 cost.json |
+| `src/core/cost-tracker.mjs` | estimateCost 缓存命中分价计费、无价格返回 null；record 增加 chapter/byModel/byChapter/unpricedCalls/costAvailable/retries；recentHitRates 滚动窗口、recordRefill、cacheSavedCost；构造函数合并默认字段兼容旧 cost.json |
 | `src/core/model-client.mjs` | record 透传 `metadata.chapterNo` |
 | `src/core/agent-engine.mjs` | metadata 加 chapterNo；onRetry 调 costTracker.recordRetry；compileChapterPrompt 移 project_memory/chapter_plan 到 dynamic、current_task 加字数缺口字段；consumeModelCallBudget 加金额/token 熔断；createModelRuntime 构建价格表 |
 | `src/core/prompt-compiler.mjs` | STABLE/DYNAMIC_BLOCK_ORDER 调整 |
@@ -55,11 +55,12 @@
 | `src/shared/failure-commands.mjs` | 注册两个新命令 |
 | `src/core/project-diagnostics.mjs` | costHealth 数据出口（O(1) 读，不扫全日志） |
 | `src/core/app-dashboard.mjs` | summary 加 costAvailable |
-| `src/app-shell/agent-truth.mjs` | spentCost 尊重 costAvailable |
+| `src/app-shell/agent-truth.mjs` | spentCost 尊重 costAvailable；deriveBadges 对 chapter_cost_warning 事件升级徽章等级 |
 | `src/app-shell/components/activity-strip.js` | cost 槽位空值守卫 |
-| `src/app-shell/drawer-panels.js` | 成本面板：未配置价格提示、每章成本表、重试/缓存健康行 |
-| `src/app-shell/settings-modal.js` | 价格三字段 + 金额/token 上限两字段 |
-| `scripts/verify-app-clickability.cjs` | 播种成本预算故障卡 + 新设置控件点击路径 |
+| `src/app-shell/drawer-panels.js` | renderCostPanel 重构为三段成本视图（总览/缓存健康+命中率走势/每章成本与浪费）；章节抽屉行加成本 |
+| `src/app-shell/settings-modal.js` | 价格三字段 + 金额/token 上限两字段 + 分区标题 |
+| `scripts/verify-app-clickability.cjs` | 播种成本预算故障卡 + 新设置控件 + 成本页签三段视图渲染断言 |
+| `tests/agent-truth.test.mjs` | 成本徽章预警升级用例 |
 | `tests/cost-tracker.test.mjs` | 适配新语义（null 价格、costAvailable、byChapter） |
 | `tests/model-gateway.test.mjs` | block order 断言按新契约更新（设计变更，非绕测试） |
 | `tests/derive-failure-card.test.mjs` / `tests/failure-actions.test.mjs` | 新卡/新命令用例 |
@@ -274,7 +275,7 @@ console.log(JSON.stringify(report, null, 2));
 Run: `npm run audit:cost -- "D:\aaaa111大学生1111"`
 Expected: 输出 JSON；calls.started=13、completed=11、cache.maxCacheVersion=8 与侦察一致。
 
-把输出整理进 `docs/superpowers/reports/2026-06-11-s1-cost-baseline.md`：原始 JSON + 三句结论（每章平均调用与 token、缓存命中率序列与 cacheVersion 证明前缀失效、重试与补写次数）。该报告是 Task 4/7/8 的对照基线。
+把输出整理进 `docs/superpowers/reports/2026-06-11-s1-cost-baseline.md`：原始 JSON + 三句结论（每章平均调用与 token、缓存命中率序列与 cacheVersion 证明前缀失效、重试与补写次数）。该报告是 Task 4/9/10 的对照基线。
 
 - [ ] **Step 7: 全量回归 + Commit**
 
@@ -646,6 +647,9 @@ import { buildPricingTable } from "./model-pricing.mjs";
 `src/app-shell/settings-modal.js`：`renderSettingsDetail` 中 `settingsFields.maxCalls` 一行之后加三个字段（值取自 `active.pricing`）：
 
 ```js
+    const priceHeading = document.createElement("h4");
+    priceHeading.className = "spd-section";
+    priceHeading.textContent = "价格（用于成本估算）";
     const pricing = active.pricing ?? {};
     settingsFields.priceInput = settingField("输入价（元/百万 token）", "number", { value: pricing.input_per_million ?? "" });
     settingsFields.priceOutput = settingField("输出价（元/百万 token）", "number", { value: pricing.output_per_million ?? "" });
@@ -655,7 +659,7 @@ import { buildPricingTable } from "./model-pricing.mjs";
     priceHint.textContent = "按供应商定价页填写。不填则成本显示为未配置价格，不会按 0 计算。";
 ```
 
-把 `settingsFields.priceInput.field, settingsFields.priceOutput.field, settingsFields.priceCacheHit.field, priceHint` 插入 178-182 行的 `append(...)` 列表中 `settingsFields.maxCalls.field` 之前。`saveSettings` 的 `active_model: compactObject({...})` 内增加：
+（`spd-section` 标题样式沿用既有"写作目标"分区的写法，见 settings-modal.js:171-173。）把 `priceHeading, settingsFields.priceInput.field, settingsFields.priceOutput.field, settingsFields.priceCacheHit.field, priceHint` 插入 178-182 行的 `append(...)` 列表中 `settingsFields.maxCalls.field` 之前。`saveSettings` 的 `active_model: compactObject({...})` 内增加：
 
 ```js
           pricing: settingsFields.priceInput.input.value && settingsFields.priceOutput.input.value
@@ -690,7 +694,6 @@ git commit -m "feat(pricing): user-configured model pricing, cache-hit aware cos
 **Files:**
 - Modify: `src/core/model-client.mjs:105`
 - Modify: `src/core/agent-engine.mjs:611-615`
-- Modify: `src/app-shell/drawer-panels.js`（renderCostPanel）
 - Test: `tests/cost-tracker.test.mjs`（byChapter 用例已在 Task 2 加）、`tests/agent-engine.test.mjs`
 
 - [ ] **Step 1: 写失败测试（引擎透传 chapter）**
@@ -728,30 +731,9 @@ Expected: FAIL（metadata 无 chapterNo）
 Run: `node --test tests/agent-engine.test.mjs tests/model-gateway.test.mjs tests/cost-double-count.test.mjs`
 Expected: PASS
 
-- [ ] **Step 4: 成本面板显示每章成本**
+（每章成本的界面展示统一放在 Task 8 成本视图重构里，本任务只做数据与事件。）
 
-`src/app-shell/drawer-panels.js` 的 `renderCostPanel`（处理 `drawerTab === "cost"` 的函数）：在既有"估算成本" kv 之后追加每章表：
-
-```js
-    const byChapter = data.cost?.byChapter ?? {};
-    const chapterKeys = Object.keys(byChapter).sort((a, b) => Number(a) - Number(b));
-    if (chapterKeys.length) {
-      const chapterPanel = dpanel("每章成本");
-      const ckv = document.createElement("dl");
-      ckv.className = "kv";
-      for (const key of chapterKeys) {
-        const row = byChapter[key];
-        const costText = data.summary?.costAvailable ? formatMoney(row.estimatedCost) : "未配置价格";
-        appendKv(ckv, `第 ${key} 章`, `${row.calls} 次调用 · ${formatNumber(row.totalTokens)} tokens · ${costText}`);
-      }
-      chapterPanel.body.append(ckv);
-      panels.push(chapterPanel.panel);
-    }
-```
-
-（`panels.push` 按该函数既有的面板收集方式接入；若它直接 `replaceChildren(a.panel, b.panel)`，把 `chapterPanel.panel` 追加到该调用末尾。）
-
-- [ ] **Step 5: 每章成本预警（spec 明确要求）**
+- [ ] **Step 4: 每章成本预警（spec 明确要求）**
 
 先写失败测试（追加到 `tests/agent-engine.test.mjs`）：
 
@@ -819,14 +801,14 @@ export async function maybeWarnChapterCost(projectRoot, project, state, costSumm
 
 Run: `node --test tests/agent-engine.test.mjs` → PASS
 
-- [ ] **Step 6: 验证 + Commit**
+- [ ] **Step 5: 验证 + Commit**
 
 Run: `npm test`，`npm run verify:app-shell`
 Expected: 全绿、`ok: true`
 
 ```powershell
-git add src/core/model-client.mjs src/core/agent-engine.mjs src/app-shell/drawer-panels.js tests/agent-engine.test.mjs
-git commit -m "feat(cost): per-chapter cost attribution, chapter cost warning event and cost panel breakdown"
+git add src/core/model-client.mjs src/core/agent-engine.mjs tests/agent-engine.test.mjs
+git commit -m "feat(cost): per-chapter cost attribution and chapter cost warning event"
 ```
 
 ---
@@ -965,7 +947,6 @@ git commit -m "fix(cache): reclassify per-chapter memory/plan as dynamic blocks 
 
 **Files:**
 - Modify: `src/core/project-diagnostics.mjs`
-- Modify: `src/app-shell/drawer-panels.js`（renderCostPanel）
 - Test: `tests/project-diagnostics.test.mjs`
 
 **边界：** M1 确立"读最近事件不许全量扫日志"。所以诊断端点只用 O(1) 的 `cost.json`/`cache_report.json` 读数（retries 已由 Task 2 进入 cost.json）；全量深审计留在 `npm run audit:cost` CLI。
@@ -1050,25 +1031,15 @@ async function readJsonOrNull(file) {
 Run: `node --test tests/project-diagnostics.test.mjs`
 Expected: PASS
 
-- [ ] **Step 4: 成本面板显示健康行**
+（健康指标的界面展示统一放在 Task 8 成本视图重构里，本任务只做数据出口。）
 
-`renderCostPanel` 在每章成本表之前追加（数据走 dashboard 已透传的 `data.cost`，不新加请求）：
-
-```js
-    const retries = data.cost?.retries ?? 0;
-    appendKv(kv, "重试次数", retries > 0 ? `${retries}（重试会重复消耗 token）` : "0");
-    const lastHit = data.cacheSummary?.lastHitRate ?? data.cost?.lastCacheHitRate ?? null;
-```
-
-若 `cacheSummaryText` 已表达命中率则只加"重试次数"一行，避免重复信息。
-
-- [ ] **Step 5: 验证 + Commit**
+- [ ] **Step 4: 验证 + Commit**
 
 Run: `npm test`，`npm run verify:app-shell`
 Expected: 全绿
 
 ```powershell
-git add src/core/project-diagnostics.mjs src/app-shell/drawer-panels.js tests/project-diagnostics.test.mjs
+git add src/core/project-diagnostics.mjs tests/project-diagnostics.test.mjs
 git commit -m "feat(diagnostics): cost health (retries, unpriced, cache version) without full log scan"
 ```
 
@@ -1316,9 +1287,14 @@ test("raise-cost-budget 写入 budget_config.max_cost 并要求续跑", async ()
 `settings-modal.js`：`settingsFields.maxCalls` 之后加两个字段并入 append 列表与 saveSettings patch：
 
 ```js
+    const budgetHeading = document.createElement("h4");
+    budgetHeading.className = "spd-section";
+    budgetHeading.textContent = "预算上限";
     settingsFields.maxCost = settingField("成本上限（元，需先配置价格）", "number", { value: budgetConfig.max_cost ?? "" });
     settingsFields.maxTokens = settingField("token 总量上限", "number", { value: budgetConfig.max_total_tokens ?? "" });
 ```
+
+（`budgetHeading` 插在 `settingsFields.maxCalls.field` 之前的 append 列表里，让"模型调用上限"也归入该分区。）
 
 ```js
         budget_config: {
@@ -1359,13 +1335,311 @@ git commit -m "feat(budget): cost and token caps with circuit breaker, failure c
 
 ---
 
-## Task 7: 补写成本治理（首轮就知道字数缺口）
+## Task 7: 成本视图数据补强（命中率走势 / 补写计数 / 缓存节省）
+
+**Files:**
+- Modify: `src/core/cost-tracker.mjs`
+- Modify: `src/core/agent-engine.mjs`（runModelGatewayCall）
+- Modify: `tests/cost-tracker.test.mjs`
+
+**背景：** Task 8 的成本视图要回答"缓存帮我省了多少、浪费在哪"。三个缺的数据：命中率走势（cache_report.json 只有 last_call 一个点，M1 禁止全量扫日志取历史）、补写轮次（只有事件没有累计值）、缓存节省金额。全部以 O(1) 方式累积在 cost.json 里。
+
+- [ ] **Step 1: 写失败测试**
+
+`tests/cost-tracker.test.mjs` 追加：
+
+```js
+test("CostTracker 维护最近 20 次命中率滚动窗口", () => {
+  const tracker = new CostTracker();
+  for (let i = 0; i < 25; i += 1) {
+    tracker.record({
+      stage: "s",
+      usageReport: { provider: "p", model: "m", inputTokens: 100, outputTokens: 1, totalTokens: 101, cachedTokens: 0, cacheHitRate: i / 100, estimatedCost: 0 }
+    });
+  }
+  const s = tracker.getSummary();
+  assert.equal(s.recentHitRates.length, 20);
+  assert.equal(s.recentHitRates[0], 0.05);
+  assert.equal(s.recentHitRates.at(-1), 0.24);
+});
+
+test("CostTracker.recordRefill 累计补写轮次", () => {
+  const tracker = new CostTracker();
+  tracker.recordRefill();
+  tracker.recordRefill();
+  assert.equal(tracker.getSummary().refillCalls, 2);
+});
+
+test("CostTracker 配置缓存命中价时累计 cacheSavedCost", () => {
+  const tracker = new CostTracker({
+    pricing: { m: { input_per_million: 2, output_per_million: 8, cache_hit_per_million: 0.5, currency: "CNY" } }
+  });
+  tracker.record({
+    stage: "s",
+    usageReport: { provider: "p", model: "m", inputTokens: 1_000_000, outputTokens: 0, totalTokens: 1_000_000, cachedTokens: 400_000, cacheHitTokens: 400_000 }
+  });
+  // 40 万命中 × (2 − 0.5)/M = 0.6 元
+  assert.equal(tracker.getSummary().cacheSavedCost, 0.6);
+});
+```
+
+Run: `node --test tests/cost-tracker.test.mjs`
+Expected: FAIL（字段与方法不存在）
+
+- [ ] **Step 2: 实现**
+
+`src/core/cost-tracker.mjs`：`SUMMARY_DEFAULTS` 增加三个字段：
+
+```js
+  recentHitRates: [],
+  refillCalls: 0,
+  cacheSavedCost: 0,
+```
+
+构造函数兜底行（兼容旧 cost.json）增加：
+
+```js
+    this.summary.recentHitRates ??= [];
+    this.summary.refillCalls ??= 0;
+    this.summary.cacheSavedCost ??= 0;
+```
+
+`record()` 在 `costAvailable` 计算之后追加：
+
+```js
+    if (Number.isFinite(usageReport.cacheHitRate)) {
+      this.summary.recentHitRates.push(Number(usageReport.cacheHitRate.toFixed(4)));
+      while (this.summary.recentHitRates.length > 20) this.summary.recentHitRates.shift();
+    }
+    if (priced && pricing?.cache_hit_per_million != null) {
+      const hitTokens = Math.min(usageReport.cacheHitTokens ?? usageReport.cachedTokens ?? 0, usageReport.inputTokens ?? 0);
+      const saved = (hitTokens / 1_000_000) * Math.max(0, pricing.input_per_million - pricing.cache_hit_per_million);
+      this.summary.cacheSavedCost = Number((this.summary.cacheSavedCost + saved).toFixed(8));
+    }
+```
+
+类中新增方法（与 `recordRetry` 并列）：
+
+```js
+  recordRefill() {
+    this.summary.refillCalls += 1;
+    return this.summary.refillCalls;
+  }
+```
+
+- [ ] **Step 3: 引擎接线补写计数**
+
+补写请求的标志是 `request.shortfall`（字数门禁失败后发起的请求带缺口字数）。`src/core/agent-engine.mjs` `runModelGatewayCall` 中 `modelClient.generate` 调用之前加：
+
+```js
+  if (Number.isFinite(request.shortfall) && request.shortfall > 0) {
+    runtime.modelClient.costTracker?.recordRefill?.();
+  }
+```
+
+- [ ] **Step 4: 跑通 + 端到端确认**
+
+Run: `node --test tests/cost-tracker.test.mjs`
+Expected: PASS
+Run: `npm run verify:mvp`
+Expected: 通过；verify:mvp 场景包含字数不足补写，跑完后 demo 项目 `cost.json` 的 `refillCalls >= 1`、`recentHitRates` 非空（mock usage 含缓存字段时）。
+
+- [ ] **Step 5: Commit**
+
+```powershell
+git add src/core/cost-tracker.mjs src/core/agent-engine.mjs tests/cost-tracker.test.mjs
+git commit -m "feat(cost-data): rolling hit-rate window, refill counter and cache savings for cost view"
+```
+
+---
+
+## Task 8: 成本视图 UI 重构 + 章节成本 + 预警徽章
+
+**Files:**
+- Modify: `src/app-shell/drawer-panels.js`（renderCostPanel 重构、renderChapterPanel/buildChapterRow、新增 sparkline 帮手）
+- Modify: `src/app-shell/agent-truth.mjs:119-129`（deriveBadges）
+- Modify: `tests/agent-truth.test.mjs`
+- Modify: `scripts/verify-app-clickability.cjs`
+
+**背景：** 成本页签目前只有 4 行 kv（drawer-panels.js:269-280），回答不了"钱花在哪、浪费在哪"。重构为三段视图，一次消费 Task 2/3/5/7 落好的全部数据；章节抽屉行尾加成本；成本徽章对 `chapter_cost_warning` 事件变色。纯前端任务，不加新接口（dashboard 已透传完整 `cost` 对象）。
+
+- [ ] **Step 1: 写失败测试（徽章升级）**
+
+`tests/agent-truth.test.mjs` 追加（沿用该文件既有 deriveBadges 用例风格）：
+
+```js
+test("deriveBadges 在最近事件含 chapter_cost_warning 时成本徽章至少为 warning", () => {
+  const dashboard = {
+    summary: { estimatedCost: 0.1, targetChapters: 10, completedChapters: 1 },
+    project: { budget_config: { max_cost: 100 } },
+    events: [{ type: "chapter_cost_warning" }]
+  };
+  const badges = deriveBadges(dashboard);
+  assert.equal(badges.cost.level, "warning");
+});
+
+test("deriveBadges 超预算 over 优先级高于预警事件", () => {
+  const dashboard = {
+    summary: { estimatedCost: 120, targetChapters: 10, completedChapters: 1 },
+    project: { budget_config: { max_cost: 100 } },
+    events: [{ type: "chapter_cost_warning" }]
+  };
+  assert.equal(deriveBadges(dashboard).cost.level, "over");
+});
+```
+
+Run: `node --test tests/agent-truth.test.mjs`
+Expected: FAIL
+
+- [ ] **Step 2: 实现徽章升级**
+
+`src/app-shell/agent-truth.mjs` `deriveBadges`（119-124 行）改为：
+
+```js
+  const used = dashboard?.summary?.estimatedCost ?? 0;
+  const budget = dashboard?.project?.budget_config?.max_cost ?? 0;
+  const pct = budget > 0 ? used / budget : 0;
+  const recentCostWarning = (dashboard?.events ?? dashboard?.recentEvents ?? [])
+    .some((event) => event.type === "chapter_cost_warning");
+  let level = 'normal';
+  if (pct >= 1) level = 'over';
+  else if (pct >= 0.8 || recentCostWarning) level = 'warning';
+```
+
+（dashboard 事件字段名以 `app-dashboard.mjs` 实际返回为准——两个候选名都已兜底。）
+
+Run: `node --test tests/agent-truth.test.mjs`
+Expected: PASS
+
+- [ ] **Step 3: 重构 renderCostPanel 为三段视图**
+
+`src/app-shell/drawer-panels.js:269-280` 整体替换，并在文件内（`appendKv` 附近）新增 `sparkline` 帮手：
+
+```js
+  function renderCostPanel(data) {
+    const summary = data.summary;
+    const cost = data.cost ?? {};
+
+    const overview = dpanel("用量总览");
+    const kv = document.createElement("dl");
+    kv.className = "kv";
+    appendKv(kv, "模型调用", `${formatNumber(summary.modelCalls)} / ${summary.maxModelCalls ?? "∞"}`);
+    appendKv(kv, "估算成本", summary.costAvailable ? formatMoney(summary.estimatedCost) : "未配置价格");
+    if (summary.costAvailable && (cost.cacheSavedCost ?? 0) > 0) {
+      appendKv(kv, "缓存已省", formatMoney(cost.cacheSavedCost), "green");
+    }
+    appendKv(kv, "重试次数", String(cost.retries ?? 0), (cost.retries ?? 0) > 0 ? "accent" : "");
+    appendKv(kv, "补写轮次", String(cost.refillCalls ?? 0), (cost.refillCalls ?? 0) > 0 ? "accent" : "");
+    appendKv(kv, "累计字数", formatNumber(summary.totalWords));
+    appendKv(kv, "完成章节", `${summary.completedChapters} / ${summary.targetChapters}`);
+    overview.body.append(kv);
+
+    const cache = dpanel("缓存健康");
+    const rates = cost.recentHitRates ?? [];
+    if (rates.length === 0) {
+      cache.body.append(drawerEmpty("还没有缓存命中数据。"));
+    } else {
+      const average = rates.reduce((a, b) => a + b, 0) / rates.length;
+      const ckv = document.createElement("dl");
+      ckv.className = "kv";
+      appendKv(ckv, "最近平均命中", `${Math.round(average * 100)}%`);
+      appendKv(ckv, "最近一次", `${Math.round((rates.at(-1) ?? 0) * 100)}%`);
+      cache.body.append(ckv, sparkline(rates));
+    }
+
+    const chapters = dpanel("每章成本");
+    const byChapter = cost.byChapter ?? {};
+    const keys = Object.keys(byChapter).sort((a, b) => Number(a) - Number(b));
+    if (keys.length === 0) {
+      chapters.body.append(drawerEmpty("跑过章节后这里按章显示花费。"));
+    } else {
+      const chkv = document.createElement("dl");
+      chkv.className = "kv";
+      for (const key of keys) {
+        const row = byChapter[key];
+        const costText = summary.costAvailable ? formatMoney(row.estimatedCost) : `${formatNumber(row.totalTokens)} tokens`;
+        appendKv(chkv, `第 ${key} 章`, `${row.calls} 次调用 · ${costText}`);
+      }
+      chapters.body.append(chkv);
+    }
+
+    ctx.refs.drawerBody.replaceChildren(overview.panel, cache.panel, chapters.panel);
+  }
+
+  function sparkline(values, width = 220, height = 36) {
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    svg.setAttribute("width", "100%");
+    svg.setAttribute("height", String(height));
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", "最近缓存命中率走势");
+    const step = values.length > 1 ? width / (values.length - 1) : width;
+    const points = values
+      .map((value, index) => {
+        const x = (index * step).toFixed(1);
+        const y = (height - 3 - Math.max(0, Math.min(1, value)) * (height - 6)).toFixed(1);
+        return `${x},${y}`;
+      })
+      .join(" ");
+    const line = document.createElementNS(ns, "polyline");
+    line.setAttribute("points", points);
+    line.setAttribute("fill", "none");
+    line.setAttribute("stroke", "currentColor");
+    line.setAttribute("stroke-width", "1.5");
+    svg.append(line);
+    svg.style.opacity = "0.85";
+    svg.style.marginTop = "4px";
+    return svg;
+  }
+```
+
+- [ ] **Step 4: 章节抽屉行尾加成本**
+
+`renderChapterPanel`（drawer-panels.js:52-68）循环改为传成本：
+
+```js
+      const byChapter = data.cost?.byChapter ?? {};
+      for (const chapter of chapters) {
+        list.append(buildChapterRow(chapter, byChapter[String(chapter.chapter_no)], data.summary?.costAvailable === true));
+      }
+```
+
+`buildChapterRow` 签名改为 `(chapter, costRow, costAvailable)`，完成态分支（84-89 行）的 meta 改为：
+
+```js
+      meta.textContent = costAvailable && costRow
+        ? `${formatNumber(chapter.actual_words)} 字 · ${formatMoney(costRow.estimatedCost)}`
+        : `${formatNumber(chapter.actual_words)} 字`;
+```
+
+- [ ] **Step 5: 点击防线扩展**
+
+`scripts/verify-app-clickability.cjs` 的抽屉断言部分增加：点击成本页签（`[data-dtab="cost"]`）后断言三个面板标题"用量总览""缓存健康""每章成本"都渲染（无数据时空态文案也算渲染成功）；点击章节页签后断言章节行可见。沿用探针既有的 trusted click + DOM 查询断言方式。
+
+- [ ] **Step 6: 验证 + Commit**
+
+Run: `npm test`
+Expected: 全绿
+Run: `npm run verify:app-shell`
+Expected: `ok: true`
+Run: `npm run verify:app-clickability`
+Expected: `ok: true`（含成本页签三段视图断言）
+
+```powershell
+git add src/app-shell/drawer-panels.js src/app-shell/agent-truth.mjs tests/agent-truth.test.mjs scripts/verify-app-clickability.cjs
+git commit -m "feat(cost-view): three-section cost panel with hit-rate sparkline, chapter row cost, warning badge"
+```
+
+---
+
+## Task 9: 补写成本治理（首轮就知道字数缺口）
 
 **Files:**
 - Modify: `src/core/agent-engine.mjs:687-773`（compileChapterPrompt）
 - Test: `tests/agent-engine.test.mjs`（CapturingModelClient prompt 断言）
 
-**背景：** 基线显示字数门禁失败触发补写轮（每轮都是一次完整模型调用）。现在模型首轮只知道 `segment_target_words`，不知道"整章还差多少字到最低门槛"。把实算缺口放进 current_task，让模型首轮分配好篇幅，减少补写轮。效果由 `audit:cost` 的 refills 指标在真实短跑中对比（Task 8）。
+**背景：** 基线显示字数门禁失败触发补写轮（每轮都是一次完整模型调用）。现在模型首轮只知道 `segment_target_words`，不知道"整章还差多少字到最低门槛"。把实算缺口放进 current_task，让模型首轮分配好篇幅，减少补写轮。效果由 `audit:cost` 的 refills 指标在真实短跑中对比（Task 10）。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -1420,7 +1694,7 @@ git commit -m "feat(refill): expose real chapter word gap in current_task to red
 
 ---
 
-## Task 8: 基线对比、真实 API 验证与 S1 交付报告
+## Task 10: 基线对比、真实 API 验证与 S1 交付报告
 
 **Files:**
 - Create: `docs/superpowers/reports/2026-06-11-s1-delivery-report.md`
@@ -1461,12 +1735,12 @@ git commit -m "docs(s1): delivery report with baseline comparison and real-API v
 
 | spec 验收 | 由哪个 Task 满足 |
 |----------|----------------|
-| UI 能回答总花费/每章花费/缓存节省/浪费在哪 | Task 2（诚实成本）+ Task 3（每章）+ Task 5（重试/缓存健康） |
-| 重试与补写成本占比量化报告 | Task 1（audit:cost CLI）+ Task 8（报告） |
+| UI 能回答总花费/每章花费/缓存节省/浪费在哪 | Task 2（诚实成本）+ Task 3（每章归因）+ Task 5（诊断出口）+ Task 7（数据补强）+ Task 8（成本视图） |
+| 重试与补写成本占比量化报告 | Task 1（audit:cost CLI）+ Task 7（常态计数）+ Task 10（报告） |
 | 金额/token 上限熔断且可从故障卡恢复 | Task 6 |
-| 每章成本预警 | Task 3 Step 5（chapter_cost_warning 事件） |
-| 改动前后同一项目缓存命中率基准对比 | Task 1（基线）+ Task 4（修复）+ Task 8（对比） |
-| 真实 API 短跑验证 | Task 8 Step 3 |
+| 每章成本预警 | Task 3 Step 4（chapter_cost_warning 事件）+ Task 8（徽章升级与事件流展示） |
+| 改动前后同一项目缓存命中率基准对比 | Task 1（基线）+ Task 4（修复）+ Task 8（命中率走势可视）+ Task 10（对比） |
+| 真实 API 短跑验证 | Task 10 Step 3 |
 
 ## 风险提示（执行者必读）
 
