@@ -178,13 +178,15 @@ test("buildContinuityPromptContext includes previous chapters up to MAX_CONTEXT_
       await recordChapterMemory(dir, { chapterNo: i, title: `Ch${i}`, content: `Content of chapter ${i}.`, actualWords: 100 * i });
     }
     const ctx = await buildContinuityPromptContext(dir, 7);
-    // Should include up to MAX_CONTEXT_CHAPTERS (4) previous chapters: 3,4,5,6
-    for (let i = 3; i <= 6; i++) {
+    // Should include up to MAX_CONTEXT_CHAPTERS (2) previous chapters: 5,6
+    for (let i = 5; i <= 6; i++) {
       assert.ok(ctx.includes(`第 ${i} 章`), `should include chapter ${i}`);
     }
-    // chapters 1 and 2 should NOT be in context
+    // chapters 1-4 should NOT be in context
     assert.ok(!ctx.includes("第 1 章："));
     assert.ok(!ctx.includes("第 2 章："));
+    assert.ok(!ctx.includes("第 3 章："));
+    assert.ok(!ctx.includes("第 4 章："));
   } finally {
     await cleanup(dir);
   }
@@ -210,7 +212,7 @@ test("buildContinuityPromptContext excludes current and future chapters", async 
 
 test("exported constants have expected values", () => {
   assert.equal(CHAPTER_MEMORY_SCHEMA_VERSION, 1);
-  assert.equal(MAX_CONTEXT_CHAPTERS, 4);
+  assert.equal(MAX_CONTEXT_CHAPTERS, 2);
   assert.equal(OPENING_EXCERPT_CHARS, 420);
   assert.equal(ENDING_EXCERPT_CHARS, 900);
 });
