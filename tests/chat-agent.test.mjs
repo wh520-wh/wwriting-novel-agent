@@ -52,7 +52,8 @@ test("历史超 20 条折叠为提要", async () => {
 import { runChatTurn, resumeChatTurn } from "../src/core/chat/chat-agent.mjs";
 import { registerWriteTools } from "../src/core/chat/tools-write.mjs";
 import { loadPendingAction, readChatHistory as readHistory } from "../src/core/chat/chat-store.mjs";
-import { upsertChapter } from "../src/core/project-store.mjs";
+import { executeTool } from "../src/core/chat/tool-registry.mjs";
+import { upsertChapter, saveProject, loadState, saveState } from "../src/core/project-store.mjs";
 
 function scriptedClient(script) {
   let i = 0;
@@ -185,4 +186,104 @@ test("已有 pending_action 时新消息被挡", async () => {
   });
   assert.match(blocked.reply, /待确认/u);
   assert.ok(blocked.pendingAction);
+});
+
+test("畸形 JSON 按纯文本回复处理", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  const out = await runChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient(['```json\n{"tool_calls": [{]}\n```']),
+    userMessage: "随便"
+  });
+  assert.equal(out.reply, '```json\n{"tool_calls": [{]}\n```');
+  assert.equal(out.toolEvents.length, 0);
+});
+
+test("模型调用未知工具 → tool 消息 unknown_tool", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  const out = await runChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient([
+      '```json\n{"tool_calls":[{"tool":"not_real","args":{}}]}\n```',
+      "好吧，我用别的方法。"
+    ]),
+    userMessage: "查点东西"
+  });
+  assert.equal(out.reply, "好吧，我用别的方法。");
+  assert.equal(out.toolEvents.length, 1);
+  assert.equal(out.toolEvents[0].ok, false);
+  assert.equal(out.toolEvents[0].error, "unknown_tool");
+});
+
+test("read_only 项目 write 工具不落 pending、直接回填 permission_denied", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  project.tool_permissions = { read_only: true };
+  await saveProject(projectRoot, project);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  registerWriteTools(registry);
+  const out = await runChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient([
+      '```json\n{"tool_calls":[{"tool":"edit_chapter","args":{"chapter_no":1,"find":"六楼","replace":"十楼","reason":"x"}}]}\n```',
+      "明白了，不动。"
+    ]),
+    userMessage: "改"
+  });
+  assert.equal(out.pendingAction, null);
+  assert.equal(out.toolEvents.length, 1);
+  assert.equal(out.toolEvents[0].ok, false);
+  assert.equal(out.toolEvents[0].error, "permission_denied");
+  const content = await fs.readFile(path.join(projectRoot, "chapters", "001.md"), "utf8");
+  assert.match(content, /六楼/u);
+});
+
+test("edit_chapter 运行中章被拒（chapter_busy）", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  const state = await loadState(projectRoot);
+  state.current_chapter_no = 1;
+  await saveState(projectRoot, state);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  registerWriteTools(registry);
+  const server = {
+    runJobs: new Map([[path.resolve(projectRoot), { status: "running" }]])
+  };
+  const out = await executeTool(registry, "edit_chapter", {
+    chapter_no: 1, find: "六楼", replace: "十楼", reason: "x"
+  }, { projectRoot, project, server });
+  assert.equal(out.ok, false);
+  assert.equal(out.error, "chapter_busy");
+});
+
+test("pending_action 跨进程持久：新 registry/loop 对象 approve 成功", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  registerWriteTools(registry);
+  await runChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient(['```json\n{"tool_calls":[{"tool":"edit_chapter","args":{"chapter_no":1,"find":"六楼","replace":"十二楼","reason":"统一"}}]}\n```']),
+    userMessage: "改"
+  });
+  const newRegistry = createToolRegistry();
+  registerReadTools(newRegistry);
+  registerWriteTools(newRegistry);
+  const resumed = await resumeChatTurn({
+    projectRoot, project, registry: newRegistry,
+    modelClient: scriptedClient(["已改。"]),
+    approve: true
+  });
+  assert.equal(await loadPendingAction(projectRoot), null);
+  const content = await fs.readFile(path.join(projectRoot, "chapters", "001.md"), "utf8");
+  assert.match(content, /十二楼/u);
 });
