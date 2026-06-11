@@ -93,7 +93,7 @@ export function deriveActivity(dashboard, now = Date.now()) {
   } : null;
   const enteredAt = state.stage_entered_at ? Date.parse(state.stage_entered_at) : NaN;
   const elapsedMs = Number.isNaN(enteredAt) ? null : (now - enteredAt);
-  const spentCost = summary.estimatedCost ?? null;
+  const spentCost = summary.costAvailable ? (summary.estimatedCost ?? null) : null;
   let mode = 'idle';
   if (status === 'running' && dashboard.agent_alive) mode = 'running';
   else if (status === 'blocked') mode = 'blocked';

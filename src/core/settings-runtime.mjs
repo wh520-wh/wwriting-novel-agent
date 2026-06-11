@@ -1,5 +1,6 @@
 import { appendEvent } from "./event-log.mjs";
 import { loadProject, loadState, saveProject, saveState } from "./project-store.mjs";
+import { normalizePricing } from "./model-pricing.mjs";
 
 const SAFE_NAME = /^[A-Za-z0-9_.-]+$/u;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
@@ -91,6 +92,17 @@ export function normalizeSettingsPatch(patch = {}) {
   const normalized = {};
   if (patch.active_model !== undefined) {
     normalized.active_model = normalizeActiveModel(patch.active_model);
+  }
+  if (patch.active_model?.pricing !== undefined) {
+    if (patch.active_model.pricing === null) {
+      // 允许清除价格
+    } else {
+      const pricing = normalizePricing(patch.active_model.pricing);
+      if (!pricing) {
+        throw new SettingsValidationError("invalid_pricing", "价格必须是正数：每百万 token 的输入价和输出价必填，缓存命中价可选。");
+      }
+      normalized.active_model = { ...(normalized.active_model ?? patch.active_model), pricing };
+    }
   }
   if (patch.stage_overrides !== undefined) {
     normalized.stage_overrides = normalizeStageOverrides(patch.stage_overrides);
