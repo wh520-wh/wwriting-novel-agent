@@ -606,6 +606,9 @@ async function runModelGatewayCall(projectRoot, project, state, runtime, request
       cache_key: cacheEntry.cacheKey
     }
   });
+  if (Number.isFinite(request.shortfall) && request.shortfall > 0) {
+    runtime.modelClient.costTracker?.recordRefill?.();
+  }
   const gatewayResult = await runtime.modelClient.generate({
     project,
     stage: state.current_stage,

@@ -30,7 +30,10 @@ const SUMMARY_DEFAULTS = {
   byProvider: {},
   byModel: {},
   byStage: {},
-  byChapter: {}
+  byChapter: {},
+  recentHitRates: [],
+  refillCalls: 0,
+  cacheSavedCost: 0
 };
 
 export class CostTracker {
@@ -39,6 +42,9 @@ export class CostTracker {
     this.summary = { ...structuredClone(SUMMARY_DEFAULTS), ...(summary ?? {}) };
     this.summary.byModel ??= {};
     this.summary.byChapter ??= {};
+    this.summary.recentHitRates ??= [];
+    this.summary.refillCalls ??= 0;
+    this.summary.cacheSavedCost ??= 0;
   }
 
   record({ stage = "unknown", chapter = null, usageReport }) {
@@ -59,6 +65,15 @@ export class CostTracker {
       this.summary.unpricedCalls += 1;
     }
     this.summary.costAvailable = this.summary.unpricedCalls === 0 && this.summary.calls > 0;
+    if (Number.isFinite(usageReport.cacheHitRate)) {
+      this.summary.recentHitRates.push(Number(usageReport.cacheHitRate.toFixed(4)));
+      while (this.summary.recentHitRates.length > 20) this.summary.recentHitRates.shift();
+    }
+    if (priced && pricing?.cache_hit_per_million != null) {
+      const hitTokens = Math.min(usageReport.cacheHitTokens ?? usageReport.cachedTokens ?? 0, usageReport.inputTokens ?? 0);
+      const saved = (hitTokens / 1_000_000) * Math.max(0, pricing.input_per_million - pricing.cache_hit_per_million);
+      this.summary.cacheSavedCost = Number((this.summary.cacheSavedCost + saved).toFixed(8));
+    }
     const bucketCost = priced ? cost : 0;
     addToBucket(this.summary.byProvider, provider, usageReport, bucketCost);
     addToBucket(this.summary.byModel, model, usageReport, bucketCost);
@@ -72,6 +87,11 @@ export class CostTracker {
   recordRetry() {
     this.summary.retries += 1;
     return this.summary.retries;
+  }
+
+  recordRefill() {
+    this.summary.refillCalls += 1;
+    return this.summary.refillCalls;
   }
 
   getSummary() {
