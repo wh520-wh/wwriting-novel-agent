@@ -9,7 +9,7 @@ import { loadProject, loadState, loadChapterIndex, saveState, upsertChapter, wri
 import { MockModel } from "./mock-model.mjs";
 import { MockProviderAdapter, OpenAICompatibleAdapter } from "./provider-adapters.mjs";
 import { PromptCompiler, computeChapterWordGap } from "./prompt-compiler.mjs";
-import { assertToolCallForChapter, runWordCountGate } from "./quality-gates.mjs";
+import { assertToolCallForChapter, runWordCountGate, runTitleGate, runWordCapGate } from "./quality-gates.mjs";
 import { collectSkillPromptHooks, loadEnabledSkills, runPostProcessHooks, runSkillChecks } from "./skill-runtime.mjs";
 import { ensureDefaultToolHooks, runAfterToolUse, runBeforeToolUse } from "./tool-hooks.mjs";
 import { appendChapterSegment, chapterFileName, finalizeChapterFile, readDraft, ToolValidationError } from "./tool-runtime.mjs";
@@ -393,6 +393,59 @@ async function reviewChapter(projectRoot, project, state, runtime) {
     } catch (err) { console.warn('appendFailure failed:', err.message); }
     return;
   }
+  // S3 本地门禁：标题一致性（hard；错位串章直接打回修订）
+  const titleGate = runTitleGate(draft, state.current_chapter_no);
+  // S3 本地门禁：字数上限（soft；只记 warning + 写成本估算）
+  const wordCapGate = runWordCapGate(gate.actual_words, {
+    targetWords: project.target_words_per_chapter,
+    maxWords: project.max_words_per_chapter,
+    outputPricePerMillion: project.active_model?.pricing?.output_per_million ?? null
+  });
+  if (titleGate.status === "failed") {
+    const qualityResults = [gate, titleGate, wordCapGate];
+    const next = setStage({ ...state, last_quality_gate_results: qualityResults }, "needs_revision");
+    await saveState(projectRoot, next);
+    await upsertChapter(projectRoot, {
+      chapter_no: state.current_chapter_no,
+      status: "needs_revision",
+      actual_words: gate.actual_words,
+      quality_gate_results: qualityResults
+    });
+    await appendEvent(projectRoot, {
+      type: "quality_gate_failed",
+      project_id: project.project_id,
+      chapter_no: state.current_chapter_no,
+      stage: "reviewing",
+      severity: "warn",
+      message: "chapter-title gate failed",
+      data: titleGate
+    });
+    await writeCheckpoint(projectRoot, checkpointPayload(project, state, next));
+    try {
+      const fresh = await loadState(projectRoot).catch(() => state);
+      const card = deriveFailureCard({
+        id: `flr_${Date.now()}_${Math.random().toString(36).slice(2,8)}`,
+        type: 'quality_gate_failed',
+        chapter_no: state.current_chapter_no,
+        message: 'chapter-title gate failed',
+        ts: new Date().toISOString(),
+        data: titleGate
+      }, fresh);
+      appendFailure(projectRoot, card);
+    } catch (err) { console.warn('appendFailure failed:', err.message); }
+    return;
+  }
+  if (wordCapGate.status === "warning") {
+    await appendEvent(projectRoot, {
+      type: "quality_gate_warning",
+      project_id: project.project_id,
+      chapter_no: state.current_chapter_no,
+      stage: "reviewing",
+      severity: "warn",
+      message: `第 ${state.current_chapter_no} 章超出字数上限（${wordCapGate.actual_words}/${wordCapGate.max_words}）`,
+      data: wordCapGate
+    });
+  }
   const skillGateResults = await runSkillChecks(projectRoot, project, "reviewing", {
     chapter_no: state.current_chapter_no,
     stage: "reviewing",
@@ -401,7 +454,7 @@ async function reviewChapter(projectRoot, project, state, runtime) {
   });
   const failedSkillGates = skillGateResults.filter((result) => result.status === "failed");
   if (failedSkillGates.length > 0) {
-    const qualityResults = [gate, ...skillGateResults];
+    const qualityResults = [gate, titleGate, wordCapGate, ...skillGateResults];
     const next = setStage({ ...state, last_quality_gate_results: qualityResults }, "needs_revision");
     await saveState(projectRoot, next);
     await upsertChapter(projectRoot, {
@@ -440,7 +493,7 @@ async function reviewChapter(projectRoot, project, state, runtime) {
     chapter_no: state.current_chapter_no,
     status: "finalizing",
     actual_words: gate.actual_words,
-    quality_gate_results: [gate, ...skillGateResults]
+    quality_gate_results: [gate, titleGate, wordCapGate, ...skillGateResults]
   });
   await writeCheckpoint(projectRoot, checkpointPayload(project, state, next, [], [], null, { skill_gate_results: skillGateResults }));
 }

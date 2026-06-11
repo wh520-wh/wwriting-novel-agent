@@ -101,3 +101,103 @@ export function assertToolCallForChapter(output, context = {}) {
 
   return { ok: true };
 }
+
+// =============== S3 本地门禁：title + word-cap ===============
+
+// 中文数字解析：一～九百九十九（覆盖常用范围）
+const CN_DIGITS = { "零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9 };
+const CN_UNITS = { "十": 10, "百": 100, "千": 1000, "万": 10000 };
+
+export function parseChineseChapterNo(text) {
+  if (text == null) return null;
+  const s = String(text);
+  // 阿拉伯数字：直接取
+  const arabic = s.match(/[0-9]+/u);
+  if (arabic) {
+    const n = Number(arabic[0]);
+    return Number.isInteger(n) && n > 0 ? n : null;
+  }
+  // 中文数字：逐字符累计
+  let result = 0;
+  let section = 0;
+  let lastDigit = 0;
+  let any = false;
+  for (const ch of s) {
+    if (Object.prototype.hasOwnProperty.call(CN_DIGITS, ch)) {
+      lastDigit = CN_DIGITS[ch];
+      any = true;
+    } else if (Object.prototype.hasOwnProperty.call(CN_UNITS, ch)) {
+      const unit = CN_UNITS[ch];
+      if (unit === 10000) {
+        result = (result + section + lastDigit) * unit;
+        section = 0;
+        lastDigit = 0;
+      } else if (unit >= 10) {
+        section += (lastDigit || 1) * unit;
+        lastDigit = 0;
+      }
+    }
+  }
+  const total = result + section + lastDigit;
+  return any && total > 0 ? total : null;
+}
+
+export function runTitleGate(content, chapterNo) {
+  // 扫描所有行首 #{1,3}\s*第(...)+章；若任一标题与期望章号不一致，则失败
+  const lines = String(content ?? "").split("\n");
+  const hits = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const m = /^\s{0,3}#{1,3}\s*第\s*([^\s章节章]+?)\s*章/u.exec(line);
+    if (m) {
+      hits.push({ foundText: `第${m[1]}章`, foundNum: parseChineseChapterNo(m[1]), line: i + 1 });
+    }
+  }
+  if (hits.length === 0) {
+    return { gate: "chapter-title-gate", status: "passed", found_title: null, line: 0 };
+  }
+  // 第一个标题必须匹配 chapterNo；其它任何标题的章号不等于 chapterNo 也视为串章失败
+  for (const hit of hits) {
+    if (hit.foundNum !== null && hit.foundNum !== chapterNo) {
+      return {
+        gate: "chapter-title-gate",
+        status: "failed",
+        found_title: hit.foundText,
+        expected_chapter: chapterNo,
+        line: hit.line
+      };
+    }
+  }
+  const first = hits[0];
+  return { gate: "chapter-title-gate", status: "passed", found_title: first.foundText, line: first.line };
+}
+
+export function runWordCapGate(actualWords, { targetWords, maxWords, outputPricePerMillion } = {}) {
+  const actual = Number(actualWords) || 0;
+  const target = Number(targetWords) || 0;
+  const max = Number(maxWords) > 0 ? Number(maxWords) : Math.round(target * 1.5);
+  if (actual <= max) {
+    return {
+      gate: "word-cap-gate",
+      status: "passed",
+      actual_words: actual,
+      max_words: max,
+      overflow_words: 0,
+      overflow_cost_estimate: null
+    };
+  }
+  const overflow = actual - max;
+  let cost = null;
+  if (Number.isFinite(Number(outputPricePerMillion)) && Number(outputPricePerMillion) > 0) {
+    // 中文 1 字 ≈ 1.5 token 粗估
+    cost = overflow * 1.5 / 1e6 * Number(outputPricePerMillion);
+  }
+  return {
+    gate: "word-cap-gate",
+    status: "warning",
+    actual_words: actual,
+    max_words: max,
+    overflow_words: overflow,
+    overflow_cost_estimate: cost
+  };
+}
