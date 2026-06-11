@@ -1,5 +1,7 @@
 # WWriting 软件成熟度路线图设计
 
+> 本文档已被 `2026-06-11-software-maturity-roadmap-v2-design.md` 取代。M1 已交付（见 `../reports/2026-06-01-m1-delivery-report.md`），M2/M3 的内容已在 v2 中按新阶段重新划分。
+
 ## 背景
 
 WWriting 已经完成了一轮大规模优化：模型调用、流式响应、事件日志、前端拆分、HTTP 错误格式和测试覆盖都有明显改善。
