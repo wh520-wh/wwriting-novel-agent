@@ -32,3 +32,19 @@ export async function readResponseJson(response) {
     return { ok: false, message: text.slice(0, 240) || `HTTP ${response.status}` };
   }
 }
+
+export async function sendChatMessage(message) {
+  return await postJson("/api/chat/send", { message });
+}
+
+export async function confirmChatAction(approve) {
+  return await postJson("/api/chat/confirm", { approve });
+}
+
+export async function fetchChatHistory({ after = null, limit = 100 } = {}) {
+  const params = new URLSearchParams();
+  if (after) params.set("after", after);
+  if (limit) params.set("limit", String(limit));
+  const qs = params.toString();
+  return await getJson(`/api/chat/history${qs ? `?${qs}` : ""}`);
+}
