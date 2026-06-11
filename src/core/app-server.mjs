@@ -894,6 +894,8 @@ async function serveFailuresResolve(request, response, context) {
         return;
       }
     }
+    // 查重与落账必须在同一把项目锁内，否则双击会让两个请求都通过「未处理」检查。
+    return await withProjectLock(context, projectRoot, async () => {
     const failures = readFailures(projectRoot);
     const match = failures.find((f) => f.id === failureId);
     if (!match) {
@@ -904,7 +906,6 @@ async function serveFailuresResolve(request, response, context) {
       sendError(response, new HttpError(409, "CONFLICT", "故障卡已处理"));
       return;
     }
-    return await withProjectLock(context, projectRoot, async () => {
     markResolved(projectRoot, failureId, {
       action: command,
       submittedAt: new Date().toISOString(),

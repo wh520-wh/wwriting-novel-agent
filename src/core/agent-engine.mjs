@@ -90,7 +90,6 @@ export async function runProject(projectRoot, options = {}) {
         });
         return { completed: false, paused: true, projectRoot };
       }
-      state = await loadState(projectRoot);
       const nowIso = new Date().toISOString();
       const lastBeatMs = Date.parse(state.last_heartbeat ?? "");
       if (Number.isNaN(lastBeatMs) || Date.now() - lastBeatMs > 1500) {
