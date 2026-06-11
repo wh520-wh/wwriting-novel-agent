@@ -41,3 +41,24 @@ test("loadProjectDiagnostics summarizes state, queue, recent events, failures, a
   assert.equal(diagnostics.failures.length, 1);
   assert.match(diagnostics.recoveryHint.message, /重试|恢复|retry|resume/u);
 });
+
+test("diagnostics 暴露 costHealth 且不读全量日志", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-diagnostics-"));
+  await saveState(root, { project_status: "running", current_stage: "drafting", current_chapter_no: 1 });
+  await fs.writeFile(path.join(root, "cost.json"), JSON.stringify({
+    calls: 10, retries: 3, unpricedCalls: 10, costAvailable: false,
+    inputTokens: 1, outputTokens: 1, totalTokens: 2, cachedTokens: 0, estimatedCost: 0,
+    byProvider: {}, byModel: {}, byStage: {}, byChapter: {}
+  }));
+  await fs.writeFile(path.join(root, "cache_report.json"), JSON.stringify({
+    entries: { "p:drafting.v1": { cacheVersion: 8 } },
+    last_call: { cacheHitRate: 0.14, stableChanged: true }
+  }));
+
+  const diagnostics = await loadProjectDiagnostics(root);
+
+  assert.equal(diagnostics.costHealth.retries, 3);
+  assert.equal(diagnostics.costHealth.costAvailable, false);
+  assert.equal(diagnostics.costHealth.maxCacheVersion, 8);
+  assert.equal(diagnostics.costHealth.lastCacheHitRate, 0.14);
+});
