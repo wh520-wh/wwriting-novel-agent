@@ -24,6 +24,7 @@
     "verify:installer": "node scripts/verify-installer-artifact.mjs",
     "verify:provider-online": "node scripts/verify-provider-online.mjs",
     "verify:research-online": "node scripts/verify-research-online.mjs",
+    "verify:chat-online": "node scripts/verify-chat-online.mjs",
     "verify:app-shell": "node scripts/verify-app-shell.mjs",
     "audit:cost": "node scripts/audit-cost.mjs",
     "audit:rebuild-memory": "node scripts/rebuild-memory.mjs"

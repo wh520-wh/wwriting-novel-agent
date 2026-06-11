@@ -1,0 +1,234 @@
+// verify-chat-online.mjs — S3 real-API chat verification
+// Requires: WWRITING_PROVIDER_BASE_URL, WWRITING_PROVIDER_MODEL, WWRITING_API_KEY
+// Scenarios: A) comprehension with read tools, B) edit flow with confirmation, C) fact-check corpus
+import path from "node:path";
+import fs from "node:fs/promises";
+import os from "node:os";
+import { fileURLToPath } from "node:url";
+import { createProject, loadProject, saveProject, upsertChapter } from "../src/core/project-store.mjs";
+import { saveContinuity } from "../src/core/continuity-store.mjs";
+import { runChatTurn, resumeChatTurn } from "../src/core/chat/chat-agent.mjs";
+import { createToolRegistry } from "../src/core/chat/tool-registry.mjs";
+import { registerReadTools } from "../src/core/chat/tools-read.mjs";
+import { registerWriteTools } from "../src/core/chat/tools-write.mjs";
+import { buildFactCheckMessages, parseFactCheck } from "../src/core/quality-gates.mjs";
+import { ModelClient } from "../src/core/model-client.mjs";
+import { CostTracker } from "../src/core/cost-tracker.mjs";
+import { OpenAICompatibleAdapter } from "../src/core/provider-adapters.mjs";
+import { buildPricingTable } from "../src/core/model-pricing.mjs";
+
+const baseUrl = process.env.WWRITING_PROVIDER_BASE_URL;
+const model = process.env.WWRITING_PROVIDER_MODEL;
+const apiKeyEnv = process.env.WWRITING_API_KEY_ENV ?? "OPENAI_API_KEY";
+const apiKey = process.env[apiKeyEnv];
+
+if (!baseUrl || !model || !apiKey) {
+  console.error(JSON.stringify({
+    error: "missing_env",
+    required: ["WWRITING_PROVIDER_BASE_URL", "WWRITING_PROVIDER_MODEL", `${apiKeyEnv}(API key)`]
+  }));
+  process.exit(1);
+}
+
+const pricing = {
+  input_per_million: Number(process.env.WWRITING_PRICING_INPUT) || 3,
+  output_per_million: Number(process.env.WWRITING_PRICING_OUTPUT) || 6,
+  cache_hit_per_million: Number(process.env.WWRITING_PRICING_CACHE_HIT) || 0.025
+};
+
+async function main() {
+  const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-chat-verify-"));
+  const results = [];
+
+  try {
+    // 1. 建临时项目（target 3 章、min 50 字）
+    const { projectRoot } = await createProject(tmpRoot, {
+      slug: "chat-verify",
+      title: "对话验证",
+      story_seed: "测试种子",
+      target_chapters: 3,
+      min_words_per_chapter: 50,
+      target_words_per_chapter: 80
+    });
+
+    const project = await loadProject(projectRoot);
+    project.active_model = {
+      provider: "openai-compatible",
+      model_name: model,
+      base_url: baseUrl,
+      api_key_env: apiKeyEnv
+    };
+    project.active_model.pricing = pricing;
+    await saveProject(projectRoot, project);
+
+    // 2. 预置第 1 章正文（固化语料：含"刘康从六楼坠落"）
+    const chapterPath = path.join(projectRoot, "chapters", "001.md");
+    await fs.mkdir(path.dirname(chapterPath), { recursive: true });
+    await fs.writeFile(chapterPath, "# 第一章\n\n刘康从六楼坠落。沈泽在食堂吃饭时听到了这个消息。", "utf8");
+    await upsertChapter(projectRoot, {
+      chapter_no: 1,
+      status: "completed",
+      final_path: chapterPath,
+      actual_words: 25
+    });
+
+    // 预置 continuity.json（六楼@ch1 事实）
+    await saveContinuity(projectRoot, {
+      schema_version: 1,
+      facts: [{
+        entity: "刘康",
+        attribute: "坠楼楼层",
+        value: "六楼",
+        chapter_no: 1,
+        quote: "六楼。",
+        conflict_with: null
+      }],
+      timeline: [{
+        chapter_no: 1,
+        story_time: "十月",
+        events: ["刘康坠楼"]
+      }],
+      characters: [{
+        name: "刘康",
+        traits: ["叼着不点的烟"],
+        status: "已死亡",
+        chapter_no: 1
+      }]
+    });
+
+    // 构造 runtime
+    const adapter = new OpenAICompatibleAdapter({ baseUrl, apiKey });
+    const modelClient = new ModelClient({
+      costTracker: new CostTracker({ pricing: buildPricingTable(project) }),
+      adapters: { "openai-compatible": adapter }
+    });
+    const registry = createToolRegistry();
+    registerReadTools(registry);
+    registerWriteTools(registry);
+
+    // ========== 场景 A：理解 ==========
+    console.error("[A] comprehension...");
+    const a = await runChatTurn({
+      projectRoot,
+      project,
+      registry,
+      modelClient,
+      userMessage: "这本书现在写到第几章？刘康是从几楼坠落的？"
+    });
+    const aPass = a.reply.includes("六楼") && a.toolEvents.some((e) => e.ok);
+    results.push({
+      scenario: "A_comprehension",
+      pass: aPass,
+      reply: a.reply.slice(0, 200),
+      toolEvents: a.toolEvents.length,
+      cost: a.usage.cost
+    });
+    console.error(`[A] pass=${aPass} reply="${a.reply.slice(0, 80)}..." tools=${a.toolEvents.length}`);
+
+    // ========== 场景 B：编辑 ==========
+    console.error("[B] edit flow...");
+    const b = await runChatTurn({
+      projectRoot,
+      project,
+      registry,
+      modelClient,
+      userMessage: "把第1章的六楼改成十二楼"
+    });
+    const bPending = b.pendingAction?.tool === "edit_chapter";
+    let bEdit = false;
+    if (bPending) {
+      console.error(`[B] pending action confirmed: ${JSON.stringify(b.pendingAction.args)}`);
+      const resumed = await resumeChatTurn({
+        projectRoot,
+        project,
+        registry,
+        modelClient,
+        approve: true
+      });
+      const content = await fs.readFile(chapterPath, "utf8");
+      bEdit = content.includes("十二楼");
+      console.error(`[B] resumed, file contains 十二楼=${bEdit}`);
+    } else {
+      console.error(`[B] no pending edit action; reply="${b.reply.slice(0, 80)}..."`);
+    }
+    const checkpoints = await fs.readdir(path.join(projectRoot, "checkpoints")).catch(() => []);
+    results.push({
+      scenario: "B_edit",
+      pass: bPending && bEdit,
+      pendingAction: bPending,
+      editApplied: bEdit,
+      checkpoints: checkpoints.length
+    });
+    console.error(`[B] pass=${bPending && bEdit} pending=${bPending} edit=${bEdit} checkpoints=${checkpoints.length}`);
+
+    // ========== 场景 C：fact-check 拦截率 ==========
+    console.error("[C] fact-check corpus...");
+    const corpus = await loadCorpus();
+    const cResults = [];
+    for (const fixture of corpus) {
+      const messages = buildFactCheckMessages({
+        chapterNo: 2,
+        draft: fixture.draft,
+        facts: fixture.continuity_facts,
+        timeline: fixture.timeline || []
+      });
+      try {
+        const result = await modelClient.generate({
+          project,
+          stage: "fact_check",
+          messages
+        });
+        const parsed = parseFactCheck(result.text);
+        const pass = fixture.expect === "conflict"
+          ? parsed.conflicts.length > 0
+          : parsed.conflicts.length === 0;
+        cResults.push({ name: fixture.name, pass, conflicts: parsed.conflicts.length, expect: fixture.expect });
+        console.error(`[C] ${fixture.name}: pass=${pass} conflicts=${parsed.conflicts.length} expect=${fixture.expect}`);
+      } catch (error) {
+        cResults.push({ name: fixture.name, pass: false, error: error.message });
+        console.error(`[C] ${fixture.name}: ERROR ${error.message}`);
+      }
+    }
+    const cPassRate = corpus.length > 0
+      ? cResults.filter((r) => r.pass).length / cResults.length
+      : 1;
+    results.push({ scenario: "C_fact_check", passRate: cPassRate, details: cResults });
+
+    // 写成本报告
+    await modelClient.costTracker.writeProjectReport(projectRoot);
+  } catch (error) {
+    results.push({ scenario: "error", error: error.message });
+    console.error(`[FATAL] ${error.message}\n${error.stack}`);
+  }
+
+  const allPass = results.every((r) => r.pass || (r.passRate != null && r.passRate >= 0.6));
+  const totalCost = results.reduce((sum, r) => sum + (r.cost ?? 0), 0);
+  const report = {
+    ok: allPass,
+    results,
+    totalCost: Number(totalCost.toFixed(6)),
+    timestamp: new Date().toISOString()
+  };
+  console.log(JSON.stringify(report, null, 2));
+  process.exit(allPass ? 0 : 1);
+}
+
+async function loadCorpus() {
+  const scriptDir = path.dirname(path.resolve(process.cwd(), process.argv[1]));
+  const projectRoot = path.resolve(scriptDir, "..");
+  const corpusDir = path.join(projectRoot, "tests", "fixtures", "s2-corpus");
+  try {
+    const files = (await fs.readdir(corpusDir)).filter((f) => f.endsWith(".json"));
+    return Promise.all(
+      files.map((f) => fs.readFile(path.join(corpusDir, f), "utf8").then(JSON.parse))
+    );
+  } catch {
+    console.error("[C] warning: s2-corpus not found, skipping fact-check scenario");
+    return [];
+  }
+}
+
+main().catch((error) => {
+  console.error(JSON.stringify({ error: error.message }));
+  process.exit(1);
+});
