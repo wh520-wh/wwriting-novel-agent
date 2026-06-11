@@ -245,14 +245,35 @@ describe('renderCostPanel — 3-section layout', () => {
     assert.match(text, /25\.0%/);
   });
 
-  it('7. shows 0.00 元 for cacheSavedCost when zero', () => {
+  it('7. hides cache savings row when costAvailable is false', () => {
     const root = renderCostPanel({
-      cost: makeCost({ cacheSavedCost: 0 }),
+      cost: makeCost({ cacheSavedCost: 0, costAvailable: false }),
       summary: makeSummary(),
       events: []
     });
     const text = flat(root);
-    assert.match(text, /0\.00\s*元/);
+    assert.equal(/缓存节省/.test(text), false, 'should NOT show 缓存节省 when costAvailable is false');
+  });
+
+  it('7b. hides cache savings row when costAvailable is true but saved is 0', () => {
+    const root = renderCostPanel({
+      cost: makeCost({ cacheSavedCost: 0, costAvailable: true }),
+      summary: makeSummary({ costAvailable: true }),
+      events: []
+    });
+    const text = flat(root);
+    assert.equal(/缓存节省/.test(text), false, 'should NOT show 缓存节省 when saved is 0');
+  });
+
+  it('7c. shows cache savings when costAvailable is true and saved > 0', () => {
+    const root = renderCostPanel({
+      cost: makeCost({ cacheSavedCost: 0.6, costAvailable: true }),
+      summary: makeSummary({ costAvailable: true }),
+      events: []
+    });
+    const text = flat(root);
+    assert.match(text, /缓存节省/);
+    assert.match(text, /0\.60\s*元/);
   });
 
   it('8. shows formatted cacheSavedCost when non-zero', () => {
