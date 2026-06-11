@@ -802,7 +802,7 @@ export function createThreadRenderer(ctx) {
   function renderConfirmCard(pendingAction) {
     const wrap = document.createElement("div");
     wrap.className = "msg-agent rise chat-bubble-wrap chat-bubble-wrap--confirm";
-    wrap.dataset.ts = pendingAction?.ts ?? "";
+    wrap.dataset.ts = pendingAction?.created_at ?? "";
     const card = document.createElement("div");
     card.className = "chat-confirm-card";
     const h4 = document.createElement("h4");
@@ -890,6 +890,19 @@ export function createThreadRenderer(ctx) {
     const messages = [...(history?.messages ?? [])].sort(
       (a, b) => timeValue(a.ts) - timeValue(b.ts)
     );
+
+    // pendingAction 渲染（独立指纹防重，按 created_at 排序插入）
+    if (history?.pendingAction) {
+      const confirmKey = `chat:confirm:${history.pendingAction.id}`;
+      if (!ctx.renderedKeys?.has(confirmKey)) {
+        const confirmNode = renderConfirmCard(history.pendingAction);
+        if (confirmNode) {
+          insertByTs(ctx.refs.thread, confirmNode, history.pendingAction.created_at || new Date().toISOString());
+          ctx.renderedKeys?.add(confirmKey);
+        }
+      }
+    }
+
     if (messages.length === 0) {
       // 无聊天历史时不主动清理既有 thread；维持原 agent 事件流渲染。
       return;
