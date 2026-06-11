@@ -618,6 +618,36 @@ test("agent-engine 检测到 failure_resolved=pause-here 后立刻退出循环",
   assert.equal(state.project_status, "completed");
 });
 
+test("首次章节请求就把真实字数缺口写进 current_task，避免触发补写", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-wordgap-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "project",
+    target_chapters: 1,
+    min_words_per_chapter: 300,
+    target_words_per_chapter: 360
+  });
+  // 预先写一半的草稿（150 个汉字 < 300），让模型首次请求时就拿到真实缺口
+  const draftsDir = path.join(projectRoot, "drafts");
+  await fs.mkdir(draftsDir, { recursive: true });
+  const seededDraft = "字".repeat(150);
+  await fs.writeFile(path.join(draftsDir, "001.draft.md"), seededDraft, "utf8");
+
+  const modelClient = new CapturingModelClient();
+  await runProject(projectRoot, { modelClient });
+
+  // 第一次模型调用（chapter 1, segment 1, kind=draft_segment）必须包含缺口字段
+  const firstPrompt = modelClient.prompts[0];
+  assert.ok(firstPrompt, "expected at least one model prompt to be captured");
+
+  // 从 current_task JSON 块里抠出缺口字段
+  const match = firstPrompt.match(/"chapterWordsWritten":\s*(\d+)\s*,\s*"chapterWordsRemaining":\s*(\d+)/u);
+  assert.ok(match, `expected chapterWordsWritten/Remaining in first prompt, got snippet: ${firstPrompt.slice(0, 600)}`);
+  const wordsWritten = Number(match[1]);
+  const wordsRemaining = Number(match[2]);
+  assert.equal(wordsWritten, 150);
+  assert.equal(wordsRemaining, 150); // 300 - 150
+});
+
 test("maybeWarnChapterCost 在当前章 token 超前几章均值 2 倍时告警一次", async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-warn-"));
   const { projectRoot } = await createProject(workspace, {
