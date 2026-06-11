@@ -459,6 +459,102 @@ async function main() {
     settleMs: 750
   }));
 
+  // === S3 chat probes ===
+  // Write chat_pending_action.json and chat_history.jsonl fixtures
+  fs.writeFileSync(path.join(projectRoot, "chat_pending_action.json"), JSON.stringify({
+    id: "test-pending-001",
+    created_at: "2026-06-12T00:00:00.000Z",
+    status: "pending",
+    tool: "edit_chapter",
+    args: { chapter_no: 1, find: "六楼", replace: "十二楼", reason: "test" },
+    preview: { ok: true, chapter_no: 1, before: "...六楼...", after: "...十二楼..." },
+    lead_text: "test"
+  }));
+  fs.writeFileSync(path.join(projectRoot, "chat_history.jsonl"), [
+    JSON.stringify({ id: "chat-user-001", ts: "2026-06-12T01:00:00.000Z", role: "user", content: "你好" }),
+    JSON.stringify({ id: "chat-assistant-001", ts: "2026-06-12T01:00:01.000Z", role: "assistant", content: "你好！有什么可以帮你的？", cost: 0.001 }),
+    JSON.stringify({ id: "chat-tool-001", ts: "2026-06-12T01:00:02.000Z", role: "tool", tool: "read_chapter", ok: true, result_summary: '{"chapter_no":1,"words":1200}' })
+  ].join("\n") + "\n");
+
+  // Mock /api/chat/send and /api/chat/confirm to avoid real LLM calls
+  await win.webContents.executeJavaScript(`
+    (() => {
+      if (!window.__origFetch) window.__origFetch = window.fetch;
+      window.fetch = async function(...args) {
+        const url = typeof args[0] === 'string' ? args[0] : args[0]?.url;
+        if (url && url.includes('/api/chat/send')) {
+          return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url && url.includes('/api/chat/confirm')) {
+          return new Response(JSON.stringify({ ok: true, message: "已确认" }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        return window.__origFetch.apply(this, args);
+      };
+      return true;
+    })()
+  `);
+
+  // ① composer 输入"你好"回车 → user + assistant 气泡
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const input = document.getElementById("composer-input");
+      input.value = "你好";
+      input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "你好" }));
+      input.focus();
+      return true;
+    })()
+  `);
+  assert.equal(await read(win, "document.getElementById('composer-submit').disabled === false"), true, "composer submit must be enabled with text '你好'");
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const input = document.getElementById("composer-input");
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+      return true;
+    })()
+  `);
+  await waitUntil(win, `
+    document.querySelector('.chat-bubble--user') !== null &&
+    document.querySelector('.chat-bubble--assistant') !== null
+  `, "chat user+assistant bubbles must appear after composer Enter", 8000);
+
+  // ② pending_action 确认卡 (fixtures written above, refresh to ensure loaded)
+  clicks.push(await clickAndRead(win, "#refresh", {
+    label: "refresh-for-chat-fixtures",
+    settleMs: 1000,
+    expect: () => read(win, `document.querySelector('[data-testid="chat-confirm-approve"]') !== null && document.querySelector('[data-testid="chat-confirm-reject"]') !== null`)
+  }));
+  const confirmCardState = await read(win, `
+    (() => {
+      const approve = document.querySelector('[data-testid="chat-confirm-approve"]');
+      const reject = document.querySelector('[data-testid="chat-confirm-reject"]');
+      return {
+        approveExists: approve !== null,
+        rejectExists: reject !== null,
+        approveDisabled: approve?.disabled ?? true,
+        rejectDisabled: reject?.disabled ?? true
+      };
+    })()
+  `);
+  assert.equal(confirmCardState.approveExists, true, "chat-confirm-approve must exist");
+  assert.equal(confirmCardState.rejectExists, true, "chat-confirm-reject must exist");
+  assert.equal(confirmCardState.approveDisabled, false, "chat-confirm-approve must not be disabled");
+  assert.equal(confirmCardState.rejectDisabled, false, "chat-confirm-reject must not be disabled");
+  clicks.push(await clickAndRead(win, '[data-testid="chat-confirm-approve"]', {
+    label: "chat-confirm-approve",
+    settleMs: 500,
+    expect: () => read(win, `
+      document.querySelector('.chat-confirm-card--resolved') !== null ||
+      document.querySelector('[data-testid="chat-confirm-approve"]')?.disabled === true
+    `)
+  }));
+
+  // ③ 工具卡展开点击
+  clicks.push(await clickAndRead(win, ".chat-tool-card summary", {
+    label: "chat-tool-card-expand",
+    settleMs: 200,
+    expect: () => read(win, `document.querySelector('.chat-tool-card')?.open === true`)
+  }));
+
   const motionReady = await read(win, "Boolean(window.__wwritingMotionReady)");
   assert.equal(motionReady, true, "motion runtime must initialize in Electron");
   for (const message of consoleMessages) {
