@@ -9,7 +9,7 @@ import { loadProject, loadState, loadChapterIndex, saveState, upsertChapter, wri
 import { MockModel } from "./mock-model.mjs";
 import { MockProviderAdapter, OpenAICompatibleAdapter } from "./provider-adapters.mjs";
 import { PromptCompiler, computeChapterWordGap } from "./prompt-compiler.mjs";
-import { assertToolCallForChapter, runWordCountGate, runTitleGate, runWordCapGate } from "./quality-gates.mjs";
+import { assertToolCallForChapter, runWordCountGate, runTitleGate, runWordCapGate, buildFactCheckMessages, parseFactCheck } from "./quality-gates.mjs";
 import { collectSkillPromptHooks, loadEnabledSkills, runPostProcessHooks, runSkillChecks } from "./skill-runtime.mjs";
 import { ensureDefaultToolHooks, runAfterToolUse, runBeforeToolUse } from "./tool-hooks.mjs";
 import { appendChapterSegment, chapterFileName, finalizeChapterFile, readDraft, ToolValidationError } from "./tool-runtime.mjs";
@@ -22,6 +22,8 @@ import { deriveFailureCard } from "./derive-failure-card.mjs";
 import { emit, CORE_EVENTS } from "./event-bus.mjs";
 import { buildMemoryExtractionMessages, parseMemoryExtraction } from "./memory-extractor.mjs";
 import { loadContinuity, mergeExtraction, saveContinuity, loadContinuityState, saveContinuityState } from "./continuity-store.mjs";
+import { appendChatMessage, loadPendingAction, savePendingAction } from "./chat/chat-store.mjs";
+import { previewEditChapter } from "./chat/tools-write.mjs";
 
 export class SimulatedInterrupt extends Error {
   constructor(message) {
@@ -487,6 +489,16 @@ async function reviewChapter(projectRoot, project, state, runtime) {
     } catch (err) { console.warn('appendFailure failed:', err.message); }
     return;
   }
+  // S3 fact-check 门禁：skill checks 之后、成功路径之前；不阻塞主流程
+  try {
+    await runFactCheck(projectRoot, project, state, runtime, draft);
+  } catch (error) {
+    await appendEvent(projectRoot, {
+      type: "fact_check_failed", project_id: project.project_id,
+      chapter_no: state.current_chapter_no, stage: "reviewing", severity: "warn",
+      message: `fact-check 失败：${error.message}`
+    });
+  }
   const next = setStage({ ...state }, "finalizing");
   await saveState(projectRoot, next);
   await upsertChapter(projectRoot, {
@@ -634,6 +646,113 @@ function renderForPrompt(continuity) {
   const facts = continuity.facts.map((f) => `- ${f.entity}/${f.attribute}: ${f.value} (第${f.chapter_no}章)`).join("\n");
   const chars = continuity.characters.map((c) => `- ${c.name}(${c.status}): ${c.traits.join("、")}`).join("\n");
   return [facts, chars].filter(Boolean).join("\n");
+}
+
+// S3 fact-check 门禁：在 reviewChapter 内、skill checks 之后调用。
+// 不阻塞主流程：外层调用需用 try/catch 包裹，本函数内部也会吞下非致命错误。
+async function runFactCheck(projectRoot, project, state, runtime, draft) {
+  if (project.fact_check?.enabled === false) {
+    return;
+  }
+  const provider = project.active_model?.provider ?? "mock";
+  if (provider === "mock") {
+    await appendEvent(projectRoot, {
+      type: "fact_check_skipped", project_id: project.project_id,
+      chapter_no: state.current_chapter_no, stage: "reviewing",
+      message: "mock provider，跳过 fact-check"
+    });
+    return;
+  }
+  let continuity;
+  try {
+    continuity = await loadContinuity(projectRoot);
+  } catch (error) {
+    await appendEvent(projectRoot, {
+      type: "fact_check_skipped", project_id: project.project_id,
+      chapter_no: state.current_chapter_no, stage: "reviewing", severity: "warn",
+      message: `加载 continuity 失败，跳过 fact-check：${error.message}`
+    });
+    return;
+  }
+  if (!continuity.facts.length) {
+    await appendEvent(projectRoot, {
+      type: "fact_check_skipped", project_id: project.project_id,
+      chapter_no: state.current_chapter_no, stage: "reviewing",
+      message: "无既有 facts，跳过 fact-check"
+    });
+    return;
+  }
+
+  let parsed = null;
+  for (let attempt = 0; attempt < 2 && !parsed?.ok; attempt += 1) {
+    try {
+      const result = await runtime.modelClient.generate({
+        project, stage: "fact_check",
+        messages: buildFactCheckMessages({
+          chapterNo: state.current_chapter_no, draft,
+          facts: continuity.facts, timeline: continuity.timeline
+        }),
+        metadata: { factCheck: true, chapterNo: state.current_chapter_no, attempt }
+      });
+      parsed = parseFactCheck(result.text);
+    } catch (error) {
+      parsed = { ok: false, error: error.message };
+    }
+  }
+  if (!parsed?.ok) {
+    await appendEvent(projectRoot, {
+      type: "fact_check_skipped", project_id: project.project_id,
+      chapter_no: state.current_chapter_no, stage: "reviewing", severity: "warn",
+      message: `fact-check 解析失败：${parsed?.error ?? "unknown"}`
+    });
+    return;
+  }
+  if (parsed.conflicts.length === 0) {
+    await appendEvent(projectRoot, {
+      type: "fact_check_completed", project_id: project.project_id,
+      chapter_no: state.current_chapter_no, stage: "reviewing",
+      message: "fact-check 未发现冲突"
+    });
+    return;
+  }
+
+  // 有冲突：记事件 + 主动消息 + 可选 pending
+  const conflicts = parsed.conflicts;
+  await appendEvent(projectRoot, {
+    type: "quality_gate_warning", project_id: project.project_id,
+    chapter_no: state.current_chapter_no, stage: "reviewing", severity: "warn",
+    message: `fact-check 发现 ${conflicts.length} 个潜在冲突`,
+    data: { conflicts }
+  });
+
+  const first = conflicts[0];
+  const note = `第 ${state.current_chapter_no} 章可能与既有设定矛盾：「${first.draft_quote}」 ↔ ${first.conflicts_with}（第 ${first.prior_chapter} 章）。建议：${first.suggestion}`;
+  await appendChatMessage(projectRoot, {
+    role: "assistant", content: note, proactive: "fact_check",
+    chapter_no: state.current_chapter_no
+  });
+
+  // 软模式：仅当 draft_quote 在 draft 中唯一命中且当前无 pending 时落 pending_action
+  const existingPending = await loadPendingAction(projectRoot).catch(() => null);
+  if (!existingPending) {
+    const firstIdx = draft.indexOf(first.draft_quote);
+    const onlyHit = firstIdx >= 0 && draft.indexOf(first.draft_quote, firstIdx + 1) < 0;
+    if (onlyHit) {
+      try {
+        const preview = await previewEditChapter(projectRoot, {
+          chapter_no: state.current_chapter_no,
+          find: first.draft_quote,
+          replace: first.suggestion
+        });
+        await savePendingAction(projectRoot, {
+          tool: "edit_chapter",
+          args: { chapter_no: state.current_chapter_no, find: first.draft_quote, replace: first.suggestion, reason: "fact-check 矛盾修复" },
+          preview
+        });
+      } catch { /* preview 失败不阻塞 */ }
+    }
+  }
+  // hard 模式：当前任务仅记录 warning 与主动消息，不强制 needs_revision（后续 Task 处理）
 }
 
 async function completeChapter(projectRoot, project, state) {

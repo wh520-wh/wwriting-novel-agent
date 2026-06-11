@@ -1,0 +1,7 @@
+{
+  "name": "a2-time-conflict",
+  "draft": "前天晚上十一点，沈泽探查北围墙。",
+  "continuity_facts": [],
+  "timeline": [{ "chapter_no": 1, "story_time": "午间", "events": ["午间发生"] }],
+  "expect": "conflict"
+}

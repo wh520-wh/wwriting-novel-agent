@@ -201,3 +201,57 @@ export function runWordCapGate(actualWords, { targetWords, maxWords, outputPrice
     overflow_cost_estimate: cost
   };
 }
+
+// =============== S3 fact-check 门禁（纯函数部分） ===============
+
+const FACT_CHECK_SUMMARY_MAX = 2000;
+
+const FACT_CHECK_SYSTEM_PROMPT = [
+  "你是小说事实核查员。读完本章后比对既有设定档案，挑出本章与既有事实/时间线之间的客观冲突。",
+  "只输出一个 JSON 对象（可用 ```json 围栏），结构：",
+  '{"conflicts":[{"draft_quote":"本章内一句触发冲突的原文","conflicts_with":"既有设定/时间线中的对应记录","prior_chapter":既有章节号,"severity":"high|low","suggestion":"修复建议（说明改哪边、目标值）"}]}',
+  "只报客观叙述层的设定冲突（地点、数字、时间、生死、关系）。",
+  "豁免：回忆/闪回/角色撒谎/隐喻/旁白不算矛盾。",
+  "若没有冲突，输出 {\"conflicts\":[]}。",
+  "不要输出其他内容。"
+].join("\n");
+
+export function buildFactCheckMessages({ chapterNo, draft, facts, timeline }) {
+  const user = [
+    `# 第 ${chapterNo} 章正文`,
+    String(draft ?? "").slice(0, FACT_CHECK_SUMMARY_MAX),
+    "",
+    "# 既有事实",
+    (facts ?? []).map((f) => `- ${f.entity}/${f.attribute}: ${f.value} (第${f.chapter_no}章)`).join("\n") || "(空)",
+    "",
+    "# 既有时间线",
+    (timeline ?? []).map((t) => `- 第${t.chapter_no}章 [${t.story_time}]: ${(t.events ?? []).join("；")}`).join("\n") || "(空)"
+  ].join("\n");
+  return [
+    { role: "system", content: FACT_CHECK_SYSTEM_PROMPT },
+    { role: "user", content: user }
+  ];
+}
+
+export function parseFactCheck(rawText) {
+  const text = String(rawText ?? "");
+  const fenced = /```(?:json)?\s*([\s\S]*?)```/u.exec(text);
+  const candidate = (fenced ? fenced[1] : text).trim();
+  let data;
+  try {
+    data = JSON.parse(candidate);
+  } catch {
+    return { ok: false, error: "invalid_json" };
+  }
+  const conflicts = Array.isArray(data?.conflicts) ? data.conflicts : [];
+  const normalized = conflicts
+    .map((c) => ({
+      draft_quote: String(c.draft_quote ?? "").slice(0, 200),
+      conflicts_with: String(c.conflicts_with ?? "").slice(0, 200),
+      prior_chapter: Number(c.prior_chapter) || null,
+      severity: c.severity === "low" ? "low" : "high",
+      suggestion: String(c.suggestion ?? "").slice(0, 400)
+    }))
+    .filter((c) => c.draft_quote && c.conflicts_with);
+  return { ok: true, conflicts: normalized };
+}
