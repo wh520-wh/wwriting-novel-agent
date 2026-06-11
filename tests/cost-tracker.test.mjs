@@ -221,3 +221,14 @@ test("CostTracker 配置缓存命中价时累计 cacheSavedCost", () => {
   // 40 万命中 × (2 − 0.5)/M = 0.6 元
   assert.equal(tracker.getSummary().cacheSavedCost, 0.6);
 });
+
+test("CostTracker 未配置 cache_hit_per_million 时 cacheSavedCost 保持 0", () => {
+  const tracker = new CostTracker({
+    pricing: { m: { input_per_million: 2, output_per_million: 8 } }
+  });
+  tracker.record({
+    stage: "s",
+    usageReport: { provider: "p", model: "m", inputTokens: 1_000_000, outputTokens: 0, totalTokens: 1_000_000, cachedTokens: 500_000 }
+  });
+  assert.equal(tracker.getSummary().cacheSavedCost, 0);
+});

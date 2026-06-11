@@ -71,7 +71,8 @@ export class CostTracker {
     }
     if (priced && pricing?.cache_hit_per_million != null) {
       const hitTokens = Math.min(usageReport.cacheHitTokens ?? usageReport.cachedTokens ?? 0, usageReport.inputTokens ?? 0);
-      const saved = (hitTokens / 1_000_000) * Math.max(0, pricing.input_per_million - pricing.cache_hit_per_million);
+      const inputPrice = pricing.input_per_million ?? 0;
+      const saved = (hitTokens / 1_000_000) * Math.max(0, inputPrice - pricing.cache_hit_per_million);
       this.summary.cacheSavedCost = Number((this.summary.cacheSavedCost + saved).toFixed(8));
     }
     const bucketCost = priced ? cost : 0;
