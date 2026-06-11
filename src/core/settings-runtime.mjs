@@ -42,7 +42,7 @@ async function syncBudgetConfigToState(projectRoot, budgetConfig) {
     revision_rounds_by_chapter: {},
     ...(state.active_budget ?? {})
   };
-  for (const key of ["max_model_calls", "max_revision_rounds_per_chapter"]) {
+  for (const key of ["max_model_calls", "max_revision_rounds_per_chapter", "max_cost", "max_total_tokens"]) {
     if (budgetConfig[key] === undefined) {
       continue;
     }
@@ -266,6 +266,8 @@ function normalizeBudgetConfig(config) {
   const normalized = {};
   copyOptionalPositiveInteger(normalized, config, "max_model_calls");
   copyOptionalPositiveInteger(normalized, config, "max_revision_rounds_per_chapter");
+  copyOptionalPositiveNumber(normalized, config, "max_cost");
+  copyOptionalPositiveInteger(normalized, config, "max_total_tokens");
   return normalized;
 }
 
@@ -367,6 +369,21 @@ function copyOptionalPositiveInteger(target, source, key) {
   const value = Number(source[key]);
   if (!Number.isInteger(value) || value < 1) {
     throw new SettingsValidationError(`invalid_${key}`, `${key} must be a positive integer.`);
+  }
+  target[key] = value;
+}
+
+function copyOptionalPositiveNumber(target, source, key) {
+  if (source[key] === undefined) {
+    return;
+  }
+  if (source[key] === "" || source[key] === null) {
+    target[key] = null;
+    return;
+  }
+  const value = Number(source[key]);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new SettingsValidationError(`invalid_${key}`, `${key} must be a positive number.`);
   }
   target[key] = value;
 }

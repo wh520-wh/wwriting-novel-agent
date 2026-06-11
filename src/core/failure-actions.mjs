@@ -76,6 +76,18 @@ export async function applyFailureResolution(projectRoot, { command, args = {} }
       return { resumeRun: true, message: `预算已提高到 ${args.newMaxModelCalls}，继续写作。` };
     }
 
+    case "raise-cost-budget": {
+      await updateProjectSettings(projectRoot, { budget_config: { max_cost: args.newMaxCost } });
+      await saveResumeableState(projectRoot);
+      return { resumeRun: true, message: `成本上限已提高到 ¥${args.newMaxCost}，继续写作。` };
+    }
+
+    case "raise-token-budget": {
+      await updateProjectSettings(projectRoot, { budget_config: { max_total_tokens: args.newMaxTotalTokens } });
+      await saveResumeableState(projectRoot);
+      return { resumeRun: true, message: `token 上限已提高到 ${args.newMaxTotalTokens}，继续写作。` };
+    }
+
     case "switch-model": {
       const project = await loadProject(projectRoot);
       await updateProjectSettings(projectRoot, {

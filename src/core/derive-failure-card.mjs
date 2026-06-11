@@ -12,7 +12,8 @@ function classifyKind(event) {
   if (type === 'tool_call_rejected') return 'tool-rejected';
   if (type === 'project_blocked') {
     if (message === 'model_output_invalid' || message === 'unsupported_tool') return 'tool-rejected';
-    if (message === 'model_call_budget_exhausted' || message === 'revision_budget_exhausted') return 'budget-exhausted';
+    if (message === 'model_call_budget_exhausted' || message === 'revision_budget_exhausted'
+      || message === 'cost_budget_exhausted' || message === 'token_budget_exhausted') return 'budget-exhausted';
     return 'provider-error';
   }
   return 'unknown';
@@ -40,6 +41,20 @@ function actionsForKind(kind, event) {
         { label: '停在这里我手动处理', command: 'pause-here', args: {} }
       ];
     case 'budget-exhausted': {
+      if (event.message === 'cost_budget_exhausted') {
+        const currentMax = data.max_cost ?? 1;
+        return [
+          { label: `提高成本上限到 ¥${currentMax * 2}`, command: 'raise-cost-budget', args: { newMaxCost: currentMax * 2 } },
+          { label: '停在这里', command: 'pause-here', args: {} }
+        ];
+      }
+      if (event.message === 'token_budget_exhausted') {
+        const currentMax = data.max_total_tokens ?? 100000;
+        return [
+          { label: `提高 token 上限到 ${currentMax * 2}`, command: 'raise-token-budget', args: { newMaxTotalTokens: currentMax * 2 } },
+          { label: '停在这里', command: 'pause-here', args: {} }
+        ];
+      }
       const current = data.max_model_calls ?? data.max ?? 200;
       return [
         { label: `提高预算到 ${current * 2}`, command: 'raise-budget', args: { newMaxModelCalls: current * 2 } },
@@ -85,8 +100,15 @@ function bodyForKind(kind, event, state) {
       return `第 ${ch} 章本段写了 ${data.actual_words ?? '?'} 字，低于 ${data.min_words ?? data.expected_words ?? '?'} 字门槛。智能体没有继续，等你决定怎么处理。`;
     case 'tool-rejected':
       return `第 ${ch} 章的工具调用 ${data.tool ?? ''} 被拒。智能体停在 ${state.current_stage ?? '未知'} 阶段。`;
-    case 'budget-exhausted':
+    case 'budget-exhausted': {
+      if (event.message === 'cost_budget_exhausted') {
+        return `第 ${ch} 章已花约 ¥${data.estimated_cost ?? '?'}，达到你设置的 ¥${data.max_cost ?? '?'} 上限。智能体停下，等你决定。`;
+      }
+      if (event.message === 'token_budget_exhausted') {
+        return `第 ${ch} 章已用约 ${data.total_tokens ?? '?'} token，达到你设置的 ${data.max_total_tokens ?? '?'} token 上限。智能体停下，等你决定。`;
+      }
       return `第 ${ch} 章已经用完模型调用预算 (${data.model_calls ?? data.used ?? '?'} / ${data.max_model_calls ?? data.max ?? '?'})，等你决定。`;
+    }
     case 'provider-error':
       return `第 ${ch} 章遇到模型服务异常: ${event.message ?? '未知'}。`;
     case 'review-failed':

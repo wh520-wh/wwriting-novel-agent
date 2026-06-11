@@ -40,6 +40,26 @@ test("raise-budget 解除预算阻塞并同步 active_budget 与 project.yaml", 
   assert.equal(project.budget_config.max_model_calls, 400);
 });
 
+test("raise-cost-budget 写入 budget_config.max_cost 并要求续跑", async () => {
+  const projectRoot = await makeProject("wwriting-fa-cost-budget-");
+  const state = await loadState(projectRoot);
+  await saveState(projectRoot, {
+    ...state,
+    project_status: "blocked",
+    current_stage: "blocked",
+    blocked_at_stage: "drafting",
+    blocked_reason: "cost_budget_exhausted",
+    active_budget: { model_calls: 50, max_model_calls: 200, max_cost: 1, revision_rounds_by_chapter: {} }
+  });
+  const result = await applyFailureResolution(projectRoot, { command: "raise-cost-budget", args: { newMaxCost: 2 } });
+  assert.equal(result.resumeRun, true);
+  const project = await loadProject(projectRoot);
+  assert.equal(project.budget_config.max_cost, 2);
+  const next = await loadState(projectRoot);
+  assert.equal(next.project_status, "idle");
+  assert.equal(next.active_budget.max_cost, 2);
+});
+
 test("accept-current-words 把 needs_revision 推进到 finalizing", async () => {
   const projectRoot = await makeProject("wwriting-fa-accept-");
   const state = await loadState(projectRoot);

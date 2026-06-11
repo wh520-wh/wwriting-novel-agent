@@ -2,11 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { FAILURE_COMMANDS, validateFailureCommand } from '../src/shared/failure-commands.mjs';
 
-test('FAILURE_COMMANDS 包含所有 11 个命令', () => {
+test('FAILURE_COMMANDS 包含所有 13 个命令', () => {
   const expected = [
     'retry-segment', 'retry-with-prompt', 'pause-here',
     'accept-current-words', 'skip-segment', 'fill-words',
-    'raise-budget', 'switch-model', 'apply-review-suggestions',
+    'raise-budget', 'raise-cost-budget', 'raise-token-budget',
+    'switch-model', 'apply-review-suggestions',
     'accept-review-current', 'manual-review-handoff'
   ].sort();
   assert.deepEqual(Object.keys(FAILURE_COMMANDS).sort(), expected);
