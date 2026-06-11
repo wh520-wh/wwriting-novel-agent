@@ -104,3 +104,38 @@ test("settings runtime rejects non-http base URLs", () => {
     (error) => error instanceof SettingsValidationError && error.code === "invalid_base_url"
   );
 });
+
+test("normalizeStageOverrides preserves pricing field", async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-override-pricing-"));
+  try {
+    const { projectRoot } = await createProject(workspace, {
+      title: "override pricing", story_seed: "t", target_chapters: 1, min_words_per_chapter: 300
+    });
+    await updateProjectSettings(projectRoot, {
+      active_model: {
+        provider: "openai-compatible",
+        model_name: "mimo-v2.5-pro",
+        base_url: "https://api.xiaomimimo.com/v1",
+        api_key_env: "XIAOMI_MIMO_API_KEY",
+        pricing: { input_per_million: 1, output_per_million: 4 }
+      },
+      stage_overrides: {
+        enabled: true,
+        outline: {
+          enabled: true,
+          provider: "openai-compatible",
+          model_name: "deepseek-chat",
+          base_url: "https://api.deepseek.com",
+          api_key_env: "DEEPSEEK_API_KEY",
+          pricing: { input_per_million: 2, output_per_million: 8 }
+        }
+      }
+    });
+    const project = await loadProject(projectRoot);
+    assert.deepEqual(project.stage_overrides.outline.pricing, {
+      input_per_million: 2, output_per_million: 8, currency: "CNY"
+    });
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});
