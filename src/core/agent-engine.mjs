@@ -763,11 +763,11 @@ async function compileChapterPrompt(projectRoot, project, state, request, runtim
         "Chapter body must be written through the append_chapter_segment tool. Chat body text is not a valid deliverable.",
       goal: project.story_seed ?? project.title ?? "Untitled writing project",
       style: styleRulesText,
-      skill_instructions: skillInstructions,
-      project_memory: [bookSummary, continuityContext].filter(Boolean).join("\n\n"),
-      chapter_plan: [`Chapter ${state.current_chapter_no} of ${project.target_chapters}.`, chapterContinuityRule].join("\n")
+      skill_instructions: skillInstructions
     },
     dynamicBlocks: {
+      project_memory: [bookSummary, continuityContext].filter(Boolean).join("\n\n"),
+      chapter_plan: [`Chapter ${state.current_chapter_no} of ${project.target_chapters}.`, chapterContinuityRule].join("\n"),
       current_task: JSON.stringify(
         {
           kind: request.kind,
