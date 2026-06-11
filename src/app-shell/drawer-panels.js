@@ -1,6 +1,7 @@
 import { icon } from "./icons.js";
 import { formatNumber, formatMoney, formatTime, translateStage, translateReviewStatus, translateSkillType, translateSourceKind, translateEventType } from "./utils.js";
 import { postJson } from "./api-client.js";
+import { renderCostPanel as renderCostPanelComponent } from "./components/cost-panel.js";
 
 export function createDrawerPanels(ctx) {
   // ctx provides: refs, getDrawerTab, setDrawerTab, getDashboard, loadDashboard,
@@ -268,15 +269,29 @@ export function createDrawerPanels(ctx) {
 
   function renderCostPanel(data) {
     const summary = data.summary;
-    const budget = dpanel("预算与用量");
-    const kv = document.createElement("dl");
-    kv.className = "kv";
-    appendKv(kv, "模型调用", `${formatNumber(summary.modelCalls)} / ${summary.maxModelCalls ?? "∞"}`);
-    appendKv(kv, "估算成本", summary.costAvailable ? formatMoney(summary.estimatedCost) : "未配置价格");
-    appendKv(kv, "累计字数", formatNumber(summary.totalWords));
-    appendKv(kv, "完成章节", `${summary.completedChapters} / ${summary.targetChapters}`);
-    budget.body.append(kv);
-    ctx.refs.drawerBody.replaceChildren(budget.panel);
+    const events = data.events ?? [];
+    const { panel, body } = dpanel("成本视图");
+    // Pill shows the high-level "has-cost / no-cost" state, mirroring the
+    // honest 未配置价格 display from the overview section below.
+    if (summary.costAvailable) {
+      const pill = document.createElement("span");
+      pill.className = "pill mono";
+      pill.textContent = formatMoney(summary.estimatedCost);
+      panel.querySelector(".dpanel-head").append(pill);
+    } else {
+      const pill = document.createElement("span");
+      pill.className = "pill mono muted";
+      pill.textContent = "未配置价格";
+      panel.querySelector(".dpanel-head").append(pill);
+    }
+    body.style.padding = "0";
+    const tree = renderCostPanelComponent({
+      cost: data.cost ?? null,
+      summary,
+      events
+    });
+    body.append(tree);
+    ctx.refs.drawerBody.replaceChildren(panel);
   }
 
   function renderReviewerPanel(data) {

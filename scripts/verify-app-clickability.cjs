@@ -280,6 +280,11 @@ async function main() {
   }));
   await waitUntil(win, "document.getElementById('settings-scrim')?.classList.contains('show') === false", "settings overlay must close before switching drawer tabs");
   await clearStaleClosingStates(win);
+  clicks.push(await clickAndReadStable(win, ".drawer-tabs [data-dtab=\"cost\"]", {
+    label: "drawer-cost-tab",
+    expect: () => read(win, "document.querySelector('[data-dtab=\"cost\"]').getAttribute('aria-selected') === 'true' && document.querySelector('.cost-panel-root') !== null"),
+    settleMs: 250
+  }));
   clicks.push(await clickAndReadStable(win, ".drawer-tabs [data-dtab=\"run\"]", {
     label: "drawer-run-tab",
     expect: () => read(win, "document.querySelector('[data-dtab=\"run\"]').getAttribute('aria-selected') === 'true'")
