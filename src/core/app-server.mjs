@@ -25,6 +25,17 @@ import { readFailures, markResolved } from "./failures-store.mjs";
 import { HttpError, sendError } from "./http-error.mjs";
 import { createProjectLockRegistry } from "./project-lock.mjs";
 import { loadProjectDiagnostics } from "./project-diagnostics.mjs";
+import { readJson, safeJoin } from "./fs-utils.mjs";
+import { runChatTurn, resumeChatTurn } from "./chat/chat-agent.mjs";
+import { createToolRegistry } from "./chat/tool-registry.mjs";
+import { registerReadTools } from "./chat/tools-read.mjs";
+import { registerWriteTools } from "./chat/tools-write.mjs";
+import { registerControlTools } from "./chat/tools-control.mjs";
+import { readChatHistory, loadPendingAction } from "./chat/chat-store.mjs";
+import { buildPricingTable } from "./model-pricing.mjs";
+import { CostTracker } from "./cost-tracker.mjs";
+import { ModelClient } from "./model-client.mjs";
+import { MockProviderAdapter, OpenAICompatibleAdapter } from "./provider-adapters.mjs";
 
 export function createAppShellServer({
   workspaceRoot = path.resolve("."),
@@ -139,6 +150,18 @@ export function createAppShellServer({
     }
     if (url.pathname === "/api/commands/submit" && request.method === "POST") {
       await serveCommandSubmit(request, response, { workspace, selected, runJobs, getTaskQueue, testModel, testRunProject, projectLocks });
+      return;
+    }
+    if (url.pathname === "/api/chat/send" && request.method === "POST") {
+      await serveChatSend(request, response, { workspace, selected, runJobs, getTaskQueue, testModel, testRunProject, projectLocks, startProjectRunFn: startProjectRun });
+      return;
+    }
+    if (url.pathname === "/api/chat/confirm" && request.method === "POST") {
+      await serveChatConfirm(request, response, { workspace, selected, runJobs, getTaskQueue, testModel, testRunProject, projectLocks, startProjectRunFn: startProjectRun });
+      return;
+    }
+    if (url.pathname === "/api/chat/history" && request.method === "GET") {
+      await serveChatHistory(url, response, { workspace, selected });
       return;
     }
     if (url.pathname === "/api/run/retry" && request.method === "POST") {
@@ -726,6 +749,98 @@ async function serveCommandSubmit(request, response, context) {
   } catch (error) {
     sendError(response, new HttpError(400, "command_submit_failed", error.message));
   }
+}
+
+async function serveChatSend(request, response, context) {
+  try {
+    const body = await readJsonBody(request);
+    const message = String(body.message ?? "").trim();
+    if (!message) throw new Error("请输入消息。");
+    if (message.length > 4000) throw new Error("消息过长。");
+    const projectRoot = await resolveActiveProjectRoot(context);
+    const project = await loadProject(projectRoot);
+    const registry = buildChatRegistry();
+    const modelClient = await buildChatModelClient(project, projectRoot);
+    const result = await runChatTurn({
+      projectRoot,
+      project,
+      registry,
+      modelClient,
+      userMessage: message,
+      server: chatServerContext(context),
+      getTaskQueue: context.getTaskQueue
+    });
+    await modelClient.costTracker.writeProjectReport(projectRoot);
+    await serveJson(response, { ok: true, ...result });
+  } catch (error) {
+    sendError(response, new HttpError(400, "BAD_REQUEST", error.message));
+  }
+}
+
+async function serveChatConfirm(request, response, context) {
+  try {
+    const body = await readJsonBody(request);
+    const projectRoot = await resolveActiveProjectRoot(context);
+    const project = await loadProject(projectRoot);
+    const registry = buildChatRegistry();
+    const modelClient = await buildChatModelClient(project, projectRoot);
+    const result = await resumeChatTurn({
+      projectRoot,
+      project,
+      registry,
+      modelClient,
+      approve: body.approve === true,
+      server: chatServerContext(context),
+      getTaskQueue: context.getTaskQueue
+    });
+    await modelClient.costTracker.writeProjectReport(projectRoot);
+    await serveJson(response, { ok: true, ...result });
+  } catch (error) {
+    sendError(response, new HttpError(400, "BAD_REQUEST", error.message));
+  }
+}
+
+async function serveChatHistory(url, response, context) {
+  try {
+    const projectRoot = await resolveActiveProjectRoot(context);
+    const after = url.searchParams.get("after") ?? null;
+    const limit = Number(url.searchParams.get("limit") ?? 100);
+    const messages = await readChatHistory(projectRoot, { after, limit });
+    const pendingAction = await loadPendingAction(projectRoot);
+    await serveJson(response, { ok: true, messages, pendingAction });
+  } catch (error) {
+    sendError(response, new HttpError(400, "BAD_REQUEST", error.message));
+  }
+}
+
+function chatServerContext(context) {
+  return {
+    runJobs: context.runJobs,
+    getTaskQueue: context.getTaskQueue,
+    startProjectRun: (projectRoot, project, _server, task, meta) =>
+      context.startProjectRunFn(projectRoot, project, context, task, meta)
+  };
+}
+
+function buildChatRegistry() {
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  registerWriteTools(registry);
+  registerControlTools(registry);
+  return registry;
+}
+
+async function buildChatModelClient(project, projectRoot) {
+  const existingCost = await readJson(safeJoin(projectRoot, "cost.json"), null);
+  return new ModelClient({
+    costTracker: new CostTracker({ pricing: buildPricingTable(project), summary: existingCost }),
+    adapters: {
+      "openai-compatible": new OpenAICompatibleAdapter(),
+      mock: new MockProviderAdapter({
+        response: () => ({ text: "（mock 模型不支持对话，请在设置里配置真实模型。）" })
+      })
+    }
+  });
 }
 
 async function serveSideQuestion(request, response, context) {
