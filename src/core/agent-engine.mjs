@@ -5,7 +5,7 @@ import { CostTracker } from "./cost-tracker.mjs";
 import { buildPricingTable } from "./model-pricing.mjs";
 import { readJson, safeJoin, sha256, writeFileAtomic } from "./fs-utils.mjs";
 import { ModelClient } from "./model-client.mjs";
-import { loadProject, loadState, saveState, upsertChapter, writeCheckpoint } from "./project-store.mjs";
+import { loadProject, loadState, loadChapterIndex, saveState, upsertChapter, writeCheckpoint } from "./project-store.mjs";
 import { MockModel } from "./mock-model.mjs";
 import { MockProviderAdapter, OpenAICompatibleAdapter } from "./provider-adapters.mjs";
 import { PromptCompiler, computeChapterWordGap } from "./prompt-compiler.mjs";
@@ -20,6 +20,8 @@ import os from "node:os";
 import { appendFailure } from "./failures-store.mjs";
 import { deriveFailureCard } from "./derive-failure-card.mjs";
 import { emit, CORE_EVENTS } from "./event-bus.mjs";
+import { buildMemoryExtractionMessages, parseMemoryExtraction } from "./memory-extractor.mjs";
+import { loadContinuity, mergeExtraction, saveContinuity, loadContinuityState, saveContinuityState } from "./continuity-store.mjs";
 
 export class SimulatedInterrupt extends Error {
   constructor(message) {
@@ -139,6 +141,7 @@ export async function runProject(projectRoot, options = {}) {
           await finalizeChapter(projectRoot, project, state, runtime);
           break;
         case "summarizing":
+          await extractChapterMemory(projectRoot, project, state, runtime);
           await completeChapter(projectRoot, project, state);
           break;
         default:
@@ -516,6 +519,68 @@ async function finalizeChapter(projectRoot, project, state, runtime) {
     checksum: result.checksum
   });
   await writeCheckpoint(projectRoot, checkpointPayload(project, state, next, [], [result], null, { skill_hooks: postProcess.hooks, skill_gate_results: postProcess.results }));
+}
+
+export async function extractChapterMemory(projectRoot, project, state, runtime) {
+  const chapterNo = state.current_chapter_no;
+  if (project.memory_extraction?.enabled === false) return;
+  const watermark = await loadContinuityState(projectRoot);
+  if (watermark.last_extracted_chapter >= chapterNo) return; // 幂等
+  const provider = project.active_model?.provider ?? "mock";
+  if (provider === "mock") {
+    await saveContinuityState(projectRoot, { last_extracted_chapter: chapterNo });
+    await appendEvent(projectRoot, {
+      type: "memory_extract_skipped", project_id: project.project_id, chapter_no: chapterNo,
+      stage: "summarizing", message: "mock provider，跳过记忆提取"
+    });
+    return;
+  }
+  try {
+    const index = await loadChapterIndex(projectRoot);
+    const entry = index.chapters.find((c) => c.chapter_no === chapterNo);
+    const chapterPath = entry?.final_path ?? entry?.draft_path;
+    const chapterContent = chapterPath ? await fs.readFile(chapterPath, "utf8") : "";
+    const [bookSummary, continuity] = await Promise.all([
+      readOptionalProjectText(projectRoot, "memory", "book_summary.md"),
+      loadContinuity(projectRoot)
+    ]);
+    const messages = buildMemoryExtractionMessages({
+      chapterNo, chapterContent,
+      bookSummary, continuityMarkdown: renderForPrompt(continuity)
+    });
+    let parsed = null;
+    for (let attempt = 0; attempt < 2 && !parsed?.ok; attempt += 1) {
+      const result = await runtime.modelClient.generate({
+        project, stage: "memory_extract", messages,
+        metadata: { memoryExtract: true, chapterNo, attempt }
+      });
+      parsed = parseMemoryExtraction(result.text);
+    }
+    if (!parsed.ok) throw new Error(`memory extraction parse failed: ${parsed.error}`);
+    const merged = mergeExtraction(continuity, parsed);
+    await saveContinuity(projectRoot, merged);
+    await writeFileAtomic(safeJoin(projectRoot, "memory", "book_summary.md"), `# 全书摘要\n\n${parsed.summary}\n`);
+    await saveContinuityState(projectRoot, { last_extracted_chapter: chapterNo });
+    await appendEvent(projectRoot, {
+      type: "memory_extract_completed", project_id: project.project_id, chapter_no: chapterNo,
+      stage: "summarizing", message: `记忆已更新（新增事实 ${parsed.facts.length} 条）`,
+      data: { facts_added: parsed.facts.length, timeline_added: parsed.timeline.length }
+    });
+  } catch (error) {
+    await saveContinuityState(projectRoot, { last_extracted_chapter: chapterNo });
+    await appendEvent(projectRoot, {
+      type: "memory_extract_failed", project_id: project.project_id, chapter_no: chapterNo,
+      stage: "summarizing", severity: "warn",
+      message: `记忆提取失败（不影响写作，可用 audit:rebuild-memory 补建）：${error.message}`,
+      data: { lost_chapter: chapterNo }
+    });
+  }
+}
+
+function renderForPrompt(continuity) {
+  const facts = continuity.facts.map((f) => `- ${f.entity}/${f.attribute}: ${f.value} (第${f.chapter_no}章)`).join("\n");
+  const chars = continuity.characters.map((c) => `- ${c.name}(${c.status}): ${c.traits.join("、")}`).join("\n");
+  return [facts, chars].filter(Boolean).join("\n");
 }
 
 async function completeChapter(projectRoot, project, state) {
