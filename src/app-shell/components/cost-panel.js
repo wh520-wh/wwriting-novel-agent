@@ -72,7 +72,7 @@ function meanHitRate(recentHitRates) {
 }
 
 function buildSparkline(recentHitRates) {
-  const wrap = el("div", { className: "cost-sparkline", role: "img", dataset: { costSpark: "1" } });
+  const wrap = el("div", { className: "cost-sparkline", role: "img", dataset: { costSpark: "1" }, "aria-label": `最近 20 次缓存命中率，平均 ${(meanHitRate(recentHitRates) * 100).toFixed(1)}%` });
   // Left-align: most recent values occupy the right-most slots; missing slots
   // (older history) are zero-height on the right. This is the natural reading
   // order for a "rolling window" indicator.
