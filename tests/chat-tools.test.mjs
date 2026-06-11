@@ -123,3 +123,73 @@ test("read_continuity / read_outline / get_cost 在空项目不报错", async ()
     assert.equal(out.ok, true, `${name} should be ok`);
   }
 });
+
+import { registerWriteTools, previewEditChapter } from "../src/core/chat/tools-write.mjs";
+import { loadChapterIndex } from "../src/core/project-store.mjs";
+
+test("edit_chapter 唯一命中才执行，并更新 index 与 checkpoint", async () => {
+  const registry = createToolRegistry();
+  registerWriteTools(registry);
+  const projectRoot = await makeProjectWithChapter();
+  const project = await (await import("../src/core/project-store.mjs")).loadProject(projectRoot);
+  const dup = await executeTool(registry, "edit_chapter", { chapter_no: 1, find: "。", replace: "！" }, { projectRoot, project });
+  assert.equal(dup.ok, false);
+  assert.equal(dup.error, "find_not_unique");
+  const missing = await executeTool(registry, "edit_chapter", { chapter_no: 1, find: "不存在的句子", replace: "x" }, { projectRoot, project });
+  assert.equal(missing.error, "find_not_found");
+  const out = await executeTool(registry, "edit_chapter", { chapter_no: 1, find: "六楼", replace: "十二楼", reason: "统一楼层" }, { projectRoot, project });
+  assert.equal(out.ok, true);
+  const content = await fs.readFile(path.join(projectRoot, "chapters", "001.md"), "utf8");
+  assert.match(content, /十二楼/u);
+  assert.doesNotMatch(content, /从六楼坠落/u);
+  const index = await loadChapterIndex(projectRoot);
+  const entry = index.chapters.find((c) => c.chapter_no === 1);
+  assert.match(entry.checksum, /^sha256:/u);
+  const checkpoints = await fs.readdir(path.join(projectRoot, "checkpoints"));
+  assert.ok(checkpoints.length >= 1);
+});
+
+test("previewEditChapter 生成 before/after 摘录", async () => {
+  const projectRoot = await makeProjectWithChapter();
+  const preview = await previewEditChapter(projectRoot, { chapter_no: 1, find: "六楼", replace: "十二楼" });
+  assert.equal(preview.ok, true);
+  assert.match(preview.before, /六楼/u);
+  assert.match(preview.after, /十二楼/u);
+});
+
+test("queue_chapters 复用 expandInstruction 入队", async () => {
+  const registry = createToolRegistry();
+  registerWriteTools(registry);
+  const projectRoot = await makeProject();
+  const project = await (await import("../src/core/project-store.mjs")).loadProject(projectRoot);
+  // 注入 stub task queue：记录所有 enqueue
+  const queued = [];
+  const out = await executeTool(registry, "queue_chapters", { instruction: "写2章" }, {
+    projectRoot, project, getTaskQueue: async () => ({ enqueue: async (text) => { queued.push(text); return { id: String(queued.length) }; } })
+  });
+  assert.equal(out.ok, true);
+  assert.equal(out.result.queued, 2);
+  assert.equal(queued.length, 2);
+});
+
+test("update_continuity 修改设定档案", async () => {
+  const registry = createToolRegistry();
+  registerWriteTools(registry);
+  const projectRoot = await makeProject();
+  const project = await (await import("../src/core/project-store.mjs")).loadProject(projectRoot);
+  const out = await executeTool(registry, "update_continuity", { entity: "刘康", attribute: "坠楼楼层", value: "六楼", note: "用户裁决" }, { projectRoot, project });
+  assert.equal(out.ok, true);
+  const continuity = await (await import("../src/core/continuity-store.mjs")).loadContinuity(projectRoot);
+  assert.equal(continuity.facts[0].value, "六楼");
+});
+
+test("update_settings 走 settings-runtime 校验（裸密钥被拒）", async () => {
+  const registry = createToolRegistry();
+  registerWriteTools(registry);
+  const projectRoot = await makeProject();
+  const project = await (await import("../src/core/project-store.mjs")).loadProject(projectRoot);
+  const bad = await executeTool(registry, "update_settings", { patch: { api_key: "sk-real-key" } }, { projectRoot, project });
+  assert.equal(bad.ok, false);
+  const good = await executeTool(registry, "update_settings", { patch: { target_chapters: 12 } }, { projectRoot, project });
+  assert.equal(good.ok, true);
+});
