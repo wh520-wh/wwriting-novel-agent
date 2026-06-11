@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { runProject, SimulatedInterrupt } from "../src/core/agent-engine.mjs";
+import { runProject, SimulatedInterrupt, maybeWarnChapterCost } from "../src/core/agent-engine.mjs";
 import { appendEvent, readEvents } from "../src/core/event-log.mjs";
 import { countEffectiveWords } from "../src/core/word-count.mjs";
 import { MockModel } from "../src/core/mock-model.mjs";
@@ -44,10 +44,12 @@ class CapturingModelClient {
       async writeProjectReport() {}
     };
     this.prompts = [];
+    this.metadatas = [];
   }
 
   async generate({ prompt, metadata }) {
     this.prompts.push(prompt);
+    this.metadatas.push(metadata);
     const request = metadata.toolRequest;
     return {
       text: "",
@@ -402,6 +404,7 @@ test("engine includes command-bar instructions in the next model prompt", async 
   assert.ok(modelClient.prompts.some((prompt) => prompt.includes("latest_user_feedback")));
   assert.ok(modelClient.prompts.some((prompt) => prompt.includes(project.project_id)));
   assert.ok(modelClient.prompts.some((prompt) => prompt.includes("雨夜钥匙")));
+  assert.ok(modelClient.metadatas.every((m) => Number.isInteger(m.chapterNo) && m.chapterNo >= 1));
 });
 
 test("engine feeds previous chapter memory into later chapter prompts", async () => {
@@ -613,4 +616,27 @@ test("agent-engine 检测到 failure_resolved=pause-here 后立刻退出循环",
   assert.equal(result.completed, true);
   const state = await loadState(projectRoot);
   assert.equal(state.project_status, "completed");
+});
+
+test("maybeWarnChapterCost 在当前章 token 超前几章均值 2 倍时告警一次", async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-warn-"));
+  const { projectRoot } = await createProject(workspace, {
+    title: "预警", story_seed: "t", target_chapters: 5, min_words_per_chapter: 300
+  });
+  const project = { project_id: "p1" };
+  const state = { current_chapter_no: 3, current_stage: "drafting" };
+  const runtime = { warnedChapters: new Set() };
+  const costSummary = {
+    byChapter: {
+      "1": { totalTokens: 1000 }, "2": { totalTokens: 1200 },
+      "3": { totalTokens: 5000 }
+    }
+  };
+  await maybeWarnChapterCost(projectRoot, project, state, costSummary, runtime);
+  await maybeWarnChapterCost(projectRoot, project, state, costSummary, runtime); // 第二次不重复告警
+  const events = await readEvents(projectRoot, { limit: 20 });
+  const warnings = events.filter((e) => e.type === "chapter_cost_warning");
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].data.chapter_total_tokens, 5000);
+  await fs.rm(workspace, { recursive: true, force: true });
 });

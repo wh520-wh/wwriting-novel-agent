@@ -102,7 +102,7 @@ export class ModelClient {
           rawUsage: response.usage ?? {},
           cost: response.cost ?? null
         });
-        const costSummary = this.costTracker.record({ stage, usageReport });
+        const costSummary = this.costTracker.record({ stage, chapter: metadata.chapterNo ?? null, usageReport });
         return {
           text: response.text ?? "",
           raw: response.raw ?? response,

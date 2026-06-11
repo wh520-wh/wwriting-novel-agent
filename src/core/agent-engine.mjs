@@ -581,7 +581,8 @@ async function createModelRuntime(projectRoot, project, options, fallbackModel) 
   return {
     modelClient,
     cacheKeyManager: options.cacheKeyManager ?? new CacheKeyManager({ entries: existingCacheReport.entries ?? {} }),
-    stepSkills: null
+    stepSkills: null,
+    warnedChapters: new Set()
   };
 }
 
@@ -613,7 +614,8 @@ async function runModelGatewayCall(projectRoot, project, state, runtime, request
     metadata: {
       toolRequest: request,
       cacheKey: cacheEntry.cacheKey,
-      cacheVersion: cacheEntry.cacheVersion
+      cacheVersion: cacheEntry.cacheVersion,
+      chapterNo: state.current_chapter_no
     }
   });
   throwIfAborted(request.signal);
@@ -626,6 +628,7 @@ async function runModelGatewayCall(projectRoot, project, state, runtime, request
   if (runtime.modelClient.costTracker?.writeProjectReport) {
     await runtime.modelClient.costTracker.writeProjectReport(projectRoot);
   }
+  await maybeWarnChapterCost(projectRoot, project, state, gatewayResult.costSummary, runtime);
   const cacheReport = await writeCacheReport(projectRoot, {
     manager: runtime.cacheKeyManager,
     cacheEntry,
@@ -684,6 +687,33 @@ async function runModelGatewayCall(projectRoot, project, state, runtime, request
     }
   });
   return { output, ...modelCall };
+}
+
+export async function maybeWarnChapterCost(projectRoot, project, state, costSummary, runtime) {
+  const chapterKey = String(state.current_chapter_no);
+  if (runtime.warnedChapters?.has(chapterKey)) return;
+  const byChapter = costSummary?.byChapter ?? {};
+  const current = byChapter[chapterKey];
+  const others = Object.entries(byChapter)
+    .filter(([key]) => key !== chapterKey)
+    .map(([, bucket]) => bucket.totalTokens ?? 0);
+  if (!current || others.length < 2) return;
+  const average = others.reduce((a, b) => a + b, 0) / others.length;
+  if (average > 0 && (current.totalTokens ?? 0) > average * 2) {
+    runtime.warnedChapters?.add(chapterKey);
+    await appendEvent(projectRoot, {
+      type: "chapter_cost_warning",
+      severity: "warn",
+      project_id: project.project_id,
+      chapter_no: state.current_chapter_no,
+      stage: state.current_stage,
+      message: `第 ${state.current_chapter_no} 章 token 消耗已超过前几章平均值的 2 倍`,
+      data: {
+        chapter_total_tokens: current.totalTokens ?? 0,
+        average_other_chapters: Math.round(average)
+      }
+    });
+  }
 }
 
 async function compileChapterPrompt(projectRoot, project, state, request, runtime) {
