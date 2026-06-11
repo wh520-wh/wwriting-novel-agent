@@ -48,3 +48,141 @@ test("历史超 20 条折叠为提要", async () => {
   const fullHistory = messages.filter((m) => m.content?.startsWith?.("历史消息") && !m.content.includes("提要"));
   assert.equal(fullHistory.length, 20);
 });
+
+import { runChatTurn, resumeChatTurn } from "../src/core/chat/chat-agent.mjs";
+import { registerWriteTools } from "../src/core/chat/tools-write.mjs";
+import { loadPendingAction, readChatHistory as readHistory } from "../src/core/chat/chat-store.mjs";
+import { upsertChapter } from "../src/core/project-store.mjs";
+
+function scriptedClient(script) {
+  let i = 0;
+  return { generate: async () => ({ text: script[Math.min(i++, script.length - 1)], usageReport: {}, costSummary: { estimatedCost: 0 } }) };
+}
+
+async function makeChatProject() {
+  const projectRoot = await makeProject();
+  const chapterPath = path.join(projectRoot, "chapters", "001.md");
+  await fs.mkdir(path.dirname(chapterPath), { recursive: true });
+  await fs.writeFile(chapterPath, "# Chapter 001\n\n刘康从六楼坠落。", "utf8");
+  await upsertChapter(projectRoot, { chapter_no: 1, status: "completed", final_path: chapterPath, actual_words: 8 });
+  return projectRoot;
+}
+
+test("纯文本回复直接落历史", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  const out = await runChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient(["进度是 1/3 章。"]),
+    userMessage: "进度如何？"
+  });
+  assert.equal(out.reply, "进度是 1/3 章。");
+  assert.equal(out.pendingAction, null);
+  const history = await readHistory(projectRoot);
+  assert.deepEqual(history.map((m) => m.role), ["user", "assistant"]);
+});
+
+test("读工具自动执行并回填后续轮", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  const out = await runChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient([
+      '```json\n{"tool_calls":[{"tool":"get_status","args":{}}]}\n```',
+      "已完成 1 章，共 3 章。"
+    ]),
+    userMessage: "进度如何？"
+  });
+  assert.equal(out.reply, "已完成 1 章，共 3 章。");
+  assert.equal(out.toolEvents.length, 1);
+  assert.equal(out.toolEvents[0].tool, "get_status");
+  assert.equal(out.toolEvents[0].ok, true);
+});
+
+test("写工具落 pending_action 并暂停，approve 后执行并继续", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  registerWriteTools(registry);
+  const first = await runChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient([
+      '```json\n{"tool_calls":[{"tool":"edit_chapter","args":{"chapter_no":1,"find":"六楼","replace":"十二楼","reason":"统一"}}]}\n```'
+    ]),
+    userMessage: "把第1章六楼改成十二楼"
+  });
+  assert.ok(first.pendingAction);
+  assert.equal(first.pendingAction.tool, "edit_chapter");
+  assert.match(first.pendingAction.preview.after, /十二楼/u);
+  assert.ok(await loadPendingAction(projectRoot));
+  const resumed = await resumeChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient(["已把第 1 章的六楼改为十二楼。"]),
+    approve: true
+  });
+  assert.equal(resumed.reply, "已把第 1 章的六楼改为十二楼。");
+  assert.equal(await loadPendingAction(projectRoot), null);
+  const content = await fs.readFile(path.join(projectRoot, "chapters", "001.md"), "utf8");
+  assert.match(content, /十二楼/u);
+});
+
+test("拒绝路径：reject 回填 user_rejected", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  registerWriteTools(registry);
+  await runChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient(['```json\n{"tool_calls":[{"tool":"edit_chapter","args":{"chapter_no":1,"find":"六楼","replace":"九楼","reason":"x"}}]}\n```']),
+    userMessage: "改楼层"
+  });
+  const resumed = await resumeChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient(["好的，保持六楼不变。"]),
+    approve: false
+  });
+  assert.equal(resumed.reply, "好的，保持六楼不变。");
+  const content = await fs.readFile(path.join(projectRoot, "chapters", "001.md"), "utf8");
+  assert.match(content, /六楼/u);
+});
+
+test("maxToolRounds 护栏", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  const loopForever = '```json\n{"tool_calls":[{"tool":"get_status","args":{}}]}\n```';
+  const out = await runChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient(Array(20).fill(loopForever)),
+    userMessage: "随便"
+  });
+  assert.match(out.reply, /上限/u);
+  assert.equal(out.toolEvents.length, 8);
+});
+
+test("已有 pending_action 时新消息被挡", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  registerWriteTools(registry);
+  await runChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient(['```json\n{"tool_calls":[{"tool":"edit_chapter","args":{"chapter_no":1,"find":"六楼","replace":"五楼","reason":"x"}}]}\n```']),
+    userMessage: "改"
+  });
+  const blocked = await runChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient(["should not be called"]),
+    userMessage: "再改点别的"
+  });
+  assert.match(blocked.reply, /待确认/u);
+  assert.ok(blocked.pendingAction);
+});
