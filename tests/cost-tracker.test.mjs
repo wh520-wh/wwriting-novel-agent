@@ -188,3 +188,36 @@ test("CostTracker.recordRetry 累计 retries", () => {
   tracker.recordRetry();
   assert.equal(tracker.getSummary().retries, 2);
 });
+
+test("CostTracker 维护最近 20 次命中率滚动窗口", () => {
+  const tracker = new CostTracker();
+  for (let i = 0; i < 25; i += 1) {
+    tracker.record({
+      stage: "s",
+      usageReport: { provider: "p", model: "m", inputTokens: 100, outputTokens: 1, totalTokens: 101, cachedTokens: 0, cacheHitRate: i / 100, estimatedCost: 0 }
+    });
+  }
+  const s = tracker.getSummary();
+  assert.equal(s.recentHitRates.length, 20);
+  assert.equal(s.recentHitRates[0], 0.05);
+  assert.equal(s.recentHitRates.at(-1), 0.24);
+});
+
+test("CostTracker.recordRefill 累计补写轮次", () => {
+  const tracker = new CostTracker();
+  tracker.recordRefill();
+  tracker.recordRefill();
+  assert.equal(tracker.getSummary().refillCalls, 2);
+});
+
+test("CostTracker 配置缓存命中价时累计 cacheSavedCost", () => {
+  const tracker = new CostTracker({
+    pricing: { m: { input_per_million: 2, output_per_million: 8, cache_hit_per_million: 0.5, currency: "CNY" } }
+  });
+  tracker.record({
+    stage: "s",
+    usageReport: { provider: "p", model: "m", inputTokens: 1_000_000, outputTokens: 0, totalTokens: 1_000_000, cachedTokens: 400_000, cacheHitTokens: 400_000 }
+  });
+  // 40 万命中 × (2 − 0.5)/M = 0.6 元
+  assert.equal(tracker.getSummary().cacheSavedCost, 0.6);
+});
