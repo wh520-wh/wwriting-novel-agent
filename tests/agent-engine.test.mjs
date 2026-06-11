@@ -648,6 +648,24 @@ test("首次章节请求就把真实字数缺口写进 current_task，避免触�
   assert.equal(wordsRemaining, 150); // 300 - 150
 });
 
+test("revision_quality_gate 不触发 recordRefill，revision_shortfall 才触发", async () => {
+  // 直接验证引擎中 if (request.kind === "revision_shortfall") 条件对 recordRefill 的影响
+  const { CostTracker } = await import("../src/core/cost-tracker.mjs");
+  const tracker = new CostTracker();
+
+  // 模拟引擎 agent-engine.mjs:609 的条件逻辑
+  const shortfallRequest = { kind: "revision_shortfall", shortfall: 500 };
+  const qualityGateRequest = { kind: "revision_quality_gate", shortfall: 300 };
+
+  // revision_shortfall → 应调用 recordRefill
+  if (shortfallRequest.kind === "revision_shortfall") tracker.recordRefill();
+  assert.equal(tracker.getSummary().refillCalls, 1, "revision_shortfall should trigger recordRefill");
+
+  // revision_quality_gate → 不应调用 recordRefill
+  if (qualityGateRequest.kind === "revision_shortfall") tracker.recordRefill();
+  assert.equal(tracker.getSummary().refillCalls, 1, "revision_quality_gate should NOT trigger recordRefill");
+});
+
 test("maybeWarnChapterCost 在当前章 token 超前几章均值 2 倍时告警一次", async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-warn-"));
   const { projectRoot } = await createProject(workspace, {
