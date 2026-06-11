@@ -16,7 +16,9 @@ export function normalizeUsageReport({ provider, model, usage = {}, rawUsage = u
   const outputTokens = firstNumber(usage.outputTokens, usage.output_tokens, usage.completion_tokens);
   const totalTokens = firstNumber(usage.totalTokens, usage.total_tokens, inputTokens + outputTokens);
   const cachedTokens = firstNumber(usage.cachedTokens, usage.cached_tokens);
-  const cacheHitTokens = firstNumber(usage.cacheHitTokens, usage.cache_hit_tokens, usage.prompt_cache_hit_tokens);
+  // provider 显式命中字段优先；OpenAI 风格只给 cached_tokens（如 MiMo）时回退，
+  // 否则下游 `cacheHitTokens ?? cachedTokens` 会被这里规约出的 0 短路，缓存折扣永远算不上。
+  const cacheHitTokens = firstNumber(usage.cacheHitTokens, usage.cache_hit_tokens, usage.prompt_cache_hit_tokens, cachedTokens);
   const cacheReadTokens = firstNumber(usage.cacheReadTokens, usage.cache_read_tokens);
   const cacheWriteTokens = firstNumber(usage.cacheWriteTokens, usage.cache_write_tokens);
   const reasoningTokens = firstNumber(usage.reasoningTokens, usage.reasoning_tokens);

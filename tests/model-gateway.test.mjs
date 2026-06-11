@@ -172,6 +172,39 @@ test("normalizeUsageReport never invents cache metrics when provider omits them"
   assert.equal(report.cacheHitRate, null);
 });
 
+test("normalizeUsageReport 只有 cached_tokens（MiMo/OpenAI 风格）时 cacheHitTokens 回退到 cachedTokens", () => {
+  const report = normalizeUsageReport({
+    provider: "openai-compatible",
+    model: "mimo-v2.5-pro",
+    usage: {
+      prompt_tokens: 5750,
+      completion_tokens: 2100,
+      total_tokens: 7850,
+      cached_tokens: 4096
+    }
+  });
+  assert.equal(report.cachedTokens, 4096);
+  assert.equal(report.cacheHitTokens, 4096);
+  assert.equal(report.cacheMetricsAvailable, true);
+  assert.ok(Math.abs(report.cacheHitRate - 4096 / 5750) < 1e-9);
+});
+
+test("normalizeUsageReport 同时有显式命中字段时优先于 cached_tokens", () => {
+  const report = normalizeUsageReport({
+    provider: "openai-compatible",
+    model: "deepseek-v4-pro",
+    usage: {
+      prompt_tokens: 1000,
+      completion_tokens: 100,
+      total_tokens: 1100,
+      cached_tokens: 512,
+      prompt_cache_hit_tokens: 640
+    }
+  });
+  assert.equal(report.cacheHitTokens, 640);
+  assert.equal(report.cachedTokens, 512);
+});
+
 test("writeCacheReport preserves promptBlockHashes and adds structured promptBlocks", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-cache-report-"));
   const compiler = new PromptCompiler({ templateVersion: "drafting.v1" });
