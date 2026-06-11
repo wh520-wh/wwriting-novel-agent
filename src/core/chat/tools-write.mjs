@@ -2,6 +2,7 @@
 // 错误码：chapter_not_found / bad_args / find_not_found / find_not_unique / tool_failed。
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
+import path from "node:path";
 import { loadChapterIndex, loadState, upsertChapter, writeCheckpoint } from "../project-store.mjs";
 import { loadContinuity, mergeExtraction, saveContinuity } from "../continuity-store.mjs";
 import { updateProjectSettings } from "../settings-runtime.mjs";
@@ -68,6 +69,19 @@ export function registerWriteTools(registry) {
     },
     run: async (args, ctx) => {
       const { entry, filePath } = await resolveChapterFile(ctx.projectRoot, args.chapter_no);
+      // 运行中章编辑检查
+      if (ctx.server?.runJobs) {
+        const key = path.resolve(ctx.projectRoot);
+        const job = ctx.server.runJobs.get(key);
+        if (job?.status === "running") {
+          const state = await loadState(ctx.projectRoot);
+          if (state.current_chapter_no === Number(args.chapter_no)) {
+            const e = new Error(`第 ${args.chapter_no} 章正在写作中，请等写作完成后再编辑。`);
+            e.code = "chapter_busy";
+            throw e;
+          }
+        }
+      }
       const content = await fs.readFile(filePath, "utf8");
       locateFind(content, String(args.find ?? ""));
       // 先校验再副作用：writeCheckpoint 在 locateFind 通过后才写

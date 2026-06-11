@@ -2,7 +2,7 @@
 // 续轮由 resumeChatTurn 接管；maxToolRounds 防止失控空转。
 import { buildChatContext } from "./chat-context.mjs";
 import { parseAgentReply } from "./agent-protocol.mjs";
-import { executeTool } from "./tool-registry.mjs";
+import { executeTool, checkToolPermission } from "./tool-registry.mjs";
 import { previewEditChapter } from "./tools-write.mjs";
 import { appendChatMessage, loadPendingAction, savePendingAction, clearPendingAction } from "./chat-store.mjs";
 
@@ -64,6 +64,15 @@ async function agentLoop(options, toolEvents) {
     const tool = registry.get(parsed.call.tool);
     const isRead = tool?.kind === "read";
     if (tool && !isRead) {
+      // 权限预检：落 pending 之前先检查，避免 read_only 项目白白占确认位
+      const permission = checkToolPermission(tool, project?.tool_permissions ?? {});
+      if (!permission.allowed) {
+        const outcome = { ok: false, error: "permission_denied", message: permission.message };
+        toolEvents.push({ tool: parsed.call.tool, ok: false, error: outcome.error });
+        await appendChatMessage(projectRoot, { role: "tool", tool: parsed.call.tool, ok: false, result_summary: outcome.message });
+        onEvent?.({ type: "tool_result", tool: parsed.call.tool, ok: false });
+        continue;
+      }
       let preview = null;
       if (parsed.call.tool === "edit_chapter") {
         try { preview = await previewEditChapter(projectRoot, parsed.call.args); }
