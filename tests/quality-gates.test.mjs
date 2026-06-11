@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runTitleGate, runWordCapGate, parseChineseChapterNo } from "../src/core/quality-gates.mjs";
+import { runTitleGate, runWordCapGate, parseChineseChapterNo, buildFactCheckMessages, parseFactCheck } from "../src/core/quality-gates.mjs";
 
 const TITLE_BAD_SAMPLE = "# 第一章\n\n正文…\n\n## 第二章（第1章续）\n\n续写正文…";
 
@@ -47,4 +47,29 @@ test("runWordCapGate 有价时 cost 估算 > 0", () => {
 test("runWordCapGate 无价时 cost 估算 null", () => {
   const out = runWordCapGate(5147, { targetWords: 3300 });
   assert.equal(out.overflow_cost_estimate, null);
+});
+
+test("buildFactCheckMessages 含豁免规则", () => {
+  const messages = buildFactCheckMessages({
+    chapterNo: 9, draft: "正文", facts: [], timeline: []
+  });
+  assert.equal(messages[0].role, "system");
+  assert.match(messages[0].content, /回忆/u); // 豁免规则
+  assert.match(messages[0].content, /JSON/u);
+  const user = messages[1].content;
+  assert.match(user, /第 9 章/u);
+});
+
+test("parseFactCheck 解析合法输出", () => {
+  const raw = '```json\n{"conflicts":[{"draft_quote":"从十二楼坠落","conflicts_with":"六楼","prior_chapter":1,"severity":"high","suggestion":"改为六楼"}]}\n```';
+  const out = parseFactCheck(raw);
+  assert.equal(out.ok, true);
+  assert.equal(out.conflicts.length, 1);
+  assert.equal(out.conflicts[0].prior_chapter, 1);
+  assert.equal(out.conflicts[0].severity, "high");
+});
+
+test("parseFactCheck 畸形输出 ok:false", () => {
+  assert.equal(parseFactCheck("不是 JSON").ok, false);
+  assert.equal(parseFactCheck("").ok, false);
 });

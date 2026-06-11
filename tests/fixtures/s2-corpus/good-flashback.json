@@ -1,0 +1,9 @@
+{
+  "name": "good-flashback",
+  "draft": "他想起第一次见刘康时，那是六楼的走廊。",
+  "continuity_facts": [
+    { "entity": "刘康", "attribute": "坠楼楼层", "value": "六楼", "chapter_no": 1, "quote": "六楼。", "conflict_with": null }
+  ],
+  "timeline": [],
+  "expect": "pass"
+}
