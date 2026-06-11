@@ -193,3 +193,34 @@ test("update_settings 走 settings-runtime 校验（裸密钥被拒）", async (
   const good = await executeTool(registry, "update_settings", { patch: { target_chapters: 12 } }, { projectRoot, project });
   assert.equal(good.ok, true);
 });
+
+import { registerControlTools } from "../src/core/chat/tools-control.mjs";
+
+test("start_run 无 server 上下文时报 control_unavailable；有则启动", async () => {
+  const registry = createToolRegistry();
+  registerControlTools(registry);
+  const projectRoot = await makeProject();
+  const project = await (await import("../src/core/project-store.mjs")).loadProject(projectRoot);
+  const noServer = await executeTool(registry, "start_run", {}, { projectRoot, project });
+  assert.equal(noServer.ok, false);
+  assert.equal(noServer.error, "control_unavailable");
+  const calls = [];
+  const server = {
+    runJobs: new Map(),
+    startProjectRun: async (...args) => { calls.push("start"); return { started: true }; },
+    getTaskQueue: async () => ({ promoteNext: async () => ({ id: "t1", instruction: "写第1章" }) })
+  };
+  const out = await executeTool(registry, "start_run", {}, { projectRoot, project, server });
+  assert.equal(out.ok, true);
+  assert.deepEqual(calls, ["start"]);
+});
+
+test("pause_run 没有运行中任务时人话报错", async () => {
+  const registry = createToolRegistry();
+  registerControlTools(registry);
+  const projectRoot = await makeProject();
+  const project = await (await import("../src/core/project-store.mjs")).loadProject(projectRoot);
+  const out = await executeTool(registry, "pause_run", {}, { projectRoot, project, server: { runJobs: new Map() } });
+  assert.equal(out.ok, false);
+  assert.match(out.message, /没有正在运行/u);
+});
