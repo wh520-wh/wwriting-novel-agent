@@ -233,6 +233,15 @@ function normalizeStageOverrides(stageOverrides) {
       ...normalizeActiveModel(config),
       enabled: config.enabled === true
     };
+    // normalizeActiveModel does not copy pricing — preserve it explicitly
+    if (config.pricing !== undefined) {
+      if (config.pricing === null) {
+        delete normalized[stage].pricing;
+      } else {
+        const pricing = normalizePricing(config.pricing);
+        if (pricing) normalized[stage].pricing = pricing;
+      }
+    }
   }
   return normalized;
 }
