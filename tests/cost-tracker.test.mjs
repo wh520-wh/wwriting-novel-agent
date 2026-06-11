@@ -235,6 +235,21 @@ test("CostTracker 配置缓存命中价时累计 cacheSavedCost", () => {
   assert.equal(tracker.getSummary().cacheSavedCost, 0.6);
 });
 
+test("CostTracker 只有 cachedTokens（无 cacheHitTokens 字段，MiMo 风格）时按命中价计费并累计 cacheSavedCost", () => {
+  const tracker = new CostTracker({
+    pricing: { "mimo-v2.5-pro": { input_per_million: 3, output_per_million: 6, cache_hit_per_million: 0.025, currency: "CNY" } }
+  });
+  tracker.record({
+    stage: "drafting",
+    usageReport: { provider: "openai-compatible", model: "mimo-v2.5-pro", inputTokens: 1_000_000, outputTokens: 0, totalTokens: 1_000_000, cachedTokens: 400_000 }
+  });
+  const s = tracker.getSummary();
+  // 60 万未命中 ×3/M + 40 万命中 ×0.025/M = 1.8 + 0.01 = 1.81
+  assert.equal(s.estimatedCost, 1.81);
+  // 40 万命中 × (3 − 0.025)/M = 1.19
+  assert.equal(s.cacheSavedCost, 1.19);
+});
+
 test("CostTracker 未配置 cache_hit_per_million 时 cacheSavedCost 保持 0", () => {
   const tracker = new CostTracker({
     pricing: { m: { input_per_million: 2, output_per_million: 8 } }
