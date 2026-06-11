@@ -321,7 +321,7 @@ export function createThreadRenderer(ctx) {
     const meta = document.createElement("div");
     meta.className = "task-meta";
     const words = data.summary?.totalWords ? `${formatNumber(data.summary.totalWords)} 字` : "已完成";
-    const cost = data.summary?.estimatedCost ? ` · 约 ${data.summary.estimatedCost}` : "";
+    const cost = (data.summary?.costAvailable && data.summary?.estimatedCost) ? ` · 约 ${data.summary.estimatedCost}` : "";
     meta.textContent = `${words}${cost}${task.completedAt ? ` · ${formatTime(task.completedAt)}` : ""}`;
     return meta;
   }

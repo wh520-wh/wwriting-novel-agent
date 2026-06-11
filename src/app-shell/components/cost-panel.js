@@ -114,13 +114,17 @@ function buildOverview(cost, summary) {
 function buildCacheHealth(cost) {
   const rates = cost?.recentHitRates ?? [];
   const saved = Number(cost?.cacheSavedCost ?? 0);
+  const costAvailable = cost?.costAvailable ?? false;
   const mean = meanHitRate(rates);
   const meanPct = (mean * 100).toFixed(1);
-  return section("缓存健康",
+  const children = [
     row(`最近 ${SPARKLINE_LENGTH} 次命中率`, `${meanPct}%`, "mono"),
-    row("缓存节省", `${saved.toFixed(2)} 元`, "mono"),
     buildSparkline(rates)
-  );
+  ];
+  if (costAvailable && saved > 0) {
+    children.splice(1, 0, row("缓存节省", `${saved.toFixed(2)} 元`, "mono"));
+  }
+  return section("缓存健康", ...children);
 }
 
 function buildChapterCost(cost, summary, warning) {
