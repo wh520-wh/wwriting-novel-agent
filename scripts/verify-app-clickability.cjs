@@ -416,12 +416,16 @@ async function clickAndRead(win, selector, { label = selector, expect = null, se
       const selector = ${JSON.stringify(selector)};
       const el = document.querySelector(selector);
       if (!el) return false;
+      if (typeof el.scrollIntoView === "function") {
+        el.scrollIntoView({ block: "center" });
+      }
       el.addEventListener("click", () => {
         window.__wwClickProbe.clicks[selector] = (window.__wwClickProbe.clicks[selector] || 0) + 1;
       }, { capture: true, once: true });
       return true;
     })();
   `);
+  await delay(40);
   const before = await probe(win, selector);
   assert.ok(before.rect, `${label} must have a layout box: ${JSON.stringify({ ...before, consoleMessages }, null, 2)}`);
   win.webContents.sendInputEvent({ type: "mouseMove", x: before.center.x, y: before.center.y });
