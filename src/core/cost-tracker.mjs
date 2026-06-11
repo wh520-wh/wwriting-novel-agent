@@ -1,40 +1,77 @@
 import { safeJoin, writeJsonAtomic } from "./fs-utils.mjs";
+import { resolvePricing } from "./model-pricing.mjs";
 
-export function estimateCost(usageReport, pricing = {}) {
+export function estimateCost(usageReport, pricing = null) {
+  if (!pricing) return null;
+  const input = usageReport.inputTokens ?? 0;
+  const output = usageReport.outputTokens ?? 0;
+  const cacheHit = Math.min(usageReport.cacheHitTokens ?? usageReport.cachedTokens ?? 0, input);
   const inputPerMillion = pricing.input_per_million ?? 0;
   const outputPerMillion = pricing.output_per_million ?? 0;
-  const inputCost = (usageReport.inputTokens / 1_000_000) * inputPerMillion;
-  const outputCost = (usageReport.outputTokens / 1_000_000) * outputPerMillion;
-  return Number((inputCost + outputCost).toFixed(8));
+  const cacheHitPerMillion = pricing.cache_hit_per_million ?? inputPerMillion;
+  const cost =
+    ((input - cacheHit) / 1_000_000) * inputPerMillion +
+    (cacheHit / 1_000_000) * cacheHitPerMillion +
+    (output / 1_000_000) * outputPerMillion;
+  return Number(cost.toFixed(8));
 }
+
+const SUMMARY_DEFAULTS = {
+  calls: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  totalTokens: 0,
+  cachedTokens: 0,
+  estimatedCost: 0,
+  pricedCalls: 0,
+  unpricedCalls: 0,
+  costAvailable: false,
+  retries: 0,
+  byProvider: {},
+  byModel: {},
+  byStage: {},
+  byChapter: {}
+};
 
 export class CostTracker {
   constructor({ pricing = {}, summary = null } = {}) {
     this.pricing = pricing;
-    this.summary = summary ?? {
-      calls: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      totalTokens: 0,
-      cachedTokens: 0,
-      estimatedCost: 0,
-      byProvider: {},
-      byStage: {}
-    };
+    this.summary = { ...structuredClone(SUMMARY_DEFAULTS), ...(summary ?? {}) };
+    this.summary.byModel ??= {};
+    this.summary.byChapter ??= {};
   }
 
-  record({ stage = "unknown", usageReport }) {
+  record({ stage = "unknown", chapter = null, usageReport }) {
     const provider = usageReport.provider ?? "unknown";
-    const cost = usageReport.estimatedCost ?? estimateCost(usageReport, this.pricing[provider] ?? {});
+    const model = usageReport.model ?? "unknown";
+    const pricing = resolvePricing(model, this.pricing) ?? this.pricing[provider] ?? null;
+    const cost = usageReport.estimatedCost ?? estimateCost(usageReport, pricing);
+    const priced = cost != null;
     this.summary.calls += 1;
     this.summary.inputTokens += usageReport.inputTokens;
     this.summary.outputTokens += usageReport.outputTokens;
     this.summary.totalTokens += usageReport.totalTokens;
     this.summary.cachedTokens += usageReport.cachedTokens;
-    this.summary.estimatedCost = Number((this.summary.estimatedCost + cost).toFixed(8));
-    addToBucket(this.summary.byProvider, provider, usageReport, cost);
-    addToBucket(this.summary.byStage, stage, usageReport, cost);
+    if (priced) {
+      this.summary.pricedCalls += 1;
+      this.summary.estimatedCost = Number((this.summary.estimatedCost + cost).toFixed(8));
+    } else {
+      this.summary.unpricedCalls += 1;
+    }
+    this.summary.costAvailable = this.summary.unpricedCalls === 0 && this.summary.calls > 0;
+    const bucketCost = priced ? cost : 0;
+    addToBucket(this.summary.byProvider, provider, usageReport, bucketCost);
+    addToBucket(this.summary.byModel, model, usageReport, bucketCost);
+    addToBucket(this.summary.byStage, stage, usageReport, bucketCost);
+    if (chapter != null) {
+      addToBucket(this.summary.byChapter, String(chapter), usageReport, bucketCost);
+    }
     return this.getSummary();
+  }
+
+  recordRetry() {
+    this.summary.retries += 1;
+    return this.summary.retries;
   }
 
   getSummary() {
@@ -62,4 +99,3 @@ function addToBucket(buckets, key, usageReport, cost) {
   buckets[key].cachedTokens += usageReport.cachedTokens;
   buckets[key].estimatedCost = Number((buckets[key].estimatedCost + cost).toFixed(8));
 }
-

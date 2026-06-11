@@ -20,9 +20,8 @@ test("estimateCost computes input + output cost correctly", () => {
   assert.equal(cost, 10.5);
 });
 
-test("estimateCost defaults pricing to 0 when missing", () => {
-  const cost = estimateCost({ inputTokens: 1_000_000, outputTokens: 1_000_000 });
-  assert.equal(cost, 0);
+test("estimateCost 没有价格表时返回 null 而不是 0", () => {
+  assert.equal(estimateCost({ inputTokens: 1_000_000, outputTokens: 1_000_000 }), null);
 });
 
 test("estimateCost rounds to 8 decimal places", () => {
@@ -142,11 +141,50 @@ test("CostTracker computes cost from pricing when estimatedCost is absent", () =
   assert.equal(tracker.getSummary().estimatedCost, 20);
 });
 
-test("CostTracker defaults unknown provider pricing to 0", () => {
+test("CostTracker 未配置价格时累计 unpricedCalls 且 costAvailable=false", () => {
   const tracker = new CostTracker({ pricing: {} });
   tracker.record({
     stage: "s",
-    usageReport: { provider: "unknownProvider", inputTokens: 1_000_000, outputTokens: 1_000_000, totalTokens: 2_000_000, cachedTokens: 0 }
+    usageReport: { provider: "p", model: "unknown-model", inputTokens: 1_000_000, outputTokens: 1_000_000, totalTokens: 2_000_000, cachedTokens: 0 }
   });
-  assert.equal(tracker.getSummary().estimatedCost, 0);
+  const s = tracker.getSummary();
+  assert.equal(s.estimatedCost, 0);
+  assert.equal(s.unpricedCalls, 1);
+  assert.equal(s.costAvailable, false);
+});
+
+test("estimateCost 缓存命中按 cache_hit 价计费", () => {
+  const cost = estimateCost(
+    { inputTokens: 1_000_000, outputTokens: 0, cacheHitTokens: 400_000 },
+    { input_per_million: 2, output_per_million: 8, cache_hit_per_million: 0.5 }
+  );
+  // 60 万未命中 ×2/M + 40 万命中 ×0.5/M = 1.2 + 0.2 = 1.4
+  assert.equal(cost, 1.4);
+});
+
+test("CostTracker 按模型名解析价格并记 byModel", () => {
+  const tracker = new CostTracker({ pricing: { "deepseek-v4": { input_per_million: 2, output_per_million: 8, currency: "CNY" } } });
+  tracker.record({
+    stage: "drafting",
+    usageReport: { provider: "openai-compatible", model: "deepseek-v4-pro", inputTokens: 1_000_000, outputTokens: 0, totalTokens: 1_000_000, cachedTokens: 0 }
+  });
+  const s = tracker.getSummary();
+  assert.equal(s.estimatedCost, 2);
+  assert.equal(s.costAvailable, true);
+  assert.equal(s.byModel["deepseek-v4-pro"].calls, 1);
+});
+
+test("CostTracker 兼容缺新字段的旧 cost.json", () => {
+  const tracker = new CostTracker({ summary: { calls: 5, inputTokens: 1, outputTokens: 1, totalTokens: 2, cachedTokens: 0, estimatedCost: 0, byProvider: {}, byStage: {} } });
+  const s = tracker.getSummary();
+  assert.equal(s.unpricedCalls, 0);
+  assert.deepEqual(s.byModel, {});
+  assert.deepEqual(s.byChapter, {});
+});
+
+test("CostTracker.recordRetry 累计 retries", () => {
+  const tracker = new CostTracker();
+  tracker.recordRetry();
+  tracker.recordRetry();
+  assert.equal(tracker.getSummary().retries, 2);
 });

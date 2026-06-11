@@ -139,6 +139,16 @@ export function createSettingsModal(ctx) {
     keyHint.className = "spd-hint";
     keyHint.textContent = "API Key 只保存在本机应用 secrets，项目文件只记录变量名。";
     settingsFields.maxCalls = settingField("模型调用上限", "number", { value: budgetConfig.max_model_calls ?? "" });
+    const priceHeading = document.createElement("h4");
+    priceHeading.className = "spd-section";
+    priceHeading.textContent = "价格（用于成本估算）";
+    const pricing = active.pricing ?? {};
+    settingsFields.priceInput = settingField("输入价（元/百万 token）", "number", { value: pricing.input_per_million ?? "" });
+    settingsFields.priceOutput = settingField("输出价（元/百万 token）", "number", { value: pricing.output_per_million ?? "" });
+    settingsFields.priceCacheHit = settingField("缓存命中价（元/百万 token，可选）", "number", { value: pricing.cache_hit_per_million ?? "" });
+    const priceHint = document.createElement("div");
+    priceHint.className = "spd-hint";
+    priceHint.textContent = "按供应商定价页填写。不填则成本显示为未配置价格，不会按 0 计算。";
     settingsFields.network = settingToggle("联网搜索/抓取权限", permissions.network_allowed === true);
     const research = dashboard?.config?.effective?.research_config ?? dashboard?.project?.research_config ?? {};
     settingsFields.searchEndpoint = settingField("联网搜索接口地址", "text", { value: research.search_endpoint ?? "", placeholder: "https://api.example.com/search" });
@@ -178,6 +188,7 @@ export function createSettingsModal(ctx) {
     ctx.refs.settingsDetail.append(
       settingsFields.model.field, settingsFields.baseUrl.field, endpointHint,
       settingsFields.apiKey.field, settingsFields.apiKeyEnv.field, keyHint,
+      priceHeading, settingsFields.priceInput.field, settingsFields.priceOutput.field, settingsFields.priceCacheHit.field, priceHint,
       settingsFields.maxCalls.field, settingsFields.network.field,
       settingsFields.searchEndpoint.field, settingsFields.searchKeyEnv.field,
       settingsFields.outputStyle.field,
@@ -371,7 +382,14 @@ export function createSettingsModal(ctx) {
           model_name: settingsFields.model.input.value.trim(),
           base_url: settingsFields.baseUrl.input.value.trim(),
           api_key: settingsFields.apiKey.input.value.trim(),
-          api_key_env: apiKeyEnv
+          api_key_env: apiKeyEnv,
+          pricing: settingsFields.priceInput.input.value && settingsFields.priceOutput.input.value
+            ? compactObject({
+                input_per_million: Number(settingsFields.priceInput.input.value),
+                output_per_million: Number(settingsFields.priceOutput.input.value),
+                cache_hit_per_million: settingsFields.priceCacheHit.input.value ? Number(settingsFields.priceCacheHit.input.value) : undefined
+              })
+            : undefined
         }),
         tool_permissions: { network_allowed: settingsFields.network.checked },
         budget_config: { max_model_calls: settingsFields.maxCalls.input.value },

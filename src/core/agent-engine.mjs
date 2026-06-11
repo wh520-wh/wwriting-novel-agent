@@ -2,6 +2,7 @@ import { appendEvent, readEvents } from "./event-log.mjs";
 import { CacheKeyManager, writeCacheReport } from "./cache-key-manager.mjs";
 import { loadConfigLayers } from "./config-runtime.mjs";
 import { CostTracker } from "./cost-tracker.mjs";
+import { buildPricingTable } from "./model-pricing.mjs";
 import { readJson, safeJoin, sha256, writeFileAtomic } from "./fs-utils.mjs";
 import { ModelClient } from "./model-client.mjs";
 import { loadProject, loadState, saveState, upsertChapter, writeCheckpoint } from "./project-store.mjs";
@@ -544,7 +545,7 @@ async function createModelRuntime(projectRoot, project, options, fallbackModel) 
   ensureDefaultToolHooks();
   const existingCost = await readJson(safeJoin(projectRoot, "cost.json"), null);
   const existingCacheReport = await readJson(safeJoin(projectRoot, "cache_report.json"), { entries: {} });
-  const costTracker = options.costTracker ?? new CostTracker({ summary: existingCost });
+  const costTracker = options.costTracker ?? new CostTracker({ pricing: buildPricingTable(project), summary: existingCost });
   const defaultAdapters = {
     "openai-compatible": new OpenAICompatibleAdapter(),
     mock: new MockProviderAdapter({
@@ -568,6 +569,7 @@ async function createModelRuntime(projectRoot, project, options, fallbackModel) 
       costTracker,
       adapters,
       onRetry: (info) => {
+        costTracker.recordRetry?.();
         appendEvent(projectRoot, {
           type: "model_retry",
           severity: "warn",

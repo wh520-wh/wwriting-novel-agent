@@ -9,7 +9,7 @@ function dash(overrides = {}) {
     summary: {
       projectStatus: 'running', currentStage: 'drafting',
       currentChapterNo: 7, completedChapters: 3, targetChapters: 100,
-      estimatedCost: 0.18, modelCalls: 12
+      estimatedCost: 0.18, costAvailable: true, modelCalls: 12
     },
     state: { current_chapter_no: 7, current_stage: 'drafting', stage_entered_at: '2026-05-31T00:00:00Z' },
     recent_tool_events: [{ id: 'e1', type: 'tool_call', data: { tool: 'write_segment' }, ts: '2026-05-31T00:02:00Z' }],

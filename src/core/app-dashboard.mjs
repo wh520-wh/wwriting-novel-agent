@@ -93,6 +93,7 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
       maxModelCalls: config.effective.budget_config?.max_model_calls ?? state.active_budget?.max_model_calls ?? null,
       totalTokens: cost?.totalTokens ?? 0,
       estimatedCost: cost?.estimatedCost ?? 0,
+      costAvailable: cost?.costAvailable ?? false,
       cacheMetricsAvailable: cache?.last_call?.cacheMetricsAvailable ?? false,
       cacheHitRate: cache?.last_call?.cacheHitRate ?? null
     },

@@ -124,7 +124,7 @@ export function createDrawerPanels(ctx) {
     const kv = document.createElement("dl");
     kv.className = "kv";
     appendKv(kv, "模型调用", `${formatNumber(summary.modelCalls)} / ${summary.maxModelCalls ?? "∞"}`);
-    appendKv(kv, "估算成本", formatMoney(summary.estimatedCost));
+    appendKv(kv, "估算成本", summary.costAvailable ? formatMoney(summary.estimatedCost) : "未配置价格");
     appendKv(kv, "缓存", cacheSummaryText(data));
     appendKv(kv, "联网权限", permissions.network_allowed ? "已开启" : "关闭", permissions.network_allowed ? "accent" : "");
     appendKv(kv, "审查器", translateReviewStatus(data.review?.status), "green");
@@ -272,7 +272,7 @@ export function createDrawerPanels(ctx) {
     const kv = document.createElement("dl");
     kv.className = "kv";
     appendKv(kv, "模型调用", `${formatNumber(summary.modelCalls)} / ${summary.maxModelCalls ?? "∞"}`);
-    appendKv(kv, "估算成本", formatMoney(summary.estimatedCost));
+    appendKv(kv, "估算成本", summary.costAvailable ? formatMoney(summary.estimatedCost) : "未配置价格");
     appendKv(kv, "累计字数", formatNumber(summary.totalWords));
     appendKv(kv, "完成章节", `${summary.completedChapters} / ${summary.targetChapters}`);
     budget.body.append(kv);
