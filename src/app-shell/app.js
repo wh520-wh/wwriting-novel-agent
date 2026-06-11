@@ -4,7 +4,7 @@ import { renderActivityStrip } from "./components/activity-strip.js";
 import { renderQuickRail, bindQuickRailKeys } from "./components/quick-rail.js";
 import { getLastSeen, watchLastSeen } from "./components/last-seen.js";
 import { motion, summarizeBadgesForMotion, diffBadgeKeys } from "./motion-runtime.js";
-import { getJson, postJson } from "./api-client.js";
+import { getJson, postJson, fetchChatHistory } from "./api-client.js";
 import { formatNumber, pathEquals, pathBaseName, statusClass, translateStage } from "./utils.js";
 import { icon } from "./icons.js";
 import { createThreadRenderer } from "./thread-renderer.js";
@@ -347,7 +347,12 @@ async function loadDashboard(options = {}) {
     if (requestId !== dashboardRequestId) return;
     if (!data.ok) throw new Error(data.message ?? "仪表盘请求失败");
     if (data.hasProject) {
-      data.queue = await getJson("/api/queue/state").catch(() => ({ ok: false, tasks: [] }));
+      const [queue, chatHistory] = await Promise.all([
+        getJson("/api/queue/state").catch(() => ({ ok: false, tasks: [] })),
+        fetchChatHistory().catch(() => null)
+      ]);
+      data.queue = queue;
+      data.chatHistory = chatHistory;
       if (requestId !== dashboardRequestId) return;
     }
     renderDashboard(data);
@@ -438,6 +443,11 @@ function renderDashboard(data) {
 
   threadRenderer.syncThread(data, firstLoad);
   threadRenderer.syncFailureCards(data);
+
+  // 同步 chat 对话历史（含 pendingAction 确认卡片）
+  if (data.chatHistory && data.chatHistory.ok !== false) {
+    threadRenderer.syncChatThread(data.chatHistory);
+  }
 
   if (refs.activityStrip) {
     const activity = deriveActivity(data);

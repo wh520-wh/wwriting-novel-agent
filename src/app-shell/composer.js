@@ -1,5 +1,5 @@
 import { icon } from "./icons.js";
-import { postJson } from "./api-client.js";
+import { postJson, sendChatMessage } from "./api-client.js";
 import { getCommand, listCommands } from "./command-registry.mjs";
 import "./commands/index.mjs";  // side-effect: register 5 built-in commands
 
@@ -48,7 +48,7 @@ export function createComposer(ctx) {
     }
     const write = matchCommandPrefix(trimmed, WRITE_PREFIXES);
     if (write !== null) {
-      return { type: "main", content: write, raw, shouldAffectMainTask: true };
+      return { type: "write", content: write, raw, shouldAffectMainTask: true };
     }
     if (mode === "side_question") {
       return { type: "side_question", content: trimmed, raw, shouldAffectMainTask: detectMainTaskImpact(trimmed) };
@@ -213,7 +213,12 @@ export function createComposer(ctx) {
       await submitSideQuestion(parsed.content);
       return;
     }
-    await submitWritingCommand(parsed.content, parsed.type === "review" ? "review" : "write");
+    if (parsed.type === "write" || parsed.type === "review") {
+      await submitWritingCommand(parsed.content, parsed.type === "review" ? "review" : "write");
+      return;
+    }
+    // 默认走 chat agent
+    await sendChatMessageWithUX(parsed.content);
   }
 
   async function submitWritingCommand(message, mode, { fromSideQuestion = false } = {}) {
@@ -263,6 +268,84 @@ export function createComposer(ctx) {
       );
     } catch (error) {
       ctx.showActionError(error);
+    } finally {
+      ctx.refs.composerSubmit.removeAttribute("aria-busy");
+      updateSubmitState();
+    }
+  }
+
+  async function sendChatMessageWithUX(message) {
+    const savedContent = message;
+    ctx.refs.composerSubmit.disabled = true;
+    ctx.refs.composerSubmit.setAttribute("aria-busy", "true");
+
+    // 1. 立即清空输入框
+    ctx.refs.composerInput.value = "";
+    autoGrowComposer();
+    updateSubmitState();
+
+    // 2. 插入用户气泡
+    const userBubble = document.createElement("div");
+    userBubble.className = "msg-user rise chat-bubble-wrap chat-bubble-wrap--user";
+    const userBubbleInner = document.createElement("div");
+    userBubbleInner.className = "chat-bubble chat-bubble--user";
+    const userContent = document.createElement("div");
+    userContent.className = "chat-bubble-content";
+    userContent.textContent = message;
+    userBubbleInner.append(userContent);
+    userBubble.append(userBubbleInner);
+    ctx.refs.thread.append(userBubble);
+    ctx.threadRenderer.scrollThreadToBottom();
+
+    // 3. 插入"思考中"占位
+    const thinkingBubble = document.createElement("div");
+    thinkingBubble.className = "msg-agent rise chat-bubble-wrap chat-bubble-wrap--assistant chat-thinking";
+    const thinkingAvatar = document.createElement("div");
+    thinkingAvatar.className = "agent-avatar";
+    thinkingAvatar.textContent = "W";
+    const thinkingBody = document.createElement("div");
+    thinkingBody.className = "agent-body";
+    const thinkingSay = document.createElement("p");
+    thinkingSay.className = "agent-say";
+    thinkingSay.textContent = "思考中...";
+    thinkingBody.append(thinkingSay);
+    thinkingBubble.append(thinkingAvatar, thinkingBody);
+    ctx.refs.thread.append(thinkingBubble);
+    ctx.threadRenderer.scrollThreadToBottom();
+
+    try {
+      // 4. 调用 chat API
+      await sendChatMessage(message);
+
+      // 5. 移除手动插入的元素；loadDashboard → syncChatThread 会从历史渲染正确的气泡
+      userBubble.remove();
+      thinkingBubble.remove();
+      if (typeof ctx.loadDashboard === "function") {
+        await ctx.loadDashboard();
+      }
+    } catch (error) {
+      // 6. 错误恢复：移除手动插入的元素，显示错误行，恢复输入框
+      userBubble.remove();
+      thinkingBubble.remove();
+
+      const errorBubble = document.createElement("div");
+      errorBubble.className = "msg-agent rise chat-bubble-wrap";
+      const errorAvatar = document.createElement("div");
+      errorAvatar.className = "agent-avatar";
+      errorAvatar.textContent = "W";
+      const errorBody = document.createElement("div");
+      errorBody.className = "agent-body";
+      const errorSay = document.createElement("p");
+      errorSay.className = "agent-say";
+      errorSay.textContent = `发送失败：${error.message}`;
+      errorBody.append(errorSay);
+      errorBubble.append(errorAvatar, errorBody);
+      ctx.refs.thread.append(errorBubble);
+      ctx.threadRenderer.scrollThreadToBottom();
+
+      ctx.refs.composerInput.value = savedContent;
+      autoGrowComposer();
+      ctx.showActionError?.(error);
     } finally {
       ctx.refs.composerSubmit.removeAttribute("aria-busy");
       updateSubmitState();
