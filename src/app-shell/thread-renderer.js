@@ -4,6 +4,7 @@ import { motion } from "./motion-runtime.js";
 import { renderFailureCard } from "./components/failure-card.js";
 import { deriveFailures } from "./agent-truth.mjs";
 import { postJson } from "./api-client.js";
+import { sendChatMessage, confirmChatAction } from "./api-client.js";
 
 const STAGE_ORDER = ["queued", "planning", "planned", "drafting", "reviewing", "needs_revision", "revising", "finalizing", "summarizing"];
 
@@ -710,12 +711,223 @@ export function createThreadRenderer(ctx) {
     return confirm;
   }
 
+  // ===== S3 chat thread rendering =====
+  // 简单 HTML 转义：避免把 message.content / tool 输出当作 HTML 解析。
+  function escape(text) {
+    return String(text ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  // 极简 markdown：段落 (\n\n) + 粗体 (**x**) + 行内代码 (`x`)。
+  // 不引入第三方依赖；遇到更复杂结构时回退到纯文本。
+  function renderAssistantText(text) {
+    const escaped = escape(text ?? "");
+    return escaped
+      .split(/\n{2,}/)
+      .map((para) => {
+        const withBold = para.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+        const withCode = withBold.replace(/`([^`]+)`/g, "<code>$1</code>");
+        return `<p>${withCode.replace(/\n/g, "<br>")}</p>`;
+      })
+      .join("");
+  }
+
+  function renderUserBubble(message) {
+    const wrap = document.createElement("div");
+    wrap.className = "msg-user rise chat-bubble-wrap chat-bubble-wrap--user";
+    wrap.dataset.ts = message.ts ?? "";
+    const bubble = document.createElement("div");
+    bubble.className = "chat-bubble chat-bubble--user";
+    const content = document.createElement("div");
+    content.className = "chat-bubble-content";
+    content.textContent = message.content ?? "";
+    bubble.append(content);
+    wrap.append(bubble);
+    return wrap;
+  }
+
+  function renderAssistantBubble(message) {
+    const wrap = document.createElement("div");
+    wrap.className = "msg-agent rise chat-bubble-wrap chat-bubble-wrap--assistant";
+    wrap.dataset.ts = message.ts ?? "";
+    const bubble = document.createElement("div");
+    bubble.className = "chat-bubble chat-bubble--assistant";
+    if (message.proactive === "fact_check") {
+      const badge = document.createElement("span");
+      badge.className = "chat-proactive-badge";
+      badge.textContent = "fact-check";
+      bubble.append(badge);
+    }
+    const body = document.createElement("div");
+    body.className = "chat-bubble-content";
+    body.innerHTML = renderAssistantText(message.content ?? "");
+    bubble.append(body);
+    if (Number.isFinite(message.cost) && message.cost > 0) {
+      const cost = document.createElement("span");
+      cost.className = "chat-cost";
+      cost.textContent = `本轮 ¥${message.cost.toFixed(4)}`;
+      bubble.append(cost);
+    }
+    wrap.append(bubble);
+    return wrap;
+  }
+
+  function renderToolCard(message) {
+    const wrap = document.createElement("div");
+    wrap.className = "msg-agent rise chat-bubble-wrap chat-bubble-wrap--tool";
+    wrap.dataset.ts = message.ts ?? "";
+    const card = document.createElement("details");
+    card.className = "chat-tool-card";
+    const summary = document.createElement("summary");
+    const ok = message.ok !== false;
+    summary.textContent = `工具 ${message.tool ?? ""} ${ok ? "✓" : "✗"}`;
+    card.append(summary);
+    const pre = document.createElement("pre");
+    pre.textContent = message.result_summary ?? "";
+    card.append(pre);
+    if (message.error) {
+      const err = document.createElement("div");
+      err.className = "chat-tool-error";
+      err.textContent = message.error;
+      card.append(err);
+    }
+    wrap.append(card);
+    return wrap;
+  }
+
+  function renderConfirmCard(pendingAction) {
+    const wrap = document.createElement("div");
+    wrap.className = "msg-agent rise chat-bubble-wrap chat-bubble-wrap--confirm";
+    wrap.dataset.ts = pendingAction?.ts ?? "";
+    const card = document.createElement("div");
+    card.className = "chat-confirm-card";
+    const h4 = document.createElement("h4");
+    h4.textContent = `待确认操作：${pendingAction?.tool ?? ""}`;
+    card.append(h4);
+    if (pendingAction?.description) {
+      const desc = document.createElement("p");
+      desc.className = "chat-confirm-desc";
+      desc.textContent = pendingAction.description;
+      card.append(desc);
+    }
+    const preview = pendingAction?.preview;
+    if (preview?.before != null || preview?.after != null) {
+      const diff = document.createElement("div");
+      diff.className = "chat-confirm-diff";
+      const before = document.createElement("div");
+      before.className = "chat-confirm-before";
+      before.textContent = preview?.before ?? "";
+      const after = document.createElement("div");
+      after.className = "chat-confirm-after";
+      after.textContent = preview?.after ?? "";
+      diff.append(before, after);
+      card.append(diff);
+    }
+    const buttons = document.createElement("div");
+    buttons.className = "chat-confirm-buttons";
+    const approve = document.createElement("button");
+    approve.type = "button";
+    approve.className = "chat-confirm-approve";
+    approve.dataset.testid = "chat-confirm-approve";
+    approve.textContent = "执行";
+    const reject = document.createElement("button");
+    reject.type = "button";
+    reject.className = "chat-confirm-reject";
+    reject.dataset.testid = "chat-confirm-reject";
+    reject.textContent = "取消";
+    approve.addEventListener("click", async () => {
+      approve.disabled = true;
+      reject.disabled = true;
+      try {
+        await confirmChatAction(true);
+        card.classList.add("chat-confirm-card--resolved");
+        if (typeof ctx.loadDashboard === "function") {
+          void ctx.loadDashboard();
+        }
+      } catch (error) {
+        approve.disabled = false;
+        reject.disabled = false;
+        ctx.showActionError?.(error);
+      }
+    });
+    reject.addEventListener("click", async () => {
+      approve.disabled = true;
+      reject.disabled = true;
+      try {
+        await confirmChatAction(false);
+        card.classList.add("chat-confirm-card--rejected");
+        if (typeof ctx.loadDashboard === "function") {
+          void ctx.loadDashboard();
+        }
+      } catch (error) {
+        approve.disabled = false;
+        reject.disabled = false;
+        ctx.showActionError?.(error);
+      }
+    });
+    buttons.append(approve, reject);
+    card.append(buttons);
+    wrap.append(card);
+    return wrap;
+  }
+
+  // 渲染一条 chat 历史消息：根据 type 路由到对应渲染器。
+  function renderChatMessage(message) {
+    if (!message) return null;
+    if (message.role === "user") return renderUserBubble(message);
+    if (message.role === "assistant") return renderAssistantBubble(message);
+    if (message.role === "tool") return renderToolCard(message);
+    if (message.role === "confirm") return renderConfirmCard(message);
+    return null;
+  }
+
+  // 把 chat 历史刷进 thread，按 ts 升序插入。已渲染的项用指纹去重。
+  function syncChatThread(history) {
+    const messages = [...(history?.messages ?? [])].sort(
+      (a, b) => timeValue(a.ts) - timeValue(b.ts)
+    );
+    if (messages.length === 0) {
+      // 无聊天历史时不主动清理既有 thread；维持原 agent 事件流渲染。
+      return;
+    }
+    for (const message of messages) {
+      const key = `chat:${message.role}:${message.ts}:${message.tool ?? ""}`;
+      if (ctx.renderedKeys.has(key)) continue;
+      const node = renderChatMessage(message);
+      if (!node) continue;
+      ctx.renderedKeys.add(key);
+      insertByTs(ctx.refs.thread, node, message.ts);
+    }
+  }
+
+  // 发送聊天消息的便捷方法（composer 暂未接入时也可单独调用）。
+  async function submitChatMessage(message) {
+    if (!message || !message.trim()) return null;
+    try {
+      const result = await sendChatMessage(message);
+      if (typeof ctx.loadDashboard === "function") {
+        void ctx.loadDashboard();
+      }
+      return result;
+    } catch (error) {
+      ctx.showActionError?.(error);
+      throw error;
+    }
+  }
+
   return {
     syncThread,
     renderEmptyThread,
     syncFailureCards,
     updateLiveAgentBlock,
     buildSideBubble,
-    scrollThreadToBottom
+    scrollThreadToBottom,
+    renderChatMessage,
+    syncChatThread,
+    submitChatMessage
   };
 }
