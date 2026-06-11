@@ -7,7 +7,8 @@ import { runProject, SimulatedInterrupt, maybeWarnChapterCost } from "../src/cor
 import { appendEvent, readEvents } from "../src/core/event-log.mjs";
 import { countEffectiveWords } from "../src/core/word-count.mjs";
 import { MockModel } from "../src/core/mock-model.mjs";
-import { createProject, loadChapterIndex, loadState, saveState } from "../src/core/project-store.mjs";
+import { createProject, loadChapterIndex, loadProject, loadState, saveProject, saveState, upsertChapter } from "../src/core/project-store.mjs";
+import { loadContinuity, loadContinuityState } from "../src/core/continuity-store.mjs";
 import { updateProjectSettings } from "../src/core/settings-runtime.mjs";
 import { appendChapterSegment } from "../src/core/tool-runtime.mjs";
 
@@ -687,4 +688,74 @@ test("maybeWarnChapterCost 在当前章 token 超前几章均值 2 倍时告警�
   assert.equal(warnings.length, 1);
   assert.equal(warnings[0].data.chapter_total_tokens, 5000);
   await fs.rm(workspace, { recursive: true, force: true });
+});
+
+test("summarizing 阶段写入 book_summary 与 continuity（真实 provider 路径用注入的 fake client）", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-memx-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "memx", title: "记忆测试", story_seed: "测试种子",
+    target_chapters: 1, min_words_per_chapter: 10, target_words_per_chapter: 12, max_model_calls: 50
+  });
+  const project = await loadProject(projectRoot);
+  project.active_model = { provider: "openai-compatible", model_name: "fake-model", base_url: "http://localhost:0", api_key_env: "FAKE_KEY" };
+  await saveProject(projectRoot, project);
+  const extraction = {
+    summary: "第一章：主角能力觉醒。",
+    facts: [{ entity: "沈泽", attribute: "能力", value: "意念致死", chapter_no: 1, quote: "他去死就好了" }],
+    timeline: [{ chapter_no: 1, story_time: "十月", events: ["觉醒"] }],
+    characters: [{ name: "沈泽", traits: ["谨慎"], status: "存活", chapter_no: 1 }]
+  };
+  const calls = [];
+  const fakeClient = {
+    generate: async ({ stage, messages }) => {
+      calls.push(stage);
+      if (stage === "memory_extract") {
+        return { text: "```json\n" + JSON.stringify(extraction) + "\n```", usageReport: {} };
+      }
+      throw new Error(`unexpected stage ${stage}`);
+    }
+  };
+  const { extractChapterMemory } = await import("../src/core/agent-engine.mjs");
+  await extractChapterMemory(projectRoot, project, { current_chapter_no: 1 }, { modelClient: fakeClient });
+  const summary = await fs.readFile(path.join(projectRoot, "memory", "book_summary.md"), "utf8");
+  assert.match(summary, /能力觉醒/u);
+  const continuity = await loadContinuity(projectRoot);
+  assert.equal(continuity.facts[0].value, "意念致死");
+  assert.equal((await loadContinuityState(projectRoot)).last_extracted_chapter, 1);
+  await extractChapterMemory(projectRoot, project, { current_chapter_no: 1 }, { modelClient: fakeClient });
+  assert.equal(calls.filter((s) => s === "memory_extract").length, 1);
+});
+
+test("mock provider 跳过提取但推进水位", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-memskip-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "memskip", title: "跳过测试", story_seed: "种子",
+    target_chapters: 1, min_words_per_chapter: 10, target_words_per_chapter: 12
+  });
+  const project = await loadProject(projectRoot);
+  const { extractChapterMemory } = await import("../src/core/agent-engine.mjs");
+  await extractChapterMemory(projectRoot, project, { current_chapter_no: 1 }, {
+    modelClient: { generate: async () => { throw new Error("must not call"); } }
+  });
+  assert.equal((await loadContinuityState(projectRoot)).last_extracted_chapter, 1);
+  const events = await readEvents(projectRoot);
+  assert.ok(events.some((e) => e.type === "memory_extract_skipped"));
+});
+
+test("提取失败软跳过：事件 memory_extract_failed 且水位推进", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-memfail-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "memfail", title: "失败测试", story_seed: "种子",
+    target_chapters: 1, min_words_per_chapter: 10, target_words_per_chapter: 12
+  });
+  const project = await loadProject(projectRoot);
+  project.active_model = { provider: "openai-compatible", model_name: "fake", base_url: "http://localhost:0", api_key_env: "FAKE_KEY" };
+  await saveProject(projectRoot, project);
+  const { extractChapterMemory } = await import("../src/core/agent-engine.mjs");
+  await extractChapterMemory(projectRoot, project, { current_chapter_no: 1 }, {
+    modelClient: { generate: async () => ({ text: "不是 JSON", usageReport: {} }) }
+  });
+  const events = await readEvents(projectRoot);
+  assert.ok(events.some((e) => e.type === "memory_extract_failed"));
+  assert.equal((await loadContinuityState(projectRoot)).last_extracted_chapter, 1);
 });
