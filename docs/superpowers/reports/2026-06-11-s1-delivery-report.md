@@ -22,7 +22,7 @@
 | 5 | 诊断出口成本健康 | `616d208` | `costHealth` 8 字段（retries/unpriced/cacheVersion 等），O(1) 读取 |
 | 6 | 预算熔断 + 故障卡恢复 | `9db452b` | `max_cost`/`max_total_tokens` 上限 + circuit breaker + failure card + 设置页 UI |
 | 7 | 成本视图数据补强 | `4cd4f18` `5f2fa3f` | `recentHitRates` 滚动窗口 + `refillCalls` + `cacheSavedCost` |
-| 8 | 成本视图 UI 重构 | `3df9e3f` `3c5b8ad` | 三段式面板（总览/缓存健康/章节成本）+ sparkline + 预警徽章 + a11y aria-label |
+| 8 | 成本视图 UI 重构 | `3df9e3f` `3c5b8ad` | 三段式面板（总览/缓存健康/章节成本）+ sparkline + 面板内预警 banner（主界面成本徽章升级 + 章节行成本在收尾修复中补齐） |
 | 9 | 补写成本治理 | `dc4d32a` | `computeChapterWordGap` 纯函数，首轮 prompt 暴露字数缺口，减少补写轮次 |
 | 10 | 基线对比 + 交付报告 | 本 commit | 本文件 |
 
@@ -115,13 +115,19 @@ npm run verify:provider-online
 |---|------|------|---------|
 | 1 | provider fallback hack | `cost-tracker.mjs:47` | 真实项目审计时验证 `?? this.pricing[provider]` 是否误匹配 |
 | 2 | `?? 0` 防御性默认值掩盖上游 bug | `cost-tracker.mjs:51-54` | 添加 warning 日志，当 token 为 0 时告警 |
-| 3 | `cachedTokens` vs `cacheHitTokens` 计算口径不一致 | `cost-tracker.mjs:54,99` | **真实 bug**：`estimateCost` 用一个字段，`cacheSavedCost` 用另一个。S2 统一 |
 | 4 | `currency` 是死元数据 | `model-pricing.mjs:11` | 删除或暴露到 UI |
 | 5 | `costAvailable === true` guard 无文档 | `agent-engine.mjs:1099` | 添加 JSDoc 说明 guard 语义 |
 | 6 | 预算百分比是魔术数字 | `derive-failure-card.mjs` | 提取为命名常量 |
 | 7 | agent-engine 测试缺 malformed state 路径 | `tests/agent-engine.test.mjs` | 添加 state 异常输入测试 |
 | 8 | stable/dynamic block contract 无 JSDoc | `prompt-compiler.mjs` | 添加版本化契约文档 |
 | 9 | `warnedChapters` 生命周期是 per-run | `agent-engine.mjs:585` | 文档化：重启后重新预警是 by design |
+| 10 | stage override pricing 被设置层剥离 | `settings-runtime.mjs:232` | 本轮已修复：normalizeStageOverrides 补 pricing 拷贝 |
+| 11 | refill 过计：技能门禁修订也算补写 | `agent-engine.mjs:609` | 本轮已修复：改为 kind === "revision_shortfall" |
+| 12 | deriveBadges 不响应 chapter_cost_warning | `agent-truth.mjs:119` | 本轮已修复 |
+| 13 | 章节抽屉行缺成本 | `drawer-panels.js:64` | 本轮已修复 |
+| 14 | thread-renderer 直显 estimatedCost 不守 costAvailable | `thread-renderer.js:324` | 本轮已修复 |
+| 15 | cost-panel el() 丢弃 role/aria-label | `cost-panel.js:21` | 本轮已修复 |
+| 16 | 缓存节省 0.00 元在未配价格时显示 | `cost-panel.js:121` | 本轮已修复 |
 
 ---
 
