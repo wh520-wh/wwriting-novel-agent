@@ -60,15 +60,17 @@ export function createDrawerPanels(ctx) {
     if (chapters.length === 0) {
       list.append(drawerEmpty("尚无章节，发送指令后开始生成。"));
     } else {
+      const byChapter = data.cost?.byChapter ?? {};
+      const costAvailable = data.summary?.costAvailable === true;
       for (const chapter of chapters) {
-        list.append(buildChapterRow(chapter));
+        list.append(buildChapterRow(chapter, byChapter[String(chapter.chapter_no)], costAvailable));
       }
     }
     body.append(list);
     ctx.refs.drawerBody.replaceChildren(panel);
   }
 
-  function buildChapterRow(chapter) {
+  function buildChapterRow(chapter, costRow, costAvailable) {
     const done = chapter.status === "completed";
     const running = !done && chapter.status && !["queued", "planned"].includes(chapter.status);
     const row = document.createElement("button");
@@ -85,7 +87,11 @@ export function createDrawerPanels(ctx) {
     if (done) {
       const meta = document.createElement("span");
       meta.className = "ch-meta mono";
-      meta.textContent = `${formatNumber(chapter.actual_words)} 字`;
+      if (costAvailable && costRow) {
+        meta.textContent = `${formatNumber(chapter.actual_words)} 字 · ${formatMoney(costRow.estimatedCost)}`;
+      } else {
+        meta.textContent = `${formatNumber(chapter.actual_words)} 字`;
+      }
       row.append(meta, icon("chevR", 14, "ch-go"));
       row.addEventListener("click", () => ctx.openReader(chapter.chapter_no));
     } else if (running) {

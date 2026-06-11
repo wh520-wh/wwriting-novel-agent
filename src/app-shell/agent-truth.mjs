@@ -119,9 +119,12 @@ export function deriveBadges(dashboard, projectRoot = '', lastSeen = {}) {
   const used = dashboard?.summary?.estimatedCost ?? 0;
   const budget = dashboard?.project?.budget_config?.max_cost ?? 0;
   const pct = budget > 0 ? used / budget : 0;
+  const recentCostWarning = (dashboard?.events ?? []).some(
+    (event) => event.type === "chapter_cost_warning"
+  );
   let level = 'normal';
   if (pct >= 1) level = 'over';
-  else if (pct >= 0.8) level = 'warning';
+  else if (pct >= 0.8 || recentCostWarning) level = 'warning';
   return {
     chapters: { done, total, ticking: false },
     skills: { enabledCount },

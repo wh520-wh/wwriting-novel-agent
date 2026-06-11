@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { computeAgentTruth } from "../src/app-shell/agent-truth.mjs";
+import { computeAgentTruth, deriveBadges } from "../src/app-shell/agent-truth.mjs";
 
 const now = Date.parse("2026-05-31T00:00:00.000Z");
 
@@ -32,4 +32,32 @@ test("computeAgentTruth covers stopped and terminal persisted states", () => {
   assert.equal(computeAgentTruth(data({ summary: { projectStatus: "blocked" } }), now).showRetry, false);
   assert.equal(computeAgentTruth(data({ summary: { projectStatus: "completed" } }), now).className, "completed");
   assert.equal(computeAgentTruth({ hasProject: false }, now).className, "idle");
+});
+
+test("deriveBadges 在最近事件含 chapter_cost_warning 时成本徽章至少为 warning", () => {
+  const dashboard = {
+    summary: { estimatedCost: 0.1, targetChapters: 10, completedChapters: 1 },
+    project: { budget_config: { max_cost: 100 } },
+    events: [{ type: "chapter_cost_warning" }]
+  };
+  const badges = deriveBadges(dashboard);
+  assert.equal(badges.cost.level, "warning");
+});
+
+test("deriveBadges 超预算 over 优先级高于预警事件", () => {
+  const dashboard = {
+    summary: { estimatedCost: 120, targetChapters: 10, completedChapters: 1 },
+    project: { budget_config: { max_cost: 100 } },
+    events: [{ type: "chapter_cost_warning" }]
+  };
+  assert.equal(deriveBadges(dashboard).cost.level, "over");
+});
+
+test("deriveBadges 无预警无超预算时成本徽章为 normal", () => {
+  const dashboard = {
+    summary: { estimatedCost: 0.1, targetChapters: 10, completedChapters: 1 },
+    project: { budget_config: { max_cost: 100 } },
+    events: []
+  };
+  assert.equal(deriveBadges(dashboard).cost.level, "normal");
 });
