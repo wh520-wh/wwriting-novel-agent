@@ -6,6 +6,8 @@ export const FAILURE_COMMANDS = Object.freeze({
   'skip-segment':            { args: {} },
   'fill-words':              { args: { targetWords: { type: 'integer', min: 1, max: 50000, required: true } } },
   'raise-budget':            { args: { newMaxModelCalls: { type: 'integer', min: 1, max: 10000, required: true } } },
+  'raise-cost-budget':       { args: { newMaxCost: { type: 'number', min: 0.01, max: 100000, required: true } } },
+  'raise-token-budget':      { args: { newMaxTotalTokens: { type: 'integer', min: 1, max: 100000000, required: true } } },
   'switch-model':            { args: { modelId: { type: 'string', source: 'allowed-models-only', required: true } } },
   'apply-review-suggestions':{ args: {} },
   'accept-review-current':   { args: {} },
@@ -29,6 +31,10 @@ export function validateFailureCommand(command, args = {}) {
       }
     } else if (schema.type === 'integer') {
       if (!Number.isInteger(v)) return { ok: false, error: `${key} 必须是整数` };
+      if (schema.min !== undefined && v < schema.min) return { ok: false, error: `${key} 不能小于 ${schema.min}` };
+      if (schema.max !== undefined && v > schema.max) return { ok: false, error: `${key} 不能大于 ${schema.max}` };
+    } else if (schema.type === 'number') {
+      if (typeof v !== 'number' || !Number.isFinite(v)) return { ok: false, error: `${key} 必须是数字` };
       if (schema.min !== undefined && v < schema.min) return { ok: false, error: `${key} 不能小于 ${schema.min}` };
       if (schema.max !== undefined && v > schema.max) return { ok: false, error: `${key} 不能大于 ${schema.max}` };
     }

@@ -1086,6 +1086,25 @@ async function consumeModelCallBudget(projectRoot, project, state, data = {}) {
     });
     throw new ProjectBlockedError("model_call_budget_exhausted");
   }
+  const costSummary = await readJson(safeJoin(projectRoot, "cost.json"), null);
+  const maxTokens = budget.max_total_tokens;
+  if (Number.isFinite(maxTokens) && (costSummary?.totalTokens ?? 0) >= maxTokens) {
+    await blockProject(projectRoot, project, current, "token_budget_exhausted", {
+      total_tokens: costSummary?.totalTokens ?? 0,
+      max_total_tokens: maxTokens,
+      ...data
+    });
+    throw new ProjectBlockedError("token_budget_exhausted");
+  }
+  const maxCost = budget.max_cost;
+  if (Number.isFinite(maxCost) && costSummary?.costAvailable === true && costSummary.estimatedCost >= maxCost) {
+    await blockProject(projectRoot, project, current, "cost_budget_exhausted", {
+      estimated_cost: costSummary.estimatedCost,
+      max_cost: maxCost,
+      ...data
+    });
+    throw new ProjectBlockedError("cost_budget_exhausted");
+  }
   budget.model_calls += 1;
   current.active_budget = budget;
   await saveState(projectRoot, current);
@@ -1142,6 +1161,8 @@ function withBudgetDefaults(state) {
     max_model_calls: 200,
     revision_rounds_by_chapter: {},
     max_revision_rounds_per_chapter: 4,
+    max_cost: null,
+    max_total_tokens: null,
     ...(state.active_budget ?? {})
   };
 }

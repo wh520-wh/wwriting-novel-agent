@@ -48,3 +48,14 @@ test("provider-error 卡的 switch-model 文案引导去设置", () => {
   const switchAction = card.actions.find((a) => a.command === "switch-model");
   assert.equal(switchAction.label, "去设置切换模型");
 });
+
+test("cost_budget_exhausted 事件产出可恢复的成本预算卡", () => {
+  const card = deriveFailureCard({
+    id: "e1", type: "project_blocked", message: "cost_budget_exhausted",
+    chapter_no: 3, data: { estimated_cost: 1.21, max_cost: 1 }
+  }, { current_chapter_no: 3 });
+  assert.equal(card.kind, "budget-exhausted");
+  assert.match(card.body, /1\.21/);
+  assert.equal(card.actions[0].command, "raise-cost-budget");
+  assert.equal(card.actions[0].args.newMaxCost, 2);
+});

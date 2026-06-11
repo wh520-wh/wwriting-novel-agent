@@ -139,6 +139,11 @@ export function createSettingsModal(ctx) {
     keyHint.className = "spd-hint";
     keyHint.textContent = "API Key 只保存在本机应用 secrets，项目文件只记录变量名。";
     settingsFields.maxCalls = settingField("模型调用上限", "number", { value: budgetConfig.max_model_calls ?? "" });
+    const budgetHeading = document.createElement("h4");
+    budgetHeading.className = "spd-section";
+    budgetHeading.textContent = "预算上限";
+    settingsFields.maxCost = settingField("成本上限（元，需先配置价格）", "number", { value: budgetConfig.max_cost ?? "" });
+    settingsFields.maxTokens = settingField("token 总量上限", "number", { value: budgetConfig.max_total_tokens ?? "" });
     const priceHeading = document.createElement("h4");
     priceHeading.className = "spd-section";
     priceHeading.textContent = "价格（用于成本估算）";
@@ -189,7 +194,8 @@ export function createSettingsModal(ctx) {
       settingsFields.model.field, settingsFields.baseUrl.field, endpointHint,
       settingsFields.apiKey.field, settingsFields.apiKeyEnv.field, keyHint,
       priceHeading, settingsFields.priceInput.field, settingsFields.priceOutput.field, settingsFields.priceCacheHit.field, priceHint,
-      settingsFields.maxCalls.field, settingsFields.network.field,
+      budgetHeading, settingsFields.maxCost.field, settingsFields.maxTokens.field, settingsFields.maxCalls.field,
+      settingsFields.network.field,
       settingsFields.searchEndpoint.field, settingsFields.searchKeyEnv.field,
       settingsFields.outputStyle.field,
       profileHeading, settingsFields.profileTitle.field, settingsFields.targetChapters.field, settingsFields.minWords.field
@@ -392,7 +398,11 @@ export function createSettingsModal(ctx) {
             : undefined
         }),
         tool_permissions: { network_allowed: settingsFields.network.checked },
-        budget_config: { max_model_calls: settingsFields.maxCalls.input.value },
+        budget_config: {
+          max_model_calls: settingsFields.maxCalls.input.value,
+          max_cost: settingsFields.maxCost.input.value,
+          max_total_tokens: settingsFields.maxTokens.input.value
+        },
         research_config: compactObject({
           search_endpoint: settingsFields.searchEndpoint.input.value.trim(),
           search_api_key_env: settingsFields.searchKeyEnv.input.value.trim()

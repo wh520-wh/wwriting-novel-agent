@@ -51,6 +51,21 @@ async function main() {
     diagnostics: { eventId: "click-failure-1", tool: null, promptHash: null, logPath: "run_log.jsonl", rawError: null },
     resolution: null
   });
+  appendFailure(projectRoot, {
+    id: "seed-cost-budget",
+    seq: 2,
+    chapterNo: 1,
+    kind: "budget-exhausted",
+    title: "预算已用尽",
+    body: "第 1 章已花约 ¥1.21，达到你设置的 ¥1 上限。",
+    ts: new Date().toISOString(),
+    actions: [
+      { label: "提高成本上限到 ¥2", command: "raise-cost-budget", args: { newMaxCost: 2 } },
+      { label: "停在这里", command: "pause-here", args: {} }
+    ],
+    diagnostics: { eventId: "seed-cost-budget", tool: null, promptHash: null, logPath: "run_log.jsonl", rawError: null },
+    resolution: null
+  });
 
   server = createAppShellServer({
     workspaceRoot: rootDir,
@@ -348,6 +363,25 @@ async function main() {
     label: "failure-refresh-after-resolve",
     settleMs: 450,
     expect: () => read(win, "document.querySelectorAll('[data-failure-id=\"click-failure-1\"]').length === 1")
+  }));
+
+  await win.webContents.executeJavaScript(`
+    document.querySelector('.failure-card[data-failure-id="seed-cost-budget"]')?.scrollIntoView({ block: "center" });
+    true;
+  `);
+  await delay(120);
+  clicks.push(await clickAndRead(win, '.failure-card[data-failure-id="seed-cost-budget"] .failure-actions button', {
+    label: "cost-budget-failure-action",
+    settleMs: 3000,
+    expect: () => read(win, `
+      (() => {
+        const card = document.querySelector('[data-failure-id="seed-cost-budget"]');
+        if (!card) return false;
+        return Boolean(card.querySelector('.failure-resolved'))
+          || Boolean(card.querySelector('.failure-actions button[disabled]'))
+          || window.__wwDebugResolve?.started === true;
+      })()
+    `)
   }));
 
   clicks.push(await clickAndRead(win, "#cbar-slash", {
