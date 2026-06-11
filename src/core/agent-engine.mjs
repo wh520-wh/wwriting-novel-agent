@@ -788,7 +788,7 @@ async function compileChapterPrompt(projectRoot, project, state, request, runtim
   const configuredVersion = project.prompt_template_versions?.drafting ?? "v1";
   const templateVersion = configuredVersion.startsWith("drafting.") ? configuredVersion : `drafting.${configuredVersion}`;
   const compiler = new PromptCompiler({ templateVersion });
-  const [promptTemplate, bookSummary, draft, latestUserFeedback, planningSkillPrompts, stageSkillPrompts, continuityContext] = await Promise.all([
+  const [promptTemplate, bookSummary, draft, latestUserFeedback, planningSkillPrompts, stageSkillPrompts, continuityContext, continuityMd] = await Promise.all([
     readOptionalProjectText(projectRoot, "prompts", `${templateVersion}.md`),
     readOptionalProjectText(projectRoot, "memory", "book_summary.md"),
     readDraft(projectRoot, project, state.current_chapter_no),
@@ -803,7 +803,8 @@ async function compileChapterPrompt(projectRoot, project, state, request, runtim
       stage: state.current_stage,
       skills: runtime?.stepSkills
     }),
-    buildContinuityPromptContext(projectRoot, state.current_chapter_no)
+    buildContinuityPromptContext(projectRoot, state.current_chapter_no),
+    readOptionalProjectText(projectRoot, "memory", "continuity.md")
   ]);
   const skillInstructions = [planningSkillPrompts.content, stageSkillPrompts.content].filter(Boolean).join("\n\n");
   const styleRules = [
@@ -834,7 +835,7 @@ async function compileChapterPrompt(projectRoot, project, state, request, runtim
       skill_instructions: skillInstructions
     },
     dynamicBlocks: {
-      project_memory: [bookSummary, continuityContext].filter(Boolean).join("\n\n"),
+      project_memory: [bookSummary, continuityMd, continuityContext].filter(Boolean).join("\n\n"),
       chapter_plan: [`Chapter ${state.current_chapter_no} of ${project.target_chapters}.`, chapterContinuityRule].join("\n"),
       current_task: JSON.stringify(
         {

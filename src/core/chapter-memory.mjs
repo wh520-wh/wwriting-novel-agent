@@ -1,7 +1,7 @@
 import { readJson, safeJoin, writeJsonAtomic } from "./fs-utils.mjs";
 
 export const CHAPTER_MEMORY_SCHEMA_VERSION = 1;
-export const MAX_CONTEXT_CHAPTERS = 4;
+export const MAX_CONTEXT_CHAPTERS = 2;
 export const OPENING_EXCERPT_CHARS = 420;
 export const ENDING_EXCERPT_CHARS = 900;
 
