@@ -8,7 +8,7 @@ import { ModelClient } from "./model-client.mjs";
 import { loadProject, loadState, saveState, upsertChapter, writeCheckpoint } from "./project-store.mjs";
 import { MockModel } from "./mock-model.mjs";
 import { MockProviderAdapter, OpenAICompatibleAdapter } from "./provider-adapters.mjs";
-import { PromptCompiler } from "./prompt-compiler.mjs";
+import { PromptCompiler, computeChapterWordGap } from "./prompt-compiler.mjs";
 import { assertToolCallForChapter, runWordCountGate } from "./quality-gates.mjs";
 import { collectSkillPromptHooks, loadEnabledSkills, runPostProcessHooks, runSkillChecks } from "./skill-runtime.mjs";
 import { ensureDefaultToolHooks, runAfterToolUse, runBeforeToolUse } from "./tool-hooks.mjs";
@@ -779,6 +779,13 @@ async function compileChapterPrompt(projectRoot, project, state, request, runtim
           segment_no: request.segment_no,
           segment_target_words: request.segment_target_words,
           shortfall: request.shortfall,
+          // 章节字数缺口：把当前真实已写字数与剩余缺口直接喂给模型，
+          // 让首次写正文时就按目标写够，避免 word-count gate 失败后
+          // 再发起补写请求（补写会被 costTracker.recordRefill 计费）。
+          ...computeChapterWordGap({
+            draftContent: draft,
+            minWords: project.min_words_per_chapter
+          }),
           quality_gate_failures: request.quality_gate_failures,
           correction_attempt: request.correction_attempt,
           validation_feedback: request.validation_feedback,

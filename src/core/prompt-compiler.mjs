@@ -1,4 +1,5 @@
 import { sha256 } from "./fs-utils.mjs";
+import { countEffectiveWords } from "./word-count.mjs";
 
 export const STABLE_BLOCK_ORDER = [
   "system_rules",
@@ -86,4 +87,27 @@ function orderBlocks(blocks, preferredOrder) {
 function renderBlock(block) {
   const label = block.kind === "stable" ? "Stable Block" : "Dynamic Block";
   return `[${label}] ${block.name}\n${block.content}`;
+}
+
+/**
+ * 计算当前章节的字数缺口，供 current_task JSON 注入。
+ *
+ * 目的：让模型在第一次写正文时就看到还差多少字，避免 word-count gate 失败后
+ * 再发一次补写请求（refill round）。补写请求会被 costTracker.recordRefill 计费，
+ * 因此暴露真实缺口能直接降低单章的模型调用次数与 token 消耗。
+ *
+ * @param {object} input
+ * @param {string|null|undefined} input.draftContent 当前章节已写入的正文内容（draft 文件原文）
+ * @param {number} [input.minWords=3000] 章节最小有效字数门槛
+ * @returns {{chapterWordsWritten: number, chapterWordsRemaining: number}}
+ */
+export function computeChapterWordGap({ draftContent, minWords } = {}) {
+  const safeMin = Number.isFinite(minWords) && minWords > 0 ? Math.floor(minWords) : 3000;
+  const safeContent = typeof draftContent === "string" ? draftContent : "";
+  const wordsWritten = countEffectiveWords(safeContent);
+  const wordsRemaining = Math.max(0, safeMin - wordsWritten);
+  return {
+    chapterWordsWritten: wordsWritten,
+    chapterWordsRemaining: wordsRemaining
+  };
 }
