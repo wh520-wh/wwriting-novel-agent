@@ -61,6 +61,15 @@ class MockElement {
     if (!this._listeners.has(type)) this._listeners.set(type, []);
     this._listeners.get(type).push(handler);
   }
+
+  setAttribute(name, value) {
+    if (!this._attrs) this._attrs = {};
+    this._attrs[name] = value;
+  }
+
+  getAttribute(name) {
+    return this._attrs?.[name] ?? null;
+  }
 }
 
 const _realDoc = globalThis.document;
@@ -305,6 +314,9 @@ describe('renderCostPanel — 3-section layout', () => {
     });
     const sparks = findByClass(root, 'cost-spark');
     assert.equal(sparks.length, 20, `expected 20 spark blocks, got ${sparks.length}`);
+    const sparklineEl = findByClass(root, 'cost-sparkline')[0];
+    assert.equal(sparklineEl.getAttribute("role"), "img");
+    assert.ok(sparklineEl.getAttribute("aria-label").includes("命中率"));
   });
 
   it('11. fills missing sparkline slots with zero height', () => {
@@ -382,6 +394,8 @@ describe('renderCostPanel — warning badge', () => {
     });
     const text = flat(root);
     assert.match(text, /cost-warning|cost-warn|⚠|预警/);
+    const bannerEl = findByClass(root, 'cost-warning-banner')[0];
+    assert.equal(bannerEl.getAttribute("role"), "status");
   });
 
   it('16. no warning badge when no chapter_cost_warning event', () => {

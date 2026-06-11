@@ -28,6 +28,11 @@ function el(tag, props = {}, ...children) {
   if (props.style) {
     for (const [k, v] of Object.entries(props.style)) node.style[k] = v;
   }
+  if (props.attrs) {
+    for (const [k, v] of Object.entries(props.attrs)) {
+      if (v != null) node.setAttribute(k, String(v));
+    }
+  }
   for (const c of children.flat()) {
     if (c == null || c === false) continue;
     node.appendChild(typeof c === "object" ? c : document.createTextNode(String(c)));
@@ -72,7 +77,14 @@ function meanHitRate(recentHitRates) {
 }
 
 function buildSparkline(recentHitRates) {
-  const wrap = el("div", { className: "cost-sparkline", role: "img", dataset: { costSpark: "1" }, "aria-label": `最近 20 次缓存命中率，平均 ${(meanHitRate(recentHitRates) * 100).toFixed(1)}%` });
+  const wrap = el("div", {
+    className: "cost-sparkline",
+    dataset: { costSpark: "1" },
+    attrs: {
+      role: "img",
+      "aria-label": `最近 20 次缓存命中率，平均 ${(meanHitRate(recentHitRates) * 100).toFixed(1)}%`
+    }
+  });
   // Left-align: most recent values occupy the right-most slots; missing slots
   // (older history) are zero-height on the right. This is the natural reading
   // order for a "rolling window" indicator.
@@ -178,7 +190,7 @@ function buildWarningBanner(warning) {
   const chapterText = chapterNo != null ? `第 ${chapterNo} 章` : "未知章节";
   return el("div", {
     className: "cost-warning-banner",
-    role: "status",
+    attrs: { role: "status" },
     dataset: { costWarningBanner: "1", chapterNo: String(chapterNo ?? "") }
   },
     el("span", { className: "cost-warning-icon", text: "⚠" }),
