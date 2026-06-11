@@ -1,17 +1,21 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { readEvents } from "./event-log.mjs";
 import { readFailures } from "./failures-store.mjs";
 import { loadState } from "./project-store.mjs";
 import { TaskQueue } from "./task-queue.mjs";
 
 export async function loadProjectDiagnostics(projectRoot) {
-  const [state, events, failures, queueState] = await Promise.all([
+  const [state, events, failures, queueState, costSummary, cacheReport] = await Promise.all([
     loadState(projectRoot).catch((error) => ({ project_status: "unknown", load_error: error.message })),
     readEvents(projectRoot, { limit: 20 }),
     Promise.resolve()
       .then(() => readFailures(projectRoot))
       .then((items) => items.slice(-10).reverse())
       .catch(() => []),
-    loadQueueState(projectRoot)
+    loadQueueState(projectRoot),
+    readJsonOrNull(path.join(projectRoot, "cost.json")),
+    readJsonOrNull(path.join(projectRoot, "cache_report.json"))
   ]);
 
   return {
@@ -26,6 +30,16 @@ export async function loadProjectDiagnostics(projectRoot) {
     recentEvents: events.slice(-20).reverse(),
     modelErrors: events.filter((event) => isModelError(event)).slice(-5).reverse(),
     failures,
+    costHealth: {
+      calls: costSummary?.calls ?? 0,
+      retries: costSummary?.retries ?? 0,
+      unpricedCalls: costSummary?.unpricedCalls ?? 0,
+      costAvailable: costSummary?.costAvailable ?? false,
+      estimatedCost: costSummary?.estimatedCost ?? 0,
+      maxCacheVersion: maxCacheVersion(cacheReport),
+      lastCacheHitRate: cacheReport?.last_call?.cacheHitRate ?? null,
+      lastStableChanged: cacheReport?.last_call?.stableChanged ?? null
+    },
     recoveryHint: buildRecoveryHint(state, queueState)
   };
 }
@@ -72,4 +86,19 @@ function buildRecoveryHint(state, queueState) {
     return { action: "wait-or-stop", message: "项目正在运行。等待完成，或先停止当前任务。" };
   }
   return { action: "none", message: "当前没有需要处理的恢复动作。" };
+}
+
+function maxCacheVersion(cacheReport) {
+  const versions = Object.values(cacheReport?.entries ?? {})
+    .map((entry) => entry?.cacheVersion)
+    .filter((v) => Number.isFinite(v));
+  return versions.length ? Math.max(...versions) : null;
+}
+
+async function readJsonOrNull(file) {
+  try {
+    return JSON.parse(await readFile(file, "utf8"));
+  } catch {
+    return null;
+  }
 }
