@@ -220,6 +220,50 @@ async function main() {
     expect: () => read(win, "document.querySelector('.spd-affix-eye')?.getAttribute('aria-pressed') === 'true'")
   }));
   clicks.push(await clickAndRead(win, ".spd-affix-copy", { label: "settings-api-key-copy-empty" }));
+
+  // --- 价格与预算上限输入框探针 ---
+  const priceInputState = await read(win, `
+    (() => {
+      const control = document.querySelector('[aria-label="输入价（元/百万 token）"]');
+      if (!control) return { tagName: null };
+      control.value = "2";
+      control.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "2" }));
+      return { tagName: control.tagName, value: control.value };
+    })()
+  `);
+  assert.equal(priceInputState.tagName, "INPUT", "price input must be editable");
+  assert.equal(priceInputState.value, "2", "price input must accept numeric value");
+
+  const priceOutputState = await read(win, `
+    (() => {
+      const control = document.querySelector('[aria-label="输出价（元/百万 token）"]');
+      if (!control) return { tagName: null };
+      control.value = "8";
+      control.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "8" }));
+      return { tagName: control.tagName, value: control.value };
+    })()
+  `);
+  assert.equal(priceOutputState.tagName, "INPUT", "price output must be editable");
+  assert.equal(priceOutputState.value, "8", "price output must accept numeric value");
+
+  const maxCostState = await read(win, `
+    (() => {
+      const control = document.querySelector('[aria-label="成本上限（元，需先配置价格）"]');
+      if (!control) return { tagName: null };
+      return { tagName: control.tagName };
+    })()
+  `);
+  assert.equal(maxCostState.tagName, "INPUT", "max cost input must exist");
+
+  const maxTokensState = await read(win, `
+    (() => {
+      const control = document.querySelector('[aria-label="token 总量上限"]');
+      if (!control) return { tagName: null };
+      return { tagName: control.tagName };
+    })()
+  `);
+  assert.equal(maxTokensState.tagName, "INPUT", "max tokens input must exist");
+
   clicks.push(await clickAndRead(win, ".sw", {
     label: "settings-network-toggle",
     expect: () => read(win, "document.querySelector('.sw')?.getAttribute('aria-pressed') === 'true'")
@@ -282,7 +326,11 @@ async function main() {
   await clearStaleClosingStates(win);
   clicks.push(await clickAndReadStable(win, ".drawer-tabs [data-dtab=\"cost\"]", {
     label: "drawer-cost-tab",
-    expect: () => read(win, "document.querySelector('[data-dtab=\"cost\"]').getAttribute('aria-selected') === 'true' && document.querySelector('.cost-panel-root') !== null"),
+    expect: () => read(win, `
+      document.querySelector('[data-dtab="cost"]').getAttribute('aria-selected') === 'true'
+      && document.querySelector('.cost-panel-root') !== null
+      && document.querySelectorAll('[data-cost-section]').length >= 2
+    `),
     settleMs: 250
   }));
   clicks.push(await clickAndReadStable(win, ".drawer-tabs [data-dtab=\"run\"]", {
