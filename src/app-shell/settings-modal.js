@@ -1,6 +1,6 @@
 import { icon } from "./icons.js";
 import { compactObject, isEnvironmentVariableName, resolveModelEndpoint } from "./utils.js";
-import { getJson, postJson } from "./api-client.js";
+import { getJson, postJson, sendChatMessage } from "./api-client.js";
 import { motion } from "./motion-runtime.js";
 
 const PROVIDER_PRESETS = {
@@ -17,11 +17,11 @@ const SETTINGS_PROVIDERS = [
 
 const SETTINGS_SECTIONS = [
   { id: "model", label: "模型与密钥", icon: "settings", ready: true },
-  { id: "writing", label: "写作参数", icon: "compose", ready: false, milestone: "Task 7" },
-  { id: "gates", label: "质量门禁", icon: "check", ready: false, milestone: "Task 7" },
+  { id: "writing", label: "写作参数", icon: "compose", ready: true },
+  { id: "gates", label: "质量门禁", icon: "check", ready: true },
   { id: "permissions", label: "权限与确认", icon: "help", ready: false, milestone: "Task 8" },
-  { id: "research", label: "联网搜索", icon: "search", ready: false, milestone: "Task 7" },
-  { id: "danger", label: "危险区", icon: "bolt", ready: false, milestone: "Task 7" }
+  { id: "research", label: "联网搜索", icon: "search", ready: true },
+  { id: "danger", label: "危险区", icon: "bolt", ready: true }
 ];
 
 export function createSettingsModal(ctx) {
@@ -116,6 +116,30 @@ export function createSettingsModal(ctx) {
       ctx.refs.settingsSave.textContent = "保存设置";
       return;
     }
+    if (settingsSection === "writing") {
+      renderWritingSection();
+      ctx.refs.settingsSave.disabled = false;
+      ctx.refs.settingsSave.textContent = "保存设置";
+      return;
+    }
+    if (settingsSection === "gates") {
+      renderGatesSection();
+      ctx.refs.settingsSave.disabled = false;
+      ctx.refs.settingsSave.textContent = "保存设置";
+      return;
+    }
+    if (settingsSection === "research") {
+      renderResearchSection();
+      ctx.refs.settingsSave.disabled = false;
+      ctx.refs.settingsSave.textContent = "保存设置";
+      return;
+    }
+    if (settingsSection === "danger") {
+      renderDangerSection();
+      ctx.refs.settingsSave.disabled = false;
+      ctx.refs.settingsSave.textContent = "保存设置";
+      return;
+    }
     renderStubSection(settingsSection);
     ctx.refs.settingsSave.disabled = true;
     ctx.refs.settingsSave.textContent = "保存设置";
@@ -124,6 +148,253 @@ export function createSettingsModal(ctx) {
   function renderModelSection() {
     renderSettingsProviders();
     renderSettingsDetail();
+  }
+
+  async function renderWritingSection() {
+    const dashboard = ctx.getDashboard();
+    const project = dashboard?.project ?? {};
+    ctx.refs.settingsDetail.replaceChildren();
+
+    const head = document.createElement("header");
+    head.className = "spd-head";
+    const ic = document.createElement("span");
+    ic.className = "spd-av lg";
+    ic.append(icon("compose", 16));
+    const h3 = document.createElement("h3");
+    h3.textContent = "写作参数";
+    head.append(ic, h3);
+    ctx.refs.settingsDetail.append(head);
+
+    const intro = document.createElement("p");
+    intro.className = "spd-hint";
+    intro.textContent = "控制每章的篇幅、目标章节数和输出风格。这些字段会直接进入 prompt 上下文。";
+    ctx.refs.settingsDetail.append(intro);
+
+    settingsFields.targetChapters = settingField("目标章节数（提高它可以继续已完成的小说）", "number", {
+      value: project.target_chapters ?? ""
+    });
+    settingsFields.minWords = settingField("每章最低字数", "number", { value: project.min_words_per_chapter ?? "" });
+    settingsFields.targetWords = settingField("每章目标字数", "number", { value: project.target_words_per_chapter ?? "" });
+    settingsFields.maxWords = settingField("每章字数上限（留空 = 不限，按 target × 1.5 估算）", "number", {
+      value: project.max_words_per_chapter ?? ""
+    });
+
+    // 输出风格下拉（从模型区平移）
+    const currentOutputStyle = project.output_style ?? "creative";
+    const outputStyles = await fetchOutputStyles();
+    const outputStyleField = document.createElement("div");
+    outputStyleField.className = "spd-field";
+    const outputStyleLabel = document.createElement("div");
+    outputStyleLabel.className = "spd-label";
+    const outputStyleSpan = document.createElement("span");
+    outputStyleSpan.textContent = "输出风格";
+    outputStyleLabel.append(outputStyleSpan);
+    const outputStyleSelect = document.createElement("select");
+    outputStyleSelect.className = "spd-input";
+    outputStyleSelect.id = "settings-output-style";
+    outputStyleSelect.setAttribute("aria-label", "输出风格");
+    for (const style of outputStyles) {
+      const opt = document.createElement("option");
+      opt.value = style.name;
+      opt.textContent = `${style.name} — ${style.description}`;
+      outputStyleSelect.append(opt);
+    }
+    outputStyleSelect.value = currentOutputStyle;
+    outputStyleField.append(outputStyleLabel, outputStyleSelect);
+    settingsFields.outputStyle = { field: outputStyleField, input: outputStyleSelect };
+
+    ctx.refs.settingsDetail.append(
+      settingsFields.targetChapters.field,
+      settingsFields.minWords.field,
+      settingsFields.targetWords.field,
+      settingsFields.maxWords.field,
+      settingsFields.outputStyle.field
+    );
+  }
+
+  function renderGatesSection() {
+    const dashboard = ctx.getDashboard();
+    const project = dashboard?.project ?? {};
+    const memoryExtraction = project.memory_extraction ?? {};
+    const factCheck = project.fact_check ?? {};
+    ctx.refs.settingsDetail.replaceChildren();
+
+    const head = document.createElement("header");
+    head.className = "spd-head";
+    const ic = document.createElement("span");
+    ic.className = "spd-av lg";
+    ic.append(icon("check", 16));
+    const h3 = document.createElement("h3");
+    h3.textContent = "质量门禁";
+    head.append(ic, h3);
+    ctx.refs.settingsDetail.append(head);
+
+    const intro = document.createElement("p");
+    intro.className = "spd-hint";
+    intro.textContent = "本地门禁默认全开；这里可以关掉 memory extraction / fact-check，或让 fact-check 变成硬门禁。";
+    ctx.refs.settingsDetail.append(intro);
+
+    settingsFields.memoryExtractionEnabled = settingToggle("启用章节记忆抽取（每章自动落 facts / timeline）", memoryExtraction.enabled !== false);
+
+    settingsFields.factCheckEnabled = settingToggle("启用 fact-check（基于既有 facts 比对新章节）", factCheck.enabled !== false);
+    settingsFields.factCheckHard = settingToggle("fact-check 硬模式：发现设定矛盾直接打回修订", factCheck.hard === true);
+    const factCheckHint = document.createElement("div");
+    factCheckHint.className = "spd-hint";
+    factCheckHint.textContent = "硬模式：发现设定矛盾直接打回修订。";
+    factCheckHint.id = "settings-fact-check-hard-hint";
+
+    // 内建只读门禁占位
+    const titleGateRow = document.createElement("div");
+    titleGateRow.className = "spd-field spd-toggle";
+    const titleGateLabel = document.createElement("div");
+    titleGateLabel.className = "spd-label";
+    const titleGateSpan = document.createElement("span");
+    titleGateSpan.textContent = "章节标题校验 · 内建始终开启";
+    titleGateLabel.append(titleGateSpan);
+    const titleGatePill = document.createElement("span");
+    titleGatePill.className = "spd-hint mono";
+    titleGatePill.textContent = "always-on";
+    titleGateLabel.append(titleGatePill);
+    titleGateRow.append(titleGateLabel);
+
+    ctx.refs.settingsDetail.append(
+      settingsFields.memoryExtractionEnabled.field,
+      settingsFields.factCheckEnabled.field,
+      settingsFields.factCheckHard.field,
+      factCheckHint,
+      titleGateRow
+    );
+  }
+
+  function renderResearchSection() {
+    const dashboard = ctx.getDashboard();
+    const research = dashboard?.config?.effective?.research_config ?? dashboard?.project?.research_config ?? {};
+    ctx.refs.settingsDetail.replaceChildren();
+
+    const head = document.createElement("header");
+    head.className = "spd-head";
+    const ic = document.createElement("span");
+    ic.className = "spd-av lg";
+    ic.append(icon("search", 16));
+    const h3 = document.createElement("h3");
+    h3.textContent = "联网搜索";
+    head.append(ic, h3);
+    ctx.refs.settingsDetail.append(head);
+
+    const intro = document.createElement("p");
+    intro.className = "spd-hint";
+    intro.textContent = "联网搜索走环境变量；只在这里登记 endpoint 和 key 变量名。";
+    ctx.refs.settingsDetail.append(intro);
+
+    settingsFields.searchEndpoint = settingField("联网搜索接口地址", "text", {
+      value: research.search_endpoint ?? "",
+      placeholder: "https://api.example.com/search"
+    });
+    settingsFields.searchKeyEnv = settingField("搜索密钥环境变量名", "text", {
+      value: research.search_api_key_env ?? "",
+      placeholder: "SEARCH_API_KEY"
+    });
+
+    ctx.refs.settingsDetail.append(
+      settingsFields.searchEndpoint.field,
+      settingsFields.searchKeyEnv.field
+    );
+  }
+
+  function renderDangerSection() {
+    const dashboard = ctx.getDashboard();
+    const project = dashboard?.project ?? {};
+    const projectRoot = ctx.getCurrentProjectRoot();
+    const isArchived = Boolean(project.archived_at);
+    ctx.refs.settingsDetail.replaceChildren();
+
+    const head = document.createElement("header");
+    head.className = "spd-head";
+    const ic = document.createElement("span");
+    ic.className = "spd-av lg";
+    ic.append(icon("bolt", 16));
+    const h3 = document.createElement("h3");
+    h3.textContent = "危险区";
+    head.append(ic, h3);
+    ctx.refs.settingsDetail.append(head);
+
+    const intro = document.createElement("p");
+    intro.className = "spd-hint";
+    intro.textContent = "高风险操作都在这里：归档/解除归档会进入对话确认链；打开项目文件夹走桌面桥。";
+    ctx.refs.settingsDetail.append(intro);
+
+    // 归档/解除归档
+    const archiveHeading = document.createElement("h4");
+    archiveHeading.className = "spd-section";
+    archiveHeading.textContent = "项目归档";
+    ctx.refs.settingsDetail.append(archiveHeading);
+
+    const archiveField = document.createElement("div");
+    archiveField.className = "spd-field spd-toggle";
+    const archiveLabel = document.createElement("div");
+    archiveLabel.className = "spd-label";
+    const archiveSpan = document.createElement("span");
+    archiveSpan.textContent = isArchived ? "项目已归档" : "项目状态：活跃";
+    archiveLabel.append(archiveSpan);
+    const archiveBtn = document.createElement("button");
+    archiveBtn.type = "button";
+    archiveBtn.className = "sp-btn";
+    archiveBtn.id = isArchived ? "settings-unarchive-trigger" : "settings-archive-trigger";
+    archiveBtn.textContent = isArchived ? "解除归档" : "归档此项目";
+    archiveBtn.addEventListener("click", () => {
+      closeSettingsModal();
+      const message = isArchived ? "解除归档" : "归档这个项目";
+      void sendChatMessage(message).catch((error) => ctx.showToast(error.message, "error"));
+    });
+    archiveField.append(archiveLabel, archiveBtn);
+    settingsFields.archiveButton = { field: archiveField, input: archiveBtn };
+    ctx.refs.settingsDetail.append(archiveField);
+
+    const archiveHint = document.createElement("div");
+    archiveHint.className = "spd-hint";
+    archiveHint.textContent = isArchived
+      ? "归档后只读；解除归档会走对话确认链，恢复 active 状态。"
+      : "归档后项目进入只读态；通过对话链确认后写入 archived_at。";
+    ctx.refs.settingsDetail.append(archiveHint);
+
+    // 打开项目文件夹
+    const folderHeading = document.createElement("h4");
+    folderHeading.className = "spd-section";
+    folderHeading.textContent = "项目文件夹";
+    ctx.refs.settingsDetail.append(folderHeading);
+
+    const folderField = document.createElement("div");
+    folderField.className = "spd-field spd-toggle";
+    const folderLabel = document.createElement("div");
+    folderLabel.className = "spd-label";
+    const folderSpan = document.createElement("span");
+    folderSpan.textContent = projectRoot ?? "未选择项目";
+    folderLabel.append(folderSpan);
+    const folderBtn = document.createElement("button");
+    folderBtn.type = "button";
+    folderBtn.className = "sp-btn";
+    folderBtn.id = "settings-open-folder";
+    folderBtn.textContent = "打开项目文件夹";
+    folderBtn.addEventListener("click", () => {
+      if (!projectRoot) {
+        ctx.showToast("请先新建或打开一部小说。", "info");
+        return;
+      }
+      const reveal = window.wwritingDesktop?.revealPath;
+      if (typeof reveal === "function") {
+        void reveal(projectRoot).catch(() => ctx.showToast("打开项目文件夹失败。", "error"));
+        return;
+      }
+      ctx.showToast("当前环境不支持打开文件夹（需要 Electron 桥）。", "info");
+    });
+    folderField.append(folderLabel, folderBtn);
+    settingsFields.folderButton = { field: folderField, input: folderBtn };
+    ctx.refs.settingsDetail.append(folderField);
+
+    const folderHint = document.createElement("div");
+    folderHint.className = "spd-hint";
+    folderHint.textContent = "桌面端会调用 shell.openPath；预览环境会提示「需要 Electron 桥」。";
+    ctx.refs.settingsDetail.append(folderHint);
   }
 
   function renderStubSection(sectionId) {
@@ -452,6 +723,27 @@ export function createSettingsModal(ctx) {
   }
 
   async function saveSettings() {
+    if (settingsSection === "writing") {
+      await saveWritingSection();
+      return;
+    }
+    if (settingsSection === "gates") {
+      await saveGatesSection();
+      return;
+    }
+    if (settingsSection === "research") {
+      await saveResearchSection();
+      return;
+    }
+    if (settingsSection === "danger") {
+      // 危险区不通过 settings/update 写：归档按钮已自行 close+sendChatMessage；此处兜底 toast 提示。
+      ctx.showToast("危险区操作直接走对话链，请用上面的按钮。", "info");
+      return;
+    }
+    await saveModelSection();
+  }
+
+  async function saveModelSection() {
     const provider = SETTINGS_PROVIDERS.find((p) => p.id === settingsProviderId) ?? SETTINGS_PROVIDERS[0];
     const apiKeyEnv = settingsFields.apiKeyEnv.input.value.trim();
     if (apiKeyEnv && !isEnvironmentVariableName(apiKeyEnv)) {
@@ -463,10 +755,7 @@ export function createSettingsModal(ctx) {
       ctx.showToast("请先新建或打开一部小说，再保存模型设置。", "info");
       return;
     }
-    ctx.refs.settingsSave.disabled = true;
-    const originalText = ctx.refs.settingsSave.textContent;
-    ctx.refs.settingsSave.textContent = "保存中...";
-    try {
+    await runSave(async () => {
       const result = await postJson("/api/settings/update", {
         active_model: compactObject({
           provider: PROVIDER_PRESETS[provider.preset].provider,
@@ -503,6 +792,76 @@ export function createSettingsModal(ctx) {
       ctx.showToast(`模型设置已保存：${profile.display ?? provider.name}`, "success");
       closeSettingsModal();
       await ctx.loadDashboard();
+    });
+  }
+
+  async function saveWritingSection() {
+    const currentProjectRoot = ctx.getCurrentProjectRoot();
+    if (!currentProjectRoot) {
+      ctx.showToast("请先新建或打开一部小说，再保存写作参数。", "info");
+      return;
+    }
+    await runSave(async () => {
+      await postJson("/api/settings/update", {
+        project_profile: compactObject({
+          target_chapters: settingsFields.targetChapters.input.value,
+          min_words_per_chapter: settingsFields.minWords.input.value,
+          target_words_per_chapter: settingsFields.targetWords.input.value,
+          max_words_per_chapter: settingsFields.maxWords.input.value
+        }),
+        output_style: settingsFields.outputStyle?.input?.value ?? "creative"
+      });
+      ctx.showToast("写作参数已保存。", "success");
+      closeSettingsModal();
+      await ctx.loadDashboard();
+    });
+  }
+
+  async function saveGatesSection() {
+    const currentProjectRoot = ctx.getCurrentProjectRoot();
+    if (!currentProjectRoot) {
+      ctx.showToast("请先新建或打开一部小说，再保存质量门禁。", "info");
+      return;
+    }
+    await runSave(async () => {
+      await postJson("/api/settings/update", {
+        memory_extraction: { enabled: settingsFields.memoryExtractionEnabled.checked },
+        fact_check: {
+          enabled: settingsFields.factCheckEnabled.checked,
+          hard: settingsFields.factCheckHard.checked
+        }
+      });
+      ctx.showToast("质量门禁已保存。", "success");
+      closeSettingsModal();
+      await ctx.loadDashboard();
+    });
+  }
+
+  async function saveResearchSection() {
+    const currentProjectRoot = ctx.getCurrentProjectRoot();
+    if (!currentProjectRoot) {
+      ctx.showToast("请先新建或打开一部小说，再保存联网搜索配置。", "info");
+      return;
+    }
+    await runSave(async () => {
+      await postJson("/api/settings/update", {
+        research_config: compactObject({
+          search_endpoint: settingsFields.searchEndpoint.input.value.trim(),
+          search_api_key_env: settingsFields.searchKeyEnv.input.value.trim()
+        })
+      });
+      ctx.showToast("联网搜索配置已保存。", "success");
+      closeSettingsModal();
+      await ctx.loadDashboard();
+    });
+  }
+
+  async function runSave(fn) {
+    ctx.refs.settingsSave.disabled = true;
+    const originalText = ctx.refs.settingsSave.textContent;
+    ctx.refs.settingsSave.textContent = "保存中...";
+    try {
+      await fn();
     } catch (error) {
       ctx.showToast(error.message, "error");
     } finally {

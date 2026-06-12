@@ -133,6 +133,12 @@ export function normalizeSettingsPatch(patch = {}) {
   if (patch.project_profile !== undefined) {
     normalized.project_profile = normalizeProjectProfile(patch.project_profile);
   }
+  if (patch.memory_extraction !== undefined) {
+    normalized.memory_extraction = normalizeMemoryExtraction(patch.memory_extraction);
+  }
+  if (patch.fact_check !== undefined) {
+    normalized.fact_check = normalizeFactCheck(patch.fact_check);
+  }
   return normalized;
 }
 
@@ -173,6 +179,12 @@ function mergeProjectSettings(project, patch) {
     ) {
       next.target_words_per_chapter = next.min_words_per_chapter;
     }
+  }
+  if (patch.memory_extraction !== undefined) {
+    next.memory_extraction = mergeNullableSection(project.memory_extraction, patch.memory_extraction);
+  }
+  if (patch.fact_check !== undefined) {
+    next.fact_check = mergeNullableSection(project.fact_check, patch.fact_check);
   }
   return next;
 }
@@ -322,6 +334,31 @@ function normalizeResearchConfig(config) {
     }
   }
   copyOptionalPositiveInteger(normalized, config, "max_fetch_chars");
+  return normalized;
+}
+
+function normalizeMemoryExtraction(config) {
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw new SettingsValidationError("invalid_memory_extraction", "memory_extraction must be an object.");
+  }
+  const normalized = {};
+  if (config.enabled !== undefined) {
+    normalized.enabled = config.enabled === true;
+  }
+  return normalized;
+}
+
+function normalizeFactCheck(config) {
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw new SettingsValidationError("invalid_fact_check", "fact_check must be an object.");
+  }
+  const normalized = {};
+  if (config.enabled !== undefined) {
+    normalized.enabled = config.enabled === true;
+  }
+  if (config.hard !== undefined) {
+    normalized.hard = config.hard === true;
+  }
   return normalized;
 }
 
