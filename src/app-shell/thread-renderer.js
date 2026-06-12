@@ -881,7 +881,6 @@ export function createThreadRenderer(ctx) {
     if (message.role === "user") return renderUserBubble(message);
     if (message.role === "assistant") return renderAssistantBubble(message);
     if (message.role === "tool") return renderToolCard(message);
-    if (message.role === "confirm") return renderConfirmCard(message);
     return null;
   }
 
@@ -908,7 +907,7 @@ export function createThreadRenderer(ctx) {
       return;
     }
     for (const message of messages) {
-      const key = `chat:${message.role}:${message.ts}:${message.tool ?? ""}`;
+      const key = message.id ? `chat:${message.id}` : `chat:${message.role}:${message.ts}:${message.tool ?? ""}`;
       if (ctx.renderedKeys.has(key)) continue;
       const node = renderChatMessage(message);
       if (!node) continue;

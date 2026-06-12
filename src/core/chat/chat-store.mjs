@@ -7,9 +7,9 @@ const PENDING_FILE = "chat_pending_action.json";
 
 export async function appendChatMessage(projectRoot, message) {
   const entry = {
+    ...message,
     id: message.id ?? crypto.randomUUID(),
-    ts: message.ts ?? new Date().toISOString(),
-    ...message
+    ts: message.ts ?? new Date().toISOString()
   };
   await fs.appendFile(safeJoin(projectRoot, HISTORY_FILE), `${JSON.stringify(entry)}\n`, "utf8");
   return entry;
