@@ -213,7 +213,7 @@ npm run verify:desktop-shell
 
 交付桌面前：`npm run verify:local`。
 
-**真实 API 短跑**：`verify:chat-online` 增加场景 F（发送期间轮询 history 断言 `busy: true` 且 tool 消息增量出现；停止后断言「已停止」消息）。无 key 时如实标注待跑（沿 S4 惯例）。
+**真实 API 短跑**：`verify:chat-online` 增加场景 F，拆两段——F1）回合进行中轮询 `chat_history.jsonl`，在"已见 tool 消息且未见本轮 assistant 消息"的窗口内断言增量落盘（过程流的数据基础）；F2）中途 abort 断言返回 `cancelled: true` 且「（已停止。）」落盘。HTTP 层 `busy` 字段不在此验（脚本直连 `runChatTurn`，busy 由 `chat-busy-stop` HTTP 单测用假模型覆盖）。无 key 时如实标注待跑（沿 S4 惯例）。
 
 ## 7. 明确不做
 
@@ -254,7 +254,8 @@ npm run verify:desktop-shell
 - **I6** assistant 气泡可读性：13.5px/1.55 提到 14px/1.7、max-width 86%。
 - **I7** 全部新增按钮带 `aria-label`/可见文本 + `data-testid`。
 - **I8** composer 提示文案追加 `? 快捷键` 入口提示。
-- **I9** 空态建议卡与问候 chips 在 chat busy 时点击直接忽略，避免 409 噪音。
+- **I9** 空态建议卡与问候 chips 在 chat busy 时点击直接忽略，避免 409 噪音（前端 `sendChatMessageWithUX` 入口另设忙态守卫兜底）。
+- **I10** `docs/USER_GUIDE.zh-CN.md` 追加 §15「S4.5 对话体验速览」，文档与新交互同步。
 
 ## 10. 风险与对策
 
