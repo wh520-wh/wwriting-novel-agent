@@ -85,3 +85,29 @@ test("buildFactCheckMessages 不截断正文（冲突可能在章节尾部）", 
   });
   assert.match(messages[1].content, /十二楼/u, "章节尾部内容必须进入核查输入");
 });
+
+test("parseFactCheck 解析 replace_with 字段，缺省为空串", () => {
+  const raw = JSON.stringify({ conflicts: [{
+    draft_quote: "从十二楼坠落",
+    conflicts_with: "坠楼楼层: 六楼",
+    prior_chapter: 1,
+    severity: "high",
+    suggestion: "建议把十二楼改成六楼以保持一致",
+    replace_with: "从六楼坠落"
+  }, {
+    draft_quote: "时间线混乱",
+    conflicts_with: "ch1 午间",
+    prior_chapter: 1,
+    severity: "low",
+    suggestion: "复杂改动，无法机械替换"
+  }] });
+  const parsed = parseFactCheck(raw);
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.conflicts[0].replace_with, "从六楼坠落");
+  assert.equal(parsed.conflicts[1].replace_with, "");
+});
+
+test("buildFactCheckMessages 系统提示要求 replace_with 为可直接替换文字", () => {
+  const messages = buildFactCheckMessages({ chapterNo: 2, draft: "x", facts: [], timeline: [] });
+  assert.match(messages[0].content, /replace_with/u);
+});
