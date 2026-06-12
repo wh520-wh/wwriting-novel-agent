@@ -2,7 +2,7 @@
 // 续轮由 resumeChatTurn 接管；maxToolRounds 防止失控空转。
 import { buildChatContext } from "./chat-context.mjs";
 import { parseAgentReply } from "./agent-protocol.mjs";
-import { executeTool, checkToolPermission } from "./tool-registry.mjs";
+import { executeTool, checkToolPermission, summarizeArgs } from "./tool-registry.mjs";
 import { previewEditChapter } from "./tools-write.mjs";
 import { appendChatMessage, loadPendingAction, savePendingAction, clearPendingAction } from "./chat-store.mjs";
 
@@ -38,6 +38,7 @@ export async function resumeChatTurn(options) {
   const toolEvent = { tool: pending.tool, ok: outcome.ok, error: outcome.ok ? null : outcome.error };
   await appendChatMessage(projectRoot, {
     role: "tool", tool: pending.tool, ok: outcome.ok,
+    args: summarizeArgs(pending.args),
     result_summary: summarize(outcome.ok ? outcome.result : { error: outcome.error, message: outcome.message })
   });
   options.onEvent?.({ type: "tool_result", ...toolEvent });
@@ -69,7 +70,7 @@ async function agentLoop(options, toolEvents) {
       if (!permission.allowed) {
         const outcome = { ok: false, error: "permission_denied", message: permission.message };
         toolEvents.push({ tool: parsed.call.tool, ok: false, error: outcome.error });
-        await appendChatMessage(projectRoot, { role: "tool", tool: parsed.call.tool, ok: false, result_summary: outcome.message });
+        await appendChatMessage(projectRoot, { role: "tool", tool: parsed.call.tool, ok: false, args: summarizeArgs(parsed.call.args), result_summary: outcome.message });
         onEvent?.({ type: "tool_result", tool: parsed.call.tool, ok: false });
         continue;
       }
@@ -82,6 +83,7 @@ async function agentLoop(options, toolEvents) {
         toolEvents.push(event);
         await appendChatMessage(projectRoot, {
           role: "tool", tool: parsed.call.tool, ok: outcome.ok, auto_approved: true,
+          args: summarizeArgs(parsed.call.args),
           result_summary: summarize(outcome.ok ? outcome.result : { error: outcome.error, message: outcome.message })
         });
         onEvent?.({ type: "tool_result", ...event });
@@ -93,7 +95,7 @@ async function agentLoop(options, toolEvents) {
         catch (error) {
           const outcome = { ok: false, error: error.code ?? "preview_failed", message: error.message };
           toolEvents.push({ tool: parsed.call.tool, ok: false, error: outcome.error });
-          await appendChatMessage(projectRoot, { role: "tool", tool: parsed.call.tool, ok: false, result_summary: outcome.message });
+          await appendChatMessage(projectRoot, { role: "tool", tool: parsed.call.tool, ok: false, args: summarizeArgs(parsed.call.args), result_summary: outcome.message });
           onEvent?.({ type: "tool_result", tool: parsed.call.tool, ok: false });
           continue;
         }
@@ -111,6 +113,7 @@ async function agentLoop(options, toolEvents) {
     toolEvents.push(event);
     await appendChatMessage(projectRoot, {
       role: "tool", tool: parsed.call.tool, ok: outcome.ok,
+      args: summarizeArgs(parsed.call.args),
       result_summary: summarize(outcome.ok ? outcome.result : { error: outcome.error, message: outcome.message })
     });
     onEvent?.({ type: "tool_result", ...event });

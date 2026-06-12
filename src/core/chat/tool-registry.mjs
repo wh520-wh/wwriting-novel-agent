@@ -74,7 +74,7 @@ export function renderToolDocs(registry) {
   }).join("\n");
 }
 
-function summarizeArgs(args) {
+export function summarizeArgs(args) {
   const json = JSON.stringify(args ?? {});
   return json.length > 200 ? `${json.slice(0, 200)}…` : json;
 }
