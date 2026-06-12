@@ -106,6 +106,7 @@ const threadRenderer = createThreadRenderer({
   getLiveBlock: () => liveBlock,
   setLiveBlock: (block) => { liveBlock = block; },
   getCurrentProjectRoot: () => currentProjectRoot,
+  getDashboard: () => lastDashboard,
   loadDashboard,
   handleRetry,
   handleStop,
@@ -123,6 +124,7 @@ const threadRenderer = createThreadRenderer({
     composer.updateSubmitState();
   },
   promoteAskEntry: (entry) => composer.promoteAskEntry(entry),
+  sendChatMessageWithUX: (msg) => composer.sendChatMessageWithUX(msg),
 });
 
 const settingsModal = createSettingsModal({
@@ -417,6 +419,7 @@ function renderDashboard(data) {
     ensureRefreshLoop(false);
     threadRenderer.renderEmptyThread();
     composer.updateModePill();
+    composer.updateStatusPills(data);
     refreshDrawerIfOpen();
     return;
   }
@@ -450,6 +453,10 @@ function renderDashboard(data) {
   if (data.chatHistory && data.chatHistory.ok !== false) {
     threadRenderer.syncChatThread(data.chatHistory);
   }
+  // S4 Task 11: 空状态建议卡（有项目但无聊天消息时显示）
+  if (firstLoad && (data.chatHistory?.messages?.length ?? 0) === 0) {
+    threadRenderer.appendSuggestionCards(data);
+  }
 
   if (refs.activityStrip) {
     const activity = deriveActivity(data);
@@ -478,6 +485,7 @@ function renderDashboard(data) {
   }
 
   composer.updateModePill();
+  composer.updateStatusPills(data);
   refreshDrawerIfOpen();
 }
 

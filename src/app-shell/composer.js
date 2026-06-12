@@ -207,6 +207,75 @@ export function createComposer(ctx) {
     if (modePopoverOpen) syncModePopoverChecked();
   }
 
+  // --- S4 Task 11: status pills (model + session cost) ---
+
+  function updateStatusPills(data) {
+    updateModelPill(data);
+    updateCostPill(data);
+  }
+
+  function ensureStatusPillContainer() {
+    // 确保 status-pills 容器挂在 mode-pill 之后
+    let container = document.getElementById("status-pills");
+    if (container) return container;
+    const modePill = getModePill();
+    if (!modePill) return null;
+    container = document.createElement("span");
+    container.id = "status-pills";
+    container.className = "status-pills";
+    modePill.after(container);
+    return container;
+  }
+
+  function updateModelPill(data) {
+    const container = ensureStatusPillContainer();
+    if (!container) return;
+    let pill = document.getElementById("status-pill-model");
+    if (!pill) {
+      pill = document.createElement("button");
+      pill.type = "button";
+      pill.id = "status-pill-model";
+      pill.className = "cbar-pill cbar-pill--readonly";
+      pill.addEventListener("click", () => ctx.openSettingsModal());
+      container.append(pill);
+    }
+    const project = data?.project;
+    const isMock = data?.model_profile?.is_mock;
+    const name = project?.active_model?.model_name;
+    pill.textContent = isMock || !name ? "未配置模型" : name;
+    pill.title = isMock || !name ? "点击打开设置配置模型" : name;
+  }
+
+  function updateCostPill(data) {
+    const container = ensureStatusPillContainer();
+    if (!container) return;
+    let pill = document.getElementById("status-pill-cost");
+    if (!pill) {
+      pill = document.createElement("span");
+      pill.id = "status-pill-cost";
+      pill.className = "cbar-pill cbar-pill--readonly";
+      container.append(pill);
+    }
+    const costAvailable = data?.summary?.costAvailable !== false;
+    if (!costAvailable) {
+      pill.hidden = true;
+      return;
+    }
+    pill.hidden = false;
+    let totalCost = 0;
+    const messages = data?.chatHistory?.messages ?? [];
+    for (const msg of messages) {
+      if (msg.role === "assistant" && Number.isFinite(msg.cost) && msg.cost > 0) {
+        totalCost += msg.cost;
+      }
+    }
+    // 也计入 summary.estimatedCost（agent 运行成本）
+    const agentCost = Number(data?.summary?.estimatedCost) || 0;
+    totalCost += agentCost;
+    pill.textContent = totalCost > 0 ? `¥${totalCost.toFixed(2)}` : "¥0.00";
+    pill.title = "本会话累计成本";
+  }
+
   function parseUserCommand(input, mode) {
     const raw = String(input ?? "");
     const trimmed = raw.trim();
@@ -608,6 +677,7 @@ export function createComposer(ctx) {
     parseUserCommand, onComposerKeydown, autoGrowComposer, updateSubmitState,
     updateSlashMenu, hideSlashMenu, submitComposer, submitWritingCommand,
     submitSideQuestion, promoteAskEntry, resultMessageForCommand,
-    initModePill, updateModePill, openModePopover, closeModePopover
+    initModePill, updateModePill, openModePopover, closeModePopover,
+    updateStatusPills, sendChatMessageWithUX
   };
 }

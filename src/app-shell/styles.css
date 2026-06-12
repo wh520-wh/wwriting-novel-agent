@@ -751,6 +751,52 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   color: var(--muted);
 }
 
+/* S4 Task 11: status pills (model + cost) */
+.status-pills {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.cbar-pill--readonly {
+  cursor: default;
+  user-select: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  min-height: 26px;
+  padding: 0 9px;
+}
+button.cbar-pill--readonly {
+  cursor: pointer;
+}
+button.cbar-pill--readonly:hover {
+  background: var(--hover);
+  border-color: var(--line);
+}
+
+/* S4 Task 11: suggestion cards for empty chat state */
+.suggestion-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 4px 0 8px;
+}
+.suggestion-card {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: var(--r);
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--ink-2);
+  box-shadow: var(--shadow-xs);
+  transition: background .12s, border-color .12s, box-shadow .12s;
+}
+.suggestion-card:hover {
+  background: var(--hover);
+  border-color: #d8d3c9;
+  box-shadow: var(--shadow-sm);
+}
+
 /* mode popover (reuses .slash surface patterns) */
 .mode-popover {
   position: absolute; left: 12px; bottom: calc(100% + 8px);
@@ -1679,6 +1725,8 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .chat-bubble-wrap { display: flex; width: 100%; }
 .chat-bubble-wrap--user { justify-content: flex-end; }
 .chat-bubble-wrap--assistant, .chat-bubble-wrap--tool, .chat-bubble-wrap--confirm { justify-content: flex-start; }
+.chat-thinking .chat-bubble { opacity: 0.7; animation: thinkingPulse 1.4s ease-in-out infinite; }
+@keyframes thinkingPulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 0.85; } }
 .chat-bubble {
   max-width: 80%;
   padding: 9px 13px;
