@@ -14,6 +14,8 @@ import { runChatTurn, resumeChatTurn } from "../src/core/chat/chat-agent.mjs";
 import { createToolRegistry } from "../src/core/chat/tool-registry.mjs";
 import { registerReadTools } from "../src/core/chat/tools-read.mjs";
 import { registerWriteTools } from "../src/core/chat/tools-write.mjs";
+import { registerControlTools } from "../src/core/chat/tools-control.mjs";
+import { updateProjectSettings } from "../src/core/settings-runtime.mjs";
 import { buildFactCheckMessages, parseFactCheck } from "../src/core/quality-gates.mjs";
 import { ModelClient } from "../src/core/model-client.mjs";
 import { CostTracker } from "../src/core/cost-tracker.mjs";
@@ -228,6 +230,116 @@ async function main() {
       goodSamples: passCases.length,
       details: cResults
     });
+
+    // ========== 场景 D：指挥落地（outline + queue + start_run 闭环）==========
+    console.error("[D] command pipeline...");
+    try {
+      // 注册控制工具
+      const dRegistry = createToolRegistry();
+      registerReadTools(dRegistry);
+      registerWriteTools(dRegistry);
+      registerControlTools(dRegistry);
+
+      // 设置 YOLO 模式（免确认）
+      await updateProjectSettings(projectRoot, { tool_permissions: { yolo: true, auto_edit: true, safe_edit: true, read_only: false } });
+      const dProject = await loadProject(projectRoot);
+
+      // 构造 fake server（startProjectRun 记录调用不真跑）
+      let startRunCalled = false;
+      const fakeServer = {
+        runJobs: new Map(),
+        getTaskQueue: async () => ({
+          promoteNext: async () => null,
+          enqueue: async () => ({})
+        }),
+        startProjectRun: async () => { startRunCalled = true; return { started: true }; }
+      };
+
+      const d = await runChatTurn({
+        projectRoot,
+        project: dProject,
+        registry: dRegistry,
+        modelClient,
+        server: fakeServer,
+        userMessage: "把大纲改成「第 2 章沈泽去工地」，然后写到第 2 章"
+      });
+
+      const dToolNames = d.toolEvents.map((e) => e.tool);
+      const dOutlineOk = d.toolEvents.some((e) => e.tool === "update_outline" && e.ok);
+      const dQueueOk = d.toolEvents.some((e) => e.tool === "queue_chapters" && e.ok);
+      // start_run 调用与否记录入报告不计 fail（部分模型保守）
+      const dStartRun = d.toolEvents.some((e) => e.tool === "start_run");
+      const dPass = dOutlineOk && dQueueOk;
+
+      results.push({
+        scenario: "D_command_pipeline",
+        pass: dPass,
+        outlineOk: dOutlineOk,
+        queueOk: dQueueOk,
+        startRunCalled: dStartRun || startRunCalled,
+        toolEvents: d.toolEvents.map((e) => `${e.tool}:${e.ok ? "ok" : e.error}`),
+        reply: d.reply.slice(0, 200),
+        cost: d.usage.cost
+      });
+      console.error(`[D] pass=${dPass} outline=${dOutlineOk} queue=${dQueueOk} startRun=${dStartRun || startRunCalled}`);
+    } catch (error) {
+      results.push({ scenario: "D_command_pipeline", pass: false, error: error.message });
+      console.error(`[D] ERROR ${error.message}`);
+    }
+
+    // ========== 场景 E：归档语义 ==========
+    console.error("[E] archive semantics...");
+    try {
+      // 恢复正常权限
+      await updateProjectSettings(projectRoot, { tool_permissions: { yolo: false, auto_edit: false, safe_edit: true, read_only: false } });
+
+      // E1: 归档项目后尝试编辑 → 应被拒绝
+      await updateProjectSettings(projectRoot, { archived_at: new Date().toISOString() });
+      const eProjectArchived = await loadProject(projectRoot);
+
+      const eRegistry = createToolRegistry();
+      registerReadTools(eRegistry);
+      registerWriteTools(eRegistry);
+
+      const e1 = await runChatTurn({
+        projectRoot,
+        project: eProjectArchived,
+        registry: eRegistry,
+        modelClient,
+        userMessage: "把第1章六楼改成十二楼"
+      });
+      const e1Rejected = e1.toolEvents.some((e) => e.tool === "edit_chapter" && !e.ok)
+        || (e1.reply && e1.reply.includes("归档"));
+      results.push({
+        scenario: "E1_archive_reject_edit",
+        pass: e1Rejected,
+        toolEvents: e1.toolEvents.map((e) => `${e.tool}:${e.ok ? "ok" : e.error}`),
+        reply: e1.reply?.slice(0, 200) ?? "",
+        cost: e1.usage.cost
+      });
+      console.error(`[E1] pass=${e1Rejected} tools=${e1.toolEvents.map((e) => e.tool).join(",")}`);
+
+      // E2: 归档项目导出 → 豁免名单放行
+      const e2 = await runChatTurn({
+        projectRoot,
+        project: eProjectArchived,
+        registry: eRegistry,
+        modelClient,
+        userMessage: "导出全书"
+      });
+      const e2ExportOk = e2.toolEvents.some((e) => e.tool === "export_book" && e.ok);
+      results.push({
+        scenario: "E2_archive_export_exempt",
+        pass: e2ExportOk,
+        toolEvents: e2.toolEvents.map((e) => `${e.tool}:${e.ok ? "ok" : e.error}`),
+        reply: e2.reply?.slice(0, 200) ?? "",
+        cost: e2.usage.cost
+      });
+      console.error(`[E2] pass=${e2ExportOk} tools=${e2.toolEvents.map((e) => e.tool).join(",")}`);
+    } catch (error) {
+      results.push({ scenario: "E_archive_semantics", pass: false, error: error.message });
+      console.error(`[E] ERROR ${error.message}`);
+    }
 
     // 写成本报告
     await modelClient.costTracker.writeProjectReport(projectRoot);
