@@ -849,3 +849,15 @@ test("runFactCheck 解析两次失败：fact_check_skipped 且返回 null", asyn
   const events = await readEvents(projectRoot);
   assert.ok(events.some((e) => e.type === "fact_check_skipped"));
 });
+
+test("applyFactCheckHardFail 写 needs_revision 状态与 quality_gate_failed 事件", async () => {
+  const { projectRoot, project } = await makeFactCheckProject("wwriting-fc5-");
+  const { applyFactCheckHardFail } = await import("../src/core/agent-engine.mjs");
+  const conflicts = [{ draft_quote: "从十二楼坠落", conflicts_with: "坠楼楼层: 六楼", prior_chapter: 1, severity: "high", suggestion: "改回六楼", replace_with: "从六楼坠落" }];
+  await applyFactCheckHardFail(projectRoot, project, { current_chapter_no: 1, project_status: "running" }, conflicts);
+  const state = await loadState(projectRoot);
+  assert.equal(state.current_stage, "needs_revision");
+  assert.ok(state.last_quality_gate_results.some((g) => g.gate === "fact-check-gate" && g.status === "failed"));
+  const events = await readEvents(projectRoot);
+  assert.ok(events.some((e) => e.type === "quality_gate_failed" && e.message.includes("fact-check")));
+});
