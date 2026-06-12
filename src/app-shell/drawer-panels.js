@@ -54,6 +54,34 @@ export function createDrawerPanels(ctx) {
     const summary = data.summary;
     const { panel, body } = dpanel("章节目录", `${summary.completedChapters}/${summary.targetChapters}`);
     body.style.padding = "6px";
+
+    // 导出工具条
+    const toolbar = document.createElement("div");
+    toolbar.className = "export-toolbar";
+    const exportBtn = document.createElement("button");
+    exportBtn.type = "button";
+    exportBtn.className = "tbtn export-btn";
+    exportBtn.textContent = "导出成书";
+    exportBtn.addEventListener("click", () => {
+      ctx.closeDrawer?.();
+      ctx.sendChatMessageWithUX?.("导出全书为 md");
+    });
+    toolbar.append(exportBtn);
+    if (window.wwritingDesktop?.revealPath) {
+      const revealBtn = document.createElement("button");
+      revealBtn.type = "button";
+      revealBtn.className = "tbtn export-reveal-btn";
+      revealBtn.textContent = "打开导出文件夹";
+      revealBtn.addEventListener("click", () => {
+        const root = data.projectRoot ?? data.project?.projectRoot;
+        if (root) {
+          window.wwritingDesktop.revealPath(root + "/exports");
+        }
+      });
+      toolbar.append(revealBtn);
+    }
+    body.append(toolbar);
+
     const list = document.createElement("div");
     list.className = "chrow-list";
     const chapters = data.chapters ?? [];

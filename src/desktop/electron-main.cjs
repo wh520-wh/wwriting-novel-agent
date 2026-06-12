@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require("electron");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -33,6 +33,22 @@ app.whenReady().then(async () => {
       return null;
     }
     return result.filePaths[0];
+  });
+
+  ipcMain.handle("wwriting:reveal-path", async (_event, targetPath) => {
+    const resolved = path.resolve(String(targetPath ?? ""));
+    // 安全：只允许打开 rootDir 下的路径
+    if (!resolved.startsWith(rootDir + path.sep) && resolved !== rootDir) {
+      throw new Error("路径不在项目工作区内");
+    }
+    try {
+      fs.mkdirSync(resolved, { recursive: true });
+    } catch (err) {
+      throw new Error(`无法创建目录: ${err.message}`);
+    }
+    const result = await shell.openPath(resolved);
+    if (result) throw new Error(`无法打开路径: ${result}`);
+    return true;
   });
 
   const { createAppShellServer } = await import(pathToFileURL(path.join(rootDir, "src", "core", "app-server.mjs")).href);

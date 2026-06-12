@@ -98,6 +98,7 @@ let previousBadgeSummary = null;
 // --- extracted module instances (created before event bindings that reference their methods) ---
 let composer; // forward ref: thread-renderer's promote button calls composer.promoteAskEntry (assigned in Task 7)
 let projectListData = null; // hoisted to top so click handlers never trip TDZ if a probe fires before later declarations run
+let archivedExpanded = false;
 
 const threadRenderer = createThreadRenderer({
   refs,
@@ -147,6 +148,8 @@ const { renderDrawerBody } = createDrawerPanels({
   openSettingsModal,
   showToast,
   showActionError,
+  closeDrawer,
+  sendChatMessageWithUX: (msg) => composer?.sendChatMessageWithUX?.(msg),
 });
 
 composer = createComposer({
@@ -332,10 +335,44 @@ function renderProjectListFiltered() {
         )
       )
     : projectListData.projects;
+  const active = filtered.filter((p) => !p.archived_at);
+  const archived = filtered.filter((p) => p.archived_at);
   refs.projectCount.textContent = formatNumber(filtered.length);
+  const parts = [];
+  if (active.length > 0) {
+    parts.push(...active.map((project) => renderProjectNav(project, projectListData.selectedProjectRoot)));
+  }
+  if (archived.length > 0) {
+    const toggle = document.createElement("div");
+    toggle.className = "rail-group-label rail-archived-toggle";
+    toggle.setAttribute("role", "button");
+    toggle.setAttribute("tabindex", "0");
+    const labelSpan = document.createElement("span");
+    labelSpan.textContent = "已归档";
+    const countSpan = document.createElement("span");
+    countSpan.className = "count";
+    countSpan.textContent = String(archived.length);
+    toggle.append(labelSpan, countSpan);
+    const toggleArchived = () => { archivedExpanded = !archivedExpanded; renderProjectListFiltered(); };
+    toggle.addEventListener("click", toggleArchived);
+    toggle.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleArchived(); } });
+    parts.push(toggle);
+    if (archivedExpanded) {
+      parts.push(...archived.map((project) => {
+        const row = renderProjectNav(project, projectListData.selectedProjectRoot);
+        row.classList.add("proj-archived");
+        // prepend archive emoji to title
+        const titleEl = row.querySelector(".proj-title");
+        if (titleEl && !titleEl.textContent.startsWith("\u{1F4E6}")) {
+          titleEl.textContent = "\u{1F4E6} " + titleEl.textContent;
+        }
+        return row;
+      }));
+    }
+  }
   refs.projectList.replaceChildren(
-    ...(filtered.length > 0
-      ? filtered.map((project) => renderProjectNav(project, projectListData.selectedProjectRoot))
+    ...(parts.length > 0
+      ? parts
       : [renderProjectEmpty(query ? "没有匹配的小说。" : "还没有小说，点上方「新建小说」开始")])
   );
 }
@@ -441,8 +478,23 @@ function renderDashboard(data) {
   const callsText = `${formatNumber(summary.modelCalls)}/${summary.maxModelCalls ?? "∞"} 调用`;
   const modelLabel = modelProfile.is_mock ? "模型未配置 · 请在设置里选一个" : (modelProfile.display ?? "模型未配置");
   refs.topbarSub.textContent = `${modelLabel} · ${summary.completedChapters}/${summary.targetChapters} 章 · ${callsText}`;
+
+  // 归档态 UI
+  const isArchived = Boolean(project.archived_at);
+  refs.composerInput.placeholder = isArchived
+    ? "项目已归档（只读）。对话查询可用；解除归档后才能修改。"
+    : "给智能体下达指令：开始写作、续写下一章、调整方向…  输入 / 唤起命令";
+
   const truth = computeAgentTruth(data);
   renderTruthIndicator(truth);
+  // 归档态覆盖 status pill
+  if (isArchived) {
+    refs.status.className = "pill ghost";
+    const adot = document.createElement("span");
+    adot.className = "pdot";
+    refs.status.replaceChildren(adot, document.createTextNode("已归档"));
+    if (refs.topbar) refs.topbar.classList.remove("is-busy");
+  }
   renderTopbarProgress(truth, Number(data.summary?.activityProgressPercent ?? 0));
   ensureRefreshLoop(truth.refresh || summary.projectStatus === "running" || Boolean(liveBlock && !liveBlock.done));
 

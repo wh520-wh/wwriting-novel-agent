@@ -5,6 +5,10 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const assert = require("node:assert/strict");
 
+// Guard against EPIPE when stdout pipe is closed (e.g. user interrupted)
+process.stdout.on("error", (err) => { if (err.code !== "EPIPE") throw err; });
+process.stderr.on("error", (err) => { if (err.code !== "EPIPE") throw err; });
+
 const rootDir = path.resolve(__dirname, "..");
 const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "wwriting-clicks-"));
 let server = null;
