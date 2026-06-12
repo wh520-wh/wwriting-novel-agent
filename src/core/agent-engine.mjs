@@ -490,8 +490,9 @@ async function reviewChapter(projectRoot, project, state, runtime) {
     return;
   }
   // S3 fact-check 门禁：skill checks 之后、成功路径之前；不阻塞主流程
+  let factCheck = null;
   try {
-    await runFactCheck(projectRoot, project, state, runtime, draft);
+    factCheck = await runFactCheck(projectRoot, project, state, runtime, draft);
   } catch (error) {
     await appendEvent(projectRoot, {
       type: "fact_check_failed", project_id: project.project_id,
@@ -650,9 +651,9 @@ function renderForPrompt(continuity) {
 
 // S3 fact-check 门禁：在 reviewChapter 内、skill checks 之后调用。
 // 不阻塞主流程：外层调用需用 try/catch 包裹，本函数内部也会吞下非致命错误。
-async function runFactCheck(projectRoot, project, state, runtime, draft) {
+export async function runFactCheck(projectRoot, project, state, runtime, draft) {
   if (project.fact_check?.enabled === false) {
-    return;
+    return null;
   }
   const provider = project.active_model?.provider ?? "mock";
   if (provider === "mock") {
@@ -661,7 +662,7 @@ async function runFactCheck(projectRoot, project, state, runtime, draft) {
       chapter_no: state.current_chapter_no, stage: "reviewing",
       message: "mock provider，跳过 fact-check"
     });
-    return;
+    return null;
   }
   let continuity;
   try {
@@ -672,7 +673,7 @@ async function runFactCheck(projectRoot, project, state, runtime, draft) {
       chapter_no: state.current_chapter_no, stage: "reviewing", severity: "warn",
       message: `加载 continuity 失败，跳过 fact-check：${error.message}`
     });
-    return;
+    return null;
   }
   if (!continuity.facts.length) {
     await appendEvent(projectRoot, {
@@ -680,7 +681,7 @@ async function runFactCheck(projectRoot, project, state, runtime, draft) {
       chapter_no: state.current_chapter_no, stage: "reviewing",
       message: "无既有 facts，跳过 fact-check"
     });
-    return;
+    return null;
   }
 
   let parsed = null;
@@ -705,7 +706,7 @@ async function runFactCheck(projectRoot, project, state, runtime, draft) {
       chapter_no: state.current_chapter_no, stage: "reviewing", severity: "warn",
       message: `fact-check 解析失败：${parsed?.error ?? "unknown"}`
     });
-    return;
+    return null;
   }
   if (parsed.conflicts.length === 0) {
     await appendEvent(projectRoot, {
@@ -713,7 +714,7 @@ async function runFactCheck(projectRoot, project, state, runtime, draft) {
       chapter_no: state.current_chapter_no, stage: "reviewing",
       message: "fact-check 未发现冲突"
     });
-    return;
+    return { conflicts: [] };
   }
 
   // 有冲突：记事件 + 主动消息 + 可选 pending
@@ -753,6 +754,7 @@ async function runFactCheck(projectRoot, project, state, runtime, draft) {
     }
   }
   // hard 模式：当前任务仅记录 warning 与主动消息，不强制 needs_revision（后续 Task 处理）
+  return { conflicts };
 }
 
 async function completeChapter(projectRoot, project, state) {

@@ -8,9 +8,10 @@ import { appendEvent, readEvents } from "../src/core/event-log.mjs";
 import { countEffectiveWords } from "../src/core/word-count.mjs";
 import { MockModel } from "../src/core/mock-model.mjs";
 import { createProject, loadChapterIndex, loadProject, loadState, saveProject, saveState, upsertChapter } from "../src/core/project-store.mjs";
-import { loadContinuity, loadContinuityState } from "../src/core/continuity-store.mjs";
+import { loadContinuity, loadContinuityState, saveContinuity } from "../src/core/continuity-store.mjs";
 import { updateProjectSettings } from "../src/core/settings-runtime.mjs";
 import { appendChapterSegment } from "../src/core/tool-runtime.mjs";
+import { loadPendingAction as loadChatPending, readChatHistory as readChatHist } from "../src/core/chat/chat-store.mjs";
 
 class AlwaysInvalidModel {
   async generate() {
@@ -758,4 +759,93 @@ test("提取失败软跳过：事件 memory_extract_failed 且水位推进", asy
   const events = await readEvents(projectRoot);
   assert.ok(events.some((e) => e.type === "memory_extract_failed"));
   assert.equal((await loadContinuityState(projectRoot)).last_extracted_chapter, 1);
+});
+
+async function makeFactCheckProject(prefix) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  const { projectRoot } = await createProject(root, {
+    slug: "fc", title: "核查测试", story_seed: "种子",
+    target_chapters: 2, min_words_per_chapter: 10, target_words_per_chapter: 12
+  });
+  const project = await loadProject(projectRoot);
+  project.active_model = { provider: "openai-compatible", model_name: "fake", base_url: "http://localhost:0", api_key_env: "FAKE_KEY" };
+  await saveProject(projectRoot, project);
+  await saveContinuity(projectRoot, {
+    schema_version: 1,
+    facts: [{ entity: "刘康", attribute: "坠楼楼层", value: "六楼", chapter_no: 1, quote: "六楼。", conflict_with: null }],
+    timeline: [], characters: []
+  });
+  return { projectRoot, project };
+}
+
+const FC_CONFLICT_REPLY = JSON.stringify({ conflicts: [{
+  draft_quote: "从十二楼坠落", conflicts_with: "坠楼楼层: 六楼", prior_chapter: 1,
+  severity: "high", suggestion: "把十二楼改回六楼", replace_with: "从六楼坠落"
+}] });
+
+test("runFactCheck 有冲突：主动消息 + pending 预填 replace_with + warning 事件，返回 conflicts", async () => {
+  const { projectRoot, project } = await makeFactCheckProject("wwriting-fc1-");
+  const chapterPath = path.join(projectRoot, "chapters", "001.md");
+  await fs.mkdir(path.dirname(chapterPath), { recursive: true });
+  await fs.writeFile(chapterPath, "# 第一章\n\n刘康从十二楼坠落。", "utf8");
+  await upsertChapter(projectRoot, { chapter_no: 1, status: "completed", final_path: chapterPath, actual_words: 10 });
+  const { runFactCheck } = await import("../src/core/agent-engine.mjs");
+  const draft = "刘康从十二楼坠落。";
+  const out = await runFactCheck(projectRoot, project, { current_chapter_no: 1 }, {
+    modelClient: { generate: async () => ({ text: FC_CONFLICT_REPLY, usageReport: {} }) }
+  }, draft);
+  assert.equal(out.conflicts.length, 1);
+  const events = await readEvents(projectRoot);
+  assert.ok(events.some((e) => e.type === "quality_gate_warning" && e.data?.conflicts?.length === 1));
+  const history = await readChatHist(projectRoot);
+  const proactive = history.find((m) => m.proactive === "fact_check");
+  assert.ok(proactive, "应有 agent 主动消息");
+  assert.match(proactive.content, /十二楼/u);
+  const pending = await loadChatPending(projectRoot);
+  assert.ok(pending, "应预填 pending_action");
+  assert.equal(pending.tool, "edit_chapter");
+  assert.equal(pending.args.replace, "从六楼坠落"); // replace_with，而非 suggestion 说明文字
+});
+
+test("runFactCheck replace_with 为空：只发消息，不落 pending", async () => {
+  const { projectRoot, project } = await makeFactCheckProject("wwriting-fc2-");
+  const noReplace = JSON.stringify({ conflicts: [{
+    draft_quote: "从十二楼坠落", conflicts_with: "坠楼楼层: 六楼", prior_chapter: 1,
+    severity: "high", suggestion: "结构性改动，无法机械替换", replace_with: ""
+  }] });
+  const { runFactCheck } = await import("../src/core/agent-engine.mjs");
+  const out = await runFactCheck(projectRoot, project, { current_chapter_no: 1 }, {
+    modelClient: { generate: async () => ({ text: noReplace, usageReport: {} }) }
+  }, "刘康从十二楼坠落。");
+  assert.equal(out.conflicts.length, 1);
+  assert.equal(await loadChatPending(projectRoot), null, "不应预填 pending");
+  const history = await readChatHist(projectRoot);
+  assert.ok(history.some((m) => m.proactive === "fact_check"), "主动消息仍要发");
+});
+
+test("runFactCheck mock provider 跳过并记事件，返回 null", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-fc3-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "fcm", title: "跳过", story_seed: "种子",
+    target_chapters: 1, min_words_per_chapter: 10, target_words_per_chapter: 12
+  });
+  const project = await loadProject(projectRoot); // 默认 mock provider
+  const { runFactCheck } = await import("../src/core/agent-engine.mjs");
+  const out = await runFactCheck(projectRoot, project, { current_chapter_no: 1 }, {
+    modelClient: { generate: async () => { throw new Error("must not call"); } }
+  }, "正文");
+  assert.equal(out, null);
+  const events = await readEvents(projectRoot);
+  assert.ok(events.some((e) => e.type === "fact_check_skipped"));
+});
+
+test("runFactCheck 解析两次失败：fact_check_skipped 且返回 null", async () => {
+  const { projectRoot, project } = await makeFactCheckProject("wwriting-fc4-");
+  const { runFactCheck } = await import("../src/core/agent-engine.mjs");
+  const out = await runFactCheck(projectRoot, project, { current_chapter_no: 1 }, {
+    modelClient: { generate: async () => ({ text: "不是 JSON", usageReport: {} }) }
+  }, "正文");
+  assert.equal(out, null);
+  const events = await readEvents(projectRoot);
+  assert.ok(events.some((e) => e.type === "fact_check_skipped"));
 });
