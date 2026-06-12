@@ -14,8 +14,8 @@
 | 阶段 | 主题 | 状态 | 对应 spec |
 |------|------|------|----------|
 | S1 跑得省 | 成本与模型行为 | ✅ 已闭环（含真实 API 验证） | v2 路线图 S1 节 + s1 交付/验证报告 |
-| S2a 写得稳·记忆 | 连贯性记忆链路（memory-extractor、continuity.md、book_summary 闭环、rebuild 脚本） | 待实施 | `2026-06-12-s2-memory-and-quality-gates-design.md` 组件 1/6 节 |
-| S3 聊得动 | 对话范式：agent loop、15 工具、确认机制、统一时间线、**门禁对话化（吸收原 S2b）** | 待实施 | `2026-06-12-chat-agent-paradigm-design.md` |
+| S2a 写得稳·记忆 | 连贯性记忆链路（memory-extractor、continuity.md、book_summary 闭环、rebuild 脚本） | ✅ 已闭环（2026-06-12，审核修复 + 真实 API 验收） | `2026-06-12-s2-memory-and-quality-gates-design.md` 组件 1/6 节 |
+| S3 聊得动 | 对话范式：agent loop、15 工具、确认机制、统一时间线、**门禁对话化（吸收原 S2b）** | ✅ 已闭环（2026-06-12，spec §12 9/10，条 3 指挥落地列 backlog） | `2026-06-12-chat-agent-paradigm-design.md` |
 | S4 用得顺 | 残余日常体验：成书导出、项目归档、设置分区展示（运行反馈已被 S3 统一时间线吸收） | 排队 | 届时另写 |
 | S5 发得出 | 可分享成熟度：首次上手、升级迁移、诊断包、发布 checklist（原 v2 S4 全部内容） | 排队 | 届时另写 |
 
