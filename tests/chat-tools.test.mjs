@@ -259,3 +259,34 @@ test("rewrite_chapter 组装重写指令入队", async () => {
   assert.match(enqueued[0].instruction, /心理描写/u);
   assert.equal(enqueued[0].opts.mode, "write");
 });
+
+test("export_book 工具：导出并返回路径/字数/skipped", async () => {
+  const registry = createToolRegistry();
+  registerWriteTools(registry);
+  const projectRoot = await makeProjectWithChapter();
+  const project = await (await import("../src/core/project-store.mjs")).loadProject(projectRoot);
+  const out = await executeTool(registry, "export_book", { format: "md" }, { projectRoot, project });
+  assert.equal(out.ok, true);
+  assert.ok(out.result.path.includes("exports"));
+  assert.equal(out.result.chapters, 1);
+});
+
+test("archive_project 工具：归档/解除归档写 archived_at；运行中拒绝", async () => {
+  const registry = createToolRegistry();
+  registerWriteTools(registry);
+  const projectRoot = await makeProject();
+  const project = await (await import("../src/core/project-store.mjs")).loadProject(projectRoot);
+  const on = await executeTool(registry, "archive_project", { archived: true }, { projectRoot, project });
+  assert.equal(on.ok, true);
+  assert.ok((await (await import("../src/core/project-store.mjs")).loadProject(projectRoot)).archived_at);
+  // 解除归档：注意 ctx.project 需带 archived_at 才能过豁免链（豁免名单放行）
+  const archivedProject = await (await import("../src/core/project-store.mjs")).loadProject(projectRoot);
+  const off = await executeTool(registry, "archive_project", { archived: false }, { projectRoot, project: archivedProject });
+  assert.equal(off.ok, true);
+  assert.equal((await (await import("../src/core/project-store.mjs")).loadProject(projectRoot)).archived_at, null);
+  // 运行中拒绝
+  const busyServer = { runJobs: new Map([[path.resolve(projectRoot), { status: "running", controller: new AbortController() }]]) };
+  const busy = await executeTool(registry, "archive_project", { archived: true }, { projectRoot, project, server: busyServer });
+  assert.equal(busy.ok, false);
+  assert.equal(busy.error, "project_busy");
+});
