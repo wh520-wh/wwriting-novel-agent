@@ -365,6 +365,52 @@ export function createThreadRenderer(ctx) {
     return row;
   }
 
+  // Task card: stage chips + subtitle line
+  const STAGE_CHIPS = [
+    { id: "planning", label: "规划", stages: ["queued", "planning", "planned"] },
+    { id: "drafting", label: "起草", stages: ["drafting"] },
+    { id: "reviewing", label: "审稿", stages: ["reviewing", "needs_revision", "revising"] },
+    { id: "finalizing", label: "定稿", stages: ["finalizing", "summarizing"] }
+  ];
+
+  function updateStageChips(block, data) {
+    if (!block || !block.stageRow) return;
+    const summary = data.summary;
+    const activeStage = summary.currentStage === "blocked" ? (data.state?.blocked_at_stage ?? "") : (summary.currentStage ?? "");
+    const activeIndex = STAGE_ORDER.indexOf(activeStage);
+    const completed = summary.projectStatus === "completed";
+
+    block.stageRow.replaceChildren(...STAGE_CHIPS.map((chip) => {
+      const el = document.createElement("span");
+      el.className = "run-stage-chip";
+      const chipMax = Math.max(...chip.stages.map((s) => STAGE_ORDER.indexOf(s)));
+      const isCurrent = chip.stages.includes(activeStage);
+      if (completed || (activeIndex >= 0 && activeIndex > chipMax)) {
+        el.classList.add("done");
+      } else if (isCurrent) {
+        el.classList.add("active");
+      }
+      el.textContent = chip.label;
+      return el;
+    }));
+
+    // Subtitle: "第 N 章 · X 字 · ¥Y"
+    const parts = [];
+    const chNo = summary.currentChapterNo;
+    if (chNo) parts.push(`第 ${chNo} 章`);
+    const words = summary.totalWords;
+    if (words != null && words > 0) parts.push(`${formatNumber(words)} 字`);
+    if (summary.costAvailable && summary.estimatedCost) {
+      parts.push(`¥${summary.estimatedCost}`);
+    }
+    block.subtitle.textContent = parts.join(" · ") || "准备中";
+
+    // Stop button visibility: only when running
+    if (block.stopBtn) {
+      block.stopBtn.hidden = summary.projectStatus !== "running";
+    }
+  }
+
   // 一次运行 = 一个智能体气泡：含步骤时间线 + 完成后的章节卡 + 汇报文字。
   function buildAgentBlock(startEvent, data) {
     const wrap = document.createElement("div");
@@ -382,15 +428,38 @@ export function createThreadRenderer(ctx) {
     time.className = "t";
     time.textContent = "工作中";
     name.append(strong, time);
+
+    // --- Task card header: stage chips + subtitle + stop button ---
+    const cardHeader = document.createElement("div");
+    cardHeader.className = "run-card-header";
+    const stageRow = document.createElement("div");
+    stageRow.className = "run-stage-row";
+    const subtitle = document.createElement("div");
+    subtitle.className = "run-subtitle";
+    const stopBtn = document.createElement("button");
+    stopBtn.type = "button";
+    stopBtn.className = "run-stop-btn";
+    stopBtn.textContent = "停止";
+    stopBtn.addEventListener("click", async () => {
+      stopBtn.disabled = true;
+      try {
+        await ctx.handleStop();
+      } catch (e) {
+        stopBtn.disabled = false;
+      }
+    });
+    cardHeader.append(stageRow, subtitle, stopBtn);
+
     const steps = document.createElement("div");
     steps.className = "steps";
     const say = document.createElement("p");
     say.className = "agent-say";
     say.hidden = true;
-    body.append(name, steps, say);
+    body.append(name, cardHeader, steps, say);
     wrap.append(avatar, body);
-    const block = { root: wrap, body, time, steps, say, chapter: null, quick: null, done: false };
+    const block = { root: wrap, body, time, steps, say, chapter: null, quick: null, done: false, stageRow, subtitle, stopBtn };
     renderSteps(block, data);
+    updateStageChips(block, data);
     return block;
   }
 
@@ -557,6 +626,8 @@ export function createThreadRenderer(ctx) {
     block.done = true;
     block.time.textContent = "刚刚";
     renderSteps(block, data);
+    updateStageChips(block, data);
+    if (block.stopBtn) block.stopBtn.hidden = true;
     if (event.type === "project_run_failed" || event.type === "project_blocked") {
       block.say.hidden = false;
       block.say.textContent = event.message ?? "运行已停止，请在右侧「运行」面板查看错误。";
@@ -640,6 +711,7 @@ export function createThreadRenderer(ctx) {
     }
     if (data.summary.projectStatus === "running") {
       renderSteps(liveBlock, data);
+      updateStageChips(liveBlock, data);
       const ch = data.summary.currentChapterNo;
       liveBlock.time.textContent = ch ? `第 ${ch} 章 · 工作中` : "工作中";
       ctx.announce(ch ? `正在写第 ${ch} 章` : "工作中");
