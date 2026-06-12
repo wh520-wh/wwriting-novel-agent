@@ -1,6 +1,9 @@
 // verify-chat-online.mjs — S3 real-API chat verification
 // Requires: WWRITING_PROVIDER_BASE_URL, WWRITING_PROVIDER_MODEL, and the API key in the env var named by WWRITING_API_KEY_ENV (default OPENAI_API_KEY)
-// Scenarios: A) comprehension with read tools, B) edit flow with confirmation, C) fact-check corpus
+// Scenarios: A1) in-context comprehension (injected memory counts as grounding, no tool required)
+//            A2) out-of-context comprehension (answer only exists in chapter body — MUST use a read tool)
+//            B) edit flow with confirmation, C) fact-check corpus
+// 验收口径（Claude Code/Codex 模式）：预注入记忆可直接引用；记忆未覆盖的细节必须工具查证。
 import path from "node:path";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -39,6 +42,7 @@ const pricing = {
 async function main() {
   const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-chat-verify-"));
   const results = [];
+  let modelClient = null;
 
   try {
     // 1. 建临时项目（target 3 章、min 50 字）
@@ -98,7 +102,7 @@ async function main() {
 
     // 构造 runtime
     const adapter = new OpenAICompatibleAdapter({ baseUrl, apiKey });
-    const modelClient = new ModelClient({
+    modelClient = new ModelClient({
       costTracker: new CostTracker({ pricing: buildPricingTable(project) }),
       adapters: { "openai-compatible": adapter }
     });
@@ -106,24 +110,43 @@ async function main() {
     registerReadTools(registry);
     registerWriteTools(registry);
 
-    // ========== 场景 A：理解 ==========
-    console.error("[A] comprehension...");
-    const a = await runChatTurn({
+    // ========== 场景 A1：记忆内事实（预注入记忆即溯源，不要求工具调用）==========
+    console.error("[A1] in-context comprehension...");
+    const a1 = await runChatTurn({
       projectRoot,
       project,
       registry,
       modelClient,
-      userMessage: "这本书现在写到第几章？刘康是从几楼坠落的？"
+      userMessage: "刘康是从几楼坠落的？"
     });
-    const aPass = a.reply.includes("六楼") && a.toolEvents.some((e) => e.ok);
+    const a1Pass = a1.reply.includes("六楼");
     results.push({
-      scenario: "A_comprehension",
-      pass: aPass,
-      reply: a.reply.slice(0, 200),
-      toolEvents: a.toolEvents.length,
-      cost: a.usage.cost
+      scenario: "A1_memory_comprehension",
+      pass: a1Pass,
+      reply: a1.reply.slice(0, 200),
+      toolEvents: a1.toolEvents.length,
+      cost: a1.usage.cost
     });
-    console.error(`[A] pass=${aPass} reply="${a.reply.slice(0, 80)}..." tools=${a.toolEvents.length}`);
+    console.error(`[A1] pass=${a1Pass} reply="${a1.reply.slice(0, 80)}..." tools=${a1.toolEvents.length}`);
+
+    // ========== 场景 A2：记忆外事实（"食堂"只在正文里，必须读工具查证）==========
+    console.error("[A2] out-of-context comprehension...");
+    const a2 = await runChatTurn({
+      projectRoot,
+      project,
+      registry,
+      modelClient,
+      userMessage: "第 1 章正文里，沈泽是在什么地方听到刘康坠楼消息的？"
+    });
+    const a2Pass = a2.reply.includes("食堂") && a2.toolEvents.some((e) => e.ok);
+    results.push({
+      scenario: "A2_tool_grounded_comprehension",
+      pass: a2Pass,
+      reply: a2.reply.slice(0, 200),
+      toolEvents: a2.toolEvents.map((e) => `${e.tool}:${e.ok ? "ok" : e.error}`),
+      cost: a2.usage.cost
+    });
+    console.error(`[A2] pass=${a2Pass} reply="${a2.reply.slice(0, 80)}..." tools=${a2.toolEvents.length}`);
 
     // ========== 场景 B：编辑 ==========
     console.error("[B] edit flow...");
@@ -157,7 +180,10 @@ async function main() {
       pass: bPending && bEdit,
       pendingAction: bPending,
       editApplied: bEdit,
-      checkpoints: checkpoints.length
+      checkpoints: checkpoints.length,
+      reply: b.reply.slice(0, 200),
+      toolEvents: b.toolEvents.map((e) => `${e.tool}:${e.ok ? "ok" : e.error}`),
+      cost: b.usage.cost
     });
     console.error(`[B] pass=${bPending && bEdit} pending=${bPending} edit=${bEdit} checkpoints=${checkpoints.length}`);
 
@@ -211,9 +237,11 @@ async function main() {
   }
 
   const allPass = results.every((r) => r.pass === true);
-  const totalCost = results.reduce((sum, r) => sum + (r.cost ?? 0), 0);
+  // totalCost 从 costTracker 总账取（覆盖全部场景的模型调用，含 C 的裸 generate）
+  const totalCost = modelClient ? Number(modelClient.costTracker.getSummary().estimatedCost ?? 0) : 0;
   const report = {
     ok: allPass,
+    provider: { baseUrlHost: baseUrl.replace(/^https?:\/\//u, "").split("/")[0], model },
     results,
     totalCost: Number(totalCost.toFixed(6)),
     timestamp: new Date().toISOString()
