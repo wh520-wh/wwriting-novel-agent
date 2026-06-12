@@ -15,11 +15,21 @@ const SETTINGS_PROVIDERS = [
   { id: "custom", name: "OpenAI 兼容 · 自定义", short: "AI", color: "#10a37f", preset: "custom" }
 ];
 
+const SETTINGS_SECTIONS = [
+  { id: "model", label: "模型与密钥", icon: "settings", ready: true },
+  { id: "writing", label: "写作参数", icon: "compose", ready: false, milestone: "Task 7" },
+  { id: "gates", label: "质量门禁", icon: "check", ready: false, milestone: "Task 7" },
+  { id: "permissions", label: "权限与确认", icon: "help", ready: false, milestone: "Task 8" },
+  { id: "research", label: "联网搜索", icon: "search", ready: false, milestone: "Task 7" },
+  { id: "danger", label: "危险区", icon: "bolt", ready: false, milestone: "Task 7" }
+];
+
 export function createSettingsModal(ctx) {
   // ctx provides: refs, getDashboard, getCurrentProjectRoot, showToast, loadDashboard,
   //   getLastFocused, setLastFocused
 
   let settingsProviderId = "deepseek";
+  let settingsSection = "model";
   const settingsFields = {};
 
   async function fetchModelSecret() {
@@ -49,14 +59,89 @@ export function createSettingsModal(ctx) {
     if (dashboard?.project?.active_model) {
       settingsProviderId = detectProviderPreset(dashboard.project.active_model);
     }
+    settingsSection = "model";
     ctx.refs.settingsSearch.value = "";
-    renderSettingsProviders();
-    renderSettingsDetail();
+    renderSectionNav();
+    renderSectionBody();
     ctx.setLastFocused(document.activeElement);
     ctx.refs.settingsScrim.removeAttribute("inert");
     ctx.refs.settingsScrim.classList.add("show");
-    ctx.refs.settingsSearch.focus();
     motion.openModal(ctx.refs.settingsScrim, document.querySelector("#settings-modal"));
+    if (settingsSection === "model") ctx.refs.settingsSearch.focus();
+  }
+
+  function setSettingsSection(next) {
+    if (!SETTINGS_SECTIONS.some((s) => s.id === next)) return;
+    if (next === settingsSection) return;
+    settingsSection = next;
+    renderSectionNav();
+    renderSectionBody();
+  }
+
+  function renderSectionNav() {
+    const nav = document.getElementById("settings-section-nav");
+    if (!nav) return;
+    nav.replaceChildren(...SETTINGS_SECTIONS.map((section) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `sp-section-item${section.id === settingsSection ? " on" : ""}`;
+      button.dataset.section = section.id;
+      button.setAttribute("aria-current", section.id === settingsSection ? "true" : "false");
+      button.setAttribute("aria-label", section.label);
+      const ic = document.createElement("span");
+      ic.className = "sp-section-ic";
+      ic.append(icon(section.icon, 14));
+      const label = document.createElement("span");
+      label.textContent = section.label;
+      button.append(ic, label);
+      if (!section.ready) {
+        const badge = document.createElement("span");
+        badge.className = "sp-section-soon";
+        badge.textContent = section.milestone ?? "稍后";
+        button.append(badge);
+      }
+      button.addEventListener("click", () => setSettingsSection(section.id));
+      return button;
+    }));
+    // Sync the data-section on the side container so CSS can hide provider list
+    // for non-model sections.
+    const side = nav.closest(".sp-side");
+    if (side) side.dataset.section = settingsSection;
+  }
+
+  function renderSectionBody() {
+    if (settingsSection === "model") {
+      renderModelSection();
+      ctx.refs.settingsSave.disabled = false;
+      ctx.refs.settingsSave.textContent = "保存设置";
+      return;
+    }
+    renderStubSection(settingsSection);
+    ctx.refs.settingsSave.disabled = true;
+    ctx.refs.settingsSave.textContent = "保存设置";
+  }
+
+  function renderModelSection() {
+    renderSettingsProviders();
+    renderSettingsDetail();
+  }
+
+  function renderStubSection(sectionId) {
+    const def = SETTINGS_SECTIONS.find((s) => s.id === sectionId);
+    if (!def) return;
+    // Clear any previously rendered detail
+    ctx.refs.settingsDetail.replaceChildren();
+    const stub = document.createElement("div");
+    stub.className = "sp-stub";
+    const tag = document.createElement("span");
+    tag.className = "sp-stub-tag";
+    tag.textContent = def.milestone ? `${def.milestone} 提供` : "稍后提供";
+    const h3 = document.createElement("h3");
+    h3.textContent = def.label;
+    const p = document.createElement("p");
+    p.textContent = `「${def.label}」分区的设置将在后续任务中提供。本任务先搭好 6 分区导航骨架。`;
+    stub.append(tag, h3, p);
+    ctx.refs.settingsDetail.append(stub);
   }
 
   function closeSettingsModal() {
