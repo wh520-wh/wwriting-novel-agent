@@ -48,10 +48,13 @@ export async function createProjectAt(projectRoot, options = {}) {
     },
     enabled_skills: options.enabled_skills ?? [],
     output_style: options.output_style ?? "creative",
+    archived_at: options.archived_at ?? null,
     tool_permissions: {
       network_allowed: options.network_allowed ?? false,
       safe_edit: true,
       read_only: false,
+      auto_edit: false,
+      yolo: false,
       dangerous: false,
       ...(options.tool_permissions ?? {})
     },

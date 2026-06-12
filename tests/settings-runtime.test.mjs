@@ -105,6 +105,48 @@ test("settings runtime rejects non-http base URLs", () => {
   );
 });
 
+test("tool_permissions 接受 auto_edit/yolo，拒绝 dangerous，保留未知字段丢弃", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-settings-autoedit-"));
+  const { projectRoot } = await createProject(root, { slug: "autoedit" });
+
+  await updateProjectSettings(projectRoot, { tool_permissions: { auto_edit: true, yolo: true } });
+  const project = await loadProject(projectRoot);
+  assert.equal(project.tool_permissions.auto_edit, true);
+  assert.equal(project.tool_permissions.yolo, true);
+
+  await assert.rejects(
+    () => updateProjectSettings(projectRoot, { tool_permissions: { dangerous: true } }),
+    /dangerous/iu
+  );
+});
+
+test("archived_at 接受 null 与合法 ISO，拒绝垃圾", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-settings-archive-"));
+  const { projectRoot } = await createProject(root, { slug: "archive" });
+
+  const iso = new Date().toISOString();
+  await updateProjectSettings(projectRoot, { archived_at: iso });
+  assert.equal((await loadProject(projectRoot)).archived_at, iso);
+
+  await updateProjectSettings(projectRoot, { archived_at: null });
+  assert.equal((await loadProject(projectRoot)).archived_at, null);
+
+  await assert.rejects(
+    () => updateProjectSettings(projectRoot, { archived_at: "昨天" }),
+    /archived_at/u
+  );
+});
+
+test("createProject 默认 auto_edit=false yolo=false archived_at=null", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-settings-defaults-"));
+  const { projectRoot } = await createProject(root, { slug: "defaults" });
+
+  const project = await loadProject(projectRoot);
+  assert.equal(project.tool_permissions.auto_edit, false);
+  assert.equal(project.tool_permissions.yolo, false);
+  assert.equal(project.archived_at, null);
+});
+
 test("normalizeStageOverrides preserves pricing field", async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-override-pricing-"));
   try {

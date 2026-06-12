@@ -119,6 +119,17 @@ export function normalizeSettingsPatch(patch = {}) {
   if (patch.output_style !== undefined) {
     normalized.output_style = normalizeOutputStyle(patch.output_style);
   }
+  if (patch.archived_at !== undefined) {
+    if (patch.archived_at === null) {
+      normalized.archived_at = null;
+    } else {
+      const ts = Date.parse(patch.archived_at);
+      if (!Number.isFinite(ts)) {
+        throw new SettingsValidationError("invalid_archived_at", "archived_at must be null or an ISO timestamp.");
+      }
+      normalized.archived_at = new Date(ts).toISOString();
+    }
+  }
   if (patch.project_profile !== undefined) {
     normalized.project_profile = normalizeProjectProfile(patch.project_profile);
   }
@@ -145,6 +156,9 @@ function mergeProjectSettings(project, patch) {
   }
   if (patch.output_style !== undefined) {
     next.output_style = patch.output_style;
+  }
+  if (patch.archived_at !== undefined) {
+    next.archived_at = patch.archived_at;
   }
   if (patch.project_profile !== undefined) {
     for (const [key, value] of Object.entries(patch.project_profile)) {
@@ -261,6 +275,12 @@ function normalizeToolPermissions(permissions) {
   }
   if (permissions.dangerous !== undefined) {
     normalized.dangerous = false;
+  }
+  if (permissions.auto_edit !== undefined) {
+    normalized.auto_edit = permissions.auto_edit === true;
+  }
+  if (permissions.yolo !== undefined) {
+    normalized.yolo = permissions.yolo === true;
   }
   if (normalized.read_only === true) {
     normalized.safe_edit = false;
