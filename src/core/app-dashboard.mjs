@@ -74,7 +74,8 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
       run_mode: project.run_mode,
       active_model: config.effective.active_model,
       stage_overrides: config.effective.stage_overrides,
-      tool_permissions: config.effective.tool_permissions,
+      tool_permissions: project.tool_permissions ?? {},
+      archived_at: project.archived_at ?? null,
       budget_config: config.effective.budget_config,
       research_config: config.effective.research_config
     },
