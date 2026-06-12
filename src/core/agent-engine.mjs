@@ -734,7 +734,7 @@ async function runFactCheck(projectRoot, project, state, runtime, draft) {
 
   // 软模式：仅当 draft_quote 在 draft 中唯一命中且当前无 pending 时落 pending_action
   const existingPending = await loadPendingAction(projectRoot).catch(() => null);
-  if (!existingPending) {
+  if (!existingPending && first.replace_with) {
     const firstIdx = draft.indexOf(first.draft_quote);
     const onlyHit = firstIdx >= 0 && draft.indexOf(first.draft_quote, firstIdx + 1) < 0;
     if (onlyHit) {
@@ -742,11 +742,11 @@ async function runFactCheck(projectRoot, project, state, runtime, draft) {
         const preview = await previewEditChapter(projectRoot, {
           chapter_no: state.current_chapter_no,
           find: first.draft_quote,
-          replace: first.suggestion
+          replace: first.replace_with
         });
         await savePendingAction(projectRoot, {
           tool: "edit_chapter",
-          args: { chapter_no: state.current_chapter_no, find: first.draft_quote, replace: first.suggestion, reason: "fact-check 矛盾修复" },
+          args: { chapter_no: state.current_chapter_no, find: first.draft_quote, replace: first.replace_with, reason: "fact-check 矛盾修复" },
           preview
         });
       } catch { /* preview 失败不阻塞 */ }

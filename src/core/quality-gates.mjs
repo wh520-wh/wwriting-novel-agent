@@ -207,7 +207,7 @@ export function runWordCapGate(actualWords, { targetWords, maxWords, outputPrice
 const FACT_CHECK_SYSTEM_PROMPT = [
   "你是小说事实核查员。读完本章后比对既有设定档案，挑出本章与既有事实/时间线之间的客观冲突。",
   "只输出一个 JSON 对象（可用 ```json 围栏），结构：",
-  '{"conflicts":[{"draft_quote":"本章内一句触发冲突的原文","conflicts_with":"既有设定/时间线中的对应记录","prior_chapter":既有章节号,"severity":"high|low","suggestion":"修复建议（说明改哪边、目标值）"}]}',
+  '{"conflicts":[{"draft_quote":"本章内一句触发冲突的原文","conflicts_with":"既有设定/时间线中的对应记录","prior_chapter":既有章节号,"severity":"high|low","suggestion":"修复建议（说明改哪边、为什么）","replace_with":"用于直接替换 draft_quote 的修正后原文（保持句式，只改冲突值；若无法给出精确替换则留空字符串）"}]}',
   "只报客观叙述层的设定冲突（地点、数字、时间、生死、关系）。",
   "豁免：回忆/闪回/角色撒谎/隐喻/旁白不算矛盾。",
   "若没有冲突，输出 {\"conflicts\":[]}。",
@@ -248,7 +248,8 @@ export function parseFactCheck(rawText) {
       conflicts_with: String(c.conflicts_with ?? "").slice(0, 200),
       prior_chapter: Number(c.prior_chapter) || null,
       severity: c.severity === "low" ? "low" : "high",
-      suggestion: String(c.suggestion ?? "").slice(0, 400)
+      suggestion: String(c.suggestion ?? "").slice(0, 400),
+      replace_with: String(c.replace_with ?? "").slice(0, 200)
     }))
     .filter((c) => c.draft_quote && c.conflicts_with);
   return { ok: true, conflicts: normalized };
