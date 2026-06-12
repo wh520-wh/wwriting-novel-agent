@@ -10,6 +10,7 @@ import { expandInstruction } from "../task-queue.mjs";
 import { countEffectiveWords } from "../word-count.mjs";
 import { appendEvent } from "../event-log.mjs";
 import { pathExists, safeJoin, writeFileAtomic } from "../fs-utils.mjs";
+import { exportBook } from "../book-export.mjs";
 
 async function resolveChapterFile(projectRoot, chapterNo) {
   const index = await loadChapterIndex(projectRoot);
@@ -211,6 +212,43 @@ export function registerWriteTools(registry) {
         keys: Object.keys(args.patch ?? {}),
         result: result?.ok ?? true
       };
+    }
+  });
+
+  registry.register({
+    name: "export_book", kind: "write",
+    description: "把已完成章节合成一本书，导出到项目 exports/ 文件夹（md 或 txt）。",
+    params: { format: "md 或 txt（默认 md）", from_chapter: "起始章（可空）", to_chapter: "结束章（可空）" },
+    run: async (args, ctx) => {
+      return await exportBook(ctx.projectRoot, {
+        format: args.format === "txt" ? "txt" : "md",
+        fromChapter: Number(args.from_chapter) > 0 ? Number(args.from_chapter) : 1,
+        toChapter: Number(args.to_chapter) > 0 ? Number(args.to_chapter) : Infinity
+      });
+    }
+  });
+
+  registry.register({
+    name: "archive_project", kind: "write",
+    description: "归档或解除归档本项目。归档后项目只读（仍可查询与导出）。",
+    params: { archived: "true 归档 / false 解除归档" },
+    run: async (args, ctx) => {
+      if (args.archived === true || args.archived === "true") {
+        const job = ctx.server?.runJobs?.get(path.resolve(ctx.projectRoot));
+        if (job?.status === "running") {
+          const e = new Error("写作任务正在运行，请先暂停或等它完成，再归档。");
+          e.code = "project_busy";
+          throw e;
+        }
+      }
+      const archivedAt = (args.archived === true || args.archived === "true") ? new Date().toISOString() : null;
+      await updateProjectSettings(ctx.projectRoot, { archived_at: archivedAt });
+      await appendEvent(ctx.projectRoot, {
+        type: archivedAt ? "project_archived" : "project_unarchived",
+        project_id: ctx.project?.project_id ?? null, stage: "chat",
+        message: archivedAt ? "项目已归档（只读）" : "项目已解除归档"
+      });
+      return { archived: Boolean(archivedAt), archived_at: archivedAt };
     }
   });
 }
