@@ -9,12 +9,12 @@ import { buildPricingTable } from "../src/core/model-pricing.mjs";
 import { readJson, safeJoin } from "../src/core/fs-utils.mjs";
 
 const args = process.argv.slice(2);
-const projectRoot = path.resolve(args.find((a) => !a.startsWith("--")) ?? "");
+const rootArg = args.find((a) => !a.startsWith("--"));
+if (!rootArg) throw new Error("usage: node scripts/rebuild-memory.mjs <projectRoot> [--from N] [--dry-run]");
+const projectRoot = path.resolve(rootArg);
 const dryRun = args.includes("--dry-run");
 const fromArg = args.indexOf("--from");
 const fromChapter = fromArg >= 0 ? Number(args[fromArg + 1]) : 1;
-
-if (!projectRoot) throw new Error("usage: node scripts/rebuild-memory.mjs <projectRoot> [--from N] [--dry-run]");
 
 const project = await loadProject(projectRoot);
 if ((project.active_model?.provider ?? "mock") === "mock") {

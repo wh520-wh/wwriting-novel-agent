@@ -1,0 +1,9 @@
+{
+  "name": "good-normal",
+  "draft": "沈泽把工牌翻过来又翻过去，食堂的电视里在放午间新闻。老马端着餐盘坐到他对面，两个人谁都没先开口。",
+  "continuity_facts": [
+    { "entity": "刘康", "attribute": "坠楼楼层", "value": "六楼", "chapter_no": 1, "quote": "六楼。", "conflict_with": null }
+  ],
+  "timeline": [{ "chapter_no": 1, "story_time": "十月", "events": ["刘康坠楼"] }],
+  "expect": "pass"
+}

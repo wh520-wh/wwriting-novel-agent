@@ -1,0 +1,9 @@
+{
+  "name": "good-liar",
+  "draft": "包工头压低声音对警察说：「我亲眼看见的，刘康是从十二楼跳下去的。」沈泽在一旁听着，知道他在撒谎。",
+  "continuity_facts": [
+    { "entity": "刘康", "attribute": "坠楼楼层", "value": "六楼", "chapter_no": 1, "quote": "六楼。", "conflict_with": null }
+  ],
+  "timeline": [],
+  "expect": "pass"
+}
