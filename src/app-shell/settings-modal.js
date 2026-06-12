@@ -19,10 +19,54 @@ const SETTINGS_SECTIONS = [
   { id: "model", label: "模型与密钥", icon: "settings", ready: true },
   { id: "writing", label: "写作参数", icon: "compose", ready: true },
   { id: "gates", label: "质量门禁", icon: "check", ready: true },
-  { id: "permissions", label: "权限与确认", icon: "help", ready: false, milestone: "Task 8" },
+  { id: "permissions", label: "权限与确认", icon: "help", ready: true },
   { id: "research", label: "联网搜索", icon: "search", ready: true },
   { id: "danger", label: "危险区", icon: "bolt", ready: true }
 ];
+
+// spec §4.3 四档权限矩阵（与 composer.js 中的 TIER_DEFS 保持一致）
+const PERMISSION_TIERS = [
+  {
+    id: "read_only",
+    label: "🔒 只读",
+    short: "只读",
+    combo: { read_only: true,  safe_edit: true, auto_edit: false, yolo: false },
+    desc: "完全只读；智能体不修改任何文件。",
+    warn: ""
+  },
+  {
+    id: "confirm",
+    label: "✓ 确认后修改",
+    short: "确认",
+    combo: { read_only: false, safe_edit: true, auto_edit: false, yolo: false },
+    desc: "默认档；写文件前会先让你确认。",
+    warn: ""
+  },
+  {
+    id: "auto",
+    label: "⚡ 自动修改",
+    short: "自动",
+    combo: { read_only: false, safe_edit: true, auto_edit: true,  yolo: false },
+    desc: "可静默改稿；归档/导出仍需确认。",
+    warn: ""
+  },
+  {
+    id: "yolo",
+    label: "⚡ YOLO",
+    short: "YOLO",
+    combo: { read_only: false, safe_edit: true, auto_edit: true,  yolo: true  },
+    desc: "跳过所有确认；归档/章节编辑全自动。",
+    warn: "⚠ 警告：YOLO 模式自动执行所有写与控制操作，包括章节编辑、设定更新和任务控制。"
+  }
+];
+
+function detectPermissionTier(perms) {
+  const p = perms ?? {};
+  if (p.read_only === true) return "read_only";
+  if (p.yolo === true) return "yolo";
+  if (p.auto_edit === true) return "auto";
+  return "confirm";
+}
 
 export function createSettingsModal(ctx) {
   // ctx provides: refs, getDashboard, getCurrentProjectRoot, showToast, loadDashboard,
@@ -124,6 +168,12 @@ export function createSettingsModal(ctx) {
     }
     if (settingsSection === "gates") {
       renderGatesSection();
+      ctx.refs.settingsSave.disabled = false;
+      ctx.refs.settingsSave.textContent = "保存设置";
+      return;
+    }
+    if (settingsSection === "permissions") {
+      renderPermissionsSection();
       ctx.refs.settingsSave.disabled = false;
       ctx.refs.settingsSave.textContent = "保存设置";
       return;
@@ -299,6 +349,104 @@ export function createSettingsModal(ctx) {
       settingsFields.searchEndpoint.field,
       settingsFields.searchKeyEnv.field
     );
+  }
+
+  function renderPermissionsSection() {
+    const dashboard = ctx.getDashboard();
+    const project = dashboard?.project ?? {};
+    const projectRoot = ctx.getCurrentProjectRoot();
+    const isArchived = Boolean(project.archived_at);
+    ctx.refs.settingsDetail.replaceChildren();
+
+    const head = document.createElement("header");
+    head.className = "spd-head";
+    const ic = document.createElement("span");
+    ic.className = "spd-av lg";
+    ic.append(icon("help", 16));
+    const h3 = document.createElement("h3");
+    h3.textContent = "权限与确认";
+    head.append(ic, h3);
+    ctx.refs.settingsDetail.append(head);
+
+    const intro = document.createElement("p");
+    intro.className = "spd-hint";
+    intro.textContent = "四档单选；切档会立即同步到 composer 底部的权限标签，项目内不再二次确认。";
+    ctx.refs.settingsDetail.append(intro);
+
+    if (!projectRoot) {
+      const noProj = document.createElement("div");
+      noProj.className = "spd-hint";
+      noProj.textContent = "请先新建或打开一部小说，再设置权限档。";
+      ctx.refs.settingsDetail.append(noProj);
+      settingsFields.permissionTier = null;
+      return;
+    }
+
+    if (isArchived) {
+      const archivedNote = document.createElement("div");
+      archivedNote.className = "spd-hint";
+      archivedNote.textContent = "项目已归档，权限模式不可改（始终为只读）。";
+      ctx.refs.settingsDetail.append(archivedNote);
+    }
+
+    const radioGroup = document.createElement("div");
+    radioGroup.className = "spd-radio-group";
+    radioGroup.setAttribute("role", "radiogroup");
+    radioGroup.setAttribute("aria-label", "权限模式");
+    radioGroup.id = "settings-permission-tiers";
+
+    const initialTier = isArchived ? "read_only" : detectPermissionTier(project.tool_permissions);
+    settingsFields.permissionTier = { selected: initialTier, group: radioGroup };
+
+    for (const tier of PERMISSION_TIERS) {
+      const option = document.createElement("label");
+      option.className = "spd-radio-option" + (tier.id === "yolo" ? " spd-radio-option--yolo" : "");
+      option.setAttribute("data-tier-id", tier.id);
+
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.name = "permission-tier";
+      input.value = tier.id;
+      input.checked = tier.id === initialTier;
+      input.disabled = isArchived;
+      input.id = `settings-permission-tier-${tier.id}`;
+      input.setAttribute("aria-describedby", `settings-permission-tier-${tier.id}-desc`);
+      input.addEventListener("change", () => {
+        if (input.checked && settingsFields.permissionTier) {
+          settingsFields.permissionTier.selected = tier.id;
+        }
+        refreshPermissionTierOptions();
+      });
+
+      const tx = document.createElement("div");
+      tx.className = "spd-radio-tx";
+      const label = document.createElement("strong");
+      label.textContent = tier.label;
+      const desc = document.createElement("small");
+      desc.id = `settings-permission-tier-${tier.id}-desc`;
+      desc.textContent = tier.desc;
+      tx.append(label, desc);
+      option.append(input, tx);
+      if (tier.id === "yolo" && tier.warn) {
+        const warn = document.createElement("div");
+        warn.className = "spd-radio-warn";
+        warn.textContent = tier.warn;
+        option.append(warn);
+      }
+      radioGroup.append(option);
+    }
+    ctx.refs.settingsDetail.append(radioGroup);
+    refreshPermissionTierOptions();
+  }
+
+  function refreshPermissionTierOptions() {
+    const group = document.getElementById("settings-permission-tiers");
+    if (!group) return;
+    const options = [...group.querySelectorAll(".spd-radio-option")];
+    for (const opt of options) {
+      const input = opt.querySelector('input[type="radio"]');
+      opt.classList.toggle("spd-radio-option--on", Boolean(input?.checked));
+    }
   }
 
   function renderDangerSection() {
@@ -700,6 +848,10 @@ export function createSettingsModal(ctx) {
       await saveGatesSection();
       return;
     }
+    if (settingsSection === "permissions") {
+      await savePermissionsSection();
+      return;
+    }
     if (settingsSection === "research") {
       await saveResearchSection();
       return;
@@ -813,6 +965,34 @@ export function createSettingsModal(ctx) {
         })
       });
       ctx.showToast("联网搜索配置已保存。", "success");
+      closeSettingsModal();
+      await ctx.loadDashboard();
+    });
+  }
+
+  async function savePermissionsSection() {
+    const currentProjectRoot = ctx.getCurrentProjectRoot();
+    if (!currentProjectRoot) {
+      ctx.showToast("请先新建或打开一部小说，再保存权限设置。", "info");
+      return;
+    }
+    const tierField = settingsFields.permissionTier;
+    if (!tierField) {
+      ctx.showToast("请先选择权限档。", "info");
+      return;
+    }
+    const tier = PERMISSION_TIERS.find((t) => t.id === tierField.selected) ?? PERMISSION_TIERS[1];
+    if (tier.id === "yolo") {
+      const confirmYolo = window.confirm(
+        "YOLO 模式会自动执行所有写与控制操作，包括章节编辑、设定更新和任务控制。\n确定要开启 YOLO 模式吗？"
+      );
+      if (!confirmYolo) return;
+    }
+    await runSave(async () => {
+      await postJson("/api/settings/update", {
+        tool_permissions: tier.combo
+      });
+      ctx.showToast(`权限档已切换为「${tier.short}」。`, "success");
       closeSettingsModal();
       await ctx.loadDashboard();
     });

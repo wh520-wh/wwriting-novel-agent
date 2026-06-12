@@ -687,6 +687,73 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .cbar-btn svg { display: block; color: var(--muted); }
 .cbar-spacer { margin-left: auto; }
 .cbar-hint { font-size: 11px; color: var(--faint); font-family: var(--mono); }
+.cbar-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 30px; padding: 0 12px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--surface-2);
+  color: var(--ink-2); font-size: 12px; font-weight: 600;
+  font-family: var(--mono); letter-spacing: 0.01em;
+  cursor: pointer; user-select: none;
+  transition: background .12s, border-color .12s, color .12s, box-shadow .12s;
+}
+.cbar-pill:hover { background: var(--hover); border-color: var(--line); }
+.cbar-pill:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus-ring); border-color: var(--accent-line); }
+.cbar-pill[disabled] { cursor: not-allowed; opacity: 0.65; }
+.cbar-pill--yolo {
+  border-color: #f0c674;
+  background: #fff8e6;
+  color: #6b4f00;
+}
+.cbar-pill--yolo:hover { background: #fff1cc; border-color: #e0b75b; }
+.cbar-pill--archived {
+  border-color: var(--line);
+  background: var(--surface-3);
+  color: var(--muted);
+}
+
+/* mode popover (reuses .slash surface patterns) */
+.mode-popover {
+  position: absolute; left: 12px; bottom: calc(100% + 8px);
+  min-width: 240px; max-width: 320px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-pop); padding: 6px; display: grid; gap: 2px;
+  z-index: 30;
+}
+.mode-popover[hidden] { display: none; }
+.mode-popover-label {
+  font-size: 10.5px; font-weight: 700; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--faint);
+  padding: 6px 10px 4px;
+}
+.mode-popover-item {
+  display: grid; grid-template-columns: 22px minmax(0,1fr); gap: 10px; align-items: center;
+  padding: 8px 10px; border-radius: 9px; text-align: left;
+  border: 1px solid transparent; background: transparent;
+  cursor: pointer; color: var(--ink-2);
+  transition: background .1s, border-color .1s;
+}
+.mode-popover-item:hover, .mode-popover-item.active { background: var(--hover); }
+.mode-popover-item[aria-checked="true"] {
+  background: var(--surface-3); border-color: var(--line-2);
+}
+.mode-popover-item .mpi-glyph {
+  display: inline-grid; place-items: center; width: 22px; height: 22px;
+  border-radius: 6px; background: var(--surface-3);
+  border: 1px solid var(--line-2); color: var(--ink-2); font-size: 13px;
+}
+.mode-popover-item .mpi-tx { min-width: 0; display: grid; gap: 1px; }
+.mode-popover-item .mpi-tx strong { font-size: 13px; font-weight: 650; }
+.mode-popover-item .mpi-tx small { font-size: 11.5px; color: var(--muted); }
+.mode-popover-item--yolo { border-color: #f0c674; background: #fff8e6; }
+.mode-popover-item--yolo .mpi-tx strong { color: #6b4f00; }
+.mode-popover-item--yolo .mpi-tx small { color: #8a6418; }
+.mode-popover-item--yolo[aria-checked="true"] { background: #fff1cc; border-color: #e0b75b; }
+.mode-popover-warn {
+  padding: 8px 10px; border-radius: var(--r-sm); font-size: 11.5px; line-height: 1.5;
+  border: 1px solid #f0c674; background: #fff8e6; color: #6b4f00;
+  margin-top: 4px;
+}
+.mode-popover-warn[hidden] { display: none; }
 .send {
   width: 34px; height: 34px; border-radius: 10px; flex: 0 0 auto;
   display: grid; place-items: center;
@@ -1522,6 +1589,36 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .spd-hint.error { color: #b4382f; }
 .spd-hint.success { color: #2f8f5b; }
 .spd-section { margin: 18px 0 4px; font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: 0.02em; }
+
+/* permission tier radio group (settings → 权限与确认) */
+.spd-radio-group { display: grid; gap: 8px; margin-top: 8px; }
+.spd-radio-option {
+  display: grid; grid-template-columns: 22px minmax(0,1fr); gap: 10px; align-items: start;
+  padding: 10px 12px; border-radius: var(--r-md);
+  border: 1px solid var(--line); background: var(--surface-2);
+  cursor: pointer; transition: background .12s, border-color .12s, box-shadow .12s;
+}
+.spd-radio-option:hover { background: var(--hover); }
+.spd-radio-option input[type="radio"] { margin-top: 3px; cursor: pointer; }
+.spd-radio-option input[type="radio"]:focus-visible { outline: 2px solid var(--accent-line); outline-offset: 2px; }
+.spd-radio-option--on {
+  background: var(--surface); border-color: var(--accent-line);
+  box-shadow: 0 0 0 1px var(--accent-line) inset;
+}
+.spd-radio-option--yolo { border-color: #f0c674; background: #fff8e6; }
+.spd-radio-option--yolo:hover { background: #fff1cc; }
+.spd-radio-option--yolo.spd-radio-option--on { background: #fff1cc; border-color: #e0b75b; box-shadow: 0 0 0 1px #e0b75b inset; }
+.spd-radio-tx { min-width: 0; display: grid; gap: 3px; }
+.spd-radio-tx strong { font-size: 13.5px; font-weight: 650; color: var(--ink); }
+.spd-radio-tx small { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+.spd-radio-option--yolo .spd-radio-tx strong { color: #6b4f00; }
+.spd-radio-option--yolo .spd-radio-tx small { color: #8a6418; }
+.spd-radio-warn {
+  grid-column: 1 / -1; margin-top: 6px;
+  padding: 8px 10px; border-radius: var(--r-sm);
+  border: 1px solid #f0c674; background: #fffbeb; color: #6b4f00;
+  font-size: 11.5px; line-height: 1.5;
+}
 
 .filecard-rollup {
   display: block;

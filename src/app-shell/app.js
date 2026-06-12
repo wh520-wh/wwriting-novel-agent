@@ -97,6 +97,7 @@ let previousBadgeSummary = null;
 
 // --- extracted module instances (created before event bindings that reference their methods) ---
 let composer; // forward ref: thread-renderer's promote button calls composer.promoteAskEntry (assigned in Task 7)
+let projectListData = null; // hoisted to top so click handlers never trip TDZ if a probe fires before later declarations run
 
 const threadRenderer = createThreadRenderer({
   refs,
@@ -149,6 +150,7 @@ const { renderDrawerBody } = createDrawerPanels({
 composer = createComposer({
   refs,
   getCurrentProjectRoot: () => currentProjectRoot,
+  getDashboard: () => lastDashboard,
   loadDashboard,
   openCreateModal,
   openSettingsModal,
@@ -244,6 +246,7 @@ refs.composerInput.addEventListener("input", () => {
   updateSubmitState();
   updateSlashMenu();
 });
+setTimeout(() => composer.initModePill(), 0);
 
 refs.readerClose.addEventListener("click", closeReader);
 refs.readerScrim.addEventListener("click", (event) => {
@@ -305,8 +308,6 @@ function renderRailNav() {
 async function loadAll() {
   await Promise.all([loadProjectList(), loadDashboard()]);
 }
-
-let projectListData = null;
 
 async function loadProjectList() {
   try {
@@ -415,6 +416,7 @@ function renderDashboard(data) {
     setStatus("idle");
     ensureRefreshLoop(false);
     threadRenderer.renderEmptyThread();
+    composer.updateModePill();
     refreshDrawerIfOpen();
     return;
   }
@@ -475,6 +477,7 @@ function renderDashboard(data) {
     previousBadgeSummary = nextBadgeSummary;
   }
 
+  composer.updateModePill();
   refreshDrawerIfOpen();
 }
 
