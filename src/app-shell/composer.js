@@ -2,6 +2,7 @@ import { icon } from "./icons.js";
 import { postJson, sendChatMessage } from "./api-client.js";
 import { getCommand, listCommands } from "./command-registry.mjs";
 import "./commands/index.mjs";  // side-effect: register 5 built-in commands
+import { PERMISSION_TIERS, detectPermissionTier, getTierById } from "./permission-tiers.mjs";
 
 // 旁路询问命令前缀（与后端 side-question.mjs 保持一致；禁止使用 /btw）。
 const SIDE_QUESTION_PREFIXES = ["/ask", "/side", "/q"];
@@ -33,26 +34,10 @@ export function createComposer(ctx) {
   let slashActiveIndex = 0;
 
   // --- four-tier approval / mode pill (S4 Task 8) ---
-  // Tier priority: yolo > auto > read_only > confirm.
-  // (safe_edit 是另一条正交轴，保留原值不参与档位判定。)
-  const TIER_DEFS = [
-    { id: "read_only", label: "🔒 只读",     short: "🔒 只读",     combo: { read_only: true,  safe_edit: true, auto_edit: false, yolo: false } },
-    { id: "confirm",   label: "✓ 确认后修改", short: "✓ 确认后修改", combo: { read_only: false, safe_edit: true, auto_edit: false, yolo: false } },
-    { id: "auto",      label: "⚡ 自动修改",  short: "⚡ 自动修改",  combo: { read_only: false, safe_edit: true, auto_edit: true,  yolo: false } },
-    { id: "yolo",      label: "⚡ YOLO",     short: "⚡ YOLO",     combo: { read_only: false, safe_edit: true, auto_edit: true,  yolo: true  } }
-  ];
-  const TIER_DESC = {
-    read_only: "完全只读；智能体不修改任何文件。",
-    confirm:   "默认档；写文件前会先让你确认。",
-    auto:      "可静默改稿；归档/导出仍需确认。",
-    yolo:      "⚠ 跳过所有确认；归档/章节编辑全自动。"
-  };
+  // PERMISSION_TIERS 引用共享模块 PERMISSION_TIERS；detectPermissionTier 统一优先级。
+  const TIER_DESC = Object.fromEntries(PERMISSION_TIERS.map((t) => [t.id, t.desc]));
   function tierFromPermissions(perms) {
-    const p = perms ?? {};
-    if (p.yolo === true) return TIER_DEFS[3];
-    if (p.auto_edit === true) return TIER_DEFS[2];
-    if (p.read_only === true) return TIER_DEFS[0];
-    return TIER_DEFS[1];
+    return getTierById(detectPermissionTier(perms));
   }
 
   let modePopoverOpen = false;
@@ -86,7 +71,7 @@ export function createComposer(ctx) {
 
   function syncModePopoverChecked() {
     const project = ctx.getDashboard()?.project ?? null;
-    const tier = project ? tierFromPermissions(project.tool_permissions) : TIER_DEFS[1];
+    const tier = project ? tierFromPermissions(project.tool_permissions) : PERMISSION_TIERS[1];
     const popover = getModePopover();
     if (!popover) return;
     const items = [...popover.querySelectorAll("[data-tier-id]")];
@@ -94,7 +79,7 @@ export function createComposer(ctx) {
       const on = el.dataset.tierId === tier.id && !project?.archived_at;
       el.setAttribute("aria-checked", on ? "true" : "false");
     });
-    modePopoverActiveIndex = Math.max(0, TIER_DEFS.findIndex((t) => t.id === tier.id));
+    modePopoverActiveIndex = Math.max(0, PERMISSION_TIERS.findIndex((t) => t.id === tier.id));
     const warn = document.getElementById("mode-popover-warn");
     if (warn) warn.hidden = tier.id !== "yolo";
   }
@@ -157,7 +142,7 @@ export function createComposer(ctx) {
       return;
     }
     if (event.key === "Enter" || event.key === " ") {
-      const tier = TIER_DEFS[modePopoverActiveIndex];
+      const tier = PERMISSION_TIERS[modePopoverActiveIndex];
       if (tier) {
         event.preventDefault();
         void applyTier(tier);
@@ -186,7 +171,7 @@ export function createComposer(ctx) {
       await postJson("/api/settings/update", {
         tool_permissions: tier.combo
       });
-      ctx.showToast(`已切换到「${tier.label.replace(/^[^\s]+\s/, "")}」档。`, "success");
+      ctx.showToast(`已切换到「${tier.short}」档。`, "success");
       await ctx.loadDashboard();
     } catch (error) {
       ctx.showToast(error.message ?? "切换权限档失败。", "error");
@@ -212,7 +197,7 @@ export function createComposer(ctx) {
   function onModePopoverItemClick(event) {
     const target = event.currentTarget;
     const tierId = target?.dataset?.tierId;
-    const tier = TIER_DEFS.find((t) => t.id === tierId);
+    const tier = PERMISSION_TIERS.find((t) => t.id === tierId);
     if (tier) void applyTier(tier);
   }
 
@@ -572,7 +557,7 @@ export function createComposer(ctx) {
     label.textContent = "权限模式";
     popover.append(label);
 
-    for (const tier of TIER_DEFS) {
+    for (const tier of PERMISSION_TIERS) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "mode-popover-item" + (tier.id === "yolo" ? " mode-popover-item--yolo" : "");
