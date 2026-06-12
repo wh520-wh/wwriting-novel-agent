@@ -242,7 +242,21 @@ npm run verify:desktop-shell
 14. 阅读器字号四档调节并在重启后保持；←/→ 翻章；沉浸模式切换生效。
 15. `npm test` 全绿；`verify:app-shell`、`verify:app-clickability`（含新增探针）`ok: true`。
 
-## 9. 风险与对策
+## 9. 顺手改进（实施层，随主任务交付）
+
+实施计划（`../plans/2026-06-13-s45-conversation-polish.md`）将以下勘察期发现的小改进明确纳入对应任务，属于本 spec 范围：
+
+- **I1** thread-renderer 本地 `escape()` 与 markdown-lite 的 `escapeHtml` 去重（DRY）。
+- **I2** 问候语与快捷 chips 还停留在 S3 前的 `/write` `/ask` 话术，更新为 chat-first 文案。
+- **I3** composer 乐观用户气泡手工拼 DOM 与 thread-renderer 重复，改为复用 `renderChatMessage`。
+- **I4** `syncChatThread` 补贴底跟随（stick-to-bottom）与无障碍播报（过程流的前置条件）。
+- **I5** 隐私模式完整性：文稿块与段落 diff 正文带 `peek` class，确保隐私模糊覆盖对话内正文。
+- **I6** assistant 气泡可读性：13.5px/1.55 提到 14px/1.7、max-width 86%。
+- **I7** 全部新增按钮带 `aria-label`/可见文本 + `data-testid`。
+- **I8** composer 提示文案追加 `? 快捷键` 入口提示。
+- **I9** 空态建议卡与问候 chips 在 chat busy 时点击直接忽略，避免 409 噪音。
+
+## 10. 风险与对策
 
 | 风险 | 对策 |
 |------|------|
