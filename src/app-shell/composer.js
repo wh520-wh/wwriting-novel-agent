@@ -32,6 +32,196 @@ export function createComposer(ctx) {
 
   let slashActiveIndex = 0;
 
+  // --- four-tier approval / mode pill (S4 Task 8) ---
+  // Tier priority: yolo > auto > read_only > confirm.
+  // (safe_edit 是另一条正交轴，保留原值不参与档位判定。)
+  const TIER_DEFS = [
+    { id: "read_only", label: "🔒 只读",     short: "🔒 只读",     combo: { read_only: true,  safe_edit: true, auto_edit: false, yolo: false } },
+    { id: "confirm",   label: "✓ 确认后修改", short: "✓ 确认后修改", combo: { read_only: false, safe_edit: true, auto_edit: false, yolo: false } },
+    { id: "auto",      label: "⚡ 自动修改",  short: "⚡ 自动修改",  combo: { read_only: false, safe_edit: true, auto_edit: true,  yolo: false } },
+    { id: "yolo",      label: "⚡ YOLO",     short: "⚡ YOLO",     combo: { read_only: false, safe_edit: true, auto_edit: true,  yolo: true  } }
+  ];
+  const TIER_DESC = {
+    read_only: "完全只读；智能体不修改任何文件。",
+    confirm:   "默认档；写文件前会先让你确认。",
+    auto:      "可静默改稿；归档/导出仍需确认。",
+    yolo:      "⚠ 跳过所有确认；归档/章节编辑全自动。"
+  };
+  function tierFromPermissions(perms) {
+    const p = perms ?? {};
+    if (p.yolo === true) return TIER_DEFS[3];
+    if (p.auto_edit === true) return TIER_DEFS[2];
+    if (p.read_only === true) return TIER_DEFS[0];
+    return TIER_DEFS[1];
+  }
+
+  let modePopoverOpen = false;
+  let modePopoverActiveIndex = 1; // default tier index
+
+  function getModePill() {
+    return document.getElementById("mode-pill");
+  }
+  function getModePopover() {
+    return document.getElementById("mode-popover");
+  }
+
+  function renderModePill() {
+    const pill = getModePill();
+    if (!pill) return;
+    const project = ctx.getDashboard()?.project ?? null;
+    if (!project) {
+      // No project loaded: leave the pill in its HTML default state and let dashboard refresh re-render.
+      pill.setAttribute("aria-expanded", modePopoverOpen ? "true" : "false");
+      return;
+    }
+    pill.disabled = Boolean(project.archived_at);
+    const tier = tierFromPermissions(project.tool_permissions);
+    pill.textContent = pill.disabled ? "📦 已归档" : tier.label;
+    pill.className = "cbar-pill"
+      + (pill.disabled ? " cbar-pill--archived" : "")
+      + (!pill.disabled && tier.id === "yolo" ? " cbar-pill--yolo" : "");
+    pill.setAttribute("data-tier", tier.id);
+    pill.setAttribute("aria-expanded", modePopoverOpen ? "true" : "false");
+  }
+
+  function syncModePopoverChecked() {
+    const project = ctx.getDashboard()?.project ?? null;
+    const tier = project ? tierFromPermissions(project.tool_permissions) : TIER_DEFS[1];
+    const popover = getModePopover();
+    if (!popover) return;
+    const items = [...popover.querySelectorAll("[data-tier-id]")];
+    items.forEach((el) => {
+      const on = el.dataset.tierId === tier.id && !project?.archived_at;
+      el.setAttribute("aria-checked", on ? "true" : "false");
+    });
+    modePopoverActiveIndex = Math.max(0, TIER_DEFS.findIndex((t) => t.id === tier.id));
+    const warn = document.getElementById("mode-popover-warn");
+    if (warn) warn.hidden = tier.id !== "yolo";
+  }
+
+  function openModePopover() {
+    const popover = getModePopover();
+    const pill = getModePill();
+    if (!popover || !pill) return;
+    if (pill.disabled) return;
+    popover.hidden = false;
+    modePopoverOpen = true;
+    pill.setAttribute("aria-expanded", "true");
+    syncModePopoverChecked();
+    setModePopoverActive(modePopoverActiveIndex);
+    document.addEventListener("keydown", onModePopoverKeydown, true);
+    document.addEventListener("pointerdown", onModePopoverPointerdown, true);
+  }
+
+  function closeModePopover() {
+    const popover = getModePopover();
+    const pill = getModePill();
+    if (!popover) return;
+    if (popover.hidden && !modePopoverOpen) return;
+    popover.hidden = true;
+    modePopoverOpen = false;
+    pill?.setAttribute("aria-expanded", "false");
+    document.removeEventListener("keydown", onModePopoverKeydown, true);
+    document.removeEventListener("pointerdown", onModePopoverPointerdown, true);
+  }
+
+  function setModePopoverActive(i) {
+    const popover = getModePopover();
+    if (!popover) return;
+    const items = [...popover.querySelectorAll("[data-tier-id]")];
+    if (!items.length) return;
+    modePopoverActiveIndex = ((i % items.length) + items.length) % items.length;
+    items.forEach((el, idx) => {
+      const on = idx === modePopoverActiveIndex;
+      el.classList.toggle("active", on);
+    });
+  }
+
+  function onModePopoverKeydown(event) {
+    if (!modePopoverOpen) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeModePopover();
+      getModePill()?.focus();
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setModePopoverActive(modePopoverActiveIndex + 1);
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setModePopoverActive(modePopoverActiveIndex - 1);
+      return;
+    }
+    if (event.key === "Enter" || event.key === " ") {
+      const tier = TIER_DEFS[modePopoverActiveIndex];
+      if (tier) {
+        event.preventDefault();
+        void applyTier(tier);
+      }
+    }
+  }
+
+  function onModePopoverPointerdown(event) {
+    if (!modePopoverOpen) return;
+    const popover = getModePopover();
+    const pill = getModePill();
+    const target = event.target;
+    if (popover && popover.contains(target)) return;
+    if (pill && pill.contains(target)) return;
+    closeModePopover();
+  }
+
+  async function applyTier(tier) {
+    closeModePopover();
+    const currentProjectRoot = ctx.getCurrentProjectRoot();
+    if (!currentProjectRoot) {
+      ctx.showToast("请先新建或打开一部小说。", "info");
+      return;
+    }
+    try {
+      await postJson("/api/settings/update", {
+        tool_permissions: tier.combo
+      });
+      ctx.showToast(`已切换到「${tier.label.replace(/^[^\s]+\s/, "")}」档。`, "success");
+      await ctx.loadDashboard();
+    } catch (error) {
+      ctx.showToast(error.message ?? "切换权限档失败。", "error");
+    }
+  }
+
+  function onModePillClick() {
+    if (getModePill()?.disabled) return;
+    if (modePopoverOpen) closeModePopover();
+    else openModePopover();
+  }
+  function onModePillKeydown(event) {
+    if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
+      if (!modePopoverOpen) {
+        event.preventDefault();
+        openModePopover();
+      }
+    }
+    if (event.key === "Escape" && modePopoverOpen) {
+      closeModePopover();
+    }
+  }
+  function onModePopoverItemClick(event) {
+    const target = event.currentTarget;
+    const tierId = target?.dataset?.tierId;
+    const tier = TIER_DEFS.find((t) => t.id === tierId);
+    if (tier) void applyTier(tier);
+  }
+
+  // expose update so app.js can re-render when dashboard refreshes
+  function updateModePill() {
+    renderModePill();
+    if (modePopoverOpen) syncModePopoverChecked();
+  }
+
   function parseUserCommand(input, mode) {
     const raw = String(input ?? "");
     const trimmed = raw.trim();
@@ -368,9 +558,71 @@ export function createComposer(ctx) {
     return result.message ?? "指令已记录。";
   }
 
+  function buildModePopover() {
+    if (document.getElementById("mode-popover")) return;
+    const popover = document.createElement("div");
+    popover.className = "mode-popover";
+    popover.id = "mode-popover";
+    popover.setAttribute("role", "listbox");
+    popover.setAttribute("aria-label", "智能体权限模式");
+    popover.hidden = true;
+
+    const label = document.createElement("div");
+    label.className = "mode-popover-label";
+    label.textContent = "权限模式";
+    popover.append(label);
+
+    for (const tier of TIER_DEFS) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "mode-popover-item" + (tier.id === "yolo" ? " mode-popover-item--yolo" : "");
+      btn.setAttribute("role", "option");
+      btn.setAttribute("data-tier-id", tier.id);
+      btn.setAttribute("aria-checked", "false");
+      btn.dataset.tierId = tier.id;
+      const glyph = document.createElement("span");
+      glyph.className = "mpi-glyph";
+      glyph.textContent = tier.short.slice(0, 2);
+      const tx = document.createElement("span");
+      tx.className = "mpi-tx";
+      const strong = document.createElement("strong");
+      strong.textContent = tier.label;
+      const small = document.createElement("small");
+      small.textContent = TIER_DESC[tier.id];
+      tx.append(strong, small);
+      btn.append(glyph, tx);
+      btn.addEventListener("click", onModePopoverItemClick);
+      popover.append(btn);
+    }
+
+    const warn = document.createElement("div");
+    warn.className = "mode-popover-warn";
+    warn.id = "mode-popover-warn";
+    warn.textContent = "⚠ 警告：YOLO 模式自动执行所有写与控制操作，包括章节编辑、设定更新和任务控制。";
+    warn.hidden = true;
+    popover.append(warn);
+
+    // 浮层挂在 composer-wrap 上，跟随 composer 一起定位
+    const wrap = document.getElementById("composer") ?? ctx.refs.composer;
+    if (wrap) wrap.append(popover);
+
+    // pill 绑定
+    const pill = getModePill();
+    if (pill) {
+      pill.addEventListener("click", onModePillClick);
+      pill.addEventListener("keydown", onModePillKeydown);
+    }
+  }
+
+  function initModePill() {
+    buildModePopover();
+    renderModePill();
+  }
+
   return {
     parseUserCommand, onComposerKeydown, autoGrowComposer, updateSubmitState,
     updateSlashMenu, hideSlashMenu, submitComposer, submitWritingCommand,
-    submitSideQuestion, promoteAskEntry, resultMessageForCommand
+    submitSideQuestion, promoteAskEntry, resultMessageForCommand,
+    initModePill, updateModePill, openModePopover, closeModePopover
   };
 }
