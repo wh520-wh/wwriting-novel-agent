@@ -2,6 +2,7 @@ import { icon } from "./icons.js";
 import { compactObject, isEnvironmentVariableName, resolveModelEndpoint } from "./utils.js";
 import { getJson, postJson, sendChatMessage } from "./api-client.js";
 import { motion } from "./motion-runtime.js";
+import { PERMISSION_TIERS, detectPermissionTier } from "./permission-tiers.mjs";
 
 const PROVIDER_PRESETS = {
   deepseek: { title: "DeepSeek 官方", provider: "openai-compatible", baseUrl: "https://api.deepseek.com", apiKeyEnv: "DEEPSEEK_API_KEY", models: ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat"] },
@@ -24,49 +25,6 @@ const SETTINGS_SECTIONS = [
   { id: "danger", label: "危险区", icon: "bolt", ready: true }
 ];
 
-// spec §4.3 四档权限矩阵（与 composer.js 中的 TIER_DEFS 保持一致）
-const PERMISSION_TIERS = [
-  {
-    id: "read_only",
-    label: "🔒 只读",
-    short: "只读",
-    combo: { read_only: true,  safe_edit: true, auto_edit: false, yolo: false },
-    desc: "完全只读；智能体不修改任何文件。",
-    warn: ""
-  },
-  {
-    id: "confirm",
-    label: "✓ 确认后修改",
-    short: "确认",
-    combo: { read_only: false, safe_edit: true, auto_edit: false, yolo: false },
-    desc: "默认档；写文件前会先让你确认。",
-    warn: ""
-  },
-  {
-    id: "auto",
-    label: "⚡ 自动修改",
-    short: "自动",
-    combo: { read_only: false, safe_edit: true, auto_edit: true,  yolo: false },
-    desc: "可静默改稿；归档/导出仍需确认。",
-    warn: ""
-  },
-  {
-    id: "yolo",
-    label: "⚡ YOLO",
-    short: "YOLO",
-    combo: { read_only: false, safe_edit: true, auto_edit: true,  yolo: true  },
-    desc: "跳过所有确认；归档/章节编辑全自动。",
-    warn: "⚠ 警告：YOLO 模式自动执行所有写与控制操作，包括章节编辑、设定更新和任务控制。"
-  }
-];
-
-function detectPermissionTier(perms) {
-  const p = perms ?? {};
-  if (p.read_only === true) return "read_only";
-  if (p.yolo === true) return "yolo";
-  if (p.auto_edit === true) return "auto";
-  return "confirm";
-}
 
 export function createSettingsModal(ctx) {
   // ctx provides: refs, getDashboard, getCurrentProjectRoot, showToast, loadDashboard,
