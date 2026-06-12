@@ -500,6 +500,10 @@ async function reviewChapter(projectRoot, project, state, runtime) {
       message: `fact-check 失败：${error.message}`
     });
   }
+  if (factCheck?.conflicts?.length && project.fact_check?.hard === true) {
+    await applyFactCheckHardFail(projectRoot, project, state, factCheck.conflicts);
+    return;
+  }
   const next = setStage({ ...state }, "finalizing");
   await saveState(projectRoot, next);
   await upsertChapter(projectRoot, {
@@ -753,8 +757,40 @@ export async function runFactCheck(projectRoot, project, state, runtime, draft) 
       } catch { /* preview 失败不阻塞 */ }
     }
   }
-  // hard 模式：当前任务仅记录 warning 与主动消息，不强制 needs_revision（后续 Task 处理）
   return { conflicts };
+}
+
+export async function applyFactCheckHardFail(projectRoot, project, state, conflicts) {
+  const gate = { gate: "fact-check-gate", status: "failed", conflicts };
+  const next = setStage({ ...state, last_quality_gate_results: [gate] }, "needs_revision");
+  await saveState(projectRoot, next);
+  await upsertChapter(projectRoot, {
+    chapter_no: state.current_chapter_no,
+    status: "needs_revision",
+    quality_gate_results: [gate]
+  });
+  await appendEvent(projectRoot, {
+    type: "quality_gate_failed",
+    project_id: project.project_id,
+    chapter_no: state.current_chapter_no,
+    stage: "reviewing",
+    severity: "warn",
+    message: `fact-check gate failed（${conflicts.length} 个设定冲突，hard 模式打回修订）`,
+    data: gate
+  });
+  await writeCheckpoint(projectRoot, checkpointPayload(project, state, next));
+  try {
+    const fresh = await loadState(projectRoot).catch(() => state);
+    const card = deriveFailureCard({
+      id: `flr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      type: "quality_gate_failed",
+      chapter_no: state.current_chapter_no,
+      message: "fact-check gate failed",
+      ts: new Date().toISOString(),
+      data: gate
+    }, fresh);
+    appendFailure(projectRoot, card);
+  } catch (err) { console.warn("appendFailure failed:", err.message); }
 }
 
 async function completeChapter(projectRoot, project, state) {
