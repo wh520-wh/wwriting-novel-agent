@@ -43,6 +43,21 @@ test("read_only 项目拒绝 write/control 工具，放行 read", () => {
   assert.equal(checkToolPermission({ kind: "write", name: "queue_chapters" }, noSafeEdit).allowed, true);
 });
 
+test("checkToolPermission 归档只读：写/控制拒绝，豁免名单放行，read 永放行", () => {
+  const perms = { read_only: false, safe_edit: true };
+  const archived = { archived: true };
+  assert.equal(checkToolPermission({ kind: "read" }, perms, archived).allowed, true);
+  assert.equal(checkToolPermission({ kind: "write", name: "edit_chapter" }, perms, archived).allowed, false);
+  assert.equal(checkToolPermission({ kind: "control", name: "start_run" }, perms, archived).allowed, false);
+  assert.equal(checkToolPermission({ kind: "write", name: "archive_project" }, perms, archived).allowed, true);
+  assert.equal(checkToolPermission({ kind: "write", name: "export_book" }, perms, archived).allowed, true);
+});
+
+test("优先级：read_only 压过 yolo；safe_edit:false 压过 yolo", () => {
+  assert.equal(checkToolPermission({ kind: "write", name: "edit_chapter" }, { read_only: true, yolo: true }).allowed, false);
+  assert.equal(checkToolPermission({ kind: "write", name: "edit_chapter" }, { safe_edit: false, yolo: true }).allowed, false);
+});
+
 test("executeTool 成功路径写 chat_tool_executed 事件", async () => {
   const registry = createToolRegistry();
   registry.register({ name: "demo_read", kind: "read", description: "演示", params: {}, run: async () => ({ ok: 1 }) });

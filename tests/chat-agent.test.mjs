@@ -51,7 +51,8 @@ test("历史超 20 条折叠为提要", async () => {
 
 import { runChatTurn, resumeChatTurn } from "../src/core/chat/chat-agent.mjs";
 import { registerWriteTools } from "../src/core/chat/tools-write.mjs";
-import { loadPendingAction, readChatHistory as readHistory } from "../src/core/chat/chat-store.mjs";
+import { registerControlTools } from "../src/core/chat/tools-control.mjs";
+import { loadPendingAction, readChatHistory as readHistory, clearPendingAction } from "../src/core/chat/chat-store.mjs";
 import { executeTool } from "../src/core/chat/tool-registry.mjs";
 import { upsertChapter, saveProject, loadState, saveState } from "../src/core/project-store.mjs";
 
@@ -286,4 +287,42 @@ test("pending_action 跨进程持久：新 registry/loop 对象 approve 成功",
   assert.equal(await loadPendingAction(projectRoot), null);
   const content = await fs.readFile(path.join(projectRoot, "chapters", "001.md"), "utf8");
   assert.match(content, /十二楼/u);
+});
+
+test("auto_edit=true：edit_chapter 不落 pending 直接执行", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  project.tool_permissions = { ...project.tool_permissions, auto_edit: true };
+  const registry = createToolRegistry();
+  registerReadTools(registry); registerWriteTools(registry);
+  const out = await runChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient([
+      '```json\n{"tool_calls":[{"tool":"edit_chapter","args":{"chapter_no":1,"find":"六楼","replace":"十二楼","reason":"auto"}}]}\n```',
+      "已自动改完。"
+    ]),
+    userMessage: "改楼层"
+  });
+  assert.equal(out.pendingAction, null);
+  assert.equal(out.toolEvents[0].tool, "edit_chapter");
+  assert.equal(out.toolEvents[0].ok, true);
+  assert.match(await fs.readFile(path.join(projectRoot, "chapters", "001.md"), "utf8"), /十二楼/u);
+});
+
+test("auto_edit=true 不放开 control；yolo=true 放开 control", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  const registry = createToolRegistry();
+  registerReadTools(registry); registerWriteTools(registry); registerControlTools(registry);
+  const callScript = ['```json\n{"tool_calls":[{"tool":"pause_run","args":{}}]}\n```', "好。"];
+  project.tool_permissions = { ...project.tool_permissions, auto_edit: true, yolo: false };
+  const a = await runChatTurn({ projectRoot, project, registry, modelClient: scriptedClient(callScript), userMessage: "暂停" });
+  assert.ok(a.pendingAction, "auto 档 control 仍须确认");
+  await clearPendingAction(projectRoot); // 从 chat-store 导入
+  project.tool_permissions = { ...project.tool_permissions, yolo: true };
+  const fakeServer = { runJobs: new Map([[path.resolve(projectRoot), { status: "running", controller: new AbortController() }]]) };
+  const b = await runChatTurn({ projectRoot, project, registry, modelClient: scriptedClient(callScript), userMessage: "暂停", server: fakeServer });
+  assert.equal(b.pendingAction, null);
+  assert.equal(b.toolEvents[0].tool, "pause_run");
+  assert.equal(b.toolEvents[0].ok, true);
 });
