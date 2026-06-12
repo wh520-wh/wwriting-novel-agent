@@ -1705,3 +1705,10 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .chat-confirm-approve:disabled, .chat-confirm-reject:disabled { opacity: .55; cursor: not-allowed; }
 .chat-confirm-card--resolved { opacity: .6; border-color: var(--green); }
 .chat-confirm-card--rejected { opacity: .6; border-color: var(--muted); }
+
+/* line-level diff view (edit_chapter confirm card) */
+.chat-diff { font-family: var(--mono); font-size: 12.5px; line-height: 1.6; border-radius: var(--r-sm); max-height: 360px; overflow-y: auto; }
+.chat-diff-line { padding: 1px 10px; white-space: pre-wrap; overflow-wrap: break-word; }
+.chat-diff-keep { color: var(--ink-2); }
+.chat-diff-del { background: var(--red-soft); color: var(--red); }
+.chat-diff-add { background: var(--green-soft); color: var(--green); }
