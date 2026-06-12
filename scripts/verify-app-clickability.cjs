@@ -6,7 +6,6 @@ const { pathToFileURL } = require("node:url");
 const assert = require("node:assert/strict");
 
 const rootDir = path.resolve(__dirname, "..");
-const port = 5300 + Math.floor(Math.random() * 300);
 const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "wwriting-clicks-"));
 let server = null;
 
@@ -72,9 +71,10 @@ async function main() {
     selectedProjectRoot: projectRoot,
     staticRoot: path.join(rootDir, "src", "app-shell"),
     secretsRoot: userDataDir,
-    port
+    port: 0
   });
-  await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
   await waitForServer(port);
 
   const win = new BrowserWindow({
