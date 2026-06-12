@@ -179,6 +179,13 @@ function mergeProjectSettings(project, patch) {
     ) {
       next.target_words_per_chapter = next.min_words_per_chapter;
     }
+    if (
+      Number.isInteger(next.max_words_per_chapter) &&
+      Number.isInteger(next.min_words_per_chapter) &&
+      next.max_words_per_chapter < next.min_words_per_chapter
+    ) {
+      next.max_words_per_chapter = next.min_words_per_chapter;
+    }
   }
   if (patch.memory_extraction !== undefined) {
     next.memory_extraction = mergeNullableSection(project.memory_extraction, patch.memory_extraction);
@@ -200,6 +207,7 @@ function normalizeProjectProfile(profile) {
   copyOptionalPositiveInteger(normalized, profile, "target_chapters");
   copyOptionalPositiveInteger(normalized, profile, "min_words_per_chapter");
   copyOptionalPositiveInteger(normalized, profile, "target_words_per_chapter");
+  copyOptionalPositiveInteger(normalized, profile, "max_words_per_chapter");
   return normalized;
 }
 
