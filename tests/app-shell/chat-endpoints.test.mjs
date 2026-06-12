@@ -163,3 +163,21 @@ test("POST /api/chat/send 无项目时返回 400", async () => {
     await closeServer(server);
   }
 });
+
+test("并发两条 chat send 串行执行，历史不交错", async () => {
+  const ctx = await setupServer();
+  try {
+    const [r1, r2] = await Promise.all([
+      postJson(ctx.port, "/api/chat/send", { message: "并发一" }),
+      postJson(ctx.port, "/api/chat/send", { message: "并发二" })
+    ]);
+    assert.equal(r1.res.status, 200);
+    assert.equal(r2.res.status, 200);
+    const hist = await getJson(ctx.port, "/api/chat/history");
+    const roles = hist.data.messages.map((m) => m.role);
+    // 串行证据：必须是 user,assistant,user,assistant（交错则为 user,user,assistant,assistant 等）
+    assert.deepEqual(roles, ["user", "assistant", "user", "assistant"]);
+  } finally {
+    await closeServer(ctx.server);
+  }
+});
