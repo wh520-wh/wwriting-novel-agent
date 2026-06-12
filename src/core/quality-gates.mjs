@@ -204,8 +204,6 @@ export function runWordCapGate(actualWords, { targetWords, maxWords, outputPrice
 
 // =============== S3 fact-check 门禁（纯函数部分） ===============
 
-const FACT_CHECK_SUMMARY_MAX = 2000;
-
 const FACT_CHECK_SYSTEM_PROMPT = [
   "你是小说事实核查员。读完本章后比对既有设定档案，挑出本章与既有事实/时间线之间的客观冲突。",
   "只输出一个 JSON 对象（可用 ```json 围栏），结构：",
@@ -219,7 +217,7 @@ const FACT_CHECK_SYSTEM_PROMPT = [
 export function buildFactCheckMessages({ chapterNo, draft, facts, timeline }) {
   const user = [
     `# 第 ${chapterNo} 章正文`,
-    String(draft ?? "").slice(0, FACT_CHECK_SUMMARY_MAX),
+    String(draft ?? ""),
     "",
     "# 既有事实",
     (facts ?? []).map((f) => `- ${f.entity}/${f.attribute}: ${f.value} (第${f.chapter_no}章)`).join("\n") || "(空)",
