@@ -80,16 +80,19 @@ S3 把产品交互重构为对话 agent，但三类「日常顺手度」缺口�
 | 联网搜索 | search_endpoint、search_api_key_env | 平移 |
 | 危险区 | 「归档此项目」按钮、「打开项目文件夹」 | 新增 |
 
-**授权模式三档**（映射到既有 `tool_permissions`，settings-runtime 已支持 patch）：
+**授权模式四档**（映射到既有 `tool_permissions`，settings-runtime 已支持 patch；对应 Codex 的 read-only / approval / auto / full-access）：
 
 | 档位 | tool_permissions 值 | 行为 |
 |------|--------------------|------|
-| 只读 | `{ read_only: true }` | agent 只能查询；写/控制工具直接人话拒绝（现状已实现） |
-| 确认后修改（**默认**） | `{ read_only: false, auto_edit: false }` | 现状：write/control 落 pending 确认卡 |
-| 自动修改 | `{ read_only: false, auto_edit: true }` | **新增**：write 工具跳过 pending 直接执行（chat-agent loop 的写分支先查 auto_edit）；control 工具（start/pause/resolve）仍走确认——启停影响成本，保守保留人审 |
+| 只读 | `{ read_only: true, auto_edit: false, yolo: false }` | agent 只能查询；写/控制工具直接人话拒绝（现状已实现） |
+| 确认后修改（**默认**） | `{ read_only: false, auto_edit: false, yolo: false }` | 现状：write/control 落 pending 确认卡 |
+| 自动修改 | `{ read_only: false, auto_edit: true, yolo: false }` | write 工具跳过 pending 直接执行；control 工具（start/pause/resolve）仍走确认 |
+| **YOLO（全权限）** | `{ read_only: false, auto_edit: true, yolo: true }` | **write + control 全部免确认自动执行**：agent 可自主改正文、排队、启停写作、处理故障卡，零打断 |
 
-- `normalizeToolPermissions` 增 `auto_edit` 布尔字段；旧字段 `safe_edit` 保留兼容（auto_edit 与 safe_edit=false 同存时 safe_edit 优先拒绝，即「禁止编辑」强于「自动编辑」）。
-- **composer 旁模式指示器**（Codex 标志性交互）：composer-bar 左侧新增模式 pill（如「✓ 确认后修改」），点击弹出三档浮层即点即换（复用设置弹窗现有的保存端点提交 tool_permissions patch，无需进设置弹窗）；archived 项目时 pill 显示「📦 已归档」不可点。
+- `normalizeToolPermissions` 增 `auto_edit`、`yolo` 两个布尔字段；UI 四档单选互斥写入上表组合值。
+- **优先级（安全优先）**：`read_only` > `safe_edit:false`（禁编辑） > 归档只读 > `yolo` > `auto_edit`。矛盾配置时取限制更强者——例如 yolo=true 但项目已归档，仍然只读。
+- **YOLO 的硬底线（不可被 yolo 绕过）**：checkpoint 前置（每次 edit 仍有快照可回滚）、`chapter_busy` 守卫、`find` 唯一性校验、预算熔断（max_model_calls / cost budget）、settings 裸密钥拒绝。YOLO 免的是「确认」，不免「校验」。
+- **composer 旁模式指示器**（Codex 标志性交互）：composer-bar 左侧新增模式 pill（如「✓ 确认后修改」），点击弹出四档浮层即点即换（复用设置弹窗现有的保存端点提交 tool_permissions patch，无需进设置弹窗）；YOLO 态 pill 用 `--amber` 警示色显示「⚡ YOLO」；archived 项目时 pill 显示「📦 已归档」不可点。设置「权限与确认」分区的 YOLO 选项附警示文案：「agent 将自主修改正文、启停写作、处理故障，不再询问；改动有 checkpoint 可回滚，成本受预算熔断保护。」
 
 ### 4.4 时间线 Codex 化
 
@@ -110,7 +113,7 @@ S3 把产品交互重构为对话 agent，但三类「日常顺手度」缺口�
 // project.json 增量
 {
   "archived_at": null,                          // ISO 字符串 | null
-  "tool_permissions": { "read_only": false, "safe_edit": true, "auto_edit": false }
+  "tool_permissions": { "read_only": false, "safe_edit": true, "auto_edit": false, "yolo": false }
 }
 
 // export_book 工具
@@ -128,14 +131,14 @@ stage 标签：导出/归档不调模型，无新 stage。
 
 ## 6. 明确不做（v1 候补）
 
-EPUB/DOCX 导出、项目硬删除（归档已覆盖收纳需求，删除有数据风险）、暗色主题、SSE 流式（沿袭候补）、导出模板自定义、项目列表拖拽排序、control 工具的 auto 档（成本保守）、归档项目批量操作。
+EPUB/DOCX 导出、项目硬删除（归档已覆盖收纳需求，删除有数据风险）、暗色主题、SSE 流式（沿袭候补）、导出模板自定义、项目列表拖拽排序、归档项目批量操作、YOLO 的细粒度白名单（按工具单独放行——四档已覆盖主场景）。
 
 ## 7. 验收标准
 
 1. **导出**（真实项目）：对话「导出全书」→ 确认卡 → exports/ 文件生成，章节数与顺序正确、无双标题；`/export` 与抽屉按钮同效；txt 格式无 markdown 残留。
 2. **归档**：对话归档 → 确认 → 左栏入归档组；归档后 edit_chapter/queue_chapters 被人话拒绝、对话查询与导出仍可用；解除归档全恢复；运行中归档被拒（project_busy）。
 3. **设置分区**：6 分区全部可达且保存生效；fact_check.hard 在 UI 开启后，引擎真实走 needs_revision（已有 applyFactCheckHardFail 链路）。
-4. **授权分级**：三档切换即时生效——auto 档下 edit_chapter 不落 pending 直接执行且写 checkpoint；只读档人话拒绝；模式 pill 与实际配置一致。
+4. **授权分级**：四档切换即时生效——auto 档下 edit_chapter 不落 pending 直接执行且写 checkpoint；YOLO 档下 control 工具（如 start_run）也免确认直接执行，且 checkpoint/chapter_busy/预算熔断仍然生效；只读档人话拒绝；模式 pill 与实际配置一致，YOLO 态呈 amber 警示。
 5. **diff 确认卡**：edit_chapter 确认卡显示行级红绿 diff，批准后文件变更与 diff 一致。
 6. **既有防线**：`npm test`、`verify:mvp`、`verify:longrun`、`verify:app-shell`、`verify:app-clickability`（含 §4.5 新探针）、`verify:local` 全过。
 7. **真实 API 短跑**：场景 D 补入 verify:chat-online——「把大纲第 2 章改成 X 然后写到第 2 章」（顺带闭环 spec §12 条 3 的指挥落地欠账）+ 场景 E 导出与归档拒绝路径。
@@ -146,6 +149,7 @@ EPUB/DOCX 导出、项目硬删除（归档已覆盖收纳需求，删除有数�
 |------|------|
 | 设置弹窗重构引发「点不动」回归 | clickability 探针随分区同步扩展（CLAUDE.md 既有硬防线）；provider detail 整体平移不重写 |
 | auto_edit 模式误改正文 | 仅 write 类自动、control 仍确认；checkpoint 前置不变；模式 pill 常驻可见随手切回 |
+| YOLO 模式 agent 失控（连环改文/反复启停） | 确认免了但校验全在：checkpoint 可回滚、find 唯一性、chapter_busy、maxToolRounds=8、预算熔断；pill amber 警示常驻；归档/read_only 优先级压过 yolo |
 | 归档只读化有绕过路径 | chat 层 + server 写端点双重拦截；clickability 加归档态探针 |
 | 行级 diff 实现 bug 导致预览误导 | 纯函数 + 单测覆盖（增/删/改/无变化/全替换五用例）；批准执行仍走 edit_chapter 原校验链（find 唯一性），diff 仅是呈现层 |
 | 导出大书（百章）卡 UI | 导出在 server 端同步执行（文件 IO 毫秒级，无模型调用），无需进度条；实测 100 章 < 1s |
