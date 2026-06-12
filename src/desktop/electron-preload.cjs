@@ -3,5 +3,6 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("wwritingDesktop", {
   platform: process.platform,
   shell: "electron",
-  selectProjectFolder: () => ipcRenderer.invoke("wwriting:select-project-folder")
+  selectProjectFolder: () => ipcRenderer.invoke("wwriting:select-project-folder"),
+  revealPath: (p) => ipcRenderer.invoke("wwriting:reveal-path", p)
 });

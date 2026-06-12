@@ -1800,3 +1800,33 @@ button.cbar-pill--readonly:hover {
 .chat-diff-keep { color: var(--ink-2); }
 .chat-diff-del { background: var(--red-soft); color: var(--red); }
 .chat-diff-add { background: var(--green-soft); color: var(--green); }
+
+/* S4 Task 12: archived project styles */
+.proj-archived { opacity: 0.6; }
+.proj-archived .proj-title { color: var(--faint); }
+.proj-archived .proj-sub { color: var(--ghost); }
+.rail-archived-toggle { cursor: pointer; user-select: none; }
+.rail-archived-toggle:hover { color: var(--muted); }
+.pill.ghost { border-color: var(--line); background: var(--surface-3); color: var(--ghost); }
+
+/* S4 Task 12: export toolbar in chapter panel */
+.export-toolbar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 4px 10px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 6px;
+}
+.export-btn, .export-reveal-btn {
+  font-size: 12px; font-weight: 600;
+  padding: 5px 12px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+.export-btn:hover, .export-reveal-btn:hover {
+  background: var(--hover);
+  border-color: var(--accent-line);
+}
