@@ -1,0 +1,9 @@
+{
+  "name": "good-metaphor",
+  "draft": "听到这个名字，沈泽一阵眩晕，像是自己从十二楼坠落，胃里翻江倒海。",
+  "continuity_facts": [
+    { "entity": "刘康", "attribute": "坠楼楼层", "value": "六楼", "chapter_no": 1, "quote": "六楼。", "conflict_with": null }
+  ],
+  "timeline": [],
+  "expect": "pass"
+}

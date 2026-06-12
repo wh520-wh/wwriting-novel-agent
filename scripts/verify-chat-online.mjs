@@ -1,5 +1,5 @@
 // verify-chat-online.mjs — S3 real-API chat verification
-// Requires: WWRITING_PROVIDER_BASE_URL, WWRITING_PROVIDER_MODEL, WWRITING_API_KEY
+// Requires: WWRITING_PROVIDER_BASE_URL, WWRITING_PROVIDER_MODEL, and the API key in the env var named by WWRITING_API_KEY_ENV (default OPENAI_API_KEY)
 // Scenarios: A) comprehension with read tools, B) edit flow with confirmation, C) fact-check corpus
 import path from "node:path";
 import fs from "node:fs/promises";
@@ -189,10 +189,19 @@ async function main() {
         console.error(`[C] ${fixture.name}: ERROR ${error.message}`);
       }
     }
-    const cPassRate = corpus.length > 0
-      ? cResults.filter((r) => r.pass).length / cResults.length
-      : 1;
-    results.push({ scenario: "C_fact_check", passRate: cPassRate, details: cResults });
+    const conflictCases = cResults.filter((r) => corpus.find((f) => f.name === r.name)?.expect === "conflict");
+    const passCases = cResults.filter((r) => corpus.find((f) => f.name === r.name)?.expect === "pass");
+    const interceptRate = conflictCases.length ? conflictCases.filter((r) => r.pass).length / conflictCases.length : 1;
+    const falseKillCount = passCases.filter((r) => !r.pass).length;
+    const cPass = corpus.length > 0 && interceptRate === 1 && falseKillCount === 0;
+    results.push({
+      scenario: "C_fact_check",
+      pass: cPass,
+      interceptRate,
+      falseKillCount,
+      goodSamples: passCases.length,
+      details: cResults
+    });
 
     // 写成本报告
     await modelClient.costTracker.writeProjectReport(projectRoot);
@@ -201,7 +210,7 @@ async function main() {
     console.error(`[FATAL] ${error.message}\n${error.stack}`);
   }
 
-  const allPass = results.every((r) => r.pass || (r.passRate != null && r.passRate >= 0.6));
+  const allPass = results.every((r) => r.pass === true);
   const totalCost = results.reduce((sum, r) => sum + (r.cost ?? 0), 0);
   const report = {
     ok: allPass,
@@ -209,6 +218,11 @@ async function main() {
     totalCost: Number(totalCost.toFixed(6)),
     timestamp: new Date().toISOString()
   };
+  const reportDir = path.resolve(path.dirname(process.argv[1]), "..", "docs", "superpowers", "reports");
+  await fs.mkdir(reportDir, { recursive: true });
+  const reportPath = path.join(reportDir, `${new Date().toISOString().slice(0, 10)}-s3-chat-online-verification.json`);
+  await fs.writeFile(reportPath, JSON.stringify(report, null, 2), "utf8");
+  console.error(`report written: ${reportPath}`);
   console.log(JSON.stringify(report, null, 2));
   process.exit(allPass ? 0 : 1);
 }
