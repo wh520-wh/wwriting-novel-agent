@@ -65,13 +65,27 @@ async function agentLoop(options, toolEvents) {
     const isRead = tool?.kind === "read";
     if (tool && !isRead) {
       // 权限预检：落 pending 之前先检查，避免 read_only 项目白白占确认位
-      const permission = checkToolPermission(tool, project?.tool_permissions ?? {});
+      const permission = checkToolPermission(tool, project?.tool_permissions ?? {}, { archived: Boolean(project?.archived_at) });
       if (!permission.allowed) {
         const outcome = { ok: false, error: "permission_denied", message: permission.message };
         toolEvents.push({ tool: parsed.call.tool, ok: false, error: outcome.error });
         await appendChatMessage(projectRoot, { role: "tool", tool: parsed.call.tool, ok: false, result_summary: outcome.message });
         onEvent?.({ type: "tool_result", tool: parsed.call.tool, ok: false });
         continue;
+      }
+      // 免确认分支：yolo 放开 write+control；auto_edit 仅放开 write。免「确认」不免「校验」——直接走 executeTool 原链。
+      const perms = project?.tool_permissions ?? {};
+      const autoApproved = perms.yolo === true || (perms.auto_edit === true && tool.kind === "write");
+      if (autoApproved) {
+        const outcome = await executeTool(registry, parsed.call.tool, parsed.call.args, { projectRoot, project, server, getTaskQueue });
+        const event = { tool: parsed.call.tool, ok: outcome.ok, error: outcome.ok ? null : outcome.error };
+        toolEvents.push(event);
+        await appendChatMessage(projectRoot, {
+          role: "tool", tool: parsed.call.tool, ok: outcome.ok, auto_approved: true,
+          result_summary: summarize(outcome.ok ? outcome.result : { error: outcome.error, message: outcome.message })
+        });
+        onEvent?.({ type: "tool_result", ...event });
+        continue; // 回 loop 让模型看到结果继续
       }
       let preview = null;
       if (parsed.call.tool === "edit_chapter") {
