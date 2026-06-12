@@ -2,6 +2,7 @@ import { icon } from "./icons.js";
 import { formatTime, formatNumber, formatCompact, cssEscape, translateStage, translateReviewStatus, statusClass } from "./utils.js";
 import { motion } from "./motion-runtime.js";
 import { renderFailureCard } from "./components/failure-card.js";
+import { renderDiff } from "./diff-view.js";
 import { deriveFailures } from "./agent-truth.mjs";
 import { postJson } from "./api-client.js";
 import { sendChatMessage, confirmChatAction } from "./api-client.js";
@@ -816,16 +817,20 @@ export function createThreadRenderer(ctx) {
     }
     const preview = pendingAction?.preview;
     if (preview?.before != null || preview?.after != null) {
-      const diff = document.createElement("div");
-      diff.className = "chat-confirm-diff";
-      const before = document.createElement("div");
-      before.className = "chat-confirm-before";
-      before.textContent = preview?.before ?? "";
-      const after = document.createElement("div");
-      after.className = "chat-confirm-after";
-      after.textContent = preview?.after ?? "";
-      diff.append(before, after);
-      card.append(diff);
+      if (pendingAction?.tool === "edit_chapter") {
+        card.append(renderDiff(preview.before ?? "", preview.after ?? ""));
+      } else {
+        const diff = document.createElement("div");
+        diff.className = "chat-confirm-diff";
+        const before = document.createElement("div");
+        before.className = "chat-confirm-before";
+        before.textContent = preview?.before ?? "";
+        const after = document.createElement("div");
+        after.className = "chat-confirm-after";
+        after.textContent = preview?.after ?? "";
+        diff.append(before, after);
+        card.append(diff);
+      }
     }
     const buttons = document.createElement("div");
     buttons.className = "chat-confirm-buttons";
