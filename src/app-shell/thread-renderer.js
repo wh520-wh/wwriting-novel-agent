@@ -31,7 +31,39 @@ export function createThreadRenderer(ctx) {
     ctx.askEntries.clear();
     threadGreeted = false;
     ctx.setLiveBlock(null);
-    ctx.refs.thread.replaceChildren(buildSessionHead(null), buildGreeting());
+    const fragment = document.createDocumentFragment();
+    fragment.append(buildSessionHead(null), buildGreeting());
+    ctx.refs.thread.replaceChildren(fragment);
+  }
+
+  function buildSuggestionCards() {
+    const suggestions = [
+      { label: "排 5 章试写", message: "排 5 章试写" },
+      { label: "这本书的设定是什么？", message: "这本书的设定是什么？" },
+      { label: "目前花了多少钱？", message: "目前花了多少钱？" }
+    ];
+    const wrap = document.createElement("div");
+    wrap.className = "suggestion-cards";
+    for (const item of suggestions) {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "suggestion-card";
+      card.textContent = item.label;
+      card.addEventListener("click", () => {
+        wrap.querySelectorAll(".suggestion-card").forEach((c) => { c.disabled = true; });
+        if (typeof ctx.sendChatMessageWithUX === "function") {
+          ctx.sendChatMessageWithUX(item.message);
+        }
+      });
+      wrap.append(card);
+    }
+    return wrap;
+  }
+
+  function appendSuggestionCards() {
+    const cards = buildSuggestionCards();
+    ctx.refs.thread.append(cards);
+    scrollThreadToBottom();
   }
 
   // 把后端事件流增量聚合成对话气泡。已渲染的事件用指纹去重，轮询时只追加新增气泡。
@@ -1017,6 +1049,7 @@ export function createThreadRenderer(ctx) {
     scrollThreadToBottom,
     renderChatMessage,
     syncChatThread,
-    submitChatMessage
+    submitChatMessage,
+    appendSuggestionCards
   };
 }
