@@ -44,7 +44,7 @@ S3/S4 交付后的对话体验停在"功能正确"层面。以下事实全部经
 
 **后端**：
 
-1. `app-server.mjs` 新增内存注册表 `chatJobs: Map<resolvedProjectRoot, { controller: AbortController, startedAt: string }>`（仿 `runJobs`）。`serveChatSend` / `serveChatConfirm` 进入处理时注册，`finally` 中清除。
+1. `app-server.mjs` 新增内存注册表 `chatJobs: Map<resolvedProjectRoot, { controller: AbortController, startedAt: string }>`（仿 `runJobs`）。`serveChatSend` / `serveChatConfirm` 在进入 `withProjectLock` **之前**先做忙态守卫并注册：若 `chatJobs` 已有该项目 → 立即 409 `CONFLICT`（"上一轮对话还在进行中"），**不得**静默排队（否则第二个请求会顶掉第一个的 AbortController，且用户得不到反馈）；否则注册，`finally` 中清除。
 2. `/api/chat/history` 响应增加 `busy: boolean`、`busySince: string|null`（从 chatJobs 读取）。
 3. 新端点 `POST /api/chat/stop`：取 `chatJobs.get(root)` 并 `controller.abort("用户停止")`；无忙时返回 409。
    **硬约束：此端点绝不进入 `withProjectLock`** —— send 正持有锁直到循环结束，stop 入锁即死锁到循环自然结束，按钮形同虚设。
@@ -62,11 +62,12 @@ S3/S4 交付后的对话体验停在"功能正确"层面。以下事实全部经
    - 文案 = `思考中 · 已 N 秒`（1s 本地计时），当轮询带来新 tool 消息时占位上方即已增量出现人话工具行（D2 渲染），占位本身追加回显最近一条活动（如 `已读取第 3 章，继续思考…`）；
    - 占位右侧内嵌**停止**按钮 → `POST /api/chat/stop`；409 时按钮置灰并 toast；
    - send 的 await 返回仍是本轮权威结束信号：成功/失败/取消都按现有清理路径移除占位（轮询只是过程补充，不改变结束语义）。
-3. 渲染竞态兜底：增量上屏全部走 `syncChatThread` 既有指纹去重，不新加直插路径。
+3. **确认卡续轮覆盖**：当轮询发现 `busy === true` 而本地无占位（典型：确认卡批准后 `resumeChatTurn` 续轮、或另一窗口在发消息）时，自动补一个同样的活动占位；`busy === false` 时移除。
+4. 渲染竞态兜底：增量上屏全部走 `syncChatThread` 既有指纹去重，不新加直插路径。
 
 ### A3 · Markdown 渲染补全
 
-新建 `src/app-shell/markdown-lite.js`，导出纯函数 `renderMarkdown(text): string`（HTML 字符串）：
+新建 `src/app-shell/markdown-lite.mjs`（`.mjs` 后缀对齐 `permission-tiers.mjs`/`agent-truth.mjs` 的"可被 node 单测的纯逻辑"惯例），导出纯函数 `renderMarkdown(text): string`（HTML 字符串）：
 
 - 支持：段落、`**粗体**`、`` `行内代码` ``、`## / ###` 标题（降级渲染为 `<h4>/<h5>`）、`- ` 无序列表、`1. ` 有序列表、`> ` 引用、`---` 分隔线、``` 普通围栏（`<pre><code>`）、```稿 文稿块（见 B1）。
 - 安全顺序不变：**先整体 escape 再做结构转换**（沿用 F7 现实现的防注入顺序）。
@@ -77,8 +78,8 @@ S3/S4 交付后的对话体验停在"功能正确"层面。以下事实全部经
 
 1. **协议约定**：`agent-protocol.mjs` `buildSystemPrompt` 增加一条——"输出小说正文、草稿或改写片段时，用 \```稿 围栏包裹正文，正文外的说明放围栏外"。
 2. **解析器加固**（修 F10）：`parseAgentReply` 从"只看第一个围栏"改为**扫描全部围栏，取第一个能 `JSON.parse` 且含 `tool_calls` 的**作为工具调用；其余围栏原样保留在文本中。无任何围栏可解析时整体按文本处理（现有行为）。既有单围栏用例行为不变，须有回归测试。
-3. **渲染**：markdown-lite 把 ```稿 围栏渲染为 `<div class="manuscript-block">`：衬线（与 `.reader-body` 同 `Georgia/Songti SC` 栈）、15.5px、行高 1.95、段首缩进 2em、底部右对齐小字号字数标（`N 字`）。
-4. **确认卡正文同质感**：`edit_chapter` 之外的 preview before/after 文本块、以及 B2 段落对照中的正文，统一套衬线正文样式。
+3. **渲染**：markdown-lite 把 ```稿 围栏（同时接受 `prose` 作为别名标签，容忍模型偏差）渲染为 `<div class="manuscript-block">`：衬线（与 `.reader-body` 同 `Georgia/Songti SC` 栈）、15.5px、行高 1.95、段首缩进 2em、底部右对齐小字号字数标（`N 字`）。
+4. **确认卡正文同质感**：确认卡里所有承载小说正文的文本块统一套衬线正文样式——包括非 `edit_chapter` 工具的 preview before/after 块，以及 B2 段落对照视图中的段落文本。
 
 ### B2 · Diff 确认卡文学化
 
@@ -97,7 +98,7 @@ S3/S4 交付后的对话体验停在"功能正确"层面。以下事实全部经
 
 ### C2 · 空态建议情境化
 
-- 新建纯函数 `deriveSuggestions(data): {label, message}[]`（放 `thread-renderer.js` 或独立模块，可单测），按优先级取前 3 条：
+- 新建 `src/app-shell/chat-derive.mjs`（与 D1 的 `deriveSources` 同模块，纯函数、无 DOM 依赖、node 可直接单测），导出 `deriveSuggestions(data): {label, message}[]`，按优先级取前 3 条：
   1. 已归档 → `导出成书` / `解除归档`
   2. 有 needs_revision 章节 → `处理待修订章节`
   3. 全部目标完成 → `导出成书` / `提高目标章节数再续写`
@@ -133,7 +134,7 @@ S3/S4 交付后的对话体验停在"功能正确"层面。以下事实全部经
 
 ### D1 · 回答溯源 chips
 
-- 前端纯函数 `deriveSources(messages, assistantMessage)`：取该 assistant 消息**之前、最近一条 user 消息之后**的 `ok === true` 的 read 类 tool 消息，映射为 chips（按工具去重）：
+- `chat-derive.mjs` 导出纯函数 `deriveSources(messages, assistantMessage)`：取该 assistant 消息**之前、最近一条 user 消息之后**的 `ok === true` 的 read 类 tool 消息，映射为 chips（按工具去重）：
   - `read_chapter` → `第 N 章`（N 取自 tool 消息 `args`），**可点击** → `openReader(N)`；
   - `read_continuity` → `设定记忆`；`read_outline` → `大纲`；`search_text` → `全文搜索`；`get_status` → `项目状态`；`get_cost` → `成本台账`（以上不可点，hover 显示 result 摘要）。
 - 渲染于 assistant 气泡底部：`依据 · 第 3 章 · 设定记忆`。无来源时整行不渲染。
@@ -176,6 +177,7 @@ S3/S4 交付后的对话体验停在"功能正确"层面。以下事实全部经
 ## 5. 错误处理
 
 - `/api/chat/stop`：无忙循环 → 409 `CONFLICT`；前端按钮置灰 + 轻提示。
+- `/api/chat/send|confirm` 撞上忙循环 → 409 `CONFLICT`（A1 守卫）；前端走既有错误恢复路径（错误行 + 还原输入框内容）。
 - abort 时序：模型调用被掐断 → AbortError 在 `agentLoop` 捕获 → 落「已停止」→ send 响应 `{ ok: true, cancelled: true }`（不是 500）。
 - 忙时轮询请求失败：静默忽略（现有 catch 模式），下一拍重试。
 - 稿块围栏未闭合：按普通文本渲染。
@@ -187,14 +189,14 @@ S3/S4 交付后的对话体验停在"功能正确"层面。以下事实全部经
 
 **单元测试**（`node --test`，新增文件入 `tests/` 与 `tests/app-shell/`）：
 
-- `markdown-lite`：标题/列表/引用/分隔线/围栏/稿块/转义注入/未闭合围栏回退。
+- `markdown-lite`：标题/列表/引用/分隔线/围栏/稿块（含 `prose` 别名）/转义注入/未闭合围栏回退。
 - `agent-protocol`：多围栏扫描（稿块在前+tool call 在后不丢调用）、单围栏回归、纯文本回归。
 - `chat-agent`：fake modelClient + signal——轮间中断、模型调用中中断、写工具执行中不打断、「已停止」消息落盘、`cancelled: true` 返回。
 - `diff-view`：`diffParagraphs` 段级语义、`summarizeDiff` 字数统计。
 - `tool-labels`：17 工具全覆盖 + 未知工具回退。
 - `deriveSuggestions`：5 类项目状态各返回正确建议组。
 - `deriveSources`：消息窗口边界（上一 user 之后）、read-only 过滤、去重、无 args 降级。
-- HTTP 级：`/api/chat/history` busy 字段、`/api/chat/stop` 忙/非忙两态（慢速 fake model 制造忙窗口）。
+- HTTP 级：`/api/chat/history` busy 字段、`/api/chat/stop` 忙/非忙两态、忙时并发 `send` 返回 409（均用慢速 fake model 制造忙窗口，经 `createAppShellServer({ testModel })` 注入）。
 
 **clickability 探针扩展**（`scripts/verify-app-clickability.cjs`，项目铁律）：
 
@@ -236,7 +238,7 @@ npm run verify:desktop-shell
 10. status pills 出现 `本次 +N 字`（写入新内容后增长；新会话归零隐藏）。
 11. 空态建议卡随 5 类项目状态变化（至少验证新项目/写作中/已归档三态）。
 12. `?` 与 ⌨ 按钮均能打开快捷键速查，Esc 关闭。
-13. C4 表中 4 个成功 toast 不再弹出；错误 toast 全部保留。
+13. C4 表中 4 个成功 toast 不再弹出（隐私模式首次开启的一次性说明除外）；错误 toast 全部保留。
 14. 阅读器字号四档调节并在重启后保持；←/→ 翻章；沉浸模式切换生效。
 15. `npm test` 全绿；`verify:app-shell`、`verify:app-clickability`（含新增探针）`ok: true`。
 
