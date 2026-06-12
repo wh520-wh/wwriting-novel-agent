@@ -40,6 +40,14 @@ test("坏行跳过不抛", async () => {
   assert.equal(history.length, 2);
 });
 
+test("appendChatMessage 显式 undefined id/ts 不覆盖默认值", async () => {
+  const root = await tmp();
+  await appendChatMessage(root, { role: "user", content: "x", id: undefined, ts: undefined });
+  const history = await readChatHistory(root);
+  assert.ok(history[0].id, "id 必须有值");
+  assert.ok(history[0].ts, "ts 必须有值");
+});
+
 test("pending action 存取清", async () => {
   const root = await tmp();
   assert.equal(await loadPendingAction(root), null);
