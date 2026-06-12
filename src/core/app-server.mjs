@@ -758,6 +758,7 @@ async function serveChatSend(request, response, context) {
     if (!message) throw new Error("请输入消息。");
     if (message.length > 4000) throw new Error("消息过长。");
     const projectRoot = await resolveActiveProjectRoot(context);
+    return await withProjectLock(context, projectRoot, async () => {
     const project = await loadProject(projectRoot);
     const registry = buildChatRegistry();
     const modelClient = await buildChatModelClient(project, projectRoot);
@@ -772,6 +773,7 @@ async function serveChatSend(request, response, context) {
     });
     await modelClient.costTracker.writeProjectReport(projectRoot);
     await serveJson(response, { ok: true, ...result });
+    });
   } catch (error) {
     sendError(response, new HttpError(400, "BAD_REQUEST", error.message));
   }
@@ -781,6 +783,7 @@ async function serveChatConfirm(request, response, context) {
   try {
     const body = await readJsonBody(request);
     const projectRoot = await resolveActiveProjectRoot(context);
+    return await withProjectLock(context, projectRoot, async () => {
     const project = await loadProject(projectRoot);
     const registry = buildChatRegistry();
     const modelClient = await buildChatModelClient(project, projectRoot);
@@ -795,6 +798,7 @@ async function serveChatConfirm(request, response, context) {
     });
     await modelClient.costTracker.writeProjectReport(projectRoot);
     await serveJson(response, { ok: true, ...result });
+    });
   } catch (error) {
     sendError(response, new HttpError(400, "BAD_REQUEST", error.message));
   }
