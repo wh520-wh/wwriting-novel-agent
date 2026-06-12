@@ -1,24 +1,40 @@
 {
-  "ok": false,
+  "ok": true,
+  "provider": {
+    "baseUrlHost": "api.xiaomimimo.com",
+    "model": "mimo-v2.5-pro"
+  },
   "results": [
     {
-      "scenario": "A_comprehension",
-      "pass": false,
-      "reply": "根据项目信息：\n\n1. **当前进度**：本书计划写 3 章，目前已写到第 1 章（状态为 queued，等待处理中）。\n\n2. **刘康坠楼楼层**：**六楼**（记录在第 1 章中）。",
+      "scenario": "A1_memory_comprehension",
+      "pass": true,
+      "reply": "根据设定档案，刘康是从**六楼**坠落的（第1章）。",
       "toolEvents": 0,
-      "cost": 0.003432
+      "cost": 0.003075
+    },
+    {
+      "scenario": "A2_tool_grounded_comprehension",
+      "pass": true,
+      "reply": "根据第1章正文，沈泽是在**食堂**吃饭时听到刘康坠楼消息的。",
+      "toolEvents": [
+        "read_chapter:ok"
+      ],
+      "cost": 0.008461
     },
     {
       "scenario": "B_edit",
-      "pass": false,
-      "pendingAction": false,
-      "editApplied": false,
-      "checkpoints": 0
+      "pass": true,
+      "pendingAction": true,
+      "editApplied": true,
+      "checkpoints": 1,
+      "reply": "我来修改正文和设定档案中的坠楼楼层。\n（待确认操作：edit_chapter，请在确认卡上批准或取消）",
+      "toolEvents": [],
+      "cost": 0.0055962
     },
     {
       "scenario": "C_fact_check",
-      "pass": false,
-      "interceptRate": 0.5,
+      "pass": true,
+      "interceptRate": 1,
       "falseKillCount": 0,
       "goodSamples": 4,
       "details": [
@@ -30,8 +46,8 @@
         },
         {
           "name": "a2-time-conflict",
-          "pass": false,
-          "conflicts": 0,
+          "pass": true,
+          "conflicts": 1,
           "expect": "conflict"
         },
         {
@@ -61,6 +77,6 @@
       ]
     }
   ],
-  "totalCost": 0.003432,
-  "timestamp": "2026-06-12T08:06:25.187Z"
+  "totalCost": 0.042469,
+  "timestamp": "2026-06-12T10:39:35.324Z"
 }
