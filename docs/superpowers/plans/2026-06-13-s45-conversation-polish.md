@@ -13,7 +13,7 @@
 - 仓库根：`D:\WWriting`，包管理 npm，`package.json type: module`（`.js` 在 node 测试里也按 ESM 导入）。
 - 按 `superpowers:using-git-worktrees` 建隔离工作区，分支名 `s45-conversation-polish`，基于 `master`。
 - 每个任务内：先跑该任务的测试文件，任务收尾跑 `npm test` 全量。Electron 防线（`verify:app-clickability` / `verify:desktop-shell`）只在 Task 17/18 跑（重量级）。
-- **禁止事项（全局）**：不重构本计划未列出的代码；不改动既有探针断言；不动 `_backup-pre-codex-*` 目录；不引第三方库；不改 `agent-say` 旧事件流渲染路径；CSS 一律追加到 `styles.css` 末尾的带注释分区，不就地改既有规则（本计划明确列出的除外）。
+- **禁止事项（全局）**：不重构本计划未列出的代码；不改动既有探针断言；不动 `_backup-pre-codex-*` 目录；不引第三方库；不改 `agent-say` 旧事件流渲染路径；CSS 一律追加到 `styles.css` 末尾的带注释分区，不就地改既有规则（本计划明确列出的除外）；**不得给 `/api/dashboard`、`/api/chat/history`、`/api/queue/state` 等 GET 端点加 `withProjectLock`**——busy 期间的轮询过程流依赖它们无锁（已 grep 取证：当前 withProjectLock 仅覆盖 command submit / chat send / chat confirm / queue cancel / run stop / run retry 六个写端点）。
 
 **顺手改进清单（已纳入任务，执行者不得自行增删）：**
 
@@ -28,13 +28,14 @@
 | I7 | 所有新增按钮必须带 `aria-label` 或可见文本 + `data-testid` | 全部 |
 | I8 | composer 提示文案追加 `? 快捷键` | Task 16 |
 | I9 | 空态建议卡与问候 chips 在 chat busy 时点击直接忽略（防 409 噪音） | Task 15 |
+| I10 | USER_GUIDE 追加 §15「S4.5 对话体验速览」，文档与交互同步 | Task 18 |
 
 **Spec 验收条 → 任务映射（自审用）：**
 
 | 验收 | 任务 |
 |------|------|
-| 1 过程流 | T5+T11 |
-| 2 停止 | T4+T5+T11 |
+| 1 过程流 | T5+T11+T17b |
+| 2 停止 | T4+T5+T11+T17b |
 | 3 markdown | T1+T9 |
 | 4 稿块+混排不丢调用 | T1+T2+T9 |
 | 5 段落 diff | T8+T10 |
@@ -79,6 +80,8 @@
   tests/chat-protocol.test.mjs         多围栏用例（T2）
   tests/diff-view.test.mjs             段落 diff 用例（T8）
   scripts/verify-app-clickability.cjs  新探针（T17）
+  scripts/verify-chat-online.mjs       场景 F：增量落盘 + 中途停止（T17b）
+  docs/USER_GUIDE.zh-CN.md             §15 S4.5 速览（T18）
 ```
 
 ---
@@ -993,7 +996,46 @@ async function serveChatSend(request, response, context) {
 注意 1：原函数若开头校验文案与上面不同，**保留原有校验文案**，只加守卫/注册/signal/finally/测试缝五件事。
 注意 2：catch 里必须先判 `error instanceof HttpError`（否则 409 会被吞成 400）——上面已写。
 
-(d) `serveChatConfirm` 同构改造（守卫 → 注册 → try/finally → `resumeChatTurn` 参数补 `signal: controller.signal`、模型客户端走 `context.testModel?.chatClient?.() ?? ...`、catch 同样保留 HttpError）。除函数名与 `resumeChatTurn({ ..., approve: body.approve === true, ... })` 外逐字同 (c)。
+(d) `serveChatConfirm` 完整新函数体（同构改造，confirm 没有 message 校验）：
+
+```js
+async function serveChatConfirm(request, response, context) {
+  try {
+    const body = await readJsonBody(request);
+    const projectRoot = await resolveActiveProjectRoot(context);
+    const jobKey = path.resolve(projectRoot);
+    if (context.chatJobs.has(jobKey)) {
+      sendError(response, new HttpError(409, "CHAT_BUSY", "上一轮对话还在进行中，请等它完成或先点停止。"));
+      return;
+    }
+    const controller = new AbortController();
+    context.chatJobs.set(jobKey, { controller, startedAt: new Date().toISOString() });
+    try {
+      return await withProjectLock(context, projectRoot, async () => {
+      const project = await loadProject(projectRoot);
+      const registry = buildChatRegistry();
+      const modelClient = context.testModel?.chatClient?.() ?? await buildChatModelClient(project, projectRoot);
+      const result = await resumeChatTurn({
+        projectRoot,
+        project,
+        registry,
+        modelClient,
+        approve: body.approve === true,
+        signal: controller.signal,
+        server: chatServerContext(context),
+        getTaskQueue: context.getTaskQueue
+      });
+      await modelClient.costTracker.writeProjectReport(projectRoot);
+      await serveJson(response, { ok: true, ...result });
+      });
+    } finally {
+      context.chatJobs.delete(jobKey);
+    }
+  } catch (error) {
+    sendError(response, error instanceof HttpError ? error : new HttpError(400, "BAD_REQUEST", error.message));
+  }
+}
+```
 
 (e) `serveChatHistory` 的 `serveJson` 调用替换为：
 
@@ -1780,6 +1822,8 @@ git commit -m "feat(s4.5): confirm card paragraph view with line-level toggle"
 - Modify: `src/app-shell/app.js`
 - Modify: `src/app-shell/styles.css`
 
+**载荷事实（执行前确认，不要破坏）**：busy 期间轮询能拿到增量数据，是因为 `/api/dashboard`、`/api/chat/history`、`/api/queue/state` 都不取项目锁，而 `/api/chat/send` 在锁内同步跑完循环、tool 消息逐条落盘 `chat_history.jsonl`。若任何改动让这些 GET 端点进锁，过程流会整体卡死到回合结束——见全局禁止事项。
+
 - [ ] **Step 11.1: composer.js import 更新**——顶部：
 
 ```js
@@ -1870,6 +1914,11 @@ import { toolLabel } from "./tool-labels.mjs";
 
 ```js
   async function sendChatMessageWithUX(message) {
+    // 入口忙态守卫：双击建议卡/快捷 chip/重试按钮不应打出 409 噪音（服务端守卫仍是兜底）。
+    if (isChatBusy()) {
+      ctx.showToast("智能体正在处理上一条消息，请稍候或点停止。", "info");
+      return;
+    }
     const savedContent = message;
     ctx.refs.composerSubmit.disabled = true;
     ctx.refs.composerSubmit.setAttribute("aria-busy", "true");
@@ -2398,7 +2447,7 @@ import { deriveSources, deriveSuggestions } from "./chat-derive.mjs";
 
 - [ ] **Step 15.4: Toast 降噪（C4+I11）**——四个调用点：
 
-(a) composer.js `applyTier` 成功分支：删除 `ctx.showToast(\`已切换到「${tier.short}」档。\`, "success");`，原位替换为：
+(a) composer.js `applyTier` 成功分支：删除 `ctx.showToast(\`已切换到「${tier.short}」档。\`, "success");`，并在 `await ctx.loadDashboard();` **之后**追加（时序关键：loadDashboard 触发 `renderModePill` 重置 `className`，脉冲 class 必须在重渲染之后再加，否则动画被掐断）：
 
 ```js
       getModePill()?.classList.add("cbar-pill--pulse");
@@ -2528,7 +2577,15 @@ refs.shortcutsScrim.addEventListener("click", (event) => {
   }
 ```
 
-(e) trapTab 链：`else if (refs.createScrim.classList.contains("show")) trapTab(refs.createScrim, event);` 之前插入 `else if (refs.shortcutsScrim.classList.contains("show")) trapTab(refs.shortcutsScrim, event);` —— 注意放在链条最前（`if (refs.readerScrim...` 之前改为先判 shortcuts）。最终顺序：shortcuts → reader → settings → create → drawer。
+(e) trapTab 链整体替换为以下最终形态（shortcuts 永远最后打开，所以判在最前）：
+
+```js
+  if (refs.shortcutsScrim.classList.contains("show")) trapTab(refs.shortcutsScrim, event);
+  else if (refs.readerScrim.classList.contains("show")) trapTab(refs.readerScrim, event);
+  else if (refs.settingsScrim.classList.contains("show")) trapTab(refs.settingsScrim, event);
+  else if (refs.createScrim.classList.contains("show")) trapTab(refs.createScrim, event);
+  else if (refs.drawer.classList.contains("show")) trapTab(refs.drawer, event);
+```
 
 - [ ] **Step 16.3: styles.css 追加**：
 
@@ -2636,10 +2693,12 @@ git commit -m "feat(s4.5): keyboard shortcuts overlay with ? trigger and compose
   await delay(300);
   const placeholderVisible = await read(win, `Boolean(document.querySelector('[data-testid="chat-activity-placeholder"]'))`);
   assert.equal(placeholderVisible, true, "activity placeholder must appear during chat send");
+  // stop 打到真服务器：send 被前端 mock，服务端无 chatJobs → 409「当前没有进行中的对话轮。」→ 错误 toast。
+  // 断言必须认这条具体文案——不能只看 toast 非空（⑫ 的复制 toast 3.2s 内还在栈里，会误判通过）。
   clicks.push(await clickAndRead(win, '[data-testid="chat-stop"]', {
     label: "s45-chat-stop",
     settleMs: 400,
-    expect: () => read(win, `document.querySelector('.toast-stack').textContent.length > 0`)
+    expect: () => read(win, `document.querySelector('.toast-stack').textContent.includes('对话轮') || document.querySelector('.toast-stack').textContent.includes('停止')`)
   }));
   await delay(900); // 等 mock send 完成、占位撤除
 
@@ -2648,21 +2707,23 @@ git commit -m "feat(s4.5): keyboard shortcuts overlay with ? trigger and compose
   await delay(500);
   const readerOpen = await read(win, `document.getElementById('reader-scrim').classList.contains('show')`);
   assert.equal(readerOpen, true, "reader must open from chapter card");
+  // 比较表达式放进页内求值，expect 保持同步布尔（与既有探针契约一致）。
   const fontBefore = await read(win, `document.getElementById('reader-body').style.fontSize`);
   clicks.push(await clickAndRead(win, '#reader-font-plus', {
     label: "s45-reader-font-plus",
     settleMs: 150,
-    expect: async () => (await read(win, `document.getElementById('reader-body').style.fontSize`)) !== fontBefore
+    expect: () => read(win, `document.getElementById('reader-body').style.fontSize !== ${JSON.stringify(fontBefore)}`)
   }));
   clicks.push(await clickAndRead(win, '#reader-wide', {
     label: "s45-reader-wide",
     settleMs: 150,
     expect: () => read(win, `document.getElementById('reader').classList.contains('reader--wide')`)
   }));
+  // 用 reader-path 断言翻章：它永远是 chapters/00N.md，不依赖章节标题内容。
   clicks.push(await clickAndRead(win, '#reader-next', {
     label: "s45-reader-next",
-    settleMs: 400,
-    expect: () => read(win, `document.getElementById('reader-title').textContent.includes('002') || document.getElementById('reader-next').disabled`)
+    settleMs: 500,
+    expect: () => read(win, `document.getElementById('reader-path').textContent.includes('002') || document.getElementById('reader-next').disabled === true`)
   }));
   await win.webContents.executeJavaScript(`document.getElementById('reader-close').click(); true;`);
   await delay(200);
@@ -2696,6 +2757,102 @@ git commit -m "test(s4.5): clickability probes - manuscript, tool labels, source
 
 ---
 
+### Task 17b: verify-chat-online 场景 F——真实 API 过程流与中途停止
+
+**Files:**
+- Modify: `scripts/verify-chat-online.mjs`
+
+口径说明（与 spec §6 对齐）：HTTP 层的 `busy` 字段已由 `tests/app-shell/chat-busy-stop.test.mjs` 用假模型覆盖；本场景用**真实模型**验证两件事——F1）tool 消息在回合结束前增量落盘（前端过程流的数据基础）；F2）中途 abort 能掐断真实模型调用并落「（已停止。）」。
+
+- [ ] **Step 17b.1: 文件头场景注释更新**——在 `//            B) edit flow with confirmation, C) fact-check corpus` 一行之后追加：
+
+```js
+//            F) incremental tool persistence + mid-turn cancel (S4.5)
+```
+
+- [ ] **Step 17b.2: 场景 F 实现**——在 `    // 写成本报告` 一行之前插入：
+
+```js
+    // ========== 场景 F：过程流增量落盘 + 中途停止（S4.5）==========
+    console.error("[F] incremental persistence + cancel...");
+    try {
+      // F1: 回合进行中，tool 消息应已增量写入 chat_history.jsonl。
+      // 判定窗口 = "已见 tool 消息且尚未见本轮 assistant 消息"，否则只能证明事后写入。
+      const historyFile = path.join(projectRoot, "chat_history.jsonl");
+      const baselineLines = (await fs.readFile(historyFile, "utf8").catch(() => "")).split("\n").filter(Boolean).length;
+      let sawIncrementalTool = false;
+      const f1Turn = runChatTurn({
+        projectRoot, project, registry, modelClient,
+        userMessage: "第 1 章正文里，沈泽是在什么地方听到消息的？必须读原文查证后回答。"
+      });
+      const f1Poll = (async () => {
+        for (let i = 0; i < 120; i += 1) {
+          await new Promise((r) => setTimeout(r, 500));
+          const lines = (await fs.readFile(historyFile, "utf8").catch(() => "")).split("\n").filter(Boolean);
+          const fresh = lines.slice(baselineLines).map((l) => { try { return JSON.parse(l); } catch { return null; } });
+          const hasTool = fresh.some((m) => m?.role === "tool");
+          const hasAssistant = fresh.some((m) => m?.role === "assistant");
+          if (hasTool && !hasAssistant) { sawIncrementalTool = true; return; }
+          if (hasAssistant) return; // 回合已结束，未捕获增量窗口
+        }
+      })();
+      const f1 = await f1Turn;
+      await f1Poll;
+      const f1Pass = sawIncrementalTool && f1.toolEvents.length > 0;
+      results.push({
+        scenario: "F1_incremental_tool_persistence",
+        pass: f1Pass,
+        sawIncrementalTool,
+        toolEvents: f1.toolEvents.map((e) => `${e.tool}:${e.ok ? "ok" : e.error}`),
+        cost: f1.usage.cost
+      });
+      console.error(`[F1] pass=${f1Pass} incremental=${sawIncrementalTool}`);
+
+      // F2: 中途 abort → cancelled:true + 「（已停止。）」落盘。
+      // 500ms 时模型首轮调用几乎必然仍在途（真实 API 延迟 >1s）；若模型异常快导致 cancelled=false，重跑一次再判。
+      const controller = new AbortController();
+      const f2Turn = runChatTurn({
+        projectRoot, project, registry, modelClient, signal: controller.signal,
+        userMessage: "把第 1 章每一段都总结一遍，再查一遍设定记忆和大纲。"
+      });
+      setTimeout(() => controller.abort("用户停止"), 500);
+      const f2 = await f2Turn;
+      const f2History = (await fs.readFile(historyFile, "utf8")).split("\n").filter(Boolean);
+      const f2Last = JSON.parse(f2History.at(-1));
+      const f2Pass = f2.cancelled === true && f2Last.content === "（已停止。）";
+      results.push({
+        scenario: "F2_cancel_mid_turn",
+        pass: f2Pass,
+        cancelled: f2.cancelled === true,
+        lastMessage: String(f2Last.content ?? "").slice(0, 50),
+        cost: f2.usage.cost
+      });
+      console.error(`[F2] pass=${f2Pass} cancelled=${f2.cancelled}`);
+    } catch (error) {
+      results.push({ scenario: "F_process_stream", pass: false, error: error.message });
+      console.error(`[F] ERROR ${error.message}`);
+    }
+```
+
+注意：场景 F 排在 E（归档语义）之后执行，此时项目可能处于归档态——F 只用读工具，归档不拦读，无需解档。
+
+- [ ] **Step 17b.3: 运行（需用户 API key）**
+
+```powershell
+npm run verify:chat-online
+```
+
+Expected: 报告 JSON 中 `F1_incremental_tool_persistence` 与 `F2_cancel_mid_turn` 均 `pass: true`。无 key 时跳过执行，在交付报告里如实标注"场景 F 待跑"。
+
+- [ ] **Step 17b.4: Commit**
+
+```bash
+git add scripts/verify-chat-online.mjs
+git commit -m "test(s4.5): chat-online scenario F - incremental persistence and mid-turn cancel"
+```
+
+---
+
 ### Task 18: 防线全跑 + 交付报告
 
 **Files:**
@@ -2712,7 +2869,7 @@ npm run verify:desktop-shell
 
 Expected: 测试全绿；三个 verify 全部 `ok: true`。任何一个失败：先用 `superpowers:systematic-debugging` 定位，禁止改探针绕过。
 
-- [ ] **Step 18.2: 真实 API 短跑（可选，需用户 key）**
+- [ ] **Step 18.2: 真实 API 短跑（可选，需用户 key；含 Task 17b 的场景 F）**
 
 ```powershell
 npm run verify:chat-online
@@ -2720,13 +2877,29 @@ npm run verify:chat-online
 
 无 key 时在报告里如实标注"待跑"。
 
-- [ ] **Step 18.3: 写交付报告**——`docs/superpowers/reports/2026-06-13-s45-delivery-report.md`，结构对齐 S4 报告：任务对照表（Task 1–17 → 提交哈希）、spec §8 验收 15 条逐条对照证据、防线输出原文、已知问题、新增/修改文件清单。
+- [ ] **Step 18.2b: 用户指南增补**——在 `docs/USER_GUIDE.zh-CN.md` 文件末尾追加（逐字）：
+
+```markdown
+
+## 15. S4.5 对话体验速览
+
+- **过程可见**：发送后占位气泡显示已耗时与智能体当前动作；每个工具动作完成即出现在对话流。
+- **随时停止**：占位气泡上的「停止」按钮可中断本轮对话（进行中的文件写入会原子完成，不会留半截）。
+- **稿块**：智能体输出的正文片段以衬线"文稿块"渲染并标注字数；隐私模式同样会模糊它。
+- **修改确认**：编辑确认卡默认显示段落对照与改动摘要，可切换「行级详细」。
+- **依据 chips**：回答下方「依据 · 第 N 章」可点击直达阅读器。
+- **消息操作**：悬停气泡可复制 / 重新发送 / 重试本轮。
+- **阅读器**：A− / A＋ 调字号（档位会记住）、‹ › 或 ← / → 翻章、「沉浸」加宽视图、选中正文可「问智能体」。
+- **快捷键**：按 `?` 或点输入栏的 ⌨ 查看全部快捷键。
+```
+
+- [ ] **Step 18.3: 写交付报告**——`docs/superpowers/reports/2026-06-13-s45-delivery-report.md`，结构对齐 S4 报告：任务对照表（Task 1–17b → 提交哈希）、spec §8 验收 15 条逐条对照证据、防线输出原文、已知问题、新增/修改文件清单。
 
 - [ ] **Step 18.4: Commit**
 
 ```bash
-git add docs/superpowers/reports/2026-06-13-s45-delivery-report.md
-git commit -m "docs(s4.5): delivery report with acceptance evidence"
+git add docs/superpowers/reports/2026-06-13-s45-delivery-report.md docs/USER_GUIDE.zh-CN.md
+git commit -m "docs(s4.5): delivery report with acceptance evidence, user guide S4.5 section"
 ```
 
 - [ ] **Step 18.5**：用 `superpowers:finishing-a-development-branch` 收尾（merge 回 master / 保留分支由用户决定）。合并回 master 后若要交付桌面快捷方式：`npm run verify:local` + 重新打包（`npm run package:dir`），否则桌面 exe 还是旧的。
@@ -2738,3 +2911,12 @@ git commit -m "docs(s4.5): delivery report with acceptance evidence"
 1. **Spec 覆盖**：§3 全部 13 项 → 见头部映射表；§4 接口变更 → T2/T3/T4/T5；§5 错误处理 → 409 守卫（T5 测试 2/4 例）、abort 时序（T4 测试 2）、旧历史降级（T6 测试 + T17 探针⑩）、未闭合围栏（T1 测试）、clipboard 失败（T12 catch + T17 探针⑫双文案断言）、翻章越界（T14 disabled）；§6 测试矩阵 → T1–T8 单测 + T5 HTTP + T17 探针；§9 风险 → stop 死锁（T5 红线注释+测试 3）、parseAgentReply 回归（T2 Step 2.5 跑全量旧用例）、轮询重影（T9 乐观气泡清理 + T11 指纹路径）、半写文件（T4 测试 3）。
 2. **占位符扫描**：无 TBD/TODO；所有代码步骤给出完整代码或精确锚点+逐字插入内容。
 3. **类型一致性**：`toolLabel(tool, argsSummary)`/`toolSourceChip` 签名在 T6 定义、T9/T11 使用一致；`deriveSources(messages, assistantMessage)` T7 定义、T9 使用一致；`renderParagraphDiff(before, after)` T8 定义、T10 使用一致；`syncChatBusy(data)`/`isChatBusy()` T11 定义、app.js/T12/T15 使用一致；tool 消息 `args` 字段 T3 写入、T6/T7/T9/T17 消费均为字符串摘要。
+
+**第二轮优化记录（2026-06-13）**：
+
+1. 补漏：spec §6 要求的 verify:chat-online 场景 F 此前无对应任务 → 新增 Task 17b（F1 增量落盘窗口判定 = "见 tool 未见 assistant"，F2 500ms abort），并修订 spec §6 口径（HTTP busy 由 chat-busy-stop 单测覆盖）。
+2. 消除挥手指令：Task 5(d) serveChatConfirm 由"逐字同 (c)"改为完整函数体；Task 16(e) trapTab 链给出最终形态（原两处指令互相矛盾）。
+3. 修时序 bug：Task 15 mode pill 脉冲移到 `await ctx.loadDashboard()` 之后（renderModePill 重置 className 会掐断动画）。
+4. 修弱断言：探针 ⑭ stop 的 toast 断言改为认具体文案（防 ⑫ 复制 toast 串扰误判）；⑮ 翻章改用 reader-path（标题文案不可靠）、字号比较移入页内布尔表达式（保持 expect 同步契约）。
+5. 加守卫：sendChatMessageWithUX 入口忙态守卫（防双击 409 噪音）；全局禁止事项增加"GET 端点不得加 withProjectLock"红线（轮询过程流的载荷事实，已 grep 取证六个写端点清单）。
+6. 文档同步：Task 18 新增 Step 18.2b USER_GUIDE §15 增补（I10）。
