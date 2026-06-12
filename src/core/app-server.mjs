@@ -263,12 +263,14 @@ async function buildProjectList(context) {
     let title = item.title ?? path.basename(root);
     let storySeed = item.story_seed ?? "";
     let activeModel = null;
+    let archivedAt = null;
     try {
       const project = await loadProject(root);
       title = project.title ?? title;
       storySeed = project.story_seed ?? storySeed;
       const config = await loadConfigLayers(root, project).catch(() => null);
       activeModel = config?.effective?.active_model ?? project.active_model ?? null;
+      archivedAt = project.archived_at ?? null;
     } catch (error) {
       console.warn("[app-server] Failed to load project metadata:", error.message);
     }
@@ -278,6 +280,7 @@ async function buildProjectList(context) {
       story_seed: storySeed,
       active_model: activeModel,
       model_label: modelDisplayName(activeModel),
+      archived_at: archivedAt,
       external: !isPathInside(context.workspace, root)
     });
   }
@@ -433,6 +436,7 @@ async function serveSettingsUpdate(request, response, context) {
   try {
     const body = await readJsonBody(request);
     const projectRoot = await resolveActiveProjectRoot(context);
+    await assertNotArchived(projectRoot);
     const secretResult = await persistModelSecretIfPresent(body, context.secretsRoot);
     const project = await updateProjectSettings(projectRoot, body);
     const config = await loadConfigLayers(projectRoot, project);
@@ -453,7 +457,7 @@ async function serveSettingsUpdate(request, response, context) {
       secret_env: secretResult.envName
     });
   } catch (error) {
-    sendError(response, new HttpError(400, error.code ?? "settings_update_failed", error.message));
+    sendError(response, error instanceof HttpError ? error : new HttpError(400, error.code ?? "settings_update_failed", error.message));
   }
 }
 
@@ -555,6 +559,16 @@ async function withProjectLock(context, projectRoot, operation) {
   return context.projectLocks.runExclusive(projectRoot, operation);
 }
 
+// 归档守卫：归档项目对所有写端点拒绝。/api/chat/send|confirm 不走这里——chat 层由 checkToolPermission
+// 按工具类型决定（如 read 类工具仍可用）。这是 server 侧 defense-in-depth，与 chat 侧运行时校验叠加。
+async function assertNotArchived(projectRoot) {
+  const project = await loadProject(projectRoot);
+  if (project.archived_at) {
+    throw new HttpError(400, "PROJECT_ARCHIVED", "项目已归档（只读）。请先解除归档再执行此操作。");
+  }
+  return project;
+}
+
 function queueSnapshot(queue, job) {
   const state = queue.getState();
   const tasks = state.tasks ?? [];
@@ -588,6 +602,7 @@ async function serveSkillMutation(request, response, context) {
   try {
     const body = await readJsonBody(request);
     const projectRoot = await resolveActiveProjectRoot(context);
+    await assertNotArchived(projectRoot);
     const project = await loadProject(projectRoot);
     let skillName = body.name;
     if (context.action === "import") {
@@ -626,7 +641,7 @@ async function serveSkillMutation(request, response, context) {
       enabled_skills: project.enabled_skills
     });
   } catch (error) {
-    sendError(response, new HttpError(400, "BAD_REQUEST", error.message));
+    sendError(response, error instanceof HttpError ? error : new HttpError(400, "BAD_REQUEST", error.message));
   }
 }
 
@@ -642,6 +657,7 @@ async function serveCommandSubmit(request, response, context) {
     }
     const mode = body.mode === "review" ? "review" : "write";
     const projectRoot = await resolveActiveProjectRoot(context);
+    await assertNotArchived(projectRoot);
     return await withProjectLock(context, projectRoot, async () => {
     const project = await loadProject(projectRoot);
     const state = await loadState(projectRoot);
@@ -747,7 +763,7 @@ async function serveCommandSubmit(request, response, context) {
     });
     });
   } catch (error) {
-    sendError(response, new HttpError(400, "command_submit_failed", error.message));
+    sendError(response, error instanceof HttpError ? error : new HttpError(400, "command_submit_failed", error.message));
   }
 }
 
@@ -878,6 +894,7 @@ async function serveQueueCancel(request, response, context) {
   try {
     const body = await readJsonBody(request);
     const projectRoot = await resolveActiveProjectRoot(context);
+    await assertNotArchived(projectRoot);
     return await withProjectLock(context, projectRoot, async () => {
     const queue = await context.getTaskQueue(projectRoot);
     const task = await queue.cancel(String(body.taskId ?? ""), body.reason ?? "用户取消");
@@ -888,13 +905,14 @@ async function serveQueueCancel(request, response, context) {
     await serveJson(response, { ok: true, task, ...queueSnapshot(queue, null) });
     });
   } catch (error) {
-    sendError(response, new HttpError(400, "BAD_REQUEST", error.message));
+    sendError(response, error instanceof HttpError ? error : new HttpError(400, "BAD_REQUEST", error.message));
   }
 }
 
 async function serveRunStop(response, context) {
   try {
     const projectRoot = await resolveActiveProjectRoot(context);
+    await assertNotArchived(projectRoot);
     return await withProjectLock(context, projectRoot, async () => {
     const job = context.runJobs.get(path.resolve(projectRoot));
     if (!isJobRunning(job)) {
@@ -905,7 +923,7 @@ async function serveRunStop(response, context) {
     await serveJson(response, { ok: true, message: "已请求停止当前任务。" });
     });
   } catch (error) {
-    sendError(response, new HttpError(400, "BAD_REQUEST", error.message));
+    sendError(response, error instanceof HttpError ? error : new HttpError(400, "BAD_REQUEST", error.message));
   }
 }
 
@@ -913,6 +931,7 @@ async function serveRunRetry(request, response, context) {
   try {
     const body = await readJsonBody(request);
     const projectRoot = await resolveActiveProjectRoot(context);
+    await assertNotArchived(projectRoot);
     return await withProjectLock(context, projectRoot, async () => {
     const queue = await context.getTaskQueue(projectRoot);
     const candidate = await resolveRetryCandidate({
@@ -995,6 +1014,7 @@ async function serveFailuresResolve(request, response, context) {
       return;
     }
     const projectRoot = await resolveActiveProjectRoot(context);
+    await assertNotArchived(projectRoot);
     const valid = validateFailureCommand(command, args);
     if (!valid.ok) {
       await appendEvent(projectRoot, {

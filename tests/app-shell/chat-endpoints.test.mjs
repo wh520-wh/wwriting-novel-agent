@@ -216,3 +216,13 @@ test("POST /api/chat/confirm 无 pending 时友好返回", async () => {
     await closeServer(ctx.server);
   }
 });
+
+test("dashboard 透出 tool_permissions 与 archived_at", async () => {
+  const ctx = await setupServer();
+  try {
+    const { data } = await getJson(ctx.port, "/api/dashboard");
+    assert.equal(data.project.archived_at, null);
+    assert.equal(typeof data.project.tool_permissions, "object");
+    assert.equal(data.project.tool_permissions.read_only, false);
+  } finally { await closeServer(ctx.server); }
+});
