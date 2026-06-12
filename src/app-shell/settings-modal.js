@@ -511,40 +511,11 @@ export function createSettingsModal(ctx) {
     priceHint.className = "spd-hint";
     priceHint.textContent = "按供应商定价页填写。不填则成本显示为未配置价格，不会按 0 计算。";
     settingsFields.network = settingToggle("联网搜索/抓取权限", permissions.network_allowed === true);
-    const research = dashboard?.config?.effective?.research_config ?? dashboard?.project?.research_config ?? {};
-    settingsFields.searchEndpoint = settingField("联网搜索接口地址", "text", { value: research.search_endpoint ?? "", placeholder: "https://api.example.com/search" });
-    settingsFields.searchKeyEnv = settingField("搜索密钥环境变量名", "text", { value: research.search_api_key_env ?? "", placeholder: "SEARCH_API_KEY" });
-
-    // 输出风格下拉(bundled + user + project)
-    const currentOutputStyle = dashboard?.project?.output_style ?? "creative";
-    const outputStyles = await fetchOutputStyles();
-    const outputStyleField = document.createElement("div");
-    outputStyleField.className = "spd-field";
-    const outputStyleLabel = document.createElement("div");
-    outputStyleLabel.className = "spd-label";
-    const outputStyleSpan = document.createElement("span");
-    outputStyleSpan.textContent = "输出风格";
-    outputStyleLabel.append(outputStyleSpan);
-    const outputStyleSelect = document.createElement("select");
-    outputStyleSelect.className = "spd-input";
-    outputStyleSelect.id = "settings-output-style";
-    outputStyleSelect.setAttribute("aria-label", "输出风格");
-    for (const style of outputStyles) {
-      const opt = document.createElement("option");
-      opt.value = style.name;
-      opt.textContent = `${style.name} — ${style.description}`;
-      outputStyleSelect.append(opt);
-    }
-    outputStyleSelect.value = currentOutputStyle;
-    outputStyleField.append(outputStyleLabel, outputStyleSelect);
-    settingsFields.outputStyle = { field: outputStyleField, input: outputStyleSelect };
 
     const profileHeading = document.createElement("h4");
     profileHeading.className = "spd-section";
     profileHeading.textContent = "写作目标";
     settingsFields.profileTitle = settingField("小说名", "text", { value: dashboard?.project?.title ?? "" });
-    settingsFields.targetChapters = settingField("目标章节数（提高它可以继续已完成的小说）", "number", { value: dashboard?.project?.target_chapters ?? "" });
-    settingsFields.minWords = settingField("每章最低字数", "number", { value: dashboard?.project?.min_words_per_chapter ?? "" });
 
     ctx.refs.settingsDetail.append(
       settingsFields.model.field, settingsFields.baseUrl.field, endpointHint,
@@ -552,9 +523,7 @@ export function createSettingsModal(ctx) {
       priceHeading, settingsFields.priceInput.field, settingsFields.priceOutput.field, settingsFields.priceCacheHit.field, priceHint,
       budgetHeading, settingsFields.maxCost.field, settingsFields.maxTokens.field, settingsFields.maxCalls.field,
       settingsFields.network.field,
-      settingsFields.searchEndpoint.field, settingsFields.searchKeyEnv.field,
-      settingsFields.outputStyle.field,
-      profileHeading, settingsFields.profileTitle.field, settingsFields.targetChapters.field, settingsFields.minWords.field
+      profileHeading, settingsFields.profileTitle.field
     );
     bindEndpointPreview();
     updateEndpointPreview();
@@ -777,15 +746,8 @@ export function createSettingsModal(ctx) {
           max_cost: settingsFields.maxCost.input.value,
           max_total_tokens: settingsFields.maxTokens.input.value
         },
-        research_config: compactObject({
-          search_endpoint: settingsFields.searchEndpoint.input.value.trim(),
-          search_api_key_env: settingsFields.searchKeyEnv.input.value.trim()
-        }),
-        output_style: settingsFields.outputStyle?.input?.value ?? "creative",
         project_profile: compactObject({
-          title: settingsFields.profileTitle.input.value.trim(),
-          target_chapters: settingsFields.targetChapters.input.value,
-          min_words_per_chapter: settingsFields.minWords.input.value
+          title: settingsFields.profileTitle.input.value.trim()
         }),
       });
       const profile = result.model_profile ?? {};
