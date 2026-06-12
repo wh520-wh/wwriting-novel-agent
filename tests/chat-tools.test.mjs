@@ -224,3 +224,23 @@ test("pause_run 没有运行中任务时人话报错", async () => {
   assert.equal(out.ok, false);
   assert.match(out.message, /没有正在运行/u);
 });
+
+test("rewrite_chapter 组装重写指令入队", async () => {
+  const registry = createToolRegistry();
+  registerWriteTools(registry);
+  const projectRoot = await makeProject();
+  const project = await (await import("../src/core/project-store.mjs")).loadProject(projectRoot);
+  const enqueued = [];
+  const ctx = {
+    projectRoot, project,
+    getTaskQueue: async () => ({ enqueue: async (instruction, opts) => { enqueued.push({ instruction, opts }); return { id: "t1" }; } })
+  };
+  const out = await executeTool(registry, "rewrite_chapter", { chapter_no: 2, instructions: "增加沈泽心理描写" }, ctx);
+  assert.equal(out.ok, true);
+  assert.equal(out.result.queued, 1);
+  assert.equal(out.result.task_id, "t1");
+  assert.equal(enqueued.length, 1);
+  assert.match(enqueued[0].instruction, /重写第2章/u);
+  assert.match(enqueued[0].instruction, /心理描写/u);
+  assert.equal(enqueued[0].opts.mode, "write");
+});

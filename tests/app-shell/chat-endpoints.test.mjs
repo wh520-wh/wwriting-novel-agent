@@ -11,6 +11,7 @@ import path from "node:path";
 import test from "node:test";
 import { createAppShellServer } from "../../src/core/app-server.mjs";
 import { createProject } from "../../src/core/project-store.mjs";
+import { savePendingAction } from "../../src/core/chat/chat-store.mjs";
 
 const FETCH_BLOCKED_PORTS = new Set([
   1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79,
@@ -177,6 +178,40 @@ test("并发两条 chat send 串行执行，历史不交错", async () => {
     const roles = hist.data.messages.map((m) => m.role);
     // 串行证据：必须是 user,assistant,user,assistant（交错则为 user,user,assistant,assistant 等）
     assert.deepEqual(roles, ["user", "assistant", "user", "assistant"]);
+  } finally {
+    await closeServer(ctx.server);
+  }
+});
+
+test("POST /api/chat/confirm approve=false：清 pending 并回填 user_rejected", async () => {
+  const ctx = await setupServer();
+  try {
+    await savePendingAction(ctx.projectRoot, {
+      tool: "edit_chapter",
+      args: { chapter_no: 1, find: "六楼", replace: "十二楼", reason: "test" },
+      preview: { ok: true, chapter_no: 1, before: "六楼", after: "十二楼" }
+    });
+    const { res, data } = await postJson(ctx.port, "/api/chat/confirm", { approve: false });
+    assert.equal(res.status, 200);
+    assert.equal(data.ok, true);
+    assert.equal(data.pendingAction, null);
+    const hist = await getJson(ctx.port, "/api/chat/history");
+    const toolMsg = hist.data.messages.find((m) => m.role === "tool" && m.tool === "edit_chapter");
+    assert.ok(toolMsg, "应有 tool 回填消息");
+    assert.equal(toolMsg.ok, false);
+    assert.match(toolMsg.result_summary ?? "", /user_rejected/u);
+    assert.equal(hist.data.pendingAction ?? null, null, "pending 应被清除");
+  } finally {
+    await closeServer(ctx.server);
+  }
+});
+
+test("POST /api/chat/confirm 无 pending 时友好返回", async () => {
+  const ctx = await setupServer();
+  try {
+    const { res, data } = await postJson(ctx.port, "/api/chat/confirm", { approve: true });
+    assert.equal(res.status, 200);
+    assert.match(data.reply ?? "", /没有待确认/u);
   } finally {
     await closeServer(ctx.server);
   }
