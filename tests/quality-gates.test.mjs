@@ -73,3 +73,15 @@ test("parseFactCheck 畸形输出 ok:false", () => {
   assert.equal(parseFactCheck("不是 JSON").ok, false);
   assert.equal(parseFactCheck("").ok, false);
 });
+
+test("buildFactCheckMessages 不截断正文（冲突可能在章节尾部）", () => {
+  const longDraft = "开头无冲突内容。".repeat(300) + "刘康从十二楼坠落。";
+  assert.ok(longDraft.length > 2000, "前置条件：正文超 2000 字符");
+  const messages = buildFactCheckMessages({
+    chapterNo: 2,
+    draft: longDraft,
+    facts: [{ entity: "刘康", attribute: "坠楼楼层", value: "六楼", chapter_no: 1 }],
+    timeline: []
+  });
+  assert.match(messages[1].content, /十二楼/u, "章节尾部内容必须进入核查输入");
+});
