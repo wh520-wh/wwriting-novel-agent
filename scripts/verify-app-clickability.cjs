@@ -476,8 +476,9 @@ async function main() {
   }));
   fs.writeFileSync(path.join(projectRoot, "chat_history.jsonl"), [
     JSON.stringify({ id: "chat-user-001", ts: "2026-06-12T01:00:00.000Z", role: "user", content: "你好" }),
-    JSON.stringify({ id: "chat-assistant-001", ts: "2026-06-12T01:00:01.000Z", role: "assistant", content: "你好！有什么可以帮你的？", cost: 0.001 }),
-    JSON.stringify({ id: "chat-tool-001", ts: "2026-06-12T01:00:02.000Z", role: "tool", tool: "read_chapter", ok: true, result_summary: '{"chapter_no":1,"words":1200}' })
+    JSON.stringify({ id: "chat-tool-000", ts: "2026-06-12T01:00:01.000Z", role: "tool", tool: "read_chapter", ok: true, result_summary: '{"chapter_no":1}' }),
+    JSON.stringify({ id: "chat-tool-001", ts: "2026-06-12T01:00:02.000Z", role: "tool", tool: "read_chapter", ok: true, args: '{"chapter_no":1}', result_summary: '{"chapter_no":1,"words":1200}' }),
+    JSON.stringify({ id: "chat-assistant-001", ts: "2026-06-12T01:00:03.000Z", role: "assistant", content: "看一段：\n\n```稿\n夜雨敲窗，他点了灯。\n```\n\n- 要点一\n- 要点二", cost: 0.001 })
   ].join("\n") + "\n");
 
   // Mock /api/chat/send and /api/chat/confirm to avoid real LLM calls
@@ -487,7 +488,8 @@ async function main() {
       window.fetch = async function(...args) {
         const url = typeof args[0] === 'string' ? args[0] : args[0]?.url;
         if (url && url.includes('/api/chat/send')) {
-          return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+          await new Promise((r) => setTimeout(r, 800));
+          return new Response(JSON.stringify({ ok: true, reply: "mock", toolEvents: [], pendingAction: null, usage: { calls: 0, cost: 0 } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
         }
         if (url && url.includes('/api/chat/confirm')) {
           return new Response(JSON.stringify({ ok: true, message: "已确认" }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -609,6 +611,116 @@ async function main() {
   // ⑧ 归档组折叠头（当前项目未归档，验证 toggle 元素结构存在性）
   const archivedToggle = await read(win, `document.querySelector('.rail-archived-toggle')`);
   // 归档 toggle 仅在有归档项目时显示，不作为 fail 条件
+
+  // === S4.5 probes ===
+  // ⑨ 稿块 + markdown 列表渲染
+  const msBlock = await read(win, `document.querySelectorAll('.manuscript-block').length`);
+  assert.ok(msBlock >= 1, "manuscript block must render from ```稿 fence");
+  const mdList = await read(win, `document.querySelectorAll('.chat-bubble-content ul li').length`);
+  assert.ok(mdList >= 2, "markdown list must render");
+
+  // ⑩ 工具卡人话标签（带 args 与缺 args 两种）
+  const toolLabels = await read(win, `[...document.querySelectorAll('.chat-tool-label')].map((n) => n.textContent)`);
+  assert.ok(toolLabels.some((t) => t.includes("第 1 章")), `tool label humanized: ${JSON.stringify(toolLabels)}`);
+  assert.ok(toolLabels.some((t) => t === "读取了章节"), "legacy tool message without args must degrade gracefully");
+
+  // ⑪ 溯源 chips：点章节 chip 打开阅读器
+  clicks.push(await clickAndRead(win, '[data-testid="chat-source-chapter"]', {
+    label: "s45-source-chip-open-reader",
+    settleMs: 400,
+    expect: () => read(win, `document.getElementById('reader-scrim').classList.contains('show')`)
+  }));
+  await win.webContents.executeJavaScript(`document.getElementById('reader-close').click(); true;`);
+  await delay(200);
+
+  // ⑫ 消息操作：复制（点击后必须出 toast——成功或失败文案都算执行到位）
+  clicks.push(await clickAndRead(win, '[data-testid="msg-copy"]', {
+    label: "s45-msg-copy",
+    settleMs: 300,
+    expect: () => read(win, `document.querySelector('.toast-stack').textContent.includes('复制')`)
+  }));
+
+  // ⑬ 确认卡段落/行级切换
+  clicks.push(await clickAndRead(win, '[data-testid="chat-diff-toggle"]', {
+    label: "s45-diff-toggle",
+    settleMs: 200,
+    expect: () => read(win, `document.querySelector('.chat-diff') && document.querySelector('.chat-diff').hidden === false`)
+  }));
+
+  // ⑭ 活动占位 + 停止按钮（chat/send mock 延迟 800ms 制造窗口；stop 打到真服务器 → 空闲 409 → 错误 toast 证明链路通）
+  await win.webContents.executeJavaScript(`
+    document.getElementById('composer-input').value = '测试过程流';
+    document.getElementById('composer-input').dispatchEvent(new Event('input', { bubbles: true }));
+    document.getElementById('composer-submit').click();
+    true;
+  `);
+  await delay(300);
+  const placeholderVisible = await read(win, `Boolean(document.querySelector('[data-testid="chat-activity-placeholder"]'))`);
+  assert.equal(placeholderVisible, true, "activity placeholder must appear during chat send");
+  // stop 打到真服务器：send 被前端 mock，服务端无 chatJobs → 409「当前没有进行中的对话轮。」→ 错误 toast。
+  // 断言必须认这条具体文案——不能只看 toast 非空（⑫ 的复制 toast 3.2s 内还在栈里，会误判通过）。
+  clicks.push(await clickAndRead(win, '[data-testid="chat-stop"]', {
+    label: "s45-chat-stop",
+    settleMs: 400,
+    expect: () => read(win, `document.querySelector('.toast-stack').textContent.includes('对话轮') || document.querySelector('.toast-stack').textContent.includes('停止')`)
+  }));
+  await delay(900); // 等 mock send 完成、占位撤除
+
+  // ⑮ 阅读器工具排：开阅读器 → 字号 + 沉浸 + 翻章按钮
+  // 适配既有模式：mocked /api/chat/send 不会触发 chapter_completed，所以 .filecard 不存在。
+  // 走 chapters 抽屉 → .chrow.completed 开阅读器（与 ② 同款）。
+  clicks.push(await clickAndReadStable(win, '.quick-rail .qr-slot[data-key="chapters"]', {
+    label: "s45-open-chapters-for-reader",
+    expect: () => read(win, "document.getElementById('drawer').classList.contains('show') && document.querySelector('[data-dtab=\"chapters\"]').getAttribute('aria-selected') === 'true'"),
+    settleMs: 500
+  }));
+  clicks.push(await clickAndReadStable(win, ".chrow.completed", {
+    label: "s45-reader-from-chrow",
+    expect: () => overlayVisible(win, "reader-scrim"),
+    settleMs: 500
+  }));
+  // 比较表达式放进页内求值，expect 保持同步布尔（与既有探针契约一致）。
+  const fontBefore = await read(win, `document.getElementById('reader-body').style.fontSize`);
+  clicks.push(await clickAndRead(win, '#reader-font-plus', {
+    label: "s45-reader-font-plus",
+    settleMs: 150,
+    expect: () => read(win, `document.getElementById('reader-body').style.fontSize !== ${JSON.stringify(fontBefore)}`)
+  }));
+  clicks.push(await clickAndRead(win, '#reader-wide', {
+    label: "s45-reader-wide",
+    settleMs: 150,
+    expect: () => read(win, `document.getElementById('reader').classList.contains('reader--wide')`)
+  }));
+  // 用 reader-path 断言翻章：它永远是 chapters/00N.md，不依赖章节标题内容。
+  clicks.push(await clickAndRead(win, '#reader-next', {
+    label: "s45-reader-next",
+    settleMs: 500,
+    expect: () => read(win, `document.getElementById('reader-path').textContent.includes('002') || document.getElementById('reader-next').disabled === true`)
+  }));
+  await win.webContents.executeJavaScript(`document.getElementById('reader-close').click(); true;`);
+  await delay(200);
+  // 关闭 chapters 抽屉，避免遮挡命令栏 #cbar-keys
+  await win.webContents.executeJavaScript(`
+    (() => {
+      if (document.getElementById('drawer')?.classList.contains('show')) {
+        document.getElementById('drawer-close')?.click();
+      }
+      return true;
+    })()
+  `);
+  await waitUntil(win, "document.getElementById('drawer')?.classList.contains('show') === false", "drawer must close before shortcuts probe", 2000);
+
+  // ⑯ 快捷键浮层：⌨ 开 → X 关
+  clicks.push(await clickAndRead(win, '#cbar-keys', {
+    label: "s45-shortcuts-open",
+    settleMs: 200,
+    expect: () => read(win, `document.getElementById('shortcuts-scrim').classList.contains('show')`)
+  }));
+  clicks.push(await clickAndRead(win, '#shortcuts-x', {
+    label: "s45-shortcuts-close",
+    settleMs: 200,
+    expect: () => read(win, `!document.getElementById('shortcuts-scrim').classList.contains('show')`)
+  }));
 
   const motionReady = await read(win, "Boolean(window.__wwritingMotionReady)");
   assert.equal(motionReady, true, "motion runtime must initialize in Electron");
