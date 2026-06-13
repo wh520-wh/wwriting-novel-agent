@@ -153,6 +153,7 @@ export async function runProject(projectRoot, options = {}) {
           if (completion.taskCompleted) {
             return {
               outcome: "completed",
+              completed: completion.projectCompleted,
               task_completed: true,
               project_completed: completion.projectCompleted,
               completed_chapters: [completion.chapterNo],
