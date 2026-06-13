@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { runProject, SimulatedInterrupt, maybeWarnChapterCost } from "../src/core/agent-engine.mjs";
+import { runProject, SimulatedInterrupt, maybeWarnChapterCost, extractChapterMemory, runFactCheck } from "../src/core/agent-engine.mjs";
 import { appendEvent, readEvents } from "../src/core/event-log.mjs";
 import { countEffectiveWords } from "../src/core/word-count.mjs";
 import { MockModel } from "../src/core/mock-model.mjs";
@@ -905,4 +905,84 @@ test("末章任务同时完成项目", async () => {
   });
   assert.equal(result.project_completed, true);
   assert.equal((await loadState(projectRoot)).project_status, "completed");
+});
+
+test("fact-check abort escapes instead of degrading to skipped", async () => {
+  const { projectRoot, project } = await makeFactCheckProject("wwriting-fc-abort-");
+  const controller = new AbortController();
+  const started = Promise.withResolvers();
+  const runtime = {
+    signal: controller.signal,
+    modelClient: {
+      generate: async ({ signal }) => {
+        started.resolve();
+        await new Promise((resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+        });
+      }
+    }
+  };
+  const promise = runFactCheck(projectRoot, project, { current_chapter_no: 1 }, runtime, "draft");
+  await started.promise;
+  controller.abort("用户停止");
+  await assert.rejects(promise, (error) => error.name === "ProjectCancelledError");
+});
+
+test("memory extraction abort does not advance watermark", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-memory-abort-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "project",
+    target_chapters: 1,
+    min_words_per_chapter: 10,
+    target_words_per_chapter: 12,
+    active_model: {
+      provider: "openai-compatible",
+      model_name: "fake-model",
+      base_url: "http://127.0.0.1:1/v1",
+      api_key_env: "FAKE_KEY"
+    }
+  });
+  const project = await loadProject(projectRoot);
+  const finalPath = path.join(projectRoot, "chapters", "001.md");
+  await fs.mkdir(path.dirname(finalPath), { recursive: true });
+  await fs.writeFile(finalPath, "# 第一章\n\n雨落在旧信封上。", "utf8");
+  await upsertChapter(projectRoot, {
+    chapter_no: 1,
+    status: "summarizing",
+    final_path: finalPath
+  });
+
+  const controller = new AbortController();
+  const started = Promise.withResolvers();
+  const promise = extractChapterMemory(
+    projectRoot,
+    project,
+    { current_chapter_no: 1 },
+    {
+      signal: controller.signal,
+      modelClient: {
+        generate: async ({ signal }) => {
+          started.resolve();
+          await new Promise((resolve, reject) => {
+            signal.addEventListener(
+              "abort",
+              () => reject(new DOMException("aborted", "AbortError")),
+              { once: true }
+            );
+          });
+        }
+      }
+    }
+  );
+
+  await started.promise;
+  controller.abort("用户停止");
+  await assert.rejects(
+    promise,
+    (error) => error.name === "ProjectCancelledError"
+  );
+  assert.equal(
+    (await loadContinuityState(projectRoot)).last_extracted_chapter ?? 0,
+    0
+  );
 });

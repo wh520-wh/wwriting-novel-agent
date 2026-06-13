@@ -230,3 +230,36 @@ test("throw after exhausting retries — all attempts fail", async () => {
   // 1 initial + 2 retries = 3 total calls
   assert.equal(calls, 3);
 });
+
+test("adapter AbortError after external abort is never retried", async () => {
+  const controller = new AbortController();
+  const started = Promise.withResolvers();
+  let calls = 0;
+  const adapter = {
+    async generate({ signal }) {
+      calls += 1;
+      started.resolve();
+      await new Promise((resolve, reject) => {
+        signal.addEventListener(
+          "abort",
+          () => reject(new DOMException("aborted", "AbortError")),
+          { once: true }
+        );
+      });
+    }
+  };
+  const client = makeClient(adapter, { retryMax: 3 });
+  const pending = client.generate({
+    prompt: "hi",
+    signal: controller.signal
+  });
+
+  await started.promise;
+  controller.abort("用户停止");
+
+  await assert.rejects(
+    pending,
+    (error) => error.name === "AbortError"
+  );
+  assert.equal(calls, 1);
+});
