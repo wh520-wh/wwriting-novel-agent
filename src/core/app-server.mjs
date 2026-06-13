@@ -1350,7 +1350,7 @@ async function startProjectRun(projectRoot, project, context, task, instructionM
         type: "project_run_finished",
         project_id: project.project_id,
         stage: "run",
-        message: result?.completed ? "写作任务已完成。" : "写作任务已停止。",
+        message: (result?.completed || result?.task_completed || result?.project_completed) ? "写作任务已完成。" : "写作任务已停止。",
         data: result
       });
       const latestState = await loadState(projectRoot).catch(() => runningState);
