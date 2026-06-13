@@ -44,7 +44,10 @@ export async function inspectChapterArtifact({ projectRoot, chapter, indexEntry 
     if (error.code === "ENOENT") {
       return artifactState("invalid", chapter, "missing_file", { relative_path: relativePath });
     }
-    throw error;
+    return artifactState("invalid", chapter, "inspect_error", {
+      relative_path: relativePath,
+      error_code: error.code ?? null,
+    });
   }
   if (!fileStat.isFile()) {
     return artifactState("invalid", chapter, "not_a_file", { relative_path: relativePath });
@@ -53,7 +56,17 @@ export async function inspectChapterArtifact({ projectRoot, chapter, indexEntry 
   const cacheKey = `${absolutePath}:${fileStat.size}:${fileStat.mtimeMs}`;
   let checksum = artifactCache.get(cacheKey);
   if (!checksum) {
-    const content = await readFile(absolutePath);
+    let content;
+    try {
+      content = await readFile(absolutePath);
+    } catch (error) {
+      return artifactState("invalid", chapter, "inspect_error", {
+        path_exists: true,
+        relative_path: relativePath,
+        absolute_path: absolutePath,
+        error_code: error.code ?? null,
+      });
+    }
     checksum = sha256(content);
     artifactCache.set(cacheKey, checksum);
   }
