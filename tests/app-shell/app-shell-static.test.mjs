@@ -153,3 +153,34 @@ test("thread-renderer.js gates the open-reader click and 'open' affordance on ca
     "the '打开阅读' affordance must be conditional on view.canOpen"
   );
 });
+
+test("thread-renderer.js hides the stop button while projectStatus is cancelling", () => {
+  // The plan requires: the per-run stop button must be hidden once the run
+  // is cancelling, and the task-card stop button must not be rendered for
+  // any non-running status (including cancelling). We assert that
+  // `cancelling` appears in the same statement that toggles stopBtn.hidden,
+  // and that the task-card stop button branch is gated to `running` only.
+  const stopBtnContext = threadRendererSource.match(
+    /block\.stopBtn\.hidden[\s\S]{0,200}/u
+  );
+  assert.ok(
+    stopBtnContext && /cancelling/.test(stopBtnContext[0]),
+    "run-stop-btn hidden condition should account for cancelling"
+  );
+  assert.match(
+    threadRendererSource,
+    /task\.status\s*===\s*["']running["']/u,
+    "task-card stop button branch should be gated to status === running"
+  );
+  // No branch should render a stop button for a cancelling task. The task
+  // card builder uses `if (task.status === "running")` for the stop button
+  // and falls through to other branches (queued/completed/blocked/etc).
+  const cancellingStopBranch = threadRendererSource.match(
+    /task\.status\s*===\s*["']cancelling["'][\s\S]{0,160}stopBtn/u
+  );
+  assert.equal(
+    cancellingStopBranch,
+    null,
+    "no stop button branch should be wired for cancelling tasks"
+  );
+});
