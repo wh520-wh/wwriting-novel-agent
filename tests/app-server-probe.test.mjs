@@ -303,6 +303,52 @@ test("POST /api/run/stop cancels the running task and leaves queued tasks untouc
   }
 });
 
+test("POST /api/run/stop immediately exposes cancelling", async () => {
+  const run = deferredRun();
+  const { server, port, projectRoot } = await setupServer({ testRunProject: run.testRunProject });
+  try {
+    await postJson(port, "/api/commands/submit", { message: "写第1章" });
+    const before = Date.now();
+    const stopped = await postJson(port, "/api/run/stop", {});
+    assert.equal(stopped.res.status, 200);
+    assert.equal(stopped.data.status, "cancelling");
+    assert.ok(Date.now() - before < 500);
+    const state = await loadState(projectRoot);
+    assert.equal(state.project_status, "cancelling");
+    const queue = await getJson(port, "/api/queue/state");
+    assert.equal(queue.data.tasks[0].status, "cancelling");
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("重复 stop 对 cancelling 幂等", async () => {
+  const heldRun = Promise.withResolvers();
+  async function testRunProject() {
+    return heldRun.promise;
+  }
+  const { server, port, projectRoot } = await setupServer({ testRunProject });
+  try {
+    await postJson(port, "/api/commands/submit", { message: "写第1章" });
+    const first = await postJson(port, "/api/run/stop", {});
+    const second = await postJson(port, "/api/run/stop", {});
+
+    assert.equal(first.res.status, 200);
+    assert.equal(second.res.status, 200);
+    assert.equal(first.data.status, "cancelling");
+    assert.equal(second.data.status, "cancelling");
+
+    const events = await readEvents(projectRoot);
+    assert.equal(
+      events.filter((event) => event.type === "project_cancelling").length,
+      1
+    );
+  } finally {
+    heldRun.resolve({ completed: true });
+    await closeServer(server);
+  }
+});
+
 test("stop and retry do not leave multiple running tasks", async () => {
   let activeRun = null;
   async function testRunProject(projectRoot, options) {
@@ -519,6 +565,102 @@ test("stop wins if a runner resolves after its AbortSignal is aborted", async ()
     });
     const { data: queue } = await getJson(port, "/api/queue/state");
     assert.equal(queue.tasks[0].status, "cancelled");
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("cancellation converges to cancelled without emitting project_run_failed", async () => {
+  let deferred = null;
+  async function testRunProject(projectRoot, options) {
+    deferred = {};
+    deferred.promise = new Promise((resolve, reject) => {
+      deferred.resolve = resolve;
+      deferred.reject = reject;
+    });
+    options.signal?.addEventListener(
+      "abort",
+      () => deferred.reject(new Error(String(options.signal.reason ?? "cancelled"))),
+      { once: true }
+    );
+    return deferred.promise;
+  }
+  const { server, port, projectRoot } = await setupServer({ testRunProject });
+  try {
+    await postJson(port, "/api/commands/submit", { message: "slow task" });
+    await postJson(port, "/api/run/stop", {});
+
+    await waitFor(async () => {
+      const { data: queue } = await getJson(port, "/api/queue/state");
+      return queue.tasks[0]?.status === "cancelled" && queue;
+    });
+    await waitFor(async () => {
+      const state = await loadState(projectRoot);
+      return state.project_status === "cancelled" && state;
+    });
+
+    const events = await readEvents(projectRoot);
+    const cancelledCount = events.filter((event) => event.type === "project_cancelled").length;
+    const failedCount = events.filter((event) => event.type === "project_run_failed").length;
+    const state = await loadState(projectRoot);
+
+    assert.equal(cancelledCount, 1);
+    assert.equal(failedCount, 0);
+    assert.equal(state.project_status, "cancelled");
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("迟到的第二次 stop 不复活已收敛的 cancelled 状态", async () => {
+  // 竞态回归：双击/重复停止。第一次 stop 持久化 cancelling 并 abort，runner 收敛到 cancelled；
+  // 第二次 stop 在项目已是终态后到达，绝不能把 project_status 拨回 cancelling、不能再发
+  // project_cancelling 事件，否则重试会被永久 409 阻塞。
+  let deferred = null;
+  async function testRunProject(projectRoot, options) {
+    deferred = {};
+    deferred.promise = new Promise((resolve, reject) => {
+      deferred.resolve = resolve;
+      deferred.reject = reject;
+    });
+    options.signal?.addEventListener(
+      "abort",
+      () => deferred.reject(new Error(String(options.signal.reason ?? "cancelled"))),
+      { once: true }
+    );
+    return deferred.promise;
+  }
+  const { server, port, projectRoot } = await setupServer({ testRunProject });
+  try {
+    await postJson(port, "/api/commands/submit", { message: "slow task" });
+
+    // 第一次 stop：持久化 cancelling 并触发 abort。
+    const first = await postJson(port, "/api/run/stop", {});
+    assert.equal(first.res.status, 200);
+    assert.equal(first.data.status, "cancelling");
+
+    // 让 runner 收敛到终态 cancelled。
+    await waitFor(async () => {
+      const state = await loadState(projectRoot);
+      return state.project_status === "cancelled" && state;
+    });
+
+    // 第二次 stop：项目已是终态，job 已收敛为 cancelled，应当 409 且不复活。
+    const second = await postJson(port, "/api/run/stop", {});
+    assert.equal(second.res.status, 409);
+
+    const state = await loadState(projectRoot);
+    assert.equal(state.project_status, "cancelled");
+
+    const events = await readEvents(projectRoot);
+    assert.equal(
+      events.filter((event) => event.type === "project_cancelling").length,
+      1
+    );
+    assert.equal(
+      events.filter((event) => event.type === "project_cancelled").length,
+      1
+    );
   } finally {
     await closeServer(server);
   }

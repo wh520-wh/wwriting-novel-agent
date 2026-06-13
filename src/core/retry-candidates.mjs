@@ -9,10 +9,16 @@ export async function resolveRetryCandidate({ projectRoot, queue, job, taskId = 
   if (isJobRunningForRetry(job)) {
     return unavailable("retry_still_running", "智能体仍在运行，请先停止当前任务。", 409);
   }
+  if (job?.status === "cancelling" || state.project_status === "cancelling") {
+    return unavailable("retry_cancelling", "正在停止，请等待状态收敛", 409);
+  }
+  const queueState = queue.getState();
+  if (queueState.tasks.some((task) => task.status === "cancelling")) {
+    return unavailable("retry_cancelling", "正在停止，请等待状态收敛", 409);
+  }
   if (["completed", "blocked"].includes(state.project_status)) {
     return unavailable("retry_not_allowed_status", "当前项目状态不可重试。", 400);
   }
-  const queueState = queue.getState();
   if (taskId) {
     const selected = queueState.tasks.find((task) => task.id === String(taskId));
     if (!selected || !["interrupted", "cancelled"].includes(selected.status)) {
