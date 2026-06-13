@@ -2,7 +2,7 @@ import { icon } from "./icons.js";
 import { formatTime, formatNumber, formatCompact, cssEscape, translateStage, translateReviewStatus, statusClass } from "./utils.js";
 import { motion } from "./motion-runtime.js";
 import { renderFailureCard } from "./components/failure-card.js";
-import { renderDiff } from "./diff-view.js";
+import { renderDiff, renderParagraphDiff } from "./diff-view.js";
 import { deriveFailures } from "./agent-truth.mjs";
 import { postJson } from "./api-client.js";
 import { sendChatMessage, confirmChatAction } from "./api-client.js";
@@ -940,15 +940,34 @@ export function createThreadRenderer(ctx) {
     const preview = pendingAction?.preview;
     if (preview?.before != null || preview?.after != null) {
       if (pendingAction?.tool === "edit_chapter") {
-        card.append(renderDiff(preview.before ?? "", preview.after ?? ""));
+        const diffWrap = document.createElement("div");
+        diffWrap.className = "chat-confirm-diffwrap";
+        const paraView = renderParagraphDiff(preview.before ?? "", preview.after ?? "");
+        const lineView = renderDiff(preview.before ?? "", preview.after ?? "");
+        lineView.hidden = true;
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "chat-diff-toggle";
+        toggle.dataset.testid = "chat-diff-toggle";
+        toggle.textContent = "行级详细";
+        toggle.setAttribute("aria-pressed", "false");
+        toggle.addEventListener("click", () => {
+          const showLine = lineView.hidden;
+          lineView.hidden = !showLine;
+          paraView.hidden = showLine;
+          toggle.textContent = showLine ? "段落对照" : "行级详细";
+          toggle.setAttribute("aria-pressed", showLine ? "true" : "false");
+        });
+        diffWrap.append(paraView, lineView, toggle);
+        card.append(diffWrap);
       } else {
         const diff = document.createElement("div");
         diff.className = "chat-confirm-diff";
         const before = document.createElement("div");
-        before.className = "chat-confirm-before";
+        before.className = "chat-confirm-before manuscript-text peek";
         before.textContent = preview?.before ?? "";
         const after = document.createElement("div");
-        after.className = "chat-confirm-after";
+        after.className = "chat-confirm-after manuscript-text peek";
         after.textContent = preview?.after ?? "";
         diff.append(before, after);
         card.append(diff);
