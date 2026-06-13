@@ -5,6 +5,7 @@ import { readEvents } from "./event-log.mjs";
 import { readFailures } from "./failures-store.mjs";
 import { isPathInside, pathExists, readJson, safeJoin } from "./fs-utils.mjs";
 import { loadProject } from "./project-store.mjs";
+import { inspectChapterArtifact } from "./chapter-artifact.mjs";
 import { listProjectSkills } from "./skill-runtime.mjs";
 import { readRecentToolEvents, makeToolEventsCache } from "./recent-tool-events.mjs";
 
@@ -45,9 +46,19 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
   const [skills, sources] = await Promise.all([readSkills(projectRoot, effectiveProject), readSources(projectRoot)]);
   const failures = readFailures(projectRoot);
 
-  const chapters = chapterIndex.chapters ?? [];
+  const indexedChapters = chapterIndex.chapters ?? [];
+  const chapters = await Promise.all(
+    indexedChapters.map(async (chapter) => ({
+      ...chapter,
+      artifact: await inspectChapterArtifact({
+        projectRoot,
+        chapter: chapter.chapter_no,
+        indexEntry: chapter
+      })
+    }))
+  );
   const totalWords = chapters.reduce((sum, chapter) => sum + Number(chapter.actual_words ?? 0), 0);
-  const completedChapters = chapters.filter((chapter) => chapter.status === "completed").length;
+  const completedChapters = chapters.filter((chapter) => chapter.artifact.state === "committed").length;
   const targetChapters = Number(project.target_chapters ?? chapters.length ?? 0);
   const progressPercent = targetChapters > 0 ? Math.round((completedChapters / targetChapters) * 100) : 0;
   const activityProgressPercent = computeActivityProgressPercent({
