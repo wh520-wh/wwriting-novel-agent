@@ -53,6 +53,9 @@ export function createAppShellServer({
   applyLocalSecretsToEnv(loadLocalSecretsSync(localSecretsRoot));
   const runJobs = new Map();
   const taskQueues = new Map();
+  // chat 循环忙态注册表：resolvedProjectRoot -> { controller, startedAt }。
+  // send/confirm 进锁前注册；/api/chat/stop 从这里取 controller —— stop 绝不进项目锁（send 正持锁，入锁即死锁）。
+  const chatJobs = new Map();
   const projectLocks = createProjectLockRegistry();
   async function getTaskQueue(projectRoot) {
     const key = path.resolve(projectRoot);
@@ -153,15 +156,20 @@ export function createAppShellServer({
       return;
     }
     if (url.pathname === "/api/chat/send" && request.method === "POST") {
-      await serveChatSend(request, response, { workspace, selected, runJobs, getTaskQueue, testModel, testRunProject, projectLocks, startProjectRunFn: startProjectRun });
+      await serveChatSend(request, response, { workspace, selected, runJobs, getTaskQueue, testModel, testRunProject, projectLocks, startProjectRunFn: startProjectRun, chatJobs });
       return;
     }
     if (url.pathname === "/api/chat/confirm" && request.method === "POST") {
-      await serveChatConfirm(request, response, { workspace, selected, runJobs, getTaskQueue, testModel, testRunProject, projectLocks, startProjectRunFn: startProjectRun });
+      await serveChatConfirm(request, response, { workspace, selected, runJobs, getTaskQueue, testModel, testRunProject, projectLocks, startProjectRunFn: startProjectRun, chatJobs });
       return;
     }
     if (url.pathname === "/api/chat/history" && request.method === "GET") {
-      await serveChatHistory(url, response, { workspace, selected });
+      await serveChatHistory(url, response, { workspace, selected, chatJobs });
+      return;
+    }
+    if (url.pathname === "/api/chat/stop" && request.method === "POST") {
+      // 红线：不要给这个端点包 withProjectLock。
+      await serveChatStop(response, { workspace, selected, chatJobs });
       return;
     }
     if (url.pathname === "/api/run/retry" && request.method === "POST") {
@@ -771,27 +779,39 @@ async function serveChatSend(request, response, context) {
   try {
     const body = await readJsonBody(request);
     const message = String(body.message ?? "").trim();
-    if (!message) throw new Error("请输入消息。");
+    if (!message) throw new Error("请输入要发送的消息。");
     if (message.length > 4000) throw new Error("消息过长。");
     const projectRoot = await resolveActiveProjectRoot(context);
-    return await withProjectLock(context, projectRoot, async () => {
-    const project = await loadProject(projectRoot);
-    const registry = buildChatRegistry();
-    const modelClient = await buildChatModelClient(project, projectRoot);
-    const result = await runChatTurn({
-      projectRoot,
-      project,
-      registry,
-      modelClient,
-      userMessage: message,
-      server: chatServerContext(context),
-      getTaskQueue: context.getTaskQueue
-    });
-    await modelClient.costTracker.writeProjectReport(projectRoot);
-    await serveJson(response, { ok: true, ...result });
-    });
+    const jobKey = path.resolve(projectRoot);
+    if (context.chatJobs.has(jobKey)) {
+      sendError(response, new HttpError(409, "CHAT_BUSY", "上一轮对话还在进行中，请等它完成或先点停止。"));
+      return;
+    }
+    const controller = new AbortController();
+    context.chatJobs.set(jobKey, { controller, startedAt: new Date().toISOString() });
+    try {
+      return await withProjectLock(context, projectRoot, async () => {
+      const project = await loadProject(projectRoot);
+      const registry = buildChatRegistry();
+      const modelClient = context.testModel?.chatClient?.() ?? await buildChatModelClient(project, projectRoot);
+      const result = await runChatTurn({
+        projectRoot,
+        project,
+        registry,
+        modelClient,
+        userMessage: message,
+        signal: controller.signal,
+        server: chatServerContext(context),
+        getTaskQueue: context.getTaskQueue
+      });
+      await modelClient.costTracker.writeProjectReport(projectRoot);
+      await serveJson(response, { ok: true, ...result });
+      });
+    } finally {
+      context.chatJobs.delete(jobKey);
+    }
   } catch (error) {
-    sendError(response, new HttpError(400, "BAD_REQUEST", error.message));
+    sendError(response, error instanceof HttpError ? error : new HttpError(400, "BAD_REQUEST", error.message));
   }
 }
 
@@ -799,24 +819,36 @@ async function serveChatConfirm(request, response, context) {
   try {
     const body = await readJsonBody(request);
     const projectRoot = await resolveActiveProjectRoot(context);
-    return await withProjectLock(context, projectRoot, async () => {
-    const project = await loadProject(projectRoot);
-    const registry = buildChatRegistry();
-    const modelClient = await buildChatModelClient(project, projectRoot);
-    const result = await resumeChatTurn({
-      projectRoot,
-      project,
-      registry,
-      modelClient,
-      approve: body.approve === true,
-      server: chatServerContext(context),
-      getTaskQueue: context.getTaskQueue
-    });
-    await modelClient.costTracker.writeProjectReport(projectRoot);
-    await serveJson(response, { ok: true, ...result });
-    });
+    const jobKey = path.resolve(projectRoot);
+    if (context.chatJobs.has(jobKey)) {
+      sendError(response, new HttpError(409, "CHAT_BUSY", "上一轮对话还在进行中，请等它完成或先点停止。"));
+      return;
+    }
+    const controller = new AbortController();
+    context.chatJobs.set(jobKey, { controller, startedAt: new Date().toISOString() });
+    try {
+      return await withProjectLock(context, projectRoot, async () => {
+      const project = await loadProject(projectRoot);
+      const registry = buildChatRegistry();
+      const modelClient = context.testModel?.chatClient?.() ?? await buildChatModelClient(project, projectRoot);
+      const result = await resumeChatTurn({
+        projectRoot,
+        project,
+        registry,
+        modelClient,
+        approve: body.approve === true,
+        signal: controller.signal,
+        server: chatServerContext(context),
+        getTaskQueue: context.getTaskQueue
+      });
+      await modelClient.costTracker.writeProjectReport(projectRoot);
+      await serveJson(response, { ok: true, ...result });
+      });
+    } finally {
+      context.chatJobs.delete(jobKey);
+    }
   } catch (error) {
-    sendError(response, new HttpError(400, "BAD_REQUEST", error.message));
+    sendError(response, error instanceof HttpError ? error : new HttpError(400, "BAD_REQUEST", error.message));
   }
 }
 
@@ -827,9 +859,26 @@ async function serveChatHistory(url, response, context) {
     const limit = Number(url.searchParams.get("limit") ?? 100);
     const messages = await readChatHistory(projectRoot, { after, limit });
     const pendingAction = await loadPendingAction(projectRoot);
-    await serveJson(response, { ok: true, messages, pendingAction });
+    const jobKey = path.resolve(projectRoot);
+    const job = context.chatJobs?.get(jobKey) ?? null;
+    await serveJson(response, { ok: true, messages, pendingAction, busy: Boolean(job), busySince: job?.startedAt ?? null });
   } catch (error) {
     sendError(response, new HttpError(400, "BAD_REQUEST", error.message));
+  }
+}
+
+async function serveChatStop(response, context) {
+  try {
+    const projectRoot = await resolveActiveProjectRoot(context);
+    const job = context.chatJobs.get(path.resolve(projectRoot));
+    if (!job) {
+      sendError(response, new HttpError(409, "CONFLICT", "当前没有进行中的对话轮。"));
+      return;
+    }
+    job.controller.abort("用户停止");
+    await serveJson(response, { ok: true, message: "已请求停止本轮对话。" });
+  } catch (error) {
+    sendError(response, error instanceof HttpError ? error : new HttpError(400, "BAD_REQUEST", error.message));
   }
 }
 
