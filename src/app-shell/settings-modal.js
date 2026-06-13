@@ -3,6 +3,12 @@ import { compactObject, isEnvironmentVariableName, resolveModelEndpoint } from "
 import { getJson, postJson, sendChatMessage } from "./api-client.js";
 import { motion } from "./motion-runtime.js";
 import { PERMISSION_TIERS, detectPermissionTier } from "./permission-tiers.mjs";
+import { MIMO_PRESET, formatConnectionStatus, submitModelConnectionTest } from "./settings-connection.mjs";
+
+// Re-export so consumers that already `import { ... } from "./settings-modal.js"`
+// continue to work. The pure helpers themselves live in ./settings-connection.mjs
+// so they can be tested without DOM-bound modules.
+export { MIMO_PRESET, formatConnectionStatus, submitModelConnectionTest } from "./settings-connection.mjs";
 
 const PROVIDER_PRESETS = {
   deepseek: { title: "DeepSeek 官方", provider: "openai-compatible", baseUrl: "https://api.deepseek.com", apiKeyEnv: "DEEPSEEK_API_KEY", models: ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat"] },
@@ -26,17 +32,25 @@ const SETTINGS_SECTIONS = [
 ];
 
 
-export function createSettingsModal(ctx) {
+export function createSettingsModal(ctx, options = {}) {
   // ctx provides: refs, getDashboard, getCurrentProjectRoot, showToast, loadDashboard,
   //   getLastFocused, setLastFocused
+  const {
+    getJsonImpl = getJson,
+    postJsonImpl = postJson,
+  } = options;
 
   let settingsProviderId = "deepseek";
   let settingsSection = "model";
   const settingsFields = {};
+  // connection-test state machine: "idle" | "testing" | "success" | "failure" | "aborted" | "saving"
+  let connectionState = "idle";
+  // Single in-flight AbortController per modal so closing/switching cancels cleanly.
+  let connectionAbortController = null;
 
   async function fetchModelSecret() {
     try {
-      const data = await getJson("/api/settings/model-secret");
+      const data = await getJsonImpl("/api/settings/model-secret");
       return data.value ?? "";
     } catch {
       return "";
@@ -45,7 +59,7 @@ export function createSettingsModal(ctx) {
 
   async function fetchOutputStyles() {
     try {
-      const data = await getJson("/api/output-styles");
+      const data = await getJsonImpl("/api/output-styles");
       return Array.isArray(data.styles) ? data.styles : [];
     } catch (error) {
       console.warn("fetchOutputStyles failed:", error);
@@ -62,6 +76,8 @@ export function createSettingsModal(ctx) {
       settingsProviderId = detectProviderPreset(dashboard.project.active_model);
     }
     settingsSection = "model";
+    // Cancel any in-flight test from a previous session and clear temporary state.
+    resetConnectionState();
     ctx.refs.settingsSearch.value = "";
     renderSectionNav();
     renderSectionBody();
@@ -528,6 +544,9 @@ export function createSettingsModal(ctx) {
   }
 
   function closeSettingsModal() {
+    // Closing the modal aborts any in-flight connection test and clears the
+    // temporary key the user typed. Reopening will not prefill the secret.
+    resetConnectionState();
     ctx.refs.settingsScrim.dataset.closing = "true";
     ctx.refs.settingsScrim.classList.remove("show");
     ctx.refs.settingsScrim.setAttribute("inert", "");
@@ -557,12 +576,27 @@ export function createSettingsModal(ctx) {
       name.textContent = provider.name;
       button.append(av, name);
       button.addEventListener("click", () => {
+        const previous = settingsProviderId;
         settingsProviderId = provider.id;
+        // MiMo preset selection autofills exact fields. Clear the temporary key
+        // so we never carry the previous provider's typed secret into the new one.
+        if (previous !== provider.id && provider.preset === "mimo") {
+          applyMimoPresetAutofill();
+        }
         renderSettingsProviders();
         renderSettingsDetail();
       });
       return button;
     }));
+  }
+
+  function applyMimoPresetAutofill() {
+    // Refetch the rendered fields lazily: renderSettingsDetail may not have run
+    // yet for a fresh modal. If the fields exist, mutate in place so the user
+    // sees the autofill before the section re-renders.
+    if (settingsFields.model?.input) settingsFields.model.input.value = MIMO_PRESET.model_name;
+    if (settingsFields.baseUrl?.input) settingsFields.baseUrl.input.value = MIMO_PRESET.base_url;
+    if (settingsFields.apiKeyEnv?.input) settingsFields.apiKeyEnv.input.value = MIMO_PRESET.api_key_env;
   }
 
   async function renderSettingsDetail() {
@@ -592,20 +626,70 @@ export function createSettingsModal(ctx) {
       value: usingThisPreset ? active.model_name : preset.models[0],
       placeholder: "输入模型 ID，例如 deepseek-chat"
     });
+    settingsFields.modelError = document.createElement("div");
+    settingsFields.modelError.className = "spd-field-error";
+    settingsFields.modelError.hidden = true;
+
     settingsFields.baseUrl = settingField("API 地址 · 基础 URL", "text", {
       value: usingThisPreset && active.base_url ? active.base_url : preset.baseUrl
     });
+    settingsFields.baseUrlError = document.createElement("div");
+    settingsFields.baseUrlError.className = "spd-field-error";
+    settingsFields.baseUrlError.hidden = true;
     const endpointHint = document.createElement("div");
     endpointHint.className = "spd-hint";
     settingsFields.endpointHint = endpointHint;
-    settingsFields.apiKey = settingField("API Key", "password", { placeholder: "粘贴官方 API Key", value: "", secret: true });
+
+    // Password placeholder must not echo the saved key. When the server has
+    // already saved a secret for this env, hint "已配置，可留空保持不变" so the
+    // user understands the existing value persists.
+    const apiKeyPlaceholder = usingThisPreset && profile.api_key_saved
+      ? "已配置，可留空保持不变"
+      : "粘贴官方 API Key";
+    settingsFields.apiKey = settingField("API Key", "password", {
+      placeholder: apiKeyPlaceholder,
+      value: "",
+      secret: true
+    });
+    settingsFields.apiKeyError = document.createElement("div");
+    settingsFields.apiKeyError.className = "spd-field-error";
+    settingsFields.apiKeyError.hidden = true;
+
     settingsFields.apiKeyEnv = settingField("密钥环境变量名（不是密钥本身）", "text", {
       value: usingThisPreset && active.api_key_env ? active.api_key_env : preset.apiKeyEnv,
       placeholder: "XIAOMI_MIMO_API_KEY"
     });
+    settingsFields.apiKeyEnvError = document.createElement("div");
+    settingsFields.apiKeyEnvError.className = "spd-field-error";
+    settingsFields.apiKeyEnvError.hidden = true;
+
     const keyHint = document.createElement("div");
     keyHint.className = "spd-hint";
     keyHint.textContent = "API Key 只保存在本机应用 secrets，项目文件只记录变量名。";
+
+    // 测试连接 状态行：放在密钥字段之后、密码提示之后。
+    const connectionStatus = document.createElement("div");
+    connectionStatus.id = "settings-connection-status";
+    connectionStatus.className = "spd-connection-status";
+    connectionStatus.setAttribute("role", "status");
+    connectionStatus.setAttribute("aria-live", "polite");
+    connectionStatus.dataset.state = connectionState;
+    connectionStatus.textContent = "";
+    settingsFields.connectionStatus = connectionStatus;
+
+    // 测试连接 button lives next to the API Key field. We attach the click
+    // handler below after the field is fully wired.
+    const testRow = document.createElement("div");
+    testRow.className = "spd-test-row";
+    const testBtn = document.createElement("button");
+    testBtn.type = "button";
+    testBtn.id = "settings-test-connection";
+    testBtn.className = "spd-test-connection";
+    testBtn.textContent = "测试连接";
+    testBtn.addEventListener("click", () => { void runConnectionTest(); });
+    testRow.append(testBtn);
+    settingsFields.testConnectionBtn = testBtn;
+
     settingsFields.maxCalls = settingField("模型调用上限", "number", { value: budgetConfig.max_model_calls ?? "" });
     const budgetHeading = document.createElement("h4");
     budgetHeading.className = "spd-section";
@@ -630,8 +714,10 @@ export function createSettingsModal(ctx) {
     settingsFields.profileTitle = settingField("小说名", "text", { value: dashboard?.project?.title ?? "" });
 
     ctx.refs.settingsDetail.append(
-      settingsFields.model.field, settingsFields.baseUrl.field, endpointHint,
-      settingsFields.apiKey.field, settingsFields.apiKeyEnv.field, keyHint,
+      settingsFields.model.field, settingsFields.modelError,
+      settingsFields.baseUrl.field, settingsFields.baseUrlError, endpointHint,
+      settingsFields.apiKey.field, settingsFields.apiKeyError, settingsFields.apiKeyEnv.field, settingsFields.apiKeyEnvError, keyHint,
+      testRow, connectionStatus,
       priceHeading, settingsFields.priceInput.field, settingsFields.priceOutput.field, settingsFields.priceCacheHit.field, priceHint,
       budgetHeading, settingsFields.maxCost.field, settingsFields.maxTokens.field, settingsFields.maxCalls.field,
       settingsFields.network.field,
@@ -639,13 +725,132 @@ export function createSettingsModal(ctx) {
     );
     bindEndpointPreview();
     updateEndpointPreview();
+    applyConnectionButtonState();
 
-    if (usingThisPreset && profile.api_key_saved) {
-      void fetchModelSecret().then((value) => {
-        if (value && settingsFields.apiKey.input.isConnected && !settingsFields.apiKey.input.value) {
-          settingsFields.apiKey.input.value = value;
-        }
+    // Explicitly DO NOT prefill the saved key value into the password field.
+    // The placeholder hints "已配置，可留空保持不变" instead. The saved secret
+    // stays server-side and is only used for the test connection probe (when
+    // the user leaves the field blank).
+  }
+
+  function applyConnectionButtonState() {
+    const testBtn = settingsFields.testConnectionBtn;
+    const status = settingsFields.connectionStatus;
+    const saveBtn = ctx.refs.settingsSave;
+    if (!testBtn || !status) return;
+    const busy = connectionState === "testing" || connectionState === "saving";
+    testBtn.disabled = busy;
+    saveBtn.disabled = busy;
+    status.dataset.state = connectionState;
+    if (connectionState === "testing") {
+      testBtn.textContent = "正在连接…";
+      status.textContent = "";
+    } else if (connectionState === "saving") {
+      testBtn.textContent = "测试连接";
+      status.textContent = "";
+    } else {
+      testBtn.textContent = "测试连接";
+    }
+  }
+
+  function setConnectionStatusFromResult(result) {
+    const status = settingsFields.connectionStatus;
+    if (!status) return;
+    status.textContent = formatConnectionStatus(result);
+    status.dataset.state = result?.ok ? "success" : "failure";
+  }
+
+  function clearConnectionStatus() {
+    const status = settingsFields.connectionStatus;
+    if (status) {
+      status.textContent = "";
+      status.dataset.state = "idle";
+    }
+  }
+
+  function applyServerFields(errors) {
+    const map = {
+      model_name: settingsFields.modelError,
+      base_url: settingsFields.baseUrlError,
+      api_key: settingsFields.apiKeyError,
+      api_key_env: settingsFields.apiKeyEnvError,
+    };
+    for (const key of Object.keys(map)) {
+      const node = map[key];
+      if (!node) continue;
+      if (errors && typeof errors[key] === "string" && errors[key]) {
+        node.textContent = errors[key];
+        node.hidden = false;
+      } else {
+        node.textContent = "";
+        node.hidden = true;
+      }
+    }
+  }
+
+  function resetConnectionState() {
+    if (connectionAbortController) {
+      try { connectionAbortController.abort(); } catch { /* ignore */ }
+      connectionAbortController = null;
+    }
+    connectionState = "idle";
+    applyConnectionButtonState();
+    clearConnectionStatus();
+  }
+
+  async function runConnectionTest() {
+    if (settingsSection !== "model") return;
+    if (connectionState === "testing" || connectionState === "saving") return;
+    const currentProjectRoot = ctx.getCurrentProjectRoot();
+    if (!currentProjectRoot) {
+      ctx.showToast("请先新建或打开一部小说，再测试连接。", "info");
+      return;
+    }
+    applyServerFields(null);
+    connectionState = "testing";
+    applyConnectionButtonState();
+    const controller = new AbortController();
+    connectionAbortController = controller;
+    const candidate = {
+      provider: PROVIDER_PRESETS[SETTINGS_PROVIDERS.find((p) => p.id === settingsProviderId)?.preset ?? "custom"]?.provider ?? "openai-compatible",
+      model_name: settingsFields.model.input.value.trim(),
+      base_url: settingsFields.baseUrl.input.value.trim(),
+      api_key_env: settingsFields.apiKeyEnv.input.value.trim(),
+    };
+    // Empty key field is intentional: when the user leaves it blank we trust
+    // the server-side stored secret for the same env. The server re-checks
+    // secrets and returns configuration_missing if neither is available.
+    const temporaryKey = settingsFields.apiKey.input.value;
+    try {
+      const result = await submitModelConnectionTest({
+        postJsonImpl,
+        projectRoot: currentProjectRoot,
+        active_model: candidate,
+        apiKey: temporaryKey,
+        signal: controller.signal,
       });
+      // Late-arriving guard: another call may have aborted us. Drop the
+      // success/failure paint so we don't fight the latest user action.
+      if (connectionAbortController !== controller) return;
+      connectionState = "success";
+      setConnectionStatusFromResult(result);
+      applyServerFields(null);
+      applyConnectionButtonState();
+    } catch (error) {
+      if (connectionAbortController !== controller) return;
+      if (error?.name === "AbortError") {
+        connectionState = "aborted";
+        clearConnectionStatus();
+      } else {
+        connectionState = "failure";
+        setConnectionStatusFromResult({ ok: false, message: error?.message ?? "连接失败" });
+        if (error?.fields && typeof error.fields === "object") {
+          applyServerFields(error.fields);
+        }
+      }
+      applyConnectionButtonState();
+    } finally {
+      if (connectionAbortController === controller) connectionAbortController = null;
     }
   }
 
@@ -841,7 +1046,7 @@ export function createSettingsModal(ctx) {
       return;
     }
     await runSave(async () => {
-      const result = await postJson("/api/settings/update", {
+      const result = await postJsonImpl("/api/settings/update", {
         active_model: compactObject({
           provider: PROVIDER_PRESETS[provider.preset].provider,
           model_name: settingsFields.model.input.value.trim(),
@@ -880,7 +1085,7 @@ export function createSettingsModal(ctx) {
       return;
     }
     await runSave(async () => {
-      await postJson("/api/settings/update", {
+      await postJsonImpl("/api/settings/update", {
         project_profile: compactObject({
           target_chapters: settingsFields.targetChapters.input.value,
           min_words_per_chapter: settingsFields.minWords.input.value,
@@ -902,7 +1107,7 @@ export function createSettingsModal(ctx) {
       return;
     }
     await runSave(async () => {
-      await postJson("/api/settings/update", {
+      await postJsonImpl("/api/settings/update", {
         memory_extraction: { enabled: settingsFields.memoryExtractionEnabled.checked },
         fact_check: {
           enabled: settingsFields.factCheckEnabled.checked,
@@ -922,7 +1127,7 @@ export function createSettingsModal(ctx) {
       return;
     }
     await runSave(async () => {
-      await postJson("/api/settings/update", {
+      await postJsonImpl("/api/settings/update", {
         research_config: compactObject({
           search_endpoint: settingsFields.searchEndpoint.input.value.trim(),
           search_api_key_env: settingsFields.searchKeyEnv.input.value.trim()
@@ -953,7 +1158,7 @@ export function createSettingsModal(ctx) {
       if (!confirmYolo) return;
     }
     await runSave(async () => {
-      await postJson("/api/settings/update", {
+      await postJsonImpl("/api/settings/update", {
         tool_permissions: tier.combo
       });
       closeSettingsModal();
@@ -968,6 +1173,9 @@ export function createSettingsModal(ctx) {
     ctx.refs.settingsSave.disabled = true;
     const originalText = ctx.refs.settingsSave.textContent;
     ctx.refs.settingsSave.textContent = "保存中...";
+    const previousState = connectionState;
+    connectionState = "saving";
+    applyConnectionButtonState();
     try {
       await fn();
     } catch (error) {
@@ -975,6 +1183,8 @@ export function createSettingsModal(ctx) {
     } finally {
       ctx.refs.settingsSave.disabled = false;
       ctx.refs.settingsSave.textContent = originalText;
+      connectionState = previousState === "testing" ? "testing" : "idle";
+      applyConnectionButtonState();
     }
   }
 

@@ -86,6 +86,72 @@ test("api-client.js exports withProjectScope helper", () => {
   );
 });
 
+test("settings-modal.js re-exports the pure connection helpers", () => {
+  const settingsModalPath = path.join(here, "..", "..", "src", "app-shell", "settings-modal.js");
+  return fs.readFile(settingsModalPath, "utf8").then((settingsModalSource) => {
+    // Re-export form: `export { formatConnectionStatus, submitModelConnectionTest } from "..."`
+    assert.match(
+      settingsModalSource,
+      /export\s*\{[^}]*formatConnectionStatus[^}]*\}\s*from\s*["']\.\/settings-connection\.mjs["']/,
+      "settings-modal.js should re-export formatConnectionStatus from ./settings-connection.mjs"
+    );
+    assert.match(
+      settingsModalSource,
+      /export\s*\{[^}]*submitModelConnectionTest[^}]*\}\s*from\s*["']\.\/settings-connection\.mjs["']/,
+      "settings-modal.js should re-export submitModelConnectionTest from ./settings-connection.mjs"
+    );
+    // The placeholder must NOT echo a saved key value. Hint text is Chinese.
+    assert.match(
+      settingsModalSource,
+      /已配置[\s\S]{0,40}留空/u,
+      "settings-modal.js should show a '已配置…留空' placeholder for an existing secret"
+    );
+  });
+});
+
+test("settings-connection.mjs defines the pure helpers", () => {
+  const settingsConnectionPath = path.join(here, "..", "..", "src", "app-shell", "settings-connection.mjs");
+  return fs.readFile(settingsConnectionPath, "utf8").then((source) => {
+    assert.match(
+      source,
+      /export\s+function\s+formatConnectionStatus[\s\S]*?\(/,
+      "settings-connection.mjs should export formatConnectionStatus"
+    );
+    assert.match(
+      source,
+      /export\s+async\s+function\s+submitModelConnectionTest[\s\S]*?\(/,
+      "settings-connection.mjs should export submitModelConnectionTest"
+    );
+  });
+});
+
+test("settings-connection.mjs owns the MiMo preset autofill", () => {
+  const settingsConnectionPath = path.join(here, "..", "..", "src", "app-shell", "settings-connection.mjs");
+  const settingsModalPath = path.join(here, "..", "..", "src", "app-shell", "settings-modal.js");
+  return Promise.all([
+    fs.readFile(settingsConnectionPath, "utf8"),
+    fs.readFile(settingsModalPath, "utf8"),
+  ]).then(([source, modalSource]) => {
+    // MiMo preset exact fields per plan.
+    assert.match(
+      source,
+      /provider:\s*"openai-compatible"[\s\S]{0,200}model_name:\s*"mimo-v2\.5-pro"[\s\S]{0,200}base_url:\s*"https:\/\/api\.xiaomimimo\.com\/v1"[\s\S]{0,200}api_key_env:\s*"XIAOMI_MIMO_API_KEY"/u,
+      "MiMo preset must autofill provider/openai-compatible with exact base_url and api_key_env"
+    );
+    // Plan forbids renaming the env var.
+    assert.match(
+      modalSource,
+      /XIAOMI_MIMO_API_KEY/,
+      "settings-modal.js must reference XIAOMI_MIMO_API_KEY (no rename)"
+    );
+    assert.doesNotMatch(
+      modalSource,
+      /mimo-v2-flash/,
+      "settings-modal.js must not invent a mimo-v2-flash model"
+    );
+  });
+});
+
 test("api-client.js preserves error code/fields/actions on post failure", () => {
   // The new behavior is to attach code, fields, action onto the thrown error.
   assert.match(apiClientSource, /error\.code\s*=/);
