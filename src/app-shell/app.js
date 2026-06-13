@@ -94,6 +94,8 @@ let lastFocused = null;
 let createModalMode = "new";
 let previousActivity = null;
 let previousBadgeSummary = null;
+let readerChapterNo = null;
+let readerQuoteBtn = null;
 
 // --- extracted module instances (created before event bindings that reference their methods) ---
 let composer; // forward ref: thread-renderer's promote button calls composer.promoteAskEntry (assigned in Task 7)
@@ -258,6 +260,36 @@ refs.readerClose.addEventListener("click", closeReader);
 refs.readerScrim.addEventListener("click", (event) => {
   if (event.target === refs.readerScrim) closeReader();
 });
+
+function removeReaderQuoteBtn() {
+  readerQuoteBtn?.remove();
+  readerQuoteBtn = null;
+}
+
+refs.readerBody.addEventListener("mouseup", () => {
+  removeReaderQuoteBtn();
+  const selection = window.getSelection();
+  const text = String(selection?.toString() ?? "").trim();
+  if (!text || !refs.readerScrim.classList.contains("show")) return;
+  const rect = selection.getRangeAt(0).getBoundingClientRect();
+  readerQuoteBtn = document.createElement("button");
+  readerQuoteBtn.type = "button";
+  readerQuoteBtn.id = "reader-quote-btn";
+  readerQuoteBtn.textContent = "问智能体";
+  readerQuoteBtn.style.left = `${Math.round(rect.left + rect.width / 2)}px`;
+  readerQuoteBtn.style.top = `${Math.round(rect.bottom + 8)}px`;
+  readerQuoteBtn.addEventListener("click", () => {
+    const snippet = text.slice(0, 500);
+    const chapter = readerChapterNo;
+    closeReader();
+    refs.composerInput.value = `关于第 ${chapter} 章这段：\n> ${snippet}\n`;
+    refs.composerInput.focus();
+    composer.autoGrowComposer();
+    composer.updateSubmitState();
+  });
+  document.body.append(readerQuoteBtn);
+});
+refs.readerBody.addEventListener("scroll", removeReaderQuoteBtn);
 refs.settingsX.addEventListener("click", closeSettingsModal);
 refs.settingsCancel.addEventListener("click", closeSettingsModal);
 refs.settingsScrim.addEventListener("click", (event) => {
@@ -755,6 +787,7 @@ function setCreateStatus(text, kind) {
 }
 
 async function openReader(chapterNo) {
+  readerChapterNo = chapterNo;
   refs.readerPath.textContent = `chapters/${String(chapterNo).padStart(3, "0")}.md`;
   refs.readerTitle.textContent = `第 ${String(chapterNo).padStart(3, "0")} 章`;
   refs.readerMeta.textContent = "正在读取本章正文...";
@@ -789,6 +822,7 @@ function readerEmpty(text) {
 }
 
 function closeReader() {
+  removeReaderQuoteBtn();
   closeOverlay(refs.readerScrim);
 }
 
