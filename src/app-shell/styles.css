@@ -771,6 +771,9 @@ button.cbar-pill--readonly:hover {
   background: var(--hover);
   border-color: var(--line);
 }
+/* 状态药丸文字截断：长模型名不再撑长命令栏（hover 的 title 仍显示全名） */
+.cbar-pill .pill-tx { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#status-pill-model { max-width: 200px; }
 
 /* S4 Task 11: suggestion cards for empty chat state */
 .suggestion-cards {
