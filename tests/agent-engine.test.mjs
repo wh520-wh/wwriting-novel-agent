@@ -12,6 +12,7 @@ import { loadContinuity, loadContinuityState, saveContinuity } from "../src/core
 import { updateProjectSettings } from "../src/core/settings-runtime.mjs";
 import { appendChapterSegment } from "../src/core/tool-runtime.mjs";
 import { loadPendingAction as loadChatPending, readChatHistory as readChatHist } from "../src/core/chat/chat-store.mjs";
+import { makeChapterContract } from "../src/core/task-contract.mjs";
 
 class AlwaysInvalidModel {
   async generate() {
@@ -180,7 +181,9 @@ test("mock model generates three chapters and writes local files", async () => {
     min_words_per_chapter: 300,
     target_words_per_chapter: 360
   });
-  await runProject(projectRoot);
+  for (const chapterNo of [1, 2, 3]) {
+    await runProject(projectRoot, { contract: makeChapterContract(chapterNo) });
+  }
   const index = await loadChapterIndex(projectRoot);
   assert.equal(index.chapters.filter((chapter) => chapter.status === "completed").length, 3);
   for (const chapterNo of [1, 2, 3]) {
@@ -214,9 +217,13 @@ test("project resumes from checkpoint after simulated interruption", async () =>
     min_words_per_chapter: 300,
     target_words_per_chapter: 360
   });
+  // Chapter 1 finishes cleanly under its contract.
+  await runProject(projectRoot, { contract: makeChapterContract(1) });
+  // Chapter 2 gets interrupted mid-draft at segment 1.
   let interrupted = false;
   try {
     await runProject(projectRoot, {
+      contract: makeChapterContract(2),
       simulateInterruptAfter: {
         chapter_no: 2,
         segment_no: 1
@@ -226,7 +233,9 @@ test("project resumes from checkpoint after simulated interruption", async () =>
     interrupted = error instanceof SimulatedInterrupt;
   }
   assert.equal(interrupted, true);
-  await runProject(projectRoot);
+  // Resume the partial chapter 2 under its contract, then run chapter 3.
+  await runProject(projectRoot, { contract: makeChapterContract(2) });
+  await runProject(projectRoot, { contract: makeChapterContract(3) });
   const index = await loadChapterIndex(projectRoot);
   assert.equal(index.chapters.filter((chapter) => chapter.status === "completed").length, 3);
   const chapter2 = await fs.readFile(path.join(projectRoot, "chapters", "002.md"), "utf8");
@@ -419,7 +428,8 @@ test("engine feeds previous chapter memory into later chapter prompts", async ()
   });
   const modelClient = new CapturingModelClient();
 
-  await runProject(projectRoot, { modelClient });
+  await runProject(projectRoot, { contract: makeChapterContract(1), modelClient });
+  await runProject(projectRoot, { contract: makeChapterContract(2), modelClient });
 
   const memory = JSON.parse(await fs.readFile(path.join(projectRoot, "memory", "chapter_memory.json"), "utf8"));
   assert.equal(memory.schema_version, 1);
@@ -611,11 +621,12 @@ test("agent-engine 检测到 failure_resolved=pause-here 后立刻退出循环",
     data: { failureId: "flr_test_001", action: "pause-here" }
   });
 
-  const result = await runProject(projectRoot);
+  const result = await runProject(projectRoot, { contract: makeChapterContract(1) });
 
   // Stale pause-here events (before runStartedAtMs) are now ignored;
   // the project should complete normally.
-  assert.equal(result.completed, true);
+  assert.equal(result.project_completed, true);
+  assert.equal(result.task_completed, true);
   const state = await loadState(projectRoot);
   assert.equal(state.project_status, "completed");
 });
@@ -860,4 +871,38 @@ test("applyFactCheckHardFail 写 needs_revision 状态与 quality_gate_failed �
   assert.ok(state.last_quality_gate_results.some((g) => g.gate === "fact-check-gate" && g.status === "failed"));
   const events = await readEvents(projectRoot);
   assert.ok(events.some((e) => e.type === "quality_gate_failed" && e.message.includes("fact-check")));
+});
+
+test("单章契约完成后不调用第2章模型", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-single-chapter-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "project", target_chapters: 3, min_words_per_chapter: 20, target_words_per_chapter: 24
+  });
+  const modelClient = new CapturingModelClient();
+  const result = await runProject(projectRoot, {
+    taskId: "task-1",
+    contract: makeChapterContract(1),
+    modelClient
+  });
+  assert.equal(result.task_completed, true);
+  assert.equal(result.project_completed, false);
+  assert.deepEqual(result.completed_chapters, [1]);
+  assert.ok(modelClient.metadatas.every((item) => item.chapterNo === 1));
+  const state = await loadState(projectRoot);
+  assert.equal(state.project_status, "idle");
+  assert.equal(state.current_chapter_no, 2);
+  assert.equal(state.current_stage, "queued");
+});
+
+test("末章任务同时完成项目", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-last-chapter-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "project", target_chapters: 1, min_words_per_chapter: 20, target_words_per_chapter: 24
+  });
+  const result = await runProject(projectRoot, {
+    taskId: "task-1",
+    contract: makeChapterContract(1)
+  });
+  assert.equal(result.project_completed, true);
+  assert.equal((await loadState(projectRoot)).project_status, "completed");
 });
