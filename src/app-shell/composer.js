@@ -247,8 +247,9 @@ export function createComposer(ctx) {
       await postJson("/api/settings/update", {
         tool_permissions: tier.combo
       });
-      ctx.showToast(`已切换到「${tier.short}」档。`, "success");
       await ctx.loadDashboard();
+      getModePill()?.classList.add("cbar-pill--pulse");
+      window.setTimeout(() => getModePill()?.classList.remove("cbar-pill--pulse"), 400);
     } catch (error) {
       ctx.showToast(error.message ?? "切换权限档失败。", "error");
     }
@@ -287,7 +288,31 @@ export function createComposer(ctx) {
 
   function updateStatusPills(data) {
     updateModelPill(data);
+    updateWordsPill(data);
     updateCostPill(data);
+  }
+
+  // 会话新增字数：每项目记会话基线（内存，重启/切项目即重置——会话语义）。
+  const sessionWordBaselines = new Map();
+
+  function updateWordsPill(data) {
+    const container = ensureStatusPillContainer();
+    if (!container) return;
+    let pill = document.getElementById("status-pill-words");
+    if (!pill) {
+      pill = document.createElement("span");
+      pill.id = "status-pill-words";
+      pill.className = "cbar-pill cbar-pill--readonly cbar-pill--words";
+      pill.title = "本次会话新增字数";
+      container.append(pill);
+    }
+    const root = data?.projectRoot;
+    const total = Number(data?.summary?.totalWords ?? 0);
+    if (!root) { pill.hidden = true; return; }
+    if (!sessionWordBaselines.has(root)) sessionWordBaselines.set(root, total);
+    const delta = total - sessionWordBaselines.get(root);
+    pill.hidden = delta <= 0;
+    if (delta > 0) pill.textContent = `本次 +${delta.toLocaleString("zh-CN")} 字`;
   }
 
   function ensureStatusPillContainer() {

@@ -1842,6 +1842,16 @@ button.cbar-pill--readonly:hover {
 .chat-bubble-content ul, .chat-bubble-content ol { margin: 4px 0 8px; padding-left: 1.4em; }
 .chat-bubble-content ul { list-style: disc; }
 .chat-bubble-content ol { list-style: decimal; }
+
+/* ============================================================
+   S4.5 Task 15 · 字数 pill 与 mode pill 脉冲
+   ============================================================ */
+.cbar-pill--words { color: var(--green); border-color: var(--green-line); background: var(--green-soft); }
+.cbar-pill--pulse { animation: pillPulse .35s ease; }
+@keyframes pillPulse { 0% { transform: scale(1); } 45% { transform: scale(1.08); } 100% { transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) {
+  .cbar-pill--pulse { animation: none; }
+}
 .chat-bubble-content li { margin: 2px 0; }
 .chat-bubble-content blockquote {
   margin: 6px 0; padding: 4px 12px; border-left: 3px solid var(--line);
