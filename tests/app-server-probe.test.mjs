@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createAppShellServer } from "../src/core/app-server.mjs";
-import { recordRecentProject } from "../src/core/app-state.mjs";
+import { recordRecentProject, samePath } from "../src/core/app-state.mjs";
+import { loadDashboardData } from "../src/core/app-dashboard.mjs";
 import { readEvents } from "../src/core/event-log.mjs";
 import { createProject, loadState, saveState } from "../src/core/project-store.mjs";
 import { TaskQueue } from "../src/core/task-queue.mjs";
@@ -1097,4 +1098,94 @@ test("已有写作任务时拒绝含糊指令", async () => {
   } finally {
     await closeServer(server);
   }
+});
+
+test("dashboard request remains scoped to its requested project during a switch", async () => {
+  const delayed = Promise.withResolvers();
+  const started = Promise.withResolvers();
+  let projectA = null;
+  const fixture = await setupServer({
+    testLoadDashboardData: async (workspace, options) => {
+      if (samePath(options.projectRoot, projectA)) {
+        started.resolve();
+        await delayed.promise;
+      }
+      return loadDashboardData(workspace, options);
+    },
+  });
+  projectA = fixture.projectRoot;
+  const { projectRoot: projectB } = await createProject(fixture.root, {
+    slug: "project-b",
+    title: "Project B",
+  });
+  await recordRecentProject(fixture.stateRoot, {
+    projectRoot: projectA,
+    title: "Project A",
+  });
+  await recordRecentProject(fixture.stateRoot, {
+    projectRoot: projectB,
+    title: "Project B",
+  });
+
+  const pendingA = getJson(
+    fixture.port,
+    `/api/dashboard?projectRoot=${encodeURIComponent(projectA)}`,
+  );
+  await started.promise;
+
+  await postJson(fixture.port, "/api/projects/open", {
+    projectRoot: projectB,
+  });
+  const dashboardB = await getJson(
+    fixture.port,
+    `/api/dashboard?projectRoot=${encodeURIComponent(projectB)}`,
+  );
+  delayed.resolve();
+  const dashboardA = await pendingA;
+
+  assert.equal(dashboardA.data.projectRoot, projectA);
+  assert.equal(dashboardB.data.projectRoot, projectB);
+  await closeServer(fixture.server);
+});
+
+test("project-scoped endpoint rejects a root outside the registered project list", async () => {
+  const { server, port } = await setupServer();
+  const response = await fetch(
+    `http://127.0.0.1:${port}/api/dashboard?projectRoot=${encodeURIComponent("C:\\unregistered")}`,
+  );
+
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).code, "INVALID_PROJECT_SCOPE");
+  await closeServer(server);
+});
+
+test("write request is rejected after selected project changes", async () => {
+  const fixture = await setupServer();
+  const projectA = fixture.projectRoot;
+  const { projectRoot: projectB } = await createProject(fixture.root, {
+    slug: "project-b",
+  });
+  await recordRecentProject(fixture.stateRoot, { projectRoot: projectB });
+  await postJson(fixture.port, "/api/projects/open", {
+    projectRoot: projectB,
+  });
+
+  const { res, data } = await postJson(
+    fixture.port,
+    "/api/commands/submit",
+    {
+      projectRoot: projectA,
+      expectedProjectRoot: projectA,
+      message: "写第1章",
+    },
+  );
+
+  assert.equal(res.status, 409);
+  assert.equal(data.code, "PROJECT_SCOPE_CHANGED");
+  const queueA = await getJson(
+    fixture.port,
+    `/api/queue/state?projectRoot=${encodeURIComponent(projectA)}`,
+  );
+  assert.equal(queueA.data.tasks.length, 0);
+  await closeServer(fixture.server);
 });

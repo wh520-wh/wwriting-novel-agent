@@ -51,11 +51,13 @@ export function createAppShellServer({
   stateRoot = null,
   port = 4173,
   testModel = null,
-  testRunProject = null
+  testRunProject = null,
+  testLoadDashboardData = null
 } = {}) {
   const workspace = path.resolve(workspaceRoot);
   const localSecretsRoot = path.resolve(secretsRoot);
   const appStateRoot = path.resolve(stateRoot ?? secretsRoot);
+  const dashboardLoader = testLoadDashboardData ?? loadDashboardData;
   applyLocalSecretsToEnv(loadLocalSecretsSync(localSecretsRoot));
   const runJobs = new Map();
   const taskQueues = new Map();
@@ -84,14 +86,24 @@ export function createAppShellServer({
   const server = http.createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
     if (url.pathname === "/api/dashboard") {
-      const data = await serveDashboard(response, { workspace, selected, secretsRoot: localSecretsRoot, runJobs, getTaskQueue });
-      if (data?.hasProject && data.projectRoot) {
-        selected = data.projectRoot;
+      try {
+        const requestedRoot = url.searchParams.get("projectRoot");
+        const scopedRoot = (requestedRoot || selected)
+          ? await resolveReadProjectRoot({ requestedRoot: requestedRoot ?? undefined, selected, workspace, stateRoot: appStateRoot })
+          : null;
+        await serveDashboard(response, { workspace, projectRoot: scopedRoot, secretsRoot: localSecretsRoot, runJobs, getTaskQueue, dashboardLoader });
+      } catch (error) {
+        sendError(response, error);
       }
       return;
     }
     if (url.pathname === "/api/diagnostics") {
-      await serveDiagnostics(response, { workspace, selected });
+      try {
+        const projectRoot = await resolveReadProjectRoot({ requestedRoot: url.searchParams.get("projectRoot") ?? undefined, selected, workspace, stateRoot: appStateRoot });
+        await serveDiagnostics(response, { workspace, projectRoot });
+      } catch (error) {
+        sendError(response, error instanceof HttpError ? error : new HttpError(404, "no_project", error.message));
+      }
       return;
     }
     if (url.pathname === "/api/projects/list") {
@@ -150,7 +162,7 @@ export function createAppShellServer({
       return;
     }
     if (url.pathname === "/api/settings/update" && request.method === "POST") {
-      await serveSettingsUpdate(request, response, { workspace, selected, secretsRoot: localSecretsRoot });
+      await serveSettingsUpdate(request, response, { workspace, selected, stateRoot: appStateRoot, secretsRoot: localSecretsRoot });
       return;
     }
     if (url.pathname === "/api/settings/model-secret" && request.method === "GET") {
@@ -158,44 +170,54 @@ export function createAppShellServer({
       return;
     }
     if (url.pathname === "/api/commands/submit" && request.method === "POST") {
-      await serveCommandSubmit(request, response, { workspace, selected, runJobs, getTaskQueue, testModel, testRunProject, projectLocks });
+      await serveCommandSubmit(request, response, { workspace, selected, stateRoot: appStateRoot, runJobs, getTaskQueue, testModel, testRunProject, projectLocks });
       return;
     }
     if (url.pathname === "/api/chat/send" && request.method === "POST") {
-      await serveChatSend(request, response, { workspace, selected, runJobs, getTaskQueue, testModel, testRunProject, projectLocks, startProjectRunFn: startProjectRun, chatJobs });
+      await serveChatSend(request, response, { workspace, selected, stateRoot: appStateRoot, runJobs, getTaskQueue, testModel, testRunProject, projectLocks, startProjectRunFn: startProjectRun, chatJobs });
       return;
     }
     if (url.pathname === "/api/chat/confirm" && request.method === "POST") {
-      await serveChatConfirm(request, response, { workspace, selected, runJobs, getTaskQueue, testModel, testRunProject, projectLocks, startProjectRunFn: startProjectRun, chatJobs });
+      await serveChatConfirm(request, response, { workspace, selected, stateRoot: appStateRoot, runJobs, getTaskQueue, testModel, testRunProject, projectLocks, startProjectRunFn: startProjectRun, chatJobs });
       return;
     }
     if (url.pathname === "/api/chat/history" && request.method === "GET") {
-      await serveChatHistory(url, response, { workspace, selected, chatJobs });
+      try {
+        const projectRoot = await resolveReadProjectRoot({ requestedRoot: url.searchParams.get("projectRoot") ?? undefined, selected, workspace, stateRoot: appStateRoot });
+        await serveChatHistory(url, response, { workspace, projectRoot, chatJobs });
+      } catch (error) {
+        sendError(response, error instanceof HttpError ? error : new HttpError(400, "BAD_REQUEST", error.message));
+      }
       return;
     }
     if (url.pathname === "/api/chat/stop" && request.method === "POST") {
       // 红线：不要给这个端点包 withProjectLock。
-      await serveChatStop(response, { workspace, selected, chatJobs });
+      await serveChatStop(response, { workspace, selected, stateRoot: appStateRoot, chatJobs });
       return;
     }
     if (url.pathname === "/api/run/retry" && request.method === "POST") {
-      await serveRunRetry(request, response, { workspace, selected, runJobs, getTaskQueue, testModel, testRunProject, projectLocks });
+      await serveRunRetry(request, response, { workspace, selected, stateRoot: appStateRoot, runJobs, getTaskQueue, testModel, testRunProject, projectLocks });
       return;
     }
     if (url.pathname === "/api/failures/resolve" && request.method === "POST") {
-      await serveFailuresResolve(request, response, { workspace, selected, runJobs, getTaskQueue, testModel, testRunProject, projectLocks });
+      await serveFailuresResolve(request, response, { workspace, selected, stateRoot: appStateRoot, runJobs, getTaskQueue, testModel, testRunProject, projectLocks });
       return;
     }
     if (url.pathname === "/api/run/stop" && request.method === "POST") {
-      await serveRunStop(response, { workspace, selected, runJobs, getTaskQueue, projectLocks });
+      await serveRunStop(response, { workspace, selected, stateRoot: appStateRoot, runJobs, getTaskQueue, projectLocks });
       return;
     }
     if (url.pathname === "/api/queue/state" && request.method === "GET") {
-      await serveQueueState(response, { workspace, selected, getTaskQueue, runJobs });
+      try {
+        const projectRoot = await resolveReadProjectRoot({ requestedRoot: url.searchParams.get("projectRoot") ?? undefined, selected, workspace, stateRoot: appStateRoot });
+        await serveQueueState(response, { workspace, projectRoot, getTaskQueue, runJobs });
+      } catch (error) {
+        sendError(response, error instanceof HttpError ? error : new HttpError(400, "BAD_REQUEST", error.message));
+      }
       return;
     }
     if (url.pathname === "/api/queue/cancel" && request.method === "POST") {
-      await serveQueueCancel(request, response, { workspace, selected, getTaskQueue, projectLocks });
+      await serveQueueCancel(request, response, { workspace, selected, stateRoot: appStateRoot, getTaskQueue, projectLocks });
       return;
     }
     if (url.pathname === "/api/commands/ask" && request.method === "POST") {
@@ -203,7 +225,12 @@ export function createAppShellServer({
       return;
     }
     if (url.pathname === "/api/chapters/read") {
-      await serveChapterRead(url, response, { workspace, selected });
+      try {
+        const projectRoot = await resolveReadProjectRoot({ requestedRoot: url.searchParams.get("projectRoot") ?? undefined, selected, workspace, stateRoot: appStateRoot });
+        await serveChapterRead(url, response, { workspace, projectRoot });
+      } catch (error) {
+        sendError(response, error instanceof HttpError ? error : new HttpError(400, "chapter_read_failed", error.message));
+      }
       return;
     }
     await serveStatic(url.pathname, response, { staticRoot });
@@ -218,10 +245,11 @@ export function createAppShellServer({
 
 async function serveDashboard(response, context) {
   try {
-    const data = await loadDashboardData(context.workspace, {
-      projectRoot: context.selected,
-      allowExternalProjectRoot: Boolean(context.selected),
-      disableProjectFallback: !context.selected
+    const loadDashboard = context.dashboardLoader ?? loadDashboardData;
+    const data = await loadDashboard(context.workspace, {
+      projectRoot: context.projectRoot,
+      allowExternalProjectRoot: Boolean(context.projectRoot),
+      disableProjectFallback: !context.projectRoot
     });
     if (data?.hasProject) {
       data.model_profile = buildModelProfile(data.project?.active_model, context.secretsRoot);
@@ -250,7 +278,7 @@ async function serveDashboard(response, context) {
 
 async function serveDiagnostics(response, context) {
   try {
-    const projectRoot = await resolveActiveProjectRoot(context);
+    const projectRoot = context.projectRoot ?? await resolveActiveProjectRoot(context);
     const diagnostics = await loadProjectDiagnostics(projectRoot);
     await serveJson(response, diagnostics);
   } catch (error) {
@@ -449,7 +477,7 @@ async function serveResearch(request, response, context) {
 async function serveSettingsUpdate(request, response, context) {
   try {
     const body = await readJsonBody(request);
-    const projectRoot = await resolveActiveProjectRoot(context);
+    const projectRoot = await resolveActiveWriteProjectRoot(context, body);
     await assertNotArchived(projectRoot);
     const secretResult = await persistModelSecretIfPresent(body, context.secretsRoot);
     const project = await updateProjectSettings(projectRoot, body);
@@ -670,7 +698,7 @@ async function serveCommandSubmit(request, response, context) {
       throw new Error("指令内容过长。");
     }
     const mode = body.mode === "review" ? "review" : "write";
-    const projectRoot = await resolveActiveProjectRoot(context);
+    const projectRoot = await resolveActiveWriteProjectRoot(context, body);
     await assertNotArchived(projectRoot);
     return await withProjectLock(context, projectRoot, async () => {
     const project = await loadProject(projectRoot);
@@ -832,7 +860,7 @@ async function serveChatSend(request, response, context) {
     const message = String(body.message ?? "").trim();
     if (!message) throw new Error("请输入要发送的消息。");
     if (message.length > 4000) throw new Error("消息过长。");
-    const projectRoot = await resolveActiveProjectRoot(context);
+    const projectRoot = await resolveActiveWriteProjectRoot(context, body);
     const jobKey = path.resolve(projectRoot);
     if (context.chatJobs.has(jobKey)) {
       sendError(response, new HttpError(409, "CHAT_BUSY", "上一轮对话还在进行中，请等它完成或先点停止。"));
@@ -869,7 +897,7 @@ async function serveChatSend(request, response, context) {
 async function serveChatConfirm(request, response, context) {
   try {
     const body = await readJsonBody(request);
-    const projectRoot = await resolveActiveProjectRoot(context);
+    const projectRoot = await resolveActiveWriteProjectRoot(context, body);
     const jobKey = path.resolve(projectRoot);
     if (context.chatJobs.has(jobKey)) {
       sendError(response, new HttpError(409, "CHAT_BUSY", "上一轮对话还在进行中，请等它完成或先点停止。"));
@@ -905,7 +933,7 @@ async function serveChatConfirm(request, response, context) {
 
 async function serveChatHistory(url, response, context) {
   try {
-    const projectRoot = await resolveActiveProjectRoot(context);
+    const projectRoot = context.projectRoot ?? await resolveActiveProjectRoot(context);
     const after = url.searchParams.get("after") ?? null;
     const limit = Number(url.searchParams.get("limit") ?? 100);
     const messages = await readChatHistory(projectRoot, { after, limit });
@@ -981,7 +1009,7 @@ async function serveSideQuestion(request, response, context) {
 
 async function serveQueueState(response, context) {
   try {
-    const projectRoot = await resolveActiveProjectRoot(context);
+    const projectRoot = context.projectRoot ?? await resolveActiveProjectRoot(context);
     const queue = await context.getTaskQueue(projectRoot);
     await queue.load();
     await serveJson(response, queueSnapshot(queue, context.runJobs.get(path.resolve(projectRoot))));
@@ -993,7 +1021,7 @@ async function serveQueueState(response, context) {
 async function serveQueueCancel(request, response, context) {
   try {
     const body = await readJsonBody(request);
-    const projectRoot = await resolveActiveProjectRoot(context);
+    const projectRoot = await resolveActiveWriteProjectRoot(context, body);
     await assertNotArchived(projectRoot);
     return await withProjectLock(context, projectRoot, async () => {
     const queue = await context.getTaskQueue(projectRoot);
@@ -1071,7 +1099,7 @@ async function serveRunStop(response, context) {
 async function serveRunRetry(request, response, context) {
   try {
     const body = await readJsonBody(request);
-    const projectRoot = await resolveActiveProjectRoot(context);
+    const projectRoot = await resolveActiveWriteProjectRoot(context, body);
     await assertNotArchived(projectRoot);
     return await withProjectLock(context, projectRoot, async () => {
     const queue = await context.getTaskQueue(projectRoot);
@@ -1154,7 +1182,7 @@ async function serveFailuresResolve(request, response, context) {
       sendError(response, new HttpError(400, "BAD_REQUEST", "缺少 failureId"));
       return;
     }
-    const projectRoot = await resolveActiveProjectRoot(context);
+    const projectRoot = await resolveActiveWriteProjectRoot(context, body);
     await assertNotArchived(projectRoot);
     const valid = validateFailureCommand(command, args);
     if (!valid.ok) {
@@ -1480,7 +1508,7 @@ async function startProjectRun(projectRoot, project, context, task, instructionM
 
 async function serveChapterRead(url, response, context) {
   try {
-    const projectRoot = await resolveActiveProjectRoot(context);
+    const projectRoot = context.projectRoot ?? await resolveActiveProjectRoot(context);
     const chapterNo = url.searchParams.get("chapter") ?? url.searchParams.get("chapter_no");
     const data = await readChapterContent(projectRoot, chapterNo);
     await serveJson(response, { ...data, projectRoot });
@@ -1496,6 +1524,55 @@ async function resolveActiveProjectRoot({ selected }) {
   const target = path.resolve(selected);
   await validateProjectRoot(target);
   return target;
+}
+
+// 显式请求作用域：读请求以请求携带的 projectRoot 为准，缺省回落到当前选中项目。
+// 目标项目必须仍是「已注册」的（当前选中、最近列表里、或工作区内部），且磁盘上有 project.yaml，
+// 否则返回 400 INVALID_PROJECT_SCOPE。读请求绝不改写 selected。
+async function resolveReadProjectRoot({ requestedRoot, selected, workspace, stateRoot }) {
+  const target = requestedRoot ?? selected;
+  if (!target) {
+    throw new HttpError(404, "no_project", "当前没有打开的项目");
+  }
+  const resolvedTarget = path.resolve(target);
+  let registered = samePath(selected, resolvedTarget);
+  if (!registered && workspace && isPathInside(path.resolve(workspace), resolvedTarget)) {
+    registered = true;
+  }
+  if (!registered) {
+    const state = await loadAppState(stateRoot);
+    registered = state.recentProjects.some((project) => samePath(project.projectRoot, resolvedTarget));
+  }
+  if (!registered || !existsSync(path.join(resolvedTarget, "project.yaml"))) {
+    throw new HttpError(400, "INVALID_PROJECT_SCOPE", "请求的项目未注册");
+  }
+  return resolvedTarget;
+}
+
+// 写请求在读作用域校验之外，还要求「请求/期望的项目」与当前选中项目一致，
+// 否则在用户切换项目的瞬间写入会落到错误的项目。不一致时返回 409 PROJECT_SCOPE_CHANGED。
+// 向后兼容：未携带 expectedProjectRoot 且请求目标即当前选中项目时，等价于旧行为。
+async function resolveWriteProjectRoot({ requestedRoot, expectedProjectRoot, selected, workspace, stateRoot }) {
+  const target = await resolveReadProjectRoot({ requestedRoot, selected, workspace, stateRoot });
+  const expected = expectedProjectRoot ?? target;
+  if (!samePath(expected, selected) || !samePath(target, selected)) {
+    throw new HttpError(409, "PROJECT_SCOPE_CHANGED", "项目已切换，请确认后重试");
+  }
+  return target;
+}
+
+// 写端点统一入口：从 context 取 selected/workspace/stateRoot，从 body 取请求/期望项目。
+// 未携带显式作用域字段时回落到旧的「校验当前选中项目」行为，保持既有测试与调用方兼容。
+async function resolveActiveWriteProjectRoot(context, body = {}) {
+  const projectRoot = await resolveWriteProjectRoot({
+    requestedRoot: body?.projectRoot ?? undefined,
+    expectedProjectRoot: body?.expectedProjectRoot ?? undefined,
+    selected: context.selected,
+    workspace: context.workspace,
+    stateRoot: context.stateRoot
+  });
+  await validateProjectRoot(projectRoot);
+  return projectRoot;
 }
 
 async function readJsonBody(request) {
