@@ -9,6 +9,7 @@ import { sendChatMessage, confirmChatAction } from "./api-client.js";
 import { renderMarkdown } from "./markdown-lite.mjs";
 import { toolLabel } from "./tool-labels.mjs";
 import { deriveSources, deriveSuggestions } from "./chat-derive.mjs";
+import { presentChapterArtifact } from "./chapter-presentation.mjs";
 
 const STAGE_ORDER = ["queued", "planning", "planned", "drafting", "reviewing", "needs_revision", "revising", "finalizing", "summarizing"];
 
@@ -592,11 +593,18 @@ export function createThreadRenderer(ctx) {
     if (!chapterNo) return;
     if (block.body.querySelector(`[data-chapter-card="${chapterNo}"]`)) return;
     const chapter = (data.chapters ?? []).find((item) => item.chapter_no === chapterNo);
-    const card = document.createElement("button");
-    card.className = "filecard";
+    const view = presentChapterArtifact({
+      chapter: chapterNo,
+      artifact: chapter?.artifact,
+      projectStatus: data.summary?.projectStatus ?? null,
+    });
+    const card = document.createElement(view.canOpen ? "button" : "div");
+    card.className = `filecard filecard-${view.tone}`;
     card.dataset.chapterCard = String(chapterNo);
-    card.type = "button";
-    card.addEventListener("click", () => ctx.openReader(chapterNo));
+    if (view.canOpen) {
+      card.type = "button";
+      card.addEventListener("click", () => ctx.openReader(chapterNo));
+    }
 
     const top = document.createElement("span");
     top.className = "filecard-top";
@@ -610,11 +618,13 @@ export function createThreadRenderer(ctx) {
     path.textContent = `chapters/${String(chapterNo).padStart(3, "0")}.md`;
     const nm = document.createElement("span");
     nm.className = "name";
-    nm.textContent = `第 ${chapterNo} 章已写入本地文件`;
+    nm.textContent = view.title;
     fid.append(path, nm);
     const badge = document.createElement("span");
     badge.className = "file-badge";
-    badge.textContent = translateStage(chapter?.status ?? "completed");
+    badge.textContent = view.canOpen
+      ? translateStage(chapter?.status ?? "completed")
+      : view.detail;
     top.append(fic, fid, badge);
 
     const foot = document.createElement("span");
@@ -622,16 +632,24 @@ export function createThreadRenderer(ctx) {
     const words = document.createElement("span");
     words.className = "mono";
     words.textContent = `${formatNumber(chapter?.actual_words ?? 0)} 字`;
-    const hint = document.createElement("span");
-    hint.className = "open-hint";
-    hint.append(document.createTextNode("打开阅读 "));
-    hint.append(icon("chevR", 13));
-    foot.append(words, document.createTextNode(" · 本地已保存 "), hint);
+    if (view.canOpen) {
+      const hint = document.createElement("span");
+      hint.className = "open-hint";
+      hint.append(document.createTextNode("打开阅读 "));
+      hint.append(icon("chevR", 13));
+      foot.append(words, document.createTextNode(" · 本地已保存 "), hint);
+    } else if (view.detail) {
+      foot.append(words, document.createTextNode(` · ${view.detail}`));
+    } else {
+      foot.append(words);
+    }
 
     card.append(top, foot);
     // 插在汇报文字之前。
     block.body.insertBefore(card, block.say);
-    block.chapter = chapterNo;
+    if (view.canOpen) {
+      block.chapter = chapterNo;
+    }
     collapseOldChapterCards(block);
   }
 

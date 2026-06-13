@@ -9,9 +9,13 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const appJsPath = path.join(here, "..", "..", "src", "app-shell", "app.js");
 const apiClientPath = path.join(here, "..", "..", "src", "app-shell", "api-client.js");
+const threadRendererPath = path.join(here, "..", "..", "src", "app-shell", "thread-renderer.js");
+const chapterPresentationPath = path.join(here, "..", "..", "src", "app-shell", "chapter-presentation.mjs");
 
 const appSource = await fs.readFile(appJsPath, "utf8");
 const apiClientSource = await fs.readFile(apiClientPath, "utf8");
+const threadRendererSource = await fs.readFile(threadRendererPath, "utf8");
+const chapterPresentationSource = await fs.readFile(chapterPresentationPath, "utf8");
 
 test("app.js wires the project scope module", () => {
   assert.match(
@@ -99,5 +103,53 @@ test("api-client.js postJson accepts an AbortSignal", () => {
     apiClientSource,
     /signal/,
     "the signal should be forwarded into fetch()"
+  );
+});
+
+test("thread-renderer.js imports presentChapterArtifact from the chapter-presentation module", () => {
+  assert.match(
+    threadRendererSource,
+    /import\s*\{[^}]*presentChapterArtifact[^}]*\}\s*from\s*["']\.\/chapter-presentation\.mjs["']/,
+    "thread-renderer.js should import presentChapterArtifact from ./chapter-presentation.mjs"
+  );
+});
+
+test("chapter-presentation.mjs exports presentChapterArtifact and reason text", () => {
+  assert.match(
+    chapterPresentationSource,
+    /export\s+function\s+presentChapterArtifact\s*\(/,
+    "chapter-presentation.mjs should export a presentChapterArtifact function"
+  );
+  // The hardening in B1.1 introduced inspect_error; the renderer should not
+  // show empty detail text for that reason.
+  assert.match(
+    chapterPresentationSource,
+    /inspect_error\s*:\s*"读取章节文件失败（可能文件被锁定）"/u,
+    "reasonText should include an inspect_error entry"
+  );
+});
+
+test("thread-renderer.js calls presentChapterArtifact when rendering a chapter card", () => {
+  assert.match(
+    threadRendererSource,
+    /presentChapterArtifact\s*\(/,
+    "attachChapterCard should call presentChapterArtifact"
+  );
+});
+
+test("thread-renderer.js gates the open-reader click and 'open' affordance on canOpen", () => {
+  // The plan requires: only bind openReader when canOpen is true; never show
+  // "已写入本地文件" or enable the open action for a non-committed artifact.
+  // We assert at least one conditional that gates the click handler on canOpen
+  // and at least one that gates the "打开阅读" affordance on canOpen.
+  assert.match(
+    threadRendererSource,
+    /view\.canOpen[\s\S]*?addEventListener\s*\(\s*["']click["']/u,
+    "click handler binding must be conditional on view.canOpen"
+  );
+  assert.match(
+    threadRendererSource,
+    /view\.canOpen[\s\S]*?打开阅读/u,
+    "the '打开阅读' affordance must be conditional on view.canOpen"
   );
 });
