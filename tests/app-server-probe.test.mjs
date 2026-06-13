@@ -7,7 +7,7 @@ import { createAppShellServer } from "../src/core/app-server.mjs";
 import { recordRecentProject, samePath } from "../src/core/app-state.mjs";
 import { loadDashboardData } from "../src/core/app-dashboard.mjs";
 import { readEvents } from "../src/core/event-log.mjs";
-import { loadLocalSecretsSync, saveLocalSecret } from "../src/core/local-secrets.mjs";
+import { loadLocalSecrets, loadLocalSecretsSync, saveLocalSecret } from "../src/core/local-secrets.mjs";
 import { createProject, loadProject, loadState, saveProject, saveState } from "../src/core/project-store.mjs";
 import { TaskQueue } from "../src/core/task-queue.mjs";
 import { appendFailure } from "../src/core/failures-store.mjs";
@@ -1253,5 +1253,52 @@ test("valid candidate persists project config and secret together", async () => 
     );
   } finally {
     await closeServer(ctx.server);
+  }
+});
+
+test("connection test validates unsaved candidate without persisting it", async () => {
+  const seen = [];
+  const { server, port, projectRoot, secretsRoot } = await setupServer({
+    testModelConnection: async (input) => {
+      seen.push(input);
+      return {
+        ok: true,
+        provider: input.config.provider,
+        model_name: input.config.model_name,
+        latency_ms: 31,
+      };
+    },
+  });
+  try {
+    const beforeProject = await loadProject(projectRoot);
+    const beforeSecrets = await loadLocalSecrets(secretsRoot);
+
+    const { res, data } = await postJson(port, "/api/settings/test-connection", {
+      projectRoot,
+      active_model: {
+        provider: "openai-compatible",
+        model_name: "mimo-v2.5-pro",
+        base_url: "https://api.xiaomimimo.com/v1",
+        api_key_env: "XIAOMI_MIMO_API_KEY",
+        api_key: "ephemeral-key",
+      },
+    });
+
+    assert.equal(res.status, 200);
+    assert.equal(data.ok, true);
+    assert.equal(seen[0].config.model_name, "mimo-v2.5-pro");
+    assert.deepEqual(await loadProject(projectRoot), beforeProject);
+    assert.deepEqual(await loadLocalSecrets(secretsRoot), beforeSecrets);
+    const events = await readEvents(projectRoot);
+    assert.ok(
+      events.some(
+        (event) =>
+          event.type === "model_connection_tested" &&
+          event.data?.ok === true &&
+          JSON.stringify(event).includes("ephemeral-key") === false
+      )
+    );
+  } finally {
+    await closeServer(server);
   }
 });
