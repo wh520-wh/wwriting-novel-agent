@@ -821,6 +821,60 @@ export function createThreadRenderer(ctx) {
 
   // ===== S3 chat thread rendering =====
 
+  // 气泡操作排：复制 / 重新发送（user）/ 重试本轮（assistant，仅最后一条显示，见 syncChatThread 收尾）。
+  function buildMsgActions(message, allMessages) {
+    const bar = document.createElement("div");
+    bar.className = "msg-actions";
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "msg-action";
+    copy.dataset.testid = "msg-copy";
+    copy.textContent = "复制";
+    copy.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(message.content ?? "");
+        ctx.showToast("已复制。", "info");
+      } catch {
+        ctx.showToast("复制失败：剪贴板不可用。", "error");
+      }
+    });
+    bar.append(copy);
+    if (message.role === "user") {
+      const resend = document.createElement("button");
+      resend.type = "button";
+      resend.className = "msg-action";
+      resend.dataset.testid = "msg-resend";
+      resend.textContent = "重新发送";
+      resend.addEventListener("click", () => {
+        if (ctx.isChatBusy?.()) return;
+        ctx.sendChatMessageWithUX?.(message.content ?? "");
+      });
+      bar.append(resend);
+    }
+    if (message.role === "assistant") {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "msg-action";
+      retry.dataset.testid = "msg-retry";
+      retry.hidden = true; // syncChatThread 收尾只放开最后一条 assistant 的
+      retry.textContent = "重试本轮";
+      retry.addEventListener("click", () => {
+        if (ctx.isChatBusy?.()) return;
+        const msgs = allMessages ?? [];
+        const idx = msgs.findIndex((m) => m?.id === message.id);
+        for (let i = (idx < 0 ? msgs.length : idx) - 1; i >= 0; i -= 1) {
+          if (msgs[i]?.role === "user") {
+            ctx.sendChatMessageWithUX?.(msgs[i].content ?? "");
+            return;
+          }
+        }
+        ctx.showToast("没有可重试的消息。", "info");
+      });
+      bar.append(retry);
+    }
+    return bar;
+  }
+
   function renderUserBubble(message) {
     const wrap = document.createElement("div");
     wrap.className = "msg-user rise chat-bubble-wrap chat-bubble-wrap--user";
@@ -831,6 +885,7 @@ export function createThreadRenderer(ctx) {
     content.className = "chat-bubble-content";
     content.textContent = message.content ?? "";
     bubble.append(content);
+    bubble.append(buildMsgActions(message));
     wrap.append(bubble);
     return wrap;
   }
@@ -885,6 +940,7 @@ export function createThreadRenderer(ctx) {
       cost.textContent = `本轮 ¥${message.cost.toFixed(4)}`;
       bubble.append(cost);
     }
+    bubble.append(buildMsgActions(message, allMessages));
     wrap.append(bubble);
     return wrap;
   }
@@ -1071,6 +1127,8 @@ export function createThreadRenderer(ctx) {
         ctx.announce("智能体已回复");
       }
     }
+    const retryButtons = ctx.refs.thread.querySelectorAll('[data-testid="msg-retry"]');
+    retryButtons.forEach((btn, i) => { btn.hidden = i !== retryButtons.length - 1; });
     if (appended && stick) scrollThreadToBottom();
   }
 
