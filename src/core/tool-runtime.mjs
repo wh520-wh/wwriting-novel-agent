@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { appendEvent } from "./event-log.mjs";
 import { countEffectiveWords } from "./word-count.mjs";
+import { throwIfAborted } from "./cancellation.mjs";
 import { ensureDir, pathExists, safeJoin, sha256, writeFileAtomic } from "./fs-utils.mjs";
 
 export class ToolValidationError extends Error {
@@ -88,10 +89,24 @@ export async function appendChapterSegment(projectRoot, project, input, options 
   };
 }
 
-export async function finalizeChapterFile(projectRoot, project, chapterNo) {
+export async function finalizeChapterFile(projectRoot, project, chapterNo, { signal } = {}) {
+  throwIfAborted(signal);
   const draftPath = safeJoin(projectRoot, "drafts", chapterFileName(chapterNo, `draft.${project.output_format}`));
   const finalPath = safeJoin(projectRoot, "chapters", chapterFileName(chapterNo, project.output_format));
+  if (await pathExists(finalPath)) {
+    const existing = await fs.readFile(finalPath, "utf8");
+    return {
+      ok: true,
+      duplicate: true,
+      path: finalPath,
+      draft_path: draftPath,
+      bytes_written: 0,
+      actual_words: countEffectiveWords(existing),
+      checksum: sha256(existing)
+    };
+  }
   const content = await fs.readFile(draftPath, "utf8");
+  throwIfAborted(signal);
   const actualWords = countEffectiveWords(content);
   const written = await writeFileAtomic(finalPath, content);
   await appendEvent(projectRoot, {
@@ -104,6 +119,7 @@ export async function finalizeChapterFile(projectRoot, project, chapterNo) {
   });
   return {
     ok: true,
+    duplicate: false,
     path: finalPath,
     draft_path: draftPath,
     bytes_written: written.bytes_written,

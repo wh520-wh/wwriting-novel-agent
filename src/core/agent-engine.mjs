@@ -576,7 +576,9 @@ async function finalizeChapter(projectRoot, project, state, runtime) {
     });
   }
   throwIfAborted(runtime.signal);
-  const result = await finalizeChapterFile(projectRoot, project, state.current_chapter_no);
+  const result = await finalizeChapterFile(projectRoot, project, state.current_chapter_no, { signal: runtime.signal });
+  // Finalization critical section: 最终文件提交后到索引/检查点持久化之间不得插入取消检查，
+  // 否则会出现最终文件存在但索引缺失的状态。duplicate=true 表示恢复时文件已提交，只修复索引。
   await emit(CORE_EVENTS.ChapterWritten, {
     projectRoot,
     path: result?.path ?? result?.draft_path ?? null,
@@ -602,7 +604,16 @@ async function finalizeChapter(projectRoot, project, state, runtime) {
     actual_words: result.actual_words,
     checksum: result.checksum
   });
-  await writeCheckpoint(projectRoot, checkpointPayload(project, state, next, [], [result], null, { skill_hooks: postProcess.hooks, skill_gate_results: postProcess.results }));
+  await writeCheckpoint(projectRoot, checkpointPayload(project, state, next, [], [result], null, {
+    skill_hooks: postProcess.hooks,
+    skill_gate_results: postProcess.results,
+    artifact_commit: {
+      chapter_no: state.current_chapter_no,
+      final_path: result.path,
+      checksum: result.checksum,
+      duplicate: result.duplicate === true
+    }
+  }));
 }
 
 export async function extractChapterMemory(projectRoot, project, state, runtime) {
@@ -1542,6 +1553,8 @@ function checkpointPayload(project, stateBefore, stateAfter, toolCalls = [], too
     project_id: project.project_id,
     task_id: extras.task_id ?? `${project.project_id}:${stateAfter.current_chapter_no}:${stateAfter.current_stage}`,
     task_contract: extras.task_contract ?? null,
+    committed_model_calls: extras.committed_model_calls ?? [],
+    artifact_commit: extras.artifact_commit ?? null,
     chapter_no: stateAfter.current_chapter_no,
     stage: stateAfter.current_stage,
     segment_no: stateAfter.current_segment_no,

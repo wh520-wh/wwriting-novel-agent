@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { createProject } from "../src/core/project-store.mjs";
 import { assertToolCallForChapter } from "../src/core/quality-gates.mjs";
-import { appendChapterSegment, ToolValidationError } from "../src/core/tool-runtime.mjs";
+import { appendChapterSegment, finalizeChapterFile, ToolValidationError } from "../src/core/tool-runtime.mjs";
 import { safeJoin } from "../src/core/fs-utils.mjs";
 
 test("appendChapterSegment writes once per segment number", async () => {
@@ -102,4 +102,29 @@ test("chapter tool-call gate rejects mismatched scoped arguments", () => {
   assert.equal(assertToolCallForChapter({ ...base, input: { ...base.input, chapter_no: 2 } }, { chapter_no: 1 }).code, "invalid_chapter_no");
   assert.equal(assertToolCallForChapter({ ...base, input: { ...base.input, segment_no: 3 } }, { segment_no: 2 }).code, "invalid_segment_no");
   assert.equal(assertToolCallForChapter({ ...base, input: { ...base.input, content: "" } }, { segment_no: 2 }).code, "empty_content");
+});
+
+test("finalizeChapterFile respects a pre-aborted signal", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-final-abort-"));
+  const { projectRoot, project } = await createProject(root, {
+    slug: "project",
+    target_chapters: 1,
+    min_words_per_chapter: 10,
+    target_words_per_chapter: 12
+  });
+  await appendChapterSegment(projectRoot, project, {
+    chapter_no: 1,
+    segment_no: 1,
+    content: "# 第一章\n\n雨声压住脚步，沈泽拆开了旧信。"
+  });
+  const controller = new AbortController();
+  controller.abort("用户停止");
+  await assert.rejects(
+    () => finalizeChapterFile(projectRoot, project, 1, { signal: controller.signal }),
+    (error) => error.name === "ProjectCancelledError"
+  );
+  await assert.rejects(
+    () => fs.stat(path.join(projectRoot, "chapters", "001.md")),
+    (error) => error.code === "ENOENT"
+  );
 });

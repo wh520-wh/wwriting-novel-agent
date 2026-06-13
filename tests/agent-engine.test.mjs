@@ -12,7 +12,7 @@ import { loadContinuity, loadContinuityState, saveContinuity } from "../src/core
 import { updateProjectSettings } from "../src/core/settings-runtime.mjs";
 import { appendChapterSegment } from "../src/core/tool-runtime.mjs";
 import { loadPendingAction as loadChatPending, readChatHistory as readChatHist } from "../src/core/chat/chat-store.mjs";
-import { makeChapterContract } from "../src/core/task-contract.mjs";
+import { makeChapterContract, makeResumeContract } from "../src/core/task-contract.mjs";
 
 class AlwaysInvalidModel {
   async generate() {
@@ -985,4 +985,89 @@ test("memory extraction abort does not advance watermark", async () => {
     (await loadContinuityState(projectRoot)).last_extracted_chapter ?? 0,
     0
   );
+});
+
+test("fact-check 检查点恢复不重新生成正文", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-review-resume-"));
+  const { projectRoot, project } = await createProject(root, {
+    slug: "project",
+    target_chapters: 1,
+    min_words_per_chapter: 10,
+    target_words_per_chapter: 12
+  });
+  await appendChapterSegment(projectRoot, project, {
+    chapter_no: 1,
+    segment_no: 1,
+    content: "# 第一章 雨夜来信\n\n雨声压住脚步，沈泽拆开旧信，发现失踪者留下的地址。"
+  });
+  const state = await loadState(projectRoot);
+  await saveState(projectRoot, {
+    ...state,
+    project_status: "cancelled",
+    current_stage: "reviewing",
+    current_segment_no: 1
+  });
+  const modelClient = new CapturingModelClient();
+
+  await runProject(projectRoot, {
+    taskId: "resume-review-1",
+    contract: makeResumeContract(1),
+    modelClient
+  });
+
+  assert.equal(
+    modelClient.metadatas.some(
+      (metadata) => metadata.toolRequest?.kind === "draft_segment"
+    ),
+    false
+  );
+  const final = await fs.readFile(
+    path.join(projectRoot, "chapters", "001.md"),
+    "utf8"
+  );
+  assert.match(final, /失踪者留下的地址/u);
+});
+
+test("已提交最终文件的恢复只修复索引不重复写入", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-final-resume-"));
+  const { projectRoot, project } = await createProject(root, {
+    slug: "project",
+    target_chapters: 1,
+    min_words_per_chapter: 10,
+    target_words_per_chapter: 12
+  });
+  await appendChapterSegment(projectRoot, project, {
+    chapter_no: 1,
+    segment_no: 1,
+    content: "# 第一章 雨夜来信\n\n雨声压住脚步，沈泽拆开旧信，发现失踪者留下的地址。"
+  });
+  const draftPath = path.join(projectRoot, "drafts", "001.draft.md");
+  const finalPath = path.join(projectRoot, "chapters", "001.md");
+  await fs.copyFile(draftPath, finalPath);
+  const state = await loadState(projectRoot);
+  await saveState(projectRoot, {
+    ...state,
+    project_status: "cancelled",
+    current_stage: "finalizing",
+    current_segment_no: 1
+  });
+  await upsertChapter(projectRoot, {
+    chapter_no: 1,
+    status: "finalizing",
+    draft_path: draftPath,
+    final_path: finalPath,
+    checksum: null
+  });
+  const before = await fs.stat(finalPath);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await runProject(projectRoot, {
+    taskId: "resume-1",
+    contract: makeResumeContract(1),
+    modelClient: new CapturingModelClient()
+  });
+  const after = await fs.stat(finalPath);
+  assert.equal(after.mtimeMs, before.mtimeMs);
+  const chapter = (await loadChapterIndex(projectRoot)).chapters[0];
+  assert.equal(chapter.status, "completed");
+  assert.ok(chapter.checksum);
 });
