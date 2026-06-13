@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { readJson, safeJoin, writeJsonAtomic } from "./fs-utils.mjs";
+import { compileWritingTasks, makeResumeContract } from "./task-contract.mjs";
 
-export const TASK_QUEUE_SCHEMA_VERSION = 2;
+export const TASK_QUEUE_SCHEMA_VERSION = 3;
 
 const TERMINAL_STATUSES = new Set(["completed", "interrupted", "cancelled", "blocked"]);
+const ACTIVE_STATUSES = new Set(["running", "cancelling"]);
 
 export class TaskQueue {
   constructor(projectRoot) {
@@ -15,11 +17,16 @@ export class TaskQueue {
 
   async load() {
     const loaded = await readJson(this.queuePath, createEmptyState());
-    this.state = normalizeState(loaded);
+    const previousVersion = typeof loaded?.schema_version === "number" ? loaded.schema_version : 1;
+    const needsMigration = previousVersion < TASK_QUEUE_SCHEMA_VERSION;
+    this.state = normalizeState(loaded, { migrateContracts: needsMigration });
+    if (needsMigration) {
+      await this.save();
+    }
     return this.getState();
   }
 
-  async enqueue(instruction, { mode = "auto" } = {}) {
+  async enqueue(instruction, { mode = "auto", contract } = {}) {
     return this.withLock(async () => {
       await this.load();
     const now = timestamp();
@@ -27,6 +34,7 @@ export class TaskQueue {
       id: `task-${randomUUID()}`,
       index: nextIndex(this.state.tasks),
       instruction,
+      contract: contract ? clone(contract) : null,
       mode,
       status: "queued",
       createdAt: now,
@@ -47,7 +55,7 @@ export class TaskQueue {
   async createRecoveryTask({ instruction, mode = "write", currentStage = "queued", recovery = {} } = {}) {
     return this.withLock(async () => {
       await this.load();
-      if (this.state.tasks.some((candidate) => candidate.status === "running")) {
+      if (this.state.tasks.some((candidate) => ACTIVE_STATUSES.has(candidate.status))) {
         return null;
       }
       const now = timestamp();
@@ -81,7 +89,7 @@ export class TaskQueue {
   async promoteNext() {
     return this.withLock(async () => {
       await this.load();
-      if (this.state.tasks.some((candidate) => candidate.status === "running")) {
+      if (this.state.tasks.some((candidate) => ACTIVE_STATUSES.has(candidate.status))) {
         return null;
       }
       const task = this.state.tasks.find((candidate) => candidate.status === "queued");
@@ -146,6 +154,24 @@ export class TaskQueue {
     });
   }
 
+  async markCancelling(taskId, reason = "用户停止") {
+    return this.withLock(async () => {
+      await this.load();
+      const task = this.findTask(taskId);
+      if (!task || !ACTIVE_STATUSES.has(task.status)) {
+        return null;
+      }
+      if (task.status !== "cancelling") {
+        const now = timestamp();
+        task.status = "cancelling";
+        task.error = reason;
+        task.updatedAt = now;
+        await this.save();
+      }
+      return clone(task);
+    });
+  }
+
   async block(taskId, reason) {
     return this.withLock(async () => {
       await this.load();
@@ -164,7 +190,7 @@ export class TaskQueue {
       await this.load();
     const aborted = [];
     for (const task of this.state.tasks) {
-      if (task.status === "running" && (!taskId || task.id === taskId)) {
+      if (ACTIVE_STATUSES.has(task.status) && (!taskId || task.id === taskId)) {
         markCancelled(task, reason ?? "aborted");
         aborted.push(clone(task));
       }
@@ -209,7 +235,7 @@ export class TaskQueue {
     if (!task || !["interrupted", "cancelled"].includes(task.status)) {
       return null;
     }
-    if (this.state.tasks.some((candidate) => candidate.status === "running")) {
+    if (this.state.tasks.some((candidate) => ACTIVE_STATUSES.has(candidate.status))) {
       return null;
     }
     const now = timestamp();
@@ -281,35 +307,82 @@ function createEmptyState() {
   };
 }
 
-function normalizeState(value) {
+function normalizeState(value, { migrateContracts = false } = {}) {
   const state = {
     schema_version: TASK_QUEUE_SCHEMA_VERSION,
-    tasks: Array.isArray(value?.tasks) ? value.tasks.map(normalizeTask) : [],
+    tasks: Array.isArray(value?.tasks) ? value.tasks.map((task) => normalizeTask(task, { migrateContracts })) : [],
     updatedAt: value?.updatedAt ?? timestamp()
   };
   state.tasks.sort((a, b) => a.index - b.index);
   return state;
 }
 
-function normalizeTask(task) {
+function normalizeTask(task, { migrateContracts = false } = {}) {
   const now = timestamp();
-  return {
+  const status = task.status ?? "queued";
+  const recovery = task.recovery && typeof task.recovery === "object" ? clone(task.recovery) : null;
+  const hasContract = Object.hasOwn(task, "contract") && task.contract != null;
+  const migration = migrateContracts && !hasContract ? migrateContract(task, status, recovery) : {};
+  const normalized = {
     id: task.id ?? `task-${randomUUID()}`,
     index: task.index ?? 0,
     instruction: task.instruction ?? "",
     mode: task.mode ?? "auto",
-    status: task.status ?? "queued",
+    status: migration.status ?? status,
     createdAt: task.createdAt ?? now,
     startedAt: task.startedAt ?? null,
-    completedAt: task.completedAt ?? (TERMINAL_STATUSES.has(task.status) ? now : null),
+    completedAt: task.completedAt ?? (TERMINAL_STATUSES.has(migration.status ?? status) ? now : null),
     updatedAt: task.updatedAt ?? now,
-    error: task.error ?? null,
+    error: migration.error ?? task.error ?? null,
     stages: Array.isArray(task.stages) ? task.stages : [],
     currentStage: task.currentStage ?? null,
     heartbeatAt: task.heartbeatAt ?? null,
+    ...(migration.contract ? { contract: migration.contract } : hasContract ? { contract: clone(task.contract) } : {}),
     ...(typeof task.source === "string" ? { source: task.source } : {}),
-    ...(task.recovery && typeof task.recovery === "object" ? { recovery: clone(task.recovery) } : {}),
+    ...(recovery ? { recovery } : {}),
     ...(Object.hasOwn(task, "result") ? { result: task.result } : {})
+  };
+  return normalized;
+}
+
+function migrateContract(task, status, recovery) {
+  const isRecovery = task.source === "project_state_recovery";
+  const recoveryChapter = recovery?.chapterNo;
+  const recoveryTarget = recovery?.targetChapters;
+
+  if (isRecovery || status === "cancelled" || status === "interrupted") {
+    const chapterNo = Number(recoveryChapter) > 0 ? Number(recoveryChapter) : 1;
+    return { contract: makeResumeContract(chapterNo) };
+  }
+
+  const text = String(task.instruction ?? "").trim();
+  const precise = /^(写|续写)第(\d+)章(?:[，,\s].*)?$/u.exec(text);
+  if (precise) {
+    const chapter = Number(precise[2]);
+    const target = Number(recoveryTarget) > 0 ? Number(recoveryTarget) : Math.max(chapter, 1);
+    try {
+      const compiled = compileWritingTasks(text, { currentChapter: chapter, targetChapters: target });
+      if (Array.isArray(compiled) && compiled.length > 0 && compiled[0].contract) {
+        return { contract: clone(compiled[0].contract) };
+      }
+    } catch (_) {
+      // fall through to legacy block
+    }
+  }
+
+  if (status === "running") {
+    if (Number(recoveryChapter) > 0) {
+      return { contract: makeResumeContract(Number(recoveryChapter)) };
+    }
+    return {
+      status: "blocked",
+      error: "legacy_task_contract_unresolved"
+    };
+  }
+
+  return {
+    status: "blocked",
+    error: "legacy_task_contract_unresolved"
   };
 }
 

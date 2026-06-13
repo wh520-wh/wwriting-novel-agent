@@ -34,7 +34,7 @@ test("loading a v1-shaped file (no schema_version) auto-migrates to v2", async (
     const queue = new TaskQueue(projectRoot);
     const state = await queue.load();
 
-    assert.equal(state.schema_version, 2);
+    assert.equal(state.schema_version, 3);
     assert.equal(state.tasks.length, 1);
     assert.equal(state.tasks[0].id, "task-aaa");
   } finally {
@@ -68,7 +68,7 @@ test("loading a v1-shaped file with schema_version 1 upgrades to v2", async () =
     const queue = new TaskQueue(projectRoot);
     const state = await queue.load();
 
-    assert.equal(state.schema_version, 2);
+    assert.equal(state.schema_version, 3);
     assert.equal(state.tasks[0].id, "task-bbb");
     assert.equal(state.tasks[0].instruction, "续写第2章");
     assert.equal(state.tasks[0].mode, "manual");
@@ -151,7 +151,7 @@ test("v1 task missing id and index gets auto-generated defaults", async () => {
     const v1State = {
       tasks: [
         {
-          instruction: "自动保存的任务",
+          instruction: "写第1章",
           status: "queued",
           createdAt: "2026-05-01T00:00:00.000Z",
           updatedAt: "2026-05-01T00:00:00.000Z"
@@ -248,7 +248,7 @@ test("v1 empty tasks array migrates cleanly to v2", async () => {
     const queue = new TaskQueue(projectRoot);
     const state = await queue.load();
 
-    assert.equal(state.schema_version, 2);
+    assert.equal(state.schema_version, 3);
     assert.deepEqual(state.tasks, []);
     assert.ok(state.updatedAt);
   } finally {
@@ -265,7 +265,7 @@ test("v1 file with non-array tasks defaults to empty tasks", async () => {
     const queue = new TaskQueue(projectRoot);
     const state = await queue.load();
 
-    assert.equal(state.schema_version, 2);
+    assert.equal(state.schema_version, 3);
     assert.deepEqual(state.tasks, []);
   } finally {
     await fs.rm(projectRoot, { recursive: true, force: true });
@@ -297,7 +297,7 @@ test("persisted file after migration contains schema_version 2", async () => {
     await queue.save();
 
     const raw = JSON.parse(await fs.readFile(path.join(projectRoot, "task_queue.json"), "utf8"));
-    assert.equal(raw.schema_version, 2, "persisted file should have schema_version 2");
+    assert.equal(raw.schema_version, 3, "persisted file should have schema_version 3");
     assert.equal(raw.tasks.length, 1);
     assert.equal(raw.tasks[0].id, "task-persist");
     assert.deepEqual(raw.tasks[0].stages, [], "persisted file should have stages as empty array");
@@ -308,8 +308,8 @@ test("persisted file after migration contains schema_version 2", async () => {
   }
 });
 
-test("TASK_QUEUE_SCHEMA_VERSION constant equals 2", () => {
-  assert.equal(TASK_QUEUE_SCHEMA_VERSION, 2);
+test("TASK_QUEUE_SCHEMA_VERSION constant equals 3", () => {
+  assert.equal(TASK_QUEUE_SCHEMA_VERSION, 3);
 });
 
 test("multiple v1 tasks are sorted by index after migration", async () => {
@@ -411,9 +411,170 @@ test("loading a missing file creates empty v2 state", async () => {
     const queue = new TaskQueue(projectRoot);
     const state = await queue.load();
 
-    assert.equal(state.schema_version, 2);
+    assert.equal(state.schema_version, 3);
     assert.deepEqual(state.tasks, []);
     assert.ok(state.updatedAt);
+  } finally {
+    await fs.rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("loading a v2-shaped file (no task contracts) auto-migrates to v3 with a synthesized contract", async () => {
+  const projectRoot = await makeTmpDir("wwriting-schema-migration-v2-precise-");
+  try {
+    const v2State = {
+      schema_version: 2,
+      tasks: [
+        {
+          id: "task-v2-precise",
+          index: 1,
+          instruction: "写第2章",
+          mode: "auto",
+          status: "queued",
+          createdAt: "2026-05-15T00:00:00.000Z",
+          startedAt: null,
+          completedAt: null,
+          updatedAt: "2026-05-15T00:00:00.000Z",
+          error: null,
+          stages: [],
+          currentStage: null,
+          heartbeatAt: null
+        }
+      ],
+      updatedAt: "2026-05-15T00:00:00.000Z"
+    };
+    await fs.writeFile(path.join(projectRoot, "task_queue.json"), JSON.stringify(v2State, null, 2));
+
+    const queue = new TaskQueue(projectRoot);
+    const state = await queue.load();
+
+    assert.equal(state.schema_version, 3);
+    assert.equal(state.tasks[0].contract.kind, "write_chapter");
+    assert.equal(state.tasks[0].contract.chapter_start, 2);
+  } finally {
+    await fs.rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("loading a v2 ambiguous queued task marks it blocked with legacy_task_contract_unresolved", async () => {
+  const projectRoot = await makeTmpDir("wwriting-schema-migration-v2-ambiguous-");
+  try {
+    const v2State = {
+      schema_version: 2,
+      tasks: [
+        {
+          id: "task-v2-ambiguous",
+          index: 1,
+          instruction: "继续写作",
+          mode: "auto",
+          status: "queued",
+          createdAt: "2026-05-15T00:00:00.000Z",
+          startedAt: null,
+          completedAt: null,
+          updatedAt: "2026-05-15T00:00:00.000Z",
+          error: null,
+          stages: [],
+          currentStage: null,
+          heartbeatAt: null
+        }
+      ],
+      updatedAt: "2026-05-15T00:00:00.000Z"
+    };
+    await fs.writeFile(path.join(projectRoot, "task_queue.json"), JSON.stringify(v2State, null, 2));
+
+    const queue = new TaskQueue(projectRoot);
+    const state = await queue.load();
+
+    assert.equal(state.schema_version, 3);
+    assert.equal(state.tasks[0].status, "blocked");
+    assert.equal(state.tasks[0].error, "legacy_task_contract_unresolved");
+  } finally {
+    await fs.rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("loading a v2 ambiguous running legacy task marks it blocked with legacy_task_contract_unresolved", async () => {
+  const projectRoot = await makeTmpDir("wwriting-schema-migration-v2-ambiguous-running-");
+  try {
+    const v2State = {
+      schema_version: 2,
+      tasks: [
+        {
+          id: "task-v2-ambiguous-running",
+          index: 1,
+          instruction: "resume stale run",
+          mode: "write",
+          status: "running",
+          createdAt: "2026-05-20T00:00:00.000Z",
+          startedAt: "2026-05-20T00:00:01.000Z",
+          completedAt: null,
+          updatedAt: "2026-05-20T00:00:01.000Z",
+          error: null,
+          stages: [],
+          currentStage: "drafting",
+          heartbeatAt: "2026-05-20T00:00:01.000Z"
+        }
+      ],
+      updatedAt: "2026-05-20T00:00:01.000Z"
+    };
+    await fs.writeFile(path.join(projectRoot, "task_queue.json"), JSON.stringify(v2State, null, 2));
+
+    const queue = new TaskQueue(projectRoot);
+    const state = await queue.load();
+    const task = state.tasks[0];
+
+    assert.equal(state.schema_version, 3);
+    assert.equal(task.status, "blocked");
+    assert.equal(task.error, "legacy_task_contract_unresolved");
+    assert.equal(task.contract, undefined);
+  } finally {
+    await fs.rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("loading a v2 ambiguous running legacy task with recovery.chapterNo binds a resume contract", async () => {
+  const projectRoot = await makeTmpDir("wwriting-schema-migration-v2-running-recovery-");
+  try {
+    const v2State = {
+      schema_version: 2,
+      tasks: [
+        {
+          id: "task-v2-running-with-recovery",
+          index: 1,
+          instruction: "resume stale run",
+          mode: "write",
+          status: "running",
+          source: "project_state_recovery",
+          recovery: {
+            source: "project_state",
+            projectStatus: "interrupted",
+            chapterNo: 3,
+            stage: "drafting",
+            reason: "API timeout"
+          },
+          createdAt: "2026-05-21T00:00:00.000Z",
+          startedAt: "2026-05-21T00:00:01.000Z",
+          completedAt: null,
+          updatedAt: "2026-05-21T00:00:01.000Z",
+          error: null,
+          stages: [],
+          currentStage: "drafting",
+          heartbeatAt: "2026-05-21T00:00:01.000Z"
+        }
+      ],
+      updatedAt: "2026-05-21T00:00:01.000Z"
+    };
+    await fs.writeFile(path.join(projectRoot, "task_queue.json"), JSON.stringify(v2State, null, 2));
+
+    const queue = new TaskQueue(projectRoot);
+    const state = await queue.load();
+    const task = state.tasks[0];
+
+    assert.equal(state.schema_version, 3);
+    assert.equal(task.status, "running");
+    assert.equal(task.contract.kind, "resume_chapter");
+    assert.equal(task.contract.chapter_start, 3);
+    assert.equal(task.contract.chapter_end, 3);
   } finally {
     await fs.rm(projectRoot, { recursive: true, force: true });
   }

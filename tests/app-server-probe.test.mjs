@@ -387,14 +387,20 @@ test("POST /api/run/retry without taskId prefers a stale running task over termi
     const state = await loadState(projectRoot);
     await saveState(projectRoot, { ...state, project_status: "running", current_stage: "drafting" });
 
+    // Schema v3 migration marks the ambiguous running legacy task as blocked,
+    // because it has no project_state_recovery source, no terminal status,
+    // no precise chapter instruction, and no recovery.chapterNo to bind.
+    // Retry should then pick the remaining terminal candidate instead.
     const { res, data } = await postJson(port, "/api/run/retry", {});
 
     assert.equal(res.status, 200);
     assert.equal(data.ok, true);
     assert.equal(run.calls.length, 1);
-    assert.equal(run.calls[0].options.taskId, "task-stale-running");
+    assert.equal(run.calls[0].options.taskId, "task-interrupted-old");
     const { data: queue } = await getJson(port, "/api/queue/state");
-    assert.equal(queue.tasks.find((task) => task.id === "task-interrupted-old").status, "interrupted");
+    const stale = queue.tasks.find((task) => task.id === "task-stale-running");
+    assert.equal(stale.status, "blocked");
+    assert.equal(stale.error, "legacy_task_contract_unresolved");
   } finally {
     await closeServer(server);
   }

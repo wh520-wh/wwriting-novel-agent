@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { expandInstruction, TaskQueue } from "../src/core/task-queue.mjs";
+import { makeChapterContract } from "../src/core/task-contract.mjs";
 
 async function makeQueue(prefix = "wwriting-task-queue-") {
   const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -32,7 +33,7 @@ test("enqueue stores queued tasks with stable shape and persists them", async ()
   assert.ok(Date.parse(task.updatedAt));
 
   const raw = JSON.parse(await fs.readFile(path.join(projectRoot, "task_queue.json"), "utf8"));
-  assert.equal(raw.schema_version, 2);
+  assert.equal(raw.schema_version, 3);
   assert.equal(raw.tasks.length, 1);
   assert.equal(raw.tasks[0].id, task.id);
 });
@@ -70,6 +71,36 @@ test("promoteNext does not promote another task while one is already running", a
   assert.equal(first.status, "running");
   assert.equal(second, null);
   assert.deepEqual(queue.getState().tasks.map((task) => task.status), ["running", "queued"]);
+});
+
+test("promoteNext does not promote another task while one is cancelling", async () => {
+  const { queue } = await makeQueue("wwriting-queue-cancelling-promote-");
+  const taskA = await queue.enqueue("写第1章", {
+    mode: "write",
+    contract: makeChapterContract(1)
+  });
+  const taskB = await queue.enqueue("写第2章", {
+    mode: "write",
+    contract: makeChapterContract(2)
+  });
+
+  const promoted = await queue.promoteNext();
+  assert.equal(promoted.id, taskA.id);
+  assert.equal(promoted.status, "running");
+
+  const cancelling = await queue.markCancelling(taskA.id, "用户停止");
+  assert.equal(cancelling.status, "cancelling");
+
+  const result = await queue.promoteNext();
+  assert.equal(result, null);
+
+  const resultAgain = await queue.promoteNext();
+  assert.equal(resultAgain, null);
+
+  assert.deepEqual(queue.getState().tasks.map((task) => [task.id, task.status]), [
+    [taskA.id, "cancelling"],
+    [taskB.id, "queued"]
+  ]);
 });
 
 test("complete, interrupt, cancel, and abortRunning transition only valid tasks", async () => {
@@ -212,7 +243,7 @@ test("schema v2 preserves recovery metadata across reload", async () => {
   const reloaded = new TaskQueue(root);
   await reloaded.load();
   const state = reloaded.getState();
-  assert.equal(state.schema_version, 2);
+  assert.equal(state.schema_version, 3);
   assert.equal(state.tasks[0].source, "project_state_recovery");
   assert.equal(state.tasks[0].recovery.chapterNo, 2);
 });
@@ -241,4 +272,30 @@ test("createRecoveryTask refuses to create a second running task", async () => {
   const state = queue.getState();
   assert.equal(state.tasks.length, 1);
   assert.equal(state.tasks[0].status, "running");
+});
+
+test("enqueue persists the supplied task contract", async () => {
+  const { projectRoot, queue } = await makeQueue("wwriting-queue-contract-");
+  const contract = {
+    version: 1, kind: "write_chapter", chapter_start: 1, chapter_end: 1,
+    stop_policy: "immediate", resume_policy: "checkpoint", skip_policy: "reject"
+  };
+  const task = await queue.enqueue("写第1章", { mode: "write", contract });
+  assert.deepEqual(task.contract, contract);
+  const raw = JSON.parse(await fs.readFile(path.join(projectRoot, "task_queue.json"), "utf8"));
+  assert.equal(raw.schema_version, 3);
+  assert.deepEqual(raw.tasks[0].contract, contract);
+});
+
+test("markCancelling is idempotent and keeps the task non-terminal", async () => {
+  const { queue } = await makeQueue("wwriting-queue-cancelling-");
+  const task = await queue.enqueue("写第1章", {
+    contract: makeChapterContract(1)
+  });
+  await queue.promoteNext();
+  const first = await queue.markCancelling(task.id, "用户停止");
+  const second = await queue.markCancelling(task.id, "用户停止");
+  assert.equal(first.status, "cancelling");
+  assert.equal(second.status, "cancelling");
+  assert.equal(second.completedAt, null);
 });
