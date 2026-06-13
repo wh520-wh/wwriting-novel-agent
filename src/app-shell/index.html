@@ -82,9 +82,10 @@
               <textarea id="composer-input" rows="1" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="slash-menu" aria-haspopup="listbox" aria-label="给智能体下达指令" placeholder="给智能体下达指令：开始写作、续写下一章、调整方向…  输入 / 唤起命令" spellcheck="false"></textarea>
               <div class="composer-bar">
                 <button class="cbar-btn" id="cbar-slash" title="斜杠命令"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 20l6-16"/></svg>命令</button>
+                <button class="cbar-btn" id="cbar-keys" title="快捷键" aria-label="快捷键速查">⌨</button>
                 <button class="cbar-pill" id="mode-pill" type="button" aria-haspopup="listbox" aria-expanded="false" title="智能体权限模式">✓ 确认后修改</button>
                 <span class="cbar-spacer"></span>
-                <span class="cbar-hint" id="composer-hint">Enter 发送 · Shift+Enter 换行</span>
+                <span class="cbar-hint" id="composer-hint">Enter 发送 · Shift+Enter 换行 · ? 快捷键</span>
                 <button class="send" id="composer-submit" disabled aria-label="发送"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M6 11l6-6 6 6"/></svg></button>
               </div>
             </div>
@@ -181,6 +182,23 @@
           <button class="save-btn" id="create-submit" type="button">开始创作</button>
           <p id="create-status" class="spd-hint"></p>
           <button class="settings-x icon-btn" id="create-x" aria-label="关闭"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+        </div>
+      </div>
+
+      <!-- 快捷键速查 -->
+      <div class="settings-scrim" id="shortcuts-scrim" inert>
+        <div class="shortcuts-card" id="shortcuts-card" role="dialog" aria-modal="true" aria-label="快捷键速查">
+          <h2>快捷键</h2>
+          <dl class="shortcuts-list">
+            <dt>Enter</dt><dd>发送指令</dd>
+            <dt>Shift + Enter</dt><dd>换行</dd>
+            <dt>/</dt><dd>唤起斜杠命令菜单</dd>
+            <dt>Ctrl + .</dt><dd>隐私模式开关</dd>
+            <dt>← / →</dt><dd>阅读器内翻章</dd>
+            <dt>Esc</dt><dd>关闭弹窗 / 抽屉</dd>
+            <dt>?</dt><dd>打开本速查</dd>
+          </dl>
+          <button class="settings-x icon-btn" id="shortcuts-x" aria-label="关闭"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
         </div>
       </div>
 
