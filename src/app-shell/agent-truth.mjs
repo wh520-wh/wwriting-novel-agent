@@ -9,6 +9,25 @@ export function computeAgentTruth(data, now = Date.now()) {
   const heartbeat = data.agent_last_heartbeat ?? data.state?.last_heartbeat;
   const heartbeatMs = heartbeat ? Date.parse(heartbeat) : NaN;
   const heartbeatAge = Number.isNaN(heartbeatMs) ? Infinity : (now - heartbeatMs) / 1000;
+  // `cancelling` is an in-progress status, not a terminal one: the user has
+  // already pressed stop, the backend has acknowledged it, but the run has
+  // not yet settled to `cancelled`. Surface it as "正在取消…" with a
+  // distinct (non-terminal) tone and keep the stop action hidden so
+  // repeated clicks can't fire while the engine is winding down.
+  if (status === "cancelling") {
+    const chapterNo = data.summary?.currentChapterNo ?? data.state?.current_chapter_no ?? null;
+    const label = chapterNo
+      ? `正在取消第 ${chapterNo} 章`
+      : "正在取消";
+    return {
+      display: label,
+      className: "cancelling",
+      showRetry: false,
+      showStop: false,
+      refresh: true,
+      reason: "已停止，等待任务收尾"
+    };
+  }
   if (alive && heartbeatAge > 60) {
     return { display: "疑似卡住", className: "stale", showRetry: false, showStop: true, refresh: true, reason: retryReason || `心跳超时 ${Math.round(heartbeatAge)} 秒` };
   }

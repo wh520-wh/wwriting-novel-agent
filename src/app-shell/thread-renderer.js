@@ -440,9 +440,12 @@ export function createThreadRenderer(ctx) {
     }
     block.subtitle.textContent = parts.join(" · ") || "准备中";
 
-    // Stop button visibility: only when running
+    // Stop button visibility: only when running. Cancelling is an
+    // in-progress state — the user already pressed stop, so the button
+    // must stay hidden until the run settles to a terminal state.
     if (block.stopBtn) {
-      block.stopBtn.hidden = summary.projectStatus !== "running";
+      const runActive = summary.projectStatus === "running" || summary.projectStatus === "cancelling";
+      block.stopBtn.hidden = !runActive || summary.projectStatus === "cancelling";
     }
   }
 
@@ -761,12 +764,18 @@ export function createThreadRenderer(ctx) {
       ctx.setLiveBlock(null);
       return;
     }
-    if (data.summary.projectStatus === "running") {
+    const status = data.summary.projectStatus;
+    if (status === "running" || status === "cancelling") {
       renderSteps(liveBlock, data);
       updateStageChips(liveBlock, data);
       const ch = data.summary.currentChapterNo;
-      liveBlock.time.textContent = ch ? `第 ${ch} 章 · 工作中` : "工作中";
-      ctx.announce(ch ? `正在写第 ${ch} 章` : "工作中");
+      if (status === "cancelling") {
+        liveBlock.time.textContent = ch ? `第 ${ch} 章 · 正在取消` : "正在取消";
+        ctx.announce("正在停止");
+      } else {
+        liveBlock.time.textContent = ch ? `第 ${ch} 章 · 工作中` : "工作中";
+        ctx.announce(ch ? `正在写第 ${ch} 章` : "工作中");
+      }
     }
   }
 

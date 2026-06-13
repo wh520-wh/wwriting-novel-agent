@@ -34,6 +34,39 @@ test("computeAgentTruth covers stopped and terminal persisted states", () => {
   assert.equal(computeAgentTruth({ hasProject: false }, now).className, "idle");
 });
 
+test("cancelling task tells the user that cancellation is in progress", () => {
+  const truth = computeAgentTruth(data({
+    summary: { projectStatus: "cancelling", currentChapterNo: 4, currentStage: "drafting" },
+    state: { project_status: "cancelling", current_chapter_no: 4 }
+  }), now);
+
+  assert.equal(truth.className, "cancelling");
+  assert.equal(truth.display, "正在取消第 4 章");
+  assert.equal(truth.showStop, false);
+});
+
+test("cancelling status comes from the persisted project_status even when summary is missing", () => {
+  const truth = computeAgentTruth(data({
+    summary: { projectStatus: null, currentChapterNo: 7 },
+    state: { project_status: "cancelling", current_chapter_no: 7 }
+  }), now);
+
+  assert.equal(truth.className, "cancelling");
+  assert.equal(truth.display, "正在取消第 7 章");
+  assert.equal(truth.showStop, false);
+});
+
+test("cancelling truth does not collide with the cancelled terminal label", () => {
+  const cancelling = computeAgentTruth(data({
+    summary: { projectStatus: "cancelling", currentChapterNo: 2 }
+  }), now);
+  const cancelled = computeAgentTruth(data({
+    summary: { projectStatus: "cancelled", currentChapterNo: 2 }
+  }), now);
+  assert.notEqual(cancelling.display, cancelled.display);
+  assert.equal(cancelled.display, "已停止");
+});
+
 test("deriveBadges 在最近事件含 chapter_cost_warning 时成本徽章至少为 warning", () => {
   const dashboard = {
     summary: { estimatedCost: 0.1, targetChapters: 10, completedChapters: 1 },
