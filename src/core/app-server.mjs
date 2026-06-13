@@ -8,11 +8,12 @@ import { forgetRecentProject, loadAppStateSync, loadAppState, recordRecentProjec
 import { loadConfigLayers } from "./config-runtime.mjs";
 import { appendEvent } from "./event-log.mjs";
 import { isPathInside } from "./fs-utils.mjs";
-import { applyLocalSecretsToEnv, defaultSecretsRoot, loadLocalSecretsSync } from "./local-secrets.mjs";
+import { applyLocalSecretsToEnv, defaultSecretsRoot, loadLocalSecrets, loadLocalSecretsSync } from "./local-secrets.mjs";
 import { createProjectAt, loadProject, loadState, saveProject, saveState } from "./project-store.mjs";
 import { createResearchAdapter } from "./research-adapters.mjs";
 import { fetchWebPage, searchWeb } from "./research-tools.mjs";
-import { ModelConfigValidationError } from "./model-config-validation.mjs";
+import { ModelConfigValidationError, validateModelConfig } from "./model-config-validation.mjs";
+import { testModelConnection as runModelConnectionTest } from "./model-connection-test.mjs";
 import { saveModelSettingsTransaction } from "./settings-runtime.mjs";
 import { ensureBuiltinSkill, importProjectSkill, listProjectSkills } from "./skill-runtime.mjs";
 import { loadOutputStyles } from "./output-style-loader.mjs";
@@ -53,12 +54,14 @@ export function createAppShellServer({
   port = 4173,
   testModel = null,
   testRunProject = null,
-  testLoadDashboardData = null
+  testLoadDashboardData = null,
+  testModelConnection = null
 } = {}) {
   const workspace = path.resolve(workspaceRoot);
   const localSecretsRoot = path.resolve(secretsRoot);
   const appStateRoot = path.resolve(stateRoot ?? secretsRoot);
   const dashboardLoader = testLoadDashboardData ?? loadDashboardData;
+  const connectionTester = testModelConnection ?? runModelConnectionTest ?? null;
   applyLocalSecretsToEnv(loadLocalSecretsSync(localSecretsRoot));
   const runJobs = new Map();
   const taskQueues = new Map();
@@ -164,6 +167,25 @@ export function createAppShellServer({
     }
     if (url.pathname === "/api/settings/update" && request.method === "POST") {
       await serveSettingsUpdate(request, response, { workspace, selected, stateRoot: appStateRoot, secretsRoot: localSecretsRoot });
+      return;
+    }
+    if (url.pathname === "/api/settings/test-connection" && request.method === "POST") {
+      try {
+        const projectRoot = await resolveReadProjectRoot({
+          requestedRoot: undefined,
+          selected,
+          workspace,
+          stateRoot: appStateRoot
+        });
+        await serveTestConnection(request, response, {
+          workspace,
+          projectRoot,
+          secretsRoot: localSecretsRoot,
+          connectionTester
+        });
+      } catch (error) {
+        sendError(response, error instanceof HttpError ? error : new HttpError(400, "BAD_REQUEST", error.message));
+      }
       return;
     }
     if (url.pathname === "/api/settings/model-secret" && request.method === "GET") {
@@ -533,6 +555,119 @@ async function serveModelSecret(response, context) {
     await serveJson(response, { ok: true, env: envName, value });
   } catch (error) {
     sendError(response, new HttpError(400, "model_secret_failed", error.message));
+  }
+}
+
+// 连接测试：仅复用现有项目读取权限，候选 active_model + 临时 api_key 完全不入项目/secret 文件。
+// 1) 用 resolveReadProjectRoot 校验项目已注册且磁盘上存在 project.yaml；
+// 2) 用 ModelConfigValidationError 校验字段；缺字段返回 400 configuration_missing；
+// 3) 从 secrets 读旧 key，请求里的 api_key（若非空）覆盖在 secrets 上（仅用于本次探测）；
+// 4) 调用注入的 connectionTester（默认 runModelConnectionTest）做一次只读探测；
+// 5) 追加一条不含 api_key、prompt、response body 的 model_connection_tested 审计事件；
+// 6) 200/4xx 分流：探测结果（成功或分类后的失败）一律 200；缺字段/缺密钥映射的 configuration_missing 走 400。
+async function serveTestConnection(request, response, context) {
+  try {
+    if (!context.connectionTester) {
+      throw new HttpError(503, "model_probe_unavailable", "模型连接探测尚未配置。");
+    }
+    const body = await readJsonBody(request);
+    const projectRoot = context.projectRoot;
+    const candidate = body?.active_model && typeof body.active_model === "object"
+      ? { ...body.active_model }
+      : null;
+    if (!candidate) {
+      throw new HttpError(400, "configuration_missing", "active_model is required.");
+    }
+    const project = await loadProject(projectRoot);
+    const projectId = project.project_id ?? null;
+
+    let validated;
+    try {
+      validated = validateModelConfig(candidate);
+    } catch (error) {
+      if (error instanceof ModelConfigValidationError) {
+        sendError(response, new HttpError(400, error.code, error.message, { fields: error.fields }));
+        return;
+      }
+      throw error;
+    }
+
+    const stored = await loadLocalSecrets(context.secretsRoot);
+    const transientApiKey = typeof candidate.api_key === "string" && candidate.api_key.length > 0
+      ? candidate.api_key
+      : null;
+    const secrets = { ...stored };
+    if (transientApiKey) {
+      secrets[validated.api_key_env] = transientApiKey;
+    }
+    if (!secrets[validated.api_key_env]) {
+      sendError(response, new HttpError(400, "configuration_missing", "请先在 Windows 环境变量中配置 API Key"));
+      return;
+    }
+
+    const persistedConfig = {
+      provider: validated.provider,
+      model_name: validated.model_name,
+      base_url: validated.base_url,
+      api_key_env: validated.api_key_env
+    };
+
+    let result;
+    try {
+      result = await context.connectionTester({
+        config: persistedConfig,
+        secrets
+      });
+    } catch (error) {
+      // 调用方取消（AbortError）原样上抛，不映射为 provider 错误。
+      if (error && (error.name === "AbortError" || error.code === DOMException.ABORT_ERR)) {
+        throw error;
+      }
+      throw error;
+    }
+
+    let baseUrlOrigin = "";
+    try {
+      baseUrlOrigin = new URL(validated.base_url).origin;
+    } catch {
+      baseUrlOrigin = "";
+    }
+
+    await appendEvent(projectRoot, {
+      type: "model_connection_tested",
+      project_id: projectId,
+      stage: "settings",
+      severity: result?.ok ? "info" : "warn",
+      message: result?.ok ? "模型连接成功" : `模型连接失败：${result?.code ?? "unknown"}`,
+      data: {
+        ok: result?.ok === true,
+        provider: persistedConfig.provider,
+        model_name: persistedConfig.model_name,
+        base_url_origin: baseUrlOrigin,
+        code: result?.code ?? null,
+        latency_ms: typeof result?.latency_ms === "number" ? result.latency_ms : null
+      }
+    });
+
+    await serveJson(response, {
+      ok: result?.ok === true,
+      code: result?.code ?? null,
+      message: result?.message ?? null,
+      provider: persistedConfig.provider,
+      model_name: persistedConfig.model_name,
+      latency_ms: typeof result?.latency_ms === "number" ? result.latency_ms : null,
+      projectRoot
+    });
+  } catch (error) {
+    if (error instanceof HttpError) {
+      sendError(response, error);
+      return;
+    }
+    if (error && (error.name === "AbortError" || error.code === DOMException.ABORT_ERR)) {
+      sendError(response, new HttpError(499, "client_closed_request", "连接测试已取消"));
+      return;
+    }
+    sendError(response, new HttpError(400, "test_connection_failed", error.message));
   }
 }
 
