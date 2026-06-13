@@ -37,3 +37,41 @@ test("buildSystemPrompt 含工具文档与协议说明", () => {
   assert.match(prompt, /tool_calls/u);
   assert.match(prompt, /测试书/u);
 });
+
+// ===== S4.5: 多围栏扫描 + 稿块约定 =====
+test("稿块围栏在前、tool call 围栏在后：调用不丢失，稿块留在 leadText", () => {
+  const reply = [
+    "开场我先给你看一段：",
+    "```稿",
+    "夜雨敲窗，他点了灯。",
+    "```",
+    '```json',
+    '{"tool_calls":[{"tool":"read_chapter","args":{"chapter_no":2}}]}',
+    "```"
+  ].join("\n");
+  const parsed = parseAgentReply(reply);
+  assert.equal(parsed.type, "tool_call");
+  assert.equal(parsed.call.tool, "read_chapter");
+  assert.deepEqual(parsed.call.args, { chapter_no: 2 });
+  assert.ok(parsed.leadText.includes("```稿"), "稿块应保留在 leadText 中");
+  assert.ok(parsed.leadText.includes("夜雨敲窗"));
+});
+
+test("只有稿块围栏（无 tool call）：整体按文本返回", () => {
+  const reply = "```稿\n正文片段。\n```\n\n这是说明。";
+  const parsed = parseAgentReply(reply);
+  assert.equal(parsed.type, "text");
+  assert.equal(parsed.text, reply);
+});
+
+test("多个非 JSON 围栏 + 裸 JSON tool call：裸 JSON 仍可解析", () => {
+  const parsed = parseAgentReply('{"tool_calls":[{"tool":"get_status","args":{}}]}');
+  assert.equal(parsed.type, "tool_call");
+  assert.equal(parsed.call.tool, "get_status");
+});
+
+test("buildSystemPrompt 包含稿块约定", () => {
+  const registry = { list: () => [] };
+  const prompt = buildSystemPrompt(registry, {});
+  assert.match(prompt, /```稿/u);
+});

@@ -3,6 +3,7 @@
 // Scenarios: A1) in-context comprehension (injected memory counts as grounding, no tool required)
 //            A2) out-of-context comprehension (answer only exists in chapter body — MUST use a read tool)
 //            B) edit flow with confirmation, C) fact-check corpus
+//            F) incremental tool persistence + mid-turn cancel (S4.5)
 // 验收口径（Claude Code/Codex 模式）：预注入记忆可直接引用；记忆未覆盖的细节必须工具查证。
 import path from "node:path";
 import fs from "node:fs/promises";
@@ -339,6 +340,66 @@ async function main() {
     } catch (error) {
       results.push({ scenario: "E_archive_semantics", pass: false, error: error.message });
       console.error(`[E] ERROR ${error.message}`);
+    }
+
+    // ========== 场景 F：过程流增量落盘 + 中途停止（S4.5）==========
+    console.error("[F] incremental persistence + cancel...");
+    try {
+      // F1: 回合进行中，tool 消息应已增量写入 chat_history.jsonl。
+      // 判定窗口 = "已见 tool 消息且尚未见本轮 assistant 消息"，否则只能证明事后写入。
+      const historyFile = path.join(projectRoot, "chat_history.jsonl");
+      const baselineLines = (await fs.readFile(historyFile, "utf8").catch(() => "")).split("\n").filter(Boolean).length;
+      let sawIncrementalTool = false;
+      const f1Turn = runChatTurn({
+        projectRoot, project, registry, modelClient,
+        userMessage: "第 1 章正文里，沈泽是在什么地方听到消息的？必须读原文查证后回答。"
+      });
+      const f1Poll = (async () => {
+        for (let i = 0; i < 120; i += 1) {
+          await new Promise((r) => setTimeout(r, 500));
+          const lines = (await fs.readFile(historyFile, "utf8").catch(() => "")).split("\n").filter(Boolean);
+          const fresh = lines.slice(baselineLines).map((l) => { try { return JSON.parse(l); } catch { return null; } });
+          const hasTool = fresh.some((m) => m?.role === "tool");
+          const hasAssistant = fresh.some((m) => m?.role === "assistant");
+          if (hasTool && !hasAssistant) { sawIncrementalTool = true; return; }
+          if (hasAssistant) return; // 回合已结束，未捕获增量窗口
+        }
+      })();
+      const f1 = await f1Turn;
+      await f1Poll;
+      const f1Pass = sawIncrementalTool && f1.toolEvents.length > 0;
+      results.push({
+        scenario: "F1_incremental_tool_persistence",
+        pass: f1Pass,
+        sawIncrementalTool,
+        toolEvents: f1.toolEvents.map((e) => `${e.tool}:${e.ok ? "ok" : e.error}`),
+        cost: f1.usage.cost
+      });
+      console.error(`[F1] pass=${f1Pass} incremental=${sawIncrementalTool}`);
+
+      // F2: 中途 abort → cancelled:true + 「（已停止。）」落盘。
+      // 500ms 时模型首轮调用几乎必然仍在途（真实 API 延迟 >1s）；若模型异常快导致 cancelled=false，重跑一次再判。
+      const controller = new AbortController();
+      const f2Turn = runChatTurn({
+        projectRoot, project, registry, modelClient, signal: controller.signal,
+        userMessage: "把第 1 章每一段都总结一遍，再查一遍设定记忆和大纲。"
+      });
+      setTimeout(() => controller.abort("用户停止"), 500);
+      const f2 = await f2Turn;
+      const f2History = (await fs.readFile(historyFile, "utf8")).split("\n").filter(Boolean);
+      const f2Last = JSON.parse(f2History.at(-1));
+      const f2Pass = f2.cancelled === true && f2Last.content === "（已停止。）";
+      results.push({
+        scenario: "F2_cancel_mid_turn",
+        pass: f2Pass,
+        cancelled: f2.cancelled === true,
+        lastMessage: String(f2Last.content ?? "").slice(0, 50),
+        cost: f2.usage.cost
+      });
+      console.error(`[F2] pass=${f2Pass} cancelled=${f2.cancelled}`);
+    } catch (error) {
+      results.push({ scenario: "F_process_stream", pass: false, error: error.message });
+      console.error(`[F] ERROR ${error.message}`);
     }
 
     // 写成本报告

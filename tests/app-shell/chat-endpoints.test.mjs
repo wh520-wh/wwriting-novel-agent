@@ -165,7 +165,7 @@ test("POST /api/chat/send 无项目时返回 400", async () => {
   }
 });
 
-test("并发两条 chat send 串行执行，历史不交错", async () => {
+test("并发两条 chat send：第二条被 busy 守卫 409 拒绝，历史无交错", async () => {
   const ctx = await setupServer();
   try {
     const [r1, r2] = await Promise.all([
@@ -173,11 +173,13 @@ test("并发两条 chat send 串行执行，历史不交错", async () => {
       postJson(ctx.port, "/api/chat/send", { message: "并发二" })
     ]);
     assert.equal(r1.res.status, 200);
-    assert.equal(r2.res.status, 200);
+    // s4.5：chat send 不再排队；忙时直接 409。
+    assert.equal(r2.res.status, 409);
+    assert.equal(r2.data.code, "CHAT_BUSY");
     const hist = await getJson(ctx.port, "/api/chat/history");
     const roles = hist.data.messages.map((m) => m.role);
-    // 串行证据：必须是 user,assistant,user,assistant（交错则为 user,user,assistant,assistant 等）
-    assert.deepEqual(roles, ["user", "assistant", "user", "assistant"]);
+    // 第一条完整一轮：user, assistant。第二条被拒，未写入历史。
+    assert.deepEqual(roles, ["user", "assistant"]);
   } finally {
     await closeServer(ctx.server);
   }

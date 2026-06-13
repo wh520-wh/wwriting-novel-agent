@@ -4,25 +4,40 @@ import { renderToolDocs } from "./tool-registry.mjs";
 
 export function parseAgentReply(rawText) {
   const text = String(rawText ?? "").trim();
-  const fenced = /```(?:json)?\s*([\s\S]*?)```/u.exec(text);
-  const candidate = fenced ? fenced[1].trim() : (text.startsWith("{") ? text : null);
-  if (candidate) {
-    try {
-      const data = JSON.parse(candidate);
-      if (Array.isArray(data?.tool_calls) && data.tool_calls.length > 0) {
-        const [first, ...rest] = data.tool_calls;
-        if (first?.tool) {
-          return {
-            type: "tool_call",
-            call: { tool: String(first.tool), args: first.args ?? {} },
-            dropped: rest.length,
-            leadText: fenced ? text.slice(0, fenced.index).trim() : ""
-          };
-        }
-      }
-    } catch { /* fallthrough to text */ }
+  // 扫描全部围栏，取第一个能解析出 tool_calls 的；其余围栏（如 ```稿）留在文本/leadText 里。
+  const fenceRe = /```(?:json)?\s*([\s\S]*?)```/gu;
+  let match;
+  while ((match = fenceRe.exec(text)) !== null) {
+    const parsed = tryParseToolCall(match[1].trim());
+    if (parsed) {
+      return {
+        type: "tool_call",
+        call: parsed.call,
+        dropped: parsed.dropped,
+        leadText: text.slice(0, match.index).trim()
+      };
+    }
+  }
+  if (text.startsWith("{")) {
+    const parsed = tryParseToolCall(text);
+    if (parsed) {
+      return { type: "tool_call", call: parsed.call, dropped: parsed.dropped, leadText: "" };
+    }
   }
   return { type: "text", text };
+}
+
+function tryParseToolCall(candidate) {
+  try {
+    const data = JSON.parse(candidate);
+    if (Array.isArray(data?.tool_calls) && data.tool_calls.length > 0) {
+      const [first, ...rest] = data.tool_calls;
+      if (first?.tool) {
+        return { call: { tool: String(first.tool), args: first.args ?? {} }, dropped: rest.length };
+      }
+    }
+  } catch { /* 不是 tool call，继续扫描 */ }
+  return null;
 }
 
 export function buildSystemPrompt(registry, snapshot = {}) {
@@ -39,6 +54,7 @@ export function buildSystemPrompt(registry, snapshot = {}) {
     "下方快照与记忆里已有的信息可以直接引用；它们没有覆盖的细节（如正文原文、具体段落内容），必须先调用读工具查证再回答，不要凭印象编造。",
     "用户要求修改正文、设定或项目时，调用对应的写工具发起操作，不要只口头答应。",
     "写类与控制类工具会先征求用户确认，被拒绝时请尊重用户决定。",
+    "输出小说正文、草稿或改写片段时，把正文放进一个 ```稿 围栏块（说明文字放围栏外）；不要把工具调用 JSON 和正文混进同一个围栏。",
     "最终回答用中文，简洁、具体、基于工具返回的事实，不要编造。",
     "",
     "## 可用工具",

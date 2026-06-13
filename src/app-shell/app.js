@@ -51,6 +51,11 @@ const refs = {
   readerMeta: document.querySelector("#reader-meta"),
   readerClose: document.querySelector("#reader-close"),
   readerBody: document.querySelector("#reader-body"),
+  readerFontMinus: document.querySelector("#reader-font-minus"),
+  readerFontPlus: document.querySelector("#reader-font-plus"),
+  readerPrev: document.querySelector("#reader-prev"),
+  readerNext: document.querySelector("#reader-next"),
+  readerWide: document.querySelector("#reader-wide"),
   settingsScrim: document.querySelector("#settings-scrim"),
   settingsSearch: document.querySelector("#settings-search"),
   settingsProviderList: document.querySelector("#settings-provider-list"),
@@ -71,6 +76,9 @@ const refs = {
   createSubmit: document.querySelector("#create-submit"),
   createStatus: document.querySelector("#create-status"),
   createX: document.querySelector("#create-x"),
+  shortcutsScrim: document.querySelector("#shortcuts-scrim"),
+  shortcutsX: document.querySelector("#shortcuts-x"),
+  cbarKeys: document.querySelector("#cbar-keys"),
   toastStack: document.querySelector("#toast-stack"),
   threadStatus: document.querySelector("#thread-status"),
   topbar: document.querySelector(".topbar"),
@@ -94,6 +102,8 @@ let lastFocused = null;
 let createModalMode = "new";
 let previousActivity = null;
 let previousBadgeSummary = null;
+let readerChapterNo = null;
+let readerQuoteBtn = null;
 
 // --- extracted module instances (created before event bindings that reference their methods) ---
 let composer; // forward ref: thread-renderer's promote button calls composer.promoteAskEntry (assigned in Task 7)
@@ -126,6 +136,7 @@ const threadRenderer = createThreadRenderer({
   },
   promoteAskEntry: (entry) => composer.promoteAskEntry(entry),
   sendChatMessageWithUX: (msg) => composer.sendChatMessageWithUX(msg),
+  isChatBusy: () => composer?.isChatBusy?.() === true,
 });
 
 const settingsModal = createSettingsModal({
@@ -257,6 +268,36 @@ refs.readerClose.addEventListener("click", closeReader);
 refs.readerScrim.addEventListener("click", (event) => {
   if (event.target === refs.readerScrim) closeReader();
 });
+
+function removeReaderQuoteBtn() {
+  readerQuoteBtn?.remove();
+  readerQuoteBtn = null;
+}
+
+refs.readerBody.addEventListener("mouseup", () => {
+  removeReaderQuoteBtn();
+  const selection = window.getSelection();
+  const text = String(selection?.toString() ?? "").trim();
+  if (!text || !refs.readerScrim.classList.contains("show")) return;
+  const rect = selection.getRangeAt(0).getBoundingClientRect();
+  readerQuoteBtn = document.createElement("button");
+  readerQuoteBtn.type = "button";
+  readerQuoteBtn.id = "reader-quote-btn";
+  readerQuoteBtn.textContent = "问智能体";
+  readerQuoteBtn.style.left = `${Math.round(rect.left + rect.width / 2)}px`;
+  readerQuoteBtn.style.top = `${Math.round(rect.bottom + 8)}px`;
+  readerQuoteBtn.addEventListener("click", () => {
+    const snippet = text.slice(0, 500);
+    const chapter = readerChapterNo;
+    closeReader();
+    refs.composerInput.value = `关于第 ${chapter} 章这段：\n> ${snippet}\n`;
+    refs.composerInput.focus();
+    composer.autoGrowComposer();
+    composer.updateSubmitState();
+  });
+  document.body.append(readerQuoteBtn);
+});
+refs.readerBody.addEventListener("scroll", removeReaderQuoteBtn);
 refs.settingsX.addEventListener("click", closeSettingsModal);
 refs.settingsCancel.addEventListener("click", closeSettingsModal);
 refs.settingsScrim.addEventListener("click", (event) => {
@@ -272,18 +313,44 @@ refs.createScrim.addEventListener("click", (event) => {
 refs.createBrowse.addEventListener("click", () => browseForCreatePath());
 refs.createSubmit.addEventListener("click", () => initProject(refs.createPath.value.trim()));
 
+refs.cbarKeys.addEventListener("click", () => openShortcuts());
+refs.shortcutsX.addEventListener("click", () => closeShortcuts());
+refs.shortcutsScrim.addEventListener("click", (event) => {
+  if (event.target === refs.shortcutsScrim) closeShortcuts();
+});
+
+refs.readerFontMinus.addEventListener("click", () => nudgeReaderFont(-1));
+refs.readerFontPlus.addEventListener("click", () => nudgeReaderFont(1));
+refs.readerPrev.addEventListener("click", () => openAdjacentChapter(-1));
+refs.readerNext.addEventListener("click", () => openAdjacentChapter(1));
+refs.readerWide.addEventListener("click", () => {
+  const on = !document.querySelector("#reader").classList.contains("reader--wide");
+  document.querySelector("#reader").classList.toggle("reader--wide", on);
+  refs.readerWide.setAttribute("aria-pressed", on ? "true" : "false");
+});
+
 document.addEventListener("keydown", (event) => {
   if ((event.ctrlKey || event.metaKey) && event.key === ".") {
     event.preventDefault();
     setPrivacyMode(refs.app.dataset.privacy !== "on");
   }
+  if (refs.readerScrim.classList.contains("show")) {
+    if (event.key === "ArrowLeft") { event.preventDefault(); openAdjacentChapter(-1); return; }
+    if (event.key === "ArrowRight") { event.preventDefault(); openAdjacentChapter(1); return; }
+  }
   if (event.key === "Escape") {
+    if (refs.shortcutsScrim.classList.contains("show")) return closeShortcuts();
     if (refs.readerScrim.classList.contains("show")) return closeReader();
     if (refs.settingsScrim.classList.contains("show")) return closeSettingsModal();
     if (refs.createScrim.classList.contains("show")) return closeCreateModal();
     if (refs.drawer.classList.contains("show")) return closeDrawer();
   }
-  if (refs.readerScrim.classList.contains("show")) trapTab(refs.readerScrim, event);
+  if (event.key === "?" && !isEditableTarget(event.target)) {
+    event.preventDefault();
+    openShortcuts();
+  }
+  if (refs.shortcutsScrim.classList.contains("show")) trapTab(refs.shortcutsScrim, event);
+  else if (refs.readerScrim.classList.contains("show")) trapTab(refs.readerScrim, event);
   else if (refs.settingsScrim.classList.contains("show")) trapTab(refs.settingsScrim, event);
   else if (refs.createScrim.classList.contains("show")) trapTab(refs.createScrim, event);
   else if (refs.drawer.classList.contains("show")) trapTab(refs.drawer, event);
@@ -457,6 +524,7 @@ function renderDashboard(data) {
     threadRenderer.renderEmptyThread();
     composer.updateModePill();
     composer.updateStatusPills(data);
+    composer.syncChatBusy(data);
     refreshDrawerIfOpen();
     return;
   }
@@ -496,7 +564,12 @@ function renderDashboard(data) {
     if (refs.topbar) refs.topbar.classList.remove("is-busy");
   }
   renderTopbarProgress(truth, Number(data.summary?.activityProgressPercent ?? 0));
-  ensureRefreshLoop(truth.refresh || summary.projectStatus === "running" || Boolean(liveBlock && !liveBlock.done));
+  ensureRefreshLoop(
+    truth.refresh
+    || summary.projectStatus === "running"
+    || Boolean(liveBlock && !liveBlock.done)
+    || data.chatHistory?.busy === true
+  );
 
   threadRenderer.syncThread(data, firstLoad);
   threadRenderer.syncFailureCards(data);
@@ -538,6 +611,7 @@ function renderDashboard(data) {
 
   composer.updateModePill();
   composer.updateStatusPills(data);
+  composer.syncChatBusy(data);
   refreshDrawerIfOpen();
 }
 
@@ -601,7 +675,6 @@ async function openProject(projectRoot) {
     // 不在这里写 currentProjectRoot：renderDashboard 用旧值与新 data.projectRoot 比对来判定切换并清空对话流。
     refs.projectOpenStatus.style.display = "none";
     refs.projectOpenStatus.textContent = "";
-    showToast("小说已打开。", "success");
     previousActivity = null;
     previousBadgeSummary = null;
     await loadAll();
@@ -746,12 +819,62 @@ function setCreateStatus(text, kind) {
   refs.createStatus.className = `spd-hint${kind ? ` ${kind}` : ""}`;
 }
 
+// 阅读器字号四档（行高随档位），持久化 localStorage。
+const READER_FONT_STEPS = [
+  { size: 14, lh: 1.9 },
+  { size: 15.5, lh: 1.95 },
+  { size: 17, lh: 2.0 },
+  { size: 19, lh: 2.0 }
+];
+let readerFontIndex = 1;
+try {
+  const stored = Number(window.localStorage.getItem("ww:reader:fontsize"));
+  if (Number.isInteger(stored) && stored >= 0 && stored < READER_FONT_STEPS.length) readerFontIndex = stored;
+} catch { /* localStorage 不可用则用默认档 */ }
+
+function applyReaderFont() {
+  const step = READER_FONT_STEPS[readerFontIndex];
+  refs.readerBody.style.fontSize = `${step.size}px`;
+  refs.readerBody.style.lineHeight = String(step.lh);
+  refs.readerFontMinus.disabled = readerFontIndex === 0;
+  refs.readerFontPlus.disabled = readerFontIndex === READER_FONT_STEPS.length - 1;
+}
+
+function nudgeReaderFont(delta) {
+  readerFontIndex = Math.max(0, Math.min(READER_FONT_STEPS.length - 1, readerFontIndex + delta));
+  try { window.localStorage.setItem("ww:reader:fontsize", String(readerFontIndex)); } catch { /* 忽略 */ }
+  applyReaderFont();
+}
+
+function readableChapters() {
+  return [...(lastDashboard?.chapters ?? [])]
+    .filter((c) => Number(c.actual_words ?? 0) > 0)
+    .sort((a, b) => a.chapter_no - b.chapter_no);
+}
+
+function updateReaderNav() {
+  const list = readableChapters();
+  const idx = list.findIndex((c) => c.chapter_no === readerChapterNo);
+  refs.readerPrev.disabled = idx <= 0;
+  refs.readerNext.disabled = idx < 0 || idx >= list.length - 1;
+}
+
+function openAdjacentChapter(delta) {
+  const list = readableChapters();
+  const idx = list.findIndex((c) => c.chapter_no === readerChapterNo);
+  const next = list[idx + delta];
+  if (next) void openReader(next.chapter_no);
+}
+
 async function openReader(chapterNo) {
+  readerChapterNo = chapterNo;
   refs.readerPath.textContent = `chapters/${String(chapterNo).padStart(3, "0")}.md`;
   refs.readerTitle.textContent = `第 ${String(chapterNo).padStart(3, "0")} 章`;
   refs.readerMeta.textContent = "正在读取本章正文...";
   refs.readerBody.replaceChildren(readerEmpty("读取中..."));
   openOverlay(refs.readerScrim, refs.readerClose);
+  applyReaderFont();
+  updateReaderNav();
   try {
     const data = await getJson(`/api/chapters/read?chapter=${encodeURIComponent(chapterNo)}`);
     refs.readerTitle.textContent = data.title ?? `第 ${String(chapterNo).padStart(3, "0")} 章`;
@@ -781,6 +904,7 @@ function readerEmpty(text) {
 }
 
 function closeReader() {
+  removeReaderQuoteBtn();
   closeOverlay(refs.readerScrim);
 }
 
@@ -858,6 +982,14 @@ function closeOverlay(scrim) {
   lastFocused = null;
 }
 
+function openShortcuts() { openOverlay(refs.shortcutsScrim, refs.shortcutsX); }
+function closeShortcuts() { closeOverlay(refs.shortcutsScrim); }
+
+function isEditableTarget(target) {
+  const tag = target?.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable === true;
+}
+
 function initPrivacyMode() {
   let stored = "off";
   try {
@@ -872,10 +1004,14 @@ function setPrivacyMode(on) {
   applyPrivacyState(on);
   try {
     window.localStorage.setItem("ww:privacy", on ? "on" : "off");
+    // 首次开启才弹说明；按钮态与模糊效果本身即时可见。
+    if (on && window.localStorage.getItem("ww:privacy:hinted") !== "1") {
+      window.localStorage.setItem("ww:privacy:hinted", "1");
+      showToast("隐私模式已开启：正文已模糊，鼠标悬停可临时查看。", "info");
+    }
   } catch {
     // localStorage 不可用时忽略持久化。
   }
-  showToast(on ? "隐私模式已开启：正文已模糊，鼠标悬停可临时查看。" : "隐私模式已关闭。", "info");
 }
 
 function applyPrivacyState(on) {
