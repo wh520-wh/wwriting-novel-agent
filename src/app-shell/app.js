@@ -51,6 +51,11 @@ const refs = {
   readerMeta: document.querySelector("#reader-meta"),
   readerClose: document.querySelector("#reader-close"),
   readerBody: document.querySelector("#reader-body"),
+  readerFontMinus: document.querySelector("#reader-font-minus"),
+  readerFontPlus: document.querySelector("#reader-font-plus"),
+  readerPrev: document.querySelector("#reader-prev"),
+  readerNext: document.querySelector("#reader-next"),
+  readerWide: document.querySelector("#reader-wide"),
   settingsScrim: document.querySelector("#settings-scrim"),
   settingsSearch: document.querySelector("#settings-search"),
   settingsProviderList: document.querySelector("#settings-provider-list"),
@@ -305,10 +310,24 @@ refs.createScrim.addEventListener("click", (event) => {
 refs.createBrowse.addEventListener("click", () => browseForCreatePath());
 refs.createSubmit.addEventListener("click", () => initProject(refs.createPath.value.trim()));
 
+refs.readerFontMinus.addEventListener("click", () => nudgeReaderFont(-1));
+refs.readerFontPlus.addEventListener("click", () => nudgeReaderFont(1));
+refs.readerPrev.addEventListener("click", () => openAdjacentChapter(-1));
+refs.readerNext.addEventListener("click", () => openAdjacentChapter(1));
+refs.readerWide.addEventListener("click", () => {
+  const on = !document.querySelector("#reader").classList.contains("reader--wide");
+  document.querySelector("#reader").classList.toggle("reader--wide", on);
+  refs.readerWide.setAttribute("aria-pressed", on ? "true" : "false");
+});
+
 document.addEventListener("keydown", (event) => {
   if ((event.ctrlKey || event.metaKey) && event.key === ".") {
     event.preventDefault();
     setPrivacyMode(refs.app.dataset.privacy !== "on");
+  }
+  if (refs.readerScrim.classList.contains("show")) {
+    if (event.key === "ArrowLeft") { event.preventDefault(); openAdjacentChapter(-1); return; }
+    if (event.key === "ArrowRight") { event.preventDefault(); openAdjacentChapter(1); return; }
   }
   if (event.key === "Escape") {
     if (refs.readerScrim.classList.contains("show")) return closeReader();
@@ -786,6 +805,53 @@ function setCreateStatus(text, kind) {
   refs.createStatus.className = `spd-hint${kind ? ` ${kind}` : ""}`;
 }
 
+// 阅读器字号四档（行高随档位），持久化 localStorage。
+const READER_FONT_STEPS = [
+  { size: 14, lh: 1.9 },
+  { size: 15.5, lh: 1.95 },
+  { size: 17, lh: 2.0 },
+  { size: 19, lh: 2.0 }
+];
+let readerFontIndex = 1;
+try {
+  const stored = Number(window.localStorage.getItem("ww:reader:fontsize"));
+  if (Number.isInteger(stored) && stored >= 0 && stored < READER_FONT_STEPS.length) readerFontIndex = stored;
+} catch { /* localStorage 不可用则用默认档 */ }
+
+function applyReaderFont() {
+  const step = READER_FONT_STEPS[readerFontIndex];
+  refs.readerBody.style.fontSize = `${step.size}px`;
+  refs.readerBody.style.lineHeight = String(step.lh);
+  refs.readerFontMinus.disabled = readerFontIndex === 0;
+  refs.readerFontPlus.disabled = readerFontIndex === READER_FONT_STEPS.length - 1;
+}
+
+function nudgeReaderFont(delta) {
+  readerFontIndex = Math.max(0, Math.min(READER_FONT_STEPS.length - 1, readerFontIndex + delta));
+  try { window.localStorage.setItem("ww:reader:fontsize", String(readerFontIndex)); } catch { /* 忽略 */ }
+  applyReaderFont();
+}
+
+function readableChapters() {
+  return [...(lastDashboard?.chapters ?? [])]
+    .filter((c) => Number(c.actual_words ?? 0) > 0)
+    .sort((a, b) => a.chapter_no - b.chapter_no);
+}
+
+function updateReaderNav() {
+  const list = readableChapters();
+  const idx = list.findIndex((c) => c.chapter_no === readerChapterNo);
+  refs.readerPrev.disabled = idx <= 0;
+  refs.readerNext.disabled = idx < 0 || idx >= list.length - 1;
+}
+
+function openAdjacentChapter(delta) {
+  const list = readableChapters();
+  const idx = list.findIndex((c) => c.chapter_no === readerChapterNo);
+  const next = list[idx + delta];
+  if (next) void openReader(next.chapter_no);
+}
+
 async function openReader(chapterNo) {
   readerChapterNo = chapterNo;
   refs.readerPath.textContent = `chapters/${String(chapterNo).padStart(3, "0")}.md`;
@@ -793,6 +859,8 @@ async function openReader(chapterNo) {
   refs.readerMeta.textContent = "正在读取本章正文...";
   refs.readerBody.replaceChildren(readerEmpty("读取中..."));
   openOverlay(refs.readerScrim, refs.readerClose);
+  applyReaderFont();
+  updateReaderNav();
   try {
     const data = await getJson(`/api/chapters/read?chapter=${encodeURIComponent(chapterNo)}`);
     refs.readerTitle.textContent = data.title ?? `第 ${String(chapterNo).padStart(3, "0")} 章`;

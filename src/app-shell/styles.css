@@ -1937,3 +1937,12 @@ button.cbar-pill--readonly:hover {
   background: var(--btn-gradient); color: #fff; box-shadow: var(--shadow);
 }
 #reader-quote-btn:hover { filter: brightness(1.1); }
+
+/* ============================================================
+   S4.5 Task 14 · 阅读器工具排与沉浸模式
+   ============================================================ */
+.reader-tools { display: flex; align-items: center; gap: 4px; flex: none; }
+.reader-tools .icon-btn { font-size: 12px; min-width: 30px; }
+.reader-tools .icon-btn:disabled { opacity: .35; cursor: default; }
+.reader.reader--wide { width: min(96vw, 1100px); }
+.reader--wide .reader-head .path, .reader--wide .reader-head .sub { display: none; }
