@@ -6,7 +6,7 @@ import { renderDiff, renderParagraphDiff } from "./diff-view.js";
 import { deriveFailures } from "./agent-truth.mjs";
 import { postJson } from "./api-client.js";
 import { sendChatMessage, confirmChatAction } from "./api-client.js";
-import { renderMarkdown, escapeHtml } from "./markdown-lite.mjs";
+import { renderMarkdown } from "./markdown-lite.mjs";
 import { toolLabel } from "./tool-labels.mjs";
 import { deriveSources, deriveSuggestions } from "./chat-derive.mjs";
 
