@@ -8,7 +8,7 @@ import { postJson } from "./api-client.js";
 import { sendChatMessage, confirmChatAction } from "./api-client.js";
 import { renderMarkdown, escapeHtml } from "./markdown-lite.mjs";
 import { toolLabel } from "./tool-labels.mjs";
-import { deriveSources } from "./chat-derive.mjs";
+import { deriveSources, deriveSuggestions } from "./chat-derive.mjs";
 
 const STAGE_ORDER = ["queued", "planning", "planned", "drafting", "reviewing", "needs_revision", "revising", "finalizing", "summarizing"];
 
@@ -39,12 +39,8 @@ export function createThreadRenderer(ctx) {
     ctx.refs.thread.replaceChildren(fragment);
   }
 
-  function buildSuggestionCards() {
-    const suggestions = [
-      { label: "排 5 章试写", message: "排 5 章试写" },
-      { label: "这本书的设定是什么？", message: "这本书的设定是什么？" },
-      { label: "目前花了多少钱？", message: "目前花了多少钱？" }
-    ];
+  function buildSuggestionCards(data) {
+    const suggestions = deriveSuggestions(data ?? ctx.getDashboard?.() ?? {});
     const wrap = document.createElement("div");
     wrap.className = "suggestion-cards";
     for (const item of suggestions) {
@@ -53,6 +49,7 @@ export function createThreadRenderer(ctx) {
       card.className = "suggestion-card";
       card.textContent = item.label;
       card.addEventListener("click", () => {
+        if (ctx.isChatBusy?.()) return;
         wrap.querySelectorAll(".suggestion-card").forEach((c) => { c.disabled = true; });
         if (typeof ctx.sendChatMessageWithUX === "function") {
           ctx.sendChatMessageWithUX(item.message);
@@ -63,8 +60,8 @@ export function createThreadRenderer(ctx) {
     return wrap;
   }
 
-  function appendSuggestionCards() {
-    const cards = buildSuggestionCards();
+  function appendSuggestionCards(data) {
+    const cards = buildSuggestionCards(data);
     ctx.refs.thread.append(cards);
     scrollThreadToBottom();
   }
@@ -235,9 +232,9 @@ export function createThreadRenderer(ctx) {
     const say = document.createElement("p");
     say.className = "agent-say";
     say.textContent = currentProjectRoot
-      ? "我已就绪。你可以输入 /write 续写章节、/review 审稿修订，或 /ask 临时询问当前进度。"
+      ? "我已就绪。直接告诉我你想做什么：写下一章、改一段正文、问设定或进度都行；输入 / 可以唤起命令。"
       : "你好，我是 WWriting 智能体。新建或从左侧打开一部小说后，告诉我故事的设定，我会规划、起草、审稿、定稿，并把每一章保存为本地文件。";
-    const quick = buildQuickRow(currentProjectRoot ? ["开始写作", "续写下一章", "/ask 现在写到第几章了"] : ["新建小说"]);
+    const quick = buildQuickRow(currentProjectRoot ? ["续写下一章", "这本书的设定是什么？", "目前花了多少钱？"] : ["新建小说"]);
     body.append(name, say);
     if (quick) body.append(quick);
     wrap.append(avatar, body);
@@ -366,7 +363,6 @@ export function createThreadRenderer(ctx) {
   async function cancelQueuedTask(taskId) {
     try {
       await postJson("/api/queue/cancel", { taskId });
-      ctx.showToast("任务已取消。", "success");
       await ctx.loadDashboard();
     } catch (error) {
       ctx.showToast(error.message, "error");
@@ -394,7 +390,10 @@ export function createThreadRenderer(ctx) {
       chip.type = "button";
       chip.append(icon("bolt", 13));
       chip.append(document.createTextNode(label));
-      chip.addEventListener("click", () => ctx.handleQuick(label));
+      chip.addEventListener("click", () => {
+        if (ctx.isChatBusy?.()) return;
+        ctx.handleQuick(label);
+      });
       row.append(chip);
     }
     return row;

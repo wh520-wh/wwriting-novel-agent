@@ -660,7 +660,6 @@ async function openProject(projectRoot) {
     // 不在这里写 currentProjectRoot：renderDashboard 用旧值与新 data.projectRoot 比对来判定切换并清空对话流。
     refs.projectOpenStatus.style.display = "none";
     refs.projectOpenStatus.textContent = "";
-    showToast("小说已打开。", "success");
     previousActivity = null;
     previousBadgeSummary = null;
     await loadAll();
@@ -982,10 +981,14 @@ function setPrivacyMode(on) {
   applyPrivacyState(on);
   try {
     window.localStorage.setItem("ww:privacy", on ? "on" : "off");
+    // 首次开启才弹说明；按钮态与模糊效果本身即时可见。
+    if (on && window.localStorage.getItem("ww:privacy:hinted") !== "1") {
+      window.localStorage.setItem("ww:privacy:hinted", "1");
+      showToast("隐私模式已开启：正文已模糊，鼠标悬停可临时查看。", "info");
+    }
   } catch {
     // localStorage 不可用时忽略持久化。
   }
-  showToast(on ? "隐私模式已开启：正文已模糊，鼠标悬停可临时查看。" : "隐私模式已关闭。", "info");
 }
 
 function applyPrivacyState(on) {
