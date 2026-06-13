@@ -6,7 +6,8 @@ import test from "node:test";
 import { loadDashboardData, loadProjectList, readChapterContent, validateProjectRoot } from "../src/core/app-dashboard.mjs";
 import { appendFailure } from "../src/core/failures-store.mjs";
 import { runProject } from "../src/core/agent-engine.mjs";
-import { createProject, loadState, saveState } from "../src/core/project-store.mjs";
+import { createProject, loadState, saveState, upsertChapter } from "../src/core/project-store.mjs";
+import { sha256 } from "../src/core/fs-utils.mjs";
 import { runReviewerAgent } from "../src/core/reviewer-agent.mjs";
 import { searchWeb } from "../src/core/research-tools.mjs";
 import { updateProjectSettings } from "../src/core/settings-runtime.mjs";
@@ -241,4 +242,51 @@ test('loadDashboardData 在 hasProject=false 时不读 failures.jsonl', async ()
   const snap = await loadDashboardData(root, { disableProjectFallback: true });
   assert.equal(snap.hasProject, false);
   assert.equal(snap.failures, undefined);
+});
+
+test("dashboard does not count an indexed chapter whose file is missing", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-artifact-dashboard-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "project",
+    target_chapters: 2,
+  });
+  await upsertChapter(projectRoot, {
+    chapter_no: 1,
+    status: "completed",
+    final_path: path.join(projectRoot, "chapters", "001.md"),
+    checksum: sha256("# 第一章\n\n内容"),
+    actual_words: 1200,
+  });
+
+  const dashboard = await loadDashboardData(root, { projectRoot });
+
+  assert.equal(dashboard.summary.completedChapters, 0);
+  assert.equal(dashboard.chapters[0].artifact.state, "invalid");
+  assert.equal(dashboard.chapters[0].artifact.reason, "missing_file");
+});
+
+test("dashboard exposes a verified artifact for a readable chapter file", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-artifact-dashboard-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "project",
+    target_chapters: 2,
+  });
+  const finalPath = path.join(projectRoot, "chapters", "001.md");
+  const content = "# 第一章\n\n内容";
+  await fs.mkdir(path.dirname(finalPath), { recursive: true });
+  await fs.writeFile(finalPath, content, "utf8");
+  const checksum = sha256(content);
+  await upsertChapter(projectRoot, {
+    chapter_no: 1,
+    status: "completed",
+    final_path: finalPath,
+    checksum,
+    actual_words: 2,
+  });
+
+  const dashboard = await loadDashboardData(root, { projectRoot });
+
+  assert.equal(dashboard.summary.completedChapters, 1);
+  assert.equal(dashboard.chapters[0].artifact.state, "committed");
+  assert.equal(dashboard.chapters[0].artifact.checksum, checksum);
 });
