@@ -6,6 +6,9 @@ import { renderDiff } from "./diff-view.js";
 import { deriveFailures } from "./agent-truth.mjs";
 import { postJson } from "./api-client.js";
 import { sendChatMessage, confirmChatAction } from "./api-client.js";
+import { renderMarkdown, escapeHtml } from "./markdown-lite.mjs";
+import { toolLabel } from "./tool-labels.mjs";
+import { deriveSources } from "./chat-derive.mjs";
 
 const STAGE_ORDER = ["queued", "planning", "planned", "drafting", "reviewing", "needs_revision", "revising", "finalizing", "summarizing"];
 
@@ -817,29 +820,6 @@ export function createThreadRenderer(ctx) {
   }
 
   // ===== S3 chat thread rendering =====
-  // 简单 HTML 转义：避免把 message.content / tool 输出当作 HTML 解析。
-  function escape(text) {
-    return String(text ?? "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#39;");
-  }
-
-  // 极简 markdown：段落 (\n\n) + 粗体 (**x**) + 行内代码 (`x`)。
-  // 不引入第三方依赖；遇到更复杂结构时回退到纯文本。
-  function renderAssistantText(text) {
-    const escaped = escape(text ?? "");
-    return escaped
-      .split(/\n{2,}/)
-      .map((para) => {
-        const withBold = para.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-        const withCode = withBold.replace(/`([^`]+)`/g, "<code>$1</code>");
-        return `<p>${withCode.replace(/\n/g, "<br>")}</p>`;
-      })
-      .join("");
-  }
 
   function renderUserBubble(message) {
     const wrap = document.createElement("div");
@@ -855,7 +835,7 @@ export function createThreadRenderer(ctx) {
     return wrap;
   }
 
-  function renderAssistantBubble(message) {
+  function renderAssistantBubble(message, allMessages) {
     const wrap = document.createElement("div");
     wrap.className = "msg-agent rise chat-bubble-wrap chat-bubble-wrap--assistant";
     wrap.dataset.ts = message.ts ?? "";
@@ -869,8 +849,36 @@ export function createThreadRenderer(ctx) {
     }
     const body = document.createElement("div");
     body.className = "chat-bubble-content";
-    body.innerHTML = renderAssistantText(message.content ?? "");
+    body.innerHTML = renderMarkdown(message.content ?? "");
     bubble.append(body);
+    const sources = deriveSources(allMessages ?? [], message);
+    if (sources.length > 0) {
+      const row = document.createElement("div");
+      row.className = "chat-sources";
+      const tag = document.createElement("span");
+      tag.className = "chat-sources-tag";
+      tag.textContent = "依据";
+      row.append(tag);
+      for (const chip of sources) {
+        if (chip.chapterNo) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "chat-source-chip chat-source-chip--link";
+          btn.dataset.testid = "chat-source-chapter";
+          btn.textContent = chip.label;
+          btn.title = chip.resultSummary;
+          btn.addEventListener("click", () => ctx.openReader(chip.chapterNo));
+          row.append(btn);
+        } else {
+          const span = document.createElement("span");
+          span.className = "chat-source-chip";
+          span.textContent = chip.label;
+          span.title = chip.resultSummary;
+          row.append(span);
+        }
+      }
+      bubble.append(row);
+    }
     if (Number.isFinite(message.cost) && message.cost > 0) {
       const cost = document.createElement("span");
       cost.className = "chat-cost";
@@ -889,8 +897,18 @@ export function createThreadRenderer(ctx) {
     card.className = "chat-tool-card";
     const summary = document.createElement("summary");
     const ok = message.ok !== false;
-    summary.textContent = `工具 ${message.tool ?? ""} ${ok ? "✓" : "✗"}`;
+    const label = document.createElement("span");
+    label.className = "chat-tool-label";
+    label.textContent = toolLabel(message.tool ?? "", message.args);
+    const mark = document.createElement("span");
+    mark.className = `chat-tool-mark ${ok ? "ok" : "fail"}`;
+    mark.textContent = ok ? "✓" : "✗";
+    summary.append(label, mark);
     card.append(summary);
+    const tech = document.createElement("div");
+    tech.className = "chat-tool-tech mono";
+    tech.textContent = `${message.tool ?? ""} ${message.args ?? ""}`.trim();
+    card.append(tech);
     const pre = document.createElement("pre");
     pre.textContent = message.result_summary ?? "";
     card.append(pre);
@@ -985,10 +1003,10 @@ export function createThreadRenderer(ctx) {
   }
 
   // 渲染一条 chat 历史消息：根据 type 路由到对应渲染器。
-  function renderChatMessage(message) {
+  function renderChatMessage(message, allMessages) {
     if (!message) return null;
     if (message.role === "user") return renderUserBubble(message);
-    if (message.role === "assistant") return renderAssistantBubble(message);
+    if (message.role === "assistant") return renderAssistantBubble(message, allMessages);
     if (message.role === "tool") return renderToolCard(message);
     return null;
   }
@@ -1015,14 +1033,26 @@ export function createThreadRenderer(ctx) {
       // 无聊天历史时不主动清理既有 thread；维持原 agent 事件流渲染。
       return;
     }
+    const wrap = ctx.refs.threadWrap;
+    const stick = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 80;
+    let appended = false;
     for (const message of messages) {
       const key = message.id ? `chat:${message.id}` : `chat:${message.role}:${message.ts}:${message.tool ?? ""}`;
       if (ctx.renderedKeys.has(key)) continue;
-      const node = renderChatMessage(message);
+      const node = renderChatMessage(message, messages);
       if (!node) continue;
       ctx.renderedKeys.add(key);
       insertByTs(ctx.refs.thread, node, message.ts);
+      appended = true;
+      if (message.role === "user") {
+        // 持久化的 user 消息上屏后，移除 composer 的乐观气泡，防止重影。
+        ctx.refs.thread.querySelector('[data-optimistic="user"]')?.remove();
+      }
+      if (message.role === "assistant") {
+        ctx.announce("智能体已回复");
+      }
     }
+    if (appended && stick) scrollThreadToBottom();
   }
 
   // 发送聊天消息的便捷方法（composer 暂未接入时也可单独调用）。
