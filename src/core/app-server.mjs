@@ -1009,18 +1009,59 @@ async function serveQueueCancel(request, response, context) {
   }
 }
 
+// 终态项目状态：一旦项目落到这些状态，停止请求就不该再把它拉回 cancelling。
+// 用于关闭「双击/重复停止」竞态：当 runner 已收敛到 cancelled 后，迟到的第二次
+// 停止读到终态就跳过持久化，避免复活一个已结束的任务、让重试永久 409。
+const STOP_IGNORED_STATUSES = new Set(["cancelled", "completed", "blocked", "interrupted", "error"]);
+
 async function serveRunStop(response, context) {
+  // 红线：停止路径绝不能包 withProjectLock。定稿或错误收敛会持锁，
+  // 让 500ms 内的 cancelling 确认被阻塞。这里只写状态、abort、回包，全程不取项目锁。
   try {
     const projectRoot = await resolveActiveProjectRoot(context);
     await assertNotArchived(projectRoot);
-    return await withProjectLock(context, projectRoot, async () => {
     const job = context.runJobs.get(path.resolve(projectRoot));
-    if (!isJobRunning(job)) {
+    if (!isJobRunning(job) && job?.status !== "cancelling") {
       sendError(response, new HttpError(409, "CONFLICT", "当前没有正在运行的写作任务。"));
       return;
     }
-    job.controller.abort("用户停止");
-    await serveJson(response, { ok: true, message: "已请求停止当前任务。" });
+    const queue = await context.getTaskQueue(projectRoot);
+    const state = await loadState(projectRoot);
+    const requestedAt = state.stop_requested_at ?? new Date().toISOString();
+    const alreadyCancelling = state.project_status === "cancelling";
+    const alreadyTerminal = STOP_IGNORED_STATUSES.has(state.project_status);
+    // 仅在项目仍处于「活动且尚未 cancelling」时才持久化 cancelling。
+    // - alreadyCancelling：重复停止保持幂等（只发一个 project_cancelling 事件，仍回 cancelling）。
+    // - alreadyTerminal：runner 已经收敛到终态，跳过持久化，避免把终态复活成 cancelling。
+    if (!alreadyCancelling && !alreadyTerminal) {
+      await saveState(projectRoot, {
+        ...state,
+        project_status: "cancelling",
+        stop_requested_at: requestedAt
+      });
+      await queue.markCancelling(job.taskId, "用户停止");
+      await appendEvent(projectRoot, {
+        type: "project_cancelling",
+        chapter_no: state.current_chapter_no,
+        stage: state.current_stage,
+        message: "用户请求立即停止",
+        data: { task_id: job.taskId, stop_requested_at: requestedAt }
+      });
+    }
+    // 只在任务仍在运行或正在 cancelling 时翻状态/abort；任务若已收敛到终态，
+    // 不要把它的状态拨回 cancelling，也不要对已死的 controller 再 abort。
+    if (isJobRunning(job) || job?.status === "cancelling") {
+      job.status = "cancelling";
+      if (!job.controller.signal.aborted) {
+        job.controller.abort("用户停止");
+      }
+    }
+    await serveJson(response, {
+      ok: true,
+      projectRoot,
+      taskId: job.taskId,
+      status: "cancelling",
+      message: "正在停止当前任务，草稿将保留。"
     });
   } catch (error) {
     sendError(response, error instanceof HttpError ? error : new HttpError(400, "BAD_REQUEST", error.message));
@@ -1369,15 +1410,35 @@ async function startProjectRun(projectRoot, project, context, task, instructionM
       return await withProjectLock(context, projectRoot, async () => {
       const queue = await context.getTaskQueue(projectRoot);
       const latestState = await loadState(projectRoot).catch(() => runningState);
-      if (controller.signal.aborted || error instanceof ProjectCancelledError || latestState.project_status === "cancelled") {
+      if (controller.signal.aborted || error instanceof ProjectCancelledError || latestState.project_status === "cancelled" || latestState.project_status === "cancelling") {
         job.status = "cancelled";
         job.error = error.message;
         await queue.abortRunning(error.message, task.id);
+        const cancelledAt = new Date().toISOString();
+        const stopRequestedAt = latestState.stop_requested_at ?? cancelledAt;
+        const stopLatencyMs = Math.max(0, Date.parse(cancelledAt) - Date.parse(stopRequestedAt));
         await saveState(projectRoot, {
           ...latestState,
           project_status: "cancelled",
           cancelled_reason: error.message,
-          cancelled_at: new Date().toISOString()
+          stop_requested_at: stopRequestedAt,
+          cancel_observed_at: cancelledAt,
+          cancelled_at: cancelledAt,
+          stop_latency_ms: stopLatencyMs
+        });
+        await appendEvent(projectRoot, {
+          type: "project_cancelled",
+          project_id: project.project_id,
+          chapter_no: latestState.current_chapter_no,
+          stage: latestState.current_stage,
+          message: "写作任务已停止，草稿已保留。",
+          data: {
+            task_id: task.id,
+            stop_requested_at: stopRequestedAt,
+            cancel_observed_at: cancelledAt,
+            cancelled_at: cancelledAt,
+            stop_latency_ms: stopLatencyMs
+          }
         });
       } else {
         job.status = "error";
@@ -1395,18 +1456,18 @@ async function startProjectRun(projectRoot, project, context, task, instructionM
           });
           }
         }
+        await appendEvent(projectRoot, {
+          type: "project_run_failed",
+          project_id: project.project_id,
+          stage: "run",
+          severity: "error",
+          message: error.message,
+          data: {
+            name: error.name,
+            stack: error.stack?.slice(0, 2000)
+          }
+        });
       }
-      await appendEvent(projectRoot, {
-        type: "project_run_failed",
-        project_id: project.project_id,
-        stage: "run",
-        severity: "error",
-        message: error.message,
-        data: {
-          name: error.name,
-          stack: error.stack?.slice(0, 2000)
-        }
-      });
       });
     })
     .catch((error) => {

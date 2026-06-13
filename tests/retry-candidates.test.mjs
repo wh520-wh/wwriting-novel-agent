@@ -61,6 +61,35 @@ test("resolveRetryCandidate returns unavailable when job is still running", asyn
   }
 });
 
+test("resolveRetryCandidate reports cancelling when job is stopping", async () => {
+  const dir = await makeTmpProject({ project_status: "cancelling" });
+  try {
+    const result = await resolveRetryCandidate({ projectRoot: dir, queue: makeQueue(), job: makeJob("cancelling") });
+    assert.equal(result.available, false);
+    assert.equal(result.code, "retry_cancelling");
+    assert.equal(result.reason, "正在停止，请等待状态收敛");
+    assert.equal(result.status, 409);
+  } finally {
+    await cleanup(dir);
+  }
+});
+
+test("resolveRetryCandidate reports cancelling when a queue task is cancelling", async () => {
+  const dir = await makeTmpProject({ project_status: "running" });
+  try {
+    const result = await resolveRetryCandidate({
+      projectRoot: dir,
+      queue: makeQueue([{ id: "task-1", status: "cancelling" }]),
+      job: makeJob()
+    });
+    assert.equal(result.available, false);
+    assert.equal(result.code, "retry_cancelling");
+    assert.equal(result.reason, "正在停止，请等待状态收敛");
+  } finally {
+    await cleanup(dir);
+  }
+});
+
 test("resolveRetryCandidate returns unavailable when project status is completed", async () => {
   const dir = await makeTmpProject({ project_status: "completed" });
   try {
