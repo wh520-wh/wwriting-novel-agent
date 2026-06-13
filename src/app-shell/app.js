@@ -126,6 +126,7 @@ const threadRenderer = createThreadRenderer({
   },
   promoteAskEntry: (entry) => composer.promoteAskEntry(entry),
   sendChatMessageWithUX: (msg) => composer.sendChatMessageWithUX(msg),
+  isChatBusy: () => composer?.isChatBusy?.() === true,
 });
 
 const settingsModal = createSettingsModal({
@@ -457,6 +458,7 @@ function renderDashboard(data) {
     threadRenderer.renderEmptyThread();
     composer.updateModePill();
     composer.updateStatusPills(data);
+    composer.syncChatBusy(data);
     refreshDrawerIfOpen();
     return;
   }
@@ -496,7 +498,12 @@ function renderDashboard(data) {
     if (refs.topbar) refs.topbar.classList.remove("is-busy");
   }
   renderTopbarProgress(truth, Number(data.summary?.activityProgressPercent ?? 0));
-  ensureRefreshLoop(truth.refresh || summary.projectStatus === "running" || Boolean(liveBlock && !liveBlock.done));
+  ensureRefreshLoop(
+    truth.refresh
+    || summary.projectStatus === "running"
+    || Boolean(liveBlock && !liveBlock.done)
+    || data.chatHistory?.busy === true
+  );
 
   threadRenderer.syncThread(data, firstLoad);
   threadRenderer.syncFailureCards(data);
@@ -538,6 +545,7 @@ function renderDashboard(data) {
 
   composer.updateModePill();
   composer.updateStatusPills(data);
+  composer.syncChatBusy(data);
   refreshDrawerIfOpen();
 }
 
