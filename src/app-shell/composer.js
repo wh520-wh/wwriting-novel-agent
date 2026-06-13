@@ -344,7 +344,9 @@ export function createComposer(ctx) {
     const project = data?.project;
     const isMock = data?.model_profile?.is_mock;
     const name = project?.active_model?.model_name;
-    pill.textContent = isMock || !name ? "未配置模型" : name;
+    let tx = pill.querySelector(".pill-tx");
+    if (!tx) { tx = document.createElement("span"); tx.className = "pill-tx"; pill.append(tx); }
+    tx.textContent = isMock || !name ? "未配置模型" : name;
     pill.title = isMock || !name ? "点击打开设置配置模型" : name;
   }
 
