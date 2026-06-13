@@ -4,13 +4,14 @@ import { renderActivityStrip } from "./components/activity-strip.js";
 import { renderQuickRail, bindQuickRailKeys } from "./components/quick-rail.js";
 import { getLastSeen, watchLastSeen } from "./components/last-seen.js";
 import { motion, summarizeBadgesForMotion, diffBadgeKeys } from "./motion-runtime.js";
-import { getJson, postJson, fetchChatHistory } from "./api-client.js";
+import { getJson, postJson, fetchChatHistory, withProjectScope } from "./api-client.js";
 import { formatNumber, pathEquals, pathBaseName, statusClass, translateStage } from "./utils.js";
 import { icon } from "./icons.js";
 import { createThreadRenderer } from "./thread-renderer.js";
 import { createDrawerPanels } from "./drawer-panels.js";
 import { createSettingsModal } from "./settings-modal.js";
 import { createComposer } from "./composer.js";
+import { createProjectScope } from "./project-scope.mjs";
 
 // WWriting · Codex 风格对话式前端
 // 后端无消息/SSE 端点，对话流由前端用 /api/dashboard 的 events[] + chapters[] + summary 聚合而成。
@@ -93,6 +94,8 @@ let dashboardRequestId = 0;
 let refreshTimer = null;
 let drawerTab = "chapters";
 let lastDashboard = null;
+// 唯一的 project generation 门禁：旧项目响应到达时不会污染当前 DOM。
+const projectScope = createProjectScope();
 // 已渲染进对话流的事件指纹，避免轮询重复追加同一条气泡。
 const renderedKeys = new Set();
 // 本地内存里的旁路问答待确认条目（刷新即丢，与后端 side_questions.md 解耦）。
@@ -104,6 +107,8 @@ let previousActivity = null;
 let previousBadgeSummary = null;
 let readerChapterNo = null;
 let readerQuoteBtn = null;
+// 已发布给屏幕阅读器（aria-live）的最后一条状态：切换项目时清空。
+let lastAnnounce = "";
 
 // --- extracted module instances (created before event bindings that reference their methods) ---
 let composer; // forward ref: thread-renderer's promote button calls composer.promoteAskEntry (assigned in Task 7)
@@ -446,27 +451,74 @@ function renderProjectListFiltered() {
 
 async function loadDashboard(options = {}) {
   const requestId = ++dashboardRequestId;
+  const activeProjectRoot = currentProjectRoot;
+  const token = projectScope.capture(activeProjectRoot);
   if (options.silent !== true) {
     setStatus("loading");
   }
   try {
-    const data = await getJson("/api/dashboard");
+    const dashboardUrl = withProjectScope("/api/dashboard", activeProjectRoot);
+    const data = await getJson(dashboardUrl);
     if (requestId !== dashboardRequestId) return;
+    if (!projectScope.isCurrent(token)) return;
     if (!data.ok) throw new Error(data.message ?? "仪表盘请求失败");
     if (data.hasProject) {
+      const queueUrl = withProjectScope("/api/queue/state", activeProjectRoot);
       const [queue, chatHistory] = await Promise.all([
-        getJson("/api/queue/state").catch(() => ({ ok: false, tasks: [] })),
-        fetchChatHistory().catch(() => null)
+        getJson(queueUrl).catch(() => ({ ok: false, tasks: [] })),
+        fetchChatHistory({ projectRoot: activeProjectRoot }).catch(() => null)
       ]);
       data.queue = queue;
       data.chatHistory = chatHistory;
       if (requestId !== dashboardRequestId) return;
+      if (!projectScope.isCurrent(token)) return;
     }
     renderDashboard(data);
   } catch (error) {
     if (requestId !== dashboardRequestId) return;
+    if (!projectScope.isCurrent(token)) return;
     renderError(error);
   }
+}
+
+// Switch Cleanup Matrix：每次切换项目/无项目时重置所有项目级临时 UI 状态。
+// 旧项目的渲染、toast、对话流不能混入新项目的首屏。
+function clearTransientState() {
+  // 任何在途请求的 token 都会因 generation 自增而失效。
+  dashboardRequestId += 1;
+  // 对话流指纹与旁路问答是项目级内存缓存。
+  renderedKeys.clear();
+  askEntries.clear();
+  liveBlock = null;
+  lastAnnounce = "";
+  // 顶部活动状态：renderer / motion 会在下次 renderDashboard 重画。
+  previousActivity = null;
+  previousBadgeSummary = null;
+  if (refs.thread) refs.thread.replaceChildren();
+  if (refs.threadStatus) refs.threadStatus.textContent = "";
+  if (refs.toastStack) {
+    for (const toast of [...refs.toastStack.children]) toast.remove();
+  }
+  if (refs.readerScrim?.classList.contains("show")) {
+    refs.readerScrim.classList.remove("show");
+    refs.readerScrim.setAttribute("inert", "");
+  }
+  readerChapterNo = null;
+  if (refs.composerInput && "value" in refs.composerInput) {
+    refs.composerInput.value = "";
+  }
+  if (refs.composerInput?.dataset) {
+    delete refs.composerInput.dataset.error;
+  }
+}
+
+// 在每次成功的项目选择（open / init / forget / no-project 兜底）后，
+// 都提升 generation + 清空临时状态，确保任何旧项目的延迟响应被丢弃。
+// 同步把 currentProjectRoot 指向新根，避免后续 loadDashboard 捕获到旧值。
+function commitProjectSwitch(projectRoot) {
+  projectScope.activate(projectRoot);
+  currentProjectRoot = projectRoot;
+  clearTransientState();
 }
 
 function renderProjectNav(project, selectedProjectRoot) {
@@ -656,9 +708,9 @@ async function forgetProject(projectRoot) {
   try {
     const result = await postJson("/api/projects/forget", { projectRoot });
     showToast("已从列表移除。", "success");
-    currentProjectRoot = result.selectedProjectRoot ?? null;
-    previousActivity = null;
-    previousBadgeSummary = null;
+    // 切换/取消选择：commitProjectSwitch 已经处理 generation + currentProjectRoot + 清空。
+    const nextRoot = result.selectedProjectRoot ?? null;
+    commitProjectSwitch(nextRoot);
     await loadAll();
   } catch (error) {
     showToast(error.message, "error");
@@ -672,11 +724,10 @@ async function openProject(projectRoot) {
   refs.projectOpenStatus.textContent = "正在打开...";
   try {
     await postJson("/api/projects/open", { projectRoot });
-    // 不在这里写 currentProjectRoot：renderDashboard 用旧值与新 data.projectRoot 比对来判定切换并清空对话流。
+    // 切换项目：提升 generation、清空临时状态；让 loadDashboard 决定 currentProjectRoot。
+    commitProjectSwitch(projectRoot);
     refs.projectOpenStatus.style.display = "none";
     refs.projectOpenStatus.textContent = "";
-    previousActivity = null;
-    previousBadgeSummary = null;
     await loadAll();
   } catch (error) {
     refs.projectOpenStatus.style.display = "none";
@@ -725,11 +776,10 @@ async function initProject(projectRoot) {
       target_words_per_chapter: Math.max(minWords, 3300),
       output_format: "md"
     });
-    // 不在这里写 currentProjectRoot：renderDashboard 用旧值与新 data.projectRoot 比对来判定切换并清空对话流。
+    // 切换项目：提升 generation、清空临时状态。
+    commitProjectSwitch(projectRoot);
     closeCreateModal();
     showToast("小说已创建并打开。", "success");
-    previousActivity = null;
-    previousBadgeSummary = null;
     await loadAll();
   } catch (error) {
     setCreateStatus(error.message, "error");
@@ -1052,7 +1102,7 @@ function showToast(message, type = "info") {
   window.setTimeout(remove, type === "error" ? 5200 : 3200);
 }
 
-let lastAnnounce = "";
+// lastAnnounce 已在文件顶部声明；切换项目时由 clearTransientState 清空。
 function announce(msg) {
   if (refs.threadStatus && msg && msg !== lastAnnounce) {
     lastAnnounce = msg;
