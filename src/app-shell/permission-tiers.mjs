@@ -31,9 +31,9 @@ export const PERMISSION_TIERS = [
   },
   {
     id: "yolo",
-    label: "⚡ YOLO",
+    label: "🚀 YOLO",
     short: "YOLO",
-    glyph: "⚡",
+    glyph: "🚀",
     combo: { read_only: false, safe_edit: true, auto_edit: true,  yolo: true  },
     desc: "跳过所有确认；归档/章节编辑全自动。",
     warn: "⚠ 警告：YOLO 模式自动执行所有写与控制操作，包括章节编辑、设定更新和任务控制。"

@@ -725,11 +725,12 @@ export function createComposer(ctx) {
       btn.dataset.tierId = tier.id;
       const glyph = document.createElement("span");
       glyph.className = "mpi-glyph";
-      glyph.textContent = tier.short.slice(0, 2);
+      glyph.textContent = tier.glyph;
       const tx = document.createElement("span");
       tx.className = "mpi-tx";
       const strong = document.createElement("strong");
-      strong.textContent = tier.label;
+      // 图标已在左侧方块用 tier.glyph 呈现，标题去掉 label 开头重复的符号
+      strong.textContent = tier.label.replace(/^\S+\s+/, "");
       const small = document.createElement("small");
       small.textContent = TIER_DESC[tier.id];
       tx.append(strong, small);
