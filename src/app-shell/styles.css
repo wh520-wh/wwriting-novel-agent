@@ -1914,3 +1914,16 @@ button.cbar-pill--readonly:hover {
 }
 .chat-stop-btn:hover { filter: brightness(0.97); }
 .chat-stop-btn:disabled { opacity: .5; cursor: default; }
+
+/* ============================================================
+   S4.5 Task 12 · 消息操作排
+   ============================================================ */
+.msg-actions { display: flex; gap: 6px; margin-top: 6px; opacity: .25; transition: opacity .15s; }
+.chat-bubble-wrap:hover .msg-actions,
+.chat-bubble-wrap:focus-within .msg-actions { opacity: 1; }
+.msg-action {
+  font-size: 10.5px; padding: 2px 8px; border-radius: 99px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--muted);
+}
+.msg-action:hover { background: var(--hover); color: var(--ink-2); }
+.chat-bubble--user .msg-action { background: rgba(255,255,255,.14); border-color: rgba(255,255,255,.3); color: #fff; }
