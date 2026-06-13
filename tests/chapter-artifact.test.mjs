@@ -132,3 +132,26 @@ test("file metadata change invalidates the checksum cache", async () => {
   assert.equal(changed.state, "invalid");
   assert.equal(changed.reason, "checksum_mismatch");
 });
+
+test("inspect never throws on a non-ENOENT filesystem error", async () => {
+  const root = await makeProject();
+  // final_path routes through a regular file as if it were a directory.
+  // stat on that path raises a non-ENOENT errno (ENOTDIR on POSIX), which
+  // must surface as an invalid artifact rather than rejecting the promise.
+  await writeFile(path.join(root, "chapters", "001.md"), "x", "utf8");
+
+  const artifact = await inspectChapterArtifact({
+    projectRoot: root,
+    chapter: 1,
+    indexEntry: {
+      status: "completed",
+      final_path: "chapters/001.md/inner.md",
+      checksum: "sha256:whatever",
+    },
+  });
+
+  // The errno differs across platforms; only assert the no-throw contract:
+  // the call resolves and reports an invalid artifact with a reason.
+  assert.equal(artifact.state, "invalid");
+  assert.ok(artifact.reason);
+});
