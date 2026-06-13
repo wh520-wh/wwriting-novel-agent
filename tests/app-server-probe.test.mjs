@@ -7,7 +7,8 @@ import { createAppShellServer } from "../src/core/app-server.mjs";
 import { recordRecentProject, samePath } from "../src/core/app-state.mjs";
 import { loadDashboardData } from "../src/core/app-dashboard.mjs";
 import { readEvents } from "../src/core/event-log.mjs";
-import { createProject, loadState, saveState } from "../src/core/project-store.mjs";
+import { loadLocalSecretsSync, saveLocalSecret } from "../src/core/local-secrets.mjs";
+import { createProject, loadProject, loadState, saveProject, saveState } from "../src/core/project-store.mjs";
 import { TaskQueue } from "../src/core/task-queue.mjs";
 import { appendFailure } from "../src/core/failures-store.mjs";
 
@@ -1188,4 +1189,69 @@ test("write request is rejected after selected project changes", async () => {
   );
   assert.equal(queueA.data.tasks.length, 0);
   await closeServer(fixture.server);
+});
+
+test("invalid candidate leaves project settings and secrets unchanged", async () => {
+  const ctx = await setupServer();
+  try {
+    const project = await loadProject(ctx.projectRoot);
+    await saveProject(ctx.projectRoot, {
+      ...project,
+      active_model: {
+        provider: "openai-compatible",
+        model_name: "old-model",
+        base_url: "https://old.example/v1",
+        api_key_env: "OLD_KEY",
+      },
+    });
+    await saveLocalSecret(ctx.secretsRoot, "OLD_KEY", "old-secret-value");
+    const beforeProject = await loadProject(ctx.projectRoot);
+    const beforeSecrets = loadLocalSecretsSync(ctx.secretsRoot);
+
+    const { res, data } = await postJson(ctx.port, "/api/settings/update", {
+      projectRoot: ctx.projectRoot,
+      active_model: {
+        provider: "openai-compatible",
+        model_name: "mimo-v2.5-pro",
+        base_url: "",
+        api_key_env: "XIAOMI_MIMO_API_KEY",
+        api_key: "new-secret",
+      },
+    });
+
+    assert.equal(res.status, 400);
+    assert.equal(data.code, "configuration_missing");
+    assert.deepEqual(await loadProject(ctx.projectRoot), beforeProject);
+    assert.deepEqual(loadLocalSecretsSync(ctx.secretsRoot), beforeSecrets);
+  } finally {
+    await closeServer(ctx.server);
+  }
+});
+
+test("valid candidate persists project config and secret together", async () => {
+  const ctx = await setupServer();
+  try {
+    const { res } = await postJson(ctx.port, "/api/settings/update", {
+      projectRoot: ctx.projectRoot,
+      active_model: {
+        provider: "openai-compatible",
+        model_name: "mimo-v2.5-pro",
+        base_url: "https://api.xiaomimimo.com/v1",
+        api_key_env: "XIAOMI_MIMO_API_KEY",
+        api_key: "temporary-test-key",
+      },
+    });
+
+    assert.equal(res.status, 200);
+    assert.equal(
+      (await loadProject(ctx.projectRoot)).active_model.model_name,
+      "mimo-v2.5-pro",
+    );
+    assert.equal(
+      loadLocalSecretsSync(ctx.secretsRoot).XIAOMI_MIMO_API_KEY,
+      "temporary-test-key"
+    );
+  } finally {
+    await closeServer(ctx.server);
+  }
 });

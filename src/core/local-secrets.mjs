@@ -21,6 +21,13 @@ export function loadLocalSecretsSync(secretsRoot = defaultSecretsRoot()) {
   }
 }
 
+export async function loadLocalSecrets(secretsRoot = defaultSecretsRoot()) {
+  const root = path.resolve(secretsRoot);
+  const filePath = path.join(root, SECRET_FILE_NAME);
+  const data = (await readJson(filePath, {})) ?? {};
+  return normalizeSecrets(data);
+}
+
 export function applyLocalSecretsToEnv(secrets = {}) {
   for (const [name, value] of Object.entries(secrets)) {
     if (ENV_NAME.test(name) && typeof value === "string" && value.length > 0) {
@@ -45,6 +52,20 @@ export async function saveLocalSecret(secretsRoot, name, value) {
   }
   process.env[envName] = secret;
   return { envName };
+}
+
+export async function saveLocalSecrets(secretsRoot, candidate) {
+  const root = path.resolve(secretsRoot ?? defaultSecretsRoot());
+  const secrets = normalizeSecrets(candidate);
+  await ensureDir(root);
+  const filePath = path.join(root, SECRET_FILE_NAME);
+  await writeJsonAtomic(filePath, secrets);
+  try {
+    await fs.chmod(filePath, 0o600);
+  } catch {
+    // Windows ACLs may not map cleanly to chmod; keep the secret out of project files either way.
+  }
+  return secrets;
 }
 
 function normalizeSecrets(value) {
