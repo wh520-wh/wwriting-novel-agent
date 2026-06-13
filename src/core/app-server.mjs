@@ -8,11 +8,12 @@ import { forgetRecentProject, loadAppStateSync, loadAppState, recordRecentProjec
 import { loadConfigLayers } from "./config-runtime.mjs";
 import { appendEvent } from "./event-log.mjs";
 import { isPathInside } from "./fs-utils.mjs";
-import { applyLocalSecretsToEnv, defaultSecretsRoot, loadLocalSecretsSync, saveLocalSecret } from "./local-secrets.mjs";
+import { applyLocalSecretsToEnv, defaultSecretsRoot, loadLocalSecretsSync } from "./local-secrets.mjs";
 import { createProjectAt, loadProject, loadState, saveProject, saveState } from "./project-store.mjs";
 import { createResearchAdapter } from "./research-adapters.mjs";
 import { fetchWebPage, searchWeb } from "./research-tools.mjs";
-import { updateProjectSettings } from "./settings-runtime.mjs";
+import { ModelConfigValidationError } from "./model-config-validation.mjs";
+import { saveModelSettingsTransaction } from "./settings-runtime.mjs";
 import { ensureBuiltinSkill, importProjectSkill, listProjectSkills } from "./skill-runtime.mjs";
 import { loadOutputStyles } from "./output-style-loader.mjs";
 import { ProjectCancelledError, runProject } from "./agent-engine.mjs";
@@ -479,27 +480,46 @@ async function serveSettingsUpdate(request, response, context) {
     const body = await readJsonBody(request);
     const projectRoot = await resolveActiveWriteProjectRoot(context, body);
     await assertNotArchived(projectRoot);
-    const secretResult = await persistModelSecretIfPresent(body, context.secretsRoot);
-    const project = await updateProjectSettings(projectRoot, body);
-    const config = await loadConfigLayers(projectRoot, project);
+    const activeModel = body?.active_model && typeof body.active_model === "object"
+      ? { ...body.active_model }
+      : null;
+    if (!activeModel) {
+      throw new HttpError(400, "invalid_active_model", "active_model is required.");
+    }
+    const result = await saveModelSettingsTransaction({
+      projectRoot,
+      secretsRoot: context.secretsRoot,
+      activeModel
+    });
+    const config = await loadConfigLayers(projectRoot, result.project);
     await serveJson(response, {
       ok: true,
       projectRoot,
       project: {
-        project_id: project.project_id,
-        active_model: project.active_model,
-        stage_overrides: project.stage_overrides,
-        tool_permissions: project.tool_permissions,
-        budget_config: project.budget_config,
-        research_config: project.research_config
+        project_id: result.project.project_id,
+        active_model: result.project.active_model,
+        stage_overrides: result.project.stage_overrides,
+        tool_permissions: result.project.tool_permissions,
+        budget_config: result.project.budget_config,
+        research_config: result.project.research_config
       },
       effective_config: config.effective,
       model_profile: buildModelProfile(config.effective.active_model, context.secretsRoot),
-      secret_saved: secretResult.saved,
-      secret_env: secretResult.envName
+      secret_saved: result.secret_saved,
+      secret_env: result.secret_env
     });
   } catch (error) {
-    sendError(response, error instanceof HttpError ? error : new HttpError(400, error.code ?? "settings_update_failed", error.message));
+    if (error instanceof ModelConfigValidationError) {
+      sendError(response, new HttpError(400, error.code, error.message, { fields: error.fields }));
+      return;
+    }
+    if (error instanceof HttpError) {
+      sendError(response, error);
+      return;
+    }
+    const code = error?.code ?? "settings_update_failed";
+    const status = code === "settings_rollback_failed" ? 500 : 400;
+    sendError(response, new HttpError(status, code, error.message));
   }
 }
 
@@ -514,20 +534,6 @@ async function serveModelSecret(response, context) {
   } catch (error) {
     sendError(response, new HttpError(400, "model_secret_failed", error.message));
   }
-}
-
-async function persistModelSecretIfPresent(body, secretsRoot) {
-  const apiKey = body.active_model?.api_key ?? body.api_key;
-  if (body.active_model) {
-    delete body.active_model.api_key;
-  }
-  delete body.api_key;
-  if (!apiKey) {
-    return { saved: false, envName: body.active_model?.api_key_env ?? null };
-  }
-  const envName = body.active_model?.api_key_env;
-  const result = await saveLocalSecret(secretsRoot, envName, apiKey);
-  return { saved: true, envName: result.envName };
 }
 
 function buildModelProfile(activeModel = {}, secretsRoot) {

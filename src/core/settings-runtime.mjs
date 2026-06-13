@@ -1,5 +1,14 @@
 import { appendEvent } from "./event-log.mjs";
 import { loadProject, loadState, saveProject, saveState } from "./project-store.mjs";
+import {
+  applyLocalSecretsToEnv,
+  loadLocalSecrets,
+  saveLocalSecrets
+} from "./local-secrets.mjs";
+import {
+  ModelConfigValidationError,
+  validateModelConfig
+} from "./model-config-validation.mjs";
 import { normalizePricing } from "./model-pricing.mjs";
 
 const SAFE_NAME = /^[A-Za-z0-9_.-]+$/u;
@@ -30,6 +39,118 @@ export async function updateProjectSettings(projectRoot, patch = {}) {
     }
   });
   return next;
+}
+
+// Transactional model settings save.
+//
+// Reads the old project + old secrets, validates the candidate, then performs
+// the durable writes in project → secrets order. If secrets fail, restores the
+// old project snapshot. If runtime apply fails, keeps the durable writes —
+// another reader may already have observed them, and the only safe action is
+// to surface a restart-required error.
+//
+// The function NEVER persists `api_key` into the project file, the returned
+// project, the response, or any event log. Raw secrets are confined to the
+// secrets file and process env (via `applyLocalSecretsToEnv`).
+export async function saveModelSettingsTransaction({
+  projectRoot,
+  secretsRoot,
+  activeModel,
+  readProject = loadProject,
+  writeProject = saveProject,
+  readSecrets = loadLocalSecrets,
+  writeSecrets = saveLocalSecrets,
+  applySecrets = applyLocalSecretsToEnv
+} = {}) {
+  if (!projectRoot || typeof projectRoot !== "string") {
+    throw new SettingsValidationError("invalid_project_root", "projectRoot is required.");
+  }
+  if (!activeModel || typeof activeModel !== "object" || Array.isArray(activeModel)) {
+    throw new SettingsValidationError("invalid_active_model", "active_model is required.");
+  }
+
+  // 1. Read old project and old secrets up front — used for rollback and
+  //    secret-presence checks. Re-throw raw IO errors; the caller (server)
+  //    maps anything not in our known codes to a 500.
+  const oldProject = await readProject(projectRoot);
+  const oldSecrets = await readSecrets(secretsRoot);
+
+  // 2. Validate the candidate. The `api_key` field is stripped before being
+  //    seen by the validator (it never leaves the secrets file / process env).
+  const candidate = { ...activeModel };
+  const transientApiKey = typeof candidate.api_key === "string" ? candidate.api_key.trim() : "";
+  delete candidate.api_key;
+  const validated = validateModelConfig(candidate);
+
+  // 3. For openai-compatible, we need either a pre-existing secret for this
+  //    env name OR a non-empty transient api_key in the request body.
+  if (validated.provider === "openai-compatible") {
+    const hasExistingSecret = Boolean(oldSecrets[validated.api_key_env]);
+    if (!hasExistingSecret && !transientApiKey) {
+      throw new ModelConfigValidationError({
+        api_key: "请输入 API Key，或先在 Windows 环境变量中配置。"
+      });
+    }
+  }
+
+  // 4. Compute the next durable state.
+  const nextProject = mergeProjectSettings(oldProject, {
+    active_model: { ...validated }
+  });
+  const nextSecrets = transientApiKey
+    ? { ...oldSecrets, [validated.api_key_env ?? "API_KEY_ENV"]: transientApiKey }
+    : { ...oldSecrets };
+
+  // 5. Write project first. Surface raw IO errors as-is; the server turns
+  //    non-HttpError failures into 500.
+  await writeProject(projectRoot, nextProject);
+
+  // 6. Write secrets. On failure, attempt to restore the old project. If the
+  //    restore also fails, wrap both errors and surface a rollback error so
+  //    the operator knows the durable state is in an unknown shape.
+  try {
+    await writeSecrets(secretsRoot, nextSecrets);
+  } catch (writeError) {
+    try {
+      await writeProject(projectRoot, oldProject);
+    } catch (rollbackError) {
+      const err = new SettingsValidationError(
+        "settings_rollback_failed",
+        "设置保存失败且回滚失败：项目文件可能与 secrets 不一致，请人工检查。"
+      );
+      err.cause = writeError;
+      err.rollbackError = rollbackError;
+      throw err;
+    }
+    const err = new SettingsValidationError(
+      "settings_save_failed",
+      writeError?.message ?? "设置保存失败：无法写入本地密钥。"
+    );
+    err.cause = writeError;
+    throw err;
+  }
+
+  // 7. Apply secrets to the running process. Failure here is NOT rolled back
+  //    because the durable files have already been observed by other readers
+  //    (and our own subsequent reads); the only safe action is to tell the
+  //    caller to restart the app for the new env vars to take effect.
+  try {
+    applySecrets(nextSecrets);
+  } catch (applyError) {
+    const err = new SettingsValidationError(
+      "settings_runtime_apply_failed",
+      "密钥已保存到磁盘，但未能应用到当前进程环境。请重启 App Shell 让新配置生效。"
+    );
+    err.cause = applyError;
+    throw err;
+  }
+
+  return {
+    project: nextProject,
+    secrets: nextSecrets,
+    secret_saved: Boolean(transientApiKey),
+    secret_env: validated.api_key_env ?? null
+  };
 }
 
 async function syncBudgetConfigToState(projectRoot, budgetConfig) {
