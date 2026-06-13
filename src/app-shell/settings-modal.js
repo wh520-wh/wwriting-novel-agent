@@ -950,9 +950,11 @@ export function createSettingsModal(ctx) {
       await postJson("/api/settings/update", {
         tool_permissions: tier.combo
       });
-      ctx.showToast(`权限档已切换为「${tier.short}」。`, "success");
       closeSettingsModal();
       await ctx.loadDashboard();
+      // 与 composer.applyTier 一致：用 mode pill 脉冲代替成功 toast，避免噪音。
+      document.getElementById("mode-pill")?.classList.add("cbar-pill--pulse");
+      window.setTimeout(() => document.getElementById("mode-pill")?.classList.remove("cbar-pill--pulse"), 400);
     });
   }
 

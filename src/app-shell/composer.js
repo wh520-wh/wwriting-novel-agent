@@ -1,5 +1,6 @@
 import { icon } from "./icons.js";
-import { postJson, sendChatMessage } from "./api-client.js";
+import { postJson, sendChatMessage, stopChat } from "./api-client.js";
+import { toolLabel } from "./tool-labels.mjs";
 import { getCommand, listCommands } from "./command-registry.mjs";
 import "./commands/index.mjs";  // side-effect: register 5 built-in commands
 import { PERMISSION_TIERS, detectPermissionTier, getTierById } from "./permission-tiers.mjs";
@@ -32,6 +33,81 @@ export function createComposer(ctx) {
   //   threadRenderer, getAskEntries, ensureRefreshLoop
 
   let slashActiveIndex = 0;
+
+  // --- S4.5 活动占位：chat busy 期间的过程反馈 + 停止 ---
+  let activePlaceholder = null;   // { wrap, say, stop, dispose, setActivity }
+  let localSendInFlight = false;  // 本地 send 未返回时不让轮询提前撤占位
+  let latestActivity = "";
+
+  function isChatBusy() {
+    return localSendInFlight || Boolean(activePlaceholder);
+  }
+
+  function showActivityPlaceholder() {
+    if (activePlaceholder) return activePlaceholder;
+    const wrap = document.createElement("div");
+    wrap.className = "msg-agent rise chat-bubble-wrap chat-thinking";
+    wrap.dataset.testid = "chat-activity-placeholder";
+    const avatar = document.createElement("div");
+    avatar.className = "agent-avatar";
+    avatar.textContent = "W";
+    const body = document.createElement("div");
+    body.className = "agent-body";
+    const row = document.createElement("div");
+    row.className = "chat-activity-row";
+    const say = document.createElement("p");
+    say.className = "agent-say chat-activity-text";
+    say.textContent = "思考中…";
+    const stop = document.createElement("button");
+    stop.type = "button";
+    stop.className = "chat-stop-btn";
+    stop.dataset.testid = "chat-stop";
+    stop.setAttribute("aria-label", "停止本轮对话");
+    stop.textContent = "停止";
+    stop.addEventListener("click", async () => {
+      stop.disabled = true;
+      try {
+        await stopChat();
+      } catch (error) {
+        stop.disabled = false;
+        ctx.showToast(error.message ?? "停止失败。", "error");
+      }
+    });
+    row.append(say, stop);
+    body.append(row);
+    wrap.append(avatar, body);
+    ctx.refs.thread.append(wrap);
+    ctx.threadRenderer.scrollThreadToBottom();
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      const secs = Math.round((Date.now() - startedAt) / 1000);
+      say.textContent = `${latestActivity || "思考中"} · 已 ${secs} 秒`;
+    }, 1000);
+    activePlaceholder = {
+      wrap, say, stop,
+      setActivity: (text) => { latestActivity = text; },
+      dispose: () => { window.clearInterval(timer); wrap.remove(); }
+    };
+    return activePlaceholder;
+  }
+
+  function removeActivityPlaceholder() {
+    activePlaceholder?.dispose();
+    activePlaceholder = null;
+    latestActivity = "";
+  }
+
+  // renderDashboard 每拍调用：busy 驱动占位生命周期 + 回显最新工具活动。
+  function syncChatBusy(data) {
+    const busy = data?.chatHistory?.busy === true;
+    if (busy && !activePlaceholder) showActivityPlaceholder(); // 确认卡续轮 / 他窗口在跑
+    if (!busy && activePlaceholder && !localSendInFlight) removeActivityPlaceholder();
+    if (activePlaceholder) {
+      const msgs = data?.chatHistory?.messages ?? [];
+      const lastTool = [...msgs].reverse().find((m) => m.role === "tool");
+      if (lastTool) activePlaceholder.setActivity(`${toolLabel(lastTool.tool, lastTool.args)}，继续思考`);
+    }
+  }
 
   // --- four-tier approval / mode pill (S4 Task 8) ---
   // PERMISSION_TIERS 引用共享模块 PERMISSION_TIERS；detectPermissionTier 统一优先级。
@@ -171,8 +247,9 @@ export function createComposer(ctx) {
       await postJson("/api/settings/update", {
         tool_permissions: tier.combo
       });
-      ctx.showToast(`已切换到「${tier.short}」档。`, "success");
       await ctx.loadDashboard();
+      getModePill()?.classList.add("cbar-pill--pulse");
+      window.setTimeout(() => getModePill()?.classList.remove("cbar-pill--pulse"), 400);
     } catch (error) {
       ctx.showToast(error.message ?? "切换权限档失败。", "error");
     }
@@ -211,7 +288,31 @@ export function createComposer(ctx) {
 
   function updateStatusPills(data) {
     updateModelPill(data);
+    updateWordsPill(data);
     updateCostPill(data);
+  }
+
+  // 会话新增字数：每项目记会话基线（内存，重启/切项目即重置——会话语义）。
+  const sessionWordBaselines = new Map();
+
+  function updateWordsPill(data) {
+    const container = ensureStatusPillContainer();
+    if (!container) return;
+    let pill = document.getElementById("status-pill-words");
+    if (!pill) {
+      pill = document.createElement("span");
+      pill.id = "status-pill-words";
+      pill.className = "cbar-pill cbar-pill--readonly cbar-pill--words";
+      pill.title = "本次会话新增字数";
+      container.append(pill);
+    }
+    const root = data?.projectRoot;
+    const total = Number(data?.summary?.totalWords ?? 0);
+    if (!root) { pill.hidden = true; return; }
+    if (!sessionWordBaselines.has(root)) sessionWordBaselines.set(root, total);
+    const delta = total - sessionWordBaselines.get(root);
+    pill.hidden = delta <= 0;
+    if (delta > 0) pill.textContent = `本次 +${delta.toLocaleString("zh-CN")} 字`;
   }
 
   function ensureStatusPillContainer() {
@@ -519,6 +620,11 @@ export function createComposer(ctx) {
   }
 
   async function sendChatMessageWithUX(message) {
+    // 入口忙态守卫：双击建议卡/快捷 chip/重试按钮不应打出 409 噪音（服务端守卫仍是兜底）。
+    if (isChatBusy()) {
+      ctx.showToast("智能体正在处理上一条消息，请稍候或点停止。", "info");
+      return;
+    }
     const savedContent = message;
     ctx.refs.composerSubmit.disabled = true;
     ctx.refs.composerSubmit.setAttribute("aria-busy", "true");
@@ -528,49 +634,31 @@ export function createComposer(ctx) {
     autoGrowComposer();
     updateSubmitState();
 
-    // 2. 插入用户气泡
-    const userBubble = document.createElement("div");
-    userBubble.className = "msg-user rise chat-bubble-wrap chat-bubble-wrap--user";
-    const userBubbleInner = document.createElement("div");
-    userBubbleInner.className = "chat-bubble chat-bubble--user";
-    const userContent = document.createElement("div");
-    userContent.className = "chat-bubble-content";
-    userContent.textContent = message;
-    userBubbleInner.append(userContent);
-    userBubble.append(userBubbleInner);
+    // 2. 乐观用户气泡（复用 thread-renderer 的渲染器；轮询渲出持久化消息后会被自动清理）
+    const userBubble = ctx.threadRenderer.renderChatMessage({
+      role: "user", content: message, ts: new Date().toISOString()
+    });
+    userBubble.dataset.optimistic = "user";
     ctx.refs.thread.append(userBubble);
-    ctx.threadRenderer.scrollThreadToBottom();
 
-    // 3. 插入"思考中"占位
-    const thinkingBubble = document.createElement("div");
-    thinkingBubble.className = "msg-agent rise chat-bubble-wrap chat-bubble-wrap--assistant chat-thinking";
-    const thinkingAvatar = document.createElement("div");
-    thinkingAvatar.className = "agent-avatar";
-    thinkingAvatar.textContent = "W";
-    const thinkingBody = document.createElement("div");
-    thinkingBody.className = "agent-body";
-    const thinkingSay = document.createElement("p");
-    thinkingSay.className = "agent-say";
-    thinkingSay.textContent = "思考中...";
-    thinkingBody.append(thinkingSay);
-    thinkingBubble.append(thinkingAvatar, thinkingBody);
-    ctx.refs.thread.append(thinkingBubble);
-    ctx.threadRenderer.scrollThreadToBottom();
+    // 3. 活动占位 + 立刻开启忙时轮询（过程流靠它）
+    localSendInFlight = true;
+    showActivityPlaceholder();
+    ctx.ensureRefreshLoop(true);
 
     try {
-      // 4. 调用 chat API
-      await sendChatMessage(message);
-
-      // 5. 移除手动插入的元素；loadDashboard → syncChatThread 会从历史渲染正确的气泡
-      userBubble.remove();
-      thinkingBubble.remove();
+      const result = await sendChatMessage(message);
+      localSendInFlight = false;
+      removeActivityPlaceholder();
+      if (userBubble.isConnected) userBubble.remove();
+      if (result?.cancelled) ctx.showToast("本轮已停止。", "info");
       if (typeof ctx.loadDashboard === "function") {
         await ctx.loadDashboard();
       }
     } catch (error) {
-      // 6. 错误恢复：移除手动插入的元素，显示错误行，恢复输入框
-      userBubble.remove();
-      thinkingBubble.remove();
+      localSendInFlight = false;
+      removeActivityPlaceholder();
+      if (userBubble.isConnected) userBubble.remove();
 
       const errorBubble = document.createElement("div");
       errorBubble.className = "msg-agent rise chat-bubble-wrap";
@@ -678,6 +766,7 @@ export function createComposer(ctx) {
     updateSlashMenu, hideSlashMenu, submitComposer, submitWritingCommand,
     submitSideQuestion, promoteAskEntry, resultMessageForCommand,
     initModePill, updateModePill, openModePopover, closeModePopover,
-    updateStatusPills, sendChatMessageWithUX
+    updateStatusPills, sendChatMessageWithUX,
+    syncChatBusy, isChatBusy
   };
 }

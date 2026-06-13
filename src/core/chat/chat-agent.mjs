@@ -2,7 +2,7 @@
 // 续轮由 resumeChatTurn 接管；maxToolRounds 防止失控空转。
 import { buildChatContext } from "./chat-context.mjs";
 import { parseAgentReply } from "./agent-protocol.mjs";
-import { executeTool, checkToolPermission } from "./tool-registry.mjs";
+import { executeTool, checkToolPermission, summarizeArgs } from "./tool-registry.mjs";
 import { previewEditChapter } from "./tools-write.mjs";
 import { appendChatMessage, loadPendingAction, savePendingAction, clearPendingAction } from "./chat-store.mjs";
 
@@ -38,6 +38,7 @@ export async function resumeChatTurn(options) {
   const toolEvent = { tool: pending.tool, ok: outcome.ok, error: outcome.ok ? null : outcome.error };
   await appendChatMessage(projectRoot, {
     role: "tool", tool: pending.tool, ok: outcome.ok,
+    args: summarizeArgs(pending.args),
     result_summary: summarize(outcome.ok ? outcome.result : { error: outcome.error, message: outcome.message })
   });
   options.onEvent?.({ type: "tool_result", ...toolEvent });
@@ -45,14 +46,22 @@ export async function resumeChatTurn(options) {
 }
 
 async function agentLoop(options, toolEvents) {
-  const { projectRoot, project, registry, modelClient, server, getTaskQueue, onEvent } = options;
+  const { projectRoot, project, registry, modelClient, server, getTaskQueue, onEvent, signal } = options;
   let totalCost = 0;
   let calls = 0;
   for (let round = 0; round < MAX_TOOL_ROUNDS + 1; round += 1) {
+    if (signal?.aborted) return await finishCancelled(projectRoot, toolEvents, calls, totalCost);
     const { messages } = await buildChatContext({ projectRoot, project, registry, userMessage: latestPrompt(options, round) });
-    const result = await modelClient.generate({
-      project, stage: "chat", messages, metadata: { chat: true, round }
-    });
+    let result;
+    try {
+      result = await modelClient.generate({
+        project, stage: "chat", messages, metadata: { chat: true, round }, signal
+      });
+    } catch (error) {
+      // 外部停止（signal.aborted）与模型超时（仅 AbortError）要区分：超时照旧抛出走原错误链。
+      if (signal?.aborted) return await finishCancelled(projectRoot, toolEvents, calls, totalCost);
+      throw error;
+    }
     calls += 1;
     totalCost += Number(result.costSummary?.estimatedCost ?? 0) || 0;
     const parsed = parseAgentReply(result.text);
@@ -61,6 +70,7 @@ async function agentLoop(options, toolEvents) {
       return { reply: parsed.text, toolEvents, pendingAction: null, usage: { calls, cost: totalCost } };
     }
     if (toolEvents.length >= MAX_TOOL_ROUNDS) break;
+    if (signal?.aborted) return await finishCancelled(projectRoot, toolEvents, calls, totalCost);
     const tool = registry.get(parsed.call.tool);
     const isRead = tool?.kind === "read";
     if (tool && !isRead) {
@@ -69,7 +79,7 @@ async function agentLoop(options, toolEvents) {
       if (!permission.allowed) {
         const outcome = { ok: false, error: "permission_denied", message: permission.message };
         toolEvents.push({ tool: parsed.call.tool, ok: false, error: outcome.error });
-        await appendChatMessage(projectRoot, { role: "tool", tool: parsed.call.tool, ok: false, result_summary: outcome.message });
+        await appendChatMessage(projectRoot, { role: "tool", tool: parsed.call.tool, ok: false, args: summarizeArgs(parsed.call.args), result_summary: outcome.message });
         onEvent?.({ type: "tool_result", tool: parsed.call.tool, ok: false });
         continue;
       }
@@ -82,6 +92,7 @@ async function agentLoop(options, toolEvents) {
         toolEvents.push(event);
         await appendChatMessage(projectRoot, {
           role: "tool", tool: parsed.call.tool, ok: outcome.ok, auto_approved: true,
+          args: summarizeArgs(parsed.call.args),
           result_summary: summarize(outcome.ok ? outcome.result : { error: outcome.error, message: outcome.message })
         });
         onEvent?.({ type: "tool_result", ...event });
@@ -93,7 +104,7 @@ async function agentLoop(options, toolEvents) {
         catch (error) {
           const outcome = { ok: false, error: error.code ?? "preview_failed", message: error.message };
           toolEvents.push({ tool: parsed.call.tool, ok: false, error: outcome.error });
-          await appendChatMessage(projectRoot, { role: "tool", tool: parsed.call.tool, ok: false, result_summary: outcome.message });
+          await appendChatMessage(projectRoot, { role: "tool", tool: parsed.call.tool, ok: false, args: summarizeArgs(parsed.call.args), result_summary: outcome.message });
           onEvent?.({ type: "tool_result", tool: parsed.call.tool, ok: false });
           continue;
         }
@@ -111,6 +122,7 @@ async function agentLoop(options, toolEvents) {
     toolEvents.push(event);
     await appendChatMessage(projectRoot, {
       role: "tool", tool: parsed.call.tool, ok: outcome.ok,
+      args: summarizeArgs(parsed.call.args),
       result_summary: summarize(outcome.ok ? outcome.result : { error: outcome.error, message: outcome.message })
     });
     onEvent?.({ type: "tool_result", ...event });
@@ -118,6 +130,11 @@ async function agentLoop(options, toolEvents) {
   const capped = "操作轮数达到上限，我先停在这里。请把任务拆小一点，或直接告诉我下一步。";
   await appendChatMessage(projectRoot, { role: "assistant", content: capped });
   return { reply: capped, toolEvents, pendingAction: null, usage: { calls, cost: totalCost } };
+}
+
+async function finishCancelled(projectRoot, toolEvents, calls, totalCost) {
+  await appendChatMessage(projectRoot, { role: "assistant", content: "（已停止。）", cost: totalCost || undefined });
+  return { reply: "（已停止。）", toolEvents, pendingAction: null, cancelled: true, usage: { calls, cost: totalCost } };
 }
 
 function latestPrompt(options, round) {

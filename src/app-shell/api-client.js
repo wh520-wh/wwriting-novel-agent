@@ -41,6 +41,10 @@ export async function confirmChatAction(approve) {
   return await postJson("/api/chat/confirm", { approve });
 }
 
+export async function stopChat() {
+  return await postJson("/api/chat/stop", {});
+}
+
 export async function fetchChatHistory({ after = null, limit = 100 } = {}) {
   const params = new URLSearchParams();
   if (after) params.set("after", after);

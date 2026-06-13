@@ -2,10 +2,13 @@ import { icon } from "./icons.js";
 import { formatTime, formatNumber, formatCompact, cssEscape, translateStage, translateReviewStatus, statusClass } from "./utils.js";
 import { motion } from "./motion-runtime.js";
 import { renderFailureCard } from "./components/failure-card.js";
-import { renderDiff } from "./diff-view.js";
+import { renderDiff, renderParagraphDiff } from "./diff-view.js";
 import { deriveFailures } from "./agent-truth.mjs";
 import { postJson } from "./api-client.js";
 import { sendChatMessage, confirmChatAction } from "./api-client.js";
+import { renderMarkdown, escapeHtml } from "./markdown-lite.mjs";
+import { toolLabel } from "./tool-labels.mjs";
+import { deriveSources, deriveSuggestions } from "./chat-derive.mjs";
 
 const STAGE_ORDER = ["queued", "planning", "planned", "drafting", "reviewing", "needs_revision", "revising", "finalizing", "summarizing"];
 
@@ -36,12 +39,8 @@ export function createThreadRenderer(ctx) {
     ctx.refs.thread.replaceChildren(fragment);
   }
 
-  function buildSuggestionCards() {
-    const suggestions = [
-      { label: "排 5 章试写", message: "排 5 章试写" },
-      { label: "这本书的设定是什么？", message: "这本书的设定是什么？" },
-      { label: "目前花了多少钱？", message: "目前花了多少钱？" }
-    ];
+  function buildSuggestionCards(data) {
+    const suggestions = deriveSuggestions(data ?? ctx.getDashboard?.() ?? {});
     const wrap = document.createElement("div");
     wrap.className = "suggestion-cards";
     for (const item of suggestions) {
@@ -50,6 +49,7 @@ export function createThreadRenderer(ctx) {
       card.className = "suggestion-card";
       card.textContent = item.label;
       card.addEventListener("click", () => {
+        if (ctx.isChatBusy?.()) return;
         wrap.querySelectorAll(".suggestion-card").forEach((c) => { c.disabled = true; });
         if (typeof ctx.sendChatMessageWithUX === "function") {
           ctx.sendChatMessageWithUX(item.message);
@@ -60,8 +60,8 @@ export function createThreadRenderer(ctx) {
     return wrap;
   }
 
-  function appendSuggestionCards() {
-    const cards = buildSuggestionCards();
+  function appendSuggestionCards(data) {
+    const cards = buildSuggestionCards(data);
     ctx.refs.thread.append(cards);
     scrollThreadToBottom();
   }
@@ -232,9 +232,9 @@ export function createThreadRenderer(ctx) {
     const say = document.createElement("p");
     say.className = "agent-say";
     say.textContent = currentProjectRoot
-      ? "我已就绪。你可以输入 /write 续写章节、/review 审稿修订，或 /ask 临时询问当前进度。"
+      ? "我已就绪。直接告诉我你想做什么：写下一章、改一段正文、问设定或进度都行；输入 / 可以唤起命令。"
       : "你好，我是 WWriting 智能体。新建或从左侧打开一部小说后，告诉我故事的设定，我会规划、起草、审稿、定稿，并把每一章保存为本地文件。";
-    const quick = buildQuickRow(currentProjectRoot ? ["开始写作", "续写下一章", "/ask 现在写到第几章了"] : ["新建小说"]);
+    const quick = buildQuickRow(currentProjectRoot ? ["续写下一章", "这本书的设定是什么？", "目前花了多少钱？"] : ["新建小说"]);
     body.append(name, say);
     if (quick) body.append(quick);
     wrap.append(avatar, body);
@@ -363,7 +363,6 @@ export function createThreadRenderer(ctx) {
   async function cancelQueuedTask(taskId) {
     try {
       await postJson("/api/queue/cancel", { taskId });
-      ctx.showToast("任务已取消。", "success");
       await ctx.loadDashboard();
     } catch (error) {
       ctx.showToast(error.message, "error");
@@ -391,7 +390,10 @@ export function createThreadRenderer(ctx) {
       chip.type = "button";
       chip.append(icon("bolt", 13));
       chip.append(document.createTextNode(label));
-      chip.addEventListener("click", () => ctx.handleQuick(label));
+      chip.addEventListener("click", () => {
+        if (ctx.isChatBusy?.()) return;
+        ctx.handleQuick(label);
+      });
       row.append(chip);
     }
     return row;
@@ -817,28 +819,59 @@ export function createThreadRenderer(ctx) {
   }
 
   // ===== S3 chat thread rendering =====
-  // 简单 HTML 转义：避免把 message.content / tool 输出当作 HTML 解析。
-  function escape(text) {
-    return String(text ?? "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#39;");
-  }
 
-  // 极简 markdown：段落 (\n\n) + 粗体 (**x**) + 行内代码 (`x`)。
-  // 不引入第三方依赖；遇到更复杂结构时回退到纯文本。
-  function renderAssistantText(text) {
-    const escaped = escape(text ?? "");
-    return escaped
-      .split(/\n{2,}/)
-      .map((para) => {
-        const withBold = para.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-        const withCode = withBold.replace(/`([^`]+)`/g, "<code>$1</code>");
-        return `<p>${withCode.replace(/\n/g, "<br>")}</p>`;
-      })
-      .join("");
+  // 气泡操作排：复制 / 重新发送（user）/ 重试本轮（assistant，仅最后一条显示，见 syncChatThread 收尾）。
+  function buildMsgActions(message, allMessages) {
+    const bar = document.createElement("div");
+    bar.className = "msg-actions";
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "msg-action";
+    copy.dataset.testid = "msg-copy";
+    copy.textContent = "复制";
+    copy.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(message.content ?? "");
+        ctx.showToast("已复制。", "info");
+      } catch {
+        ctx.showToast("复制失败：剪贴板不可用。", "error");
+      }
+    });
+    bar.append(copy);
+    if (message.role === "user") {
+      const resend = document.createElement("button");
+      resend.type = "button";
+      resend.className = "msg-action";
+      resend.dataset.testid = "msg-resend";
+      resend.textContent = "重新发送";
+      resend.addEventListener("click", () => {
+        if (ctx.isChatBusy?.()) return;
+        ctx.sendChatMessageWithUX?.(message.content ?? "");
+      });
+      bar.append(resend);
+    }
+    if (message.role === "assistant") {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "msg-action";
+      retry.dataset.testid = "msg-retry";
+      retry.hidden = true; // syncChatThread 收尾只放开最后一条 assistant 的
+      retry.textContent = "重试本轮";
+      retry.addEventListener("click", () => {
+        if (ctx.isChatBusy?.()) return;
+        const msgs = allMessages ?? [];
+        const idx = msgs.findIndex((m) => m?.id === message.id);
+        for (let i = (idx < 0 ? msgs.length : idx) - 1; i >= 0; i -= 1) {
+          if (msgs[i]?.role === "user") {
+            ctx.sendChatMessageWithUX?.(msgs[i].content ?? "");
+            return;
+          }
+        }
+        ctx.showToast("没有可重试的消息。", "info");
+      });
+      bar.append(retry);
+    }
+    return bar;
   }
 
   function renderUserBubble(message) {
@@ -851,11 +884,12 @@ export function createThreadRenderer(ctx) {
     content.className = "chat-bubble-content";
     content.textContent = message.content ?? "";
     bubble.append(content);
+    bubble.append(buildMsgActions(message));
     wrap.append(bubble);
     return wrap;
   }
 
-  function renderAssistantBubble(message) {
+  function renderAssistantBubble(message, allMessages) {
     const wrap = document.createElement("div");
     wrap.className = "msg-agent rise chat-bubble-wrap chat-bubble-wrap--assistant";
     wrap.dataset.ts = message.ts ?? "";
@@ -869,14 +903,43 @@ export function createThreadRenderer(ctx) {
     }
     const body = document.createElement("div");
     body.className = "chat-bubble-content";
-    body.innerHTML = renderAssistantText(message.content ?? "");
+    body.innerHTML = renderMarkdown(message.content ?? "");
     bubble.append(body);
+    const sources = deriveSources(allMessages ?? [], message);
+    if (sources.length > 0) {
+      const row = document.createElement("div");
+      row.className = "chat-sources";
+      const tag = document.createElement("span");
+      tag.className = "chat-sources-tag";
+      tag.textContent = "依据";
+      row.append(tag);
+      for (const chip of sources) {
+        if (chip.chapterNo) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "chat-source-chip chat-source-chip--link";
+          btn.dataset.testid = "chat-source-chapter";
+          btn.textContent = chip.label;
+          btn.title = chip.resultSummary;
+          btn.addEventListener("click", () => ctx.openReader(chip.chapterNo));
+          row.append(btn);
+        } else {
+          const span = document.createElement("span");
+          span.className = "chat-source-chip";
+          span.textContent = chip.label;
+          span.title = chip.resultSummary;
+          row.append(span);
+        }
+      }
+      bubble.append(row);
+    }
     if (Number.isFinite(message.cost) && message.cost > 0) {
       const cost = document.createElement("span");
       cost.className = "chat-cost";
       cost.textContent = `本轮 ¥${message.cost.toFixed(4)}`;
       bubble.append(cost);
     }
+    bubble.append(buildMsgActions(message, allMessages));
     wrap.append(bubble);
     return wrap;
   }
@@ -889,8 +952,18 @@ export function createThreadRenderer(ctx) {
     card.className = "chat-tool-card";
     const summary = document.createElement("summary");
     const ok = message.ok !== false;
-    summary.textContent = `工具 ${message.tool ?? ""} ${ok ? "✓" : "✗"}`;
+    const label = document.createElement("span");
+    label.className = "chat-tool-label";
+    label.textContent = toolLabel(message.tool ?? "", message.args);
+    const mark = document.createElement("span");
+    mark.className = `chat-tool-mark ${ok ? "ok" : "fail"}`;
+    mark.textContent = ok ? "✓" : "✗";
+    summary.append(label, mark);
     card.append(summary);
+    const tech = document.createElement("div");
+    tech.className = "chat-tool-tech mono";
+    tech.textContent = `${message.tool ?? ""} ${message.args ?? ""}`.trim();
+    card.append(tech);
     const pre = document.createElement("pre");
     pre.textContent = message.result_summary ?? "";
     card.append(pre);
@@ -922,15 +995,34 @@ export function createThreadRenderer(ctx) {
     const preview = pendingAction?.preview;
     if (preview?.before != null || preview?.after != null) {
       if (pendingAction?.tool === "edit_chapter") {
-        card.append(renderDiff(preview.before ?? "", preview.after ?? ""));
+        const diffWrap = document.createElement("div");
+        diffWrap.className = "chat-confirm-diffwrap";
+        const paraView = renderParagraphDiff(preview.before ?? "", preview.after ?? "");
+        const lineView = renderDiff(preview.before ?? "", preview.after ?? "");
+        lineView.hidden = true;
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "chat-diff-toggle";
+        toggle.dataset.testid = "chat-diff-toggle";
+        toggle.textContent = "行级详细";
+        toggle.setAttribute("aria-pressed", "false");
+        toggle.addEventListener("click", () => {
+          const showLine = lineView.hidden;
+          lineView.hidden = !showLine;
+          paraView.hidden = showLine;
+          toggle.textContent = showLine ? "段落对照" : "行级详细";
+          toggle.setAttribute("aria-pressed", showLine ? "true" : "false");
+        });
+        diffWrap.append(paraView, lineView, toggle);
+        card.append(diffWrap);
       } else {
         const diff = document.createElement("div");
         diff.className = "chat-confirm-diff";
         const before = document.createElement("div");
-        before.className = "chat-confirm-before";
+        before.className = "chat-confirm-before manuscript-text peek";
         before.textContent = preview?.before ?? "";
         const after = document.createElement("div");
-        after.className = "chat-confirm-after";
+        after.className = "chat-confirm-after manuscript-text peek";
         after.textContent = preview?.after ?? "";
         diff.append(before, after);
         card.append(diff);
@@ -985,10 +1077,10 @@ export function createThreadRenderer(ctx) {
   }
 
   // 渲染一条 chat 历史消息：根据 type 路由到对应渲染器。
-  function renderChatMessage(message) {
+  function renderChatMessage(message, allMessages) {
     if (!message) return null;
     if (message.role === "user") return renderUserBubble(message);
-    if (message.role === "assistant") return renderAssistantBubble(message);
+    if (message.role === "assistant") return renderAssistantBubble(message, allMessages);
     if (message.role === "tool") return renderToolCard(message);
     return null;
   }
@@ -1015,14 +1107,28 @@ export function createThreadRenderer(ctx) {
       // 无聊天历史时不主动清理既有 thread；维持原 agent 事件流渲染。
       return;
     }
+    const wrap = ctx.refs.threadWrap;
+    const stick = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 80;
+    let appended = false;
     for (const message of messages) {
       const key = message.id ? `chat:${message.id}` : `chat:${message.role}:${message.ts}:${message.tool ?? ""}`;
       if (ctx.renderedKeys.has(key)) continue;
-      const node = renderChatMessage(message);
+      const node = renderChatMessage(message, messages);
       if (!node) continue;
       ctx.renderedKeys.add(key);
       insertByTs(ctx.refs.thread, node, message.ts);
+      appended = true;
+      if (message.role === "user") {
+        // 持久化的 user 消息上屏后，移除 composer 的乐观气泡，防止重影。
+        ctx.refs.thread.querySelector('[data-optimistic="user"]')?.remove();
+      }
+      if (message.role === "assistant") {
+        ctx.announce("智能体已回复");
+      }
     }
+    const retryButtons = ctx.refs.thread.querySelectorAll('[data-testid="msg-retry"]');
+    retryButtons.forEach((btn, i) => { btn.hidden = i !== retryButtons.length - 1; });
+    if (appended && stick) scrollThreadToBottom();
   }
 
   // 发送聊天消息的便捷方法（composer 暂未接入时也可单独调用）。
