@@ -17,7 +17,13 @@ import { ensureBuiltinSkill, importProjectSkill, listProjectSkills } from "./ski
 import { loadOutputStyles } from "./output-style-loader.mjs";
 import { ProjectCancelledError, runProject } from "./agent-engine.mjs";
 import { handleSideQuestion } from "./side-question.mjs";
-import { expandInstruction, TaskQueue } from "./task-queue.mjs";
+import { TaskQueue } from "./task-queue.mjs";
+import {
+  TaskContractError,
+  compileWritingTasks,
+  makeResumeContract,
+  validateTaskContract
+} from "./task-contract.mjs";
 import { resolveRetryCandidate, retryDashboardFields } from "./retry-candidates.mjs";
 import { validateFailureCommand } from "../shared/failure-commands.mjs";
 import { applyFailureResolution } from "./failure-actions.mjs";
@@ -741,10 +747,51 @@ async function serveCommandSubmit(request, response, context) {
       return;
     }
     const queue = await context.getTaskQueue(projectRoot);
-    const instructions = expandInstruction(message, { currentChapter: state.current_chapter_no ?? 1 });
+    const explicitScope = /第\d+章|(?:\d+|[一二三四五六七八九十])章|到第\d+章/u.test(message);
+    const hasPendingWritingTask = queue.getState().tasks.some((candidate) =>
+      ["queued", "running", "cancelling"].includes(candidate.status) &&
+      ["write_chapter", "resume_chapter"].includes(candidate.contract?.kind)
+    );
+    if (!explicitScope && hasPendingWritingTask) {
+      await appendEvent(projectRoot, {
+        type: "task_contract_rejected",
+        project_id: project.project_id,
+        stage: "user_input",
+        severity: "warn",
+        message,
+        data: {
+          code: "ambiguous_task_scope",
+          currentChapter: state.current_chapter_no ?? 1
+        }
+      });
+      throw new TaskContractError(
+        "ambiguous_task_scope",
+        "已有写作任务，请明确指定章节。"
+      );
+    }
+    const plannedTasks = compileWritingTasks(message, {
+      currentChapter: state.current_chapter_no ?? 1,
+      targetChapters: project.target_chapters
+    });
     const tasks = [];
-    for (const instruction of instructions) {
-      tasks.push(await queue.enqueue(instruction, { mode }));
+    for (const planned of plannedTasks) {
+      const task = await queue.enqueue(planned.instruction, {
+        mode,
+        contract: planned.contract
+      });
+      tasks.push(task);
+      await appendEvent(projectRoot, {
+        type: "task_contract_created",
+        project_id: project.project_id,
+        stage: "user_input",
+        message: planned.instruction,
+        data: {
+          task_id: task.id,
+          contract_kind: planned.contract?.kind ?? null,
+          chapter_start: planned.contract?.chapter_start ?? null,
+          chapter_end: planned.contract?.chapter_end ?? null
+        }
+      });
     }
     let runStatus = { started: false, alreadyRunning: isJobRunning(context.runJobs.get(path.resolve(projectRoot))) };
     if (!runStatus.alreadyRunning) {
@@ -771,6 +818,10 @@ async function serveCommandSubmit(request, response, context) {
     });
     });
   } catch (error) {
+    if (error instanceof TaskContractError) {
+      sendError(response, new HttpError(400, error.code, error.message, error.details ?? null));
+      return;
+    }
     sendError(response, error instanceof HttpError ? error : new HttpError(400, "command_submit_failed", error.message));
   }
 }
@@ -1187,6 +1238,36 @@ async function startProjectRun(projectRoot, project, context, task, instructionM
     project_status: "running",
     current_stage: state.current_stage && state.current_stage !== "idle" ? state.current_stage : "queued"
   };
+  const contractForRun = task.source === "project_state_recovery" || !task.contract
+    ? makeResumeContract(state.current_chapter_no ?? 1)
+    : task.contract;
+  try {
+    validateTaskContract(contractForRun, {
+      currentChapter: state.current_chapter_no,
+      targetChapters: project.target_chapters
+    });
+  } catch (error) {
+    if (error instanceof TaskContractError) {
+      await appendEvent(projectRoot, {
+        type: "task_contract_rejected",
+        project_id: project.project_id,
+        stage: state.current_stage,
+        severity: "warn",
+        message: error.message,
+        data: {
+          code: error.code,
+          task_id: task.id,
+          currentChapter: state.current_chapter_no ?? 1
+        }
+      });
+    }
+    job.status = "error";
+    job.error = error.message;
+    runJobs.delete(key);
+    const queue = await context.getTaskQueue(projectRoot);
+    await queue.block(task.id, error.message).catch(() => {});
+    throw error;
+  }
   await saveState(projectRoot, runningState);
   await appendEvent(projectRoot, {
     type: "user_instruction_received",
@@ -1213,6 +1294,7 @@ async function startProjectRun(projectRoot, project, context, task, instructionM
     model: context.testModel ?? undefined,
     signal: controller.signal,
     taskId: task.id,
+    contract: contractForRun,
     onHeartbeat: async ({ stage, chapter, step } = {}) => {
       job.lastHeartbeat = new Date().toISOString();
       const queue = await context.getTaskQueue(projectRoot);

@@ -196,9 +196,7 @@ test("command submit queues future tasks without appending future instructions t
   const run = deferredRun();
   const { server, port, projectRoot } = await setupServer({ testRunProject: run.testRunProject });
   try {
-    await postJson(port, "/api/commands/submit", { message: "写第1章" });
-    await postJson(port, "/api/commands/submit", { message: "写第2章" });
-    await postJson(port, "/api/commands/submit", { message: "写第3章" });
+    await postJson(port, "/api/commands/submit", { message: "写3章" });
 
     const { data: queue } = await getJson(port, "/api/queue/state");
     assert.equal(queue.tasks.length, 3);
@@ -223,10 +221,11 @@ test("concurrent command submits start one run and leave later tasks queued", as
   const run = deferredRun();
   const { server, port } = await setupServer({ testRunProject: run.testRunProject });
   try {
+    // 并发的「写第1章」请求，每个都编译成第 1 章契约；项目锁串行化入队，第一个升级为 running，其余留在 queued。
     await Promise.all([
-      postJson(port, "/api/commands/submit", { message: "task one" }),
-      postJson(port, "/api/commands/submit", { message: "task two" }),
-      postJson(port, "/api/commands/submit", { message: "task three" })
+      postJson(port, "/api/commands/submit", { message: "写第1章" }),
+      postJson(port, "/api/commands/submit", { message: "写第1章" }),
+      postJson(port, "/api/commands/submit", { message: "写第1章" })
     ]);
 
     const { data: queue } = await getJson(port, "/api/queue/state");
@@ -244,8 +243,14 @@ test("completed queued task auto-advances to the next queued instruction", async
   const run = deferredRun();
   const { server, port, projectRoot } = await setupServer({ testRunProject: run.testRunProject });
   try {
-    await postJson(port, "/api/commands/submit", { message: "写第1章" });
-    await postJson(port, "/api/commands/submit", { message: "写第2章" });
+    // 走 API 编译两个单章任务（第 1 章、第 2 章）；「写2章」在 currentChapter=1 时把两个
+    // 任务都入队，第一个立刻升级为 running，第二个留在 queued。契约在 run-start 才校验，
+    // 所以两个任务都能进队列；第二个任务开始前要先把项目状态推进到第 2 章才能通过校验。
+    await postJson(port, "/api/commands/submit", { message: "写2章" });
+
+    await waitFor(() => run.calls.length === 1);
+    const state = await loadState(projectRoot);
+    await saveState(projectRoot, { ...state, current_chapter_no: 2 });
 
     run.deferreds[0].resolve({ completed: false, projectRoot });
 
@@ -263,8 +268,7 @@ test("completed queued task auto-advances to the next queued instruction", async
 test("server close aborts the active job and cancels only its running task", async () => {
   const run = deferredRun();
   const { server, port, projectRoot } = await setupServer({ testRunProject: run.testRunProject });
-  await postJson(port, "/api/commands/submit", { message: "task one" });
-  await postJson(port, "/api/commands/submit", { message: "task two" });
+  await postJson(port, "/api/commands/submit", { message: "写2章" });
   assert.equal(run.calls[0].options.signal.aborted, false);
 
   await closeServer(server);
@@ -282,8 +286,7 @@ test("POST /api/run/stop cancels the running task and leaves queued tasks untouc
   const run = deferredRun();
   const { server, port } = await setupServer({ testRunProject: run.testRunProject });
   try {
-    await postJson(port, "/api/commands/submit", { message: "写第1章" });
-    await postJson(port, "/api/commands/submit", { message: "写第2章" });
+    await postJson(port, "/api/commands/submit", { message: "写2章" });
 
     const { res, data } = await postJson(port, "/api/run/stop", {});
     assert.equal(res.status, 200);
@@ -891,4 +894,65 @@ test("POST /api/failures/resolve blocked 项目也能处理（不被 short-circu
     assert.equal(res.status, 200);
     assert.equal(data.ok, true);
   } finally { await closeServer(ctx.server); }
+});
+
+test("精确单章命令把契约传给 runner", async () => {
+  const run = deferredRun();
+  const { server, port } = await setupServer({ testRunProject: run.testRunProject });
+  try {
+    const { res } = await postJson(port, "/api/commands/submit", { message: "写第1章" });
+    assert.equal(res.status, 200);
+    assert.equal(run.calls.length, 1);
+    assert.deepEqual(run.calls[0].options.contract, {
+      version: 1, kind: "write_chapter", chapter_start: 1, chapter_end: 1,
+      stop_policy: "immediate", resume_policy: "checkpoint", skip_policy: "reject"
+    });
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("跳章命令返回 chapter_gap 且不入队", async () => {
+  const { server, port } = await setupServer();
+  try {
+    const { res, data } = await postJson(port, "/api/commands/submit", { message: "写第3章" });
+    assert.equal(res.status, 400);
+    assert.equal(data.code, "chapter_gap");
+    const queue = await getJson(port, "/api/queue/state");
+    assert.equal(queue.data.tasks.length, 0);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("写3章创建三个严格单章任务", async () => {
+  const run = deferredRun();
+  const { server, port } = await setupServer({ testRunProject: run.testRunProject });
+  try {
+    const result = await postJson(port, "/api/commands/submit", { message: "写3章" });
+    assert.equal(result.data.tasks.length, 3);
+    assert.deepEqual(result.data.tasks.map((task) => task.contract.chapter_start), [1, 2, 3]);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("已有写作任务时拒绝含糊指令", async () => {
+  const run = deferredRun();
+  const { server, port } = await setupServer({
+    testRunProject: run.testRunProject
+  });
+  try {
+    await postJson(port, "/api/commands/submit", { message: "写第1章" });
+    const { res, data } = await postJson(port, "/api/commands/submit", {
+      message: "继续完善雨夜氛围"
+    });
+
+    assert.equal(res.status, 400);
+    assert.equal(data.code, "ambiguous_task_scope");
+    const queue = await getJson(port, "/api/queue/state");
+    assert.equal(queue.data.tasks.length, 1);
+  } finally {
+    await closeServer(server);
+  }
 });
