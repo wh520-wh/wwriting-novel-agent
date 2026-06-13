@@ -25,6 +25,9 @@ import { loadContinuity, mergeExtraction, saveContinuity, loadContinuityState, s
 import { appendChatMessage, loadPendingAction, savePendingAction } from "./chat/chat-store.mjs";
 import { previewEditChapter } from "./chat/tools-write.mjs";
 import { validateTaskContract } from "./task-contract.mjs";
+import { ProjectCancelledError, rethrowIfCancelled, throwIfAborted } from "./cancellation.mjs";
+
+export { ProjectCancelledError } from "./cancellation.mjs";
 
 export class SimulatedInterrupt extends Error {
   constructor(message) {
@@ -38,14 +41,6 @@ export class ProjectBlockedError extends Error {
     super(`Project blocked: ${reason}`);
     this.name = "ProjectBlockedError";
     this.reason = reason;
-  }
-}
-
-export class ProjectCancelledError extends Error {
-  constructor(reason = "cancelled") {
-    super(String(reason || "cancelled"));
-    this.name = "ProjectCancelledError";
-    this.reason = String(reason || "cancelled");
   }
 }
 
@@ -252,11 +247,6 @@ export async function runProject(projectRoot, options = {}) {
     }).catch(() => {});
     throw error;
   }
-}
-
-function throwIfAborted(signal) {
-  if (!signal?.aborted) return;
-  throw new ProjectCancelledError(signal.reason ?? "cancelled");
 }
 
 async function findFreshPauseRequest(projectRoot, sinceMs) {
@@ -514,6 +504,7 @@ async function reviewChapter(projectRoot, project, state, runtime) {
   try {
     factCheck = await runFactCheck(projectRoot, project, state, runtime, draft);
   } catch (error) {
+    rethrowIfCancelled(error, runtime.signal);
     await appendEvent(projectRoot, {
       type: "fact_check_failed", project_id: project.project_id,
       chapter_no: state.current_chapter_no, stage: "reviewing", severity: "warn",
@@ -562,12 +553,14 @@ async function reviseChapter(projectRoot, project, state, runtime, options = {})
 
 async function finalizeChapter(projectRoot, project, state, runtime) {
   const draft = await readDraft(projectRoot, project, state.current_chapter_no);
+  throwIfAborted(runtime.signal);
   const postProcess = await runPostProcessHooks(projectRoot, project, {
     chapter_no: state.current_chapter_no,
     stage: "post_process",
     content: draft,
     skills: runtime.stepSkills
   });
+  throwIfAborted(runtime.signal);
   if (postProcess.results.some((result) => result.status === "applied")) {
     await writeFileAtomic(
       safeJoin(projectRoot, "drafts", chapterFileName(state.current_chapter_no, `draft.${project.output_format}`)),
@@ -582,6 +575,7 @@ async function finalizeChapter(projectRoot, project, state, runtime) {
       data: { hooks: postProcess.hooks, results: postProcess.results }
     });
   }
+  throwIfAborted(runtime.signal);
   const result = await finalizeChapterFile(projectRoot, project, state.current_chapter_no);
   await emit(CORE_EVENTS.ChapterWritten, {
     projectRoot,
@@ -640,8 +634,10 @@ export async function extractChapterMemory(projectRoot, project, state, runtime)
     });
     let parsed = null;
     for (let attempt = 0; attempt < 2 && !parsed?.ok; attempt += 1) {
+      throwIfAborted(runtime.signal);
       const result = await runtime.modelClient.generate({
         project, stage: "memory_extract", messages,
+        signal: runtime.signal,
         metadata: { memoryExtract: true, chapterNo, attempt }
       });
       parsed = parseMemoryExtraction(result.text);
@@ -657,6 +653,7 @@ export async function extractChapterMemory(projectRoot, project, state, runtime)
       data: { facts_added: parsed.facts.length, timeline_added: parsed.timeline.length }
     });
   } catch (error) {
+    rethrowIfCancelled(error, runtime.signal);
     await saveContinuityState(projectRoot, { last_extracted_chapter: chapterNo });
     await appendEvent(projectRoot, {
       type: "memory_extract_failed", project_id: project.project_id, chapter_no: chapterNo,
@@ -710,6 +707,7 @@ export async function runFactCheck(projectRoot, project, state, runtime, draft) 
 
   let parsed = null;
   for (let attempt = 0; attempt < 2 && !parsed?.ok; attempt += 1) {
+    throwIfAborted(runtime.signal);
     try {
       const result = await runtime.modelClient.generate({
         project, stage: "fact_check",
@@ -717,10 +715,12 @@ export async function runFactCheck(projectRoot, project, state, runtime, draft) 
           chapterNo: state.current_chapter_no, draft,
           facts: continuity.facts, timeline: continuity.timeline
         }),
+        signal: runtime.signal,
         metadata: { factCheck: true, chapterNo: state.current_chapter_no, attempt }
       });
       parsed = parseFactCheck(result.text);
     } catch (error) {
+      rethrowIfCancelled(error, runtime.signal);
       parsed = { ok: false, error: error.message };
     }
   }
@@ -885,6 +885,9 @@ async function createModelRuntime(projectRoot, project, options, fallbackModel) 
     });
   return {
     modelClient,
+    signal: options.signal,
+    taskId: options.taskId ?? null,
+    contract: options.contract ?? null,
     cacheKeyManager: options.cacheKeyManager ?? new CacheKeyManager({ entries: existingCacheReport.entries ?? {} }),
     stepSkills: null,
     warnedChapters: new Set()
@@ -1242,6 +1245,7 @@ async function requestChapterToolCall(projectRoot, project, state, runtime, requ
   let lastValidation = null;
   let lastModelCall = null;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
+    throwIfAborted(runtime.signal);
     await consumeModelCallBudget(projectRoot, project, state, {
       request_kind: request.kind,
       attempt

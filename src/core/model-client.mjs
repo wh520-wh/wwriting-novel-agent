@@ -2,6 +2,7 @@ import { CostTracker } from "./cost-tracker.mjs";
 import { resolveRuntimeConfig } from "./config-runtime.mjs";
 import { normalizeUsageReport } from "./usage-report.mjs";
 import { ProviderTransportError } from "./provider-adapters.mjs";
+import { isCancellationError } from "./cancellation.mjs";
 
 export class ModelClient {
   constructor({
@@ -113,6 +114,11 @@ export class ModelClient {
       } catch (error) {
         clearTimeout(timer);
         timeoutController.signal.removeEventListener("abort", onTimeout);
+
+        // External cancellation — never retry; rethrow the original AbortError.
+        if (!timedOut && isCancellationError(error, signal)) {
+          throw error;
+        }
 
         // User abort — don't retry
         if (signal?.aborted && !timedOut) {
