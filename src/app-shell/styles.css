@@ -1956,3 +1956,21 @@ button.cbar-pill--readonly:hover {
 .reader-tools .icon-btn:disabled { opacity: .35; cursor: default; }
 .reader.reader--wide { width: min(96vw, 1100px); }
 .reader--wide .reader-head .path, .reader--wide .reader-head .sub { display: none; }
+
+/* ============================================================
+   S4.5 Task 16 · 快捷键速查
+   ============================================================ */
+.shortcuts-card {
+  position: relative; width: min(420px, 100%);
+  border: 1px solid var(--line); border-radius: var(--r-xl);
+  background: linear-gradient(180deg, #fff, var(--surface-2));
+  padding: 26px 28px 24px; box-shadow: var(--shadow-pop);
+}
+.shortcuts-card h2 { font-size: 17px; margin-bottom: 14px; }
+.shortcuts-list { display: grid; grid-template-columns: auto 1fr; gap: 8px 18px; margin: 0; }
+.shortcuts-list dt {
+  font-family: var(--mono); font-size: 12px; color: var(--ink-2);
+  background: var(--surface-3); border: 1px solid var(--line-2); border-radius: 6px;
+  padding: 2px 8px; justify-self: start;
+}
+.shortcuts-list dd { margin: 0; font-size: 13px; color: var(--muted); align-self: center; }

@@ -76,6 +76,9 @@ const refs = {
   createSubmit: document.querySelector("#create-submit"),
   createStatus: document.querySelector("#create-status"),
   createX: document.querySelector("#create-x"),
+  shortcutsScrim: document.querySelector("#shortcuts-scrim"),
+  shortcutsX: document.querySelector("#shortcuts-x"),
+  cbarKeys: document.querySelector("#cbar-keys"),
   toastStack: document.querySelector("#toast-stack"),
   threadStatus: document.querySelector("#thread-status"),
   topbar: document.querySelector(".topbar"),
@@ -310,6 +313,12 @@ refs.createScrim.addEventListener("click", (event) => {
 refs.createBrowse.addEventListener("click", () => browseForCreatePath());
 refs.createSubmit.addEventListener("click", () => initProject(refs.createPath.value.trim()));
 
+refs.cbarKeys.addEventListener("click", () => openShortcuts());
+refs.shortcutsX.addEventListener("click", () => closeShortcuts());
+refs.shortcutsScrim.addEventListener("click", (event) => {
+  if (event.target === refs.shortcutsScrim) closeShortcuts();
+});
+
 refs.readerFontMinus.addEventListener("click", () => nudgeReaderFont(-1));
 refs.readerFontPlus.addEventListener("click", () => nudgeReaderFont(1));
 refs.readerPrev.addEventListener("click", () => openAdjacentChapter(-1));
@@ -330,12 +339,18 @@ document.addEventListener("keydown", (event) => {
     if (event.key === "ArrowRight") { event.preventDefault(); openAdjacentChapter(1); return; }
   }
   if (event.key === "Escape") {
+    if (refs.shortcutsScrim.classList.contains("show")) return closeShortcuts();
     if (refs.readerScrim.classList.contains("show")) return closeReader();
     if (refs.settingsScrim.classList.contains("show")) return closeSettingsModal();
     if (refs.createScrim.classList.contains("show")) return closeCreateModal();
     if (refs.drawer.classList.contains("show")) return closeDrawer();
   }
-  if (refs.readerScrim.classList.contains("show")) trapTab(refs.readerScrim, event);
+  if (event.key === "?" && !isEditableTarget(event.target)) {
+    event.preventDefault();
+    openShortcuts();
+  }
+  if (refs.shortcutsScrim.classList.contains("show")) trapTab(refs.shortcutsScrim, event);
+  else if (refs.readerScrim.classList.contains("show")) trapTab(refs.readerScrim, event);
   else if (refs.settingsScrim.classList.contains("show")) trapTab(refs.settingsScrim, event);
   else if (refs.createScrim.classList.contains("show")) trapTab(refs.createScrim, event);
   else if (refs.drawer.classList.contains("show")) trapTab(refs.drawer, event);
@@ -965,6 +980,14 @@ function closeOverlay(scrim) {
   scrim.setAttribute("inert", "");
   if (lastFocused && lastFocused.isConnected) lastFocused.focus();
   lastFocused = null;
+}
+
+function openShortcuts() { openOverlay(refs.shortcutsScrim, refs.shortcutsX); }
+function closeShortcuts() { closeOverlay(refs.shortcutsScrim); }
+
+function isEditableTarget(target) {
+  const tag = target?.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable === true;
 }
 
 function initPrivacyMode() {
