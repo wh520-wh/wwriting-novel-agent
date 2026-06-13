@@ -1928,7 +1928,7 @@ button.cbar-pill--readonly:hover {
 /* ============================================================
    S4.5 Task 12 · 消息操作排
    ============================================================ */
-.msg-actions { display: flex; gap: 6px; margin-top: 6px; opacity: .25; transition: opacity .15s; }
+.msg-actions { display: flex; gap: 6px; margin-top: 6px; opacity: .25; transition: opacity .2s; }
 .chat-bubble-wrap:hover .msg-actions,
 .chat-bubble-wrap:focus-within .msg-actions { opacity: 1; }
 .msg-action {
