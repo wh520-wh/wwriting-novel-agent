@@ -1927,3 +1927,13 @@ button.cbar-pill--readonly:hover {
 }
 .msg-action:hover { background: var(--hover); color: var(--ink-2); }
 .chat-bubble--user .msg-action { background: rgba(255,255,255,.14); border-color: rgba(255,255,255,.3); color: #fff; }
+
+/* ============================================================
+   S4.5 Task 13 · 阅读器选段引用
+   ============================================================ */
+#reader-quote-btn {
+  position: fixed; z-index: 220; transform: translateX(-50%);
+  font-size: 12px; padding: 5px 12px; border-radius: 99px;
+  background: var(--btn-gradient); color: #fff; box-shadow: var(--shadow);
+}
+#reader-quote-btn:hover { filter: brightness(1.1); }
