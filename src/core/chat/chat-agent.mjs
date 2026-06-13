@@ -46,14 +46,22 @@ export async function resumeChatTurn(options) {
 }
 
 async function agentLoop(options, toolEvents) {
-  const { projectRoot, project, registry, modelClient, server, getTaskQueue, onEvent } = options;
+  const { projectRoot, project, registry, modelClient, server, getTaskQueue, onEvent, signal } = options;
   let totalCost = 0;
   let calls = 0;
   for (let round = 0; round < MAX_TOOL_ROUNDS + 1; round += 1) {
+    if (signal?.aborted) return await finishCancelled(projectRoot, toolEvents, calls, totalCost);
     const { messages } = await buildChatContext({ projectRoot, project, registry, userMessage: latestPrompt(options, round) });
-    const result = await modelClient.generate({
-      project, stage: "chat", messages, metadata: { chat: true, round }
-    });
+    let result;
+    try {
+      result = await modelClient.generate({
+        project, stage: "chat", messages, metadata: { chat: true, round }, signal
+      });
+    } catch (error) {
+      // 外部停止（signal.aborted）与模型超时（仅 AbortError）要区分：超时照旧抛出走原错误链。
+      if (signal?.aborted) return await finishCancelled(projectRoot, toolEvents, calls, totalCost);
+      throw error;
+    }
     calls += 1;
     totalCost += Number(result.costSummary?.estimatedCost ?? 0) || 0;
     const parsed = parseAgentReply(result.text);
@@ -62,6 +70,7 @@ async function agentLoop(options, toolEvents) {
       return { reply: parsed.text, toolEvents, pendingAction: null, usage: { calls, cost: totalCost } };
     }
     if (toolEvents.length >= MAX_TOOL_ROUNDS) break;
+    if (signal?.aborted) return await finishCancelled(projectRoot, toolEvents, calls, totalCost);
     const tool = registry.get(parsed.call.tool);
     const isRead = tool?.kind === "read";
     if (tool && !isRead) {
@@ -121,6 +130,11 @@ async function agentLoop(options, toolEvents) {
   const capped = "操作轮数达到上限，我先停在这里。请把任务拆小一点，或直接告诉我下一步。";
   await appendChatMessage(projectRoot, { role: "assistant", content: capped });
   return { reply: capped, toolEvents, pendingAction: null, usage: { calls, cost: totalCost } };
+}
+
+async function finishCancelled(projectRoot, toolEvents, calls, totalCost) {
+  await appendChatMessage(projectRoot, { role: "assistant", content: "（已停止。）", cost: totalCost || undefined });
+  return { reply: "（已停止。）", toolEvents, pendingAction: null, cancelled: true, usage: { calls, cost: totalCost } };
 }
 
 function latestPrompt(options, round) {
