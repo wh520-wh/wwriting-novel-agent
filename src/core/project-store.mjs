@@ -165,6 +165,7 @@ export async function writeCheckpoint(projectRoot, payload) {
     checkpoint_id,
     timestamp: new Date().toISOString(),
     task_id: payload.task_id ?? null,
+    task_contract: payload.task_contract ?? null,
     chapter_no: payload.chapter_no ?? null,
     stage: payload.stage ?? null,
     segment_no: payload.segment_no ?? null,

@@ -24,6 +24,7 @@ import { buildMemoryExtractionMessages, parseMemoryExtraction } from "./memory-e
 import { loadContinuity, mergeExtraction, saveContinuity, loadContinuityState, saveContinuityState } from "./continuity-store.mjs";
 import { appendChatMessage, loadPendingAction, savePendingAction } from "./chat/chat-store.mjs";
 import { previewEditChapter } from "./chat/tools-write.mjs";
+import { validateTaskContract } from "./task-contract.mjs";
 
 export class SimulatedInterrupt extends Error {
   constructor(message) {
@@ -61,6 +62,15 @@ export async function runProject(projectRoot, options = {}) {
   if (state.project_status === "blocked") {
     return { completed: false, blocked: true, projectRoot, reason: state.blocked_reason };
   }
+
+  const taskId = options.taskId ?? null;
+  const contract = options.contract
+    ? validateTaskContract(options.contract, {
+        currentChapter: state.current_chapter_no,
+        targetChapters: project.target_chapters
+      })
+    : null;
+  const execution = { taskId, contract };
 
   state.project_status = "running";
   if (!state.current_stage || state.current_stage === "idle") {
@@ -142,10 +152,20 @@ export async function runProject(projectRoot, options = {}) {
         case "finalizing":
           await finalizeChapter(projectRoot, project, state, runtime);
           break;
-        case "summarizing":
+        case "summarizing": {
           await extractChapterMemory(projectRoot, project, state, runtime);
-          await completeChapter(projectRoot, project, state);
+          const completion = await completeChapter(projectRoot, project, state, execution);
+          if (completion.taskCompleted) {
+            return {
+              outcome: "completed",
+              task_completed: true,
+              project_completed: completion.projectCompleted,
+              completed_chapters: [completion.chapterNo],
+              projectRoot
+            };
+          }
           break;
+        }
         default:
           throw new Error(`Unknown stage: ${state.current_stage}`);
       }
@@ -793,27 +813,37 @@ export async function applyFactCheckHardFail(projectRoot, project, state, confli
   } catch (err) { console.warn("appendFailure failed:", err.message); }
 }
 
-async function completeChapter(projectRoot, project, state) {
-  const nextChapter = state.current_chapter_no + 1;
-  const targetStage = nextChapter > project.target_chapters ? "completed" : "queued";
+async function completeChapter(projectRoot, project, state, execution) {
+  const chapterNo = state.current_chapter_no;
+  const nextChapter = chapterNo + 1;
+  const projectCompleted = nextChapter > project.target_chapters;
+  const taskCompleted = execution?.contract
+    ? chapterNo >= execution.contract.chapter_end
+    : nextChapter > project.target_chapters;
   const next = setStage({
     ...state,
+    project_status: projectCompleted ? "completed" : (taskCompleted ? "idle" : "running"),
     current_chapter_no: nextChapter,
     current_segment_no: 0
-  }, targetStage);
+  }, projectCompleted ? "completed" : "queued");
   await upsertChapter(projectRoot, {
-    chapter_no: state.current_chapter_no,
+    chapter_no: chapterNo,
     status: "completed"
   });
   await appendEvent(projectRoot, {
     type: "chapter_completed",
     project_id: project.project_id,
-    chapter_no: state.current_chapter_no,
+    chapter_no: chapterNo,
     stage: "completed",
-    message: "chapter completed"
+    message: "chapter completed",
+    data: { task_id: execution?.taskId ?? null }
   });
   await saveState(projectRoot, next);
-  await writeCheckpoint(projectRoot, checkpointPayload(project, state, next));
+  await writeCheckpoint(projectRoot, checkpointPayload(
+    project, state, next, [], [], null,
+    { task_id: execution?.taskId ?? null, task_contract: execution?.contract ?? null }
+  ));
+  return { chapterNo, taskCompleted, projectCompleted };
 }
 
 async function createModelRuntime(projectRoot, project, options, fallbackModel) {
@@ -1506,7 +1536,8 @@ async function blockProject(projectRoot, project, state, reason, data = {}, opts
 function checkpointPayload(project, stateBefore, stateAfter, toolCalls = [], toolResults = [], error = null, extras = {}) {
   return {
     project_id: project.project_id,
-    task_id: `${project.project_id}:${stateAfter.current_chapter_no}:${stateAfter.current_stage}`,
+    task_id: extras.task_id ?? `${project.project_id}:${stateAfter.current_chapter_no}:${stateAfter.current_stage}`,
+    task_contract: extras.task_contract ?? null,
     chapter_no: stateAfter.current_chapter_no,
     stage: stateAfter.current_stage,
     segment_no: stateAfter.current_segment_no,
