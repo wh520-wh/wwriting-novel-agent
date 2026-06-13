@@ -292,7 +292,8 @@ export function createComposer(ctx) {
     updateCostPill(data);
   }
 
-  // 会话新增字数：每项目记会话基线（内存，重启/切项目即重置——会话语义）。
+  // 会话新增字数：按项目在内存 Map 里记基线，整个会话期间复用（切回旧项目基线仍在）；
+  // 刷新/重启应用即清空——会话语义，不持久化。
   const sessionWordBaselines = new Map();
 
   function updateWordsPill(data) {
