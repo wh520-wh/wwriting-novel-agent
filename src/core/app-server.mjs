@@ -14,7 +14,7 @@ import { createResearchAdapter } from "./research-adapters.mjs";
 import { fetchWebPage, searchWeb } from "./research-tools.mjs";
 import { ModelConfigValidationError, validateModelConfig } from "./model-config-validation.mjs";
 import { testModelConnection as runModelConnectionTest } from "./model-connection-test.mjs";
-import { saveModelSettingsTransaction } from "./settings-runtime.mjs";
+import { SettingsValidationError, normalizeSettingsPatch, saveModelSettingsTransaction, updateProjectSettings } from "./settings-runtime.mjs";
 import { ensureBuiltinSkill, importProjectSkill, listProjectSkills } from "./skill-runtime.mjs";
 import { loadOutputStyles } from "./output-style-loader.mjs";
 import { ProjectCancelledError, runProject } from "./agent-engine.mjs";
@@ -508,22 +508,49 @@ async function serveSettingsUpdate(request, response, context) {
     if (!activeModel) {
       throw new HttpError(400, "invalid_active_model", "active_model is required.");
     }
+
+    // Validate non-model fields (tool_permissions / budget_config / research_config / ...) BEFORE
+    // touching durable state. If the caller sent garbage in any of these sections, we reject the
+    // whole request without writing the model — the request is meant to be atomic.
+    const nonModelPatch = { ...body };
+    delete nonModelPatch.active_model;
+    delete nonModelPatch.projectRoot;
+    let normalizedNonModelPatch = null;
+    if (Object.keys(nonModelPatch).length > 0) {
+      try {
+        normalizedNonModelPatch = normalizeSettingsPatch(nonModelPatch);
+      } catch (settingsError) {
+        if (settingsError instanceof SettingsValidationError) {
+          throw new HttpError(400, settingsError.code, settingsError.message);
+        }
+        throw settingsError;
+      }
+    }
+
     const result = await saveModelSettingsTransaction({
       projectRoot,
       secretsRoot: context.secretsRoot,
       activeModel
     });
-    const config = await loadConfigLayers(projectRoot, result.project);
+
+    // Model save succeeded; now persist the non-model fields. If this fails the durable state is
+    // still consistent (active_model already saved); we surface the error and let the caller retry.
+    let mergedProject = result.project;
+    if (normalizedNonModelPatch && Object.keys(normalizedNonModelPatch).length > 0) {
+      mergedProject = await updateProjectSettings(projectRoot, normalizedNonModelPatch);
+    }
+
+    const config = await loadConfigLayers(projectRoot, mergedProject);
     await serveJson(response, {
       ok: true,
       projectRoot,
       project: {
-        project_id: result.project.project_id,
-        active_model: result.project.active_model,
-        stage_overrides: result.project.stage_overrides,
-        tool_permissions: result.project.tool_permissions,
-        budget_config: result.project.budget_config,
-        research_config: result.project.research_config
+        project_id: mergedProject.project_id,
+        active_model: mergedProject.active_model,
+        stage_overrides: mergedProject.stage_overrides,
+        tool_permissions: mergedProject.tool_permissions ?? {},
+        budget_config: mergedProject.budget_config ?? {},
+        research_config: mergedProject.research_config ?? {}
       },
       effective_config: config.effective,
       model_profile: buildModelProfile(config.effective.active_model, context.secretsRoot),
@@ -533,6 +560,10 @@ async function serveSettingsUpdate(request, response, context) {
   } catch (error) {
     if (error instanceof ModelConfigValidationError) {
       sendError(response, new HttpError(400, error.code, error.message, { fields: error.fields }));
+      return;
+    }
+    if (error instanceof SettingsValidationError) {
+      sendError(response, new HttpError(400, error.code, error.message));
       return;
     }
     if (error instanceof HttpError) {
