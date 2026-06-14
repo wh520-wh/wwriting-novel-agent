@@ -1,0 +1,11 @@
+command: npm test
+started_at: 2026-06-13 baseline
+finished_at: 2026-06-13 baseline
+exit_code: 0
+passed_count: 599
+failed_count: 0
+log_path: .uat_runs/2026-06-13-remediation/logs/00-baseline-npm-test.txt
+commit: 432899e45bb7215a3a7c3d48e1787620e98d7b37
+
+Baseline established. 599 tests passing, 0 failing on commit 432899e.
+No pre-existing test failures to track.
