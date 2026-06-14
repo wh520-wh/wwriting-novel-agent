@@ -1256,6 +1256,79 @@ test("valid candidate persists project config and secret together", async () => 
   }
 });
 
+test("settings/update persists tool_permissions / budget_config / research_config alongside active_model", async () => {
+  const ctx = await setupServer();
+  try {
+    const { res, data } = await postJson(ctx.port, "/api/settings/update", {
+      projectRoot: ctx.projectRoot,
+      active_model: {
+        provider: "openai-compatible",
+        model_name: "writer-smoke",
+        base_url: "https://api.example.test/v1",
+        api_key_env: "WRITER_API_KEY",
+        api_key: "sk-smoke-key-for-local-secret",
+      },
+      tool_permissions: {
+        network_allowed: true
+      },
+      budget_config: {
+        max_model_calls: 77
+      },
+      research_config: {
+        search_endpoint: "https://search.example.test/api",
+        search_api_key_env: "SEARCH_API_KEY"
+      }
+    });
+
+    assert.equal(res.status, 200);
+    assert.equal(data.project.budget_config.max_model_calls, 77);
+    assert.equal(data.project.tool_permissions.network_allowed, true);
+    assert.equal(data.project.research_config.search_endpoint, "https://search.example.test/api");
+
+    const persisted = await loadProject(ctx.projectRoot);
+    assert.equal(persisted.budget_config.max_model_calls, 77);
+    assert.equal(persisted.tool_permissions.network_allowed, true);
+    assert.equal(persisted.research_config.search_endpoint, "https://search.example.test/api");
+
+    const dashboard = await loadDashboardData(ctx.root, { projectRoot: ctx.projectRoot });
+    assert.equal(dashboard.project.budget_config.max_model_calls, 77);
+    assert.equal(dashboard.project.tool_permissions.network_allowed, true);
+    assert.equal(dashboard.project.research_config.search_endpoint, "https://search.example.test/api");
+  } finally {
+    await closeServer(ctx.server);
+  }
+});
+
+test("settings/update rejects an invalid non-model patch atomically before writing model fields", async () => {
+  const ctx = await setupServer();
+  try {
+    const before = await loadProject(ctx.projectRoot);
+    const beforeSecrets = loadLocalSecretsSync(ctx.secretsRoot);
+
+    const { res, data } = await postJson(ctx.port, "/api/settings/update", {
+      projectRoot: ctx.projectRoot,
+      active_model: {
+        provider: "openai-compatible",
+        model_name: "writer-smoke",
+        base_url: "https://api.example.test/v1",
+        api_key_env: "WRITER_API_KEY",
+        api_key: "sk-smoke-key-for-local-secret",
+      },
+      // Invalid: max_model_calls must be a positive integer
+      budget_config: {
+        max_model_calls: -1
+      }
+    });
+
+    assert.equal(res.status, 400);
+    assert.equal(data.code, "invalid_max_model_calls");
+    assert.deepEqual(await loadProject(ctx.projectRoot), before);
+    assert.deepEqual(loadLocalSecretsSync(ctx.secretsRoot), beforeSecrets);
+  } finally {
+    await closeServer(ctx.server);
+  }
+});
+
 test("connection test validates unsaved candidate without persisting it", async () => {
   const seen = [];
   const { server, port, projectRoot, secretsRoot } = await setupServer({
