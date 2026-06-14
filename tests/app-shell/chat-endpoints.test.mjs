@@ -144,7 +144,7 @@ test("GET /api/chat/history 支持 after / limit 参数", async () => {
   }
 });
 
-test("POST /api/chat/send 无项目时返回 400", async () => {
+test("POST /api/chat/send 无项目时返回 404 no_project", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-chat-noproject-"));
   const stateRoot = path.join(root, ".state");
   const secretsRoot = path.join(root, ".secrets");
@@ -158,7 +158,8 @@ test("POST /api/chat/send 无项目时返回 400", async () => {
   const port = await listenOnFetchSafePort(server);
   try {
     const { res, data } = await postJson(port, "/api/chat/send", { message: "hi" });
-    assert.equal(res.status, 400);
+    // B1.3 把 read-scope 解析器统一为 404 no_project；无项目时拒绝 4xx（含 404）即可。
+    assert.equal(res.status, 404);
     assert.equal(data.ok, false);
   } finally {
     await closeServer(server);
