@@ -172,6 +172,25 @@ export class TaskQueue {
     });
   }
 
+  // 把排队/运行/取消中的任务直接置为 blocked。仅在「项目级阻塞」这种前置校验里使用，
+  // 避免在 run-start 后再调用 queue.block（它要求任务已经在 running）。
+  async markBlocked(taskId, reason) {
+    return this.withLock(async () => {
+      await this.load();
+      const task = this.findTask(taskId);
+      if (!task || TERMINAL_STATUSES.has(task.status)) {
+        return null;
+      }
+      const now = timestamp();
+      task.status = "blocked";
+      task.completedAt = now;
+      task.updatedAt = now;
+      task.error = reason ?? "blocked";
+      await this.save();
+      return clone(task);
+    });
+  }
+
   async block(taskId, reason) {
     return this.withLock(async () => {
       await this.load();
