@@ -1302,3 +1302,42 @@ test("connection test validates unsaved candidate without persisting it", async 
     await closeServer(server);
   }
 });
+
+test("invalid legacy model config blocks a task without provider access", async () => {
+  let runCalls = 0;
+  const { server, port, projectRoot } = await setupServer({
+    testRunProject: async () => {
+      runCalls += 1;
+    },
+  });
+  try {
+    const project = await loadProject(projectRoot);
+    await saveProject(projectRoot, {
+      ...project,
+      active_model: {
+        provider: "openai-compatible",
+        model_name: "mimo-v2.5-pro",
+        base_url: "",
+        api_key_env: "XIAOMI_MIMO_API_KEY",
+      },
+    });
+
+    const { res, data } = await postJson(port, "/api/commands/submit", {
+      projectRoot,
+      message: "写第 1 章",
+    });
+
+    assert.equal(res.status, 400);
+    assert.equal(data.code, "configuration_missing");
+    assert.equal(runCalls, 0);
+    const queue = await getJson(port, "/api/queue/state");
+    assert.equal(queue.data.tasks.length, 1);
+    assert.equal(queue.data.tasks[0].status, "blocked");
+    assert.equal(queue.data.tasks[0].error, "configuration_missing");
+    const state = await loadState(projectRoot);
+    assert.equal(state.project_status, "blocked");
+    assert.equal(state.blocked_reason, "模型配置不完整");
+  } finally {
+    await closeServer(server);
+  }
+});

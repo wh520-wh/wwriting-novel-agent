@@ -828,6 +828,25 @@ async function serveSkillMutation(request, response, context) {
   }
 }
 
+async function validateRunnableModelConfig(project, secretsRoot) {
+  if (!project || !project.active_model) {
+    throw new ModelConfigValidationError({
+      provider: "请先在设置中配置模型"
+    });
+  }
+  validateModelConfig(project.active_model);
+  if (project.active_model.provider === "openai-compatible") {
+    const secrets = await loadLocalSecrets(secretsRoot);
+    const envName = project.active_model.api_key_env;
+    if (!secrets[envName]) {
+      throw new ModelConfigValidationError({
+        api_key: "请填写 API Key 或保留已配置密钥"
+      });
+    }
+  }
+  return project.active_model;
+}
+
 async function serveCommandSubmit(request, response, context) {
   try {
     const body = await readJsonBody(request);
@@ -961,6 +980,30 @@ async function serveCommandSubmit(request, response, context) {
           chapter_end: planned.contract?.chapter_end ?? null
         }
       });
+    }
+    // 运行前模型资格预检：仅做本地静态检查（字段形状 + secret 存在），不发网络请求、不消耗模型预算。
+    // 失败时把已入队任务与项目置为 blocked，不启动 runner。
+    try {
+      await validateRunnableModelConfig(project, context.secretsRoot);
+    } catch (modelError) {
+      if (modelError instanceof ModelConfigValidationError) {
+        const latestState = await loadState(projectRoot).catch(() => state);
+        await saveState(projectRoot, {
+          ...latestState,
+          project_status: "blocked",
+          current_stage: "idle",
+          blocked_reason: "模型配置不完整"
+        });
+        for (const task of tasks) {
+          await queue.markBlocked(task.id, "configuration_missing").catch(() => {});
+        }
+        sendError(response, new HttpError(400, "configuration_missing", "模型配置不完整", {
+          fields: modelError.fields,
+          action: "open_settings"
+        }));
+        return;
+      }
+      throw modelError;
     }
     let runStatus = { started: false, alreadyRunning: isJobRunning(context.runJobs.get(path.resolve(projectRoot))) };
     if (!runStatus.alreadyRunning) {
