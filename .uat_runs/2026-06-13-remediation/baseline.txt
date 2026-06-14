@@ -1,0 +1,17 @@
+Base commit: 432899e45bb7215a3a7c3d48e1787620e98d7b37 (docs: add UAT remediation implementation plans)
+Worktree path: D:\WWriting (master branch)
+Branch: master
+Pre-existing dirty paths (stashed as uat-execution-baseline-stash):
+  M  docs/superpowers/plans/2026-06-13-uat-execution-core.md (user revision)
+  M  docs/superpowers/plans/2026-06-13-uat-model-config.md (user revision)
+  M  docs/superpowers/plans/2026-06-13-uat-remediation-program.md (user revision)
+  M  docs/superpowers/plans/2026-06-13-uat-state-ui.md (user revision)
+   M scripts/verify-electron-runtime.mjs
+   M scripts/verify-packaged-dir.mjs
+   M src/desktop/electron-main.cjs
+  ?? .uat_runs/ (pre-existing UAT artifacts)
+  ?? WWriting-真实用户验收报告-2026-06-13.md (prior report)
+  ?? src/desktop/server-listen.cjs
+  ?? tests/desktop-server-listen.test.mjs
+Executor: subagent-driven-development controller
+Start time: 2026-06-13
