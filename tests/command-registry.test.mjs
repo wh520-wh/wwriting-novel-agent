@@ -10,6 +10,7 @@ import {
 import {
   askCommand,
   chaptersCommand,
+  modelCommand,
   reviewCommand,
   settingsCommand,
   writeCommand
@@ -75,14 +76,20 @@ test("listCommands filters by userInvocable, category, and isEnabled", () => {
 });
 
 test("built-in slash commands are user invocable", () => {
-  for (const command of [askCommand, chaptersCommand, reviewCommand, settingsCommand, writeCommand]) {
+  for (const command of [askCommand, chaptersCommand, modelCommand, reviewCommand, settingsCommand, writeCommand]) {
     registerCommand(command);
   }
 
   assert.deepEqual(
     listCommands({ userInvocable: true }).map((c) => c.name).sort(),
-    ["ask", "chapters", "review", "settings", "write"]
+    ["ask", "chapters", "model", "review", "settings", "write"]
   );
+});
+
+test("model slash command is wired to /model", () => {
+  assert.equal(modelCommand.name, "model");
+  assert.equal(modelCommand.slashKey, "/model");
+  assert.equal(modelCommand.userInvocable, true);
 });
 
 test("registerCommand throws when name missing", () => {

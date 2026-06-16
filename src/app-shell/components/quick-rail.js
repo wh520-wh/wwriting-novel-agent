@@ -1,14 +1,16 @@
 import { setLastSeen } from './last-seen.js';
+import { icon as renderIcon } from '../icons.js';
 // Register 5 built-in slash commands on module load (composer's table mirrors
 // quick-rail's SLOTS array; they are intentionally separate UI surfaces).
 import '../commands/index.mjs';
 
+// 用线条 SVG 图标（icons.js）而非 emoji，避免「AI 生成」观感。
 const SLOTS = [
-  { key: 'chapters', icon: '📖', label: '章节', tab: 'chapters' },
-  { key: 'skills',   icon: '🧩', label: '技能', tab: 'skills' },
-  { key: 'research', icon: '📎', label: '资料', tab: 'research' },
-  { key: 'cost',     icon: '💰', label: '成本', tab: 'cost' },
-  { key: 'reviewer', icon: '🔍', label: '审查', tab: 'reviewer' }
+  { key: 'chapters', icon: 'book',   label: '章节', tab: 'chapters' },
+  { key: 'skills',   icon: 'skill',  label: '技能', tab: 'skills' },
+  { key: 'research', icon: 'doc',    label: '资料', tab: 'research' },
+  { key: 'cost',     icon: 'coin',   label: '成本', tab: 'cost' },
+  { key: 'reviewer', icon: 'search', label: '审查', tab: 'reviewer' }
 ];
 
 let activePopover = null;
@@ -37,10 +39,10 @@ export function renderQuickRail(root, badges, { onOpenTab, projectRoot }) {
     btn.dataset.key = slot.key;
     btn.setAttribute('aria-label', slot.label);
 
-    const icon = document.createElement('span');
-    icon.className = 'qr-icon';
-    icon.textContent = slot.icon;
-    btn.appendChild(icon);
+    const iconEl = document.createElement('span');
+    iconEl.className = 'qr-icon';
+    iconEl.append(renderIcon(slot.icon, 18));
+    btn.appendChild(iconEl);
 
     const badge = badgeText(slot.key, badges);
     if (badge) {

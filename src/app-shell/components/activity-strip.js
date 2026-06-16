@@ -1,8 +1,4 @@
-const STAGE_LABEL = {
-  queued: '排队', planning: '规划', planned: '已规划', drafting: '起草',
-  reviewing: '审稿', needs_revision: '需修订', revising: '修订',
-  finalizing: '定稿', summarizing: '摘要', blocked: '阻塞'
-};
+import { translateStage } from '../utils.js';
 
 export function renderActivityStrip(root, activity, { privacy = false, onClickCost, onClickChapter } = {}) {
   if (!activity) {
@@ -14,7 +10,7 @@ export function renderActivityStrip(root, activity, { privacy = false, onClickCo
   root.classList.toggle('blocked', activity.mode === 'blocked' || activity.mode === 'interrupted');
 
   root.replaceChildren();
-  appendSlot(root, 'stage', `● ${STAGE_LABEL[activity.stage] ?? activity.stage ?? '—'}`);
+  appendSlot(root, 'stage', `● ${translateStage(activity.stage) ?? '—'}`);
   if (activity.chapterNo != null) {
     const loc = activity.segCurrent != null
       ? `第 ${activity.chapterNo} 章 · seg ${activity.segCurrent}/${activity.segTotal ?? '?'}`

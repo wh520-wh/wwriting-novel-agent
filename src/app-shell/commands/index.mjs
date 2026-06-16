@@ -3,13 +3,15 @@ import { writeCommand } from "./write.mjs";
 import { reviewCommand } from "./review.mjs";
 import { askCommand } from "./ask.mjs";
 import { chaptersCommand } from "./chapters.mjs";
+import { modelCommand } from "./model.mjs";
 import { settingsCommand } from "./settings.mjs";
 
-// 模块加载副作用:一次性注册 5 个内置 slash 命令
+// 模块加载副作用:一次性注册内置 slash 命令
 registerCommand(writeCommand);
 registerCommand(reviewCommand);
 registerCommand(askCommand);
 registerCommand(chaptersCommand);
+registerCommand(modelCommand);
 registerCommand(settingsCommand);
 
 export {
@@ -17,5 +19,6 @@ export {
   reviewCommand,
   askCommand,
   chaptersCommand,
+  modelCommand,
   settingsCommand,
 };

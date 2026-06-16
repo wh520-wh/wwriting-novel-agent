@@ -164,6 +164,13 @@ describe('renderActivityStrip', () => {
     assert.equal(stage.textContent, '● unknown_stage');
   });
 
+  it('5c. translates idle stage to Chinese (no raw English)', () => {
+    const root = new MockElement('div');
+    renderActivityStrip(root, makeActivity({ stage: 'idle' }));
+    const stage = root.children.find(c => c.className.includes('as-stage'));
+    assert.equal(stage.textContent, '● 空闲');
+  });
+
   it('6. renders chapter location with segment info', () => {
     const root = new MockElement('div');
     renderActivityStrip(root, makeActivity({ chapterNo: 5, segCurrent: 3, segTotal: 10 }));

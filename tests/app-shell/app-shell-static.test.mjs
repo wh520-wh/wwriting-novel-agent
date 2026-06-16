@@ -9,11 +9,13 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const appJsPath = path.join(here, "..", "..", "src", "app-shell", "app.js");
 const apiClientPath = path.join(here, "..", "..", "src", "app-shell", "api-client.js");
+const composerPath = path.join(here, "..", "..", "src", "app-shell", "composer.js");
 const threadRendererPath = path.join(here, "..", "..", "src", "app-shell", "thread-renderer.js");
 const chapterPresentationPath = path.join(here, "..", "..", "src", "app-shell", "chapter-presentation.mjs");
 
 const appSource = await fs.readFile(appJsPath, "utf8");
 const apiClientSource = await fs.readFile(apiClientPath, "utf8");
+const composerSource = await fs.readFile(composerPath, "utf8");
 const threadRendererSource = await fs.readFile(threadRendererPath, "utf8");
 const chapterPresentationSource = await fs.readFile(chapterPresentationPath, "utf8");
 
@@ -100,13 +102,35 @@ test("settings-modal.js re-exports the pure connection helpers", () => {
       /export\s*\{[^}]*submitModelConnectionTest[^}]*\}\s*from\s*["']\.\/settings-connection\.mjs["']/,
       "settings-modal.js should re-export submitModelConnectionTest from ./settings-connection.mjs"
     );
-    // The placeholder must NOT echo a saved key value. Hint text is Chinese.
     assert.match(
       settingsModalSource,
-      /已配置[\s\S]{0,40}留空/u,
-      "settings-modal.js should show a '已配置…留空' placeholder for an existing secret"
+      /fetchModelSecret\s*\(\s*\)[\s\S]{0,240}settingsFields\.apiKey\.input\.value/u,
+      "settings-modal.js should fetch the saved model secret and put the full key back into the API Key input"
+    );
+    assert.doesNotMatch(
+      settingsModalSource,
+      /DO NOT prefill|must not echo the saved key|value:\s*""[\s\S]{0,80}secret:\s*true/u,
+      "settings-modal.js should no longer intentionally keep the saved API Key field empty"
     );
   });
+});
+
+test("composer.js supports /model switching from the chat box", () => {
+  assert.match(
+    composerSource,
+    /MODEL_PREFIXES/u,
+    "composer.js should define /model as a first-class command prefix"
+  );
+  assert.match(
+    composerSource,
+    /\/api\/settings\/model-switch/u,
+    "composer.js should call the model-switch endpoint from /model"
+  );
+  assert.match(
+    composerSource,
+    /await\s+ctx\.loadDashboard\s*\(/u,
+    "model switching should refresh dashboard so the model pill updates"
+  );
 });
 
 test("settings-connection.mjs defines the pure helpers", () => {

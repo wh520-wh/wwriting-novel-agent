@@ -9,8 +9,22 @@ import { PERMISSION_TIERS, detectPermissionTier, getTierById } from "./permissio
 const SIDE_QUESTION_PREFIXES = ["/ask", "/side", "/q"];
 const REVIEW_PREFIXES = ["/review", "/审稿"];
 const WRITE_PREFIXES = ["/write", "/写作"];
+const MODEL_PREFIXES = ["/model", "/模型"];
 // 命中则说明旁路询问其实包含修改主线设定/正文的诉求，需要确认后才转正式任务。
 const MAIN_TASK_IMPACT_PATTERN = /(改成|改为|改掉|改写|写成|换成|替换|删除|删掉|去掉|移除|重写|改编|不要写|不再写|别写|不写|推翻|重新设定|改设定|改人设|改世界观|改大纲|改结局|改剧情|黑化|洗白|复活|写死|赐死|领便当|降智|崩坏|让.{0,6}死|让.{0,6}活|让.{0,8}(在一起|分手|退场|出局|登场|加入|离开|背叛|反水))/u;
+
+// 明确的「开始/继续写作」祈使意图：命中则走硬启动（submitWritingCommand），
+// 不再把成败押在弱模型是否自觉调用 start_run 上。保守匹配——宁可漏判走对话，
+// 也不能把含疑问/条件/转折/否定的句子误判成启动指令。
+const START_WRITING_CORE = /^(请|帮我|帮忙|麻烦|那|那就|就|你)?\s*(现在|马上|立刻|赶紧|这就)?\s*(开始|继续|接着|往下|开)?\s*(写作|写|创作|续写|开写)\s*(第?\s*[一二三四五六七八九十百千零\d]+\s*章|下一?章|正文|下去|起来)?\s*(吧|呀|啊|了|呗|哈)?\s*[。.!！]*$/u;
+const START_WRITING_BLOCK = /[?？吗]|怎么|怎样|如何|可不可以|可以吗|能不能|能否|是不是|是否|要不要|好不好|行不行|的话|之前|先|稍后|等会|回头|如果|假如|要是|别|不要|不用|暂停|停一下|停下|先别/u;
+
+export function isStartWritingIntent(text) {
+  const t = String(text ?? "").trim();
+  if (!t || t.length > 18) return false;        // 超过 18 字多半带额外语义，交给对话流程
+  if (START_WRITING_BLOCK.test(t)) return false; // 疑问/条件/转折/否定 → 不启动
+  return START_WRITING_CORE.test(t);
+}
 
 // 动态从注册表取 slash 菜单项,避免硬编码
 function commandsForSlashMenu(query) {
@@ -118,12 +132,16 @@ export function createComposer(ctx) {
 
   let modePopoverOpen = false;
   let modePopoverActiveIndex = 1; // default tier index
+  let modelPopoverOpen = false;
 
   function getModePill() {
     return document.getElementById("mode-pill");
   }
   function getModePopover() {
     return document.getElementById("mode-popover");
+  }
+  function getModelPopover() {
+    return document.getElementById("model-popover");
   }
 
   function renderModePill() {
@@ -184,6 +202,56 @@ export function createComposer(ctx) {
     pill?.setAttribute("aria-expanded", "false");
     document.removeEventListener("keydown", onModePopoverKeydown, true);
     document.removeEventListener("pointerdown", onModePopoverPointerdown, true);
+  }
+
+  function openModelPopover() {
+    const models = ctx.getDashboard()?.available_models ?? [];
+    if (!models.length) {
+      ctx.showToast("还没有可切换的本地模型。请先在设置里保存模型与 API Key。", "info");
+      ctx.openSettingsModal?.();
+      return false;
+    }
+    closeModePopover();
+    buildModelPopover(models);
+    const popover = getModelPopover();
+    const pill = document.getElementById("status-pill-model");
+    if (!popover || !pill) return false;
+    popover.hidden = false;
+    modelPopoverOpen = true;
+    pill.setAttribute("aria-expanded", "true");
+    document.addEventListener("pointerdown", onModelPopoverPointerdown, true);
+    document.addEventListener("keydown", onModelPopoverKeydown, true);
+    return true;
+  }
+
+  function closeModelPopover() {
+    const popover = getModelPopover();
+    const pill = document.getElementById("status-pill-model");
+    if (!popover) return;
+    popover.hidden = true;
+    modelPopoverOpen = false;
+    pill?.setAttribute("aria-expanded", "false");
+    document.removeEventListener("pointerdown", onModelPopoverPointerdown, true);
+    document.removeEventListener("keydown", onModelPopoverKeydown, true);
+  }
+
+  function onModelPopoverPointerdown(event) {
+    if (!modelPopoverOpen) return;
+    const popover = getModelPopover();
+    const pill = document.getElementById("status-pill-model");
+    const target = event.target;
+    if (popover && popover.contains(target)) return;
+    if (pill && pill.contains(target)) return;
+    closeModelPopover();
+  }
+
+  function onModelPopoverKeydown(event) {
+    if (!modelPopoverOpen) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeModelPopover();
+      document.getElementById("status-pill-model")?.focus();
+    }
   }
 
   function setModePopoverActive(i) {
@@ -338,7 +406,8 @@ export function createComposer(ctx) {
       pill.type = "button";
       pill.id = "status-pill-model";
       pill.className = "cbar-pill cbar-pill--readonly";
-      pill.addEventListener("click", () => ctx.openSettingsModal());
+      pill.setAttribute("aria-haspopup", "listbox");
+      pill.addEventListener("click", () => openModelPopover());
       container.append(pill);
     }
     const project = data?.project;
@@ -347,7 +416,47 @@ export function createComposer(ctx) {
     let tx = pill.querySelector(".pill-tx");
     if (!tx) { tx = document.createElement("span"); tx.className = "pill-tx"; pill.append(tx); }
     tx.textContent = isMock || !name ? "未配置模型" : name;
-    pill.title = isMock || !name ? "点击打开设置配置模型" : name;
+    const count = Array.isArray(data?.available_models) ? data.available_models.length : 0;
+    pill.title = count > 0 ? "点击切换已配置模型" : "点击打开设置配置模型";
+  }
+
+  function buildModelPopover(models) {
+    let popover = getModelPopover();
+    if (!popover) {
+      popover = document.createElement("div");
+      popover.className = "mode-popover model-popover";
+      popover.id = "model-popover";
+      popover.setAttribute("role", "listbox");
+      popover.setAttribute("aria-label", "选择模型");
+      const wrap = document.getElementById("composer") ?? ctx.refs.composer;
+      if (wrap) wrap.append(popover);
+    }
+    const label = document.createElement("div");
+    label.className = "mode-popover-label";
+    label.textContent = "已配置模型";
+    const items = models.map((model) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "mode-popover-item";
+      btn.setAttribute("role", "option");
+      btn.setAttribute("aria-checked", model.active ? "true" : "false");
+      btn.dataset.modelId = model.id ?? model.model_name;
+      const glyph = document.createElement("span");
+      glyph.className = "mpi-glyph";
+      glyph.textContent = model.active ? "✓" : "M";
+      const tx = document.createElement("span");
+      tx.className = "mpi-tx";
+      const strong = document.createElement("strong");
+      strong.textContent = model.model_name ?? model.id ?? "model";
+      const small = document.createElement("small");
+      small.textContent = model.api_key_saved ? `${model.provider_label ?? model.provider} · key 已保存` : `${model.provider_label ?? model.provider} · key 未保存`;
+      tx.append(strong, small);
+      btn.append(glyph, tx);
+      btn.addEventListener("click", () => switchModel(btn.dataset.modelId));
+      return btn;
+    });
+    popover.replaceChildren(label, ...items);
+    popover.hidden = true;
   }
 
   function updateCostPill(data) {
@@ -398,11 +507,19 @@ export function createComposer(ctx) {
     if (write !== null) {
       return { type: "write", content: write, raw, shouldAffectMainTask: true };
     }
+    const model = matchCommandPrefix(trimmed, MODEL_PREFIXES);
+    if (model !== null) {
+      return { type: "model", content: model, raw, shouldAffectMainTask: false };
+    }
     if (mode === "side_question") {
       return { type: "side_question", content: trimmed, raw, shouldAffectMainTask: detectMainTaskImpact(trimmed) };
     }
     if (mode === "review") {
       return { type: "review", content: trimmed, raw, shouldAffectMainTask: true };
+    }
+    // 自然语言的「开始/继续写作」走硬启动（write），不靠 chat agent 自觉调用 start_run。
+    if (isStartWritingIntent(trimmed)) {
+      return { type: "write", content: trimmed, raw, shouldAffectMainTask: true };
     }
     return { type: "main", content: trimmed, raw, shouldAffectMainTask: true };
   }
@@ -544,7 +661,13 @@ export function createComposer(ctx) {
   }
 
   async function submitComposer() {
-    const parsed = parseUserCommand(ctx.refs.composerInput.value, "main");
+    await submitText(ctx.refs.composerInput.value);
+  }
+
+  // 统一提交入口：命令栏提交、气泡「重新发送 / 重试本轮」都走这里，
+  // 确保都经过 parseUserCommand 意图识别（如「开始写」→ 硬启动），不会绕过。
+  async function submitText(text) {
+    const parsed = parseUserCommand(text, "main");
     if (parsed.type === "empty") {
       ctx.showToast("请输入要提交的内容。", "info");
       return;
@@ -563,6 +686,10 @@ export function createComposer(ctx) {
     }
     if (parsed.type === "write" || parsed.type === "review") {
       await submitWritingCommand(parsed.content, parsed.type === "review" ? "review" : "write");
+      return;
+    }
+    if (parsed.type === "model") {
+      await submitModelCommand(parsed.content);
       return;
     }
     // 默认走 chat agent
@@ -619,6 +746,42 @@ export function createComposer(ctx) {
     } finally {
       ctx.refs.composerSubmit.removeAttribute("aria-busy");
       updateSubmitState();
+    }
+  }
+
+  async function submitModelCommand(modelId) {
+    if (!ctx.getCurrentProjectRoot()) {
+      ctx.showToast("请先新建或打开一部小说。", "info");
+      return;
+    }
+    const target = String(modelId ?? "").trim();
+    if (!target) {
+      openModelPopover();
+      return;
+    }
+    await switchModel(target);
+    ctx.refs.composerInput.value = "";
+    autoGrowComposer();
+    updateSubmitState();
+  }
+
+  async function switchModel(modelId) {
+    const currentProjectRoot = ctx.getCurrentProjectRoot();
+    if (!currentProjectRoot) {
+      ctx.showToast("请先新建或打开一部小说。", "info");
+      return;
+    }
+    try {
+      const result = await postJson("/api/settings/model-switch", {
+        projectRoot: currentProjectRoot,
+        model_id: modelId
+      });
+      closeModelPopover();
+      await ctx.loadDashboard();
+      ctx.showToast(`已切换模型：${result.model_profile?.model_name ?? modelId}`, "success");
+    } catch (error) {
+      ctx.showActionError?.(error);
+      ctx.showToast(error.message ?? "切换模型失败。", "error");
     }
   }
 
@@ -767,10 +930,10 @@ export function createComposer(ctx) {
 
   return {
     parseUserCommand, onComposerKeydown, autoGrowComposer, updateSubmitState,
-    updateSlashMenu, hideSlashMenu, submitComposer, submitWritingCommand,
+    updateSlashMenu, hideSlashMenu, submitComposer, submitText, submitWritingCommand,
     submitSideQuestion, promoteAskEntry, resultMessageForCommand,
     initModePill, updateModePill, openModePopover, closeModePopover,
-    updateStatusPills, sendChatMessageWithUX,
+    openModelPopover, closeModelPopover, updateStatusPills, sendChatMessageWithUX,
     syncChatBusy, isChatBusy
   };
 }

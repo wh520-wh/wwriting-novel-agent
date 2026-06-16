@@ -219,11 +219,33 @@ async function main() {
   assert.equal(modelControlState.value, customModelId, "settings model input must accept a custom model id");
   assert.equal(modelControlState.listId, "settings-model-suggestions", "settings model input must reference preset suggestions");
   assert.equal(modelControlState.hasSuggestions, true, "settings model suggestions datalist must exist");
+  const customApiKey = `sk-clickability-${Date.now()}`;
+  const customProviderState = await read(win, `
+    (() => {
+      const baseUrl = document.querySelector('[aria-label="API 地址 · 基础 URL"]');
+      const apiKey = document.querySelector('[aria-label="API Key"]');
+      if (!baseUrl || !apiKey) return { baseUrlTag: baseUrl?.tagName ?? null, apiKeyTag: apiKey?.tagName ?? null };
+      baseUrl.value = "https://api.example.test/v1";
+      baseUrl.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: baseUrl.value }));
+      apiKey.value = ${JSON.stringify(customApiKey)};
+      apiKey.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: apiKey.value }));
+      return {
+        baseUrlTag: baseUrl.tagName,
+        baseUrlValue: baseUrl.value,
+        apiKeyTag: apiKey.tagName,
+        apiKeyLength: apiKey.value.length
+      };
+    })()
+  `);
+  assert.equal(customProviderState.baseUrlTag, "INPUT", "custom provider base URL input must exist");
+  assert.equal(customProviderState.baseUrlValue, "https://api.example.test/v1", "custom provider base URL must accept input");
+  assert.equal(customProviderState.apiKeyTag, "INPUT", "custom provider API Key input must exist");
+  assert.equal(customProviderState.apiKeyLength, customApiKey.length, "custom provider API Key input must accept the full key");
   clicks.push(await clickAndRead(win, ".spd-affix-eye", {
     label: "settings-api-key-reveal",
     expect: () => read(win, "document.querySelector('.spd-affix-eye')?.getAttribute('aria-pressed') === 'true'")
   }));
-  clicks.push(await clickAndRead(win, ".spd-affix-copy", { label: "settings-api-key-copy-empty" }));
+  clicks.push(await clickAndRead(win, ".spd-affix-copy", { label: "settings-api-key-copy" }));
 
   // --- 价格与预算上限输入框探针 ---
   const priceInputState = await read(win, `
@@ -283,6 +305,12 @@ async function main() {
       .then((data) => data.project?.active_model?.model_name)
   `);
   assert.equal(savedCustomModel, customModelId, "saved settings must preserve a custom model id");
+  const savedCustomSecret = await read(win, `
+    fetch("/api/settings/model-secret")
+      .then((response) => response.json())
+      .then((data) => data.value)
+  `);
+  assert.equal(savedCustomSecret, customApiKey, "saved settings must preserve the full local API key");
   await waitUntil(win, "document.getElementById('settings-save')?.disabled === false", "settings save flow must finish before quick rail checks");
 
   const modalClosedState = await read(win, `
