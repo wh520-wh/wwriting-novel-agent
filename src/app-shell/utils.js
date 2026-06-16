@@ -59,6 +59,7 @@ export function cssEscape(value) {
 export function translateStage(stage) {
   return {
     "-": "-",
+    idle: "空闲",
     queued: "排队",
     planned: "已规划",
     planning: "规划",

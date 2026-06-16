@@ -1256,6 +1256,164 @@ test("valid candidate persists project config and secret together", async () => 
   }
 });
 
+test("settings/update saves reusable local model profiles and model secret survives restart", async () => {
+  const ctx = await setupServer();
+  try {
+    const { res } = await postJson(ctx.port, "/api/settings/update", {
+      projectRoot: ctx.projectRoot,
+      active_model: {
+        provider: "openai-compatible",
+        model_name: "mimo-v2.5-pro",
+        base_url: "https://api.xiaomimimo.com/v1",
+        api_key_env: "XIAOMI_MIMO_API_KEY",
+        api_key: "sk-visible-local-key"
+      }
+    });
+    assert.equal(res.status, 200);
+    await closeServer(ctx.server);
+
+    const restarted = createAppShellServer({
+      workspaceRoot: ctx.root,
+      selectedProjectRoot: ctx.projectRoot,
+      stateRoot: ctx.stateRoot,
+      secretsRoot: ctx.secretsRoot,
+      port: 0
+    });
+    const port = await listenOnFetchSafePort(restarted);
+    try {
+      const secret = await getJson(port, "/api/settings/model-secret");
+      assert.equal(secret.res.status, 200);
+      assert.equal(secret.data.value, "sk-visible-local-key");
+
+      const models = await getJson(port, "/api/settings/models");
+      assert.equal(models.res.status, 200);
+      assert.ok(models.data.models.some((model) => model.model_name === "mimo-v2.5-pro"));
+      assert.equal(models.data.default_model.model_name, "mimo-v2.5-pro");
+    } finally {
+      await closeServer(restarted);
+    }
+  } catch (error) {
+    if (ctx.server.listening) await closeServer(ctx.server);
+    throw error;
+  }
+});
+
+test("new projects inherit the saved local model without re-entering the key", async () => {
+  const ctx = await setupServer();
+  try {
+    await postJson(ctx.port, "/api/settings/update", {
+      projectRoot: ctx.projectRoot,
+      active_model: {
+        provider: "openai-compatible",
+        model_name: "mimo-v2.5-pro",
+        base_url: "https://api.xiaomimimo.com/v1",
+        api_key_env: "XIAOMI_MIMO_API_KEY",
+        api_key: "sk-new-project-reuses-this"
+      }
+    });
+
+    const nextRoot = path.join(ctx.root, "fresh-project");
+    const created = await postJson(ctx.port, "/api/projects/init", {
+      projectRoot: nextRoot,
+      title: "Fresh Project",
+      story_seed: "seed"
+    });
+    assert.equal(created.res.status, 200);
+
+    const project = await loadProject(nextRoot);
+    assert.equal(project.active_model.provider, "openai-compatible");
+    assert.equal(project.active_model.model_name, "mimo-v2.5-pro");
+    assert.equal(project.active_model.api_key_env, "XIAOMI_MIMO_API_KEY");
+    assert.equal(loadLocalSecretsSync(ctx.secretsRoot).XIAOMI_MIMO_API_KEY, "sk-new-project-reuses-this");
+  } finally {
+    await closeServer(ctx.server);
+  }
+});
+
+test("mock models are never saved as reusable local model profiles", async () => {
+  const ctx = await setupServer();
+  try {
+    await postJson(ctx.port, "/api/settings/update", {
+      projectRoot: ctx.projectRoot,
+      active_model: {
+        provider: "openai-compatible",
+        model_name: "writer-real",
+        base_url: "https://api.example.test/v1",
+        api_key_env: "WRITER_REAL_API_KEY",
+        api_key: "sk-real-local"
+      }
+    });
+    await postJson(ctx.port, "/api/settings/update", {
+      projectRoot: ctx.projectRoot,
+      active_model: {
+        provider: "mock",
+        model_name: "mock-writer"
+      }
+    });
+
+    const models = await getJson(ctx.port, "/api/settings/models");
+    assert.equal(models.res.status, 200);
+    assert.equal(models.data.default_model.model_name, "writer-real");
+    assert.ok(models.data.models.every((model) => model.provider !== "mock"));
+
+    const dashboard = await getJson(ctx.port, "/api/dashboard");
+    assert.ok(dashboard.data.available_models.every((model) => model.provider !== "mock"));
+
+    const nextRoot = path.join(ctx.root, "no-mock-project");
+    const created = await postJson(ctx.port, "/api/projects/init", {
+      projectRoot: nextRoot,
+      title: "No Mock Project",
+      story_seed: "seed"
+    });
+    assert.equal(created.res.status, 200);
+    const project = await loadProject(nextRoot);
+    assert.equal(project.active_model.provider, "openai-compatible");
+    assert.equal(project.active_model.model_name, "writer-real");
+  } finally {
+    await closeServer(ctx.server);
+  }
+});
+
+test("model switch endpoint applies a saved model profile and refreshes dashboard metadata", async () => {
+  const ctx = await setupServer();
+  try {
+    await postJson(ctx.port, "/api/settings/update", {
+      projectRoot: ctx.projectRoot,
+      active_model: {
+        provider: "openai-compatible",
+        model_name: "mimo-v2.5-pro",
+        base_url: "https://api.xiaomimimo.com/v1",
+        api_key_env: "XIAOMI_MIMO_API_KEY",
+        api_key: "sk-mimo-local"
+      }
+    });
+    await postJson(ctx.port, "/api/settings/update", {
+      projectRoot: ctx.projectRoot,
+      active_model: {
+        provider: "openai-compatible",
+        model_name: "deepseek-chat",
+        base_url: "https://api.deepseek.com",
+        api_key_env: "DEEPSEEK_API_KEY",
+        api_key: "sk-deepseek-local"
+      }
+    });
+
+    const switched = await postJson(ctx.port, "/api/settings/model-switch", {
+      projectRoot: ctx.projectRoot,
+      model_id: "mimo-v2.5-pro"
+    });
+    assert.equal(switched.res.status, 200);
+    assert.equal(switched.data.project.active_model.model_name, "mimo-v2.5-pro");
+    assert.equal(switched.data.model_profile.api_key_saved, true);
+
+    const dashboard = await getJson(ctx.port, "/api/dashboard");
+    assert.equal(dashboard.data.project.active_model.model_name, "mimo-v2.5-pro");
+    assert.ok(dashboard.data.available_models.some((model) => model.model_name === "deepseek-chat"));
+  } finally {
+    await closeServer(ctx.server);
+  }
+});
+
 test("settings/update persists tool_permissions / budget_config / research_config alongside active_model", async () => {
   const ctx = await setupServer();
   try {

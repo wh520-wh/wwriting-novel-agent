@@ -640,17 +640,22 @@ export function createSettingsModal(ctx, options = {}) {
     endpointHint.className = "spd-hint";
     settingsFields.endpointHint = endpointHint;
 
-    // Password placeholder must not echo the saved key. When the server has
-    // already saved a secret for this env, hint "已配置，可留空保持不变" so the
-    // user understands the existing value persists.
+    // Saved local keys are loaded back into the field so the user can confirm
+    // the full value after restarting the app.
     const apiKeyPlaceholder = usingThisPreset && profile.api_key_saved
       ? "已配置，可留空保持不变"
       : "粘贴官方 API Key";
     settingsFields.apiKey = settingField("API Key", "password", {
       placeholder: apiKeyPlaceholder,
-      value: "",
       secret: true
     });
+    if (usingThisPreset && profile.api_key_saved) {
+      fetchModelSecret().then((savedKey) => {
+        if (savedKey && settingsFields.apiKey?.input) {
+          settingsFields.apiKey.input.value = savedKey;
+        }
+      });
+    }
     settingsFields.apiKeyError = document.createElement("div");
     settingsFields.apiKeyError.className = "spd-field-error";
     settingsFields.apiKeyError.hidden = true;
@@ -726,11 +731,6 @@ export function createSettingsModal(ctx, options = {}) {
     bindEndpointPreview();
     updateEndpointPreview();
     applyConnectionButtonState();
-
-    // Explicitly DO NOT prefill the saved key value into the password field.
-    // The placeholder hints "已配置，可留空保持不变" instead. The saved secret
-    // stays server-side and is only used for the test connection probe (when
-    // the user leaves the field blank).
   }
 
   function applyConnectionButtonState() {

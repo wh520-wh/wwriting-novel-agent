@@ -444,6 +444,15 @@ try {
     target_chapters: 1,
     min_words_per_chapter: 80
   });
+  const inheritedCommandDashboard = await fetchJson(`http://127.0.0.1:${port}/api/dashboard`);
+  assert.equal(inheritedCommandDashboard.projectRoot, commandRoot);
+  assert.equal(inheritedCommandDashboard.project.active_model.model_name, "writer-smoke");
+  await postJson(`http://127.0.0.1:${port}/api/settings/update`, {
+    active_model: {
+      provider: "mock",
+      model_name: "mock-writer"
+    }
+  });
   const runCommand = await postJson(`http://127.0.0.1:${port}/api/commands/submit`, {
     message: "从命令栏启动写作，并把正文写入本地文件。"
   });

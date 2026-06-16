@@ -52,9 +52,7 @@ export function createThreadRenderer(ctx) {
       card.addEventListener("click", () => {
         if (ctx.isChatBusy?.()) return;
         wrap.querySelectorAll(".suggestion-card").forEach((c) => { c.disabled = true; });
-        if (typeof ctx.sendChatMessageWithUX === "function") {
-          ctx.sendChatMessageWithUX(item.message);
-        }
+        ctx.submitText?.(item.message);
       });
       wrap.append(card);
     }
@@ -872,8 +870,7 @@ export function createThreadRenderer(ctx) {
       resend.dataset.testid = "msg-resend";
       resend.textContent = "重新发送";
       resend.addEventListener("click", () => {
-        if (ctx.isChatBusy?.()) return;
-        ctx.sendChatMessageWithUX?.(message.content ?? "");
+        ctx.submitText?.(message.content ?? "");
       });
       bar.append(resend);
     }
@@ -885,12 +882,11 @@ export function createThreadRenderer(ctx) {
       retry.hidden = true; // syncChatThread 收尾只放开最后一条 assistant 的
       retry.textContent = "重试本轮";
       retry.addEventListener("click", () => {
-        if (ctx.isChatBusy?.()) return;
         const msgs = allMessages ?? [];
         const idx = msgs.findIndex((m) => m?.id === message.id);
         for (let i = (idx < 0 ? msgs.length : idx) - 1; i >= 0; i -= 1) {
           if (msgs[i]?.role === "user") {
-            ctx.sendChatMessageWithUX?.(msgs[i].content ?? "");
+            ctx.submitText?.(msgs[i].content ?? "");
             return;
           }
         }

@@ -9,6 +9,7 @@ import { loadConfigLayers } from "./config-runtime.mjs";
 import { appendEvent } from "./event-log.mjs";
 import { isPathInside } from "./fs-utils.mjs";
 import { applyLocalSecretsToEnv, defaultSecretsRoot, loadLocalSecrets, loadLocalSecretsSync } from "./local-secrets.mjs";
+import { findLocalModelProfile, getDefaultLocalModelProfile, loadLocalModelProfiles, upsertLocalModelProfile } from "./local-model-profiles.mjs";
 import { createProjectAt, loadProject, loadState, saveProject, saveState } from "./project-store.mjs";
 import { createResearchAdapter } from "./research-adapters.mjs";
 import { fetchWebPage, searchWeb } from "./research-tools.mjs";
@@ -134,7 +135,7 @@ export function createAppShellServer({
       return;
     }
     if (url.pathname === "/api/projects/init" && request.method === "POST") {
-      const initialized = await serveProjectInit(request, response);
+      const initialized = await serveProjectInit(request, response, { secretsRoot: localSecretsRoot });
       if (initialized) {
         selected = initialized;
         await rememberProject(appStateRoot, initialized);
@@ -190,6 +191,14 @@ export function createAppShellServer({
     }
     if (url.pathname === "/api/settings/model-secret" && request.method === "GET") {
       await serveModelSecret(response, { workspace, selected, secretsRoot: localSecretsRoot });
+      return;
+    }
+    if (url.pathname === "/api/settings/models" && request.method === "GET") {
+      await serveSettingsModels(response, { workspace, selected, secretsRoot: localSecretsRoot });
+      return;
+    }
+    if (url.pathname === "/api/settings/model-switch" && request.method === "POST") {
+      await serveModelSwitch(request, response, { workspace, selected, stateRoot: appStateRoot, secretsRoot: localSecretsRoot });
       return;
     }
     if (url.pathname === "/api/commands/submit" && request.method === "POST") {
@@ -276,6 +285,7 @@ async function serveDashboard(response, context) {
     });
     if (data?.hasProject) {
       data.model_profile = buildModelProfile(data.project?.active_model, context.secretsRoot);
+      data.available_models = await buildAvailableModelProfiles(context.secretsRoot, data.project?.active_model);
       const key = data.projectRoot ? path.resolve(data.projectRoot) : null;
       const job = key ? context.runJobs?.get(key) : null;
       data.agent_alive = isJobRunning(job);
@@ -440,7 +450,7 @@ async function resolveSelectedAfterForget({ stateRoot, currentSelected, forgotte
   return null;
 }
 
-async function serveProjectInit(request, response) {
+async function serveProjectInit(request, response, context = {}) {
   try {
     const body = await readJsonBody(request);
     const projectRoot = await canInitializeProjectRoot(body.projectRoot ?? body.path ?? "");
@@ -450,13 +460,15 @@ async function serveProjectInit(request, response) {
     const minWordsPerChapter = normalizePositiveInteger(body.min_words_per_chapter, 3000);
     const targetWordsPerChapter = normalizePositiveInteger(body.target_words_per_chapter, Math.max(minWordsPerChapter, 3300));
     const outputFormat = ["md", "txt"].includes(body.output_format) ? body.output_format : "md";
+    const defaultModel = context.secretsRoot ? await getDefaultLocalModelProfile(context.secretsRoot) : null;
     const { project } = await createProjectAt(projectRoot, {
       title,
       story_seed: storySeed,
       target_chapters: targetChapters,
       min_words_per_chapter: minWordsPerChapter,
       target_words_per_chapter: targetWordsPerChapter,
-      output_format: outputFormat
+      output_format: outputFormat,
+      active_model: defaultModel ? modelConfigFromLocalProfile(defaultModel) : undefined
     });
     await serveJson(response, {
       ok: true,
@@ -539,6 +551,7 @@ async function serveSettingsUpdate(request, response, context) {
     if (normalizedNonModelPatch && Object.keys(normalizedNonModelPatch).length > 0) {
       mergedProject = await updateProjectSettings(projectRoot, normalizedNonModelPatch);
     }
+    await upsertLocalModelProfile(context.secretsRoot, mergedProject.active_model);
 
     const config = await loadConfigLayers(projectRoot, mergedProject);
     await serveJson(response, {
@@ -554,6 +567,7 @@ async function serveSettingsUpdate(request, response, context) {
       },
       effective_config: config.effective,
       model_profile: buildModelProfile(config.effective.active_model, context.secretsRoot),
+      available_models: await buildAvailableModelProfiles(context.secretsRoot, config.effective.active_model),
       secret_saved: result.secret_saved,
       secret_env: result.secret_env
     });
@@ -586,6 +600,62 @@ async function serveModelSecret(response, context) {
     await serveJson(response, { ok: true, env: envName, value });
   } catch (error) {
     sendError(response, new HttpError(400, "model_secret_failed", error.message));
+  }
+}
+
+async function serveSettingsModels(response, context) {
+  try {
+    let activeModel = null;
+    if (context.selected) {
+      const projectRoot = await resolveActiveProjectRoot(context).catch(() => null);
+      if (projectRoot) {
+        const project = await loadProject(projectRoot).catch(() => null);
+        const config = project ? await loadConfigLayers(projectRoot, project).catch(() => null) : null;
+        activeModel = config?.effective?.active_model ?? project?.active_model ?? null;
+      }
+    }
+    const store = await loadLocalModelProfiles(context.secretsRoot);
+    const defaultModel = store.models.find((model) => model.id === store.default_model_id) ?? store.models[0] ?? null;
+    await serveJson(response, {
+      ok: true,
+      default_model: defaultModel ? buildModelProfile(defaultModel, context.secretsRoot, { id: defaultModel.id, saved_to: "model-profiles.json" }) : null,
+      models: await buildAvailableModelProfiles(context.secretsRoot, activeModel)
+    });
+  } catch (error) {
+    sendError(response, new HttpError(400, "settings_models_failed", error.message));
+  }
+}
+
+async function serveModelSwitch(request, response, context) {
+  try {
+    const body = await readJsonBody(request);
+    const projectRoot = await resolveActiveWriteProjectRoot(context, body);
+    await assertNotArchived(projectRoot);
+    const modelId = String(body.model_id ?? body.modelId ?? body.model_name ?? "").trim();
+    if (!modelId) {
+      throw new HttpError(400, "invalid_model_id", "model_id is required.");
+    }
+    const profile = await findLocalModelProfile(context.secretsRoot, modelId);
+    if (!profile) {
+      throw new HttpError(404, "model_profile_not_found", `未找到已配置模型：${modelId}`);
+    }
+    const project = await updateProjectSettings(projectRoot, { active_model: modelConfigFromLocalProfile(profile) });
+    await upsertLocalModelProfile(context.secretsRoot, project.active_model);
+    const config = await loadConfigLayers(projectRoot, project);
+    await serveJson(response, {
+      ok: true,
+      projectRoot,
+      project: {
+        project_id: project.project_id,
+        active_model: project.active_model,
+        tool_permissions: project.tool_permissions ?? {}
+      },
+      effective_config: config.effective,
+      model_profile: buildModelProfile(config.effective.active_model, context.secretsRoot),
+      available_models: await buildAvailableModelProfiles(context.secretsRoot, config.effective.active_model)
+    });
+  } catch (error) {
+    sendError(response, error instanceof HttpError ? error : new HttpError(400, "model_switch_failed", error.message));
   }
 }
 
@@ -702,7 +772,24 @@ async function serveTestConnection(request, response, context) {
   }
 }
 
-function buildModelProfile(activeModel = {}, secretsRoot) {
+async function buildAvailableModelProfiles(secretsRoot, activeModel = null) {
+  const store = await loadLocalModelProfiles(secretsRoot);
+  const models = [...store.models];
+  if (
+    activeModel?.provider &&
+    activeModel?.provider !== "mock" &&
+    activeModel?.model_name &&
+    !models.some((model) => sameModelProfile(model, activeModel))
+  ) {
+    models.unshift(activeModel);
+  }
+  return models.map((model) => ({
+    ...buildModelProfile(model, secretsRoot, { id: model.id ?? model.model_name, saved_to: "model-profiles.json" }),
+    active: sameModelProfile(model, activeModel)
+  }));
+}
+
+function buildModelProfile(activeModel = {}, secretsRoot, options = {}) {
   const provider = activeModel?.provider ?? "mock";
   const modelName = activeModel?.model_name ?? "mock-writer";
   const apiKeyEnv = activeModel?.api_key_env ?? null;
@@ -718,8 +805,24 @@ function buildModelProfile(activeModel = {}, secretsRoot) {
     api_key_masked: secretValue ? `••••${secretValue.slice(-4)}` : "",
     is_mock: provider === "mock",
     display: modelDisplayName(activeModel),
-    saved_to: "project.yaml"
+    id: options.id ?? modelName,
+    saved_to: options.saved_to ?? "project.yaml"
   };
+}
+
+function sameModelProfile(left = {}, right = {}) {
+  if (!left || !right) return false;
+  return (
+    left.provider === right.provider &&
+    left.model_name === right.model_name &&
+    (left.base_url ?? "") === (right.base_url ?? "") &&
+    (left.api_key_env ?? "") === (right.api_key_env ?? "")
+  );
+}
+
+function modelConfigFromLocalProfile(profile = {}) {
+  const { id, saved_at, ...config } = profile;
+  return config;
 }
 
 function modelDisplayName(activeModel = {}) {

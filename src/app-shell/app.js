@@ -140,7 +140,7 @@ const threadRenderer = createThreadRenderer({
     composer.updateSubmitState();
   },
   promoteAskEntry: (entry) => composer.promoteAskEntry(entry),
-  sendChatMessageWithUX: (msg) => composer.sendChatMessageWithUX(msg),
+  submitText: (text) => composer.submitText(text),
   isChatBusy: () => composer?.isChatBusy?.() === true,
 });
 
