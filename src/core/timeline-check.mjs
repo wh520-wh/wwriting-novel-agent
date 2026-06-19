@@ -1,5 +1,4 @@
 // 故事时钟：纯函数。token/日期/锚点解析 + 故事时钟累加 + 确定性时序裁决。无文件 IO。
-import { parseChineseChapterNo } from "./quality-gates.mjs";
 
 const UNIT_HOURS = { h: 1, d: 24, w: 168, mo: 720, y: 8760 }; // mo≈30d, y≈365d
 
@@ -13,8 +12,34 @@ export function parseElapsedToken(token) {
   return Number(m[1]) * UNIT_HOURS[m[2]];
 }
 
+const CN_DIGITS = { "〇":0,"零":0,"一":1,"二":2,"两":2,"三":3,"四":4,"五":5,"六":6,"七":7,"八":8,"九":9 };
+const CN_UNITS = { "十":10,"百":100,"千":1000 };
+
+// 独立中文数字解析（含纯单位"十"=10），不依赖章号解析器。
+// 注：阿拉伯数字按"首个数字串"提取（与旧 parseChineseChapterNo 一致，兼容 "20岁" 这种带后缀的 raw）；
+// 中文数字循环中忽略非数位/单位字符（如 "岁""月""日"），以兼容带后缀的 age raw。
+function parseCnNumber(seg) {
+  const s = String(seg ?? "").trim();
+  if (!s) return null;
+  const arabic = s.match(/[0-9]+/u);
+  if (arabic) return Number(arabic[0]);
+  let total = 0, section = 0, hasDigit = false;
+  for (const ch of s) {
+    if (ch in CN_DIGITS) { section = CN_DIGITS[ch]; hasDigit = true; }
+    else if (ch in CN_UNITS) {
+      const unit = CN_UNITS[ch];
+      if (section === 0) section = 1; // "十" → 1*10
+      total += section * unit;
+      section = 0;
+    }
+    // 其他字符忽略（与旧解析器一致，兼容 "岁"/"月"/"日" 等后缀）
+  }
+  total += section;
+  return hasDigit || total > 0 ? total : null;
+}
+
 function cnNum(seg) {
-  const n = parseChineseChapterNo(seg);
+  const n = parseCnNumber(seg);
   return Number.isInteger(n) && n > 0 ? n : null;
 }
 
@@ -24,7 +49,7 @@ function matchNum(s, pattern) {
 }
 
 // 日期原文 → { comparable, value }；value 为 YYYYMMDD 式单调序号；
-// comparable 仅当带年份（不带年份的"X月Y日"跨年会误判，故不参与裁决）；完全无日期→null
+// comparable 仅当有年份且（有月或有日）（不带年份或仅年份粒度过粗，跨年/同年内会误判，故不参与裁决）；完全无日期→null
 export function parseDateRaw(raw) {
   const s = String(raw ?? "");
   const num = "([0-9〇零一二两三四五六七八九十百千]+)";
@@ -32,7 +57,7 @@ export function parseDateRaw(raw) {
   const month = matchNum(s, num + "\\s*月");
   const day = matchNum(s, num + "\\s*[日号]");
   if (year == null && month == null && day == null) return null;
-  return { comparable: year != null, value: (year ?? 0) * 10000 + (month ?? 0) * 100 + (day ?? 0) };
+  return { comparable: year != null && (month != null || day != null), value: (year ?? 0) * 10000 + (month ?? 0) * 100 + (day ?? 0) };
 }
 
 // 锚点 → { unit:"year", value }（age）或 { comparable, value }（date）；不可解析→null
@@ -50,9 +75,15 @@ export function parseAnchorValue(anchor) {
 const SCENE = "scene";
 
 function sceneNodes(timeline) {
+  const seen = new Set();
   return (Array.isArray(timeline) ? timeline : [])
     .filter((n) => n?.time?.kind === SCENE)
-    .sort((a, b) => (a.chapter_no ?? 0) - (b.chapter_no ?? 0));
+    .sort((a, b) => (a.chapter_no ?? 0) - (b.chapter_no ?? 0))
+    .filter((n) => {
+      if (n.chapter_no == null || seen.has(n.chapter_no)) return false;
+      seen.add(n.chapter_no);
+      return true;
+    });
 }
 
 // 沿 scene 链累加 elapsed → { perChapter:Map<chapter_no,{day,certain}>, latest }
@@ -79,7 +110,7 @@ export function describeStoryClock(timeline) {
   const { latest } = computeStoryClock(timeline);
   if (!latest) return "";
   const approx = latest.certain ? "" : "（部分时间未言明，为下界）";
-  return `截至第 ${latest.chapter_no} 章，故事时钟约为第 ${latest.day} 天${approx}`;
+  return `截至第 ${latest.chapter_no} 章，故事时钟约为第 ${Math.round(latest.day)} 天${approx}`;
 }
 
 // timeline[] (v2) → { violations:[{type,chapter_no,prior_chapter,detail,severity,suggestion}] }

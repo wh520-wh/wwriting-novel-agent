@@ -92,7 +92,7 @@ function normalizeAnchor(value) {
   return { type, raw: raw.slice(0, 60), subject };
 }
 
-function normalizeTimeField(value) {
+export function normalizeTimeField(value) {
   const v = value && typeof value === "object" ? value : {};
   return {
     kind: TIME_KINDS.has(v.kind) ? v.kind : "scene",

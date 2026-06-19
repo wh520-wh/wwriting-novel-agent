@@ -128,3 +128,17 @@ test("renderContinuityMarkdown: 时间线优先 raw 并带 time 摘要", () => {
   assert.match(md, /\+3d/u);
   assert.match(md, /上工地/u);
 });
+
+test("migrateTimelineNode: 透传的畸形 time 被规范化", () => {
+  const merged = mergeExtraction(
+    { schema_version: 2, facts: [], timeline: [], characters: [] },
+    { facts: [], characters: [], timeline: [
+      { chapter_no: 5, story_time_raw: "x", events: ["e"],
+        time: { kind: "weird", elapsed: "三天", anchor: "bad", confidence: "maybe" } } ] }
+  );
+  const t = merged.timeline[0].time;
+  assert.equal(t.kind, "scene");
+  assert.equal(t.elapsed, null);
+  assert.equal(t.anchor, null);
+  assert.equal(t.confidence, "low");
+});

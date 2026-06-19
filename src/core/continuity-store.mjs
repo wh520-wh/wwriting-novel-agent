@@ -1,4 +1,5 @@
 import { readJson, safeJoin, writeFileAtomic, writeJsonAtomic } from "./fs-utils.mjs";
+import { normalizeTimeField } from "./memory-extractor.mjs";
 
 export const CONTINUITY_SCHEMA_VERSION = 2;
 export const MAX_FACTS_PER_ENTITY = 20;
@@ -12,8 +13,7 @@ function migrateTimelineNode(node) {
     events: Array.isArray(n.events) ? n.events : [],
     story_time_raw: String(n.story_time_raw ?? n.story_time ?? "")
   };
-  if (n.time && typeof n.time === "object") return { ...base, time: n.time };
-  return { ...base, time: { kind: "scene", elapsed: null, anchor: null, confidence: "low" } };
+  return { ...base, time: normalizeTimeField(n.time) };
 }
 
 export async function loadContinuity(projectRoot) {
