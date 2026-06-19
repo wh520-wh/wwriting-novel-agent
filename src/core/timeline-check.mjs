@@ -49,8 +49,7 @@ function matchNum(s, pattern) {
 }
 
 // 日期原文 → { comparable, value }；value 为 YYYYMMDD 式单调序号；
-// comparable 仅当年/月/日齐全（完整绝对日期）。只有年或年+月粒度过粗：
-// 月粒度（"2021年10月"）相对同月具体日（"2021年10月5日"）可前可后，非稳判，混比会误报倒退，故不参与确定性裁决（留给 LLM 路径）。完全无日期→null
+// comparable 仅当有年份且（有月或有日）（不带年份或仅年份粒度过粗，跨年/同年内会误判，故不参与裁决）；完全无日期→null
 export function parseDateRaw(raw) {
   const s = String(raw ?? "");
   const num = "([0-9〇零一二两三四五六七八九十百千]+)";
@@ -58,7 +57,7 @@ export function parseDateRaw(raw) {
   const month = matchNum(s, num + "\\s*月");
   const day = matchNum(s, num + "\\s*[日号]");
   if (year == null && month == null && day == null) return null;
-  return { comparable: year != null && month != null && day != null, value: (year ?? 0) * 10000 + (month ?? 0) * 100 + (day ?? 0) };
+  return { comparable: year != null && (month != null || day != null), value: (year ?? 0) * 10000 + (month ?? 0) * 100 + (day ?? 0) };
 }
 
 // 锚点 → { unit:"year", value }（age）或 { comparable, value }（date）；不可解析→null
