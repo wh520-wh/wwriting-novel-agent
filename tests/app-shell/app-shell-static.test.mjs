@@ -274,3 +274,7 @@ test("thread-renderer.js hides the stop button while projectStatus is cancelling
     "no stop button branch should be wired for cancelling tasks"
   );
 });
+
+test("thread-renderer 主动徽标认 timeline_check 类型", () => {
+  assert.match(threadRendererSource, /timeline_check/, "thread-renderer 应识别 timeline_check 主动消息");
+});

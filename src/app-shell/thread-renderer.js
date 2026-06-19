@@ -918,10 +918,11 @@ export function createThreadRenderer(ctx) {
     wrap.dataset.ts = message.ts ?? "";
     const bubble = document.createElement("div");
     bubble.className = "chat-bubble chat-bubble--assistant";
-    if (message.proactive === "fact_check") {
+    const proactiveBadge = { fact_check: "fact-check", timeline_check: "时间线" };
+    if (message.proactive && proactiveBadge[message.proactive]) {
       const badge = document.createElement("span");
       badge.className = "chat-proactive-badge";
-      badge.textContent = "fact-check";
+      badge.textContent = proactiveBadge[message.proactive];
       bubble.append(badge);
     }
     const body = document.createElement("div");
