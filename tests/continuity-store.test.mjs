@@ -91,3 +91,40 @@ test("水位读写", async () => {
   await saveContinuityState(root, { last_extracted_chapter: 9 });
   assert.equal((await loadContinuityState(root)).last_extracted_chapter, 9);
 });
+
+test("mergeExtraction: 写入 v2 timeline（raw + time）", () => {
+  const merged = mergeExtraction(
+    { schema_version: 2, facts: [], timeline: [], characters: [] },
+    { facts: [], characters: [], timeline: [
+      { chapter_no: 5, story_time_raw: "三日后", events: ["上工地"],
+        time: { kind: "scene", elapsed: "+3d", anchor: null, confidence: "high" } } ] }
+  );
+  assert.equal(merged.timeline.length, 1);
+  assert.equal(merged.timeline[0].story_time_raw, "三日后");
+  assert.equal(merged.timeline[0].time.elapsed, "+3d");
+});
+
+test("loadContinuity: v1 节点惰性迁移为 v2", async () => {
+  const root = await tmpProject();
+  await fs.writeFile(path.join(root, "memory", "continuity.json"), JSON.stringify({
+    schema_version: 1, facts: [], characters: [],
+    timeline: [{ chapter_no: 1, story_time: "十月", events: ["觉醒"] }]
+  }), "utf8");
+  const data = await loadContinuity(root);
+  assert.equal(data.schema_version, 2);
+  const t = data.timeline[0];
+  assert.equal(t.story_time_raw, "十月");
+  assert.equal(t.time.kind, "scene");
+  assert.equal(t.time.confidence, "low");
+  assert.equal(t.time.elapsed, null);
+});
+
+test("renderContinuityMarkdown: 时间线优先 raw 并带 time 摘要", () => {
+  const md = renderContinuityMarkdown({ schema_version: 2, facts: [], characters: [], timeline: [
+    { chapter_no: 5, story_time_raw: "三日后", events: ["上工地"],
+      time: { kind: "scene", elapsed: "+3d", anchor: null, confidence: "high" } } ] });
+  assert.match(md, /第5章/u);
+  assert.match(md, /三日后/u);
+  assert.match(md, /\+3d/u);
+  assert.match(md, /上工地/u);
+});
