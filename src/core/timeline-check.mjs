@@ -81,3 +81,56 @@ export function describeStoryClock(timeline) {
   const approx = latest.certain ? "" : "（部分时间未言明，为下界）";
   return `截至第 ${latest.chapter_no} 章，故事时钟约为第 ${latest.day} 天${approx}`;
 }
+
+// timeline[] (v2) → { violations:[{type,chapter_no,prior_chapter,detail,severity,suggestion}] }
+export function checkTimeline(timeline) {
+  const violations = [];
+  const scenes = sceneNodes(timeline).filter((n) => n.time?.confidence === "high");
+
+  // date_regression：仅比较带年份完整日期（防跨年误报）
+  let lastDate = null; // { value, chapter_no, raw }
+  for (const n of scenes) {
+    if (n.time.anchor?.type !== "date") continue;
+    const parsed = parseAnchorValue(n.time.anchor);
+    if (!parsed || !parsed.comparable) continue;
+    if (lastDate && parsed.value < lastDate.value) {
+      violations.push({
+        type: "time_reversal", chapter_no: n.chapter_no, prior_chapter: lastDate.chapter_no,
+        severity: "high", detail: `${n.time.anchor.raw} < ${lastDate.raw}`,
+        suggestion: `第${n.chapter_no}章的时间（${n.time.anchor.raw}）早于第${lastDate.chapter_no}章（${lastDate.raw}）。若非回忆/闪回，建议调整其一以保持时间顺序。`
+      });
+    }
+    if (!lastDate || parsed.value >= lastDate.value) {
+      lastDate = { value: parsed.value, chapter_no: n.chapter_no, raw: n.time.anchor.raw };
+    }
+  }
+
+  // age_regression：仅比较填了 subject 的年龄，按 subject 分组（防串桶误报）
+  const lastAge = new Map(); // subject -> { value, chapter_no }
+  for (const n of scenes) {
+    if (n.time.anchor?.type !== "age") continue;
+    const subject = n.time.anchor.subject;
+    if (!subject) continue;
+    const parsed = parseAnchorValue(n.time.anchor);
+    if (!parsed) continue;
+    const prev = lastAge.get(subject);
+    if (prev && parsed.value < prev.value) {
+      violations.push({
+        type: "anchor_conflict", chapter_no: n.chapter_no, prior_chapter: prev.chapter_no,
+        severity: "high", detail: `${subject}年龄 ${parsed.value} < ${prev.value}`,
+        suggestion: `第${n.chapter_no}章中${subject}的年龄（${parsed.value}）小于第${prev.chapter_no}章（${prev.value}）。若非回忆/闪回，建议核对年龄。`
+      });
+    }
+    if (!prev || parsed.value >= prev.value) lastAge.set(subject, { value: parsed.value, chapter_no: n.chapter_no });
+  }
+
+  return { violations };
+}
+
+// 取首条冲突生成 agent 主动提示文案（章号由调用方传入，确保与"较晚一方"一致）
+export function summarizeTimelineViolations(violations, chapterNo) {
+  if (!Array.isArray(violations) || violations.length === 0) return "";
+  const v = violations[0];
+  const more = violations.length > 1 ? `（另有 ${violations.length - 1} 处）` : "";
+  return `第 ${chapterNo} 章可能存在时间线矛盾：${v.suggestion}${more}`;
+}

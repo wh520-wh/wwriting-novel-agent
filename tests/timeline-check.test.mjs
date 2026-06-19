@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseElapsedToken, parseDateRaw, parseAnchorValue, computeStoryClock, describeStoryClock } from "../src/core/timeline-check.mjs";
+import { parseElapsedToken, parseDateRaw, parseAnchorValue, computeStoryClock, describeStoryClock, checkTimeline, summarizeTimelineViolations } from "../src/core/timeline-check.mjs";
 
 test("parseElapsedToken: 合法 token 转小时", () => {
   assert.equal(parseElapsedToken("+0"), 0);
@@ -77,4 +77,69 @@ test("describeStoryClock: 生成喂提示的摘要", () => {
   assert.match(describeStoryClock([sc(1, null), sc(2, "+3d")]), /第 ?2 ?章/u);
   assert.match(describeStoryClock([sc(1, null), sc(2, "+3d")]), /第 ?3 ?天/u);
   assert.equal(describeStoryClock([]), "");
+});
+
+const an = (chapter_no, kind, anchor, confidence = "high") => ({
+  chapter_no, events: ["e"], story_time_raw: anchor?.raw ?? "",
+  time: { kind, elapsed: null, anchor, confidence }
+});
+
+test("checkTimeline: 带年份日期倒退报 time_reversal", () => {
+  const { violations } = checkTimeline([
+    an(3, "scene", { type: "date", raw: "2021年3月10日" }),
+    an(5, "scene", { type: "date", raw: "2021年3月5日" })
+  ]);
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].type, "time_reversal");
+  assert.equal(violations[0].chapter_no, 5);
+  assert.equal(violations[0].prior_chapter, 3);
+});
+
+test("checkTimeline: 不带年份月日（跨年）不误报", () => {
+  const { violations } = checkTimeline([
+    an(3, "scene", { type: "date", raw: "12月20日" }),
+    an(5, "scene", { type: "date", raw: "1月5日" })
+  ]);
+  assert.equal(violations.length, 0);
+});
+
+test("checkTimeline: 闪回不算倒流", () => {
+  const { violations } = checkTimeline([
+    an(3, "scene", { type: "date", raw: "2021年3月10日" }),
+    an(5, "flashback", { type: "date", raw: "2021年3月5日" })
+  ]);
+  assert.equal(violations.length, 0);
+});
+
+test("checkTimeline: 同 subject 年龄倒退报 anchor_conflict", () => {
+  const { violations } = checkTimeline([
+    an(2, "scene", { type: "age", raw: "20岁", subject: "主角" }),
+    an(6, "scene", { type: "age", raw: "18岁", subject: "主角" })
+  ]);
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].type, "anchor_conflict");
+  assert.equal(violations[0].chapter_no, 6);
+});
+
+test("checkTimeline: 空 subject 的不同年龄不串桶误报", () => {
+  const { violations } = checkTimeline([
+    an(2, "scene", { type: "age", raw: "40岁", subject: null }),
+    an(6, "scene", { type: "age", raw: "18岁", subject: null })
+  ]);
+  assert.equal(violations.length, 0);
+});
+
+test("checkTimeline: 低置信不判", () => {
+  const { violations } = checkTimeline([
+    an(3, "scene", { type: "date", raw: "2021年3月10日" }, "high"),
+    an(5, "scene", { type: "date", raw: "2021年3月5日" }, "low")
+  ]);
+  assert.equal(violations.length, 0);
+});
+
+test("summarizeTimelineViolations: 用传入章号、含建议", () => {
+  const note = summarizeTimelineViolations(
+    [{ type: "time_reversal", chapter_no: 5, prior_chapter: 3, severity: "high", detail: "", suggestion: "建议调整其一" }], 5);
+  assert.match(note, /第 ?5 ?章/u);
+  assert.match(note, /建议/u);
 });
