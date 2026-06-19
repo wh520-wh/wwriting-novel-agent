@@ -46,3 +46,38 @@ export function parseAnchorValue(anchor) {
   if (anchor.type === "date") return parseDateRaw(raw);
   return null;
 }
+
+const SCENE = "scene";
+
+function sceneNodes(timeline) {
+  return (Array.isArray(timeline) ? timeline : [])
+    .filter((n) => n?.time?.kind === SCENE)
+    .sort((a, b) => (a.chapter_no ?? 0) - (b.chapter_no ?? 0));
+}
+
+// 沿 scene 链累加 elapsed → { perChapter:Map<chapter_no,{day,certain}>, latest }
+export function computeStoryClock(timeline) {
+  const scenes = sceneNodes(timeline);
+  const perChapter = new Map();
+  let day = 0;
+  let certain = true;
+  scenes.forEach((n, i) => {
+    if (i > 0) {
+      const hrs = parseElapsedToken(n.time.elapsed);
+      if (hrs == null) certain = false;
+      else day += hrs / 24;
+    }
+    perChapter.set(n.chapter_no, { day: Math.round(day * 10) / 10, certain });
+  });
+  const last = scenes[scenes.length - 1];
+  const latest = last ? { chapter_no: last.chapter_no, ...perChapter.get(last.chapter_no) } : null;
+  return { perChapter, latest };
+}
+
+// 故事时钟摘要行（喂给 fact-check 提示）；空→""
+export function describeStoryClock(timeline) {
+  const { latest } = computeStoryClock(timeline);
+  if (!latest) return "";
+  const approx = latest.certain ? "" : "（部分时间未言明，为下界）";
+  return `截至第 ${latest.chapter_no} 章，故事时钟约为第 ${latest.day} 天${approx}`;
+}

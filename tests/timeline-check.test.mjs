@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseElapsedToken, parseDateRaw, parseAnchorValue } from "../src/core/timeline-check.mjs";
+import { parseElapsedToken, parseDateRaw, parseAnchorValue, computeStoryClock, describeStoryClock } from "../src/core/timeline-check.mjs";
 
 test("parseElapsedToken: 合法 token 转小时", () => {
   assert.equal(parseElapsedToken("+0"), 0);
@@ -42,4 +42,39 @@ test("parseAnchorValue: age 取整数年龄，date 走日期，named/空→null"
   assert.equal(parseAnchorValue({ type: "date", raw: "2021年3月10日" }).comparable, true);
   assert.equal(parseAnchorValue({ type: "named", raw: "登基大典" }), null);
   assert.equal(parseAnchorValue(null), null);
+});
+
+const sc = (chapter_no, elapsed, extra = {}) => ({
+  chapter_no, events: ["e"], story_time_raw: extra.raw ?? "",
+  time: { kind: extra.kind ?? "scene", elapsed, anchor: extra.anchor ?? null, confidence: extra.confidence ?? "high" }
+});
+
+test("computeStoryClock: 累加 elapsed 得第几天", () => {
+  const { perChapter, latest } = computeStoryClock([
+    sc(1, null), sc(2, "+1d"), sc(3, "+3d")
+  ]);
+  assert.equal(perChapter.get(1).day, 0);
+  assert.equal(perChapter.get(2).day, 1);
+  assert.equal(perChapter.get(3).day, 4);
+  assert.equal(latest.chapter_no, 3);
+  assert.equal(latest.certain, true);
+});
+
+test("computeStoryClock: 中间 elapsed=null 标记不确定", () => {
+  const { latest } = computeStoryClock([sc(1, null), sc(2, null), sc(3, "+2d")]);
+  assert.equal(latest.certain, false);
+});
+
+test("computeStoryClock: flashback 不进主链", () => {
+  const { perChapter } = computeStoryClock([
+    sc(1, null), sc(2, "+1d"), sc(3, "+0", { kind: "flashback" }), sc(4, "+2d")
+  ]);
+  assert.equal(perChapter.has(3), false);
+  assert.equal(perChapter.get(4).day, 3);
+});
+
+test("describeStoryClock: 生成喂提示的摘要", () => {
+  assert.match(describeStoryClock([sc(1, null), sc(2, "+3d")]), /第 ?2 ?章/u);
+  assert.match(describeStoryClock([sc(1, null), sc(2, "+3d")]), /第 ?3 ?天/u);
+  assert.equal(describeStoryClock([]), "");
 });
