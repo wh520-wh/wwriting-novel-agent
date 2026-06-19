@@ -67,7 +67,13 @@ S2a/S3 已落地的部分（本设计**不重复造**，经代码核实）：
 - `time.anchor`：绝对锚点，原文给了才填：`{ "type": "date|age|named", "raw": "3月15日 / 主角20岁 / 建安五年", "value": 可解析时给规范值否则 null }`。
 - `time.confidence`：`high|low`。抽取没把握 / 纯模糊表达 → `low`，审计里只提示不硬判。
 
-**关键设计：全局时序结论由本地检查器"算"出来，不向模型要。** 抽取只产出局部、好判断的字段（这是不是闪回？距上一幕多久？有无绝对日期/年龄？）；"是否时间倒流 / 跨度是否自洽 / 年龄是否打架"这些全局判断，由确定性检查器沿链累加 `elapsed`、比对 `anchor` 算出来。故不设"模型自报的全局序号"——避免模型在只看局部时给出漂移的全局序。
+**关键设计：本地层算一条"故事时钟"，确定性裁决 + 喂给 LLM 兜底，分工明确。**
+
+- 抽取只产出局部、好判断的字段（这是不是闪回？距上一幕多久？有无绝对日期/年龄？）。
+- 本地确定性层沿 scene 链累加 `elapsed` 维护一条"故事时钟"（第几天），并比对 `anchor`：
+  - **能确定性判的硬矛盾**（带年份的显式日期倒退、同角色年龄倒退、两个绝对日期锚点的日历间隔与累加时钟互斥）→ 直接出确定性裁决（零成本）。这类在中文小说里偏少，但判了就准。
+  - **相对时间漂移**（"三天后…当晚"这类、无绝对锚点）→ 本地**无法**确定性裁决：`elapsed` 本身是模型自报、"当晚"是对过去某夜的回指，光靠前向累加算不出矛盾。本地能做的是把"截至上一幕，故事时钟≈第 D 天"这条**算好的结论喂给 LLM fact-check**，让它不必心算散落的时间词即可可靠判出（"当晚=第 0 天 ↔ 时钟第 3 天"）。这一步花一点钱，但远比现状（LLM 肉眼比自由文本）准，且**诚实——不假装免费**。
+- 不设"模型自报的全局序号"，避免模型在只看局部时给出漂移的全局序。
 
 ## 4. Part A：`story_time` 规范化（地基）
 
@@ -83,23 +89,29 @@ S2a/S3 已落地的部分（本设计**不重复造**，经代码核实）：
 - `renderContinuityMarkdown` 时间线行优先显示 `story_time_raw`，附 `time` 摘要（如 `[+3d·scene]`），保证既有 markdown/`read_continuity` 视图不破。
 - `EMPTY()`/`loadContinuity` 兼容 v1：读到 v1 节点（有 `story_time`、无 `time`）→ 迁移成 `story_time_raw=story_time`、`time={kind:"scene",elapsed:null,anchor:null,confidence:"low"}`。
 
-### 4.3 新增确定性本地检查器（新模块 `src/core/timeline-check.mjs`，纯函数、零模型调用）
+### 4.3 新增故事时钟模块（新模块 `src/core/timeline-check.mjs`，纯函数、零模型调用）
 
-输入：`timeline[]`（v2）。输出：`{ violations:[{type, chapter_no, prior_chapter, detail, severity, suggestion}] }`。
+两件事：**算时钟** + **确定性裁决**。输入 `timeline[]`（v2）。
 
-检查项（只判 `confidence:"high"` 且字段可解析的；判不了的跳过留给 LLM）：
+**(a) `computeStoryClock(timeline)`**：沿 `kind:"scene"` 链按章号累加 `elapsed`（token→小时→天），得每个 scene 章的"故事时钟≈第 D 天"。某段 `elapsed` 为 null → 该处时钟标记为"不确定（≥下界）"，不强行编号。输出供两用：喂 LLM（§4.4）、做确定性裁决。
 
-- **单调性**：仅对 `kind:"scene"` 事件，沿章号顺序累加 `elapsed` 得"运行故事钟"；若某 scene 章的钟值早于更早章的钟值且无 flashback/parallel 标记 → `time_reversal`。
-- **跨度自洽**：两处对同一对相邻幕的 `elapsed`/`anchor` 推出的间隔互相矛盾（如累加得 +3d，却有 anchor 指向同日）→ `span_conflict`。
-- **锚点自洽**：`anchor.type:"age"` 沿时间倒退（后面更年轻）或 `anchor.type:"date"` 与运行钟方向相悖 → `anchor_conflict`。中文数/日期解析复用 `parseChineseChapterNo` 同款思路。
+**(b) `checkTimeline(timeline)` 确定性裁决**：输出 `{ violations:[{type, chapter_no, prior_chapter, detail, severity, suggestion}] }`。只判 `confidence:"high"`、`kind:"scene"`、字段可解析者；判不了的不报（留 LLM）。**只做能稳判、不误报的三类**：
 
-`elapsed` token → 小时数的解析器内置于本模块，便于累加比较。
+- **date_regression（`time_reversal`）**：仅比较**带年份的完整日期**（`anchor.type:"date"` 且解析出年月日）。**只有"X月Y日"不带年的一律不判**——长篇必然跨年，"12月20日→次年1月5日"是正常前进，不能误报为倒流。
+- **age_regression（`anchor_conflict`）**：仅比较**填了 `subject` 的年龄**，按同 `subject` 比；**`subject` 为空的年龄不参与比较**——否则"主角20岁/反派40岁"没填 subject 会被当成同一人误判。
+- **clock_anchor_conflict（`span_conflict`，低频）**：两个带年份完整日期锚点之间的日历间隔，与这两章间累加的 `elapsed` 互斥（超阈值）→ 报。需两端皆可解析完整日期，否则跳过。
+
+中文数/日期解析复用 `parseChineseChapterNo` 思路；`elapsed` token→小时解析器内置本模块。
+
+> 相对漂移（"三天后/当晚"无锚点）**本地不裁决**，靠 §4.4 把算好的时钟喂 LLM 来抓。
 
 ### 4.4 接入提案通道（复用 S3，不新建 UI）
 
-- 抽取/合并后调用 `timeline-check`；`violations` 非空时，**走 `agent-engine.mjs` 既有那条 proactive 提案路径**（同 `runFactCheck` 出口）：发一条 agent 消息 + 预填 `edit_chapter` 的 `replace_with`（确定性命中可给确定建议）。
-- `buildFactCheckMessages` 喂时间线时，从喂 `story_time` 升级为喂"`story_time_raw` + `time`（序/elapsed/anchor）"，让 LLM 兜底判断也更有据。
-- 确定性命中 `severity` 默认 `high`；与 LLM 命中合流，去重（同章同 draft_quote 只报一次）。
+两条路径分工明确：
+
+- **确定性命中（通知型）**：抽取/合并后调用 `checkTimeline`。**只报"较晚一方 = 刚抽取的本章"的冲突**——天然避免每抽一章就把旧冲突重刷一遍，且主动消息标题章号恒等于本章（修 A4：去重 + 章号不张冠李戴）。这类冲突（日期/年龄倒退）没有唯一的 prose 替换目标，故**只发主动消息（说明改哪边、为什么），不伪造"一键修复"**。
+- **相对漂移（LLM 一键修复路径）**：`buildFactCheckMessages` 升级——除喂 `story_time_raw` + `time` 外，再喂 `computeStoryClock` 算出的"截至第 M 章，故事时钟≈第 D 天"。该章 review 时，LLM 凭算好的时钟判出"当晚 ↔ 第 D 天"矛盾，沿用既有 `runFactCheck` 出口：proactive 消息 + `replace_with` + `pending_action` 一键修复（§8#3 的一键来源在此路径，prose 有确定的 `draft_quote` 可替换）。
+- **前端**：`thread-renderer.js` 需新认 `proactive:"timeline_check"` 徽标（当前仅认 `fact_check`，修 A6），否则确定性通知在界面上无标识。
 
 ### 4.5 迁移
 
@@ -134,13 +146,14 @@ K 与是否启用走 `project.yaml`（默认开、K=5）。每次重检写 `run_
 
 | 复用 | 来自 | 本设计如何用 |
 |------|------|-------------|
-| 提案消息 + `replace_with` 一键修复 | S3 `agent-engine.mjs:766` | 确定性命中与 B1/B2 命中统一从此出口 |
+| 提案消息 + `replace_with` 一键修复 | S3 `agent-engine.mjs:766` | **相对漂移**走 LLM fact-check 出口（一键修复在此）；确定性命中仅通知 |
 | 确认卡 + 标价 | S3 | B1 超阈值、B2 LLM 深审的"先问后跑" |
-| `runFactCheck` | S3 `agent-engine.mjs:687` | B1/B2 的 LLM 兜底复核直接调用 |
+| `runFactCheck` | S3 `agent-engine.mjs:687` | 喂入故事时钟后判相对漂移；B1/B2 的 LLM 复核直接调用 |
 | `rebuild-memory` 遍历骨架 | S2a `scripts/rebuild-memory.mjs` | 迁移重抽 + B2 全书逐章复核 |
 | `continuity_state` 水位线 | S2a | 迁移重抽的增量控制 |
 | `parseChineseChapterNo` 中文数解析 | `quality-gates.mjs` | `anchor` 年龄/日期解析 |
-| s2-corpus 回归语料 | S2a/S3 | 扩充时间线确定性用例（§8） |
+| 前端 proactive 徽标 | `thread-renderer.js:921`（当前仅 `fact_check`） | 扩展认 `timeline_check`（A6） |
+| s2-corpus 回归语料 | S2a/S3 | 仅供真实 API fact-check 场景；确定性用例放纯函数单测（§8） |
 
 ## 7. 交付切分与顺序
 
@@ -151,14 +164,17 @@ K 与是否启用走 `project.yaml`（默认开、K=5）。每次重检写 `run_
 Part A：
 
 1. **结构正确**（单测）：抽取吐 v2 `time` 字段；非法字段降级不崩；merge 写入与渲染兼容。
-2. **确定性检查**（单测，新增 s2-corpus 用例）：
-   - 时间倒流：scene 累加 +3d 后又置同日 → `time_reversal`（新 fixture `b1-time-reversal`）。
-   - 闪回豁免：`kind:"flashback"` 不触发倒流（新 fixture `b1-flashback-ok`）。
-   - 年龄倒退：anchor age 20→19 → `anchor_conflict`（新 fixture `b1-age-regression`）。
-   - 纯模糊：`confidence:"low"`/elapsed=null → 本地不判、无误报（新 fixture `b1-fuzzy-defer`）。
-3. **提案落地**（真实 API）：构造跨章时间矛盾 → agent 主动发提案消息 + 一键修复执行成功、文件实际变更。
+2. **故事时钟与确定性检查**（纯函数单测，放 `tests/timeline-check.test.mjs`）：
+   - 时钟累加：连续 `+1d`/`+3d` → 第 4 天；中间 `elapsed=null` → 标记不确定。
+   - 日期倒退：**带年份**完整日期倒退（2021年3月10日→2021年3月5日）→ `time_reversal`；**只月日跨年**（12月20日→1月5日）→ **不报**（防跨年误报）。
+   - 年龄倒退：同 `subject` 年龄 20→18 → `anchor_conflict`；两条**空 subject** 的不同年龄（主角20/反派40）→ **不报**（防串桶误报）。
+   - 闪回豁免：`kind:"flashback"` 不触发倒流。
+   - 纯模糊：`confidence:"low"`/无锚点 → 本地不判、无误报。
+3. **提案落地**，分两条路径各自验收：
+   - **3a 确定性（通知型）**：构造带年份日期倒退 → agent 主动消息出现，**标题章号 = 较晚那一章**；继续抽取后续章，**同一冲突不重复刷**（修 A4，单测 + 集成验）。
+   - **3b 相对漂移（LLM 一键修复，真实 API）**：`buildFactCheckMessages` 输出含"故事时钟≈第 D 天"（单测）；真实模型下构造"时钟第 3 天 ↔ 当晚" → fact-check 判 conflict 且产出 `replace_with`，一键修复执行成功、文件实际变更。
 4. **迁移**：v1 项目读取不报错、markdown 正常；`audit:rebuild-memory` 后产出 v2。
-5. **不增调用**：抽取调用次数与改造前一致（成本回归）。
+5. **不增调用**：抽取调用次数与改造前一致；故事时钟/确定性检查零模型调用。
 
 Part B：
 
@@ -183,7 +199,12 @@ Part B：
 |------|------|
 | 台账（LLM 抽取）本身错 → 误报/漏报 | 保留 `story_time_raw`；`confidence:"low"` 只提示不硬判；确定性检查只判 high+可解析 |
 | 模型 `time` 字段输出不稳 | 宽容解析 + 字段降级（缺省 scene/low/null），不崩 |
-| 把闪回/并叙误判成时间倒流 | `kind` 分轴：非 scene 不进单调性计算；扩 corpus 防误报 |
+| 把闪回/并叙误判成时间倒流 | `kind` 分轴：非 scene 不进时钟计算；扩用例防误报 |
+| **跨年月日误报**（12月20→1月5被当倒流） | date_regression **只判带年份完整日期**，月日不带年的不裁决（A3） |
+| **空 subject 年龄串桶误报**（主角/反派混比） | age_regression **只比填了 subject 的年龄**，空 subject 不参与（A3） |
+| **重复打扰 + 标题章号张冠李戴** | 确定性命中**只报"较晚一方=本章"的冲突**，标题恒为本章（A4） |
+| **前端不认新 proactive 类型 → 通知无标识** | 同步扩 `thread-renderer.js` 认 `timeline_check`（A6），纳入 app-shell/clickability 回归 |
+| **相对漂移把关押在概率 LLM 在线门易抖红** | 不把无锚点相对冲突加进 100% 在线门；以确定性单测 + "时钟入提示词"单测作主回归信号（A7） |
 | 回溯重检烧钱（长书） | 波及 > K 强制确认 + 标价；确定性检查先免费过滤 |
 | 改 timeline 结构破坏既有消费方 | 消费方仅四处（抽取/merge/渲染/fact-check），逐一改 + 回归；markdown 优先显示 raw |
 | 迁移丢数据 | 惰性迁移保 raw；schema 版本号；rebuild 可重生成 |
