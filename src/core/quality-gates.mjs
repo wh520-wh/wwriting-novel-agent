@@ -210,11 +210,18 @@ const FACT_CHECK_SYSTEM_PROMPT = [
   '{"conflicts":[{"draft_quote":"本章内一句触发冲突的原文","conflicts_with":"既有设定/时间线中的对应记录","prior_chapter":既有章节号,"severity":"high|low","suggestion":"修复建议（说明改哪边、为什么）","replace_with":"用于直接替换 draft_quote 的修正后原文（保持句式，只改冲突值；若无法给出精确替换则留空字符串）"}]}',
   "只报客观叙述层的设定冲突（地点、数字、时间、生死、关系）。",
   "豁免：回忆/闪回/角色撒谎/隐喻/旁白不算矛盾。",
+  "若提供了「故事时钟」，据其判断本章的时间叙述（如「当晚」「次日」「三天后」）是否与已推进的天数矛盾。",
   "若没有冲突，输出 {\"conflicts\":[]}。",
   "不要输出其他内容。"
 ].join("\n");
 
-export function buildFactCheckMessages({ chapterNo, draft, facts, timeline }) {
+export function buildFactCheckMessages({ chapterNo, draft, facts, timeline, storyClock }) {
+  const timelineLines = (timeline ?? []).map((t) => {
+    const time = t.time ?? {};
+    const when = t.story_time_raw ?? t.story_time ?? "";
+    const extra = [time.elapsed, time.anchor?.raw, time.kind && time.kind !== "scene" ? time.kind : null].filter(Boolean).join("·");
+    return `- 第${t.chapter_no}章 [${when}${extra ? `·${extra}` : ""}]: ${(t.events ?? []).join("；")}`;
+  }).join("\n") || "(空)";
   const user = [
     `# 第 ${chapterNo} 章正文`,
     String(draft ?? ""),
@@ -223,7 +230,8 @@ export function buildFactCheckMessages({ chapterNo, draft, facts, timeline }) {
     (facts ?? []).map((f) => `- ${f.entity}/${f.attribute}: ${f.value} (第${f.chapter_no}章)`).join("\n") || "(空)",
     "",
     "# 既有时间线",
-    (timeline ?? []).map((t) => `- 第${t.chapter_no}章 [${t.story_time}]: ${(t.events ?? []).join("；")}`).join("\n") || "(空)"
+    timelineLines,
+    ...(storyClock ? ["", "# 故事时钟", String(storyClock)] : [])
   ].join("\n");
   return [
     { role: "system", content: FACT_CHECK_SYSTEM_PROMPT },

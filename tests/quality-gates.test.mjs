@@ -111,3 +111,28 @@ test("buildFactCheckMessages 系统提示要求 replace_with 为可直接替换�
   const messages = buildFactCheckMessages({ chapterNo: 2, draft: "x", facts: [], timeline: [] });
   assert.match(messages[0].content, /replace_with/u);
 });
+
+test("buildFactCheckMessages: 注入故事时钟 + 时间线带 raw/elapsed/anchor", () => {
+  const messages = buildFactCheckMessages({
+    chapterNo: 9, draft: "案发当晚他就到了。",
+    facts: [{ entity: "刘康", attribute: "生死", value: "死亡", chapter_no: 1 }],
+    timeline: [{ chapter_no: 7, story_time_raw: "三天后", events: ["抵达工地"],
+      time: { kind: "scene", elapsed: "+3d", anchor: { type: "date", raw: "3月10日", subject: null }, confidence: "high" } }],
+    storyClock: "截至第 7 章，故事时钟约为第 3 天"
+  });
+  const user = messages[1].content;
+  assert.match(user, /三天后/u);
+  assert.match(user, /\+3d/u);
+  assert.match(user, /故事时钟/u);
+  assert.match(user, /第 3 天/u);
+});
+
+test("buildFactCheckMessages: 无 storyClock 不渲染时钟段、兼容旧 story_time", () => {
+  const messages = buildFactCheckMessages({
+    chapterNo: 2, draft: "x", facts: [{ entity: "a", attribute: "b", value: "c", chapter_no: 1 }],
+    timeline: [{ chapter_no: 1, story_time: "十月", events: ["e"] }]
+  });
+  const user = messages[1].content;
+  assert.match(user, /十月/u);
+  assert.doesNotMatch(user, /故事时钟/u);
+});
