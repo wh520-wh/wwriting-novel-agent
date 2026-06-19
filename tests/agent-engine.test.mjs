@@ -1071,3 +1071,18 @@ test("已提交最终文件的恢复只修复索引不重复写入", async () =>
   assert.equal(chapter.status, "completed");
   assert.ok(chapter.checksum);
 });
+
+test("timeline-check 装配 + 只报本章的过滤逻辑", async () => {
+  const mod = await import("../src/core/timeline-check.mjs");
+  const timeline = [
+    { chapter_no: 3, events: ["e"], story_time_raw: "", time: { kind: "scene", elapsed: null, anchor: { type: "date", raw: "2021年3月10日" }, confidence: "high" } },
+    { chapter_no: 5, events: ["e"], story_time_raw: "", time: { kind: "scene", elapsed: null, anchor: { type: "date", raw: "2021年3月5日" }, confidence: "high" } }
+  ];
+  const all = mod.checkTimeline(timeline).violations;
+  assert.equal(all.length, 1);
+  // 抽取第 5 章时只报较晚一方=5 的冲突
+  assert.equal(all.filter((v) => v.chapter_no === 5).length, 1);
+  // 抽取第 3 章时不会冒出该冲突（避免重复打扰）
+  assert.equal(all.filter((v) => v.chapter_no === 3).length, 0);
+  assert.match(mod.describeStoryClock(timeline), /故事时钟|第/u);
+});

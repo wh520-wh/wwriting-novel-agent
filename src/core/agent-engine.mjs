@@ -10,6 +10,7 @@ import { MockModel } from "./mock-model.mjs";
 import { MockProviderAdapter, OpenAICompatibleAdapter } from "./provider-adapters.mjs";
 import { PromptCompiler, computeChapterWordGap } from "./prompt-compiler.mjs";
 import { assertToolCallForChapter, runWordCountGate, runTitleGate, runWordCapGate, buildFactCheckMessages, parseFactCheck } from "./quality-gates.mjs";
+import { checkTimeline, summarizeTimelineViolations, describeStoryClock } from "./timeline-check.mjs";
 import { collectSkillPromptHooks, loadEnabledSkills, runPostProcessHooks, runSkillChecks } from "./skill-runtime.mjs";
 import { ensureDefaultToolHooks, runAfterToolUse, runBeforeToolUse } from "./tool-hooks.mjs";
 import { appendChapterSegment, chapterFileName, finalizeChapterFile, readDraft, ToolValidationError } from "./tool-runtime.mjs";
@@ -659,6 +660,22 @@ export async function extractChapterMemory(projectRoot, project, state, runtime)
     await saveContinuity(projectRoot, merged);
     await writeFileAtomic(safeJoin(projectRoot, "memory", "book_summary.md"), `# 全书摘要\n\n${parsed.summary}\n`);
     await saveContinuityState(projectRoot, { last_extracted_chapter: chapterNo });
+
+    // 故事时钟确定性检查：只报"较晚一方=本章"的冲突（去重 + 标题章号正确）
+    const { violations } = checkTimeline(merged.timeline);
+    const newViolations = violations.filter((v) => v.chapter_no === chapterNo);
+    if (newViolations.length > 0) {
+      await appendEvent(projectRoot, {
+        type: "quality_gate_warning", project_id: project.project_id, chapter_no: chapterNo,
+        stage: "summarizing", severity: "warn",
+        message: `时间线检查发现 ${newViolations.length} 处疑似矛盾`,
+        data: { violations: newViolations }
+      });
+      await appendChatMessage(projectRoot, {
+        role: "assistant", content: summarizeTimelineViolations(newViolations, chapterNo),
+        proactive: "timeline_check", chapter_no: chapterNo
+      });
+    }
     await appendEvent(projectRoot, {
       type: "memory_extract_completed", project_id: project.project_id, chapter_no: chapterNo,
       stage: "summarizing", message: `记忆已更新（新增事实 ${parsed.facts.length} 条）`,
@@ -725,7 +742,8 @@ export async function runFactCheck(projectRoot, project, state, runtime, draft) 
         project, stage: "fact_check",
         messages: buildFactCheckMessages({
           chapterNo: state.current_chapter_no, draft,
-          facts: continuity.facts, timeline: continuity.timeline
+          facts: continuity.facts, timeline: continuity.timeline,
+          storyClock: describeStoryClock(continuity.timeline)
         }),
         signal: runtime.signal,
         metadata: { factCheck: true, chapterNo: state.current_chapter_no, attempt }
