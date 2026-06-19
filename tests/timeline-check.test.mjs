@@ -143,3 +143,39 @@ test("summarizeTimelineViolations: 用传入章号、含建议", () => {
   assert.match(note, /第 ?5 ?章/u);
   assert.match(note, /建议/u);
 });
+
+test("parseDateRaw: 只有年份不参与裁决（防误报）", () => {
+  const onlyYear = parseDateRaw("2021年");
+  assert.equal(onlyYear.comparable, false);
+  // 只有年 vs 完整日期，不应触发可比
+  assert.equal(parseDateRaw("2021年").comparable, false);
+  // 有年有月有日仍可比
+  assert.equal(parseDateRaw("2021年3月5日").comparable, true);
+  // 有年有月无日也可比（粒度足够）
+  assert.equal(parseDateRaw("2021年3月").comparable, true);
+});
+
+test("computeStoryClock: 同章多节点不重复累加", () => {
+  const { perChapter } = computeStoryClock([
+    sc(1, null), sc(2, "+1d"), sc(2, "+1d"), sc(3, "+2d")
+  ]);
+  // 第2章被算两次 elapsed 会得到 day=2，正确应为 1
+  assert.equal(perChapter.get(2).day, 1);
+  assert.equal(perChapter.get(3).day, 3);
+});
+
+test("parseAnchorValue/parseDateRaw: 纯单位中文数字'十'可解析", () => {
+  assert.deepEqual(parseAnchorValue({ type: "age", raw: "十岁" }), { unit: "year", value: 10 });
+  assert.equal(parseDateRaw("十日").value, 10);
+  assert.equal(parseDateRaw("十月五日").value, 1005);
+});
+
+test("describeStoryClock: 小数天整数化展示", () => {
+  assert.match(describeStoryClock([sc(1, null), sc(2, "+12h")]), /第 1 天/u);
+  assert.doesNotMatch(describeStoryClock([sc(1, null), sc(2, "+12h")]), /0\.5/);
+});
+
+test("parseElapsedToken: 裸 0 与 +0 等价（契约锁定）", () => {
+  assert.equal(parseElapsedToken("0"), parseElapsedToken("+0"));
+  assert.equal(parseElapsedToken("0"), 0);
+});
