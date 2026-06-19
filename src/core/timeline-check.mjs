@@ -118,21 +118,29 @@ export function checkTimeline(timeline) {
   const violations = [];
   const scenes = sceneNodes(timeline).filter((n) => n.time?.confidence === "high");
 
-  // date_regression：仅比较带年份完整日期（防跨年误报）
-  let lastDate = null; // { value, chapter_no, raw }
+  // date_regression：仅比较带年份日期；混合粒度时取粗粒度比较（防"日 vs 同月月粒度"假倒退）。
+  // 注：comparable 契约不变（有年且(有月或有日)即 true）；此处只在比较时按粒度对齐。
+  let lastDate = null; // { value, monthValue, hasDay, chapter_no, raw }
   for (const n of scenes) {
     if (n.time.anchor?.type !== "date") continue;
     const parsed = parseAnchorValue(n.time.anchor);
     if (!parsed || !parsed.comparable) continue;
-    if (lastDate && parsed.value < lastDate.value) {
-      violations.push({
-        type: "time_reversal", chapter_no: n.chapter_no, prior_chapter: lastDate.chapter_no,
-        severity: "high", detail: `${n.time.anchor.raw} < ${lastDate.raw}`,
-        suggestion: `第${n.chapter_no}章的时间（${n.time.anchor.raw}）早于第${lastDate.chapter_no}章（${lastDate.raw}）。若非回忆/闪回，建议调整其一以保持时间顺序。`
-      });
+    const hasDay = parsed.value % 100 !== 0;            // 末两位为日(1-31)；0 表无日(月粒度)
+    const monthValue = Math.floor(parsed.value / 100);  // YYYYMM
+    if (lastDate) {
+      // 双方均有日 → 比完整值；任一为月粒度 → 比年月（避免 day=0 排到月初造成假倒退）
+      const cur = hasDay && lastDate.hasDay ? parsed.value : monthValue;
+      const prev = hasDay && lastDate.hasDay ? lastDate.value : lastDate.monthValue;
+      if (cur < prev) {
+        violations.push({
+          type: "time_reversal", chapter_no: n.chapter_no, prior_chapter: lastDate.chapter_no,
+          severity: "high", detail: `${n.time.anchor.raw} < ${lastDate.raw}`,
+          suggestion: `第${n.chapter_no}章的时间（${n.time.anchor.raw}）早于第${lastDate.chapter_no}章（${lastDate.raw}）。若非回忆/闪回，建议调整其一以保持时间顺序。`
+        });
+      }
     }
     if (!lastDate || parsed.value >= lastDate.value) {
-      lastDate = { value: parsed.value, chapter_no: n.chapter_no, raw: n.time.anchor.raw };
+      lastDate = { value: parsed.value, monthValue, hasDay, chapter_no: n.chapter_no, raw: n.time.anchor.raw };
     }
   }
 
