@@ -1,246 +1,113 @@
-# 故事时钟 Part A 收尾改进计划
+# 故事时钟 Part A 收尾改进计划（eval2 · 第二次验收）
 
-> 目标：修复 Part A 验收中确认的 6 个点（2 个 P1、2 个 P2、2 个 P3），全部 TDD，不破坏既有 725 测试。
-> 执行方式：superpowers TDD——每条先写失败测试，跑红，改实现，跑绿，最后全量回归。
+> 目标：修复第二次验收确认的 1 个 P1 bug（B1：日期混合粒度误报），TDD，不破坏既有 731 测试，**不动 `comparable` 契约**。
+> 执行方式：superpowers TDD——先写失败测试，跑红，改实现，跑绿，最后全量回归。
+>
+> **本文件为第二次验收（eval2-with-skill）的收尾计划。** 上一版 polish（6 个 Fix）已落地于 commit `43ab4e9`，见 git 历史；本版只处理上一版遗留的 B1。
 
 ## 背景
 
-Part A 已交付（8 提交、725 测试全绿），但验收发现以下可改进点。本计划只做收尾打磨，不动架构。
+Part A 已交付（8 feat 提交 + 1 fix 提交 `43ab4e9`，731 测试全绿）。第一次验收的 Fix 1 把 `comparable` 从「有年份」收紧为「有年份 **且**（有月或有日）」，并**刻意保留** `parseDateRaw("2021年3月").comparable === true`（测试 `tests/timeline-check.test.mjs:155` 锁定，注释"粒度足够"）。
+
+但这一决定留下一个盲区：**月粒度日期（无日，`value` 末两位=0）参与裁决时，会被排到该月月初，与同月的日粒度日期比较时产生假倒退。** 这就是 B1。曾有一次尝试（commit `895e6b8`）通过把 `comparable` 改成「必须年月日齐全」来修 B1，但那**改动了 `comparable` 契约**、会破坏 `:155` 测试，已被 `4764866` revert。当前代码状态以 `4764866` 为准，B1 仍存在。
+
+本计划按 skill 原则#6「最小改动、保护既有契约」：**不改 `comparable` 语义，只在比较处按粒度对齐。**
 
 ---
 
-## Fix 1（P1 Bug）：parseDateRaw "只有年份" 不应参与裁决
+## Fix 1（P1 Bug）：日期混合粒度比较产生假倒退（B1）
 
-**问题**：`src/core/timeline-check.mjs:35` 仅凭"有年份"就 `comparable:true`。`parseDateRaw("2021年")` 返回 `{comparable:true, value:20210000}`，与 `2021年3月5日`(20210305) 比较会误报 `time_reversal`。粗粒度"只有年"不必然早于同年某月日，与 A3"宁缺毋滥"冲突。
+**问题**：`src/core/timeline-check.mjs:121-137` 的 `date_regression` 循环里，`lastDate` 与当前日期都直接比 `parsed.value`。月粒度日期（如 "2021年3月"）`value = 20210300`（日位=0），会被排到 3 月 1 日之前；当故事里先出现 "2021年3月15日"（`20210315`）、再出现 "2021年3月"（`20210300`）时，`20210300 < 20210315` 触发 `time_reversal`。但 "2021年3月" 可能指 3 月任意一天（含 15 日之后），并非确定倒退 → **误报**，违反 A3「宁缺毋滥」。
 
-**修复**：`comparable` 仅当"有年份 **且**（有月或有日）"时为 true。只有年无月日 → 仍返回对象但 `comparable:false`。
-
-**Step 1 失败测试**（追加到 `tests/timeline-check.test.mjs`）：
-
-```js
-test("parseDateRaw: 只有年份不参与裁决（防误报）", () => {
-  const onlyYear = parseDateRaw("2021年");
-  assert.equal(onlyYear.comparable, false);
-  // 只有年 vs 完整日期，不应触发可比
-  assert.equal(parseDateRaw("2021年").comparable, false);
-  // 有年有月有日仍可比
-  assert.equal(parseDateRaw("2021年3月5日").comparable, true);
-  // 有年有月无日也可比（粒度足够）
-  assert.equal(parseDateRaw("2021年3月").comparable, true);
-});
+探针证据（修复前）：
+```
+ch3=2021年3月15日, ch5=2021年3月  => violations: 1 [{"type":"time_reversal","ch":5,"prior":3}]   ← 误报
+parseDateRaw("2021年3月") => {"comparable":true,"value":20210300}                                ← 契约保留，不动
 ```
 
-**Step 2 跑红**：`node --test tests/timeline-check.test.mjs` → FAIL（只有年 comparable 为 true）。
+**修复**：`comparable` 契约**不变**（仍「有年且(有月或有日)」）。在 `checkTimeline` 的比较处按「双方最粗公共粒度」对齐：双方均有日 → 比完整 `value`；任一为月粒度 → 只比年月（`Math.floor(value/100)`）。这样同月混比判等不报（消误报），而「3 月→2 月」这类月粒度真实倒退仍能抓到（保覆盖，契合上一版「粒度足够」的意图）。
 
-**Step 3 实现**：把 `timeline-check.mjs` 第 35 行
+> **契约影响声明（按 skill 原则#6）**：本 Fix **不改 `parseDateRaw` / `comparable` 的语义或返回形状**，不触及 `parseAnchorValue`、渲染、fact-check 等消费方。改动仅限 `checkTimeline` 内部 `date_regression` 循环。`hasDay`/`monthValue` 在循环内由 `value` 派生（日位 1-31，0 表无日），不外泄。
 
-```js
-  return { comparable: year != null, value: (year ?? 0) * 10000 + (month ?? 0) * 100 + (day ?? 0) };
-```
-
-改为：
+**Step 1 失败测试**（追加到 `tests/timeline-check.test.mjs` 末尾）：
 
 ```js
-  return { comparable: year != null && (month != null || day != null), value: (year ?? 0) * 10000 + (month ?? 0) * 100 + (day ?? 0) };
-```
-
-**Step 4 跑绿**。
-
----
-
-## Fix 2（P1 不对称）：migrateTimelineNode 复用 normalize 校验 time
-
-**问题**：`src/core/continuity-store.mjs:15` 对已存在的 `time` 直接 `{ ...base, time: n.time }` 透传，不校验内部结构；而 `memory-extractor.mjs` 的 `normalizeTimeField` 严格白名单规范化。两侧"入口验、存储不验"不对称，外部污染的畸形 time 会一路透传到渲染/检查。
-
-**修复**：把 `memory-extractor.mjs` 的 `normalizeTimeField` 导出，`continuity-store.mjs` 复用它校验所有 time（含已存在）。消除不对称，无循环依赖（memory-extractor 不反向依赖 continuity-store）。
-
-**Step 1 失败测试**（追加到 `tests/continuity-store.test.mjs`）：
-
-```js
-test("migrateTimelineNode: 透传的畸形 time 被规范化", () => {
-  const merged = mergeExtraction(
-    { schema_version: 2, facts: [], timeline: [], characters: [] },
-    { facts: [], characters: [], timeline: [
-      { chapter_no: 5, story_time_raw: "x", events: ["e"],
-        time: { kind: "weird", elapsed: "三天", anchor: "bad", confidence: "maybe" } } ] }
-  );
-  const t = merged.timeline[0].time;
-  assert.equal(t.kind, "scene");
-  assert.equal(t.elapsed, null);
-  assert.equal(t.anchor, null);
-  assert.equal(t.confidence, "low");
-});
-```
-
-**Step 2 跑红**：`node --test tests/continuity-store.test.mjs` → FAIL（kind 仍 "weird"）。
-
-**Step 3a 实现 memory-extractor**：把 `normalizeTimeField` 改为 `export function normalizeTimeField`（第 95 行）。
-
-**Step 3b 实现 continuity-store**：
-- 顶部加 import：`import { normalizeTimeField } from "./memory-extractor.mjs";`
-- 把 `migrateTimelineNode` 第 15 行 `if (n.time && typeof n.time === "object") return { ...base, time: n.time };` 删除，统一走：
-
-```js
-function migrateTimelineNode(node) {
-  const n = node && typeof node === "object" ? node : {};
-  const base = {
-    chapter_no: n.chapter_no ?? null,
-    events: Array.isArray(n.events) ? n.events : [],
-    story_time_raw: String(n.story_time_raw ?? n.story_time ?? "")
-  };
-  return { ...base, time: normalizeTimeField(n.time) };
-}
-```
-
-**Step 4 跑绿**（注意：既有"v2 time 透传"测试 `merged.timeline[0].time.elapsed === "+3d"` 仍过，因为 normalizeTimeField 对合法 time 透传）。
-
----
-
-## Fix 3（P2 隐患）：同章多节点导致故事时钟重复累加
-
-**问题**：`mergeExtraction` 同 `chapter_no` 不同 events 指纹会 push 第二条，timeline 出现同章多 scene 节点。`sceneNodes` 排序后同章两个 scene 都进主链累加，`computeStoryClock`/`checkTimeline` 会重复累加/重复比较。这是既有逻辑（非本次引入），但时钟链路无防护。
-
-**修复**：在 `sceneNodes` 内按 `chapter_no` 去重，保留每章第一条 scene（章号最小事件顺序已由 sort 保证稳定）。不动 `mergeExtraction` 既有去重指纹逻辑（避免破坏既有测试）。
-
-**Step 1 失败测试**（追加到 `tests/timeline-check.test.mjs`）：
-
-```js
-test("computeStoryClock: 同章多节点不重复累加", () => {
-  const { perChapter } = computeStoryClock([
-    sc(1, null), sc(2, "+1d"), sc(2, "+1d"), sc(3, "+2d")
+test("checkTimeline: 月粒度与日粒度混比不误报倒退（B1）", () => {
+  // 同年同月：日粒度在前、月粒度在后；月粒度可能落在该月任意一天，不应判倒退
+  const { violations } = checkTimeline([
+    an(3, "scene", { type: "date", raw: "2021年3月15日" }),
+    an(5, "scene", { type: "date", raw: "2021年3月" })
   ]);
-  // 第2章被算两次 elapsed 会得到 day=2，正确应为 1
-  assert.equal(perChapter.get(2).day, 1);
-  assert.equal(perChapter.get(3).day, 3);
+  assert.equal(violations.length, 0);
+});
+
+test("checkTimeline: 月粒度之间真实倒退仍报（防过度收窄）", () => {
+  // 行为锁定：修复不得把月粒度日期整体踢出裁决（否则与上一版"粒度足够"意图相悖）
+  const { violations } = checkTimeline([
+    an(3, "scene", { type: "date", raw: "2021年3月" }),
+    an(5, "scene", { type: "date", raw: "2021年2月" })
+  ]);
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].type, "time_reversal");
+  assert.equal(violations[0].chapter_no, 5);
 });
 ```
 
-**Step 2 跑红**：`node --test tests/timeline-check.test.mjs` → FAIL（第2章 day=2）。
+**Step 2 跑红**：`node --test tests/timeline-check.test.mjs` → 第一条 FAIL（`violations.length` 实测 1，预期 0）。第二条当前已绿（行为锁定，修复后仍须绿）。
 
-**Step 3 实现**：把 `timeline-check.mjs` 的 `sceneNodes` 改为按 chapter_no 去重（保留首个）：
+**Step 3 实现**：把 `src/core/timeline-check.mjs` 中 `date_regression` 循环（`let lastDate = null;` 那段）
 
+old:
 ```js
-function sceneNodes(timeline) {
-  const seen = new Set();
-  return (Array.isArray(timeline) ? timeline : [])
-    .filter((n) => n?.time?.kind === SCENE)
-    .sort((a, b) => (a.chapter_no ?? 0) - (b.chapter_no ?? 0))
-    .filter((n) => {
-      if (n.chapter_no == null || seen.has(n.chapter_no)) return false;
-      seen.add(n.chapter_no);
-      return true;
-    });
-}
-```
-
-**Step 4 跑绿**（注意：既有"flashback 不进主链"测试 `perChapter.has(3)===false` 仍过，因为 flashback 被 kind 过滤）。
-
----
-
-## Fix 4（P2 漏报）：纯单位中文数字"十"解析
-
-**问题**：`timeline-check.mjs:16-19` 的 `cnNum` 复用 `parseChineseChapterNo`，其 `any && total>0` 检查使纯单位"十""百"返回 null，导致"十岁/十日/十月"解析失败（漏报方向，安全但覆盖缺口）。"十岁"是常见年龄表达。
-
-**修复**：在 `timeline-check.mjs` 内新增独立的轻量中文数字解析 `parseCnNumber`，覆盖纯单位"十"（=10）、"二十"（=20）、"三百"（=300）等，不依赖 `parseChineseChapterNo`，避免改动 quality-gates 行为。`cnNum` 改用它。
-
-**Step 1 失败测试**（追加到 `tests/timeline-check.test.mjs`）：
-
-```js
-test("parseAnchorValue/parseDateRaw: 纯单位中文数字'十'可解析", () => {
-  assert.deepEqual(parseAnchorValue({ type: "age", raw: "十岁" }), { unit: "year", value: 10 });
-  assert.equal(parseDateRaw("十日").value, 10);
-  assert.equal(parseDateRaw("十月五日").value, 1005);
-});
-```
-
-**Step 2 跑红**：`node --test tests/timeline-check.test.mjs` → FAIL（"十岁"返回 null）。
-
-**Step 3 实现**：在 `timeline-check.mjs` 新增（替换 `cnNum` 实现，不再调 `parseChineseChapterNo`）：
-
-```js
-const CN_DIGITS = { "〇":0,"零":0,"一":1,"二":2,"两":2,"三":3,"四":4,"五":5,"六":6,"七":7,"八":8,"九":9 };
-const CN_UNITS = { "十":10,"百":100,"千":1000 };
-
-// 独立中文数字解析（含纯单位"十"=10），不依赖章号解析器
-function parseCnNumber(seg) {
-  const s = String(seg ?? "").trim();
-  if (!s) return null;
-  if (/^\d+$/.test(s)) return Number(s);
-  let total = 0, section = 0, hasDigit = false;
-  for (const ch of s) {
-    if (ch in CN_DIGITS) { section = CN_DIGITS[ch]; hasDigit = true; }
-    else if (ch in CN_UNITS) {
-      const unit = CN_UNITS[ch];
-      if (section === 0) section = 1; // "十" → 1*10
-      total += section * unit;
-      section = 0;
-    } else return null;
+  // date_regression：仅比较带年份完整日期（防跨年误报）
+  let lastDate = null; // { value, chapter_no, raw }
+  for (const n of scenes) {
+    if (n.time.anchor?.type !== "date") continue;
+    const parsed = parseAnchorValue(n.time.anchor);
+    if (!parsed || !parsed.comparable) continue;
+    if (lastDate && parsed.value < lastDate.value) {
+      violations.push({
+        type: "time_reversal", chapter_no: n.chapter_no, prior_chapter: lastDate.chapter_no,
+        severity: "high", detail: `${n.time.anchor.raw} < ${lastDate.raw}`,
+        suggestion: `第${n.chapter_no}章的时间（${n.time.anchor.raw}）早于第${lastDate.chapter_no}章（${lastDate.raw}）。若非回忆/闪回，建议调整其一以保持时间顺序。`
+      });
+    }
+    if (!lastDate || parsed.value >= lastDate.value) {
+      lastDate = { value: parsed.value, chapter_no: n.chapter_no, raw: n.time.anchor.raw };
+    }
   }
-  total += section;
-  return hasDigit || total > 0 ? total : null;
-}
-
-function cnNum(seg) {
-  const n = parseCnNumber(seg);
-  return Number.isInteger(n) && n > 0 ? n : null;
-}
 ```
 
-注意：若 `import { parseChineseChapterNo }` 此后不再被使用，**移除该 import 行**（避免 lint 未用警告），但要确认 `parseDateRaw` 的注释/逻辑无其他引用。
-
-**Step 4 跑绿**（确认既有中文数字测试"二千零二十一年三月五日"仍过）。
-
----
-
-## Fix 5（P3 可读性）：describeStoryClock 整数化天
-
-**问题**：`describeStoryClock` 直接拼 `latest.day`，产出"第 0.5 天""第 3.5 天"，喂 LLM 的提示词里出现小数天有点怪。
-
-**修复**：展示时整数化——day 为整数直接显示；非整数显示"约第 N 天"或取整。取整用 `Math.round`，文案保持"约为第 N 天"。
-
-**Step 1 失败测试**（追加到 `tests/timeline-check.test.mjs`）：
-
+new:
 ```js
-test("describeStoryClock: 小数天整数化展示", () => {
-  assert.match(describeStoryClock([sc(1, null), sc(2, "+12h")]), /第 1 天/u);
-  assert.doesNotMatch(describeStoryClock([sc(1, null), sc(2, "+12h")]), /0\.5/);
-});
+  // date_regression：仅比较带年份日期；混合粒度时取粗粒度比较（防"日 vs 同月月粒度"假倒退）。
+  // 注：comparable 契约不变（有年且(有月或有日)即 true）；此处只在比较时按粒度对齐。
+  let lastDate = null; // { value, monthValue, hasDay, chapter_no, raw }
+  for (const n of scenes) {
+    if (n.time.anchor?.type !== "date") continue;
+    const parsed = parseAnchorValue(n.time.anchor);
+    if (!parsed || !parsed.comparable) continue;
+    const hasDay = parsed.value % 100 !== 0;            // 末两位为日(1-31)；0 表无日(月粒度)
+    const monthValue = Math.floor(parsed.value / 100);  // YYYYMM
+    if (lastDate) {
+      // 双方均有日 → 比完整值；任一为月粒度 → 比年月（避免 day=0 排到月初造成假倒退）
+      const cur = hasDay && lastDate.hasDay ? parsed.value : monthValue;
+      const prev = hasDay && lastDate.hasDay ? lastDate.value : lastDate.monthValue;
+      if (cur < prev) {
+        violations.push({
+          type: "time_reversal", chapter_no: n.chapter_no, prior_chapter: lastDate.chapter_no,
+          severity: "high", detail: `${n.time.anchor.raw} < ${lastDate.raw}`,
+          suggestion: `第${n.chapter_no}章的时间（${n.time.anchor.raw}）早于第${lastDate.chapter_no}章（${lastDate.raw}）。若非回忆/闪回，建议调整其一以保持时间顺序。`
+        });
+      }
+    }
+    if (!lastDate || parsed.value >= lastDate.value) {
+      lastDate = { value: parsed.value, monthValue, hasDay, chapter_no: n.chapter_no, raw: n.time.anchor.raw };
+    }
+  }
 ```
 
-**Step 2 跑红**：`node --test tests/timeline-check.test.mjs` → FAIL（出现"第 0.5 天"）。
-
-**Step 3 实现**：把 `describeStoryClock` 中的
-
-```js
-  return `截至第 ${latest.chapter_no} 章，故事时钟约为第 ${latest.day} 天${approx}`;
-```
-
-改为：
-
-```js
-  return `截至第 ${latest.chapter_no} 章，故事时钟约为第 ${Math.round(latest.day)} 天${approx}`;
-```
-
-**Step 4 跑绿**（注意：既有 describeStoryClock 测试断言 `/第 ?3 ?天/u`，`Math.round(3)=3` 仍过）。
-
----
-
-## Fix 6（P3 一致性）：裸 "0" 统一为 "+0"
-
-**问题**：`parseElapsedToken` 接受裸 `"0"`→0，而 `normalizeElapsed` 把 `"0"` 规范成 `"+0"`。两侧对裸 0 处理不一致（功能等价，但语义不统一）。
-
-**修复**：`parseElapsedToken` 仍接受 `"0"`（向后兼容已存数据），但 `normalizeElapsed` 保持产出 `"+0"`。**此条不必改代码**——只需补一条测试锁定"两侧对裸 0 等价"的契约，防止未来漂移。
-
-**Step 1 契约测试**（追加到 `tests/timeline-check.test.mjs`）：
-
-```js
-test("parseElapsedToken: 裸 0 与 +0 等价（契约锁定）", () => {
-  assert.equal(parseElapsedToken("0"), parseElapsedToken("+0"));
-  assert.equal(parseElapsedToken("0"), 0);
-});
-```
-
-**Step 2**：直接跑绿（无需改实现）。
+**Step 4 跑绿**：`node --test tests/timeline-check.test.mjs` → 全绿（含两条新测试）。
 
 ---
 
@@ -250,12 +117,19 @@ test("parseElapsedToken: 裸 0 与 +0 等价（契约锁定）", () => {
 node --test tests/*.test.mjs tests/app-shell/*.test.mjs
 ```
 
-Expected: 全绿（既有 725 + 本次新增全部通过）。
+Expected: 全绿（既有 731 + 本次新增 2 条 = 733 全通过）。
 
-完成后用 `git add -A && git commit -m "fix(timeline): tighten date comparability, normalize migrated time, dedup scene nodes, parse CN unit digits, integer-day clock"` 单次提交收尾。
+完成后单次提交（显式 add，不用 `-A`）：
+```bash
+git add src/core/timeline-check.mjs tests/timeline-check.test.mjs docs/superpowers/plans/2026-06-19-story-clock-part-a-polish.md
+git commit -m "fix(timeline): compare dates at common granularity to kill mixed-granularity false reversal (B1)"
+```
 
 ## Self-Review
 
-- Fix 1 防误报（与 A3 一致）✓；Fix 2 消除入口/存储不对称 ✓；Fix 3 防重复累加 ✓；Fix 4 补漏报覆盖（不改 quality-gates）✓；Fix 5 可读性 ✓；Fix 6 契约锁定 ✓。
-- 所有修复均有失败测试先行；不破坏既有测试（已逐条核对既有断言）。
-- 不动 mergeExtraction 既有去重指纹逻辑（Fix 3 在读取侧去重，风险更低）。
+- 本 Fix 防什么：消除「月粒度 vs 同月日粒度」比较的假 `time_reversal` 误报（B1），与 A3「宁缺毋滥」一致 ✓
+- 补什么：同时锁定「月粒度之间真实倒退仍报」，防止未来有人把修复做成「月粒度整体踢出裁决」的过度收窄 ✓
+- 有失败测试先行（第一条 B1 用例修复前实测 1 violation，预期 0 → 红）✓
+- 不破坏既有测试：`checkTimeline: 带年份日期倒退报 time_reversal`（双方均有日，走完整值比较，行为不变）、`不带年份月日不误报`（`comparable:false` 提前 continue，不变）、闪回/低置信/空 subject 等路径均不变 ✓
+- **不动 `comparable` 契约**：`parseDateRaw` / `parseAnchorValue` 一字未改；`"2021年3月".comparable` 仍为 `true`（`:155` 测试仍绿）。改动仅在 `checkTimeline` 内部 ✓
+- 不动无关既有逻辑（age_regression 循环、sceneNodes 去重、computeStoryClock 均不动）✓

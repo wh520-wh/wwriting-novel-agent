@@ -179,3 +179,23 @@ test("parseElapsedToken: 裸 0 与 +0 等价（契约锁定）", () => {
   assert.equal(parseElapsedToken("0"), parseElapsedToken("+0"));
   assert.equal(parseElapsedToken("0"), 0);
 });
+
+test("checkTimeline: 月粒度与日粒度混比不误报倒退（B1）", () => {
+  // 同年同月：日粒度在前、月粒度在后；月粒度可能落在该月任意一天，不应判倒退
+  const { violations } = checkTimeline([
+    an(3, "scene", { type: "date", raw: "2021年3月15日" }),
+    an(5, "scene", { type: "date", raw: "2021年3月" })
+  ]);
+  assert.equal(violations.length, 0);
+});
+
+test("checkTimeline: 月粒度之间真实倒退仍报（防过度收窄）", () => {
+  // 行为锁定：修复不得把月粒度日期整体踢出裁决（否则与上一版"粒度足够"意图相悖）
+  const { violations } = checkTimeline([
+    an(3, "scene", { type: "date", raw: "2021年3月" }),
+    an(5, "scene", { type: "date", raw: "2021年2月" })
+  ]);
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].type, "time_reversal");
+  assert.equal(violations[0].chapter_no, 5);
+});
