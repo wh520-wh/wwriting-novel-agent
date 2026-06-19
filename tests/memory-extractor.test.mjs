@@ -41,3 +41,38 @@ test("parseMemoryExtraction 裁剪超长 summary 到 2000 字", () => {
   assert.equal(parsed.ok, true);
   assert.equal(parsed.summary.length, 2000);
 });
+
+test("parseMemoryExtraction: 解析 v2 结构化 time", () => {
+  const raw = JSON.stringify({ summary: "s", facts: [],
+    timeline: [{ chapter_no: 9, story_time_raw: "三天后的傍晚", events: ["探查"],
+      time: { kind: "scene", elapsed: "+3d", anchor: { type: "date", raw: "3月10日", subject: null }, confidence: "high" } }],
+    characters: [] });
+  const t = parseMemoryExtraction(raw).timeline[0];
+  assert.equal(t.story_time_raw, "三天后的傍晚");
+  assert.equal(t.time.kind, "scene");
+  assert.equal(t.time.elapsed, "+3d");
+  assert.equal(t.time.anchor.type, "date");
+  assert.equal(t.time.confidence, "high");
+});
+
+test("parseMemoryExtraction: 旧 story_time 降级为 raw + 默认 low time", () => {
+  const raw = JSON.stringify({ summary: "s", facts: [],
+    timeline: [{ chapter_no: 9, story_time: "十月下旬", events: ["探查"] }], characters: [] });
+  const t = parseMemoryExtraction(raw).timeline[0];
+  assert.equal(t.story_time_raw, "十月下旬");
+  assert.equal(t.time.kind, "scene");
+  assert.equal(t.time.elapsed, null);
+  assert.equal(t.time.anchor, null);
+  assert.equal(t.time.confidence, "low");
+});
+
+test("parseMemoryExtraction: 非法 time 字段降级不抛", () => {
+  const raw = JSON.stringify({ summary: "s", facts: [],
+    timeline: [{ chapter_no: 1, events: ["e"], story_time_raw: "x",
+      time: { kind: "weird", elapsed: "三天", anchor: "bad", confidence: "maybe" } }], characters: [] });
+  const t = parseMemoryExtraction(raw).timeline[0];
+  assert.equal(t.time.kind, "scene");
+  assert.equal(t.time.elapsed, null);
+  assert.equal(t.time.anchor, null);
+  assert.equal(t.time.confidence, "low");
+});
