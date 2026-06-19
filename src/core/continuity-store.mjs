@@ -1,16 +1,27 @@
 import { readJson, safeJoin, writeFileAtomic, writeJsonAtomic } from "./fs-utils.mjs";
 
-export const CONTINUITY_SCHEMA_VERSION = 1;
+export const CONTINUITY_SCHEMA_VERSION = 2;
 export const MAX_FACTS_PER_ENTITY = 20;
 
 const EMPTY = () => ({ schema_version: CONTINUITY_SCHEMA_VERSION, facts: [], timeline: [], characters: [] });
+
+function migrateTimelineNode(node) {
+  const n = node && typeof node === "object" ? node : {};
+  const base = {
+    chapter_no: n.chapter_no ?? null,
+    events: Array.isArray(n.events) ? n.events : [],
+    story_time_raw: String(n.story_time_raw ?? n.story_time ?? "")
+  };
+  if (n.time && typeof n.time === "object") return { ...base, time: n.time };
+  return { ...base, time: { kind: "scene", elapsed: null, anchor: null, confidence: "low" } };
+}
 
 export async function loadContinuity(projectRoot) {
   const data = await readJson(safeJoin(projectRoot, "memory", "continuity.json"), EMPTY());
   return {
     schema_version: CONTINUITY_SCHEMA_VERSION,
     facts: Array.isArray(data.facts) ? data.facts : [],
-    timeline: Array.isArray(data.timeline) ? data.timeline : [],
+    timeline: (Array.isArray(data.timeline) ? data.timeline : []).map(migrateTimelineNode),
     characters: Array.isArray(data.characters) ? data.characters : []
   };
 }
@@ -35,8 +46,10 @@ export function mergeExtraction(base, extraction) {
     enforceEntityCap(next.facts, fact.entity);
   }
   for (const node of extraction.timeline ?? []) {
-    const dup = next.timeline.find((t) => t.chapter_no === node.chapter_no && t.story_time === node.story_time);
-    if (!dup) next.timeline.push({ chapter_no: node.chapter_no, story_time: node.story_time ?? "", events: node.events ?? [] });
+    const incoming = migrateTimelineNode(node);
+    const fp = incoming.events.join("¦");
+    const dup = next.timeline.find((t) => t.chapter_no === incoming.chapter_no && (t.events ?? []).join("¦") === fp);
+    if (!dup) next.timeline.push(incoming);
   }
   for (const ch of extraction.characters ?? []) {
     const existing = next.characters.find((c) => c.name === ch.name);
@@ -76,7 +89,11 @@ export function renderContinuityMarkdown(data) {
   }
   lines.push("", "## 时间线");
   for (const t of [...data.timeline].sort((a, b) => (a.chapter_no ?? 0) - (b.chapter_no ?? 0))) {
-    lines.push(`- 第${t.chapter_no}章 [${t.story_time}]: ${t.events.join("；")}`);
+    const node = migrateTimelineNode(t);
+    const tags = [node.time.elapsed, node.time.kind !== "scene" ? node.time.kind : null].filter(Boolean).join("·");
+    const meta = tags ? ` [${tags}]` : "";
+    const when = node.story_time_raw || (node.time.anchor?.raw ?? "");
+    lines.push(`- 第${node.chapter_no}章${when ? ` [${when}]` : ""}${meta}: ${node.events.join("；")}`);
   }
   lines.push("", "## 角色");
   for (const c of data.characters) {
