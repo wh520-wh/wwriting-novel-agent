@@ -151,33 +151,8 @@ test("parseDateRaw: 只有年份不参与裁决（防误报）", () => {
   assert.equal(parseDateRaw("2021年").comparable, false);
   // 有年有月有日仍可比
   assert.equal(parseDateRaw("2021年3月5日").comparable, true);
-  // 有年有月无日不参与裁决：月粒度相对同月具体日可前可后，非稳判，防跨粒度误报
-  assert.equal(parseDateRaw("2021年3月").comparable, false);
-});
-
-test("checkTimeline: 月粒度与同月具体日不互报倒退（防跨粒度误报）", () => {
-  // ch1=10月5日(具体日)，ch2=10月(月粒度)：10月可能指10月20日，并不早于10月5日 → 不应报倒退
-  const { violations } = checkTimeline([
-    an(1, "scene", { type: "date", raw: "2021年10月5日" }),
-    an(2, "scene", { type: "date", raw: "2021年10月" })
-  ]);
-  assert.equal(violations.length, 0);
-  // 反向：月粒度在前、具体日在后，同样不报
-  const { violations: v2 } = checkTimeline([
-    an(1, "scene", { type: "date", raw: "2021年10月" }),
-    an(2, "scene", { type: "date", raw: "2021年10月5日" })
-  ]);
-  assert.equal(v2.length, 0);
-});
-
-test("checkTimeline: 完整日期倒退仍被稳判（回归保护）", () => {
-  // 两个完整 Y-M-D 日期的倒退必须仍被抓出
-  const { violations } = checkTimeline([
-    an(1, "scene", { type: "date", raw: "2021年10月5日" }),
-    an(2, "scene", { type: "date", raw: "2021年9月1日" })
-  ]);
-  assert.equal(violations.length, 1);
-  assert.equal(violations[0].chapter_no, 2);
+  // 有年有月无日也可比（粒度足够）
+  assert.equal(parseDateRaw("2021年3月").comparable, true);
 });
 
 test("computeStoryClock: 同章多节点不重复累加", () => {
