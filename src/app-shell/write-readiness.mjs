@@ -1,0 +1,214 @@
+/**
+ * @param {object} input - Dashboard data object
+ * @param {boolean} input.hasProject
+ * @param {object|null} input.project
+ * @param {object|null} input.model_profile
+ * @param {object} input.summary
+ * @param {object} input.state
+ * @param {object} input.chatHistory
+ * @param {Array} input.events
+ * @param {Array} input.failures
+ * @returns {{ key, label, detail, primaryAction, primaryLabel, chapterNo, modelLabel, blocking, reasonCode }}
+ */
+export function deriveWriteReadiness(input) {
+  if (!input) {
+    return readiness("no_project", {
+      primaryAction: "create_project",
+      primaryLabel: "新建小说"
+    });
+  }
+
+  // 1. No project
+  if (input.hasProject === false) {
+    return readiness("no_project", {
+      primaryAction: "create_project",
+      primaryLabel: "新建小说"
+    });
+  }
+
+  const project = input.project || {};
+  const summary = input.summary || {};
+  const state = input.state || {};
+  const chatHistory = input.chatHistory || {};
+  const modelProfile = input.model_profile;
+  const events = input.events || [];
+  const failures = input.failures || [];
+
+  const chapterNo = summary.currentChapterNo || state.current_chapter_no || 1;
+  const modelLabel = modelProfile ? modelProfile.display || "" : "";
+
+  // 2. Project archived or read-only
+  if (project.archived_at || project.tool_permissions?.read_only) {
+    return readiness("project_read_only", {
+      chapterNo,
+      modelLabel,
+      primaryAction: "view_project_status"
+    });
+  }
+
+  // 3. Running or chat busy
+  if (summary.projectStatus === "running" || chatHistory.busy) {
+    return readiness("running", {
+      chapterNo,
+      modelLabel,
+      primaryAction: "view_progress"
+    });
+  }
+
+  // 4. Blocked or unresolved failure
+  if (summary.projectStatus === "blocked" || (failures.length > 0)) {
+    return readiness("blocked", {
+      chapterNo,
+      modelLabel,
+      primaryAction: "view_issue",
+      blocking: true
+    });
+  }
+
+  // 5. Completed (completedChapters >= targetChapters)
+  if (summary.completedChapters >= summary.targetChapters) {
+    return readiness("completed", {
+      chapterNo,
+      modelLabel,
+      primaryAction: "increase_target"
+    });
+  }
+
+  // 6. Missing model
+  const activeModel = project.active_model;
+  if (!activeModel) {
+    return readiness("missing_model", {
+      chapterNo,
+      modelLabel,
+      primaryAction: "open_settings"
+    });
+  }
+
+  // 7. Invalid model fields
+  if (isInvalidModel(activeModel)) {
+    return readiness("invalid_model", {
+      chapterNo,
+      modelLabel,
+      primaryAction: "open_settings",
+      blocking: true
+    });
+  }
+
+  // 8. Mock/demo model
+  if (modelProfile && modelProfile.is_mock) {
+    return readiness("demo", {
+      chapterNo,
+      modelLabel,
+      primaryAction: "start_chapter",
+      primaryLabel: `用演示模型写第 ${chapterNo} 章`
+    });
+  }
+
+  // 9. Check for matching model_connection_tested event
+  const connEvent = findLatestConnectionEvent(events, activeModel.model_name);
+  if (connEvent && connEvent.data.ok === true) {
+    return readiness("ready", {
+      chapterNo,
+      modelLabel,
+      primaryAction: "start_chapter",
+      primaryLabel: `开始写第 ${chapterNo} 章`
+    });
+  }
+  if (connEvent && connEvent.data.ok === false) {
+    return readiness("invalid_model", {
+      chapterNo,
+      modelLabel,
+      primaryAction: "open_settings",
+      blocking: true,
+      reasonCode: "connection_failed"
+    });
+  }
+
+  // 10. Connection unknown
+  return readiness("connection_unknown", {
+    chapterNo,
+    modelLabel,
+    primaryAction: "test_connection"
+  });
+}
+
+/**
+ * Check if active model has invalid/incomplete fields.
+ */
+function isInvalidModel(model) {
+  const required = ["provider", "model_name", "base_url", "api_key_env"];
+  for (const field of required) {
+    const val = model[field];
+    if (val === undefined || val === null || val === "") {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Find the latest model_connection_tested event for a given model name.
+ */
+function findLatestConnectionEvent(events, modelName) {
+  let latest = null;
+  for (const ev of events) {
+    if (ev.type === "model_connection_tested" && ev.data && ev.data.model_name === modelName) {
+      latest = ev;
+    }
+  }
+  return latest;
+}
+
+/**
+ * Build the readiness result object with defaults.
+ */
+function readiness(key, overrides = {}) {
+  const labels = {
+    no_project:         { label: "未创建项目",       detail: "请先创建小说项目。" },
+    project_read_only:  { label: "项目只读",         detail: "项目已被归档或设置为只读。" },
+    running:            { label: "写作进行中",       detail: "AI 正在写作中，请稍候。" },
+    blocked:            { label: "遇到阻塞",         detail: "项目存在待解决的问题。" },
+    completed:          { label: "已完成目标",       detail: "已达成目标章节数，可增加目标。" },
+    missing_model:      { label: "未配置模型",       detail: "请先配置 AI 模型。" },
+    invalid_model:      { label: "模型配置无效",     detail: "模型配置信息不完整或连接失败，请检查设置。" },
+    demo:               { label: "演示模型模式",     detail: "写作内容不会被保存。继续以确认。" },
+    ready:              { label: "模型已连接",       detail: "可以开始写第 1 章。" },
+    connection_unknown: { label: "连接状态未知",     detail: "尚未确认模型连接是否正常。" }
+  };
+
+  const entry = labels[key] || { label: key, detail: "" };
+
+  // Build detail with chapter number for ready and demo
+  let detail = entry.detail;
+  if (key === "ready" && overrides.chapterNo) {
+    detail = `可以开始写第 ${overrides.chapterNo} 章。`;
+  }
+
+  return {
+    key,
+    label: entry.label,
+    detail,
+    primaryAction: overrides.primaryAction || "",
+    primaryLabel: overrides.primaryLabel || getDefaultPrimaryLabel(key, overrides.chapterNo),
+    chapterNo: overrides.chapterNo || 1,
+    modelLabel: overrides.modelLabel || "",
+    blocking: overrides.blocking === true,
+    reasonCode: overrides.reasonCode || null
+  };
+}
+
+function getDefaultPrimaryLabel(key, chapterNo) {
+  const labels = {
+    no_project: "新建小说",
+    project_read_only: "查看项目状态",
+    running: "查看进度",
+    blocked: "查看问题",
+    completed: "增加目标",
+    missing_model: "打开设置",
+    invalid_model: "打开设置",
+    demo: "用演示模型开始",
+    ready: "开始写作",
+    connection_unknown: "测试连接"
+  };
+  return labels[key] || "";
+}
