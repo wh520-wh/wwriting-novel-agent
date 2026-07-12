@@ -57,6 +57,12 @@ test("key readiness states", () => {
   );
   assert.equal(
     deriveWriteReadiness(data({
+      events: [{ type: "model_connection_tested", data: { model_name: "deepseek-chat", ok: false } }]
+    })).key,
+    "invalid_model"
+  );
+  assert.equal(
+    deriveWriteReadiness(data({
       events: [{ type: "model_connection_tested", data: { model_name: "deepseek-chat", ok: true } }]
     })).key,
     "ready"
