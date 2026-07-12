@@ -33,13 +33,21 @@ const base = {
 };
 
 function data(overrides = {}) {
+  const merge = (field) => {
+    if (Object.hasOwn(overrides, field)) {
+      const v = overrides[field];
+      if (v === null || v === undefined) return v;
+      return { ...base[field], ...v };
+    }
+    return { ...base[field] };
+  };
   return {
     ...base,
     ...overrides,
-    project: { ...base.project, ...(overrides.project || {}) },
-    model_profile: { ...base.model_profile, ...(overrides.model_profile || {}) },
-    summary: { ...base.summary, ...(overrides.summary || {}) },
-    state: { ...base.state, ...(overrides.state || {}) }
+    project: merge("project"),
+    model_profile: merge("model_profile"),
+    summary: merge("summary"),
+    state: merge("state")
   };
 }
 
@@ -73,6 +81,70 @@ test("key readiness states", () => {
     })).key,
     "connection_unknown"
   );
+});
+
+test("full return shape for ready state", () => {
+  const result = deriveWriteReadiness(data({
+    events: [{ type: "model_connection_tested", data: { model_name: "deepseek-chat", ok: true } }]
+  }));
+  assert.equal(result.key, "ready");
+  assert.equal(result.label, "模型已连接");
+  assert.ok(result.detail.includes("第 1 章"));
+  assert.equal(result.primaryAction, "start_chapter");
+  assert.equal(result.primaryLabel, "开始写第 1 章");
+  assert.equal(result.chapterNo, 1);
+  assert.equal(result.modelLabel, "DeepSeek · deepseek-chat");
+  assert.equal(result.blocking, false);
+  assert.equal(result.reasonCode, null);
+});
+
+test("full return shape for no_project", () => {
+  const result = deriveWriteReadiness({ hasProject: false });
+  assert.equal(result.key, "no_project");
+  assert.equal(result.primaryAction, "create_project");
+  assert.equal(result.primaryLabel, "新建小说");
+  assert.equal(result.blocking, false);
+});
+
+test("full return shape for missing_model", () => {
+  const result = deriveWriteReadiness(data({ project: { active_model: null }, model_profile: null }));
+  assert.equal(result.key, "missing_model");
+  assert.equal(result.primaryAction, "open_settings");
+  assert.equal(result.blocking, false);
+});
+
+test("full return shape for demo", () => {
+  const result = deriveWriteReadiness(data({
+    model_profile: { is_mock: true, display: "演示模型", model_name: "mock-writer" }
+  }));
+  assert.equal(result.key, "demo");
+  assert.equal(result.primaryAction, "start_chapter");
+  assert.equal(result.primaryLabel, "用演示模型写第 1 章");
+  assert.equal(result.blocking, false);
+});
+
+test("blocked via failures when project status is idle", () => {
+  const result = deriveWriteReadiness(data({
+    summary: { projectStatus: "idle" },
+    failures: [{ id: "f1", kind: "test" }]
+  }));
+  assert.equal(result.key, "blocked");
+  assert.equal(result.blocking, true);
+});
+
+test("running via chatHistory.busy when project status is idle", () => {
+  const result = deriveWriteReadiness(data({
+    summary: { projectStatus: "idle" },
+    chatHistory: { busy: true }
+  }));
+  assert.equal(result.key, "running");
+});
+
+test("null and undefined input are handled safely", () => {
+  const nullResult = deriveWriteReadiness(null);
+  assert.equal(nullResult.key, "no_project");
+  const undefResult = deriveWriteReadiness(undefined);
+  assert.equal(undefResult.key, "no_project");
 });
 
 test("project states take precedence", () => {
