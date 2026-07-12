@@ -710,11 +710,11 @@ function renderDashboard(data) {
     threadRenderer.renderEmptyThread();
     composer.updateModePill();
     composer.updateStatusPills(data);
-	    composer.syncChatBusy(data);
-	    renderWriteReadiness(data);
-	    refreshDrawerIfOpen();
-	    return;
-	  }
+    composer.syncChatBusy(data);
+    renderWriteReadiness(data);
+    refreshDrawerIfOpen();
+    return;
+  }
 
   const firstLoad = currentProjectRoot !== data.projectRoot;
   if (firstLoad) {
@@ -797,11 +797,11 @@ function renderDashboard(data) {
   }
 
   composer.updateModePill();
-	composer.updateStatusPills(data);
-	composer.syncChatBusy(data);
-	renderWriteReadiness(data);
-	renderChapterSuccess(data);
-	refreshDrawerIfOpen();
+  composer.updateStatusPills(data);
+  composer.syncChatBusy(data);
+  renderWriteReadiness(data);
+  renderChapterSuccess(data);
+  refreshDrawerIfOpen();
 }
 
 // 抽屉打开时重渲并保留滚动位置；renderDashboard 在 hasProject 和 noProject 两条分支都需要。
