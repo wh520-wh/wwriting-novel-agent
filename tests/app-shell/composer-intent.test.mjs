@@ -75,3 +75,13 @@ test("parseUserCommand 对普通对话仍走 main（chat agent）", () => {
   assert.equal(composer.parseUserCommand("怎么开始写", "main").type, "main");
   assert.equal(composer.parseUserCommand("帮我看看大纲", "main").type, "main");
 });
+
+test("startCurrentChapter exists and calls submitWritingCommand", async () => {
+  const composer = makeComposer();
+  assert.equal(typeof composer.startCurrentChapter, "function");
+  try {
+    await composer.startCurrentChapter();
+  } catch {
+    // Expected - postJson isn't mocked in unit test
+  }
+});

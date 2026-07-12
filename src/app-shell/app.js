@@ -398,11 +398,7 @@ if (refs.chapterSuccessRead) {
 }
 if (refs.chapterSuccessContinue) {
   refs.chapterSuccessContinue.addEventListener("click", () => {
-    if (typeof composer.startCurrentChapter === "function") {
-      void composer.startCurrentChapter();
-    } else {
-      showToast("写作启动功能即将就绪。", "info");
-    }
+    void composer.startCurrentChapter();
   });
 }
 
@@ -620,11 +616,7 @@ function handleReadinessAction(view) {
       openSettingsModal();
       break;
     case "start_chapter":
-      if (typeof composer.startCurrentChapter === "function") {
-        void composer.startCurrentChapter();
-      } else {
-        showToast("写作启动功能即将就绪。", "info");
-      }
+      void composer.startCurrentChapter();
       break;
     case "view_progress":
     case "view_project_status":

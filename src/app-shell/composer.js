@@ -715,6 +715,16 @@ export function createComposer(ctx) {
     }
   }
 
+  async function startCurrentChapter() {
+    const dashboard = ctx.getDashboard?.() || {};
+    const chapterNo = Number(
+      dashboard.summary?.currentChapterNo ||
+      dashboard.state?.current_chapter_no ||
+      1
+    );
+    await submitWritingCommand("开始写第 " + chapterNo + " 章", "write");
+  }
+
   async function submitSideQuestion(question) {
     ctx.refs.composerSubmit.disabled = true;
     ctx.refs.composerSubmit.setAttribute("aria-busy", "true");
@@ -931,6 +941,7 @@ export function createComposer(ctx) {
   return {
     parseUserCommand, onComposerKeydown, autoGrowComposer, updateSubmitState,
     updateSlashMenu, hideSlashMenu, submitComposer, submitText, submitWritingCommand,
+    startCurrentChapter,
     submitSideQuestion, promoteAskEntry, resultMessageForCommand,
     initModePill, updateModePill, openModePopover, closeModePopover,
     openModelPopover, closeModelPopover, updateStatusPills, sendChatMessageWithUX,
