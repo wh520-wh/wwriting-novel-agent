@@ -497,7 +497,10 @@ try {
   const initializedDashboard = await fetchJson(`http://127.0.0.1:${port}/api/dashboard`);
   assert.equal(initializedDashboard.projectRoot, initRoot);
   assert.equal(initializedDashboard.project.title, "Initialized From Folder");
+  assert.equal(initializedDashboard.project.story_seed, "一个空文件夹被初始化为项目。");
   assert.equal(initializedDashboard.summary.targetChapters, 9);
+  assert.equal(initializedDashboard.summary.currentChapterNo, 1);
+  assert.equal(initializedDashboard.summary.projectStatus, "idle");
 
   // 持久会话：最近项目列表来自持久化 recents（不再扫描整个工作区噪声项目）
   await postJson(`http://127.0.0.1:${port}/api/projects/open`, { projectRoot });
