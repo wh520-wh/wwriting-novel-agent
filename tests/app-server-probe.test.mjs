@@ -1330,6 +1330,31 @@ test("new projects inherit the saved local model without re-entering the key", a
   }
 });
 
+test("dashboard shows correct project state after POST /api/projects/init", async () => {
+  const ctx = await setupServer();
+  try {
+    const storySeed = "一位钟表匠在修理古董钟时发现了时间裂缝。";
+    const targetChapters = 5;
+    const initRoot = path.join(ctx.root, "init-dashboard-project");
+    const initRes = await postJson(ctx.port, "/api/projects/init", {
+      projectRoot: initRoot,
+      title: "Dashboard Init Test",
+      story_seed: storySeed,
+      target_chapters: targetChapters
+    });
+    assert.equal(initRes.res.status, 200);
+
+    const { data } = await getJson(ctx.port, "/api/dashboard");
+    assert.equal(data.hasProject, true);
+    assert.equal(data.project.story_seed, storySeed);
+    assert.equal(data.summary.currentChapterNo, 1);
+    assert.equal(data.summary.targetChapters, targetChapters);
+    assert.equal(data.summary.projectStatus, "idle");
+  } finally {
+    await closeServer(ctx.server);
+  }
+});
+
 test("mock models are never saved as reusable local model profiles", async () => {
   const ctx = await setupServer();
   try {

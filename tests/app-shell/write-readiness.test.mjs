@@ -83,6 +83,46 @@ test("key readiness states", () => {
   );
 });
 
+test("connection event matching rules", () => {
+  const activeModel = { provider: "openai-compatible", model_name: "deepseek-chat", base_url: "https://api.deepseek.com", api_key_env: "DEEPSEEK_API_KEY" };
+
+  // ok:true with matching model_name -> ready
+  const matchedOk = deriveWriteReadiness(data({
+    project: { active_model: activeModel },
+    events: [{ type: "model_connection_tested", data: { model_name: "deepseek-chat", ok: true } }]
+  }));
+  assert.equal(matchedOk.key, "ready");
+  assert.equal(matchedOk.reasonCode, null);
+
+  // ok:true with non-matching model_name -> connection_unknown
+  const nonMatchingOk = deriveWriteReadiness(data({
+    project: { active_model: activeModel },
+    events: [{ type: "model_connection_tested", data: { model_name: "old-model", ok: true } }]
+  }));
+  assert.equal(nonMatchingOk.key, "connection_unknown");
+  assert.equal(nonMatchingOk.reasonCode, null);
+
+  // ok:false with matching model_name -> invalid_model with reasonCode
+  const failedConn = deriveWriteReadiness(data({
+    project: { active_model: activeModel },
+    events: [{ type: "model_connection_tested", data: { model_name: "deepseek-chat", ok: false } }]
+  }));
+  assert.equal(failedConn.key, "invalid_model");
+  assert.equal(failedConn.reasonCode, "connection_failed");
+  assert.equal(failedConn.blocking, true);
+
+  // multiple events — latest matching event wins
+  const latestWins = deriveWriteReadiness(data({
+    project: { active_model: activeModel },
+    events: [
+      { type: "model_connection_tested", data: { model_name: "deepseek-chat", ok: false } },
+      { type: "model_connection_tested", data: { model_name: "deepseek-chat", ok: true } }
+    ]
+  }));
+  assert.equal(latestWins.key, "ready");
+  assert.equal(latestWins.reasonCode, null);
+});
+
 test("full return shape for ready state", () => {
   const result = deriveWriteReadiness(data({
     events: [{ type: "model_connection_tested", data: { model_name: "deepseek-chat", ok: true } }]
