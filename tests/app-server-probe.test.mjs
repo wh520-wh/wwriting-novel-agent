@@ -1572,3 +1572,31 @@ test("invalid legacy model config blocks a task without provider access", async 
     await closeServer(server);
   }
 });
+
+test("custom model settings persist the submitted base URL and model id", async () => {
+  const ctx = await setupServer();
+  try {
+    const customModelId = "writer-custom-" + Date.now();
+    const customApiKey = "sk-custom-" + Date.now();
+    const { res, data } = await postJson(ctx.port, "/api/settings/update", {
+      projectRoot: ctx.projectRoot,
+      active_model: {
+        provider: "openai-compatible",
+        model_name: customModelId,
+        base_url: "https://api.example.test/v1",
+        api_key_env: "WWRITING_PROVIDER_API_KEY",
+        api_key: customApiKey,
+        max_output_tokens: 4096
+      }
+    });
+    assert.equal(res.status, 200);
+    assert.equal(data.project.active_model.model_name, customModelId);
+    assert.equal(data.project.active_model.base_url, "https://api.example.test/v1");
+
+    const dashboard = await getJson(ctx.port, "/api/dashboard");
+    assert.equal(dashboard.data.project.active_model.model_name, customModelId);
+    assert.equal(dashboard.data.model_profile.model_name, customModelId);
+  } finally {
+    await closeServer(ctx.server);
+  }
+});
