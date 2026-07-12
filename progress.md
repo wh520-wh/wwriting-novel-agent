@@ -1,5 +1,98 @@
 # Progress
 
+## 2026-07-12 产品收敛计划建立
+
+### 本次完成
+
+- 阅读并遵循 `planning-with-files-zh` 技能规则。
+- 读取现有 `task_plan.md`、`findings.md`、`progress.md`，确认它们包含从 MVP、Codex 风格 UI、聊天 Agent 到故事时间线的历史记录。
+- 结合现有源码和验收报告，确认当前阶段应从“新增能力”转向“已有能力产品化”。
+- 在 `task_plan.md` 顶部新增当前产品收敛计划，分为发布可信度、第一章成功、模型库、信息架构、编辑闭环、故事记忆、成书交付和总验收八个阶段。
+- 在 `findings.md` 记录产品判断、代码证据、已知风险和明确取舍。
+
+### 当前状态
+
+- 计划状态：规划完成，等待用户决定是否进入第一阶段实现。
+- 当前阶段：阶段 0「发布与基础可信度」待执行。
+- 本次未修改源码、测试、打包产物或用户已有临时文件。
+
+### 下一步建议
+
+1. 先执行阶段 0，修复自定义模型保存路径并让 `verify:local` 恢复为可用发布门槛。
+2. 阶段 0 通过后，再进入阶段 1 的“创建项目后直接开始第一章”路径。
+3. 每完成一个阶段，更新本文件、计划状态和对应验收证据。
+
+## 2026-07-12 首章成功路径 Spec
+
+### 本次完成
+
+- 修复 WebBridge 的陈旧 PID 文件后恢复 daemon；当前 daemon 运行正常，但浏览器扩展尚未连接，因此未使用登录态网页内容。
+- 公开检索入口超时后，改为读取 Sudowrite、Scrivener、Campfire 的官方页面；Novelcrafter 文档首页返回 308，未采信其内容。
+- 将研究结论写入 `findings.md`，包括 Quick Start、项目级故事事实来源、作者任务式信息架构、资料可达和成书导出的可迁移原则。
+- 新建 `docs/superpowers/specs/2026-07-12-first-chapter-success-design.md`，细化“创建/打开 → 准备写作 → 测试模型 → 开始第 1 章 → 阅读完成章节”的设计、状态模型、文件落点、错误处理和验收命令。
+- 明确本 Spec 不修改核心 Agent 状态机、项目文件 schema、模型库结构和完整 Story Bible 编辑器。
+
+### 当前状态
+
+- 阶段 0：发布与基础可信度，仍待执行。
+- 阶段 1：首次使用与第一章成功，Spec 已完成，等待用户确认后再写实施计划。
+- 本次未修改源码、测试和打包产物。
+
+## 2026-07-12 首章成功路径实施计划
+
+### 本次完成
+
+- 按 `writing-plans` 技能将首章成功 Spec 拆成 7 个可独立验证的实施任务。
+- 计划采用 TDD 顺序：先锁定自定义模型保存基线，再实现纯 readiness 状态，随后接入准备卡、受控启动入口、dashboard 语义、Electron 点击探针和最终交付门槛。
+- 自审修正两处范围遗漏：无项目状态必须在主区保留“新建小说 / 打开本地文件夹”；章节完成卡在任一 committed 章节完成后即可显示，不等待整本目标完成。
+- 实施计划保存到 `docs/superpowers/plans/2026-07-12-first-chapter-success.md`。
+
+### 当前状态
+
+- 阶段 1：实施计划已完成并验收通过。
+- 阶段 0 和阶段 1 的所有实现任务已执行完毕，进入发布前的最终收口状态。
+
+## 2026-07-12 首章成功路径实现（Tasks 1-7）
+
+### 本次完成
+
+- **Task 1**：锁定自定义模型保存回归 — 新增回归测试断言自定义模型 base_url 和 model_id 在保存后 persist 到 dashboard；`scripts/verify-app-clickability.cjs` 扩展已有 Electron 点击链路覆盖新建项目和设置保存。
+- **Task 2**：以 TDD 实现 `deriveWriteReadiness` — 新增 `src/app-shell/write-readiness.mjs` 纯函数模块，派生 10 种优先级顺序状态（no_project → project_read_only → running → blocked → completed → missing_model → invalid_model → demo → ready → connection_unknown）；`tests/app-shell/write-readiness.test.mjs` 覆盖全部状态和项目状态优先级。
+- **Task 3**：接入准备卡与章节完成卡 — `index.html` 新增 `#write-readiness` 和 `#chapter-success` 卡片容器；`app.js` 整合 `deriveWriteReadiness` 渲染逻辑，准备卡按状态显示不同主按钮（写第 1 章/演示模型/配置模型/检查配置/测试连接等），完成卡仅使用 committed artifact 真值；`styles.css` 新增响应式卡片样式。
+- **Task 4**：暴露受控的开始当前章节入口 — `composer.js` 新增 `startCurrentChapter()`，内部调用 `submitWritingCommand()` 复用现有写作提交路径；准备卡和完成卡按钮均使用 `composer.startCurrentChapter()`；`composer-intent.test.mjs` 验证请求 /api/commands/submit。
+- **Task 5**：补齐 dashboard 与连接测试语义 — `app-server-probe.test.mjs` 新增项目初始化后 dashboard 断言和连接事件匹配测试；确认无新增 quick-start API。
+- **Task 6**：增加真实 Electron 首章点击链路 — `verify-app-clickability.cjs` 新增 first-chapter-start 和 chapter-success-read 探针；`verify-app-shell.mjs` 扩展项目初始化后 dashboard 字段断言；`app-shell-static.test.mjs` 断言 6 个稳定卡片 ID 和 deriveWriteReadiness 导入。
+- **Task 7**（本任务）：新增首次写作流程说明到用户指南；运行完整交付门槛。
+
+### 验证结果
+
+| 门槛 | 结果 | 说明 |
+|---|---|---|
+| `npm test` | 通过 | 749 项全部通过 |
+| `npm run verify:app-clickability` | 通过 | Electron 点击链路探针全部命中（含 first-chapter-start、chapter-success-read）|
+| `npm run verify:app-shell` | 通过 | 包含 dashboard 字段断言、新 IA 断言、漂移守卫 |
+| `npm run verify:desktop-shell` | 通过 | 桌面壳菜单接管与中文标签 |
+| `npm run verify:electron-runtime` | 通过 | Electron smoke 模式加载 dashboard |
+| `npm run verify:mvp` | 通过 | 3 章 mock 生成 |
+| `npm run verify:longrun` | 通过 | 20 章 mock 一致性 |
+| `npm run verify:faults` | 通过 | 8 章故障注入 |
+| `npm run package:dir` | 通过 | 目录包构建成功 |
+| `npm run verify:packaged-dir` | 通过 | 打包 exe smoke 测试通过 |
+| `npm run package:installer` | 通过 | NSIS 安装器构建成功（102.6 MB） |
+| `npm run verify:installer` | 通过 | 安装器文件头和体积校验通过 |
+| `npm run verify:local` | **通过** | 12 步全绿，整体发布门槛通过 |
+
+### 当前状态
+
+- Phase 1 首章成功路径：完成。
+- `verify:local` 全链路通过，可进入发布流程。
+- 已更新 `docs/USER_GUIDE.zh-CN.md` 包含首次写作流程说明。
+
+### 未解决风险
+
+- 无阻塞性未解决问题。阶段 0（发布与基础可信度）和阶段 1（首次使用与第一章成功）均已实现并通过验收。
+- 后续阶段（2-7）待规划和实现。
+
 ## 已完成（需求与决策）
 - 产品方向：桌面端长篇小说写作 Agent；用户：独立作者；模式：自动连续写作 + 人工确认；输出：本地 Markdown 章节。
 - 扩展：内置工具优先 + 支持 skill 导入。基础工具：网页搜索/抓取、本地文件、任务队列、checkpoint、日志。
@@ -199,6 +292,3 @@
 - 对抗式审计（多智能体工作流：多维评审 → 逐发现反驳验证）：第一轮三维确认 6 条，独立验证者逐条确认全部 low 级、全不触及核心隔离铁律。已全修——state 空值兜底、前后端漂移守卫（verify-app-shell 逐字比对后端常量/正则）、合并重复导入、modelError 改为暴露并写日志、readOptionalText 死分支折叠、chapter_index 改用 loadChapterIndex。新增 3 测试（modelError 暴露 / 模型失败降级只写 side_questions.md / 缺失 agent_state.json 不崩溃）；`npm test` 77 项；`verify:app-shell`（含漂移守卫）通过。
 - 第二轮补缺审计完备性复核：核心隔离铁律「结构上稳固、无真实漏洞」，仅存测试覆盖缺口。补强：在线模型路径全项目快照不变性测试（除 side_questions.md 外文件 sha256 前后逐字节一致，证 cost.json 不被写）、真实 buildSideQuestionClient 路径测试（stub fetch 走生产装配、验 base_url 与不污染文件）、UX 漏报正则扩充（写成/改编/黑化/洗白/写死/让…在一起等，前后端同步、漂移守卫保证一致）。`npm test` 79 项（side-question 共 12 项）；`verify:app-shell` 通过。
 - 最终交付：`verify:local` 11 步全绿（含两次打包与产物校验）；重新打包并签名，产物 `win-unpacked\WWriting Novel Agent.exe`（约 226.9 MB）+ `Setup.exe`（约 96.7 MB），2026-05-30 14:24 重建。三份规划文档已精炼至约一半篇幅（总结性压缩，保留全部实质决策与验证证据）。
-
-
-
