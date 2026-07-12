@@ -12,6 +12,7 @@ import { createDrawerPanels } from "./drawer-panels.js";
 import { createSettingsModal } from "./settings-modal.js";
 import { createComposer } from "./composer.js";
 import { createProjectScope } from "./project-scope.mjs";
+import { deriveWriteReadiness } from "./write-readiness.mjs";
 
 // WWriting · Codex 风格对话式前端
 // 后端无消息/SSE 端点，对话流由前端用 /api/dashboard 的 events[] + chapters[] + summary 聚合而成。
@@ -86,7 +87,20 @@ const refs = {
   quickRail: document.querySelector("#quick-rail"),
   topbarStop: document.querySelector("#topbar-stop"),
   topbarRetry: document.querySelector("#topbar-retry"),
-  activityStrip: document.getElementById("activity-strip")
+  activityStrip: document.getElementById("activity-strip"),
+  writeReadiness: document.querySelector("#write-readiness"),
+  writeReadinessTitle: document.querySelector("#write-readiness-title"),
+  writeReadinessDetail: document.querySelector("#write-readiness-detail"),
+  writeReadinessMeta: document.querySelector("#write-readiness-meta"),
+  writeReadinessPrimary: document.querySelector("#write-readiness-primary"),
+  writeReadinessSecondary: document.querySelector("#write-readiness-secondary"),
+  writeReadinessTertiary: document.querySelector("#write-readiness-tertiary"),
+  chapterSuccess: document.querySelector("#chapter-success"),
+  chapterSuccessTitle: document.querySelector("#chapter-success-title"),
+  chapterSuccessMeta: document.querySelector("#chapter-success-meta"),
+  chapterSuccessReview: document.querySelector("#chapter-success-review"),
+  chapterSuccessRead: document.querySelector("#chapter-success-read"),
+  chapterSuccessContinue: document.querySelector("#chapter-success-continue"),
 };
 
 let currentProjectRoot = null;
@@ -109,6 +123,8 @@ let readerChapterNo = null;
 let readerQuoteBtn = null;
 // 已发布给屏幕阅读器（aria-live）的最后一条状态：切换项目时清空。
 let lastAnnounce = "";
+let lastWriteReadinessView = null;
+let lastCommittedChapter = null;
 
 // --- extracted module instances (created before event bindings that reference their methods) ---
 let composer; // forward ref: thread-renderer's promote button calls composer.promoteAskEntry (assigned in Task 7)
@@ -364,6 +380,32 @@ window.addEventListener("blur", () => { refs.app.dataset.away = "true"; });
 window.addEventListener("focus", () => { refs.app.dataset.away = "false"; });
 refs.privacyToggle.addEventListener("click", () => setPrivacyMode(refs.app.dataset.privacy !== "on"));
 
+// Writing readiness buttons
+if (refs.writeReadinessPrimary) {
+  refs.writeReadinessPrimary.addEventListener("click", () => {
+    if (lastWriteReadinessView) handleReadinessAction(lastWriteReadinessView);
+  });
+}
+if (refs.writeReadinessSecondary) {
+  refs.writeReadinessSecondary.addEventListener("click", () => openFromFolder());
+}
+
+// Chapter success buttons
+if (refs.chapterSuccessRead) {
+  refs.chapterSuccessRead.addEventListener("click", () => {
+    if (lastCommittedChapter) openReader(lastCommittedChapter.chapter_no);
+  });
+}
+if (refs.chapterSuccessContinue) {
+  refs.chapterSuccessContinue.addEventListener("click", () => {
+    if (typeof composer.startCurrentChapter === "function") {
+      void composer.startCurrentChapter();
+    } else {
+      showToast("写作启动功能即将就绪。", "info");
+    }
+  });
+}
+
 function renderRailNav() {
   const items = [
     { key: "new", icon: "compose", label: "新对话" },
@@ -563,6 +605,98 @@ function renderProjectEmpty(text) {
   return empty;
 }
 
+function handleReadinessAction(view) {
+  const action = view.primaryAction;
+  switch (action) {
+    case "create_project":
+      openCreateModal();
+      break;
+    case "open_project":
+      openFromFolder();
+      break;
+    case "open_settings":
+    case "test_connection":
+    case "increase_target":
+      openSettingsModal();
+      break;
+    case "start_chapter":
+      if (typeof composer.startCurrentChapter === "function") {
+        void composer.startCurrentChapter();
+      } else {
+        showToast("写作启动功能即将就绪。", "info");
+      }
+      break;
+    case "view_progress":
+    case "view_project_status":
+      openDrawerTab("run");
+      break;
+    case "view_issue":
+      openDrawerTab("run");
+      break;
+    default:
+      break;
+  }
+}
+
+function renderWriteReadiness(data) {
+  const view = deriveWriteReadiness(data);
+  lastWriteReadinessView = view;
+  const section = refs.writeReadiness;
+  if (!section) return;
+  const isNoProject = view.key === "no_project";
+  const show = isNoProject || (data && data.hasProject);
+  section.hidden = !show;
+  if (!show) return;
+  refs.writeReadinessTitle.textContent = view.label;
+  refs.writeReadinessDetail.textContent = view.detail;
+  if (refs.writeReadinessMeta) {
+    const parts = [];
+    if (view.modelLabel) parts.push(view.modelLabel);
+    if (view.chapterNo && !isNoProject) parts.push(`第 ${view.chapterNo} 章`);
+    refs.writeReadinessMeta.textContent = parts.join(" · ");
+  }
+  refs.writeReadinessPrimary.textContent = view.primaryLabel;
+  if (isNoProject) {
+    refs.writeReadinessSecondary.hidden = false;
+    refs.writeReadinessSecondary.textContent = "打开本地文件夹";
+  } else {
+    refs.writeReadinessSecondary.hidden = true;
+  }
+  refs.writeReadinessTertiary.hidden = true;
+}
+
+function renderChapterSuccess(data) {
+  const section = refs.chapterSuccess;
+  if (!section) return;
+  if (!data || !data.hasProject || data.summary?.projectStatus === "running") {
+    section.hidden = true;
+    return;
+  }
+  const chapters = data.chapters || [];
+  const committed = chapters
+    .filter((c) => c.artifact?.state === "committed")
+    .sort((a, b) => b.chapter_no - a.chapter_no);
+  if (committed.length === 0) {
+    section.hidden = true;
+    lastCommittedChapter = null;
+    return;
+  }
+  lastCommittedChapter = committed[0];
+  const latest = lastCommittedChapter;
+  section.hidden = false;
+  refs.chapterSuccessTitle.textContent = `第 ${latest.chapter_no} 章 · ${latest.title || `Chapter ${latest.chapter_no}`}`;
+  if (refs.chapterSuccessMeta) {
+    const words = latest.actual_words || 0;
+    const format = (latest.format || "md").toUpperCase();
+    const status = latest.artifact?.state === "committed" ? "已定稿" : "草稿";
+    refs.chapterSuccessMeta.textContent = `${formatNumber(words)} 字 · ${format} · ${status}`;
+  }
+  if (refs.chapterSuccessReview) {
+    const reviewStatus = latest.review_status || latest.artifact?.review_status;
+    refs.chapterSuccessReview.textContent = reviewStatus ? `审稿：${reviewStatus}` : "";
+  }
+}
+
 function renderDashboard(data) {
   lastDashboard = data;
   if (!data.hasProject) {
@@ -576,10 +710,11 @@ function renderDashboard(data) {
     threadRenderer.renderEmptyThread();
     composer.updateModePill();
     composer.updateStatusPills(data);
-    composer.syncChatBusy(data);
-    refreshDrawerIfOpen();
-    return;
-  }
+	    composer.syncChatBusy(data);
+	    renderWriteReadiness(data);
+	    refreshDrawerIfOpen();
+	    return;
+	  }
 
   const firstLoad = currentProjectRoot !== data.projectRoot;
   if (firstLoad) {
@@ -662,9 +797,11 @@ function renderDashboard(data) {
   }
 
   composer.updateModePill();
-  composer.updateStatusPills(data);
-  composer.syncChatBusy(data);
-  refreshDrawerIfOpen();
+	composer.updateStatusPills(data);
+	composer.syncChatBusy(data);
+	renderWriteReadiness(data);
+	renderChapterSuccess(data);
+	refreshDrawerIfOpen();
 }
 
 // 抽屉打开时重渲并保留滚动位置；renderDashboard 在 hasProject 和 noProject 两条分支都需要。

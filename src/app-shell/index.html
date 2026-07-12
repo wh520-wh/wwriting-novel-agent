@@ -71,6 +71,35 @@
         </header>
         <div class="activity-strip" id="activity-strip" hidden></div>
 
+        <!-- 准备写作卡 -->
+        <section class="write-readiness" id="write-readiness" aria-labelledby="write-readiness-title" hidden>
+          <div>
+            <p class="eyebrow">准备写作</p>
+            <h2 id="write-readiness-title"></h2>
+            <p id="write-readiness-detail"></p>
+            <div id="write-readiness-meta"></div>
+          </div>
+          <div class="write-readiness-actions">
+            <button id="write-readiness-primary" type="button"></button>
+            <button id="write-readiness-secondary" type="button" hidden></button>
+            <button id="write-readiness-tertiary" type="button" hidden></button>
+          </div>
+        </section>
+
+        <!-- 章节完成卡 -->
+        <section class="chapter-success" id="chapter-success" aria-labelledby="chapter-success-title" hidden>
+          <div>
+            <p class="eyebrow">章节完成</p>
+            <h2 id="chapter-success-title"></h2>
+            <p id="chapter-success-meta"></p>
+            <p id="chapter-success-review"></p>
+          </div>
+          <div class="chapter-success-actions">
+            <button id="chapter-success-read" type="button">阅读本章</button>
+            <button id="chapter-success-continue" type="button">继续下一章</button>
+          </div>
+        </section>
+
         <div class="thread-wrap" id="thread-wrap">
           <div class="thread" id="thread"></div>
         </div>

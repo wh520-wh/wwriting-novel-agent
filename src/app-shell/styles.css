@@ -2045,3 +2045,179 @@ button.cbar-pill--readonly:hover {
   padding: 2px 8px; justify-self: start;
 }
 .shortcuts-list dd { margin: 0; font-size: 13px; color: var(--muted); align-self: center; }
+
+/* ============================================================
+   Task 3: Writing readiness card
+   ============================================================ */
+.write-readiness {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  min-height: 148px;
+  padding: 16px 20px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  box-shadow: var(--shadow-xs);
+  margin: 12px 24px 0;
+}
+.write-readiness[hidden] { display: none !important; }
+.write-readiness > div:first-child {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 6px;
+}
+.write-readiness .eyebrow {
+  font-size: 10.5px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.write-readiness h2 {
+  font-size: 17px;
+  font-weight: 680;
+  letter-spacing: -0.01em;
+}
+#write-readiness-detail {
+  font-size: 12.5px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+#write-readiness-meta {
+  font-size: 11px;
+  color: var(--faint);
+  font-family: var(--mono);
+}
+.write-readiness-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.write-readiness-actions button {
+  min-height: 36px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 0 16px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+.write-readiness-actions button:hover {
+  background: var(--hover);
+  border-color: #d2cdc3;
+}
+.write-readiness-actions #write-readiness-primary {
+  background: var(--btn-gradient);
+  color: #fff;
+  border-color: #000;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.13);
+}
+.write-readiness-actions #write-readiness-primary:hover {
+  filter: brightness(1.13);
+}
+
+/* ============================================================
+   Task 3: Chapter success card
+   ============================================================ */
+.chapter-success {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  min-height: 148px;
+  padding: 16px 20px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  box-shadow: var(--shadow-xs);
+  margin: 12px 24px 0;
+}
+.chapter-success[hidden] { display: none !important; }
+.chapter-success > div:first-child {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 6px;
+}
+.chapter-success .eyebrow {
+  font-size: 10.5px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--green);
+}
+.chapter-success h2 {
+  font-size: 17px;
+  font-weight: 680;
+  letter-spacing: -0.01em;
+}
+#chapter-success-meta {
+  font-size: 12px;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+#chapter-success-review {
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.chapter-success-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.chapter-success-actions button {
+  min-height: 36px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 0 16px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+.chapter-success-actions button:hover {
+  background: var(--hover);
+  border-color: #d2cdc3;
+}
+.chapter-success-actions #chapter-success-read {
+  background: var(--btn-gradient);
+  color: #fff;
+  border-color: #000;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.13);
+}
+.chapter-success-actions #chapter-success-read:hover {
+  filter: brightness(1.13);
+}
+
+/* Narrow layout: vertical stack, actions wrap */
+@media (max-width: 720px) {
+  .write-readiness,
+  .chapter-success {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+    margin: 10px 14px 0;
+  }
+  .write-readiness-actions,
+  .chapter-success-actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .write-readiness-actions button,
+  .chapter-success-actions button {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+}

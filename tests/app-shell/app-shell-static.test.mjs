@@ -278,3 +278,28 @@ test("thread-renderer.js hides the stop button while projectStatus is cancelling
 test("thread-renderer 主动徽标认 timeline_check 类型", () => {
   assert.match(threadRendererSource, /timeline_check/, "thread-renderer 应识别 timeline_check 主动消息");
 });
+
+// ---- Task 3: Writing readiness and chapter success cards ----
+
+const indexPath = path.join(here, "..", "..", "src", "app-shell", "index.html");
+const indexSource = await fs.readFile(indexPath, "utf8");
+
+test("index.html contains write-readiness section with stable IDs", () => {
+  assert.match(indexSource, /id="write-readiness"/, "index.html should have a #write-readiness element");
+  assert.match(indexSource, /id="write-readiness-primary"/, "index.html should have a #write-readiness-primary button");
+  assert.match(indexSource, /id="write-readiness-secondary"/, "index.html should have a #write-readiness-secondary button");
+});
+
+test("index.html contains chapter-success section with stable IDs", () => {
+  assert.match(indexSource, /id="chapter-success"/, "index.html should have a #chapter-success element");
+  assert.match(indexSource, /id="chapter-success-read"/, "index.html should have a #chapter-success-read button");
+  assert.match(indexSource, /id="chapter-success-continue"/, "index.html should have a #chapter-success-continue button");
+});
+
+test("app.js imports deriveWriteReadiness from write-readiness.mjs", () => {
+  assert.match(
+    appSource,
+    /import\s*\{[^}]*deriveWriteReadiness[^}]*\}\s*from\s*["']\.\/write-readiness\.mjs["']/,
+    "app.js should import deriveWriteReadiness from ./write-readiness.mjs"
+  );
+});
