@@ -827,7 +827,7 @@ function renderDashboard(data) {
   }
   currentProjectRoot = data.projectRoot;
   if (firstLoad) {
-    restoreDraftIfAny(currentProjectRoot);
+    restoreDraftIfAny(currentProjectRoot, { focus: true });
   }
 
   const summary = data.summary;
