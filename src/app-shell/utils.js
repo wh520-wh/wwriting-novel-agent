@@ -117,3 +117,12 @@ export function translateEventType(type) {
     user_instruction_received: "用户指令"
   }[type] ?? type;
 }
+
+export function hashKey(projectRoot) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < projectRoot.length; i++) {
+    h ^= projectRoot.charCodeAt(i);
+    h = (h * 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0") + projectRoot.length.toString(16).padStart(4, "0");
+}
