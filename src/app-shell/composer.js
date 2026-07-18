@@ -4,6 +4,7 @@ import { toolLabel } from "./tool-labels.mjs";
 import { getCommand, listCommands } from "./command-registry.mjs";
 import "./commands/index.mjs";  // side-effect: register 5 built-in commands
 import { PERMISSION_TIERS, detectPermissionTier, getTierById } from "./permission-tiers.mjs";
+import { saveDraft, loadDraft, clearDraft } from "./composer-draft.mjs";
 
 // 旁路询问命令前缀（与后端 side-question.mjs 保持一致；禁止使用 /btw）。
 const SIDE_QUESTION_PREFIXES = ["/ask", "/side", "/q"];
@@ -18,11 +19,14 @@ const MAIN_TASK_IMPACT_PATTERN = /(改成|改为|改掉|改写|写成|换成|替
 // 也不能把含疑问/条件/转折/否定的句子误判成启动指令。
 const START_WRITING_CORE = /^(请|帮我|帮忙|麻烦|那|那就|就|你)?\s*(现在|马上|立刻|赶紧|这就)?\s*(开始|继续|接着|往下|开)?\s*(写作|写|创作|续写|开写)\s*(第?\s*[一二三四五六七八九十百千零\d]+\s*章|下一?章|正文|下去|起来)?\s*(吧|呀|啊|了|呗|哈)?\s*[。.!！]*$/u;
 const START_WRITING_BLOCK = /[?？吗]|怎么|怎样|如何|可不可以|可以吗|能不能|能否|是不是|是否|要不要|好不好|行不行|的话|之前|先|稍后|等会|回头|如果|假如|要是|别|不要|不用|暂停|停一下|停下|先别/u;
+const DETAILED_CHAPTER_START = /^(请|帮我|帮忙|麻烦|那|那就|就|你)?\s*(现在|马上|立刻|赶紧|这就)?\s*(开始写|开始创作|开写|继续写|续写)\s*第?\s*[一二三四五六七八九十百千零\d]+\s*章(?:[，,。；;：:\s]|$)/u;
 
 export function isStartWritingIntent(text) {
   const t = String(text ?? "").trim();
-  if (!t || t.length > 18) return false;        // 超过 18 字多半带额外语义，交给对话流程
+  if (!t) return false;
   if (START_WRITING_BLOCK.test(t)) return false; // 疑问/条件/转折/否定 → 不启动
+  if (DETAILED_CHAPTER_START.test(t)) return true;
+  if (t.length > 18) return false;
   return START_WRITING_CORE.test(t);
 }
 
@@ -47,6 +51,45 @@ export function createComposer(ctx) {
   //   threadRenderer, getAskEntries, ensureRefreshLoop
 
   let slashActiveIndex = 0;
+
+  // --- 输入框草稿：按项目持久化，切走/重启可恢复 ---
+  let draftTimer = null;
+  const DRAFT_DEBOUNCE_MS = 200;
+
+  function currentRoot() {
+    return ctx.getCurrentProjectRoot();
+  }
+
+  function persistDraft() {
+    if (!currentRoot()) return;
+    if (draftTimer) window.clearTimeout(draftTimer);
+    draftTimer = window.setTimeout(() => {
+      draftTimer = null;
+      saveDraft(currentRoot(), ctx.refs.composerInput.value);
+    }, DRAFT_DEBOUNCE_MS);
+  }
+
+  function flushDraft() {
+    if (draftTimer) { window.clearTimeout(draftTimer); draftTimer = null; }
+    const root = currentRoot();
+    if (root) saveDraft(root, ctx.refs.composerInput.value);
+  }
+
+  function clearDraftForCurrent() {
+    if (draftTimer) { window.clearTimeout(draftTimer); draftTimer = null; }
+    const root = currentRoot();
+    if (root) clearDraft(root);
+  }
+
+  function restoreDraftIfAny(projectRoot) {
+    const text = projectRoot ? loadDraft(projectRoot) : "";
+    if (!text) return false;
+    ctx.refs.composerInput.value = text;
+    autoGrowComposer();
+    updateSubmitState();
+    try { ctx.refs.composerInput.focus(); } catch { /* 失焦不可用则忽略 */ }
+    return true;
+  }
 
   // --- S4.5 活动占位：chat busy 期间的过程反馈 + 停止 ---
   let activePlaceholder = null;   // { wrap, say, stop, dispose, setActivity }
@@ -570,6 +613,14 @@ export function createComposer(ctx) {
     ctx.refs.composerSubmit.disabled = ctx.refs.composerInput.value.trim().length === 0;
   }
 
+  // 统一清空输入框：清当前项目草稿 + value + 自适应高度 + 提交态 + 取消防抖。
+  function clearComposerInput() {
+    clearDraftForCurrent();
+    ctx.refs.composerInput.value = "";
+    autoGrowComposer();
+    updateSubmitState();
+  }
+
   function updateSlashMenu() {
     const value = ctx.refs.composerInput.value;
     if (!value.startsWith("/") || value.includes(" ") || value.includes("\n")) {
@@ -642,8 +693,7 @@ export function createComposer(ctx) {
     // UI-only 命令:直接 run,input 留空
     if (registryCmd.uiOnly) {
       registryCmd.run({}, ctx).catch((err) => ctx.showActionError(err));
-      ctx.refs.composerInput.value = "";
-      updateSubmitState();
+      clearComposerInput();
       return;
     }
     ctx.refs.composerInput.value = `${cmd.key} `;
@@ -696,18 +746,20 @@ export function createComposer(ctx) {
     await sendChatMessageWithUX(parsed.content);
   }
 
-  async function submitWritingCommand(message, mode, { fromSideQuestion = false } = {}) {
+  async function submitWritingCommand(message, mode, { fromSideQuestion = false, projectRoot: requestedProjectRoot = null } = {}) {
+    const projectRoot = requestedProjectRoot ?? ctx.getCurrentProjectRoot();
+    const token = ctx.projectScope?.capture(projectRoot);
     ctx.refs.composerSubmit.disabled = true;
     ctx.refs.composerSubmit.setAttribute("aria-busy", "true");
     try {
-      const result = await postJson("/api/commands/submit", { message, mode, fromSideQuestion });
-      ctx.refs.composerInput.value = "";
-      autoGrowComposer();
-      updateSubmitState();
+      const result = await postJson("/api/commands/submit", { message, mode, fromSideQuestion, projectRoot });
+      if (token && !ctx.projectScope.isCurrent(token)) return;
+      clearComposerInput();
       ctx.showToast(resultMessageForCommand(result), result.blocked ? "error" : "success");
       ctx.ensureRefreshLoop(true);
       await ctx.loadDashboard();
     } catch (error) {
+      if (token && !ctx.projectScope.isCurrent(token)) return;
       ctx.showActionError(error);
     } finally {
       ctx.refs.composerSubmit.removeAttribute("aria-busy");
@@ -726,13 +778,14 @@ export function createComposer(ctx) {
   }
 
   async function submitSideQuestion(question) {
+    const projectRoot = ctx.getCurrentProjectRoot();
+    const token = ctx.projectScope?.capture(projectRoot);
     ctx.refs.composerSubmit.disabled = true;
     ctx.refs.composerSubmit.setAttribute("aria-busy", "true");
     try {
-      const result = await postJson("/api/commands/ask", { question });
-      ctx.refs.composerInput.value = "";
-      autoGrowComposer();
-      updateSubmitState();
+      const result = await postJson("/api/commands/ask", { question, projectRoot });
+      if (token && !ctx.projectScope.isCurrent(token)) return;
+      clearComposerInput();
       const askEntries = ctx.getAskEntries();
       const entry = {
         id: `ask-${result.askedAt ?? Date.now()}-${askEntries.size}`,
@@ -740,7 +793,9 @@ export function createComposer(ctx) {
         answer: result.answer ?? "",
         mainTaskAffecting: result.mainTaskAffecting === true,
         suggestion: result.suggestion ?? null,
-        promoted: false
+        promoted: false,
+        projectRoot,
+        projectToken: token
       };
       askEntries.set(entry.id, entry);
       ctx.refs.thread.append(ctx.threadRenderer.buildSideBubble(entry));
@@ -770,9 +825,7 @@ export function createComposer(ctx) {
       return;
     }
     await switchModel(target);
-    ctx.refs.composerInput.value = "";
-    autoGrowComposer();
-    updateSubmitState();
+    clearComposerInput();
   }
 
   async function switchModel(modelId) {
@@ -802,13 +855,13 @@ export function createComposer(ctx) {
       return;
     }
     const savedContent = message;
+    const projectRoot = ctx.getCurrentProjectRoot();
+    const token = ctx.projectScope?.capture(projectRoot);
     ctx.refs.composerSubmit.disabled = true;
     ctx.refs.composerSubmit.setAttribute("aria-busy", "true");
 
     // 1. 立即清空输入框
-    ctx.refs.composerInput.value = "";
-    autoGrowComposer();
-    updateSubmitState();
+    clearComposerInput();
 
     // 2. 乐观用户气泡（复用 thread-renderer 的渲染器；轮询渲出持久化消息后会被自动清理）
     const userBubble = ctx.threadRenderer.renderChatMessage({
@@ -823,7 +876,13 @@ export function createComposer(ctx) {
     ctx.ensureRefreshLoop(true);
 
     try {
-      const result = await sendChatMessage(message);
+      const result = await sendChatMessage(message, { projectRoot });
+      if (token && !ctx.projectScope.isCurrent(token)) {
+        localSendInFlight = false;
+        removeActivityPlaceholder();
+        if (userBubble.isConnected) userBubble.remove();
+        return;
+      }
       localSendInFlight = false;
       removeActivityPlaceholder();
       if (userBubble.isConnected) userBubble.remove();
@@ -832,6 +891,12 @@ export function createComposer(ctx) {
         await ctx.loadDashboard();
       }
     } catch (error) {
+      if (token && !ctx.projectScope.isCurrent(token)) {
+        localSendInFlight = false;
+        removeActivityPlaceholder();
+        if (userBubble.isConnected) userBubble.remove();
+        return;
+      }
       localSendInFlight = false;
       removeActivityPlaceholder();
       if (userBubble.isConnected) userBubble.remove();
@@ -853,6 +918,8 @@ export function createComposer(ctx) {
 
       ctx.refs.composerInput.value = savedContent;
       autoGrowComposer();
+      const failRoot = currentRoot();
+      if (failRoot) saveDraft(failRoot, savedContent);
       ctx.showActionError?.(error);
     } finally {
       ctx.refs.composerSubmit.removeAttribute("aria-busy");
@@ -863,7 +930,11 @@ export function createComposer(ctx) {
   async function promoteAskEntry(entry) {
     const currentProjectRoot = ctx.getCurrentProjectRoot();
     if (!currentProjectRoot) { ctx.showToast("请先打开一部小说。", "info"); return; }
-    await submitWritingCommand(entry.question, "write", { fromSideQuestion: true });
+    if (entry.projectToken && ctx.projectScope && !ctx.projectScope.isCurrent(entry.projectToken)) {
+      ctx.showToast("该询问来自已切换的项目，已忽略。", "info");
+      return;
+    }
+    await submitWritingCommand(entry.question, "write", { fromSideQuestion: true, projectRoot: entry.projectRoot });
     entry.promoted = true;
     ctx.showToast("已将该修改建议转为正式写作任务。", "success");
   }
@@ -945,6 +1016,7 @@ export function createComposer(ctx) {
     submitSideQuestion, promoteAskEntry, resultMessageForCommand,
     initModePill, updateModePill, openModePopover, closeModePopover,
     openModelPopover, closeModelPopover, updateStatusPills, sendChatMessageWithUX,
-    syncChatBusy, isChatBusy
+    syncChatBusy, isChatBusy,
+    persistDraft, flushDraft, restoreDraftIfAny, clearDraftForCurrent
   };
 }

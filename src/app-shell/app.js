@@ -13,6 +13,8 @@ import { createSettingsModal } from "./settings-modal.js";
 import { createComposer } from "./composer.js";
 import { createProjectScope } from "./project-scope.mjs";
 import { deriveWriteReadiness } from "./write-readiness.mjs";
+import { deriveProjectIdentity } from "./project-identity.mjs";
+import { deriveWorkbenchView, deriveChapterCompletion } from "./workbench-presentation.mjs";
 
 // WWriting · Codex 风格对话式前端
 // 后端无消息/SSE 端点，对话流由前端用 /api/dashboard 的 events[] + chapters[] + summary 聚合而成。
@@ -31,6 +33,7 @@ const refs = {
   status: document.querySelector("#project-status"),
   topbarSub: document.querySelector("#topbar-sub"),
   topbarProgress: document.querySelector("#topbar-progress"),
+  topbarProgressLabel: document.querySelector("#topbar-progress-label"),
   topbarProgressBar: document.querySelector("#topbar-progress-bar"),
   privacyToggle: document.querySelector("#privacy-toggle"),
   privacyLabel: document.querySelector("#privacy-label"),
@@ -88,6 +91,20 @@ const refs = {
   topbarStop: document.querySelector("#topbar-stop"),
   topbarRetry: document.querySelector("#topbar-retry"),
   activityStrip: document.getElementById("activity-strip"),
+  projectWorkbench: document.querySelector("#project-workbench"),
+  workbenchCover: document.querySelector("#workbench-cover"),
+  workbenchMonogram: document.querySelector("#workbench-monogram"),
+  workbenchTitle: document.querySelector("#workbench-title"),
+  workbenchSeed: document.querySelector("#workbench-seed"),
+  workbenchProgress: document.querySelector("#workbench-progress"),
+  workbenchProgressLabel: document.querySelector("#workbench-progress-label"),
+  workbenchWordCount: document.querySelector("#workbench-word-count"),
+  workbenchProgressFill: document.querySelector("#workbench-progress-fill"),
+  workbenchStatus: document.querySelector("#workbench-status"),
+  workbenchPrimary: document.querySelector("#workbench-primary"),
+  workbenchReadLatest: document.querySelector("#workbench-read-latest"),
+  workbenchOpenChapters: document.querySelector("#workbench-open-chapters"),
+  workbenchActivity: document.querySelector("#workbench-activity"),
   writeReadiness: document.querySelector("#write-readiness"),
   writeReadinessTitle: document.querySelector("#write-readiness-title"),
   writeReadinessDetail: document.querySelector("#write-readiness-detail"),
@@ -124,6 +141,7 @@ let readerQuoteBtn = null;
 // 已发布给屏幕阅读器（aria-live）的最后一条状态：切换项目时清空。
 let lastAnnounce = "";
 let lastWriteReadinessView = null;
+let lastWorkbenchView = null;
 let lastCommittedChapter = null;
 
 // --- extracted module instances (created before event bindings that reference their methods) ---
@@ -197,8 +215,9 @@ composer = createComposer({
   ensureRefreshLoop,
   threadRenderer,
   getAskEntries: () => askEntries,
+  projectScope,
 });
-const { submitComposer, autoGrowComposer, updateSlashMenu, onComposerKeydown, updateSubmitState, promoteAskEntry } = composer;
+const { submitComposer, autoGrowComposer, updateSlashMenu, onComposerKeydown, updateSubmitState, promoteAskEntry, persistDraft, flushDraft, restoreDraftIfAny } = composer;
 
 function openDrawer(tab) {
   if (tab) drawerTab = tab;
@@ -282,6 +301,11 @@ refs.composerInput.addEventListener("input", () => {
   autoGrowComposer();
   updateSubmitState();
   updateSlashMenu();
+  persistDraft();
+});
+window.addEventListener("pagehide", flushDraft);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") flushDraft();
 });
 setTimeout(() => composer.initModePill(), 0);
 
@@ -389,6 +413,21 @@ if (refs.writeReadinessPrimary) {
 if (refs.writeReadinessSecondary) {
   refs.writeReadinessSecondary.addEventListener("click", () => openFromFolder());
 }
+if (refs.workbenchPrimary) {
+  refs.workbenchPrimary.addEventListener("click", () => {
+    if (lastWorkbenchView) handleReadinessAction(lastWorkbenchView.readiness);
+  });
+}
+if (refs.workbenchReadLatest) {
+  refs.workbenchReadLatest.addEventListener("click", () => {
+    if (lastWorkbenchView?.latestChapter?.canOpen) {
+      openReader(lastWorkbenchView.latestChapter.chapterNo);
+    }
+  });
+}
+if (refs.workbenchOpenChapters) {
+  refs.workbenchOpenChapters.addEventListener("click", () => openDrawerTab("chapters"));
+}
 
 // Chapter success buttons
 if (refs.chapterSuccessRead) {
@@ -490,7 +529,7 @@ function renderProjectListFiltered() {
 async function loadDashboard(options = {}) {
   const requestId = ++dashboardRequestId;
   const activeProjectRoot = currentProjectRoot;
-  const token = projectScope.capture(activeProjectRoot);
+  let token = projectScope.capture(activeProjectRoot);
   if (options.silent !== true) {
     setStatus("loading");
   }
@@ -499,6 +538,10 @@ async function loadDashboard(options = {}) {
     const data = await getJson(dashboardUrl);
     if (requestId !== dashboardRequestId) return;
     if (!projectScope.isCurrent(token)) return;
+    if (!activeProjectRoot && data.hasProject && data.projectRoot) {
+      projectScope.activate(data.projectRoot);
+      token = projectScope.capture(data.projectRoot);
+    }
     if (!data.ok) throw new Error(data.message ?? "仪表盘请求失败");
     if (data.hasProject) {
       const queueUrl = withProjectScope("/api/queue/state", activeProjectRoot);
@@ -554,9 +597,13 @@ function clearTransientState() {
 // 都提升 generation + 清空临时状态，确保任何旧项目的延迟响应被丢弃。
 // 同步把 currentProjectRoot 指向新根，避免后续 loadDashboard 捕获到旧值。
 function commitProjectSwitch(projectRoot) {
+  // 切走前：把当前输入框内容存到旧项目草稿（currentProjectRoot 仍指向旧值）。
+  flushDraft();
   projectScope.activate(projectRoot);
   currentProjectRoot = projectRoot;
   clearTransientState();
+  // 切到新项目后：从新项目草稿恢复输入框。
+  restoreDraftIfAny(currentProjectRoot);
 }
 
 function renderProjectNav(project, selectedProjectRoot) {
@@ -565,6 +612,12 @@ function renderProjectNav(project, selectedProjectRoot) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = `proj${pathEquals(project.projectRoot, selectedProjectRoot) ? " active" : ""}`;
+  const identity = deriveProjectIdentity({ project, projectRoot: project.projectRoot });
+  const cover = document.createElement("span");
+  cover.className = "proj-cover";
+  cover.dataset.projectTheme = identity.theme;
+  cover.setAttribute("aria-hidden", "true");
+  cover.textContent = identity.monogram;
   button.addEventListener("click", () => openProject(project.projectRoot));
   const dot = document.createElement("span");
   dot.className = "proj-dot";
@@ -577,7 +630,7 @@ function renderProjectNav(project, selectedProjectRoot) {
   sub.className = "proj-sub";
   sub.textContent = project.model_label ?? project.story_seed ?? project.projectRoot;
   main.append(title, sub);
-  button.append(dot, main);
+  button.append(cover, dot, main);
   const menu = document.createElement("div");
   menu.className = "proj-menu";
   const remove = document.createElement("button");
@@ -630,13 +683,79 @@ function handleReadinessAction(view) {
   }
 }
 
+function workbenchStatusText(view) {
+  const key = view.readiness.key;
+  if (key === "running") return "故事正在落笔";
+  if (key === "blocked") return "故事线需要你的判断";
+  if (key === "completed") return "本轮章节目标已完成";
+  if (key === "project_read_only") return "这部作品当前以只读方式打开";
+  if (key === "missing_model" || key === "invalid_model" || key === "connection_unknown") return "完成模型准备后即可继续";
+  return `下一步：第 ${view.readiness.chapterNo} 章`;
+}
+
+function renderWorkbenchActivity(entries) {
+  if (!refs.workbenchActivity) return;
+  const rows = entries.map((entry) => {
+    const row = document.createElement("div");
+    row.className = `workbench-activity-row tone-${entry.tone}`;
+    row.dataset.activityKey = entry.key;
+    const dot = document.createElement("span");
+    dot.className = "workbench-activity-dot";
+    dot.setAttribute("aria-hidden", "true");
+    const label = document.createElement("span");
+    label.className = "workbench-activity-label";
+    label.textContent = entry.label;
+    row.append(dot, label);
+    return row;
+  });
+  refs.workbenchActivity.replaceChildren(...rows);
+  refs.workbenchActivity.hidden = rows.length === 0;
+}
+
+function renderProjectWorkbench(data) {
+  const view = deriveWorkbenchView(data);
+  lastWorkbenchView = view.visible ? view : null;
+  if (!refs.projectWorkbench) return;
+  refs.projectWorkbench.hidden = !view.visible;
+  if (!view.visible) return;
+
+  const identity = view.identity;
+  refs.projectWorkbench.dataset.projectTheme = identity.theme;
+  refs.workbenchCover.dataset.projectTheme = identity.theme;
+  refs.workbenchCover.setAttribute("aria-label", identity.ariaLabel);
+  refs.workbenchMonogram.textContent = identity.monogram;
+  refs.workbenchTitle.textContent = view.title;
+  refs.workbenchSeed.textContent = view.storySeed || "这部小说还没有故事种子。";
+  refs.workbenchProgress.setAttribute("aria-valuenow", String(view.progress.percent));
+  refs.workbenchProgress.setAttribute("aria-valuetext", `${view.progress.completed} / ${view.progress.target} 章`);
+  refs.workbenchProgressLabel.textContent = `${view.progress.completed} / ${view.progress.target} 章`;
+  refs.workbenchWordCount.textContent = `${formatNumber(view.progress.totalWords)} 字`;
+  refs.workbenchProgressFill.style.width = `${view.progress.percent}%`;
+  refs.workbenchStatus.textContent = workbenchStatusText(view);
+  refs.workbenchPrimary.textContent = view.readiness.primaryLabel;
+  refs.workbenchPrimary.disabled = view.readiness.key === "running";
+
+  refs.workbenchReadLatest.hidden = !view.latestChapter?.canOpen;
+  if (view.latestChapter?.canOpen) {
+    refs.workbenchReadLatest.textContent = `阅读第 ${view.latestChapter.chapterNo} 章`;
+  }
+  renderWorkbenchActivity(view.activity);
+}
+
 function renderWriteReadiness(data) {
   const view = deriveWriteReadiness(data);
   lastWriteReadinessView = view;
   const section = refs.writeReadiness;
   if (!section) return;
   const isNoProject = view.key === "no_project";
-  const show = isNoProject || (data && data.hasProject);
+  const hasCommittedChapter = data?.chapters?.some(
+    (chapter) => chapter.artifact?.state === "committed"
+  ) === true;
+  const show = isNoProject || (
+    data?.hasProject
+    && view.key !== "running"
+    && !hasCommittedChapter
+  );
   section.hidden = !show;
   if (!show) return;
   refs.writeReadinessTitle.textContent = view.label;
@@ -660,32 +779,21 @@ function renderWriteReadiness(data) {
 function renderChapterSuccess(data) {
   const section = refs.chapterSuccess;
   if (!section) return;
-  if (!data || !data.hasProject || data.summary?.projectStatus === "running") {
-    section.hidden = true;
-    return;
-  }
-  const chapters = data.chapters || [];
-  const committed = chapters
-    .filter((c) => c.artifact?.state === "committed")
-    .sort((a, b) => b.chapter_no - a.chapter_no);
-  if (committed.length === 0) {
+  const completion = deriveChapterCompletion(data);
+  if (!completion) {
     section.hidden = true;
     lastCommittedChapter = null;
     return;
   }
-  lastCommittedChapter = committed[0];
-  const latest = lastCommittedChapter;
+
+  lastCommittedChapter = { chapter_no: completion.chapterNo };
   section.hidden = false;
-  refs.chapterSuccessTitle.textContent = `第 ${latest.chapter_no} 章 · ${latest.title || `Chapter ${latest.chapter_no}`}`;
-  if (refs.chapterSuccessMeta) {
-    const words = latest.actual_words || 0;
-    const format = (latest.format || "md").toUpperCase();
-    const status = latest.artifact?.state === "committed" ? "已定稿" : "草稿";
-    refs.chapterSuccessMeta.textContent = `${formatNumber(words)} 字 · ${format} · ${status}`;
-  }
-  if (refs.chapterSuccessReview) {
-    const reviewStatus = latest.review_status || latest.artifact?.review_status;
-    refs.chapterSuccessReview.textContent = reviewStatus ? `审稿：${reviewStatus}` : "";
+  refs.chapterSuccessTitle.textContent = `第 ${completion.chapterNo} 章已完成 · ${completion.title}`;
+  refs.chapterSuccessMeta.textContent = `${formatNumber(completion.words)} 字 · ${completion.format} · 已保存到本地`;
+  refs.chapterSuccessReview.textContent = completion.reviewLabel;
+  refs.chapterSuccessContinue.hidden = !completion.continueVisible;
+  if (completion.continueVisible) {
+    refs.chapterSuccessContinue.textContent = `继续写第 ${completion.nextChapterNo} 章`;
   }
 }
 
@@ -703,6 +811,7 @@ function renderDashboard(data) {
     composer.updateModePill();
     composer.updateStatusPills(data);
     composer.syncChatBusy(data);
+    renderProjectWorkbench(data);
     renderWriteReadiness(data);
     refreshDrawerIfOpen();
     return;
@@ -717,6 +826,9 @@ function renderDashboard(data) {
     refs.thread.replaceChildren();
   }
   currentProjectRoot = data.projectRoot;
+  if (firstLoad) {
+    restoreDraftIfAny(currentProjectRoot);
+  }
 
   const summary = data.summary;
   const project = data.project;
@@ -750,6 +862,7 @@ function renderDashboard(data) {
     || data.chatHistory?.busy === true
   );
 
+  renderProjectWorkbench(data);
   threadRenderer.syncThread(data, firstLoad);
   threadRenderer.syncFailureCards(data);
 
@@ -937,7 +1050,7 @@ function renderTruthIndicator(truth) {
   refs.status.replaceChildren(dot, document.createTextNode(truth.display));
   refs.status.title = truth.reason ?? "";
   if (refs.topbar) refs.topbar.classList.toggle("is-busy", truth.className === "running" || truth.className === "slow" || truth.className === "stale");
-  renderTopbarAction(refs.topbarStop, "停止", truth.showStop, handleStop, truth.reason);
+  renderTopbarAction(refs.topbarStop, "停止", false, handleStop, truth.reason);
   renderTopbarAction(refs.topbarRetry, "重试", truth.showRetry, handleRetry, truth.reason);
 }
 
@@ -957,6 +1070,8 @@ function renderTopbarProgress(truth, pct) {
   if (pct > 0 && ["running", "slow", "stale"].includes(truth.className)) {
     refs.topbarProgress.hidden = false;
     refs.topbarProgressBar.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+    refs.topbarProgress.setAttribute("aria-valuenow", String(Math.round(pct)));
+    refs.topbarProgressLabel.textContent = `本章流程 ${Math.round(pct)}%`;
   } else {
     refs.topbarProgress.hidden = true;
   }
