@@ -81,13 +81,16 @@ export function createComposer(ctx) {
     if (root) clearDraft(root);
   }
 
-  function restoreDraftIfAny(projectRoot) {
+  function restoreDraftIfAny(projectRoot, { focus = false } = {}) {
     const text = projectRoot ? loadDraft(projectRoot) : "";
     if (!text) return false;
     ctx.refs.composerInput.value = text;
     autoGrowComposer();
     updateSubmitState();
-    try { ctx.refs.composerInput.focus(); } catch { /* 失焦不可用则忽略 */ }
+    updateSlashMenu();
+    if (focus) {
+      try { ctx.refs.composerInput.focus(); } catch { /* 失焦不可用则忽略 */ }
+    }
     return true;
   }
 
