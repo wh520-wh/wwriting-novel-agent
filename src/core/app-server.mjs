@@ -517,10 +517,6 @@ async function serveSettingsUpdate(request, response, context) {
     const activeModel = body?.active_model && typeof body.active_model === "object"
       ? { ...body.active_model }
       : null;
-    if (!activeModel) {
-      throw new HttpError(400, "invalid_active_model", "active_model is required.");
-    }
-
     // Validate non-model fields (tool_permissions / budget_config / research_config / ...) BEFORE
     // touching durable state. If the caller sent garbage in any of these sections, we reject the
     // whole request without writing the model — the request is meant to be atomic.
@@ -539,19 +535,28 @@ async function serveSettingsUpdate(request, response, context) {
       }
     }
 
-    const result = await saveModelSettingsTransaction({
-      projectRoot,
-      secretsRoot: context.secretsRoot,
-      activeModel
-    });
+    if (!activeModel && !normalizedNonModelPatch) {
+      throw new HttpError(400, "invalid_settings_patch", "settings update requires a patch.");
+    }
 
-    // Model save succeeded; now persist the non-model fields. If this fails the durable state is
-    // still consistent (active_model already saved); we surface the error and let the caller retry.
-    let mergedProject = result.project;
-    if (normalizedNonModelPatch && Object.keys(normalizedNonModelPatch).length > 0) {
+    let result = null;
+    let mergedProject;
+    if (activeModel) {
+      result = await saveModelSettingsTransaction({
+        projectRoot,
+        secretsRoot: context.secretsRoot,
+        activeModel
+      });
+      mergedProject = result.project;
+      // Model save succeeded; now persist the non-model fields. If this fails the durable state is
+      // still consistent (active_model already saved); we surface the error and let the caller retry.
+      if (normalizedNonModelPatch && Object.keys(normalizedNonModelPatch).length > 0) {
+        mergedProject = await updateProjectSettings(projectRoot, normalizedNonModelPatch);
+      }
+      await upsertLocalModelProfile(context.secretsRoot, mergedProject.active_model);
+    } else {
       mergedProject = await updateProjectSettings(projectRoot, normalizedNonModelPatch);
     }
-    await upsertLocalModelProfile(context.secretsRoot, mergedProject.active_model);
 
     const config = await loadConfigLayers(projectRoot, mergedProject);
     await serveJson(response, {
@@ -568,8 +573,8 @@ async function serveSettingsUpdate(request, response, context) {
       effective_config: config.effective,
       model_profile: buildModelProfile(config.effective.active_model, context.secretsRoot),
       available_models: await buildAvailableModelProfiles(context.secretsRoot, config.effective.active_model),
-      secret_saved: result.secret_saved,
-      secret_env: result.secret_env
+      secret_saved: result?.secret_saved ?? false,
+      secret_env: result?.secret_env ?? null
     });
   } catch (error) {
     if (error instanceof ModelConfigValidationError) {

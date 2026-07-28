@@ -1,5 +1,65 @@
 # Findings
 
+## 2026-07-12 产品收敛评估
+
+### 当前判断
+
+- 现有代码已覆盖本地项目、章节状态机、断点恢复、模型网关、聊天 Agent、资料工具、技能、质量门禁、审查、成本/缓存、阅读器、故事记忆、时间线和成书导出。
+- 因此当前主要产品问题不是“能力缺失”，而是能力分散在技术面板和多个状态中，用户需要理解内部结构才能完成写作。
+- 下一阶段应优先优化“创建小说到第一章成功”的路径，再做信息架构收敛和章节编辑闭环。
+- 竞品可借鉴的是工作流表达：首次使用预检、模型可复用、生成后立即阅读/审查/修订、故事记忆可见、导出是明确出口；不需要照搬账号、云同步、多智能体或复杂编辑器。
+
+### 代码证据
+
+- `src/core/app-server.mjs` 已有项目、设置、模型切换、聊天、运行、章节阅读、技能和资料相关 API。
+- `src/core/app-dashboard.mjs` 已聚合项目、章节、运行、成本、缓存、技能和审查信息，适合支撑重新组织后的工作台。
+- `src/core/local-model-profiles.mjs` 与 `src/core/local-secrets.mjs` 已提供模型配置复用和本机密钥存储的基础。
+- `src/core/book-export.mjs` 和 `src/app-shell/drawer-panels.js` 已有成书导出入口，不应重新设计一套导出系统。
+- `src/core/continuity-store.mjs`、`src/core/chapter-memory.mjs`、`src/core/timeline-check.mjs` 和 `src/core/reviewer-agent.mjs` 已具备故事记忆和审查的底层能力，当前更需要可见化呈现。
+- `src/app-shell/chat-derive.mjs` 已有基于项目状态的情境化建议，可复用于“下一步动作”设计。
+
+### 现有风险
+
+- 历史验收记录显示自定义模型预设存在空 `base_url` 保存路径问题，导致 `verify:app-clickability` 和 `verify:local` 不能稳定作为发布门槛。
+- 历史验收中真实桌面人工点击和已打包应用的完整人工复验不足，自动化通过不能完全替代用户路径验收。
+- 当前工作区存在用户已有修改和临时验收文件；本轮只更新规划文件，不处理这些无关变更。
+
+### 产品取舍
+
+- 先做复用现有 artifact/API 的呈现和路径收敛，不新建完整人物/世界观编辑器。
+- 先做模型库与项目选择，不增加供应商编排或多 Agent 角色系统。
+- 先做 Markdown/TXT 的可靠导出，不扩展 EPUB、PDF、云发布。
+- 先做只读故事状态展示，修改仍走对话和确认，避免维护第二套记忆编辑模型。
+
+### 2026-07-12 网页研究状态
+
+- `kimi-webbridge` 守护进程已恢复运行，但当前 `extension_connected=false`，无法读取用户浏览器中的登录页面。
+- 尝试通过 DuckDuckGo HTML 公开搜索入口检索 Sudowrite Story Bible 和 Novelcrafter 官方文档，两次请求均在 20 秒内超时，暂未把搜索结果当作证据。
+- 后续只采信能直接读取的官方产品页或帮助文档，并记录 URL、页面标题、读取日期和可验证的产品行为；无法访问的来源标记为未验证。
+
+### 已读取的公开官方页面
+
+- Sudowrite 文档首页：`https://docs.sudowrite.com/`，读取成功（HTTP 200，2026-07-12）。导航同时列出 Getting Started、Quick Start、Organizing Your Projects、Importing Files、Exporting Files、Story Bible、Series、Workflows 等主题，说明其产品入口围绕“快速开始 → 项目组织 → 故事资料 → 写作工作流 → 导出”展开。
+- Scrivener 官方概览：`https://www.literatureandlatte.com/scrivener/overview`，读取成功（HTTP 200，2026-07-12）。页面将产品定位为从最初想法到最终稿的完整写作工具，并强调把写作者熟悉的工具整合到一个工作区；这支持 WWriting 把章节、资料、草稿和导出组织在同一项目中，而不是继续增加独立功能入口。
+- Campfire 官方学习中心：`https://www.campfirewriting.com/learn`，读取成功（HTTP 200，2026-07-12）。导航包含 Character Development、Plotting & Outlining、Calendars & Timelines、Worldbuilding 等作者任务主题，说明故事结构和时间线应按作者任务呈现，而不是只暴露底层数据模块。
+- Novelcrafter 文档首页：`https://docs.novelcrafter.com/`，请求返回 HTTP 308 Permanent Redirect，当前未采信其页面内容，待找到可直接读取的最终 URL 或恢复浏览器扩展后再补查。
+- Sudowrite Quick Start：`https://docs.sudowrite.com/getting-started/dQph1snuwbfMWG9wRjsNug/quick-start/2A4FjtiocrtxHPUyz6WZgR`，读取成功（HTTP 200，2026-07-12）。官方导航将 Quick Start 与 Write、Rewrite、Brainstorm、First Draft、Expand、Chat、Workflows、Story Bible、Chapter Continuity、Exporting Files 并列，说明首次上手应先进入写作动作，再逐步暴露高级组织能力。
+- Sudowrite Story Bible：`https://docs.sudowrite.com/using-sudowrite/1ow1qkGqof9rtcyGnrWUBS/what-is-story-bible/jmWepHcQdJetNrE991fjJC`，读取成功（HTTP 200，2026-07-12）。页面导航显示 Story Bible 由 Braindump、Genre、Style、Synopsis、Characters、Worldbuilding、Outline、Scenes 等结构组成，并有 Chapter Continuity 和 Visibility Settings；可借鉴其“结构化记忆可见、按需控制 AI 可见范围”的方向，但 WWriting 当前只先做只读摘要/连续性展示，不直接复制完整编辑器。
+
+### 研究转化为产品约束
+
+- Sudowrite 的 Story Bible 明确承担两个职责：把故事核心元素集中在一个地方，并作为作者和 AI 后续工作的事实来源；它还允许按项目开关、手动修改或让 AI 生成各字段。WWriting 的对应最小版本应是“项目级故事状态摘要 + 来源/更新时间 + 需要核对提示”，而不是另建完整人物卡系统。
+- Sudowrite 的字段有明确依赖关系：故事种子影响概要，概要影响人物/世界观/大纲，大纲影响场景，场景影响正文。WWriting 已有 prompt、memory、continuity、timeline 和章节状态，但 UI 需要把“当前章节使用了哪些上下文”解释给用户，避免记忆像黑箱。
+- Scrivener 官方概览：`https://www.literatureandlatte.com/scrivener/overview`，读取成功（HTTP 200，2026-07-12）。其 Corkboard 把章节/片段与摘要卡绑定，移动卡片同时调整稿件结构；Research 可以与正文并排查看；Compile 可以将项目合成为 Word、PDF、Final Draft 或纯文本等交付物。WWriting 当前不复制可自由拖拽的编辑器，而优先做章节摘要列表、资料与当前章节并排可达、Markdown/TXT 可靠导出。
+- Campfire 页面已证实作者工具按 Character Development、Plotting & Outlining、Calendars & Timelines、Worldbuilding 等任务分类；因此 WWriting 的故事资料入口应面向“人物/情节/时间/来源”等作者问题，而不是直接暴露 `continuity-store`、`cache_report` 等内部模块名。
+
+### 研究过程中的错误
+
+| 错误 | 尝试次数 | 处理结果 |
+|---|---:|---|
+| DuckDuckGo HTML 公开搜索请求超时 | 2 | 改用可直接访问的官方文档 URL，并只采信 HTTP 200 页面 |
+| PowerShell 提取 Sudowrite 正文时因弯引号导致字符串解析失败 | 1 | 改用双引号表达式重跑，成功读取 Story Bible 正文 |
+
 ## 已确认需求
 - 工作区为空，无现成代码库；产品形态为桌面应用，目标用户是独立作者。
 - 写作支持自动连续 + 人工确认两种模式；输出为本地 Markdown/TXT 章节（默认 Markdown）。

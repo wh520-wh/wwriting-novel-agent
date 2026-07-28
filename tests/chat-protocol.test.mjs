@@ -24,6 +24,22 @@ test("parseAgentReply 裸 JSON 也可", () => {
   assert.equal(out.call.args.chapter_no, 2);
 });
 
+test("parseAgentReply 识别 XML tool_call 包装并隐藏协议标记", () => {
+  const raw = [
+    "看起来任务队列是空的，我先安排第一章。",
+    "<tool_call>",
+    "<tool_call>",
+    '{"tool_calls":[{"tool":"queue_chapters","args":{"instruction":"开始写第1章"}}]}',
+    "</tool_call>",
+    "</tool_call>"
+  ].join("\n");
+  const out = parseAgentReply(raw);
+  assert.equal(out.type, "tool_call");
+  assert.equal(out.call.tool, "queue_chapters");
+  assert.deepEqual(out.call.args, { instruction: "开始写第1章" });
+  assert.equal(out.leadText, "看起来任务队列是空的，我先安排第一章。");
+});
+
 test("parseAgentReply 畸形 JSON 回落为文本", () => {
   const out = parseAgentReply('```json\n{"tool_calls": [{]}\n```');
   assert.equal(out.type, "text");

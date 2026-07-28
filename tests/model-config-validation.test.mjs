@@ -37,6 +37,26 @@ test("MiMo compatible configuration is normalized", () => {
   assert.equal(config.api_key_env, "XIAOMI_MIMO_API_KEY");
 });
 
+test("model validation preserves supported runtime and pricing fields", () => {
+  const config = validateModelConfig({
+    provider: "openai-compatible",
+    model_name: "writer",
+    base_url: "https://api.example.test/v1",
+    api_key_env: "WRITER_KEY",
+    pricing: { input_per_million: 1, output_per_million: 2, cache_hit_per_million: 0.2 },
+    stream: true,
+    cache_mode: "prefix",
+    max_context_tokens: 8192,
+    max_output_tokens: 2048,
+  });
+
+  assert.deepEqual(config.pricing, { input_per_million: 1, output_per_million: 2, cache_hit_per_million: 0.2, currency: "CNY" });
+  assert.equal(config.stream, true);
+  assert.equal(config.cache_mode, "prefix");
+  assert.equal(config.max_context_tokens, 8192);
+  assert.equal(config.max_output_tokens, 2048);
+});
+
 test("api_key_env rejects shell expressions", () => {
   assert.throws(
     () => validateModelConfig({

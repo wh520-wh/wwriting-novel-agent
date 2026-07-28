@@ -3,9 +3,10 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
+const { listenWithFallback } = require("./server-start.cjs");
 
 const rootDir = path.resolve(__dirname, "..", "..");
-const port = Number(process.env.PORT || 4173);
+let port = Number(process.env.PORT || 4173);
 const smokeMode = process.env.WWRITING_ELECTRON_SMOKE === "1";
 let server = null;
 let smokeUserDataDir = null;
@@ -59,7 +60,7 @@ app.whenReady().then(async () => {
     secretsRoot: app.getPath("userData"),
     port
   });
-  await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
+  port = await listenWithFallback(server, port, "127.0.0.1");
 
   await waitForServer(port);
   if (smokeMode) {

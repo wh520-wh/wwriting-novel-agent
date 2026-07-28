@@ -50,7 +50,8 @@ export async function readResponseJson(response) {
 }
 
 export async function sendChatMessage(message, options = {}) {
-  return await postJson("/api/chat/send", { message }, options);
+  const { projectRoot, ...requestOptions } = options;
+  return await postJson("/api/chat/send", { message, ...(projectRoot ? { projectRoot } : {}) }, requestOptions);
 }
 
 export async function confirmChatAction(approve, options = {}) {

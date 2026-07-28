@@ -69,7 +69,7 @@ child.stderr.on("data", (chunk) => {
 
 try {
   await waitForServer(port);
-  const [html, js, truthJs, css, quickRailJs, dashboard, utilsJs, apiClientJs, threadRendererJs, drawerPanelsJs, settingsModalJs, composerJs] = await Promise.all([
+  const [html, js, truthJs, css, quickRailJs, dashboard, utilsJs, apiClientJs, threadRendererJs, drawerPanelsJs, settingsModalJs, composerJs, projectIdentityJs, workbenchPresentationJs] = await Promise.all([
     fetchText(`http://127.0.0.1:${port}/`),
     fetchText(`http://127.0.0.1:${port}/app.js`),
     fetchText(`http://127.0.0.1:${port}/agent-truth.mjs`),
@@ -81,7 +81,9 @@ try {
     fetchText(`http://127.0.0.1:${port}/thread-renderer.js`),
     fetchText(`http://127.0.0.1:${port}/drawer-panels.js`),
     fetchText(`http://127.0.0.1:${port}/settings-modal.js`),
-    fetchText(`http://127.0.0.1:${port}/composer.js`)
+    fetchText(`http://127.0.0.1:${port}/composer.js`),
+    fetchJavaScriptModule(`http://127.0.0.1:${port}/project-identity.mjs`),
+    fetchJavaScriptModule(`http://127.0.0.1:${port}/workbench-presentation.mjs`)
   ]);
   const [motionRuntime, gsapVendor] = await Promise.all([
     fetchText(`http://127.0.0.1:${port}/motion-runtime.js`),
@@ -90,6 +92,9 @@ try {
   assert.ok(motionRuntime.includes("export const motion"));
   assert.ok(motionRuntime.includes("./vendor/gsap.js"));
   assert.ok(gsapVendor.includes("export const gsap"));
+  assert.ok(projectIdentityJs.includes("export function deriveProjectIdentity"));
+  assert.ok(workbenchPresentationJs.includes("export function deriveWorkbenchView"));
+  assert.ok(workbenchPresentationJs.includes("export function deriveChapterCompletion"));
 
   // Codex 对话式信息架构：左栏项目 + 顶栏 + 对话流 + 单输入框（斜杠命令）+ 右侧抽屉
   assert.ok(html.includes("小说智能体"));
@@ -209,6 +214,13 @@ try {
   assert.ok(css.includes("--window-control-space"));
   assert.ok(css.includes("calc(20px + var(--window-control-space))"));
   assertWindowDragRegionsAreClickSafe(css);
+  assert.ok(html.includes('data-testid="project-workbench"'));
+  assert.ok(html.includes('id="workbench-primary"'));
+  assert.ok(html.includes('id="workbench-read-latest"'));
+  assert.ok(html.includes('id="workbench-activity"'));
+  assert.ok(css.includes(".project-workbench"));
+  assert.ok(css.includes(".proj-cover"));
+  assert.ok(css.includes(".creation-card"));
   assert.ok(css.includes(".reader-scrim"));
   assert.ok(css.includes(".toast"));
   assert.ok(css.includes(".rail"));
@@ -351,6 +363,12 @@ try {
   assert.equal(dashboard.skills.items[0].enabled_in_project, true);
   assert.equal(dashboard.sources.count, 1);
   assert.equal(dashboard.review.status, "passed");
+  assert.equal(dashboard.project.title, "Dashboard Novel");
+  assert.ok(dashboard.project.story_seed.length > 0);
+  assert.equal(dashboard.summary.progressPercent, 100);
+  assert.ok(dashboard.chapters.some((chapter) => chapter.artifact?.state === "committed"));
+  assert.equal(dashboard.review.status, "passed");
+  assert.ok(dashboard.review.reviewed_at);
   const chapterRead = await fetchJson(`http://127.0.0.1:${port}/api/chapters/read?chapter=1`);
   assert.equal(chapterRead.ok, true);
   assert.equal(chapterRead.chapter_no, 1);
@@ -557,6 +575,17 @@ async function waitForServer(targetPort) {
 async function fetchText(url) {
   const response = await fetch(url);
   assert.equal(response.ok, true, `${url} must return 2xx`);
+  return response.text();
+}
+
+async function fetchJavaScriptModule(url) {
+  const response = await fetch(url);
+  assert.equal(response.ok, true, `${url} must return 2xx`);
+  assert.match(
+    response.headers.get("content-type") ?? "",
+    /^text\/javascript(?:;|$)/iu,
+    `${url} must be served as JavaScript`
+  );
   return response.text();
 }
 

@@ -1,15 +1,16 @@
 import { icon } from "./icons.js";
-import { formatTime, formatNumber, formatCompact, cssEscape, translateStage, translateReviewStatus, statusClass } from "./utils.js";
+import { formatTime, formatNumber, cssEscape, translateStage, statusClass } from "./utils.js";
 import { motion } from "./motion-runtime.js";
 import { renderFailureCard } from "./components/failure-card.js";
 import { renderDiff, renderParagraphDiff } from "./diff-view.js";
 import { deriveFailures } from "./agent-truth.mjs";
 import { postJson } from "./api-client.js";
 import { sendChatMessage, confirmChatAction } from "./api-client.js";
-import { renderMarkdown } from "./markdown-lite.mjs";
+import { renderMarkdown, cleanAssistantContent } from "./markdown-lite.mjs";
 import { toolLabel } from "./tool-labels.mjs";
 import { deriveSources, deriveSuggestions } from "./chat-derive.mjs";
 import { presentChapterArtifact } from "./chapter-presentation.mjs";
+import { deriveProjectIdentity } from "./project-identity.mjs";
 
 const STAGE_ORDER = ["queued", "planning", "planned", "drafting", "reviewing", "needs_revision", "revising", "finalizing", "summarizing"];
 
@@ -149,32 +150,24 @@ export function createThreadRenderer(ctx) {
     const frag = document.createDocumentFragment();
     const summary = data.summary;
     const project = data.project;
+    const identity = deriveProjectIdentity({ project, projectRoot: data.projectRoot });
     const titleRow = document.createElement("div");
-    titleRow.className = "session-title";
+    titleRow.className = "session-title session-title--trail";
     const cover = document.createElement("div");
-    cover.className = "session-cover";
+    cover.className = "session-cover session-cover--trail";
+    cover.dataset.projectTheme = identity.theme;
+    cover.setAttribute("aria-hidden", "true");
+    cover.textContent = identity.monogram;
     const meta = document.createElement("div");
     meta.className = "session-meta";
     const h2 = document.createElement("h2");
-    h2.textContent = project.title ?? "未命名小说";
+    h2.textContent = "创作记录";
     const seed = document.createElement("p");
-    seed.className = "session-seed peek";
-    seed.textContent = project.story_seed ?? data.projectRoot;
+    seed.className = "session-seed";
+    seed.textContent = `${project.title ?? "未命名小说"} · 第 ${summary.currentChapterNo ?? 1} 章`;
     meta.append(h2, seed);
     titleRow.append(cover, meta);
     frag.append(titleRow);
-
-    const stats = document.createElement("div");
-    stats.className = "session-stats";
-    const pct = summary.progressPercent ?? 0;
-    stats.append(
-      statCell("章节进度", `${summary.completedChapters}/${summary.targetChapters}`),
-      statCell("累计字数", formatCompact(summary.totalWords)),
-      statCell("完成度", `${pct}%`, "accent"),
-      statCell("模型调用", formatNumber(summary.modelCalls)),
-      statCell("审查器", translateReviewStatus(data.review?.status), "green")
-    );
-    frag.append(stats);
     if (["interrupted", "cancelled", "running"].includes(summary.projectStatus)) {
       const recovery = document.createElement("div");
       recovery.className = `recovery-card ${statusClass(summary.projectStatus)}`;
@@ -195,19 +188,6 @@ export function createThreadRenderer(ctx) {
       frag.append(recovery);
     }
     return frag;
-  }
-
-  function statCell(label, value, valueClass) {
-    const stat = document.createElement("div");
-    stat.className = "stat";
-    const k = document.createElement("span");
-    k.className = "k";
-    k.textContent = label;
-    const v = document.createElement("span");
-    v.className = `v${valueClass ? ` ${valueClass}` : ""}`;
-    v.textContent = value;
-    stat.append(k, v);
-    return stat;
   }
 
   function refreshSessionHead(data) {
@@ -261,6 +241,10 @@ export function createThreadRenderer(ctx) {
     for (const task of tasks) {
       const key = `task:${task.id}`;
       let existing = ctx.refs.thread.querySelector(`[data-task-card-id="${cssEscape(task.id)}"]`);
+      if (task.status === "running") {
+        existing?.remove();
+        continue;
+      }
       const card = buildTaskCard(task, data);
       if (existing) {
         existing.replaceWith(card);
@@ -290,15 +274,7 @@ export function createThreadRenderer(ctx) {
     instruction.textContent = task.instruction ?? "";
     card.append(header, instruction);
 
-    if (task.status === "running") {
-      card.append(buildInlineProgress(task, data));
-      const stopBtn = document.createElement("button");
-      stopBtn.className = "task-action danger";
-      stopBtn.type = "button";
-      stopBtn.textContent = "停止";
-      stopBtn.addEventListener("click", () => ctx.handleStop());
-      card.append(stopBtn);
-    } else if (task.status === "queued") {
+    if (task.status === "queued") {
       const meta = document.createElement("div");
       meta.className = "task-meta";
       const queued = (data.queue?.tasks ?? []).filter((item) => item.status === "queued");
@@ -913,6 +889,8 @@ export function createThreadRenderer(ctx) {
   }
 
   function renderAssistantBubble(message, allMessages) {
+    const assistantContent = cleanAssistantContent(message.content ?? "");
+    if (!assistantContent) return null;
     const wrap = document.createElement("div");
     wrap.className = "msg-agent rise chat-bubble-wrap chat-bubble-wrap--assistant";
     wrap.dataset.ts = message.ts ?? "";
@@ -927,7 +905,7 @@ export function createThreadRenderer(ctx) {
     }
     const body = document.createElement("div");
     body.className = "chat-bubble-content";
-    body.innerHTML = renderMarkdown(message.content ?? "");
+    body.innerHTML = renderMarkdown(assistantContent);
     bubble.append(body);
     const sources = deriveSources(allMessages ?? [], message);
     if (sources.length > 0) {
@@ -969,6 +947,7 @@ export function createThreadRenderer(ctx) {
   }
 
   function renderToolCard(message) {
+    if (message.ok !== false) return null;
     const wrap = document.createElement("div");
     wrap.className = "msg-agent rise chat-bubble-wrap chat-bubble-wrap--tool";
     wrap.dataset.ts = message.ts ?? "";
@@ -1138,7 +1117,10 @@ export function createThreadRenderer(ctx) {
       const key = message.id ? `chat:${message.id}` : `chat:${message.role}:${message.ts}:${message.tool ?? ""}`;
       if (ctx.renderedKeys.has(key)) continue;
       const node = renderChatMessage(message, messages);
-      if (!node) continue;
+      if (!node) {
+        ctx.renderedKeys.add(key);
+        continue;
+      }
       ctx.renderedKeys.add(key);
       insertByTs(ctx.refs.thread, node, message.ts);
       appended = true;

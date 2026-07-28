@@ -70,6 +70,14 @@ test("app.js gates the dashboard load on projectScope.isCurrent", () => {
   );
 });
 
+test("app.js adopts the initially selected dashboard project into projectScope", () => {
+  assert.match(
+    appSource,
+    /if\s*\(\s*!activeProjectRoot\s*&&\s*data\.hasProject\s*&&\s*data\.projectRoot\s*\)\s*\{[\s\S]*?projectScope\.activate\s*\(\s*data\.projectRoot\s*\)/,
+    "the first dashboard response must activate its project root so later refreshes are not discarded"
+  );
+});
+
 test("app.js carries projectRoot in dashboard fetches", () => {
   // Either the URL is built with withProjectScope, or the body has projectRoot
   // alongside the dashboard fetch call. The api-client should expose withProjectScope.
@@ -131,6 +139,12 @@ test("composer.js supports /model switching from the chat box", () => {
     /await\s+ctx\.loadDashboard\s*\(/u,
     "model switching should refresh dashboard so the model pill updates"
   );
+});
+
+test("composer async actions carry a project scope token and reject stale responses", () => {
+  assert.match(composerSource, /projectScope\?\.capture\(projectRoot\)/u);
+  assert.match(composerSource, /projectScope\.isCurrent\(token\)/u);
+  assert.match(composerSource, /projectRoot\s*\}\s*\);/u);
 });
 
 test("settings-connection.mjs defines the pure helpers", () => {
@@ -244,12 +258,7 @@ test("thread-renderer.js gates the open-reader click and 'open' affordance on ca
   );
 });
 
-test("thread-renderer.js hides the stop button while projectStatus is cancelling", () => {
-  // The plan requires: the per-run stop button must be hidden once the run
-  // is cancelling, and the task-card stop button must not be rendered for
-  // any non-running status (including cancelling). We assert that
-  // `cancelling` appears in the same statement that toggles stopBtn.hidden,
-  // and that the task-card stop button branch is gated to `running` only.
+test("thread-renderer.js keeps the sole run stop button hidden while cancelling", () => {
   const stopBtnContext = threadRendererSource.match(
     /block\.stopBtn\.hidden[\s\S]{0,200}/u
   );
@@ -259,19 +268,21 @@ test("thread-renderer.js hides the stop button while projectStatus is cancelling
   );
   assert.match(
     threadRendererSource,
-    /task\.status\s*===\s*["']running["']/u,
-    "task-card stop button branch should be gated to status === running"
+    /task\.status\s*===\s*["']running["'][\s\S]{0,120}existing\?\.remove\(\)/u,
+    "the running task must defer to the run card instead of adding another stop button"
   );
-  // No branch should render a stop button for a cancelling task. The task
-  // card builder uses `if (task.status === "running")` for the stop button
-  // and falls through to other branches (queued/completed/blocked/etc).
-  const cancellingStopBranch = threadRendererSource.match(
-    /task\.status\s*===\s*["']cancelling["'][\s\S]{0,160}stopBtn/u
+});
+
+test("thread-renderer.js keeps a running task in the single run card and hides successful tool internals", () => {
+  assert.match(
+    threadRendererSource,
+    /task\.status\s*===\s*["']running["'][\s\S]{0,180}existing\?\.remove\(\)[\s\S]{0,180}continue/u,
+    "running queue tasks should be removed instead of duplicating the run card"
   );
-  assert.equal(
-    cancellingStopBranch,
-    null,
-    "no stop button branch should be wired for cancelling tasks"
+  assert.match(
+    threadRendererSource,
+    /function renderToolCard\(message\)[\s\S]{0,200}message\.ok\s*!==\s*false[\s\S]{0,100}return null/u,
+    "successful tool calls should not render technical parameters or JSON into the thread"
   );
 });
 
@@ -302,4 +313,58 @@ test("app.js imports deriveWriteReadiness from write-readiness.mjs", () => {
     /import\s*\{[^}]*deriveWriteReadiness[^}]*\}\s*from\s*["']\.\/write-readiness\.mjs["']/,
     "app.js should import deriveWriteReadiness from ./write-readiness.mjs"
   );
+});
+
+test("index.html contains an accessible author workbench with stable test hooks", () => {
+  for (const selector of [
+    "id=\"project-workbench\"",
+    "data-testid=\"project-workbench\"",
+    "id=\"workbench-cover\"",
+    "id=\"workbench-title\"",
+    "id=\"workbench-seed\"",
+    "id=\"workbench-progress\"",
+    "id=\"workbench-primary\"",
+    "id=\"workbench-read-latest\"",
+    "id=\"workbench-open-chapters\"",
+    "id=\"workbench-activity\"",
+  ]) {
+    assert.ok(indexSource.includes(selector), `missing author workbench contract: ${selector}`);
+  }
+  assert.match(indexSource, /id="workbench-cover"[^>]*role="img"|role="img"[^>]*id="workbench-cover"/u);
+  assert.ok(indexSource.includes('id="workbench-progress-label"'));
+});
+
+test("app.js renders the workbench from pure presentation modules", () => {
+  assert.match(
+    appSource,
+    /import\s*\{[^}]*deriveProjectIdentity[^}]*\}\s*from\s*["']\.\/project-identity\.mjs["']/,
+    "app.js should import deriveProjectIdentity"
+  );
+  assert.match(
+    appSource,
+    /import\s*\{[^}]*deriveWorkbenchView[^}]*deriveChapterCompletion[^}]*\}\s*from\s*["']\.\/workbench-presentation\.mjs["']/,
+    "app.js should import workbench presentation helpers"
+  );
+  assert.match(appSource, /function\s+renderProjectWorkbench\s*\(/, "app.js should render the workbench in one function");
+  assert.match(appSource, /renderProjectWorkbench\s*\(\s*data\s*\)/, "renderDashboard should update the workbench");
+  assert.match(appSource, /deriveProjectIdentity\s*\(\s*\{\s*project\s*,\s*projectRoot:/, "project rows should reuse project identity");
+});
+
+test("styles.css defines themed workbench, project covers, creation cards and reduced-motion fallback", async () => {
+  const cssPath = path.join(here, "..", "..", "src", "app-shell", "styles.css");
+  const cssSource = await fs.readFile(cssPath, "utf8");
+
+  for (const selector of [
+    ".project-workbench",
+    ".workbench-cover",
+    ".proj-cover",
+    ".workbench-activity-row",
+    ".creation-card",
+    ".session-title--trail",
+    "[data-project-theme=\"tide\"]",
+    "[data-project-theme=\"ember\"]",
+  ]) {
+    assert.ok(cssSource.includes(selector), `missing visual system selector: ${selector}`);
+  }
+  assert.match(cssSource, /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.project-workbench/u);
 });

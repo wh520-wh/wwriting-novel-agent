@@ -1,7 +1,7 @@
 // tests/markdown-lite.test.mjs
 import assert from "node:assert/strict";
 import test from "node:test";
-import { renderMarkdown, escapeHtml, countProseWords } from "../src/app-shell/markdown-lite.mjs";
+import { renderMarkdown, escapeHtml, countProseWords, cleanAssistantContent } from "../src/app-shell/markdown-lite.mjs";
 
 test("escapeHtml 转义五种字符", () => {
   assert.equal(escapeHtml(`<a href="x">'&`), "&lt;a href=&quot;x&quot;&gt;&#39;&amp;");
@@ -67,6 +67,16 @@ test("注入文本始终被转义（含稿块内）", () => {
   const html = renderMarkdown("```稿\n<script>alert(1)</script>\n```");
   assert.ok(!html.includes("<script>"), html);
   assert.ok(html.includes("&lt;script&gt;"));
+});
+
+test("cleanAssistantContent removes leaked XML tool-call protocol but keeps prose", () => {
+  const content = [
+    "我会先安排第一章。",
+    "<tool_call>",
+    '{"tool_calls":[{"tool":"queue_chapters","args":{"instruction":"开始写第1章"}}]}',
+    "</tool_call>"
+  ].join("\n");
+  assert.equal(cleanAssistantContent(content), "我会先安排第一章。");
 });
 
 test("混合文档整体顺序正确", () => {

@@ -43,7 +43,7 @@
     "icon": "src/assets/app-icon.ico",
     "win": {
       "icon": "src/assets/app-icon.ico",
-      "signAndEditExecutable": false,
+      "signAndEditExecutable": true,
       "target": [
         "dir",
         "nsis"
