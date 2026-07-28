@@ -750,24 +750,35 @@ export async function runFactCheck(projectRoot, project, state, runtime, draft) 
     chapter_no: state.current_chapter_no
   });
 
-  // 软模式：仅当 draft_quote 在 draft 中唯一命中且当前无 pending 时落 pending_action
-  const existingPending = await loadPendingAction(projectRoot).catch(() => null);
-  if (!existingPending && first.replace_with) {
+  // 软模式：自动修复矛盾（draft_quote 唯一命中且有 replace_with），不等用户确认
+  if (first.replace_with) {
     const firstIdx = draft.indexOf(first.draft_quote);
     const onlyHit = firstIdx >= 0 && draft.indexOf(first.draft_quote, firstIdx + 1) < 0;
     if (onlyHit) {
       try {
-        const preview = await previewEditChapter(projectRoot, {
+        const draftPath = safeJoin(projectRoot, "drafts", chapterFileName(state.current_chapter_no, `draft.${project.output_format}`));
+        const draftContent = (await fs.readFile(draftPath, "utf8").catch(() => draft)).replace(first.draft_quote, first.replace_with);
+        await writeFileAtomic(draftPath, draftContent);
+        await appendEvent(projectRoot, {
+          type: "fact_check_auto_fixed",
+          project_id: project.project_id,
           chapter_no: state.current_chapter_no,
-          find: first.draft_quote,
-          replace: first.replace_with
+          stage: "reviewing",
+          severity: "info",
+          message: "fact-check 矛盾已自动修复",
+          data: { draft_quote: first.draft_quote, replace_with: first.replace_with, conflicts_with: first.conflicts_with }
         });
-        await savePendingAction(projectRoot, {
-          tool: "edit_chapter",
-          args: { chapter_no: state.current_chapter_no, find: first.draft_quote, replace: first.replace_with, reason: "fact-check 矛盾修复" },
-          preview
+      } catch (error) {
+        await appendEvent(projectRoot, {
+          type: "fact_check_auto_fix_failed",
+          project_id: project.project_id,
+          chapter_no: state.current_chapter_no,
+          stage: "reviewing",
+          severity: "warn",
+          message: `fact-check 自动修复失败：${error.message}`,
+          data: { conflict: first, error: error.message }
         });
-      } catch { /* preview 失败不阻塞 */ }
+      }
     }
   }
   return { conflicts };
