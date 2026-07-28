@@ -6,3 +6,4 @@ npm-debug.log*
 *.tmp
 .gstack/
 .claude/
+debug/
