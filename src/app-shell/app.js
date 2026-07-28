@@ -217,7 +217,7 @@ composer = createComposer({
   getAskEntries: () => askEntries,
   projectScope,
 });
-const { submitComposer, autoGrowComposer, updateSlashMenu, onComposerKeydown, updateSubmitState, promoteAskEntry, persistDraft, flushDraft, restoreDraftIfAny } = composer;
+const { submitComposer, autoGrowComposer, updateSlashMenu, onComposerKeydown, updateSubmitState, promoteAskEntry, persistDraft, flushDraft, restoreDraftIfAny, resetComposerInputUi } = composer;
 
 function openDrawer(tab) {
   if (tab) drawerTab = tab;
@@ -585,9 +585,7 @@ function clearTransientState() {
     refs.readerScrim.setAttribute("inert", "");
   }
   readerChapterNo = null;
-  if (refs.composerInput && "value" in refs.composerInput) {
-    refs.composerInput.value = "";
-  }
+  if (refs.composerInput && "value" in refs.composerInput) resetComposerInputUi();
   if (refs.composerInput?.dataset) {
     delete refs.composerInput.dataset.error;
   }

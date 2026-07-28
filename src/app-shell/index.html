@@ -55,8 +55,9 @@
               <span class="pill" id="project-status"><span class="pdot"></span>待命</span>
             </div>
             <div class="topbar-sub" id="topbar-sub">用一句话描述你的故事，应用会持续生成章节并保存到本地。</div>
-            <div class="topbar-progress" id="topbar-progress" hidden>
-              <div class="topbar-progress-bar" id="topbar-progress-bar"></div>
+            <div class="topbar-progress" id="topbar-progress" role="progressbar" aria-label="本章写作流程" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden>
+              <span class="topbar-progress-label" id="topbar-progress-label">本章流程</span>
+              <div class="topbar-progress-track"><div class="topbar-progress-bar" id="topbar-progress-bar"></div></div>
             </div>
           </div>
           <div class="topbar-actions">
@@ -70,32 +71,56 @@
           </div>
         </header>
         <div class="activity-strip" id="activity-strip" hidden></div>
+        <section class="project-workbench" id="project-workbench" data-testid="project-workbench" aria-labelledby="workbench-title" hidden>
+          <div class="workbench-identity">
+            <div class="workbench-cover" id="workbench-cover" role="img" aria-label="未命名小说的作品封面"><span id="workbench-monogram" aria-hidden="true">W</span></div>
+            <div class="workbench-copy">
+              <p class="eyebrow">正在创作</p>
+              <h2 id="workbench-title">未命名小说</h2>
+              <p class="workbench-seed peek" id="workbench-seed"></p>
+              <div class="workbench-progress" id="workbench-progress" role="progressbar" aria-label="作品章节进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="0 / 0 章">
+                <div class="workbench-progress-head">
+                  <span id="workbench-progress-label">0 / 0 章</span>
+                  <span id="workbench-word-count">0 字</span>
+                </div>
+                <div class="workbench-progress-track"><span id="workbench-progress-fill"></span></div>
+              </div>
+            </div>
+          </div>
+          <div class="workbench-actions" aria-label="当前创作操作">
+            <p class="workbench-status" id="workbench-status"></p>
+            <button id="workbench-primary" type="button"></button>
+            <button id="workbench-read-latest" type="button" hidden>阅读最近一章</button>
+            <button id="workbench-open-chapters" type="button">查看章节</button>
+          </div>
+          <div class="workbench-activity" id="workbench-activity" aria-label="最近创作动态"></div>
+        </section>
 
         <!-- 准备写作卡 -->
-        <section class="write-readiness" id="write-readiness" aria-labelledby="write-readiness-title" hidden>
+        <section class="write-readiness creation-card" id="write-readiness" data-creation-tone="ready" aria-labelledby="write-readiness-title" hidden>
           <div>
             <p class="eyebrow">准备写作</p>
             <h2 id="write-readiness-title"></h2>
             <p id="write-readiness-detail"></p>
             <div id="write-readiness-meta"></div>
           </div>
-          <div class="write-readiness-actions">
-            <button id="write-readiness-primary" type="button"></button>
+          <div class="write-readiness-actions creation-card-actions">
+            <button id="write-readiness-primary" class="creation-primary" type="button"></button>
             <button id="write-readiness-secondary" type="button" hidden></button>
             <button id="write-readiness-tertiary" type="button" hidden></button>
           </div>
         </section>
 
         <!-- 章节完成卡 -->
-        <section class="chapter-success" id="chapter-success" aria-labelledby="chapter-success-title" hidden>
+        <section class="chapter-success creation-card" id="chapter-success" data-creation-tone="success" aria-labelledby="chapter-success-title" hidden>
           <div>
             <p class="eyebrow">章节完成</p>
             <h2 id="chapter-success-title"></h2>
             <p id="chapter-success-meta"></p>
             <p id="chapter-success-review"></p>
           </div>
-          <div class="chapter-success-actions">
-            <button id="chapter-success-read" type="button">阅读本章</button>
+          <div class="chapter-success-actions creation-card-actions">
+            <button id="chapter-success-read" class="creation-primary" type="button">阅读本章</button>
             <button id="chapter-success-continue" type="button">继续下一章</button>
           </div>
         </section>

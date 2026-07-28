@@ -1020,6 +1020,11 @@ export async function maybeWarnChapterCost(projectRoot, project, state, costSumm
   }
 }
 
+const DEFAULT_DRAFTING_SYSTEM_RULES = [
+  "你是一位功底深厚的中文小说家，擅长用克制而精准的笔触讲故事，让读者通过画面与人物自行体会，而不是被直接告知。",
+  "本章正文必须通过 append_chapter_segment 工具写入；写在聊天回复里的正文不算交付，会被判为无效。"
+].join("\n");
+
 const DEFAULT_FORBIDDEN_PATTERNS = [
   "普通大学生突然获得神力",
   "不是梦",
@@ -1053,10 +1058,14 @@ async function compileChapterPrompt(projectRoot, project, state, request, runtim
   ]);
   const skillInstructions = [planningSkillPrompts.content, stageSkillPrompts.content].filter(Boolean).join("\n\n");
   const styleRules = [
-    `Output format: ${project.output_format}. Minimum effective words per chapter: ${project.min_words_per_chapter}.`,
+    `输出格式：${project.output_format}。每章最低有效字数：${project.min_words_per_chapter}。`,
     "叙事连续性：第 2 章及以后必须承接上一章落点，不要把本章写成新的第一章，不要重复介绍主角和世界观。",
     "段落连续性：segment_no 大于 1 时，直接续写 selected_draft_fragment 的最后动作、对话或悬念，不要另起一个开头。",
-    "去 AI 腔：减少抽象宣告，用具体动作、环境细节、人物选择和后果推进剧情。",
+    "呈现而非概述：用具体的动作、对白和环境细节推进，不直接宣告人物的情绪、性格或本章主题。",
+    "对白带潜台词：人物各有自己的声音，话里留有没说出口的东西；不要用对白生硬交代设定。",
+    "节奏有张弛：长短句交替，场景之间留出呼吸；每个场景至少发生一次信息、关系或情绪上的变化。",
+    "感官克制：调动五感但不堆砌形容词；情绪靠细节累积，避免“仿佛”“似乎”“一种说不出的”这类模糊词。",
+    "视角与时态全程保持一致，不中途滑动视角，不让旁白替人物下结论。",
     "禁用高频套路词和套话，除非用户原始设定强制要求：普通大学生突然获得神力、不是梦、三天了、你不是唯一一个、代价、神性、命运逼近、神秘力量。"
   ];
   // 输出风格(project-level preference, default creative)
@@ -1074,14 +1083,14 @@ async function compileChapterPrompt(projectRoot, project, state, request, runtim
     stableBlocks: {
       system_rules:
         promptTemplate ||
-        "Chapter body must be written through the append_chapter_segment tool. Chat body text is not a valid deliverable.",
+        DEFAULT_DRAFTING_SYSTEM_RULES,
       goal: project.story_seed ?? project.title ?? "Untitled writing project",
       style: styleRulesText,
       skill_instructions: skillInstructions
     },
     dynamicBlocks: {
       project_memory: [bookSummary, buildRelevantFacts(continuity, state.current_chapter_no), continuityContext].filter(Boolean).join("\n\n"),
-      chapter_plan: [`Chapter ${state.current_chapter_no} of ${project.target_chapters}.`, chapterContinuityRule].join("\n"),
+      chapter_plan: [`第 ${state.current_chapter_no} 章 / 共 ${project.target_chapters} 章。`, chapterContinuityRule].join("\n"),
       current_task: JSON.stringify(
         {
           kind: request.kind,

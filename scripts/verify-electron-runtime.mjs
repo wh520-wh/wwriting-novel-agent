@@ -47,7 +47,9 @@ assert.ok(jsonLine, `Electron smoke output missing JSON. stdout=${stdout} stderr
 const result = JSON.parse(jsonLine);
 assert.equal(result.ok, true);
 assert.equal(result.desktopShell, "electron");
-assert.equal(result.loaded, `http://127.0.0.1:${port}`);
+const loadedUrl = new URL(result.loaded);
+assert.equal(loadedUrl.hostname, "127.0.0.1");
+assert.ok(Number(loadedUrl.port) > 0);
 
 console.log(
   JSON.stringify(

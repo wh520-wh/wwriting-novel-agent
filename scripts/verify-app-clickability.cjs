@@ -77,9 +77,9 @@ async function main() {
     path.join(rootDir, ".demo_runs", `fc-${Date.now()}`),
     {
       slug: "first-chapter",
-      title: "First Chapter",
+      title: "点击验收小说",
       story_seed: "A short story to verify first chapter writing.",
-      target_chapters: 1,
+      target_chapters: 2,
       min_words_per_chapter: 120,
       target_words_per_chapter: 180,
       active_model: {
@@ -154,20 +154,8 @@ async function main() {
   const clicks = [];
 
   // === First Chapter Click Chain ===
-  // Step 1: Switch to the first-chapter project and wait for the page to show
-  // the mock-model write-readiness state (button should say "用演示模型写第 1 章").
-  await win.webContents.executeJavaScript(`
-    fetch("/api/projects/open", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ projectRoot: ${JSON.stringify(fcProjectRoot)} })
-    }).then(r => r.json());
-    true;
-  `);
-  await delay(1000);
-
-  // Ensure the page has loaded the new project's dashboard by clicking refresh
-  // and waiting for the write-readiness button text to reflect the mock-model state.
+  // The server starts with the first-chapter fixture selected. Wait for the
+  // real renderer to expose the mock-model readiness action.
   await win.webContents.executeJavaScript(`document.getElementById('refresh').click(); true;`);
   await waitUntil(win,
     `document.getElementById('write-readiness-primary').textContent.includes("写第 1 章")`,
@@ -175,48 +163,43 @@ async function main() {
     8000
   );
 
-  clicks.push(await clickAndRead(win, "#write-readiness-primary", {
-    label: "first-chapter-start",
-    settleMs: 3000,
-    expect: () => read(win, "true")
+  await waitUntil(win, `(() => {
+    const workbench = document.querySelector('[data-testid="project-workbench"]');
+    const title = document.querySelector('#workbench-title');
+    const cover = document.querySelector('#workbench-cover');
+    const primary = document.querySelector('#workbench-primary');
+    return Boolean(
+      workbench && !workbench.hidden &&
+      title?.textContent.includes("点击验收小说") &&
+      cover?.dataset.projectTheme &&
+      primary?.textContent.includes("第 1 章")
+    );
+  })()`, "首章工作台应显示真实作品与第 1 章动作", 8000);
+
+  clicks.push(await clickAndRead(win, "#workbench-primary", {
+    label: "工作台开始第 1 章",
+    settleMs: 300
   }));
 
-  // Step 3: Wait for a committed artifact — chapter-success section appears.
-  // The mock agent commits the chapter server-side; poll until it is done,
-  // then render the section directly since the page's dashboard refresh loop
-  // does not pick up the change (currentProjectRoot is not updated by the
-  // raw-fetch project switch).
-  const fcPollStart = Date.now();
-  let fcForceCount = 0;
-  while (Date.now() - fcPollStart < 35000) {
-    const ready = await read(win, "document.getElementById('chapter-success').hidden === false");
-    if (ready) break;
-    if (++fcForceCount % 6 === 0) {
-      const rendered = await read(win, `
-        (async () => {
-          const d = await fetch("/api/dashboard?projectRoot=" + encodeURIComponent(${JSON.stringify(fcProjectRoot)})).then(r => r.json());
-          const ch = (d.chapters || []).slice(-1)[0];
-          if (!ch || ch.artifact?.state !== 'committed') return false;
-          document.getElementById('chapter-success').hidden = false;
-          document.getElementById('chapter-success-title').textContent = '第 ' + ch.chapter_no + ' 章 · ' + (ch.title || '');
-          if (document.getElementById('chapter-success-meta')) {
-            document.getElementById('chapter-success-meta').textContent = (ch.actual_words || 0) + ' 字';
-          }
-          window.__lastCommittedChapter = ch;
-          document.getElementById('chapter-success-read').onclick = function() {
-            if (window.__lastCommittedChapter) {
-              document.getElementById('reader-scrim').classList.add('show');
-              document.getElementById('reader-title').textContent = '第 ' + window.__lastCommittedChapter.chapter_no + ' 章';
-            }
-          };
-          return true;
-        })()
-      `);
-    }
-    await delay(500);
-  }
+  await waitUntil(win,
+    `document.querySelector('.run-stop-btn:not([hidden])') !== null || document.getElementById('chapter-success').hidden === false`,
+    "starting chapter 1 must show the single run-card stop action or the completed chapter card",
+    8000
+  );
+
+  // Wait for the normal dashboard refresh loop to render a committed artifact.
+  await waitUntil(win,
+    `document.getElementById('chapter-success').hidden === false`,
+    "chapter-success must appear after first chapter is written",
+    35000
+  );
   const fcChapterSuccessVisible = await read(win, "document.getElementById('chapter-success').hidden === false");
   assert.equal(fcChapterSuccessVisible, true, "chapter-success must appear after first chapter is written");
+  assert.equal(
+    await read(win, "document.getElementById('write-readiness').hidden === true"),
+    true,
+    "write-readiness must yield the main area to chapter-success"
+  );
   const fcSuccessTitle = await read(win, "document.getElementById('chapter-success-title').textContent");
   assert.ok(fcSuccessTitle.includes("第 1 章"), `chapter-success-title must contain "第 1 章", got: ${fcSuccessTitle}`);
   clicks.push(await clickAndReadStable(win, "#chapter-success-read", {
@@ -227,6 +210,69 @@ async function main() {
   // Close the reader overlay before proceeding
   await win.webContents.executeJavaScript(`document.getElementById('reader-close').click(); true;`);
   await delay(300);
+
+  clicks.push(await clickAndRead(win, "#workbench-read-latest", {
+    label: "工作台阅读最近一章",
+    expect: () => read(win, "document.getElementById('reader-scrim').classList.contains('show') === true")
+  }));
+  await win.webContents.executeJavaScript(`document.getElementById('reader-close').click(); true;`);
+  await delay(300);
+  await waitUntil(win, `document.querySelector("#reader-scrim")?.classList.contains("show") === false`, "工作台阅读器应已关闭");
+
+  clicks.push(await clickAndRead(win, "#chapter-success-continue", {
+    label: "继续写第 2 章",
+    settleMs: 300,
+    expect: () => read(win, `(() => {
+      const runVisible = document.querySelector('.run-stop-btn:not([hidden])') !== null;
+      const completionTitle = document.querySelector("#chapter-success-title")?.textContent ?? "";
+      return runVisible || completionTitle.includes("第 2 章");
+    })()`)
+  }));
+
+  await waitUntil(win, `(() => {
+    const runVisible = document.querySelector('.run-stop-btn:not([hidden])') !== null;
+    const completionTitle = document.querySelector("#chapter-success-title")?.textContent ?? "";
+    return runVisible || completionTitle.includes("第 2 章");
+  })()`, "续写点击必须启动第 2 章或完成第 2 章", 8000);
+
+  await waitUntil(
+    win,
+    `document.querySelector("#chapter-success-title")?.textContent.includes("第 2 章") === true`,
+    "第 2 章完成后必须更新完成卡",
+    35000,
+  );
+  assert.equal(
+    await read(win, `document.querySelector("#chapter-success-continue").hidden === true`),
+    true,
+    "达到两章目标后必须隐藏续写按钮",
+  );
+
+  // 工作台「查看章节」按钮：真实点击应打开抽屉并落到章节 tab，证明第三个新增按钮也收到 trusted pointer click。
+  clicks.push(await clickAndRead(win, "#workbench-open-chapters", {
+    label: "工作台查看章节",
+    expect: () => read(win, `document.getElementById('drawer').classList.contains('show') === true && document.querySelector('[data-dtab="chapters"]')?.getAttribute('aria-selected') === 'true'`)
+  }));
+  clicks.push(await clickAndReadStable(win, "#drawer-close", {
+    label: "工作台查看章节后关闭抽屉",
+    expect: () => read(win, "document.getElementById('drawer').classList.contains('show') === false")
+  }));
+
+  // === Composer draft persistence probe ===
+  // 当前选中的是 fcProjectRoot（A）：输入未发送草稿并等待 200ms 防抖落盘。
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const input = document.getElementById("composer-input");
+      input.value = "A 项目未发送草稿";
+      input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: input.value }));
+      return true;
+    })()
+  `);
+  await delay(300);
+  assert.equal(
+    await read(win, `Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i)).some((key) => key?.startsWith("wwriting:composer:draft:") && localStorage.getItem(key) === "A 项目未发送草稿")`),
+    true,
+    "A 项目输入后应写入 composer draft key"
+  );
 
   // Switch back to the original project by reloading the page after changing
   // the server's selected project root.
@@ -241,6 +287,40 @@ async function main() {
   await delay(600);
 
   // Reload page to reset currentProjectRoot and all transient UI state.
+  await win.loadURL(`http://127.0.0.1:${port}`);
+  await delay(800);
+  assert.equal(
+    await read(win, `document.getElementById("composer-input").value`),
+    "",
+    "切到没有草稿的 B 项目时输入框应为空"
+  );
+
+  // Reload into A again: this also covers the restart/first-load restore path.
+  await win.webContents.executeJavaScript(`
+    fetch("/api/projects/open", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectRoot: ${JSON.stringify(fcProjectRoot)} })
+    }).then(r => r.json());
+    true;
+  `);
+  await win.loadURL(`http://127.0.0.1:${port}`);
+  await delay(800);
+  assert.equal(
+    await read(win, `document.getElementById("composer-input").value`),
+    "A 项目未发送草稿",
+    "重载并回到 A 项目时应恢复草稿"
+  );
+
+  // Return to the original project for the remaining click probes.
+  await win.webContents.executeJavaScript(`
+    fetch("/api/projects/open", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectRoot: ${JSON.stringify(projectRoot)} })
+    }).then(r => r.json());
+    true;
+  `);
   await win.loadURL(`http://127.0.0.1:${port}`);
   await delay(800);
   // Re-inject click and motion probes for the original project.
@@ -647,6 +727,10 @@ async function main() {
       window.fetch = async function(...args) {
         const url = typeof args[0] === 'string' ? args[0] : args[0]?.url;
         if (url && url.includes('/api/chat/send')) {
+          if (window.__failNextChat === true) {
+            window.__failNextChat = false;
+            return new Response(JSON.stringify({ ok: false, message: "mock chat failure" }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+          }
           await new Promise((r) => setTimeout(r, 800));
           return new Response(JSON.stringify({ ok: true, reply: "mock", toolEvents: [], pendingAction: null, usage: { calls: 0, cost: 0 } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
         }
@@ -659,6 +743,27 @@ async function main() {
     })()
   `);
 
+  // 失败路径：输入应恢复，且失败内容应立即写回草稿。
+  await win.webContents.executeJavaScript(`
+    (() => {
+      window.__failNextChat = true;
+      const input = document.getElementById("composer-input");
+      input.value = "失败后应保留的草稿";
+      input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: input.value }));
+      input.focus();
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+      return true;
+    })()
+  `);
+  await waitUntil(win, `document.querySelector('.agent-say')?.textContent.includes("发送失败") === true`, "失败发送应显示错误并恢复输入", 5000);
+  assert.equal(await read(win, `document.getElementById("composer-input").value`), "失败后应保留的草稿", "发送失败应恢复原文");
+  await delay(100);
+  assert.equal(
+    await read(win, `Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i)).some((key) => key?.startsWith("wwriting:composer:draft:") && localStorage.getItem(key) === "失败后应保留的草稿")`),
+    true,
+    "发送失败应立即保存草稿"
+  );
+
   // ① composer 输入"你好"回车 → user + assistant 气泡
   await win.webContents.executeJavaScript(`
     (() => {
@@ -669,6 +774,9 @@ async function main() {
       return true;
     })()
   `);
+  await delay(300);
+  const chatDraftKey = await read(win, `Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i)).find((key) => key?.startsWith("wwriting:composer:draft:") && localStorage.getItem(key) === "你好") ?? null`);
+  assert.ok(chatDraftKey, "chat input should have a persisted draft key before send");
   assert.equal(await read(win, "document.getElementById('composer-submit').disabled === false"), true, "composer submit must be enabled with text '你好'");
   await win.webContents.executeJavaScript(`
     (() => {
@@ -681,6 +789,11 @@ async function main() {
     document.querySelector('.chat-bubble--user') !== null &&
     document.querySelector('.chat-bubble--assistant') !== null
   `, "chat user+assistant bubbles must appear after composer Enter", 8000);
+  assert.equal(
+    await read(win, `localStorage.getItem(${JSON.stringify(chatDraftKey)})`),
+    null,
+    "successful chat send should clear its composer draft key"
+  );
 
   // ② pending_action 确认卡 (fixtures written above, refresh to ensure loaded)
   clicks.push(await clickAndRead(win, "#refresh", {
@@ -713,12 +826,11 @@ async function main() {
     `)
   }));
 
-  // ③ 工具卡展开点击
-  clicks.push(await clickAndRead(win, ".chat-tool-card summary", {
-    label: "chat-tool-card-expand",
-    settleMs: 200,
-    expect: () => read(win, `document.querySelector('.chat-tool-card')?.open === true`)
-  }));
+  assert.equal(
+    await read(win, `document.querySelector('.chat-tool-card') === null`),
+    true,
+    "successful tool calls must not expose technical cards in the main thread"
+  );
 
   // === S4 Task 13: 新探针 ===
 
@@ -778,10 +890,9 @@ async function main() {
   const mdList = await read(win, `document.querySelectorAll('.chat-bubble-content ul li').length`);
   assert.ok(mdList >= 2, "markdown list must render");
 
-  // ⑩ 工具卡人话标签（带 args 与缺 args 两种）
+  // ⑩ 成功工具调用不应占据主线程或暴露技术参数。
   const toolLabels = await read(win, `[...document.querySelectorAll('.chat-tool-label')].map((n) => n.textContent)`);
-  assert.ok(toolLabels.some((t) => t.includes("第 1 章")), `tool label humanized: ${JSON.stringify(toolLabels)}`);
-  assert.ok(toolLabels.some((t) => t === "读取了章节"), "legacy tool message without args must degrade gracefully");
+  assert.deepEqual(toolLabels, [], `successful tool cards should stay hidden: ${JSON.stringify(toolLabels)}`);
 
   // ⑪ 溯源 chips：点章节 chip 打开阅读器
   clicks.push(await clickAndRead(win, '[data-testid="chat-source-chapter"]', {

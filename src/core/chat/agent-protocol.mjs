@@ -18,6 +18,19 @@ export function parseAgentReply(rawText) {
       };
     }
   }
+  const xmlRe = /<tool_call\b[^>]*>[\s\S]*?<\/tool_call>/giu;
+  while ((match = xmlRe.exec(text)) !== null) {
+    const candidate = match[0].replace(/<\/?tool_call\b[^>]*>/giu, "").trim();
+    const parsed = tryParseToolCall(candidate);
+    if (parsed) {
+      return {
+        type: "tool_call",
+        call: parsed.call,
+        dropped: parsed.dropped,
+        leadText: text.slice(0, match.index).trim()
+      };
+    }
+  }
   if (text.startsWith("{")) {
     const parsed = tryParseToolCall(text);
     if (parsed) {

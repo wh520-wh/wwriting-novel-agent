@@ -81,6 +81,10 @@ export function createComposer(ctx) {
     if (root) clearDraft(root);
   }
 
+  function persistCurrentDraftNow(projectRoot = currentRoot()) {
+    if (projectRoot) saveDraft(projectRoot, ctx.refs.composerInput.value);
+  }
+
   function restoreDraftIfAny(projectRoot, { focus = false } = {}) {
     const text = projectRoot ? loadDraft(projectRoot) : "";
     if (!text) return false;
@@ -624,6 +628,14 @@ export function createComposer(ctx) {
     updateSubmitState();
   }
 
+  // 切换项目时只重置当前 DOM，不触碰任何项目的持久化草稿。
+  function resetComposerInputUi() {
+    ctx.refs.composerInput.value = "";
+    autoGrowComposer();
+    updateSubmitState();
+    updateSlashMenu();
+  }
+
   function updateSlashMenu() {
     const value = ctx.refs.composerInput.value;
     if (!value.startsWith("/") || value.includes(" ") || value.includes("\n")) {
@@ -763,6 +775,7 @@ export function createComposer(ctx) {
       await ctx.loadDashboard();
     } catch (error) {
       if (token && !ctx.projectScope.isCurrent(token)) return;
+      persistCurrentDraftNow(projectRoot);
       ctx.showActionError(error);
     } finally {
       ctx.refs.composerSubmit.removeAttribute("aria-busy");
@@ -810,6 +823,8 @@ export function createComposer(ctx) {
         result.mainTaskAffecting ? "info" : "success"
       );
     } catch (error) {
+      if (token && !ctx.projectScope.isCurrent(token)) return;
+      persistCurrentDraftNow(projectRoot);
       ctx.showActionError(error);
     } finally {
       ctx.refs.composerSubmit.removeAttribute("aria-busy");
@@ -921,8 +936,7 @@ export function createComposer(ctx) {
 
       ctx.refs.composerInput.value = savedContent;
       autoGrowComposer();
-      const failRoot = currentRoot();
-      if (failRoot) saveDraft(failRoot, savedContent);
+      persistCurrentDraftNow(projectRoot);
       ctx.showActionError?.(error);
     } finally {
       ctx.refs.composerSubmit.removeAttribute("aria-busy");
@@ -1020,6 +1034,7 @@ export function createComposer(ctx) {
     initModePill, updateModePill, openModePopover, closeModePopover,
     openModelPopover, closeModelPopover, updateStatusPills, sendChatMessageWithUX,
     syncChatBusy, isChatBusy,
-    persistDraft, flushDraft, restoreDraftIfAny, clearDraftForCurrent
+    persistDraft, flushDraft, restoreDraftIfAny, clearDraftForCurrent,
+    resetComposerInputUi
   };
 }

@@ -18,6 +18,18 @@ export function countProseWords(text) {
   return String(text ?? "").replace(/\s+/gu, "").length;
 }
 
+export function cleanAssistantContent(text) {
+  let content = String(text ?? "");
+  content = content.replace(/<tool_call\b[^>]*>[\s\S]*?<\/tool_call>/giu, "");
+  content = content.replace(/<\/?tool_call\b[^>]*>/giu, "");
+  content = content.replace(/```(?:json)?\s*([\s\S]*?)```/giu, (full, body) => {
+    return /["']?tool_calls["']?\s*:/u.test(body) ? "" : full;
+  });
+  const trimmed = content.trim();
+  if (/^\{[\s\S]*["']?tool_calls["']?\s*:/u.test(trimmed)) return "";
+  return trimmed;
+}
+
 function inline(text) {
   return text
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")

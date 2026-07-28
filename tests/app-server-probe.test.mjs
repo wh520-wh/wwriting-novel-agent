@@ -56,6 +56,13 @@ async function setupServer(options = {}) {
 }
 
 function closeServer(server) {
+  // Forcefully drop lingering keep-alive connections so the server closes
+  // deterministically. Relying on server.close(cb) alone waits for idle
+  // keep-alive sockets, which under load can push a test past node:test's
+  // default timeout and produce intermittent "server close" flakes.
+  if (typeof server.closeAllConnections === "function") {
+    server.closeAllConnections();
+  }
   return new Promise((resolve) => server.close(resolve));
 }
 
@@ -1477,6 +1484,54 @@ test("settings/update persists tool_permissions / budget_config / research_confi
     assert.equal(dashboard.project.budget_config.max_model_calls, 77);
     assert.equal(dashboard.project.tool_permissions.network_allowed, true);
     assert.equal(dashboard.project.research_config.search_endpoint, "https://search.example.test/api");
+  } finally {
+    await closeServer(ctx.server);
+  }
+});
+
+test("settings/update persists a non-model patch without requiring active_model", async () => {
+  const ctx = await setupServer();
+  try {
+    const { res, data } = await postJson(ctx.port, "/api/settings/update", {
+      projectRoot: ctx.projectRoot,
+      tool_permissions: { network_allowed: true },
+      budget_config: { max_model_calls: 12 },
+    });
+
+    assert.equal(res.status, 200);
+    assert.equal(data.project.tool_permissions.network_allowed, true);
+    assert.equal(data.project.budget_config.max_model_calls, 12);
+    const persisted = await loadProject(ctx.projectRoot);
+    assert.equal(persisted.tool_permissions.network_allowed, true);
+    assert.equal(persisted.budget_config.max_model_calls, 12);
+    assert.equal(persisted.active_model.model_name, "mock-writer");
+  } finally {
+    await closeServer(ctx.server);
+  }
+});
+
+test("settings/update persists active model pricing and runtime fields", async () => {
+  const ctx = await setupServer();
+  try {
+    const { res } = await postJson(ctx.port, "/api/settings/update", {
+      projectRoot: ctx.projectRoot,
+      active_model: {
+        provider: "openai-compatible",
+        model_name: "writer-pricing",
+        base_url: "https://api.example.test/v1",
+        api_key_env: "WRITER_PRICING_KEY",
+        api_key: "temporary-pricing-key",
+        pricing: { input_per_million: 1, output_per_million: 2 },
+        stream: true,
+        max_output_tokens: 2048,
+      },
+    });
+
+    assert.equal(res.status, 200);
+    const persisted = await loadProject(ctx.projectRoot);
+    assert.deepEqual(persisted.active_model.pricing, { input_per_million: 1, output_per_million: 2, currency: "CNY" });
+    assert.equal(persisted.active_model.stream, true);
+    assert.equal(persisted.active_model.max_output_tokens, 2048);
   } finally {
     await closeServer(ctx.server);
   }

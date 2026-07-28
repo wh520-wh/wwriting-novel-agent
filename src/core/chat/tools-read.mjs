@@ -26,6 +26,27 @@ export function registerReadTools(registry) {
   });
 
   registry.register({
+    name: "list_chapters",
+    kind: "read",
+    description: "列出所有章节的进度概览（章号、状态、字数、标题），一次看全局。",
+    params: {},
+    run: async (_args, ctx) => {
+      const index = await loadChapterIndex(ctx.projectRoot);
+      const chapters = (index.chapters ?? []).map((c) => ({
+        chapter_no: c.chapter_no,
+        status: c.status,
+        actual_words: c.actual_words ?? 0,
+        title: c.title ?? null
+      }));
+      return {
+        total: chapters.length,
+        completed: chapters.filter((c) => c.status === "completed").length,
+        chapters
+      };
+    }
+  });
+
+  registry.register({
     name: "read_chapter", kind: "read",
     description: "读取指定章节正文。",
     params: { chapter_no: "章节号（整数）", max_chars: "可选，返回字符上限，默认 8000" },

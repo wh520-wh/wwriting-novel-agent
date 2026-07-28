@@ -3,21 +3,8 @@ import test from "node:test";
 
 import { createComposer, isStartWritingIntent } from "../../src/app-shell/composer.js";
 
-function makeComposer() {
-  return createComposer({
-    refs: {},
-    getCurrentProjectRoot: () => "D:\\novels\\demo",
-    getDashboard: () => ({}),
-    loadDashboard: async () => {},
-    openDrawer: () => {},
-    openSettingsModal: () => {},
-    openCreateModal: () => {},
-    showToast: () => {},
-    showActionError: () => {},
-    threadRenderer: {},
-    getAskEntries: () => new Map(),
-    ensureRefreshLoop: () => {}
-  });
+function makeComposer(refs = {}) {
+  return createComposer({ ...makeComposerContext(), refs });
 }
 
 // 明确的「开始/继续写作」祈使：命中后走硬启动（submitWritingCommand），不再被弱模型口头答应糊弄。
@@ -56,6 +43,12 @@ test("isStartWritingIntent 命中明确的开始/继续写作祈使", () => {
   }
 });
 
+test("isStartWritingIntent 命中带创作要求的明确章节启动", () => {
+  const instruction = "开始写第1章，建立主角初来城市的日常，为神之复活做铺垫，目标字数3300字左右";
+  assert.equal(isStartWritingIntent(instruction), true);
+  assert.equal(makeComposer().parseUserCommand(instruction, "main").type, "write");
+});
+
 test("isStartWritingIntent 不误判提问/讨论/否定句", () => {
   for (const text of START_INTENT_NEGATIVES) {
     assert.equal(isStartWritingIntent(text), false, `不应命中：「${text}」`);
@@ -85,3 +78,43 @@ test("startCurrentChapter exists and calls submitWritingCommand", async () => {
     // Expected - postJson isn't mocked in unit test
   }
 });
+
+test("resetComposerInputUi clears value and derived composer UI state", () => {
+  const input = {
+    value: "/ask",
+    style: {},
+    scrollHeight: 48,
+    setAttribute() {},
+    removeAttribute() {}
+  };
+  const submit = { disabled: false };
+  const slashMenu = {
+    hidden: false,
+    replaceChildren() { this.cleared = true; }
+  };
+  const composer = makeComposer({ composerInput: input, composerSubmit: submit, slashMenu });
+
+  composer.resetComposerInputUi();
+
+  assert.equal(input.value, "");
+  assert.equal(submit.disabled, true);
+  assert.equal(input.style.height, "48px");
+  assert.equal(slashMenu.hidden, true);
+  assert.equal(slashMenu.cleared, true);
+});
+
+function makeComposerContext() {
+  return {
+    getCurrentProjectRoot: () => "D:\\novels\\demo",
+    getDashboard: () => ({}),
+    loadDashboard: async () => {},
+    openDrawer: () => {},
+    openSettingsModal: () => {},
+    openCreateModal: () => {},
+    showToast: () => {},
+    showActionError: () => {},
+    threadRenderer: {},
+    getAskEntries: () => new Map(),
+    ensureRefreshLoop: () => {}
+  };
+}
