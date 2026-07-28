@@ -1195,3 +1195,24 @@ test("buildRelevantFacts: 近期 facts 优先，超 maxFacts 截断更早的", a
   assert.ok(result.includes("实体11"), "第 40 条 fact 应在");
   assert.ok(!result.includes("实体10"), "超出 maxFacts 的更早 fact 应被截断");
 });
+
+test("forbidden_patterns 可通过项目配置覆盖默认套路词", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-forbidden-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "project",
+    target_chapters: 1,
+    min_words_per_chapter: 200,
+    target_words_per_chapter: 260
+  });
+  const project = await loadProject(projectRoot);
+  project.forbidden_patterns = ["主角光环", "金手指"];
+  await saveProject(projectRoot, project);
+
+  const modelClient = new CapturingModelClient();
+  await runProject(projectRoot, { modelClient });
+
+  const prompt = modelClient.prompts[0];
+  assert.ok(prompt.includes('"主角光环"'), "自定义套路词应在 forbidden_reboot_patterns JSON 里");
+  assert.ok(prompt.includes('"金手指"'), "自定义套路词应在 forbidden_reboot_patterns JSON 里");
+  assert.ok(!prompt.includes('"普通大学生突然获得神力"'), "默认套路词不应在 forbidden_reboot_patterns JSON 里");
+});
