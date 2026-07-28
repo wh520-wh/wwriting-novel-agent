@@ -1086,3 +1086,91 @@ test("timeline-check 装配 + 只报本章的过滤逻辑", async () => {
   assert.equal(all.filter((v) => v.chapter_no === 3).length, 0);
   assert.match(mod.describeStoryClock(timeline), /故事时钟|第/u);
 });
+
+class ReadThenWriteModelClient {
+  constructor() {
+    this.calls = 0;
+    this.costTracker = {
+      record() {
+        return { calls: 1, inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCost: 0 };
+      },
+      async writeProjectReport() {}
+    };
+    this.prompts = [];
+  }
+
+  async generate({ prompt, metadata }) {
+    this.calls += 1;
+    this.prompts.push(prompt);
+    const request = metadata.toolRequest;
+    const usageReport = {
+      provider: "mock",
+      model: "read-then-write",
+      inputTokens: 1,
+      outputTokens: 1,
+      totalTokens: 2,
+      cachedTokens: 0,
+      cacheHitTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      cacheMetricsAvailable: false,
+      cacheHitRate: null,
+      estimatedCost: 0,
+      rawUsage: {}
+    };
+    if (this.calls === 1) {
+      return {
+        text: "",
+        raw: { output: { type: "tool_call", tool: "read_continuity", input: {} } },
+        usageReport,
+        costSummary: { calls: 1, inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCost: 0 },
+        modelConfig: { provider: "mock", model_name: "read-then-write" }
+      };
+    }
+    return {
+      text: "",
+      raw: {
+        output: {
+          type: "tool_call",
+          tool: "append_chapter_segment",
+          input: {
+            project_id: request.project_id,
+            chapter_no: request.chapter_no,
+            segment_no: request.segment_no,
+            content: Array.from({ length: 260 }, (_, index) => `agentloop${index}`).join(" ")
+          }
+        }
+      },
+      usageReport,
+      costSummary: { calls: this.calls, inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCost: 0 },
+      modelConfig: { provider: "mock", model_name: "read-then-write" }
+    };
+  }
+}
+
+test("writing agent loop: drafting 阶段模型先调 read_continuity 查设定再提交正文", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-agent-loop-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "project",
+    target_chapters: 1,
+    min_words_per_chapter: 200,
+    target_words_per_chapter: 260
+  });
+
+  const modelClient = new ReadThenWriteModelClient();
+  await runProject(projectRoot, { modelClient });
+
+  const events = await readEvents(projectRoot);
+  assert.ok(
+    events.some((e) => e.type === "agent_loop_tool_executed" && e.data?.tool === "read_continuity"),
+    "应有 read_continuity 工具执行事件"
+  );
+  assert.ok(events.some((e) => e.type === "tool_call_requested" && e.data?.tool === "append_chapter_segment"));
+  const index = await loadChapterIndex(projectRoot);
+  assert.equal(index.chapters[0].status, "completed");
+  assert.ok(modelClient.prompts.some((p) => p.includes("allowed_tools")));
+  assert.ok(modelClient.prompts.some((p) => p.includes("agent_loop_instruction")));
+  assert.ok(modelClient.prompts.some((p) => p.includes("agent_loop_feedback") && p.includes("read_continuity")));
+  assert.equal(modelClient.calls, 2);
+});

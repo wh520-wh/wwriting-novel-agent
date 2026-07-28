@@ -24,7 +24,9 @@ import { emit, CORE_EVENTS } from "./event-bus.mjs";
 import { buildMemoryExtractionMessages, parseMemoryExtraction } from "./memory-extractor.mjs";
 import { loadContinuity, mergeExtraction, saveContinuity, loadContinuityState, saveContinuityState } from "./continuity-store.mjs";
 import { appendChatMessage, loadPendingAction, savePendingAction } from "./chat/chat-store.mjs";
-import { previewEditChapter } from "./chat/tools-write.mjs";
+import { createToolRegistry, checkToolPermission } from "./chat/tool-registry.mjs";
+import { registerReadTools } from "./chat/tools-read.mjs";
+import { previewEditChapter, registerWriteTools } from "./chat/tools-write.mjs";
 import { validateTaskContract } from "./task-contract.mjs";
 import { ProjectCancelledError, rethrowIfCancelled, throwIfAborted } from "./cancellation.mjs";
 
@@ -337,22 +339,19 @@ async function draftNextSegment(projectRoot, project, state, runtime, options) {
   }
 
   const segmentNo = state.current_segment_no + 1;
-  const response = await requestChapterToolCall(projectRoot, project, state, runtime, {
+  const response = await runWritingAgentLoop(projectRoot, project, state, runtime, {
     kind: "draft_segment",
     project_id: project.project_id,
     chapter_no: state.current_chapter_no,
     segment_no: segmentNo,
     segment_target_words: Math.max(900, Math.ceil(project.target_words_per_chapter / 3)),
-    signal: options.signal
-  });
-  const result = await executeToolCall(projectRoot, project, state, response.toolCall, {
-    expectedChapterNo: state.current_chapter_no,
-    expectedSegmentNo: segmentNo
+    signal: options.signal,
+    allowed_tools: DRAFTING_ALLOWED_TOOLS
   });
   const latestState = await loadState(projectRoot);
   const next = setStage({ ...latestState, current_segment_no: segmentNo }, "drafting");
   await saveState(projectRoot, next);
-  await writeCheckpoint(projectRoot, checkpointPayload(project, state, next, [response.toolCall], [result], null, checkpointModelExtras(response.modelCall)));
+  await writeCheckpoint(projectRoot, checkpointPayload(project, state, next, [response.toolCall], [response.result], null, checkpointModelExtras(response.modelCall)));
 
   if (
     options.simulateInterruptAfter &&
@@ -393,18 +392,7 @@ async function reviewChapter(projectRoot, project, state, runtime) {
       data: gate
     });
     await writeCheckpoint(projectRoot, checkpointPayload(project, state, next));
-    try {
-      const fresh = await loadState(projectRoot).catch(() => state);
-      const card = deriveFailureCard({
-        id: `flr_${Date.now()}_${Math.random().toString(36).slice(2,8)}`,
-        type: 'quality_gate_failed',
-        chapter_no: state.current_chapter_no,
-        message: 'word-count gate failed',
-        ts: new Date().toISOString(),
-        data: gate
-      }, fresh);
-      appendFailure(projectRoot, card);
-    } catch (err) { console.warn('appendFailure failed:', err.message); }
+    await appendFailureCard(projectRoot, state, { type: 'quality_gate_failed', message: 'word-count gate failed', data: gate });
     return;
   }
   // S3 本地门禁：标题一致性（hard；错位串章直接打回修订）
@@ -435,18 +423,7 @@ async function reviewChapter(projectRoot, project, state, runtime) {
       data: titleGate
     });
     await writeCheckpoint(projectRoot, checkpointPayload(project, state, next));
-    try {
-      const fresh = await loadState(projectRoot).catch(() => state);
-      const card = deriveFailureCard({
-        id: `flr_${Date.now()}_${Math.random().toString(36).slice(2,8)}`,
-        type: 'quality_gate_failed',
-        chapter_no: state.current_chapter_no,
-        message: 'chapter-title gate failed',
-        ts: new Date().toISOString(),
-        data: titleGate
-      }, fresh);
-      appendFailure(projectRoot, card);
-    } catch (err) { console.warn('appendFailure failed:', err.message); }
+    await appendFailureCard(projectRoot, state, { type: 'quality_gate_failed', message: 'chapter-title gate failed', data: titleGate });
     return;
   }
   if (wordCapGate.status === "warning") {
@@ -487,18 +464,7 @@ async function reviewChapter(projectRoot, project, state, runtime) {
       data: { failed_gates: failedSkillGates }
     });
     await writeCheckpoint(projectRoot, checkpointPayload(project, state, next, [], [], null, { skill_gate_results: skillGateResults }));
-    try {
-      const fresh = await loadState(projectRoot).catch(() => state);
-      const card = deriveFailureCard({
-        id: `flr_${Date.now()}_${Math.random().toString(36).slice(2,8)}`,
-        type: 'quality_gate_failed',
-        chapter_no: state.current_chapter_no,
-        message: 'skill quality gate failed',
-        ts: new Date().toISOString(),
-        data: { failed_gates: failedSkillGates }
-      }, fresh);
-      appendFailure(projectRoot, card);
-    } catch (err) { console.warn('appendFailure failed:', err.message); }
+    await appendFailureCard(projectRoot, state, { type: 'quality_gate_failed', message: 'skill quality gate failed', data: { failed_gates: failedSkillGates } });
     return;
   }
   // S3 fact-check 门禁：skill checks 之后、成功路径之前；不阻塞主流程
@@ -534,23 +500,20 @@ async function reviseChapter(projectRoot, project, state, runtime, options = {})
   const gate = runWordCountGate(draft, project.min_words_per_chapter);
   const segmentNo = budgetedState.current_segment_no + 1;
   const qualityGateFailures = budgetedState.last_quality_gate_results?.filter((result) => result.status === "failed") ?? [];
-  const response = await requestChapterToolCall(projectRoot, project, budgetedState, runtime, {
+  const response = await runWritingAgentLoop(projectRoot, project, budgetedState, runtime, {
     kind: gate.status === "failed" ? "revision_shortfall" : "revision_quality_gate",
     project_id: project.project_id,
     chapter_no: budgetedState.current_chapter_no,
     segment_no: segmentNo,
     shortfall: Math.max(gate.shortfall ?? 0, 300),
     quality_gate_failures: qualityGateFailures,
-    signal: options.signal
-  });
-  const result = await executeToolCall(projectRoot, project, budgetedState, response.toolCall, {
-    expectedChapterNo: budgetedState.current_chapter_no,
-    expectedSegmentNo: segmentNo
+    signal: options.signal,
+    allowed_tools: REVISING_ALLOWED_TOOLS
   });
   const latestState = await loadState(projectRoot);
   const next = setStage({ ...latestState, current_segment_no: segmentNo }, "reviewing");
   await saveState(projectRoot, next);
-  await writeCheckpoint(projectRoot, checkpointPayload(project, state, next, [response.toolCall], [result], null, checkpointModelExtras(response.modelCall)));
+  await writeCheckpoint(projectRoot, checkpointPayload(project, state, next, [response.toolCall], [response.result], null, checkpointModelExtras(response.modelCall)));
 }
 
 async function finalizeChapter(projectRoot, project, state, runtime) {
@@ -829,18 +792,7 @@ export async function applyFactCheckHardFail(projectRoot, project, state, confli
     data: gate
   });
   await writeCheckpoint(projectRoot, checkpointPayload(project, state, next));
-  try {
-    const fresh = await loadState(projectRoot).catch(() => state);
-    const card = deriveFailureCard({
-      id: `flr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      type: "quality_gate_failed",
-      chapter_no: state.current_chapter_no,
-      message: "fact-check gate failed",
-      ts: new Date().toISOString(),
-      data: gate
-    }, fresh);
-    appendFailure(projectRoot, card);
-  } catch (err) { console.warn("appendFailure failed:", err.message); }
+  await appendFailureCard(projectRoot, state, { type: "quality_gate_failed", message: "fact-check gate failed", data: gate });
 }
 
 async function completeChapter(projectRoot, project, state, execution) {
@@ -1128,6 +1080,11 @@ async function compileChapterPrompt(projectRoot, project, state, request, runtim
           quality_gate_failures: request.quality_gate_failures,
           correction_attempt: request.correction_attempt,
           validation_feedback: request.validation_feedback,
+          allowed_tools: request.allowed_tools ?? ["append_chapter_segment"],
+          agent_loop_feedback: request.agent_loop_feedback ?? null,
+          agent_loop_instruction: (request.allowed_tools?.length ?? 0) > 1
+            ? "写作时你可以先调用 read 类工具（list_chapters 看全局进度、read_chapter 读具体章节、read_continuity 查设定档案、read_outline 查大纲、get_status 看当前状态）查询前文与设定，也可以用 edit_chapter 修改本章已写部分。当前阶段还允许 update_continuity/update_outline 时，可修订设定或大纲。准备就绪后，必须调用 append_chapter_segment 提交本段新正文。一次只调用一个工具，工具结果会回给你。"
+            : null,
           segment_continuity_required: request.segment_no > 1,
           chapter_continuity_required: request.chapter_no > 1,
           forbidden_reboot_patterns: [
@@ -1271,77 +1228,300 @@ function checkpointModelExtras(modelCall) {
   };
 }
 
-async function requestChapterToolCall(projectRoot, project, state, runtime, request) {
+// =============== 写作 agent 循环（调整点 1：软化管道） ===============
+// drafting/revising 阶段不再只让模型填一段正文，而是允许模型连续调用 read/edit/update 类工具
+// 查设定、改前文、修设定，最后以 append_chapter_segment 提交本段正文。
+// 保留旧管道兜底：连续 3 次“未成功提交”（纯文本 / 校验失败 / 非白名单工具）-> model_output_invalid；
+// 总轮数达上限仍没提交 -> agent_loop_exhausted。
+const WRITING_AGENT_MAX_ROUNDS = 8;
+const WRITING_AGENT_COMMIT_FAILURES = 3;
+
+const DRAFTING_ALLOWED_TOOLS = [
+  "get_status",
+  "list_chapters",
+  "read_chapter",
+  "read_continuity",
+  "read_outline",
+  "edit_chapter",
+  "append_chapter_segment"
+];
+
+const REVISING_ALLOWED_TOOLS = [
+  "get_status",
+  "list_chapters",
+  "read_chapter",
+  "read_continuity",
+  "read_outline",
+  "edit_chapter",
+  "update_continuity",
+  "update_outline",
+  "append_chapter_segment"
+];
+
+function buildWritingRegistry() {
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  registerWriteTools(registry);
+  return registry;
+}
+
+function summarizeToolResult(value) {
+  const json = typeof value === "string" ? value : JSON.stringify(value ?? null);
+  return json.length > 500 ? `${json.slice(0, 500)}…` : json;
+}
+
+async function failWritingAgentLoop(projectRoot, project, state, reason, lastValidation, lastModelCall, allowedTools) {
+  await blockProject(projectRoot, project, state, reason, {
+    last_validation: lastValidation,
+    last_model_call: lastModelCall,
+    allowed_tools: allowedTools
+  }, { skipFailureCard: true });
+  await appendFailureCard(projectRoot, state, {
+    type: "tool_call_rejected",
+    message: lastValidation?.message ?? reason,
+    data: { tool: lastModelCall?.output?.tool ?? null, code: reason }
+  });
+}
+
+// 写作 agent 循环：模型每轮可调一个白名单工具；非 append_chapter_segment 的工具结果作为
+// agent_loop_feedback 喂回下一轮 prompt。append_chapter_segment 校验通过即执行并退出循环。
+async function runWritingAgentLoop(projectRoot, project, state, runtime, request) {
+  const allowedTools = request.allowed_tools ?? ["append_chapter_segment"];
+  const registry = buildWritingRegistry();
+  let agentLoopFeedback = null;
   let lastValidation = null;
   let lastModelCall = null;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
+  let commitFailures = 0;
+
+  for (let attempt = 1; attempt <= WRITING_AGENT_MAX_ROUNDS; attempt += 1) {
     throwIfAborted(runtime.signal);
     await consumeModelCallBudget(projectRoot, project, state, {
       request_kind: request.kind,
-      attempt
+      attempt,
+      agent_loop: true
     });
+
     const modelCall = await runModelGatewayCall(projectRoot, project, state, runtime, {
       ...request,
       correction_attempt: attempt > 1,
       validation_feedback: lastValidation,
+      agent_loop_feedback: agentLoopFeedback,
+      allowed_tools: allowedTools,
       attempt
     });
     lastModelCall = modelCall;
     const output = modelCall.output;
-    const validation = assertToolCallForChapter(output, {
-      project_id: project.project_id,
-      chapter_no: state.current_chapter_no,
-      segment_no: request.segment_no,
-      allowedTools: ["append_chapter_segment"]
-    });
-    if (validation.ok) {
+
+    // 情况 A：模型没调工具（纯文本），对应旧 invalid_output_channel
+    if (output.type !== "tool_call") {
+      const validation = {
+        ok: false,
+        code: "invalid_output_channel",
+        message: "Chapter body must be written through a tool_call, not delivered in chat."
+      };
+      lastValidation = validation;
+      commitFailures += 1;
+      agentLoopFeedback = {
+        status: "no_tool_call",
+        message: "你没有调用工具。写作正文必须通过 append_chapter_segment 提交，请重新调用工具。"
+      };
       await appendEvent(projectRoot, {
-        type: "tool_call_requested",
+        type: "tool_call_rejected",
         project_id: project.project_id,
         chapter_no: state.current_chapter_no,
         stage: state.current_stage,
-        message: "model requested a file-writing tool",
-        data: { tool: output.tool, attempt }
+        severity: "warn",
+        message: validation.message,
+        data: { code: validation.code, attempt, output_type: output?.type ?? null }
       });
-      return { toolCall: output, modelCall };
+      if (commitFailures >= WRITING_AGENT_COMMIT_FAILURES) {
+        await failWritingAgentLoop(projectRoot, project, state, "model_output_invalid", lastValidation, lastModelCall, allowedTools);
+        throw new ProjectBlockedError("model_output_invalid");
+      }
+      continue;
     }
-    lastValidation = validation;
-    await appendEvent(projectRoot, {
-      type: "quality_gate_failed",
-      project_id: project.project_id,
-      chapter_no: state.current_chapter_no,
-      stage: state.current_stage,
-      severity: "warn",
-      message: validation.message,
-      data: { code: validation.code, attempt, output_type: output?.type ?? null }
+
+    // 情况 B：工具不在白名单
+    if (!allowedTools.includes(output.tool)) {
+      const validation = {
+        ok: false,
+        code: "unsupported_tool",
+        message: `Unsupported tool for chapter writing: ${output.tool ?? "missing"}`
+      };
+      lastValidation = validation;
+      commitFailures += 1;
+      agentLoopFeedback = {
+        status: "tool_not_allowed",
+        tool: output.tool,
+        message: `工具 ${output.tool} 不在当前阶段允许列表内。允许的工具：${allowedTools.join(", ")}。`
+      };
+      await appendEvent(projectRoot, {
+        type: "tool_call_rejected",
+        project_id: project.project_id,
+        chapter_no: state.current_chapter_no,
+        stage: state.current_stage,
+        severity: "warn",
+        message: validation.message,
+        data: { code: validation.code, attempt, tool: output.tool }
+      });
+      if (commitFailures >= WRITING_AGENT_COMMIT_FAILURES) {
+        await failWritingAgentLoop(projectRoot, project, state, "model_output_invalid", lastValidation, lastModelCall, allowedTools);
+        throw new ProjectBlockedError("model_output_invalid");
+      }
+      continue;
+    }
+
+    // 情况 C：append_chapter_segment —— 提交动作，校验通过即执行并退出
+    if (output.tool === "append_chapter_segment") {
+      const validation = assertToolCallForChapter(output, {
+        project_id: project.project_id,
+        chapter_no: state.current_chapter_no,
+        segment_no: request.segment_no,
+        allowedTools: ["append_chapter_segment"]
+      });
+      if (validation.ok) {
+        await appendEvent(projectRoot, {
+          type: "tool_call_requested",
+          project_id: project.project_id,
+          chapter_no: state.current_chapter_no,
+          stage: state.current_stage,
+          message: "model requested a file-writing tool",
+          data: { tool: output.tool, attempt }
+        });
+        const result = await executeToolCall(projectRoot, project, state, output, {
+          expectedChapterNo: state.current_chapter_no,
+          expectedSegmentNo: request.segment_no
+        });
+        return { toolCall: output, modelCall: lastModelCall, result };
+      }
+      // 校验失败：记事件 + feedback，连续 3 次则 block
+      lastValidation = validation;
+      commitFailures += 1;
+      agentLoopFeedback = {
+        status: "validation_failed",
+        tool: output.tool,
+        message: validation.message
+      };
+      await appendEvent(projectRoot, {
+        type: "quality_gate_failed",
+        project_id: project.project_id,
+        chapter_no: state.current_chapter_no,
+        stage: state.current_stage,
+        severity: "warn",
+        message: validation.message,
+        data: { code: validation.code, attempt, output_type: output?.type ?? null }
+      });
+      await appendEvent(projectRoot, {
+        type: "tool_call_rejected",
+        project_id: project.project_id,
+        chapter_no: state.current_chapter_no,
+        stage: state.current_stage,
+        severity: "warn",
+        message: validation.message,
+        data: { code: validation.code, attempt, output_type: output?.type ?? null }
+      });
+      if (commitFailures >= WRITING_AGENT_COMMIT_FAILURES) {
+        await failWritingAgentLoop(projectRoot, project, state, "model_output_invalid", lastValidation, lastModelCall, allowedTools);
+        throw new ProjectBlockedError("model_output_invalid");
+      }
+      continue;
+    }
+
+    // 情况 D：白名单内的 read/edit/update 工具 —— 通过 registry 执行，结果喂回模型
+    const tool = registry.get(output.tool);
+    if (!tool) {
+      agentLoopFeedback = {
+        status: "unknown_tool",
+        tool: output.tool,
+        message: `工具 ${output.tool} 未注册。`
+      };
+      continue;
+    }
+
+    const permission = checkToolPermission(tool, project.tool_permissions ?? {}, {
+      archived: Boolean(project.archived_at)
     });
-    await appendEvent(projectRoot, {
-      type: "tool_call_rejected",
-      project_id: project.project_id,
-      chapter_no: state.current_chapter_no,
-      stage: state.current_stage,
-      severity: "warn",
-      message: validation.message,
-      data: { code: validation.code, attempt, output_type: output?.type ?? null }
-    });
+    if (!permission.allowed) {
+      agentLoopFeedback = {
+        status: "permission_denied",
+        tool: output.tool,
+        message: permission.message
+      };
+      await appendEvent(projectRoot, {
+        type: "tool_call_rejected",
+        project_id: project.project_id,
+        chapter_no: state.current_chapter_no,
+        stage: state.current_stage,
+        severity: "warn",
+        message: permission.message,
+        data: { tool: output.tool, reason: permission.message }
+      });
+      continue;
+    }
+
+    const toolStartMs = Date.now();
+    try {
+      // 写作引擎自己 edit 当前章是预期行为：传空 runJobs 让 edit_chapter 跳过 chapter_busy 检查。
+      const toolCtx = {
+        projectRoot,
+        project,
+        server: { runJobs: new Map() }
+      };
+      const result = await tool.run(output.input ?? {}, toolCtx);
+      commitFailures = 0; // 模型在干活，重置提交失败计数
+      const summary = summarizeToolResult(result);
+      agentLoopFeedback = {
+        status: "tool_result",
+        tool: output.tool,
+        result_summary: summary
+      };
+      await appendEvent(projectRoot, {
+        type: "agent_loop_tool_executed",
+        project_id: project.project_id,
+        chapter_no: state.current_chapter_no,
+        stage: state.current_stage,
+        message: `agent loop tool ${output.tool}: ok`,
+        data: { tool: output.tool, attempt, duration_ms: Date.now() - toolStartMs, result_summary: summary }
+      });
+    } catch (error) {
+      agentLoopFeedback = {
+        status: "tool_error",
+        tool: output.tool,
+        error: error.message
+      };
+      await appendEvent(projectRoot, {
+        type: "agent_loop_tool_failed",
+        project_id: project.project_id,
+        chapter_no: state.current_chapter_no,
+        stage: state.current_stage,
+        severity: "warn",
+        message: `agent loop tool ${output.tool} failed: ${error.message}`,
+        data: { tool: output.tool, attempt, error: error.code ?? error.message, duration_ms: Date.now() - toolStartMs }
+      });
+    }
   }
-  await blockProject(projectRoot, project, state, "model_output_invalid", {
-    last_validation: lastValidation,
-    last_model_call: lastModelCall
-  }, { skipFailureCard: true });
+
+  // 总轮数达上限仍没提交 append_chapter_segment
+  await failWritingAgentLoop(projectRoot, project, state, "agent_loop_exhausted", lastValidation, lastModelCall, allowedTools);
+  throw new ProjectBlockedError("agent_loop_exhausted");
+}
+
+// 统一的故障卡落账 helper：消除 reviewChapter / executeToolCall / blockProject 等处的重复 try/catch。
+async function appendFailureCard(projectRoot, state, { type, message, data }) {
   try {
     const fresh = await loadState(projectRoot).catch(() => state);
     const card = deriveFailureCard({
-      id: `flr_${Date.now()}_${Math.random().toString(36).slice(2,8)}`,
-      type: 'tool_call_rejected',
+      id: `flr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      type,
       chapter_no: state.current_chapter_no,
-      message: lastValidation?.message ?? 'invalid arguments',
+      message,
       ts: new Date().toISOString(),
-      data: { tool: lastModelCall?.output?.tool ?? null, code: lastValidation?.code }
+      data
     }, fresh);
     appendFailure(projectRoot, card);
-  } catch (err) { console.warn('appendFailure failed:', err.message); }
-  throw new ProjectBlockedError("model_output_invalid");
+  } catch (err) {
+    console.warn("appendFailure failed:", err.message);
+  }
 }
 
 async function executeToolCall(projectRoot, project, state, toolCall, options) {
@@ -1406,18 +1586,7 @@ async function executeToolCall(projectRoot, project, state, toolCall, options) {
       await blockProject(projectRoot, project, state, error.code, {
         message: error.message
       }, { skipFailureCard: true });
-      try {
-        const fresh = await loadState(projectRoot).catch(() => state);
-        const card = deriveFailureCard({
-          id: `flr_${Date.now()}_${Math.random().toString(36).slice(2,8)}`,
-          type: 'tool_call_rejected',
-          chapter_no: state.current_chapter_no,
-          message: error.message,
-          ts: new Date().toISOString(),
-          data: { tool: error.tool, code: error.code }
-        }, fresh);
-        appendFailure(projectRoot, card);
-      } catch (err) { console.warn('appendFailure failed:', err.message); }
+      await appendFailureCard(projectRoot, state, { type: 'tool_call_rejected', message: error.message, data: { tool: error.tool, code: error.code } });
       throw new ProjectBlockedError(error.code);
     }
     throw error;
@@ -1551,18 +1720,7 @@ async function blockProject(projectRoot, project, state, reason, data = {}, opts
     data
   }));
   if (!opts.skipFailureCard) {
-    try {
-      const fresh = await loadState(projectRoot).catch(() => state);
-      const card = deriveFailureCard({
-        id: `flr_${Date.now()}_${Math.random().toString(36).slice(2,8)}`,
-        type: 'project_blocked',
-        chapter_no: current.current_chapter_no,
-        message: reason,
-        ts: new Date().toISOString(),
-        data
-      }, fresh);
-      appendFailure(projectRoot, card);
-    } catch (err) { console.warn('appendFailure failed:', err.message); }
+    await appendFailureCard(projectRoot, current, { type: 'project_blocked', message: reason, data });
   }
   return next;
 }
