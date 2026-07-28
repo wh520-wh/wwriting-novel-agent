@@ -1174,3 +1174,24 @@ test("writing agent loop: drafting 阶段模型先调 read_continuity 查设定�
   assert.ok(modelClient.prompts.some((p) => p.includes("agent_loop_feedback") && p.includes("read_continuity")));
   assert.equal(modelClient.calls, 2);
 });
+
+test("buildRelevantFacts: 空 continuity 返回空字符串", async () => {
+  const { buildRelevantFacts } = await import("../src/core/chapter-memory.mjs");
+  assert.equal(buildRelevantFacts({ facts: [], timeline: [], characters: [] }, 5), "");
+  assert.equal(buildRelevantFacts(null, 5), "");
+});
+
+test("buildRelevantFacts: 近期 facts 优先，超 maxFacts 截断更早的", async () => {
+  const { buildRelevantFacts } = await import("../src/core/chapter-memory.mjs");
+  const facts = Array.from({ length: 50 }, (_, i) => ({
+    entity: `实体${i + 1}`,
+    attribute: "属性",
+    value: `值${i + 1}`,
+    chapter_no: i + 1
+  }));
+  const result = buildRelevantFacts({ facts, timeline: [], characters: [] }, 60, { maxFacts: 40 });
+  assert.ok(result.includes("精选近期"), "应有检索式标题");
+  assert.ok(result.includes("实体50"), "最新章的 fact 应在");
+  assert.ok(result.includes("实体11"), "第 40 条 fact 应在");
+  assert.ok(!result.includes("实体10"), "超出 maxFacts 的更早 fact 应被截断");
+});

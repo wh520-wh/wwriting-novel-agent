@@ -14,7 +14,7 @@ import { checkTimeline, summarizeTimelineViolations, describeStoryClock } from "
 import { collectSkillPromptHooks, loadEnabledSkills, runPostProcessHooks, runSkillChecks } from "./skill-runtime.mjs";
 import { ensureDefaultToolHooks, runAfterToolUse, runBeforeToolUse } from "./tool-hooks.mjs";
 import { appendChapterSegment, chapterFileName, finalizeChapterFile, readDraft, ToolValidationError } from "./tool-runtime.mjs";
-import { buildContinuityPromptContext, recordChapterMemory } from "./chapter-memory.mjs";
+import { buildContinuityPromptContext, buildRelevantFacts, recordChapterMemory } from "./chapter-memory.mjs";
 import { loadOutputStyles } from "./output-style-loader.mjs";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -1013,7 +1013,7 @@ async function compileChapterPrompt(projectRoot, project, state, request, runtim
   const configuredVersion = project.prompt_template_versions?.drafting ?? "v1";
   const templateVersion = configuredVersion.startsWith("drafting.") ? configuredVersion : `drafting.${configuredVersion}`;
   const compiler = new PromptCompiler({ templateVersion });
-  const [promptTemplate, bookSummary, draft, latestUserFeedback, planningSkillPrompts, stageSkillPrompts, continuityContext, continuityMd] = await Promise.all([
+  const [promptTemplate, bookSummary, draft, latestUserFeedback, planningSkillPrompts, stageSkillPrompts, continuityContext, continuity] = await Promise.all([
     readOptionalProjectText(projectRoot, "prompts", `${templateVersion}.md`),
     readOptionalProjectText(projectRoot, "memory", "book_summary.md"),
     readDraft(projectRoot, project, state.current_chapter_no),
@@ -1029,7 +1029,7 @@ async function compileChapterPrompt(projectRoot, project, state, request, runtim
       skills: runtime?.stepSkills
     }),
     buildContinuityPromptContext(projectRoot, state.current_chapter_no),
-    readOptionalProjectText(projectRoot, "memory", "continuity.md")
+    loadContinuity(projectRoot)
   ]);
   const skillInstructions = [planningSkillPrompts.content, stageSkillPrompts.content].filter(Boolean).join("\n\n");
   const styleRules = [
@@ -1060,7 +1060,7 @@ async function compileChapterPrompt(projectRoot, project, state, request, runtim
       skill_instructions: skillInstructions
     },
     dynamicBlocks: {
-      project_memory: [bookSummary, continuityMd, continuityContext].filter(Boolean).join("\n\n"),
+      project_memory: [bookSummary, buildRelevantFacts(continuity, state.current_chapter_no), continuityContext].filter(Boolean).join("\n\n"),
       chapter_plan: [`Chapter ${state.current_chapter_no} of ${project.target_chapters}.`, chapterContinuityRule].join("\n"),
       current_task: JSON.stringify(
         {

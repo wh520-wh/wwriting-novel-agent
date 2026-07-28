@@ -64,6 +64,78 @@ export async function buildContinuityPromptContext(projectRoot, currentChapterNo
   return lines.join("\n");
 }
 
+// 检索式记忆注入：只取最近 N 章的 facts + 角色状态 + 近期 timeline，
+// 避免全量 continuity.md 随章节增长膨胀挤占上下文。模型需要更多细节时调 read_continuity。
+export function buildRelevantFacts(continuity, currentChapterNo, options = {}) {
+  const recentWindow = options.recentWindow ?? 5;
+  const maxFacts = options.maxFacts ?? 40;
+  const maxCharacters = options.maxCharacters ?? 12;
+  const maxTimeline = options.maxTimeline ?? 8;
+  const chapterNo = Number(currentChapterNo);
+  const lowerBound = chapterNo - recentWindow;
+
+  const recentFacts = (continuity?.facts ?? [])
+    .filter((f) => {
+      const fNo = Number(f.chapter_no);
+      return fNo >= lowerBound && fNo < chapterNo;
+    })
+    .sort((a, b) => Number(a.chapter_no) - Number(b.chapter_no));
+
+  let selected = recentFacts;
+  if (selected.length < maxFacts) {
+    const older = (continuity?.facts ?? [])
+      .filter((f) => Number(f.chapter_no) < lowerBound)
+      .sort((a, b) => Number(b.chapter_no) - Number(a.chapter_no));
+    selected = [...selected, ...older].slice(0, maxFacts);
+  } else {
+    selected = recentFacts.slice(-maxFacts);
+  }
+
+  const characters = (continuity?.characters ?? []).slice(0, maxCharacters);
+  const recentTimeline = (continuity?.timeline ?? [])
+    .filter((t) => Number(t.chapter_no) >= lowerBound)
+    .slice(-maxTimeline);
+
+  if (selected.length === 0 && characters.length === 0 && recentTimeline.length === 0) {
+    return "";
+  }
+
+  const lines = ["## 相关设定（精选近期，更多可用 read_continuity 工具按实体查）"];
+
+  if (selected.length > 0) {
+    lines.push("", "### 关键事实");
+    const byEntity = new Map();
+    for (const f of selected) {
+      if (!byEntity.has(f.entity)) byEntity.set(f.entity, []);
+      byEntity.get(f.entity).push(f);
+    }
+    for (const [entity, facts] of byEntity) {
+      lines.push(`- ${entity}:`);
+      for (const f of facts) {
+        const conflict = f.conflict_with ? ` ⚠${f.conflict_with}` : "";
+        lines.push(`  - ${f.attribute}: ${f.value} (第${f.chapter_no}章)${conflict}`);
+      }
+    }
+  }
+
+  if (characters.length > 0) {
+    lines.push("", "### 角色状态");
+    for (const c of characters) {
+      lines.push(`- ${c.name}（${c.status || "状态未知"}）：${(c.traits ?? []).join("、") || "无记录特征"}`);
+    }
+  }
+
+  if (recentTimeline.length > 0) {
+    lines.push("", "### 近期时间线");
+    for (const t of recentTimeline) {
+      const when = t.story_time_raw || "";
+      lines.push(`- 第${t.chapter_no}章${when ? ` [${when}]` : ""}: ${(t.events ?? []).join("；")}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
 function normalizeMemory(memory) {
   const chapters = Array.isArray(memory?.chapters)
     ? memory.chapters
