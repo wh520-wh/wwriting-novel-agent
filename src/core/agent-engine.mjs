@@ -1020,6 +1020,15 @@ export async function maybeWarnChapterCost(projectRoot, project, state, costSumm
   }
 }
 
+const DEFAULT_FORBIDDEN_PATTERNS = [
+  "普通大学生突然获得神力",
+  "不是梦",
+  "三天了",
+  "你不是唯一一个",
+  "代价",
+  "神性"
+];
+
 async function compileChapterPrompt(projectRoot, project, state, request, runtime) {
   const configuredVersion = project.prompt_template_versions?.drafting ?? "v1";
   const templateVersion = configuredVersion.startsWith("drafting.") ? configuredVersion : `drafting.${configuredVersion}`;
@@ -1098,14 +1107,7 @@ async function compileChapterPrompt(projectRoot, project, state, request, runtim
             : null,
           segment_continuity_required: request.segment_no > 1,
           chapter_continuity_required: request.chapter_no > 1,
-          forbidden_reboot_patterns: [
-            "普通大学生突然获得神力",
-            "不是梦",
-            "三天了",
-            "你不是唯一一个",
-            "代价",
-            "神性"
-          ]
+          forbidden_reboot_patterns: project.forbidden_patterns ?? DEFAULT_FORBIDDEN_PATTERNS
         },
         null,
         2
