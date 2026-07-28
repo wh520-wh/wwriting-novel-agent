@@ -794,12 +794,11 @@ const FC_CONFLICT_REPLY = JSON.stringify({ conflicts: [{
   severity: "high", suggestion: "把十二楼改回六楼", replace_with: "从六楼坠落"
 }] });
 
-test("runFactCheck 有冲突：主动消息 + pending 预填 replace_with + warning 事件，返回 conflicts", async () => {
+test("runFactCheck 有冲突：主动消息 + 自动修复 draft + warning 事件，返回 conflicts", async () => {
   const { projectRoot, project } = await makeFactCheckProject("wwriting-fc1-");
-  const chapterPath = path.join(projectRoot, "chapters", "001.md");
-  await fs.mkdir(path.dirname(chapterPath), { recursive: true });
-  await fs.writeFile(chapterPath, "# 第一章\n\n刘康从十二楼坠落。", "utf8");
-  await upsertChapter(projectRoot, { chapter_no: 1, status: "completed", final_path: chapterPath, actual_words: 10 });
+  const draftPath = path.join(projectRoot, "drafts", "001.draft.md");
+  await fs.mkdir(path.dirname(draftPath), { recursive: true });
+  await fs.writeFile(draftPath, "# 第一章\n\n刘康从十二楼坠落。", "utf8");
   const { runFactCheck } = await import("../src/core/agent-engine.mjs");
   const draft = "刘康从十二楼坠落。";
   const out = await runFactCheck(projectRoot, project, { current_chapter_no: 1 }, {
@@ -808,14 +807,15 @@ test("runFactCheck 有冲突：主动消息 + pending 预填 replace_with + warn
   assert.equal(out.conflicts.length, 1);
   const events = await readEvents(projectRoot);
   assert.ok(events.some((e) => e.type === "quality_gate_warning" && e.data?.conflicts?.length === 1));
+  assert.ok(events.some((e) => e.type === "fact_check_auto_fixed" && e.data?.replace_with === "从六楼坠落"), "应自动修复矛盾");
   const history = await readChatHist(projectRoot);
   const proactive = history.find((m) => m.proactive === "fact_check");
   assert.ok(proactive, "应有 agent 主动消息");
   assert.match(proactive.content, /十二楼/u);
-  const pending = await loadChatPending(projectRoot);
-  assert.ok(pending, "应预填 pending_action");
-  assert.equal(pending.tool, "edit_chapter");
-  assert.equal(pending.args.replace, "从六楼坠落"); // replace_with，而非 suggestion 说明文字
+  const fixed = await fs.readFile(draftPath, "utf8");
+  assert.ok(fixed.includes("从六楼坠落"), "draft 应被修复");
+  assert.ok(!fixed.includes("从十二楼坠落"), "矛盾原文应被替换");
+  assert.equal(await loadChatPending(projectRoot), null, "软模式不再生成 pending");
 });
 
 test("runFactCheck replace_with 为空：只发消息，不落 pending", async () => {
