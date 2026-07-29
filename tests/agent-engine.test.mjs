@@ -754,7 +754,7 @@ test("mock provider 跳过提取但推进水位", async () => {
   assert.ok(events.some((e) => e.type === "memory_extract_skipped"));
 });
 
-test("提取失败软跳过：事件 memory_extract_failed 且水位推进", async () => {
+test("提取失败软跳过：事件 memory_extract_failed 且不推进水位（可回补）", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-memfail-"));
   const { projectRoot } = await createProject(root, {
     slug: "memfail", title: "失败测试", story_seed: "种子",
@@ -769,7 +769,9 @@ test("提取失败软跳过：事件 memory_extract_failed 且水位推进", asy
   });
   const events = await readEvents(projectRoot);
   assert.ok(events.some((e) => e.type === "memory_extract_failed"));
-  assert.equal((await loadContinuityState(projectRoot)).last_extracted_chapter, 1);
+  const state = await loadContinuityState(projectRoot);
+  assert.equal(state.last_extracted_chapter, 0);
+  assert.ok(!state.extracted_chapters.includes(1));
 });
 
 async function makeFactCheckProject(prefix) {
@@ -832,6 +834,31 @@ test("runFactCheck replace_with 为空：只发消息，不落 pending", async (
   assert.equal(await loadChatPending(projectRoot), null, "不应预填 pending");
   const history = await readChatHist(projectRoot);
   assert.ok(history.some((m) => m.proactive === "fact_check"), "主动消息仍要发");
+});
+
+test("runFactCheck 引文超 200 字被截断：跳过自动修复，避免正文乱码", async () => {
+  const { projectRoot, project } = await makeFactCheckProject("wwriting-fc-trunc-");
+  const draftPath = path.join(projectRoot, "drafts", "001.draft.md");
+  await fs.mkdir(path.dirname(draftPath), { recursive: true });
+  const longQuote = "刘康从十二楼坠落".repeat(26); // 208 字 > 200
+  const draftBody = `# 第一章\n\n${longQuote}。`;
+  await fs.writeFile(draftPath, draftBody, "utf8");
+  const reply = JSON.stringify({ conflicts: [{
+    draft_quote: longQuote, conflicts_with: "坠楼楼层: 六楼", prior_chapter: 1,
+    severity: "high", suggestion: "把十二楼改回六楼", replace_with: "替换文本"
+  }] });
+  const { runFactCheck } = await import("../src/core/agent-engine.mjs");
+  const out = await runFactCheck(projectRoot, project, { current_chapter_no: 1 }, {
+    modelClient: { generate: async () => ({ text: reply, usageReport: {} }) }
+  }, draftBody);
+  assert.equal(out.conflicts.length, 1);
+  assert.equal(out.conflicts[0].draft_quote_truncated, true);
+  const events = await readEvents(projectRoot);
+  assert.ok(!events.some((e) => e.type === "fact_check_auto_fixed"), "截断时不应自动修复");
+  assert.ok(events.some((e) => e.type === "fact_check_auto_fix_skipped"), "应记跳过事件");
+  const fixed = await fs.readFile(draftPath, "utf8");
+  assert.ok(fixed.includes(longQuote), "正文应原样保留，不被截断引文替换");
+  assert.ok(!fixed.includes("替换文本"), "replace_with 不应写入正文");
 });
 
 test("runFactCheck mock provider 跳过并记事件，返回 null", async () => {

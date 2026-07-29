@@ -22,8 +22,9 @@ if ((project.active_model?.provider ?? "mock") === "mock") {
 }
 const index = await loadChapterIndex(projectRoot);
 const watermark = await loadContinuityState(projectRoot);
+const alreadyExtracted = new Set(watermark.extracted_chapters ?? []);
 const targets = index.chapters
-  .filter((c) => c.status === "completed" && c.chapter_no >= fromChapter && c.chapter_no > watermark.last_extracted_chapter)
+  .filter((c) => c.status === "completed" && c.chapter_no >= fromChapter && !alreadyExtracted.has(c.chapter_no))
   .sort((a, b) => a.chapter_no - b.chapter_no);
 
 console.log(JSON.stringify({ projectRoot, chapters: targets.map((c) => c.chapter_no), estimatedCalls: targets.length, dryRun }));

@@ -4,6 +4,7 @@ import { appendEvent } from "./event-log.mjs";
 import { countEffectiveWords } from "./word-count.mjs";
 import { throwIfAborted } from "./cancellation.mjs";
 import { ensureDir, pathExists, safeJoin, sha256, writeFileAtomic } from "./fs-utils.mjs";
+import { upsertChapter } from "./project-store.mjs";
 
 export class ToolValidationError extends Error {
   constructor(code, message) {
@@ -55,6 +56,9 @@ export async function appendChapterSegment(projectRoot, project, input, options 
   const draftPath = safeJoin(projectRoot, "drafts", chapterFileName(chapterNo, `draft.${project.output_format}`));
   await ensureDir(path.dirname(draftPath));
   const current = (await pathExists(draftPath)) ? await fs.readFile(draftPath, "utf8") : `# Chapter ${String(chapterNo).padStart(3, "0")}\n`;
+  // 把 draft_path 落进章节索引：写作 agent 循环里 edit_chapter/read_chapter/search_text
+  // 都靠索引里的 final_path ?? draft_path 解析文件，否则草稿阶段会误报 chapter_not_found。
+  await upsertChapter(projectRoot, { chapter_no: chapterNo, draft_path: draftPath });
   const marker = `<!-- segment:${segmentNo} `;
   if (current.includes(marker)) {
     const actualWords = countEffectiveWords(current);

@@ -164,10 +164,27 @@ test("edit_chapter 唯一命中才执行，并更新 index 与 checkpoint", asyn
   assert.ok(checkpoints.length >= 1);
 });
 
+test("appendChapterSegment 后 edit_chapter 能解析到草稿中的当前章（修复 chapter_not_found）", async () => {
+  const projectRoot = await makeProject();
+  const project = await (await import("../src/core/project-store.mjs")).loadProject(projectRoot);
+  const { appendChapterSegment } = await import("../src/core/tool-runtime.mjs");
+  await appendChapterSegment(projectRoot, project, {
+    project_id: project.project_id, chapter_no: 1, segment_no: 1, content: "刘康从六楼坠落。沈泽在食堂。"
+  });
+  const index = await loadChapterIndex(projectRoot);
+  const entry = index.chapters.find((c) => c.chapter_no === 1);
+  assert.ok(entry.draft_path, "草稿写入后索引应有 draft_path");
+  const registry = createToolRegistry();
+  registerWriteTools(registry);
+  const out = await executeTool(registry, "edit_chapter", { chapter_no: 1, find: "六楼", replace: "十二楼", reason: "统一楼层" }, { projectRoot, project });
+  assert.equal(out.ok, true, "草稿阶段 edit 当前章不应再报 chapter_not_found");
+  const draft = await fs.readFile(entry.draft_path, "utf8");
+  assert.match(draft, /十二楼/u);
+});
+
 test("previewEditChapter 生成 before/after 摘录", async () => {
   const projectRoot = await makeProjectWithChapter();
-  const preview = await previewEditChapter(projectRoot, { chapter_no: 1, find: "六楼", replace: "十二楼" });
-  assert.equal(preview.ok, true);
+  const preview = await previewEditChapter(projectRoot, { chapter_no: 1, find: "六楼", replace: "十二楼" });  assert.equal(preview.ok, true);
   assert.match(preview.before, /六楼/u);
   assert.match(preview.after, /十二楼/u);
 });
@@ -196,6 +213,11 @@ test("update_continuity 修改设定档案", async () => {
   assert.equal(out.ok, true);
   const continuity = await (await import("../src/core/continuity-store.mjs")).loadContinuity(projectRoot);
   assert.equal(continuity.facts[0].value, "六楼");
+  // 渲染不应再出现字面量 "(第null章)"
+  const { renderContinuityMarkdown } = await import("../src/core/continuity-store.mjs");
+  const md = renderContinuityMarkdown(continuity);
+  assert.doesNotMatch(md, /第null章/u);
+  assert.match(md, /未标章号|第1章/u);
 });
 
 test("update_settings 走 settings-runtime 校验（裸密钥被拒）", async () => {

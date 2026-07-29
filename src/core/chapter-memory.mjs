@@ -1,4 +1,5 @@
 import { readJson, safeJoin, writeJsonAtomic } from "./fs-utils.mjs";
+import { formatChapterRef } from "./continuity-store.mjs";
 
 export const CHAPTER_MEMORY_SCHEMA_VERSION = 1;
 export const MAX_CONTEXT_CHAPTERS = 2;
@@ -113,7 +114,7 @@ export function buildRelevantFacts(continuity, currentChapterNo, options = {}) {
       lines.push(`- ${entity}:`);
       for (const f of facts) {
         const conflict = f.conflict_with ? ` ⚠${f.conflict_with}` : "";
-        lines.push(`  - ${f.attribute}: ${f.value} (第${f.chapter_no}章)${conflict}`);
+        lines.push(`  - ${f.attribute}: ${f.value} (${formatChapterRef(f.chapter_no)})${conflict}`);
       }
     }
   }

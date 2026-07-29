@@ -22,7 +22,7 @@ import { appendFailure } from "./failures-store.mjs";
 import { deriveFailureCard } from "./derive-failure-card.mjs";
 import { emit, CORE_EVENTS } from "./event-bus.mjs";
 import { buildMemoryExtractionMessages, parseMemoryExtraction } from "./memory-extractor.mjs";
-import { loadContinuity, mergeExtraction, saveContinuity, loadContinuityState, saveContinuityState } from "./continuity-store.mjs";
+import { loadContinuity, mergeExtraction, saveContinuity, loadContinuityState, saveContinuityState, formatChapterRef } from "./continuity-store.mjs";
 import { appendChatMessage, loadPendingAction, savePendingAction } from "./chat/chat-store.mjs";
 import { createToolRegistry, checkToolPermission } from "./chat/tool-registry.mjs";
 import { registerReadTools } from "./chat/tools-read.mjs";
@@ -253,13 +253,16 @@ export async function runProject(projectRoot, options = {}) {
   }
 }
 
+const PAUSE_COMMANDS = new Set(["pause-here", "manual-review-handoff"]);
+
 async function findFreshPauseRequest(projectRoot, sinceMs) {
-  const recentEvents = await readEvents(projectRoot, { limit: 5 });
+  // 一个 drafting/revise 步骤会产生 6-7 条事件，limit 太小会把 pause 事件挤出窗口而漏掉。
+  const recentEvents = await readEvents(projectRoot, { limit: 30 });
   return (
     recentEvents.find(
       (event) =>
         event.type === "failure_resolved" &&
-        event.message === "pause-here" &&
+        PAUSE_COMMANDS.has(event.message) &&
         Date.parse(event.timestamp ?? "") >= sinceMs
     ) ?? null
   );
@@ -585,10 +588,13 @@ export async function extractChapterMemory(projectRoot, project, state, runtime)
   const chapterNo = state.current_chapter_no;
   if (project.memory_extraction?.enabled === false) return;
   const watermark = await loadContinuityState(projectRoot);
-  if (watermark.last_extracted_chapter >= chapterNo) return; // 幂等
+  if ((watermark.extracted_chapters ?? []).includes(chapterNo)) return; // 幂等：仅看是否已成功提取过本章
   const provider = project.active_model?.provider ?? "mock";
   if (provider === "mock") {
-    await saveContinuityState(projectRoot, { last_extracted_chapter: chapterNo });
+    await saveContinuityState(projectRoot, {
+      last_extracted_chapter: chapterNo,
+      extracted_chapters: [...(watermark.extracted_chapters ?? []), chapterNo]
+    });
     await appendEvent(projectRoot, {
       type: "memory_extract_skipped", project_id: project.project_id, chapter_no: chapterNo,
       stage: "summarizing", message: "mock provider，跳过记忆提取"
@@ -622,7 +628,10 @@ export async function extractChapterMemory(projectRoot, project, state, runtime)
     const merged = mergeExtraction(continuity, parsed);
     await saveContinuity(projectRoot, merged);
     await writeFileAtomic(safeJoin(projectRoot, "memory", "book_summary.md"), `# 全书摘要\n\n${parsed.summary}\n`);
-    await saveContinuityState(projectRoot, { last_extracted_chapter: chapterNo });
+    await saveContinuityState(projectRoot, {
+      last_extracted_chapter: chapterNo,
+      extracted_chapters: [...(watermark.extracted_chapters ?? []), chapterNo]
+    });
 
     // 故事时钟确定性检查：只报"较晚一方=本章"的冲突（去重 + 标题章号正确）
     const { violations } = checkTimeline(merged.timeline);
@@ -646,18 +655,18 @@ export async function extractChapterMemory(projectRoot, project, state, runtime)
     });
   } catch (error) {
     rethrowIfCancelled(error, runtime.signal);
-    await saveContinuityState(projectRoot, { last_extracted_chapter: chapterNo });
+    // 失败时不推进水位、不入 extracted_chapters：让 audit:rebuild-memory 能识别本章缺失并回补。
     await appendEvent(projectRoot, {
       type: "memory_extract_failed", project_id: project.project_id, chapter_no: chapterNo,
       stage: "summarizing", severity: "warn",
-      message: `记忆提取失败（不影响写作，可用 audit:rebuild-memory 补建）：${error.message}`,
+      message: `记忆提取失败（不影响写作，运行 npm run audit:rebuild-memory 可补建本章）：${error.message}`,
       data: { lost_chapter: chapterNo }
     });
   }
 }
 
 function renderForPrompt(continuity) {
-  const facts = continuity.facts.map((f) => `- ${f.entity}/${f.attribute}: ${f.value} (第${f.chapter_no}章)`).join("\n");
+  const facts = continuity.facts.map((f) => `- ${f.entity}/${f.attribute}: ${f.value} (${formatChapterRef(f.chapter_no)})`).join("\n");
   const chars = continuity.characters.map((c) => `- ${c.name}(${c.status}): ${c.traits.join("、")}`).join("\n");
   return [facts, chars].filter(Boolean).join("\n");
 }
@@ -750,8 +759,9 @@ export async function runFactCheck(projectRoot, project, state, runtime, draft) 
     chapter_no: state.current_chapter_no
   });
 
-  // 软模式：自动修复矛盾（draft_quote 唯一命中且有 replace_with），不等用户确认
-  if (first.replace_with) {
+  // 软模式：自动修复矛盾（draft_quote 唯一命中且有 replace_with），不等用户确认。
+  // draft_quote 被截断（>200 字）时跳过自动修复：用截断后的引文做 indexOf+replace 会留下后半段造成乱码。
+  if (first.replace_with && !first.draft_quote_truncated) {
     const firstIdx = draft.indexOf(first.draft_quote);
     const onlyHit = firstIdx >= 0 && draft.indexOf(first.draft_quote, firstIdx + 1) < 0;
     if (onlyHit) {
@@ -780,6 +790,16 @@ export async function runFactCheck(projectRoot, project, state, runtime, draft) 
         });
       }
     }
+  } else if (first.draft_quote_truncated) {
+    await appendEvent(projectRoot, {
+      type: "fact_check_auto_fix_skipped",
+      project_id: project.project_id,
+      chapter_no: state.current_chapter_no,
+      stage: "reviewing",
+      severity: "info",
+      message: "fact-check 引文过长被截断，跳过自动修复（避免正文乱码），请人工核对",
+      data: { conflicts_with: first.conflicts_with, suggestion: first.suggestion }
+    });
   }
   return { conflicts };
 }
