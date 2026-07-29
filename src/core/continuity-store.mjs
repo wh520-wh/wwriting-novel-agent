@@ -4,6 +4,12 @@ import { normalizeTimeField } from "./memory-extractor.mjs";
 export const CONTINUITY_SCHEMA_VERSION = 2;
 export const MAX_FACTS_PER_ENTITY = 20;
 
+// 章号渲染兜底：chapter_no 为 null（如 chat 修订、模型漏填）时不再输出 "(第null章)"。
+export function formatChapterRef(chapterNo) {
+  const n = Number(chapterNo);
+  return Number.isInteger(n) && n > 0 ? `第${n}章` : "未标章号";
+}
+
 const EMPTY = () => ({ schema_version: CONTINUITY_SCHEMA_VERSION, facts: [], timeline: [], characters: [] });
 
 function migrateTimelineNode(node) {
@@ -41,7 +47,7 @@ export function mergeExtraction(base, extraction) {
     next.facts.push({
       entity: fact.entity, attribute: fact.attribute, value: fact.value,
       chapter_no: fact.chapter_no ?? null, quote: fact.quote ?? "",
-      conflict_with: prior ? `第${prior.chapter_no}章: ${prior.value}` : null
+      conflict_with: prior ? `${formatChapterRef(prior.chapter_no)}: ${prior.value}` : null
     });
     enforceEntityCap(next.facts, fact.entity);
   }
@@ -84,7 +90,7 @@ export function renderContinuityMarkdown(data) {
     lines.push(`### ${entity}`);
     for (const f of facts) {
       const conflict = f.conflict_with ? ` ⚠ 与既有记录冲突（${f.conflict_with}），以人工或门禁裁决为准` : "";
-      lines.push(`- ${f.attribute}: ${f.value} (第${f.chapter_no}章)${conflict}`);
+      lines.push(`- ${f.attribute}: ${f.value} (${formatChapterRef(f.chapter_no)})${conflict}`);
     }
   }
   lines.push("", "## 时间线");
@@ -105,14 +111,29 @@ export function renderContinuityMarkdown(data) {
 
 export async function loadContinuityState(projectRoot) {
   const state = await readJson(safeJoin(projectRoot, "memory", "continuity_state.json"), {
-    schema_version: CONTINUITY_SCHEMA_VERSION, last_extracted_chapter: 0, updated_at: null
+    schema_version: CONTINUITY_SCHEMA_VERSION, last_extracted_chapter: 0, extracted_chapters: [], updated_at: null
   });
-  return { ...state, last_extracted_chapter: Number(state.last_extracted_chapter) || 0 };
+  const extracted = Array.isArray(state.extracted_chapters)
+    ? state.extracted_chapters.map((n) => Number(n)).filter((n) => Number.isInteger(n))
+    : [];
+  return {
+    ...state,
+    last_extracted_chapter: Number(state.last_extracted_chapter) || 0,
+    extracted_chapters: extracted
+  };
 }
 
 export async function saveContinuityState(projectRoot, patch) {
   const current = await loadContinuityState(projectRoot);
-  const next = { ...current, ...patch, schema_version: CONTINUITY_SCHEMA_VERSION, updated_at: new Date().toISOString() };
+  const next = {
+    ...current,
+    ...patch,
+    schema_version: CONTINUITY_SCHEMA_VERSION,
+    updated_at: new Date().toISOString()
+  };
+  if (Array.isArray(next.extracted_chapters)) {
+    next.extracted_chapters = [...new Set(next.extracted_chapters.map((n) => Number(n)).filter((n) => Number.isInteger(n)))].sort((a, b) => a - b);
+  }
   await writeJsonAtomic(safeJoin(projectRoot, "memory", "continuity_state.json"), next);
   return next;
 }

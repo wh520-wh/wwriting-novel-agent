@@ -143,6 +143,8 @@ export function registerWriteTools(registry) {
       note: "备注"
     },
     run: async (args, ctx) => {
+      const state = await loadState(ctx.projectRoot);
+      const chapterNo = Number.isInteger(state.current_chapter_no) ? state.current_chapter_no : null;
       const continuity = await loadContinuity(ctx.projectRoot);
       const merged = mergeExtraction(continuity, {
         facts: [
@@ -150,7 +152,7 @@ export function registerWriteTools(registry) {
             entity: String(args.entity),
             attribute: String(args.attribute),
             value: String(args.value),
-            chapter_no: null,
+            chapter_no: chapterNo,
             quote: String(args.note ?? "chat 修订")
           }
         ],

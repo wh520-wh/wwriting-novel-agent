@@ -47,3 +47,25 @@ test("运行中收到 pause-here 会干净暂停并返回 paused 结果", async 
   const events = await readEvents(projectRoot);
   assert.ok(events.some((e) => e.type === "project_paused"));
 });
+
+test("运行中收到 manual-review-handoff 也会暂停（与 pause-here 同效）", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-pause-handoff-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "project",
+    target_chapters: 3,
+    min_words_per_chapter: 300,
+    target_words_per_chapter: 360
+  });
+  let injected = false;
+  const result = await runProject(projectRoot, {
+    onHeartbeat: async () => {
+      if (!injected) {
+        injected = true;
+        await appendEvent(projectRoot, { type: "failure_resolved", severity: "info", message: "manual-review-handoff", data: { failureId: "handoff" } });
+      }
+    }
+  });
+  assert.equal(result.paused, true);
+  const state = await loadState(projectRoot);
+  assert.equal(state.project_status, "paused");
+});

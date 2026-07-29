@@ -1,4 +1,5 @@
 import { countEffectiveWords } from "./word-count.mjs";
+import { formatChapterRef } from "./continuity-store.mjs";
 
 export function runWordCountGate(content, minWords) {
   const actualWords = countEffectiveWords(content);
@@ -227,7 +228,7 @@ export function buildFactCheckMessages({ chapterNo, draft, facts, timeline, stor
     String(draft ?? ""),
     "",
     "# 既有事实",
-    (facts ?? []).map((f) => `- ${f.entity}/${f.attribute}: ${f.value} (第${f.chapter_no}章)`).join("\n") || "(空)",
+    (facts ?? []).map((f) => `- ${f.entity}/${f.attribute}: ${f.value} (${formatChapterRef(f.chapter_no)})`).join("\n") || "(空)",
     "",
     "# 既有时间线",
     timelineLines,
@@ -251,14 +252,20 @@ export function parseFactCheck(rawText) {
   }
   const conflicts = Array.isArray(data?.conflicts) ? data.conflicts : [];
   const normalized = conflicts
-    .map((c) => ({
-      draft_quote: String(c.draft_quote ?? "").slice(0, 200),
-      conflicts_with: String(c.conflicts_with ?? "").slice(0, 200),
-      prior_chapter: Number(c.prior_chapter) || null,
-      severity: c.severity === "low" ? "low" : "high",
-      suggestion: String(c.suggestion ?? "").slice(0, 400),
-      replace_with: String(c.replace_with ?? "").slice(0, 200)
-    }))
+    .map((c) => {
+      const rawQuote = String(c.draft_quote ?? "");
+      return {
+        draft_quote: rawQuote.slice(0, 200),
+        // 引文超 200 字会被截断；自动修复用截断后的引文做 indexOf+replace 会留下后半段造成乱码，
+        // 调用方据此后退为只报告、不自动改。
+        draft_quote_truncated: rawQuote.length > 200,
+        conflicts_with: String(c.conflicts_with ?? "").slice(0, 200),
+        prior_chapter: Number(c.prior_chapter) || null,
+        severity: c.severity === "low" ? "low" : "high",
+        suggestion: String(c.suggestion ?? "").slice(0, 400),
+        replace_with: String(c.replace_with ?? "").slice(0, 200)
+      };
+    })
     .filter((c) => c.draft_quote && c.conflicts_with);
   return { ok: true, conflicts: normalized };
 }
