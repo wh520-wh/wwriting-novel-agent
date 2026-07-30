@@ -118,6 +118,9 @@ const refs = {
   chapterSuccessReview: document.querySelector("#chapter-success-review"),
   chapterSuccessRead: document.querySelector("#chapter-success-read"),
   chapterSuccessContinue: document.querySelector("#chapter-success-continue"),
+  chapterSuccessFoldHeader: document.querySelector("#chapter-success-fold"),
+  chapterSuccessBody: document.querySelector("#chapter-success-body"),
+  chapterSuccessFoldSummary: document.querySelector("#chapter-success-fold-summary"),
 };
 
 let currentProjectRoot = null;
@@ -440,6 +443,24 @@ if (refs.chapterSuccessContinue) {
     void composer.startCurrentChapter();
   });
 }
+
+// Initialize chapter-success fold
+(function initChapterSuccessFold() {
+  const header = refs.chapterSuccessFoldHeader;
+  const body = refs.chapterSuccessBody;
+  if (!header || !body) return;
+  const foldKey = "wwriting.card.fold.chapter-success";
+  const val = localStorage.getItem(foldKey);
+  const folded = val === null ? true : val === "true"; // completed → folded by default
+  body.hidden = folded;
+  header.classList.toggle("folded", folded);
+  header.addEventListener("click", () => {
+    const nowFolded = !body.hidden;
+    body.hidden = nowFolded;
+    header.classList.toggle("folded", nowFolded);
+    localStorage.setItem(foldKey, String(nowFolded));
+  });
+})();
 
 function renderRailNav() {
   const items = [
@@ -792,6 +813,9 @@ function renderChapterSuccess(data) {
   refs.chapterSuccessContinue.hidden = !completion.continueVisible;
   if (completion.continueVisible) {
     refs.chapterSuccessContinue.textContent = `继续写第 ${completion.nextChapterNo} 章`;
+  }
+  if (refs.chapterSuccessFoldSummary) {
+    refs.chapterSuccessFoldSummary.textContent = `第 ${completion.chapterNo} 章已完成 · ${formatNumber(completion.words)} 字`;
   }
 }
 

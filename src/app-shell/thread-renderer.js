@@ -12,6 +12,35 @@ import { deriveSources, deriveSuggestions } from "./chat-derive.mjs";
 import { presentChapterArtifact } from "./chapter-presentation.mjs";
 import { deriveProjectIdentity } from "./project-identity.mjs";
 
+// ----- Fold state management for collapsible cards -----
+const FOLD_PREFIX = "wwriting.card.fold.";
+
+function getFoldKey(prefix, id) {
+  return `${FOLD_PREFIX}${prefix}:${id}`;
+}
+
+function getFoldState(key, defaultFolded) {
+  const val = localStorage.getItem(key);
+  return val === null ? defaultFolded : val === "true";
+}
+
+function setFoldState(key, folded) {
+  localStorage.setItem(key, String(folded));
+}
+
+function applyFold(headerEl, bodyEl, foldKey, defaultFolded) {
+  const folded = getFoldState(foldKey, defaultFolded);
+  bodyEl.hidden = folded;
+  headerEl.classList.toggle("folded", folded);
+  headerEl.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const nowFolded = !bodyEl.hidden;
+    bodyEl.hidden = nowFolded;
+    headerEl.classList.toggle("folded", nowFolded);
+    setFoldState(foldKey, nowFolded);
+  });
+}
+
 const STAGE_ORDER = ["queued", "planning", "planned", "drafting", "reviewing", "needs_revision", "revising", "finalizing", "summarizing"];
 
 const STEP_GROUPS = [
@@ -259,6 +288,11 @@ export function createThreadRenderer(ctx) {
     const card = document.createElement("div");
     card.className = `task-card task-${statusClass(task.status)}`;
     card.dataset.taskCardId = task.id;
+
+    const foldKey = getFoldKey("task", task.id);
+    const isEnded = task.status === "completed" || task.status === "interrupted" || task.status === "cancelled";
+    const defaultFolded = isEnded;
+
     const header = document.createElement("div");
     header.className = "task-header";
     const num = document.createElement("span");
@@ -267,12 +301,18 @@ export function createThreadRenderer(ctx) {
     const badge = document.createElement("span");
     badge.className = `task-badge ${statusClass(task.status)}`;
     badge.textContent = translateTaskStatus(task.status);
-    header.append(num, badge);
+    const chevron = document.createElement("span");
+    chevron.className = "card-fold-chevron";
+    chevron.textContent = "▸";
+    header.append(num, badge, chevron);
+    card.append(header);
 
+    const body = document.createElement("div");
+    body.className = "task-body";
     const instruction = document.createElement("div");
     instruction.className = "task-instruction";
     instruction.textContent = task.instruction ?? "";
-    card.append(header, instruction);
+    body.append(instruction);
 
     if (task.status === "queued") {
       const meta = document.createElement("div");
@@ -285,14 +325,14 @@ export function createThreadRenderer(ctx) {
       cancelBtn.type = "button";
       cancelBtn.textContent = "取消";
       cancelBtn.addEventListener("click", () => cancelQueuedTask(task.id));
-      card.append(meta, cancelBtn);
+      body.append(meta, cancelBtn);
     } else if (task.status === "completed") {
-      card.append(taskSummary(task, data));
+      body.append(taskSummary(task, data));
     } else if (task.status === "blocked") {
       const reason = document.createElement("div");
       reason.className = "task-error";
       reason.textContent = task.error ?? "blocked";
-      card.append(reason);
+      body.append(reason);
     } else if (task.status === "interrupted" || task.status === "cancelled") {
       const reason = document.createElement("div");
       reason.className = "task-error";
@@ -302,8 +342,11 @@ export function createThreadRenderer(ctx) {
       retryBtn.type = "button";
       retryBtn.textContent = "从中断处继续";
       retryBtn.addEventListener("click", () => ctx.handleRetry(task.id));
-      card.append(reason, retryBtn);
+      body.append(reason, retryBtn);
     }
+    card.append(body);
+
+    applyFold(header, body, foldKey, defaultFolded);
     return card;
   }
 
@@ -973,20 +1016,37 @@ export function createThreadRenderer(ctx) {
   }
 
   function renderToolCard(message) {
-    // §5.2: superseded 工具渲染为置灰确认卡
+    const msgId = message.id ?? `tool:${message.ts}:${message.tool ?? ""}`;
+
+    // §5.2: superseded 工具渲染为可折叠取消卡
     if (message.superseded) {
       const wrap = document.createElement("div");
       wrap.className = "msg-agent rise chat-bubble-wrap chat-bubble-wrap--confirm";
       wrap.dataset.ts = message.ts ?? "";
       const card = document.createElement("div");
-      card.className = "chat-confirm-card chat-confirm-card--superseded";
-      const h4 = document.createElement("h4");
-      h4.textContent = `操作已取消：${toolLabel(message.tool ?? "")}`;
-      card.append(h4);
+      card.className = "chat-tool-card chat-tool-card--superseded";
+
+      const foldKey = getFoldKey("tool", msgId);
+      const header = document.createElement("div");
+      header.className = "chat-tool-header";
+      const label = document.createElement("span");
+      label.className = "chat-tool-label";
+      label.textContent = `操作已取消：${toolLabel(message.tool ?? "")}`;
+      const chevron = document.createElement("span");
+      chevron.className = "card-fold-chevron";
+      chevron.textContent = "▸";
+      header.append(label, chevron);
+      card.append(header);
+
+      const body = document.createElement("div");
+      body.className = "chat-tool-body";
       const p = document.createElement("p");
       p.className = "chat-confirm-desc";
       p.textContent = "已被新指令取消";
-      card.append(p);
+      body.append(p);
+      card.append(body);
+
+      applyFold(header, body, foldKey, true); // superseded → folded by default
       wrap.append(card);
       return wrap;
     }
@@ -994,31 +1054,44 @@ export function createThreadRenderer(ctx) {
     const wrap = document.createElement("div");
     wrap.className = "msg-agent rise chat-bubble-wrap chat-bubble-wrap--tool";
     wrap.dataset.ts = message.ts ?? "";
-    const card = document.createElement("details");
+
+    const card = document.createElement("div");
     card.className = "chat-tool-card";
-    const summary = document.createElement("summary");
+
     const ok = message.ok !== false;
+    const foldKey = getFoldKey("tool", msgId);
+    const header = document.createElement("div");
+    header.className = "chat-tool-header";
     const label = document.createElement("span");
     label.className = "chat-tool-label";
     label.textContent = toolLabel(message.tool ?? "", message.args);
     const mark = document.createElement("span");
     mark.className = `chat-tool-mark ${ok ? "ok" : "fail"}`;
     mark.textContent = ok ? "✓" : "✗";
-    summary.append(label, mark);
-    card.append(summary);
+    const chevron = document.createElement("span");
+    chevron.className = "card-fold-chevron";
+    chevron.textContent = "▸";
+    header.append(label, mark, chevron);
+    card.append(header);
+
+    const body = document.createElement("div");
+    body.className = "chat-tool-body";
     const tech = document.createElement("div");
     tech.className = "chat-tool-tech mono";
     tech.textContent = `${message.tool ?? ""} ${message.args ?? ""}`.trim();
-    card.append(tech);
+    body.append(tech);
     const pre = document.createElement("pre");
     pre.textContent = message.result_summary ?? "";
-    card.append(pre);
+    body.append(pre);
     if (message.error) {
       const err = document.createElement("div");
       err.className = "chat-tool-error";
       err.textContent = message.error;
-      card.append(err);
+      body.append(err);
     }
+    card.append(body);
+
+    applyFold(header, body, foldKey, false); // failure tools → expanded by default
     wrap.append(card);
     return wrap;
   }
