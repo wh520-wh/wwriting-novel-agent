@@ -1,6 +1,6 @@
 # UAT Execution Core Implementation Plan
 
-> **For Codex:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 让每个写作任务具有严格章节边界，并让停止信号在 500ms 内进入 cancelling、在所有模型阶段可靠终止且可从检查点恢复。
 
@@ -36,6 +36,325 @@
 - Test: `tests/tool-runtime.test.mjs`
 - Test: `tests/app-server-probe.test.mjs`
 
+## Execution Contract
+
+### Current Baseline
+
+Before changing code, confirm these existing entry points. Their names are the anchors used throughout this plan:
+
+| Responsibility | Current entry point | Current defect |
+|---|---|---|
+| Command parsing | `expandInstruction` in `src/core/task-queue.mjs` | Returns strings, not executable contracts |
+| Queue persistence | `TaskQueue.enqueue/load/save` | Schema v2 discards chapter boundaries |
+| Run creation | `serveCommandSubmit` and `startProjectRun` in `src/core/app-server.mjs` | Runner receives `taskId` and signal, but no contract |
+| Stop API | `serveRunStop` | Aborts inside the project lock and exposes no durable `cancelling` state |
+| Main loop | `runProject` in `src/core/agent-engine.mjs` | Continues until `target_chapters` instead of task boundary |
+| Fact-check | `runFactCheck` | Treats cancellation as a degradable provider failure |
+| Memory extraction | `extractChapterMemory` | Can swallow cancellation and advance the watermark |
+| Final file commit | `finalizeChapterFile` in `src/core/tool-runtime.mjs` | Has no signal or committed-file recovery rule |
+| Checkpoints | `writeCheckpoint` and `checkpointPayload` | Do not consistently record real task identity and commit state |
+
+Run this baseline inspection before Task 1:
+
+```powershell
+rg -n "expandInstruction|class TaskQueue|serveCommandSubmit|startProjectRun|serveRunStop|runProject|runFactCheck|extractChapterMemory|finalizeChapterFile|checkpointPayload" src tests
+git status --short
+```
+
+Expected: all listed symbols exist; the status output is recorded so pre-existing user changes are never reverted.
+
+### Canonical Task Contract
+
+All implementation tasks must use this exact shape. Do not introduce alternate names such as
+`start_chapter`, `chapterNo`, or `range` in persisted queue data.
+
+```ts
+type TaskContract = {
+  version: 1;
+  kind: "write_chapter" | "rewrite_chapter" | "resume_chapter";
+  chapter_start: number;
+  chapter_end: number;
+  stop_policy: "immediate";
+  resume_policy: "checkpoint";
+  skip_policy: "reject";
+};
+```
+
+For this remediation, the executor accepts only a single-chapter contract:
+
+```text
+chapter_start === chapter_end
+```
+
+`rewrite_chapter` is reserved for a future explicit rewrite entry point. Ordinary command parsing in this
+plan must never infer it.
+
+### Queue State Machine
+
+The queue and project state are separate records and must converge according to this table:
+
+| Trigger | Queue before | Queue after | Project after | Terminal |
+|---|---|---|---|---|
+| Promote next task | `queued` | `running` | `running` | No |
+| Stop accepted | `running` | `cancelling` | `cancelling` | No |
+| Executor observes stop | `cancelling` | `cancelled` | `cancelled` | Yes |
+| Task chapter committed | `running` | `completed` | `idle` or `completed` | Yes |
+| Missing configuration | `queued` or `running` | `blocked` | `blocked` | Yes |
+| Non-cancel failure | `running` | `interrupted` | `interrupted` | Yes |
+
+The following transitions are forbidden:
+
+```text
+cancelling -> running
+cancelling -> completed unless the final file was already atomically committed
+cancelled -> completed without an explicit resume task
+completed -> running
+```
+
+`TERMINAL_STATUSES` remains:
+
+```js
+new Set(["completed", "interrupted", "cancelled", "blocked"])
+```
+
+`cancelling` belongs to `ACTIVE_STATUSES`, not terminal statuses.
+
+### Project State Invariants
+
+After every state mutation, these conditions must hold:
+
+1. `project_status === "running"` implies exactly one queue task is `running`.
+2. `project_status === "cancelling"` implies the matching queue task is `cancelling`.
+3. A non-final chapter task completion sets `project_status: "idle"`,
+   `current_stage: "queued"`, and advances `current_chapter_no` exactly once.
+4. `project_status === "completed"` is allowed only when
+   `current_chapter_no > target_chapters`.
+5. A `cancelled` project does not auto-promote another queued task.
+6. A task contract rejection does not modify `agent_state.json`, chapter index, or unrelated queue tasks.
+
+### Command Parsing Decision Table
+
+Implement and test this exact behavior:
+
+| Input | Current chapter | Result |
+|---|---:|---|
+| `写第2章` | 2 | One `write_chapter` contract for chapter 2 |
+| `继续写作` | 2 | One `write_chapter` contract for chapter 2 |
+| `写三章` | 2 | Three tasks for chapters 2, 3, and 4 |
+| `写到第4章` | 2 | Three tasks for chapters 2, 3, and 4 |
+| `写第4章` | 2 | Reject with `chapter_gap`, details `{ missing_start: 2, missing_end: 3 }` |
+| `写第1章` | 2 | Reject with `chapter_already_passed` |
+| Ambiguous text, empty queue | 2 | Bind one task to chapter 2 |
+| Ambiguous text, active/queued write exists | 2 | Reject with `ambiguous_task_scope` |
+
+The parser may accept both Arabic and common Chinese count words for one through ten, but the first
+implementation must not add a general natural-language parser.
+
+### HTTP Contracts
+
+`POST /api/commands/submit` request:
+
+```json
+{
+  "projectRoot": "D:\\Novels\\demo",
+  "message": "写第2章",
+  "mode": "auto"
+}
+```
+
+Successful response:
+
+```json
+{
+  "ok": true,
+  "projectRoot": "D:\\Novels\\demo",
+  "tasks": [
+    {
+      "id": "task-...",
+      "status": "queued",
+      "contract": {
+        "version": 1,
+        "kind": "write_chapter",
+        "chapter_start": 2,
+        "chapter_end": 2,
+        "stop_policy": "immediate",
+        "resume_policy": "checkpoint",
+        "skip_policy": "reject"
+      }
+    }
+  ]
+}
+```
+
+Contract rejection:
+
+```json
+{
+  "ok": false,
+  "code": "chapter_gap",
+  "message": "请先完成第 2 至 3 章。",
+  "details": {
+    "currentChapter": 2,
+    "requestedChapter": 4,
+    "missing_start": 2,
+    "missing_end": 3
+  }
+}
+```
+
+`POST /api/run/stop` synchronous response:
+
+```json
+{
+  "ok": true,
+  "projectRoot": "D:\\Novels\\demo",
+  "taskId": "task-...",
+  "status": "cancelling",
+  "stop_requested_at": "2026-06-13T12:00:00.000Z"
+}
+```
+
+The response means only that cancellation was accepted and persisted. It must not claim that the executor
+has already stopped.
+
+### Event Schemas
+
+Add or normalize these events. Event `data` must never contain chapter body text, complete prompts, or API keys.
+
+```js
+{
+  type: "task_contract_created",
+  chapter_no: 2,
+  stage: "queued",
+  data: { task_id, contract }
+}
+
+{
+  type: "task_contract_rejected",
+  chapter_no: currentChapter,
+  stage: currentStage,
+  severity: "warn",
+  data: { code, requested_chapter, current_chapter }
+}
+
+{
+  type: "project_cancelling",
+  chapter_no: currentChapter,
+  stage: currentStage,
+  data: { task_id, stop_requested_at }
+}
+
+{
+  type: "project_cancelled",
+  chapter_no: currentChapter,
+  stage: currentStage,
+  data: {
+    task_id,
+    stop_requested_at,
+    cancel_observed_at,
+    cancelled_at,
+    stop_latency_ms
+  }
+}
+
+{
+  type: "chapter_artifact_committed",
+  chapter_no: chapterNo,
+  stage: "finalizing",
+  data: { task_id, final_path, checksum, bytes_written }
+}
+```
+
+Repeated stop requests must reuse the first `stop_requested_at` and must not append another
+`project_cancelling` event.
+
+### Checkpoint Schema
+
+Every newly written checkpoint must include:
+
+```json
+{
+  "task_id": "task-...",
+  "task_contract": {
+    "version": 1,
+    "kind": "write_chapter",
+    "chapter_start": 2,
+    "chapter_end": 2,
+    "stop_policy": "immediate",
+    "resume_policy": "checkpoint",
+    "skip_policy": "reject"
+  },
+  "chapter_no": 2,
+  "stage": "reviewing",
+  "segment_no": 1,
+  "draft": {
+    "path": "drafts/002.draft.md",
+    "checksum": "sha256..."
+  },
+  "committed_model_calls": [
+    {
+      "id": "task-...:2:drafting:1:v1",
+      "stage": "drafting",
+      "segment_no": 1,
+      "template_version": "v1"
+    }
+  ],
+  "completed_gates": ["word-count-gate"],
+  "artifact_commit": {
+    "state": "none",
+    "final_path": null,
+    "checksum": null
+  },
+  "created_at": "2026-06-13T12:00:00.000Z"
+}
+```
+
+Do not mark a model call committed until its response has been validated and its resulting draft or state
+change has been durably written.
+
+### Finalization Critical Section
+
+The final file commit order is mandatory:
+
+1. `throwIfAborted(signal)`.
+2. Read and validate the draft.
+3. Write the temporary final file.
+4. Compute checksum from temporary-file bytes.
+5. `throwIfAborted(signal)` a second time.
+6. Atomically rename temporary file to final path.
+7. Without another cancellation check, update chapter index to `completed`.
+8. Without another cancellation check, write `chapter_artifact_committed`.
+9. Write the checkpoint with `artifact_commit.state: "committed"`.
+10. At the next normal stage boundary, observe any cancellation that arrived during steps 6 through 9.
+
+This short no-abort interval prevents a final file from existing without its index and event.
+
+### Existing Test Fixtures
+
+Reuse these helpers instead of creating a second test harness:
+
+| Test file | Existing helper | Use |
+|---|---|---|
+| `tests/task-queue.test.mjs` | `makeQueue()` | Isolated queue files |
+| `tests/app-server-probe.test.mjs` | `setupServer()` | Real HTTP server on a fetch-safe port |
+| `tests/app-server-probe.test.mjs` | `postJson()` / `getJson()` | API assertions |
+| `tests/app-server-probe.test.mjs` | `deferredRun()` | Hold a runner in flight for stop races |
+| `tests/agent-engine.test.mjs` | `CapturingModelClient` | Assert chapter and stage model calls |
+| `tests/agent-engine.test.mjs` | `makeFactCheckProject()` | Fact-check cancellation |
+
+When a new helper is necessary, keep it local to the test file unless at least two files need it.
+
+### Per-Task Definition Of Done
+
+Each task in this plan is complete only when:
+
+1. The new test fails for the intended behavioral reason before implementation.
+2. The focused test passes after implementation.
+3. Neighboring tests listed in the task pass.
+4. `git diff --check` has no output.
+5. The commit contains only files listed by that task.
+6. No pre-existing user changes are staged or reverted.
+
 ### Task 1: Define The Task Contract
 
 **Files:**
@@ -69,15 +388,38 @@ test("精确章节指令生成严格单章契约", () => {
 });
 
 test("范围指令拆成多个单章任务", () => {
-  const tasks = compileWritingTasks("写3章", { currentChapter: 4, targetChapters: 10 });
-  assert.deepEqual(tasks.map((item) => item.contract.chapter_start), [4, 5, 6]);
-  assert.ok(tasks.every((item) => item.contract.chapter_start === item.contract.chapter_end));
+  for (const instruction of ["写3章", "写三章", "写到第6章"]) {
+    const tasks = compileWritingTasks(instruction, {
+      currentChapter: 4,
+      targetChapters: 10
+    });
+    assert.deepEqual(
+      tasks.map((item) => item.contract.chapter_start),
+      [4, 5, 6],
+      instruction
+    );
+    assert.ok(
+      tasks.every(
+        (item) => item.contract.chapter_start === item.contract.chapter_end
+      )
+    );
+  }
 });
 
 test("跳章和隐式重写均被拒绝", () => {
   assert.throws(
     () => compileWritingTasks("写第5章", { currentChapter: 2, targetChapters: 10 }),
-    (error) => error instanceof TaskContractError && error.code === "chapter_gap"
+    (error) => {
+      assert.equal(error instanceof TaskContractError, true);
+      assert.equal(error.code, "chapter_gap");
+      assert.deepEqual(error.details, {
+        currentChapter: 2,
+        requestedChapter: 5,
+        missing_start: 2,
+        missing_end: 4
+      });
+      return true;
+    }
   );
   assert.throws(
     () => compileWritingTasks("写第1章", { currentChapter: 2, targetChapters: 10 }),
@@ -166,9 +508,10 @@ export function compileWritingTasks(instruction, { currentChapter, targetChapter
     return chapterTasks(current, end, preciseVerb(text));
   }
 
-  const count = /^(写|续写)(\d+)章$/u.exec(text);
+  const count = /^(写|续写)(\d+|[一二三四五六七八九十])章$/u.exec(text);
   if (count) {
-    const end = current + Number(count[2]) - 1;
+    const amount = parseChapterCount(count[2]);
+    const end = current + amount - 1;
     assertRangeEnd(end, current, target);
     return chapterTasks(current, end, count[1]);
   }
@@ -191,14 +534,14 @@ export function validateTaskContract(contract, { currentChapter, targetChapters 
   if (start !== end) {
     throw new TaskContractError("multi_chapter_contract_rejected", "执行器只接受单章任务。");
   }
+  if (start > target) {
+    throw new TaskContractError("chapter_out_of_project", `第 ${start} 章超过项目目标 ${target} 章。`);
+  }
   if (start !== current) {
     throw new TaskContractError("task_contract_stale", `当前待写第 ${current} 章，任务目标为第 ${start} 章。`, {
       currentChapter: current,
       requestedChapter: start
     });
-  }
-  if (start > target) {
-    throw new TaskContractError("chapter_out_of_project", `第 ${start} 章超过项目目标 ${target} 章。`);
   }
   return contract;
 }
@@ -210,7 +553,9 @@ function assertRequestedChapter(chapter, current, target) {
   if (chapter > current) {
     throw new TaskContractError("chapter_gap", `请先完成第 ${current} 至 ${chapter - 1} 章。`, {
       currentChapter: current,
-      requestedChapter: chapter
+      requestedChapter: chapter,
+      missing_start: current,
+      missing_end: chapter - 1
     });
   }
   if (chapter < current) {
@@ -239,6 +584,29 @@ function chapterTasks(start, end, verb) {
 
 function preciseVerb(text) {
   return text.startsWith("续写") ? "续写" : "写";
+}
+
+function parseChapterCount(value) {
+  if (/^\d+$/u.test(value)) {
+    return positiveInteger(value, "chapterCount");
+  }
+  const numbers = {
+    一: 1,
+    二: 2,
+    三: 3,
+    四: 4,
+    五: 5,
+    六: 6,
+    七: 7,
+    八: 8,
+    九: 9,
+    十: 10
+  };
+  const number = numbers[value];
+  if (!number) {
+    throw new TaskContractError("invalid_chapter_count", "章节数量必须是一到十或正整数。");
+  }
+  return number;
 }
 
 function positiveInteger(value, name) {
@@ -471,6 +839,26 @@ test("写3章创建三个严格单章任务", async () => {
     await closeServer(server);
   }
 });
+
+test("已有写作任务时拒绝含糊指令", async () => {
+  const run = deferredRun();
+  const { server, port } = await setupServer({
+    testRunProject: run.testRunProject
+  });
+  try {
+    await postJson(port, "/api/commands/submit", { message: "写第1章" });
+    const { res, data } = await postJson(port, "/api/commands/submit", {
+      message: "继续完善雨夜氛围"
+    });
+
+    assert.equal(res.status, 400);
+    assert.equal(data.code, "ambiguous_task_scope");
+    const queue = await getJson(port, "/api/queue/state");
+    assert.equal(queue.data.tasks.length, 1);
+  } finally {
+    await closeServer(server);
+  }
+});
 ```
 
 - [ ] **Step 2: Run the API tests**
@@ -499,6 +887,18 @@ import {
 Replace command expansion:
 
 ```js
+const explicitScope = /第\d+章|(?:\d+|[一二三四五六七八九十])章|到第\d+章/u.test(message);
+const hasPendingWritingTask = queue.getState().tasks.some((candidate) =>
+  ["queued", "running", "cancelling"].includes(candidate.status) &&
+  ["write_chapter", "resume_chapter"].includes(candidate.contract?.kind)
+);
+if (!explicitScope && hasPendingWritingTask) {
+  throw new TaskContractError(
+    "ambiguous_task_scope",
+    "已有写作任务，请明确指定章节。"
+  );
+}
+
 const plannedTasks = compileWritingTasks(message, {
   currentChapter: state.current_chapter_no ?? 1,
   targetChapters: project.target_chapters
