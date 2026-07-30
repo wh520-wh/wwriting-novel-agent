@@ -16,9 +16,10 @@ import { makeChapterContract, makeResumeContract } from "../src/core/task-contra
 
 class AlwaysInvalidModel {
   async generate() {
+    // 返回短文本 (< 50 chars)，agent 风格下不会被当作正文捕获，计入 commit failure。
     return {
       type: "status_message",
-      message: "I wrote the chapter in chat instead of using a file tool."
+      message: "done"
     };
   }
 }
@@ -192,7 +193,7 @@ test("mock model generates three chapters and writes local files", async () => {
   }
 });
 
-test("engine rejects chat body output and retries tool call", async () => {
+test("engine captures prose-as-text and retries on short output", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-channel-"));
   const { projectRoot } = await createProject(root, {
     slug: "project",
@@ -204,8 +205,10 @@ test("engine rejects chat body output and retries tool call", async () => {
     model: new MockModel({ invalidFirstDraft: true })
   });
   const events = await readEvents(projectRoot);
-  assert.ok(events.some((event) => event.data?.code === "invalid_output_channel"));
-  assert.ok(events.some((event) => event.type === "tool_call_rejected" && event.data?.code === "invalid_output_channel"));
+  // 第一轮输出短文本 → output_too_short（agent 风格：短文本不是正文）
+  assert.ok(events.some((event) => event.data?.code === "output_too_short"));
+  assert.ok(events.some((event) => event.type === "tool_call_rejected" && event.data?.code === "output_too_short"));
+  // 后续轮次模型调工具 → 章节完成
   assert.ok(events.some((event) => event.type === "chapter_completed"));
 });
 
