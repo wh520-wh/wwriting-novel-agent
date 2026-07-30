@@ -695,7 +695,7 @@ export function createSettingsModal(ctx, options = {}) {
     testRow.append(testBtn);
     settingsFields.testConnectionBtn = testBtn;
 
-    settingsFields.maxCalls = settingField("模型调用上限", "number", { value: budgetConfig.max_model_calls ?? "" });
+    settingsFields.maxCalls = settingField("模型调用上限", "number", { value: budgetConfig.max_model_calls ?? "", placeholder: "留空 = 不限" });
     const budgetHeading = document.createElement("h4");
     budgetHeading.className = "spd-section";
     budgetHeading.textContent = "预算上限";

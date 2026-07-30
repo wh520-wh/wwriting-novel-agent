@@ -76,9 +76,9 @@ export async function createProjectAt(projectRoot, options = {}) {
     pending_user_confirmation: null,
     active_budget: {
       model_calls: 0,
-      max_model_calls: options.max_model_calls ?? 200,
+      max_model_calls: options.max_model_calls ?? null,
       revision_rounds_by_chapter: {},
-      max_revision_rounds_per_chapter: options.max_revision_rounds_per_chapter ?? 4
+      max_revision_rounds_per_chapter: options.max_revision_rounds_per_chapter ?? null
     }
   });
   await writeJsonAtomic(safeJoin(target, "memory", "chapter_index.json"), {
