@@ -143,6 +143,25 @@ export class ModelClient {
 
         // External cancellation — never retry; rethrow the original AbortError.
         if (!timedOut && isCancellationError(error, signal)) {
+          // Record failed attempt before rethrowing (cancellation still consumed a call)
+          const usageFromError = error.usage ?? {};
+          if (usageFromError && Object.keys(usageFromError).length > 0) {
+            this.costTracker.record({
+              stage, chapter: metadata.chapterNo ?? null,
+              usageReport: { ...normalizeUsageReport({
+                provider: modelConfig.provider, model: modelConfig.model_name,
+                usage: usageFromError, rawUsage: usageFromError, cost: null
+              }), failed: true }
+            });
+          } else {
+            this.costTracker.record({
+              stage, chapter: metadata.chapterNo ?? null,
+              usageReport: { provider: modelConfig.provider, model: modelConfig.model_name,
+                inputTokens: 0, outputTokens: 0, totalTokens: 0, cachedTokens: 0,
+                estimatedCost: 0, failed: true
+              }
+            });
+          }
           throw error;
         }
 
@@ -159,6 +178,14 @@ export class ModelClient {
             await this.#retryWait(attempt, timeoutError, modelConfig.model_name, signal);
             continue;
           }
+          // §3.5: Record failed attempt (timeout still consumed budget)
+          this.costTracker.record({
+            stage, chapter: metadata.chapterNo ?? null,
+            usageReport: { provider: modelConfig.provider, model: modelConfig.model_name,
+              inputTokens: 0, outputTokens: 0, totalTokens: 0, cachedTokens: 0,
+              estimatedCost: 0, failed: true
+            }
+          });
           throw timeoutError;
         }
 
@@ -167,6 +194,26 @@ export class ModelClient {
           this.onActivity?.();
           await this.#retryWait(attempt, error, modelConfig.model_name, signal);
           continue;
+        }
+
+        // §3.5: On final non-retryable failure, record usage if provider returned any
+        const usageFromError = error.usage ?? {};
+        if (usageFromError && Object.keys(usageFromError).length > 0) {
+          this.costTracker.record({
+            stage, chapter: metadata.chapterNo ?? null,
+            usageReport: { ...normalizeUsageReport({
+              provider: modelConfig.provider, model: modelConfig.model_name,
+              usage: usageFromError, rawUsage: usageFromError, cost: null
+            }), failed: true }
+          });
+        } else {
+          this.costTracker.record({
+            stage, chapter: metadata.chapterNo ?? null,
+            usageReport: { provider: modelConfig.provider, model: modelConfig.model_name,
+              inputTokens: 0, outputTokens: 0, totalTokens: 0, cachedTokens: 0,
+              estimatedCost: 0, failed: true
+            }
+          });
         }
 
         throw error;

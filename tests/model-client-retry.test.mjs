@@ -453,3 +453,54 @@ test("onActivity preserves existing metadata fields", async () => {
 
   await client.generate({ prompt: "hi", metadata: { userField: "hello" } });
 });
+
+// §3.5: Failed call recording in costTracker
+test("failed final attempt records failed call in costTracker", async () => {
+  const { CostTracker } = await import("../src/core/cost-tracker.mjs");
+  let calls = 0;
+  const adapter = {
+    async generate() {
+      calls++;
+      throw new ProviderTransportError("Fatal error", { status: 400 });
+    }
+  };
+  const costTracker = new CostTracker();
+  const client = makeClient(adapter, { costTracker, retryMax: 0 });
+  await assert.rejects(() => client.generate({ prompt: "hi" }));
+  const s = costTracker.getSummary();
+  assert.equal(s.failedCalls, 1, "failed call should be recorded");
+  assert.equal(s.calls, 1, "failed call still counts as a call");
+});
+
+test("failed final attempt with provider partial usage records failed call with tokens", async () => {
+  const { CostTracker } = await import("../src/core/cost-tracker.mjs");
+  let calls = 0;
+  const adapter = {
+    async generate() {
+      calls++;
+      const err = new ProviderTransportError("Rate limited with usage", { status: 429 });
+      // Provider returned usage info even on error (some providers do this)
+      err.usage = { prompt_tokens: 50, completion_tokens: 10, total_tokens: 60 };
+      throw err;
+    }
+  };
+  const costTracker = new CostTracker();
+  const client = makeClient(adapter, { costTracker, retryMax: 0 });
+  await assert.rejects(() => client.generate({ prompt: "hi" }));
+  const s = costTracker.getSummary();
+  assert.equal(s.failedCalls, 1);
+  assert.equal(s.calls, 1);
+  assert.ok(s.inputTokens >= 50, `expected inputTokens >= 50, got ${s.inputTokens}`);
+  assert.ok(s.outputTokens >= 10, `expected outputTokens >= 10, got ${s.outputTokens}`);
+});
+
+test("timeout also records a failed call in costTracker", async () => {
+  const { CostTracker } = await import("../src/core/cost-tracker.mjs");
+  const costTracker = new CostTracker();
+  const hanging = new HangingAdapter();
+  const client = makeClient(hanging, { costTracker, retryMax: 0, timeoutMs: 50 });
+  await assert.rejects(() => client.generate({ prompt: "hi" }));
+  const s = costTracker.getSummary();
+  assert.equal(s.failedCalls, 1, "timeout should record a failed call");
+  assert.equal(s.calls, 1);
+});

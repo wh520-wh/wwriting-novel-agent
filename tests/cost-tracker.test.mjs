@@ -260,3 +260,36 @@ test("CostTracker 未配置 cache_hit_per_million 时 cacheSavedCost 保持 0", 
   });
   assert.equal(tracker.getSummary().cacheSavedCost, 0);
 });
+
+// §3.5: Failed call tracking
+test("CostTracker.record with failed: true increments failedCalls", () => {
+  const tracker = new CostTracker();
+  tracker.record({
+    stage: "drafting",
+    usageReport: { provider: "p", model: "m", inputTokens: 0, outputTokens: 0, totalTokens: 0, cachedTokens: 0, estimatedCost: 0, failed: true }
+  });
+  const s = tracker.getSummary();
+  assert.equal(s.calls, 1);
+  assert.equal(s.failedCalls, 1);
+});
+
+test("CostTracker.record with failed: true still counts calls but skips cost", () => {
+  const tracker = new CostTracker({ pricing: { p: { input_per_million: 3, output_per_million: 15 } } });
+  tracker.record({
+    stage: "drafting",
+    usageReport: { provider: "p", model: "m", inputTokens: 100, outputTokens: 50, totalTokens: 150, cachedTokens: 0, estimatedCost: 0.001, failed: true }
+  });
+  const s = tracker.getSummary();
+  assert.equal(s.calls, 1);
+  assert.equal(s.failedCalls, 1);
+  // price tracking still works even for failed calls with partial usage
+  assert.equal(s.pricedCalls, 1);
+  assert.ok(s.estimatedCost > 0);
+});
+
+test("CostTracker.getSummary includes failedCalls field", () => {
+  const tracker = new CostTracker();
+  const s = tracker.getSummary();
+  assert.equal(typeof s.failedCalls, "number");
+  assert.equal(s.failedCalls, 0);
+});

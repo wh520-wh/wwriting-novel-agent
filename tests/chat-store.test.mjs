@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
-  appendChatMessage, readChatHistory, loadPendingAction, savePendingAction, clearPendingAction
+  appendChatMessage, readChatHistory, loadPendingAction, savePendingAction, clearPendingAction, updatePendingStatus
 } from "../src/core/chat/chat-store.mjs";
 
 async function tmp() { return fs.mkdtemp(path.join(os.tmpdir(), "wwriting-chatstore-")); }
@@ -53,9 +53,53 @@ test("pending action 存取清", async () => {
   assert.equal(await loadPendingAction(root), null);
   const action = await savePendingAction(root, { tool: "edit_chapter", args: { chapter_no: 2 }, preview: { before: "a", after: "b" } });
   assert.ok(action.id);
+  assert.ok(action.idempotency_key);
   assert.equal(action.status, "pending");
   const loaded = await loadPendingAction(root);
   assert.equal(loaded.tool, "edit_chapter");
+  assert.equal(loaded.idempotency_key, action.idempotency_key);
   await clearPendingAction(root);
   assert.equal(await loadPendingAction(root), null);
+});
+
+test("updatePendingStatus transitions pending -> executing -> executed and cachedOutcome survives resume", async () => {
+  const root = await tmp();
+  const action = await savePendingAction(root, { tool: "edit_chapter", args: { chapter_no: 1 } });
+  const key = action.idempotency_key;
+
+  // pending -> executing
+  await updatePendingStatus(root, key, "executing");
+  let loaded = await loadPendingAction(root);
+  assert.equal(loaded.status, "executing");
+  assert.equal(loaded.idempotency_key, key);
+
+  // executing -> executed with cached outcome
+  const outcome = { ok: true, result: { before: "a", after: "b" } };
+  await updatePendingStatus(root, key, "executed", outcome);
+  loaded = await loadPendingAction(root);
+  assert.equal(loaded.status, "executed");
+  assert.deepEqual(loaded.cachedOutcome, outcome);
+
+  // cleared pending returns null
+  await clearPendingAction(root);
+  assert.equal(await loadPendingAction(root), null);
+});
+
+test("loadPendingAction returns executed (for idempotent resume) and null for cleared", async () => {
+  const root = await tmp();
+  const action = await savePendingAction(root, { tool: "edit_chapter", args: {} });
+  await updatePendingStatus(root, action.idempotency_key, "executed", { ok: true, result: "done" });
+  const loaded = await loadPendingAction(root);
+  assert.equal(loaded.status, "executed");
+  assert.ok(loaded.cachedOutcome);
+  await clearPendingAction(root);
+  assert.equal(await loadPendingAction(root), null);
+});
+
+test("savePendingAction includes idempotency_key", async () => {
+  const root = await tmp();
+  const action = await savePendingAction(root, { tool: "get_status", args: {} });
+  assert.ok(action.idempotency_key);
+  assert.equal(typeof action.idempotency_key, "string");
+  assert.ok(action.idempotency_key.length > 0);
 });

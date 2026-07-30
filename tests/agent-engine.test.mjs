@@ -754,6 +754,55 @@ test("mock provider 跳过提取但推进水位", async () => {
   assert.ok(events.some((e) => e.type === "memory_extract_skipped"));
 });
 
+test("§3.6 pending-extraction file causes skip of model call but still completes steps", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-pendingx-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "pendingx", title: "待提取恢复", story_seed: "种子",
+    target_chapters: 1, min_words_per_chapter: 10, target_words_per_chapter: 12
+  });
+  const project = await loadProject(projectRoot);
+  project.active_model = { provider: "openai-compatible", model_name: "fake", base_url: "http://localhost:0", api_key_env: "FAKE_KEY" };
+  await saveProject(projectRoot, project);
+
+  // Pre-write a pending extraction file (simulating a crash after model call but before steps 1-3)
+  const extraction = {
+    ok: true,
+    summary: "第一章：主角在雨夜收到警告。",
+    facts: [{ entity: "主角", attribute: "身份", value: "退伍军人", chapter_no: 1, quote: "雨夜" }],
+    timeline: [{ chapter_no: 1, story_time: "雨夜", events: ["收到警告"] }],
+    characters: [{ name: "主角", traits: ["谨慎"], status: "存活", chapter_no: 1 }]
+  };
+  await fs.mkdir(path.join(projectRoot, "memory"), { recursive: true });
+  await fs.writeFile(
+    path.join(projectRoot, "memory", ".pending-extraction-1.json"),
+    JSON.stringify(extraction),
+    "utf8"
+  );
+
+  const calls = [];
+  const fakeClient = {
+    generate: async ({ stage }) => {
+      calls.push(stage);
+      throw new Error("model must not be called when pending file exists");
+    }
+  };
+  const { extractChapterMemory } = await import("../src/core/agent-engine.mjs");
+  await extractChapterMemory(projectRoot, project, { current_chapter_no: 1 }, { modelClient: fakeClient });
+
+  // Model was NOT called (pending file was used)
+  assert.equal(calls.length, 0, "model must not be called when pending file exists");
+  // But extraction still completed
+  const continuity = await loadContinuity(projectRoot);
+  assert.equal(continuity.facts[0].value, "退伍军人");
+  const summary = await fs.readFile(path.join(projectRoot, "memory", "book_summary.md"), "utf8");
+  assert.match(summary, /雨夜收到警告/u);
+  assert.equal((await loadContinuityState(projectRoot)).extracted_chapters[0], 1);
+  // Pending file should be cleaned up
+  const pendingExists = await fs.access(path.join(projectRoot, "memory", ".pending-extraction-1.json"))
+    .then(() => true).catch(() => false);
+  assert.equal(pendingExists, false, "pending file should be deleted after completion");
+});
+
 test("提取失败软跳过：事件 memory_extract_failed 且不推进水位（可回补）", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-memfail-"));
   const { projectRoot } = await createProject(root, {

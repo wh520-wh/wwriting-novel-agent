@@ -34,12 +34,14 @@ export async function readChatHistory(projectRoot, { after = null, limit = 1000 
 
 export async function loadPendingAction(projectRoot) {
   const data = await readJson(safeJoin(projectRoot, PENDING_FILE), null);
-  return data && data.status === "pending" ? data : null;
+  // Return any non-cleared pending (pending for fresh, executed for idempotent resume)
+  return data && data.status !== "cleared" ? data : null;
 }
 
 export async function savePendingAction(projectRoot, action) {
   const entry = {
     id: action.id ?? crypto.randomUUID(),
+    idempotency_key: crypto.randomUUID(),
     created_at: new Date().toISOString(),
     status: "pending",
     ...action
@@ -51,4 +53,21 @@ export async function savePendingAction(projectRoot, action) {
 export async function clearPendingAction(projectRoot) {
   await writeJsonAtomic(safeJoin(projectRoot, PENDING_FILE), { status: "cleared" });
   return null;
+}
+
+// §3.3: Atomically update pending action status (executing / executed)
+// Used for idempotency handshake: before executeTool -> "executing", after -> "executed"
+export async function updatePendingStatus(projectRoot, idempotencyKey, status, outcome = null) {
+  const current = await readJson(safeJoin(projectRoot, PENDING_FILE), {});
+  const updated = {
+    ...current,
+    idempotency_key: idempotencyKey,
+    status,
+    updated_at: new Date().toISOString()
+  };
+  if (outcome != null) {
+    updated.cachedOutcome = outcome;
+  }
+  await writeJsonAtomic(safeJoin(projectRoot, PENDING_FILE), updated);
+  return updated;
 }

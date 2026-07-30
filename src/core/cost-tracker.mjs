@@ -18,6 +18,7 @@ export function estimateCost(usageReport, pricing = null) {
 
 const SUMMARY_DEFAULTS = {
   calls: 0,
+  failedCalls: 0,
   inputTokens: 0,
   outputTokens: 0,
   totalTokens: 0,
@@ -53,11 +54,18 @@ export class CostTracker {
     const pricing = resolvePricing(model, this.pricing) ?? this.pricing[provider] ?? null;
     const cost = usageReport.estimatedCost ?? estimateCost(usageReport, pricing);
     const priced = cost != null;
+    const failed = usageReport.failed === true;
     this.summary.calls += 1;
-    this.summary.inputTokens += usageReport.inputTokens;
-    this.summary.outputTokens += usageReport.outputTokens;
-    this.summary.totalTokens += usageReport.totalTokens;
-    this.summary.cachedTokens += usageReport.cachedTokens;
+    if (failed) {
+      // §3.5: Track failed calls separately for cost consistency
+      this.summary.failedCalls += 1;
+    }
+    // Skip token accumulation for failed calls without usage data
+    // If the provider returned partial usage in the error, still record it
+    this.summary.inputTokens += usageReport.inputTokens ?? 0;
+    this.summary.outputTokens += usageReport.outputTokens ?? 0;
+    this.summary.totalTokens += usageReport.totalTokens ?? 0;
+    this.summary.cachedTokens += usageReport.cachedTokens ?? 0;
     if (priced) {
       this.summary.pricedCalls += 1;
       this.summary.estimatedCost = Number((this.summary.estimatedCost + cost).toFixed(8));

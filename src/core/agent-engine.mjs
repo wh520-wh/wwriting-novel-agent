@@ -3,7 +3,7 @@ import { CacheKeyManager, writeCacheReport } from "./cache-key-manager.mjs";
 import { loadConfigLayers } from "./config-runtime.mjs";
 import { CostTracker } from "./cost-tracker.mjs";
 import { buildPricingTable } from "./model-pricing.mjs";
-import { readJson, safeJoin, sha256, writeFileAtomic } from "./fs-utils.mjs";
+import { readJson, safeJoin, sha256, writeFileAtomic, writeJsonAtomic } from "./fs-utils.mjs";
 import { ModelClient } from "./model-client.mjs";
 import { loadProject, loadState, loadChapterIndex, saveState, upsertChapter, writeCheckpoint } from "./project-store.mjs";
 import { MockModel } from "./mock-model.mjs";
@@ -602,6 +602,11 @@ export async function extractChapterMemory(projectRoot, project, state, runtime)
     return;
   }
   try {
+    // §3.6: Check for pending extraction from a previous crash.
+    // If the file exists, the model call is already done; skip it and use cached data.
+    const pendingFile = safeJoin(projectRoot, "memory", `.pending-extraction-${chapterNo}.json`);
+    const pendingExtraction = await readJson(pendingFile, null);
+
     const index = await loadChapterIndex(projectRoot);
     const entry = index.chapters.find((c) => c.chapter_no === chapterNo);
     const chapterPath = entry?.final_path ?? entry?.draft_path;
@@ -610,28 +615,42 @@ export async function extractChapterMemory(projectRoot, project, state, runtime)
       readOptionalProjectText(projectRoot, "memory", "book_summary.md"),
       loadContinuity(projectRoot)
     ]);
-    const messages = buildMemoryExtractionMessages({
-      chapterNo, chapterContent,
-      bookSummary, continuityMarkdown: renderForPrompt(continuity)
-    });
+
     let parsed = null;
-    for (let attempt = 0; attempt < 2 && !parsed?.ok; attempt += 1) {
-      throwIfAborted(runtime.signal);
-      const result = await runtime.modelClient.generate({
-        project, stage: "memory_extract", messages,
-        signal: runtime.signal,
-        metadata: { memoryExtract: true, chapterNo, attempt }
+    if (pendingExtraction && pendingExtraction.ok) {
+      // Recovery path: use cached extraction data, skip model call
+      parsed = pendingExtraction;
+    } else {
+      // Normal path: call model to extract memory
+      const messages = buildMemoryExtractionMessages({
+        chapterNo, chapterContent,
+        bookSummary, continuityMarkdown: renderForPrompt(continuity)
       });
-      parsed = parseMemoryExtraction(result.text);
+      for (let attempt = 0; attempt < 2 && !parsed?.ok; attempt += 1) {
+        throwIfAborted(runtime.signal);
+        const result = await runtime.modelClient.generate({
+          project, stage: "memory_extract", messages,
+          signal: runtime.signal,
+          metadata: { memoryExtract: true, chapterNo, attempt }
+        });
+        parsed = parseMemoryExtraction(result.text);
+      }
+      if (!parsed.ok) throw new Error(`memory extraction parse failed: ${parsed.error}`);
+      // §3.6: Save pending extraction atomically (crash recovery: next run skips model call)
+      await writeJsonAtomic(pendingFile, parsed);
     }
-    if (!parsed.ok) throw new Error(`memory extraction parse failed: ${parsed.error}`);
+
+    // §3.6: Steps 1-3 are idempotent (mergeExtraction skips dupes, writes overwrite)
     const merged = mergeExtraction(continuity, parsed);
-    await saveContinuity(projectRoot, merged);
-    await writeFileAtomic(safeJoin(projectRoot, "memory", "book_summary.md"), `# 全书摘要\n\n${parsed.summary}\n`);
-    await saveContinuityState(projectRoot, {
+    await saveContinuity(projectRoot, merged);                           // Step 1
+    await writeFileAtomic(safeJoin(projectRoot, "memory", "book_summary.md"), `# 全书摘要\n\n${parsed.summary}\n`);  // Step 2
+    await saveContinuityState(projectRoot, {                             // Step 3
       last_extracted_chapter: chapterNo,
       extracted_chapters: [...(watermark.extracted_chapters ?? []), chapterNo]
     });
+
+    // §3.6: All steps complete — remove pending file
+    await fs.unlink(pendingFile).catch(() => {});
 
     // 故事时钟确定性检查：只报"较晚一方=本章"的冲突（去重 + 标题章号正确）
     const { violations } = checkTimeline(merged.timeline);
@@ -656,6 +675,7 @@ export async function extractChapterMemory(projectRoot, project, state, runtime)
   } catch (error) {
     rethrowIfCancelled(error, runtime.signal);
     // 失败时不推进水位、不入 extracted_chapters：让 audit:rebuild-memory 能识别本章缺失并回补。
+    // 如果 pending-extraction 文件已存在（模型调用已完成但写入中断），留它让下次恢复用。
     await appendEvent(projectRoot, {
       type: "memory_extract_failed", project_id: project.project_id, chapter_no: chapterNo,
       stage: "summarizing", severity: "warn",
