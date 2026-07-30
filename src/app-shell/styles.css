@@ -1641,6 +1641,42 @@ button.cbar-pill--readonly:hover {
 }
 .topbar-retry { border-color: color-mix(in srgb, var(--red) 35%, var(--line)); color: var(--red); }
 .topbar-stop { border-color: color-mix(in srgb, var(--amber) 35%, var(--line)); color: var(--amber); }
+
+/* ===== Foldable card header / body ===== */
+.card-fold-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  width: 100%;
+}
+.card-fold-header:hover {
+  background: var(--hover);
+  border-radius: var(--r-sm);
+}
+.card-fold-summary {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.card-fold-chevron {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--faint);
+  transition: transform .2s;
+  flex: 0 0 auto;
+}
+.folded .card-fold-chevron {
+  transform: rotate(-90deg);
+}
+
+/* Task card — foldable */
 .task-card {
   width: 100%;
   border: 1px solid var(--line);
@@ -1654,7 +1690,8 @@ button.cbar-pill--readonly:hover {
 .task-card.task-running { border-left-color: var(--accent); background: var(--accent-soft); }
 .task-card.task-completed { border-left-color: var(--green); background: var(--green-soft); }
 .task-card.task-interrupted, .task-card.task-cancelled, .task-card.task-blocked { border-left-color: var(--red); background: var(--red-soft); }
-.task-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; min-height: 20px; }
+.task-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; min-height: 20px; cursor: pointer; user-select: none; }
+.task-body { }
 .task-num { font-size: 12px; font-weight: 650; color: var(--muted); }
 .task-badge {
   font-size: 11px;
@@ -1881,11 +1918,23 @@ button.cbar-pill--readonly:hover {
   background: var(--surface);
   max-width: 80%;
 }
-.chat-tool-card[open] { padding-bottom: 9px; }
-.chat-tool-card summary { cursor: pointer; font-weight: 550; color: var(--ink-2); list-style: none; }
-.chat-tool-card summary::-webkit-details-marker { display: none; }
-.chat-tool-card summary::before { content: "▸"; display: inline-block; width: 12px; color: var(--muted); transition: transform .2s ease; }
-.chat-tool-card[open] summary::before { transform: rotate(90deg); }
+.chat-tool-card--superseded {
+  opacity: .65;
+}
+.chat-tool-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+.chat-tool-header:hover {
+  background: var(--hover);
+  border-radius: 4px;
+}
+.chat-tool-body {
+  margin-top: 6px;
+}
 .chat-tool-card pre { white-space: pre-wrap; margin: 8px 0 0; font-size: 12px; color: var(--ink-2); background: var(--surface-2); padding: 7px 9px; border-radius: 4px; max-height: 240px; overflow: auto; }
 .chat-tool-error { margin-top: 6px; font-size: 11.5px; color: var(--red); }
 .chat-confirm-card {
@@ -2034,7 +2083,7 @@ button.cbar-pill--readonly:hover {
 .chat-source-chip--link:hover { box-shadow: var(--shadow-xs); }
 
 /* D2 工具卡 */
-.chat-tool-card summary { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.chat-tool-header { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .chat-tool-label { font-size: 12.5px; color: var(--ink-2); }
 .chat-tool-mark.ok { color: var(--green); }
 .chat-tool-mark.fail { color: var(--red); }
@@ -2223,3 +2272,19 @@ button.cbar-pill--readonly:hover {
 
 .write-readiness[hidden],
 .chapter-success[hidden] { display: none !important; }
+
+/* Chapter success — foldable column layout */
+.chapter-success {
+  flex-direction: column;
+  gap: 8px;
+}
+.chapter-success > .card-fold-header {
+  width: 100%;
+}
+.chapter-success-body {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  width: 100%;
+}

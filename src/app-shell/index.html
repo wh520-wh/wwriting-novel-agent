@@ -113,15 +113,21 @@
 
         <!-- 章节完成卡 -->
         <section class="chapter-success creation-card" id="chapter-success" data-creation-tone="success" aria-labelledby="chapter-success-title" hidden>
-          <div>
-            <p class="eyebrow">章节完成</p>
-            <h2 id="chapter-success-title"></h2>
-            <p id="chapter-success-meta"></p>
-            <p id="chapter-success-review"></p>
+          <div class="card-fold-header" id="chapter-success-fold">
+            <span class="card-fold-summary" id="chapter-success-fold-summary">章节已完成</span>
+            <span class="card-fold-chevron">▸</span>
           </div>
-          <div class="chapter-success-actions creation-card-actions">
-            <button id="chapter-success-read" class="creation-primary" type="button">阅读本章</button>
-            <button id="chapter-success-continue" type="button">继续下一章</button>
+          <div class="chapter-success-body" id="chapter-success-body">
+            <div>
+              <p class="eyebrow">章节完成</p>
+              <h2 id="chapter-success-title"></h2>
+              <p id="chapter-success-meta"></p>
+              <p id="chapter-success-review"></p>
+            </div>
+            <div class="chapter-success-actions creation-card-actions">
+              <button id="chapter-success-read" class="creation-primary" type="button">阅读本章</button>
+              <button id="chapter-success-continue" type="button">继续下一章</button>
+            </div>
           </div>
         </section>
 
