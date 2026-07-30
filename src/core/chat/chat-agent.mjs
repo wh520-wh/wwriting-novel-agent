@@ -6,9 +6,10 @@ import { executeTool, checkToolPermission, summarizeArgs } from "./tool-registry
 import { previewEditChapter } from "./tools-write.mjs";
 import { isJobRunning } from "./tools-control.mjs";
 import { appendChatMessage, loadPendingAction, savePendingAction, clearPendingAction } from "./chat-store.mjs";
+import { loadConfigLayers } from "../config-runtime.mjs";
 import path from "node:path";
 
-export const MAX_TOOL_ROUNDS = 8;
+export const MAX_TOOL_ROUNDS = 32;
 const RESULT_SUMMARY_CHARS = 500;
 
 // 写作运行时写保护：runProject 后台不持 projectLock，chat 持锁，两者并发写
@@ -66,9 +67,13 @@ export async function resumeChatTurn(options) {
 
 async function agentLoop(options, toolEvents) {
   const { projectRoot, project, registry, modelClient, server, getTaskQueue, onEvent, signal } = options;
+  // 加载运行时配置读取 chat_max_tool_rounds
+  const configLayers = await loadConfigLayers(projectRoot, project ?? {}, {});
+  const effectiveConfig = configLayers.effective;
+  const maxToolRounds = effectiveConfig?.chat_max_tool_rounds ?? MAX_TOOL_ROUNDS;
   let totalCost = 0;
   let calls = 0;
-  for (let round = 0; round < MAX_TOOL_ROUNDS + 1; round += 1) {
+  for (let round = 0; round < maxToolRounds + 1; round += 1) {
     if (signal?.aborted) return await finishCancelled(projectRoot, toolEvents, calls, totalCost);
     const { messages } = await buildChatContext({ projectRoot, project, registry, userMessage: latestPrompt(options, round) });
     let result;
@@ -88,72 +93,113 @@ async function agentLoop(options, toolEvents) {
       await appendChatMessage(projectRoot, { role: "assistant", content: parsed.text, cost: totalCost || undefined });
       return { reply: parsed.text, toolEvents, pendingAction: null, usage: { calls, cost: totalCost } };
     }
-    if (toolEvents.length >= MAX_TOOL_ROUNDS) break;
+    // §2.3：只算成功执行的调用（ok===true），被拒/失败不占额度
+    const successfulRounds = toolEvents.filter((e) => e.ok).length;
+    if (successfulRounds >= maxToolRounds) break;
     if (signal?.aborted) return await finishCancelled(projectRoot, toolEvents, calls, totalCost);
-    const tool = registry.get(parsed.call.tool);
-    const isRead = tool?.kind === "read";
-    if (tool && !isRead) {
-      // 权限预检：落 pending 之前先检查，避免 read_only 项目白白占确认位
-      const permission = checkToolPermission(tool, project?.tool_permissions ?? {}, { archived: Boolean(project?.archived_at) });
-      if (!permission.allowed) {
-        const outcome = { ok: false, error: "permission_denied", message: permission.message };
-        toolEvents.push({ tool: parsed.call.tool, ok: false, error: outcome.error });
-        await appendChatMessage(projectRoot, { role: "tool", tool: parsed.call.tool, ok: false, args: summarizeArgs(parsed.call.args), result_summary: outcome.message });
-        onEvent?.({ type: "tool_result", tool: parsed.call.tool, ok: false });
-        continue;
-      }
-      // 免确认分支：yolo 放开 write+control；auto_edit 仅放开 write。免「确认」不免「校验」——直接走 executeTool 原链。
-      // 写作运行时写保护：见 checkRunBusy 注释。running 时拒绝会与流水线竞态的 write 工具，
-      // 避免 chat 与后台 runProject 并发写 continuity/state 导致 lost update。
-      const busy = checkRunBusy(tool, server, projectRoot);
-      if (busy) {
-        toolEvents.push({ tool: parsed.call.tool, ok: false, error: busy.error });
-        await appendChatMessage(projectRoot, { role: "tool", tool: parsed.call.tool, ok: false, args: summarizeArgs(parsed.call.args), result_summary: busy.message });
-        onEvent?.({ type: "tool_result", tool: parsed.call.tool, ok: false });
-        continue;
-      }
-      const perms = project?.tool_permissions ?? {};
-      const autoApproved = perms.yolo === true || (perms.auto_edit === true && tool.kind === "write");
-      if (autoApproved) {
-        const outcome = await executeTool(registry, parsed.call.tool, parsed.call.args, { projectRoot, project, server, getTaskQueue });
-        const event = { tool: parsed.call.tool, ok: outcome.ok, error: outcome.ok ? null : outcome.error };
-        toolEvents.push(event);
+
+    // §2.4：处理本轮全部 tool_calls —— 顺序执行 read 类，遇到第一个 write/control 即挂 pending
+    let foundWriteTool = false;
+    let savedPending = null;
+    for (const tc of parsed.tool_calls) {
+      if (foundWriteTool) {
+        // 排在 write/control 之后的工具：丢弃并注明 skipped_after_pending
+        toolEvents.push({ tool: tc.tool, ok: false, error: "skipped_after_pending" });
         await appendChatMessage(projectRoot, {
-          role: "tool", tool: parsed.call.tool, ok: outcome.ok, auto_approved: true,
-          args: summarizeArgs(parsed.call.args),
-          result_summary: summarize(outcome.ok ? outcome.result : { error: outcome.error, message: outcome.message })
+          role: "tool", tool: tc.tool, ok: false,
+          args: summarizeArgs(tc.args),
+          result_summary: "SKIPPED: 前序操作已落待确认，此工具不执行。"
         });
-        onEvent?.({ type: "tool_result", ...event });
-        continue; // 回 loop 让模型看到结果继续
+        onEvent?.({ type: "tool_result", tool: tc.tool, ok: false });
+        continue;
       }
-      let preview = null;
-      if (parsed.call.tool === "edit_chapter") {
-        try { preview = await previewEditChapter(projectRoot, parsed.call.args); }
-        catch (error) {
-          const outcome = { ok: false, error: error.code ?? "preview_failed", message: error.message };
-          toolEvents.push({ tool: parsed.call.tool, ok: false, error: outcome.error });
-          await appendChatMessage(projectRoot, { role: "tool", tool: parsed.call.tool, ok: false, args: summarizeArgs(parsed.call.args), result_summary: outcome.message });
-          onEvent?.({ type: "tool_result", tool: parsed.call.tool, ok: false });
+
+      const tool = registry.get(tc.tool);
+      if (!tool) {
+        toolEvents.push({ tool: tc.tool, ok: false, error: "unknown_tool" });
+        await appendChatMessage(projectRoot, {
+          role: "tool", tool: tc.tool, ok: false,
+          args: summarizeArgs(tc.args),
+          result_summary: `unknown tool: ${tc.tool}`
+        });
+        onEvent?.({ type: "tool_result", tool: tc.tool, ok: false });
+        continue;
+      }
+
+      const isRead = tool.kind === "read";
+      if (!isRead) {
+        foundWriteTool = true;
+        // 权限预检
+        const permission = checkToolPermission(tool, project?.tool_permissions ?? {}, { archived: Boolean(project?.archived_at) });
+        if (!permission.allowed) {
+          const outcome = { ok: false, error: "permission_denied", message: permission.message };
+          toolEvents.push({ tool: tc.tool, ok: false, error: outcome.error });
+          await appendChatMessage(projectRoot, { role: "tool", tool: tc.tool, ok: false, args: summarizeArgs(tc.args), result_summary: outcome.message });
+          onEvent?.({ type: "tool_result", tool: tc.tool, ok: false });
           continue;
         }
+        // 写作运行时写保护
+        const busy = checkRunBusy(tool, server, projectRoot);
+        if (busy) {
+          toolEvents.push({ tool: tc.tool, ok: false, error: busy.error });
+          await appendChatMessage(projectRoot, { role: "tool", tool: tc.tool, ok: false, args: summarizeArgs(tc.args), result_summary: busy.message });
+          onEvent?.({ type: "tool_result", tool: tc.tool, ok: false });
+          continue;
+        }
+        // 免确认分支
+        const perms = project?.tool_permissions ?? {};
+        const autoApproved = perms.yolo === true || (perms.auto_edit === true && tool.kind === "write");
+        if (autoApproved) {
+          const outcome = await executeTool(registry, tc.tool, tc.args, { projectRoot, project, server, getTaskQueue });
+          const event = { tool: tc.tool, ok: outcome.ok, error: outcome.ok ? null : outcome.error };
+          toolEvents.push(event);
+          await appendChatMessage(projectRoot, {
+            role: "tool", tool: tc.tool, ok: outcome.ok, auto_approved: true,
+            args: summarizeArgs(tc.args),
+            result_summary: summarize(outcome.ok ? outcome.result : { error: outcome.error, message: outcome.message })
+          });
+          onEvent?.({ type: "tool_result", ...event });
+          continue; // 后续 tool_calls 被 foundWriteTool 跳过
+        }
+        // edit_chapter 预览
+        let preview = null;
+        if (tc.tool === "edit_chapter") {
+          try { preview = await previewEditChapter(projectRoot, tc.args); }
+          catch (error) {
+            const outcome = { ok: false, error: error.code ?? "preview_failed", message: error.message };
+            toolEvents.push({ tool: tc.tool, ok: false, error: outcome.error });
+            await appendChatMessage(projectRoot, { role: "tool", tool: tc.tool, ok: false, args: summarizeArgs(tc.args), result_summary: outcome.message });
+            onEvent?.({ type: "tool_result", tool: tc.tool, ok: false });
+            continue;
+          }
+        }
+        // 记 toolEvent（ok=true 表示预览通过，pending 状态由 pendingAction 字段指示）
+        toolEvents.push({ tool: tc.tool, ok: true, error: null });
+        // 挂 pending，不立即返回——等后续 tools 标记跳过后再返回
+        savedPending = await savePendingAction(projectRoot, {
+          tool: tc.tool, args: tc.args, preview, lead_text: parsed.leadText ?? ""
+        });
+        continue;
       }
-      const pending = await savePendingAction(projectRoot, {
-        tool: parsed.call.tool, args: parsed.call.args, preview, lead_text: parsed.leadText ?? ""
+
+      // Read 工具：立即执行并落盘
+      const outcome = await executeTool(registry, tc.tool, tc.args, { projectRoot, project, server, getTaskQueue });
+      const event = { tool: tc.tool, ok: outcome.ok, error: outcome.ok ? null : outcome.error };
+      toolEvents.push(event);
+      await appendChatMessage(projectRoot, {
+        role: "tool", tool: tc.tool, ok: outcome.ok,
+        args: summarizeArgs(tc.args),
+        result_summary: summarize(outcome.ok ? outcome.result : { error: outcome.error, message: outcome.message })
       });
-      const note = [parsed.leadText, `（待确认操作：${parsed.call.tool}，请在确认卡上批准或取消）`].filter(Boolean).join("\n");
-      await appendChatMessage(projectRoot, { role: "assistant", content: note, cost: totalCost || undefined });
-      onEvent?.({ type: "pending_action", action: pending });
-      return { reply: note, toolEvents, pendingAction: pending, usage: { calls, cost: totalCost } };
+      onEvent?.({ type: "tool_result", ...event });
     }
-    const outcome = await executeTool(registry, parsed.call.tool, parsed.call.args, { projectRoot, project, server, getTaskQueue });
-    const event = { tool: parsed.call.tool, ok: outcome.ok, error: outcome.ok ? null : outcome.error };
-    toolEvents.push(event);
-    await appendChatMessage(projectRoot, {
-      role: "tool", tool: parsed.call.tool, ok: outcome.ok,
-      args: summarizeArgs(parsed.call.args),
-      result_summary: summarize(outcome.ok ? outcome.result : { error: outcome.error, message: outcome.message })
-    });
-    onEvent?.({ type: "tool_result", ...event });
+    // 本轮全部 tool_calls 处理完毕：若写入 pending，返回等待确认；否则续下一轮
+    if (savedPending) {
+      const note = [parsed.leadText, `（待确认操作：${savedPending.tool}，请在确认卡上批准或取消）`].filter(Boolean).join("\n");
+      await appendChatMessage(projectRoot, { role: "assistant", content: note, cost: totalCost || undefined });
+      onEvent?.({ type: "pending_action", action: savedPending });
+      return { reply: note, toolEvents, pendingAction: savedPending, usage: { calls, cost: totalCost } };
+    }
   }
   const capped = "操作轮数达到上限，我先停在这里。请把任务拆小一点，或直接告诉我下一步。";
   await appendChatMessage(projectRoot, { role: "assistant", content: capped });

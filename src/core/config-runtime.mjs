@@ -18,7 +18,8 @@ export const DEFAULT_CONFIG = {
   budget_config: {},
   cache_config: {},
   research_config: {},
-  enabled_skills: []
+  enabled_skills: [],
+  chat_max_tool_rounds: 32
 };
 
 export async function loadConfigLayers(projectRoot, project = {}, options = {}) {
@@ -110,6 +111,7 @@ export function normalizeConfigLayer(layer = {}, options = {}) {
   copyIfDefined(config, source, "enabled_skills");
   copyIfDefined(config, source, "default_writer_model");
   copyIfDefined(config, source, "default_reviewer_model");
+  copyIfDefined(config, source, "chat_max_tool_rounds");
 
   if (source.network_allowed !== undefined) {
     config.tool_permissions ??= {};
