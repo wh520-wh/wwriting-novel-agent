@@ -1691,7 +1691,8 @@ async function startProjectRun(projectRoot, project, context, task, instructionM
       job.lastHeartbeat = new Date().toISOString();
       const queue = await context.getTaskQueue(projectRoot);
       await queue.updateRunning(task.id, { currentStage: stage, heartbeatAt: job.lastHeartbeat, chapter, step });
-    }
+    },
+    onActivity: () => { job.lastHeartbeat = new Date().toISOString(); }
   })
     .then(async (result) => {
       return await withProjectLock(context, projectRoot, async () => {

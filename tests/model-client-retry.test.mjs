@@ -263,3 +263,104 @@ test("adapter AbortError after external abort is never retried", async () => {
   );
   assert.equal(calls, 1);
 });
+
+// -- §3.1 onActivity tests --
+
+test("onActivity called on each retry for non-streaming", async () => {
+  const activityLog = [];
+  let calls = 0;
+  const adapter = {
+    async generate() {
+      calls++;
+      if (calls <= 2) {
+        throw new ProviderTransportError("Retryable", { reason: "server-retryable" });
+      }
+      return { text: "ok", usage: {} };
+    }
+  };
+  const client = new ModelClient({
+    adapters: { mock: adapter },
+    activeModel: { provider: "mock", model_name: "test" },
+    retryMax: 2,
+    retryBaseDelayMs: 10,
+    retryMaxDelayMs: 10,
+    onActivity: () => { activityLog.push(Date.now()); }
+  });
+
+  const result = await client.generate({ prompt: "hi" });
+  assert.equal(result.text, "ok");
+  // 2 retries from 2 failures -> 2 onActivity calls
+  assert.equal(activityLog.length, 2);
+});
+
+test("onActivity called via metadata during streaming", async () => {
+  const activityLog = [];
+  const adapter = {
+    async generate({ metadata }) {
+      // Simulate SSE streaming: call onActivity on each chunk
+      for (let i = 0; i < 5; i++) {
+        metadata?.onActivity?.();
+      }
+      return { text: "stream complete", usage: {} };
+    }
+  };
+  const client = new ModelClient({
+    adapters: { mock: adapter },
+    activeModel: { provider: "mock", model_name: "test" },
+    onActivity: () => { activityLog.push(Date.now()); }
+  });
+
+  const result = await client.generate({ prompt: "hi" });
+  assert.equal(result.text, "stream complete");
+  assert.equal(activityLog.length, 5, "onActivity should be called 5 times (one per simulated chunk)");
+});
+
+test("onActivity not set in metadata when not configured", async () => {
+  const adapter = {
+    async generate({ metadata }) {
+      assert.equal(metadata?.onActivity, undefined);
+      return { text: "ok", usage: {} };
+    }
+  };
+  const client = new ModelClient({
+    adapters: { mock: adapter },
+    activeModel: { provider: "mock", model_name: "test" }
+  });
+
+  const result = await client.generate({ prompt: "hi" });
+  assert.equal(result.text, "ok");
+});
+
+test("onActivity not called on first successful non-streaming attempt", async () => {
+  const activityLog = [];
+  const adapter = {
+    async generate() {
+      return { text: "ok", usage: {} };
+    }
+  };
+  const client = new ModelClient({
+    adapters: { mock: adapter },
+    activeModel: { provider: "mock", model_name: "test" },
+    onActivity: () => { activityLog.push(Date.now()); }
+  });
+
+  await client.generate({ prompt: "hi" });
+  assert.equal(activityLog.length, 0, "no retry -> no onActivity for non-streaming");
+});
+
+test("onActivity preserves existing metadata fields", async () => {
+  const adapter = {
+    async generate({ metadata }) {
+      assert.equal(metadata.userField, "hello");
+      assert.equal(typeof metadata.onActivity, "function");
+      return { text: "ok", usage: {} };
+    }
+  };
+  const client = new ModelClient({
+    adapters: { mock: adapter },
+    activeModel: { provider: "mock", model_name: "test" },
+    onActivity: () => {}
+  });
+
+  await client.generate({ prompt: "hi", metadata: { userField: "hello" } });
+});

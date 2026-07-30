@@ -109,3 +109,70 @@ test("readEvents with a small limit handles a large log and returns only recent 
   assert.deepEqual(recent.map((event) => event.data.seq), [4995, 4996, 4997, 4998, 4999]);
   assert.ok(elapsedMs < 100, `expected recent log read under 100ms, got ${elapsedMs}ms`);
 });
+
+// -- §3.2 corrupted line tolerance tests --
+
+test("readEvents skips a single malformed JSON line", async () => {
+  const root = await makeProject();
+  await appendEvent(root, { type: "good", message: "before" });
+  // Inject a bad line directly
+  const logPath = path.join(root, "run_log.jsonl");
+  await fs.appendFile(logPath, `{"broken}\n`, "utf8");
+  await appendEvent(root, { type: "good", message: "after" });
+
+  const events = await readEvents(root);
+  assert.equal(events.length, 2);
+  assert.equal(events[0].message, "before");
+  assert.equal(events[1].message, "after");
+});
+
+test("readEvents with limit skips malformed lines in middle of file", async () => {
+  const root = await makeProject();
+  const ids = [];
+  for (let i = 0; i < 5; i++) {
+    const ev = await appendEvent(root, { type: "good", message: `msg-${i}` });
+    ids.push(ev.event_id);
+  }
+  // Inject bad lines in the middle
+  const logPath = path.join(root, "run_log.jsonl");
+  await fs.appendFile(logPath, `garbage_line\n`, "utf8");
+  await fs.appendFile(logPath, `{truncated\n`, "utf8");
+  for (let i = 5; i < 10; i++) {
+    const ev = await appendEvent(root, { type: "good", message: `msg-${i}` });
+    ids.push(ev.event_id);
+  }
+
+  const tail = await readEvents(root, { limit: 5 });
+  // tail returns last 5 non-empty lines: [good5, good6, good7, good8, good9]
+  // all parse correctly because bad lines are before the tail window
+  assert.equal(tail.length, 5);
+  assert.equal(tail[0].message, "msg-5");
+  assert.equal(tail[4].message, "msg-9");
+});
+
+test("readEvents handles file with all bad lines", async () => {
+  const root = await makeProject();
+  const logPath = path.join(root, "run_log.jsonl");
+  await fs.writeFile(logPath, `garbage\nnot-json\n{"partial\n`, "utf8");
+
+  const events = await readEvents(root);
+  assert.deepEqual(events, []);
+});
+
+test("readEvents empty file returns empty array", async () => {
+  const root = await makeProject();
+  const logPath = path.join(root, "run_log.jsonl");
+  await fs.writeFile(logPath, "", "utf8");
+
+  const events = await readEvents(root);
+  assert.deepEqual(events, []);
+});
+
+test("readEvents with limit on empty file returns empty array", async () => {
+  const root = await makeProject();
+  const logPath = path.join(root, "run_log.jsonl");
+  await fs.writeFile(logPath, "", "utf8");
+
+  const events = await readEvents(root, { limit: 5 });
+  assert.deepEqual(events, []);
+});

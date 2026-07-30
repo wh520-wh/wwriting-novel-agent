@@ -894,7 +894,8 @@ async function createModelRuntime(projectRoot, project, options, fallbackModel) 
           message: `模型调用重试 ${info.attempt}/${info.maxAttempts}（${info.reason}），等待 ${Math.round(info.delay)}ms`,
           data: { attempt: info.attempt, reason: info.reason, model: info.model }
         }).catch(() => {});
-      }
+      },
+      onActivity: options.onActivity
     });
   return {
     modelClient,

@@ -25,12 +25,29 @@ export async function readEvents(projectRoot, options = {}) {
     return [];
   }
 
+  let skipped_lines = 0;
+
+  // Helper to safely parse a JSON line
+  function tryParse(line) {
+    try {
+      return JSON.parse(line);
+    } catch {
+      skipped_lines++;
+      return null;
+    }
+  }
+
   // No limit = full read (backward compatible)
   if (!options.limit) {
-    const events = (await fs.readFile(logPath, "utf8"))
-      .split(/\r?\n/u)
-      .filter(Boolean)
-      .map((line) => JSON.parse(line));
+    const lines = (await fs.readFile(logPath, "utf8")).split(/\r?\n/u).filter(Boolean);
+    const events = [];
+    for (const line of lines) {
+      const parsed = tryParse(line);
+      if (parsed !== null) events.push(parsed);
+    }
+    if (skipped_lines > 0) {
+      console.warn(`[event-log] readEvents: skipped ${skipped_lines} malformed line(s) in ${logPath}`);
+    }
     return events;
   }
 
@@ -66,7 +83,17 @@ export async function readEvents(projectRoot, options = {}) {
       lines.unshift(remainder);
     }
 
-    return lines.map((line) => JSON.parse(line));
+    const events = [];
+    for (const line of lines) {
+      const parsed = tryParse(line);
+      if (parsed !== null) events.push(parsed);
+    }
+
+    if (skipped_lines > 0) {
+      console.warn(`[event-log] readEvents: skipped ${skipped_lines} malformed line(s) in ${logPath}`);
+    }
+
+    return events;
   } finally {
     await handle.close();
   }
