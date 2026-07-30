@@ -1153,7 +1153,10 @@ async function compileChapterPrompt(projectRoot, project, state, request, runtim
           allowed_tools: request.allowed_tools ?? ["append_chapter_segment"],
           agent_loop_feedback: request.agent_loop_feedback ?? null,
           agent_loop_instruction: (request.allowed_tools?.length ?? 0) > 1
-            ? "写作时你可以先调用 read 类工具（list_chapters 看全局进度、read_chapter 读具体章节、read_continuity 查设定档案、read_outline 查大纲、get_status 看当前状态）查询前文与设定，也可以用 edit_chapter 修改本章已写部分。当前阶段还允许 update_continuity/update_outline 时，可修订设定或大纲。准备就绪后，必须调用 append_chapter_segment 提交本段新正文。一次只调用一个工具，工具结果会回给你。"
+            ? "你可以用工具（list_chapters / read_chapter / read_continuity / read_outline / get_status）查前文与设定，"
+              + "也可以用 edit_chapter 修改已写部分、update_continuity/update_outline 修订设定或大纲。"
+              + "准备好后，直接输出章节正文文字即可提交，不需要特地调用工具。"
+              + "一次只调用一个工具，工具结果会回给你继续下一步。"
             : null,
           segment_continuity_required: request.segment_no > 1,
           chapter_continuity_required: request.chapter_no > 1,
@@ -1294,13 +1297,19 @@ function checkpointModelExtras(modelCall) {
   };
 }
 
-// =============== 写作 agent 循环（调整点 1：软化管道） ===============
-// drafting/revising 阶段不再只让模型填一段正文，而是允许模型连续调用 read/edit/update 类工具
-// 查设定、改前文、修设定，最后以 append_chapter_segment 提交本段正文。
-// 保留旧管道兜底：连续 3 次“未成功提交”（纯文本 / 校验失败 / 非白名单工具）-> model_output_invalid；
-// 总轮数达上限仍没提交 -> agent_loop_exhausted。
+// =============== 写作 agent 循环（调整点 1：软化管道，重构为真正 agent 风格） ===============
+// 核心原则：模型输出的文字本身就是正文。工具（read/edit/update）是辅助手段，
+// 不是强制出口。模型可以自然地”读 → 想 → 写”，不需要通过特定工具才能提交内容。
+//
+// 两种提交方式等价：
+//   1. 直接输出正文文字 → 系统捕获为章节内容（主要路径）
+//   2. 调用 append_chapter_segment 工具 → 通过参数提交（兼容路径）
+//
+// 兜底：连续 COMMIT_FAILURES 次无效输出（空文本 / 校验失败 / 非白名单工具）→ model_output_invalid
+//       总轮数达上限 → agent_loop_exhausted（极少触发，正常情况下模型写完就退出）
 const WRITING_AGENT_MAX_ROUNDS = 8;
 const WRITING_AGENT_COMMIT_FAILURES = 8;
+const WRITING_AGENT_MIN_PROSE_CHARS = 50; // 文本输出少于此值视为无效，不算正文
 
 const DRAFTING_ALLOWED_TOOLS = [
   "get_status",
@@ -1336,6 +1345,17 @@ function summarizeToolResult(value) {
   return json.length > 500 ? `${json.slice(0, 500)}…` : json;
 }
 
+// 模型连续只读不写时追加轻量提示，避免陷入"永远在查资料"的循环。
+function appendReadLoopHint(feedback, attempt, maxRounds, output) {
+  if (!feedback) return;
+  // 只在后 1/3 区间且模型仍在做读操作时提示
+  if (attempt >= Math.ceil(maxRounds * 0.65) && output?.tool && output.tool !== "append_chapter_segment") {
+    const remaining = maxRounds - attempt;
+    feedback.message = (feedback.message ?? "") +
+      `\n💡 还剩 ${remaining} 轮。信息应该足够了，准备好后请直接输出正文（或调用 append_chapter_segment）。`;
+  }
+}
+
 async function failWritingAgentLoop(projectRoot, project, state, reason, lastValidation, lastModelCall, allowedTools) {
   await blockProject(projectRoot, project, state, reason, {
     last_validation: lastValidation,
@@ -1349,8 +1369,10 @@ async function failWritingAgentLoop(projectRoot, project, state, reason, lastVal
   });
 }
 
-// 写作 agent 循环：模型每轮可调一个白名单工具；非 append_chapter_segment 的工具结果作为
-// agent_loop_feedback 喂回下一轮 prompt。append_chapter_segment 校验通过即执行并退出循环。
+// 写作 agent 循环（重构版）：
+// 模型输出文字 = 正文，直接捕获提交；工具（read/edit/update）是辅助手段。
+// 两种等价提交路径：1) 直接输出正文文字 2) 调用 append_chapter_segment 工具。
+// 正常情况下模型查 1-3 轮资料后直接输出正文退出，极少触发 round 上限。
 async function runWritingAgentLoop(projectRoot, project, state, runtime, request) {
   const allowedTools = request.allowed_tools ?? ["append_chapter_segment"];
   const registry = buildWritingRegistry();
@@ -1378,27 +1400,77 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
     lastModelCall = modelCall;
     const output = modelCall.output;
 
-    // 情况 A：模型没调工具（纯文本），对应旧 invalid_output_channel
+    // ============================================================
+    // 情况 A：模型输出文字（没调工具）
+    // agent 风格：文字本身就是正文，直接捕获提交。
+    // ============================================================
     if (output.type !== "tool_call") {
-      const validation = {
-        ok: false,
-        code: "invalid_output_channel",
-        message: "Chapter body must be written through a tool_call, not delivered in chat."
+      const prose = (output.message ?? "").trim();
+
+      // 文字太短 → 模型在闲聊或确认，不算正文
+      if (prose.length < WRITING_AGENT_MIN_PROSE_CHARS) {
+        commitFailures += 1;
+        lastValidation = { ok: false, code: "output_too_short", message: `Output too short (${prose.length} chars, min ${WRITING_AGENT_MIN_PROSE_CHARS}).` };
+        agentLoopFeedback = {
+          status: "output_too_short",
+          message: `你的回复太短（${prose.length} 字）。请直接输出章节正文，至少 ${WRITING_AGENT_MIN_PROSE_CHARS} 字；或调用工具查询资料后输出正文。`
+        };
+        await appendEvent(projectRoot, {
+          type: "tool_call_rejected",
+          project_id: project.project_id, chapter_no: state.current_chapter_no, stage: state.current_stage,
+          severity: "warn", message: lastValidation.message,
+          data: { code: lastValidation.code, attempt, char_count: prose.length }
+        });
+        if (commitFailures >= WRITING_AGENT_COMMIT_FAILURES) {
+          await failWritingAgentLoop(projectRoot, project, state, "model_output_invalid", lastValidation, lastModelCall, allowedTools);
+          throw new ProjectBlockedError("model_output_invalid");
+        }
+        continue;
+      }
+
+      // 文字够长 → 这就是正文！包装为 append_chapter_segment 调用并执行
+      const proseCall = {
+        type: "tool_call",
+        tool: "append_chapter_segment",
+        input: {
+          project_id: project.project_id,
+          chapter_no: state.current_chapter_no,
+          segment_no: request.segment_no,
+          content: prose
+        }
       };
+      const validation = assertToolCallForChapter(proseCall, {
+        project_id: project.project_id,
+        chapter_no: state.current_chapter_no,
+        segment_no: request.segment_no,
+        allowedTools: ["append_chapter_segment"]
+      });
+      if (validation.ok) {
+        await appendEvent(projectRoot, {
+          type: "tool_call_requested",
+          project_id: project.project_id, chapter_no: state.current_chapter_no, stage: state.current_stage,
+          message: `model wrote prose as text (${prose.length} chars)`,
+          data: { tool: "append_chapter_segment", attempt, source: "text_output" }
+        });
+        const result = await executeToolCall(projectRoot, project, state, proseCall, {
+          expectedChapterNo: state.current_chapter_no,
+          expectedSegmentNo: request.segment_no
+        });
+        return { toolCall: proseCall, modelCall: lastModelCall, result };
+      }
+      // 文本通过了长度检查但校验失败（极少见，比如 project_id 不匹配）
       lastValidation = validation;
       commitFailures += 1;
       agentLoopFeedback = {
-        status: "no_tool_call",
-        message: "你没有调用工具。写作正文必须通过 append_chapter_segment 提交，请重新调用工具。"
+        status: "validation_failed",
+        tool: "append_chapter_segment",
+        message: validation.message
       };
       await appendEvent(projectRoot, {
-        type: "tool_call_rejected",
-        project_id: project.project_id,
-        chapter_no: state.current_chapter_no,
-        stage: state.current_stage,
-        severity: "warn",
-        message: validation.message,
-        data: { code: validation.code, attempt, output_type: output?.type ?? null }
+        type: "quality_gate_failed",
+        project_id: project.project_id, chapter_no: state.current_chapter_no, stage: state.current_stage,
+        severity: "warn", message: validation.message,
+        data: { code: validation.code, attempt, source: "text_output" }
       });
       if (commitFailures >= WRITING_AGENT_COMMIT_FAILURES) {
         await failWritingAgentLoop(projectRoot, project, state, "model_output_invalid", lastValidation, lastModelCall, allowedTools);
@@ -1407,15 +1479,15 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
       continue;
     }
 
+    // ============================================================
     // 情况 B：工具不在白名单
+    // ============================================================
     if (!allowedTools.includes(output.tool)) {
-      const validation = {
-        ok: false,
-        code: "unsupported_tool",
+      commitFailures += 1;
+      lastValidation = {
+        ok: false, code: "unsupported_tool",
         message: `Unsupported tool for chapter writing: ${output.tool ?? "missing"}`
       };
-      lastValidation = validation;
-      commitFailures += 1;
       agentLoopFeedback = {
         status: "tool_not_allowed",
         tool: output.tool,
@@ -1423,12 +1495,9 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
       };
       await appendEvent(projectRoot, {
         type: "tool_call_rejected",
-        project_id: project.project_id,
-        chapter_no: state.current_chapter_no,
-        stage: state.current_stage,
-        severity: "warn",
-        message: validation.message,
-        data: { code: validation.code, attempt, tool: output.tool }
+        project_id: project.project_id, chapter_no: state.current_chapter_no, stage: state.current_stage,
+        severity: "warn", message: lastValidation.message,
+        data: { code: lastValidation.code, attempt, tool: output.tool }
       });
       if (commitFailures >= WRITING_AGENT_COMMIT_FAILURES) {
         await failWritingAgentLoop(projectRoot, project, state, "model_output_invalid", lastValidation, lastModelCall, allowedTools);
@@ -1437,7 +1506,9 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
       continue;
     }
 
-    // 情况 C：append_chapter_segment —— 提交动作，校验通过即执行并退出
+    // ============================================================
+    // 情况 C：append_chapter_segment 工具调用 → 校验通过即执行并退出
+    // ============================================================
     if (output.tool === "append_chapter_segment") {
       const validation = assertToolCallForChapter(output, {
         project_id: project.project_id,
@@ -1448,10 +1519,8 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
       if (validation.ok) {
         await appendEvent(projectRoot, {
           type: "tool_call_requested",
-          project_id: project.project_id,
-          chapter_no: state.current_chapter_no,
-          stage: state.current_stage,
-          message: "model requested a file-writing tool",
+          project_id: project.project_id, chapter_no: state.current_chapter_no, stage: state.current_stage,
+          message: "model requested append_chapter_segment",
           data: { tool: output.tool, attempt }
         });
         const result = await executeToolCall(projectRoot, project, state, output, {
@@ -1460,7 +1529,7 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
         });
         return { toolCall: output, modelCall: lastModelCall, result };
       }
-      // 校验失败：记事件 + feedback，连续 3 次则 block
+      // 校验失败
       lastValidation = validation;
       commitFailures += 1;
       agentLoopFeedback = {
@@ -1470,21 +1539,15 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
       };
       await appendEvent(projectRoot, {
         type: "quality_gate_failed",
-        project_id: project.project_id,
-        chapter_no: state.current_chapter_no,
-        stage: state.current_stage,
-        severity: "warn",
-        message: validation.message,
-        data: { code: validation.code, attempt, output_type: output?.type ?? null }
+        project_id: project.project_id, chapter_no: state.current_chapter_no, stage: state.current_stage,
+        severity: "warn", message: validation.message,
+        data: { code: validation.code, attempt }
       });
       await appendEvent(projectRoot, {
         type: "tool_call_rejected",
-        project_id: project.project_id,
-        chapter_no: state.current_chapter_no,
-        stage: state.current_stage,
-        severity: "warn",
-        message: validation.message,
-        data: { code: validation.code, attempt, output_type: output?.type ?? null }
+        project_id: project.project_id, chapter_no: state.current_chapter_no, stage: state.current_stage,
+        severity: "warn", message: validation.message,
+        data: { code: validation.code, attempt }
       });
       if (commitFailures >= WRITING_AGENT_COMMIT_FAILURES) {
         await failWritingAgentLoop(projectRoot, project, state, "model_output_invalid", lastValidation, lastModelCall, allowedTools);
@@ -1493,7 +1556,9 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
       continue;
     }
 
-    // 情况 D：白名单内的 read/edit/update 工具 —— 通过 registry 执行，结果喂回模型
+    // ============================================================
+    // 情况 D：白名单内的 read/edit/update 工具 → 执行，结果喂回下一轮
+    // ============================================================
     const tool = registry.get(output.tool);
     if (!tool) {
       agentLoopFeedback = {
@@ -1515,11 +1580,8 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
       };
       await appendEvent(projectRoot, {
         type: "tool_call_rejected",
-        project_id: project.project_id,
-        chapter_no: state.current_chapter_no,
-        stage: state.current_stage,
-        severity: "warn",
-        message: permission.message,
+        project_id: project.project_id, chapter_no: state.current_chapter_no, stage: state.current_stage,
+        severity: "warn", message: permission.message,
         data: { tool: output.tool, reason: permission.message }
       });
       continue;
@@ -1527,14 +1589,9 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
 
     const toolStartMs = Date.now();
     try {
-      // 写作引擎自己 edit 当前章是预期行为：传空 runJobs 让 edit_chapter 跳过 chapter_busy 检查。
-      const toolCtx = {
-        projectRoot,
-        project,
-        server: { runJobs: new Map() }
-      };
+      const toolCtx = { projectRoot, project, server: { runJobs: new Map() } };
       const result = await tool.run(output.input ?? {}, toolCtx);
-      commitFailures = 0; // 模型在干活，重置提交失败计数
+      commitFailures = 0; // 模型在干活，重置失败计数
       const summary = summarizeToolResult(result);
       agentLoopFeedback = {
         status: "tool_result",
@@ -1543,9 +1600,7 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
       };
       await appendEvent(projectRoot, {
         type: "agent_loop_tool_executed",
-        project_id: project.project_id,
-        chapter_no: state.current_chapter_no,
-        stage: state.current_stage,
+        project_id: project.project_id, chapter_no: state.current_chapter_no, stage: state.current_stage,
         message: `agent loop tool ${output.tool}: ok`,
         data: { tool: output.tool, attempt, duration_ms: Date.now() - toolStartMs, result_summary: summary }
       });
@@ -1557,17 +1612,17 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
       };
       await appendEvent(projectRoot, {
         type: "agent_loop_tool_failed",
-        project_id: project.project_id,
-        chapter_no: state.current_chapter_no,
-        stage: state.current_stage,
+        project_id: project.project_id, chapter_no: state.current_chapter_no, stage: state.current_stage,
         severity: "warn",
         message: `agent loop tool ${output.tool} failed: ${error.message}`,
         data: { tool: output.tool, attempt, error: error.code ?? error.message, duration_ms: Date.now() - toolStartMs }
       });
     }
+    // 正常执行工具后追加轻量提示：如果接近轮数上限且仍在读，提醒该写了
+    appendReadLoopHint(agentLoopFeedback, attempt, WRITING_AGENT_MAX_ROUNDS, output);
   }
 
-  // 总轮数达上限仍没提交 append_chapter_segment
+  // 总轮数达上限仍没提交
   await failWritingAgentLoop(projectRoot, project, state, "agent_loop_exhausted", lastValidation, lastModelCall, allowedTools);
   throw new ProjectBlockedError("agent_loop_exhausted");
 }

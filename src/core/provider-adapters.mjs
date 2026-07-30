@@ -87,15 +87,16 @@ export class OpenAICompatibleAdapter {
       envName: modelConfig.api_key_env ?? this.apiKeyEnv
     });
     const usesChapterTool = shouldRequestChapterTool(metadata);
+    const allowedTools = metadata?.toolRequest?.allowed_tools ?? [];
     const selectedModel = modelConfig.model_name ?? model;
     const stream = modelConfig.stream === true && !usesChapterTool;
     const body = {
       model: selectedModel,
-      messages: buildMessages({ messages, prompt, usesChapterTool }),
+      messages: buildMessages({ messages, prompt, usesChapterTool, allowedTools }),
       ...optionalNumber("temperature", modelConfig.temperature),
       ...optionalNumber("top_p", modelConfig.top_p),
       ...optionalNumber("max_tokens", modelConfig.max_output_tokens ?? modelConfig.max_tokens),
-      ...buildChapterToolRequest(usesChapterTool, { ...modelConfig, base_url: baseUrl, model_name: selectedModel }),
+      ...buildChapterToolRequest(usesChapterTool, { ...modelConfig, base_url: baseUrl, model_name: selectedModel }, allowedTools),
       ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
       ...(modelConfig.extra_body ?? {})
     };
@@ -263,70 +264,193 @@ function optionalNumber(key, value) {
   return Number.isFinite(value) ? { [key]: value } : {};
 }
 
+// OpenAI function-call 格式的写作工具定义表。
+// 写作 agent 循环（runWritingAgentLoop）中的 DRAFTING_ALLOWED_TOOLS / REVISING_ALLOWED_TOOLS
+// 会通过 metadata.toolRequest.allowed_tools 传入，本表将其映射为 API 原生 tools 数组。
+// 与聊天代理的 renderToolDocs 对应：聊天模式用文本描述工具，写作模式用结构化 function 定义。
+const WRITING_TOOL_DEFINITIONS = {
+  get_status: {
+    type: "function",
+    function: {
+      name: "get_status",
+      description: "获取项目当前状态：进度、阶段、运行状况、字数。",
+      parameters: { type: "object", additionalProperties: false, properties: {} }
+    }
+  },
+  list_chapters: {
+    type: "function",
+    function: {
+      name: "list_chapters",
+      description: "列出所有章节的进度概览（章号、状态、字数、标题），一次看全局。",
+      parameters: { type: "object", additionalProperties: false, properties: {} }
+    }
+  },
+  read_chapter: {
+    type: "function",
+    function: {
+      name: "read_chapter",
+      description: "读取指定章节正文。返回章节号、状态、字数、正文内容（可能因长度截断）。",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        required: ["chapter_no"],
+        properties: {
+          chapter_no: { type: "integer", minimum: 1, description: "要读取的章节号" },
+          max_chars: { type: "integer", description: "返回字符数上限，默认 8000。超出会截断并标记 truncated=true" }
+        }
+      }
+    }
+  },
+  read_continuity: {
+    type: "function",
+    function: {
+      name: "read_continuity",
+      description: "读取设定档案（事实/时间线/角色）。可指定 entity 只看某个实体。",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          entity: { type: "string", description: "可选，指定要查询的实体名称（角色名/组织名/地点等）" }
+        }
+      }
+    }
+  },
+  read_outline: {
+    type: "function",
+    function: {
+      name: "read_outline",
+      description: "读取写作目标与任务计划，包括 story_seed、目标章数、字数要求等。",
+      parameters: { type: "object", additionalProperties: false, properties: {} }
+    }
+  },
+  edit_chapter: {
+    type: "function",
+    function: {
+      name: "edit_chapter",
+      description: "对指定章节正文做一次精确文本替换。find 唯一命中时直接替换；出现多次时需指定 occurrence 消歧。",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        required: ["chapter_no", "find", "replace"],
+        properties: {
+          chapter_no: { type: "integer", minimum: 1, description: "要编辑的章节号" },
+          find: { type: "string", minLength: 1, description: "要替换的原文片段（需精确匹配，建议至少 20 个字符确保唯一性）" },
+          replace: { type: "string", description: "替换后的文字" },
+          occurrence: { type: "integer", minimum: 1, description: "当 find 出现多次时，指定替换第几个（从 1 开始）。不填则要求 find 唯一" },
+          reason: { type: "string", description: "修改原因的简短说明" }
+        }
+      }
+    }
+  },
+  append_chapter_segment: {
+    type: "function",
+    function: {
+      name: "append_chapter_segment",
+      description: "将一段生成的章节正文追加到本地草稿文件。应用会在写入前校验参数。正文只放在 content 字段中，不要放在普通聊天文本里。",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        required: ["project_id", "chapter_no", "segment_no", "content"],
+        properties: {
+          project_id: { type: "string", description: "当前任务的精确 project_id" },
+          chapter_no: { type: "integer", minimum: 1, description: "当前任务的章节号" },
+          segment_no: { type: "integer", minimum: 1, description: "当前任务的下一段落号" },
+          content: { type: "string", minLength: 1, description: "本段落的完整正文。必须是连贯的叙事散文，不是大纲或要点。" }
+        }
+      }
+    }
+  },
+  update_continuity: {
+    type: "function",
+    function: {
+      name: "update_continuity",
+      description: "更新设定档案中的实体信息（角色/组织/地点/事件等），记录新发现的事实。",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        required: ["entity", "attribute", "value"],
+        properties: {
+          entity: { type: "string", description: "要更新的实体名（角色名/组织名/地点名等）" },
+          attribute: { type: "string", description: "要更新的属性名（如 age、status、location、relationship 等）" },
+          value: { type: "string", description: "属性的新值" },
+          note: { type: "string", description: "补充说明（如更新原因、来源章节等）" }
+        }
+      }
+    }
+  },
+  update_outline: {
+    type: "function",
+    function: {
+      name: "update_outline",
+      description: "更新写作大纲。可修改特定章节计划或整体大纲。",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        required: ["plan"],
+        properties: {
+          chapter_no: { type: "integer", minimum: 1, description: "可选，指定要更新的章节号。不填则更新整体大纲" },
+          plan: { type: "string", description: "更新后的大纲/计划内容" }
+        }
+      }
+    }
+  }
+};
+
 function shouldRequestChapterTool(metadata = {}) {
   return metadata?.toolRequest && metadata.toolRequest.project_id && metadata.toolRequest.chapter_no;
 }
 
-function buildMessages({ messages = [], prompt = "", usesChapterTool = false } = {}) {
+function buildMessages({ messages = [], prompt = "", usesChapterTool = false, allowedTools = [] } = {}) {
   const baseMessages = messages.length > 0 ? messages : [{ role: "user", content: prompt }];
   if (!usesChapterTool) {
     return baseMessages;
   }
+  const hasMultiple = allowedTools.length > 1;
+  const systemContent = hasMultiple
+    ? "You are WWriting's chapter writer. Use tools (get_status, list_chapters, read_chapter, read_continuity, read_outline) to check context; edit_chapter to fix text; update_continuity/update_outline to record facts. When ready, output chapter prose directly as text — it will be captured automatically. Or call append_chapter_segment as an alternative."
+    : "You are WWriting's chapter writer. For chapter body output, call append_chapter_segment exactly once. Put the chapter prose only in the tool input.content field, never in normal chat content.";
   return [
-    {
-      role: "system",
-      content:
-        "You are WWriting's chapter writer. For chapter body output, call append_chapter_segment exactly once. Put the chapter prose only in the tool input.content field, never in normal chat content."
-    },
+    { role: "system", content: systemContent },
     ...baseMessages
   ];
 }
 
-function buildChapterToolRequest(usesChapterTool, modelConfig = {}) {
+function buildChapterToolRequest(usesChapterTool, modelConfig = {}, allowedTools = []) {
   if (!usesChapterTool) {
     return {};
   }
+
+  // 根据写作 agent 循环传入的 allowed_tools 动态构建 tools 数组。
+  // 单工具模式（仅 append_chapter_segment）保持向后兼容；
+  // 多工具模式（drafting/revising 阶段白名单）把全部允许工具发给 API，
+  // 让模型按需先查设定/读前文/改正文，最后再提交 append_chapter_segment。
+  const toolNames = allowedTools.length > 0 ? allowedTools : ["append_chapter_segment"];
+  const tools = [];
+  for (const name of toolNames) {
+    const def = WRITING_TOOL_DEFINITIONS[name];
+    if (def) {
+      tools.push(def);
+    }
+  }
+
+  if (tools.length === 0) {
+    return {};
+  }
+
+  const hasMultiple = tools.length > 1;
+
   return {
-    tools: [
-      {
-        type: "function",
-        function: {
-          name: "append_chapter_segment",
-          description: "Append one generated chapter segment to the local draft file. The application validates arguments before writing.",
-          parameters: {
-            type: "object",
-            additionalProperties: false,
-            required: ["project_id", "chapter_no", "segment_no", "content"],
-            properties: {
-              project_id: {
-                type: "string",
-                description: "The exact active WWriting project_id supplied by the current task."
-              },
-              chapter_no: {
-                type: "integer",
-                minimum: 1,
-                description: "The active chapter number supplied by the current task."
-              },
-              segment_no: {
-                type: "integer",
-                minimum: 1,
-                description: "The next segment number supplied by the current task."
-              },
-              content: {
-                type: "string",
-                minLength: 1,
-                description: "The complete prose for this chapter segment."
-              }
-            }
-          }
-        }
-      }
-    ],
-    tool_choice: chapterToolChoice(modelConfig)
+    tools,
+    tool_choice: chapterToolChoice(modelConfig, hasMultiple)
   };
 }
 
-function chapterToolChoice(modelConfig = {}) {
+function chapterToolChoice(modelConfig = {}, hasMultipleTools = false) {
+  // 多工具模式：模型需要自主选择 read/edit/update/append，必须用 "auto"
+  if (hasMultipleTools) {
+    return "auto";
+  }
+  // 单工具模式：保持原有逻辑，非 DeepSeek 推理模型强制调用 append_chapter_segment
   if (requiresAutoToolChoice(modelConfig)) {
     return "auto";
   }
