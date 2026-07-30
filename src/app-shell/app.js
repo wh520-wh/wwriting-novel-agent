@@ -355,9 +355,7 @@ refs.settingsSave.addEventListener("click", () => saveSettings());
 refs.settingsSearch.addEventListener("input", () => renderSettingsProviders());
 refs.settingsAdd.addEventListener("click", () => settingsModal.resetToCustom());
 refs.createX.addEventListener("click", closeCreateModal);
-refs.createScrim.addEventListener("click", (event) => {
-  if (event.target === refs.createScrim) closeCreateModal();
-});
+// 新建弹窗：只通过右上角 X 或 Esc 关闭，避免点击遮罩误触丢失已填内容。
 refs.createBrowse.addEventListener("click", () => browseForCreatePath());
 refs.createSubmit.addEventListener("click", () => initProject(refs.createPath.value.trim()));
 
@@ -1051,18 +1049,56 @@ async function openFromFolder() {
 }
 
 async function browseForCreatePath() {
+  setCreateStatus("", "");
   const picked = await window.wwritingDesktop?.selectProjectFolder?.();
-  if (picked) refs.createPath.value = picked;
-  else if (!window.wwritingDesktop?.selectProjectFolder) showToast("预览环境请手动输入文件夹路径。", "info");
+  if (picked) {
+    refs.createPath.value = picked;
+    setCreateStatus(`已选择：${picked}`, "info");
+    refs.createTitle.focus();
+  } else if (!window.wwritingDesktop?.selectProjectFolder) {
+    showToast("预览环境请手动输入文件夹路径。", "info");
+  }
 }
 
-async function initProject(projectRoot) {
+function normalizeProjectPath(raw) {
+  return raw?.trim()?.replace(/[\s]+$/g, "").replace(/\/$/g, "").replace(/\\$/g, "") ?? "";
+}
+
+function resetCreateForm() {
+  refs.createTitle.value = "";
+  refs.createSeed.value = "";
+  refs.createChapters.value = "100";
+  refs.createMinWords.value = "3000";
+  refs.createPath.value = "";
+  setCreateStatus("", "");
+  const spinner = refs.createSubmit.querySelector(".btn-spinner");
+  const label = refs.createSubmit.querySelector(".btn-label");
+  if (spinner) spinner.hidden = true;
+  if (label) label.hidden = false;
+}
+
+function setCreateSubmitLoading(loading) {
+  refs.createSubmit.disabled = loading;
+  const spinner = refs.createSubmit.querySelector(".btn-spinner");
+  const label = refs.createSubmit.querySelector(".btn-label");
+  if (spinner) spinner.hidden = !loading;
+  if (label) label.hidden = loading;
+}
+
+async function initProject(rawPath) {
+  const projectRoot = normalizeProjectPath(rawPath);
   if (!projectRoot) {
     setCreateStatus("请填写要保存到的本地文件夹路径。", "error");
+    refs.createPath.focus();
     return;
   }
-  refs.createSubmit.disabled = true;
-  setCreateStatus("正在初始化项目...", "");
+  if (/^(\\|\/|\\\\|[a-zA-Z]:\\?)$/.test(projectRoot) || projectRoot.length < 3) {
+    setCreateStatus("请填写一个具体文件夹路径，不要只写盘符或根目录。", "error");
+    refs.createPath.focus();
+    return;
+  }
+  setCreateSubmitLoading(true);
+  setCreateStatus("正在初始化项目...", "info");
   try {
     const minWords = Number(refs.createMinWords.value || 3000);
     await postJson("/api/projects/init", {
@@ -1077,13 +1113,14 @@ async function initProject(projectRoot) {
     // 切换项目：提升 generation、清空临时状态。
     commitProjectSwitch(projectRoot);
     closeCreateModal();
+    resetCreateForm();
     showToast("小说已创建并打开。", "success");
     await loadAll();
   } catch (error) {
     setCreateStatus(error.message, "error");
     showToast(error.message, "error");
   } finally {
-    refs.createSubmit.disabled = false;
+    setCreateSubmitLoading(false);
   }
 }
 
@@ -1166,7 +1203,7 @@ async function handleStop() {
 
 function setCreateStatus(text, kind) {
   refs.createStatus.textContent = text;
-  refs.createStatus.className = `spd-hint${kind ? ` ${kind}` : ""}`;
+  refs.createStatus.className = `create-status${kind ? ` ${kind}` : ""}`;
 }
 
 // 阅读器字号四档（行高随档位），持久化 localStorage。
@@ -1282,12 +1319,15 @@ function renderCreateModalCopy() {
   };
   if (refs.createHeading) refs.createHeading.textContent = copy.heading;
   if (refs.createLead) refs.createLead.textContent = copy.lead;
-  if (refs.createSubmit) refs.createSubmit.textContent = copy.submit;
+  const submitLabel = refs.createSubmit?.querySelector(".btn-label");
+  if (submitLabel) submitLabel.textContent = copy.submit;
+  else if (refs.createSubmit) refs.createSubmit.textContent = copy.submit;
 }
 
 function openCreateModal(prefillPath, options = {}) {
   createModalMode = options.mode ?? "new";
   setCreateStatus("", "");
+  setCreateSubmitLoading(false);
   if (prefillPath) refs.createPath.value = prefillPath;
   renderCreateModalCopy();
   openOverlay(refs.createScrim, refs.createTitle);

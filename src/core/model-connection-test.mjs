@@ -137,8 +137,13 @@ export async function completeOpenAICompatibleProbe({
     signal,
   });
   if (!response || typeof response.text !== "string" || !response.text.trim()) {
-    const error = new Error("Provider returned empty or unparseable response");
+    const rawSummary = summarizeResponseForDiagnostics(response?.raw);
+    const message = rawSummary
+      ? `模型返回了 200，但内容为空或无法解析。返回摘要：${rawSummary}`
+      : "Provider returned empty or unparseable response";
+    const error = new Error(message);
     error.code = "response_incompatible";
+    error.raw = response?.raw ?? null;
     throw error;
   }
   return response;
@@ -186,6 +191,21 @@ async function runWithRetry(fn, { maxAttempts = 1, retryDelayMs = 2000, signal }
   }
   // Should not reach here, but satisfy type-safety
   throw lastError ?? new Error("Probe failed for unknown reason");
+}
+
+function summarizeResponseForDiagnostics(raw) {
+  if (!raw || typeof raw !== "object") return "";
+  try {
+    const firstChoice = raw.choices?.[0];
+    if (firstChoice) {
+      const keys = Object.keys(firstChoice?.message ?? {});
+      return `choices[0].message 字段: ${keys.join(", ") || "(empty)"}`;
+    }
+    const keys = Object.keys(raw).slice(0, 8);
+    return `响应顶层字段: ${keys.join(", ") || "(empty)"}`;
+  } catch {
+    return "";
+  }
 }
 
 function readSecret(secrets, envName) {

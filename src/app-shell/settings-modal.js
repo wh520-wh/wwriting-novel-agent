@@ -3,7 +3,7 @@ import { compactObject, isEnvironmentVariableName, resolveModelEndpoint } from "
 import { getJson, postJson, sendChatMessage } from "./api-client.js";
 import { motion } from "./motion-runtime.js";
 import { PERMISSION_TIERS, detectPermissionTier } from "./permission-tiers.mjs";
-import { MIMO_PRESET, formatConnectionStatus, submitModelConnectionTest } from "./settings-connection.mjs";
+import { formatConnectionStatus, submitModelConnectionTest } from "./settings-connection.mjs";
 
 // Re-export so consumers that already `import { ... } from "./settings-modal.js"`
 // continue to work. The pure helpers themselves live in ./settings-connection.mjs
@@ -47,6 +47,11 @@ export function createSettingsModal(ctx, options = {}) {
   let connectionState = "idle";
   // Single in-flight AbortController per modal so closing/switching cancels cleanly.
   let connectionAbortController = null;
+  // Preserve the API Key the user is currently typing when switching providers,
+  // as long as the env name stays the same. Avoids carrying secrets across
+  // different providers (different api_key_env).
+  let lastTypedApiKey = "";
+  let lastTypedApiKeyEnv = "";
 
   async function fetchModelSecret() {
     try {
@@ -575,28 +580,23 @@ export function createSettingsModal(ctx, options = {}) {
       name.className = "sp-name";
       name.textContent = provider.name;
       button.append(av, name);
-      button.addEventListener("click", () => {
-        const previous = settingsProviderId;
+      button.addEventListener("click", async () => {
+        const previousEnv = settingsFields.apiKeyEnv?.input?.value ?? "";
+        const previousKey = settingsFields.apiKey?.input?.value ?? "";
         settingsProviderId = provider.id;
-        // MiMo preset selection autofills exact fields. Clear the temporary key
-        // so we never carry the previous provider's typed secret into the new one.
-        if (previous !== provider.id && provider.preset === "mimo") {
-          applyMimoPresetAutofill();
-        }
         renderSettingsProviders();
-        renderSettingsDetail();
+        await renderSettingsDetail();
+        // Restore the key the user was typing if the env name did not change.
+        // Different env names mean different providers/keys, so we intentionally
+        // leave the field empty there.
+        if (previousEnv && previousKey && settingsFields.apiKeyEnv?.input?.value === previousEnv) {
+          if (settingsFields.apiKey?.input && !settingsFields.apiKey.input.value) {
+            settingsFields.apiKey.input.value = previousKey;
+          }
+        }
       });
       return button;
     }));
-  }
-
-  function applyMimoPresetAutofill() {
-    // Refetch the rendered fields lazily: renderSettingsDetail may not have run
-    // yet for a fresh modal. If the fields exist, mutate in place so the user
-    // sees the autofill before the section re-renders.
-    if (settingsFields.model?.input) settingsFields.model.input.value = MIMO_PRESET.model_name;
-    if (settingsFields.baseUrl?.input) settingsFields.baseUrl.input.value = MIMO_PRESET.base_url;
-    if (settingsFields.apiKeyEnv?.input) settingsFields.apiKeyEnv.input.value = MIMO_PRESET.api_key_env;
   }
 
   async function renderSettingsDetail() {
@@ -651,7 +651,9 @@ export function createSettingsModal(ctx, options = {}) {
     });
     if (usingThisPreset && profile.api_key_saved) {
       fetchModelSecret().then((savedKey) => {
-        if (savedKey && settingsFields.apiKey?.input) {
+        // Only prefill the saved key when the user has not already typed one
+        // (e.g. after a provider switch we restored their temporary key).
+        if (savedKey && settingsFields.apiKey?.input && !settingsFields.apiKey.input.value) {
           settingsFields.apiKey.input.value = savedKey;
         }
       });
@@ -820,7 +822,7 @@ export function createSettingsModal(ctx, options = {}) {
     // Empty key field is intentional: when the user leaves it blank we trust
     // the server-side stored secret for the same env. The server re-checks
     // secrets and returns configuration_missing if neither is available.
-    const temporaryKey = settingsFields.apiKey.input.value;
+    const temporaryKey = settingsFields.apiKey.input.value.trim();
     try {
       const result = await submitModelConnectionTest({
         postJsonImpl,

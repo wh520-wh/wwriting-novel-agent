@@ -349,27 +349,34 @@ function requiresAutoToolChoice(modelConfig = {}) {
 }
 
 function extractText(raw) {
-  if (typeof raw.output_text === "string") {
+  if (typeof raw.output_text === "string" && raw.output_text) {
     return raw.output_text;
   }
   const firstChoice = raw.choices?.[0];
-  if (typeof firstChoice?.message?.content === "string") {
-    return firstChoice.message.content;
-  }
-  if (Array.isArray(firstChoice?.message?.content)) {
-    return firstChoice.message.content
+  const message = firstChoice?.message;
+  let text = "";
+  if (typeof message?.content === "string") {
+    text = message.content;
+  } else if (Array.isArray(message?.content)) {
+    text = message.content
       .map((part) => (typeof part === "string" ? part : part?.text ?? ""))
       .filter(Boolean)
       .join("");
   }
-  if (typeof firstChoice?.text === "string") {
-    return firstChoice.text;
+  // DeepSeek 等推理模型可能在 content 为空时把内容放在 reasoning_content。
+  if (!text && typeof message?.reasoning_content === "string") {
+    text = message.reasoning_content;
   }
-  return "";
+  if (!text && typeof firstChoice?.text === "string") {
+    text = firstChoice.text;
+  }
+  return text;
 }
 
 function extractStreamToken(event) {
-  return event.choices?.[0]?.delta?.content ?? event.choices?.[0]?.text ?? "";
+  const delta = event.choices?.[0]?.delta ?? {};
+  // 空字符串时用 reasoning_content 兜底，避免推理模型 content 为空时丢 token。
+  return delta.content || delta.reasoning_content || event.choices?.[0]?.text || "";
 }
 
 /**
