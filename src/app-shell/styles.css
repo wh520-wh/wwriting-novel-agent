@@ -1493,6 +1493,49 @@ button.cbar-pill--readonly:hover {
   opacity: 0.5;
   cursor: not-allowed;
 }
+.failure-card-inline-prompt {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  width: 100%;
+}
+.failure-card-inline-prompt textarea {
+  flex: 1;
+  min-height: 48px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 13px;
+  resize: vertical;
+  line-height: 1.5;
+}
+.failure-card-inline-prompt textarea:disabled {
+  opacity: 0.5;
+}
+.failure-card-inline-prompt button {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  padding: 6px 14px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+  align-self: flex-end;
+}
+.failure-card-inline-prompt button:hover:not(:disabled) {
+  background: var(--hover);
+}
+.failure-card-inline-prompt button.destructive {
+  border-color: var(--red);
+  color: var(--red);
+}
+.failure-card-inline-prompt button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 .failure-resolved {
   color: var(--muted);
   font-size: 12px;

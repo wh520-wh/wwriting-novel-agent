@@ -267,9 +267,9 @@ test("recoverInterruptedProjects detects stale running project", () => {
       recentProjects: [{ projectRoot: projectDir, title: "test" }]
     }));
     const runJobs = new Map();
-    const candidates = recoverInterruptedProjects(stateRoot, runJobs);
-    assert.equal(candidates.size, 1);
-    assert.ok(candidates.has(path.resolve(projectDir)));
+    const result = recoverInterruptedProjects(stateRoot, runJobs);
+    assert.equal(result.recoveryCandidates.size, 1);
+    assert.ok(result.recoveryCandidates.has(path.resolve(projectDir)));
   } finally {
     fss.rmSync(dir, { recursive: true, force: true });
   }
@@ -292,8 +292,8 @@ test("recoverInterruptedProjects skips project with running job", () => {
       recentProjects: [{ projectRoot: projectDir }]
     }));
     const runJobs = new Map([[path.resolve(projectDir), { status: "running" }]]);
-    const candidates = recoverInterruptedProjects(stateRoot, runJobs);
-    assert.equal(candidates.size, 0, "有存活 job 时不应标记为残留");
+    const result = recoverInterruptedProjects(stateRoot, runJobs);
+    assert.equal(result.recoveryCandidates.size, 0, "有存活 job 时不应标记为残留");
   } finally {
     fss.rmSync(dir, { recursive: true, force: true });
   }
@@ -315,8 +315,8 @@ test("recoverInterruptedProjects skips non-running project", () => {
       lastProjectRoot: projectDir,
       recentProjects: [{ projectRoot: projectDir }]
     }));
-    const candidates = recoverInterruptedProjects(stateRoot, new Map());
-    assert.equal(candidates.size, 0, "已完成的项目不应标记残留");
+    const result = recoverInterruptedProjects(stateRoot, new Map());
+    assert.equal(result.recoveryCandidates.size, 0, "已完成的项目不应标记残留");
   } finally {
     fss.rmSync(dir, { recursive: true, force: true });
   }

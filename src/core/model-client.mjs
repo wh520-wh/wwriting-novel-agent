@@ -73,11 +73,13 @@ export class ModelClient {
     const attemptTimeoutMs = modelConfig.timeout_ms ?? this.timeoutMs;
 
     const startTime = Date.now();
+    // §4.2.2: Stage-configurable total deadline — modelConfig.total_deadline_ms overrides constructor default
+    const totalDeadlineMs = modelConfig.total_deadline_ms ?? this.totalDeadlineMs;
 
     for (let attempt = 0; attempt <= this.retryMax; attempt++) {
       // Check total deadline before starting the attempt
       const elapsed = Date.now() - startTime;
-      if (elapsed >= this.totalDeadlineMs) {
+      if (elapsed >= totalDeadlineMs) {
         // Total deadline exceeded — throw immediately, do not retry.
         // Retrying on deadline would waste one backoff delay for a guaranteed timeout.
         throw new ProviderTransportError("Request exceeded total deadline.", { reason: "timeout" });
