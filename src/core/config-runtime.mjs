@@ -19,7 +19,8 @@ export const DEFAULT_CONFIG = {
   cache_config: {},
   research_config: {},
   enabled_skills: [],
-  chat_max_tool_rounds: 32
+  chat_max_tool_rounds: 32,
+  auto_resume_on_start: false
 };
 
 export async function loadConfigLayers(projectRoot, project = {}, options = {}) {
@@ -112,6 +113,7 @@ export function normalizeConfigLayer(layer = {}, options = {}) {
   copyIfDefined(config, source, "default_writer_model");
   copyIfDefined(config, source, "default_reviewer_model");
   copyIfDefined(config, source, "chat_max_tool_rounds");
+  copyIfDefined(config, source, "auto_resume_on_start");
 
   if (source.network_allowed !== undefined) {
     config.tool_permissions ??= {};

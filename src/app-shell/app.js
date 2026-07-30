@@ -861,6 +861,7 @@ function renderDashboard(data) {
   );
 
   renderProjectWorkbench(data);
+  renderRecoveryBanner(data);
   threadRenderer.syncThread(data, firstLoad);
   threadRenderer.syncFailureCards(data);
 
@@ -905,6 +906,39 @@ function renderDashboard(data) {
   renderWriteReadiness(data);
   renderChapterSuccess(data);
   refreshDrawerIfOpen();
+}
+
+// §4.1: 启动恢复横幅 — 上次崩溃/断电残留检测标记在 recovery_pending 中。
+function renderRecoveryBanner(data) {
+  if (!data.recovery_pending || !refs.thread) return;
+  if (refs.thread.querySelector(".recovery-startup-banner")) return;
+  const banner = document.createElement("div");
+  banner.className = "recovery-startup-banner";
+  const iconSpan = document.createElement("span");
+  iconSpan.className = "recovery-banner-icon";
+  iconSpan.textContent = "⚡";
+  const text = document.createElement("div");
+  text.className = "recovery-banner-text";
+  const strong = document.createElement("strong");
+  strong.textContent = "上次写作被中断";
+  const desc = document.createElement("span");
+  const chapterNo = data.summary?.currentChapterNo ?? "-";
+  const stage = data.summary?.currentStage ?? "-";
+  desc.textContent = `从第 ${chapterNo} 章 · ${stage} 继续？`;
+  text.append(strong, desc);
+  const actions = document.createElement("div");
+  actions.className = "recovery-banner-actions";
+  const retryBtn = document.createElement("button");
+  retryBtn.className = "small-button";
+  retryBtn.textContent = "继续写作";
+  retryBtn.addEventListener("click", () => handleRetry());
+  const statusBtn = document.createElement("button");
+  statusBtn.className = "small-button";
+  statusBtn.textContent = "查看状态";
+  statusBtn.addEventListener("click", () => openDrawerTab("run"));
+  actions.append(retryBtn, statusBtn);
+  banner.append(iconSpan, text, actions);
+  refs.thread.prepend(banner);
 }
 
 // 抽屉打开时重渲并保留滚动位置；renderDashboard 在 hasProject 和 noProject 两条分支都需要。
