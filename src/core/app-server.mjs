@@ -206,7 +206,7 @@ export function createAppShellServer({
       return;
     }
     if (url.pathname === "/api/commands/submit" && request.method === "POST") {
-      await serveCommandSubmit(request, response, { workspace, selected, stateRoot: appStateRoot, runJobs, getTaskQueue, testModel, testRunProject, projectLocks });
+      await serveCommandSubmit(request, response, { workspace, selected, stateRoot: appStateRoot, secretsRoot: localSecretsRoot, runJobs, getTaskQueue, testModel, testRunProject, projectLocks });
       return;
     }
     if (url.pathname === "/api/chat/send" && request.method === "POST") {
@@ -737,6 +737,13 @@ async function serveTestConnection(request, response, context) {
       throw new HttpError(503, "model_probe_unavailable", "模型连接探测尚未配置。");
     }
     const body = await readJsonBody(request);
+    const abortController = new AbortController();
+    const onRequestClose = () => {
+      if (!response.writableEnded) {
+        abortController.abort(new DOMException("client closed request", "AbortError"));
+      }
+    };
+    request.once("close", onRequestClose);
     const projectRoot = context.projectRoot;
     const candidate = body?.active_model && typeof body.active_model === "object"
       ? { ...body.active_model }
@@ -782,7 +789,8 @@ async function serveTestConnection(request, response, context) {
     try {
       result = await context.connectionTester({
         config: persistedConfig,
-        secrets
+        secrets,
+        signal: abortController.signal
       });
     } catch (error) {
       // 调用方取消（AbortError）原样上抛，不映射为 provider 错误。
@@ -790,6 +798,8 @@ async function serveTestConnection(request, response, context) {
         throw error;
       }
       throw error;
+    } finally {
+      request.removeListener("close", onRequestClose);
     }
 
     let baseUrlOrigin = "";

@@ -143,3 +143,113 @@ test("connection probe propagates caller cancellation", async () => {
   controller.abort();
   await assert.rejects(pending, (error) => error.name === "AbortError");
 });
+
+test("network unreachable is classified as network error", async () => {
+  const error = new Error("connect failed");
+  error.code = "ECONNREFUSED";
+  const result = await testModelConnection({
+    config: {
+      provider: "openai-compatible",
+      model_name: "mimo-v2.5-pro",
+      base_url: "https://api.xiaomimimo.com/v1",
+      api_key_env: "XIAOMI_MIMO_API_KEY",
+    },
+    secrets: { XIAOMI_MIMO_API_KEY: "test-key" },
+    complete: async () => { throw error; },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "network_unreachable");
+  assert.match(result.message, /无法连接/);
+});
+
+test("HTTP 404 is classified as model_not_found", async () => {
+  const error = new Error("not found");
+  error.status = 404;
+  const result = await testModelConnection({
+    config: {
+      provider: "openai-compatible",
+      model_name: "unknown-model",
+      base_url: "https://api.example.com/v1",
+      api_key_env: "TEST_KEY",
+    },
+    secrets: { TEST_KEY: "test-key" },
+    complete: async () => { throw error; },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "model_not_found");
+});
+
+test("HTTP 429 is classified as provider_error", async () => {
+  const error = new Error("rate limited");
+  error.status = 429;
+  const result = await testModelConnection({
+    config: {
+      provider: "openai-compatible",
+      model_name: "mimo-v2.5-pro",
+      base_url: "https://api.xiaomimimo.com/v1",
+      api_key_env: "XIAOMI_MIMO_API_KEY",
+    },
+    secrets: { XIAOMI_MIMO_API_KEY: "test-key" },
+    complete: async () => { throw error; },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "provider_error");
+});
+
+test("empty response is classified as response_incompatible", async () => {
+  const error = new Error("Provider returned empty or unparseable response");
+  error.code = "response_incompatible";
+  const result = await testModelConnection({
+    config: {
+      provider: "openai-compatible",
+      model_name: "mimo-v2.5-pro",
+      base_url: "https://api.xiaomimimo.com/v1",
+      api_key_env: "XIAOMI_MIMO_API_KEY",
+    },
+    secrets: { XIAOMI_MIMO_API_KEY: "test-key" },
+    complete: async () => { throw error; },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "response_incompatible");
+});
+
+test("timeout is classified as request_timeout", async () => {
+  const result = await testModelConnection({
+    config: {
+      provider: "openai-compatible",
+      model_name: "mimo-v2.5-pro",
+      base_url: "https://api.xiaomimimo.com/v1",
+      api_key_env: "XIAOMI_MIMO_API_KEY",
+    },
+    secrets: { XIAOMI_MIMO_API_KEY: "test-key" },
+    complete: async ({ signal }) => {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new DOMException("probe timeout", "TimeoutError")), 50);
+        signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new DOMException("aborted", "AbortError")); }, { once: true });
+      });
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "request_timeout");
+});
+
+test("provider error message containing the key is redacted", async () => {
+  const result = await testModelConnection({
+    config: {
+      provider: "openai-compatible",
+      model_name: "mimo-v2.5-pro",
+      base_url: "https://api.xiaomimimo.com/v1",
+      api_key_env: "XIAOMI_MIMO_API_KEY",
+    },
+    secrets: { XIAOMI_MIMO_API_KEY: "secret-value" },
+    complete: async () => {
+      const error = new Error("500 secret-value leaked");
+      error.status = 500;
+      throw error;
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "provider_error");
+  assert.equal(result.message.includes("secret-value"), false);
+  assert.match(result.message, /\[REDACTED\]/);
+});

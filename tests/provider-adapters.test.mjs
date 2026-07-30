@@ -656,3 +656,99 @@ test("OpenAICompatibleAdapter sends stream_options with streaming requests", asy
   assert.equal(captured.body.stream, true);
   assert.deepEqual(captured.body.stream_options, { include_usage: true });
 });
+
+test("OpenAICompatibleAdapter falls back to reasoning_content when content is empty string", async () => {
+  const adapter = new OpenAICompatibleAdapter({
+    baseUrl: "https://api.example.test/v1",
+    apiKey: "test-key",
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      async text() {
+        return JSON.stringify({
+          choices: [{ message: { content: "", reasoning_content: "reasoning output" } }],
+          usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 }
+        });
+      }
+    })
+  });
+  const result = await adapter.generate({ model: "deepseek-reasoner", prompt: "hi" });
+  assert.equal(result.text, "reasoning output");
+});
+
+test("OpenAICompatibleAdapter prefers content over reasoning_content", async () => {
+  const adapter = new OpenAICompatibleAdapter({
+    baseUrl: "https://api.example.test/v1",
+    apiKey: "test-key",
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      async text() {
+        return JSON.stringify({
+          choices: [{ message: { content: "final", reasoning_content: "reasoning" } }],
+          usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 }
+        });
+      }
+    })
+  });
+  const result = await adapter.generate({ model: "deepseek-reasoner", prompt: "hi" });
+  assert.equal(result.text, "final");
+});
+
+test("OpenAICompatibleAdapter falls back to reasoning_content when content is missing", async () => {
+  const adapter = new OpenAICompatibleAdapter({
+    baseUrl: "https://api.example.test/v1",
+    apiKey: "test-key",
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      async text() {
+        return JSON.stringify({
+          choices: [{ message: { reasoning_content: "only reasoning" } }],
+          usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 }
+        });
+      }
+    })
+  });
+  const result = await adapter.generate({ model: "deepseek-reasoner", prompt: "hi" });
+  assert.equal(result.text, "only reasoning");
+});
+
+test("OpenAICompatibleAdapter streaming falls back to reasoning_content when content is empty", async () => {
+  const tokens = [];
+  const adapter = new OpenAICompatibleAdapter({
+    baseUrl: "https://api.example.test/v1",
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      text: async () => { throw new Error("streaming path should not call response.text()"); },
+      body: {
+        getReader() {
+          const chunks = [
+            new TextEncoder().encode('data: {"choices":[{"delta":{"content":"","reasoning_content":"think"}}]}\n\n'),
+            new TextEncoder().encode('data: {"choices":[{"delta":{"content":"","reasoning_content":"ing"}}]}\n\ndata: [DONE]\n\n')
+          ];
+          let index = 0;
+          return {
+            read() {
+              if (index >= chunks.length) return Promise.resolve({ done: true, value: undefined });
+              return Promise.resolve({ done: false, value: chunks[index++] });
+            }
+          };
+        }
+      }
+    })
+  });
+  const result = await adapter.generate({
+    model: "deepseek-reasoner",
+    prompt: "hi",
+    modelConfig: { stream: true },
+    metadata: {
+      onToken(token) {
+        tokens.push(token);
+      }
+    }
+  });
+  assert.deepEqual(tokens, ["think", "ing"]);
+  assert.equal(result.text, "thinking");
+});
