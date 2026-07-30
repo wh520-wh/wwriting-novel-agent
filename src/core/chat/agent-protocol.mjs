@@ -1,5 +1,5 @@
 // 对话 agent 的输出解析与系统提示构建：容忍 ```json 围栏 / 裸 JSON / 纯文本；
-// 一次只取第一个 tool call；系统提示把工具文档、调用协议与项目快照拼在一起。
+// 支持一次返回多个 tool call；系统提示把工具文档、调用协议与项目快照拼在一起。
 import { renderToolDocs } from "./tool-registry.mjs";
 
 export function parseAgentReply(rawText) {
@@ -12,8 +12,8 @@ export function parseAgentReply(rawText) {
     if (parsed) {
       return {
         type: "tool_call",
+        tool_calls: parsed.tool_calls,
         call: parsed.call,
-        dropped: parsed.dropped,
         leadText: text.slice(0, match.index).trim()
       };
     }
@@ -25,8 +25,8 @@ export function parseAgentReply(rawText) {
     if (parsed) {
       return {
         type: "tool_call",
+        tool_calls: parsed.tool_calls,
         call: parsed.call,
-        dropped: parsed.dropped,
         leadText: text.slice(0, match.index).trim()
       };
     }
@@ -34,7 +34,7 @@ export function parseAgentReply(rawText) {
   if (text.startsWith("{")) {
     const parsed = tryParseToolCall(text);
     if (parsed) {
-      return { type: "tool_call", call: parsed.call, dropped: parsed.dropped, leadText: "" };
+      return { type: "tool_call", tool_calls: parsed.tool_calls, call: parsed.call, leadText: "" };
     }
   }
   return { type: "text", text };
@@ -44,9 +44,11 @@ function tryParseToolCall(candidate) {
   try {
     const data = JSON.parse(candidate);
     if (Array.isArray(data?.tool_calls) && data.tool_calls.length > 0) {
-      const [first, ...rest] = data.tool_calls;
-      if (first?.tool) {
-        return { call: { tool: String(first.tool), args: first.args ?? {} }, dropped: rest.length };
+      const allCalls = data.tool_calls
+        .filter((tc) => tc?.tool)
+        .map((tc) => ({ tool: String(tc.tool), args: tc.args ?? {} }));
+      if (allCalls.length > 0) {
+        return { tool_calls: allCalls, call: allCalls[0] };
       }
     }
   } catch { /* 不是 tool call，继续扫描 */ }
@@ -59,7 +61,7 @@ export function buildSystemPrompt(registry, snapshot = {}) {
     "你可以直接回答，也可以调用工具查询或操作项目。",
     "",
     "## 调用工具的方式",
-    "当需要工具时，输出一个 JSON 围栏块（一次只调用一个工具），格式：",
+    "当需要工具时，输出一个 JSON 围栏块（一次可调用一个或多个工具），格式：",
     '```json',
     '{"tool_calls":[{"tool":"工具名","args":{}}]}',
     '```',

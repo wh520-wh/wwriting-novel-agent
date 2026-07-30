@@ -1194,6 +1194,9 @@ function parseGatewayToolOutput(gatewayResult) {
   };
 }
 
+// 写作 agent 循环（runWritingAgentLoop）每轮只处理一个工具调用（与 chat 的多工具支持不同）。
+// 这是有意的设计选择：写作流水线中工具之间有严格依赖（read → edit → append），
+// 单工具轮次让模型每次只做一个决策，结果喂回后由下一轮决策是否继续，避免批次决策失误导致全局阻塞。
 function parseOpenAIToolCall(raw) {
   const message = raw?.choices?.[0]?.message;
   const toolCall = Array.isArray(message?.tool_calls) ? message.tool_calls[0] : null;

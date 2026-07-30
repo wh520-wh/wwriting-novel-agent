@@ -9,12 +9,15 @@ test("parseAgentReply 纯文本", () => {
   assert.match(out.text, /北围墙/u);
 });
 
-test("parseAgentReply 围栏 JSON 工具调用（只取第一个）", () => {
-  const raw = '我来查一下。\n```json\n{"tool_calls":[{"tool":"get_status","args":{}},{"tool":"get_cost","args":{}}]}\n```';
+test("parseAgentReply 围栏 JSON 工具调用（返回全部 tool_calls）", () => {
+  const raw = '我来查一下。\n```json\n{"tool_calls":[{"tool":"get_status","args":{}},{"tool":"read_chapter","args":{"chapter_no":3}}]}\n```';
   const out = parseAgentReply(raw);
   assert.equal(out.type, "tool_call");
   assert.equal(out.call.tool, "get_status");
-  assert.equal(out.dropped, 1);
+  assert.equal(out.tool_calls.length, 2);
+  assert.equal(out.tool_calls[0].tool, "get_status");
+  assert.equal(out.tool_calls[1].tool, "read_chapter");
+  assert.equal(out.tool_calls[1].args.chapter_no, 3);
   assert.match(out.leadText, /我来查一下/u);
 });
 

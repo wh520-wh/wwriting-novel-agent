@@ -154,19 +154,22 @@ test("拒绝路径：reject 回填 user_rejected", async () => {
   assert.match(content, /六楼/u);
 });
 
-test("maxToolRounds 护栏", async () => {
+test("maxToolRounds 护栏（默认 32）", async () => {
   const projectRoot = await makeChatProject();
   const project = await loadProject(projectRoot);
   const registry = createToolRegistry();
   registerReadTools(registry);
   const loopForever = '```json\n{"tool_calls":[{"tool":"get_status","args":{}}]}\n```';
+  // 提供足够多脚本条目使 32 轮都能跑满
   const out = await runChatTurn({
     projectRoot, project, registry,
-    modelClient: scriptedClient(Array(20).fill(loopForever)),
+    modelClient: scriptedClient(Array(40).fill(loopForever)),
     userMessage: "随便"
   });
   assert.match(out.reply, /上限/u);
-  assert.equal(out.toolEvents.length, 8);
+  assert.equal(out.toolEvents.length, 32);
+  // 验证全部成功
+  assert.ok(out.toolEvents.every((e) => e.ok === true));
 });
 
 test("已有 pending_action 时新消息被挡", async () => {
@@ -384,4 +387,65 @@ test("auto_edit=true 不放开 control；yolo=true 放开 control", async () => 
   assert.equal(b.pendingAction, null);
   assert.equal(b.toolEvents[0].tool, "pause_run");
   assert.equal(b.toolEvents[0].ok, true);
+});
+
+// ===== §2.4：多工具支持 =====
+test("多工具：同一轮多个 read 全部执行并落盘", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  const out = await runChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient([
+      '```json\n{"tool_calls":[{"tool":"get_status","args":{}},{"tool":"list_chapters","args":{}}]}\n```',
+      "查完了。"
+    ]),
+    userMessage: "查状态和章节"
+  });
+  assert.equal(out.reply, "查完了。");
+  assert.equal(out.toolEvents.length, 2);
+  assert.equal(out.toolEvents[0].tool, "get_status");
+  assert.equal(out.toolEvents[0].ok, true);
+  assert.equal(out.toolEvents[1].tool, "list_chapters");
+  assert.equal(out.toolEvents[1].ok, true);
+  const history = await readHistory(projectRoot);
+  const toolMsgs = history.filter((m) => m.role === "tool");
+  assert.equal(toolMsgs.length, 2);
+  assert.equal(toolMsgs[0].tool, "get_status");
+  assert.equal(toolMsgs[1].tool, "list_chapters");
+});
+
+test("多工具：read + write 组合 → reads 先执行，write 落 pending，后续工具跳过", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  registerWriteTools(registry);
+  const out = await runChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient([
+      '```json\n{"tool_calls":[{"tool":"get_status","args":{}},{"tool":"edit_chapter","args":{"chapter_no":1,"find":"六楼","replace":"十二楼","reason":"统一"}},{"tool":"list_chapters","args":{}}]}\n```',
+      "已处理。"
+    ]),
+    userMessage: "查状态，再改楼层"
+  });
+  // 第一个 get_status 应已执行
+  assert.equal(out.toolEvents.length, 3);
+  assert.equal(out.toolEvents[0].tool, "get_status");
+  assert.equal(out.toolEvents[0].ok, true);
+  // 第二个 edit_chapter 落 pending
+  assert.equal(out.toolEvents[1].tool, "edit_chapter");
+  assert.equal(out.toolEvents[1].ok, true); // pending 时用 ok 标记预览成功
+  assert.ok(out.pendingAction);
+  // 第三个 list_chapters 应被跳过
+  assert.equal(out.toolEvents[2].tool, "list_chapters");
+  assert.equal(out.toolEvents[2].ok, false);
+  assert.equal(out.toolEvents[2].error, "skipped_after_pending");
+  // 历史记录：应有 get_status 的 tool 消息
+  const history = await readHistory(projectRoot);
+  const toolMsgs = history.filter((m) => m.role === "tool");
+  assert.ok(toolMsgs.find((m) => m.tool === "get_status"));
+  // 应有 skipped 的记录
+  assert.ok(toolMsgs.find((m) => m.tool === "list_chapters" && m.ok === false));
 });
