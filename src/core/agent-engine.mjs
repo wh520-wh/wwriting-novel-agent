@@ -1,4 +1,4 @@
-import { appendEvent, readEvents } from "./event-log.mjs";
+import { appendEvent, readEvents, tailEvents } from "./event-log.mjs";
 import { CacheKeyManager, writeCacheReport } from "./cache-key-manager.mjs";
 import { loadConfigLayers } from "./config-runtime.mjs";
 import { CostTracker } from "./cost-tracker.mjs";
@@ -912,7 +912,7 @@ async function createModelRuntime(projectRoot, project, options, fallbackModel) 
           type: "model_retry",
           severity: "warn",
           message: `模型调用重试 ${info.attempt}/${info.maxAttempts}（${info.reason}），等待 ${Math.round(info.delay)}ms`,
-          data: { attempt: info.attempt, reason: info.reason, model: info.model }
+          data: { attempt: info.attempt, maxAttempts: info.maxAttempts, delay: info.delay, reason: info.reason, model: info.model }
         }).catch(() => {});
       },
       onActivity: options.onActivity
@@ -1576,6 +1576,11 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
 async function appendFailureCard(projectRoot, state, { type, message, data }) {
   try {
     const fresh = await loadState(projectRoot).catch(() => state);
+    // §4.5: 从 run_log 计算该 segment 连续 quality_gate_failed 次数
+    let consecutiveFailures = 0;
+    if (type === 'quality_gate_failed') {
+      consecutiveFailures = await countConsecutiveQualityGateFailures(projectRoot, state.current_chapter_no);
+    }
     const card = deriveFailureCard({
       id: `flr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       type,
@@ -1583,10 +1588,33 @@ async function appendFailureCard(projectRoot, state, { type, message, data }) {
       message,
       ts: new Date().toISOString(),
       data
-    }, fresh);
+    }, fresh, { consecutiveFailures });
     appendFailure(projectRoot, card);
   } catch (err) {
     console.warn("appendFailure failed:", err.message);
+  }
+}
+
+// §4.5: 从事件日志尾部读取并统计同一 chapter 的连续 quality_gate_failed 事件数
+async function countConsecutiveQualityGateFailures(projectRoot, chapterNo) {
+  try {
+    const recent = await tailEvents(projectRoot, 100);
+    let count = 0;
+    for (let i = recent.length - 1; i >= 0; i--) {
+      const e = recent[i];
+      if (e.type === 'quality_gate_failed' && e.chapter_no === chapterNo) {
+        count++;
+      } else if (e.type === 'quality_gate_failed') {
+        // 不同章节重置计数
+        count = 0;
+      } else {
+        // 遇到非 quality_gate_failed 事件停止计数
+        break;
+      }
+    }
+    return count;
+  } catch {
+    return 0;
   }
 }
 

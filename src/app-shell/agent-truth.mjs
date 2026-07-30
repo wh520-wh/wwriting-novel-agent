@@ -14,6 +14,19 @@ export function computeAgentTruth(data, now = Date.now()) {
   // not yet settled to `cancelled`. Surface it as "正在取消…" with a
   // distinct (non-terminal) tone and keep the stop action hidden so
   // repeated clicks can't fire while the engine is winding down.
+  // §4.3: 网络重试中覆盖常规运行态
+  if (alive && data.retry_info?.active === true) {
+    const ri = data.retry_info;
+    const display = `网络重试中 (${ri.attempt}/${ri.maxAttempts})`;
+    return {
+      display,
+      className: "running",
+      showRetry: false,
+      showStop: true,
+      refresh: true,
+      reason: ri.reason ? `原因: ${ri.reason}` : ""
+    };
+  }
   if (status === "cancelling") {
     const chapterNo = data.summary?.currentChapterNo ?? data.state?.current_chapter_no ?? null;
     const label = chapterNo

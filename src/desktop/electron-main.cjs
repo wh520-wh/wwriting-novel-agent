@@ -101,11 +101,26 @@ app.on("window-all-closed", () => {
   app.quit();
 });
 
-app.on("before-quit", () => {
+let quitInProgress = false;
+
+app.on("before-quit", async (event) => {
+  if (quitInProgress) return;
+  event.preventDefault();
+  quitInProgress = true;
+  // §4.4: 先调本地关停 API 让 server 优雅终止活跃任务
   if (server) {
-    server.close();
+    try {
+      await fetch(`http://127.0.0.1:${port}/api/shutdown`, {
+        method: "POST",
+        signal: AbortSignal.timeout(3000)
+      });
+    } catch {
+      // 超时或 server 已不可达 — 忽略，直接 close
+    }
+    await new Promise((resolve) => server.close(resolve));
     server = null;
   }
+  app.quit();
 });
 
 app.on("will-quit", () => {
