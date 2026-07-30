@@ -7,6 +7,8 @@ import { OpenAICompatibleAdapter } from "./provider-adapters.mjs";
 const PROBE_TIMEOUT_MS = 10_000;
 const PROBE_PROMPT = "仅回复 OK";
 const PROBE_MAX_TOKENS = 4;
+const PROBE_MAX_ATTEMPTS = 2;
+const PROBE_RETRY_DELAY_MS = 2000;
 const NETWORK_ERROR_CODES = new Set([
   "ENOTFOUND",
   "ECONNREFUSED",
@@ -62,15 +64,21 @@ export async function testModelConnection({
 
   const start = now();
   try {
-    await complete({
-      config,
-      apiKey,
-      messages: [{ role: "user", content: PROBE_PROMPT }],
-      maxTokens: PROBE_MAX_TOKENS,
-      timeoutMs: PROBE_TIMEOUT_MS,
-      maxAttempts: 1,
-      signal: combinedSignal,
-    });
+    await runWithRetry(
+      () => complete({
+        config,
+        apiKey,
+        messages: [{ role: "user", content: PROBE_PROMPT }],
+        maxTokens: PROBE_MAX_TOKENS,
+        timeoutMs: PROBE_TIMEOUT_MS,
+        signal: combinedSignal,
+      }),
+      {
+        maxAttempts: PROBE_MAX_ATTEMPTS,
+        retryDelayMs: PROBE_RETRY_DELAY_MS,
+        signal: combinedSignal,
+      },
+    );
     const latency_ms = Math.max(0, now() - start);
     return {
       ok: true,
@@ -112,6 +120,7 @@ export async function completeOpenAICompatibleProbe({
     apiKey,
     apiKeyEnv: config.api_key_env,
   });
+
   const response = await adapter.generate({
     model: config.model_name,
     modelConfig: {
@@ -133,6 +142,50 @@ export async function completeOpenAICompatibleProbe({
     throw error;
   }
   return response;
+}
+
+/**
+ * Run an async probe function with retry on transport-level errors.
+ * Uses the same error classification as the main retry chain.
+ */
+async function runWithRetry(fn, { maxAttempts = 1, retryDelayMs = 2000, signal } = {}) {
+  let lastError = null;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (attempt > 0) {
+      // Abortable wait before retry
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, retryDelayMs);
+        if (signal) {
+          signal.addEventListener("abort", () => {
+            clearTimeout(timer);
+            reject(new DOMException("The operation was aborted.", "AbortError"));
+          }, { once: true });
+        }
+      });
+    }
+
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (isCallerAbort(error, signal)) {
+        throw error;
+      }
+      // Retry only on transport-level errors (same classification as ModelClient)
+      const isTransportError =
+        error.code === "provider_transport_error" &&
+        (error.reason === "server-retryable" || error.reason === "timeout" || error.reason === "network");
+      if (!isTransportError) {
+        throw error;
+      }
+      // Last attempt exhausted — throw
+      if (attempt >= maxAttempts - 1) {
+        throw error;
+      }
+    }
+  }
+  // Should not reach here, but satisfy type-safety
+  throw lastError ?? new Error("Probe failed for unknown reason");
 }
 
 function readSecret(secrets, envName) {

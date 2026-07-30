@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { testModelConnection } from "../src/core/model-connection-test.mjs";
+import { ProviderTransportError } from "../src/core/provider-adapters.mjs";
 
 test("successful probe returns latency and provider identity", async () => {
   const result = await testModelConnection({
@@ -67,6 +68,51 @@ test("missing secret is rejected before making a network request", async () => {
 
   assert.equal(result.code, "configuration_missing");
   assert.equal(calls, 0);
+});
+
+test("connection probe retries on transport error", async () => {
+  let attempts = 0;
+  const result = await testModelConnection({
+    config: {
+      provider: "openai-compatible",
+      model_name: "mimo-v2.5-pro",
+      base_url: "https://api.xiaomimimo.com/v1",
+      api_key_env: "XIAOMI_MIMO_API_KEY",
+    },
+    secrets: { XIAOMI_MIMO_API_KEY: "test-key" },
+    complete: async () => {
+      attempts++;
+      if (attempts === 1) {
+        throw new ProviderTransportError("503 Service Unavailable", { status: 503 });
+      }
+      return { text: "OK" };
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(attempts, 2, "should retry once after 503");
+});
+
+test("connection probe does not retry on auth error", async () => {
+  let attempts = 0;
+  const result = await testModelConnection({
+    config: {
+      provider: "openai-compatible",
+      model_name: "mimo-v2.5-pro",
+      base_url: "https://api.xiaomimimo.com/v1",
+      api_key_env: "XIAOMI_MIMO_API_KEY",
+    },
+    secrets: { XIAOMI_MIMO_API_KEY: "test-key" },
+    complete: async () => {
+      attempts++;
+      const error = new Error("401 Unauthorized");
+      error.status = 401;
+      throw error;
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(attempts, 1, "auth errors should NOT be retried");
 });
 
 test("connection probe propagates caller cancellation", async () => {

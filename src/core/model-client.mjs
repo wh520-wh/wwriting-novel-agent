@@ -14,6 +14,7 @@ export class ModelClient {
     retryBaseDelayMs = 1000,
     retryMaxDelayMs = 16000,
     timeoutMs = 120000,
+    totalDeadlineMs = 300000,
     onRetry = null,
     onActivity = null
   } = {}) {
@@ -25,6 +26,7 @@ export class ModelClient {
     this.retryBaseDelayMs = retryBaseDelayMs;
     this.retryMaxDelayMs = retryMaxDelayMs;
     this.timeoutMs = timeoutMs;
+    this.totalDeadlineMs = totalDeadlineMs;
     this.onRetry = onRetry;
     this.onActivity = onActivity;
   }
@@ -67,7 +69,24 @@ export class ModelClient {
       throw new Error(`No provider adapter configured for ${modelConfig.provider}`);
     }
 
+    // Stage-aware per-attempt timeout: stage override > constructor default
+    const attemptTimeoutMs = modelConfig.timeout_ms ?? this.timeoutMs;
+
+    const startTime = Date.now();
+
     for (let attempt = 0; attempt <= this.retryMax; attempt++) {
+      // Check total deadline before starting the attempt
+      const elapsed = Date.now() - startTime;
+      if (elapsed >= this.totalDeadlineMs) {
+        const deadlineError = new ProviderTransportError("Request exceeded total deadline.", { reason: "timeout" });
+        if (this.#isRetryable(deadlineError) && attempt < this.retryMax) {
+          this.onActivity?.();
+          await this.#retryWait(attempt, deadlineError, modelConfig.model_name, signal);
+          continue;
+        }
+        throw deadlineError;
+      }
+
       // Create a timeout controller for this attempt
       const timeoutController = new AbortController();
       let timedOut = false;
@@ -82,7 +101,7 @@ export class ModelClient {
       const combinedSignal = AbortSignal.any(signals);
 
       // Start the timeout timer
-      const timer = setTimeout(() => timeoutController.abort(), this.timeoutMs);
+      const timer = setTimeout(() => timeoutController.abort(), attemptTimeoutMs);
 
       // Pass onActivity through metadata so streaming adapters can call it on each SSE chunk
       const metadataWithActivity = this.onActivity
@@ -165,7 +184,10 @@ export class ModelClient {
   async #retryWait(attempt, error, model, signal) {
     const backoff = this.retryBaseDelayMs * Math.pow(2, attempt);
     const jitter = Math.random() * 1000;
-    const delay = Math.min(backoff + jitter, this.retryMaxDelayMs);
+    const baseDelay = Math.min(backoff + jitter, this.retryMaxDelayMs);
+    // Prefer Retry-After from server if present and larger than backoff
+    const retryAfterMs = error?.retryAfterMs ?? null;
+    const delay = retryAfterMs != null ? Math.max(retryAfterMs, baseDelay) : baseDelay;
     const reason = error.reason ?? "unknown";
     if (this.onRetry) {
       this.onRetry({
