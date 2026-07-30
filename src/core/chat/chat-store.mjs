@@ -59,6 +59,14 @@ export async function clearPendingAction(projectRoot) {
 // Used for idempotency handshake: before executeTool -> "executing", after -> "executed"
 export async function updatePendingStatus(projectRoot, idempotencyKey, status, outcome = null) {
   const current = await readJson(safeJoin(projectRoot, PENDING_FILE), {});
+  // §3.3 Key-match guard: if pending file has a different idempotency_key, another
+  // concurrent operation has taken over — clear the stale pending and abort.
+  if (current.idempotency_key && current.idempotency_key !== idempotencyKey) {
+    await writeJsonAtomic(safeJoin(projectRoot, PENDING_FILE), { status: "cleared" });
+    throw new Error(
+      `Idempotency key mismatch: pending has key ${current.idempotency_key}, expected ${idempotencyKey}`
+    );
+  }
   const updated = {
     ...current,
     idempotency_key: idempotencyKey,

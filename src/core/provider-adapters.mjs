@@ -191,14 +191,19 @@ export class OpenAICompatibleAdapter {
       }
 
       // Truncation detection: malformed frames or missing stream-end signal
-      if (malformedSseFrameCount > 0) {
-        throw new ProviderTransportError(
-          `Stream ended with ${malformedSseFrameCount} malformed SSE frame(s).`,
-          { reason: "network", body: JSON.stringify({ truncatedContentLength: text.length, malformedSseFrameCount }) }
-        );
-      }
       const lastEvent = events.length > 0 ? events[events.length - 1] : null;
       const lastFinishReason = lastEvent?.choices?.[0]?.finish_reason ?? null;
+      if (malformedSseFrameCount > 0) {
+        // Only treat malformed frames as truncation when stream didn't terminate properly
+        if (!sawDone && !lastFinishReason) {
+          throw new ProviderTransportError(
+            `Stream ended with ${malformedSseFrameCount} malformed SSE frame(s) and no termination signal.`,
+            { reason: "network", body: JSON.stringify({ truncatedContentLength: text.length, malformedSseFrameCount }) }
+          );
+        }
+        // Stream terminated normally — tolerate malformed frames with a warning
+        console.warn(`Stream had ${malformedSseFrameCount} malformed SSE frame(s) but terminated normally.`);
+      }
       if (events.length > 0 && !sawDone && !lastFinishReason) {
         throw new ProviderTransportError(
           "Stream ended without DONE or finish_reason — possible truncation.",

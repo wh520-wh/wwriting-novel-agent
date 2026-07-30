@@ -1595,7 +1595,8 @@ async function appendFailureCard(projectRoot, state, { type, message, data }) {
   }
 }
 
-// §4.5: 从事件日志尾部读取并统计同一 chapter 的连续 quality_gate_failed 事件数
+// §4.5: 从事件日志尾部读取并统计同一 chapter 的 quality_gate_failed 事件总数
+// 不再要求严格连续——interleaved 事件（如 stage_started、model_call_completed）不打断计数。
 async function countConsecutiveQualityGateFailures(projectRoot, chapterNo) {
   try {
     const recent = await tailEvents(projectRoot, 100);
@@ -1607,10 +1608,8 @@ async function countConsecutiveQualityGateFailures(projectRoot, chapterNo) {
       } else if (e.type === 'quality_gate_failed') {
         // 不同章节重置计数
         count = 0;
-      } else {
-        // 遇到非 quality_gate_failed 事件停止计数
-        break;
       }
+      // interleaved 事件（stage_started, model_call 等）不打断计数，继续向前扫描
     }
     return count;
   } catch {
