@@ -53,6 +53,7 @@ import { runChatTurn, resumeChatTurn } from "../src/core/chat/chat-agent.mjs";
 import { registerWriteTools } from "../src/core/chat/tools-write.mjs";
 import { registerControlTools } from "../src/core/chat/tools-control.mjs";
 import { loadPendingAction, readChatHistory as readHistory, clearPendingAction } from "../src/core/chat/chat-store.mjs";
+import { appendTranscript } from "../src/core/chat/transcript-store.mjs";
 import { executeTool } from "../src/core/chat/tool-registry.mjs";
 import { upsertChapter, saveProject, loadState, saveState } from "../src/core/project-store.mjs";
 
@@ -172,24 +173,36 @@ test("maxToolRounds 护栏（默认 32）", async () => {
   assert.ok(out.toolEvents.every((e) => e.ok === true));
 });
 
-test("已有 pending_action 时新消息被挡", async () => {
+test("已有 pending_action 时新消息不再硬挡：superseded 落盘 + 继续处理", async () => {
   const projectRoot = await makeChatProject();
   const project = await loadProject(projectRoot);
   const registry = createToolRegistry();
   registerReadTools(registry);
   registerWriteTools(registry);
+  // 第一轮挂 pending
   await runChatTurn({
     projectRoot, project, registry,
     modelClient: scriptedClient(['```json\n{"tool_calls":[{"tool":"edit_chapter","args":{"chapter_no":1,"find":"六楼","replace":"五楼","reason":"x"}}]}\n```']),
     userMessage: "改"
   });
-  const blocked = await runChatTurn({
+  // 第二轮有 pending 时发新消息 → 不再被挡，pending 被 superseded，新消息正常处理
+  const second = await runChatTurn({
     projectRoot, project, registry,
-    modelClient: scriptedClient(["should not be called"]),
-    userMessage: "再改点别的"
+    modelClient: scriptedClient(["进度是 1/3 章。"]),
+    userMessage: "进度如何？"
   });
-  assert.match(blocked.reply, /待确认/u);
-  assert.ok(blocked.pendingAction);
+  assert.equal(second.reply, "进度是 1/3 章。");
+  assert.equal(second.pendingAction, null);
+  // 历史中应有 superseded 工具消息
+  const history = await readHistory(projectRoot);
+  const supersededMsg = history.find((m) => m.superseded === true);
+  assert.ok(supersededMsg, "应有 superseded 消息");
+  assert.equal(supersededMsg.role, "tool");
+  assert.equal(supersededMsg.ok, false);
+  assert.equal(supersededMsg.tool, "edit_chapter");
+  assert.equal(supersededMsg.result_summary, "因新指令自动取消");
+  // pending 已被清除
+  assert.equal(await loadPendingAction(projectRoot), null);
 });
 
 test("写作运行时写保护：running 时 update_continuity 免确认也被拒（防 lost update）", async () => {
@@ -505,4 +518,52 @@ test("runChatTurn writes failure message on agentLoop error", async () => {
   assert.ok(history[2].turn_id);
   // turn_id 应一致
   assert.equal(history[1].turn_id, history[2].turn_id);
+});
+
+// ===== §5.1: Transcript 记录 =====
+
+test("appendTranscript 写入 chat_transcript.jsonl", async () => {
+  const projectRoot = await makeChatProject();
+  const entry = { turn_id: "t1", request_messages: [{ role: "user", content: "hi" }], raw_response: "hello", parsed_tool_calls: [], usage: { calls: 1, cost: 0 } };
+  await appendTranscript(projectRoot, entry);
+  const filePath = path.join(projectRoot, "chat_transcript.jsonl");
+  const content = await fs.readFile(filePath, "utf8");
+  const lines = content.trim().split("\n");
+  assert.equal(lines.length, 1);
+  const parsed = JSON.parse(lines[0]);
+  assert.ok(parsed.id);
+  assert.ok(parsed.ts);
+  assert.equal(parsed.turn_id, "t1");
+  assert.equal(parsed.raw_response, "hello");
+});
+
+test("appendTranscript 写入失败只 warn 不抛", async () => {
+  // 用一个不存在的路径 root 触发写入失败
+  const badRoot = path.join(os.tmpdir(), "wwriting-nonexistent-" + Date.now(), "deep");
+  const entry = { turn_id: "t1", request_messages: [], raw_response: "x", parsed_tool_calls: [], usage: {} };
+  // 不应抛异常
+  await appendTranscript(badRoot, entry);
+});
+
+test("runChatTurn 后 chat_transcript.jsonl 有记录", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  await runChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient(["进度是 1/3 章。"]),
+    userMessage: "进度如何？"
+  });
+  const filePath = path.join(projectRoot, "chat_transcript.jsonl");
+  const exists = await fs.access(filePath).then(() => true).catch(() => false);
+  assert.ok(exists, "transcript 文件应存在");
+  const content = await fs.readFile(filePath, "utf8");
+  const lines = content.trim().split("\n").filter(Boolean);
+  assert.ok(lines.length >= 1, "应有至少 1 条 transcript 记录");
+  const parsed = JSON.parse(lines[0]);
+  assert.ok(parsed.turn_id);
+  assert.ok(parsed.request_messages);
+  assert.ok(parsed.raw_response);
+  assert.ok(Array.isArray(parsed.parsed_tool_calls));
 });

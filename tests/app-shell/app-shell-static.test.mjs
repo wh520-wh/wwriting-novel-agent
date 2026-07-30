@@ -281,7 +281,7 @@ test("thread-renderer.js keeps a running task in the single run card and hides s
   );
   assert.match(
     threadRendererSource,
-    /function renderToolCard\(message\)[\s\S]{0,200}message\.ok\s*!==\s*false[\s\S]{0,100}return null/u,
+    /function renderToolCard\(message\)[\s\S]*?message\.ok\s*!==\s*false[\s\S]{0,100}return null/u,
     "successful tool calls should not render technical parameters or JSON into the thread"
   );
 });

@@ -1913,6 +1913,7 @@ button.cbar-pill--readonly:hover {
 .chat-confirm-approve:disabled, .chat-confirm-reject:disabled { opacity: .55; cursor: not-allowed; }
 .chat-confirm-card--resolved { opacity: .6; border-color: var(--green); }
 .chat-confirm-card--rejected { opacity: .6; border-color: var(--muted); }
+.chat-confirm-card--superseded { opacity: .5; border-color: var(--muted); background: var(--bg-soft); }
 
 /* §3.4: 中断卡片 — 进程崩溃/断电后最后一条消息是 generating 占位时渲染 */
 .chat-interrupted-card {

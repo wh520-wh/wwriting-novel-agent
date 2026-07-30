@@ -7,6 +7,7 @@ import { executeTool, checkToolPermission, summarizeArgs } from "./tool-registry
 import { previewEditChapter } from "./tools-write.mjs";
 import { isJobRunning } from "./tools-control.mjs";
 import { appendChatMessage, loadPendingAction, savePendingAction, clearPendingAction, updatePendingStatus } from "./chat-store.mjs";
+import { appendTranscript } from "./transcript-store.mjs";
 import { loadConfigLayers } from "../config-runtime.mjs";
 import path from "node:path";
 
@@ -26,12 +27,15 @@ function checkRunBusy(tool, server, projectRoot) {
 
 export async function runChatTurn(options) {
   const { projectRoot, userMessage } = options;
+  // §5.2: pending 存在时不再硬挡——接受新消息，旧 pending 标记 superseded 并落取消记录
   const existing = await loadPendingAction(projectRoot);
   if (existing) {
-    return {
-      reply: "还有一个待确认操作没处理（见确认卡）。请先确认或取消，再发新消息。",
-      toolEvents: [], pendingAction: existing, usage: { calls: 0, cost: 0 }
-    };
+    await updatePendingStatus(projectRoot, existing.idempotency_key, "superseded");
+    await appendChatMessage(projectRoot, {
+      role: "tool", tool: existing.tool, ok: false,
+      result_summary: "因新指令自动取消", superseded: true
+    });
+    await clearPendingAction(projectRoot);
   }
   await appendChatMessage(projectRoot, { role: "user", content: String(userMessage ?? "") });
 
@@ -43,7 +47,7 @@ export async function runChatTurn(options) {
   });
 
   try {
-    return await agentLoop(options, []);
+    return await agentLoop({ ...options, turnId }, []);
   } catch (error) {
     // §3.4: 失败时写错误消息
     const errorSummary = String(error.message ?? "未知错误").slice(0, 200);
@@ -93,7 +97,8 @@ export async function resumeChatTurn(options) {
     result_summary: summarize(outcome.ok ? outcome.result : { error: outcome.error, message: outcome.message })
   });
   options.onEvent?.({ type: "tool_result", ...toolEvent });
-  return await agentLoop({ ...options, userMessage: null }, [toolEvent]);
+  const resumeTurnId = crypto.randomUUID();
+  return await agentLoop({ ...options, userMessage: null, turnId: resumeTurnId }, [toolEvent]);
 }
 
 async function agentLoop(options, toolEvents) {
@@ -120,6 +125,14 @@ async function agentLoop(options, toolEvents) {
     calls += 1;
     totalCost += Number(result.costSummary?.estimatedCost ?? 0) || 0;
     const parsed = parseAgentReply(result.text);
+    // §5.1: 转录本轮模型 I/O（fire-and-forget，失败只 warn 不阻断）
+    appendTranscript(projectRoot, {
+      turn_id: options.turnId,
+      request_messages: messages,
+      raw_response: result.text,
+      parsed_tool_calls: parsed.tool_calls ?? [],
+      usage: { calls, cost: totalCost, ...result.costSummary }
+    });
     if (parsed.type === "text") {
       await appendChatMessage(projectRoot, { role: "assistant", content: parsed.text, cost: totalCost || undefined });
       return { reply: parsed.text, toolEvents, pendingAction: null, usage: { calls, cost: totalCost } };
