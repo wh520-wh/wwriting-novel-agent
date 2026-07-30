@@ -292,6 +292,34 @@ test("OpenAICompatibleAdapter wraps non-2xx provider responses", async () => {
   );
 });
 
+test("OpenAICompatibleAdapter extracts Retry-After header from 429 response", async () => {
+  const adapter = new OpenAICompatibleAdapter({
+    baseUrl: "https://api.example.test/v1",
+    fetchImpl: async () => ({
+      ok: false,
+      status: 429,
+      headers: {
+        get(name) {
+          if (name === "retry-after") return "5";
+          return null;
+        }
+      },
+      async text() {
+        return "rate limited";
+      }
+    })
+  });
+  await assert.rejects(
+    () => adapter.generate({ model: "writer-model", prompt: "hello" }),
+    (error) => {
+      assert.ok(error instanceof ProviderTransportError);
+      assert.equal(error.status, 429);
+      assert.equal(error.retryAfterMs, 5000);
+      return true;
+    }
+  );
+});
+
 test("OpenAICompatibleAdapter wraps invalid JSON success responses with provider context", async () => {
   const adapter = new OpenAICompatibleAdapter({
     baseUrl: "https://api.example.test/v1",
@@ -401,8 +429,7 @@ test("OpenAICompatibleAdapter real streaming fires onToken as chunks arrive", as
   assert.equal(result.raw.stream, true);
 });
 
-test("OpenAICompatibleAdapter preserves final unterminated text streaming frame", async () => {
-  const tokens = [];
+test("OpenAICompatibleAdapter throws truncation error on stream without DONE or finish_reason", async () => {
   const adapter = new OpenAICompatibleAdapter({
     baseUrl: "https://api.example.test/v1",
     fetchImpl: async () => ({
@@ -424,19 +451,20 @@ test("OpenAICompatibleAdapter preserves final unterminated text streaming frame"
     })
   });
 
-  const result = await adapter.generate({
-    model: "writer-model",
-    prompt: "hello",
-    modelConfig: { stream: true },
-    metadata: {
-      onToken(token) {
-        tokens.push(token);
-      }
+  await assert.rejects(
+    () => adapter.generate({
+      model: "writer-model",
+      prompt: "hello",
+      modelConfig: { stream: true }
+    }),
+    (error) => {
+      assert.ok(error instanceof ProviderTransportError);
+      assert.equal(error.reason, "network");
+      const body = JSON.parse(error.body);
+      assert.ok(body.truncatedContentLength > 0);
+      return true;
     }
-  });
-
-  assert.deepEqual(tokens, ["tail"]);
-  assert.equal(result.text, "tail");
+  );
 });
 
 test("OpenAICompatibleAdapter streams CRLF-delimited SSE frames before the response ends", async () => {
@@ -481,9 +509,9 @@ test("OpenAICompatibleAdapter streams CRLF-delimited SSE frames before the respo
   assert.equal(result.text, "Hello World");
 });
 
-test("OpenAICompatibleAdapter reports malformed streaming SSE frames without dropping valid tokens", async () => {
+test("OpenAICompatibleAdapter throws truncation error on malformed streaming SSE frames", async () => {
   const chunk1 = "data: {bad json}\n\n";
-  const chunk2 = 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n';
+  const chunk2 = 'data: {"choices":[{"delta":{"content":"ok"}}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}\n\ndata: [DONE]\n\n';
   const adapter = new OpenAICompatibleAdapter({
     baseUrl: "https://api.example.test/v1",
     fetchImpl: async () => ({
@@ -505,14 +533,61 @@ test("OpenAICompatibleAdapter reports malformed streaming SSE frames without dro
     })
   });
 
-  const result = await adapter.generate({
-    model: "writer-model",
-    prompt: "hello",
-    modelConfig: { stream: true }
+  await assert.rejects(
+    () => adapter.generate({
+      model: "writer-model",
+      prompt: "hello",
+      modelConfig: { stream: true }
+    }),
+    (error) => {
+      assert.ok(error instanceof ProviderTransportError);
+      assert.equal(error.reason, "network");
+      const body = JSON.parse(error.body);
+      assert.ok(body.malformedSseFrameCount >= 1);
+      assert.equal(body.truncatedContentLength, 2);
+      return true;
+    }
+  );
+});
+
+test("OpenAICompatibleAdapter detects stream truncation — missing DONE and finish_reason", async () => {
+  // Stream with content events but no DONE and no finish_reason → truncation error
+  const adapter = new OpenAICompatibleAdapter({
+    baseUrl: "https://api.example.test/v1",
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      text: async () => { throw new Error("streaming path should not call response.text()"); },
+      body: {
+        getReader() {
+          const chunks = ['data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'].map(c => new TextEncoder().encode(c));
+          let index = 0;
+          return {
+            read() {
+              if (index >= chunks.length) return Promise.resolve({ done: true, value: undefined });
+              return Promise.resolve({ done: false, value: chunks[index++] });
+            }
+          };
+        }
+      }
+    })
   });
 
-  assert.equal(result.text, "ok");
-  assert.equal(result.raw.malformed_sse_frame_count, 1);
+  await assert.rejects(
+    () => adapter.generate({
+      model: "writer-model",
+      prompt: "hello",
+      modelConfig: { stream: true }
+    }),
+    (error) => {
+      assert.ok(error instanceof ProviderTransportError);
+      assert.equal(error.reason, "network");
+      assert.match(error.message, /DONE|finish_reason/);
+      const body = JSON.parse(error.body);
+      assert.equal(body.truncatedContentLength, 7);
+      return true;
+    }
+  );
 });
 
 test("OpenAICompatibleAdapter sends stream_options with streaming requests", async () => {

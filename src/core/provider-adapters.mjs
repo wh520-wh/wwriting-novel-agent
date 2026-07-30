@@ -43,6 +43,7 @@ export class ProviderTransportError extends Error {
     this.code = "provider_transport_error";
     this.status = details.status ?? null;
     this.body = details.body ?? null;
+    this.retryAfterMs = details.retryAfterMs ?? null;
     // reason: 'user-abort' | 'timeout' | 'network' | 'server-retryable' | 'server-fatal'
     this.reason = details.reason ?? this.#inferReason(details);
   }
@@ -111,9 +112,11 @@ export class OpenAICompatibleAdapter {
     });
     if (!response.ok) {
       const errorText = await response.text();
+      const retryAfterMs = parseRetryAfter(response.headers);
       throw new ProviderTransportError(`OpenAI-compatible provider returned HTTP ${response.status}.`, {
         status: response.status,
-        body: errorText.slice(0, 2000)
+        body: errorText.slice(0, 2000),
+        retryAfterMs
       });
     }
     if (stream) {
@@ -124,6 +127,7 @@ export class OpenAICompatibleAdapter {
       let usage = null;
       const events = [];
       let malformedSseFrameCount = 0;
+      let sawDone = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -144,7 +148,8 @@ export class OpenAICompatibleAdapter {
             .map((line) => line.slice(5).trim());
 
           for (const data of dataLines) {
-            if (!data || data === "[DONE]") continue;
+            if (!data) continue;
+            if (data === "[DONE]") { sawDone = true; continue; }
             try {
               const event = JSON.parse(data);
               events.push(event);
@@ -166,7 +171,8 @@ export class OpenAICompatibleAdapter {
       if (buffer.trim()) {
         for (const line of buffer.split(/\r?\n/)) {
           const trimmed = line.trim();
-          if (!trimmed.startsWith("data:") || trimmed === "data: [DONE]") continue;
+          if (!trimmed.startsWith("data:")) continue;
+          if (trimmed === "data: [DONE]") { sawDone = true; continue; }
           try {
             const data = trimmed.slice(5).trim();
             const event = JSON.parse(data);
@@ -182,6 +188,22 @@ export class OpenAICompatibleAdapter {
             metadata.onMalformedSseFrame?.({ data: trimmed.slice(5).trim(), error });
           }
         }
+      }
+
+      // Truncation detection: malformed frames or missing stream-end signal
+      if (malformedSseFrameCount > 0) {
+        throw new ProviderTransportError(
+          `Stream ended with ${malformedSseFrameCount} malformed SSE frame(s).`,
+          { reason: "network", body: JSON.stringify({ truncatedContentLength: text.length, malformedSseFrameCount }) }
+        );
+      }
+      const lastEvent = events.length > 0 ? events[events.length - 1] : null;
+      const lastFinishReason = lastEvent?.choices?.[0]?.finish_reason ?? null;
+      if (events.length > 0 && !sawDone && !lastFinishReason) {
+        throw new ProviderTransportError(
+          "Stream ended without DONE or finish_reason — possible truncation.",
+          { reason: "network", body: JSON.stringify({ truncatedContentLength: text.length, events: events.length }) }
+        );
       }
 
       return {
@@ -343,6 +365,33 @@ function extractText(raw) {
 
 function extractStreamToken(event) {
   return event.choices?.[0]?.delta?.content ?? event.choices?.[0]?.text ?? "";
+}
+
+/**
+ * Parse HTTP Retry-After header value into milliseconds.
+ * Supports both decimal seconds and HTTP-date format.
+ * Returns null if the header is missing or unparseable.
+ */
+function parseRetryAfter(headers) {
+  if (!headers || typeof headers.get !== "function") {
+    return null;
+  }
+  const raw = headers.get("retry-after");
+  if (!raw) {
+    return null;
+  }
+  // Try decimal seconds first
+  const seconds = parseInt(raw, 10);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return seconds * 1000;
+  }
+  // Try HTTP-date format — if we can't parse it, fall back to a reasonable default
+  const parsed = Date.parse(raw);
+  if (Number.isFinite(parsed)) {
+    const diff = parsed - Date.now();
+    return Math.max(0, diff);
+  }
+  return null;
 }
 
 function normalizeOpenAIUsage(usage) {

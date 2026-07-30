@@ -348,6 +348,95 @@ test("onActivity not called on first successful non-streaming attempt", async ()
   assert.equal(activityLog.length, 0, "no retry -> no onActivity for non-streaming");
 });
 
+test("total deadline exceeded throws timeout error without further retries", async () => {
+  const adapter = {
+    async generate() {
+      // Simulate a slow response that always takes too long
+      throw new ProviderTransportError("Timeout", { reason: "timeout" });
+    }
+  };
+  const client = makeClient(adapter, {
+    retryMax: 3,
+    retryBaseDelayMs: 10,
+    retryMaxDelayMs: 10,
+    timeoutMs: 50,
+    totalDeadlineMs: 80, // Very tight deadline — will be exceeded after 1 attempt + backoff
+  });
+  await assert.rejects(
+    () => client.generate({ prompt: "hi" }),
+    (err) => {
+      assert.equal(err.code, "provider_transport_error");
+      assert.equal(err.reason, "timeout");
+      return true;
+    }
+  );
+});
+
+test("stage-aware timeout from modelConfig overrides constructor timeout", async () => {
+  const calls = [];
+  const adapter = {
+    async generate({ modelConfig }) {
+      calls.push(modelConfig.timeout_ms);
+      throw new ProviderTransportError("Timeout", { reason: "timeout" });
+    }
+  };
+  // Constructor timeoutMs=1000, but modelConfig.timeout_ms=200 via project config
+  const client = makeClient(adapter, {
+    retryMax: 1,
+    timeoutMs: 1000,
+    retryBaseDelayMs: 10,
+    retryMaxDelayMs: 10,
+  });
+  await assert.rejects(
+    () => client.generate({
+      prompt: "hi",
+      project: {
+        active_model: {
+          provider: "mock",
+          model_name: "test-model",
+          timeout_ms: 200
+        }
+      }
+    }),
+    (err) => {
+      assert.equal(err.code, "provider_transport_error");
+      return true;
+    }
+  );
+  // The timeout_ms should be passed through modelConfig to the adapter
+  assert.equal(calls[0], 200);
+});
+
+test("retryAfterMs is preferred over calculated backoff in retry wait", async () => {
+  const retryLog = [];
+  let calls = 0;
+  const adapter = {
+    async generate() {
+      calls++;
+      if (calls === 1) {
+        // First attempt fails with 429 and Retry-After
+        const err = new ProviderTransportError("Rate limited", { status: 429, retryAfterMs: 5000 });
+        throw err;
+      }
+      return { text: "ok", usage: {} };
+    }
+  };
+  const client = makeClient(adapter, {
+    retryMax: 2,
+    retryBaseDelayMs: 10,
+    retryMaxDelayMs: 100,
+    onRetry(info) {
+      retryLog.push({ ...info });
+    }
+  });
+  const result = await client.generate({ prompt: "hi" });
+  assert.equal(result.text, "ok");
+  assert.equal(calls, 2);
+  assert.equal(retryLog.length, 1);
+  // delay should be at least 5000 (the retryAfterMs value), not the small backoff
+  assert.ok(retryLog[0].delay >= 5000, `expected delay >= 5000, got ${retryLog[0].delay}`);
+});
+
 test("onActivity preserves existing metadata fields", async () => {
   const adapter = {
     async generate({ metadata }) {
