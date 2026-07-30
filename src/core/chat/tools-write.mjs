@@ -24,36 +24,86 @@ async function resolveChapterFile(projectRoot, chapterNo) {
   return { entry, filePath };
 }
 
-function locateFind(content, find) {
+// bigram Dice 相似度：对照 Aider difflib.SequenceMatcher 的轻量替代，
+// 用于 find 精确找不到时定位最相似片段，反馈给模型重试（不自动替换，避免小说正文误改）。
+function diceSimilarity(a, b) {
+  if (a.length < 2 || b.length < 2) return 0;
+  const ga = new Set();
+  for (let i = 0; i < a.length - 1; i += 1) ga.add(a.slice(i, i + 2));
+  const gb = new Set();
+  for (let i = 0; i < b.length - 1; i += 1) gb.add(b.slice(i, i + 2));
+  let inter = 0;
+  for (const g of ga) if (gb.has(g)) inter += 1;
+  return (2 * inter) / (ga.size + gb.size);
+}
+
+function closestSnippet(content, find, maxLen = 80) {
+  if (!find || find.length < 4) return null;
+  const win = Math.min(Math.max(find.length, 8), maxLen);
+  let best = null;
+  const step = 1; // 步长 1 不漏最佳对齐（find_not_found 是低频错误路径，开销可接受）
+  for (let i = 0; i + win <= content.length; i += step) {
+    const sim = diceSimilarity(find, content.slice(i, i + win));
+    if (!best || sim > best.sim) best = { at: i, sim };
+  }
+  if (best && best.sim >= 0.5) {
+    return content.slice(best.at, best.at + win).replace(/\s+/gu, " ").trim();
+  }
+  return null;
+}
+
+// 定位 find 在 content 中的位置。对照 Aider 的容错思路：
+// - 精确唯一命中 -> 直接返回；
+// - 精确多次命中 -> 允许 occurrence 消歧（默认仍报 find_not_unique，避免误改）；
+// - 精确找不到 -> 报 find_not_found，但附最相似片段助模型重试（不自动模糊替换）。
+function locateFind(content, find, options = {}) {
   if (!find) {
     const e = new Error("find 不能为空");
     e.code = "bad_args";
     throw e;
   }
-  const first = content.indexOf(find);
-  if (first < 0) {
-    const e = new Error("正文中找不到要替换的文字（find）。");
+  const positions = [];
+  let idx = content.indexOf(find);
+  while (idx >= 0) {
+    positions.push(idx);
+    idx = content.indexOf(find, idx + 1);
+  }
+  if (positions.length === 0) {
+    const hint = closestSnippet(content, find);
+    const e = new Error(
+      hint
+        ? `正文中找不到要替换的文字（find）。最相似片段：${hint}`
+        : "正文中找不到要替换的文字（find）。"
+    );
     e.code = "find_not_found";
     throw e;
   }
-  const second = content.indexOf(find, first + 1);
-  if (second >= 0) {
-    const count = content.split(find).length - 1;
-    const e = new Error(`要替换的文字出现了 ${count} 次，必须唯一。请提供更长、更具体的 find。`);
+  if (positions.length > 1) {
+    const occ = Number(options.occurrence);
+    if (Number.isInteger(occ) && occ >= 1 && occ <= positions.length) {
+      return { at: positions[occ - 1], length: find.length, occurrence: occ, total: positions.length };
+    }
+    const e = new Error(
+      `要替换的文字出现了 ${positions.length} 次。请提供更长、更唯一的 find，或加 occurrence（1..${positions.length}）指定第几个。`
+    );
     e.code = "find_not_unique";
     throw e;
   }
-  return first;
+  return { at: positions[0], length: find.length, occurrence: 1, total: 1 };
 }
 
 export async function previewEditChapter(projectRoot, args) {
   const { filePath } = await resolveChapterFile(projectRoot, args.chapter_no);
   const content = await fs.readFile(filePath, "utf8");
-  const at = locateFind(content, String(args.find ?? ""));
-  const find = String(args.find);
+  const find = String(args.find ?? "");
+  const loc = locateFind(content, find, args);
+  const replace = String(args.replace ?? "");
   const ctx = 60;
-  const before = content.slice(Math.max(0, at - ctx), at + find.length + ctx);
-  const after = before.replace(find, String(args.replace ?? ""));
+  const beforeStart = Math.max(0, loc.at - ctx);
+  const beforeEnd = loc.at + loc.length + ctx;
+  const before = content.slice(beforeStart, beforeEnd);
+  // 用 loc.at 精确 slice 替换，避免 before 里含多个 find 时 replace 误换第一个
+  const after = content.slice(beforeStart, loc.at) + replace + content.slice(loc.at + loc.length, beforeEnd);
   return { ok: true, chapter_no: Number(args.chapter_no), before, after };
 }
 
@@ -61,11 +111,12 @@ export function registerWriteTools(registry) {
   registry.register({
     name: "edit_chapter",
     kind: "write",
-    description: "对某章正文做一次精确替换。find 必须在该章唯一命中。",
+    description: "对某章正文做一次精确替换。find 唯一命中时直接替换；出现多次时加 occurrence 指定第几个；找不到时返回最相似片段助你重试。",
     params: {
       chapter_no: "章节号",
-      find: "要替换的原文（需唯一）",
+      find: "要替换的原文（尽量唯一；不唯一时配合 occurrence）",
       replace: "替换后的文字",
+      occurrence: "find 出现多次时，指定第几个（从 1 开始）",
       reason: "修改原因（给读者看的说明）"
     },
     run: async (args, ctx) => {
@@ -84,16 +135,19 @@ export function registerWriteTools(registry) {
         }
       }
       const content = await fs.readFile(filePath, "utf8");
-      locateFind(content, String(args.find ?? ""));
+      const find = String(args.find ?? "");
+      const loc = locateFind(content, find, args);
       // 先校验再副作用：writeCheckpoint 在 locateFind 通过后才写
       await writeCheckpoint(ctx.projectRoot, {
         kind: "chat_edit",
         chapter_no: entry.chapter_no,
         file: filePath,
         reason: args.reason ?? null,
-        find: String(args.find).slice(0, 200)
+        find: find.slice(0, 200)
       });
-      const next = content.replace(String(args.find), String(args.replace ?? ""));
+      const replace = String(args.replace ?? "");
+      // 用 loc.at 精确 slice 替换，支持 occurrence 消歧定位
+      const next = content.slice(0, loc.at) + replace + content.slice(loc.at + loc.length);
       await writeFileAtomic(filePath, next);
       const checksum = `sha256:${crypto.createHash("sha256").update(next).digest("hex")}`;
       const words = countEffectiveWords(next);

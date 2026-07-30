@@ -164,6 +164,34 @@ test("edit_chapter 唯一命中才执行，并更新 index 与 checkpoint", asyn
   assert.ok(checkpoints.length >= 1);
 });
 
+test("edit_chapter occurrence 消歧：find 多次命中时按 occurrence 替换指定位置", async () => {
+  const registry = createToolRegistry();
+  registerWriteTools(registry);
+  const projectRoot = await makeProjectWithChapter();
+  const project = await (await import("../src/core/project-store.mjs")).loadProject(projectRoot);
+  const before = await fs.readFile(path.join(projectRoot, "chapters", "001.md"), "utf8");
+  const firstIdx = before.indexOf("。");
+  const secondIdx = before.indexOf("。", firstIdx + 1);
+  assert.ok(secondIdx >= 0, "测试章节应含至少两个句号");
+  const out = await executeTool(registry, "edit_chapter", { chapter_no: 1, find: "。", replace: "！", occurrence: 2 }, { projectRoot, project });
+  assert.equal(out.ok, true);
+  const after = await fs.readFile(path.join(projectRoot, "chapters", "001.md"), "utf8");
+  assert.equal(after.charAt(firstIdx), "。", "第一个句号保留");
+  assert.equal(after.charAt(secondIdx), "！", "第二个句号被替换");
+});
+
+test("edit_chapter find 找不到时返回最相似片段助重试（对照 Aider difflib 容错）", async () => {
+  const registry = createToolRegistry();
+  registerWriteTools(registry);
+  const projectRoot = await makeProjectWithChapter();
+  const project = await (await import("../src/core/project-store.mjs")).loadProject(projectRoot);
+  const res = await executeTool(registry, "edit_chapter", { chapter_no: 1, find: "刘康从七楼坠落", replace: "x" }, { projectRoot, project });
+  assert.equal(res.ok, false);
+  assert.equal(res.error, "find_not_found");
+  assert.match(res.message, /最相似片段/u);
+  assert.match(res.message, /六楼/u);
+});
+
 test("appendChapterSegment 后 edit_chapter 能解析到草稿中的当前章（修复 chapter_not_found）", async () => {
   const projectRoot = await makeProject();
   const project = await (await import("../src/core/project-store.mjs")).loadProject(projectRoot);
