@@ -64,6 +64,12 @@ export async function resumeChatTurn(options) {
   if (!pending) {
     return { reply: "没有待确认的操作。", toolEvents: [], pendingAction: null, usage: { calls: 0, cost: 0 } };
   }
+  // §3.4: Write generating placeholder before agentLoop — crash during resumed turn
+  // produces visible interrupted state (same pattern as runChatTurn).
+  const resumeTurnId = crypto.randomUUID();
+  await appendChatMessage(projectRoot, {
+    role: "assistant", content: "", status: "generating", turn_id: resumeTurnId
+  });
   let outcome;
   if (approve === true) {
     // §3.3 Idempotency: if already executed, skip executeTool, use cached result
@@ -97,7 +103,6 @@ export async function resumeChatTurn(options) {
     result_summary: summarize(outcome.ok ? outcome.result : { error: outcome.error, message: outcome.message })
   });
   options.onEvent?.({ type: "tool_result", ...toolEvent });
-  const resumeTurnId = crypto.randomUUID();
   return await agentLoop({ ...options, userMessage: null, turnId: resumeTurnId }, [toolEvent]);
 }
 
@@ -132,7 +137,7 @@ async function agentLoop(options, toolEvents) {
       raw_response: result.text,
       parsed_tool_calls: parsed.tool_calls ?? [],
       usage: { calls, cost: totalCost, ...result.costSummary }
-    });
+    }).catch(() => {}); // fire-and-forget: 转录失败不阻断对话流程
     if (parsed.type === "text") {
       await appendChatMessage(projectRoot, { role: "assistant", content: parsed.text, cost: totalCost || undefined });
       return { reply: parsed.text, toolEvents, pendingAction: null, usage: { calls, cost: totalCost } };

@@ -36,10 +36,14 @@ export async function buildChatContext({ projectRoot, project, registry, userMes
     const digest = older.map((m) => `${m.role}: ${String(m.content ?? m.result_summary ?? "").slice(0, 160)}`).join("\n");
     messages.push({ role: "system", content: `## 早前对话提要\n${digest}` });
   }
-  // 找到历史中最后一条 tool 消息（保留全文，不二次裁剪）
-  let lastToolIdx = -1;
+  // 找到历史中最后一轮连续的 tool 消息（保留全文给多工具场景）
+  let lastToolRoundStartIdx = -1;
   for (let i = recent.length - 1; i >= 0; i -= 1) {
-    if (recent[i].role === "tool") { lastToolIdx = i; break; }
+    if (recent[i].role === "tool") {
+      lastToolRoundStartIdx = i;
+    } else {
+      break;
+    }
   }
   for (let i = 0; i < recent.length; i += 1) {
     const m = recent[i];
@@ -47,8 +51,8 @@ export async function buildChatContext({ projectRoot, project, registry, userMes
       messages.push({ role: m.role, content: String(m.content ?? "") });
     } else if (m.role === "tool") {
       const summary = String(m.result_summary ?? "");
-      // 历史 tool 消息 >4000 字压到 1000；最近一条 tool 消息保留全文
-      const trimmed = (i !== lastToolIdx && summary.length > 4000) ? summary.slice(0, 1000) + "…" : summary;
+      // 历史 tool 消息 >4000 字压到 1000；最后一轮所有 tool 消息保留全文
+      const trimmed = (i >= lastToolRoundStartIdx) ? summary : (summary.length > 4000 ? summary.slice(0, 1000) + "…" : summary);
       messages.push({ role: "user", content: `[工具 ${m.tool} 结果] ${trimmed}` });
     }
   }

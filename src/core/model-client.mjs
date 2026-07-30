@@ -78,13 +78,9 @@ export class ModelClient {
       // Check total deadline before starting the attempt
       const elapsed = Date.now() - startTime;
       if (elapsed >= this.totalDeadlineMs) {
-        const deadlineError = new ProviderTransportError("Request exceeded total deadline.", { reason: "timeout" });
-        if (this.#isRetryable(deadlineError) && attempt < this.retryMax) {
-          this.onActivity?.();
-          await this.#retryWait(attempt, deadlineError, modelConfig.model_name, signal);
-          continue;
-        }
-        throw deadlineError;
+        // Total deadline exceeded — throw immediately, do not retry.
+        // Retrying on deadline would waste one backoff delay for a guaranteed timeout.
+        throw new ProviderTransportError("Request exceeded total deadline.", { reason: "timeout" });
       }
 
       // Create a timeout controller for this attempt

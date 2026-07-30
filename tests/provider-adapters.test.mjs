@@ -509,7 +509,7 @@ test("OpenAICompatibleAdapter streams CRLF-delimited SSE frames before the respo
   assert.equal(result.text, "Hello World");
 });
 
-test("OpenAICompatibleAdapter throws truncation error on malformed streaming SSE frames", async () => {
+test("OpenAICompatibleAdapter tolerates malformed SSE frames when stream terminates normally with [DONE]", async () => {
   const chunk1 = "data: {bad json}\n\n";
   const chunk2 = 'data: {"choices":[{"delta":{"content":"ok"}}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}\n\ndata: [DONE]\n\n';
   const adapter = new OpenAICompatibleAdapter({
@@ -533,6 +533,39 @@ test("OpenAICompatibleAdapter throws truncation error on malformed streaming SSE
     })
   });
 
+  // Stream terminates with [DONE], so malformed frames are tolerated (no throw)
+  const result = await adapter.generate({
+    model: "writer-model",
+    prompt: "hello",
+    modelConfig: { stream: true }
+  });
+  assert.equal(result.text, "ok");
+  assert.ok(result.raw.malformed_sse_frame_count >= 1);
+});
+
+test("OpenAICompatibleAdapter throws truncation error on malformed SSE frames without termination signal", async () => {
+  const adapter = new OpenAICompatibleAdapter({
+    baseUrl: "https://api.example.test/v1",
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      text: async () => { throw new Error("streaming path should not call response.text()"); },
+      body: {
+        getReader() {
+          const chunks = ['data: {bad}\n\ndata: {also bad}\n\n'].map(c => new TextEncoder().encode(c));
+          let index = 0;
+          return {
+            read() {
+              if (index >= chunks.length) return Promise.resolve({ done: true, value: undefined });
+              return Promise.resolve({ done: false, value: chunks[index++] });
+            }
+          };
+        }
+      }
+    })
+  });
+
+  // No DONE and no finish_reason, so malformed frames should throw truncation error
   await assert.rejects(
     () => adapter.generate({
       model: "writer-model",
@@ -543,8 +576,7 @@ test("OpenAICompatibleAdapter throws truncation error on malformed streaming SSE
       assert.ok(error instanceof ProviderTransportError);
       assert.equal(error.reason, "network");
       const body = JSON.parse(error.body);
-      assert.ok(body.malformedSseFrameCount >= 1);
-      assert.equal(body.truncatedContentLength, 2);
+      assert.ok(body.malformedSseFrameCount >= 2);
       return true;
     }
   );

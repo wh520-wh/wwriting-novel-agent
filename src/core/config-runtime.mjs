@@ -20,7 +20,7 @@ export const DEFAULT_CONFIG = {
   research_config: {},
   enabled_skills: [],
   chat_max_tool_rounds: 32,
-  auto_resume_on_start: false
+  auto_resume_on_start: false // TODO: wired in recoverInterruptedProjects() — app startup auto-resume for crashed projects
 };
 
 export async function loadConfigLayers(projectRoot, project = {}, options = {}) {
