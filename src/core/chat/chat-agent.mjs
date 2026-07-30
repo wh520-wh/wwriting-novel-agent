@@ -4,6 +4,7 @@ import { buildChatContext } from "./chat-context.mjs";
 import { parseAgentReply } from "./agent-protocol.mjs";
 import { executeTool, checkToolPermission, summarizeArgs } from "./tool-registry.mjs";
 import { previewEditChapter } from "./tools-write.mjs";
+import { isJobRunning } from "./tools-control.mjs";
 import { appendChatMessage, loadPendingAction, savePendingAction, clearPendingAction } from "./chat-store.mjs";
 import path from "node:path";
 
@@ -12,12 +13,13 @@ const RESULT_SUMMARY_CHARS = 500;
 
 // 写作运行时写保护：runProject 后台不持 projectLock，chat 持锁，两者并发写
 // continuity/state 会 lost update（extracted_chapters 水位推进后不可恢复，静默丢记忆）。
-// 运行中拒绝与流水线竞态的 write 工具；入队类（rewrite/queue）与只读输出类（export）不拦。
-const RUN_SAFE_WRITE_TOOLS = new Set(["rewrite_chapter", "queue_chapters", "export_book"]);
-
-function isRunJobActive(server, projectRoot) {
-  const job = server?.runJobs?.get(path.resolve(projectRoot));
-  return job?.status === "running";
+// 运行中拒绝与流水线竞态的 write 工具；由各工具注册时声明 safeDuringRun:true 标记自身
+// 与流水线无竞态（入队类 rewrite/queue、只读导出 export）--新工具默认被拦（安全默认）。
+function checkRunBusy(tool, server, projectRoot) {
+  if (tool?.kind === "write" && !tool?.safeDuringRun && isJobRunning(server?.runJobs?.get(path.resolve(projectRoot)))) {
+    return { ok: false, error: "run_busy", message: "写作任务进行中，请先停止或等它完成，再通过对话修改设定/章节/设置。" };
+  }
+  return null;
 }
 
 export async function runChatTurn(options) {
@@ -42,8 +44,9 @@ export async function resumeChatTurn(options) {
   let outcome;
   if (approve === true) {
     const tool = registry.get(pending.tool);
-    if (tool?.kind === "write" && !RUN_SAFE_WRITE_TOOLS.has(pending.tool) && isRunJobActive(server, projectRoot)) {
-      outcome = { ok: false, error: "run_busy", message: "写作任务进行中，请先停止或等它完成，再通过对话修改设定/章节/设置。" };
+    const busy = checkRunBusy(tool, server, projectRoot);
+    if (busy) {
+      outcome = busy;
     } else {
       outcome = await executeTool(registry, pending.tool, pending.args, { projectRoot, project, server, getTaskQueue });
     }
@@ -100,12 +103,12 @@ async function agentLoop(options, toolEvents) {
         continue;
       }
       // 免确认分支：yolo 放开 write+control；auto_edit 仅放开 write。免「确认」不免「校验」——直接走 executeTool 原链。
-      // 写作运行时写保护：见文件顶部 RUN_SAFE_WRITE_TOOLS 注释。running 时拒绝会与流水线竞态的 write 工具，
+      // 写作运行时写保护：见 checkRunBusy 注释。running 时拒绝会与流水线竞态的 write 工具，
       // 避免 chat 与后台 runProject 并发写 continuity/state 导致 lost update。
-      if (tool.kind === "write" && !RUN_SAFE_WRITE_TOOLS.has(parsed.call.tool) && isRunJobActive(server, projectRoot)) {
-        const outcome = { ok: false, error: "run_busy", message: "写作任务进行中，请先停止或等它完成，再通过对话修改设定/章节/设置。" };
-        toolEvents.push({ tool: parsed.call.tool, ok: false, error: outcome.error });
-        await appendChatMessage(projectRoot, { role: "tool", tool: parsed.call.tool, ok: false, args: summarizeArgs(parsed.call.args), result_summary: outcome.message });
+      const busy = checkRunBusy(tool, server, projectRoot);
+      if (busy) {
+        toolEvents.push({ tool: parsed.call.tool, ok: false, error: busy.error });
+        await appendChatMessage(projectRoot, { role: "tool", tool: parsed.call.tool, ok: false, args: summarizeArgs(parsed.call.args), result_summary: busy.message });
         onEvent?.({ type: "tool_result", tool: parsed.call.tool, ok: false });
         continue;
       }
