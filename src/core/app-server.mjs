@@ -242,6 +242,11 @@ export function createAppShellServer({
       await serveRunStop(response, { workspace, selected, stateRoot: appStateRoot, runJobs, getTaskQueue, projectLocks });
       return;
     }
+    if (url.pathname === "/api/shutdown" && request.method === "POST") {
+      abortActiveJobs(runJobs, "Server shutdown");
+      await serveJson(response, { ok: true, message: "shutting down" });
+      return;
+    }
     if (url.pathname === "/api/queue/state" && request.method === "GET") {
       try {
         const projectRoot = await resolveReadProjectRoot({ requestedRoot: url.searchParams.get("projectRoot") ?? undefined, selected, workspace, stateRoot: appStateRoot });
@@ -305,6 +310,23 @@ async function serveDashboard(response, context) {
       Object.assign(data, retryDashboardFields(candidate));
       // §4.1: 启动时检测到的残留标记
       data.recovery_pending = context.recoveryCandidates?.has(key) ?? false;
+      // §4.3: 从最近事件推导重试可见性
+      if (Array.isArray(data.events)) {
+        const retryEvents = data.events.filter(e => e.type === 'model_retry');
+        const lastRetry = retryEvents[retryEvents.length - 1];
+        if (lastRetry?.data) {
+          const retryAge = Date.now() - Date.parse(lastRetry.timestamp || lastRetry.ts || 0);
+          if (retryAge < 60000) {
+            data.retry_info = {
+              active: true,
+              attempt: lastRetry.data.attempt ?? 1,
+              maxAttempts: lastRetry.data.maxAttempts ?? 4,
+              delay: lastRetry.data.delay ?? 0,
+              reason: lastRetry.data.reason ?? ''
+            };
+          }
+        }
+      }
     }
     await serveJson(response, data);
     return data;

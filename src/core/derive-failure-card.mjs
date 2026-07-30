@@ -118,8 +118,29 @@ function bodyForKind(kind, event, state) {
   }
 }
 
-export function deriveFailureCard(event, state = {}) {
+// §4.5: 连续失败 ≥3 后调整推荐动作顺序，把「换提示词重试 / 换模型 / 跳过」置前
+function reorderActionsForRetryExhausted(actions) {
+  const preferredLabels = ['改提示词后重试', '换提示词后重试', '去设置切换模型', '跳过本段', '跳过'];
+  const preferred = [];
+  const rest = [];
+  for (const action of actions) {
+    if (preferredLabels.some(label => action.label.includes(label))) {
+      preferred.push(action);
+    } else {
+      rest.push(action);
+    }
+  }
+  return [...preferred, ...rest];
+}
+
+export function deriveFailureCard(event, state = {}, options = {}) {
   const kind = classifyKind(event);
+  const consecutiveFailures = options.consecutiveFailures ?? 0;
+  let actions = actionsForKind(kind, event);
+  // §4.5: 连续 3 次及以上 failure 后收敛推荐动作
+  if (consecutiveFailures >= 3 && ['tool-rejected', 'provider-error', 'unknown'].includes(kind)) {
+    actions = reorderActionsForRetryExhausted(actions);
+  }
   return {
     id: event.id,
     seq: event.seq ?? 0,
@@ -128,7 +149,7 @@ export function deriveFailureCard(event, state = {}) {
     title: clean(titleForKind(kind), 80),
     body: clean(bodyForKind(kind, event, state), 500),
     ts: event.ts,
-    actions: actionsForKind(kind, event),
+    actions,
     diagnostics: {
       eventId: event.id,
       tool: event.data?.tool ?? null,
