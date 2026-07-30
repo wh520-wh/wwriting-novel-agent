@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import fss from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -242,4 +243,81 @@ test("retryDashboardFields handles missing taskId and ambiguousTaskIds", () => {
   const fields = retryDashboardFields({ available: false, code: "x", reason: "y" });
   assert.equal(fields.retry_task_id, null);
   assert.deepEqual(fields.retry_ambiguous_task_ids, []);
+});
+
+// ===== §4.1: recoverInterruptedProjects =====
+
+import { recoverInterruptedProjects } from "../src/core/app-server.mjs";
+
+test("recoverInterruptedProjects detects stale running project", () => {
+  const dir = fss.mkdtempSync(path.join(os.tmpdir(), "wwriting-recovery-"));
+  try {
+    const stateRoot = path.join(dir, "state");
+    fss.mkdirSync(stateRoot, { recursive: true });
+    const projectDir = path.join(dir, "project");
+    fss.mkdirSync(projectDir, { recursive: true });
+    fss.writeFileSync(path.join(projectDir, "project.yaml"), "title: test\n", "utf8");
+    fss.writeFileSync(path.join(projectDir, "agent_state.json"), JSON.stringify({
+      project_status: "running",
+      current_chapter_no: 3,
+      current_stage: "drafting"
+    }));
+    fss.writeFileSync(path.join(stateRoot, "app-state.json"), JSON.stringify({
+      lastProjectRoot: projectDir,
+      recentProjects: [{ projectRoot: projectDir, title: "test" }]
+    }));
+    const runJobs = new Map();
+    const candidates = recoverInterruptedProjects(stateRoot, runJobs);
+    assert.equal(candidates.size, 1);
+    assert.ok(candidates.has(path.resolve(projectDir)));
+  } finally {
+    fss.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("recoverInterruptedProjects skips project with running job", () => {
+  const dir = fss.mkdtempSync(path.join(os.tmpdir(), "wwriting-recovery-"));
+  try {
+    const stateRoot = path.join(dir, "state");
+    fss.mkdirSync(stateRoot, { recursive: true });
+    const projectDir = path.join(dir, "project");
+    fss.mkdirSync(projectDir, { recursive: true });
+    fss.writeFileSync(path.join(projectDir, "project.yaml"), "title: test\n", "utf8");
+    fss.writeFileSync(path.join(projectDir, "agent_state.json"), JSON.stringify({
+      project_status: "running",
+      current_chapter_no: 1
+    }));
+    fss.writeFileSync(path.join(stateRoot, "app-state.json"), JSON.stringify({
+      lastProjectRoot: projectDir,
+      recentProjects: [{ projectRoot: projectDir }]
+    }));
+    const runJobs = new Map([[path.resolve(projectDir), { status: "running" }]]);
+    const candidates = recoverInterruptedProjects(stateRoot, runJobs);
+    assert.equal(candidates.size, 0, "有存活 job 时不应标记为残留");
+  } finally {
+    fss.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("recoverInterruptedProjects skips non-running project", () => {
+  const dir = fss.mkdtempSync(path.join(os.tmpdir(), "wwriting-recovery-"));
+  try {
+    const stateRoot = path.join(dir, "state");
+    fss.mkdirSync(stateRoot, { recursive: true });
+    const projectDir = path.join(dir, "project");
+    fss.mkdirSync(projectDir, { recursive: true });
+    fss.writeFileSync(path.join(projectDir, "project.yaml"), "title: test\n", "utf8");
+    fss.writeFileSync(path.join(projectDir, "agent_state.json"), JSON.stringify({
+      project_status: "completed",
+      current_chapter_no: 5
+    }));
+    fss.writeFileSync(path.join(stateRoot, "app-state.json"), JSON.stringify({
+      lastProjectRoot: projectDir,
+      recentProjects: [{ projectRoot: projectDir }]
+    }));
+    const candidates = recoverInterruptedProjects(stateRoot, new Map());
+    assert.equal(candidates.size, 0, "已完成的项目不应标记残留");
+  } finally {
+    fss.rmSync(dir, { recursive: true, force: true });
+  }
 });

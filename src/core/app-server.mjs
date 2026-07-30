@@ -1,6 +1,6 @@
 import http from "node:http";
 import fs from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { canInitializeProjectRoot, loadDashboardData, readChapterContent, validateProjectRoot } from "./app-dashboard.mjs";
@@ -70,6 +70,9 @@ export function createAppShellServer({
   // send/confirm 进锁前注册；/api/chat/stop 从这里取 controller —— stop 绝不进项目锁（send 正持锁，入锁即死锁）。
   const chatJobs = new Map();
   const projectLocks = createProjectLockRegistry();
+  // §4.1: 启动时检测崩溃残留 — 项目 state 中 project_status==="running" 但无存活 runner。
+  // 用同步 API 确保在 server.listen 前完成扫描。
+  const recoveryCandidates = recoverInterruptedProjects(appStateRoot, runJobs);
   async function getTaskQueue(projectRoot) {
     const key = path.resolve(projectRoot);
     let queue = taskQueues.get(key);
@@ -96,7 +99,7 @@ export function createAppShellServer({
         const scopedRoot = (requestedRoot || selected)
           ? await resolveReadProjectRoot({ requestedRoot: requestedRoot ?? undefined, selected, workspace, stateRoot: appStateRoot })
           : null;
-        await serveDashboard(response, { workspace, projectRoot: scopedRoot, secretsRoot: localSecretsRoot, runJobs, getTaskQueue, dashboardLoader });
+        await serveDashboard(response, { workspace, projectRoot: scopedRoot, secretsRoot: localSecretsRoot, runJobs, getTaskQueue, dashboardLoader, recoveryCandidates });
       } catch (error) {
         sendError(response, error);
       }
@@ -300,6 +303,8 @@ async function serveDashboard(response, context) {
         job
       });
       Object.assign(data, retryDashboardFields(candidate));
+      // §4.1: 启动时检测到的残留标记
+      data.recovery_pending = context.recoveryCandidates?.has(key) ?? false;
     }
     await serveJson(response, data);
     return data;
@@ -864,6 +869,29 @@ function modelEndpoint(baseUrl) {
 
 function isJobRunning(job) {
   return job?.status === "running";
+}
+
+// §4.1: 启动时扫描 recentProjects，检测 project_status==="running" 但无存活 runner 的残留项目。
+// 用同步 API 确保扫描在 server.listen 前完成。
+export function recoverInterruptedProjects(stateRoot, runJobs) {
+  const state = loadAppStateSync(stateRoot);
+  const candidates = new Set();
+  for (const item of state.recentProjects) {
+    const projectRoot = item.projectRoot;
+    if (!existsSync(path.join(projectRoot, "project.yaml"))) continue;
+    try {
+      const stateFile = path.join(projectRoot, "agent_state.json");
+      if (!existsSync(stateFile)) continue;
+      const raw = readFileSync(stateFile, "utf8");
+      const projectState = JSON.parse(raw);
+      const key = path.resolve(projectRoot);
+      const job = runJobs.get(key);
+      if (projectState.project_status === "running" && !isJobRunning(job)) {
+        candidates.add(key);
+      }
+    } catch { /* skip unreadable projects */ }
+  }
+  return candidates;
 }
 
 function abortActiveJobs(runJobs, reason) {

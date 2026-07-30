@@ -179,8 +179,8 @@ test("并发两条 chat send：第二条被 busy 守卫 409 拒绝，历史无�
     assert.equal(r2.data.code, "CHAT_BUSY");
     const hist = await getJson(ctx.port, "/api/chat/history");
     const roles = hist.data.messages.map((m) => m.role);
-    // 第一条完整一轮：user, assistant。第二条被拒，未写入历史。
-    assert.deepEqual(roles, ["user", "assistant"]);
+    // 第一条完整一轮：user, generating(assistant), assistant。第二条被拒，未写入历史。
+    assert.deepEqual(roles, ["user", "assistant", "assistant"]);
   } finally {
     await closeServer(ctx.server);
   }

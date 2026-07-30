@@ -821,6 +821,32 @@ export function createThreadRenderer(ctx) {
 
   // ===== S3 chat thread rendering =====
 
+  // §3.4: 进程崩溃/中断时最后一条消息是 status:"generating" 占位，渲染为中断条。
+  function buildInterruptedCard(allMessages) {
+    const lastUserMsg = [...allMessages].reverse().find((m) => m.role === "user");
+    if (!lastUserMsg) return null;
+    const wrap = document.createElement("div");
+    wrap.className = "msg-agent rise chat-bubble-wrap chat-bubble-wrap--interrupted";
+    const card = document.createElement("div");
+    card.className = "chat-interrupted-card";
+    const label = document.createElement("span");
+    label.className = "chat-interrupted-label";
+    label.textContent = "上一轮被中断";
+    const text = document.createElement("span");
+    text.className = "chat-interrupted-text";
+    text.textContent = "对话进程在上次回复完成前退出，可重发消息。";
+    const retryBtn = document.createElement("button");
+    retryBtn.type = "button";
+    retryBtn.className = "small-button";
+    retryBtn.textContent = "重发";
+    retryBtn.addEventListener("click", () => {
+      ctx.submitText?.(lastUserMsg.content ?? "");
+    });
+    card.append(label, text, retryBtn);
+    wrap.append(card);
+    return wrap;
+  }
+
   // 气泡操作排：复制 / 重新发送（user）/ 重试本轮（assistant，仅最后一条显示，见 syncChatThread 收尾）。
   function buildMsgActions(message, allMessages) {
     const bar = document.createElement("div");
@@ -1134,6 +1160,21 @@ export function createThreadRenderer(ctx) {
     }
     const retryButtons = ctx.refs.thread.querySelectorAll('[data-testid="msg-retry"]');
     retryButtons.forEach((btn, i) => { btn.hidden = i !== retryButtons.length - 1; });
+
+    // §3.4: 检查 last message 是否为 dangling generating 占位（进程崩溃/中断残留），渲染中断条
+    const lastMsg = messages[messages.length - 1];
+    if (lastMsg?.status === "generating") {
+      const interruptKey = "chat:interrupted:generating";
+      if (!ctx.renderedKeys?.has(interruptKey)) {
+        const node = buildInterruptedCard(messages);
+        if (node) {
+          ctx.refs.thread.append(node);
+          ctx.renderedKeys?.add(interruptKey);
+          appended = true;
+        }
+      }
+    }
+
     if (appended && stick) scrollThreadToBottom();
   }
 

@@ -35,6 +35,7 @@
   --green-line: #cfe7d8;
   --amber: #94631a;
   --amber-soft: #f8f1e3;
+  --amber-line: #e9dcc3;
   --red: #b23a2c;
   --red-soft: #fbeeec;
 
@@ -1714,6 +1715,44 @@ button.cbar-pill--readonly:hover {
 .research-form .research-input { flex: 1 1 120px; min-width: 0; font: inherit; font-size: 12.5px; padding: 6px 9px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); color: var(--ink); }
 .research-form .small-button { flex: 0 0 auto; }
 
+/* §4.1: 启动恢复横幅 — 项目上次崩溃/断电残留 */
+.recovery-startup-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  margin: 10px 0;
+  border: 1px solid var(--amber-line);
+  border-radius: 6px;
+  background: var(--amber-soft);
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.recovery-banner-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.recovery-banner-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.recovery-banner-text strong {
+  font-weight: 600;
+  font-size: 13px;
+}
+.recovery-banner-text span {
+  font-size: 12px;
+  color: var(--muted);
+}
+.recovery-banner-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .spin { animation: none; }
   .proj-dot.running, .pill.running .pdot { animation: none; }
@@ -1805,7 +1844,7 @@ button.cbar-pill--readonly:hover {
 /* ===== S3 chat thread rendering ===== */
 .chat-bubble-wrap { display: flex; width: 100%; }
 .chat-bubble-wrap--user { justify-content: flex-end; }
-.chat-bubble-wrap--assistant, .chat-bubble-wrap--tool, .chat-bubble-wrap--confirm { justify-content: flex-start; }
+.chat-bubble-wrap--assistant, .chat-bubble-wrap--tool, .chat-bubble-wrap--confirm, .chat-bubble-wrap--interrupted { justify-content: flex-start; }
 .chat-thinking .chat-bubble { opacity: 0.7; animation: thinkingPulse 1.4s ease-in-out infinite; }
 @keyframes thinkingPulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 0.85; } }
 .chat-bubble {
@@ -1874,6 +1913,31 @@ button.cbar-pill--readonly:hover {
 .chat-confirm-approve:disabled, .chat-confirm-reject:disabled { opacity: .55; cursor: not-allowed; }
 .chat-confirm-card--resolved { opacity: .6; border-color: var(--green); }
 .chat-confirm-card--rejected { opacity: .6; border-color: var(--muted); }
+
+/* §3.4: 中断卡片 — 进程崩溃/断电后最后一条消息是 generating 占位时渲染 */
+.chat-interrupted-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px dashed var(--red);
+  border-radius: 6px;
+  background: var(--red-soft);
+  font-size: 12.5px;
+}
+.chat-interrupted-label {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--red);
+  white-space: nowrap;
+}
+.chat-interrupted-text {
+  flex: 1;
+  color: var(--muted);
+}
+.chat-interrupted-card .small-button {
+  flex-shrink: 0;
+}
 
 /* line-level diff view (edit_chapter confirm card) */
 .chat-diff { font-family: var(--mono); font-size: 12.5px; line-height: 1.6; border-radius: var(--r-sm); max-height: 360px; overflow-y: auto; }

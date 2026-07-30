@@ -83,7 +83,7 @@ test("纯文本回复直接落历史", async () => {
   assert.equal(out.reply, "进度是 1/3 章。");
   assert.equal(out.pendingAction, null);
   const history = await readHistory(projectRoot);
-  assert.deepEqual(history.map((m) => m.role), ["user", "assistant"]);
+  assert.deepEqual(history.map((m) => m.role), ["user", "assistant", "assistant"]);
 });
 
 test("读工具自动执行并回填后续轮", async () => {
@@ -448,4 +448,61 @@ test("多工具：read + write 组合 → reads 先执行，write 落 pending，
   assert.ok(toolMsgs.find((m) => m.tool === "get_status"));
   // 应有 skipped 的记录
   assert.ok(toolMsgs.find((m) => m.tool === "list_chapters" && m.ok === false));
+});
+
+// ===== §3.4: generating placeholder + failure message =====
+
+test("runChatTurn writes generating placeholder before agentLoop", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  await runChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient(["进度是 1/3 章。"]),
+    userMessage: "进度如何？"
+  });
+  const history = await readHistory(projectRoot);
+  // 应有: user, generating, assistant
+  assert.equal(history.length, 3);
+  assert.equal(history[0].role, "user");
+  assert.equal(history[1].role, "assistant");
+  assert.equal(history[1].status, "generating");
+  assert.equal(history[1].content, "");
+  assert.ok(history[1].turn_id);
+  assert.equal(history[2].role, "assistant");
+  assert.ok(!history[2].status || history[2].status !== "generating");
+  assert.ok(history[2].content.length > 0);
+});
+
+test("runChatTurn writes failure message on agentLoop error", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  const throwingClient = {
+    generate: async () => { throw new Error("模型调用超时"); }
+  };
+  try {
+    await runChatTurn({
+      projectRoot, project, registry,
+      modelClient: throwingClient,
+      userMessage: "会出错的消息"
+    });
+    assert.fail("应抛异常");
+  } catch (error) {
+    assert.match(error.message, /模型调用超时/u);
+  }
+  const history = await readHistory(projectRoot);
+  // 应有: user, generating, failed assistant
+  assert.equal(history.length, 3, `历史应有 3 条，实际 ${history.length}`);
+  assert.equal(history[0].role, "user");
+  assert.equal(history[1].role, "assistant");
+  assert.equal(history[1].status, "generating");
+  assert.equal(history[2].role, "assistant");
+  assert.equal(history[2].status, "failed");
+  assert.match(history[2].content, /本轮失败/u);
+  assert.ok(history[2].turn_id);
+  // turn_id 应一致
+  assert.equal(history[1].turn_id, history[2].turn_id);
 });

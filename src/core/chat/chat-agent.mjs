@@ -1,5 +1,6 @@
 // 对话 agent 主循环：解析模型回复 -> 读工具自动执行 -> 写/控制类工具先预览后挂 pending
 // 续轮由 resumeChatTurn 接管；maxToolRounds 防止失控空转。
+import crypto from "node:crypto";
 import { buildChatContext } from "./chat-context.mjs";
 import { parseAgentReply } from "./agent-protocol.mjs";
 import { executeTool, checkToolPermission, summarizeArgs } from "./tool-registry.mjs";
@@ -33,7 +34,24 @@ export async function runChatTurn(options) {
     };
   }
   await appendChatMessage(projectRoot, { role: "user", content: String(userMessage ?? "") });
-  return await agentLoop(options, []);
+
+  // §3.4: 写 generating 占位消息。正常完成时 agentLoop 会追加正式回复，占位因 content 为空被前端跳过；
+  // 如果进程崩溃/中断，最后一条消息就是 status:"generating"，前端据此渲染中断条。
+  const turnId = crypto.randomUUID();
+  await appendChatMessage(projectRoot, {
+    role: "assistant", content: "", status: "generating", turn_id: turnId
+  });
+
+  try {
+    return await agentLoop(options, []);
+  } catch (error) {
+    // §3.4: 失败时写错误消息
+    const errorSummary = String(error.message ?? "未知错误").slice(0, 200);
+    await appendChatMessage(projectRoot, {
+      role: "assistant", content: `（本轮失败：${errorSummary}，可重发）`, status: "failed", turn_id: turnId
+    });
+    throw error;
+  }
 }
 
 export async function resumeChatTurn(options) {
