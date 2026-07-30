@@ -21,13 +21,36 @@ export function renderFailureCard(card, { onAction }) {
   const actions = document.createElement('div');
   actions.className = 'failure-actions';
   for (const action of card.actions) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.textContent = action.label;
-    if (action.destructive) btn.classList.add('destructive');
-    btn.disabled = !!card.resolution;
-    btn.addEventListener('click', () => onAction(card, action));
-    actions.appendChild(btn);
+    if (action.command === 'retry-with-prompt') {
+      // §4.5.2: 内嵌 textarea + 提交按钮，替代普通按钮
+      const inlinePrompt = document.createElement('div');
+      inlinePrompt.className = 'failure-card-inline-prompt';
+
+      const textarea = document.createElement('textarea');
+      textarea.placeholder = '输入改写提示…';
+      textarea.disabled = !!card.resolution;
+
+      const submitBtn = document.createElement('button');
+      submitBtn.type = 'button';
+      submitBtn.textContent = action.label;
+      if (action.destructive) submitBtn.classList.add('destructive');
+      submitBtn.disabled = !!card.resolution;
+      submitBtn.addEventListener('click', () => {
+        onAction(card, { command: 'retry-with-prompt', args: { prompt: textarea.value } });
+      });
+
+      inlinePrompt.appendChild(textarea);
+      inlinePrompt.appendChild(submitBtn);
+      actions.appendChild(inlinePrompt);
+    } else {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = action.label;
+      if (action.destructive) btn.classList.add('destructive');
+      btn.disabled = !!card.resolution;
+      btn.addEventListener('click', () => onAction(card, action));
+      actions.appendChild(btn);
+    }
   }
   el.appendChild(actions);
 

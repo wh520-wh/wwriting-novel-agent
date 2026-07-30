@@ -7,6 +7,9 @@ export const DEFAULT_CONFIG = {
   },
   stage_overrides: {
     enabled: false
+    // 各 stage 覆盖示例：
+    // drafting:   { enabled: true, model_name: "deepseek-chat", total_deadline_ms: 600000 },
+    // chat:       { enabled: true, model_name: "deepseek-chat", total_deadline_ms: 120000 },
   },
   tool_permissions: {
     read_only: false,
@@ -20,7 +23,7 @@ export const DEFAULT_CONFIG = {
   research_config: {},
   enabled_skills: [],
   chat_max_tool_rounds: 32,
-  auto_resume_on_start: false // TODO: wired in recoverInterruptedProjects() — app startup auto-resume for crashed projects
+  auto_resume_on_start: false,
 };
 
 export async function loadConfigLayers(projectRoot, project = {}, options = {}) {

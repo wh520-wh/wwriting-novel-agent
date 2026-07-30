@@ -8,6 +8,7 @@ import { forgetRecentProject, loadAppStateSync, loadAppState, recordRecentProjec
 import { loadConfigLayers } from "./config-runtime.mjs";
 import { appendEvent } from "./event-log.mjs";
 import { isPathInside } from "./fs-utils.mjs";
+import { parseSimpleYaml } from "./simple-yaml.mjs";
 import { applyLocalSecretsToEnv, defaultSecretsRoot, loadLocalSecrets, loadLocalSecretsSync } from "./local-secrets.mjs";
 import { findLocalModelProfile, getDefaultLocalModelProfile, loadLocalModelProfiles, upsertLocalModelProfile } from "./local-model-profiles.mjs";
 import { createProjectAt, loadProject, loadState, saveProject, saveState } from "./project-store.mjs";
@@ -72,7 +73,7 @@ export function createAppShellServer({
   const projectLocks = createProjectLockRegistry();
   // §4.1: 启动时检测崩溃残留 — 项目 state 中 project_status==="running" 但无存活 runner。
   // 用同步 API 确保在 server.listen 前完成扫描。
-  const recoveryCandidates = recoverInterruptedProjects(appStateRoot, runJobs);
+  const { recoveryCandidates, autoResumeCandidates } = recoverInterruptedProjects(appStateRoot, runJobs);
   async function getTaskQueue(projectRoot) {
     const key = path.resolve(projectRoot);
     let queue = taskQueues.get(key);
@@ -280,6 +281,38 @@ export function createAppShellServer({
     abortActiveJobs(runJobs, "Application shutdown");
     return originalClose(callback);
   };
+
+  // §4.1.3: 对配置了 auto_resume_on_start===true 的崩溃残留项目自动续跑。
+  // 放在 server.listen 之后执行；在 server 返回前 fire-and-forget 启动，
+  // 这样 server 仍然可以立即接受请求（续跑在后台异步推进）。
+  if (autoResumeCandidates.length > 0) {
+    (async () => {
+      for (const root of autoResumeCandidates) {
+        try {
+          const project = await loadProject(root);
+          const state = await loadState(root);
+          const queue = await getTaskQueue(root);
+          const task = await queue.createRecoveryTask({
+            instruction: state.last_user_instruction ?? "继续当前写作任务",
+            mode: "write",
+            currentStage: state.current_stage ?? "queued",
+            recovery: { reason: "auto_resume_on_start" }
+          });
+          if (task) {
+            const miniCtx = { runJobs, getTaskQueue, testModel, testRunProject, projectLocks };
+            await startProjectRun(root, project, miniCtx, task, { source: "auto_resume_on_start" });
+            console.log(`[app-server] auto_resume_on_start: continued ${path.basename(root)}`);
+          }
+        } catch (err) {
+          // 单项目失败不影响其他项目的自动续跑
+          console.warn(`[app-server] auto_resume_on_start failed for ${path.basename(root)}:`, err.message);
+        }
+      }
+    })().catch((err) => {
+      console.warn("[app-server] auto_resume_on_start processing error:", err.message);
+    });
+  }
+
   return server;
 }
 
@@ -895,9 +928,13 @@ function isJobRunning(job) {
 
 // §4.1: 启动时扫描 recentProjects，检测 project_status==="running" 但无存活 runner 的残留项目。
 // 用同步 API 确保扫描在 server.listen 前完成。
+// 返回 { recoveryCandidates, autoResumeCandidates }：
+//   - recoveryCandidates：设 recovery_pending 标记让用户手动处理
+//   - autoResumeCandidates：auto_resume_on_start===true，直接自动续跑
 export function recoverInterruptedProjects(stateRoot, runJobs) {
   const state = loadAppStateSync(stateRoot);
-  const candidates = new Set();
+  const recoveryCandidates = new Set();
+  const autoResumeCandidates = [];
   for (const item of state.recentProjects) {
     const projectRoot = item.projectRoot;
     if (!existsSync(path.join(projectRoot, "project.yaml"))) continue;
@@ -909,11 +946,33 @@ export function recoverInterruptedProjects(stateRoot, runJobs) {
       const key = path.resolve(projectRoot);
       const job = runJobs.get(key);
       if (projectState.project_status === "running" && !isJobRunning(job)) {
-        candidates.add(key);
+        // 检查 auto_resume_on_start 配置
+        let autoResume = false;
+        try {
+          const projectYaml = readFileSync(path.join(projectRoot, "project.yaml"), "utf8");
+          const projectData = parseSimpleYaml(projectYaml);
+          autoResume = projectData.auto_resume_on_start === true;
+          if (!autoResume) {
+            // 也在 config JSON 文件中检查
+            for (const cfgFile of ["config/global_config.json", "config/local_config.json", "config/policy_config.json"]) {
+              const cfgPath = path.join(projectRoot, cfgFile);
+              if (existsSync(cfgPath)) {
+                const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+                if (cfg.auto_resume_on_start === true) { autoResume = true; break; }
+              }
+            }
+          }
+        } catch { /* skip unreadable config */ }
+
+        if (autoResume) {
+          autoResumeCandidates.push(key);
+        } else {
+          recoveryCandidates.add(key);
+        }
       }
     } catch { /* skip unreadable projects */ }
   }
-  return candidates;
+  return { recoveryCandidates, autoResumeCandidates };
 }
 
 function abortActiveJobs(runJobs, reason) {
