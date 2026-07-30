@@ -1280,7 +1280,7 @@ function checkpointModelExtras(modelCall) {
 // 保留旧管道兜底：连续 3 次“未成功提交”（纯文本 / 校验失败 / 非白名单工具）-> model_output_invalid；
 // 总轮数达上限仍没提交 -> agent_loop_exhausted。
 const WRITING_AGENT_MAX_ROUNDS = 8;
-const WRITING_AGENT_COMMIT_FAILURES = 3;
+const WRITING_AGENT_COMMIT_FAILURES = 8;
 
 const DRAFTING_ALLOWED_TOOLS = [
   "get_status",

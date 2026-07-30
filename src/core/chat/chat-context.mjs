@@ -4,7 +4,7 @@ import { pathExists, safeJoin } from "../fs-utils.mjs";
 import { readChatHistory } from "./chat-store.mjs";
 import { buildSystemPrompt } from "./agent-protocol.mjs";
 
-const HISTORY_WINDOW = 20;
+const HISTORY_WINDOW = 40;
 
 export async function buildChatContext({ projectRoot, project, registry, userMessage }) {
   const [state, index, bookSummary, continuityMd, history] = await Promise.all([
@@ -12,7 +12,7 @@ export async function buildChatContext({ projectRoot, project, registry, userMes
     loadChapterIndex(projectRoot).catch(() => ({ chapters: [] })),
     readOptional(safeJoin(projectRoot, "memory", "book_summary.md")),
     readOptional(safeJoin(projectRoot, "memory", "continuity.md")),
-    readChatHistory(projectRoot, { limit: 200 })
+    readChatHistory(projectRoot, { limit: 1000 })
   ]);
   const chapters = index.chapters ?? [];
   const snapshot = {
@@ -33,14 +33,23 @@ export async function buildChatContext({ projectRoot, project, registry, userMes
   const recent = history.slice(-HISTORY_WINDOW);
   const older = history.slice(0, Math.max(0, history.length - HISTORY_WINDOW));
   if (older.length > 0) {
-    const digest = older.map((m) => `${m.role}: ${String(m.content ?? m.result_summary ?? "").slice(0, 80)}`).join("\n");
+    const digest = older.map((m) => `${m.role}: ${String(m.content ?? m.result_summary ?? "").slice(0, 160)}`).join("\n");
     messages.push({ role: "system", content: `## 早前对话提要\n${digest}` });
   }
-  for (const m of recent) {
+  // 找到历史中最后一条 tool 消息（保留全文，不二次裁剪）
+  let lastToolIdx = -1;
+  for (let i = recent.length - 1; i >= 0; i -= 1) {
+    if (recent[i].role === "tool") { lastToolIdx = i; break; }
+  }
+  for (let i = 0; i < recent.length; i += 1) {
+    const m = recent[i];
     if (m.role === "user" || m.role === "assistant") {
       messages.push({ role: m.role, content: String(m.content ?? "") });
     } else if (m.role === "tool") {
-      messages.push({ role: "user", content: `[工具 ${m.tool} 结果] ${String(m.result_summary ?? "")}` });
+      const summary = String(m.result_summary ?? "");
+      // 历史 tool 消息 >4000 字压到 1000；最近一条 tool 消息保留全文
+      const trimmed = (i !== lastToolIdx && summary.length > 4000) ? summary.slice(0, 1000) + "…" : summary;
+      messages.push({ role: "user", content: `[工具 ${m.tool} 结果] ${trimmed}` });
     }
   }
   messages.push({ role: "user", content: String(userMessage ?? "") });

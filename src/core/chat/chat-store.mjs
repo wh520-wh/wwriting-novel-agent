@@ -15,7 +15,7 @@ export async function appendChatMessage(projectRoot, message) {
   return entry;
 }
 
-export async function readChatHistory(projectRoot, { after = null, limit = 200 } = {}) {
+export async function readChatHistory(projectRoot, { after = null, limit = 1000 } = {}) {
   const file = safeJoin(projectRoot, HISTORY_FILE);
   if (!(await pathExists(file))) return [];
   const lines = (await fs.readFile(file, "utf8")).split("\n").filter(Boolean);

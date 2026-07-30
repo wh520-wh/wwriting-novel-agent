@@ -36,9 +36,9 @@ test("buildChatContext 注入系统提示/记忆/历史/本轮消息", async () 
   assert.equal(snapshot.title, "上下文测试");
 });
 
-test("历史超 20 条折叠为提要", async () => {
+test("历史超 40 条折叠为提要", async () => {
   const projectRoot = await makeProject();
-  for (let i = 0; i < 30; i += 1) await appendChatMessage(projectRoot, { role: "user", content: `历史消息${i}` });
+  for (let i = 0; i < 50; i += 1) await appendChatMessage(projectRoot, { role: "user", content: `历史消息${i}` });
   const registry = createToolRegistry();
   const project = await loadProject(projectRoot);
   const { messages } = await buildChatContext({ projectRoot, project, registry, userMessage: "新消息" });
@@ -46,7 +46,7 @@ test("历史超 20 条折叠为提要", async () => {
   assert.ok(digest);
   assert.match(digest.content, /历史消息0/u);
   const fullHistory = messages.filter((m) => m.content?.startsWith?.("历史消息") && !m.content.includes("提要"));
-  assert.equal(fullHistory.length, 20);
+  assert.equal(fullHistory.length, 40);
 });
 
 import { runChatTurn, resumeChatTurn } from "../src/core/chat/chat-agent.mjs";

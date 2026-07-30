@@ -10,7 +10,7 @@ import { loadConfigLayers } from "../config-runtime.mjs";
 import path from "node:path";
 
 export const MAX_TOOL_ROUNDS = 32;
-const RESULT_SUMMARY_CHARS = 500;
+const RESULT_SUMMARY_CHARS = 4000;
 
 // 写作运行时写保护：runProject 后台不持 projectLock，chat 持锁，两者并发写
 // continuity/state 会 lost update（extracted_chapters 水位推进后不可恢复，静默丢记忆）。
