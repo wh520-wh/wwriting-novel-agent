@@ -523,7 +523,7 @@ test("post-process skill hooks can modify draft before finalizing", async () => 
   assert.ok(events.some((event) => event.type === "skill_hook_applied" && event.stage === "post_process"));
 });
 
-test("engine persists blocked state after three invalid model outputs", async () => {
+test("engine persists blocked state after excessive invalid model outputs", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-blocked-invalid-"));
   const { projectRoot } = await createProject(root, {
     slug: "project",
