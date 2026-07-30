@@ -6,7 +6,7 @@ import { parseAgentReply } from "./agent-protocol.mjs";
 import { executeTool, checkToolPermission, summarizeArgs } from "./tool-registry.mjs";
 import { previewEditChapter } from "./tools-write.mjs";
 import { isJobRunning } from "./tools-control.mjs";
-import { appendChatMessage, loadPendingAction, savePendingAction, clearPendingAction } from "./chat-store.mjs";
+import { appendChatMessage, loadPendingAction, savePendingAction, clearPendingAction, updatePendingStatus } from "./chat-store.mjs";
 import { loadConfigLayers } from "../config-runtime.mjs";
 import path from "node:path";
 
@@ -62,17 +62,30 @@ export async function resumeChatTurn(options) {
   }
   let outcome;
   if (approve === true) {
-    const tool = registry.get(pending.tool);
-    const busy = checkRunBusy(tool, server, projectRoot);
-    if (busy) {
-      outcome = busy;
+    // §3.3 Idempotency: if already executed, skip executeTool, use cached result
+    if (pending.status === "executed") {
+      outcome = pending.cachedOutcome;
     } else {
-      outcome = await executeTool(registry, pending.tool, pending.args, { projectRoot, project, server, getTaskQueue });
+      const tool = registry.get(pending.tool);
+      const busy = checkRunBusy(tool, server, projectRoot);
+      if (busy) {
+        outcome = busy;
+        await clearPendingAction(projectRoot);
+      } else {
+        // §3.3: Atomically mark as executing before execution
+        const key = pending.idempotency_key ?? crypto.randomUUID();
+        await updatePendingStatus(projectRoot, key, "executing");
+        outcome = await executeTool(registry, pending.tool, pending.args, { projectRoot, project, server, getTaskQueue });
+        // §3.3: Atomically mark as executed with cached result (crash recovery: next resume skips re-execution)
+        await updatePendingStatus(projectRoot, key, "executed", outcome);
+      }
     }
+    // Clear pending before agentLoop so a new pending can be created
+    await clearPendingAction(projectRoot);
   } else {
     outcome = { ok: false, error: "user_rejected", message: "用户拒绝了此操作。" };
+    await clearPendingAction(projectRoot);
   }
-  await clearPendingAction(projectRoot);
   const toolEvent = { tool: pending.tool, ok: outcome.ok, error: outcome.ok ? null : outcome.error };
   await appendChatMessage(projectRoot, {
     role: "tool", tool: pending.tool, ok: outcome.ok,
