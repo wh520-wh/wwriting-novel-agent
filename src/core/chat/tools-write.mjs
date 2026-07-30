@@ -26,12 +26,13 @@ async function resolveChapterFile(projectRoot, chapterNo) {
 
 // bigram Dice 相似度：对照 Aider difflib.SequenceMatcher 的轻量替代，
 // 用于 find 精确找不到时定位最相似片段，反馈给模型重试（不自动替换，避免小说正文误改）。
-function diceSimilarity(a, b) {
-  if (a.length < 2 || b.length < 2) return 0;
-  const ga = new Set();
-  for (let i = 0; i < a.length - 1; i += 1) ga.add(a.slice(i, i + 2));
-  const gb = new Set();
-  for (let i = 0; i < b.length - 1; i += 1) gb.add(b.slice(i, i + 2));
+function bigrams(str) {
+  const set = new Set();
+  for (let i = 0; i < str.length - 1; i += 1) set.add(str.slice(i, i + 2));
+  return set;
+}
+
+function diceSimilaritySets(ga, gb) {
   let inter = 0;
   for (const g of ga) if (gb.has(g)) inter += 1;
   return (2 * inter) / (ga.size + gb.size);
@@ -40,10 +41,12 @@ function diceSimilarity(a, b) {
 function closestSnippet(content, find, maxLen = 80) {
   if (!find || find.length < 4) return null;
   const win = Math.min(Math.max(find.length, 8), maxLen);
+  // find 在循环中不变，bigrams 预计算一次；原实现每轮重建 ga，是 O(N*m) 的纯浪费。
+  const ga = bigrams(find);
   let best = null;
   const step = 1; // 步长 1 不漏最佳对齐（find_not_found 是低频错误路径，开销可接受）
   for (let i = 0; i + win <= content.length; i += step) {
-    const sim = diceSimilarity(find, content.slice(i, i + win));
+    const sim = diceSimilaritySets(ga, bigrams(content.slice(i, i + win)));
     if (!best || sim > best.sim) best = { at: i, sim };
   }
   if (best && best.sim >= 0.5) {
@@ -171,6 +174,7 @@ export function registerWriteTools(registry) {
   registry.register({
     name: "rewrite_chapter",
     kind: "write",
+    safeDuringRun: true,
     description: "把某章整体重写的要求排成写作任务（由写作流水线执行）。",
     params: {
       chapter_no: "章节号",
@@ -241,6 +245,7 @@ export function registerWriteTools(registry) {
   registry.register({
     name: "queue_chapters",
     kind: "write",
+    safeDuringRun: true,
     description: "把写作指令排进任务队列（支持「写N章」「写到第N章」或自由指令）。",
     params: { instruction: "写作指令" },
     run: async (args, ctx) => {
@@ -272,7 +277,7 @@ export function registerWriteTools(registry) {
   });
 
   registry.register({
-    name: "export_book", kind: "write",
+    name: "export_book", kind: "write", safeDuringRun: true,
     description: "把已完成章节合成一本书，导出到项目 exports/ 文件夹（md 或 txt）。",
     params: { format: "md 或 txt（默认 md）", from_chapter: "起始章（可空）", to_chapter: "结束章（可空）" },
     run: async (args, ctx) => {

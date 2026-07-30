@@ -16,7 +16,7 @@ function requireServer(ctx) {
 
 // 复制自 src/core/app-server.mjs 的同名函数（避免循环依赖：app-server 不会引入 chat 层）。
 // job 形状：{ status, controller, ... }，status === "running" 时认为在跑。
-function isJobRunning(job) {
+export function isJobRunning(job) {
   return job?.status === "running";
 }
 
