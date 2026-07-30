@@ -1932,7 +1932,7 @@ async function readJsonBody(request) {
   for await (const chunk of request) {
     source += chunk.toString("utf8");
     if (source.length > 200_000) {
-      throw new Error("请求内容过大。");
+      throw new HttpError(413, "PAYLOAD_TOO_LARGE", "请求体过大");
     }
   }
   return source ? JSON.parse(source) : {};

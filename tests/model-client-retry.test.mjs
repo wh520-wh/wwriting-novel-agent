@@ -77,7 +77,7 @@ test("NOT retry on 400 — client error, fail immediately", async () => {
   const client = makeClient(adapter, { retryMax: 3 });
   await assert.rejects(() => client.generate({ prompt: "hi" }), (err) => {
     assert.equal(err.code, "provider_transport_error");
-    assert.equal(err.reason, "server-fatal");
+    assert.equal(err.reason, "client-fatal");
     return true;
   });
   assert.equal(calls, 1);
@@ -94,7 +94,7 @@ test("NOT retry on 401 — auth error, fail immediately", async () => {
   const client = makeClient(adapter, { retryMax: 3 });
   await assert.rejects(() => client.generate({ prompt: "hi" }), (err) => {
     assert.equal(err.code, "provider_transport_error");
-    assert.equal(err.reason, "server-fatal");
+    assert.equal(err.reason, "client-fatal");
     return true;
   });
   assert.equal(calls, 1);
