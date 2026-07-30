@@ -14,7 +14,8 @@ export class ModelClient {
     retryBaseDelayMs = 1000,
     retryMaxDelayMs = 16000,
     timeoutMs = 120000,
-    onRetry = null
+    onRetry = null,
+    onActivity = null
   } = {}) {
     this.adapters = adapters;
     this.activeModel = activeModel;
@@ -25,6 +26,7 @@ export class ModelClient {
     this.retryMaxDelayMs = retryMaxDelayMs;
     this.timeoutMs = timeoutMs;
     this.onRetry = onRetry;
+    this.onActivity = onActivity;
   }
 
   resolveModelConfig(project = {}, stage = "drafting") {
@@ -82,6 +84,11 @@ export class ModelClient {
       // Start the timeout timer
       const timer = setTimeout(() => timeoutController.abort(), this.timeoutMs);
 
+      // Pass onActivity through metadata so streaming adapters can call it on each SSE chunk
+      const metadataWithActivity = this.onActivity
+        ? { ...metadata, onActivity: this.onActivity }
+        : metadata;
+
       try {
         const response = await adapter.generate({
           model: modelConfig.model_name,
@@ -89,7 +96,7 @@ export class ModelClient {
           prompt,
           messages,
           stage,
-          metadata,
+          metadata: metadataWithActivity,
           signal: combinedSignal
         });
 
@@ -129,6 +136,7 @@ export class ModelClient {
         if (timedOut) {
           const timeoutError = new ProviderTransportError("Request timed out.", { reason: "timeout" });
           if (this.#isRetryable(timeoutError) && attempt < this.retryMax) {
+            this.onActivity?.();
             await this.#retryWait(attempt, timeoutError, modelConfig.model_name, signal);
             continue;
           }
@@ -137,6 +145,7 @@ export class ModelClient {
 
         // Check if the error is retryable
         if (this.#isRetryable(error) && attempt < this.retryMax) {
+          this.onActivity?.();
           await this.#retryWait(attempt, error, modelConfig.model_name, signal);
           continue;
         }

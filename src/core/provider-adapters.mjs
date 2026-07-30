@@ -130,6 +130,9 @@ export class OpenAICompatibleAdapter {
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
 
+        // Signal activity on each raw SSE chunk so the heartbeat stays fresh during long streams
+        metadata?.onActivity?.();
+
         const parts = buffer.split(/(?:\r?\n){2,}/);
         buffer = parts.pop(); // keep incomplete part
 
