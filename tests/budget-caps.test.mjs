@@ -64,3 +64,23 @@ test("costAvailable=false 时 max_cost 不熔断（无法按钱计量）", async
   assert.notEqual(state.project_status, "blocked");
   await fs.rm(workspace, { recursive: true, force: true });
 });
+
+test("显式设置 max_model_calls=1 时调用一次后进入 blocked(model_call_budget_exhausted)", async () => {
+  const { workspace, projectRoot } = await setupProject({ max_model_calls: 1 });
+  const result = await runProject(projectRoot, { model: new MockModel() }).catch(() => {});
+  assert.equal(result.blocked, true);
+  const state = await loadState(projectRoot);
+  assert.equal(state.blocked_reason, "model_call_budget_exhausted");
+  assert.equal(state.active_budget.model_calls, 1);
+  assert.equal(state.active_budget.max_model_calls, 1);
+  await fs.rm(workspace, { recursive: true, force: true });
+});
+
+test("不设置 max_model_calls（默认 null）时项目不因调用上限阻塞", async () => {
+  const { workspace, projectRoot } = await setupProject({});
+  const result = await runProject(projectRoot, { model: new MockModel() }).catch(() => {});
+  const state = await loadState(projectRoot);
+  assert.equal(state.active_budget.max_model_calls, null);
+  assert.notEqual(state.blocked_reason, "model_call_budget_exhausted");
+  await fs.rm(workspace, { recursive: true, force: true });
+});

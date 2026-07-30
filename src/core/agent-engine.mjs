@@ -1720,9 +1720,9 @@ async function consumeRevisionBudget(projectRoot, project, state) {
 function withBudgetDefaults(state) {
   return {
     model_calls: 0,
-    max_model_calls: 200,
+    max_model_calls: null,
     revision_rounds_by_chapter: {},
-    max_revision_rounds_per_chapter: 4,
+    max_revision_rounds_per_chapter: null,
     max_cost: null,
     max_total_tokens: null,
     ...(state.active_budget ?? {})
