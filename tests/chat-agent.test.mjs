@@ -189,6 +189,65 @@ test("已有 pending_action 时新消息被挡", async () => {
   assert.ok(blocked.pendingAction);
 });
 
+test("写作运行时写保护：running 时 update_continuity 免确认也被拒（防 lost update）", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  project.tool_permissions = { ...(project.tool_permissions ?? {}), yolo: true };
+  await saveProject(projectRoot, project);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  registerWriteTools(registry);
+  const runJobs = new Map([[path.resolve(projectRoot), { status: "running", taskId: "t1" }]]);
+  const out = await runChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient([
+      '```json\n{"tool_calls":[{"tool":"update_continuity","args":{"entity":"刘康","attribute":"身高","value":"180","note":"补"}}]}\n```',
+      "好的，等写作完成再改。"
+    ]),
+    userMessage: "把刘康身高设为 180",
+    server: { runJobs }
+  });
+  assert.equal(out.toolEvents[0].tool, "update_continuity");
+  assert.equal(out.toolEvents[0].ok, false);
+  assert.equal(out.toolEvents[0].error, "run_busy");
+  // continuity.json 未被写入：update_continuity 被拦，不与后台 runProject 并发写
+  const contPath = path.join(projectRoot, "memory", "continuity.json");
+  const exists = await fs.access(contPath).then(() => true).catch(() => false);
+  assert.equal(exists, false);
+});
+
+test("写作运行时写保护：resume 批准时若已 running，pending 的 update_continuity 被拒", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  registerWriteTools(registry);
+  // 第一轮无 running，update_continuity 落 pending
+  await runChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient([
+      '```json\n{"tool_calls":[{"tool":"update_continuity","args":{"entity":"刘康","attribute":"身高","value":"180","note":"补"}}]}\n```'
+    ]),
+    userMessage: "把刘康身高设为 180",
+    server: { runJobs: new Map() }
+  });
+  // 批准时写作任务已启动（pending 存时无 running，批准时 running 的竞态窗口）
+  const runJobs = new Map([[path.resolve(projectRoot), { status: "running", taskId: "t1" }]]);
+  await resumeChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient(["好的，等写作完成再改。"]),
+    approve: true,
+    server: { runJobs }
+  });
+  const toolMsg = (await readHistory(projectRoot)).find((m) => m.role === "tool" && m.tool === "update_continuity");
+  assert.ok(toolMsg);
+  assert.equal(toolMsg.ok, false);
+  assert.match(toolMsg.result_summary, /run_busy|写作任务进行中/u);
+  const contPath = path.join(projectRoot, "memory", "continuity.json");
+  const exists = await fs.access(contPath).then(() => true).catch(() => false);
+  assert.equal(exists, false);
+});
+
 test("畸形 JSON 按纯文本回复处理", async () => {
   const projectRoot = await makeChatProject();
   const project = await loadProject(projectRoot);
