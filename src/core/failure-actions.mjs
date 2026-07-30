@@ -44,6 +44,8 @@ export async function applyFailureResolution(projectRoot, { command, args = {} }
       if (["reviewing", "needs_revision", "revising"].includes(next.current_stage)) {
         next.current_stage = "finalizing";
         next.stage_entered_at = new Date().toISOString();
+      } else {
+        return { resumeRun: false, message: "当前阶段无草稿可接受。" };
       }
       await saveState(projectRoot, next);
       await appendEvent(projectRoot, {

@@ -44,7 +44,7 @@ export class ProviderTransportError extends Error {
     this.status = details.status ?? null;
     this.body = details.body ?? null;
     this.retryAfterMs = details.retryAfterMs ?? null;
-    // reason: 'user-abort' | 'timeout' | 'network' | 'server-retryable' | 'server-fatal'
+    // reason: 'user-abort' | 'timeout' | 'network' | 'server-retryable' | 'client-fatal'
     this.reason = details.reason ?? this.#inferReason(details);
   }
 
@@ -54,7 +54,7 @@ export class ProviderTransportError extends Error {
       return "server-retryable";
     }
     // 其他 4xx 是客户端错误，不重试
-    if (details.status >= 400 && details.status < 500) return "server-fatal";
+    if (details.status >= 400 && details.status < 500) return "client-fatal";
     // 5xx 是服务器错误，可重试
     if (details.status >= 500) return "server-retryable";
     // 无 status = 网络错误
