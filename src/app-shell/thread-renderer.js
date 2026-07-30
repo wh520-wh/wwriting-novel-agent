@@ -973,6 +973,23 @@ export function createThreadRenderer(ctx) {
   }
 
   function renderToolCard(message) {
+    // §5.2: superseded 工具渲染为置灰确认卡
+    if (message.superseded) {
+      const wrap = document.createElement("div");
+      wrap.className = "msg-agent rise chat-bubble-wrap chat-bubble-wrap--confirm";
+      wrap.dataset.ts = message.ts ?? "";
+      const card = document.createElement("div");
+      card.className = "chat-confirm-card chat-confirm-card--superseded";
+      const h4 = document.createElement("h4");
+      h4.textContent = `操作已取消：${toolLabel(message.tool ?? "")}`;
+      card.append(h4);
+      const p = document.createElement("p");
+      p.className = "chat-confirm-desc";
+      p.textContent = "已被新指令取消";
+      card.append(p);
+      wrap.append(card);
+      return wrap;
+    }
     if (message.ok !== false) return null;
     const wrap = document.createElement("div");
     wrap.className = "msg-agent rise chat-bubble-wrap chat-bubble-wrap--tool";
