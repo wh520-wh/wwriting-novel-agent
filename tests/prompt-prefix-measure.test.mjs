@@ -15,6 +15,8 @@ import { DYNAMIC_BLOCK_ORDER, STABLE_BLOCK_ORDER } from "../src/core/prompt-comp
 // M1 稳定区占比测量：真实项目 + 真实 compileChapterPrompt 编译路径，
 // 统计 stable/dynamic 块字符占比（token proxy），推算稳态命中率上界
 // （= stable 占比 + 动态区可复用部分；可复用部分本轮保守按 0）。
+// Task 19 补章内视角：同一章 segment 1 vs segment 2 的编译，章内不变前缀
+// （stable + project_memory + chapter_plan）占比是计划稳态口径（排除每章首调）的真实上界。
 // 测量记录写入 gitignored 的 debug/measure-prompt-prefix.json。
 
 const RECORD_PATH = path.resolve(import.meta.dirname, "../debug/measure-prompt-prefix.json");
@@ -130,6 +132,36 @@ async function simulateProgressToChapter3(projectRoot, project) {
   return state;
 }
 
+function recommendInChapterTarget(inChapterShare, currentTaskChars) {
+  const planTarget = 0.8;
+  if (inChapterShare >= planTarget) {
+    return {
+      plan_target: planTarget,
+      recommendation: "confirm",
+      suggested_target: planTarget,
+      rationale: `章内稳态口径（排除每章首调）实测上界 ${inChapterShare.toFixed(3)} ≥ ${planTarget}，80% 参考目标按原目标确认。`
+    };
+  }
+  const suggested = Math.floor(inChapterShare * 20) / 20;
+  const currentTaskShare = Number.isFinite(currentTaskChars) && inChapterShare < 1
+    ? Math.min(0.99, inChapterShare + currentTaskChars) // current_task 之后才会遇到第一个变化块
+    : inChapterShare;
+  return {
+    plan_target: planTarget,
+    recommendation: "adjust",
+    suggested_target: suggested,
+    rationale: `章内稳态口径（排除每章首调）实测上界 ${inChapterShare.toFixed(3)} < ${planTarget}，建议把参考目标调整为 ${suggested}。`
+      + `章内不变前缀 = stable + project_memory + chapter_plan（这两块动态块在跨章视角会变、章内不变），`
+      + `第一个变化的块是 current_task（segment_no/attempt/字数缺口逐段变化）。`
+      + `要再抬高：把 current_task 中逐段稳定的内容（allowed_tools、agent_loop_instruction、`
+      + `forbidden_reboot_patterns、写作指令）移出 JSON 进 stable 区，或把易变字段`
+      + `（segment_no/attempt/字数缺口）挪到末尾的 recent_trace_summary 之后，`
+      + `让前缀延伸过 current_task（届时上界约 ${currentTaskShare.toFixed(3)}）。`
+      + `注：selected_draft_fragment 被 draft.slice(-1200) 封顶，草稿变长只改内容不改长度，`
+      + `章内提示总长基本恒定，章内占比不会随段数下探。`
+  };
+}
+
 function recommendTarget(minStableShare) {
   const planTarget = 0.8;
   if (minStableShare >= planTarget) {
@@ -199,6 +231,83 @@ test("真实项目编译：第 1 章与第 3 章（模拟推进）的 stable/dyn
   assert.equal(resultA.compiled.stableHash, resultB.compiled.stableHash, "跨章 stableHash 应保持不变");
   assert.notEqual(resultA.compiled.dynamicHash, resultB.compiled.dynamicHash, "跨章 dynamicHash 应变化");
 
+  // —— 章内视角（Task 19 补测）：同一章 segment 1 vs segment 2 的真实编译 ——
+  // 章内记忆/计划不变，仅 current_task（segment_no/字数缺口）、selected_draft_fragment
+  // （草稿增长）、recent_trace_summary（segment_no）变化。章内不变前缀 =
+  // stable + project_memory + chapter_plan，是计划稳态口径（排除每章首调）的命中率上界。
+  const stateSeg1 = await loadState(projectRoot);
+  stateSeg1.current_chapter_no = 3;
+  stateSeg1.current_stage = "drafting";
+  stateSeg1.current_segment_no = 1;
+  await saveState(projectRoot, stateSeg1);
+  const seg1Result = await compileScenario(projectRoot, project, stateSeg1, runtime, draftRequest(project, 3, 1, 1));
+
+  // 模拟第 1 段写完后追加（草稿变长），再以 segment 2 编译。
+  // 注意：追加文本必须与 prose() 的周期句不同——prose(3, 3400) 与 prose(3, 1200)
+  // 的尾部 1200 字符是字节相同的（句子 40 字符一周期，3400/1200 都是 40 的倍数），
+  // 若直接追加 prose(3, 1200)，selected_draft_fragment 将不变，章内视角就测不出来。
+  const appendedSegment = (() => {
+    const sentence = "他听见书架后面有人低语，转身时只看到一枚滚落的印章。";
+    return sentence.repeat(Math.ceil(1200 / sentence.length)).slice(0, 1200);
+  })();
+  await fs.appendFile(
+    safeJoin(projectRoot, "drafts", chapterFileName(3, `draft.${project.output_format}`)),
+    `\n\n${appendedSegment}`,
+    "utf8"
+  );
+  const stateSeg2 = await loadState(projectRoot);
+  stateSeg2.current_chapter_no = 3;
+  stateSeg2.current_stage = "drafting";
+  stateSeg2.current_segment_no = 2;
+  await saveState(projectRoot, stateSeg2);
+  const seg2Result = await compileScenario(projectRoot, project, stateSeg2, runtime, draftRequest(project, 3, 2, 1));
+
+  // 章内不变前缀：自提示开头起逐块字节相等的最长前缀
+  const contentsSeg1 = seg1Result.compiled.blocks.map((b) => b.content);
+  const contentsSeg2 = seg2Result.compiled.blocks.map((b) => b.content);
+  let invariantCount = 0;
+  while (
+    invariantCount < Math.min(contentsSeg1.length, contentsSeg2.length)
+    && contentsSeg1[invariantCount] === contentsSeg2[invariantCount]
+  ) {
+    invariantCount += 1;
+  }
+  const invariantNames = seg1Result.compiled.blocks.slice(0, invariantCount).map((b) => b.name);
+  const invariantChars = seg1Result.compiled.blocks
+    .slice(0, invariantCount)
+    .reduce((sum, block) => sum + block.content.length, 0);
+
+  // 测试前提断言：草稿增长后 selected_draft_fragment / current_task 确实变化（否则章内视角测的是空集）
+  const blockContent = (result, name) => result.compiled.blocks.find((b) => b.name === name).content;
+  assert.notEqual(
+    blockContent(seg1Result, "selected_draft_fragment"),
+    blockContent(seg2Result, "selected_draft_fragment"),
+    "章内视角测试前提：草稿增长后 selected_draft_fragment 应变化"
+  );
+  assert.notEqual(
+    blockContent(seg1Result, "current_task"),
+    blockContent(seg2Result, "current_task"),
+    "章内视角测试前提：segment_no 不同后 current_task 应变化"
+  );
+  // 提示总长不随草稿增长：selected_draft_fragment 被 draft.slice(-1200) 封顶，
+  // 草稿变长只改变 fragment 内容、不改变其长度——这是编译器的真实行为。
+  const dynamicTextSeg1 = seg1Result.compiled.blocks.filter((b) => b.kind === "dynamic").map((b) => b.content).join("\n");
+  const dynamicTextSeg2 = seg2Result.compiled.blocks.filter((b) => b.kind === "dynamic").map((b) => b.content).join("\n");
+  assert.notEqual(dynamicTextSeg1, dynamicTextSeg2, "章内视角测试前提：动态区整体应变化");
+
+  // 章内性质断言：stable 区不变；不变前缀至少覆盖 stable + memory + plan；首个变化块是 current_task
+  assert.equal(seg1Result.compiled.stableHash, seg2Result.compiled.stableHash, "章内 stableHash 应保持不变");
+  assert.ok(invariantCount >= 4, "章内不变前缀应至少覆盖 stable 区 + project_memory + chapter_plan");
+  assert.equal(
+    seg1Result.compiled.blocks[invariantCount]?.name,
+    "current_task",
+    "章内第一个变化的块应是 current_task（segment_no/字数缺口逐段变化）"
+  );
+  const invariantShareSeg1 = seg1Result.totalChars > 0 ? invariantChars / seg1Result.totalChars : 0;
+  const invariantShareSeg2 = seg2Result.totalChars > 0 ? invariantChars / seg2Result.totalChars : 0;
+  const inChapterUpperBound = Math.min(invariantShareSeg1, invariantShareSeg2);
+  assert.ok(invariantChars > 0 && inChapterUpperBound > 0 && inChapterUpperBound < 1, "章内不变前缀占比应在 (0,1) 内");
+
   // 推算稳态命中率上界 = min 视角的 stable 占比（动态区可复用部分保守按 0）
   const minStableShare = Math.min(resultA.stableShare, resultB.stableShare);
   const record = {
@@ -241,6 +350,37 @@ test("真实项目编译：第 1 章与第 3 章（模拟推进）的 stable/dyn
       steady_state_hit_rate_upper_bound: {
         per_compile: [resultA.stableShare, resultB.stableShare],
         min: minStableShare
+      },
+      // 章内视角（Task 19 补测）：排除每章首调后，稳态请求的前缀命中上界
+      in_chapter: {
+        scenario: "同一章（第 3 章）内 segment 1 vs segment 2 的真实编译：章内记忆/计划不变，仅 current_task / selected_draft_fragment / recent_trace_summary 变化",
+        invariant_block_names: invariantNames,
+        invariant_chars: invariantChars,
+        compiles: [seg1Result, seg2Result].map((result, i) => ({
+          label: i === 0
+            ? "第 3 章 segment 1（每章首调，前缀只命中 stable）"
+            : "第 3 章 segment 2（章内稳态，前缀命中不变前缀）",
+          chapter_no: 3,
+          stage: "drafting",
+          stable_hash: result.compiled.stableHash,
+          dynamic_hash: result.compiled.dynamicHash,
+          total_chars: result.totalChars,
+          stable_chars: result.stableChars,
+          dynamic_chars: result.dynamicChars,
+          stable_share: result.stableShare,
+          dynamic_share: result.dynamicShare,
+          blocks: result.blocks
+        })),
+        share: {
+          segment1: invariantShareSeg1,
+          segment2: invariantShareSeg2,
+          min: inChapterUpperBound
+        },
+        steady_state_hit_rate_upper_bound: inChapterUpperBound,
+        reference_target: recommendInChapterTarget(
+          inChapterUpperBound,
+          blockContent(seg2Result, "current_task").length / seg2Result.totalChars
+        )
       }
     },
     reference_target: recommendTarget(minStableShare)
@@ -253,4 +393,9 @@ test("真实项目编译：第 1 章与第 3 章（模拟推进）的 stable/dyn
   assert.equal(written.measurement.compiles.length, 2);
   assert.ok(written.measurement.steady_state_hit_rate_upper_bound.min > 0);
   assert.ok(["confirm", "adjust"].includes(written.reference_target.recommendation));
+  // 章内视角记录校验
+  assert.equal(written.measurement.in_chapter.compiles.length, 2);
+  assert.ok(written.measurement.in_chapter.invariant_chars > 0);
+  assert.ok(written.measurement.in_chapter.steady_state_hit_rate_upper_bound > 0);
+  assert.ok(["confirm", "adjust"].includes(written.measurement.in_chapter.reference_target.recommendation));
 });
