@@ -9,7 +9,7 @@ import {
   ModelConfigValidationError,
   validateModelConfig
 } from "./model-config-validation.mjs";
-import { normalizePricing } from "./model-pricing.mjs";
+import { fillDeepSeekCacheHitPricing, normalizePricing } from "./model-pricing.mjs";
 
 const SAFE_NAME = /^[A-Za-z0-9_.-]+$/u;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
@@ -222,7 +222,12 @@ export function normalizeSettingsPatch(patch = {}) {
       if (!pricing) {
         throw new SettingsValidationError("invalid_pricing", "价格必须是正数：每百万 token 的输入价和输出价必填，缓存命中价可选。");
       }
-      normalized.active_model = { ...(normalized.active_model ?? patch.active_model), pricing };
+      // DeepSeek 预设补填：用户未填缓存命中价时按官方价自动补，已填则保留用户的数值。
+      const activeModel = normalized.active_model ?? patch.active_model;
+      normalized.active_model = {
+        ...activeModel,
+        pricing: fillDeepSeekCacheHitPricing(activeModel.model_name, activeModel.base_url, pricing)
+      };
     }
   }
   if (patch.stage_overrides !== undefined) {

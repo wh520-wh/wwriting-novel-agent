@@ -1,6 +1,14 @@
 import { safeJoin, writeJsonAtomic } from "./fs-utils.mjs";
 import { resolvePricing } from "./model-pricing.mjs";
 
+// 未配置 cache_hit_per_million 时，按输入价的 2% 假设缓存命中价，用于估算「缓存节省」。
+// DeepSeek v4-flash 官方命中价 $0.0028/M 正好是输入价 $0.14/M 的 2%（E10），
+// 其他模型缺省时沿用同一比例，避免「命中率有、节省恒 0」。
+export const DEFAULT_CACHE_HIT_PRICE_RATIO = 0.02;
+
+// chat 调用前缀每轮必变，命中率天然低；其调用仍计费，但不计入命中率统计口径。
+export const CHAT_STAGE = "chat";
+
 export function estimateCost(usageReport, pricing = null) {
   if (!pricing) return null;
   const input = usageReport.inputTokens ?? 0;
@@ -23,6 +31,9 @@ const SUMMARY_DEFAULTS = {
   outputTokens: 0,
   totalTokens: 0,
   cachedTokens: 0,
+  // 累计命中 token 与命中率分母（均不含 chat 调用）：token 加权累计命中率 = cacheHitTokens / hitRateInputTokens
+  cacheHitTokens: 0,
+  hitRateInputTokens: 0,
   estimatedCost: 0,
   pricedCalls: 0,
   unpricedCalls: 0,
@@ -46,6 +57,8 @@ export class CostTracker {
     this.summary.recentHitRates ??= [];
     this.summary.refillCalls ??= 0;
     this.summary.cacheSavedCost ??= 0;
+    this.summary.cacheHitTokens ??= 0;
+    this.summary.hitRateInputTokens ??= 0;
   }
 
   record({ stage = "unknown", chapter = null, usageReport }) {
@@ -55,6 +68,9 @@ export class CostTracker {
     const cost = usageReport.estimatedCost ?? estimateCost(usageReport, pricing);
     const priced = cost != null;
     const failed = usageReport.failed === true;
+    // chat 前缀每轮必变，命中率天然低；仍计费，但不写入命中率统计口径
+    // （recentHitRates / cacheHitTokens / hitRateInputTokens）。
+    const hitRateEligible = stage !== CHAT_STAGE;
     this.summary.calls += 1;
     if (failed) {
       // §3.5: Track failed calls separately for cost consistency
@@ -66,6 +82,12 @@ export class CostTracker {
     this.summary.outputTokens += usageReport.outputTokens ?? 0;
     this.summary.totalTokens += usageReport.totalTokens ?? 0;
     this.summary.cachedTokens += usageReport.cachedTokens ?? 0;
+    if (hitRateEligible) {
+      // usage-report 已把 OpenAI 风格 cached_tokens 回退为 cacheHitTokens，
+      // 这里再兜一次 ?? cachedTokens，兼容直接构造 usageReport 的调用方。
+      this.summary.cacheHitTokens += usageReport.cacheHitTokens ?? usageReport.cachedTokens ?? 0;
+      this.summary.hitRateInputTokens += usageReport.inputTokens ?? 0;
+    }
     if (priced) {
       this.summary.pricedCalls += 1;
       this.summary.estimatedCost = Number((this.summary.estimatedCost + cost).toFixed(8));
@@ -73,15 +95,20 @@ export class CostTracker {
       this.summary.unpricedCalls += 1;
     }
     this.summary.costAvailable = this.summary.unpricedCalls === 0 && this.summary.calls > 0;
-    if (Number.isFinite(usageReport.cacheHitRate)) {
+    if (hitRateEligible && Number.isFinite(usageReport.cacheHitRate)) {
       this.summary.recentHitRates.push(Number(usageReport.cacheHitRate.toFixed(4)));
       while (this.summary.recentHitRates.length > 20) this.summary.recentHitRates.shift();
     }
-    if (priced && pricing?.cache_hit_per_million != null) {
-      const hitTokens = Math.min(usageReport.cacheHitTokens ?? usageReport.cachedTokens ?? 0, usageReport.inputTokens ?? 0);
+    if (priced && pricing != null) {
+      // 未配置 cache_hit_per_million 时按输入价 × DEFAULT_CACHE_HIT_PRICE_RATIO 折算缓存命中价，
+      // 避免「命中率有、节省恒 0」。计费（estimateCost）仍按保守的全价口径，两者差异见任务报告。
       const inputPrice = pricing.input_per_million ?? 0;
-      const saved = (hitTokens / 1_000_000) * Math.max(0, inputPrice - pricing.cache_hit_per_million);
-      this.summary.cacheSavedCost = Number((this.summary.cacheSavedCost + saved).toFixed(8));
+      const cacheHitPerMillion = pricing.cache_hit_per_million ?? inputPrice * DEFAULT_CACHE_HIT_PRICE_RATIO;
+      if (inputPrice > 0 && cacheHitPerMillion < inputPrice) {
+        const hitTokens = Math.min(usageReport.cacheHitTokens ?? usageReport.cachedTokens ?? 0, usageReport.inputTokens ?? 0);
+        const saved = (hitTokens / 1_000_000) * Math.max(0, inputPrice - cacheHitPerMillion);
+        this.summary.cacheSavedCost = Number((this.summary.cacheSavedCost + saved).toFixed(8));
+      }
     }
     const bucketCost = priced ? cost : 0;
     addToBucket(this.summary.byProvider, provider, usageReport, bucketCost);

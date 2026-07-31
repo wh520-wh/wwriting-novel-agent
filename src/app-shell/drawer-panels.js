@@ -308,7 +308,9 @@ export function createDrawerPanels(ctx) {
     const tree = renderCostPanelComponent({
       cost: data.cost ?? null,
       summary,
-      events
+      events,
+      modelConfig: data.config?.effective?.active_model ?? null,
+      cacheSummary: data.cacheSummary ?? null
     });
     body.append(tree);
     ctx.refs.drawerBody.replaceChildren(panel);
