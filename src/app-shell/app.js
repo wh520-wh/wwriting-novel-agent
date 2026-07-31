@@ -17,6 +17,7 @@ import { deriveProjectIdentity } from "./project-identity.mjs";
 import { deriveWorkbenchView, deriveChapterCompletion } from "./workbench-presentation.mjs";
 import { loadDefaultTier } from "./permission-defaults.mjs";
 import { getTierById } from "./permission-tiers.mjs";
+import { listTestedModels } from "./connection-memory.mjs";
 
 // WWriting · Codex 风格对话式前端
 // 后端无消息/SSE 端点，对话流由前端用 /api/dashboard 的 events[] + chapters[] + summary 聚合而成。
@@ -762,7 +763,7 @@ function renderProjectWorkbench(data) {
 }
 
 function renderWriteReadiness(data) {
-  const view = deriveWriteReadiness(data);
+  const view = deriveWriteReadiness(data, { globallyTestedModels: listTestedModels() });
   lastWriteReadinessView = view;
   const section = refs.writeReadiness;
   if (!section) return;

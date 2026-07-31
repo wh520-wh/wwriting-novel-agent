@@ -52,8 +52,7 @@ function data(overrides = {}) {
 }
 
 test("key readiness states", () => {
-  assert.equal(deriveWriteReadiness({ hasProject: false }).key, "no_project");
-  assert.equal(
+  assert.equal(deriveWriteReadiness({ hasProject: false }).key, "no_project");  assert.equal(
     deriveWriteReadiness(data({ project: { active_model: null }, model_profile: null })).key,
     "missing_model"
   );
@@ -121,6 +120,27 @@ test("connection event matching rules", () => {
   }));
   assert.equal(latestWins.key, "ready");
   assert.equal(latestWins.reasonCode, null);
+});
+
+test("全局已测模型：项目无连接事件时回退到 globallyTestedModels，判 ready 不强制重测", () => {
+  // 项目无事件 + 全局记忆有该模型 -> ready
+  const viaGlobal = deriveWriteReadiness(data({ events: [] }), {
+    globallyTestedModels: ["deepseek-chat"]
+  });
+  assert.equal(viaGlobal.key, "ready");
+  assert.equal(viaGlobal.primaryAction, "start_chapter");
+
+  // 项目无事件 + 全局记忆无该模型 -> connection_unknown（原行为）
+  const noGlobal = deriveWriteReadiness(data({ events: [] }), {
+    globallyTestedModels: ["some-other-model"]
+  });
+  assert.equal(noGlobal.key, "connection_unknown");
+
+  // 项目有失败事件 -> 仍 invalid_model（项目级失败优先于全局记忆）
+  const projectFailed = deriveWriteReadiness(data({
+    events: [{ type: "model_connection_tested", data: { model_name: "deepseek-chat", ok: false } }]
+  }), { globallyTestedModels: ["deepseek-chat"] });
+  assert.equal(projectFailed.key, "invalid_model");
 });
 
 test("full return shape for ready state", () => {
