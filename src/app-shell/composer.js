@@ -425,7 +425,7 @@ export function createComposer(ctx) {
       pill = document.createElement("span");
       pill.id = "status-pill-words";
       pill.className = "cbar-pill cbar-pill--readonly cbar-pill--words";
-      pill.title = "本次会话新增字数";
+      pill.title = "本次应用启动以来新增的字数，刷新后重新计数";
       container.append(pill);
     }
     const root = data?.projectRoot;
@@ -434,7 +434,7 @@ export function createComposer(ctx) {
     if (!sessionWordBaselines.has(root)) sessionWordBaselines.set(root, total);
     const delta = total - sessionWordBaselines.get(root);
     pill.hidden = delta <= 0;
-    if (delta > 0) pill.textContent = `本次 +${delta.toLocaleString("zh-CN")} 字`;
+    if (delta > 0) pill.textContent = `本次会话 +${delta.toLocaleString("zh-CN")} 字`;
   }
 
   function ensureStatusPillContainer() {
