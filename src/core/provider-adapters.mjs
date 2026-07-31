@@ -95,7 +95,7 @@ export class OpenAICompatibleAdapter {
       messages: buildMessages({ messages, prompt, usesChapterTool, allowedTools }),
       ...optionalNumber("temperature", modelConfig.temperature),
       ...optionalNumber("top_p", modelConfig.top_p),
-      ...optionalNumber("max_tokens", modelConfig.max_output_tokens ?? modelConfig.max_tokens),
+      ...optionalNumber("max_tokens", modelConfig.max_output_tokens ?? modelConfig.max_tokens ?? (usesChapterTool ? DEFAULT_CHAPTER_TOOL_MAX_TOKENS : undefined)),
       ...buildChapterToolRequest(usesChapterTool, { ...modelConfig, base_url: baseUrl, model_name: selectedModel }, allowedTools),
       ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
       ...(modelConfig.extra_body ?? {})
@@ -263,6 +263,11 @@ function ensureTrailingSlash(value) {
 function optionalNumber(key, value) {
   return Number.isFinite(value) ? { [key]: value } : {};
 }
+
+// 章节工具请求在未显式配置 max_output_tokens/max_tokens 时的默认上限。
+// 防 reasoning 模型长输出（思考 token 计入完成 token）撞请求超时；
+// 显式配置（max_output_tokens > max_tokens）优先于本默认值。
+export const DEFAULT_CHAPTER_TOOL_MAX_TOKENS = 4096;
 
 // OpenAI function-call 格式的写作工具定义表。
 // 写作 agent 循环（runWritingAgentLoop）中的 DRAFTING_ALLOWED_TOOLS / REVISING_ALLOWED_TOOLS
