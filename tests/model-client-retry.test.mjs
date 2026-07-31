@@ -504,3 +504,62 @@ test("timeout also records a failed call in costTracker", async () => {
   assert.equal(s.failedCalls, 1, "timeout should record a failed call");
   assert.equal(s.calls, 1);
 });
+
+test("non-streaming request emits periodic onActivity heartbeat while pending", async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const activityLog = [];
+  const adapter = {
+    async generate() {
+      await gate;
+      return { text: "done", raw: {}, usage: null, cost: null };
+    },
+  };
+  const client = makeClient(adapter, {
+    heartbeatMs: 10,
+    onActivity: () => { activityLog.push(Date.now()); },
+  });
+  const pending = client.generate({ prompt: "hi" });
+  await new Promise((resolve) => setTimeout(resolve, 35));
+  release();
+  await pending;
+  assert.ok(activityLog.length >= 2, `expected >=2 heartbeats, got ${activityLog.length}`);
+});
+
+test("heartbeat timer is cleaned up after request completes", async () => {
+  const adapter = {
+    async generate() { return { text: "done", raw: {}, usage: null, cost: null }; },
+  };
+  const client = makeClient(adapter, { heartbeatMs: 5, onActivity: () => {} });
+  await client.generate({ prompt: "hi" });
+  // 心跳若未清理，进程会有存活 timer；用间接方式验证：快速请求期间不应触发心跳。
+  const activityLog = [];
+  const client2 = makeClient(adapter, { heartbeatMs: 5, onActivity: () => { activityLog.push(1); } });
+  await client2.generate({ prompt: "hi" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(activityLog.length, 0);
+});
+
+test("external abort racing with timeout yields AbortError exactly once, no retry", async () => {
+  const controller = new AbortController();
+  const started = Promise.withResolvers();
+  let calls = 0;
+  const adapter = {
+    async generate({ signal }) {
+      calls += 1;
+      started.resolve();
+      await new Promise((resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+      });
+    },
+  };
+  // timeoutMs 设得极短，使用户 abort 与 timeout 落在同一窗口。
+  const client = makeClient(adapter, { retryMax: 3, timeoutMs: 5 });
+  const pending = client.generate({ prompt: "hi", signal: controller.signal });
+  await started.promise;
+  controller.abort("用户停止");
+  await assert.rejects(pending, (error) => error.name === "AbortError");
+  // 给潜在的重试留出时间窗，确认没有第二次调用。
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(calls, 1);
+});

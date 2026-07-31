@@ -28,6 +28,7 @@ export class ModelClient {
     retryMaxDelayMs = 16000,
     timeoutMs = 120000,
     totalDeadlineMs = 300000,
+    heartbeatMs = 5000,
     onRetry = null,
     onActivity = null,
     responseCacheSize = DEFAULT_RESPONSE_CACHE_SIZE
@@ -41,6 +42,7 @@ export class ModelClient {
     this.retryMaxDelayMs = retryMaxDelayMs;
     this.timeoutMs = timeoutMs;
     this.totalDeadlineMs = totalDeadlineMs;
+    this.heartbeatMs = heartbeatMs;
     this.onRetry = onRetry;
     this.onActivity = onActivity;
     this.responseCache = new Map();
@@ -144,6 +146,19 @@ export class ModelClient {
       // Start the timeout timer
       const timer = setTimeout(() => timeoutController.abort(), attemptTimeoutMs);
 
+      // Non-streaming heartbeat: while the attempt is pending, periodically ping
+      // onActivity so UI can show the request is alive (0 disables; null is a valid no-op).
+      const heartbeat = this.onActivity && this.heartbeatMs > 0
+        ? setInterval(() => { this.onActivity?.(); }, this.heartbeatMs)
+        : null;
+
+      // Both success and failure paths must release timer + heartbeat + abort listener.
+      const cleanupAttempt = () => {
+        clearTimeout(timer);
+        clearInterval(heartbeat);
+        timeoutController.signal.removeEventListener("abort", onTimeout);
+      };
+
       // Pass onActivity through metadata so streaming adapters can call it on each SSE chunk
       const metadataWithActivity = this.onActivity
         ? { ...metadata, onActivity: this.onActivity }
@@ -160,8 +175,7 @@ export class ModelClient {
           signal: combinedSignal
         });
 
-        clearTimeout(timer);
-        timeoutController.signal.removeEventListener("abort", onTimeout);
+        cleanupAttempt();
 
         // L3：成功的确定性辅助请求写入缓存（仅成功响应可缓存——失败的响应会污染缓存）
         if (cacheKey) {
@@ -187,8 +201,12 @@ export class ModelClient {
           modelConfig
         };
       } catch (error) {
-        clearTimeout(timer);
-        timeoutController.signal.removeEventListener("abort", onTimeout);
+        cleanupAttempt();
+
+        // External cancellation always wins over timeout — never retry.
+        if (signal?.aborted) {
+          throw new DOMException("The operation was aborted.", "AbortError");
+        }
 
         // External cancellation — never retry; rethrow the original AbortError.
         if (!timedOut && isCancellationError(error, signal)) {
@@ -212,11 +230,6 @@ export class ModelClient {
             });
           }
           throw error;
-        }
-
-        // User abort — don't retry
-        if (signal?.aborted && !timedOut) {
-          throw new DOMException("The operation was aborted.", "AbortError");
         }
 
         // Timeout — wrap as ProviderTransportError
