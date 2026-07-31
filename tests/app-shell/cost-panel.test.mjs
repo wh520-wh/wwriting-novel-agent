@@ -367,6 +367,42 @@ describe('renderCostPanel — 3-section layout', () => {
     assert.match(text, /总调用/);
     assert.match(text, /42/);
   });
+
+  it('22. shows token-weighted 累计命中率 percentage', () => {
+    const root = renderCostPanel({
+      cost: makeCost({ cacheHitTokens: 400000, hitRateInputTokens: 1000000, recentHitRates: [0.5] }),
+      summary: makeSummary(),
+      events: []
+    });
+    const text = flat(root);
+    assert.match(text, /累计命中率/);
+    assert.match(text, /40\.0%/);
+    // token 加权 ≠ per-call 平均：最近 20 次行仍是 50.0%
+    assert.match(text, /50\.0%/);
+  });
+
+  it('23. shows 暂无数据 placeholder when no cache data', () => {
+    const root = renderCostPanel({
+      cost: makeCost(),
+      summary: makeSummary(),
+      events: []
+    });
+    const text = flat(root);
+    assert.match(text, /累计命中率/);
+    assert.match(text, /暂无数据/);
+  });
+
+  it('24. does not fabricate nonzero 累计命中率 when summary lacks cache fields', () => {
+    const root = renderCostPanel({
+      cost: {},
+      summary: makeSummary(),
+      events: []
+    });
+    const text = flat(root);
+    assert.match(text, /累计命中率/);
+    assert.match(text, /暂无数据/);
+    assert.equal(/累计命中率[^%]*[1-9]\.[0-9]%/.test(text), false, 'should NOT show a fabricated percentage');
+  });
 });
 
 describe('renderCostPanel — warning badge', () => {
