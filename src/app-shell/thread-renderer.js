@@ -50,6 +50,12 @@ const STEP_GROUPS = [
   { id: "finalizing", name: "定稿", detail: "归档进书稿", stages: ["finalizing", "summarizing"] }
 ];
 
+// 任务卡标题：把 task.contract.kind 翻译成用户可读的任务类型；未知类型显示为“后台任务”。
+const TASK_KIND_LABELS = {
+  write_chapter: "写作",
+  resume_chapter: "续写",
+};
+
 export function createThreadRenderer(ctx) {
   // ctx provides: refs, renderedKeys, askEntries, getLiveBlock, setLiveBlock,
   //   getDashboard, getCurrentProjectRoot, loadDashboard, handleRetry, handleStop,
@@ -297,7 +303,11 @@ export function createThreadRenderer(ctx) {
     header.className = "task-header";
     const num = document.createElement("span");
     num.className = "task-num";
-    num.textContent = `任务 #${task.index ?? ""}`;
+    // 标题用人类语言描述任务（类型 · 章节），不暴露单调递增的内部编号。
+    const contract = task.contract ?? {};
+    const kindLabel = TASK_KIND_LABELS[contract.kind] ?? "后台任务";
+    const chapterNo = Number(contract.chapter_start) || null;
+    num.textContent = chapterNo != null ? `${kindLabel} · 第 ${chapterNo} 章` : kindLabel;
     const badge = document.createElement("span");
     badge.className = `task-badge ${statusClass(task.status)}`;
     badge.textContent = translateTaskStatus(task.status);
