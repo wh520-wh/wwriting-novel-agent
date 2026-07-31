@@ -123,6 +123,15 @@ function buildOverview(cost, summary) {
   );
 }
 
+// 累计命中率 = cacheHitTokens / hitRateInputTokens（token 加权，不含 chat）。
+// 无任何写入调用数据时显示占位，避免把 0 当成真实命中率误报。
+function cumulativeHitRateText(cost) {
+  const base = Number(cost?.hitRateInputTokens ?? 0);
+  if (!(base > 0)) return "暂无数据";
+  const hitTokens = Number(cost?.cacheHitTokens ?? 0);
+  return `${((hitTokens / base) * 100).toFixed(1)}%`;
+}
+
 function buildCacheHealth(cost) {
   const rates = cost?.recentHitRates ?? [];
   const saved = Number(cost?.cacheSavedCost ?? 0);
@@ -130,6 +139,7 @@ function buildCacheHealth(cost) {
   const mean = meanHitRate(rates);
   const meanPct = (mean * 100).toFixed(1);
   const children = [
+    row("累计命中率", cumulativeHitRateText(cost), "mono"),
     row(`最近 ${SPARKLINE_LENGTH} 次命中率`, `${meanPct}%`, "mono"),
     buildSparkline(rates)
   ];
