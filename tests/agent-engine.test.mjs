@@ -1229,6 +1229,65 @@ class ReadThenWriteModelClient {
   }
 }
 
+class ReadLoopModelClient {
+  constructor() {
+    this.calls = 0;
+    this.prompts = [];
+    this.costTracker = {
+      record() {
+        return { calls: 1, inputTokens: 1, outputTokens: 1, totalTokens: 2, cachedTokens: 0, estimatedCost: 0 };
+      },
+      async writeProjectReport() {},
+    };
+  }
+  async generate({ prompt, metadata }) {
+    this.calls += 1;
+    this.prompts.push(prompt);
+    const request = metadata.toolRequest;
+    const usageReport = {
+      provider: "mock", model: "read-loop",
+      inputTokens: 1, outputTokens: 1, totalTokens: 2, cachedTokens: 0,
+      estimatedCost: 0, rawUsage: {},
+    };
+    const costSummary = { estimatedCost: 0 };
+    const modelConfig = { provider: "mock", model_name: "read-loop" };
+    if (this.calls <= 3) {
+      // 前三次：只会查询，不提交。
+      return { text: "", raw: { output: { type: "tool_call", tool: "read_outline", input: {} } },
+        usageReport, costSummary, modelConfig };
+    }
+    // 第四次（此时 allowed_tools 应已被切换为 commit-only）：提交正文。
+    return { text: "", raw: { output: { type: "tool_call", tool: "append_chapter_segment",
+      input: { project_id: request.project_id, chapter_no: request.chapter_no,
+        segment_no: request.segment_no,
+        content: Array.from({ length: 260 }, (_, i) => `readloop${i}`).join(" ") } } },
+      usageReport, costSummary, modelConfig };
+  }
+}
+
+test("writing agent loop: 连续 3 次只读后自动 commit-only，模型提交章节且项目不 blocked", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-readloop-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "project", target_chapters: 1, min_words_per_chapter: 200, target_words_per_chapter: 260,
+  });
+  const modelClient = new ReadLoopModelClient();
+  const result = await runProject(projectRoot, { modelClient });
+  assert.equal(result.completed, true);
+  const events = await readEvents(projectRoot);
+  assert.equal(events.filter((e) => e.type === "agent_loop_commit_only").length, 1);
+  assert.ok(events.some((e) => e.type === "tool_call_requested" && e.data?.tool === "append_chapter_segment"));
+  assert.ok(events.some((e) => e.type === "agent_settled"));
+  const index = await loadChapterIndex(projectRoot);
+  assert.equal(index.chapters[0].status, "completed");
+  // 第 4 次调用的 prompt 中 allowed_tools 只剩 append_chapter_segment。
+  const fourthPrompt = modelClient.prompts[3];
+  const toolsMatch = fourthPrompt.match(/"allowed_tools":\s*\[([\s\S]*?)\]/u);
+  assert.ok(toolsMatch, "第 4 次 prompt 应包含 allowed_tools 清单");
+  assert.ok(toolsMatch[1].includes("append_chapter_segment"));
+  assert.ok(!toolsMatch[1].includes("read_outline"), "commit-only 后白名单不应再含只读工具");
+  assert.equal(modelClient.calls, 4);
+});
+
 test("writing agent loop: drafting 阶段模型先调 read_continuity 查设定再提交正文", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-agent-loop-"));
   const { projectRoot } = await createProject(root, {
