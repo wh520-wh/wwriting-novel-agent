@@ -827,3 +827,63 @@ test("OpenAICompatibleAdapter streaming falls back to reasoning_content when con
   assert.deepEqual(tokens, ["think", "ing"]);
   assert.equal(result.text, "thinking");
 });
+
+test("chapter tool request defaults max_tokens to 4096 when not configured", async () => {
+  let captured = null;
+  const adapter = new OpenAICompatibleAdapter({
+    baseUrl: "https://api.example.test/v1",
+    apiKey: "test-key",
+    fetchImpl: async (url, init) => {
+      captured = { url, init, body: JSON.parse(init.body) };
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return JSON.stringify({
+            choices: [{ message: { content: "", tool_calls: [
+              { id: "call_1", type: "function", function: { name: "append_chapter_segment", arguments: "{\"content\":\"正文\"}" } },
+            ] } }],
+            usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+          });
+        },
+      };
+    },
+  });
+  await adapter.generate({
+    model: "writer-model",
+    prompt: "写第一章",
+    metadata: { toolRequest: { project_id: "p1", chapter_no: 1, segment_no: 1 } },
+  });
+  assert.equal(captured.body.max_tokens, 4096);
+  assert.equal(captured.body.stream, undefined); // 章节工具仍强制非流式
+});
+
+test("explicit max_output_tokens still overrides the chapter tool default", async () => {
+  let captured = null;
+  const adapter = new OpenAICompatibleAdapter({
+    baseUrl: "https://api.example.test/v1",
+    apiKey: "test-key",
+    fetchImpl: async (url, init) => {
+      captured = { url, init, body: JSON.parse(init.body) };
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return JSON.stringify({
+            choices: [{ message: { content: "", tool_calls: [
+              { id: "call_1", type: "function", function: { name: "append_chapter_segment", arguments: "{\"content\":\"正文\"}" } },
+            ] } }],
+            usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+          });
+        },
+      };
+    },
+  });
+  await adapter.generate({
+    model: "writer-model",
+    prompt: "写第一章",
+    modelConfig: { max_output_tokens: 8192 },
+    metadata: { toolRequest: { project_id: "p1", chapter_no: 1, segment_no: 1 } },
+  });
+  assert.equal(captured.body.max_tokens, 8192);
+});
