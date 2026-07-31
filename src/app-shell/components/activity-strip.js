@@ -1,4 +1,5 @@
 import { translateStage } from '../utils.js';
+import { toolLabel } from '../tool-labels.mjs';
 
 export function renderActivityStrip(root, activity, { privacy = false, onClickCost, onClickChapter } = {}) {
   if (!activity) {
@@ -20,7 +21,7 @@ export function renderActivityStrip(root, activity, { privacy = false, onClickCo
   }
   if (activity.lastTool) {
     const sym = activity.lastTool.status === 'pending' ? '→' : activity.lastTool.status === 'failed' ? '✗' : '✓';
-    appendSlot(root, 'tool', `${sym} ${privacy ? '████' : activity.lastTool.name}`);
+    appendSlot(root, 'tool', `${sym} ${privacy ? '████' : toolLabel(activity.lastTool.name)}`);
   }
   if (activity.elapsedMs != null) {
     appendSlot(root, 'time', `${formatDuration(activity.elapsedMs)} / ${activity.etaMs != null ? '~' + formatDuration(activity.etaMs) : '—'}`);
