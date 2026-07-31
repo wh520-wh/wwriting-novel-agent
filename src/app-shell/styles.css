@@ -1719,6 +1719,48 @@ button.cbar-pill--readonly:hover {
   transform: rotate(-90deg);
 }
 
+/* ===== 可折叠卡片主体（grid-template-rows 平滑高度动画）===== */
+.card-collapse {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows .22s ease;
+  min-height: 0;
+}
+.card-collapse.folded {
+  grid-template-rows: 0fr;
+}
+.card-collapse > .card-collapse-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .card-collapse { transition: none; }
+}
+
+/* 折叠按钮（标题行右侧）*/
+.card-fold-toggle {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--faint);
+  cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+.card-fold-toggle:hover { background: var(--hover); border-color: #d2cdc3; }
+.card-fold-toggle .card-fold-chevron {
+  margin: 0;
+  font-size: 10px;
+  transition: transform .2s ease;
+}
+/* 展开时箭头朝下（▸ 旋转 90deg），折叠时朝右（旋转 0）*/
+.card-fold-toggle:not(.folded) .card-fold-chevron { transform: rotate(90deg); }
+
 /* Task card — foldable */
 .task-card {
   width: 100%;
@@ -2257,9 +2299,9 @@ button.cbar-pill--readonly:hover {
   --project-line: var(--accent-line);
   margin: 18px 24px 0;
   padding: 20px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 18px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
   border: 1px solid var(--project-line);
   border-radius: var(--r-xl);
   background:
@@ -2268,6 +2310,9 @@ button.cbar-pill--readonly:hover {
   box-shadow: var(--shadow-xs);
 }
 .project-workbench[hidden] { display: none !important; }
+.workbench-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.workbench-body .card-collapse-inner { display: flex; flex-direction: column; gap: 14px; }
+.workbench-body .workbench-actions { align-self: flex-start; }
 .workbench-identity { display: flex; min-width: 0; align-items: flex-start; gap: 16px; }
 .workbench-cover,
 .proj-cover {
@@ -2322,6 +2367,19 @@ button.cbar-pill--readonly:hover {
 .creation-card-actions { display: flex; flex-direction: column; flex-shrink: 0; gap: 8px; }
 .creation-card[data-creation-tone="ready"] .eyebrow { color: var(--accent); }
 .creation-card[data-creation-tone="success"] .eyebrow { color: var(--green); }
+
+/* 准备写作卡：折叠结构（head 常驻 + body 可折叠）*/
+.write-readiness.creation-card { flex-direction: column; align-items: stretch; gap: 10px; }
+.write-readiness.creation-card > .write-readiness-head {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.write-readiness-body .card-collapse-inner { display: flex; flex-direction: column; gap: 8px; }
+.write-readiness-body .write-readiness-actions { flex-direction: row; flex-wrap: wrap; }
+.write-readiness-body .write-readiness-actions button { flex: 0 0 auto; }
 
 @media (max-width: 720px) {
   .project-workbench { grid-template-columns: 1fr; margin: 10px 14px 0; padding: 16px; gap: 14px; }

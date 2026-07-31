@@ -16,8 +16,8 @@ import { deriveWriteReadiness } from "./write-readiness.mjs";
 import { deriveProjectIdentity } from "./project-identity.mjs";
 import { deriveWorkbenchView, deriveChapterCompletion } from "./workbench-presentation.mjs";
 import { loadDefaultTier } from "./permission-defaults.mjs";
-import { getTierById } from "./permission-tiers.mjs";
 import { listTestedModels } from "./connection-memory.mjs";
+import { getTierById } from "./permission-tiers.mjs";
 
 // WWriting · Codex 风格对话式前端
 // 后端无消息/SSE 端点，对话流由前端用 /api/dashboard 的 events[] + chapters[] + summary 聚合而成。
@@ -108,6 +108,8 @@ const refs = {
   workbenchReadLatest: document.querySelector("#workbench-read-latest"),
   workbenchOpenChapters: document.querySelector("#workbench-open-chapters"),
   workbenchActivity: document.querySelector("#workbench-activity"),
+  workbenchFoldToggle: document.querySelector("#workbench-fold-toggle"),
+  workbenchBody: document.querySelector("#workbench-body"),
   writeReadiness: document.querySelector("#write-readiness"),
   writeReadinessTitle: document.querySelector("#write-readiness-title"),
   writeReadinessDetail: document.querySelector("#write-readiness-detail"),
@@ -115,6 +117,8 @@ const refs = {
   writeReadinessPrimary: document.querySelector("#write-readiness-primary"),
   writeReadinessSecondary: document.querySelector("#write-readiness-secondary"),
   writeReadinessTertiary: document.querySelector("#write-readiness-tertiary"),
+  writeReadinessFoldToggle: document.querySelector("#write-readiness-fold-toggle"),
+  writeReadinessBody: document.querySelector("#write-readiness-body"),
   chapterSuccess: document.querySelector("#chapter-success"),
   chapterSuccessTitle: document.querySelector("#chapter-success-title"),
   chapterSuccessMeta: document.querySelector("#chapter-success-meta"),
@@ -452,7 +456,7 @@ if (refs.chapterSuccessContinue) {
   if (!header || !body) return;
   const foldKey = "wwriting.card.fold.chapter-success";
   const val = localStorage.getItem(foldKey);
-  const folded = val === null ? true : val === "true"; // completed → folded by default
+  const folded = val === null ? false : val === "true"; // completed → folded by default
   body.hidden = folded;
   header.classList.toggle("folded", folded);
   header.addEventListener("click", () => {
@@ -462,6 +466,35 @@ if (refs.chapterSuccessContinue) {
     localStorage.setItem(foldKey, String(nowFolded));
   });
 })();
+
+// 可折叠主卡片：标题行常驻，body 用 grid-template-rows 平滑动画。
+// 默认展开；折叠状态存 localStorage，刷新后保持。
+function initCardFold({ toggle, body, foldKey, defaultFolded = false }) {
+  if (!toggle || !body) return;
+  const val = localStorage.getItem(foldKey);
+  const folded = val === null ? defaultFolded : val === "true";
+  toggle.classList.toggle("folded", folded);
+  body.classList.toggle("folded", folded);
+  toggle.setAttribute("aria-expanded", String(!folded));
+  toggle.addEventListener("click", () => {
+    const nowFolded = !toggle.classList.contains("folded");
+    toggle.classList.toggle("folded", nowFolded);
+    body.classList.toggle("folded", nowFolded);
+    toggle.setAttribute("aria-expanded", String(!nowFolded));
+    localStorage.setItem(foldKey, String(nowFolded));
+  });
+}
+
+initCardFold({
+  toggle: refs.workbenchFoldToggle,
+  body: refs.workbenchBody,
+  foldKey: "wwriting.card.fold.project-workbench",
+});
+initCardFold({
+  toggle: refs.writeReadinessFoldToggle,
+  body: refs.writeReadinessBody,
+  foldKey: "wwriting.card.fold.write-readiness",
+});
 
 function renderRailNav() {
   const items = [
@@ -1118,7 +1151,7 @@ async function initProject(rawPath) {
     closeCreateModal();
     resetCreateForm();
     showToast("小说已创建并打开。", "success");
-    // 套用上次的权限模式（含 YOLO）-- 在 loadAll 前做，mode pill 首次渲染即反映。
+    // 套用上次的权限模式（含 YOLO）—— 在 loadAll 前做，mode pill 首次渲染即反映。
     await applyDefaultTierForNewProject(projectRoot);
     await loadAll();
   } catch (error) {
