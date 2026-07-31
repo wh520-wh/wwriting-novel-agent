@@ -53,10 +53,9 @@ export class WritingAgentSession {
     const steering = [...this.pendingSteer.splice(0)];
     this.sharedSteering = steering;
 
-    await this.emitEvent("agent_start", { run: this.runs, allowed_tools: [...this.baseAllowedTools] });
-
     let result;
     try {
+      await this.emitEvent("agent_start", { run: this.runs, allowed_tools: [...this.baseAllowedTools] });
       result = await runAgentLoop({
         context: { ...this.context, allowedTools: [...this.baseAllowedTools], feedback: null, steering },
         maxTurns: this.maxTurns,
@@ -108,6 +107,7 @@ export class WritingAgentSession {
       } else {
         this.status = "idle";
         request.signal?.removeEventListener?.("abort", onExternalAbort);
+        this.idleResolve?.(); this.idlePromise = null;
         throw error;
       }
     } finally {
