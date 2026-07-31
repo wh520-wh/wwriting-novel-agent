@@ -15,6 +15,8 @@ import { createProjectScope } from "./project-scope.mjs";
 import { deriveWriteReadiness } from "./write-readiness.mjs";
 import { deriveProjectIdentity } from "./project-identity.mjs";
 import { deriveWorkbenchView, deriveChapterCompletion } from "./workbench-presentation.mjs";
+import { loadDefaultTier } from "./permission-defaults.mjs";
+import { getTierById } from "./permission-tiers.mjs";
 
 // WWriting · Codex 风格对话式前端
 // 后端无消息/SSE 端点，对话流由前端用 /api/dashboard 的 events[] + chapters[] + summary 聚合而成。
@@ -1115,12 +1117,31 @@ async function initProject(rawPath) {
     closeCreateModal();
     resetCreateForm();
     showToast("小说已创建并打开。", "success");
+    // 套用上次的权限模式（含 YOLO）-- 在 loadAll 前做，mode pill 首次渲染即反映。
+    await applyDefaultTierForNewProject(projectRoot);
     await loadAll();
   } catch (error) {
     setCreateStatus(error.message, "error");
     showToast(error.message, "error");
   } finally {
     setCreateSubmitLoading(false);
+  }
+}
+
+// 新建项目后套用全局记住的权限档位；默认档（confirm）无需套用。
+// 套用失败不阻塞创建流程，用户可在命令栏手动切换。
+async function applyDefaultTierForNewProject(projectRoot) {
+  const tierId = loadDefaultTier();
+  if (!tierId || tierId === "confirm") return;
+  const tier = getTierById(tierId);
+  if (!tier) return;
+  try {
+    await postJson("/api/settings/update", {
+      projectRoot,
+      tool_permissions: tier.combo
+    });
+  } catch {
+    // 套用失败不阻塞
   }
 }
 
