@@ -56,3 +56,17 @@ test('idle mode', () => {
   }));
   assert.equal(a.mode, 'idle');
 });
+
+test('idle 时不残留上一次的工具名', () => {
+  const a = deriveActivity(dash({
+    agent_alive: false,
+    summary: { projectStatus: 'idle', currentStage: 'idle' },
+    recent_tool_events: [{
+      id: 'e2', type: 'tool_call',
+      data: { tool: 'append_chapter_segment' },
+      ts: '2026-05-31T00:03:00Z'
+    }]
+  }));
+  assert.equal(a.mode, 'idle');
+  assert.equal(a.lastTool, null);
+});

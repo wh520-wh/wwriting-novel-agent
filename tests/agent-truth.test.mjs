@@ -67,6 +67,39 @@ test("cancelling truth does not collide with the cancelled terminal label", () =
   assert.equal(cancelled.display, "已停止");
 });
 
+test("agent truth: 任务已入队但 project_status 仍为 idle 时显示排队中而非待命", () => {
+  const truth = computeAgentTruth(data({
+    summary: { projectStatus: "idle", currentStage: "queued" },
+    state: { project_status: "idle", agent_alive: false },
+    queue: { tasks: [{ index: 1, status: "queued" }] }
+  }), now);
+
+  assert.equal(truth.display, "排队中");
+  assert.notEqual(truth.display, "待命");
+  assert.equal(truth.className, "running");
+  assert.equal(truth.showRetry, false);
+});
+
+test("agent truth: 仅队列存在 queued 任务（stage 未知）也显示排队中", () => {
+  const truth = computeAgentTruth(data({
+    summary: { projectStatus: "idle", currentStage: null },
+    queue: { tasks: [{ index: 2, status: "running" }] }
+  }), now);
+
+  assert.equal(truth.display, "排队中");
+  assert.equal(truth.className, "running");
+});
+
+test("agent truth: 无排队任务且状态 idle 仍为待命", () => {
+  const truth = computeAgentTruth(data({
+    summary: { projectStatus: "idle", currentStage: null },
+    queue: { tasks: [{ index: 3, status: "completed" }] }
+  }), now);
+
+  assert.equal(truth.display, "待命");
+  assert.equal(truth.className, "idle");
+});
+
 test("deriveBadges 在最近事件含 chapter_cost_warning 时成本徽章至少为 warning", () => {
   const dashboard = {
     summary: { estimatedCost: 0.1, targetChapters: 10, completedChapters: 1 },

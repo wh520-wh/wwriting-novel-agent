@@ -6,6 +6,7 @@ export function computeAgentTruth(data, now = Date.now()) {
   const retryReason = data.retry_unavailable_reason ?? "";
   const alive = data.agent_alive === true;
   const status = data.summary?.projectStatus ?? data.state?.project_status ?? "idle";
+  const stage = data.currentStage ?? data.summary?.currentStage ?? data.state?.current_stage ?? null;
   const heartbeat = data.agent_last_heartbeat ?? data.state?.last_heartbeat;
   const heartbeatMs = heartbeat ? Date.parse(heartbeat) : NaN;
   const heartbeatAge = Number.isNaN(heartbeatMs) ? Infinity : (now - heartbeatMs) / 1000;
@@ -68,6 +69,13 @@ export function computeAgentTruth(data, now = Date.now()) {
   if (status === "completed") {
     return { display: "已完成", className: "completed", showRetry: false, showStop: false, refresh: false, reason: "" };
   }
+  // 任务已入队但 project_status 仍为 idle 的窗口：此时既无心跳也无运行态，
+  // 兜底"待命"会误导用户以为没在干活。队列里存在 queued/running 任务即视为排队中。
+  const hasQueuedTask = stage === "queued"
+    || (data?.queue?.tasks ?? []).some((task) => task.status === "queued" || task.status === "running");
+  if (hasQueuedTask) {
+    return { display: "排队中", className: "running", showRetry: false, showStop: true, refresh: true, reason: "" };
+  }
   return { display: "待命", className: "idle", showRetry: false, showStop: false, refresh: false, reason: "" };
 }
 
@@ -117,7 +125,13 @@ export function deriveActivity(dashboard, now = Date.now()) {
   const segTotal = null;
   const rt = Array.isArray(dashboard.recent_tool_events) && dashboard.recent_tool_events.length
     ? dashboard.recent_tool_events[0] : null;
-  const lastTool = rt ? {
+  let mode = 'idle';
+  if (status === 'running' && dashboard.agent_alive) mode = 'running';
+  else if (status === 'blocked') mode = 'blocked';
+  else if (status === 'interrupted') mode = 'interrupted';
+  else if (status === 'completed') mode = 'completed';
+  // idle 时不得残留上一次运行的工具名：mode 为非 idle 才透出 lastTool。
+  const lastTool = mode !== 'idle' && rt ? {
     name: rt.data?.tool ?? rt.tool ?? '',
     status: rt.type === 'tool_call_rejected' ? 'failed'
           : (rt.type === 'tool_call_requested' ? 'pending' : 'ok'),
@@ -126,11 +140,6 @@ export function deriveActivity(dashboard, now = Date.now()) {
   const enteredAt = state.stage_entered_at ? Date.parse(state.stage_entered_at) : NaN;
   const elapsedMs = Number.isNaN(enteredAt) ? null : (now - enteredAt);
   const spentCost = summary.costAvailable ? (summary.estimatedCost ?? null) : null;
-  let mode = 'idle';
-  if (status === 'running' && dashboard.agent_alive) mode = 'running';
-  else if (status === 'blocked') mode = 'blocked';
-  else if (status === 'interrupted') mode = 'interrupted';
-  else if (status === 'completed') mode = 'completed';
   return { stage, chapterNo, segCurrent, segTotal, lastTool, elapsedMs, etaMs: null, spentCost, mode };
 }
 
