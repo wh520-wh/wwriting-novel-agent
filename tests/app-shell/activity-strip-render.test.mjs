@@ -194,26 +194,33 @@ describe('renderActivityStrip', () => {
     assert.equal(loc.textContent, '第 5 章 · seg 3/?');
   });
 
-  it('7. renders tool status with checkmark for done', () => {
+  it('7. renders tool status with friendly label for done', () => {
     const root = new MockElement('div');
     renderActivityStrip(root, makeActivity({ lastTool: { name: 'append_chapter_segment', status: 'done' } }));
     const tool = root.children.find(c => c.className.includes('as-tool'));
     assert.ok(tool, 'tool slot should exist');
-    assert.equal(tool.textContent, '✓ append_chapter_segment');
+    assert.equal(tool.textContent, '✓ 写入章节内容');
   });
 
-  it('7b. renders tool status with arrow for pending', () => {
+  it('7b. renders tool status with friendly label for pending', () => {
     const root = new MockElement('div');
-    renderActivityStrip(root, makeActivity({ lastTool: { name: 'summarize', status: 'pending' } }));
+    renderActivityStrip(root, makeActivity({ lastTool: { name: 'edit_chapter', status: 'pending' } }));
     const tool = root.children.find(c => c.className.includes('as-tool'));
-    assert.equal(tool.textContent, '→ summarize');
+    assert.equal(tool.textContent, '→ 修改章节');
   });
 
-  it('7c. renders tool status with cross for failed', () => {
+  it('7c. renders tool status with friendly label for failed', () => {
     const root = new MockElement('div');
-    renderActivityStrip(root, makeActivity({ lastTool: { name: 'review', status: 'failed' } }));
+    renderActivityStrip(root, makeActivity({ lastTool: { name: 'update_outline', status: 'failed' } }));
     const tool = root.children.find(c => c.className.includes('as-tool'));
-    assert.equal(tool.textContent, '✗ review');
+    assert.equal(tool.textContent, '✗ 更新写作计划');
+  });
+
+  it('7d. degrades unknown tool name to toolLabel fallback (no raw name)', () => {
+    const root = new MockElement('div');
+    renderActivityStrip(root, makeActivity({ lastTool: { name: 'some_unknown_tool', status: 'pending' } }));
+    const tool = root.children.find(c => c.className.includes('as-tool'));
+    assert.equal(tool.textContent, '→ 工具 some_unknown_tool');
   });
 
   it('8. renders elapsed time in MM:SS format', () => {

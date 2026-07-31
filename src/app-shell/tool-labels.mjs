@@ -1,5 +1,5 @@
 // src/app-shell/tool-labels.mjs
-// 17 个 chat 工具 → 写作者语言。技术名/原始 JSON 由 thread-renderer 收进展开区。
+// 17 个 chat 工具 + 2 个章节写作工具 → 写作者语言。技术名/原始 JSON 由 thread-renderer 收进展开区。
 // args 摘要可能是被截断 200 字符的 JSON 字符串：parseArgsSummary 先整体 parse，
 // 失败再做关键字段抢救（chapter_no/query/entity），都失败返回 null（调用方降级）。
 
@@ -26,9 +26,11 @@ const LABELS = {
   search_text: (a) => (a?.query ? `搜索「${a.query}」` : "搜索了全文"),
   read_continuity: (a) => (a?.entity ? `查阅了设定记忆 · ${a.entity}` : "查阅了设定记忆"),
   read_outline: () => "查阅了大纲与计划",
+  list_chapters: () => "列出章节",
   get_cost: () => "查询了成本台账",
   edit_chapter: (a) => (a?.chapter_no ? `修改第 ${a.chapter_no} 章` : "修改章节"),
   rewrite_chapter: (a) => (a?.chapter_no ? `重写第 ${a.chapter_no} 章` : "重写章节"),
+  append_chapter_segment: () => "写入章节内容",
   update_continuity: (a) => (a?.entity ? `更新设定记忆 · ${a.entity}` : "更新设定记忆"),
   update_outline: () => "更新写作计划",
   queue_chapters: () => "排队写作指令",
