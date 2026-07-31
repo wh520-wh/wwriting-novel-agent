@@ -1018,81 +1018,52 @@ export function createThreadRenderer(ctx) {
   function renderToolCard(message) {
     const msgId = message.id ?? `tool:${message.ts}:${message.tool ?? ""}`;
 
-    // §5.2: superseded 工具渲染为可折叠取消卡
-    if (message.superseded) {
-      const wrap = document.createElement("div");
-      wrap.className = "msg-agent rise chat-bubble-wrap chat-bubble-wrap--confirm";
-      wrap.dataset.ts = message.ts ?? "";
-      const card = document.createElement("div");
-      card.className = "chat-tool-card chat-tool-card--superseded";
+    // Codex 桌面端风格：工具调用统一渲染为内联折叠行（非卡片框）。
+    // 成功/失败/superseded 都展示；成功与 superseded 默认折叠，失败默认展开。
+    const tool = message.tool ?? "";
+    const ok = message.ok !== false;
+    const superseded = Boolean(message.superseded);
+    const foldKey = getFoldKey("tool", msgId);
 
-      const foldKey = getFoldKey("tool", msgId);
-      const header = document.createElement("div");
-      header.className = "chat-tool-header";
-      const label = document.createElement("span");
-      label.className = "chat-tool-label";
-      label.textContent = `操作已取消：${toolLabel(message.tool ?? "")}`;
-      const chevron = document.createElement("span");
-      chevron.className = "card-fold-chevron";
-      chevron.textContent = "▸";
-      header.append(label, chevron);
-      card.append(header);
-
-      const body = document.createElement("div");
-      body.className = "chat-tool-body";
-      const p = document.createElement("p");
-      p.className = "chat-confirm-desc";
-      p.textContent = "已被新指令取消";
-      body.append(p);
-      card.append(body);
-
-      applyFold(header, body, foldKey, true); // superseded → folded by default
-      wrap.append(card);
-      return wrap;
-    }
-    if (message.ok !== false) return null;
     const wrap = document.createElement("div");
-    wrap.className = "msg-agent rise chat-bubble-wrap chat-bubble-wrap--tool";
+    wrap.className = "msg-agent tool-inline";
     wrap.dataset.ts = message.ts ?? "";
 
-    const card = document.createElement("div");
-    card.className = "chat-tool-card";
-
-    const ok = message.ok !== false;
-    const foldKey = getFoldKey("tool", msgId);
-    const header = document.createElement("div");
-    header.className = "chat-tool-header";
-    const label = document.createElement("span");
-    label.className = "chat-tool-label";
-    label.textContent = toolLabel(message.tool ?? "", message.args);
-    const mark = document.createElement("span");
-    mark.className = `chat-tool-mark ${ok ? "ok" : "fail"}`;
-    mark.textContent = ok ? "✓" : "✗";
+    const row = document.createElement("div");
+    row.className = `tool-inline-row ${ok ? "ok" : "fail"}${superseded ? " superseded" : ""}`;
+    row.dataset.testid = "tool-inline-row";
     const chevron = document.createElement("span");
-    chevron.className = "card-fold-chevron";
+    chevron.className = "tool-inline-chevron";
     chevron.textContent = "▸";
-    header.append(label, mark, chevron);
-    card.append(header);
+    const label = document.createElement("span");
+    label.className = "tool-inline-label";
+    label.textContent = superseded ? `已取消 · ${toolLabel(tool, message.args)}` : toolLabel(tool, message.args);
+    const mark = document.createElement("span");
+    mark.className = `tool-inline-mark ${ok ? "ok" : "fail"}`;
+    mark.textContent = superseded ? "⊘" : (ok ? "✓" : "✗");
+    row.append(chevron, label, mark);
+    wrap.append(row);
 
     const body = document.createElement("div");
-    body.className = "chat-tool-body";
+    body.className = "tool-inline-body";
     const tech = document.createElement("div");
-    tech.className = "chat-tool-tech mono";
-    tech.textContent = `${message.tool ?? ""} ${message.args ?? ""}`.trim();
+    tech.className = "tool-inline-tech mono";
+    tech.textContent = `${tool} ${message.args ?? ""}`.trim();
     body.append(tech);
-    const pre = document.createElement("pre");
-    pre.textContent = message.result_summary ?? "";
-    body.append(pre);
+    if (message.result_summary) {
+      const pre = document.createElement("pre");
+      pre.textContent = message.result_summary;
+      body.append(pre);
+    }
     if (message.error) {
       const err = document.createElement("div");
-      err.className = "chat-tool-error";
+      err.className = "tool-inline-error";
       err.textContent = message.error;
       body.append(err);
     }
-    card.append(body);
+    wrap.append(body);
 
-    applyFold(header, body, foldKey, false); // failure tools → expanded by default
-    wrap.append(card);
+    applyFold(row, body, foldKey, ok || superseded);
     return wrap;
   }
 
