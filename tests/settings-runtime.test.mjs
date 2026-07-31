@@ -136,6 +136,29 @@ test("normalizeSettingsPatch DeepSeek 模型完全不填价格时也补全官方
   assert.equal(normalized.active_model.pricing.cache_hit_per_million, 0.025);
 });
 
+test("normalizeSettingsPatch 为 mimo-v2.5 与 mimo-v2.5-pro 自动补全官方人民币价", () => {
+  const flash = normalizeSettingsPatch({
+    active_model: {
+      provider: "openai-compatible",
+      model_name: "mimo-v2.5",
+      base_url: "https://api.xiaomimimo.com/v1",
+      pricing: {}
+    }
+  });
+  assert.equal(flash.active_model.pricing.input_per_million, 1.0);
+  assert.equal(flash.active_model.pricing.cache_hit_per_million, 0.02);
+  const pro = normalizeSettingsPatch({
+    active_model: {
+      provider: "openai-compatible",
+      model_name: "mimo-v2.5-pro",
+      base_url: "https://api.xiaomimimo.com/v1",
+      pricing: {}
+    }
+  });
+  assert.equal(pro.active_model.pricing.input_per_million, 3.0);
+  assert.equal(pro.active_model.pricing.cache_hit_per_million, 0.025);
+});
+
 test("normalizeSettingsPatch 用户已填缓存命中价不被覆盖", () => {
   const normalized = normalizeSettingsPatch({
     active_model: {
@@ -148,12 +171,12 @@ test("normalizeSettingsPatch 用户已填缓存命中价不被覆盖", () => {
   assert.equal(normalized.active_model.pricing.cache_hit_per_million, 0.05);
 });
 
-test("normalizeSettingsPatch 非 DeepSeek 模型不补填缓存命中价", () => {
+test("normalizeSettingsPatch 未收录模型不补填缓存命中价", () => {
   const normalized = normalizeSettingsPatch({
     active_model: {
       provider: "openai-compatible",
-      model_name: "mimo-v2.5-pro",
-      base_url: "https://api.xiaomimimo.com/v1",
+      model_name: "custom-model",
+      base_url: "https://example.com/v1",
       pricing: { input_per_million: 3, output_per_million: 6 }
     }
   });
