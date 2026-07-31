@@ -117,6 +117,46 @@ test("session: abort 使当前 run 以 aborted 结束，settled 照常发出", a
   await session.waitForIdle();
 });
 
+test("session: 非 AbortError 失败后 waitForIdle 不悬挂", async () => {
+  const { session } = makeSession({
+    respond: () => ({ type: "tool_call", tool: "read_thing", input: {} }),
+    executeTool: async () => {
+      throw new Error("tool exploded");
+    },
+  });
+  const runPromise = session.start();
+  const idlePromise = session.waitForIdle(); // run 期间调用，拿到内部 idlePromise
+  await assert.rejects(runPromise, /tool exploded/);
+  await Promise.race([
+    idlePromise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("waitForIdle 悬挂")), 500)),
+  ]);
+  assert.equal(session.status, "idle");
+});
+
+test("session: emitEvent 抛错后 start 可复用（状态回 idle）", async () => {
+  let calls = 0;
+  const { session, events } = makeSession({
+    respond: () => ({ type: "tool_call", tool: "commit_thing", input: {} }),
+    executeTool: async () => ({ ok: true, committed: true }),
+    sessionOptions: {
+      emitEvent: async (type, data) => {
+        if (type === "agent_start" && calls === 0) {
+          calls += 1;
+          throw new Error("disk write failed");
+        }
+        calls += 1;
+        events.push({ type, ...data });
+      },
+    },
+  });
+  await assert.rejects(session.start(), /disk write failed/);
+  assert.equal(session.status, "idle");
+  const run = await session.start(); // 第二次 start 应正常完成
+  assert.equal(run.outcome, "completed");
+  assert.equal(session.status, "idle");
+});
+
 test("session: 领域 stopRun 主动终止（连续无效输出上限）", async () => {
   const { session } = makeSession({
     respond: () => ({ type: "status_message", message: "嗯" }),
