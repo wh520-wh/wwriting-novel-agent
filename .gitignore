@@ -15,3 +15,7 @@ debug/
 # 本地保留、不推送（用户要求）
 CLAUDE.md
 docs/superpowers/
+
+# 本地研究资料，不推送（用户要求）
+docs/research/2026-07-31-codewhale-deepseek-cache-ledger.json
+docs/research/2026-07-31-codewhale-deepseek-cache.md
