@@ -56,9 +56,15 @@ export function registerReadTools(registry) {
       const entry = (index.chapters ?? []).find((c) => c.chapter_no === chapterNo);
       const filePath = entry?.final_path ?? entry?.draft_path;
       if (!entry || !filePath || !(await pathExists(filePath))) {
-        const error = new Error(`第 ${args.chapter_no} 章不存在或还没有正文。`);
-        error.code = "chapter_not_found";
-        throw error;
+        // 不抛错：写作 agent 可能在 drafting 时读当前章（草稿还没落盘/索引没更新），
+        // 抛 chapter_not_found 会让模型陷入循环到 block。返回明确信息让模型知道该写而非读。
+        return {
+          chapter_no: chapterNo,
+          status: entry?.status ?? "not_started",
+          words: 0,
+          content: "",
+          note: `第 ${args.chapter_no} 章还没有正文（可能还在写，或尚未开始）。如果你在写这一章，直接输出正文即可，不需要先读它。`
+        };
       }
       const raw = await fs.readFile(filePath, "utf8");
       const max = Number(args.max_chars) > 0 ? Number(args.max_chars) : DEFAULT_CHAPTER_CHARS;

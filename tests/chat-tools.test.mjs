@@ -113,7 +113,8 @@ test("read_chapter 读正文并尊重 max_chars", async () => {
   assert.equal(out.ok, true);
   assert.ok(out.result.content.length <= 11);
   const missing = await executeTool(registry, "read_chapter", { chapter_no: 99 }, { projectRoot, project });
-  assert.equal(missing.ok, false);
+  assert.equal(missing.ok, true, "不存在章节不应抛错，返回 ok + note 让模型可恢复");
+  assert.ok(missing.result.note, "应返回 note 说明章节没正文");
 });
 
 test("search_text 命中返回章节与摘录", async () => {
