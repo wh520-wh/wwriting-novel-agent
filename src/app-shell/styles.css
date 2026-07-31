@@ -1980,6 +1980,35 @@ button.cbar-pill--readonly:hover {
 }
 .chat-tool-card pre { white-space: pre-wrap; margin: 8px 0 0; font-size: 12px; color: var(--ink-2); background: var(--surface-2); padding: 7px 9px; border-radius: 4px; max-height: 240px; overflow: auto; }
 .chat-tool-error { margin-top: 6px; font-size: 11.5px; color: var(--red); }
+
+/* Codex 桌面端风格：工具调用内联折叠行（替代卡片框，减边框提密度） */
+.tool-inline { margin: 2px 0; font-size: 12.5px; color: var(--ink-2); }
+.tool-inline-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.tool-inline-row:hover { background: var(--hover); }
+.tool-inline-row.superseded { opacity: .55; }
+.tool-inline-chevron { font-size: 10px; color: var(--ink-3); transition: transform .12s; display: inline-block; }
+.tool-inline-row:not(.folded) .tool-inline-chevron { transform: rotate(90deg); }
+.tool-inline-label { color: var(--ink-2); }
+.tool-inline-mark.ok { color: var(--green); }
+.tool-inline-mark.fail { color: var(--red); }
+.tool-inline-body {
+  margin: 3px 0 4px 18px;
+  padding: 4px 0 4px 10px;
+  border-left: 2px solid var(--line);
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.tool-inline-tech { font-size: 11.5px; color: var(--ink-3); }
+.tool-inline-body pre { white-space: pre-wrap; margin: 6px 0 0; font-size: 11.5px; color: var(--ink-2); background: var(--surface-2); padding: 6px 8px; border-radius: 4px; max-height: 200px; overflow: auto; }
+.tool-inline-error { margin-top: 4px; font-size: 11.5px; color: var(--red); }
 .chat-confirm-card {
   border: 2px solid #f59e0b;
   border-radius: var(--r-sm);
