@@ -61,7 +61,7 @@ export class WritingAgentSession {
         maxTurns: this.maxTurns,
         signal: this.abortController.signal,
         emitEvent: this.emitEvent,
-        prepareNextTurn: (ctx) => {
+        prepareNextTurn: async (ctx) => {
           if (ctx.steering.length > 0) {
             ctx.feedback = ((ctx.feedback ?? "") + ctx.steering.join("\n")).trim();
             ctx.steering.length = 0;
@@ -69,7 +69,7 @@ export class WritingAgentSession {
           if (!escalated && consecutiveReads >= this.maxConsecutiveReads && ctx.allowedTools.length > 1) {
             escalated = true;
             ctx.allowedTools = [this.commitTool];
-            void this.emitEvent("agent_loop_commit_only", {
+            await this.emitEvent("agent_loop_commit_only", {
               turn: ctx.turn,
               consecutive_reads: consecutiveReads,
             });
