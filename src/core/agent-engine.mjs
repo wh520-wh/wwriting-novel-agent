@@ -482,8 +482,25 @@ async function reviewChapter(projectRoot, project, state, runtime) {
       message: `fact-check 失败：${error.message}`
     });
   }
-  if (factCheck?.conflicts?.length && project.fact_check?.hard === true) {
-    await applyFactCheckHardFail(projectRoot, project, state, factCheck.conflicts);
+  if (factCheck?.conflicts?.length) {
+    // ADR-0001：任何 fact-check 冲突都进 needs_revision，conflicts 作为 feedback 喂回写作循环。
+    // 不再区分 hard/soft——砍掉自动修复后，soft 模式也必须走反思循环，不能静默放过。
+    // ADR-0001 决策 4/5：硬上限 3 轮防无限循环，达上限软降级 block 本章交用户。
+    const fcBudget = withBudgetDefaults(state);
+    const fcKey = String(state.current_chapter_no);
+    const fcRounds = fcBudget.fact_check_rounds_by_chapter[fcKey] ?? 0;
+    if (fcRounds >= fcBudget.max_fact_check_rounds_per_chapter) {
+      await blockFactCheckUnresolved(projectRoot, project, state, factCheck.conflicts, fcRounds);
+      return;
+    }
+    const stateWithRound = {
+      ...state,
+      active_budget: {
+        ...fcBudget,
+        fact_check_rounds_by_chapter: { ...fcBudget.fact_check_rounds_by_chapter, [fcKey]: fcRounds + 1 }
+      }
+    };
+    await applyFactCheckConflicts(projectRoot, project, stateWithRound, factCheck.conflicts);
     return;
   }
   const next = setStage({ ...state }, "finalizing");
@@ -779,52 +796,17 @@ export async function runFactCheck(projectRoot, project, state, runtime, draft) 
     chapter_no: state.current_chapter_no
   });
 
-  // 软模式：自动修复矛盾（draft_quote 唯一命中且有 replace_with），不等用户确认。
-  // draft_quote 被截断（>200 字）时跳过自动修复：用截断后的引文做 indexOf+replace 会留下后半段造成乱码。
-  if (first.replace_with && !first.draft_quote_truncated) {
-    const firstIdx = draft.indexOf(first.draft_quote);
-    const onlyHit = firstIdx >= 0 && draft.indexOf(first.draft_quote, firstIdx + 1) < 0;
-    if (onlyHit) {
-      try {
-        const draftPath = safeJoin(projectRoot, "drafts", chapterFileName(state.current_chapter_no, `draft.${project.output_format}`));
-        const draftContent = (await fs.readFile(draftPath, "utf8").catch(() => draft)).replace(first.draft_quote, first.replace_with);
-        await writeFileAtomic(draftPath, draftContent);
-        await appendEvent(projectRoot, {
-          type: "fact_check_auto_fixed",
-          project_id: project.project_id,
-          chapter_no: state.current_chapter_no,
-          stage: "reviewing",
-          severity: "info",
-          message: "fact-check 矛盾已自动修复",
-          data: { draft_quote: first.draft_quote, replace_with: first.replace_with, conflicts_with: first.conflicts_with }
-        });
-      } catch (error) {
-        await appendEvent(projectRoot, {
-          type: "fact_check_auto_fix_failed",
-          project_id: project.project_id,
-          chapter_no: state.current_chapter_no,
-          stage: "reviewing",
-          severity: "warn",
-          message: `fact-check 自动修复失败：${error.message}`,
-          data: { conflict: first, error: error.message }
-        });
-      }
-    }
-  } else if (first.draft_quote_truncated) {
-    await appendEvent(projectRoot, {
-      type: "fact_check_auto_fix_skipped",
-      project_id: project.project_id,
-      chapter_no: state.current_chapter_no,
-      stage: "reviewing",
-      severity: "info",
-      message: "fact-check 引文过长被截断，跳过自动修复（避免正文乱码），请人工核对",
-      data: { conflicts_with: first.conflicts_with, suggestion: first.suggestion }
-    });
-  }
+  // ADR-0001：修改权还给模型。runFactCheck 只负责“发现问题 + 通知”，
+  // 不再自动 indexOf+replace 改正文。conflicts 返回给上层（reviewChapter），
+  // 由 reviewChapter 进 needs_revision、把 conflicts 作为 feedback 喂回写作循环，
+  // 模型用 edit_chapter 自己改。砍掉“只改第一个”“长引文跳过”两个 bug 的根源。
   return { conflicts };
 }
 
-export async function applyFactCheckHardFail(projectRoot, project, state, conflicts) {
+// ADR-0001：fact-check 发现冲突 -> 进 needs_revision，conflicts 作为 feedback 喂回写作循环。
+// 模型在 revise 阶段看到 fact-check-gate 的 conflicts，用 edit_chapter 自己改，回 reviewing 再验证。
+// 不再区分 hard/soft：任何冲突都走反思循环，由进展检测 + 软降级兜底（见 runWritingAgentLoop）。
+export async function applyFactCheckConflicts(projectRoot, project, state, conflicts) {
   const gate = { gate: "fact-check-gate", status: "failed", conflicts };
   const next = setStage({ ...state, last_quality_gate_results: [gate] }, "needs_revision");
   await saveState(projectRoot, next);
@@ -839,11 +821,43 @@ export async function applyFactCheckHardFail(projectRoot, project, state, confli
     chapter_no: state.current_chapter_no,
     stage: "reviewing",
     severity: "warn",
-    message: `fact-check gate failed（${conflicts.length} 个设定冲突，hard 模式打回修订）`,
+    message: `fact-check 发现 ${conflicts.length} 个设定冲突，进 needs_revision 让模型修订`,
     data: gate
   });
   await writeCheckpoint(projectRoot, checkpointPayload(project, state, next));
   await appendFailureCard(projectRoot, state, { type: "quality_gate_failed", message: "fact-check gate failed", data: gate });
+}
+
+// ADR-0001 决策 5：fact-check 冲突达到硬上限（3 轮）仍有冲突 -> 软降级。
+// 不静默放过、不硬改。block 本章（项目 paused），通知用户人工核对。
+// 对标 Claude Code：跑不过测试就停下来问用户，绝不硬改糊弄。
+async function blockFactCheckUnresolved(projectRoot, project, state, conflicts, rounds) {
+  const chapterNo = state.current_chapter_no;
+  const note = `第 ${chapterNo} 章经 ${rounds} 轮修订仍有 ${conflicts.length} 个设定矛盾，模型无法自动解决。请人工核对正文与设定档案（continuity），修正后恢复项目。`;
+  const next = setStage({
+    ...state,
+    project_status: "blocked",
+    blocked_reason: "fact_check_unresolved",
+    blocked_at: new Date().toISOString(),
+    blocked_data: { conflicts, rounds }
+  }, "blocked");
+  await saveState(projectRoot, next);
+  await upsertChapter(projectRoot, { chapter_no: chapterNo, status: "blocked" });
+  await appendChatMessage(projectRoot, {
+    role: "assistant", content: note, proactive: "fact_check", chapter_no: chapterNo
+  });
+  await appendEvent(projectRoot, {
+    type: "project_blocked",
+    project_id: project.project_id,
+    chapter_no: chapterNo,
+    stage: "reviewing",
+    severity: "error",
+    message: `fact-check 软降级：${conflicts.length} 个设定矛盾 ${rounds} 轮未解决，需人工核对`,
+    data: { reason: "fact_check_unresolved", conflicts, rounds }
+  });
+  await appendFailureCard(projectRoot, state, { type: "fact_check_unresolved", message: note, data: { conflicts, rounds } });
+  await writeCheckpoint(projectRoot, checkpointPayload(project, state, next, [], [], { code: "fact_check_unresolved", data: { conflicts, rounds } }));
+  throw new ProjectBlockedError("fact_check_unresolved");
 }
 
 async function completeChapter(projectRoot, project, state, execution) {
@@ -1828,6 +1842,9 @@ function withBudgetDefaults(state) {
     max_model_calls: null,
     revision_rounds_by_chapter: {},
     max_revision_rounds_per_chapter: null,
+    // ADR-0001 决策 4：fact-check 反思循环硬上限，防无限循环（默认 revision budget 为 null 时兜底）
+    fact_check_rounds_by_chapter: {},
+    max_fact_check_rounds_per_chapter: 3,
     max_cost: null,
     max_total_tokens: null,
     ...(state.active_budget ?? {})

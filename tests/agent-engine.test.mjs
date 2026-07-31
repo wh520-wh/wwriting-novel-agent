@@ -848,7 +848,7 @@ const FC_CONFLICT_REPLY = JSON.stringify({ conflicts: [{
   severity: "high", suggestion: "把十二楼改回六楼", replace_with: "从六楼坠落"
 }] });
 
-test("runFactCheck 有冲突：主动消息 + 自动修复 draft + warning 事件，返回 conflicts", async () => {
+test("runFactCheck 有冲突：主动消息 + warning 事件，返回 conflicts，不自动改 draft（修改权还给模型）", async () => {
   const { projectRoot, project } = await makeFactCheckProject("wwriting-fc1-");
   const draftPath = path.join(projectRoot, "drafts", "001.draft.md");
   await fs.mkdir(path.dirname(draftPath), { recursive: true });
@@ -861,14 +861,15 @@ test("runFactCheck 有冲突：主动消息 + 自动修复 draft + warning 事�
   assert.equal(out.conflicts.length, 1);
   const events = await readEvents(projectRoot);
   assert.ok(events.some((e) => e.type === "quality_gate_warning" && e.data?.conflicts?.length === 1));
-  assert.ok(events.some((e) => e.type === "fact_check_auto_fixed" && e.data?.replace_with === "从六楼坠落"), "应自动修复矛盾");
+  assert.ok(!events.some((e) => e.type === "fact_check_auto_fixed"), "不应自动修复（修改权还给模型）");
+  assert.ok(!events.some((e) => e.type === "fact_check_auto_fix_skipped"), "不应有跳过修复事件");
   const history = await readChatHist(projectRoot);
   const proactive = history.find((m) => m.proactive === "fact_check");
   assert.ok(proactive, "应有 agent 主动消息");
   assert.match(proactive.content, /十二楼/u);
-  const fixed = await fs.readFile(draftPath, "utf8");
-  assert.ok(fixed.includes("从六楼坠落"), "draft 应被修复");
-  assert.ok(!fixed.includes("从十二楼坠落"), "矛盾原文应被替换");
+  const unchanged = await fs.readFile(draftPath, "utf8");
+  assert.ok(unchanged.includes("从十二楼坠落"), "draft 不应被代码改动（修改权还给模型）");
+  assert.ok(!unchanged.includes("从六楼坠落"), "代码不应替模型写入替换");
   assert.equal(await loadChatPending(projectRoot), null, "软模式不再生成 pending");
 });
 
@@ -888,7 +889,7 @@ test("runFactCheck replace_with 为空：只发消息，不落 pending", async (
   assert.ok(history.some((m) => m.proactive === "fact_check"), "主动消息仍要发");
 });
 
-test("runFactCheck 引文超 200 字被截断：跳过自动修复，避免正文乱码", async () => {
+test("runFactCheck 引文超 200 字被截断：标记 truncated 返回，draft 原样保留", async () => {
   const { projectRoot, project } = await makeFactCheckProject("wwriting-fc-trunc-");
   const draftPath = path.join(projectRoot, "drafts", "001.draft.md");
   await fs.mkdir(path.dirname(draftPath), { recursive: true });
@@ -906,11 +907,11 @@ test("runFactCheck 引文超 200 字被截断：跳过自动修复，避免正�
   assert.equal(out.conflicts.length, 1);
   assert.equal(out.conflicts[0].draft_quote_truncated, true);
   const events = await readEvents(projectRoot);
-  assert.ok(!events.some((e) => e.type === "fact_check_auto_fixed"), "截断时不应自动修复");
-  assert.ok(events.some((e) => e.type === "fact_check_auto_fix_skipped"), "应记跳过事件");
-  const fixed = await fs.readFile(draftPath, "utf8");
-  assert.ok(fixed.includes(longQuote), "正文应原样保留，不被截断引文替换");
-  assert.ok(!fixed.includes("替换文本"), "replace_with 不应写入正文");
+  assert.ok(!events.some((e) => e.type === "fact_check_auto_fixed"), "不应自动修复");
+  assert.ok(!events.some((e) => e.type === "fact_check_auto_fix_skipped"), "不应有跳过修复事件");
+  const unchanged = await fs.readFile(draftPath, "utf8");
+  assert.ok(unchanged.includes(longQuote), "正文应原样保留");
+  assert.ok(!unchanged.includes("替换文本"), "replace_with 不应写入正文");
 });
 
 test("runFactCheck mock provider 跳过并记事件，返回 null", async () => {
@@ -940,11 +941,11 @@ test("runFactCheck 解析两次失败：fact_check_skipped 且返回 null", asyn
   assert.ok(events.some((e) => e.type === "fact_check_skipped"));
 });
 
-test("applyFactCheckHardFail 写 needs_revision 状态与 quality_gate_failed 事件", async () => {
+test("applyFactCheckConflicts 写 needs_revision 状态与 quality_gate_failed 事件", async () => {
   const { projectRoot, project } = await makeFactCheckProject("wwriting-fc5-");
-  const { applyFactCheckHardFail } = await import("../src/core/agent-engine.mjs");
+  const { applyFactCheckConflicts } = await import("../src/core/agent-engine.mjs");
   const conflicts = [{ draft_quote: "从十二楼坠落", conflicts_with: "坠楼楼层: 六楼", prior_chapter: 1, severity: "high", suggestion: "改回六楼", replace_with: "从六楼坠落" }];
-  await applyFactCheckHardFail(projectRoot, project, { current_chapter_no: 1, project_status: "running" }, conflicts);
+  await applyFactCheckConflicts(projectRoot, project, { current_chapter_no: 1, project_status: "running" }, conflicts);
   const state = await loadState(projectRoot);
   assert.equal(state.current_stage, "needs_revision");
   assert.ok(state.last_quality_gate_results.some((g) => g.gate === "fact-check-gate" && g.status === "failed"));
@@ -1252,6 +1253,214 @@ test("writing agent loop: drafting 阶段模型先调 read_continuity 查设定�
   assert.ok(modelClient.prompts.some((p) => p.includes("agent_loop_instruction")));
   assert.ok(modelClient.prompts.some((p) => p.includes("agent_loop_feedback") && p.includes("read_continuity")));
   assert.equal(modelClient.calls, 2);
+});
+
+// ADR-0001 端到端反思闭环：fact-check 发现冲突 -> needs_revision ->
+// 模型用 edit_chapter 改 -> 回 reviewing -> fact-check 无冲突 -> 完成。
+class FactCheckLoopModelClient {
+  constructor() {
+    this.calls = 0;
+    this.factCheckCalls = 0;
+    this.costTracker = {
+      record() {
+        return { calls: 1, inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCost: 0 };
+      },
+      async recordRefill() {},
+      async writeProjectReport() {}
+    };
+    this.prompts = [];
+  }
+
+  async generate({ prompt, metadata }) {
+    this.calls += 1;
+    this.prompts.push(prompt);
+    const request = metadata.toolRequest;
+    const usageReport = {
+      provider: "openai-compatible", model: "fc-loop",
+      inputTokens: 1, outputTokens: 1, totalTokens: 2,
+      cachedTokens: 0, cacheHitTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+      reasoningTokens: 0, cacheMetricsAvailable: false, cacheHitRate: null,
+      estimatedCost: 0, rawUsage: {}
+    };
+    const costSummary = { calls: this.calls, inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCost: 0 };
+    const modelConfig = { provider: "openai-compatible", model_name: "fc-loop" };
+
+    // fact-check 调用：第一次返回冲突，第二次返回无冲突
+    if (metadata.factCheck) {
+      this.factCheckCalls += 1;
+      if (this.factCheckCalls === 1) {
+        return {
+          text: JSON.stringify({ conflicts: [{
+            draft_quote: "从十二楼坠落", conflicts_with: "坠楼楼层: 六楼", prior_chapter: 1,
+            severity: "high", suggestion: "把十二楼改回六楼", replace_with: "从六楼坠落"
+          }] }),
+          usageReport, costSummary, modelConfig
+        };
+      }
+      return { text: JSON.stringify({ conflicts: [] }), usageReport, costSummary, modelConfig };
+    }
+
+    // 写作调用
+    if (request) {
+      // revise 阶段：第一次用 edit_chapter 改矛盾，第二次 append 退出循环。
+      // 注：runWritingAgentLoop 退出条件是 append 或 >=50 字正文；edit_chapter 属情况 D
+      // 执行后继续循环，模型改完需通过 append 收尾退出。此退出机制限制记入 ADR-0001 后续。
+      if (request.kind === "revision_quality_gate" || request.kind === "revision_shortfall") {
+        this.reviseCalls = (this.reviseCalls ?? 0) + 1;
+        if (this.reviseCalls === 1) {
+          return {
+            text: "",
+            raw: { output: { type: "tool_call", tool: "edit_chapter", input: {
+              chapter_no: request.chapter_no,
+              find: "从十二楼坠落",
+              replace: "从六楼坠落",
+              reason: "修正设定矛盾"
+            } } },
+            usageReport, costSummary, modelConfig
+          };
+        }
+        return {
+          text: "",
+          raw: { output: { type: "tool_call", tool: "append_chapter_segment", input: {
+            project_id: request.project_id, chapter_no: request.chapter_no, segment_no: request.segment_no,
+            content: Array.from({ length: 60 }, (_, i) => `修订收尾${i}`).join(" ")
+          } } },
+          usageReport, costSummary, modelConfig
+        };
+      }
+      // drafting：写含矛盾的够字数正文
+      const filler = Array.from({ length: 260 }, (_, i) => `草稿片段${i}`).join(" ");
+      return {
+        text: "",
+        raw: { output: { type: "tool_call", tool: "append_chapter_segment", input: {
+          project_id: request.project_id, chapter_no: request.chapter_no, segment_no: request.segment_no,
+          content: `${filler}刘康从十二楼坠落。`
+        } } },
+        usageReport, costSummary, modelConfig
+      };
+    }
+
+    return { text: "", usageReport, costSummary, modelConfig };
+  }
+}
+
+test("ADR-0001 反思闭环：fact-check 发现冲突 -> edit_chapter 改 -> 无冲突 -> 完成", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-fc-loop-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "fcloop", title: "反思闭环", story_seed: "种子",
+    target_chapters: 1, min_words_per_chapter: 200, target_words_per_chapter: 260
+  });
+  // provider 设为 openai-compatible，让 fact-check 不跳过
+  const project = await loadProject(projectRoot);
+  project.active_model = { provider: "openai-compatible", model_name: "fc-loop", base_url: "http://localhost:0", api_key_env: "FAKE_KEY" };
+  await saveProject(projectRoot, project);
+  // 预存 continuity（fact-check 需要 facts 来比对）
+  await saveContinuity(projectRoot, {
+    schema_version: 1,
+    facts: [{ entity: "刘康", attribute: "坠楼楼层", value: "六楼", chapter_no: 1, quote: "六楼。", conflict_with: null }],
+    timeline: [], characters: []
+  });
+
+  const modelClient = new FactCheckLoopModelClient();
+  await runProject(projectRoot, { modelClient });
+
+  const events = await readEvents(projectRoot);
+  // 1. 第一次 fact-check 发现冲突
+  assert.ok(events.some((e) => e.type === "quality_gate_warning" && e.data?.conflicts?.length === 1), "第一次 fact-check 应发现冲突");
+  // 2. 进 needs_revision（不分 hard/soft）
+  assert.ok(events.some((e) => e.type === "quality_gate_failed" && e.message.includes("设定冲突")), "应进 needs_revision 让模型修订");
+  // 3. 模型用 edit_chapter 改矛盾（修改权还给模型，不是代码自动修复）
+  //    edit_chapter 走 runWritingAgentLoop 情况 D，记 agent_loop_tool_executed（不是 tool_call_requested）
+  assert.ok(events.some((e) => e.type === "agent_loop_tool_executed" && e.data?.tool === "edit_chapter"), "模型应用 edit_chapter 改矛盾");
+  assert.ok(!events.some((e) => e.type === "fact_check_auto_fixed"), "不应有代码自动修复");
+  // 4. 第二次 fact-check 无冲突
+  assert.ok(events.some((e) => e.type === "fact_check_completed" && e.message.includes("未发现冲突")), "第二次 fact-check 应无冲突");
+  // 5. 章节最终完成
+  const index = await loadChapterIndex(projectRoot);
+  assert.equal(index.chapters[0].status, "completed", "章节应完成");
+  assert.equal(modelClient.factCheckCalls, 2, "fact-check 应跑两轮");
+});
+
+// ADR-0001 决策 5 软降级：fact-check 总报冲突（模型改不对）-> 3 轮硬上限 -> block 本章交用户。
+class FactCheckUnresolvedModelClient {
+  constructor() {
+    this.calls = 0;
+    this.factCheckCalls = 0;
+    this.costTracker = {
+      record() { return { calls: 1, inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCost: 0 }; },
+      async recordRefill() {},
+      async writeProjectReport() {}
+    };
+    this.prompts = [];
+  }
+
+  async generate({ prompt, metadata }) {
+    this.calls += 1;
+    this.prompts.push(prompt);
+    const request = metadata.toolRequest;
+    const usageReport = {
+      provider: "openai-compatible", model: "fc-unres",
+      inputTokens: 1, outputTokens: 1, totalTokens: 2,
+      cachedTokens: 0, cacheHitTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+      reasoningTokens: 0, cacheMetricsAvailable: false, cacheHitRate: null,
+      estimatedCost: 0, rawUsage: {}
+    };
+    const costSummary = { calls: this.calls, inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCost: 0 };
+    const modelConfig = { provider: "openai-compatible", model_name: "fc-unres" };
+
+    // fact-check 总返回冲突（模拟模型改不对，fact-check 一直报同样矛盾）
+    if (metadata.factCheck) {
+      this.factCheckCalls += 1;
+      return {
+        text: JSON.stringify({ conflicts: [{
+          draft_quote: "从十二楼坠落", conflicts_with: "坠楼楼层: 六楼", prior_chapter: 1,
+          severity: "high", suggestion: "把十二楼改回六楼", replace_with: "从六楼坠落"
+        }] }),
+        usageReport, costSummary, modelConfig
+      };
+    }
+
+    // 写作调用：drafting 与 revise 都 append（测试聚焦软降级触发，不验证 edit 改矛盾）
+    if (request) {
+      const filler = Array.from({ length: 260 }, (_, i) => `草稿${i}`).join(" ");
+      return {
+        text: "",
+        raw: { output: { type: "tool_call", tool: "append_chapter_segment", input: {
+          project_id: request.project_id, chapter_no: request.chapter_no, segment_no: request.segment_no,
+          content: `${filler}刘康从十二楼坠落。`
+        } } },
+        usageReport, costSummary, modelConfig
+      };
+    }
+    return { text: "", usageReport, costSummary, modelConfig };
+  }
+}
+
+test("ADR-0001 软降级：fact-check 3 轮仍有冲突 -> block 本章交用户", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-fc-unresolved-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "fcunres", title: "软降级", story_seed: "种子",
+    target_chapters: 1, min_words_per_chapter: 200, target_words_per_chapter: 260
+  });
+  const project = await loadProject(projectRoot);
+  project.active_model = { provider: "openai-compatible", model_name: "fc-unres", base_url: "http://localhost:0", api_key_env: "FAKE_KEY" };
+  await saveProject(projectRoot, project);
+  await saveContinuity(projectRoot, {
+    schema_version: 1,
+    facts: [{ entity: "刘康", attribute: "坠楼楼层", value: "六楼", chapter_no: 1, quote: "六楼。", conflict_with: null }],
+    timeline: [], characters: []
+  });
+
+  const modelClient = new FactCheckUnresolvedModelClient();
+  const result = await runProject(projectRoot, { modelClient });
+
+  assert.ok(result.blocked, "项目应被 block（不静默放过）");
+  assert.equal(result.reason, "fact_check_unresolved", "block 原因应是 fact_check_unresolved");
+  assert.equal(modelClient.factCheckCalls, 4, "模型修订 3 轮后，第 4 次 fact-check 仍冲突 -> 软降级");
+  const events = await readEvents(projectRoot);
+  assert.ok(events.some((e) => e.type === "project_blocked" && e.data?.reason === "fact_check_unresolved"), "应有软降级 block 事件");
+  const history = await readChatHist(projectRoot);
+  assert.ok(history.some((m) => m.proactive === "fact_check" && m.content.includes("人工核对")), "应有通知用户人工核对的主动消息");
 });
 
 test("buildRelevantFacts: 空 continuity 返回空字符串", async () => {
