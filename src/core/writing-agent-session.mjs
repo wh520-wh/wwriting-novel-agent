@@ -115,23 +115,33 @@ export class WritingAgentSession {
       request.signal?.removeEventListener?.("abort", onExternalAbort);
     }
 
-    await this.emitEvent("agent_end", {
-      run: this.runs,
-      outcome: result.outcome,
-      reason: result.reason,
-      turns: result.turns,
-    });
+    try {
+      await this.emitEvent("agent_end", {
+        run: this.runs,
+        outcome: result.outcome,
+        reason: result.reason,
+        turns: result.turns,
+      });
 
-    this.status = "settling";
-    const queue = this.followUpQueue.splice(0);
-    for (const job of queue) {
-      await job();
+      this.status = "settling";
+      const queue = this.followUpQueue.splice(0);
+      for (const job of queue) {
+        await job();
+      }
+      this.status = "idle";
+      await this.emitEvent("agent_settled", { runs: this.runs });
+      this.idleResolve?.();
+      this.idleResolve = null;
+      this.idlePromise = null;
+    } catch (error) {
+      // 尾部事件写入与 followUp 尽力而为：失败绝不卡住状态机（status 强制回 idle、
+      // 唤醒 waitForIdle 等待者），错误仍向上传播让调用方感知 run 失败。
+      this.status = "idle";
+      this.idleResolve?.();
+      this.idleResolve = null;
+      this.idlePromise = null;
+      throw error;
     }
-    this.status = "idle";
-    await this.emitEvent("agent_settled", { runs: this.runs });
-    this.idleResolve?.();
-    this.idleResolve = null;
-    this.idlePromise = null;
 
     return { outcome: result.outcome, reason: result.reason, result: result.lastResult, turns: result.turns };
   }

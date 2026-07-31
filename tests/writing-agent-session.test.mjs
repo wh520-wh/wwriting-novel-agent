@@ -157,6 +157,38 @@ test("session: emitEvent 抛错后 start 可复用（状态回 idle）", async (
   assert.equal(session.status, "idle");
 });
 
+test("session: agent_end 事件写盘失败 → start reject、状态回 idle、waitForIdle 可 resolve", async () => {
+  const { session } = makeSession({
+    respond: () => ({ type: "tool_call", tool: "commit_thing", input: {} }),
+    executeTool: async () => ({ ok: true, committed: true }),
+    sessionOptions: {
+      emitEvent: async (type) => {
+        if (type === "agent_end") throw new Error("agent_end disk full");
+      },
+    },
+  });
+  const runPromise = session.start();
+  const idlePromise = session.waitForIdle(); // run 期间调用，拿到内部 idlePromise
+  await assert.rejects(runPromise, /agent_end disk full/);
+  await Promise.race([
+    idlePromise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("waitForIdle 悬挂")), 500)),
+  ]);
+  assert.equal(session.status, "idle");
+});
+
+test("session: followUp 任务抛错 → start reject、状态回 idle（不卡 settling）", async () => {
+  const { session } = makeSession({
+    respond: () => ({ type: "tool_call", tool: "commit_thing", input: {} }),
+    executeTool: async () => ({ ok: true, committed: true }),
+  });
+  session.followUp(async () => { throw new Error("followUp job exploded"); });
+  await assert.rejects(session.start(), /followUp job exploded/);
+  assert.equal(session.status, "idle");
+  const run = await session.start(); // 状态已回 idle，可复用
+  assert.equal(run.outcome, "completed");
+});
+
 test("session: agent_loop_commit_only 事件写盘失败时 start reject 而非未处理拒绝崩溃", async () => {
   const { session } = makeSession({
     respond: (ctx, n) => (n <= 3
