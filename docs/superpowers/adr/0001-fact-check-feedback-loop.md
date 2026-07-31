@@ -49,17 +49,17 @@ WWriting 写作 agent 引擎的 agent 三支柱中，**Feedback loop（反馈闭
 
 ## 实施状态
 
-已落地（测试 46/46 绿）：
+已落地（测试 47/47 绿）：
 
 - **切片 1**：`runFactCheck` 砍掉自动 `indexOf+replace` 修复分支，只返回 conflicts。修掉"只改第一个""长引文跳过"两个 bug。
 - **切片 2**：`reviewChapter` 任何 fact-check 冲突都进 `needs_revision`（`applyFactCheckHardFail` 重命名为 `applyFactCheckConflicts`，不再区分 hard/soft）。
 - **切片 3**：端到端反思闭环跑通--fact-check 发现冲突 -> needs_revision -> 模型用 `edit_chapter` 改 -> 回 reviewing -> fact-check 无冲突 -> 完成。
 - **决策 4/5**：硬上限 3 轮（`max_fact_check_rounds_per_chapter`）+ 软降级 `blockFactCheckUnresolved`（block 本章 + 主动消息 + failure card，交用户人工核对）。
+- **决策 6（差异化 feedback）**：第二轮起冲突数未减少时 feedback 附带 `progress_hint`（"上次报 X 个，这次 Y 个--冲突未减少，请换一种改法"），让模型换思路而非重复。冲突数减少（模型在收敛）时不提示。
 
 未实现（后续优化）：
 
-- **决策 6（差异化 feedback）**：第二轮起喂回"上次怎么改的 + 仍冲突"。当前 feedback 只传 conflicts，不传上次改法。模型改不对时靠硬上限 3 轮兜底，而非"换思路"。
-- **进展检测**：决策 4 的"冲突数减少才继续"未实现。当前纯靠硬上限 3 轮，不区分"模型在收敛"还是"停滞"。
+- **进展检测**：决策 4 的"冲突数减少才继续、停滞提前终止"未做成硬逻辑。当前靠硬上限 3 轮 + 决策 6 的 progress_hint 软引导，但不强制提前终止。后续可加：冲突数停滞 N 轮 -> 提前软降级。
 
 ## 已知限制
 
