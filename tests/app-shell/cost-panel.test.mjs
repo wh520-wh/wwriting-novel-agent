@@ -668,4 +668,54 @@ describe('renderCostPanel — DeepSeek 低命中率诊断提示（D2）', () => 
     assert.match(text, HINT_COPY);
     assert.equal(/检测到规则\/风格\/技能配置有改动/.test(text), false);
   });
+
+  // MiMo 适配（2026-07-31）：isCacheDiscountedMode 统一判据 —— MiMo 官方端点与 Token Plan 端点同享 D2 提示
+
+  const MIMO_MODEL = { base_url: "https://api.xiaomimimo.com/v1", model_name: "mimo-v2.5-pro" };
+
+  it('34. MiMo 官方 API 端点 + 写作路径 ≥10 次 + 累计命中率 <30% 时显示提示（文案与 DeepSeek 相同）', () => {
+    const root = renderCostPanel({
+      cost: lowHitCost(),
+      summary: makeSummary(),
+      events: [],
+      modelConfig: MIMO_MODEL
+    });
+    const text = flat(root);
+    assert.match(text, HINT_COPY);
+    assert.equal(findByClass(root, 'cost-hint').length, 1, '应恰好一行提示');
+  });
+
+  it('35. MiMo Token Plan 订阅端点同样显示提示', () => {
+    const root = renderCostPanel({
+      cost: lowHitCost(),
+      summary: makeSummary(),
+      events: [],
+      modelConfig: { base_url: "https://token-plan-cn.xiaomimimo.com/v1", model_name: "mimo-v2.5" }
+    });
+    assert.match(flat(root), HINT_COPY);
+  });
+
+  it('36. MiMo 模式 + stableChangedReason 归因照常工作', () => {
+    const root = renderCostPanel({
+      cost: lowHitCost(),
+      summary: makeSummary(),
+      events: [],
+      modelConfig: MIMO_MODEL,
+      cacheSummary: { stableChangedReason: "stable_hash_changed" }
+    });
+    const text = flat(root);
+    assert.match(text, HINT_COPY);
+    assert.match(text, /（检测到规则\/风格\/技能配置有改动）/);
+  });
+
+  it('37. MiMo 模型走第三方端点（非官方）不显示提示（保守口径与 DeepSeek 一致）', () => {
+    const root = renderCostPanel({
+      cost: lowHitCost(),
+      summary: makeSummary(),
+      events: [],
+      modelConfig: { base_url: "https://api.novita.ai/openai", model_name: "xiaomimimo/mimo-v2.5" }
+    });
+    const text = flat(root);
+    assert.equal(/缓存命中率偏低/.test(text), false);
+  });
 });

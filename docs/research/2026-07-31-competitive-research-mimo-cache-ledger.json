@@ -1,0 +1,156 @@
+{
+  "research_date": "2026-07-31",
+  "evidence": [
+    {
+      "id": "E1",
+      "competitor": "小米 MiMo 开放平台",
+      "claim": "官方落地页定价区分缓存命中/未命中：MiMo-V2.5 命中 ¥0.02 / 未命中 ¥1 / 输出 ¥2；MiMo-V2.5-Pro 命中 ¥0.025 / 未命中 ¥3 / 输出 ¥6；MiMo-V2.5-Pro-UltraSpeed 命中 ¥0.075 / 未命中 ¥9 / 输出 ¥18（application-only beta）。页面同时宣告 MiMo-V2 系列已于 2026-06-30 下线，并存在 Token Plan 订阅计费体系。",
+      "source_url": "https://mimo.mi.com/docs/zh-CN/",
+      "source_type": "official_pricing",
+      "accessed_on": "2026-07-31",
+      "evidence_locator": "落地页定价表（MiMo-V2.5 / MiMo-V2.5-Pro / MiMo-V2.5-Pro-UltraSpeed 三行）与下线通告",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E2",
+      "competitor": "小米 MiMo V2.5 Pro（规格）",
+      "claim": "Vercel AI Gateway 模型页列出 MiMo V2.5 Pro 支持 implicit prompt caching（隐式提示缓存）、reasoning、工具调用、文件输入、视觉，上下文窗口 1.1M token，MIT 许可，架构为 MoE + 混合注意力（滑动窗口 + 全注意力）。",
+      "source_url": "https://vercel.com/ai-gateway/models/mimo-v2.5-pro/about",
+      "source_type": "marketplace_listing",
+      "accessed_on": "2026-07-31",
+      "evidence_locator": "About 页 capabilities 段（Implicit Caching / Reasoning / Context Window）",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E3",
+      "competitor": "小米 MiMo 开放平台",
+      "claim": "OpenClaw 开源项目的小米 provider 文档描述 MiMo API 为 OpenAI-compatible chat completions，按量付费 base_url 为 https://api.xiaomimimo.com/v1，Token Plan 端点另有 token-plan-{cn,sgp,ams}.xiaomimimo.com/v1。",
+      "source_url": "https://docs.openclaw.ai/providers/xiaomi",
+      "source_type": "source_code",
+      "accessed_on": "2026-07-31",
+      "evidence_locator": "Providers/Xiaomi 页（base_url 与协议兼容说明）",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E4",
+      "competitor": "MiMo-V2.5（OpenAI 兼容端点）",
+      "claim": "Novita AI 的 MiMo-V2.5 文档与博客展示 OpenAI SDK 示例：base_url=https://api.novita.ai/openai，model=xiaomimimo/mimo-v2.5，显式传 temperature=0.7 与 max_tokens，说明 MiMo 系列在 OpenAI 兼容端点上支持 temperature 采样参数。",
+      "source_url": "https://blogs.novita.ai/xiaomi-mimo-v2-5-pro-api/",
+      "source_type": "marketplace_listing",
+      "accessed_on": "2026-07-31",
+      "evidence_locator": "博客 OpenAI SDK 代码示例（temperature 参数）",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E5",
+      "competitor": "小米 MiMo 团队",
+      "claim": "inference（基于媒体对小米团队发布内容的转述，非官方文档原文）：据媒体报道，MiMo-V2.5 基于 SWA 混合注意力将 KV Cache 体积降至约 1/7，GCache 分布式缓存部署于 GPU 内置 SSD、TTL 延长至小时甚至天级，服务器侧实测缓存命中率平均 93%、高频长期用户超 95%。本 claim 是推断：媒体转述内容尚未在官方 API reference 中得到逐字确认。",
+      "source_url": "https://eu.36kr.com/zh/p/3826881598919303",
+      "source_type": "official_presentation",
+      "accessed_on": "2026-07-31",
+      "evidence_locator": "36kr 报道（小米 MiMo API 永久降价，引述罗福莉团队技术披露）",
+      "classification": "inference",
+      "confidence": "medium"
+    },
+    {
+      "id": "E6",
+      "competitor": "DeepSeek 开放平台",
+      "claim": "官方文档确认上下文硬盘缓存对所有用户默认自动开启（隐式），按完整前缀单元匹配（A+B 与 A+C 不命中），TTL 为尽力而为（不再使用后几小时到几天自动清空），usage 返回 prompt_cache_hit_tokens 与 prompt_cache_miss_tokens 两个计费字段，并建议固定 prompt 放在最前、避免前缀内插入变动内容。",
+      "source_url": "https://api-docs.deepseek.com/zh-cn/guides/kv_cache",
+      "source_type": "official_docs",
+      "accessed_on": "2026-07-31",
+      "evidence_locator": "上下文硬盘缓存（Context Caching on Disk）章节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E7",
+      "competitor": "Anthropic Claude",
+      "claim": "官方文档确认 Claude prompt caching 为显式机制（cache_control: ephemeral 断点，仅支持 ephemeral 类型），默认 TTL 5 分钟（命中免费刷新），可选 1 小时（写入 2× 价格）；写入按 1.25×/2× 基础输入价、读取按 0.1× 计费；建议把断点放在静止内容末尾、用 max_tokens=0 预热缓存、保持缓存段跨调用逐字节一致。",
+      "source_url": "https://platform.claude.com/docs/en/docs/build-with-claude/prompt-caching",
+      "source_type": "official_docs",
+      "accessed_on": "2026-07-31",
+      "evidence_locator": "Prompt caching 文档（cache_control / TTL / 定价 multiplier / best practices）",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E8",
+      "competitor": "OpenAI",
+      "claim": "官方文档确认 prompt caching 默认隐式自动启用（prompt ≥1024 token 自动触发），GPT-5.6+ 支持显式模式（prompt_cache_options.mode=explicit，TTL 唯一支持 30m）；旧模型缓存前缀在 5-10 分钟不活动后失效（extended 档最长 24 小时）；缓存命中按折扣价（约 50%）计费；usage 在 input_tokens_details / prompt_tokens_details 下返回 cached_tokens。",
+      "source_url": "https://developers.openai.com/api/docs/guides/prompt-caching",
+      "source_type": "official_docs",
+      "accessed_on": "2026-07-31",
+      "evidence_locator": "Prompt caching 指南（自动启用 / TTL / cached_tokens 字段）",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E9",
+      "competitor": "阿里云百炼（通义）",
+      "claim": "官方帮助文档描述上下文缓存两种模式：显式（cache_control: ephemeral，TTL 5 分钟、命中后重置）与隐式（自动模式、无法关闭、命中率不确定）；命中缓存按输入单价约 20% 计费；缓存基于请求公共前缀。本 claim 经由搜索引擎摘要获取，未逐页抓取（confidence 相应降级）。",
+      "source_url": "https://help.aliyun.com/zh/model-studio/context-cache",
+      "source_type": "official_docs",
+      "accessed_on": "2026-07-31",
+      "evidence_locator": "上下文缓存（Context Cache）文档页",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E10",
+      "competitor": "WWriting（本地基线）",
+      "claim": "WWriting 源码已发货：OFFICIAL_PRICING 收录 mimo-v2.5 与 mimo-v2.5-pro（1.00/2.00/0.02 与 3.00/6.00/0.025 元/M）并自动补缺；isDeepSeekMode 仅识别 api.deepseek.com 前缀的模型（src/shared/deepseek-detection.mjs）；isReasonerModel 名单仅含 DeepSeek thinking 系（provider-adapters.mjs:478-485），MiMo 不在名单；L3 辅助调用确定性缓存对非 reasoner 模型注入 temperature=0（model-client.mjs #prepareAuxiliaryCache）；usage-report 已有 prompt_cache_hit_tokens 与 cached_tokens 双字段回退。",
+      "source_url": "https://github.com/wh520-wh/wwriting-novel-agent",
+      "source_type": "source_code",
+      "accessed_on": "2026-07-31",
+      "evidence_locator": "src/core/model-pricing.mjs; src/shared/deepseek-detection.mjs; src/core/provider-adapters.mjs; src/core/model-client.mjs; src/core/usage-report.mjs",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E11",
+      "competitor": "WWriting（本地测量）",
+      "claim": "2026-07-31 前缀稳定性测量记录（仓库内 debug/measure-prompt-prefix.json，gitignored，本地可复核）：DeepSeek 口径下跨章视角稳定前缀份额约 10.2%（首章 45.1%），章内（排除每章首调）不变前缀约 66.6%。",
+      "source_url": "https://github.com/wh520-wh/wwriting-novel-agent",
+      "source_type": "source_code",
+      "accessed_on": "2026-07-31",
+      "evidence_locator": "debug/measure-prompt-prefix.json（gitignored 本地文件）",
+      "classification": "fact",
+      "confidence": "high"
+    }
+  ],
+  "recommendations": [
+    {
+      "id": "R1",
+      "priority": "P0",
+      "statement": "把 DeepSeek 专属的缓存感知推广为「缓存折扣平台」层：新增 isCacheDiscountedPlatform 判据（base_url 含 api.xiaomimimo.com 或 token-plan-*.xiaomimimo.com 且模型前缀 mimo-），D2 低命中率提示对 MiMo 用户生效——MiMo 价差 120 倍，是最大受益人群。",
+      "evidence_ids": ["E1", "E10"],
+      "acceptance_signal": "单元测试覆盖三态（官方 API / Token Plan / 非 MiMo）；verify:app-shell 断言 mimo base_url 下成本面板出现低命中率提示；DeepSeek 既有行为不回归。"
+    },
+    {
+      "id": "R2",
+      "priority": "P0",
+      "statement": "OFFICIAL_PRICING 补入 mimo-v2.5-pro-ultraspeed（0.075/9/18 元/M，application-only beta 型号），复用既有 fillOfficialPricing 自动补缺逻辑，零新机制。",
+      "evidence_ids": ["E1"],
+      "acceptance_signal": "tests/model-pricing.test.mjs 新增用例断言三字段自动补全；未收录模型仍不补填（负向用例不回归）。"
+    },
+    {
+      "id": "R3",
+      "priority": "P1",
+      "statement": "用真实 MiMo key 做在线验证：同前缀两次调用，确认 usage 返回 prompt_cache_hit_tokens（DeepSeek 风格）还是 cached_tokens（OpenAI 风格），据此确认 L2 累计命中率在 MiMo 上显示正确；字段缺失时回退 ×2% 折算而非造假数字。",
+      "evidence_ids": ["E6", "E8", "E10"],
+      "acceptance_signal": "在线验证用例断言第二次调用 usage 含缓存命中字段且成本面板命中率非零；或记录为「MiMo 无命中率可观测」并标注回退路径。"
+    },
+    {
+      "id": "R4",
+      "priority": "P2",
+      "statement": "侦察 Anthropic 类显式缓存适配（cache_control 断点注入 + max_tokens=0 预热），评估写作循环（章节内多次调用、跨章间隔长）与 5 分钟 TTL 的匹配性；本轮只产出设计草案不实现。",
+      "evidence_ids": ["E7"],
+      "acceptance_signal": "调研存档至 docs/research/，含断点放置策略与预热时机草案；若 TTL 实测不匹配则记录为不做项。"
+    }
+  ]
+}

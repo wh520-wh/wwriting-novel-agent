@@ -12,14 +12,15 @@
 // across re-renders (drawer body re-mounts on every tab switch).
 
 import { formatNumber } from "../utils.js";
-import { isDeepSeekMode } from "../../shared/deepseek-detection.mjs";
+import { isCacheDiscountedMode } from "../../shared/deepseek-detection.mjs";
 
 const SPARKLINE_LENGTH = 20;
 const SPARK_GAP = 1; // px
 const SPARK_WIDTH = 4; // px
 const SPARK_HEIGHT = 16; // px
 
-// D2：DeepSeek 专属层的低命中率诊断提示。一行小字、不弹窗、仅 DeepSeek 模式显示。
+// D2：缓存折扣平台（DeepSeek / MiMo）的低命中率诊断提示。一行小字、不弹窗、
+// 仅缓存折扣平台模式显示（MiMo 价差 120 倍，与 DeepSeek 同享提示）。
 // 文案为计划原文（验收核对一字不差）：同时覆盖冷缓存（改配置）与 TTL 掉命中（间隔过久），不做错误归因。
 const LOW_HIT_RATE_HINT = "缓存命中率偏低，可能近期改动了规则/风格/技能配置，或章节间间隔过久";
 // stableChangedReason == "stable_hash_changed"（cache_report.json 既有字段，D4 确认可归因）时
@@ -142,11 +143,11 @@ function cumulativeHitRateText(cost) {
   return `${((hitTokens / base) * 100).toFixed(1)}%`;
 }
 
-// D2：DeepSeek 模式 + 写作路径调用数 ≥10 + 累计命中率 <30% 时返回一行小字提示，否则 null。
+// D2：缓存折扣平台模式（DeepSeek / MiMo）+ 写作路径调用数 ≥10 + 累计命中率 <30% 时返回一行小字提示，否则 null。
 // 统计口径沿用 L2：hitRateInputTokens / cacheHitTokens 已排除 chat（cost-tracker 按 stage==="chat" 剔除）；
 // 写作路径调用数 = 总调用 - chat 调用（byStage.chat.calls），同样排除 chat。
 function lowHitRateHint({ cost = {}, modelConfig = null, cacheSummary = null } = {}) {
-  if (!isDeepSeekMode(modelConfig)) return null;
+  if (!isCacheDiscountedMode(modelConfig)) return null;
   const base = Number(cost.hitRateInputTokens ?? 0);
   if (!(base > 0)) return null; // 无命中率数据不提示（与累计命中率「暂无数据」占位一致，不把 0 当真实命中率）
   if (Number(cost.cacheHitTokens ?? 0) / base >= LOW_HIT_RATE_THRESHOLD) return null;
