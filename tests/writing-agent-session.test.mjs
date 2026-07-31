@@ -157,6 +157,26 @@ test("session: emitEvent 抛错后 start 可复用（状态回 idle）", async (
   assert.equal(session.status, "idle");
 });
 
+test("session: agent_loop_commit_only 事件写盘失败时 start reject 而非未处理拒绝崩溃", async () => {
+  const { session } = makeSession({
+    respond: (ctx, n) => (n <= 3
+      ? { type: "tool_call", tool: "read_thing", input: {} }
+      : { type: "tool_call", tool: "commit_thing", input: {} }),
+    executeTool: async (output) => ({
+      ok: true,
+      readOnly: output.tool === "read_thing",
+      committed: output.tool === "commit_thing",
+    }),
+    sessionOptions: {
+      emitEvent: async (type) => {
+        if (type === "agent_loop_commit_only") throw new Error("disk full");
+      },
+    },
+  });
+  await assert.rejects(session.start(), /disk full/);
+  assert.equal(session.status, "idle");
+});
+
 test("session: 领域 stopRun 主动终止（连续无效输出上限）", async () => {
   const { session } = makeSession({
     respond: () => ({ type: "status_message", message: "嗯" }),
