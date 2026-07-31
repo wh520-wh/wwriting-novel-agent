@@ -110,6 +110,42 @@ test("settings runtime rejects non-http base URLs", () => {
   );
 });
 
+test("normalizeSettingsPatch 为 DeepSeek 模型自动补填缓存命中价", () => {
+  const normalized = normalizeSettingsPatch({
+    active_model: {
+      provider: "openai-compatible",
+      model_name: "deepseek-v4-flash",
+      base_url: "https://api.deepseek.com",
+      pricing: { input_per_million: 0.14, output_per_million: 0.28 }
+    }
+  });
+  assert.equal(normalized.active_model.pricing.cache_hit_per_million, 0.0028);
+});
+
+test("normalizeSettingsPatch 用户已填缓存命中价不被覆盖", () => {
+  const normalized = normalizeSettingsPatch({
+    active_model: {
+      provider: "openai-compatible",
+      model_name: "deepseek-v4-pro",
+      base_url: "https://api.deepseek.com",
+      pricing: { input_per_million: 0.435, output_per_million: 0.87, cache_hit_per_million: 0.05 }
+    }
+  });
+  assert.equal(normalized.active_model.pricing.cache_hit_per_million, 0.05);
+});
+
+test("normalizeSettingsPatch 非 DeepSeek 模型不补填缓存命中价", () => {
+  const normalized = normalizeSettingsPatch({
+    active_model: {
+      provider: "openai-compatible",
+      model_name: "mimo-v2.5-pro",
+      base_url: "https://api.xiaomimimo.com/v1",
+      pricing: { input_per_million: 3, output_per_million: 6 }
+    }
+  });
+  assert.equal(normalized.active_model.pricing.cache_hit_per_million, undefined);
+});
+
 test("tool_permissions 接受 auto_edit/yolo，拒绝 dangerous，保留未知字段丢弃", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-settings-autoedit-"));
   const { projectRoot } = await createProject(root, { slug: "autoedit" });
