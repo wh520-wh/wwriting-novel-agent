@@ -445,13 +445,16 @@ function buildChapterToolRequest(usesChapterTool, modelConfig = {}, allowedTools
   };
 }
 
-// 2026-07-31 结论记录（D3，DeepSeek thinking-mode 防护）：
+// 2026-07-31 结论记录（D3，DeepSeek thinking-mode 防护；F1 修订）：
 // 当前架构不存在 CodeWhale 报告描述的「DeepSeek 推理模型拒绝强制 tool_choice 返回 400」场景，无需新增 sanitize。
 // 依据：
 // 1. requiresAutoToolChoice（isReasonerModel）已对 DeepSeek 推理模型强制 tool_choice="auto"（见 chapterToolChoice），
 //    auto 模式 DeepSeek 仍会返回 tool_calls，不会因强制指定 tool 名而 400；
 // 2. extractText / extractStreamToken 均有 reasoning_content 兜底（content 为空时取 reasoning_content），
 //    不会因推理模型 content 为空而丢正文或触发错误路径。
+// 3. F1 修订：deepseek-v4-flash 默认 non-thinking（官方 2026-07 文档），与 deepseek-chat 同等走
+//    单工具 force 分支（chapterToolChoice 默认返回指定工具名）；仅 v4-pro / deepseek-reasoner 需 auto。
+//    若未来暴露 thinking 参数开关，v4-flash 切 thinking 时需重新评估本条（含 reasoning_content 回传）。
 // 若未来接入不经由此适配器的模型直连通道，需重新评估该结论。
 function chapterToolChoice(modelConfig = {}, hasMultipleTools = false) {
   // 多工具模式：模型需要自主选择 read/edit/update/append，必须用 "auto"
@@ -471,16 +474,25 @@ function chapterToolChoice(modelConfig = {}, hasMultipleTools = false) {
 }
 
 // DeepSeek thinking（reasoner 系）模型名单判据：base_url 指向官方 API 且模型名命中
-// deepseek-v4*/deepseek-reasoner/reasoner。两处复用同一判据：
+// deepseek-v4-pro/deepseek-reasoner/reasoner。两处复用同一判据：
 // 1. requiresAutoToolChoice —— thinking 模型拒绝强制 tool_choice，但 auto 模式仍会返回 tool_calls；
 // 2. L3 确定性响应缓存 —— reasoner 系模型不支持 temperature 参数（L3 决策：不注入 temperature=0，
 //    因缓存确定性建立在显式 temperature=0 上，reasoner 系模型本轮不走缓存）。
+//
+// 2026-07 官方文档修正（F1）：deepseek-v4-flash 支持 non-thinking/thinking/thinking_max 三模式、
+// 默认 non-thinking，non-thinking 下 temperature（0-2）生效；deepseek-reasoner 是 v4-flash thinking
+// 模式的旧别名（2026-07-24 已退役）。故 v4-flash（默认非思考）不再判为 reasoner——L3 缓存对其
+// 生效、tool_choice 走 deepseek-chat 同等普通路径。deepseek-v4-pro 与旧别名名单保留。
+// 注意：WWriting 不透传 thinking 参数，v4-flash 恒走默认 non-thinking；若未来暴露思考模式开关，
+// 需改为按「是否启用 thinking」参数判定（thinking 模式下 v4-flash 应重新判为 reasoner）。
 export function isReasonerModel(modelConfig = {}) {
   const baseUrl = String(modelConfig.base_url ?? "").toLowerCase();
   const modelName = String(modelConfig.model_name ?? "").toLowerCase();
   return (
     baseUrl.includes("api.deepseek.com") &&
-    (modelName.includes("deepseek-v4") || modelName.includes("deepseek-reasoner") || modelName.includes("reasoner"))
+    ((modelName.includes("deepseek-v4") && !modelName.includes("-flash")) ||
+      modelName.includes("deepseek-reasoner") ||
+      modelName.includes("reasoner"))
   );
 }
 

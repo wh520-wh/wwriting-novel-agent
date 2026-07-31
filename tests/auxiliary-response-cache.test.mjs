@@ -172,15 +172,26 @@ test("temperature=0 注入：非 reasoner 模型显式注入 0；用户配置不
   assert.equal(state2.seenConfigs[0].temperature, 0.7, "用户配置的 temperature 不应被覆盖");
   assert.equal(state2.calls, 2, "temperature≠0 不满足确定性前提，不缓存");
 
-  // reasoner 系模型（deepseek-v4-flash，现有 isReasonerModel 判据命中）：不注入、不缓存
+  // v4-flash（F1：默认 non-thinking，官方 2026-07 文档）：注入 temperature=0 且可缓存
   const state3 = countingAdapter();
   const client3 = makeClient(state3.adapter, {
     model: { model_name: "deepseek-v4-flash", base_url: "https://api.deepseek.com" }
   });
   await client3.generate(auxRequest());
   await client3.generate(auxRequest());
-  assert.equal(state3.seenConfigs[0].temperature, undefined, "reasoner 模型不应注入 temperature（不支持该参数）");
-  assert.equal(state3.calls, 2, "reasoner 模型不满足显式 temperature=0，不缓存");
+  assert.equal(state3.seenConfigs[0].temperature, 0, "v4-flash 默认 non-thinking，应注入 temperature=0");
+  assert.equal(state3.calls, 1, "v4-flash 注入 temperature=0 后应可缓存");
+});
+
+test("reasoner 系模型（v4-pro / deepseek-reasoner）不注入 temperature 也不缓存", async () => {
+  for (const model_name of ["deepseek-v4-pro", "deepseek-reasoner"]) {
+    const state = countingAdapter();
+    const client = makeClient(state.adapter, { model: { model_name, base_url: "https://api.deepseek.com" } });
+    await client.generate(auxRequest());
+    await client.generate(auxRequest());
+    assert.equal(state.seenConfigs[0].temperature, undefined, `${model_name} 不应注入 temperature（thinking 模式不支持该参数）`);
+    assert.equal(state.calls, 2, `${model_name} 不满足显式 temperature=0，不缓存`);
+  }
 });
 
 test("容量上限：LRU 逐出最久未使用条目", async () => {
