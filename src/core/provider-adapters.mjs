@@ -462,14 +462,22 @@ function chapterToolChoice(modelConfig = {}, hasMultipleTools = false) {
   };
 }
 
-function requiresAutoToolChoice(modelConfig = {}) {
+// DeepSeek thinking（reasoner 系）模型名单判据：base_url 指向官方 API 且模型名命中
+// deepseek-v4*/deepseek-reasoner/reasoner。两处复用同一判据：
+// 1. requiresAutoToolChoice —— thinking 模型拒绝强制 tool_choice，但 auto 模式仍会返回 tool_calls；
+// 2. L3 确定性响应缓存 —— reasoner 系模型不支持 temperature 参数（L3 决策：不注入 temperature=0，
+//    因缓存确定性建立在显式 temperature=0 上，reasoner 系模型本轮不走缓存）。
+export function isReasonerModel(modelConfig = {}) {
   const baseUrl = String(modelConfig.base_url ?? "").toLowerCase();
   const modelName = String(modelConfig.model_name ?? "").toLowerCase();
-  // DeepSeek thinking models reject forced tool_choice, but still return tool_calls with auto.
   return (
     baseUrl.includes("api.deepseek.com") &&
     (modelName.includes("deepseek-v4") || modelName.includes("deepseek-reasoner") || modelName.includes("reasoner"))
   );
+}
+
+function requiresAutoToolChoice(modelConfig = {}) {
+  return isReasonerModel(modelConfig);
 }
 
 function extractText(raw) {

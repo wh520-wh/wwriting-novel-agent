@@ -1,8 +1,21 @@
 import { CostTracker } from "./cost-tracker.mjs";
 import { resolveRuntimeConfig } from "./config-runtime.mjs";
 import { normalizeUsageReport } from "./usage-report.mjs";
-import { ProviderTransportError } from "./provider-adapters.mjs";
+import { sha256 } from "./fs-utils.mjs";
+import { isReasonerModel, ProviderTransportError } from "./provider-adapters.mjs";
 import { isCancellationError } from "./cancellation.mjs";
+
+// L3 收窄版确定性响应缓存（仅辅助调用重试去重）：
+// - 缓存条件：metadata 带 memoryExtract/factCheck 标记（辅助调用）+ 无工具请求 + 非流式
+//   + 显式 temperature=0（reasoner 系模型不支持 temperature，按 isReasonerModel 区分，
+//   不注入也就不缓存——确定性前提不成立）。
+// - 重试豁免：metadata.attempt > 0 时既不查也不写缓存（计划语义：重试预期新调用）。
+// - 命中语义：不调 adapter、不 record 费用，usage 归零返回（同 CodeWhale llm_response_cache）。
+// - 容量：进程内 Map LRU，默认 256 条。
+const DEFAULT_RESPONSE_CACHE_SIZE = 256;
+// 缓存 key 里 metadata 的稳定子集（attempt 每次流程级重试都不同，必须排除；
+// onActivity 是函数不可序列化，同样排除）。
+const AUXILIARY_METADATA_KEY_FIELDS = ["memoryExtract", "factCheck", "chapterNo"];
 
 export class ModelClient {
   constructor({
@@ -16,7 +29,8 @@ export class ModelClient {
     timeoutMs = 120000,
     totalDeadlineMs = 300000,
     onRetry = null,
-    onActivity = null
+    onActivity = null,
+    responseCacheSize = DEFAULT_RESPONSE_CACHE_SIZE
   } = {}) {
     this.adapters = adapters;
     this.activeModel = activeModel;
@@ -29,6 +43,8 @@ export class ModelClient {
     this.totalDeadlineMs = totalDeadlineMs;
     this.onRetry = onRetry;
     this.onActivity = onActivity;
+    this.responseCache = new Map();
+    this.responseCacheSize = responseCacheSize;
   }
 
   resolveModelConfig(project = {}, stage = "drafting") {
@@ -63,10 +79,37 @@ export class ModelClient {
       throw new DOMException("The operation was aborted.", "AbortError");
     }
 
-    const modelConfig = this.resolveModelConfig(project, stage);
-    const adapter = this.adapters[modelConfig.provider];
+    const resolvedModelConfig = this.resolveModelConfig(project, stage);
+    const adapter = this.adapters[resolvedModelConfig.provider];
     if (!adapter) {
-      throw new Error(`No provider adapter configured for ${modelConfig.provider}`);
+      throw new Error(`No provider adapter configured for ${resolvedModelConfig.provider}`);
+    }
+
+    // L3 辅助调用确定性响应缓存：
+    // 1) 资格满足时对非 reasoner 模型显式注入 temperature=0（缓存确定性前提）；
+    // 2) 命中直接返回缓存响应（usage 归零、不调 adapter、不 record 费用）；
+    // 3) metadata.attempt > 0 的流程级重试不查缓存。
+    const { modelConfig, cacheKey } = this.#prepareAuxiliaryCache({
+      modelConfig: resolvedModelConfig, stage, prompt, messages, metadata
+    });
+    if (cacheKey) {
+      const cached = this.#responseCacheGet(cacheKey);
+      if (cached) {
+        const usageReport = normalizeUsageReport({
+          provider: modelConfig.provider,
+          model: modelConfig.model_name,
+          usage: {},
+          rawUsage: {},
+          cost: null
+        });
+        return {
+          text: cached.text,
+          raw: cached.raw,
+          usageReport,
+          costSummary: this.costTracker.getSummary(),
+          modelConfig
+        };
+      }
     }
 
     // Stage-aware per-attempt timeout: stage override > constructor default
@@ -119,6 +162,14 @@ export class ModelClient {
 
         clearTimeout(timer);
         timeoutController.signal.removeEventListener("abort", onTimeout);
+
+        // L3：成功的确定性辅助请求写入缓存（仅成功响应可缓存——失败的响应会污染缓存）
+        if (cacheKey) {
+          this.#responseCachePut(cacheKey, {
+            text: response.text ?? "",
+            raw: response.raw ?? response
+          });
+        }
 
         const usageReport = normalizeUsageReport({
           provider: modelConfig.provider,
@@ -219,6 +270,76 @@ export class ModelClient {
     }
   }
 
+  /**
+   * L3 辅助调用缓存准备：返回 { modelConfig, cacheKey }。
+   * - modelConfig：资格满足且非 reasoner 模型时注入 temperature=0（用户已显式配置则尊重用户值）；
+   * - cacheKey：仅当「辅助标记 + 无工具 + 非流式 + 有效 temperature=0 + attempt=0」时非空。
+   *   reasoner 系模型（isReasonerModel）不注入 temperature（不支持该参数），
+   *   因缓存确定性建立在显式 temperature=0 上，reasoner 模型本轮不走缓存。
+   */
+  #prepareAuxiliaryCache({ modelConfig, stage, prompt, messages, metadata }) {
+    const isAuxiliary = metadata?.memoryExtract === true || metadata?.factCheck === true;
+    const isFlowRetry = Number(metadata?.attempt) > 0;
+    const hasTools = Boolean(metadata?.toolRequest);
+    const streaming = modelConfig?.stream === true;
+    const eligible = isAuxiliary && !isFlowRetry && !hasTools && !streaming;
+    if (!eligible) {
+      return { modelConfig, cacheKey: null };
+    }
+    const effectiveConfig = modelConfig.temperature === undefined && !isReasonerModel(modelConfig)
+      ? { ...modelConfig, temperature: 0 }
+      : modelConfig;
+    const cacheKey = effectiveConfig.temperature === 0
+      ? this.#responseCacheKey({ modelConfig: effectiveConfig, stage, prompt, messages, metadata })
+      : null;
+    return { modelConfig: effectiveConfig, cacheKey };
+  }
+
+  #responseCacheKey({ modelConfig, stage, prompt, messages, metadata }) {
+    const stableMetadata = {};
+    for (const field of AUXILIARY_METADATA_KEY_FIELDS) {
+      if (metadata?.[field] !== undefined) {
+        stableMetadata[field] = metadata[field];
+      }
+    }
+    const payload = {
+      provider: modelConfig.provider,
+      model: modelConfig.model_name,
+      stage,
+      temperature: modelConfig.temperature,
+      top_p: modelConfig.top_p,
+      max_tokens: modelConfig.max_output_tokens ?? modelConfig.max_tokens,
+      extra_body: modelConfig.extra_body ?? null,
+      prompt,
+      messages,
+      metadata: stableMetadata
+    };
+    return sha256(stableStringify(payload));
+  }
+
+  #responseCacheGet(key) {
+    const entry = this.responseCache.get(key);
+    if (entry === undefined) {
+      return null;
+    }
+    // LRU 刷新：删除后重放，让最近命中的条目保持较新位置
+    this.responseCache.delete(key);
+    this.responseCache.set(key, entry);
+    return entry;
+  }
+
+  #responseCachePut(key, entry) {
+    if (this.responseCache.has(key)) {
+      this.responseCache.delete(key);
+    }
+    if (this.responseCache.size >= this.responseCacheSize) {
+      // Map 迭代序 = 插入序，第一个条目即最久未使用
+      const oldestKey = this.responseCache.keys().next().value;
+      this.responseCache.delete(oldestKey);
+    }
+    this.responseCache.set(key, entry);
+  }
+
   #isRetryable(error) {
     return (
       error.code === "provider_transport_error" &&
@@ -246,6 +367,35 @@ export class ModelClient {
     }
     await abortableDelay(delay, signal);
   }
+}
+
+// 确定性序列化：对象键按字典序排序，保证同一请求在不同构造顺序下 key 一致。
+// 函数/undefined 显式抛错——静默跳过会产出错误缓存键（命中错响应），宁可炸在明处。
+function stableStringify(value, seen = new Set()) {
+  if (value === null) return "null";
+  const type = typeof value;
+  if (type === "string") return JSON.stringify(value);
+  if (type === "number") return Number.isFinite(value) ? String(value) : "null";
+  if (type === "boolean") return String(value);
+  if (type === "undefined" || type === "function") {
+    throw new TypeError(`stableStringify 不支持的值: ${type}`);
+  }
+  if (Array.isArray(value)) {
+    if (seen.has(value)) throw new TypeError("stableStringify 不支持循环引用");
+    seen.add(value);
+    const parts = value.map((item) => stableStringify(item, seen));
+    seen.delete(value);
+    return `[${parts.join(",")}]`;
+  }
+  if (type === "object") {
+    if (seen.has(value)) throw new TypeError("stableStringify 不支持循环引用");
+    seen.add(value);
+    const keys = Object.keys(value).filter((key) => value[key] !== undefined).sort();
+    const parts = keys.map((key) => `${JSON.stringify(key)}:${stableStringify(value[key], seen)}`);
+    seen.delete(value);
+    return `{${parts.join(",")}}`;
+  }
+  throw new TypeError(`stableStringify 不支持的类型: ${type}`);
 }
 
 function abortableDelay(delay, signal) {
