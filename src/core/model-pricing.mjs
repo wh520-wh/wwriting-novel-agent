@@ -1,3 +1,23 @@
+// DeepSeek 官方缓存命中价（每百万 token，官方定价页 2026-07-31 抓取 E10）。
+// 未列出的 deepseek-* 模型不补填，交给 cost-tracker 的输入价 × 2% 默认折算兜底。
+export const DEEPSEEK_CACHE_HIT_PRICES = {
+  "deepseek-v4-flash": 0.0028,
+  "deepseek-v4-pro": 0.003625
+};
+
+export function isDeepSeekModel(modelName, baseUrl) {
+  return String(modelName ?? "").startsWith("deepseek-") || String(baseUrl ?? "").includes("api.deepseek.com");
+}
+
+// 检测到 DeepSeek 且用户未填 cache_hit_per_million 时按官方价补填；用户已填的值绝不覆盖。
+export function fillDeepSeekCacheHitPricing(modelName, baseUrl, pricing) {
+  if (!pricing || pricing.cache_hit_per_million != null) return pricing;
+  if (!isDeepSeekModel(modelName, baseUrl)) return pricing;
+  const official = DEEPSEEK_CACHE_HIT_PRICES[modelName];
+  if (official == null) return pricing;
+  return { ...pricing, cache_hit_per_million: official };
+}
+
 function positiveNumber(value) {
   const n = Number(value);
   return Number.isFinite(n) && n > 0 ? n : null;
