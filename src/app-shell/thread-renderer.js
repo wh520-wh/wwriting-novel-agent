@@ -707,11 +707,10 @@ export function createThreadRenderer(ctx) {
       return;
     }
     block.say.hidden = false;
-    block.say.textContent = block.chapter
-      ? `第 ${block.chapter} 章已写入本地文件并通过校验。点上方文件卡可阅读正文。`
-      : (event.message ?? "本轮任务已完成。");
+    // 保存结果由文件卡（"第 N 章已写入本地文件" + "打开阅读"）承载，这里只播报本轮任务结果。
+    block.say.textContent = event.message ?? "本轮任务已完成。";
     ctx.announce(block.say.textContent);
-    block.body.append(buildQuickRow(block.chapter ? ["续写下一章", "查看章节正文"] : ["续写下一章"]));
+    block.body.append(buildQuickRow(["续写下一章"]));
   }
 
   function insertByTs(container, node, ts) {
