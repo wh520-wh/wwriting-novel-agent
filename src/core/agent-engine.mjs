@@ -1096,7 +1096,7 @@ const DEFAULT_FORBIDDEN_PATTERNS = [
   "神性"
 ];
 
-async function compileChapterPrompt(projectRoot, project, state, request, runtime) {
+export async function compileChapterPrompt(projectRoot, project, state, request, runtime) {
   const configuredVersion = project.prompt_template_versions?.drafting ?? "v1";
   const templateVersion = configuredVersion.startsWith("drafting.") ? configuredVersion : `drafting.${configuredVersion}`;
   const compiler = new PromptCompiler({ templateVersion });

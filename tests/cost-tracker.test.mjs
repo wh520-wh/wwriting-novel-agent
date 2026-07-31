@@ -180,6 +180,8 @@ test("CostTracker 兼容缺新字段的旧 cost.json", () => {
   assert.equal(s.unpricedCalls, 0);
   assert.deepEqual(s.byModel, {});
   assert.deepEqual(s.byChapter, {});
+  assert.equal(s.cacheHitTokens, 0);
+  assert.equal(s.hitRateInputTokens, 0);
 });
 
 test("CostTracker.recordRetry 累计 retries", () => {
@@ -250,15 +252,69 @@ test("CostTracker 只有 cachedTokens（无 cacheHitTokens 字段，MiMo 风格�
   assert.equal(s.cacheSavedCost, 1.19);
 });
 
-test("CostTracker 未配置 cache_hit_per_million 时 cacheSavedCost 保持 0", () => {
+test("CostTracker 未配置 cache_hit_per_million 时按输入价×2% 默认折算缓存节省", () => {
   const tracker = new CostTracker({
     pricing: { m: { input_per_million: 2, output_per_million: 8 } }
   });
   tracker.record({
     stage: "s",
-    usageReport: { provider: "p", model: "m", inputTokens: 1_000_000, outputTokens: 0, totalTokens: 1_000_000, cachedTokens: 500_000 }
+    usageReport: { provider: "p", model: "m", inputTokens: 1_000_000, outputTokens: 0, totalTokens: 1_000_000, cachedTokens: 500_000, cacheHitTokens: 500_000 }
   });
-  assert.equal(tracker.getSummary().cacheSavedCost, 0);
+  // 命中价按 2 × 0.02 = 0.04 折算，节省 = 50 万 × (2 − 0.04)/M = 0.98
+  assert.equal(tracker.getSummary().cacheSavedCost, 0.98);
+});
+
+test("CostTracker 累计 cacheHitTokens 与命中率分母（token 加权）", () => {
+  const tracker = new CostTracker();
+  tracker.record({
+    stage: "drafting",
+    usageReport: { provider: "p", model: "m", inputTokens: 1_000_000, outputTokens: 0, totalTokens: 1_000_000, cacheHitTokens: 0, cacheHitRate: 0, estimatedCost: 0 }
+  });
+  tracker.record({
+    stage: "drafting",
+    usageReport: { provider: "p", model: "m", inputTokens: 100_000, outputTokens: 0, totalTokens: 100_000, cacheHitTokens: 100_000, cacheHitRate: 1, estimatedCost: 0 }
+  });
+  const s = tracker.getSummary();
+  // token 加权累计命中率 = 10 万 / 110 万 ≈ 9.09%，而非 per-call 平均 50%
+  assert.equal(s.cacheHitTokens, 100_000);
+  assert.equal(s.hitRateInputTokens, 1_100_000);
+  assert.equal(Number((s.cacheHitTokens / s.hitRateInputTokens).toFixed(4)), 0.0909);
+  assert.equal(s.recentHitRates.length, 2);
+});
+
+test("CostTracker 只有 cachedTokens（OpenAI 风格）时 cacheHitTokens 也累加", () => {
+  const tracker = new CostTracker();
+  tracker.record({
+    stage: "drafting",
+    usageReport: { provider: "p", model: "m", inputTokens: 1_000_000, outputTokens: 0, totalTokens: 1_000_000, cachedTokens: 400_000, estimatedCost: 0 }
+  });
+  const s = tracker.getSummary();
+  assert.equal(s.cacheHitTokens, 400_000);
+  assert.equal(s.hitRateInputTokens, 1_000_000);
+});
+
+test("chat 调用不计入命中率统计但仍正常计费", () => {
+  const tracker = new CostTracker();
+  tracker.record({
+    stage: "chat",
+    usageReport: { provider: "p", model: "m", inputTokens: 50_000, outputTokens: 10_000, totalTokens: 60_000, cacheHitTokens: 50_000, cacheHitRate: 1, estimatedCost: 0.5 }
+  });
+  const s = tracker.getSummary();
+  assert.equal(s.cacheHitTokens, 0);
+  assert.equal(s.hitRateInputTokens, 0);
+  assert.deepEqual(s.recentHitRates, []);
+  // 计费路径不受影响
+  assert.equal(s.calls, 1);
+  assert.equal(s.inputTokens, 50_000);
+  assert.equal(s.totalTokens, 60_000);
+  assert.equal(s.estimatedCost, 0.5);
+});
+
+test("CostTracker 构造时保留 cost.json 里已有的 cacheHitTokens（跨会话持久）", () => {
+  const tracker = new CostTracker({ summary: { calls: 3, cacheHitTokens: 700_000, hitRateInputTokens: 1_000_000 } });
+  const s = tracker.getSummary();
+  assert.equal(s.cacheHitTokens, 700_000);
+  assert.equal(s.hitRateInputTokens, 1_000_000);
 });
 
 // §3.5: Failed call tracking

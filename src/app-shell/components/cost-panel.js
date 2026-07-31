@@ -12,11 +12,21 @@
 // across re-renders (drawer body re-mounts on every tab switch).
 
 import { formatNumber } from "../utils.js";
+import { isDeepSeekMode } from "../../shared/deepseek-detection.mjs";
 
 const SPARKLINE_LENGTH = 20;
 const SPARK_GAP = 1; // px
 const SPARK_WIDTH = 4; // px
 const SPARK_HEIGHT = 16; // px
+
+// D2：DeepSeek 专属层的低命中率诊断提示。一行小字、不弹窗、仅 DeepSeek 模式显示。
+// 文案为计划原文（验收核对一字不差）：同时覆盖冷缓存（改配置）与 TTL 掉命中（间隔过久），不做错误归因。
+const LOW_HIT_RATE_HINT = "缓存命中率偏低，可能近期改动了规则/风格/技能配置，或章节间间隔过久";
+// stableChangedReason == "stable_hash_changed"（cache_report.json 既有字段，D4 确认可归因）时
+// 在原文后附具体归因，仍保持一行小字。
+const LOW_HIT_RATE_HINT_STABLE_CHANGED = `${LOW_HIT_RATE_HINT}（检测到规则/风格/技能配置有改动）`;
+const LOW_HIT_RATE_THRESHOLD = 0.3; // 累计命中率 <30% 触发
+const MIN_WRITING_PATH_CALLS = 10; // 写作路径调用数门限，避免冷启动/样本过少误报
 
 function el(tag, props = {}, ...children) {
   const node = document.createElement(tag);
@@ -123,18 +133,55 @@ function buildOverview(cost, summary) {
   );
 }
 
-function buildCacheHealth(cost) {
+// 累计命中率 = cacheHitTokens / hitRateInputTokens（token 加权，不含 chat）。
+// 无任何写入调用数据时显示占位，避免把 0 当成真实命中率误报。
+function cumulativeHitRateText(cost) {
+  const base = Number(cost?.hitRateInputTokens ?? 0);
+  if (!(base > 0)) return "暂无数据";
+  const hitTokens = Number(cost?.cacheHitTokens ?? 0);
+  return `${((hitTokens / base) * 100).toFixed(1)}%`;
+}
+
+// D2：DeepSeek 模式 + 写作路径调用数 ≥10 + 累计命中率 <30% 时返回一行小字提示，否则 null。
+// 统计口径沿用 L2：hitRateInputTokens / cacheHitTokens 已排除 chat（cost-tracker 按 stage==="chat" 剔除）；
+// 写作路径调用数 = 总调用 - chat 调用（byStage.chat.calls），同样排除 chat。
+function lowHitRateHint({ cost = {}, modelConfig = null, cacheSummary = null } = {}) {
+  if (!isDeepSeekMode(modelConfig)) return null;
+  const base = Number(cost.hitRateInputTokens ?? 0);
+  if (!(base > 0)) return null; // 无命中率数据不提示（与累计命中率「暂无数据」占位一致，不把 0 当真实命中率）
+  if (Number(cost.cacheHitTokens ?? 0) / base >= LOW_HIT_RATE_THRESHOLD) return null;
+  const writingPathCalls = Number(cost.calls ?? 0) - Number(cost.byStage?.chat?.calls ?? 0);
+  if (writingPathCalls < MIN_WRITING_PATH_CALLS) return null;
+  // cache_report.json 的 stableChangedReason == "stable_hash_changed"：最近一次调用稳定区已变更，
+  // 归因到「改配置导致的打断」（D4 既有字段，成本为零）。
+  if (cacheSummary?.stableChangedReason === "stable_hash_changed") {
+    return LOW_HIT_RATE_HINT_STABLE_CHANGED;
+  }
+  return LOW_HIT_RATE_HINT;
+}
+
+function buildCacheHealth(cost, opts = {}) {
   const rates = cost?.recentHitRates ?? [];
   const saved = Number(cost?.cacheSavedCost ?? 0);
   const costAvailable = cost?.costAvailable ?? false;
   const mean = meanHitRate(rates);
   const meanPct = (mean * 100).toFixed(1);
   const children = [
+    row("累计命中率", cumulativeHitRateText(cost), "mono"),
     row(`最近 ${SPARKLINE_LENGTH} 次命中率`, `${meanPct}%`, "mono"),
     buildSparkline(rates)
   ];
   if (costAvailable && saved > 0) {
     children.splice(1, 0, row("缓存节省", `${saved.toFixed(2)} 元`, "mono"));
+  }
+  const hint = lowHitRateHint({ cost, modelConfig: opts.modelConfig, cacheSummary: opts.cacheSummary });
+  if (hint) {
+    children.push(el("div", {
+      className: "cost-hint",
+      dataset: { costHint: "low-hit-rate" },
+      attrs: { role: "status" },
+      text: hint
+    }));
   }
   return section("缓存健康", ...children);
 }
@@ -216,9 +263,11 @@ function resolveLastEvent(events, lastEvent) {
  * @param {object|null} args.summary - the dashboard summary object (for costAvailable, modelCalls fallback)
  * @param {Array} [args.events=[]] - the events stream (oldest-first); the last chapter_cost_warning is used for the badge
  * @param {object} [args.lastEvent] - optional override for the warning event
+ * @param {object|null} [args.modelConfig] - the active_model config ({base_url, model_name}); D2 判定 DeepSeek 模式用
+ * @param {object|null} [args.cacheSummary] - dashboard cacheSummary; stableChangedReason 驱动 D2 归因
  * @returns {HTMLElement} the container (for chaining)
  */
-export function renderCostPanel({ cost = null, summary = null, events = [], lastEvent = null } = {}) {
+export function renderCostPanel({ cost = null, summary = null, events = [], lastEvent = null, modelConfig = null, cacheSummary = null } = {}) {
   const container = el("div", { className: "cost-panel-root" });
 
   const safeCost = cost ?? {};
@@ -229,7 +278,7 @@ export function renderCostPanel({ cost = null, summary = null, events = [], last
   if (banner) container.appendChild(banner);
 
   container.appendChild(buildOverview(safeCost, safeSummary));
-  container.appendChild(buildCacheHealth(safeCost));
+  container.appendChild(buildCacheHealth(safeCost, { modelConfig, cacheSummary }));
   container.appendChild(buildChapterCost(safeCost, safeSummary, warning));
 
   return container;

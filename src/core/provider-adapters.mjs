@@ -445,6 +445,14 @@ function buildChapterToolRequest(usesChapterTool, modelConfig = {}, allowedTools
   };
 }
 
+// 2026-07-31 结论记录（D3，DeepSeek thinking-mode 防护）：
+// 当前架构不存在 CodeWhale 报告描述的「DeepSeek 推理模型拒绝强制 tool_choice 返回 400」场景，无需新增 sanitize。
+// 依据：
+// 1. requiresAutoToolChoice（isReasonerModel）已对 DeepSeek 推理模型强制 tool_choice="auto"（见 chapterToolChoice），
+//    auto 模式 DeepSeek 仍会返回 tool_calls，不会因强制指定 tool 名而 400；
+// 2. extractText / extractStreamToken 均有 reasoning_content 兜底（content 为空时取 reasoning_content），
+//    不会因推理模型 content 为空而丢正文或触发错误路径。
+// 若未来接入不经由此适配器的模型直连通道，需重新评估该结论。
 function chapterToolChoice(modelConfig = {}, hasMultipleTools = false) {
   // 多工具模式：模型需要自主选择 read/edit/update/append，必须用 "auto"
   if (hasMultipleTools) {
@@ -462,14 +470,22 @@ function chapterToolChoice(modelConfig = {}, hasMultipleTools = false) {
   };
 }
 
-function requiresAutoToolChoice(modelConfig = {}) {
+// DeepSeek thinking（reasoner 系）模型名单判据：base_url 指向官方 API 且模型名命中
+// deepseek-v4*/deepseek-reasoner/reasoner。两处复用同一判据：
+// 1. requiresAutoToolChoice —— thinking 模型拒绝强制 tool_choice，但 auto 模式仍会返回 tool_calls；
+// 2. L3 确定性响应缓存 —— reasoner 系模型不支持 temperature 参数（L3 决策：不注入 temperature=0，
+//    因缓存确定性建立在显式 temperature=0 上，reasoner 系模型本轮不走缓存）。
+export function isReasonerModel(modelConfig = {}) {
   const baseUrl = String(modelConfig.base_url ?? "").toLowerCase();
   const modelName = String(modelConfig.model_name ?? "").toLowerCase();
-  // DeepSeek thinking models reject forced tool_choice, but still return tool_calls with auto.
   return (
     baseUrl.includes("api.deepseek.com") &&
     (modelName.includes("deepseek-v4") || modelName.includes("deepseek-reasoner") || modelName.includes("reasoner"))
   );
+}
+
+function requiresAutoToolChoice(modelConfig = {}) {
+  return isReasonerModel(modelConfig);
 }
 
 function extractText(raw) {
