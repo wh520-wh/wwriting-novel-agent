@@ -49,6 +49,36 @@ test("provider-error 卡的 switch-model 文案引导去设置", () => {
   assert.equal(switchAction.label, "去设置切换模型");
 });
 
+test("agent_loop_exhausted 不再标 tool-rejected，归为 loop-exhausted 且改提示词重试置前", () => {
+  const card = deriveFailureCard({
+    id: "f4",
+    ts: "2026-06-10T00:00:00Z",
+    type: "project_blocked",
+    message: "Output too short",
+    chapter_no: 2,
+    data: { tool: null, code: "agent_loop_exhausted" }
+  }, { current_chapter_no: 2 });
+  assert.equal(card.kind, "loop-exhausted");
+  assert.equal(card.title, "多次尝试未成功");
+  assert.ok(card.body.includes("多轮"), `body 应说明多轮未提交: ${card.body}`);
+  // 已自动重试 N 次仍失败 -> 改提示词重试置前，简单重试降到第二
+  assert.equal(card.actions[0].command, "retry-with-prompt");
+  assert.equal(card.actions[1].command, "retry-segment");
+});
+
+test("model_output_invalid 也归为 loop-exhausted（不再标 tool-rejected 误导）", () => {
+  const card = deriveFailureCard({
+    id: "f5",
+    ts: "2026-06-10T00:00:00Z",
+    type: "project_blocked",
+    message: "permission denied",
+    chapter_no: 3,
+    data: { tool: "edit_chapter", code: "model_output_invalid" }
+  }, { current_chapter_no: 3 });
+  assert.equal(card.kind, "loop-exhausted");
+  assert.ok(card.body.includes("多次"), `body 应说明多次输出无效: ${card.body}`);
+});
+
 test("cost_budget_exhausted 事件产出可恢复的成本预算卡", () => {
   const card = deriveFailureCard({
     id: "e1", type: "project_blocked", message: "cost_budget_exhausted",

@@ -11,9 +11,12 @@ function classifyKind(event) {
   if (type === 'quality_gate_failed' && message === 'skill quality gate failed') return 'review-failed';
   if (type === 'tool_call_rejected') return 'tool-rejected';
   if (type === 'project_blocked') {
-    if (message === 'model_output_invalid' || message === 'unsupported_tool') return 'tool-rejected';
-    if (message === 'model_call_budget_exhausted' || message === 'revision_budget_exhausted'
-      || message === 'cost_budget_exhausted' || message === 'token_budget_exhausted') return 'budget-exhausted';
+    // 优先用 data.code（failWritingAgentLoop 传 reason 作 code）；blockProject 自身的卡片无 code 时回退到 message。
+    const code = data.code ?? message;
+    if (code === 'model_output_invalid' || code === 'agent_loop_exhausted') return 'loop-exhausted';
+    if (code === 'unsupported_tool') return 'tool-rejected';
+    if (code === 'model_call_budget_exhausted' || code === 'revision_budget_exhausted'
+      || code === 'cost_budget_exhausted' || code === 'token_budget_exhausted') return 'budget-exhausted';
     return 'provider-error';
   }
   return 'unknown';
@@ -38,6 +41,13 @@ function actionsForKind(kind, event) {
       return [
         { label: '让它重试', command: 'retry-segment', args: {} },
         { label: '改提示词后重试', command: 'retry-with-prompt', args: { prompt: '' } },
+        { label: '停在这里我手动处理', command: 'pause-here', args: {} }
+      ];
+    case 'loop-exhausted':
+      // 已自动重试 N 次仍失败 -> 把"换提示词重试"置前，简单重试大概率仍会失败。
+      return [
+        { label: '改提示词后重试', command: 'retry-with-prompt', args: { prompt: '' } },
+        { label: '让它再试一次', command: 'retry-segment', args: {} },
         { label: '停在这里我手动处理', command: 'pause-here', args: {} }
       ];
     case 'budget-exhausted': {
@@ -85,6 +95,7 @@ function titleForKind(kind) {
   return {
     'words-short': '字数不足',
     'tool-rejected': '工具调用被拒',
+    'loop-exhausted': '多次尝试未成功',
     'budget-exhausted': '预算已用尽',
     'provider-error': '模型服务出错',
     'review-failed': '审稿未通过',
@@ -100,6 +111,13 @@ function bodyForKind(kind, event, state) {
       return `第 ${ch} 章本段写了 ${data.actual_words ?? '?'} 字，低于 ${data.min_words ?? data.expected_words ?? '?'} 字门槛。智能体没有继续，等你决定怎么处理。`;
     case 'tool-rejected':
       return `第 ${ch} 章的工具调用 ${data.tool ?? ''} 被拒。智能体停在 ${state.current_stage ?? '未知'} 阶段。`;
+    case 'loop-exhausted': {
+      const code = data.code ?? event.message;
+      if (code === 'agent_loop_exhausted') {
+        return `第 ${ch} 章智能体在多轮内未提交正文，可能陷在查资料循环。已自动重试仍未成功，建议换思路或调整提示词。`;
+      }
+      return `第 ${ch} 章智能体连续多次输出无效（太短/工具不被允许/校验失败）。已自动重试仍未成功，建议换思路或调整提示词。`;
+    }
     case 'budget-exhausted': {
       if (event.message === 'cost_budget_exhausted') {
         return `第 ${ch} 章已花约 ¥${data.estimated_cost ?? '?'}，达到你设置的 ¥${data.max_cost ?? '?'} 上限。智能体停下，等你决定。`;
