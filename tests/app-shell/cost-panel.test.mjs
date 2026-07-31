@@ -516,3 +516,156 @@ describe('renderCostPanel — defensive defaults', () => {
     assert.match(text, /未配置价格/);
   });
 });
+
+describe('renderCostPanel — DeepSeek 低命中率诊断提示（D2）', () => {
+
+  const DEEPSEEK_MODEL = { base_url: "https://api.deepseek.com", model_name: "deepseek-chat" };
+  const HINT_COPY = /缓存命中率偏低，可能近期改动了规则\/风格\/技能配置，或章节间间隔过久/;
+  // 低命中率样本：写作路径 12 次调用、累计命中率 20%
+  const lowHitCost = () => makeCost({
+    calls: 12,
+    byStage: { chat: { calls: 0 } },
+    cacheHitTokens: 200000,
+    hitRateInputTokens: 1000000
+  });
+
+  it('25. DeepSeek 模式 + 写作路径 ≥10 次 + 累计命中率 <30% 时显示一行小字（文案按计划原文）', () => {
+    const root = renderCostPanel({
+      cost: lowHitCost(),
+      summary: makeSummary(),
+      events: [],
+      modelConfig: DEEPSEEK_MODEL
+    });
+    const text = flat(root);
+    assert.match(text, HINT_COPY);
+    const hints = findByClass(root, 'cost-hint');
+    assert.equal(hints.length, 1, '应恰好一行提示');
+    // 提示在「缓存健康」section 内
+    const sections = findAll(root, (n) => n.dataset?.costSection === '缓存健康');
+    assert.equal(sections.length, 1);
+    assert.match(flat(sections[0]), HINT_COPY);
+  });
+
+  it('26. 写作路径调用数 <10（门限内）不显示提示', () => {
+    const root = renderCostPanel({
+      cost: makeCost({
+        calls: 9,
+        byStage: { chat: { calls: 0 } },
+        cacheHitTokens: 200000,
+        hitRateInputTokens: 1000000
+      }),
+      summary: makeSummary(),
+      events: [],
+      modelConfig: DEEPSEEK_MODEL
+    });
+    const text = flat(root);
+    assert.equal(/缓存命中率偏低/.test(text), false, '调用数不足门限不应提示');
+  });
+
+  it('27. 累计命中率 ≥30% 不显示提示', () => {
+    const root = renderCostPanel({
+      cost: makeCost({
+        calls: 12,
+        byStage: { chat: { calls: 0 } },
+        cacheHitTokens: 400000,
+        hitRateInputTokens: 1000000
+      }),
+      summary: makeSummary(),
+      events: [],
+      modelConfig: DEEPSEEK_MODEL
+    });
+    const text = flat(root);
+    assert.equal(/缓存命中率偏低/.test(text), false, '命中率 40% 不应提示');
+  });
+
+  it('28. 非 DeepSeek 模式不显示提示（即使命中率低且调用数达标）', () => {
+    const root = renderCostPanel({
+      cost: lowHitCost(),
+      summary: makeSummary(),
+      events: [],
+      modelConfig: { base_url: "https://api.openai.com/v1", model_name: "gpt-4o" }
+    });
+    const text = flat(root);
+    assert.equal(/缓存命中率偏低/.test(text), false, '非 DeepSeek 不应提示');
+    const hints = findByClass(root, 'cost-hint');
+    assert.equal(hints.length, 0);
+  });
+
+  it('29. 未传入模型配置（旧调用方）不显示提示', () => {
+    const root = renderCostPanel({
+      cost: lowHitCost(),
+      summary: makeSummary(),
+      events: []
+    });
+    const text = flat(root);
+    assert.equal(/缓存命中率偏低/.test(text), false);
+  });
+
+  it('30. chat 调用排除：总调用含大量 chat 时写作路径调用数按 总调用 - chat 计算', () => {
+    // 总调用 39（chat 30 + 写作 9）：写作路径 9 <10，即使累计命中率低也不提示
+    const root = renderCostPanel({
+      cost: makeCost({
+        calls: 39,
+        byStage: { chat: { calls: 30 } },
+        cacheHitTokens: 200000,
+        hitRateInputTokens: 1000000
+      }),
+      summary: makeSummary(),
+      events: [],
+      modelConfig: DEEPSEEK_MODEL
+    });
+    const text = flat(root);
+    assert.equal(/缓存命中率偏低/.test(text), false, 'chat 调用不应计入写作路径门限');
+    // 反向：写作路径 12 次 + chat 若干，命中率低 → 仍提示（chat 不计入命中率分母，由 L2 口径保证）
+    const root2 = renderCostPanel({
+      cost: makeCost({
+        calls: 32,
+        byStage: { chat: { calls: 20 } },
+        cacheHitTokens: 200000,
+        hitRateInputTokens: 1000000
+      }),
+      summary: makeSummary(),
+      events: [],
+      modelConfig: DEEPSEEK_MODEL
+    });
+    assert.match(flat(root2), HINT_COPY);
+  });
+
+  it('31. 无命中率数据（hitRateInputTokens 为 0）不显示提示', () => {
+    const root = renderCostPanel({
+      cost: makeCost({ calls: 12, byStage: { chat: { calls: 0 } }, cacheHitTokens: 0, hitRateInputTokens: 0 }),
+      summary: makeSummary(),
+      events: [],
+      modelConfig: DEEPSEEK_MODEL
+    });
+    const text = flat(root);
+    assert.equal(/缓存命中率偏低/.test(text), false, '无数据不应把 0 当真实命中率误报');
+  });
+
+  it('32. stableChangedReason == "stable_hash_changed" 时附具体归因，基础文案不变', () => {
+    const root = renderCostPanel({
+      cost: lowHitCost(),
+      summary: makeSummary(),
+      events: [],
+      modelConfig: DEEPSEEK_MODEL,
+      cacheSummary: { stableChangedReason: "stable_hash_changed" }
+    });
+    const text = flat(root);
+    assert.match(text, HINT_COPY, '基础文案应保持计划原文');
+    assert.match(text, /（检测到规则\/风格\/技能配置有改动）/);
+    assert.equal(findByClass(root, 'cost-hint').length, 1, '归因仍是一行小字');
+  });
+
+  it('33. stableChangedReason 非 stable_hash_changed 时不附归因', () => {
+    const root = renderCostPanel({
+      cost: lowHitCost(),
+      summary: makeSummary(),
+      events: [],
+      modelConfig: DEEPSEEK_MODEL,
+      cacheSummary: { stableChangedReason: "first_call" }
+    });
+    const text = flat(root);
+    assert.match(text, HINT_COPY);
+    assert.equal(/检测到规则\/风格\/技能配置有改动/.test(text), false);
+  });
+});
