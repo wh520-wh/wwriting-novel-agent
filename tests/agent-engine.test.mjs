@@ -481,7 +481,7 @@ test("enabled suspense skill applies planning hook and blocks flat chapter endin
     model: new PlainThenSuspenseModel()
   });
   const planningFile = await fs.readFile(path.join(projectRoot, "drafts", "001.planning.md"), "utf8");
-  assert.ok(planningFile.includes("suspense hook"));
+  assert.ok(planningFile.includes("结尾悬念钩子"));
   const events = await readEvents(projectRoot);
   assert.ok(events.some((event) => event.type === "skill_hook_applied"));
   assert.ok(events.some((event) => event.type === "quality_gate_failed" && event.data?.failed_gates?.[0]?.skill === "suspense-chapter-end"));

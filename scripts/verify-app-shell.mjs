@@ -359,8 +359,10 @@ try {
   assert.ok(dashboard.summary.totalTokens > 0);
   assert.ok(dashboard.cost.calls >= 2);
   assert.ok(dashboard.cache.last_call.cacheKey);
-  assert.equal(dashboard.skills.items.length, 1);
-  assert.equal(dashboard.skills.items[0].enabled_in_project, true);
+  assert.ok(dashboard.skills.items.length >= 5, "built-in skill pack should list 5+ skills");
+  const suspenseSkill = dashboard.skills.items.find((skill) => skill.name === "suspense-chapter-end");
+  assert.ok(suspenseSkill, "suspense-chapter-end should be listed");
+  assert.equal(suspenseSkill.enabled_in_project, true);
   assert.equal(dashboard.sources.count, 1);
   assert.equal(dashboard.review.status, "passed");
   assert.equal(dashboard.project.title, "Dashboard Novel");

@@ -1,0 +1,149 @@
+{
+  "research_date": "2026-07-31",
+  "evidence": [
+    {
+      "id": "E1",
+      "competitor": "novel-bot (GitHub)",
+      "claim": "An LLM-powered long-form fiction writing agent; uses 'Filesystem as Memory' with SOUL.md and WORLD.md as editable Markdown files; dual memory (global + per-chapter summary); supports OpenAI-compatible models.",
+      "source_url": "https://github.com/fighterfire/novel-bot",
+      "source_type": "source_code",
+      "accessed_on": "2026-07-31",
+      "evidence_locator": "Repository description and README summary from search result",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E2",
+      "competitor": "Novel-OS (GitHub)",
+      "claim": "Multi-agent framework (Architect/Scribe/Editor/Guardian/Curator five-role pipeline) with persistent story state, a deterministic continuity engine, 13+ LLM providers, MIT license.",
+      "source_url": "https://github.com/mrigankad/Novel-OS",
+      "source_type": "source_code",
+      "accessed_on": "2026-07-31",
+      "evidence_locator": "Repository description from search result",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E3",
+      "competitor": "SAGA (GitHub)",
+      "claim": "Local-first single-user Python CLI for long-form fiction using LangGraph checkpointing and Neo4j knowledge graph; includes consistency validation and revision loops; explicitly not production-ready.",
+      "source_url": "https://github.com/Lanerra/saga",
+      "source_type": "source_code",
+      "accessed_on": "2026-07-31",
+      "evidence_locator": "Repository description from search result",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E4",
+      "competitor": "NovelClaw (GitHub)",
+      "claim": "Dynamic-memory-first collaborative framework; inspectable writing workspace with storyboards, observable runs, progress traces and editable memory banks; human-in-the-loop.",
+      "source_url": "https://github.com/iLearn-Lab/NovelClaw",
+      "source_type": "source_code",
+      "accessed_on": "2026-07-31",
+      "evidence_locator": "Repository description from search result",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E5",
+      "competitor": "Openwrite (GitHub, Chinese)",
+      "claim": "Chinese autonomous novel-writing CLI with two agents (Goethe: idea to writable assets; Dante: continuous writing/review/state settlement), transactional commit safety, single source of truth, 37-dimension review.",
+      "source_url": "https://github.com/LiPu-jpg/Openwrite",
+      "source_type": "source_code",
+      "accessed_on": "2026-07-31",
+      "evidence_locator": "Repository description from search result",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E6",
+      "competitor": "novel-architect (GitHub)",
+      "claim": "Agent skill for Chinese commercial serial web-novel workflows hardened in production including a 140-chapter novel; combines agent literary judgment with deterministic Python state guards.",
+      "source_url": "https://github.com/zhougz520/novel-architect",
+      "source_type": "source_code",
+      "accessed_on": "2026-07-31",
+      "evidence_locator": "Repository description from search result",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E7",
+      "competitor": "Sudowrite",
+      "claim": "Commercial cloud subscription fiction tool with proprietary Muse model, Story Engine (full chapters from outline) and Story Bible; subscription pricing; strict content moderation; 2026 pricing data conflicts across sources.",
+      "source_url": "https://sudowrite.com/blog/best-ai-writing-software-for-fiction-writers-2026/",
+      "source_type": "official_product",
+      "accessed_on": "2026-07-31",
+      "evidence_locator": "Official blog listing Sudowrite features; third-party reviews for pricing",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E8",
+      "competitor": "NovelCrafter",
+      "claim": "Browser-based long-form writing platform with bring-your-own-key model (300+ models via OpenRouter); Codex structured wiki for characters/locations/lore with auto-injection into prompts; subscription plus separate API costs; cloud-hosted.",
+      "source_url": "https://novelcrafter.com",
+      "source_type": "official_product",
+      "accessed_on": "2026-07-31",
+      "evidence_locator": "Official site; third-party reviews for pricing",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E9",
+      "competitor": "NovelAI",
+      "claim": "Commercial fiction platform with custom Kayra-XL model, Lorebook world rules, fully encrypted editor and privacy promise; no content filters; subscription pricing.",
+      "source_url": "https://novelai.net",
+      "source_type": "official_product",
+      "accessed_on": "2026-07-31",
+      "evidence_locator": "Official site; third-party reviews for pricing",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E10",
+      "competitor": "AI-Novel-Writing-Assistant (GitHub)",
+      "claim": "Chinese-language AI-native engine for end-to-end novel creation from inspiration to full book, beginner-oriented, agent-driven workflows with review/repair/state feedback; available as Windows desktop app.",
+      "source_url": "https://github.com/ExplosiveCoderflome/AI-Novel-Writing-Assistant",
+      "source_type": "source_code",
+      "accessed_on": "2026-07-31",
+      "evidence_locator": "Repository description from search result",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E11",
+      "competitor": "WWriting (self)",
+      "claim": "Shipped baseline: Electron desktop shell, chapter state machine (plan/draft/review/revise/finalize), real word-count gate (model self-reported counts not trusted), tool-call-only chapter delivery, checkpoint resume, local project folder persistence to Markdown/TXT, controlled web search (off by default) with untrusted snapshots, OpenAI-compatible providers (DeepSeek/MiMo presets), cost/cache reporting, skill runtime, Windows packaging.",
+      "source_url": "https://github.com/WWriting-dev/wwriting-novel-agent",
+      "source_type": "official_product",
+      "accessed_on": "2026-07-31",
+      "evidence_locator": "Project README.md, package.json, src/ structure",
+      "classification": "fact",
+      "confidence": "high"
+    }
+  ],
+  "recommendations": [
+    {
+      "id": "R1",
+      "priority": "P0",
+      "statement": "Position WWriting as 'local-first, verifiable-delivery desktop agent for long-form fiction': data lives in the user's own folder as Markdown/TXT; delivery is machine-verified (real word count, tool-call commits, checkpoints).",
+      "evidence_ids": ["E11", "E1", "E3", "E7", "E8", "E9"],
+      "acceptance_signal": "README first screen states both differentiators (local data ownership, verifiable delivery) within 5 seconds of reading; a competitor comparison table appears in the README."
+    },
+    {
+      "id": "R2",
+      "priority": "P1",
+      "statement": "Add an editable story bible (characters/settings/foreshadowing) persisted as Markdown files inside the project folder, auto-injected during drafting.",
+      "evidence_ids": ["E7", "E8", "E11"],
+      "acceptance_signal": "A user can maintain a character card in the UI and see it injected into draft prompts; after restart the card remains as an ordinary file openable in any editor."
+    },
+    {
+      "id": "R3",
+      "priority": "P2",
+      "statement": "Build a skill ecosystem: export/import skill packs (continuation, style, suspense hooks) as shareable zips on top of the existing skill runtime.",
+      "evidence_ids": ["E6", "E11"],
+      "acceptance_signal": "A skill authored by one user can be exported, imported by another user, and used without code changes."
+    }
+  ]
+}

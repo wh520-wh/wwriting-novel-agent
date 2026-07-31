@@ -67,6 +67,10 @@
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg>
               <span id="privacy-label">隐私</span>
             </button>
+            <button class="tbtn" id="theme-toggle" title="深色模式：夜间写作更护眼" aria-pressed="false">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13.5A8.5 8.5 0 0 1 10.5 4 7.5 7.5 0 1 0 20 13.5z"/></svg>
+              <span id="theme-label">夜间</span>
+            </button>
             <button class="tbtn qr-collapsed-btn" id="qr-collapsed" type="button" aria-label="快捷面板" hidden>面板</button>
           </div>
         </header>
@@ -153,7 +157,7 @@
           <div class="composer" id="composer">
             <div class="slash" id="slash-menu" role="listbox" aria-label="斜杠命令" hidden></div>
             <div class="composer-inner">
-              <textarea id="composer-input" rows="1" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="slash-menu" aria-haspopup="listbox" aria-label="给智能体下达指令" placeholder="给智能体下达指令：开始写作、续写下一章、调整方向…  输入 / 唤起命令" spellcheck="false"></textarea>
+              <textarea id="composer-input" rows="1" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="slash-menu" aria-haspopup="listbox" aria-label="给智能体下达指令" placeholder="跟我说：开始写作、写下一章、调整方向…  输入 / 唤起命令" spellcheck="false"></textarea>
               <div class="composer-bar">
                 <button class="cbar-btn" id="cbar-slash" title="斜杠命令"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 20l6-16"/></svg>命令</button>
                 <button class="cbar-btn" id="cbar-keys" title="快捷键" aria-label="快捷键速查">⌨</button>

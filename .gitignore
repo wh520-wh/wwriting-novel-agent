@@ -6,4 +6,12 @@ npm-debug.log*
 *.tmp
 .gstack/
 .claude/
+.codex/
+.agents/
+.superpowers/
+.uat_runs/
 debug/
+
+# 本地保留、不推送（用户要求）
+CLAUDE.md
+docs/superpowers/

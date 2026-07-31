@@ -44,10 +44,10 @@ function applyFold(headerEl, bodyEl, foldKey, defaultFolded) {
 const STAGE_ORDER = ["queued", "planning", "planned", "drafting", "reviewing", "needs_revision", "revising", "finalizing", "summarizing"];
 
 const STEP_GROUPS = [
-  { id: "planning", name: "规划", detail: "拆解本章 · 悬念点", stages: ["queued", "planning", "planned"] },
-  { id: "drafting", name: "写入章节", detail: "生成新章节文件", stages: ["drafting"] },
-  { id: "reviewing", name: "审稿", detail: "质量门禁 · 结尾钩子", stages: ["reviewing", "needs_revision", "revising"] },
-  { id: "finalizing", name: "定稿", detail: "checksum · 索引", stages: ["finalizing", "summarizing"] }
+  { id: "planning", name: "规划", detail: "想好走向 · 埋下钩子", stages: ["queued", "planning", "planned"] },
+  { id: "drafting", name: "写入章节", detail: "把故事写出来", stages: ["drafting"] },
+  { id: "reviewing", name: "审稿", detail: "按写作清单检查", stages: ["reviewing", "needs_revision", "revising"] },
+  { id: "finalizing", name: "定稿", detail: "归档进书稿", stages: ["finalizing", "summarizing"] }
 ];
 
 export function createThreadRenderer(ctx) {
@@ -594,7 +594,7 @@ export function createThreadRenderer(ctx) {
         status = blocked ? "blocked" : "running";
         meta = blocked ? "受阻" : "进行中";
         if (!blocked && group.id === "drafting") {
-          meta = "Writing";
+          meta = "书写中";
           metaKind = "writing";
         }
       }
