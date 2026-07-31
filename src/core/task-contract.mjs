@@ -29,7 +29,7 @@ export function compileWritingTasks(instruction, { currentChapter, targetChapter
   if (precise) {
     const chapter = Number(precise[2]);
     assertRequestedChapter(chapter, current, target);
-    return [{ instruction: text, contract: makeChapterContract(chapter) }];
+    return [{ instruction: text, contract: makeChapterContract(chapter, kindForVerb(precise[1])) }];
   }
 
   const toChapter = /^(?:写|续写|写完|一直写)到第(\d+)章$/u.exec(text);
@@ -47,7 +47,8 @@ export function compileWritingTasks(instruction, { currentChapter, targetChapter
     return chapterTasks(current, end, count[1]);
   }
 
-  return [{ instruction: text, contract: makeChapterContract(current) }];
+  // 「续写…」开头的自由指令（如「续写下一章」）也视为续写任务，其余走常规写作。
+  return [{ instruction: text, contract: makeChapterContract(current, kindForVerb(text)) }];
 }
 
 export function makeResumeContract(chapterNo) {
@@ -104,13 +105,20 @@ function assertRangeEnd(end, current, target) {
 }
 
 function chapterTasks(start, end, verb) {
+  const kind = kindForVerb(verb);
   return Array.from({ length: end - start + 1 }, (_, offset) => {
     const chapter = start + offset;
     return {
       instruction: `${verb}第${chapter}章`,
-      contract: makeChapterContract(chapter)
+      contract: makeChapterContract(chapter, kind)
     };
   });
+}
+
+function kindForVerb(verb) {
+  // 「续写」开头的指令是续写任务（resume_chapter → 任务卡显示「续写」），
+  // 其余为常规写作（write_chapter → 「写作」）。
+  return String(verb ?? "").startsWith("续写") ? "resume_chapter" : "write_chapter";
 }
 
 function preciseVerb(text) {

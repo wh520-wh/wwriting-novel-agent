@@ -301,6 +301,19 @@ test("buildTaskCard: resume_chapter 显示为续写类型", async () => {
   assert.equal(titleOf(thread, "task-resume"), "续写 · 第 3 章");
 });
 
+test("buildTaskCard: 用户发起续写（续写第2章）显示「续写 · 第 2 章」而非「写作」", async () => {
+  const task = {
+    id: "task-continue",
+    index: 6,
+    instruction: "续写第2章",
+    mode: "write",
+    status: "queued",
+    contract: { version: 1, kind: "resume_chapter", chapter_start: 2, chapter_end: 2 },
+  };
+  const thread = await renderTaskCards([task]);
+  assert.equal(titleOf(thread, "task-continue"), "续写 · 第 2 章");
+});
+
 test("buildTaskCard: 无 contract（无类型无章节）→ 后台任务", async () => {
   const task = {
     id: "task-bare",
