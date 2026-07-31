@@ -1521,11 +1521,17 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
           archived: Boolean(project.archived_at)
         });
         if (!permission.allowed) {
-          await emitLoopEvent("tool_call_rejected", {
-            code: "permission_denied", tool: output.tool, attempt: ctx.turn,
-            message: permission.message, severity: "warn",
+          // 权限拒绝也计入提交失败：连续 WRITING_AGENT_COMMIT_FAILURES 次拒绝
+          // → stopRun（model_output_invalid），不再空转到 24 轮耗尽。
+          // 事件形状与现网一致：tool_call_rejected data = { code, tool, attempt, message, severity }。
+          agentLoopFeedback = { message: `工具 ${output.tool} 被拒绝：${permission.message}` };
+          const stop = await rejectOutput("permission_denied", {
+            attempt: ctx.turn,
+            tool: output.tool,
+            message: permission.message,
+            severity: "warn",
           });
-          return { ok: false, summary: "permission_denied" };
+          return { ok: false, summary: "permission_denied", ...(stop ?? {}) };
         }
         const toolResult = await tool.run(output.input ?? {}, { projectRoot, project, server: { runJobs: new Map() } });
         commitFailures = 0;

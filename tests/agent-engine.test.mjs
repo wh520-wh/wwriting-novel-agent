@@ -1288,6 +1288,62 @@ test("writing agent loop: 连续 3 次只读后自动 commit-only，模型提交
   assert.equal(modelClient.calls, 4);
 });
 
+// 只读模式：白名单内写工具被权限拒绝也必须累计失败计数（连续拒绝达上限即终止，
+// 而非空转到 24 轮 agent_loop_exhausted），并把拒绝原因喂回给模型改方向。
+class ReadOnlyDeniedModelClient {
+  constructor() {
+    this.calls = 0;
+    this.prompts = [];
+    this.costTracker = {
+      record() {
+        return { calls: 1, inputTokens: 1, outputTokens: 1, totalTokens: 2, cachedTokens: 0, estimatedCost: 0 };
+      },
+      async writeProjectReport() {},
+    };
+  }
+  async generate({ prompt, metadata }) {
+    this.calls += 1;
+    this.prompts.push(prompt);
+    const request = metadata.toolRequest;
+    const usageReport = {
+      provider: "mock", model: "readonly-denied",
+      inputTokens: 1, outputTokens: 1, totalTokens: 2, cachedTokens: 0,
+      estimatedCost: 0, rawUsage: {},
+    };
+    const costSummary = { estimatedCost: 0 };
+    const modelConfig = { provider: "mock", model_name: "readonly-denied" };
+    // 每次都尝试调用白名单内写工具 edit_chapter；项目只读 → 权限拒绝分支。
+    return { text: "", raw: { output: { type: "tool_call", tool: "edit_chapter",
+      input: { project_id: request.project_id, chapter_no: request.chapter_no,
+        segment_no: request.segment_no, find: "旧文", replace: "新文" } } },
+      usageReport, costSummary, modelConfig };
+  }
+}
+
+test("writing agent loop: 只读模式反复调用被拒写工具，连续拒绝达上限即终止（model_output_invalid，非耗尽）", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-readonly-denied-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "project", target_chapters: 1, min_words_per_chapter: 200, target_words_per_chapter: 260,
+    tool_permissions: { read_only: true },
+  });
+  const modelClient = new ReadOnlyDeniedModelClient();
+  const result = await runProject(projectRoot, { modelClient });
+  assert.equal(result.blocked, true);
+  const state = await loadState(projectRoot);
+  assert.equal(state.project_status, "blocked");
+  assert.equal(state.blocked_reason, "model_output_invalid");
+  const events = await readEvents(projectRoot);
+  const rejected = events.filter((e) => e.type === "tool_call_rejected");
+  assert.equal(rejected.length, 8, "8 次权限拒绝应各发一条 tool_call_rejected");
+  assert.ok(rejected.every((e) => e.data?.code === "permission_denied"));
+  assert.ok(rejected.every((e) => e.data?.tool === "edit_chapter"));
+  assert.ok(events.some((e) => e.type === "project_blocked"));
+  // 反馈喂回：后续 prompt 应包含拒绝原因（只读模式文案），模型能改方向而非盲目重试。
+  assert.ok(modelClient.prompts.some((p) => p.includes("被拒绝") && p.includes("只读模式")));
+  // 连续 8 次拒绝即终止，不应空转到 24 轮耗尽。
+  assert.equal(modelClient.calls, 8);
+});
+
 test("writing agent loop: drafting 阶段模型先调 read_continuity 查设定再提交正文", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-agent-loop-"));
   const { projectRoot } = await createProject(root, {
