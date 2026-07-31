@@ -305,6 +305,7 @@ export class ModelClient {
     const payload = {
       provider: modelConfig.provider,
       model: modelConfig.model_name,
+      base_url: modelConfig.base_url,
       stage,
       temperature: modelConfig.temperature,
       top_p: modelConfig.top_p,
