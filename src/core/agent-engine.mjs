@@ -1383,8 +1383,11 @@ async function failWritingAgentLoop(projectRoot, project, state, reason, lastVal
     last_model_call: lastModelCall,
     allowed_tools: allowedTools
   }, { skipFailureCard: true });
+  // 故障卡类型用 project_blocked + data.code，让 classifyKind 按 reason 归类
+  // （agent_loop_exhausted / model_output_invalid -> loop-exhausted，
+  // 不再统一标"工具调用被拒"误导用户）。
   await appendFailureCard(projectRoot, state, {
-    type: "tool_call_rejected",
+    type: "project_blocked",
     message: lastValidation?.message ?? reason,
     data: { tool: lastModelCall?.output?.tool ?? null, code: reason }
   });
@@ -1594,6 +1597,9 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
       archived: Boolean(project.archived_at)
     });
     if (!permission.allowed) {
+      // 权限拒绝也累计失败计数 + 反馈喂回，到上限才 block（不再空转到轮数上限）。
+      commitFailures += 1;
+      lastValidation = { ok: false, code: "permission_denied", message: permission.message };
       agentLoopFeedback = {
         status: "permission_denied",
         tool: output.tool,
@@ -1605,6 +1611,10 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
         severity: "warn", message: permission.message,
         data: { tool: output.tool, reason: permission.message }
       });
+      if (commitFailures >= WRITING_AGENT_COMMIT_FAILURES) {
+        await failWritingAgentLoop(projectRoot, project, state, "model_output_invalid", lastValidation, lastModelCall, allowedTools);
+        throw new ProjectBlockedError("model_output_invalid");
+      }
       continue;
     }
 
