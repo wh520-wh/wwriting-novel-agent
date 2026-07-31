@@ -5,6 +5,7 @@ import { getCommand, listCommands } from "./command-registry.mjs";
 import "./commands/index.mjs";  // side-effect: register 5 built-in commands
 import { PERMISSION_TIERS, detectPermissionTier, getTierById } from "./permission-tiers.mjs";
 import { saveDraft, loadDraft, clearDraft } from "./composer-draft.mjs";
+import { saveDefaultTier } from "./permission-defaults.mjs";
 
 // 旁路询问命令前缀（与后端 side-question.mjs 保持一致；禁止使用 /btw）。
 const SIDE_QUESTION_PREFIXES = ["/ask", "/side", "/q"];
@@ -366,6 +367,8 @@ export function createComposer(ctx) {
         tool_permissions: tier.combo
       });
       await ctx.loadDashboard();
+      // 记住用户选择，新建项目时默认套用同一档（含 YOLO）。
+      saveDefaultTier(tier.id);
       getModePill()?.classList.add("cbar-pill--pulse");
       window.setTimeout(() => getModePill()?.classList.remove("cbar-pill--pulse"), 400);
     } catch (error) {
