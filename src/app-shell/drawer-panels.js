@@ -203,14 +203,7 @@ export function createDrawerPanels(ctx) {
       }
     }
 
-    const skillItems = data.skills?.items ?? [];
-    const enabledCount = skillItems.filter((s) => s.enabled_in_project).length;
-    const skills = dpanel("技能", `${enabledCount} 启用`);
-    if (skillItems.length === 0) {
-      skills.body.append(drawerEmpty("未发现技能。"));
-    } else {
-      for (const skill of skillItems) skills.body.append(buildSkillRow(skill));
-    }
+    const skills = buildSkillsPanel(data);
 
     const sources = data.sources?.latest ?? [];
     const research = dpanel("资料来源", formatNumber(data.sources?.count ?? 0));
@@ -251,14 +244,7 @@ export function createDrawerPanels(ctx) {
   }
 
   function renderSkillsPanel(data) {
-    const skillItems = data.skills?.items ?? [];
-    const enabledCount = skillItems.filter((s) => s.enabled_in_project).length;
-    const skills = dpanel("技能", `${enabledCount} 启用`);
-    if (skillItems.length === 0) {
-      skills.body.append(drawerEmpty("未发现技能。"));
-    } else {
-      for (const skill of skillItems) skills.body.append(buildSkillRow(skill));
-    }
+    const skills = buildSkillsPanel(data);
     ctx.refs.drawerBody.replaceChildren(skills.panel);
   }
 
@@ -384,12 +370,13 @@ export function createDrawerPanels(ctx) {
   function buildSkillRow(skill) {
     const row = document.createElement("div");
     row.className = "evt";
-    const et = document.createElement("span");
-    et.className = "et";
-    et.textContent = skill.name;
-    const em = document.createElement("span");
-    em.className = "em";
-    em.textContent = `${translateSkillType(skill.type)} · 优先级 ${skill.priority}`;
+    const desc = document.createElement("span");
+    desc.className = "et";
+    desc.textContent = skill.description ?? skill.name;
+    desc.title = skill.description ?? skill.name;
+    const meta = document.createElement("span");
+    meta.className = "em";
+    meta.textContent = `${translateSkillType(skill.type)} · ${skill.name}`;
     const action = document.createElement("button");
     action.className = "small-button";
     action.type = "button";
@@ -398,15 +385,64 @@ export function createDrawerPanels(ctx) {
       action.disabled = true;
       try {
         await postJson(skill.enabled_in_project ? "/api/skills/disable" : "/api/skills/enable", { name: skill.name });
-        ctx.showToast(`技能已${skill.enabled_in_project ? "禁用" : "启用"}：${skill.name}`, "success");
+        ctx.showToast(`技能已${skill.enabled_in_project ? "禁用" : "启用"}：${skill.description ?? skill.name}`, "success");
         await ctx.loadDashboard();
       } catch (error) {
         ctx.showActionError(error);
         action.disabled = false;
       }
     });
-    row.append(et, em, action);
+    row.append(desc, meta, action);
     return row;
+  }
+
+  function buildSkillsPanel(data) {
+    const skillItems = data.skills?.items ?? [];
+    const enabledCount = skillItems.filter((s) => s.enabled_in_project).length;
+    const skills = dpanel("技能", `${enabledCount} 启用`);
+
+    const intro = document.createElement("div");
+    intro.className = "skill-intro";
+    intro.textContent = "写作技能包：开启后，写作时自动注入规则，审稿时按清单检查质量。";
+
+    const pendingSkills = skillItems.filter((s) => !s.enabled_in_project);
+    const enableAllBtn = document.createElement("button");
+    enableAllBtn.type = "button";
+    enableAllBtn.className = "small-button promote";
+    enableAllBtn.textContent = "全部启用";
+    enableAllBtn.disabled = pendingSkills.length === 0;
+    enableAllBtn.addEventListener("click", async () => {
+      enableAllBtn.disabled = true;
+      let ok = 0;
+      let failed = 0;
+      for (const skill of pendingSkills) {
+        try {
+          await postJson("/api/skills/enable", { name: skill.name });
+          ok += 1;
+        } catch (error) {
+          failed += 1;
+          console.error("enable skill failed:", skill.name, error);
+        }
+      }
+      if (failed > 0) {
+        ctx.showToast(`技能启用：成功 ${ok} 个，失败 ${failed} 个`, "error");
+      } else {
+        ctx.showToast(`已启用 ${ok} 个技能，写作时会自动生效`, "success");
+      }
+      await ctx.loadDashboard();
+    });
+
+    const toolbar = document.createElement("div");
+    toolbar.className = "skill-toolbar";
+    toolbar.append(intro, enableAllBtn);
+    skills.body.append(toolbar);
+
+    if (skillItems.length === 0) {
+      skills.body.append(drawerEmpty("未发现技能。"));
+    } else {
+      for (const skill of skillItems) skills.body.append(buildSkillRow(skill));
+    }
+    return skills;
   }
 
   return { renderDrawerBody };

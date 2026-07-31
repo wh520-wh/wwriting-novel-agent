@@ -50,9 +50,14 @@ test("loadDashboardData summarizes real project files", async () => {
   assert.ok(data.cost.calls >= 2);
   assert.ok(data.cache.last_call.cacheKey);
   assert.equal(data.config.effective.tool_permissions.network_allowed, true);
-  assert.equal(data.skills.items[0].name, "suspense-chapter-end");
-  assert.equal(data.skills.items[0].enabled_in_project, true);
-  assert.ok(data.skills.items[0].hooks.some((hook) => hook.stage === "planning"));
+  const suspenseSkill = data.skills.items.find((skill) => skill.name === "suspense-chapter-end");
+  assert.ok(suspenseSkill, "built-in suspense skill should be listed");
+  assert.equal(suspenseSkill.enabled_in_project, true);
+  assert.ok(suspenseSkill.hooks.some((hook) => hook.stage === "planning"));
+  // 内置技能包扩展后，老项目不会自动启用新技能
+  const aiVoiceSkill = data.skills.items.find((skill) => skill.name === "avoid-ai-voice");
+  assert.ok(aiVoiceSkill, "built-in ai-voice skill should be listed");
+  assert.equal(aiVoiceSkill.enabled_in_project, false);
   assert.equal(data.sources.count, 1);
   assert.equal(data.sources.latest[0].untrusted, true);
   assert.equal(data.review.status, "passed");

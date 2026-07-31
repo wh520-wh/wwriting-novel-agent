@@ -40,6 +40,8 @@ const refs = {
   topbarProgressBar: document.querySelector("#topbar-progress-bar"),
   privacyToggle: document.querySelector("#privacy-toggle"),
   privacyLabel: document.querySelector("#privacy-label"),
+  themeToggle: document.querySelector("#theme-toggle"),
+  themeLabel: document.querySelector("#theme-label"),
   threadWrap: document.querySelector("#thread-wrap"),
   thread: document.querySelector("#thread"),
   composer: document.querySelector("#composer"),
@@ -860,7 +862,7 @@ function renderDashboard(data) {
     previousActivity = null;
     previousBadgeSummary = null;
     refs.title.textContent = "开始创作";
-    refs.topbarSub.textContent = "新建或打开一部小说后，这里会显示模型与进度。";
+    refs.topbarSub.textContent = "新建或打开一部小说，开始你的创作。";
     setStatus("idle");
     ensureRefreshLoop(false);
     threadRenderer.renderEmptyThread();
@@ -890,15 +892,17 @@ function renderDashboard(data) {
   const project = data.project;
   const modelProfile = data.model_profile ?? {};
   refs.title.textContent = project.title ?? "未命名小说";
-  const callsText = `${formatNumber(summary.modelCalls)}/${summary.maxModelCalls ?? "∞"} 调用`;
   const modelLabel = modelProfile.is_mock ? "模型未配置 · 请在设置里选一个" : (modelProfile.display ?? "模型未配置");
-  refs.topbarSub.textContent = `${modelLabel} · ${summary.completedChapters}/${summary.targetChapters} 章 · ${callsText}`;
+  const progressCopy = `已写 ${summary.completedChapters}/${summary.targetChapters} 章`;
+  refs.topbarSub.textContent = modelProfile.is_mock
+    ? `${modelLabel} · ${progressCopy}`
+    : `${progressCopy} · ${modelLabel}`;
 
   // 归档态 UI
   const isArchived = Boolean(project.archived_at);
   refs.composerInput.placeholder = isArchived
     ? "项目已归档（只读）。对话查询可用；解除归档后才能修改。"
-    : "给智能体下达指令：开始写作、续写下一章、调整方向…  输入 / 唤起命令";
+    : "跟我说：开始写作、写下一章、调整方向…  输入 / 唤起命令";
 
   const truth = computeAgentTruth(data);
   renderTruthIndicator(truth);
@@ -1435,6 +1439,38 @@ function isEditableTarget(target) {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable === true;
 }
 
+function initThemeMode() {
+  let stored = null;
+  try {
+    stored = window.localStorage.getItem("ww:theme");
+  } catch {
+    stored = null;
+  }
+  // 未手动选过时跟随系统偏好
+  const dark = stored === "dark" || (stored !== "light" && window.matchMedia?.("(prefers-color-scheme: dark)").matches);
+  applyThemeState(dark);
+  refs.themeToggle?.addEventListener("click", () => {
+    const next = document.documentElement.dataset.theme !== "dark";
+    setThemeMode(next);
+  });
+}
+
+function setThemeMode(dark) {
+  applyThemeState(dark);
+  try {
+    window.localStorage.setItem("ww:theme", dark ? "dark" : "light");
+  } catch {
+    // localStorage 不可用时忽略持久化。
+  }
+}
+
+function applyThemeState(dark) {
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  refs.themeToggle?.setAttribute("aria-pressed", dark ? "true" : "false");
+  refs.themeToggle?.classList.toggle("active", dark);
+  if (refs.themeLabel) refs.themeLabel.textContent = dark ? "日间" : "夜间";
+}
+
 function initPrivacyMode() {
   let stored = "off";
   try {
@@ -1508,6 +1544,7 @@ function announce(msg) {
 
 // 模块体执行完毕（所有 const/let 已离开 TDZ）后再启动；防止首屏渲染触达后置声明导致静默 ReferenceError。
 renderRailNav();
+initThemeMode();
 initPrivacyMode();
 autoGrowComposer();
 updateSubmitState();

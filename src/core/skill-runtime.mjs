@@ -126,14 +126,14 @@ export const BUILTIN_SKILLS = {
     enabled: true,
     priority: 50,
     scope: "chapter",
-    description: "Every chapter should end with a suspense hook.",
+    description: "每章结尾都要留下悬念钩子：震惊性话语、推翻认知的新事实或突然逼近的危险。",
     hooks: [
       {
         stage: "planning",
         action: "append_prompt",
         content: [
-          "This chapter plan must include an ending suspense hook.",
-          "Prefer one of these hook types: a shocking line, a new fact that overturns prior assumptions, or a sudden urgent danger."
+          "本章计划必须包含一个结尾悬念钩子。",
+          "优先使用以下类型：一句令人震惊的话、一个推翻此前认知的新事实、或一个突然逼近的危险。"
         ].join("\n")
       },
       {
@@ -143,8 +143,123 @@ export const BUILTIN_SKILLS = {
         prompt: "Check whether the final 500 visible characters contain a meaningful suspense hook."
       }
     ]
+  },
+
+  "chapter-opening-hook": {
+    name: "chapter-opening-hook",
+    version: "1.0.0",
+    type: "flow-control",
+    enabled: true,
+    priority: 40,
+    scope: "chapter",
+    description: "每章开头必须用正在发生的事抓人：动作、冲突或悬念开场，不写天气和环境铺垫。",
+    hooks: [
+      {
+        stage: "planning",
+        action: "append_prompt",
+        content: [
+          "本章开头前两句话必须进入一个正在发生的事件（人物行动、冲突、悬念或意外）。",
+          "禁止以天气、环境描写或背景说明开场。"
+        ].join("\n")
+      },
+      {
+        stage: "reviewing",
+        action: "check",
+        check: "chapter-opening",
+        prompt: "检查正文开头约 150 个可见字符内是否有一个正在发生的动作、冲突或悬念。"
+      }
+    ]
+  },
+
+  "avoid-ai-voice": {
+    name: "avoid-ai-voice",
+    version: "1.0.0",
+    type: "quality-gate",
+    enabled: true,
+    priority: 30,
+    scope: "chapter",
+    description: "去除 AI 腔：不堆排比、不用模糊修饰词和总结式收尾，读起来像人写的。",
+    hooks: [
+      {
+        stage: "drafting",
+        action: "append_prompt",
+        content: [
+          "去除 AI 腔，这些写法一律不用：",
+          "1) 三连排比堆砌（如“他握住刀，握住恨，握住……”）；",
+          "2) 段尾用总结句收束情绪（如“她终于明白了……”）；",
+          "3) 模糊修饰词连发（仿佛、似乎、不禁、不由得、莫名、悄然、缓缓、微微、瞬间、顿时、一股莫名的、一种说不出的）；",
+          "4) 抒情长句连续不断，情绪改用具体动作和实物承载；",
+          "5) “如果说……那么……”式的议论句式。"
+        ].join("\n")
+      },
+      {
+        stage: "reviewing",
+        action: "check",
+        check: "ai-voice",
+        prompt: "统计正文中模糊修饰词（仿佛/似乎/不禁/不由得/莫名/悄然/缓缓/微微/瞬间/顿时等）的出现密度，判断是否超标。"
+      }
+    ]
+  },
+
+  "dialogue-not-summary": {
+    name: "dialogue-not-summary",
+    version: "1.0.0",
+    type: "quality-gate",
+    enabled: true,
+    priority: 40,
+    scope: "chapter",
+    description: "对话推进剧情：人物各有声音、不重复已知信息；本章对话占比合理。",
+    hooks: [
+      {
+        stage: "drafting",
+        action: "append_prompt",
+        content: [
+          "对话规则：",
+          "1) 每段对话必须有目的：推进情节、暴露人设或制造冲突；",
+          "2) 禁止用对话复述读者已知的信息（“如你所知……”式）；",
+          "3) 人物各有口头禅和句式，不要所有人一个腔调；",
+          "4) 对话配动作与反应（表情、停顿、小动作），避免“他说道”“她答道”连发。"
+        ].join("\n")
+      },
+      {
+        stage: "reviewing",
+        action: "check",
+        check: "dialogue-ratio",
+        prompt: "计算本章引号内对话占总可见字符的比例，对话过少或过多都要标记。"
+      }
+    ]
+  },
+
+  "show-dont-tell": {
+    name: "show-dont-tell",
+    version: "1.0.0",
+    type: "style",
+    enabled: true,
+    priority: 50,
+    scope: "chapter",
+    description: "展示而非陈述：用动作、反应和细节表现情绪与性格，不直接贴标签。",
+    hooks: [
+      {
+        stage: "drafting",
+        action: "append_prompt",
+        content: [
+          "展示而非陈述：不直接宣告情绪或性格（如“他很生气”“她是个善良的人”）。",
+          "改用具体动作、身体反应、环境细节和他人反应：",
+          "例：他摔上门，钥匙在锁孔里断成两截——而不是：他很生气。",
+          "例：她蹲下来把碎纸一片片捡起，摆回信封——而不是：她是个细心的人。"
+        ].join("\n")
+      },
+      {
+        stage: "revising",
+        action: "append_prompt",
+        content: "修订时检查：正文中是否还有直接宣告情绪、性格或结论的句子？把它们改写成具体动作与细节。"
+      }
+    ]
   }
 };
+
+// 内置写作技能包：新建项目时提示一键启用；UI 上按此名单提供“全部启用”。
+export const DEFAULT_SKILL_PACK = Object.keys(BUILTIN_SKILLS).sort();
 
 export async function ensureBuiltinSkill(projectRoot, skillName) {
   const manifest = BUILTIN_SKILLS[skillName];
@@ -244,12 +359,20 @@ export async function collectSkillPromptHooks(projectRoot, project, stage, conte
   };
 }
 
+const SKILL_CHECKERS = {
+  "suspense-ending": checkSuspenseEnding,
+  "chapter-opening": checkChapterOpening,
+  "ai-voice": checkAiVoice,
+  "dialogue-ratio": checkDialogueRatio
+};
+
 export async function runSkillChecks(projectRoot, project, stage, context = {}) {
   const hooks = await collectHooks(projectRoot, project, stage, "check", context);
   const results = [];
   for (const { skill, hook } of hooks) {
-    if (hook.check === "suspense-ending" || skill.name === "suspense-chapter-end") {
-      results.push(checkSuspenseEnding(context.content, skill, hook));
+    const checker = SKILL_CHECKERS[hook.check ?? ""] ?? SKILL_CHECKERS[skill.name];
+    if (checker) {
+      results.push(checker(context.content, skill, hook));
     } else {
       results.push({
         gate: `skill:${skill.name}`,
@@ -483,6 +606,78 @@ function checkSuspenseEnding(content, skill, hook) {
     instruction: hasHook
       ? null
       : "The final 500 visible characters do not contain a clear suspense hook. Append a concise ending beat with a new danger, reversal, secret, or unresolved question."
+  };
+}
+
+function checkChapterOpening(content, skill, hook) {
+  const visible = stripMarkdown(content ?? "");
+  const head = visible.slice(0, 150);
+  const hasHook = /突然|猛然|骤然|撞|摔倒|跌|喊|吼|尖叫|枪|刀|剑|血|杀|死|逃|追|夺|抓|打|踢|砸|跪|耳光|疼|痛|冷汗|颤抖|危险|秘密|真相|消失|失踪|线索|阴谋|威胁|求救|救命|来不及|难道|怎么回事|震惊|愣住|呆住|脸色|[?？!！]/iu.test(head);
+  return {
+    gate: `skill:${skill.name}`,
+    status: hasHook ? "passed" : "failed",
+    skill: skill.name,
+    hook: hookSummary(skill, hook),
+    checked_chars: head.length,
+    instruction: hasHook
+      ? null
+      : "开头约 150 字没有正在发生的事件。把章节开头改成人物正在进行的动作或冲突：第一句就进入场面（一个动作、一句对话、一处异动），天气与背景说明移到正文中段。"
+  };
+}
+
+const AI_VOICE_WORDS = ["仿佛", "似乎", "不禁", "不由得", "莫名", "悄然", "缓缓", "微微", "瞬间", "顿时", "一股莫名的", "一种说不出的"];
+
+function checkAiVoice(content, skill, hook) {
+  const visible = stripMarkdown(content ?? "");
+  const counts = [];
+  let total = 0;
+  for (const word of AI_VOICE_WORDS) {
+    const matches = visible.split(word).length - 1;
+    if (matches > 0) {
+      total += matches;
+      counts.push(`${word}×${matches}`);
+    }
+  }
+  // 3000 字章节允许约 8 处；密度上限 = 每 350 字 1 处。取两者中更宽松者，避免短章节误杀。
+  const threshold = Math.max(8, Math.floor(visible.length / 350));
+  const over = total > threshold;
+  return {
+    gate: `skill:${skill.name}`,
+    status: over ? "failed" : "passed",
+    skill: skill.name,
+    hook: hookSummary(skill, hook),
+    checked_chars: visible.length,
+    ai_voice_total: total,
+    ai_voice_detail: counts.join("，"),
+    instruction: over
+      ? `模糊修饰词超标（共 ${total} 处：${counts.join("，")}）。改写：这类词多数直接删去不损语义；“不禁/不由得”改成具体的动作反应；“瞬间/顿时”用时间与动作的先后顺序替代。`
+      : null
+  };
+}
+
+function checkDialogueRatio(content, skill, hook) {
+  const visible = stripMarkdown(content ?? "");
+  const quoteRe = /"[^"\n]*"|“[^”\n]*”|‘[^’\n]*’|「[^」\n]*」|『[^』\n]*』/gu;
+  const dialogueChars = [...visible.matchAll(quoteRe)].reduce((sum, match) => sum + match[0].length, 0);
+  const ratio = visible.length > 0 ? dialogueChars / visible.length : 0;
+  const percent = Math.round(ratio * 100);
+  const tooFew = ratio < 0.08;
+  const tooMany = ratio > 0.7;
+  const status = tooFew || tooMany ? "failed" : "passed";
+  let instruction = null;
+  if (tooFew) {
+    instruction = `本章对话占比过低（约 ${percent}%）：情节全靠叙述推进。补一段有目的的对话——让人物当面发生冲突、讨价还价或交换秘密，把信息放进对话与动作里。`;
+  } else if (tooMany) {
+    instruction = `本章几乎全是对话（约 ${percent}%）：缺动作与场景描写。给关键对话配表情、停顿、动作反应和周围环境，让场面立体。`;
+  }
+  return {
+    gate: `skill:${skill.name}`,
+    status,
+    skill: skill.name,
+    hook: hookSummary(skill, hook),
+    checked_chars: visible.length,
+    dialogue_ratio: Math.round(ratio * 1000) / 10,
+    instruction
   };
 }
 

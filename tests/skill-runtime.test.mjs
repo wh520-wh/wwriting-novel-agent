@@ -89,7 +89,7 @@ test("built-in suspense skill can append prompt and check chapter endings", asyn
   const skills = await loadEnabledSkills(projectRoot, project);
   assert.ok(skills.some((skill) => skill.name === "suspense-chapter-end"));
   const prompts = await collectSkillPromptHooks(projectRoot, project, "planning", { chapter_no: 1 });
-  assert.ok(prompts.content.includes("suspense hook"));
+  assert.ok(prompts.content.includes("悬念钩子"));
   const failed = await runSkillChecks(projectRoot, project, "reviewing", {
     chapter_no: 1,
     content: "He closed the door and slept. The room was quiet. Nothing changed."
@@ -119,6 +119,75 @@ test("listProjectSkills includes built-ins and imported project skills", async (
   const custom = skills.find((skill) => skill.name === "custom-style");
   assert.equal(custom.source_type, "project");
   assert.equal(custom.enabled_in_project, true);
+});
+
+test("built-in skill pack includes chapter-opening, ai-voice, dialogue and show-dont-tell skills", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-skill-pack-"));
+  const { projectRoot } = await createProject(root, { slug: "project" });
+  const skills = await listProjectSkills(projectRoot, {});
+  const names = skills.map((skill) => skill.name);
+  for (const name of ["chapter-opening-hook", "avoid-ai-voice", "dialogue-not-summary", "show-dont-tell"]) {
+    assert.ok(names.includes(name), `built-in skill missing: ${name}`);
+  }
+  const opening = skills.find((skill) => skill.name === "chapter-opening-hook");
+  assert.ok(opening.description.includes("开头"));
+  assert.ok(opening.hooks.some((hook) => hook.stage === "planning" && hook.action === "append_prompt"));
+  assert.ok(opening.hooks.some((hook) => hook.stage === "reviewing" && hook.check === "chapter-opening"));
+});
+
+test("chapter-opening checker fails on scene-less openings and passes on action openings", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-opening-"));
+  const { projectRoot, project } = await createProject(root, {
+    slug: "project",
+    enabled_skills: ["chapter-opening-hook"]
+  });
+  const flat = await runSkillChecks(projectRoot, project, "reviewing", {
+    chapter_no: 1,
+    content: "清晨的阳光透过窗帘照进房间。窗外传来鸟鸣。桌上一杯茶还冒着热气，一切都和昨天一样。"
+  });
+  assert.equal(flat[0].status, "failed");
+  assert.ok(flat[0].instruction.includes("正在发生"));
+  const action = await runSkillChecks(projectRoot, project, "reviewing", {
+    chapter_no: 1,
+    content: "突然，门被人从外面撞开，一个浑身是血的人滚了进来，抓住他的裤脚：“快逃！”"
+  });
+  assert.equal(action[0].status, "passed");
+});
+
+test("ai-voice checker fails on dense filler words and passes on plain prose", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-aivoice-"));
+  const { projectRoot, project } = await createProject(root, {
+    slug: "project",
+    enabled_skills: ["avoid-ai-voice"]
+  });
+  const noisy = "她不禁微微一愣，仿佛时间瞬间凝固了。他不禁缓缓抬头，似乎想说什么，却顿时又止住，一种说不出的情绪悄然漫上心头。仿佛连风都不禁放慢了脚步，莫名地，他悄然握紧了拳头。";
+  const noisyResult = await runSkillChecks(projectRoot, project, "reviewing", { chapter_no: 1, content: noisy });
+  assert.equal(noisyResult[0].status, "failed");
+  assert.ok(noisyResult[0].ai_voice_total >= 8);
+  const plain = "她把茶杯搁回桌上，杯底磕出轻响。他抬起头，喉结动了动，又把话咽了回去。窗外的风灌进来，桌上的纸页哗哗翻动。她等他开口。";
+  const plainResult = await runSkillChecks(projectRoot, project, "reviewing", { chapter_no: 1, content: plain });
+  assert.equal(plainResult[0].status, "passed");
+});
+
+test("dialogue-ratio checker flags dialogue-less and dialogue-only chapters", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-dialogue-"));
+  const { projectRoot, project } = await createProject(root, {
+    slug: "project",
+    enabled_skills: ["dialogue-not-summary"]
+  });
+  const noDialogue = "他沿着河岸走了很远。芦苇在风里弯下腰。他数着桥洞，一个，两个，三个。天色暗下来，他想起小时候的事，想起母亲说过的话。水声越来越大，他把手伸进冰凉的河水里。";
+  const tooLittle = await runSkillChecks(projectRoot, project, "reviewing", { chapter_no: 1, content: noDialogue });
+  assert.equal(tooLittle[0].status, "failed");
+  assert.ok(tooLittle[0].instruction.includes("对话占比过低"));
+
+  const allDialogue = `“你来了？”“嗯。”“东西带来了吗？”“带了。”“给我。”“先谈价钱。”“你说。”“五百。”“五百？你疯了吗？”“那你就拿不到它。”“成交。”`;
+  const tooMuch = await runSkillChecks(projectRoot, project, "reviewing", { chapter_no: 1, content: allDialogue });
+  assert.equal(tooMuch[0].status, "failed");
+  assert.ok(tooMuch[0].instruction.includes("几乎全是对话"));
+
+  const mixed = `他把信封推过桌面：“钱呢？”对面的人没有接，只是盯着信封看了一会儿。“你先打开。”那人说。他撕开封口，里面是一张发黄的照片。窗外下起雨来，雨点打在玻璃上，两个人谁都没再说话。`;
+  const balanced = await runSkillChecks(projectRoot, project, "reviewing", { chapter_no: 1, content: mixed });
+  assert.equal(balanced[0].status, "passed");
 });
 
 async function writeSkill(projectRoot, name, manifest) {
