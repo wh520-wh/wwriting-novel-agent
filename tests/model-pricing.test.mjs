@@ -64,6 +64,22 @@ test("fillOfficialPricing 为 mimo-v2.5-pro 补全官方人民币价（与 pro �
   assert.equal(filled.cache_hit_per_million, 0.025);
 });
 
+test("fillOfficialPricing 为 mimo-v2.5-pro-ultraspeed 补全官方人民币价（9/18/0.075）", () => {
+  const filled = fillOfficialPricing("mimo-v2.5-pro-ultraspeed", "https://api.xiaomimimo.com/v1", {});
+  assert.equal(filled.input_per_million, 9.0);
+  assert.equal(filled.output_per_million, 18.0);
+  assert.equal(filled.cache_hit_per_million, 0.075);
+});
+
+test("fillOfficialPricing 为 mimo-v2.5-pro-ultraspeed 只补缺失字段，用户已填值不覆盖", () => {
+  const filled = fillOfficialPricing("mimo-v2.5-pro-ultraspeed", "https://api.xiaomimimo.com/v1", {
+    input_per_million: 8.5, cache_hit_per_million: 0.1
+  });
+  assert.equal(filled.input_per_million, 8.5);
+  assert.equal(filled.output_per_million, 18.0);
+  assert.equal(filled.cache_hit_per_million, 0.1);
+});
+
 test("fillOfficialPricing 只补缺失字段，用户已填的值绝不覆盖", () => {
   const filled = fillOfficialPricing("deepseek-v4-flash", "https://api.deepseek.com", { input_per_million: 0.5, cache_hit_per_million: 0.123 });
   assert.equal(filled.input_per_million, 0.5);

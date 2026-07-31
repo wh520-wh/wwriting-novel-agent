@@ -4,7 +4,8 @@ export const OFFICIAL_PRICING = {
   "deepseek-v4-flash": { input_per_million: 1.0, output_per_million: 2.0, cache_hit_per_million: 0.02 },
   "deepseek-v4-pro": { input_per_million: 3.0, output_per_million: 6.0, cache_hit_per_million: 0.025 },
   "mimo-v2.5": { input_per_million: 1.0, output_per_million: 2.0, cache_hit_per_million: 0.02 },
-  "mimo-v2.5-pro": { input_per_million: 3.0, output_per_million: 6.0, cache_hit_per_million: 0.025 }
+  "mimo-v2.5-pro": { input_per_million: 3.0, output_per_million: 6.0, cache_hit_per_million: 0.025 },
+  "mimo-v2.5-pro-ultraspeed": { input_per_million: 9.0, output_per_million: 18.0, cache_hit_per_million: 0.075 }
 };
 
 export function isDeepSeekModel(modelName, baseUrl) {
