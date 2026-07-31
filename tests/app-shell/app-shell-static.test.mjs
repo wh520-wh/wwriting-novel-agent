@@ -281,8 +281,8 @@ test("thread-renderer.js keeps a running task in the single run card and hides s
   );
   assert.match(
     threadRendererSource,
-    /function renderToolCard\(message\)[\s\S]*?message\.ok\s*!==\s*false[\s\S]{0,100}return null/u,
-    "successful tool calls should not render technical parameters or JSON into the thread"
+    /function renderToolCard\(message\)[\s\S]*?applyFold\([\s\S]*?ok\s*\|\|\s*superseded/u,
+    "successful tool calls should be folded by default so technical params stay hidden"
   );
 });
 
