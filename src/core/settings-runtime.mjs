@@ -9,7 +9,7 @@ import {
   ModelConfigValidationError,
   validateModelConfig
 } from "./model-config-validation.mjs";
-import { fillDeepSeekCacheHitPricing, normalizePricing } from "./model-pricing.mjs";
+import { fillDeepSeekPricing, normalizePricing } from "./model-pricing.mjs";
 
 const SAFE_NAME = /^[A-Za-z0-9_.-]+$/u;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
@@ -218,16 +218,14 @@ export function normalizeSettingsPatch(patch = {}) {
     if (patch.active_model.pricing === null) {
       // 允许清除价格
     } else {
-      const pricing = normalizePricing(patch.active_model.pricing);
+      // DeepSeek 预设补缺：用户未填的输入/输出/命中价按官方人民币价自动补，已填则保留用户的数值。
+      const activeModel = normalized.active_model ?? patch.active_model;
+      const filled = fillDeepSeekPricing(activeModel.model_name, activeModel.base_url, patch.active_model.pricing);
+      const pricing = normalizePricing(filled);
       if (!pricing) {
         throw new SettingsValidationError("invalid_pricing", "价格必须是正数：每百万 token 的输入价和输出价必填，缓存命中价可选。");
       }
-      // DeepSeek 预设补填：用户未填缓存命中价时按官方价自动补，已填则保留用户的数值。
-      const activeModel = normalized.active_model ?? patch.active_model;
-      normalized.active_model = {
-        ...activeModel,
-        pricing: fillDeepSeekCacheHitPricing(activeModel.model_name, activeModel.base_url, pricing)
-      };
+      normalized.active_model = { ...activeModel, pricing };
     }
   }
   if (patch.stage_overrides !== undefined) {

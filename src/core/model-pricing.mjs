@@ -1,21 +1,25 @@
-// DeepSeek 官方缓存命中价（每百万 token，官方定价页 2026-07-31 抓取 E10）。
+// DeepSeek 官方定价（人民币，每百万 token；官方定价页 2026-07-31 用户提供）。
 // 未列出的 deepseek-* 模型不补填，交给 cost-tracker 的输入价 × 2% 默认折算兜底。
-export const DEEPSEEK_CACHE_HIT_PRICES = {
-  "deepseek-v4-flash": 0.0028,
-  "deepseek-v4-pro": 0.003625
+export const DEEPSEEK_OFFICIAL_PRICING = {
+  "deepseek-v4-flash": { input_per_million: 1.0, output_per_million: 2.0, cache_hit_per_million: 0.02 },
+  "deepseek-v4-pro": { input_per_million: 3.0, output_per_million: 6.0, cache_hit_per_million: 0.025 }
 };
 
 export function isDeepSeekModel(modelName, baseUrl) {
   return String(modelName ?? "").startsWith("deepseek-") || String(baseUrl ?? "").includes("api.deepseek.com");
 }
 
-// 检测到 DeepSeek 且用户未填 cache_hit_per_million 时按官方价补填；用户已填的值绝不覆盖。
-export function fillDeepSeekCacheHitPricing(modelName, baseUrl, pricing) {
-  if (!pricing || pricing.cache_hit_per_million != null) return pricing;
-  if (!isDeepSeekModel(modelName, baseUrl)) return pricing;
-  const official = DEEPSEEK_CACHE_HIT_PRICES[modelName];
-  if (official == null) return pricing;
-  return { ...pricing, cache_hit_per_million: official };
+// 检测到 DeepSeek 且字段未填时按官方人民币价补缺（输入/输出/命中价各自独立判断）；
+// 用户已填的值绝不覆盖。返回浅拷贝，不改入参。
+export function fillDeepSeekPricing(modelName, baseUrl, pricing = {}) {
+  if (!pricing || !isDeepSeekModel(modelName, baseUrl)) return pricing;
+  const official = DEEPSEEK_OFFICIAL_PRICING[modelName];
+  if (!official) return pricing;
+  const filled = { ...pricing };
+  for (const key of ["input_per_million", "output_per_million", "cache_hit_per_million"]) {
+    if (filled[key] == null) filled[key] = official[key];
+  }
+  return filled;
 }
 
 function positiveNumber(value) {
