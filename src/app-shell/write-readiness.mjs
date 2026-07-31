@@ -8,9 +8,11 @@
  * @param {object} input.chatHistory
  * @param {Array} input.events
  * @param {Array} input.failures
+ * @param {object} [options]
+ * @param {string[]} [options.globallyTestedModels] - 跨项目记住的已验证模型名（localStorage）
  * @returns {{ key, label, detail, primaryAction, primaryLabel, chapterNo, modelLabel, blocking, reasonCode }}
  */
-export function deriveWriteReadiness(input) {
+export function deriveWriteReadiness(input, options = {}) {
   if (!input) {
     return readiness("no_project", {
       primaryAction: "create_project",
@@ -121,6 +123,18 @@ export function deriveWriteReadiness(input) {
       primaryAction: "open_settings",
       blocking: true,
       reasonCode: "connection_failed"
+    });
+  }
+
+  // 9b. 项目无连接事件，但该模型在其他项目测过（全局记忆）-> 直接 ready，不强制重测。
+  // 仅在项目无事件时回退到全局记忆；项目级事件（含失败）优先。
+  const globallyTested = Array.isArray(options.globallyTestedModels) ? options.globallyTestedModels : [];
+  if (globallyTested.includes(activeModel.model_name)) {
+    return readiness("ready", {
+      chapterNo,
+      modelLabel,
+      primaryAction: "start_chapter",
+      primaryLabel: `开始写第 ${chapterNo} 章`
     });
   }
 
