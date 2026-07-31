@@ -21,6 +21,25 @@ test("精确章节指令生成严格单章契约", () => {
   }]);
 });
 
+test("续写指令生成 resume_chapter 契约（精确/范围/自由指令）", () => {
+  const cases = [
+    ["续写第3章", { currentChapter: 3, targetChapters: 10 }, "resume_chapter"],
+    ["续写到第6章", { currentChapter: 4, targetChapters: 10 }, "resume_chapter"],
+    ["续写3章", { currentChapter: 4, targetChapters: 10 }, "resume_chapter"],
+    ["续写下一章", { currentChapter: 3, targetChapters: 10 }, "resume_chapter"],
+  ];
+  for (const [instruction, opts, expectedKind] of cases) {
+    const tasks = compileWritingTasks(instruction, opts);
+    assert.ok(tasks.length >= 1, instruction);
+    assert.equal(tasks[0].contract.kind, expectedKind, instruction);
+  }
+  // 「写…」指令不受影响，仍为 write_chapter。
+  const [writeTask] = compileWritingTasks("写到第6章", { currentChapter: 4, targetChapters: 10 });
+  assert.equal(writeTask.contract.kind, "write_chapter");
+  const [freeTask] = compileWritingTasks("继续写作，加强雨夜氛围", { currentChapter: 3, targetChapters: 10 });
+  assert.equal(freeTask.contract.kind, "write_chapter");
+});
+
 test("范围指令拆成多个单章任务", () => {
   for (const instruction of ["写3章", "写三章", "写到第6章"]) {
     const tasks = compileWritingTasks(instruction, {
