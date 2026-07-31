@@ -493,14 +493,17 @@ async function reviewChapter(projectRoot, project, state, runtime) {
       await blockFactCheckUnresolved(projectRoot, project, state, factCheck.conflicts, fcRounds);
       return;
     }
+    // 决策 6：读取上次冲突数，用于进展提示（冲突数没减少 -> 告诉模型换思路）
+    const fcLastCount = fcBudget.last_fact_check_conflict_count_by_chapter?.[fcKey] ?? null;
     const stateWithRound = {
       ...state,
       active_budget: {
         ...fcBudget,
-        fact_check_rounds_by_chapter: { ...fcBudget.fact_check_rounds_by_chapter, [fcKey]: fcRounds + 1 }
+        fact_check_rounds_by_chapter: { ...fcBudget.fact_check_rounds_by_chapter, [fcKey]: fcRounds + 1 },
+        last_fact_check_conflict_count_by_chapter: { ...fcBudget.last_fact_check_conflict_count_by_chapter, [fcKey]: factCheck.conflicts.length }
       }
     };
-    await applyFactCheckConflicts(projectRoot, project, stateWithRound, factCheck.conflicts);
+    await applyFactCheckConflicts(projectRoot, project, stateWithRound, factCheck.conflicts, fcRounds + 1, fcLastCount);
     return;
   }
   const next = setStage({ ...state }, "finalizing");
@@ -806,8 +809,12 @@ export async function runFactCheck(projectRoot, project, state, runtime, draft) 
 // ADR-0001：fact-check 发现冲突 -> 进 needs_revision，conflicts 作为 feedback 喂回写作循环。
 // 模型在 revise 阶段看到 fact-check-gate 的 conflicts，用 edit_chapter 自己改，回 reviewing 再验证。
 // 不再区分 hard/soft：任何冲突都走反思循环，由进展检测 + 软降级兜底（见 runWritingAgentLoop）。
-export async function applyFactCheckConflicts(projectRoot, project, state, conflicts) {
-  const gate = { gate: "fact-check-gate", status: "failed", conflicts };
+export async function applyFactCheckConflicts(projectRoot, project, state, conflicts, rounds, lastConflictCount) {
+  // 决策 6：第二轮起，冲突数没减少时加 progress_hint 让模型换思路（而非重复同样改法）
+  const progressHint = (rounds && rounds > 1 && lastConflictCount !== null && lastConflictCount <= conflicts.length)
+    ? `上次报 ${lastConflictCount} 个冲突，这次仍 ${conflicts.length} 个——之前的修改未减少冲突，请换一种改法（如调整上下文、改前后文衔接，而非只改引文本身）。`
+    : null;
+  const gate = { gate: "fact-check-gate", status: "failed", conflicts, rounds: rounds ?? 1, progress_hint: progressHint };
   const next = setStage({ ...state, last_quality_gate_results: [gate] }, "needs_revision");
   await saveState(projectRoot, next);
   await upsertChapter(projectRoot, {
@@ -1845,6 +1852,8 @@ function withBudgetDefaults(state) {
     // ADR-0001 决策 4：fact-check 反思循环硬上限，防无限循环（默认 revision budget 为 null 时兜底）
     fact_check_rounds_by_chapter: {},
     max_fact_check_rounds_per_chapter: 3,
+    // 决策 6：跟踪上次冲突数，用于进展提示（冲突数没减少 -> 告诉模型换思路）
+    last_fact_check_conflict_count_by_chapter: {},
     max_cost: null,
     max_total_tokens: null,
     ...(state.active_budget ?? {})

@@ -1463,6 +1463,30 @@ test("ADR-0001 软降级：fact-check 3 轮仍有冲突 -> block 本章交用户
   assert.ok(history.some((m) => m.proactive === "fact_check" && m.content.includes("人工核对")), "应有通知用户人工核对的主动消息");
 });
 
+test("ADR-0001 决策 6：第二轮冲突数未减少时 feedback 含 progress_hint 让模型换思路", async () => {
+  const { projectRoot, project } = await makeFactCheckProject("wwriting-fc-progress-");
+  const { applyFactCheckConflicts } = await import("../src/core/agent-engine.mjs");
+  const conflicts = [{ draft_quote: "从十二楼坠落", conflicts_with: "坠楼楼层: 六楼", prior_chapter: 1, severity: "high", suggestion: "改回六楼", replace_with: "从六楼坠落" }];
+  // 第一轮：rounds=1, lastConflictCount=null -> 无 progress_hint
+  await applyFactCheckConflicts(projectRoot, project, { current_chapter_no: 1, project_status: "running" }, conflicts, 1, null);
+  let state = await loadState(projectRoot);
+  let gate = state.last_quality_gate_results[0];
+  assert.equal(gate.rounds, 1);
+  assert.equal(gate.progress_hint, null, "第一轮不应有 progress_hint");
+  // 第二轮：冲突数未减少（上次 1，这次 1）-> 有 progress_hint
+  await applyFactCheckConflicts(projectRoot, project, { current_chapter_no: 1, project_status: "running" }, conflicts, 2, 1);
+  state = await loadState(projectRoot);
+  gate = state.last_quality_gate_results[0];
+  assert.equal(gate.rounds, 2);
+  assert.ok(gate.progress_hint, "冲突数未减少应有 progress_hint");
+  assert.match(gate.progress_hint, /换一种改法/u);
+  // 冲突数减少（上次 2，这次 1）-> 模型在收敛，无 progress_hint
+  await applyFactCheckConflicts(projectRoot, project, { current_chapter_no: 1, project_status: "running" }, conflicts, 3, 2);
+  state = await loadState(projectRoot);
+  gate = state.last_quality_gate_results[0];
+  assert.equal(gate.progress_hint, null, "冲突数减少时不应有 progress_hint（模型在收敛）");
+});
+
 test("buildRelevantFacts: 空 continuity 返回空字符串", async () => {
   const { buildRelevantFacts } = await import("../src/core/chapter-memory.mjs");
   assert.equal(buildRelevantFacts({ facts: [], timeline: [], characters: [] }, 5), "");
