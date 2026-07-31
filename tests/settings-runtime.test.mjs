@@ -110,16 +110,30 @@ test("settings runtime rejects non-http base URLs", () => {
   );
 });
 
-test("normalizeSettingsPatch 为 DeepSeek 模型自动补填缓存命中价", () => {
+test("normalizeSettingsPatch 为 DeepSeek 模型自动补全官方人民币价", () => {
   const normalized = normalizeSettingsPatch({
     active_model: {
       provider: "openai-compatible",
       model_name: "deepseek-v4-flash",
       base_url: "https://api.deepseek.com",
-      pricing: { input_per_million: 0.14, output_per_million: 0.28 }
+      pricing: { input_per_million: 1.0, output_per_million: 2.0 }
     }
   });
-  assert.equal(normalized.active_model.pricing.cache_hit_per_million, 0.0028);
+  assert.equal(normalized.active_model.pricing.cache_hit_per_million, 0.02);
+});
+
+test("normalizeSettingsPatch DeepSeek 模型完全不填价格时也补全官方价（保存后即可确认配置）", () => {
+  const normalized = normalizeSettingsPatch({
+    active_model: {
+      provider: "openai-compatible",
+      model_name: "deepseek-v4-pro",
+      base_url: "https://api.deepseek.com",
+      pricing: {}
+    }
+  });
+  assert.equal(normalized.active_model.pricing.input_per_million, 3.0);
+  assert.equal(normalized.active_model.pricing.output_per_million, 6.0);
+  assert.equal(normalized.active_model.pricing.cache_hit_per_million, 0.025);
 });
 
 test("normalizeSettingsPatch 用户已填缓存命中价不被覆盖", () => {
@@ -128,7 +142,7 @@ test("normalizeSettingsPatch 用户已填缓存命中价不被覆盖", () => {
       provider: "openai-compatible",
       model_name: "deepseek-v4-pro",
       base_url: "https://api.deepseek.com",
-      pricing: { input_per_million: 0.435, output_per_million: 0.87, cache_hit_per_million: 0.05 }
+      pricing: { input_per_million: 3, output_per_million: 6, cache_hit_per_million: 0.05 }
     }
   });
   assert.equal(normalized.active_model.pricing.cache_hit_per_million, 0.05);
