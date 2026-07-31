@@ -128,6 +128,25 @@ test("条件排除：请求体不同不命中；chat / side_question 不缓存",
   assert.equal(state.calls, 7, "side_question 调用不缓存");
 });
 
+test("base_url 不同不命中：会话中切换端点不误用旧端点缓存", async () => {
+  const state = countingAdapter();
+  const client = makeClient(state.adapter, { model: { base_url: "https://api.deepseek.com" } });
+
+  await client.generate(auxRequest());
+  await client.generate(auxRequest());
+  assert.equal(state.calls, 1, "相同 base_url 相同请求应命中缓存");
+
+  // 会话中切换端点（官方 → 中转，同名模型）：缓存键应区分 base_url
+  client.activeModel = { ...client.activeModel, base_url: "https://relay.example.com/v1" };
+  await client.generate(auxRequest());
+  assert.equal(state.calls, 2, "端点切换后相同请求不应命中旧端点缓存");
+
+  // 切回原端点：应命中原端点缓存
+  client.activeModel = { ...client.activeModel, base_url: "https://api.deepseek.com" };
+  await client.generate(auxRequest());
+  assert.equal(state.calls, 2, "端点恢复后应命中原端点缓存");
+});
+
 test("条件排除：stream=true 的辅助请求不缓存", async () => {
   const state = countingAdapter();
   const client = makeClient(state.adapter, { model: { stream: true } });
