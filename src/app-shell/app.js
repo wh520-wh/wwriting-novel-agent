@@ -474,17 +474,19 @@ if (refs.chapterSuccessContinue) {
 
 // 可折叠主卡片：标题行常驻，body 用 grid-template-rows 平滑动画。
 // 默认展开；折叠状态存 localStorage，刷新后保持。
-function initCardFold({ toggle, body, foldKey, defaultFolded = false }) {
+function initCardFold({ toggle, body, foldKey, defaultFolded = false, root = null }) {
   if (!toggle || !body) return;
   const val = localStorage.getItem(foldKey);
   const folded = val === null ? defaultFolded : val === "true";
   toggle.classList.toggle("folded", folded);
   body.classList.toggle("folded", folded);
+  root?.classList.toggle("folded", folded);
   toggle.setAttribute("aria-expanded", String(!folded));
   toggle.addEventListener("click", () => {
     const nowFolded = !toggle.classList.contains("folded");
     toggle.classList.toggle("folded", nowFolded);
     body.classList.toggle("folded", nowFolded);
+    root?.classList.toggle("folded", nowFolded);
     toggle.setAttribute("aria-expanded", String(!nowFolded));
     localStorage.setItem(foldKey, String(nowFolded));
   });
@@ -493,6 +495,7 @@ function initCardFold({ toggle, body, foldKey, defaultFolded = false }) {
 initCardFold({
   toggle: refs.workbenchFoldToggle,
   body: refs.workbenchBody,
+  root: refs.projectWorkbench,
   foldKey: "wwriting.card.fold.project-workbench",
 });
 initCardFold({
@@ -1473,6 +1476,11 @@ function applyThemeState(dark) {
   refs.themeToggle?.setAttribute("aria-pressed", dark ? "true" : "false");
   refs.themeToggle?.classList.toggle("active", dark);
   if (refs.themeLabel) refs.themeLabel.textContent = dark ? "日间" : "夜间";
+  try {
+    window.wwritingDesktop?.setTitleBarTheme?.(dark);
+  } catch {
+    // 非 Electron 环境或旧版本忽略。
+  }
 }
 
 function initPrivacyMode() {
