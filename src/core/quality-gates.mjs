@@ -1,6 +1,6 @@
 import { countEffectiveWords } from "./word-count.mjs";
 import { formatChapterRef } from "./continuity-store.mjs";
-import { registerSchema, parseStructuredOutput, STRUCTURED_OUTPUT_ERRORS } from "./structured-output.mjs";
+import { registerSchema, parseStructuredOutput } from "./structured-output.mjs";
 
 // 注册 fact_check@v1 schema（模块加载时执行一次，registerSchema 幂等）
 registerSchema("fact_check", "v1", {

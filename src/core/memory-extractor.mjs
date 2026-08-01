@@ -10,20 +10,20 @@ registerSchema("memory_extraction", "v1", {
     const summary = typeof data?.summary === "string" ? data.summary.trim().slice(0, MEMORY_SUMMARY_MAX_CHARS) : "";
     return {
       summary,
-      facts: normalizeArray(data.facts, (item) => ({
+      facts: normalizeArray(data?.facts, (item) => ({
         entity: requiredString(item.entity),
         attribute: requiredString(item.attribute),
         value: requiredString(item.value),
         chapter_no: Number(item.chapter_no) || null,
         quote: String(item.quote ?? "").slice(0, 80)
       }), (f) => f.entity && f.attribute && f.value),
-      timeline: normalizeArray(data.timeline, (item) => ({
+      timeline: normalizeArray(data?.timeline, (item) => ({
         chapter_no: Number(item.chapter_no) || null,
         story_time_raw: String(item.story_time_raw ?? item.story_time ?? "").slice(0, 120),
         events: Array.isArray(item.events) ? item.events.map((e) => String(e)).slice(0, 10) : [],
         time: normalizeTimeField(item.time)
       }), (t) => t.chapter_no !== null),
-      characters: normalizeArray(data.characters, (item) => ({
+      characters: normalizeArray(data?.characters, (item) => ({
         name: requiredString(item.name),
         traits: Array.isArray(item.traits) ? item.traits.map((t) => String(t)).slice(0, 10) : [],
         status: String(item.status ?? ""),
