@@ -5,7 +5,8 @@ import {
   OpenAICompatibleAdapter,
   ProviderConfigurationError,
   ProviderTransportError,
-  isReasonerModel
+  isReasonerModel,
+  resolveModelCapabilities
 } from "../src/core/provider-adapters.mjs";
 
 test("OpenAICompatibleAdapter sends chat completion requests and extracts usage", async () => {
@@ -886,4 +887,78 @@ test("explicit max_output_tokens still overrides the chapter tool default", asyn
     metadata: { toolRequest: { project_id: "p1", chapter_no: 1, segment_no: 1 } },
   });
   assert.equal(captured.body.max_tokens, 8192);
+});
+
+test("resolveModelCapabilities: deepseek-v4-pro 标记 supportsThinking 且不支持 temperature", () => {
+  const caps = resolveModelCapabilities({
+    base_url: "https://api.deepseek.com/v1",
+    model_name: "deepseek-v4-pro"
+  });
+  assert.equal(caps.supportsThinking, true);
+  assert.equal(caps.supportsTemperature, false);
+  assert.equal(caps.supportsJsonOutput, true);
+  assert.equal(caps.supportsTools, true);
+});
+
+test("resolveModelCapabilities: deepseek-v4-flash 默认非思考，支持 temperature", () => {
+  const caps = resolveModelCapabilities({
+    base_url: "https://api.deepseek.com/v1",
+    model_name: "deepseek-v4-flash"
+  });
+  assert.equal(caps.supportsThinking, false);
+  assert.equal(caps.supportsTemperature, true);
+});
+
+test("resolveModelCapabilities: 非 deepseek 模型默认全支持", () => {
+  const caps = resolveModelCapabilities({
+    base_url: "https://api.openai.com/v1",
+    model_name: "gpt-4o"
+  });
+  assert.equal(caps.supportsThinking, false);
+  assert.equal(caps.supportsTemperature, true);
+  assert.equal(caps.supportsJsonOutput, true);
+  assert.equal(caps.supportsTools, true);
+});
+
+test("OpenAICompatibleAdapter 按 capability 注入 response_format=json_object", async () => {
+  let captured = null;
+  const adapter = new OpenAICompatibleAdapter({
+    baseUrl: "https://api.deepseek.com/v1",
+    apiKey: "k",
+    fetchImpl: async (url, init) => {
+      captured = JSON.parse(init.body);
+      return { ok: true, status: 200, async text() { return JSON.stringify({ choices: [{ message: { content: "{}" } }] }); } };
+    }
+  });
+  await adapter.generate({
+    model: "deepseek-v4-flash",
+    modelConfig: { model_name: "deepseek-v4-flash", base_url: "https://api.deepseek.com/v1" },
+    messages: [{ role: "user", content: "输出 json" }],
+    metadata: { responseFormat: "json_object" }
+  });
+  assert.deepEqual(captured.response_format, { type: "json_object" });
+});
+
+test("buildMessages: messages 含 role=tool 时不重注入 system", async () => {
+  let captured = null;
+  const adapter = new OpenAICompatibleAdapter({
+    baseUrl: "https://api.deepseek.com/v1", apiKey: "k",
+    fetchImpl: async (url, init) => {
+      captured = JSON.parse(init.body);
+      return { ok: true, status: 200, async text() { return JSON.stringify({ choices: [{ message: { content: "ok" } }] }); } };
+    }
+  });
+  const multiTurnMessages = [
+    { role: "user", content: "写章" },
+    { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "read_chapter", arguments: "{}" } }] },
+    { role: "tool", tool_call_id: "c1", content: '{"chapter_no":1}' }
+  ];
+  await adapter.generate({
+    model: "deepseek-v4-flash",
+    modelConfig: { model_name: "deepseek-v4-flash", base_url: "https://api.deepseek.com/v1" },
+    messages: multiTurnMessages,
+    metadata: { toolRequest: { project_id: "p", chapter_no: 1, allowed_tools: ["read_chapter", "append_chapter_segment"] } }
+  });
+  assert.equal(captured.messages[0].role, "user");
+  assert.equal(captured.messages.length, 3);
 });
