@@ -136,3 +136,13 @@ test("buildFactCheckMessages: 无 storyClock 不渲染时钟段、兼容旧 stor
   assert.match(user, /十月/u);
   assert.doesNotMatch(user, /故事时钟/u);
 });
+
+test("parseFactCheck 失败时返回字符串 error + error_code 分类（向后兼容）", () => {
+  const r1 = parseFactCheck("无法输出 JSON");
+  assert.equal(r1.ok, false);
+  assert.equal(typeof r1.error, "string");       // agent-engine.mjs:770 的 ${parsed?.error} 不破
+  assert.equal(r1.error_code, "invalid_json");
+
+  const r2 = parseFactCheck("");
+  assert.equal(r2.error_code, "empty_content");
+});

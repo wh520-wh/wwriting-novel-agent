@@ -1,6 +1,41 @@
 // 记忆提取的消息构造与输出解析。纯函数，无文件 IO，便于单测与回放。
+import { registerSchema, parseStructuredOutput, STRUCTURED_OUTPUT_ERRORS } from "./structured-output.mjs";
+
 export const MEMORY_SUMMARY_MAX_CHARS = 2000;
 export const MEMORY_EXTRACT_STAGE = "memory_extract";
+
+// 注册 memory_extraction@v1 schema（模块加载时执行一次，registerSchema 幂等）
+registerSchema("memory_extraction", "v1", {
+  normalize: (data) => {
+    const summary = typeof data?.summary === "string" ? data.summary.trim().slice(0, MEMORY_SUMMARY_MAX_CHARS) : "";
+    return {
+      summary,
+      facts: normalizeArray(data.facts, (item) => ({
+        entity: requiredString(item.entity),
+        attribute: requiredString(item.attribute),
+        value: requiredString(item.value),
+        chapter_no: Number(item.chapter_no) || null,
+        quote: String(item.quote ?? "").slice(0, 80)
+      }), (f) => f.entity && f.attribute && f.value),
+      timeline: normalizeArray(data.timeline, (item) => ({
+        chapter_no: Number(item.chapter_no) || null,
+        story_time_raw: String(item.story_time_raw ?? item.story_time ?? "").slice(0, 120),
+        events: Array.isArray(item.events) ? item.events.map((e) => String(e)).slice(0, 10) : [],
+        time: normalizeTimeField(item.time)
+      }), (t) => t.chapter_no !== null),
+      characters: normalizeArray(data.characters, (item) => ({
+        name: requiredString(item.name),
+        traits: Array.isArray(item.traits) ? item.traits.map((t) => String(t)).slice(0, 10) : [],
+        status: String(item.status ?? ""),
+        chapter_no: Number(item.chapter_no) || null
+      }), (c) => Boolean(c.name))
+    };
+  },
+  validate: (n) => {
+    if (!n.summary) return { ok: false, code: STRUCTURED_OUTPUT_ERRORS.missing_field, field: "summary" };
+    return { ok: true };
+  }
+});
 
 const SYSTEM_PROMPT = [
   "你是小说项目的记忆管理员。读完本章后更新全书记忆。",
@@ -37,40 +72,18 @@ export function buildMemoryExtractionMessages({ chapterNo, chapterContent, bookS
   ];
 }
 
+// parseMemoryExtraction 委托 structured-output，error 保持字符串 + error_code/error_field（向后兼容）
 export function parseMemoryExtraction(rawText) {
-  const text = String(rawText ?? "");
-  const fenced = /```(?:json)?\s*([\s\S]*?)```/u.exec(text);
-  const candidate = (fenced ? fenced[1] : text).trim();
-  let data;
-  try {
-    data = JSON.parse(candidate);
-  } catch {
-    return { ok: false, error: "invalid_json" };
+  const result = parseStructuredOutput("memory_extraction", "v1", rawText);
+  if (!result.ok) {
+    return {
+      ok: false,
+      error: result.error.message ?? result.error.code,   // 字符串，agent-engine.mjs:655 的 ${parsed.error} 不破
+      error_code: result.error.code,
+      error_field: result.error.field ?? null
+    };
   }
-  if (typeof data?.summary !== "string" || !data.summary.trim()) {
-    return { ok: false, error: "missing_summary" };
-  }
-  const summary = data.summary.trim().slice(0, MEMORY_SUMMARY_MAX_CHARS);
-  const facts = normalizeArray(data.facts, (item) => ({
-    entity: requiredString(item.entity),
-    attribute: requiredString(item.attribute),
-    value: requiredString(item.value),
-    chapter_no: Number(item.chapter_no) || null,
-    quote: String(item.quote ?? "").slice(0, 80)
-  }), (f) => f.entity && f.attribute && f.value);
-  const timeline = normalizeArray(data.timeline, (item) => ({
-    chapter_no: Number(item.chapter_no) || null,
-    story_time_raw: String(item.story_time_raw ?? item.story_time ?? "").slice(0, 120),
-    events: Array.isArray(item.events) ? item.events.map((e) => String(e)).slice(0, 10) : [],
-    time: normalizeTimeField(item.time)
-  }), (t) => t.chapter_no !== null);
-  const characters = normalizeArray(data.characters, (item) => ({
-    name: requiredString(item.name),
-    traits: Array.isArray(item.traits) ? item.traits.map((t) => String(t)).slice(0, 10) : [],
-    status: String(item.status ?? ""),
-    chapter_no: Number(item.chapter_no) || null
-  }), (c) => Boolean(c.name));
-  return { ok: true, summary, facts, timeline, characters };
+  return { ok: true, ...result.data };
 }
 
 const TIME_KINDS = new Set(["scene", "flashback", "parallel", "dream"]);
