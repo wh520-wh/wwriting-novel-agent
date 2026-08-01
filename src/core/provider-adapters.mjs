@@ -528,8 +528,13 @@ export function resolveModelCapabilities(modelConfig = {}) {
     modelName.includes("deepseek-reasoner") ||
     modelName.includes("reasoner")
   );
+  // 实测：DeepSeek 官方 API 当前把 deepseek-v4-flash 当 thinking 模型处理，
+  // 强制 tool_choice 会返回 400 "Thinking mode does not support this tool_choice"，
+  // 故对官方 v4-flash 也走 auto（模型仍会返回 tool_calls）。
+  const isDeepSeekV4Flash = isDeepSeek && modelName.includes("deepseek-v4-flash");
   return {
     supportsThinking,
+    requiresAutoToolChoice: supportsThinking || isDeepSeekV4Flash,
     supportsTemperature: !supportsThinking, // thinking 模型忽略采样参数
     supportsTopP: !supportsThinking,
     supportsJsonOutput: true, // DeepSeek + OpenAI 兼容均支持 json_object
@@ -539,7 +544,7 @@ export function resolveModelCapabilities(modelConfig = {}) {
 }
 
 function requiresAutoToolChoice(modelConfig = {}) {
-  return resolveModelCapabilities(modelConfig).supportsThinking;
+  return resolveModelCapabilities(modelConfig).requiresAutoToolChoice;
 }
 
 function extractText(raw) {

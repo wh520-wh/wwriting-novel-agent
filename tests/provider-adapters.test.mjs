@@ -215,7 +215,7 @@ test("OpenAICompatibleAdapter uses auto tool choice for DeepSeek thinking models
   assert.equal(captured.body.stream, undefined);
 });
 
-test("OpenAICompatibleAdapter v4-flash（默认 non-thinking）走与 deepseek-chat 相同的单工具 force 分支", async () => {
+test("OpenAICompatibleAdapter v4-flash 走 auto tool_choice（官方 API 当前按 thinking 处理，强制 function 会 400）", async () => {
   let captured = null;
   const adapter = new OpenAICompatibleAdapter({
     baseUrl: "https://api.deepseek.com",
@@ -268,10 +268,7 @@ test("OpenAICompatibleAdapter v4-flash（默认 non-thinking）走与 deepseek-c
     }
   });
 
-  assert.deepEqual(captured.body.tool_choice, {
-    type: "function",
-    function: { name: "append_chapter_segment" }
-  });
+  assert.equal(captured.body.tool_choice, "auto");
   assert.equal(captured.body.stream, undefined);
 });
 
@@ -880,17 +877,19 @@ test("resolveModelCapabilities: deepseek-v4-pro 标记 supportsThinking 且不�
     model_name: "deepseek-v4-pro"
   });
   assert.equal(caps.supportsThinking, true);
+  assert.equal(caps.requiresAutoToolChoice, true);
   assert.equal(caps.supportsTemperature, false);
   assert.equal(caps.supportsJsonOutput, true);
   assert.equal(caps.supportsTools, true);
 });
 
-test("resolveModelCapabilities: deepseek-v4-flash 默认非思考，支持 temperature", () => {
+test("resolveModelCapabilities: deepseek-v4-flash 默认非思考，支持 temperature，但需 auto tool_choice", () => {
   const caps = resolveModelCapabilities({
     base_url: "https://api.deepseek.com/v1",
     model_name: "deepseek-v4-flash"
   });
   assert.equal(caps.supportsThinking, false);
+  assert.equal(caps.requiresAutoToolChoice, true);
   assert.equal(caps.supportsTemperature, true);
 });
 
@@ -900,6 +899,7 @@ test("resolveModelCapabilities: 非 deepseek 模型默认全支持", () => {
     model_name: "gpt-4o"
   });
   assert.equal(caps.supportsThinking, false);
+  assert.equal(caps.requiresAutoToolChoice, false);
   assert.equal(caps.supportsTemperature, true);
   assert.equal(caps.supportsJsonOutput, true);
   assert.equal(caps.supportsTools, true);
