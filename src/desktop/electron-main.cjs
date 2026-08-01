@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell, nativeTheme } = require("electron");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -80,20 +80,30 @@ app.whenReady().then(async () => {
     return;
   }
 
+  const isDark = nativeTheme.shouldUseDarkColors;
+  const backgroundColor = isDark ? "#191713" : "#f4f3f0";
   const window = new BrowserWindow({
     width: 1320,
     height: 860,
     minWidth: 980,
     minHeight: 680,
     show: true,
-    backgroundColor: "#f4f3f0",
+    backgroundColor,
     autoHideMenuBar: true,
-    ...desktopWindowChrome(),
+    ...desktopWindowChrome(process.platform, isDark),
     webPreferences: {
       preload: path.join(__dirname, "electron-preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false
     }
+  });
+
+  ipcMain.handle("wwriting:set-title-bar-theme", (_event, dark) => {
+    const overlay = desktopWindowChrome(process.platform, dark).titleBarOverlay;
+    if (overlay) {
+      window.setTitleBarOverlay(overlay);
+    }
+    window.setBackgroundColor(dark ? "#191713" : "#f4f3f0");
   });
 
   await window.loadURL(`http://127.0.0.1:${port}`);

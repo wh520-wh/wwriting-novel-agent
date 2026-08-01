@@ -27,7 +27,7 @@ assert.ok(main.includes('label: "视图"'));
 assert.ok(main.includes('label: "窗口"'));
 assert.ok(main.includes('label: "退出"'));
 assert.ok(main.includes("desktopWindowChrome"), "desktop shell should use the shared window chrome helper");
-assert.ok(main.includes("...desktopWindowChrome()"), "desktop shell should apply the shared window chrome helper");
+assert.ok(/\.\.\.desktopWindowChrome\s*\(/.test(main), "desktop shell should apply the shared window chrome helper");
 assert.ok(main.includes("app-server.mjs"));
 assert.ok(main.includes("contextIsolation: true"));
 assert.ok(main.includes("nodeIntegration: false"));
