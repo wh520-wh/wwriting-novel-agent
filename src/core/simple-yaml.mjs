@@ -42,7 +42,13 @@ function parseValue(rawValue) {
     rawValue.startsWith("[") ||
     rawValue.startsWith("{")
   ) {
-    return JSON.parse(rawValue);
+    try {
+      return JSON.parse(rawValue);
+    } catch {
+      // 手写/遗留值不是严格 JSON（无引号键、尾随注释等）：回退为原始字符串，
+      // 与解析器其余部分的宽松行为一致——绝不因单个值让整个 project.yaml 解析失败。
+      return rawValue;
+    }
   }
   return rawValue;
 }

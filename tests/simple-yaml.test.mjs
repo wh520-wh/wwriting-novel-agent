@@ -83,6 +83,21 @@ test("parseSimpleYaml handles plain string values (unquoted)", () => {
   assert.equal(result.status, "active");
 });
 
+test("parseSimpleYaml 非严格 JSON 值宽松回退而非抛错（回归：parseValue try/catch）", () => {
+  // 手写常见形态：无引号键的对象、无引号字符串的数组、JSON 后跟注释——都不应让整个文件解析失败。
+  const result = parseSimpleYaml(
+    "active_model: {provider: mock, model_name: mock-writer}\n" +
+    "enabled_skills: [写作, 校对]\n" +
+    "other: {\"a\": 1} # 注释\n"
+  );
+  assert.equal(result.active_model, "{provider: mock, model_name: mock-writer}");
+  assert.equal(result.enabled_skills, "[写作, 校对]");
+  assert.equal(result.other, '{"a": 1} # 注释');
+  // 严格 JSON 仍正常解析（不受回退影响）
+  const strict = parseSimpleYaml('nested: {"x":1}\n');
+  assert.deepEqual(strict.nested, { x: 1 });
+});
+
 // --- serializeSimpleYaml ---
 
 test("serializeSimpleYaml serializes simple key-value pairs", () => {
