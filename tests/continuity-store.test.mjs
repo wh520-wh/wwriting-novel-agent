@@ -129,6 +129,15 @@ test("renderContinuityMarkdown: 时间线优先 raw 并带 time 摘要", () => {
   assert.match(md, /上工地/u);
 });
 
+test("renderContinuityMarkdown: null 章号 timeline 渲染为未标章号而非第null章", () => {
+  const md = renderContinuityMarkdown({ schema_version: 2, facts: [], characters: [], timeline: [
+    { chapter_no: null, story_time_raw: "某个夜晚", events: ["夜谈"],
+      time: { kind: "scene", elapsed: null, anchor: null, confidence: "low" } } ] });
+  assert.doesNotMatch(md, /第null章/u);
+  assert.match(md, /未标章号/u);
+  assert.match(md, /夜谈/u);
+});
+
 test("migrateTimelineNode: 透传的畸形 time 被规范化", () => {
   const merged = mergeExtraction(
     { schema_version: 2, facts: [], timeline: [], characters: [] },

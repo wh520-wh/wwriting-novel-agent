@@ -7,13 +7,16 @@ import { buildSystemPrompt } from "./agent-protocol.mjs";
 const HISTORY_WINDOW = 40;
 
 export async function buildChatContext({ projectRoot, project, registry, userMessage }) {
-  const [state, index, bookSummary, continuityMd, history] = await Promise.all([
+  const [state, index, bookSummary, continuityMd, historyRaw] = await Promise.all([
     loadState(projectRoot).catch(() => ({})),
     loadChapterIndex(projectRoot).catch(() => ({ chapters: [] })),
     readOptional(safeJoin(projectRoot, "memory", "book_summary.md")),
     readOptional(safeJoin(projectRoot, "memory", "continuity.md")),
     readChatHistory(projectRoot, { limit: 1000 })
   ]);
+  // 过滤「generating」占位消息（content 为空，只供前端渲染中断条）：空 assistant 消息进模型上下文
+  // 没有信息量，部分兼容端点还会拒绝。与写作循环 appendAssistant 的空 content 归一（agent-engine.mjs）一致。
+  const history = historyRaw.filter((m) => !(m.role === "assistant" && !String(m.content ?? "")));
   const chapters = index.chapters ?? [];
   const snapshot = {
     title: project.title,

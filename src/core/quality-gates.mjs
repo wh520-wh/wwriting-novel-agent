@@ -246,7 +246,7 @@ export function buildFactCheckMessages({ chapterNo, draft, facts, timeline, stor
     const time = t.time ?? {};
     const when = t.story_time_raw ?? t.story_time ?? "";
     const extra = [time.elapsed, time.anchor?.raw, time.kind && time.kind !== "scene" ? time.kind : null].filter(Boolean).join("·");
-    return `- 第${t.chapter_no}章 [${when}${extra ? `·${extra}` : ""}]: ${(t.events ?? []).join("；")}`;
+    return `- ${formatChapterRef(t.chapter_no)} [${when}${extra ? `·${extra}` : ""}]: ${(t.events ?? []).join("；")}`;
   }).join("\n") || "(空)";
   const user = [
     `# 第 ${chapterNo} 章正文`,

@@ -253,6 +253,13 @@ export function registerWriteTools(registry) {
       const instructions = expandInstruction(String(args.instruction ?? ""), {
         currentChapter: state.current_chapter_no ?? 1
       });
+      if (instructions.length === 0) {
+        // expandInstruction 对「写到第N章」且 N 早于当前章返回 []：如实报错，
+        // 避免静默返回 {queued:0} 让模型误以为已排队（与 task-contract 对同一输入的抛错口径一致）。
+        const e = new Error("目标章号早于当前章节，没有可排队的写作任务。请把「写到第N章」的 N 调整为不小于当前章号。");
+        e.code = "bad_args";
+        throw e;
+      }
       const queue = await ctx.getTaskQueue(ctx.projectRoot);
       for (const instruction of instructions) {
         await queue.enqueue(instruction, { mode: "write" });

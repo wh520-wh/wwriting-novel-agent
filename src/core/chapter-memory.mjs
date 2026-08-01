@@ -130,7 +130,7 @@ export function buildRelevantFacts(continuity, currentChapterNo, options = {}) {
     lines.push("", "### 近期时间线");
     for (const t of recentTimeline) {
       const when = t.story_time_raw || "";
-      lines.push(`- 第${t.chapter_no}章${when ? ` [${when}]` : ""}: ${(t.events ?? []).join("；")}`);
+      lines.push(`- ${formatChapterRef(t.chapter_no)}${when ? ` [${when}]` : ""}: ${(t.events ?? []).join("；")}`);
     }
   }
 

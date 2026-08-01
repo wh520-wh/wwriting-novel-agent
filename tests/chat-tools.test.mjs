@@ -233,6 +233,23 @@ test("queue_chapters 复用 expandInstruction 入队", async () => {
   assert.equal(queued.length, 2);
 });
 
+test("queue_chapters 对早于当前章的目标章号如实报错而非静默 queued:0", async () => {
+  const registry = createToolRegistry();
+  registerWriteTools(registry);
+  const projectRoot = await makeProject();
+  const project = await (await import("../src/core/project-store.mjs")).loadProject(projectRoot);
+  const { loadState, saveState } = await import("../src/core/project-store.mjs");
+  await saveState(projectRoot, { ...(await loadState(projectRoot)), current_chapter_no: 3 });
+  const queued = [];
+  const out = await executeTool(registry, "queue_chapters", { instruction: "写到第1章" }, {
+    projectRoot, project, getTaskQueue: async () => ({ enqueue: async (text) => { queued.push(text); return { id: String(queued.length) }; } })
+  });
+  assert.equal(out.ok, false);
+  assert.equal(out.error, "bad_args");
+  assert.match(out.message, /早于当前章节/u);
+  assert.equal(queued.length, 0);
+});
+
 test("update_continuity 修改设定档案", async () => {
   const registry = createToolRegistry();
   registerWriteTools(registry);

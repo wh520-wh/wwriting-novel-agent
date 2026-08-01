@@ -21,7 +21,16 @@ export async function resolveRetryCandidate({ projectRoot, queue, job, taskId = 
   }
   if (taskId) {
     const selected = queueState.tasks.find((task) => task.id === String(taskId));
-    if (!selected || !["interrupted", "cancelled"].includes(selected.status)) {
+    if (!selected) {
+      return unavailable("retry_invalid_task_id", "只能重试已中断或已停止的任务。", 400);
+    }
+    // 崩溃残留：任务在队列里仍是 running，但函数开头已确认无存活 job（isJobRunningForRetry 提前返回），
+    // 这里的 running 即 stale。与下方无 taskId 分支的 staleRunning 判定保持一致，
+    // 走 serveRunRetry 的 stale_queue_task 路径直接续跑，避免「仪表盘广播可重试、点击却 400」的矛盾。
+    if (selected.status === "running" && ["running", "interrupted", "cancelled"].includes(state.project_status)) {
+      return available({ taskId: selected.id, candidateSource: "stale_queue_task", projectStatus: state.project_status });
+    }
+    if (!["interrupted", "cancelled"].includes(selected.status)) {
       return unavailable("retry_invalid_task_id", "只能重试已中断或已停止的任务。", 400);
     }
     return available({ taskId: selected.id, candidateSource: "queue_task", projectStatus: state.project_status });

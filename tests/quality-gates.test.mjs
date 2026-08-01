@@ -60,6 +60,17 @@ test("buildFactCheckMessages 含豁免规则", () => {
   assert.match(user, /第 9 章/u);
 });
 
+test("buildFactCheckMessages null 章号 timeline 渲染为未标章号而非第null章", () => {
+  const messages = buildFactCheckMessages({
+    chapterNo: 9, draft: "正文", facts: [],
+    timeline: [{ chapter_no: null, story_time_raw: "次日", events: ["码头"] }]
+  });
+  const user = messages[1].content;
+  assert.doesNotMatch(user, /第null章/u);
+  assert.match(user, /未标章号/u);
+  assert.match(user, /码头/u);
+});
+
 test("parseFactCheck 解析合法输出", () => {
   const raw = '```json\n{"conflicts":[{"draft_quote":"从十二楼坠落","conflicts_with":"六楼","prior_chapter":1,"severity":"high","suggestion":"改为六楼"}]}\n```';
   const out = parseFactCheck(raw);
