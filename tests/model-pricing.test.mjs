@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildPricingTable, fillOfficialPricing, isDeepSeekModel, normalizePricing, resolvePricing } from "../src/core/model-pricing.mjs";
+import { buildPricingTable, fillOfficialPricing, normalizePricing, resolvePricing } from "../src/core/model-pricing.mjs";
 
 test("normalizePricing 接受正数价格并保留币种", () => {
   const p = normalizePricing({ input_per_million: 2, output_per_million: 8, cache_hit_per_million: 0.5 });
@@ -95,10 +95,4 @@ test("fillOfficialPricing 未收录的模型不补填（交给 ×2% 默认折算
 test("fillOfficialPricing 非官方收录模型不补填", () => {
   const filled = fillOfficialPricing("custom-model", "https://example.com/v1", { input_per_million: 1, output_per_million: 2 });
   assert.equal(filled.cache_hit_per_million, undefined);
-});
-
-test("isDeepSeekModel 按模型前缀或 baseUrl 判断", () => {
-  assert.equal(isDeepSeekModel("deepseek-v4-flash", ""), true);
-  assert.equal(isDeepSeekModel("my-model", "https://api.deepseek.com/v1"), true);
-  assert.equal(isDeepSeekModel("mimo-v2.5-pro", "https://api.xiaomimimo.com/v1"), false);
 });

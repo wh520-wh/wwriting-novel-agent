@@ -2,7 +2,6 @@
 import { registerSchema, parseStructuredOutput, STRUCTURED_OUTPUT_ERRORS } from "./structured-output.mjs";
 
 export const MEMORY_SUMMARY_MAX_CHARS = 2000;
-export const MEMORY_EXTRACT_STAGE = "memory_extract";
 
 // 注册 memory_extraction@v1 schema（模块加载时执行一次，registerSchema 幂等）
 registerSchema("memory_extraction", "v1", {

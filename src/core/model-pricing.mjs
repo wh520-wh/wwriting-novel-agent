@@ -8,10 +8,6 @@ export const OFFICIAL_PRICING = {
   "mimo-v2.5-pro-ultraspeed": { input_per_million: 9.0, output_per_million: 18.0, cache_hit_per_million: 0.075 }
 };
 
-export function isDeepSeekModel(modelName, baseUrl) {
-  return String(modelName ?? "").startsWith("deepseek-") || String(baseUrl ?? "").includes("api.deepseek.com");
-}
-
 // 检测到官方收录的模型（DeepSeek / MiMo）且字段未填时按官方人民币价补缺
 // （输入/输出/命中价各自独立判断）；用户已填的值绝不覆盖。返回浅拷贝，不改入参。
 export function fillOfficialPricing(modelName, baseUrl, pricing = {}) {

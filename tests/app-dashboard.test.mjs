@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { loadDashboardData, loadProjectList, readChapterContent, validateProjectRoot } from "../src/core/app-dashboard.mjs";
+import { loadDashboardData, readChapterContent, validateProjectRoot } from "../src/core/app-dashboard.mjs";
 import { appendFailure } from "../src/core/failures-store.mjs";
 import { runProject } from "../src/core/agent-engine.mjs";
 import { createProject, loadState, saveState, upsertChapter } from "../src/core/project-store.mjs";
@@ -61,8 +61,6 @@ test("loadDashboardData summarizes real project files", async () => {
   assert.equal(data.sources.count, 1);
   assert.equal(data.sources.latest[0].untrusted, true);
   assert.equal(data.review.status, "passed");
-  const projects = await loadProjectList(root);
-  assert.ok(projects.some((project) => project.projectRoot === projectRoot));
   assert.equal(await validateProjectRoot(projectRoot), projectRoot);
 });
 

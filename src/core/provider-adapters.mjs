@@ -538,14 +538,8 @@ export function resolveModelCapabilities(modelConfig = {}) {
   };
 }
 
-// 保留导出名与行为，委托给 resolveModelCapabilities（现有调用方不破：
-// model-client L3 缓存、chapterToolChoice、deepseek-detection 测试）。
-export function isReasonerModel(modelConfig = {}) {
-  return resolveModelCapabilities(modelConfig).supportsThinking;
-}
-
 function requiresAutoToolChoice(modelConfig = {}) {
-  return isReasonerModel(modelConfig);
+  return resolveModelCapabilities(modelConfig).supportsThinking;
 }
 
 function extractText(raw) {

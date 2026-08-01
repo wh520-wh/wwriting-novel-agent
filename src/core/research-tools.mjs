@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import { isPermissionAllowed, resolveRuntimeConfig } from "./config-runtime.mjs";
 import { appendEvent } from "./event-log.mjs";
-import { safeJoin, sha256, writeFileAtomic, writeJsonAtomic } from "./fs-utils.mjs";
+import { safeJoin, sha256, writeJsonAtomic } from "./fs-utils.mjs";
 
 export class NetworkPermissionError extends Error {
   constructor(message = "Network tools are disabled for this project.") {

@@ -5,7 +5,6 @@ import {
   OpenAICompatibleAdapter,
   ProviderConfigurationError,
   ProviderTransportError,
-  isReasonerModel,
   resolveModelCapabilities
 } from "../src/core/provider-adapters.mjs";
 
@@ -214,20 +213,6 @@ test("OpenAICompatibleAdapter uses auto tool choice for DeepSeek thinking models
   assert.equal(captured.body.tools[0].function.name, "append_chapter_segment");
   assert.equal(captured.body.tool_choice, "auto");
   assert.equal(captured.body.stream, undefined);
-});
-
-test("isReasonerModel：v4-flash 默认非思考不再判为 reasoner；v4-pro 与旧别名保留", () => {
-  const cfg = (model_name, base_url = "https://api.deepseek.com") => ({ model_name, base_url });
-  // F1：deepseek-v4-flash 默认 non-thinking（官方 2026-07 文档），temperature 生效 → 非 reasoner
-  assert.equal(isReasonerModel(cfg("deepseek-v4-flash")), false);
-  assert.equal(isReasonerModel(cfg("deepseek-v4-flash", "https://api.deepseek.com/v1")), false);
-  // v4-pro 与旧别名名单保留
-  assert.equal(isReasonerModel(cfg("deepseek-v4-pro")), true);
-  assert.equal(isReasonerModel(cfg("deepseek-reasoner")), true);
-  assert.equal(isReasonerModel(cfg("deepseek-v4.5-xxx")), true, "无 -flash 后缀的 v4 系未知型号保守保留");
-  // 非官方端点 / 非 DeepSeek 模型不受影响
-  assert.equal(isReasonerModel(cfg("deepseek-v4-flash", "https://relay.example.com/v1")), false);
-  assert.equal(isReasonerModel(cfg("mimo-v2.5-pro", "https://api.xiaomimimo.com/v1")), false);
 });
 
 test("OpenAICompatibleAdapter v4-flash（默认 non-thinking）走与 deepseek-chat 相同的单工具 force 分支", async () => {
