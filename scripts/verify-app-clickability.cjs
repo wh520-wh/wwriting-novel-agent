@@ -110,6 +110,7 @@ async function main() {
     show: false,
     backgroundColor: "#f4f3f0",
     ...desktopWindowChrome(),
+    // 刻意不挂 preload：harness 不注册 ipcMain handler，挂上会使 bridge invoke reject（072d89e 曾因此破坏本 harness）；此处测试浏览器兜底路径，desktop bridge 由 verify:electron-runtime 覆盖。
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
