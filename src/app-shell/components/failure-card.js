@@ -2,25 +2,33 @@ import { FAILURE_COMMANDS } from '../../shared/failure-commands.mjs';
 
 export { FAILURE_COMMANDS };  // 重导出供 verify-app-shell 漂移守卫读取
 
-export function renderFailureCard(card, { onAction }) {
+export function renderFailureCard(card, { onAction = () => {} } = {}) {
+  const source = card && typeof card === 'object' ? card : {};
+  const kind = source.kind ?? 'unknown';
+  const title = source.title ?? '需要处理的异常';
+  const bodyText = source.body ?? '故障记录不完整，请打开技术细节或刷新后重试。';
+  const diagnostics = source.diagnostics && typeof source.diagnostics === 'object' ? source.diagnostics : {};
+  const actionItems = Array.isArray(source.actions) ? source.actions : [];
+  const resolution = source.resolution ?? null;
+
   const el = document.createElement('article');
-  el.className = `failure-card kind-${card.kind}`;
-  el.dataset.failureId = card.id;
-  el.dataset.ts = card.ts;
+  el.className = `failure-card kind-${kind}`;
+  el.dataset.failureId = source.id ?? '';
+  el.dataset.ts = source.ts ?? '';
 
   const head = document.createElement('header');
   head.className = 'failure-head';
-  head.textContent = `故障 #${card.seq} · ${card.title} · ${formatTime(card.ts)}`;
+  head.textContent = `故障 #${source.seq ?? ''} · ${title} · ${formatTime(source.ts)}`;
   el.appendChild(head);
 
   const body = document.createElement('p');
   body.className = 'failure-body';
-  body.textContent = card.body;
+  body.textContent = bodyText;
   el.appendChild(body);
 
   const actions = document.createElement('div');
   actions.className = 'failure-actions';
-  for (const action of card.actions) {
+  for (const action of actionItems) {
     if (action.command === 'retry-with-prompt') {
       // §4.5.2: 内嵌 textarea + 提交按钮，替代普通按钮
       const inlinePrompt = document.createElement('div');
@@ -28,13 +36,13 @@ export function renderFailureCard(card, { onAction }) {
 
       const textarea = document.createElement('textarea');
       textarea.placeholder = '输入改写提示…';
-      textarea.disabled = !!card.resolution;
+      textarea.disabled = !!resolution;
 
       const submitBtn = document.createElement('button');
       submitBtn.type = 'button';
       submitBtn.textContent = action.label;
       if (action.destructive) submitBtn.classList.add('destructive');
-      submitBtn.disabled = !!card.resolution;
+      submitBtn.disabled = !!resolution;
       submitBtn.addEventListener('click', () => {
         onAction(card, { command: 'retry-with-prompt', args: { prompt: textarea.value } });
       });
@@ -47,17 +55,17 @@ export function renderFailureCard(card, { onAction }) {
       btn.type = 'button';
       btn.textContent = action.label;
       if (action.destructive) btn.classList.add('destructive');
-      btn.disabled = !!card.resolution;
+      btn.disabled = !!resolution;
       btn.addEventListener('click', () => onAction(card, action));
       actions.appendChild(btn);
     }
   }
   el.appendChild(actions);
 
-  if (card.resolution) {
+  if (resolution) {
     const done = document.createElement('p');
     done.className = 'failure-resolved';
-    done.textContent = `已选: ${card.resolution.action} · ${formatTime(card.resolution.submittedAt)}`;
+    done.textContent = `已选: ${resolution.action} · ${formatTime(resolution.submittedAt)}`;
     el.appendChild(done);
   }
 
@@ -67,7 +75,7 @@ export function renderFailureCard(card, { onAction }) {
   summary.textContent = '看技术细节';
   details.appendChild(summary);
   const pre = document.createElement('pre');
-  pre.textContent = JSON.stringify(card.diagnostics, null, 2);
+  pre.textContent = JSON.stringify(diagnostics, null, 2) ?? '{}';
   details.appendChild(pre);
   el.appendChild(details);
 

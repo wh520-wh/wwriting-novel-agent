@@ -217,6 +217,29 @@ describe('renderFailureCard', () => {
     assert.ok(actionsDiv.children[0].className.includes('destructive'));
     assert.equal(actionsDiv.children[1].className.includes('destructive'), false);
   });
+
+  it('renders a legacy card without actions without throwing', () => {
+    assert.doesNotThrow(() => renderFailureCard({
+      id: "legacy-http-400",
+      kind: "provider-error",
+      title: "模型服务出错",
+      body: "模型服务拒绝了请求（HTTP 400）。",
+      ts: "2026-08-01T01:00:00Z",
+      diagnostics: {}
+    }, { onAction() {} }));
+
+    const el = renderFailureCard({
+      id: "legacy-http-400",
+      kind: "provider-error",
+      title: "模型服务出错",
+      body: "模型服务拒绝了请求（HTTP 400）。",
+      ts: "2026-08-01T01:00:00Z",
+      diagnostics: {}
+    }, { onAction() {} });
+    assert.equal(el.children[2].children.length, 0);
+    assert.ok(el.children[1].textContent.includes("模型服务拒绝了请求"));
+    assert.equal(el.children[3].children[0].textContent, "看技术细节");
+  });
 });
 
 describe('FAILURE_COMMANDS', () => {
