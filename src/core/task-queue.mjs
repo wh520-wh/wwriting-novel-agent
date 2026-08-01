@@ -304,10 +304,10 @@ export function expandInstruction(instruction, { currentChapter = 1 } = {}) {
     return chapterRange(current, target, outputVerb);
   }
 
-  const countMatch = /^(写|续写)(\d+)章$/u.exec(text);
+  const countMatch = /^(写|续写)(\d+|[一二三四五六七八九十])章$/u.exec(text);
   if (countMatch) {
     const [, verb, countText] = countMatch;
-    const count = Number(countText);
+    const count = parseChapterCount(countText);
     if (!Number.isInteger(count) || count < 1) {
       return [text];
     }
@@ -315,6 +315,14 @@ export function expandInstruction(instruction, { currentChapter = 1 } = {}) {
   }
 
   return [text];
+}
+
+// 中文数字章数解析（与 task-contract.compileWritingTasks 的 parseChapterCount 对齐；
+// 「写三章」与「写3章」行为一致，避免 chat 的 queue_chapters 把中文数字退化成自由指令）。
+function parseChapterCount(token) {
+  const map = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+  if (map[token] !== undefined) return map[token];
+  return Number(token);
 }
 
 function createEmptyState() {

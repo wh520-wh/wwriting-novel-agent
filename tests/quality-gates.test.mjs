@@ -24,6 +24,22 @@ test("runTitleGate 中文数字解析", () => {
   assert.equal(parseChineseChapterNo("第9章"), 9);
 });
 
+test("runTitleGate 纯单位中文数字可解析，合法标题不再被 null 绕过（回归）", () => {
+  // 与 timeline-check.parseCnNumber 对齐：「十」「二十」等纯单位必须解析出数字，
+  // 否则「第十章」在第 5 章时 foundNum===null 会绕过串章检查。
+  assert.equal(parseChineseChapterNo("十"), 10);
+  assert.equal(parseChineseChapterNo("二十"), 20);
+  assert.equal(parseChineseChapterNo("第十一章"), 11);
+  // 章号一致 → passed（修复前也 passed，但原因是 null 绕过；修复后是真实匹配）
+  const ok = runTitleGate("# 第十章\n\n正文", 10);
+  assert.equal(ok.status, "passed");
+  assert.equal(ok.found_title, "第十章");
+  // 章号不一致 → failed（修复前因 null 绕过而误 passed）
+  const bad = runTitleGate("# 第十章\n\n正文", 5);
+  assert.equal(bad.status, "failed");
+  assert.equal(bad.found_title, "第十章");
+});
+
 test("runWordCapGate 超标 warning + overflow 正确", () => {
   const out = runWordCapGate(5147, { targetWords: 3300 });
   assert.equal(out.status, "warning");

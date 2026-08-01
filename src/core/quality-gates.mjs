@@ -158,9 +158,13 @@ export function parseChineseChapterNo(text) {
         result = (result + section + lastDigit) * unit;
         section = 0;
         lastDigit = 0;
+        any = true;
       } else if (unit >= 10) {
         section += (lastDigit || 1) * unit;
         lastDigit = 0;
+        // 纯单位（如「十」=10、「二十」=20）也算有数字：与 timeline-check.parseCnNumber 一致，
+        // 否则「第十章」解析为 null 会被 runTitleGate 的 foundNum===null 分支绕过（合法数字标题漏检）。
+        any = true;
       }
     }
   }

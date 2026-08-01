@@ -119,3 +119,10 @@ promoteNext: null — blocked by stale running task   (写第4章=queued 永不�
 |------|------|----------|
 | S3 | `book-export.mjs` 新增 `stripPipelineArtifacts`（与 `app-dashboard.stripChapterMarkup` 同规则）：剥离 `<!-- segment:N ... -->` 标记、`# Chapter 001` 草稿头、规整空行；md/txt 两个分支共用 | 新增「composeBook 剥离流水线产物」测试（真实流水线内容，md+txt 双格式断言） |
 | S2 | `simple-yaml.mjs` `parseValue` 的 `JSON.parse` 加 try/catch：手写/遗留的非严格 JSON 值（无引号键、无引号数组值、JSON 后跟注释）回退为原始字符串，与解析器整体宽松行为一致，整个 project.yaml 不再因单个值解析失败 | 新增「非严格 JSON 值宽松回退而非抛错」测试（三种手写形态 + 严格 JSON 不受影响） |
+
+### ✅ 第三轮优化记录（2026-08-01，已实施并全量测试通过：1013/1013）
+
+| 优化 | 改动 | 回归测试 |
+|------|------|----------|
+| R4 | `quality-gates.mjs` `parseChineseChapterNo` 支持纯单位中文数字（「十」=10、「二十」=20，`any` 标志在单位分支也置位），对齐 `timeline-check.parseCnNumber`——此前「第十章」解析为 null，被 `runTitleGate` 的 `foundNum===null` 分支绕过串章检查 | 新增「纯单位中文数字可解析，合法标题不再被 null 绕过」测试（`parseChineseChapterNo("十")=10`；章 10 通过 / 章 5 判 failed） |
+| 一致性 | `task-queue.mjs` `expandInstruction` 的「写N章」支持中文数字（一~十），对齐 `compileWritingTasks.parseChapterCount`——此前 chat 的 `queue_chapters` 收到「写三章」会退化成自由指令（只写当前章）而非排 3 章任务 | 新增「中文数字章数与 compileWritingTasks 对齐」测试（写三章=3 章 / 续写一章 / 写十章） |
