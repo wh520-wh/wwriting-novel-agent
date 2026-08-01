@@ -239,7 +239,13 @@ export async function runProject(projectRoot, options = {}) {
     await appendFailureCard(projectRoot, state, {
       type: "model-error",
       message: error.message,
-      data: { reason: "interrupted" }
+      data: {
+        // ProviderTransportError 的具体信息(DeepSeek 400 的 status/body/reason)透传给故障卡,
+        // derive-failure-card 的 diagnostics.providerStatus/providerReason/providerBody 直接读取。
+        reason: error.reason ?? "interrupted",
+        status: error.status ?? null,
+        body: typeof error.body === "string" ? error.body.slice(0, 2000) : null
+      }
     });
     await emit(CORE_EVENTS.TaskFailed, {
       projectRoot,

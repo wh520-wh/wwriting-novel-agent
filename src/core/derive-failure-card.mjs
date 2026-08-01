@@ -195,7 +195,13 @@ export function deriveFailureCard(event, state = {}, options = {}) {
       tool: event.data?.tool ?? null,
       promptHash: event.data?.prompt_hash ?? null,
       logPath: 'run_log.jsonl',
-      rawError: clean(event.message ?? null, 500)
+      rawError: clean(event.message ?? null, 500),
+      // 模型供应商具体错误:status/reason/body(DeepSeek 400 的 JSON 正文)。
+      // 仅 provider-error 卡读取——data.status/reason 在 words-short 等卡是其他语义,避免误展示;
+      // failure-card.js 已 JSON.stringify(diagnostics) 展示,加字段后自动出现在"技术细节"区。
+      providerStatus: kind === "provider-error" ? (event.data?.status ?? null) : null,
+      providerReason: kind === "provider-error" ? (event.data?.reason ?? null) : null,
+      providerBody: kind === "provider-error" ? clean(event.data?.body ?? null, 1000) : null
     },
     resolution: null
   };

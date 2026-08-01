@@ -240,6 +240,32 @@ describe('renderFailureCard', () => {
     assert.ok(el.children[1].textContent.includes("模型服务拒绝了请求"));
     assert.equal(el.children[3].children[0].textContent, "看技术细节");
   });
+
+  it('failure-card: provider-error 技术细节含 providerBody(providerStatus=400)', async () => {
+    const card = {
+      id: "flr_test", seq: 1, chapterNo: 2, kind: "provider-error",
+      title: "模型服务出错",
+      body: "第 2 章遇到模型服务异常: OpenAI-compatible provider returned HTTP 400.",
+      ts: "2026-08-02T01:30:02Z",
+      actions: [{ label: "重试当前段", command: "retry-segment", args: {} }],
+      diagnostics: {
+        eventId: "flr_test", tool: null, promptHash: null, logPath: "run_log.jsonl",
+        rawError: "OpenAI-compatible provider returned HTTP 400.",
+        providerStatus: 400, providerReason: "client-fatal",
+        providerBody: '{"error":{"message":"Invalid tool_calls"}}'
+      },
+      resolution: null
+    };
+    const el = renderFailureCard(card, { onAction() {} }); // 按该文件现有 render 调用签名
+    // failure-card.js:73 details className="failure-diagnostics";<pre> 无 className、永远在 details.children[1]
+    // MockElement.querySelector 只支持 class 选择器(不支持 tag),故用 .failure-diagnostics 取 details、children[1] 取 pre。
+    // 对齐 tests/app-shell/failure-card-render.test.mjs:182-192 现有范式。
+    const details = el.querySelector(".failure-diagnostics");
+    const pre = details.children[1];
+    const parsed = JSON.parse(pre.textContent);
+    assert.equal(parsed.providerStatus, 400, "技术细节 JSON 应含 providerStatus");
+    assert.match(parsed.providerBody ?? "", /Invalid tool_calls/u, "技术细节 JSON 应含 providerBody 原文");
+  });
 });
 
 describe('FAILURE_COMMANDS', () => {

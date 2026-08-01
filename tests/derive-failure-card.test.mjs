@@ -106,3 +106,51 @@ test("legacy model-error is normalized into an actionable provider failure", () 
   assert.ok(Array.isArray(card.actions));
   assert.ok(card.actions.some((action) => action.command === "retry-segment"));
 });
+
+test("deriveFailureCard: provider-error 透出 providerBody/providerStatus", () => {
+  const card = normalizeFailureCard({
+    type: "model-error",
+    chapter_no: 2,
+    message: "OpenAI-compatible provider returned HTTP 400.",
+    ts: "2026-08-02T01:30:02Z",
+    data: {
+      reason: "client-fatal",
+      status: 400,
+      body: '{"error":{"message":"Invalid tool_calls","type":"invalid_request_error"}}'
+    }
+  });
+  assert.equal(card.kind, "provider-error");
+  assert.equal(card.diagnostics.providerStatus, 400);
+  assert.equal(card.diagnostics.providerReason, "client-fatal");
+  assert.ok(card.diagnostics.providerBody.includes("Invalid tool_calls"),
+    `providerBody 应含 DeepSeek 正文,实际: ${card.diagnostics.providerBody}`);
+});
+
+test("deriveFailureCard: data 无 status/reason/body 时 provider 字段回退为 null", () => {
+  const card = normalizeFailureCard({
+    type: "model-error",
+    chapter_no: 2,
+    message: "No provider adapter configured for foo",
+    ts: "2026-08-02T02:00:00Z",
+    data: {}
+  });
+  assert.equal(card.kind, "provider-error");
+  assert.equal(card.diagnostics.providerStatus, null);
+  assert.equal(card.diagnostics.providerReason, null);
+  assert.equal(card.diagnostics.providerBody, null);
+});
+
+test("deriveFailureCard: 非 provider-error 卡不读 data.status/reason(避免 words-short 污染)", () => {
+  const card = deriveFailureCard({
+    id: "f6",
+    ts: "2026-08-02T02:00:00Z",
+    type: "quality_gate_failed",
+    message: "word-count gate failed",
+    chapter_no: 3,
+    data: { gate: "word-count", status: "failed", actual_words: 2380, min_words: 3200 }
+  }, { current_chapter_no: 3 });
+  assert.equal(card.kind, "words-short");
+  assert.equal(card.diagnostics.providerStatus, null, "words-short 的 data.status 不应透出为 providerStatus");
+  assert.equal(card.diagnostics.providerReason, null);
+  assert.equal(card.diagnostics.providerBody, null);
+});
