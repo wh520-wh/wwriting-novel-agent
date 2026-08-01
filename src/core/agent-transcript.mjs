@@ -53,8 +53,9 @@ export class ToolTranscript {
     return pending;
   }
 
+  // 序列化为独立快照（消息均为浅层对象，浅拷贝即可），后续 append 不影响已序列化结果
   serialize() {
-    return { messages: this.messages };
+    return { messages: this.messages.map((m) => ({ ...m })) };
   }
 
   static restore(serialized) {

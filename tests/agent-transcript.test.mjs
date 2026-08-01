@@ -68,7 +68,7 @@ test("serialize + restore: 循环不变量", () => {
   t.appendUser("写章");
   t.appendAssistant({ content: null, reasoning_content: "思考", tool_calls: [{ id: "c1", type: "function", function: { name: "read_chapter", arguments: '{"chapter_no":1}' } }] });
   t.appendToolResult("c1", { chapter_no: 1 });
-  const serialized = t.serialize();
+  const serialized = JSON.parse(JSON.stringify(t.serialize()));
   const restored = ToolTranscript.restore(serialized);
   assert.deepEqual(restored.toMessages(), t.toMessages());
   assert.equal(restored.pendingToolCalls.length, 0);
