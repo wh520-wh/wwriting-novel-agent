@@ -90,11 +90,15 @@ export class OpenAICompatibleAdapter {
     const allowedTools = metadata?.toolRequest?.allowed_tools ?? [];
     const selectedModel = modelConfig.model_name ?? model;
     const stream = modelConfig.stream === true && !usesChapterTool;
+    // capability 净化：thinking 模型（reasoner/v4-pro）不支持 temperature/top_p，注入会被 DeepSeek 400。
+    // resolveModelCapabilities 已算 supportsTemperature/supportsTopP，这里统一在请求构造层生效
+    // （此前仅在 model-client L3 辅助缓存路径使用，正文写作路径漏净化）。
+    const caps = resolveModelCapabilities({ ...modelConfig, base_url: baseUrl, model_name: selectedModel });
     const body = {
       model: selectedModel,
       messages: buildMessages({ messages, prompt, usesChapterTool, allowedTools }),
-      ...optionalNumber("temperature", modelConfig.temperature),
-      ...optionalNumber("top_p", modelConfig.top_p),
+      ...(caps.supportsTemperature ? optionalNumber("temperature", modelConfig.temperature) : {}),
+      ...(caps.supportsTopP ? optionalNumber("top_p", modelConfig.top_p) : {}),
       ...optionalNumber("max_tokens", modelConfig.max_output_tokens ?? modelConfig.max_tokens ?? (usesChapterTool ? DEFAULT_CHAPTER_TOOL_MAX_TOKENS : undefined)),
       ...buildChapterToolRequest(usesChapterTool, { ...modelConfig, base_url: baseUrl, model_name: selectedModel }, allowedTools, metadata),
       ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
