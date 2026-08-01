@@ -1255,20 +1255,30 @@ function parseGatewayToolOutput(gatewayResult) {
   };
 }
 
-// 写作 agent 循环（runWritingAgentLoop）每轮只处理一个工具调用（与 chat 的多工具支持不同）。
-// 这是有意的设计选择：写作流水线中工具之间有严格依赖（read → edit → append），
-// 单工具轮次让模型每次只做一个决策，结果喂回后由下一轮决策是否继续，避免批次决策失误导致全局阻塞。
-function parseOpenAIToolCall(raw) {
+// 解析模型一轮返回的全部 tool_calls(并行 function calling)。
+// 写作 agent 循环需要全部执行并回填,保证 transcript 里每个 tool_call 都有对应 role=tool 结果
+// (OpenAI/DeepSeek 硬性契约:tool_calls 与 tool 结果必须 1:1,否则下一轮 400)。
+function parseOpenAIToolCalls(raw) {
   const message = raw?.choices?.[0]?.message;
-  const toolCall = Array.isArray(message?.tool_calls) ? message.tool_calls[0] : null;
-  if (toolCall) {
-    return {
-      type: "tool_call",
-      id: toolCall.id ?? null,
-      tool: toolCall.function?.name ?? toolCall.name ?? null,
-      input: parseToolCallArguments(toolCall.function?.arguments ?? toolCall.arguments)
-    };
+  if (!Array.isArray(message?.tool_calls) || message.tool_calls.length === 0) {
+    return [];
   }
+  return message.tool_calls.map((tc) => ({
+    type: "tool_call",
+    id: tc.id ?? null,
+    tool: tc.function?.name ?? tc.name ?? null,
+    input: parseToolCallArguments(tc.function?.arguments ?? tc.arguments)
+  }));
+}
+
+// 写作 agent 循环(runWritingAgentLoop)每轮的主 output 取首个 tool_call(向后兼容)。
+// 其余 tool_call 由 runWritingAgentLoop 的 executeTool 回调在本轮内顺序执行+回填(Task 2)。
+function parseOpenAIToolCall(raw) {
+  const calls = parseOpenAIToolCalls(raw);
+  if (calls.length > 0) {
+    return calls[0];
+  }
+  const message = raw?.choices?.[0]?.message;
   if (message?.function_call) {
     return {
       type: "tool_call",
