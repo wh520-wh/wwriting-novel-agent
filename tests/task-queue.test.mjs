@@ -218,6 +218,12 @@ test("expandInstruction expands chapter ranges and counts but keeps precise chap
   assert.deepEqual(expandInstruction("写第4章，加入新角色林夕", { currentChapter: 2 }), ["写第4章，加入新角色林夕"]);
 });
 
+test("expandInstruction 中文数字章数与 compileWritingTasks 对齐（写三章=3 章）", () => {
+  assert.deepEqual(expandInstruction("写三章", { currentChapter: 4 }), ["写第4章", "写第5章", "写第6章"]);
+  assert.deepEqual(expandInstruction("续写一章", { currentChapter: 4 }), ["续写第4章"]);
+  assert.deepEqual(expandInstruction("写十章", { currentChapter: 1 }), ["写第1章", "写第2章", "写第3章", "写第4章", "写第5章", "写第6章", "写第7章", "写第8章", "写第9章", "写第10章"]);
+});
+
 test("schema v2 preserves recovery metadata across reload", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-queue-recovery-"));
   const queue = new TaskQueue(root);
