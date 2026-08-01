@@ -4,6 +4,7 @@ import { motion } from "./motion-runtime.js";
 import { renderFailureCard } from "./components/failure-card.js";
 import { renderDiff, renderParagraphDiff } from "./diff-view.js";
 import { deriveFailures } from "./agent-truth.mjs";
+import { deriveRunPresentation, deriveStepState } from "./run-presentation.mjs";
 import { postJson } from "./api-client.js";
 import { sendChatMessage, confirmChatAction } from "./api-client.js";
 import { renderMarkdown, cleanAssistantContent } from "./markdown-lite.mjs";
@@ -183,8 +184,9 @@ export function createThreadRenderer(ctx) {
 
   function buildSessionHeadInner(data) {
     const frag = document.createDocumentFragment();
-    const summary = data.summary;
-    const project = data.project;
+    const summary = data.summary ?? {};
+    const project = data.project ?? {};
+    const run = deriveRunPresentation(data);
     const identity = deriveProjectIdentity({ project, projectRoot: data.projectRoot });
     const titleRow = document.createElement("div");
     titleRow.className = "session-title session-title--trail";
@@ -203,20 +205,20 @@ export function createThreadRenderer(ctx) {
     meta.append(h2, seed);
     titleRow.append(cover, meta);
     frag.append(titleRow);
-    if (["interrupted", "cancelled", "running"].includes(summary.projectStatus)) {
+    if (["interrupted", "cancelled", "running"].includes(run.status)) {
       const recovery = document.createElement("div");
-      recovery.className = `recovery-card ${statusClass(summary.projectStatus)}`;
+      recovery.className = `recovery-card ${statusClass(run.status)}`;
       const text = document.createElement("span");
-      const stage = translateStage(summary.currentStage ?? data.state?.current_stage);
-      text.textContent = summary.projectStatus === "running"
-        ? `上次进展：第 ${summary.currentChapterNo ?? "-"} 章 · ${stage}`
-        : `${summary.projectStatus === "cancelled" ? "已停止" : "已中断"}：第 ${summary.currentChapterNo ?? "-"} 章 · ${stage}`;
+      const stage = translateStage(run.resumeStage);
+      text.textContent = run.status === "running"
+        ? `上次进展：第 ${run.chapterNo ?? "-"} 章 · ${stage}`
+        : `第 ${run.chapterNo ?? "-"} 章在${stage}阶段${run.label}`;
       recovery.append(text);
-      if (summary.projectStatus === "interrupted" || summary.projectStatus === "cancelled") {
+      if (run.recoveryLabel) {
         const retry = document.createElement("button");
         retry.type = "button";
-        retry.className = "task-action retry";
-        retry.textContent = "继续";
+        retry.className = "task-action recovery-action";
+        retry.textContent = run.recoveryLabel;
         retry.addEventListener("click", () => ctx.handleRetry());
         recovery.append(retry);
       }
@@ -347,12 +349,7 @@ export function createThreadRenderer(ctx) {
       const reason = document.createElement("div");
       reason.className = "task-error";
       reason.textContent = task.error ?? (task.status === "cancelled" ? "用户停止" : "任务中断");
-      const retryBtn = document.createElement("button");
-      retryBtn.className = "task-action retry";
-      retryBtn.type = "button";
-      retryBtn.textContent = "从中断处继续";
-      retryBtn.addEventListener("click", () => ctx.handleRetry(task.id));
-      body.append(reason, retryBtn);
+      body.append(reason);
     }
     card.append(body);
 
@@ -437,20 +434,19 @@ export function createThreadRenderer(ctx) {
 
   function updateStageChips(block, data) {
     if (!block || !block.stageRow) return;
-    const summary = data.summary;
-    const activeStage = summary.currentStage === "blocked" ? (data.state?.blocked_at_stage ?? "") : (summary.currentStage ?? "");
-    const activeIndex = STAGE_ORDER.indexOf(activeStage);
-    const completed = summary.projectStatus === "completed";
+    const summary = data.summary ?? {};
+    const run = deriveRunPresentation(data);
 
     block.stageRow.replaceChildren(...STAGE_CHIPS.map((chip) => {
       const el = document.createElement("span");
       el.className = "run-stage-chip";
-      const chipMax = Math.max(...chip.stages.map((s) => STAGE_ORDER.indexOf(s)));
-      const isCurrent = chip.stages.includes(activeStage);
-      if (completed || (activeIndex >= 0 && activeIndex > chipMax)) {
+      const chipStatus = deriveStepState(run, chip.stages, STAGE_ORDER);
+      if (chipStatus === "done") {
         el.classList.add("done");
-      } else if (isCurrent) {
+      } else if (chipStatus === "running") {
         el.classList.add("active");
+      } else if (chipStatus === "interrupted" || chipStatus === "cancelled") {
+        el.classList.add(chipStatus);
       }
       el.textContent = chip.label;
       return el;
@@ -471,8 +467,7 @@ export function createThreadRenderer(ctx) {
     // in-progress state — the user already pressed stop, so the button
     // must stay hidden until the run settles to a terminal state.
     if (block.stopBtn) {
-      const runActive = summary.projectStatus === "running" || summary.projectStatus === "cancelling";
-      block.stopBtn.hidden = !runActive || summary.projectStatus === "cancelling";
+      block.stopBtn.hidden = !run.isLive || run.status === "cancelling";
     }
   }
 
@@ -529,14 +524,15 @@ export function createThreadRenderer(ctx) {
   }
 
   function appendRunDetail(block, event, data, key) {
-    if (!block) return;
+    if (!block || block.done) return;
     if (event.type === "chapter_completed" || event.type === "chapter_finalized") {
       if (!ctx.renderedKeys.has(key)) {
         ctx.renderedKeys.add(key);
         attachChapterCard(block, event.chapter_no, data);
       }
     }
-    if (event.type === "project_run_finished" || event.type === "project_run_failed" || event.type === "project_blocked") {
+    if (event.type === "project_run_finished" || event.type === "project_run_failed" || event.type === "project_blocked"
+      || event.type === "project_interrupted" || event.type === "project_cancelled") {
       if (!ctx.renderedKeys.has(key)) {
         ctx.renderedKeys.add(key);
         finishAgentBlock(block, event, data);
@@ -586,34 +582,23 @@ export function createThreadRenderer(ctx) {
   }
 
   function computeSteps(data) {
-    const summary = data.summary;
-    const activeStage = summary.currentStage === "blocked" ? data.state?.blocked_at_stage : summary.currentStage;
-    const activeIndex = STAGE_ORDER.indexOf(activeStage);
-    const completed = summary.projectStatus === "completed";
-    const blocked = summary.projectStatus === "blocked";
+    const run = deriveRunPresentation(data);
     return STEP_GROUPS.map((group, i) => {
-      const groupMax = Math.max(...group.stages.map((s) => STAGE_ORDER.indexOf(s)));
-      const isActive = group.stages.includes(activeStage);
-      let status = "todo";
-      let meta = "排队";
-      let metaKind = null;
-      if (completed || (activeIndex >= 0 && activeIndex > groupMax)) {
-        status = "done";
-        meta = "完成";
-      } else if (isActive) {
-        status = blocked ? "blocked" : "running";
-        meta = blocked ? "受阻" : "进行中";
-        if (!blocked && group.id === "drafting") {
-          meta = "书写中";
-          metaKind = "writing";
-        }
-      }
+      const status = deriveStepState(run, group.stages, STAGE_ORDER);
+      const writing = status === "running" && group.id === "drafting";
       return {
-        name: writingStepLabel(data, group, isActive && !blocked),
+        name: writingStepLabel(data, group, writing),
         detail: group.detail,
         status,
-        meta,
-        metaKind,
+        meta: {
+          done: "完成",
+          running: writing ? "书写中" : "进行中",
+          blocked: "受阻",
+          interrupted: "已中断",
+          cancelled: "已停止",
+          todo: "排队"
+        }[status],
+        metaKind: writing ? "writing" : null,
         index: i + 1
       };
     });
@@ -704,12 +689,28 @@ export function createThreadRenderer(ctx) {
     rollup.textContent = `已收起 ${count} 张章节卡 · 点击在「章节」面板查看全部`;
   }
 
+  function terminalMessage(run) {
+    const chapter = run.chapterNo ?? "当前";
+    const stage = translateStage(run.resumeStage);
+    if (run.status === "interrupted") return `第 ${chapter} 章在${stage}阶段中断。草稿已保留。`;
+    if (run.status === "cancelled") return `第 ${chapter} 章已停止。草稿已保留。`;
+    if (run.status === "blocked") return `第 ${chapter} 章在${stage}阶段需要处理。`;
+    return "本轮任务已完成。";
+  }
+
   function finishAgentBlock(block, event, data) {
+    const run = deriveRunPresentation(data);
     block.done = true;
-    block.time.textContent = "刚刚";
+    block.time.textContent = run.isTerminal && run.status !== "completed" ? run.label : "刚刚";
     renderSteps(block, data);
     updateStageChips(block, data);
     if (block.stopBtn) block.stopBtn.hidden = true;
+    if (run.status === "interrupted" || run.status === "cancelled" || run.status === "blocked") {
+      block.say.hidden = false;
+      block.say.textContent = terminalMessage(run);
+      ctx.announce(block.say.textContent);
+      return;
+    }
     if (event.type === "project_run_failed" || event.type === "project_blocked") {
       block.say.hidden = false;
       block.say.textContent = event.message ?? "运行已停止，请在右侧「运行」面板查看错误。";
@@ -790,12 +791,17 @@ export function createThreadRenderer(ctx) {
       ctx.setLiveBlock(null);
       return;
     }
-    const status = data.summary.projectStatus;
-    if (status === "running" || status === "cancelling") {
+    const run = deriveRunPresentation(data);
+    if (run.isTerminal) {
+      finishAgentBlock(liveBlock, { type: `project_${run.status}` }, data);
+      ctx.setLiveBlock(null);
+      return;
+    }
+    if (run.isLive) {
       renderSteps(liveBlock, data);
       updateStageChips(liveBlock, data);
-      const ch = data.summary.currentChapterNo;
-      if (status === "cancelling") {
+      const ch = run.chapterNo;
+      if (run.status === "cancelling") {
         liveBlock.time.textContent = ch ? `第 ${ch} 章 · 正在取消` : "正在取消";
         ctx.announce("正在停止");
       } else {
