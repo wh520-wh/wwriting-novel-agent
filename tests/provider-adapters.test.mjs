@@ -939,7 +939,34 @@ test("OpenAICompatibleAdapter 按 capability 注入 response_format=json_object"
   assert.deepEqual(captured.response_format, { type: "json_object" });
 });
 
-test("buildMessages: messages 含 role=tool 时不重注入 system", async () => {
+test("buildMessages: messages 首条为 system 时不重注入", async () => {
+  let captured = null;
+  const adapter = new OpenAICompatibleAdapter({
+    baseUrl: "https://api.deepseek.com/v1", apiKey: "k",
+    fetchImpl: async (url, init) => {
+      captured = JSON.parse(init.body);
+      return { ok: true, status: 200, async text() { return JSON.stringify({ choices: [{ message: { content: "ok" } }] }); } };
+    }
+  });
+  const multiTurnMessages = [
+    { role: "system", content: "chat system" },
+    { role: "user", content: "写章" },
+    { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "read_chapter", arguments: "{}" } }] },
+    { role: "tool", tool_call_id: "c1", content: '{"chapter_no":1}' }
+  ];
+  await adapter.generate({
+    model: "deepseek-v4-flash",
+    modelConfig: { model_name: "deepseek-v4-flash", base_url: "https://api.deepseek.com/v1" },
+    messages: multiTurnMessages,
+    metadata: { toolRequest: { project_id: "p", chapter_no: 1, allowed_tools: ["read_chapter", "append_chapter_segment"] } }
+  });
+  // 首条已是 system（聊天会话 / 已含 system 的 transcript）：原样透传，不重复注入写作 system
+  assert.equal(captured.messages.length, 4);
+  assert.equal(captured.messages[0].role, "system");
+  assert.equal(captured.messages[0].content, "chat system");
+});
+
+test("buildMessages: 多轮 messages 首条为 user 时注入 system（写作循环第 2+ 轮形状）", async () => {
   let captured = null;
   const adapter = new OpenAICompatibleAdapter({
     baseUrl: "https://api.deepseek.com/v1", apiKey: "k",
@@ -959,6 +986,11 @@ test("buildMessages: messages 含 role=tool 时不重注入 system", async () =>
     messages: multiTurnMessages,
     metadata: { toolRequest: { project_id: "p", chapter_no: 1, allowed_tools: ["read_chapter", "append_chapter_segment"] } }
   });
-  assert.equal(captured.messages[0].role, "user");
-  assert.equal(captured.messages.length, 3);
+  // 多轮 transcript 首条为 user：仍需章节 writer 的 system 指令，必须注入在首位
+  assert.equal(captured.messages.length, 4);
+  assert.equal(captured.messages[0].role, "system");
+  assert.ok(captured.messages[0].content.includes("chapter writer"));
+  assert.equal(captured.messages[1].role, "user");
+  assert.equal(captured.messages[2].role, "assistant");
+  assert.equal(captured.messages[3].role, "tool");
 });

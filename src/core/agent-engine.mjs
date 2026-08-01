@@ -30,6 +30,7 @@ import { previewEditChapter, registerWriteTools } from "./chat/tools-write.mjs";
 import { validateTaskContract } from "./task-contract.mjs";
 import { ProjectCancelledError, rethrowIfCancelled, throwIfAborted } from "./cancellation.mjs";
 import { WritingAgentSession } from "./writing-agent-session.mjs";
+import { ToolTranscript } from "./agent-transcript.mjs";
 
 export { ProjectCancelledError } from "./cancellation.mjs";
 
@@ -339,6 +340,10 @@ async function draftNextSegment(projectRoot, project, state, runtime, options) {
   }
 
   const segmentNo = state.current_segment_no + 1;
+  // 恢复检测：上次中断时 pending transcript 已落盘，若与本次要写的段号一致且有
+  // 未回传结果的 tool_calls，则把 transcript 传给循环续写（跳过首轮编译与重复写入）。
+  const pendingData = await readPendingTranscript(projectRoot, state.current_chapter_no, segmentNo);
+  const restoredTranscript = pendingData ? ToolTranscript.restore(pendingData) : null;
   const response = await runWritingAgentLoop(projectRoot, project, state, runtime, {
     kind: "draft_segment",
     project_id: project.project_id,
@@ -346,12 +351,15 @@ async function draftNextSegment(projectRoot, project, state, runtime, options) {
     segment_no: segmentNo,
     segment_target_words: Math.max(900, Math.ceil(project.target_words_per_chapter / 3)),
     signal: options.signal,
-    allowed_tools: DRAFTING_ALLOWED_TOOLS
+    allowed_tools: DRAFTING_ALLOWED_TOOLS,
+    ...(restoredTranscript?.pendingToolCalls.length > 0
+      ? { restored_transcript: restoredTranscript }
+      : {})
   });
   const latestState = await loadState(projectRoot);
   const next = setStage({ ...latestState, current_segment_no: segmentNo }, "drafting");
   await saveState(projectRoot, next);
-  await writeCheckpoint(projectRoot, checkpointPayload(project, state, next, [response.toolCall], [response.result], null, checkpointModelExtras(response.modelCall)));
+  await writeCheckpoint(projectRoot, checkpointPayload(project, state, next, [response.toolCall], [response.result], null, { ...checkpointModelExtras(response.modelCall), transcript: response.transcript }));
 
   if (
     options.simulateInterruptAfter &&
@@ -368,6 +376,9 @@ async function draftNextSegment(projectRoot, project, state, runtime, options) {
     });
     throw new SimulatedInterrupt("Simulated interruption after checkpoint");
   }
+  // 删除时机（设计决策 B）：checkpoint 写入 + 中断检查之后才清 pending 文件——
+  // 保证 simulateInterruptAfter/崩溃时 pending 文件仍在，恢复可续写；正常完成时必被清理。
+  await clearPendingTranscript(projectRoot, state.current_chapter_no, segmentNo);
 }
 
 async function reviewChapter(projectRoot, project, state, runtime) {
@@ -520,6 +531,9 @@ async function reviseChapter(projectRoot, project, state, runtime, options = {})
   const gate = runWordCountGate(draft, project.min_words_per_chapter);
   const segmentNo = budgetedState.current_segment_no + 1;
   const qualityGateFailures = budgetedState.last_quality_gate_results?.filter((result) => result.status === "failed") ?? [];
+  // 恢复检测：与 draftNextSegment 一致，读 pending transcript 续写
+  const pendingData = await readPendingTranscript(projectRoot, budgetedState.current_chapter_no, segmentNo);
+  const restoredTranscript = pendingData ? ToolTranscript.restore(pendingData) : null;
   const response = await runWritingAgentLoop(projectRoot, project, budgetedState, runtime, {
     kind: gate.status === "failed" ? "revision_shortfall" : "revision_quality_gate",
     project_id: project.project_id,
@@ -528,12 +542,17 @@ async function reviseChapter(projectRoot, project, state, runtime, options = {})
     shortfall: Math.max(gate.shortfall ?? 0, 300),
     quality_gate_failures: qualityGateFailures,
     signal: options.signal,
-    allowed_tools: REVISING_ALLOWED_TOOLS
+    allowed_tools: REVISING_ALLOWED_TOOLS,
+    ...(restoredTranscript?.pendingToolCalls.length > 0
+      ? { restored_transcript: restoredTranscript }
+      : {})
   });
   const latestState = await loadState(projectRoot);
   const next = setStage({ ...latestState, current_segment_no: segmentNo }, "reviewing");
   await saveState(projectRoot, next);
-  await writeCheckpoint(projectRoot, checkpointPayload(project, state, next, [response.toolCall], [response.result], null, checkpointModelExtras(response.modelCall)));
+  await writeCheckpoint(projectRoot, checkpointPayload(project, state, next, [response.toolCall], [response.result], null, { ...checkpointModelExtras(response.modelCall), transcript: response.transcript }));
+  // 设计决策 B：checkpoint 写入后清 pending（正常完成不留残留；中断时文件保留供恢复）
+  await clearPendingTranscript(projectRoot, budgetedState.current_chapter_no, segmentNo);
 }
 
 async function finalizeChapter(projectRoot, project, state, runtime) {
@@ -948,12 +967,21 @@ async function createModelRuntime(projectRoot, project, options, fallbackModel) 
 
 async function runModelGatewayCall(projectRoot, project, state, runtime, request) {
   throwIfAborted(request.signal);
-  const compiledPrompt = await compileChapterPrompt(projectRoot, project, state, request, runtime);
-  const cacheEntry = runtime.cacheKeyManager.update({
-    projectId: project.project_id,
-    templateVersion: compiledPrompt.templateVersion,
-    stableHash: compiledPrompt.stableHash
-  });
+  let compiledPrompt;
+  let cacheEntry;
+  if (request.transcript_messages) {
+    // 多轮 transcript 轮次（写作 agent 循环第 2+ 轮）：跳过章节 prompt 编译与 cacheKeyManager 更新，
+    // messages 直接用上一轮落盘/内存的 transcript，prompt 为空串（编译产物不参与后续轮）。
+    compiledPrompt = { prompt: null, templateVersion: "transcript", stableHash: null, blockHashes: {}, skillHooks: [] };
+    cacheEntry = { cacheKey: null, cacheVersion: null };
+  } else {
+    compiledPrompt = await compileChapterPrompt(projectRoot, project, state, request, runtime);
+    cacheEntry = runtime.cacheKeyManager.update({
+      projectId: project.project_id,
+      templateVersion: compiledPrompt.templateVersion,
+      stableHash: compiledPrompt.stableHash
+    });
+  }
   await appendEvent(projectRoot, {
     type: "model_call_started",
     project_id: project.project_id,
@@ -963,7 +991,8 @@ async function runModelGatewayCall(projectRoot, project, state, runtime, request
     data: {
       request_kind: request.kind,
       attempt: request.attempt,
-      cache_key: cacheEntry.cacheKey
+      cache_key: cacheEntry.cacheKey,
+      multi_turn: Boolean(request.transcript_messages)
     }
   });
   if (request.kind === "revision_shortfall") {
@@ -972,7 +1001,8 @@ async function runModelGatewayCall(projectRoot, project, state, runtime, request
   const gatewayResult = await runtime.modelClient.generate({
     project,
     stage: state.current_stage,
-    prompt: compiledPrompt.prompt,
+    prompt: compiledPrompt.prompt ?? "",
+    messages: request.transcript_messages ?? [],
     signal: request.signal,
     metadata: {
       toolRequest: request,
@@ -1005,10 +1035,10 @@ async function runModelGatewayCall(projectRoot, project, state, runtime, request
     attempt: request.attempt,
     stage: state.current_stage,
     prompt_template_version: compiledPrompt.templateVersion,
-    context_package_hash: sha256(compiledPrompt.prompt),
+    context_package_hash: request.transcript_messages ? null : sha256(compiledPrompt.prompt),
     prompt_block_hashes: compiledPrompt.blockHashes,
     stable_hash: compiledPrompt.stableHash,
-    dynamic_hash: compiledPrompt.dynamicHash,
+    dynamic_hash: compiledPrompt.dynamicHash ?? null,
     cache_key: cacheEntry.cacheKey,
     cache_version: cacheEntry.cacheVersion,
     model_config: gatewayResult.modelConfig,
@@ -1016,7 +1046,13 @@ async function runModelGatewayCall(projectRoot, project, state, runtime, request
     cost_summary: gatewayResult.costSummary,
     cache_report: cacheReport.last_call,
     skill_hooks: compiledPrompt.skillHooks ?? [],
-    output_type: output?.type ?? null
+    output_type: output?.type ?? null,
+    // 首轮编译 prompt 原文：callModel 借此装入 transcript（首条 user 消息），
+    // 后续 transcript 轮次为 null。
+    compiled_prompt: compiledPrompt.prompt,
+    // 原始响应：callModel 借此提取 assistant 消息（tool_calls/reasoning_content）装入 transcript。
+    // 不影响既有字段（checkpointModelExtras 只挑固定字段落 checkpoint）。
+    raw: gatewayResult.raw
   };
   await appendEvent(projectRoot, {
     type: "model_usage_recorded",
@@ -1260,6 +1296,36 @@ function parseOpenAIToolCall(raw) {
   return null;
 }
 
+// 从模型网关返回结果中提取 assistant 消息（OpenAI-compatible 格式），
+// 用于装入 ToolTranscript 供下一轮回放。content 为空串时归一为 null，
+// 保证 appendAssistant 不会写入空 content 字段。
+function extractAssistantMessage(modelCall) {
+  const message = modelCall?.raw?.choices?.[0]?.message ?? {};
+  return {
+    content: typeof message.content === "string" && message.content ? message.content : null,
+    tool_calls: Array.isArray(message.tool_calls) ? message.tool_calls : null,
+    reasoning_content: typeof message.reasoning_content === "string" ? message.reasoning_content : null
+  };
+}
+
+// transcript 持久化：每轮工具执行后写 pending 文件，成功完成时删除。
+// 中断（throw/崩溃）时 pending 文件已落盘，恢复时读它续写。
+// 文件命名对齐 §3.6 pending-extraction 模式（memory/.pending-*.json）。
+const pendingTranscriptPath = (projectRoot, chapterNo, segmentNo) =>
+  safeJoin(projectRoot, "memory", `.pending-transcript-${chapterNo}-${segmentNo}.json`);
+
+async function writePendingTranscript(projectRoot, chapterNo, segmentNo, transcript) {
+  await writeJsonAtomic(pendingTranscriptPath(projectRoot, chapterNo, segmentNo), transcript.serialize());
+}
+
+async function readPendingTranscript(projectRoot, chapterNo, segmentNo) {
+  return readJson(pendingTranscriptPath(projectRoot, chapterNo, segmentNo), null);
+}
+
+async function clearPendingTranscript(projectRoot, chapterNo, segmentNo) {
+  await fs.unlink(pendingTranscriptPath(projectRoot, chapterNo, segmentNo)).catch(() => {});
+}
+
 function parseToolCallArguments(argumentsValue) {
   if (argumentsValue && typeof argumentsValue === "object") {
     return argumentsValue;
@@ -1439,6 +1505,11 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
     return null;
   };
 
+  // transcript：首轮编译 prompt 装入后，后续轮次直接回放 transcript 消息链，
+  // 不再重新编译章节 prompt（transcript_messages 走 runModelGatewayCall 的跳过分支）。
+  // 崩溃恢复时由调用方（draftNextSegment/reviseChapter）读 pending 文件恢复后传入。
+  const transcript = request.restored_transcript ?? new ToolTranscript();
+
   const session = new WritingAgentSession({
     allowedTools,
     commitTool: "append_chapter_segment",
@@ -1451,21 +1522,41 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
         attempt: ctx.turn,
         agent_loop: true
       });
+      const isFirstTurn = ctx.turn === 1 && !request.restored_transcript;
       const modelCall = await runModelGatewayCall(
         projectRoot, project, state, runtime,
         {
           ...request,
-          correction_attempt: ctx.turn > 1,
+          correction_attempt: !isFirstTurn,
           validation_feedback: lastValidation,
           agent_loop_feedback: agentLoopFeedback,
           allowed_tools: ctx.allowedTools,
-          attempt: ctx.turn
+          attempt: ctx.turn,
+          ...(isFirstTurn ? {} : { transcript_messages: transcript.toMessages() })
         },
       );
+      if (isFirstTurn) {
+        // 首轮编译产物装入 transcript 首条 user 消息，后续轮次不再携带编译 prompt。
+        transcript.appendUser(modelCall.compiled_prompt);
+      }
+      transcript.appendAssistant(extractAssistantMessage(modelCall));
       lastModelCall = modelCall;
       return modelCall.output;
     },
     executeTool: async (output, ctx) => {
+      // 拒绝/失败反馈写入 transcript（反馈喂回，替代旧设计里编译 prompt 中的 agent_loop_feedback）：
+      // - 带 tool_call id（原生 tool_calls 路径）：记 role=tool 回执，保持消息链形状合法
+      //   （assistant tool_calls 必须有对应 tool 结果，否则真实 API 会拒绝请求）；
+      // - 无 id（系统/mock 路径）：记 user 反馈消息。
+      // 写入后落盘 pending，中断恢复时反馈不丢。
+      const recordRejectionFeedback = async (toolCallId, message) => {
+        if (toolCallId) {
+          transcript.appendToolResult(toolCallId, { ok: false, error: message });
+        } else {
+          transcript.appendUser(message);
+        }
+        await writePendingTranscript(projectRoot, request.chapter_no, request.segment_no, transcript);
+      };
       // 情况 A：模型直接输出正文文本。
       if (!output || output.type !== "tool_call") {
         const prose = (output?.message ?? output?.text ?? "").trim();
@@ -1477,6 +1568,7 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
             message: `Output too short (${prose.length} chars, min ${WRITING_AGENT_MIN_PROSE_CHARS}).`,
             severity: "warn",
           });
+          await recordRejectionFeedback(null, agentLoopFeedback.message);
           return { ok: false, summary: "output_too_short", ...(stop ?? {}) };
         }
         const wrapped = { type: "tool_call", tool: "append_chapter_segment",
@@ -1493,11 +1585,18 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
           message: `Unsupported tool for chapter writing: ${output.tool ?? "missing"}`,
           severity: "warn",
         });
+        await recordRejectionFeedback(output.id, agentLoopFeedback.message);
         return { ok: false, summary: "tool_not_allowed", ...(stop ?? {}) };
       }
-      // 情况 C：提交工具。
+      // 情况 C：提交工具。执行成功后把 tool 回执装入 transcript 并落盘 pending 文件；
+      // 恢复场景下 append_chapter_segment 按 segment 号幂等去重，重放不会重复写。
       if (output.tool === "append_chapter_segment") {
-        return executeCommit(projectRoot, project, state, runtime, request, output, ctx.turn, emitLoopEvent, (v) => { lastValidation = v; }, rejectOutput);
+        const result = await executeCommit(projectRoot, project, state, runtime, request, output, ctx.turn, emitLoopEvent, (v) => { lastValidation = v; }, rejectOutput);
+        if (output.id && result?.ok) {
+          transcript.appendToolResult(output.id, result.result ?? { ok: true });
+          await writePendingTranscript(projectRoot, request.chapter_no, request.segment_no, transcript);
+        }
+        return result;
       }
       // 情况 D：白名单内 read/edit/update，经注册表执行。
       const tool = registry.get(output.tool);
@@ -1509,6 +1608,7 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
           message: `工具 ${output.tool} 未注册。`,
           severity: "warn",
         });
+        await recordRejectionFeedback(output.id, agentLoopFeedback.message);
         return { ok: false, summary: "unknown_tool", ...(stop ?? {}) };
       }
       const startedAt = Date.now();
@@ -1527,6 +1627,7 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
             message: permission.message,
             severity: "warn",
           });
+          await recordRejectionFeedback(output.id, agentLoopFeedback.message);
           return { ok: false, summary: "permission_denied", ...(stop ?? {}) };
         }
         const toolResult = await tool.run(output.input ?? {}, { projectRoot, project, server: { runJobs: new Map() } });
@@ -1537,6 +1638,11 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
           duration_ms: Date.now() - startedAt, result_summary: summary,
         });
         agentLoopFeedback = { message: `工具 ${output.tool} 结果：${summary}` };
+        if (output.id) {
+          // 原生 tool_calls 带 id 才记 transcript（情况 A 的系统包装调用无 id，不进 transcript）。
+          transcript.appendToolResult(output.id, toolResult);
+          await writePendingTranscript(projectRoot, request.chapter_no, request.segment_no, transcript);
+        }
         return { ok: true, readOnly: tool.kind === "read", summary };
       } catch (error) {
         await emitLoopEvent("agent_loop_tool_failed", {
@@ -1546,6 +1652,13 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
           severity: "warn",
         });
         agentLoopFeedback = { message: `工具 ${output.tool} 执行失败：${error?.message ?? error}` };
+        if (output.id) {
+          // 失败也把回执（{ok:false,error}）装入 transcript，让下一轮模型知道发生了什么。
+          transcript.appendToolResult(output.id, { ok: false, error: error?.message ?? String(error) });
+          await writePendingTranscript(projectRoot, request.chapter_no, request.segment_no, transcript);
+        } else {
+          await recordRejectionFeedback(null, agentLoopFeedback.message);
+        }
         return { ok: false, summary: "tool_error" };
       }
     },
@@ -1553,12 +1666,15 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
 
   const run = await session.start({ signal: request.signal });
   if (run.outcome === "completed") {
-    return { ...run.result, modelCall: lastModelCall };
+    // 注意：pending 文件不在本函数删除，由调用方（draftNextSegment/reviseChapter）
+    // 在 checkpoint 与中断检查之后删除——保证中断时 pending 文件仍在，可恢复续写。
+    return { ...run.result, modelCall: lastModelCall, transcript: transcript.serialize() };
   }
   if (run.outcome === "aborted") {
     // 保持旧行为：循环中抛 ProjectCancelledError → runProject 标记 cancelled 而非 interrupted。
     throw new ProjectCancelledError(request.signal?.reason ?? "cancelled");
   }
+  // failed/exhausted：不删 pending 文件（保留供恢复），走现有 failWritingAgentLoop
   const reason = run.reason ?? "agent_loop_exhausted";
   await failWritingAgentLoop(projectRoot, project, state, reason, lastValidation, lastModelCall, allowedTools);
   throw new ProjectBlockedError(reason);
@@ -1844,6 +1960,8 @@ function checkpointPayload(project, stateBefore, stateAfter, toolCalls = [], too
     skill_hooks: extras.skill_hooks ?? [],
     skill_gate_results: extras.skill_gate_results ?? [],
     context_package_hash: extras.context_package_hash,
+    // transcript 备份：写作 agent 循环成功完成时的消息链序列化（恢复主路径是 pending 文件）
+    transcript: extras.transcript ?? null,
     tool_calls: toolCalls,
     tool_results: toolResults,
     state_before: stateBefore,
