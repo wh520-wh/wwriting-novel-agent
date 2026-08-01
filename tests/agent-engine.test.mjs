@@ -5,6 +5,8 @@ import path from "node:path";
 import test from "node:test";
 import { runProject, SimulatedInterrupt, maybeWarnChapterCost, extractChapterMemory, runFactCheck, trimUnresolvedAssistantTurns } from "../src/core/agent-engine.mjs";
 import { appendEvent, readEvents } from "../src/core/event-log.mjs";
+import { ProviderTransportError } from "../src/core/provider-adapters.mjs";
+import { readFailures } from "../src/core/failures-store.mjs";
 import { countEffectiveWords } from "../src/core/word-count.mjs";
 import { MockModel } from "../src/core/mock-model.mjs";
 import { createProject, loadChapterIndex, loadProject, loadState, saveProject, saveState, upsertChapter } from "../src/core/project-store.mjs";
@@ -289,6 +291,30 @@ test("runProject sets project_status to interrupted on unexpected error", async 
   assert.equal(failures.kind, "provider-error");
   assert.ok(Array.isArray(failures.actions));
   assert.ok(failures.actions.length > 0);
+});
+
+test("model-error 故障卡透传 ProviderTransportError 的 status/reason/body", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-card-body-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "project", target_chapters: 1, min_words_per_chapter: 300, target_words_per_chapter: 360
+  });
+  class BodyThrowingModelClient {
+    async generate() {
+      throw new ProviderTransportError("OpenAI-compatible provider returned HTTP 400.", {
+        status: 400,
+        body: '{"error":{"message":"Invalid tool_calls","type":"invalid_request_error"}}',
+        reason: "client-fatal"
+      });
+    }
+  }
+  await assert.rejects(runProject(projectRoot, { modelClient: new BodyThrowingModelClient() }));
+  const failures = readFailures(projectRoot);
+  const card = failures.find((f) => f.kind === "provider-error");
+  assert.ok(card, `应有 provider-error 故障卡,实际: ${JSON.stringify(failures.map((f) => f.kind))}`);
+  assert.equal(card.diagnostics.providerStatus, 400, "providerStatus 应透传");
+  assert.equal(card.diagnostics.providerReason, "client-fatal", "providerReason 应透传");
+  assert.ok(card.diagnostics.providerBody?.includes("Invalid tool_calls"),
+    `providerBody 应含 DeepSeek 正文,实际: ${card.diagnostics.providerBody}`);
 });
 
 test("runProject records cancelled state when AbortSignal is already aborted", async () => {
