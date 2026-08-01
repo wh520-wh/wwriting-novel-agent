@@ -1827,6 +1827,7 @@ class ReadThenCommitModelClient {
     this.calls += 1;
     this.capturedMessagesPerCall.push([...messages]);
     const req = metadata.toolRequest;
+    // 正文需 ≥300 字门禁（min_words_per_chapter）：repeat(2) 仅 60 有效字会触发再调模型致 calls>1；repeat(11)≈330 有效字，过 300 字门禁确保单轮 commit 完成。
     const content = "这是一段足够长的正文内容用于通过字数门禁,确保超过最小字符阈值。".repeat(11);
     return {
       text: "",
@@ -1875,4 +1876,23 @@ test("trimUnresolvedAssistantTurns: side 部分回填的崩溃窗口恢复后裁
   assert.equal(transcript.toMessages().length, 1, "不完整轮次应被裁剪,只剩 user 消息");
   assert.equal(transcript.toMessages()[0].role, "user");
   assert.equal(transcript.pendingToolCalls.length, 0, "裁剪后无悬空");
+});
+
+// Task 3：不变式运行时校验(防回归哨兵)。每轮 modelCall 决策后、落盘前检查 transcript
+// 是否残留上一轮的悬空 tool_call(无对应 role=tool 结果)。本测试只覆盖正常路径不变式
+// (全新项目,fresh loop,无 restored_transcript):正常路径(Task 2 全量回填)不应触发违例,
+// 若 side 执行被删此处将出现违例事件导致测试失败;恢复路径(trimUnresolvedAssistantTurns)
+// 由崩溃恢复测试另盖。
+// 已知局限:不变式校验块本身若被整体删除,本测试无法察觉(不改结构)。
+test("runWritingAgentLoop: 本轮结束 transcript 无悬空 tool_call(不变式)", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-invariant-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "project", target_chapters: 1, min_words_per_chapter: 300, target_words_per_chapter: 360
+  });
+  const client = new MultiToolCallModelClient();
+  await runProject(projectRoot, { modelClient: client });
+  const events = await readEvents(projectRoot);
+  const violations = events.filter((e) => e.type === "agent_loop_transcript_invariant_violation");
+  assert.equal(violations.length, 0,
+    `正常路径不应有不变式违例,实际: ${JSON.stringify(violations)}`);
 });
