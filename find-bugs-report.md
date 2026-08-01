@@ -94,3 +94,28 @@ promoteNext: null — blocked by stale running task   (写第4章=queued 永不�
 - 14 个候选 → 1 确认（major，崩溃恢复主链路损坏）+ 5 个机制属实 minor（建议修复：R1 一行过滤、R2 三处改 `formatChapterRef`、R3 补守卫、R5 补 `?? 0`）+ 8 个被反驳/降级。
 - 本次目标「5 个 bug」：诚实的输出是 **1 个 major + 5 个已验证的 minor 硬化项**；未人为凑数。
 - 若需要，R1/R2/R3/R5 四处为低风险硬化修复，可作为下一轮改动；BUG-1 建议优先修（恢复功能当前确定性损坏）。
+
+---
+
+## 第二轮狩猎（2026-08-01，目标 1 个）
+
+聚焦上一轮未覆盖区域：simple-yaml、app-state、desktop/electron、book-export、cost-audit、side-question、config-runtime。2 个候选均经 fresh skeptic 反驳；**0 个 major 确认**，2 个机制全确认但严重性降级。
+
+### 机制确认、降级为 minor（2 个）
+
+| # | 候选 | 裁决 | 拒绝原因（skeptic 证据要点） |
+|---|------|------|------------------------------|
+| S3 | 导出成书未剥离流水线产物：`# Chapter 001` 英文头 + `<!-- segment:N checksum:... -->` 标记进入每本导出的书（`book-export.mjs:7,18,26` vs 写入端 `tool-runtime.mjs:58,74,112-115`） | **downgraded** | 机制端到端实测确认（composeBook 真实内容输出含两者；`.demo_runs` 真实章节文件含标记；`HEAD_TITLE_RE` 只匹配第N章，`# Chapter 001` 不匹配）；兄弟路径 `app-dashboard.mjs:229-237` stripChapterMarkup 恰好剥离这两样 → 明确是遗漏非设计；导出是默认功能（工具栏按钮 + chat 工具），每次导出 100% 复现。但无数据丢失/无功能损坏 → 内容污染属 cosmetic/minor。值得修：复用兄弟剥离规则即可。 |
+| S2 | `simple-yaml.mjs:40-45` parseValue 无守卫 `JSON.parse`：手写 `{provider: mock}`/`[写作]`/JSON 后跟注释 → 整个 project.yaml 解析抛错 → loadProject 抛错 → 该项目仪表盘/设置 500 | **downgraded** | 抛错机制实测确认；但文档从不引导手改 project.yaml（README/CLAUDE 均只描述应用自写），应用自写永远合法 JSON；一处引用方（autoResume 读取）实际已被 try/catch 保护；项目列表/恢复路径容错，文件可修复恢复 → 低概率健壮性缺口。 |
+
+### 结论（第二轮）
+
+- 未发现 major 级新 bug；S3 是机制最扎实的一条（**每次导出必然复现**，且兄弟路径已有正确剥离规则，修复成本极低），建议顺手修掉。
+- 若要凑「1 个 bug」：S3 属真实缺陷（确定性、用户可见），只是未达 major 门槛——按技能流程记入拒绝日志，不冒充确认项。
+
+### ✅ 第二轮修复记录（2026-08-01，已实施并全量测试通过：1011/1011）
+
+| 修复 | 改动 | 回归测试 |
+|------|------|----------|
+| S3 | `book-export.mjs` 新增 `stripPipelineArtifacts`（与 `app-dashboard.stripChapterMarkup` 同规则）：剥离 `<!-- segment:N ... -->` 标记、`# Chapter 001` 草稿头、规整空行；md/txt 两个分支共用 | 新增「composeBook 剥离流水线产物」测试（真实流水线内容，md+txt 双格式断言） |
+| S2 | `simple-yaml.mjs` `parseValue` 的 `JSON.parse` 加 try/catch：手写/遗留的非严格 JSON 值（无引号键、无引号数组值、JSON 后跟注释）回退为原始字符串，与解析器整体宽松行为一致，整个 project.yaml 不再因单个值解析失败 | 新增「非严格 JSON 值宽松回退而非抛错」测试（三种手写形态 + 严格 JSON 不受影响） |

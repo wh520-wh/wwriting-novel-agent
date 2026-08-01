@@ -6,6 +6,16 @@ import { pathExists, safeJoin, writeFileAtomic } from "./fs-utils.mjs";
 
 const HEAD_TITLE_RE = /^\s{0,3}#{1,3}\s*第\s*[^\s章]+\s*章[^\n]*\n+/u; // 同 quality-gates 标题判定的剥离版
 
+// 剥离写作流水线产物（与 app-dashboard.stripChapterMarkup 同规则，导出路径此前遗漏）：
+// 草稿英文头 `# Chapter 001` 与每段标记 `<!-- segment:N checksum:... -->` 不是正文。
+function stripPipelineArtifacts(content) {
+  return String(content)
+    .replace(/<!--\s*segment:[^>]*-->/gu, "")
+    .replace(/^#\s+Chapter\s+\d+\s*$/imu, "")
+    .replace(/\n{3,}/gu, "\n\n")
+    .trim();
+}
+
 export function composeBook(chapters, { title, slug, format = "md", date = new Date() } = {}) {
   const sorted = [...chapters].sort((a, b) => a.chapter_no - b.chapter_no);
   const ymd = date.toISOString().slice(0, 10).replaceAll("-", "");
@@ -15,7 +25,7 @@ export function composeBook(chapters, { title, slug, format = "md", date = new D
   if (ext === "md") {
     parts.push(`# ${title}`);
     for (const ch of sorted) {
-      const body = String(ch.content ?? "").replace(HEAD_TITLE_RE, "").trim();
+      const body = stripPipelineArtifacts(ch.content).replace(HEAD_TITLE_RE, "");
       const heading = ch.title ? `## 第 ${ch.chapter_no} 章 ${ch.title}` : `## 第 ${ch.chapter_no} 章`;
       parts.push(`${heading}\n\n${body}`);
     }
@@ -23,7 +33,7 @@ export function composeBook(chapters, { title, slug, format = "md", date = new D
   }
   parts.push(title);
   for (const ch of sorted) {
-    const body = stripMarkdown(String(ch.content ?? "").replace(HEAD_TITLE_RE, "").trim());
+    const body = stripMarkdown(stripPipelineArtifacts(ch.content).replace(HEAD_TITLE_RE, ""));
     const heading = ch.title ? `第 ${ch.chapter_no} 章 ${ch.title}` : `第 ${ch.chapter_no} 章`;
     parts.push(`${heading}\n\n${body}`);
   }

@@ -29,6 +29,25 @@ test("composeBook txt：剥 markdown 标记", () => {
   assert.match(content, /强调与代码正文。/u);
 });
 
+test("composeBook 剥离流水线产物（# Chapter 头 + segment 标记，回归）", () => {
+  // 真实流水线章节内容：英文草稿头 + 每段 checksum 标记（tool-runtime 写入、finalize 原样拷贝）
+  const pipelineContent = "# Chapter 001\n\n" +
+    "<!-- segment:1 checksum:sha256:abc123 -->\n正文第一段：他推开窗。\n\n" +
+    "<!-- segment:2 checksum:sha256:def456 -->\n正文第二段：雨停了。\n";
+  const md = composeBook([{ chapter_no: 1, title: "雨夜", content: pipelineContent }],
+    { title: "测试书", slug: "t", format: "md" });
+  assert.doesNotMatch(md.content, /Chapter 001/u, "md 导出不应含英文草稿头");
+  assert.doesNotMatch(md.content, /<!-- segment/u, "md 导出不应含段标记");
+  assert.match(md.content, /正文第一段/u);
+  assert.match(md.content, /正文第二段/u);
+  const txt = composeBook([{ chapter_no: 1, title: "雨夜", content: pipelineContent }],
+    { title: "测试书", slug: "t", format: "txt" });
+  assert.doesNotMatch(txt.content, /Chapter 001/u, "txt 导出不应含英文草稿头");
+  assert.doesNotMatch(txt.content, /<!-- segment/u, "txt 导出不应含段标记");
+  assert.doesNotMatch(txt.content, /checksum/u);
+  assert.match(txt.content, /正文第一段/u);
+});
+
 test("exportBook 端到端：completed 章入书、缺文件章进 skipped、写 exports/", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-export-"));
   const { projectRoot } = await createProject(root, {
