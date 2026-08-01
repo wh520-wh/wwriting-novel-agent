@@ -111,7 +111,6 @@ async function main() {
     backgroundColor: "#f4f3f0",
     ...desktopWindowChrome(),
     webPreferences: {
-      preload: path.join(rootDir, "src", "desktop", "electron-preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
       backgroundThrottling: false
