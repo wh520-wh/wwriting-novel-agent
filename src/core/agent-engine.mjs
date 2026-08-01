@@ -1305,12 +1305,11 @@ function extractAssistantMessage(modelCall) {
   };
 }
 
-// 恢复裁剪：pending 文件可能落在「模型已决策、工具未执行」的崩溃窗口，此时尾部
-// assistant tool_calls 消息的结果必然在其后，出现在尾部即未回执。恢复时裁剪掉这些
-// 轮次，让模型重新决策，避免 tool_calls 无结果的非法消息形状（真实 API 会 400）。
-// 恢复裁剪:检查所有 assistant 轮次的 tool_calls 是否全部有对应 role=tool 结果。
-// 任意不完整轮次(含 side 部分回填的崩溃窗口:主+side1 已回填、side2 未回填)及其后所有消息裁剪,
-// 让模型从最后一个完整轮次重新决策。原版只看尾部连续 assistant,会漏判"尾部是 tool 但前面 assistant 有悬空"。
+// 恢复裁剪：pending 文件可能落在「模型已决策、工具未执行」的崩溃窗口；检查所有 assistant
+// 轮次的 tool_calls 是否全部有对应 role=tool 结果，从首个不完整轮次(含 side 部分回填的
+// 崩溃窗口:主+side1 已回填、side2 未回填)起裁剪，让模型从最后一个完整轮次重新决策，
+// 避免 tool_calls 无结果的非法消息形状（真实 API 会 400）。原版只看尾部连续 assistant,
+// 会漏判"尾部是 tool 但前面 assistant 有悬空"。
 export function trimUnresolvedAssistantTurns(transcript) {
   const messages = transcript.messages;
   for (let i = 0; i < messages.length; i += 1) {
@@ -1715,6 +1714,21 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
         // 首轮编译产物装入 transcript 首条 user 消息，后续轮次不再携带编译 prompt。
         transcript.appendUser(modelCall.compiled_prompt);
       }
+      // 不变式校验:本轮 modelCall 决策后、落盘前,transcript 不应有上一轮残留的悬空 tool_call
+      // (无对应 role=tool 结果的 tool_call)。须在 appendAssistant 之前检查——本轮自己的
+      // tool_calls 尚未回填,若计入会把每轮都误判为违例;此处只看上一轮执行后残留。
+      // 崩溃恢复首帧由 trimUnresolvedAssistantTurns 兜底,正常路径每轮 side 执行后
+      // pendingToolCalls 应为空。违例只记 warn 不阻断。
+      const dangling = transcript.pendingToolCalls;
+      if (dangling.length > 0) {
+        await emitLoopEvent("agent_loop_transcript_invariant_violation", {
+          turn: ctx.turn,
+          dangling_count: dangling.length,
+          dangling_tools: dangling.map((tc) => tc.function?.name ?? tc.name ?? tc.tool),
+          severity: "warn",
+          message: `transcript 含 ${dangling.length} 个悬空 tool_call(无对应 tool 结果),下一轮请求可能被 API 拒绝`
+        });
+      }
       transcript.appendAssistant(extractAssistantMessage(modelCall));
       thisTurnToolCalls = parseOpenAIToolCalls(modelCall.raw); // 本轮全部 tool_calls(side 执行用)
       // 每次模型决策后无条件落盘 pending：覆盖「模型已决策、工具未执行」的崩溃窗口，
@@ -1738,6 +1752,11 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
       // 保证 transcript 里每个 tool_call.id 都有对应 role=tool 消息(OpenAI/DeepSeek 硬性契约)。
       // 主 output 是 commit(已 committed)时,剩余一律 skipped_after_commit(循环即将 stop)。
       // 否则顺序执行剩余:read/edit/update 执行+回填;遇到 append 则执行+回填+更新 primaryResult,其后 skipped。
+      // 与主 output 分派(情况 B/D)的刻意分歧:side 段失败(tool_not_allowed 对应情况 B、
+      // permission_denied/unknown_tool/tool 异常对应情况 D)不计 commitFailures、不更新
+      // agentLoopFeedback、不走 rejectOutput——
+      // stopRun 升级只对主 output 决策生效,避免一次多工具轮次的 side 失败误触发整体 stopRun;
+      // 模型仍可从 transcript 的 role=tool 回执(含 error)推断。
       const sideCalls = thisTurnToolCalls.slice(1); // 主 output(thisTurnToolCalls[0])已执行
       thisTurnToolCalls = [];
       for (const tc of sideCalls) {
