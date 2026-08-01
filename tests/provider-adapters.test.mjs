@@ -5,7 +5,8 @@ import {
   OpenAICompatibleAdapter,
   ProviderConfigurationError,
   ProviderTransportError,
-  isReasonerModel
+  isReasonerModel,
+  resolveModelCapabilities
 } from "../src/core/provider-adapters.mjs";
 
 test("OpenAICompatibleAdapter sends chat completion requests and extracts usage", async () => {
@@ -886,4 +887,163 @@ test("explicit max_output_tokens still overrides the chapter tool default", asyn
     metadata: { toolRequest: { project_id: "p1", chapter_no: 1, segment_no: 1 } },
   });
   assert.equal(captured.body.max_tokens, 8192);
+});
+
+test("resolveModelCapabilities: deepseek-v4-pro 标记 supportsThinking 且不支持 temperature", () => {
+  const caps = resolveModelCapabilities({
+    base_url: "https://api.deepseek.com/v1",
+    model_name: "deepseek-v4-pro"
+  });
+  assert.equal(caps.supportsThinking, true);
+  assert.equal(caps.supportsTemperature, false);
+  assert.equal(caps.supportsJsonOutput, true);
+  assert.equal(caps.supportsTools, true);
+});
+
+test("resolveModelCapabilities: deepseek-v4-flash 默认非思考，支持 temperature", () => {
+  const caps = resolveModelCapabilities({
+    base_url: "https://api.deepseek.com/v1",
+    model_name: "deepseek-v4-flash"
+  });
+  assert.equal(caps.supportsThinking, false);
+  assert.equal(caps.supportsTemperature, true);
+});
+
+test("resolveModelCapabilities: 非 deepseek 模型默认全支持", () => {
+  const caps = resolveModelCapabilities({
+    base_url: "https://api.openai.com/v1",
+    model_name: "gpt-4o"
+  });
+  assert.equal(caps.supportsThinking, false);
+  assert.equal(caps.supportsTemperature, true);
+  assert.equal(caps.supportsJsonOutput, true);
+  assert.equal(caps.supportsTools, true);
+});
+
+test("OpenAICompatibleAdapter 按 capability 注入 response_format=json_object", async () => {
+  let captured = null;
+  const adapter = new OpenAICompatibleAdapter({
+    baseUrl: "https://api.deepseek.com/v1",
+    apiKey: "k",
+    fetchImpl: async (url, init) => {
+      captured = JSON.parse(init.body);
+      return { ok: true, status: 200, async text() { return JSON.stringify({ choices: [{ message: { content: "{}" } }] }); } };
+    }
+  });
+  await adapter.generate({
+    model: "deepseek-v4-flash",
+    modelConfig: { model_name: "deepseek-v4-flash", base_url: "https://api.deepseek.com/v1" },
+    messages: [{ role: "user", content: "输出 json" }],
+    metadata: { responseFormat: "json_object" }
+  });
+  assert.deepEqual(captured.response_format, { type: "json_object" });
+});
+
+test("buildMessages: messages 首条为 system 时不重注入", async () => {
+  let captured = null;
+  const adapter = new OpenAICompatibleAdapter({
+    baseUrl: "https://api.deepseek.com/v1", apiKey: "k",
+    fetchImpl: async (url, init) => {
+      captured = JSON.parse(init.body);
+      return { ok: true, status: 200, async text() { return JSON.stringify({ choices: [{ message: { content: "ok" } }] }); } };
+    }
+  });
+  const multiTurnMessages = [
+    { role: "system", content: "chat system" },
+    { role: "user", content: "写章" },
+    { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "read_chapter", arguments: "{}" } }] },
+    { role: "tool", tool_call_id: "c1", content: '{"chapter_no":1}' }
+  ];
+  await adapter.generate({
+    model: "deepseek-v4-flash",
+    modelConfig: { model_name: "deepseek-v4-flash", base_url: "https://api.deepseek.com/v1" },
+    messages: multiTurnMessages,
+    metadata: { toolRequest: { project_id: "p", chapter_no: 1, allowed_tools: ["read_chapter", "append_chapter_segment"] } }
+  });
+  // 首条已是 system（聊天会话 / 已含 system 的 transcript）：原样透传，不重复注入写作 system
+  assert.equal(captured.messages.length, 4);
+  assert.equal(captured.messages[0].role, "system");
+  assert.equal(captured.messages[0].content, "chat system");
+});
+
+test("buildMessages: 多轮 messages 首条为 user 时注入 system（写作循环第 2+ 轮形状）", async () => {
+  let captured = null;
+  const adapter = new OpenAICompatibleAdapter({
+    baseUrl: "https://api.deepseek.com/v1", apiKey: "k",
+    fetchImpl: async (url, init) => {
+      captured = JSON.parse(init.body);
+      return { ok: true, status: 200, async text() { return JSON.stringify({ choices: [{ message: { content: "ok" } }] }); } };
+    }
+  });
+  const multiTurnMessages = [
+    { role: "user", content: "写章" },
+    { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "read_chapter", arguments: "{}" } }] },
+    { role: "tool", tool_call_id: "c1", content: '{"chapter_no":1}' }
+  ];
+  await adapter.generate({
+    model: "deepseek-v4-flash",
+    modelConfig: { model_name: "deepseek-v4-flash", base_url: "https://api.deepseek.com/v1" },
+    messages: multiTurnMessages,
+    metadata: { toolRequest: { project_id: "p", chapter_no: 1, allowed_tools: ["read_chapter", "append_chapter_segment"] } }
+  });
+  // 多轮 transcript 首条为 user：仍需章节 writer 的 system 指令，必须注入在首位
+  assert.equal(captured.messages.length, 4);
+  assert.equal(captured.messages[0].role, "system");
+  assert.ok(captured.messages[0].content.includes("chapter writer"));
+  assert.equal(captured.messages[1].role, "user");
+  assert.equal(captured.messages[2].role, "assistant");
+  assert.equal(captured.messages[3].role, "tool");
+});
+
+// ===== Task 7: 聊天场景外部 tools 注入（toolRequest.tools） =====
+test("toolRequest.tools 原样注入 + tool_choice=auto，且不注入写作 system（聊天场景）", async () => {
+  let captured = null;
+  const adapter = new OpenAICompatibleAdapter({
+    baseUrl: "https://api.deepseek.com/v1", apiKey: "k",
+    fetchImpl: async (url, init) => {
+      captured = JSON.parse(init.body);
+      return { ok: true, status: 200, async text() { return JSON.stringify({ choices: [{ message: { content: "ok" } }] }); } };
+    }
+  });
+  const externalTools = [
+    { type: "function", function: { name: "get_status", description: "查状态", parameters: { type: "object", properties: {} } } },
+    { type: "function", function: { name: "read_chapter", description: "读章", parameters: { type: "object", properties: {} } } }
+  ];
+  const chatMessages = [
+    { role: "system", content: "chat system" },
+    { role: "user", content: "进度如何？" }
+  ];
+  await adapter.generate({
+    model: "chat-model",
+    modelConfig: { model_name: "chat-model", base_url: "https://api.deepseek.com/v1" },
+    messages: chatMessages,
+    metadata: { toolRequest: { tools: externalTools, project_id: "p1" } }
+  });
+  // 外部 tools 数组原样进入 body（不经 WRITING_TOOL_DEFINITIONS 查找）
+  assert.deepEqual(captured.tools, externalTools);
+  assert.equal(captured.tool_choice, "auto");
+  // 聊天场景首条已是 system：消息原样透传，不注入英文写作 system
+  assert.deepEqual(captured.messages, chatMessages);
+  assert.ok(!captured.messages.some((m) => m.role === "system" && m.content.includes("chapter writer")));
+});
+
+test("toolRequest.tools 为空数组时不注入 tools（回落围栏兜底）", async () => {
+  let captured = null;
+  const adapter = new OpenAICompatibleAdapter({
+    baseUrl: "https://api.deepseek.com/v1", apiKey: "k",
+    fetchImpl: async (url, init) => {
+      captured = JSON.parse(init.body);
+      return { ok: true, status: 200, async text() { return JSON.stringify({ choices: [{ message: { content: "ok" } }] }); } };
+    }
+  });
+  await adapter.generate({
+    model: "chat-model",
+    modelConfig: { model_name: "chat-model", base_url: "https://api.deepseek.com/v1" },
+    messages: [{ role: "user", content: "hi" }],
+    metadata: { toolRequest: { tools: [], project_id: "p1" } }
+  });
+  // 空注册表：不应出现 {tools:[], tool_choice:"auto"}，也没有 chapter writer system 注入
+  assert.equal(captured.tools, undefined);
+  assert.equal(captured.tool_choice, undefined);
+  assert.equal(captured.messages.length, 1);
 });

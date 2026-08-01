@@ -76,3 +76,17 @@ test("parseMemoryExtraction: 非法 time 字段降级不抛", () => {
   assert.equal(t.time.anchor, null);
   assert.equal(t.time.confidence, "low");
 });
+
+test("parseMemoryExtraction 失败时返回字符串 error + error_code 分类（向后兼容）", () => {
+  const r1 = parseMemoryExtraction("我无法输出 JSON");
+  assert.equal(r1.ok, false);
+  assert.equal(typeof r1.error, "string");      // error 保持字符串，agent-engine.mjs:655 的 ${parsed.error} 不破
+  assert.equal(r1.error_code, "invalid_json");   // 分类在 error_code
+
+  const r2 = parseMemoryExtraction("");
+  assert.equal(r2.error_code, "empty_content");
+
+  const r3 = parseMemoryExtraction(JSON.stringify({ facts: [], timeline: [], characters: [] }));
+  assert.equal(r3.error_code, "missing_field");
+  assert.equal(r3.error_field, "summary");
+});

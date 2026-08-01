@@ -96,10 +96,18 @@ export class OpenAICompatibleAdapter {
       ...optionalNumber("temperature", modelConfig.temperature),
       ...optionalNumber("top_p", modelConfig.top_p),
       ...optionalNumber("max_tokens", modelConfig.max_output_tokens ?? modelConfig.max_tokens ?? (usesChapterTool ? DEFAULT_CHAPTER_TOOL_MAX_TOKENS : undefined)),
-      ...buildChapterToolRequest(usesChapterTool, { ...modelConfig, base_url: baseUrl, model_name: selectedModel }, allowedTools),
+      ...buildChapterToolRequest(usesChapterTool, { ...modelConfig, base_url: baseUrl, model_name: selectedModel }, allowedTools, metadata),
       ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
       ...(modelConfig.extra_body ?? {})
     };
+    // 标准化输出契约：metadata.responseFormat 请求 json_object 输出时，
+    // 按模型 capability 注入 response_format（DeepSeek JSON Output 兼容 OpenAI 格式）。
+    if (metadata?.responseFormat === "json_object") {
+      const caps = resolveModelCapabilities({ ...modelConfig, base_url: baseUrl, model_name: selectedModel });
+      if (caps.supportsJsonOutput) {
+        body.response_format = { type: "json_object" };
+      }
+    }
     const response = await fetchImpl(resolveEndpoint(baseUrl, modelConfig.endpoint ?? this.endpoint), {
       method: "POST",
       headers: {
@@ -402,7 +410,9 @@ const WRITING_TOOL_DEFINITIONS = {
 };
 
 function shouldRequestChapterTool(metadata = {}) {
-  return metadata?.toolRequest && metadata.toolRequest.project_id && metadata.toolRequest.chapter_no;
+  const tr = metadata?.toolRequest;
+  // 空 tools 数组（空注册表）不触发：回落围栏解析兜底，避免注入 {tools:[], tool_choice:"auto"}
+  return Boolean(tr) && ((tr.tools?.length ?? 0) > 0 || (tr.project_id && tr.chapter_no));
 }
 
 function buildMessages({ messages = [], prompt = "", usesChapterTool = false, allowedTools = [] } = {}) {
@@ -414,18 +424,30 @@ function buildMessages({ messages = [], prompt = "", usesChapterTool = false, al
   const systemContent = hasMultiple
     ? "You are WWriting's chapter writer. Use tools (get_status, list_chapters, read_chapter, read_continuity, read_outline) to check context; edit_chapter to fix text; update_continuity/update_outline to record facts. When ready, output chapter prose directly as text — it will be captured automatically. Or call append_chapter_segment as an alternative."
     : "You are WWriting's chapter writer. For chapter body output, call append_chapter_segment exactly once. Put the chapter prose only in the tool input.content field, never in normal chat content.";
+  // 注入判定统一为「首条消息是否 system」：
+  // - 首条已是 system（聊天会话 / 已含 system 的 transcript）不重注入，避免重复指令干扰上下文；
+  // - 首条为 user 时注入（写作循环第 2+ 轮 transcript 首条是 user，仍需章节 writer 的英文 system 指令）。
+  if (baseMessages[0]?.role === "system") {
+    return baseMessages;
+  }
   return [
     { role: "system", content: systemContent },
     ...baseMessages
   ];
 }
 
-function buildChapterToolRequest(usesChapterTool, modelConfig = {}, allowedTools = []) {
+function buildChapterToolRequest(usesChapterTool, modelConfig = {}, allowedTools = [], metadata = {}) {
   if (!usesChapterTool) {
     return {};
   }
 
-  // 根据写作 agent 循环传入的 allowed_tools 动态构建 tools 数组。
+  // 聊天场景：外部传入完整 tools 数组（toOpenAITools 产物），直接原样注入，
+  // tool_choice 用 "auto"（模型自主选择是否调用），不查 WRITING_TOOL_DEFINITIONS。
+  if (metadata?.toolRequest?.tools) {
+    return { tools: metadata.toolRequest.tools, tool_choice: "auto" };
+  }
+
+  // 写作场景：根据写作 agent 循环传入的 allowed_tools 动态构建 tools 数组。
   // 单工具模式（仅 append_chapter_segment）保持向后兼容；
   // 多工具模式（drafting/revising 阶段白名单）把全部允许工具发给 API，
   // 让模型按需先查设定/读前文/改正文，最后再提交 append_chapter_segment。
@@ -490,15 +512,36 @@ function chapterToolChoice(modelConfig = {}, hasMultipleTools = false) {
 // 生效、tool_choice 走 deepseek-chat 同等普通路径。deepseek-v4-pro 与旧别名名单保留。
 // 注意：WWriting 不透传 thinking 参数，v4-flash 恒走默认 non-thinking；若未来暴露思考模式开关，
 // 需改为按「是否启用 thinking」参数判定（thinking 模式下 v4-flash 应重新判为 reasoner）。
-export function isReasonerModel(modelConfig = {}) {
+//
+// Task 3 收敛：模型能力判定统一收敛到 resolveModelCapabilities capability matrix，
+// isReasonerModel 委托其 supportsThinking，其余调用方（model-client L3 缓存、
+// chapterToolChoice）行为不变。OpenAI 兼容供应商（含 DeepSeek/MiMo 等）默认全能力开放，
+// 仅 thinking 模型不支持 temperature/top_p（忽略采样参数）。
+export function resolveModelCapabilities(modelConfig = {}) {
   const baseUrl = String(modelConfig.base_url ?? "").toLowerCase();
   const modelName = String(modelConfig.model_name ?? "").toLowerCase();
-  return (
-    baseUrl.includes("api.deepseek.com") &&
-    ((modelName.includes("deepseek-v4") && !modelName.includes("-flash")) ||
-      modelName.includes("deepseek-reasoner") ||
-      modelName.includes("reasoner"))
+  const isDeepSeek = baseUrl.includes("api.deepseek.com");
+  // 原 isReasonerModel 判据 1:1 搬移：v4-pro / deepseek-reasoner / reasoner 系为 thinking 模型；
+  // v4-flash 默认 non-thinking（官方 2026-07），不判为 reasoner。
+  const supportsThinking = isDeepSeek && (
+    (modelName.includes("deepseek-v4") && !modelName.includes("-flash")) ||
+    modelName.includes("deepseek-reasoner") ||
+    modelName.includes("reasoner")
   );
+  return {
+    supportsThinking,
+    supportsTemperature: !supportsThinking, // thinking 模型忽略采样参数
+    supportsTopP: !supportsThinking,
+    supportsJsonOutput: true, // DeepSeek + OpenAI 兼容均支持 json_object
+    supportsTools: true,
+    supportsStreaming: true
+  };
+}
+
+// 保留导出名与行为，委托给 resolveModelCapabilities（现有调用方不破：
+// model-client L3 缓存、chapterToolChoice、deepseek-detection 测试）。
+export function isReasonerModel(modelConfig = {}) {
+  return resolveModelCapabilities(modelConfig).supportsThinking;
 }
 
 function requiresAutoToolChoice(modelConfig = {}) {

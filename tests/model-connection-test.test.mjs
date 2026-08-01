@@ -233,6 +233,39 @@ test("timeout is classified as request_timeout", async () => {
   assert.equal(result.code, "request_timeout");
 });
 
+test("completeOpenAICompatibleProbe 对思考模型不注入 temperature", async () => {
+  // 走真实 probe（默认 complete=completeOpenAICompatibleProbe），
+  // 用桩 fetch 捕获发给 deepseek-v4-pro（思考模型）的请求体，
+  // 断言 body 不含 temperature 字段（thinking 模型忽略采样参数，不应注入）。
+  const originalFetch = globalThis.fetch;
+  let captured = null;
+  globalThis.fetch = async (_url, init) => {
+    captured = JSON.parse(init.body);
+    return {
+      ok: true,
+      status: 200,
+      async text() {
+        return JSON.stringify({ choices: [{ message: { content: "OK" } }] });
+      },
+    };
+  };
+  try {
+    const result = await testModelConnection({
+      config: {
+        provider: "openai-compatible",
+        base_url: "https://api.deepseek.com/v1",
+        model_name: "deepseek-v4-pro",
+        api_key_env: "TEST_KEY",
+      },
+      secrets: { TEST_KEY: "k" },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(captured.temperature, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("provider error message containing the key is redacted", async () => {
   const result = await testModelConnection({
     config: {

@@ -18,7 +18,8 @@ class SeededFaultModel {
     if (request.attempt === 1 && shouldInjectInvalidOutput(request)) {
       return {
         type: "status_message",
-        message: "Injected fault: model wrote status text instead of using append_chapter_segment."
+        // 消息长度必须 < WRITING_AGENT_MIN_PROSE_CHARS(50)：文字输出即正文语义下 ≥50 字符会被当正文提交，注入将静默失效。
+        message: "Injected fault",
       };
     }
     return this.mock.generate(request);
@@ -68,6 +69,8 @@ const events = await readEvents(projectRoot);
 const rejected = events.filter((event) => event.type === "tool_call_rejected");
 assert.ok(interruptedAndRecovered);
 assert.ok(rejected.length >= 1);
+// 钉住拒绝码：注入的短输出必须走 output_too_short 拒绝路径（事件形状 data.code），免疫引擎语义漂移。
+assert.ok(rejected.some((event) => event.data?.code === "output_too_short"));
 
 const review = await runReviewerAgent(projectRoot);
 assert.equal(review.status, "passed");

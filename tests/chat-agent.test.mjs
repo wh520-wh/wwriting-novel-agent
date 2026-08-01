@@ -7,6 +7,7 @@ import { buildChatContext } from "../src/core/chat/chat-context.mjs";
 import { appendChatMessage } from "../src/core/chat/chat-store.mjs";
 import { createToolRegistry } from "../src/core/chat/tool-registry.mjs";
 import { registerReadTools } from "../src/core/chat/tools-read.mjs";
+import { readEvents } from "../src/core/event-log.mjs";
 import { createProject, loadProject } from "../src/core/project-store.mjs";
 
 async function makeProject() {
@@ -104,6 +105,65 @@ test("读工具自动执行并回填后续轮", async () => {
   assert.equal(out.toolEvents.length, 1);
   assert.equal(out.toolEvents[0].tool, "get_status");
   assert.equal(out.toolEvents[0].ok, true);
+});
+
+// ===== Task 7: 原生 tools 注入 =====
+test("agentLoop 注入原生 tools（注册表工具名齐全、无 chapter_no）", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  let captured = null;
+  const modelClient = {
+    generate: async (req) => {
+      captured = req;
+      return { text: "进度是 1/3 章。", usageReport: {}, costSummary: { estimatedCost: 0 } };
+    }
+  };
+  const out = await runChatTurn({
+    projectRoot, project, registry,
+    modelClient,
+    userMessage: "进度如何？"
+  });
+  assert.equal(out.reply, "进度是 1/3 章。");
+  const toolRequest = captured.metadata.toolRequest;
+  assert.ok(Array.isArray(toolRequest.tools) && toolRequest.tools.length > 0, "应注入非空 tools 数组");
+  const names = toolRequest.tools.map((t) => t.function.name);
+  assert.ok(names.includes("get_status"));
+  assert.ok(names.includes("read_chapter"));
+  for (const t of toolRequest.tools) {
+    assert.equal(t.type, "function");
+    assert.equal(t.function.parameters.type, "object");
+  }
+  assert.equal(toolRequest.chapter_no, undefined, "聊天场景不应有 chapter_no");
+});
+
+test("finish_reason=length 时文本回复追加截断标注并发 warn 事件", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  const modelClient = {
+    generate: async () => ({
+      text: "很长的回复……",
+      raw: { choices: [{ message: { content: "很长的回复……" }, finish_reason: "length" }] },
+      usageReport: {}, costSummary: { estimatedCost: 0 }
+    })
+  };
+  const out = await runChatTurn({
+    projectRoot, project, registry,
+    modelClient,
+    userMessage: "写长点"
+  });
+  // 标注进入最终返回的 reply 与历史里的 assistant 消息
+  assert.match(out.reply, /被截断/u);
+  const history = await readHistory(projectRoot);
+  assert.match(history.at(-1).content, /被截断/u);
+  // warn 级事件落盘 run_log.jsonl
+  const events = await readEvents(projectRoot);
+  const trunc = events.find((e) => e.type === "chat_reply_truncated");
+  assert.ok(trunc, "应有 chat_reply_truncated 事件");
+  assert.equal(trunc.severity, "warn");
 });
 
 test("写工具落 pending_action 并暂停，approve 后执行并继续", async () => {

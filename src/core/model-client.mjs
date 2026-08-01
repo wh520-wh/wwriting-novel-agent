@@ -2,13 +2,13 @@ import { CostTracker } from "./cost-tracker.mjs";
 import { resolveRuntimeConfig } from "./config-runtime.mjs";
 import { normalizeUsageReport } from "./usage-report.mjs";
 import { sha256 } from "./fs-utils.mjs";
-import { isReasonerModel, ProviderTransportError } from "./provider-adapters.mjs";
+import { resolveModelCapabilities, ProviderTransportError } from "./provider-adapters.mjs";
 import { isCancellationError } from "./cancellation.mjs";
 
 // L3 收窄版确定性响应缓存（仅辅助调用重试去重）：
 // - 缓存条件：metadata 带 memoryExtract/factCheck 标记（辅助调用）+ 无工具请求 + 非流式
-//   + 显式 temperature=0（reasoner 系模型不支持 temperature，按 isReasonerModel 区分，
-//   不注入也就不缓存——确定性前提不成立）。
+//   + 显式 temperature=0（按 resolveModelCapabilities.supportsTemperature 区分——
+//   thinking 模型不支持 temperature，不注入也就不缓存——确定性前提不成立）。
 // - 重试豁免：metadata.attempt > 0 时既不查也不写缓存（计划语义：重试预期新调用）。
 // - 命中语义：不调 adapter、不 record 费用，usage 归零返回（同 CodeWhale llm_response_cache）。
 // - 容量：进程内 Map LRU，默认 256 条。
@@ -88,7 +88,7 @@ export class ModelClient {
     }
 
     // L3 辅助调用确定性响应缓存：
-    // 1) 资格满足时对非 reasoner 模型显式注入 temperature=0（缓存确定性前提）；
+    // 1) 资格满足且模型 supportsTemperature 时显式注入 temperature=0（缓存确定性前提）；
     // 2) 命中直接返回缓存响应（usage 归零、不调 adapter、不 record 费用）；
     // 3) metadata.attempt > 0 的流程级重试不查缓存。
     const { modelConfig, cacheKey } = this.#prepareAuxiliaryCache({
@@ -285,10 +285,10 @@ export class ModelClient {
 
   /**
    * L3 辅助调用缓存准备：返回 { modelConfig, cacheKey }。
-   * - modelConfig：资格满足且非 reasoner 模型时注入 temperature=0（用户已显式配置则尊重用户值）；
+   * - modelConfig：资格满足且模型 supportsTemperature 时注入 temperature=0（用户已显式配置则尊重用户值）；
    * - cacheKey：仅当「辅助标记 + 无工具 + 非流式 + 有效 temperature=0 + attempt=0」时非空。
-   *   reasoner 系模型（isReasonerModel）不注入 temperature（不支持该参数），
-   *   因缓存确定性建立在显式 temperature=0 上，reasoner 模型本轮不走缓存。
+   *   不支持 temperature 的模型（resolveModelCapabilities.supportsTemperature=false，即 thinking 模型）
+   *   不注入 temperature（忽略采样参数），因缓存确定性建立在显式 temperature=0 上，这类模型本轮不走缓存。
    */
   #prepareAuxiliaryCache({ modelConfig, stage, prompt, messages, metadata }) {
     const isAuxiliary = metadata?.memoryExtract === true || metadata?.factCheck === true;
@@ -299,7 +299,8 @@ export class ModelClient {
     if (!eligible) {
       return { modelConfig, cacheKey: null };
     }
-    const effectiveConfig = modelConfig.temperature === undefined && !isReasonerModel(modelConfig)
+    const caps = resolveModelCapabilities(modelConfig);
+    const effectiveConfig = modelConfig.temperature === undefined && caps.supportsTemperature
       ? { ...modelConfig, temperature: 0 }
       : modelConfig;
     const cacheKey = effectiveConfig.temperature === 0

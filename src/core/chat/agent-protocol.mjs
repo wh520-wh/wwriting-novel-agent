@@ -2,9 +2,25 @@
 // 支持一次返回多个 tool call；系统提示把工具文档、调用协议与项目快照拼在一起。
 import { renderToolDocs } from "./tool-registry.mjs";
 
-export function parseAgentReply(rawText) {
-  const text = String(rawText ?? "").trim();
-  // 扫描全部围栏，取第一个能解析出 tool_calls 的；其余围栏（如 ```稿）留在文本/leadText 里。
+// 兼容两种输入：纯字符串（旧调用方）或 { text, raw } 对象（原生 tool_calls 场景）。
+export function parseAgentReply(input) {
+  const rawText = typeof input === "string" ? input : String(input?.text ?? "");
+  const text = rawText.trim();
+  const rawObj = typeof input === "object" && input !== null ? input.raw : null;
+
+  // 原生 tool_calls 优先：OpenAI 兼容 API 返回的 message.tool_calls 直接采用；
+  // 围栏/XML/裸 JSON 解析降为兜底（模型未走原生 tools 或旧模型仍输出围栏时生效）。
+  const nativeToolCalls = rawObj?.choices?.[0]?.message?.tool_calls;
+  if (Array.isArray(nativeToolCalls) && nativeToolCalls.length > 0) {
+    const allCalls = nativeToolCalls
+      .filter((tc) => tc?.function?.name)
+      .map((tc) => ({ tool: tc.function.name, args: parseToolCallArguments(tc.function.arguments) }));
+    if (allCalls.length > 0) {
+      return { type: "tool_call", tool_calls: allCalls, call: allCalls[0], leadText: text };
+    }
+  }
+
+  // 兜底：扫描全部围栏，取第一个能解析出 tool_calls 的；其余围栏（如 ```稿）留在文本/leadText 里。
   const fenceRe = /```(?:json)?\s*([\s\S]*?)```/gu;
   let match;
   while ((match = fenceRe.exec(text)) !== null) {
@@ -38,6 +54,17 @@ export function parseAgentReply(rawText) {
     }
   }
   return { type: "text", text };
+}
+
+// 原生 tool_calls 的 arguments 可能已是对象（部分代理返回）或 JSON 字符串；解析失败给空对象兜底。
+function parseToolCallArguments(argumentsValue) {
+  if (argumentsValue && typeof argumentsValue === "object") return argumentsValue;
+  if (typeof argumentsValue !== "string") return {};
+  try {
+    return JSON.parse(argumentsValue);
+  } catch {
+    return {};
+  }
 }
 
 function tryParseToolCall(candidate) {
