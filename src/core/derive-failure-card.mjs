@@ -5,8 +5,30 @@ function clean(str, max) {
   return str.replace(CONTROL_CHARS, ' ').slice(0, max);
 }
 
-function classifyKind(event) {
-  const { type, message = '', data = {} } = event;
+const KNOWN_KINDS = new Set([
+  'words-short',
+  'tool-rejected',
+  'loop-exhausted',
+  'budget-exhausted',
+  'provider-error',
+  'review-failed',
+  'unknown'
+]);
+
+function normalizeKind(value) {
+  if (value === 'model-error' || value === 'provider-error' || value === 'project_interrupted') {
+    return 'provider-error';
+  }
+  return KNOWN_KINDS.has(value) ? value : null;
+}
+
+function classifyKind(event = {}) {
+  const { type, kind, message = '', data = {} } = event;
+  const explicit = normalizeKind(kind);
+  if (explicit) return explicit;
+  if (type === 'model-error' || type === 'provider-error' || type === 'project_interrupted') {
+    return 'provider-error';
+  }
   if (type === 'quality_gate_failed' && message === 'word-count gate failed') return 'words-short';
   if (type === 'quality_gate_failed' && message === 'skill quality gate failed') return 'review-failed';
   if (type === 'tool_call_rejected') return 'tool-rejected';
@@ -176,5 +198,42 @@ export function deriveFailureCard(event, state = {}, options = {}) {
       rawError: clean(event.message ?? null, 500)
     },
     resolution: null
+  };
+}
+
+function stableLegacyId(card) {
+  const material = [
+    card?.ts ?? "",
+    card?.chapterNo ?? card?.chapter_no ?? "",
+    card?.type ?? card?.kind ?? "unknown",
+    card?.message ?? card?.body ?? ""
+  ].join("|");
+  let hash = 5381;
+  for (const char of material) hash = ((hash << 5) + hash) ^ char.charCodeAt(0);
+  return `legacy_${(hash >>> 0).toString(36)}`;
+}
+
+export function normalizeFailureCard(card, state = {}) {
+  const raw = card && typeof card === "object" ? card : {};
+  const event = {
+    id: typeof raw.id === "string" && raw.id ? raw.id : stableLegacyId(raw),
+    type: raw.type ?? raw.kind ?? "unknown",
+    kind: raw.kind,
+    chapter_no: raw.chapter_no ?? raw.chapterNo,
+    message: raw.message ?? raw.body ?? "未知错误",
+    ts: raw.ts ?? "",
+    data: raw.data && typeof raw.data === "object" ? raw.data : {}
+  };
+  const derived = deriveFailureCard(event, state);
+  return {
+    ...derived,
+    seq: raw.seq ?? derived.seq,
+    title: typeof raw.title === "string" && raw.title ? raw.title : derived.title,
+    body: typeof raw.body === "string" && raw.body ? raw.body : derived.body,
+    actions: Array.isArray(raw.actions) ? raw.actions : derived.actions,
+    diagnostics: raw.diagnostics && typeof raw.diagnostics === "object"
+      ? { ...derived.diagnostics, ...raw.diagnostics }
+      : derived.diagnostics,
+    resolution: raw.resolution ?? null
   };
 }

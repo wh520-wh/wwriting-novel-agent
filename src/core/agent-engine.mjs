@@ -210,17 +210,15 @@ export async function runProject(projectRoot, options = {}) {
         message: error.message,
         data: { reason: "model_provider_unavailable" }
       });
+      await appendFailureCard(projectRoot, state, {
+        type: "model-error",
+        message: error.message,
+        data: { reason: "model_provider_unavailable" }
+      });
       await emit(CORE_EVENTS.TaskFailed, {
         projectRoot,
         taskId: state.current_stage,
         error,
-        card: {
-          type: "model-error",
-          chapter_no: state.current_chapter_no,
-          message: error.message,
-          ts: new Date().toISOString(),
-          data: { reason: "model_provider_unavailable" }
-        },
         options: { stage: state.current_stage }
       }).catch(() => {});
       throw error;
@@ -237,17 +235,15 @@ export async function runProject(projectRoot, options = {}) {
       severity: "error",
       message: error.message
     });
+    await appendFailureCard(projectRoot, state, {
+      type: "model-error",
+      message: error.message,
+      data: { reason: "interrupted" }
+    });
     await emit(CORE_EVENTS.TaskFailed, {
       projectRoot,
       taskId: state.current_stage,
       error,
-      card: {
-        type: "model-error",
-        chapter_no: state.current_chapter_no,
-        message: error.message,
-        ts: new Date().toISOString(),
-        data: { reason: "interrupted" }
-      },
       options: { stage: state.current_stage }
     }).catch(() => {});
     throw error;

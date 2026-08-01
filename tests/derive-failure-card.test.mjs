@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { deriveFailureCard } from "../src/core/derive-failure-card.mjs";
+import { deriveFailureCard, normalizeFailureCard } from "../src/core/derive-failure-card.mjs";
 
 test("words-short 卡读取 min_words 并产出扁平 action", () => {
   const card = deriveFailureCard({
@@ -88,4 +88,21 @@ test("cost_budget_exhausted 事件产出可恢复的成本预算卡", () => {
   assert.match(card.body, /1\.21/);
   assert.equal(card.actions[0].command, "raise-cost-budget");
   assert.equal(card.actions[0].args.newMaxCost, 2);
+});
+
+test("legacy model-error is normalized into an actionable provider failure", () => {
+  const card = normalizeFailureCard({
+    type: "model-error",
+    chapter_no: 2,
+    message: "OpenAI-compatible provider returned HTTP 400.",
+    ts: "2026-08-01T01:00:00Z",
+    data: { reason: "interrupted" }
+  });
+
+  assert.equal(card.kind, "provider-error");
+  assert.equal(card.chapterNo, 2);
+  assert.equal(card.title, "模型服务出错");
+  assert.ok(card.id.startsWith("legacy_"));
+  assert.ok(Array.isArray(card.actions));
+  assert.ok(card.actions.some((action) => action.command === "retry-segment"));
 });

@@ -42,3 +42,28 @@ test('markResolved 更新对应条目', () => {
   const all = readFailures(dir);
   assert.equal(all[0].resolution.action, 'fill-words');
 });
+
+test('遗留 model-error 卡片读取时规范化并可稳定处理', () => {
+  const dir = makeProject();
+  appendFailure(dir, {
+    type: 'model-error',
+    chapter_no: 2,
+    message: 'OpenAI-compatible provider returned HTTP 400.',
+    ts: '2026-08-01T01:00:00Z',
+    data: { reason: 'interrupted' }
+  });
+
+  const first = readFailures(dir);
+  assert.equal(first.length, 1);
+  assert.ok(first[0].id.startsWith('legacy_'));
+  assert.equal(first[0].kind, 'provider-error');
+  assert.ok(first[0].actions.length > 0);
+
+  markResolved(dir, first[0].id, { action: 'retry-segment', submittedAt: '2026-08-01T01:05:00Z' });
+  const second = readFailures(dir);
+  assert.equal(second[0].id, first[0].id);
+  assert.deepEqual(second[0].resolution, {
+    action: 'retry-segment',
+    submittedAt: '2026-08-01T01:05:00Z'
+  });
+});
