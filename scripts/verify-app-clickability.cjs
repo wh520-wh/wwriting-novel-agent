@@ -4,6 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const assert = require("node:assert/strict");
+const { desktopWindowChrome } = require("../src/desktop/window-chrome.cjs");
 
 // Guard against EPIPE when stdout pipe is closed (e.g. user interrupted)
 process.stdout.on("error", (err) => { if (err.code !== "EPIPE") throw err; });
@@ -108,7 +109,9 @@ async function main() {
     height: 860,
     show: false,
     backgroundColor: "#f4f3f0",
+    ...desktopWindowChrome(),
     webPreferences: {
+      preload: path.join(rootDir, "src", "desktop", "electron-preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
       backgroundThrottling: false

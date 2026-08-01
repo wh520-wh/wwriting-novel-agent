@@ -4,6 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { listenWithFallback } = require("./server-start.cjs");
+const { desktopWindowChrome } = require("./window-chrome.cjs");
 
 const rootDir = path.resolve(__dirname, "..", "..");
 let port = Number(process.env.PORT || 4173);
@@ -87,6 +88,7 @@ app.whenReady().then(async () => {
     show: true,
     backgroundColor: "#f4f3f0",
     autoHideMenuBar: true,
+    ...desktopWindowChrome(),
     webPreferences: {
       preload: path.join(__dirname, "electron-preload.cjs"),
       contextIsolation: true,
