@@ -21,3 +21,24 @@ test('deriveFailures 处理空 / 缺失 failures', () => {
   assert.deepEqual(deriveFailures({}), []);
   assert.deepEqual(deriveFailures({ failures: null }), []);
 });
+
+test('deriveFailures 为缺失 actions 的遗留卡片补空数组', () => {
+  const [card] = deriveFailures({
+    failures: [{ id: 'legacy', chapterNo: 2, kind: 'provider-error' }]
+  });
+  assert.deepEqual(card.actions, []);
+});
+
+test('interrupted drafting is terminal in the top status badge', async () => {
+  const { computeAgentTruth } = await import('../../src/app-shell/agent-truth.mjs');
+  const truth = computeAgentTruth({
+    hasProject: true,
+    agent_alive: false,
+    retry_available: true,
+    summary: { projectStatus: 'interrupted', currentStage: 'drafting', currentChapterNo: 2 },
+    state: { interrupted_reason: 'HTTP 400' }
+  });
+  assert.equal(truth.display, '已中断');
+  assert.equal(truth.showRetry, false);
+  assert.equal(truth.refresh, false);
+});

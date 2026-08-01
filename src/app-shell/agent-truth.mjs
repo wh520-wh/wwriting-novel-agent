@@ -1,11 +1,14 @@
+import { deriveRunPresentation } from "./run-presentation.mjs";
+
 export function computeAgentTruth(data, now = Date.now()) {
   if (!data?.hasProject) {
     return { display: "待命", className: "idle", showRetry: false, showStop: false, refresh: false, reason: "" };
   }
+  const run = deriveRunPresentation(data);
   const retryAvailable = data.retry_available === true;
   const retryReason = data.retry_unavailable_reason ?? "";
   const alive = data.agent_alive === true;
-  const status = data.summary?.projectStatus ?? data.state?.project_status ?? "idle";
+  const status = run.status;
   const stage = data.currentStage ?? data.summary?.currentStage ?? data.state?.current_stage ?? null;
   const heartbeat = data.agent_last_heartbeat ?? data.state?.last_heartbeat;
   const heartbeatMs = heartbeat ? Date.parse(heartbeat) : NaN;
@@ -29,7 +32,7 @@ export function computeAgentTruth(data, now = Date.now()) {
     };
   }
   if (status === "cancelling") {
-    const chapterNo = data.summary?.currentChapterNo ?? data.state?.current_chapter_no ?? null;
+    const chapterNo = run.chapterNo;
     const label = chapterNo
       ? `正在取消第 ${chapterNo} 章`
       : "正在取消";
@@ -54,11 +57,15 @@ export function computeAgentTruth(data, now = Date.now()) {
   if (status === "running") {
     return { display: "已中断", className: "interrupted", showRetry: retryAvailable, showStop: false, refresh: false, reason: retryReason || "进程已退出但状态仍为运行中" };
   }
-  if (status === "interrupted") {
-    return { display: "已中断", className: "interrupted", showRetry: retryAvailable, showStop: false, refresh: false, reason: data.agent_error ?? data.state?.interrupted_reason ?? retryReason ?? "" };
-  }
-  if (status === "cancelled") {
-    return { display: "已停止", className: "cancelled", showRetry: retryAvailable, showStop: false, refresh: false, reason: data.state?.cancelled_reason ?? retryReason ?? "用户停止" };
+  if (run.isTerminal) {
+    return {
+      display: run.label,
+      className: status,
+      showRetry: false,
+      showStop: false,
+      refresh: false,
+      reason: run.reason || data.agent_error || retryReason || (status === "cancelled" ? "用户停止" : "")
+    };
   }
   if (status === "paused") {
     return { display: "已暂停", className: "idle", showRetry: retryAvailable, showStop: false, refresh: false, reason: "你选择了停在这里，发送新指令即可恢复" };
@@ -110,7 +117,7 @@ export function deriveFailures(dashboard) {
     const ch = f.chapterNo ?? 0;
     const n = (seqByChapter.get(ch) ?? 0) + 1;
     seqByChapter.set(ch, n);
-    return { ...f, seq: n };
+    return { ...f, actions: Array.isArray(f.actions) ? f.actions : [], seq: n };
   });
 }
 

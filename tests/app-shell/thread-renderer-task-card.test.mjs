@@ -254,6 +254,28 @@ function makeDashboard(tasks) {
   };
 }
 
+function makeInterruptedDashboard() {
+  return {
+    project: { title: "测试小说" },
+    projectRoot: "D:\\novel",
+    summary: {
+      currentStage: "drafting",
+      projectStatus: "interrupted",
+      currentChapterNo: 2,
+      totalWords: 1234,
+      costAvailable: true,
+      estimatedCost: "0.02",
+    },
+    state: { interrupted_reason: "HTTP 400" },
+    chapters: [],
+    queue: { tasks: [] },
+    events: [
+      { type: "project_run_started", timestamp: "2026-08-01T01:00:00Z", stage: "drafting" },
+      { type: "project_interrupted", timestamp: "2026-08-01T01:01:00Z", stage: "drafting", message: "HTTP 400" },
+    ],
+  };
+}
+
 function renderTaskCards(tasks) {
   const { refs, ctx } = makeHarness();
   createThreadRenderer(ctx).syncThread(makeDashboard(tasks), true);
@@ -352,4 +374,13 @@ test("buildTaskCard: 有类型无章节号 → 仅显示类型标签", async () 
   };
   const thread = await renderTaskCards([task]);
   assert.equal(titleOf(thread, "task-no-chapter"), "写作");
+});
+
+test("interrupted run renders terminal copy without writing spinner or duplicate retry", () => {
+  const { refs, ctx } = makeHarness();
+  createThreadRenderer(ctx).syncThread(makeInterruptedDashboard(), true);
+  assert.match(refs.thread.textContent, /已中断/u);
+  assert.doesNotMatch(refs.thread.textContent, /书写中/u);
+  assert.equal(refs.thread.querySelector(".spin"), null);
+  assert.equal(refs.thread.querySelectorAll(".task-action.retry").length, 0);
 });
