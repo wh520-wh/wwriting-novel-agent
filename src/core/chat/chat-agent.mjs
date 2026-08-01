@@ -8,11 +8,16 @@ import { previewEditChapter } from "./tools-write.mjs";
 import { isJobRunning } from "./tools-control.mjs";
 import { appendChatMessage, loadPendingAction, savePendingAction, clearPendingAction, updatePendingStatus } from "./chat-store.mjs";
 import { appendTranscript } from "./transcript-store.mjs";
+import { appendEvent } from "../event-log.mjs";
 import { loadConfigLayers } from "../config-runtime.mjs";
 import path from "node:path";
 
 export const MAX_TOOL_ROUNDS = 32;
 const RESULT_SUMMARY_CHARS = 4000;
+// 截断标注：聊天带原生 tools 后走 usesChapterTool 路径，无显式 max_tokens 时默认 4096，
+// finish_reason=length 说明输出被截断，追加此标注让用户感知（与 structured-output 约定一致：
+// 截断检测由上游负责，chat 就是上游）。
+const TRUNCATED_NOTE = "…（回复超出长度限制被截断，请缩小范围重试）";
 
 // 写作运行时写保护：runProject 后台不持 projectLock，chat 持锁，两者并发写
 // continuity/state 会 lost update（extracted_chapters 水位推进后不可恢复，静默丢记忆）。
@@ -136,6 +141,21 @@ async function agentLoop(options, toolEvents) {
     }
     calls += 1;
     totalCost += Number(result.costSummary?.estimatedCost ?? 0) || 0;
+    // 截断检测：finish_reason=length 时无论文本回复还是 tool_calls 都发 warn 事件；
+    // 文本回复额外追加截断标注（tool_calls 的 arguments 截断会以工具执行错误浮出，不特殊处理）。
+    const truncated = result?.raw?.choices?.[0]?.finish_reason === "length";
+    if (truncated) {
+      onEvent?.({ type: "chat_reply_truncated", round });
+      // await 落盘（executeTool 同模式）：保证事件在回复返回前持久化，测试可确定性断言
+      await appendEvent(projectRoot, {
+        type: "chat_reply_truncated",
+        severity: "warn",
+        project_id: project?.project_id ?? null,
+        stage: "chat",
+        message: "chat 回复被截断（finish_reason=length）",
+        data: { round }
+      }).catch(() => {}); // 事件落盘失败不阻断对话流程
+    }
     const parsed = parseAgentReply({ text: result.text, raw: result.raw });
     // §5.1: 转录本轮模型 I/O（fire-and-forget，失败只 warn 不阻断）
     appendTranscript(projectRoot, {
@@ -146,8 +166,10 @@ async function agentLoop(options, toolEvents) {
       usage: { calls, cost: totalCost, ...result.costSummary }
     }).catch(() => {}); // fire-and-forget: 转录失败不阻断对话流程
     if (parsed.type === "text") {
-      await appendChatMessage(projectRoot, { role: "assistant", content: parsed.text, cost: totalCost || undefined });
-      return { reply: parsed.text, toolEvents, pendingAction: null, usage: { calls, cost: totalCost } };
+      // 截断时在回复末尾追加标注（进入历史与最终返回的 reply，前端据此展示）
+      const content = truncated ? `${parsed.text}${TRUNCATED_NOTE}` : parsed.text;
+      await appendChatMessage(projectRoot, { role: "assistant", content, cost: totalCost || undefined });
+      return { reply: content, toolEvents, pendingAction: null, usage: { calls, cost: totalCost } };
     }
     // §2.3：只算成功执行的调用（ok===true），被拒/失败不占额度
     const successfulRounds = toolEvents.filter((e) => e.ok).length;

@@ -411,7 +411,8 @@ const WRITING_TOOL_DEFINITIONS = {
 
 function shouldRequestChapterTool(metadata = {}) {
   const tr = metadata?.toolRequest;
-  return Boolean(tr) && (Boolean(tr.tools) || (tr.project_id && tr.chapter_no));
+  // 空 tools 数组（空注册表）不触发：回落围栏解析兜底，避免注入 {tools:[], tool_choice:"auto"}
+  return Boolean(tr) && ((tr.tools?.length ?? 0) > 0 || (tr.project_id && tr.chapter_no));
 }
 
 function buildMessages({ messages = [], prompt = "", usesChapterTool = false, allowedTools = [] } = {}) {
