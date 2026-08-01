@@ -18,7 +18,7 @@ class SeededFaultModel {
     if (request.attempt === 1 && shouldInjectInvalidOutput(request)) {
       return {
         type: "status_message",
-        message: "Injected fault: model wrote status text instead of using append_chapter_segment."
+        message: "Injected fault",
       };
     }
     return this.mock.generate(request);
