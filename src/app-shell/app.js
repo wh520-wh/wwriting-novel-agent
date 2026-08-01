@@ -691,8 +691,9 @@ function renderProjectNav(project, selectedProjectRoot) {
   const remove = document.createElement("button");
   remove.type = "button";
   remove.className = "proj-remove";
-  remove.textContent = "移除";
+  remove.replaceChildren(icon("trash", 14));
   remove.setAttribute("aria-label", `从列表移除 ${project.title ?? "未命名小说"}`);
+  remove.title = "从列表移除";
   remove.addEventListener("click", (event) => {
     event.stopPropagation();
     forgetProject(project.projectRoot);

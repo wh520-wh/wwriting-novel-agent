@@ -368,3 +368,12 @@ test("styles.css defines themed workbench, project covers, creation cards and re
   }
   assert.match(cssSource, /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.project-workbench/u);
 });
+
+test("project removal uses an accessible icon button and an out-of-flow menu", async () => {
+  const cssPath = path.join(here, "..", "..", "src", "app-shell", "styles.css");
+  const [cssSource] = await Promise.all([fs.readFile(cssPath, "utf8")]);
+  assert.match(appSource, /icon\(\s*["']trash["']/u, "project removal should use the trash icon");
+  assert.match(appSource, /remove\.title\s*=\s*["']从列表移除["']/u, "project removal needs a visible title");
+  assert.match(cssSource, /\.proj-menu\s*\{[\s\S]*?position:\s*absolute/u, "project menu must be out of layout flow");
+  assert.match(cssSource, /\.proj-row:focus-within\s+\.proj-menu/u, "project menu must remain keyboard reachable");
+});

@@ -1483,20 +1483,24 @@ button.cbar-pill--readonly:hover {
 [data-privacy="on"][data-away="true"] .peek { filter: blur(10px); }
 .tbtn.active, .tbtn.on { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
 .proj-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 4px;
+  position: relative;
+  display: block;
 }
 
 .proj-row .proj {
+  width: 100%;
   min-width: 0;
 }
 
 .proj-menu {
+  position: absolute;
+  inset-inline-end: 8px;
+  top: 50%;
+  z-index: 1;
+  transform: translateY(-50%);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 120ms ease;
+  transition: opacity 120ms ease, transform 120ms ease;
 }
 
 .proj-row:hover .proj-menu,
@@ -1506,12 +1510,16 @@ button.cbar-pill--readonly:hover {
 }
 
 .proj-remove {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  display: grid;
+  place-items: center;
   border: 1px solid var(--line);
   background: var(--surface);
   color: var(--muted);
   border-radius: 6px;
-  min-width: 44px;
-  min-height: 30px;
   cursor: pointer;
 }
 

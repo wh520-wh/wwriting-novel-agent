@@ -381,6 +381,27 @@ async function main() {
     expect: () => overlayHidden(win, "create-scrim")
   }));
   await assertRailPrimaryEntriesSeparate(win);
+  const projectGeometry = await read(win, `(() => {
+    const row = document.querySelector('.proj-row');
+    const card = row?.querySelector('.proj');
+    if (!row || !card) return null;
+    const rowRect = row.getBoundingClientRect();
+    const cardRect = card.getBoundingClientRect();
+    return {
+      gap: Math.round(rowRect.right - cardRect.right),
+      rowWidth: Math.round(rowRect.width),
+      cardWidth: Math.round(cardRect.width)
+    };
+  })()`);
+  assert.ok(projectGeometry, "项目列表必须存在可测量的项目行");
+  assert.ok(projectGeometry.gap <= 1, `未悬停时项目卡不得预留菜单宽度: ${JSON.stringify(projectGeometry)}`);
+  const projectRemoveAccessibility = await read(win, `(() => {
+    const remove = document.querySelector('.proj-remove');
+    return remove ? { ariaLabel: remove.getAttribute('aria-label'), title: remove.getAttribute('title') } : null;
+  })()`);
+  assert.ok(projectRemoveAccessibility, "项目列表必须存在删除图标按钮");
+  assert.ok(projectRemoveAccessibility.ariaLabel, "删除图标按钮必须有 aria-label");
+  assert.ok(projectRemoveAccessibility.title, "删除图标按钮必须有 title");
   clicks.push(await clickAndRead(win, ".proj.active", { label: "active-project" }));
 
   const newNovel = await clickAndRead(win, "#new-novel", {
