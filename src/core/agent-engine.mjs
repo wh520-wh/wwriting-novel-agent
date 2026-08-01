@@ -340,8 +340,9 @@ async function draftNextSegment(projectRoot, project, state, runtime, options) {
   }
 
   const segmentNo = state.current_segment_no + 1;
-  // 恢复检测：上次中断时 pending transcript 已落盘，若与本次要写的段号一致且有
-  // 未回传结果的 tool_calls，则把 transcript 传给循环续写（跳过首轮编译与重复写入）。
+  // 恢复检测：上次中断时 pending transcript 已落盘（可能在「模型已决策、工具未执行」的
+  // 崩溃窗口），只要存在就传给循环续写——跳过首轮编译与重复写入；未回执轮次由
+  // runWritingAgentLoop 恢复裁剪处理（trimUnresolvedAssistantTurns）。
   const pendingData = await readPendingTranscript(projectRoot, state.current_chapter_no, segmentNo);
   const restoredTranscript = pendingData ? ToolTranscript.restore(pendingData) : null;
   const response = await runWritingAgentLoop(projectRoot, project, state, runtime, {
@@ -352,32 +353,15 @@ async function draftNextSegment(projectRoot, project, state, runtime, options) {
     segment_target_words: Math.max(900, Math.ceil(project.target_words_per_chapter / 3)),
     signal: options.signal,
     allowed_tools: DRAFTING_ALLOWED_TOOLS,
-    ...(restoredTranscript?.pendingToolCalls.length > 0
-      ? { restored_transcript: restoredTranscript }
-      : {})
+    ...(options.simulateInterruptAfter ? { simulate_interrupt_after: options.simulateInterruptAfter } : {}),
+    ...(restoredTranscript ? { restored_transcript: restoredTranscript } : {})
   });
   const latestState = await loadState(projectRoot);
   const next = setStage({ ...latestState, current_segment_no: segmentNo }, "drafting");
   await saveState(projectRoot, next);
   await writeCheckpoint(projectRoot, checkpointPayload(project, state, next, [response.toolCall], [response.result], null, { ...checkpointModelExtras(response.modelCall), transcript: response.transcript }));
-
-  if (
-    options.simulateInterruptAfter &&
-    options.simulateInterruptAfter.chapter_no === state.current_chapter_no &&
-    options.simulateInterruptAfter.segment_no === segmentNo
-  ) {
-    await appendEvent(projectRoot, {
-      type: "project_paused",
-      project_id: project.project_id,
-      chapter_no: state.current_chapter_no,
-      stage: "drafting",
-      severity: "warn",
-      message: "simulated interruption triggered"
-    });
-    throw new SimulatedInterrupt("Simulated interruption after checkpoint");
-  }
-  // 删除时机（设计决策 B）：checkpoint 写入 + 中断检查之后才清 pending 文件——
-  // 保证 simulateInterruptAfter/崩溃时 pending 文件仍在，恢复可续写；正常完成时必被清理。
+  // 删除时机（设计决策 B）：checkpoint 写入后清 pending。中断由循环层（callModel）触发，
+  // 抛异常时本行不执行，pending 文件保留未回执轮次供恢复；正常完成时必被清理。
   await clearPendingTranscript(projectRoot, state.current_chapter_no, segmentNo);
 }
 
@@ -531,7 +515,7 @@ async function reviseChapter(projectRoot, project, state, runtime, options = {})
   const gate = runWordCountGate(draft, project.min_words_per_chapter);
   const segmentNo = budgetedState.current_segment_no + 1;
   const qualityGateFailures = budgetedState.last_quality_gate_results?.filter((result) => result.status === "failed") ?? [];
-  // 恢复检测：与 draftNextSegment 一致，读 pending transcript 续写
+  // 恢复检测：与 draftNextSegment 一致，pending 存在即续写（未回执轮次由循环层裁剪）
   const pendingData = await readPendingTranscript(projectRoot, budgetedState.current_chapter_no, segmentNo);
   const restoredTranscript = pendingData ? ToolTranscript.restore(pendingData) : null;
   const response = await runWritingAgentLoop(projectRoot, project, budgetedState, runtime, {
@@ -543,9 +527,7 @@ async function reviseChapter(projectRoot, project, state, runtime, options = {})
     quality_gate_failures: qualityGateFailures,
     signal: options.signal,
     allowed_tools: REVISING_ALLOWED_TOOLS,
-    ...(restoredTranscript?.pendingToolCalls.length > 0
-      ? { restored_transcript: restoredTranscript }
-      : {})
+    ...(restoredTranscript ? { restored_transcript: restoredTranscript } : {})
   });
   const latestState = await loadState(projectRoot);
   const next = setStage({ ...latestState, current_segment_no: segmentNo }, "reviewing");
@@ -1308,6 +1290,21 @@ function extractAssistantMessage(modelCall) {
   };
 }
 
+// 恢复裁剪：pending 文件可能落在「模型已决策、工具未执行」的崩溃窗口，此时尾部
+// assistant tool_calls 消息的结果必然在其后，出现在尾部即未回执。恢复时裁剪掉这些
+// 轮次，让模型重新决策，避免 tool_calls 无结果的非法消息形状（真实 API 会 400）。
+function trimUnresolvedAssistantTurns(transcript) {
+  const messages = transcript.messages;
+  while (messages.length > 0) {
+    const last = messages[messages.length - 1];
+    if (last?.role === "assistant" && Array.isArray(last.tool_calls) && last.tool_calls.length > 0) {
+      messages.pop();
+    } else {
+      break;
+    }
+  }
+}
+
 // transcript 持久化：每轮工具执行后写 pending 文件，成功完成时删除。
 // 中断（throw/崩溃）时 pending 文件已落盘，恢复时读它续写。
 // 文件命名对齐 §3.6 pending-extraction 模式（memory/.pending-*.json）。
@@ -1509,6 +1506,11 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
   // 不再重新编译章节 prompt（transcript_messages 走 runModelGatewayCall 的跳过分支）。
   // 崩溃恢复时由调用方（draftNextSegment/reviseChapter）读 pending 文件恢复后传入。
   const transcript = request.restored_transcript ?? new ToolTranscript();
+  if (request.restored_transcript) {
+    // 恢复裁剪：pending 可能落在「模型已决策、工具未执行」的崩溃窗口，
+    // 尾部未回执的 assistant tool_calls 轮次裁剪掉，模型恢复后重新决策。
+    trimUnresolvedAssistantTurns(transcript);
+  }
 
   const session = new WritingAgentSession({
     allowedTools,
@@ -1540,6 +1542,17 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
         transcript.appendUser(modelCall.compiled_prompt);
       }
       transcript.appendAssistant(extractAssistantMessage(modelCall));
+      // 每次模型决策后无条件落盘 pending：覆盖「模型已决策、工具未执行」的崩溃窗口，
+      // 保证磁盘上的 pending 可能含未回执的 tool_calls，恢复时才能真正续写。
+      await writePendingTranscript(projectRoot, request.chapter_no, request.segment_no, transcript);
+      // 循环层中断注入：决策已落盘后检查，抛异常时 pending 文件保留未回执轮次供恢复。
+      if (
+        request.simulate_interrupt_after &&
+        request.simulate_interrupt_after.chapter_no === request.chapter_no &&
+        request.simulate_interrupt_after.segment_no === request.segment_no
+      ) {
+        throw new SimulatedInterrupt("Simulated interruption mid agent loop");
+      }
       lastModelCall = modelCall;
       return modelCall.output;
     },
@@ -1592,8 +1605,15 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
       // 恢复场景下 append_chapter_segment 按 segment 号幂等去重，重放不会重复写。
       if (output.tool === "append_chapter_segment") {
         const result = await executeCommit(projectRoot, project, state, runtime, request, output, ctx.turn, emitLoopEvent, (v) => { lastValidation = v; }, rejectOutput);
-        if (output.id && result?.ok) {
-          transcript.appendToolResult(output.id, result.result ?? { ok: true });
+        if (output.id) {
+          if (result?.ok) {
+            transcript.appendToolResult(output.id, result.result ?? { ok: true });
+          } else {
+            // 校验失败（如 output 校验不过）也要回执：否则下一轮 transcript 含
+            // tool_calls 无结果的非法消息形状（真实 API 400），与「assistant tool_calls
+            // 全部有回执」的裁决相悖。error 用 executeCommit 返回的校验错误码。
+            transcript.appendToolResult(output.id, { ok: false, error: result?.summary ?? "validation_failed" });
+          }
           await writePendingTranscript(projectRoot, request.chapter_no, request.segment_no, transcript);
         }
         return result;
