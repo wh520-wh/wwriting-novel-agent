@@ -284,6 +284,10 @@ test("runProject sets project_status to interrupted on unexpected error", async 
   assert.equal(typeof state.interrupted_at, "string");
   const events = await readEvents(projectRoot);
   assert.ok(events.some((event) => event.type === "project_interrupted" && event.message.includes("API timeout")));
+  const failures = JSON.parse((await fs.readFile(path.join(projectRoot, "failures.jsonl"), "utf8")).trim());
+  assert.equal(failures.kind, "provider-error");
+  assert.ok(Array.isArray(failures.actions));
+  assert.ok(failures.actions.length > 0);
 });
 
 test("runProject records cancelled state when AbortSignal is already aborted", async () => {
