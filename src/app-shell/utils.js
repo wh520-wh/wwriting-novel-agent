@@ -6,14 +6,6 @@ export function formatNumber(value) {
   return new Intl.NumberFormat("zh-CN").format(Number(value ?? 0));
 }
 
-export function formatCompact(value) {
-  const number = Number(value ?? 0);
-  if (number >= 1_000_000) return `${(number / 1_000_000).toFixed(1)}M`;
-  if (number >= 10_000) return `${(number / 10_000).toFixed(1)}万`;
-  if (number >= 1_000) return `${(number / 1_000).toFixed(1)}K`;
-  return formatNumber(number);
-}
-
 export function formatMoney(value) {
   return `$${Number(value ?? 0).toFixed(6)}`;
 }

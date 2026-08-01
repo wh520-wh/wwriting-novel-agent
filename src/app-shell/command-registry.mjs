@@ -15,10 +15,6 @@ export function registerCommand(cmd) {
   commands.set(cmd.name, cmd);
 }
 
-export function unregisterCommand(name) {
-  return commands.delete(name);
-}
-
 export function getCommand(name) {
   return commands.get(name);
 }

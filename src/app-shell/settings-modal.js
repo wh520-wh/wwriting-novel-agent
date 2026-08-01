@@ -9,7 +9,7 @@ import { rememberTestedModel } from "./connection-memory.mjs";
 // Re-export so consumers that already `import { ... } from "./settings-modal.js"`
 // continue to work. The pure helpers themselves live in ./settings-connection.mjs
 // so they can be tested without DOM-bound modules.
-export { MIMO_PRESET, formatConnectionStatus, submitModelConnectionTest } from "./settings-connection.mjs";
+export { formatConnectionStatus, submitModelConnectionTest } from "./settings-connection.mjs";
 
 const PROVIDER_PRESETS = {
   deepseek: { title: "DeepSeek 官方", provider: "openai-compatible", baseUrl: "https://api.deepseek.com", apiKeyEnv: "DEEPSEEK_API_KEY", models: ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat"] },

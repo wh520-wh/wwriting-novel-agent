@@ -44,20 +44,8 @@ export function rememberTestedModel(modelName, ok) {
   writeList(list);
 }
 
-export function isModelTestedOk(modelName) {
-  const name = String(modelName ?? "").trim();
-  if (!name) return false;
-  return readList().includes(name);
-}
-
 export function listTestedModels() {
   return readList();
-}
-
-export function forgetTestedModel(modelName) {
-  const name = String(modelName ?? "").trim();
-  if (!name) return;
-  writeList(readList().filter((m) => m !== name));
 }
 
 // 仅供单元测试注入 storage；生产代码不调用。

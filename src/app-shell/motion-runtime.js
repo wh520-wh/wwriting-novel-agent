@@ -179,20 +179,6 @@ export function clearTemporaryProps(targets, props) {
   });
 }
 
-/**
- * Reduced-motion-aware animation: uses gsap.set for reduced, gsap.to for normal.
- */
-export function animateOrSet(targets, vars) {
-  if (!_gsapLoaded || !gsap || !targets) return undefined;
-  return safeAnimate(() => {
-    if (isReducedMotion()) {
-      gsap.set(targets, vars);
-      return undefined;
-    }
-    return gsap.to(targets, vars);
-  });
-}
-
 /* ─── Semantic animation APIs ─── */
 
 /**

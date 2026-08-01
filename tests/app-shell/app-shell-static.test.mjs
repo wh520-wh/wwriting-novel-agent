@@ -163,17 +163,13 @@ test("settings-connection.mjs defines the pure helpers", () => {
   });
 });
 
-test("settings-connection.mjs owns the MiMo preset autofill", () => {
-  const settingsConnectionPath = path.join(here, "..", "..", "src", "app-shell", "settings-connection.mjs");
+test("settings-modal.js owns the MiMo preset autofill", () => {
   const settingsModalPath = path.join(here, "..", "..", "src", "app-shell", "settings-modal.js");
-  return Promise.all([
-    fs.readFile(settingsConnectionPath, "utf8"),
-    fs.readFile(settingsModalPath, "utf8"),
-  ]).then(([source, modalSource]) => {
+  return fs.readFile(settingsModalPath, "utf8").then((modalSource) => {
     // MiMo preset exact fields per plan.
     assert.match(
-      source,
-      /provider:\s*"openai-compatible"[\s\S]{0,200}model_name:\s*"mimo-v2\.5-pro"[\s\S]{0,200}base_url:\s*"https:\/\/api\.xiaomimimo\.com\/v1"[\s\S]{0,200}api_key_env:\s*"XIAOMI_MIMO_API_KEY"/u,
+      modalSource,
+      /provider:\s*"openai-compatible"[\s\S]{0,200}baseUrl:\s*"https:\/\/api\.xiaomimimo\.com\/v1"[\s\S]{0,200}apiKeyEnv:\s*"XIAOMI_MIMO_API_KEY"/u,
       "MiMo preset must autofill provider/openai-compatible with exact base_url and api_key_env"
     );
     // Plan forbids renaming the env var.

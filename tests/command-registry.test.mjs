@@ -2,7 +2,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   registerCommand,
-  unregisterCommand,
   getCommand,
   listCommands,
   __resetRegistry
@@ -39,16 +38,6 @@ test("registerCommand overwriting same name replaces it", () => {
   registerCommand({ ...sampleCmd });
   registerCommand({ ...sampleCmd, description: "v2" });
   assert.equal(getCommand("sample").description, "v2");
-});
-
-test("unregisterCommand removes the command", () => {
-  registerCommand({ ...sampleCmd });
-  assert.ok(unregisterCommand("sample"));
-  assert.equal(getCommand("sample"), undefined);
-});
-
-test("unregisterCommand on missing name returns false", () => {
-  assert.equal(unregisterCommand("nope"), false);
 });
 
 test("getCommand returns undefined for unknown", () => {

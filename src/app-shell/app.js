@@ -1,5 +1,4 @@
-import { computeAgentTruth, deriveFailures, deriveActivity, deriveBadges, agentPhaseLabel } from "./agent-truth.mjs";
-import { renderFailureCard } from "./components/failure-card.js";
+import { computeAgentTruth, deriveActivity, deriveBadges, agentPhaseLabel } from "./agent-truth.mjs";
 import { renderActivityStrip } from "./components/activity-strip.js";
 import { renderQuickRail, bindQuickRailKeys } from "./components/quick-rail.js";
 import { getLastSeen, watchLastSeen } from "./components/last-seen.js";
