@@ -418,16 +418,16 @@ function buildMessages({ messages = [], prompt = "", usesChapterTool = false, al
   if (!usesChapterTool) {
     return baseMessages;
   }
-  // 多轮 tool transcript（Task 6 写作 agent 循环）：messages 已含 tool 回执或 assistant tool_calls
-  // 时说明首轮 system 已注入过，直接透传，避免重复注入 system 干扰上下文。
-  const isMultiTurn = baseMessages.some((m) => m.role === "tool" || (m.role === "assistant" && m.tool_calls));
-  if (isMultiTurn) {
-    return baseMessages;
-  }
   const hasMultiple = allowedTools.length > 1;
   const systemContent = hasMultiple
     ? "You are WWriting's chapter writer. Use tools (get_status, list_chapters, read_chapter, read_continuity, read_outline) to check context; edit_chapter to fix text; update_continuity/update_outline to record facts. When ready, output chapter prose directly as text — it will be captured automatically. Or call append_chapter_segment as an alternative."
     : "You are WWriting's chapter writer. For chapter body output, call append_chapter_segment exactly once. Put the chapter prose only in the tool input.content field, never in normal chat content.";
+  // 注入判定统一为「首条消息是否 system」：
+  // - 首条已是 system（聊天会话 / 已含 system 的 transcript）不重注入，避免重复指令干扰上下文；
+  // - 首条为 user 时注入（写作循环第 2+ 轮 transcript 首条是 user，仍需章节 writer 的英文 system 指令）。
+  if (baseMessages[0]?.role === "system") {
+    return baseMessages;
+  }
   return [
     { role: "system", content: systemContent },
     ...baseMessages

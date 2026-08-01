@@ -158,6 +158,35 @@ export async function upsertChapter(projectRoot, patch) {
   return index.chapters.find((chapter) => chapter.chapter_no === patch.chapter_no);
 }
 
+// 读取指定章节/阶段最近一次成功写入的 checkpoint（备份用）：
+// 按 checkpoint 文件 mtime 取最新，损坏或字段不匹配的文件跳过。
+export async function readLastCheckpoint(projectRoot, chapterNo, stage) {
+  const dir = safeJoin(projectRoot, "checkpoints");
+  let files;
+  try {
+    files = await fs.readdir(dir);
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+  const matching = await Promise.all(
+    files.map(async (file) => {
+      try {
+        const content = await fs.readFile(path.join(dir, file), "utf8");
+        const cp = JSON.parse(content);
+        if (cp.chapter_no === chapterNo && cp.stage === stage) {
+          return { file, mtime: (await fs.stat(path.join(dir, file))).mtimeMs, cp };
+        }
+      } catch { /* 跳过损坏的 checkpoint 文件 */ }
+      return null;
+    })
+  );
+  const valid = matching.filter(Boolean);
+  if (valid.length === 0) return null;
+  valid.sort((a, b) => b.mtime - a.mtime);
+  return valid[0].cp;
+}
+
 export async function writeCheckpoint(projectRoot, payload) {
   const checkpoint_id = payload.checkpoint_id ?? randomUUID();
   const checkpoint = {
