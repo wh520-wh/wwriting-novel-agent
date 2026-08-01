@@ -446,6 +446,22 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   -webkit-app-region: drag;
   app-region: drag;
 }
+
+:root[data-desktop-shell="electron"][data-desktop-platform="win32"] .rail-top,
+:root[data-desktop-shell="electron"][data-desktop-platform="win32"] .topbar {
+  min-height: 34px;
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+:root[data-desktop-shell="electron"][data-desktop-platform="win32"] .topbar {
+  --window-control-space: 138px;
+  border-bottom-color: color-mix(in srgb, var(--line) 72%, transparent);
+}
+:root[data-desktop-shell="electron"][data-desktop-platform="win32"] .topbar-id,
+:root[data-desktop-shell="electron"][data-desktop-platform="win32"] .brand-text {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
 .topbar-title-row { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .topbar-title-row h1 {
   font-size: 15px; font-weight: 680; letter-spacing: -0.01em;

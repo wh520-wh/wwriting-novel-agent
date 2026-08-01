@@ -132,6 +132,10 @@ const refs = {
   chapterSuccessFoldSummary: document.querySelector("#chapter-success-fold-summary"),
 };
 
+const desktop = window.wwritingDesktop;
+document.documentElement.dataset.desktopShell = desktop?.shell ?? "browser";
+document.documentElement.dataset.desktopPlatform = desktop?.platform ?? "browser";
+
 let currentProjectRoot = null;
 let dashboardRequestId = 0;
 let refreshTimer = null;

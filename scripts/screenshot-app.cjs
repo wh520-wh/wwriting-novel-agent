@@ -3,9 +3,11 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
+const { desktopWindowChrome } = require("../src/desktop/window-chrome.cjs");
+const { listenWithFallback } = require("../src/desktop/server-start.cjs");
 
 const rootDir = path.resolve(__dirname, "..");
-const port = Number(process.env.PORT || 4319);
+let port = Number(process.env.PORT || 4319);
 const outDir = path.resolve(process.env.OUT_DIR || path.join(os.tmpdir(), "ww-shots"));
 const projectRoot = process.env.PROJECT_ROOT || null;
 const width = Number(process.env.SHOT_WIDTH || 1360);
@@ -30,15 +32,17 @@ app.whenReady().then(async () => {
     secretsRoot: userDataDir,
     port
   });
-  await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
+  port = await listenWithFallback(server, port, "127.0.0.1");
   await waitForServer(port);
 
   const win = new BrowserWindow({
     width,
     height,
-    show: false,
-    backgroundColor: "#ffffff",
+    show: true,
+    backgroundColor: "#f4f3f0",
+    ...desktopWindowChrome(),
     webPreferences: {
+      preload: path.join(rootDir, "src", "desktop", "electron-preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
       backgroundThrottling: false,
