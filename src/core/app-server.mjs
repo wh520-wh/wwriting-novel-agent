@@ -1947,7 +1947,12 @@ async function startProjectRun(projectRoot, project, context, task, instructionM
           message: error.message,
           data: {
             name: error.name,
-            stack: error.stack?.slice(0, 2000)
+            stack: error.stack?.slice(0, 2000),
+            // 透传 ProviderTransportError 的具体信息:status/reason/body(DeepSeek 400 的 JSON 正文)。
+            // 此前只存 name+stack,body 被丢弃,故障卡片只剩"HTTP 400"空话,无法定位具体违规参数。
+            status: error.status ?? null,
+            reason: error.reason ?? null,
+            body: typeof error.body === "string" ? error.body.slice(0, 2000) : null
           }
         });
       }
