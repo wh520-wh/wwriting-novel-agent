@@ -96,7 +96,7 @@ export class OpenAICompatibleAdapter {
       ...optionalNumber("temperature", modelConfig.temperature),
       ...optionalNumber("top_p", modelConfig.top_p),
       ...optionalNumber("max_tokens", modelConfig.max_output_tokens ?? modelConfig.max_tokens ?? (usesChapterTool ? DEFAULT_CHAPTER_TOOL_MAX_TOKENS : undefined)),
-      ...buildChapterToolRequest(usesChapterTool, { ...modelConfig, base_url: baseUrl, model_name: selectedModel }, allowedTools),
+      ...buildChapterToolRequest(usesChapterTool, { ...modelConfig, base_url: baseUrl, model_name: selectedModel }, allowedTools, metadata),
       ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
       ...(modelConfig.extra_body ?? {})
     };
@@ -410,7 +410,8 @@ const WRITING_TOOL_DEFINITIONS = {
 };
 
 function shouldRequestChapterTool(metadata = {}) {
-  return metadata?.toolRequest && metadata.toolRequest.project_id && metadata.toolRequest.chapter_no;
+  const tr = metadata?.toolRequest;
+  return Boolean(tr) && (Boolean(tr.tools) || (tr.project_id && tr.chapter_no));
 }
 
 function buildMessages({ messages = [], prompt = "", usesChapterTool = false, allowedTools = [] } = {}) {
@@ -434,12 +435,18 @@ function buildMessages({ messages = [], prompt = "", usesChapterTool = false, al
   ];
 }
 
-function buildChapterToolRequest(usesChapterTool, modelConfig = {}, allowedTools = []) {
+function buildChapterToolRequest(usesChapterTool, modelConfig = {}, allowedTools = [], metadata = {}) {
   if (!usesChapterTool) {
     return {};
   }
 
-  // 根据写作 agent 循环传入的 allowed_tools 动态构建 tools 数组。
+  // 聊天场景：外部传入完整 tools 数组（toOpenAITools 产物），直接原样注入，
+  // tool_choice 用 "auto"（模型自主选择是否调用），不查 WRITING_TOOL_DEFINITIONS。
+  if (metadata?.toolRequest?.tools) {
+    return { tools: metadata.toolRequest.tools, tool_choice: "auto" };
+  }
+
+  // 写作场景：根据写作 agent 循环传入的 allowed_tools 动态构建 tools 数组。
   // 单工具模式（仅 append_chapter_segment）保持向后兼容；
   // 多工具模式（drafting/revising 阶段白名单）把全部允许工具发给 API，
   // 让模型按需先查设定/读前文/改正文，最后再提交 append_chapter_segment。
