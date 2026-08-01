@@ -34,7 +34,7 @@ WWriting 走第三条路：
 - **技能系统**：支持 manifest / hook / 启用 / 禁用 / 导入，内置悬念结尾技能。
 - **受控网页搜索/抓取**：默认禁网；来源快照标记为"不可信资料"，不作为系统指令执行。
 - **OpenAI-compatible 模型接入**：内置 DeepSeek 官方、小米 MiMo 官方预设，粘贴 API Key 即可用；API Key 只存本机。
-- **可验证的开发文化**：54 个单元/集成测试 + 一键本地验收（`npm run verify:local`），连"按钮看得到但点不动"这类 UI 回归都有真实 Electron 点击防线。
+- **可验证的开发文化**：1002 个单元/集成测试 + 一键本地验收（`npm run verify:local`），连"按钮看得到但点不动"这类 UI 回归都有真实 Electron 点击防线。
 
 ## 快速开始
 
@@ -111,7 +111,7 @@ cache_report.json   # 缓存 key 与 provider 缓存指标
 ## 验证命令
 
 ```powershell
-npm test                            # 54 个单元/集成测试
+npm test                            # 1002 个单元/集成测试
 npm run verify:local                # 完整本地验收（含打包，较慢）
 npm run verify:app-shell            # GUI、项目打开、设置写回、技能、资料工具
 npm run verify:app-clickability     # 真实 Electron 窗口逐项点击关键按钮
