@@ -1758,3 +1758,62 @@ test("transcript pending 文件: 循环层中断后 pending 含未回执 tool_ca
   const draft = await fs.readFile(path.join(projectRoot, "drafts", "001.draft.md"), "utf8");
   assert.equal((draft.match(/segment:1/gu) ?? []).length, 1, "恢复后 segment:1 不重复");
 });
+
+// Task 1：模型一轮返回多个并行 tool_calls 时，写作 agent 循环必须全部执行并回填
+// transcript（OpenAI/DeepSeek 契约：tool_calls 与 role=tool 结果 1:1，否则下一轮 400）。
+class MultiToolCallModelClient {
+  constructor() {
+    this.calls = 0;
+    this.capturedMessagesPerCall = [];
+  }
+  async generate({ messages = [], metadata = {} } = {}) {
+    this.calls += 1;
+    const req = metadata.toolRequest;
+    if (this.calls === 1 && messages.length === 0) {
+      // 首轮(fresh):返回 2 个并行只读 tool_calls
+      this.capturedMessagesPerCall.push(messages);
+      return {
+        text: "",
+        raw: { choices: [{ message: { role: "assistant", content: null,
+          tool_calls: [
+            { id: "mtc_a", type: "function", function: { name: "get_status", arguments: "{}" } },
+            { id: "mtc_b", type: "function", function: { name: "read_outline", arguments: "{}" } }
+          ] } }] },
+        usageReport: { provider: "mock", model: "m", inputTokens: 1, outputTokens: 1, totalTokens: 2, cachedTokens: 0, cacheHitRate: null, estimatedCost: 0, rawUsage: {} },
+        costSummary: { calls: 1, inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCost: 0 },
+        modelConfig: { provider: "mock", model_name: "m" }
+      };
+    }
+    this.capturedMessagesPerCall.push(messages);
+    const content = "这是一段足够长的正文内容用于通过字数门禁,确保超过最小字符阈值,从而被包装为 append_chapter_segment 提交。".repeat(2);
+    return {
+      text: "",
+      raw: { choices: [{ message: { role: "assistant", content: null,
+        tool_calls: [{ id: `mtc_c${this.calls}`, type: "function", function: { name: "append_chapter_segment", arguments: JSON.stringify({ project_id: req.project_id, chapter_no: req.chapter_no, segment_no: req.segment_no, content }) } }] } }] },
+      usageReport: { provider: "mock", model: "m", inputTokens: 1, outputTokens: 1, totalTokens: 2, cachedTokens: 0, cacheHitRate: null, estimatedCost: 0, rawUsage: {} },
+      costSummary: { calls: 1, inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCost: 0 },
+      modelConfig: { provider: "mock", model_name: "m" }
+    };
+  }
+}
+
+test("parseOpenAIToolCalls: 模型一轮返回多个 tool_calls 时全部进入 transcript 待执行", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-multi-tc-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "project", target_chapters: 1, min_words_per_chapter: 300, target_words_per_chapter: 360
+  });
+  const client = new MultiToolCallModelClient();
+  await runProject(projectRoot, { modelClient: client });
+  assert.ok(client.calls >= 2, `expected >= 2 model calls, got ${client.calls}`);
+  const secondRound = client.capturedMessagesPerCall[1];
+  const assistantMsg = secondRound.find((m) => m.role === "assistant" && m.tool_calls);
+  assert.ok(assistantMsg, "第 2 轮应含上一轮 assistant tool_calls");
+  assert.equal(assistantMsg.tool_calls.length, 2, "上一轮应有 2 个 tool_calls");
+  const toolResultIds = secondRound
+    .filter((m) => m.role === "tool")
+    .map((m) => m.tool_call_id);
+  for (const tc of assistantMsg.tool_calls) {
+    assert.ok(toolResultIds.includes(tc.id),
+      `每个 tool_call(id=${tc.id}) 都必须有对应 role=tool 结果,实际 tool 结果 ids: ${JSON.stringify(toolResultIds)}`);
+  }
+});
