@@ -15,6 +15,11 @@ registerSchema("test_thing", "v1", {
   }
 });
 
+registerSchema("throw_thing", "v1", {
+  normalize: () => { throw new Error("boom"); },
+  validate: () => ({ ok: true })
+});
+
 test("parseStructuredOutput 合法围栏 JSON 通过", () => {
   const r = parseStructuredOutput("test_thing", "v1", '```json\n{"name":"x","kind":"a"}\n```');
   assert.equal(r.ok, true);
@@ -52,6 +57,12 @@ test("parseStructuredOutput 超枚举返回 enum_violation + field", () => {
 test("parseStructuredOutput 未注册 schema 返回 schema_not_found", () => {
   const r = parseStructuredOutput("nope", "v1", "{}");
   assert.equal(r.error.code, STRUCTURED_OUTPUT_ERRORS.schema_not_found);
+});
+
+test("parseStructuredOutput normalize 抛异常返回 invalid_json 不穿透", () => {
+  const r = parseStructuredOutput("throw_thing", "v1", "{}");
+  assert.equal(r.ok, false);
+  assert.equal(r.error.code, STRUCTURED_OUTPUT_ERRORS.invalid_json);
 });
 
 test("STRUCTURED_OUTPUT_ERRORS 不含 truncated（YAGNI，截断走 invalid_json）", () => {

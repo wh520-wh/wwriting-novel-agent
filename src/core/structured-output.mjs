@@ -51,9 +51,23 @@ export function parseStructuredOutput(name, version, rawText) {
   } catch {
     return { ok: false, error: { code: STRUCTURED_OUTPUT_ERRORS.invalid_json } };
   }
-  const validation = schema.validate(normalized);
+  let validation;
+  try {
+    validation = schema.validate(normalized);
+  } catch {
+    // 与 normalize 对称：validate 抛异常也统一归为 invalid_json，不穿透给调用方
+    return { ok: false, error: { code: STRUCTURED_OUTPUT_ERRORS.invalid_json } };
+  }
   if (!validation.ok) {
-    return { ok: false, error: { code: validation.code, field: validation.field ?? null, message: validation.message ?? null } };
+    return {
+      ok: false,
+      error: {
+        // 兜底：validate 返回 { ok: false } 但缺 code 时，保证 error.code 不为 undefined
+        code: validation.code ?? STRUCTURED_OUTPUT_ERRORS.invalid_json,
+        field: validation.field ?? null,
+        message: validation.message ?? null
+      }
+    };
   }
   return { ok: true, data: normalized };
 }
