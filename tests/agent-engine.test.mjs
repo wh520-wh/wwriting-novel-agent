@@ -13,6 +13,7 @@ import { updateProjectSettings } from "../src/core/settings-runtime.mjs";
 import { appendChapterSegment } from "../src/core/tool-runtime.mjs";
 import { loadPendingAction as loadChatPending, readChatHistory as readChatHist } from "../src/core/chat/chat-store.mjs";
 import { makeChapterContract, makeResumeContract } from "../src/core/task-contract.mjs";
+import { ToolTranscript } from "../src/core/agent-transcript.mjs";
 
 class AlwaysInvalidModel {
   async generate() {
@@ -1237,6 +1238,8 @@ class ReadLoopModelClient {
   constructor() {
     this.calls = 0;
     this.prompts = [];
+    this.capturedMessages = [];
+    this.metadatas = [];
     this.costTracker = {
       record() {
         return { calls: 1, inputTokens: 1, outputTokens: 1, totalTokens: 2, cachedTokens: 0, estimatedCost: 0 };
@@ -1244,9 +1247,12 @@ class ReadLoopModelClient {
       async writeProjectReport() {},
     };
   }
-  async generate({ prompt, metadata }) {
+  async generate({ prompt, messages, metadata }) {
     this.calls += 1;
     this.prompts.push(prompt);
+    // 快照捕获：transcript.toMessages() 返回活引用，后续轮次追加会继续修改原数组
+    this.capturedMessages.push([...messages]);
+    this.metadatas.push(metadata);
     const request = metadata.toolRequest;
     const usageReport = {
       provider: "mock", model: "read-loop",
@@ -1260,7 +1266,13 @@ class ReadLoopModelClient {
       return { text: "", raw: { output: { type: "tool_call", tool: "read_outline", input: {} } },
         usageReport, costSummary, modelConfig };
     }
-    // 第四次（此时 allowed_tools 应已被切换为 commit-only）：提交正文。
+    if (this.calls === 4) {
+      // 第四次（commit-only 已切换）：仍尝试只读工具 → 应被 tool_not_allowed 拒绝，
+      // 拒绝反馈喂回下一轮 transcript。
+      return { text: "", raw: { output: { type: "tool_call", tool: "read_outline", input: {} } },
+        usageReport, costSummary, modelConfig };
+    }
+    // 第五次（已见拒绝反馈）：提交正文。
     return { text: "", raw: { output: { type: "tool_call", tool: "append_chapter_segment",
       input: { project_id: request.project_id, chapter_no: request.chapter_no,
         segment_no: request.segment_no,
@@ -1283,13 +1295,18 @@ test("writing agent loop: 连续 3 次只读后自动 commit-only，模型提交
   assert.ok(events.some((e) => e.type === "agent_settled"));
   const index = await loadChapterIndex(projectRoot);
   assert.equal(index.chapters[0].status, "completed");
-  // 第 4 次调用的 prompt 中 allowed_tools 只剩 append_chapter_segment。
-  const fourthPrompt = modelClient.prompts[3];
-  const toolsMatch = fourthPrompt.match(/"allowed_tools":\s*\[([\s\S]*?)\]/u);
-  assert.ok(toolsMatch, "第 4 次 prompt 应包含 allowed_tools 清单");
-  assert.ok(toolsMatch[1].includes("append_chapter_segment"));
-  assert.ok(!toolsMatch[1].includes("read_outline"), "commit-only 后白名单不应再含只读工具");
-  assert.equal(modelClient.calls, 4);
+  // 第 4 次调用起进入 commit-only：请求 metadata 中 allowed_tools 只剩 append_chapter_segment
+  // （多轮化后不再重新编译 prompt，白名单通过 metadata.toolRequest.allowed_tools 传给模型）。
+  const fourthMeta = modelClient.metadatas[3];
+  assert.deepEqual(fourthMeta.toolRequest.allowed_tools, ["append_chapter_segment"],
+    "commit-only 后白名单不应再含只读工具");
+  // 反馈喂回：commit-only 期间模型再调 read_outline 被拒（tool_not_allowed），拒绝原因以
+  // user 反馈消息进入第 5 轮 transcript。slice(1) 排除首轮编译 prompt，避免伪命中
+  // （编译 prompt 的 allowed_tools 清单里含 read_outline 字样）。
+  const fifthMessages = modelClient.capturedMessages[4];
+  assert.ok(fifthMessages.slice(1).some((m) => m.role === "user" && m.content.includes("当前只允许调用")),
+    "第 5 轮 messages 应含 tool_not_allowed 拒绝反馈");
+  assert.equal(modelClient.calls, 5);
 });
 
 // 只读模式：白名单内写工具被权限拒绝也必须累计失败计数（连续拒绝达上限即终止，
@@ -1298,6 +1315,7 @@ class ReadOnlyDeniedModelClient {
   constructor() {
     this.calls = 0;
     this.prompts = [];
+    this.capturedMessages = [];
     this.costTracker = {
       record() {
         return { calls: 1, inputTokens: 1, outputTokens: 1, totalTokens: 2, cachedTokens: 0, estimatedCost: 0 };
@@ -1305,9 +1323,11 @@ class ReadOnlyDeniedModelClient {
       async writeProjectReport() {},
     };
   }
-  async generate({ prompt, metadata }) {
+  async generate({ prompt, messages, metadata }) {
     this.calls += 1;
     this.prompts.push(prompt);
+    // 快照捕获：transcript.toMessages() 返回活引用，后续轮次追加会继续修改原数组
+    this.capturedMessages.push([...messages]);
     const request = metadata.toolRequest;
     const usageReport = {
       provider: "mock", model: "readonly-denied",
@@ -1342,8 +1362,9 @@ test("writing agent loop: 只读模式反复调用被拒写工具，连续拒绝
   assert.ok(rejected.every((e) => e.data?.code === "permission_denied"));
   assert.ok(rejected.every((e) => e.data?.tool === "edit_chapter"));
   assert.ok(events.some((e) => e.type === "project_blocked"));
-  // 反馈喂回：后续 prompt 应包含拒绝原因（只读模式文案），模型能改方向而非盲目重试。
-  assert.ok(modelClient.prompts.some((p) => p.includes("被拒绝") && p.includes("只读模式")));
+  // 反馈喂回：多轮化后不再重新编译 prompt，拒绝原因以 user 反馈消息进入后续轮次 transcript。
+  assert.ok(modelClient.capturedMessages.some((msgs) => msgs.some((m) => m.role === "user" && m.content.includes("被拒绝") && m.content.includes("只读模式"))),
+    "后续 messages 应包含拒绝原因（只读模式文案），模型能改方向而非盲目重试");
   // 连续 8 次拒绝即终止，不应空转到 24 轮耗尽。
   assert.equal(modelClient.calls, 8);
 });
@@ -1646,4 +1667,94 @@ test("forbidden_patterns 可通过项目配置覆盖默认套路词", async () =
   assert.ok(prompt.includes('"主角光环"'), "自定义套路词应在 forbidden_reboot_patterns JSON 里");
   assert.ok(prompt.includes('"金手指"'), "自定义套路词应在 forbidden_reboot_patterns JSON 里");
   assert.ok(!prompt.includes('"普通大学生突然获得神力"'), "默认套路词不应在 forbidden_reboot_patterns JSON 里");
+});
+
+// Task 6：写作 agent 循环多轮化。第 1 轮 read_chapter（id c1）后，
+// 第 2 轮 messages 必须是 transcript 回放：含上一轮 assistant tool_calls 与 role=tool 结果。
+class TranscriptCapturingModelClient {
+  constructor() {
+    this.calls = 0;
+    this.capturedMessagesPerCall = [];
+    this.costTracker = {
+      record() { return { calls: 1, inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCost: 0 }; },
+      async writeProjectReport() {}
+    };
+  }
+  async generate({ messages = [], metadata }) {
+    this.calls += 1;
+    // 快照捕获：transcript.toMessages() 返回活引用，后续轮次追加会继续修改原数组
+    this.capturedMessagesPerCall.push([...messages]);
+    const request = metadata?.toolRequest ?? {};
+    if (this.calls === 1) {
+      return {
+        text: "",
+        raw: { choices: [{ message: { role: "assistant", content: null,
+          tool_calls: [{ id: "c1", type: "function", function: { name: "read_chapter", arguments: JSON.stringify({ chapter_no: request.chapter_no }) } }] } }] },
+        usageReport: { provider: "mock", model: "m", inputTokens: 1, outputTokens: 1, totalTokens: 2, cachedTokens: 0, cacheHitRate: null, estimatedCost: 0, rawUsage: {} },
+        costSummary: { calls: 1, inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCost: 0 },
+        modelConfig: { provider: "mock", model_name: "m" }
+      };
+    }
+    const content = Array.from({ length: 180 }, (_, i) => `seg${i}`).join(" ");
+    return {
+      text: "",
+      raw: { choices: [{ message: { role: "assistant", content: null,
+        tool_calls: [{ id: `c${this.calls}`, type: "function", function: { name: "append_chapter_segment", arguments: JSON.stringify({ project_id: request.project_id, chapter_no: request.chapter_no, segment_no: request.segment_no, content }) } }] } }] },
+      usageReport: { provider: "mock", model: "m", inputTokens: 1, outputTokens: 1, totalTokens: 2, cachedTokens: 0, cacheHitRate: null, estimatedCost: 0, rawUsage: {} },
+      costSummary: { calls: 1, inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCost: 0 },
+      modelConfig: { provider: "mock", model_name: "m" }
+    };
+  }
+}
+
+test("runWritingAgentLoop 多轮: 第 2 轮 messages 含上一轮 assistant tool_calls + role=tool", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-transcript-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "project", target_chapters: 1, min_words_per_chapter: 300, target_words_per_chapter: 360
+  });
+  const client = new TranscriptCapturingModelClient();
+  await runProject(projectRoot, { modelClient: client });
+  assert.ok(client.calls >= 2, `expected >= 2 model calls, got ${client.calls}`);
+  const secondRound = client.capturedMessagesPerCall[1];
+  assert.ok(secondRound.some((m) => m.role === "assistant" && m.tool_calls?.some((tc) => tc.id === "c1")),
+    "第 2 轮 messages 应含上一轮 assistant tool_calls");
+  assert.ok(secondRound.some((m) => m.role === "tool" && m.tool_call_id === "c1"),
+    "第 2 轮 messages 应含 role=tool 结果");
+});
+
+test("transcript pending 文件: 循环层中断后 pending 含未回执 tool_call，恢复续写不重复 segment", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-tcp-pending-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "project", target_chapters: 1, min_words_per_chapter: 300, target_words_per_chapter: 360
+  });
+  const client = new TranscriptCapturingModelClient();
+  try {
+    await runProject(projectRoot, { modelClient: client, simulateInterruptAfter: { chapter_no: 1, segment_no: 1 } });
+  } catch (error) {
+    assert.ok(error instanceof SimulatedInterrupt);
+  }
+  // 中断发生在循环层（callModel 决策落盘后、工具执行前）：
+  // pending 应含未回执的 assistant tool_calls（模型已决策、工具未执行）
+  const pendingPath = path.join(projectRoot, "memory", ".pending-transcript-1-1.json");
+  const pending = JSON.parse(await fs.readFile(pendingPath, "utf8"));
+  assert.ok(pending.messages.length > 0, "pending transcript messages 非空");
+  assert.ok(pending.messages.some((m) => m.role === "assistant" && m.tool_calls),
+    "pending transcript 应含 assistant tool_calls（待恢复）");
+  assert.equal(ToolTranscript.restore(pending).pendingToolCalls.length, 1,
+    "pending transcript 应恰有 1 个未回执 tool_call（恢复裁剪后模型重新决策）");
+  // 恢复续写：恢复裁剪未回执轮次 → 正常完成，segment:1 不重复
+  const callsBeforeRestore = client.capturedMessagesPerCall.length;
+  await runProject(projectRoot, { modelClient: client });
+  // 恢复读路径：恢复后的首个模型调用应收到裁剪后的 pending 链（至少含 user 消息）——
+  // 非恢复的首轮（fresh loop）messages 是空数组；若恢复逻辑被删，此处必失败。
+  const firstRestoreCall = client.capturedMessagesPerCall[callsBeforeRestore];
+  assert.ok(
+    Array.isArray(firstRestoreCall) && firstRestoreCall.some((m) => m.role === "user"),
+    "恢复后首轮应收到含 user 消息的 pending 链（不是 fresh 首轮的空数组）"
+  );
+  // 恢复成功后 pending 文件应已被清理（正常完成路径）
+  assert.equal(await fs.stat(pendingPath).catch(() => null), null,
+    "恢复成功后 pending 文件应已删除");
+  const draft = await fs.readFile(path.join(projectRoot, "drafts", "001.draft.md"), "utf8");
+  assert.equal((draft.match(/segment:1/gu) ?? []).length, 1, "恢复后 segment:1 不重复");
 });

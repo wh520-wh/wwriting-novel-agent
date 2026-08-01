@@ -67,6 +67,27 @@ export async function executeTool(registry, name, args, ctx) {
   return outcome;
 }
 
+// 把注册表工具转为 OpenAI 原生 function-calling 的 tools 数组（聊天场景注入用）。
+// 工具声明的 params 是扁平参数表（{ 参数名: 说明 }），这里转成 JSON Schema：
+// 全部参数按 string 声明（工具内部自行 Number() 强转），不设 required/additionalProperties，
+// 与围栏时代同样宽松，避免模型因参数类型校验失败而拒绝调用。
+export function toOpenAITools(registry) {
+  return registry.list().map((tool) => {
+    const properties = {};
+    for (const [paramName, description] of Object.entries(tool.params ?? {})) {
+      properties[paramName] = { type: "string", description: String(description) };
+    }
+    return {
+      type: "function",
+      function: {
+        name: tool.name,
+        description: tool.description ?? "",
+        parameters: { type: "object", properties }
+      }
+    };
+  });
+}
+
 export function renderToolDocs(registry) {
   return registry.list().map((tool) => {
     const params = Object.entries(tool.params ?? {}).map(([k, v]) => `    ${k}: ${v}`).join("\n");

@@ -130,7 +130,6 @@ export async function completeOpenAICompatibleProbe({
       api_key_env: config.api_key_env,
       max_tokens: maxTokens,
       max_output_tokens: maxTokens,
-      temperature: 0,
       stream: false,
     },
     messages,

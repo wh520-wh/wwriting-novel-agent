@@ -94,3 +94,31 @@ test("buildSystemPrompt 包含稿块约定", () => {
   const prompt = buildSystemPrompt(registry, {});
   assert.match(prompt, /```稿/u);
 });
+
+// ===== Task 7: 原生 tool_calls 优先，围栏降为兜底 =====
+test("parseAgentReply 优先解析原生 tool_calls（围栏降为兜底）", () => {
+  const input = {
+    text: "我来查一下。",
+    raw: { choices: [{ message: { role: "assistant", content: "我来查一下。",
+      tool_calls: [{ id: "c1", type: "function", function: { name: "get_status", arguments: "{}" } }] } }] }
+  };
+  const out = parseAgentReply(input);
+  assert.equal(out.type, "tool_call");
+  assert.equal(out.tool_calls[0].tool, "get_status");
+  assert.match(out.leadText ?? "", /我来查一下/u);
+});
+
+test("parseAgentReply 无原生 tool_calls 时回落围栏解析（兜底）", () => {
+  const input = {
+    text: '```json\n{"tool_calls":[{"tool":"read_chapter","args":{"chapter_no":2}}]}\n```',
+    raw: { choices: [{ message: { content: '```json\n{"tool_calls":[{"tool":"read_chapter","args":{"chapter_no":2}}]}\n```' } }] }
+  };
+  const out = parseAgentReply(input);
+  assert.equal(out.type, "tool_call");
+  assert.equal(out.tool_calls[0].tool, "read_chapter");
+});
+
+test("parseAgentReply 纯字符串输入仍兼容（旧调用方）", () => {
+  const out = parseAgentReply("好的，第 9 章写到沈泽探查北围墙。");
+  assert.equal(out.type, "text");
+});
