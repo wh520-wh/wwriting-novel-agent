@@ -3,7 +3,7 @@
 import crypto from "node:crypto";
 import { buildChatContext } from "./chat-context.mjs";
 import { parseAgentReply } from "./agent-protocol.mjs";
-import { executeTool, checkToolPermission, summarizeArgs } from "./tool-registry.mjs";
+import { executeTool, checkToolPermission, summarizeArgs, toOpenAITools } from "./tool-registry.mjs";
 import { previewEditChapter } from "./tools-write.mjs";
 import { isJobRunning } from "./tools-control.mjs";
 import { appendChatMessage, loadPendingAction, savePendingAction, clearPendingAction, updatePendingStatus } from "./chat-store.mjs";
@@ -120,7 +120,14 @@ async function agentLoop(options, toolEvents) {
     let result;
     try {
       result = await modelClient.generate({
-        project, stage: "chat", messages, metadata: { chat: true, round }, signal
+        project, stage: "chat", messages,
+        metadata: {
+          chat: true, round,
+          // 聊天场景：注入原生 tools（模型自主选择是否调用），无 chapter_no；
+          // 围栏 JSON 解析降为兜底，仅当模型未走原生 tool_calls 时生效。
+          toolRequest: { tools: toOpenAITools(registry), project_id: project?.project_id }
+        },
+        signal
       });
     } catch (error) {
       // 外部停止（signal.aborted）与模型超时（仅 AbortError）要区分：超时照旧抛出走原错误链。
@@ -129,7 +136,7 @@ async function agentLoop(options, toolEvents) {
     }
     calls += 1;
     totalCost += Number(result.costSummary?.estimatedCost ?? 0) || 0;
-    const parsed = parseAgentReply(result.text);
+    const parsed = parseAgentReply({ text: result.text, raw: result.raw });
     // §5.1: 转录本轮模型 I/O（fire-and-forget，失败只 warn 不阻断）
     appendTranscript(projectRoot, {
       turn_id: options.turnId,
