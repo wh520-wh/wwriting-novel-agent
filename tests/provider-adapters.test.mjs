@@ -1032,3 +1032,39 @@ test("toolRequest.tools 为空数组时不注入 tools（回落围栏兜底）",
   assert.equal(captured.tool_choice, undefined);
   assert.equal(captured.messages.length, 1);
 });
+
+test("OpenAICompatibleAdapter: thinking 模型不注入 temperature/top_p（DeepSeek reasoner 400 防护）", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, body: JSON.parse(init.body) });
+    return { ok: true, status: 200, headers: new Map([["content-type", "application/json"]]),
+      async text() { return JSON.stringify({ choices: [{ message: { content: "ok" } }], usage: { prompt_tokens: 1, completion_tokens: 1 } }); } };
+  };
+  const adapter = new OpenAICompatibleAdapter({ baseUrl: "https://api.deepseek.com/v1", fetchImpl });
+  await adapter.generate({
+    model: "deepseek-reasoner",
+    modelConfig: { base_url: "https://api.deepseek.com/v1", model_name: "deepseek-reasoner", temperature: 0.7, top_p: 0.9 },
+    messages: [{ role: "user", content: "hi" }]
+  });
+  assert.equal(calls.length, 1, "应发一次请求");
+  assert.equal(calls[0].body.temperature, undefined, "thinking 模型不应注入 temperature");
+  assert.equal(calls[0].body.top_p, undefined, "thinking 模型不应注入 top_p");
+  assert.equal(calls[0].body.model, "deepseek-reasoner");
+});
+
+test("OpenAICompatibleAdapter: 非 thinking 模型正常注入 temperature/top_p", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ body: JSON.parse(init.body) });
+    return { ok: true, status: 200, headers: new Map(),
+      async text() { return JSON.stringify({ choices: [{ message: { content: "ok" } }], usage: { prompt_tokens: 1, completion_tokens: 1 } }); } };
+  };
+  const adapter = new OpenAICompatibleAdapter({ baseUrl: "https://api.deepseek.com/v1", fetchImpl });
+  await adapter.generate({
+    model: "deepseek-chat",
+    modelConfig: { base_url: "https://api.deepseek.com/v1", model_name: "deepseek-chat", temperature: 0.7, top_p: 0.9 },
+    messages: [{ role: "user", content: "hi" }]
+  });
+  assert.equal(calls[0].body.temperature, 0.7, "非 thinking 模型应注入 temperature");
+  assert.equal(calls[0].body.top_p, 0.9, "非 thinking 模型应注入 top_p");
+});
