@@ -99,7 +99,7 @@ export function renderContinuityMarkdown(data) {
     const tags = [node.time.elapsed, node.time.kind !== "scene" ? node.time.kind : null].filter(Boolean).join("·");
     const meta = tags ? ` [${tags}]` : "";
     const when = node.story_time_raw || (node.time.anchor?.raw ?? "");
-    lines.push(`- 第${node.chapter_no}章${when ? ` [${when}]` : ""}${meta}: ${node.events.join("；")}`);
+    lines.push(`- ${formatChapterRef(node.chapter_no)}${when ? ` [${when}]` : ""}${meta}: ${node.events.join("；")}`);
   }
   lines.push("", "## 角色");
   for (const c of data.characters) {

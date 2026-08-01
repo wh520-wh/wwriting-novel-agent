@@ -126,6 +126,37 @@ test("resolveRetryCandidate selects stale running task as candidate", async () =
   }
 });
 
+test("resolveRetryCandidate accepts stale running task by taskId (dashboard→retry 闭环)", async () => {
+  // 回归：仪表盘（无 taskId）广播 stale running 任务为可重试后，前端把 retry_task_id 回传，
+  // taskId 分支必须同样放行（走 stale_queue_task 路径），不能 400 retry_invalid_task_id。
+  const dir = await makeTmpProject({ project_status: "running" });
+  try {
+    const tasks = [{ id: "task-1", status: "running" }];
+    const dash = await resolveRetryCandidate({ projectRoot: dir, queue: makeQueue(tasks), job: makeJob() });
+    assert.equal(dash.available, true);
+    assert.equal(dash.taskId, "task-1");
+    const retry = await resolveRetryCandidate({ projectRoot: dir, queue: makeQueue(tasks), job: makeJob(), taskId: dash.taskId });
+    assert.equal(retry.available, true);
+    assert.equal(retry.taskId, "task-1");
+    assert.equal(retry.candidateSource, "stale_queue_task");
+  } finally {
+    await cleanup(dir);
+  }
+});
+
+test("resolveRetryCandidate still rejects running task by taskId when project state is idle", async () => {
+  // 状态不一致（项目 idle 但队列残留 running）不广播也不放行，保持原拒绝行为。
+  const dir = await makeTmpProject({ project_status: "idle" });
+  try {
+    const tasks = [{ id: "task-1", status: "running" }];
+    const result = await resolveRetryCandidate({ projectRoot: dir, queue: makeQueue(tasks), job: makeJob(), taskId: "task-1" });
+    assert.equal(result.available, false);
+    assert.equal(result.code, "retry_invalid_task_id");
+  } finally {
+    await cleanup(dir);
+  }
+});
+
 test("resolveRetryCandidate selects interrupted task when only one exists", async () => {
   const dir = await makeTmpProject({ project_status: "running" });
   try {

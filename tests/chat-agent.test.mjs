@@ -37,6 +37,28 @@ test("buildChatContext 注入系统提示/记忆/历史/本轮消息", async () 
   assert.equal(snapshot.title, "上下文测试");
 });
 
+test("buildChatContext 过滤 generating 占位消息（空 assistant 不进模型上下文）", async () => {
+  const projectRoot = await makeProject();
+  await appendChatMessage(projectRoot, { role: "user", content: "用户消息" });
+  // runChatTurn 先写占位（content 为空，status=generating），模型回复后历史里会有空占位残留
+  await appendChatMessage(projectRoot, { role: "assistant", content: "", status: "generating", turn_id: "t1" });
+  await appendChatMessage(projectRoot, { role: "assistant", content: "正式回复" });
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  const project = await loadProject(projectRoot);
+  const { messages } = await buildChatContext({ projectRoot, project, registry, userMessage: "新消息" });
+  const assistantContents = messages.filter((m) => m.role === "assistant").map((m) => m.content);
+  assert.deepEqual(assistantContents, ["正式回复"]);
+  assert.ok(!messages.some((m) => m.role === "assistant" && !m.content), "不应存在空 content 的 assistant 消息");
+  // 同时确认生成中的占位（当前轮，最后一条）也被过滤
+  await appendChatMessage(projectRoot, { role: "assistant", content: "", status: "generating", turn_id: "t2" });
+  const { messages: messages2 } = await buildChatContext({ projectRoot, project, registry, userMessage: "又一条" });
+  const last = messages2.at(-2);
+  assert.equal(last.role, "assistant");
+  assert.equal(last.content, "正式回复");
+  assert.ok(messages2.every((m) => !(m.role === "assistant" && !m.content)));
+});
+
 test("历史超 40 条折叠为提要", async () => {
   const projectRoot = await makeProject();
   for (let i = 0; i < 50; i += 1) await appendChatMessage(projectRoot, { role: "user", content: `历史消息${i}` });

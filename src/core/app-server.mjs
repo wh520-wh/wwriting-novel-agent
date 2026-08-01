@@ -292,12 +292,19 @@ export function createAppShellServer({
           const project = await loadProject(root);
           const state = await loadState(root);
           const queue = await getTaskQueue(root);
-          const task = await queue.createRecoveryTask({
+          let task = await queue.createRecoveryTask({
             instruction: state.last_user_instruction ?? "继续当前写作任务",
             mode: "write",
             currentStage: state.current_stage ?? "queued",
             recovery: { reason: "auto_resume_on_start" }
           });
+          if (!task) {
+            // createRecoveryTask 对 ACTIVE 任务返回 null：队列里残留的 running 任务即崩溃前的任务本身，
+            // 直接续跑它（与 serveRunRetry 的 stale_queue_task 路径一致），避免自动续跑被静默吞掉。
+            // 只放行 running，不放行 cancelling（用户当时在停止）。
+            const staleTask = queue.getState().tasks.find((candidate) => candidate.status === "running");
+            if (staleTask) task = staleTask;
+          }
           if (task) {
             const miniCtx = { runJobs, getTaskQueue, testModel, testRunProject, projectLocks };
             await startProjectRun(root, project, miniCtx, task, { source: "auto_resume_on_start" });
@@ -1264,6 +1271,7 @@ async function serveCommandSubmit(request, response, context) {
       throw modelError;
     }
     let runStatus = { started: false, alreadyRunning: isJobRunning(context.runJobs.get(path.resolve(projectRoot))) };
+    let startBlockedReason = null;
     if (!runStatus.alreadyRunning) {
       const task = await queue.promoteNext();
       if (task) {
@@ -1271,6 +1279,10 @@ async function serveCommandSubmit(request, response, context) {
           source: "app_shell_composer",
           promoted_from_side_question: body.fromSideQuestion === true
         });
+      } else {
+        // promoteNext 返回 null：队列里存在未收尾的 running/cancelling 任务（通常是崩溃残留），
+        // 新指令只会排队不会自动启动 —— 如实告知，避免「写作任务已开始」的误导。
+        startBlockedReason = "指令已入队，但队列中仍有未完成的任务（可能是上次中断残留），未能自动启动。请点「继续写作」恢复，或稍后再试。";
       }
     }
     await serveJson(response, {
@@ -1284,7 +1296,7 @@ async function serveCommandSubmit(request, response, context) {
       blocked: runStatus.blocked,
       message:
         runStatus.message ??
-        (runStatus.alreadyRunning ? "指令已记录；项目正在运行中。" : "指令已记录，写作任务已开始。")
+        (runStatus.alreadyRunning ? "指令已记录；项目正在运行中。" : startBlockedReason ?? "指令已记录，写作任务已开始。")
     });
     });
   } catch (error) {

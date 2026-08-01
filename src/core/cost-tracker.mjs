@@ -149,9 +149,11 @@ function addToBucket(buckets, key, usageReport, cost) {
     estimatedCost: 0
   };
   buckets[key].calls += 1;
-  buckets[key].inputTokens += usageReport.inputTokens;
-  buckets[key].outputTokens += usageReport.outputTokens;
-  buckets[key].totalTokens += usageReport.totalTokens;
-  buckets[key].cachedTokens += usageReport.cachedTokens;
+  // 与 summary 路径（record 里 inputTokens ?? 0 等）保持一致：缺字段按 0 累计，
+  // 避免 undefined 把桶内字段污染成 NaN（JSON 序列化后变 null）。
+  buckets[key].inputTokens += usageReport.inputTokens ?? 0;
+  buckets[key].outputTokens += usageReport.outputTokens ?? 0;
+  buckets[key].totalTokens += usageReport.totalTokens ?? 0;
+  buckets[key].cachedTokens += usageReport.cachedTokens ?? 0;
   buckets[key].estimatedCost = Number((buckets[key].estimatedCost + cost).toFixed(8));
 }

@@ -94,6 +94,26 @@ test("CostTracker.record groups by provider and stage", () => {
   assert.equal(s.byStage.drafting.estimatedCost, 5);
 });
 
+test("CostTracker.record 缺 token 字段时桶内不产生 NaN（回归：addToBucket ?? 0）", () => {
+  const tracker = new CostTracker();
+  tracker.record({
+    stage: "drafting",
+    usageReport: { provider: "p", failed: true, estimatedCost: 0 }
+  });
+  const s = tracker.getSummary();
+  assert.equal(Number.isNaN(s.byProvider.p.inputTokens), false);
+  assert.equal(Number.isNaN(s.byProvider.p.outputTokens), false);
+  assert.equal(Number.isNaN(s.byProvider.p.totalTokens), false);
+  assert.equal(Number.isNaN(s.byProvider.p.cachedTokens), false);
+  assert.equal(s.byProvider.p.inputTokens, 0);
+  assert.equal(s.byStage.drafting.inputTokens, 0);
+  // 后续正常记录不会被 NaN 污染
+  tracker.record({ stage: "drafting", usageReport: { provider: "p", inputTokens: 100, outputTokens: 50, totalTokens: 150, cachedTokens: 0, estimatedCost: 1 } });
+  const s2 = tracker.getSummary();
+  assert.equal(s2.byProvider.p.inputTokens, 100);
+  assert.equal(s2.byProvider.p.outputTokens, 50);
+});
+
 test("CostTracker.record returns a deep copy of the summary", () => {
   const tracker = new CostTracker();
   const s1 = tracker.record({ stage: "x", usageReport: { provider: "p", inputTokens: 10, outputTokens: 5, totalTokens: 15, cachedTokens: 0, estimatedCost: 0.1 } });
