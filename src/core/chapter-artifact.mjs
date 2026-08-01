@@ -5,10 +5,6 @@ import { isPathInside, sha256 } from "./fs-utils.mjs";
 
 const artifactCache = new Map();
 
-export function clearArtifactCache() {
-  artifactCache.clear();
-}
-
 export async function inspectChapterArtifact({ projectRoot, chapter, indexEntry = {} }) {
   if (indexEntry.status === "finalizing") {
     return artifactState("committing", chapter);

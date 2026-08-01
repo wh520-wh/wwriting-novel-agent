@@ -181,23 +181,6 @@ function computeActivityProgressPercent({ completedChapters, targetChapters, cur
   return Math.max(projectStatus === "running" ? 4 : 0, Math.min(percent, 99));
 }
 
-export async function loadProjectList(workspaceRoot, options = {}) {
-  const workspace = path.resolve(workspaceRoot);
-  const projects = await findProjectRoots(workspace, { maxDepth: options.maxDepth ?? 4 });
-  const items = await Promise.all(
-    projects.map(async (item) => {
-      const project = await loadProject(item.projectRoot).catch(() => ({}));
-      return {
-        projectRoot: item.projectRoot,
-        title: project.title ?? path.basename(item.projectRoot),
-        story_seed: project.story_seed ?? "",
-        mtimeMs: item.mtimeMs
-      };
-    })
-  );
-  return items.sort((a, b) => b.mtimeMs - a.mtimeMs);
-}
-
 export async function readChapterContent(projectRoot, chapterNo) {
   const root = path.resolve(projectRoot);
   const targetNo = Number(chapterNo);

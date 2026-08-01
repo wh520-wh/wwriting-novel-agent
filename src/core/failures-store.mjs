@@ -50,8 +50,6 @@ export function markResolved(projectRoot, id, resolution) {
   writeFailures(projectRoot, all);
 }
 
-export const FAILURES_FILE = FILE;
-
 on(CORE_EVENTS.TaskFailed, (payload) => {
   if (!payload || !payload.projectRoot || !payload.card) return;
   appendFailure(payload.projectRoot, payload.card);

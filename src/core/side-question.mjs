@@ -14,7 +14,7 @@ import fs from "node:fs/promises";
 import { CostTracker } from "./cost-tracker.mjs";
 import { loadConfigLayers } from "./config-runtime.mjs";
 import { readEvents } from "./event-log.mjs";
-import { pathExists, readJson, safeJoin } from "./fs-utils.mjs";
+import { pathExists, safeJoin } from "./fs-utils.mjs";
 import { ModelClient } from "./model-client.mjs";
 import { MockProviderAdapter, OpenAICompatibleAdapter } from "./provider-adapters.mjs";
 import { loadChapterIndex, loadProject, loadState } from "./project-store.mjs";

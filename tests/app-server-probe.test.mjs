@@ -7,7 +7,7 @@ import { createAppShellServer } from "../src/core/app-server.mjs";
 import { recordRecentProject, samePath } from "../src/core/app-state.mjs";
 import { loadDashboardData } from "../src/core/app-dashboard.mjs";
 import { readEvents } from "../src/core/event-log.mjs";
-import { loadLocalSecrets, loadLocalSecretsSync, saveLocalSecret } from "../src/core/local-secrets.mjs";
+import { loadLocalSecrets, loadLocalSecretsSync } from "../src/core/local-secrets.mjs";
 import { createProject, loadProject, loadState, saveProject, saveState } from "../src/core/project-store.mjs";
 import { TaskQueue } from "../src/core/task-queue.mjs";
 import { appendFailure } from "../src/core/failures-store.mjs";
@@ -1211,7 +1211,8 @@ test("invalid candidate leaves project settings and secrets unchanged", async ()
         api_key_env: "OLD_KEY",
       },
     });
-    await saveLocalSecret(ctx.secretsRoot, "OLD_KEY", "old-secret-value");
+    await fs.mkdir(ctx.secretsRoot, { recursive: true });
+    await fs.writeFile(path.join(ctx.secretsRoot, "secrets.json"), JSON.stringify({ OLD_KEY: "old-secret-value" }));
     const beforeProject = await loadProject(ctx.projectRoot);
     const beforeSecrets = loadLocalSecretsSync(ctx.secretsRoot);
 

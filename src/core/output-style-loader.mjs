@@ -74,7 +74,3 @@ function parseStyleFile(content) {
     body: match[2] ?? "",
   };
 }
-
-export function listBuiltInStyleNames() {
-  return BUNDLED_STYLES.map((s) => s.name);
-}
