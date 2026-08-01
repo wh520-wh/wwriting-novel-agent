@@ -1263,12 +1263,15 @@ function parseOpenAIToolCalls(raw) {
   if (!Array.isArray(message?.tool_calls) || message.tool_calls.length === 0) {
     return [];
   }
-  return message.tool_calls.map((tc) => ({
-    type: "tool_call",
-    id: tc.id ?? null,
-    tool: tc.function?.name ?? tc.name ?? null,
-    input: parseToolCallArguments(tc.function?.arguments ?? tc.arguments)
-  }));
+  return message.tool_calls.map((tc) => {
+    if (!tc) return null;
+    return {
+      type: "tool_call",
+      id: tc.id ?? null,
+      tool: tc.function?.name ?? tc.name ?? null,
+      input: parseToolCallArguments(tc.function?.arguments ?? tc.arguments)
+    };
+  }).filter(Boolean);
 }
 
 // 写作 agent 循环(runWritingAgentLoop)每轮的主 output 取首个 tool_call(向后兼容)。
@@ -1305,14 +1308,23 @@ function extractAssistantMessage(modelCall) {
 // 恢复裁剪：pending 文件可能落在「模型已决策、工具未执行」的崩溃窗口，此时尾部
 // assistant tool_calls 消息的结果必然在其后，出现在尾部即未回执。恢复时裁剪掉这些
 // 轮次，让模型重新决策，避免 tool_calls 无结果的非法消息形状（真实 API 会 400）。
-function trimUnresolvedAssistantTurns(transcript) {
+// 恢复裁剪:检查所有 assistant 轮次的 tool_calls 是否全部有对应 role=tool 结果。
+// 任意不完整轮次(含 side 部分回填的崩溃窗口:主+side1 已回填、side2 未回填)及其后所有消息裁剪,
+// 让模型从最后一个完整轮次重新决策。原版只看尾部连续 assistant,会漏判"尾部是 tool 但前面 assistant 有悬空"。
+export function trimUnresolvedAssistantTurns(transcript) {
   const messages = transcript.messages;
-  while (messages.length > 0) {
-    const last = messages[messages.length - 1];
-    if (last?.role === "assistant" && Array.isArray(last.tool_calls) && last.tool_calls.length > 0) {
-      messages.pop();
-    } else {
-      break;
+  for (let i = 0; i < messages.length; i += 1) {
+    const msg = messages[i];
+    if (msg?.role !== "assistant" || !Array.isArray(msg.tool_calls) || msg.tool_calls.length === 0) {
+      continue;
+    }
+    const allResolved = msg.tool_calls.every((tc) => {
+      if (!tc.id) return true; // null id 不算悬空(与 pendingToolCalls 一致)
+      return messages.slice(i + 1).some((m) => m.role === "tool" && m.tool_call_id === tc.id);
+    });
+    if (!allResolved) {
+      messages.length = i; // 裁剪此 assistant 及之后所有消息
+      return;
     }
   }
 }
@@ -1534,6 +1546,146 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
     trimUnresolvedAssistantTurns(transcript);
   }
 
+  // 本轮模型返回的全部 tool_calls(并行 function calling)。callModel 设置,executeTool 消费。
+  // 主 output(loop 传入 executeTool 的首个)由 dispatchSingleToolCall 执行;
+  // 剩余由 executeTool 回调末尾的 side 段执行+回填。
+  let thisTurnToolCalls = [];
+
+  // 原 executeTool 回调内的回执 helper(用 transcript 闭包),上移到 runWritingAgentLoop 体内供 dispatchSingleToolCall + side 段共用。
+  const recordToolReceipt = async (toolCallId, result) => {
+    transcript.appendToolResult(toolCallId, result);
+    await writePendingTranscript(projectRoot, request.chapter_no, request.segment_no, transcript);
+  };
+  // 拒绝/失败反馈写入 transcript（反馈喂回，替代旧设计里编译 prompt 中的 agent_loop_feedback）：
+  // - 带 tool_call id（原生 tool_calls 路径）：记 role=tool 回执，保持消息链形状合法
+  //   （assistant tool_calls 必须有对应 tool 结果，否则真实 API 会拒绝请求）；
+  // - 无 id（系统/mock 路径）：记 user 反馈消息。
+  // 写入后落盘 pending，中断恢复时反馈不丢。
+  const recordRejectionFeedback = async (toolCallId, message) => {
+    if (toolCallId) {
+      await recordToolReceipt(toolCallId, { ok: false, error: message });
+    } else {
+      transcript.appendUser(message);
+      await writePendingTranscript(projectRoot, request.chapter_no, request.segment_no, transcript);
+    }
+  };
+
+  // 主 output 分派:原 executeTool 回调的 4 情况(A/B/C/D)原样搬入,return 不变。
+  // 闭包捕获 rejectOutput/commitFailures/lastValidation/agentLoopFeedback/registry/executeCommit/
+  // checkToolPermission/summarizeToolResult/emitLoopEvent 等(均在本作用域)。
+  const dispatchSingleToolCall = async (output, ctx) => {
+    // === 以下为原 executeTool 回调体的 1:1 搬运,不改逻辑 ===
+    // 情况 A：模型直接输出正文文本。
+    if (!output || output.type !== "tool_call") {
+      const prose = (output?.message ?? output?.text ?? "").trim();
+      if (prose.length < WRITING_AGENT_MIN_PROSE_CHARS) {
+        agentLoopFeedback = { message: "输出过短。请调用 append_chapter_segment 提交完整正文。" };
+        const stop = await rejectOutput("output_too_short", {
+          attempt: ctx.turn,
+          char_count: prose.length,
+          message: `Output too short (${prose.length} chars, min ${WRITING_AGENT_MIN_PROSE_CHARS}).`,
+          severity: "warn",
+        });
+        await recordRejectionFeedback(null, agentLoopFeedback.message);
+        return { ok: false, summary: "output_too_short", ...(stop ?? {}) };
+      }
+      const wrapped = { type: "tool_call", tool: "append_chapter_segment",
+        input: { project_id: request.project_id, chapter_no: request.chapter_no,
+          segment_no: request.segment_no, content: prose } };
+      return executeCommit(projectRoot, project, state, runtime, request, wrapped, ctx.turn, emitLoopEvent, (v) => { lastValidation = v; }, rejectOutput);
+    }
+    // 情况 B：工具不在当前白名单（commit-only 期间调用只读工具也落此分支）。
+    if (!ctx.allowedTools.includes(output.tool)) {
+      agentLoopFeedback = { message: `当前只允许调用：${ctx.allowedTools.join(", ")}。请直接提交正文。` };
+      const stop = await rejectOutput("tool_not_allowed", {
+        attempt: ctx.turn,
+        tool: output.tool,
+        message: `Unsupported tool for chapter writing: ${output.tool ?? "missing"}`,
+        severity: "warn",
+      });
+      await recordRejectionFeedback(output.id, agentLoopFeedback.message);
+      return { ok: false, summary: "tool_not_allowed", ...(stop ?? {}) };
+    }
+    // 情况 C：提交工具。执行成功后把 tool 回执装入 transcript 并落盘 pending 文件；
+    // 恢复场景下 append_chapter_segment 按 segment 号幂等去重，重放不会重复写。
+    if (output.tool === "append_chapter_segment") {
+      const result = await executeCommit(projectRoot, project, state, runtime, request, output, ctx.turn, emitLoopEvent, (v) => { lastValidation = v; }, rejectOutput);
+      if (output.id) {
+        if (result?.ok) {
+          await recordToolReceipt(output.id, result.result ?? { ok: true });
+        } else {
+          // 校验失败（如 output 校验不过）也要回执：否则下一轮 transcript 含
+          // tool_calls 无结果的非法消息形状（真实 API 400），与「assistant tool_calls
+          // 全部有回执」的裁决相悖。error 用 executeCommit 返回的校验错误码。
+          await recordToolReceipt(output.id, { ok: false, error: result?.summary ?? "validation_failed" });
+        }
+      }
+      return result;
+    }
+    // 情况 D：白名单内 read/edit/update，经注册表执行。
+    const tool = registry.get(output.tool);
+    if (!tool) {
+      agentLoopFeedback = { message: `工具 ${output.tool} 未注册。` };
+      const stop = await rejectOutput("unknown_tool", {
+        attempt: ctx.turn,
+        tool: output.tool,
+        message: `工具 ${output.tool} 未注册。`,
+        severity: "warn",
+      });
+      await recordRejectionFeedback(output.id, agentLoopFeedback.message);
+      return { ok: false, summary: "unknown_tool", ...(stop ?? {}) };
+    }
+    const startedAt = Date.now();
+    try {
+      const permission = checkToolPermission(tool, project.tool_permissions ?? {}, {
+        archived: Boolean(project.archived_at)
+      });
+      if (!permission.allowed) {
+        // 权限拒绝也计入提交失败：连续 WRITING_AGENT_COMMIT_FAILURES 次拒绝
+        // → stopRun（model_output_invalid），不再空转到 24 轮耗尽。
+        // 事件形状与现网一致：tool_call_rejected data = { code, tool, attempt, message, severity }。
+        agentLoopFeedback = { message: `工具 ${output.tool} 被拒绝：${permission.message}` };
+        const stop = await rejectOutput("permission_denied", {
+          attempt: ctx.turn,
+          tool: output.tool,
+          message: permission.message,
+          severity: "warn",
+        });
+        await recordRejectionFeedback(output.id, agentLoopFeedback.message);
+        return { ok: false, summary: "permission_denied", ...(stop ?? {}) };
+      }
+      const toolResult = await tool.run(output.input ?? {}, { projectRoot, project, server: { runJobs: new Map() } });
+      commitFailures = 0;
+      const summary = summarizeToolResult(toolResult);
+      await emitLoopEvent("agent_loop_tool_executed", {
+        tool: output.tool, attempt: ctx.turn,
+        duration_ms: Date.now() - startedAt, result_summary: summary,
+      });
+      agentLoopFeedback = { message: `工具 ${output.tool} 结果：${summary}` };
+      if (output.id) {
+        // 原生 tool_calls 带 id 才记 transcript（情况 A 的系统包装调用无 id，不进 transcript）。
+        await recordToolReceipt(output.id, toolResult);
+      }
+      return { ok: true, readOnly: tool.kind === "read", summary };
+    } catch (error) {
+      await emitLoopEvent("agent_loop_tool_failed", {
+        tool: output.tool, attempt: ctx.turn,
+        error: error?.message ?? String(error), duration_ms: Date.now() - startedAt,
+        message: `agent loop tool ${output.tool} failed: ${error?.message ?? error}`,
+        severity: "warn",
+      });
+      agentLoopFeedback = { message: `工具 ${output.tool} 执行失败：${error?.message ?? error}` };
+      if (output.id) {
+        // 失败也把回执（{ok:false,error}）装入 transcript，让下一轮模型知道发生了什么。
+        await recordToolReceipt(output.id, { ok: false, error: error?.message ?? String(error) });
+      } else {
+        await recordRejectionFeedback(null, agentLoopFeedback.message);
+      }
+      return { ok: false, summary: "tool_error" };
+    }
+    // === 搬运结束 ===
+  };
+
   const session = new WritingAgentSession({
     allowedTools,
     commitTool: "append_chapter_segment",
@@ -1564,6 +1716,7 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
         transcript.appendUser(modelCall.compiled_prompt);
       }
       transcript.appendAssistant(extractAssistantMessage(modelCall));
+      thisTurnToolCalls = parseOpenAIToolCalls(modelCall.raw); // 本轮全部 tool_calls(side 执行用)
       // 每次模型决策后无条件落盘 pending：覆盖「模型已决策、工具未执行」的崩溃窗口，
       // 保证磁盘上的 pending 可能含未回执的 tool_calls，恢复时才能真正续写。
       await writePendingTranscript(projectRoot, request.chapter_no, request.segment_no, transcript);
@@ -1579,132 +1732,51 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
       return modelCall.output;
     },
     executeTool: async (output, ctx) => {
-      // 工具回执写入 transcript 并落盘 pending 的统一出口（情况 C 成功/失败、情况 D 成功/失败共用）。
-      const recordToolReceipt = async (toolCallId, result) => {
-        transcript.appendToolResult(toolCallId, result);
-        await writePendingTranscript(projectRoot, request.chapter_no, request.segment_no, transcript);
-      };
-      // 拒绝/失败反馈写入 transcript（反馈喂回，替代旧设计里编译 prompt 中的 agent_loop_feedback）：
-      // - 带 tool_call id（原生 tool_calls 路径）：记 role=tool 回执，保持消息链形状合法
-      //   （assistant tool_calls 必须有对应 tool 结果，否则真实 API 会拒绝请求）；
-      // - 无 id（系统/mock 路径）：记 user 反馈消息。
-      // 写入后落盘 pending，中断恢复时反馈不丢。
-      const recordRejectionFeedback = async (toolCallId, message) => {
-        if (toolCallId) {
-          await recordToolReceipt(toolCallId, { ok: false, error: message });
-        } else {
-          transcript.appendUser(message);
-          await writePendingTranscript(projectRoot, request.chapter_no, request.segment_no, transcript);
+      // 主 output 分派:现有 4 情况逻辑(A/B/C/D)原样,return 不变
+      let primaryResult = await dispatchSingleToolCall(output, ctx);
+      // -- 并行 tool_calls 支持:本轮剩余 tool_calls 顺序执行+回填 --
+      // 保证 transcript 里每个 tool_call.id 都有对应 role=tool 消息(OpenAI/DeepSeek 硬性契约)。
+      // 主 output 是 commit(已 committed)时,剩余一律 skipped_after_commit(循环即将 stop)。
+      // 否则顺序执行剩余:read/edit/update 执行+回填;遇到 append 则执行+回填+更新 primaryResult,其后 skipped。
+      const sideCalls = thisTurnToolCalls.slice(1); // 主 output(thisTurnToolCalls[0])已执行
+      thisTurnToolCalls = [];
+      for (const tc of sideCalls) {
+        if (primaryResult?.committed) {
+          if (tc.id) await recordToolReceipt(tc.id, { ok: false, error: "skipped_after_commit" });
+          continue;
         }
-      };
-      // 情况 A：模型直接输出正文文本。
-      if (!output || output.type !== "tool_call") {
-        const prose = (output?.message ?? output?.text ?? "").trim();
-        if (prose.length < WRITING_AGENT_MIN_PROSE_CHARS) {
-          agentLoopFeedback = { message: "输出过短。请调用 append_chapter_segment 提交完整正文。" };
-          const stop = await rejectOutput("output_too_short", {
-            attempt: ctx.turn,
-            char_count: prose.length,
-            message: `Output too short (${prose.length} chars, min ${WRITING_AGENT_MIN_PROSE_CHARS}).`,
-            severity: "warn",
-          });
-          await recordRejectionFeedback(null, agentLoopFeedback.message);
-          return { ok: false, summary: "output_too_short", ...(stop ?? {}) };
+        if (!ctx.allowedTools.includes(tc.tool)) {
+          if (tc.id) await recordToolReceipt(tc.id, { ok: false, error: "tool_not_allowed" });
+          continue;
         }
-        const wrapped = { type: "tool_call", tool: "append_chapter_segment",
-          input: { project_id: request.project_id, chapter_no: request.chapter_no,
-            segment_no: request.segment_no, content: prose } };
-        return executeCommit(projectRoot, project, state, runtime, request, wrapped, ctx.turn, emitLoopEvent, (v) => { lastValidation = v; }, rejectOutput);
-      }
-      // 情况 B：工具不在当前白名单（commit-only 期间调用只读工具也落此分支）。
-      if (!ctx.allowedTools.includes(output.tool)) {
-        agentLoopFeedback = { message: `当前只允许调用：${ctx.allowedTools.join(", ")}。请直接提交正文。` };
-        const stop = await rejectOutput("tool_not_allowed", {
-          attempt: ctx.turn,
-          tool: output.tool,
-          message: `Unsupported tool for chapter writing: ${output.tool ?? "missing"}`,
-          severity: "warn",
-        });
-        await recordRejectionFeedback(output.id, agentLoopFeedback.message);
-        return { ok: false, summary: "tool_not_allowed", ...(stop ?? {}) };
-      }
-      // 情况 C：提交工具。执行成功后把 tool 回执装入 transcript 并落盘 pending 文件；
-      // 恢复场景下 append_chapter_segment 按 segment 号幂等去重，重放不会重复写。
-      if (output.tool === "append_chapter_segment") {
-        const result = await executeCommit(projectRoot, project, state, runtime, request, output, ctx.turn, emitLoopEvent, (v) => { lastValidation = v; }, rejectOutput);
-        if (output.id) {
-          if (result?.ok) {
-            await recordToolReceipt(output.id, result.result ?? { ok: true });
-          } else {
-            // 校验失败（如 output 校验不过）也要回执：否则下一轮 transcript 含
-            // tool_calls 无结果的非法消息形状（真实 API 400），与「assistant tool_calls
-            // 全部有回执」的裁决相悖。error 用 executeCommit 返回的校验错误码。
-            await recordToolReceipt(output.id, { ok: false, error: result?.summary ?? "validation_failed" });
+        if (tc.tool === "append_chapter_segment") {
+          const sideResult = await executeCommit(projectRoot, project, state, runtime, request, tc, ctx.turn, emitLoopEvent, (v) => { lastValidation = v; }, rejectOutput);
+          if (tc.id) {
+            await recordToolReceipt(tc.id, sideResult?.ok ? (sideResult.result ?? { ok: true }) : { ok: false, error: sideResult?.summary ?? "validation_failed" });
           }
+          if (sideResult?.committed) { primaryResult = sideResult; }
+          continue;
         }
-        return result;
+        const sideTool = registry.get(tc.tool);
+        if (!sideTool) {
+          if (tc.id) await recordToolReceipt(tc.id, { ok: false, error: "unknown_tool" });
+          continue;
+        }
+        try {
+          const sidePerm = checkToolPermission(sideTool, project.tool_permissions ?? {}, { archived: Boolean(project.archived_at) });
+          if (!sidePerm.allowed) {
+            if (tc.id) await recordToolReceipt(tc.id, { ok: false, error: "permission_denied" });
+            continue;
+          }
+          const sideToolResult = await sideTool.run(tc.input ?? {}, { projectRoot, project, server: { runJobs: new Map() } });
+          await emitLoopEvent("agent_loop_tool_executed", { tool: tc.tool, attempt: ctx.turn, result_summary: summarizeToolResult(sideToolResult) });
+          if (tc.id) await recordToolReceipt(tc.id, sideToolResult);
+        } catch (error) {
+          await emitLoopEvent("agent_loop_tool_failed", { tool: tc.tool, attempt: ctx.turn, error: error?.message ?? String(error), severity: "warn" });
+          if (tc.id) await recordToolReceipt(tc.id, { ok: false, error: error?.message ?? String(error) });
+        }
       }
-      // 情况 D：白名单内 read/edit/update，经注册表执行。
-      const tool = registry.get(output.tool);
-      if (!tool) {
-        agentLoopFeedback = { message: `工具 ${output.tool} 未注册。` };
-        const stop = await rejectOutput("unknown_tool", {
-          attempt: ctx.turn,
-          tool: output.tool,
-          message: `工具 ${output.tool} 未注册。`,
-          severity: "warn",
-        });
-        await recordRejectionFeedback(output.id, agentLoopFeedback.message);
-        return { ok: false, summary: "unknown_tool", ...(stop ?? {}) };
-      }
-      const startedAt = Date.now();
-      try {
-        const permission = checkToolPermission(tool, project.tool_permissions ?? {}, {
-          archived: Boolean(project.archived_at)
-        });
-        if (!permission.allowed) {
-          // 权限拒绝也计入提交失败：连续 WRITING_AGENT_COMMIT_FAILURES 次拒绝
-          // → stopRun（model_output_invalid），不再空转到 24 轮耗尽。
-          // 事件形状与现网一致：tool_call_rejected data = { code, tool, attempt, message, severity }。
-          agentLoopFeedback = { message: `工具 ${output.tool} 被拒绝：${permission.message}` };
-          const stop = await rejectOutput("permission_denied", {
-            attempt: ctx.turn,
-            tool: output.tool,
-            message: permission.message,
-            severity: "warn",
-          });
-          await recordRejectionFeedback(output.id, agentLoopFeedback.message);
-          return { ok: false, summary: "permission_denied", ...(stop ?? {}) };
-        }
-        const toolResult = await tool.run(output.input ?? {}, { projectRoot, project, server: { runJobs: new Map() } });
-        commitFailures = 0;
-        const summary = summarizeToolResult(toolResult);
-        await emitLoopEvent("agent_loop_tool_executed", {
-          tool: output.tool, attempt: ctx.turn,
-          duration_ms: Date.now() - startedAt, result_summary: summary,
-        });
-        agentLoopFeedback = { message: `工具 ${output.tool} 结果：${summary}` };
-        if (output.id) {
-          // 原生 tool_calls 带 id 才记 transcript（情况 A 的系统包装调用无 id，不进 transcript）。
-          await recordToolReceipt(output.id, toolResult);
-        }
-        return { ok: true, readOnly: tool.kind === "read", summary };
-      } catch (error) {
-        await emitLoopEvent("agent_loop_tool_failed", {
-          tool: output.tool, attempt: ctx.turn,
-          error: error?.message ?? String(error), duration_ms: Date.now() - startedAt,
-          message: `agent loop tool ${output.tool} failed: ${error?.message ?? error}`,
-          severity: "warn",
-        });
-        agentLoopFeedback = { message: `工具 ${output.tool} 执行失败：${error?.message ?? error}` };
-        if (output.id) {
-          // 失败也把回执（{ok:false,error}）装入 transcript，让下一轮模型知道发生了什么。
-          await recordToolReceipt(output.id, { ok: false, error: error?.message ?? String(error) });
-        } else {
-          await recordRejectionFeedback(null, agentLoopFeedback.message);
-        }
-        return { ok: false, summary: "tool_error" };
-      }
+      return primaryResult;
     },
   });
 

@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { runProject, SimulatedInterrupt, maybeWarnChapterCost, extractChapterMemory, runFactCheck } from "../src/core/agent-engine.mjs";
+import { runProject, SimulatedInterrupt, maybeWarnChapterCost, extractChapterMemory, runFactCheck, trimUnresolvedAssistantTurns } from "../src/core/agent-engine.mjs";
 import { appendEvent, readEvents } from "../src/core/event-log.mjs";
 import { countEffectiveWords } from "../src/core/word-count.mjs";
 import { MockModel } from "../src/core/mock-model.mjs";
@@ -1771,7 +1771,7 @@ class MultiToolCallModelClient {
     const req = metadata.toolRequest;
     if (this.calls === 1 && messages.length === 0) {
       // 首轮(fresh):返回 2 个并行只读 tool_calls
-      this.capturedMessagesPerCall.push(messages);
+      this.capturedMessagesPerCall.push([...messages]);
       return {
         text: "",
         raw: { choices: [{ message: { role: "assistant", content: null,
@@ -1784,7 +1784,7 @@ class MultiToolCallModelClient {
         modelConfig: { provider: "mock", model_name: "m" }
       };
     }
-    this.capturedMessagesPerCall.push(messages);
+    this.capturedMessagesPerCall.push([...messages]);
     const content = "这是一段足够长的正文内容用于通过字数门禁,确保超过最小字符阈值,从而被包装为 append_chapter_segment 提交。".repeat(2);
     return {
       text: "",
@@ -1816,4 +1816,63 @@ test("parseOpenAIToolCalls: 模型一轮返回多个 tool_calls 时全部进入 
     assert.ok(toolResultIds.includes(tc.id),
       `每个 tool_call(id=${tc.id}) 都必须有对应 role=tool 结果,实际 tool 结果 ids: ${JSON.stringify(toolResultIds)}`);
   }
+});
+
+// Task 2：本轮并行执行全部 tool_calls —— read + append 同轮 commit。
+// 模型一轮返回 [read_outline, append_chapter_segment] 两个 tool_calls：
+// 主 output 是 read_outline，剩余 append 由本轮 side 段执行并回填；append commit 后循环 stop。
+class ReadThenCommitModelClient {
+  constructor() { this.calls = 0; this.capturedMessagesPerCall = []; }
+  async generate({ messages = [], metadata = {} } = {}) {
+    this.calls += 1;
+    this.capturedMessagesPerCall.push([...messages]);
+    const req = metadata.toolRequest;
+    const content = "这是一段足够长的正文内容用于通过字数门禁,确保超过最小字符阈值。".repeat(11);
+    return {
+      text: "",
+      raw: { choices: [{ message: { role: "assistant", content: null,
+        tool_calls: [
+          { id: `rac_r${this.calls}`, type: "function", function: { name: "read_outline", arguments: "{}" } },
+          { id: `rac_a${this.calls}`, type: "function", function: { name: "append_chapter_segment", arguments: JSON.stringify({ project_id: req.project_id, chapter_no: req.chapter_no, segment_no: req.segment_no, content }) } }
+        ] } }] },
+      usageReport: { provider: "mock", model: "m", inputTokens: 1, outputTokens: 1, totalTokens: 2, cachedTokens: 0, cacheHitRate: null, estimatedCost: 0, rawUsage: {} },
+      costSummary: { calls: 1, inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCost: 0 },
+      modelConfig: { provider: "mock", model_name: "m" }
+    };
+  }
+}
+
+test("runWritingAgentLoop: 本轮主 read + 剩余 append,commit 后无悬空 tool_call", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-read-append-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "project", target_chapters: 1, min_words_per_chapter: 300, target_words_per_chapter: 360
+  });
+  const client = new ReadThenCommitModelClient();
+  await runProject(projectRoot, { modelClient: client });
+  assert.equal(client.calls, 1, "read+append 同轮完成后应 stop,不再调模型");
+  const pendingPath = path.join(projectRoot, "memory", ".pending-transcript-1-1.json");
+  assert.equal(await fs.stat(pendingPath).catch(() => null), null,
+    "read+append 同轮 commit 后应正常完成,pending 文件应删除");
+  const draft = await fs.readFile(path.join(projectRoot, "drafts", "001.draft.md"), "utf8");
+  assert.match(draft, /segment:1/u, "正文已写入");
+});
+
+test("trimUnresolvedAssistantTurns: side 部分回填的崩溃窗口恢复后裁剪不完整轮次", () => {
+  // 模拟崩溃窗口:assistant(2 tool_calls: a,b) + tool(a 结果),b 结果缺失
+  const transcript = ToolTranscript.restore({
+    messages: [
+      { role: "user", content: "写第一章" },
+      { role: "assistant", tool_calls: [
+        { id: "a", type: "function", function: { name: "get_status", arguments: "{}" } },
+        { id: "b", type: "function", function: { name: "read_outline", arguments: "{}" } }
+      ], reasoning_content: "思考" },
+      { role: "tool", tool_call_id: "a", content: '{"status":"ok"}' }
+      // b 的 tool 结果缺失(崩溃在 side 执行中途)
+    ]
+  });
+  assert.equal(transcript.pendingToolCalls.length, 1, "应有 1 个悬空 tool_call(b)");
+  trimUnresolvedAssistantTurns(transcript);
+  assert.equal(transcript.toMessages().length, 1, "不完整轮次应被裁剪,只剩 user 消息");
+  assert.equal(transcript.toMessages()[0].role, "user");
+  assert.equal(transcript.pendingToolCalls.length, 0, "裁剪后无悬空");
 });
