@@ -1250,7 +1250,8 @@ class ReadLoopModelClient {
   async generate({ prompt, messages, metadata }) {
     this.calls += 1;
     this.prompts.push(prompt);
-    this.capturedMessages.push(messages);
+    // 快照捕获：transcript.toMessages() 返回活引用，后续轮次追加会继续修改原数组
+    this.capturedMessages.push([...messages]);
     this.metadatas.push(metadata);
     const request = metadata.toolRequest;
     const usageReport = {
@@ -1325,7 +1326,8 @@ class ReadOnlyDeniedModelClient {
   async generate({ prompt, messages, metadata }) {
     this.calls += 1;
     this.prompts.push(prompt);
-    this.capturedMessages.push(messages);
+    // 快照捕获：transcript.toMessages() 返回活引用，后续轮次追加会继续修改原数组
+    this.capturedMessages.push([...messages]);
     const request = metadata.toolRequest;
     const usageReport = {
       provider: "mock", model: "readonly-denied",
@@ -1680,7 +1682,8 @@ class TranscriptCapturingModelClient {
   }
   async generate({ messages = [], metadata }) {
     this.calls += 1;
-    this.capturedMessagesPerCall.push(messages);
+    // 快照捕获：transcript.toMessages() 返回活引用，后续轮次追加会继续修改原数组
+    this.capturedMessagesPerCall.push([...messages]);
     const request = metadata?.toolRequest ?? {};
     if (this.calls === 1) {
       return {
@@ -1740,7 +1743,18 @@ test("transcript pending 文件: 循环层中断后 pending 含未回执 tool_ca
   assert.equal(ToolTranscript.restore(pending).pendingToolCalls.length, 1,
     "pending transcript 应恰有 1 个未回执 tool_call（恢复裁剪后模型重新决策）");
   // 恢复续写：恢复裁剪未回执轮次 → 正常完成，segment:1 不重复
+  const callsBeforeRestore = client.capturedMessagesPerCall.length;
   await runProject(projectRoot, { modelClient: client });
+  // 恢复读路径：恢复后的首个模型调用应收到裁剪后的 pending 链（至少含 user 消息）——
+  // 非恢复的首轮（fresh loop）messages 是空数组；若恢复逻辑被删，此处必失败。
+  const firstRestoreCall = client.capturedMessagesPerCall[callsBeforeRestore];
+  assert.ok(
+    Array.isArray(firstRestoreCall) && firstRestoreCall.some((m) => m.role === "user"),
+    "恢复后首轮应收到含 user 消息的 pending 链（不是 fresh 首轮的空数组）"
+  );
+  // 恢复成功后 pending 文件应已被清理（正常完成路径）
+  assert.equal(await fs.stat(pendingPath).catch(() => null), null,
+    "恢复成功后 pending 文件应已删除");
   const draft = await fs.readFile(path.join(projectRoot, "drafts", "001.draft.md"), "utf8");
   assert.equal((draft.match(/segment:1/gu) ?? []).length, 1, "恢复后 segment:1 不重复");
 });
