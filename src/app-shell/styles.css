@@ -148,6 +148,47 @@
 :root[data-theme="dark"] .proj-cover,
 :root[data-theme="dark"] .session-cover--trail { color: #fff; }
 
+/* ===== 深色模式收尾：硬编码亮色块统一换暗色语义变量 ===== */
+/* 会话封面条纹 + 书脊线 */
+:root[data-theme="dark"] .session-cover {
+  background: repeating-linear-gradient(135deg, var(--surface-2), var(--surface-2) 6px, var(--surface-3) 6px, var(--surface-3) 12px);
+}
+:root[data-theme="dark"] .session-cover::after { background: rgba(255,255,255,0.08); }
+/* yolo 模式（琥珀系）：命令栏徽章 / 模式弹窗 / 设置单选 / 警告条 */
+:root[data-theme="dark"] .cbar-pill--yolo { border-color: var(--amber-line); background: var(--amber-soft); color: var(--amber); }
+:root[data-theme="dark"] .cbar-pill--yolo:hover { background: var(--amber-soft); border-color: var(--amber); }
+:root[data-theme="dark"] .mode-popover-item--yolo { border-color: var(--amber-line); background: var(--amber-soft); }
+:root[data-theme="dark"] .mode-popover-item--yolo .mpi-tx strong { color: var(--amber); }
+:root[data-theme="dark"] .mode-popover-item--yolo .mpi-tx small { color: var(--amber); }
+:root[data-theme="dark"] .mode-popover-item--yolo[aria-checked="true"] { background: var(--amber-soft); border-color: var(--amber); }
+:root[data-theme="dark"] .mode-popover-warn { border-color: var(--amber-line); background: var(--amber-soft); color: var(--amber); }
+:root[data-theme="dark"] .spd-radio-option--yolo { border-color: var(--amber-line); background: var(--amber-soft); }
+:root[data-theme="dark"] .spd-radio-option--yolo:hover { background: var(--amber-soft); }
+:root[data-theme="dark"] .spd-radio-option--yolo.spd-radio-option--on { background: var(--amber-soft); border-color: var(--amber); box-shadow: 0 0 0 1px var(--amber) inset; }
+:root[data-theme="dark"] .spd-radio-option--yolo .spd-radio-glyph { border-color: var(--amber-line); background: var(--amber-soft); }
+:root[data-theme="dark"] .spd-radio-option--yolo .spd-radio-tx strong { color: var(--amber); }
+:root[data-theme="dark"] .spd-radio-option--yolo .spd-radio-tx small { color: var(--amber); }
+:root[data-theme="dark"] .spd-radio-warn { border-color: var(--amber-line); background: var(--amber-soft); color: var(--amber); }
+/* 成本面板：警告条 / 超支行 / 失败徽章（红系） */
+:root[data-theme="dark"] .cost-warning-banner { border-color: var(--amber-line); background: var(--amber-soft); color: var(--amber); }
+:root[data-theme="dark"] .cost-chapter-row.cost-chapter-warn { background: var(--amber-soft); border-bottom-color: var(--amber-line); }
+:root[data-theme="dark"] .cost-warning { background: var(--red-soft); color: var(--red); border-color: var(--red); }
+/* 旁路卡片 impact 提示 / chat 待确认卡（米黄 → 暗琥珀） */
+:root[data-theme="dark"] .sidecard.impact { border-color: var(--amber-line); background: var(--amber-soft); }
+:root[data-theme="dark"] .chat-confirm-card { border-color: var(--amber); background: var(--amber-soft); }
+/* 主动提示徽章：亮橙 → 暗琥珀，深色文字保持浅色 */
+:root[data-theme="dark"] .chat-proactive-badge { background: var(--amber); color: var(--btn-2); }
+/* 开关 off 轨道（on 态已用 --green） */
+:root[data-theme="dark"] .sw { background: var(--line); }
+/* 气泡内 code 块：暗底上用白透明 */
+:root[data-theme="dark"] .chat-bubble-content code { background: rgba(255,255,255,0.08); }
+/* 提示色：error/success 换语义红绿（暗色下可读） */
+:root[data-theme="dark"] .spd-hint.error { color: var(--red); }
+:root[data-theme="dark"] .spd-hint.success { color: var(--green); }
+/* hover 亮边框 → 暗线 */
+:root[data-theme="dark"] .suggestion-card:hover { border-color: var(--line); }
+:root[data-theme="dark"] .spd-test-connection:hover:not(:disabled) { border-color: var(--line); }
+
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 
