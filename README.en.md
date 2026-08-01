@@ -34,7 +34,7 @@ In one sentence: **cloud platforms lock your novel into their servers, CLI frame
 - **Skill system**: manifest / hooks / enable / disable / import; ships with a built-in cliffhanger-ending skill.
 - **Controlled web research**: offline by default; fetched sources are snapshotted and marked as untrusted material, never executed as instructions.
 - **OpenAI-compatible model adapters**: official DeepSeek and Xiaomi MiMo presets; paste an API key and go. Keys are stored locally only.
-- **Verification culture**: 54 unit/integration tests plus a one-command local acceptance suite (`npm run verify:local`) — even UI regressions ("buttons visible but unclickable") are guarded by a real Electron click-through harness.
+- **Verification culture**: 1002 unit/integration tests plus a one-command local acceptance suite (`npm run verify:local`) — even UI regressions ("buttons visible but unclickable") are guarded by a real Electron click-through harness.
 
 ## Quick Start
 
@@ -111,7 +111,7 @@ cache_report.json   # cache keys and provider cache metrics
 ## Verification Commands
 
 ```powershell
-npm test                            # 54 unit/integration tests
+npm test                            # 1002 unit/integration tests
 npm run verify:local                # full local acceptance (includes packaging; slow)
 npm run verify:app-shell            # GUI, project open, settings write-back, skills, research tools
 npm run verify:app-clickability     # real Electron window, clicks every critical button

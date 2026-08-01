@@ -8,7 +8,6 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import os from "node:os";
-import { fileURLToPath } from "node:url";
 import { createProject, loadProject, saveProject, upsertChapter } from "../src/core/project-store.mjs";
 import { saveContinuity } from "../src/core/continuity-store.mjs";
 import { runChatTurn, resumeChatTurn } from "../src/core/chat/chat-agent.mjs";
