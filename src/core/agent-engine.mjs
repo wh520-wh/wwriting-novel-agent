@@ -1758,11 +1758,14 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
       // 保证 transcript 里每个 tool_call.id 都有对应 role=tool 消息(OpenAI/DeepSeek 硬性契约)。
       // 主 output 是 commit(已 committed)时,剩余一律 skipped_after_commit(循环即将 stop)。
       // 否则顺序执行剩余:read/edit/update 执行+回填;遇到 append 则执行+回填+更新 primaryResult,其后 skipped。
-      // 与主 output 分派(情况 B/D)的刻意分歧:side 段失败(tool_not_allowed 对应情况 B、
-      // permission_denied/unknown_tool/tool 异常对应情况 D)不计 commitFailures、不更新
-      // agentLoopFeedback、不走 rejectOutput——
+      // 与主 output 分派(情况 B/D)的刻意分歧:side 段自身的拒绝分支(tool_not_allowed 对应情况 B、
+      // permission_denied/unknown_tool/tool 异常对应情况 D)不走 rejectOutput、不计 commitFailures、
+      // 不更新 agentLoopFeedback——
       // stopRun 升级只对主 output 决策生效,避免一次多工具轮次的 side 失败误触发整体 stopRun;
       // 模型仍可从 transcript 的 role=tool 回执(含 error)推断。
+      // 注意:side 的 append_chapter_segment 仍走 executeCommit,其内部校验失败会计入 commitFailures
+      // (rejectOutput),但返回的 stopRun 不向上传递(仅 committed 更新 primaryResult),升级略滞后一轮,
+      // 最终由轮次耗尽(failWritingAgentLoop)兜底。
       const sideCalls = thisTurnToolCalls.slice(1); // 主 output(thisTurnToolCalls[0])已执行
       thisTurnToolCalls = [];
       for (const tc of sideCalls) {
@@ -1787,6 +1790,7 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
           if (tc.id) await recordToolReceipt(tc.id, { ok: false, error: "unknown_tool" });
           continue;
         }
+        const startedAt = Date.now();
         try {
           const sidePerm = checkToolPermission(sideTool, project.tool_permissions ?? {}, { archived: Boolean(project.archived_at) });
           if (!sidePerm.allowed) {
@@ -1794,10 +1798,10 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
             continue;
           }
           const sideToolResult = await sideTool.run(tc.input ?? {}, { projectRoot, project, server: { runJobs: new Map() } });
-          await emitLoopEvent("agent_loop_tool_executed", { tool: tc.tool, attempt: ctx.turn, result_summary: summarizeToolResult(sideToolResult) });
+          await emitLoopEvent("agent_loop_tool_executed", { tool: tc.tool, attempt: ctx.turn, duration_ms: Date.now() - startedAt, result_summary: summarizeToolResult(sideToolResult) });
           if (tc.id) await recordToolReceipt(tc.id, sideToolResult);
         } catch (error) {
-          await emitLoopEvent("agent_loop_tool_failed", { tool: tc.tool, attempt: ctx.turn, error: error?.message ?? String(error), severity: "warn" });
+          await emitLoopEvent("agent_loop_tool_failed", { tool: tc.tool, attempt: ctx.turn, duration_ms: Date.now() - startedAt, error: error?.message ?? String(error), severity: "warn" });
           if (tc.id) await recordToolReceipt(tc.id, { ok: false, error: error?.message ?? String(error) });
         }
       }
