@@ -17,7 +17,6 @@ import { isCacheDiscountedMode } from "../../shared/deepseek-detection.mjs";
 const SPARKLINE_LENGTH = 20;
 const SPARK_GAP = 1; // px
 const SPARK_WIDTH = 4; // px
-const SPARK_HEIGHT = 16; // px
 
 // D2：缓存折扣平台（DeepSeek / MiMo）的低命中率诊断提示。一行小字、不弹窗、
 // 仅缓存折扣平台模式显示（MiMo 价差 120 倍，与 DeepSeek 同享提示）。
