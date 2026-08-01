@@ -1004,9 +1004,11 @@ async function runModelGatewayCall(projectRoot, project, state, runtime, request
     await runtime.modelClient.costTracker.writeProjectReport(projectRoot);
   }
   await maybeWarnChapterCost(projectRoot, project, state, gatewayResult.costSummary, runtime);
+  // transcript 轮次（cacheKey 为 null）不写幻影 last_call（templateVersion:"transcript" 全 null 对象），
+  // 传 null 让 writeCacheReport 落 last_call:null，不覆盖真实缓存记录。
   const cacheReport = await writeCacheReport(projectRoot, {
     manager: runtime.cacheKeyManager,
-    cacheEntry,
+    cacheEntry: cacheEntry.cacheKey ? cacheEntry : null,
     compiledPrompt,
     usageReport: gatewayResult.usageReport,
     modelConfig: gatewayResult.modelConfig
@@ -1316,7 +1318,12 @@ async function writePendingTranscript(projectRoot, chapterNo, segmentNo, transcr
 }
 
 async function readPendingTranscript(projectRoot, chapterNo, segmentNo) {
-  return readJson(pendingTranscriptPath(projectRoot, chapterNo, segmentNo), null);
+  try {
+    return await readJson(pendingTranscriptPath(projectRoot, chapterNo, segmentNo), null);
+  } catch {
+    // 损坏的 pending 文件视为无 pending：恢复走全新编译，不硬失败恢复流程
+    return null;
+  }
 }
 
 async function clearPendingTranscript(projectRoot, chapterNo, segmentNo) {
@@ -1430,9 +1437,14 @@ function summarizeToolResult(value) {
 }
 
 async function failWritingAgentLoop(projectRoot, project, state, reason, lastValidation, lastModelCall, allowedTools) {
+  // 持久化前剥掉 raw（完整网关响应）与 compiled_prompt（完整 prompt）：它们只用于循环内
+  // transcript 提取，整包写入 agent_state 会让 blocked_data 膨胀。字段名保持原样。
+  const persistableModelCall = lastModelCall
+    ? (({ raw, compiled_prompt, ...rest }) => rest)(lastModelCall)
+    : null;
   await blockProject(projectRoot, project, state, reason, {
     last_validation: lastValidation,
-    last_model_call: lastModelCall,
+    last_model_call: persistableModelCall,
     allowed_tools: allowedTools
   }, { skipFailureCard: true });
   // 故障卡类型用 project_blocked + data.code，让 classifyKind 按 reason 归类
@@ -1557,6 +1569,11 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
       return modelCall.output;
     },
     executeTool: async (output, ctx) => {
+      // 工具回执写入 transcript 并落盘 pending 的统一出口（情况 C 成功/失败、情况 D 成功/失败共用）。
+      const recordToolReceipt = async (toolCallId, result) => {
+        transcript.appendToolResult(toolCallId, result);
+        await writePendingTranscript(projectRoot, request.chapter_no, request.segment_no, transcript);
+      };
       // 拒绝/失败反馈写入 transcript（反馈喂回，替代旧设计里编译 prompt 中的 agent_loop_feedback）：
       // - 带 tool_call id（原生 tool_calls 路径）：记 role=tool 回执，保持消息链形状合法
       //   （assistant tool_calls 必须有对应 tool 结果，否则真实 API 会拒绝请求）；
@@ -1564,11 +1581,11 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
       // 写入后落盘 pending，中断恢复时反馈不丢。
       const recordRejectionFeedback = async (toolCallId, message) => {
         if (toolCallId) {
-          transcript.appendToolResult(toolCallId, { ok: false, error: message });
+          await recordToolReceipt(toolCallId, { ok: false, error: message });
         } else {
           transcript.appendUser(message);
+          await writePendingTranscript(projectRoot, request.chapter_no, request.segment_no, transcript);
         }
-        await writePendingTranscript(projectRoot, request.chapter_no, request.segment_no, transcript);
       };
       // 情况 A：模型直接输出正文文本。
       if (!output || output.type !== "tool_call") {
@@ -1607,14 +1624,13 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
         const result = await executeCommit(projectRoot, project, state, runtime, request, output, ctx.turn, emitLoopEvent, (v) => { lastValidation = v; }, rejectOutput);
         if (output.id) {
           if (result?.ok) {
-            transcript.appendToolResult(output.id, result.result ?? { ok: true });
+            await recordToolReceipt(output.id, result.result ?? { ok: true });
           } else {
             // 校验失败（如 output 校验不过）也要回执：否则下一轮 transcript 含
             // tool_calls 无结果的非法消息形状（真实 API 400），与「assistant tool_calls
             // 全部有回执」的裁决相悖。error 用 executeCommit 返回的校验错误码。
-            transcript.appendToolResult(output.id, { ok: false, error: result?.summary ?? "validation_failed" });
+            await recordToolReceipt(output.id, { ok: false, error: result?.summary ?? "validation_failed" });
           }
-          await writePendingTranscript(projectRoot, request.chapter_no, request.segment_no, transcript);
         }
         return result;
       }
@@ -1660,8 +1676,7 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
         agentLoopFeedback = { message: `工具 ${output.tool} 结果：${summary}` };
         if (output.id) {
           // 原生 tool_calls 带 id 才记 transcript（情况 A 的系统包装调用无 id，不进 transcript）。
-          transcript.appendToolResult(output.id, toolResult);
-          await writePendingTranscript(projectRoot, request.chapter_no, request.segment_no, transcript);
+          await recordToolReceipt(output.id, toolResult);
         }
         return { ok: true, readOnly: tool.kind === "read", summary };
       } catch (error) {
@@ -1674,8 +1689,7 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
         agentLoopFeedback = { message: `工具 ${output.tool} 执行失败：${error?.message ?? error}` };
         if (output.id) {
           // 失败也把回执（{ok:false,error}）装入 transcript，让下一轮模型知道发生了什么。
-          transcript.appendToolResult(output.id, { ok: false, error: error?.message ?? String(error) });
-          await writePendingTranscript(projectRoot, request.chapter_no, request.segment_no, transcript);
+          await recordToolReceipt(output.id, { ok: false, error: error?.message ?? String(error) });
         } else {
           await recordRejectionFeedback(null, agentLoopFeedback.message);
         }

@@ -211,6 +211,9 @@ export async function writeCheckpoint(projectRoot, payload) {
     cache_key: payload.cache_key ?? null,
     skill_hooks: payload.skill_hooks ?? [],
     skill_gate_results: payload.skill_gate_results ?? [],
+    // transcript 备份：写作 agent 循环消息链序列化（对齐 checkpointPayload 的 transcript 字段），
+    // 成功完成时由 draftNextSegment/reviseChapter 写入；5 轮约 30KB，可接受。
+    transcript: payload.transcript ?? null,
     tool_calls: payload.tool_calls ?? [],
     tool_results: payload.tool_results ?? [],
     state_before: payload.state_before ?? null,
