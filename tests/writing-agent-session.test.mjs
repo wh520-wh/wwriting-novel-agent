@@ -218,3 +218,39 @@ test("session: 领域 stopRun 主动终止（连续无效输出上限）", async
   assert.equal(run.outcome, "failed");
   assert.equal(run.reason, "model_output_invalid");
 });
+
+test("外部 signal abort 后，session 内部立即感知（单向同步，无需调用 session.abort()）", async () => {
+  const externalController = new AbortController();
+  const session = new WritingAgentSession({
+    allowedTools: ["read_chapter", "append_chapter_segment"],
+    commitTool: "append_chapter_segment",
+    maxConsecutiveReads: 3,
+    maxTurns: 24,
+    emitEvent: async () => {},
+    callModel: async () => {
+      externalController.abort("模拟用户点击停止");
+      // 模拟模型调用耗时期间外部触发停止
+      return { type: "tool_call", tool: "read_chapter", input: {} };
+    },
+    executeTool: async () => ({ ok: true, readOnly: true }),
+  });
+  const run = await session.start({ signal: externalController.signal });
+  assert.equal(run.outcome, "aborted");
+});
+
+test("session.abort() 是内部/测试可用的编程接口，效果等价于外部 signal abort（不是死代码）", async () => {
+  const session = new WritingAgentSession({
+    allowedTools: ["read_chapter"],
+    commitTool: "append_chapter_segment",
+    maxConsecutiveReads: 3,
+    maxTurns: 24,
+    emitEvent: async () => {},
+    callModel: async () => {
+      session.abort("内部主动停止");
+      return { type: "tool_call", tool: "read_chapter", input: {} };
+    },
+    executeTool: async () => ({ ok: true, readOnly: true }),
+  });
+  const run = await session.start();
+  assert.equal(run.outcome, "aborted");
+});
