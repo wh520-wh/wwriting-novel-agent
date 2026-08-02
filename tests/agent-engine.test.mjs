@@ -1554,9 +1554,9 @@ test("writing agent loop: 耗尽故障卡带字数门禁上下文,提供降低�
   assert.ok(card, `应有 loop-exhausted 故障卡,实际: ${JSON.stringify(failures.map((f) => f.kind))}`);
   const lowerAction = card.actions.find((a) => a.command === "lower-target-words");
   assert.ok(lowerAction, "草稿未达 min_words 时耗尽卡应提供降低字数目标选项");
-  // target 260 × 0.7 = 182 低于 min_words 200 → 按 min_words 下限顶到 200，label 与落盘值一致。
-  assert.equal(lowerAction.args.newTargetWords, 200);
-  assert.ok(lowerAction.label.includes("200"));
+  // target 260 * 0.7 = 182，绝对地板 100 不触发，lowered=182 < min_words 200，门禁真正放低。
+  assert.equal(lowerAction.args.newTargetWords, 182);
+  assert.ok(lowerAction.label.includes("182"));
 });
 
 test("writing agent loop: drafting 阶段模型先调 read_continuity 查设定再提交正文", async () => {

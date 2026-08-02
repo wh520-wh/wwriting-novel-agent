@@ -71,14 +71,13 @@ function actionsForKind(kind, event) {
         { label: '改提示词后重试', command: 'retry-with-prompt', args: { prompt: '' } },
         { label: '让它再试一次', command: 'retry-segment', args: {} }
       ];
-      // 若耗尽原因是字数门禁反复不达标，给一个"降低目标"的具体选项，
-      // 而不是让用户只能反复改提示词硬试（对照 AskUserQuestion：高风险分支给结构化选项）。
-      // 下限取 min_words：settings-runtime 的既有约束会把低于 min 的 target 顶回 min，
-      // 卡面 label 必须按同一个下限算，避免"label 写 2310、落盘 3000"的谎言；无 min_words 时退回 300 兜底。
+      // 若耗尽原因是字数门禁反复不达标，给一个「降低门槛」的具体选项，让门禁真正放低，
+      // 而不是只降软目标（settings-runtime 会把低于 min 的 target 顶回 min，等于没降）。
+      // failure-actions.mjs 据此同时降 target 和 min 到 lowered；地板用绝对 100（非当前 min），
+      // 保证 lowered 能真正低于当前 min，门禁才放宽。label 写「门槛」与实际改的 min 对齐。
       if (data.last_gate === 'word-count-gate' && data.target_words) {
-        const floor = data.min_words ?? 300;
-        const lowered = Math.max(floor, Math.round(data.target_words * 0.7));
-        actions.push({ label: `降低本段字数目标到 ${lowered} 字`, command: 'lower-target-words', args: { newTargetWords: lowered } });
+        const lowered = Math.max(100, Math.round(data.target_words * 0.7));
+        actions.push({ label: `降低本章字数门槛到 ${lowered} 字`, command: 'lower-target-words', args: { newTargetWords: lowered } });
       }
       actions.push({ label: '跳过本段', command: 'skip-segment', args: {}, destructive: true });
       actions.push({ label: '停在这里我手动处理', command: 'pause-here', args: {} });
@@ -192,6 +191,12 @@ export function deriveFailureCard(event, state = {}, options = {}) {
   // §4.5: 连续 3 次及以上 failure 后收敛推荐动作
   if (consecutiveFailures >= 3 && ['tool-rejected', 'provider-error', 'unknown'].includes(kind)) {
     actions = reorderActionsForRetryExhausted(actions);
+  }
+  // drafting 阶段 loop-exhausted：skip-segment 在 failure-actions.mjs 只对 reviewing/
+  // needs_revision/revising 生效，drafting 走 else 返回「当前阶段无草稿可接受」是假按钮，不展示。
+  // state 此刻是 blocked 态（appendFailureCard 在 blockProject 之后调用），原阶段在 blocked_at_stage。
+  if (kind === 'loop-exhausted' && state?.blocked_at_stage === 'drafting') {
+    actions = actions.filter((a) => a.command !== 'skip-segment');
   }
   return {
     id: event.id,

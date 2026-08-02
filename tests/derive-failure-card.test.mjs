@@ -161,6 +161,15 @@ test("loop-exhausted 故障卡追加跳过本段选项", () => {
   assert.ok(commands.includes("skip-segment"), "loop-exhausted 应包含跳过本段选项");
 });
 
+test("loop-exhausted drafting 阶段不展示 skip-segment 假按钮", () => {
+  const card = deriveFailureCard(
+    { type: "project_blocked", chapter_no: 3, message: "agent_loop_exhausted", data: { code: "agent_loop_exhausted" } },
+    { current_chapter_no: 3, blocked_at_stage: "drafting" }
+  );
+  const commands = card.actions.map((a) => a.command);
+  assert.ok(!commands.includes("skip-segment"), "drafting 阶段 skip-segment 是假按钮，不应展示");
+});
+
 test("loop-exhausted 因字数门禁反复失败时,追加降低字数目标选项", () => {
   const card = deriveFailureCard(
     { type: "project_blocked", chapter_no: 3, message: "agent_loop_exhausted", data: { code: "agent_loop_exhausted", last_gate: "word-count-gate", target_words: 3000 } },
@@ -171,15 +180,16 @@ test("loop-exhausted 因字数门禁反复失败时,追加降低字数目标选�
   assert.ok(lowerAction.args.newTargetWords < 3000);
 });
 
-test("loop-exhausted 降低字数目标受 min_words 下限约束,label 与落盘值一致", () => {
+test("loop-exhausted 降低字数门槛用绝对地板 100,label 与落盘值一致", () => {
   const card = deriveFailureCard(
     { type: "project_blocked", chapter_no: 3, message: "agent_loop_exhausted", data: { code: "agent_loop_exhausted", last_gate: "word-count-gate", min_words: 3000, target_words: 3300 } },
     { current_chapter_no: 3 }
   );
   const lowerAction = card.actions.find((a) => a.command === "lower-target-words");
-  assert.ok(lowerAction, "字数门禁导致耗尽时应提供降低目标选项");
-  // 0.7×3300=2310 低于 min_words=3000：settings-runtime 会把 target 顶回 min，
-  // 卡面 label 必须按同一个下限算，避免"label 写 2310、落盘 3000"的谎言。
-  assert.equal(lowerAction.args.newTargetWords, 3000);
-  assert.ok(lowerAction.label.includes("3000"));
+  assert.ok(lowerAction, "字数门禁导致耗尽时应提供降低门槛选项");
+  // 地板用绝对 100（非当前 min）：0.7×3300=2310 > 100，lowered=2310，
+  // 同时降 target 和 min 到 2310，门禁真正放低，不被 min 顶回。
+  assert.equal(lowerAction.args.newTargetWords, 2310);
+  assert.ok(lowerAction.label.includes("2310"));
+  assert.ok(lowerAction.label.includes("门槛"), "label 应说明降的是门槛");
 });
