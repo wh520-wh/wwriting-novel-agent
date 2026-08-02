@@ -539,8 +539,10 @@ export function resolveModelCapabilities(modelConfig = {}) {
   return {
     supportsThinking,
     requiresAutoToolChoice: supportsThinking || isDeepSeekV4Flash,
-    supportsTemperature: !supportsThinking, // thinking 模型忽略采样参数
-    supportsTopP: !supportsThinking,
+    // v4-flash 官方按 thinking 处理(requiresAutoToolChoice)，采样参数同样不支持，
+    // 与 supportsThinking 一并排除(R1:Task 4 净化覆盖 v4-flash，防 temperature 触发 400)。
+    supportsTemperature: !supportsThinking && !isDeepSeekV4Flash,
+    supportsTopP: !supportsThinking && !isDeepSeekV4Flash,
     supportsJsonOutput: true, // DeepSeek + OpenAI 兼容均支持 json_object
     supportsTools: true,
     supportsStreaming: true
