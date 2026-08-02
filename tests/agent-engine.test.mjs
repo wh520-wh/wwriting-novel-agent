@@ -9,7 +9,7 @@ import { ProviderTransportError } from "../src/core/provider-adapters.mjs";
 import { readFailures } from "../src/core/failures-store.mjs";
 import { countEffectiveWords } from "../src/core/word-count.mjs";
 import { MockModel } from "../src/core/mock-model.mjs";
-import { createProject, loadChapterIndex, loadProject, loadState, saveProject, saveState, upsertChapter } from "../src/core/project-store.mjs";
+import { createProject, loadChapterIndex, loadProject, loadState, saveChapterIndex, saveProject, saveState, upsertChapter } from "../src/core/project-store.mjs";
 import { loadContinuity, loadContinuityState, saveContinuity } from "../src/core/continuity-store.mjs";
 import { updateProjectSettings } from "../src/core/settings-runtime.mjs";
 import { appendChapterSegment } from "../src/core/tool-runtime.mjs";
@@ -1440,6 +1440,84 @@ test("writing agent loop: 只读模式反复调用被拒写工具，连续拒绝
   assert.ok(modelClient.capturedMessages.some((msgs) => msgs.some((m) => m.role === "user" && m.content.includes("被拒绝") && m.content.includes("只读模式"))),
     "后续 messages 应包含拒绝原因（只读模式文案），模型能改方向而非盲目重试");
   // 连续 8 次拒绝即终止，不应空转到 24 轮耗尽。
+  assert.equal(modelClient.calls, 8);
+});
+
+// 工具执行异常注入：每轮都调用 read_chapter（drafting 白名单内的读工具）。
+// 测试在项目里把索引中本章 draft_path 指向一个目录，read_chapter 内部对目录
+// fs.readFile 会抛 EISDIR/EPERM → dispatchSingleToolCall catch 块（tool_error）。
+class AlwaysThrowingToolModel {
+  constructor() {
+    this.calls = 0;
+    this.prompts = [];
+    this.capturedMessages = [];
+    this.metadatas = [];
+    this.costTracker = {
+      record() {
+        return { calls: 1, inputTokens: 1, outputTokens: 1, totalTokens: 2, cachedTokens: 0, estimatedCost: 0 };
+      },
+      async writeProjectReport() {},
+    };
+  }
+  async generate({ prompt, messages, metadata }) {
+    this.calls += 1;
+    this.prompts.push(prompt);
+    // 快照捕获：transcript.toMessages() 返回活引用，后续轮次追加会继续修改原数组
+    this.capturedMessages.push([...messages]);
+    const request = metadata.toolRequest;
+    const usageReport = {
+      provider: "mock", model: "always-throwing",
+      inputTokens: 1, outputTokens: 1, totalTokens: 2, cachedTokens: 0,
+      estimatedCost: 0, rawUsage: {},
+    };
+    const costSummary = { estimatedCost: 0 };
+    const modelConfig = { provider: "mock", model_name: "always-throwing" };
+    // 每次都调用 read_chapter：索引指向的路径是目录，工具执行必抛异常。
+    return { text: "", raw: { output: { type: "tool_call", tool: "read_chapter",
+      input: { chapter_no: request.chapter_no } } },
+      usageReport, costSummary, modelConfig };
+  }
+}
+
+test("writing agent loop: 工具执行连续异常在 8 次后提早停止，不空转到 24 轮硬顶（model_output_invalid）", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-tool-error-count-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "project", target_chapters: 1, min_words_per_chapter: 200, target_words_per_chapter: 260,
+  });
+  // 注入故障：draft_path 指向目录（drafts/001.final.md），read_chapter 执行时
+  // fs.readFile 对目录读取抛异常。readDraft 读的是 drafts/001.draft.md（不存在，
+  // 返回空串），planning/drafting 入口的 upsertChapter 只覆盖 chapter_no/status、
+  // 不碰 draft_path——因此故障只在 read_chapter 执行时触发，不影响循环前各阶段。
+  await fs.mkdir(path.join(projectRoot, "drafts", "001.final.md"), { recursive: true });
+  const index = await loadChapterIndex(projectRoot);
+  index.chapters.push({
+    chapter_no: 1,
+    status: "queued",
+    draft_path: path.join(projectRoot, "drafts", "001.final.md"),
+    final_path: null,
+    actual_words: 0,
+    checksum: null,
+    quality_gate_results: [],
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+  await saveChapterIndex(projectRoot, index);
+  const modelClient = new AlwaysThrowingToolModel();
+  const result = await runProject(projectRoot, { modelClient });
+  assert.equal(result.blocked, true);
+  const state = await loadState(projectRoot);
+  assert.equal(state.project_status, "blocked");
+  assert.equal(state.blocked_reason, "model_output_invalid");
+  const events = await readEvents(projectRoot);
+  const rejected = events.filter((e) => e.type === "tool_call_rejected");
+  assert.equal(rejected.length, 8, "8 次工具异常应各发一条 tool_call_rejected");
+  assert.ok(rejected.every((e) => e.data?.code === "tool_error"));
+  assert.ok(rejected.every((e) => e.data?.tool === "read_chapter"));
+  assert.ok(events.some((e) => e.type === "project_blocked"));
+  // 失败原因以 user 反馈消息喂回后续轮次 transcript，模型能感知而非盲目重试。
+  assert.ok(modelClient.capturedMessages.some((msgs) => msgs.some((m) => m.role === "user" && m.content.includes("执行失败"))),
+    "后续 messages 应包含工具执行失败反馈");
+  // 连续 8 次异常即终止，不应空转到 24 轮耗尽。
   assert.equal(modelClient.calls, 8);
 });
 
