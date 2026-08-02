@@ -9,6 +9,13 @@ import {
   setDefaultLocalModelProfile,
   upsertLocalModelProfile
 } from "../src/core/local-model-profiles.mjs";
+import { loadLocalSecrets } from "../src/core/local-secrets.mjs";
+import {
+  GlobalModelSettingsError,
+  removeGlobalModelProfile,
+  saveGlobalModelProfile,
+  selectGlobalModelProfile
+} from "../src/core/global-model-settings.mjs";
 
 async function tempRoot() {
   return fs.mkdtemp(path.join(os.tmpdir(), "wwriting-globalmodel-"));
@@ -63,4 +70,86 @@ test("设为默认：只挪指针，不改模型字段", async () => {
   assert.equal(target.base_url, "https://api.deepseek.com");
   assert.equal(target.api_key_env, "DEEPSEEK_API_KEY");
   assert.equal(await setDefaultLocalModelProfile(root, "not-there"), null);
+});
+
+test("全局保存模型：没有任何项目也能存密钥和清单", async () => {
+  const secretsRoot = await tempRoot();
+  const { saved, store } = await saveGlobalModelProfile({
+    secretsRoot,
+    activeModel: {
+      provider: "openai-compatible",
+      model_name: "deepseek-chat",
+      base_url: "https://api.deepseek.com",
+      api_key_env: "DEEPSEEK_API_KEY",
+      api_key: "sk-test-1234"
+    }
+  });
+  assert.equal(saved.model_name, "deepseek-chat");
+  assert.equal(store.default_model_id, "deepseek-chat");
+  const secrets = await loadLocalSecrets(secretsRoot);
+  assert.equal(secrets.DEEPSEEK_API_KEY, "sk-test-1234");
+});
+
+test("全局保存模型：api_key 不落进清单文件", async () => {
+  const secretsRoot = await tempRoot();
+  const { saved, activeModel } = await saveGlobalModelProfile({
+    secretsRoot,
+    activeModel: {
+      provider: "openai-compatible",
+      model_name: "deepseek-chat",
+      base_url: "https://api.deepseek.com",
+      api_key_env: "DEEPSEEK_API_KEY",
+      api_key: "sk-secret"
+    }
+  });
+  assert.equal(saved.api_key, undefined);
+  assert.equal(activeModel.api_key, undefined);
+  const raw = await fs.readFile(path.join(secretsRoot, "model-profiles.json"), "utf8");
+  assert.equal(raw.includes("sk-secret"), false);
+});
+
+test("全局保存模型：留空密钥沿用已存的，不清掉旧密钥", async () => {
+  const secretsRoot = await tempRoot();
+  const base = {
+    provider: "openai-compatible",
+    model_name: "deepseek-chat",
+    base_url: "https://api.deepseek.com",
+    api_key_env: "DEEPSEEK_API_KEY"
+  };
+  await saveGlobalModelProfile({ secretsRoot, activeModel: { ...base, api_key: "sk-first" } });
+  await saveGlobalModelProfile({
+    secretsRoot,
+    activeModel: { ...base, base_url: "https://api.deepseek.com/v2", api_key: "" }
+  });
+  const secrets = await loadLocalSecrets(secretsRoot);
+  assert.equal(secrets.DEEPSEEK_API_KEY, "sk-first");
+});
+
+test("全局保存模型：既无已存密钥又没填新密钥时报可读错误", async () => {
+  const secretsRoot = await tempRoot();
+  await assert.rejects(
+    () => saveGlobalModelProfile({
+      secretsRoot,
+      activeModel: {
+        provider: "openai-compatible",
+        model_name: "deepseek-chat",
+        base_url: "https://api.deepseek.com",
+        api_key_env: "DEEPSEEK_API_KEY",
+        api_key: ""
+      }
+    }),
+    (error) => {
+      assert.equal(typeof error.fields.api_key, "string");
+      assert.match(error.fields.api_key, /API Key/);
+      return true;
+    }
+  );
+});
+
+test("全局删除/选用：找不到模型时抛 model_profile_not_found", async () => {
+  const secretsRoot = await tempRoot();
+  await assert.rejects(() => removeGlobalModelProfile(secretsRoot, "nope"),
+    (e) => e instanceof GlobalModelSettingsError && e.code === "model_profile_not_found");
+  await assert.rejects(() => selectGlobalModelProfile(secretsRoot, "nope"),
+    (e) => e instanceof GlobalModelSettingsError && e.code === "model_profile_not_found");
 });
