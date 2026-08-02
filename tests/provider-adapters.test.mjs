@@ -883,14 +883,15 @@ test("resolveModelCapabilities: deepseek-v4-pro 标记 supportsThinking 且不�
   assert.equal(caps.supportsTools, true);
 });
 
-test("resolveModelCapabilities: deepseek-v4-flash 默认非思考，支持 temperature，但需 auto tool_choice", () => {
+test("resolveModelCapabilities: deepseek-v4-flash 默认非思考，不支持 temperature(官方按 thinking 处理)，需 auto tool_choice", () => {
   const caps = resolveModelCapabilities({
     base_url: "https://api.deepseek.com/v1",
     model_name: "deepseek-v4-flash"
   });
   assert.equal(caps.supportsThinking, false);
   assert.equal(caps.requiresAutoToolChoice, true);
-  assert.equal(caps.supportsTemperature, true);
+  assert.equal(caps.supportsTemperature, false);
+  assert.equal(caps.supportsTopP, false);
 });
 
 test("resolveModelCapabilities: 非 deepseek 模型默认全支持", () => {
@@ -1067,4 +1068,22 @@ test("OpenAICompatibleAdapter: 非 thinking 模型正常注入 temperature/top_p
   });
   assert.equal(calls[0].body.temperature, 0.7, "非 thinking 模型应注入 temperature");
   assert.equal(calls[0].body.top_p, 0.9, "非 thinking 模型应注入 top_p");
+});
+
+test("OpenAICompatibleAdapter: deepseek-v4-flash 不注入 temperature/top_p(官方按 thinking 处理，R1 防护)", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ body: JSON.parse(init.body) });
+    return { ok: true, status: 200, headers: new Map(),
+      async text() { return JSON.stringify({ choices: [{ message: { content: "ok" } }], usage: { prompt_tokens: 1, completion_tokens: 1 } }); } };
+  };
+  const adapter = new OpenAICompatibleAdapter({ baseUrl: "https://api.deepseek.com/v1", fetchImpl });
+  await adapter.generate({
+    model: "deepseek-v4-flash",
+    modelConfig: { base_url: "https://api.deepseek.com/v1", model_name: "deepseek-v4-flash", temperature: 0.7, top_p: 0.9 },
+    messages: [{ role: "user", content: "hi" }]
+  });
+  assert.equal(calls[0].body.temperature, undefined, "v4-flash 官方按 thinking 处理，不应注入 temperature");
+  assert.equal(calls[0].body.top_p, undefined, "v4-flash 不应注入 top_p");
+  assert.equal(calls[0].body.model, "deepseek-v4-flash");
 });
