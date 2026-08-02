@@ -29,6 +29,38 @@ export async function upsertLocalModelProfile(root, activeModel) {
   return saved;
 }
 
+// 从全局清单里删掉一个模型。删掉的正好是默认模型时，默认顺延到剩下的第一个。
+export async function removeLocalModelProfile(root, modelId) {
+  const wanted = String(modelId ?? "").trim();
+  if (!wanted) return null;
+  const store = await loadLocalModelProfiles(root);
+  const models = store.models.filter((item) => item.id !== wanted && item.model_name !== wanted);
+  if (models.length === store.models.length) return null;
+  const next = {
+    schema_version: SCHEMA_VERSION,
+    default_model_id: models.some((item) => item.id === store.default_model_id)
+      ? store.default_model_id
+      : models[0]?.id ?? null,
+    models
+  };
+  await ensureDir(path.resolve(root));
+  await writeJsonAtomic(modelProfilesPath(root), next);
+  return next;
+}
+
+// 只挪默认指针，不动模型字段——清单里「选用某个模型」走这里。
+export async function setDefaultLocalModelProfile(root, modelId) {
+  const wanted = String(modelId ?? "").trim();
+  if (!wanted) return null;
+  const store = await loadLocalModelProfiles(root);
+  const target = store.models.find((item) => item.id === wanted || item.model_name === wanted);
+  if (!target) return null;
+  const next = { ...store, default_model_id: target.id };
+  await ensureDir(path.resolve(root));
+  await writeJsonAtomic(modelProfilesPath(root), next);
+  return next;
+}
+
 export async function getDefaultLocalModelProfile(root) {
   const store = await loadLocalModelProfiles(root);
   return store.models.find((model) => model.id === store.default_model_id) ?? store.models[0] ?? null;
