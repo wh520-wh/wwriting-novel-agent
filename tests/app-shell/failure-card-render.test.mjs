@@ -276,13 +276,14 @@ describe('FAILURE_COMMANDS', () => {
     assert.equal(Object.isFrozen(FAILURE_COMMANDS), true);
   });
 
-  it('contains the expected 13 commands', () => {
+  it('contains the expected 14 commands', () => {
     const keys = Object.keys(FAILURE_COMMANDS);
-    assert.equal(keys.length, 13);
+    assert.equal(keys.length, 14);
     const expected = [
       'retry-segment', 'retry-with-prompt', 'pause-here', 'accept-current-words',
       'skip-segment', 'fill-words', 'raise-budget', 'raise-cost-budget', 'raise-token-budget',
-      'switch-model', 'apply-review-suggestions', 'accept-review-current', 'manual-review-handoff'
+      'switch-model', 'apply-review-suggestions', 'accept-review-current', 'manual-review-handoff',
+      'lower-target-words'
     ];
     assert.deepEqual(keys.sort(), expected.sort());
   });

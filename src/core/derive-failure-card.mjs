@@ -73,8 +73,11 @@ function actionsForKind(kind, event) {
       ];
       // 若耗尽原因是字数门禁反复不达标，给一个"降低目标"的具体选项，
       // 而不是让用户只能反复改提示词硬试（对照 AskUserQuestion：高风险分支给结构化选项）。
+      // 下限取 min_words：settings-runtime 的既有约束会把低于 min 的 target 顶回 min，
+      // 卡面 label 必须按同一个下限算，避免"label 写 2310、落盘 3000"的谎言；无 min_words 时退回 300 兜底。
       if (data.last_gate === 'word-count-gate' && data.target_words) {
-        const lowered = Math.max(300, Math.round(data.target_words * 0.7));
+        const floor = data.min_words ?? 300;
+        const lowered = Math.max(floor, Math.round(data.target_words * 0.7));
         actions.push({ label: `降低本段字数目标到 ${lowered} 字`, command: 'lower-target-words', args: { newTargetWords: lowered } });
       }
       actions.push({ label: '跳过本段', command: 'skip-segment', args: {}, destructive: true });

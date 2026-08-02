@@ -5,6 +5,7 @@ export const FAILURE_COMMANDS = Object.freeze({
   'accept-current-words':    { args: {} },
   'skip-segment':            { args: {} },
   'fill-words':              { args: { targetWords: { type: 'integer', min: 1, max: 50000, required: true } } },
+  'lower-target-words':      { args: { newTargetWords: { type: 'integer', min: 1, max: 1000000, required: true } } },
   'raise-budget':            { args: { newMaxModelCalls: { type: 'integer', min: 1, max: 10000, required: true } } },
   'raise-cost-budget':       { args: { newMaxCost: { type: 'number', min: 0.01, max: 100000, required: true } } },
   'raise-token-budget':      { args: { newMaxTotalTokens: { type: 'integer', min: 1, max: 100000000, required: true } } },

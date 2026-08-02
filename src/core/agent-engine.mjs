@@ -1497,10 +1497,34 @@ async function failWritingAgentLoop(projectRoot, project, state, reason, lastVal
   // 故障卡类型用 project_blocked + data.code，让 classifyKind 按 reason 归类
   // （agent_loop_exhausted / model_output_invalid -> loop-exhausted，
   // 不再统一标"工具调用被拒"误导用户）。
+  // 字数门禁上下文（Task 6）：loop-exhausted 卡需要知道"耗尽是否由字数不达标驱动"才能给出
+  // 降低字数目标选项。revision 路径从 state.last_quality_gate_results 取最近一次 word-count 失败；
+  // drafting 路径兜底直接量草稿（草稿未达 min_words 即字门槛未过）。
+  let lastWordGate = null;
+  const gateResults = Array.isArray(state.last_quality_gate_results) ? state.last_quality_gate_results : [];
+  for (let i = gateResults.length - 1; i >= 0; i -= 1) {
+    if (gateResults[i]?.gate === "word-count-gate" && gateResults[i]?.status === "failed") {
+      lastWordGate = gateResults[i];
+      break;
+    }
+  }
+  if (!lastWordGate) {
+    const draft = await readDraft(projectRoot, project, state.current_chapter_no);
+    const gate = runWordCountGate(draft, project.min_words_per_chapter);
+    if (gate.status === "failed") lastWordGate = gate;
+  }
   await appendFailureCard(projectRoot, state, {
     type: "project_blocked",
     message: lastValidation?.message ?? reason,
-    data: { tool: lastModelCall?.output?.tool ?? null, code: reason }
+    data: {
+      tool: lastModelCall?.output?.tool ?? null,
+      code: reason,
+      ...(lastWordGate ? {
+        last_gate: "word-count-gate",
+        min_words: lastWordGate.min_words ?? project.min_words_per_chapter,
+        target_words: project.target_words_per_chapter
+      } : {})
+    }
   });
 }
 
