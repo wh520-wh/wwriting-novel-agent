@@ -965,7 +965,10 @@ function renderRecoveryBanner(data) {
   const desc = document.createElement("span");
   const chapterNo = data.summary?.currentChapterNo ?? "-";
   const stage = data.summary?.currentStage ?? "-";
-  desc.textContent = `从第 ${chapterNo} 章 · ${stage} 继续？`;
+  const stageLabel = translateStage(stage);
+  desc.textContent = stageLabel && stageLabel !== "-"
+    ? `从第 ${chapterNo} 章 · ${stageLabel} 继续？`
+    : `从第 ${chapterNo} 章继续写作？`;
   text.append(strong, desc);
   const actions = document.createElement("div");
   actions.className = "recovery-banner-actions";

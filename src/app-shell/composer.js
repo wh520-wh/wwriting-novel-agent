@@ -463,12 +463,11 @@ export function createComposer(ctx) {
       pill.addEventListener("click", () => openModelPopover());
       container.append(pill);
     }
-    const project = data?.project;
     const isMock = data?.model_profile?.is_mock;
-    const name = project?.active_model?.model_name;
+    const display = data?.model_profile?.display;
     let tx = pill.querySelector(".pill-tx");
     if (!tx) { tx = document.createElement("span"); tx.className = "pill-tx"; pill.append(tx); }
-    tx.textContent = isMock || !name ? "未配置模型" : name;
+    tx.textContent = isMock || !display ? "未配置模型" : display;
     const count = Array.isArray(data?.available_models) ? data.available_models.length : 0;
     pill.title = count > 0 ? "点击切换已配置模型" : "点击打开设置配置模型";
   }
@@ -500,7 +499,7 @@ export function createComposer(ctx) {
       const tx = document.createElement("span");
       tx.className = "mpi-tx";
       const strong = document.createElement("strong");
-      strong.textContent = model.model_name ?? model.id ?? "model";
+      strong.textContent = model.display ?? model.model_name ?? model.id ?? "model";
       const small = document.createElement("small");
       small.textContent = model.api_key_saved ? `${model.provider_label ?? model.provider} · key 已保存` : `${model.provider_label ?? model.provider} · key 未保存`;
       tx.append(strong, small);
@@ -862,7 +861,7 @@ export function createComposer(ctx) {
       });
       closeModelPopover();
       await ctx.loadDashboard();
-      ctx.showToast(`已切换模型：${result.model_profile?.model_name ?? modelId}`, "success");
+      ctx.showToast(`已切换模型：${result.model_profile?.display ?? modelId}`, "success");
     } catch (error) {
       ctx.showActionError?.(error);
       ctx.showToast(error.message ?? "切换模型失败。", "error");
@@ -1004,7 +1003,7 @@ export function createComposer(ctx) {
     const warn = document.createElement("div");
     warn.className = "mode-popover-warn";
     warn.id = "mode-popover-warn";
-    warn.textContent = "警告：YOLO 模式自动执行所有写与控制操作，包括章节编辑、设定更新和任务控制。";
+    warn.textContent = "警告：全程自动模式会自动执行所有写与控制操作，包括章节编辑、设定更新和任务控制。";
     warn.hidden = true;
     popover.append(warn);
 
