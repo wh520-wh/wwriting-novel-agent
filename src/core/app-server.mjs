@@ -11,6 +11,13 @@ import { isPathInside } from "./fs-utils.mjs";
 import { parseSimpleYaml } from "./simple-yaml.mjs";
 import { applyLocalSecretsToEnv, defaultSecretsRoot, loadLocalSecrets, loadLocalSecretsSync } from "./local-secrets.mjs";
 import { findLocalModelProfile, getDefaultLocalModelProfile, loadLocalModelProfiles, upsertLocalModelProfile } from "./local-model-profiles.mjs";
+import {
+  GlobalModelSettingsError,
+  refreshProjectModelFromGlobal,
+  removeGlobalModelProfile,
+  saveGlobalModelProfile,
+  selectGlobalModelProfile
+} from "./global-model-settings.mjs";
 import { createProjectAt, loadProject, loadState, saveProject, saveState } from "./project-store.mjs";
 import { createResearchAdapter } from "./research-adapters.mjs";
 import { fetchWebPage, searchWeb } from "./research-tools.mjs";
@@ -203,6 +210,24 @@ export function createAppShellServer({
     }
     if (url.pathname === "/api/settings/model-switch" && request.method === "POST") {
       await serveModelSwitch(request, response, { workspace, selected, stateRoot: appStateRoot, secretsRoot: localSecretsRoot });
+      return;
+    }
+    if (url.pathname === "/api/settings/model-profile" && request.method === "POST") {
+      await serveGlobalModelSave(request, response, { secretsRoot: localSecretsRoot });
+      return;
+    }
+    if (url.pathname === "/api/settings/model-select" && request.method === "POST") {
+      await serveGlobalModelMutation(request, response, {
+        secretsRoot: localSecretsRoot,
+        mutate: selectGlobalModelProfile
+      });
+      return;
+    }
+    if (url.pathname === "/api/settings/model-remove" && request.method === "POST") {
+      await serveGlobalModelMutation(request, response, {
+        secretsRoot: localSecretsRoot,
+        mutate: removeGlobalModelProfile
+      });
       return;
     }
     if (url.pathname === "/api/commands/submit" && request.method === "POST") {
@@ -729,6 +754,77 @@ async function serveModelSwitch(request, response, context) {
   } catch (error) {
     sendError(response, error instanceof HttpError ? error : new HttpError(400, "model_switch_failed", error.message));
   }
+}
+
+// 保存模型到全局清单：不需要项目。设置面板在「还没有小说」时也走这条路径。
+// api_key 只落 secrets.json 与 process.env，响应体只回可展示的档案（含掩码）。
+async function serveGlobalModelSave(request, response, context) {
+  try {
+    const body = await readJsonBody(request);
+    const candidate = body?.active_model && typeof body.active_model === "object" && !Array.isArray(body.active_model)
+      ? body.active_model
+      : null;
+    if (!candidate) {
+      throw new HttpError(400, "invalid_active_model", "请填写模型信息后再保存。");
+    }
+    const { activeModel } = await saveGlobalModelProfile({
+      secretsRoot: context.secretsRoot,
+      activeModel: candidate
+    });
+    await serveJson(response, {
+      ok: true,
+      model_profile: buildModelProfile(activeModel, context.secretsRoot, {
+        id: activeModel.model_name,
+        saved_to: "model-profiles.json"
+      }),
+      ...(await globalModelListPayload(context.secretsRoot))
+    });
+  } catch (error) {
+    sendGlobalModelError(response, error);
+  }
+}
+
+// 选用 / 删除共用：都是「按 model_id 改全局清单，然后回最新清单」。
+async function serveGlobalModelMutation(request, response, context) {
+  try {
+    const body = await readJsonBody(request);
+    const modelId = String(body?.model_id ?? body?.modelId ?? "").trim();
+    if (!modelId) {
+      throw new HttpError(400, "invalid_model_id", "请先选择一个模型。");
+    }
+    await context.mutate(context.secretsRoot, modelId);
+    await serveJson(response, { ok: true, ...(await globalModelListPayload(context.secretsRoot)) });
+  } catch (error) {
+    sendGlobalModelError(response, error);
+  }
+}
+
+async function globalModelListPayload(secretsRoot) {
+  const store = await loadLocalModelProfiles(secretsRoot);
+  const defaultModel = store.models.find((model) => model.id === store.default_model_id) ?? store.models[0] ?? null;
+  return {
+    default_model: defaultModel
+      ? buildModelProfile(defaultModel, secretsRoot, { id: defaultModel.id, saved_to: "model-profiles.json" })
+      : null,
+    models: await buildAvailableModelProfiles(secretsRoot, defaultModel)
+  };
+}
+
+// 字段级错误必须原样带上 fields，界面要逐个输入框标红。
+function sendGlobalModelError(response, error) {
+  if (error instanceof HttpError) {
+    sendError(response, error);
+    return;
+  }
+  if (error instanceof ModelConfigValidationError) {
+    sendError(response, new HttpError(400, error.code, error.message, { fields: error.fields }));
+    return;
+  }
+  if (error instanceof GlobalModelSettingsError) {
+    sendError(response, new HttpError(400, error.code, error.message));
+    return;
+  }
+  sendError(response, new HttpError(500, "global_model_save_failed", error?.message ?? "模型设置保存失败。"));
 }
 
 // 连接测试：仅复用现有项目读取权限，候选 active_model + 临时 api_key 完全不入项目/secret 文件。
