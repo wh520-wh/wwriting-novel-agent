@@ -354,17 +354,7 @@ async function main() {
     label: "project-filter-focus",
     expect: () => read(win, "document.activeElement?.id === 'project-filter'")
   }));
-  clicks.push(await clickAndRead(win, ".rail-nav .nav-item:nth-of-type(2)", {
-    label: "nav-skill",
-    expect: () => read(win, "document.getElementById('drawer').classList.contains('show') === true && document.querySelector('[data-dtab=\"run\"]').getAttribute('aria-selected') === 'true'"),
-    settleMs: 500
-  }));
-  clicks.push(await clickAndReadStable(win, "#drawer-close", {
-    label: "nav-skill-drawer-close",
-    expect: () => read(win, "document.getElementById('drawer').classList.contains('show') === false"),
-    settleMs: 500
-  }));
-  clicks.push(await clickAndRead(win, ".rail-nav .nav-item:nth-of-type(1)", {
+  clicks.push(await clickAndRead(win, "#new-novel", {
     label: "nav-new",
     expect: () => overlayVisible(win, "create-scrim")
   }));
@@ -993,11 +983,12 @@ async function main() {
     settleMs: 150,
     expect: () => read(win, `document.getElementById('reader').classList.contains('reader--wide')`)
   }));
-  // 用 reader-path 断言翻章：它永远是 chapters/00N.md，不依赖章节标题内容。
+  // reader-path 已移除（不向用户暴露文件路径）；用翻章后状态断言：到末章 next 禁用，
+  // 或翻到非首章 prev 可用。
   clicks.push(await clickAndRead(win, '#reader-next', {
     label: "s45-reader-next",
     settleMs: 500,
-    expect: () => read(win, `document.getElementById('reader-path').textContent.includes('002') || document.getElementById('reader-next').disabled === true`)
+    expect: () => read(win, `document.getElementById('reader-next').disabled === true || document.getElementById('reader-prev').disabled === false`)
   }));
   await win.webContents.executeJavaScript(`document.getElementById('reader-close').click(); true;`);
   await delay(200);

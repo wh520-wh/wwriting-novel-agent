@@ -178,12 +178,13 @@ describe('renderActivityStrip', () => {
     assert.equal(stage.textContent, '阶段：空闲');
   });
 
-  it('6. renders chapter location with segment info', () => {
+  it('6. renders chapter location without internal segment info', () => {
     const root = new MockElement('div');
     renderActivityStrip(root, makeActivity({ chapterNo: 5, segCurrent: 3, segTotal: 10 }));
     const loc = root.children.find(c => c.className.includes('as-loc'));
     assert.ok(loc, 'loc slot should exist');
-    assert.equal(loc.textContent, '位置：第 5 章 · seg 3/10');
+    // seg 段号是内部概念，不暴露给用户；位置只显示章号。
+    assert.equal(loc.textContent, '位置：第 5 章');
   });
 
   it('6b. renders chapter location without segment when segCurrent is null', () => {
@@ -194,41 +195,15 @@ describe('renderActivityStrip', () => {
     assert.equal(loc.textContent, '位置：第 5 章');
   });
 
-  it('6c. renders chapter location with ? when segTotal is missing', () => {
+  it('6c. renders chapter location without segment even when segTotal is missing', () => {
     const root = new MockElement('div');
     renderActivityStrip(root, makeActivity({ chapterNo: 5, segCurrent: 3, segTotal: null }));
     const loc = root.children.find(c => c.className.includes('as-loc'));
-    assert.equal(loc.textContent, '位置：第 5 章 · seg 3/?');
+    assert.equal(loc.textContent, '位置：第 5 章');
   });
 
-  it('7. renders tool status with friendly label for done', () => {
-    const root = new MockElement('div');
-    renderActivityStrip(root, makeActivity({ lastTool: { name: 'append_chapter_segment', status: 'done' } }));
-    const tool = root.children.find(c => c.className.includes('as-tool'));
-    assert.ok(tool, 'tool slot should exist');
-    assert.equal(tool.textContent, '动作：写入章节内容 · 完成');
-  });
-
-  it('7b. renders tool status with friendly label for pending', () => {
-    const root = new MockElement('div');
-    renderActivityStrip(root, makeActivity({ lastTool: { name: 'edit_chapter', status: 'pending' } }));
-    const tool = root.children.find(c => c.className.includes('as-tool'));
-    assert.equal(tool.textContent, '动作：修改章节 · 进行');
-  });
-
-  it('7c. renders tool status with friendly label for failed', () => {
-    const root = new MockElement('div');
-    renderActivityStrip(root, makeActivity({ lastTool: { name: 'update_outline', status: 'failed' } }));
-    const tool = root.children.find(c => c.className.includes('as-tool'));
-    assert.equal(tool.textContent, '动作：更新写作计划 · 失败');
-  });
-
-  it('7d. degrades unknown tool name to toolLabel fallback (no raw name)', () => {
-    const root = new MockElement('div');
-    renderActivityStrip(root, makeActivity({ lastTool: { name: 'some_unknown_tool', status: 'pending' } }));
-    const tool = root.children.find(c => c.className.includes('as-tool'));
-    assert.equal(tool.textContent, '动作：工具 some_unknown_tool · 进行');
-  });
+  // 「动作」行（as-tool 槽）已从 UI 移除：它暴露内部工具名（append_chapter_segment 等），
+  // 对普通作者无意义。toolLabel 映射保留供其他组件使用，活动条不再渲染该槽。
 
   it('8. renders elapsed time in MM:SS format', () => {
     const root = new MockElement('div');
@@ -267,15 +242,6 @@ describe('renderActivityStrip', () => {
     const loc = root.children.find(c => c.className.includes('as-loc'));
     assert.ok(loc, 'loc slot should exist');
     assert.equal(loc.textContent, '位置：█████');
-  });
-
-  it('10b. privacy-masks tool name when privacy=true', () => {
-    const root = new MockElement('div');
-    renderActivityStrip(root, makeActivity(), { privacy: true });
-    const tool = root.children.find(c => c.className.includes('as-tool'));
-    assert.ok(tool, 'tool slot should exist');
-    assert.ok(tool.textContent.includes('████'), 'tool name should be masked');
-    assert.ok(tool.textContent.startsWith('动作：'), 'tool label prefix should still show');
   });
 
   it('11. calls onClickCost when cost is clicked', () => {
@@ -323,9 +289,9 @@ describe('renderActivityStrip', () => {
     assert.equal(cost, undefined, 'cost slot should not exist');
   });
 
-  it('renders no tool slot when lastTool is null', () => {
+  it('renders no tool slot (动作行已从 UI 移除，不暴露内部工具名)', () => {
     const root = new MockElement('div');
-    renderActivityStrip(root, makeActivity({ lastTool: null }));
+    renderActivityStrip(root, makeActivity({ lastTool: { name: 'append_chapter_segment', status: 'done' } }));
     const tool = root.children.find(c => c.className.includes('as-tool'));
     assert.equal(tool, undefined, 'tool slot should not exist');
   });

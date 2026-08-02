@@ -119,16 +119,22 @@ function buildSparkline(recentHitRates) {
 }
 
 function buildOverview(cost, summary) {
-  const totalCalls = cost?.calls ?? summary?.modelCalls ?? 0;
-  const totalTokens = cost?.totalTokens ?? summary?.totalTokens ?? 0;
   const estimatedCost = cost?.estimatedCost ?? summary?.estimatedCost ?? 0;
   const costAvailable = cost?.costAvailable ?? summary?.costAvailable ?? false;
-  const refillCalls = cost?.refillCalls ?? 0;
-
   return section("总览",
+    row("已计费", formatCost(estimatedCost, costAvailable), costAvailable ? "mono" : "muted")
+  );
+}
+
+// 调用统计（总调用 / 累计 token / 补写轮次）面向进阶用户，折进「缓存与调用详情」折叠区。
+// 普通作者打开成本面板只看「已计费」和「章节成本」即可，不被 token / 缓存命中率吓到。
+function buildCallStats(cost, summary) {
+  const totalCalls = cost?.calls ?? summary?.modelCalls ?? 0;
+  const totalTokens = cost?.totalTokens ?? summary?.totalTokens ?? 0;
+  const refillCalls = cost?.refillCalls ?? 0;
+  return section("调用统计",
     row("总调用", `${formatNumber(totalCalls)} 次`),
     row("累计 token", formatNumber(totalTokens)),
-    row("已计费", formatCost(estimatedCost, costAvailable), costAvailable ? "mono" : "muted"),
     row("补写轮次", `${formatNumber(refillCalls)}`)
   );
 }
@@ -278,7 +284,12 @@ export function renderCostPanel({ cost = null, summary = null, events = [], last
   if (banner) container.appendChild(banner);
 
   container.appendChild(buildOverview(safeCost, safeSummary));
-  container.appendChild(buildCacheHealth(safeCost, { modelConfig, cacheSummary }));
+  const advanced = el("details", { className: "cost-advanced" },
+    el("summary", { text: "缓存与调用详情" }),
+    buildCallStats(safeCost, safeSummary),
+    buildCacheHealth(safeCost, { modelConfig, cacheSummary })
+  );
+  container.appendChild(advanced);
   container.appendChild(buildChapterCost(safeCost, safeSummary, warning));
 
   return container;
