@@ -875,7 +875,7 @@ function renderDashboard(data) {
   const progressCopy = `已写 ${summary.completedChapters}/${summary.targetChapters} 章`;
   refs.topbarSub.textContent = modelProfile.is_mock
     ? `${modelLabel} · ${progressCopy}`
-    : `${progressCopy} · ${modelLabel}`;
+    : progressCopy;
 
   // 归档态 UI
   const isArchived = Boolean(project.archived_at);

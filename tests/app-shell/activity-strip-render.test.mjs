@@ -205,28 +205,7 @@ describe('renderActivityStrip', () => {
   // 「动作」行（as-tool 槽）已从 UI 移除：它暴露内部工具名（append_chapter_segment 等），
   // 对普通作者无意义。toolLabel 映射保留供其他组件使用，活动条不再渲染该槽。
 
-  it('8. renders elapsed time in MM:SS format', () => {
-    const root = new MockElement('div');
-    renderActivityStrip(root, makeActivity({ elapsedMs: 90000, etaMs: null }));
-    const time = root.children.find(c => c.className.includes('as-time'));
-    assert.ok(time, 'time slot should exist');
-    assert.ok(time.textContent.includes('01:30'), `expected 01:30 in "${time.textContent}"`);
-  });
-
-  it('8b. renders elapsed time with ETA', () => {
-    const root = new MockElement('div');
-    renderActivityStrip(root, makeActivity({ elapsedMs: 125000, etaMs: 60000 }));
-    const time = root.children.find(c => c.className.includes('as-time'));
-    assert.ok(time.textContent.includes('02:05'), `expected 02:05 in "${time.textContent}"`);
-    assert.ok(time.textContent.includes('~01:00'), `expected ~01:00 in "${time.textContent}"`);
-  });
-
-  it('8c. renders elapsed time with dash when etaMs is null', () => {
-    const root = new MockElement('div');
-    renderActivityStrip(root, makeActivity({ elapsedMs: 125000, etaMs: null }));
-    const time = root.children.find(c => c.className.includes('as-time'));
-    assert.ok(time.textContent.includes('/ —'), `expected "/ —" in "${time.textContent}"`);
-  });
+  // 耗时行（as-time 槽）已从 UI 移除：倒计时格式给作者制造焦虑，活动条只保留 阶段/位置/成本。
 
   it('9. renders cost with yuan symbol', () => {
     const root = new MockElement('div');
@@ -296,9 +275,9 @@ describe('renderActivityStrip', () => {
     assert.equal(tool, undefined, 'tool slot should not exist');
   });
 
-  it('renders no time slot when elapsedMs is null', () => {
+  it('renders no time slot (耗时行已从 UI 移除)', () => {
     const root = new MockElement('div');
-    renderActivityStrip(root, makeActivity({ elapsedMs: null }));
+    renderActivityStrip(root, makeActivity({ elapsedMs: 125000, etaMs: 60000 }));
     const time = root.children.find(c => c.className.includes('as-time'));
     assert.equal(time, undefined, 'time slot should not exist');
   });
