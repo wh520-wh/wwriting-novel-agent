@@ -228,17 +228,20 @@ test("外部 signal abort 后，session 内部立即感知（单向同步，无�
     maxTurns: 24,
     emitEvent: async () => {},
     callModel: async () => {
+      // 在模型调用内部同步触发外部停止（AbortController abort 事件同步派发，无时序竞态），
+      // 因此下一轮循环开头的 signal.aborted 检查必然命中，测试结果确定。
       externalController.abort("模拟用户点击停止");
-      // 模拟模型调用耗时期间外部触发停止
       return { type: "tool_call", tool: "read_chapter", input: {} };
     },
     executeTool: async () => ({ ok: true, readOnly: true }),
   });
   const run = await session.start({ signal: externalController.signal });
   assert.equal(run.outcome, "aborted");
+  assert.equal(session.abortReason, "external"); // 外部停止经 onExternalAbort 传入，reason 固化传播路径
 });
 
 test("session.abort() 是内部/测试可用的编程接口，效果等价于外部 signal abort（不是死代码）", async () => {
+  const externalController = new AbortController();
   const session = new WritingAgentSession({
     allowedTools: ["read_chapter"],
     commitTool: "append_chapter_segment",
@@ -251,6 +254,9 @@ test("session.abort() 是内部/测试可用的编程接口，效果等价于外
     },
     executeTool: async () => ({ ok: true, readOnly: true }),
   });
-  const run = await session.start();
+  const run = await session.start({ signal: externalController.signal });
   assert.equal(run.outcome, "aborted");
+  // 反向断言：内部 session.abort() 只中止内部 abortController，
+  // 不反向影响外部 controller（单向同步的方向性由此固化）。
+  assert.equal(externalController.signal.aborted, false);
 });
