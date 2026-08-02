@@ -164,6 +164,7 @@ const realWindow = globalThis.window;
 // 因此必须先 import（window 不存在，ticker 永不启动），import 完成后再提供
 // window（utils.cssEscape 运行时读 window.CSS.escape）。
 let createThreadRenderer = null;
+let computeSteps = null;
 
 before(async () => {
   // gsap 的 UMD 包裹在 ESM 严格模式下拿不到顶层 this，需要 self 兜底。
@@ -188,6 +189,7 @@ before(async () => {
   // 先 import（无 window，gsap ticker 不启动），再补 window 供 cssEscape 使用。
   const mod = await import("../../src/app-shell/thread-renderer.js");
   createThreadRenderer = mod.createThreadRenderer;
+  computeSteps = mod.computeSteps;
   globalThis.window = {};
 });
 
@@ -383,4 +385,42 @@ test("interrupted run renders terminal copy without writing spinner or duplicate
   assert.doesNotMatch(refs.thread.textContent, /书写中/u);
   assert.equal(refs.thread.querySelector(".spin"), null);
   assert.equal(refs.thread.querySelectorAll(".task-action.retry").length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Task 7: 步骤子步骤可见性 —— 写入章节 / 审稿 running 时展示小粒度进度
+// （对照 Claude Code TodoWrite 三态模型的可见性思路；纯函数 computeSteps 直接断言）
+// ---------------------------------------------------------------------------
+
+test("computeSteps: 写入章节进行中时附带当前段号子步骤", () => {
+  const steps = computeSteps({
+    state: { current_stage: "drafting", current_segment_no: 1, active_budget: {} },
+    summary: { projectStatus: "running", currentChapterNo: 1 }
+  });
+  const drafting = steps.find((s) => s.name.includes("写入"));
+  assert.equal(drafting.status, "running");
+  assert.equal(drafting.substep, "第 2 段"); // 已完成 1 段，正在写第 2 段
+});
+
+test("computeSteps: 审稿进行中且 fact-check 有轮次记录时附带轮数子步骤", () => {
+  const steps = computeSteps({
+    state: {
+      current_stage: "reviewing", current_chapter_no: 1,
+      active_budget: { fact_check_rounds_by_chapter: { "1": 1 }, max_fact_check_rounds_per_chapter: 3 }
+    },
+    summary: { projectStatus: "running", currentChapterNo: 1 }
+  });
+  const reviewing = steps.find((s) => s.name === "审稿");
+  assert.equal(reviewing.status, "running");
+  assert.equal(reviewing.substep, "事实核对 第 1/3 轮");
+});
+
+test("computeSteps: 审稿进行中但 fact-check 无轮次记录时无子步骤", () => {
+  const steps = computeSteps({
+    state: { current_stage: "reviewing", current_chapter_no: 1, active_budget: {} },
+    summary: { projectStatus: "running", currentChapterNo: 1 }
+  });
+  const reviewing = steps.find((s) => s.name === "审稿");
+  assert.equal(reviewing.status, "running");
+  assert.ok(!reviewing.substep, "无 fact-check 轮次记录时不应展示子步骤");
 });

@@ -57,6 +57,62 @@ const TASK_KIND_LABELS = {
   resume_chapter: "续写",
 };
 
+// 子步骤文案：只在对应大步骤 running 时展示，让用户看清"现在具体卡在哪一小步"
+// （对照 Claude Code TodoWrite 三态模型的可见性思路，本地化为写作循环的实际粒度）。
+function deriveSubstep(groupId, state) {
+  if (groupId === "drafting") {
+    const segmentNo = (state.current_segment_no ?? 0) + 1;
+    return `第 ${segmentNo} 段`;
+  }
+  if (groupId === "reviewing") {
+    const chapterKey = String(state.current_chapter_no ?? "");
+    const rounds = state.active_budget?.fact_check_rounds_by_chapter?.[chapterKey];
+    const maxRounds = state.active_budget?.max_fact_check_rounds_per_chapter ?? 3;
+    if (rounds) {
+      return `事实核对 第 ${rounds}/${maxRounds} 轮`;
+    }
+    return null;
+  }
+  return null;
+}
+
+function writingStepLabel(data, group, isActive) {
+  if (group.id !== "drafting" || !isActive) {
+    return group.name;
+  }
+  const chapterNo = Number(data.summary?.currentChapterNo ?? 0);
+  if (!Number.isInteger(chapterNo) || chapterNo < 1) {
+    return "写入章节中";
+  }
+  return `写入第 ${chapterNo} 章中`;
+}
+
+// 步骤时间线数据源：把 9 阶段折叠成 4 个对话级步骤，running 步骤附带子步骤文案。
+export function computeSteps(data) {
+  const run = deriveRunPresentation(data);
+  const state = data.state ?? {};
+  return STEP_GROUPS.map((group, i) => {
+    const status = deriveStepState(run, group.stages, STAGE_ORDER);
+    const writing = status === "running" && group.id === "drafting";
+    return {
+      name: writingStepLabel(data, group, writing),
+      detail: group.detail,
+      status,
+      meta: {
+        done: "状态：完成",
+        running: writing ? "状态：书写中" : "状态：进行中",
+        blocked: "状态：受阻",
+        interrupted: "状态：已中断",
+        cancelled: "状态：已停止",
+        todo: "状态：排队"
+      }[status],
+      metaKind: writing ? "writing" : null,
+      index: i + 1,
+      ...(status === "running" ? { substep: deriveSubstep(group.id, state) } : {})
+    };
+  });
+}
+
 export function createThreadRenderer(ctx) {
   // ctx provides: refs, renderedKeys, askEntries, getLiveBlock, setLiveBlock,
   //   getDashboard, getCurrentProjectRoot, loadDashboard, handleRetry, handleStop,
@@ -566,42 +622,14 @@ export function createThreadRenderer(ctx) {
         meta.setAttribute("aria-label", "Writing...");
       }
       row.append(ic, txt, meta);
+      if (step.substep) {
+        const substepEl = document.createElement("span");
+        substepEl.className = "step-substep";
+        substepEl.textContent = step.substep;
+        row.append(substepEl);
+      }
       return row;
     }));
-  }
-
-  function writingStepLabel(data, group, isActive) {
-    if (group.id !== "drafting" || !isActive) {
-      return group.name;
-    }
-    const chapterNo = Number(data.summary?.currentChapterNo ?? 0);
-    if (!Number.isInteger(chapterNo) || chapterNo < 1) {
-      return "写入章节中";
-    }
-    return `写入第 ${chapterNo} 章中`;
-  }
-
-  function computeSteps(data) {
-    const run = deriveRunPresentation(data);
-    return STEP_GROUPS.map((group, i) => {
-      const status = deriveStepState(run, group.stages, STAGE_ORDER);
-      const writing = status === "running" && group.id === "drafting";
-      return {
-        name: writingStepLabel(data, group, writing),
-        detail: group.detail,
-        status,
-        meta: {
-          done: "状态：完成",
-          running: writing ? "状态：书写中" : "状态：进行中",
-          blocked: "状态：受阻",
-          interrupted: "状态：已中断",
-          cancelled: "状态：已停止",
-          todo: "状态：排队"
-        }[status],
-        metaKind: writing ? "writing" : null,
-        index: i + 1
-      };
-    });
   }
 
   function attachChapterCard(block, chapterNo, data) {
