@@ -247,24 +247,6 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   border-right: 1px solid var(--line);
 }
 
-/* function nav */
-.rail-nav { padding: 2px 8px 10px; display: grid; gap: 1px; }
-.nav-item {
-  width: 100%; display: flex; align-items: center; gap: 11px;
-  padding: 8px 10px; border-radius: 9px;
-  color: var(--ink-2); font-size: 13.5px; font-weight: 550;
-  transition: background .12s, color .12s;
-}
-.nav-item:hover { background: var(--hover); color: var(--ink); }
-.nav-item:hover svg { color: var(--ink-2); }
-.nav-item svg { color: var(--muted); display: block; flex: 0 0 auto; }
-.nav-item.disabled { color: var(--ghost); cursor: default; }
-.nav-item.disabled svg { color: var(--ghost); }
-.nav-soon {
-  margin-left: auto; font-size: 9.5px; font-weight: 600; letter-spacing: .03em;
-  color: var(--faint); background: var(--rail-2); border-radius: 99px; padding: 2px 7px;
-}
-
 .rail-top {
   display: flex;
   align-items: center;
@@ -307,7 +289,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   transition: background .12s, color .12s;
 }
 .icon-btn:hover { background: var(--hover); color: var(--ink); }
-.icon-btn:active, .foot-btn:active, .nav-item:active, .tbtn:active { transform: scale(.96); transition: transform .08s; }
+.icon-btn:active, .foot-btn:active, .tbtn:active { transform: scale(.96); transition: transform .08s; }
 .icon-btn svg { display: block; }
 
 .rail-new {
@@ -750,7 +732,6 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   background: var(--surface); border: 1px solid var(--line); color: var(--ink-2);
 }
 .file-id { min-width: 0; display: grid; gap: 1px; }
-.file-id .path { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .file-id .name { font-size: 13.5px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .file-badge {
   font-family: var(--mono); font-size: 11px; font-weight: 600; color: var(--green);
@@ -1809,7 +1790,6 @@ button.cbar-pill--readonly:hover {
   border-radius: 2px;
   transition: width .28s ease;
 }
-.topbar-retry { border-color: color-mix(in srgb, var(--red) 35%, var(--line)); color: var(--red); }
 .topbar-stop { border-color: color-mix(in srgb, var(--amber) 35%, var(--line)); color: var(--amber); }
 
 /* ===== Foldable card header / body ===== */
@@ -2191,7 +2171,6 @@ button.cbar-pill--readonly:hover {
   font-size: 12px;
   color: var(--ink-2);
 }
-.tool-inline-tech { font-size: 11.5px; color: var(--ink-3); }
 .tool-inline-body pre { white-space: pre-wrap; margin: 6px 0 0; font-size: 11.5px; color: var(--ink-2); background: var(--surface-2); padding: 6px 8px; border-radius: 4px; max-height: 200px; overflow: auto; }
 .tool-inline-error { margin-top: 4px; font-size: 11.5px; color: var(--red); }
 .chat-confirm-card {

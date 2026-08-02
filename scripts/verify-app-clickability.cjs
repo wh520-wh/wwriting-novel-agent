@@ -1115,7 +1115,6 @@ async function probe(win, selector) {
         targetAtCenter: target ? { id: target.id, className: String(target.className || ""), tag: target.tagName } : null,
         clickCount: window.__wwClickProbe?.clicks?.[${JSON.stringify(selector)}] ?? 0,
         errors: window.__wwClickProbe?.errors ?? [],
-        railNavHtml: document.getElementById("rail-nav")?.innerHTML ?? null,
         visibleButtons: [...document.querySelectorAll("button")]
           .filter((el) => el.offsetParent !== null)
           .map((el) => ({

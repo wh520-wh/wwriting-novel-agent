@@ -1096,9 +1096,13 @@ export function createThreadRenderer(ctx) {
       err.textContent = message.error;
       body.append(err);
     }
-    wrap.append(body);
-
-    applyFold(row, body, foldKey, ok || superseded);
+    if (body.children.length > 0) {
+      wrap.append(body);
+      applyFold(row, body, foldKey, ok || superseded);
+    } else {
+      // 无结果摘要也无错误：没有可展开内容，隐藏折叠箭头，避免点开空白。
+      chevron.style.visibility = "hidden";
+    }
     return wrap;
   }
 
