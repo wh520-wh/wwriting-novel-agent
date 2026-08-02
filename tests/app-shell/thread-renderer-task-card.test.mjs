@@ -402,7 +402,7 @@ test("computeSteps: 写入章节进行中时附带当前段号子步骤", () => 
   assert.equal(drafting.substep, "第 2 段"); // 已完成 1 段，正在写第 2 段
 });
 
-test("computeSteps: 审稿进行中且 fact-check 有轮次记录时附带轮数子步骤", () => {
+test("computeSteps: 审稿进行中且 fact-check 有轮次记录时附带子步骤（不暴露轮数）", () => {
   const steps = computeSteps({
     state: {
       current_stage: "reviewing", current_chapter_no: 1,
@@ -412,7 +412,7 @@ test("computeSteps: 审稿进行中且 fact-check 有轮次记录时附带轮数
   });
   const reviewing = steps.find((s) => s.name === "审稿");
   assert.equal(reviewing.status, "running");
-  assert.equal(reviewing.substep, "事实核对 第 1/3 轮");
+  assert.equal(reviewing.substep, "正在核对设定");
 });
 
 test("computeSteps: 审稿进行中但 fact-check 无轮次记录时无子步骤", () => {

@@ -67,9 +67,8 @@ function deriveSubstep(groupId, state) {
   if (groupId === "reviewing") {
     const chapterKey = String(state.current_chapter_no ?? "");
     const rounds = state.active_budget?.fact_check_rounds_by_chapter?.[chapterKey];
-    const maxRounds = state.active_budget?.max_fact_check_rounds_per_chapter ?? 3;
     if (rounds) {
-      return `事实核对 第 ${rounds}/${maxRounds} 轮`;
+      return "正在核对设定";
     }
     return null;
   }
@@ -1117,7 +1116,7 @@ export function createThreadRenderer(ctx) {
     const card = document.createElement("div");
     card.className = "chat-confirm-card";
     const h4 = document.createElement("h4");
-    h4.textContent = `待确认操作：${pendingAction?.tool ?? ""}`;
+    h4.textContent = `待确认：${toolLabel(pendingAction?.tool, pendingAction?.args)}`;
     card.append(h4);
     if (pendingAction?.description) {
       const desc = document.createElement("p");
