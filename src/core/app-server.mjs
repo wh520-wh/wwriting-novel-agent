@@ -182,22 +182,20 @@ export function createAppShellServer({
       return;
     }
     if (url.pathname === "/api/settings/test-connection" && request.method === "POST") {
-      try {
-        const projectRoot = await resolveReadProjectRoot({
-          requestedRoot: undefined,
-          selected,
-          workspace,
-          stateRoot: appStateRoot
-        });
-        await serveTestConnection(request, response, {
-          workspace,
-          projectRoot,
-          secretsRoot: localSecretsRoot,
-          connectionTester
-        });
-      } catch (error) {
-        sendError(response, error instanceof HttpError ? error : new HttpError(400, "BAD_REQUEST", error.message));
-      }
+      // 项目可有可无：有项目就顺带写一条审计事件，没项目也要能测。
+      // 配模型和建项目是两件独立的事，别让「还没有小说」挡住测试。
+      const projectRoot = await resolveReadProjectRoot({
+        requestedRoot: undefined,
+        selected,
+        workspace,
+        stateRoot: appStateRoot
+      }).catch(() => null);
+      await serveTestConnection(request, response, {
+        workspace,
+        projectRoot,
+        secretsRoot: localSecretsRoot,
+        connectionTester
+      });
       return;
     }
     if (url.pathname === "/api/settings/model-secret" && request.method === "GET") {
@@ -854,8 +852,9 @@ async function serveTestConnection(request, response, context) {
     if (!candidate) {
       throw new HttpError(400, "configuration_missing", "active_model is required.");
     }
-    const project = await loadProject(projectRoot);
-    const projectId = project.project_id ?? null;
+    // 没有项目时跳过项目读取：projectId 仅用于审计事件，缺了不影响探测。
+    const project = projectRoot ? await loadProject(projectRoot).catch(() => null) : null;
+    const projectId = project?.project_id ?? null;
 
     let validated;
     try {
@@ -912,21 +911,23 @@ async function serveTestConnection(request, response, context) {
       baseUrlOrigin = "";
     }
 
-    await appendEvent(projectRoot, {
-      type: "model_connection_tested",
-      project_id: projectId,
-      stage: "settings",
-      severity: result?.ok ? "info" : "warn",
-      message: result?.ok ? "模型连接成功" : `模型连接失败：${result?.code ?? "unknown"}`,
-      data: {
-        ok: result?.ok === true,
-        provider: persistedConfig.provider,
-        model_name: persistedConfig.model_name,
-        base_url_origin: baseUrlOrigin,
-        code: result?.code ?? null,
-        latency_ms: typeof result?.latency_ms === "number" ? result.latency_ms : null
-      }
-    });
+    if (projectRoot) {
+      await appendEvent(projectRoot, {
+        type: "model_connection_tested",
+        project_id: projectId,
+        stage: "settings",
+        severity: result?.ok ? "info" : "warn",
+        message: result?.ok ? "模型连接成功" : `模型连接失败：${result?.code ?? "unknown"}`,
+        data: {
+          ok: result?.ok === true,
+          provider: persistedConfig.provider,
+          model_name: persistedConfig.model_name,
+          base_url_origin: baseUrlOrigin,
+          code: result?.code ?? null,
+          latency_ms: typeof result?.latency_ms === "number" ? result.latency_ms : null
+        }
+      });
+    }
 
     await serveJson(response, {
       ok: result?.ok === true,

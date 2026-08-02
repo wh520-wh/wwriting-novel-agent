@@ -40,15 +40,19 @@ function closeServer(server) {
 }
 
 // 关键点：不建任何项目，selectedProjectRoot 传 null——复刻用户「还没有小说」的场景。
-async function setupProjectlessServer() {
+async function setupProjectlessServer(options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-globalroute-"));
   const secretsRoot = path.join(root, ".secrets");
+  const { connectionTester, ...rest } = options;
   const server = createAppShellServer({
     workspaceRoot: root,
     selectedProjectRoot: null,
     stateRoot: path.join(root, ".state"),
     secretsRoot,
-    port: 0
+    port: 0,
+    ...rest,
+    // 注入点参数名是 testModelConnection；测试统一用 connectionTester 透传假探测函数，避免真实网络。
+    ...(connectionTester ? { testModelConnection: connectionTester } : {})
   });
   const port = await listenOnFetchSafePort(server);
   return { root, secretsRoot, server, port };
@@ -139,6 +143,48 @@ test("选用/删除不存在的模型：400 且带可读原因", async () => {
     assert.match(selected.json.message, /未找到已配置模型/);
     const removed = await post(port, "/api/settings/model-remove", { model_id: "ghost" });
     assert.equal(removed.status, 400);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("无项目也能测试连接：不再要求先新建小说", async () => {
+  const calls = [];
+  const { server, port } = await setupProjectlessServer({
+    // 与 app-server-probe 同款写法：注入函数收到 { config, secrets, signal } 信封对象。
+    connectionTester: async (input) => {
+      calls.push(input.config.model_name);
+      return { ok: true, message: "连接正常", model_name: input.config.model_name };
+    }
+  });
+  try {
+    await post(port, "/api/settings/model-profile", { active_model: SAMPLE_MODEL });
+    const { status, json } = await post(port, "/api/settings/test-connection", {
+      active_model: {
+        provider: "openai-compatible",
+        model_name: "deepseek-chat",
+        base_url: "https://api.deepseek.com",
+        api_key_env: "DEEPSEEK_API_KEY"
+      }
+    });
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+    assert.deepEqual(calls, ["deepseek-chat"]);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("无项目测试连接：字段缺失仍返回逐字段错误", async () => {
+  const { server, port } = await setupProjectlessServer({
+    connectionTester: async () => ({ ok: true, message: "连接正常" })
+  });
+  try {
+    const { status, json } = await post(port, "/api/settings/test-connection", {
+      active_model: { provider: "openai-compatible", model_name: "x", base_url: "", api_key_env: "" }
+    });
+    assert.equal(status, 400);
+    assert.equal(typeof json.fields, "object");
   } finally {
     await closeServer(server);
   }
