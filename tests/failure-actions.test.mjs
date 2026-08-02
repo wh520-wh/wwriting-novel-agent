@@ -110,20 +110,20 @@ test("fill-words 注入补写指令事件", async () => {
   assert.ok(instruction.message.includes("820"));
 });
 
-test("lower-target-words 只改 target_words_per_chapter,不动 min_words_per_chapter", async () => {
+test("lower-target-words 同时降 target 和 min,门禁真正放低", async () => {
   const projectRoot = await makeProject("wwriting-lower-target-");
-  const result = await applyFailureResolution(projectRoot, { command: "lower-target-words", args: { newTargetWords: 2100 } });
+  const result = await applyFailureResolution(projectRoot, { command: "lower-target-words", args: { newTargetWords: 250 } });
   assert.equal(result.resumeRun, true);
   const project = await loadProject(projectRoot);
-  assert.equal(project.target_words_per_chapter, 2100);
-  assert.equal(project.min_words_per_chapter, 300);
+  assert.equal(project.target_words_per_chapter, 250);
+  assert.equal(project.min_words_per_chapter, 250, "min 也降到同一值，门禁才真正放低");
 });
 
-test("lower-target-words 目标低于 min 时被既有约束顶到 min（硬门禁兜底）", async () => {
+test("lower-target-words 同时降 target 和 min,不再被 min 顶回", async () => {
   const projectRoot = await makeProject("wwriting-lower-target-clamp-");
   const result = await applyFailureResolution(projectRoot, { command: "lower-target-words", args: { newTargetWords: 200 } });
   assert.equal(result.resumeRun, true);
   const project = await loadProject(projectRoot);
-  assert.equal(project.target_words_per_chapter, 300, "target 低于 min 时 settings-runtime 的 clamp 应顶到 min");
-  assert.equal(project.min_words_per_chapter, 300);
+  assert.equal(project.target_words_per_chapter, 200, "降到同一值绕开 target<min 顶回约束");
+  assert.equal(project.min_words_per_chapter, 200, "min 也降到 200，门禁真正放低");
 });

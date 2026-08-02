@@ -50,7 +50,7 @@ registerSchema("word_count", "v1", {
     : { ok: false, code: "missing_field", field: "status", message: "word_count 结果缺少 status（passed|failed）" })
 });
 
-export function runWordCountGate(content, minWords, targetWords = null) {
+export function runWordCountGate(content, minWords) {
   const actualWords = countEffectiveWords(content);
   if (actualWords >= minWords) {
     return {

@@ -178,32 +178,32 @@ test("parseFactCheck 失败时返回字符串 error + error_code 分类（向后
 // =============== runWordCountGate padding_risk + 防注水指令 ===============
 
 test("runWordCountGate 达标时 padding_risk 为 false", () => {
-  const r = runWordCountGate("字".repeat(500), 300, 500);
+  const r = runWordCountGate("字".repeat(500), 300);
   assert.equal(r.status, "passed");
   assert.equal(r.padding_risk, false);
 });
 
 test("runWordCountGate 差距很小时标记 padding_risk 并追加防注水指令", () => {
-  const r = runWordCountGate("字".repeat(280), 300, 500);
+  const r = runWordCountGate("字".repeat(280), 300);
   assert.equal(r.status, "failed");
   assert.equal(r.padding_risk, true);
   assert.match(r.instruction, /不要.*(重复|堆砌|注水|凑)/u);
 });
 
 test("runWordCountGate 差距很大时不误判 padding_risk（内容本来就不够，非注水场景）", () => {
-  const r = runWordCountGate("字".repeat(50), 300, 500);
+  const r = runWordCountGate("字".repeat(50), 300);
   assert.equal(r.status, "failed");
   assert.equal(r.padding_risk, false);
 });
 
-test("runWordCountGate 向后兼容：旧调用方省略 targetWords 仍正常工作", () => {
+test("runWordCountGate 返回 shortfall 供调用方使用", () => {
   const r = runWordCountGate("字".repeat(280), 300);
   assert.equal(r.status, "failed");
   assert.equal(typeof r.shortfall, "number");
 });
 
 test("word_count@v1 schema 可解析 runWordCountGate 返回值（含 padding_risk）", () => {
-  const gate = runWordCountGate("字".repeat(280), 300, 500);
+  const gate = runWordCountGate("字".repeat(280), 300);
   const parsed = parseStructuredOutput("word_count", "v1", JSON.stringify(gate));
   assert.equal(parsed.ok, true);
   assert.equal(parsed.data.gate, "word-count-gate");

@@ -91,13 +91,16 @@ export async function applyFailureResolution(projectRoot, { command, args = {} }
     }
 
     case "lower-target-words": {
-      // 只降软目标 target_words_per_chapter，不动 min_words_per_chapter 硬门禁；
+      // 同时降 target 和 min：只降 target 会被 settings-runtime「target<min 顶回 min」约束抵消，门禁纹丝不动。
       // 必须用 project_profile 包装——顶层 patch 会被 normalizeSettingsPatch 白名单静默丢弃。
       await updateProjectSettings(projectRoot, {
-        project_profile: { target_words_per_chapter: args.newTargetWords }
+        project_profile: {
+          target_words_per_chapter: args.newTargetWords,
+          min_words_per_chapter: args.newTargetWords
+        }
       });
       await saveResumeableState(projectRoot);
-      return { resumeRun: true, message: `本章字数目标已降到 ${args.newTargetWords} 字，继续写作。` };
+      return { resumeRun: true, message: `本章字数门槛已降到 ${args.newTargetWords} 字，继续写作。` };
     }
 
     case "switch-model": {

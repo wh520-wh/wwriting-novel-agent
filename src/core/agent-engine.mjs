@@ -1532,6 +1532,24 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
     // 情况 C：提交工具。执行成功后把 tool 回执装入 transcript 并落盘 pending 文件；
     // 恢复场景下 append_chapter_segment 按 segment 号幂等去重，重放不会重复写。
     if (output.tool === "append_chapter_segment") {
+      // 与情况 A 对齐：调工具提交前先查非正文内容。否则 appendChapterSegment 内的
+      // detectNonProseContent 抛 ToolValidationError -> executeToolCall 立即 blockProject，
+      // 绕过 commitFailures 重试计数，模型一次失误就被卡死（case A 同样错误可重试 8 次）。
+      const cContent = output?.input?.content;
+      if (typeof cContent === "string") {
+        const nonProseCheck = detectNonProseContent(cContent);
+        if (nonProseCheck.isNonProse) {
+          agentLoopFeedback = { message: `检测到非正文内容：${nonProseCheck.reason}。请只输出小说正文，不要复述工具调用或错误信息。` };
+          const stop = await rejectOutput("non_prose_output", {
+            attempt: ctx.turn,
+            char_count: cContent.length,
+            message: agentLoopFeedback.message,
+            severity: "warn",
+          });
+          await recordRejectionFeedback(output.id, agentLoopFeedback.message);
+          return { ok: false, summary: "non_prose_output", ...(stop ?? {}) };
+        }
+      }
       const result = await executeCommit(projectRoot, project, state, runtime, request, output, ctx.turn, emitLoopEvent, (v) => { lastValidation = v; }, rejectOutput);
       if (output.id) {
         if (result?.ok) {
