@@ -1521,6 +1521,43 @@ test("writing agent loop: 工具执行连续异常在 8 次后提早停止，不
   assert.equal(modelClient.calls, 8);
 });
 
+test("writing agent loop: 耗尽故障卡带字数门禁上下文,提供降低字数目标选项", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-exhausted-wordgate-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "project", target_chapters: 1, min_words_per_chapter: 200, target_words_per_chapter: 260,
+  });
+  // 与 AlwaysThrowingToolModel 既有用例相同的注入：draft_path 指向目录，
+  // read_chapter 执行必抛异常，草稿始终为空（readDraft 兜底返回空串）。
+  await fs.mkdir(path.join(projectRoot, "drafts", "001.final.md"), { recursive: true });
+  const index = await loadChapterIndex(projectRoot);
+  index.chapters.push({
+    chapter_no: 1,
+    status: "queued",
+    draft_path: path.join(projectRoot, "drafts", "001.final.md"),
+    final_path: null,
+    actual_words: 0,
+    checksum: null,
+    quality_gate_results: [],
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+  await saveChapterIndex(projectRoot, index);
+  const modelClient = new AlwaysThrowingToolModel();
+  const result = await runProject(projectRoot, { modelClient });
+  assert.equal(result.blocked, true);
+  // 草稿未达 min_words（空串 < 200）→ failWritingAgentLoop 的草稿兜底应把
+  // last_gate/min_words/target_words 带上故障卡，derive 分支据此给出降低目标选项。
+  // 归因容错：不管耗尽原因是 model_output_invalid 还是 agent_loop_exhausted，都归 loop-exhausted。
+  const failures = readFailures(projectRoot);
+  const card = failures.find((f) => f.kind === "loop-exhausted");
+  assert.ok(card, `应有 loop-exhausted 故障卡,实际: ${JSON.stringify(failures.map((f) => f.kind))}`);
+  const lowerAction = card.actions.find((a) => a.command === "lower-target-words");
+  assert.ok(lowerAction, "草稿未达 min_words 时耗尽卡应提供降低字数目标选项");
+  // target 260 × 0.7 = 182 低于 min_words 200 → 按 min_words 下限顶到 200，label 与落盘值一致。
+  assert.equal(lowerAction.args.newTargetWords, 200);
+  assert.ok(lowerAction.label.includes("200"));
+});
+
 test("writing agent loop: drafting 阶段模型先调 read_continuity 查设定再提交正文", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-agent-loop-"));
   const { projectRoot } = await createProject(root, {
