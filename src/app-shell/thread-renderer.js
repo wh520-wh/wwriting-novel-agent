@@ -655,13 +655,10 @@ export function createThreadRenderer(ctx) {
     fic.append(icon("doc", 16));
     const fid = document.createElement("span");
     fid.className = "file-id";
-    const path = document.createElement("span");
-    path.className = "path";
-    path.textContent = `chapters/${String(chapterNo).padStart(3, "0")}.md`;
     const nm = document.createElement("span");
     nm.className = "name";
     nm.textContent = view.title;
-    fid.append(path, nm);
+    fid.append(nm);
     const badge = document.createElement("span");
     badge.className = "file-badge";
     badge.textContent = view.canOpen
@@ -860,7 +857,7 @@ export function createThreadRenderer(ctx) {
     a.textContent = entry.answer || "（无回答）";
     const note = document.createElement("div");
     note.className = "side-note";
-    note.textContent = "side_questions.md · 不影响正文 / task_plan.md / progress.md";
+    note.textContent = "这个提问不会改动正文，仅供参考。";
     card.append(tag, q, a, note);
     if (entry.mainTaskAffecting && !entry.promoted) {
       card.append(buildAskConfirm(entry));
@@ -1049,7 +1046,7 @@ export function createThreadRenderer(ctx) {
     if (Number.isFinite(message.cost) && message.cost > 0) {
       const cost = document.createElement("span");
       cost.className = "chat-cost";
-      cost.textContent = `本轮 ¥${message.cost.toFixed(4)}`;
+      cost.textContent = message.cost < 0.01 ? "本轮 ＜¥0.01" : `本轮 ¥${message.cost.toFixed(2)}`;
       bubble.append(cost);
     }
     bubble.append(buildMsgActions(message, allMessages));
@@ -1082,16 +1079,12 @@ export function createThreadRenderer(ctx) {
     label.textContent = superseded ? `已取消 · ${toolLabel(tool, message.args)}` : toolLabel(tool, message.args);
     const mark = document.createElement("span");
     mark.className = `tool-inline-mark ${ok ? "ok" : "fail"}`;
-    mark.textContent = superseded ? "⊘" : (ok ? "✓" : "✗");
+    mark.textContent = superseded ? "" : (ok ? "✓" : "✗");
     row.append(chevron, label, mark);
     wrap.append(row);
 
     const body = document.createElement("div");
     body.className = "tool-inline-body";
-    const tech = document.createElement("div");
-    tech.className = "tool-inline-tech mono";
-    tech.textContent = `${tool} ${message.args ?? ""}`.trim();
-    body.append(tech);
     if (message.result_summary) {
       const pre = document.createElement("pre");
       pre.textContent = message.result_summary;

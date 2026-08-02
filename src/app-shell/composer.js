@@ -537,7 +537,8 @@ export function createComposer(ctx) {
     // 也计入 summary.estimatedCost（agent 运行成本）
     const agentCost = Number(data?.summary?.estimatedCost) || 0;
     totalCost += agentCost;
-    pill.textContent = totalCost > 0 ? `¥${totalCost.toFixed(2)}` : "¥0.00";
+    pill.hidden = totalCost <= 0;
+    pill.textContent = `¥${totalCost.toFixed(2)}`;
     pill.title = "本会话累计成本";
   }
 
