@@ -1149,9 +1149,10 @@ button.cbar-pill--readonly:hover {
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-xl);
   box-shadow: var(--shadow-pop); overflow: hidden;
   display: grid; grid-template-columns: 312px minmax(0,1fr);
-  transform: translateY(8px) scale(.99); transition: transform .2s;
+  transform: translateY(8px) scale(.99); opacity: 0; transition: transform .2s, opacity .2s;
 }
-.settings-scrim.show .settings-modal { transform: translateY(0) scale(1); }
+.settings-scrim.show .settings-modal { transform: translateY(0) scale(1); opacity: 1; }
+.settings-scrim.show .create-card { opacity: 1; }
 .settings-x { position: absolute; top: 12px; right: 12px; z-index: 5; }
 
 /* left pane */
@@ -1437,6 +1438,7 @@ button.cbar-pill--readonly:hover {
   width: min(560px, 100%); border: 1px solid var(--line); border-radius: var(--r-xl);
   background: linear-gradient(180deg, #fff, var(--surface-2)); padding: 30px 32px 28px;
   box-shadow: var(--shadow); display: grid; gap: 13px; position: relative; overflow: hidden;
+  opacity: 0; transition: opacity .2s;
 }
 .create-card::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 3px; background: linear-gradient(90deg, var(--accent), var(--green)); opacity: .85; }
 .create-card .eyebrow { font-size: 11px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
