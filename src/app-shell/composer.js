@@ -538,7 +538,7 @@ export function createComposer(ctx) {
     const agentCost = Number(data?.summary?.estimatedCost) || 0;
     totalCost += agentCost;
     pill.hidden = totalCost <= 0;
-    pill.textContent = `¥${totalCost.toFixed(2)}`;
+    if (totalCost > 0) pill.textContent = `¥${totalCost.toFixed(2)}`;
     pill.title = "本会话累计成本";
   }
 

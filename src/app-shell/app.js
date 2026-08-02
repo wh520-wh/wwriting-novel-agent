@@ -871,10 +871,9 @@ function renderDashboard(data) {
   const project = data.project;
   const modelProfile = data.model_profile ?? {};
   refs.title.textContent = project.title ?? "未命名小说";
-  const modelLabel = modelProfile.is_mock ? "模型未配置 · 请在设置里选一个" : (modelProfile.display ?? "模型未配置");
   const progressCopy = `已写 ${summary.completedChapters}/${summary.targetChapters} 章`;
   refs.topbarSub.textContent = modelProfile.is_mock
-    ? `${modelLabel} · ${progressCopy}`
+    ? `模型未配置 · 请在设置里选一个 · ${progressCopy}`
     : progressCopy;
 
   // 归档态 UI
