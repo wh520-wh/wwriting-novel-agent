@@ -26,7 +26,31 @@ registerSchema("fact_check", "v1", {
   validate: (n) => ({ ok: true })  // conflicts 可为空数组，不缺字段即合法
 });
 
-export function runWordCountGate(content, minWords) {
+// =============== 字数门禁：word-count-gate ===============
+
+const PADDING_RISK_RATIO = 0.15; // 差距占 minWords 比例 < 15% 时判定为"接近达标，容易靠注水补齐"
+
+// 注册 word_count@v1 schema（模块加载时执行一次，registerSchema 幂等）
+// 契约对象即 runWordCountGate 的返回值；供调用方用 parseStructuredOutput 结构化解析门禁结果（含 padding_risk）。
+registerSchema("word_count", "v1", {
+  normalize: (data) => {
+    const status = data?.status === "passed" ? "passed" : data?.status === "failed" ? "failed" : null;
+    return {
+      gate: "word-count-gate",
+      status,
+      actual_words: Number(data?.actual_words) || 0,
+      min_words: Number(data?.min_words) || 0,
+      shortfall: Number(data?.shortfall) || 0,
+      padding_risk: Boolean(data?.padding_risk),
+      instruction: String(data?.instruction ?? "")
+    };
+  },
+  validate: (n) => (n.status
+    ? { ok: true }
+    : { ok: false, code: "missing_field", field: "status", message: "word_count 结果缺少 status（passed|failed）" })
+});
+
+export function runWordCountGate(content, minWords, targetWords = null) {
   const actualWords = countEffectiveWords(content);
   if (actualWords >= minWords) {
     return {
@@ -34,16 +58,23 @@ export function runWordCountGate(content, minWords) {
       status: "passed",
       actual_words: actualWords,
       min_words: minWords,
-      shortfall: 0
+      shortfall: 0,
+      padding_risk: false
     };
   }
+  const shortfall = minWords - actualWords;
+  const paddingRisk = shortfall / minWords < PADDING_RISK_RATIO;
+  const baseInstruction = `Chapter is short by ${shortfall} effective words. Continue through a file-writing tool; do not claim the word count is reached.`;
+  // 防注水约束：差距占 minWords 比例 < 15% 时判定为"接近达标、容易靠注水补齐"，追加中文指令（文案中文，供 UI/日志展示）
+  const antiPaddingNote = " 新增情节或对话推进内容，不要重复已有句子、堆砌冗余描写或用注水文字凑数。";
   return {
     gate: "word-count-gate",
     status: "failed",
     actual_words: actualWords,
     min_words: minWords,
-    shortfall: minWords - actualWords,
-    instruction: `Chapter is short by ${minWords - actualWords} effective words. Continue through a file-writing tool; do not claim the word count is reached.`
+    shortfall,
+    padding_risk: paddingRisk,
+    instruction: paddingRisk ? baseInstruction + antiPaddingNote : baseInstruction
   };
 }
 
