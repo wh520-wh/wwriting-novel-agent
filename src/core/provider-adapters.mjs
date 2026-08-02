@@ -504,30 +504,44 @@ function chapterToolChoice(modelConfig = {}, hasMultipleTools = false) {
   };
 }
 
-// DeepSeek thinking（reasoner 系）模型名单判据：base_url 指向官方 API 且模型名命中
-// deepseek-v4-pro/deepseek-reasoner/reasoner。两处复用同一判据：
-// 1. requiresAutoToolChoice —— thinking 模型拒绝强制 tool_choice，但 auto 模式仍会返回 tool_calls；
-// 2. L3 确定性响应缓存 —— reasoner 系模型不支持 temperature 参数（L3 决策：不注入 temperature=0，
-//    因缓存确定性建立在显式 temperature=0 上，reasoner 系模型本轮不走缓存）。
-//
-// 2026-07 官方文档修正（F1）：deepseek-v4-flash 支持 non-thinking/thinking/thinking_max 三模式、
-// 默认 non-thinking，non-thinking 下 temperature（0-2）生效；deepseek-reasoner 是 v4-flash thinking
-// 模式的旧别名（2026-07-24 已退役）。故 v4-flash（默认非思考）不再判为 reasoner——L3 缓存对其
-// 生效、tool_choice 走 deepseek-chat 同等普通路径。deepseek-v4-pro 与旧别名名单保留。
-// 注意：WWriting 不透传 thinking 参数，v4-flash 恒走默认 non-thinking；若未来暴露思考模式开关，
-// 需改为按「是否启用 thinking」参数判定（thinking 模式下 v4-flash 应重新判为 reasoner）。
-//
-// Task 3 收敛：模型能力判定统一收敛到 resolveModelCapabilities capability matrix，
-// isReasonerModel 委托其 supportsThinking，其余调用方（model-client L3 缓存、
-// chapterToolChoice）行为不变。OpenAI 兼容供应商（含 DeepSeek/MiMo 等）默认全能力开放，
-// 仅 thinking 模型不支持 temperature/top_p（忽略采样参数）。
-export function resolveModelCapabilities(modelConfig = {}) {
-  const baseUrl = String(modelConfig.base_url ?? "").toLowerCase();
+// ── 供应商能力判断注册表（Task 5 泛化）──────────────────────────────────────
+// 演进史（保留自 2026-07 记录，供维护者参考）：
+// - DeepSeek thinking 判据：base_url 指向官方 API 且模型名命中 deepseek-v4-pro/deepseek-reasoner/
+//   reasoner（2026-07 官方文档修正 F1：deepseek-reasoner 是 v4-flash thinking 模式的旧别名，
+//   2026-07-24 已退役，名单保留以兼容旧配置）。
+// - v4-flash（官方三模式 non-thinking/thinking/thinking_max，默认 non-thinking）不再判为 reasoner：
+//   L3 缓存对其生效、tool_choice 走 deepseek-chat 同等普通路径；WWriting 不透传 thinking 参数，
+//   v4-flash 恒走默认 non-thinking——若未来暴露思考模式开关，需改为按「是否启用 thinking」判定。
+// - L3 确定性响应缓存：reasoner 系模型不支持 temperature 参数，不注入 temperature=0，
+//   因缓存确定性建立在显式 temperature=0 上，这类模型本轮不走缓存（见 model-client #prepareAuxiliaryCache）。
+// - Task 3 收敛：模型能力判定统一收敛到 capability matrix；Task 5 泛化：判据改为可注册表，
+//   非 DeepSeek 供应商有类似 thinking/参数限制时注册一条 resolver 即可，无需改本文件内 if 分支
+//   （评估报告 P2：非 DeepSeek 供应商覆盖面限制）。
+const PROVIDER_CAPABILITY_RESOLVERS = [];
+
+const DEFAULT_CAPABILITIES = Object.freeze({
+  supportsThinking: false,
+  requiresAutoToolChoice: false,
+  supportsTemperature: true,
+  supportsTopP: true,
+  supportsJsonOutput: true,
+  supportsTools: true,
+  supportsStreaming: true
+});
+
+// 供应商能力判断注册表：新供应商有推理模型/参数限制时，注册一条 resolver 即可，
+// 不需要改这个文件内部的 if 分支（评估报告 P2：非 DeepSeek 供应商覆盖面限制）。
+// matcher(modelConfig) 命中时用 resolver(modelConfig) 的返回值覆盖 DEFAULT_CAPABILITIES；
+// 按注册顺序先匹配先生效。
+export function registerProviderCapabilityResolver(matcher, resolver) {
+  PROVIDER_CAPABILITY_RESOLVERS.push({ matcher, resolver });
+}
+
+function resolveDeepSeekCapabilities(modelConfig) {
   const modelName = String(modelConfig.model_name ?? "").toLowerCase();
-  const isDeepSeek = baseUrl.includes("api.deepseek.com");
   // 原 isReasonerModel 判据 1:1 搬移：v4-pro / deepseek-reasoner / reasoner 系为 thinking 模型；
   // v4-flash 默认 non-thinking（官方 2026-07），不判为 reasoner。
-  const supportsThinking = isDeepSeek && (
+  const supportsThinking = (
     (modelName.includes("deepseek-v4") && !modelName.includes("-flash")) ||
     modelName.includes("deepseek-reasoner") ||
     modelName.includes("reasoner")
@@ -535,7 +549,7 @@ export function resolveModelCapabilities(modelConfig = {}) {
   // 实测：DeepSeek 官方 API 当前把 deepseek-v4-flash 当 thinking 模型处理，
   // 强制 tool_choice 会返回 400 "Thinking mode does not support this tool_choice"，
   // 故对官方 v4-flash 也走 auto（模型仍会返回 tool_calls）。
-  const isDeepSeekV4Flash = isDeepSeek && modelName.includes("deepseek-v4-flash");
+  const isDeepSeekV4Flash = modelName.includes("deepseek-v4-flash");
   return {
     supportsThinking,
     requiresAutoToolChoice: supportsThinking || isDeepSeekV4Flash,
@@ -547,6 +561,23 @@ export function resolveModelCapabilities(modelConfig = {}) {
     supportsTools: true,
     supportsStreaming: true
   };
+}
+
+// DeepSeek 的 resolver 在模块加载时自动注册一次（matcher 对 base_url 做 lowercase 归一化，
+// 与泛化前 isDeepSeek 门控语义等价），调用方无需手动注册。
+registerProviderCapabilityResolver(
+  (modelConfig) => String(modelConfig.base_url ?? "").toLowerCase().includes("api.deepseek.com"),
+  resolveDeepSeekCapabilities
+);
+
+// 模型能力判定：遍历已注册 resolver，未匹配任何供应商时回落默认全能力开放。
+export function resolveModelCapabilities(modelConfig = {}) {
+  for (const { matcher, resolver } of PROVIDER_CAPABILITY_RESOLVERS) {
+    if (matcher(modelConfig)) {
+      return { ...DEFAULT_CAPABILITIES, ...resolver(modelConfig) };
+    }
+  }
+  return DEFAULT_CAPABILITIES;
 }
 
 function requiresAutoToolChoice(modelConfig = {}) {

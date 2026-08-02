@@ -5,6 +5,7 @@ import {
   OpenAICompatibleAdapter,
   ProviderConfigurationError,
   ProviderTransportError,
+  registerProviderCapabilityResolver,
   resolveModelCapabilities
 } from "../src/core/provider-adapters.mjs";
 
@@ -1086,4 +1087,38 @@ test("OpenAICompatibleAdapter: deepseek-v4-flash 不注入 temperature/top_p(官
   assert.equal(calls[0].body.temperature, undefined, "v4-flash 官方按 thinking 处理，不应注入 temperature");
   assert.equal(calls[0].body.top_p, undefined, "v4-flash 不应注入 top_p");
   assert.equal(calls[0].body.model, "deepseek-v4-flash");
+});
+
+test("resolveModelCapabilities 现有 DeepSeek 判据在泛化后行为不变（回归锚点）", () => {
+  const caps = resolveModelCapabilities({ base_url: "https://api.deepseek.com/v1", model_name: "deepseek-v4-pro" });
+  assert.equal(caps.supportsThinking, true);
+  assert.equal(caps.supportsTemperature, false);
+  const flashCaps = resolveModelCapabilities({ base_url: "https://api.deepseek.com/v1", model_name: "deepseek-v4-flash" });
+  assert.equal(flashCaps.supportsTemperature, false);
+  assert.equal(flashCaps.requiresAutoToolChoice, true);
+});
+
+test("registerProviderCapabilityResolver 支持后续供应商注册自己的能力判据", () => {
+  registerProviderCapabilityResolver(
+    (modelConfig) => String(modelConfig.base_url ?? "").includes("api.example-vendor.com"),
+    (modelConfig) => ({
+      supportsThinking: true,
+      requiresAutoToolChoice: true,
+      supportsTemperature: false,
+      supportsTopP: false,
+      supportsJsonOutput: true,
+      supportsTools: true,
+      supportsStreaming: false
+    })
+  );
+  const caps = resolveModelCapabilities({ base_url: "https://api.example-vendor.com/v1", model_name: "example-thinking-1" });
+  assert.equal(caps.supportsThinking, true);
+  assert.equal(caps.supportsStreaming, false);
+});
+
+test("未匹配任何注册 resolver 的供应商回落默认全能力开放", () => {
+  const caps = resolveModelCapabilities({ base_url: "https://api.totally-unknown.com/v1", model_name: "x" });
+  assert.equal(caps.supportsThinking, false);
+  assert.equal(caps.supportsTemperature, true);
+  assert.equal(caps.supportsTools, true);
 });
