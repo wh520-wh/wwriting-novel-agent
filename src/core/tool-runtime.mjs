@@ -18,6 +18,45 @@ export function chapterFileName(chapterNo, extension = "md") {
   return `${String(chapterNo).padStart(3, "0")}.${extension}`;
 }
 
+// 非正文内容启发式检测：防止模型把工具调用报错、内心独白、prompt 字段名写入章节。
+// 检测对象是应当为小说正文的 content；误伤率应极低（snake_case 工具名与中文小说正文不重叠）。
+const KNOWN_TOOL_NAMES = [
+  "append_chapter_segment",
+  "read_chapter",
+  "read_continuity",
+  "read_outline",
+  "get_status",
+  "edit_chapter",
+  "update_continuity",
+  "update_outline",
+  "list_chapters"
+];
+
+const NON_PROSE_PATTERNS = [
+  { pattern: /\btool\s+is\s+not\s+allowed\b/giu, reason: "包含工具调用被拒的英文描述" },
+  { pattern: /\bonly\s+allowed\s+tool\b/giu, reason: "包含白名单限制描述" },
+  { pattern: /\ballowed\s+tools?\s+includes?\b/giu, reason: "包含允许工具列表描述" },
+  { pattern: /\bsegment_target_words\b/giu, reason: "包含 prompt 内部字段名" }
+];
+
+export function detectNonProseContent(content) {
+  if (typeof content !== "string") {
+    return { isNonProse: true, reason: "content 不是字符串" };
+  }
+  const text = content;
+  for (const tool of KNOWN_TOOL_NAMES) {
+    if (text.includes(tool)) {
+      return { isNonProse: true, reason: `包含写作工具名 "${tool}"` };
+    }
+  }
+  for (const { pattern, reason } of NON_PROSE_PATTERNS) {
+    if (pattern.test(text)) {
+      return { isNonProse: true, reason };
+    }
+  }
+  return { isNonProse: false, reason: null };
+}
+
 export function validateAppendChapterSegmentInput(project, input, options = {}) {
   if (!input || typeof input !== "object") {
     throw new ToolValidationError("missing_tool_input", "Tool input is required.");
@@ -51,6 +90,10 @@ export function validateAppendChapterSegmentInput(project, input, options = {}) 
 
 export async function appendChapterSegment(projectRoot, project, input, options = {}) {
   validateAppendChapterSegmentInput(project, input, options);
+  const nonProseCheck = detectNonProseContent(input.content);
+  if (nonProseCheck.isNonProse) {
+    throw new ToolValidationError("non_prose_content", `检测到非正文内容：${nonProseCheck.reason}。请只输出小说正文。`);
+  }
   const chapterNo = input.chapter_no;
   const segmentNo = input.segment_no;
   const draftPath = safeJoin(projectRoot, "drafts", chapterFileName(chapterNo, `draft.${project.output_format}`));

@@ -704,10 +704,18 @@ async function main() {
     `)
   }));
 
-  clicks.push(await clickAndRead(win, "#cbar-slash", {
-    label: "cbar-slash",
-    expect: () => read(win, "document.getElementById('slash-menu').hidden === false")
-  }));
+  // 「命令」按钮已移除（UI 优化：删除挤压竖排的按钮），改为直接输入 "/" 触发斜杠菜单。
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const input = document.getElementById("composer-input");
+      input.focus();
+      input.value = "/";
+      input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "/" }));
+      return true;
+    })()
+  `);
+  await delay(180);
+  assert.equal(await read(win, "document.getElementById('slash-menu').hidden"), false, "输入 / 应唤起斜杠菜单");
   clicks.push(await clickAndRead(win, ".slash-item", {
     label: "slash-first-item",
     expect: () => read(win, "document.getElementById('composer-input').value.length > 0")

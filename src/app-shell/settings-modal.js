@@ -398,21 +398,15 @@ export function createSettingsModal(ctx, options = {}) {
         refreshPermissionTierOptions();
       });
 
-      const glyph = document.createElement("span");
-      glyph.className = "spd-radio-glyph";
-      glyph.setAttribute("aria-hidden", "true");
-      glyph.textContent = tier.glyph;
-
       const tx = document.createElement("div");
       tx.className = "spd-radio-tx";
       const label = document.createElement("strong");
-      // 图标已在 glyph 方块呈现，标题去掉 label 开头重复的符号
-      label.textContent = tier.label.replace(/^\S+\s+/, "");
+      label.textContent = tier.label;
       const desc = document.createElement("small");
       desc.id = `settings-permission-tier-${tier.id}-desc`;
       desc.textContent = tier.desc;
       tx.append(label, desc);
-      option.append(input, glyph, tx);
+      option.append(input, tx);
       if (tier.id === "yolo" && tier.warn) {
         const warn = document.createElement("div");
         warn.className = "spd-radio-warn";

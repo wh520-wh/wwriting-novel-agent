@@ -104,6 +104,35 @@ test("chapter tool-call gate rejects mismatched scoped arguments", () => {
   assert.equal(assertToolCallForChapter({ ...base, input: { ...base.input, content: "" } }, { segment_no: 2 }).code, "empty_content");
 });
 
+test("appendChapterSegment rejects content that looks like model reasoning or tool errors", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-tool-nonprose-"));
+  const { projectRoot, project } = await createProject(root, {
+    slug: "project",
+    min_words_per_chapter: 10
+  });
+  const pollutedContent = `The read_chapter tool is not allowed right now. It seems the only allowed tool for this step is append_chapter_segment. Wait, the task says allowed_tools includes get_status, list_chapters, read_chapter, read_continuity, read_outline, edit_chapter, append_chapter_segment. But the actual response says "当前只允许调用：append_chapter_segment。请直接提交正文。" Hmm, interesting. So I should just submit the prose directly via append_chapter_segment. OK. Let me now write segment 2, continuing from the selected fragment. I need to write ~1100 words (segment_target_words: 1100).`;
+  await assert.rejects(
+    () =>
+      appendChapterSegment(
+        projectRoot,
+        project,
+        {
+          project_id: project.project_id,
+          chapter_no: 1,
+          segment_no: 1,
+          content: pollutedContent
+        },
+        { requireProjectId: true, expectedChapterNo: 1, expectedSegmentNo: 1 }
+      ),
+    (error) => error instanceof ToolValidationError && error.code === "non_prose_content"
+  );
+  // 确认文件未被创建
+  await assert.rejects(
+    () => fs.stat(path.join(projectRoot, "drafts", "001.draft.md")),
+    (error) => error.code === "ENOENT"
+  );
+});
+
 test("finalizeChapterFile respects a pre-aborted signal", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-final-abort-"));
   const { projectRoot, project } = await createProject(root, {

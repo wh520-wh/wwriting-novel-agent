@@ -46,7 +46,6 @@ const refs = {
   composer: document.querySelector("#composer"),
   slashMenu: document.querySelector("#slash-menu"),
   composerInput: document.querySelector("#composer-input"),
-  cbarSlash: document.querySelector("#cbar-slash"),
   composerHint: document.querySelector("#composer-hint"),
   composerSubmit: document.querySelector("#composer-submit"),
   drawerScrim: document.querySelector("#drawer-scrim"),
@@ -305,12 +304,6 @@ refs.drawerTabs.addEventListener("click", (event) => {
 });
 
 refs.composerSubmit.addEventListener("click", () => submitComposer());
-refs.cbarSlash.addEventListener("click", () => {
-  refs.composerInput.value = "/";
-  refs.composerInput.focus();
-  autoGrowComposer();
-  updateSlashMenu();
-});
 refs.composerInput.addEventListener("keydown", onComposerKeydown);
 refs.composerInput.addEventListener("input", () => {
   autoGrowComposer();
@@ -985,7 +978,7 @@ function renderRecoveryBanner(data) {
   banner.className = "recovery-startup-banner";
   const iconSpan = document.createElement("span");
   iconSpan.className = "recovery-banner-icon";
-  iconSpan.textContent = "⚡";
+  iconSpan.append(icon("bolt", 16));
   const text = document.createElement("div");
   text.className = "recovery-banner-text";
   const strong = document.createElement("strong");
@@ -1208,7 +1201,7 @@ function renderTruthIndicator(truth) {
   dot.className = "pdot";
   refs.status.replaceChildren(dot, document.createTextNode(truth.display));
   refs.status.title = truth.reason ?? "";
-  if (refs.topbar) refs.topbar.classList.toggle("is-busy", truth.className === "running" || truth.className === "slow" || truth.className === "stale");
+  if (refs.topbar) refs.topbar.classList.toggle("is-busy", truth.className === "running" || truth.className === "cancelling");
   renderTopbarAction(refs.topbarStop, "停止", false, handleStop, truth.reason);
   renderTopbarAction(refs.topbarRetry, "重试", truth.showRetry, handleRetry, truth.reason);
 }

@@ -75,7 +75,7 @@ test("agent truth: 任务已入队但 project_status 仍为 idle 时显示排队
   }), now);
 
   assert.equal(truth.display, "排队中");
-  assert.notEqual(truth.display, "待命");
+  assert.notEqual(truth.display, "空闲");
   assert.equal(truth.className, "running");
   assert.equal(truth.showRetry, false);
 });
@@ -90,13 +90,13 @@ test("agent truth: 仅队列存在 queued 任务（stage 未知）也显示排�
   assert.equal(truth.className, "running");
 });
 
-test("agent truth: 无排队任务且状态 idle 仍为待命", () => {
+test("agent truth: 无排队任务且状态 idle 仍为空闲", () => {
   const truth = computeAgentTruth(data({
     summary: { projectStatus: "idle", currentStage: null },
     queue: { tasks: [{ index: 3, status: "completed" }] }
   }), now);
 
-  assert.equal(truth.display, "待命");
+  assert.equal(truth.display, "空闲");
   assert.equal(truth.className, "idle");
 });
 

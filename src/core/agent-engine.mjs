@@ -13,7 +13,7 @@ import { assertToolCallForChapter, runWordCountGate, runTitleGate, runWordCapGat
 import { checkTimeline, summarizeTimelineViolations, describeStoryClock } from "./timeline-check.mjs";
 import { collectSkillPromptHooks, loadEnabledSkills, runPostProcessHooks, runSkillChecks } from "./skill-runtime.mjs";
 import { ensureDefaultToolHooks, runAfterToolUse, runBeforeToolUse } from "./tool-hooks.mjs";
-import { appendChapterSegment, chapterFileName, finalizeChapterFile, readDraft, ToolValidationError } from "./tool-runtime.mjs";
+import { appendChapterSegment, chapterFileName, detectNonProseContent, finalizeChapterFile, readDraft, ToolValidationError } from "./tool-runtime.mjs";
 import { buildContinuityPromptContext, buildRelevantFacts, recordChapterMemory } from "./chapter-memory.mjs";
 import { loadOutputStyles } from "./output-style-loader.mjs";
 import fs from "node:fs/promises";
@@ -1593,6 +1593,18 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
         });
         await recordRejectionFeedback(null, agentLoopFeedback.message);
         return { ok: false, summary: "output_too_short", ...(stop ?? {}) };
+      }
+      const nonProseCheck = detectNonProseContent(prose);
+      if (nonProseCheck.isNonProse) {
+        agentLoopFeedback = { message: `检测到非正文内容：${nonProseCheck.reason}。请只输出小说正文，不要复述工具调用或错误信息。` };
+        const stop = await rejectOutput("non_prose_output", {
+          attempt: ctx.turn,
+          char_count: prose.length,
+          message: agentLoopFeedback.message,
+          severity: "warn",
+        });
+        await recordRejectionFeedback(null, agentLoopFeedback.message);
+        return { ok: false, summary: "non_prose_output", ...(stop ?? {}) };
       }
       const wrapped = { type: "tool_call", tool: "append_chapter_segment",
         input: { project_id: request.project_id, chapter_no: request.chapter_no,

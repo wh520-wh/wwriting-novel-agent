@@ -42,6 +42,33 @@ class WrongProjectToolModel {
   }
 }
 
+class NonProseThenToolModel {
+  constructor() {
+    this.calls = 0;
+  }
+
+  async generate(request) {
+    this.calls += 1;
+    if (this.calls === 1) {
+      // 模拟 bug 场景：模型把工具调用被拒后的分析文字直接输出。
+      return {
+        type: "status_message",
+        message: "The read_chapter tool is not allowed right now. It seems the only allowed tool for this step is append_chapter_segment. Hmm, interesting. So I should just submit the prose directly via append_chapter_segment. OK."
+      };
+    }
+    return {
+      type: "tool_call",
+      tool: "append_chapter_segment",
+      input: {
+        project_id: request.project_id,
+        chapter_no: request.chapter_no,
+        segment_no: request.segment_no,
+        content: "雨声压低了城中的灯火，主角把线索藏进掌心，又在沉默里听见命运逼近。".repeat(20)
+      }
+    };
+  }
+}
+
 class CapturingModelClient {
   constructor() {
     this.costTracker = {
@@ -213,6 +240,27 @@ test("engine captures prose-as-text and retries on short output", async () => {
   assert.ok(events.some((event) => event.type === "tool_call_rejected" && event.data?.code === "output_too_short"));
   // 后续轮次模型调工具 → 章节完成
   assert.ok(events.some((event) => event.type === "chapter_completed"));
+});
+
+test("engine rejects direct prose output that contains tool reasoning", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-nonprose-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "project",
+    target_chapters: 1,
+    min_words_per_chapter: 250,
+    target_words_per_chapter: 300
+  });
+  await runProject(projectRoot, {
+    model: new NonProseThenToolModel()
+  });
+  const events = await readEvents(projectRoot);
+  // 第一轮非正文输出应被识别并拒绝
+  assert.ok(events.some((event) => event.type === "tool_call_rejected" && event.data?.code === "non_prose_output"));
+  // 第二轮工具调用提交后章节应完成
+  assert.ok(events.some((event) => event.type === "chapter_completed"));
+  const chapter = await fs.readFile(path.join(projectRoot, "chapters", "001.md"), "utf8");
+  assert.ok(!chapter.includes("read_chapter tool is not allowed"), "章节不应包含模型分析文字");
+  assert.ok(countEffectiveWords(chapter) >= 250);
 });
 
 test("project resumes from checkpoint after simulated interruption", async () => {

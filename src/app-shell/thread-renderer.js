@@ -591,12 +591,12 @@ export function createThreadRenderer(ctx) {
         detail: group.detail,
         status,
         meta: {
-          done: "完成",
-          running: writing ? "书写中" : "进行中",
-          blocked: "受阻",
-          interrupted: "已中断",
-          cancelled: "已停止",
-          todo: "排队"
+          done: "状态：完成",
+          running: writing ? "状态：书写中" : "状态：进行中",
+          blocked: "状态：受阻",
+          interrupted: "状态：已中断",
+          cancelled: "状态：已停止",
+          todo: "状态：排队"
         }[status],
         metaKind: writing ? "writing" : null,
         index: i + 1

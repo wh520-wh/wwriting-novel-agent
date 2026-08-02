@@ -170,7 +170,7 @@ export function createComposer(ctx) {
     if (activePlaceholder) {
       const msgs = data?.chatHistory?.messages ?? [];
       const lastTool = [...msgs].reverse().find((m) => m.role === "tool");
-      if (lastTool) activePlaceholder.setActivity(`${toolLabel(lastTool.tool, lastTool.args)}，继续思考`);
+      if (lastTool) activePlaceholder.setActivity(`动作：${toolLabel(lastTool.tool, lastTool.args)} · 继续思考`);
     }
   }
 
@@ -206,7 +206,7 @@ export function createComposer(ctx) {
     }
     pill.disabled = Boolean(project.archived_at);
     const tier = tierFromPermissions(project.tool_permissions);
-    pill.textContent = pill.disabled ? "📦 已归档" : tier.label;
+    pill.textContent = pill.disabled ? "已归档" : tier.label;
     pill.className = "cbar-pill"
       + (pill.disabled ? " cbar-pill--archived" : "")
       + (!pill.disabled && tier.id === "yolo" ? " cbar-pill--yolo" : "");
@@ -989,18 +989,14 @@ export function createComposer(ctx) {
       btn.setAttribute("data-tier-id", tier.id);
       btn.setAttribute("aria-checked", "false");
       btn.dataset.tierId = tier.id;
-      const glyph = document.createElement("span");
-      glyph.className = "mpi-glyph";
-      glyph.textContent = tier.glyph;
       const tx = document.createElement("span");
       tx.className = "mpi-tx";
       const strong = document.createElement("strong");
-      // 图标已在左侧方块用 tier.glyph 呈现，标题去掉 label 开头重复的符号
-      strong.textContent = tier.label.replace(/^\S+\s+/, "");
+      strong.textContent = tier.label;
       const small = document.createElement("small");
       small.textContent = TIER_DESC[tier.id];
       tx.append(strong, small);
-      btn.append(glyph, tx);
+      btn.append(tx);
       btn.addEventListener("click", onModePopoverItemClick);
       popover.append(btn);
     }
@@ -1008,7 +1004,7 @@ export function createComposer(ctx) {
     const warn = document.createElement("div");
     warn.className = "mode-popover-warn";
     warn.id = "mode-popover-warn";
-    warn.textContent = "⚠ 警告：YOLO 模式自动执行所有写与控制操作，包括章节编辑、设定更新和任务控制。";
+    warn.textContent = "警告：YOLO 模式自动执行所有写与控制操作，包括章节编辑、设定更新和任务控制。";
     warn.hidden = true;
     popover.append(warn);
 
