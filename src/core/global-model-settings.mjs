@@ -94,6 +94,48 @@ async function persistGlobalModel({
   return { saved, store, activeModel: withPricing };
 }
 
+// 写回式同步：把全局清单里的最新字段刷回项目的 active_model。
+//
+// 「改了设置里的模型，已有项目全部跟着变」靠这一步实现。只按 model_name 匹配：
+// 项目引用的模型还在全局清单里，就用清单里的地址 / 密钥变量名 / 价格等覆盖项目里
+// 的旧快照；匹配不到（例如演示模型 mock-writer）就原样不动。
+//
+// 放在服务端读项目的入口调用，写回磁盘后，引擎、对话、CLI 再读 project.yaml 时
+// 自然拿到新值，不需要逐层透传 secretsRoot。
+export async function refreshProjectModelFromGlobal(projectRoot, secretsRoot, {
+  readProject,
+  writeProject
+} = {}) {
+  if (!projectRoot || !secretsRoot || !readProject || !writeProject) {
+    return { changed: false, project: null };
+  }
+  const project = await readProject(projectRoot);
+  const modelName = project?.active_model?.model_name;
+  if (!modelName) return { changed: false, project };
+  const store = await loadLocalModelProfiles(secretsRoot);
+  const profile = store.models.find((item) => item.model_name === modelName);
+  if (!profile) return { changed: false, project };
+
+  const { id, saved_at, ...fields } = profile;
+  const current = project.active_model ?? {};
+  if (!differsFromCurrent(current, fields)) return { changed: false, project };
+  const next = { ...project, active_model: { ...current, ...fields } };
+  await writeProject(projectRoot, next);
+  return { changed: true, project: next };
+}
+
+function differsFromCurrent(current, fields) {
+  for (const [key, value] of Object.entries(fields)) {
+    const existing = current[key];
+    if (value && typeof value === "object") {
+      if (JSON.stringify(existing ?? null) !== JSON.stringify(value)) return true;
+      continue;
+    }
+    if (existing !== value) return true;
+  }
+  return false;
+}
+
 export async function removeGlobalModelProfile(secretsRoot, modelId) {
   const store = await removeLocalModelProfile(secretsRoot, modelId);
   if (!store) {
