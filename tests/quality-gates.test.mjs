@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runTitleGate, runWordCapGate, parseChineseChapterNo, buildFactCheckMessages, parseFactCheck } from "../src/core/quality-gates.mjs";
+import { runTitleGate, runWordCapGate, parseChineseChapterNo, buildFactCheckMessages, parseFactCheck, runWordCountGate } from "../src/core/quality-gates.mjs";
+import { parseStructuredOutput } from "../src/core/structured-output.mjs";
 
 const TITLE_BAD_SAMPLE = "# 第一章\n\n正文…\n\n## 第二章（第1章续）\n\n续写正文…";
 
@@ -172,4 +173,47 @@ test("parseFactCheck 失败时返回字符串 error + error_code 分类（向后
 
   const r2 = parseFactCheck("");
   assert.equal(r2.error_code, "empty_content");
+});
+
+// =============== runWordCountGate padding_risk + 防注水指令 ===============
+
+test("runWordCountGate 达标时 padding_risk 为 false", () => {
+  const r = runWordCountGate("字".repeat(500), 300, 500);
+  assert.equal(r.status, "passed");
+  assert.equal(r.padding_risk, false);
+});
+
+test("runWordCountGate 差距很小时标记 padding_risk 并追加防注水指令", () => {
+  const r = runWordCountGate("字".repeat(280), 300, 500);
+  assert.equal(r.status, "failed");
+  assert.equal(r.padding_risk, true);
+  assert.match(r.instruction, /不要.*(重复|堆砌|注水|凑)/u);
+});
+
+test("runWordCountGate 差距很大时不误判 padding_risk（内容本来就不够，非注水场景）", () => {
+  const r = runWordCountGate("字".repeat(50), 300, 500);
+  assert.equal(r.status, "failed");
+  assert.equal(r.padding_risk, false);
+});
+
+test("runWordCountGate 向后兼容：旧调用方省略 targetWords 仍正常工作", () => {
+  const r = runWordCountGate("字".repeat(280), 300);
+  assert.equal(r.status, "failed");
+  assert.equal(typeof r.shortfall, "number");
+});
+
+test("word_count@v1 schema 可解析 runWordCountGate 返回值（含 padding_risk）", () => {
+  const gate = runWordCountGate("字".repeat(280), 300, 500);
+  const parsed = parseStructuredOutput("word_count", "v1", JSON.stringify(gate));
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.data.gate, "word-count-gate");
+  assert.equal(parsed.data.status, "failed");
+  assert.equal(parsed.data.shortfall, 20);
+  assert.equal(parsed.data.padding_risk, true);
+  assert.match(parsed.data.instruction, /不要.*(重复|堆砌|注水|凑)/u);
+  // 缺 status 视为非法，返回可分类错误码
+  const bad = parseStructuredOutput("word_count", "v1", JSON.stringify({ actual_words: 100 }));
+  assert.equal(bad.ok, false);
+  assert.equal(bad.error.code, "missing_field");
+  assert.equal(bad.error.field, "status");
 });
