@@ -90,6 +90,16 @@ export async function applyFailureResolution(projectRoot, { command, args = {} }
       return { resumeRun: true, message: `token 上限已提高到 ${args.newMaxTotalTokens}，继续写作。` };
     }
 
+    case "lower-target-words": {
+      // 只降软目标 target_words_per_chapter，不动 min_words_per_chapter 硬门禁；
+      // 必须用 project_profile 包装——顶层 patch 会被 normalizeSettingsPatch 白名单静默丢弃。
+      await updateProjectSettings(projectRoot, {
+        project_profile: { target_words_per_chapter: args.newTargetWords }
+      });
+      await saveResumeableState(projectRoot);
+      return { resumeRun: true, message: `本章字数目标已降到 ${args.newTargetWords} 字，继续写作。` };
+    }
+
     case "switch-model": {
       const project = await loadProject(projectRoot);
       await updateProjectSettings(projectRoot, {

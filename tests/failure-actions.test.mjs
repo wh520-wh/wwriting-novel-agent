@@ -109,3 +109,21 @@ test("fill-words 注入补写指令事件", async () => {
   assert.ok(instruction, "应写入 user_instruction_received 事件");
   assert.ok(instruction.message.includes("820"));
 });
+
+test("lower-target-words 只改 target_words_per_chapter,不动 min_words_per_chapter", async () => {
+  const projectRoot = await makeProject("wwriting-lower-target-");
+  const result = await applyFailureResolution(projectRoot, { command: "lower-target-words", args: { newTargetWords: 2100 } });
+  assert.equal(result.resumeRun, true);
+  const project = await loadProject(projectRoot);
+  assert.equal(project.target_words_per_chapter, 2100);
+  assert.equal(project.min_words_per_chapter, 300);
+});
+
+test("lower-target-words 目标低于 min 时被既有约束顶到 min（硬门禁兜底）", async () => {
+  const projectRoot = await makeProject("wwriting-lower-target-clamp-");
+  const result = await applyFailureResolution(projectRoot, { command: "lower-target-words", args: { newTargetWords: 200 } });
+  assert.equal(result.resumeRun, true);
+  const project = await loadProject(projectRoot);
+  assert.equal(project.target_words_per_chapter, 300, "target 低于 min 时 settings-runtime 的 clamp 应顶到 min");
+  assert.equal(project.min_words_per_chapter, 300);
+});

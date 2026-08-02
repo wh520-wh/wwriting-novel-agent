@@ -65,13 +65,22 @@ function actionsForKind(kind, event) {
         { label: '改提示词后重试', command: 'retry-with-prompt', args: { prompt: '' } },
         { label: '停在这里我手动处理', command: 'pause-here', args: {} }
       ];
-    case 'loop-exhausted':
+    case 'loop-exhausted': {
       // 已自动重试 N 次仍失败 -> 把"换提示词重试"置前，简单重试大概率仍会失败。
-      return [
+      const actions = [
         { label: '改提示词后重试', command: 'retry-with-prompt', args: { prompt: '' } },
-        { label: '让它再试一次', command: 'retry-segment', args: {} },
-        { label: '停在这里我手动处理', command: 'pause-here', args: {} }
+        { label: '让它再试一次', command: 'retry-segment', args: {} }
       ];
+      // 若耗尽原因是字数门禁反复不达标，给一个"降低目标"的具体选项，
+      // 而不是让用户只能反复改提示词硬试（对照 AskUserQuestion：高风险分支给结构化选项）。
+      if (data.last_gate === 'word-count-gate' && data.target_words) {
+        const lowered = Math.max(300, Math.round(data.target_words * 0.7));
+        actions.push({ label: `降低本段字数目标到 ${lowered} 字`, command: 'lower-target-words', args: { newTargetWords: lowered } });
+      }
+      actions.push({ label: '跳过本段', command: 'skip-segment', args: {}, destructive: true });
+      actions.push({ label: '停在这里我手动处理', command: 'pause-here', args: {} });
+      return actions;
+    }
     case 'budget-exhausted': {
       if (event.message === 'cost_budget_exhausted') {
         const currentMax = data.max_cost ?? 1;

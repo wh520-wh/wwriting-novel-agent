@@ -154,3 +154,19 @@ test("deriveFailureCard: 非 provider-error 卡不读 data.status/reason(避免 
   assert.equal(card.diagnostics.providerReason, null);
   assert.equal(card.diagnostics.providerBody, null);
 });
+
+test("loop-exhausted 故障卡追加跳过本段选项", () => {
+  const card = deriveFailureCard({ type: "project_blocked", chapter_no: 3, message: "agent_loop_exhausted", data: { code: "agent_loop_exhausted" } }, { current_chapter_no: 3 });
+  const commands = card.actions.map((a) => a.command);
+  assert.ok(commands.includes("skip-segment"), "loop-exhausted 应包含跳过本段选项");
+});
+
+test("loop-exhausted 因字数门禁反复失败时,追加降低字数目标选项", () => {
+  const card = deriveFailureCard(
+    { type: "project_blocked", chapter_no: 3, message: "agent_loop_exhausted", data: { code: "agent_loop_exhausted", last_gate: "word-count-gate", target_words: 3000 } },
+    { current_chapter_no: 3 }
+  );
+  const lowerAction = card.actions.find((a) => a.command === "lower-target-words");
+  assert.ok(lowerAction, "字数门禁导致耗尽时应提供降低目标选项");
+  assert.ok(lowerAction.args.newTargetWords < 3000);
+});
