@@ -154,21 +154,28 @@ describe('renderActivityStrip', () => {
     renderActivityStrip(root, makeActivity({ stage: 'drafting' }));
     const stage = root.children.find(c => c.className.includes('as-stage'));
     assert.ok(stage, 'stage slot should exist');
-    assert.equal(stage.textContent, '● 起草');
+    assert.equal(stage.textContent, '阶段：起草');
   });
 
   it('5b. renders stage slot with fallback for unknown stage', () => {
     const root = new MockElement('div');
     renderActivityStrip(root, makeActivity({ stage: 'unknown_stage' }));
     const stage = root.children.find(c => c.className.includes('as-stage'));
-    assert.equal(stage.textContent, '● unknown_stage');
+    assert.equal(stage.textContent, '阶段：unknown_stage');
   });
 
   it('5c. translates idle stage to Chinese (no raw English)', () => {
     const root = new MockElement('div');
     renderActivityStrip(root, makeActivity({ stage: 'idle' }));
     const stage = root.children.find(c => c.className.includes('as-stage'));
-    assert.equal(stage.textContent, '● 空闲');
+    assert.equal(stage.textContent, '阶段：空闲');
+  });
+
+  it('5d. shows 空闲 stage text when mode is idle regardless of stale stage value', () => {
+    const root = new MockElement('div');
+    renderActivityStrip(root, makeActivity({ mode: 'idle', stage: 'drafting' }));
+    const stage = root.children.find(c => c.className.includes('as-stage'));
+    assert.equal(stage.textContent, '阶段：空闲');
   });
 
   it('6. renders chapter location with segment info', () => {
@@ -176,7 +183,7 @@ describe('renderActivityStrip', () => {
     renderActivityStrip(root, makeActivity({ chapterNo: 5, segCurrent: 3, segTotal: 10 }));
     const loc = root.children.find(c => c.className.includes('as-loc'));
     assert.ok(loc, 'loc slot should exist');
-    assert.equal(loc.textContent, '第 5 章 · seg 3/10');
+    assert.equal(loc.textContent, '位置：第 5 章 · seg 3/10');
   });
 
   it('6b. renders chapter location without segment when segCurrent is null', () => {
@@ -184,14 +191,14 @@ describe('renderActivityStrip', () => {
     renderActivityStrip(root, makeActivity({ chapterNo: 5, segCurrent: null, segTotal: null }));
     const loc = root.children.find(c => c.className.includes('as-loc'));
     assert.ok(loc, 'loc slot should exist');
-    assert.equal(loc.textContent, '第 5 章');
+    assert.equal(loc.textContent, '位置：第 5 章');
   });
 
   it('6c. renders chapter location with ? when segTotal is missing', () => {
     const root = new MockElement('div');
     renderActivityStrip(root, makeActivity({ chapterNo: 5, segCurrent: 3, segTotal: null }));
     const loc = root.children.find(c => c.className.includes('as-loc'));
-    assert.equal(loc.textContent, '第 5 章 · seg 3/?');
+    assert.equal(loc.textContent, '位置：第 5 章 · seg 3/?');
   });
 
   it('7. renders tool status with friendly label for done', () => {
@@ -199,28 +206,28 @@ describe('renderActivityStrip', () => {
     renderActivityStrip(root, makeActivity({ lastTool: { name: 'append_chapter_segment', status: 'done' } }));
     const tool = root.children.find(c => c.className.includes('as-tool'));
     assert.ok(tool, 'tool slot should exist');
-    assert.equal(tool.textContent, '✓ 写入章节内容');
+    assert.equal(tool.textContent, '动作：写入章节内容 · 完成');
   });
 
   it('7b. renders tool status with friendly label for pending', () => {
     const root = new MockElement('div');
     renderActivityStrip(root, makeActivity({ lastTool: { name: 'edit_chapter', status: 'pending' } }));
     const tool = root.children.find(c => c.className.includes('as-tool'));
-    assert.equal(tool.textContent, '→ 修改章节');
+    assert.equal(tool.textContent, '动作：修改章节 · 进行');
   });
 
   it('7c. renders tool status with friendly label for failed', () => {
     const root = new MockElement('div');
     renderActivityStrip(root, makeActivity({ lastTool: { name: 'update_outline', status: 'failed' } }));
     const tool = root.children.find(c => c.className.includes('as-tool'));
-    assert.equal(tool.textContent, '✗ 更新写作计划');
+    assert.equal(tool.textContent, '动作：更新写作计划 · 失败');
   });
 
   it('7d. degrades unknown tool name to toolLabel fallback (no raw name)', () => {
     const root = new MockElement('div');
     renderActivityStrip(root, makeActivity({ lastTool: { name: 'some_unknown_tool', status: 'pending' } }));
     const tool = root.children.find(c => c.className.includes('as-tool'));
-    assert.equal(tool.textContent, '→ 工具 some_unknown_tool');
+    assert.equal(tool.textContent, '动作：工具 some_unknown_tool · 进行');
   });
 
   it('8. renders elapsed time in MM:SS format', () => {
@@ -259,7 +266,7 @@ describe('renderActivityStrip', () => {
     renderActivityStrip(root, makeActivity(), { privacy: true });
     const loc = root.children.find(c => c.className.includes('as-loc'));
     assert.ok(loc, 'loc slot should exist');
-    assert.equal(loc.textContent, '█████');
+    assert.equal(loc.textContent, '位置：█████');
   });
 
   it('10b. privacy-masks tool name when privacy=true', () => {
@@ -268,7 +275,7 @@ describe('renderActivityStrip', () => {
     const tool = root.children.find(c => c.className.includes('as-tool'));
     assert.ok(tool, 'tool slot should exist');
     assert.ok(tool.textContent.includes('████'), 'tool name should be masked');
-    assert.ok(tool.textContent.startsWith('✓'), 'tool status symbol should still show');
+    assert.ok(tool.textContent.startsWith('动作：'), 'tool label prefix should still show');
   });
 
   it('11. calls onClickCost when cost is clicked', () => {

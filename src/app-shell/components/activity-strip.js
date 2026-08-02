@@ -11,20 +11,21 @@ export function renderActivityStrip(root, activity, { privacy = false, onClickCo
   root.classList.toggle('blocked', activity.mode === 'blocked' || activity.mode === 'interrupted');
 
   root.replaceChildren();
-  appendSlot(root, 'stage', `● ${translateStage(activity.stage) ?? '—'}`);
+  const stageText = activity.mode === 'idle' ? '空闲' : (translateStage(activity.stage) ?? '—');
+  appendSlot(root, 'stage', `阶段：${stageText}`);
   if (activity.chapterNo != null) {
     const loc = activity.segCurrent != null
       ? `第 ${activity.chapterNo} 章 · seg ${activity.segCurrent}/${activity.segTotal ?? '?'}`
       : `第 ${activity.chapterNo} 章`;
-    const locEl = appendSlot(root, 'loc', privacy ? '█████' : loc);
+    const locEl = appendSlot(root, 'loc', `位置：${privacy ? '█████' : loc}`);
     if (onClickChapter) { locEl.style.cursor = 'pointer'; locEl.addEventListener('click', onClickChapter); }
   }
   if (activity.lastTool) {
-    const sym = activity.lastTool.status === 'pending' ? '→' : activity.lastTool.status === 'failed' ? '✗' : '✓';
-    appendSlot(root, 'tool', `${sym} ${privacy ? '████' : toolLabel(activity.lastTool.name)}`);
+    const sym = activity.lastTool.status === 'pending' ? '进行' : activity.lastTool.status === 'failed' ? '失败' : '完成';
+    appendSlot(root, 'tool', `动作：${privacy ? '████' : toolLabel(activity.lastTool.name)} · ${sym}`);
   }
   if (activity.elapsedMs != null) {
-    appendSlot(root, 'time', `${formatDuration(activity.elapsedMs)} / ${activity.etaMs != null ? '~' + formatDuration(activity.etaMs) : '—'}`);
+    appendSlot(root, 'time', `耗时：${formatDuration(activity.elapsedMs)} / ${activity.etaMs != null ? '~' + formatDuration(activity.etaMs) : '—'}`);
   }
   if (activity.spentCost != null) {
     const costEl = appendSlot(root, 'cost', `￥${activity.spentCost.toFixed(2)}`);

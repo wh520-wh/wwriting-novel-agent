@@ -702,7 +702,8 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   font-size: 11px; flex: 0 0 auto;
 }
 .step.done .step-ic { background: var(--green-soft); color: var(--green); }
-.step.running .step-ic { background: var(--accent-soft); color: var(--accent); }
+.step.running { background: var(--accent-soft); }
+.step.running .step-ic { background: color-mix(in srgb, var(--accent-soft) 60%, var(--surface)); color: var(--accent); }
 .step.blocked .step-ic { background: var(--red-soft); color: var(--red); }
 .step-txt { min-width: 0; display: grid; gap: 1px; }
 .step-txt strong { font-size: 12.5px; font-weight: 600; }
@@ -928,7 +929,7 @@ button.cbar-pill--readonly:hover {
   padding: 6px 10px 4px;
 }
 .mode-popover-item {
-  display: grid; grid-template-columns: 22px minmax(0,1fr); gap: 10px; align-items: center;
+  display: grid; grid-template-columns: minmax(0,1fr); gap: 10px; align-items: center;
   padding: 8px 10px; border-radius: 9px; text-align: left;
   border: 1px solid transparent; background: transparent;
   cursor: pointer; color: var(--ink-2);
@@ -1697,7 +1698,7 @@ button.cbar-pill--readonly:hover {
   font-size: 12px;
   color: var(--ink-2);
 }
-.activity-strip.idle { height: 28px; }
+.activity-strip.idle { height: 36px; opacity: 0.85; }
 .activity-strip.blocked .as-stage { color: var(--red); }
 .as-slot { white-space: nowrap; }
 .as-slot:not(:last-child)::after {
@@ -2047,7 +2048,7 @@ button.cbar-pill--readonly:hover {
 /* permission tier radio group (settings → 权限与确认) */
 .spd-radio-group { display: grid; gap: 8px; margin-top: 8px; }
 .spd-radio-option {
-  display: grid; grid-template-columns: auto 22px minmax(0,1fr); gap: 10px; align-items: start;
+  display: grid; grid-template-columns: auto minmax(0,1fr); gap: 10px; align-items: start;
   padding: 10px 12px; border-radius: var(--r-md);
   border: 1px solid var(--line); background: var(--surface-2);
   cursor: pointer; transition: background .12s, border-color .12s, box-shadow .12s;

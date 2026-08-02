@@ -83,7 +83,7 @@ export function computeAgentTruth(data, now = Date.now()) {
   if (hasQueuedTask) {
     return { display: "排队中", className: "running", showRetry: false, showStop: true, refresh: true, reason: "" };
   }
-  return { display: "待命", className: "idle", showRetry: false, showStop: false, refresh: false, reason: "" };
+  return { display: "空闲", className: "idle", showRetry: false, showStop: false, refresh: false, reason: "" };
 }
 
 export function agentPhaseLabel(status, stage) {
