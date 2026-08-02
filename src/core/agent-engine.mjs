@@ -1718,7 +1718,10 @@ async function runWritingAgentLoop(projectRoot, project, state, runtime, request
       } else {
         await recordRejectionFeedback(null, agentLoopFeedback.message);
       }
-      return { ok: false, summary: "tool_error" };
+      // 工具执行异常也计入失败计数（评估报告 P2）：连续异常不应无限空转到 24 轮硬顶，
+      // 应该和校验失败/权限拒绝一样，走同一条 WRITING_AGENT_COMMIT_FAILURES 计数路径提早止损。
+      const stop = await rejectOutput("tool_error", { attempt: ctx.turn, tool: output.tool, message: `Tool ${output.tool} threw: ${error?.message ?? error}`, severity: "warn" });
+      return { ok: false, summary: "tool_error", ...(stop ?? {}) };
     }
     // === 搬运结束 ===
   };
