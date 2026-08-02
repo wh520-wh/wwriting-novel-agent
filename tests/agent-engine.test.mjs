@@ -1622,14 +1622,19 @@ class FactCheckUnresolvedModelClient {
     const costSummary = { calls: this.calls, inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCost: 0 };
     const modelConfig = { provider: "openai-compatible", model_name: "fc-unres" };
 
-    // fact-check 总返回冲突（模拟模型改不对，fact-check 一直报同样矛盾）
+    // fact-check 返回冲突：第一次 2 个、之后每轮 1 个（先降后稳）。
+    // 冲突数首轮下降说明模型“有进展”，不会触发停滞提前终止（连续 2 轮无改善），
+    // 从而保留对“3 轮打满硬上限 -> rounds_exhausted 软降级”路径的覆盖；
+    // 若每轮返回相同数量，则会命中新增的停滞检测在第 3 次 review 提前 block（见 StallFactCheckModelClient）。
     if (metadata.factCheck) {
       this.factCheckCalls += 1;
+      const conflictCount = this.factCheckCalls === 1 ? 2 : 1;
+      const conflicts = Array.from({ length: conflictCount }, () => ({
+        draft_quote: "从十二楼坠落", conflicts_with: "坠楼楼层: 六楼", prior_chapter: 1,
+        severity: "high", suggestion: "把十二楼改回六楼", replace_with: "从六楼坠落"
+      }));
       return {
-        text: JSON.stringify({ conflicts: [{
-          draft_quote: "从十二楼坠落", conflicts_with: "坠楼楼层: 六楼", prior_chapter: 1,
-          severity: "high", suggestion: "把十二楼改回六楼", replace_with: "从六楼坠落"
-        }] }),
+        text: JSON.stringify({ conflicts }),
         usageReport, costSummary, modelConfig
       };
     }
@@ -1675,6 +1680,96 @@ test("ADR-0001 软降级：fact-check 3 轮仍有冲突 -> block 本章交用户
   assert.ok(events.some((e) => e.type === "project_blocked" && e.data?.reason === "fact_check_unresolved"), "应有软降级 block 事件");
   const history = await readChatHist(projectRoot);
   assert.ok(history.some((m) => m.proactive === "fact_check" && m.content.includes("人工核对")), "应有通知用户人工核对的主动消息");
+});
+
+// 评估报告 P3（进展检测硬化）：fact-check 每轮返回相同数量冲突（模型无法收敛）时，
+// reviewChapter 应在连续 2 轮无改善后提前 block，不再强制跑满硬上限 3 轮。
+class StallFactCheckModelClient {
+  constructor({ conflictCount = 2 } = {}) {
+    this.calls = 0;
+    // factCheckCalls：fact-check 相关的模型 generate 调用次数
+    //（每次 runFactCheck 恰好 1 次 generate；其余为 drafting/revise 的写作调用，不计入）
+    this.factCheckCalls = 0;
+    this.conflictCount = conflictCount;
+    this.costTracker = {
+      record() { return { calls: 1, inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCost: 0 }; },
+      async recordRefill() {},
+      async writeProjectReport() {}
+    };
+    this.prompts = [];
+  }
+
+  async generate({ prompt, metadata }) {
+    this.calls += 1;
+    this.prompts.push(prompt);
+    const request = metadata.toolRequest;
+    const usageReport = {
+      provider: "openai-compatible", model: "fc-stall",
+      inputTokens: 1, outputTokens: 1, totalTokens: 2,
+      cachedTokens: 0, cacheHitTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+      reasoningTokens: 0, cacheMetricsAvailable: false, cacheHitRate: null,
+      estimatedCost: 0, rawUsage: {}
+    };
+    const costSummary = { calls: this.calls, inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCost: 0 };
+    const modelConfig = { provider: "openai-compatible", model_name: "fc-stall" };
+
+    // fact-check 调用：每轮返回相同数量冲突（模拟模型无法收敛）
+    if (metadata.factCheck) {
+      this.factCheckCalls += 1;
+      const conflicts = Array.from({ length: this.conflictCount }, () => ({
+        draft_quote: "从十二楼坠落", conflicts_with: "坠楼楼层: 六楼", prior_chapter: 1,
+        severity: "high", suggestion: "把十二楼改回六楼", replace_with: "从六楼坠落"
+      }));
+      return { text: JSON.stringify({ conflicts }), usageReport, costSummary, modelConfig };
+    }
+
+    // 写作调用：drafting 与 revise 都 append 达标正文（聚焦停滞检测，不验证修订有效性）
+    if (request) {
+      const filler = Array.from({ length: 130 }, (_, i) => `停滞草稿${i}`).join(" ");
+      return {
+        text: "",
+        raw: { output: { type: "tool_call", tool: "append_chapter_segment", input: {
+          project_id: request.project_id, chapter_no: request.chapter_no, segment_no: request.segment_no,
+          content: `${filler}刘康从十二楼坠落。`
+        } } },
+        usageReport, costSummary, modelConfig
+      };
+    }
+    return { text: "", usageReport, costSummary, modelConfig };
+  }
+}
+
+test("fact-check 冲突数连续 2 轮未减少时提前终止，不跑满 3 轮", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-factcheck-stall-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "project", target_chapters: 1, min_words_per_chapter: 100, target_words_per_chapter: 120
+  });
+  // provider 必须是非 mock（mock 会跳过 fact-check）；预存 continuity facts 供比对
+  const project = await loadProject(projectRoot);
+  project.active_model = { provider: "openai-compatible", model_name: "fc-stall", base_url: "http://localhost:0", api_key_env: "FAKE_KEY" };
+  await saveProject(projectRoot, project);
+  await saveContinuity(projectRoot, {
+    schema_version: 1,
+    facts: [{ entity: "刘康", attribute: "坠楼楼层", value: "六楼", chapter_no: 1, quote: "六楼。", conflict_with: null }],
+    timeline: [], characters: []
+  });
+
+  // StallFactCheckModelClient：每轮 fact-check 返回相同数量的冲突（模拟模型无法收敛）
+  const client = new StallFactCheckModelClient({ conflictCount: 2 });
+  const result = await runProject(projectRoot, { modelClient: client });
+
+  // 注：计划初稿断言 factCheckCalls <= 2，但“连续 2 轮无改善”语义要求 block 发生在
+  // 第 3 次进入 reviewChapter 时（第 1 次为基线无 stall，第 2/3 次才累计到 stallCount=2），
+  // 即修复后 fact-check 实际调用 3 次（第 3 轮修订不再应用）；修复前为 4 次（跑满硬上限）。
+  // 故以 <= 3 为界：修复前失败（4 次）、修复后通过（3 次）。
+  assert.ok(result.blocked, "冲突未收敛应触发 blocked");
+  assert.equal(result.reason, "fact_check_unresolved", "block 原因应是 fact_check_unresolved");
+  assert.ok(client.factCheckCalls <= 3, `应在第 2 轮停滞后提前终止,实际调用 ${client.factCheckCalls} 次`);
+  const events = await readEvents(projectRoot);
+  assert.ok(events.some((e) => e.type === "project_blocked" && e.data?.reason === "fact_check_unresolved"), "应有 fact-check 软降级 block 事件");
+  // 应走“停滞”文案路径（而非“跑满轮次”路径），并在主动消息中通知用户人工核对
+  const history = await readChatHist(projectRoot);
+  assert.ok(history.some((m) => m.proactive === "fact_check" && m.content.includes("停滞")), "停滞判定应通知用户人工核对");
 });
 
 test("ADR-0001 决策 6：第二轮冲突数未减少时 feedback 含 progress_hint 让模型换思路", async () => {

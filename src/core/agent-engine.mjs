@@ -487,18 +487,29 @@ async function reviewChapter(projectRoot, project, state, runtime) {
     const fcBudget = withBudgetDefaults(state);
     const fcKey = String(state.current_chapter_no);
     const fcRounds = fcBudget.fact_check_rounds_by_chapter[fcKey] ?? 0;
-    if (fcRounds >= fcBudget.max_fact_check_rounds_per_chapter) {
-      await blockFactCheckUnresolved(projectRoot, project, state, factCheck.conflicts, fcRounds);
+    const fcLastCount = fcBudget.last_fact_check_conflict_count_by_chapter?.[fcKey] ?? null;
+    const priorStallCount = fcBudget.fact_check_stall_count_by_chapter?.[fcKey] ?? 0;
+    const notImproved = fcRounds > 0 && fcLastCount !== null && fcLastCount <= factCheck.conflicts.length;
+    const stallCount = notImproved ? priorStallCount + 1 : 0;
+
+    // 停滞检测（评估报告 P3，进展检测硬化）：连续 2 轮冲突数未减少 -> 提前 block，
+    // 不等硬上限。语义：最多应用 2 轮修订就停（block 发生在第 3 次 review 进入时，
+    // fact_check_rounds_by_chapter 停在 2，不会应用到第 3 轮），比固定跑满 3 轮更快止损，
+    // 但不会 1 轮就放弃（给模型至少 1 次改进机会）。
+    if (fcRounds >= fcBudget.max_fact_check_rounds_per_chapter || stallCount >= 2) {
+      await blockFactCheckUnresolved(projectRoot, project, state, factCheck.conflicts, fcRounds, {
+        reason: stallCount >= 2 ? "stalled" : "rounds_exhausted"
+      });
       return;
     }
     // 决策 6：读取上次冲突数，用于进展提示（冲突数没减少 -> 告诉模型换思路）
-    const fcLastCount = fcBudget.last_fact_check_conflict_count_by_chapter?.[fcKey] ?? null;
     const stateWithRound = {
       ...state,
       active_budget: {
         ...fcBudget,
         fact_check_rounds_by_chapter: { ...fcBudget.fact_check_rounds_by_chapter, [fcKey]: fcRounds + 1 },
-        last_fact_check_conflict_count_by_chapter: { ...fcBudget.last_fact_check_conflict_count_by_chapter, [fcKey]: factCheck.conflicts.length }
+        last_fact_check_conflict_count_by_chapter: { ...fcBudget.last_fact_check_conflict_count_by_chapter, [fcKey]: factCheck.conflicts.length },
+        fact_check_stall_count_by_chapter: { ...fcBudget.fact_check_stall_count_by_chapter, [fcKey]: stallCount }
       }
     };
     await applyFactCheckConflicts(projectRoot, project, stateWithRound, factCheck.conflicts, fcRounds + 1, fcLastCount);
@@ -842,9 +853,14 @@ export async function applyFactCheckConflicts(projectRoot, project, state, confl
 // ADR-0001 决策 5：fact-check 冲突达到硬上限（3 轮）仍有冲突 -> 软降级。
 // 不静默放过、不硬改。block 本章（项目 paused），通知用户人工核对。
 // 对标 Claude Code：跑不过测试就停下来问用户，绝不硬改糊弄。
-async function blockFactCheckUnresolved(projectRoot, project, state, conflicts, rounds) {
+// 评估报告 P3：reason 区分“跑满轮次”（rounds_exhausted）与“连续 2 轮无改善提前判定停滞”（stalled），
+// 仅影响主动消息文案，block 行为（reason/事件/故障卡）保持一致。
+async function blockFactCheckUnresolved(projectRoot, project, state, conflicts, rounds, { reason = "rounds_exhausted" } = {}) {
   const chapterNo = state.current_chapter_no;
-  const note = `第 ${chapterNo} 章经 ${rounds} 轮修订仍有 ${conflicts.length} 个设定矛盾，模型无法自动解决。请人工核对正文与设定档案（continuity），修正后恢复项目。`;
+  const reasonText = reason === "stalled"
+    ? `第 ${chapterNo} 章连续 2 轮修订冲突数未减少，判定为停滞，提前终止`
+    : `第 ${chapterNo} 章经 ${rounds} 轮修订仍有 ${conflicts.length} 个设定矛盾，模型无法自动解决`;
+  const note = `${reasonText}。请人工核对正文与设定档案（continuity），修正后恢复项目。`;
   const next = setStage({
     ...state,
     project_status: "blocked",
@@ -2043,6 +2059,9 @@ function withBudgetDefaults(state) {
     max_fact_check_rounds_per_chapter: 3,
     // 决策 6：跟踪上次冲突数，用于进展提示（冲突数没减少 -> 告诉模型换思路）
     last_fact_check_conflict_count_by_chapter: {},
+    // 评估报告 P3：跟踪连续未改善轮数（冲突数未减少 -> +1，减少 -> 归零），
+    // 达到 2 即判定停滞提前终止，不再强制跑满硬上限
+    fact_check_stall_count_by_chapter: {},
     max_cost: null,
     max_total_tokens: null,
     ...(state.active_budget ?? {})
