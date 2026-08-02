@@ -1623,9 +1623,11 @@ class FactCheckUnresolvedModelClient {
     const modelConfig = { provider: "openai-compatible", model_name: "fc-unres" };
 
     // fact-check 返回冲突：第一次 2 个、之后每轮 1 个（先降后稳）。
-    // 冲突数首轮下降说明模型“有进展”，不会触发停滞提前终止（连续 2 轮无改善），
-    // 从而保留对“3 轮打满硬上限 -> rounds_exhausted 软降级”路径的覆盖；
-    // 若每轮返回相同数量，则会命中新增的停滞检测在第 3 次 review 提前 block（见 StallFactCheckModelClient）。
+    // 冲突数首轮下降说明模型“有进展”，不会在早期触发停滞提前终止；
+    // 但第 4 次 review 时 fcRounds 达硬上限 3 且 stallCount 也累计到 2——两条件同轮触发，
+    // 依“硬上限优先归因”规则（见 agent-engine.mjs reviewChapter）走 rounds_exhausted 文案，
+    // 保住对“3 轮打满硬上限 -> 软降级”路径的覆盖（测试断言“经 3 轮修订仍有”锁定该分支）；
+    // 若每轮返回相同数量，则会命中停滞检测在第 3 次 review 提前 block（见 StallFactCheckModelClient）。
     if (metadata.factCheck) {
       this.factCheckCalls += 1;
       const conflictCount = this.factCheckCalls === 1 ? 2 : 1;
@@ -1680,6 +1682,9 @@ test("ADR-0001 软降级：fact-check 3 轮仍有冲突 -> block 本章交用户
   assert.ok(events.some((e) => e.type === "project_blocked" && e.data?.reason === "fact_check_unresolved"), "应有软降级 block 事件");
   const history = await readChatHist(projectRoot);
   assert.ok(history.some((m) => m.proactive === "fact_check" && m.content.includes("人工核对")), "应有通知用户人工核对的主动消息");
+  // 锁 rounds_exhausted 文案分支：硬上限与停滞同轮触发时（第 4 次 review）归因“跑满轮次”，
+  // 而非“提前终止停滞”（reason 优先级：硬上限优先，见 agent-engine.mjs reviewChapter）
+  assert.ok(history.some((m) => m.proactive === "fact_check" && m.content.includes("经 3 轮修订仍有")), "硬上限路径主动消息应为 rounds_exhausted 文案");
 });
 
 // 评估报告 P3（进展检测硬化）：fact-check 每轮返回相同数量冲突（模型无法收敛）时，
@@ -1760,11 +1765,11 @@ test("fact-check 冲突数连续 2 轮未减少时提前终止，不跑满 3 轮
 
   // 注：计划初稿断言 factCheckCalls <= 2，但“连续 2 轮无改善”语义要求 block 发生在
   // 第 3 次进入 reviewChapter 时（第 1 次为基线无 stall，第 2/3 次才累计到 stallCount=2），
-  // 即修复后 fact-check 实际调用 3 次（第 3 轮修订不再应用）；修复前为 4 次（跑满硬上限）。
-  // 故以 <= 3 为界：修复前失败（4 次）、修复后通过（3 次）。
+  // 即修复后 fact-check 恰好调用 3 次（第 3 轮修订不再应用）；修复前为 4 次（跑满硬上限）。
+  // 用严格相等锁定：既能抓住“提前终止过晚”（4 次），也能抓住“过早终止”（1-2 次）。
   assert.ok(result.blocked, "冲突未收敛应触发 blocked");
   assert.equal(result.reason, "fact_check_unresolved", "block 原因应是 fact_check_unresolved");
-  assert.ok(client.factCheckCalls <= 3, `应在第 2 轮停滞后提前终止,实际调用 ${client.factCheckCalls} 次`);
+  assert.equal(client.factCheckCalls, 3, `应在第 2 轮停滞后提前终止,实际调用 ${client.factCheckCalls} 次`);
   const events = await readEvents(projectRoot);
   assert.ok(events.some((e) => e.type === "project_blocked" && e.data?.reason === "fact_check_unresolved"), "应有 fact-check 软降级 block 事件");
   // 应走“停滞”文案路径（而非“跑满轮次”路径），并在主动消息中通知用户人工核对

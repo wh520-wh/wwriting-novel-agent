@@ -497,8 +497,12 @@ async function reviewChapter(projectRoot, project, state, runtime) {
     // fact_check_rounds_by_chapter 停在 2，不会应用到第 3 轮），比固定跑满 3 轮更快止损，
     // 但不会 1 轮就放弃（给模型至少 1 次改进机会）。
     if (fcRounds >= fcBudget.max_fact_check_rounds_per_chapter || stallCount >= 2) {
+      // reason 优先级：硬上限优先于停滞。两者同轮触发时（如先有进展、后停滞的 2→1→1→1
+      // 序列，第 4 次 review 时 fcRounds 已达上限且 stallCount 也累计到 2），实际跑满了
+      // 3 轮修订，归因应写“跑满轮次”（rounds_exhausted）而非“提前终止停滞”；
+      // stalled 仅用于未达上限、因连续无改善而提前 block 的场景。
       await blockFactCheckUnresolved(projectRoot, project, state, factCheck.conflicts, fcRounds, {
-        reason: stallCount >= 2 ? "stalled" : "rounds_exhausted"
+        reason: fcRounds >= fcBudget.max_fact_check_rounds_per_chapter ? "rounds_exhausted" : "stalled"
       });
       return;
     }
