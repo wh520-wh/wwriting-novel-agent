@@ -23,7 +23,6 @@ import { getTierById } from "./permission-tiers.mjs";
 const refs = {
   app: document.querySelector("#app"),
   refresh: document.querySelector("#refresh"),
-  railNav: document.querySelector("#rail-nav"),
   newNovel: document.querySelector("#new-novel"),
   projectCount: document.querySelector("#project-count"),
   projectFilter: document.querySelector("#project-filter"),
@@ -54,7 +53,6 @@ const refs = {
   drawerTabs: document.querySelector("#drawer-tabs"),
   drawerBody: document.querySelector("#drawer-body"),
   readerScrim: document.querySelector("#reader-scrim"),
-  readerPath: document.querySelector("#reader-path"),
   readerTitle: document.querySelector("#reader-title"),
   readerMeta: document.querySelector("#reader-meta"),
   readerClose: document.querySelector("#reader-close"),
@@ -92,7 +90,6 @@ const refs = {
   topbar: document.querySelector(".topbar"),
   quickRail: document.querySelector("#quick-rail"),
   topbarStop: document.querySelector("#topbar-stop"),
-  topbarRetry: document.querySelector("#topbar-retry"),
   activityStrip: document.getElementById("activity-strip"),
   projectWorkbench: document.querySelector("#project-workbench"),
   workbenchCover: document.querySelector("#workbench-cover"),
@@ -496,24 +493,6 @@ initCardFold({
   body: refs.writeReadinessBody,
   foldKey: "wwriting.card.fold.write-readiness",
 });
-
-function renderRailNav() {
-  const items = [
-    { key: "new", icon: "compose", label: "新对话" },
-    { key: "skill", icon: "skill", label: "技能" }
-  ];
-  refs.railNav.replaceChildren(...items.map((item) => {
-    const button = document.createElement("button");
-    button.className = "nav-item";
-    button.type = "button";
-    button.append(icon(item.icon, 16));
-    const span = document.createElement("span");
-    span.textContent = item.label;
-    button.append(span);
-    button.addEventListener("click", () => handleNav(item.key));
-    return button;
-  }));
-}
 
 async function loadAll() {
   await Promise.all([loadProjectList(), loadDashboard()]);
@@ -1020,11 +999,6 @@ function renderError(error) {
   ensureRefreshLoop(true);
 }
 
-function handleNav(key) {
-  if (key === "new") return openCreateModal();
-  if (key === "skill") return openDrawer("run");
-}
-
 function handleQuick(label) {
   if (label === "新建小说") return openCreateModal();
   if (label.includes("查看") && label.includes("正文")) {
@@ -1203,7 +1177,6 @@ function renderTruthIndicator(truth) {
   refs.status.title = truth.reason ?? "";
   if (refs.topbar) refs.topbar.classList.toggle("is-busy", truth.className === "running" || truth.className === "cancelling");
   renderTopbarAction(refs.topbarStop, "停止", false, handleStop, truth.reason);
-  renderTopbarAction(refs.topbarRetry, "重试", truth.showRetry, handleRetry, truth.reason);
 }
 
 function renderTopbarAction(button, label, visible, handler, title = "") {
@@ -1230,7 +1203,6 @@ function renderTopbarProgress(truth, pct) {
 }
 
 async function handleRetry(taskId = null) {
-  if (refs.topbarRetry) refs.topbarRetry.disabled = true;
   const resolvedTaskId = taskId ?? lastDashboard?.retry_task_id ?? null;
   try {
     const result = await postJson("/api/run/retry", resolvedTaskId ? { taskId: resolvedTaskId } : {});
@@ -1240,8 +1212,6 @@ async function handleRetry(taskId = null) {
   } catch (error) {
     showToast(error.message, "error");
     await loadDashboard();
-  } finally {
-    if (refs.topbarRetry) refs.topbarRetry.disabled = false;
   }
 }
 
@@ -1314,8 +1284,7 @@ function openAdjacentChapter(delta) {
 
 async function openReader(chapterNo) {
   readerChapterNo = chapterNo;
-  refs.readerPath.textContent = `chapters/${String(chapterNo).padStart(3, "0")}.md`;
-  refs.readerTitle.textContent = `第 ${String(chapterNo).padStart(3, "0")} 章`;
+  refs.readerTitle.textContent = `第 ${chapterNo} 章`;
   refs.readerMeta.textContent = "正在读取本章正文...";
   refs.readerBody.replaceChildren(readerEmpty("读取中..."));
   openOverlay(refs.readerScrim, refs.readerClose);
@@ -1323,8 +1292,8 @@ async function openReader(chapterNo) {
   updateReaderNav();
   try {
     const data = await getJson(`/api/chapters/read?chapter=${encodeURIComponent(chapterNo)}`);
-    refs.readerTitle.textContent = data.title ?? `第 ${String(chapterNo).padStart(3, "0")} 章`;
-    refs.readerMeta.textContent = `${data.is_draft ? "草稿" : "正式章节"} · ${translateStage(data.status)} · ${formatNumber(data.actual_words)} 字 · ${String(data.format ?? "md").toUpperCase()}`;
+    refs.readerTitle.textContent = data.title ?? `第 ${chapterNo} 章`;
+    refs.readerMeta.textContent = `${data.is_draft ? "草稿" : "正式章节"} · ${translateStage(data.status)} · ${formatNumber(data.actual_words)} 字`;
     const paragraphs = String(data.content ?? "").split(/\n{2,}/u).map((block) => block.trim()).filter(Boolean);
     if (paragraphs.length === 0) {
       refs.readerBody.replaceChildren(readerEmpty("本章正文为空。"));
@@ -1548,7 +1517,6 @@ function announce(msg) {
 
 
 // 模块体执行完毕（所有 const/let 已离开 TDZ）后再启动；防止首屏渲染触达后置声明导致静默 ReferenceError。
-renderRailNav();
 initThemeMode();
 initPrivacyMode();
 autoGrowComposer();

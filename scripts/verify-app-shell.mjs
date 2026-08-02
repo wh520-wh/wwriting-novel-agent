@@ -105,7 +105,7 @@ try {
   assert.ok(html.includes("故事设定"));
   assert.ok(html.includes("开始创作"));
   // 主列结构
-  assert.ok(html.includes("id=\"rail-nav\""));
+  assert.ok(html.includes("id=\"new-novel\""));
   assert.ok(html.includes("id=\"project-filter\""));
   assert.ok(html.includes("id=\"thread\""));
   assert.ok(html.includes("thread-wrap"));
@@ -136,7 +136,6 @@ try {
   assert.ok(html.includes("topbar"));
   assert.ok(html.includes("project-status"));
   assert.ok(html.includes("id=\"topbar-stop\""));
-  assert.ok(html.includes("id=\"topbar-retry\""));
   assert.ok(html.includes("id=\"topbar-progress\""));
   assert.ok(html.includes("privacy-toggle"));
   assert.ok(html.includes("隐私"));
