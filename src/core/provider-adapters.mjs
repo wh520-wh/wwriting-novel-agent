@@ -509,8 +509,9 @@ function chapterToolChoice(modelConfig = {}, hasMultipleTools = false) {
 // - DeepSeek thinking 判据：base_url 指向官方 API 且模型名命中 deepseek-v4-pro/deepseek-reasoner/
 //   reasoner（2026-07 官方文档修正 F1：deepseek-reasoner 是 v4-flash thinking 模式的旧别名，
 //   2026-07-24 已退役，名单保留以兼容旧配置）。
-// - v4-flash（官方三模式 non-thinking/thinking/thinking_max，默认 non-thinking）不再判为 reasoner：
-//   L3 缓存对其生效、tool_choice 走 deepseek-chat 同等普通路径；WWriting 不透传 thinking 参数，
+// - v4-flash（官方三模式 non-thinking/thinking/thinking_max，默认 non-thinking）不再判为 reasoner，
+//   但官方 API 实测按 thinking 处理：不走 L3 缓存（采样参数不支持，无 temperature=0 注入）、
+//   tool_choice 走 auto（与 v4-pro 同路径）；WWriting 不透传 thinking 参数，
 //   v4-flash 恒走默认 non-thinking——若未来暴露思考模式开关，需改为按「是否启用 thinking」判定。
 // - L3 确定性响应缓存：reasoner 系模型不支持 temperature 参数，不注入 temperature=0，
 //   因缓存确定性建立在显式 temperature=0 上，这类模型本轮不走缓存（见 model-client #prepareAuxiliaryCache）。
