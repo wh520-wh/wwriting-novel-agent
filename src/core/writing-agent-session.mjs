@@ -157,6 +157,10 @@ export class WritingAgentSession {
     this.followUpQueue.push(job);
   }
 
+  // 停止信号说明：生产路径的唯一停止入口是 app-server.mjs 的 job.controller.abort()，
+  // 通过 session.start({signal}) 传入后由 onExternalAbort 监听同步到内部 abortController（单向）。
+  // 本方法（session.abort()）是内部/测试可用的编程接口，效果等价，但生产代码不应直接调用它——
+  // 应始终通过外部 signal 触发停止，保持"唯一停止源"的心智模型，避免未来出现第二条不同步的停止路径。
   abort(reason = "user") {
     this.abortReason = reason;
     this.abortController?.abort();
