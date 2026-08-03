@@ -131,6 +131,9 @@ document.documentElement.dataset.desktopShell = desktop?.shell ?? "browser";
 document.documentElement.dataset.desktopPlatform = desktop?.platform ?? "browser";
 
 let currentProjectRoot = null;
+// SSE 流式订阅句柄与当前订阅项目：项目切换时在 loadDashboard 里重连；轮询保持兜底。
+let sseSource = null;
+let sseProjectRoot = null;
 let dashboardRequestId = 0;
 let refreshTimer = null;
 let drawerTab = "chapters";
@@ -564,6 +567,21 @@ async function loadDashboard(options = {}) {
   const requestId = ++dashboardRequestId;
   const activeProjectRoot = currentProjectRoot;
   let token = projectScope.capture(activeProjectRoot);
+
+  // SSE 流式订阅：模型 delta 与运行事件实时到达；轮询保持兜底。
+  if (currentProjectRoot && currentProjectRoot !== sseProjectRoot) {
+    sseProjectRoot = currentProjectRoot;
+    sseSource?.close();
+    sseSource = new EventSource(`/api/project/events?projectRoot=${encodeURIComponent(currentProjectRoot)}`);
+    sseSource.onmessage = (msg) => {
+      const event = JSON.parse(msg.data);
+      if (event.type === "model_delta") {
+        threadRenderer.onModelDelta?.(event.text);
+      } else {
+        threadRenderer.onRunEvent?.(event);
+      }
+    };
+  }
   if (options.silent !== true) {
     setStatus("loading");
   }

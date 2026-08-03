@@ -1303,6 +1303,9 @@ export function createThreadRenderer(ctx) {
     renderChatMessage,
     syncChatThread,
     submitChatMessage,
-    appendSuggestionCards
+    appendSuggestionCards,
+    // SSE 增量事件入口（Task 11 实现完整 live turn 状态机）
+    onRunEvent(event) { /* Task 11：并入 live turn 状态机 */ },
+    onModelDelta(text) { /* Task 11：live 正文逐字追加 */ }
   };
 }
