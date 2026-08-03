@@ -2598,3 +2598,200 @@ button.cbar-pill--readonly:hover {
   line-height: 1;
 }
 .sp-saved-del:hover { background: var(--surface-2); color: var(--ink); }
+
+/* ============================================================
+   Agent 一轮（turn）状态机：思考→工具→正文→段落→完成态
+   规格书《写作Agent对话样式规格书》2026-08-03 定稿：
+   无卡片无边框、无头像无署名；折叠态即终态；正文神圣。
+   配套原型：docs/mockups/agent-chat-prototype-v3.html
+   ============================================================ */
+
+/* Task 11 token 别名：规格书色板映射到纸感主题令牌（亮/暗自动翻转） */
+:root {
+  --text-dim: var(--muted);
+  --text-faint: var(--ghost);
+  --think-bg: var(--surface-3);
+  --tool-bg: var(--surface-2);
+  --chip-bg: var(--surface-3);
+  --retry-bg: var(--amber-soft);
+  --retry-border: var(--amber-line);
+  --retry-text: var(--amber);
+  --ok-green: var(--green);
+  --err-bg: var(--red-soft);
+  --err-border: var(--red-line);
+  --err-text: var(--red);
+}
+
+.turn-agent { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+
+/* 思考块：灰色小字流式展开，想完自动合拢，可点开再看（规格书 5.2） */
+.think-block {
+  font-size: 13px; color: var(--text-dim);
+  overflow: hidden; cursor: pointer; user-select: none;
+}
+.think-block .think-head { display: flex; align-items: center; gap: 8px; padding: 2px; }
+.think-block .caret { font-size: 11px; transition: transform .2s; }
+.think-block.open .caret { transform: rotate(90deg); }
+.think-block .dotting::after {
+  content: "…"; display: inline-block; width: 1em; text-align: left;
+  animation: ww-dots 1.2s steps(3) infinite; overflow: hidden; vertical-align: bottom;
+}
+@keyframes ww-dots { 0% { width: 0; } 100% { width: 1em; } }
+.think-body {
+  display: none;
+  padding: 4px 2px 6px;
+  line-height: 1.8;
+  color: var(--muted);
+  white-space: pre-wrap;
+}
+.think-block.open .think-body { display: block; }
+
+/* 工具行（过程态）：无框一行小字，不占满窗口（规格书 5.3） */
+.tool-card {
+  display: flex; align-items: center; gap: 8px;
+  padding: 2px;
+  font-size: 13px; color: var(--text-dim);
+  max-width: 82%;
+}
+.tool-card .ic { color: var(--accent); }
+.tool-card .status { margin-left: auto; font-size: 12px; color: var(--text-faint); white-space: nowrap; }
+.tool-card .status.bad { color: var(--err-text); }
+
+/* 状态行/错误插槽（重试行/恢复提示由 Task 12 填充） */
+.status-slot, .error-slot { display: flex; flex-direction: column; gap: 8px; }
+
+/* 流式正文：衬线、15px、行高 2.0，神圣不与 UI 混排（规格书 5.4 / P5） */
+.stream-area { display: flex; flex-direction: column; gap: 10px; }
+.para {
+  font-family: var(--serif);
+  font-size: 15px; line-height: 2.0;
+  color: var(--ink);
+  padding: 2px;
+  white-space: pre-wrap;
+  max-height: 600px;
+  transition: max-height .38s ease, opacity .38s ease, padding .38s ease;
+  overflow: hidden;
+}
+.para.folding { max-height: 0; opacity: 0; padding-top: 0; padding-bottom: 0; }
+.para .cursor {
+  display: inline-block; width: 2px; height: 17px;
+  background: var(--accent);
+  animation: ww-blink 1s steps(1) infinite;
+  vertical-align: -2px; margin-left: 1px;
+}
+@keyframes ww-blink { 50% { opacity: 0; } }
+
+/* 段落文字标记（规格书 5.5）：无框小字，hover 提示可点偷看 */
+.para-chips { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.p-chip {
+  padding: 2px 0;
+  font-size: 12px; color: var(--text-dim);
+  cursor: pointer; user-select: none;
+  border-bottom: 1px dashed transparent;
+  transition: border-color .12s, color .12s;
+  animation: ww-chip-in .25s ease;
+}
+.p-chip:hover { color: var(--accent); border-bottom-color: var(--accent); }
+.p-chip.unfinished { color: var(--retry-text); }
+@keyframes ww-chip-in { from { opacity: 0; transform: translateY(4px); } }
+
+/* 偷看：纯衬线小字浮现，无底色（规格书 5.5） */
+.para-peek {
+  font-family: var(--serif);
+  font-size: 14px; line-height: 1.9;
+  color: var(--muted);
+  padding: 4px 2px;
+  white-space: pre-wrap;
+  animation: ww-chip-in .25s ease;
+}
+
+/* 完成态（折叠终态）：无卡片、无边框，纯文字流（规格书 5.6 / 2026-08-03 定稿） */
+.done-card { overflow: hidden; }
+.done-card.enter { animation: ww-card-in .45s ease; }
+@keyframes ww-card-in { from { opacity: 0; transform: translateY(8px); } }
+.done-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 2px;
+  cursor: pointer; user-select: none;
+}
+.done-head .ok {
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--accent); color: var(--btn-ink);
+  font-size: 11px; display: flex; align-items: center; justify-content: center;
+  flex: none;
+}
+.done-head .t { font-size: 15px; font-weight: 600; }
+.done-head .toggle {
+  margin-left: auto; font-size: 12px; color: var(--accent);
+  transition: transform .25s;
+}
+.done-card.open .done-head .toggle { transform: rotate(180deg); }
+.done-meta {
+  display: flex; flex-wrap: wrap; gap: 10px;
+  padding: 4px 2px 6px 28px;
+}
+.done-meta .meta-chip { font-size: 12px; color: var(--text-dim); }
+.done-preview {
+  padding: 0 2px 10px 28px;
+  font-family: var(--serif);
+  font-size: 13px; color: var(--text-faint);
+  line-height: 1.7;
+}
+.done-detail {
+  max-height: 0; overflow: hidden;
+  transition: max-height .45s ease;
+}
+.done-card.open .done-detail { max-height: 4000px; }
+.done-detail .detail-inner {
+  border-top: 1px dashed var(--line);
+  margin: 0 2px; padding: 10px 2px 12px;
+}
+.detail-think {
+  font-size: 13px; color: var(--text-dim);
+  padding: 2px 2px 10px;
+  line-height: 1.8;
+}
+.detail-think .lbl {
+  display: block; font-size: 12px; color: var(--text-faint);
+  margin-bottom: 4px;
+}
+.full-text {
+  font-family: var(--serif);
+  font-size: 15px; line-height: 2.1;
+  white-space: pre-wrap;
+}
+
+/* 错误卡（规格书 5.9）：低饱和红底、无边框，标题+时间戳/人话+错误码徽章/提示行/按钮 */
+.msg-error {
+  background: var(--err-bg);
+  border-radius: 12px;
+  padding: 12px 14px;
+  max-width: 94%;
+  animation: ww-card-in .35s ease;
+}
+.e-head { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: var(--err-text); }
+.e-head .e-time {
+  margin-left: auto; font-size: 12px; font-weight: 400;
+  color: color-mix(in srgb, var(--err-text) 72%, transparent);
+}
+.e-body { font-size: 13px; line-height: 1.7; color: var(--err-text); margin-top: 6px; }
+.e-code {
+  font-family: var(--mono); font-size: 12px;
+  background: color-mix(in srgb, var(--red) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--red) 16%, transparent);
+  padding: 1px 6px; border-radius: 6px;
+  white-space: nowrap;
+}
+.e-note { font-size: 12px; color: var(--muted); margin-top: 6px; line-height: 1.6; }
+.e-actions { display: flex; gap: 8px; margin-top: 10px; }
+.e-btn {
+  font-size: 12px; padding: 5px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--err-border);
+  background: var(--surface); color: var(--err-text);
+  cursor: pointer; transition: background .12s;
+}
+.e-btn:hover { background: var(--err-bg); }
+
+/* 过程元素显隐：与原型一致用 .hidden 类强制隐藏 */
+.hidden { display: none !important; }

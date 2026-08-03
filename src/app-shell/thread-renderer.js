@@ -13,6 +13,32 @@ import { deriveSources, deriveSuggestions } from "./chat-derive.mjs";
 import { presentChapterArtifact } from "./chapter-presentation.mjs";
 import { deriveProjectIdentity } from "./project-identity.mjs";
 
+// ----- 错误卡片（规格书 5.9）：纯函数渲染，DOM 绑定在 live turn 侧复用 -----
+// 结构：头部（⛔ + 标题 + 时间戳）/ 人话 + 等宽错误码徽章 / （可选）提示行 / 操作按钮。
+// 提示行只放用户需要知道的后果（如"已保留当前进度"），空则不渲染；
+// 禁止"不会自动重试"这类策略性说教文案。手动「↻ 重试」按钮带 data-retry。
+export function renderErrorCard(cfg) {
+  const time = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+  const note = cfg.note ? `<div class="e-note">${cfg.note}</div>` : "";
+  const btn = (a) =>
+    typeof a === "string"
+      ? `<button class="e-btn">${a}</button>`
+      : `<button class="e-btn" data-retry="1">${a.label}</button>`;
+  return (
+    `<div class="msg-error">` +
+      `<div class="e-head"><span>⛔</span><span>${cfg.title}</span><span class="e-time">${time}</span></div>` +
+      `<div class="e-body">${cfg.body} <span class="e-code">${cfg.code}</span></div>` +
+      note +
+      `<div class="e-actions">${cfg.actions.map(btn).join("")}</div>` +
+    `</div>`
+  );
+}
+
+// 去掉空白后的字符数（规格书 5.6：字数必须由 JS 从正文实时统计，禁止写死）。
+function countChars(text) {
+  return String(text ?? "").replace(/\s/g, "").length;
+}
+
 // ----- Fold state management for collapsible cards -----
 const FOLD_PREFIX = "wwriting.card.fold.";
 
@@ -121,11 +147,14 @@ export function createThreadRenderer(ctx) {
 
   let sessionHeadEl = null;
   let threadGreeted = false;
+  // 当前一轮（live turn）状态：SSE 事件驱动的思考→工具→正文→完成态状态机。
+  let liveTurn = null;
 
   function renderEmptyThread() {
     ctx.renderedKeys.clear();
     ctx.askEntries.clear();
     threadGreeted = false;
+    liveTurn = null;
     ctx.setLiveBlock(null);
     const fragment = document.createDocumentFragment();
     fragment.append(buildSessionHead(null), buildGreeting());
@@ -188,6 +217,13 @@ export function createThreadRenderer(ctx) {
       if (event.type === "project_run_started") {
         if (!ctx.renderedKeys.has(key)) {
           ctx.renderedKeys.add(key);
+          if (liveTurn && !liveTurn.done) {
+            // live turn（SSE）已认领本轮：轮询只登记指纹，不重建旧式运行块，
+            // 防止同一轮出现两套 agent 渲染。
+            liveTurn.runStartedKey = key;
+            liveTurn.chapterNo = event.chapter_no ?? liveTurn.chapterNo;
+            continue;
+          }
           const block = buildAgentBlock(event, data);
           ctx.setLiveBlock(block);
           ctx.refs.thread.append(block.root);
@@ -200,6 +236,8 @@ export function createThreadRenderer(ctx) {
     }
     // 运行中：把最新阶段/章节进度同步进当前运行气泡。
     updateLiveAgentBlock(data);
+    // live turn 对账：段落标记字数回填 + SSE 断流时收尾兜底。
+    reconcileLiveTurn(data);
     renderQueueCards(data.queue?.tasks ?? [], data);
     if (stick) scrollThreadToBottom();
   }
@@ -1293,6 +1331,388 @@ export function createThreadRenderer(ctx) {
     }
   }
 
+  // ===== 一轮（turn）状态机：SSE 事件驱动的过程→完成态渲染 =====
+  // 规格书 P1/P3/P6（2026-08-03 定稿）：过程可见但不占位；折叠态即终态；
+  // 无头像、无署名行，Agent 消息直接以内容开始。结构对齐定稿原型：
+  // 思考块（流式展开→合拢）→ 工具行 → 流式正文（衬线+光标）→ 段落文字标记 → 完成态。
+
+  function buildThinkBlock() {
+    const el = document.createElement("div");
+    el.className = "think-block hidden";
+    const head = document.createElement("div");
+    head.className = "think-head";
+    const caret = document.createElement("span");
+    caret.className = "caret";
+    caret.textContent = "▶";
+    const label = document.createElement("span");
+    label.className = "label dotting";
+    label.textContent = "思考中";
+    head.append(caret, label);
+    const body = document.createElement("div");
+    body.className = "think-body";
+    el.append(head, body);
+    el.addEventListener("click", () => el.classList.toggle("open"));
+    return { el, label, body };
+  }
+
+  function buildToolCard() {
+    const el = document.createElement("div");
+    el.className = "tool-card hidden";
+    const ic = document.createElement("span");
+    ic.className = "ic";
+    ic.textContent = "✎";
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = "正在撰写";
+    const status = document.createElement("span");
+    status.className = "status";
+    el.append(ic, label, status);
+    return { el, label, status };
+  }
+
+  function buildDoneCard() {
+    const el = document.createElement("div");
+    el.className = "done-card hidden";
+    const head = document.createElement("div");
+    head.className = "done-head";
+    const ok = document.createElement("span");
+    ok.className = "ok";
+    ok.textContent = "✓";
+    const title = document.createElement("span");
+    title.className = "t";
+    const toggle = document.createElement("span");
+    toggle.className = "toggle";
+    toggle.textContent = "展开 ⌄";
+    head.append(ok, title, toggle);
+    const meta = document.createElement("div");
+    meta.className = "done-meta";
+    const thinkChip = document.createElement("span");
+    thinkChip.className = "meta-chip";
+    thinkChip.textContent = "🧠 已思考";
+    const paraChip = document.createElement("span");
+    paraChip.className = "meta-chip";
+    const wc = document.createElement("span");
+    wc.className = "meta-chip";
+    meta.append(thinkChip, paraChip, wc);
+    const preview = document.createElement("div");
+    preview.className = "done-preview";
+    const detail = document.createElement("div");
+    detail.className = "done-detail";
+    const inner = document.createElement("div");
+    inner.className = "detail-inner";
+    const thinkBox = document.createElement("div");
+    thinkBox.className = "detail-think";
+    const lbl = document.createElement("span");
+    lbl.className = "lbl";
+    lbl.textContent = "思考过程";
+    const thinkText = document.createElement("span");
+    thinkBox.append(lbl, thinkText);
+    const full = document.createElement("div");
+    full.className = "full-text";
+    inner.append(thinkBox, full);
+    detail.append(inner);
+    el.append(head, meta, preview, detail);
+    head.addEventListener("click", () => el.classList.toggle("open"));
+    return { el, title, paraChip, wc, preview, thinkBox, thinkText, full };
+  }
+
+  // 归属守卫：live turn 只属于启动它时的那个项目。
+  // 解决两个遗留问题——切到无项目时旧 SSE 不 close、切项目后 ≤1.8s 窗口内旧事件可能送达：
+  // 事件到达时若当前项目已不是 turn 归属项目，一律丢弃并释放 live turn。
+  function turnIsCurrent(turn) {
+    return Boolean(turn) && turn.projectRoot === ctx.getCurrentProjectRoot();
+  }
+
+  function startLiveTurn(userEvent) {
+    const projectRoot = ctx.getCurrentProjectRoot();
+    if (!projectRoot) return null; // 无项目不渲染 live turn
+    const key = eventKey(userEvent);
+    if (ctx.renderedKeys.has(key)) return null; // 轮询已渲染过这条用户气泡
+
+    ctx.renderedKeys.add(key);
+    ctx.refs.thread.append(buildUserBubble(userEvent));
+
+    const root = document.createElement("div");
+    root.className = "turn-agent rise";
+    const think = buildThinkBlock();
+    const tool = buildToolCard();
+    const statusSlot = document.createElement("div");
+    statusSlot.className = "status-slot hidden";
+    const streamEl = document.createElement("div");
+    streamEl.className = "stream-area";
+    const chipsEl = document.createElement("div");
+    chipsEl.className = "para-chips hidden";
+    const peekSlot = document.createElement("div");
+    peekSlot.className = "peek-slot";
+    const errorSlot = document.createElement("div");
+    errorSlot.className = "error-slot hidden";
+    const done = buildDoneCard();
+    root.append(think.el, tool.el, statusSlot, streamEl, chipsEl, peekSlot, errorSlot, done.el);
+    ctx.refs.thread.append(root);
+
+    // 段落圆片：点开偷看该段原文（规格书 5.5），再点收起。
+    chipsEl.addEventListener("click", (e) => {
+      const chip = e.target.closest(".p-chip");
+      if (!chip || chip._peek === undefined) return;
+      if (peekSlot.dataset.open === chip._key) {
+        peekSlot.replaceChildren();
+        peekSlot.dataset.open = "";
+        return;
+      }
+      peekSlot.replaceChildren();
+      const peek = document.createElement("div");
+      peek.className = "para-peek";
+      peek.textContent = chip._peek;
+      peekSlot.append(peek);
+      peekSlot.dataset.open = chip._key;
+    });
+
+    const turn = {
+      projectRoot,
+      root,
+      thinkEl: think.el, thinkLabel: think.label, thinkBody: think.body,
+      toolEl: tool.el, toolLabel: tool.label, toolStatus: tool.status,
+      statusSlot, streamEl, chipsEl, peekSlot, errorSlot,
+      doneEl: done.el, doneTitle: done.title, doneParaChip: done.paraChip,
+      doneWc: done.wc, donePreview: done.preview,
+      doneThinkBox: done.thinkBox, doneThink: done.thinkText, doneFull: done.full,
+      phase: "idle", // idle | planning | drafting | done
+      chapterNo: null,
+      chapters: [],          // [{ chapterNo, text, unfinished }]
+      chapterContents: {},   // chapterNo -> 正文（完成态从磁盘回填）
+      thinkText: "",
+      para: null,            // 当前流式 para 元素
+      paraText: "",          // 当前 para 累积文本
+      done: false,
+      runStartedKey: null,
+    };
+    liveTurn = turn;
+    ctx.announce("已发送指令");
+    scrollThreadToBottom();
+    return turn;
+  }
+
+  function showThink(turn) {
+    turn.phase = "planning";
+    turn.thinkEl.classList.remove("hidden");
+    turn.thinkEl.classList.add("open");
+    turn.thinkLabel.textContent = "思考中";
+    turn.thinkLabel.classList.add("dotting");
+  }
+
+  function startDrafting(turn, event) {
+    turn.chapterNo = event.chapter_no ?? turn.chapterNo;
+    turn.phase = "drafting";
+    turn.thinkEl.classList.remove("open");
+    turn.thinkLabel.textContent = "已思考";
+    turn.thinkLabel.classList.remove("dotting");
+    const ch = turn.chapterNo;
+    turn.toolEl.classList.remove("hidden");
+    turn.toolLabel.textContent = ch ? `正在撰写 第 ${ch} 章` : "正在撰写";
+    turn.toolStatus.textContent = "进行中";
+    turn.toolStatus.classList.remove("bad");
+  }
+
+  function ensurePara(turn) {
+    if (turn.para) return turn.para;
+    const para = document.createElement("div");
+    para.className = "para";
+    turn.streamEl.append(para);
+    turn.para = para;
+    turn.paraText = "";
+    return para;
+  }
+
+  function appendParaText(turn, text) {
+    const para = ensurePara(turn);
+    turn.paraText += text;
+    para.textContent = turn.paraText;
+    const cursor = document.createElement("span");
+    cursor.className = "cursor";
+    para.append(cursor);
+  }
+
+  // 章节完成的当下 dashboard 未必已落盘 actual_words，先用流式文本统计；
+  // 后续轮询对账（reconcileLiveTurn）会用真实字数回填。
+  function dashboardChapterWords(chapterNo) {
+    const chapters = ctx.getDashboard?.()?.chapters ?? [];
+    const found = chapters.find((c) => Number(c.chapter_no) === Number(chapterNo));
+    return found ? Number(found.actual_words ?? 0) : 0;
+  }
+
+  function foldChapter(turn, chapterNo) {
+    if (!chapterNo || turn.done) return;
+    if (turn.chapters.some((c) => c.chapterNo === chapterNo)) return; // 去重
+    const text = turn.paraText ?? "";
+    turn.chapters.push({ chapterNo, text, unfinished: false });
+    if (turn.para) {
+      turn.para.classList.add("folding");
+      const el = turn.para;
+      setTimeout(() => el.remove(), 380); // 0.38s 高度折叠动画后移除
+      turn.para = null;
+      turn.paraText = "";
+    }
+    const chip = document.createElement("span");
+    chip.className = "p-chip";
+    chip.dataset.chapterNo = String(chapterNo);
+    const words = countChars(text) || dashboardChapterWords(chapterNo);
+    chip.textContent = `📖 第 ${chapterNo} 章` + (words > 0 ? ` · ${words} 字` : "");
+    if (text) {
+      chip._peek = text;
+      chip._key = `para-${chapterNo}-${turn.chapters.length}`;
+      chip.title = "点击偷看本段";
+    }
+    turn.chipsEl.classList.remove("hidden");
+    turn.chipsEl.append(chip);
+    turn.toolStatus.textContent = `完成 ✓ ${turn.chapters.length}`;
+    scrollThreadToBottom();
+  }
+
+  // 轮询对账：段落标记字数回填；SSE 断流（如重连窗口）时轮询看到终态则收尾本轮。
+  function reconcileLiveTurn(data) {
+    const turn = liveTurn;
+    if (!turn || turn.done) return;
+    if (!turnIsCurrent(turn)) { liveTurn = null; return; }
+    const chapters = data?.chapters ?? [];
+    for (const chip of turn.chipsEl.querySelectorAll(".p-chip[data-chapter-no]")) {
+      const n = Number(chip.dataset.chapterNo);
+      const chapter = chapters.find((c) => Number(c.chapter_no) === n);
+      const words = chapter ? Number(chapter.actual_words ?? 0) : 0;
+      if (words > 0) chip.textContent = `📖 第 ${n} 章 · ${words} 字`;
+    }
+    const run = deriveRunPresentation(data ?? {});
+    if (run.isTerminal) {
+      const kind = run.status === "interrupted" ? "interrupted"
+        : run.status === "cancelled" ? "cancelled"
+        : run.status === "blocked" ? "blocked"
+        : "finished";
+      closeTurnToDone(turn, { type: `project_${run.status}`, message: run.label ?? "" }, kind);
+    }
+  }
+
+  function closeTurnToDone(turn, event, kind = "finished") {
+    if (turn.done) return;
+    turn.done = true;
+
+    // 残段（若有）收成「（未完成）」文字标记（规格书 5.5 / 6.2）。
+    if (turn.para && turn.paraText) {
+      const text = turn.paraText;
+      const chip = document.createElement("span");
+      chip.className = "p-chip unfinished";
+      chip.dataset.chapterNo = String(turn.chapterNo ?? "");
+      chip.textContent = `📖 第 ${turn.chapterNo} 章（未完成）· ${countChars(text)} 字`;
+      chip._peek = text;
+      chip._key = `para-${turn.chapterNo}-residue`;
+      chip.title = "点击偷看本段";
+      turn.chipsEl.classList.remove("hidden");
+      turn.chipsEl.append(chip);
+      turn.para.classList.add("folding");
+      const el = turn.para;
+      setTimeout(() => el.remove(), 380);
+      turn.para = null;
+      turn.paraText = "";
+    }
+
+    // 过程区清空：思考/工具/状态行/段落标记/偷看区/正文区整体消失（P1/P3）。
+    turn.thinkEl.classList.add("hidden");
+    turn.toolEl.classList.add("hidden");
+    turn.statusSlot.classList.add("hidden");
+    turn.chipsEl.classList.add("hidden");
+    turn.peekSlot.replaceChildren();
+    turn.streamEl.replaceChildren();
+
+    // 完成卡（折叠终态，无卡片无边框）：标题 / 摘要标记 / 衬线预览 / 展开全文。
+    const nums = turn.chapters.map((c) => c.chapterNo).filter(Boolean);
+    const paused = kind === "finished" && event?.data?.paused === true;
+    if (nums.length > 1) {
+      turn.doneTitle.textContent = paused
+        ? `第 ${nums[0]}–${nums[nums.length - 1]} 章 · 已暂停`
+        : `第 ${nums[0]}–${nums[nums.length - 1]} 章 · 全部完成`;
+    } else if (nums.length === 1) {
+      turn.doneTitle.textContent = paused ? `第 ${nums[0]} 章 · 已暂停`
+        : kind === "interrupted" ? `第 ${nums[0]} 章 · 已中断`
+        : kind === "cancelled" ? `第 ${nums[0]} 章 · 已停止`
+        : kind === "blocked" ? `第 ${nums[0]} 章 · 需要处理`
+        : `第 ${nums[0]} 章 · 已完成`;
+    } else {
+      turn.doneTitle.textContent = kind === "interrupted" ? "本轮写作已中断"
+        : kind === "cancelled" ? "本轮写作已停止"
+        : paused ? "本轮写作已暂停"
+        : "本轮写作已完成";
+    }
+    turn.doneParaChip.textContent = turn.chapters.length > 0 ? `✎ 撰写 ${turn.chapters.length} 章` : "";
+    const streamed = turn.chapters.map((c) => c.text).filter(Boolean).join("\n\n");
+    turn.doneWc.textContent = `${countChars(streamed)} 字`;
+    turn.donePreview.textContent = streamed ? `“${streamed.trim().slice(0, 24)}……”` : "";
+    if (turn.thinkText) {
+      turn.doneThink.textContent = turn.thinkText;
+      turn.doneThinkBox.hidden = false;
+    } else {
+      turn.doneThinkBox.hidden = true;
+    }
+    turn.doneFull.textContent = streamed;
+    turn.doneEl.classList.remove("hidden");
+    turn.doneEl.classList.add("enter");
+
+    // 正文回填：写作主调用的 delta 流在默认配置下为空（非流式 + 工具调用），
+    // 完成态展开全文从磁盘章节文件读取真实正文（含实时字数统计）。
+    if (kind === "finished" && nums.length > 0) {
+      void refreshDoneFromChapterFiles(turn);
+    }
+
+    if (event?.message) ctx.announce(event.message);
+  }
+
+  async function refreshDoneFromChapterFiles(turn) {
+    const nums = turn.chapters.map((c) => c.chapterNo).filter(Boolean);
+    await Promise.all(nums.map(async (n) => {
+      try {
+        const data = await getJson(`/api/chapters/read?chapter=${encodeURIComponent(n)}`);
+        if (!data?.ok || typeof data.content !== "string" || !data.content.trim()) return;
+        if (liveTurn !== turn || !turnIsCurrent(turn)) return; // 已切项目/已换轮则丢弃
+        turn.chapterContents[n] = data.content;
+        applyDoneContent(turn);
+      } catch { /* 文件尚未落盘或读取失败：保持已流式文本 */ }
+    }));
+  }
+
+  function applyDoneContent(turn) {
+    const full = turn.chapters
+      .map((c) => turn.chapterContents[c.chapterNo] ?? c.text)
+      .filter(Boolean)
+      .join("\n\n");
+    if (!full) return;
+    turn.doneFull.textContent = full;
+    turn.doneWc.textContent = `${countChars(full)} 字`;
+    turn.donePreview.textContent = `“${full.trim().slice(0, 24)}……”`;
+  }
+
+  // project_run_failed 红卡（规格书 5.9）：人话 + 错误码徽章 + 手动重试。
+  // 重试行/恢复提示等过程态插槽由 Task 12 细化。
+  function failTurn(turn, event) {
+    const data = event.data ?? {};
+    const status = data.status ?? null;
+    const reason = data.reason ?? null;
+    const name = data.name ?? null;
+    const title = status ? `模型调用失败 · ${status}` : (name ? `写作任务失败 · ${name}` : "写作任务失败");
+    const code = [status, reason].filter(Boolean).join(" · ") || name || "unknown_error";
+    const card = document.createElement("div");
+    card.innerHTML = renderErrorCard({
+      title,
+      body: event.message ?? "写作任务未能完成，可手动重试。",
+      code,
+      note: "已保留当前进度。",
+      actions: [{ label: "↻ 重试", retry: true }]
+    });
+    card.querySelectorAll("[data-retry]").forEach((btn) => {
+      btn.addEventListener("click", () => ctx.handleRetry?.());
+    });
+    turn.errorSlot.replaceChildren(card);
+    turn.errorSlot.classList.remove("hidden");
+    turn.done = true;
+    if (event.message) ctx.announce(event.message);
+  }
+
   return {
     syncThread,
     renderEmptyThread,
@@ -1304,8 +1724,68 @@ export function createThreadRenderer(ctx) {
     syncChatThread,
     submitChatMessage,
     appendSuggestionCards,
-    // SSE 增量事件入口（Task 11 实现完整 live turn 状态机）
-    onRunEvent(event) { /* Task 11：并入 live turn 状态机 */ },
-    onModelDelta(text) { /* Task 11：live 正文逐字追加 */ }
+    // SSE 增量事件入口（Task 11 落地 live turn 状态机）：
+    // user_instruction_received 开新轮；stage_started/model_call_started 显示思考/工具行；
+    // chapter_completed 折叠段落；project_run_finished 清过程区、完成态淡入。
+    onRunEvent(event) {
+      if (!event || typeof event !== "object") return;
+      if (event.type === "user_instruction_received") {
+        startLiveTurn(event);
+        return;
+      }
+      const turn = liveTurn;
+      if (!turn || turn.done) return;
+      // 归属守卫：事件到达时若 liveTurn 不属于当前项目（切项目/切无项目），丢弃。
+      if (!turnIsCurrent(turn)) { liveTurn = null; return; }
+      switch (event.type) {
+        case "project_run_started":
+          // live turn 认领本轮运行：轮询兜底不再重建旧式运行块。
+          turn.runStartedKey = eventKey(event);
+          ctx.renderedKeys.add(turn.runStartedKey);
+          turn.chapterNo = event.chapter_no ?? turn.chapterNo;
+          break;
+        case "stage_started":
+          if (event.stage === "planning") showThink(turn);
+          break;
+        case "model_call_started":
+          if (event.stage === "planning") showThink(turn);
+          else if (event.stage === "drafting") startDrafting(turn, event);
+          break;
+        case "chapter_completed":
+        case "chapter_finalized":
+          foldChapter(turn, event.chapter_no);
+          break;
+        case "project_run_finished":
+          closeTurnToDone(turn, event, "finished");
+          break;
+        case "project_run_failed":
+          failTurn(turn, event);
+          break;
+        case "project_cancelled":
+          closeTurnToDone(turn, event, "cancelled");
+          break;
+        case "project_interrupted":
+        case "project_blocked":
+          closeTurnToDone(turn, event, "interrupted");
+          break;
+        // model_retry / status_message 等过程态插槽由 Task 12 细化
+        default:
+          break;
+      }
+    },
+    // live 正文/思考逐字追加：planning 阶段进思考块，drafting 阶段进正文区（衬线 + 光标）。
+    onModelDelta(text) {
+      const turn = liveTurn;
+      if (!turn || turn.done) return;
+      if (!turnIsCurrent(turn)) { liveTurn = null; return; }
+      const chunk = String(text ?? "");
+      if (!chunk) return; // 心跳（无正文）不上屏
+      if (turn.phase === "planning") {
+        turn.thinkText += chunk;
+        turn.thinkBody.textContent = turn.thinkText;
+      } else if (turn.phase === "drafting") {
+        appendParaText(turn, chunk);
+      }
+    }
   };
 }

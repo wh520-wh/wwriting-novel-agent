@@ -6,6 +6,16 @@ const { pathToFileURL } = require("node:url");
 const assert = require("node:assert/strict");
 const { desktopWindowChrome } = require("../src/desktop/window-chrome.cjs");
 
+// 运行中可见性主标记（Task 11 一轮状态机落地后）：
+// live turn 过程区（思考块/工具行可见）→ 顶栏停止按钮 → 旧式运行卡停止按钮（兜底）。
+// 旧式运行卡已被 live turn 替换（无停止按钮，停止入口在顶栏），不能只认 .run-stop-btn。
+const RUN_VISIBLE_JS = `(() => {
+  const liveTurn = document.querySelector('.turn-agent .think-block:not(.hidden), .turn-agent .tool-card:not(.hidden)');
+  const legacyRun = document.querySelector('.run-stop-btn:not([hidden])');
+  const topbarStop = document.querySelector('#topbar-stop:not([hidden])');
+  return Boolean(liveTurn || legacyRun || topbarStop);
+})()`;
+
 // Guard against EPIPE when stdout pipe is closed (e.g. user interrupted)
 process.stdout.on("error", (err) => { if (err.code !== "EPIPE") throw err; });
 process.stderr.on("error", (err) => { if (err.code !== "EPIPE") throw err; });
@@ -187,8 +197,8 @@ async function main() {
   }));
 
   await waitUntil(win,
-    `document.querySelector('.run-stop-btn:not([hidden])') !== null || document.getElementById('chapter-success').hidden === false`,
-    "starting chapter 1 must show the single run-card stop action or the completed chapter card",
+    `(${RUN_VISIBLE_JS}) || document.getElementById('chapter-success').hidden === false`,
+    "starting chapter 1 must show live turn process area (or legacy run card stop action / topbar stop) or the completed chapter card",
     8000
   );
 
@@ -228,17 +238,17 @@ async function main() {
     label: "继续写第 2 章",
     settleMs: 300,
     expect: () => read(win, `(() => {
-      const runVisible = document.querySelector('.run-stop-btn:not([hidden])') !== null;
+      const runVisible = ${RUN_VISIBLE_JS};
       const completionTitle = document.querySelector("#chapter-success-title")?.textContent ?? "";
       return runVisible || completionTitle.includes("第 2 章");
     })()`)
   }));
 
   await waitUntil(win, `(() => {
-    const runVisible = document.querySelector('.run-stop-btn:not([hidden])') !== null;
+    const runVisible = ${RUN_VISIBLE_JS};
     const completionTitle = document.querySelector("#chapter-success-title")?.textContent ?? "";
     return runVisible || completionTitle.includes("第 2 章");
-  })()`, "续写点击必须启动第 2 章或完成第 2 章", 8000);
+  })()`, "续写点击必须启动第 2 章（live turn 过程区可见）或完成第 2 章", 8000);
 
   await waitUntil(
     win,
@@ -250,6 +260,19 @@ async function main() {
     await read(win, `document.querySelector("#chapter-success-continue").hidden === true`),
     true,
     "达到两章目标后必须隐藏续写按钮",
+  );
+
+  // Task 11 终态断言：真实写作一轮完成后，线程里应出现 live turn 完成卡
+  // （无框折叠终态），且 live turn 内无头像、无署名行（规格书 P3/P6）。
+  assert.equal(
+    await read(win, `document.querySelectorAll('.turn-agent .done-card:not(.hidden)').length >= 1`),
+    true,
+    "写作完成后线程应出现 live turn 完成卡（无框折叠终态）"
+  );
+  assert.equal(
+    await read(win, `document.querySelectorAll('.turn-agent .agent-avatar, .turn-agent .agent-name, .turn-agent .agent-tag').length === 0`),
+    true,
+    "live turn 内不得出现头像/署名行/agent-tag"
   );
 
   // 工作台「查看章节」按钮：真实点击应打开抽屉并落到章节 tab，证明第三个新增按钮也收到 trusted pointer click。
