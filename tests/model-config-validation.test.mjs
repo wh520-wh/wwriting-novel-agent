@@ -57,6 +57,42 @@ test("model validation preserves supported runtime and pricing fields", () => {
   assert.equal(config.max_output_tokens, 2048);
 });
 
+test("temperature：合法值 0–2 通过并保留", () => {
+  const config = validateModelConfig({
+    provider: "openai-compatible", model_name: "deepseek-chat",
+    base_url: "https://api.deepseek.com", api_key_env: "DEEPSEEK_API_KEY",
+    temperature: 1.2
+  });
+  assert.equal(config.temperature, 1.2);
+});
+
+test("temperature：缺省不携带（厂商默认）", () => {
+  const config = validateModelConfig({
+    provider: "openai-compatible", model_name: "deepseek-chat",
+    base_url: "https://api.deepseek.com", api_key_env: "DEEPSEEK_API_KEY"
+  });
+  assert.equal(config.temperature, undefined);
+});
+
+test("temperature：越界/非数字报错", () => {
+  assert.throws(() => validateModelConfig({
+    provider: "openai-compatible", model_name: "x",
+    base_url: "https://api.example.com", api_key_env: "K",
+    temperature: 3
+  }), (e) => {
+    assert.equal(typeof e.fields?.temperature, "string");
+    return true;
+  });
+  assert.throws(() => validateModelConfig({
+    provider: "openai-compatible", model_name: "x",
+    base_url: "https://api.example.com", api_key_env: "K",
+    temperature: "hot"
+  }), (e) => {
+    assert.equal(typeof e.fields?.temperature, "string");
+    return true;
+  });
+});
+
 test("api_key_env rejects shell expressions", () => {
   assert.throws(
     () => validateModelConfig({

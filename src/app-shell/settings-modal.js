@@ -794,6 +794,13 @@ export function createSettingsModal(ctx, options = {}) {
     const priceHint = document.createElement("div");
     priceHint.className = "spd-hint";
     priceHint.textContent = "按供应商定价页填写。不填则成本显示为未配置价格，不会按 0 计算。";
+    settingsFields.temperature = settingField("写作温度（0–2，可选，留空用厂商默认）", "number", {
+      value: active.temperature ?? "",
+      min: 0, max: 2, step: 0.1
+    });
+    settingsFields.temperatureError = document.createElement("div");
+    settingsFields.temperatureError.className = "spd-field-error";
+    settingsFields.temperatureError.hidden = true;
     settingsFields.network = settingToggle("联网搜索/抓取权限", permissions.network_allowed === true);
 
     const profileHeading = document.createElement("h4");
@@ -807,6 +814,7 @@ export function createSettingsModal(ctx, options = {}) {
       settingsFields.apiKey.field, settingsFields.apiKeyError, settingsFields.apiKeyEnv.field, settingsFields.apiKeyEnvError, keyHint,
       testRow, connectionStatus,
       priceHeading, settingsFields.priceInput.field, settingsFields.priceOutput.field, settingsFields.priceCacheHit.field, priceHint,
+      settingsFields.temperature.field, settingsFields.temperatureError,
       budgetHeading, settingsFields.maxCost.field, settingsFields.maxTokens.field, settingsFields.maxCalls.field,
       settingsFields.network.field,
       profileHeading, settingsFields.profileTitle.field
@@ -857,6 +865,7 @@ export function createSettingsModal(ctx, options = {}) {
       base_url: settingsFields.baseUrlError,
       api_key: settingsFields.apiKeyError,
       api_key_env: settingsFields.apiKeyEnvError,
+      temperature: settingsFields.temperatureError,
     };
     for (const key of Object.keys(map)) {
       const node = map[key];
@@ -933,7 +942,7 @@ export function createSettingsModal(ctx, options = {}) {
     }
   }
 
-  function settingField(labelText, type, { value = "", placeholder = "", options = null, secret = false } = {}) {
+  function settingField(labelText, type, { value = "", placeholder = "", options = null, secret = false, min = null, max = null, step = null } = {}) {
     const field = document.createElement("div");
     field.className = "spd-field";
     const label = document.createElement("div");
@@ -974,6 +983,9 @@ export function createSettingsModal(ctx, options = {}) {
       input.type = type;
       input.value = value ?? "";
       if (placeholder) input.placeholder = placeholder;
+      if (min !== null) input.min = min;
+      if (max !== null) input.max = max;
+      if (step !== null) input.step = step;
     }
     input.setAttribute("aria-label", labelText);
     if (secret) {
@@ -1125,21 +1137,25 @@ export function createSettingsModal(ctx, options = {}) {
       // 因此校验失败在这里捕获：逐项标红后继续抛出，由 runSave 兜底 toast 展示服务端原文错误。
       let modelResult;
       try {
+        const activeModelPayload = compactObject({
+          provider: PROVIDER_PRESETS[provider.preset].provider,
+          model_name: settingsFields.model.input.value.trim(),
+          base_url: settingsFields.baseUrl.input.value.trim(),
+          api_key: settingsFields.apiKey.input.value.trim(),
+          api_key_env: apiKeyEnv,
+          pricing: settingsFields.priceInput.input.value && settingsFields.priceOutput.input.value
+            ? compactObject({
+                input_per_million: Number(settingsFields.priceInput.input.value),
+                output_per_million: Number(settingsFields.priceOutput.input.value),
+                cache_hit_per_million: settingsFields.priceCacheHit.input.value ? Number(settingsFields.priceCacheHit.input.value) : undefined
+              })
+            : undefined
+        });
+        // 温度：留空不携带（厂商默认），填了才带。
+        const tRaw = String(settingsFields.temperature?.input?.value ?? "").trim();
+        if (tRaw !== "") activeModelPayload.temperature = Number(tRaw);
         modelResult = await postJsonImpl("/api/settings/model-profile", {
-          active_model: compactObject({
-            provider: PROVIDER_PRESETS[provider.preset].provider,
-            model_name: settingsFields.model.input.value.trim(),
-            base_url: settingsFields.baseUrl.input.value.trim(),
-            api_key: settingsFields.apiKey.input.value.trim(),
-            api_key_env: apiKeyEnv,
-            pricing: settingsFields.priceInput.input.value && settingsFields.priceOutput.input.value
-              ? compactObject({
-                  input_per_million: Number(settingsFields.priceInput.input.value),
-                  output_per_million: Number(settingsFields.priceOutput.input.value),
-                  cache_hit_per_million: settingsFields.priceCacheHit.input.value ? Number(settingsFields.priceCacheHit.input.value) : undefined
-                })
-              : undefined
-          })
+          active_model: activeModelPayload
         });
       } catch (error) {
         if (error?.fields && typeof error.fields === "object") {
