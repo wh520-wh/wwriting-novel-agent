@@ -603,13 +603,13 @@ export function createSettingsModal(ctx, options = {}) {
         btn.type = "button";
         btn.className = "sp-saved-btn";
         btn.textContent = model.display ?? model.model_name;
-        btn.addEventListener("click", () => void selectSavedModel(model));
+        btn.addEventListener("click", () => { void selectSavedModel(model).catch((error) => ctx.showToast(error.message, "error")); });
         const del = document.createElement("button");
         del.type = "button";
         del.className = "sp-saved-del";
         del.setAttribute("aria-label", `删除 ${model.display ?? model.model_name}`);
         del.textContent = "×";
-        del.addEventListener("click", (e) => { e.stopPropagation(); void deleteSavedModel(model.id); });
+        del.addEventListener("click", (e) => { e.stopPropagation(); void deleteSavedModel(model.id).catch((error) => ctx.showToast(error.message, "error")); });
         row.append(btn, del);
         frag.append(row);
       }
@@ -662,11 +662,13 @@ export function createSettingsModal(ctx, options = {}) {
     await renderSettingsDetail();
   }
 
-  // 删除已存模型：从全局清单移除并刷新左栏列表。
+  // 删除已存模型：从全局清单移除，并同步刷新左栏列表与右侧表单，
+  // 避免删除当前展示/默认模型后表单残留已删模型的字段（保存时把模型「复活」回清单）。
   async function deleteSavedModel(modelId) {
     await postJsonImpl("/api/settings/model-remove", { model_id: modelId });
     await fetchGlobalModels();
     renderSettingsProviders();
+    await renderSettingsDetail();
   }
 
   async function renderSettingsDetail() {
