@@ -6,6 +6,7 @@ import test from "node:test";
 import { createAppShellServer } from "../src/core/app-server.mjs";
 import { loadLocalSecrets } from "../src/core/local-secrets.mjs";
 import { loadLocalModelProfiles } from "../src/core/local-model-profiles.mjs";
+import { createProject, loadProject, saveProject } from "../src/core/project-store.mjs";
 
 const FETCH_BLOCKED_PORTS = new Set([
   1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79,
@@ -56,6 +57,22 @@ async function setupProjectlessServer(options = {}) {
   });
   const port = await listenOnFetchSafePort(server);
   return { root, secretsRoot, server, port };
+}
+
+async function setupServerWithProject(options = {}) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-globalsync-"));
+  const { projectRoot } = await createProject(root, { slug: "project", target_chapters: 3 });
+  const secretsRoot = path.join(root, ".secrets");
+  const server = createAppShellServer({
+    workspaceRoot: root,
+    selectedProjectRoot: projectRoot,
+    stateRoot: path.join(root, ".state"),
+    secretsRoot,
+    port: 0,
+    ...options
+  });
+  const port = await listenOnFetchSafePort(server);
+  return { root, projectRoot, secretsRoot, server, port };
 }
 
 async function post(port, pathname, body) {
@@ -185,6 +202,43 @@ test("无项目测试连接：字段缺失仍返回逐字段错误", async () =>
     });
     assert.equal(status, 400);
     assert.equal(typeof json.fields, "object");
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("改全局模型后打开界面：已有项目的模型配置跟着变", async () => {
+  const { projectRoot, server, port } = await setupServerWithProject();
+  try {
+    // 项目先指向旧地址
+    const project = await loadProject(projectRoot);
+    await saveProject(projectRoot, {
+      ...project,
+      active_model: {
+        provider: "openai-compatible",
+        model_name: "deepseek-chat",
+        base_url: "https://old.example.com",
+        api_key_env: "OLD_KEY_ENV"
+      }
+    });
+    // 在设置里把同名模型改成新地址 + 新密钥变量名
+    await post(port, "/api/settings/model-profile", {
+      active_model: {
+        provider: "openai-compatible",
+        model_name: "deepseek-chat",
+        base_url: "https://api.deepseek.com",
+        api_key_env: "DEEPSEEK_API_KEY",
+        api_key: "sk-new"
+      }
+    });
+
+    const dashboard = await fetch(`http://127.0.0.1:${port}/`);
+    assert.equal(dashboard.status, 200);
+    await dashboard.text();
+
+    const synced = await loadProject(projectRoot);
+    assert.equal(synced.active_model.base_url, "https://api.deepseek.com");
+    assert.equal(synced.active_model.api_key_env, "DEEPSEEK_API_KEY");
   } finally {
     await closeServer(server);
   }

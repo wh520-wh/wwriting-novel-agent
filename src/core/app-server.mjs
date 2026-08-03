@@ -107,6 +107,7 @@ export function createAppShellServer({
         const scopedRoot = (requestedRoot || selected)
           ? await resolveReadProjectRoot({ requestedRoot: requestedRoot ?? undefined, selected, workspace, stateRoot: appStateRoot })
           : null;
+        await syncProjectModelFromGlobal(scopedRoot, localSecretsRoot);
         await serveDashboard(response, { workspace, projectRoot: scopedRoot, secretsRoot: localSecretsRoot, runJobs, getTaskQueue, dashboardLoader, recoveryCandidates });
       } catch (error) {
         sendError(response, error);
@@ -296,6 +297,10 @@ export function createAppShellServer({
         sendError(response, error instanceof HttpError ? error : new HttpError(400, "chapter_read_failed", error.message));
       }
       return;
+    }
+    if (url.pathname === "/") {
+      // 打开应用首页即触发一次同步：界面渲染前 project.yaml 已是全局最新配置。
+      await syncProjectModelFromGlobal(selected, localSecretsRoot);
     }
     await serveStatic(url.pathname, response, { staticRoot });
   });
@@ -751,6 +756,20 @@ async function serveModelSwitch(request, response, context) {
     });
   } catch (error) {
     sendError(response, error instanceof HttpError ? error : new HttpError(400, "model_switch_failed", error.message));
+  }
+}
+
+// 读项目前先把全局模型的最新字段刷回 project.yaml。
+// 同步失败绝不能挡住界面或写作——用户宁可看到旧地址，也不能打不开应用。
+async function syncProjectModelFromGlobal(projectRoot, secretsRoot) {
+  if (!projectRoot || !secretsRoot) return;
+  try {
+    await refreshProjectModelFromGlobal(projectRoot, secretsRoot, {
+      readProject: loadProject,
+      writeProject: saveProject
+    });
+  } catch (error) {
+    console.warn("[app-server] 同步全局模型配置失败:", error?.message ?? error);
   }
 }
 
@@ -1824,6 +1843,8 @@ async function startProjectRun(projectRoot, project, context, task, instructionM
     taskId: task.id
   };
   runJobs.set(key, job);
+  // 开跑前再同步一次：用户可能刚在设置里换了密钥或地址。
+  await syncProjectModelFromGlobal(projectRoot, context.secretsRoot);
   const state = await loadState(projectRoot);
   if (state.project_status === "completed") {
     job.status = "done";
