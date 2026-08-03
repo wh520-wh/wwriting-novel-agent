@@ -17,13 +17,16 @@ import { deriveProjectIdentity } from "./project-identity.mjs";
 // 结构：头部（⛔ + 标题 + 时间戳）/ 人话 + 等宽错误码徽章 / （可选）提示行 / 操作按钮。
 // 提示行只放用户需要知道的后果（如"已保留当前进度"），空则不渲染；
 // 禁止"不会自动重试"这类策略性说教文案。手动「↻ 重试」按钮带 data-retry。
+// 动作形态：字符串 = 静态按钮；{label, retry:true} = 重试按钮（点击重新发起，data-retry）；
+// {label, copy:true} = 复制按钮（复制错误详情到剪贴板，data-copy-code）。
 export function renderErrorCard(cfg) {
   const time = new Date().toLocaleTimeString("zh-CN", { hour12: false });
   const note = cfg.note ? `<div class="e-note">${cfg.note}</div>` : "";
-  const btn = (a) =>
-    typeof a === "string"
-      ? `<button class="e-btn">${a}</button>`
-      : `<button class="e-btn" data-retry="1">${a.label}</button>`;
+  const btn = (a) => {
+    if (typeof a === "string") return `<button class="e-btn">${a}</button>`;
+    if (a.copy) return `<button class="e-btn" data-copy-code="1">${a.label}</button>`;
+    return `<button class="e-btn" data-retry="1">${a.label}</button>`;
+  };
   return (
     `<div class="msg-error">` +
       `<div class="e-head"><span>⛔</span><span>${cfg.title}</span><span class="e-time">${time}</span></div>` +
@@ -337,26 +340,20 @@ export function createThreadRenderer(ctx) {
   function buildGreeting() {
     const currentProjectRoot = ctx.getCurrentProjectRoot();
     const wrap = document.createElement("div");
-    wrap.className = "msg-agent rise";
-    const avatar = document.createElement("div");
-    avatar.className = "agent-avatar";
-    avatar.textContent = "W";
+    // 规格书 P6：Agent 消息不带头像、不带署名行，直接以内容开始（2026-08-03 决定）。
+    // msg-agent--plain：无头像列的单列网格（历史轮 buildAgentBlock 保留旧式带头像布局，defer 4）。
+    wrap.className = "msg-agent msg-agent--plain rise";
     const body = document.createElement("div");
     body.className = "agent-body";
-    const name = document.createElement("div");
-    name.className = "agent-name";
-    const strong = document.createElement("strong");
-    strong.textContent = "WWriting 智能体";
-    name.append(strong);
     const say = document.createElement("p");
     say.className = "agent-say";
     say.textContent = currentProjectRoot
       ? "我已就绪。直接告诉我你想做什么：写下一章、改一段正文、问设定或进度都行；输入 / 可以唤起命令。"
       : "你好，我是 WWriting 智能体。新建或从左侧打开一部小说后，告诉我故事的设定，我会规划、起草、审稿、定稿，并把每一章保存为本地文件。";
     const quick = buildQuickRow(currentProjectRoot ? ["续写下一章", "这本书的设定是什么？", "目前花了多少钱？"] : ["新建小说"]);
-    body.append(name, say);
+    body.append(say);
     if (quick) body.append(quick);
-    wrap.append(avatar, body);
+    wrap.append(body);
     return wrap;
   }
 
@@ -885,10 +882,8 @@ export function createThreadRenderer(ctx) {
 
   function buildSideBubble(entry) {
     const wrap = document.createElement("div");
-    wrap.className = "msg-agent rise";
-    const avatar = document.createElement("div");
-    avatar.className = "agent-avatar side";
-    avatar.textContent = "?";
+    // 规格书 P6：Agent 消息不带头像，直接以内容开始（msg-agent--plain = 无头像列单列网格）。
+    wrap.className = "msg-agent msg-agent--plain rise";
     const body = document.createElement("div");
     body.className = "agent-body";
     const card = document.createElement("div");
@@ -911,7 +906,7 @@ export function createThreadRenderer(ctx) {
       card.append(buildAskConfirm(entry));
     }
     body.append(card);
-    wrap.append(avatar, body);
+    wrap.append(body);
     return wrap;
   }
 
@@ -1702,9 +1697,14 @@ export function createThreadRenderer(ctx) {
     turn.donePreview.textContent = `“${full.trim().slice(0, 24)}……”`;
   }
 
-  // project_run_failed 红卡（规格书 5.9）：人话 + 错误码徽章 + 手动重试。
+  // project_run_failed 红卡（规格书 5.9）：人话 + 错误码徽章 + 操作按钮。
   // 手动重试走 ctx.handleRetry（app.js 复用 POST /api/run/retry，并带 toast/刷新兜底），
   // 比裸 fetch 更完整；data-retry 按钮的绑定语义与规格书 6.3「手动重试」一致。
+  // 动作集按失败类型区分（规格书 6.2/6.3 + 定稿原型 S4/S5）：
+  //  - 网络耗尽（data.status 为空，如 reason:"timeout"）→「↻ 重试」+「↻ 继续写作」+「复制错误详情」；
+  //    POST /api/run/retry 实为从保存状态创建 recovery task（断点续写语义），「继续写作」才是耗尽卡准确文案。
+  //  - 鉴权/配置类（data.status 非空，如 401）→「↻ 重试」。
+  // 两个按钮点击行为都走既有 ctx.handleRetry（内部 POST /api/run/retry）。
   function failTurn(turn, event) {
     const data = event.data ?? {};
     const status = data.status ?? null;
@@ -1719,16 +1719,24 @@ export function createThreadRenderer(ctx) {
       turn.toolStatus.textContent = "已中断";
       turn.toolStatus.classList.add("bad");
     }
+    const actions = status
+      ? [{ label: "↻ 重试", retry: true }]
+      : [{ label: "↻ 重试", retry: true }, { label: "↻ 继续写作", retry: true }, { label: "复制错误详情", copy: true }];
     const card = document.createElement("div");
     card.innerHTML = renderErrorCard({
       title,
       body: event.message ?? "写作任务未能完成，可手动重试。",
       code,
       note: "已保留当前进度。",
-      actions: [{ label: "↻ 重试", retry: true }]
+      actions
     });
     card.querySelectorAll("[data-retry]").forEach((btn) => {
       btn.addEventListener("click", () => ctx.handleRetry?.());
+    });
+    // 「复制错误详情」：把错误码徽章 + 人话文案复制到剪贴板（Electron 渲染进程 clipboard API）。
+    card.querySelector("[data-copy-code]")?.addEventListener("click", () => {
+      const text = `${code}${event.message ? `\n${event.message}` : ""}`;
+      globalThis.navigator?.clipboard?.writeText?.(text)?.catch?.(() => {});
     });
     turn.errorSlot.replaceChildren(card);
     turn.errorSlot.classList.remove("hidden");
