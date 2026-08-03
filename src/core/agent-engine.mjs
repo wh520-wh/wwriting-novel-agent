@@ -21,6 +21,7 @@ import os from "node:os";
 import { appendFailure } from "./failures-store.mjs";
 import { deriveFailureCard } from "./derive-failure-card.mjs";
 import { emit, CORE_EVENTS } from "./event-bus.mjs";
+import { emit as emitRunEvent } from "./run-events-bus.mjs";
 import { buildMemoryExtractionMessages, parseMemoryExtraction } from "./memory-extractor.mjs";
 import { loadContinuity, mergeExtraction, saveContinuity, loadContinuityState, saveContinuityState, formatChapterRef } from "./continuity-store.mjs";
 import { appendChatMessage } from "./chat/chat-store.mjs";
@@ -968,7 +969,13 @@ async function createModelRuntime(projectRoot, project, options, fallbackModel) 
           data: { attempt: info.attempt, maxAttempts: info.maxAttempts, delay: info.delay, reason: info.reason, model: info.model }
         }).catch(() => {});
       },
-      onActivity: options.onActivity
+      // 流式推送：onActivity 从无参心跳升级为「带 delta 的流式通道」——字符串（含空串）
+      // 为本次 chunk 新增正文，经 run-events-bus 广播 model_delta 给 SSE 订阅者；
+      // undefined 为心跳/重试 ping，不上报 delta。上游回调（app-server 的任务心跳）照常透传。
+      onActivity: (deltaText) => {
+        emitRunEvent(projectRoot, { type: "model_delta", text: deltaText ?? "" });
+        options.onActivity?.(deltaText);
+      }
     });
   return {
     modelClient,
