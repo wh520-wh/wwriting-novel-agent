@@ -6,7 +6,8 @@ import test from "node:test";
 import { runProject, SimulatedInterrupt, maybeWarnChapterCost, extractChapterMemory, runFactCheck } from "../src/core/agent-engine.mjs";
 import { trimUnresolvedAssistantTurns } from "../src/core/agent-output-parsing.mjs";
 import { appendEvent, readEvents } from "../src/core/event-log.mjs";
-import { ProviderTransportError } from "../src/core/provider-adapters.mjs";
+import { ProviderTransportError, MockProviderAdapter } from "../src/core/provider-adapters.mjs";
+import { subscribe } from "../src/core/run-events-bus.mjs";
 import { readFailures } from "../src/core/failures-store.mjs";
 import { countEffectiveWords } from "../src/core/word-count.mjs";
 import { MockModel } from "../src/core/mock-model.mjs";
@@ -2276,4 +2277,52 @@ test("非 thinking 模型（v4-flash）重放含 reasoning_content 的恢复 tra
   // 章节最终完成（剥离不破坏多轮回放）
   const index = await loadChapterIndex(projectRoot);
   assert.equal(index.chapters[0].status, "completed");
+});
+
+// Task 8（模型配置优化）：engine 把模型 delta 与运行事件经 run-events-bus 广播，
+// SSE 订阅者（Task 9 起）能看到与事件日志一致的实时事件流。
+test("engine 经事件总线广播 model_delta 与运行事件", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-bus-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "project",
+    target_chapters: 1,
+    min_words_per_chapter: 250,
+    target_words_per_chapter: 300
+  });
+  const busEvents = [];
+  const off = subscribe(projectRoot, (event) => busEvents.push(event));
+  try {
+    const deltas = ["他推", "开门，", "灯光漏进来"];
+    const mockModel = new MockModel();
+    // 覆盖 engine 默认 mock adapter：与默认实现同形状（JSON 化工具调用输出），
+    // 额外在每次模型调用时经 metadata.onActivity 上报 delta 文本，验证引擎接线。
+    await runProject(projectRoot, {
+      adapters: {
+        mock: new MockProviderAdapter({
+          response: async (gatewayRequest) => {
+            const toolRequest = gatewayRequest.metadata?.toolRequest ?? {};
+            const output = await mockModel.generate(toolRequest);
+            for (const delta of deltas) {
+              gatewayRequest.metadata?.onActivity?.(delta);
+            }
+            return {
+              text: JSON.stringify(output),
+              raw: { output },
+              usage: { input_tokens: 12, output_tokens: 8, total_tokens: 20 }
+            };
+          }
+        })
+      }
+    });
+  } finally {
+    off();
+  }
+  for (const delta of ["他推", "开门，", "灯光漏进来"]) {
+    assert.ok(
+      busEvents.some((event) => event.type === "model_delta" && event.text === delta),
+      `总线应收到 model_delta "${delta}"`
+    );
+  }
+  assert.ok(busEvents.some((event) => event.type === "model_call_started"),
+    "总线应收到 model_call_started 运行事件（appendEvent 广播）");
 });

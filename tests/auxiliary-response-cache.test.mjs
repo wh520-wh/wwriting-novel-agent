@@ -318,3 +318,67 @@ test("失败响应不写缓存：首次调用失败后相同请求仍调 adapter
   await client.generate(auxRequest());
   assert.equal(state.calls, 2, "成功响应入缓存后第三次应命中");
 });
+
+// Task 8（模型配置优化）onActivity 流式通道测试：onActivity 从无参心跳升级为
+// 「带 delta 的心跳」——流式分支每个解析出的事件把新增正文文本回调出去（空串也回调）。
+
+// 桩 fetch 返回 SSE chunk 的流式 adapter（沿用本文件 bodyCaptureAdapter 的真实
+// OpenAICompatibleAdapter + 桩 fetch 写法；SSE chunk 模式同 provider-adapters.test.mjs）。
+function streamingDeltaAdapter(sseChunks) {
+  return new OpenAICompatibleAdapter({
+    baseUrl: "https://api.example.test/v1",
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      text: async () => { throw new Error("streaming path should not call response.text()"); },
+      body: {
+        getReader() {
+          const chunks = sseChunks.map((c) => new TextEncoder().encode(c));
+          let index = 0;
+          return {
+            read() {
+              if (index >= chunks.length) return Promise.resolve({ done: true, value: undefined });
+              return Promise.resolve({ done: false, value: chunks[index++] });
+            }
+          };
+        }
+      }
+    })
+  });
+}
+
+function streamingDeltaClient(sseChunks, onActivity) {
+  return new ModelClient({
+    adapters: { "openai-compatible": streamingDeltaAdapter(sseChunks) },
+    activeModel: {
+      provider: "openai-compatible", model_name: "m",
+      base_url: "https://api.example.test/v1", stream: true
+    },
+    retryMax: 0,
+    heartbeatMs: 0, // 聚焦流式 delta，关闭间隔心跳避免 undefined 混入
+    onActivity
+  });
+}
+
+test("onActivity 收到流式 delta 文本", async () => {
+  const deltas = [];
+  const client = streamingDeltaClient([
+    'data: {"choices":[{"delta":{"content":"他推"}}]}\n\n',
+    'data: {"choices":[{"delta":{"content":"开门，"}}]}\n\n',
+    'data: {"choices":[{"delta":{"content":"灯光漏进来"}}]}\n\n',
+    "data: [DONE]\n\n"
+  ], (d) => deltas.push(d));
+  await client.generate({ project: {}, stage: "drafting", prompt: "写", messages: [] });
+  assert.deepEqual(deltas, ["他推", "开门，", "灯光漏进来"]);
+});
+
+test("onActivity 空串也回调：usage-only 帧无正文仍上报（reasoning_content 兜底）", async () => {
+  const deltas = [];
+  const client = streamingDeltaClient([
+    'data: {"choices":[{"delta":{"reasoning_content":"思考中"}}]}\n\n',
+    'data: {"choices":[],"usage":{"prompt_tokens":8,"completion_tokens":2,"total_tokens":10}}\n\n',
+    "data: [DONE]\n\n"
+  ], (d) => deltas.push(d));
+  await client.generate({ project: {}, stage: "drafting", prompt: "写", messages: [] });
+  assert.deepEqual(deltas, ["思考中", ""]);
+});

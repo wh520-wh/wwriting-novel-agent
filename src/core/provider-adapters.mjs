@@ -147,9 +147,6 @@ export class OpenAICompatibleAdapter {
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
 
-        // Signal activity on each raw SSE chunk so the heartbeat stays fresh during long streams
-        metadata?.onActivity?.();
-
         const parts = buffer.split(/(?:\r?\n){2,}/);
         buffer = parts.pop(); // keep incomplete part
 
@@ -168,6 +165,10 @@ export class OpenAICompatibleAdapter {
               events.push(event);
               if (event.usage) usage = event.usage;
               const token = extractStreamToken(event);
+              // 流式心跳升级：onActivity 从无参心跳变为「带 delta 的心跳」——每个解析出的
+              // 事件回调新增正文文本（usage-only 帧返回空串也照常回调，前端据此判断
+              // "有 token 但无正文"不渲染；回调本身同时保持长流心跳新鲜）。
+              metadata?.onActivity?.(token);
               if (token) {
                 text += token;
                 metadata.onToken?.(token, event);
@@ -192,6 +193,7 @@ export class OpenAICompatibleAdapter {
             events.push(event);
             if (event.usage) usage = event.usage;
             const token = extractStreamToken(event);
+            metadata?.onActivity?.(token);
             if (token) {
               text += token;
               metadata.onToken?.(token, event);

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import { pathExists, safeJoin } from "./fs-utils.mjs";
 import { on, CORE_EVENTS } from "./event-bus.mjs";
+import { emit } from "./run-events-bus.mjs";
 
 export async function appendEvent(projectRoot, event) {
   const entry = {
@@ -16,6 +17,9 @@ export async function appendEvent(projectRoot, event) {
     type: event.type
   };
   await fs.appendFile(safeJoin(projectRoot, "run_log.jsonl"), `${JSON.stringify(entry)}\n`, "utf8");
+  // 运行事件内存总线广播：SSE 端点经 subscribe 订阅，看到的与 run_log.jsonl 事件日志一致。
+  // 无订阅者时 emit 静默丢弃（run 期间前端必然订阅，未订阅即无人在看）。
+  emit(projectRoot, entry);
   return entry;
 }
 
