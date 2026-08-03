@@ -2186,3 +2186,94 @@ test("runWritingAgentLoop: 本轮结束 transcript 无悬空 tool_call(不变式
   assert.equal(violations.length, 0,
     `正常路径不应有不变式违例,实际: ${JSON.stringify(violations)}`);
 });
+
+// Task 6：transcript 推理内容跨模型剥离。reasoning_content 与 thinking 模型绑定，
+// 换到非 thinking 模型（deepseek v4-flash，supportsThinking=false）后原样重放会被 API 拒
+// （400）。组装 gateway messages 时应剥离，transcript 本体不动（换回 thinking 模型仍可完整重放）。
+class ReasoningStrippingModelClient {
+  constructor() {
+    this.calls = 0;
+    this.capturedMessagesPerCall = [];
+    this.costTracker = {
+      record() { return { calls: 1, inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCost: 0 }; },
+      async writeProjectReport() {}
+    };
+  }
+  async generate({ stage, messages = [], metadata = {} }) {
+    this.calls += 1;
+    this.capturedMessagesPerCall.push([...messages]);
+    const request = metadata.toolRequest;
+    const usageReport = {
+      provider: "openai-compatible", model: "deepseek-v4-flash",
+      inputTokens: 1, outputTokens: 1, totalTokens: 2,
+      cachedTokens: 0, cacheHitTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+      reasoningTokens: 0, cacheMetricsAvailable: false, cacheHitRate: null,
+      estimatedCost: 0, rawUsage: {}
+    };
+    const costSummary = { calls: 1, inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCost: 0 };
+    const modelConfig = { provider: "openai-compatible", model_name: "deepseek-v4-flash" };
+    if (stage === "memory_extract") {
+      // summarizing 阶段的内存提取：返回合法 JSON 让 run 走完（聚焦剥离断言，不测试提取）。
+      return {
+        text: "```json\n" + JSON.stringify({ summary: "第一章：主角在雨夜收到警告。", facts: [], timeline: [], characters: [] }) + "\n```",
+        usageReport, costSummary, modelConfig
+      };
+    }
+    if (request) {
+      const content = "这是一段足够长的正文内容用于通过字数门禁,确保超过最小字符阈值。".repeat(11);
+      return {
+        text: "",
+        raw: { choices: [{ message: { role: "assistant", content: null,
+          tool_calls: [{ id: `stc_${this.calls}`, type: "function", function: { name: "append_chapter_segment", arguments: JSON.stringify({ project_id: request.project_id, chapter_no: request.chapter_no, segment_no: request.segment_no, content }) } }] } }] },
+        usageReport, costSummary, modelConfig
+      };
+    }
+    return { text: "", usageReport, costSummary, modelConfig };
+  }
+}
+
+test("非 thinking 模型（v4-flash）重放含 reasoning_content 的恢复 transcript 时剥离", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-strip-reasoning-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "project", target_chapters: 1, min_words_per_chapter: 300, target_words_per_chapter: 360
+  });
+  // active_model 为 deepseek v4-flash：resolveModelCapabilities 判定 supportsThinking=false
+  const project = await loadProject(projectRoot);
+  project.active_model = {
+    provider: "openai-compatible",
+    base_url: "https://api.deepseek.com",
+    model_name: "deepseek-v4-flash",
+    api_key_env: "FAKE_KEY"
+  };
+  await saveProject(projectRoot, project);
+  // 预写 pending transcript：assistant 轮次带 reasoning_content（thinking 模型产物），
+  // 跨模型切换后恢复重放应剥离该字段。
+  await fs.mkdir(path.join(projectRoot, "memory"), { recursive: true });
+  await fs.writeFile(
+    path.join(projectRoot, "memory", ".pending-transcript-1-1.json"),
+    JSON.stringify({
+      messages: [
+        { role: "user", content: "写第一章" },
+        { role: "assistant", content: null, reasoning_content: "先铺垫雨夜线索", tool_calls: [{ id: "c1", type: "function", function: { name: "read_continuity", arguments: "{}" } }] },
+        { role: "tool", tool_call_id: "c1", content: "{}" }
+      ]
+    }),
+    "utf8"
+  );
+  const client = new ReasoningStrippingModelClient();
+  const result = await runProject(projectRoot, { modelClient: client, contract: makeChapterContract(1) });
+  assert.equal(result.task_completed, true);
+  // 恢复后的首个 gateway 请求 = restored transcript，其中的 assistant reasoning_content 必须被剥离
+  const firstWritingMessages = client.capturedMessagesPerCall[0];
+  assert.ok(firstWritingMessages.some((m) => m.role === "user"), "首轮应收到含 user 消息的恢复链");
+  const assistantMsg = firstWritingMessages.find((m) => m.role === "assistant");
+  assert.ok(assistantMsg, "恢复链应含 assistant 消息");
+  assert.equal(assistantMsg.reasoning_content, undefined,
+    "supportsThinking=false 时发出的 assistant 消息不得带 reasoning_content（防跨模型 400）");
+  assert.equal(assistantMsg.tool_calls[0].id, "c1", "tool_calls 应原样保留");
+  const toolMsg = firstWritingMessages.find((m) => m.role === "tool");
+  assert.equal(toolMsg.tool_call_id, "c1", "role=tool 结果应原样保留");
+  // 章节最终完成（剥离不破坏多轮回放）
+  const index = await loadChapterIndex(projectRoot);
+  assert.equal(index.chapters[0].status, "completed");
+});
