@@ -1064,25 +1064,31 @@ export function createSettingsModal(ctx, options = {}) {
     }
     await runSave(async () => {
       // 第一步：模型配置存全局（~/.wwriting/model-profiles.json），不需要项目。
-      const modelResult = await postJsonImpl("/api/settings/model-profile", {
-        active_model: compactObject({
-          provider: PROVIDER_PRESETS[provider.preset].provider,
-          model_name: settingsFields.model.input.value.trim(),
-          base_url: settingsFields.baseUrl.input.value.trim(),
-          api_key: settingsFields.apiKey.input.value.trim(),
-          api_key_env: apiKeyEnv,
-          pricing: settingsFields.priceInput.input.value && settingsFields.priceOutput.input.value
-            ? compactObject({
-                input_per_million: Number(settingsFields.priceInput.input.value),
-                output_per_million: Number(settingsFields.priceOutput.input.value),
-                cache_hit_per_million: settingsFields.priceCacheHit.input.value ? Number(settingsFields.priceCacheHit.input.value) : undefined
-              })
-            : undefined
-        })
-      });
-      if (modelResult?.fields) {
-        applyServerFields(modelResult.fields);
-        throw new Error("模型信息不完整，请检查标红的字段。");
+      // 服务端对 ModelConfigValidationError 一律回 400 + fields，postJson 会抛错携带 error.fields，
+      // 因此校验失败在这里捕获：逐项标红后继续抛出，由 runSave 兜底 toast 展示服务端原文错误。
+      let modelResult;
+      try {
+        modelResult = await postJsonImpl("/api/settings/model-profile", {
+          active_model: compactObject({
+            provider: PROVIDER_PRESETS[provider.preset].provider,
+            model_name: settingsFields.model.input.value.trim(),
+            base_url: settingsFields.baseUrl.input.value.trim(),
+            api_key: settingsFields.apiKey.input.value.trim(),
+            api_key_env: apiKeyEnv,
+            pricing: settingsFields.priceInput.input.value && settingsFields.priceOutput.input.value
+              ? compactObject({
+                  input_per_million: Number(settingsFields.priceInput.input.value),
+                  output_per_million: Number(settingsFields.priceOutput.input.value),
+                  cache_hit_per_million: settingsFields.priceCacheHit.input.value ? Number(settingsFields.priceCacheHit.input.value) : undefined
+                })
+              : undefined
+          })
+        });
+      } catch (error) {
+        if (error?.fields && typeof error.fields === "object") {
+          applyServerFields(error.fields);
+        }
+        throw error;
       }
       await fetchGlobalModels();
 
