@@ -116,10 +116,17 @@ export async function resumeChatTurn(options) {
     await clearPendingAction(projectRoot);
   }
   const toolEvent = { tool: pending.tool, ok: outcome.ok, error: outcome.ok ? null : outcome.error };
+  // 蓝图门禁拒绝路径与 agentLoop 的 !isRead 分支保持一致：result_summary 用纯 message，
+  // 不 JSON 序列化 {error, message}（其余错误路径保持原样）。
+  const resultSummary = outcome.ok
+    ? summarize(outcome.result)
+    : outcome.error === "blueprint_not_ready"
+      ? outcome.message
+      : summarize({ error: outcome.error, message: outcome.message });
   await appendChatMessage(projectRoot, {
     role: "tool", tool: pending.tool, ok: outcome.ok,
     args: summarizeArgs(pending.args),
-    result_summary: summarize(outcome.ok ? outcome.result : { error: outcome.error, message: outcome.message })
+    result_summary: resultSummary
   });
   options.onEvent?.({ type: "tool_result", ...toolEvent });
   return await agentLoop({ ...options, userMessage: null, turnId: resumeTurnId }, [toolEvent]);
