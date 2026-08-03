@@ -88,7 +88,7 @@ export class ModelClient {
     }
 
     // L3 辅助调用确定性响应缓存：
-    // 1) 资格满足且模型 supportsTemperature 时显式注入 temperature=0（缓存确定性前提）；
+    // 1) 默认不注入 temperature（用厂商接口默认值，更稳定）；仅用户显式配置 0 时保留确定性缓存资格；
     // 2) 命中直接返回缓存响应（usage 归零、不调 adapter、不 record 费用）；
     // 3) metadata.attempt > 0 的流程级重试不查缓存。
     const { modelConfig, cacheKey } = this.#prepareAuxiliaryCache({
@@ -285,10 +285,10 @@ export class ModelClient {
 
   /**
    * L3 辅助调用缓存准备：返回 { modelConfig, cacheKey }。
-   * - modelConfig：资格满足且模型 supportsTemperature 时注入 temperature=0（用户已显式配置则尊重用户值）；
-   * - cacheKey：仅当「辅助标记 + 无工具 + 非流式 + 有效 temperature=0 + attempt=0」时非空。
+   * - modelConfig：默认不注入 temperature（2026-08-03 用户决定：用厂商接口默认值更稳定）；
+   * - cacheKey：仅当「辅助标记 + 无工具 + 非流式 + 显式 temperature=0 + 模型 supportsTemperature + attempt=0」时非空。
    *   不支持 temperature 的模型（resolveModelCapabilities.supportsTemperature=false，即 thinking 模型）
-   *   不注入 temperature（忽略采样参数），因缓存确定性建立在显式 temperature=0 上，这类模型本轮不走缓存。
+   *   即使显式配置 0 也无法满足确定性前提（厂商忽略采样参数），这类模型本轮不走缓存。
    */
   #prepareAuxiliaryCache({ modelConfig, stage, prompt, messages, metadata }) {
     const isAuxiliary = metadata?.memoryExtract === true || metadata?.factCheck === true;
@@ -299,11 +299,11 @@ export class ModelClient {
     if (!eligible) {
       return { modelConfig, cacheKey: null };
     }
+    // 2026-08-03 用户决定：默认不注入 temperature，用厂商接口默认值（更稳定）。
+    // 仅用户显式配置 0 时保留确定性缓存资格。
     const caps = resolveModelCapabilities(modelConfig);
-    const effectiveConfig = modelConfig.temperature === undefined && caps.supportsTemperature
-      ? { ...modelConfig, temperature: 0 }
-      : modelConfig;
-    const cacheKey = effectiveConfig.temperature === 0
+    const effectiveConfig = modelConfig;
+    const cacheKey = effectiveConfig.temperature === 0 && caps.supportsTemperature
       ? this.#responseCacheKey({ modelConfig: effectiveConfig, stage, prompt, messages, metadata })
       : null;
     return { modelConfig: effectiveConfig, cacheKey };

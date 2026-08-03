@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ModelClient } from "../src/core/model-client.mjs";
+import { OpenAICompatibleAdapter } from "../src/core/provider-adapters.mjs";
 
 // Task 21 (L3) 收窄版确定性响应缓存测试：
 // 仅「辅助调用（memoryExtract/factCheck）+ 无工具 + 非流式 + 显式 temperature=0 + attempt=0」
@@ -27,7 +28,9 @@ function countingAdapter({ text = "辅助响应文本", usage = { input_tokens: 
 function makeClient(adapter, { model = {}, client = {} } = {}) {
   return new ModelClient({
     adapters: { test: adapter },
-    activeModel: { provider: "test", model_name: "aux-model", ...model },
+    // 显式 temperature=0（2026-08-03 起默认不再注入）：本文件的缓存机制测试
+    // 显式开启确定性缓存资格，语义与「用户显式配置 0」一致
+    activeModel: { provider: "test", model_name: "aux-model", temperature: 0, ...model },
     retryMax: 0, // 本测试聚焦 L3 缓存，不需要网络重试
     ...client
   });
@@ -155,16 +158,26 @@ test("条件排除：stream=true 的辅助请求不缓存", async () => {
   assert.equal(state.calls, 2, "流式辅助请求不缓存");
 });
 
-test("temperature=0 注入：非 reasoner 模型显式注入 0；用户配置不被覆盖；reasoner 模型不注入也不缓存", async () => {
-  // 非 reasoner 模型：注入 temperature=0 且进缓存
+test("temperature 注入策略：默认不注入（厂商默认）；显式 0 保留确定性缓存；显式非 0 尊重用户值不缓存", async () => {
+  // 默认（用户未配置 temperature）：不注入，用厂商接口默认值（2026-08-03 用户决定）；
+  // 不满足显式 temperature=0 的确定性前提，不缓存
+  // （makeClient 默认带 temperature=0 仅为本文件缓存机制测试的显式约定，这里显式清空模拟用户未配置）
   const state1 = countingAdapter();
-  const client1 = makeClient(state1.adapter);
+  const client1 = makeClient(state1.adapter, { model: { temperature: undefined } });
   await client1.generate(auxRequest());
-  assert.equal(state1.seenConfigs[0].temperature, 0, "非 reasoner 模型应显式注入 temperature=0");
+  assert.equal(state1.seenConfigs[0].temperature, undefined, "默认不注入 temperature，用厂商接口默认值");
   await client1.generate(auxRequest());
-  assert.equal(state1.calls, 1, "注入 temperature=0 后应可缓存");
+  assert.equal(state1.calls, 2, "默认无 temperature=0，不满足确定性前提，不缓存");
 
-  // 用户已显式配置 temperature：尊重用户值，不覆盖；temperature≠0 则不缓存
+  // 用户显式配置 temperature=0：尊重用户值，并保留确定性缓存资格
+  const stateZero = countingAdapter();
+  const clientZero = makeClient(stateZero.adapter, { model: { temperature: 0 } });
+  await clientZero.generate(auxRequest());
+  assert.equal(stateZero.seenConfigs[0].temperature, 0, "用户显式配置的 temperature=0 应保留（确定性缓存资格）");
+  await clientZero.generate(auxRequest());
+  assert.equal(stateZero.calls, 1, "显式 temperature=0 满足确定性前提，应可缓存");
+
+  // 用户已显式配置非 0 temperature：尊重用户值，不覆盖；temperature≠0 则不缓存
   const state2 = countingAdapter();
   const client2 = makeClient(state2.adapter, { model: { temperature: 0.7 } });
   await client2.generate(auxRequest());
@@ -175,7 +188,7 @@ test("temperature=0 注入：非 reasoner 模型显式注入 0；用户配置不
   // v4-flash（官方按 thinking 处理，R1）：不注入 temperature 也不缓存(同 reasoner)
   const state3 = countingAdapter();
   const client3 = makeClient(state3.adapter, {
-    model: { model_name: "deepseek-v4-flash", base_url: "https://api.deepseek.com" }
+    model: { model_name: "deepseek-v4-flash", base_url: "https://api.deepseek.com", temperature: undefined }
   });
   await client3.generate(auxRequest());
   await client3.generate(auxRequest());
@@ -183,14 +196,85 @@ test("temperature=0 注入：非 reasoner 模型显式注入 0；用户配置不
   assert.equal(state3.calls, 2, "v4-flash 不满足显式 temperature=0，不缓存");
 });
 
-test("reasoner 系模型（v4-pro / deepseek-reasoner）不注入 temperature 也不缓存", async () => {
+// Task 2（模型配置优化）请求体级验证：经 ModelClient → 真实 OpenAI 兼容 adapter → 桩 fetch 捕获请求体。
+// 默认不注入 temperature（用厂商接口默认值）；仅用户显式配置的值会进入请求体。
+function bodyCaptureAdapter() {
+  const captured = [];
+  const adapter = new OpenAICompatibleAdapter({
+    baseUrl: "https://api.deepseek.com/v1",
+    apiKey: "sk-test",
+    fetchImpl: async (_url, init) => {
+      captured.push(JSON.parse(init.body));
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return JSON.stringify({ choices: [{ message: { content: "OK" } }] });
+        },
+      };
+    }
+  });
+  return { captured, adapter };
+}
+
+function bodyRequest(overrides = {}) {
+  return {
+    project: {},
+    stage: "memory_extract",
+    prompt: "你好",
+    messages: [{ role: "user", content: "提取本章记忆" }],
+    metadata: { memoryExtract: true, chapterNo: 1, attempt: 0 },
+    ...overrides
+  };
+}
+
+test("默认不注入 temperature：用户未配置时请求体不带 temperature 字段", async () => {
+  const { captured, adapter } = bodyCaptureAdapter();
+  const client = new ModelClient({
+    adapters: { "openai-compatible": adapter },
+    activeModel: {
+      provider: "openai-compatible", model_name: "deepseek-chat",
+      base_url: "https://api.deepseek.com/v1", api_key: "sk-test"
+    }
+  });
+  await client.generate(bodyRequest());
+  assert.equal("temperature" in captured[0], false, "默认不注入 temperature，请求体不应带 temperature 字段");
+});
+
+test("用户显式配置 temperature 时注入该值", async () => {
+  const { captured, adapter } = bodyCaptureAdapter();
+  const client = new ModelClient({
+    adapters: { "openai-compatible": adapter },
+    activeModel: {
+      provider: "openai-compatible", model_name: "deepseek-chat",
+      base_url: "https://api.deepseek.com/v1", api_key: "sk-test",
+      temperature: 1.1
+    }
+  });
+  await client.generate(bodyRequest());
+  assert.equal(captured[0].temperature, 1.1, "用户显式配置的 temperature 应注入请求体");
+});
+
+test("reasoner 系模型（v4-pro / deepseek-reasoner）不注入 temperature 也不缓存；显式 0 也不缓存", async () => {
   for (const model_name of ["deepseek-v4-pro", "deepseek-reasoner"]) {
+    // 未配置 temperature：不注入
     const state = countingAdapter();
-    const client = makeClient(state.adapter, { model: { model_name, base_url: "https://api.deepseek.com" } });
+    const client = makeClient(state.adapter, {
+      model: { model_name, base_url: "https://api.deepseek.com", temperature: undefined }
+    });
     await client.generate(auxRequest());
     await client.generate(auxRequest());
     assert.equal(state.seenConfigs[0].temperature, undefined, `${model_name} 不应注入 temperature（thinking 模式不支持该参数）`);
     assert.equal(state.calls, 2, `${model_name} 不满足显式 temperature=0，不缓存`);
+
+    // 显式配置 temperature=0：值虽合法，但模型 supportsTemperature=false，
+    // 确定性前提不成立，同样不缓存
+    const stateZero = countingAdapter();
+    const clientZero = makeClient(stateZero.adapter, { model: { model_name, base_url: "https://api.deepseek.com", temperature: 0 } });
+    await clientZero.generate(auxRequest());
+    await clientZero.generate(auxRequest());
+    assert.equal(stateZero.seenConfigs[0].temperature, 0, `${model_name} 应尊重用户显式配置的 temperature=0`);
+    assert.equal(stateZero.calls, 2, `${model_name} supportsTemperature=false，显式 0 也不缓存`);
   }
 });
 
