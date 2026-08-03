@@ -98,7 +98,9 @@ async function main() {
     selectedProjectRoot: fcProjectRoot, // Start with fc project so the page loads it first
     staticRoot: path.join(rootDir, "src", "app-shell"),
     secretsRoot: userDataDir,
-    port: 0
+    port: 0,
+    // 注入假探测函数：让「测试连接」按钮在无头环境也能走通成功路径（真实网络探测由 verify:provider-online 覆盖）。
+    testModelConnection: async () => ({ ok: true, message: "连接正常", latency_ms: 12 })
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = server.address().port;
@@ -515,6 +517,19 @@ async function main() {
   `);
   assert.equal(maxTokensState.tagName, "INPUT", "max tokens input must exist");
 
+  // 用户截图里的核心链路：填好模型名/地址/Key 后点「测试连接」→ 应看到连接结果，
+  // 不应弹「请先新建或打开一部小说」。断言状态行进入 success 且文案不含项目门禁。
+  clicks.push(await clickAndRead(win, "#settings-test-connection", {
+    label: "settings-test-connection",
+    expect: () => read(win, `
+      (() => {
+        const status = document.getElementById("settings-connection-status");
+        const text = status?.textContent ?? "";
+        return status?.dataset?.state === "success" && text.includes("连接成功") && !text.includes("请先新建或打开一部小说");
+      })()
+    `)
+  }));
+
   clicks.push(await clickAndRead(win, ".sw", {
     label: "settings-network-toggle",
     expect: () => read(win, "document.querySelector('.sw')?.getAttribute('aria-pressed') === 'true'")
@@ -524,18 +539,32 @@ async function main() {
     expect: () => overlayHidden(win, "settings-scrim"),
     settleMs: 500
   }));
+  // 模型设置与项目解耦后：保存只进全局清单（model-profiles.json + secrets.json），
+  // 成为全局默认模型，不再写当前项目的 active_model。这里按新契约断言：
+  // 1) 保存的模型成为全局默认；2) 密钥真实落盘（api_key_saved）；3) 项目模型原样保留。
   const savedCustomModel = await read(win, `
+    fetch("/api/settings/models")
+      .then((response) => response.json())
+      .then((data) => data.default_model?.model_name ?? null)
+  `);
+  assert.equal(savedCustomModel, customModelId, "saved settings must promote the custom model to global default");
+  const savedCustomSecret = await read(win, `
+    fetch("/api/settings/models")
+      .then((response) => response.json())
+      .then((data) => {
+        const profile = data.models.find((model) => model.model_name === ${JSON.stringify(customModelId)});
+        return profile ? { apiKeySaved: profile.api_key_saved, masked: profile.api_key_masked } : null;
+      })
+  `);
+  assert.ok(savedCustomSecret, "saved settings must list the custom model in the global profile list");
+  assert.equal(savedCustomSecret.apiKeySaved, true, "saved settings must persist the full local API key to secrets.json");
+  assert.equal(savedCustomSecret.masked.endsWith(customApiKey.slice(-4)), true, "saved API key mask must match the entered key's tail");
+  const projectModelAfterSave = await read(win, `
     fetch("/api/dashboard")
       .then((response) => response.json())
-      .then((data) => data.project?.active_model?.model_name)
+      .then((data) => data.project?.active_model?.model_name ?? null)
   `);
-  assert.equal(savedCustomModel, customModelId, "saved settings must preserve a custom model id");
-  const savedCustomSecret = await read(win, `
-    fetch("/api/settings/model-secret")
-      .then((response) => response.json())
-      .then((data) => data.value)
-  `);
-  assert.equal(savedCustomSecret, customApiKey, "saved settings must preserve the full local API key");
+  assert.equal(projectModelAfterSave, "mock-writer", "saving global model must not overwrite the current project's active model (decoupled)");
   await waitUntil(win, "document.getElementById('settings-save')?.disabled === false", "settings save flow must finish before quick rail checks");
 
   const modalClosedState = await read(win, `
