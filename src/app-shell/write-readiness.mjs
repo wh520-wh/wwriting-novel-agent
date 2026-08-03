@@ -6,13 +6,10 @@
  * @param {object} input.summary
  * @param {object} input.state
  * @param {object} input.chatHistory
- * @param {Array} input.events
  * @param {Array} input.failures
- * @param {object} [options]
- * @param {string[]} [options.globallyTestedModels] - 跨项目记住的已验证模型名（localStorage）
  * @returns {{ key, label, detail, primaryAction, primaryLabel, chapterNo, modelLabel, blocking, reasonCode }}
  */
-export function deriveWriteReadiness(input, options = {}) {
+export function deriveWriteReadiness(input) {
   if (!input) {
     return readiness("no_project", {
       primaryAction: "create_project",
@@ -33,7 +30,6 @@ export function deriveWriteReadiness(input, options = {}) {
   const state = input.state || {};
   const chatHistory = input.chatHistory || {};
   const modelProfile = input.model_profile;
-  const events = input.events || [];
   const failures = input.failures || [];
 
   const chapterNo = summary.currentChapterNo || state.current_chapter_no || 1;
@@ -106,43 +102,13 @@ export function deriveWriteReadiness(input, options = {}) {
     });
   }
 
-  // 9. Check for matching model_connection_tested event
-  const connEvent = findLatestConnectionEvent(events, activeModel.model_name);
-  if (connEvent && connEvent.data.ok === true) {
-    return readiness("ready", {
-      chapterNo,
-      modelLabel,
-      primaryAction: "start_chapter",
-      primaryLabel: `开始写第 ${chapterNo} 章`
-    });
-  }
-  if (connEvent && connEvent.data.ok === false) {
-    return readiness("invalid_model", {
-      chapterNo,
-      modelLabel,
-      primaryAction: "open_settings",
-      blocking: true,
-      reasonCode: "connection_failed"
-    });
-  }
-
-  // 9b. 项目无连接事件，但该模型在其他项目测过（全局记忆）-> 直接 ready，不强制重测。
-  // 仅在项目无事件时回退到全局记忆；项目级事件（含失败）优先。
-  const globallyTested = Array.isArray(options.globallyTestedModels) ? options.globallyTestedModels : [];
-  if (globallyTested.includes(activeModel.model_name)) {
-    return readiness("ready", {
-      chapterNo,
-      modelLabel,
-      primaryAction: "start_chapter",
-      primaryLabel: `开始写第 ${chapterNo} 章`
-    });
-  }
-
-  // 10. Connection unknown
-  return readiness("connection_unknown", {
+  // 配置齐全即可开写。这里不做连接探测门禁：模型能不能连通，运行时会用真实
+  // 报错告诉用户，界面不提前拦、也不显示「未验证」之类的状态标记。
+  return readiness("ready", {
     chapterNo,
     modelLabel,
-    primaryAction: "test_connection"
+    primaryAction: "start_chapter",
+    primaryLabel: `开始写第 ${chapterNo} 章`
   });
 }
 
@@ -161,19 +127,6 @@ function isInvalidModel(model) {
 }
 
 /**
- * Find the latest model_connection_tested event for a given model name.
- */
-function findLatestConnectionEvent(events, modelName) {
-  let latest = null;
-  for (const ev of events) {
-    if (ev.type === "model_connection_tested" && ev.data && ev.data.model_name === modelName) {
-      latest = ev;
-    }
-  }
-  return latest;
-}
-
-/**
  * Build the readiness result object with defaults.
  */
 function readiness(key, overrides = {}) {
@@ -186,8 +139,7 @@ function readiness(key, overrides = {}) {
     missing_model:      { label: "未配置模型",       detail: "请先配置 AI 模型。" },
     invalid_model:      { label: "模型配置无效",     detail: "模型配置信息不完整或连接失败，请检查设置。" },
     demo:               { label: "演示模型模式",     detail: "写作内容不会被保存。继续以确认。" },
-    ready:              { label: "模型已连接",       detail: "可以开始写第 1 章。" },
-    connection_unknown: { label: "连接状态未知",     detail: "尚未确认模型连接是否正常。" }
+    ready:              { label: "模型已连接",       detail: "可以开始写第 1 章。" }
   };
 
   const entry = labels[key] || { label: key, detail: "" };
@@ -221,8 +173,7 @@ function getDefaultPrimaryLabel(key, chapterNo) {
     missing_model: "打开设置",
     invalid_model: "打开设置",
     demo: "用演示模型开始",
-    ready: "开始写作",
-    connection_unknown: "测试连接"
+    ready: "开始写作"
   };
   return labels[key] || "";
 }

@@ -62,85 +62,21 @@ test("key readiness states", () => {
     })).key,
     "demo"
   );
-  assert.equal(
-    deriveWriteReadiness(data({
-      events: [{ type: "model_connection_tested", data: { model_name: "deepseek-chat", ok: false } }]
-    })).key,
-    "invalid_model"
-  );
-  assert.equal(
-    deriveWriteReadiness(data({
-      events: [{ type: "model_connection_tested", data: { model_name: "deepseek-chat", ok: true } }]
-    })).key,
-    "ready"
-  );
-  assert.equal(
-    deriveWriteReadiness(data({
-      events: [{ type: "model_connection_tested", data: { model_name: "old-model", ok: true } }]
-    })).key,
-    "connection_unknown"
-  );
 });
 
-test("connection event matching rules", () => {
-  const activeModel = { provider: "openai-compatible", model_name: "deepseek-chat", base_url: "https://api.deepseek.com", api_key_env: "DEEPSEEK_API_KEY" };
-
-  // ok:true with matching model_name -> ready
-  const matchedOk = deriveWriteReadiness(data({
-    project: { active_model: activeModel },
-    events: [{ type: "model_connection_tested", data: { model_name: "deepseek-chat", ok: true } }]
-  }));
-  assert.equal(matchedOk.key, "ready");
-  assert.equal(matchedOk.reasonCode, null);
-
-  // ok:true with non-matching model_name -> connection_unknown
-  const nonMatchingOk = deriveWriteReadiness(data({
-    project: { active_model: activeModel },
-    events: [{ type: "model_connection_tested", data: { model_name: "old-model", ok: true } }]
-  }));
-  assert.equal(nonMatchingOk.key, "connection_unknown");
-  assert.equal(nonMatchingOk.reasonCode, null);
-
-  // ok:false with matching model_name -> invalid_model with reasonCode
-  const failedConn = deriveWriteReadiness(data({
-    project: { active_model: activeModel },
-    events: [{ type: "model_connection_tested", data: { model_name: "deepseek-chat", ok: false } }]
-  }));
-  assert.equal(failedConn.key, "invalid_model");
-  assert.equal(failedConn.reasonCode, "connection_failed");
-  assert.equal(failedConn.blocking, true);
-
-  // multiple events — latest matching event wins
-  const latestWins = deriveWriteReadiness(data({
-    project: { active_model: activeModel },
-    events: [
-      { type: "model_connection_tested", data: { model_name: "deepseek-chat", ok: false } },
-      { type: "model_connection_tested", data: { model_name: "deepseek-chat", ok: true } }
-    ]
-  }));
-  assert.equal(latestWins.key, "ready");
-  assert.equal(latestWins.reasonCode, null);
+test("没测过连接也能开始写：不再有连接门禁", () => {
+  const view = deriveWriteReadiness(data({ events: [] }));
+  assert.equal(view.key, "ready");
+  assert.equal(view.primaryAction, "start_chapter");
+  assert.equal(view.blocking, false);
 });
 
-test("全局已测模型：项目无连接事件时回退到 globallyTestedModels，判 ready 不强制重测", () => {
-  // 项目无事件 + 全局记忆有该模型 -> ready
-  const viaGlobal = deriveWriteReadiness(data({ events: [] }), {
-    globallyTestedModels: ["deepseek-chat"]
-  });
-  assert.equal(viaGlobal.key, "ready");
-  assert.equal(viaGlobal.primaryAction, "start_chapter");
-
-  // 项目无事件 + 全局记忆无该模型 -> connection_unknown（原行为）
-  const noGlobal = deriveWriteReadiness(data({ events: [] }), {
-    globallyTestedModels: ["some-other-model"]
-  });
-  assert.equal(noGlobal.key, "connection_unknown");
-
-  // 项目有失败事件 -> 仍 invalid_model（项目级失败优先于全局记忆）
-  const projectFailed = deriveWriteReadiness(data({
+test("上次连接失败也不拦写作：真实报错交给运行时", () => {
+  const view = deriveWriteReadiness(data({
     events: [{ type: "model_connection_tested", data: { model_name: "deepseek-chat", ok: false } }]
-  }), { globallyTestedModels: ["deepseek-chat"] });
-  assert.equal(projectFailed.key, "invalid_model");
+  }));
+  assert.equal(view.key, "ready");
+  assert.equal(view.blocking, false);
 });
 
 test("full return shape for ready state", () => {
