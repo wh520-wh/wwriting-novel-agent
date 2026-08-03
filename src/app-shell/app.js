@@ -15,7 +15,6 @@ import { deriveWriteReadiness } from "./write-readiness.mjs";
 import { deriveProjectIdentity } from "./project-identity.mjs";
 import { deriveWorkbenchView, deriveChapterCompletion } from "./workbench-presentation.mjs";
 import { loadDefaultTier } from "./permission-defaults.mjs";
-import { listTestedModels } from "./connection-memory.mjs";
 import { getTierById } from "./permission-tiers.mjs";
 
 // WWriting · Codex 风格对话式前端
@@ -723,7 +722,7 @@ function workbenchStatusText(view) {
   if (key === "blocked") return "故事线需要你的判断";
   if (key === "completed") return "本轮章节目标已完成";
   if (key === "project_read_only") return "这部作品当前以只读方式打开";
-  if (key === "missing_model" || key === "invalid_model" || key === "connection_unknown") return "完成模型准备后即可继续";
+  if (key === "missing_model" || key === "invalid_model") return "完成模型准备后即可继续";
   return `下一步：第 ${view.readiness.chapterNo} 章`;
 }
 
@@ -777,7 +776,7 @@ function renderProjectWorkbench(data) {
 }
 
 function renderWriteReadiness(data) {
-  const view = deriveWriteReadiness(data, { globallyTestedModels: listTestedModels() });
+  const view = deriveWriteReadiness(data);
   lastWriteReadinessView = view;
   const section = refs.writeReadiness;
   if (!section) return;
