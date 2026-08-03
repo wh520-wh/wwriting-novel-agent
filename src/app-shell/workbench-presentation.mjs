@@ -1,7 +1,6 @@
 import { presentChapterArtifact } from "./chapter-presentation.mjs";
 import { deriveProjectIdentity } from "./project-identity.mjs";
 import { deriveWriteReadiness } from "./write-readiness.mjs";
-import { listTestedModels } from "./connection-memory.mjs";
 
 const ACTIVITY_COPY = {
   project_created: ({ chapterNo }) => ({ label: "开始创作这部小说", tone: "neutral", chapterNo }),
@@ -122,7 +121,7 @@ export function deriveWorkbenchView(data) {
   }
 
   const summary = data.summary ?? {};
-  const readiness = deriveWriteReadiness(data, { globallyTestedModels: listTestedModels() });
+  const readiness = deriveWriteReadiness(data);
   const latestChapter = latestCommittedChapter(data);
   const completion = deriveChapterCompletion(data);
   return {

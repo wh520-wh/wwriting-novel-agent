@@ -4,7 +4,6 @@ import { getJson, postJson, sendChatMessage } from "./api-client.js";
 import { motion } from "./motion-runtime.js";
 import { PERMISSION_TIERS, detectPermissionTier } from "./permission-tiers.mjs";
 import { formatConnectionStatus, submitModelConnectionTest } from "./settings-connection.mjs";
-import { rememberTestedModel } from "./connection-memory.mjs";
 
 // Re-export so consumers that already `import { ... } from "./settings-modal.js"`
 // continue to work. The pure helpers themselves live in ./settings-connection.mjs
@@ -830,8 +829,6 @@ export function createSettingsModal(ctx, options = {}) {
       // success/failure paint so we don't fight the latest user action.
       if (connectionAbortController !== controller) return;
       connectionState = "success";
-      // 测试通过：记住该模型，新建项目用同一模型不再强制重测。
-      rememberTestedModel(result?.model_name ?? candidate.model_name, true);
       setConnectionStatusFromResult(result);
       applyServerFields(null);
       applyConnectionButtonState();
@@ -842,8 +839,6 @@ export function createSettingsModal(ctx, options = {}) {
         clearConnectionStatus();
       } else {
         connectionState = "failure";
-        // 测试失败：移除该模型的全局记忆（key 可能已失效）。
-        rememberTestedModel(candidate.model_name, false);
         setConnectionStatusFromResult({ ok: false, message: error?.message ?? "连接失败" });
         if (error?.fields && typeof error.fields === "object") {
           applyServerFields(error.fields);
