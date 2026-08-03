@@ -21,6 +21,7 @@ import {
 } from "./local-model-profiles.mjs";
 import { ModelConfigValidationError, validateModelConfig } from "./model-config-validation.mjs";
 import { fillOfficialPricing, normalizePricing } from "./model-pricing.mjs";
+import { writingRequiredCapabilitiesOk } from "./provider-adapters.mjs";
 
 export class GlobalModelSettingsError extends Error {
   constructor(code, message) {
@@ -64,6 +65,10 @@ export async function saveGlobalModelProfile({
       );
     }
     withPricing = { ...validated, pricing };
+  }
+  // C 档：写作引擎强依赖工具调用与流式，能力缺失的模型保存后也跑不动，直接报错阻止。
+  if (!writingRequiredCapabilitiesOk(candidate)) {
+    throw new GlobalModelSettingsError("model_unsupported", "该模型不支持工具调用，无法用于小说写作。");
   }
   return persistGlobalModel({
     secretsRoot, withPricing, transientApiKey, readSecrets, writeSecrets, applySecrets

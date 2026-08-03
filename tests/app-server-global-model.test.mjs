@@ -5,8 +5,9 @@ import path from "node:path";
 import test from "node:test";
 import { createAppShellServer } from "../src/core/app-server.mjs";
 import { loadLocalSecrets } from "../src/core/local-secrets.mjs";
-import { loadLocalModelProfiles } from "../src/core/local-model-profiles.mjs";
+import { loadLocalModelProfiles, upsertLocalModelProfile } from "../src/core/local-model-profiles.mjs";
 import { createProject, loadProject, saveProject } from "../src/core/project-store.mjs";
+import { registerProviderCapabilityResolver } from "../src/core/provider-adapters.mjs";
 
 const FETCH_BLOCKED_PORTS = new Set([
   1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79,
@@ -303,6 +304,65 @@ test("建项目后随时换模型：切换后项目用清单里的另一个模�
     assert.equal(after.active_model.base_url, "https://api.deepseek.com");
     // 响应里的清单完整：两个模型都在
     assert.equal(switched.json.available_models.length, 2);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+// Task 3 C 档（2026-08-03）：写作引擎强依赖工具调用与流式，能力缺失（no-tools）的模型
+// 保存/选用/切换直接报错阻止。no-tools resolver 的 matcher 只命中 no-tools.example，
+// 不影响本文件其它用 deepseek/mimo 的用例；注册表无 unregister，沿用既有注入惯例
+// （见 tests/provider-adapters.test.mjs 的 registerProviderCapabilityResolver 用例）。
+
+test("切换模型：C 档模型切换被拒", async () => {
+  registerProviderCapabilityResolver(
+    (c) => String(c.base_url ?? "").includes("no-tools.example"),
+    () => ({ supportsTools: false })
+  );
+  const { projectRoot, secretsRoot, server, port } = await setupServerWithProject();
+  try {
+    // 直写清单造出「存量 no-tools 模型」：保存 API 已被 C 档校验拦截，只有直写能模拟历史数据
+    await upsertLocalModelProfile(secretsRoot, {
+      provider: "openai-compatible",
+      model_name: "no-tools",
+      base_url: "https://no-tools.example",
+      api_key_env: "NO_TOOLS_API_KEY"
+    });
+    const { status, json } = await post(port, "/api/settings/model-switch", {
+      projectRoot,
+      model_id: "no-tools"
+    });
+    assert.equal(status, 400);
+    assert.equal(json.code, "model_unsupported");
+    assert.match(json.message, /不支持工具调用/);
+    // 校验发生在写 project.yaml 之前：项目模型没被切过去
+    const project = await loadProject(projectRoot);
+    assert.notEqual(project.active_model.model_name, "no-tools");
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("选用模型：C 档模型选用被拒", async () => {
+  registerProviderCapabilityResolver(
+    (c) => String(c.base_url ?? "").includes("no-tools.example"),
+    () => ({ supportsTools: false })
+  );
+  const { secretsRoot, server, port } = await setupProjectlessServer();
+  try {
+    await upsertLocalModelProfile(secretsRoot, {
+      provider: "openai-compatible",
+      model_name: "no-tools",
+      base_url: "https://no-tools.example",
+      api_key_env: "NO_TOOLS_API_KEY"
+    });
+    const { status, json } = await post(port, "/api/settings/model-select", { model_id: "no-tools" });
+    assert.equal(status, 400);
+    assert.equal(json.code, "model_unsupported");
+    assert.match(json.message, /不支持工具调用/);
+    // 清单还在：被拒后没有改默认指针，no-tools 依然可删
+    const store = await loadLocalModelProfiles(secretsRoot);
+    assert.equal(store.models.length, 1);
   } finally {
     await closeServer(server);
   }
