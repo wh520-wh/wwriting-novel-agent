@@ -42,6 +42,9 @@ export function createSettingsModal(ctx, options = {}) {
 
   let settingsProviderId = "deepseek";
   let settingsSection = "model";
+  // 模型清单来自全局（~/.wwriting/model-profiles.json），与项目无关。
+  // 打开设置时拉一次，保存/删除/选用后刷新。
+  let globalModels = { default_model: null, models: [] };
   const settingsFields = {};
   // connection-test state machine: "idle" | "testing" | "success" | "failure" | "aborted" | "saving"
   let connectionState = "idle";
@@ -62,6 +65,20 @@ export function createSettingsModal(ctx, options = {}) {
     }
   }
 
+  // 拉取全局模型清单（Task 4 的 GET /api/settings/models）。失败时回到空清单，
+  // 表单仍能用预设默认值渲染，不阻塞设置面板打开。
+  async function fetchGlobalModels() {
+    try {
+      const result = await getJsonImpl("/api/settings/models");
+      if (result?.ok) {
+        globalModels = { default_model: result.default_model ?? null, models: result.models ?? [] };
+      }
+    } catch {
+      globalModels = { default_model: null, models: [] };
+    }
+    return globalModels;
+  }
+
   async function fetchOutputStyles() {
     try {
       const data = await getJsonImpl("/api/output-styles");
@@ -75,12 +92,16 @@ export function createSettingsModal(ctx, options = {}) {
     }
   }
 
-  function openSettingsModal() {
-    const dashboard = ctx.getDashboard();
-    if (dashboard?.project?.active_model) {
-      settingsProviderId = detectProviderPreset(dashboard.project.active_model);
-    }
+  async function openSettingsModal() {
     settingsSection = "model";
+    // 模型清单来自全局配置，与项目无关：先拉一次，没打开项目时表单也能显示已配好的模型。
+    await fetchGlobalModels();
+    const dashboard = ctx.getDashboard();
+    // 有项目时以项目当前模型为准；没项目时退回全局默认模型。
+    const activeModel = dashboard?.project?.active_model ?? globalModels.default_model;
+    if (activeModel) {
+      settingsProviderId = detectProviderPreset(activeModel);
+    }
     // Cancel any in-flight test from a previous session and clear temporary state.
     resetConnectionState();
     ctx.refs.settingsSearch.value = "";
@@ -597,8 +618,17 @@ export function createSettingsModal(ctx, options = {}) {
     const provider = SETTINGS_PROVIDERS.find((p) => p.id === settingsProviderId) ?? SETTINGS_PROVIDERS[0];
     const preset = PROVIDER_PRESETS[provider.preset];
     const dashboard = ctx.getDashboard();
-    const active = dashboard?.project?.active_model ?? {};
-    const profile = dashboard?.model_profile ?? {};
+    // 模型字段优先用全局清单里的默认模型：没有项目时也要能显示已配好的模型。
+    const globalDefault = globalModels.default_model;
+    const active = dashboard?.project?.active_model ?? (globalDefault
+      ? {
+          provider: globalDefault.provider,
+          model_name: globalDefault.model_name,
+          base_url: globalDefault.base_url,
+          api_key_env: globalDefault.api_key_env
+        }
+      : {});
+    const profile = dashboard?.model_profile ?? globalDefault ?? {};
     const budgetConfig = dashboard?.config?.effective?.budget_config ?? dashboard?.project?.budget_config ?? {};
     const permissions = dashboard?.config?.effective?.tool_permissions ?? dashboard?.project?.tool_permissions ?? {};
     const usingThisPreset = detectProviderPreset(active) === provider.id;
@@ -797,11 +827,6 @@ export function createSettingsModal(ctx, options = {}) {
   async function runConnectionTest() {
     if (settingsSection !== "model") return;
     if (connectionState === "testing" || connectionState === "saving") return;
-    const currentProjectRoot = ctx.getCurrentProjectRoot();
-    if (!currentProjectRoot) {
-      ctx.showToast("请先新建或打开一部小说，再测试连接。", "info");
-      return;
-    }
     applyServerFields(null);
     connectionState = "testing";
     applyConnectionButtonState();
@@ -820,7 +845,8 @@ export function createSettingsModal(ctx, options = {}) {
     try {
       const result = await submitModelConnectionTest({
         postJsonImpl,
-        projectRoot: currentProjectRoot,
+        // 没有项目也能测连接（Task 5 起服务端不再要求项目）；有项目时带上用于审计事件。
+        projectRoot: ctx.getCurrentProjectRoot(),
         active_model: candidate,
         apiKey: temporaryKey,
         signal: controller.signal,
@@ -1036,13 +1062,9 @@ export function createSettingsModal(ctx, options = {}) {
       ctx.showToast("密钥环境变量名只能用字母、数字、下划线，且不能以数字开头，例如 XIAOMI_MIMO_API_KEY。", "error");
       return;
     }
-    const currentProjectRoot = ctx.getCurrentProjectRoot();
-    if (!currentProjectRoot) {
-      ctx.showToast("请先新建或打开一部小说，再保存模型设置。", "info");
-      return;
-    }
     await runSave(async () => {
-      const result = await postJsonImpl("/api/settings/update", {
+      // 第一步：模型配置存全局（~/.wwriting/model-profiles.json），不需要项目。
+      const modelResult = await postJsonImpl("/api/settings/model-profile", {
         active_model: compactObject({
           provider: PROVIDER_PRESETS[provider.preset].provider,
           model_name: settingsFields.model.input.value.trim(),
@@ -1056,18 +1078,31 @@ export function createSettingsModal(ctx, options = {}) {
                 cache_hit_per_million: settingsFields.priceCacheHit.input.value ? Number(settingsFields.priceCacheHit.input.value) : undefined
               })
             : undefined
-        }),
-        tool_permissions: { network_allowed: settingsFields.network.checked },
-        budget_config: {
-          max_model_calls: settingsFields.maxCalls.input.value,
-          max_cost: settingsFields.maxCost.input.value,
-          max_total_tokens: settingsFields.maxTokens.input.value
-        },
-        project_profile: compactObject({
-          title: settingsFields.profileTitle.input.value.trim()
-        }),
+        })
       });
-      const profile = result.model_profile ?? {};
+      if (modelResult?.fields) {
+        applyServerFields(modelResult.fields);
+        throw new Error("模型信息不完整，请检查标红的字段。");
+      }
+      await fetchGlobalModels();
+
+      // 第二步：项目专属设置（联网权限、预算、书名）——只在有项目时才发。
+      const currentProjectRoot = ctx.getCurrentProjectRoot();
+      if (currentProjectRoot) {
+        await postJsonImpl("/api/settings/update", {
+          tool_permissions: { network_allowed: settingsFields.network.checked },
+          budget_config: {
+            max_model_calls: settingsFields.maxCalls.input.value,
+            max_cost: settingsFields.maxCost.input.value,
+            max_total_tokens: settingsFields.maxTokens.input.value
+          },
+          project_profile: compactObject({
+            title: settingsFields.profileTitle?.input?.value?.trim()
+          })
+        });
+      }
+
+      const profile = modelResult.model_profile ?? {};
       ctx.showToast(`模型设置已保存：${profile.display ?? provider.name}`, "success");
       closeSettingsModal();
       await ctx.loadDashboard();
@@ -1191,5 +1226,18 @@ export function createSettingsModal(ctx, options = {}) {
     renderSettingsDetail();
   }
 
-  return { openSettingsModal, closeSettingsModal, renderSettingsProviders, renderSettingsDetail, saveSettings, resetToCustom };
+  return {
+    openSettingsModal, closeSettingsModal, renderSettingsProviders, renderSettingsDetail, saveSettings, resetToCustom,
+    // 仅供测试：直接回填模型表单字段（避免测试里模拟 DOM 输入）。
+    setModelFieldsForTest(values = {}) {
+      if (settingsFields.model) settingsFields.model.input.value = values.model_name ?? "";
+      if (settingsFields.baseUrl) settingsFields.baseUrl.input.value = values.base_url ?? "";
+      if (settingsFields.apiKey) settingsFields.apiKey.input.value = values.api_key ?? "";
+      if (settingsFields.apiKeyEnv) settingsFields.apiKeyEnv.input.value = values.api_key_env ?? "";
+    },
+    // 仅供测试：直接触发保存（等价于点「保存设置」）。
+    saveSettingsForTest() {
+      return saveSettings();
+    }
+  };
 }
