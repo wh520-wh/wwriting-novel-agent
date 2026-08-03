@@ -1600,28 +1600,33 @@ export function createThreadRenderer(ctx) {
     }
   }
 
+  // 残段（若有）收成「（未完成）」文字标记（规格书 5.5 / 6.2）。
+  // 成功/中断/取消/受阻/失败共用：失败路径（failTurn）同样要求残段折叠、过程不占位。
+  function foldResidueParagraph(turn) {
+    if (!turn.para || !turn.paraText) return;
+    const text = turn.paraText;
+    const chip = document.createElement("span");
+    chip.className = "p-chip unfinished";
+    chip.dataset.chapterNo = String(turn.chapterNo ?? "");
+    chip.textContent = `📖 第 ${turn.chapterNo} 章（未完成）· ${countChars(text)} 字`;
+    chip._peek = text;
+    chip._key = `para-${turn.chapterNo}-residue`;
+    chip.title = "点击偷看本段";
+    turn.chipsEl.classList.remove("hidden");
+    turn.chipsEl.append(chip);
+    turn.para.classList.add("folding");
+    const el = turn.para;
+    setTimeout(() => el.remove(), 380);
+    turn.para = null;
+    turn.paraText = "";
+  }
+
   function closeTurnToDone(turn, event, kind = "finished") {
     if (turn.done) return;
     turn.done = true;
 
     // 残段（若有）收成「（未完成）」文字标记（规格书 5.5 / 6.2）。
-    if (turn.para && turn.paraText) {
-      const text = turn.paraText;
-      const chip = document.createElement("span");
-      chip.className = "p-chip unfinished";
-      chip.dataset.chapterNo = String(turn.chapterNo ?? "");
-      chip.textContent = `📖 第 ${turn.chapterNo} 章（未完成）· ${countChars(text)} 字`;
-      chip._peek = text;
-      chip._key = `para-${turn.chapterNo}-residue`;
-      chip.title = "点击偷看本段";
-      turn.chipsEl.classList.remove("hidden");
-      turn.chipsEl.append(chip);
-      turn.para.classList.add("folding");
-      const el = turn.para;
-      setTimeout(() => el.remove(), 380);
-      turn.para = null;
-      turn.paraText = "";
-    }
+    foldResidueParagraph(turn);
 
     // 过程区清空：思考/工具/状态行/段落标记/偷看区/正文区整体消失（P1/P3）。
     turn.thinkEl.classList.add("hidden");
@@ -1707,6 +1712,13 @@ export function createThreadRenderer(ctx) {
     const name = data.name ?? null;
     const title = status ? `模型调用失败 · ${status}` : (name ? `写作任务失败 · ${name}` : "写作任务失败");
     const code = [status, reason].filter(Boolean).join(" · ") || name || "unknown_error";
+    // 规格书 6.2/5.3：失败同样把已流出的残段折叠为「（未完成）」文字标记，
+    // 工具行状态变红「已中断」——错误显性化，不留未折叠的过程元素占位。
+    foldResidueParagraph(turn);
+    if (!turn.toolEl.classList.contains("hidden")) {
+      turn.toolStatus.textContent = "已中断";
+      turn.toolStatus.classList.add("bad");
+    }
     const card = document.createElement("div");
     card.innerHTML = renderErrorCard({
       title,

@@ -2714,7 +2714,8 @@ button.cbar-pill--readonly:hover {
   animation: ww-chip-in .25s ease;
 }
 .p-chip:hover { color: var(--accent); border-bottom-color: var(--accent); }
-.p-chip.unfinished { color: var(--retry-text); }
+/* 未完成的残段：虚线边框 + 琥珀色文字（规格书 5.5 / 6.2） */
+.p-chip.unfinished { color: var(--retry-text); border-bottom-color: var(--retry-text); }
 @keyframes ww-chip-in { from { opacity: 0; transform: translateY(4px); } }
 
 /* 偷看：纯衬线小字浮现，无底色（规格书 5.5） */

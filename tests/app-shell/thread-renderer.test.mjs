@@ -666,6 +666,36 @@ test("project_run_failed → 红卡挂载 + data-retry 手动重试 + 「已保�
   assert.ok(done.classList.contains("hidden"), "失败轮不得再显示完成卡");
 });
 
+test("project_run_failed 且已有流式残段：残段折叠为（未完成）标记 + 工具行红色已中断（规格书 6.2/5.3）", async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { refs, ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+
+  renderer.onRunEvent(userEvent());
+  renderer.onRunEvent(runStartedEvent());
+  renderer.onRunEvent(draftingCallEvent());
+  renderer.onModelDelta("残段正文：他推开门，灯光漏进来。");
+
+  renderer.onRunEvent(runFailedEvent());
+
+  const turn = refs.thread.querySelector(".turn-agent");
+  // 残段收成（未完成）文字标记
+  const residue = turn.querySelectorAll(".p-chip").find((c) => c.classList.contains("unfinished"));
+  assert.ok(residue, "失败后残段应收成（未完成）标记");
+  assert.ok(residue.textContent.includes("（未完成）"), "残段标记带（未完成）标注");
+  assert.ok(residue.textContent.includes("第 5 章"), "残段标记带章节号");
+  assert.ok(residue.textContent.includes("字"), "残段标记带实时字数（JS 统计，禁止写死）");
+  // 流式正文区：para 已进入折叠动画（0.38s 后移除），不再累积新文本
+  const streamPara = turn.querySelector(".para");
+  assert.ok(streamPara && streamPara.classList.contains("folding"), "残段正文进入折叠动画（折叠即不再占位）");
+  // 工具行状态变红「已中断」
+  const tool = turn.querySelector(".tool-card");
+  assert.ok(tool, "工具行仍在（过程态）");
+  assert.ok(tool.textContent.includes("已中断"), "工具行状态显示已中断");
+  const status = tool.querySelector(".status");
+  assert.ok(status.classList.contains("bad"), "工具行状态带红色 bad 类（规格书 5.3 失败中断红色）");
+});
+
 test("project_cancelled 折叠终态标题：「第 N 章 · 已停止」", async () => {
   const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
   const { refs, ctx } = makeHarness();
