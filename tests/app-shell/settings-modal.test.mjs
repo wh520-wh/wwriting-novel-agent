@@ -414,6 +414,7 @@ test("设置里显示已配好的模型，可以点击选用或删除", async ()
       }
       if (url === "/api/settings/model-remove") {
         models = models.filter((m) => m.id !== body.model_id);
+        if (defaultModel?.id === body.model_id) defaultModel = null;
       }
       return { ok: true, models: [], default_model: null };
     }
@@ -429,6 +430,8 @@ test("设置里显示已配好的模型，可以点击选用或删除", async ()
   assert.equal(calls.some((c) => c.url === "/api/settings/model-select" && c.body.model_id === "mimo-v1"), true);
   assert.equal(modal.getModelFieldValue("model_name"), "mimo-v1");
 
-  await modal.deleteSavedModel("deepseek-chat");
-  assert.equal(calls.some((c) => c.url === "/api/settings/model-remove" && c.body.model_id === "deepseek-chat"), true);
+  await modal.deleteSavedModel("mimo-v1");
+  assert.equal(calls.some((c) => c.url === "/api/settings/model-remove" && c.body.model_id === "mimo-v1"), true);
+  // 删除当前展示的模型后，右侧表单同步刷新回预设默认值，不残留已删模型的字段。
+  assert.equal(modal.getModelFieldValue("model_name"), "mimo-v2.5-pro");
 });
