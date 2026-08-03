@@ -1,6 +1,6 @@
 # Claude Code 2.1.88 模型配置机制调研
 
-**调研对象：** `C:\Users\32694\Desktop\claudecode2.1.88\node_modules\@anthropic-ai\claude-code\`
+**调研对象：** `<LOCAL_PATH>/node_modules/@anthropic-ai/claude-code/`
 （`cli.js` 13M 压缩产物 + `cli.js.map` 57M sourcemap，后者内嵌未压缩原始 TS 源码）
 
 **调研目的：** WWriting 刚完成「模型配置与项目解耦」，需要对照一个成熟实现，看还有哪些机制值得借鉴。

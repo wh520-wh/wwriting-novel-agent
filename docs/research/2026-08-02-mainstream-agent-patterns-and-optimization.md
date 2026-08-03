@@ -1,7 +1,7 @@
 # 主流 Agent 设计思路对照与 WWriting 优化方向
 
 - 日期：2026-08-02
-- 参考对象：`C:\Users\32694\Desktop\claudecode2.1.88`（Claude Code 2.1.88，`@anthropic-ai/claude-code` 官方包）——业界主流 agent 产品的公开可验证设计
+- 参考对象：`<LOCAL_PATH>`（Claude Code 2.1.88，`@anthropic-ai/claude-code` 官方包）——业界主流 agent 产品的公开可验证设计
 - 说明：该包的 `cli.js` 是 13MB 压缩后的产物代码，不适合逐行代码复用；本文档提炼的是它对外暴露的**工具接口契约**（`sdk-tools.d.ts`，2719 行，含 `TodoWriteInput/Output`、`AgentInput/Output`、`AskUserQuestionInput`、`ExitPlanModeInput`、`TaskStopInput` 等结构化定义）和公开文档中的架构模式，作为"主流 agent 怎么做可交互、可中断、状态透明"的设计参照，不是照抄实现
 - 目标：把这些经过大规模验证的模式，映射到 [2026-08-02-writing-agent-stability-assessment.md](2026-08-02-writing-agent-stability-assessment.md) 里identified 的具体瑕疵上
 
