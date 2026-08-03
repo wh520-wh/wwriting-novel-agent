@@ -243,3 +243,67 @@ test("改全局模型后打开界面：已有项目的模型配置跟着变", as
     await closeServer(server);
   }
 });
+
+// Task 11（2026-08-03 修订）：建项目不规定模型——projects/init 不带 model_id，
+// 直接用全局默认模型；写作中随时通过 model-switch 换模型（入口是 composer 底部
+// 状态栏模型按钮与 /model 命令，无需新增前端代码）。
+
+test("新建项目不指定模型时沿用全局默认模型", async () => {
+  const { root, server, port } = await setupProjectlessServer();
+  try {
+    // 只配一个模型（deepseek-chat），保存后它就是全局默认
+    await post(port, "/api/settings/model-profile", { active_model: SAMPLE_MODEL });
+    const target = path.join(root, "novel-default");
+    // 建项目不传 model_id：项目直接用全局默认模型
+    const { status } = await post(port, "/api/projects/init", {
+      projectRoot: target,
+      title: "默认模型"
+    });
+    assert.equal(status, 200);
+    const created = await loadProject(target);
+    assert.equal(created.active_model.model_name, "deepseek-chat");
+    assert.equal(created.active_model.base_url, "https://api.deepseek.com");
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("建项目后随时换模型：切换后项目用清单里的另一个模型", async () => {
+  const { root, server, port } = await setupProjectlessServer();
+  try {
+    // 配两个模型：deepseek-chat、mimo-v1；mimo-v1 最后保存，所以是全局默认
+    await post(port, "/api/settings/model-profile", { active_model: SAMPLE_MODEL });
+    await post(port, "/api/settings/model-profile", {
+      active_model: {
+        ...SAMPLE_MODEL,
+        model_name: "mimo-v1",
+        base_url: "https://api.mimo.example",
+        api_key_env: "XIAOMI_MIMO_API_KEY",
+        api_key: "sk-mimo"
+      }
+    });
+    // 建项目不传 model_id：项目先用全局默认模型 mimo-v1
+    const target = path.join(root, "novel-switch");
+    const init = await post(port, "/api/projects/init", {
+      projectRoot: target,
+      title: "随时换模型"
+    });
+    assert.equal(init.status, 200);
+    const created = await loadProject(target);
+    assert.equal(created.active_model.model_name, "mimo-v1");
+
+    // 写作中换模型：切到清单里的 deepseek-chat
+    const switched = await post(port, "/api/settings/model-switch", {
+      projectRoot: target,
+      model_id: "deepseek-chat"
+    });
+    assert.equal(switched.status, 200);
+    const after = await loadProject(target);
+    assert.equal(after.active_model.model_name, "deepseek-chat");
+    assert.equal(after.active_model.base_url, "https://api.deepseek.com");
+    // 响应里的清单完整：两个模型都在
+    assert.equal(switched.json.available_models.length, 2);
+  } finally {
+    await closeServer(server);
+  }
+});
