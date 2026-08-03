@@ -17,6 +17,7 @@ import {
   saveGlobalModelProfile,
   selectGlobalModelProfile
 } from "../src/core/global-model-settings.mjs";
+import { registerProviderCapabilityResolver } from "../src/core/provider-adapters.mjs";
 
 async function tempRoot() {
   return fs.mkdtemp(path.join(os.tmpdir(), "wwriting-globalmodel-"));
@@ -246,4 +247,22 @@ test("写回同步：缺参数时安全返回，不抛错", async () => {
   const secretsRoot = await tempRoot();
   const result = await refreshProjectModelFromGlobal("", secretsRoot, {});
   assert.deepEqual(result, { changed: false, project: null });
+});
+
+test("C 档：不支持工具调用的模型保存被阻止", async () => {
+  registerProviderCapabilityResolver(
+    (c) => String(c.base_url ?? "").includes("no-tools.example"),
+    () => ({ supportsTools: false })
+  );
+  const root = await tempRoot();
+  await assert.rejects(
+    saveGlobalModelProfile({
+      secretsRoot: root,
+      activeModel: {
+        provider: "openai-compatible", model_name: "no-tools",
+        base_url: "https://no-tools.example", api_key_env: "K", api_key: "sk-x"
+      }
+    }),
+    (e) => e.code === "model_unsupported"
+  );
 });

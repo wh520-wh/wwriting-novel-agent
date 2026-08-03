@@ -581,6 +581,12 @@ export function resolveModelCapabilities(modelConfig = {}) {
   return DEFAULT_CAPABILITIES;
 }
 
+// C 档：写作引擎强依赖工具调用与流式；缺失时阻止保存/选用/切换（2026-08-03 调研落地）。
+export function writingRequiredCapabilitiesOk(modelConfig = {}) {
+  const caps = resolveModelCapabilities(modelConfig);
+  return caps.supportsTools !== false && caps.supportsStreaming !== false;
+}
+
 function requiresAutoToolChoice(modelConfig = {}) {
   return resolveModelCapabilities(modelConfig).requiresAutoToolChoice;
 }

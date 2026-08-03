@@ -52,7 +52,7 @@ import { readChatHistory, loadPendingAction } from "./chat/chat-store.mjs";
 import { buildPricingTable } from "./model-pricing.mjs";
 import { CostTracker } from "./cost-tracker.mjs";
 import { ModelClient } from "./model-client.mjs";
-import { MockProviderAdapter, OpenAICompatibleAdapter } from "./provider-adapters.mjs";
+import { MockProviderAdapter, OpenAICompatibleAdapter, writingRequiredCapabilitiesOk } from "./provider-adapters.mjs";
 
 export function createAppShellServer({
   workspaceRoot = path.resolve("."),
@@ -218,6 +218,7 @@ export function createAppShellServer({
     if (url.pathname === "/api/settings/model-select" && request.method === "POST") {
       await serveGlobalModelMutation(request, response, {
         secretsRoot: localSecretsRoot,
+        gateWritingCapabilities: true,
         mutate: selectGlobalModelProfile
       });
       return;
@@ -739,6 +740,10 @@ async function serveModelSwitch(request, response, context) {
     if (!profile) {
       throw new HttpError(404, "model_profile_not_found", `未找到已配置模型：${modelId}`);
     }
+    // C 档：写作引擎强依赖工具调用与流式，能力缺失的模型切过去也跑不动，写 project.yaml 前先拦下。
+    if (!writingRequiredCapabilitiesOk(profile)) {
+      throw new HttpError(400, "model_unsupported", "该模型不支持工具调用，无法用于小说写作。");
+    }
     const project = await updateProjectSettings(projectRoot, { active_model: modelConfigFromLocalProfile(profile) });
     await upsertLocalModelProfile(context.secretsRoot, project.active_model);
     const config = await loadConfigLayers(projectRoot, project);
@@ -808,6 +813,14 @@ async function serveGlobalModelMutation(request, response, context) {
     const modelId = String(body?.model_id ?? body?.modelId ?? "").trim();
     if (!modelId) {
       throw new HttpError(400, "invalid_model_id", "请先选择一个模型。");
+    }
+    // C 档：选用一个写作必需能力缺失的模型等于把默认指向跑不动的模型，mutate 前拦下。
+    // 只对「选用」生效：删除不受限——能力缺失的模型必须能删掉清理。
+    if (context.gateWritingCapabilities) {
+      const profile = await findLocalModelProfile(context.secretsRoot, modelId);
+      if (profile && !writingRequiredCapabilitiesOk(profile)) {
+        throw new HttpError(400, "model_unsupported", "该模型不支持工具调用，无法用于小说写作。");
+      }
     }
     await context.mutate(context.secretsRoot, modelId);
     await serveJson(response, { ok: true, ...(await globalModelListPayload(context.secretsRoot)) });
