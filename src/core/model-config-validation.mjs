@@ -21,6 +21,11 @@ export function validateModelConfig(input) {
     const pricing = normalizePricing(input.pricing);
     if (pricing) config.pricing = pricing;
   }
+  if (input?.temperature !== undefined && input.temperature !== null) {
+    const t = Number(input.temperature);
+    if (Number.isFinite(t) && t >= 0 && t <= 2) config.temperature = t;
+    else config.temperature = undefined; // 标记非法，下方统一报错
+  }
   if (input?.stream !== undefined) config.stream = input.stream === true;
   if (input?.cache_mode !== undefined) config.cache_mode = String(input.cache_mode).trim();
   for (const field of ["max_context_tokens", "max_output_tokens"]) {
@@ -56,6 +61,9 @@ export function validateModelConfig(input) {
     if (input?.[field] !== undefined && config[field] === undefined) {
       fields[field] = "必须是正整数";
     }
+  }
+  if (input?.temperature !== undefined && input.temperature !== null && config.temperature === undefined) {
+    fields.temperature = "温度必须是 0 到 2 之间的数字。";
   }
   if (Object.keys(fields).length > 0) {
     throw new ModelConfigValidationError(fields);

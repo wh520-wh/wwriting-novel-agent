@@ -147,6 +147,20 @@ test("全局保存模型：既无已存密钥又没填新密钥时报可读错�
   );
 });
 
+test("保存模型带 temperature：持久化到全局清单", async () => {
+  const root = await tempRoot();
+  const { store } = await saveGlobalModelProfile({
+    secretsRoot: root,
+    activeModel: {
+      provider: "openai-compatible", model_name: "deepseek-chat",
+      base_url: "https://api.deepseek.com", api_key_env: "DEEPSEEK_API_KEY",
+      api_key: "sk-test", temperature: 1.1
+    }
+  });
+  const saved = store.models.find((m) => m.model_name === "deepseek-chat");
+  assert.equal(saved.temperature, 1.1);
+});
+
 test("全局删除/选用：找不到模型时抛 model_profile_not_found", async () => {
   const secretsRoot = await tempRoot();
   await assert.rejects(() => removeGlobalModelProfile(secretsRoot, "nope"),
