@@ -2561,3 +2561,40 @@ button.cbar-pill--readonly:hover {
   margin-top: 2px;
   grid-column: 2;
 }
+
+/* 设置左栏：已配置模型清单 */
+.sp-list-heading {
+  padding: 10px 12px 4px;
+  font-size: 11px;
+  letter-spacing: .04em;
+  color: var(--faint);
+}
+.sp-saved-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px 0 0;
+}
+.sp-saved-btn {
+  flex: 1;
+  text-align: left;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  font: inherit;
+}
+.sp-saved-btn:hover { background: var(--surface-2); }
+.sp-saved-del {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  background: transparent;
+  color: var(--faint);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  line-height: 1;
+}
+.sp-saved-del:hover { background: var(--surface-2); color: var(--ink); }
