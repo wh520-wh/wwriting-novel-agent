@@ -6,23 +6,6 @@ WWriting is not a "describe it, it writes it" generator. It is a desktop writing
 
 **Your data stays on your machine. Delivery is verifiable.**
 
-## How It Differs from Other Tools
-
-AI writing tools on the market fall into two camps: cloud subscription platforms (Sudowrite, NovelCrafter, NovelAI) host your work on their servers, charge monthly fees, and enforce platform content policies; open-source CLI frameworks (novel-bot, Novel-OS, SAGA, etc.) are powerful but require you to set up your own environment and work in a terminal.
-
-WWriting takes a third path:
-
-| Dimension | WWriting | Cloud Subscription Platforms | Open-Source CLI Frameworks |
-|---|---|---|---|
-| Where your novel lives | **Your local folder** — plain Markdown/TXT files | Cloud servers | Local files |
-| Verifiable delivery | **Real word-count gate + tool-call-only commits + read-only inspector** — the model's self-reported word count never counts | Generated means done | Some have quality gates, no hard word-count enforcement |
-| Models | **Bring your own API key** — OpenAI-compatible, DeepSeek / Xiaomi MiMo presets, pay per use | Proprietary models, subscription | Bring your own API key |
-| Barrier to entry | **Desktop app** — one-click Windows install, fully visual | Web-based, steep learning curve | Terminal + Python environment |
-| Privacy & content policy | Offline by default, data never leaves your machine | Platform content moderation | Determined by your model provider |
-| Cost transparency | Token and cost recorded per call | Subscription + credits, hard to predict | Not tracked |
-
-In one sentence: **cloud platforms lock your novel into their servers, CLI frameworks put the bar at the terminal — WWriting keeps both your work and its verification on your own computer.**
-
 ## Highlights
 
 - **Local project folder persistence**: chapters are written to Markdown/TXT files readable by any editor; an empty folder can be initialized into a new project from the desktop UI.
@@ -133,10 +116,6 @@ tests/                 # Node test suite
 docs/                  # user guide and design docs
 ```
 
-## Competitive Research
-
-Positioning is based on [docs/research/2026-07-31-competitive-research.md](docs/research/2026-07-31-competitive-research.md): a survey of 9 open-source writing agents (novel-bot, Novel-OS, SAGA, NovelClaw, Openwrite, novel-architect, AI-Novel-Writing-Assistant, and more) plus 3 commercial platforms (Sudowrite, NovelCrafter, NovelAI). Conclusion: **memory/continuity, quality gates, and multi-agent pipelines are industry table stakes — but the combination of a local desktop GUI, file-as-project persistence, and verifiable delivery is unclaimed.**
-
 ## Current Status
 
 A locally runnable, verifiable desktop writing agent. Core long-run generation, recovery, word-count gates, skills, research tools, model adapters, GUI, Electron runtime, and Windows packaging all have verification scripts.
@@ -147,4 +126,3 @@ Planned enhancements: editable story bible (characters/settings/foreshadowing), 
 
 - [Chinese README](README.md)
 - [User guide (Chinese)](docs/USER_GUIDE.zh-CN.md)
-- [Competitive research report](docs/research/2026-07-31-competitive-research.md)
