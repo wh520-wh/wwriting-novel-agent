@@ -234,11 +234,11 @@ export function createAppShellServer({
       return;
     }
     if (url.pathname === "/api/chat/send" && request.method === "POST") {
-      await serveChatSend(request, response, { workspace, selected, stateRoot: appStateRoot, runJobs, getTaskQueue, testModel, testRunProject, projectLocks, startProjectRunFn: startProjectRun, chatJobs });
+      await serveChatSend(request, response, { workspace, selected, stateRoot: appStateRoot, runJobs, getTaskQueue, testModel, testRunProject, projectLocks, startProjectRunFn: startProjectRun, chatJobs, secretsRoot: localSecretsRoot });
       return;
     }
     if (url.pathname === "/api/chat/confirm" && request.method === "POST") {
-      await serveChatConfirm(request, response, { workspace, selected, stateRoot: appStateRoot, runJobs, getTaskQueue, testModel, testRunProject, projectLocks, startProjectRunFn: startProjectRun, chatJobs });
+      await serveChatConfirm(request, response, { workspace, selected, stateRoot: appStateRoot, runJobs, getTaskQueue, testModel, testRunProject, projectLocks, startProjectRunFn: startProjectRun, chatJobs, secretsRoot: localSecretsRoot });
       return;
     }
     if (url.pathname === "/api/chat/history" && request.method === "GET") {
@@ -256,11 +256,11 @@ export function createAppShellServer({
       return;
     }
     if (url.pathname === "/api/run/retry" && request.method === "POST") {
-      await serveRunRetry(request, response, { workspace, selected, stateRoot: appStateRoot, runJobs, getTaskQueue, testModel, testRunProject, projectLocks });
+      await serveRunRetry(request, response, { workspace, selected, stateRoot: appStateRoot, runJobs, getTaskQueue, testModel, testRunProject, projectLocks, secretsRoot: localSecretsRoot });
       return;
     }
     if (url.pathname === "/api/failures/resolve" && request.method === "POST") {
-      await serveFailuresResolve(request, response, { workspace, selected, stateRoot: appStateRoot, runJobs, getTaskQueue, testModel, testRunProject, projectLocks });
+      await serveFailuresResolve(request, response, { workspace, selected, stateRoot: appStateRoot, runJobs, getTaskQueue, testModel, testRunProject, projectLocks, secretsRoot: localSecretsRoot });
       return;
     }
     if (url.pathname === "/api/run/stop" && request.method === "POST") {
@@ -334,7 +334,7 @@ export function createAppShellServer({
             if (staleTask) task = staleTask;
           }
           if (task) {
-            const miniCtx = { runJobs, getTaskQueue, testModel, testRunProject, projectLocks };
+            const miniCtx = { runJobs, getTaskQueue, testModel, testRunProject, projectLocks, secretsRoot: localSecretsRoot };
             await startProjectRun(root, project, miniCtx, task, { source: "auto_resume_on_start" });
             console.log(`[app-server] auto_resume_on_start: continued ${path.basename(root)}`);
           }
