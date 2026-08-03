@@ -2657,8 +2657,30 @@ button.cbar-pill--readonly:hover {
 .tool-card .status { margin-left: auto; font-size: 12px; color: var(--text-faint); white-space: nowrap; }
 .tool-card .status.bad { color: var(--err-text); }
 
-/* 状态行/错误插槽（重试行/恢复提示由 Task 12 填充） */
+/* 状态行/错误插槽 */
 .status-slot, .error-slot { display: flex; flex-direction: column; gap: 8px; }
+
+/* 重试状态行（规格书 5.7 · 琥珀无框）：脉动圆点 + n/5 计数实时可见（Task 12） */
+.retry-line {
+  display: flex; align-items: center; gap: 8px;
+  padding: 2px;
+  font-size: 13px; color: var(--retry-text);
+  max-width: 82%;
+}
+.retry-line .pulse {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--amber); flex: none;
+  animation: retryPulse 1s ease infinite;
+}
+@keyframes retryPulse { 50% { opacity: .25; transform: scale(.75); } }
+.retry-line b { color: var(--amber); }
+
+/* 恢复提示（规格书 5.8 · 绿色 12px 小字） */
+.recover-line {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--ok-green);
+  padding: 2px 4px;
+}
 
 /* 流式正文：衬线、15px、行高 2.0，神圣不与 UI 混排（规格书 5.4 / P5） */
 .stream-area { display: flex; flex-direction: column; gap: 10px; }

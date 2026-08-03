@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ModelClient } from "../src/core/model-client.mjs";
-import { OpenAICompatibleAdapter } from "../src/core/provider-adapters.mjs";
+import { OpenAICompatibleAdapter, ProviderTransportError } from "../src/core/provider-adapters.mjs";
 
 // Task 21 (L3) 收窄版确定性响应缓存测试：
 // 仅「辅助调用（memoryExtract/factCheck）+ 无工具 + 非流式 + 显式 temperature=0 + attempt=0」
@@ -45,6 +45,39 @@ function auxRequest(overrides = {}) {
     ...overrides
   };
 }
+
+// Task 12（错误分级）：重试上限 3→5（规格书 R1：自动重试上限固定 5 次）。
+// 用本文件既有写法（真实 API `new ModelClient({ adapters, activeModel })`），
+// 不设显式 retryMax，验证构造默认值。
+
+test("默认重试上限为 5 次", () => {
+  const client = new ModelClient({
+    adapters: { test: { async generate() { return { text: "ok", usage: {} }; } } },
+    activeModel: { provider: "test", model_name: "aux-model" }
+  });
+  assert.equal(client.retryMax, 5, "构造默认重试上限应为 5（规格书 R1）");
+});
+
+test("网络错误默认重试 5 次后耗尽：1 次初始 + 5 次重试 = 6 次总调用", async () => {
+  let calls = 0;
+  const adapter = {
+    async generate() {
+      calls += 1;
+      throw new ProviderTransportError("网络波动", { reason: "network" });
+    }
+  };
+  const client = new ModelClient({
+    adapters: { test: adapter },
+    activeModel: { provider: "test", model_name: "aux-model" },
+    retryBaseDelayMs: 1,
+    retryMaxDelayMs: 1
+  });
+  await assert.rejects(
+    () => client.generate(auxRequest()),
+    (err) => err.code === "provider_transport_error" && err.reason === "network"
+  );
+  assert.equal(calls, 6, "默认上限 5 次重试 = 总调用 6 次（retryMax=3 时本测试会失败于 4 次）");
+});
 
 test("缓存命中：相同辅助请求第二次不调 adapter、usage 归零、费用不新增", async () => {
   const state = countingAdapter();
