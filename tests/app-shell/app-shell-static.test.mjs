@@ -373,3 +373,21 @@ test("project removal uses an accessible icon button and an out-of-flow menu", a
   assert.match(cssSource, /\.proj-menu\s*\{[\s\S]*?position:\s*absolute/u, "project menu must be out of layout flow");
   assert.match(cssSource, /\.proj-row:focus-within\s+\.proj-menu/u, "project menu must remain keyboard reachable");
 });
+
+test("app.js SSE onmessage 归属守卫：连接时捕获归属项目，切项目后旧连接事件丢弃", () => {
+  // Fix round 1（Important 1）：SSE 事件无项目字段，thread-renderer 的 user_instruction_received
+  // 分支只能以「当前项目」为归属。若 app.js 在切项目（A→B）窗口内仍把 A 的 in-flight 事件
+  // dispatch 给新线程，A 排队任务的 user_instruction_received 会在 B 的线程开一轮假 turn。
+  // 修复约定：EventSource 连接建立时把 currentProjectRoot 捕获进闭包（connRoot），
+  // onmessage 派发前与当前 currentProjectRoot 比对，不一致（切项目/切无项目）一律丢弃。
+  assert.match(
+    appSource,
+    /const\s+connRoot\s*=\s*currentProjectRoot\s*;/,
+    "SSE 连接建立时应把当时的 currentProjectRoot 捕获进闭包"
+  );
+  assert.match(
+    appSource,
+    /sseSource\.onmessage\s*=\s*\(msg\)\s*=>\s*\{[\s\S]*?if\s*\(\s*currentProjectRoot\s*!==\s*connRoot\s*\)\s*return[\s\S]*?threadRenderer\.onRunEvent/,
+    "onmessage 派发前应与连接归属项目比对，不一致则丢弃，旧项目开轮事件不得串入新线程"
+  );
+});

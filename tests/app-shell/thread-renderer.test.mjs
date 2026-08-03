@@ -75,6 +75,29 @@ class MockElement {
     this.children = [];
   }
 
+  // innerHTML 只做原始字符串存储（不做解析）；querySelector/querySelectorAll 遇到
+  // [data-retry] 选择器时，若 markup 含 data-retry="1"，惰性物化一个重试按钮子节点，
+  // 使 live turn 的 data-retry 绑定循环（failTurn）在无 jsdom 下可被真实点击验证。
+  set innerHTML(html) {
+    this._innerHTML = String(html);
+  }
+  get innerHTML() {
+    return this._innerHTML ?? "";
+  }
+
+  _queryRetryFallback(selector) {
+    if (!/^\[data-retry(?:="1")?\]$/.test(selector)) return null;
+    if (!this._innerHTML || !/data-retry="1"/.test(this._innerHTML)) return null;
+    if (!this._retryNode) {
+      const btn = new MockElement("button");
+      btn.dataset.retry = "1";
+      btn._text = "↻ 重试";
+      this._retryNode = btn;
+      this.children.push(btn);
+    }
+    return this._retryNode;
+  }
+
   append(...nodes) {
     this.children.push(...nodes);
   }
@@ -110,11 +133,26 @@ class MockElement {
     for (const fn of this._listeners.get(type) ?? []) fn(...args);
   }
 
+  // 真实 DOM 的 data-* 属性在 dataset 里是 camelCase 键（data-chapter-no → chapterNo）。
+  static _dataKey(name) {
+    return name.replace(/-([a-z])/g, (_m, c) => c.toUpperCase());
+  }
+
   _matches(selector) {
+    // 复合选择器 .class[data-attr] / .class[data-attr="value"]（如 .p-chip[data-chapter-no]）
+    const compound = selector.match(/^\.([\w-]+)((?:\[data-[\w-]+(?:="[^"]*")?\])+)$/);
+    if (compound) {
+      if (!this.classList.contains(compound[1])) return false;
+      for (const m of compound[2].matchAll(/\[data-([\w-]+)(?:="([^"]*)")?\]/g)) {
+        const actual = this.dataset[MockElement._dataKey(m[1])] ?? "";
+        if (m[2] === undefined ? actual === "" : String(actual) !== m[2]) return false;
+      }
+      return true;
+    }
     if (selector.startsWith(".")) return this.classList.contains(selector.slice(1));
     if (selector.startsWith("#")) return (this._attrs.id ?? "") === selector.slice(1);
     const dataSel = selector.match(/^\[data-([\w-]+)="?([^"\]]*)"?\]$/);
-    if (dataSel) return String(this.dataset[dataSel[1]] ?? "") === dataSel[2];
+    if (dataSel) return String(this.dataset[MockElement._dataKey(dataSel[1])] ?? "") === dataSel[2];
     const attrSel = selector.match(/^\[([\w-]+)="?([^"\]]*)"?\]$/);
     if (attrSel) return String(this._attrs[attrSel[1]] ?? "") === attrSel[2];
     return String(this.tagName).toLowerCase() === selector.toLowerCase();
@@ -127,7 +165,7 @@ class MockElement {
       const found = child.querySelector(selector);
       if (found) return found;
     }
-    return null;
+    return this._queryRetryFallback(selector);
   }
 
   querySelectorAll(selector) {
@@ -140,6 +178,8 @@ class MockElement {
       }
     };
     walk(this);
+    const fallback = this._queryRetryFallback(selector);
+    if (fallback) out.push(fallback);
     return out;
   }
 }
@@ -466,4 +506,155 @@ test("项目归属守卫：切换项目/无项目后，旧项目事件不得串�
   assert.ok(!turnA.textContent.includes("串台尾巴 2"), "切项目后旧 SSE delta 应被丢弃");
   const doneInTurnA = turnA.querySelector(".done-card");
   assert.ok(!doneInTurnA || doneInTurnA.classList.contains("hidden"), "切项目后旧 SSE 完成事件不得驱动旧 turn 完成态");
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 1: 完成态磁盘回填（Critical 1 — getJson 导入缺失会静默失效）
+// 写作主调用为非流式 + 工具调用，delta 流为空；完成态正文/字数/预览必须由
+// GET /api/chapters/read 从磁盘回填。此前 getJson 未导入，ReferenceError 被
+// catch{} 吞掉，完成卡显示「0 字」+ 空预览 + 空展开全文。
+// ---------------------------------------------------------------------------
+
+const DISK_TEXT = "磁盘上保存的真实正文。窗外雨声渐歇，他合上笔记本，望向窗外泛白的天际。";
+
+test("完成态从磁盘回填真实正文：getJson 回填 doneFull/预览/字数（非流式写作）", async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { refs, ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+  const realFetch = globalThis.fetch;
+  const requested = [];
+  globalThis.fetch = async (url, _options) => {
+    requested.push(String(url));
+    return { ok: true, text: async () => JSON.stringify({ ok: true, content: DISK_TEXT }) };
+  };
+  try {
+    // 无任何 model_delta：完成卡初始为「0 字」+ 空预览，只能靠磁盘回填恢复。
+    renderer.onRunEvent(userEvent());
+    renderer.onRunEvent(runStartedEvent());
+    renderer.onRunEvent(draftingCallEvent());
+    renderer.onRunEvent(chapterDoneEvent(5));
+    renderer.onRunEvent(runFinishedEvent());
+    await new Promise((r) => setTimeout(r, 10));
+
+    const turn = refs.thread.querySelector(".turn-agent");
+    const done = turn.querySelector(".done-card");
+    assert.ok(
+      requested.some((u) => u.includes("/api/chapters/read?chapter=5")),
+      "完成态应请求磁盘章节正文接口"
+    );
+    const doneFull = done.querySelector(".full-text");
+    assert.equal(doneFull.textContent, DISK_TEXT, "展开全文应从磁盘回填真实正文");
+    const expectedWords = DISK_TEXT.replace(/\s/g, "").length;
+    assert.ok(done.textContent.includes(`${expectedWords} 字`), "完成卡字数应更新为磁盘真实字数");
+    const preview = done.querySelector(".done-preview");
+    assert.equal(preview.textContent, `“${DISK_TEXT.trim().slice(0, 24)}……”`, "预览应取磁盘正文前 24 字");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 1: 失败/中断路径覆盖（Important 2 — 此前零测试）
+// ---------------------------------------------------------------------------
+
+function runFailedEvent() {
+  return {
+    type: "project_run_failed",
+    timestamp: "2026-08-03T10:00:25.000Z",
+    stage: "run",
+    message: "模型调用失败：401 Unauthorized，API Key 无效或已过期。",
+    data: { status: 401, reason: "invalid_api_key", name: "AuthenticationError" },
+  };
+}
+
+test("project_run_failed → 红卡挂载 + data-retry 手动重试 + 「已保留当前进度」", async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { refs, ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+  let retried = 0;
+  ctx.handleRetry = () => { retried += 1; };
+
+  renderer.onRunEvent(userEvent());
+  renderer.onRunEvent(runStartedEvent());
+  renderer.onRunEvent(draftingCallEvent());
+  renderer.onRunEvent(runFailedEvent());
+
+  const turn = refs.thread.querySelector(".turn-agent");
+  const errSlot = turn.querySelector(".error-slot");
+  assert.ok(errSlot, "失败轮应渲染 error-slot");
+  assert.ok(!errSlot.classList.contains("hidden"), "失败后红卡槽应可见");
+  const card = errSlot.children[0];
+  assert.ok(card, "errorSlot 应挂载错误卡");
+  // 红卡结构（规格书 5.9）：标题+时间戳 / 人话+错误码徽章 / 后果提示 / 手动重试按钮
+  assert.match(card.innerHTML, /class="msg-error"/, "红卡容器");
+  assert.match(card.innerHTML, /模型调用失败 · 401/, "标题带状态码");
+  assert.match(card.innerHTML, /401 · invalid_api_key/, "错误码徽章");
+  assert.match(card.innerHTML, /已保留当前进度/, "提示行只放用户需要知道的后果");
+  assert.match(card.innerHTML, /↻ 重试/, "手动重试按钮文案");
+  assert.match(card.innerHTML, /data-retry="1"/, "手动重试按钮带 data-retry 标记");
+  // data-retry 绑定真实可点：点击应回调 ctx.handleRetry
+  const retryBtn = card.querySelector("[data-retry]");
+  assert.ok(retryBtn, "红卡内应存在 data-retry 按钮节点");
+  retryBtn._fire("click");
+  assert.equal(retried, 1, "点击手动重试应触发 ctx.handleRetry");
+  // 失败即终态：后续收尾事件不得再驱动完成态
+  renderer.onRunEvent(runFinishedEvent());
+  assert.ok(!errSlot.classList.contains("hidden"), "失败后红卡保持可见");
+  const done = turn.querySelector(".done-card");
+  assert.ok(done.classList.contains("hidden"), "失败轮不得再显示完成卡");
+});
+
+test("project_cancelled 折叠终态标题：「第 N 章 · 已停止」", async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { refs, ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+
+  renderer.onRunEvent(userEvent());
+  renderer.onRunEvent(runStartedEvent());
+  renderer.onRunEvent(draftingCallEvent());
+  renderer.onRunEvent(chapterDoneEvent(5));
+  renderer.onRunEvent({
+    type: "project_cancelled",
+    timestamp: "2026-08-03T10:00:25.000Z",
+    chapter_no: 5,
+    stage: "run",
+    message: "写作任务已停止。",
+  });
+
+  const turn = refs.thread.querySelector(".turn-agent");
+  const done = turn.querySelector(".done-card");
+  assert.ok(done && !done.classList.contains("hidden"), "cancelled 应收进折叠终态（完成卡可见）");
+  const head = done.querySelector(".done-head");
+  assert.ok(head.textContent.includes("第 5 章 · 已停止"), "cancelled 变体标题为「第 N 章 · 已停止」");
+  const chips = turn.querySelector(".para-chips");
+  assert.ok(chips.classList.contains("hidden"), "终态后段落标记排隐藏");
+});
+
+test("reconcileLiveTurn 轮询兜底：SSE 断流时按 dashboard 终态收尾 + 段落字数回填", async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { refs, ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+
+  // SSE 侧只到段落完成，project_run_finished 未送达（断流/重连窗口）。
+  renderer.onRunEvent(userEvent());
+  renderer.onRunEvent(runStartedEvent());
+  renderer.onRunEvent(chapterDoneEvent(5));
+
+  // 轮询兜底：dashboard 已是终态（cancelled），且章节真实字数可回填段落标记。
+  renderer.syncThread({
+    project: { title: "测试小说" },
+    projectRoot: "D:\\novel-a",
+    summary: { projectStatus: "cancelled", currentChapterNo: 5, totalWords: 88, costAvailable: false },
+    chapters: [{ chapter_no: 5, actual_words: 88 }],
+    events: [],
+  }, false);
+
+  const turn = refs.thread.querySelector(".turn-agent");
+  const chip = turn.querySelector(".p-chip");
+  assert.ok(chip, "段落标记应在对账前存在");
+  assert.ok(chip.textContent.includes("📖 第 5 章 · 88 字"), "轮询对账应回填段落标记真实字数");
+  const done = turn.querySelector(".done-card");
+  assert.ok(done && !done.classList.contains("hidden"), "SSE 断流时轮询兜底应收尾完成态");
+  const head = done.querySelector(".done-head");
+  assert.ok(head.textContent.includes("第 5 章 · 已停止"), "轮询兜底按 dashboard 终态定标题");
 });
