@@ -855,6 +855,13 @@ export function createComposer(ctx) {
       ctx.showToast("请先新建或打开一部小说。", "info");
       return;
     }
+    // 任务进行中：二次确认（2026-08-03 决定）。空闲切换不打扰。
+    const dashboard = ctx.getDashboard?.() ?? {};
+    const busy = dashboard.chatHistory?.busy === true ||
+                 dashboard.summary?.projectStatus === "running";
+    if (busy && !window.confirm("您确认要切换吗？切换后当前写作将由新模型接力，本章文风可能变化。")) {
+      return;
+    }
     try {
       const result = await postJson("/api/settings/model-switch", {
         projectRoot: currentProjectRoot,
