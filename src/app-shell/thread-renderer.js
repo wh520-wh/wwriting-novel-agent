@@ -5,7 +5,7 @@ import { renderFailureCard } from "./components/failure-card.js";
 import { renderDiff, renderParagraphDiff } from "./diff-view.js";
 import { deriveFailures } from "./agent-truth.mjs";
 import { deriveRunPresentation, deriveStepState } from "./run-presentation.mjs";
-import { postJson } from "./api-client.js";
+import { postJson, getJson } from "./api-client.js";
 import { sendChatMessage, confirmChatAction } from "./api-client.js";
 import { renderMarkdown, cleanAssistantContent } from "./markdown-lite.mjs";
 import { toolLabel } from "./tool-labels.mjs";

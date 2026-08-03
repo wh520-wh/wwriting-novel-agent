@@ -572,8 +572,13 @@ async function loadDashboard(options = {}) {
   if (currentProjectRoot && currentProjectRoot !== sseProjectRoot) {
     sseProjectRoot = currentProjectRoot;
     sseSource?.close();
+    // 连接建立时捕获归属项目：onmessage 派发前与当前 currentProjectRoot 比对，
+    // 切项目/切无项目后旧连接 in-flight 事件（含开轮 user_instruction_received）一律丢弃，
+    // 防止旧项目排队任务的事件在切换窗口内于新项目线程开假轮。
+    const connRoot = currentProjectRoot;
     sseSource = new EventSource(`/api/project/events?projectRoot=${encodeURIComponent(currentProjectRoot)}`);
     sseSource.onmessage = (msg) => {
+      if (currentProjectRoot !== connRoot) return;
       const event = JSON.parse(msg.data);
       if (event.type === "model_delta") {
         threadRenderer.onModelDelta?.(event.text);
