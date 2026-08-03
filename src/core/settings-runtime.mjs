@@ -367,6 +367,7 @@ function normalizeActiveModel(activeModel) {
   copyOptionalString(normalized, activeModel, "cache_mode");
   copyOptionalPositiveInteger(normalized, activeModel, "max_context_tokens");
   copyOptionalPositiveInteger(normalized, activeModel, "max_output_tokens");
+  copyOptionalTemperature(normalized, activeModel, "temperature");
   if (activeModel.stream !== undefined) {
     normalized.stream = activeModel.stream === true;
   }
@@ -582,6 +583,19 @@ function copyOptionalPositiveNumber(target, source, key) {
   const value = Number(source[key]);
   if (!Number.isFinite(value) || value <= 0) {
     throw new SettingsValidationError(`invalid_${key}`, `${key} must be a positive number.`);
+  }
+  target[key] = value;
+}
+
+// 温度 0-2 校验，语义与 model-config-validation.mjs 的 validateModelConfig 一致：
+// undefined / null / "" 表示「未配置不携带」；合法数值原样保留；非法数值直接报错。
+function copyOptionalTemperature(target, source, key) {
+  if (source[key] === undefined || source[key] === null || source[key] === "") {
+    return;
+  }
+  const value = Number(source[key]);
+  if (!Number.isFinite(value) || value < 0 || value > 2) {
+    throw new SettingsValidationError(`invalid_${key}`, `${key} must be a number between 0 and 2.`);
   }
   target[key] = value;
 }
