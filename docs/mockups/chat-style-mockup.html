@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>聊天窗口样式预览 · WWriting</title>
+<style>
+  :root {
+    --bg: #f5f3ef;
+    --panel: #ffffff;
+    --border: #e5e1d8;
+    --text: #2c2a26;
+    --text-dim: #8a857a;
+    --accent: #a0835a;
+    --think-bg: #f0ede6;
+    --tool-bg: #f7f5f0;
+    --bubble-user: #ece7dc;
+    --warn-bg: #fdf3e0;
+    --warn-border: #e8cf9e;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    color: var(--text);
+    padding: 32px 16px 60px;
+  }
+  .page-head {
+    max-width: 640px; margin: 0 auto 20px;
+  }
+  .page-head h1 { font-size: 20px; font-weight: 600; margin-bottom: 6px; }
+  .page-head p { font-size: 13px; color: var(--text-dim); line-height: 1.7; }
+  .page-head .hl { color: var(--accent); font-weight: 600; }
+
+  .window {
+    max-width: 640px; margin: 0 auto;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.06);
+    overflow: hidden;
+  }
+  .win-bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px; color: var(--text-dim);
+  }
+  .win-bar .dot { width: 10px; height: 10px; border-radius: 50%; }
+  .win-bar .dot.r { background: #e07b6b; }
+  .win-bar .dot.y { background: #e0c26b; }
+  .win-bar .dot.g { background: #7bb27e; }
+  .win-bar .title { margin-left: 6px; }
+
+  .thread { padding: 20px 18px 16px; display: flex; flex-direction: column; gap: 16px; }
+
+  .msg-user { align-self: flex-end; max-width: 80%; }
+  .msg-user .bubble {
+    background: var(--bubble-user);
+    border-radius: 14px 14px 4px 14px;
+    padding: 10px 14px;
+    font-size: 14px; line-height: 1.7;
+  }
+
+  .msg-agent { align-self: flex-start; max-width: 100%; display: flex; flex-direction: column; gap: 8px; }
+  .agent-tag {
+    font-size: 12px; color: var(--text-dim);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .agent-tag .name { color: var(--accent); font-weight: 600; }
+
+  /* 思考块 */
+  .think-block {
+    background: var(--think-bg);
+    border-radius: 10px;
+    padding: 0;
+    font-size: 13px;
+    color: var(--text-dim);
+    overflow: hidden;
+    cursor: pointer;
+    user-select: none;
+  }
+  .think-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px;
+  }
+  .think-head .caret { transition: transform .2s; font-size: 11px; }
+  .think-block.open .caret { transform: rotate(90deg); }
+  .think-body {
+    display: none;
+    padding: 2px 12px 10px;
+    line-height: 1.7;
+    color: #6f6a5f;
+    border-top: 1px dashed var(--border);
+    margin: 0 8px;
+  }
+  .think-block.open .think-body { display: block; }
+
+  /* 工具调用卡片 */
+  .tool-card {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--tool-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 7px 12px;
+    font-size: 13px;
+    color: var(--text-dim);
+    max-width: 70%;
+  }
+  .tool-card .ic { font-size: 14px; }
+  .tool-card .status { margin-left: auto; font-size: 12px; }
+
+  /* 正文 */
+  .msg-content {
+    font-size: 14px; line-height: 1.8;
+    padding: 2px 2px;
+    white-space: pre-wrap;
+  }
+  .msg-content .cursor {
+    display: inline-block; width: 2px; height: 16px;
+    background: var(--accent);
+    animation: blink 1s steps(1) infinite;
+    vertical-align: -2px;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* 折叠后的摘要行 */
+  .collapse-summary {
+    display: flex; flex-wrap: wrap; gap: 8px;
+  }
+  .collapsed-chip {
+    background: var(--think-bg);
+    border-radius: 999px;
+    padding: 4px 12px;
+    font-size: 12px;
+    color: var(--text-dim);
+    cursor: pointer;
+    user-select: none;
+    border: 1px solid transparent;
+    transition: border-color .15s;
+  }
+  .collapsed-chip:hover { border-color: var(--accent); }
+
+  /* 故障消息 */
+  .msg-warn {
+    align-self: flex-start;
+    display: flex; align-items: flex-start; gap: 8px;
+    background: var(--warn-bg);
+    border: 1px solid var(--warn-border);
+    border-radius: 10px;
+    padding: 9px 12px;
+    font-size: 13px;
+    line-height: 1.6;
+    color: #8a6a2a;
+    max-width: 85%;
+  }
+
+  .play-bar {
+    max-width: 640px; margin: 16px auto 0;
+    display: flex; gap: 10px; justify-content: center;
+  }
+  .btn {
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--text);
+    border-radius: 999px;
+    padding: 9px 22px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background .15s;
+  }
+  .btn:hover { background: #efece4; }
+  .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .btn.primary:hover { background: #8f7350; }
+
+  .legend {
+    max-width: 640px; margin: 22px auto 0;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 18px;
+    font-size: 13px;
+    line-height: 1.8;
+    color: var(--text-dim);
+  }
+  .legend b { color: var(--text); font-weight: 600; }
+  .legend .row { display: flex; gap: 8px; align-items: baseline; }
+  .legend .n { color: var(--accent); font-weight: 700; width: 22px; flex: none; }
+
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<div class="page-head">
+  <h1>聊天窗口样式预览</h1>
+  <p>点击下方 <b class="hl">▶ 播放写作过程</b>，模拟一次完整写作：思考 → 工具调用 → 正文流式返回 → <b class="hl">过程自动折叠</b>。</p>
+</div>
+
+<div class="window">
+  <div class="win-bar">
+    <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+    <span class="title">《雾锁边城》 · 第 5 章</span>
+  </div>
+
+  <div class="thread">
+    <!-- 用户消息 -->
+    <div class="msg-user"><div class="bubble">继续写第 5 章，主角要发现真相。</div></div>
+
+    <!-- agent 消息区（演示目标） -->
+    <div class="msg-agent" id="agentMsg">
+      <div class="agent-tag"><span class="name">写作助手</span> · 深度求索 v4-flash</div>
+
+      <!-- 思考块 -->
+      <div class="think-block" id="thinkBlock">
+        <div class="think-head"><span class="caret">▶</span><span class="label">思考中…</span></div>
+        <div class="think-body">本节冲突点是线索暴露。先铺垫一段环境，让主角在柜子后面发现旧照片——照片上的人他认识，但照片日期是十年前，那天他不在城里。用这个矛盾收尾，制造悬念。</div>
+      </div>
+
+      <!-- 工具卡片 -->
+      <div class="tool-card" id="toolCard">
+        <span class="ic">✎</span><span class="label">正在撰写 第 5 章 第 2 段</span><span class="status"></span>
+      </div>
+
+      <!-- 正文 -->
+      <div class="msg-content" id="content"></div>
+
+      <!-- 结果返回后：过程折叠成的摘要行 -->
+      <div class="collapse-summary hidden" id="summary">
+        <div class="collapsed-chip" title="点击展开思考过程">🧠 已思考</div>
+        <div class="collapsed-chip" title="点击查看完成的操作">🛠 完成 1 次撰写</div>
+      </div>
+    </div>
+
+    <!-- 故障消息示例 -->
+    <div class="msg-warn hidden" id="warnMsg">
+      <span>⚠</span>
+      <span>刚才模型服务繁忙，已自动重试后继续，本章内容没有丢失。</span>
+    </div>
+  </div>
+</div>
+
+<div class="play-bar">
+  <button class="btn primary" id="playBtn">▶ 播放写作过程</button>
+  <button class="btn" id="resetBtn">↺ 重置</button>
+</div>
+
+<div class="legend">
+  <div class="row"><span class="n">1</span><span><b>写作助手</b> 一行小字标明是谁在说话 —— 没有头像。</span></div>
+  <div class="row"><span class="n">2</span><span><b>思考中…</b> 灰色块，点一下可以展开/收起思考内容。</span></div>
+  <div class="row"><span class="n">3</span><span><b>✎ 正在撰写…</b> 工具调用卡片，显示助手正在做什么。</span></div>
+  <div class="row"><span class="n">4</span><span><b>正文</b> 一个字一个字出现（流式）。</span></div>
+  <div class="row"><span class="n">5</span><span>结果返回后，<b>思考块和工具卡片自动折叠</b>成一行小圆片，正文保持干净。</span></div>
+  <div class="row"><span class="n">6</span><span><b>⚠ 故障消息</b> 以聊天消息的形式出现（示例在最下面）。</span></div>
+</div>
+
+<script>
+  const thinkBlock = document.getElementById("thinkBlock");
+  const toolCard = document.getElementById("toolCard");
+  const content = document.getElementById("content");
+  const summary = document.getElementById("summary");
+  const warnMsg = document.getElementById("warnMsg");
+  const playBtn = document.getElementById("playBtn");
+
+  const FULL_TEXT = "他推开门，灯光漏进来，灰尘在光柱里打转。柜子后面的墙皮脱落了一块，露出半张泛黄的照片——\n\n是他。十年前，他明明说自己在省城。";
+
+  thinkBlock.addEventListener("click", () => thinkBlock.classList.toggle("open"));
+  summary.addEventListener("click", (e) => {
+    if (e.target.textContent.includes("思考")) {
+      thinkBlock.classList.add("open");
+    }
+  });
+
+  let playing = false;
+  playBtn.addEventListener("click", () => {
+    if (playing) return;
+    playing = true;
+    playBtn.disabled = true;
+
+    // 重置本消息区到初始态
+    content.textContent = "";
+    thinkBlock.classList.remove("hidden");
+    thinkBlock.classList.remove("open");
+    toolCard.classList.remove("hidden");
+    summary.classList.add("hidden");
+    warnMsg.classList.add("hidden");
+    toolCard.querySelector(".status").textContent = "";
+
+    // 1. 思考出现（0.6s 后展开，模拟正在想）
+    setTimeout(() => {
+      thinkBlock.classList.add("open");
+    }, 500);
+
+    // 2. 思考收起，工具卡片出现
+    setTimeout(() => {
+      thinkBlock.classList.remove("open");
+      toolCard.querySelector(".status").textContent = "进行中";
+    }, 2600);
+
+    // 3. 工具完成，正文流式逐字出现
+    setTimeout(() => {
+      toolCard.querySelector(".status").textContent = "完成 ✓";
+      let i = 0;
+      const cursor = document.createElement("span");
+      cursor.className = "cursor";
+      const tick = () => {
+        if (i < FULL_TEXT.length) {
+          content.textContent = FULL_TEXT.slice(0, i + 1);
+          content.appendChild(cursor);
+          i += 1;
+          setTimeout(tick, 18);
+        } else {
+          content.removeChild(cursor);
+          // 4. 结果返回 → 过程折叠成摘要行
+          setTimeout(() => {
+            thinkBlock.classList.add("hidden");
+            toolCard.classList.add("hidden");
+            summary.classList.remove("hidden");
+            playing = false;
+            playBtn.disabled = false;
+            // 5. 故障消息示例
+            setTimeout(() => warnMsg.classList.remove("hidden"), 500);
+          }, 400);
+        }
+      };
+      tick();
+    }, 3400);
+  });
+
+  document.getElementById("resetBtn").addEventListener("click", () => {
+    playing = false;
+    playBtn.disabled = false;
+    content.textContent = "";
+    thinkBlock.classList.remove("hidden");
+    thinkBlock.classList.remove("open");
+    toolCard.classList.remove("hidden");
+    toolCard.querySelector(".status").textContent = "";
+    summary.classList.add("hidden");
+    warnMsg.classList.add("hidden");
+  });
+</script>
+
+</body>
+</html>

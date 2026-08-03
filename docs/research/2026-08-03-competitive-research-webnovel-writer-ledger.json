@@ -1,0 +1,235 @@
+{
+  "research_date": "2026-08-03",
+  "evidence": [
+    {
+      "id": "E1",
+      "competitor": "webnovel-writer",
+      "claim": "GitHub 仓库元数据：stargazers_count=6277，forks_count=1080，open_issues_count=31，language=Python，license=GPL-3.0，archived=false，created_at=2026-01-02，pushed_at=2026-08-02，description 声称支持 200 万字量级连载创作。",
+      "source_url": "https://github.com/lingfengQAQ/webnovel-writer",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-03",
+      "evidence_locator": "GitHub REST API repos/lingfengQAQ/webnovel-writer",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E2",
+      "competitor": "webnovel-writer",
+      "claim": "官方 README 陈述：基于 Claude Code 的长篇网文创作插件，8 个 Skill 命令（init/plan/write/review/query/learn/dashboard/doctor），内置 37 个中文网文题材模板，RAG 配置支持 embedding+rerank 且无 key 时回退 BM25，README 内嵌 Trendshift badge（trendshift.io/repositories/22487），开发方式为 Vibe Coding（Claude Code + Gemini CLI + Codex），灵感来自 Linux.do 帖子，致谢 oh-story-claudecode。",
+      "source_url": "https://github.com/lingfengQAQ/webnovel-writer/blob/master/README.md",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-03",
+      "evidence_locator": "README.md 全文（核心能力表、快速开始、更新简介）",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E3",
+      "competitor": "webnovel-writer",
+      "claim": "架构总览文档陈述：真源划分（写前真源 .story-system/MASTER_SETTING.json 等，写后真源为 accepted CHAPTER_COMMIT，.webnovel/ 各产物仅为投影 read-model）；防幻觉三定律（大纲即法律、设定即物理、发明需识别）；Strand Weave 节奏系统（Quest 主线 60% / Fire 感情线 20% / Constellation 世界观 20%，红线：Quest 连续不超过 5 章、Fire 断档不超过 10 章、Constellation 断档不超过 15 章）；3 个 Agent 分工（Context 读 / Data 写 / Reviewer 审）。",
+      "source_url": "https://github.com/lingfengQAQ/webnovel-writer/blob/master/docs/architecture/overview.md",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-03",
+      "evidence_locator": "docs/architecture/overview.md（核心理念、Agent 分工、Story System 章节）",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E4",
+      "competitor": "webnovel-writer",
+      "claim": "context-agent 定义陈述：写作前生成五段写作任务书；load-context 一次性注入 story_contracts/recent_summaries/urgent_loops/active_rules/protagonist/memory_pack/author_style_patterns/style_contract；伏笔规则为 remaining ≤5 或超期的必须处理、可选伏笔最多 5 条；不暴露系统术语与文件路径，只输出自然语气任务书。",
+      "source_url": "https://github.com/lingfengQAQ/webnovel-writer/blob/master/webnovel-writer/agents/context-agent.md",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-03",
+      "evidence_locator": "webnovel-writer/agents/context-agent.md",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E5",
+      "competitor": "webnovel-writer",
+      "claim": "reviewer agent 定义陈述：只查 5 个可验证维度（设定一致性/时间线/叙事连贯/角色一致性/逻辑）；不评分、不给建议、不评价文笔；每条 issue 必须有 evidence（原文引用或数据对比）；severity 分级 critical/high/medium/low，blocking 仅用于可确认的事实矛盾；dimension_results 必须覆盖全部 5 个维度，无问题也显式输出 pass。",
+      "source_url": "https://github.com/lingfengQAQ/webnovel-writer/blob/master/webnovel-writer/agents/reviewer.md",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-03",
+      "evidence_locator": "webnovel-writer/agents/reviewer.md",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E6",
+      "competitor": "webnovel-writer",
+      "claim": "data-agent 定义陈述：从正文提取三份 artifact（fulfillment/disambiguation/extraction）；event_type 枚举含 character_state_changed/power_breakthrough/relationship_changed/world_rule_revealed/world_rule_broken/open_loop_created/open_loop_closed/promise_created/promise_paid_off/artifact_obtained；open_loop 带 urgency(0-100)、planted_chapter、expected_payoff；实体消歧置信度 >0.8 自动采用、0.5-0.8 采用+warning、<0.5 标记待人工；摘要中的埋设伏笔必须同步写 open_loop_created 事件。",
+      "source_url": "https://github.com/lingfengQAQ/webnovel-writer/blob/master/webnovel-writer/agents/data-agent.md",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-03",
+      "evidence_locator": "webnovel-writer/agents/data-agent.md（§7 输出 schema 唯一真源）",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E7",
+      "competitor": "webnovel-writer",
+      "claim": "长期记忆架构文档陈述：长期记忆主链路为 memory_scratchpad.json（语义缓存）+ index.db/summaries/state.json（近期状态与历史证据），MemoryOrchestrator 组装 working/episodic/semantic 三层；记忆条目维护 active/outdated/contradicted/tentative 状态；compactor 负责压缩与冲突检查；文档纪律为只描述「当前代码里真实存在、已接入主链路」的架构。",
+      "source_url": "https://github.com/lingfengQAQ/webnovel-writer/blob/master/docs/memory/long-term-memory-architecture-v2.md",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-03",
+      "evidence_locator": "docs/memory/long-term-memory-architecture-v2.md",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E8",
+      "competitor": "webnovel-writer",
+      "claim": "CHANGELOG 陈述：v6.2.0 引入面向作者的四态最终报告（已完成/部分完成/需要你处理/未完成）+ 三段式；/webnovel-write 中断后重复执行同章优先检查可信断点续跑；v6.2.1 修复 Windows WinError 5 拒绝访问（atomic_write_json 指数退避重试），全量 pytest 774 passed；v6.1.0 引入 doctor/project-status/write-gate/projection 重放、hooks 与行为 eval。",
+      "source_url": "https://github.com/lingfengQAQ/webnovel-writer/blob/master/CHANGELOG.md",
+      "source_type": "official_release",
+      "accessed_on": "2026-08-03",
+      "evidence_locator": "CHANGELOG.md（v6.0.0-v6.2.1）",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E9",
+      "competitor": "webnovel-writer",
+      "claim": "仓库 docs/research/storyteller-paper-summary.md 为 ACL 2025 Findings 论文 STORYTELLER（An Enhanced Plot-Planning Framework for Coherent and Cohesive Story Generation，aclanthology.org/2025.findings-acl.1071）的工程化总结，借鉴其 SVO 情节节点/STORYLINE 时间线/NEKG 叙事实体知识图谱思想，说明该仓库有学术文献调研与实践映射的文档文化。",
+      "source_url": "https://github.com/lingfengQAQ/webnovel-writer/blob/master/docs/research/storyteller-paper-summary.md",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-03",
+      "evidence_locator": "docs/research/storyteller-paper-summary.md（一句话结论与核心模块章节）",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E10",
+      "competitor": "webnovel-writer",
+      "claim": "GitHub 提交历史显示：2026-07-18 修复 dashboard 聚合与文风记忆消费问题，2026-07-07 发布 v6.2.1（WinError 5 修复），2026-06-12 起 README 公示 v7 RFC，2026-06-11 收敛 v6 维护并冻结 story repo spec v7 draft 0.4；最近推送 2026-08-02。",
+      "source_url": "https://github.com/lingfengQAQ/webnovel-writer/commits/master",
+      "source_type": "official_release",
+      "accessed_on": "2026-08-03",
+      "evidence_locator": "GitHub REST API commits?per_page=15",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E11",
+      "competitor": "webnovel-writer",
+      "claim": "仓库目录树显示：含 .github/workflows（plugin-release/plugin-version CI）、agents/evals（evals.json + test-project 测试项目）、dashboard/frontend（React + Vite，含预打包 dist）、docs 体系（architecture/guides/memory/operations/research/archive）、releases 发布说明、story-repo-spec v7 draft 等，工程结构与发布治理完备。",
+      "source_url": "https://github.com/lingfengQAQ/webnovel-writer/tree/master",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-03",
+      "evidence_locator": "GitHub REST API git/trees/HEAD?recursive=1",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E12",
+      "competitor": "webnovel-writer",
+      "claim": "GitHub Discussions 确认存在：【征求意见】webnovel-writer v7 设计公示（架构重写，discussions/118）、用户反馈帖「伏笔和钩子强度有问题」（discussions/123）、「下一步你最想先看到哪个方向」投票（discussions/107），说明该仓库有公开的意见征集与用户反馈闭环。",
+      "source_url": "https://github.com/lingfengQAQ/webnovel-writer/discussions/118",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-03",
+      "evidence_locator": "GitHub GraphQL repository.discussions 查询结果",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E13",
+      "competitor": "WWriting（本地基线）",
+      "claim": "WWriting 官方 README 陈述已交付能力：章节状态机（规划→起草→审稿→修订→定稿→摘要）、真实字数校验门禁、工具调用写入防线、checkpoint 断点恢复、本地项目文件夹持久化、成本与缓存报告、技能系统（manifest/hook/导入）、受控网页搜索/抓取（默认禁网、来源标不可信）、OpenAI-compatible 模型适配（DeepSeek/小米 MiMo）、Electron 三栏 GUI、1002 个测试 + verify:local 验收链；明确后续方向为故事圣经（角色/设定/伏笔管理）、技能生态、更多 provider 预设。",
+      "source_url": "https://github.com/wh520-wh/wwriting-novel-agent",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-03",
+      "evidence_locator": "D:\\WWriting\\README.md（功能亮点、目录结构、当前状态）",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E14",
+      "competitor": "WWriting（本地基线）",
+      "claim": "2026-07-31 竞品调研报告陈述：记忆与连贯性、多智能体分工、质量门禁已是行业标配；WWriting 楔子为本地桌面 GUI + 文件即项目 + 可验证交付（字数门禁/工具调用/checkpoint）；已识别缺口为故事圣经/伏笔管理（对照 NovelCrafter Codex、Sudowrite Story Bible）；不做过云托管写作、不做自研模型、不做全自动代写。",
+      "source_url": "https://github.com/wh520-wh/wwriting-novel-agent",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-03",
+      "evidence_locator": "D:\\WWriting\\docs\\research\\2026-07-31-competitive-research.md（Executive Conclusion、Adoption-blocking gaps、Non-goals）",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E15",
+      "competitor": "webnovel-writer",
+      "claim": "Inference：综合 E1 的 6277 stars/1080 forks、E2 的 Trendshift 上榜声明与 37 题材/RAG 等成熟功能、E12 的公开 RFC 意见征集，推断该仓库在中文 AI 网文写作开源圈具备高社区认可度与工程参考价值；但因其为单维护者业余项目（E2 致谢与赞助信息）且采用 Vibe Coding 开发，不构成制度性权威或官方标准。",
+      "source_url": "https://github.com/lingfengQAQ/webnovel-writer",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-03",
+      "evidence_locator": "综合 E1/E2/E12 的权威性判定",
+      "classification": "inference",
+      "confidence": "medium"
+    }
+  ],
+  "recommendations": [
+    {
+      "id": "R1",
+      "priority": "P0",
+      "statement": "写后事实入账：每章定稿后从正文提取结构化事件（伏笔埋设/回收、承诺建立/兑现、角色状态变化、力量突破、关系变化、世界规则揭示），写入项目 memory/ 事件文件，供后续章节上下文注入与审查使用；本地 memory-extractor.mjs / chapter-memory.mjs 为天然挂载点。",
+      "evidence_ids": ["E3", "E6"],
+      "acceptance_signal": "写完一章后项目 memory/ 出现结构化事件文件；下一章起草上下文自动注入上章未回收的伏笔与关键状态。"
+    },
+    {
+      "id": "R2",
+      "priority": "P0",
+      "statement": "审查器输出纪律化：本地 reviewer-agent/quality-gates 升级为每条 issue 必带正文引用 evidence、severity+blocking 分级、固定可验证维度（设定/时间线/连贯/角色/逻辑）且无问题维度显式 pass。",
+      "evidence_ids": ["E5"],
+      "acceptance_signal": "审查报告每条 issue 含 evidence 字段；无问题维度显示 pass；blocking 仅用于可确认的事实矛盾。"
+    },
+    {
+      "id": "R3",
+      "priority": "P1",
+      "statement": "伏笔/悬念闭环：在 R1 事件流上建立伏笔登记与到期提醒（紧急度 0-100 + 埋设章号），起草前注入 urgent loops（剩余 ≤5 章或超期必须处理，可选伏笔 ≤5 条）。",
+      "evidence_ids": ["E4", "E6"],
+      "acceptance_signal": "项目视图/资料区可查伏笔清单与到期状态；写章任务书自动列出未回收伏笔及紧急度。"
+    },
+    {
+      "id": "R4",
+      "priority": "P1",
+      "statement": "节奏管理：按 Strand Weave 简化版（主线/感情线/世界观线占比与断档红线）在项目视图展示最近 N 章的三线分布与断档提示，提示不阻断写作。",
+      "evidence_ids": ["E3"],
+      "acceptance_signal": "项目视图显示三线占比；断档超过红线（如感情线 10 章未推进）时出现非阻断性提示。"
+    },
+    {
+      "id": "R5",
+      "priority": "P1",
+      "statement": "项目级文风记忆：用户可记录这本书的文风偏好/写法经验，写前自动注入起草上下文，写后可沉淀；存项目文件夹可被外部编辑。",
+      "evidence_ids": ["E4", "E7"],
+      "acceptance_signal": "设置里可新增一条文风偏好；起草任务书自动包含该偏好；偏好存项目文件夹且可被外部编辑器打开。"
+    },
+    {
+      "id": "R6",
+      "priority": "P2",
+      "statement": "题材模板库：新建项目时可选题材（对照其 37 题材与复合题材规则），初始化大纲与设定骨架带题材规则。",
+      "evidence_ids": ["E2"],
+      "acceptance_signal": "新建项目弹窗可选 ≥10 个题材模板；选题后初始化的大纲/设定包含该题材规则条目。"
+    },
+    {
+      "id": "R7",
+      "priority": "P2",
+      "statement": "项目内语义检索（可选、默认关闭）：资料区支持对项目文件夹 embedding 语义检索，未配置 key 自动回退 BM25，延续 WWriting 默认禁网/可控启用的隐私原则。",
+      "evidence_ids": ["E2", "E13"],
+      "acceptance_signal": "配置 key 后资料区可语义检索；未配置时关键词检索可用且界面说明降级原因。"
+    },
+    {
+      "id": "R8",
+      "priority": "P2",
+      "statement": "写章链路行为 eval：仿其 agents/evals（测试项目 + 断言），把写章链路关键断点（上下文注入、事实入账、审查阻断、断点续跑）纳入 npm run verify 体系。",
+      "evidence_ids": ["E8", "E11"],
+      "acceptance_signal": "新增 verify:writing-eval 且通过；评估覆盖写章链路 ≥4 个关键断点。"
+    },
+    {
+      "id": "R9",
+      "priority": "P2",
+      "statement": "面向作者的最终报告四态升级：写章/审查结束报告升级为四态（已完成/部分完成/需要你处理/未完成）+ 三段式，并透明列出系统自动处理过的事项。",
+      "evidence_ids": ["E8"],
+      "acceptance_signal": "写章结束报告按四态呈现；跳过项与自动处理项可见；用户无需读日志即可判断下一步。"
+    }
+  ]
+}
