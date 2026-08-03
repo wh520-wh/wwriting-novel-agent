@@ -299,3 +299,73 @@ test("没有项目时测试连接不再拦截", async () => {
   assert.equal(calls.some((c) => c.url === "/api/settings/test-connection"), true);
   assert.equal(toasts.some((t) => /先新建或打开一部小说/.test(t.message)), false);
 });
+
+test("模型字段校验失败时逐项标红，且不发送项目设置请求", async () => {
+  const calls = [];
+  const toasts = [];
+  const modal = createSettingsModalForTest({
+    getCurrentProjectRoot: () => "D:/novels/demo",
+    showToast: (message, kind) => toasts.push({ message, kind }),
+    postJsonImpl: async (url, body) => {
+      calls.push({ url, body });
+      if (url === "/api/settings/model-profile") {
+        // 服务端对 ModelConfigValidationError 回 400 + fields，postJson 抛错携带 error.fields
+        throw Object.assign(new Error("模型信息不完整，请检查标红的字段。"), {
+          fields: { model_name: "请输入模型名称" }
+        });
+      }
+      return { ok: true };
+    }
+  });
+  await modal.openSettingsModal();
+  modal.setModelFieldsForTest({
+    model_name: "",
+    base_url: "https://api.deepseek.com",
+    api_key: "sk-test-1234",
+    api_key_env: "DEEPSEEK_API_KEY"
+  });
+  await modal.saveSettingsForTest();
+
+  // 校验失败：不发项目设置请求
+  assert.equal(calls.some((c) => c.url === "/api/settings/update"), false);
+  // 只有模型名字段标红：错误提示可见且带服务端文案，其余字段隐藏
+  const visibleErrors = domRegistry.filter((el) => el.className === "spd-field-error" && el.hidden === false);
+  assert.deepEqual(visibleErrors.map((el) => el.textContent), ["请输入模型名称"]);
+  // runSave 兜底 toast 展示服务端原文错误
+  assert.equal(toasts.some((t) => t.message === "模型信息不完整，请检查标红的字段。"), true);
+});
+
+test("模型字段校验失败后再保存：成功路径仍正常工作", async () => {
+  const calls = [];
+  let failModelProfile = true;
+  const modal = createSettingsModalForTest({
+    getCurrentProjectRoot: () => "D:/novels/demo",
+    postJsonImpl: async (url, body) => {
+      calls.push({ url, body });
+      if (url === "/api/settings/model-profile" && failModelProfile) {
+        failModelProfile = false;
+        throw Object.assign(new Error("模型信息不完整，请检查标红的字段。"), {
+          fields: { model_name: "请输入模型名称" }
+        });
+      }
+      return { ok: true, model_profile: { display: "DeepSeek 官方 / deepseek-chat" }, models: [] };
+    }
+  });
+  await modal.openSettingsModal();
+  modal.setModelFieldsForTest({
+    model_name: "deepseek-chat",
+    base_url: "https://api.deepseek.com",
+    api_key: "sk-test-1234",
+    api_key_env: "DEEPSEEK_API_KEY"
+  });
+
+  // 第一次：校验失败，只发 model-profile，不发 update
+  await modal.saveSettingsForTest();
+  assert.equal(calls.filter((c) => c.url === "/api/settings/model-profile").length, 1);
+  assert.equal(calls.some((c) => c.url === "/api/settings/update"), false);
+
+  // 第二次：校验通过，完整走完保存流程（含项目设置 update）
+  await modal.saveSettingsForTest();
+  assert.equal(calls.filter((c) => c.url === "/api/settings/model-profile").length, 2);
+  assert.equal(calls.filter((c) => c.url === "/api/settings/update").length, 1);
+});
