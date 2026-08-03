@@ -309,6 +309,53 @@ test("建项目后随时换模型：切换后项目用清单里的另一个模�
   }
 });
 
+// I-1 缺陷回归（2026-08-03 审查）：normalizeActiveModel 白名单缺 temperature，切模型时
+// 温度同时从 project.yaml 与全局 model-profiles.json 永久消失——用户再打开设置温度框
+// 为空（「保存后像没保存过」）。断言切换后两处都保留温度。
+
+test("切换模型保留温度配置：project.yaml 与全局清单 temperature 都不丢", async () => {
+  const { root, secretsRoot, server, port } = await setupProjectlessServer();
+  try {
+    // 配两个模型：deepseek-chat 带 temperature 0.7；mimo-v1 最后保存是全局默认
+    await post(port, "/api/settings/model-profile", {
+      active_model: { ...SAMPLE_MODEL, temperature: 0.7 }
+    });
+    await post(port, "/api/settings/model-profile", {
+      active_model: {
+        ...SAMPLE_MODEL,
+        model_name: "mimo-v1",
+        base_url: "https://api.mimo.example",
+        api_key_env: "XIAOMI_MIMO_API_KEY",
+        api_key: "sk-mimo"
+      }
+    });
+    const target = path.join(root, "novel-temp");
+    const init = await post(port, "/api/projects/init", {
+      projectRoot: target,
+      title: "温度保留"
+    });
+    assert.equal(init.status, 200);
+    // 切换前：全局清单里的 deepseek-chat 带温度
+    const storeBefore = await loadLocalModelProfiles(secretsRoot);
+    assert.equal(storeBefore.models.find((m) => m.id === "deepseek-chat").temperature, 0.7);
+
+    // 写作中切到带温度的 deepseek-chat
+    const switched = await post(port, "/api/settings/model-switch", {
+      projectRoot: target,
+      model_id: "deepseek-chat"
+    });
+    assert.equal(switched.status, 200);
+    // project.yaml：active_model.temperature 保留
+    const after = await loadProject(target);
+    assert.equal(after.active_model.temperature, 0.7);
+    // 全局 model-profiles.json：对应条目 temperature 保留（不被整条替换剥掉）
+    const store = await loadLocalModelProfiles(secretsRoot);
+    assert.equal(store.models.find((m) => m.id === "deepseek-chat").temperature, 0.7);
+  } finally {
+    await closeServer(server);
+  }
+});
+
 // Task 3 C 档（2026-08-03）：写作引擎强依赖工具调用与流式，能力缺失（no-tools）的模型
 // 保存/选用/切换直接报错阻止。no-tools resolver 的 matcher 只命中 no-tools.example，
 // 不影响本文件其它用 deepseek/mimo 的用例；注册表无 unregister，沿用既有注入惯例
