@@ -34,6 +34,16 @@ export function renderErrorCard(cfg) {
   );
 }
 
+// 重试状态行（规格书 5.7 · 琥珀无框）：脉动圆点 + n/5 计数实时可见。
+export function renderRetryLine(attempt) {
+  return `<div class="retry-line"><span class="pulse"></span>⚡ 网络波动，正在自动重试 <b>${attempt}</b>/5 …</div>`;
+}
+
+// 恢复提示（规格书 5.8 · 绿色小字）：第 n 次重试成功，从断点继续写作。
+export function renderRecoverLine(attempt) {
+  return `<div class="recover-line">✓ 连接已恢复（第 ${attempt} 次重试成功），从断点继续写作</div>`;
+}
+
 // 去掉空白后的字符数（规格书 5.6：字数必须由 JS 从正文实时统计，禁止写死）。
 function countChars(text) {
   return String(text ?? "").replace(/\s/g, "").length;
@@ -1688,7 +1698,8 @@ export function createThreadRenderer(ctx) {
   }
 
   // project_run_failed 红卡（规格书 5.9）：人话 + 错误码徽章 + 手动重试。
-  // 重试行/恢复提示等过程态插槽由 Task 12 细化。
+  // 手动重试走 ctx.handleRetry（app.js 复用 POST /api/run/retry，并带 toast/刷新兜底），
+  // 比裸 fetch 更完整；data-retry 按钮的绑定语义与规格书 6.3「手动重试」一致。
   function failTurn(turn, event) {
     const data = event.data ?? {};
     const status = data.status ?? null;
@@ -1765,10 +1776,24 @@ export function createThreadRenderer(ctx) {
           closeTurnToDone(turn, event, "cancelled");
           break;
         case "project_interrupted":
-        case "project_blocked":
           closeTurnToDone(turn, event, "interrupted");
           break;
-        // model_retry / status_message 等过程态插槽由 Task 12 细化
+        case "project_blocked":
+          // 与轮询分支（reconcileLiveTurn kind=blocked）统一：终态标题「需要处理」。
+          closeTurnToDone(turn, event, "blocked");
+          break;
+        case "model_retry":
+          // 琥珀重试行（规格书 5.7/6.2）：n/5 计数实时可见——每次事件用最新 attempt 重渲染。
+          turn.statusSlot.innerHTML = renderRetryLine(event.data?.attempt ?? 1);
+          turn.statusSlot.classList.remove("hidden");
+          break;
+        case "status_message":
+          // 恢复提示（规格书 5.8/6.2）：绿字「已连接恢复…从断点继续写作」。
+          if (/恢复/.test(event.message ?? "")) {
+            turn.statusSlot.innerHTML = renderRecoverLine(event.data?.attempt ?? 1);
+            turn.statusSlot.classList.remove("hidden");
+          }
+          break;
         default:
           break;
       }

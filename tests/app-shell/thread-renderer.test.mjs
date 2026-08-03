@@ -356,6 +356,68 @@ test("错误卡片 note 非空时渲染提示行，静态按钮不挂 data-retry
 });
 
 // ---------------------------------------------------------------------------
+// Task 12: 错误分级——重试行（琥珀 n/5）/ 恢复提示（绿字）/ 终态清理
+// ---------------------------------------------------------------------------
+
+test("renderRetryLine / renderRecoverLine 输出规格书文案（琥珀重试行 n/5、绿字恢复）", async () => {
+  const { renderRetryLine, renderRecoverLine } = await import("../../src/app-shell/thread-renderer.js");
+  const retry = renderRetryLine(2);
+  assert.match(retry, /class="retry-line"/, "重试行容器");
+  assert.match(retry, /class="pulse"/, "重试行带脉动圆点");
+  assert.match(retry, /⚡ 网络波动，正在自动重试 <b>2<\/b>\/5 …/, "规格书 5.7 文案逐字（n/5）");
+  const recover = renderRecoverLine(3);
+  assert.match(recover, /class="recover-line"/, "恢复行容器");
+  assert.match(recover, /✓ 连接已恢复（第 3 次重试成功），从断点继续写作/, "规格书 5.8 文案逐字");
+});
+
+function retryEvent(attempt, message = `模型调用重试 ${attempt}/5（network）`) {
+  return {
+    type: "model_retry",
+    timestamp: `2026-08-03T10:00:0${attempt}.000Z`,
+    severity: "warn",
+    message,
+    data: { attempt, maxAttempts: 5, delay: 1600, reason: "network", model: "test-model" },
+  };
+}
+
+test("model_retry → 琥珀重试行 n/5 计数实时更新；恢复消息 → 绿字；终态随过程区清理", async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { refs, ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+
+  renderer.onRunEvent(userEvent());
+  renderer.onRunEvent(draftingCallEvent());
+
+  const turn = refs.thread.querySelector(".turn-agent");
+  const statusSlot = turn.querySelector(".status-slot");
+  assert.ok(statusSlot, "turn 应渲染 status-slot");
+  assert.ok(statusSlot.classList.contains("hidden"), "无重试时状态槽隐藏");
+
+  // 第一次重试：1/5
+  renderer.onRunEvent(retryEvent(1));
+  assert.ok(!statusSlot.classList.contains("hidden"), "重试事件后状态槽可见");
+  assert.match(statusSlot.innerHTML, /正在自动重试 <b>1<\/b>\/5/, "琥珀重试行 1/5");
+
+  // 计数实时可见：第二次重试更新为 2/5，旧计数不残留
+  renderer.onRunEvent(retryEvent(2));
+  assert.match(statusSlot.innerHTML, /正在自动重试 <b>2<\/b>\/5/, "n/5 计数随事件实时更新");
+  assert.doesNotMatch(statusSlot.innerHTML, /<b>1<\/b>\/5/, "旧计数不得残留");
+
+  // 恢复消息（status_message 含「恢复」）→ 绿字恢复行
+  renderer.onRunEvent({
+    type: "status_message",
+    timestamp: "2026-08-03T10:00:04.000Z",
+    message: "连接已恢复（第 2 次重试成功），继续写作。",
+    data: { attempt: 2 },
+  });
+  assert.match(statusSlot.innerHTML, /✓ 连接已恢复（第 2 次重试成功），从断点继续写作/, "恢复提示绿字文案");
+
+  // 最终成功：过程区清理（R5：重试/恢复提示属过程态，随过程区整体消失）
+  renderer.onRunEvent(runFinishedEvent("第 5 章已完成。"));
+  assert.ok(statusSlot.classList.contains("hidden"), "终态后状态槽随过程区隐藏");
+});
+
+// ---------------------------------------------------------------------------
 // live turn 状态机：正常流（思考→工具→正文→段落→完成态）
 // ---------------------------------------------------------------------------
 

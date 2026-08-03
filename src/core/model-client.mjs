@@ -23,7 +23,7 @@ export class ModelClient {
     activeModel = null,
     stageOverrides = {},
     costTracker = new CostTracker(),
-    retryMax = 3,
+    retryMax = 5,
     retryBaseDelayMs = 1000,
     retryMaxDelayMs = 16000,
     timeoutMs = 120000,
