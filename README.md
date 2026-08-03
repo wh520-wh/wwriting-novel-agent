@@ -33,7 +33,7 @@ WWriting 走第三条路：
 - **成本与缓存报告**：记录 token、模型调用、成本估算和 provider 缓存字段，用多少一目了然。
 - **技能系统**：支持 manifest / hook / 启用 / 禁用 / 导入，内置悬念结尾技能。
 - **受控网页搜索/抓取**：默认禁网；来源快照标记为"不可信资料"，不作为系统指令执行。
-- **OpenAI-compatible 模型接入**：内置 DeepSeek 官方、小米 MiMo 官方预设，粘贴 API Key 即可用；API Key 只存本机。
+- **OpenAI兼容格式（不稳定） 模型接入**：内置 DeepSeek 官方、小米 MiMo 官方预设，粘贴 API Key 即可用；API Key 只存本机。
 - **可验证的开发文化**：1002 个单元/集成测试 + 一键本地验收（`npm run verify:local`），连"按钮看得到但点不动"这类 UI 回归都有真实 Electron 点击防线。
 
 ## 快速开始
@@ -133,9 +133,6 @@ tests/                 # Node test 测试
 docs/                  # 使用教程与设计文档
 ```
 
-## 竞品调研
-
-产品定位基于 [docs/research/2026-07-31-competitive-research.md](docs/research/2026-07-31-competitive-research.md)：调研了 9 个开源写作 agent（novel-bot、Novel-OS、SAGA、NovelClaw、Openwrite、novel-architect、AI-Novel-Writing-Assistant 等）和 3 个商业平台（Sudowrite、NovelCrafter、NovelAI），结论是：**记忆与连贯性、质量门禁、多智能体已是行业标配，但"本地桌面 GUI + 文件即项目 + 可验证交付"的组合是空白**。
 
 ## 当前状态
 
