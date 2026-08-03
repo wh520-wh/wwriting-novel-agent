@@ -10,6 +10,7 @@ import { appendChatMessage, loadPendingAction, savePendingAction, clearPendingAc
 import { appendTranscript } from "./transcript-store.mjs";
 import { appendEvent } from "../event-log.mjs";
 import { loadConfigLayers } from "../config-runtime.mjs";
+import { assertBlueprintReady } from "../blueprint-guard.mjs";
 import path from "node:path";
 
 export const MAX_TOOL_ROUNDS = 32;
@@ -83,8 +84,21 @@ export async function resumeChatTurn(options) {
     } else {
       const tool = registry.get(pending.tool);
       const busy = checkRunBusy(tool, server, projectRoot);
+      // 蓝图门禁（spec §1.4）：pending 工具均为 write/control 类（read 类从不挂 pending），
+      // 执行前检查；与 agentLoop 内 !isRead 分支一致，阻断时清掉 pending。
+      let blueprintBlock = null;
+      if (tool?.kind !== "read") {
+        try {
+          await assertBlueprintReady(projectRoot);
+        } catch (error) {
+          blueprintBlock = { ok: false, error: "blueprint_not_ready", message: error.message };
+        }
+      }
       if (busy) {
         outcome = busy;
+        await clearPendingAction(projectRoot);
+      } else if (blueprintBlock) {
+        outcome = blueprintBlock;
         await clearPendingAction(projectRoot);
       } else {
         // §3.3: Atomically mark as executing before execution
@@ -207,6 +221,20 @@ async function agentLoop(options, toolEvents) {
       const isRead = tool.kind === "read";
       if (!isRead) {
         foundWriteTool = true;
+        // 蓝图门禁（spec §1.4）：write/control 工具执行前检查，read 类工具不受限。
+        // 不通过则拒绝并继续处理后续 tool_calls（与权限预检同模式）。
+        let blueprintBlocked = null;
+        try {
+          await assertBlueprintReady(projectRoot);
+        } catch (error) {
+          blueprintBlocked = { ok: false, error: "blueprint_not_ready", message: error.message };
+        }
+        if (blueprintBlocked) {
+          toolEvents.push({ tool: tc.tool, ok: false, error: blueprintBlocked.error });
+          await appendChatMessage(projectRoot, { role: "tool", tool: tc.tool, ok: false, args: summarizeArgs(tc.args), result_summary: blueprintBlocked.message });
+          onEvent?.({ type: "tool_result", tool: tc.tool, ok: false });
+          continue;
+        }
         // 权限预检
         const permission = checkToolPermission(tool, project?.tool_permissions ?? {}, { archived: Boolean(project?.archived_at) });
         if (!permission.allowed) {

@@ -11,7 +11,8 @@ import { subscribe } from "../src/core/run-events-bus.mjs";
 import { readFailures } from "../src/core/failures-store.mjs";
 import { countEffectiveWords } from "../src/core/word-count.mjs";
 import { MockModel } from "../src/core/mock-model.mjs";
-import { createProject, loadChapterIndex, loadProject, loadState, saveChapterIndex, saveProject, saveState, upsertChapter } from "../src/core/project-store.mjs";
+import { loadChapterIndex, loadProject, loadState, saveChapterIndex, saveProject, saveState, upsertChapter } from "../src/core/project-store.mjs";
+import { createWritingProject } from "./helpers.mjs";
 import { loadContinuity, loadContinuityState, saveContinuity } from "../src/core/continuity-store.mjs";
 import { updateProjectSettings } from "../src/core/settings-runtime.mjs";
 import { appendChapterSegment } from "../src/core/tool-runtime.mjs";
@@ -208,7 +209,7 @@ class PlainThenSuspenseModel {
 
 test("mock model generates three chapters and writes local files", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-agent-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 3,
     min_words_per_chapter: 300,
@@ -227,7 +228,7 @@ test("mock model generates three chapters and writes local files", async () => {
 
 test("engine captures prose-as-text and retries on short output", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-channel-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 250,
@@ -246,7 +247,7 @@ test("engine captures prose-as-text and retries on short output", async () => {
 
 test("engine rejects direct prose output that contains tool reasoning", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-nonprose-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 250,
@@ -267,7 +268,7 @@ test("engine rejects direct prose output that contains tool reasoning", async ()
 
 test("project resumes from checkpoint after simulated interruption", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-recover-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 3,
     min_words_per_chapter: 300,
@@ -300,7 +301,7 @@ test("project resumes from checkpoint after simulated interruption", async () =>
 
 test("runProject calls onHeartbeat and persists last heartbeat each main-loop step", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-heartbeat-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 300,
@@ -319,7 +320,7 @@ test("runProject calls onHeartbeat and persists last heartbeat each main-loop st
 
 test("runProject sets project_status to interrupted on unexpected error", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-interrupted-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 300,
@@ -345,7 +346,7 @@ test("runProject sets project_status to interrupted on unexpected error", async 
 
 test("model-error 故障卡透传 ProviderTransportError 的 status/reason/body", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-card-body-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project", target_chapters: 1, min_words_per_chapter: 300, target_words_per_chapter: 360
   });
   class BodyThrowingModelClient {
@@ -369,7 +370,7 @@ test("model-error 故障卡透传 ProviderTransportError 的 status/reason/body"
 
 test("runProject records cancelled state when AbortSignal is already aborted", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-cancelled-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 300,
@@ -388,7 +389,7 @@ test("runProject records cancelled state when AbortSignal is already aborted", a
 
 test("reviewing stage triggers word-count gate and revision when draft is short", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-shortfall-"));
-  const { projectRoot, project } = await createProject(root, {
+  const { projectRoot, project } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 300,
@@ -416,7 +417,7 @@ test("reviewing stage triggers word-count gate and revision when draft is short"
 
 test("engine can finalize TXT chapter files when project output_format is txt", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-txt-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     output_format: "txt",
     target_chapters: 1,
@@ -431,7 +432,7 @@ test("engine can finalize TXT chapter files when project output_format is txt", 
 
 test("engine records model gateway usage, cost, cache, and prompt hashes", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-model-records-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 200,
@@ -459,7 +460,7 @@ test("engine records model gateway usage, cost, cache, and prompt hashes", async
 
 test("engine accepts OpenAI-compatible tool_calls for chapter writing", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-openai-tool-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 120,
@@ -480,7 +481,7 @@ test("engine accepts OpenAI-compatible tool_calls for chapter writing", async ()
 
 test("engine includes command-bar instructions in the next model prompt", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-command-prompt-"));
-  const { projectRoot, project } = await createProject(root, {
+  const { projectRoot, project } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 200,
@@ -504,7 +505,7 @@ test("engine includes command-bar instructions in the next model prompt", async 
 
 test("engine feeds previous chapter memory into later chapter prompts", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-continuity-prompt-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 2,
     min_words_per_chapter: 200,
@@ -533,7 +534,7 @@ test("engine feeds previous chapter memory into later chapter prompts", async ()
 
 test("engine allows chapter one to establish the premise once", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-first-chapter-prompt-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 200,
@@ -551,7 +552,7 @@ test("engine allows chapter one to establish the premise once", async () => {
 
 test("enabled suspense skill applies planning hook and blocks flat chapter endings", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-skill-engine-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 60,
@@ -575,7 +576,7 @@ test("enabled suspense skill applies planning hook and blocks flat chapter endin
 
 test("post-process skill hooks can modify draft before finalizing", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-skill-post-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 120,
@@ -609,7 +610,7 @@ test("post-process skill hooks can modify draft before finalizing", async () => 
 
 test("engine persists blocked state after 8 consecutive invalid model outputs (WRITING_AGENT_COMMIT_FAILURES)", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-blocked-invalid-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 200,
@@ -633,7 +634,7 @@ test("engine persists blocked state after 8 consecutive invalid model outputs (W
 
 test("engine blocks forged project_id tool calls without writing draft", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-forged-tool-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 200,
@@ -652,7 +653,7 @@ test("engine blocks forged project_id tool calls without writing draft", async (
 
 test("engine stops before model call when model-call budget is exhausted", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-budget-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 200,
@@ -668,7 +669,7 @@ test("engine stops before model call when model-call budget is exhausted", async
 
 test("engine enforces model-call budget saved from settings panel", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-settings-budget-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 2,
     min_words_per_chapter: 180,
@@ -690,7 +691,7 @@ test("engine enforces model-call budget saved from settings panel", async () => 
 
 test("agent-engine 检测到 failure_resolved=pause-here 后立刻退出循环", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-pause-here-"));
-  const { projectRoot, project } = await createProject(root, {
+  const { projectRoot, project } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 200,
@@ -717,7 +718,7 @@ test("agent-engine 检测到 failure_resolved=pause-here 后立刻退出循环",
 
 test("首次章节请求就把真实字数缺口写进 current_task，避免触发补写", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-wordgap-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 300,
@@ -765,7 +766,7 @@ test("revision_quality_gate 不触发 recordRefill，revision_shortfall 才触�
 
 test("maybeWarnChapterCost 在当前章 token 超前几章均值 2 倍时告警一次", async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-warn-"));
-  const { projectRoot } = await createProject(workspace, {
+  const { projectRoot } = await createWritingProject(workspace, {
     title: "预警", story_seed: "t", target_chapters: 5, min_words_per_chapter: 300
   });
   const project = { project_id: "p1" };
@@ -788,7 +789,7 @@ test("maybeWarnChapterCost 在当前章 token 超前几章均值 2 倍时告警�
 
 test("summarizing 阶段写入 book_summary 与 continuity（真实 provider 路径用注入的 fake client）", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-memx-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "memx", title: "记忆测试", story_seed: "测试种子",
     target_chapters: 1, min_words_per_chapter: 10, target_words_per_chapter: 12, max_model_calls: 50
   });
@@ -824,7 +825,7 @@ test("summarizing 阶段写入 book_summary 与 continuity（真实 provider 路
 
 test("mock provider 跳过提取但推进水位", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-memskip-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "memskip", title: "跳过测试", story_seed: "种子",
     target_chapters: 1, min_words_per_chapter: 10, target_words_per_chapter: 12
   });
@@ -840,7 +841,7 @@ test("mock provider 跳过提取但推进水位", async () => {
 
 test("§3.6 pending-extraction file causes skip of model call but still completes steps", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-pendingx-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "pendingx", title: "待提取恢复", story_seed: "种子",
     target_chapters: 1, min_words_per_chapter: 10, target_words_per_chapter: 12
   });
@@ -889,7 +890,7 @@ test("§3.6 pending-extraction file causes skip of model call but still complete
 
 test("提取失败软跳过：事件 memory_extract_failed 且不推进水位（可回补）", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-memfail-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "memfail", title: "失败测试", story_seed: "种子",
     target_chapters: 1, min_words_per_chapter: 10, target_words_per_chapter: 12
   });
@@ -909,7 +910,7 @@ test("提取失败软跳过：事件 memory_extract_failed 且不推进水位（
 
 async function makeFactCheckProject(prefix) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "fc", title: "核查测试", story_seed: "种子",
     target_chapters: 2, min_words_per_chapter: 10, target_words_per_chapter: 12
   });
@@ -997,7 +998,7 @@ test("runFactCheck 引文超 200 字被截断：标记 truncated 返回，draft 
 
 test("runFactCheck mock provider 跳过并记事件，返回 null", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-fc3-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "fcm", title: "跳过", story_seed: "种子",
     target_chapters: 1, min_words_per_chapter: 10, target_words_per_chapter: 12
   });
@@ -1036,7 +1037,7 @@ test("applyFactCheckConflicts 写 needs_revision 状态与 quality_gate_failed �
 
 test("单章契约完成后不调用第2章模型", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-single-chapter-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project", target_chapters: 3, min_words_per_chapter: 20, target_words_per_chapter: 24
   });
   const modelClient = new CapturingModelClient();
@@ -1057,7 +1058,7 @@ test("单章契约完成后不调用第2章模型", async () => {
 
 test("末章任务同时完成项目", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-last-chapter-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project", target_chapters: 1, min_words_per_chapter: 20, target_words_per_chapter: 24
   });
   const result = await runProject(projectRoot, {
@@ -1091,7 +1092,7 @@ test("fact-check abort escapes instead of degrading to skipped", async () => {
 
 test("memory extraction abort does not advance watermark", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-memory-abort-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 10,
@@ -1150,7 +1151,7 @@ test("memory extraction abort does not advance watermark", async () => {
 
 test("fact-check 检查点恢复不重新生成正文", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-review-resume-"));
-  const { projectRoot, project } = await createProject(root, {
+  const { projectRoot, project } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 10,
@@ -1191,7 +1192,7 @@ test("fact-check 检查点恢复不重新生成正文", async () => {
 
 test("已提交最终文件的恢复只修复索引不重复写入", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-final-resume-"));
-  const { projectRoot, project } = await createProject(root, {
+  const { projectRoot, project } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 10,
@@ -1359,7 +1360,7 @@ class ReadLoopModelClient {
 
 test("writing agent loop: 连续 3 次只读后自动 commit-only，模型提交章节且项目不 blocked", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-readloop-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project", target_chapters: 1, min_words_per_chapter: 200, target_words_per_chapter: 260,
   });
   const modelClient = new ReadLoopModelClient();
@@ -1422,7 +1423,7 @@ class ReadOnlyDeniedModelClient {
 
 test("writing agent loop: 只读模式反复调用被拒写工具，连续拒绝达上限即终止（model_output_invalid，非耗尽）", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-readonly-denied-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project", target_chapters: 1, min_words_per_chapter: 200, target_words_per_chapter: 260,
     tool_permissions: { read_only: true },
   });
@@ -1483,7 +1484,7 @@ class AlwaysThrowingToolModel {
 
 test("writing agent loop: 工具执行连续异常在 8 次后提早停止，不空转到 24 轮硬顶（model_output_invalid）", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-tool-error-count-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project", target_chapters: 1, min_words_per_chapter: 200, target_words_per_chapter: 260,
   });
   // 注入故障：draft_path 指向目录（drafts/001.final.md），read_chapter 执行时
@@ -1525,7 +1526,7 @@ test("writing agent loop: 工具执行连续异常在 8 次后提早停止，不
 
 test("writing agent loop: 耗尽故障卡带字数门禁上下文,提供降低字数目标选项", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-exhausted-wordgate-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project", target_chapters: 1, min_words_per_chapter: 200, target_words_per_chapter: 260,
   });
   // 与 AlwaysThrowingToolModel 既有用例相同的注入：draft_path 指向目录，
@@ -1562,7 +1563,7 @@ test("writing agent loop: 耗尽故障卡带字数门禁上下文,提供降低�
 
 test("writing agent loop: drafting 阶段模型先调 read_continuity 查设定再提交正文", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-agent-loop-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 200,
@@ -1677,7 +1678,7 @@ class FactCheckLoopModelClient {
 
 test("ADR-0001 反思闭环：fact-check 发现冲突 -> edit_chapter 改 -> 无冲突 -> 完成", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-fc-loop-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "fcloop", title: "反思闭环", story_seed: "种子",
     target_chapters: 1, min_words_per_chapter: 200, target_words_per_chapter: 260
   });
@@ -1776,7 +1777,7 @@ class FactCheckUnresolvedModelClient {
 
 test("ADR-0001 软降级：fact-check 3 轮仍有冲突 -> block 本章交用户", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-fc-unresolved-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "fcunres", title: "软降级", story_seed: "种子",
     target_chapters: 1, min_words_per_chapter: 200, target_words_per_chapter: 260
   });
@@ -1863,7 +1864,7 @@ class StallFactCheckModelClient {
 
 test("fact-check 冲突数连续 2 轮未减少时提前终止，不跑满 3 轮", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-factcheck-stall-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project", target_chapters: 1, min_words_per_chapter: 100, target_words_per_chapter: 120
   });
   // provider 必须是非 mock（mock 会跳过 fact-check）；预存 continuity facts 供比对
@@ -1941,7 +1942,7 @@ test("buildRelevantFacts: 近期 facts 优先，超 maxFacts 截断更早的", a
 
 test("forbidden_patterns 可通过项目配置覆盖默认套路词", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-forbidden-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 200,
@@ -2000,7 +2001,7 @@ class TranscriptCapturingModelClient {
 
 test("runWritingAgentLoop 多轮: 第 2 轮 messages 含上一轮 assistant tool_calls + role=tool", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-transcript-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project", target_chapters: 1, min_words_per_chapter: 300, target_words_per_chapter: 360
   });
   const client = new TranscriptCapturingModelClient();
@@ -2015,7 +2016,7 @@ test("runWritingAgentLoop 多轮: 第 2 轮 messages 含上一轮 assistant tool
 
 test("transcript pending 文件: 循环层中断后 pending 含未回执 tool_call，恢复续写不重复 segment", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-tcp-pending-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project", target_chapters: 1, min_words_per_chapter: 300, target_words_per_chapter: 360
   });
   const client = new TranscriptCapturingModelClient();
@@ -2090,7 +2091,7 @@ class MultiToolCallModelClient {
 
 test("parseOpenAIToolCalls: 模型一轮返回多个 tool_calls 时全部进入 transcript 待执行", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-multi-tc-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project", target_chapters: 1, min_words_per_chapter: 300, target_words_per_chapter: 360
   });
   const client = new MultiToolCallModelClient();
@@ -2136,7 +2137,7 @@ class ReadThenCommitModelClient {
 
 test("runWritingAgentLoop: 本轮主 read + 剩余 append,commit 后无悬空 tool_call", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-read-append-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project", target_chapters: 1, min_words_per_chapter: 300, target_words_per_chapter: 360
   });
   const client = new ReadThenCommitModelClient();
@@ -2177,7 +2178,7 @@ test("trimUnresolvedAssistantTurns: side 部分回填的崩溃窗口恢复后裁
 // 已知局限:不变式校验块本身若被整体删除,本测试无法察觉(不改结构)。
 test("runWritingAgentLoop: 本轮结束 transcript 无悬空 tool_call(不变式)", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-invariant-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project", target_chapters: 1, min_words_per_chapter: 300, target_words_per_chapter: 360
   });
   const client = new MultiToolCallModelClient();
@@ -2235,7 +2236,7 @@ class ReasoningStrippingModelClient {
 
 test("非 thinking 模型（v4-flash）重放含 reasoning_content 的恢复 transcript 时剥离", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-strip-reasoning-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project", target_chapters: 1, min_words_per_chapter: 300, target_words_per_chapter: 360
   });
   // active_model 为 deepseek v4-flash：resolveModelCapabilities 判定 supportsThinking=false
@@ -2283,7 +2284,7 @@ test("非 thinking 模型（v4-flash）重放含 reasoning_content 的恢复 tra
 // SSE 订阅者（Task 9 起）能看到与事件日志一致的实时事件流。
 test("engine 经事件总线广播 model_delta 与运行事件", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-bus-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 250,

@@ -4,11 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { runProject } from "../src/core/agent-engine.mjs";
-import { createProject, loadState } from "../src/core/project-store.mjs";
+import { loadState } from "../src/core/project-store.mjs";
+import { createWritingProject } from "./helpers.mjs";
 
 test("阶段切换写入 stage_entered_at，心跳仍然更新", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-stagemeta-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 300,

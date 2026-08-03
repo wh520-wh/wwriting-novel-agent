@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createAppShellServer } from "../src/core/app-server.mjs";
-import { createProject, loadState, saveState } from "../src/core/project-store.mjs";
+import { loadState, saveState } from "../src/core/project-store.mjs";
+import { createWritingProject } from "./helpers.mjs";
 import { readEvents } from "../src/core/event-log.mjs";
 import { appendFailure } from "../src/core/failures-store.mjs";
 
@@ -31,7 +32,7 @@ async function listenOnFetchSafePort(server) {
 
 async function setupServer(options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-resolve-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 3,
     min_words_per_chapter: 300,
