@@ -8,11 +8,12 @@ import { appendChatMessage } from "../src/core/chat/chat-store.mjs";
 import { createToolRegistry } from "../src/core/chat/tool-registry.mjs";
 import { registerReadTools } from "../src/core/chat/tools-read.mjs";
 import { readEvents } from "../src/core/event-log.mjs";
-import { createProject, loadProject } from "../src/core/project-store.mjs";
+import { loadProject } from "../src/core/project-store.mjs";
+import { createWritingProject } from "./helpers.mjs";
 
 async function makeProject() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-chatctx-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "c", title: "上下文测试", story_seed: "种子",
     target_chapters: 3, min_words_per_chapter: 10, target_words_per_chapter: 12
   });

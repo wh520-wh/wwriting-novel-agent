@@ -1,6 +1,7 @@
 import { appendEvent, readEvents, tailEvents } from "./event-log.mjs";
 import { CacheKeyManager, writeCacheReport } from "./cache-key-manager.mjs";
 import { loadConfigLayers } from "./config-runtime.mjs";
+import { assertBlueprintReady } from "./blueprint-guard.mjs";
 import { CostTracker } from "./cost-tracker.mjs";
 import { buildPricingTable } from "./model-pricing.mjs";
 import { readJson, safeJoin, sha256, writeFileAtomic, writeJsonAtomic } from "./fs-utils.mjs";
@@ -59,6 +60,8 @@ export class ProjectBlockedError extends Error {
 }
 
 export async function runProject(projectRoot, options = {}) {
+  // 蓝图门禁（spec §1.4）：blueprint_status 非 complete/legacy 时拒绝进入写作主循环
+  await assertBlueprintReady(projectRoot);
   const loadedProject = await loadProject(projectRoot);
   const configLayers = await loadConfigLayers(projectRoot, loadedProject, options.configLayers ?? {});
   const project = applyEffectiveProjectConfig(loadedProject, configLayers);

@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { runProject } from "../src/core/agent-engine.mjs";
 import { readEvents } from "../src/core/event-log.mjs";
-import { createProject } from "../src/core/project-store.mjs";
+import { createWritingProject } from "./helpers.mjs";
 import { MockModel } from "../src/core/mock-model.mjs";
 import { MockProviderAdapter } from "../src/core/provider-adapters.mjs";
 
@@ -39,7 +39,7 @@ function deepseekMockAdapter() {
 
 async function runTinyProject(adapters) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-usage-e2e-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 200,

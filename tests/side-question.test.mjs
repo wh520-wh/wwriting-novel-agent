@@ -12,7 +12,8 @@ import {
   handleSideQuestion,
   parseUserCommand
 } from "../src/core/side-question.mjs";
-import { createProject, loadProject, loadState, saveProject, saveState } from "../src/core/project-store.mjs";
+import { loadProject, loadState, saveProject, saveState } from "../src/core/project-store.mjs";
+import { createWritingProject } from "./helpers.mjs";
 import { runProject } from "../src/core/agent-engine.mjs";
 
 test("parseUserCommand routes by mode and command prefixes", () => {
@@ -55,7 +56,7 @@ test("agentPhaseLabel maps status + stage to enterprise phases", () => {
 
 test("handleSideQuestion answers offline without modifying novel state or files", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-sideq-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "novel",
     title: "测试小说",
     story_seed: "一个钟表匠发现时间可以倒流。",
@@ -93,7 +94,7 @@ test("handleSideQuestion answers offline without modifying novel state or files"
 
 test("handleSideQuestion marks main-line modification requests for confirmation", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-sideq-impact-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "novel",
     title: "废土小说",
     story_seed: "校园里的少年。",
@@ -111,7 +112,7 @@ test("handleSideQuestion marks main-line modification requests for confirmation"
 
 test("handleSideQuestion uses an injected model client instead of touching the network", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-sideq-model-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "novel",
     title: "在线小说",
     story_seed: "侦探故事。",
@@ -139,7 +140,7 @@ test("handleSideQuestion uses an injected model client instead of touching the n
 
 test("handleSideQuestion degrades to offline and surfaces modelError when the model client throws", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-sideq-fail-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "novel",
     title: "降级小说",
     story_seed: "测试模型失败降级。",
@@ -176,7 +177,7 @@ test("handleSideQuestion degrades to offline and surfaces modelError when the mo
 
 test("collectSideQuestionContext tolerates a missing agent_state.json instead of crashing", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-sideq-nostate-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "novel",
     title: "无状态小说",
     story_seed: "测试缺失状态文件。",
@@ -202,7 +203,7 @@ test("collectSideQuestionContext tolerates a missing agent_state.json instead of
 
 test("collectSideQuestionContext gathers read-only project context", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-sideq-context-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "novel",
     title: "上下文小说",
     story_seed: "一句话设定。",
@@ -222,7 +223,7 @@ test("collectSideQuestionContext gathers read-only project context", async () =>
 
 test("appendSideQuestionLog creates the header once and appends entries", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-sideq-log-"));
-  const { projectRoot } = await createProject(root, { slug: "novel", target_chapters: 1, min_words_per_chapter: 80 });
+  const { projectRoot } = await createWritingProject(root, { slug: "novel", target_chapters: 1, min_words_per_chapter: 80 });
 
   await appendSideQuestionLog(projectRoot, {
     askedAt: new Date("2026-05-30T10:00:00Z").toISOString(),
@@ -274,7 +275,7 @@ async function snapshotProjectFiles(projectRoot, { exclude = ["side_questions.md
 
 test("side-question on the model path leaves every project file except side_questions.md byte-identical", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-sideq-snap-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "novel",
     title: "快照小说",
     story_seed: "测试在线路径不污染项目文件。",
@@ -301,7 +302,7 @@ test("side-question on the model path leaves every project file except side_ques
 
 test("production buildSideQuestionClient path routes through the configured openai-compatible adapter without touching the network for real", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-sideq-realclient-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "novel",
     title: "真实客户端小说",
     story_seed: "测试生产客户端装配。",

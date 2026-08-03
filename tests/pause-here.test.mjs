@@ -5,11 +5,12 @@ import path from "node:path";
 import test from "node:test";
 import { runProject } from "../src/core/agent-engine.mjs";
 import { appendEvent, readEvents } from "../src/core/event-log.mjs";
-import { createProject, loadChapterIndex, loadState } from "../src/core/project-store.mjs";
+import { loadChapterIndex, loadState } from "../src/core/project-store.mjs";
+import { createWritingProject } from "./helpers.mjs";
 
 test("历史 pause-here 事件不会阻止新一轮运行", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-pause-stale-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 300,
@@ -25,7 +26,7 @@ test("历史 pause-here 事件不会阻止新一轮运行", async () => {
 
 test("运行中收到 pause-here 会干净暂停并返回 paused 结果", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-pause-fresh-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 3,
     min_words_per_chapter: 300,
@@ -50,7 +51,7 @@ test("运行中收到 pause-here 会干净暂停并返回 paused 结果", async 
 
 test("运行中收到 manual-review-handoff 也会暂停（与 pause-here 同效）", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-pause-handoff-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 3,
     min_words_per_chapter: 300,

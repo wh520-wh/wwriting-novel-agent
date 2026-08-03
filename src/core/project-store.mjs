@@ -68,6 +68,7 @@ export async function createProjectAt(projectRoot, options = {}) {
   await writeJsonAtomic(safeJoin(target, "agent_state.json"), {
     schema_version: SCHEMA_VERSION,
     project_status: "idle",
+    blueprint_status: "none",
     current_chapter_no: 1,
     current_stage: "queued",
     current_segment_no: 0,
@@ -92,6 +93,8 @@ export async function createProjectAt(projectRoot, options = {}) {
   await writeFileAtomic(safeJoin(target, "memory", "book_summary.md"), "# 全书摘要\n\n");
   await writeFileAtomic(safeJoin(target, "sources.md"), "# Sources\n\n");
   await writeFileAtomic(safeJoin(target, "source_summaries.md"), "# Source Summaries\n\n");
+  await writeFileAtomic(safeJoin(target, "OUTLINE.md"), "# OUTLINE.md\n\n> 蓝图未生成，请运行 /init\n");
+  await writeFileAtomic(safeJoin(target, "SETTING.md"), "# SETTING.md\n\n> 蓝图未生成，请运行 /init\n");
   await writeFileAtomic(safeJoin(target, "prompts", "drafting.v1.md"), "章节正文必须通过工具调用写入本地文件。\n");
   for (const skillName of project.enabled_skills) {
     await ensureBuiltinSkill(target, skillName);
