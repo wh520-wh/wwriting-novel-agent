@@ -64,3 +64,14 @@ export class ToolTranscript {
     return t;
   }
 }
+
+// 调研落地（2026-08-03）：reasoning_content 与模型绑定，非 thinking 模型重放可能 400。
+// 跨模型重放前按当前模型能力剥离；不修改入参。
+export function stripReasoningContent(messages) {
+  return (messages ?? []).map((m) => {
+    if (m.role !== "assistant" || m.reasoning_content === undefined) return { ...m };
+    const copy = { ...m };
+    delete copy.reasoning_content;
+    return copy;
+  });
+}

@@ -7,7 +7,7 @@ import { readJson, safeJoin, sha256, writeFileAtomic, writeJsonAtomic } from "./
 import { ModelClient } from "./model-client.mjs";
 import { loadProject, loadState, loadChapterIndex, saveState, upsertChapter, writeCheckpoint } from "./project-store.mjs";
 import { MockModel } from "./mock-model.mjs";
-import { MockProviderAdapter, OpenAICompatibleAdapter } from "./provider-adapters.mjs";
+import { MockProviderAdapter, OpenAICompatibleAdapter, resolveModelCapabilities } from "./provider-adapters.mjs";
 import { PromptCompiler, computeChapterWordGap } from "./prompt-compiler.mjs";
 import { assertToolCallForChapter, runWordCountGate, runTitleGate, runWordCapGate, buildFactCheckMessages, parseFactCheck } from "./quality-gates.mjs";
 import { checkTimeline, summarizeTimelineViolations, describeStoryClock } from "./timeline-check.mjs";
@@ -30,7 +30,7 @@ import { registerWriteTools } from "./chat/tools-write.mjs";
 import { validateTaskContract } from "./task-contract.mjs";
 import { ProjectCancelledError, rethrowIfCancelled, throwIfAborted } from "./cancellation.mjs";
 import { WritingAgentSession } from "./writing-agent-session.mjs";
-import { ToolTranscript } from "./agent-transcript.mjs";
+import { ToolTranscript, stripReasoningContent } from "./agent-transcript.mjs";
 import {
   parseGatewayToolOutput,
   parseOpenAIToolCalls,
@@ -1014,11 +1014,19 @@ async function runModelGatewayCall(projectRoot, project, state, runtime, request
   if (request.kind === "revision_shortfall") {
     runtime.modelClient.costTracker?.recordRefill?.();
   }
+  // 跨模型剥离（2026-08-03 调研落地）：reasoning_content 与 thinking 模型绑定，
+  // 换到 supportsThinking=false 的模型后原样回传可能被拒（400）。组装 messages 时
+  // 按当前模型能力剥离，transcript 本体不动（换回 thinking 模型仍可完整重放）。
+  let transcriptMessages = request.transcript_messages ?? [];
+  if (transcriptMessages.length > 0 &&
+      resolveModelCapabilities(project.active_model ?? {}).supportsThinking === false) {
+    transcriptMessages = stripReasoningContent(transcriptMessages);
+  }
   const gatewayResult = await runtime.modelClient.generate({
     project,
     stage: state.current_stage,
     prompt: compiledPrompt.prompt ?? "",
-    messages: request.transcript_messages ?? [],
+    messages: transcriptMessages,
     signal: request.signal,
     metadata: {
       toolRequest: request,

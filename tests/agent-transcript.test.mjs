@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ToolTranscript } from "../src/core/agent-transcript.mjs";
+import { ToolTranscript, stripReasoningContent } from "../src/core/agent-transcript.mjs";
 
 test("ToolTranscript 单轮：user -> assistant -> 提交 toMessages", () => {
   const t = new ToolTranscript();
@@ -81,4 +81,26 @@ test("restore 带 pendingToolCalls: 恢复时识别未完成 tool_call", () => {
   const restored = ToolTranscript.restore(t.serialize());
   assert.equal(restored.pendingToolCalls.length, 1);
   assert.equal(restored.pendingToolCalls[0].id, "c1");
+});
+
+test("stripReasoningContent：剥离 assistant 消息的 reasoning_content，保留其余字段", () => {
+  const t = new ToolTranscript();
+  t.appendUser("写第 5 章");
+  t.appendAssistant({ content: "开始", tool_calls: [{ id: "c1", name: "write_chapter", arguments: "{}" }], reasoning_content: "先铺垫线索" });
+  t.appendToolResult("c1", "ok");
+  const out = stripReasoningContent(t.toMessages());
+  assert.equal(out.length, 3);
+  assert.equal(out[1].reasoning_content, undefined);
+  assert.equal(out[1].tool_calls[0].id, "c1");
+  assert.equal(out[1].content, "开始");
+  assert.equal(out[2].role, "tool");
+  // 不污染原数组
+  assert.equal(t.toMessages()[1].reasoning_content, "先铺垫线索");
+});
+
+test("stripReasoningContent：无 reasoning_content 时原样深拷贝", () => {
+  const t = new ToolTranscript();
+  t.appendUser("你好");
+  const out = stripReasoningContent(t.toMessages());
+  assert.deepEqual(out, t.toMessages());
 });
