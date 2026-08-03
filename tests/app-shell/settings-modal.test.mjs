@@ -48,7 +48,18 @@ class MockElement {
 
   append(...nodes) { this.children.push(...nodes); }
   appendChild(child) { this.children.push(child); return child; }
-  replaceChildren(...nodes) { this.children.length = 0; this.children.push(...nodes); }
+  replaceChildren(...nodes) {
+    this.children.length = 0;
+    for (const node of nodes) {
+      // 与真实 DOM 一致：replaceChildren(fragment) 会把 fragment 的子节点移入父节点。
+      if (node instanceof MockElement && node.tagName === "DOCUMENT-FRAGMENT") {
+        this.children.push(...node.children);
+        node.children.length = 0;
+      } else {
+        this.children.push(node);
+      }
+    }
+  }
 
   addEventListener(type, handler) {
     if (!this._listeners.has(type)) this._listeners.set(type, []);
@@ -57,8 +68,15 @@ class MockElement {
 
   /** Fire all handlers registered for `type`, forwarding extra args. */
   _fire(type, ...args) {
-    for (const fn of this._listeners.get(type) ?? []) fn(...args);
+    // 真实 DOM 的 click 事件总是带 event 对象；无参触发时补一个假事件，
+    // 让带 e.stopPropagation() 的处理器在 mock 里也能跑。
+    const evt = { target: this, stopPropagation() {}, preventDefault() {} };
+    const pass = args.length ? args : [evt];
+    for (const fn of this._listeners.get(type) ?? []) fn(...pass);
   }
+
+  /** 与真实 DOM 的 HTMLElement.click() 一致：派发 click 事件。 */
+  click() { this._fire("click"); }
 
   focus() {}
   closest() { return null; }
@@ -80,6 +98,7 @@ function installDomMock() {
       return el;
     },
     createElementNS(_ns, tag) { return globalThis.document.createElement(tag); },
+    createDocumentFragment() { return new MockElement("document-fragment"); },
     getElementById() { return null; },
     querySelector() { return null; },
     activeElement: null
@@ -368,4 +387,48 @@ test("模型字段校验失败后再保存：成功路径仍正常工作", async
   await modal.saveSettingsForTest();
   assert.equal(calls.filter((c) => c.url === "/api/settings/model-profile").length, 2);
   assert.equal(calls.filter((c) => c.url === "/api/settings/update").length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// 已配置模型清单（Task 10: 选用 / 删除已配模型）
+// ---------------------------------------------------------------------------
+
+test("设置里显示已配好的模型，可以点击选用或删除", async () => {
+  const calls = [];
+  // 有状态的桩：选用后全局默认模型随之变化（与服务端行为一致）。
+  let models = [
+    { id: "deepseek-chat", model_name: "deepseek-chat", display: "DeepSeek / deepseek-chat",
+      base_url: "https://api.deepseek.com", api_key_env: "DEEPSEEK_API_KEY" },
+    { id: "mimo-v1", model_name: "mimo-v1", display: "MiMo / mimo-v1",
+      base_url: "https://api.mimo.example", api_key_env: "XIAOMI_MIMO_API_KEY" }
+  ];
+  let defaultModel = { ...models[0] };
+  const modal = createSettingsModalForTest({
+    getCurrentProjectRoot: () => "",
+    // 清单来自 GET /api/settings/models（fetchGlobalModels 走 getJsonImpl）。
+    getJsonImpl: async () => ({ ok: true, default_model: defaultModel, models }),
+    postJsonImpl: async (url, body) => {
+      calls.push({ url, body });
+      if (url === "/api/settings/model-select") {
+        defaultModel = models.find((m) => m.id === body.model_id) ?? null;
+      }
+      if (url === "/api/settings/model-remove") {
+        models = models.filter((m) => m.id !== body.model_id);
+      }
+      return { ok: true, models: [], default_model: null };
+    }
+  });
+  await modal.openSettingsModal();
+
+  const savedItems = modal.getSavedModelItems();
+  assert.equal(savedItems.length, 2);
+  assert.equal(savedItems.some((item) => item.modelName === "deepseek-chat"), true);
+  assert.equal(savedItems.some((item) => item.modelName === "mimo-v1"), true);
+
+  await modal.clickSavedModel("mimo-v1");
+  assert.equal(calls.some((c) => c.url === "/api/settings/model-select" && c.body.model_id === "mimo-v1"), true);
+  assert.equal(modal.getModelFieldValue("model_name"), "mimo-v1");
+
+  await modal.deleteSavedModel("deepseek-chat");
+  assert.equal(calls.some((c) => c.url === "/api/settings/model-remove" && c.body.model_id === "deepseek-chat"), true);
 });

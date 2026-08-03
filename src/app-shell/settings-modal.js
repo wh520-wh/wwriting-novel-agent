@@ -581,9 +581,47 @@ export function createSettingsModal(ctx, options = {}) {
   }
 
   function renderSettingsProviders() {
+    // 已存模型清单——比供应商预设优先展示。
+    const savedSection = buildSavedModelSection(globalModels.models);
+    ctx.refs.settingsProviderList.replaceChildren(savedSection);
+  }
+
+  // 私有：左栏清单 = 「已配置」已存模型（可选用/删除）+「新增供应商」模板入口。
+  function buildSavedModelSection(models) {
+    const frag = document.createDocumentFragment();
+    if (models?.length > 0) {
+      const heading = document.createElement("div");
+      heading.className = "sp-list-heading";
+      heading.textContent = "已配置";
+      frag.append(heading);
+      for (const model of models) {
+        const row = document.createElement("div");
+        row.className = "sp-saved-item";
+        row.dataset.modelId = model.id;
+        row.dataset.modelName = model.model_name;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "sp-saved-btn";
+        btn.textContent = model.display ?? model.model_name;
+        btn.addEventListener("click", () => void selectSavedModel(model));
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "sp-saved-del";
+        del.setAttribute("aria-label", `删除 ${model.display ?? model.model_name}`);
+        del.textContent = "×";
+        del.addEventListener("click", (e) => { e.stopPropagation(); void deleteSavedModel(model.id); });
+        row.append(btn, del);
+        frag.append(row);
+      }
+      const divider = document.createElement("div");
+      divider.className = "sp-list-heading";
+      divider.textContent = "新增供应商";
+      frag.append(divider);
+    }
+    // 原有静态供应商列表（DeepSeek / MiMo / 自定义），现在作为「新增」模板入口
     const q = ctx.refs.settingsSearch.value.trim().toLowerCase();
     const list = SETTINGS_PROVIDERS.filter((p) => p.name.toLowerCase().includes(q));
-    ctx.refs.settingsProviderList.replaceChildren(...list.map((provider) => {
+    for (const provider of list) {
       const button = document.createElement("button");
       button.className = `sp-item${provider.id === settingsProviderId ? " on" : ""}`;
       button.type = "button";
@@ -610,8 +648,25 @@ export function createSettingsModal(ctx, options = {}) {
           }
         }
       });
-      return button;
-    }));
+      frag.append(button);
+    }
+    return frag;
+  }
+
+  // 选用已存模型：设为全局默认，并把它的字段回填到右侧表单。
+  async function selectSavedModel(model) {
+    await postJsonImpl("/api/settings/model-select", { model_id: model.id });
+    await fetchGlobalModels();
+    settingsProviderId = detectProviderPreset(model);
+    renderSettingsProviders();
+    await renderSettingsDetail();
+  }
+
+  // 删除已存模型：从全局清单移除并刷新左栏列表。
+  async function deleteSavedModel(modelId) {
+    await postJsonImpl("/api/settings/model-remove", { model_id: modelId });
+    await fetchGlobalModels();
+    renderSettingsProviders();
   }
 
   async function renderSettingsDetail() {
@@ -1244,6 +1299,41 @@ export function createSettingsModal(ctx, options = {}) {
     // 仅供测试：直接触发保存（等价于点「保存设置」）。
     saveSettingsForTest() {
       return saveSettings();
+    },
+    // 仅供测试：读取左栏已配置模型清单（每项带 modelName / modelId 与按钮节点）。
+    getSavedModelItems() {
+      return [...ctx.refs.settingsProviderList.children]
+        .filter((el) => el.className === "sp-saved-item")
+        .map((row) => ({
+          modelName: row.dataset.modelName ?? row.dataset.modelId ?? "",
+          modelId: row.dataset.modelId ?? "",
+          btn: [...row.children].find((c) => c.className === "sp-saved-btn") ?? null,
+          del: [...row.children].find((c) => c.className === "sp-saved-del") ?? null
+        }));
+    },
+    // 仅供测试：点击某个已保存模型（等异步选用链完成后返回）。
+    async clickSavedModel(modelName) {
+      const item = this.getSavedModelItems().find((it) => it.modelName === modelName);
+      if (!item?.btn) throw new Error(`未找到已保存模型：${modelName}`);
+      item.btn.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    },
+    // 仅供测试：点击某个已保存模型的删除按钮（等异步删除链完成后返回）。
+    async deleteSavedModel(modelName) {
+      const item = this.getSavedModelItems().find((it) => it.modelName === modelName);
+      if (!item?.del) throw new Error(`未找到已保存模型的删除按钮：${modelName}`);
+      item.del.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    },
+    // 仅供测试：读取模型表单字段值（model_name / base_url / api_key / api_key_env）。
+    getModelFieldValue(fieldName) {
+      const byName = {
+        model_name: settingsFields.model,
+        base_url: settingsFields.baseUrl,
+        api_key: settingsFields.apiKey,
+        api_key_env: settingsFields.apiKeyEnv
+      };
+      return byName[fieldName]?.input?.value ?? "";
     }
   };
 }
