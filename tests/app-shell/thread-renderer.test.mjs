@@ -653,6 +653,7 @@ test("project_run_failed → 红卡挂载 + data-retry 手动重试 + 「已保�
   assert.match(card.innerHTML, /401 · invalid_api_key/, "错误码徽章");
   assert.match(card.innerHTML, /已保留当前进度/, "提示行只放用户需要知道的后果");
   assert.match(card.innerHTML, /↻ 重试/, "手动重试按钮文案");
+  assert.doesNotMatch(card.innerHTML, /继续写作/, "鉴权类红卡不提供「↻ 继续写作」（规格书 6.3：配置/鉴权错误流手动「↻ 重试」）");
   assert.match(card.innerHTML, /data-retry="1"/, "手动重试按钮带 data-retry 标记");
   // data-retry 绑定真实可点：点击应回调 ctx.handleRetry
   const retryBtn = card.querySelector("[data-retry]");
@@ -749,4 +750,83 @@ test("reconcileLiveTurn 轮询兜底：SSE 断流时按 dashboard 终态收尾 +
   assert.ok(done && !done.classList.contains("hidden"), "SSE 断流时轮询兜底应收尾完成态");
   const head = done.querySelector(".done-head");
   assert.ok(head.textContent.includes("第 5 章 · 已停止"), "轮询兜底按 dashboard 终态定标题");
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 2 (Task 13 审查 Important 1)：失败红卡按失败类型区分动作集。
+// 规格书 6.2 耗尽场景「↻ 继续写作」/ 6.3 鉴权场景「↻ 重试」；定稿原型 S4 动作数组
+// [{ ↻ 重试(retry) }, "↻ 继续写作", "复制错误详情"] 两按钮并存。
+// 判别依据：project_run_failed data.status 为空（网络耗尽，reason:"timeout"）vs 非空（4xx 鉴权）。
+// 两个按钮点击行为都走 ctx.handleRetry（内部 POST /api/run/retry = 从保存状态创建 recovery task）。
+// ---------------------------------------------------------------------------
+
+function runFailedExhaustedEvent() {
+  return {
+    type: "project_run_failed",
+    timestamp: "2026-08-03T10:00:25.000Z",
+    stage: "run",
+    message: "仍无法连接模型服务（连接超时）。",
+    data: { status: null, reason: "timeout", name: "ProviderTransportError" },
+  };
+}
+
+test("project_run_failed 网络耗尽（无 status）：红卡含「↻ 继续写作」+「↻ 重试」+「复制错误详情」，按钮均触发 handleRetry（规格书 6.2 + 定稿原型 S4）", async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { refs, ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+  let retried = 0;
+  ctx.handleRetry = () => { retried += 1; };
+
+  renderer.onRunEvent(userEvent());
+  renderer.onRunEvent(runStartedEvent());
+  renderer.onRunEvent(draftingCallEvent());
+  renderer.onRunEvent(runFailedExhaustedEvent());
+
+  const turn = refs.thread.querySelector(".turn-agent");
+  const errSlot = turn.querySelector(".error-slot");
+  assert.ok(errSlot && !errSlot.classList.contains("hidden"), "失败轮应渲染可见 error-slot");
+  const card = errSlot.children[0];
+  assert.match(card.innerHTML, /↻ 继续写作/, "网络耗尽红卡应提供「↻ 继续写作」（规格书 6.2：提示进度已保留，提供继续写作按钮）");
+  assert.match(card.innerHTML, /↻ 重试/, "网络耗尽红卡保留「↻ 重试」（定稿原型 S4：两按钮并存）");
+  assert.match(card.innerHTML, /复制错误详情/, "网络耗尽红卡提供「复制错误详情」（定稿原型 S4）");
+  // 引擎错误形态如实透传（标题 写作任务失败 · ProviderTransportError / 徽章 timeout）——登记偏差，前端不修（Minor 6）。
+  assert.match(card.innerHTML, /写作任务失败 · ProviderTransportError/, "标题如实透传引擎错误形态");
+  assert.match(card.innerHTML, /timeout/, "错误码徽章如实透传 reason");
+  const retryMarks = card.innerHTML.match(/data-retry="1"/g) ?? [];
+  assert.equal(retryMarks.length, 2, "「↻ 重试」与「↻ 继续写作」均带 data-retry（点击都走 ctx.handleRetry）");
+  const retryBtn = card.querySelector("[data-retry]");
+  assert.ok(retryBtn, "红卡内应存在 data-retry 按钮节点");
+  retryBtn._fire("click");
+  assert.equal(retried, 1, "点击按钮应触发 ctx.handleRetry");
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 2 (Task 13 审查 Minor 5)：greeting / side bubble 去头像去署名行。
+// 规格书 P6：Agent 消息不带头像、不带署名行，直接以内容开始；历史轮（defer 4）不动。
+// ---------------------------------------------------------------------------
+
+test("greeting 无头像无署名行：Agent 消息直接以内容开始（规格书 P6）", async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { refs, ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+  renderer.renderEmptyThread();
+  const greeting = refs.thread.querySelector(".msg-agent");
+  assert.ok(greeting, "greeting 应渲染（msg-agent 容器）");
+  assert.equal(greeting.querySelector(".agent-avatar"), null, "greeting 不得渲染头像");
+  assert.equal(greeting.querySelector(".agent-name"), null, "greeting 不得渲染署名行");
+  assert.ok(greeting.textContent.includes("我已就绪"), "greeting 直接以内容开始");
+});
+
+test("side bubble 无头像：旁路问答直接以内容开始（规格书 P6）", async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { refs, ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+  const bubble = renderer.buildSideBubble({
+    question: "旁路问题示例",
+    answer: "旁路回答示例",
+    mainTaskAffecting: false,
+    promoted: false,
+  });
+  assert.equal(bubble.querySelector(".agent-avatar"), null, "side bubble 不得渲染头像");
+  assert.ok(bubble.textContent.includes("旁路问题示例"), "side bubble 直接以内容开始");
 });

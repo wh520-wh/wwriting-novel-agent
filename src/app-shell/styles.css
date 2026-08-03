@@ -593,6 +593,9 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 /* agent block */
 .msg-agent { display: grid; grid-template-columns: 30px minmax(0,1fr); gap: 12px; }
+/* 无头像无署名行（规格书 P6）：greeting / side bubble 单列通栏，直接以内容开始。
+   历史轮 buildAgentBlock 保留带头像的 .msg-agent 布局（defer 4 未迁移）。 */
+.msg-agent--plain { grid-template-columns: minmax(0, 1fr); }
 .agent-avatar {
   width: 30px; height: 30px; border-radius: 9px; flex: 0 0 auto;
   display: grid; place-items: center;
