@@ -22,6 +22,7 @@ import { createProjectAt, loadProject, loadState, saveProject, saveState } from 
 import { createResearchAdapter } from "./research-adapters.mjs";
 import { fetchWebPage, searchWeb } from "./research-tools.mjs";
 import { ModelConfigValidationError, validateModelConfig } from "./model-config-validation.mjs";
+import { subscribe } from "./run-events-bus.mjs";
 import { testModelConnection as runModelConnectionTest } from "./model-connection-test.mjs";
 import { SettingsValidationError, normalizeSettingsPatch, saveModelSettingsTransaction, updateProjectSettings } from "./settings-runtime.mjs";
 import { ensureBuiltinSkill, importProjectSkill, listProjectSkills } from "./skill-runtime.mjs";
@@ -209,6 +210,10 @@ export function createAppShellServer({
     }
     if (url.pathname === "/api/settings/model-switch" && request.method === "POST") {
       await serveModelSwitch(request, response, { workspace, selected, stateRoot: appStateRoot, secretsRoot: localSecretsRoot });
+      return;
+    }
+    if (url.pathname === "/api/project/events" && request.method === "GET") {
+      await serveProjectEvents(url, request, response);
       return;
     }
     if (url.pathname === "/api/settings/model-profile" && request.method === "POST") {
@@ -773,6 +778,28 @@ async function serveModelSwitch(request, response, context) {
   } catch (error) {
     sendError(response, error instanceof HttpError ? error : new HttpError(400, "model_switch_failed", error.message));
   }
+}
+
+// SSE 端点：按 projectRoot 订阅运行事件总线，收到事件即推送 `data: {json}\n\n`。
+// 红线（Task 8 审查再入提醒）：回调里只写 response，绝不调 appendEvent/emit——
+// 否则一次事件推送会再触发一次事件，无限递归。连接关闭时退订。
+async function serveProjectEvents(url, request, response) {
+  const projectRoot = String(url.searchParams.get("projectRoot") ?? "").trim();
+  if (!projectRoot) {
+    response.writeHead(400, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ ok: false, error: "projectRoot is required." }));
+    return;
+  }
+  response.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive"
+  });
+  response.write(": connected\n\n");
+  const off = subscribe(projectRoot, (event) => {
+    response.write(`data: ${JSON.stringify(event)}\n\n`);
+  });
+  request.on("close", () => off());
 }
 
 // 读项目前先把全局模型的最新字段刷回 project.yaml。
