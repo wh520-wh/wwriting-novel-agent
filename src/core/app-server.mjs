@@ -52,7 +52,7 @@ import { readChatHistory, loadPendingAction } from "./chat/chat-store.mjs";
 import { buildPricingTable } from "./model-pricing.mjs";
 import { CostTracker } from "./cost-tracker.mjs";
 import { ModelClient } from "./model-client.mjs";
-import { MockProviderAdapter, OpenAICompatibleAdapter, writingRequiredCapabilitiesOk } from "./provider-adapters.mjs";
+import { MockProviderAdapter, OpenAICompatibleAdapter, resolveModelCapabilities, writingRequiredCapabilitiesOk } from "./provider-adapters.mjs";
 
 export function createAppShellServer({
   workspaceRoot = path.resolve("."),
@@ -744,12 +744,23 @@ async function serveModelSwitch(request, response, context) {
     if (!writingRequiredCapabilitiesOk(profile)) {
       throw new HttpError(400, "model_unsupported", "该模型不支持工具调用，无法用于小说写作。");
     }
+    // B 档：切换成功 toast 的能力告知数据——新模型静默丢弃参数（supportsTemperature=false）
+    // 且项目已配置温度时，判定一条冲突。读切换前的项目：active_model.temperature 是「项目
+    // 已配置的温度」（全局保存 → 项目同步后存在于此字段），新模型不支持时该值会被静默忽略。
+    const beforeSwitchProject = await loadProject(projectRoot);
+    const caps = resolveModelCapabilities(profile);
+    const conflicts = [];
+    if (caps.supportsTemperature === false && beforeSwitchProject.active_model?.temperature !== undefined) {
+      conflicts.push("该模型不支持温度设置，写作温度不会生效。");
+    }
     const project = await updateProjectSettings(projectRoot, { active_model: modelConfigFromLocalProfile(profile) });
     await upsertLocalModelProfile(context.secretsRoot, project.active_model);
     const config = await loadConfigLayers(projectRoot, project);
     await serveJson(response, {
       ok: true,
       projectRoot,
+      capabilities: caps,
+      conflicts,
       project: {
         project_id: project.project_id,
         active_model: project.active_model,

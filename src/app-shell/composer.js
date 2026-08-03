@@ -862,7 +862,11 @@ export function createComposer(ctx) {
       });
       closeModelPopover();
       await ctx.loadDashboard();
-      ctx.showToast(`已切换模型：${result.model_profile?.display ?? modelId}`, "success");
+      const parts = [`已切换模型：${result.model_profile?.display ?? modelId}`];
+      // 换模型必破缓存：一次性告知，不常驻
+      parts.push("这本书的缓存要重新攒，接下来一两章成本会略高。");
+      for (const c of result.conflicts ?? []) parts.push(c);
+      ctx.showToast(parts.join("\n"), "success");
     } catch (error) {
       ctx.showActionError?.(error);
       ctx.showToast(error.message ?? "切换模型失败。", "error");

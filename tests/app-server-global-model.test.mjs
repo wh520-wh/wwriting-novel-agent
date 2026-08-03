@@ -343,6 +343,77 @@ test("切换模型：C 档模型切换被拒", async () => {
   }
 });
 
+// Task 4 B 档（2026-08-03）：切换成功响应带 capabilities 与 conflicts——新模型静默
+// 丢弃参数（supportsTemperature=false 且项目已配置 temperature）时，前端 toast 追加
+// 能力告知。no-temp resolver 的 matcher 只命中 no-temp.example，与 no-tools.example
+// 互不干扰（注册表无 unregister，沿用既有注入惯例）。
+
+test("切换模型响应带 capabilities 与 conflicts", async () => {
+  registerProviderCapabilityResolver(
+    (c) => String(c.base_url ?? "").includes("no-temp.example"),
+    () => ({ supportsTemperature: false })
+  );
+  const { projectRoot, secretsRoot, server, port } = await setupServerWithProject();
+  try {
+    // 项目 active_model 原配置 temperature：模拟「项目已配置温度」（Task 1 后温度随
+    // 全局保存 → 项目同步存在于 active_model.temperature）
+    const project = await loadProject(projectRoot);
+    await saveProject(projectRoot, {
+      ...project,
+      active_model: { ...project.active_model, temperature: 0.7 }
+    });
+    // 直写清单造出 no-temp 模型：保存 API 不校验温度能力（B 档只告知不阻止），
+    // 直写与全局保存两条路径造出的 profile 等价
+    await upsertLocalModelProfile(secretsRoot, {
+      provider: "openai-compatible",
+      model_name: "no-temp",
+      base_url: "https://no-temp.example",
+      api_key_env: "NO_TEMP_API_KEY"
+    });
+    const { status, json } = await post(port, "/api/settings/model-switch", {
+      projectRoot,
+      model_id: "no-temp"
+    });
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+    assert.equal(json.capabilities.supportsTemperature, false);
+    // 只缺温度能力，工具/流式仍在：C 档校验不拦这类模型（B 档只告知不阻止）
+    assert.equal(json.capabilities.supportsTools, true);
+    assert.deepEqual(json.conflicts, ["该模型不支持温度设置，写作温度不会生效。"]);
+    // 切换落盘完成：项目已指向 no-temp 模型
+    const after = await loadProject(projectRoot);
+    assert.equal(after.active_model.model_name, "no-temp");
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("切换模型：项目未配置温度时 conflicts 为空数组", async () => {
+  registerProviderCapabilityResolver(
+    (c) => String(c.base_url ?? "").includes("no-temp.example"),
+    () => ({ supportsTemperature: false })
+  );
+  const { projectRoot, secretsRoot, server, port } = await setupServerWithProject();
+  try {
+    // 默认项目模型 mock-writer 未配置 temperature：切 no-temp 模型不应报冲突
+    await upsertLocalModelProfile(secretsRoot, {
+      provider: "openai-compatible",
+      model_name: "no-temp",
+      base_url: "https://no-temp.example",
+      api_key_env: "NO_TEMP_API_KEY"
+    });
+    const { status, json } = await post(port, "/api/settings/model-switch", {
+      projectRoot,
+      model_id: "no-temp"
+    });
+    assert.equal(status, 200);
+    assert.equal(json.capabilities.supportsTemperature, false);
+    assert.deepEqual(json.conflicts, []);
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test("选用模型：C 档模型选用被拒", async () => {
   registerProviderCapabilityResolver(
     (c) => String(c.base_url ?? "").includes("no-tools.example"),
