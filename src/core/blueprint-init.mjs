@@ -11,7 +11,9 @@
 // - 失败/取消恢复语义：生成进行中置 partial（拒绝并发写作），失败回滚到原值；
 //   下次 /init 从头重试，不续传。
 // - 单轮生成实现（一个 prompt 让模型一次输出两份文件内容，分隔符切分）。
-//   题材字段分化模板是 Task 10 的内容，这里只在 prompt 里要求模型按题材自然分化。
+//   题材字段分化模板（Task 10，blueprint-templates.mjs）：按用户题材命中模板后，
+//   把必填字段清单注入 prompt（OUTLINE 总纲区第 5 节起 / SETTING 题材专属设定区）；
+//   未命中走基础模板，仅靠"按题材自然分化"指令兜底。
 // - 旧项目迁移（runBlueprintInitForLegacy）：对 legacy 项目（已有章节无 OUTLINE.md），
 //   输入改为已有章节摘要 + continuity + task_plan.md，AI 反推生成蓝图初稿；
 //   反推不保证与正文完全一致（返回 notice 提示用户对照确认）。
@@ -20,6 +22,7 @@ import path from "node:path";
 import { loadContinuity, renderContinuityMarkdown } from "./continuity-store.mjs";
 import { pathExists, safeJoin, writeFileAtomic } from "./fs-utils.mjs";
 import { loadChapterIndex, loadProject, loadState, saveState } from "./project-store.mjs";
+import { pickTemplate } from "./blueprint-templates.mjs";
 
 // 模型输出两块内容的分隔行（独立成行）。导出供测试 mock 复用，避免测试与实现漂移。
 export const BLUEPRINT_SPLIT = "<<<BLUEPRINT_SPLIT>>>";
@@ -162,6 +165,7 @@ function buildBlueprintPrompt({ project, userRequirements }) {
     || "（用户未提供具体要求，按通用东方玄幻方向规划）";
   const title = project?.title ? `书名：${project.title}` : null;
   const seed = project?.story_seed ? `故事种子：${project.story_seed}` : null;
+  const template = pickTemplate(requirement);
   return [
     "你是长篇小说的规划引擎。请根据用户需求，按下面的固定结构生成两份蓝图文件的内容（markdown 格式）。",
     "内容必须贴合用户需求的题材并具体填充，不要留空占位。",
@@ -170,9 +174,10 @@ function buildBlueprintPrompt({ project, userRequirements }) {
     OUTLINE_STRUCTURE,
     "第二份 SETTING.md 结构（必须保留以下标题层级）：",
     SETTING_STRUCTURE,
+    ...buildGenreTemplateLines(template),
     "输出要求：",
     `1. 第一份是 OUTLINE.md 的完整内容，第二份是 SETTING.md 的完整内容，两份之间用单独一行 ${BLUEPRINT_SPLIT} 分隔，除此之外不要输出任何说明文字。`,
-    "2. 总纲区「5. 题材字段」按题材自然分化（如修真→修炼境界体系，科幻→科技设定，都市→异能等级，历史→时代背景）。",
+    ...buildGenreRequirementItem(template),
     "3. 章节骨架先规划第一卷的 3-5 章，每章一行「- [ ] 第N章《标题》：主要事件 / 爽点 / 伏笔」。",
     "4. 角色表列出 3-5 个主要角色。",
     "",
@@ -190,6 +195,7 @@ function buildLegacyBlueprintPrompt({ project, userRequirements, context }) {
     : "（未读取到章节内容）";
   const continuityText = context.continuityText ?? "（无设定档案）";
   const taskPlan = context.taskPlan ? `任务计划（task_plan.md）：\n${context.taskPlan}` : null;
+  const template = pickTemplate(requirement);
   return [
     "你是长篇小说的规划引擎。该项目是已有章节产出的旧项目（升级迁移），请根据已有章节反推生成两份蓝图文件（markdown 格式）。",
     "注意：反推生成是估计，不保证与既有正文完全一致，用户会对照确认。内容必须基于下面的章节与设定证据具体填充，不要留空占位。",
@@ -198,9 +204,10 @@ function buildLegacyBlueprintPrompt({ project, userRequirements, context }) {
     OUTLINE_STRUCTURE,
     "第二份 SETTING.md 结构（必须保留以下标题层级）：",
     SETTING_STRUCTURE,
+    ...buildGenreTemplateLines(template),
     "输出要求：",
     `1. 第一份是 OUTLINE.md 的完整内容，第二份是 SETTING.md 的完整内容，两份之间用单独一行 ${BLUEPRINT_SPLIT} 分隔，除此之外不要输出任何说明文字。`,
-    "2. 总纲区「5. 题材字段」按题材自然分化（如修真→修炼境界体系，科幻→科技设定，都市→异能等级，历史→时代背景）。",
+    ...buildGenreRequirementItem(template),
     "3. 章节骨架覆盖已有章节（从章节摘要反推主要事件 / 爽点 / 伏笔），每章一行「- [ ] 第N章《标题》：主要事件 / 爽点 / 伏笔」。",
     "4. 角色表列出从正文与设定档案中出现的 3-5 个主要角色。",
     "",
@@ -210,6 +217,29 @@ function buildLegacyBlueprintPrompt({ project, userRequirements, context }) {
     continuityText,
     ...[title, taskPlan, requirement ? `用户补充要求：${requirement}` : null].filter(Boolean)
   ].join("\n");
+}
+
+// 题材模板命中时输出必填字段清单（两行固定前缀，测试 mock 按前缀提取回显，验证字段真的进了 prompt）。
+// 未命中（pickTemplate 返回 undefined）时输出空数组，prompt 保持基础模板。
+function buildGenreTemplateLines(template) {
+  if (!template) return [];
+  return [
+    "",
+    `题材专属字段（已匹配题材模板「${template.genre}」，以下字段为必填，输出时不得省略）：`,
+    `- OUTLINE 题材字段：${template.outlineFields.join("、")}`,
+    `- SETTING 题材字段：${template.settingFields.join("、")}`,
+    ""
+  ];
+}
+
+// 输出要求第 2 条：命中模板时按清单展开字段，否则保留"按题材自然分化"兜底指令。
+function buildGenreRequirementItem(template) {
+  if (!template) {
+    return ["2. 总纲区「5. 题材字段」按题材自然分化（如修真→修炼境界体系，科幻→科技设定，都市→异能等级，历史→时代背景）。"];
+  }
+  return [
+    `2. 总纲区第 5 节起按「OUTLINE 题材字段」清单展开为「### N. 字段名」小节（N 从 5 起连续编号，不再保留「### 5. [题材字段]」占位）；SETTING.md「三、题材专属设定」区逐字段说明。必填字段不得省略。`
+  ];
 }
 
 // 收集旧项目证据：章节索引 + 正文头部摘要（无索引时扫 chapters/ 目录兜底）+ continuity + task_plan.md。
