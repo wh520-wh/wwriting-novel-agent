@@ -947,16 +947,18 @@ export function createThreadRenderer(ctx) {
   // ===== S3 chat thread rendering =====
 
   // §3.4: 进程崩溃/中断时最后一条消息是 status:"generating" 占位，渲染为中断条。
+  // spec §2.3-U1/U6：中断是中性态，不是错误——neutral class + 中性灰样式（styles.css），
+  // 不归 --err-* 红色系；文案走 U2 术语「上次对话未完成，可继续」。
   function buildInterruptedCard(allMessages) {
     const lastUserMsg = [...allMessages].reverse().find((m) => m.role === "user");
     if (!lastUserMsg) return null;
     const wrap = document.createElement("div");
     wrap.className = "msg-agent rise chat-bubble-wrap chat-bubble-wrap--interrupted";
     const card = document.createElement("div");
-    card.className = "chat-interrupted-card";
+    card.className = "chat-interrupted-card neutral";
     const label = document.createElement("span");
     label.className = "chat-interrupted-label";
-    label.textContent = "上一轮被中断";
+    label.textContent = "上次对话未完成，可继续";
     const text = document.createElement("span");
     text.className = "chat-interrupted-text";
     text.textContent = "对话进程在上次回复完成前退出，可重发消息。";
