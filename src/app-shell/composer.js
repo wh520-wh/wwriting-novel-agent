@@ -227,9 +227,13 @@ export function createComposer(ctx) {
       const on = el.dataset.tierId === tier.id && !project?.archived_at;
       el.setAttribute("aria-checked", on ? "true" : "false");
     });
-    // 弹层只含 POPOVER_TIERS；当前档是 yolo 时（仅设置里可选）回退到弹层首项。
-    const idx = POPOVER_TIERS.findIndex((t) => t.id === tier.id);
-    modePopoverActiveIndex = idx < 0 ? 0 : idx;
+    // 弹层只含 POPOVER_TIERS；当前档是 yolo 时（仅设置里可选）回退到相邻的 auto 档，
+    // 避免高亮最低档「只读」与 pill 上的「全程自动」反差误导。
+    let idx = POPOVER_TIERS.findIndex((t) => t.id === tier.id);
+    if (idx < 0) {
+      idx = Math.max(0, POPOVER_TIERS.findIndex((t) => t.id === "auto"));
+    }
+    modePopoverActiveIndex = idx;
   }
 
   function openModePopover() {
@@ -340,7 +344,9 @@ export function createComposer(ctx) {
       return;
     }
     if (event.key === "Enter" || event.key === " ") {
-      const tier = PERMISSION_TIERS[modePopoverActiveIndex];
+      // modePopoverActiveIndex 是 POPOVER_TIERS（不含 yolo）的索引；
+      // 取档必须用 POPOVER_TIERS，否则 yolo 被排除后索引会错位。
+      const tier = POPOVER_TIERS[modePopoverActiveIndex];
       if (tier) {
         event.preventDefault();
         void applyTier(tier);
