@@ -900,9 +900,10 @@ function renderDashboard(data) {
 
   // 归档态 UI
   const isArchived = Boolean(project.archived_at);
+  // spec §2.3-U5：placeholder 精简为一句核心提示（示例已移到折叠提示 #composer-hint）。
   refs.composerInput.placeholder = isArchived
     ? "项目已归档（只读）。对话查询可用；解除归档后才能修改。"
-    : "跟我说：开始写作、写下一章、调整方向…  输入 / 唤起命令";
+    : "输入指令，或 /write 开始写作";
 
   const truth = computeAgentTruth(data);
   renderTruthIndicator(truth);

@@ -158,14 +158,23 @@
           <div class="composer" id="composer">
             <div class="slash" id="slash-menu" role="listbox" aria-label="斜杠命令" hidden></div>
             <div class="composer-inner">
-              <textarea id="composer-input" rows="1" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="slash-menu" aria-haspopup="listbox" aria-label="给智能体下达指令" placeholder="跟我说：开始写作、写下一章、调整方向…  输入 / 唤起命令" spellcheck="false"></textarea>
               <div class="composer-bar">
-                <button class="cbar-btn" id="cbar-keys" title="快捷键" aria-label="快捷键速查"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h16M4 12h16M4 16h10M16 16h4M4 8v8h16V8H4z"/></svg></button>
-                <button class="cbar-pill" id="mode-pill" type="button" aria-haspopup="listbox" aria-expanded="false" title="智能体权限模式">确认后修改</button>
-                <span class="cbar-spacer"></span>
-                <span class="cbar-hint" id="composer-hint">Enter 发送 · Shift+Enter 换行 · ? 快捷键</span>
-                <button class="send" id="composer-submit" disabled aria-label="发送"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M6 11l6-6 6 6"/></svg></button>
+                <div class="composer-left">
+                  <button class="cbar-btn" id="cbar-keys" title="快捷键" aria-label="快捷键速查"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h16M4 12h16M4 16h10M16 16h4M4 8v8h16V8H4z"/></svg></button>
+                  <button class="cbar-pill" id="mode-pill" type="button" aria-haspopup="listbox" aria-expanded="false" title="智能体权限模式">确认后修改</button>
+                  <!-- 模型选择器（status-pills）由 composer.js 动态挂到 mode-pill 之后 -->
+                </div>
+                <div class="composer-center">
+                  <textarea id="composer-input" rows="1" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="slash-menu" aria-haspopup="listbox" aria-label="给智能体下达指令" placeholder="输入指令，或 /write 开始写作" spellcheck="false"></textarea>
+                </div>
+                <div class="composer-right">
+                  <button class="send" id="composer-submit" disabled aria-label="发送"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M6 11l6-6 6 6"/></svg></button>
+                </div>
               </div>
+              <details class="composer-hint" id="composer-hint">
+                <summary class="cbar-hint">Enter 发送 · Shift+Enter 换行 · ? 快捷键</summary>
+                <div class="composer-hint-examples">试试：开始写作 · 写下一章 · 调整方向 · 输入 / 唤起命令</div>
+              </details>
             </div>
           </div>
         </div>
