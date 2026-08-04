@@ -947,8 +947,8 @@ export function createThreadRenderer(ctx) {
   // ===== S3 chat thread rendering =====
 
   // §3.4: 进程崩溃/中断时最后一条消息是 status:"generating" 占位，渲染为中断条。
-  // spec §2.3-U1/U6：中断是中性态，不是错误——neutral class + 中性灰样式（styles.css），
-  // 不归 --err-* 红色系；文案走 U2 术语「上次对话未完成，可继续」。
+  // spec §2.3-U1：中断是中性态，不是错误——neutral class + 中性灰样式（styles.css），
+  // 不归 --err-* 红色系；文案改「上次对话未完成，可继续」。
   function buildInterruptedCard(allMessages) {
     const lastUserMsg = [...allMessages].reverse().find((m) => m.role === "user");
     if (!lastUserMsg) return null;

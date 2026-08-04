@@ -2232,12 +2232,7 @@ button.cbar-pill--readonly:hover {
   font-size: 12.5px;
   max-width: 82%;
 }
-.chat-interrupted-card.neutral {
-  color: var(--neutral-text);
-  background: var(--neutral-bg);
-  border: none;
-  max-width: 82%;
-}
+/* neutral class 保留作语义/测试契约标记（thread-renderer.test.mjs 断言），样式由 base 类承载 */
 .chat-interrupted-label {
   font-weight: 600;
   font-size: 12px;
