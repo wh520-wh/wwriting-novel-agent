@@ -101,6 +101,7 @@ npm run verify:app-clickability     # 真实 Electron 窗口逐项点击关键�
 npm run verify:desktop-shell        # Electron 安全开关、中文菜单、打包配置
 npm run verify:provider-online      # 真实 OpenAI-compatible provider 在线验收
 npm run verify:research-online      # 真实网页抓取与可配置搜索接口验收
+npm run sim:user-flow             # 用户真实操作全链路模拟（需 DEEPSEEK_API_KEY，默认 flash 模型）
 ```
 
 ## 目录结构
