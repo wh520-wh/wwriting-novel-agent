@@ -33,6 +33,16 @@ test("deriveSources：a1 的窗口只含 u1 之后的 read_outline", () => {
   assert.deepEqual(chips.map((c) => c.label), ["大纲"]);
 });
 
+test("deriveSources：read_blueprint 也生成依据 chip（蓝图读取是 read 工具）", () => {
+  const msgs2 = [
+    { id: "u1", role: "user", content: "总纲里写了什么？" },
+    { id: "t1", role: "tool", tool: "read_blueprint", ok: true, args: '{"section":"outline"}', result_summary: "OUTLINE.md" },
+    { id: "a1", role: "assistant", content: "蓝图说…" }
+  ];
+  const chips = deriveSources(msgs2, msgs2.at(-1));
+  assert.deepEqual(chips.map((c) => c.label), ["蓝图 · 总纲"]);
+});
+
 test("deriveSuggestions：归档项目", () => {
   const s = deriveSuggestions({ project: { archived_at: "2026-06-01" }, summary: {}, chapters: [] });
   assert.deepEqual(s.map((x) => x.label), ["导出成书", "解除归档"]);
