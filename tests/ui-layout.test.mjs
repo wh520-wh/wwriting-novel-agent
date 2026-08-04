@@ -27,6 +27,11 @@ const chatDeriveSource = await fs.readFile(path.join(srcDir, "chat-derive.mjs"),
 
 const CONCISE_PLACEHOLDER = "输入指令，或 /write 开始写作";
 
+// composer 弹层行为测试用：id 注册表（document.getElementById 的 mock 后端）
+// + document 级事件处理器（openModePopover 会挂 keydown/pointerdown）。
+let domRegistry = new Map();
+const docListeners = new Map();
+
 // ---------------------------------------------------------------------------
 // 最小 DOM mock（复用 thread-renderer.test.mjs 的模式，无 JSDOM）
 // ---------------------------------------------------------------------------
@@ -86,12 +91,19 @@ class MockElement {
     if (index >= 0) this.children.splice(index, 0, node);
     else this.children.push(node);
   }
-  setAttribute(name, value) { this._attrs[name] = String(value); }
+  setAttribute(name, value) {
+    this._attrs[name] = String(value);
+    // 与真实 DOM 一致：id 设置后即可通过 document.getElementById 找到。
+    if (name === "id") domRegistry.set(this._attrs.id, this);
+  }
   getAttribute(name) { return this._attrs[name] ?? null; }
   removeAttribute(name) { delete this._attrs[name]; }
-  // 真实 DOM 中 title 是 title 属性的反射属性。
+  // 真实 DOM 中 title / id 是属性的反射属性。
   get title() { return this._attrs.title ?? ""; }
   set title(value) { this._attrs.title = String(value); }
+  get id() { return this._attrs.id ?? ""; }
+  set id(value) { this._attrs.id = String(value); domRegistry.set(this._attrs.id, this); }
+  focus() {}
   addEventListener(type, handler) {
     if (!this._listeners.has(type)) this._listeners.set(type, []);
     this._listeners.get(type).push(handler);
@@ -102,6 +114,12 @@ class MockElement {
 
   _matches(selector) {
     if (selector.startsWith(".")) return this.classList.contains(selector.slice(1));
+    // 属性存在选择器 [data-key]（无值）
+    const presenceSel = selector.match(/^\[data-([\w-]+)\]$/);
+    if (presenceSel) {
+      const key = presenceSel[1].replace(/-([a-z])/g, (_m, c) => c.toUpperCase());
+      return this.dataset[key] !== undefined;
+    }
     const dataSel = selector.match(/^\[data-([\w-]+)="?([^"\]]*)"?\]$/);
     if (dataSel) {
       const key = dataSel[1].replace(/-([a-z])/g, (_m, c) => c.toUpperCase());
@@ -144,6 +162,16 @@ before(async () => {
     createElement: (tag) => new MockElement(tag),
     createElementNS: (_ns, tag) => new MockElement(tag),
     createDocumentFragment: () => new MockElement("fragment"),
+    getElementById: (id) => domRegistry.get(id) ?? null,
+    addEventListener: (type, handler) => {
+      if (!docListeners.has(type)) docListeners.set(type, []);
+      docListeners.get(type).push(handler);
+    },
+    removeEventListener: (type, handler) => {
+      const list = docListeners.get(type) ?? [];
+      const index = list.indexOf(handler);
+      if (index >= 0) list.splice(index, 1);
+    },
   };
   globalThis.requestAnimationFrame = (cb) => { cb(); return 1; };
 });
@@ -315,6 +343,151 @@ test("U5 设置弹窗保留全程自动（权限与确认分区）", () => {
   assert.match(settingsSource, /tier\.id === "yolo"/, "设置弹窗权限分区应保留 yolo 处理");
   assert.match(settingsSource, /spd-radio-option--yolo/, "设置弹窗 yolo 选项样式应保留");
   assert.match(settingsSource, /全程自动模式会自动执行/, "设置弹窗应保留全程自动警告文案");
+});
+
+// ---------------------------------------------------------------------------
+// U5 行为测试：mode pill 显示 / 键盘选档（composer.js onModePopoverKeydown）
+// 覆盖评审 Important #2：Enter/ArrowUp/ArrowDown 选档索引映射（POPOVER_TIERS）、
+// yolo 档打开弹层的回退行为、mode pill 在 yolo 档的显示。
+// ---------------------------------------------------------------------------
+
+function installComposerDom() {
+  domRegistry = new Map();
+  docListeners.clear();
+  const posted = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options = {}) => {
+    posted.push({ url: String(url), body: options.body ? JSON.parse(options.body) : null });
+    return { ok: true, text: async () => JSON.stringify({ ok: true }) };
+  };
+  const realStorage = globalThis.localStorage;
+  globalThis.localStorage = { getItem: () => null, setItem: () => {} };
+  return {
+    posted,
+    fireKeydown: (event) => {
+      for (const fn of [...(docListeners.get("keydown") ?? [])]) fn(event);
+    },
+    restore: () => {
+      globalThis.fetch = realFetch;
+      if (realStorage === undefined) delete globalThis.localStorage;
+      else globalThis.localStorage = realStorage;
+    },
+  };
+}
+
+function makeComposerForPopover(createComposer, toolPermissions) {
+  // mode-pill 在真实 index.html 里静态存在；这里预建并注册进 domRegistry。
+  const pill = new MockElement("button");
+  pill.setAttribute("id", "mode-pill");
+  const refs = {
+    thread: new MockElement("div"),
+    threadWrap: new MockElement("div"),
+    composer: new MockElement("div"),
+  };
+  const ctx = {
+    refs,
+    getCurrentProjectRoot: () => "D:\\novel-a",
+    getDashboard: () => ({ project: { tool_permissions: toolPermissions }, summary: {}, chapters: [] }),
+    loadDashboard: async () => {},
+    openDrawer: () => {},
+    openSettingsModal: () => {},
+    openCreateModal: () => {},
+    showToast: () => {},
+    showActionError: () => {},
+    threadRenderer: { scrollThreadToBottom: () => {} },
+    getAskEntries: () => new Map(),
+    ensureRefreshLoop: () => {},
+  };
+  const composer = createComposer(ctx);
+  composer.initModePill();
+  composer.updateModePill();
+  return composer;
+}
+
+function popoverItems() {
+  return [...(domRegistry.get("mode-popover")?.querySelectorAll("[data-tier-id]") ?? [])];
+}
+
+test("U5 mode pill 在 yolo 档显示「全程自动」+ cbar-pill--yolo（yolo 仅设置里可选，pill 仍如实显示）", async () => {
+  const { createComposer } = await import("../src/app-shell/composer.js");
+  const env = installComposerDom();
+  try {
+    makeComposerForPopover(createComposer, { yolo: true, auto_edit: true, safe_edit: true, read_only: false });
+    const pill = domRegistry.get("mode-pill");
+    assert.ok(pill, "mode-pill 应存在");
+    assert.equal(pill.textContent, "全程自动", "yolo 档 pill 文案");
+    assert.ok(pill.className.includes("cbar-pill--yolo"), "yolo 档 pill 应带 cbar-pill--yolo 样式");
+    assert.equal(pill.getAttribute("data-tier"), "yolo", "pill 应带 data-tier=yolo");
+  } finally {
+    env.restore();
+  }
+});
+
+test("U5 yolo 档打开弹层：回退高亮相邻 auto 档，Enter 提交 auto 而非 yolo（索引不越界）", async () => {
+  const { createComposer } = await import("../src/app-shell/composer.js");
+  const env = installComposerDom();
+  try {
+    const composer = makeComposerForPopover(createComposer, { yolo: true, auto_edit: true, safe_edit: true, read_only: false });
+    composer.openModePopover();
+    const items = popoverItems();
+    assert.equal(items.length, 3, "弹层只含 3 档（无 yolo）");
+    assert.ok(items.every((el) => el.getAttribute("aria-checked") === "false"), "yolo 档打开时无任何档被勾选");
+    const activeIdx = items.findIndex((el) => el.classList.contains("active"));
+    assert.equal(activeIdx, 2, "回退高亮应落在相邻的 auto 档（索引 2）");
+    assert.equal(items[activeIdx].dataset.tierId, "auto", "回退档应为 auto");
+
+    env.fireKeydown({ key: "Enter", preventDefault() {}, stopPropagation() {} });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(env.posted.length, 1, "Enter 应触发一次 applyTier");
+    assert.equal(env.posted[0].url, "/api/settings/update", "applyTier 应 POST settings/update");
+    assert.deepEqual(env.posted[0].body.tool_permissions, {
+      read_only: false, safe_edit: true, auto_edit: true, yolo: false,
+    }, "Enter 提交的应为 auto 档 combo，而非 yolo");
+  } finally {
+    env.restore();
+  }
+});
+
+test("U5 键盘选档（非 yolo）：ArrowDown/ArrowUp/Enter 按 POPOVER_TIERS 映射提交", async () => {
+  const { createComposer } = await import("../src/app-shell/composer.js");
+  const env = installComposerDom();
+  try {
+    const composer = makeComposerForPopover(createComposer, { yolo: false, auto_edit: false, safe_edit: true, read_only: false });
+    composer.openModePopover();
+    let items = popoverItems();
+    assert.equal(items[1].getAttribute("aria-checked"), "true", "confirm 档应被勾选");
+    assert.ok(items[1].classList.contains("active"), "confirm 档应高亮（索引 1）");
+
+    // ArrowDown → auto（索引 2），Enter 提交 auto
+    env.fireKeydown({ key: "ArrowDown", preventDefault() {}, stopPropagation() {} });
+    assert.ok(items[2].classList.contains("active"), "ArrowDown 应高亮 auto（索引 2）");
+    env.fireKeydown({ key: "Enter", preventDefault() {}, stopPropagation() {} });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(env.posted.at(-1).body.tool_permissions.auto_edit, true, "Enter 应提交 auto 档");
+
+    // 重开弹层：ArrowUp 从 confirm（索引 1）→ read_only（索引 0），Enter 提交 read_only
+    composer.openModePopover();
+    items = popoverItems();
+    env.fireKeydown({ key: "ArrowUp", preventDefault() {}, stopPropagation() {} });
+    assert.ok(items[0].classList.contains("active"), "ArrowUp 应高亮 read_only（索引 0）");
+    env.fireKeydown({ key: "Enter", preventDefault() {}, stopPropagation() {} });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(env.posted.at(-1).body.tool_permissions.read_only, true, "Enter 应提交 read_only 档");
+
+    // 边界：read_only 上再 ArrowUp 环绕回 auto（索引 2），Enter 提交 auto；全程不得出现 yolo
+    composer.openModePopover();
+    items = popoverItems();
+    env.fireKeydown({ key: "ArrowUp", preventDefault() {}, stopPropagation() {} });
+    env.fireKeydown({ key: "ArrowUp", preventDefault() {}, stopPropagation() {} });
+    assert.ok(items[2].classList.contains("active"), "越界 ArrowUp 应环绕回 auto（索引 2）");
+    env.fireKeydown({ key: "Enter", preventDefault() {}, stopPropagation() {} });
+    await new Promise((r) => setTimeout(r, 10));
+
+    assert.ok(env.posted.every((p) => p.body?.tool_permissions?.yolo !== true), "任何提交都不得是 yolo 档");
+    assert.equal(env.posted.length, 3, "三次 Enter 共提交三档");
+  } finally {
+    env.restore();
+  }
 });
 
 // ---------------------------------------------------------------------------
