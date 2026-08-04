@@ -587,8 +587,9 @@ function copyOptionalPositiveNumber(target, source, key) {
   target[key] = value;
 }
 
-// 温度 0-2 校验，语义与 model-config-validation.mjs 的 validateModelConfig 一致：
-// undefined / null / "" 表示「未配置不携带」；合法数值原样保留；非法数值直接报错。
+// 温度 0-2 校验：undefined / null / "" 表示「未配置不携带」；合法数值原样保留；非法数值直接报错。
+// 注：validateModelConfig（model-config-validation.mjs）把 "" 视为 0（Number("")===0），
+// 与这里「空串不携带」语义不同；面板层已先剥离空串，两条 API 路径暂不会互相踩到。
 function copyOptionalTemperature(target, source, key) {
   if (source[key] === undefined || source[key] === null || source[key] === "") {
     return;
