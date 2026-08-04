@@ -4,6 +4,7 @@ import { getJson, postJson, sendChatMessage } from "./api-client.js";
 import { motion } from "./motion-runtime.js";
 import { PERMISSION_TIERS, detectPermissionTier } from "./permission-tiers.mjs";
 import { formatConnectionStatus, submitModelConnectionTest } from "./settings-connection.mjs";
+import { fillOfficialPricing } from "../shared/official-pricing.mjs";
 
 // Re-export so consumers that already `import { ... } from "./settings-modal.js"`
 // continue to work. The pure helpers themselves live in ./settings-connection.mjs
@@ -677,14 +678,9 @@ export function createSettingsModal(ctx, options = {}) {
     const dashboard = ctx.getDashboard();
     // 模型字段优先用全局清单里的默认模型：没有项目时也要能显示已配好的模型。
     const globalDefault = globalModels.default_model;
-    const active = dashboard?.project?.active_model ?? (globalDefault
-      ? {
-          provider: globalDefault.provider,
-          model_name: globalDefault.model_name,
-          base_url: globalDefault.base_url,
-          api_key_env: globalDefault.api_key_env
-        }
-      : {});
+    // globalDefault 是 buildModelProfile 的输出（app-server），已含本表单要用的
+    // provider/model_name/base_url/api_key_env/pricing/temperature，无需再投影一份。
+    const active = dashboard?.project?.active_model ?? globalDefault ?? {};
     const profile = dashboard?.model_profile ?? globalDefault ?? {};
     const budgetConfig = dashboard?.config?.effective?.budget_config ?? dashboard?.project?.budget_config ?? {};
     const permissions = dashboard?.config?.effective?.tool_permissions ?? dashboard?.project?.tool_permissions ?? {};
@@ -744,7 +740,7 @@ export function createSettingsModal(ctx, options = {}) {
     settingsFields.apiKeyError.hidden = true;
 
     settingsFields.apiKeyEnv = settingField("密钥环境变量名（不是密钥本身）", "text", {
-      value: usingThisPreset && active.api_key_env ? active.api_key_env : preset.apiKeyEnv,
+      value: apiKeyEnvValue,
       placeholder: "XIAOMI_MIMO_API_KEY"
     });
     settingsFields.apiKeyEnvError = document.createElement("div");
@@ -787,7 +783,9 @@ export function createSettingsModal(ctx, options = {}) {
     const priceHeading = document.createElement("h4");
     priceHeading.className = "spd-section";
     priceHeading.textContent = "价格（用于成本估算）";
-    const pricing = active.pricing ?? {};
+    // 价格/温度跟随「表单当前展示的模型」：正在用且属于当前供应商预设 → 用已存值；
+    // 否则（切供应商预览）→ 空，由官方价表自动带出，不把上一个模型的价错配过来。
+    const pricing = usingThisPreset ? (active.pricing ?? {}) : {};
     settingsFields.priceInput = settingField("输入价（元/百万 token）", "number", { value: pricing.input_per_million ?? "" });
     settingsFields.priceOutput = settingField("输出价（元/百万 token）", "number", { value: pricing.output_per_million ?? "" });
     settingsFields.priceCacheHit = settingField("缓存命中价（元/百万 token，可选）", "number", { value: pricing.cache_hit_per_million ?? "" });
@@ -795,7 +793,7 @@ export function createSettingsModal(ctx, options = {}) {
     priceHint.className = "spd-hint";
     priceHint.textContent = "按供应商定价页填写。不填则成本显示为未配置价格，不会按 0 计算。";
     settingsFields.temperature = settingField("写作温度（0–2，可选，留空用厂商默认）", "number", {
-      value: active.temperature ?? "",
+      value: usingThisPreset ? (active.temperature ?? "") : "",
       min: 0, max: 2, step: 0.1
     });
     settingsFields.temperatureError = document.createElement("div");
@@ -821,6 +819,7 @@ export function createSettingsModal(ctx, options = {}) {
     );
     bindEndpointPreview();
     updateEndpointPreview();
+    bindOfficialPricingFill();
     applyConnectionButtonState();
   }
 
@@ -1071,6 +1070,40 @@ export function createSettingsModal(ctx, options = {}) {
     });
     field.append(label, button);
     return { field, input: button, get checked() { return button.getAttribute("aria-pressed") === "true"; } };
+  }
+
+  // 选模型自动带出官方价：统一走 shared 的 fillOfficialPricing（与保存时补缺同一份规则）。
+  // 两条触发路径：
+  //  - 模型名变更（input / change）：overwrite=true——价格以模型名为准：
+  //    匹配则整组重置为官方价，不匹配则清空（对空对象补缺结果就是空），
+  //    避免把上一个模型的价错配给新模型保存出去。
+  //  - 初始渲染（打开设置 / 切供应商 / 选用已保存模型）：overwrite=false——
+  //    只补空缺字段，已保存或用户手填的值绝不覆盖。
+  function bindOfficialPricingFill() {
+    const input = settingsFields.model?.input;
+    if (!input || input.dataset.boundPricingFill === "true") return;
+    input.dataset.boundPricingFill = "true";
+    const pairs = [
+      [settingsFields.priceInput?.input, "input_per_million"],
+      [settingsFields.priceOutput?.input, "output_per_million"],
+      [settingsFields.priceCacheHit?.input, "cache_hit_per_million"]
+    ];
+    const applyOfficial = (overwrite) => {
+      // 收集当前表单值作补缺基准；overwrite 时基准为空，结果即官方价整组（或未收录时的空）。
+      const base = {};
+      if (!overwrite) {
+        for (const [field, key] of pairs) if (field?.value) base[key] = field.value;
+      }
+      const filled = fillOfficialPricing(input.value.trim(), "", base);
+      for (const [field, key] of pairs) {
+        if (!field) continue;
+        const value = filled[key];
+        if (overwrite || !field.value) field.value = value != null ? String(value) : "";
+      }
+    };
+    input.addEventListener("input", () => applyOfficial(true));
+    input.addEventListener("change", () => applyOfficial(true));
+    applyOfficial(false);
   }
 
   function bindEndpointPreview() {

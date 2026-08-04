@@ -1061,7 +1061,11 @@ function buildModelProfile(activeModel = {}, secretsRoot, options = {}) {
     is_mock: provider === "mock",
     display: modelDisplayName(activeModel),
     id: options.id ?? modelName,
-    saved_to: options.saved_to ?? "project.yaml"
+    saved_to: options.saved_to ?? "project.yaml",
+    // 价格与温度一并带回：设置面板无项目时用全局默认模型渲染表单，
+    // 缺这两个字段会显示成空白（价格已保存却看不见）。
+    pricing: activeModel?.pricing ?? null,
+    temperature: activeModel?.temperature ?? null
   };
 }
 
