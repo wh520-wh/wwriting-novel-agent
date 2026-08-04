@@ -110,6 +110,32 @@ export async function previewEditChapter(projectRoot, args) {
   return { ok: true, chapter_no: Number(args.chapter_no), before, after };
 }
 
+// ---- 蓝图只增不改校验（spec §1.6）----
+// mode=extend 时服务端强制：解析现有 OUTLINE.md/SETTING.md 的标题，newContent 里出现
+// 已有标题（完全一致、或是已有标题的前缀/后缀）即拒绝，只允许追加新字段/新章节。
+
+function extractBlueprintHeadings(text) {
+  return String(text ?? "").split("\n")
+    .map((line) => line.trim())
+    .filter((line) => /^#{1,6}\s+\S/u.test(line))
+    .map((line) => line.replace(/^#+\s+/u, "").trim());
+}
+
+async function assertExtendOnly(projectRoot, file, newContent) {
+  const fileName = file === "setting" ? "SETTING.md" : "OUTLINE.md";
+  const existing = await fs.readFile(safeJoin(projectRoot, fileName), "utf8").catch(() => null);
+  if (!existing) return; // 蓝图尚未生成：没有已定内容，直接放行
+  const existingTitles = extractBlueprintHeadings(existing);
+  for (const title of extractBlueprintHeadings(newContent)) {
+    const conflict = existingTitles.find((e) => e === title || e.startsWith(title) || title.startsWith(e));
+    if (conflict) {
+      const e = new Error(`总纲已定内容不可修改（已有标题「${conflict}」），如需调整请对话说明。`);
+      e.code = "append_only";
+      throw e;
+    }
+  }
+}
+
 export function registerWriteTools(registry) {
   registry.register({
     name: "edit_chapter",
@@ -239,6 +265,71 @@ export function registerWriteTools(registry) {
       const next = `${existing.trimEnd()}\n\n${heading}\n\n${String(args.plan ?? "").trim()}\n`;
       await writeFileAtomic(planPath, next);
       return { updated: true };
+    }
+  });
+
+  registry.register({
+    name: "update_blueprint",
+    kind: "write",
+    description: "更新规划蓝图。mode=extend 追加扩展总纲/设定（只增不改：不能覆盖已有字段，需调整请对话说明）；mode=check_segment 给章节骨架打勾。",
+    params: {
+      file: "outline | setting（默认 outline）",
+      mode: "extend | check_segment",
+      content: "extend 时的追加内容（markdown，用 ### N. 标题开头）",
+      chapterNo: "check_segment 时的章号（整数）"
+    },
+    run: async (args, ctx) => {
+      const file = args.file === "setting" ? "setting" : "outline";
+      const mode = String(args.mode ?? "");
+      if (mode !== "extend" && mode !== "check_segment") {
+        const e = new Error("mode 仅支持 extend（追加扩展）或 check_segment（骨架打勾）。");
+        e.code = "bad_args";
+        throw e;
+      }
+      const fileName = file === "setting" ? "SETTING.md" : "OUTLINE.md";
+      const filePath = safeJoin(ctx.projectRoot, fileName);
+      if (mode === "extend") {
+        const content = String(args.content ?? "").trim();
+        if (!content) {
+          const e = new Error("extend 需要提供 content 追加内容。");
+          e.code = "bad_args";
+          throw e;
+        }
+        await assertExtendOnly(ctx.projectRoot, file, content);
+        const existing = await fs.readFile(filePath, "utf8").catch(() => null);
+        const next = existing ? `${existing.trimEnd()}\n\n${content}\n` : `# ${fileName}\n\n${content}\n`;
+        await writeFileAtomic(filePath, next);
+        return { updated: true, file: fileName, mode };
+      }
+      // mode === "check_segment"：骨架打勾只对 OUTLINE.md 有意义
+      if (file !== "outline") {
+        const e = new Error("check_segment 只支持 outline（SETTING.md 没有章节骨架）。");
+        e.code = "bad_args";
+        throw e;
+      }
+      const chapterNo = Number(args.chapterNo);
+      if (!Number.isInteger(chapterNo) || chapterNo < 1) {
+        const e = new Error("check_segment 需要整数章号 chapterNo。");
+        e.code = "bad_args";
+        throw e;
+      }
+      const content = await fs.readFile(filePath, "utf8").catch(() => null);
+      if (!content) {
+        const e = new Error("OUTLINE.md 不存在，无法打勾。");
+        e.code = "file_not_found";
+        throw e;
+      }
+      const lineRe = new RegExp(`^- \\[ \\] 第${chapterNo}章`, "m");
+      if (new RegExp(`^- \\[x\\] 第${chapterNo}章`, "m").test(content)) {
+        return { updated: true, file: fileName, mode, chapter_no: chapterNo, already_checked: true };
+      }
+      if (!lineRe.test(content)) {
+        const e = new Error(`第 ${chapterNo} 章不在 OUTLINE.md 章节骨架中，无法打勾。`);
+        e.code = "segment_not_found";
+        throw e;
+      }
+      await writeFileAtomic(filePath, content.replace(lineRe, `- [x] 第${chapterNo}章`));
+      return { updated: true, file: fileName, mode, chapter_no: chapterNo };
     }
   });
 
