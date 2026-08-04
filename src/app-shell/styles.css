@@ -820,12 +820,27 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 }
 .composer.focus, .composer:focus-within { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--focus-ring), var(--shadow); }
 .composer-inner { display: grid; gap: 8px; padding: 12px 12px 9px; }
-.composer textarea {
-  width: 100%; border: none; resize: none; outline: none; background: transparent;
+/* spec §2.3-U5：底部栏三区 — 左（模型选择器）/ 中（输入区）/ 右（发送） */
+.composer-bar { display: flex; align-items: flex-end; gap: 10px; }
+.composer-left { display: flex; align-items: center; gap: 8px; flex: 0 1 auto; min-width: 0; }
+.composer-center { flex: 1 1 auto; min-width: 0; display: flex; }
+.composer-center textarea {
+  width: 100%; min-width: 0; border: none; resize: none; outline: none; background: transparent;
   font-size: 14px; line-height: 1.55; max-height: 200px; padding: 2px 4px;
 }
+.composer-right { flex: 0 0 auto; display: flex; align-items: center; }
 .composer textarea::placeholder { color: var(--faint); }
-.composer-bar { display: flex; align-items: center; gap: 8px; }
+/* 折叠提示：默认一行快捷键，展开后显示示例文案（spec §2.3-U5：示例移到折叠提示） */
+.composer-hint { margin: 0; }
+.composer-hint summary {
+  list-style: none; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 5px;
+}
+.composer-hint summary::-webkit-details-marker { display: none; }
+.composer-hint-examples {
+  font-size: 11px; color: var(--faint); font-family: var(--mono);
+  padding: 3px 0 0 4px;
+}
 .cbar-btn {
   display: inline-flex; align-items: center; gap: 6px;
   min-height: 30px; padding: 0 10px; border-radius: 9px;
@@ -834,7 +849,6 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 }
 .cbar-btn:hover { background: var(--hover); }
 .cbar-btn svg { display: block; color: var(--muted); }
-.cbar-spacer { margin-left: auto; }
 .cbar-hint { font-size: 11px; color: var(--faint); font-family: var(--mono); }
 .cbar-pill {
   display: inline-flex; align-items: center; gap: 6px;
@@ -941,16 +955,6 @@ button.cbar-pill--readonly:hover {
 .mode-popover-item .mpi-tx { min-width: 0; display: grid; gap: 1px; }
 .mode-popover-item .mpi-tx strong { font-size: 13px; font-weight: 650; }
 .mode-popover-item .mpi-tx small { font-size: 11.5px; color: var(--muted); }
-.mode-popover-item--yolo { border-color: var(--amber-line); background: var(--amber-soft); }
-.mode-popover-item--yolo .mpi-tx strong { color: var(--amber); }
-.mode-popover-item--yolo .mpi-tx small { color: var(--amber); }
-.mode-popover-item--yolo[aria-checked="true"] { background: color-mix(in srgb, var(--amber-soft) 85%, var(--amber-line)); border-color: var(--amber); }
-.mode-popover-warn {
-  padding: 8px 10px; border-radius: var(--r-sm); font-size: 11.5px; line-height: 1.5;
-  border: 1px solid var(--amber-line); background: var(--amber-soft); color: var(--amber);
-  margin-top: 4px;
-}
-.mode-popover-warn[hidden] { display: none; }
 .send {
   width: 34px; height: 34px; border-radius: 10px; flex: 0 0 auto;
   display: grid; place-items: center;
@@ -2389,6 +2393,10 @@ button.cbar-pill--readonly:hover {
 }
 .msg-action:hover { background: var(--hover); color: var(--ink-2); }
 .chat-bubble--user .msg-action { background: rgba(255,255,255,.14); border-color: rgba(255,255,255,.3); color: var(--btn-ink); }
+/* spec §2.3-U4：灰显按钮（aria-disabled）— 半透明 + not-allowed，无 hover 抬升；
+   保留指针事件，悬停时 title tooltip 仍可读。 */
+.msg-action[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
+.msg-action[aria-disabled="true"]:hover { background: none; color: var(--muted); }
 
 /* ============================================================
    S4.5 Task 13 · 阅读器选段引用

@@ -975,6 +975,8 @@ export function createThreadRenderer(ctx) {
   }
 
   // 气泡操作排：复制 / 重新发送（user）/ 重试本轮（assistant，仅最后一条显示，见 syncChatThread 收尾）。
+  // spec §2.3-U4：灰显按钮（无可复制/重发内容时）带 title tooltip 说明禁用原因 + aria-disabled，
+  // 点击直接返回不触发动作；有内容时不设 title/aria，保持原交互。
   function buildMsgActions(message, allMessages) {
     const bar = document.createElement("div");
     bar.className = "msg-actions";
@@ -983,7 +985,13 @@ export function createThreadRenderer(ctx) {
     copy.className = "msg-action";
     copy.dataset.testid = "msg-copy";
     copy.textContent = "复制";
+    const copyDisabled = !String(message.content ?? "").trim();
+    if (copyDisabled) {
+      copy.title = "无可复制内容";
+      copy.setAttribute("aria-disabled", "true");
+    }
     copy.addEventListener("click", async () => {
+      if (copy.getAttribute("aria-disabled") === "true") return;
       try {
         await navigator.clipboard.writeText(message.content ?? "");
         ctx.showToast("已复制。", "info");
@@ -998,7 +1006,13 @@ export function createThreadRenderer(ctx) {
       resend.className = "msg-action";
       resend.dataset.testid = "msg-resend";
       resend.textContent = "重新发送";
+      const resendDisabled = !String(message.content ?? "").trim();
+      if (resendDisabled) {
+        resend.title = "无可重发内容";
+        resend.setAttribute("aria-disabled", "true");
+      }
       resend.addEventListener("click", () => {
+        if (resend.getAttribute("aria-disabled") === "true") return;
         ctx.submitText?.(message.content ?? "");
       });
       bar.append(resend);

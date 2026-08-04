@@ -177,6 +177,9 @@ export function createComposer(ctx) {
   // --- four-tier approval / mode pill (S4 Task 8) ---
   // PERMISSION_TIERS 引用共享模块 PERMISSION_TIERS；detectPermissionTier 统一优先级。
   const TIER_DESC = Object.fromEntries(PERMISSION_TIERS.map((t) => [t.id, t.desc]));
+  // spec §2.3-U5：全程自动（yolo）只在设置弹窗「权限与确认」分区可选，
+  // 底部栏弹层不再提供——输入区减负，避免误触高风险模式。
+  const POPOVER_TIERS = PERMISSION_TIERS.filter((t) => t.id !== "yolo");
   function tierFromPermissions(perms) {
     return getTierById(detectPermissionTier(perms));
   }
@@ -224,9 +227,9 @@ export function createComposer(ctx) {
       const on = el.dataset.tierId === tier.id && !project?.archived_at;
       el.setAttribute("aria-checked", on ? "true" : "false");
     });
-    modePopoverActiveIndex = Math.max(0, PERMISSION_TIERS.findIndex((t) => t.id === tier.id));
-    const warn = document.getElementById("mode-popover-warn");
-    if (warn) warn.hidden = tier.id !== "yolo";
+    // 弹层只含 POPOVER_TIERS；当前档是 yolo 时（仅设置里可选）回退到弹层首项。
+    const idx = POPOVER_TIERS.findIndex((t) => t.id === tier.id);
+    modePopoverActiveIndex = idx < 0 ? 0 : idx;
   }
 
   function openModePopover() {
@@ -992,10 +995,10 @@ export function createComposer(ctx) {
     label.textContent = "权限模式";
     popover.append(label);
 
-    for (const tier of PERMISSION_TIERS) {
+    for (const tier of POPOVER_TIERS) {
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "mode-popover-item" + (tier.id === "yolo" ? " mode-popover-item--yolo" : "");
+      btn.className = "mode-popover-item";
       btn.setAttribute("role", "option");
       btn.setAttribute("data-tier-id", tier.id);
       btn.setAttribute("aria-checked", "false");
@@ -1011,13 +1014,6 @@ export function createComposer(ctx) {
       btn.addEventListener("click", onModePopoverItemClick);
       popover.append(btn);
     }
-
-    const warn = document.createElement("div");
-    warn.className = "mode-popover-warn";
-    warn.id = "mode-popover-warn";
-    warn.textContent = "警告：全程自动模式会自动执行所有写与控制操作，包括章节编辑、设定更新和任务控制。";
-    warn.hidden = true;
-    popover.append(warn);
 
     // 浮层挂在 composer-wrap 上，跟随 composer 一起定位
     const wrap = document.getElementById("composer") ?? ctx.refs.composer;
