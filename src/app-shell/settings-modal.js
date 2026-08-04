@@ -56,9 +56,9 @@ export function createSettingsModal(ctx, options = {}) {
   let lastTypedApiKey = "";
   let lastTypedApiKeyEnv = "";
 
-  async function fetchModelSecret() {
+  async function fetchModelSecret(envName) {
     try {
-      const data = await getJsonImpl("/api/settings/model-secret");
+      const data = await getJsonImpl(`/api/settings/model-secret?env=${encodeURIComponent(envName ?? "")}`);
       return data.value ?? "";
     } catch {
       return "";
@@ -721,19 +721,19 @@ export function createSettingsModal(ctx, options = {}) {
     endpointHint.className = "spd-hint";
     settingsFields.endpointHint = endpointHint;
 
-    // Saved local keys are loaded back into the field so the user can confirm
-    // the full value after restarting the app.
-    const apiKeyPlaceholder = usingThisPreset && profile.api_key_saved
-      ? "已配置，可留空保持不变"
-      : "粘贴官方 API Key";
+    // 已保存的 key 按「正在编辑的供应商」的 env 回填进输入框：
+    // 打开设置即可看到完整 key，可用眼睛按钮查看、复制按钮复制。
+    // （本地个人使用，不做遮罩隐藏。）
+    const apiKeyEnvValue = usingThisPreset && active.api_key_env ? active.api_key_env : preset.apiKeyEnv;
+    const savedForEnv = (globalModels.models ?? []).find((model) => model.api_key_env && model.api_key_env === apiKeyEnvValue);
+    const hasSavedKey = savedForEnv?.api_key_saved ?? (usingThisPreset && profile.api_key_saved);
     settingsFields.apiKey = settingField("API Key", "password", {
-      placeholder: apiKeyPlaceholder,
+      placeholder: "粘贴官方 API Key",
       secret: true
     });
-    if (usingThisPreset && profile.api_key_saved) {
-      fetchModelSecret().then((savedKey) => {
-        // Only prefill the saved key when the user has not already typed one
-        // (e.g. after a provider switch we restored their temporary key).
+    if (hasSavedKey && apiKeyEnvValue) {
+      fetchModelSecret(apiKeyEnvValue).then((savedKey) => {
+        // 仅当用户还没有手动输入时回填，避免覆盖正在输入的内容。
         if (savedKey && settingsFields.apiKey?.input && !settingsFields.apiKey.input.value) {
           settingsFields.apiKey.input.value = savedKey;
         }

@@ -201,7 +201,7 @@ export function createAppShellServer({
       return;
     }
     if (url.pathname === "/api/settings/model-secret" && request.method === "GET") {
-      await serveModelSecret(response, { workspace, selected, secretsRoot: localSecretsRoot });
+      await serveModelSecret(request, response, { workspace, selected, secretsRoot: localSecretsRoot });
       return;
     }
     if (url.pathname === "/api/settings/models" && request.method === "GET") {
@@ -696,12 +696,18 @@ async function serveSettingsUpdate(request, response, context) {
   }
 }
 
-async function serveModelSecret(response, context) {
+async function serveModelSecret(request, response, context) {
   try {
-    const projectRoot = await resolveActiveProjectRoot(context);
-    const project = await loadProject(projectRoot);
-    const config = await loadConfigLayers(projectRoot, project);
-    const envName = config.effective?.active_model?.api_key_env ?? null;
+    // 优先按请求携带的 env 读取（对应设置面板中正在编辑的供应商），
+    // 无参数时回退到当前项目 active model 的 env（保持旧调用兼容）。
+    const requestedEnv = new URL(request.url, "http://localhost").searchParams.get("env");
+    let envName = requestedEnv;
+    if (!envName) {
+      const projectRoot = await resolveActiveProjectRoot(context);
+      const project = await loadProject(projectRoot);
+      const config = await loadConfigLayers(projectRoot, project);
+      envName = config.effective?.active_model?.api_key_env ?? null;
+    }
     const value = envName ? loadLocalSecretsSync(context.secretsRoot)[envName] ?? process.env[envName] ?? "" : "";
     await serveJson(response, { ok: true, env: envName, value });
   } catch (error) {
