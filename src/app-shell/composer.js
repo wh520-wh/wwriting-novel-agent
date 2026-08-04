@@ -12,6 +12,8 @@ const SIDE_QUESTION_PREFIXES = ["/ask", "/side", "/q"];
 const REVIEW_PREFIXES = ["/review", "/审稿"];
 const WRITE_PREFIXES = ["/write", "/写作"];
 const MODEL_PREFIXES = ["/model", "/模型"];
+// /init（spec §1.4）：用户显式触发蓝图初始化，题材需求作为 /init 的参数。
+const INIT_PREFIXES = ["/init", "/初始化"];
 // 命中则说明旁路询问其实包含修改主线设定/正文的诉求，需要确认后才转正式任务。
 const MAIN_TASK_IMPACT_PATTERN = /(改成|改为|改掉|改写|写成|换成|替换|删除|删掉|去掉|移除|重写|改编|不要写|不再写|别写|不写|推翻|重新设定|改设定|改人设|改世界观|改大纲|改结局|改剧情|黑化|洗白|复活|写死|赐死|领便当|降智|崩坏|让.{0,6}死|让.{0,6}活|让.{0,8}(在一起|分手|退场|出局|登场|加入|离开|背叛|反水))/u;
 
@@ -177,6 +179,9 @@ export function createComposer(ctx) {
   // --- four-tier approval / mode pill (S4 Task 8) ---
   // PERMISSION_TIERS 引用共享模块 PERMISSION_TIERS；detectPermissionTier 统一优先级。
   const TIER_DESC = Object.fromEntries(PERMISSION_TIERS.map((t) => [t.id, t.desc]));
+  // spec §2.3-U5：全程自动（yolo）只在设置弹窗「权限与确认」分区可选，
+  // 底部栏弹层不再提供——输入区减负，避免误触高风险模式。
+  const POPOVER_TIERS = PERMISSION_TIERS.filter((t) => t.id !== "yolo");
   function tierFromPermissions(perms) {
     return getTierById(detectPermissionTier(perms));
   }
@@ -224,9 +229,13 @@ export function createComposer(ctx) {
       const on = el.dataset.tierId === tier.id && !project?.archived_at;
       el.setAttribute("aria-checked", on ? "true" : "false");
     });
-    modePopoverActiveIndex = Math.max(0, PERMISSION_TIERS.findIndex((t) => t.id === tier.id));
-    const warn = document.getElementById("mode-popover-warn");
-    if (warn) warn.hidden = tier.id !== "yolo";
+    // 弹层只含 POPOVER_TIERS；当前档是 yolo 时（仅设置里可选）回退到相邻的 auto 档，
+    // 避免高亮最低档「只读」与 pill 上的「全程自动」反差误导。
+    let idx = POPOVER_TIERS.findIndex((t) => t.id === tier.id);
+    if (idx < 0) {
+      idx = Math.max(0, POPOVER_TIERS.findIndex((t) => t.id === "auto"));
+    }
+    modePopoverActiveIndex = idx;
   }
 
   function openModePopover() {
@@ -337,7 +346,9 @@ export function createComposer(ctx) {
       return;
     }
     if (event.key === "Enter" || event.key === " ") {
-      const tier = PERMISSION_TIERS[modePopoverActiveIndex];
+      // modePopoverActiveIndex 是 POPOVER_TIERS（不含 yolo）的索引；
+      // 取档必须用 POPOVER_TIERS，否则 yolo 被排除后索引会错位。
+      const tier = POPOVER_TIERS[modePopoverActiveIndex];
       if (tier) {
         event.preventDefault();
         void applyTier(tier);
@@ -564,6 +575,10 @@ export function createComposer(ctx) {
     if (model !== null) {
       return { type: "model", content: model, raw, shouldAffectMainTask: false };
     }
+    const init = matchCommandPrefix(trimmed, INIT_PREFIXES);
+    if (init !== null) {
+      return { type: "init", content: init, raw, shouldAffectMainTask: true };
+    }
     if (mode === "side_question") {
       return { type: "side_question", content: trimmed, raw, shouldAffectMainTask: detectMainTaskImpact(trimmed) };
     }
@@ -760,8 +775,46 @@ export function createComposer(ctx) {
       await submitModelCommand(parsed.content);
       return;
     }
+    if (parsed.type === "init") {
+      await submitBlueprintInit(parsed.content);
+      return;
+    }
     // 默认走 chat agent
     await sendChatMessageWithUX(parsed.content);
+  }
+
+  // /init（spec §1.4）：显式触发蓝图初始化。requirements 可为空——
+  // 服务端 pickTemplate 对空输入走默认玄幻模板，生成不依赖用户补充题材。
+  async function submitBlueprintInit(requirements) {
+    const projectRoot = ctx.getCurrentProjectRoot();
+    if (!projectRoot) {
+      ctx.showToast("请先新建或打开一部小说。", "info");
+      return;
+    }
+    const token = ctx.projectScope?.capture(projectRoot);
+    ctx.refs.composerSubmit.disabled = true;
+    ctx.refs.composerSubmit.setAttribute("aria-busy", "true");
+    try {
+      ctx.showToast("正在生成大纲与设定（OUTLINE.md + SETTING.md），可能需要一两分钟…", "info");
+      const result = await postJson("/api/projects/init-blueprint", {
+        projectRoot,
+        requirements: String(requirements ?? "").trim(),
+      });
+      if (token && !ctx.projectScope.isCurrent(token)) return;
+      clearComposerInput();
+      ctx.showToast("蓝图已生成（OUTLINE.md + SETTING.md），可以开始写作了。", "success");
+      ctx.ensureRefreshLoop(true);
+      await ctx.loadDashboard();
+      return result;
+    } catch (error) {
+      if (token && !ctx.projectScope.isCurrent(token)) return;
+      persistCurrentDraftNow(projectRoot);
+      ctx.showActionError(error);
+      throw error;
+    } finally {
+      ctx.refs.composerSubmit.removeAttribute("aria-busy");
+      updateSubmitState();
+    }
   }
 
   async function submitWritingCommand(message, mode, { fromSideQuestion = false, projectRoot: requestedProjectRoot = null } = {}) {
@@ -992,10 +1045,10 @@ export function createComposer(ctx) {
     label.textContent = "权限模式";
     popover.append(label);
 
-    for (const tier of PERMISSION_TIERS) {
+    for (const tier of POPOVER_TIERS) {
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "mode-popover-item" + (tier.id === "yolo" ? " mode-popover-item--yolo" : "");
+      btn.className = "mode-popover-item";
       btn.setAttribute("role", "option");
       btn.setAttribute("data-tier-id", tier.id);
       btn.setAttribute("aria-checked", "false");
@@ -1011,13 +1064,6 @@ export function createComposer(ctx) {
       btn.addEventListener("click", onModePopoverItemClick);
       popover.append(btn);
     }
-
-    const warn = document.createElement("div");
-    warn.className = "mode-popover-warn";
-    warn.id = "mode-popover-warn";
-    warn.textContent = "警告：全程自动模式会自动执行所有写与控制操作，包括章节编辑、设定更新和任务控制。";
-    warn.hidden = true;
-    popover.append(warn);
 
     // 浮层挂在 composer-wrap 上，跟随 composer 一起定位
     const wrap = document.getElementById("composer") ?? ctx.refs.composer;
@@ -1039,7 +1085,7 @@ export function createComposer(ctx) {
   return {
     parseUserCommand, onComposerKeydown, autoGrowComposer, updateSubmitState,
     updateSlashMenu, hideSlashMenu, submitComposer, submitText, submitWritingCommand,
-    startCurrentChapter,
+    submitBlueprintInit, startCurrentChapter,
     submitSideQuestion, promoteAskEntry, resultMessageForCommand,
     initModePill, updateModePill, openModePopover, closeModePopover,
     openModelPopover, closeModelPopover, updateStatusPills, sendChatMessageWithUX,

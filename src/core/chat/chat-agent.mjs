@@ -10,6 +10,7 @@ import { appendChatMessage, loadPendingAction, savePendingAction, clearPendingAc
 import { appendTranscript } from "./transcript-store.mjs";
 import { appendEvent } from "../event-log.mjs";
 import { loadConfigLayers } from "../config-runtime.mjs";
+import { assertBlueprintReady } from "../blueprint-guard.mjs";
 import path from "node:path";
 
 export const MAX_TOOL_ROUNDS = 32;
@@ -83,8 +84,21 @@ export async function resumeChatTurn(options) {
     } else {
       const tool = registry.get(pending.tool);
       const busy = checkRunBusy(tool, server, projectRoot);
+      // 蓝图门禁（spec §1.4）：pending 工具均为 write/control 类（read 类从不挂 pending），
+      // 执行前检查；与 agentLoop 内 !isRead 分支一致，阻断时清掉 pending。
+      let blueprintBlock = null;
+      if (tool?.kind !== "read") {
+        try {
+          await assertBlueprintReady(projectRoot);
+        } catch (error) {
+          blueprintBlock = { ok: false, error: "blueprint_not_ready", message: error.message };
+        }
+      }
       if (busy) {
         outcome = busy;
+        await clearPendingAction(projectRoot);
+      } else if (blueprintBlock) {
+        outcome = blueprintBlock;
         await clearPendingAction(projectRoot);
       } else {
         // §3.3: Atomically mark as executing before execution
@@ -102,10 +116,17 @@ export async function resumeChatTurn(options) {
     await clearPendingAction(projectRoot);
   }
   const toolEvent = { tool: pending.tool, ok: outcome.ok, error: outcome.ok ? null : outcome.error };
+  // 蓝图门禁拒绝路径与 agentLoop 的 !isRead 分支保持一致：result_summary 用纯 message，
+  // 不 JSON 序列化 {error, message}（其余错误路径保持原样）。
+  const resultSummary = outcome.ok
+    ? summarize(outcome.result)
+    : outcome.error === "blueprint_not_ready"
+      ? outcome.message
+      : summarize({ error: outcome.error, message: outcome.message });
   await appendChatMessage(projectRoot, {
     role: "tool", tool: pending.tool, ok: outcome.ok,
     args: summarizeArgs(pending.args),
-    result_summary: summarize(outcome.ok ? outcome.result : { error: outcome.error, message: outcome.message })
+    result_summary: resultSummary
   });
   options.onEvent?.({ type: "tool_result", ...toolEvent });
   return await agentLoop({ ...options, userMessage: null, turnId: resumeTurnId }, [toolEvent]);
@@ -179,15 +200,14 @@ async function agentLoop(options, toolEvents) {
     // §2.4：处理本轮全部 tool_calls —— 顺序执行 read 类，遇到第一个 write/control 即挂 pending
     let foundWriteTool = false;
     let savedPending = null;
+    const skippedBatch = [];
     for (const tc of parsed.tool_calls) {
       if (foundWriteTool) {
-        // 排在 write/control 之后的工具：丢弃并注明 skipped_after_pending
+        // 排在 write/control 之后的工具：跳过决策不变（仍逐条 skipped_after_pending 事件），
+        // 只改落盘方式——本轮连续 SKIPPED 循环结束后聚合成一条 batch_skipped
+        // （spec §2.3-U1 P2-9：后端聚合是数据协议，历史回放/UI 重载看到同一条）。
         toolEvents.push({ tool: tc.tool, ok: false, error: "skipped_after_pending" });
-        await appendChatMessage(projectRoot, {
-          role: "tool", tool: tc.tool, ok: false,
-          args: summarizeArgs(tc.args),
-          result_summary: "SKIPPED: 前序操作已落待确认，此工具不执行。"
-        });
+        skippedBatch.push(tc.tool);
         onEvent?.({ type: "tool_result", tool: tc.tool, ok: false });
         continue;
       }
@@ -207,6 +227,20 @@ async function agentLoop(options, toolEvents) {
       const isRead = tool.kind === "read";
       if (!isRead) {
         foundWriteTool = true;
+        // 蓝图门禁（spec §1.4）：write/control 工具执行前检查，read 类工具不受限。
+        // 不通过则拒绝并继续处理后续 tool_calls（与权限预检同模式）。
+        let blueprintBlocked = null;
+        try {
+          await assertBlueprintReady(projectRoot);
+        } catch (error) {
+          blueprintBlocked = { ok: false, error: "blueprint_not_ready", message: error.message };
+        }
+        if (blueprintBlocked) {
+          toolEvents.push({ tool: tc.tool, ok: false, error: blueprintBlocked.error });
+          await appendChatMessage(projectRoot, { role: "tool", tool: tc.tool, ok: false, args: summarizeArgs(tc.args), result_summary: blueprintBlocked.message });
+          onEvent?.({ type: "tool_result", tool: tc.tool, ok: false });
+          continue;
+        }
         // 权限预检
         const permission = checkToolPermission(tool, project?.tool_permissions ?? {}, { archived: Boolean(project?.archived_at) });
         if (!permission.allowed) {
@@ -271,7 +305,14 @@ async function agentLoop(options, toolEvents) {
       });
       onEvent?.({ type: "tool_result", ...event });
     }
-    // 本轮全部 tool_calls 处理完毕：若写入 pending，返回等待确认；否则续下一轮
+    // 本轮全部 tool_calls 处理完毕：连续 SKIPPED 聚合落盘成一条（不改跳过决策，只改落盘方式）
+    if (skippedBatch.length > 0) {
+      await appendChatMessage(projectRoot, {
+        role: "tool", tool: "batch_skipped", ok: false,
+        result_summary: `${skippedBatch.length} 个后续操作已跳过（待前序确认）：${skippedBatch.join(", ")}`
+      });
+    }
+    // 若写入 pending，返回等待确认；否则续下一轮
     if (savedPending) {
       const note = [parsed.leadText, `（待确认操作：${savedPending.tool}，请在确认卡上批准或取消）`].filter(Boolean).join("\n");
       await appendChatMessage(projectRoot, { role: "assistant", content: note, cost: totalCost || undefined });

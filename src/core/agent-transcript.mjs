@@ -18,9 +18,17 @@ export class ToolTranscript {
   }
 
   appendAssistant({ content = null, tool_calls = null, reasoning_content = null } = {}) {
+    // 真实 API 契约（DeepSeek/OpenAI）：assistant 消息必须含 content 或 tool_calls，
+    // 全空消息（content 空且无 tool_calls）会被 400 拒绝。模型偶发空响应时跳过入史，
+    // 保持消息链合法；仅跳过"本轮无任何决策"的沉默轮次，不影响 pendingToolCalls 不变式。
+    const hasContent = Boolean(content);
+    const hasToolCalls = Array.isArray(tool_calls) && tool_calls.length > 0;
+    if (!hasContent && !hasToolCalls) {
+      return;
+    }
     const msg = { role: "assistant" };
-    if (content) msg.content = content;
-    if (tool_calls && tool_calls.length > 0) msg.tool_calls = tool_calls;
+    if (hasContent) msg.content = content;
+    if (hasToolCalls) msg.tool_calls = tool_calls;
     if (reasoning_content) msg.reasoning_content = reasoning_content;
     this.messages.push(msg);
   }

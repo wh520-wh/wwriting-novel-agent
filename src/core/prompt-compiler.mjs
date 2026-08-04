@@ -8,12 +8,15 @@ export const STABLE_BLOCK_ORDER = [
   "style",
   "skill_instructions",
   "source_summaries",
-  "outline"
+  "outline",
+  "setting"
 ];
 
 export const DYNAMIC_BLOCK_ORDER = [
   "project_memory",
   "chapter_plan",
+  "current_outline_segment",
+  "character_status",
   "current_task",
   "selected_draft_fragment",
   "latest_user_feedback",

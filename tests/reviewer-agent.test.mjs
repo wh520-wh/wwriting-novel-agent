@@ -4,12 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { runProject } from "../src/core/agent-engine.mjs";
-import { createProject } from "../src/core/project-store.mjs";
+import { createWritingProject } from "./helpers.mjs";
 import { runReviewerAgent } from "../src/core/reviewer-agent.mjs";
 
 test("Reviewer Agent passes a locally verified completed project", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-review-pass-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 2,
     min_words_per_chapter: 220,
@@ -27,7 +27,7 @@ test("Reviewer Agent passes a locally verified completed project", async () => {
 
 test("Reviewer Agent detects tampered completed chapter files", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-review-tamper-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 220,

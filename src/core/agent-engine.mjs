@@ -1,6 +1,7 @@
 import { appendEvent, readEvents, tailEvents } from "./event-log.mjs";
 import { CacheKeyManager, writeCacheReport } from "./cache-key-manager.mjs";
 import { loadConfigLayers } from "./config-runtime.mjs";
+import { assertBlueprintReady } from "./blueprint-guard.mjs";
 import { CostTracker } from "./cost-tracker.mjs";
 import { buildPricingTable } from "./model-pricing.mjs";
 import { readJson, safeJoin, sha256, writeFileAtomic, writeJsonAtomic } from "./fs-utils.mjs";
@@ -59,6 +60,8 @@ export class ProjectBlockedError extends Error {
 }
 
 export async function runProject(projectRoot, options = {}) {
+  // 蓝图门禁（spec §1.4）：blueprint_status 非 complete/legacy 时拒绝进入写作主循环
+  await assertBlueprintReady(projectRoot);
   const loadedProject = await loadProject(projectRoot);
   const configLayers = await loadConfigLayers(projectRoot, loadedProject, options.configLayers ?? {});
   const project = applyEffectiveProjectConfig(loadedProject, configLayers);
@@ -741,6 +744,8 @@ function renderForPrompt(continuity) {
 
 // S3 fact-check 门禁：在 reviewChapter 内、skill checks 之后调用。
 // 不阻塞主流程：外层调用需用 try/catch 包裹，本函数内部也会吞下非致命错误。
+// spec §1.7：注入 OUTLINE.md 总纲（outlineContext）做跑偏核对；deviation 是软提示，
+// 不进 needs_revision / commitFailures，只写作者报告（proactive 消息 + reportHint）。
 export async function runFactCheck(projectRoot, project, state, runtime, draft) {
   if (project.fact_check?.enabled === false) {
     return null;
@@ -765,7 +770,12 @@ export async function runFactCheck(projectRoot, project, state, runtime, draft) 
     });
     return null;
   }
-  if (!continuity.facts.length) {
+  // spec §1.7（P1-6/P2-10）：跑偏核对不依赖 continuity facts。
+  // 无 facts 时"事实矛盾"维度跳过（现有行为），但只要 OUTLINE.md 总纲可读，
+  // "剧情跑偏"维度仍执行（对照总纲判断走向）。两样都没有 → 维持原有跳过语义。
+  const outlineContext = await readOutlineCore(projectRoot);
+  const hasFacts = continuity.facts.length > 0;
+  if (!hasFacts && !outlineContext) {
     await appendEvent(projectRoot, {
       type: "fact_check_skipped", project_id: project.project_id,
       chapter_no: state.current_chapter_no, stage: "reviewing",
@@ -782,8 +792,10 @@ export async function runFactCheck(projectRoot, project, state, runtime, draft) 
         project, stage: "fact_check",
         messages: buildFactCheckMessages({
           chapterNo: state.current_chapter_no, draft,
-          facts: continuity.facts, timeline: continuity.timeline,
-          storyClock: describeStoryClock(continuity.timeline)
+          facts: hasFacts ? continuity.facts : [],
+          timeline: hasFacts ? continuity.timeline : [],
+          storyClock: hasFacts ? describeStoryClock(continuity.timeline) : undefined,
+          outlineContext
         }),
         signal: runtime.signal,
         metadata: { factCheck: true, chapterNo: state.current_chapter_no, attempt }
@@ -802,13 +814,31 @@ export async function runFactCheck(projectRoot, project, state, runtime, draft) 
     });
     return null;
   }
+  // spec §1.7（P1-7）：deviation = 软提示，不进 needs_revision / commitFailures，
+  // 只写作者报告（proactive 消息 + reportHint）。旧模型不返回时降级为未检测。
+  const deviation = parsed.deviation ?? { detected: false, description: "" };
+  const reportHint = deviation.detected
+    ? `本章偏离主线：${deviation.description || "模型未说明具体偏离点"}，建议人工确认。`
+    : null;
+  if (deviation.detected) {
+    await appendEvent(projectRoot, {
+      type: "fact_check_deviation", project_id: project.project_id,
+      chapter_no: state.current_chapter_no, stage: "reviewing", severity: "info",
+      message: reportHint,
+      data: deviation
+    });
+    await appendChatMessage(projectRoot, {
+      role: "assistant", content: reportHint, proactive: "fact_check",
+      chapter_no: state.current_chapter_no
+    });
+  }
   if (parsed.conflicts.length === 0) {
     await appendEvent(projectRoot, {
       type: "fact_check_completed", project_id: project.project_id,
       chapter_no: state.current_chapter_no, stage: "reviewing",
-      message: "fact-check 未发现冲突"
+      message: deviation.detected ? "fact-check 未发现冲突（含跑偏提示）" : "fact-check 未发现冲突"
     });
-    return { conflicts: [] };
+    return { conflicts: [], deviation, reportHint };
   }
 
   // 有冲突：记事件 + 主动消息 + 可选 pending
@@ -831,7 +861,7 @@ export async function runFactCheck(projectRoot, project, state, runtime, draft) 
   // 不再自动 indexOf+replace 改正文。conflicts 返回给上层（reviewChapter），
   // 由 reviewChapter 进 needs_revision、把 conflicts 作为 feedback 喂回写作循环，
   // 模型用 edit_chapter 自己改。砍掉“只改第一个”“长引文跳过”两个 bug 的根源。
-  return { conflicts };
+  return { conflicts, deviation, reportHint };
 }
 
 // ADR-0001：fact-check 发现冲突 -> 进 needs_revision，conflicts 作为 feedback 喂回写作循环。
@@ -1162,11 +1192,184 @@ const DEFAULT_FORBIDDEN_PATTERNS = [
   "神性"
 ];
 
+// =============== 蓝图注入：outline/setting/character_status（spec §1.5 P1-8/P1-9） ===============
+// 切分原则（P1-9 修订核心）：
+// - outline（OUTLINE.md 总纲区）→ stable；setting（SETTING.md 静态部分）→ stable
+// - character_status（continuity 实时角色状态）→ dynamic；current_outline_segment（当前卷骨架）→ dynamic
+// 角色当前状态绝对不能进 stable block：状态每章变化，进 stable 会破坏 stableHash 缓存。
+// 读取失败降级（P1-8）：OUTLINE.md/SETTING.md 不存在或读取失败时跳过对应块（返回 null/""），
+// 不报错、不阻断写作；legacy 项目 block 为空等价于无蓝图约束。
+// 大小限制（P1-8）：总纲超 4000 字只保留核心段（主题/主线/核心矛盾/卷划分）；设定超 6000 字
+// 只保留世界观 + 角色表（≤10 个角色）；均带截断标记。
+const OUTLINE_MAX_CHARS = 4000;
+const SETTING_MAX_CHARS = 6000;
+const SETTING_MAX_CHARACTERS = 10;
+const TRUNCATION_MARKER = "\n\n[内容过长，已按预算截断，其余部分请在对话中说明]";
+
+// createProject 默认写入的占位蓝图（"蓝图未生成，请运行 /init"）等价于无蓝图 → 跳过注入，
+// 避免把占位文案当真实蓝图塞进 prompt（对 blueprint_status: none / 未跑 /init 的项目）。
+const BLUEPRINT_PLACEHOLDER = /^# (OUTLINE|SETTING)\.md\s*\n>\s*蓝图未生成，请运行 \/init\s*$/;
+
+// 读 OUTLINE.md 总纲区（"一、总纲" 到 "二、章节骨架" 之间）。文件缺失/占位/读取失败 → null。
+export async function readOutlineSection(projectRoot) {
+  const text = await readBlueprintFile(projectRoot, "OUTLINE.md");
+  if (text === null || BLUEPRINT_PLACEHOLDER.test(text.trim())) return null;
+  const end = text.match(/^##\s*二、章节骨架/m);
+  const start = text.match(/^##\s*一、总纲/m);
+  if (!start) return text.slice(0, end ? end.index : undefined).trim(); // 非模板结构：到骨架标题为止，骨架区不进 stable
+  return text.slice(start.index, end ? end.index : undefined).trim();
+}
+
+// 读 OUTLINE.md 总纲核心段（主题/主线/核心矛盾，spec §1.7 跑偏核对的对照锚点）。
+// 复用 readOutlineSection 的总纲区切分与占位检测（BLUEPRINT_PLACEHOLDER → null）；
+// 非模板结构取不到核心小节时降级为整个总纲区。文件缺失/占位/读取失败 → null（不阻断）。
+export async function readOutlineCore(projectRoot) {
+  const section = await readOutlineSection(projectRoot);
+  if (section === null) return null;
+  const core = splitSubsections(section)
+    .filter((block) => /^###\s*[1-3]\./.test(block.heading))
+    .map((block) => block.text);
+  const text = core.length > 0 ? core.join("\n\n") : section;
+  return text.length <= OUTLINE_MAX_CHARS ? text : `${text.slice(0, OUTLINE_MAX_CHARS)}${TRUNCATION_MARKER}`;
+}
+
+// 读 SETTING.md 静态规划部分（世界观 + 角色身份/性格/能力/关系）。文件缺失/占位/读取失败 → null。
+export async function readSettingStatic(projectRoot) {
+  const text = await readBlueprintFile(projectRoot, "SETTING.md");
+  if (text === null || BLUEPRINT_PLACEHOLDER.test(text.trim())) return null;
+  return text.trim();
+}
+
+// 读 OUTLINE.md 当前卷骨架（"二、章节骨架" 区，按 chapterNo 定位当前卷）。无骨架 → ""。
+export async function readCurrentVolumeOutline(projectRoot, chapterNo) {
+  const text = await readBlueprintFile(projectRoot, "OUTLINE.md");
+  if (text === null) return "";
+  const skeletonStart = text.match(/^##\s*二、章节骨架/m);
+  if (!skeletonStart) return "";
+  const skeleton = text.slice(skeletonStart.index).trim();
+  const volumes = splitVolumes(skeleton);
+  if (volumes.length === 0) return skeleton;
+  const n = Number(chapterNo);
+  if (!Number.isInteger(n) || n <= 0) return volumes[0].text;
+  // 取覆盖当前章号的卷：卷按文件顺序排列、最小章号递增；空卷（minChapterNo=null）跳过但不阻断其后的卷
+  let selected = volumes[0];
+  for (const volume of volumes) {
+    if (volume.minChapterNo == null) continue;
+    if (volume.minChapterNo > n) break;
+    selected = volume;
+  }
+  return selected.text;
+}
+
+// 从 continuity 渲染角色当前状态（参考信息，非硬性约束，spec §1.3 P1-5）。
+// 只注入与当前章相关的角色（chapter_no 未标注或 <= chapterNo）；无数据时返回 ""（block 自动跳过）。
+export function renderCharacterStatus(characters, { chapterNo } = {}) {
+  const list = Array.isArray(characters) ? characters : [];
+  const n = Number(chapterNo);
+  const relevant = Number.isInteger(n) && n > 0
+    ? list.filter((c) => c.chapter_no == null || Number(c.chapter_no) <= n)
+    : list;
+  if (relevant.length === 0) return "";
+  return [
+    "角色当前状态（参考信息，非硬性约束，以 continuity 实时档案为准）：",
+    ...relevant.map((c) => `- ${c.name ?? "未命名角色"}：${c.status || "状态未知"}`)
+  ].join("\n");
+}
+
+// 总纲截断：超 OUTLINE_MAX_CHARS 时只保留主题/主线/核心矛盾/卷划分四个核心小节，再超则硬截断。
+export function truncateOutline(text, maxChars = OUTLINE_MAX_CHARS) {
+  const trimmed = String(text ?? "").trim();
+  if (trimmed.length <= maxChars) return trimmed;
+  const core = splitSubsections(trimmed)
+    .filter((block) => /^###\s*[1-4]\./.test(block.heading))
+    .map((block) => block.text);
+  const kept = core.length > 0 ? core.join("\n\n") : trimmed;
+  return kept.length <= maxChars ? kept : `${kept.slice(0, maxChars)}${TRUNCATION_MARKER}`;
+}
+
+// 设定截断：超 SETTING_MAX_CHARS 时只保留世界观/角色表小节（角色表 ≤10 个角色），再超则硬截断。
+export function truncateSetting(text, maxChars = SETTING_MAX_CHARS) {
+  const trimmed = String(text ?? "").trim();
+  if (trimmed.length <= maxChars) return trimmed;
+  const kept = splitTopSections(trimmed)
+    .filter((block) => /(世界观|角色表)/.test(block.heading))
+    .map((block) => capCharacterBullets(block, SETTING_MAX_CHARACTERS))
+    .join("\n\n");
+  const bounded = kept.length > 0 ? kept : trimmed;
+  return bounded.length <= maxChars ? bounded : `${bounded.slice(0, maxChars)}${TRUNCATION_MARKER}`;
+}
+
+async function readBlueprintFile(projectRoot, fileName) {
+  try {
+    return await fs.readFile(safeJoin(projectRoot, fileName), "utf8");
+  } catch {
+    return null; // 不存在/读取失败 → 降级跳过，不阻断写作
+  }
+}
+
+// 把骨架区按 "### 第X卷" 标题切成卷，并解析每卷最小章号。
+// 章号只从条目行解析（- [ ] 第N章...），避免卷标题的承接注释（如"（承接第2章伏笔）"）污染最小章号。
+function splitVolumes(skeleton) {
+  const headingRe = /^###\s+(第.+?卷)/gm;
+  const headings = [];
+  let match;
+  while ((match = headingRe.exec(skeleton)) !== null) headings.push(match.index);
+  if (headings.length === 0) return [];
+  return headings.map((index, i) => {
+    const end = headings[i + 1] ?? skeleton.length;
+    const text = skeleton.slice(index, end).trim();
+    const minMatch = text.match(/-\s*\[\s*\]\s*第(\d+)章/);
+    return { text, minChapterNo: minMatch ? Number(minMatch[1]) : null };
+  });
+}
+
+function splitSections(text, headingRe) {
+  const matches = [];
+  let match;
+  headingRe.lastIndex = 0;
+  while ((match = headingRe.exec(text)) !== null) matches.push(match.index);
+  return matches.map((index, i) => {
+    const end = matches[i + 1] ?? text.length;
+    const blockText = text.slice(index, end).trim();
+    return { heading: blockText.split("\n", 1)[0], text: blockText };
+  });
+}
+
+function splitSubsections(text) {
+  // 只按 ### 切分：#### 等更深层级标题并入所属 ### 小节，避免嵌套子节被独立切出后整体丢掉
+  return splitSections(text, /^###\s+/gm);
+}
+
+function splitTopSections(text) {
+  return splitSections(text, /^##\s+/gm);
+}
+
+// 角色表小节只保留前 maxBullets 个角色条目（- 开头的行），超出加注说明。
+function capCharacterBullets(block, maxBullets) {
+  if (!/角色表/.test(block.heading)) return block.text;
+  const lines = block.text.split("\n");
+  let bulletCount = 0;
+  const kept = [];
+  for (const line of lines) {
+    if (line.trimStart().startsWith("- ")) {
+      bulletCount += 1;
+      if (bulletCount > maxBullets) {
+        if (kept.length === 0 || !kept[kept.length - 1].startsWith("> ")) {
+          kept.push(`> （角色表过长，仅保留前 ${maxBullets} 个角色）`);
+        }
+        continue;
+      }
+    }
+    kept.push(line);
+  }
+  return kept.join("\n");
+}
+
 export async function compileChapterPrompt(projectRoot, project, state, request, runtime) {
   const configuredVersion = project.prompt_template_versions?.drafting ?? "v1";
   const templateVersion = configuredVersion.startsWith("drafting.") ? configuredVersion : `drafting.${configuredVersion}`;
   const compiler = new PromptCompiler({ templateVersion });
-  const [promptTemplate, bookSummary, draft, latestUserFeedback, planningSkillPrompts, stageSkillPrompts, continuityContext, continuity] = await Promise.all([
+  const [promptTemplate, bookSummary, draft, latestUserFeedback, planningSkillPrompts, stageSkillPrompts, continuityContext, continuity, outlineSection, settingStatic, currentVolumeOutline] = await Promise.all([
     readOptionalProjectText(projectRoot, "prompts", `${templateVersion}.md`),
     readOptionalProjectText(projectRoot, "memory", "book_summary.md"),
     readDraft(projectRoot, project, state.current_chapter_no),
@@ -1182,7 +1385,11 @@ export async function compileChapterPrompt(projectRoot, project, state, request,
       skills: runtime?.stepSkills
     }),
     buildContinuityPromptContext(projectRoot, state.current_chapter_no),
-    loadContinuity(projectRoot)
+    loadContinuity(projectRoot),
+    // spec §1.5 P1-8：蓝图注入内容构建；读取失败降级为 null/""，块不加入
+    readOutlineSection(projectRoot),
+    readSettingStatic(projectRoot),
+    readCurrentVolumeOutline(projectRoot, state.current_chapter_no)
   ]);
   const skillInstructions = [planningSkillPrompts.content, stageSkillPrompts.content].filter(Boolean).join("\n\n");
   const styleRules = [
@@ -1207,19 +1414,25 @@ export async function compileChapterPrompt(projectRoot, project, state, request,
   const chapterContinuityRule = state.current_chapter_no > 1
     ? `第 ${state.current_chapter_no} 章必须从第 ${state.current_chapter_no - 1} 章留下的后果、线索或情绪压力继续推进。`
     : "第 1 章可以建立初始处境一次；不要在同一章后续段落重复开场。";
-  const compiled = compiler.compile({
-    stableBlocks: {
-      system_rules:
-        promptTemplate ||
-        DEFAULT_DRAFTING_SYSTEM_RULES,
-      goal: project.story_seed ?? project.title ?? "Untitled writing project",
-      style: styleRulesText,
-      skill_instructions: skillInstructions
-    },
-    dynamicBlocks: {
-      project_memory: [bookSummary, buildRelevantFacts(continuity, state.current_chapter_no), continuityContext].filter(Boolean).join("\n\n"),
-      chapter_plan: [`第 ${state.current_chapter_no} 章 / 共 ${project.target_chapters} 章。`, chapterContinuityRule].join("\n"),
-      current_task: JSON.stringify(
+  const stableBlocks = {
+    system_rules:
+      promptTemplate ||
+      DEFAULT_DRAFTING_SYSTEM_RULES,
+    goal: project.story_seed ?? project.title ?? "Untitled writing project",
+    style: styleRulesText,
+    skill_instructions: skillInstructions
+  };
+  // spec §1.5 P1-8：outline/setting 内容构建（stable）。文件缺失/读取失败时 block 不加入。
+  if (outlineSection) stableBlocks.outline = truncateOutline(outlineSection);
+  if (settingStatic) stableBlocks.setting = truncateSetting(settingStatic);
+  const dynamicBlocks = {
+    project_memory: [bookSummary, buildRelevantFacts(continuity, state.current_chapter_no), continuityContext].filter(Boolean).join("\n\n"),
+    chapter_plan: [`第 ${state.current_chapter_no} 章 / 共 ${project.target_chapters} 章。`, chapterContinuityRule].join("\n"),
+    // spec §1.5 P1-9：当前卷骨架（dynamic，按章定位）；无骨架时内容为空 → 块自动跳过
+    current_outline_segment: currentVolumeOutline,
+    // spec §1.5 P1-9：角色当前状态必须放 dynamic（每章变化），绝不放 stable 的 setting
+    character_status: renderCharacterStatus(continuity.characters, { chapterNo: state.current_chapter_no }),
+    current_task: JSON.stringify(
         {
           kind: request.kind,
           project_id: request.project_id ?? project.project_id,
@@ -1255,8 +1468,8 @@ export async function compileChapterPrompt(projectRoot, project, state, request,
       selected_draft_fragment: draft.slice(-1200),
       latest_user_feedback: latestUserFeedback,
       recent_trace_summary: `stage=${state.current_stage}; current_segment_no=${state.current_segment_no}; attempt=${request.attempt}.`
-    }
-  });
+  };
+  const compiled = compiler.compile({ stableBlocks, dynamicBlocks });
   return {
     ...compiled,
     skillHooks: [...planningSkillPrompts.hooks, ...stageSkillPrompts.hooks]
@@ -1332,6 +1545,7 @@ const DRAFTING_ALLOWED_TOOLS = [
   "read_chapter",
   "read_continuity",
   "read_outline",
+  "read_blueprint",
   "edit_chapter",
   "append_chapter_segment"
 ];
@@ -1342,9 +1556,11 @@ const REVISING_ALLOWED_TOOLS = [
   "read_chapter",
   "read_continuity",
   "read_outline",
+  "read_blueprint",
   "edit_chapter",
   "update_continuity",
   "update_outline",
+  "update_blueprint",
   "append_chapter_segment"
 ];
 

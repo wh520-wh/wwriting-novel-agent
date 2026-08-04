@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import { spawn } from "node:child_process";
 import net from "node:net";
 import path from "node:path";
-import { createProject } from "../src/core/project-store.mjs";
+import { createProject, loadState, saveState } from "../src/core/project-store.mjs";
 import { runProject } from "../src/core/agent-engine.mjs";
 import { runReviewerAgent } from "../src/core/reviewer-agent.mjs";
 import { searchWeb } from "../src/core/research-tools.mjs";
@@ -37,6 +37,9 @@ const { projectRoot } = await createProject(root, {
   network_allowed: true,
   enabled_skills: ["suspense-chapter-end"]
 });
+// 蓝图门禁（spec §1.4）：新建项目 blueprint_status 默认 "none"，写作入口会拒绝。
+// 本脚本验证 app shell 渲染与 API 流而非蓝图内容，预置 complete 放行（与 tests/helpers.mjs 同款模式）。
+await markBlueprintReady(projectRoot);
 await runProject(projectRoot);
 await searchWeb(
   projectRoot,
@@ -463,6 +466,9 @@ try {
     target_chapters: 1,
     min_words_per_chapter: 80
   });
+  // /api/projects/init 走 createProjectAt（blueprint_status "none"），
+  // 后续命令栏写作会被门禁拒绝，这里直接对文件系统预置 complete。
+  await markBlueprintReady(commandRoot);
   const inheritedCommandDashboard = await fetchJson(`http://127.0.0.1:${port}/api/dashboard`);
   assert.equal(inheritedCommandDashboard.projectRoot, commandRoot);
   assert.equal(inheritedCommandDashboard.project.active_model.model_name, "writer-smoke");
@@ -494,6 +500,8 @@ try {
       model_name: "missing-model"
     }
   });
+  // 同上：broken 项目也要通过蓝图门禁，才能走到 provider 失败路径（blocked）。
+  await markBlueprintReady(brokenProject.projectRoot);
   await postJson(`http://127.0.0.1:${port}/api/projects/open`, { projectRoot: brokenProject.projectRoot });
   const brokenCommand = await postJson(`http://127.0.0.1:${port}/api/commands/submit`, {
     message: "触发一个失败的 provider，用来验证前端不会一直显示工作中。"
@@ -571,6 +579,15 @@ async function waitForServer(targetPort) {
     }
   }
   throw new Error(`app shell server did not start. ${stderrText}`);
+}
+
+// 蓝图门禁适配（spec §1.4）：新建项目 blueprint_status 默认 "none"，
+// 写作入口（runProject / /api/commands/submit）会拒绝。verify 脚本只测 shell 渲染与
+// API 流，不验证蓝图内容，预置 complete 放行即可（与 tests/helpers.mjs createWritingProject 同款模式）。
+async function markBlueprintReady(projectRoot) {
+  const state = await loadState(projectRoot);
+  state.blueprint_status = "complete";
+  await saveState(projectRoot, state);
 }
 
 async function fetchText(url) {

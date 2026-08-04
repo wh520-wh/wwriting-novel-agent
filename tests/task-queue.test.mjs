@@ -13,6 +13,15 @@ async function makeQueue(prefix = "wwriting-task-queue-") {
   return { projectRoot, queue };
 }
 
+// createRecoveryTask 是写作入口（蓝图门禁 spec §1.4）：裸目录需先有 blueprint_status: complete，
+// 否则字段缺失且无章节产物会被门禁拒绝（Task 9 收紧后的语义）。
+async function markBlueprintReady(projectRoot) {
+  await fs.writeFile(
+    path.join(projectRoot, "agent_state.json"),
+    JSON.stringify({ schema_version: 1, project_status: "idle", blueprint_status: "complete" }, null, 2)
+  );
+}
+
 test("enqueue stores queued tasks with stable shape and persists them", async () => {
   const { projectRoot, queue } = await makeQueue();
 
@@ -226,6 +235,7 @@ test("expandInstruction 中文数字章数与 compileWritingTasks 对齐（写�
 
 test("schema v2 preserves recovery metadata across reload", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-queue-recovery-"));
+  await markBlueprintReady(root);
   const queue = new TaskQueue(root);
   await queue.load();
   const task = await queue.createRecoveryTask({
@@ -256,6 +266,7 @@ test("schema v2 preserves recovery metadata across reload", async () => {
 
 test("createRecoveryTask refuses to create a second running task", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-queue-recovery-running-"));
+  await markBlueprintReady(root);
   const queue = new TaskQueue(root);
   await queue.load();
   await queue.enqueue("already running", { mode: "write" });

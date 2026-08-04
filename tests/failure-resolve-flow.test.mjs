@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createAppShellServer } from "../src/core/app-server.mjs";
-import { createProject, loadState, saveState } from "../src/core/project-store.mjs";
+import { loadState, saveState } from "../src/core/project-store.mjs";
+import { createWritingProject } from "./helpers.mjs";
 import { readEvents } from "../src/core/event-log.mjs";
 import { appendFailure } from "../src/core/failures-store.mjs";
 
@@ -31,7 +32,7 @@ async function listenOnFetchSafePort(server) {
 
 async function setupServer(options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-resolve-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 3,
     min_words_per_chapter: 300,
@@ -99,7 +100,10 @@ test("resolve raise-budget 解除阻塞并自动续跑", async () => {
   const ctx = await setupServer({ testRunProject: run.testRunProject });
   try {
     // Seed blocked state with budget failure
+    // 保留 blueprint_status: complete（createWritingProject 的约定）：
+    // 手写 state 覆盖时会丢掉该字段，字段缺失且无章节产物会按 none 拒绝（Task 9 收紧后语义）。
     await saveState(ctx.projectRoot, {
+      blueprint_status: "complete",
       project_status: "blocked",
       blocked_reason: "model_call_budget_exhausted",
       blocked_at_stage: "drafting",

@@ -18,11 +18,13 @@ import {
   saveGlobalModelProfile,
   selectGlobalModelProfile
 } from "./global-model-settings.mjs";
+import { assertBlueprintReady } from "./blueprint-guard.mjs";
+import { runBlueprintInit, runBlueprintInitForLegacy } from "./blueprint-init.mjs";
 import { createProjectAt, loadProject, loadState, saveProject, saveState } from "./project-store.mjs";
 import { createResearchAdapter } from "./research-adapters.mjs";
 import { fetchWebPage, searchWeb } from "./research-tools.mjs";
 import { ModelConfigValidationError, validateModelConfig } from "./model-config-validation.mjs";
-import { subscribe } from "./run-events-bus.mjs";
+import { emit as emitRunEvent, subscribe } from "./run-events-bus.mjs";
 import { testModelConnection as runModelConnectionTest } from "./model-connection-test.mjs";
 import { SettingsValidationError, normalizeSettingsPatch, saveModelSettingsTransaction, updateProjectSettings } from "./settings-runtime.mjs";
 import { ensureBuiltinSkill, importProjectSkill, listProjectSkills } from "./skill-runtime.mjs";
@@ -153,6 +155,10 @@ export function createAppShellServer({
         selected = initialized;
         await rememberProject(appStateRoot, initialized);
       }
+      return;
+    }
+    if (url.pathname === "/api/projects/init-blueprint" && request.method === "POST") {
+      await serveBlueprintInit(request, response, { workspace, selected, stateRoot: appStateRoot, secretsRoot: localSecretsRoot, projectLocks, testModel });
       return;
     }
     if (url.pathname === "/api/skills/enable" && request.method === "POST") {
@@ -585,6 +591,44 @@ async function serveProjectInit(request, response, context = {}) {
   } catch (error) {
     sendError(response, new HttpError(400, "project_init_failed", error.message));
     return null;
+  }
+}
+
+// /init 独立服务端流程（spec §1.4 P1-3 修订）：不走 chat agent 的工具确认模型，
+// 后端直接生成 OUTLINE.md + SETTING.md 并原子提交（blueprint_status -> complete）。
+// 全程持项目锁（spec §1.4：/init 运行时锁项目，禁止其他写操作）。
+async function serveBlueprintInit(request, response, context) {
+  try {
+    const body = await readJsonBody(request);
+    const projectRoot = await resolveActiveWriteProjectRoot(context, body);
+    await assertNotArchived(projectRoot);
+    const requirements = String(body.requirements ?? body.user_requirements ?? "").trim();
+    await withProjectLock(context, projectRoot, async () => {
+      const project = await loadProject(projectRoot);
+      const modelClient = context.testModel?.chatClient?.() ?? await buildChatModelClient(project, projectRoot);
+      // spec §1.4 P2-5：legacy 项目（已有章节无 OUTLINE.md）的 /init 走反推生成（读已有章节+continuity+task_plan.md），
+      // 而非从 story_seed 凭空生成。完成事件统一由下方 appendEvent 承载（Minor 3：onEvent 只管过程事件，不双发）。
+      const state = await loadState(projectRoot);
+      const legacy = state?.blueprint_status === "legacy";
+      const result = legacy
+        ? await runBlueprintInitForLegacy(projectRoot, { modelClient, userRequirements: requirements, onEvent: (event) => emitRunEvent(projectRoot, event) })
+        : await runBlueprintInit(projectRoot, {
+            modelClient,
+            userRequirements: requirements,
+            onEvent: (event) => emitRunEvent(projectRoot, event)
+          });
+      await appendEvent(projectRoot, {
+        type: "blueprint_init_completed",
+        project_id: project.project_id,
+        message: legacy
+          ? (result?.notice ?? "蓝图已由已有章节反推生成（可能与正文不完全一致，请对照确认）")
+          : "/init 蓝图已生成并原子提交（OUTLINE.md + SETTING.md）",
+        data: { blueprint_status: "complete", legacy }
+      });
+    });
+    await serveJson(response, { ok: true, blueprint_status: "complete" });
+  } catch (error) {
+    sendError(response, error instanceof HttpError ? error : new HttpError(400, "blueprint_init_failed", error.message));
   }
 }
 
@@ -1302,6 +1346,11 @@ async function serveCommandSubmit(request, response, context) {
     const mode = body.mode === "review" ? "review" : "write";
     const projectRoot = await resolveActiveWriteProjectRoot(context, body);
     await assertNotArchived(projectRoot);
+    // 蓝图门禁（spec §1.4 拒绝点 4）：API 边界尽早失败（省一次模型调用/入队）。
+    // runProject 内部另有门禁（blueprint-guard.mjs），这里是第一道防线。
+    await assertBlueprintReady(projectRoot).catch((error) => {
+      throw new HttpError(400, "blueprint_not_ready", error.message);
+    });
     return await withProjectLock(context, projectRoot, async () => {
     const project = await loadProject(projectRoot);
     const state = await loadState(projectRoot);

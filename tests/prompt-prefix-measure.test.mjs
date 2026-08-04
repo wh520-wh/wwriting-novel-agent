@@ -328,7 +328,7 @@ test("真实项目编译：第 1 章与第 3 章（模拟推进）的 stable/dyn
         enabled_skills: project.enabled_skills,
         prompt_template_versions: project.prompt_template_versions
       },
-      environment_note: "本机无用户级 skills / output-styles，输出风格为内置 creative；source_summaries/outline 当前未参与编译",
+      environment_note: "本机无用户级 skills / output-styles，输出风格为内置 creative；本项目无 OUTLINE.md/SETTING.md（蓝图未生成），source_summaries 未参与编译、outline/setting 按降级规则不参与（见 prompt-injection.test.mjs）",
       compiles: [resultA, resultB].map((result, i) => ({
         label: i === 0 ? "第 1 章首段（全新项目）" : "第 3 章续写（模拟推进 2 章后）",
         chapter_no: i === 0 ? 1 : 3,

@@ -186,6 +186,11 @@ export function createThreadRenderer(ctx) {
       card.addEventListener("click", () => {
         if (ctx.isChatBusy?.()) return;
         wrap.querySelectorAll(".suggestion-card").forEach((c) => { c.disabled = true; });
+        // kind 化的建议卡走独立触发（/init 蓝图初始化），不走 chat agent 文本发送。
+        if (item.kind === "init-blueprint") {
+          ctx.runBlueprintInit?.();
+          return;
+        }
         ctx.submitText?.(item.message);
       });
       wrap.append(card);
@@ -947,16 +952,18 @@ export function createThreadRenderer(ctx) {
   // ===== S3 chat thread rendering =====
 
   // §3.4: 进程崩溃/中断时最后一条消息是 status:"generating" 占位，渲染为中断条。
+  // spec §2.3-U1：中断是中性态，不是错误——neutral class + 中性灰样式（styles.css），
+  // 不归 --err-* 红色系；文案改「上次对话未完成，可继续」。
   function buildInterruptedCard(allMessages) {
     const lastUserMsg = [...allMessages].reverse().find((m) => m.role === "user");
     if (!lastUserMsg) return null;
     const wrap = document.createElement("div");
     wrap.className = "msg-agent rise chat-bubble-wrap chat-bubble-wrap--interrupted";
     const card = document.createElement("div");
-    card.className = "chat-interrupted-card";
+    card.className = "chat-interrupted-card neutral";
     const label = document.createElement("span");
     label.className = "chat-interrupted-label";
-    label.textContent = "上一轮被中断";
+    label.textContent = "上次对话未完成，可继续";
     const text = document.createElement("span");
     text.className = "chat-interrupted-text";
     text.textContent = "对话进程在上次回复完成前退出，可重发消息。";
@@ -973,6 +980,8 @@ export function createThreadRenderer(ctx) {
   }
 
   // 气泡操作排：复制 / 重新发送（user）/ 重试本轮（assistant，仅最后一条显示，见 syncChatThread 收尾）。
+  // spec §2.3-U4：灰显按钮（无可复制/重发内容时）带 title tooltip 说明禁用原因 + aria-disabled，
+  // 点击直接返回不触发动作；有内容时不设 title/aria，保持原交互。
   function buildMsgActions(message, allMessages) {
     const bar = document.createElement("div");
     bar.className = "msg-actions";
@@ -981,7 +990,13 @@ export function createThreadRenderer(ctx) {
     copy.className = "msg-action";
     copy.dataset.testid = "msg-copy";
     copy.textContent = "复制";
+    const copyDisabled = !String(message.content ?? "").trim();
+    if (copyDisabled) {
+      copy.title = "无可复制内容";
+      copy.setAttribute("aria-disabled", "true");
+    }
     copy.addEventListener("click", async () => {
+      if (copy.getAttribute("aria-disabled") === "true") return;
       try {
         await navigator.clipboard.writeText(message.content ?? "");
         ctx.showToast("已复制。", "info");
@@ -996,7 +1011,13 @@ export function createThreadRenderer(ctx) {
       resend.className = "msg-action";
       resend.dataset.testid = "msg-resend";
       resend.textContent = "重新发送";
+      const resendDisabled = !String(message.content ?? "").trim();
+      if (resendDisabled) {
+        resend.title = "无可重发内容";
+        resend.setAttribute("aria-disabled", "true");
+      }
       resend.addEventListener("click", () => {
+        if (resend.getAttribute("aria-disabled") === "true") return;
         ctx.submitText?.(message.content ?? "");
       });
       bar.append(resend);
@@ -1101,10 +1122,16 @@ export function createThreadRenderer(ctx) {
     const msgId = message.id ?? `tool:${message.ts}:${message.tool ?? ""}`;
 
     // Codex 桌面端风格：工具调用统一渲染为内联折叠行（非卡片框）。
-    // 成功/失败/superseded 都展示；成功与 superseded 默认折叠，失败默认展开。
+    // 成功/失败/SKIPPED/superseded 都展示；成功与 SKIPPED/superseded 默认折叠，失败默认展开。
     const tool = message.tool ?? "";
     const ok = message.ok !== false;
     const superseded = Boolean(message.superseded);
+    // SKIPPED 类消息（聚合 batch_skipped 或旧式逐条 SKIPPED）：中性灰渲染，不归红色系
+    // （spec §2.3-U1/U6）。检测依据：tool 名 + result_summary 前缀匹配已知两代协议格式
+    // （聚合 "N 个后续操作已跳过…" / 旧式 "SKIPPED: …"）——不放宽到任意位置含「跳过」。
+    const resultSummary = String(message.result_summary ?? "");
+    const skipped = tool === "batch_skipped" || /^\d+ 个后续操作已跳过|^SKIPPED/u.test(resultSummary);
+    const rowState = skipped ? "skipped" : (ok ? "ok" : "fail");
     const foldKey = getFoldKey("tool", msgId);
 
     const wrap = document.createElement("div");
@@ -1112,17 +1139,26 @@ export function createThreadRenderer(ctx) {
     wrap.dataset.ts = message.ts ?? "";
 
     const row = document.createElement("div");
-    row.className = `tool-inline-row ${ok ? "ok" : "fail"}${superseded ? " superseded" : ""}`;
+    row.className = `tool-inline-row ${rowState}${superseded ? " superseded" : ""}`;
+    if (skipped) row.classList.add("tool-skipped-neutral"); // 中性灰降级标记（不归 --err-*）
     row.dataset.testid = "tool-inline-row";
     const chevron = document.createElement("span");
     chevron.className = "tool-inline-chevron";
     chevron.textContent = "▸";
     const label = document.createElement("span");
     label.className = "tool-inline-label";
-    label.textContent = superseded ? `已取消 · ${toolLabel(tool, message.args)}` : toolLabel(tool, message.args);
+    let labelText;
+    if (skipped && tool === "batch_skipped") {
+      // 聚合消息的行标签：从 summary 取数量，「· N 个操作已跳过」（不展示英文 batch_skipped）
+      const count = /^(\d+) 个/u.exec(resultSummary)?.[1];
+      labelText = count ? `${count} 个操作已跳过` : "后续操作已跳过";
+    } else {
+      labelText = toolLabel(tool, message.args);
+    }
+    label.textContent = superseded ? `已取消 · ${labelText}` : labelText;
     const mark = document.createElement("span");
-    mark.className = `tool-inline-mark ${ok ? "ok" : "fail"}`;
-    mark.textContent = superseded ? "" : (ok ? "✓" : "✗");
+    mark.className = `tool-inline-mark ${rowState}`;
+    mark.textContent = superseded ? "" : (skipped ? "·" : (ok ? "✓" : "✗"));
     row.append(chevron, label, mark);
     wrap.append(row);
 
@@ -1141,7 +1177,7 @@ export function createThreadRenderer(ctx) {
     }
     if (body.children.length > 0) {
       wrap.append(body);
-      applyFold(row, body, foldKey, ok || superseded);
+      applyFold(row, body, foldKey, ok || superseded || skipped);
     } else {
       // 无结果摘要也无错误：没有可展开内容，隐藏折叠箭头，避免点开空白。
       chevron.style.visibility = "hidden";

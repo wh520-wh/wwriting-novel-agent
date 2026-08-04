@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { runProject } from "../src/core/agent-engine.mjs";
-import { createProject } from "../src/core/project-store.mjs";
+import { createWritingProject } from "./helpers.mjs";
 import { DYNAMIC_BLOCK_ORDER, PromptCompiler, STABLE_BLOCK_ORDER } from "../src/core/prompt-compiler.mjs";
 
 test("project_memory 与 chapter_plan 属于 dynamic 顺序且不在 stable 顺序", () => {
@@ -35,7 +35,7 @@ test("跨章只变 project_memory/chapter_plan 时 stableHash 不变", () => {
 
 test("跑完 2 章后 cache_report.json 的所有 cacheVersion 保持 1", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-cache-prefix-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 2,
     min_words_per_chapter: 200,

@@ -9,7 +9,8 @@ import { runChatTurn } from "../src/core/chat/chat-agent.mjs";
 import { readChatHistory } from "../src/core/chat/chat-store.mjs";
 import { createToolRegistry, summarizeArgs } from "../src/core/chat/tool-registry.mjs";
 import { registerReadTools } from "../src/core/chat/tools-read.mjs";
-import { createProject, loadProject, upsertChapter } from "../src/core/project-store.mjs";
+import { loadProject, upsertChapter } from "../src/core/project-store.mjs";
+import { createWritingProject } from "./helpers.mjs";
 
 function scriptedClient(script) {
   let i = 0;
@@ -18,7 +19,9 @@ function scriptedClient(script) {
 
 async function makeChatProject() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-args-"));
-  const { projectRoot } = await createProject(root, {
+  // 蓝图门禁要求：真实走 chat 写工具路径的用例需把项目标为蓝图完成，
+  // 否则 fake_write 会被 blueprint_not_ready 拦截，测不到权限预检分支。
+  const { projectRoot } = await createWritingProject(root, {
     slug: "a", title: "args 测试", story_seed: "种子",
     target_chapters: 3, min_words_per_chapter: 10, target_words_per_chapter: 12
   });
@@ -65,7 +68,7 @@ test("权限拒绝分支的 tool 消息同样带 args", async () => {
     name: "fake_write", kind: "write", description: "测试写工具", params: {},
     run: async () => ({ done: true })
   });
-  await runChatTurn({
+  const out = await runChatTurn({
     projectRoot, project, registry,
     modelClient: scriptedClient([
       '```json\n{"tool_calls":[{"tool":"fake_write","args":{"x":1}}]}\n```',
@@ -73,6 +76,11 @@ test("权限拒绝分支的 tool 消息同样带 args", async () => {
     ]),
     userMessage: "改一下"
   });
+  // 蓝图已 complete，此分支必须真实走到权限预检：error 码为 permission_denied，
+  // 而非蓝图门禁的 blueprint_not_ready（防语义漂移静默测错分支）。
+  const blockedEvent = out.toolEvents.find((e) => e.tool === "fake_write");
+  assert.ok(blockedEvent, "应有 fake_write 的 tool 事件");
+  assert.equal(blockedEvent.error, "permission_denied");
   const history = await readChatHistory(projectRoot);
   const toolMsg = history.find((m) => m.role === "tool" && m.tool === "fake_write");
   assert.ok(toolMsg);

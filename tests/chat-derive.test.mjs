@@ -33,6 +33,16 @@ test("deriveSources：a1 的窗口只含 u1 之后的 read_outline", () => {
   assert.deepEqual(chips.map((c) => c.label), ["大纲"]);
 });
 
+test("deriveSources：read_blueprint 也生成依据 chip（蓝图读取是 read 工具）", () => {
+  const msgs2 = [
+    { id: "u1", role: "user", content: "总纲里写了什么？" },
+    { id: "t1", role: "tool", tool: "read_blueprint", ok: true, args: '{"section":"outline"}', result_summary: "OUTLINE.md" },
+    { id: "a1", role: "assistant", content: "蓝图说…" }
+  ];
+  const chips = deriveSources(msgs2, msgs2.at(-1));
+  assert.deepEqual(chips.map((c) => c.label), ["蓝图 · 总纲"]);
+});
+
 test("deriveSuggestions：归档项目", () => {
   const s = deriveSuggestions({ project: { archived_at: "2026-06-01" }, summary: {}, chapters: [] });
   assert.deepEqual(s.map((x) => x.label), ["导出成书", "解除归档"]);
@@ -60,6 +70,41 @@ test("deriveSuggestions：写作中段", () => {
 test("deriveSuggestions：新项目", () => {
   const s = deriveSuggestions({ project: {}, summary: { completedChapters: 0, targetChapters: 10 }, chapters: [] });
   assert.deepEqual(s.map((x) => x.label), ["排 5 章试写", "这本书的设定是什么？", "帮我完善大纲"]);
+});
+
+test("deriveSuggestions：新项目蓝图未初始化 → 引导显式 /init（kind: init-blueprint）", () => {
+  const s = deriveSuggestions({
+    project: {}, summary: { completedChapters: 0, targetChapters: 10 }, chapters: [],
+    state: { blueprint_status: "none" }
+  });
+  assert.deepEqual(s.map((x) => x.label), ["开始规划蓝图", "这本书的设定是什么？"]);
+  assert.equal(s[0].kind, "init-blueprint");
+  assert.equal(typeof s[0].message, "string");
+});
+
+test("deriveSuggestions：blueprint partial 同样引导 /init", () => {
+  const s = deriveSuggestions({
+    project: {}, summary: { completedChapters: 0, targetChapters: 10 }, chapters: [],
+    state: { blueprint_status: "partial" }
+  });
+  assert.equal(s[0].label, "开始规划蓝图");
+  assert.equal(s[0].kind, "init-blueprint");
+});
+
+test("deriveSuggestions：blueprint complete 后新项目恢复原建议", () => {
+  const s = deriveSuggestions({
+    project: {}, summary: { completedChapters: 0, targetChapters: 10 }, chapters: [],
+    state: { blueprint_status: "complete" }
+  });
+  assert.deepEqual(s.map((x) => x.label), ["排 5 章试写", "这本书的设定是什么？", "帮我完善大纲"]);
+});
+
+test("deriveSuggestions：写作中段不受 blueprint 分支影响（blueprint 已就绪）", () => {
+  const s = deriveSuggestions({
+    project: {}, summary: { completedChapters: 4, targetChapters: 10 }, chapters: [],
+    state: { blueprint_status: "none" }
+  });
+  assert.deepEqual(s.map((x) => x.label), ["续写下一章（第 5 章）", "回顾第 4 章的结尾", "目前花了多少钱？"]);
 });
 
 test("deriveSuggestions：message 默认等于 label，可直接发送", () => {

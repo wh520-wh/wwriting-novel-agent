@@ -39,9 +39,18 @@ app.whenReady().then(() => main().catch((error) => {
 
 async function main() {
   const { createAppShellServer } = await import(pathToFileURL(path.join(rootDir, "src", "core", "app-server.mjs")).href);
-  const { createProject } = await import(pathToFileURL(path.join(rootDir, "src", "core", "project-store.mjs")).href);
+  const { createProject, loadState, saveState } = await import(pathToFileURL(path.join(rootDir, "src", "core", "project-store.mjs")).href);
   const { runProject } = await import(pathToFileURL(path.join(rootDir, "src", "core", "agent-engine.mjs")).href);
   const { appendFailure } = await import(pathToFileURL(path.join(rootDir, "src", "core", "failures-store.mjs")).href);
+
+  // 蓝图门禁适配（spec §1.4）：新建项目 blueprint_status 默认 "none"，
+  // 写作入口（runProject / /api/commands/submit）会拒绝。本脚本只测 UI 交互，
+  // 不验证蓝图内容，预置 complete 放行即可（与 tests/helpers.mjs createWritingProject 同款模式）。
+  async function markBlueprintReady(projectRoot) {
+    const state = await loadState(projectRoot);
+    state.blueprint_status = "complete";
+    await saveState(projectRoot, state);
+  }
   const demoRoot = path.join(rootDir, ".demo_runs", `clickability-${Date.now()}`);
   const { projectRoot } = await createProject(demoRoot, {
     slug: "clickability-novel",
@@ -52,6 +61,9 @@ async function main() {
     target_words_per_chapter: 180,
     enabled_skills: ["suspense-chapter-end"]
   });
+  // 蓝图门禁（spec §1.4）：新建项目 blueprint_status 默认 "none"，写作入口会拒绝。
+  // 本脚本验证 UI 可点击性而非蓝图内容，预置 complete 放行（与 tests/helpers.mjs 同款模式）。
+  await markBlueprintReady(projectRoot);
   await runProject(projectRoot);
   appendFailure(projectRoot, {
     id: "click-failure-1",
@@ -102,6 +114,8 @@ async function main() {
     }
   );
   // Don't runProject — chapter 1 is pending, which triggers the "demo" readiness state.
+  // 同上：预置蓝图 complete，否则 #workbench-primary 的写作提交会被蓝图门禁拒绝。
+  await markBlueprintReady(fcProjectRoot);
 
   server = createAppShellServer({
     workspaceRoot: rootDir,
@@ -1191,10 +1205,13 @@ async function probe(win, selector) {
 }
 
 async function assertQuickRailPopoverClears(win) {
+  // 稳定性：hover 前先确认无残留 popover（避免上一个交互遗留的状态干扰"恰好 1 个"断言），
+  // 并把 hover 后的等待超时放宽（渲染线程繁忙时 mouseover 触发可能超过默认 2000ms）。
+  await waitUntil(win, "document.querySelectorAll('.qr-popover').length === 0", "quick rail must start with no popover", 4000);
   const chaptersSelector = '.quick-rail .qr-slot[data-key="chapters"]';
   const chapters = await triggerQuickRailHover(win, chaptersSelector);
   assert.ok(chapters.rect, `chapters quick rail slot must have a layout box: ${JSON.stringify(chapters, null, 2)}`);
-  await waitUntil(win, "document.querySelectorAll('.qr-popover').length === 1", "hovering chapters quick rail slot must show exactly one popover");
+  await waitUntil(win, "document.querySelectorAll('.qr-popover').length === 1", "hovering chapters quick rail slot must show exactly one popover", 4000);
   win.webContents.sendInputEvent({ type: "mouseDown", x: chapters.center.x, y: chapters.center.y, button: "left", clickCount: 1 });
   win.webContents.sendInputEvent({ type: "mouseUp", x: chapters.center.x, y: chapters.center.y, button: "left", clickCount: 1 });
   await delay(80);
@@ -1207,7 +1224,7 @@ async function assertQuickRailPopoverClears(win) {
 
   const research = await triggerQuickRailHover(win, '.quick-rail .qr-slot[data-key="research"]');
   assert.ok(research.rect, `research quick rail slot must have a layout box: ${JSON.stringify(research, null, 2)}`);
-  await waitUntil(win, "document.querySelectorAll('.qr-popover').length === 1", "hovering research quick rail slot must show exactly one popover before blur");
+  await waitUntil(win, "document.querySelectorAll('.qr-popover').length === 1", "hovering research quick rail slot must show exactly one popover before blur", 4000);
   await win.webContents.executeJavaScript(`window.dispatchEvent(new Event("blur")); true;`);
   await delay(40);
   assert.equal(

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readJson, safeJoin, writeJsonAtomic } from "./fs-utils.mjs";
 import { compileWritingTasks, makeResumeContract } from "./task-contract.mjs";
+import { assertBlueprintReady } from "./blueprint-guard.mjs";
 
 export const TASK_QUEUE_SCHEMA_VERSION = 3;
 
@@ -55,6 +56,8 @@ export class TaskQueue {
   async createRecoveryTask({ instruction, mode = "write", currentStage = "queued", recovery = {} } = {}) {
     return this.withLock(async () => {
       await this.load();
+      // 蓝图门禁（spec §1.4）：恢复待跑任务前检查，蓝图未完成不恢复写作任务
+      await assertBlueprintReady(this.projectRoot);
       if (this.state.tasks.some((candidate) => ACTIVE_STATUSES.has(candidate.status))) {
         return null;
       }
