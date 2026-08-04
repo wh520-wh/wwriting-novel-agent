@@ -232,3 +232,49 @@ test("dashboard 不下发明文 API Key，model-secret 端点按需返回", asyn
     await closeServer(ctx.server);
   }
 });
+
+test("model-secret 按 env 参数读取，与项目 active model 无关", async () => {
+  const ctx = await setupServer();
+  try {
+    // 项目 active model 用 env A
+    const save = await postJson(ctx.port, "/api/settings/update", {
+      active_model: {
+        provider: "openai-compatible",
+        model_name: "deepseek-chat",
+        base_url: "https://api.deepseek.com",
+        api_key: "sk-active-key",
+        api_key_env: "WW_ACTIVE_ENV"
+      }
+    });
+    assert.equal(save.res.status, 200, JSON.stringify(save.data));
+
+    // 全局另存一个用 env B 的模型（与项目 active model 无关）
+    const saveB = await postJson(ctx.port, "/api/settings/model-profile", {
+      active_model: {
+        provider: "openai-compatible",
+        model_name: "kimi-chat",
+        base_url: "https://api.moonshot.cn",
+        api_key: "sk-other-key",
+        api_key_env: "WW_OTHER_ENV"
+      }
+    });
+    assert.equal(saveB.res.status, 200, JSON.stringify(saveB.data));
+
+    // 带 env=B 读取 → 返回 B 的 key，而不是项目 active model 的 key
+    const secretB = await (await fetch(`http://127.0.0.1:${ctx.port}/api/settings/model-secret?env=WW_OTHER_ENV`)).json();
+    assert.equal(secretB.ok, true);
+    assert.equal(secretB.value, "sk-other-key");
+
+    // 带 env=A 读取 → 返回 A 的 key
+    const secretA = await (await fetch(`http://127.0.0.1:${ctx.port}/api/settings/model-secret?env=WW_ACTIVE_ENV`)).json();
+    assert.equal(secretA.ok, true);
+    assert.equal(secretA.value, "sk-active-key");
+
+    // 未保存的 env → 返回空值而不是报错
+    const secretEmpty = await (await fetch(`http://127.0.0.1:${ctx.port}/api/settings/model-secret?env=WW_UNKNOWN_ENV`)).json();
+    assert.equal(secretEmpty.ok, true);
+    assert.equal(secretEmpty.value, "");
+  } finally {
+    await closeServer(ctx.server);
+  }
+});

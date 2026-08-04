@@ -112,8 +112,8 @@ test("settings-modal.js re-exports the pure connection helpers", () => {
     );
     assert.match(
       settingsModalSource,
-      /fetchModelSecret\s*\(\s*\)[\s\S]{0,240}settingsFields\.apiKey\.input\.value/u,
-      "settings-modal.js should fetch the saved model secret and put the full key back into the API Key input"
+      /fetchModelSecret\s*\(\s*apiKeyEnvValue\s*\)[\s\S]{0,240}settingsFields\.apiKey\.input\.value/u,
+      "settings-modal.js should fetch the saved model secret by the edited provider's env and put the full key back into the API Key input"
     );
     assert.doesNotMatch(
       settingsModalSource,
