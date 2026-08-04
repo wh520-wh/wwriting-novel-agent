@@ -1101,10 +1101,15 @@ export function createThreadRenderer(ctx) {
     const msgId = message.id ?? `tool:${message.ts}:${message.tool ?? ""}`;
 
     // Codex 桌面端风格：工具调用统一渲染为内联折叠行（非卡片框）。
-    // 成功/失败/superseded 都展示；成功与 superseded 默认折叠，失败默认展开。
+    // 成功/失败/SKIPPED/superseded 都展示；成功与 SKIPPED/superseded 默认折叠，失败默认展开。
     const tool = message.tool ?? "";
     const ok = message.ok !== false;
     const superseded = Boolean(message.superseded);
+    // SKIPPED 类消息（聚合 batch_skipped 或旧式逐条 SKIPPED）：中性灰渲染，不归红色系
+    // （spec §2.3-U1/U6）。检测依据：tool 名 + result_summary 含「跳过」/「SKIPPED」。
+    const resultSummary = String(message.result_summary ?? "");
+    const skipped = tool === "batch_skipped" || /跳过|^SKIPPED/u.test(resultSummary);
+    const rowState = skipped ? "skipped" : (ok ? "ok" : "fail");
     const foldKey = getFoldKey("tool", msgId);
 
     const wrap = document.createElement("div");
@@ -1112,17 +1117,24 @@ export function createThreadRenderer(ctx) {
     wrap.dataset.ts = message.ts ?? "";
 
     const row = document.createElement("div");
-    row.className = `tool-inline-row ${ok ? "ok" : "fail"}${superseded ? " superseded" : ""}`;
+    row.className = `tool-inline-row ${rowState}${superseded ? " superseded" : ""}`;
+    if (skipped) row.classList.add("tool-skipped-neutral"); // 中性灰降级标记（不归 --err-*）
     row.dataset.testid = "tool-inline-row";
     const chevron = document.createElement("span");
     chevron.className = "tool-inline-chevron";
     chevron.textContent = "▸";
     const label = document.createElement("span");
     label.className = "tool-inline-label";
-    label.textContent = superseded ? `已取消 · ${toolLabel(tool, message.args)}` : toolLabel(tool, message.args);
+    let labelText = toolLabel(tool, message.args);
+    if (skipped && tool === "batch_skipped") {
+      // 聚合消息的行标签：从 summary 取数量，「· N 个操作已跳过」（不展示英文 batch_skipped）
+      const count = /^(\d+) 个/u.exec(resultSummary)?.[1];
+      labelText = count ? `${count} 个操作已跳过` : "后续操作已跳过";
+    }
+    label.textContent = superseded ? `已取消 · ${labelText}` : labelText;
     const mark = document.createElement("span");
-    mark.className = `tool-inline-mark ${ok ? "ok" : "fail"}`;
-    mark.textContent = superseded ? "" : (ok ? "✓" : "✗");
+    mark.className = `tool-inline-mark ${rowState}`;
+    mark.textContent = superseded ? "" : (skipped ? "·" : (ok ? "✓" : "✗"));
     row.append(chevron, label, mark);
     wrap.append(row);
 
@@ -1141,7 +1153,7 @@ export function createThreadRenderer(ctx) {
     }
     if (body.children.length > 0) {
       wrap.append(body);
-      applyFold(row, body, foldKey, ok || superseded);
+      applyFold(row, body, foldKey, ok || superseded || skipped);
     } else {
       // 无结果摘要也无错误：没有可展开内容，隐藏折叠箭头，避免点开空白。
       chevron.style.visibility = "hidden";

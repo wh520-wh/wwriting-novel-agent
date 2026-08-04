@@ -42,6 +42,11 @@
   --red-soft: #f9eeea;
   --red-line: #ead3cf;
 
+  /* 中性态（SKIPPED/跳过/待确认 —— 不归红色系，spec §2.3-U6） */
+  --neutral-bg: #f1ede3;
+  --neutral-text: #8f887a;
+  --neutral-border: #ded7c6;
+
   /* graphite button — ink-black with warm cast */
   --btn: #2b2720;
   --btn-2: #181511;
@@ -130,6 +135,11 @@
   --red: #d0866f;
   --red-soft: #352420;
   --red-line: #5c3d36;
+
+  /* 中性态（暗色书房变体，对齐 --faint） */
+  --neutral-bg: #2a271f;
+  --neutral-text: #9a8f78;
+  --neutral-border: #3a352a;
 
   --btn: #e9e2d2;
   --btn-2: #fffdf8;
@@ -2169,6 +2179,9 @@ button.cbar-pill--readonly:hover {
 .tool-inline-label { color: var(--ink-2); }
 .tool-inline-mark.ok { color: var(--green); }
 .tool-inline-mark.fail { color: var(--red); }
+/* SKIPPED/跳过：中性灰（spec §2.3-U1/U6 —— 不归 --err-* 红色系，用「·」代替红 X） */
+.tool-skipped-neutral { color: var(--neutral-text); background: none; border: none; }
+.tool-inline-mark.skipped { color: var(--neutral-text); }
 .tool-inline-body {
   margin: 3px 0 4px 18px;
   padding: 4px 0 4px 10px;
