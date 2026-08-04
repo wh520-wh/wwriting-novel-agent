@@ -744,6 +744,8 @@ function renderForPrompt(continuity) {
 
 // S3 fact-check 门禁：在 reviewChapter 内、skill checks 之后调用。
 // 不阻塞主流程：外层调用需用 try/catch 包裹，本函数内部也会吞下非致命错误。
+// spec §1.7：注入 OUTLINE.md 总纲（outlineContext）做跑偏核对；deviation 是软提示，
+// 不进 needs_revision / commitFailures，只写作者报告（proactive 消息 + reportHint）。
 export async function runFactCheck(projectRoot, project, state, runtime, draft) {
   if (project.fact_check?.enabled === false) {
     return null;
@@ -768,7 +770,12 @@ export async function runFactCheck(projectRoot, project, state, runtime, draft) 
     });
     return null;
   }
-  if (!continuity.facts.length) {
+  // spec §1.7（P1-6/P2-10）：跑偏核对不依赖 continuity facts。
+  // 无 facts 时"事实矛盾"维度跳过（现有行为），但只要 OUTLINE.md 总纲可读，
+  // "剧情跑偏"维度仍执行（对照总纲判断走向）。两样都没有 → 维持原有跳过语义。
+  const outlineContext = await readOutlineCore(projectRoot);
+  const hasFacts = continuity.facts.length > 0;
+  if (!hasFacts && !outlineContext) {
     await appendEvent(projectRoot, {
       type: "fact_check_skipped", project_id: project.project_id,
       chapter_no: state.current_chapter_no, stage: "reviewing",
@@ -785,8 +792,10 @@ export async function runFactCheck(projectRoot, project, state, runtime, draft) 
         project, stage: "fact_check",
         messages: buildFactCheckMessages({
           chapterNo: state.current_chapter_no, draft,
-          facts: continuity.facts, timeline: continuity.timeline,
-          storyClock: describeStoryClock(continuity.timeline)
+          facts: hasFacts ? continuity.facts : [],
+          timeline: hasFacts ? continuity.timeline : [],
+          storyClock: hasFacts ? describeStoryClock(continuity.timeline) : undefined,
+          outlineContext
         }),
         signal: runtime.signal,
         metadata: { factCheck: true, chapterNo: state.current_chapter_no, attempt }
@@ -805,13 +814,31 @@ export async function runFactCheck(projectRoot, project, state, runtime, draft) 
     });
     return null;
   }
+  // spec §1.7（P1-7）：deviation = 软提示，不进 needs_revision / commitFailures，
+  // 只写作者报告（proactive 消息 + reportHint）。旧模型不返回时降级为未检测。
+  const deviation = parsed.deviation ?? { detected: false, description: "" };
+  const reportHint = deviation.detected
+    ? `本章偏离主线：${deviation.description || "模型未说明具体偏离点"}，建议人工确认。`
+    : null;
+  if (deviation.detected) {
+    await appendEvent(projectRoot, {
+      type: "fact_check_deviation", project_id: project.project_id,
+      chapter_no: state.current_chapter_no, stage: "reviewing", severity: "info",
+      message: reportHint,
+      data: deviation
+    });
+    await appendChatMessage(projectRoot, {
+      role: "assistant", content: reportHint, proactive: "fact_check",
+      chapter_no: state.current_chapter_no
+    });
+  }
   if (parsed.conflicts.length === 0) {
     await appendEvent(projectRoot, {
       type: "fact_check_completed", project_id: project.project_id,
       chapter_no: state.current_chapter_no, stage: "reviewing",
-      message: "fact-check 未发现冲突"
+      message: deviation.detected ? "fact-check 未发现冲突（含跑偏提示）" : "fact-check 未发现冲突"
     });
-    return { conflicts: [] };
+    return { conflicts: [], deviation, reportHint };
   }
 
   // 有冲突：记事件 + 主动消息 + 可选 pending
@@ -834,7 +861,7 @@ export async function runFactCheck(projectRoot, project, state, runtime, draft) 
   // 不再自动 indexOf+replace 改正文。conflicts 返回给上层（reviewChapter），
   // 由 reviewChapter 进 needs_revision、把 conflicts 作为 feedback 喂回写作循环，
   // 模型用 edit_chapter 自己改。砍掉“只改第一个”“长引文跳过”两个 bug 的根源。
-  return { conflicts };
+  return { conflicts, deviation, reportHint };
 }
 
 // ADR-0001：fact-check 发现冲突 -> 进 needs_revision，conflicts 作为 feedback 喂回写作循环。
@@ -1191,6 +1218,19 @@ export async function readOutlineSection(projectRoot) {
   const start = text.match(/^##\s*一、总纲/m);
   if (!start) return text.slice(0, end ? end.index : undefined).trim(); // 非模板结构：到骨架标题为止，骨架区不进 stable
   return text.slice(start.index, end ? end.index : undefined).trim();
+}
+
+// 读 OUTLINE.md 总纲核心段（主题/主线/核心矛盾，spec §1.7 跑偏核对的对照锚点）。
+// 复用 readOutlineSection 的总纲区切分与占位检测（BLUEPRINT_PLACEHOLDER → null）；
+// 非模板结构取不到核心小节时降级为整个总纲区。文件缺失/占位/读取失败 → null（不阻断）。
+export async function readOutlineCore(projectRoot) {
+  const section = await readOutlineSection(projectRoot);
+  if (section === null) return null;
+  const core = splitSubsections(section)
+    .filter((block) => /^###\s*[1-3]\./.test(block.heading))
+    .map((block) => block.text);
+  const text = core.length > 0 ? core.join("\n\n") : section;
+  return text.length <= OUTLINE_MAX_CHARS ? text : `${text.slice(0, OUTLINE_MAX_CHARS)}${TRUNCATION_MARKER}`;
 }
 
 // 读 SETTING.md 静态规划部分（世界观 + 角色身份/性格/能力/关系）。文件缺失/占位/读取失败 → null。

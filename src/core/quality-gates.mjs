@@ -6,6 +6,8 @@ import { registerSchema, parseStructuredOutput } from "./structured-output.mjs";
 registerSchema("fact_check", "v1", {
   normalize: (data) => {
     const conflicts = Array.isArray(data?.conflicts) ? data.conflicts : [];
+    // spec §1.7（P1-7）：deviation = 剧情跑偏（软提示）。旧模型不返回时降级为未检测，不报错。
+    const deviationRaw = data?.deviation ?? {};
     return {
       conflicts: conflicts.map((c) => {
         const rawQuote = String(c.draft_quote ?? "");
@@ -20,7 +22,11 @@ registerSchema("fact_check", "v1", {
           suggestion: String(c.suggestion ?? "").slice(0, 400),
           replace_with: String(c.replace_with ?? "").slice(0, 200)
         };
-      }).filter((c) => c.draft_quote && c.conflicts_with)
+      }).filter((c) => c.draft_quote && c.conflicts_with),
+      deviation: {
+        detected: Boolean(deviationRaw.detected),
+        description: String(deviationRaw.description ?? "").slice(0, 400)
+      }
     };
   },
   validate: (n) => ({ ok: true })  // conflicts 可为空数组，不缺字段即合法
@@ -268,15 +274,16 @@ export function runWordCapGate(actualWords, { targetWords, maxWords, outputPrice
 const FACT_CHECK_SYSTEM_PROMPT = [
   "你是小说事实核查员。读完本章后比对既有设定档案，挑出本章与既有事实/时间线之间的客观冲突。",
   "只输出一个 JSON 对象（可用 ```json 围栏），结构：",
-  '{"conflicts":[{"draft_quote":"本章内一句触发冲突的原文","conflicts_with":"既有设定/时间线中的对应记录","prior_chapter":既有章节号,"severity":"high|low","suggestion":"修复建议（说明改哪边、为什么）","replace_with":"用于直接替换 draft_quote 的修正后原文（保持句式，只改冲突值；若无法给出精确替换则留空字符串）"}]}',
+  '{"conflicts":[{"draft_quote":"本章内一句触发冲突的原文","conflicts_with":"既有设定/时间线中的对应记录","prior_chapter":既有章节号,"severity":"high|low","suggestion":"修复建议（说明改哪边、为什么）","replace_with":"用于直接替换 draft_quote 的修正后原文（保持句式，只改冲突值；若无法给出精确替换则留空字符串）"}],"deviation":{"detected":true或false,"description":"剧情走向是否偏离总纲（偏离时简要说明偏离点，未偏离留空串）"}}',
   "只报客观叙述层的设定冲突（地点、数字、时间、生死、关系）。",
   "豁免：回忆/闪回/角色撒谎/隐喻/旁白不算矛盾。",
   "若提供了「故事时钟」，据其判断本章的时间叙述（如「当晚」「次日」「三天后」）是否与已推进的天数矛盾。",
-  "若没有冲突，输出 {\"conflicts\":[]}。",
+  "若提供了「规划参照」，据其判断本章剧情走向是否偏离总纲主线/核心矛盾：detected=true 表示偏离（本章与主线无关、方向相反或搁置核心矛盾），false 表示未偏离。deviation 是软提示，不影响 conflicts 的判定。",
+  "若没有冲突，输出 {\"conflicts\":[]}（未偏离时 deviation.detected 为 false）。",
   "不要输出其他内容。"
 ].join("\n");
 
-export function buildFactCheckMessages({ chapterNo, draft, facts, timeline, storyClock }) {
+export function buildFactCheckMessages({ chapterNo, draft, facts, timeline, storyClock, outlineContext }) {
   const timelineLines = (timeline ?? []).map((t) => {
     const time = t.time ?? {};
     const when = t.story_time_raw ?? t.story_time ?? "";
@@ -294,10 +301,16 @@ export function buildFactCheckMessages({ chapterNo, draft, facts, timeline, stor
     timelineLines,
     ...(storyClock ? ["", "# 故事时钟", String(storyClock)] : [])
   ].join("\n");
-  return [
+  const messages = [
     { role: "system", content: FACT_CHECK_SYSTEM_PROMPT },
     { role: "user", content: user }
   ];
+  // spec §1.7（P1-6）：总纲参照段（主线 + 核心矛盾），让模型对照判断本章是否跑偏。
+  // 追加在末尾，保持 messages[0]/messages[1] 结构不变（向后兼容）。
+  if (outlineContext) {
+    messages.push({ role: "system", content: `规划参照（判断剧情走向是否偏离）：\n${outlineContext}` });
+  }
+  return messages;
 }
 
 // parseFactCheck 委托 structured-output，error 保持字符串 + error_code/error_field（向后兼容）
@@ -311,5 +324,5 @@ export function parseFactCheck(rawText) {
       error_field: result.error.field ?? null
     };
   }
-  return { ok: true, conflicts: result.data.conflicts };
+  return { ok: true, conflicts: result.data.conflicts, deviation: result.data.deviation };
 }
