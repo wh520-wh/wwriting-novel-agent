@@ -5,7 +5,7 @@ import path from "node:path";
 import { runProject, SimulatedInterrupt } from "../src/core/agent-engine.mjs";
 import { readEvents } from "../src/core/event-log.mjs";
 import { MockModel } from "../src/core/mock-model.mjs";
-import { createProject, loadChapterIndex } from "../src/core/project-store.mjs";
+import { createProject, loadChapterIndex, loadState, saveState } from "../src/core/project-store.mjs";
 import { runReviewerAgent } from "../src/core/reviewer-agent.mjs";
 import { countEffectiveWords } from "../src/core/word-count.mjs";
 
@@ -34,6 +34,11 @@ const { projectRoot } = await createProject(root, {
   target_words_per_chapter: 260,
   max_model_calls: 80
 });
+// 蓝图门禁（spec §1.4）：新建项目 blueprint_status 默认 "none"，写作入口会拒绝。
+// 预置 complete 放行（与 tests/helpers.mjs createWritingProject 同款模式）。
+const state = await loadState(projectRoot);
+state.blueprint_status = "complete";
+await saveState(projectRoot, state);
 
 let interruptedAndRecovered = false;
 try {
