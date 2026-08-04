@@ -1165,11 +1165,168 @@ const DEFAULT_FORBIDDEN_PATTERNS = [
   "神性"
 ];
 
+// =============== 蓝图注入：outline/setting/character_status（spec §1.5 P1-8/P1-9） ===============
+// 切分原则（P1-9 修订核心）：
+// - outline（OUTLINE.md 总纲区）→ stable；setting（SETTING.md 静态部分）→ stable
+// - character_status（continuity 实时角色状态）→ dynamic；current_outline_segment（当前卷骨架）→ dynamic
+// 角色当前状态绝对不能进 stable block：状态每章变化，进 stable 会破坏 stableHash 缓存。
+// 读取失败降级（P1-8）：OUTLINE.md/SETTING.md 不存在或读取失败时跳过对应块（返回 null/""），
+// 不报错、不阻断写作；legacy 项目 block 为空等价于无蓝图约束。
+// 大小限制（P1-8）：总纲超 4000 字只保留核心段（主题/主线/核心矛盾/卷划分）；设定超 6000 字
+// 只保留世界观 + 角色表（≤10 个角色）；均带截断标记。
+const OUTLINE_MAX_CHARS = 4000;
+const SETTING_MAX_CHARS = 6000;
+const SETTING_MAX_CHARACTERS = 10;
+const TRUNCATION_MARKER = "\n\n[内容过长，已按预算截断，其余部分请在对话中说明]";
+
+// createProject 默认写入的占位蓝图（"蓝图未生成，请运行 /init"）等价于无蓝图 → 跳过注入，
+// 避免把占位文案当真实蓝图塞进 prompt（对 blueprint_status: none / 未跑 /init 的项目）。
+const BLUEPRINT_PLACEHOLDER = /^# (OUTLINE|SETTING)\.md\s*\n>\s*蓝图未生成，请运行 \/init\s*$/;
+
+// 读 OUTLINE.md 总纲区（"一、总纲" 到 "二、章节骨架" 之间）。文件缺失/占位/读取失败 → null。
+export async function readOutlineSection(projectRoot) {
+  const text = await readBlueprintFile(projectRoot, "OUTLINE.md");
+  if (text === null || BLUEPRINT_PLACEHOLDER.test(text.trim())) return null;
+  const start = text.match(/^##\s*一、总纲/m);
+  if (!start) return text.trim(); // 结构未按固定模板：尽力注入全文
+  const end = text.match(/^##\s*二、章节骨架/m);
+  return text.slice(start.index, end ? end.index : undefined).trim();
+}
+
+// 读 SETTING.md 静态规划部分（世界观 + 角色身份/性格/能力/关系）。文件缺失/占位/读取失败 → null。
+export async function readSettingStatic(projectRoot) {
+  const text = await readBlueprintFile(projectRoot, "SETTING.md");
+  if (text === null || BLUEPRINT_PLACEHOLDER.test(text.trim())) return null;
+  return text.trim();
+}
+
+// 读 OUTLINE.md 当前卷骨架（"二、章节骨架" 区，按 chapterNo 定位当前卷）。无骨架 → ""。
+export async function readCurrentVolumeOutline(projectRoot, chapterNo) {
+  const text = await readBlueprintFile(projectRoot, "OUTLINE.md");
+  if (text === null) return "";
+  const skeletonStart = text.match(/^##\s*二、章节骨架/m);
+  if (!skeletonStart) return "";
+  const skeleton = text.slice(skeletonStart.index).trim();
+  const volumes = splitVolumes(skeleton);
+  if (volumes.length === 0) return skeleton;
+  const n = Number(chapterNo);
+  if (!Number.isInteger(n) || n <= 0) return volumes[0].text;
+  // 取覆盖当前章号的卷：卷按文件顺序排列、最小章号递增，选最后一个 minChapterNo <= chapterNo 的卷
+  let selected = volumes[0];
+  for (const volume of volumes) {
+    if (volume.minChapterNo != null && volume.minChapterNo <= n) selected = volume;
+    else break;
+  }
+  return selected.text;
+}
+
+// 从 continuity 渲染角色当前状态（参考信息，非硬性约束，spec §1.3 P1-5）。
+// 只注入与当前章相关的角色（chapter_no 未标注或 <= chapterNo）；无数据时返回 ""（block 自动跳过）。
+export function renderCharacterStatus(characters, { chapterNo } = {}) {
+  const list = Array.isArray(characters) ? characters : [];
+  const n = Number(chapterNo);
+  const relevant = Number.isInteger(n) && n > 0
+    ? list.filter((c) => c.chapter_no == null || Number(c.chapter_no) <= n)
+    : list;
+  if (relevant.length === 0) return "";
+  return [
+    "角色当前状态（参考信息，非硬性约束，以 continuity 实时档案为准）：",
+    ...relevant.map((c) => `- ${c.name ?? "未命名角色"}：${c.status || "状态未知"}`)
+  ].join("\n");
+}
+
+// 总纲截断：超 OUTLINE_MAX_CHARS 时只保留主题/主线/核心矛盾/卷划分四个核心小节，再超则硬截断。
+export function truncateOutline(text, maxChars = OUTLINE_MAX_CHARS) {
+  const trimmed = String(text ?? "").trim();
+  if (trimmed.length <= maxChars) return trimmed;
+  const core = splitSubsections(trimmed)
+    .filter((block) => /^###\s*[1-4]\./.test(block.heading))
+    .map((block) => block.text);
+  const kept = core.length > 0 ? core.join("\n\n") : trimmed;
+  return kept.length <= maxChars ? kept : `${kept.slice(0, maxChars)}${TRUNCATION_MARKER}`;
+}
+
+// 设定截断：超 SETTING_MAX_CHARS 时只保留世界观/角色表小节（角色表 ≤10 个角色），再超则硬截断。
+export function truncateSetting(text, maxChars = SETTING_MAX_CHARS) {
+  const trimmed = String(text ?? "").trim();
+  if (trimmed.length <= maxChars) return trimmed;
+  const kept = splitTopSections(trimmed)
+    .filter((block) => /(世界观|角色表)/.test(block.heading))
+    .map((block) => capCharacterBullets(block, SETTING_MAX_CHARACTERS))
+    .join("\n\n");
+  const bounded = kept.length > 0 ? kept : trimmed;
+  return bounded.length <= maxChars ? bounded : `${bounded.slice(0, maxChars)}${TRUNCATION_MARKER}`;
+}
+
+async function readBlueprintFile(projectRoot, fileName) {
+  try {
+    return await fs.readFile(safeJoin(projectRoot, fileName), "utf8");
+  } catch {
+    return null; // 不存在/读取失败 → 降级跳过，不阻断写作
+  }
+}
+
+// 把骨架区按 "### 第X卷" 标题切成卷，并解析每卷最小章号。
+function splitVolumes(skeleton) {
+  const headingRe = /^###\s+(第.+?卷)/gm;
+  const headings = [];
+  let match;
+  while ((match = headingRe.exec(skeleton)) !== null) headings.push(match.index);
+  if (headings.length === 0) return [];
+  return headings.map((index, i) => {
+    const end = headings[i + 1] ?? skeleton.length;
+    const text = skeleton.slice(index, end).trim();
+    const minMatch = text.match(/第(\d+)章/);
+    return { text, minChapterNo: minMatch ? Number(minMatch[1]) : null };
+  });
+}
+
+function splitSections(text, headingRe) {
+  const matches = [];
+  let match;
+  headingRe.lastIndex = 0;
+  while ((match = headingRe.exec(text)) !== null) matches.push(match.index);
+  return matches.map((index, i) => {
+    const end = matches[i + 1] ?? text.length;
+    const blockText = text.slice(index, end).trim();
+    return { heading: blockText.split("\n", 1)[0], text: blockText };
+  });
+}
+
+function splitSubsections(text) {
+  return splitSections(text, /^#{2,4}\s+/gm);
+}
+
+function splitTopSections(text) {
+  return splitSections(text, /^##\s+/gm);
+}
+
+// 角色表小节只保留前 maxBullets 个角色条目（- 开头的行），超出加注说明。
+function capCharacterBullets(block, maxBullets) {
+  if (!/角色表/.test(block.heading)) return block.text;
+  const lines = block.text.split("\n");
+  let bulletCount = 0;
+  const kept = [];
+  for (const line of lines) {
+    if (line.trimStart().startsWith("- ")) {
+      bulletCount += 1;
+      if (bulletCount > maxBullets) {
+        if (kept.length === 0 || !kept[kept.length - 1].startsWith("> ")) {
+          kept.push(`> （角色表过长，仅保留前 ${maxBullets} 个角色）`);
+        }
+        continue;
+      }
+    }
+    kept.push(line);
+  }
+  return kept.join("\n");
+}
+
 export async function compileChapterPrompt(projectRoot, project, state, request, runtime) {
   const configuredVersion = project.prompt_template_versions?.drafting ?? "v1";
   const templateVersion = configuredVersion.startsWith("drafting.") ? configuredVersion : `drafting.${configuredVersion}`;
   const compiler = new PromptCompiler({ templateVersion });
-  const [promptTemplate, bookSummary, draft, latestUserFeedback, planningSkillPrompts, stageSkillPrompts, continuityContext, continuity] = await Promise.all([
+  const [promptTemplate, bookSummary, draft, latestUserFeedback, planningSkillPrompts, stageSkillPrompts, continuityContext, continuity, outlineSection, settingStatic, currentVolumeOutline] = await Promise.all([
     readOptionalProjectText(projectRoot, "prompts", `${templateVersion}.md`),
     readOptionalProjectText(projectRoot, "memory", "book_summary.md"),
     readDraft(projectRoot, project, state.current_chapter_no),
@@ -1185,7 +1342,11 @@ export async function compileChapterPrompt(projectRoot, project, state, request,
       skills: runtime?.stepSkills
     }),
     buildContinuityPromptContext(projectRoot, state.current_chapter_no),
-    loadContinuity(projectRoot)
+    loadContinuity(projectRoot),
+    // spec §1.5 P1-8：蓝图注入内容构建；读取失败降级为 null/""，块不加入
+    readOutlineSection(projectRoot),
+    readSettingStatic(projectRoot),
+    readCurrentVolumeOutline(projectRoot, state.current_chapter_no)
   ]);
   const skillInstructions = [planningSkillPrompts.content, stageSkillPrompts.content].filter(Boolean).join("\n\n");
   const styleRules = [
@@ -1210,19 +1371,25 @@ export async function compileChapterPrompt(projectRoot, project, state, request,
   const chapterContinuityRule = state.current_chapter_no > 1
     ? `第 ${state.current_chapter_no} 章必须从第 ${state.current_chapter_no - 1} 章留下的后果、线索或情绪压力继续推进。`
     : "第 1 章可以建立初始处境一次；不要在同一章后续段落重复开场。";
-  const compiled = compiler.compile({
-    stableBlocks: {
-      system_rules:
-        promptTemplate ||
-        DEFAULT_DRAFTING_SYSTEM_RULES,
-      goal: project.story_seed ?? project.title ?? "Untitled writing project",
-      style: styleRulesText,
-      skill_instructions: skillInstructions
-    },
-    dynamicBlocks: {
-      project_memory: [bookSummary, buildRelevantFacts(continuity, state.current_chapter_no), continuityContext].filter(Boolean).join("\n\n"),
-      chapter_plan: [`第 ${state.current_chapter_no} 章 / 共 ${project.target_chapters} 章。`, chapterContinuityRule].join("\n"),
-      current_task: JSON.stringify(
+  const stableBlocks = {
+    system_rules:
+      promptTemplate ||
+      DEFAULT_DRAFTING_SYSTEM_RULES,
+    goal: project.story_seed ?? project.title ?? "Untitled writing project",
+    style: styleRulesText,
+    skill_instructions: skillInstructions
+  };
+  // spec §1.5 P1-8：outline/setting 内容构建（stable）。文件缺失/读取失败时 block 不加入。
+  if (outlineSection) stableBlocks.outline = truncateOutline(outlineSection);
+  if (settingStatic) stableBlocks.setting = truncateSetting(settingStatic);
+  const dynamicBlocks = {
+    project_memory: [bookSummary, buildRelevantFacts(continuity, state.current_chapter_no), continuityContext].filter(Boolean).join("\n\n"),
+    chapter_plan: [`第 ${state.current_chapter_no} 章 / 共 ${project.target_chapters} 章。`, chapterContinuityRule].join("\n"),
+    // spec §1.5 P1-9：当前卷骨架（dynamic，按章定位）；无骨架时内容为空 → 块自动跳过
+    current_outline_segment: currentVolumeOutline,
+    // spec §1.5 P1-9：角色当前状态必须放 dynamic（每章变化），绝不放 stable 的 setting
+    character_status: renderCharacterStatus(continuity.characters, { chapterNo: state.current_chapter_no }),
+    current_task: JSON.stringify(
         {
           kind: request.kind,
           project_id: request.project_id ?? project.project_id,
@@ -1258,8 +1425,8 @@ export async function compileChapterPrompt(projectRoot, project, state, request,
       selected_draft_fragment: draft.slice(-1200),
       latest_user_feedback: latestUserFeedback,
       recent_trace_summary: `stage=${state.current_stage}; current_segment_no=${state.current_segment_no}; attempt=${request.attempt}.`
-    }
-  });
+  };
+  const compiled = compiler.compile({ stableBlocks, dynamicBlocks });
   return {
     ...compiled,
     skillHooks: [...planningSkillPrompts.hooks, ...stageSkillPrompts.hooks]
