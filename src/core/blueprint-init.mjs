@@ -91,6 +91,7 @@ export async function runBlueprintInitForLegacy(projectRoot, { modelClient, user
 async function runBlueprintCommit(projectRoot, { modelClient, onEvent, signal, buildPrompt }) {
   onEvent?.({ type: "blueprint_init_started" });
   const state = await loadState(projectRoot);
+  const hadState = Boolean(state);
   const originalStatus = state?.blueprint_status ?? "none";
   // spec §1.4：生成进行中置 partial，拒绝并发写作；失败时回滚到原值（测试断言：失败后为 none）。
   // 已经是 complete/legacy 的项目重跑 /init 不动状态（项目锁已串行化写操作）。
@@ -113,8 +114,13 @@ async function runBlueprintCommit(projectRoot, { modelClient, onEvent, signal, b
     renamesDone += 1;
     const latest = await loadState(projectRoot);
     if (!latest) {
-      // 极端竞态（agent_state.json 被删）：拒绝覆盖，防止 {...null} 清空状态文件。
-      throw new Error("agent_state.json 不存在：拒绝覆盖状态文件，请重试 /init");
+      // 拒绝覆盖，防止 {...null} 清空状态文件。区分场景给出可行动提示：
+      // 文件原本存在（生成中途被删）→ 重试可自愈；文件原本就不存在 → 项目状态损坏，重建。
+      throw new Error(
+        hadState
+          ? "agent_state.json 在生成过程中消失：拒绝覆盖状态文件，请重试 /init"
+          : "agent_state.json 缺失（项目状态损坏）：蓝图文件已生成但无法提交状态，请重建项目后再试"
+      );
     }
     await saveState(projectRoot, { ...latest, blueprint_status: "complete" });
     return { outlineContent, settingContent };
@@ -229,10 +235,12 @@ async function collectChapterSummaries(projectRoot) {
     if (summary) summaries.push(summary);
   }
   if (summaries.length === 0) {
-    // 兜底：极老的项目可能没有 chapter_index.json，直接扫 chapters/ 目录
+    // 兜底：极老的项目可能没有 chapter_index.json，直接扫 chapters/ 目录（只认 .md/.txt 章节文件）
     const dir = safeJoin(projectRoot, "chapters");
     if (await pathExists(dir)) {
-      const names = (await fs.readdir(dir)).filter((name) => !name.startsWith(".")).sort();
+      const names = (await fs.readdir(dir))
+        .filter((name) => /\.(md|txt)$/i.test(name))
+        .sort();
       for (const name of names) {
         const summary = await readChapterHead(safeJoin(dir, name), null, name);
         if (summary) summaries.push(summary);
@@ -249,8 +257,11 @@ async function readChapterHead(absPath, chapterNo, title) {
     const content = await fs.readFile(absPath, "utf8");
     const head = content.replace(/\s+/gu, " ").trim().slice(0, CHAPTER_HEAD_CHARS);
     if (!head) return null;
-    const label = chapterNo ? `第${chapterNo}章` : (title ?? path.basename(absPath));
-    return `- ${label}${title ? `《${title}》` : ""}：${head}${content.length > CHAPTER_HEAD_CHARS ? "…" : ""}`;
+    const rawTitle = String(title ?? "").trim();
+    const label = chapterNo ? `第${chapterNo}章` : (rawTitle || path.basename(absPath));
+    // 标题已含书名号或与标签重复（如标题即文件名）时不再包一层，避免 `- 001.md《001.md》：`
+    const titlePart = rawTitle && rawTitle !== label && !rawTitle.includes("《") ? `《${rawTitle}》` : "";
+    return `- ${label}${titlePart}：${head}${content.length > CHAPTER_HEAD_CHARS ? "…" : ""}`;
   } catch {
     return null;
   }

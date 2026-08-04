@@ -117,14 +117,15 @@ export async function saveProject(projectRoot, project) {
   return writeFileAtomic(safeJoin(projectRoot, "project.yaml"), serializeSimpleYaml(project));
 }
 
-// 章节产物证据（spec §1.4 P2-5 legacy 语义）：chapters/ 目录有章节文件，或 chapter_index.json 有索引。
+// 章节产物证据（spec §1.4 P2-5 legacy 语义）：chapters/ 目录有章节文件（.md/.txt，过滤系统杂项
+// 如 Thumbs.db/desktop.ini/子目录），或 chapter_index.json 有索引。
 // 用于 loadState 动态标 legacy 与 blueprint-guard 对 agent_state.json 缺失时的兜底判定。
 export async function hasChapterArtifacts(projectRoot) {
   const chaptersDir = safeJoin(projectRoot, "chapters");
   if (await pathExists(chaptersDir)) {
     try {
       const entries = await fs.readdir(chaptersDir);
-      if (entries.some((name) => !name.startsWith("."))) return true;
+      if (entries.some((name) => /\.(md|txt)$/i.test(name))) return true;
     } catch {
       // 目录不可读时继续看索引
     }
@@ -137,9 +138,13 @@ export async function loadState(projectRoot) {
   const state = await readJson(safeJoin(projectRoot, "agent_state.json"));
   if (state && (state.blueprint_status === undefined || state.blueprint_status === null)) {
     // spec §1.4 P2-5：字段缺失（升级前旧项目 / 手写夹具）时按章节证据动态判定：
-    // 有章节产物 → legacy（允许写作），无产物 → none（拒绝）。不写回磁盘，保持 read-only 语义。
+    // 有章节产物 → legacy（允许写作），无产物 → none（拒绝）。
+    // structuredClone 后再注入：loadState 是纯读取，调用方 saveState(state) 不会把动态值
+    // 意外落盘（避免 legacy 判定变粘性、与"不写回磁盘"注释矛盾）。
     // 新建项目（createProjectAt）必有字段 "none"，不会误标。
-    state.blueprint_status = (await hasChapterArtifacts(projectRoot)) ? "legacy" : "none";
+    const enriched = structuredClone(state);
+    enriched.blueprint_status = (await hasChapterArtifacts(projectRoot)) ? "legacy" : "none";
+    return enriched;
   }
   return state;
 }
