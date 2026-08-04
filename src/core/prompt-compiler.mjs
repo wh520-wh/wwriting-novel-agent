@@ -8,7 +8,8 @@ export const STABLE_BLOCK_ORDER = [
   "style",
   "skill_instructions",
   "source_summaries",
-  "outline"
+  "outline",
+  "setting"
 ];
 
 export const DYNAMIC_BLOCK_ORDER = [

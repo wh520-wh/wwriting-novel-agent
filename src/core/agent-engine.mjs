@@ -1187,9 +1187,9 @@ const BLUEPRINT_PLACEHOLDER = /^# (OUTLINE|SETTING)\.md\s*\n>\s*蓝图未生成�
 export async function readOutlineSection(projectRoot) {
   const text = await readBlueprintFile(projectRoot, "OUTLINE.md");
   if (text === null || BLUEPRINT_PLACEHOLDER.test(text.trim())) return null;
-  const start = text.match(/^##\s*一、总纲/m);
-  if (!start) return text.trim(); // 结构未按固定模板：尽力注入全文
   const end = text.match(/^##\s*二、章节骨架/m);
+  const start = text.match(/^##\s*一、总纲/m);
+  if (!start) return text.slice(0, end ? end.index : undefined).trim(); // 非模板结构：到骨架标题为止，骨架区不进 stable
   return text.slice(start.index, end ? end.index : undefined).trim();
 }
 
@@ -1211,11 +1211,12 @@ export async function readCurrentVolumeOutline(projectRoot, chapterNo) {
   if (volumes.length === 0) return skeleton;
   const n = Number(chapterNo);
   if (!Number.isInteger(n) || n <= 0) return volumes[0].text;
-  // 取覆盖当前章号的卷：卷按文件顺序排列、最小章号递增，选最后一个 minChapterNo <= chapterNo 的卷
+  // 取覆盖当前章号的卷：卷按文件顺序排列、最小章号递增；空卷（minChapterNo=null）跳过但不阻断其后的卷
   let selected = volumes[0];
   for (const volume of volumes) {
-    if (volume.minChapterNo != null && volume.minChapterNo <= n) selected = volume;
-    else break;
+    if (volume.minChapterNo == null) continue;
+    if (volume.minChapterNo > n) break;
+    selected = volume;
   }
   return selected.text;
 }
@@ -1267,6 +1268,7 @@ async function readBlueprintFile(projectRoot, fileName) {
 }
 
 // 把骨架区按 "### 第X卷" 标题切成卷，并解析每卷最小章号。
+// 章号只从条目行解析（- [ ] 第N章...），避免卷标题的承接注释（如"（承接第2章伏笔）"）污染最小章号。
 function splitVolumes(skeleton) {
   const headingRe = /^###\s+(第.+?卷)/gm;
   const headings = [];
@@ -1276,7 +1278,7 @@ function splitVolumes(skeleton) {
   return headings.map((index, i) => {
     const end = headings[i + 1] ?? skeleton.length;
     const text = skeleton.slice(index, end).trim();
-    const minMatch = text.match(/第(\d+)章/);
+    const minMatch = text.match(/-\s*\[\s*\]\s*第(\d+)章/);
     return { text, minChapterNo: minMatch ? Number(minMatch[1]) : null };
   });
 }
@@ -1294,7 +1296,8 @@ function splitSections(text, headingRe) {
 }
 
 function splitSubsections(text) {
-  return splitSections(text, /^#{2,4}\s+/gm);
+  // 只按 ### 切分：#### 等更深层级标题并入所属 ### 小节，避免嵌套子节被独立切出后整体丢掉
+  return splitSections(text, /^###\s+/gm);
 }
 
 function splitTopSections(text) {
