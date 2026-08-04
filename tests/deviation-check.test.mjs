@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { runFactCheck } from "../src/core/agent-engine.mjs";
+import { readOutlineCore, runFactCheck } from "../src/core/agent-engine.mjs";
 import { buildFactCheckMessages, parseFactCheck } from "../src/core/quality-gates.mjs";
 import { readChatHistory as readChatHist } from "../src/core/chat/chat-store.mjs";
 import { loadContinuity, saveContinuity } from "../src/core/continuity-store.mjs";
@@ -154,6 +154,74 @@ test("模型未返回 deviation：降级为未检测，不报错不阻断", asyn
   assert.deepEqual(out.deviation, { detected: false, description: "" });
   assert.equal(out.reportHint, null);
   assert.equal(out.conflicts.length, 0);
+});
+
+test("模型返回字符串 \"false\"：不误报为偏离（严格布尔）", async () => {
+  const { projectRoot, project } = await makeProject("dev-falsestr-");
+  const out = await runFactCheck(projectRoot, project, { current_chapter_no: 1 }, {
+    modelClient: { generate: async () => ({
+      text: JSON.stringify({ conflicts: [], deviation: { detected: "false", description: "" } }), usageReport: {}
+    }) }
+  }, "正文。");
+  assert.equal(out.deviation.detected, false, "字符串 \"false\" 不得强转为 true");
+  assert.equal(out.reportHint, null, "不应产生偏离提示");
+  const events = await readEvents(projectRoot);
+  assert.ok(!events.some((e) => e.type === "fact_check_deviation"), "不应有偏离提示事件");
+});
+
+test("readOutlineCore：占位 OUTLINE.md 返回 null（降级不报错）", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "dev-core-placeholder-"));
+  await fs.writeFile(path.join(root, "OUTLINE.md"), "# OUTLINE.md\n> 蓝图未生成，请运行 /init\n", "utf8");
+  assert.equal(await readOutlineCore(root), null);
+});
+
+test("readOutlineCore：超 4000 字符总纲截断并带标记", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "dev-core-trunc-"));
+  const longMainline = "复仇".repeat(5000); // 10000 字，远超 4000
+  await fs.writeFile(path.join(root, "OUTLINE.md"), [
+    "# OUTLINE.md",
+    "",
+    "## 一、总纲（锚点区 · 只增不改）",
+    "### 1. 主题与核心概念",
+    "复仇与救赎",
+    "### 2. 主线",
+    longMainline,
+    "### 3. 核心矛盾",
+    "复仇 vs 宽恕",
+    "",
+    "## 二、章节骨架（事实区 · 跟正文走）",
+    "### 第一卷",
+    "- [ ] 第1章《登场》"
+  ].join("\n"), "utf8");
+  const out = await readOutlineCore(root);
+  assert.ok(out.length > 4000, "截断后应仍超 4000（4000 + 截断标记）");
+  assert.ok(out.includes("[内容过长，已按预算截断"), "应带截断标记");
+  assert.ok(out.includes("### 2. 主线"), "核心小节仍保留");
+});
+
+test("readOutlineCore：### 10. 等非核心小节不进入核心段（不误配）", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "dev-core-10-"));
+  await fs.writeFile(path.join(root, "OUTLINE.md"), [
+    "# OUTLINE.md",
+    "",
+    "## 一、总纲（锚点区 · 只增不改）",
+    "### 1. 主题与核心概念",
+    "主题",
+    "### 2. 主线",
+    "主角为父复仇",
+    "### 3. 核心矛盾",
+    "复仇 vs 宽恕",
+    "### 10. 附录：题材补充",
+    "这是不应进入跑偏参照的补充内容",
+    "",
+    "## 二、章节骨架（事实区 · 跟正文走）",
+    "### 第一卷",
+    "- [ ] 第1章《登场》"
+  ].join("\n"), "utf8");
+  const out = await readOutlineCore(root);
+  assert.ok(out.includes("主角为父复仇"), "主线应保留");
+  assert.ok(out.includes("复仇 vs 宽恕"), "核心矛盾应保留");
+  assert.ok(!out.includes("不应进入跑偏参照"), "### 10. 小节不得混入核心段");
 });
 
 test("deviation 与 conflicts 同报：conflicts 仍走硬阻断返回，deviation 不放大冲突", async () => {

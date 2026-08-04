@@ -24,7 +24,8 @@ registerSchema("fact_check", "v1", {
         };
       }).filter((c) => c.draft_quote && c.conflicts_with),
       deviation: {
-        detected: Boolean(deviationRaw.detected),
+        // 严格布尔：模型误输出字符串 "false" 时不得强转为 true 造成误报
+        detected: deviationRaw.detected === true,
         description: String(deviationRaw.description ?? "").slice(0, 400)
       }
     };
