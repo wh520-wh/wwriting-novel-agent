@@ -141,6 +141,19 @@ export function registerReadTools(registry) {
   });
 
   registry.register({
+    name: "read_blueprint", kind: "read",
+    description: "读取规划蓝图：OUTLINE.md（总纲 + 章节骨架）/ SETTING.md（世界观 + 角色 + 题材设定）。section 指定读哪份，默认两份都读。",
+    params: { section: "outline | setting | all（默认 all）" },
+    run: async (args, ctx) => {
+      const outline = await fs.readFile(safeJoin(ctx.projectRoot, "OUTLINE.md"), "utf8").catch(() => null);
+      const setting = await fs.readFile(safeJoin(ctx.projectRoot, "SETTING.md"), "utf8").catch(() => null);
+      if (args.section === "outline") return { content: outline };
+      if (args.section === "setting") return { content: setting };
+      return { outline, setting };
+    }
+  });
+
+  registry.register({
     name: "get_cost", kind: "read",
     description: "读取成本摘要：总花费、token、缓存命中、最近章节成本。",
     params: {},

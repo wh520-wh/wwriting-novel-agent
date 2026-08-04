@@ -1505,6 +1505,7 @@ const DRAFTING_ALLOWED_TOOLS = [
   "read_chapter",
   "read_continuity",
   "read_outline",
+  "read_blueprint",
   "edit_chapter",
   "append_chapter_segment"
 ];
@@ -1515,9 +1516,11 @@ const REVISING_ALLOWED_TOOLS = [
   "read_chapter",
   "read_continuity",
   "read_outline",
+  "read_blueprint",
   "edit_chapter",
   "update_continuity",
   "update_outline",
+  "update_blueprint",
   "append_chapter_segment"
 ];
 
