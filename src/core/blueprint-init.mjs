@@ -22,7 +22,7 @@ import path from "node:path";
 import { loadContinuity, renderContinuityMarkdown } from "./continuity-store.mjs";
 import { pathExists, safeJoin, writeFileAtomic } from "./fs-utils.mjs";
 import { loadChapterIndex, loadProject, loadState, saveState } from "./project-store.mjs";
-import { pickTemplate } from "./blueprint-templates.mjs";
+import { GENRE_TEMPLATES, pickTemplate } from "./blueprint-templates.mjs";
 
 // 模型输出两块内容的分隔行（独立成行）。导出供测试 mock 复用，避免测试与实现漂移。
 export const BLUEPRINT_SPLIT = "<<<BLUEPRINT_SPLIT>>>";
@@ -161,11 +161,13 @@ async function generateBlueprint(projectRoot, modelClient, { signal, buildPrompt
 }
 
 function buildBlueprintPrompt({ project, userRequirements }) {
-  const requirement = String(userRequirements ?? "").trim()
-    || "（用户未提供具体要求，按通用东方玄幻方向规划）";
+  // 题材匹配必须基于原始输入：无输入时显式命中默认玄幻模板（与"默认东方玄幻方向"语义自洽），
+  // 不依赖默认文案是否含"玄幻"字样（否则改文案措辞会静默改变匹配结果）。
+  const rawRequirement = String(userRequirements ?? "").trim();
+  const requirement = rawRequirement || "（用户未提供具体要求，按通用东方玄幻方向规划）";
   const title = project?.title ? `书名：${project.title}` : null;
   const seed = project?.story_seed ? `故事种子：${project.story_seed}` : null;
-  const template = pickTemplate(requirement);
+  const template = rawRequirement ? pickTemplate(rawRequirement) : GENRE_TEMPLATES["玄幻"];
   return [
     "你是长篇小说的规划引擎。请根据用户需求，按下面的固定结构生成两份蓝图文件的内容（markdown 格式）。",
     "内容必须贴合用户需求的题材并具体填充，不要留空占位。",
@@ -221,13 +223,20 @@ function buildLegacyBlueprintPrompt({ project, userRequirements, context }) {
 
 // 题材模板命中时输出必填字段清单（两行固定前缀，测试 mock 按前缀提取回显，验证字段真的进了 prompt）。
 // 未命中（pickTemplate 返回 undefined）时输出空数组，prompt 保持基础模板。
+// 字段数组为空时跳过对应清单行，不输出「字段：」空清单（模板配置缺失时防御）。
 function buildGenreTemplateLines(template) {
   if (!template) return [];
+  const outlineFields = template.outlineFields ?? [];
+  const settingFields = template.settingFields ?? [];
+  const fieldLines = [
+    outlineFields.length ? `- OUTLINE 题材字段：${outlineFields.join("、")}` : null,
+    settingFields.length ? `- SETTING 题材字段：${settingFields.join("、")}` : null
+  ].filter(Boolean);
+  if (!fieldLines.length) return [];
   return [
     "",
     `题材专属字段（已匹配题材模板「${template.genre}」，以下字段为必填，输出时不得省略）：`,
-    `- OUTLINE 题材字段：${template.outlineFields.join("、")}`,
-    `- SETTING 题材字段：${template.settingFields.join("、")}`,
+    ...fieldLines,
     ""
   ];
 }

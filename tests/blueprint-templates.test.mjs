@@ -139,6 +139,19 @@ test("未匹配题材走基础模板：不强制题材字段", async () => {
   assert.ok(!outlineContent.includes("情感基调"), "未匹配模板时不应强制题材字段");
 });
 
+test("无用户需求时显式走默认玄幻模板（与默认东方玄幻方向自洽，不依赖默认文案措辞）", async () => {
+  const projectRoot = makeProjectRoot("blueprint-tpl-none-");
+  await createProjectAt(projectRoot, { title: "无需求" });
+
+  // 不传 userRequirements：prompt 的默认方向是"通用东方玄幻"，无输入必须显式命中玄幻模板
+  const { outlineContent } = await runBlueprintInit(projectRoot, {
+    modelClient: templateEchoClient()
+  });
+
+  assert.ok(outlineContent.includes("能力体系"), "无输入应显式命中默认玄幻模板（能力体系）");
+  assert.ok(outlineContent.includes("修为阶层"), "无输入应显式命中默认玄幻模板（修为阶层）");
+});
+
 test("legacy 反推生成同样按题材套模板（用户给题材需求时）", async () => {
   const projectRoot = makeProjectRoot("blueprint-tpl-legacy-");
   await makeLegacyProject(projectRoot);
@@ -166,6 +179,12 @@ test("pickTemplate 科幻与玄幻不互误", () => {
   assert.equal(pickTemplate("科幻小说").genre, "科幻");
   assert.equal(pickTemplate("玄幻小说").genre, "玄幻");
   assert.equal(pickTemplate("星际科幻").genre, "科幻");
+});
+
+test("pickTemplate 组合题材按模板迭代顺序取优先级", () => {
+  // 迭代顺序即优先级：先命中"玄幻"；"科幻都市"同时含都市/科幻，都市在前取都市
+  assert.equal(pickTemplate("都市异能玄幻").genre, "玄幻");
+  assert.equal(pickTemplate("科幻都市").genre, "都市");
 });
 
 test("pickTemplate 无匹配返回 undefined（走基础模板）", () => {
