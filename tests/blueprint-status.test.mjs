@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -70,18 +71,41 @@ test("legacy 状态允许写作", async () => {
   await assert.doesNotReject(() => assertBlueprintReady(projectRoot));
 });
 
-// 字段缺失是唯一旁路（spec §1.4 legacy 语义）：最需回归保护
-test("blueprint_status 字段缺失视为 legacy 放行", async () => {
+// 章节产物证据：写 chapters/001.md（升级前旧项目的等价证据）
+async function addChapterEvidence(projectRoot) {
+  await mkdir(join(projectRoot, "chapters"), { recursive: true });
+  await writeFile(join(projectRoot, "chapters", "001.md"), "# 第1章\n\n旧项目正文……\n", "utf8");
+}
+
+// Task 9 收紧后的兜底语义（spec §1.4 P2-5）：字段缺失不再是无条件放行——
+// 有章节产物才视为 legacy 放行；字段缺失且无产物按 none 拒绝（门禁不形同虚设）。
+test("blueprint_status 字段缺失且无章节产物时拒绝", async () => {
   const projectRoot = makeProjectRoot();
   await createProjectAt(projectRoot, { title: "T" });
   const state = await loadState(projectRoot);
   delete state.blueprint_status;
   await saveState(projectRoot, state);
+  await assert.rejects(() => assertBlueprintReady(projectRoot), /完成.*init/u);
+});
+
+test("blueprint_status 字段缺失但有章节产物时视为 legacy 放行", async () => {
+  const projectRoot = makeProjectRoot();
+  await createProjectAt(projectRoot, { title: "T" });
+  const state = await loadState(projectRoot);
+  delete state.blueprint_status;
+  await saveState(projectRoot, state);
+  await addChapterEvidence(projectRoot);
   await assert.doesNotReject(() => assertBlueprintReady(projectRoot));
 });
 
-test("agent_state.json 不存在时视为 legacy 放行", async () => {
+test("agent_state.json 不存在且无章节产物时拒绝", async () => {
   const projectRoot = makeProjectRoot();
+  await assert.rejects(() => assertBlueprintReady(projectRoot), /完成.*init/u);
+});
+
+test("agent_state.json 不存在但有章节产物时视为 legacy 放行", async () => {
+  const projectRoot = makeProjectRoot();
+  await addChapterEvidence(projectRoot);
   await assert.doesNotReject(() => assertBlueprintReady(projectRoot));
 });
 

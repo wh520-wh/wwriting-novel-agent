@@ -1,15 +1,20 @@
-import { loadState } from "./project-store.mjs";
+import { hasChapterArtifacts, loadState } from "./project-store.mjs";
 
 // 写作入口门禁（spec §1.4）：blueprint_status 为 "complete" 或 "legacy" 才允许写作。
 // - "none" / "partial"：蓝图未完成，拒绝并提示先完成 /init。
-// - 字段缺失（旧项目 / 手写夹具）视为 legacy：spec §1.4 的 legacy 语义允许旧项目写作，
-//   不因字段不存在而误伤存量项目与测试夹具。这是唯一旁路，命中时打 warn 便于发现。
+// - 字段缺失（文件存在）：由 loadState 动态计算（有章节产物 → legacy 放行，无产物 → none 拒绝），
+//   不因字段不存在而误伤存量项目，也不让门禁形同虚设。
+// - agent_state.json 不存在（loadState 返回 null，最旧的升级前项目）：本处按章节证据兜底——
+//   有章节产物视为 legacy 放行（打 warn 便于发现），无章节产物拒绝。
 export async function assertBlueprintReady(projectRoot) {
   const state = await loadState(projectRoot);
   const status = state?.blueprint_status;
   if (status === undefined || status === null) {
-    console.warn(`[blueprint-guard] agent_state.json 缺少 blueprint_status 字段，视为 legacy 放行: ${projectRoot}`);
-    return;
+    if (await hasChapterArtifacts(projectRoot)) {
+      console.warn(`[blueprint-guard] agent_state.json 不存在但有章节产物，视为 legacy 放行: ${projectRoot}`);
+      return;
+    }
+    throw new Error("请先完成 /init 生成大纲与设定");
   }
   if (status !== "complete" && status !== "legacy") {
     throw new Error("请先完成 /init 生成大纲与设定");
