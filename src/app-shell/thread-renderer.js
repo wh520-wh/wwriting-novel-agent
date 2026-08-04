@@ -235,6 +235,16 @@ export function createThreadRenderer(ctx) {
       if (event.type === "project_run_started") {
         if (!ctx.renderedKeys.has(key)) {
           ctx.renderedKeys.add(key);
+          // 新轮开始（未登记 start key）：若上一轮是刷新后渲染的历史运行卡（_startEvent），
+          // 它已被新轮追赶（终态缺失或晚到），先按当前 data 折叠为完成卡/未完成卡
+          // （规格书 P3/P6）。注：终态若迟于本批到达（后续轮询才落盘），折叠为「未完成」
+          // 后不再对账——低频场景，显示未完成仍贴近追赶时刻的事实。
+          const prev = ctx.getLiveBlock();
+          if (prev?._startEvent) {
+            const rebuilt = buildHistoryTurn(prev._startEvent, data);
+            ctx.setLiveBlock(rebuilt);
+            prev.root.replaceWith(rebuilt.root);
+          }
           if (liveTurn && !liveTurn.done) {
             // live turn（SSE）已认领本轮：轮询只登记指纹，不重建旧式运行块，
             // 防止同一轮出现两套 agent 渲染。
@@ -242,15 +252,36 @@ export function createThreadRenderer(ctx) {
             liveTurn.chapterNo = event.chapter_no ?? liveTurn.chapterNo;
             continue;
           }
-          const block = buildAgentBlock(event, data);
+          // 历史轮（无 live turn 认领）直接按规格书「折叠态即终态」渲染完成卡：
+          // 聚合本轮全部事件 → 无头像/无署名/无过程元素，只剩一张可展开的完成卡
+          // （2026-08-05 还债 defer 4：buildAgentBlock 旧式带头像布局已废弃）。
+          const block = buildHistoryTurn(event, data);
           ctx.setLiveBlock(block);
           ctx.refs.thread.append(block.root);
-          ctx.announce("智能体开始写作");
         }
         continue;
       }
       // 运行内的阶段/章节/收尾事件，折叠进当前（持久于轮询之间的）运行气泡。
       appendRunDetail(ctx.getLiveBlock(), event, data, key);
+    }
+    // 刷新/重载后正在运行的轮（buildHistoryTurn 早退渲染的运行卡）：
+    // 终态事件到达后，用全量事件重建为完成卡——规格书 P3/P6：一轮结束折叠为
+    // 无头像无署名完成卡，不留旧式带头像静态卡（filecard/quick row）。
+    // 早退前提是该轮是最后一轮（无终态且 nextTurnAt<0），事件列表中的终态必属本轮。
+    // 注意：appendRunDetail 已把运行卡静态化（block.done=true），重建必须无条件覆盖——
+    // _startEvent 已足以区分历史运行卡与实时轮卡；重建后的完成卡无 _startEvent，后续轮询自然跳过。
+    const runningBlock = ctx.getLiveBlock();
+    if (runningBlock?._startEvent
+      && (data.events ?? []).some((e) => ["project_run_finished", "project_run_failed",
+        "project_interrupted", "project_cancelled", "project_blocked"].includes(e.type))) {
+      const rebuilt = buildHistoryTurn(runningBlock._startEvent, data);
+      // 仅当重建为折叠态才替换：若 events 里的终态属于更早的轮（当前运行卡已被新轮追赶、
+      // 自身无终态），buildHistoryTurn 会早退返回新运行卡（done=false），保持现状——
+      // 被追赶轮的折叠由 started 分支的 prev 检查负责。
+      if (rebuilt.done) {
+        ctx.setLiveBlock(rebuilt);
+        runningBlock.root.replaceWith(rebuilt.root);
+      }
     }
     // 运行中：把最新阶段/章节进度同步进当前运行气泡。
     updateLiveAgentBlock(data);
@@ -346,7 +377,7 @@ export function createThreadRenderer(ctx) {
     const currentProjectRoot = ctx.getCurrentProjectRoot();
     const wrap = document.createElement("div");
     // 规格书 P6：Agent 消息不带头像、不带署名行，直接以内容开始（2026-08-03 决定）。
-    // msg-agent--plain：无头像列的单列网格（历史轮 buildAgentBlock 保留旧式带头像布局，defer 4）。
+    // msg-agent--plain：无头像列的单列网格（历史轮同规格：buildHistoryTurn 完成卡，2026-08-05）。
     wrap.className = "msg-agent msg-agent--plain rise";
     const body = document.createElement("div");
     body.className = "agent-body";
@@ -577,6 +608,112 @@ export function createThreadRenderer(ctx) {
   }
 
   // 一次运行 = 一个智能体气泡：含步骤时间线 + 完成后的章节卡 + 汇报文字。
+  // 历史轮完成卡（规格书「折叠态即终态」）：轮询全量重放时把一轮的事件聚合成
+  // 与实时轮一致的终态——过程元素（思考/工具/状态/段落）整体隐藏，只留完成卡。
+  // 无头像、无署名行（规格书 P6，2026-08-03 决定）；思考文本仅存在于 SSE 流，
+  // 历史重放没有，完成卡「已思考」区留空隐藏。
+  function buildHistoryTurn(startEvent, data) {
+    const events = [...(data.events ?? [])].sort((a, b) => timeValue(a.timestamp) - timeValue(b.timestamp));
+    // 轮询每次返回全新序列化的事件对象（getJson 不复用引用），按 eventKey 匹配 startEvent
+    // 而不是 indexOf——重建路径（历史运行卡终态到达）拿到的 startEvent 属于上一轮 data。
+    const idx = events.findIndex((e) => eventKey(e) === eventKey(startEvent));
+    const tail = idx >= 0 ? events.slice(idx + 1) : [];
+    const nextTurnAt = tail.findIndex((e) => e.type === "user_instruction_received" || e.type === "project_run_started");
+    const runEvents = nextTurnAt >= 0 ? tail.slice(0, nextTurnAt) : tail;
+    // 终态查找提前：决定本轮是折叠完成卡还是保持运行卡。
+    const terminal = runEvents.find((e) => ["project_run_finished", "project_run_failed", "project_interrupted", "project_cancelled", "project_blocked"].includes(e.type));
+
+    // 本轮无终态事件且是最后一轮：可能仍在运行（刷新/重载后轮询重放），不折叠——
+    // 渲染运行卡保持实时更新，事件由 appendRunDetail/updateLiveAgentBlock 增量处理，
+    // 终态到达后再重建折叠（规格书 P3：一轮结束才折叠为完成卡）。
+    // 早退必须在预登记 runEvents 指纹之前：运行卡路径不得预登记本轮 runEvents
+    // （start key 已由 syncThread 登记），否则后续轮询增量被吞。
+    // 挂 _startEvent 供 syncThread 终态重建；挂 projectRoot 通过 turnIsCurrent 守卫，
+    // 否则 reconcileLiveTurn 首轮即把 liveTurn 清空（还债 defer 4）。
+    if (!terminal && nextTurnAt < 0) {
+      const block = buildAgentBlock(startEvent, data);
+      block._startEvent = startEvent;
+      block.projectRoot = ctx.getCurrentProjectRoot();
+      return block;
+    }
+
+    // 登记本轮全部事件指纹：本轮事件由这里聚合处理，后续增量循环不得重复渲染。
+    for (const e of [startEvent, ...runEvents]) ctx.renderedKeys.add(eventKey(e));
+
+    const root = document.createElement("div");
+    root.className = "turn-agent rise";
+    const think = buildThinkBlock();
+    const tool = buildToolCard();
+    const statusSlot = document.createElement("div");
+    statusSlot.className = "status-slot hidden";
+    const streamEl = document.createElement("div");
+    streamEl.className = "stream-area";
+    const chipsEl = document.createElement("div");
+    chipsEl.className = "para-chips hidden";
+    const peekSlot = document.createElement("div");
+    peekSlot.className = "peek-slot";
+    const errorSlot = document.createElement("div");
+    errorSlot.className = "error-slot hidden";
+    const done = buildDoneCard();
+    root.append(think.el, tool.el, statusSlot, streamEl, chipsEl, peekSlot, errorSlot, done.el);
+
+    const turn = {
+      projectRoot: ctx.getCurrentProjectRoot(),
+      root,
+      thinkEl: think.el, thinkLabel: think.label, thinkBody: think.body,
+      toolEl: tool.el, toolLabel: tool.label, toolStatus: tool.status,
+      statusSlot, streamEl, chipsEl, peekSlot, errorSlot,
+      doneEl: done.el, doneTitle: done.title, doneParaChip: done.paraChip,
+      doneWc: done.wc, donePreview: done.preview,
+      doneThinkBox: done.thinkBox, doneThink: done.thinkText, doneFull: done.full,
+      chapters: [], chapterContents: {}, chapterNo: startEvent.chapter_no ?? null,
+      phase: "drafting", thinkText: "", para: null, paraText: "",
+      done: false
+    };
+
+    // 章节聚合：chapter_completed/finalized 事件登记章号（正文由
+    // refreshDoneFromChapterFiles 从磁盘回填——artifact 是元数据对象，不得当正文）。
+    const nums = [];
+    for (const e of runEvents) {
+      if (e.type !== "chapter_completed" && e.type !== "chapter_finalized") continue;
+      const n = Number(e.chapter_no);
+      if (n && !nums.includes(n)) nums.push(n);
+      turn.chapterNo = e.chapter_no ?? turn.chapterNo;
+    }
+    for (const n of nums) {
+      turn.chapters.push({ chapterNo: n, text: "", unfinished: false });
+    }
+
+    // 终态应用：失败走红卡（规格书 5.9），其余折叠为完成卡（terminal 已提前算好）。
+    if (terminal && terminal.type === "project_run_failed") {
+      failTurn(turn, terminal);
+    } else {
+      const kindMap = {
+        project_run_finished: "finished",
+        project_interrupted: "interrupted",
+        project_cancelled: "cancelled",
+        project_blocked: "blocked"
+      };
+      closeTurnToDone(turn, terminal ?? startEvent, terminal ? kindMap[terminal.type] ?? "finished" : "unfinished");
+    }
+    return turn;
+  }
+
+  // 历史轮正文回填（规格书：完成卡展开全文从磁盘读真实正文，含实时字数统计）。
+  function refreshDoneFromChapterFiles(turn) {
+    const nums = turn.chapters.map((c) => c.chapterNo).filter(Boolean);
+    return Promise.all(nums.map(async (n) => {
+      try {
+        const data = await getJson(`/api/chapters/read?chapter=${encodeURIComponent(n)}`);
+        if (!data?.ok || typeof data.content !== "string" || !data.content.trim()) return;
+        // 实时轮：已切项目/已换轮则丢弃；历史轮：回填到已断连 root 无副作用，不设守卫。
+        if (liveTurn === turn && !turnIsCurrent(turn)) return;
+        turn.chapterContents[n] = data.content;
+        applyDoneContent(turn);
+      } catch { /* 文件尚未落盘或读取失败：保持已流式文本 */ }
+    }));
+  }
+
   function buildAgentBlock(startEvent, data) {
     const wrap = document.createElement("div");
     wrap.className = "msg-agent rise";
@@ -782,7 +919,8 @@ export function createThreadRenderer(ctx) {
     if (run.status === "interrupted" || run.status === "cancelled" || run.status === "blocked") {
       block.say.hidden = false;
       block.say.textContent = terminalMessage(run);
-      ctx.announce(block.say.textContent);
+      // 历史运行卡（_startEvent）即将被重建折叠为完成卡，播报由重建路径负责一次，避免双重播报。
+      if (!block._startEvent) ctx.announce(block.say.textContent);
       return;
     }
     if (event.type === "project_run_failed" || event.type === "project_blocked") {
@@ -794,7 +932,8 @@ export function createThreadRenderer(ctx) {
     block.say.hidden = false;
     // 保存结果由文件卡（"第 N 章已写入本地文件" + "打开阅读"）承载，这里只播报本轮任务结果。
     block.say.textContent = event.message ?? "本轮任务已完成。";
-    ctx.announce(block.say.textContent);
+    // 历史运行卡（_startEvent）即将被重建折叠为完成卡，播报由重建路径负责一次，避免双重播报。
+    if (!block._startEvent) ctx.announce(block.say.textContent);
     block.body.append(buildQuickRow(["续写下一章"]));
   }
 
@@ -1614,6 +1753,9 @@ export function createThreadRenderer(ctx) {
     const turn = liveTurn;
     if (!turn || turn.done) return;
     if (!turnIsCurrent(turn)) { liveTurn = null; return; }
+    // 历史运行卡（buildHistoryTurn 早退的 buildAgentBlock 块）没有段落标记区/状态机槽位，
+    // 段落对账与终态收尾由其重建路径负责，这里只对账 live turn 状态机结构。
+    if (!turn.chipsEl) return;
     const chapters = data?.chapters ?? [];
     for (const chip of turn.chipsEl.querySelectorAll(".p-chip[data-chapter-no]")) {
       const n = Number(chip.dataset.chapterNo);
@@ -1673,16 +1815,23 @@ export function createThreadRenderer(ctx) {
     if (nums.length > 1) {
       turn.doneTitle.textContent = paused
         ? `第 ${nums[0]}–${nums[nums.length - 1]} 章 · 已暂停`
+        : kind === "unfinished" ? `第 ${nums[0]}–${nums[nums.length - 1]} 章 · 未完成`
+        : kind === "interrupted" ? `第 ${nums[0]}–${nums[nums.length - 1]} 章 · 已中断`
+        : kind === "cancelled" ? `第 ${nums[0]}–${nums[nums.length - 1]} 章 · 已停止`
+        : kind === "blocked" ? `第 ${nums[0]}–${nums[nums.length - 1]} 章 · 需要处理`
         : `第 ${nums[0]}–${nums[nums.length - 1]} 章 · 全部完成`;
     } else if (nums.length === 1) {
       turn.doneTitle.textContent = paused ? `第 ${nums[0]} 章 · 已暂停`
         : kind === "interrupted" ? `第 ${nums[0]} 章 · 已中断`
         : kind === "cancelled" ? `第 ${nums[0]} 章 · 已停止`
         : kind === "blocked" ? `第 ${nums[0]} 章 · 需要处理`
+        : kind === "unfinished" ? `第 ${nums[0]} 章 · 未完成`
         : `第 ${nums[0]} 章 · 已完成`;
     } else {
-      turn.doneTitle.textContent = kind === "interrupted" ? "本轮写作已中断"
-        : kind === "cancelled" ? "本轮写作已停止"
+      turn.doneTitle.textContent = kind === "interrupted" ? (turn.chapterNo ? `第 ${turn.chapterNo} 章 · 已中断` : "本轮写作已中断")
+        : kind === "cancelled" ? (turn.chapterNo ? `第 ${turn.chapterNo} 章 · 已停止` : "本轮写作已停止")
+        : kind === "unfinished" ? (turn.chapterNo ? `第 ${turn.chapterNo} 章 · 未完成` : "本轮写作未完成")
+        : kind === "blocked" ? (turn.chapterNo ? `第 ${turn.chapterNo} 章 · 需要处理` : "本轮写作需要处理")
         : paused ? "本轮写作已暂停"
         : "本轮写作已完成";
     }
@@ -1706,20 +1855,8 @@ export function createThreadRenderer(ctx) {
       void refreshDoneFromChapterFiles(turn);
     }
 
-    if (event?.message) ctx.announce(event.message);
-  }
-
-  async function refreshDoneFromChapterFiles(turn) {
-    const nums = turn.chapters.map((c) => c.chapterNo).filter(Boolean);
-    await Promise.all(nums.map(async (n) => {
-      try {
-        const data = await getJson(`/api/chapters/read?chapter=${encodeURIComponent(n)}`);
-        if (!data?.ok || typeof data.content !== "string" || !data.content.trim()) return;
-        if (liveTurn !== turn || !turnIsCurrent(turn)) return; // 已切项目/已换轮则丢弃
-        turn.chapterContents[n] = data.content;
-        applyDoneContent(turn);
-      } catch { /* 文件尚未落盘或读取失败：保持已流式文本 */ }
-    }));
+    // unfinished 折叠时 event 是 startEvent（message「开始写作」）：播报语义错位且每次启动重播，跳过。
+    if (kind !== "unfinished" && event?.message) ctx.announce(event.message);
   }
 
   function applyDoneContent(turn) {
