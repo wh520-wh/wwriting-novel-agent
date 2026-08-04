@@ -188,6 +188,8 @@ const threadRenderer = createThreadRenderer({
   },
   promoteAskEntry: (entry) => composer.promoteAskEntry(entry),
   submitText: (text) => composer.submitText(text),
+  // 空态建议卡「开始规划蓝图」点击：直接触发 /init（空 requirements 走默认玄幻模板兜底）。
+  runBlueprintInit: () => composer.submitBlueprintInit(""),
   isChatBusy: () => composer?.isChatBusy?.() === true,
 });
 
@@ -230,7 +232,7 @@ composer = createComposer({
   getAskEntries: () => askEntries,
   projectScope,
 });
-const { submitComposer, autoGrowComposer, updateSlashMenu, onComposerKeydown, updateSubmitState, promoteAskEntry, persistDraft, flushDraft, restoreDraftIfAny, resetComposerInputUi } = composer;
+const { submitComposer, autoGrowComposer, updateSlashMenu, onComposerKeydown, updateSubmitState, promoteAskEntry, persistDraft, flushDraft, restoreDraftIfAny, resetComposerInputUi, submitBlueprintInit } = composer;
 
 function openDrawer(tab) {
   if (tab) drawerTab = tab;
@@ -727,6 +729,10 @@ function handleReadinessAction(view) {
     case "start_chapter":
       void composer.startCurrentChapter();
       break;
+    case "init_blueprint":
+      // 主操作区「开始规划蓝图」按钮：直接触发 /init（空 requirements 走默认玄幻模板兜底）。
+      void submitBlueprintInit("");
+      break;
     case "view_progress":
     case "view_project_status":
       openDrawerTab("run");
@@ -746,6 +752,7 @@ function workbenchStatusText(view) {
   if (key === "completed") return "本轮章节目标已完成";
   if (key === "project_read_only") return "这部作品当前以只读方式打开";
   if (key === "missing_model" || key === "invalid_model") return "完成模型准备后即可继续";
+  if (key === "blueprint_pending") return "先完成蓝图规划，再开始写作";
   return `下一步：第 ${view.readiness.chapterNo} 章`;
 }
 

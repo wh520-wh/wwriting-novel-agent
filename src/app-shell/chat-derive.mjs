@@ -45,9 +45,18 @@ export function deriveSuggestions(data) {
   if (done >= 1) {
     return [item(`续写下一章（第 ${done + 1} 章）`), item(`回顾第 ${done} 章的结尾`), item("目前花了多少钱？")];
   }
+  // 新项目且蓝图未就绪（spec §1.4 门禁）：写作入口被拒，先引导显式 /init。
+  // 点击走独立触发（kind: init-blueprint），不走 chat agent——空 requirements 也能生成（默认玄幻模板）。
+  const blueprintStatus = data?.state?.blueprint_status;
+  if (blueprintStatus === "none" || blueprintStatus === "partial") {
+    return [
+      item("开始规划蓝图", "", { kind: "init-blueprint" }),
+      item("这本书的设定是什么？"),
+    ];
+  }
   return [item("排 5 章试写"), item("这本书的设定是什么？"), item("帮我完善大纲")];
 }
 
-function item(label, message = label) {
-  return { label, message };
+function item(label, message = label, extra = {}) {
+  return { label, message, ...extra };
 }
