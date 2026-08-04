@@ -2218,26 +2218,35 @@ button.cbar-pill--readonly:hover {
 .chat-confirm-card--rejected { opacity: .6; border-color: var(--muted); }
 .chat-confirm-card--superseded { opacity: .5; border-color: var(--muted); background: var(--bg-soft); }
 
-/* §3.4: 中断卡片 — 进程崩溃/断电后最后一条消息是 generating 占位时渲染 */
+/* §3.4: 中断卡片 — 进程崩溃/断电后最后一条消息是 generating 占位时渲染。
+   spec §2.3-U1/U6：中性灰细条提示（不占内容区核心），无虚线边框，不通栏（最大宽度 82%），
+   不归 --err-* 红色系——中断是中性态，只有真错误才用红。 */
 .chat-interrupted-card {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 10px 14px;
-  border: 1px dashed var(--red);
+  border: none;
   border-radius: 6px;
-  background: var(--red-soft);
+  background: var(--neutral-bg);
   font-size: 12.5px;
+  max-width: 82%;
+}
+.chat-interrupted-card.neutral {
+  color: var(--neutral-text);
+  background: var(--neutral-bg);
+  border: none;
+  max-width: 82%;
 }
 .chat-interrupted-label {
   font-weight: 600;
   font-size: 12px;
-  color: var(--red);
+  color: var(--neutral-text);
   white-space: nowrap;
 }
 .chat-interrupted-text {
   flex: 1;
-  color: var(--muted);
+  color: var(--neutral-text);
 }
 .chat-interrupted-card .small-button {
   flex-shrink: 0;

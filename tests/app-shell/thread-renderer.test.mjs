@@ -904,3 +904,73 @@ test("非 SKIPPED 的失败工具消息保持红色系（fail + ✗，不受降�
   assert.ok(!row.classList.contains("tool-skipped-neutral"), "真失败不得误标中性灰");
   assert.equal(row.querySelector(".tool-inline-mark").textContent, "✗", "真失败标记仍为 ✗");
 }));
+
+// ---------------------------------------------------------------------------
+// Task 7: 中断横幅降级 + 步骤中文说明（spec §2.3-U1/U3/U6）。
+// U1：中断横幅从红色虚线框降级为中性灰细条（不带 err/红色系），
+//     文案「上一轮被中断」改「上次对话未完成，可继续」。
+// U3：工具结果行旁有中文说明（toolLabel 翻译，read_blueprint/update_blueprint 不落回退）。
+// 横幅经 syncChatThread 触发（最后一条消息是 status:"generating" 占位）。
+// ---------------------------------------------------------------------------
+
+function renderInterruptedBanner(renderer, refs) {
+  renderer.syncChatThread({
+    messages: [
+      { id: "u1", role: "user", content: "继续写第 5 章", ts: "2026-08-03T10:00:00.000Z" },
+      { id: "a1", role: "assistant", status: "generating", ts: "2026-08-03T10:00:01.000Z" },
+    ],
+  });
+  return refs.thread.querySelector(".chat-interrupted-card");
+}
+
+test("中断横幅降级：chat-interrupted-card 带 neutral class，不带 err/fail 红色系", withLocalStorage(async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { refs, ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+  const card = renderInterruptedBanner(renderer, refs);
+  assert.ok(card, "应渲染中断横幅");
+  assert.ok(card.classList.contains("neutral"), "中断横幅应带 neutral 中性灰标记 class");
+  assert.ok(!card.classList.contains("err"), "中断横幅不得带 err（红色系）class");
+  assert.ok(!card.classList.contains("fail"), "中断横幅不得带 fail class");
+}));
+
+test("中断横幅文案改为「上次对话未完成，可继续」（U2 术语）", withLocalStorage(async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { refs, ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+  const card = renderInterruptedBanner(renderer, refs);
+  assert.ok(card, "应渲染中断横幅");
+  assert.ok(card.textContent.includes("上次对话未完成"), "应展示「上次对话未完成」新文案");
+  assert.ok(card.textContent.includes("可继续"), "应含「可继续」");
+  assert.ok(!card.textContent.includes("上一轮被中断"), "不得再出现旧文案「上一轮被中断」");
+}));
+
+test("步骤中文说明：read_blueprint 显示「读取蓝图」而非回退「工具 read_blueprint」", withLocalStorage(async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+  const node = renderer.renderChatMessage({
+    id: "t1", role: "tool", tool: "read_blueprint", ok: true,
+    result_summary: "OUTLINE.md/SETTING.md 已读取",
+  });
+  const row = node.querySelector(".tool-inline-row");
+  assert.ok(row, "应有工具行");
+  const label = row.querySelector(".tool-inline-label");
+  assert.ok(label.textContent.includes("读取蓝图"), "read_blueprint 行应显示中文「读取蓝图」");
+  assert.ok(!label.textContent.includes("工具 read_blueprint"), "不得回退成「工具 read_blueprint」");
+  assert.equal(row.querySelector(".tool-inline-mark").textContent, "✓", "成功标记为 ✓");
+}));
+
+test("步骤中文说明：update_blueprint 显示「更新蓝图」", withLocalStorage(async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+  const node = renderer.renderChatMessage({
+    id: "t2", role: "tool", tool: "update_blueprint", ok: true,
+    args: '{"file":"outline","mode":"extend"}',
+    result_summary: "蓝图已追加",
+  });
+  const label = node.querySelector(".tool-inline-label");
+  assert.ok(label.textContent.includes("更新蓝图"), "update_blueprint 行应显示中文「更新蓝图」");
+  assert.ok(!label.textContent.includes("工具 update_blueprint"), "不得回退成「工具 update_blueprint」");
+}));

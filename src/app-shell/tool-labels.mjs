@@ -26,6 +26,20 @@ const LABELS = {
   search_text: (a) => (a?.query ? `搜索「${a.query}」` : "搜索了全文"),
   read_continuity: (a) => (a?.entity ? `查阅了设定记忆 · ${a.entity}` : "查阅了设定记忆"),
   read_outline: () => "查阅了大纲与计划",
+  // Task 5 新增蓝图工具（spec §1.6）：section 区分读哪份蓝图
+  read_blueprint: (a) => {
+    const section = a?.section;
+    if (section === "outline") return "读取蓝图 · 总纲";
+    if (section === "setting") return "读取蓝图 · 设定";
+    return "读取蓝图";
+  },
+  update_blueprint: (a) => {
+    if (a?.mode === "check_segment") {
+      const no = a?.chapterNo ?? a?.chapter_no;
+      return `蓝图骨架打勾（第 ${no ?? "?"} 章）`;
+    }
+    return "更新蓝图";
+  },
   list_chapters: () => "列出章节",
   get_cost: () => "查询了成本台账",
   edit_chapter: (a) => (a?.chapter_no ? `修改第 ${a.chapter_no} 章` : "修改章节"),
