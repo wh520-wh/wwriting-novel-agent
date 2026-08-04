@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { createProject, loadChapterIndex, loadState } from "../src/core/project-store.mjs";
+import { createProject, loadChapterIndex, loadState, saveState } from "../src/core/project-store.mjs";
 import { readEvents } from "../src/core/event-log.mjs";
 import { runProject } from "../src/core/agent-engine.mjs";
 import { countEffectiveWords } from "../src/core/word-count.mjs";
@@ -16,6 +16,11 @@ const { projectRoot } = await createProject(root, {
   target_words_per_chapter: 360,
   max_model_calls: 120
 });
+// 蓝图门禁（spec §1.4）：新建项目 blueprint_status 默认 "none"，写作入口会拒绝。
+// 预置 complete 放行（与 tests/helpers.mjs createWritingProject 同款模式）。
+const blueprintState = await loadState(projectRoot);
+blueprintState.blueprint_status = "complete";
+await saveState(projectRoot, blueprintState);
 
 const result = await runProject(projectRoot, { maxSteps: 2000 });
 assert.equal(result.completed, true, "project must complete the 20 chapter run");

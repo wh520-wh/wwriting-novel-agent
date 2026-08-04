@@ -8,7 +8,7 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import os from "node:os";
-import { createProject, loadProject, saveProject, upsertChapter } from "../src/core/project-store.mjs";
+import { createProject, loadProject, loadState, saveProject, saveState, upsertChapter } from "../src/core/project-store.mjs";
 import { saveContinuity } from "../src/core/continuity-store.mjs";
 import { runChatTurn, resumeChatTurn } from "../src/core/chat/chat-agent.mjs";
 import { createToolRegistry } from "../src/core/chat/tool-registry.mjs";
@@ -56,6 +56,11 @@ async function main() {
       min_words_per_chapter: 50,
       target_words_per_chapter: 80
     });
+    // 蓝图门禁（spec §1.4）：新建项目 blueprint_status 默认 "none"，chat 写作入口会拒绝。
+    // 预置 complete 放行（与 tests/helpers.mjs createWritingProject 同款模式）。
+    const chatState = await loadState(projectRoot);
+    chatState.blueprint_status = "complete";
+    await saveState(projectRoot, chatState);
 
     const project = await loadProject(projectRoot);
     project.active_model = {
