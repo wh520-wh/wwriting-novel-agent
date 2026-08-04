@@ -19,7 +19,7 @@ import {
   selectGlobalModelProfile
 } from "./global-model-settings.mjs";
 import { assertBlueprintReady } from "./blueprint-guard.mjs";
-import { runBlueprintInit } from "./blueprint-init.mjs";
+import { runBlueprintInit, runBlueprintInitForLegacy } from "./blueprint-init.mjs";
 import { createProjectAt, loadProject, loadState, saveProject, saveState } from "./project-store.mjs";
 import { createResearchAdapter } from "./research-adapters.mjs";
 import { fetchWebPage, searchWeb } from "./research-tools.mjs";
@@ -606,16 +606,24 @@ async function serveBlueprintInit(request, response, context) {
     await withProjectLock(context, projectRoot, async () => {
       const project = await loadProject(projectRoot);
       const modelClient = context.testModel?.chatClient?.() ?? await buildChatModelClient(project, projectRoot);
-      await runBlueprintInit(projectRoot, {
-        modelClient,
-        userRequirements: requirements,
-        onEvent: (event) => emitRunEvent(projectRoot, event)
-      });
+      // spec §1.4 P2-5：legacy 项目（已有章节无 OUTLINE.md）的 /init 走反推生成（读已有章节+continuity+task_plan.md），
+      // 而非从 story_seed 凭空生成。完成事件统一由下方 appendEvent 承载（Minor 3：onEvent 只管过程事件，不双发）。
+      const state = await loadState(projectRoot);
+      const legacy = state?.blueprint_status === "legacy";
+      const result = legacy
+        ? await runBlueprintInitForLegacy(projectRoot, { modelClient, onEvent: (event) => emitRunEvent(projectRoot, event) })
+        : await runBlueprintInit(projectRoot, {
+            modelClient,
+            userRequirements: requirements,
+            onEvent: (event) => emitRunEvent(projectRoot, event)
+          });
       await appendEvent(projectRoot, {
         type: "blueprint_init_completed",
         project_id: project.project_id,
-        message: "/init 蓝图已生成并原子提交（OUTLINE.md + SETTING.md）",
-        data: { blueprint_status: "complete" }
+        message: legacy
+          ? (result?.notice ?? "蓝图已由已有章节反推生成（可能与正文不完全一致，请对照确认）")
+          : "/init 蓝图已生成并原子提交（OUTLINE.md + SETTING.md）",
+        data: { blueprint_status: "complete", legacy }
       });
     });
     await serveJson(response, { ok: true, blueprint_status: "complete" });
