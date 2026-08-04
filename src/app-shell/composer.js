@@ -12,6 +12,8 @@ const SIDE_QUESTION_PREFIXES = ["/ask", "/side", "/q"];
 const REVIEW_PREFIXES = ["/review", "/审稿"];
 const WRITE_PREFIXES = ["/write", "/写作"];
 const MODEL_PREFIXES = ["/model", "/模型"];
+// /init（spec §1.4）：用户显式触发蓝图初始化，题材需求作为 /init 的参数。
+const INIT_PREFIXES = ["/init", "/初始化"];
 // 命中则说明旁路询问其实包含修改主线设定/正文的诉求，需要确认后才转正式任务。
 const MAIN_TASK_IMPACT_PATTERN = /(改成|改为|改掉|改写|写成|换成|替换|删除|删掉|去掉|移除|重写|改编|不要写|不再写|别写|不写|推翻|重新设定|改设定|改人设|改世界观|改大纲|改结局|改剧情|黑化|洗白|复活|写死|赐死|领便当|降智|崩坏|让.{0,6}死|让.{0,6}活|让.{0,8}(在一起|分手|退场|出局|登场|加入|离开|背叛|反水))/u;
 
@@ -573,6 +575,10 @@ export function createComposer(ctx) {
     if (model !== null) {
       return { type: "model", content: model, raw, shouldAffectMainTask: false };
     }
+    const init = matchCommandPrefix(trimmed, INIT_PREFIXES);
+    if (init !== null) {
+      return { type: "init", content: init, raw, shouldAffectMainTask: true };
+    }
     if (mode === "side_question") {
       return { type: "side_question", content: trimmed, raw, shouldAffectMainTask: detectMainTaskImpact(trimmed) };
     }
@@ -769,8 +775,46 @@ export function createComposer(ctx) {
       await submitModelCommand(parsed.content);
       return;
     }
+    if (parsed.type === "init") {
+      await submitBlueprintInit(parsed.content);
+      return;
+    }
     // 默认走 chat agent
     await sendChatMessageWithUX(parsed.content);
+  }
+
+  // /init（spec §1.4）：显式触发蓝图初始化。requirements 可为空——
+  // 服务端 pickTemplate 对空输入走默认玄幻模板，生成不依赖用户补充题材。
+  async function submitBlueprintInit(requirements) {
+    const projectRoot = ctx.getCurrentProjectRoot();
+    if (!projectRoot) {
+      ctx.showToast("请先新建或打开一部小说。", "info");
+      return;
+    }
+    const token = ctx.projectScope?.capture(projectRoot);
+    ctx.refs.composerSubmit.disabled = true;
+    ctx.refs.composerSubmit.setAttribute("aria-busy", "true");
+    try {
+      ctx.showToast("正在生成大纲与设定（OUTLINE.md + SETTING.md），可能需要一两分钟…", "info");
+      const result = await postJson("/api/projects/init-blueprint", {
+        projectRoot,
+        requirements: String(requirements ?? "").trim(),
+      });
+      if (token && !ctx.projectScope.isCurrent(token)) return;
+      clearComposerInput();
+      ctx.showToast("蓝图已生成（OUTLINE.md + SETTING.md），可以开始写作了。", "success");
+      ctx.ensureRefreshLoop(true);
+      await ctx.loadDashboard();
+      return result;
+    } catch (error) {
+      if (token && !ctx.projectScope.isCurrent(token)) return;
+      persistCurrentDraftNow(projectRoot);
+      ctx.showActionError(error);
+      throw error;
+    } finally {
+      ctx.refs.composerSubmit.removeAttribute("aria-busy");
+      updateSubmitState();
+    }
   }
 
   async function submitWritingCommand(message, mode, { fromSideQuestion = false, projectRoot: requestedProjectRoot = null } = {}) {
@@ -1041,7 +1085,7 @@ export function createComposer(ctx) {
   return {
     parseUserCommand, onComposerKeydown, autoGrowComposer, updateSubmitState,
     updateSlashMenu, hideSlashMenu, submitComposer, submitText, submitWritingCommand,
-    startCurrentChapter,
+    submitBlueprintInit, startCurrentChapter,
     submitSideQuestion, promoteAskEntry, resultMessageForCommand,
     initModePill, updateModePill, openModePopover, closeModePopover,
     openModelPopover, closeModelPopover, updateStatusPills, sendChatMessageWithUX,
