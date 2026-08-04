@@ -830,3 +830,77 @@ test("side bubble 无头像：旁路问答直接以内容开始（规格书 P6�
   assert.equal(bubble.querySelector(".agent-avatar"), null, "side bubble 不得渲染头像");
   assert.ok(bubble.textContent.includes("旁路问题示例"), "side bubble 直接以内容开始");
 });
+
+// ---------------------------------------------------------------------------
+// Task 3: SKIPPED 中性灰渲染（spec §2.3-U1/U6 —— SKIPPED 不归红色系，用「·」代替红 X）。
+// 数据协议：后端聚合落盘为一条 batch_skipped（tool + result_summary 含「跳过」），
+// 旧式逐条 SKIPPED（summary 以 SKIPPED 开头）同样按中性灰处理。
+// renderToolCard 内部走 applyFold → localStorage，这里局部 mock 掉。
+// ---------------------------------------------------------------------------
+
+function withLocalStorage(fn) {
+  return async () => {
+    const real = globalThis.localStorage;
+    const store = new Map();
+    globalThis.localStorage = {
+      getItem: (k) => (store.has(k) ? store.get(k) : null),
+      setItem: (k, v) => store.set(k, String(v)),
+      removeItem: (k) => store.delete(k),
+    };
+    try {
+      await fn();
+    } finally {
+      if (real === undefined) delete globalThis.localStorage;
+      else globalThis.localStorage = real;
+    }
+  };
+}
+
+test("batch_skipped 聚合消息渲染中性灰：tool-skipped-neutral + 「·」标记，不加 fail 红色系", withLocalStorage(async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+  const node = renderer.renderChatMessage({
+    id: "skp1", role: "tool", tool: "batch_skipped", ok: false,
+    result_summary: "3 个后续操作已跳过（待前序确认）：list_chapters, read_chapter, get_status"
+  });
+  assert.ok(node, "应渲染工具行");
+  const row = node.querySelector(".tool-inline-row");
+  assert.ok(row, "应有 tool-inline-row");
+  assert.ok(row.classList.contains("tool-skipped-neutral"), "SKIPPED 行应带 tool-skipped-neutral");
+  assert.ok(!row.classList.contains("fail"), "SKIPPED 行不得带 fail（红色系）");
+  const mark = row.querySelector(".tool-inline-mark");
+  assert.equal(mark.textContent, "·", "SKIPPED 标记应为中性「·」而非红色 ✗");
+  assert.ok(!mark.classList.contains("fail"), "SKIPPED 标记不得带 fail 类");
+  assert.ok(mark.classList.contains("skipped"), "SKIPPED 标记应带 skipped 状态类");
+  const label = row.querySelector(".tool-inline-label");
+  assert.ok(label.textContent.includes("3 个操作已跳过"), "聚合行标签展示「N 个操作已跳过」");
+}));
+
+test("旧式逐条 SKIPPED 消息（summary 以 SKIPPED 开头）同样渲染中性灰", withLocalStorage(async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+  const node = renderer.renderChatMessage({
+    id: "skp2", role: "tool", tool: "list_chapters", ok: false,
+    result_summary: "SKIPPED: 前序操作已落待确认，此工具不执行。"
+  });
+  const row = node.querySelector(".tool-inline-row");
+  assert.ok(row.classList.contains("tool-skipped-neutral"), "旧式 SKIPPED 行也应带 tool-skipped-neutral");
+  assert.ok(!row.classList.contains("fail"), "旧式 SKIPPED 行不得带 fail 类");
+  assert.equal(row.querySelector(".tool-inline-mark").textContent, "·", "旧式 SKIPPED 标记为「·」");
+}));
+
+test("非 SKIPPED 的失败工具消息保持红色系（fail + ✗，不受降级影响）", withLocalStorage(async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+  const node = renderer.renderChatMessage({
+    id: "fail1", role: "tool", tool: "edit_chapter", ok: false,
+    error: "run_busy", result_summary: "写作任务进行中"
+  });
+  const row = node.querySelector(".tool-inline-row");
+  assert.ok(row.classList.contains("fail"), "真失败仍应带 fail 类");
+  assert.ok(!row.classList.contains("tool-skipped-neutral"), "真失败不得误标中性灰");
+  assert.equal(row.querySelector(".tool-inline-mark").textContent, "✗", "真失败标记仍为 ✗");
+}));

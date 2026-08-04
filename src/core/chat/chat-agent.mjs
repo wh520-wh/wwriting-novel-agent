@@ -200,15 +200,14 @@ async function agentLoop(options, toolEvents) {
     // §2.4：处理本轮全部 tool_calls —— 顺序执行 read 类，遇到第一个 write/control 即挂 pending
     let foundWriteTool = false;
     let savedPending = null;
+    const skippedBatch = [];
     for (const tc of parsed.tool_calls) {
       if (foundWriteTool) {
-        // 排在 write/control 之后的工具：丢弃并注明 skipped_after_pending
+        // 排在 write/control 之后的工具：跳过决策不变（仍逐条 skipped_after_pending 事件），
+        // 只改落盘方式——本轮连续 SKIPPED 循环结束后聚合成一条 batch_skipped
+        // （spec §2.3-U1 P2-9：后端聚合是数据协议，历史回放/UI 重载看到同一条）。
         toolEvents.push({ tool: tc.tool, ok: false, error: "skipped_after_pending" });
-        await appendChatMessage(projectRoot, {
-          role: "tool", tool: tc.tool, ok: false,
-          args: summarizeArgs(tc.args),
-          result_summary: "SKIPPED: 前序操作已落待确认，此工具不执行。"
-        });
+        skippedBatch.push(tc.tool);
         onEvent?.({ type: "tool_result", tool: tc.tool, ok: false });
         continue;
       }
@@ -306,7 +305,14 @@ async function agentLoop(options, toolEvents) {
       });
       onEvent?.({ type: "tool_result", ...event });
     }
-    // 本轮全部 tool_calls 处理完毕：若写入 pending，返回等待确认；否则续下一轮
+    // 本轮全部 tool_calls 处理完毕：连续 SKIPPED 聚合落盘成一条（不改跳过决策，只改落盘方式）
+    if (skippedBatch.length > 0) {
+      await appendChatMessage(projectRoot, {
+        role: "tool", tool: "batch_skipped", ok: false,
+        result_summary: `${skippedBatch.length} 个后续操作已跳过（待前序确认）：${skippedBatch.join(", ")}`
+      });
+    }
+    // 若写入 pending，返回等待确认；否则续下一轮
     if (savedPending) {
       const note = [parsed.leadText, `（待确认操作：${savedPending.tool}，请在确认卡上批准或取消）`].filter(Boolean).join("\n");
       await appendChatMessage(projectRoot, { role: "assistant", content: note, cost: totalCost || undefined });
