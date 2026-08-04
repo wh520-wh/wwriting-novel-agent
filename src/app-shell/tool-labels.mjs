@@ -1,9 +1,9 @@
 // src/app-shell/tool-labels.mjs
-// 17 个 chat 工具 + 2 个章节写作工具 → 写作者语言。技术名/原始 JSON 由 thread-renderer 收进展开区。
+// 19 个 chat 工具 + 2 个章节写作工具 → 写作者语言。技术名/原始 JSON 由 thread-renderer 收进展开区。
 // args 摘要可能是被截断 200 字符的 JSON 字符串：parseArgsSummary 先整体 parse，
-// 失败再做关键字段抢救（chapter_no/query/entity），都失败返回 null（调用方降级）。
+// 失败再做关键字段抢救（chapter_no/chapterNo/query/entity），都失败返回 null（调用方降级）。
 
-export const READ_TOOLS = new Set(["get_status", "read_chapter", "search_text", "read_continuity", "read_outline", "get_cost"]);
+export const READ_TOOLS = new Set(["get_status", "read_chapter", "search_text", "read_continuity", "read_outline", "read_blueprint", "get_cost"]);
 
 export function parseArgsSummary(argsSummary) {
   if (argsSummary == null) return null;
@@ -13,6 +13,8 @@ export function parseArgsSummary(argsSummary) {
   const out = {};
   const chapter = /"chapter_no"\s*:\s*(\d+)/.exec(text);
   if (chapter) out.chapter_no = Number(chapter[1]);
+  const chapterCamel = /"chapterNo"\s*:\s*(\d+)/.exec(text);
+  if (chapterCamel) out.chapterNo = Number(chapterCamel[1]);
   const query = /"query"\s*:\s*"([^"]*)"/.exec(text);
   if (query) out.query = query[1];
   const entity = /"entity"\s*:\s*"([^"]*)"/.exec(text);
@@ -26,6 +28,20 @@ const LABELS = {
   search_text: (a) => (a?.query ? `搜索「${a.query}」` : "搜索了全文"),
   read_continuity: (a) => (a?.entity ? `查阅了设定记忆 · ${a.entity}` : "查阅了设定记忆"),
   read_outline: () => "查阅了大纲与计划",
+  // Task 5 新增蓝图工具（spec §1.6）：section 区分读哪份蓝图
+  read_blueprint: (a) => {
+    const section = a?.section;
+    if (section === "outline") return "读取蓝图 · 总纲";
+    if (section === "setting") return "读取蓝图 · 设定";
+    return "读取蓝图";
+  },
+  update_blueprint: (a) => {
+    if (a?.mode === "check_segment") {
+      const no = a?.chapterNo ?? a?.chapter_no;
+      return `蓝图骨架打勾（第 ${no ?? "?"} 章）`;
+    }
+    return "更新蓝图";
+  },
   list_chapters: () => "列出章节",
   get_cost: () => "查询了成本台账",
   edit_chapter: (a) => (a?.chapter_no ? `修改第 ${a.chapter_no} 章` : "修改章节"),
@@ -54,7 +70,14 @@ const SOURCE_LABELS = {
   read_outline: () => ({ label: "大纲", chapterNo: null }),
   search_text: () => ({ label: "全文搜索", chapterNo: null }),
   get_status: () => ({ label: "项目状态", chapterNo: null }),
-  get_cost: () => ({ label: "成本台账", chapterNo: null })
+  get_cost: () => ({ label: "成本台账", chapterNo: null }),
+  // 蓝图读取也进依据 chips（spec §1.6 新增读工具，kind: read）
+  read_blueprint: (a) => {
+    const section = a?.section;
+    if (section === "outline") return { label: "蓝图 · 总纲", chapterNo: null };
+    if (section === "setting") return { label: "蓝图 · 设定", chapterNo: null };
+    return { label: "蓝图", chapterNo: null };
+  }
 };
 
 export function toolSourceChip(tool, argsSummary) {

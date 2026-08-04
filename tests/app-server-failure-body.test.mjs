@@ -5,8 +5,8 @@ import path from "node:path";
 import test from "node:test";
 import { createAppShellServer } from "../src/core/app-server.mjs";
 import { readEvents } from "../src/core/event-log.mjs";
-import { createProject } from "../src/core/project-store.mjs";
 import { ProviderTransportError } from "../src/core/provider-adapters.mjs";
+import { createWritingProject } from "./helpers.mjs";
 
 // —— 测试服务器小工具(对齐 tests/app-server-probe.test.mjs 的既有范式) ——
 const FETCH_BLOCKED_PORTS = new Set([
@@ -59,7 +59,8 @@ async function waitFor(predicate, { timeout = 3000 } = {}) {
 
 async function setupServer() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-body-"));
-  const { projectRoot } = await createProject(root, {
+  // 走写作入口必须 blueprint_status complete（helpers 约定），否则 API 层蓝图门禁直接 400。
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project", target_chapters: 1, min_words_per_chapter: 300, target_words_per_chapter: 360
   });
   async function testRunProject() {

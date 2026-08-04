@@ -10,17 +10,24 @@ test("parseArgsSummary：完整 JSON / 截断 JSON 抢救 / 非法输入", () =>
   assert.equal(parseArgsSummary(truncated).chapter_no, 7);
   const q = '{"query":"灯笼","other":"' + "x".repeat(300);
   assert.equal(parseArgsSummary(q).query, "灯笼");
+  // 截断抢救也覆盖 camelCase chapterNo（update_blueprint check_segment 参数）
+  const bp = '{"mode":"check_segment","chapterNo":3,"content":"' + "乙".repeat(300);
+  assert.equal(parseArgsSummary(bp).chapterNo, 3);
   assert.equal(parseArgsSummary("not json at all"), null);
   assert.equal(parseArgsSummary(null), null);
 });
 
-test("17 个工具全部有非回退人话标签", () => {
+test("19 个工具全部有非回退人话标签", () => {
   const cases = [
     ["get_status", "{}", /项目状态/],
     ["read_chapter", '{"chapter_no":3}', /第 3 章/],
     ["search_text", '{"query":"灯笼"}', /「灯笼」/],
     ["read_continuity", '{"entity":"刘康"}', /设定记忆.*刘康/],
     ["read_outline", "{}", /大纲/],
+    ["read_blueprint", "{}", /读取蓝图/],
+    ["read_blueprint", '{"section":"setting"}', /读取蓝图.*设定/],
+    ["update_blueprint", "{}", /更新蓝图/],
+    ["update_blueprint", '{"mode":"check_segment","chapterNo":3}', /骨架打勾.*3/],
     ["get_cost", "{}", /成本/],
     ["edit_chapter", '{"chapter_no":2}', /修改第 2 章/],
     ["rewrite_chapter", '{"chapter_no":4}', /重写第 4 章/],
@@ -57,9 +64,11 @@ test("toolSourceChip：read 工具映射溯源 chip，read_chapter 带 chapterNo
   assert.deepEqual(toolSourceChip("search_text", "{}"), { label: "全文搜索", chapterNo: null });
   assert.deepEqual(toolSourceChip("get_status", "{}"), { label: "项目状态", chapterNo: null });
   assert.deepEqual(toolSourceChip("get_cost", "{}"), { label: "成本台账", chapterNo: null });
+  assert.deepEqual(toolSourceChip("read_blueprint", "{}"), { label: "蓝图", chapterNo: null }, "蓝图读取也生成依据 chip");
+  assert.deepEqual(toolSourceChip("read_blueprint", '{"section":"setting"}'), { label: "蓝图 · 设定", chapterNo: null });
   assert.equal(toolSourceChip("edit_chapter", "{}"), null, "write 工具不是溯源来源");
 });
 
-test("READ_TOOLS 集合与 6 个读工具一致", () => {
-  assert.deepEqual([...READ_TOOLS].sort(), ["get_cost", "get_status", "read_chapter", "read_continuity", "read_outline", "search_text"]);
+test("READ_TOOLS 集合与 7 个读工具一致", () => {
+  assert.deepEqual([...READ_TOOLS].sort(), ["get_cost", "get_status", "read_blueprint", "read_chapter", "read_continuity", "read_outline", "search_text"]);
 });

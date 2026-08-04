@@ -8,11 +8,12 @@ import { appendChatMessage } from "../src/core/chat/chat-store.mjs";
 import { createToolRegistry } from "../src/core/chat/tool-registry.mjs";
 import { registerReadTools } from "../src/core/chat/tools-read.mjs";
 import { readEvents } from "../src/core/event-log.mjs";
-import { createProject, loadProject } from "../src/core/project-store.mjs";
+import { loadProject } from "../src/core/project-store.mjs";
+import { createWritingProject } from "./helpers.mjs";
 
 async function makeProject() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-chatctx-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "c", title: "上下文测试", story_seed: "种子",
     target_chapters: 3, min_words_per_chapter: 10, target_words_per_chapter: 12
   });
@@ -537,12 +538,16 @@ test("多工具：read + write 组合 → reads 先执行，write 落 pending，
   assert.equal(out.toolEvents[2].tool, "list_chapters");
   assert.equal(out.toolEvents[2].ok, false);
   assert.equal(out.toolEvents[2].error, "skipped_after_pending");
-  // 历史记录：应有 get_status 的 tool 消息
+  // 历史记录：应有 get_status 的 tool 消息；SKIPPED 按聚合协议落盘为一条 batch_skipped
+  // （spec §2.3-U1 P2-9：连续 SKIPPED 后端聚合，事件层面仍逐条 skipped_after_pending）
   const history = await readHistory(projectRoot);
   const toolMsgs = history.filter((m) => m.role === "tool");
+  assert.equal(toolMsgs.length, 2, "落盘 tool 消息应为 get_status + 聚合的 batch_skipped");
   assert.ok(toolMsgs.find((m) => m.tool === "get_status"));
-  // 应有 skipped 的记录
-  assert.ok(toolMsgs.find((m) => m.tool === "list_chapters" && m.ok === false));
+  const skippedMsg = toolMsgs.find((m) => m.tool === "batch_skipped");
+  assert.ok(skippedMsg, "SKIPPED 应聚合成一条 batch_skipped 消息");
+  assert.equal(skippedMsg.ok, false);
+  assert.match(skippedMsg.result_summary, /list_chapters/u);
 });
 
 // ===== §3.4: generating placeholder + failure message =====

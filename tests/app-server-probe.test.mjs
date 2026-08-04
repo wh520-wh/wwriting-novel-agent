@@ -8,7 +8,8 @@ import { recordRecentProject, samePath } from "../src/core/app-state.mjs";
 import { loadDashboardData } from "../src/core/app-dashboard.mjs";
 import { readEvents } from "../src/core/event-log.mjs";
 import { loadLocalSecrets, loadLocalSecretsSync } from "../src/core/local-secrets.mjs";
-import { createProject, loadProject, loadState, saveProject, saveState } from "../src/core/project-store.mjs";
+import { loadProject, loadState, saveProject, saveState } from "../src/core/project-store.mjs";
+import { createWritingProject } from "./helpers.mjs";
 import { TaskQueue } from "../src/core/task-queue.mjs";
 import { appendFailure } from "../src/core/failures-store.mjs";
 
@@ -35,7 +36,7 @@ async function listenOnFetchSafePort(server) {
 
 async function setupServer(options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-probe-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 3,
     min_words_per_chapter: 300,
@@ -120,7 +121,7 @@ test("static shell does not expose non-module shared siblings", async () => {
   await fs.mkdir(sharedRoot, { recursive: true });
   await fs.writeFile(path.join(staticRoot, "index.html"), "<!doctype html><title>test</title>");
   await fs.writeFile(path.join(sharedRoot, "secret.json"), "{\"secret\":true}");
-  const { projectRoot } = await createProject(root, { slug: "project" });
+  const { projectRoot } = await createWritingProject(root, { slug: "project" });
   const server = createAppShellServer({
     workspaceRoot: root,
     selectedProjectRoot: projectRoot,
@@ -873,7 +874,7 @@ test("dashboard exposes ambiguous retry candidates without enabling topbar retry
 test("POST /api/projects/forget removes a recent project without deleting files", async () => {
   const { server, port, root, projectRoot, stateRoot } = await setupServer();
   try {
-    const second = await createProject(root, { slug: "second-project", title: "Second Project" });
+    const second = await createWritingProject(root, { slug: "second-project", title: "Second Project" });
     await recordRecentProject(stateRoot, { projectRoot, title: "Project" });
     await recordRecentProject(stateRoot, { projectRoot: second.projectRoot, title: "Second Project" });
     const list = await getJson(port, "/api/projects/list");
@@ -935,8 +936,8 @@ test("forgetting selected project chooses the next valid recent project", async 
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-forget-next-valid-"));
   const stateRoot = path.join(root, ".state");
   const secretsRoot = path.join(root, ".secrets");
-  const current = await createProject(root, { slug: "current-project", title: "Current Project" });
-  const valid = await createProject(root, { slug: "valid-project", title: "Valid Project" });
+  const current = await createWritingProject(root, { slug: "current-project", title: "Current Project" });
+  const valid = await createWritingProject(root, { slug: "valid-project", title: "Valid Project" });
   const staleRoot = path.join(root, "missing-project");
   await recordRecentProject(stateRoot, { projectRoot: valid.projectRoot, title: "Valid Project" });
   await recordRecentProject(stateRoot, { projectRoot: staleRoot, title: "Missing Project" });
@@ -963,7 +964,7 @@ test("forgetting selected project returns null when remaining recents are invali
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-forget-no-valid-"));
   const stateRoot = path.join(root, ".state");
   const secretsRoot = path.join(root, ".secrets");
-  const current = await createProject(root, { slug: "current-project", title: "Current Project" });
+  const current = await createWritingProject(root, { slug: "current-project", title: "Current Project" });
   const staleRoot = path.join(root, "missing-project");
   await recordRecentProject(stateRoot, { projectRoot: staleRoot, title: "Missing Project" });
   await recordRecentProject(stateRoot, { projectRoot: current.projectRoot, title: "Current Project" });
@@ -988,7 +989,7 @@ test("forgetting selected project returns null when remaining recents are invali
 
 test("server with no selected project does not scan workspace as implicit dashboard fallback", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-no-fallback-"));
-  await createProject(root, { slug: "unopened-project", title: "Unopened Project" });
+  await createWritingProject(root, { slug: "unopened-project", title: "Unopened Project" });
   const server = createAppShellServer({
     workspaceRoot: root,
     selectedProjectRoot: null,
@@ -1122,7 +1123,7 @@ test("dashboard request remains scoped to its requested project during a switch"
     },
   });
   projectA = fixture.projectRoot;
-  const { projectRoot: projectB } = await createProject(fixture.root, {
+  const { projectRoot: projectB } = await createWritingProject(fixture.root, {
     slug: "project-b",
     title: "Project B",
   });
@@ -1170,7 +1171,7 @@ test("project-scoped endpoint rejects a root outside the registered project list
 test("write request is rejected after selected project changes", async () => {
   const fixture = await setupServer();
   const projectA = fixture.projectRoot;
-  const { projectRoot: projectB } = await createProject(fixture.root, {
+  const { projectRoot: projectB } = await createWritingProject(fixture.root, {
     slug: "project-b",
   });
   await recordRecentProject(fixture.stateRoot, { projectRoot: projectB });
@@ -1679,5 +1680,66 @@ test("custom model settings persist the submitted base URL and model id", async 
     assert.equal(dashboard.data.model_profile.model_name, customModelId);
   } finally {
     await closeServer(ctx.server);
+  }
+});
+
+test("POST /api/commands/submit 在 blueprint_status none 时被 API 层门禁拒绝", async () => {
+  // spec §1.4 拒绝点 4：写作触发 API 边界尽早失败，不入队、不启动。
+  const { server, port, projectRoot } = await setupServer();
+  try {
+    const state = await loadState(projectRoot);
+    await saveState(projectRoot, { ...state, blueprint_status: "none" });
+
+    const { res, data } = await postJson(port, "/api/commands/submit", { message: "写第1章" });
+    assert.equal(res.status, 400);
+    assert.equal(data.code, "blueprint_not_ready");
+    assert.match(data.message, /init/u);
+
+    const { data: queue } = await getJson(port, "/api/queue/state");
+    assert.equal(queue.tasks.length, 0, "不应入队");
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("POST /api/projects/init-blueprint 原子提交两文件并把状态置 complete", async () => {
+  const { BLUEPRINT_SPLIT } = await import("../src/core/blueprint-init.mjs");
+  const echoClient = {
+    generate: async () => ({
+      text: [
+        "# OUTLINE.md",
+        "",
+        "## 一、总纲（锚点区 · 只增不改）",
+        "### 1. 主题与核心概念",
+        "主题：玄幻修炼",
+        BLUEPRINT_SPLIT,
+        "# SETTING.md",
+        "",
+        "## 一、世界观（基础 · 所有题材）",
+        "### 1. 世界设定",
+        "九州大陆"
+      ].join("\n")
+    })
+  };
+  const { server, port, projectRoot } = await setupServer({ testModel: { chatClient: () => echoClient } });
+  try {
+    const { res, data } = await postJson(port, "/api/projects/init-blueprint", {
+      projectRoot,
+      requirements: "玄幻小说"
+    });
+    assert.equal(res.status, 200);
+    assert.equal(data.ok, true);
+    assert.equal(data.blueprint_status, "complete");
+
+    const state = await loadState(projectRoot);
+    assert.equal(state.blueprint_status, "complete");
+    const outline = await fs.readFile(path.join(projectRoot, "OUTLINE.md"), "utf8");
+    assert.ok(outline.includes("玄幻"), "OUTLINE.md 应包含生成内容");
+    const setting = await fs.readFile(path.join(projectRoot, "SETTING.md"), "utf8");
+    assert.ok(setting.includes("世界观"), "SETTING.md 应有世界观区");
+    const events = await readEvents(projectRoot);
+    assert.ok(events.some((event) => event.type === "blueprint_init_completed"));
+  } finally {
+    await closeServer(server);
   }
 });

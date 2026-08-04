@@ -5,13 +5,14 @@ import path from "node:path";
 import test from "node:test";
 import { runProject } from "../src/core/agent-engine.mjs";
 import { MockModel } from "../src/core/mock-model.mjs";
-import { createProject, loadState } from "../src/core/project-store.mjs";
+import { loadState } from "../src/core/project-store.mjs";
+import { createWritingProject } from "./helpers.mjs";
 import { updateProjectSettings } from "../src/core/settings-runtime.mjs";
 import { readEvents } from "../src/core/event-log.mjs";
 
 async function setupProject(budgetConfig) {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-budget-"));
-  const { projectRoot } = await createProject(workspace, {
+  const { projectRoot } = await createWritingProject(workspace, {
     title: "预算熔断",
     story_seed: "test",
     target_chapters: 2,

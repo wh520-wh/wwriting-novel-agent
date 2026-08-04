@@ -11,7 +11,7 @@ import {
   _resetToolHooks
 } from "../src/core/tool-hooks.mjs";
 import { runProject } from "../src/core/agent-engine.mjs";
-import { createProject } from "../src/core/project-store.mjs";
+import { createWritingProject } from "./helpers.mjs";
 import { readEvents } from "../src/core/event-log.mjs";
 
 test("BeforeToolUse 否决会短路后续 hook", async () => {
@@ -38,7 +38,7 @@ test("默认审计 hook 写 tool_executed 事件", async () => {
   _resetToolHooks();
   ensureDefaultToolHooks();
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-toolhook-"));
-  const { projectRoot } = await createProject(root, { slug: "project" });
+  const { projectRoot } = await createWritingProject(root, { slug: "project" });
   await runAfterToolUse({
     projectRoot,
     project: { project_id: "p" },
@@ -57,7 +57,7 @@ test("默认审计 hook 写 tool_executed 事件", async () => {
 test("引擎集成：跑完一章后 run_log 含 tool_executed", async () => {
   _resetToolHooks();
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-toolhook-run-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 300,

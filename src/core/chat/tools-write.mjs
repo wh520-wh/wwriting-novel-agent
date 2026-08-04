@@ -1,5 +1,5 @@
-// 对话 agent 的写工具：edit_chapter、rewrite_chapter、update_continuity、update_outline、queue_chapters、update_settings。
-// 错误码：chapter_not_found / bad_args / find_not_found / find_not_unique / tool_failed。
+// 对话 agent 的写工具：edit_chapter、rewrite_chapter、update_continuity、update_outline、update_blueprint、queue_chapters、update_settings。
+// 错误码：chapter_not_found / bad_args / find_not_found / find_not_unique / append_only / segment_not_found / file_not_found / tool_failed。
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -108,6 +108,58 @@ export async function previewEditChapter(projectRoot, args) {
   // 用 loc.at 精确 slice 替换，避免 before 里含多个 find 时 replace 误换第一个
   const after = content.slice(beforeStart, loc.at) + replace + content.slice(loc.at + loc.length, beforeEnd);
   return { ok: true, chapter_no: Number(args.chapter_no), before, after };
+}
+
+// ---- 蓝图只增不改校验（spec §1.6）----
+// mode=extend 时服务端强制：解析现有 OUTLINE.md/SETTING.md 的标题，newContent 里出现
+// 已有标题（完全一致、或一方是另一方的前缀）即拒绝，只允许追加新字段/新章节。
+
+// createProject 默认写入的占位蓝图（"蓝图未生成，请运行 /init"）等价于无蓝图 → extend 时
+// 按"未生成"处理（重建文件），避免把占位文案当真实蓝图追加。与 agent-engine.mjs 的
+// BLUEPLACEHOLDER 保持同一正则；agent-engine 是 tools 的 consumer，这里不反向 import（避免循环依赖）。
+const BLUEPRINT_PLACEHOLDER = /^# (OUTLINE|SETTING)\.md\s*\n>\s*蓝图未生成，请运行 \/init\s*$/;
+
+// 总纲扩展（默认路径）插入「## 二、章节骨架」锚点之前（总纲区末尾）——agent-engine 的
+// readOutlineSection 只切「一、总纲」到「二、章节骨架」之间，追加到文件末尾会进不了 stable
+// outline block，还会被 readCurrentVolumeOutline 并入骨架 dynamic block 污染。
+// 骨架类内容（### 第X卷 / - [ ] 第N章 行）是事实区、跟正文走，维持文件末尾追加。
+const SKELETON_ANCHOR_RE = /^##\s*二、章节骨架/m;
+
+function isSkeletonContent(content) {
+  return /^###\s*第\d+卷/m.test(content) || /^- \[[ xX]\] 第\d+章/m.test(content);
+}
+
+function buildExtendedBlueprint(fileName, existing, content) {
+  if (!existing || BLUEPRINT_PLACEHOLDER.test(existing.trim())) return `# ${fileName}\n\n${content}\n`;
+  if (fileName === "OUTLINE.md" && !isSkeletonContent(content)) {
+    const anchor = existing.match(SKELETON_ANCHOR_RE);
+    if (anchor) {
+      return `${existing.slice(0, anchor.index).trimEnd()}\n\n${content}\n\n${existing.slice(anchor.index)}`;
+    }
+  }
+  return `${existing.trimEnd()}\n\n${content}\n`;
+}
+
+function extractBlueprintHeadings(text) {
+  return String(text ?? "").split("\n")
+    .map((line) => line.trim())
+    .filter((line) => /^#{1,6}\s+\S/u.test(line))
+    .map((line) => line.replace(/^#+\s+/u, "").trim());
+}
+
+// existing 为 null（文件未生成）或占位内容时跳过校验：没有已定内容，extend 视为首次建立。
+function assertExtendOnly(file, newContent, existing) {
+  if (!existing || BLUEPRINT_PLACEHOLDER.test(existing.trim())) return;
+  const existingTitles = extractBlueprintHeadings(existing);
+  const prefix = file === "setting" ? "设定已定内容不可修改" : "总纲已定内容不可修改";
+  for (const title of extractBlueprintHeadings(newContent)) {
+    const conflict = existingTitles.find((e) => e === title || e.startsWith(title) || title.startsWith(e));
+    if (conflict) {
+      const e = new Error(`${prefix}：新内容中的「${title}」与已有标题「${conflict}」重叠，如需调整请对话说明。`);
+      e.code = "append_only";
+      throw e;
+    }
+  }
 }
 
 export function registerWriteTools(registry) {
@@ -239,6 +291,73 @@ export function registerWriteTools(registry) {
       const next = `${existing.trimEnd()}\n\n${heading}\n\n${String(args.plan ?? "").trim()}\n`;
       await writeFileAtomic(planPath, next);
       return { updated: true };
+    }
+  });
+
+  registry.register({
+    name: "update_blueprint",
+    kind: "write",
+    description: "更新规划蓝图。mode=extend 追加扩展总纲/设定（只增不改：不能覆盖已有字段，需调整请对话说明）；mode=check_segment 给章节骨架打勾。",
+    params: {
+      file: "outline | setting（默认 outline）",
+      mode: "extend | check_segment",
+      content: "extend 时的追加内容（markdown，用 ### N. 标题开头）",
+      chapterNo: "check_segment 时的章号（整数）"
+    },
+    run: async (args, ctx) => {
+      const file = args.file === "setting" ? "setting" : "outline";
+      const mode = String(args.mode ?? "");
+      if (mode !== "extend" && mode !== "check_segment") {
+        const e = new Error("mode 仅支持 extend（追加扩展）或 check_segment（骨架打勾）。");
+        e.code = "bad_args";
+        throw e;
+      }
+      const fileName = file === "setting" ? "SETTING.md" : "OUTLINE.md";
+      const filePath = safeJoin(ctx.projectRoot, fileName);
+      if (mode === "extend") {
+        const content = String(args.content ?? "").trim();
+        if (!content) {
+          const e = new Error("extend 需要提供 content 追加内容。");
+          e.code = "bad_args";
+          throw e;
+        }
+        // 只读一次文件，校验与落盘共用（避免 TOCTOU 双读漂移）；占位/缺失视为未生成
+        const existing = await fs.readFile(filePath, "utf8").catch(() => null);
+        assertExtendOnly(file, content, existing);
+        await writeFileAtomic(filePath, buildExtendedBlueprint(fileName, existing, content));
+        return { updated: true, file: fileName, mode };
+      }
+      // mode === "check_segment"：骨架打勾只对 OUTLINE.md 有意义
+      if (file !== "outline") {
+        const e = new Error("check_segment 只支持 outline（SETTING.md 没有章节骨架）。");
+        e.code = "bad_args";
+        throw e;
+      }
+      const chapterNo = Number(args.chapterNo);
+      if (!Number.isInteger(chapterNo) || chapterNo < 1) {
+        const e = new Error("check_segment 需要整数章号 chapterNo。");
+        e.code = "bad_args";
+        throw e;
+      }
+      const content = await fs.readFile(filePath, "utf8").catch(() => null);
+      if (!content) {
+        const e = new Error("OUTLINE.md 不存在，无法打勾。");
+        e.code = "file_not_found";
+        throw e;
+      }
+      const lineRe = new RegExp(`^- \\[ \\] 第${chapterNo}章`, "m");
+      // 已勾判定放宽：人工编辑可能写 [X]（大写）或多余空白，不能因此误报 segment_not_found
+      const checkedRe = new RegExp(`^-\\s*\\[\\s*[xX]\\]\\s*第${chapterNo}章`, "m");
+      if (checkedRe.test(content)) {
+        return { updated: true, file: fileName, mode, chapter_no: chapterNo, already_checked: true };
+      }
+      if (!lineRe.test(content)) {
+        const e = new Error(`第 ${chapterNo} 章不在 OUTLINE.md 章节骨架中，无法打勾。`);
+        e.code = "segment_not_found";
+        throw e;
+      }
+      await writeFileAtomic(filePath, content.replace(lineRe, `- [x] 第${chapterNo}章`));
+      return { updated: true, file: fileName, mode, chapter_no: chapterNo };
     }
   });
 

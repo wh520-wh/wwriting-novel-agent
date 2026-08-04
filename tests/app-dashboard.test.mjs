@@ -6,7 +6,8 @@ import test from "node:test";
 import { loadDashboardData, readChapterContent, validateProjectRoot } from "../src/core/app-dashboard.mjs";
 import { appendFailure } from "../src/core/failures-store.mjs";
 import { runProject } from "../src/core/agent-engine.mjs";
-import { createProject, loadState, saveState, upsertChapter } from "../src/core/project-store.mjs";
+import { loadState, saveState, upsertChapter } from "../src/core/project-store.mjs";
+import { createWritingProject } from "./helpers.mjs";
 import { sha256 } from "../src/core/fs-utils.mjs";
 import { runReviewerAgent } from "../src/core/reviewer-agent.mjs";
 import { searchWeb } from "../src/core/research-tools.mjs";
@@ -14,7 +15,7 @@ import { updateProjectSettings } from "../src/core/settings-runtime.mjs";
 
 test("loadDashboardData summarizes real project files", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-dashboard-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 2,
     min_words_per_chapter: 160,
@@ -66,7 +67,7 @@ test("loadDashboardData summarizes real project files", async () => {
 
 test("loadDashboardData reports visible in-chapter activity progress while running", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-dashboard-activity-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 100,
     min_words_per_chapter: 160,
@@ -88,7 +89,7 @@ test("loadDashboardData reports visible in-chapter activity progress while runni
 
 test("loadDashboardData reports configured model-call budget from effective settings", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-dashboard-budget-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     max_model_calls: 200
   });
@@ -105,7 +106,7 @@ test("loadDashboardData reports configured model-call budget from effective sett
 
 test("readChapterContent returns clean prose without segment markup", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-reader-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
     min_words_per_chapter: 120,
@@ -133,7 +134,7 @@ test("loadDashboardData rejects project paths outside workspace", async () => {
 test("loadDashboardData allows an explicitly opened external project", async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-dashboard-workspace-"));
   const externalRoot = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-dashboard-external-"));
-  const { projectRoot } = await createProject(externalRoot, {
+  const { projectRoot } = await createWritingProject(externalRoot, {
     slug: "opened-project",
     target_chapters: 1,
     min_words_per_chapter: 120,
@@ -151,7 +152,7 @@ test("loadDashboardData allows an explicitly opened external project", async () 
 
 test("loadDashboardData can disable latest-project fallback", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-dashboard-no-fallback-"));
-  await createProject(root, { slug: "project", title: "Fallback Candidate" });
+  await createWritingProject(root, { slug: "project", title: "Fallback Candidate" });
 
   const data = await loadDashboardData(root, { disableProjectFallback: true });
 
@@ -161,7 +162,7 @@ test("loadDashboardData can disable latest-project fallback", async () => {
 
 test("loadDashboardData returns cacheSummary when cache report is missing", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-dashboard-cache-empty-"));
-  const { projectRoot } = await createProject(root, { slug: "project" });
+  const { projectRoot } = await createWritingProject(root, { slug: "project" });
 
   const data = await loadDashboardData(root, { projectRoot });
 
@@ -181,7 +182,7 @@ test("loadDashboardData returns cacheSummary when cache report is missing", asyn
 
 test("loadDashboardData explains stable cache key without provider metrics", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-dashboard-cache-summary-"));
-  const { projectRoot } = await createProject(root, { slug: "project" });
+  const { projectRoot } = await createWritingProject(root, { slug: "project" });
   await fs.writeFile(
     path.join(projectRoot, "cache_report.json"),
     JSON.stringify(
@@ -221,7 +222,7 @@ test("loadDashboardData explains stable cache key without provider metrics", asy
 
 test('loadDashboardData 包含 failures 字段（最近 10 未处理 + 5 已处理）', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'wwriting-dash-fail-'));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: 'p', target_chapters: 3, min_words_per_chapter: 300, target_words_per_chapter: 360
   });
   for (let i = 0; i < 20; i++) {
@@ -249,7 +250,7 @@ test('loadDashboardData 在 hasProject=false 时不读 failures.jsonl', async ()
 
 test("dashboard does not count an indexed chapter whose file is missing", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-artifact-dashboard-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 2,
   });
@@ -270,7 +271,7 @@ test("dashboard does not count an indexed chapter whose file is missing", async 
 
 test("dashboard exposes a verified artifact for a readable chapter file", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-artifact-dashboard-"));
-  const { projectRoot } = await createProject(root, {
+  const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 2,
   });

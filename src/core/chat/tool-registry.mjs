@@ -2,7 +2,7 @@
 import { appendEvent } from "../event-log.mjs";
 
 // edit 类写工具受 safe_edit 控制；其余写工具只受 read_only 控制。
-const SAFE_EDIT_TOOLS = new Set(["edit_chapter", "update_continuity", "update_outline"]);
+const SAFE_EDIT_TOOLS = new Set(["edit_chapter", "update_continuity", "update_outline", "update_blueprint"]);
 
 // 归档态下仍允许的工具：归档/解档与导出书（导出是「读」类操作的延伸，解档是归档态入口）。
 const ARCHIVE_EXEMPT_TOOLS = new Set(["archive_project", "export_book"]);
