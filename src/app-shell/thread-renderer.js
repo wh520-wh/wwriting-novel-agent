@@ -1106,9 +1106,10 @@ export function createThreadRenderer(ctx) {
     const ok = message.ok !== false;
     const superseded = Boolean(message.superseded);
     // SKIPPED 类消息（聚合 batch_skipped 或旧式逐条 SKIPPED）：中性灰渲染，不归红色系
-    // （spec §2.3-U1/U6）。检测依据：tool 名 + result_summary 含「跳过」/「SKIPPED」。
+    // （spec §2.3-U1/U6）。检测依据：tool 名 + result_summary 前缀匹配已知两代协议格式
+    // （聚合 "N 个后续操作已跳过…" / 旧式 "SKIPPED: …"）——不放宽到任意位置含「跳过」。
     const resultSummary = String(message.result_summary ?? "");
-    const skipped = tool === "batch_skipped" || /跳过|^SKIPPED/u.test(resultSummary);
+    const skipped = tool === "batch_skipped" || /^\d+ 个后续操作已跳过|^SKIPPED/u.test(resultSummary);
     const rowState = skipped ? "skipped" : (ok ? "ok" : "fail");
     const foldKey = getFoldKey("tool", msgId);
 
@@ -1125,11 +1126,13 @@ export function createThreadRenderer(ctx) {
     chevron.textContent = "▸";
     const label = document.createElement("span");
     label.className = "tool-inline-label";
-    let labelText = toolLabel(tool, message.args);
+    let labelText;
     if (skipped && tool === "batch_skipped") {
       // 聚合消息的行标签：从 summary 取数量，「· N 个操作已跳过」（不展示英文 batch_skipped）
       const count = /^(\d+) 个/u.exec(resultSummary)?.[1];
       labelText = count ? `${count} 个操作已跳过` : "后续操作已跳过";
+    } else {
+      labelText = toolLabel(tool, message.args);
     }
     label.textContent = superseded ? `已取消 · ${labelText}` : labelText;
     const mark = document.createElement("span");
