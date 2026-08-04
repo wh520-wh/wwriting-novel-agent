@@ -1205,10 +1205,13 @@ async function probe(win, selector) {
 }
 
 async function assertQuickRailPopoverClears(win) {
+  // 稳定性：hover 前先确认无残留 popover（避免上一个交互遗留的状态干扰"恰好 1 个"断言），
+  // 并把 hover 后的等待超时放宽（渲染线程繁忙时 mouseover 触发可能超过默认 2000ms）。
+  await waitUntil(win, "document.querySelectorAll('.qr-popover').length === 0", "quick rail must start with no popover", 4000);
   const chaptersSelector = '.quick-rail .qr-slot[data-key="chapters"]';
   const chapters = await triggerQuickRailHover(win, chaptersSelector);
   assert.ok(chapters.rect, `chapters quick rail slot must have a layout box: ${JSON.stringify(chapters, null, 2)}`);
-  await waitUntil(win, "document.querySelectorAll('.qr-popover').length === 1", "hovering chapters quick rail slot must show exactly one popover");
+  await waitUntil(win, "document.querySelectorAll('.qr-popover').length === 1", "hovering chapters quick rail slot must show exactly one popover", 4000);
   win.webContents.sendInputEvent({ type: "mouseDown", x: chapters.center.x, y: chapters.center.y, button: "left", clickCount: 1 });
   win.webContents.sendInputEvent({ type: "mouseUp", x: chapters.center.x, y: chapters.center.y, button: "left", clickCount: 1 });
   await delay(80);
@@ -1221,7 +1224,7 @@ async function assertQuickRailPopoverClears(win) {
 
   const research = await triggerQuickRailHover(win, '.quick-rail .qr-slot[data-key="research"]');
   assert.ok(research.rect, `research quick rail slot must have a layout box: ${JSON.stringify(research, null, 2)}`);
-  await waitUntil(win, "document.querySelectorAll('.qr-popover').length === 1", "hovering research quick rail slot must show exactly one popover before blur");
+  await waitUntil(win, "document.querySelectorAll('.qr-popover').length === 1", "hovering research quick rail slot must show exactly one popover before blur", 4000);
   await win.webContents.executeJavaScript(`window.dispatchEvent(new Event("blur")); true;`);
   await delay(40);
   assert.equal(
