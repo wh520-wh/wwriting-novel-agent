@@ -3,10 +3,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { compileChapterPrompt, truncateOutline, truncateSetting } from "../src/core/agent-engine.mjs";
+import { compileChapterPrompt, readCurrentVolumeOutline, truncateOutline, truncateSetting } from "../src/core/agent-engine.mjs";
 import { saveContinuity } from "../src/core/continuity-store.mjs";
 import { safeJoin } from "../src/core/fs-utils.mjs";
-import { DYNAMIC_BLOCK_ORDER } from "../src/core/prompt-compiler.mjs";
+import { DYNAMIC_BLOCK_ORDER, STABLE_BLOCK_ORDER } from "../src/core/prompt-compiler.mjs";
 import { loadState, saveState } from "../src/core/project-store.mjs";
 import { loadEnabledSkills } from "../src/core/skill-runtime.mjs";
 import { createWritingProject } from "./helpers.mjs";
@@ -115,6 +115,10 @@ test("blueprint_status=complete 时注入 outline/setting stable block（含总�
   assert.ok(setting.content.includes("测试世界观"), "setting block 应含世界观");
   assert.ok(setting.content.includes("林晚"), "setting block 应含角色静态规划（身份/性格/能力/关系）");
   assert.ok(compiled.prompt.includes("[Stable Block] setting"), "最终 prompt 应含 setting 稳定块标记");
+  assert.ok(
+    compiled.prompt.indexOf("[Stable Block] outline") < compiled.prompt.indexOf("[Stable Block] setting"),
+    "setting 稳定块应在 outline 之后渲染（STABLE_BLOCK_ORDER 相邻）"
+  );
 
   // 骨架区（动态）不应泄漏进 stable 的 outline block
   assert.ok(!outline.content.includes("第1章《雨夜来信》"), "章节骨架属于 dynamic 区，不应混入 stable outline");
@@ -329,4 +333,111 @@ test("角色状态变化只影响 dynamicHash，outline/setting 稳定块跨章�
   assert.equal(ch2a.stableHash, ch2b.stableHash, "角色状态变化不应改变 stableHash（P1-9 核心）");
   assert.notEqual(ch2a.dynamicHash, ch2b.dynamicHash, "角色状态变化应改变 dynamicHash");
   assert.equal(blockOf(ch2a, "setting").content, blockOf(ch2b, "setting").content, "setting 不随角色状态变化");
+});
+
+// —— 代码质量审查修复的边界用例（Important #1-#4 / Minor #3） ——
+
+test("readCurrentVolumeOutline：卷标题承接注释（含「第N章」字样）不污染章号解析", async () => {
+  const annotatedOutline = `# OUTLINE.md
+
+## 一、总纲（锚点区 · 只增不改）
+### 1. 主题与核心概念
+测试主题。
+
+## 二、章节骨架（事实区 · 跟正文走）
+### 第一卷
+- [ ] 第1章《雨夜来信》：收到无名信，开启调查。
+- [ ] 第2章《档案室的灰》：在水印标记上发现父亲笔迹。
+### 第二卷（承接第2章伏笔，进入主线）
+- [ ] 第3章《印章来历》：顾沉舟透露印章背后的势力。
+- [ ] 第4章《代价》：林晚做出选择。
+`;
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-prompt-injection-"));
+  await fs.writeFile(safeJoin(root, "OUTLINE.md"), annotatedOutline, "utf8");
+  const volCh2 = await readCurrentVolumeOutline(root, 2);
+  assert.ok(volCh2.includes("第一卷"), "第 2 章应定位到第一卷（卷标题注释里的「第2章」不应污染最小章号）");
+  assert.ok(volCh2.includes("第2章《档案室的灰》"), "应返回第一卷的章节条目");
+  assert.ok(!volCh2.includes("第二卷"), "第 2 章不应被错误定位到第二卷");
+  const volCh3 = await readCurrentVolumeOutline(root, 3);
+  assert.ok(volCh3.includes("第二卷"), "第 3 章仍应正确定位到第二卷");
+});
+
+test("readCurrentVolumeOutline：空卷（无章节条目）不阻断后续卷定位", async () => {
+  const emptyVolumeOutline = `# OUTLINE.md
+
+## 一、总纲（锚点区 · 只增不改）
+### 1. 主题与核心概念
+测试主题。
+
+## 二、章节骨架（事实区 · 跟正文走）
+### 第一卷
+- [ ] 第1章《雨夜来信》：收到无名信，开启调查。
+- [ ] 第2章《档案室的灰》：在水印标记上发现父亲笔迹。
+### 第二卷（过渡卷，尚无章节条目）
+### 第三卷
+- [ ] 第5章《归来》：真相浮出水面。
+- [ ] 第6章《终局》：尘埃落定。
+`;
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-prompt-injection-"));
+  await fs.writeFile(safeJoin(root, "OUTLINE.md"), emptyVolumeOutline, "utf8");
+  const volCh5 = await readCurrentVolumeOutline(root, 5);
+  assert.ok(volCh5.includes("第三卷"), "第 5 章应定位到第三卷（空卷不应阻断其后的卷）");
+  assert.ok(volCh5.includes("第5章《归来》"), "应返回第三卷的章节条目");
+  assert.ok(!volCh5.includes("第一卷"), "第 5 章不应因空卷回落定位到第一卷");
+});
+
+test("无总纲标题的非模板 OUTLINE.md：回退注入不含骨架区，骨架勾选变化不破坏 stableHash", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-prompt-injection-"));
+  const { projectRoot, project } = await createWritingProject(root, { slug: "project", target_chapters: 10 });
+  await fs.rm(safeJoin(projectRoot, "SETTING.md"), { force: true });
+  const runtime = await buildRuntime(projectRoot, project);
+  const nonTemplate = [
+    "# 我的大纲",
+    "",
+    "### 2. 主线",
+    "测试主线：林晚追查父亲下落。",
+    "",
+    "## 二、章节骨架（事实区 · 跟正文走）",
+    "### 第一卷",
+    "- [ ] 第1章《雨夜来信》：收到无名信，开启调查。"
+  ].join("\n");
+  await fs.writeFile(safeJoin(projectRoot, "OUTLINE.md"), nonTemplate, "utf8");
+  const c1 = await compile(projectRoot, project, 1, runtime);
+  const outline1 = blockOf(c1, "outline");
+  assert.ok(outline1, "非模板 OUTLINE.md 应尽力注入（回退路径）");
+  assert.ok(outline1.content.includes("测试主线"), "回退注入应含总纲内容");
+  assert.ok(!outline1.content.includes("章节骨架"), "回退注入不应含骨架区标题");
+  assert.ok(!outline1.content.includes("第1章《雨夜来信》"), "回退注入不应含骨架条目");
+  // 骨架勾选变化是合法的动态变化，绝不应影响 stable outline 块
+  await fs.writeFile(safeJoin(projectRoot, "OUTLINE.md"), nonTemplate.replace("- [ ] 第1章", "- [x] 第1章"), "utf8");
+  const c2 = await compile(projectRoot, project, 1, runtime);
+  assert.equal(blockOf(c2, "outline").content, outline1.content, "骨架变化不应改变 outline 稳定块内容");
+  assert.equal(c1.stableHash, c2.stableHash, "骨架勾选变化不应改变 stableHash");
+});
+
+test("truncateOutline 保留 ### 小节下 #### 嵌套子节的内容", () => {
+  const doc = [
+    "## 一、总纲（锚点区 · 只增不改）",
+    "### 1. 主题与核心概念",
+    "测试主题。",
+    "### 2. 主线",
+    "测试主线。",
+    "### 3. 核心矛盾",
+    "测试核心矛盾。",
+    "### 4. 卷划分",
+    "#### 4.1 第一卷",
+    "第一卷章节安排：".repeat(600),
+    "### 5. 题材字段",
+    "异术体系。"
+  ].join("\n");
+  const out = truncateOutline(doc, 4000);
+  assert.ok(out.includes("#### 4.1 第一卷"), "#### 嵌套子节标题应保留在所属 ### 小节内");
+  assert.ok(out.includes("第一卷章节安排："), "#### 子节内容不应被静默丢弃");
+  assert.ok(out.includes("截断"), "超限仍应带截断标记");
+});
+
+test("STABLE_BLOCK_ORDER 含 setting 且与 outline 相邻（Minor #3）", () => {
+  assert.ok(STABLE_BLOCK_ORDER.includes("setting"), "STABLE_BLOCK_ORDER 应有 setting 槽位");
+  assert.equal(STABLE_BLOCK_ORDER.indexOf("setting"), STABLE_BLOCK_ORDER.indexOf("outline") + 1, "setting 应与 outline 相邻");
+  assert.ok(!STABLE_BLOCK_ORDER.includes("character_status"), "角色状态仍是 dynamic，不进 STABLE_BLOCK_ORDER");
 });
