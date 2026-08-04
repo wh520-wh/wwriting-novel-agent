@@ -611,7 +611,7 @@ async function serveBlueprintInit(request, response, context) {
       const state = await loadState(projectRoot);
       const legacy = state?.blueprint_status === "legacy";
       const result = legacy
-        ? await runBlueprintInitForLegacy(projectRoot, { modelClient, onEvent: (event) => emitRunEvent(projectRoot, event) })
+        ? await runBlueprintInitForLegacy(projectRoot, { modelClient, userRequirements: requirements, onEvent: (event) => emitRunEvent(projectRoot, event) })
         : await runBlueprintInit(projectRoot, {
             modelClient,
             userRequirements: requirements,
