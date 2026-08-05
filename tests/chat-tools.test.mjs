@@ -50,9 +50,34 @@ test("toOpenAITools 保留工具声明的 inputSchema，并兼容旧 params", ()
   });
 
   const tools = toOpenAITools(registry);
+  assert.equal(tools[0].function.parameters.type, "object");
   assert.equal(tools[0].function.parameters.properties.timeout_ms.type, "integer");
+  assert.equal(tools[0].function.parameters.properties.timeout_ms.minimum, 100);
+  assert.equal(tools[0].function.parameters.properties.patch.type, "object");
+  assert.equal(tools[0].function.parameters.properties.patch.additionalProperties, true);
   assert.deepEqual(tools[0].function.parameters.required, ["timeout_ms"]);
+  assert.equal(tools[0].function.parameters.additionalProperties, false);
   assert.equal(tools[1].function.parameters.properties.query.type, "string");
+});
+
+test("inputSchema 工具的真实 schema 与文档参数保持可见", async () => {
+  const registry = createToolRegistry();
+  const { registerWriteTools } = await import("../src/core/chat/tools-write.mjs");
+  registerWriteTools(registry);
+
+  const updateSettings = registry.get("update_settings");
+  const schema = toOpenAITools(registry).find((tool) => tool.function.name === "update_settings").function.parameters;
+  assert.equal(schema.type, "object");
+  assert.equal(schema.properties.patch.type, "object");
+  assert.equal(schema.properties.patch.description, "设置补丁对象");
+  assert.equal(schema.properties.patch.additionalProperties, true);
+  assert.deepEqual(schema.required, ["patch"]);
+  assert.equal(schema.additionalProperties, false);
+  assert.equal(updateSettings.inputSchema, schema);
+
+  const docs = renderToolDocs(registry);
+  assert.match(docs, /update_settings/u);
+  assert.match(docs, /patch: 设置补丁对象/u);
 });
 
 test("registry 接受 describeAction 动态描述器", () => {
