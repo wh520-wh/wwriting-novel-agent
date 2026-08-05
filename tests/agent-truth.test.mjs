@@ -67,27 +67,33 @@ test("cancelling truth does not collide with the cancelled terminal label", () =
   assert.equal(cancelled.display, "已停止");
 });
 
-test("agent truth: 任务已入队但 project_status 仍为 idle 时显示排队中而非待命", () => {
+test("队列存在但模型未回复时顶部不显示排队中", () => {
   const truth = computeAgentTruth(data({
     summary: { projectStatus: "idle", currentStage: "queued" },
-    state: { project_status: "idle", agent_alive: false },
-    queue: { tasks: [{ index: 1, status: "queued" }] }
+    state: { project_status: "idle", current_stage: "queued" },
+    queue: { tasks: [{ id: "q1", status: "queued" }] },
+    chatHistory: { busy: false }
   }), now);
 
-  assert.equal(truth.display, "排队中");
-  assert.notEqual(truth.display, "空闲");
-  assert.equal(truth.className, "running");
-  assert.equal(truth.showRetry, false);
+  assert.notEqual(truth.display, "排队中");
+  assert.equal(truth.showStop, false);
 });
 
-test("agent truth: 仅队列存在 queued 任务（stage 未知）也显示排队中", () => {
+test("仅队列存在 queued 任务（stage 未知）也不显示排队中", () => {
   const truth = computeAgentTruth(data({
     summary: { projectStatus: "idle", currentStage: null },
     queue: { tasks: [{ index: 2, status: "running" }] }
   }), now);
 
-  assert.equal(truth.display, "排队中");
-  assert.equal(truth.className, "running");
+  assert.notEqual(truth.display, "排队中");
+  assert.equal(truth.className, "idle");
+});
+
+test("聊天模型正在回复时由 chatHistory.busy 显示工作中", () => {
+  const truth = computeAgentTruth(data({ chatHistory: { busy: true } }), now);
+
+  assert.equal(truth.display, "回复中");
+  assert.equal(truth.showStop, true);
 });
 
 test("agent truth: 无排队任务且状态 idle 仍为空闲", () => {

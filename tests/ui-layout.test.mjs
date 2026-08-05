@@ -7,7 +7,7 @@
 // U5 底部输入区：
 //   - 底部栏左（模型选择器）/ 中（输入区）/ 右（发送）三区；
 //   - placeholder 精简为一句核心提示（<40 字符），示例移到折叠提示；
-//   - 「全程自动」（yolo）仅在设置弹窗「权限与确认」分区可选，composer 弹层不再提供。
+//   - 「YOLO」（yolo）仅在设置弹窗「权限与确认」分区可选，composer 弹层不再提供。
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -330,19 +330,29 @@ test("U5 styles.css 提供三区布局与灰显按钮样式", () => {
 });
 
 // ---------------------------------------------------------------------------
-// U5：全程自动（yolo）仅在设置弹窗可选
+// U5：YOLO（yolo）仅在设置弹窗可选
 // ---------------------------------------------------------------------------
 
-test("U5 全程自动移到设置弹窗：composer 弹层不再渲染 yolo 档", () => {
+test("U5 YOLO 移到设置弹窗：composer 弹层不再渲染 yolo 档", () => {
   assert.match(composerSource, /filter\(\s*\(?\s*[a-z]\s*\)?\s*=>\s*[a-z]\.id\s*!==\s*["']yolo["']/, "composer 弹层应按 id 过滤掉 yolo");
   assert.ok(!composerSource.includes("mode-popover-item--yolo"), "composer 弹层不得再渲染 yolo 条目样式");
   assert.ok(!composerSource.includes("mode-popover-warn"), "yolo 警告提示应从 composer 弹层移除");
 });
 
-test("U5 设置弹窗保留全程自动（权限与确认分区）", () => {
+test("U5 设置弹窗保留 YOLO（权限与确认分区）", () => {
   assert.match(settingsSource, /tier\.id === "yolo"/, "设置弹窗权限分区应保留 yolo 处理");
   assert.match(settingsSource, /spd-radio-option--yolo/, "设置弹窗 yolo 选项样式应保留");
-  assert.match(settingsSource, /全程自动模式会自动执行/, "设置弹窗应保留全程自动警告文案");
+  assert.match(settingsSource, /确定要开启 YOLO 模式吗/, "设置弹窗应保留 YOLO 开启确认文案");
+});
+
+test("yolo 档在设置和 composer 中统一显示红色 YOLO", async () => {
+  const { getTierById } = await import("../src/app-shell/permission-tiers.mjs");
+  const tier = getTierById("yolo");
+  assert.equal(tier.label, "YOLO");
+  assert.equal(tier.short, "YOLO");
+  // 红色必须落在 yolo 自身的规则块内（不跨规则），确保设置弹窗与 composer pill 一致用红。
+  assert.match(cssSource, /\.cbar-pill--yolo\s*\{[^}]*color:\s*var\(--red\)[^}]*\}/u, ".cbar-pill--yolo 规则块内应含红色文字");
+  assert.match(cssSource, /\.spd-radio-option--yolo[^{}]*\{[^}]*color:\s*var\(--red\)[^}]*\}/u, ".spd-radio-option--yolo 规则块内应含红色文字");
 });
 
 // ---------------------------------------------------------------------------
@@ -408,14 +418,14 @@ function popoverItems() {
   return [...(domRegistry.get("mode-popover")?.querySelectorAll("[data-tier-id]") ?? [])];
 }
 
-test("U5 mode pill 在 yolo 档显示「全程自动」+ cbar-pill--yolo（yolo 仅设置里可选，pill 仍如实显示）", async () => {
+test("U5 mode pill 在 yolo 档显示「YOLO」+ cbar-pill--yolo（yolo 仅设置里可选，pill 仍如实显示）", async () => {
   const { createComposer } = await import("../src/app-shell/composer.js");
   const env = installComposerDom();
   try {
     makeComposerForPopover(createComposer, { yolo: true, auto_edit: true, safe_edit: true, read_only: false });
     const pill = domRegistry.get("mode-pill");
     assert.ok(pill, "mode-pill 应存在");
-    assert.equal(pill.textContent, "全程自动", "yolo 档 pill 文案");
+    assert.equal(pill.textContent, "YOLO", "yolo 档 pill 文案");
     assert.ok(pill.className.includes("cbar-pill--yolo"), "yolo 档 pill 应带 cbar-pill--yolo 样式");
     assert.equal(pill.getAttribute("data-tier"), "yolo", "pill 应带 data-tier=yolo");
   } finally {
