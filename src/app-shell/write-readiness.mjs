@@ -75,15 +75,6 @@ export function deriveWriteReadiness(input) {
   // 5.5 Blueprint not initialized (spec §1.4 门禁):先 /init 再写作。
   // 新项目 blueprint_status 为 none/partial 时所有写作入口被门禁拒绝,
   // 主操作区直接给出显式触发入口,避免用户对着被拒的「开始写作」干等。
-  if (state.blueprint_status === "none" || state.blueprint_status === "partial") {
-    return readiness("blueprint_pending", {
-      chapterNo,
-      modelLabel,
-      primaryAction: "init_blueprint",
-      primaryLabel: "开始规划蓝图"
-    });
-  }
-
   // 6. Missing model
   const activeModel = project.active_model;
   if (!activeModel) {
@@ -148,7 +139,6 @@ function readiness(key, overrides = {}) {
     running:            { label: "写作进行中",       detail: "AI 正在写作中，请稍候。" },
     blocked:            { label: "遇到阻塞",         detail: "项目存在待解决的问题。" },
     completed:          { label: "已完成目标",       detail: "已达成目标章节数，可增加目标。" },
-    blueprint_pending:  { label: "蓝图未初始化",     detail: "请先运行 /init 生成大纲与设定，再开始写作。" },
     missing_model:      { label: "未配置模型",       detail: "请先配置 AI 模型。" },
     invalid_model:      { label: "模型配置无效",     detail: "模型配置信息不完整或连接失败，请检查设置。" },
     demo:               { label: "演示模型模式",     detail: "演示模型用于体验写作流程，生成的章节会保存在项目里（无需真实 API Key）。" },
@@ -183,7 +173,6 @@ function getDefaultPrimaryLabel(key, chapterNo) {
     running: "查看进度",
     blocked: "查看问题",
     completed: "增加目标",
-    blueprint_pending: "开始规划蓝图",
     missing_model: "打开设置",
     invalid_model: "打开设置",
     demo: "用演示模型开始",

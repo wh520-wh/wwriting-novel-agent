@@ -783,47 +783,6 @@ export function createComposer(ctx) {
     await sendChatMessageWithUX(parsed.content);
   }
 
-  // /init（spec §1.4）：显式触发蓝图初始化。requirements 可为空——
-  // 服务端会从项目故事设定推断题材，推断不到时走默认玄幻模板，生成不依赖用户补充题材。
-  async function submitBlueprintInit(requirements) {
-    const projectRoot = ctx.getCurrentProjectRoot();
-    if (!projectRoot) {
-      ctx.showToast("请先新建或打开一部小说。", "info");
-      return;
-    }
-    // 空需求提示默认方向（Task 7）：题材将从故事设定推断，推断不到时按通用东方玄幻兜底。
-    // 文案不硬编码"必然玄幻"——seed 命中题材词时实际会走对应模板。
-    // ★ 不声明 const requirements——与函数参数重名是语法错误，用 req。
-    const req = String(requirements ?? "").trim();
-    if (!req) {
-      ctx.showToast("未提供题材偏好，将从故事设定推断题材；推断不到时按通用东方玄幻方向规划。", "info");
-    }
-    const token = ctx.projectScope?.capture(projectRoot);
-    ctx.refs.composerSubmit.disabled = true;
-    ctx.refs.composerSubmit.setAttribute("aria-busy", "true");
-    try {
-      ctx.showToast("正在生成大纲与设定（OUTLINE.md + SETTING.md），可能需要一两分钟…", "info");
-      const result = await postJson("/api/projects/init-blueprint", {
-        projectRoot,
-        requirements: req,
-      });
-      if (token && !ctx.projectScope.isCurrent(token)) return;
-      clearComposerInput();
-      ctx.showToast("蓝图已生成（OUTLINE.md + SETTING.md），可以开始写作了。", "success");
-      ctx.ensureRefreshLoop(true);
-      await ctx.loadDashboard();
-      return result;
-    } catch (error) {
-      if (token && !ctx.projectScope.isCurrent(token)) return;
-      persistCurrentDraftNow(projectRoot);
-      ctx.showActionError(error);
-      throw error;
-    } finally {
-      ctx.refs.composerSubmit.removeAttribute("aria-busy");
-      updateSubmitState();
-    }
-  }
-
   async function submitWritingCommand(message, mode, { fromSideQuestion = false, projectRoot: requestedProjectRoot = null } = {}) {
     const projectRoot = requestedProjectRoot ?? ctx.getCurrentProjectRoot();
     const token = ctx.projectScope?.capture(projectRoot);
@@ -1096,7 +1055,7 @@ export function createComposer(ctx) {
   return {
     parseUserCommand, onComposerKeydown, autoGrowComposer, updateSubmitState,
     updateSlashMenu, hideSlashMenu, submitComposer, submitText, submitWritingCommand,
-    submitBlueprintInit, startCurrentChapter,
+    startCurrentChapter,
     submitSideQuestion, promoteAskEntry, resultMessageForCommand,
     initModePill, updateModePill, openModePopover, closeModePopover,
     openModelPopover, closeModelPopover, updateStatusPills, sendChatMessageWithUX,

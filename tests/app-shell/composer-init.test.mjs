@@ -1,7 +1,7 @@
 // /init 用户触发入口测试（spec §1.4 P1 修复）：
 // 1) parseUserCommand 把 "/init [题材]" 归类为 init（显式触发蓝图初始化）
-// 2) submitBlueprintInit 调 POST /api/projects/init-blueprint，成功刷新、失败保留草稿
-// 3) /init 已注册进 slash 命令注册表（可被斜杠菜单唤起）
+// 2) /init 已注册进 slash 命令注册表（可被斜杠菜单唤起）
+// 3) /init 通过普通 chat/send 提交，保留命令和自然语言要求
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 

@@ -1056,15 +1056,11 @@ test("步骤中文说明：update_blueprint 显示「更新蓝图」", withLocal
   assert.ok(!label.textContent.includes("工具 update_blueprint"), "不得回退成「工具 update_blueprint」");
 }));
 
-// --- /init 空态建议卡（P1 修复：blueprint 未初始化时给用户显式触发入口） ---
-
-test("空态建议卡：blueprint none 显示「开始规划蓝图」，点击走 runBlueprintInit 不走 submitText", withLocalStorage(async () => {
+test("空态建议卡：blueprint none 也发送普通聊天指令", withLocalStorage(async () => {
   const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
   const { refs, ctx } = makeHarness();
-  let initCalls = 0;
-  let submitCalls = 0;
-  ctx.runBlueprintInit = () => { initCalls += 1; };
-  ctx.submitText = () => { submitCalls += 1; };
+  const submitted = [];
+  ctx.submitText = (text) => { submitted.push(text); };
   const renderer = createThreadRenderer(ctx);
 
   renderer.appendSuggestionCards({
@@ -1074,35 +1070,8 @@ test("空态建议卡：blueprint none 显示「开始规划蓝图」，点击�
 
   const cards = refs.thread.querySelectorAll(".suggestion-card");
   assert.ok(cards.length >= 1, "应有建议卡");
-  const initCard = cards.find((c) => c.textContent.includes("开始规划蓝图"));
-  assert.ok(initCard, "blueprint none 时应出现「开始规划蓝图」卡");
-  assert.ok(!cards.some((c) => c.textContent.includes("排 5 章试写")), "门禁未放行前不出现试写入口");
-
+  const initCard = cards.find((c) => c.textContent.includes("检查项目结构"));
+  assert.ok(initCard, "blueprint none 时应出现普通 /init 建议卡");
   initCard._fire("click");
-  assert.equal(initCalls, 1, "点击「开始规划蓝图」应走 runBlueprintInit");
-  assert.equal(submitCalls, 0, "不得把「开始规划蓝图」当普通文本发给 chat agent");
-  assert.equal(initCard.disabled, true, "点击后卡片禁用（防重复触发）");
-}));
-
-test("空态建议卡：blueprint complete 时点击普通卡仍走 submitText", withLocalStorage(async () => {
-  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
-  const { refs, ctx } = makeHarness();
-  let initCalls = 0;
-  const submitted = [];
-  ctx.runBlueprintInit = () => { initCalls += 1; };
-  ctx.submitText = (text) => { submitted.push(text); };
-  const renderer = createThreadRenderer(ctx);
-
-  renderer.appendSuggestionCards({
-    project: {}, summary: { completedChapters: 0, targetChapters: 10 }, chapters: [],
-    state: { blueprint_status: "complete" },
-  });
-
-  const cards = refs.thread.querySelectorAll(".suggestion-card");
-  const trialCard = cards.find((c) => c.textContent.includes("排 5 章试写"));
-  assert.ok(trialCard, "blueprint complete 时应恢复「排 5 章试写」卡");
-  trialCard._fire("click");
-  assert.equal(submitted.length, 1, "普通卡点击应作为指令发送");
-  assert.equal(submitted[0], "排 5 章试写");
-  assert.equal(initCalls, 0);
+  assert.deepEqual(submitted, ["/init"]);
 }));
