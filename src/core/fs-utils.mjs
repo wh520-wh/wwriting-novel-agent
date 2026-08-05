@@ -31,6 +31,14 @@ export function safeJoin(rootPath, ...parts) {
 export function isPathInside(rootPath, targetPath) {
   const root = path.resolve(rootPath);
   const target = path.resolve(targetPath);
+  // Windows 文件系统大小写不敏感：字面比较前归一化大小写，避免 ".wwriting/AGENT/…"、
+  // "Chapters/001.md" 等大小写变体绕过受保护路径检查（安全边界）。POSIX 保持
+  // 大小写敏感（区分大小写的文件系统，且误判 inside 属于放行方向，宁可保守）。
+  if (process.platform === "win32") {
+    const rootForCompare = root.toLowerCase();
+    const targetForCompare = target.toLowerCase();
+    return targetForCompare === rootForCompare || targetForCompare.startsWith(rootForCompare + path.sep);
+  }
   return target === root || target.startsWith(root + path.sep);
 }
 
