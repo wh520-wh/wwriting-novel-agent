@@ -353,6 +353,14 @@ async function agentLoop(options, toolEvents) {
           } catch (error) {
             const previewError = { ok: false, error: error.code ?? "preview_failed", message: error.message };
             await recordDeniedTool({ projectRoot, tc, toolEvents, onEvent, message: previewError.message, error: previewError.error });
+            // I-4/R-1: 预览失败必须补发 cancelled 终态——requested/waiting_confirmation 已在
+            // 上方发出，不补终态该 activity_id 会悬空（确认卡永停 waiting_confirmation，
+            // 且不落 pending、后续路径无人再关它）。error 统一 preview_failed 语义
+            // （与 recordDeniedTool 的原始错误码 find_not_found/bad_args 并存供 UI 区分）。
+            activity?.({
+              activity_id: activityId, phase, state: "cancelled", tool: tc.tool,
+              label: action.title, output_delta: "", error: "preview_failed"
+            });
             continue;
           }
         } else {
