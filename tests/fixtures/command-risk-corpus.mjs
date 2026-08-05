@@ -26,6 +26,7 @@ export const EXTREME_COMMANDS = [
   "rd /s /q C:\\",
   "rmdir /s C:\\",
   "del /f /s /q C:\\*.*",
+  "del /s /q C:\\*.*",
   "Remove-Item C:\\ -r -f",
   "Remove-Item C:/ -Recurse -Force",
   "Remove-Item C:\\* -Recurse -Force",

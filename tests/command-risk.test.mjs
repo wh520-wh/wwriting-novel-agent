@@ -66,6 +66,15 @@ test("引号包裹的密钥脱敏后保留引号", () => {
   assert.equal(redactChatData('--password="abc123secret"'), '--password="[REDACTED]"');
 });
 
+test("引号值含空白或异侧引号时整体脱敏并保留引号", () => {
+  assert.equal(redactChatData('secret="a b"'), 'secret="[REDACTED]"');
+  assert.equal(redactChatData("secret=\"it's\""), 'secret="[REDACTED]"');
+  assert.equal(redactChatData('Bearer "x y"'), 'Bearer "[REDACTED]"');
+  assert.equal(redactChatData("api_key=abc123secret"), "api_key=[REDACTED]");
+  // 未闭合引号保持现状，不误伤也不崩溃
+  assert.equal(redactChatData('secret="unclosed'), 'secret="unclosed');
+});
+
 test("projectRoot 缺省时兜底到进程工作目录", () => {
   assert.equal(classifyShellCommand({ command: "git status" }).category, "read");
   assert.equal(classifyShellCommand({ command: "rm -rf /" }).risk, "extreme");
