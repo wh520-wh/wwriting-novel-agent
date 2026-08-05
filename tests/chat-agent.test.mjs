@@ -835,6 +835,43 @@ test("极端确认：确认文字错误拒绝且 pending 保留；正确文字�
   assert.equal(executed.ok, true);
 });
 
+test("极端确认：reject / once / task 一律干净拒绝（user_rejected），task 不放行也不授权", async () => {
+  for (const decision of ["reject", "once", "task"]) {
+    const projectRoot = await makeChatProject();
+    const project = await loadProject(projectRoot);
+    const registry = createToolRegistry();
+    registerReadTools(registry);
+    registerDangerTool(registry);
+    const grants = createTaskGrantStore();
+    await runChatTurn({
+      projectRoot, project, registry,
+      modelClient: scriptedClient(['```json\n{"tool_calls":[{"tool":"danger_tool","args":{}}]}\n```']),
+      userMessage: "执行危险操作"
+    });
+    const pending = await loadPendingAction(projectRoot);
+    assert.equal(pending.confirmation_kind, "extreme", "前置：应挂 extreme pending");
+    const resumed = await resumeChatTurn({
+      projectRoot, project, registry,
+      modelClient: scriptedClient(["好的，不执行危险操作。"]),
+      decision,
+      grants
+    });
+    assert.equal(resumed.pendingAction, null, `${decision} 后不应再挂 pending`);
+    assert.equal(await loadPendingAction(projectRoot), null, `${decision} 应清除 pending（干净拒绝）`);
+    const toolEvent = resumed.toolEvents.find((e) => e.tool === "danger_tool");
+    assert.ok(toolEvent, `${decision} 应有 danger_tool 回填事件`);
+    assert.equal(toolEvent.ok, false, `${decision} 不得执行极端工具`);
+    assert.equal(toolEvent.error, "user_rejected", `${decision} 应回填 user_rejected`);
+    if (decision === "task") {
+      assert.equal(
+        grants.has(projectRoot, pending.task_id, "delete:outside:c:\\"),
+        false,
+        "task 不得为极端操作授予任务级授权"
+      );
+    }
+  }
+});
+
 test("任务完成（最终文本）释放任务级授权", async () => {
   const projectRoot = await makeChatProject();
   const project = await loadProject(projectRoot);
