@@ -2327,3 +2327,76 @@ test("engine 经事件总线广播 model_delta 与运行事件", async () => {
   assert.ok(busEvents.some((event) => event.type === "model_call_started"),
     "总线应收到 model_call_started 运行事件（appendEvent 广播）");
 });
+
+// -- Task 2（规格书 6.2）：网络恢复绿字——引擎在重试成功后发 status_message 事件 --
+
+test("engine 重试成功后写入 status_message「连接已恢复」事件", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-recover-"));
+  const { projectRoot } = await createWritingProject(root, {
+    slug: "project",
+    target_chapters: 1,
+    min_words_per_chapter: 250,
+    target_words_per_chapter: 300
+  });
+  const mockModel = new MockModel();
+  let calls = 0;
+  // 覆盖默认 mock adapter：首次模型调用抛网络超时（reason: "timeout"，可重试），
+  // 重试成功后恢复。其余调用正常。引擎内部 ModelClient（默认 retryMax=5）应重试并
+  // 经 onRecovered 写 status_message 事件。
+  await runProject(projectRoot, {
+    adapters: {
+      mock: new MockProviderAdapter({
+        response: async (gatewayRequest) => {
+          calls++;
+          if (calls === 1) {
+            throw new ProviderTransportError("网络抖动", { reason: "timeout" });
+          }
+          const toolRequest = gatewayRequest.metadata?.toolRequest ?? {};
+          const output = await mockModel.generate(toolRequest);
+          return {
+            text: JSON.stringify(output),
+            raw: { output },
+            usage: { input_tokens: 12, output_tokens: 8, total_tokens: 20 }
+          };
+        }
+      })
+    }
+  });
+  const events = await readEvents(projectRoot);
+  const recovered = events.filter((event) => event.type === "status_message");
+  assert.equal(recovered.length, 1, "应恰好一条「连接已恢复」状态事件");
+  assert.ok(recovered[0].message.includes("连接已恢复"),
+    `message 应含「连接已恢复」，实际: ${recovered[0].message}`);
+  assert.ok(recovered[0].message.includes("重试成功"),
+    `message 应含「重试成功」，实际: ${recovered[0].message}`);
+  assert.equal(recovered[0].data?.attempt, 1, "data.attempt 应为已完成的 1 次重试");
+});
+
+test("engine 首次调用即成功时不写 status_message 事件", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-norecover-"));
+  const { projectRoot } = await createWritingProject(root, {
+    slug: "project",
+    target_chapters: 1,
+    min_words_per_chapter: 250,
+    target_words_per_chapter: 300
+  });
+  const mockModel = new MockModel();
+  await runProject(projectRoot, {
+    adapters: {
+      mock: new MockProviderAdapter({
+        response: async (gatewayRequest) => {
+          const toolRequest = gatewayRequest.metadata?.toolRequest ?? {};
+          const output = await mockModel.generate(toolRequest);
+          return {
+            text: JSON.stringify(output),
+            raw: { output },
+            usage: { input_tokens: 12, output_tokens: 8, total_tokens: 20 }
+          };
+        }
+      })
+    }
+  });
+  const events = await readEvents(projectRoot);
+  assert.equal(events.some((event) => event.type === "status_message"), false,
+    "无重试不应出现 status_message 事件");
+});

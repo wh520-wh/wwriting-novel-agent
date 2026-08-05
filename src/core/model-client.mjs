@@ -30,6 +30,7 @@ export class ModelClient {
     totalDeadlineMs = 300000,
     heartbeatMs = 5000,
     onRetry = null,
+    onRecovered = null,
     onActivity = null,
     responseCacheSize = DEFAULT_RESPONSE_CACHE_SIZE
   } = {}) {
@@ -44,6 +45,7 @@ export class ModelClient {
     this.totalDeadlineMs = totalDeadlineMs;
     this.heartbeatMs = heartbeatMs;
     this.onRetry = onRetry;
+    this.onRecovered = onRecovered;
     this.onActivity = onActivity;
     this.responseCache = new Map();
     this.responseCacheSize = responseCacheSize;
@@ -121,6 +123,11 @@ export class ModelClient {
     // §4.2.2: Stage-configurable total deadline — modelConfig.total_deadline_ms overrides constructor default
     const totalDeadlineMs = modelConfig.total_deadline_ms ?? this.totalDeadlineMs;
 
+    // 网络恢复标志（规格书 6.2）：本方法作用域内发生过 ≥1 次重试且最终成功时，
+    // 成功 return 前通知上层发「连接已恢复」。必须定义在 generate() 内而非 #retryWait
+    // 私有方法中——后者只能 await，无法回写外层状态；retryMax=0 时循环不进入失败分支，恒为 false。
+    let retried = false;
+
     for (let attempt = 0; attempt <= this.retryMax; attempt++) {
       // Check total deadline before starting the attempt
       const elapsed = Date.now() - startTime;
@@ -193,6 +200,11 @@ export class ModelClient {
           cost: response.cost ?? null
         });
         const costSummary = this.costTracker.record({ stage, chapter: metadata.chapterNo ?? null, usageReport });
+        // 网络恢复（规格书 6.2）：发生过重试且最终成功 → 通知上层发「连接已恢复」。
+        // retryMax=0 时循环不进入失败分支，retried 恒 false，不会误触发；成功时 attempt 即已完成重试次数。
+        if (retried && this.onRecovered) {
+          this.onRecovered({ attempt: Math.min(attempt, this.retryMax), maxAttempts: this.retryMax });
+        }
         return {
           text: response.text ?? "",
           raw: response.raw ?? response,
@@ -237,6 +249,7 @@ export class ModelClient {
           const timeoutError = new ProviderTransportError("Request timed out.", { reason: "timeout" });
           if (this.#isRetryable(timeoutError) && attempt < this.retryMax) {
             this.onActivity?.();
+            retried = true;
             await this.#retryWait(attempt, timeoutError, modelConfig.model_name, signal);
             continue;
           }
@@ -254,6 +267,7 @@ export class ModelClient {
         // Check if the error is retryable
         if (this.#isRetryable(error) && attempt < this.retryMax) {
           this.onActivity?.();
+          retried = true;
           await this.#retryWait(attempt, error, modelConfig.model_name, signal);
           continue;
         }
