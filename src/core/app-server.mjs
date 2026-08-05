@@ -46,6 +46,7 @@ import { createProjectLockRegistry } from "./project-lock.mjs";
 import { loadProjectDiagnostics } from "./project-diagnostics.mjs";
 import { readJson, safeJoin } from "./fs-utils.mjs";
 import { runChatTurn, resumeChatTurn } from "./chat/chat-agent.mjs";
+import { createTaskGrantStore } from "./chat/task-grants.mjs";
 import { createToolRegistry } from "./chat/tool-registry.mjs";
 import { registerReadTools } from "./chat/tools-read.mjs";
 import { registerWriteTools } from "./chat/tools-write.mjs";
@@ -67,7 +68,8 @@ export function createAppShellServer({
   testModel = null,
   testRunProject = null,
   testLoadDashboardData = null,
-  testModelConnection = null
+  testModelConnection = null,
+  taskGrants = null
 } = {}) {
   const workspace = path.resolve(workspaceRoot);
   const localSecretsRoot = path.resolve(secretsRoot);
@@ -80,6 +82,9 @@ export function createAppShellServer({
   // chat 循环忙态注册表：resolvedProjectRoot -> { controller, startedAt }。
   // send/confirm 进锁前注册；/api/chat/stop 从这里取 controller —— stop 绝不进项目锁（send 正持锁，入锁即死锁）。
   const chatJobs = new Map();
+  // Task 7: 任务级授权唯一 store（内存态，进程重启自动失效；任务结束/停止/新消息/项目切换时显式清理）。
+  // taskGrants 参数是测试注入缝，生产默认内部创建。
+  const taskGrantsStore = taskGrants ?? createTaskGrantStore();
   const projectLocks = createProjectLockRegistry();
   // §4.1: 启动时检测崩溃残留 — 项目 state 中 project_status==="running" 但无存活 runner。
   // 用同步 API 确保在 server.listen 前完成扫描。
@@ -242,11 +247,15 @@ export function createAppShellServer({
       return;
     }
     if (url.pathname === "/api/chat/send" && request.method === "POST") {
-      await serveChatSend(request, response, { workspace, selected, stateRoot: appStateRoot, runJobs, getTaskQueue, testModel, testRunProject, projectLocks, startProjectRunFn: startProjectRun, chatJobs, secretsRoot: localSecretsRoot });
+      await serveChatSend(request, response, { workspace, selected, stateRoot: appStateRoot, runJobs, getTaskQueue, testModel, testRunProject, projectLocks, startProjectRunFn: startProjectRun, chatJobs, secretsRoot: localSecretsRoot, taskGrants: taskGrantsStore });
       return;
     }
     if (url.pathname === "/api/chat/confirm" && request.method === "POST") {
-      await serveChatConfirm(request, response, { workspace, selected, stateRoot: appStateRoot, runJobs, getTaskQueue, testModel, testRunProject, projectLocks, startProjectRunFn: startProjectRun, chatJobs, secretsRoot: localSecretsRoot });
+      await serveChatConfirm(request, response, { workspace, selected, stateRoot: appStateRoot, runJobs, getTaskQueue, testModel, testRunProject, projectLocks, startProjectRunFn: startProjectRun, chatJobs, secretsRoot: localSecretsRoot, taskGrants: taskGrantsStore });
+      return;
+    }
+    if (url.pathname === "/api/chat/grants/clear" && request.method === "POST") {
+      await serveChatGrantsClear(request, response, { workspace, selected, stateRoot: appStateRoot, taskGrants: taskGrantsStore });
       return;
     }
     if (url.pathname === "/api/chat/history" && request.method === "GET") {
@@ -1521,6 +1530,7 @@ async function serveChatSend(request, response, context) {
         signal: controller.signal,
         server: chatServerContext(context),
         getTaskQueue: context.getTaskQueue,
+        grants: context.taskGrants,
         onEvent: (event) => emitRunEvent(projectRoot, event)
       });
       await modelClient.costTracker.writeProjectReport(projectRoot);
@@ -1543,6 +1553,9 @@ async function serveChatConfirm(request, response, context) {
       sendError(response, new HttpError(409, "CHAT_BUSY", "上一轮对话还在进行中，请等它完成或先点停止。"));
       return;
     }
+    // Task 7 确认契约：once / task / reject / force；旧 approve 参数映射（approve:true -> once）。
+    let decision = ["once", "task", "reject", "force"].includes(body.decision) ? body.decision : null;
+    if (!decision) decision = typeof body.approve === "boolean" ? (body.approve ? "once" : "reject") : "reject";
     const controller = new AbortController();
     context.chatJobs.set(jobKey, { controller, startedAt: new Date().toISOString() });
     try {
@@ -1555,10 +1568,13 @@ async function serveChatConfirm(request, response, context) {
         project,
         registry,
         modelClient,
-        approve: body.approve === true,
+        decision,
+        confirmationText: String(body.confirmationText ?? ""),
         signal: controller.signal,
         server: chatServerContext(context),
-        getTaskQueue: context.getTaskQueue
+        getTaskQueue: context.getTaskQueue,
+        grants: context.taskGrants,
+        onEvent: (event) => emitRunEvent(projectRoot, event)
       });
       await modelClient.costTracker.writeProjectReport(projectRoot);
       await serveJson(response, { ok: true, ...result });
@@ -1566,6 +1582,18 @@ async function serveChatConfirm(request, response, context) {
     } finally {
       context.chatJobs.delete(jobKey);
     }
+  } catch (error) {
+    sendError(response, error instanceof HttpError ? error : new HttpError(400, "BAD_REQUEST", error.message));
+  }
+}
+
+// Task 7: 项目切换 / 退出时清除该项目的全部任务级授权（内存态，无持久副作用）。
+async function serveChatGrantsClear(request, response, context) {
+  try {
+    const body = await readJsonBody(request);
+    const projectRoot = await resolveActiveWriteProjectRoot(context, body);
+    context.taskGrants.clearProject(projectRoot);
+    await serveJson(response, { ok: true });
   } catch (error) {
     sendError(response, error instanceof HttpError ? error : new HttpError(400, "BAD_REQUEST", error.message));
   }

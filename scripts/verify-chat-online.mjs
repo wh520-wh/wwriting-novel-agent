@@ -173,7 +173,7 @@ async function main() {
         project,
         registry,
         modelClient,
-        approve: true
+        decision: "once"
       });
       const content = await fs.readFile(chapterPath, "utf8");
       bEdit = content.includes("十二楼");
