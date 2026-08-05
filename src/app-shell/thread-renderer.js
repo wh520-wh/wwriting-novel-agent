@@ -189,10 +189,6 @@ export function createThreadRenderer(ctx) {
         if (ctx.isChatBusy?.()) return;
         wrap.querySelectorAll(".suggestion-card").forEach((c) => { c.disabled = true; });
         // kind 化的建议卡走独立触发（/init 蓝图初始化），不走 chat agent 文本发送。
-        if (item.kind === "init-blueprint") {
-          ctx.runBlueprintInit?.();
-          return;
-        }
         ctx.submitText?.(item.message);
       });
       wrap.append(card);

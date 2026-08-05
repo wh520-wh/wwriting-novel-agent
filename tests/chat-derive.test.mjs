@@ -69,34 +69,15 @@ test("deriveSuggestions：写作中段", () => {
 
 test("deriveSuggestions：新项目", () => {
   const s = deriveSuggestions({ project: {}, summary: { completedChapters: 0, targetChapters: 10 }, chapters: [] });
-  assert.deepEqual(s.map((x) => x.label), ["排 5 章试写", "这本书的设定是什么？", "帮我完善大纲"]);
+  assert.deepEqual(s.map((x) => x.label), ["检查项目结构", "开始写第一章", "梳理人物关系"]);
 });
 
-test("deriveSuggestions：新项目蓝图未初始化 → 引导显式 /init（kind: init-blueprint）", () => {
+test("deriveSuggestions：新项目蓝图状态不影响普通建议", () => {
   const s = deriveSuggestions({
     project: {}, summary: { completedChapters: 0, targetChapters: 10 }, chapters: [],
     state: { blueprint_status: "none" }
   });
-  assert.deepEqual(s.map((x) => x.label), ["开始规划蓝图", "这本书的设定是什么？"]);
-  assert.equal(s[0].kind, "init-blueprint");
-  assert.equal(typeof s[0].message, "string");
-});
-
-test("deriveSuggestions：blueprint partial 同样引导 /init", () => {
-  const s = deriveSuggestions({
-    project: {}, summary: { completedChapters: 0, targetChapters: 10 }, chapters: [],
-    state: { blueprint_status: "partial" }
-  });
-  assert.equal(s[0].label, "开始规划蓝图");
-  assert.equal(s[0].kind, "init-blueprint");
-});
-
-test("deriveSuggestions：blueprint complete 后新项目恢复原建议", () => {
-  const s = deriveSuggestions({
-    project: {}, summary: { completedChapters: 0, targetChapters: 10 }, chapters: [],
-    state: { blueprint_status: "complete" }
-  });
-  assert.deepEqual(s.map((x) => x.label), ["排 5 章试写", "这本书的设定是什么？", "帮我完善大纲"]);
+  assert.deepEqual(s.map((x) => x.message), ["/init", "开始写第一章", "请检查人物关系和设定冲突"]);
 });
 
 test("deriveSuggestions：写作中段不受 blueprint 分支影响（blueprint 已就绪）", () => {

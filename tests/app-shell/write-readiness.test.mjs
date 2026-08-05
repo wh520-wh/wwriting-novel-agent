@@ -157,23 +157,12 @@ test("project states take precedence", () => {
   );
 });
 
-test("blueprint none/partial → blueprint_pending，主操作区给 /init 入口", () => {
-  const none = deriveWriteReadiness(data({ state: { project_status: "idle", blueprint_status: "none" } }));
-  assert.equal(none.key, "blueprint_pending");
-  assert.equal(none.primaryAction, "init_blueprint");
-  assert.equal(none.primaryLabel, "开始规划蓝图");
-  assert.equal(none.blocking, false);
-
-  const partial = deriveWriteReadiness(data({ state: { project_status: "idle", blueprint_status: "partial" } }));
-  assert.equal(partial.key, "blueprint_pending");
-
-  // 未初始化优先于缺模型：新项目先规划蓝图，再谈模型配置。
-  const noModel = deriveWriteReadiness(data({
-    project: { active_model: null },
-    model_profile: null,
-    state: { project_status: "idle", blueprint_status: "none" }
-  }));
-  assert.equal(noModel.key, "blueprint_pending");
+test("blueprint none/partial/complete/legacy 不改变写作准备态", () => {
+  for (const blueprint_status of ["none", "partial", "complete", "legacy"]) {
+    const view = deriveWriteReadiness(data({ state: { project_status: "idle", blueprint_status } }));
+    assert.equal(view.key, "ready");
+    assert.equal(view.primaryAction, "start_chapter");
+  }
 });
 
 test("blueprint complete/legacy/缺失 → 不拦截，走原流程", () => {
