@@ -516,3 +516,23 @@ test("回归：既有 UI 稳定标记保留（composer/textarea/send/hint）", (
   assert.ok(indexSource.includes("Enter 发送"), "快捷键提示保留");
   assert.ok(indexSource.includes("slash-menu"), "斜杠命令菜单保留");
 });
+
+// ---------------------------------------------------------------------------
+// Task 11：共享内容列 — 工作台 / 准备卡 / 线程 / composer 同一列
+// ---------------------------------------------------------------------------
+
+test("工作台、准备卡、线程和 composer 使用同一内容列", () => {
+  assert.match(cssSource, /--content-column:\s*900px/u, "根变量应定义 900px 内容列");
+  for (const selector of [".project-workbench", ".creation-card", ".thread", ".composer"]) {
+    assert.match(
+      cssSource,
+      new RegExp(`${selector.replace(".", "\\.")}[\\s\\S]*max-width:\\s*var\\(--content-column\\)`, "u"),
+      `${selector} 应共享 max-width: var(--content-column)`
+    );
+  }
+});
+
+test("模型菜单宽度受内容和视口共同约束", () => {
+  assert.match(cssSource, /width:\s*min\(420px,\s*calc\(100vw - 32px\)\)/u, "模型菜单宽度应为 min(420px, 100vw - 32px)");
+  assert.match(cssSource, /overflow-wrap:\s*anywhere/u, "模型名称应允许任意位置换行");
+});

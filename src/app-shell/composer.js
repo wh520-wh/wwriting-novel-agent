@@ -272,6 +272,11 @@ export function createComposer(ctx) {
     popover.hidden = false;
     modelPopoverOpen = true;
     pill.setAttribute("aria-expanded", "true");
+    // Task 11：打开后按视口钳制左右边界（16px 安全区），并随 resize 重新钳制。
+    clampPopoverToViewport(popover);
+    if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+      window.addEventListener("resize", onModelPopoverResize);
+    }
     document.addEventListener("pointerdown", onModelPopoverPointerdown, true);
     document.addEventListener("keydown", onModelPopoverKeydown, true);
     return true;
@@ -284,8 +289,28 @@ export function createComposer(ctx) {
     popover.hidden = true;
     modelPopoverOpen = false;
     pill?.setAttribute("aria-expanded", "false");
+    if (typeof window !== "undefined" && typeof window.removeEventListener === "function") {
+      window.removeEventListener("resize", onModelPopoverResize);
+    }
     document.removeEventListener("pointerdown", onModelPopoverPointerdown, true);
     document.removeEventListener("keydown", onModelPopoverKeydown, true);
+  }
+
+  // Task 11：把菜单左缘钳到 [16, 视口宽 - 菜单宽 - 16]，再换算为相对 offsetParent 的 left。
+  function clampPopoverToViewport(popover) {
+    if (typeof window === "undefined") return;
+    const parent = popover.offsetParent;
+    if (!parent || typeof popover.getBoundingClientRect !== "function"
+        || typeof parent.getBoundingClientRect !== "function") return;
+    const rect = popover.getBoundingClientRect();
+    const left = Math.min(Math.max(16, rect.left), window.innerWidth - rect.width - 16);
+    popover.style.left = `${left - parent.getBoundingClientRect().left}px`;
+  }
+
+  function onModelPopoverResize() {
+    if (!modelPopoverOpen) return;
+    const popover = getModelPopover();
+    if (popover) clampPopoverToViewport(popover);
   }
 
   function onModelPopoverPointerdown(event) {
@@ -502,10 +527,14 @@ export function createComposer(ctx) {
       glyph.textContent = model.active ? "✓" : "M";
       const tx = document.createElement("span");
       tx.className = "mpi-tx";
+      // Task 11：长名称可换行，主/副名称都带完整显示名 title（hover 提示完整值）。
+      const fullDisplayName = model.display ?? model.model_name ?? model.id ?? "model";
       const strong = document.createElement("strong");
-      strong.textContent = model.display ?? model.model_name ?? model.id ?? "model";
+      strong.textContent = fullDisplayName;
+      strong.title = fullDisplayName;
       const small = document.createElement("small");
       small.textContent = model.api_key_saved ? `${model.provider_label ?? model.provider} · key 已保存` : `${model.provider_label ?? model.provider} · key 未保存`;
+      small.title = fullDisplayName;
       tx.append(strong, small);
       btn.append(glyph, tx);
       btn.addEventListener("click", () => switchModel(btn.dataset.modelId));
