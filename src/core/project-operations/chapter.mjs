@@ -1,0 +1,792 @@
+// src/core/project-operations/chapter.mjs —— 章节项目事务（统一 Agent 内核计划 Task 5）。
+//
+// 职责（Rule 6 深模块）：章节草稿、质量门禁、正式提交、章节索引、章节记忆、摘要
+// 与 checkpoint 一致性。Agent runtime 只编排；本模块是唯一的章节领域事实读写方。
+//
+// 边界：
+//   - 本模块不接收 ModelGateway、不调用模型。模型类检查（fact-check、记忆提取）
+//     由 ProjectAgent runtime 完成，结果经调用参数（exceptionDecisions / extraction）
+//     传入本模块做确定性落盘。
+//   - 本模块不读写旧 agent_state 状态文件；章节位置与完成事实只由章节文件 +
+//     memory/chapter_index.json 推导（Rule 9）。
+//   - 不写 Agent journal（events.jsonl 归 runtime）；正式提交的领域事实写
+//     run_log.jsonl（event-log.mjs，计划 Rule 9）。run_log 追加属于事务边界内：
+//     失败会连同已写文件一起回滚（截断到先前大小，或删除新建的空文件）。
+//   - 磁盘格式与旧实现保持兼容：章节文件 chapters/NNN.ext、草稿 drafts/NNN.draft.ext、
+//     memory/chapter_index.json、memory/chapter_memory.json、checkpoints/{id}.json。
+//   - 错误契约：领域错误（参数、门禁、校验和、索引 JSON 损坏）统一抛
+//     ProjectOperationError；写入期的系统 I/O 错误原样抛出（保证已回滚，可能附加
+//     error.rollbackWarnings）。process 级不可恢复错误不在此列。
+//   - 测试 seam：所有导出操作接受可选第二参数 options = { hooks: { beforeWrite } }。
+//     beforeWrite({ path, kind, attempt }) 在每次事务正向写入前调用；抛错即模拟该
+//     次写入失败并触发完整回滚。回滚写入不经过探针。生产调用（Task 6）不传 options，
+//     默认无探针、行为不变。
+//
+// 移植来源（只读参考）：src/core/tool-runtime.mjs（segment 幂等、非正文检测、草稿
+// 读取、正式文件提交）、src/core/agent-engine.mjs（finalizeChapter / completeChapter /
+// extractChapterMemory 的领域事实）。不复制 run loop / state dispatch / transcript。
+//
+// 门禁基数：post-process 技能钩子先于门禁执行，word/title/cap/skill 门禁与
+// actual_words/checksum/章节记忆统一基于最终提交内容（commitContent）——索引里的
+// 字数门禁结果与真实字数永不矛盾。恢复路径（正式文件已存在）不重跑 post-process，
+// 门禁直接基于正式文件内容。
+
+import fs from "node:fs/promises";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+
+import { throwIfAborted } from "../cancellation.mjs";
+import { appendEvent } from "../event-log.mjs";
+import {
+  ensureDir,
+  pathExists,
+  readJson,
+  safeJoin,
+  sha256,
+  writeFileAtomic,
+  writeJsonAtomic
+} from "../fs-utils.mjs";
+import { loadChapterIndex, loadProject, upsertChapter } from "../project-store.mjs";
+import { runPostProcessHooks, runSkillChecks } from "../skill-runtime.mjs";
+import { runTitleGate, runWordCapGate, runWordCountGate } from "../quality-gates.mjs";
+import { countEffectiveWords } from "../word-count.mjs";
+import { recordChapterMemory } from "../chapter-memory.mjs";
+import {
+  CONTINUITY_SCHEMA_VERSION,
+  loadContinuity,
+  loadContinuityState,
+  mergeExtraction,
+  renderContinuityMarkdown
+} from "../continuity-store.mjs";
+import { checkTimeline } from "../timeline-check.mjs";
+
+// ---------------------------------------------------------------------------
+// 错误与校验
+// ---------------------------------------------------------------------------
+
+export class ProjectOperationError extends Error {
+  constructor(code, message, details = null) {
+    super(message);
+    this.name = "ProjectOperationError";
+    this.code = code;
+    this.details = details;
+  }
+}
+
+const MAX_CONTENT_CHARS = 200_000;
+
+function assertProjectRoot(projectRoot) {
+  if (typeof projectRoot !== "string" || projectRoot.length === 0) {
+    throw new ProjectOperationError("invalid_project_root", "projectRoot 必须是非空路径。");
+  }
+}
+
+function assertChapterNo(chapterNo) {
+  if (!Number.isInteger(chapterNo) || chapterNo < 1) {
+    throw new ProjectOperationError("invalid_chapter_no", "chapter_no 必须是正整数。");
+  }
+}
+
+function assertProjectIdMatches(project, projectId) {
+  if (projectId !== undefined && projectId !== null && projectId !== "" && project.project_id !== projectId) {
+    throw new ProjectOperationError("invalid_project_id", "project_id 与当前项目不匹配。");
+  }
+}
+
+async function loadProjectForOperation(projectRoot, projectId) {
+  assertProjectRoot(projectRoot);
+  let project;
+  try {
+    project = await loadProject(projectRoot);
+  } catch (error) {
+    throw new ProjectOperationError("project_not_found", `无法读取 project.yaml：${error.message}`);
+  }
+  assertProjectIdMatches(project, projectId);
+  return project;
+}
+
+// 章节索引 JSON 损坏（坏 JSON）统一包装为领域错误；I/O 错误原样抛出。
+async function loadChapterIndexSafe(projectRoot) {
+  try {
+    return await loadChapterIndex(projectRoot);
+  } catch (error) {
+    if (error instanceof ProjectOperationError) {
+      throw error;
+    }
+    throw new ProjectOperationError("chapter_index_invalid", `章节索引不可读：${error.message}`);
+  }
+}
+
+// 测试写探针：options.hooks.beforeWrite({ path, kind, attempt }) 在每次事务正向
+// 写入前调用；抛错即模拟该次写入失败（触发回滚）。生产路径无探针，直接写入。
+function createWriteProbe(options) {
+  const hook = options?.hooks?.beforeWrite ?? null;
+  if (typeof hook !== "function") {
+    return async () => {};
+  }
+  let attempt = 0;
+  return async ({ path: targetPath, kind }) => {
+    attempt += 1;
+    await hook({ path: targetPath, kind, attempt });
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 文件命名约定（与旧实现/受保护路径规则一致，保持磁盘兼容）
+// ---------------------------------------------------------------------------
+
+export function chapterFileName(chapterNo, extension = "md") {
+  return `${String(chapterNo).padStart(3, "0")}.${extension}`;
+}
+
+export function chapterDraftPath(projectRoot, chapterNo, outputFormat) {
+  return safeJoin(projectRoot, "drafts", chapterFileName(chapterNo, `draft.${outputFormat}`));
+}
+
+export function chapterFinalPath(projectRoot, chapterNo, outputFormat) {
+  return safeJoin(projectRoot, "chapters", chapterFileName(chapterNo, outputFormat));
+}
+
+export async function readChapterDraft(projectRoot, project, chapterNo) {
+  const draftPath = chapterDraftPath(projectRoot, chapterNo, project.output_format);
+  if (!(await pathExists(draftPath))) {
+    return "";
+  }
+  return fs.readFile(draftPath, "utf8");
+}
+
+// ---------------------------------------------------------------------------
+// 非正文内容启发式检测：防止模型把工具调用报错、内心独白、prompt 字段名写入章节。
+// 检测对象是应当为小说正文的 content；误伤率应极低（snake_case 工具名与中文小说
+// 正文不重叠）。
+//
+// 选择与权衡（相对旧 tool-runtime 的裸 includes 扫描）：
+//   - 全部工具名改用词边界正则 \b…\b：防止 "read_file" 出现在 "read_files" 之类
+//     更长 token 中仍被误拒；snake_case 标识符在自然正文中不可能以词边界出现。
+//   - 刻意剔除纯英文单词 "shell"：英文正文（如战争小说里的 shell）会以词边界命中，
+//     误伤面不可接受；观察到的新架构 shell 工具自我对话都会带 "allowed tools" /
+//     "tool is not allowed" 上下文，已被 NON_PROSE_PATTERNS 覆盖。
+//   - 幂等 marker 只按段号判重（旧恢复契约：重放段内容必须逐字一致）；同号段内容
+//     漂移时仍按重复处理（语义不变），但返回 content_mismatch 供调用方观测。
+// ---------------------------------------------------------------------------
+
+const KNOWN_TOOL_NAME_PATTERNS = [
+  { name: "append_chapter_segment", re: /\bappend_chapter_segment\b/u },
+  { name: "commit_chapter", re: /\bcommit_chapter\b/u },
+  { name: "commit_blueprint", re: /\bcommit_blueprint\b/u },
+  { name: "update_plan", re: /\bupdate_plan\b/u },
+  { name: "enter_workflow", re: /\benter_workflow\b/u },
+  { name: "list_files", re: /\blist_files\b/u },
+  { name: "search_files", re: /\bsearch_files\b/u },
+  { name: "read_file", re: /\bread_file\b/u },
+  { name: "write_file", re: /\bwrite_file\b/u },
+  { name: "edit_file", re: /\bedit_file\b/u }
+];
+
+const NON_PROSE_PATTERNS = [
+  { pattern: /\btool\s+is\s+not\s+allowed\b/giu, reason: "包含工具调用被拒的英文描述" },
+  { pattern: /\bonly\s+allowed\s+tool\b/giu, reason: "包含白名单限制描述" },
+  { pattern: /\ballowed\s+tools?\s+includes?\b/giu, reason: "包含允许工具列表描述" },
+  { pattern: /\bsegment_target_words\b/giu, reason: "包含 prompt 内部字段名" }
+];
+
+export function detectNonProseContent(content) {
+  if (typeof content !== "string") {
+    return { isNonProse: true, reason: "content 不是字符串" };
+  }
+  const text = content;
+  for (const { name, re } of KNOWN_TOOL_NAME_PATTERNS) {
+    if (re.test(text)) {
+      return { isNonProse: true, reason: `包含写作工具名 "${name}"` };
+    }
+  }
+  for (const { pattern, reason } of NON_PROSE_PATTERNS) {
+    if (pattern.test(text)) {
+      return { isNonProse: true, reason };
+    }
+  }
+  return { isNonProse: false, reason: null };
+}
+
+// ---------------------------------------------------------------------------
+// inspectChapterContext —— 从请求章节号 + 章节索引推导章节位置
+// （绝不读取旧 agent_state；current/next/completed 全部来自文件证据）
+// ---------------------------------------------------------------------------
+
+export async function inspectChapterContext({ projectRoot, chapterNo }) {
+  assertProjectRoot(projectRoot);
+  assertChapterNo(chapterNo);
+  const project = await loadProjectForOperation(projectRoot, undefined);
+  const index = await loadChapterIndexSafe(projectRoot);
+  const chapters = Array.isArray(index.chapters) ? index.chapters : [];
+  const entry = chapters.find((chapter) => Number(chapter.chapter_no) === chapterNo) ?? null;
+  const completedNos = chapters
+    .filter((chapter) => chapter.status === "completed")
+    .map((chapter) => Number(chapter.chapter_no))
+    .filter((n) => Number.isInteger(n) && n > 0)
+    .sort((a, b) => a - b);
+  const lastCompleted = completedNos.length > 0 ? completedNos[completedNos.length - 1] : null;
+
+  const outputFormat = project.output_format ?? "md";
+  const draftPath = chapterDraftPath(projectRoot, chapterNo, outputFormat);
+  const finalPath = chapterFinalPath(projectRoot, chapterNo, outputFormat);
+
+  return {
+    chapter_no: chapterNo,
+    output_format: outputFormat,
+    entry,
+    status: entry?.status ?? "not_started",
+    is_committed: entry?.status === "completed",
+    draft_path: entry?.draft_path ?? null,
+    final_path: entry?.final_path ?? null,
+    actual_words: Number(entry?.actual_words ?? 0),
+    checksum: entry?.checksum ?? null,
+    draft_exists: await pathExists(draftPath),
+    final_exists: await pathExists(finalPath),
+    completed_chapter_nos: completedNos,
+    last_completed_chapter_no: lastCompleted,
+    // 下一章 = 尚未完成的请求章，否则取已完成最大章的后一章
+    next_chapter_no: entry?.status === "completed" ? (lastCompleted ?? chapterNo) + 1 : chapterNo
+  };
+}
+
+// ---------------------------------------------------------------------------
+// appendChapterSegment —— 原子追加草稿段（幂等：同一 segment_no 重复追加不重复写入）
+// 原子性：草稿写入成功后才更新索引 draft_path；索引更新失败则还原草稿先前字节，
+// 不留"索引指向不存在草稿"的半写状态。
+// ---------------------------------------------------------------------------
+
+export async function appendChapterSegment({ projectRoot, projectId, chapterNo, segmentNo, content, signal }, options = {}) {
+  assertProjectRoot(projectRoot);
+  assertChapterNo(chapterNo);
+  if (!Number.isInteger(segmentNo) || segmentNo < 1) {
+    throw new ProjectOperationError("invalid_segment_no", "segment_no 必须是正整数。");
+  }
+  if (typeof content !== "string" || content.trim().length === 0) {
+    throw new ProjectOperationError("empty_content", "content 必须是非空字符串。");
+  }
+  if (content.length > MAX_CONTENT_CHARS) {
+    throw new ProjectOperationError("content_too_large", `content 超过 ${MAX_CONTENT_CHARS} 字符。`);
+  }
+  const project = await loadProjectForOperation(projectRoot, projectId);
+  throwIfAborted(signal);
+
+  const nonProseCheck = detectNonProseContent(content);
+  if (nonProseCheck.isNonProse) {
+    throw new ProjectOperationError(
+      "non_prose_content",
+      `检测到非正文内容：${nonProseCheck.reason}。请只输出小说正文。`,
+      { reason: nonProseCheck.reason }
+    );
+  }
+
+  const draftPath = chapterDraftPath(projectRoot, chapterNo, project.output_format);
+  await ensureDir(path.dirname(draftPath));
+  const draftExisted = await pathExists(draftPath);
+  const current = draftExisted
+    ? await fs.readFile(draftPath, "utf8")
+    : `# Chapter ${String(chapterNo).padStart(3, "0")}\n`;
+  const probe = createWriteProbe(options);
+
+  const marker = `<!-- segment:${segmentNo} `;
+  if (current.includes(marker)) {
+    // 幂等：同号段返回 duplicate（重放内容必须逐字一致；漂移只观测不拒绝），
+    // 并修复索引 draft_path（旧不变量：只读工具靠 final_path ?? draft_path 解析）。
+    await probe({ path: draftPath, kind: "draft_index" });
+    await upsertChapter(projectRoot, { chapter_no: chapterNo, draft_path: draftPath });
+    const checksumMatch = current.match(new RegExp(`<!-- segment:${segmentNo} checksum:([^ ]+) -->`, "u"));
+    return {
+      ok: true,
+      duplicate: true,
+      chapter_no: chapterNo,
+      segment_no: segmentNo,
+      path: draftPath,
+      actual_words: countEffectiveWords(current),
+      bytes_written: 0,
+      checksum: sha256(current),
+      content_mismatch: checksumMatch ? checksumMatch[1] !== sha256(content) : null
+    };
+  }
+
+  throwIfAborted(signal);
+  const block = `\n\n<!-- segment:${segmentNo} checksum:${sha256(content)} -->\n${String(content).trim()}\n`;
+  const next = current + block;
+  await probe({ path: draftPath, kind: "draft" });
+  const written = await writeFileAtomic(draftPath, next);
+  try {
+    await probe({ path: draftPath, kind: "draft_index" });
+    await upsertChapter(projectRoot, { chapter_no: chapterNo, draft_path: draftPath });
+  } catch (error) {
+    // 段写入成功但索引更新失败 → 还原草稿先前字节，不留半写状态。
+    // 从未创建的草稿 unlink 得 ENOENT 不算回滚失败（不产生误导性警告）。
+    try {
+      if (draftExisted) {
+        await writeFileAtomic(draftPath, current);
+      } else {
+        await fs.unlink(draftPath);
+      }
+    } catch (rollbackError) {
+      if (!(rollbackError.code === "ENOENT" && !draftExisted)) {
+        error.rollbackWarnings = [`还原草稿失败：${rollbackError.message}`];
+      }
+    }
+    throw error;
+  }
+  return {
+    ok: true,
+    duplicate: false,
+    chapter_no: chapterNo,
+    segment_no: segmentNo,
+    path: draftPath,
+    bytes_written: written.bytes_written,
+    actual_words: countEffectiveWords(next),
+    checksum: written.checksum
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 门禁例外（用户明确决定）：runtime 把用户对模型类检查（fact/continuity）与
+// 确定性门禁失败的决定作为 exceptionDecisions 传入，本模块在事务内记录。
+// ---------------------------------------------------------------------------
+
+function normalizeExceptions(exceptionDecisions) {
+  if (!Array.isArray(exceptionDecisions)) {
+    return [];
+  }
+  return exceptionDecisions
+    .filter((item) => item && typeof item === "object")
+    .map((item) => ({
+      gate: typeof item.gate === "string" ? item.gate : null,
+      decision: typeof item.decision === "string" ? item.decision : "allow",
+      chapter_no: Number.isInteger(item.chapter_no) ? item.chapter_no : null,
+      reason: typeof item.reason === "string" ? item.reason : null
+    }))
+    .filter((item) => item.gate !== null && (item.decision === "allow" || item.decision === "allow_input"));
+}
+
+function hasException(exceptions, gateName, chapterNo) {
+  return exceptions.some(
+    (exception) =>
+      exception.gate === gateName && (exception.chapter_no === null || exception.chapter_no === chapterNo)
+  );
+}
+
+// ---------------------------------------------------------------------------
+// commitChapter —— 原子正式提交：
+//   post-process 技能钩子 → word/title/cap/skill 门禁（基于最终提交内容，失败门禁
+//   需对应用户例外）→ 正式文件 → 章节索引 → 章节记忆 → checkpoint → run_log 领域事件。
+// 任一写失败：恢复被覆盖文件的先前字节，run_log 截断/删除，不留下半写状态。
+// ---------------------------------------------------------------------------
+
+export async function commitChapter({ projectRoot, projectId, chapterNo, expectedDraftChecksum = null, exceptionDecisions = null }, options = {}) {
+  assertProjectRoot(projectRoot);
+  assertChapterNo(chapterNo);
+  const project = await loadProjectForOperation(projectRoot, projectId);
+
+  const finalPath = chapterFinalPath(projectRoot, chapterNo, project.output_format);
+  const draftPath = chapterDraftPath(projectRoot, chapterNo, project.output_format);
+  const index = await loadChapterIndexSafe(projectRoot);
+  const existing = (index.chapters ?? []).find((chapter) => Number(chapter.chapter_no) === chapterNo) ?? null;
+
+  const finalExists = await pathExists(finalPath);
+  const draftExists = await pathExists(draftPath);
+
+  // 幂等：正式文件与 completed 索引都在 → 纯重复提交，零写入。
+  if (existing?.status === "completed" && finalExists) {
+    const content = await fs.readFile(finalPath, "utf8");
+    return {
+      ok: true,
+      duplicate: true,
+      repairing: false,
+      chapter_no: chapterNo,
+      path: finalPath,
+      actual_words: countEffectiveWords(content),
+      checksum: sha256(content),
+      checkpoint_id: null,
+      quality_gates: []
+    };
+  }
+
+  // 源内容：优先正式文件（中断恢复：final 已落盘只修索引，不重写文件），否则草稿。
+  let sourceContent;
+  let usedFinal = false;
+  if (finalExists) {
+    try {
+      sourceContent = await fs.readFile(finalPath, "utf8");
+    } catch (error) {
+      throw new ProjectOperationError("chapter_read_failed", `无法读取章节正式文件：${error.message}`, {
+        path: finalPath
+      });
+    }
+    usedFinal = true;
+  } else if (draftExists) {
+    try {
+      sourceContent = await fs.readFile(draftPath, "utf8");
+    } catch (error) {
+      throw new ProjectOperationError("chapter_read_failed", `无法读取章节草稿：${error.message}`, {
+        path: draftPath
+      });
+    }
+  } else {
+    throw new ProjectOperationError("draft_not_found", `第 ${chapterNo} 章没有可提交的草稿或正式文件。`);
+  }
+
+  if (expectedDraftChecksum !== null && expectedDraftChecksum !== sha256(sourceContent)) {
+    throw new ProjectOperationError(
+      "draft_checksum_mismatch",
+      "草稿校验和与预期不符，拒绝提交漂移后的内容。",
+      { expected: expectedDraftChecksum }
+    );
+  }
+
+  // ---- 提交内容：常规路径先跑 post-process 技能钩子；恢复路径不重写正式文件 ----
+  let commitContent = sourceContent;
+  let postProcess = null;
+  let draftNeedsRewrite = false;
+  if (!usedFinal) {
+    postProcess = await runPostProcessHooks(projectRoot, project, {
+      chapter_no: chapterNo,
+      stage: "post_process",
+      content: sourceContent
+    });
+    if (postProcess.results.some((result) => result.status === "applied")) {
+      commitContent = postProcess.content;
+      draftNeedsRewrite = true;
+    }
+  }
+
+  // ---- 门禁（确定性；全部基于最终提交内容，写入前完成，失败不落任何文件）----
+  const wordGate = runWordCountGate(commitContent, Number(project.min_words_per_chapter) || 0);
+  const titleGate = runTitleGate(commitContent, chapterNo);
+  const wordCapGate = runWordCapGate(wordGate.actual_words, {
+    targetWords: Number(project.target_words_per_chapter) || 0,
+    maxWords: Number(project.max_words_per_chapter) || 0,
+    outputPricePerMillion: project.active_model?.pricing?.output_per_million ?? null
+  });
+  const skillGateResults = await runSkillChecks(projectRoot, project, "reviewing", {
+    chapter_no: chapterNo,
+    stage: "reviewing",
+    content: commitContent
+  });
+  const gates = [wordGate, titleGate, wordCapGate, ...skillGateResults];
+  const exceptions = normalizeExceptions(exceptionDecisions);
+  const failedGates = gates.filter((gate) => gate.status === "failed");
+  if (failedGates.length > 0) {
+    const unexcepted = failedGates.filter((gate) => !hasException(exceptions, gate.gate, chapterNo));
+    if (unexcepted.length > 0) {
+      throw new ProjectOperationError("quality_gate_failed", "章节门禁未通过，拒绝提交。", {
+        gates: unexcepted
+      });
+    }
+  }
+  // 有用户例外的失败门禁记录为 excepted（连同决定），保留在索引与 checkpoint 中。
+  const resolvedGates = gates.map((gate) => {
+    if (gate.status === "failed" && hasException(exceptions, gate.gate, chapterNo)) {
+      const exception = exceptions.find(
+        (e) => e.gate === gate.gate && (e.chapter_no === null || e.chapter_no === chapterNo)
+      );
+      return { ...gate, status: "excepted", exception: { ...exception } };
+    }
+    return gate;
+  });
+
+  const actualWords = countEffectiveWords(commitContent);
+  const checksum = sha256(commitContent);
+
+  // ---- 事务写入（带回滚）----
+  const chapterMemoryPath = safeJoin(projectRoot, "memory", "chapter_memory.json");
+  const chapterIndexPath = safeJoin(projectRoot, "memory", "chapter_index.json");
+  const runLogPath = safeJoin(projectRoot, "run_log.jsonl");
+  const checkpointId = randomUUID();
+  const checkpointPath = safeJoin(projectRoot, "checkpoints", `${checkpointId}.json`);
+  const probe = createWriteProbe(options);
+  const backups = [];
+  const track = async (filePath) => {
+    const existed = await pathExists(filePath);
+    backups.push({ path: filePath, bytes: existed ? await fs.readFile(filePath, "utf8") : null });
+  };
+  if (draftNeedsRewrite) {
+    await track(draftPath); // post-process 改写了草稿，回滚需还原
+  }
+  if (!usedFinal) {
+    await track(finalPath); // 常规提交创建正式文件；回滚时删除
+  }
+  await track(chapterMemoryPath);
+  await track(chapterIndexPath);
+  const runLogExisted = await pathExists(runLogPath);
+  const runLogSize = runLogExisted ? (await fs.stat(runLogPath)).size : 0;
+
+  try {
+    if (!usedFinal) {
+      if (draftNeedsRewrite) {
+        await probe({ path: draftPath, kind: "draft" });
+        await writeFileAtomic(draftPath, commitContent);
+      }
+      await probe({ path: finalPath, kind: "final" });
+      await writeFileAtomic(finalPath, commitContent);
+    }
+    // 章节记忆（摘要与摘录，确定性）
+    await probe({ path: chapterMemoryPath, kind: "chapter_memory" });
+    await recordChapterMemory(projectRoot, {
+      chapterNo,
+      title: `第${String(chapterNo).padStart(3, "0")}章`,
+      actualWords,
+      checksum,
+      content: commitContent
+    });
+    // 章节索引：正式文件、真实字数、校验和、门禁结果
+    await probe({ path: chapterIndexPath, kind: "chapter_index" });
+    await upsertChapter(projectRoot, {
+      chapter_no: chapterNo,
+      status: "completed",
+      draft_path: draftPath,
+      final_path: finalPath,
+      actual_words: actualWords,
+      checksum,
+      quality_gate_results: resolvedGates
+    });
+    // checkpoint：与旧 checkpoints/{id}.json 格式兼容（project-store.writeCheckpoint
+    // 会写旧 agent_state 状态文件，本模块不得触碰，故本地写 checkpoint 文件本体）
+    await probe({ path: checkpointPath, kind: "checkpoint" });
+    await writeJsonAtomic(checkpointPath, buildCheckpoint({
+      project,
+      chapterNo,
+      checkpointId,
+      artifact: { chapter_no: chapterNo, final_path: finalPath, checksum, duplicate: usedFinal },
+      gates: resolvedGates,
+      postProcess
+    }));
+    // run_log 领域事实（计划 Rule 9：章节提交是 run_log 记录的领域事实）；
+    // 追加在事务内：失败时连同已写文件一起回滚。
+    await probe({ path: runLogPath, kind: "run_log" });
+    await appendEvent(projectRoot, {
+      type: "chapter_completed",
+      project_id: project.project_id,
+      chapter_no: chapterNo,
+      stage: "completed",
+      message: `第 ${chapterNo} 章已提交`,
+      data: {
+        path: finalPath,
+        actual_words: actualWords,
+        checksum,
+        checkpoint_id: checkpointId,
+        recovered: usedFinal
+      }
+    });
+  } catch (error) {
+    const rollbackWarnings = [];
+    for (const backup of backups) {
+      try {
+        if (backup.bytes === null) {
+          await fs.unlink(backup.path);
+        } else {
+          await writeFileAtomic(backup.path, backup.bytes);
+        }
+      } catch (rollbackError) {
+        // 未创建文件的 unlink ENOENT 不算回滚失败（与 run_log 回滚一致）
+        if (!(rollbackError.code === "ENOENT" && backup.bytes === null)) {
+          rollbackWarnings.push(`恢复 ${backup.path} 失败：${rollbackError.message}`);
+        }
+      }
+    }
+    try {
+      await fs.unlink(checkpointPath);
+    } catch (rollbackError) {
+      if (rollbackError.code !== "ENOENT") {
+        rollbackWarnings.push(`删除 ${checkpointPath} 失败：${rollbackError.message}`);
+      }
+    }
+    try {
+      if (runLogExisted) {
+        await fs.truncate(runLogPath, runLogSize);
+      } else {
+        await fs.unlink(runLogPath);
+      }
+    } catch (rollbackError) {
+      if (rollbackError.code !== "ENOENT") {
+        rollbackWarnings.push(`run_log 回滚失败：${rollbackError.message}`);
+      }
+    }
+    if (rollbackWarnings.length > 0) {
+      error.rollbackWarnings = rollbackWarnings;
+    }
+    throw error;
+  }
+
+  return {
+    ok: true,
+    duplicate: false,
+    repairing: usedFinal,
+    chapter_no: chapterNo,
+    path: finalPath,
+    actual_words: actualWords,
+    checksum,
+    checkpoint_id: path.basename(checkpointPath, ".json"),
+    quality_gates: resolvedGates,
+    skill_hooks: postProcess?.hooks ?? []
+  };
+}
+
+function buildCheckpoint({ project, chapterNo, checkpointId, artifact, gates, postProcess }) {
+  return {
+    schema_version: 1,
+    checkpoint_id: checkpointId,
+    timestamp: new Date().toISOString(),
+    task_id: null,
+    task_contract: null,
+    committed_model_calls: [],
+    artifact_commit: artifact,
+    chapter_no: chapterNo,
+    stage: "completed",
+    segment_no: null,
+    model_config: {
+      active_model: project.active_model ?? { provider: "mock", model_name: project.default_writer_model ?? "mock-writer" },
+      stage_overrides_enabled: false,
+      writer: project.default_writer_model ?? null,
+      reviewer: project.default_reviewer_model ?? null
+    },
+    prompt_template_versions: project.prompt_template_versions ?? {},
+    prompt_block_hashes: {},
+    model_calls: [],
+    usage_reports: [],
+    cost_summary: null,
+    cache_report: null,
+    cache_key: null,
+    skill_hooks: postProcess?.hooks ?? [],
+    skill_gate_results: postProcess?.results ?? [],
+    context_package_hash: null,
+    transcript: null,
+    tool_calls: [],
+    tool_results: [],
+    state_before: null,
+    state_after: null,
+    quality_gate_results: gates,
+    error: null
+  };
+}
+
+// ---------------------------------------------------------------------------
+// commitChapterMemory —— 接收已解析的提取数据（runtime 已完成模型提取），
+// 校验源章节校验和，原子更新 continuity / 全书摘要 / 水位，不改写章节正文。
+// 幂等：mergeExtraction 天然去重；重复调用（重建记忆维护 Run）安全。
+// 崩溃恢复：memory/.pending-extraction-N.json 存在时优先使用（旧 §3.6 行为），
+// 成功后删除；失败保留供下次恢复（pending 删除不在事务写入之列）。
+// ---------------------------------------------------------------------------
+
+export async function commitChapterMemory({ projectRoot, chapterNo, expectedChapterChecksum = null, extraction = null }, options = {}) {
+  assertProjectRoot(projectRoot);
+  assertChapterNo(chapterNo);
+
+  const pendingPath = safeJoin(projectRoot, "memory", `.pending-extraction-${chapterNo}.json`);
+  let data = extraction;
+  if (data === null || data === undefined) {
+    const pending = await readJson(pendingPath, null);
+    if (pending && typeof pending === "object" && pending.ok === true) {
+      data = pending;
+    }
+  }
+  if (!data || typeof data !== "object") {
+    throw new ProjectOperationError("extraction_missing", "缺少记忆提取数据（extraction 或 pending 文件）。");
+  }
+
+  // 校验源章节校验和：防把提取数据合并到已漂移的章节正文上。
+  const index = await loadChapterIndexSafe(projectRoot);
+  const entry = (index.chapters ?? []).find((chapter) => Number(chapter.chapter_no) === chapterNo) ?? null;
+  const chapterPath = entry?.final_path ?? entry?.draft_path ?? null;
+  let chapterContent = null;
+  if (chapterPath !== null && (await pathExists(chapterPath))) {
+    chapterContent = await fs.readFile(chapterPath, "utf8");
+  }
+  if (expectedChapterChecksum !== null && expectedChapterChecksum !== undefined) {
+    if (chapterContent === null) {
+      throw new ProjectOperationError("chapter_not_found", `第 ${chapterNo} 章文件不存在，无法核对校验和。`);
+    }
+    if (sha256(chapterContent) !== expectedChapterChecksum) {
+      throw new ProjectOperationError(
+        "chapter_checksum_mismatch",
+        `第 ${chapterNo} 章校验和与预期不符，拒绝合并记忆。`,
+        { expected: expectedChapterChecksum }
+      );
+    }
+  }
+
+  // ---- 计算全部目标状态（写入前完成，失败不落盘）----
+  const continuity = await loadContinuity(projectRoot);
+  const baseFacts = continuity.facts.length;
+  const baseTimeline = continuity.timeline.length;
+  const baseCharacterNames = new Set(continuity.characters.map((c) => c.name));
+  const merged = mergeExtraction(continuity, data);
+  const summaryText = `# 全书摘要\n\n${String(data.summary ?? "").trim()}\n`;
+  const state = await loadContinuityState(projectRoot);
+  const extractedChapters = [...new Set(
+    [...(Array.isArray(state.extracted_chapters) ? state.extracted_chapters : []), chapterNo]
+      .map((n) => Number(n))
+      .filter((n) => Number.isInteger(n))
+  )].sort((a, b) => a - b);
+  const nextState = {
+    ...state,
+    schema_version: CONTINUITY_SCHEMA_VERSION,
+    last_extracted_chapter: chapterNo,
+    extracted_chapters: extractedChapters,
+    updated_at: new Date().toISOString()
+  };
+
+  // ---- 原子写入 + 回滚 ----
+  const continuityPath = safeJoin(projectRoot, "memory", "continuity.json");
+  const continuityMdPath = safeJoin(projectRoot, "memory", "continuity.md");
+  const summaryPath = safeJoin(projectRoot, "memory", "book_summary.md");
+  const statePath = safeJoin(projectRoot, "memory", "continuity_state.json");
+  const probe = createWriteProbe(options);
+  const tracked = [continuityPath, continuityMdPath, summaryPath, statePath];
+  const backups = [];
+  for (const filePath of tracked) {
+    const existed = await pathExists(filePath);
+    backups.push({ path: filePath, bytes: existed ? await fs.readFile(filePath, "utf8") : null });
+  }
+
+  try {
+    await probe({ path: continuityPath, kind: "continuity_json" });
+    await writeJsonAtomic(continuityPath, merged);
+    await probe({ path: continuityMdPath, kind: "continuity_md" });
+    await writeFileAtomic(continuityMdPath, renderContinuityMarkdown(merged));
+    await probe({ path: summaryPath, kind: "book_summary" });
+    await writeFileAtomic(summaryPath, summaryText);
+    await probe({ path: statePath, kind: "continuity_state" });
+    await writeJsonAtomic(statePath, nextState);
+    await fs.unlink(pendingPath).catch(() => {});
+  } catch (error) {
+    const rollbackWarnings = [];
+    for (const backup of backups) {
+      try {
+        if (backup.bytes === null) {
+          await fs.unlink(backup.path);
+        } else {
+          await writeFileAtomic(backup.path, backup.bytes);
+        }
+      } catch (rollbackError) {
+        // 未创建文件的 unlink ENOENT 不算回滚失败（与 run_log 回滚一致）
+        if (!(rollbackError.code === "ENOENT" && backup.bytes === null)) {
+          rollbackWarnings.push(`恢复 ${backup.path} 失败：${rollbackError.message}`);
+        }
+      }
+    }
+    if (rollbackWarnings.length > 0) {
+      error.rollbackWarnings = rollbackWarnings;
+    }
+    throw error;
+  }
+
+  // 确定性连续性门禁：故事时钟矛盾只报"较晚一方=本章"的冲突（旧过滤语义）。
+  const { violations } = checkTimeline(merged.timeline);
+  const timelineViolations = violations.filter((violation) => violation.chapter_no === chapterNo);
+
+  return {
+    ok: true,
+    chapter_no: chapterNo,
+    facts_added: merged.facts.length - baseFacts,
+    timeline_added: merged.timeline.length - baseTimeline,
+    characters_added: merged.characters.filter((c) => !baseCharacterNames.has(c.name)).length,
+    summary_updated: true,
+    timeline_violations: timelineViolations
+  };
+}
