@@ -41,6 +41,18 @@ export async function runChatTurn(options) {
   const existing = await loadPendingAction(projectRoot);
   if (existing) {
     options.grants?.clear(projectRoot, existing.task_id);
+    // I-1: supersede 也要关闭旧确认卡的活动流——用挂 pending 时持久化的 activity_id
+    // （及原 turn_id）发 cancelled 终态，否则 Task 9 按 activity_id 渲染的确认卡永远停在
+    // waiting_confirmation。error 带 superseded 语义让 UI 区分「被新指令取代」与「用户拒绝」。
+    if (existing.activity_id) {
+      const supersedeActivity = createChatActivityEmitter({ turnId: existing.turn_id ?? taskId, onEvent: options.onEvent });
+      const phase = existing.tool === "shell" ? "command"
+        : options.registry?.get(existing.tool)?.kind === "write" ? "editing" : "tool";
+      supersedeActivity({
+        activity_id: existing.activity_id, phase, state: "cancelled", tool: existing.tool,
+        label: existing.action?.title ?? existing.tool, output_delta: "", error: "superseded"
+      });
+    }
     await updatePendingStatus(projectRoot, existing.idempotency_key, "superseded");
     await appendChatMessage(projectRoot, {
       role: "tool", tool: existing.tool, ok: false,
@@ -62,9 +74,12 @@ export async function runChatTurn(options) {
   try {
     return await agentLoop({ ...options, turnId, taskId, activity }, []);
   } catch (error) {
+    // I-2: 错误路径也要关闭活动流——thinking 发 failed 终态（在写失败消息之前），
+    // 否则 UI 的 thinking spinner 会因 thinking:running 永无终态而常驻。
+    const errorSummary = String(error.message ?? "未知错误").slice(0, 200);
+    activity?.({ phase: "thinking", state: "failed", error: errorSummary, label: "思考失败" });
     // §3.4: 失败时写错误消息；任务失败同样释放本任务的授权。
     options.grants?.clear(projectRoot, taskId);
-    const errorSummary = String(error.message ?? "未知错误").slice(0, 200);
     await appendChatMessage(projectRoot, {
       role: "assistant", content: `（本轮失败：${errorSummary}，可重发）`, status: "failed", turn_id: turnId
     });
@@ -99,31 +114,38 @@ export async function resumeChatTurn(options) {
   }
   // §3.4: Write generating placeholder before agentLoop — crash during resumed turn
   // produces visible interrupted state (same pattern as runChatTurn).
-  const resumeTurnId = crypto.randomUUID();
+  // I-1: resume 是同一轮对话的延续——placeholder 与活动 emitter 都沿用 pending 里持久化的
+  // turn_id（旧版 pending 无 turn_id 时兜底新开），确认卡及其终态归属同一 turn，活动连续。
+  const resumeTurnId = pending.turn_id ?? crypto.randomUUID();
   await appendChatMessage(projectRoot, {
     role: "assistant", content: "", status: "generating", turn_id: resumeTurnId
   });
   // 续轮活动事件：本次 pending 工具执行 + 后续 agentLoop 轮次共用同一 emitter（resume 的 turn_id）
   const activity = createChatActivityEmitter({ turnId: resumeTurnId, onEvent: options.onEvent });
+  const tool = registry.get(pending.tool);
+  const action = pending.action ?? { title: tool?.description ?? pending.tool };
+  // 活动阶段：命令类走 command，写工具走 editing，其余走 tool
+  const phase = pending.tool === "shell" ? "command" : tool?.kind === "write" ? "editing" : "tool";
   try {
     let outcome;
     if (decision === "once" || decision === "force" || decision === "task") {
-      const tool = registry.get(pending.tool);
-      const action = pending.action ?? { title: tool?.description ?? pending.tool };
-      const phase = pending.tool === "shell" ? "command" : tool?.kind === "write" ? "editing" : "tool";
-      // 活动序列：requested -> running -> 终态（同一 activity_id；命令类工具增量输出复用 id）
-      const activityId = activity({
+      // I-1: 复用挂 pending 时持久化的 activity_id 发终态（requested/waiting_confirmation
+      // 已在原轮发出，这里直接从 running 续起）；旧版 pending 无 activity_id 时兜底补发
+      // requested 并取新 id，保证活动序列仍然完整。
+      const activityId = pending.activity_id ?? activity?.({
         phase, state: "requested", tool: pending.tool,
         label: action.title, args: redactChatData(JSON.stringify(pending.args)),
         command: action.command ?? null, cwd: action.cwd ?? null
       });
-      activity({
+      activity?.({
         activity_id: activityId, phase, state: "running", tool: pending.tool,
         label: action.title, args: redactChatData(JSON.stringify(pending.args)),
         command: action.command ?? null, cwd: action.cwd ?? null
       });
       // §3.3 Idempotency: if already executed, skip executeTool, use cached result
       if (pending.status === "executed") {
+        // m8: 幂等重放路径——实际不执行工具，但活动事件按执行路径重放（running -> 终态），
+        // 让 UI 看到同一 activity_id 的完整生命周期；cachedOutcome 是上次执行的落盘结果。
         outcome = pending.cachedOutcome;
       } else {
         const busy = checkRunBusy(tool, server, projectRoot);
@@ -136,7 +158,7 @@ export async function resumeChatTurn(options) {
           await updatePendingStatus(projectRoot, key, "executing");
           outcome = await executeTool(registry, pending.tool, pending.args, {
             projectRoot, project, server, getTaskQueue, signal: options.signal,
-            onToolOutput: ({ text }) => activity({
+            onToolOutput: ({ text }) => activity?.({
               activity_id: activityId, phase: "command", state: "running", tool: pending.tool,
               label: "运行命令", output_delta: text, command: action.command ?? null, cwd: action.cwd ?? null
             })
@@ -147,31 +169,43 @@ export async function resumeChatTurn(options) {
       }
       // Clear pending before agentLoop so a new pending can be created
       await clearPendingAction(projectRoot);
-      const fields = toolMessageFields({ args: pending.args, outcome, action, signal: options.signal });
-      activity({
-        activity_id: activityId, phase, state: fields.status, tool: pending.tool,
-        label: action.title, output_delta: "",
-        exit_code: fields.exit_code, duration_ms: fields.duration_ms,
-        error: outcome.ok ? null : outcome.error
+      // m5: 复用 recordToolOutcome 统一「活动终态 + 历史消息 + tool_result 事件」的发射
+      // （与 agentLoop 已授权路径同一形状），避免 resume 里复制一遍
+      const outcomeEvents = [];
+      await recordToolOutcome({
+        projectRoot, tc: { tool: pending.tool, args: pending.args }, outcome,
+        toolEvents: outcomeEvents, onEvent: options.onEvent, activity, activityId, action, phase, signal: options.signal
       });
-      await appendChatMessage(projectRoot, {
-        role: "tool", tool: pending.tool, ok: outcome.ok, ...fields,
-        result_summary: summarize(outcome.ok ? outcome.result : { error: outcome.error, message: outcome.message })
-      });
+      const toolEvent = outcomeEvents[0];
+      return await agentLoop({ ...options, userMessage: null, turnId: resumeTurnId, taskId, activity }, [toolEvent]);
     } else {
       outcome = { ok: false, error: "user_rejected", message: "用户拒绝了此操作。" };
       await clearPendingAction(projectRoot);
+      // I-1: reject 也用同一 activity_id 发终态。state 选 "cancelled"：Shared Contract 状态集合
+      // （requested/waiting_confirmation/running/succeeded/failed/cancelled）里 cancelled 的语义是
+      // 「活动未完成即终止」，与 user_rejected 一致；error 字段带 user_rejected 供 UI 区分
+      // 「被用户拒绝」与「被新指令取代（superseded）/用户停止（停止消息）」。
+      if (pending.activity_id) {
+        activity?.({
+          activity_id: pending.activity_id, phase, state: "cancelled", tool: pending.tool,
+          label: action.title, output_delta: "", error: "user_rejected"
+        });
+      }
       // 拒绝路径：result_summary 保留 {error, message} 序列化（resume 与 agentLoop 拒绝分支同形状）
       await appendChatMessage(projectRoot, {
         role: "tool", tool: pending.tool, ok: false,
         args: summarizeArgs(pending.args),
         result_summary: summarize({ error: outcome.error, message: outcome.message })
       });
+      const toolEvent = { tool: pending.tool, ok: false, error: "user_rejected" };
+      options.onEvent?.({ type: "tool_result", ...toolEvent });
+      return await agentLoop({ ...options, userMessage: null, turnId: resumeTurnId, taskId, activity }, [toolEvent]);
     }
-    const toolEvent = { tool: pending.tool, ok: outcome.ok, error: outcome.ok ? null : outcome.error };
-    options.onEvent?.({ type: "tool_result", ...toolEvent });
-    return await agentLoop({ ...options, userMessage: null, turnId: resumeTurnId, taskId, activity }, [toolEvent]);
   } catch (error) {
+    // I-2: 续轮错误路径同样关闭 thinking 活动流（thinking:running 需有终态，UI spinner 不悬空；
+    // 失败消息落盘由 runChatTurn 路径语义兜底，这里只负责活动终态与授权释放）。
+    const errorSummary = String(error.message ?? "未知错误").slice(0, 200);
+    activity?.({ phase: "thinking", state: "failed", error: errorSummary, label: "思考失败" });
     // 失败路径兜底：任务级授权随任务结束释放（runChatTurn 同款语义；grants.clear 幂等，
     // 正常路径已由 agentLoop 最终文本 / 轮数上限 / finishCancelled 清理，这里只补异常路径）。
     grants?.clear(projectRoot, taskId);
@@ -306,9 +340,11 @@ async function agentLoop(options, toolEvents) {
       }
       if (["confirm", "extreme_confirm"].includes(authorization.decision)) {
         waitingConfirmation = true;
-        // 活动事件：请求已解析 -> 等待用户确认（不执行工具，终态在 resume 后由续轮补上）
-        activity?.({ phase, state: "requested", tool: tc.tool, label: action.title, args: redactChatData(JSON.stringify(tc.args)), command: action.command ?? null, cwd: action.cwd ?? null });
-        activity?.({ phase, state: "waiting_confirmation", tool: tc.tool, label: action.title, args: redactChatData(JSON.stringify(tc.args)), command: action.command ?? null, cwd: action.cwd ?? null });
+        // I-1: requested 与 waiting_confirmation 复用同一 activity_id（确认卡按 activity_id 渲染），
+        // 并把该 id 持久化进 pending——resume 执行 / 用户拒绝 / 新消息 supersede 时都复用它发终态，
+        // 确认卡生命周期闭环（不执行工具，终态在后续路径补上）。
+        const activityId = activity?.({ phase, state: "requested", tool: tc.tool, label: action.title, args: redactChatData(JSON.stringify(tc.args)), command: action.command ?? null, cwd: action.cwd ?? null });
+        activity?.({ activity_id: activityId, phase, state: "waiting_confirmation", tool: tc.tool, label: action.title, args: redactChatData(JSON.stringify(tc.args)), command: action.command ?? null, cwd: action.cwd ?? null });
         // edit_chapter 预览
         let preview = null;
         if (tc.tool === "edit_chapter") {
@@ -333,6 +369,7 @@ async function agentLoop(options, toolEvents) {
         savedPending = await savePendingAction(projectRoot, {
           task_id: taskId,
           turn_id: turnId,
+          activity_id: activityId ?? null, // I-1: 确认卡 activity_id 持久化，resume/reject/supersede 复用它发终态
           tool: tc.tool,
           args: tc.args,
           action: { ...action, preview },
@@ -392,8 +429,17 @@ async function agentLoop(options, toolEvents) {
 // 结构化工具历史字段：args/output/command 脱敏后落盘，status 区分 cancelled/succeeded/failed。
 // 非 shell 工具没有 command/cwd/output/exit_code/duration_ms，落 null/空保持结构一致，
 // 供 Task 9 的 thread-renderer 按统一形状读取。
-function toolMessageFields({ args, outcome, action, signal }) {
-  const status = signal?.aborted ? "cancelled" : outcome.ok ? "succeeded" : "failed";
+// I-3 成本取舍（不改行为）：output 落盘 stdout/stderr 全文（单条上限 ~1MiB，由 shell-runtime 的
+// MAX_CAPTURE_CHARS 控制，见 shell-runtime.mjs）；readChatHistory 整文件读入内存，长会话下
+// 读取成本随历史线性增长。这是计划 Step 4 的既定行为（输出全文落盘供回放排查），后续如需
+// 优化可改为只保留尾部（如 64KB）或侧车存储（独立 output 文件 + 消息内引用）。
+function toolMessageFields({ args, outcome, action, signal, tool }) {
+  let status = signal?.aborted ? "cancelled" : outcome.ok ? "succeeded" : "failed";
+  // m1: shell 非零退出码视为失败——ok 字段仍表示工具调用本身成功（toolEvents 语义不变），
+  // status 反映命令真实结果，活动终态同步发 failed（activity terminal 用同一 fields.status）。
+  if (status === "succeeded" && tool === "shell" && Number.isInteger(outcome.result?.exitCode) && outcome.result.exitCode !== 0) {
+    status = "failed";
+  }
   return {
     status,
     args: redactChatData(JSON.stringify(args ?? {})),
@@ -401,6 +447,8 @@ function toolMessageFields({ args, outcome, action, signal }) {
     cwd: action?.cwd ?? null,
     output: outcome.ok ? redactChatData(outcome.result?.stdout ?? "") : redactChatData(outcome.stderr ?? outcome.message ?? ""),
     exit_code: outcome.ok ? outcome.result?.exitCode ?? null : null,
+    // m2: 失败工具的耗时透传——executeTool 错误归一化把 error.durationMs（shell-runtime 超时/
+    // 中止/崩溃路径都带）带进 outcome.durationMs，这里非 null 时写入
     duration_ms: outcome.ok ? outcome.result?.durationMs ?? null : outcome.durationMs ?? null
   };
 }
@@ -422,7 +470,7 @@ async function recordDeniedTool({ projectRoot, tc, toolEvents, onEvent, message,
 async function recordToolOutcome({ projectRoot, tc, outcome, toolEvents, onEvent, activity, activityId, action, phase, signal }) {
   const event = { tool: tc.tool, ok: outcome.ok, error: outcome.ok ? null : outcome.error };
   toolEvents.push(event);
-  const fields = toolMessageFields({ args: tc.args, outcome, action, signal });
+  const fields = toolMessageFields({ args: tc.args, outcome, action, signal, tool: tc.tool });
   activity?.({
     activity_id: activityId, phase, state: fields.status, tool: tc.tool,
     label: action?.title ?? "", output_delta: "",
