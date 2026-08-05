@@ -1296,7 +1296,7 @@ export function createSettingsModal(ctx, options = {}) {
     const tier = PERMISSION_TIERS.find((t) => t.id === tierField.selected) ?? PERMISSION_TIERS[1];
     if (tier.id === "yolo") {
       const confirmYolo = window.confirm(
-        "YOLO 模式会自动执行所有写与控制操作，包括章节编辑、设定更新和任务控制。\n确定要开启 YOLO 模式吗？"
+        "YOLO 模式将跳过普通确认并允许访问项目以外的目录。极端危险操作仍会要求输入确认文字。\n确定要开启 YOLO 模式吗？"
       );
       if (!confirmYolo) return;
     }

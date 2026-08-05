@@ -2068,7 +2068,6 @@ button.cbar-pill--readonly:hover {
   background: var(--surface-3); border: 1px solid var(--line-2);
   color: var(--ink-2); font-size: 13px;
 }
-.spd-radio-option--yolo .spd-radio-glyph { border-color: var(--red-line); background: var(--red-soft); }
 .spd-radio-tx { min-width: 0; display: grid; gap: 3px; }
 .spd-radio-tx strong { font-size: 13.5px; font-weight: 650; color: var(--ink); }
 .spd-radio-tx small { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
