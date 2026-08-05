@@ -460,7 +460,8 @@ test("聊天工具清单包含 shell，写作流水线工具清单不包含它",
   const chatNames = toOpenAITools(buildChatRegistry()).map((tool) => tool.function.name);
   assert.ok(chatNames.includes("shell"), "chat registry 应包含 shell");
 
-  // 写作流水线只注册读+写工具（agent-engine 的 buildWritingRegistry 等价构成），不包含 shell
+  // 写作流水线 buildWritingRegistry（agent-engine.mjs，未导出）只注册 read+write 工具；
+  // 此断言为弱回归护栏，若将来写作侧注册 shell 需在此显式变更（此处是测试内重建的注册表，永远不含 shell）
   const writingRegistry = createToolRegistry();
   const { registerReadTools: registerWritingReadTools } = await import("../src/core/chat/tools-read.mjs");
   const { registerWriteTools: registerWritingWriteTools } = await import("../src/core/chat/tools-write.mjs");

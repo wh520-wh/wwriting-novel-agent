@@ -1,6 +1,9 @@
 // 通用 shell 工具：允许聊天 Agent 在本机命令行执行任意命令（默认目录为当前小说项目）。
 // 风险元数据由 describeAction 按命令静态分类得出（read/write/delete/network/install/process/control），
 // 模型传入的 risk/allowed 字段一律忽略——inputSchema 里根本不暴露这两个字段。
+// ctx.signal / ctx.onToolOutput 为后续任务预留：signal 接线后用户停止可中止命令，
+// onToolOutput 接线后流式输出进入聊天活动；当前 executeTool 透传的 ctx 尚未包含二者，
+// 未接线时中止依赖 runShellCommand 自身 timeout。
 import { classifyShellCommand } from "./command-risk.mjs";
 import { redactChatData } from "./chat-redaction.mjs";
 import { runShellCommand } from "./shell-runtime.mjs";
@@ -24,14 +27,14 @@ export function registerShellTools(registry) {
     describeAction(args, ctx) {
       const classified = classifyShellCommand({
         command: args.command,
-        cwd: args.cwd || ctx.projectRoot,
-        projectRoot: ctx.projectRoot
+        cwd: args.cwd || ctx?.projectRoot,
+        projectRoot: ctx?.projectRoot
       });
       return {
         ...classified,
         title: "运行命令",
-        description: String(args.purpose),
-        command: String(args.command),
+        description: redactChatData(String(args.purpose)),
+        command: redactChatData(String(args.command)),
         targets: [classified.cwd],
         preview: null
       };
@@ -40,13 +43,17 @@ export function registerShellTools(registry) {
       const result = await runShellCommand({
         command: args.command,
         cwd: args.cwd || ctx.projectRoot,
-        timeoutMs: Number(args.timeout_ms) || 120000,
+        timeoutMs: Math.min(Math.max(Number(args.timeout_ms) || 120000, 1000), 1800000),
         signal: ctx.signal,
-        onOutput: ({ stream, text }) => ctx.onToolOutput?.({ stream, text: redactChatData(text) })
+        onOutput: ({ stream, text }) => {
+          // 逐块脱敏存在 chunk 边界切分密钥的窗口（流式闪现明文，结果级脱敏兜底）
+          ctx.onToolOutput?.({ stream, text: redactChatData(text) });
+        }
       });
       return {
         ...result,
         command: redactChatData(result.command),
+        cwd: redactChatData(result.cwd),
         stdout: redactChatData(result.stdout),
         stderr: redactChatData(result.stderr)
       };
