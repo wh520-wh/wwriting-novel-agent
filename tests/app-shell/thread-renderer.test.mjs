@@ -30,6 +30,7 @@ class MockElement {
   constructor(tag) {
     this.tagName = tag;
     this.hidden = false;
+    this.disabled = false; // 对齐真实 DOM：disabled 初始 false
     this.style = {};
     this.dataset = {};
     this.children = [];
@@ -104,7 +105,15 @@ class MockElement {
 
   append(...nodes) {
     for (const node of nodes) {
-      if (node instanceof MockElement) node._parent = this;
+      if (node instanceof MockElement) {
+        // 对齐真实 DOM：append 已挂载节点是「移动」而非复制（活动流重锚定依赖此语义，
+        // 同父节点再 append 也移到末尾）。
+        if (node._parent) {
+          const idx = node._parent.children.indexOf(node);
+          if (idx >= 0) node._parent.children.splice(idx, 1);
+        }
+        node._parent = this;
+      }
       this.children.push(node);
     }
   }
@@ -150,6 +159,10 @@ class MockElement {
     this._listeners.get(type).push(handler);
   }
   _fire(type, ...args) {
+    // M-7: 贴近真实浏览器——disabled 按钮不派发 click。
+    // 之前 mock 不检查 disabled,「点过 once 后 task/reject 仍发请求」是测试假绿,
+    // 真实浏览器中 disabled 按钮点击不触发任何监听器。
+    if (type === "click" && this.disabled) return;
     for (const fn of this._listeners.get(type) ?? []) fn(...args);
   }
 
@@ -1130,7 +1143,7 @@ function stubFetch() {
 
 function tick() { return new Promise((resolve) => setTimeout(resolve, 0)); }
 
-test("普通确认卡：3 按钮 once/task/reject，点击发 decision 契约（含 command/cwd/targets）", async () => {
+test("普通确认卡：3 按钮 once/task/reject，各自发 decision 契约；点击后整卡按钮禁用", async () => {
   const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
   const { refs, ctx } = makeHarness();
   const renderer = createThreadRenderer(ctx);
@@ -1139,6 +1152,7 @@ test("普通确认卡：3 按钮 once/task/reject，点击发 decision 契约（
     renderer.syncChatThread({
       messages: [],
       pendingAction: normalPending({
+        id: "pa-1",
         targets: ["D:\\Book\\tmp\\a.txt", "D:\\Book\\tmp\\b.txt"],
         action: {
           ...normalPending().action,
@@ -1146,7 +1160,7 @@ test("普通确认卡：3 按钮 once/task/reject，点击发 decision 契约（
         },
       }),
     });
-    const card = refs.thread.querySelector(".chat-confirm-card");
+    const card = refs.thread.querySelector('[data-pending-id="pa-1"]');
     assert.ok(card, "普通确认卡应渲染 .chat-confirm-card");
     assert.match(card.textContent, /待确认：运行命令/, "shell 标题走 tool-labels 人话");
     assert.match(card.textContent, /运行项目测试以确认改动无回归/, "description 应展示");
@@ -1160,17 +1174,100 @@ test("普通确认卡：3 按钮 once/task/reject，点击发 decision 契约（
       ["仅允许这一次", "本次任务允许同类操作", "拒绝"],
       "按钮文案：仅本次 / 本次任务同类 / 拒绝"
     );
+    // once 决策在独立卡上验证（M-7：mock 的 _fire 尊重 disabled，点过 once 后
+    // 同卡 task/reject 在真实浏览器中不可达，须用新卡分别验证映射）。
     card.querySelector('[data-testid="chat-confirm-once"]')._fire("click");
     await tick();
     assert.deepEqual(calls[0].body, { decision: "once", confirmationText: "", projectRoot: "D:\\novel-a" });
     assert.ok(card.classList.contains("chat-confirm-card--resolved"), "once 后卡片 resolved");
-    card.querySelector('[data-testid="chat-confirm-task"]')._fire("click");
+    for (const b of card.querySelectorAll("button")) {
+      assert.equal(b.disabled, true, "once 后全部按钮禁用");
+    }
+    // task / reject：各自在独立新卡上验证 decision 映射。
+    renderer.syncChatThread({ messages: [], pendingAction: normalPending({ id: "pa-2", created_at: "2026-08-05T10:00:01.000Z" }) });
+    const card2 = refs.thread.querySelector('[data-pending-id="pa-2"]');
+    assert.ok(card2, "新 pending 渲染第二张卡");
+    card2.querySelector('[data-testid="chat-confirm-task"]')._fire("click");
     await tick();
     assert.equal(calls[1].body.decision, "task", "task 按钮发 decision=task");
-    card.querySelector('[data-testid="chat-confirm-reject"]')._fire("click");
+    renderer.syncChatThread({ messages: [], pendingAction: normalPending({ id: "pa-3", created_at: "2026-08-05T10:00:02.000Z" }) });
+    const card3 = refs.thread.querySelector('[data-pending-id="pa-3"]');
+    assert.ok(card3, "新 pending 渲染第三张卡");
+    card3.querySelector('[data-testid="chat-confirm-reject"]')._fire("click");
     await tick();
     assert.equal(calls[2].body.decision, "reject", "reject 按钮发 decision=reject");
-    assert.ok(card.classList.contains("chat-confirm-card--rejected"), "reject 后卡片 rejected");
+    assert.ok(card3.classList.contains("chat-confirm-card--rejected"), "reject 后卡片 rejected");
+  } finally {
+    delete globalThis.fetch;
+  }
+});
+
+test("I-1 确认卡 supersede：新 pending(id 变化)后旧卡加 superseded 类、按钮禁用、点击不发请求", async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { refs, ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+  const calls = stubFetch();
+  try {
+    renderer.syncChatThread({ messages: [], pendingAction: normalPending({ id: "pa-A" }) });
+    const cardA = refs.thread.querySelector('[data-pending-id="pa-A"]');
+    assert.ok(cardA, "pending A 渲染确认卡");
+    assert.ok(!cardA.classList.contains("chat-confirm-card--superseded"), "当前 pending 卡不带 superseded");
+    const onceA = cardA.querySelector('[data-testid="chat-confirm-once"]');
+    assert.equal(onceA.disabled, false, "A 卡按钮初始可点");
+
+    renderer.syncChatThread({ messages: [], pendingAction: normalPending({ id: "pa-B", created_at: "2026-08-05T10:00:01.000Z" }) });
+    const cardB = refs.thread.querySelector('[data-pending-id="pa-B"]');
+    assert.ok(cardB, "pending B 渲染新卡");
+    assert.ok(cardA.classList.contains("chat-confirm-card--superseded"), "旧卡 A 标记 superseded");
+    assert.equal(onceA.disabled, true, "旧卡按钮禁用");
+    onceA._fire("click");
+    await tick();
+    assert.equal(calls.length, 0, "旧卡点击不再发请求（disabled 不派发 + 守卫）");
+    assert.ok(!cardB.classList.contains("chat-confirm-card--superseded"), "新卡 B 不带 superseded");
+    assert.equal(cardB.querySelector('[data-testid="chat-confirm-once"]').disabled, false, "新卡按钮可点");
+  } finally {
+    delete globalThis.fetch;
+  }
+});
+
+test("I-1 确认卡 supersede：pending 回到已渲染 id 时未定论旧卡恢复可交互", async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { refs, ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+  const calls = stubFetch();
+  try {
+    renderer.syncChatThread({ messages: [], pendingAction: normalPending({ id: "pa-A" }) });
+    const cardA = refs.thread.querySelector('[data-pending-id="pa-A"]');
+    renderer.syncChatThread({ messages: [], pendingAction: normalPending({ id: "pa-B", created_at: "2026-08-05T10:00:01.000Z" }) });
+    assert.ok(cardA.classList.contains("chat-confirm-card--superseded"), "A 卡已被 B 追赶");
+    // pending 重置回 A（同 id，renderedKeys 已有指纹，不新建卡，恢复旧卡）。
+    renderer.syncChatThread({ messages: [], pendingAction: normalPending({ id: "pa-A" }) });
+    assert.ok(!cardA.classList.contains("chat-confirm-card--superseded"), "pending 回到 A 后旧卡恢复");
+    assert.equal(cardA.querySelector('[data-testid="chat-confirm-once"]').disabled, false, "按钮恢复可点");
+    const cardB = refs.thread.querySelector('[data-pending-id="pa-B"]');
+    assert.ok(cardB.classList.contains("chat-confirm-card--superseded"), "B 卡被反向追赶标记 superseded");
+    cardA.querySelector('[data-testid="chat-confirm-once"]')._fire("click");
+    await tick();
+    assert.equal(calls[0].body.decision, "once", "恢复后的 A 卡可正常提交决策");
+  } finally {
+    delete globalThis.fetch;
+  }
+});
+
+test("I-1 确认卡 supersede：pending 清空后旧卡 superseded、按钮禁用", async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { refs, ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+  const calls = stubFetch();
+  try {
+    renderer.syncChatThread({ messages: [], pendingAction: normalPending({ id: "pa-A" }) });
+    const cardA = refs.thread.querySelector('[data-pending-id="pa-A"]');
+    // 决策被消费/超时：后续轮询不带 pendingAction。
+    renderer.syncChatThread({ messages: [] });
+    assert.ok(cardA.classList.contains("chat-confirm-card--superseded"), "pending 清空后旧卡 superseded");
+    cardA.querySelector('[data-testid="chat-confirm-task"]')._fire("click");
+    await tick();
+    assert.equal(calls.length, 0, "pending 已清空时旧卡点击不发请求");
   } finally {
     delete globalThis.fetch;
   }
@@ -1185,6 +1282,7 @@ test("极端危险确认卡：独立红色结构 + force 需输入确认文字�
     renderer.syncChatThread({
       messages: [],
       pendingAction: normalPending({
+        id: "pa-x1",
         command: "rm -rf /",
         cwd: "C:\\",
         targets: ["C:\\"],
@@ -1194,7 +1292,7 @@ test("极端危险确认卡：独立红色结构 + force 需输入确认文字�
         confirmation_text: "强制继续 3FA9C2",
       }),
     });
-    const card = refs.thread.querySelector(".chat-danger-confirm");
+    const card = refs.thread.querySelector('[data-pending-id="pa-x1"]');
     assert.ok(card, "极端确认应渲染独立 .chat-danger-confirm");
     assert.match(card.textContent, /极端危险操作/, "标题");
     assert.match(card.textContent, /可能破坏磁盘、系统或大范围用户数据，且无法自动恢复/, "明确后果区");
@@ -1205,6 +1303,7 @@ test("极端危险确认卡：独立红色结构 + force 需输入确认文字�
     assert.equal(force.disabled, true, "初始 disabled");
     const input = card.querySelector(".chat-danger-input");
     assert.equal(input.placeholder, "强制继续 3FA9C2", "placeholder 展示确认文字");
+    assert.equal(input.getAttribute("aria-label"), "输入页面显示的确认文字以解锁强制继续", "M-3 输入框有 aria-label");
     input.value = "强制继续 WRONG";
     input._fire("input");
     assert.equal(force.disabled, true, "文字不匹配仍 disabled");
@@ -1216,12 +1315,52 @@ test("极端危险确认卡：独立红色结构 + force 需输入确认文字�
     assert.equal(calls[0].body.decision, "force", "force 发 decision=force");
     assert.equal(calls[0].body.confirmationText, "强制继续 3FA9C2", "confirmationText 原样带回（trim 后）");
     assert.equal(calls[0].body.projectRoot, "D:\\novel-a");
-    card.querySelector('[data-testid="chat-confirm-reject"]')._fire("click");
+    // reject 逃生门：force 已点过的卡按钮禁用（M-7 真实语义），在独立新极端卡上验证。
+    renderer.syncChatThread({
+      messages: [],
+      pendingAction: normalPending({
+        id: "pa-x2",
+        created_at: "2026-08-05T10:00:01.000Z",
+        command: "rm -rf /",
+        cwd: "C:\\",
+        targets: ["C:\\"],
+        action: { ...normalPending().action, command: "rm -rf /", cwd: "C:\\", targets: ["C:\\"] },
+        confirmation_kind: "extreme",
+        confirmation_text: "强制继续 3FA9C2",
+      }),
+    });
+    const card2 = refs.thread.querySelector('[data-pending-id="pa-x2"]');
+    card2.querySelector('[data-testid="chat-confirm-reject"]')._fire("click");
     await tick();
     assert.equal(calls[1].body.decision, "reject", "极端卡提供拒绝逃生门");
   } finally {
     delete globalThis.fetch;
   }
+});
+
+test("M-4 极端确认卡：confirmation_text 为空时 force 永不解锁", async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { refs, ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+  renderer.syncChatThread({
+    messages: [],
+    pendingAction: normalPending({
+      id: "pa-empty",
+      confirmation_kind: "extreme",
+      confirmation_text: "",
+      command: "dd if=/dev/zero of=/dev/sda",
+    }),
+  });
+  const card = refs.thread.querySelector('[data-pending-id="pa-empty"]');
+  const force = card.querySelector('[data-testid="chat-danger-force"]');
+  const input = card.querySelector(".chat-danger-input");
+  assert.equal(force.disabled, true, "初始 disabled");
+  input.value = "";
+  input._fire("input");
+  assert.equal(force.disabled, true, "expected 为空时空输入也不解锁");
+  input.value = "任意文字";
+  input._fire("input");
+  assert.equal(force.disabled, true, "expected 为空时任何输入都不解锁");
 });
 
 test("Task 9 活动流：chat_activity 经 onChatActivity 渲染，线程重建后 reset 可再渲染", async () => {
@@ -1246,4 +1385,52 @@ test("Task 9 活动流：chat_activity 经 onChatActivity 渲染，线程重建�
     state: "running", label: "读取章节",
   });
   assert.equal(refs.thread.querySelectorAll('[data-activity-id="a2"]').length, 1, "reset 后重建容器并可继续渲染");
+});
+
+test("I-3 活动流滚动：onChatActivity 近底部才滚，远离底部不打断回看", async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { refs, ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+  const wrap = refs.threadWrap;
+  wrap.scrollHeight = 1000;
+  wrap.clientHeight = 100;
+  wrap.scrollTop = 990; // 距底 10px < 80：应滚动到底
+  renderer.onChatActivity({
+    type: "chat_activity", turn_id: "t1", activity_id: "a1", phase: "command",
+    state: "running", label: "运行测试",
+  });
+  assert.equal(wrap.scrollTop, 1000, "近底部时滚动到底");
+  wrap.scrollTop = 400; // 距底 500px ≥ 80：不得滚动
+  renderer.onChatActivity({
+    type: "chat_activity", turn_id: "t1", activity_id: "a2", phase: "command",
+    state: "running", label: "另一条",
+  });
+  assert.equal(wrap.scrollTop, 400, "远离底部时不无条件滚动（stick 策略）");
+});
+
+test("M-6 活动流锚定：syncChatThread 后 .chat-activity-stream 重新锚定到线程末尾", async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { refs, ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+  renderer.onChatActivity({
+    type: "chat_activity", turn_id: "t1", activity_id: "a1", phase: "command",
+    state: "running", label: "运行测试",
+  });
+  const before = refs.thread.children;
+  assert.ok(before[before.length - 1].classList.contains("chat-activity-stream"), "活动流初始在线程末尾");
+  // 新消息与确认卡经 insertByTs 插入（容器无 data-ts，会落在容器之后），
+  // syncChatThread 收尾应把容器重新锚定回末尾，保持 消息 → 确认卡 → 活动流。
+  renderer.syncChatThread({
+    messages: [{ id: "u1", role: "user", content: "继续", ts: "2026-08-05T10:00:00.000Z" }],
+    pendingAction: normalPending({ id: "pa-1", created_at: "2026-08-05T10:00:01.000Z" }),
+  });
+  const after = refs.thread.children;
+  const streamIdx = after.findIndex((c) => c.classList.contains("chat-activity-stream"));
+  const msgIdx = after.findIndex((c) => c.classList.contains("chat-bubble-wrap--user"));
+  const confirmIdx = after.findIndex((c) => c.classList.contains("chat-bubble-wrap--confirm"));
+  assert.ok(streamIdx >= 0, "活动流容器仍在线程内");
+  assert.ok(after[after.length - 1].classList.contains("chat-activity-stream"), "syncChatThread 后活动流回到末尾");
+  assert.ok(msgIdx >= 0 && confirmIdx >= 0, "消息与确认卡均已渲染");
+  assert.ok(msgIdx < streamIdx && confirmIdx < streamIdx, "消息与确认卡位于活动流之前");
+  assert.equal(refs.thread.querySelectorAll(".chat-activity-stream").length, 1, "重锚定不复制容器");
 });

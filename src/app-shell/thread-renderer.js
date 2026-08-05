@@ -169,6 +169,9 @@ export function createThreadRenderer(ctx) {
   // 容器随线程重建（切项目/清空）而销毁，view 实例一并重建，避免残留 activity_id 行。
   let chatActivityView = null;
   let chatActivityRoot = null;
+  // I-1: 当前 pending 确认卡的 id。新 pending(id 变化)到来时据此把已渲染的旧卡
+  // 标记 superseded 并禁用按钮——请求体不带 pending id,陈旧点击会错配到新 pending。
+  let currentPendingKey = null;
 
   // 活动流容器按需创建：渲染时线程可能刚被 replaceChildren 重建，容器不在 DOM 里就重新挂。
   function ensureChatActivityView() {
@@ -182,9 +185,11 @@ export function createThreadRenderer(ctx) {
       root: chatActivityRoot,
       document,
       // 停止按钮触发现有 chat 停止流程（composer 占位行同款：POST /api/chat/stop）。
-      onStop: () => {
-        stopChat().catch((error) => ctx.showToast?.(error.message ?? "停止失败。", "error"));
-      },
+      // 失败时 toast 后 rethrow,让活动行的停止按钮在错误路径恢复可点(M-2 防重)。
+      onStop: () => stopChat().catch((error) => {
+        ctx.showToast?.(error.message ?? "停止失败。", "error");
+        throw error;
+      }),
     });
     return chatActivityView;
   }
@@ -194,6 +199,8 @@ export function createThreadRenderer(ctx) {
     chatActivityView?.clear();
     chatActivityView = null;
     chatActivityRoot = null;
+    // 线程重建后确认卡随线程销毁,当前 pending 标识一并复位(下次渲染重新登记)。
+    currentPendingKey = null;
   }
 
   function renderEmptyThread() {
@@ -1437,13 +1444,14 @@ export function createThreadRenderer(ctx) {
     };
   }
 
-  function actionButton(label, decision, onClick) {
+  function actionButton(label, decision) {
+    // M-1: 不再接受 onClick——此前参数会被调用方后续的 addEventListener 覆盖成死参数
+    // （同一按钮双监听）。点击绑定统一由调用方 addEventListener 负责。
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = `chat-confirm-${decision}`;
     btn.dataset.testid = `chat-confirm-${decision}`;
     btn.textContent = label;
-    btn.addEventListener("click", onClick);
     return btn;
   }
 
@@ -1469,6 +1477,8 @@ export function createThreadRenderer(ctx) {
     input.className = "chat-danger-input";
     input.placeholder = pendingAction?.confirmation_text ?? "";
     input.setAttribute("autocomplete", "off");
+    // M-3: 无可见 label 的输入框补 aria-label,屏幕阅读器可理解解锁条件。
+    input.setAttribute("aria-label", "输入页面显示的确认文字以解锁强制继续");
     const force = document.createElement("button");
     force.type = "button";
     force.className = "chat-danger-force";
@@ -1477,14 +1487,16 @@ export function createThreadRenderer(ctx) {
     force.disabled = true;
     const buttons = document.createElement("div");
     buttons.className = "chat-confirm-buttons";
-    const reject = actionButton("拒绝", "reject", () => {});
+    const reject = actionButton("拒绝", "reject");
     const set = [force, reject];
     force.addEventListener("click", submitDecision(card, set, "force", () => input.value.trim()));
     reject.addEventListener("click", submitDecision(card, set, "reject"));
     // 输入文字与 confirmation_text 完全一致（trim 后）才解锁强制按钮。
+    // M-4: expected 为空时永不解锁——否则空输入直接匹配空 expected,绕过强制确认。
     input.addEventListener("input", () => {
       const expected = String(pendingAction?.confirmation_text ?? "").trim();
-      force.disabled = String(input.value ?? "").trim() !== expected;
+      const typed = String(input.value ?? "").trim();
+      force.disabled = !expected || typed !== expected;
     });
     buttons.append(force, reject);
     card.append(input, buttons);
@@ -1516,9 +1528,9 @@ export function createThreadRenderer(ctx) {
     const buttons = document.createElement("div");
     buttons.className = "chat-confirm-buttons";
     // 普通确认三选：仅本次 / 本次任务同类 / 拒绝。
-    const once = actionButton("仅允许这一次", "once", () => {});
-    const task = actionButton("本次任务允许同类操作", "task", () => {});
-    const reject = actionButton("拒绝", "reject", () => {});
+    const once = actionButton("仅允许这一次", "once");
+    const task = actionButton("本次任务允许同类操作", "task");
+    const reject = actionButton("拒绝", "reject");
     const set = [once, task, reject];
     once.addEventListener("click", submitDecision(card, set, "once"));
     task.addEventListener("click", submitDecision(card, set, "task"));
@@ -1538,6 +1550,41 @@ export function createThreadRenderer(ctx) {
     return null;
   }
 
+  // I-1: 新 pending 到来(id 变化)时,把已渲染的旧确认卡标记 superseded 并禁用全部按钮。
+  // 未定论(resolved/rejected 之外)的卡才参与——决策已生效的卡不再改动。
+  function supersedeStaleConfirmCards(currentId) {
+    for (const wrap of ctx.refs.thread.querySelectorAll(".chat-bubble-wrap--confirm")) {
+      const card = wrap.querySelector(".chat-confirm-card") ?? wrap.querySelector(".chat-danger-confirm");
+      if (!card || !card.dataset?.pendingId || card.dataset.pendingId === currentId) continue;
+      if (card.classList.contains("chat-confirm-card--resolved") || card.classList.contains("chat-confirm-card--rejected")) continue;
+      card.classList.add("chat-confirm-card--superseded");
+      for (const btn of wrap.querySelectorAll("button")) btn.disabled = true;
+    }
+  }
+
+  // I-1: pending 回到已渲染过的 id(服务端把确认重置为同一动作)时,恢复未定论旧卡可交互。
+  function reactivateCurrentConfirmCard(currentId) {
+    if (!currentId) return;
+    for (const wrap of ctx.refs.thread.querySelectorAll(".chat-bubble-wrap--confirm")) {
+      const card = wrap.querySelector(".chat-confirm-card") ?? wrap.querySelector(".chat-danger-confirm");
+      if (!card || card.dataset?.pendingId !== currentId) continue;
+      if (card.classList.contains("chat-confirm-card--resolved") || card.classList.contains("chat-confirm-card--rejected")) continue;
+      card.classList.remove("chat-confirm-card--superseded");
+      for (const btn of wrap.querySelectorAll("button")) btn.disabled = false;
+    }
+  }
+
+  // M-6: 活动流容器没有 data-ts,insertByTs 的 childTs=0 永不触发 insertBefore,
+  // 新消息/确认卡会落在容器之后。syncChatThread 结束时把容器重新锚定到线程末尾,
+  // 保持「消息 → 确认卡 → 活动流」的顺序。
+  function anchorActivityStream() {
+    if (!chatActivityRoot) return;
+    const children = ctx.refs.thread.children;
+    if (children[children.length - 1] !== chatActivityRoot) {
+      ctx.refs.thread.append(chatActivityRoot);
+    }
+  }
+
   // 把 chat 历史刷进 thread，按 ts 升序插入。已渲染的项用指纹去重。
   function syncChatThread(history) {
     const messages = [...(history?.messages ?? [])].sort(
@@ -1546,14 +1593,31 @@ export function createThreadRenderer(ctx) {
 
     // pendingAction 渲染（独立指纹防重，按 created_at 排序插入）
     if (history?.pendingAction) {
-      const confirmKey = `chat:confirm:${history.pendingAction.id}`;
-      if (!ctx.renderedKeys?.has(confirmKey)) {
+      const pendingId = String(history.pendingAction.id ?? "");
+      const confirmKey = `chat:confirm:${pendingId}`;
+      // I-1: 新 pending(id 变化)到来,旧确认卡全部 supersede 并禁用,防止陈旧的
+      // once/task/force 决策错配到新 pending(confirmChatAction 请求体不带 pending id)。
+      if (pendingId && pendingId !== currentPendingKey) {
+        supersedeStaleConfirmCards(pendingId);
+        // pending 从别的 id 回到本 id 时,恢复该卡(未定论)可交互;已定论卡保持终态。
+        reactivateCurrentConfirmCard(pendingId);
+      }
+      if (pendingId && !ctx.renderedKeys?.has(confirmKey)) {
         const confirmNode = renderConfirmCard(history.pendingAction);
         if (confirmNode) {
+          const card = confirmNode.querySelector(".chat-confirm-card") ?? confirmNode.querySelector(".chat-danger-confirm");
+          if (card) card.dataset.pendingId = pendingId;
           insertByTs(ctx.refs.thread, confirmNode, history.pendingAction.created_at || new Date().toISOString());
           ctx.renderedKeys?.add(confirmKey);
         }
       }
+      currentPendingKey = pendingId;
+      anchorActivityStream();
+    } else if (currentPendingKey) {
+      // pending 已清空（决策被本窗口或其他窗口消费/超时）：旧卡同样 supersede,
+      // 防止陈旧点击打到已无 pending 的服务端。
+      supersedeStaleConfirmCards(null);
+      currentPendingKey = null;
     }
 
     if (messages.length === 0) {
@@ -1599,6 +1663,8 @@ export function createThreadRenderer(ctx) {
       }
     }
 
+    // M-6: 新消息插入后重新锚定活动流容器到线程末尾。
+    anchorActivityStream();
     if (appended && stick) scrollThreadToBottom();
   }
 
@@ -2126,7 +2192,11 @@ export function createThreadRenderer(ctx) {
     // Task 9 实时活动：chat_activity SSE 事件直接进活动流（独立于 live turn 状态机）。
     onChatActivity(event) {
       ensureChatActivityView().consume(event);
-      scrollThreadToBottom();
+      // I-3: 与消息插入路径一致的 stick 策略（threadWrap 近底部 80px 内才滚）,
+      // 避免每个 delta 无条件滚动打断用户回看上方内容。
+      const wrap = ctx.refs.threadWrap;
+      const stick = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 80;
+      if (stick) scrollThreadToBottom();
     },
     // 线程重建（切项目/清空）时重置活动流：由 app.js clearTransientState 调用。
     resetChatActivity,

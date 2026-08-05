@@ -895,6 +895,9 @@ function renderDashboard(data) {
     askEntries.clear();
     liveBlock = null;
     refs.thread.replaceChildren();
+    // M-5: 与 clearTransientState 一致——线程重建时同步重置活动流
+    // （容器已随 replaceChildren 销毁，重置引用后下次 chat_activity 事件重新挂载）。
+    threadRenderer.resetChatActivity?.();
   }
   currentProjectRoot = data.projectRoot;
   if (firstLoad) {

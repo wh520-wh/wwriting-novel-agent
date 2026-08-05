@@ -2428,7 +2428,10 @@ button.cbar-pill--readonly:hover {
 
 /* Task 9 · 实时活动流（chat_activity SSE → 聊天线程内容器）。
    行是 details/summary（原生键盘可展开），状态色由 data-state 驱动，
-   输出是唯一 .chat-activity-output，只追加文本不重建。 */
+   输出是唯一 .chat-activity-output，只追加文本不重建。
+   注（M-8 定案）：保持控制台块风格——不缩进对齐 .msg-agent 头像栏（30px+gap），
+   聊天区历史气泡（chat-bubble / 确认卡）均从 0 起始，活动流刻意以带边框的
+   等宽块呈现，避免把工具输出伪装成对话内容。 */
 .chat-activity-stream {
   display: flex; flex-direction: column; gap: 6px;
   padding: 4px 0;
