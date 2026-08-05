@@ -102,7 +102,7 @@ export async function resumeChatTurn(options) {
     await clearPendingAction(projectRoot);
   }
   const toolEvent = { tool: pending.tool, ok: outcome.ok, error: outcome.ok ? null : outcome.error };
-  // 蓝图门禁拒绝路径与 agentLoop 的 !isRead 分支保持一致：result_summary 用纯 message，
+  // 写工具被拒路径与 agentLoop 的 !isRead 分支保持一致：result_summary 用纯 message，
   // 不 JSON 序列化 {error, message}（其余错误路径保持原样）。
   const resultSummary = outcome.ok
     ? summarize(outcome.result)
@@ -211,9 +211,7 @@ async function agentLoop(options, toolEvents) {
       const isRead = tool.kind === "read";
       if (!isRead) {
         foundWriteTool = true;
-        // 蓝图门禁（spec §1.4）：write/control 工具执行前检查，read 类工具不受限。
-        // 不通过则拒绝并继续处理后续 tool_calls（与权限预检同模式）。
-        // 权限预检
+        // write/control 工具执行前做权限预检，不通过则拒绝并继续处理后续 tool_calls。
         const permission = checkToolPermission(tool, project?.tool_permissions ?? {}, { archived: Boolean(project?.archived_at) });
         if (!permission.allowed) {
           const outcome = { ok: false, error: "permission_denied", message: permission.message };

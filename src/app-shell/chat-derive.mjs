@@ -45,7 +45,7 @@ export function deriveSuggestions(data) {
   if (done >= 1) {
     return [item(`续写下一章（第 ${done + 1} 章）`), item(`回顾第 ${done} 章的结尾`), item("目前花了多少钱？")];
   }
-  // 新项目且蓝图未就绪（spec §1.4 门禁）：写作入口被拒，先引导显式 /init。
+  // 新项目（尚无章节）：给出项目理解与首章入口。
   return [
     item("检查项目结构", "/init", { kind: "prompt" }),
     item("开始写第一章", "开始写第一章", { kind: "prompt" }),

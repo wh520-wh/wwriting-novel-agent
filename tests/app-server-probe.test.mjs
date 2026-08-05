@@ -1694,7 +1694,8 @@ test("POST /api/commands/submit 在 blueprint_status none 时不被蓝图门禁�
     assert.notEqual(data.code, "blueprint_not_ready");
 
     const { data: queue } = await getJson(port, "/api/queue/state");
-    assert.ok(queue.tasks.length >= 0);
+    assert.equal(queue.tasks.length, 1);
+    assert.notEqual(queue.tasks[0].status, "blocked");
   } finally {
     await closeServer(server);
   }
