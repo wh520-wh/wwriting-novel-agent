@@ -8,6 +8,8 @@ import { decideToolAuthorization } from "./task-grants.mjs";
 import { previewEditChapter } from "./tools-write.mjs";
 import { isJobRunning } from "./tools-control.mjs";
 import { appendChatMessage, loadPendingAction, savePendingAction, clearPendingAction, updatePendingStatus } from "./chat-store.mjs";
+import { createChatActivityEmitter } from "./chat-activity.mjs";
+import { redactChatData } from "./chat-redaction.mjs";
 import { appendTranscript } from "./transcript-store.mjs";
 import { appendEvent } from "../event-log.mjs";
 import { loadConfigLayers } from "../config-runtime.mjs";
@@ -54,9 +56,11 @@ export async function runChatTurn(options) {
   await appendChatMessage(projectRoot, {
     role: "assistant", content: "", status: "generating", turn_id: turnId
   });
+  // 统一活动事件：思考/工具/Shell/停止都经 activity 发出（同一 turn_id，SSE 直通前端）
+  const activity = createChatActivityEmitter({ turnId, onEvent: options.onEvent });
 
   try {
-    return await agentLoop({ ...options, turnId, taskId }, []);
+    return await agentLoop({ ...options, turnId, taskId, activity }, []);
   } catch (error) {
     // §3.4: 失败时写错误消息；任务失败同样释放本任务的授权。
     options.grants?.clear(projectRoot, taskId);
@@ -99,14 +103,29 @@ export async function resumeChatTurn(options) {
   await appendChatMessage(projectRoot, {
     role: "assistant", content: "", status: "generating", turn_id: resumeTurnId
   });
+  // 续轮活动事件：本次 pending 工具执行 + 后续 agentLoop 轮次共用同一 emitter（resume 的 turn_id）
+  const activity = createChatActivityEmitter({ turnId: resumeTurnId, onEvent: options.onEvent });
   try {
     let outcome;
     if (decision === "once" || decision === "force" || decision === "task") {
+      const tool = registry.get(pending.tool);
+      const action = pending.action ?? { title: tool?.description ?? pending.tool };
+      const phase = pending.tool === "shell" ? "command" : tool?.kind === "write" ? "editing" : "tool";
+      // 活动序列：requested -> running -> 终态（同一 activity_id；命令类工具增量输出复用 id）
+      const activityId = activity({
+        phase, state: "requested", tool: pending.tool,
+        label: action.title, args: redactChatData(JSON.stringify(pending.args)),
+        command: action.command ?? null, cwd: action.cwd ?? null
+      });
+      activity({
+        activity_id: activityId, phase, state: "running", tool: pending.tool,
+        label: action.title, args: redactChatData(JSON.stringify(pending.args)),
+        command: action.command ?? null, cwd: action.cwd ?? null
+      });
       // §3.3 Idempotency: if already executed, skip executeTool, use cached result
       if (pending.status === "executed") {
         outcome = pending.cachedOutcome;
       } else {
-        const tool = registry.get(pending.tool);
         const busy = checkRunBusy(tool, server, projectRoot);
         if (busy) {
           outcome = busy;
@@ -115,30 +134,43 @@ export async function resumeChatTurn(options) {
           // §3.3: Atomically mark as executing before execution
           const key = pending.idempotency_key ?? crypto.randomUUID();
           await updatePendingStatus(projectRoot, key, "executing");
-          outcome = await executeTool(registry, pending.tool, pending.args, { projectRoot, project, server, getTaskQueue });
+          outcome = await executeTool(registry, pending.tool, pending.args, {
+            projectRoot, project, server, getTaskQueue, signal: options.signal,
+            onToolOutput: ({ text }) => activity({
+              activity_id: activityId, phase: "command", state: "running", tool: pending.tool,
+              label: "运行命令", output_delta: text, command: action.command ?? null, cwd: action.cwd ?? null
+            })
+          });
           // §3.3: Atomically mark as executed with cached result (crash recovery: next resume skips re-execution)
           await updatePendingStatus(projectRoot, key, "executed", outcome);
         }
       }
       // Clear pending before agentLoop so a new pending can be created
       await clearPendingAction(projectRoot);
+      const fields = toolMessageFields({ args: pending.args, outcome, action, signal: options.signal });
+      activity({
+        activity_id: activityId, phase, state: fields.status, tool: pending.tool,
+        label: action.title, output_delta: "",
+        exit_code: fields.exit_code, duration_ms: fields.duration_ms,
+        error: outcome.ok ? null : outcome.error
+      });
+      await appendChatMessage(projectRoot, {
+        role: "tool", tool: pending.tool, ok: outcome.ok, ...fields,
+        result_summary: summarize(outcome.ok ? outcome.result : { error: outcome.error, message: outcome.message })
+      });
     } else {
       outcome = { ok: false, error: "user_rejected", message: "用户拒绝了此操作。" };
       await clearPendingAction(projectRoot);
+      // 拒绝路径：result_summary 保留 {error, message} 序列化（resume 与 agentLoop 拒绝分支同形状）
+      await appendChatMessage(projectRoot, {
+        role: "tool", tool: pending.tool, ok: false,
+        args: summarizeArgs(pending.args),
+        result_summary: summarize({ error: outcome.error, message: outcome.message })
+      });
     }
     const toolEvent = { tool: pending.tool, ok: outcome.ok, error: outcome.ok ? null : outcome.error };
-    // 写工具被拒路径与 agentLoop 的 !isRead 分支保持一致：result_summary 用纯 message，
-    // 不 JSON 序列化 {error, message}（其余错误路径保持原样）。
-    const resultSummary = outcome.ok
-      ? summarize(outcome.result)
-      : summarize({ error: outcome.error, message: outcome.message });
-    await appendChatMessage(projectRoot, {
-      role: "tool", tool: pending.tool, ok: outcome.ok,
-      args: summarizeArgs(pending.args),
-      result_summary: resultSummary
-    });
     options.onEvent?.({ type: "tool_result", ...toolEvent });
-    return await agentLoop({ ...options, userMessage: null, turnId: resumeTurnId, taskId }, [toolEvent]);
+    return await agentLoop({ ...options, userMessage: null, turnId: resumeTurnId, taskId, activity }, [toolEvent]);
   } catch (error) {
     // 失败路径兜底：任务级授权随任务结束释放（runChatTurn 同款语义；grants.clear 幂等，
     // 正常路径已由 agentLoop 最终文本 / 轮数上限 / finishCancelled 清理，这里只补异常路径）。
@@ -148,7 +180,7 @@ export async function resumeChatTurn(options) {
 }
 
 async function agentLoop(options, toolEvents) {
-  const { projectRoot, project, registry, modelClient, server, getTaskQueue, onEvent, signal, grants, taskId, turnId } = options;
+  const { projectRoot, project, registry, modelClient, server, getTaskQueue, onEvent, signal, grants, taskId, turnId, activity } = options;
   // 加载运行时配置读取 chat_max_tool_rounds
   const configLayers = await loadConfigLayers(projectRoot, project ?? {}, {});
   const effectiveConfig = configLayers.effective;
@@ -156,7 +188,9 @@ async function agentLoop(options, toolEvents) {
   let totalCost = 0;
   let calls = 0;
   for (let round = 0; round < maxToolRounds + 1; round += 1) {
-    if (signal?.aborted) return await finishCancelled(projectRoot, toolEvents, calls, totalCost, { grants, taskId });
+    if (signal?.aborted) return await finishCancelled(projectRoot, toolEvents, calls, totalCost, { grants, taskId, activity });
+    // 每个模型轮次（含 resume 后的续轮）先发 thinking/running，标记模型思考开始
+    activity?.({ phase: "thinking", state: "running", label: "思考中" });
     const { messages } = await buildChatContext({ projectRoot, project, registry, userMessage: latestPrompt(options, round) });
     let result;
     try {
@@ -172,7 +206,7 @@ async function agentLoop(options, toolEvents) {
       });
     } catch (error) {
       // 外部停止（signal.aborted）与模型超时（仅 AbortError）要区分：超时照旧抛出走原错误链。
-      if (signal?.aborted) return await finishCancelled(projectRoot, toolEvents, calls, totalCost, { grants, taskId });
+      if (signal?.aborted) return await finishCancelled(projectRoot, toolEvents, calls, totalCost, { grants, taskId, activity });
       throw error;
     }
     calls += 1;
@@ -207,12 +241,14 @@ async function agentLoop(options, toolEvents) {
       await appendChatMessage(projectRoot, { role: "assistant", content, cost: totalCost || undefined });
       // 任务完成（最终文本）：释放本任务的任务级授权。
       grants?.clear(projectRoot, taskId);
+      // 最终文本 = 本回合活动结束
+      activity?.({ phase: "complete", state: "succeeded", label: "完成" });
       return { reply: content, toolEvents, pendingAction: null, usage: { calls, cost: totalCost } };
     }
     // §2.3：只算成功执行的调用（ok===true），被拒/失败不占额度
     const successfulRounds = toolEvents.filter((e) => e.ok).length;
     if (successfulRounds >= maxToolRounds) break;
-    if (signal?.aborted) return await finishCancelled(projectRoot, toolEvents, calls, totalCost, { grants, taskId });
+    if (signal?.aborted) return await finishCancelled(projectRoot, toolEvents, calls, totalCost, { grants, taskId, activity });
 
     // §2.4 + Task 7：处理本轮全部 tool_calls —— 先归一化动作、按授权矩阵决策：
     // 只读自动 / 已授权（yolo、auto_edit、任务授权）立即顺序执行，不跳过同批后续调用；
@@ -239,6 +275,8 @@ async function agentLoop(options, toolEvents) {
 
       // 动作归一化：shell 走自身 describeAction（命令静态风险分类），静态工具走兜底动作。
       const action = describeToolAction(tool, tc.args, { projectRoot, project });
+      // 活动阶段：命令类走 command，写工具走 editing，其余走 tool
+      const phase = tc.tool === "shell" ? "command" : tool.kind === "write" ? "editing" : "tool";
       // 权限预检（read_only / safe_edit / 归档 / dangerous 封印），不通过则拒绝并继续处理后续 tool_calls。
       // 与下方 decideToolAuthorization 是两层检查：checkToolPermission 按工具 kind 级封印（全局开关，
       // 如 read_only），decideToolAuthorization 按动作 category/scope/risk 决策授权矩阵——两层语义一致
@@ -268,6 +306,9 @@ async function agentLoop(options, toolEvents) {
       }
       if (["confirm", "extreme_confirm"].includes(authorization.decision)) {
         waitingConfirmation = true;
+        // 活动事件：请求已解析 -> 等待用户确认（不执行工具，终态在 resume 后由续轮补上）
+        activity?.({ phase, state: "requested", tool: tc.tool, label: action.title, args: redactChatData(JSON.stringify(tc.args)), command: action.command ?? null, cwd: action.cwd ?? null });
+        activity?.({ phase, state: "waiting_confirmation", tool: tc.tool, label: action.title, args: redactChatData(JSON.stringify(tc.args)), command: action.command ?? null, cwd: action.cwd ?? null });
         // edit_chapter 预览
         let preview = null;
         if (tc.tool === "edit_chapter") {
@@ -304,10 +345,26 @@ async function agentLoop(options, toolEvents) {
         continue;
       }
       // 已授权：立即执行并落盘，不跳过同一批后续调用
-      const outcome = await executeTool(registry, tc.tool, tc.args, {
-        projectRoot, project, server, getTaskQueue, signal
+      // 活动序列：requested -> running -> 终态（同一 activity_id；shell 增量输出复用 id 流式追加）
+      const activityId = activity?.({
+        phase, state: "requested", tool: tc.tool,
+        label: action.title, args: redactChatData(JSON.stringify(tc.args)),
+        command: action.command ?? null, cwd: action.cwd ?? null
       });
-      await recordToolOutcome({ projectRoot, tc, outcome, toolEvents, onEvent });
+      activity?.({
+        activity_id: activityId, phase, state: "running", tool: tc.tool,
+        label: action.title, args: redactChatData(JSON.stringify(tc.args)),
+        command: action.command ?? null, cwd: action.cwd ?? null
+      });
+      const outcome = await executeTool(registry, tc.tool, tc.args, {
+        projectRoot, project, server, getTaskQueue, signal,
+        // shell 流式输出转发为同一活动的 output_delta（tools-shell 已逐块脱敏，此处不再脱敏）
+        onToolOutput: ({ text }) => activity?.({
+          activity_id: activityId, phase: "command", state: "running", tool: tc.tool,
+          label: "运行命令", output_delta: text, command: action.command ?? null, cwd: action.cwd ?? null
+        })
+      });
+      await recordToolOutcome({ projectRoot, tc, outcome, toolEvents, onEvent, activity, activityId, action, phase, signal });
     }
     // 本轮全部 tool_calls 处理完毕：连续 SKIPPED 聚合落盘成一条（不改跳过决策，只改落盘方式）
     if (skippedBatch.length > 0) {
@@ -328,7 +385,24 @@ async function agentLoop(options, toolEvents) {
   await appendChatMessage(projectRoot, { role: "assistant", content: capped });
   // 轮数上限（任务结束）：释放本任务的任务级授权。
   grants?.clear(projectRoot, taskId);
+  activity?.({ phase: "complete", state: "succeeded", label: "完成" });
   return { reply: capped, toolEvents, pendingAction: null, usage: { calls, cost: totalCost } };
+}
+
+// 结构化工具历史字段：args/output/command 脱敏后落盘，status 区分 cancelled/succeeded/failed。
+// 非 shell 工具没有 command/cwd/output/exit_code/duration_ms，落 null/空保持结构一致，
+// 供 Task 9 的 thread-renderer 按统一形状读取。
+function toolMessageFields({ args, outcome, action, signal }) {
+  const status = signal?.aborted ? "cancelled" : outcome.ok ? "succeeded" : "failed";
+  return {
+    status,
+    args: redactChatData(JSON.stringify(args ?? {})),
+    command: action?.command ? redactChatData(action.command) : null,
+    cwd: action?.cwd ?? null,
+    output: outcome.ok ? redactChatData(outcome.result?.stdout ?? "") : redactChatData(outcome.stderr ?? outcome.message ?? ""),
+    exit_code: outcome.ok ? outcome.result?.exitCode ?? null : null,
+    duration_ms: outcome.ok ? outcome.result?.durationMs ?? null : outcome.durationMs ?? null
+  };
 }
 
 // 拒绝分支统一落盘：权限拒绝 / 运行中写保护 / 授权 deny / 未知工具都走同一形状，避免分支复制。
@@ -343,21 +417,30 @@ async function recordDeniedTool({ projectRoot, tc, toolEvents, onEvent, message,
   onEvent?.({ type: "tool_result", ...event });
 }
 
-// 执行结果统一落盘：成功/失败同一形状（result_summary 用 summarize 序列化）。
-async function recordToolOutcome({ projectRoot, tc, outcome, toolEvents, onEvent }) {
+// 执行结果统一落盘：成功/失败同一形状（result_summary 用 summarize 序列化）；
+// 活动终态经同一 activity_id 关闭（succeeded/failed/cancelled，带退出码与耗时）。
+async function recordToolOutcome({ projectRoot, tc, outcome, toolEvents, onEvent, activity, activityId, action, phase, signal }) {
   const event = { tool: tc.tool, ok: outcome.ok, error: outcome.ok ? null : outcome.error };
   toolEvents.push(event);
+  const fields = toolMessageFields({ args: tc.args, outcome, action, signal });
+  activity?.({
+    activity_id: activityId, phase, state: fields.status, tool: tc.tool,
+    label: action?.title ?? "", output_delta: "",
+    exit_code: fields.exit_code, duration_ms: fields.duration_ms,
+    error: outcome.ok ? null : outcome.error
+  });
   await appendChatMessage(projectRoot, {
-    role: "tool", tool: tc.tool, ok: outcome.ok,
-    args: summarizeArgs(tc.args),
+    role: "tool", tool: tc.tool, ok: outcome.ok, ...fields,
     result_summary: summarize(outcome.ok ? outcome.result : { error: outcome.error, message: outcome.message })
   });
   onEvent?.({ type: "tool_result", ...event });
 }
 
-async function finishCancelled(projectRoot, toolEvents, calls, totalCost, { grants, taskId } = {}) {
+async function finishCancelled(projectRoot, toolEvents, calls, totalCost, { grants, taskId, activity } = {}) {
   // 取消同样视为任务结束：释放本任务的任务级授权。
   grants?.clear(projectRoot, taskId);
+  // 停止路径：活动流以 cancelled 收尾，不再停留在 running
+  activity?.({ phase: "tool", state: "cancelled", label: "已停止" });
   await appendChatMessage(projectRoot, { role: "assistant", content: "（已停止。）", cost: totalCost || undefined });
   return { reply: "（已停止。）", toolEvents, pendingAction: null, cancelled: true, usage: { calls, cost: totalCost } };
 }
