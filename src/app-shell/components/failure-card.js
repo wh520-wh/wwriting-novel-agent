@@ -18,7 +18,7 @@ export function renderFailureCard(card, { onAction = () => {} } = {}) {
 
   const head = document.createElement('header');
   head.className = 'failure-head';
-  head.textContent = `故障 #${source.seq ?? ''} · ${title} · ${formatTime(source.ts)}`;
+  head.textContent = `${title} · ${formatTime(source.ts)}`;
   el.appendChild(head);
 
   const body = document.createElement('p');
