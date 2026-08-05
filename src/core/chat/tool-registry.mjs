@@ -53,7 +53,9 @@ export async function executeTool(registry, name, args, ctx) {
         const result = await tool.run(args ?? {}, ctx);
         outcome = { ok: true, result };
       } catch (error) {
-        outcome = { ok: false, error: error.code ?? "tool_failed", message: error.message };
+        // m2: durationMs 透传——shell-runtime 的错误带 error.durationMs（超时/中止/崩溃路径），
+        // 归一化时保留，toolMessageFields 据此写入失败工具的 duration_ms 历史字段
+        outcome = { ok: false, error: error.code ?? "tool_failed", message: error.message, durationMs: error.durationMs ?? null };
       }
     }
   }
