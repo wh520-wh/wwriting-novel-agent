@@ -76,8 +76,9 @@ class MockElement {
   }
 
   // innerHTML 只做原始字符串存储（不做解析）；querySelector/querySelectorAll 遇到
-  // [data-retry] 选择器时，若 markup 含 data-retry="1"，惰性物化一个重试按钮子节点，
-  // 使 live turn 的 data-retry 绑定循环（failTurn）在无 jsdom 下可被真实点击验证。
+  // [data-retry] / [data-open-settings] 等 data-* 属性选择器时，若 markup 含对应
+  // data-xxx="1"，惰性物化一个按钮子节点，使 live turn 的按钮绑定（failTurn）在
+  // 无 jsdom 下可被真实点击验证。
   set innerHTML(html) {
     this._innerHTML = String(html);
   }
@@ -85,17 +86,20 @@ class MockElement {
     return this._innerHTML ?? "";
   }
 
-  _queryRetryFallback(selector) {
-    if (!/^\[data-retry(?:="1")?\]$/.test(selector)) return null;
-    if (!this._innerHTML || !/data-retry="1"/.test(this._innerHTML)) return null;
-    if (!this._retryNode) {
+  _queryAttrFallback(selector) {
+    const m = selector.match(/^\[data-([\w-]+)(?:="1")?\]$/);
+    if (!m) return null;
+    const attr = m[1];
+    if (!this._innerHTML || !new RegExp(`data-${attr}="1"`).test(this._innerHTML)) return null;
+    const key = `_attrNode_${attr}`;
+    if (!this[key]) {
       const btn = new MockElement("button");
-      btn.dataset.retry = "1";
-      btn._text = "↻ 重试";
-      this._retryNode = btn;
+      btn.dataset[MockElement._dataKey(attr)] = "1";
+      btn._text = `[data-${attr}]`;
+      this[key] = btn;
       this.children.push(btn);
     }
-    return this._retryNode;
+    return this[key];
   }
 
   append(...nodes) {
@@ -165,7 +169,7 @@ class MockElement {
       const found = child.querySelector(selector);
       if (found) return found;
     }
-    return this._queryRetryFallback(selector);
+    return this._queryAttrFallback(selector);
   }
 
   querySelectorAll(selector) {
@@ -178,7 +182,7 @@ class MockElement {
       }
     };
     walk(this);
-    const fallback = this._queryRetryFallback(selector);
+    const fallback = this._queryAttrFallback(selector);
     if (fallback) out.push(fallback);
     return out;
   }
@@ -244,6 +248,7 @@ function makeHarness(initialProject = "D:\\novel-a") {
     openReader: () => {},
     handleStop: () => {},
     handleRetry: () => {},
+    openSettingsModal: () => {},
     showToast: () => {},
     showActionError: () => {},
     isChatBusy: () => false,
@@ -635,6 +640,8 @@ test("project_run_failed → 红卡挂载 + data-retry 手动重试 + 「已保�
   const renderer = createThreadRenderer(ctx);
   let retried = 0;
   ctx.handleRetry = () => { retried += 1; };
+  let settingsOpened = 0;
+  ctx.openSettingsModal = () => { settingsOpened += 1; };
 
   renderer.onRunEvent(userEvent());
   renderer.onRunEvent(runStartedEvent());
@@ -655,16 +662,85 @@ test("project_run_failed → 红卡挂载 + data-retry 手动重试 + 「已保�
   assert.match(card.innerHTML, /↻ 重试/, "手动重试按钮文案");
   assert.doesNotMatch(card.innerHTML, /继续写作/, "鉴权类红卡不提供「↻ 继续写作」（规格书 6.3：配置/鉴权错误流手动「↻ 重试」）");
   assert.match(card.innerHTML, /data-retry="1"/, "手动重试按钮带 data-retry 标记");
+  // 鉴权/配置类（HTTP 4xx）红卡提供「打开设置」修复入口（Task 3）
+  assert.match(card.innerHTML, /打开设置/, "鉴权/配置类红卡提供「打开设置」按钮");
+  assert.match(card.innerHTML, /data-open-settings="1"/, "打开设置按钮带 data-open-settings 标记");
   // data-retry 绑定真实可点：点击应回调 ctx.handleRetry
   const retryBtn = card.querySelector("[data-retry]");
   assert.ok(retryBtn, "红卡内应存在 data-retry 按钮节点");
   retryBtn._fire("click");
   assert.equal(retried, 1, "点击手动重试应触发 ctx.handleRetry");
+  // data-open-settings 绑定真实可点：点击应打开设置弹窗（ctx.openSettingsModal）
+  const settingsBtn = card.querySelector("[data-open-settings]");
+  assert.ok(settingsBtn, "红卡内应存在 data-open-settings 按钮节点");
+  settingsBtn._fire("click");
+  assert.equal(settingsOpened, 1, "点击打开设置应触发 ctx.openSettingsModal");
   // 失败即终态：后续收尾事件不得再驱动完成态
   renderer.onRunEvent(runFinishedEvent());
   assert.ok(!errSlot.classList.contains("hidden"), "失败后红卡保持可见");
   const done = turn.querySelector(".done-card");
   assert.ok(done.classList.contains("hidden"), "失败轮不得再显示完成卡");
+});
+
+test("project_run_failed HTTP 500：5xx 归网络类（ProviderTransportError 也带 status），红卡不含「打开设置」（Task 3）", async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { refs, ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+  let settingsOpened = 0;
+  ctx.openSettingsModal = () => { settingsOpened += 1; };
+
+  renderer.onRunEvent(userEvent());
+  renderer.onRunEvent(runStartedEvent());
+  renderer.onRunEvent(draftingCallEvent());
+  renderer.onRunEvent({
+    type: "project_run_failed",
+    timestamp: "2026-08-03T10:00:25.000Z",
+    stage: "run",
+    message: "模型调用失败：500 Internal Server Error。",
+    data: { status: 500, reason: "server_error", name: "ProviderTransportError" },
+  });
+
+  const turn = refs.thread.querySelector(".turn-agent");
+  const errSlot = turn.querySelector(".error-slot");
+  assert.ok(errSlot && !errSlot.classList.contains("hidden"), "失败轮应渲染可见 error-slot");
+  const card = errSlot.children[0];
+  assert.doesNotMatch(card.innerHTML, /打开设置/, "5xx 归网络类，红卡不含「打开设置」");
+  assert.equal(card.querySelector("[data-open-settings]"), null, "5xx 红卡无 data-open-settings 按钮节点");
+  assert.match(card.innerHTML, /↻ 继续写作/, "5xx 归网络类，提供「↻ 继续写作」");
+  assert.match(card.innerHTML, /复制错误详情/, "5xx 归网络类，提供「复制错误详情」");
+  assert.equal(settingsOpened, 0, "5xx 红卡点击不到设置入口，openSettingsModal 不应被调用");
+});
+
+test("project_run_failed HTTP 429（字符串 status）：限流归网络类（engine server-retryable），红卡不含「打开设置」（Task 3 审查修正）", async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { refs, ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+  let settingsOpened = 0;
+  ctx.openSettingsModal = () => { settingsOpened += 1; };
+
+  renderer.onRunEvent(userEvent());
+  renderer.onRunEvent(runStartedEvent());
+  renderer.onRunEvent(draftingCallEvent());
+  renderer.onRunEvent({
+    type: "project_run_failed",
+    timestamp: "2026-08-03T10:00:25.000Z",
+    stage: "run",
+    message: "模型调用失败：429 Too Many Requests，请求过于频繁。",
+    data: { status: "429", reason: "rate_limit_exceeded", name: "ProviderTransportError" },
+  });
+
+  const turn = refs.thread.querySelector(".turn-agent");
+  const errSlot = turn.querySelector(".error-slot");
+  assert.ok(errSlot && !errSlot.classList.contains("hidden"), "失败轮应渲染可见 error-slot");
+  const card = errSlot.children[0];
+  assert.doesNotMatch(card.innerHTML, /打开设置/, "429 限流归网络类，红卡不含「打开设置」（限流不是设置能修的）");
+  assert.equal(card.querySelector("[data-open-settings]"), null, "429 红卡无 data-open-settings 按钮节点");
+  assert.match(card.innerHTML, /↻ 继续写作/, "429 归网络类，提供「↻ 继续写作」");
+  assert.match(card.innerHTML, /复制错误详情/, "429 归网络类，提供「复制错误详情」");
+  assert.equal(settingsOpened, 0, "429 红卡无设置入口，openSettingsModal 不应被调用");
+  // 字符串 status 也按 4xx 判定（title/code 逻辑不受 Number 转换影响）
+  assert.match(card.innerHTML, /模型调用失败 · 429/, "标题带状态码（字符串原样透传）");
+  assert.match(card.innerHTML, /429 · rate_limit_exceeded/, "错误码徽章带状态码");
 });
 
 test("project_run_failed 且已有流式残段：残段折叠为（未完成）标记 + 工具行红色已中断（规格书 6.2/5.3）", async () => {
@@ -754,9 +830,11 @@ test("reconcileLiveTurn 轮询兜底：SSE 断流时按 dashboard 终态收尾 +
 
 // ---------------------------------------------------------------------------
 // Fix round 2 (Task 13 审查 Important 1)：失败红卡按失败类型区分动作集。
-// 规格书 6.2 耗尽场景「↻ 继续写作」/ 6.3 鉴权场景「↻ 重试」；定稿原型 S4 动作数组
+// 规格书 6.2 耗尽场景「↻ 继续写作」/ 6.3 鉴权场景「↻ 重试 + 打开设置」；定稿原型 S4 动作数组
 // [{ ↻ 重试(retry) }, "↻ 继续写作", "复制错误详情"] 两按钮并存。
-// 判别依据：project_run_failed data.status 为空（网络耗尽，reason:"timeout"）vs 非空（4xx 鉴权）。
+// 判别依据（Task 3 · Codex 审查修正）：鉴权/配置类 = HTTP 4xx 且非 429（status ∈ [400, 500) 且 ≠ 429）；
+// 429 限流（engine 判 server-retryable，自动重试 5 次后耗尽）、无 status（reason:"timeout"）与
+// 5xx（ProviderTransportError 对 500 也带 status）均归网络类。
 // 两个按钮点击行为都走 ctx.handleRetry（内部 POST /api/run/retry = 从保存状态创建 recovery task）。
 // ---------------------------------------------------------------------------
 
@@ -794,6 +872,9 @@ test("project_run_failed 网络耗尽（无 status）：红卡含「↻ 继续�
   assert.match(card.innerHTML, /timeout/, "错误码徽章如实透传 reason");
   const retryMarks = card.innerHTML.match(/data-retry="1"/g) ?? [];
   assert.equal(retryMarks.length, 2, "「↻ 重试」与「↻ 继续写作」均带 data-retry（点击都走 ctx.handleRetry）");
+  // 网络耗尽（无 status）：不属于鉴权/配置类，红卡不得出现「打开设置」修复入口（Task 3）
+  assert.doesNotMatch(card.innerHTML, /打开设置/, "网络耗尽红卡不含「打开设置」");
+  assert.equal(card.querySelector("[data-open-settings]"), null, "网络耗尽红卡无 data-open-settings 按钮节点");
   const retryBtn = card.querySelector("[data-retry]");
   assert.ok(retryBtn, "红卡内应存在 data-retry 按钮节点");
   retryBtn._fire("click");

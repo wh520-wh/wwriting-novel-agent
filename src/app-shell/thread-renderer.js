@@ -18,13 +18,15 @@ import { deriveProjectIdentity } from "./project-identity.mjs";
 // 提示行只放用户需要知道的后果（如"已保留当前进度"），空则不渲染；
 // 禁止"不会自动重试"这类策略性说教文案。手动「↻ 重试」按钮带 data-retry。
 // 动作形态：字符串 = 静态按钮；{label, retry:true} = 重试按钮（点击重新发起，data-retry）；
-// {label, copy:true} = 复制按钮（复制错误详情到剪贴板，data-copy-code）。
+// {label, copy:true} = 复制按钮（复制错误详情到剪贴板，data-copy-code）；
+// {label, openSettings:true} = 设置按钮（一键打开设置弹窗，data-open-settings）。
 export function renderErrorCard(cfg) {
   const time = new Date().toLocaleTimeString("zh-CN", { hour12: false });
   const note = cfg.note ? `<div class="e-note">${cfg.note}</div>` : "";
   const btn = (a) => {
     if (typeof a === "string") return `<button class="e-btn">${a}</button>`;
     if (a.copy) return `<button class="e-btn" data-copy-code="1">${a.label}</button>`;
+    if (a.openSettings) return `<button class="e-btn" data-open-settings="1">${a.label}</button>`;
     return `<button class="e-btn" data-retry="1">${a.label}</button>`;
   };
   return (
@@ -1874,10 +1876,13 @@ export function createThreadRenderer(ctx) {
   // 手动重试走 ctx.handleRetry（app.js 复用 POST /api/run/retry，并带 toast/刷新兜底），
   // 比裸 fetch 更完整；data-retry 按钮的绑定语义与规格书 6.3「手动重试」一致。
   // 动作集按失败类型区分（规格书 6.2/6.3 + 定稿原型 S4/S5）：
-  //  - 网络耗尽（data.status 为空，如 reason:"timeout"）→「↻ 重试」+「↻ 继续写作」+「复制错误详情」；
+  //  - 网络类（无 status 如 reason:"timeout"，或 5xx）→「↻ 重试」+「↻ 继续写作」+「复制错误详情」；
   //    POST /api/run/retry 实为从保存状态创建 recovery task（断点续写语义），「继续写作」才是耗尽卡准确文案。
-  //  - 鉴权/配置类（data.status 非空，如 401）→「↻ 重试」。
-  // 两个按钮点击行为都走既有 ctx.handleRetry（内部 POST /api/run/retry）。
+  //  - 鉴权/配置类（HTTP 4xx 且非 429，如 401）→「↻ 重试」+「打开设置」（一键去修，走 ctx.openSettingsModal）。
+  // 分类依据 Codex 审查修正：ProviderTransportError 对 500 也带 status（provider-adapters.mjs:44），
+  // 而 ProviderConfigurationError 无 status（provider-adapters.mjs:31），故「status 非空」≠ 配置错误，
+  // 必须按规格书 6.3 语义以 status ∈ [400, 500) 判定；429 限流除外（engine 判 server-retryable，
+  // 自动重试 5 次后耗尽才落红卡，属网络类，限流不是设置能修的）。
   function failTurn(turn, event) {
     const data = event.data ?? {};
     const status = data.status ?? null;
@@ -1892,8 +1897,15 @@ export function createThreadRenderer(ctx) {
       turn.toolStatus.textContent = "已中断";
       turn.toolStatus.classList.add("bad");
     }
-    const actions = status
-      ? [{ label: "↻ 重试", retry: true }]
+    // 鉴权/配置类（规格书 6.3）：HTTP 4xx 且非 429。
+    // 429 限流归网络类：engine 权威分类 provider-adapters.mjs:53 把 429 判为 server-retryable
+    // （model-client 自动重试 5 次），重试耗尽才以 status=429 落红卡——限流不是设置能修的，
+    // 给「打开设置」是误导性引导。Number(status) 统一转换：字符串 "429" 的严格 !== 比较
+    // 会漏排除（"429" !== 429），先转数字再判。
+    const statusCode = Number(status);
+    const isConfigError = status !== null && statusCode >= 400 && statusCode < 500 && statusCode !== 429;
+    const actions = isConfigError
+      ? [{ label: "↻ 重试", retry: true }, { label: "打开设置", openSettings: true }]
       : [{ label: "↻ 重试", retry: true }, { label: "↻ 继续写作", retry: true }, { label: "复制错误详情", copy: true }];
     const card = document.createElement("div");
     card.innerHTML = renderErrorCard({
@@ -1906,6 +1918,8 @@ export function createThreadRenderer(ctx) {
     card.querySelectorAll("[data-retry]").forEach((btn) => {
       btn.addEventListener("click", () => ctx.handleRetry?.());
     });
+    // 「打开设置」（鉴权/配置类红卡）：一键打开设置弹窗（app.js 已暴露 ctx.openSettingsModal）。
+    card.querySelector("[data-open-settings]")?.addEventListener("click", () => ctx.openSettingsModal?.());
     // 「复制错误详情」：把错误码徽章 + 人话文案复制到剪贴板（Electron 渲染进程 clipboard API）。
     card.querySelector("[data-copy-code]")?.addEventListener("click", () => {
       const text = `${code}${event.message ? `\n${event.message}` : ""}`;
