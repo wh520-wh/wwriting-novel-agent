@@ -44,7 +44,11 @@ test("命令中的密钥片段被脱敏", () => {
     "api_key=abc123secret",
     "Authorization: Bearer abc123secret",
     "tvly-abcdefghijklmnop",
-    "sk-abcdefghijklmnop123456"
+    "sk-abcdefghijklmnop123456",
+    'secret="abc123secret"',
+    "token = 'abc123secret'",
+    'Authorization: Bearer "abc123secret"',
+    '--password="abc123secret"'
   ];
   for (const input of inputs) {
     const redacted = redactChatData(input);
@@ -53,6 +57,24 @@ test("命令中的密钥片段被脱敏", () => {
     assert.ok(!/sk-[A-Za-z0-9_-]{12,}/u.test(redacted), `应脱敏 sk 令牌: ${input}`);
     assert.match(redacted, /\[REDACTED\]/u);
   }
+});
+
+test("引号包裹的密钥脱敏后保留引号", () => {
+  assert.equal(redactChatData('secret="abc123secret"'), 'secret="[REDACTED]"');
+  assert.equal(redactChatData("token = 'abc123secret'"), "token = '[REDACTED]'");
+  assert.equal(redactChatData('Authorization: Bearer "abc123secret"'), 'Authorization: Bearer "[REDACTED]"');
+  assert.equal(redactChatData('--password="abc123secret"'), '--password="[REDACTED]"');
+});
+
+test("projectRoot 缺省时兜底到进程工作目录", () => {
+  assert.equal(classifyShellCommand({ command: "git status" }).category, "read");
+  assert.equal(classifyShellCommand({ command: "rm -rf /" }).risk, "extreme");
+  assert.equal(classifyShellCommand({ command: "git status", cwd: PROJECT }).category, "read");
+});
+
+test("..foo 之类的项目内目录不被判为 outside", () => {
+  assert.equal(classifyShellCommand({ command: "git status", cwd: "D:\\Novels\\demo\\..foo", projectRoot: PROJECT }).scope, "project");
+  assert.equal(classifyShellCommand({ command: "git status", cwd: "D:\\Novels\\demo\\..\\sibling", projectRoot: PROJECT }).scope, "outside");
 });
 
 test("不含密钥的文本原样保留", () => {
