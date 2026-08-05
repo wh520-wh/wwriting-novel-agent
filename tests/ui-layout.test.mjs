@@ -2,7 +2,8 @@
 //
 // U4 按钮布局：
 //   - 「复制」「重新发送」灰显时带 title tooltip（禁用原因）+ aria-disabled="true"；
-//   - 「写大纲」类动作已内联在对话流末尾（建议动作卡 deriveSuggestions 的「帮我完善大纲」），
+//   - 「写大纲」类动作已内联在对话流末尾（建议动作卡 deriveSuggestions 的
+//     「检查项目结构 / 开始写第一章 / 梳理人物关系」，Task 3 后不再有「帮我完善大纲」），
 //     无孤立悬浮按钮（Task 8 调查结论：全库无悬浮按钮，内联建议卡即终态）。
 // U5 底部输入区：
 //   - 底部栏左（模型选择器）/ 中（输入区）/ 右（发送）三区；
@@ -272,16 +273,19 @@ test("U4 有内容的按钮不灰显：无 aria-disabled 且无禁用 title", as
 // U4：写大纲类动作内联在对话流末尾（建议动作卡；全库无孤立悬浮按钮）
 // ---------------------------------------------------------------------------
 
-test("U4 大纲动作内联在对话流末尾：appendSuggestionCards 追加含「大纲」的建议卡", async () => {
+test("U4 大纲动作内联在对话流末尾：appendSuggestionCards 追加空态建议卡（检查项目结构 / 开始写第一章 / 梳理人物关系）", async () => {
   const { createThreadRenderer } = await import("../src/app-shell/thread-renderer.js");
   const { refs, ctx } = makeHarness();
   const renderer = createThreadRenderer(ctx);
   renderer.appendSuggestionCards({ project: {}, summary: {}, chapters: [] });
   const cards = refs.thread.querySelectorAll(".suggestion-card");
   assert.ok(cards.length >= 3, "空对话态应渲染建议动作卡");
+  assert.ok(cards[0].textContent.includes("检查项目结构"), "首张建议卡应为检查项目结构");
+  assert.ok(cards[1].textContent.includes("开始写第一章"), "第二张建议卡应为开始写第一章");
   const last = cards[cards.length - 1];
-  assert.ok(last.textContent.includes("大纲"), "对话流末尾建议卡应含大纲动作（帮我完善大纲）");
-  assert.ok(chatDeriveSource.includes("大纲"), "大纲建议应来自 deriveSuggestions");
+  assert.ok(last.textContent.includes("梳理人物关系"), "对话流末尾建议卡应含梳理人物关系动作");
+  assert.ok(chatDeriveSource.includes("梳理人物关系"), "建议应来自 deriveSuggestions");
+  assert.ok(!chatDeriveSource.includes("大纲"), "旧「帮我完善大纲」建议不得残留（Task 3 已替换）");
 });
 
 // ---------------------------------------------------------------------------
@@ -351,8 +355,9 @@ test("yolo 档在设置和 composer 中统一显示红色 YOLO", async () => {
   assert.equal(tier.label, "YOLO");
   assert.equal(tier.short, "YOLO");
   // 红色必须落在 yolo 自身的规则块内（不跨规则），确保设置弹窗与 composer pill 一致用红。
+  // （?<![\w-]）锚定属性名边界：border-color: var(--red) 不得满足断言。
   assert.match(cssSource, /\.cbar-pill--yolo\s*\{[^}]*color:\s*var\(--red\)[^}]*\}/u, ".cbar-pill--yolo 规则块内应含红色文字");
-  assert.match(cssSource, /\.spd-radio-option--yolo[^{}]*\{[^}]*color:\s*var\(--red\)[^}]*\}/u, ".spd-radio-option--yolo 规则块内应含红色文字");
+  assert.match(cssSource, /\.spd-radio-option--yolo[^{}]*\{[^}]*?(?<![\w-])color:\s*var\(--red\)[^}]*\}/u, ".spd-radio-option--yolo 规则块内应含独立 color 红色文字");
 });
 
 // ---------------------------------------------------------------------------
