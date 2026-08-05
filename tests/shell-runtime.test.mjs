@@ -7,20 +7,37 @@ import { runShellCommand } from "../src/core/chat/shell-runtime.mjs";
 
 test("shell 返回 cwd、增量输出和退出码", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "ww-shell-"));
-  const chunks = [];
-  const command = `"${process.execPath}" -e "console.log(process.cwd()); console.error('stderr-line')"`;
-  const out = await runShellCommand({ command, cwd, timeoutMs: 5000, onOutput: (event) => chunks.push(event) });
-  assert.equal(out.exitCode, 0);
-  assert.match(out.stdout, new RegExp(cwd.replaceAll("\\", "\\\\"), "i"));
-  assert.match(out.stderr, /stderr-line/u);
-  assert.ok(chunks.some((chunk) => chunk.stream === "stdout"));
-  assert.ok(chunks.some((chunk) => chunk.stream === "stderr"));
+  try {
+    const chunks = [];
+    const command = `"${process.execPath}" -e "console.log(process.cwd()); console.error('stderr-line')"`;
+    const out = await runShellCommand({ command, cwd, timeoutMs: 5000, onOutput: (event) => chunks.push(event) });
+    assert.equal(out.exitCode, 0);
+    assert.equal(out.command, command);
+    assert.equal(out.cwd, cwd);
+    assert.equal(out.signal, null);
+    assert.ok(out.durationMs >= 0);
+    assert.match(out.stdout, new RegExp(cwd.replaceAll("\\", "\\\\"), "i"));
+    assert.match(out.stderr, /stderr-line/u);
+    assert.ok(chunks.some((chunk) => chunk.stream === "stdout"));
+    assert.ok(chunks.some((chunk) => chunk.stream === "stderr"));
+    // 增量捕获完整：所有 stdout/stderr 分片按序拼接后应等于最终捕获结果
+    assert.equal(
+      chunks.filter((c) => c.stream === "stdout").map((c) => c.text).join(""),
+      out.stdout
+    );
+    assert.equal(
+      chunks.filter((c) => c.stream === "stderr").map((c) => c.text).join(""),
+      out.stderr
+    );
+  } finally {
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
 });
 
 test("shell 超时会终止进程树", async () => {
   const command = `"${process.execPath}" -e "setInterval(() => {}, 1000)"`;
   await assert.rejects(
-    () => runShellCommand({ command, cwd: os.tmpdir(), timeoutMs: 50 }),
+    () => runShellCommand({ command, cwd: os.tmpdir(), timeoutMs: 200 }),
     (error) => error.code === "shell_timeout"
   );
 });
@@ -31,6 +48,20 @@ test("shell 响应 AbortSignal", async () => {
   const pending = runShellCommand({ command, cwd: os.tmpdir(), timeoutMs: 5000, signal: controller.signal });
   controller.abort("用户停止");
   await assert.rejects(pending, (error) => error.code === "shell_cancelled");
+});
+
+test("shell 调用前已 abort 直接 reject 且不 spawn", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    () =>
+      runShellCommand({
+        command: `"${process.execPath}" -e "setInterval(() => {}, 1000)"`,
+        cwd: os.tmpdir(),
+        signal: controller.signal
+      }),
+    (error) => error.code === "shell_cancelled"
+  );
 });
 
 test("shell spawn 失败时 reject 且不挂起", async () => {
