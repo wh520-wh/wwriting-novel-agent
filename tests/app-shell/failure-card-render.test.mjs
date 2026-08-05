@@ -111,11 +111,12 @@ describe('renderFailureCard', () => {
     assert.equal(el.dataset.ts, '2026-06-01T10:30:00Z');
   });
 
-  it('header contains seq, title, and formatted time', () => {
+  it('header contains human-readable title and formatted time, without internal seq', () => {
     const el = renderFailureCard(makeCard(), { onAction() {} });
     const head = el.children[0];
     assert.equal(head.tagName, 'header');
-    assert.ok(head.textContent.includes('故障 #1'));
+    // 内部序号不应暴露：head 不得含「故障 #」
+    assert.ok(!head.textContent.includes('故障 #'));
     assert.ok(head.textContent.includes('字数不足'));
     // formatTime converts UTC to local; 10:30Z = 18:30 UTC+8
     assert.ok(head.textContent.includes('30'), `expected time fragment in "${head.textContent}"`);
