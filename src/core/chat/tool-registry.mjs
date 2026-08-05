@@ -89,7 +89,15 @@ function legacySchema(params = {}) {
 
 export function renderToolDocs(registry) {
   return registry.list().map((tool) => {
-    const params = Object.entries(tool.params ?? {}).map(([k, v]) => `    ${k}: ${v}`).join("\n");
+    const schemaProperties = tool.inputSchema?.properties;
+    const params = Object.entries(schemaProperties ?? tool.params ?? {})
+      .map(([name, value]) => {
+        const description = typeof value === "object" && value !== null
+          ? value.description ?? value.type ?? JSON.stringify(value)
+          : value;
+        return `    ${name}: ${description}`;
+      })
+      .join("\n");
     return [`- ${tool.name} (${tool.kind}): ${tool.description}`, params].filter(Boolean).join("\n");
   }).join("\n");
 }
