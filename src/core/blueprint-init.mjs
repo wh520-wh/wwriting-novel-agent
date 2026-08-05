@@ -13,7 +13,9 @@
 // - 单轮生成实现（一个 prompt 让模型一次输出两份文件内容，分隔符切分）。
 //   题材字段分化模板（Task 10，blueprint-templates.mjs）：按用户题材命中模板后，
 //   把必填字段清单注入 prompt（OUTLINE 总纲区第 5 节起 / SETTING 题材专属设定区）；
-//   未命中走基础模板，仅靠"按题材自然分化"指令兜底。
+//   显式需求未命中走基础模板，仅靠"按题材自然分化"指令兜底；
+//   空需求时（Task 7）从项目 story_seed 推断题材：命中→对应模板，
+//   未命中/无设定→默认东方玄幻模板兜底。
 // - 旧项目迁移（runBlueprintInitForLegacy）：对 legacy 项目（已有章节无 OUTLINE.md），
 //   输入改为已有章节摘要 + continuity + task_plan.md，AI 反推生成蓝图初稿；
 //   反推不保证与正文完全一致（返回 notice 提示用户对照确认）。
@@ -23,6 +25,11 @@ import { loadContinuity, renderContinuityMarkdown } from "./continuity-store.mjs
 import { pathExists, safeJoin, writeFileAtomic } from "./fs-utils.mjs";
 import { loadChapterIndex, loadProject, loadState, saveState } from "./project-store.mjs";
 import { GENRE_TEMPLATES, pickTemplate } from "./blueprint-templates.mjs";
+
+// 空需求兜底模板（模块级常量）：GENRE_TEMPLATES 条目本身无 genre 字段（只有
+// pickTemplate 命中时才附加 genre 名），直接引用会让 prompt 输出
+// 「已匹配题材模板「undefined」」，此处显式补齐，与"默认东方玄幻方向"语义自洽。
+const XUANHUAN_FALLBACK = { genre: "玄幻", ...GENRE_TEMPLATES["玄幻"] };
 
 // 模型输出两块内容的分隔行（独立成行）。导出供测试 mock 复用，避免测试与实现漂移。
 export const BLUEPRINT_SPLIT = "<<<BLUEPRINT_SPLIT>>>";
@@ -161,13 +168,25 @@ async function generateBlueprint(projectRoot, modelClient, { signal, buildPrompt
 }
 
 function buildBlueprintPrompt({ project, userRequirements }) {
-  // 题材匹配必须基于原始输入：无输入时显式命中默认玄幻模板（与"默认东方玄幻方向"语义自洽），
-  // 不依赖默认文案是否含"玄幻"字样（否则改文案措辞会静默改变匹配结果）。
+  // 题材匹配必须基于原始输入（rawRequirement 原样传入 pickTemplate，不依赖默认
+  // 文案是否含"玄幻"字样——否则改文案措辞会静默改变匹配结果）；兜底方向由下方
+  // 题材选择逻辑显式指定：空需求仅当 seed 未命中题材词/为空时才落默认东方玄幻。
   const rawRequirement = String(userRequirements ?? "").trim();
-  const requirement = rawRequirement || "（用户未提供具体要求，按通用东方玄幻方向规划）";
+  // 空需求固定文案用中性表述：题材方向以 seed 推断/模板匹配为准，不写死"玄幻"——
+  // seed 命中其他题材时实际会走对应模板，否则 prompt 内「用户需求」与题材模板自相矛盾。
+  const requirement = rawRequirement || "（用户未提供具体要求，题材方向以故事设定与模板匹配为准）";
   const title = project?.title ? `书名：${project.title}` : null;
-  const seed = project?.story_seed ? `故事种子：${project.story_seed}` : null;
-  const template = rawRequirement ? pickTemplate(rawRequirement) : GENRE_TEMPLATES["玄幻"];
+  // seed 统一先 trim 一次，注入行与题材推断复用同一派生（纯空格 seed 视为无设定：
+  // 不注入「故事种子：」空行，也不参与推断）。
+  const seedText = String(project?.story_seed ?? "").trim();
+  const seed = seedText ? `故事种子：${seedText}` : null;
+  // 题材选择：显式需求优先（命中→对应模板；未命中→基础模板，pickTemplate 返回
+  // undefined，契约不变）；空需求时从故事设定推断（命中题材词→对应模板；
+  // 未命中/无设定→默认东方玄幻兜底，保持既有行为）。不把 seed 当 requirements 传——
+  // 那样会让 pickTemplate 只依赖种子关键词，且与下方 story_seed 的 prompt 注入重复。
+  const template = rawRequirement
+    ? pickTemplate(rawRequirement)
+    : (seedText ? (pickTemplate(seedText) ?? XUANHUAN_FALLBACK) : XUANHUAN_FALLBACK);
   return [
     "你是长篇小说的规划引擎。请根据用户需求，按下面的固定结构生成两份蓝图文件的内容（markdown 格式）。",
     "内容必须贴合用户需求的题材并具体填充，不要留空占位。",

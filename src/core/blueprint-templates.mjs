@@ -4,6 +4,9 @@
 // - settingFields → SETTING.md「三、题材专属设定」区的字段。
 // 匹配不到题材时 pickTemplate 返回 undefined，走基础模板（不强制字段，
 // 靠 prompt 里已有的"按题材自然分化"指令兜底）。
+// 注意（Task 7）：调用方 blueprint-init 在用户未给需求时，会先用项目 story_seed
+// 调本函数推断题材，未命中才显式兜底默认玄幻模板——本函数保持纯匹配语义
+// （undefined = 未命中），不内嵌兜底；显式需求未命中时契约不变（undefined → 基础模板）。
 export const GENRE_TEMPLATES = {
   玄幻: {
     outlineFields: ["主角金手指", "能力体系", "修为阶层"],
