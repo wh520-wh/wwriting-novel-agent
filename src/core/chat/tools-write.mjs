@@ -391,7 +391,14 @@ export function registerWriteTools(registry) {
     name: "update_settings",
     kind: "write",
     description: "更新项目设置（走全套校验；不能写入裸 API key）。",
-    params: { patch: "设置补丁对象，如 {target_chapters: 12}" },
+    inputSchema: {
+      type: "object",
+      properties: {
+        patch: { type: "object", description: "设置补丁对象", additionalProperties: true }
+      },
+      required: ["patch"],
+      additionalProperties: false
+    },
     run: async (args, ctx) => {
       const result = await updateProjectSettings(ctx.projectRoot, args.patch ?? {});
       return {

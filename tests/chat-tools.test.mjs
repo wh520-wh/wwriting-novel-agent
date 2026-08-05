@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createToolRegistry, executeTool, renderToolDocs, checkToolPermission } from "../src/core/chat/tool-registry.mjs";
+import { createToolRegistry, executeTool, renderToolDocs, checkToolPermission, toOpenAITools } from "../src/core/chat/tool-registry.mjs";
 import { createProject } from "../src/core/project-store.mjs";
 import { readEvents } from "../src/core/event-log.mjs";
 
@@ -23,6 +23,48 @@ test("registry 注册与文档渲染", () => {
   assert.match(docs, /demo_read/u);
   assert.match(docs, /演示/u);
   assert.match(docs, /x: 数字/u);
+});
+
+test("toOpenAITools 保留工具声明的 inputSchema，并兼容旧 params", () => {
+  const registry = createToolRegistry();
+  registry.register({
+    name: "typed_tool",
+    kind: "read",
+    description: "typed",
+    inputSchema: {
+      type: "object",
+      properties: {
+        timeout_ms: { type: "integer", minimum: 100 },
+        patch: { type: "object", additionalProperties: true }
+      },
+      required: ["timeout_ms"],
+      additionalProperties: false
+    },
+    run: async () => ({ ok: true })
+  });
+  registry.register({
+    name: "legacy_tool",
+    kind: "read",
+    params: { query: "搜索词" },
+    run: async () => ({ ok: true })
+  });
+
+  const tools = toOpenAITools(registry);
+  assert.equal(tools[0].function.parameters.properties.timeout_ms.type, "integer");
+  assert.deepEqual(tools[0].function.parameters.required, ["timeout_ms"]);
+  assert.equal(tools[1].function.parameters.properties.query.type, "string");
+});
+
+test("registry 接受 describeAction 动态描述器", () => {
+  const registry = createToolRegistry();
+  registry.register({
+    name: "dynamic",
+    kind: "write",
+    params: {},
+    describeAction: (args) => ({ category: args.remove ? "delete" : "write" }),
+    run: async () => ({ ok: true })
+  });
+  assert.equal(registry.get("dynamic").describeAction({ remove: true }).category, "delete");
 });
 
 test("executeTool 未知工具返回 ok:false 不抛", async () => {
