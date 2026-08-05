@@ -1032,7 +1032,7 @@ test("applyFactCheckConflicts 写 needs_revision 状态与 quality_gate_failed �
   assert.equal(state.current_stage, "needs_revision");
   assert.ok(state.last_quality_gate_results.some((g) => g.gate === "fact-check-gate" && g.status === "failed"));
   const events = await readEvents(projectRoot);
-  assert.ok(events.some((e) => e.type === "quality_gate_failed" && e.message.includes("fact-check")));
+  assert.ok(events.some((e) => e.type === "quality_gate_failed" && e.message.includes("事实核对")));
 });
 
 test("单章契约完成后不调用第2章模型", async () => {
@@ -1706,7 +1706,7 @@ test("ADR-0001 反思闭环：fact-check 发现冲突 -> edit_chapter 改 -> 无
   assert.ok(events.some((e) => e.type === "agent_loop_tool_executed" && e.data?.tool === "edit_chapter"), "模型应用 edit_chapter 改矛盾");
   assert.ok(!events.some((e) => e.type === "fact_check_auto_fixed"), "不应有代码自动修复");
   // 4. 第二次 fact-check 无冲突
-  assert.ok(events.some((e) => e.type === "fact_check_completed" && e.message.includes("未发现冲突")), "第二次 fact-check 应无冲突");
+  assert.ok(events.some((e) => e.type === "fact_check_completed" && e.message.includes("事实核对未发现冲突")), "第二次 fact-check 应无冲突");
   // 5. 章节最终完成
   const index = await loadChapterIndex(projectRoot);
   assert.equal(index.chapters[0].status, "completed", "章节应完成");

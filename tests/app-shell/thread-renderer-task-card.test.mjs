@@ -412,7 +412,7 @@ test("computeSteps: 审稿进行中且 fact-check 有轮次记录时附带子步
   });
   const reviewing = steps.find((s) => s.name === "审稿");
   assert.equal(reviewing.status, "running");
-  assert.equal(reviewing.substep, "正在核对设定");
+  assert.equal(reviewing.substep, "正在事实核对");
 });
 
 test("computeSteps: 审稿进行中但 fact-check 无轮次记录时无子步骤", () => {
