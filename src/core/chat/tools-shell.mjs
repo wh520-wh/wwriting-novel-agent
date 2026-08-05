@@ -1,9 +1,8 @@
 // 通用 shell 工具：允许聊天 Agent 在本机命令行执行任意命令（默认目录为当前小说项目）。
 // 风险元数据由 describeAction 按命令静态分类得出（read/write/delete/network/install/process/control），
 // 模型传入的 risk/allowed 字段一律忽略——inputSchema 里根本不暴露这两个字段。
-// ctx.signal / ctx.onToolOutput 为后续任务预留：signal 接线后用户停止可中止命令，
-// onToolOutput 接线后流式输出进入聊天活动；当前 executeTool 透传的 ctx 尚未包含二者，
-// 未接线时中止依赖 runShellCommand 自身 timeout。
+// ctx.signal / ctx.onToolOutput 由 chat-agent 接线：signal 用于用户停止时中止命令（进程树级），
+// onToolOutput 把脱敏后的增量输出转发为 chat_activity 流式事件（同一 activity_id）。
 import { classifyShellCommand } from "./command-risk.mjs";
 import { redactChatData } from "./chat-redaction.mjs";
 import { runShellCommand } from "./shell-runtime.mjs";
