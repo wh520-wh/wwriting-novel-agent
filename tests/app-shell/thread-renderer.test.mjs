@@ -103,22 +103,38 @@ class MockElement {
   }
 
   append(...nodes) {
-    this.children.push(...nodes);
+    for (const node of nodes) {
+      if (node instanceof MockElement) node._parent = this;
+      this.children.push(node);
+    }
   }
   appendChild(node) {
+    if (node instanceof MockElement) node._parent = this;
     this.children.push(node);
     return node;
   }
   replaceChildren(...nodes) {
+    for (const child of this.children) {
+      if (child instanceof MockElement) child._parent = null;
+    }
     this.children = [...nodes];
+    for (const node of nodes) {
+      if (node instanceof MockElement) node._parent = this;
+    }
   }
   insertBefore(node, ref) {
+    if (node instanceof MockElement) node._parent = this;
     const index = this.children.indexOf(ref);
     if (index >= 0) this.children.splice(index, 0, node);
     else this.children.push(node);
   }
   remove() {
-    /* 挂载关系由测试直接断言，无需维护 */
+    // Task 9: 活动流 clear() 依赖真实 detach 语义（线程重建/占位移除共用）。
+    if (this._parent) {
+      const index = this._parent.children.indexOf(this);
+      if (index >= 0) this._parent.children.splice(index, 1);
+      this._parent = null;
+    }
   }
   replaceWith(node) {
     this.replaceChildren(node);
@@ -1075,3 +1091,159 @@ test("空态建议卡：blueprint none 也发送普通聊天指令", withLocalSt
   initCard._fire("click");
   assert.deepEqual(submitted, ["/init"]);
 }));
+
+// ---------------------------------------------------------------------------
+// Task 9: 确认卡改造 —— 普通确认 3 按钮（once/task/reject）+ 极端确认 force 解锁
+// ---------------------------------------------------------------------------
+
+function normalPending(overrides = {}) {
+  return {
+    id: "pa-1",
+    created_at: "2026-08-05T10:00:00.000Z",
+    status: "pending",
+    tool: "shell",
+    args: { command: "npm test", purpose: "运行测试" },
+    description: "运行项目测试以确认改动无回归",
+    action: {
+      category: "process", scope: "project", risk: "normal",
+      title: "运行命令", description: "运行项目测试以确认改动无回归",
+      command: "npm test", cwd: "D:\\Book", targets: ["D:\\Book"], preview: null,
+    },
+    command: "npm test",
+    cwd: "D:\\Book",
+    targets: ["D:\\Book"],
+    preview: null,
+    confirmation_kind: "normal",
+    confirmation_text: null,
+    ...overrides,
+  };
+}
+
+function stubFetch() {
+  const calls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({ url: String(url), body: JSON.parse(options.body ?? "{}") });
+    return { ok: true, text: async () => JSON.stringify({ ok: true }) };
+  };
+  return calls;
+}
+
+function tick() { return new Promise((resolve) => setTimeout(resolve, 0)); }
+
+test("普通确认卡：3 按钮 once/task/reject，点击发 decision 契约（含 command/cwd/targets）", async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { refs, ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+  const calls = stubFetch();
+  try {
+    renderer.syncChatThread({
+      messages: [],
+      pendingAction: normalPending({
+        targets: ["D:\\Book\\tmp\\a.txt", "D:\\Book\\tmp\\b.txt"],
+        action: {
+          ...normalPending().action,
+          targets: ["D:\\Book\\tmp\\a.txt", "D:\\Book\\tmp\\b.txt"],
+        },
+      }),
+    });
+    const card = refs.thread.querySelector(".chat-confirm-card");
+    assert.ok(card, "普通确认卡应渲染 .chat-confirm-card");
+    assert.match(card.textContent, /待确认：运行命令/, "shell 标题走 tool-labels 人话");
+    assert.match(card.textContent, /运行项目测试以确认改动无回归/, "description 应展示");
+    assert.match(card.textContent, /npm test/, "命令应展示");
+    assert.match(card.textContent, /D:\\Book/, "目录应展示");
+    assert.match(card.textContent, /tmp\\a\.txt/, "删除目标应完整展示");
+    const buttons = card.querySelectorAll("button");
+    assert.equal(buttons.length, 3, "普通确认恰好 3 个按钮");
+    assert.deepEqual(
+      buttons.map((b) => b.textContent),
+      ["仅允许这一次", "本次任务允许同类操作", "拒绝"],
+      "按钮文案：仅本次 / 本次任务同类 / 拒绝"
+    );
+    card.querySelector('[data-testid="chat-confirm-once"]')._fire("click");
+    await tick();
+    assert.deepEqual(calls[0].body, { decision: "once", confirmationText: "", projectRoot: "D:\\novel-a" });
+    assert.ok(card.classList.contains("chat-confirm-card--resolved"), "once 后卡片 resolved");
+    card.querySelector('[data-testid="chat-confirm-task"]')._fire("click");
+    await tick();
+    assert.equal(calls[1].body.decision, "task", "task 按钮发 decision=task");
+    card.querySelector('[data-testid="chat-confirm-reject"]')._fire("click");
+    await tick();
+    assert.equal(calls[2].body.decision, "reject", "reject 按钮发 decision=reject");
+    assert.ok(card.classList.contains("chat-confirm-card--rejected"), "reject 后卡片 rejected");
+  } finally {
+    delete globalThis.fetch;
+  }
+});
+
+test("极端危险确认卡：独立红色结构 + force 需输入确认文字（trim 完全匹配）解锁", async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { refs, ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+  const calls = stubFetch();
+  try {
+    renderer.syncChatThread({
+      messages: [],
+      pendingAction: normalPending({
+        command: "rm -rf /",
+        cwd: "C:\\",
+        targets: ["C:\\"],
+        description: "清空系统盘根目录",
+        action: { ...normalPending().action, command: "rm -rf /", cwd: "C:\\", targets: ["C:\\"] },
+        confirmation_kind: "extreme",
+        confirmation_text: "强制继续 3FA9C2",
+      }),
+    });
+    const card = refs.thread.querySelector(".chat-danger-confirm");
+    assert.ok(card, "极端确认应渲染独立 .chat-danger-confirm");
+    assert.match(card.textContent, /极端危险操作/, "标题");
+    assert.match(card.textContent, /可能破坏磁盘、系统或大范围用户数据，且无法自动恢复/, "明确后果区");
+    assert.match(card.textContent, /rm -rf \//, "后果区展示命令");
+    assert.match(card.textContent, /C:\\/, "后果区展示目标");
+    const force = card.querySelector('[data-testid="chat-danger-force"]');
+    assert.ok(force, "应有强制继续按钮");
+    assert.equal(force.disabled, true, "初始 disabled");
+    const input = card.querySelector(".chat-danger-input");
+    assert.equal(input.placeholder, "强制继续 3FA9C2", "placeholder 展示确认文字");
+    input.value = "强制继续 WRONG";
+    input._fire("input");
+    assert.equal(force.disabled, true, "文字不匹配仍 disabled");
+    input.value = "  强制继续 3FA9C2  ";
+    input._fire("input");
+    assert.equal(force.disabled, false, "trim 后完全匹配解锁");
+    force._fire("click");
+    await tick();
+    assert.equal(calls[0].body.decision, "force", "force 发 decision=force");
+    assert.equal(calls[0].body.confirmationText, "强制继续 3FA9C2", "confirmationText 原样带回（trim 后）");
+    assert.equal(calls[0].body.projectRoot, "D:\\novel-a");
+    card.querySelector('[data-testid="chat-confirm-reject"]')._fire("click");
+    await tick();
+    assert.equal(calls[1].body.decision, "reject", "极端卡提供拒绝逃生门");
+  } finally {
+    delete globalThis.fetch;
+  }
+});
+
+test("Task 9 活动流：chat_activity 经 onChatActivity 渲染，线程重建后 reset 可再渲染", async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { refs, ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+  renderer.onChatActivity({
+    type: "chat_activity", turn_id: "t1", activity_id: "a1", phase: "command",
+    state: "running", label: "运行测试", output_delta: "one\n",
+  });
+  assert.equal(refs.thread.querySelectorAll('[data-activity-id="a1"]').length, 1);
+  assert.ok(refs.thread.querySelector(".chat-activity-stream"), "活动流容器应挂在线程内");
+  renderer.onChatActivity({
+    type: "chat_activity", turn_id: "t1", activity_id: "a1", phase: "command",
+    state: "succeeded", label: "测试完成", exit_code: 0,
+  });
+  assert.equal(refs.thread.querySelectorAll('[data-activity-id="a1"]').length, 1, "同 id 不重复建行");
+  renderer.resetChatActivity();
+  assert.equal(refs.thread.querySelectorAll(".chat-activity-item").length, 0, "reset 后行清空");
+  renderer.onChatActivity({
+    type: "chat_activity", turn_id: "t1", activity_id: "a2", phase: "tool",
+    state: "running", label: "读取章节",
+  });
+  assert.equal(refs.thread.querySelectorAll('[data-activity-id="a2"]').length, 1, "reset 后重建容器并可继续渲染");
+});

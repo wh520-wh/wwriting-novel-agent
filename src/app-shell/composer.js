@@ -1,6 +1,5 @@
 import { icon } from "./icons.js";
 import { postJson, stopChat } from "./api-client.js";
-import { toolLabel } from "./tool-labels.mjs";
 import { getCommand, listCommands } from "./command-registry.mjs";
 import "./commands/index.mjs";  // side-effect: register 5 built-in commands
 import { PERMISSION_TIERS, detectPermissionTier, getTierById } from "./permission-tiers.mjs";
@@ -102,9 +101,10 @@ export function createComposer(ctx) {
   }
 
   // --- S4.5 活动占位：chat busy 期间的过程反馈 + 停止 ---
-  let activePlaceholder = null;   // { wrap, say, stop, dispose, setActivity }
+  // Task 9 起实时活动由 SSE chat_activity 驱动（thread-renderer 活动流），
+  // 占位行只作 SSE 断线/他窗口在跑时的兜底，不再从轮询 tool history 推导文案。
+  let activePlaceholder = null;   // { wrap, say, stop, dispose }
   let localSendInFlight = false;  // 本地 send 未返回时不让轮询提前撤占位
-  let latestActivity = "";
 
   function isChatBusy() {
     return localSendInFlight || Boolean(activePlaceholder);
@@ -148,11 +148,10 @@ export function createComposer(ctx) {
     const startedAt = Date.now();
     const timer = window.setInterval(() => {
       const secs = Math.round((Date.now() - startedAt) / 1000);
-      say.textContent = `${latestActivity || "思考中"} · 已 ${secs} 秒`;
+      say.textContent = `思考中 · 已 ${secs} 秒`;
     }, 1000);
     activePlaceholder = {
       wrap, say, stop,
-      setActivity: (text) => { latestActivity = text; },
       dispose: () => { window.clearInterval(timer); wrap.remove(); }
     };
     return activePlaceholder;
@@ -161,19 +160,13 @@ export function createComposer(ctx) {
   function removeActivityPlaceholder() {
     activePlaceholder?.dispose();
     activePlaceholder = null;
-    latestActivity = "";
   }
 
-  // renderDashboard 每拍调用：busy 驱动占位生命周期 + 回显最新工具活动。
+  // renderDashboard 每拍调用：仅 busy 生命周期驱动占位（实时文案走 SSE 活动流）。
   function syncChatBusy(data) {
     const busy = data?.chatHistory?.busy === true;
     if (busy && !activePlaceholder) showActivityPlaceholder(); // 确认卡续轮 / 他窗口在跑
     if (!busy && activePlaceholder && !localSendInFlight) removeActivityPlaceholder();
-    if (activePlaceholder) {
-      const msgs = data?.chatHistory?.messages ?? [];
-      const lastTool = [...msgs].reverse().find((m) => m.role === "tool");
-      if (lastTool) activePlaceholder.setActivity(`动作：${toolLabel(lastTool.tool, lastTool.args)} · 继续思考`);
-    }
   }
 
   // --- four-tier approval / mode pill (S4 Task 8) ---

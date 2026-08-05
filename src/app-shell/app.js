@@ -582,6 +582,9 @@ async function loadDashboard(options = {}) {
       const event = JSON.parse(msg.data);
       if (event.type === "model_delta") {
         threadRenderer.onModelDelta?.(event.text);
+      } else if (event.type === "chat_activity") {
+        // Task 9: 实时活动（思考/工具/命令增量输出）→ 聊天区活动流，不经 live turn 状态机。
+        threadRenderer.onChatActivity?.(event);
       } else {
         threadRenderer.onRunEvent?.(event);
       }
@@ -632,7 +635,11 @@ function clearTransientState() {
   // 顶部活动状态：renderer / motion 会在下次 renderDashboard 重画。
   previousActivity = null;
   previousBadgeSummary = null;
-  if (refs.thread) refs.thread.replaceChildren();
+  if (refs.thread) {
+    refs.thread.replaceChildren();
+    // Task 9: 线程重建，活动流容器与已合并行随之重置（下次 chat_activity 事件重新挂载）。
+    threadRenderer.resetChatActivity?.();
+  }
   if (refs.threadStatus) refs.threadStatus.textContent = "";
   if (refs.toastStack) {
     for (const toast of [...refs.toastStack.children]) toast.remove();
