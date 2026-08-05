@@ -14,10 +14,12 @@ function makeComposer(refs = {}) {
 
 let calls = [];
 let failNext = false;
+let toasts = [];
 
 beforeEach(() => {
   calls = [];
   failNext = false;
+  toasts = [];
   ctxState.loaded = 0;
   ctxState.refreshed = 0;
   ctxState.errors = [];
@@ -95,6 +97,23 @@ test("submitBlueprintInit 空 requirements 也发送（服务端走默认玄幻�
   assert.equal(JSON.parse(calls[0].options.body).requirements, "");
 });
 
+test("submitBlueprintInit 空 requirements 提示默认方向（文案含「从故事设定推断」，不硬编码必然玄幻）", async () => {
+  const composer = createComposer({ ...makeComposerContext(), refs: makeRefs() });
+  await composer.submitBlueprintInit("");
+
+  const toast = toasts.find((t) => t.msg.includes("从故事设定推断"));
+  assert.ok(toast, "空需求应弹出默认方向提示");
+  assert.equal(toast.level, "info");
+  assert.ok(toast.msg.includes("东方玄幻"), "文案说明推断不到时的兜底方向");
+});
+
+test("submitBlueprintInit 非空 requirements 不弹默认方向提示", async () => {
+  const composer = createComposer({ ...makeComposerContext(), refs: makeRefs() });
+  await composer.submitBlueprintInit("都市");
+
+  assert.ok(!toasts.some((t) => t.msg.includes("从故事设定推断")), "显式题材时不提示默认方向");
+});
+
 test("submitBlueprintInit 失败：报错保留输入，不刷新", async () => {
   failNext = true;
   const ctx = makeComposerContext();
@@ -117,7 +136,7 @@ function makeComposerContext() {
     openDrawer: () => {},
     openSettingsModal: () => {},
     openCreateModal: () => {},
-    showToast: () => {},
+    showToast: (msg, level) => { toasts.push({ msg, level }); },
     showActionError: (err) => { ctxState.errors.push(err.message); },
     threadRenderer: {},
     getAskEntries: () => new Map(),

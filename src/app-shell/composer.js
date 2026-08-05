@@ -784,12 +784,19 @@ export function createComposer(ctx) {
   }
 
   // /init（spec §1.4）：显式触发蓝图初始化。requirements 可为空——
-  // 服务端 pickTemplate 对空输入走默认玄幻模板，生成不依赖用户补充题材。
+  // 服务端会从项目故事设定推断题材，推断不到时走默认玄幻模板，生成不依赖用户补充题材。
   async function submitBlueprintInit(requirements) {
     const projectRoot = ctx.getCurrentProjectRoot();
     if (!projectRoot) {
       ctx.showToast("请先新建或打开一部小说。", "info");
       return;
+    }
+    // 空需求提示默认方向（Task 7）：题材将从故事设定推断，推断不到时按通用东方玄幻兜底。
+    // 文案不硬编码"必然玄幻"——seed 命中题材词时实际会走对应模板。
+    // ★ 不声明 const requirements——与函数参数重名是语法错误，用 req。
+    const req = String(requirements ?? "").trim();
+    if (!req) {
+      ctx.showToast("未提供题材偏好，将从故事设定推断题材；推断不到时按通用东方玄幻方向规划。", "info");
     }
     const token = ctx.projectScope?.capture(projectRoot);
     ctx.refs.composerSubmit.disabled = true;
@@ -798,7 +805,7 @@ export function createComposer(ctx) {
       ctx.showToast("正在生成大纲与设定（OUTLINE.md + SETTING.md），可能需要一两分钟…", "info");
       const result = await postJson("/api/projects/init-blueprint", {
         projectRoot,
-        requirements: String(requirements ?? "").trim(),
+        requirements: req,
       });
       if (token && !ctx.projectScope.isCurrent(token)) return;
       clearComposerInput();
