@@ -1889,7 +1889,7 @@ export function createThreadRenderer(ctx) {
     const reason = data.reason ?? null;
     const name = data.name ?? null;
     const title = status ? `模型调用失败 · ${status}` : (name ? `写作任务失败 · ${name}` : "写作任务失败");
-    const code = [status, reason].filter(Boolean).join(" · ") || name || "unknown_error";
+    const code = [status, reason].filter(Boolean).join(" · ") || name || "未知错误";
     // 规格书 6.2/5.3：失败同样把已流出的残段折叠为「（未完成）」文字标记，
     // 工具行状态变红「已中断」——错误显性化，不留未折叠的过程元素占位。
     foldResidueParagraph(turn);
