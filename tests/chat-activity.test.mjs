@@ -11,7 +11,7 @@ import { createToolRegistry } from "../src/core/chat/tool-registry.mjs";
 import { registerReadTools } from "../src/core/chat/tools-read.mjs";
 import { registerWriteTools } from "../src/core/chat/tools-write.mjs";
 import { registerShellTools } from "../src/core/chat/tools-shell.mjs";
-import { loadProject } from "../src/core/project-store.mjs";
+import { loadProject, upsertChapter } from "../src/core/project-store.mjs";
 import { createWritingProject } from "./helpers.mjs";
 
 // ===== 测试辅助：与 chat-agent.test.mjs 同风格 =====
@@ -306,6 +306,35 @@ test("确认卡闭环：resume once 与 reject 都用同一 activity_id 发终�
   assert.equal(cancelled.activity_id, waitingReject.activity_id, "reject 终态应复用确认卡 activity_id");
   assert.equal(cancelled.error, "user_rejected");
   assertNoDanglingActivities(rejectActivities, "reject 后不应有悬空活动");
+});
+
+test("edit_chapter 预览失败：同一 activity_id 收到 cancelled 终态，无悬空活动", async () => {
+  const events = [];
+  const fixture = await makeFixture({
+    modelReplies: [
+      toolCall("edit_chapter", { chapter_no: 1, find: "不存在的文字", replace: "x", reason: "x" }),
+      textReply("完成")
+    ],
+    onEvent: (event) => events.push(event)
+  });
+  // 真实章节文件（与 chat-agent.test.mjs 同构造）：find 不命中 -> locateFind 抛
+  // find_not_found -> previewEditChapter 失败，走预览失败拒绝路径（不落 pending）。
+  const chapterPath = path.join(fixture.projectRoot, "chapters", "001.md");
+  await fs.mkdir(path.dirname(chapterPath), { recursive: true });
+  await fs.writeFile(chapterPath, "# Chapter 001\n\n刘康从六楼坠落。", "utf8");
+  await upsertChapter(fixture.projectRoot, { chapter_no: 1, status: "completed", final_path: chapterPath, actual_words: 8 });
+  const out = await runChatTurn(fixture);
+  // 预览失败 -> 不挂 pending（确认卡直接作废，因此必须在本轮内补终态闭环）
+  assert.equal(out.pendingAction, null);
+  assert.equal(out.toolEvents[0].error, "find_not_found", "预览失败应按原始错误码记为 find_not_found");
+  const activities = events.filter((event) => event.type === "chat_activity");
+  const waiting = activities.find((event) => event.state === "waiting_confirmation");
+  assert.ok(waiting, "应发出 waiting_confirmation 活动");
+  const cancelled = activities.filter((event) => event.state === "cancelled" && event.phase === "editing").at(-1);
+  assert.ok(cancelled, "预览失败应补发 cancelled 终态");
+  assert.equal(cancelled.activity_id, waiting.activity_id, "cancelled 终态应复用确认卡 activity_id");
+  assert.equal(cancelled.error, "preview_failed");
+  assertNoDanglingActivities(activities);
 });
 
 test("supersede：新消息覆盖旧 pending 时用同一 activity_id 发 cancelled 终态", async () => {
