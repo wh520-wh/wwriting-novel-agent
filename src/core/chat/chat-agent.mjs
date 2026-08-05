@@ -331,7 +331,7 @@ async function finishCancelled(projectRoot, toolEvents, calls, totalCost) {
 }
 
 function latestPrompt(options, round) {
-  if (round === 0 && options.userMessage) return options.userMessage;
+  if (round === 0 && options.userMessage) return options.modelInstruction ?? options.userMessage;
   return "（继续：基于上面的工具结果决定下一步——继续调用工具或给出最终回答。）";
 }
 
