@@ -310,12 +310,14 @@ try {
   assert.ok(js.includes("initPrivacyMode"));
   assert.ok(js.includes("setPrivacyMode"));
   assert.ok(js.includes("ww:privacy"));
-  // Task2: Quick Rail 气泡必须由模块级单例统一清理，且不叠加原生 title tooltip
+  // Task2/6: Quick Rail 气泡由模块级单例统一清理，不叠加原生 title tooltip；
+  // Task6 恢复机制（1.8s 轮询重渲后悬停弹层恢复）以 lastPointer 坐标兜底 + queueMicrotask
+  // 为关键实现（activeTimer 已随 200ms 延迟显示一并删除）。
   assert.ok(quickRailJs.includes("let activePopover"));
-  assert.ok(quickRailJs.includes("let activeTimer"));
+  assert.ok(quickRailJs.includes("lastPointer"));
   assert.ok(quickRailJs.includes("let activeOwner"));
   assert.ok(quickRailJs.includes("function clearQuickRailPopover"));
-  assert.ok(quickRailJs.includes("clearTimeout(activeTimer)"));
+  assert.ok(quickRailJs.includes("queueMicrotask"));
   assert.ok(quickRailJs.includes("activePopover.remove()"));
   assert.ok(quickRailJs.includes("activeOwner = null"));
   assert.ok(quickRailJs.includes("clearQuickRailPopover();"));
