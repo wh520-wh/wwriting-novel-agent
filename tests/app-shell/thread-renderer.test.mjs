@@ -1132,6 +1132,19 @@ function normalPending(overrides = {}) {
   };
 }
 
+function extremePending(id, created_at = "2026-08-05T10:00:00.000Z") {
+  return normalPending({
+    id,
+    created_at,
+    command: "rm -rf /",
+    cwd: "C:\\",
+    targets: ["C:\\"],
+    action: { ...normalPending().action, command: "rm -rf /", cwd: "C:\\", targets: ["C:\\"] },
+    confirmation_kind: "extreme",
+    confirmation_text: "强制继续 3FA9C2",
+  });
+}
+
 function stubFetch() {
   const calls = [];
   globalThis.fetch = async (url, options = {}) => {
@@ -1361,6 +1374,82 @@ test("M-4 极端确认卡：confirmation_text 为空时 force 永不解锁", asy
   input.value = "任意文字";
   input._fire("input");
   assert.equal(force.disabled, true, "expected 为空时任何输入都不解锁");
+});
+
+test("I-2 极端确认卡 supersede 后：输入正确确认文字 force 仍保持 disabled", async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { refs, ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+  const calls = stubFetch();
+  try {
+    renderer.syncChatThread({ messages: [], pendingAction: extremePending("pa-x1") });
+    const cardX1 = refs.thread.querySelector('[data-pending-id="pa-x1"]');
+    const input = cardX1.querySelector(".chat-danger-input");
+    const force = cardX1.querySelector('[data-testid="chat-danger-force"]');
+    renderer.syncChatThread({ messages: [], pendingAction: extremePending("pa-x2", "2026-08-05T10:00:01.000Z") });
+    assert.ok(cardX1.classList.contains("chat-confirm-card--superseded"), "旧极端卡被 supersede");
+    input.value = "强制继续 3FA9C2";
+    input._fire("input");
+    assert.equal(force.disabled, true, "supersede 后即使输入正确确认文字 force 仍 disabled");
+    force._fire("click");
+    await tick();
+    assert.equal(calls.length, 0, "旧卡 force 点击不发请求（避免陈旧决策错配到新 pending）");
+  } finally {
+    delete globalThis.fetch;
+  }
+});
+
+test("I-2 极端确认卡 A→B→A 恢复：未输入文字 force 保持 disabled，输入正确后解锁", async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { refs, ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+  const calls = stubFetch();
+  try {
+    renderer.syncChatThread({ messages: [], pendingAction: extremePending("pa-x1") });
+    const cardX1 = refs.thread.querySelector('[data-pending-id="pa-x1"]');
+    const input = cardX1.querySelector(".chat-danger-input");
+    const force = cardX1.querySelector('[data-testid="chat-danger-force"]');
+    renderer.syncChatThread({ messages: [], pendingAction: extremePending("pa-x2", "2026-08-05T10:00:01.000Z") });
+    assert.ok(cardX1.classList.contains("chat-confirm-card--superseded"), "A 卡被 B 追赶");
+    // pending 回到 A：恢复未定论卡，但 force 不能免输入解锁。
+    renderer.syncChatThread({ messages: [], pendingAction: extremePending("pa-x1") });
+    assert.ok(!cardX1.classList.contains("chat-confirm-card--superseded"), "pending 回到 A 后旧卡恢复");
+    assert.equal(force.disabled, true, "恢复后未输入确认文字 force 仍 disabled");
+    assert.equal(cardX1.querySelector('[data-testid="chat-confirm-reject"]').disabled, false, "恢复后拒绝逃生门可用");
+    input.value = "强制继续 3FA9C2";
+    input._fire("input");
+    assert.equal(force.disabled, false, "输入正确确认文字后 force 解锁");
+    force._fire("click");
+    await tick();
+    assert.equal(calls[0].body.decision, "force", "恢复后的极端卡可正常 force 决策");
+  } finally {
+    delete globalThis.fetch;
+  }
+});
+
+test("I-2 极端确认卡 force 决策成功后：编辑 input 不重新解锁 force", async () => {
+  const { createThreadRenderer } = await import("../../src/app-shell/thread-renderer.js");
+  const { refs, ctx } = makeHarness();
+  const renderer = createThreadRenderer(ctx);
+  const calls = stubFetch();
+  try {
+    renderer.syncChatThread({ messages: [], pendingAction: extremePending("pa-x1") });
+    const cardX1 = refs.thread.querySelector('[data-pending-id="pa-x1"]');
+    const input = cardX1.querySelector(".chat-danger-input");
+    const force = cardX1.querySelector('[data-testid="chat-danger-force"]');
+    input.value = "强制继续 3FA9C2";
+    input._fire("input");
+    assert.equal(force.disabled, false, "输入正确后解锁");
+    force._fire("click");
+    await tick();
+    assert.equal(calls[0].body.decision, "force", "force 决策发出");
+    assert.ok(cardX1.classList.contains("chat-confirm-card--resolved"), "成功后卡片 resolved");
+    input.value = "强制继续 3FA9C2 ";
+    input._fire("input");
+    assert.equal(force.disabled, true, "resolved 卡编辑 input 不重新解锁 force");
+  } finally {
+    delete globalThis.fetch;
+  }
 });
 
 test("Task 9 活动流：chat_activity 经 onChatActivity 渲染，线程重建后 reset 可再渲染", async () => {

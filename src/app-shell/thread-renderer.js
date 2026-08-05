@@ -1439,6 +1439,8 @@ export function createThreadRenderer(ctx) {
         }
       } catch (error) {
         for (const btn of buttons) btn.disabled = false;
+        // I-2: force 按终态类 + 当前输入重算，而非无条件恢复可点。
+        card._syncForceDisabled?.();
         ctx.showActionError?.(error);
       }
     };
@@ -1493,11 +1495,21 @@ export function createThreadRenderer(ctx) {
     reject.addEventListener("click", submitDecision(card, set, "reject"));
     // 输入文字与 confirmation_text 完全一致（trim 后）才解锁强制按钮。
     // M-4: expected 为空时永不解锁——否则空输入直接匹配空 expected,绕过强制确认。
-    input.addEventListener("input", () => {
+    // I-2: 终态卡（superseded/resolved/rejected）即使输入正确也保持锁定——陈旧 force
+    // 决策请求体不带 pending id,supersede 后解锁会错配到新 pending。
+    // 解锁条件收敛在 syncForceDisabled 一处:input 监听器、supersede、reactivate 共用。
+    const syncForceDisabled = () => {
       const expected = String(pendingAction?.confirmation_text ?? "").trim();
       const typed = String(input.value ?? "").trim();
-      force.disabled = !expected || typed !== expected;
-    });
+      const terminal =
+        card.classList.contains("chat-confirm-card--superseded") ||
+        card.classList.contains("chat-confirm-card--resolved") ||
+        card.classList.contains("chat-confirm-card--rejected");
+      force.disabled = terminal || !expected || typed !== expected;
+    };
+    input.addEventListener("input", syncForceDisabled);
+    // 挂在 DOM 节点上供 supersede/reactivate 在改终态类后重算同一解锁条件。
+    card._syncForceDisabled = syncForceDisabled;
     buttons.append(force, reject);
     card.append(input, buttons);
     wrap.append(card);
@@ -1559,6 +1571,8 @@ export function createThreadRenderer(ctx) {
       if (card.classList.contains("chat-confirm-card--resolved") || card.classList.contains("chat-confirm-card--rejected")) continue;
       card.classList.add("chat-confirm-card--superseded");
       for (const btn of wrap.querySelectorAll("button")) btn.disabled = true;
+      // I-2: 重算极端卡 force 锁定——此后旧卡 input 监听器因终态类检查也无法重新解锁。
+      card._syncForceDisabled?.();
     }
   }
 
@@ -1571,6 +1585,8 @@ export function createThreadRenderer(ctx) {
       if (card.classList.contains("chat-confirm-card--resolved") || card.classList.contains("chat-confirm-card--rejected")) continue;
       card.classList.remove("chat-confirm-card--superseded");
       for (const btn of wrap.querySelectorAll("button")) btn.disabled = false;
+      // I-2: 极端卡 force 恢复后仍须输入确认文字才解锁——重算而非无条件 disabled=false。
+      card._syncForceDisabled?.();
     }
   }
 
