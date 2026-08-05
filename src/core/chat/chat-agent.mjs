@@ -72,20 +72,25 @@ export async function resumeChatTurn(options) {
   const { projectRoot, project, registry, server, getTaskQueue, grants } = options;
   // Task 7 确认契约：once=仅此一次 / task=本任务内同类放行 / reject=拒绝 / force=极端确认文字放行。
   // 兼容旧 approve 参数（approve:true -> once，approve:false/缺省 -> reject），调用方已迁移到 decision。
-  const decision = options.decision ?? (options.approve === true ? "once" : "reject");
+  let decision = options.decision ?? (options.approve === true ? "once" : "reject");
   const confirmationText = String(options.confirmationText ?? "");
   const pending = await loadPendingAction(projectRoot);
   if (!pending) {
     return { reply: "没有待确认的操作。", toolEvents: [], pendingAction: null, usage: { calls: 0, cost: 0 } };
   }
-  // 前置校验：极端确认必须带匹配的确认文字且决策为 force，否则直接拒绝，不执行任何副作用。
+  // 前置校验：extreme pending 只接受 force + 匹配确认文字放行；reject / once / task 一律按
+  // 用户拒绝处理——task 不得放行 extreme（极端操作不受任务授权覆盖，见 decideToolAuthorization
+  // 的 extreme 优先分支），也不为它授予任务级授权。force 且文字不匹配则抛错，pending 原样保留可重试。
   const taskId = pending.task_id;
   if (pending.confirmation_kind === "extreme") {
-    if (decision !== "force" || confirmationText !== pending.confirmation_text) {
+    if (decision === "force" && confirmationText !== pending.confirmation_text) {
       throw Object.assign(new Error("确认文字不匹配，极端危险操作未执行。"), { code: "danger_confirmation_mismatch" });
     }
+    if (decision !== "force") decision = "reject";
   } else if (decision === "task") {
-    // 任务级授权：本次确认执行该工具，并授予同一任务（同一 taskId）内同 grant_key 的后续调用免确认资格。
+    // 任务级授权按 grant_key（category:scope:target-class）放行：同一类别（如项目内 write）的
+    // edit_chapter 与 shell 写命令共享同一 key。本次确认执行该工具，并授予同一任务
+    // （同一 taskId）内同 grant_key 的后续调用免确认资格。
     if (pending.action?.grant_key) grants?.allow(projectRoot, taskId, pending.action.grant_key);
   }
   // §3.4: Write generating placeholder before agentLoop — crash during resumed turn
@@ -94,45 +99,52 @@ export async function resumeChatTurn(options) {
   await appendChatMessage(projectRoot, {
     role: "assistant", content: "", status: "generating", turn_id: resumeTurnId
   });
-  let outcome;
-  if (decision === "once" || decision === "force" || decision === "task") {
-    // §3.3 Idempotency: if already executed, skip executeTool, use cached result
-    if (pending.status === "executed") {
-      outcome = pending.cachedOutcome;
-    } else {
-      const tool = registry.get(pending.tool);
-      const busy = checkRunBusy(tool, server, projectRoot);
-      if (busy) {
-        outcome = busy;
-        await clearPendingAction(projectRoot);
+  try {
+    let outcome;
+    if (decision === "once" || decision === "force" || decision === "task") {
+      // §3.3 Idempotency: if already executed, skip executeTool, use cached result
+      if (pending.status === "executed") {
+        outcome = pending.cachedOutcome;
       } else {
-        // §3.3: Atomically mark as executing before execution
-        const key = pending.idempotency_key ?? crypto.randomUUID();
-        await updatePendingStatus(projectRoot, key, "executing");
-        outcome = await executeTool(registry, pending.tool, pending.args, { projectRoot, project, server, getTaskQueue });
-        // §3.3: Atomically mark as executed with cached result (crash recovery: next resume skips re-execution)
-        await updatePendingStatus(projectRoot, key, "executed", outcome);
+        const tool = registry.get(pending.tool);
+        const busy = checkRunBusy(tool, server, projectRoot);
+        if (busy) {
+          outcome = busy;
+          await clearPendingAction(projectRoot);
+        } else {
+          // §3.3: Atomically mark as executing before execution
+          const key = pending.idempotency_key ?? crypto.randomUUID();
+          await updatePendingStatus(projectRoot, key, "executing");
+          outcome = await executeTool(registry, pending.tool, pending.args, { projectRoot, project, server, getTaskQueue });
+          // §3.3: Atomically mark as executed with cached result (crash recovery: next resume skips re-execution)
+          await updatePendingStatus(projectRoot, key, "executed", outcome);
+        }
       }
+      // Clear pending before agentLoop so a new pending can be created
+      await clearPendingAction(projectRoot);
+    } else {
+      outcome = { ok: false, error: "user_rejected", message: "用户拒绝了此操作。" };
+      await clearPendingAction(projectRoot);
     }
-    // Clear pending before agentLoop so a new pending can be created
-    await clearPendingAction(projectRoot);
-  } else {
-    outcome = { ok: false, error: "user_rejected", message: "用户拒绝了此操作。" };
-    await clearPendingAction(projectRoot);
+    const toolEvent = { tool: pending.tool, ok: outcome.ok, error: outcome.ok ? null : outcome.error };
+    // 写工具被拒路径与 agentLoop 的 !isRead 分支保持一致：result_summary 用纯 message，
+    // 不 JSON 序列化 {error, message}（其余错误路径保持原样）。
+    const resultSummary = outcome.ok
+      ? summarize(outcome.result)
+      : summarize({ error: outcome.error, message: outcome.message });
+    await appendChatMessage(projectRoot, {
+      role: "tool", tool: pending.tool, ok: outcome.ok,
+      args: summarizeArgs(pending.args),
+      result_summary: resultSummary
+    });
+    options.onEvent?.({ type: "tool_result", ...toolEvent });
+    return await agentLoop({ ...options, userMessage: null, turnId: resumeTurnId, taskId }, [toolEvent]);
+  } catch (error) {
+    // 失败路径兜底：任务级授权随任务结束释放（runChatTurn 同款语义；grants.clear 幂等，
+    // 正常路径已由 agentLoop 最终文本 / 轮数上限 / finishCancelled 清理，这里只补异常路径）。
+    grants?.clear(projectRoot, taskId);
+    throw error;
   }
-  const toolEvent = { tool: pending.tool, ok: outcome.ok, error: outcome.ok ? null : outcome.error };
-  // 写工具被拒路径与 agentLoop 的 !isRead 分支保持一致：result_summary 用纯 message，
-  // 不 JSON 序列化 {error, message}（其余错误路径保持原样）。
-  const resultSummary = outcome.ok
-    ? summarize(outcome.result)
-    : summarize({ error: outcome.error, message: outcome.message });
-  await appendChatMessage(projectRoot, {
-    role: "tool", tool: pending.tool, ok: outcome.ok,
-    args: summarizeArgs(pending.args),
-    result_summary: resultSummary
-  });
-  options.onEvent?.({ type: "tool_result", ...toolEvent });
-  return await agentLoop({ ...options, userMessage: null, turnId: resumeTurnId, taskId }, [toolEvent]);
 }
 
 async function agentLoop(options, toolEvents) {
@@ -228,6 +240,9 @@ async function agentLoop(options, toolEvents) {
       // 动作归一化：shell 走自身 describeAction（命令静态风险分类），静态工具走兜底动作。
       const action = describeToolAction(tool, tc.args, { projectRoot, project });
       // 权限预检（read_only / safe_edit / 归档 / dangerous 封印），不通过则拒绝并继续处理后续 tool_calls。
+      // 与下方 decideToolAuthorization 是两层检查：checkToolPermission 按工具 kind 级封印（全局开关，
+      // 如 read_only），decideToolAuthorization 按动作 category/scope/risk 决策授权矩阵——两层语义一致
+      // 但层级不同，先 kind 级后 category 级，都通过才执行。
       const permission = checkToolPermission(tool, project?.tool_permissions ?? {}, { archived: Boolean(project?.archived_at) });
       if (!permission.allowed) {
         await recordDeniedTool({ projectRoot, tc, toolEvents, onEvent, message: permission.message });
@@ -270,7 +285,10 @@ async function agentLoop(options, toolEvents) {
         toolEvents.push({ tool: tc.tool, ok: true, error: null });
         // 极端危险操作额外生成随机确认文字，resume 必须原样带回
         const extreme = authorization.decision === "extreme_confirm";
-        // 挂 pending，不立即返回——等后续 tools 标记跳过后再返回
+        // 挂 pending，不立即返回——等后续 tools 标记跳过后再返回。
+        // action.grant_key（category:scope:target-class 类别级）随确认卡数据透出：同一类别
+        // （如项目内 write）的 edit_chapter 与 shell 写命令共享同一 key，decision=task 时授予
+        // 该 key 即同类别后续调用免确认（见 resumeChatTurn）。
         savedPending = await savePendingAction(projectRoot, {
           task_id: taskId,
           turn_id: turnId,

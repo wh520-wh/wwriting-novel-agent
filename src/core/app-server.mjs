@@ -1553,8 +1553,15 @@ async function serveChatConfirm(request, response, context) {
       sendError(response, new HttpError(409, "CHAT_BUSY", "上一轮对话还在进行中，请等它完成或先点停止。"));
       return;
     }
-    // Task 7 确认契约：once / task / reject / force；旧 approve 参数映射（approve:true -> once）。
-    let decision = ["once", "task", "reject", "force"].includes(body.decision) ? body.decision : null;
+    // Task 7 确认契约：once / task / reject / force；旧 approve 参数兼容（approve:true -> once）。
+    // 白名单外的 decision（拼写错误等）不再静默转 reject 摧毁待确认卡：显式给出但非法、且无
+    // 兼容 approve 参数时直接 400 invalid_decision；缺省（无 decision 也无 approve）仍视为 reject。
+    const KNOWN_DECISIONS = ["once", "task", "reject", "force"];
+    let decision = KNOWN_DECISIONS.includes(body.decision) ? body.decision : null;
+    if (!decision && body.decision != null && body.decision !== "" && typeof body.approve !== "boolean") {
+      sendError(response, new HttpError(400, "invalid_decision", `未知的确认决策：${body.decision}（应为 once / task / reject / force）`));
+      return;
+    }
     if (!decision) decision = typeof body.approve === "boolean" ? (body.approve ? "once" : "reject") : "reject";
     const controller = new AbortController();
     context.chatJobs.set(jobKey, { controller, startedAt: new Date().toISOString() });
@@ -1583,7 +1590,8 @@ async function serveChatConfirm(request, response, context) {
       context.chatJobs.delete(jobKey);
     }
   } catch (error) {
-    sendError(response, error instanceof HttpError ? error : new HttpError(400, "BAD_REQUEST", error.message));
+    // 保留 throw 侧挂的错误码（如 danger_confirmation_mismatch），缺省才回退 BAD_REQUEST。
+    sendError(response, error instanceof HttpError ? error : new HttpError(400, error.code ?? "BAD_REQUEST", error.message));
   }
 }
 

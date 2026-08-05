@@ -1771,6 +1771,97 @@ test("chat confirm decision=task：同任务同类免确认，新用户消息恢
   }
 });
 
+test("chat confirm extreme：force 错误确认文字 → HTTP 400 code=danger_confirmation_mismatch，pending 保留", async () => {
+  const model = makeChatTestModel();
+  const fixture = await setupServer({ testModel: model });
+  try {
+    await setupChatChapter(fixture.projectRoot);
+    // 极端命令（格式化盘符根）→ extreme pending（只分类不执行）
+    model.push('```json\n{"tool_calls":[{"tool":"shell","args":{"command":"format c: /q","purpose":"测试"}}]}\n```');
+    const send1 = await postJson(fixture.port, "/api/chat/send", { message: "格式化 C 盘", projectRoot: fixture.projectRoot });
+    assert.equal(send1.res.status, 200);
+    assert.equal(send1.data.ok, true);
+    assert.ok(send1.data.pendingAction, "极端命令应挂 pending");
+    assert.equal(send1.data.pendingAction.confirmation_kind, "extreme");
+    // force + 错误文字 → 400，错误码透出（不丢 danger_confirmation_mismatch）
+    const confirm = await postJson(fixture.port, "/api/chat/confirm", {
+      projectRoot: fixture.projectRoot,
+      decision: "force",
+      confirmationText: "WRONG"
+    });
+    assert.equal(confirm.res.status, 400);
+    assert.equal(confirm.data.ok, false);
+    assert.equal(confirm.data.code, "danger_confirmation_mismatch");
+    // pending 原样保留，可重试正确文字
+    const hist = await getJson(fixture.port, "/api/chat/history");
+    assert.ok(hist.data.pendingAction, "mismatch 后 pending 应保留");
+    assert.equal(hist.data.pendingAction.confirmation_kind, "extreme");
+  } finally {
+    await closeServer(fixture.server);
+  }
+});
+
+test("chat confirm 未知 decision（拼写错误）→ HTTP 400 invalid_decision，pending 不被摧毁", async () => {
+  const model = makeChatTestModel();
+  const fixture = await setupServer({ testModel: model });
+  try {
+    await setupChatChapter(fixture.projectRoot);
+    model.push(EDIT_SIX_TO_TWELVE);
+    const send1 = await postJson(fixture.port, "/api/chat/send", { message: "改楼层", projectRoot: fixture.projectRoot });
+    assert.equal(send1.res.status, 200);
+    assert.ok(send1.data.pendingAction, "普通 write 应挂 pending");
+    assert.equal(send1.data.pendingAction.confirmation_kind, "normal");
+    const confirm = await postJson(fixture.port, "/api/chat/confirm", {
+      projectRoot: fixture.projectRoot,
+      decision: "Task" // 拼写错误（大写 T 不在白名单）
+    });
+    assert.equal(confirm.res.status, 400);
+    assert.equal(confirm.data.ok, false);
+    assert.equal(confirm.data.code, "invalid_decision");
+    const hist = await getJson(fixture.port, "/api/chat/history");
+    assert.ok(hist.data.pendingAction, "400 不应摧毁 pending");
+    assert.equal(hist.data.pendingAction.tool, "edit_chapter");
+  } finally {
+    await closeServer(fixture.server);
+  }
+});
+
+test("chat confirm approve=false 兼容：user_rejected 落盘并清 pending", async () => {
+  const model = makeChatTestModel();
+  const fixture = await setupServer({ testModel: model });
+  try {
+    await setupChatChapter(fixture.projectRoot);
+    model.push(EDIT_SIX_TO_TWELVE);
+    const send1 = await postJson(fixture.port, "/api/chat/send", { message: "改楼层", projectRoot: fixture.projectRoot });
+    assert.equal(send1.res.status, 200);
+    assert.ok(send1.data.pendingAction, "普通 write 应挂 pending");
+    model.push("好的，保持六楼不变。");
+    const confirm = await postJson(fixture.port, "/api/chat/confirm", {
+      projectRoot: fixture.projectRoot,
+      approve: false
+    });
+    assert.equal(confirm.res.status, 200);
+    assert.equal(confirm.data.ok, true);
+    assert.equal(confirm.data.pendingAction, null, "approve=false 应清 pending");
+    const toolEvent = confirm.data.toolEvents.find((e) => e.tool === "edit_chapter");
+    assert.ok(toolEvent, "应有 edit_chapter 回填事件");
+    assert.equal(toolEvent.ok, false);
+    assert.equal(toolEvent.error, "user_rejected");
+    // 落盘：历史 tool 消息回填 user_rejected，pending 已清除
+    const hist = await getJson(fixture.port, "/api/chat/history");
+    const toolMsg = hist.data.messages.find((m) => m.role === "tool" && m.tool === "edit_chapter");
+    assert.ok(toolMsg, "应有 tool 回填消息");
+    assert.equal(toolMsg.ok, false);
+    assert.match(toolMsg.result_summary ?? "", /user_rejected/u);
+    assert.equal(hist.data.pendingAction ?? null, null, "pending 应被清除");
+    // 内容未被修改
+    const content = await fs.readFile(path.join(fixture.projectRoot, "chapters", "001.md"), "utf8");
+    assert.match(content, /六楼/u);
+  } finally {
+    await closeServer(fixture.server);
+  }
+});
+
 test("POST /api/chat/grants/clear 清除项目全部任务级授权，同 grant_key 恢复 confirm", async () => {
   const grants = createTaskGrantStore();
   const fixture = await setupServer({ taskGrants: grants });
