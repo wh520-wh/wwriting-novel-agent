@@ -172,7 +172,7 @@ export function createComposer(ctx) {
   // --- four-tier approval / mode pill (S4 Task 8) ---
   // PERMISSION_TIERS 引用共享模块 PERMISSION_TIERS；detectPermissionTier 统一优先级。
   const TIER_DESC = Object.fromEntries(PERMISSION_TIERS.map((t) => [t.id, t.desc]));
-  // spec §2.3-U5：全程自动（yolo）只在设置弹窗「权限与确认」分区可选，
+  // spec §2.3-U5：YOLO（yolo）只在设置弹窗「权限与确认」分区可选，
   // 底部栏弹层不再提供——输入区减负，避免误触高风险模式。
   const POPOVER_TIERS = PERMISSION_TIERS.filter((t) => t.id !== "yolo");
   function tierFromPermissions(perms) {
@@ -223,7 +223,7 @@ export function createComposer(ctx) {
       el.setAttribute("aria-checked", on ? "true" : "false");
     });
     // 弹层只含 POPOVER_TIERS；当前档是 yolo 时（仅设置里可选）回退到相邻的 auto 档，
-    // 避免高亮最低档「只读」与 pill 上的「全程自动」反差误导。
+    // 避免高亮最低档「只读」与 pill 上的「YOLO」反差误导。
     let idx = POPOVER_TIERS.findIndex((t) => t.id === tier.id);
     if (idx < 0) {
       idx = Math.max(0, POPOVER_TIERS.findIndex((t) => t.id === "auto"));

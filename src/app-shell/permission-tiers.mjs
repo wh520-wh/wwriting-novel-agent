@@ -31,12 +31,12 @@ export const PERMISSION_TIERS = [
   },
   {
     id: "yolo",
-    label: "全程自动",
-    short: "全程",
+    label: "YOLO",
+    short: "YOLO",
     glyph: null,
     combo: { read_only: false, safe_edit: true, auto_edit: true,  yolo: true  },
-    desc: "跳过所有确认；归档/章节编辑全自动。",
-    warn: "警告：全程自动模式会自动执行所有写与控制操作，包括章节编辑、设定更新和任务控制。"
+    desc: "跳过普通确认，并允许访问项目以外的目录。",
+    warn: "极端危险操作仍会要求输入确认文字。"
   }
 ];
 

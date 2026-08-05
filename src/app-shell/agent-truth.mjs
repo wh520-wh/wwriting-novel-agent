@@ -9,7 +9,6 @@ export function computeAgentTruth(data, now = Date.now()) {
   const retryReason = data.retry_unavailable_reason ?? "";
   const alive = data.agent_alive === true;
   const status = run.status;
-  const stage = data.currentStage ?? data.summary?.currentStage ?? data.state?.current_stage ?? null;
   const heartbeat = data.agent_last_heartbeat ?? data.state?.last_heartbeat;
   const heartbeatMs = heartbeat ? Date.parse(heartbeat) : NaN;
   const heartbeatAge = Number.isNaN(heartbeatMs) ? Infinity : (now - heartbeatMs) / 1000;
@@ -76,12 +75,10 @@ export function computeAgentTruth(data, now = Date.now()) {
   if (status === "completed") {
     return { display: "已完成", className: "completed", showRetry: false, showStop: false, refresh: false, reason: "" };
   }
-  // 任务已入队但 project_status 仍为 idle 的窗口：此时既无心跳也无运行态，
-  // 兜底"待命"会误导用户以为没在干活。队列里存在 queued/running 任务即视为排队中。
-  const hasQueuedTask = stage === "queued"
-    || (data?.queue?.tasks ?? []).some((task) => task.status === "queued" || task.status === "running");
-  if (hasQueuedTask) {
-    return { display: "排队中", className: "running", showRetry: false, showStop: true, refresh: true, reason: "" };
+  // 聊天模型正在回复（chat agent 忙态）→ 顶部显示「回复中」并允许停止。
+  // 覆盖「任务已入队但 project_status 仍为 idle」的窗口；队列本身不再推导顶部状态。
+  if (data?.chatHistory?.busy === true) {
+    return { display: "回复中", className: "running", showRetry: false, showStop: true, refresh: true, reason: "" };
   }
   return { display: "空闲", className: "idle", showRetry: false, showStop: false, refresh: false, reason: "" };
 }
