@@ -151,7 +151,7 @@ function readiness(key, overrides = {}) {
     blueprint_pending:  { label: "蓝图未初始化",     detail: "请先运行 /init 生成大纲与设定，再开始写作。" },
     missing_model:      { label: "未配置模型",       detail: "请先配置 AI 模型。" },
     invalid_model:      { label: "模型配置无效",     detail: "模型配置信息不完整或连接失败，请检查设置。" },
-    demo:               { label: "演示模型模式",     detail: "写作内容不会被保存。继续以确认。" },
+    demo:               { label: "演示模型模式",     detail: "演示模型用于体验写作流程，生成的章节会保存在项目里（无需真实 API Key）。" },
     ready:              { label: "模型已连接",       detail: "可以开始写第 1 章。" }
   };
 
