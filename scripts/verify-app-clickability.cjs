@@ -216,6 +216,10 @@ async function main() {
     8000
   );
 
+  // Task 6 回归保护：悬停保持跨过 1.8s 轮询重渲后 popover 恢复。
+  // 必须在写作进行中（轮询活跃）调用；此后轮询停止，既有断言覆盖不到该场景。
+  await assertQuickRailPopoverSurvivesRefresh(win);
+
   // Wait for the normal dashboard refresh loop to render a committed artifact.
   await waitUntil(win,
     `document.getElementById('chapter-success').hidden === false`,
@@ -1202,6 +1206,37 @@ async function probe(win, selector) {
       };
     })();
   `);
+}
+
+async function assertQuickRailPopoverSurvivesRefresh(win) {
+  // Task 6 核心行为回归保护：悬停保持跨过 1.8s 轮询重渲后，popover 必须恢复为恰 1 个。
+  // 轮询（ensureRefreshLoop）只在写作进行中（running/busy）活跃，故本守卫须在
+  // 第 1 章写作期间调用（此后轮询已停，既有 assertQuickRailPopoverClears 覆盖不到该竞态）。
+  const qrSel = '.quick-rail .qr-slot[data-key="chapters"]';
+  // 前置条件 1：quick rail 已渲染。
+  await waitUntil(win, `document.querySelector(${JSON.stringify(qrSel)})?.isConnected === true`, "quick rail must be rendered during chapter-1 writing", 4000);
+  // 前置条件 2：1.8s 轮询活跃——按钮 DOM 须在 6s 内被重渲替换（引用变化）。
+  await win.webContents.executeJavaScript(`window.__wwQrRefreshProbe = document.querySelector(${JSON.stringify(qrSel)}); true;`);
+  await waitUntil(win,
+    `window.__wwQrRefreshProbe !== null && window.__wwQrRefreshProbe !== document.querySelector(${JSON.stringify(qrSel)})`,
+    "1.8s dashboard refresh loop must be active during chapter-1 writing",
+    6000
+  );
+  await win.webContents.executeJavaScript(`delete window.__wwQrRefreshProbe; true;`);
+  // 悬停立即显示恰 1 个 popover。
+  await triggerQuickRailHover(win, qrSel);
+  await waitUntil(win, "document.querySelectorAll('.qr-popover').length === 1", "hovering a quick rail slot must show exactly one popover", 4000);
+  // 保持悬停跨过 ≥1 轮重渲（1.8s + Electron 时序余量）：重渲会清掉 popover，
+  // 恢复机制必须把它找回来；waitUntil 覆盖滚动清除后再恢复的多轮窗口。
+  await delay(2200);
+  await waitUntil(win, "document.querySelectorAll('.qr-popover').length === 1",
+    "悬停跨过 1.8s 轮询重渲后 popover 应恢复（Task 6 重建恢复机制）", 5000);
+  // 失焦清除（沿用既有清除模式；不点击以免写作期间打开抽屉干扰流程）。
+  await win.webContents.executeJavaScript(`window.dispatchEvent(new Event("blur")); true;`);
+  await delay(40);
+  assert.equal(await read(win, "document.querySelectorAll('.qr-popover').length"), 0, "window blur must clear a quick rail popover after refresh restore");
+  await win.webContents.executeJavaScript(`window.dispatchEvent(new Event("focus")); true;`);
+  await delay(40);
 }
 
 async function assertQuickRailPopoverClears(win) {
