@@ -999,6 +999,15 @@ async function createModelRuntime(projectRoot, project, options, fallbackModel) 
           data: { attempt: info.attempt, maxAttempts: info.maxAttempts, delay: info.delay, reason: info.reason, model: info.model }
         }).catch(() => {});
       },
+      // 网络恢复（规格书 6.2）：重试成功后发 status_message，前端据此渲染绿字
+      // 「连接已恢复（第 n 次重试成功），从断点继续写作」（thread-renderer 对含"恢复"的 message 命中）。
+      onRecovered: (info) => {
+        appendEvent(projectRoot, {
+          type: "status_message",
+          message: `连接已恢复（第 ${info.attempt} 次重试成功），从断点继续写作`,
+          data: { attempt: info.attempt }
+        }).catch(() => {});
+      },
       // 流式推送：onActivity 从无参心跳升级为「带 delta 的流式通道」——字符串（含空串）
       // 为本次 chunk 新增正文，经 run-events-bus 广播 model_delta 给 SSE 订阅者；
       // undefined 为心跳/重试 ping，不上报 delta。上游回调（app-server 的任务心跳）照常透传。

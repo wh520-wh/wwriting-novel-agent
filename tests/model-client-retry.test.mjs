@@ -563,3 +563,99 @@ test("external abort racing with timeout yields AbortError exactly once, no retr
   await new Promise((resolve) => setTimeout(resolve, 60));
   assert.equal(calls, 1);
 });
+
+// -- Task 2（规格书 6.2）：网络恢复 onRecovered 回调 --
+
+test("onRecovered fires after retry succeeds, attempt = 1", async () => {
+  const retryLog = [];
+  const recoveredLog = [];
+  let calls = 0;
+  const adapter = {
+    async generate() {
+      calls++;
+      if (calls === 1) {
+        // 网络超时（reason: "timeout"）→ 重试
+        throw new ProviderTransportError("Network timeout", { reason: "timeout" });
+      }
+      return { text: "recovered", usage: {} };
+    }
+  };
+  const client = makeClient(adapter, {
+    retryMax: 3,
+    onRetry(info) {
+      retryLog.push({ ...info });
+    },
+    onRecovered(info) {
+      recoveredLog.push({ ...info });
+    }
+  });
+  const result = await client.generate({ prompt: "hi" });
+  assert.equal(result.text, "recovered");
+  assert.equal(calls, 2);
+  assert.equal(retryLog.length, 1, "onRetry 应触发 1 次");
+  assert.equal(retryLog[0].reason, "timeout");
+  assert.equal(recoveredLog.length, 1, "onRecovered 应触发 1 次");
+  assert.equal(recoveredLog[0].attempt, 1, "成功时 attempt 即已完成的重试次数");
+  assert.equal(recoveredLog[0].maxAttempts, 3);
+});
+
+test("onRecovered not fired when first attempt succeeds", async () => {
+  const recoveredLog = [];
+  const adapter = {
+    async generate() {
+      return { text: "hello", usage: {} };
+    }
+  };
+  const client = makeClient(adapter, {
+    onRecovered(info) {
+      recoveredLog.push({ ...info });
+    }
+  });
+  const result = await client.generate({ prompt: "hi" });
+  assert.equal(result.text, "hello");
+  assert.equal(recoveredLog.length, 0, "无重试不应触发 onRecovered");
+});
+
+test("onRecovered not fired when retries are exhausted or disabled", async () => {
+  // 场景 A：重试全败（1 次初始 + 2 次重试全部失败，最终 throw）→ 不是「恢复」，不触发
+  const recoveredLog = [];
+  let calls = 0;
+  const failAdapter = {
+    async generate() {
+      calls++;
+      throw new ProviderTransportError("Network timeout", { reason: "timeout" });
+    }
+  };
+  const client = makeClient(failAdapter, {
+    retryMax: 2,
+    onRecovered(info) {
+      recoveredLog.push({ ...info });
+    }
+  });
+  await assert.rejects(
+    () => client.generate({ prompt: "hi" }),
+    (err) => {
+      assert.equal(err.code, "provider_transport_error");
+      assert.equal(err.reason, "timeout");
+      return true;
+    }
+  );
+  assert.equal(calls, 3, "1 次初始 + 2 次重试全部失败");
+  assert.equal(recoveredLog.length, 0, "重试全败不是「恢复」，不应触发 onRecovered");
+
+  // 场景 B：retryMax=0（不重试，直接失败）→ 同样不触发
+  const recoveredLogNoRetry = [];
+  const noRetryAdapter = {
+    async generate() {
+      throw new ProviderTransportError("Network timeout", { reason: "timeout" });
+    }
+  };
+  const clientNoRetry = makeClient(noRetryAdapter, {
+    retryMax: 0,
+    onRecovered(info) {
+      recoveredLogNoRetry.push({ ...info });
+    }
+  });
+  await assert.rejects(() => clientNoRetry.generate({ prompt: "hi" }));
+  assert.equal(recoveredLogNoRetry.length, 0, "retryMax=0 无重试，不应触发 onRecovered");
+});
