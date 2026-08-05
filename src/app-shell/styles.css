@@ -81,6 +81,10 @@
   --r: 11px;
   --r-sm: 8px;
 
+  /* Task 11：共享内容列 — 工作台 / 准备卡 / 线程 / composer 统一宽度与居中 */
+  --content-column: 900px;
+  --content-gutter: clamp(14px, 2.2vw, 24px);
+
   --sans:
     -apple-system, BlinkMacSystemFont,
     "Segoe UI Variable Text", "Segoe UI",
@@ -537,8 +541,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
    ============================================================ */
 .thread-wrap { min-height: 0; overflow-y: auto; overflow-x: hidden; scroll-behavior: smooth; }
 .thread {
-  max-width: 760px; margin: 0 auto;
-  padding: 26px 24px 40px;
+  padding: 26px 0 40px;
   display: grid; gap: 22px;
 }
 
@@ -809,11 +812,11 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
    Composer
    ============================================================ */
 .composer-wrap {
-  padding: 12px 24px 18px;
+  padding: 12px 0 18px;
   background: linear-gradient(transparent, var(--bg) 36%);
 }
 .composer {
-  max-width: 760px; margin: 0 auto; position: relative;
+  position: relative;
   border: 1px solid var(--line); border-radius: var(--r-xl); background: var(--surface);
   box-shadow: var(--shadow);
   transition: border-color .2s, box-shadow .2s;
@@ -929,6 +932,21 @@ button.cbar-pill--readonly:hover {
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg);
   box-shadow: var(--shadow-pop); padding: 6px; display: grid; gap: 2px;
   z-index: 30;
+}
+/* Task 11：模型菜单 — 宽度受内容（420px）与视口（100vw - 32px）共同约束；
+   长名称任意位置换行，不再撑破菜单；打开后由 composer.js 钳制左右边界 */
+.model-popover {
+  width: min(420px, calc(100vw - 32px));
+  min-width: min(340px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  max-height: min(520px, calc(100vh - 96px));
+  overflow-y: auto;
+}
+.model-popover .mpi-tx strong,
+.model-popover .mpi-tx small {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
 }
 .mode-popover[hidden] { display: none; }
 .mode-popover-label {
@@ -2543,7 +2561,6 @@ button.cbar-pill--readonly:hover {
   --project-accent: var(--accent);
   --project-wash: var(--accent-soft);
   --project-line: var(--accent-line);
-  margin: 18px 24px 0;
   padding: 20px;
   display: flex;
   flex-direction: column;
@@ -2615,13 +2632,28 @@ button.cbar-pill--readonly:hover {
 .session-title--trail { align-items: center; }
 .session-cover--trail { width: 32px; height: 40px; display: grid; place-items: center; border: none; color: var(--btn-ink); background: linear-gradient(145deg, var(--project-accent), var(--project-ink)); font-family: Georgia, "Songti SC", serif; font-size: 15px; font-weight: 700; }
 
-.creation-card { margin: 12px 24px 0; min-height: 0; padding: 16px 20px; display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--shadow-xs); }
+.creation-card { min-height: 0; padding: 16px 20px; display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--shadow-xs); }
 .creation-card > div:first-child { min-width: 0; flex: 1; display: grid; gap: 6px; }
 .creation-card .eyebrow { font-size: 10.5px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
 .creation-card h2 { font-size: 17px; font-weight: 680; letter-spacing: -.01em; }
 .creation-card-actions { display: flex; flex-direction: column; flex-shrink: 0; gap: 8px; }
 .creation-card[data-creation-tone="ready"] .eyebrow { color: var(--accent); }
 .creation-card[data-creation-tone="success"] .eyebrow { color: var(--green); }
+
+/* Task 11：共享内容列 — 工作台 / 准备卡 / 线程 / composer 同一列（900px 上限） */
+.project-workbench,
+.creation-card,
+.thread,
+.composer {
+  width: calc(100% - (2 * var(--content-gutter)));
+  max-width: var(--content-column);
+  margin-left: auto;
+  margin-right: auto;
+}
+.project-workbench { margin-top: 18px; }
+.creation-card { margin-top: 12px; }
+.thread { padding: 26px 0 40px; }
+.composer-wrap { padding: 12px 0 18px; }
 
 /* 准备写作卡：折叠结构（head 常驻 + body 可折叠）*/
 .write-readiness.creation-card { flex-direction: column; align-items: stretch; gap: 10px; }
@@ -2637,14 +2669,15 @@ button.cbar-pill--readonly:hover {
 .write-readiness-body .write-readiness-actions button { flex: 0 0 auto; }
 
 @media (max-width: 720px) {
-  .project-workbench { grid-template-columns: 1fr; margin: 10px 14px 0; padding: 16px; gap: 14px; }
+  :root { --content-gutter: 14px; }
+  .project-workbench { grid-template-columns: 1fr; margin-top: 10px; padding: 16px; gap: 14px; }
   .workbench-cover { width: 58px; height: 74px; font-size: 24px; }
   .workbench-copy h2 { font-size: 20px; }
   .workbench-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); min-width: 0; }
   .workbench-status { grid-column: 1 / -1; }
   .workbench-actions button { min-width: 0; padding: 0 8px; overflow: hidden; text-overflow: ellipsis; }
   .workbench-activity { display: grid; gap: 7px; }
-  .creation-card { flex-direction: column; align-items: stretch; gap: 14px; margin: 10px 14px 0; }
+  .creation-card { flex-direction: column; align-items: stretch; gap: 14px; margin-top: 10px; }
   .creation-card-actions { flex-direction: row; flex-wrap: wrap; }
   .creation-card-actions button { flex: 1 1 auto; min-width: 0; }
 }
