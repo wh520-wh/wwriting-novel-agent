@@ -489,7 +489,7 @@ async function reviewChapter(projectRoot, project, state, runtime) {
     await appendEvent(projectRoot, {
       type: "fact_check_failed", project_id: project.project_id,
       chapter_no: state.current_chapter_no, stage: "reviewing", severity: "warn",
-      message: `fact-check 失败：${error.message}`
+      message: `事实核对失败：${error.message}`
     });
   }
   if (factCheck?.conflicts?.length) {
@@ -755,7 +755,7 @@ export async function runFactCheck(projectRoot, project, state, runtime, draft) 
     await appendEvent(projectRoot, {
       type: "fact_check_skipped", project_id: project.project_id,
       chapter_no: state.current_chapter_no, stage: "reviewing",
-      message: "mock provider，跳过 fact-check"
+      message: "mock provider，跳过事实核对"
     });
     return null;
   }
@@ -766,7 +766,7 @@ export async function runFactCheck(projectRoot, project, state, runtime, draft) 
     await appendEvent(projectRoot, {
       type: "fact_check_skipped", project_id: project.project_id,
       chapter_no: state.current_chapter_no, stage: "reviewing", severity: "warn",
-      message: `加载 continuity 失败，跳过 fact-check：${error.message}`
+      message: `加载 continuity 失败，跳过事实核对：${error.message}`
     });
     return null;
   }
@@ -779,7 +779,7 @@ export async function runFactCheck(projectRoot, project, state, runtime, draft) 
     await appendEvent(projectRoot, {
       type: "fact_check_skipped", project_id: project.project_id,
       chapter_no: state.current_chapter_no, stage: "reviewing",
-      message: "无既有 facts，跳过 fact-check"
+      message: "无既有 facts，跳过事实核对"
     });
     return null;
   }
@@ -810,7 +810,7 @@ export async function runFactCheck(projectRoot, project, state, runtime, draft) 
     await appendEvent(projectRoot, {
       type: "fact_check_skipped", project_id: project.project_id,
       chapter_no: state.current_chapter_no, stage: "reviewing", severity: "warn",
-      message: `fact-check 解析失败：${parsed?.error ?? "unknown"}`
+      message: `事实核对解析失败：${parsed?.error ?? "unknown"}`
     });
     return null;
   }
@@ -836,7 +836,7 @@ export async function runFactCheck(projectRoot, project, state, runtime, draft) 
     await appendEvent(projectRoot, {
       type: "fact_check_completed", project_id: project.project_id,
       chapter_no: state.current_chapter_no, stage: "reviewing",
-      message: deviation.detected ? "fact-check 未发现冲突（含跑偏提示）" : "fact-check 未发现冲突"
+      message: deviation.detected ? "事实核对未发现冲突（含跑偏提示）" : "事实核对未发现冲突"
     });
     return { conflicts: [], deviation, reportHint };
   }
@@ -846,7 +846,7 @@ export async function runFactCheck(projectRoot, project, state, runtime, draft) 
   await appendEvent(projectRoot, {
     type: "quality_gate_warning", project_id: project.project_id,
     chapter_no: state.current_chapter_no, stage: "reviewing", severity: "warn",
-    message: `fact-check 发现 ${conflicts.length} 个潜在冲突`,
+    message: `事实核对发现 ${conflicts.length} 个潜在冲突`,
     data: { conflicts }
   });
 
@@ -886,11 +886,11 @@ export async function applyFactCheckConflicts(projectRoot, project, state, confl
     chapter_no: state.current_chapter_no,
     stage: "reviewing",
     severity: "warn",
-    message: `fact-check 发现 ${conflicts.length} 个设定冲突，进 needs_revision 让模型修订`,
+    message: `事实核对发现 ${conflicts.length} 个设定冲突，进 needs_revision 让模型修订`,
     data: gate
   });
   await writeCheckpoint(projectRoot, checkpointPayload(project, state, next));
-  await appendFailureCard(projectRoot, state, { type: "quality_gate_failed", message: "fact-check gate failed", data: gate });
+  await appendFailureCard(projectRoot, state, { type: "quality_gate_failed", message: "事实核对门禁失败", data: gate });
 }
 
 // ADR-0001 决策 5：fact-check 冲突达到硬上限（3 轮）仍有冲突 -> 软降级。
@@ -922,7 +922,7 @@ async function blockFactCheckUnresolved(projectRoot, project, state, conflicts, 
     chapter_no: chapterNo,
     stage: "reviewing",
     severity: "error",
-    message: `fact-check 软降级：${conflicts.length} 个设定矛盾 ${rounds} 轮未解决，需人工核对`,
+    message: `事实核对软降级：${conflicts.length} 个设定矛盾 ${rounds} 轮未解决，需人工核对`,
     data: { reason: "fact_check_unresolved", conflicts, rounds }
   });
   await appendFailureCard(projectRoot, state, { type: "fact_check_unresolved", message: note, data: { conflicts, rounds } });

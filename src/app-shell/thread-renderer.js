@@ -109,7 +109,7 @@ function deriveSubstep(groupId, state) {
     const chapterKey = String(state.current_chapter_no ?? "");
     const rounds = state.active_budget?.fact_check_rounds_by_chapter?.[chapterKey];
     if (rounds) {
-      return "正在核对设定";
+      return "正在事实核对";
     }
     return null;
   }
@@ -1209,7 +1209,7 @@ export function createThreadRenderer(ctx) {
     wrap.dataset.ts = message.ts ?? "";
     const bubble = document.createElement("div");
     bubble.className = "chat-bubble chat-bubble--assistant";
-    const proactiveBadge = { fact_check: "fact-check", timeline_check: "时间线" };
+    const proactiveBadge = { fact_check: "事实核对", timeline_check: "时间线" };
     if (message.proactive && proactiveBadge[message.proactive]) {
       const badge = document.createElement("span");
       badge.className = "chat-proactive-badge";

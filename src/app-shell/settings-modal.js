@@ -282,13 +282,13 @@ export function createSettingsModal(ctx, options = {}) {
 
     const intro = document.createElement("p");
     intro.className = "spd-hint";
-    intro.textContent = "本地门禁默认全开；这里可以关掉 memory extraction / fact-check，或让 fact-check 变成硬门禁。";
+    intro.textContent = "本地门禁默认全开；这里可以关掉记忆提取 / 事实核对，或让事实核对变成硬门禁。";
     ctx.refs.settingsDetail.append(intro);
 
-    settingsFields.memoryExtractionEnabled = settingToggle("启用章节记忆抽取（每章自动落 facts / timeline）", memoryExtraction.enabled !== false);
+    settingsFields.memoryExtractionEnabled = settingToggle("启用章节记忆抽取（每章自动落设定 / 时间线）", memoryExtraction.enabled !== false);
 
-    settingsFields.factCheckEnabled = settingToggle("启用 fact-check（基于既有 facts 比对新章节）", factCheck.enabled !== false);
-    settingsFields.factCheckHard = settingToggle("fact-check 硬模式：发现设定矛盾直接打回修订", factCheck.hard === true);
+    settingsFields.factCheckEnabled = settingToggle("启用事实核对（基于既有设定比对新章节）", factCheck.enabled !== false);
+    settingsFields.factCheckHard = settingToggle("事实核对硬模式：发现设定矛盾直接打回修订", factCheck.hard === true);
     const factCheckHint = document.createElement("div");
     factCheckHint.className = "spd-hint";
     factCheckHint.textContent = "硬模式：发现设定矛盾直接打回修订。";
