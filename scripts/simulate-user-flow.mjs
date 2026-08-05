@@ -2,9 +2,9 @@
 // 用户真实操作全链路模拟（真实模型端到端回归）。
 //
 // 用途：模拟用户在产品里的完整操作序列，验证"中间有没有阻断"：
-//   阶段1 新建项目（门禁 none 拒绝写作）
-//   阶段2 触发 /init 生成蓝图（建议卡/斜杠命令背后的 runBlueprintInit）
-//   阶段3 写作第 1 章（runProject 完整流程：drafting → 门禁 → fact-check → 落盘）
+//   阶段1 新建项目（blueprint_status none，写作不再被拒）
+//   阶段2 /init 经 chat agent 展开并完成项目理解
+//   阶段3 写作第 1 章（runProject 完整流程：drafting → fact-check → 落盘）
 //   阶段4 连续写作第 2 章（续写链路）
 //   阶段5 chat 对话触发读工具（get_status / list_chapters / read_blueprint）
 //   阶段6 chat 写工具链路（update_blueprint → pending 确认 → approve → 骨架打勾）
@@ -14,8 +14,8 @@
 //   可选：MODEL_NAME=deepseek-v4-flash（默认 flash，最便宜）
 //
 // ★ 维护义务（硬性要求）：
-//   修改核心链路代码（project-store / blueprint-init / agent-engine / chat-agent /
-//   tool-registry / prompt 注入 / 门禁 / 跑偏核对）后，必须同步更新本脚本并跑通验证，
+//   修改核心链路代码（project-store / chat-agent / chat-command-expander / agent-engine /
+//   tool-registry / prompt 注入 / 写作准备态 / 跑偏核对）后，必须同步更新本脚本并跑通验证，
 //   保证用户真实调用可用。真实 API 会暴露 mock 测试测不出的协议问题
 //   （如空 assistant 消息 400、模型输出格式漂移），本脚本是最后防线。
 //
@@ -30,8 +30,6 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createProjectAt, loadState, saveProject, loadProject, loadChapterIndex } from "../src/core/project-store.mjs";
-import { runBlueprintInit } from "../src/core/blueprint-init.mjs";
-import { assertBlueprintReady } from "../src/core/blueprint-guard.mjs";
 import { runProject } from "../src/core/agent-engine.mjs";
 import { runChatTurn, resumeChatTurn } from "../src/core/chat/chat-agent.mjs";
 import { ModelClient } from "../src/core/model-client.mjs";
@@ -84,25 +82,37 @@ console.log("【阶段1】用户新建项目");
 const { projectRoot } = await createProjectAt(root, { title: "都市职场", slug: "u", story_seed: "程序员林晚在大厂内卷中觉醒" });
 let s = await loadState(projectRoot);
 const gateOk = s.blueprint_status === "none";
-let gateRejected = false;
-try {
-  await assertBlueprintReady(projectRoot);
-} catch {
-  gateRejected = true;
-}
-record("新建项目默认 none + 写作被拒", gateOk && gateRejected, `blueprint_status=${s.blueprint_status}`);
+record("新建项目默认 blueprint_status none（写作不再被门禁拒绝）", gateOk, `blueprint_status=${s.blueprint_status}`);
 const project = await readyProject(projectRoot);
 
-// ---- 阶段2：用户触发 /init ----
+// chat 工具注册表（阶段2 /init、阶段5/6 chat 链路共用）
+const registry = createToolRegistry();
+registerReadTools(registry);
+registerWriteTools(registry);
+
+// ---- 阶段2：用户触发 /init（经 chat agent 展开）----
 console.log("【阶段2】用户触发 /init");
 const t0 = Date.now();
+let initOk = false;
 try {
-  await runBlueprintInit(projectRoot, { modelClient: client(), userRequirements: "都市职场小说，程序员主角" });
-  s = await loadState(projectRoot);
-  await assertBlueprintReady(projectRoot);
-  record("/init 生成蓝图并放行", s.blueprint_status === "complete", `耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+  const { expandChatCommand } = await import("../src/core/chat/chat-command-expander.mjs");
+  const expanded = expandChatCommand({ command: "init", message: "/init 都市职场小说，程序员主角", args: "都市职场小说，程序员主角" });
+  let initTurn = await runChatTurn({ projectRoot, project, registry, modelClient: client(), userMessage: expanded.userMessage, modelInstruction: expanded.modelInstruction });
+  let resumed = 0;
+  while (initTurn.pendingAction && resumed < 3) {
+    initTurn = await resumeChatTurn({ projectRoot, project, registry, modelClient: client(), approve: true });
+    resumed += 1;
+  }
+  const created = await Promise.all(
+    ["OUTLINE.md", "SETTING.md", "AGENTS.md"].map(async (f) => {
+      try { await fs.access(path.join(projectRoot, f)); return true; } catch { return false; }
+    })
+  );
+  const createdCount = created.filter(Boolean).length;
+  initOk = Boolean(initTurn.reply) && (initTurn.toolEvents ?? []).every((e) => e.ok !== false) && createdCount > 0;
+  record("/init 经 chat agent 展开并完成项目理解", initOk, `耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s | 蓝图文件=${createdCount}/3 | 工具=${(initTurn.toolEvents ?? []).map((e) => e.tool).join(",")}`);
 } catch (e) {
-  record("/init 生成蓝图并放行", false, e.message.slice(0, 120));
+  record("/init 经 chat agent 展开并完成项目理解", false, `异常: ${e.message.slice(0, 120)}`);
 }
 
 // ---- 阶段3：用户点「写第 1 章」----
@@ -131,9 +141,6 @@ try {
 
 // ---- 阶段5：chat 读工具链路 ----
 console.log("【阶段5】chat 对话（读工具）");
-const registry = createToolRegistry();
-registerReadTools(registry);
-registerWriteTools(registry);
 let chat1ok = false;
 try {
   const t3 = Date.now();

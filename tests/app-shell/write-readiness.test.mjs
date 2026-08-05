@@ -163,13 +163,7 @@ test("blueprint none/partial/complete/legacy 不改变写作准备态", () => {
     assert.equal(view.key, "ready");
     assert.equal(view.primaryAction, "start_chapter");
   }
-});
-
-test("blueprint complete/legacy/缺失 → 不拦截，走原流程", () => {
-  const complete = deriveWriteReadiness(data({ state: { project_status: "idle", blueprint_status: "complete" } }));
-  assert.equal(complete.key, "ready");
-  const legacy = deriveWriteReadiness(data({ state: { project_status: "idle", blueprint_status: "legacy" } }));
-  assert.equal(legacy.key, "ready");
+  // 缺失（state 无 blueprint_status 字段）同样不拦截，走原流程
   const missing = deriveWriteReadiness(data({ state: { project_status: "idle" } }));
   assert.equal(missing.key, "ready");
 });

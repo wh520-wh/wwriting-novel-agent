@@ -13,13 +13,9 @@ function makeComposer(refs = {}) {
 }
 
 let calls = [];
-let failNext = false;
-let toasts = [];
 
 beforeEach(() => {
   calls = [];
-  failNext = false;
-  toasts = [];
   ctxState.loaded = 0;
   ctxState.refreshed = 0;
   ctxState.errors = [];
@@ -34,14 +30,7 @@ beforeEach(() => {
   };
   globalThis.fetch = async (url, options = {}) => {
     calls.push({ url, options });
-    const ok = !failNext;
-    return {
-      ok,
-      status: ok ? 200 : 400,
-      text: async () => JSON.stringify(ok
-        ? { ok: true, blueprint_status: "complete" }
-        : { ok: false, code: "blueprint_init_failed", message: "生成失败" }),
-    };
+    return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) };
   };
 });
 
@@ -104,7 +93,7 @@ function makeComposerContext() {
     openDrawer: () => {},
     openSettingsModal: () => {},
     openCreateModal: () => {},
-    showToast: (msg, level) => { toasts.push({ msg, level }); },
+    showToast: () => {},
     showActionError: (err) => { ctxState.errors.push(err.message); },
     threadRenderer: {
       renderChatMessage: () => ({ dataset: {}, isConnected: false, remove() {} }),

@@ -72,9 +72,6 @@ export function deriveWriteReadiness(input) {
     });
   }
 
-  // 5.5 Blueprint not initialized (spec §1.4 门禁):先 /init 再写作。
-  // 新项目 blueprint_status 为 none/partial 时所有写作入口被门禁拒绝,
-  // 主操作区直接给出显式触发入口,避免用户对着被拒的「开始写作」干等。
   // 6. Missing model
   const activeModel = project.active_model;
   if (!activeModel) {

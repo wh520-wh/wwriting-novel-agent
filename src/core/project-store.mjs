@@ -119,7 +119,7 @@ export async function saveProject(projectRoot, project) {
 
 // 章节产物证据（spec §1.4 P2-5 legacy 语义）：chapters/ 目录有章节文件（.md/.txt，过滤系统杂项
 // 如 Thumbs.db/desktop.ini/子目录），或 chapter_index.json 有索引。
-// 用于 loadState 动态标 legacy 与 blueprint-guard 对 agent_state.json 缺失时的兜底判定。
+// 用于 loadState 在 agent_state.json 缺失时对 legacy 语义的兜底判定。
 export async function hasChapterArtifacts(projectRoot) {
   const chaptersDir = safeJoin(projectRoot, "chapters");
   if (await pathExists(chaptersDir)) {

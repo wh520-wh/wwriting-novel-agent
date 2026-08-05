@@ -18,7 +18,7 @@ import { createWritingProject } from "./helpers.mjs";
 // - 大小限制（P1-8）：总纲 4000 字、设定 6000 字截断
 // - 切分（P1-9）：角色当前状态绝对不能进 stable block（会破坏 stableHash 缓存）
 
-// 与 /init（blueprint-init.mjs OUTLINE_STRUCTURE / SETTING_STRUCTURE）同构的固定结构文档。
+// 与 /init 生成的蓝图结构同构的固定结构文档。
 const OUTLINE_DOC = `# OUTLINE.md
 
 ## 一、总纲（锚点区 · 只增不改）

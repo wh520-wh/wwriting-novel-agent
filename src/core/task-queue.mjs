@@ -55,7 +55,6 @@ export class TaskQueue {
   async createRecoveryTask({ instruction, mode = "write", currentStage = "queued", recovery = {} } = {}) {
     return this.withLock(async () => {
       await this.load();
-      // 蓝图门禁（spec §1.4）：恢复待跑任务前检查，蓝图未完成不恢复写作任务
       if (this.state.tasks.some((candidate) => ACTIVE_STATUSES.has(candidate.status))) {
         return null;
       }

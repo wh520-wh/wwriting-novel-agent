@@ -188,7 +188,7 @@ export function createThreadRenderer(ctx) {
       card.addEventListener("click", () => {
         if (ctx.isChatBusy?.()) return;
         wrap.querySelectorAll(".suggestion-card").forEach((c) => { c.disabled = true; });
-        // kind 化的建议卡走独立触发（/init 蓝图初始化），不走 chat agent 文本发送。
+        // 建议卡统一走 submitText 文本提交（/init 等斜杠命令原样保留）。
         ctx.submitText?.(item.message);
       });
       wrap.append(card);
