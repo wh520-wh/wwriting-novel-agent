@@ -652,8 +652,13 @@ function clearTransientState() {
 // 都提升 generation + 清空临时状态，确保任何旧项目的延迟响应被丢弃。
 // 同步把 currentProjectRoot 指向新根，避免后续 loadDashboard 捕获到旧值。
 function commitProjectSwitch(projectRoot) {
+  const previousProjectRoot = currentProjectRoot;
   // 切走前：把当前输入框内容存到旧项目草稿（currentProjectRoot 仍指向旧值）。
   flushDraft();
+  // Task 7: 切到不同项目前清掉旧项目的任务级授权（失败不阻断切换，内存态下次自然失效兜底）。
+  if (previousProjectRoot && !pathEquals(previousProjectRoot, projectRoot)) {
+    void postJson("/api/chat/grants/clear", { projectRoot: previousProjectRoot }).catch(() => {});
+  }
   projectScope.activate(projectRoot);
   currentProjectRoot = projectRoot;
   clearTransientState();

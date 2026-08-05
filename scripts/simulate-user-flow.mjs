@@ -100,7 +100,7 @@ try {
   let initTurn = await runChatTurn({ projectRoot, project, registry, modelClient: client(), userMessage: expanded.userMessage, modelInstruction: expanded.modelInstruction });
   let resumed = 0;
   while (initTurn.pendingAction && resumed < 3) {
-    initTurn = await resumeChatTurn({ projectRoot, project, registry, modelClient: client(), approve: true });
+    initTurn = await resumeChatTurn({ projectRoot, project, registry, modelClient: client(), decision: "once" });
     resumed += 1;
   }
   const created = await Promise.all(
@@ -165,7 +165,7 @@ try {
     userMessage: "把第1章在蓝图骨架里标记为已完成，用 update_blueprint 的 check_segment"
   });
   if (chat2.pendingAction) {
-    const resumed = await resumeChatTurn({ projectRoot, project, registry, modelClient: client(), approve: true });
+    const resumed = await resumeChatTurn({ projectRoot, project, registry, modelClient: client(), decision: "once" });
     const outline = await fs.readFile(path.join(projectRoot, "OUTLINE.md"), "utf8");
     chat2ok = /\[x\] 第1章/.test(outline) && Boolean(resumed.reply);
     record("chat 写工具 pending/approve", chat2ok, `耗时 ${((Date.now() - t4) / 1000).toFixed(1)}s | 骨架打勾=${/\[x\] 第1章/.test(outline)}`);

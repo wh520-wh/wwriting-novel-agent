@@ -8,7 +8,8 @@ import { recordRecentProject, samePath } from "../src/core/app-state.mjs";
 import { loadDashboardData } from "../src/core/app-dashboard.mjs";
 import { readEvents } from "../src/core/event-log.mjs";
 import { loadLocalSecrets, loadLocalSecretsSync } from "../src/core/local-secrets.mjs";
-import { loadProject, loadState, saveProject, saveState } from "../src/core/project-store.mjs";
+import { loadProject, loadState, saveProject, saveState, upsertChapter } from "../src/core/project-store.mjs";
+import { createTaskGrantStore, decideToolAuthorization } from "../src/core/chat/task-grants.mjs";
 import { createWritingProject } from "./helpers.mjs";
 import { TaskQueue } from "../src/core/task-queue.mjs";
 import { appendFailure } from "../src/core/failures-store.mjs";
@@ -1698,5 +1699,98 @@ test("POST /api/commands/submit 在 blueprint_status none 时不被蓝图门禁�
     assert.notEqual(queue.tasks[0].status, "blocked");
   } finally {
     await closeServer(server);
+  }
+});
+
+// ===== Task 7: 任务级授权 HTTP 全链路（send/confirm decision 契约 + grants/clear）=====
+
+// 共享响应队列的 chat 模型：每次 HTTP 请求由 chatClient() 新建客户端实例，
+// 但都从同一个队列取回复，测试可按请求顺序 push 脚本。
+function makeChatTestModel() {
+  const queue = [];
+  return {
+    chatClient: () => ({
+      generate: async () => {
+        const next = queue.shift();
+        return { text: next ?? "已完成。", usageReport: {}, costSummary: { estimatedCost: 0 } };
+      },
+      costTracker: { writeProjectReport: async () => {} }
+    }),
+    push: (...responses) => queue.push(...responses)
+  };
+}
+
+const EDIT_SIX_TO_TWELVE = '```json\n{"tool_calls":[{"tool":"edit_chapter","args":{"chapter_no":1,"find":"六楼","replace":"十二楼","reason":"统一"}}]}\n```';
+const EDIT_TWELVE_TO_SIX = '```json\n{"tool_calls":[{"tool":"edit_chapter","args":{"chapter_no":1,"find":"十二楼","replace":"六楼","reason":"继续"}}]}\n```';
+
+async function setupChatChapter(projectRoot) {
+  const chapterPath = path.join(projectRoot, "chapters", "001.md");
+  await fs.mkdir(path.dirname(chapterPath), { recursive: true });
+  await fs.writeFile(chapterPath, "# Chapter 001\n\n刘康从六楼坠落。", "utf8");
+  await upsertChapter(projectRoot, { chapter_no: 1, status: "completed", final_path: chapterPath, actual_words: 8 });
+}
+
+test("chat confirm decision=task：同任务同类免确认，新用户消息恢复确认（HTTP 全链路）", async () => {
+  const model = makeChatTestModel();
+  const fixture = await setupServer({ testModel: model });
+  try {
+    await setupChatChapter(fixture.projectRoot);
+
+    // 1) 普通模式：write 工具落 pending（普通确认）
+    model.push(EDIT_SIX_TO_TWELVE);
+    const send1 = await postJson(fixture.port, "/api/chat/send", { message: "把六楼改成十二楼", projectRoot: fixture.projectRoot });
+    assert.equal(send1.res.status, 200);
+    assert.equal(send1.data.ok, true);
+    assert.ok(send1.data.pendingAction, "普通模式 write 应挂 pending");
+    assert.equal(send1.data.pendingAction.tool, "edit_chapter");
+    assert.equal(send1.data.pendingAction.confirmation_kind, "normal");
+
+    // 2) decision=task：执行 pending，并授予同任务同类工具免确认（resume 轮内第二个 edit 直接执行）
+    model.push(EDIT_TWELVE_TO_SIX, "已全部改完。");
+    const confirm = await postJson(fixture.port, "/api/chat/confirm", {
+      projectRoot: fixture.projectRoot,
+      decision: "task"
+    });
+    assert.equal(confirm.res.status, 200);
+    assert.equal(confirm.data.ok, true);
+    assert.equal(confirm.data.pendingAction, null, "task 授权下同类工具不应再挂 pending");
+    const edits = confirm.data.toolEvents.filter((e) => e.tool === "edit_chapter");
+    assert.equal(edits.length, 2, "应执行 2 次 edit_chapter（pending 批准 + 任务授权免确认）");
+    assert.ok(edits.every((e) => e.ok === true));
+    assert.match(await fs.readFile(path.join(fixture.projectRoot, "chapters", "001.md"), "utf8"), /六楼/u);
+
+    // 3) 新用户消息 = 新任务：授权不跨消息，同类工具恢复普通确认
+    model.push(EDIT_SIX_TO_TWELVE);
+    const send2 = await postJson(fixture.port, "/api/chat/send", { message: "再改回去", projectRoot: fixture.projectRoot });
+    assert.equal(send2.res.status, 200);
+    assert.ok(send2.data.pendingAction, "新用户消息后 write 应重新待确认");
+    assert.equal(send2.data.pendingAction.tool, "edit_chapter");
+    assert.equal(send2.data.pendingAction.confirmation_kind, "normal");
+  } finally {
+    await closeServer(fixture.server);
+  }
+});
+
+test("POST /api/chat/grants/clear 清除项目全部任务级授权，同 grant_key 恢复 confirm", async () => {
+  const grants = createTaskGrantStore();
+  const fixture = await setupServer({ taskGrants: grants });
+  try {
+    const write = { category: "write", scope: "project", risk: "normal", grant_key: "write:project:project-root" };
+    grants.allow(fixture.projectRoot, "t-g", write.grant_key);
+    assert.equal(
+      decideToolAuthorization({ projectRoot: fixture.projectRoot, action: write, permissions: {}, taskId: "t-g", grants }).decision,
+      "allow"
+    );
+
+    const { res, data } = await postJson(fixture.port, "/api/chat/grants/clear", { projectRoot: fixture.projectRoot });
+    assert.equal(res.status, 200);
+    assert.equal(data.ok, true);
+    assert.equal(grants.has(fixture.projectRoot, "t-g", write.grant_key), false);
+    assert.equal(
+      decideToolAuthorization({ projectRoot: fixture.projectRoot, action: write, permissions: {}, taskId: "t-g", grants }).decision,
+      "confirm"
+    );
+  } finally {
+    await closeServer(fixture.server);
   }
 });

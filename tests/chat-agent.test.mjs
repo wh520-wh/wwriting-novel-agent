@@ -76,6 +76,8 @@ test("历史超 40 条折叠为提要", async () => {
 import { runChatTurn, resumeChatTurn } from "../src/core/chat/chat-agent.mjs";
 import { registerWriteTools } from "../src/core/chat/tools-write.mjs";
 import { registerControlTools } from "../src/core/chat/tools-control.mjs";
+import { registerShellTools } from "../src/core/chat/tools-shell.mjs";
+import { createTaskGrantStore } from "../src/core/chat/task-grants.mjs";
 import { loadPendingAction, readChatHistory as readHistory, clearPendingAction } from "../src/core/chat/chat-store.mjs";
 import { appendTranscript } from "../src/core/chat/transcript-store.mjs";
 import { executeTool } from "../src/core/chat/tool-registry.mjs";
@@ -209,7 +211,7 @@ test("写工具落 pending_action 并暂停，approve 后执行并继续", async
   const resumed = await resumeChatTurn({
     projectRoot, project, registry,
     modelClient: scriptedClient(["已把第 1 章的六楼改为十二楼。"]),
-    approve: true
+    decision: "once"
   });
   assert.equal(resumed.reply, "已把第 1 章的六楼改为十二楼。");
   assert.equal(await loadPendingAction(projectRoot), null);
@@ -231,7 +233,7 @@ test("拒绝路径：reject 回填 user_rejected", async () => {
   const resumed = await resumeChatTurn({
     projectRoot, project, registry,
     modelClient: scriptedClient(["好的，保持六楼不变。"]),
-    approve: false
+    decision: "reject"
   });
   assert.equal(resumed.reply, "好的，保持六楼不变。");
   const content = await fs.readFile(path.join(projectRoot, "chapters", "001.md"), "utf8");
@@ -335,7 +337,7 @@ test("写作运行时写保护：resume 批准时若已 running，pending 的 up
   await resumeChatTurn({
     projectRoot, project, registry,
     modelClient: scriptedClient(["好的，等写作完成再改。"]),
-    approve: true,
+    decision: "once",
     server: { runJobs }
   });
   const toolMsg = (await readHistory(projectRoot)).find((m) => m.role === "tool" && m.tool === "update_continuity");
@@ -440,7 +442,7 @@ test("pending_action 跨进程持久：新 registry/loop 对象 approve 成功",
   const resumed = await resumeChatTurn({
     projectRoot, project, registry: newRegistry,
     modelClient: scriptedClient(["已改。"]),
-    approve: true
+    decision: "once"
   });
   assert.equal(await loadPendingAction(projectRoot), null);
   const content = await fs.readFile(path.join(projectRoot, "chapters", "001.md"), "utf8");
@@ -653,4 +655,255 @@ test("runChatTurn 后 chat_transcript.jsonl 有记录", async () => {
   assert.ok(parsed.request_messages);
   assert.ok(parsed.raw_response);
   assert.ok(Array.isArray(parsed.parsed_tool_calls));
+});
+
+// ===== Task 7: 任务级授权 / YOLO / 极端确认 =====
+
+// 静态动作归一化：describeToolAction 对无 describeAction 的静态工具兜底为「项目内、普通风险」。
+test("describeToolAction 静态工具兜底动作与 shell 自带描述", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  registerWriteTools(registry);
+  registerShellTools(registry);
+  const { describeToolAction } = await import("../src/core/chat/tool-registry.mjs");
+  const editAction = describeToolAction(registry.get("edit_chapter"), { chapter_no: 1, find: "六楼", reason: "统一" }, { projectRoot });
+  assert.deepEqual(editAction, {
+    category: "write", scope: "project", risk: "normal", grant_key: "write:project:project-root",
+    title: registry.get("edit_chapter").description, description: "统一",
+    command: null, cwd: null, targets: [projectRoot], preview: null, confirmation_text: null
+  });
+  const readAction = describeToolAction(registry.get("get_status"), {}, { projectRoot });
+  assert.equal(readAction.category, "read");
+  assert.equal(readAction.grant_key, "read:project:project-root");
+  const shellAction = describeToolAction(registry.get("shell"), { command: "echo hi", cwd: projectRoot, purpose: "看" }, { projectRoot });
+  assert.equal(shellAction.category, "control");
+  assert.equal(shellAction.scope, "project");
+  assert.equal(shellAction.risk, "normal");
+  assert.equal(shellAction.grant_key, "control:project:project-root");
+});
+
+test("decision=task：批准执行并授予同任务同类工具免确认；不同类别仍确认", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  registerWriteTools(registry);
+  registerControlTools(registry);
+  await runChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient([
+      '```json\n{"tool_calls":[{"tool":"edit_chapter","args":{"chapter_no":1,"find":"六楼","replace":"十二楼","reason":"统一"}}]}\n```'
+    ]),
+    userMessage: "改楼层"
+  });
+  // 批准执行 edit_chapter，并授予同任务内 write:project 免确认；同一批里的 control 不受覆盖
+  const resumed = await resumeChatTurn({
+    projectRoot, project, registry,
+    grants: createTaskGrantStore(),
+    modelClient: scriptedClient([
+      '```json\n{"tool_calls":[{"tool":"edit_chapter","args":{"chapter_no":1,"find":"十二楼","replace":"六楼","reason":"继续"}},{"tool":"pause_run","args":{}}]}\n```'
+    ]),
+    decision: "task"
+  });
+  // 同类（同 grant_key）编辑在批准后同任务内免确认直接执行
+  const edits = resumed.toolEvents.filter((e) => e.tool === "edit_chapter");
+  assert.equal(edits.length, 2, "应执行 2 次 edit_chapter（pending 批准 + 任务授权免确认）");
+  assert.ok(edits.every((e) => e.ok === true));
+  // 不同类别（control）不在 write 授权范围内，仍需普通确认
+  assert.ok(resumed.pendingAction, "control 工具应仍待确认");
+  assert.equal(resumed.pendingAction.tool, "pause_run");
+  assert.equal(resumed.pendingAction.confirmation_kind, "normal");
+  assert.match(await fs.readFile(path.join(projectRoot, "chapters", "001.md"), "utf8"), /六楼/u);
+});
+
+test("任务授权不跨用户消息（新 taskId 后恢复确认）", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  registerWriteTools(registry);
+  await runChatTurn({ projectRoot, project, registry, modelClient: scriptedClient([
+    '```json\n{"tool_calls":[{"tool":"edit_chapter","args":{"chapter_no":1,"find":"六楼","replace":"十二楼","reason":"统一"}}]}\n```'
+  ]), userMessage: "第一次改" });
+  await resumeChatTurn({
+    projectRoot, project, registry,
+    grants: createTaskGrantStore(),
+    modelClient: scriptedClient(["已改完。"]),
+    decision: "task"
+  });
+  // 第二条用户消息是新任务（新 taskId）：同类工具重新要求确认
+  const second = await runChatTurn({ projectRoot, project, registry, modelClient: scriptedClient([
+    '```json\n{"tool_calls":[{"tool":"edit_chapter","args":{"chapter_no":1,"find":"十二楼","replace":"六楼","reason":"再改"}}]}\n```'
+  ]), userMessage: "再改一次" });
+  assert.ok(second.pendingAction, "新用户消息后 write 应重新待确认");
+  assert.equal(second.pendingAction.tool, "edit_chapter");
+  assert.equal(second.pendingAction.confirmation_kind, "normal");
+});
+
+test("YOLO：普通越界 shell 放行执行", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  project.tool_permissions = { ...(project.tool_permissions ?? {}), yolo: true };
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  registerShellTools(registry);
+  const outsideCwd = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-shell-outside-"));
+  const call = JSON.stringify({
+    tool_calls: [{ tool: "shell", args: { command: "echo hi", cwd: outsideCwd, purpose: "越界测试" } }]
+  });
+  const out = await runChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient(['```json\n' + call + '\n```', "已执行。"]),
+    userMessage: "在项目外跑个命令"
+  });
+  assert.equal(out.pendingAction, null);
+  assert.equal(out.toolEvents.length, 1);
+  assert.equal(out.toolEvents[0].tool, "shell");
+  assert.equal(out.toolEvents[0].ok, true);
+});
+
+// 极端危险动作：用自定义工具模拟（真实极端 shell 命令绝不在测试里执行），验证 yolo 不放行、确认文字契约。
+function registerDangerTool(registry) {
+  registry.register({
+    name: "danger_tool",
+    kind: "shell",
+    description: "极端危险测试工具",
+    params: {},
+    run: async () => ({ done: true }),
+    describeAction: () => ({
+      category: "delete", scope: "outside", risk: "extreme", grant_key: "delete:outside:c:\\",
+      title: "危险操作", description: "格式化磁盘", command: null, cwd: null, targets: ["C:\\"], preview: null
+    })
+  });
+}
+
+test("YOLO：extreme 动作仍需极端确认（yolo 不放行 extreme）", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  project.tool_permissions = { ...(project.tool_permissions ?? {}), yolo: true };
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  registerDangerTool(registry);
+  const out = await runChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient(['```json\n{"tool_calls":[{"tool":"danger_tool","args":{}}]}\n```']),
+    userMessage: "执行危险操作"
+  });
+  assert.ok(out.pendingAction, "extreme 在 yolo 下仍须确认");
+  assert.equal(out.pendingAction.tool, "danger_tool");
+  assert.equal(out.pendingAction.confirmation_kind, "extreme");
+  assert.match(out.pendingAction.confirmation_text, /^强制继续 [A-F0-9]{6}$/u);
+});
+
+test("极端确认：确认文字错误拒绝且 pending 保留；正确文字执行", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  registerDangerTool(registry);
+  await runChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient(['```json\n{"tool_calls":[{"tool":"danger_tool","args":{}}]}\n```']),
+    userMessage: "执行危险操作"
+  });
+  // 错误确认文字 → danger_confirmation_mismatch，pending 原样保留
+  await assert.rejects(
+    resumeChatTurn({
+      projectRoot, project, registry,
+      modelClient: scriptedClient(["x"]),
+      decision: "force",
+      confirmationText: "WRONG"
+    }),
+    (error) => error.code === "danger_confirmation_mismatch"
+  );
+  const pendingAfterReject = await loadPendingAction(projectRoot);
+  assert.ok(pendingAfterReject, "确认文字不匹配后 pending 应保留");
+  assert.equal(pendingAfterReject.confirmation_kind, "extreme");
+  // 正确确认文字 → force 执行，pending 清除
+  const resumed = await resumeChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient(["危险操作已执行。"]),
+    decision: "force",
+    confirmationText: pendingAfterReject.confirmation_text
+  });
+  assert.equal(resumed.pendingAction, null);
+  assert.equal(await loadPendingAction(projectRoot), null);
+  const executed = resumed.toolEvents.find((e) => e.tool === "danger_tool");
+  assert.ok(executed);
+  assert.equal(executed.ok, true);
+});
+
+test("任务完成（最终文本）释放任务级授权", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  const grants = createTaskGrantStore();
+  grants.allow(projectRoot, "t8", "write:project:project-root");
+  const out = await runChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient(["进度是 1/3 章。"]),
+    userMessage: "进度如何？",
+    grants,
+    taskId: "t8"
+  });
+  assert.equal(out.pendingAction, null);
+  assert.equal(grants.has(projectRoot, "t8", "write:project:project-root"), false, "最终文本后授权应释放");
+});
+
+test("停止（abort）释放任务级授权", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  const grants = createTaskGrantStore();
+  grants.allow(projectRoot, "t9", "write:project:project-root");
+  const controller = new AbortController();
+  const modelClient = {
+    generate: ({ signal }) => new Promise((_resolve, reject) => {
+      signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+    })
+  };
+  const turn = runChatTurn({
+    projectRoot, project, registry,
+    signal: controller.signal, modelClient,
+    userMessage: "慢问题",
+    grants,
+    taskId: "t9"
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  controller.abort("用户停止");
+  const out = await turn;
+  assert.equal(out.cancelled, true);
+  assert.equal(grants.has(projectRoot, "t9", "write:project:project-root"), false, "停止后授权应释放");
+});
+
+test("新消息 supersede 旧 pending 时释放旧任务授权", async () => {
+  const projectRoot = await makeChatProject();
+  const project = await loadProject(projectRoot);
+  const registry = createToolRegistry();
+  registerReadTools(registry);
+  registerWriteTools(registry);
+  // 第一轮挂 pending（taskId 由 runChatTurn 内部生成），通过注入的 grants 观察释放
+  const grants = createTaskGrantStore();
+  await runChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient(['```json\n{"tool_calls":[{"tool":"edit_chapter","args":{"chapter_no":1,"find":"六楼","replace":"十二楼","reason":"统一"}}]}\n```']),
+    userMessage: "改",
+    grants,
+    taskId: "old-task"
+  });
+  grants.allow(projectRoot, "old-task", "write:project:project-root");
+  // 第二条消息：旧 pending 被 superseded，旧任务授权一并释放
+  const second = await runChatTurn({
+    projectRoot, project, registry,
+    modelClient: scriptedClient(["进度是 1/3 章。"]),
+    userMessage: "进度如何？",
+    grants,
+    taskId: "new-task"
+  });
+  assert.equal(second.pendingAction, null);
+  assert.equal(grants.has(projectRoot, "old-task", "write:project:project-root"), false, "supersede 后旧任务授权应释放");
 });
