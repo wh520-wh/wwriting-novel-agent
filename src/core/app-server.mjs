@@ -24,6 +24,7 @@ import { createProjectAt, loadProject, loadState, saveProject, saveState } from 
 import { createResearchAdapter } from "./research-adapters.mjs";
 import { fetchWebPage, searchWeb } from "./research-tools.mjs";
 import { ModelConfigValidationError, validateModelConfig } from "./model-config-validation.mjs";
+import { expandChatCommand } from "./chat/chat-command-expander.mjs";
 import { emit as emitRunEvent, subscribe } from "./run-events-bus.mjs";
 import { testModelConnection as runModelConnectionTest } from "./model-connection-test.mjs";
 import { SettingsValidationError, normalizeSettingsPatch, saveModelSettingsTransaction, updateProjectSettings } from "./settings-runtime.mjs";
@@ -1547,6 +1548,11 @@ async function serveChatSend(request, response, context) {
       return;
     }
     const controller = new AbortController();
+    const expanded = expandChatCommand({
+      command: body.command === "init" ? "init" : null,
+      message,
+      args: body.commandArgs
+    });
     context.chatJobs.set(jobKey, { controller, startedAt: new Date().toISOString() });
     try {
       return await withProjectLock(context, projectRoot, async () => {
@@ -1558,10 +1564,12 @@ async function serveChatSend(request, response, context) {
         project,
         registry,
         modelClient,
-        userMessage: message,
+        userMessage: expanded.userMessage,
+        modelInstruction: expanded.modelInstruction,
         signal: controller.signal,
         server: chatServerContext(context),
-        getTaskQueue: context.getTaskQueue
+        getTaskQueue: context.getTaskQueue,
+        onEvent: (event) => emitRunEvent(projectRoot, event)
       });
       await modelClient.costTracker.writeProjectReport(projectRoot);
       await serveJson(response, { ok: true, ...result });

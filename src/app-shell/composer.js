@@ -1,5 +1,5 @@
 import { icon } from "./icons.js";
-import { postJson, sendChatMessage, stopChat } from "./api-client.js";
+import { postJson, stopChat } from "./api-client.js";
 import { toolLabel } from "./tool-labels.mjs";
 import { getCommand, listCommands } from "./command-registry.mjs";
 import "./commands/index.mjs";  // side-effect: register 5 built-in commands
@@ -776,7 +776,7 @@ export function createComposer(ctx) {
       return;
     }
     if (parsed.type === "init") {
-      await submitBlueprintInit(parsed.content);
+      await sendChatMessageWithUX(parsed.raw, { command: "init", commandArgs: parsed.content });
       return;
     }
     // 默认走 chat agent
@@ -940,7 +940,7 @@ export function createComposer(ctx) {
     }
   }
 
-  async function sendChatMessageWithUX(message) {
+  async function sendChatMessageWithUX(message, options = {}) {
     // 入口忙态守卫：双击建议卡/快捷 chip/重试按钮不应打出 409 噪音（服务端守卫仍是兜底）。
     if (isChatBusy()) {
       ctx.showToast("智能体正在处理上一条消息，请稍候或点停止。", "info");
@@ -968,7 +968,11 @@ export function createComposer(ctx) {
     ctx.ensureRefreshLoop(true);
 
     try {
-      const result = await sendChatMessage(message, { projectRoot });
+      const result = await postJson("/api/chat/send", {
+        projectRoot,
+        message,
+        ...(options.command ? { command: options.command, commandArgs: options.commandArgs ?? "" } : {})
+      });
       if (token && !ctx.projectScope.isCurrent(token)) {
         localSendInFlight = false;
         removeActivityPlaceholder();
