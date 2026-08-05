@@ -194,6 +194,8 @@ function commandEvent(overrides = {}) {
   };
 }
 
+function tick() { return new Promise((resolve) => setTimeout(resolve, 0)); }
+
 test("同一 activity_id 合并输出且不重复创建行", () => {
   const root = new MockElement("div");
   const view = createChatActivityView({ root, document });
@@ -288,4 +290,82 @@ test("非 chat_activity 事件被忽略；点击停止触发 onStop", () => {
   const stop = root.querySelector(".chat-stop-btn");
   stop._fire("click");
   assert.equal(stopped, 1, "点击停止应触发 onStop");
+});
+
+// ---------------------------------------------------------------------------
+// I-2: 行数与输出上限（长会话防无限累积）
+// ---------------------------------------------------------------------------
+
+test("I-2 输出上限：超过 64KB 截断保留尾部，前置「输出过长已截断」提示，后续增量继续追加", () => {
+  const { root, view } = makeHarness();
+  const big = "y".repeat(70 * 1024) + "TAIL-END-123";
+  view.consume(commandEvent({ output_delta: big }));
+  const output = root.querySelector(".chat-activity-output");
+  assert.match(output.textContent, /输出过长已截断/u, "超限后应出现截断提示");
+  assert.ok(output.textContent.endsWith("TAIL-END-123"), "截断保留尾部内容");
+  assert.ok(output.textContent.length <= 64 * 1024 + 40, "总长不超过上限 + 提示长度");
+  view.consume(commandEvent({ output_delta: "more-tail" }));
+  assert.ok(output.textContent.endsWith("more-tail"), "后续增量继续追加在尾部");
+  assert.match(output.textContent, /输出过长已截断/u, "截断提示持续存在");
+  // 再灌 66KB：保留窗口整体前移，最老的 TAIL-END-123 被挤出。
+  view.consume(commandEvent({ output_delta: "z".repeat(66000) }));
+  assert.ok(!output.textContent.includes("TAIL-END-123"), "超限后最老内容被挤掉");
+  assert.ok(output.textContent.endsWith("z"), "保留窗口始终是最新尾部");
+});
+
+test("I-2 行数上限：超限裁剪最早的终态行，运行中的行保留", () => {
+  const { root, view } = makeHarness();
+  for (let i = 1; i <= 19; i += 1) {
+    view.consume(commandEvent({ activity_id: `a${i}`, state: "succeeded", exit_code: 0 }));
+  }
+  view.consume(commandEvent({ activity_id: "r1", state: "running" }));
+  view.consume(commandEvent({ activity_id: "r2", state: "running" }));
+  assert.equal(root.querySelectorAll(".chat-activity-item").length, 20, "行数被裁剪到上限 20");
+  assert.equal(root.querySelector('[data-activity-id="a1"]'), null, "最早的终态行被移除");
+  assert.ok(root.querySelector('[data-activity-id="a2"]'), "较新的终态行保留");
+  assert.ok(root.querySelector('[data-activity-id="r1"]'), "运行中的行保留");
+  assert.ok(root.querySelector('[data-activity-id="r2"]'), "运行中的行保留");
+});
+
+test("I-2 行数上限：全部运行中时不裁剪（运行中的行不删）", () => {
+  const { root, view } = makeHarness();
+  for (let i = 1; i <= 21; i += 1) {
+    view.consume(commandEvent({ activity_id: `live${i}`, state: "running" }));
+  }
+  assert.equal(root.querySelectorAll(".chat-activity-item").length, 21, "运行中的行不删（允许短暂超限）");
+});
+
+// ---------------------------------------------------------------------------
+// M-2: 停止按钮防重
+// ---------------------------------------------------------------------------
+
+test("M-2 停止按钮防重：点击即禁用，连点只触发一次 onStop；终态事件后恢复", () => {
+  const root = new MockElement("div");
+  let stopped = 0;
+  const view = createChatActivityView({ root, document, onStop: () => { stopped += 1; } });
+  view.consume(commandEvent({ state: "running" }));
+  const stop = root.querySelector(".chat-stop-btn");
+  stop._fire("click");
+  stop._fire("click");
+  stop._fire("click");
+  assert.equal(stopped, 1, "连点只触发一次 onStop");
+  assert.equal(stop.disabled, true, "点击后禁用");
+  view.consume(commandEvent({ state: "succeeded", exit_code: 0 }));
+  assert.equal(stop.disabled, false, "终态事件后恢复");
+  assert.equal(stop.hidden, true, "终态隐藏按钮");
+});
+
+test("M-2 停止按钮：onStop 失败（拒绝）时按钮恢复可点", async () => {
+  const root = new MockElement("div");
+  let stopped = 0;
+  const view = createChatActivityView({
+    root, document,
+    onStop: () => { stopped += 1; return Promise.reject(new Error("409")); },
+  });
+  view.consume(commandEvent({ state: "running" }));
+  const stop = root.querySelector(".chat-stop-btn");
+  stop._fire("click");
+  await tick();
+  assert.equal(stop.disabled, false, "失败后恢复可点（可重试停止）");
+  assert.equal(stopped, 1, "仍只触发一次 onStop");
 });

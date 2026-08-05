@@ -3,9 +3,18 @@
 //  - 同一 activity_id 合并到同一行（details/summary 原生键盘可展开），不重复建行；
 //  - output_delta 只追加文本（row.output.textContent +=），不重建 DOM；
 //  - thinking 阶段的 output_delta 是隐藏推理，不渲染（只显示人话 label）；
-//  - 停止按钮只在 running / requested 可见，终态隐藏。
+//  - 停止按钮只在 running / requested 可见，终态隐藏；点击即禁用防连点（M-2）。
 // 行结构：wrap(data-activity-id, data-state) > details > summary(状态标记 + label) + 字段区 + 输出 <pre>，右侧停止按钮。
 // 字段按 参数 → 命令 → 目录 → 退出码 → 耗时 → 错误 顺序出现（与后端 payload 对齐）。
+//
+// 上限（I-2）：长会话防止行数与输出无限累积——
+//  - 行数超过 MAX_ROWS 时移除最早的终态行（运行中的行保留不删）；
+//  - 单行输出超过 MAX_OUTPUT_CHARS 时截断保留尾部，前置「输出过长已截断」提示。
+
+const MAX_ROWS = 20;
+const MAX_OUTPUT_CHARS = 64 * 1024;
+const OUTPUT_TRUNCATED_MARK = "（输出过长已截断）\n";
+const TERMINAL_STATES = ["succeeded", "failed", "cancelled"];
 
 export function createChatActivityView({ root, document: doc = document, onStop = () => {} }) {
   const rows = new Map(); // activity_id -> row
@@ -17,19 +26,45 @@ export function createChatActivityView({ root, document: doc = document, onStop 
       row = buildRow(doc, event, onStop);
       rows.set(event.activity_id, row);
       root.append(row.wrap);
+      trimRows();
     }
     row.label.textContent = event.label || labelFor(event);
     row.wrap.dataset.state = event.state;
     if (event.args) setField(doc, row, "参数", event.args);
     if (event.command) setField(doc, row, "命令", event.command);
     if (event.cwd) setField(doc, row, "目录", event.cwd);
-    // 思考增量（隐藏推理）不上屏；其余增量只追加文本。
-    if (event.output_delta && event.phase !== "thinking") row.output.textContent += event.output_delta;
+    // 思考增量（隐藏推理）不上屏；其余增量只追加文本（超限截断保留尾部）。
+    if (event.output_delta && event.phase !== "thinking") appendOutput(row, event.output_delta);
     if (event.exit_code != null) setField(doc, row, "退出码", String(event.exit_code));
     if (event.duration_ms != null) setField(doc, row, "耗时", `${event.duration_ms} ms`);
     if (event.error) setField(doc, row, "错误", event.error);
-    row.stop.hidden = !["running", "requested"].includes(event.state);
+    const active = ["running", "requested"].includes(event.state);
+    row.stop.hidden = !active;
+    // M-2: 终态事件到达才恢复停止按钮（点击后已禁用，防连点第二个 409 弹错误 toast）。
+    if (!active) row.stop.disabled = false;
     row.mark.textContent = markFor(event.state);
+  }
+
+  // I-2: 行数超限时移除最早的终态行；没有终态行（全部运行中）则不裁剪。
+  function trimRows() {
+    if (rows.size <= MAX_ROWS) return;
+    for (const [id, row] of rows) {
+      if (TERMINAL_STATES.includes(row.wrap.dataset.state)) {
+        row.wrap.remove();
+        rows.delete(id);
+        return;
+      }
+    }
+  }
+
+  // I-2: 输出累积超限时截断保留尾部并前置提示；buffer 单处维护避免逐 delta 重读 textContent。
+  function appendOutput(row, delta) {
+    row.outputBuf = (row.outputBuf ?? "") + delta;
+    if (row.outputBuf.length > MAX_OUTPUT_CHARS) {
+      row.outputBuf = row.outputBuf.slice(row.outputBuf.length - MAX_OUTPUT_CHARS);
+      row.truncated = true;
+    }
+    row.output.textContent = row.truncated ? OUTPUT_TRUNCATED_MARK + row.outputBuf : row.outputBuf;
   }
 
   function clear() {
@@ -76,9 +111,19 @@ function buildRow(doc, event, onStop) {
   stop.type = "button";
   stop.className = "chat-stop-btn";
   stop.textContent = "停止";
-  stop.addEventListener("click", onStop);
+  // M-2: 防重——点击即禁用（连点第二个会拿到 409 弹错误 toast），
+  // 收到终态事件（consume 里恢复）或 onStop 拒绝（错误路径）才恢复可点。
+  stop.addEventListener("click", () => {
+    if (stop.disabled) return;
+    stop.disabled = true;
+    try {
+      Promise.resolve(onStop()).catch(() => { stop.disabled = false; });
+    } catch {
+      stop.disabled = false;
+    }
+  });
   wrap.append(details, stop);
-  return { wrap, label, mark, detail, output, stop, fields: new Map() };
+  return { wrap, label, mark, detail, output, stop, fields: new Map(), outputBuf: "", truncated: false };
 }
 
 // 无 label 时的兜底人话：按 phase / state 推导（thinking 只显示 label 行）。
