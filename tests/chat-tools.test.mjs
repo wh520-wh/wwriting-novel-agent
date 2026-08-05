@@ -425,3 +425,47 @@ test("archive_project 工具：归档/解除归档写 archived_at；运行中拒
   assert.equal(busy.ok, false);
   assert.equal(busy.error, "project_busy");
 });
+
+import { registerShellTools } from "../src/core/chat/tools-shell.mjs";
+
+const PROJECT = "D:\\Novels\\demo";
+
+test("shell 工具暴露 command/cwd/timeout_ms/purpose，模型不能声明风险", () => {
+  const registry = createToolRegistry();
+  registerShellTools(registry);
+  const shell = toOpenAITools(registry)[0].function;
+  assert.equal(shell.name, "shell");
+  assert.deepEqual(shell.parameters.required, ["command", "purpose"]);
+  assert.equal(shell.parameters.properties.timeout_ms.type, "integer");
+  assert.equal(shell.parameters.properties.risk, undefined);
+  assert.equal(shell.parameters.properties.approve, undefined);
+});
+
+test("shell describeAction 忽略模型伪造的 risk/allowed", () => {
+  const registry = createToolRegistry();
+  registerShellTools(registry);
+  const action = registry.get("shell").describeAction({
+    command: "Set-Content a.txt x",
+    cwd: PROJECT,
+    purpose: "写测试",
+    risk: "read",
+    allowed: true
+  }, { projectRoot: PROJECT });
+  assert.equal(action.category, "write");
+  assert.equal(action.risk, "normal");
+});
+
+test("聊天工具清单包含 shell，写作流水线工具清单不包含它", async () => {
+  const { buildChatRegistry } = await import("../src/core/app-server.mjs");
+  const chatNames = toOpenAITools(buildChatRegistry()).map((tool) => tool.function.name);
+  assert.ok(chatNames.includes("shell"), "chat registry 应包含 shell");
+
+  // 写作流水线只注册读+写工具（agent-engine 的 buildWritingRegistry 等价构成），不包含 shell
+  const writingRegistry = createToolRegistry();
+  const { registerReadTools: registerWritingReadTools } = await import("../src/core/chat/tools-read.mjs");
+  const { registerWriteTools: registerWritingWriteTools } = await import("../src/core/chat/tools-write.mjs");
+  registerWritingReadTools(writingRegistry);
+  registerWritingWriteTools(writingRegistry);
+  const writingNames = toOpenAITools(writingRegistry).map((tool) => tool.function.name);
+  assert.ok(!writingNames.includes("shell"), "写作流水线工具清单不应包含 shell");
+});

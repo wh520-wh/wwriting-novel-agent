@@ -50,6 +50,7 @@ import { createToolRegistry } from "./chat/tool-registry.mjs";
 import { registerReadTools } from "./chat/tools-read.mjs";
 import { registerWriteTools } from "./chat/tools-write.mjs";
 import { registerControlTools } from "./chat/tools-control.mjs";
+import { registerShellTools } from "./chat/tools-shell.mjs";
 import { readChatHistory, loadPendingAction } from "./chat/chat-store.mjs";
 import { buildPricingTable } from "./model-pricing.mjs";
 import { CostTracker } from "./cost-tracker.mjs";
@@ -1609,11 +1610,12 @@ function chatServerContext(context) {
   };
 }
 
-function buildChatRegistry() {
+export function buildChatRegistry() {
   const registry = createToolRegistry();
   registerReadTools(registry);
   registerWriteTools(registry);
   registerControlTools(registry);
+  registerShellTools(registry);
   return registry;
 }
 
