@@ -54,8 +54,16 @@ export async function sendChatMessage(message, options = {}) {
   return await postJson("/api/chat/send", { message, ...(projectRoot ? { projectRoot } : {}) }, requestOptions);
 }
 
-export async function confirmChatAction(approve, options = {}) {
-  return await postJson("/api/chat/confirm", { approve }, options);
+// Task 8/9 确认契约：decision ∈ once / task / reject / force（服务端 serveChatConfirm 白名单；
+// 旧 {approve: boolean} 兼容由服务端处理，前端一律发 decision）。极端确认 decision=force 必须
+// 原样带回 confirmation_text（服务端比对不匹配即拒绝）。
+export async function confirmChatAction(decision, options = {}) {
+  const { projectRoot = null, confirmationText = "", ...requestOptions } = options;
+  return await postJson("/api/chat/confirm", {
+    ...(projectRoot ? { projectRoot } : {}),
+    decision,
+    confirmationText,
+  }, requestOptions);
 }
 
 export async function stopChat(options = {}) {

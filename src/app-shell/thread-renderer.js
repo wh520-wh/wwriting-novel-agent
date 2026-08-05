@@ -6,9 +6,10 @@ import { renderDiff, renderParagraphDiff } from "./diff-view.js";
 import { deriveFailures } from "./agent-truth.mjs";
 import { deriveRunPresentation, deriveStepState } from "./run-presentation.mjs";
 import { postJson, getJson } from "./api-client.js";
-import { sendChatMessage, confirmChatAction } from "./api-client.js";
+import { sendChatMessage, confirmChatAction, stopChat } from "./api-client.js";
 import { renderMarkdown, cleanAssistantContent } from "./markdown-lite.mjs";
 import { toolLabel } from "./tool-labels.mjs";
+import { createChatActivityView } from "./chat-activity-view.js";
 import { deriveSources, deriveSuggestions } from "./chat-derive.mjs";
 import { presentChapterArtifact } from "./chapter-presentation.mjs";
 import { deriveProjectIdentity } from "./project-identity.mjs";
@@ -164,6 +165,36 @@ export function createThreadRenderer(ctx) {
   let threadGreeted = false;
   // 当前一轮（live turn）状态：SSE 事件驱动的思考→工具→正文→完成态状态机。
   let liveTurn = null;
+  // Task 9 实时活动流：chat_activity SSE 事件 → 聊天线程内独立容器（建议卡下方）。
+  // 容器随线程重建（切项目/清空）而销毁，view 实例一并重建，避免残留 activity_id 行。
+  let chatActivityView = null;
+  let chatActivityRoot = null;
+
+  // 活动流容器按需创建：渲染时线程可能刚被 replaceChildren 重建，容器不在 DOM 里就重新挂。
+  function ensureChatActivityView() {
+    if (chatActivityView) return chatActivityView;
+    if (!chatActivityRoot) {
+      chatActivityRoot = document.createElement("div");
+      chatActivityRoot.className = "chat-activity-stream";
+      ctx.refs.thread.append(chatActivityRoot);
+    }
+    chatActivityView = createChatActivityView({
+      root: chatActivityRoot,
+      document,
+      // 停止按钮触发现有 chat 停止流程（composer 占位行同款：POST /api/chat/stop）。
+      onStop: () => {
+        stopChat().catch((error) => ctx.showToast?.(error.message ?? "停止失败。", "error"));
+      },
+    });
+    return chatActivityView;
+  }
+
+  // 线程被清空/重建时同步重置活动流（clear 移除行，下次事件重新建容器）。
+  function resetChatActivity() {
+    chatActivityView?.clear();
+    chatActivityView = null;
+    chatActivityRoot = null;
+  }
 
   function renderEmptyThread() {
     ctx.renderedKeys.clear();
@@ -171,6 +202,7 @@ export function createThreadRenderer(ctx) {
     threadGreeted = false;
     liveTurn = null;
     ctx.setLiveBlock(null);
+    resetChatActivity();
     const fragment = document.createDocumentFragment();
     fragment.append(buildSessionHead(null), buildGreeting());
     ctx.refs.thread.replaceChildren(fragment);
@@ -1322,7 +1354,148 @@ export function createThreadRenderer(ctx) {
     return wrap;
   }
 
+  // 确认卡共享：预览 diff（沿用段落/行级对照，edit_chapter 走 chat-confirm-diffwrap 切换）。
+  function renderPreviewBlock(pendingAction) {
+    const preview = pendingAction?.preview;
+    if (preview?.before == null && preview?.after == null) return null;
+    if (pendingAction?.tool === "edit_chapter") {
+      const diffWrap = document.createElement("div");
+      diffWrap.className = "chat-confirm-diffwrap";
+      const paraView = renderParagraphDiff(preview.before ?? "", preview.after ?? "");
+      const lineView = renderDiff(preview.before ?? "", preview.after ?? "");
+      lineView.hidden = true;
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "chat-diff-toggle";
+      toggle.dataset.testid = "chat-diff-toggle";
+      toggle.textContent = "行级详细";
+      toggle.setAttribute("aria-pressed", "false");
+      toggle.addEventListener("click", () => {
+        const showLine = lineView.hidden;
+        lineView.hidden = !showLine;
+        paraView.hidden = showLine;
+        toggle.textContent = showLine ? "段落对照" : "行级详细";
+        toggle.setAttribute("aria-pressed", showLine ? "true" : "false");
+      });
+      diffWrap.append(paraView, lineView, toggle);
+      return diffWrap;
+    }
+    const diff = document.createElement("div");
+    diff.className = "chat-confirm-diff";
+    const before = document.createElement("div");
+    before.className = "chat-confirm-before manuscript-text peek";
+    before.textContent = preview?.before ?? "";
+    const after = document.createElement("div");
+    after.className = "chat-confirm-after manuscript-text peek";
+    after.textContent = preview?.after ?? "";
+    diff.append(before, after);
+    return diff;
+  }
+
+  // 确认卡元信息区：命令 / 目录 / 目标（删除确认展示完整 targets）。
+  // pending 里 command/cwd/targets 由 chat-agent 归一化存进 action 字段，顶层字段兜底。
+  function appendConfirmMeta(card, pendingAction) {
+    const action = pendingAction?.action ?? {};
+    const fields = [];
+    const push = (name, value) => {
+      const text = Array.isArray(value) ? value.join("\n") : String(value ?? "").trim();
+      if (!text) return;
+      const strong = document.createElement("strong");
+      strong.textContent = name;
+      const pre = document.createElement("pre");
+      pre.textContent = text;
+      fields.push(strong, pre);
+    };
+    push("命令", action.command ?? pendingAction?.command);
+    push("目录", action.cwd ?? pendingAction?.cwd);
+    push("目标", action.targets ?? pendingAction?.targets);
+    if (fields.length === 0) return;
+    const meta = document.createElement("div");
+    meta.className = "chat-confirm-meta";
+    meta.append(...fields);
+    card.append(meta);
+  }
+
+  // 确认提交：once/task/reject 走 decision；极端确认 force 附 confirmationText（getter 惰性取值）。
+  // 成功后卡变 resolved（拒绝为 rejected）；失败恢复按钮可用并走统一错误提示。
+  function submitDecision(card, buttons, decision, getConfirmationText = () => "") {
+    return async () => {
+      for (const btn of buttons) btn.disabled = true;
+      try {
+        await confirmChatAction(decision, {
+          projectRoot: ctx.getCurrentProjectRoot(),
+          confirmationText: getConfirmationText(),
+        });
+        card.classList.add(decision === "reject" ? "chat-confirm-card--rejected" : "chat-confirm-card--resolved");
+        if (typeof ctx.loadDashboard === "function") {
+          void ctx.loadDashboard();
+        }
+      } catch (error) {
+        for (const btn of buttons) btn.disabled = false;
+        ctx.showActionError?.(error);
+      }
+    };
+  }
+
+  function actionButton(label, decision, onClick) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `chat-confirm-${decision}`;
+    btn.dataset.testid = `chat-confirm-${decision}`;
+    btn.textContent = label;
+    btn.addEventListener("click", onClick);
+    return btn;
+  }
+
+  // 极端危险确认卡（独立结构，不复用普通卡琥珀样式）：
+  // 后果区（命令/目录/目标）+ 确认文字输入解锁「强制继续」+ 拒绝逃生门。
+  function renderExtremeConfirmCard(pendingAction) {
+    const wrap = document.createElement("div");
+    wrap.className = "msg-agent rise chat-bubble-wrap chat-bubble-wrap--confirm";
+    wrap.dataset.ts = pendingAction?.created_at ?? "";
+    const card = document.createElement("div");
+    card.className = "chat-danger-confirm";
+    const heading = document.createElement("h4");
+    heading.textContent = "极端危险操作";
+    const warning = document.createElement("p");
+    warning.className = "chat-danger-warning";
+    warning.textContent = "此操作可能破坏磁盘、系统或大范围用户数据，且无法自动恢复。";
+    card.append(heading, warning);
+    appendConfirmMeta(card, pendingAction);
+    const previewBlock = renderPreviewBlock(pendingAction);
+    if (previewBlock) card.append(previewBlock);
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "chat-danger-input";
+    input.placeholder = pendingAction?.confirmation_text ?? "";
+    input.setAttribute("autocomplete", "off");
+    const force = document.createElement("button");
+    force.type = "button";
+    force.className = "chat-danger-force";
+    force.dataset.testid = "chat-danger-force";
+    force.textContent = "输入确认文字后强制继续";
+    force.disabled = true;
+    const buttons = document.createElement("div");
+    buttons.className = "chat-confirm-buttons";
+    const reject = actionButton("拒绝", "reject", () => {});
+    const set = [force, reject];
+    force.addEventListener("click", submitDecision(card, set, "force", () => input.value.trim()));
+    reject.addEventListener("click", submitDecision(card, set, "reject"));
+    // 输入文字与 confirmation_text 完全一致（trim 后）才解锁强制按钮。
+    input.addEventListener("input", () => {
+      const expected = String(pendingAction?.confirmation_text ?? "").trim();
+      force.disabled = String(input.value ?? "").trim() !== expected;
+    });
+    buttons.append(force, reject);
+    card.append(input, buttons);
+    wrap.append(card);
+    return wrap;
+  }
+
   function renderConfirmCard(pendingAction) {
+    if (pendingAction?.confirmation_kind === "extreme") {
+      return renderExtremeConfirmCard(pendingAction);
+    }
     const wrap = document.createElement("div");
     wrap.className = "msg-agent rise chat-bubble-wrap chat-bubble-wrap--confirm";
     wrap.dataset.ts = pendingAction?.created_at ?? "";
@@ -1337,85 +1510,20 @@ export function createThreadRenderer(ctx) {
       desc.textContent = pendingAction.description;
       card.append(desc);
     }
-    const preview = pendingAction?.preview;
-    if (preview?.before != null || preview?.after != null) {
-      if (pendingAction?.tool === "edit_chapter") {
-        const diffWrap = document.createElement("div");
-        diffWrap.className = "chat-confirm-diffwrap";
-        const paraView = renderParagraphDiff(preview.before ?? "", preview.after ?? "");
-        const lineView = renderDiff(preview.before ?? "", preview.after ?? "");
-        lineView.hidden = true;
-        const toggle = document.createElement("button");
-        toggle.type = "button";
-        toggle.className = "chat-diff-toggle";
-        toggle.dataset.testid = "chat-diff-toggle";
-        toggle.textContent = "行级详细";
-        toggle.setAttribute("aria-pressed", "false");
-        toggle.addEventListener("click", () => {
-          const showLine = lineView.hidden;
-          lineView.hidden = !showLine;
-          paraView.hidden = showLine;
-          toggle.textContent = showLine ? "段落对照" : "行级详细";
-          toggle.setAttribute("aria-pressed", showLine ? "true" : "false");
-        });
-        diffWrap.append(paraView, lineView, toggle);
-        card.append(diffWrap);
-      } else {
-        const diff = document.createElement("div");
-        diff.className = "chat-confirm-diff";
-        const before = document.createElement("div");
-        before.className = "chat-confirm-before manuscript-text peek";
-        before.textContent = preview?.before ?? "";
-        const after = document.createElement("div");
-        after.className = "chat-confirm-after manuscript-text peek";
-        after.textContent = preview?.after ?? "";
-        diff.append(before, after);
-        card.append(diff);
-      }
-    }
+    appendConfirmMeta(card, pendingAction);
+    const previewBlock = renderPreviewBlock(pendingAction);
+    if (previewBlock) card.append(previewBlock);
     const buttons = document.createElement("div");
     buttons.className = "chat-confirm-buttons";
-    const approve = document.createElement("button");
-    approve.type = "button";
-    approve.className = "chat-confirm-approve";
-    approve.dataset.testid = "chat-confirm-approve";
-    approve.textContent = "执行";
-    const reject = document.createElement("button");
-    reject.type = "button";
-    reject.className = "chat-confirm-reject";
-    reject.dataset.testid = "chat-confirm-reject";
-    reject.textContent = "取消";
-    approve.addEventListener("click", async () => {
-      approve.disabled = true;
-      reject.disabled = true;
-      try {
-        await confirmChatAction(true);
-        card.classList.add("chat-confirm-card--resolved");
-        if (typeof ctx.loadDashboard === "function") {
-          void ctx.loadDashboard();
-        }
-      } catch (error) {
-        approve.disabled = false;
-        reject.disabled = false;
-        ctx.showActionError?.(error);
-      }
-    });
-    reject.addEventListener("click", async () => {
-      approve.disabled = true;
-      reject.disabled = true;
-      try {
-        await confirmChatAction(false);
-        card.classList.add("chat-confirm-card--rejected");
-        if (typeof ctx.loadDashboard === "function") {
-          void ctx.loadDashboard();
-        }
-      } catch (error) {
-        approve.disabled = false;
-        reject.disabled = false;
-        ctx.showActionError?.(error);
-      }
-    });
-    buttons.append(approve, reject);
+    // 普通确认三选：仅本次 / 本次任务同类 / 拒绝。
+    const once = actionButton("仅允许这一次", "once", () => {});
+    const task = actionButton("本次任务允许同类操作", "task", () => {});
+    const reject = actionButton("拒绝", "reject", () => {});
+    const set = [once, task, reject];
+    once.addEventListener("click", submitDecision(card, set, "once"));
+    task.addEventListener("click", submitDecision(card, set, "task"));
+    reject.addEventListener("click", submitDecision(card, set, "reject"));
+    buttons.append(once, task, reject);
     card.append(buttons);
     wrap.append(card);
     return wrap;
@@ -2014,6 +2122,13 @@ export function createThreadRenderer(ctx) {
       } else if (turn.phase === "drafting") {
         appendParaText(turn, chunk);
       }
-    }
+    },
+    // Task 9 实时活动：chat_activity SSE 事件直接进活动流（独立于 live turn 状态机）。
+    onChatActivity(event) {
+      ensureChatActivityView().consume(event);
+      scrollThreadToBottom();
+    },
+    // 线程重建（切项目/清空）时重置活动流：由 app.js clearTransientState 调用。
+    resetChatActivity,
   };
 }

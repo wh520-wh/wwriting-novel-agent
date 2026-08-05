@@ -55,7 +55,9 @@ const LABELS = {
   archive_project: (a) => (a?.archived === false || a?.archived === "false" ? "解除归档" : "归档项目"),
   start_run: () => "启动写作任务",
   pause_run: () => "暂停写作任务",
-  resolve_failure: (a) => (a?.command ? `处理故障（${a.command}）` : "处理故障")
+  resolve_failure: (a) => (a?.command ? `处理故障（${a.command}）` : "处理故障"),
+  // Task 9: shell 工具（确认卡标题 / 活动流兜底）。命令文本由确认卡元信息区展示，标题保持简洁。
+  shell: () => "运行命令"
 };
 
 export function toolLabel(tool, argsSummary) {

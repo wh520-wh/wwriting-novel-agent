@@ -2205,22 +2205,67 @@ button.cbar-pill--readonly:hover {
 }
 .chat-confirm-card h4 { margin: 0 0 6px; font-size: 13.5px; color: var(--ink); }
 .chat-confirm-desc { margin: 0 0 8px; font-size: 12.5px; color: var(--ink-2); line-height: 1.5; }
+/* 确认卡元信息区：命令 / 目录 / 目标（删除确认展示完整 targets） */
+.chat-confirm-meta {
+  margin: 8px 0;
+  padding: 7px 10px;
+  background: var(--surface-2);
+  border-left: 3px solid var(--amber-line);
+  border-radius: 4px;
+  font-size: 12px;
+}
+.chat-confirm-meta strong { display: block; margin-top: 5px; color: var(--ink-2); font-size: 11.5px; }
+.chat-confirm-meta strong:first-child { margin-top: 0; }
+.chat-confirm-meta pre {
+  margin: 1px 0 0; padding: 0;
+  font-family: var(--mono); font-size: 11.5px; color: var(--ink);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
 .chat-confirm-diff { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0; }
 .chat-confirm-diff > div { padding: 7px 9px; background: rgba(0,0,0,.04); border-radius: 4px; font-size: 12px; white-space: pre-wrap; color: var(--ink-2); }
 .chat-confirm-before { border-left: 3px solid var(--red); }
 .chat-confirm-after { border-left: 3px solid var(--green); }
-.chat-confirm-buttons { display: flex; gap: 8px; margin-top: 4px; }
-.chat-confirm-approve, .chat-confirm-reject {
+.chat-confirm-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.chat-confirm-once, .chat-confirm-task, .chat-confirm-reject {
   font: inherit; font-size: 12.5px; font-weight: 600;
   padding: 5px 14px; border-radius: var(--r-sm); border: 1px solid transparent; cursor: pointer;
   transition: opacity .2s ease;
 }
-.chat-confirm-approve { background: var(--green); color: var(--btn-ink); }
+.chat-confirm-once { background: var(--green); color: var(--btn-ink); }
+.chat-confirm-task { background: var(--amber); color: var(--btn-ink); }
 .chat-confirm-reject { background: var(--red); color: var(--btn-ink); }
-.chat-confirm-approve:disabled, .chat-confirm-reject:disabled { opacity: .55; cursor: not-allowed; }
+.chat-confirm-once:disabled, .chat-confirm-task:disabled, .chat-confirm-reject:disabled { opacity: .55; cursor: not-allowed; }
 .chat-confirm-card--resolved { opacity: .6; border-color: var(--green); }
 .chat-confirm-card--rejected { opacity: .6; border-color: var(--muted); }
 .chat-confirm-card--superseded { opacity: .5; border-color: var(--muted); background: var(--bg-soft); }
+
+/* Task 9 极端危险确认卡：独立红色结构（不复用普通确认卡琥珀样式）。
+   3px 左边界 + 明确后果区（命令/目录/目标由 .chat-confirm-meta 承载）。 */
+.chat-danger-confirm {
+  border: 2px solid var(--red);
+  border-left: 3px solid var(--red);
+  border-radius: var(--r-sm);
+  padding: 11px 13px;
+  background: var(--red-soft);
+  max-width: 80%;
+  font-size: 13px;
+}
+.chat-danger-confirm h4 { margin: 0 0 6px; font-size: 13.5px; color: var(--red); }
+.chat-danger-warning { margin: 0 0 8px; font-size: 12.5px; color: var(--red); line-height: 1.5; }
+.chat-danger-input {
+  width: 100%; box-sizing: border-box;
+  margin-top: 8px; padding: 6px 9px;
+  font: inherit; font-size: 12.5px; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--red-line); border-radius: 4px;
+}
+.chat-danger-input:focus { outline: none; border-color: var(--red); }
+.chat-danger-force {
+  font: inherit; font-size: 12.5px; font-weight: 700;
+  padding: 5px 14px; border-radius: var(--r-sm); border: 1px solid transparent; cursor: pointer;
+  background: var(--red); color: var(--btn-ink);
+  transition: opacity .2s ease;
+}
+.chat-danger-force:disabled { opacity: .5; cursor: not-allowed; }
 
 /* §3.4: 中断卡片 — 进程崩溃/断电后最后一条消息是 generating 占位时渲染。
    spec §2.3-U1/U6：中性灰细条提示（不占内容区核心），无虚线边框，不通栏（最大宽度 82%），
@@ -2380,6 +2425,53 @@ button.cbar-pill--readonly:hover {
 }
 .chat-stop-btn:hover { filter: brightness(0.97); }
 .chat-stop-btn:disabled { opacity: .5; cursor: default; }
+
+/* Task 9 · 实时活动流（chat_activity SSE → 聊天线程内容器）。
+   行是 details/summary（原生键盘可展开），状态色由 data-state 驱动，
+   输出是唯一 .chat-activity-output，只追加文本不重建。 */
+.chat-activity-stream {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 4px 0;
+  max-width: 86%;
+}
+.chat-activity-item {
+  display: flex; align-items: flex-start; gap: 8px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line-2);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  padding: 7px 10px;
+}
+.chat-activity-item[data-state="succeeded"] { border-left-color: var(--green); }
+.chat-activity-item[data-state="failed"] { border-left-color: var(--red); }
+.chat-activity-item[data-state="cancelled"] { opacity: .7; }
+.chat-activity-item details { flex: 1; min-width: 0; }
+.chat-activity-item summary {
+  display: flex; align-items: center; gap: 8px;
+  cursor: pointer; list-style: none;
+  font-size: 12.5px; color: var(--ink-2);
+}
+.chat-activity-item summary::-webkit-details-marker { display: none; }
+.chat-activity-item summary::before { content: "▸"; color: var(--faint); font-size: 10px; transition: transform .12s; }
+.chat-activity-item details[open] summary::before { transform: rotate(90deg); }
+.chat-activity-mark { flex: none; font-weight: 700; color: var(--ink-3); min-width: 14px; text-align: center; }
+.chat-activity-item[data-state="succeeded"] .chat-activity-mark { color: var(--green); }
+.chat-activity-item[data-state="failed"] .chat-activity-mark { color: var(--red); }
+.chat-activity-label { color: var(--ink); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-activity-fields { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 6px 0 0 14px; }
+.chat-activity-field strong { color: var(--ink-2); font-size: 11.5px; white-space: nowrap; }
+.chat-activity-field pre {
+  margin: 0; padding: 0;
+  font-family: var(--mono); font-size: 11.5px; color: var(--ink-2);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.chat-activity-output {
+  margin: 6px 0 0 14px;
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.5; color: var(--ink-2);
+  background: var(--surface-2); padding: 6px 8px; border-radius: 4px;
+  max-height: 240px; overflow: auto; white-space: pre-wrap;
+}
+.chat-activity-item .chat-stop-btn { margin-top: 2px; }
 
 /* ============================================================
    S4.5 Task 12 · 消息操作排
