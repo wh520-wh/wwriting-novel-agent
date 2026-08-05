@@ -34,7 +34,7 @@ async function listenOnFetchSafePort(server) {
   throw new Error("Could not allocate a fetch-safe test port");
 }
 
-async function setupServer() {
+async function setupServer(options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-chat-endpoints-"));
   const { projectRoot } = await createProject(root, {
     slug: "chat-ep",
@@ -49,7 +49,8 @@ async function setupServer() {
     selectedProjectRoot: projectRoot,
     stateRoot,
     secretsRoot,
-    port: 0
+    port: 0,
+    ...options
   });
   const port = await listenOnFetchSafePort(server);
   return { root, projectRoot, stateRoot, secretsRoot, server, port };
@@ -118,6 +119,56 @@ test("POST /api/chat/send 与 GET /api/chat/history 端到端：mock 模型返�
     assert.ok(roles.includes("assistant"), "应包含 assistant 消息");
     // pendingAction 无写/控制类工具时为 null
     assert.equal(hist.data.pendingAction ?? null, null);
+  } finally {
+    await closeServer(ctx.server);
+  }
+});
+
+test("POST /api/chat/send /init 保留原文、展开首轮指令并支持连续调用", async () => {
+  const modelMessages = [];
+  const modelClient = {
+    generate: async ({ messages }) => {
+      modelMessages.push(messages);
+      return { text: "已完成检查。", usageReport: {}, costSummary: { estimatedCost: 0 } };
+    },
+    costTracker: { writeProjectReport: async () => {} }
+  };
+  const ctx = await setupServer({ testModel: { chatClient: () => modelClient } });
+  try {
+    const first = await postJson(ctx.port, "/api/chat/send", {
+      projectRoot: ctx.projectRoot,
+      message: "/init 重点核对人物关系",
+      command: "init",
+      commandArgs: "重点核对人物关系"
+    });
+    const second = await postJson(ctx.port, "/api/chat/send", {
+      projectRoot: ctx.projectRoot,
+      message: "/init 再核对时间线",
+      command: "init",
+      commandArgs: "再核对时间线"
+    });
+    const ordinary = await postJson(ctx.port, "/api/chat/send", {
+      projectRoot: ctx.projectRoot,
+      message: "继续写"
+    });
+
+    assert.equal(first.res.status, 200);
+    assert.equal(second.res.status, 200);
+    assert.equal(ordinary.res.status, 200);
+    assert.equal(modelMessages.length, 3);
+    assert.match(modelMessages[0].at(-1).content, /自行读取和搜索项目/u);
+    assert.match(modelMessages[0].at(-1).content, /OUTLINE\.md/u);
+    assert.match(modelMessages[0].at(-1).content, /SETTING\.md/u);
+    assert.match(modelMessages[0].at(-1).content, /AGENTS\.md/u);
+    assert.match(modelMessages[0].at(-1).content, /重点核对人物关系/u);
+    assert.match(modelMessages[1].at(-1).content, /再核对时间线/u);
+    assert.equal(modelMessages[2].at(-1).content, "继续写");
+
+    const history = await getJson(ctx.port, "/api/chat/history");
+    assert.deepEqual(
+      history.data.messages.filter((message) => message.role === "user").map((message) => message.content),
+      ["/init 重点核对人物关系", "/init 再核对时间线", "继续写"]
+    );
   } finally {
     await closeServer(ctx.server);
   }
