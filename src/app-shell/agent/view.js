@@ -16,7 +16,6 @@
 //     但不打断正在阅读更早内容的用户。
 import {
   getActiveRun,
-  getVisiblePlan,
   getPendingDecisions,
   getQueuedInputs,
   isRunActive,
@@ -28,6 +27,13 @@ import { matchSlashCommands } from "./slash-commands.mjs";
 import { renderMarkdown } from "../markdown-lite.mjs";
 import { PERMISSION_TIERS } from "../permission-tiers.mjs";
 import { icon } from "../icons.js";
+import { createReasoningTicker } from "./reasoning-ticker.mjs";
+import {
+  formatDuration,
+  groupStatusText,
+  orderedWorkItems,
+  visibleLiveTargets
+} from "./work-items.mjs";
 
 const MAX_ROWS = 20;
 const OUTPUT_TRUNCATED_MARK = "（输出过长已截断）\n";
@@ -61,16 +67,6 @@ const RUN_STATUS_TEXT = {
 
 const PLAN_MARKS = { completed: "✓", in_progress: "•", pending: "○" };
 
-// 折叠态 3 项选取（步骤5 产品决策 4）：优先包含 in_progress 项，再取相邻步骤
-// （前一个/后一个）；没有 in_progress 时取前 3 项。纯函数，供单测直接调用。
-export function pickCollapsedPlanItems(items) {
-  if (!Array.isArray(items)) return [];
-  const list = items.filter(Boolean);
-  const index = list.findIndex((item) => item?.status === "in_progress");
-  if (index < 0) return list.slice(0, 3);
-  return list.slice(Math.max(0, index - 1), Math.min(list.length, index + 2));
-}
-
 // 详情字段固定顺序（验收契约）。
 const FIELD_ORDER = ["参数", "命令", "目录", "退出码", "耗时", "错误"];
 
@@ -99,7 +95,7 @@ export function markFor(status) {
   return "•";
 }
 
-export function createAgentView({ root, document: doc = globalThis.document, requestFrame = null }) {
+export function createAgentView({ root, document: doc = globalThis.document, requestFrame = null, scheduler = globalThis }) {
   // 增量正文渲染的合帧节流：真实 DOM 用 requestAnimationFrame；无 rAF 环境
   // （测试/SSR）回退 setTimeout(0)，行为等价——同一任务内多次变更只渲染一次。
   const scheduleFrame =
@@ -318,40 +314,41 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   let slashActiveIndex = 0;
   let lastMessageSeq = -1;
   let currentState = null;     // 最近一次 render 的 state（供异步帧回调读取）
-  // ---- Plan 悬浮层本地状态（不落 journal；truth 在 journal 的 plan_updated）----
-  let planOverlay = null;         // 悬浮层根节点（内容按需重建）
-  let planOverlayHidden = false;  // 新输入/新 Run 隐藏旧计划；新计划内容到达恢复显示
-  let planMode = "summary";       // minimal / summary / full（本地 UI 态）
-  let currentPlan = null;         // 最近渲染的 plan（toggle 重建内容用）
-  let renderedPlanSignature = null; // 已处理的计划内容签名（同内容快照替换不打断显隐）
-  let renderedPlanContent = null;   // 当前 DOM 中列表内容签名
   // ---- 增量正文流（Task 步骤7）：累积文本 → Markdown，rAF 合帧节流 ----
   let streamBubble = null;         // 流式 assistant 气泡（delta 期间的临时节点）
   let streamRenderPending = false; // 已有未决帧渲染
   let renderedStreamText = null;   // 最近已渲染的累积文本
+  // ---- 工作组（Task 6）：reasoning/tool/plan 时间线 ------------------------------
+  const workGroups = new Map();   // runId -> 工作组 DOM 记录
+  const timelineSeqs = new Map(); // messages 子节点 -> seq（跨气泡/工作组排序）
   const rows = new Map();      // activity_id -> row（合并同活动）
   const trimmedIds = new Set(); // 已按 20 行上限裁剪的活动 id（不再重建）
   const decisionCards = new Map(); // decision_id -> card（diff 更新，保留 extreme 输入）
   const pendingSubmissions = []; // 仅保留仍在途的即时消息；终态立即移出，避免会话内累积
   const rendered = {
-    messages: -1, run: -1, plan: -1, queue: -1, decisions: -1, errors: -1,
+    messages: -1, run: -1, queue: -1, decisions: -1, errors: -1,
     runId: null, runStatus: null
   };
 
+  function clearWorkGroupTimers(record) {
+    if (record.durationTimer != null) {
+      scheduler.clearInterval(record.durationTimer);
+      record.durationTimer = null;
+    }
+    for (const row of record.rows.values()) row.ticker?.finish?.();
+  }
+
   function reset() {
     viewGeneration += 1;
+    for (const record of workGroups.values()) clearWorkGroupTimers(record);
+    workGroups.clear();
     messages.replaceChildren();
+    timelineSeqs.clear();
     runHeader.replaceChildren();
     decisionsSlot.replaceChildren();
     errorsSlot.replaceChildren();
     activities.replaceChildren();
     queueSlot.replaceChildren();
-    removePlanOverlay();
-    planOverlayHidden = false;
-    planMode = "summary";
-    currentPlan = null;
-    renderedPlanSignature = null;
-    renderedPlanContent = null;
     currentState = null;
     if (streamBubble) { streamBubble.remove(); streamBubble = null; }
     streamRenderPending = false;
@@ -365,7 +362,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     controlsSignature = "";
     closeSlashMenu();
     lastMessageSeq = -1;
-    rendered.messages = rendered.run = rendered.plan = rendered.queue = -1;
+    rendered.messages = rendered.run = rendered.queue = -1;
     rendered.decisions = rendered.errors = -1;
     rendered.runId = null;
     rendered.runStatus = null;
@@ -375,6 +372,9 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   function destroy() {
     doc.removeEventListener?.("pointerdown", handleComposerOutsidePointer, true);
     doc.removeEventListener?.("focusin", handleComposerOutsideFocus, true);
+    for (const record of workGroups.values()) clearWorkGroupTimers(record);
+    workGroups.clear();
+    timelineSeqs.clear();
     surface.remove();
   }
 
@@ -428,16 +428,46 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     pendingSubmissions.splice(index, 1);
   }
 
+  // 时间线插入：气泡与工作组共享 messages 容器，按事件 seq 落位，保证
+  // 「最终回复位于对应 work group 之后」（快照重放路径同样成立）。
+  function insertTimeline(node, seq) {
+    if (seq == null) {
+      messages.append(node);
+      return;
+    }
+    const children = messages.children;
+    let index = children.length;
+    for (let i = children.length - 1; i >= 0; i -= 1) {
+      const childSeq = timelineSeqs.get(children[i]);
+      if (childSeq != null && childSeq <= seq) {
+        index = i + 1;
+        break;
+      }
+      index = i;
+    }
+    if (index >= children.length) {
+      messages.append(node);
+    } else if (typeof messages.insertBefore === "function") {
+      messages.insertBefore(node, children[index]);
+    } else {
+      // 测试 DOM mock 无 insertBefore：用 replaceChildren 重排（真实 DOM 走上面分支）
+      const all = children.slice();
+      all.splice(index, 0, node);
+      messages.replaceChildren(...all);
+    }
+    timelineSeqs.set(node, seq);
+  }
+
   function syncMessages(state) {
     if (rendered.messages === state.revisions.messages) return;
     for (const entry of state.conversation) {
       if (entry.seq != null && entry.seq <= lastMessageSeq) continue;
       if (entry.role === "user") {
         reconcilePendingSubmission(entry);
-        messages.append(createMessageBubble("user", entry.text));
+        insertTimeline(createMessageBubble("user", entry.text), entry.seq);
       } else if (typeof entry.text === "string" && entry.text.length > 0) {
         // 助手正文走 Markdown 渲染（与流式气泡同一口径，增量/终态一致）。
-        messages.append(createMessageBubble("assistant", entry.text, { markdown: true }));
+        insertTimeline(createMessageBubble("assistant", entry.text, { markdown: true }), entry.seq);
       }
       if (entry.seq != null) lastMessageSeq = entry.seq;
     }
@@ -458,7 +488,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   function renderStreamNow() {
     const text = currentState?.assistantStream?.text ?? "";
     if (!text) {
-      if (streamBubble) { streamBubble.remove(); streamBubble = null; }
+      if (streamBubble) { streamBubble.remove(); timelineSeqs.delete(streamBubble); streamBubble = null; }
       renderedStreamText = null;
       return;
     }
@@ -478,7 +508,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     const text = state.assistantStream?.text ?? "";
     if (!text) {
       // 终态/切换：立即移除流式气泡并取消未决帧（帧回调即使执行也只是空转）。
-      if (streamBubble) { streamBubble.remove(); streamBubble = null; }
+      if (streamBubble) { streamBubble.remove(); timelineSeqs.delete(streamBubble); streamBubble = null; }
       streamRenderPending = false;
       renderedStreamText = null;
       return;
@@ -503,19 +533,6 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     status.dataset.testid = "agent-run-status";
     status.textContent = runStatusText(run, state);
     runHeader.append(status);
-    // 思考中流动反馈（短促、可降级；prefers-reduced-motion 下 CSS 禁用动画）。
-    if (hasOpenModelTurn(state)) {
-      const thinking = doc.createElement("span");
-      thinking.className = "agent-thinking";
-      thinking.dataset.testid = "agent-thinking";
-      thinking.setAttribute("aria-hidden", "true");
-      for (let i = 0; i < 3; i += 1) {
-        const dot = doc.createElement("span");
-        dot.className = "agent-thinking-dot";
-        thinking.append(dot);
-      }
-      runHeader.append(thinking);
-    }
     if (isRunActive(run)) {
       const stop = doc.createElement("button");
       stop.type = "button";
@@ -581,173 +598,341 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     if (runChanged) {
       rendered.runId = runId;
       stopPending = false;
-      planMode = "summary";
-      // 新 Run：旧计划退出悬浮层（下一条 plan_updated 到达再显示），清空决策/错误
-      planOverlayHidden = true;
-      removePlanOverlay();
-      renderedPlanSignature = null;
-      renderedPlanContent = null;
+      // 新 Run：清空决策/错误（工作组的生命周期由 work 投影的 group 管理）
       for (const card of decisionCards.values()) card.remove();
       decisionCards.clear();
       errorsSlot.replaceChildren();
-      rendered.plan = -1;
       rendered.decisions = -1;
       rendered.errors = -1;
     }
     rendered.runStatus = run?.status ?? null;
   }
 
-  // ---- Visible Plan 悬浮层（步骤5）：右上覆盖层，只显示与折叠，无编辑入口 ----
-  function ensurePlanOverlay() {
-    if (planOverlay) return planOverlay;
-    planOverlay = doc.createElement("div");
-    planOverlay.className = "agent-plan-overlay";
-    planOverlay.dataset.testid = "agent-plan-overlay";
-    surface.append(planOverlay);
-    return planOverlay;
+  // ---- 工作组（Task 6）：reasoning/tool/plan 有序时间线，插入对话时间流 ----------
+  const TOOL_STATE_ICONS = { running: "•", completed: "✓", failed: "✗", cancelled: "已停止", waiting: "•" };
+  // 计时只在真实文档内运行：脱离文档（测试 mock / 未挂载）的节点不保留 1s/800ms
+  // 重复计时器，避免泄漏；details 挂载后计时正常工作。
+  const DURATION_ACTIVE_STATUSES = new Set(["running", "interrupting", "stopping"]);
+
+  function liveElapsedMs(run, now = Date.now()) {
+    const elapsed = Number(run?.active_elapsed_ms ?? 0);
+    const since = run?.active_since != null ? Number(run.active_since) : null;
+    if (Number.isFinite(since) && Number.isFinite(elapsed)) {
+      return Math.max(0, elapsed + Math.max(0, now - since));
+    }
+    return Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0;
   }
 
-  function removePlanOverlay() {
-    if (planOverlay) {
-      planOverlay.remove();
-      planOverlay = null;
+  function reasoningDetailText(item) {
+    if (item.availability === "unsupported") return "当前模型不支持查看";
+    if (item.availability === "empty" || !(typeof item.text === "string" && item.text.length > 0)) {
+      return "本次没有可查看的思考内容";
     }
+    return item.text;
   }
 
-  function buildPlanOverlayContent(plan) {
-    const overlay = ensurePlanOverlay();
-    currentPlan = plan;
-    overlay.replaceChildren();
-    overlay.dataset.mode = planMode;
-    const items = Array.isArray(plan.items) ? plan.items : [];
-    const completed = items.filter((item) => item?.status === "completed").length;
-    const progress = `${completed}/${items.length}`;
+  function createWorkGroup(group) {
+    const details = doc.createElement("details");
+    details.className = "agent-work-group";
+    details.dataset.groupId = group.id;
+    details.open = group.expanded; // 投影给出展开默认值；用户可在 DOM 侧覆盖
+    const summary = doc.createElement("summary");
+    const status = doc.createElement("span");
+    status.className = "agent-work-status";
+    const duration = doc.createElement("span");
+    duration.className = "agent-work-duration";
+    summary.append(status, duration);
+    const itemsEl = doc.createElement("div");
+    itemsEl.className = "agent-work-items";
+    details.append(summary, itemsEl);
+    insertTimeline(details, group.firstSeq);
+    const record = {
+      groupId: group.id,
+      details,
+      status,
+      duration,
+      itemsEl,
+      rows: new Map(),       // itemId -> row
+      userToggled: false,    // 用户手动折叠后，投影的 expanded 不再覆盖
+      durationTimer: null
+    };
+    // toggle 事件必须立即重应用动效（防止折叠后外层与隐藏子项同时保留动画）。
+    details.addEventListener("toggle", () => {
+      record.userToggled = true;
+      const g = currentState?.work?.groups.get(record.groupId);
+      if (g) applyLiveTargets(record, g);
+    });
+    workGroups.set(group.id, record);
+    return record;
+  }
 
-    if (planMode === "minimal") {
-      const restore = doc.createElement("button");
-      restore.type = "button";
-      restore.className = "agent-plan-restore";
-      restore.dataset.testid = "agent-plan-restore";
-      restore.setAttribute("aria-label", `展开任务计划，已完成 ${completed} 项，共 ${items.length} 项`);
-      restore.title = "展开任务计划";
-      restore.append(viewIcon("doc", 15));
-      const restoreProgress = doc.createElement("span");
-      restoreProgress.textContent = progress;
-      restore.append(restoreProgress);
-      restore.addEventListener("click", () => {
-        planMode = "summary";
-        if (planOverlay && currentPlan) buildPlanOverlayContent(currentPlan);
-      });
-      overlay.append(restore);
-      return;
+  // 统一 item renderer：reasoning / tool / plan 共用同一行结构（label + 按 kind 扩展）。
+  function buildWorkItemRow(record, item) {
+    const wrap = doc.createElement("div");
+    wrap.className = "agent-work-item";
+    wrap.dataset.itemId = item.id;
+    wrap.dataset.kind = item.kind;
+    wrap.dataset.state = item.state;
+    const label = doc.createElement("span");
+    label.className = "agent-work-item__label";
+    wrap.append(label);
+    const row = { wrap, label, kind: item.kind, itemId: item.id, prevState: null, lastPushedLen: 0 };
+    if (item.kind === "tool") {
+      const iconEl = doc.createElement("span");
+      iconEl.className = "agent-work-item__icon";
+      iconEl.setAttribute("aria-hidden", "true");
+      wrap.append(iconEl);
+      row.icon = iconEl;
+      const path = doc.createElement("span");
+      path.className = "agent-tool-path";
+      wrap.append(path);
+      row.path = path;
+      const meta = doc.createElement("span");
+      meta.className = "agent-work-item__meta";
+      wrap.append(meta);
+      row.meta = meta;
+    } else if (item.kind === "reasoning") {
+      const tickerEl = doc.createElement("div");
+      tickerEl.className = "agent-reasoning-ticker";
+      wrap.append(tickerEl);
+      row.tickerEl = tickerEl;
+      const detailEl = doc.createElement("div");
+      detailEl.className = "agent-reasoning-detail";
+      wrap.append(detailEl);
+      row.detailEl = detailEl;
+    } else if (item.kind === "plan") {
+      label.classList.add("agent-plan__title");
+      const countEl = doc.createElement("span");
+      countEl.className = "agent-plan__count";
+      wrap.append(countEl);
+      row.countEl = countEl;
+      const listEl = doc.createElement("ol");
+      listEl.className = "agent-plan-list";
+      wrap.append(listEl);
+      row.listEl = listEl;
+      row.planSignature = null;
     }
+    record.itemsEl.append(wrap);
+    return row;
+  }
 
-    const header = doc.createElement("div");
-    header.className = "agent-plan-overlay-header";
-    const heading = doc.createElement("div");
-    heading.className = "agent-plan-heading";
-    const title = doc.createElement("span");
-    title.className = "agent-plan-overlay-title";
-    title.textContent = "任务计划";
-    const progressLabel = doc.createElement("span");
-    progressLabel.className = "agent-plan-progress";
-    progressLabel.textContent = progress;
-    heading.append(title, progressLabel);
-    const headerActions = doc.createElement("div");
-    headerActions.className = "agent-plan-actions";
-    const minimize = doc.createElement("button");
-    minimize.type = "button";
-    minimize.className = "agent-plan-icon-btn";
-    minimize.dataset.testid = "agent-plan-minimize";
-    minimize.setAttribute("aria-label", "最小化任务计划");
-    minimize.title = "最小化";
-    minimize.textContent = "−";
-    minimize.addEventListener("click", () => {
-      planMode = "minimal";
-      if (planOverlay && currentPlan) buildPlanOverlayContent(currentPlan);
-    });
-    const toggle = doc.createElement("button");
-    toggle.type = "button";
-    toggle.className = `agent-plan-icon-btn agent-plan-icon-btn--${planMode}`;
-    toggle.dataset.testid = planMode === "full" ? "agent-plan-collapse" : "agent-plan-expand";
-    toggle.setAttribute("aria-label", planMode === "full" ? "折叠任务计划" : "展开任务计划");
-    toggle.title = planMode === "full" ? "折叠" : "展开";
-    toggle.append(viewIcon("chevR", 14));
-    toggle.addEventListener("click", () => {
-      planMode = planMode === "full" ? "summary" : "full";
-      if (planOverlay && currentPlan) buildPlanOverlayContent(currentPlan);
-    });
-    headerActions.append(minimize, toggle);
-    header.append(heading, headerActions);
-    overlay.append(header);
-    // 摘要态只显示 step；完整态显示 explanation 与 description（如有）。
-    if (planMode === "full") {
-      if (typeof plan.explanation === "string" && plan.explanation.length > 0) {
-        const explanation = doc.createElement("p");
-        explanation.className = "agent-plan-explanation";
-        explanation.textContent = plan.explanation;
-        overlay.append(explanation);
+  function tickerSchedulerFor(record) {
+    return {
+      setTimeout: (fn, ms) => (record.details.isConnected ? scheduler.setTimeout(fn, ms) : null),
+      clearTimeout: (id) => { if (id != null) scheduler.clearTimeout(id); }
+    };
+  }
+
+  function updateWorkItemRow(record, row, item) {
+    row.wrap.dataset.state = item.state;
+    const wasRunning = row.prevState === "running";
+    const isRunning = item.state === "running";
+    row.prevState = item.state;
+
+    // label：工具失败时把尾部「失败」拆成独立短状态词，单独应用 --text-danger。
+    const labelText = String(item.label ?? "");
+    const splitFailed = item.kind === "tool" && item.state === "failed" && labelText.endsWith("失败");
+    if (splitFailed) {
+      if (!row.stateWord) {
+        row.label.replaceChildren();
+        row.nameSpan = doc.createElement("span");
+        row.stateWord = doc.createElement("span");
+        row.stateWord.className = "agent-work-item__state";
+        row.label.append(row.nameSpan, row.stateWord);
       }
+      if (row.nameSpan.textContent !== labelText.slice(0, -2)) row.nameSpan.textContent = labelText.slice(0, -2);
+      if (row.stateWord.textContent !== "失败") row.stateWord.textContent = "失败";
+    } else {
+      if (row.stateWord) {
+        row.label.replaceChildren();
+        row.stateWord = null;
+        row.nameSpan = null;
+      }
+      if (row.label.textContent !== labelText) row.label.textContent = labelText;
     }
-    const list = doc.createElement("ol");
-    list.className = "agent-plan-items";
-    const shown = planMode === "full" ? items : pickCollapsedPlanItems(items);
-    for (const item of shown) {
+
+    if (row.icon) {
+      const iconText = TOOL_STATE_ICONS[item.state] ?? "•";
+      if (row.icon.textContent !== iconText) row.icon.textContent = iconText;
+      row.icon.dataset.state = item.state;
+    }
+    if (row.path) {
+      const pathText = item.detail ?? "";
+      if (row.path.textContent !== pathText) row.path.textContent = pathText;
+      row.path.hidden = pathText.length === 0;
+    }
+    if (row.meta) {
+      const errorText = item.error ?? "";
+      if (row.meta.textContent !== errorText) row.meta.textContent = errorText;
+      row.meta.hidden = errorText.length === 0;
+    }
+
+    if (row.kind === "reasoning") {
+      if (isRunning) {
+        // 运行中摘要走 ticker（≤2 行）；详情永远用持久化完整 reasoning。
+        if (!row.ticker) {
+          row.ticker = createReasoningTicker({
+            onDisplay: (text) => {
+              if (row.tickerEl.textContent !== text) row.tickerEl.textContent = text;
+            },
+            scheduler: tickerSchedulerFor(record)
+          });
+        }
+        const text = item.text ?? "";
+        if (text.length > row.lastPushedLen) {
+          row.ticker.push(text.slice(row.lastPushedLen));
+          row.lastPushedLen = text.length;
+        }
+        row.tickerEl.hidden = false;
+        row.detailEl.hidden = true;
+        row.detailEl.textContent = "";
+      } else {
+        row.tickerEl.hidden = true;
+        if (wasRunning) {
+          row.ticker?.finish?.(); // 立即停止 ticker 计时，不延迟折叠
+          row.ticker = null;
+          row.lastPushedLen = (item.text ?? "").length;
+        }
+        row.detailEl.hidden = false;
+        const detailText = reasoningDetailText(item);
+        if (row.detailEl.textContent !== detailText) row.detailEl.textContent = detailText;
+      }
+    } else if (row.kind === "plan") {
+      updatePlanContent(row, item.plan);
+    }
+  }
+
+  function updatePlanContent(row, plan) {
+    const items = Array.isArray(plan?.items) ? plan.items : [];
+    const signature = JSON.stringify({ explanation: plan?.explanation ?? null, items });
+    if (signature === row.planSignature) return;
+    row.planSignature = signature;
+    const completed = items.filter((item) => item?.status === "completed").length;
+    row.countEl.textContent = `${completed}/${items.length}`;
+    row.listEl.replaceChildren();
+    if (typeof plan?.explanation === "string" && plan.explanation.length > 0) {
+      const explanation = doc.createElement("div");
+      explanation.className = "agent-plan-explanation";
+      explanation.textContent = plan.explanation;
+      row.listEl.append(explanation);
+    }
+    for (const task of items) {
       const li = doc.createElement("li");
       li.className = "agent-plan-item";
-      // 旧格式事件（无 id）以 step 兜底，保证每个计划项可被定位/测试。
-      li.dataset.planId = item.id ?? item.step ?? "";
-      li.dataset.status = item.status;
-      const mark = doc.createElement("span");
-      mark.className = "agent-plan-mark";
-      mark.textContent = PLAN_MARKS[item.status] ?? "○";
+      li.dataset.status = task?.status ?? "";
+      li.dataset.planId = task?.id ?? task?.step ?? "";
+      const iconEl = doc.createElement("span");
+      iconEl.className = "agent-plan-item__icon";
+      iconEl.setAttribute("aria-hidden", "true");
+      iconEl.textContent = PLAN_MARKS[task?.status] ?? "○";
       const step = doc.createElement("span");
-      step.className = "agent-plan-step";
-      step.textContent = String(item.step ?? "");
-      li.append(mark, step);
-      if (planMode === "full" && typeof item.description === "string" && item.description.length > 0) {
+      step.className = "agent-plan-item__step";
+      step.textContent = String(task?.step ?? "");
+      li.append(iconEl, step);
+      if (typeof task?.description === "string" && task.description.length > 0) {
         const description = doc.createElement("div");
         description.className = "agent-plan-description";
-        description.textContent = item.description;
+        description.textContent = task.description;
         li.append(description);
       }
-      list.append(li);
+      row.listEl.append(li);
     }
-    overlay.append(list);
   }
 
-  function planSignature(plan) {
-    if (!plan) return null;
-    return JSON.stringify({
-      explanation: plan.explanation ?? null,
-      items: plan.items ?? []
-    });
-  }
-
-  function syncPlan(state) {
-    const plan = getVisiblePlan(state);
-    const signature = planSignature(plan);
-    if (signature !== renderedPlanSignature) {
-      // 新计划内容（plan_updated 事件或内容不同的快照）→ 显示并重建。
-      renderedPlanSignature = signature;
-      rendered.plan = state.revisions.plan;
-      if (signature) planOverlayHidden = false;
-    } else if (rendered.plan !== state.revisions.plan) {
-      // 同内容 revision（快照整体替换等）只吸收，不打断当前显隐/折叠态，
-      // 避免提交后快照把旧计划又"复活"出来。
-      rendered.plan = state.revisions.plan;
-    }
-    // 生命周期：无计划不渲染空面板；新输入（submit）隐藏旧计划；Run 终态保留供回看。
-    if (!signature || planOverlayHidden) {
-      removePlanOverlay();
+  // 工作组运行中每秒只更新一次 duration 文本；终态/waiting_user/脱离文档即停表。
+  function ensureGroupClock(record, group) {
+    const active = DURATION_ACTIVE_STATUSES.has(group.status);
+    if (!active || !record.details.isConnected) {
+      if (record.durationTimer != null) {
+        scheduler.clearInterval(record.durationTimer);
+        record.durationTimer = null;
+      }
       return;
     }
-    const overlay = ensurePlanOverlay();
-    if (renderedPlanContent !== signature) {
-      renderedPlanContent = signature;
-      buildPlanOverlayContent(plan);
+    if (record.durationTimer != null) return;
+    record.durationTimer = scheduler.setInterval(() => {
+      if (record.durationTimer == null) return;
+      const g = currentState?.work?.groups.get(record.groupId);
+      if (!g || !DURATION_ACTIVE_STATUSES.has(g.status) || !record.details.isConnected) {
+        scheduler.clearInterval(record.durationTimer);
+        record.durationTimer = null;
+        return;
+      }
+      const run = currentState ? getActiveRun(currentState) : null;
+      record.duration.textContent = formatDuration(liveElapsedMs(run));
+    }, 1000);
+  }
+
+  // 动效 class 只能由 visibleLiveTargets() 决定，显式切换（不只在创建节点时添加）。
+  function applyLiveTargets(record, group) {
+    const liveTargets = new Set(visibleLiveTargets(group, { expanded: record.details.open }));
+    record.status.classList.toggle("agent-live-text", liveTargets.has(`group:${group.id}`));
+    for (const [itemId, row] of record.rows) {
+      row.label.classList.toggle("agent-live-text", liveTargets.has(itemId));
     }
-    maybeScrollToBottom();
+  }
+
+  function updateWorkGroup(record, group, run) {
+    // 展开默认值只在用户未手动切换时应用；完成后投影 expanded=false → 自动折叠。
+    if (!record.userToggled && record.details.open !== group.expanded) {
+      record.details.open = group.expanded;
+    }
+    if (TERMINAL_RUN_STATUSES.has(group.status)) {
+      record.status.textContent = groupStatusText(group, run);
+      record.duration.textContent = "";
+    } else {
+      record.status.textContent = "工作中";
+      record.duration.textContent = formatDuration(liveElapsedMs(run));
+    }
+    ensureGroupClock(record, group);
+
+    const ordered = orderedWorkItems(group);
+    const seen = new Set();
+    let changed = false;
+    for (const item of ordered) {
+      seen.add(item.id);
+      let row = record.rows.get(item.id);
+      if (!row) {
+        row = buildWorkItemRow(record, item);
+        record.rows.set(item.id, row);
+        changed = true;
+      }
+      updateWorkItemRow(record, row, item);
+    }
+    for (const [itemId, row] of record.rows) {
+      if (!seen.has(itemId)) {
+        row.ticker?.finish?.();
+        row.wrap.remove();
+        record.rows.delete(itemId);
+        changed = true;
+      }
+    }
+    applyLiveTargets(record, group);
+    return changed;
+  }
+
+  function syncWork(state) {
+    const run = getActiveRun(state);
+    const seen = new Set();
+    let changed = false;
+    for (const group of state.work.groups.values()) {
+      if (orderedWorkItems(group).length === 0) continue; // 纯 run 标记的空组不渲染
+      seen.add(group.id);
+      let record = workGroups.get(group.id);
+      if (!record) {
+        record = createWorkGroup(group);
+        changed = true;
+      }
+      if (updateWorkGroup(record, group, run)) changed = true;
+    }
+    for (const [id, record] of workGroups) {
+      if (!seen.has(id)) {
+        clearWorkGroupTimers(record);
+        record.details.remove();
+        workGroups.delete(id);
+      }
+    }
+    if (changed) maybeScrollToBottom();
   }
 
   // ---- 决策卡：普通确认 + 红色 extreme 精确文字确认 ---------------------------
@@ -1261,9 +1446,6 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   function submitFromComposer() {
     const text = String(input.value ?? "").trim();
     if (!text) return;
-    // 新输入开始，旧计划立即退出悬浮层（不等待下一次 render；新 plan_updated 再显示）
-    planOverlayHidden = true;
-    removePlanOverlay();
     const submissionGeneration = viewGeneration;
     let request;
     try {
@@ -1344,7 +1526,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     syncMessages(state);
     syncStream(state);
     syncRun(state);
-    syncPlan(state);
+    syncWork(state);
     syncActivities(state);
     syncDecisions(state);
     syncErrors(state);

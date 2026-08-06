@@ -328,3 +328,26 @@ test("终态活动折叠在原生 details 内（无手动编辑入口）", async
   const detailFields = details.querySelector(".agent-activity-fields");
   assert.ok(detailFields, "详情字段应折叠在 details 内");
 });
+
+test("重放快照后工作组按时间线落位：最终回复位于 work group 之后", async () => {
+  const { root, surface } = await makeSurface();
+  surface.applySnapshot({
+    ok: true,
+    session: session({ status: "idle", active_run: activeRun({ status: "completed", active_elapsed_ms: 3000 }) }),
+    events: [
+      { ...ev("input_queued", { input_id: "in-1", text: "继续写", source: "chat" }), seq: 1 },
+      { ...ev("run_started", { workflow: "general", input_id: "in-1" }), seq: 2 },
+      { ...ev("tool_call_started", { tool_call_id: "tc-1", activity_id: "act-1", name: "shell", args: { command: "npm test" } }), seq: 3 },
+      { ...ev("tool_call_completed", { tool_call_id: "tc-1", activity_id: "act-1", name: "shell", exit_code: 0 }), seq: 4 },
+      { ...ev("assistant_message_completed", { input_id: "in-1", text: "全部通过" }), seq: 5 },
+      { ...ev("run_completed", {}), seq: 6 }
+    ]
+  });
+  const group = root.querySelector(".agent-work-group");
+  const assistant = root.querySelector('[data-testid="agent-assistant-message"]');
+  assert.ok(group, "重放应渲染工作组");
+  assert.ok(assistant, "重放应渲染最终回复");
+  assert.ok(group._parent === assistant._parent, "工作组与最终回复同属时间线");
+  const index = (el) => el._parent.children.indexOf(el);
+  assert.ok(index(group) < index(assistant), "最终回复位于 work group 之后");
+});
