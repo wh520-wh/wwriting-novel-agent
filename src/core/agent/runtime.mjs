@@ -35,7 +35,9 @@ import { canEnterWorkflow, workflowPolicy } from "./workflows.mjs";
 import { runLegacyImport } from "./legacy-import.mjs";
 import { loadProject } from "../project-store.mjs";
 import { pathExists } from "../fs-utils.mjs";
-import { createRedactor, createStreamingRedactor } from "../shell/redaction.mjs";
+import { createRedactor } from "../shell/redaction.mjs";
+import { resolveModelCapabilities } from "../model/capabilities.mjs";
+import { createJournalDeltaWriter, reasoningAvailability } from "./stream-writer.mjs";
 
 import {
   appendChapterSegment,
@@ -64,85 +66,6 @@ function fail(code, message) {
   const error = new Error(message);
   error.code = code;
   return error;
-}
-
-// Provider token 的低开销持久化出口：回调只同步入队，按一帧左右的时间窗口合并，
-// 且任何时刻最多一个 journal 写入在途。这样既保留真实首 token 时延，也不会让
-// 高频 token 为每个字符触发一次 events append + session.json 原子重写。
-function createAssistantDeltaWriter(journal, { runId, inputId, secrets }) {
-  const streamingRedactor = createStreamingRedactor({ secrets });
-  let rawText = "";
-  let safeText = "";
-  let pending = "";
-  let timer = null;
-  let inFlight = null;
-  let closed = false;
-
-  const schedule = () => {
-    if (closed || timer !== null || inFlight || pending.length === 0) return;
-    timer = setTimeout(pump, ASSISTANT_DELTA_FLUSH_MS);
-  };
-
-  const appendSafe = (text) => {
-    if (!text) return;
-    safeText += text;
-    pending += text;
-    if (pending.length >= ASSISTANT_DELTA_MAX_PENDING_CHARS && !inFlight) {
-      if (timer !== null) clearTimeout(timer);
-      timer = null;
-      pump();
-    } else {
-      schedule();
-    }
-  };
-
-  function pump() {
-    if (timer !== null) clearTimeout(timer);
-    timer = null;
-    if (inFlight || pending.length === 0) return;
-    const text = pending;
-    pending = "";
-    inFlight = journal.append({
-      type: "assistant_message_delta",
-      run_id: runId,
-      payload: { input_id: inputId, text }
-    }).catch(() => {
-      // completed 仍携带权威全文；增量落盘失败不能把已成功的模型调用误报为失败。
-    }).finally(() => {
-      inFlight = null;
-      if (pending.length >= ASSISTANT_DELTA_MAX_PENDING_CHARS) {
-        pump();
-      } else {
-        schedule();
-      }
-    });
-  }
-
-  return {
-    get rawText() {
-      return rawText;
-    },
-    push(token) {
-      if (closed) return;
-      const raw = String(token ?? "");
-      if (!raw) return;
-      rawText += raw;
-      appendSafe(streamingRedactor.push(raw));
-    },
-    async finish({ flushTail = true } = {}) {
-      if (!closed) {
-        if (flushTail) appendSafe(streamingRedactor.flush());
-        closed = true;
-      }
-      if (timer !== null) clearTimeout(timer);
-      timer = null;
-      while (inFlight || pending.length > 0) {
-        if (!inFlight) pump();
-        if (inFlight) await inFlight;
-      }
-      return { rawText, safeText };
-    }
-  };
 }
 
 function createMutex() {
@@ -603,38 +526,98 @@ export function createAgentRuntime({
       // 消费 context_window，不负责回填，这里在调用前挂载。
       request.modelConfig = modelConfig;
       request.stream = true;
-      const deltaWriter = createAssistantDeltaWriter(journal, { runId, inputId, secrets });
+      // 每个 Provider 轮次拥有稳定 turn id（v2 事件契约 §2.3）与独立 writer 对：
+      // onToken 只接收公开正文、onReasoningToken 只接收 reasoning，两者不得互相
+      // 兜底（§2.1）；reasoning 只经 reasoning_delta/reasoning_completed 进入
+      // journal，绝不写入 provider history。
+      const modelCaps = resolveModelCapabilities(modelConfig);
+      const turnId = idFactory();
+      const assistantWriter = createJournalDeltaWriter({
+        journal,
+        eventType: "assistant_message_delta",
+        runId,
+        basePayload: { input_id: inputId },
+        secrets,
+        flushMs: ASSISTANT_DELTA_FLUSH_MS,
+        maxPendingChars: ASSISTANT_DELTA_MAX_PENDING_CHARS
+      });
+      const reasoningWriter = createJournalDeltaWriter({
+        journal,
+        eventType: "reasoning_delta",
+        runId,
+        basePayload: { turn_id: turnId, input_id: inputId },
+        secrets,
+        flushMs: ASSISTANT_DELTA_FLUSH_MS,
+        maxPendingChars: ASSISTANT_DELTA_MAX_PENDING_CHARS
+      });
       request.metadata = {
         ...(request.metadata ?? {}),
-        onToken: (token) => deltaWriter.push(token)
+        onToken: (token) => assistantWriter.push(token),
+        onReasoningToken: (token) => reasoningWriter.push(token)
       };
 
-      // ---- 模型轮次（失败路径必须闭合 model turn）----
-      await journal.append({ type: "model_turn_started", run_id: runId, payload: {} });
+      // ---- 模型轮次（成功/失败/取消都必须完整闭合 model turn）----
+      await journal.append({
+        type: "model_turn_started",
+        run_id: runId,
+        payload: {
+          turn_id: turnId,
+          input_id: inputId,
+          reasoning_capability: modelCaps.reasoningContent
+        }
+      });
       if (state.firstTurn && !state.firstTurn.resolved) {
         state.firstTurn.resolved = true;
         state.firstTurn.resolve();
       }
+      // 每条 model turn 恰好一次 reasoning_completed + model_turn_completed
+      //（v2 冻结契约 §2.3 顺序：先以 safe text 闭合 reasoning，再闭合 turn）。
+      const closeTurn = async ({ outcome, reasoningText }) => {
+        await journal.append({
+          type: "reasoning_completed",
+          run_id: runId,
+          payload: {
+            turn_id: turnId,
+            input_id: inputId,
+            text: reasoningText,
+            availability: reasoningAvailability(modelCaps.reasoningContent, reasoningText)
+          }
+        });
+        await journal.append({
+          type: "model_turn_completed",
+          run_id: runId,
+          payload: { turn_id: turnId, input_id: inputId, outcome }
+        });
+      };
       let reply;
       let streamedReply = null;
+      let reasoningResult = null;
       try {
         reply = await state.modelGateway.complete(request, { signal: state.controller?.signal });
         const finalRawText = String(reply?.text ?? "");
         // 兼容只漏掉尾帧回调、但最终响应正文完整的 Gateway：仅当前缀严格一致时
         // 补入尾部；完全不触发 onToken 的非流式 Gateway 不制造伪增量。
-        if (deltaWriter.rawText.length > 0 && finalRawText.startsWith(deltaWriter.rawText)) {
-          deltaWriter.push(finalRawText.slice(deltaWriter.rawText.length));
+        if (assistantWriter.rawText.length > 0 && finalRawText.startsWith(assistantWriter.rawText)) {
+          assistantWriter.push(finalRawText.slice(assistantWriter.rawText.length));
         }
-        streamedReply = await deltaWriter.finish();
+        streamedReply = await assistantWriter.finish();
+        reasoningResult = await reasoningWriter.finish();
       } catch (error) {
         // 失败/取消时只排空已经确认安全的正文前缀，不 flush 可能仍是半截密钥的 carry。
-        await deltaWriter.finish({ flushTail: false });
-        await journal.append({ type: "model_turn_completed", run_id: runId, payload: {} }).catch(() => {});
+        await assistantWriter.finish({ flushTail: false });
+        const partialReasoning = await reasoningWriter.finish({ flushTail: false });
+        // 必须以 partial safe reasoning 先闭合 reasoning，再用 failed/cancelled
+        // 闭合 turn；turn 闭合失败不再加重失败（journal 已不可用时由崩溃恢复兜底）。
+        await closeTurn({
+          outcome: isAbort(error, state) ? "cancelled" : "failed",
+          reasoningText: partialReasoning.safeText
+        }).catch(() => {});
         if (isAbort(error, state)) return "interrupted";
         await failRun(state, runId, { error, inputId });
         return "failed";
       }
-      await journal.append({ type: "model_turn_completed", run_id: runId, payload: {} });
+      // 成功：先 reasoning_completed 闭合 reasoning，最后 model_turn_completed。
+      await closeTurn({ outcome: "completed", reasoningText: reasoningResult.safeText });
 
       // 调用期间可能已到达停止/立即安全点。先落 assistant tool_calls 记录（若本
       // 轮是工具轮），再检查安全点——被打断的回复在中断路径用 cancelled 工具记录
