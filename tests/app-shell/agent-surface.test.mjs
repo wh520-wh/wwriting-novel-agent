@@ -9,7 +9,8 @@
 //   - 计划：活动展开/终态折叠、无手动编辑入口；
 //   - 确认：普通三选、extreme 精确文字前禁用、终态 decision 锁定；
 //   - reasoning 不进入 Assistant 正文，但进入 reasoning 工作项；思考/活动标签可见；
-//   - 近底部自动滚动、重建后不打断阅读更早内容；
+//   - 滚动锁：显式 follow 状态（距底部 ≤48px 跟随）、上滚后保持 scrollTop +
+//     「回到最新」按钮、点击恢复 follow；重建后不打断阅读更早内容；
 //   - 模型菜单视口钳制与内容列 CSS 基线（agent.css 断言）。
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -1699,31 +1700,59 @@ test("状态文案简洁：等待确认 / 已停止 / 操作失败 / 已完成",
 });
 
 // ===========================================================================
-// 自动滚动：仅近底部跟随；重建不打断阅读更早内容
+// 滚动锁（Task 7）：显式 follow 状态 + 回到最新；重建不打断阅读更早内容
 // ===========================================================================
 
-test("近底部自动滚动：增量事件到达时跟随到底部", async () => {
+test("滚动锁：距底部 ≤48px 时增量事件自动跟随到底部", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
   const conv = root.querySelector('[data-testid="agent-conversation"]');
+  const latest = root.querySelector('[data-testid="agent-scroll-latest"]');
+  assert.ok(latest, "应有「回到最新」按钮");
+  assert.equal(latest.hidden, true, "初始处于 follow 模式，按钮隐藏");
   conv.scrollHeight = 500;
   conv.clientHeight = 200;
   conv.scrollTop = 295; // 距底部 5px < 阈值
+  conv._fire("scroll");
+  assert.equal(latest.hidden, true, "近底部时按钮保持隐藏");
   surface.applyEvent(toolStarted("a1", "shell", { command: "npm test" }));
-  assert.equal(conv.scrollTop, 300, "近底部时增量事件应跟随到底部");
+  assert.equal(conv.scrollTop, 300, "距底部 ≤48px 时新事件应跟随到底部");
 });
 
-test("阅读更早内容时不自动滚动", async () => {
+test("滚动锁：用户上滚后保持 scrollTop 并出现「回到最新」", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
   const conv = root.querySelector('[data-testid="agent-conversation"]');
+  const latest = root.querySelector('[data-testid="agent-scroll-latest"]');
   conv.scrollHeight = 500;
   conv.clientHeight = 200;
-  conv.scrollTop = 0; // 用户在顶部阅读更早内容
+  conv.scrollTop = 0; // 用户上滚阅读更早内容
+  conv._fire("scroll");
+  assert.equal(latest.hidden, false, "离开底部后应显示「回到最新」");
+  assert.equal(conv.scrollTop, 0);
   surface.applyEvent(toolStarted("a1", "shell", { command: "npm test" }));
-  assert.equal(conv.scrollTop, 0, "用户不在底部时不得抢滚动");
+  assert.equal(conv.scrollTop, 0, "用户阅读更早内容时新事件不得抢滚动");
+  assert.equal(latest.hidden, false, "按钮持续可见直到用户回到最新");
+});
+
+test("滚动锁：点击「回到最新」滚到底部并恢复 follow 模式", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  const conv = root.querySelector('[data-testid="agent-conversation"]');
+  const latest = root.querySelector('[data-testid="agent-scroll-latest"]');
+  conv.scrollHeight = 500;
+  conv.clientHeight = 200;
+  conv.scrollTop = 0;
+  conv._fire("scroll");
+  assert.equal(latest.hidden, false);
+  latest._fire("click");
+  assert.equal(conv.scrollTop, 300, "点击后应滚到底部");
+  assert.equal(latest.hidden, true, "回到最新后按钮隐藏");
+  surface.applyEvent(toolStarted("a2", "shell", { command: "npm test 2" }));
+  assert.equal(conv.scrollTop, 300, "恢复 follow 后增量事件继续贴底");
 });
 
 test("重建对话 DOM：近底部时重新锚定末端；阅读更早内容时保持位置", async () => {
@@ -1737,16 +1766,42 @@ test("重建对话 DOM：近底部时重新锚定末端；阅读更早内容时�
   conv.clientHeight = 200;
   // 近底部：重建（新 session 快照）后应重新锚定到末端
   conv.scrollTop = 290;
+  conv._fire("scroll");
   surface.applySnapshot(snapshotOf(session({ session_id: "sess-b", status: "running", active_run: activeRun() }), [
     ev("input_queued", { input_id: "in-1", text: "新会话消息", source: "chat" }, { session_id: "sess-b" })
   ]));
   assert.equal(conv.scrollTop, 300, "近底部重建后应锚定到末端");
   // 阅读更早内容：重建后保持位置，不打断
   conv.scrollTop = 0;
+  conv._fire("scroll");
   surface.applySnapshot(snapshotOf(session({ session_id: "sess-c", status: "running", active_run: activeRun() }), [
     ev("input_queued", { input_id: "in-1", text: "第三条消息", source: "chat" }, { session_id: "sess-c" })
   ]));
   assert.equal(conv.scrollTop, 0, "阅读更早内容时重建不得抢滚动");
+});
+
+test("reasoning ticker：增量替换复用同一元素，高度锁定固定两行", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("run_started", { workflow: "general", input_id: "in-1" }));
+  surface.applyEvent(ev("model_turn_started", { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }));
+  const group = root.querySelector(".agent-work-group");
+  const reasoningRow = group.querySelector('[data-kind="reasoning"]');
+  const ticker = reasoningRow.querySelector(".agent-reasoning-ticker");
+  assert.ok(ticker, "运行中 reasoning 应显示 ticker");
+  surface.applyEvent(ev("reasoning_delta", { turn_id: "turn-1", text: "第一段思考内容。" }));
+  surface.applyEvent(ev("reasoning_delta", { turn_id: "turn-1", text: "第二段更长的思考内容。" }));
+  assert.equal(reasoningRow.querySelector(".agent-reasoning-ticker"), ticker, "增量替换必须复用同一 ticker 元素，不重建 DOM");
+  assert.equal(ticker.hidden, false, "运行中 ticker 可见");
+  assert.ok(ticker.className.includes("agent-reasoning-ticker"), "ticker 样式 class 稳定");
+  // 高度约束在 CSS：固定两行（min=max=2lh + line-clamp），文本替换不改变工作项高度。
+  const css = await fs.readFile(path.join(here, "..", "..", "src", "app-shell", "agent", "agent.css"), "utf8");
+  assert.match(
+    css,
+    /\.agent-reasoning-ticker\s*\{[^}]*min-height:\s*2lh[^}]*max-height:\s*2lh[^}]*line-clamp:\s*2/u,
+    "ticker 高度锁定为固定两行（min=max=2lh），文本替换不得改变工作项高度"
+  );
 });
 
 // ===========================================================================
@@ -1807,8 +1862,8 @@ test("agent.css 保留 900px 内容列、向上菜单与工作组/动效布局",
   assert.match(css, /\.agent-reasoning-ticker\s*\{[^}]*color:\s*var\(--text-muted\)/u, "ticker 使用 muted 色");
   assert.match(
     css,
-    /\.agent-reasoning-detail\s*\{[^}]*color:\s*var\(--text-secondary\)[^}]*max-height:\s*220px[^}]*overflow-y:\s*auto/u,
-    "reasoning 详情内部滚动"
+    /\.agent-reasoning-detail\s*\{[^}]*color:\s*var\(--text-secondary\)[^}]*max-height:\s*320px[^}]*overflow-y:\s*auto/u,
+    "reasoning 详情内部滚动（max-height 320px）"
   );
   // 计划三态字重：in_progress 唯一 semibold，completed/pending 为 regular
   assert.match(
@@ -1860,6 +1915,24 @@ test("agent.css 保留 900px 内容列、向上菜单与工作组/动效布局",
   assert.match(styles, /--weight-semibold:\s*650/u, "weight token 声明");
   assert.match(styles, /--agent-work-title-fg:\s*var\(--text-secondary\)/u, "agent component token 声明");
   assert.match(styles, /--agent-plan-complete-fg:\s*var\(--text-muted\)/u, "plan 终态色 token 声明");
+});
+
+// ===========================================================================
+// 冻结布局约束（Task 7 Step 3）：固定宽度 + 响应式无横向溢出
+// ===========================================================================
+
+test("冻结布局约束：助手正文 760px / 工作组 900px / 用户消息 72%·640px 靠右 / ticker 2lh / 详情 320px", async () => {
+  const css = await fs.readFile(path.join(here, "..", "..", "src", "app-shell", "agent", "agent.css"), "utf8");
+  assert.match(css, /\.agent-message--user\s*\{[^}]*align-self:\s*flex-end/u, "用户消息靠右");
+  assert.match(css, /max-width:\s*min\(72%,\s*640px\)/u, "用户消息 max-width: min(72%, 640px)");
+  assert.match(css, /width:\s*min\(100%,\s*760px\)/u, "助手 Markdown width: min(100%, 760px)");
+  assert.match(css, /width:\s*min\(100%,\s*900px\)/u, "工作组 width: min(100%, 900px)");
+  assert.match(
+    css,
+    /\.agent-reasoning-ticker\s*\{[^}]*min-height:\s*2lh[^}]*max-height:\s*2lh[^}]*line-clamp:\s*2/u,
+    "reasoning ticker 固定两行（min=max=2lh）"
+  );
+  assert.match(css, /\.agent-reasoning-detail\s*\{[^}]*max-height:\s*320px[^}]*overflow-y:\s*auto/u, "详情 max-height 320px 内部滚动");
 });
 
 // ===========================================================================

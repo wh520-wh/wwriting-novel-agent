@@ -199,6 +199,21 @@ export function createAgentView({ root, document: doc = globalThis.document, req
 
   conv.append(emptyState, messages, runSection, activities, queueSlot);
 
+  // 「回到最新」：用户上滚离开底部后浮出的锚点按钮（由 scroll 事件驱动，见自动滚动节）。
+  // 初始处于 follow 模式，按钮隐藏；点击后滚到底部并恢复跟随。
+  const latestButton = doc.createElement("button");
+  latestButton.type = "button";
+  latestButton.className = "agent-scroll-latest";
+  latestButton.dataset.testid = "agent-scroll-latest";
+  latestButton.textContent = "回到最新";
+  latestButton.hidden = true;
+  latestButton.addEventListener("click", () => {
+    followLatest = true;
+    latestButton.hidden = true;
+    scrollToBottom();
+  });
+  conv.append(latestButton);
+
   const composer = doc.createElement("div");
   composer.className = "agent-composer";
   composer.dataset.testid = "agent-composer";
@@ -313,6 +328,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   let slashMatches = [];
   let slashActiveIndex = 0;
   let lastMessageSeq = -1;
+  let followLatest = true;     // 显式 follow 状态：仅用户接近底部时跟随（滚动锁，Task 7）
   let currentState = null;     // 最近一次 render 的 state（供异步帧回调读取）
   // ---- 增量正文流（Task 步骤7）：累积文本 → Markdown，rAF 合帧节流 ----
   let streamBubble = null;         // 流式 assistant 气泡（delta 期间的临时节点）
@@ -378,13 +394,15 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     surface.remove();
   }
 
-  // ---- 自动滚动：仅用户接近底部时跟随 ----------------------------------------
-  function isNearBottom() {
-    const height = Number(conv.scrollHeight ?? 0);
-    const client = Number(conv.clientHeight ?? 0);
-    const top = Number(conv.scrollTop ?? 0);
-    if (height <= client) return true;
-    return height - top - client < SCROLL_THRESHOLD;
+  // ---- 自动滚动：显式 follow 状态（仅用户接近底部时跟随） ----------------------
+  // 用户滚动事件是 follow 状态的唯一来源；渲染后不再重新测量 isNearBottom()，
+  // 否则内容高度变化会误判并把滚动抢回底部，打断正在阅读更早内容的用户。
+  function distanceFromBottom(el) {
+    const height = Number(el.scrollHeight ?? 0);
+    const client = Number(el.clientHeight ?? 0);
+    const top = Number(el.scrollTop ?? 0);
+    if (height <= client) return 0;
+    return height - top - client;
   }
 
   function scrollToBottom() {
@@ -393,9 +411,14 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     conv.scrollTop = Math.max(0, height - client);
   }
 
-  function maybeScrollToBottom() {
-    if (isNearBottom()) scrollToBottom();
+  function afterRender() {
+    if (followLatest) scrollToBottom();
   }
+
+  conv.addEventListener("scroll", () => {
+    followLatest = distanceFromBottom(conv) <= SCROLL_THRESHOLD;
+    latestButton.hidden = followLatest;
+  });
 
   // ---- 对话 ----------------------------------------------------------------
   function createMessageBubble(role, textValue, { markdown = false } = {}) {
@@ -472,7 +495,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       if (entry.seq != null) lastMessageSeq = entry.seq;
     }
     rendered.messages = state.revisions.messages;
-    maybeScrollToBottom();
+    afterRender();
   }
 
   // ---- 增量正文流：累积文本 → Markdown，rAF 合帧节流 -------------------------
@@ -501,7 +524,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       if (textEl) textEl.innerHTML = renderMarkdown(text);
     }
     renderedStreamText = text;
-    maybeScrollToBottom();
+    afterRender();
   }
 
   function syncStream(state) {
@@ -932,7 +955,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
         workGroups.delete(id);
       }
     }
-    if (changed) maybeScrollToBottom();
+    if (changed) afterRender();
   }
 
   // ---- 决策卡：普通确认 + 红色 extreme 精确文字确认 ---------------------------
@@ -1032,7 +1055,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
         appended = true;
       }
     }
-    if (appended) maybeScrollToBottom();
+    if (appended) afterRender();
   }
 
   // ---- 错误卡（简洁事实） ------------------------------------------------------
@@ -1053,7 +1076,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       card.append(title, message);
       errorsSlot.append(card);
     }
-    if (state.errors.length > 0) maybeScrollToBottom();
+    if (state.errors.length > 0) afterRender();
   }
 
   // ---- 活动流（单条流，同 activity_id 合并；20 行保留；64 KiB 输出尾） ---------
@@ -1172,10 +1195,10 @@ export function createAgentView({ root, document: doc = globalThis.document, req
         activities.append(row.wrap);
         trimRows();
         updateActivityRow(row, activity);
-        maybeScrollToBottom();
+        afterRender();
         continue;
       }
-      if (updateActivityRow(row, activity)) maybeScrollToBottom();
+      if (updateActivityRow(row, activity)) afterRender();
     }
   }
 
@@ -1204,7 +1227,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       row.append(text, badge, promote);
       queueSlot.append(row);
     }
-    maybeScrollToBottom();
+    afterRender();
   }
 
   // ---- composer：项目打开即可用（运行中保持可用，普通发送进入队列） ------------
@@ -1466,7 +1489,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     pendingSubmissions.push(pending);
     input.value = "";
     closeSlashMenu();
-    maybeScrollToBottom();
+    afterRender();
     Promise.resolve(request).then((result) => {
       if (submissionGeneration !== viewGeneration) return;
       pending.inputId = result?.input_id ?? null;
@@ -1481,7 +1504,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       failure.textContent = `发送失败：${String(error?.message ?? "请求失败")}`;
       bubble.append(failure);
       if (String(input.value ?? "").length === 0) input.value = text;
-      maybeScrollToBottom();
+      afterRender();
     });
   }
 
