@@ -1,0 +1,290 @@
+// SKILL.md parser 单测（计划 Task 9，冻结契约 §2.5）。
+// 合法技能返回 {name, description, body, dir, source, metadata, resources}；
+// 拒绝：缺 frontmatter、目录名与 name 不同、缺失/重复 name、无效 YAML、
+// 绝对资源路径、../ 穿越、资源 realpath 逃逸、超 512KiB 的 SKILL.md。
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import test from "node:test";
+import {
+  MAX_SKILL_FILE_BYTES,
+  MAX_SKILL_RESOURCE_BYTES,
+  readSkillFile,
+  readSkillResource
+} from "../../src/core/skills/skill-file.mjs";
+
+const VALID_SKILL = `---
+name: suspense-chapter-end
+description: 每章结尾留下有效悬念钩子；章节规划、写作或审稿时使用。
+version: 1.0.0
+metadata:
+  wwriting:
+    scope: chapter
+    priority: 50
+    always_apply: [chapter]
+    hooks:
+      - stage: reviewing
+        action: check
+        check: suspense-ending
+x-custom: keep-me
+---
+
+# Suspense Chapter End
+
+正文：本章计划必须包含一个结尾悬念钩子。
+`;
+
+function makeTemp() {
+  return mkdtempSync(path.join(tmpdir(), "wwr-skill-file-"));
+}
+
+// 在临时根下创建 <dirName>/SKILL.md，返回 { root, skillDir }。
+async function makeSkill(dirName, content) {
+  const root = makeTemp();
+  const skillDir = path.join(root, dirName);
+  await fs.mkdir(skillDir, { recursive: true });
+  await fs.writeFile(path.join(skillDir, "SKILL.md"), content, "utf8");
+  return { root, skillDir };
+}
+
+async function expectRejected(promise, code) {
+  await assert.rejects(promise, (error) => {
+    assert.equal(error.name, "SkillError", `期望 SkillError，得到 ${error.name}`);
+    assert.equal(error.code, code, `期望 code ${code}，得到 ${error.code}（${error.message}）`);
+    return true;
+  });
+}
+
+test("合法技能返回冻结的 {name, description, body, dir, source, metadata, resources}", async (t) => {
+  const { root, skillDir } = await makeSkill("suspense-chapter-end", VALID_SKILL);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  await fs.mkdir(path.join(skillDir, "references", "nested"), { recursive: true });
+  await fs.writeFile(path.join(skillDir, "references", "style-guide.md"), "参考文档", "utf8");
+  await fs.writeFile(path.join(skillDir, "references", "nested", "extra.md"), "嵌套", "utf8");
+  await fs.mkdir(path.join(skillDir, "scripts"));
+  await fs.writeFile(path.join(skillDir, "scripts", "run.sh"), "#!/bin/sh\n", "utf8");
+  await fs.mkdir(path.join(skillDir, "assets"));
+  await fs.writeFile(path.join(skillDir, "assets", "cover.png"), "PNG", "utf8");
+  // SKILL.md 顶层平铺文件不属于资源（只有 scripts/references/assets 才枚举）。
+  await fs.writeFile(path.join(skillDir, "notes.md"), "不是资源", "utf8");
+
+  const skill = await readSkillFile(skillDir, { source: "project" });
+
+  assert.equal(skill.name, "suspense-chapter-end");
+  assert.equal(skill.description, "每章结尾留下有效悬念钩子；章节规划、写作或审稿时使用。");
+  assert.equal(skill.dir, skillDir);
+  assert.equal(skill.source, "project");
+  assert.ok(skill.body.includes("# Suspense Chapter End"), "body 应包含正文标题");
+  assert.ok(skill.body.includes("本章计划必须包含一个结尾悬念钩子。"), "body 应包含正文");
+  assert.ok(!skill.body.includes("name:"), "body 不应包含 frontmatter 字段");
+
+  // metadata.wwriting 可选扩展按原样解析。
+  assert.equal(skill.metadata.wwriting.scope, "chapter");
+  assert.equal(skill.metadata.wwriting.priority, 50);
+  assert.deepEqual(skill.metadata.wwriting.always_apply, ["chapter"]);
+  assert.deepEqual(skill.metadata.wwriting.hooks, [
+    { stage: "reviewing", action: "check", check: "suspense-ending" }
+  ]);
+
+  // 未知 metadata 保留但不执行。
+  assert.equal(skill["x-custom"], "keep-me");
+
+  // 顶层冻结，metadata 与 resources 深冻结。
+  assert.ok(Object.isFrozen(skill));
+  assert.ok(Object.isFrozen(skill.metadata));
+  assert.ok(Object.isFrozen(skill.resources));
+  assert.ok(Object.isFrozen(skill.resources[0]));
+
+  // 资源枚举：只含 scripts/references/assets，递归，相对路径为 posix 形式。
+  const rels = skill.resources.map((r) => r.rel).sort();
+  assert.deepEqual(rels, [
+    "assets/cover.png",
+    "references/nested/extra.md",
+    "references/style-guide.md",
+    "scripts/run.sh"
+  ]);
+  for (const resource of skill.resources) {
+    assert.equal(
+      resource.abs,
+      await fs.realpath(path.join(skillDir, resource.rel)),
+      `资源真实路径应解析到 ${resource.rel}`
+    );
+  }
+});
+
+test("拒绝缺少 frontmatter 的 SKILL.md", async (t) => {
+  const { root, skillDir } = await makeSkill("alpha", "# 没有 frontmatter 的正文\n");
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  await expectRejected(readSkillFile(skillDir, { source: "project" }), "skill_missing_frontmatter");
+});
+
+test("拒绝只有开 fence 没有闭合 fence 的 SKILL.md", async (t) => {
+  const { root, skillDir } = await makeSkill("alpha", "---\nname: alpha\n");
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  await expectRejected(readSkillFile(skillDir, { source: "project" }), "skill_missing_frontmatter");
+});
+
+test("拒绝目录名与 name 不同的 SKILL.md", async (t) => {
+  const { root, skillDir } = await makeSkill("other-name", VALID_SKILL);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  await expectRejected(readSkillFile(skillDir, { source: "project" }), "skill_name_mismatch");
+});
+
+test("拒绝缺失 name 的 SKILL.md", async (t) => {
+  const content = "---\ndescription: 只有描述没有名字\n---\n\n正文\n";
+  const { root, skillDir } = await makeSkill("alpha", content);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  await expectRejected(readSkillFile(skillDir, { source: "project" }), "skill_missing_name");
+});
+
+test("拒绝无效 YAML frontmatter", async (t) => {
+  const { root, skillDir } = await makeSkill("alpha", "---\nname: [未闭合\n---\n\n正文\n");
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  await expectRejected(readSkillFile(skillDir, { source: "project" }), "skill_invalid_yaml");
+});
+
+test("拒绝 frontmatter 中重复的 name 键", async (t) => {
+  const content = "---\nname: alpha\nname: beta\n---\n\n正文\n";
+  const { root, skillDir } = await makeSkill("alpha", content);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  // yaml 包默认 uniqueKeys: true，重复键直接拒绝。
+  await expectRejected(readSkillFile(skillDir, { source: "project" }), "skill_invalid_yaml");
+});
+
+test("拒绝超过 512KiB 的 SKILL.md", async (t) => {
+  const body = `# Big\n\n${"x".repeat(MAX_SKILL_FILE_BYTES + 1)}\n`;
+  const { root, skillDir } = await makeSkill("alpha", body);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  await expectRejected(readSkillFile(skillDir, { source: "project" }), "skill_file_too_large");
+});
+
+test("拒绝缺失 SKILL.md 的目录", async (t) => {
+  const root = makeTemp();
+  const skillDir = path.join(root, "alpha");
+  await fs.mkdir(skillDir, { recursive: true });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  await expectRejected(readSkillFile(skillDir, { source: "project" }), "skill_file_not_found");
+});
+
+test("资源枚举拒绝 realpath 逃逸技能目录的 symlink", async (t) => {
+  let outsideFile;
+  try {
+    const root = makeTemp();
+    const skillDir = path.join(root, "alpha");
+    await fs.mkdir(path.join(skillDir, "references"), { recursive: true });
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), VALID_SKILL, "utf8");
+    outsideFile = path.join(root, "outside-secret.txt");
+    await fs.writeFile(outsideFile, "secret", "utf8");
+    symlinkSync(outsideFile, path.join(skillDir, "references", "evil.txt"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    await expectRejected(
+      readSkillFile(skillDir, { source: "project" }),
+      "skill_resource_unsafe"
+    );
+  } catch (error) {
+    if (error?.code === "EPERM" || error?.code === "EACCES") {
+      t.skip(`当前环境无法创建 symlink（${error.code}），跳过逃逸测试`);
+      return;
+    }
+    throw error;
+  }
+});
+
+test("readSkillResource 按需读取 SKILL.md", async (t) => {
+  const { root, skillDir } = await makeSkill("suspense-chapter-end", VALID_SKILL);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const skill = await readSkillFile(skillDir, { source: "project" });
+
+  const result = await readSkillResource(skill, "SKILL.md");
+  assert.equal(result.name, skill.name);
+  assert.equal(result.resource, "SKILL.md");
+  assert.equal(result.content, VALID_SKILL);
+  assert.equal(result.bytes, Buffer.byteLength(VALID_SKILL, "utf8"));
+  assert.equal(result.path, await fs.realpath(path.join(skillDir, "SKILL.md")));
+  assert.ok(Object.isFrozen(result));
+});
+
+test("readSkillResource 读取 references 资源", async (t) => {
+  const { root, skillDir } = await makeSkill("suspense-chapter-end", VALID_SKILL);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(skillDir, "references"));
+  await fs.writeFile(path.join(skillDir, "references", "guide.md"), "# 参考指南\n", "utf8");
+  const skill = await readSkillFile(skillDir, { source: "project" });
+
+  const result = await readSkillResource(skill, "references/guide.md");
+  assert.equal(result.content, "# 参考指南\n");
+  assert.equal(result.resource, "references/guide.md");
+});
+
+test("readSkillResource 拒绝绝对资源路径", async (t) => {
+  const { root, skillDir } = await makeSkill("suspense-chapter-end", VALID_SKILL);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const skill = await readSkillFile(skillDir, { source: "project" });
+  const absolute = path.join(root, "outside.txt");
+  await fs.writeFile(absolute, "x", "utf8");
+  await expectRejected(
+    readSkillResource(skill, absolute),
+    "skill_resource_unsafe"
+  );
+});
+
+test("readSkillResource 拒绝 ../ 穿越", async (t) => {
+  const { root, skillDir } = await makeSkill("suspense-chapter-end", VALID_SKILL);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const skill = await readSkillFile(skillDir, { source: "project" });
+  await fs.writeFile(path.join(root, "secret.txt"), "x", "utf8");
+  await expectRejected(readSkillResource(skill, "../secret.txt"), "skill_resource_unsafe");
+  await expectRejected(
+    readSkillResource(skill, "references/../../secret.txt"),
+    "skill_resource_unsafe"
+  );
+});
+
+test("readSkillResource 拒绝不存在的资源", async (t) => {
+  const { root, skillDir } = await makeSkill("suspense-chapter-end", VALID_SKILL);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const skill = await readSkillFile(skillDir, { source: "project" });
+  await expectRejected(
+    readSkillResource(skill, "references/missing.md"),
+    "skill_resource_not_found"
+  );
+});
+
+test("readSkillResource 拒绝超过 1MiB 的文本资源", async (t) => {
+  const { root, skillDir } = await makeSkill("suspense-chapter-end", VALID_SKILL);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(skillDir, "references"));
+  await fs.writeFile(path.join(skillDir, "references", "big.txt"), "a".repeat(MAX_SKILL_RESOURCE_BYTES + 1), "utf8");
+  const skill = await readSkillFile(skillDir, { source: "project" });
+  await expectRejected(
+    readSkillResource(skill, "references/big.txt"),
+    "skill_resource_too_large"
+  );
+});
+
+test("readSkillResource 拒绝通过 symlink 逃逸技能目录的资源", async (t) => {
+  try {
+    const root = makeTemp();
+    const skillDir = path.join(root, "alpha");
+    await fs.mkdir(path.join(skillDir, "references"), { recursive: true });
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), VALID_SKILL, "utf8");
+    const outside = path.join(root, "outside.txt");
+    await fs.writeFile(outside, "secret", "utf8");
+    symlinkSync(outside, path.join(skillDir, "references", "evil.txt"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const skill = await readSkillFile(skillDir, { source: "project" });
+    await expectRejected(
+      readSkillResource(skill, "references/evil.txt"),
+      "skill_resource_unsafe"
+    );
+  } catch (error) {
+    if (error?.code === "EPERM" || error?.code === "EACCES") {
+      t.skip(`当前环境无法创建 symlink（${error.code}），跳过逃逸测试`);
+      return;
+    }
+    throw error;
+  }
+});
