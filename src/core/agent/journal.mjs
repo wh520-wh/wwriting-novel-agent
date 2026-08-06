@@ -346,6 +346,13 @@ function reduceEvent(session, event, side) {
     }
 
     case "input_cancelled": {
+      // 已知边角（Task 6 规格审查记录，Task 9/11 全量验证时评估，不改行为）：
+      // 一条已被 input_consumed「切换激活」消费过的输入，若随后被 input_promoted
+      // 放回队列、再次经 input_consumed 重新激活，则 stop 路径追加的 input_cancelled
+      // 会给它产生第二个终态事件（本分支对活动输入不查 terminalInputs），与
+      //「每条 input 恰好一个终态事件」的字面不变量冲突。冻结验收/agent 场景均不
+      // 覆盖此链路（promote 后该输入立即重新被处理，stop 不会落在未消费的活动输入
+      // 上）；如需严格化，应在 reducer 侧校验或由 runtime 的 stop 收敛跳过已终结输入。
       const inputId = requireString(payload.input_id, "input_id");
       if (session.active_run?.active_input_id === inputId) {
         session.active_run.active_input_id = null;
@@ -385,6 +392,12 @@ function reduceEvent(session, event, side) {
 
     case "interrupt_requested": {
       const activeRun = requireActiveRun("interrupt_requested");
+      // 停止优先于中断（Task 6 规格审查）：Run 已进入 stopping 后拒绝再写入
+      // interrupt_requested，防止「立即」击穿「停止」（promote 的预检查只是
+      // 第一道防线，reducer 是 journal 锁内的唯一串行化兜底）。
+      if (activeRun.status === "stopping") {
+        fail(`Run ${run.id} 正在停止，不能写入 interrupt_requested`);
+      }
       activeRun.status = "interrupting";
       session.status = "interrupting";
       break;
@@ -533,7 +546,19 @@ function reduceEvent(session, event, side) {
       // 不影响 Session projection（transcript/领域审计类事件）
       break;
 
-    case "run_completed":
+    case "run_completed": {
+      const activeRun = requireActiveRun("run_completed");
+      // 竞态守卫（Task 6 规格审查）：队列非空时拒绝自然终结——未消费输入不得
+      // 滞留跨 Run 边界（runtime 在项目互斥锁内复查队列，此处是 reducer 兜底）。
+      if (session.queued_inputs.length > 0) {
+        fail(`run_completed 时队列非空（${session.queued_inputs.length} 条输入未消费），拒绝终结`);
+      }
+      activeRun.status = "completed";
+      activeRun.active_input_id = null;
+      session.status = "idle";
+      break;
+    }
+
     case "run_failed":
     case "run_cancelled":
     case "run_interrupted": {
@@ -768,14 +793,22 @@ export function createAgentJournal({ projectRoot, clock = defaultClock, idFactor
     const dangling = detectDangling(state);
     if (dangling) {
       // 崩溃恢复：dangling assistant 活动的 Run 不能恢复执行（绝不能把这种状态发
-      // 给 provider）——先清除其全部不可恢复 grant（计划权限生命周期规则），再把
-      // Run 标记为 interrupted。
+      // 给 provider）——先清除其全部不可恢复 grant（计划权限生命周期规则），闭合
+      // 崩溃遗留的未解决 decision（保证"每条 decision 收敛"），再把 Run 标记为
+      // interrupted。
       const recoveryBatch = [];
       for (const grant of state.session.active_run.active_grants) {
         recoveryBatch.push({
           type: "permission_grant_cleared",
           run_id: state.session.active_run.id,
           payload: { input_id: grant.input_id, grant_key: grant.grant_key, grant_id: grant.id }
+        });
+      }
+      for (const decisionId of state.openDecisions.keys()) {
+        recoveryBatch.push({
+          type: "decision_resolved",
+          run_id: state.session.active_run.id,
+          payload: { decision_id: decisionId, choice: "cancelled", reason: "recovery_dangling_decision" }
         });
       }
       recoveryBatch.push({

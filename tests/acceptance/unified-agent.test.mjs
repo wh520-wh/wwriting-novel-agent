@@ -11,8 +11,14 @@
 //   - agent.decide 的 choice 词汇："allow" | "allow_input" | "deny" | 精确 confirmation_text
 //   - 事件类型必须来自 FIXED_EVENT_TYPES（计划固定的 28 个类型）
 //
-// 当前状态：src/core/agent/index.mjs 尚不存在，本文件预期整体 FAIL（红）。
-// 后续任务按本文件的断言逐项实现；Task 9 cutover 后本文件必须全部通过。
+// 当前状态（Task 6 完成、规格审查裁决后）：19/21 场景通过。剩余 2 个红场景按
+// 任务归属，不是本任务缺陷：
+//   - "AgentSurface 保留 900px 内容基线与模型菜单视口钳制"：Task 8 实现
+//     src/app-shell/agent/（index.js + agent.css）后转绿；
+//   - "旧项目把 blueprint_status 迁入 project.yaml 且不再写旧状态文件"：Task 7
+//     legacy-import 范围（migration.json 脚手架已在 journal.mjs；旧状态一次性
+//     只读导入与 migration.legacy_imported 置位在 Task 7 实现）。
+// Task 9 cutover 后本文件必须全部通过。
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -245,6 +251,7 @@ test("空闲提交创建且只创建一个 Run", async (t) => {
 
 test("运行中提交进入 FIFO 队列", async (t) => {
   const h = await openHarness(t, {
+    project: { tool_permissions: { yolo: true } }, // yolo 是 fixture 权限模式：stub 命令免普通确认（extreme 仍强制确认）
     gatewayScript: [
       { reply: { toolCalls: [tool("shell", { command: "stub", timeout_ms: 30000 })] } },
       { reply: { text: "第一条处理完成。" } },
@@ -287,9 +294,12 @@ test("FIFO 按发送顺序消费输入", async (t) => {
     ],
     gatewayDelayMs: 60
   });
-  await h.agent.submit({ projectRoot: h.projectRoot, text: "A", source: "chat" });
-  await h.agent.submit({ projectRoot: h.projectRoot, text: "B", source: "chat" });
-  await h.agent.submit({ projectRoot: h.projectRoot, text: "C", source: "chat" });
+  // 输入文本用路径无关的独特标记（Windows 上绝对项目根含 "C:\"/"AppData" 等字母，
+  // 用单字母 A/B/C 做顺序标记会被路径字母污染）
+  const MARKERS = ["MARK_A_9f2", "MARK_B_1c7", "MARK_C_4e8"];
+  await h.agent.submit({ projectRoot: h.projectRoot, text: MARKERS[0], source: "chat" });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: MARKERS[1], source: "chat" });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: MARKERS[2], source: "chat" });
   await waitForIdle(h.agent, h.projectRoot);
   const events = await readEvents(h.agent, h.projectRoot);
   const queued = eventsOfType(events, "input_queued");
@@ -302,7 +312,7 @@ test("FIFO 按发送顺序消费输入", async (t) => {
     "input_consumed 顺序必须与 input_queued 顺序一致（FIFO）"
   );
   const texts = h.gateway.calls.map((call) => JSON.stringify(call.request));
-  const positions = ["A", "B", "C"].map((text) => texts.findIndex((serialized) => serialized.includes(text)));
+  const positions = MARKERS.map((text) => texts.findIndex((serialized) => serialized.includes(text)));
   assert.ok(positions.every((index) => index >= 0), "每个输入都应出现在模型请求中");
   assert.ok(positions[0] < positions[1] && positions[1] < positions[2], "模型按 FIFO 顺序处理输入");
   assertActivityClosure(events);
@@ -367,7 +377,7 @@ test("停止取消当前 Run 并取消排队输入", async (t) => {
 
   await h.agent.stop({ projectRoot: h.projectRoot, reason: "user_stop" });
   const final = await waitForIdle(h.agent, h.projectRoot);
-  assert.equal(final.status, "idle");
+  assert.equal(final.session.status, "idle");
   const events = await readEvents(h.agent, h.projectRoot);
   const cancelled = eventsOfType(events, "run_cancelled");
   assert.equal(cancelled.length, 1);
@@ -403,6 +413,7 @@ test("retry 恢复同一可恢复 Run", async (t) => {
 
 test("同一项目同一时刻只有一个模型轮次", async (t) => {
   const h = await openHarness(t, {
+    project: { tool_permissions: { yolo: true } }, // yolo 是 fixture 权限模式：stub 命令免普通确认（extreme 仍强制确认）
     gatewayScript: [
       { reply: { toolCalls: [tool("shell", { command: "stub", timeout_ms: 30000 })] } },
       { reply: { text: "第一条完成。" } },
@@ -689,6 +700,7 @@ test("Shell 增量输出、cwd/退出码/耗时、进程树停止与 secret 脱�
   // 子场景一：真实 Shell 增量输出 + 报告 cwd/exit/duration + 脱敏
   const h1 = await openHarness(t, {
     realShell: true,
+    project: { tool_permissions: { yolo: true } }, // yolo 是 fixture 权限模式：echo 命令免普通确认（extreme 仍强制确认）
     secrets: [SECRET],
     gatewayScript: [
       async () => ({
@@ -728,9 +740,11 @@ test("Shell 增量输出、cwd/退出码/耗时、进程树停止与 secret 脱�
     `setInterval(function(){},500)"`;
   const h2 = await openHarness(t, {
     realShell: true,
+    project: { tool_permissions: { yolo: true } }, // yolo 是 fixture 权限模式：子进程命令免普通确认（extreme 仍强制确认）
     secrets: [SECRET],
     gatewayScript: [
-      { reply: { toolCalls: [tool("shell", { command: childCommand, cwd: h2.projectRoot, timeout_ms: 30000 })] }, repeat: true },
+      // cwd 缺省 = 项目根（不能在对象字面量里引用尚未初始化的 h2）
+      { reply: { toolCalls: [tool("shell", { command: childCommand, timeout_ms: 30000 })] }, repeat: true },
       { reply: { text: "完成。" } }
     ]
   });
