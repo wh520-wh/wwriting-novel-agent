@@ -579,6 +579,12 @@
   z-index: 30;
 }
 
+/* 布局契约（Task 11 审查确认保留，非死代码）：
+ * 旧 composer 弹出式模型菜单的实现已删除（composer-model.test.mjs 断言），但
+ * 这些尺寸规则按计划 Task 8 明确要求「在旧 composer 删除后保留」作为未来模型
+ * 菜单的布局契约：16px 视口安全区（100vw - 32px）、内容与视口共同约束的宽度、
+ * 长名称任意位置换行。当前无 JS 渲染器，由 acceptance/ui-layout/composer-model/
+ * verify:unified-agent 场景 25 的 CSS 断言守护；若未来恢复菜单实现，直接复用。 */
 .agent-surface .model-popover {
   width: min(420px, calc(100vw - 32px));
   min-width: min(340px, calc(100vw - 32px));

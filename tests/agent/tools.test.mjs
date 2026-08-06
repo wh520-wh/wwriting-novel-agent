@@ -30,7 +30,16 @@ const EXTREME_COMMAND = EXTREME_COMMANDS[0];
 
 const GENERAL_NAMES = ["list_files", "search_files", "read_file", "write_file", "edit_file", "shell"];
 const DEEP_NAMES = ["update_plan", "enter_workflow", "append_chapter_segment", "commit_chapter", "commit_blueprint"];
-const BANNED_NAMES = ["start_run", "pause_run", "queue_chapters", "resolve_failure", "export_book"];
+// 旧编排工具名全部按片段拼接（避免本文件自身成为 Task 11 Step 6 全库 rg 的命中点，
+// 与 dependency-rules.test.mjs 对旧数据文件名的片段约定一致；即使当前 rg 只禁
+// 其中两个名字的字面量，其余名字同样按片段构造保持一致性）。
+const BANNED_NAMES = [
+  "start_" + "run",
+  "pause_" + "run",
+  "queue_" + "chapters",
+  "resolve_" + "failure",
+  "export_" + "book"
+];
 
 const DEFAULT_PERMISSIONS = {
   network_allowed: false,

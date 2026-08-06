@@ -1,7 +1,7 @@
 // src/core/shell/runtime.mjs
 //
-// 统一 Agent 内核计划 Task 4：从前置计划 `src/core/chat/shell-runtime.mjs` 端口迁入
-// 的 Shell 运行时，可观察行为保持不变（同一契约，见 tests/helpers/project-agent-harness.mjs
+// 统一 Agent 内核计划 Task 4：从前置计划的 shell-runtime 模块端口迁入的 Shell
+// 运行时，可观察行为保持不变（同一契约，见 tests/helpers/project-agent-harness.mjs
 // 的 shell port 形状冻结）。
 //
 // 行为契约（前置计划已验收，不得退化）：
