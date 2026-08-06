@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { testModelConnection } from "../src/core/model-connection-test.mjs";
-import { ProviderTransportError } from "../src/core/provider-adapters.mjs";
+import { ProviderTransportError } from "../src/core/model/openai-compatible.mjs";
 
 test("successful probe returns latency and provider identity", async () => {
   const result = await testModelConnection({

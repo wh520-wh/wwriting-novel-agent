@@ -4,26 +4,37 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { loadDashboardData, readChapterContent, validateProjectRoot } from "../src/core/app-dashboard.mjs";
-import { appendFailure } from "../src/core/failures-store.mjs";
-import { runProject } from "../src/core/agent-engine.mjs";
-import { loadState, saveState, upsertChapter } from "../src/core/project-store.mjs";
+import { loadProject, upsertChapter } from "../src/core/project-store.mjs";
 import { createWritingProject } from "./helpers.mjs";
 import { sha256 } from "../src/core/fs-utils.mjs";
-import { runReviewerAgent } from "../src/core/reviewer-agent.mjs";
 import { searchWeb } from "../src/core/research-tools.mjs";
 import { updateProjectSettings } from "../src/core/settings-runtime.mjs";
+
+// 章节事实辅助：用项目领域模块提交一章（dashboard 测试不依赖 Agent 写章）。
+async function commitChapterViaOperations(projectRoot, chapterNo, content) {
+  const project = await loadProject(projectRoot);
+  const { appendChapterSegment, commitChapter } = await import("../src/core/project-operations/chapter.mjs");
+  await appendChapterSegment({
+    projectRoot,
+    projectId: project.project_id,
+    chapterNo,
+    segmentNo: 1,
+    content
+  });
+  await commitChapter({ projectRoot, projectId: project.project_id, chapterNo });
+}
 
 test("loadDashboardData summarizes real project files", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-dashboard-"));
   const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 2,
-    min_words_per_chapter: 160,
-    target_words_per_chapter: 220,
-    network_allowed: true,
-    enabled_skills: ["suspense-chapter-end"]
+    min_words_per_chapter: 10,
+    target_words_per_chapter: 20,
+    network_allowed: true
   });
-  await runProject(projectRoot);
+  await commitChapterViaOperations(projectRoot, 1, "第一章正文：雨夜，一封没有署名的信落在门缝里。");
+  await commitChapterViaOperations(projectRoot, 2, "第二章正文：档案管理员林晚决定追查寄信人。");
   await searchWeb(
     projectRoot,
     { project_id: "dashboard-project", tool_permissions: { network_allowed: true } },
@@ -36,55 +47,47 @@ test("loadDashboardData summarizes real project files", async () => {
       }
     }
   );
-  await runReviewerAgent(projectRoot, { writeReport: true });
 
   const data = await loadDashboardData(root, { projectRoot });
   assert.equal(data.hasProject, true);
   assert.equal(data.summary.completedChapters, 2);
   assert.equal(data.summary.targetChapters, 2);
   assert.equal(data.summary.progressPercent, 100);
-  assert.equal(data.summary.activityProgressPercent, 100);
-  assert.ok(data.summary.totalWords >= 320);
-  assert.ok(data.summary.totalTokens > 0);
+  assert.ok(data.summary.totalWords >= 20);
   assert.ok(data.chapters.every((chapter) => chapter.status === "completed"));
-  assert.ok(data.events.some((event) => event.type === "model_usage_recorded"));
-  assert.ok(data.cost.calls >= 2);
-  assert.ok(data.cache.last_call.cacheKey);
+  assert.ok(data.events.some((event) => event.type === "project_created"));
   assert.equal(data.config.effective.tool_permissions.network_allowed, true);
   const suspenseSkill = data.skills.items.find((skill) => skill.name === "suspense-chapter-end");
   assert.ok(suspenseSkill, "built-in suspense skill should be listed");
-  assert.equal(suspenseSkill.enabled_in_project, true);
-  assert.ok(suspenseSkill.hooks.some((hook) => hook.stage === "planning"));
-  // 内置技能包扩展后，老项目不会自动启用新技能
   const aiVoiceSkill = data.skills.items.find((skill) => skill.name === "avoid-ai-voice");
   assert.ok(aiVoiceSkill, "built-in ai-voice skill should be listed");
   assert.equal(aiVoiceSkill.enabled_in_project, false);
   assert.equal(data.sources.count, 1);
   assert.equal(data.sources.latest[0].untrusted, true);
-  assert.equal(data.review.status, "passed");
   assert.equal(await validateProjectRoot(projectRoot), projectRoot);
 });
 
-test("loadDashboardData reports visible in-chapter activity progress while running", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-dashboard-activity-"));
+test("loadDashboardData 不再返回运行状态推断与旧领域字段", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-dashboard-no-run-"));
   const { projectRoot } = await createWritingProject(root, {
     slug: "project",
-    target_chapters: 100,
-    min_words_per_chapter: 160,
-    target_words_per_chapter: 220
+    target_chapters: 1,
+    min_words_per_chapter: 10,
+    target_words_per_chapter: 20
   });
-  const state = await loadState(projectRoot);
-  await saveState(projectRoot, {
-    ...state,
-    project_status: "running",
-    current_stage: "drafting",
-    current_chapter_no: 1
-  });
+  await commitChapterViaOperations(projectRoot, 1, "第一章正文：雨夜来信的开篇。");
 
   const data = await loadDashboardData(root, { projectRoot });
-  assert.equal(data.summary.progressPercent, 0);
-  assert.ok(data.summary.activityProgressPercent >= 4);
-  assert.ok(data.summary.activityProgressPercent < 100);
+  // Rule 9：dashboard 不推测 Agent 是否繁忙
+  assert.equal(data.summary.projectStatus, undefined);
+  assert.equal(data.summary.currentStage, undefined);
+  assert.equal(data.summary.currentChapterNo, undefined);
+  assert.equal(data.summary.activityProgressPercent, undefined);
+  assert.equal(data.summary.latestCheckpoint, undefined);
+  // 旧审查/故障卡/recent tool events 字段删除
+  assert.equal(data.review, undefined);
+  assert.equal(data.failures, undefined);
+  assert.equal(data.recent_tool_events, undefined);
 });
 
 test("loadDashboardData reports configured model-call budget from effective settings", async () => {
@@ -100,7 +103,7 @@ test("loadDashboardData reports configured model-call budget from effective sett
   });
 
   const data = await loadDashboardData(root, { projectRoot });
-  assert.equal(data.summary.maxModelCalls, 77);
+  // 预算限制只来自有效项目配置（Rule 9）
   assert.equal(data.project.budget_config.max_model_calls, 77);
 });
 
@@ -109,10 +112,10 @@ test("readChapterContent returns clean prose without segment markup", async () =
   const { projectRoot } = await createWritingProject(root, {
     slug: "project",
     target_chapters: 1,
-    min_words_per_chapter: 120,
-    target_words_per_chapter: 160
+    min_words_per_chapter: 10,
+    target_words_per_chapter: 20
   });
-  await runProject(projectRoot);
+  await commitChapterViaOperations(projectRoot, 1, "第一章正文：雨夜来信的开篇。");
   const chapter = await readChapterContent(projectRoot, 1);
   assert.equal(chapter.ok, true);
   assert.equal(chapter.chapter_no, 1);
@@ -137,10 +140,10 @@ test("loadDashboardData allows an explicitly opened external project", async () 
   const { projectRoot } = await createWritingProject(externalRoot, {
     slug: "opened-project",
     target_chapters: 1,
-    min_words_per_chapter: 120,
-    target_words_per_chapter: 160
+    min_words_per_chapter: 10,
+    target_words_per_chapter: 20
   });
-  await runProject(projectRoot);
+  await commitChapterViaOperations(projectRoot, 1, "第一章正文：外部项目正文。");
   const data = await loadDashboardData(workspace, {
     projectRoot,
     allowExternalProjectRoot: true
@@ -218,34 +221,6 @@ test("loadDashboardData explains stable cache key without provider metrics", asy
   assert.equal(data.cacheSummary.available, true);
   assert.equal(data.cacheSummary.providerMetricsAvailable, false);
   assert.equal(data.cacheSummary.explanation, "缓存键稳定；供应商未返回命中指标");
-});
-
-test('loadDashboardData 包含 failures 字段（最近 10 未处理 + 5 已处理）', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'wwriting-dash-fail-'));
-  const { projectRoot } = await createWritingProject(root, {
-    slug: 'p', target_chapters: 3, min_words_per_chapter: 300, target_words_per_chapter: 360
-  });
-  for (let i = 0; i < 20; i++) {
-    appendFailure(projectRoot, { id: `e${i}`, kind: 'unknown', resolution: null,
-      ts: `2026-05-31T00:00:${String(i).padStart(2,'0')}Z` });
-  }
-  for (let i = 0; i < 8; i++) {
-    appendFailure(projectRoot, { id: `r${i}`, kind: 'unknown',
-      resolution: { action: 'pause-here', submittedAt: '...' }, ts: '2026-05-30T00:00:00Z' });
-  }
-  const snap = await loadDashboardData(root, { projectRoot, allowExternalProjectRoot: true });
-  assert.ok(Array.isArray(snap.failures));
-  const pending = snap.failures.filter(f => !f.resolution);
-  const done = snap.failures.filter(f => f.resolution);
-  assert.equal(pending.length, 10);
-  assert.equal(done.length, 5);
-});
-
-test('loadDashboardData 在 hasProject=false 时不读 failures.jsonl', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'wwriting-no-project-'));
-  const snap = await loadDashboardData(root, { disableProjectFallback: true });
-  assert.equal(snap.hasProject, false);
-  assert.equal(snap.failures, undefined);
 });
 
 test("dashboard does not count an indexed chapter whose file is missing", async () => {

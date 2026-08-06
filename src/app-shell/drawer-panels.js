@@ -1,11 +1,14 @@
 import { icon } from "./icons.js";
-import { formatNumber, formatMoney, formatTime, translateStage, translateReviewStatus, translateSkillType, translateSourceKind, translateEventType } from "./utils.js";
+import { formatNumber, formatMoney, formatTime, translateStage, translateSkillType, translateSourceKind, translateEventType } from "./utils.js";
 import { postJson } from "./api-client.js";
 import { renderCostPanel as renderCostPanelComponent } from "./components/cost-panel.js";
 
+// 抽屉面板（统一 Agent 内核计划 Task 9）：只保留项目领域事实（章节/模型/技能/
+// 资料/成本）。删除运行面板与审查面板——运行事实只在 Agent 对话当前轮展示；
+// “导出成书”直接 POST 确定性导出 route，不再经聊天发送。
 export function createDrawerPanels(ctx) {
   // ctx provides: refs, getDrawerTab, setDrawerTab, getDashboard, loadDashboard,
-  //   openReader, openSettingsModal, showToast, showActionError
+  //   openReader, openSettingsModal, showToast, showActionError, closeDrawer
 
   function renderDrawerBody() {
     const dashboard = ctx.getDashboard();
@@ -18,9 +21,7 @@ export function createDrawerPanels(ctx) {
     else if (drawerTab === "model") renderModelPanel(dashboard);
     else if (drawerTab === "skills") renderSkillsPanel(dashboard);
     else if (drawerTab === "research") renderResearchPanel(dashboard);
-    else if (drawerTab === "cost") renderCostPanel(dashboard);
-    else if (drawerTab === "reviewer") renderReviewerPanel(dashboard);
-    else renderRunPanel(dashboard);
+    else renderCostPanel(dashboard);
   }
 
   function drawerEmpty(text) {
@@ -55,7 +56,7 @@ export function createDrawerPanels(ctx) {
     const { panel, body } = dpanel("章节目录", `${summary.completedChapters}/${summary.targetChapters}`);
     body.style.padding = "6px";
 
-    // 导出工具条
+    // 导出工具条：确定性导出直接 POST /api/projects/export-book。
     const toolbar = document.createElement("div");
     toolbar.className = "export-toolbar";
     const exportBtn = document.createElement("button");
@@ -63,8 +64,7 @@ export function createDrawerPanels(ctx) {
     exportBtn.className = "tbtn export-btn";
     exportBtn.textContent = "导出成书";
     exportBtn.addEventListener("click", () => {
-      ctx.closeDrawer?.();
-      ctx.sendChatMessageWithUX?.("导出全书为 md");
+      void exportBook(data, exportBtn);
     });
     toolbar.append(exportBtn);
     if (window.wwritingDesktop?.revealPath) {
@@ -86,7 +86,7 @@ export function createDrawerPanels(ctx) {
     list.className = "chrow-list";
     const chapters = data.chapters ?? [];
     if (chapters.length === 0) {
-      list.append(drawerEmpty("尚无章节，发送指令后开始生成。"));
+      list.append(drawerEmpty("暂无章节"));
     } else {
       const byChapter = data.cost?.byChapter ?? {};
       const costAvailable = data.summary?.costAvailable === true;
@@ -98,11 +98,11 @@ export function createDrawerPanels(ctx) {
     ctx.refs.drawerBody.replaceChildren(panel);
   }
 
+  // 章节状态只显示文件事实：已完成（可打开阅读）或待生成。
   function buildChapterRow(chapter, costRow, costAvailable) {
     const done = chapter.status === "completed";
-    const running = !done && chapter.status && !["queued", "planned"].includes(chapter.status);
     const row = document.createElement("button");
-    row.className = `chrow ${done ? "completed" : running ? "running" : "todo"}`;
+    row.className = `chrow ${done ? "completed" : "todo"}`;
     row.type = "button";
     row.disabled = !done;
     const n = document.createElement("span");
@@ -122,13 +122,6 @@ export function createDrawerPanels(ctx) {
       }
       row.append(meta, icon("chevR", 14, "ch-go"));
       row.addEventListener("click", () => ctx.openReader(chapter.chapter_no));
-    } else if (running) {
-      const state = document.createElement("span");
-      state.className = "ch-state run";
-      const spin = document.createElement("span");
-      spin.className = "spin";
-      state.append(spin, document.createTextNode("生成中"));
-      row.append(state);
     } else {
       const state = document.createElement("span");
       state.className = "ch-state todo";
@@ -162,7 +155,6 @@ export function createDrawerPanels(ctx) {
     appendKv(kv, "估算成本", summary.costAvailable ? formatMoney(summary.estimatedCost) : "未配置价格");
     appendKv(kv, "缓存", cacheSummaryText(data));
     appendKv(kv, "联网权限", permissions.network_allowed ? "已开启" : "关闭", permissions.network_allowed ? "accent" : "");
-    appendKv(kv, "审查器", translateReviewStatus(data.review?.status), "green");
     budget.body.append(kv);
     ctx.refs.drawerBody.replaceChildren(model.panel, budget.panel);
   }
@@ -179,68 +171,6 @@ export function createDrawerPanels(ctx) {
     dd.className = valueClass ?? "";
     dd.textContent = value;
     dl.append(dt, dd);
-  }
-
-  function renderRunPanel(data) {
-    const summary = data.summary;
-    const progress = dpanel("进度", `${summary.progressPercent ?? 0}%`);
-    const kv = document.createElement("dl");
-    kv.className = "kv";
-    appendKv(kv, "完成章节", `${summary.completedChapters} / ${summary.targetChapters}`);
-    appendKv(kv, "累计字数", formatNumber(summary.totalWords));
-    appendKv(kv, "当前阶段", translateStage(summary.currentStage ?? "-"));
-    appendKv(kv, "最近检查点", summary.latestCheckpoint ?? "-");
-    progress.body.append(kv);
-
-    const events = dpanel("运行事件");
-    events.body.style.padding = "4px 0";
-    const list = data.events ?? [];
-    if (list.length === 0) {
-      events.body.append(drawerEmpty("暂无事件。"));
-    } else {
-      for (const event of [...list].slice(-40).reverse()) {
-        events.body.append(buildEventRow(event));
-      }
-    }
-
-    const skills = buildSkillsPanel(data);
-
-    const sources = data.sources?.latest ?? [];
-    const research = dpanel("资料来源", formatNumber(data.sources?.count ?? 0));
-    const form = document.createElement("div");
-    form.className = "research-form";
-    const q = document.createElement("input");
-    q.type = "text"; q.placeholder = "搜索关键词"; q.className = "research-input";
-    const sBtn = document.createElement("button");
-    sBtn.type = "button"; sBtn.className = "small-button"; sBtn.textContent = "搜索";
-    sBtn.addEventListener("click", () => runResearch("search", { query: q.value.trim(), limit: 5 }, sBtn));
-    const u = document.createElement("input");
-    u.type = "url"; u.placeholder = "https://example.com"; u.className = "research-input";
-    const fBtn = document.createElement("button");
-    fBtn.type = "button"; fBtn.className = "small-button"; fBtn.textContent = "抓取";
-    fBtn.addEventListener("click", () => runResearch("fetch", { url: u.value.trim() }, fBtn));
-    form.append(q, sBtn, u, fBtn);
-    research.body.append(form);
-    if (sources.length === 0) {
-      research.body.append(drawerEmpty("暂无来源快照。"));
-    } else {
-      for (const source of sources) {
-        const row = document.createElement("div");
-        row.className = "evt";
-        const et = document.createElement("span");
-        et.className = "et";
-        et.textContent = translateSourceKind(source.kind);
-        const em = document.createElement("span");
-        em.className = "em peek";
-        em.textContent = source.title ?? source.file;
-        const ex = document.createElement("span");
-        ex.className = "ex";
-        ex.textContent = source.untrusted ? "不可信" : "资料";
-        row.append(et, em, ex);
-        research.body.append(row);
-      }
-    }
-    ctx.refs.drawerBody.replaceChildren(progress.panel, events.panel, skills.panel, research.panel);
   }
 
   function renderSkillsPanel(data) {
@@ -316,25 +246,20 @@ export function createDrawerPanels(ctx) {
     ctx.refs.drawerBody.replaceChildren(panel);
   }
 
-  function renderReviewerPanel(data) {
-    const review = data.review ?? {};
-    const panel = dpanel("审查报告");
-    if (!review.generated_at) {
-      panel.body.append(drawerEmpty("暂无审查报告。运行 /review 命令后生成。"));
-    } else {
-      const kv = document.createElement("dl");
-      kv.className = "kv";
-      appendKv(kv, "状态", translateReviewStatus(review.status));
-      appendKv(kv, "生成时间", formatTime(review.generated_at));
-      panel.body.append(kv);
-      if (review.summary) {
-        const p = document.createElement("p");
-        p.className = "agent-say";
-        p.textContent = review.summary;
-        panel.body.append(p);
-      }
+  // 确定性导出：直接调用书导出 route（不创建 Agent Run、不追加模型 transcript）。
+  // btn 由调用方（renderChapterPanel）传入，禁用以面板内的按钮为界，不做全局查询。
+  async function exportBook(data, btn) {
+    const projectRoot = data.projectRoot ?? data.project?.projectRoot;
+    if (!projectRoot) return;
+    if (btn) btn.disabled = true;
+    try {
+      const result = await postJson("/api/projects/export-book", { projectRoot, format: "txt" });
+      ctx.showToast(`已导出：${result.path}（${formatNumber(result.characters)} 字）`, "success");
+    } catch (error) {
+      ctx.showToast(error?.message ?? "导出失败。", "error");
+    } finally {
+      if (btn) btn.disabled = false;
     }
-    ctx.refs.drawerBody.replaceChildren(panel.panel);
   }
 
   async function runResearch(action, body, btn) {

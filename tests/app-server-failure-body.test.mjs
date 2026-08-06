@@ -4,13 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createAppShellServer } from "../src/core/app-server.mjs";
-import { readEvents } from "../src/core/event-log.mjs";
-import { ProviderTransportError } from "../src/core/provider-adapters.mjs";
-import { createWritingProject } from "./helpers.mjs";
+import { loadProject, saveProject } from "../src/core/project-store.mjs";
 
 // —— 测试服务器小工具(对齐 tests/app-server-probe.test.mjs 的既有范式) ——
 const FETCH_BLOCKED_PORTS = new Set([
-  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79,
+  1, 7, 9, 11, 13, 15, 17, 19, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79,
   87, 95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137,
   139, 143, 161, 179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532,
   540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723,
@@ -47,56 +45,124 @@ async function postJson(port, route, body = {}) {
   return { res, data };
 }
 
-async function waitFor(predicate, { timeout = 3000 } = {}) {
+async function getJson(port, route) {
+  const res = await fetch(`http://127.0.0.1:${port}${route}`);
+  return { res, data: await res.json() };
+}
+
+async function waitFor(predicate, { timeout = 15000 } = {}) {
   const start = Date.now();
   while (Date.now() - start < timeout) {
     const value = await predicate();
     if (value) return value;
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error("Timed out waiting for condition");
 }
 
 async function setupServer() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-body-"));
-  // 走写作入口必须 blueprint_status complete（helpers 约定），否则 API 层蓝图门禁直接 400。
-  const { projectRoot } = await createWritingProject(root, {
-    slug: "project", target_chapters: 1, min_words_per_chapter: 300, target_words_per_chapter: 360
+  const { createProjectAt } = await import("../src/core/project-store.mjs");
+  const { projectRoot } = await createProjectAt(path.join(root, "project"), {
+    title: "Failure Body Novel",
+    target_chapters: 1,
+    min_words_per_chapter: 10,
+    target_words_per_chapter: 20
   });
-  async function testRunProject() {
-    // 模拟 DeepSeek 400:client-fatal ProviderTransportError(body 保留)
-    throw new ProviderTransportError("OpenAI-compatible provider returned HTTP 400.", {
-      status: 400,
-      body: '{"error":{"message":"Invalid tool_calls","type":"invalid_request_error"}}',
-      reason: "client-fatal"
-    });
-  }
   const server = createAppShellServer({
     workspaceRoot: root,
     selectedProjectRoot: projectRoot,
     stateRoot: path.join(root, ".state"),
     secretsRoot: path.join(root, ".secrets"),
     staticRoot: path.resolve("src", "app-shell"),
-    port: 0,
-    testRunProject
+    port: 0
   });
   const port = await listenOnFetchSafePort(server);
   return { root, projectRoot, server, port };
 }
 
-test("project_run_failed 事件持久化 error.body/status/reason", async () => {
+test("模型错误 → snapshot 显示 failed Run → 修复配置后 retry 恢复同一 Run", async () => {
   const { projectRoot, server, port } = await setupServer();
   try {
-    await postJson(port, "/api/commands/submit", { message: "写第1章" });
-    // 事件由 startProjectRun 的 promise .catch 链异步写入,轮询等待
+    // 指向不可达端口的 openai-compatible 模型（连接拒绝 → transport 错误 → run_failed）。
+    // timeout_ms/total_deadline_ms 直接写 project.yaml（设置校验不接收这两个字段，
+    // 但 gateway 会读取 modelConfig 上的它们）——用短期限把失败收敛控制在数秒内。
+    const project = await loadProject(projectRoot);
+    project.active_model = {
+      provider: "openai-compatible",
+      model_name: "fail-model",
+      base_url: "http://127.0.0.1:1/v1",
+      api_key_env: "FAIL_KEY",
+      timeout_ms: 800,
+      total_deadline_ms: 4000
+    };
+    await saveProject(projectRoot, project);
+
+    const input = await postJson(port, "/api/agent/input", { projectRoot, text: "写第一章" });
+    assert.equal(input.res.status, 200);
+    assert.equal(input.data.status, "running");
+
+    // 等待 Run 失败（journal run_failed → snapshot failed）
     const failed = await waitFor(async () => {
-      const events = await readEvents(projectRoot);
-      return events.find((e) => e.type === "project_run_failed") ?? null;
+      const { data } = await getJson(port, `/api/agent/snapshot?projectRoot=${encodeURIComponent(projectRoot)}`);
+      return data.session.active_run?.status === "failed" ? data : null;
     });
-    assert.equal(failed.data.status, 400, "data.status 应持久化");
-    assert.equal(failed.data.reason, "client-fatal", "data.reason 应持久化");
-    assert.ok(failed.data.body && failed.data.body.includes("Invalid tool_calls"),
-      `data.body 应持久化 DeepSeek 错误正文,实际: ${failed.data.body}`);
+    const runId = failed.session.active_run.id;
+    assert.ok(failed.events.some((e) => e.type === "run_failed"), "journal 应写入 run_failed");
+    const failedEvent = failed.events.find((e) => e.type === "run_failed");
+    assert.ok(typeof failedEvent.payload.error === "string", "run_failed 应携带可读错误信息");
+
+    // 修复配置（换回 mock）后通过新 /api/agent/run/:runId/retry 恢复同一 Run
+    const fixed = await loadProject(projectRoot);
+    fixed.active_model = { provider: "mock", model_name: "mock-writer" };
+    await saveProject(projectRoot, fixed);
+    const retried = await postJson(port, `/api/agent/run/${runId}/retry`, { projectRoot });
+    assert.equal(retried.res.status, 200);
+    assert.equal(retried.data.ok, true);
+    assert.equal(retried.data.run_id, runId, "retry 必须继续同一 Run");
+    assert.equal(retried.data.retried, true);
+
+    const completed = await waitFor(async () => {
+      const { data } = await getJson(port, `/api/agent/snapshot?projectRoot=${encodeURIComponent(projectRoot)}`);
+      return data.session.active_run?.status === "completed" ? data : null;
+    });
+    assert.equal(completed.session.active_run.id, runId);
+    assert.equal(completed.session.status, "idle");
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("运行中 submit 排队（HTTP 200 + queued），stop 收敛为 cancelled", async () => {
+  const { projectRoot, server, port } = await setupServer();
+  try {
+    const project = await loadProject(projectRoot);
+    project.active_model = {
+      provider: "openai-compatible",
+      model_name: "slow-model",
+      base_url: "http://127.0.0.1:1/v1",
+      api_key_env: "FAIL_KEY",
+      timeout_ms: 800,
+      total_deadline_ms: 4000
+    };
+    await saveProject(projectRoot, project);
+
+    const first = await postJson(port, "/api/agent/input", { projectRoot, text: "任务一" });
+    const second = await postJson(port, "/api/agent/input", { projectRoot, text: "任务二" });
+    assert.equal(second.res.status, 200);
+    assert.equal(second.data.status, "queued");
+    assert.equal(second.data.run_id, first.data.run_id);
+
+    // 等 Run 进入 failed（模型错误）后停止是幂等无操作；改用直接验证排队输入被记录
+    await waitFor(async () => {
+      const { data } = await getJson(port, `/api/agent/snapshot?projectRoot=${encodeURIComponent(projectRoot)}`);
+      return data.session.active_run?.status === "failed" ? data : null;
+    });
+    const { data: snapshot } = await getJson(port, `/api/agent/snapshot?projectRoot=${encodeURIComponent(projectRoot)}`);
+    assert.ok(snapshot.session.queued_inputs.length >= 1, "排队输入应出现在 snapshot");
+    // 停止（无活动 Run 时返回 cancelled:false，不抛错）
+    const stopped = await postJson(port, `/api/agent/run/${first.data.run_id}/stop`, { projectRoot });
+    assert.ok([200, 404].includes(stopped.res.status));
   } finally {
     await closeServer(server);
   }

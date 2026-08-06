@@ -1,24 +1,24 @@
-import { computeAgentTruth, deriveActivity, deriveBadges, agentPhaseLabel } from "./agent-truth.mjs";
-import { renderActivityStrip } from "./components/activity-strip.js";
+// WWriting · 统一 Agent 对话控制面（统一 Agent 内核计划 Task 9）。
+//
+// 页面组合根：创建 AgentSurface（src/app-shell/agent/index.js，唯一对话 seam）并
+// 传递项目变更/设置/章节回调；其余只保留导航、项目列表、设置、章节阅读与确定性
+// 工具（导出）。不再 import 或维护 thread renderer / composer / agent truth /
+// run presentation / write readiness / activity strip / suggestions / command
+// registry 的状态（Rule 4/5：UI 不做业务决策，Agent 状态由 AgentSurface 消费
+// snapshot/event）。
 import { renderQuickRail, bindQuickRailKeys } from "./components/quick-rail.js";
-import { getLastSeen, watchLastSeen } from "./components/last-seen.js";
-import { motion, summarizeBadgesForMotion, diffBadgeKeys } from "./motion-runtime.js";
-import { getJson, postJson, fetchChatHistory, withProjectScope } from "./api-client.js";
-import { formatNumber, pathEquals, pathBaseName, statusClass, translateStage } from "./utils.js";
+import { motion } from "./motion-runtime.js";
+import { getJson, postJson, withProjectScope } from "./api-client.js";
+import { formatNumber, pathBaseName, pathEquals, translateStage } from "./utils.js";
 import { icon } from "./icons.js";
-import { createThreadRenderer } from "./thread-renderer.js";
 import { createDrawerPanels } from "./drawer-panels.js";
 import { createSettingsModal } from "./settings-modal.js";
-import { createComposer } from "./composer.js";
 import { createProjectScope } from "./project-scope.mjs";
-import { deriveWriteReadiness } from "./write-readiness.mjs";
+import { createAgentSurface } from "./agent/index.js";
 import { deriveProjectIdentity } from "./project-identity.mjs";
-import { deriveWorkbenchView, deriveChapterCompletion } from "./workbench-presentation.mjs";
 import { loadDefaultTier } from "./permission-defaults.mjs";
 import { getTierById } from "./permission-tiers.mjs";
 
-// WWriting · Codex 风格对话式前端
-// 后端无消息/SSE 端点，对话流由前端用 /api/dashboard 的 events[] + chapters[] + summary 聚合而成。
 const refs = {
   app: document.querySelector("#app"),
   refresh: document.querySelector("#refresh"),
@@ -32,20 +32,11 @@ const refs = {
   title: document.querySelector("#project-title"),
   status: document.querySelector("#project-status"),
   topbarSub: document.querySelector("#topbar-sub"),
-  topbarProgress: document.querySelector("#topbar-progress"),
-  topbarProgressLabel: document.querySelector("#topbar-progress-label"),
-  topbarProgressBar: document.querySelector("#topbar-progress-bar"),
   privacyToggle: document.querySelector("#privacy-toggle"),
   privacyLabel: document.querySelector("#privacy-label"),
   themeToggle: document.querySelector("#theme-toggle"),
   themeLabel: document.querySelector("#theme-label"),
-  threadWrap: document.querySelector("#thread-wrap"),
-  thread: document.querySelector("#thread"),
-  composer: document.querySelector("#composer"),
-  slashMenu: document.querySelector("#slash-menu"),
-  composerInput: document.querySelector("#composer-input"),
-  composerHint: document.querySelector("#composer-hint"),
-  composerSubmit: document.querySelector("#composer-submit"),
+  agentSurface: document.querySelector("#agent-surface"),
   drawerScrim: document.querySelector("#drawer-scrim"),
   drawer: document.querySelector("#drawer"),
   drawerClose: document.querySelector("#drawer-close"),
@@ -83,47 +74,9 @@ const refs = {
   createX: document.querySelector("#create-x"),
   shortcutsScrim: document.querySelector("#shortcuts-scrim"),
   shortcutsX: document.querySelector("#shortcuts-x"),
-  cbarKeys: document.querySelector("#cbar-keys"),
   toastStack: document.querySelector("#toast-stack"),
-  threadStatus: document.querySelector("#thread-status"),
   topbar: document.querySelector(".topbar"),
-  quickRail: document.querySelector("#quick-rail"),
-  topbarStop: document.querySelector("#topbar-stop"),
-  activityStrip: document.getElementById("activity-strip"),
-  projectWorkbench: document.querySelector("#project-workbench"),
-  workbenchCover: document.querySelector("#workbench-cover"),
-  workbenchMonogram: document.querySelector("#workbench-monogram"),
-  workbenchTitle: document.querySelector("#workbench-title"),
-  workbenchSeed: document.querySelector("#workbench-seed"),
-  workbenchProgress: document.querySelector("#workbench-progress"),
-  workbenchProgressLabel: document.querySelector("#workbench-progress-label"),
-  workbenchWordCount: document.querySelector("#workbench-word-count"),
-  workbenchProgressFill: document.querySelector("#workbench-progress-fill"),
-  workbenchStatus: document.querySelector("#workbench-status"),
-  workbenchPrimary: document.querySelector("#workbench-primary"),
-  workbenchReadLatest: document.querySelector("#workbench-read-latest"),
-  workbenchOpenChapters: document.querySelector("#workbench-open-chapters"),
-  workbenchActivity: document.querySelector("#workbench-activity"),
-  workbenchFoldToggle: document.querySelector("#workbench-fold-toggle"),
-  workbenchBody: document.querySelector("#workbench-body"),
-  writeReadiness: document.querySelector("#write-readiness"),
-  writeReadinessTitle: document.querySelector("#write-readiness-title"),
-  writeReadinessDetail: document.querySelector("#write-readiness-detail"),
-  writeReadinessMeta: document.querySelector("#write-readiness-meta"),
-  writeReadinessPrimary: document.querySelector("#write-readiness-primary"),
-  writeReadinessSecondary: document.querySelector("#write-readiness-secondary"),
-  writeReadinessTertiary: document.querySelector("#write-readiness-tertiary"),
-  writeReadinessFoldToggle: document.querySelector("#write-readiness-fold-toggle"),
-  writeReadinessBody: document.querySelector("#write-readiness-body"),
-  chapterSuccess: document.querySelector("#chapter-success"),
-  chapterSuccessTitle: document.querySelector("#chapter-success-title"),
-  chapterSuccessMeta: document.querySelector("#chapter-success-meta"),
-  chapterSuccessReview: document.querySelector("#chapter-success-review"),
-  chapterSuccessRead: document.querySelector("#chapter-success-read"),
-  chapterSuccessContinue: document.querySelector("#chapter-success-continue"),
-  chapterSuccessFoldHeader: document.querySelector("#chapter-success-fold"),
-  chapterSuccessBody: document.querySelector("#chapter-success-body"),
-  chapterSuccessFoldSummary: document.querySelector("#chapter-success-fold-summary"),
+  quickRail: document.querySelector("#quick-rail")
 };
 
 const desktop = window.wwritingDesktop;
@@ -131,64 +84,23 @@ document.documentElement.dataset.desktopShell = desktop?.shell ?? "browser";
 document.documentElement.dataset.desktopPlatform = desktop?.platform ?? "browser";
 
 let currentProjectRoot = null;
-// SSE 流式订阅句柄与当前订阅项目：项目切换时在 loadDashboard 里重连；轮询保持兜底。
-let sseSource = null;
-let sseProjectRoot = null;
 let dashboardRequestId = 0;
-let refreshTimer = null;
 let drawerTab = "chapters";
 let lastDashboard = null;
 // 唯一的 project generation 门禁：旧项目响应到达时不会污染当前 DOM。
 const projectScope = createProjectScope();
-// 已渲染进对话流的事件指纹，避免轮询重复追加同一条气泡。
-const renderedKeys = new Set();
-// 本地内存里的旁路问答待确认条目（刷新即丢，与后端 side_questions.md 解耦）。
-const askEntries = new Map();
-let liveBlock = null;
 let lastFocused = null;
 let createModalMode = "new";
-let previousActivity = null;
-let previousBadgeSummary = null;
 let readerChapterNo = null;
-let readerQuoteBtn = null;
-// 已发布给屏幕阅读器（aria-live）的最后一条状态：切换项目时清空。
-let lastAnnounce = "";
-let lastWriteReadinessView = null;
-let lastWorkbenchView = null;
-let lastCommittedChapter = null;
-
-// --- extracted module instances (created before event bindings that reference their methods) ---
-let composer; // forward ref: thread-renderer's promote button calls composer.promoteAskEntry (assigned in Task 7)
-let projectListData = null; // hoisted to top so click handlers never trip TDZ if a probe fires before later declarations run
+let projectListData = null;
 let archivedExpanded = false;
 
-const threadRenderer = createThreadRenderer({
-  refs,
-  renderedKeys,
-  askEntries,
-  getLiveBlock: () => liveBlock,
-  setLiveBlock: (block) => { liveBlock = block; },
-  getCurrentProjectRoot: () => currentProjectRoot,
-  getDashboard: () => lastDashboard,
-  loadDashboard,
-  handleRetry,
-  handleStop,
-  handleQuick,
-  openReader,
-  showToast,
-  showActionError,
-  announce,
-  openDrawer,
-  openSettingsModal: (...args) => settingsModal.openSettingsModal(...args),
-  prefillComposer: (text) => {
-    refs.composerInput.value = text;
-    refs.composerInput.focus();
-    composer.autoGrowComposer();
-    composer.updateSubmitState();
-  },
-  promoteAskEntry: (entry) => composer.promoteAskEntry(entry),
-  submitText: (text) => composer.submitText(text),
-  isChatBusy: () => composer?.isChatBusy?.() === true,
+// ---- AgentSurface：唯一对话 seam ----
+const agentSurface = createAgentSurface({
+  root: refs.agentSurface,
+  api: null, // 默认 transport：agent/api.js（复用 api-client 通用 helper）
+  onOpenSettings: (section) => openSettingsModal(section),
+  onOpenChapter: (chapterNo) => openReader(chapterNo)
 });
 
 const settingsModal = createSettingsModal({
@@ -212,25 +124,7 @@ const { renderDrawerBody } = createDrawerPanels({
   showToast,
   showActionError,
   closeDrawer,
-  sendChatMessageWithUX: (msg) => composer?.sendChatMessageWithUX?.(msg),
 });
-
-composer = createComposer({
-  refs,
-  getCurrentProjectRoot: () => currentProjectRoot,
-  getDashboard: () => lastDashboard,
-  loadDashboard,
-  openCreateModal,
-  openSettingsModal,
-  openDrawer,
-  showToast,
-  showActionError,
-  ensureRefreshLoop,
-  threadRenderer,
-  getAskEntries: () => askEntries,
-  projectScope,
-});
-const { submitComposer, autoGrowComposer, updateSlashMenu, onComposerKeydown, updateSubmitState, promoteAskEntry, persistDraft, flushDraft, restoreDraftIfAny, resetComposerInputUi } = composer;
 
 function openDrawer(tab) {
   if (tab) drawerTab = tab;
@@ -302,54 +196,10 @@ refs.drawerTabs.addEventListener("click", (event) => {
   if (tab) setDrawerTab(tab.dataset.dtab);
 });
 
-refs.composerSubmit.addEventListener("click", () => submitComposer());
-refs.composerInput.addEventListener("keydown", onComposerKeydown);
-refs.composerInput.addEventListener("input", () => {
-  autoGrowComposer();
-  updateSubmitState();
-  updateSlashMenu();
-  persistDraft();
-});
-window.addEventListener("pagehide", flushDraft);
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") flushDraft();
-});
-setTimeout(() => composer.initModePill(), 0);
-
 refs.readerClose.addEventListener("click", closeReader);
 refs.readerScrim.addEventListener("click", (event) => {
   if (event.target === refs.readerScrim) closeReader();
 });
-
-function removeReaderQuoteBtn() {
-  readerQuoteBtn?.remove();
-  readerQuoteBtn = null;
-}
-
-refs.readerBody.addEventListener("mouseup", () => {
-  removeReaderQuoteBtn();
-  const selection = window.getSelection();
-  const text = String(selection?.toString() ?? "").trim();
-  if (!text || !refs.readerScrim.classList.contains("show")) return;
-  const rect = selection.getRangeAt(0).getBoundingClientRect();
-  readerQuoteBtn = document.createElement("button");
-  readerQuoteBtn.type = "button";
-  readerQuoteBtn.id = "reader-quote-btn";
-  readerQuoteBtn.textContent = "问智能体";
-  readerQuoteBtn.style.left = `${Math.round(rect.left + rect.width / 2)}px`;
-  readerQuoteBtn.style.top = `${Math.round(rect.bottom + 8)}px`;
-  readerQuoteBtn.addEventListener("click", () => {
-    const snippet = text.slice(0, 500);
-    const chapter = readerChapterNo;
-    closeReader();
-    refs.composerInput.value = `关于第 ${chapter} 章这段：\n> ${snippet}\n`;
-    refs.composerInput.focus();
-    composer.autoGrowComposer();
-    composer.updateSubmitState();
-  });
-  document.body.append(readerQuoteBtn);
-});
-refs.readerBody.addEventListener("scroll", removeReaderQuoteBtn);
 refs.settingsX.addEventListener("click", closeSettingsModal);
 refs.settingsCancel.addEventListener("click", closeSettingsModal);
 refs.settingsScrim.addEventListener("click", (event) => {
@@ -363,7 +213,6 @@ refs.createX.addEventListener("click", closeCreateModal);
 refs.createBrowse.addEventListener("click", () => browseForCreatePath());
 refs.createSubmit.addEventListener("click", () => initProject(refs.createPath.value.trim()));
 
-refs.cbarKeys.addEventListener("click", () => openShortcuts());
 refs.shortcutsX.addEventListener("click", () => closeShortcuts());
 refs.shortcutsScrim.addEventListener("click", (event) => {
   if (event.target === refs.shortcutsScrim) closeShortcuts();
@@ -408,93 +257,6 @@ document.addEventListener("keydown", (event) => {
 window.addEventListener("blur", () => { refs.app.dataset.away = "true"; });
 window.addEventListener("focus", () => { refs.app.dataset.away = "false"; });
 refs.privacyToggle.addEventListener("click", () => setPrivacyMode(refs.app.dataset.privacy !== "on"));
-
-// Writing readiness buttons
-if (refs.writeReadinessPrimary) {
-  refs.writeReadinessPrimary.addEventListener("click", () => {
-    if (lastWriteReadinessView) handleReadinessAction(lastWriteReadinessView);
-  });
-}
-if (refs.writeReadinessSecondary) {
-  refs.writeReadinessSecondary.addEventListener("click", () => openFromFolder());
-}
-if (refs.workbenchPrimary) {
-  refs.workbenchPrimary.addEventListener("click", () => {
-    if (lastWorkbenchView) handleReadinessAction(lastWorkbenchView.readiness);
-  });
-}
-if (refs.workbenchReadLatest) {
-  refs.workbenchReadLatest.addEventListener("click", () => {
-    if (lastWorkbenchView?.latestChapter?.canOpen) {
-      openReader(lastWorkbenchView.latestChapter.chapterNo);
-    }
-  });
-}
-if (refs.workbenchOpenChapters) {
-  refs.workbenchOpenChapters.addEventListener("click", () => openDrawerTab("chapters"));
-}
-
-// Chapter success buttons
-if (refs.chapterSuccessRead) {
-  refs.chapterSuccessRead.addEventListener("click", () => {
-    if (lastCommittedChapter) openReader(lastCommittedChapter.chapter_no);
-  });
-}
-if (refs.chapterSuccessContinue) {
-  refs.chapterSuccessContinue.addEventListener("click", () => {
-    void composer.startCurrentChapter();
-  });
-}
-
-// Initialize chapter-success fold
-(function initChapterSuccessFold() {
-  const header = refs.chapterSuccessFoldHeader;
-  const body = refs.chapterSuccessBody;
-  if (!header || !body) return;
-  const foldKey = "wwriting.card.fold.chapter-success";
-  const val = localStorage.getItem(foldKey);
-  const folded = val === null ? false : val === "true"; // completed → folded by default
-  body.hidden = folded;
-  header.classList.toggle("folded", folded);
-  header.addEventListener("click", () => {
-    const nowFolded = !body.hidden;
-    body.hidden = nowFolded;
-    header.classList.toggle("folded", nowFolded);
-    localStorage.setItem(foldKey, String(nowFolded));
-  });
-})();
-
-// 可折叠主卡片：标题行常驻，body 用 grid-template-rows 平滑动画。
-// 默认展开；折叠状态存 localStorage，刷新后保持。
-function initCardFold({ toggle, body, foldKey, defaultFolded = false, root = null }) {
-  if (!toggle || !body) return;
-  const val = localStorage.getItem(foldKey);
-  const folded = val === null ? defaultFolded : val === "true";
-  toggle.classList.toggle("folded", folded);
-  body.classList.toggle("folded", folded);
-  root?.classList.toggle("folded", folded);
-  toggle.setAttribute("aria-expanded", String(!folded));
-  toggle.addEventListener("click", () => {
-    const nowFolded = !toggle.classList.contains("folded");
-    toggle.classList.toggle("folded", nowFolded);
-    body.classList.toggle("folded", nowFolded);
-    root?.classList.toggle("folded", nowFolded);
-    toggle.setAttribute("aria-expanded", String(!nowFolded));
-    localStorage.setItem(foldKey, String(nowFolded));
-  });
-}
-
-initCardFold({
-  toggle: refs.workbenchFoldToggle,
-  body: refs.workbenchBody,
-  root: refs.projectWorkbench,
-  foldKey: "wwriting.card.fold.project-workbench",
-});
-initCardFold({
-  toggle: refs.writeReadinessFoldToggle,
-  body: refs.writeReadinessBody,
-  foldKey: "wwriting.card.fold.write-readiness",
-});
 
 async function loadAll() {
   await Promise.all([loadProjectList(), loadDashboard()]);
@@ -547,7 +309,6 @@ function renderProjectListFiltered() {
       parts.push(...archived.map((project) => {
         const row = renderProjectNav(project, projectListData.selectedProjectRoot);
         row.classList.add("proj-archived");
-        // prepend archive emoji to title
         const titleEl = row.querySelector(".proj-title");
         if (titleEl && !titleEl.textContent.startsWith("\u{1F4E6}")) {
           titleEl.textContent = "\u{1F4E6} " + titleEl.textContent;
@@ -568,28 +329,6 @@ async function loadDashboard(options = {}) {
   const activeProjectRoot = currentProjectRoot;
   let token = projectScope.capture(activeProjectRoot);
 
-  // SSE 流式订阅：模型 delta 与运行事件实时到达；轮询保持兜底。
-  if (currentProjectRoot && currentProjectRoot !== sseProjectRoot) {
-    sseProjectRoot = currentProjectRoot;
-    sseSource?.close();
-    // 连接建立时捕获归属项目：onmessage 派发前与当前 currentProjectRoot 比对，
-    // 切项目/切无项目后旧连接 in-flight 事件（含开轮 user_instruction_received）一律丢弃，
-    // 防止旧项目排队任务的事件在切换窗口内于新项目线程开假轮。
-    const connRoot = currentProjectRoot;
-    sseSource = new EventSource(`/api/project/events?projectRoot=${encodeURIComponent(currentProjectRoot)}`);
-    sseSource.onmessage = (msg) => {
-      if (currentProjectRoot !== connRoot) return;
-      const event = JSON.parse(msg.data);
-      if (event.type === "model_delta") {
-        threadRenderer.onModelDelta?.(event.text);
-      } else if (event.type === "chat_activity") {
-        // Task 9: 实时活动（思考/工具/命令增量输出）→ 聊天区活动流，不经 live turn 状态机。
-        threadRenderer.onChatActivity?.(event);
-      } else {
-        threadRenderer.onRunEvent?.(event);
-      }
-    };
-  }
   if (options.silent !== true) {
     setStatus("loading");
   }
@@ -603,17 +342,6 @@ async function loadDashboard(options = {}) {
       token = projectScope.capture(data.projectRoot);
     }
     if (!data.ok) throw new Error(data.message ?? "仪表盘请求失败");
-    if (data.hasProject) {
-      const queueUrl = withProjectScope("/api/queue/state", activeProjectRoot);
-      const [queue, chatHistory] = await Promise.all([
-        getJson(queueUrl).catch(() => ({ ok: false, tasks: [] })),
-        fetchChatHistory({ projectRoot: activeProjectRoot }).catch(() => null)
-      ]);
-      data.queue = queue;
-      data.chatHistory = chatHistory;
-      if (requestId !== dashboardRequestId) return;
-      if (!projectScope.isCurrent(token)) return;
-    }
     renderDashboard(data);
   } catch (error) {
     if (requestId !== dashboardRequestId) return;
@@ -622,25 +350,10 @@ async function loadDashboard(options = {}) {
   }
 }
 
-// Switch Cleanup Matrix：每次切换项目/无项目时重置所有项目级临时 UI 状态。
-// 旧项目的渲染、toast、对话流不能混入新项目的首屏。
+// Switch Cleanup Matrix：每次切换项目/无项目时重置项目级临时 UI 状态。
+// AgentSurface 由 commitProjectSwitch 显式 openProject（重置其内部状态）。
 function clearTransientState() {
-  // 任何在途请求的 token 都会因 generation 自增而失效。
   dashboardRequestId += 1;
-  // 对话流指纹与旁路问答是项目级内存缓存。
-  renderedKeys.clear();
-  askEntries.clear();
-  liveBlock = null;
-  lastAnnounce = "";
-  // 顶部活动状态：renderer / motion 会在下次 renderDashboard 重画。
-  previousActivity = null;
-  previousBadgeSummary = null;
-  if (refs.thread) {
-    refs.thread.replaceChildren();
-    // Task 9: 线程重建，活动流容器与已合并行随之重置（下次 chat_activity 事件重新挂载）。
-    threadRenderer.resetChatActivity?.();
-  }
-  if (refs.threadStatus) refs.threadStatus.textContent = "";
   if (refs.toastStack) {
     for (const toast of [...refs.toastStack.children]) toast.remove();
   }
@@ -649,28 +362,13 @@ function clearTransientState() {
     refs.readerScrim.setAttribute("inert", "");
   }
   readerChapterNo = null;
-  if (refs.composerInput && "value" in refs.composerInput) resetComposerInputUi();
-  if (refs.composerInput?.dataset) {
-    delete refs.composerInput.dataset.error;
-  }
 }
 
-// 在每次成功的项目选择（open / init / forget / no-project 兜底）后，
-// 都提升 generation + 清空临时状态，确保任何旧项目的延迟响应被丢弃。
-// 同步把 currentProjectRoot 指向新根，避免后续 loadDashboard 捕获到旧值。
 function commitProjectSwitch(projectRoot) {
-  const previousProjectRoot = currentProjectRoot;
-  // 切走前：把当前输入框内容存到旧项目草稿（currentProjectRoot 仍指向旧值）。
-  flushDraft();
-  // Task 7: 切到不同项目前清掉旧项目的任务级授权（失败不阻断切换，内存态下次自然失效兜底）。
-  if (previousProjectRoot && !pathEquals(previousProjectRoot, projectRoot)) {
-    void postJson("/api/chat/grants/clear", { projectRoot: previousProjectRoot }).catch(() => {});
-  }
   projectScope.activate(projectRoot);
   currentProjectRoot = projectRoot;
   clearTransientState();
-  // 切到新项目后：从新项目草稿恢复输入框。
-  restoreDraftIfAny(currentProjectRoot);
+  agentSurface.openProject(projectRoot);
 }
 
 function renderProjectNav(project, selectedProjectRoot) {
@@ -722,186 +420,23 @@ function renderProjectEmpty(text) {
   return empty;
 }
 
-function handleReadinessAction(view) {
-  const action = view.primaryAction;
-  switch (action) {
-    case "create_project":
-      openCreateModal();
-      break;
-    case "open_project":
-      openFromFolder();
-      break;
-    case "open_settings":
-    case "test_connection":
-    case "increase_target":
-      openSettingsModal();
-      break;
-    case "start_chapter":
-      void composer.startCurrentChapter();
-      break;
-    case "view_progress":
-    case "view_project_status":
-      openDrawerTab("run");
-      break;
-    case "view_issue":
-      openDrawerTab("run");
-      break;
-    default:
-      break;
-  }
-}
-
-function workbenchStatusText(view) {
-  const key = view.readiness.key;
-  if (key === "running") return "故事正在落笔";
-  if (key === "blocked") return "故事线需要你的判断";
-  if (key === "completed") return "本轮章节目标已完成";
-  if (key === "project_read_only") return "这部作品当前以只读方式打开";
-  if (key === "missing_model" || key === "invalid_model") return "完成模型准备后即可继续";
-  return `下一步：第 ${view.readiness.chapterNo} 章`;
-}
-
-function renderWorkbenchActivity(entries) {
-  if (!refs.workbenchActivity) return;
-  const rows = entries.map((entry) => {
-    const row = document.createElement("div");
-    row.className = `workbench-activity-row tone-${entry.tone}`;
-    row.dataset.activityKey = entry.key;
-    const dot = document.createElement("span");
-    dot.className = "workbench-activity-dot";
-    dot.setAttribute("aria-hidden", "true");
-    const label = document.createElement("span");
-    label.className = "workbench-activity-label";
-    label.textContent = entry.label;
-    row.append(dot, label);
-    return row;
-  });
-  refs.workbenchActivity.replaceChildren(...rows);
-  refs.workbenchActivity.hidden = rows.length === 0;
-}
-
-function renderProjectWorkbench(data) {
-  const view = deriveWorkbenchView(data);
-  lastWorkbenchView = view.visible ? view : null;
-  if (!refs.projectWorkbench) return;
-  refs.projectWorkbench.hidden = !view.visible;
-  if (!view.visible) return;
-
-  const identity = view.identity;
-  refs.projectWorkbench.dataset.projectTheme = identity.theme;
-  refs.workbenchCover.dataset.projectTheme = identity.theme;
-  refs.workbenchCover.setAttribute("aria-label", identity.ariaLabel);
-  refs.workbenchMonogram.textContent = identity.monogram;
-  refs.workbenchTitle.textContent = view.title;
-  refs.workbenchSeed.textContent = view.storySeed || "这部小说还没有故事种子。";
-  refs.workbenchProgress.setAttribute("aria-valuenow", String(view.progress.percent));
-  refs.workbenchProgress.setAttribute("aria-valuetext", `${view.progress.completed} / ${view.progress.target} 章`);
-  refs.workbenchProgressLabel.textContent = `${view.progress.completed} / ${view.progress.target} 章`;
-  refs.workbenchWordCount.textContent = `${formatNumber(view.progress.totalWords)} 字`;
-  refs.workbenchProgressFill.style.width = `${view.progress.percent}%`;
-  refs.workbenchStatus.textContent = workbenchStatusText(view);
-  refs.workbenchPrimary.textContent = view.readiness.primaryLabel;
-  refs.workbenchPrimary.disabled = view.readiness.key === "running";
-
-  refs.workbenchReadLatest.hidden = !view.latestChapter?.canOpen;
-  if (view.latestChapter?.canOpen) {
-    refs.workbenchReadLatest.textContent = `阅读第 ${view.latestChapter.chapterNo} 章`;
-  }
-  renderWorkbenchActivity(view.activity);
-}
-
-function renderWriteReadiness(data) {
-  const view = deriveWriteReadiness(data);
-  lastWriteReadinessView = view;
-  const section = refs.writeReadiness;
-  if (!section) return;
-  const isNoProject = view.key === "no_project";
-  const hasCommittedChapter = data?.chapters?.some(
-    (chapter) => chapter.artifact?.state === "committed"
-  ) === true;
-  const show = isNoProject || (
-    data?.hasProject
-    && view.key !== "running"
-    && !hasCommittedChapter
-  );
-  section.hidden = !show;
-  if (!show) return;
-  refs.writeReadinessTitle.textContent = view.label;
-  refs.writeReadinessDetail.textContent = view.detail;
-  if (refs.writeReadinessMeta) {
-    const parts = [];
-    if (view.modelLabel) parts.push(view.modelLabel);
-    if (view.chapterNo && !isNoProject) parts.push(`第 ${view.chapterNo} 章`);
-    refs.writeReadinessMeta.textContent = parts.join(" · ");
-  }
-  refs.writeReadinessPrimary.textContent = view.primaryLabel;
-  if (isNoProject) {
-    refs.writeReadinessSecondary.hidden = false;
-    refs.writeReadinessSecondary.textContent = "打开本地文件夹";
-  } else {
-    refs.writeReadinessSecondary.hidden = true;
-  }
-  refs.writeReadinessTertiary.hidden = true;
-}
-
-function renderChapterSuccess(data) {
-  const section = refs.chapterSuccess;
-  if (!section) return;
-  const completion = deriveChapterCompletion(data);
-  if (!completion) {
-    section.hidden = true;
-    lastCommittedChapter = null;
-    return;
-  }
-
-  lastCommittedChapter = { chapter_no: completion.chapterNo };
-  section.hidden = false;
-  refs.chapterSuccessTitle.textContent = `第 ${completion.chapterNo} 章已完成 · ${completion.title}`;
-  refs.chapterSuccessMeta.textContent = `${formatNumber(completion.words)} 字 · ${completion.format} · 已保存到本地`;
-  refs.chapterSuccessReview.textContent = completion.reviewLabel;
-  refs.chapterSuccessContinue.hidden = !completion.continueVisible;
-  if (completion.continueVisible) {
-    refs.chapterSuccessContinue.textContent = `继续写第 ${completion.nextChapterNo} 章`;
-  }
-  if (refs.chapterSuccessFoldSummary) {
-    refs.chapterSuccessFoldSummary.textContent = `第 ${completion.chapterNo} 章已完成 · ${formatNumber(completion.words)} 字`;
-  }
-}
-
 function renderDashboard(data) {
   lastDashboard = data;
   if (!data.hasProject) {
     currentProjectRoot = null;
-    previousActivity = null;
-    previousBadgeSummary = null;
     refs.title.textContent = "开始创作";
     refs.topbarSub.textContent = "新建或打开一部小说，开始你的创作。";
     setStatus("idle");
-    ensureRefreshLoop(false);
-    threadRenderer.renderEmptyThread();
-    composer.updateModePill();
-    composer.updateStatusPills(data);
-    composer.syncChatBusy(data);
-    renderProjectWorkbench(data);
-    renderWriteReadiness(data);
+    renderQuickRailIfPresent();
     refreshDrawerIfOpen();
     return;
   }
 
   const firstLoad = currentProjectRoot !== data.projectRoot;
   if (firstLoad) {
-    // 切换/首次打开项目：重置对话流，按事件重建历史。
-    renderedKeys.clear();
-    askEntries.clear();
-    liveBlock = null;
-    refs.thread.replaceChildren();
-    // M-5: 与 clearTransientState 一致——线程重建时同步重置活动流
-    // （容器已随 replaceChildren 销毁，重置引用后下次 chat_activity 事件重新挂载）。
-    threadRenderer.resetChatActivity?.();
-  }
-  currentProjectRoot = data.projectRoot;
-  if (firstLoad) {
-    restoreDraftIfAny(currentProjectRoot, { focus: true });
+    // 切换/首次打开项目：把 AgentSurface 指向该项目（内部重连 SSE）。
+    currentProjectRoot = data.projectRoot;
+    agentSurface.openProject(data.projectRoot);
   }
 
   const summary = data.summary;
@@ -913,116 +448,31 @@ function renderDashboard(data) {
     ? `模型未配置 · 请在设置里选一个 · ${progressCopy}`
     : progressCopy;
 
-  // 归档态 UI
-  const isArchived = Boolean(project.archived_at);
-  // spec §2.3-U5：placeholder 精简为一句核心提示（示例已移到折叠提示 #composer-hint）。
-  refs.composerInput.placeholder = isArchived
-    ? "项目已归档（只读）。对话查询可用；解除归档后才能修改。"
-    : "输入指令，或 /write 开始写作";
-
-  const truth = computeAgentTruth(data);
-  renderTruthIndicator(truth);
-  // 归档态覆盖 status pill
-  if (isArchived) {
+  // 归档态 UI：只反映项目文件事实。
+  if (Boolean(project.archived_at)) {
     refs.status.className = "pill ghost";
     const adot = document.createElement("span");
     adot.className = "pdot";
     refs.status.replaceChildren(adot, document.createTextNode("已归档"));
     if (refs.topbar) refs.topbar.classList.remove("is-busy");
-  }
-  renderTopbarProgress(truth, Number(data.summary?.activityProgressPercent ?? 0));
-  ensureRefreshLoop(
-    truth.refresh
-    || summary.projectStatus === "running"
-    || Boolean(liveBlock && !liveBlock.done)
-    || data.chatHistory?.busy === true
-  );
-
-  renderProjectWorkbench(data);
-  renderRecoveryBanner(data);
-  threadRenderer.syncThread(data, firstLoad);
-  threadRenderer.syncFailureCards(data);
-
-  // 同步 chat 对话历史（含 pendingAction 确认卡片）
-  if (data.chatHistory && data.chatHistory.ok !== false) {
-    threadRenderer.syncChatThread(data.chatHistory);
-  }
-  // S4 Task 11: 空状态建议卡（有项目但无聊天消息时显示）
-  if (firstLoad && (data.chatHistory?.messages?.length ?? 0) === 0) {
-    threadRenderer.appendSuggestionCards(data);
+  } else {
+    refs.status.className = "pill ghost";
+    const adot = document.createElement("span");
+    adot.className = "pdot";
+    refs.status.replaceChildren(adot, document.createTextNode("待命"));
   }
 
-  if (refs.activityStrip) {
-    const activity = deriveActivity(data);
-    renderActivityStrip(refs.activityStrip, activity, {
-      privacy: refs.privacyToggle?.checked,
-      onClickCost: () => openDrawerTab('cost'),
-      onClickChapter: () => openDrawerTab('chapters')
-    });
-    motion.updateActivityStrip(refs.activityStrip, previousActivity, activity);
-    previousActivity = activity;
-  }
-
-  if (refs.quickRail) {
-    const lastSeen = {
-      research: getLastSeen(currentProjectRoot, 'research'),
-      reviewer: getLastSeen(currentProjectRoot, 'reviewer')
-    };
-    const badges = deriveBadges(data, currentProjectRoot, lastSeen);
-    const nextBadgeSummary = summarizeBadgesForMotion(badges);
-    const changedBadgeKeys = diffBadgeKeys(previousBadgeSummary, nextBadgeSummary);
-    renderQuickRail(refs.quickRail, badges, { onOpenTab: openDrawerTab, projectRoot: currentProjectRoot });
-    for (const key of changedBadgeKeys) {
-      motion.bumpQuickRailBadge(refs.quickRail.querySelector(`[data-key="${key}"]`));
-    }
-    previousBadgeSummary = nextBadgeSummary;
-  }
-
-  composer.updateModePill();
-  composer.updateStatusPills(data);
-  composer.syncChatBusy(data);
-  renderWriteReadiness(data);
-  renderChapterSuccess(data);
+  renderQuickRailIfPresent();
   refreshDrawerIfOpen();
 }
 
-// §4.1: 启动恢复横幅 — 上次崩溃/断电残留检测标记在 recovery_pending 中。
-function renderRecoveryBanner(data) {
-  if (!data.recovery_pending || !refs.thread) return;
-  if (refs.thread.querySelector(".recovery-startup-banner")) return;
-  const banner = document.createElement("div");
-  banner.className = "recovery-startup-banner";
-  const iconSpan = document.createElement("span");
-  iconSpan.className = "recovery-banner-icon";
-  iconSpan.append(icon("bolt", 16));
-  const text = document.createElement("div");
-  text.className = "recovery-banner-text";
-  const strong = document.createElement("strong");
-  strong.textContent = "上次写作被中断";
-  const desc = document.createElement("span");
-  const chapterNo = data.summary?.currentChapterNo ?? "-";
-  const stage = data.summary?.currentStage ?? "-";
-  const stageLabel = translateStage(stage);
-  desc.textContent = stageLabel && stageLabel !== "-"
-    ? `从第 ${chapterNo} 章 · ${stageLabel} 继续？`
-    : `从第 ${chapterNo} 章继续写作？`;
-  text.append(strong, desc);
-  const actions = document.createElement("div");
-  actions.className = "recovery-banner-actions";
-  const retryBtn = document.createElement("button");
-  retryBtn.className = "small-button";
-  retryBtn.textContent = "继续写作";
-  retryBtn.addEventListener("click", () => handleRetry());
-  const statusBtn = document.createElement("button");
-  statusBtn.className = "small-button";
-  statusBtn.textContent = "查看状态";
-  statusBtn.addEventListener("click", () => openDrawerTab("run"));
-  actions.append(retryBtn, statusBtn);
-  banner.append(iconSpan, text, actions);
-  refs.thread.prepend(banner);
+function renderQuickRailIfPresent() {
+  if (refs.quickRail) {
+    renderQuickRail(refs.quickRail, { onOpenTab: openDrawerTab });
+  }
 }
 
-// 抽屉打开时重渲并保留滚动位置；renderDashboard 在 hasProject 和 noProject 两条分支都需要。
+// 抽屉打开时重渲并保留滚动位置。
 function refreshDrawerIfOpen() {
   if (!refs.drawer.classList.contains("show")) return;
   const top = refs.drawerBody.scrollTop;
@@ -1036,21 +486,6 @@ function renderError(error) {
   refs.projectOpenStatus.style.display = "block";
   refs.projectOpenStatus.textContent = error.message;
   setStatus("blocked");
-  ensureRefreshLoop(true);
-}
-
-function handleQuick(label) {
-  if (label === "新建小说") return openCreateModal();
-  if (label.includes("查看") && label.includes("正文")) {
-    if (liveBlock?.chapter) return openReader(liveBlock.chapter);
-    const last = [...(lastDashboard?.chapters ?? [])].reverse().find((c) => (c.actual_words ?? 0) > 0);
-    if (last) return openReader(last.chapter_no);
-    return showToast("还没有可阅读的章节。", "info");
-  }
-  if (label.includes("运行面板")) return openDrawer("run");
-  // 其余快捷项作为指令直接发送。
-  refs.composerInput.value = label;
-  void submitComposer();
 }
 
 async function forgetProject(projectRoot) {
@@ -1058,7 +493,6 @@ async function forgetProject(projectRoot) {
   try {
     const result = await postJson("/api/projects/forget", { projectRoot });
     showToast("已从列表移除。", "success");
-    // 切换/取消选择：commitProjectSwitch 已经处理 generation + currentProjectRoot + 清空。
     const nextRoot = result.selectedProjectRoot ?? null;
     commitProjectSwitch(nextRoot);
     await loadAll();
@@ -1074,7 +508,6 @@ async function openProject(projectRoot) {
   refs.projectOpenStatus.textContent = "正在打开...";
   try {
     await postJson("/api/projects/open", { projectRoot });
-    // 切换项目：提升 generation、清空临时状态；让 loadDashboard 决定 currentProjectRoot。
     commitProjectSwitch(projectRoot);
     refs.projectOpenStatus.style.display = "none";
     refs.projectOpenStatus.textContent = "";
@@ -1164,12 +597,10 @@ async function initProject(rawPath) {
       target_words_per_chapter: Math.max(minWords, 3300),
       output_format: "md"
     });
-    // 切换项目：提升 generation、清空临时状态。
     commitProjectSwitch(projectRoot);
     closeCreateModal();
     resetCreateForm();
     showToast("小说已创建并打开。", "success");
-    // 套用上次的权限模式（含 YOLO）—— 在 loadAll 前做，mode pill 首次渲染即反映。
     await applyDefaultTierForNewProject(projectRoot);
     await loadAll();
   } catch (error) {
@@ -1181,7 +612,6 @@ async function initProject(rawPath) {
 }
 
 // 新建项目后套用全局记住的权限档位；默认档（confirm）无需套用。
-// 套用失败不阻塞创建流程，用户可在命令栏手动切换。
 async function applyDefaultTierForNewProject(projectRoot) {
   const tierId = loadDefaultTier();
   if (!tierId || tierId === "confirm") return;
@@ -1197,78 +627,28 @@ async function applyDefaultTierForNewProject(projectRoot) {
   }
 }
 
-function setStatus(status, stage = null) {
-  const phase = agentPhaseLabel(status, stage);
+function setStatus(status) {
   refs.status.className = `pill ${statusClass(status)}`;
   refs.status.replaceChildren();
   const dot = document.createElement("span");
   dot.className = "pdot";
-  refs.status.append(dot, document.createTextNode(phase));
+  refs.status.append(dot, document.createTextNode(statusText(status)));
   if (refs.topbar) refs.topbar.classList.toggle("is-busy", status === "running" || status === "loading");
 }
 
-globalThis.__WWritingTest = { ...(globalThis.__WWritingTest ?? {}), computeAgentTruth };
-
-function renderTruthIndicator(truth) {
-  refs.status.className = `pill ${truth.className}`;
-  const dot = document.createElement("span");
-  dot.className = "pdot";
-  refs.status.replaceChildren(dot, document.createTextNode(truth.display));
-  refs.status.title = truth.reason ?? "";
-  if (refs.topbar) refs.topbar.classList.toggle("is-busy", truth.className === "running" || truth.className === "cancelling");
-  renderTopbarAction(refs.topbarStop, "停止", false, handleStop, truth.reason);
+function statusClass(status) {
+  if (status === "blocked") return "blocked";
+  if (status === "running") return "running";
+  if (status === "loading") return "ghost";
+  return "ghost";
 }
 
-function renderTopbarAction(button, label, visible, handler, title = "") {
-  if (!button) return;
-  if (button.dataset.bound !== "true") {
-    button.addEventListener("click", () => handler());
-    button.dataset.bound = "true";
-  }
-  button.textContent = label;
-  button.title = title ?? "";
-  button.hidden = !visible;
+function statusText(status) {
+  if (status === "blocked") return "读取失败";
+  if (status === "running") return "运行中";
+  if (status === "loading") return "加载中";
+  return "待命";
 }
-
-function renderTopbarProgress(truth, pct) {
-  if (!refs.topbarProgress || !refs.topbarProgressBar) return;
-  if (pct > 0 && ["running", "slow", "stale"].includes(truth.className)) {
-    refs.topbarProgress.hidden = false;
-    refs.topbarProgressBar.style.width = `${Math.max(0, Math.min(100, pct))}%`;
-    refs.topbarProgress.setAttribute("aria-valuenow", String(Math.round(pct)));
-    refs.topbarProgressLabel.textContent = `本章流程 ${Math.round(pct)}%`;
-  } else {
-    refs.topbarProgress.hidden = true;
-  }
-}
-
-async function handleRetry(taskId = null) {
-  const resolvedTaskId = taskId ?? lastDashboard?.retry_task_id ?? null;
-  try {
-    const result = await postJson("/api/run/retry", resolvedTaskId ? { taskId: resolvedTaskId } : {});
-    showToast(result.message ?? "已从中断处继续。", "success");
-    ensureRefreshLoop(true);
-    await loadDashboard();
-  } catch (error) {
-    showToast(error.message, "error");
-    await loadDashboard();
-  }
-}
-
-async function handleStop() {
-  if (refs.topbarStop) refs.topbarStop.disabled = true;
-  try {
-    const result = await postJson("/api/run/stop", {});
-    showToast(result.message ?? "已请求停止。", "success");
-    ensureRefreshLoop(true);
-    await loadDashboard();
-  } catch (error) {
-    showToast(error.message, "error");
-  } finally {
-    if (refs.topbarStop) refs.topbarStop.disabled = false;
-  }
-}
-
 
 function setCreateStatus(text, kind) {
   refs.createStatus.textContent = text;
@@ -1359,7 +739,6 @@ function readerEmpty(text) {
 }
 
 function closeReader() {
-  removeReaderQuoteBtn();
   closeOverlay(refs.readerScrim);
 }
 
@@ -1455,7 +834,6 @@ function initThemeMode() {
   } catch {
     stored = null;
   }
-  // 未手动选过时跟随系统偏好
   const dark = stored === "dark" || (stored !== "light" && window.matchMedia?.("(prefers-color-scheme: dark)").matches);
   applyThemeState(dark);
   refs.themeToggle?.addEventListener("click", () => {
@@ -1499,7 +877,6 @@ function setPrivacyMode(on) {
   applyPrivacyState(on);
   try {
     window.localStorage.setItem("ww:privacy", on ? "on" : "off");
-    // 首次开启才弹说明；按钮态与模糊效果本身即时可见。
     if (on && window.localStorage.getItem("ww:privacy:hinted") !== "1") {
       window.localStorage.setItem("ww:privacy:hinted", "1");
       showToast("隐私模式已开启：正文已模糊，鼠标悬停可临时查看。", "info");
@@ -1514,17 +891,6 @@ function applyPrivacyState(on) {
   refs.privacyToggle.setAttribute("aria-pressed", on ? "true" : "false");
   refs.privacyToggle.classList.toggle("active", on);
   refs.privacyLabel.textContent = on ? "隐私 · 开" : "隐私";
-}
-
-function ensureRefreshLoop(active) {
-  if (active && !refreshTimer) {
-    refreshTimer = window.setInterval(() => void loadDashboard({ silent: true }), 1800);
-    return;
-  }
-  if (!active && refreshTimer) {
-    window.clearInterval(refreshTimer);
-    refreshTimer = null;
-  }
 }
 
 function showActionError(error) {
@@ -1547,25 +913,14 @@ function showToast(message, type = "info") {
   window.setTimeout(remove, type === "error" ? 5200 : 3200);
 }
 
-// lastAnnounce 已在文件顶部声明；切换项目时由 clearTransientState 清空。
-function announce(msg) {
-  if (refs.threadStatus && msg && msg !== lastAnnounce) {
-    lastAnnounce = msg;
-    refs.threadStatus.textContent = msg;
-  }
-}
-
-
-// 模块体执行完毕（所有 const/let 已离开 TDZ）后再启动；防止首屏渲染触达后置声明导致静默 ReferenceError。
+// 模块体执行完毕（所有 const/let 已离开 TDZ）后再启动。
 initThemeMode();
 initPrivacyMode();
-autoGrowComposer();
-updateSubmitState();
 
-// Quick Rail 初始化
+// Quick Rail 初始化：纯导航。
 if (refs.quickRail) {
   bindQuickRailKeys(refs.quickRail, openDrawerTab);
-  watchLastSeen(() => { if (lastDashboard) renderDashboard(lastDashboard); });
+  renderQuickRail(refs.quickRail, { onOpenTab: openDrawerTab });
 }
 
 // 窄屏折叠逻辑：<1100px 隐藏 Quick Rail，显示折叠按钮

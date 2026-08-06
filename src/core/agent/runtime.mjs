@@ -84,13 +84,18 @@ function sleep(ms) {
 
 export function createAgentRuntime({
   modelGateway = null,
+  // Task 9 接线：composition root 可注入 gatewayFactory(projectRoot) -> gateway，
+  // 让每个项目持有独立的 ModelGateway（per-project CostTracker/cost.json 记账）。
+  // 与 modelGateway 二选一；测试 harness 继续只传 modelGateway。
+  gatewayFactory = null,
   shell = null,
   secrets = [],
   idFactory = randomUUID
 } = {}) {
-  if (!modelGateway || typeof modelGateway.complete !== "function") {
+  if (!modelGateway && typeof gatewayFactory !== "function") {
     throw new TypeError("createProjectAgent 需要注入带 complete(request, { signal }) 的 modelGateway");
   }
+  const resolveGateway = typeof gatewayFactory === "function" ? gatewayFactory : () => modelGateway;
 
   const projects = new Map(); // projectRoot -> project state
 
@@ -120,7 +125,7 @@ export function createAgentRuntime({
         journal,
         tools,
         projectOperations,
-        modelGateway,
+        modelGateway: resolveGateway(key),
         // 当前 Run 的循环控制（一次一个模型/工具循环）
         runId: null,
         controller: null,

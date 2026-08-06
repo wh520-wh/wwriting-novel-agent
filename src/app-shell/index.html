@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>WWriting · 小说智能体</title>
     <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./agent/agent.css" />
   </head>
   <body>
     <div class="app" id="app" data-privacy="off">
@@ -54,13 +55,8 @@
               <span class="pill" id="project-status"><span class="pdot"></span>待命</span>
             </div>
             <div class="topbar-sub" id="topbar-sub">用一句话描述你的故事，应用会持续生成章节并保存到本地。</div>
-            <div class="topbar-progress" id="topbar-progress" role="progressbar" aria-label="本章写作流程" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden>
-              <span class="topbar-progress-label" id="topbar-progress-label">本章流程</span>
-              <div class="topbar-progress-track"><div class="topbar-progress-bar" id="topbar-progress-bar"></div></div>
-            </div>
           </div>
           <div class="topbar-actions">
-            <button class="tbtn topbar-stop" id="topbar-stop" type="button" hidden>停止</button>
             <button class="tbtn" id="privacy-toggle" title="隐私模式：模糊正文，防止旁人窥屏" aria-pressed="false">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg>
               <span id="privacy-label">隐私</span>
@@ -72,112 +68,9 @@
             <button class="tbtn qr-collapsed-btn" id="qr-collapsed" type="button" aria-label="快捷面板" hidden>面板</button>
           </div>
         </header>
-        <div class="activity-strip" id="activity-strip" hidden></div>
-        <section class="project-workbench" id="project-workbench" data-testid="project-workbench" aria-labelledby="workbench-title" hidden>
-          <div class="workbench-head">
-            <div class="workbench-identity">
-              <div class="workbench-cover" id="workbench-cover" role="img" aria-label="未命名小说的作品封面"><span id="workbench-monogram" aria-hidden="true">W</span></div>
-              <div class="workbench-copy">
-                <p class="eyebrow">正在创作</p>
-                <h2 id="workbench-title">未命名小说</h2>
-                <details class="workbench-seed-details">
-                  <summary>故事设定</summary>
-                  <p class="workbench-seed" id="workbench-seed"></p>
-                </details>
-              </div>
-            </div>
-            <button class="card-fold-toggle" id="workbench-fold-toggle" type="button" aria-expanded="true" aria-label="折叠/展开创作卡"><span class="card-fold-chevron">▸</span></button>
-          </div>
-          <div class="workbench-body card-collapse" id="workbench-body">
-            <div class="card-collapse-inner">
-              <div class="workbench-progress" id="workbench-progress" role="progressbar" aria-label="作品章节进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="0 / 0 章">
-                <div class="workbench-progress-head">
-                  <span id="workbench-progress-label">0 / 0 章</span>
-                  <span id="workbench-word-count">0 字</span>
-                </div>
-                <div class="workbench-progress-track"><span id="workbench-progress-fill"></span></div>
-              </div>
-              <div class="workbench-actions" aria-label="当前创作操作">
-                <p class="workbench-status" id="workbench-status"></p>
-                <button id="workbench-primary" type="button"></button>
-                <button id="workbench-read-latest" type="button" hidden>阅读最近一章</button>
-                <button id="workbench-open-chapters" type="button">查看章节</button>
-              </div>
-              <div class="workbench-activity" id="workbench-activity" aria-label="最近创作动态"></div>
-            </div>
-          </div>
-        </section>
 
-        <!-- 准备写作卡 -->
-        <section class="write-readiness creation-card" id="write-readiness" data-creation-tone="ready" aria-labelledby="write-readiness-title" hidden>
-          <div class="write-readiness-head">
-            <div>
-              <p class="eyebrow">准备写作</p>
-              <h2 id="write-readiness-title"></h2>
-            </div>
-            <button class="card-fold-toggle" id="write-readiness-fold-toggle" type="button" aria-expanded="true" aria-label="折叠/展开准备卡"><span class="card-fold-chevron">▸</span></button>
-          </div>
-          <div class="write-readiness-body card-collapse" id="write-readiness-body">
-            <div class="card-collapse-inner">
-              <p id="write-readiness-detail"></p>
-              <div id="write-readiness-meta"></div>
-              <div class="write-readiness-actions creation-card-actions">
-                <button id="write-readiness-primary" class="creation-primary" type="button"></button>
-                <button id="write-readiness-secondary" type="button" hidden></button>
-                <button id="write-readiness-tertiary" type="button" hidden></button>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <!-- 章节完成卡 -->
-        <section class="chapter-success creation-card" id="chapter-success" data-creation-tone="success" aria-labelledby="chapter-success-title" hidden>
-          <div class="card-fold-header" id="chapter-success-fold">
-            <span class="card-fold-summary" id="chapter-success-fold-summary">章节已完成</span>
-            <span class="card-fold-chevron">▸</span>
-          </div>
-          <div class="chapter-success-body" id="chapter-success-body">
-            <div>
-              <p class="eyebrow">章节完成</p>
-              <h2 id="chapter-success-title"></h2>
-              <p id="chapter-success-meta"></p>
-              <p id="chapter-success-review"></p>
-            </div>
-            <div class="chapter-success-actions creation-card-actions">
-              <button id="chapter-success-read" class="creation-primary" type="button">阅读本章</button>
-              <button id="chapter-success-continue" type="button">继续下一章</button>
-            </div>
-          </div>
-        </section>
-
-        <div class="thread-wrap" id="thread-wrap">
-          <div class="thread" id="thread"></div>
-        </div>
-
-        <div class="composer-wrap" id="composer-wrap">
-          <div class="composer" id="composer">
-            <div class="slash" id="slash-menu" role="listbox" aria-label="斜杠命令" hidden></div>
-            <div class="composer-inner">
-              <div class="composer-bar">
-                <div class="composer-left">
-                  <button class="cbar-btn" id="cbar-keys" title="快捷键" aria-label="快捷键速查"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h16M4 12h16M4 16h10M16 16h4M4 8v8h16V8H4z"/></svg></button>
-                  <button class="cbar-pill" id="mode-pill" type="button" aria-haspopup="listbox" aria-expanded="false" title="智能体权限模式">确认后修改</button>
-                  <!-- 模型选择器（status-pills）由 composer.js 动态挂到 mode-pill 之后 -->
-                </div>
-                <div class="composer-center">
-                  <textarea id="composer-input" rows="1" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="slash-menu" aria-haspopup="listbox" aria-label="给智能体下达指令" placeholder="输入指令，或 /write 开始写作" spellcheck="false"></textarea>
-                </div>
-                <div class="composer-right">
-                  <button class="send" id="composer-submit" disabled aria-label="发送"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M6 11l6-6 6 6"/></svg></button>
-                </div>
-              </div>
-              <details class="composer-hint" id="composer-hint">
-                <summary class="cbar-hint">Enter 发送 · Shift+Enter 换行 · ? 快捷键</summary>
-                <div class="composer-hint-examples">试试：开始写作 · 写下一章 · 调整方向 · 输入 / 唤起命令</div>
-              </details>
-            </div>
-          </div>
-        </div>
+        <!-- 唯一对话挂载点：AgentSurface（对话 + 当前 Run + 排队 + composer） -->
+        <div class="main-agent" id="agent-surface"></div>
         </div>
 
         <nav class="quick-rail" id="quick-rail" aria-label="快捷面板"></nav>
@@ -191,11 +84,9 @@
           <div class="drawer-tabs" id="drawer-tabs" role="tablist">
             <button class="dtab on" data-dtab="chapters" type="button" role="tab" aria-selected="true">章节</button>
             <button class="dtab" data-dtab="model" type="button" role="tab" aria-selected="false">模型</button>
-            <button class="dtab" data-dtab="run" type="button" role="tab" aria-selected="false">运行</button>
             <button class="dtab" data-dtab="skills" type="button" role="tab" aria-selected="false">技能</button>
             <button class="dtab" data-dtab="research" type="button" role="tab" aria-selected="false">资料</button>
             <button class="dtab" data-dtab="cost" type="button" role="tab" aria-selected="false">成本</button>
-            <button class="dtab" data-dtab="reviewer" type="button" role="tab" aria-selected="false">审查</button>
           </div>
           <div class="drawer-body" id="drawer-body"></div>
         </aside>
@@ -278,8 +169,8 @@
           <dl class="shortcuts-list">
             <dt>Enter</dt><dd>发送指令</dd>
             <dt>Shift + Enter</dt><dd>换行</dd>
-            <dt>/</dt><dd>唤起斜杠命令菜单</dd>
             <dt>Ctrl + .</dt><dd>隐私模式开关</dd>
+            <dt>Alt + 1–4</dt><dd>快捷面板（章节/技能/资料/成本）</dd>
             <dt>← / →</dt><dd>阅读器内翻章</dd>
             <dt>Esc</dt><dd>关闭弹窗 / 抽屉</dd>
             <dt>?</dt><dd>打开本速查</dd>
@@ -288,7 +179,6 @@
         </div>
       </div>
 
-      <div id="thread-status" class="sr-only" role="status" aria-live="polite"></div>
       <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
     </div>
     <script src="./app.js" type="module"></script>

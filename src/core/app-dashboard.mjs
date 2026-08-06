@@ -2,15 +2,15 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { loadConfigLayers } from "./config-runtime.mjs";
 import { readEvents } from "./event-log.mjs";
-import { readFailures } from "./failures-store.mjs";
 import { isPathInside, pathExists, readJson, safeJoin } from "./fs-utils.mjs";
 import { loadProject } from "./project-store.mjs";
 import { inspectChapterArtifact } from "./chapter-artifact.mjs";
 import { listProjectSkills } from "./skill-runtime.mjs";
-import { readRecentToolEvents, makeToolEventsCache } from "./recent-tool-events.mjs";
 
-const toolEventsCache = makeToolEventsCache();
-
+// 项目仪表盘（统一 Agent 内核计划 Task 9 重写）。
+// 只返回项目/章节/成本/设置/技能/资料等静态与领域事实；不再读取旧运行态文件，
+// 不再返回旧审查报告、故障卡、recent tool events 或运行进度推断（运行状态由
+// AgentSurface 消费 ProjectAgent snapshot；dashboard 不推测 Agent 是否繁忙）。
 export async function loadDashboardData(workspaceRoot, options = {}) {
   const workspace = path.resolve(workspaceRoot);
   const projectRoot = options.projectRoot
@@ -28,14 +28,12 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
     };
   }
 
-  const [project, state, chapterIndex, events, cost, cache, review] = await Promise.all([
+  const [project, chapterIndex, events, cost, cache] = await Promise.all([
     loadProject(projectRoot),
-    readJson(safeJoin(projectRoot, "agent_state.json"), {}),
     readJson(safeJoin(projectRoot, "memory", "chapter_index.json"), { chapters: [] }),
     readEvents(projectRoot, { limit: 80 }),
     readJson(safeJoin(projectRoot, "cost.json"), null),
-    readJson(safeJoin(projectRoot, "cache_report.json"), null),
-    readJson(safeJoin(projectRoot, "review", "reviewer_report.json"), null)
+    readJson(safeJoin(projectRoot, "cache_report.json"), null)
   ]);
   const config = await loadConfigLayers(projectRoot, project);
   const effectiveProject = {
@@ -44,7 +42,6 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
     enabled_skills: config.effective.enabled_skills ?? project.enabled_skills ?? []
   };
   const [skills, sources] = await Promise.all([readSkills(projectRoot, effectiveProject), readSources(projectRoot)]);
-  const failures = readFailures(projectRoot);
 
   const indexedChapters = chapterIndex.chapters ?? [];
   const chapters = await Promise.all(
@@ -61,13 +58,6 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
   const completedChapters = chapters.filter((chapter) => chapter.artifact.state === "committed").length;
   const targetChapters = Number(project.target_chapters ?? chapters.length ?? 0);
   const progressPercent = targetChapters > 0 ? Math.round((completedChapters / targetChapters) * 100) : 0;
-  const activityProgressPercent = computeActivityProgressPercent({
-    completedChapters,
-    targetChapters,
-    currentStage: state.current_stage,
-    projectStatus: state.project_status
-  });
-  const latestCheckpoint = state.last_checkpoint_id ?? null;
 
   return {
     ok: true,
@@ -90,19 +80,11 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
       budget_config: config.effective.budget_config,
       research_config: config.effective.research_config
     },
-    state,
     summary: {
       completedChapters,
       targetChapters,
       progressPercent,
-      activityProgressPercent,
       totalWords,
-      currentChapterNo: state.current_chapter_no ?? null,
-      currentStage: state.current_stage ?? null,
-      projectStatus: state.project_status ?? null,
-      latestCheckpoint,
-      modelCalls: state.active_budget?.model_calls ?? cost?.calls ?? 0,
-      maxModelCalls: config.effective.budget_config?.max_model_calls ?? state.active_budget?.max_model_calls ?? null,
       totalTokens: cost?.totalTokens ?? 0,
       estimatedCost: cost?.estimatedCost ?? 0,
       costAvailable: cost?.costAvailable ?? false,
@@ -119,13 +101,7 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
       layers: config.layers
     },
     skills,
-    sources,
-    review,
-    recent_tool_events: readRecentToolEvents(projectRoot, { cache: toolEventsCache }),
-    failures: [
-      ...failures.filter(f => !f.resolution).slice(-10),
-      ...failures.filter(f => f.resolution).slice(-5)
-    ]
+    sources
   };
 }
 
@@ -165,20 +141,6 @@ function buildCacheSummary(cache) {
     cachedTokens: Number(last.cachedTokens ?? 0),
     explanation
   };
-}
-
-function computeActivityProgressPercent({ completedChapters, targetChapters, currentStage, projectStatus }) {
-  if (targetChapters <= 0) {
-    return 0;
-  }
-  if (projectStatus === "completed") {
-    return 100;
-  }
-  const stageOrder = ["queued", "planning", "planned", "drafting", "reviewing", "needs_revision", "revising", "finalizing", "summarizing"];
-  const stageIndex = Math.max(0, stageOrder.indexOf(currentStage));
-  const stageFraction = projectStatus === "running" ? (stageIndex + 1) / (stageOrder.length + 1) : 0;
-  const percent = Math.round(((completedChapters + stageFraction) / targetChapters) * 100);
-  return Math.max(projectStatus === "running" ? 4 : 0, Math.min(percent, 99));
 }
 
 export async function readChapterContent(projectRoot, chapterNo) {

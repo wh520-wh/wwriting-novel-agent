@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { readEvents } from "../src/core/event-log.mjs";
 import { loadConfigLayers } from "../src/core/config-runtime.mjs";
-import { createProject, loadProject, loadState } from "../src/core/project-store.mjs";
+import { createProject, loadProject } from "../src/core/project-store.mjs";
 import {
   normalizeSettingsPatch,
   saveModelSettingsTransaction,
@@ -45,9 +45,7 @@ test("updateProjectSettings writes model, permissions, budget, and research conf
   assert.equal(project.active_model.stream, true);
   assert.equal(project.tool_permissions.network_allowed, true);
   assert.equal(project.budget_config.max_model_calls, 99);
-  const state = await loadState(projectRoot);
-  assert.equal(state.active_budget.max_model_calls, 99);
-  assert.equal(state.active_budget.model_calls, 0);
+  // 预算限制只来自有效项目配置（Rule 9：不再同步到任何运行态文件）。
   assert.equal(project.research_config.search_endpoint, "https://search.example.test/api");
   const config = await loadConfigLayers(projectRoot, project);
   assert.equal(config.effective.active_model.model_name, "writer-large");
@@ -80,10 +78,7 @@ test("settings runtime clears optional budget and research fields when inputs ar
   });
 
   const project = await loadProject(projectRoot);
-  const state = await loadState(projectRoot);
   assert.equal(project.budget_config.max_model_calls, undefined);
-  assert.equal(state.active_budget.max_model_calls, undefined);
-  assert.equal(state.active_budget.model_calls, 0);
   assert.equal(project.research_config.search_endpoint, undefined);
   assert.equal(project.research_config.search_api_key_env, undefined);
 });

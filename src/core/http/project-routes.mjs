@@ -20,9 +20,9 @@
 // Task 9 衔接点：
 //   - diagnostics handler 已按计划形状把 agent.snapshot() 结果传给稳定 diagnostics
 //     loader（loadProjectDiagnostics(projectRoot, { agentSnapshot })）。当前 loader
-//     签名仍为单参数、忽略 snapshot（Task 9 才改为消费它并停止读 TaskQueue/旧状态）；
+//     签名仍为单参数、忽略 snapshot（Task 9 才改为消费它并停止读旧运行态）；
 //     本 handler 的传参形状与 Task 9 的 loader 签名一致，无需再改。
-//   - /api/dashboard 只返回领域事实 + 模型档案：旧 handler 的 runJobs/queue/retry/
+//   - /api/dashboard 只返回领域事实 + 模型档案：旧 handler 的批处理/队列/重试/
 //     recovery 字段随 Task 9 的 app-dashboard 重写删除，不再进入新路由。
 import path from "node:path";
 import { existsSync } from "node:fs";

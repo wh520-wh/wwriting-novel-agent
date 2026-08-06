@@ -43,6 +43,9 @@ export async function createProjectAt(projectRoot, options = {}) {
       provider: "mock",
       model_name: "mock-writer"
     },
+    // 统一 Agent 内核计划 Rule 9：project.yaml 保存项目身份、配置与 blueprint_status；
+    // .wwriting/agent/ 由 ProjectAgent 惰性创建，旧运行态文件不再创建。
+    blueprint_status: options.blueprint_status ?? "none",
     stage_overrides: options.stage_overrides ?? {
       enabled: false
     },
@@ -65,23 +68,6 @@ export async function createProjectAt(projectRoot, options = {}) {
     }
   };
   await writeFileAtomic(safeJoin(target, "project.yaml"), serializeSimpleYaml(project));
-  await writeJsonAtomic(safeJoin(target, "agent_state.json"), {
-    schema_version: SCHEMA_VERSION,
-    project_status: "idle",
-    blueprint_status: "none",
-    current_chapter_no: 1,
-    current_stage: "queued",
-    current_segment_no: 0,
-    retry_counts: {},
-    last_checkpoint_id: null,
-    pending_user_confirmation: null,
-    active_budget: {
-      model_calls: 0,
-      max_model_calls: options.max_model_calls ?? null,
-      revision_rounds_by_chapter: {},
-      max_revision_rounds_per_chapter: options.max_revision_rounds_per_chapter ?? null
-    }
-  });
   await writeJsonAtomic(safeJoin(target, "memory", "chapter_index.json"), {
     schema_version: SCHEMA_VERSION,
     chapters: []
@@ -117,9 +103,10 @@ export async function saveProject(projectRoot, project) {
   return writeFileAtomic(safeJoin(projectRoot, "project.yaml"), serializeSimpleYaml(project));
 }
 
-// 章节产物证据（spec §1.4 P2-5 legacy 语义）：chapters/ 目录有章节文件（.md/.txt，过滤系统杂项
-// 如 Thumbs.db/desktop.ini/子目录），或 chapter_index.json 有索引。
-// 用于 loadState 在 agent_state.json 缺失时对 legacy 语义的兜底判定。
+// 章节产物证据（统一 Agent 内核计划 Task 7 legacy 语义）：chapters/ 目录有章节
+// 文件（.md/.txt，过滤系统杂项如 Thumbs.db/desktop.ini/子目录），或
+// chapter_index.json 有索引。仅由一次性只读导入器 agent/legacy-import.mjs 使用，
+// 用于在旧状态缺失 blueprint_status 时按章节证据判定 "legacy"/"none"。
 export async function hasChapterArtifacts(projectRoot) {
   const chaptersDir = safeJoin(projectRoot, "chapters");
   if (await pathExists(chaptersDir)) {
@@ -132,25 +119,6 @@ export async function hasChapterArtifacts(projectRoot) {
   }
   const index = await readJson(safeJoin(projectRoot, "memory", "chapter_index.json"), { chapters: [] });
   return Array.isArray(index?.chapters) && index.chapters.length > 0;
-}
-
-export async function loadState(projectRoot) {
-  const state = await readJson(safeJoin(projectRoot, "agent_state.json"));
-  if (state && (state.blueprint_status === undefined || state.blueprint_status === null)) {
-    // spec §1.4 P2-5：字段缺失（升级前旧项目 / 手写夹具）时按章节证据动态判定：
-    // 有章节产物 → legacy（允许写作），无产物 → none（拒绝）。
-    // structuredClone 后再注入：loadState 是纯读取，调用方 saveState(state) 不会把动态值
-    // 意外落盘（避免 legacy 判定变粘性、与"不写回磁盘"注释矛盾）。
-    // 新建项目（createProjectAt）必有字段 "none"，不会误标。
-    const enriched = structuredClone(state);
-    enriched.blueprint_status = (await hasChapterArtifacts(projectRoot)) ? "legacy" : "none";
-    return enriched;
-  }
-  return state;
-}
-
-export async function saveState(projectRoot, state) {
-  return writeJsonAtomic(safeJoin(projectRoot, "agent_state.json"), state);
 }
 
 export async function loadChapterIndex(projectRoot) {
@@ -189,6 +157,9 @@ export async function upsertChapter(projectRoot, patch) {
   return index.chapters.find((chapter) => chapter.chapter_no === patch.chapter_no);
 }
 
+// checkpoint 文件本体写入（统一 Agent 内核计划 Rule 9：正式章节 checkpoint 继续
+// 保存在项目 checkpoints/，journal 只记录引用；本函数不再同步任何 agent_state
+// 状态文件——运行态与 last_checkpoint_id 归属 journal 与章节索引）。
 export async function writeCheckpoint(projectRoot, payload) {
   const checkpoint_id = payload.checkpoint_id ?? randomUUID();
   const checkpoint = {
@@ -213,8 +184,6 @@ export async function writeCheckpoint(projectRoot, payload) {
     cache_key: payload.cache_key ?? null,
     skill_hooks: payload.skill_hooks ?? [],
     skill_gate_results: payload.skill_gate_results ?? [],
-    // transcript 备份：写作 agent 循环消息链序列化（对齐 checkpointPayload 的 transcript 字段），
-    // 成功完成时由 draftNextSegment/reviseChapter 写入；5 轮约 30KB，可接受。
     transcript: payload.transcript ?? null,
     tool_calls: payload.tool_calls ?? [],
     tool_results: payload.tool_results ?? [],
@@ -224,9 +193,6 @@ export async function writeCheckpoint(projectRoot, payload) {
   };
   const targetPath = safeJoin(projectRoot, "checkpoints", `${checkpoint_id}.json`);
   await writeJsonAtomic(targetPath, checkpoint);
-  const state = await loadState(projectRoot);
-  state.last_checkpoint_id = checkpoint_id;
-  await saveState(projectRoot, state);
   await appendEvent(projectRoot, {
     type: "checkpoint_written",
     project_id: payload.project_id,

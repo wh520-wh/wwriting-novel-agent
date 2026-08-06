@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import { pathExists, safeJoin } from "./fs-utils.mjs";
-import { on, CORE_EVENTS } from "./event-bus.mjs";
-import { emit } from "./run-events-bus.mjs";
 
+// 项目领域审计日志（run_log.jsonl）：只记录章节提交、蓝图提交、导出、资料写入等
+// 项目领域事实。统一 Agent 内核计划 Rule 9：不再订阅全局 event-bus，也不向
+// run-events-bus 广播——ProjectAgent journal（/api/agent/snapshot + /api/project/
+// events）是唯一的运行时 SSE 事件源，本模块不再是第二任务状态。
 export async function appendEvent(projectRoot, event) {
   const entry = {
     event_id: randomUUID(),
@@ -17,9 +19,6 @@ export async function appendEvent(projectRoot, event) {
     type: event.type
   };
   await fs.appendFile(safeJoin(projectRoot, "run_log.jsonl"), `${JSON.stringify(entry)}\n`, "utf8");
-  // 运行事件内存总线广播：SSE 端点经 subscribe 订阅，看到的与 run_log.jsonl 事件日志一致。
-  // 无订阅者时 emit 静默丢弃（run 期间前端必然订阅，未订阅即无人在看）。
-  emit(projectRoot, entry);
   return entry;
 }
 
@@ -106,32 +105,3 @@ export async function readEvents(projectRoot, options = {}) {
 export async function tailEvents(projectRoot, n) {
   return readEvents(projectRoot, { limit: n });
 }
-
-on(CORE_EVENTS.TaskFailed, (payload) => {
-  if (!payload || !payload.projectRoot) return;
-  const error = payload.error;
-  // Fire-and-forget: don't block the emit caller on a disk write.
-  // Errors are logged by the bus's Promise.allSettled path.
-  void appendEvent(payload.projectRoot, {
-    type: "task-failed",
-    severity: "error",
-    message: error?.message ?? "task failed",
-    data: {
-      taskId: payload.taskId,
-      stage: payload.options?.stage ?? null,
-      error: error ? String(error.message || error) : undefined
-    }
-  });
-});
-
-on(CORE_EVENTS.ChapterWritten, (payload) => {
-  if (!payload || !payload.projectRoot) return;
-  void appendEvent(payload.projectRoot, {
-    type: "chapter-written",
-    message: "chapter written",
-    data: {
-      path: payload.path,
-      chapterId: payload.chapterId
-    }
-  });
-});

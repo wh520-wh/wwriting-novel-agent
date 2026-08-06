@@ -1,5 +1,5 @@
 import { appendEvent } from "./event-log.mjs";
-import { loadProject, loadState, saveProject, saveState } from "./project-store.mjs";
+import { loadProject, saveProject } from "./project-store.mjs";
 import {
   applyLocalSecretsToEnv,
   loadLocalSecrets,
@@ -28,8 +28,6 @@ export async function updateProjectSettings(projectRoot, patch = {}) {
   const normalized = normalizeSettingsPatch(patch);
   const next = mergeProjectSettings(project, normalized);
   await saveProject(projectRoot, next);
-  await syncBudgetConfigToState(projectRoot, normalized.budget_config);
-  await maybeReopenCompletedProject(projectRoot, next, normalized.project_profile);
   await appendEvent(projectRoot, {
     type: "project_settings_updated",
     project_id: project.project_id,
@@ -153,55 +151,9 @@ export async function saveModelSettingsTransaction({
   };
 }
 
-async function syncBudgetConfigToState(projectRoot, budgetConfig) {
-  if (budgetConfig === undefined) {
-    return;
-  }
-  const state = await loadState(projectRoot);
-  const budget = {
-    model_calls: 0,
-    revision_rounds_by_chapter: {},
-    ...(state.active_budget ?? {})
-  };
-  for (const key of ["max_model_calls", "max_revision_rounds_per_chapter", "max_cost", "max_total_tokens"]) {
-    if (budgetConfig[key] === undefined) {
-      continue;
-    }
-    if (budgetConfig[key] === null) {
-      delete budget[key];
-    } else {
-      budget[key] = budgetConfig[key];
-    }
-  }
-  state.active_budget = budget;
-  await saveState(projectRoot, state);
-}
-
-async function maybeReopenCompletedProject(projectRoot, project, profile) {
-  if (!profile?.target_chapters) {
-    return;
-  }
-  const state = await loadState(projectRoot);
-  if (state.project_status !== "completed") {
-    return;
-  }
-  if ((state.current_chapter_no ?? 1) > project.target_chapters) {
-    return;
-  }
-  await saveState(projectRoot, {
-    ...state,
-    project_status: "idle",
-    current_stage: "queued",
-    stage_entered_at: new Date().toISOString()
-  });
-  await appendEvent(projectRoot, {
-    type: "project_reopened",
-    project_id: project.project_id,
-    chapter_no: state.current_chapter_no,
-    stage: "queued",
-    message: `目标章节数提高到 ${project.target_chapters}，项目可以继续写作。`
-  });
-}
+// 预算限制只来自有效项目配置（project.yaml.budget_config）；不再同步到任何
+// agent_state 运行态文件（统一 Agent 内核计划 Rule 9：本次 Run 的调用量在
+// journal，跨 Run 成本累计由 cost.json 负责）。
 
 export function normalizeSettingsPatch(patch = {}) {
   if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
