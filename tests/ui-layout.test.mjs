@@ -2,8 +2,8 @@
 //
 // 保留的布局基线：
 //   - 共享 900px 内容列：AgentSurface 对话与 composer 使用 --content-column（agent.css）；
-//   - 模型菜单视口钳制 min(420px, calc(100vw - 32px)) + 16px 安全区（agent.css）；
-//   - 设置弹窗保留 YOLO 档（红色）与权限分区；
+//   - composer 菜单从触发器向上浮出，并保留 16px 视口安全区（agent.css）；
+//   - 设置弹窗只暴露普通作者真正需要的模型、写作和项目管理；
 //   - 主列结构：单一对话挂载点、导航、设置、阅读器、确定性工具；
 //   - 旧对话/任务卡/准备卡结构与样式不得残留。
 import assert from "node:assert/strict";
@@ -36,12 +36,13 @@ test("共享内容列：AgentSurface 对话与 composer 使用同一 900px 列",
   );
 });
 
-test("模型菜单宽度受内容和视口共同约束（16px 视口安全区）", () => {
+test("composer 菜单锚定触发器向上浮出，并受视口约束", () => {
   assert.match(
     agentCssSource,
-    /width:\s*min\(420px,\s*calc\(100vw - 32px\)\)/u,
-    "模型菜单宽度应为 min(420px, 100vw - 32px)"
+    /\.agent-composer-popover\s*\{[^}]*bottom:\s*calc\(100% \+ 7px\)[^}]*max-width:\s*min\(360px,\s*calc\(100vw - 32px\)\)/u,
+    "菜单应从 composer 向上浮出并保留 16px 视口安全区"
   );
+  assert.match(agentCssSource, /transform-origin:\s*bottom left/u, "菜单动效应锚定触发按钮");
   assert.match(agentCssSource, /overflow-wrap:\s*anywhere/u, "模型名称应允许任意位置换行");
 });
 
@@ -76,9 +77,14 @@ test("app.js 不再维护 Agent 状态与业务正则", () => {
   );
 });
 
-test("设置弹窗保留 YOLO 档（权限与确认分区）", () => {
-  assert.match(settingsSource, /tier\.id === "yolo"/, "设置弹窗权限分区应保留 yolo 处理");
-  assert.match(cssSource, /\.spd-radio-option--yolo/, "设置弹窗 yolo 选项样式应保留");
+test("设置弹窗不暴露旧架构和专家配置入口", () => {
+  const sections = settingsSource.match(/const SETTINGS_SECTIONS = \[([\s\S]*?)\];/u)?.[1] ?? "";
+  assert.match(sections, /id:\s*"model"/u);
+  assert.match(sections, /id:\s*"writing"/u);
+  assert.match(sections, /id:\s*"danger"/u);
+  assert.doesNotMatch(sections, /gates|research|permissions|质量门禁|联网搜索|权限与确认/u);
+  assert.doesNotMatch(settingsSource, /预算上限|成本上限|token 总量上限|写作温度|联网搜索\/抓取权限/u);
+  assert.doesNotMatch(cssSource, /\.spd-radio-(?:group|option|tx|warn)/u, "已删除的权限表单样式不应残留");
 });
 
 test("样式基线：隐私模式、reduced-motion 与窗口拖拽安全区", () => {
@@ -86,4 +92,64 @@ test("样式基线：隐私模式、reduced-motion 与窗口拖拽安全区", ()
   assert.ok(cssSource.includes("prefers-reduced-motion"), "reduced-motion 应保留");
   assert.ok(cssSource.includes("--window-control-space"), "Electron 窗口控制空间变量应保留");
   assert.ok(cssSource.includes("--rail"), "rail 变量应保留");
+});
+
+test("对话控制面提供即时反馈、清晰材料层与完整无障碍降级", () => {
+  assert.match(
+    cssSource,
+    /h1, h2\s*\{[^}]*font-family:\s*var\(--sans\)/u,
+    "应用 UI 标题应使用系统无衬线字体"
+  );
+  assert.match(
+    cssSource,
+    /:where\(button,[^}]*:active\s*\{[^}]*transform:\s*scale\(/u,
+    "主要交互控件应在按下时立即提供物理反馈"
+  );
+  assert.match(
+    agentCssSource,
+    /\.agent-composer-shell\s*\{[^}]*border-radius:\s*8px[^}]*backdrop-filter:[^}]*box-shadow:/u,
+    "composer 应是带有层次感的 8px 操作材料层"
+  );
+  assert.match(
+    agentCssSource,
+    /\.agent-slash-menu\s*\{[^}]*transform-origin:\s*bottom left/u,
+    "斜杠菜单应从 composer 的触发位置出现"
+  );
+  assert.ok(cssSource.includes("prefers-reduced-transparency"), "全局样式应支持减少透明度");
+  assert.ok(cssSource.includes("prefers-contrast: more"), "全局样式应支持增强对比度");
+  assert.ok(agentCssSource.includes("prefers-reduced-transparency"), "AgentSurface 应支持减少透明度");
+  assert.ok(agentCssSource.includes("prefers-contrast: more"), "AgentSurface 应支持增强对比度");
+  assert.match(
+    agentCssSource,
+    /\.agent-message--assistant \.agent-message-text\s*\{[^}]*background:\s*transparent;[^}]*border:\s*0;/u,
+    "Agent 回复应继续保持无框正文"
+  );
+});
+
+test("次级操作融入背景，消息层级不依赖成排胶囊按钮", () => {
+  assert.match(
+    cssSource,
+    /\.new-btn\s*\{[^}]*background:\s*transparent;[^}]*border:\s*1px solid transparent;/u,
+    "新建入口应表现为侧栏行，而不是独立实心按钮"
+  );
+  assert.match(
+    cssSource,
+    /\.tbtn\s*\{[^}]*border:\s*1px solid transparent;\s*background:\s*transparent;/u,
+    "顶栏次级操作应默认融入背景"
+  );
+  assert.match(
+    agentCssSource,
+    /--agent-user-bg:\s*#f2f4f3;/u,
+    "用户消息应使用安静的浅中性表面"
+  );
+  assert.match(
+    agentCssSource,
+    /\.agent-stop-btn,[\s\S]*?\.agent-promote\s*\{[^}]*background:\s*transparent;/u,
+    "停止、重试和立即应是无常驻外框的行内操作"
+  );
+  assert.match(
+    agentCssSource,
+    /\.agent-send\s*\{[^}]*background:\s*var\(--agent-send-bg\)/u,
+    "发送按钮应保持独立、清楚的主操作层级"
+  );
 });

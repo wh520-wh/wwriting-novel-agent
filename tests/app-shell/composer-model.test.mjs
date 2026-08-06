@@ -1,8 +1,7 @@
-// 模型菜单视口钳制基线（统一 Agent 内核计划 Task 9 改写）。
+// Composer 模型菜单视口钳制基线。
 //
-// 旧 composer 的模型菜单已随 composer.js 删除；模型菜单视口钳制（Task 11 布局
-// 基线）由 agent.css 承担（agent-surface 私有模型菜单）。本测试断言该基线
-// 在 agent.css 中完整保留：宽度钳制、16px 视口安全区、长名称任意换行与 title。
+// 旧 .model-popover 已随 composer.js 删除；模型菜单现在复用 AgentSurface 的统一
+// 向上弹出菜单。本测试冻结统一菜单的视口安全区、模型菜单宽度和长名称行为。
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -21,12 +20,12 @@ function ruleBlock(selector) {
 test("模型菜单宽度受内容和视口共同约束（Task 11 基线）", () => {
   assert.match(
     css,
-    /width:\s*min\(420px,\s*calc\(100vw - 32px\)\)/u,
-    "模型菜单宽度应为 min(420px, 100vw - 32px)"
+    /\.agent-composer-menu--model \.agent-composer-popover\s*\{[^}]*width:\s*min\(320px,\s*calc\(100vw - 32px\)\)/u,
+    "模型菜单宽度应为 min(320px, 100vw - 32px)"
   );
   assert.match(
     css,
-    /max-width:\s*calc\(100vw - 32px\)/u,
+    /\.agent-composer-popover\s*\{[^}]*max-width:\s*min\(360px,\s*calc\(100vw - 32px\)\)/u,
     "模型菜单最大宽度应保证左右各 16px 视口安全区"
   );
 });
@@ -39,15 +38,16 @@ test("模型菜单长名称任意位置换行（不溢出）", () => {
   );
   assert.match(
     css,
-    /white-space:\s*normal/u,
-    "模型名称应允许换行"
+    /\.agent-composer-menu--model \.agent-composer-menu-value\s*\{[^}]*max-width:\s*170px/u,
+    "折叠态模型名称应稳定截断，不挤压其他 composer 控件"
   );
 });
 
-test("模型菜单样式块存在且属于 AgentSurface 私有作用域", () => {
-  const block = ruleBlock(".agent-surface .model-popover");
-  assert.ok(block.length > 0, ".agent-surface .model-popover 规则块应存在");
-  assert.match(block, /min\(420px,\s*calc\(100vw - 32px\)\)/u, "宽度钳制应落在该规则块内");
+test("模型菜单复用 AgentSurface 统一向上弹出菜单", () => {
+  const block = ruleBlock(".agent-composer-popover");
+  assert.ok(block.length > 0, ".agent-composer-popover 规则块应存在");
+  assert.match(block, /bottom:\s*calc\(100% \+ 7px\)/u, "菜单应向上展开");
+  assert.doesNotMatch(css, /\.model-popover|\.mode-popover/u, "不得恢复旧的两套菜单实现");
 });
 
 test("旧 composer 模型菜单实现已删除，不残留", async () => {

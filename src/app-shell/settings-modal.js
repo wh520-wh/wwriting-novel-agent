@@ -1,10 +1,8 @@
 import { icon } from "./icons.js";
-import { compactObject, isEnvironmentVariableName, resolveModelEndpoint } from "./utils.js";
+import { compactObject, resolveModelEndpoint } from "./utils.js";
 import { getJson, postJson } from "./api-client.js";
 import { motion } from "./motion-runtime.js";
-import { PERMISSION_TIERS, detectPermissionTier } from "./permission-tiers.mjs";
 import { formatConnectionStatus, submitModelConnectionTest } from "./settings-connection.mjs";
-import { fillOfficialPricing } from "../shared/official-pricing.mjs";
 
 // Re-export so consumers that already `import { ... } from "./settings-modal.js"`
 // continue to work. The pure helpers themselves live in ./settings-connection.mjs
@@ -26,10 +24,7 @@ const SETTINGS_PROVIDERS = [
 const SETTINGS_SECTIONS = [
   { id: "model", label: "模型与密钥", icon: "settings", ready: true },
   { id: "writing", label: "写作参数", icon: "compose", ready: true },
-  { id: "gates", label: "质量门禁", icon: "check", ready: true },
-  { id: "permissions", label: "权限与确认", icon: "help", ready: true },
-  { id: "research", label: "联网搜索", icon: "search", ready: true },
-  { id: "danger", label: "危险区", icon: "bolt", ready: true }
+  { id: "danger", label: "项目管理", icon: "folder", ready: true }
 ];
 
 
@@ -61,11 +56,8 @@ export function createSettingsModal(ctx, options = {}) {
   let saveSequence = 0;
   // Single in-flight AbortController per modal so closing/switching cancels cleanly.
   let connectionAbortController = null;
-  // Preserve the API Key the user is currently typing when switching providers,
-  // as long as the env name stays the same. Avoids carrying secrets across
-  // different providers (different api_key_env).
-  let lastTypedApiKey = "";
-  let lastTypedApiKeyEnv = "";
+  // 密钥槽是供应商实现细节，不暴露给普通用户；预设与已保存模型在此保留其槽名。
+  let currentApiKeyEnv = PROVIDER_PRESETS.deepseek.apiKeyEnv;
   // 「当前已生效模型」快照（模型切换确认的基线）：打开设置时从项目/全局默认捕获。
   // 模型变更比较只含 model_name 与 base_url——API Key/环境变量变更是凭据修复，
   // 不改变文风语义，不需要确认。
@@ -186,33 +178,12 @@ export function createSettingsModal(ctx, options = {}) {
       ctx.refs.settingsSave.textContent = "保存设置";
       return;
     }
-    if (settingsSection === "gates") {
-      renderGatesSection();
-      ctx.refs.settingsSave.disabled = false;
-      ctx.refs.settingsSave.textContent = "保存设置";
-      return;
-    }
-    if (settingsSection === "permissions") {
-      renderPermissionsSection();
-      ctx.refs.settingsSave.disabled = false;
-      ctx.refs.settingsSave.textContent = "保存设置";
-      return;
-    }
-    if (settingsSection === "research") {
-      renderResearchSection();
-      ctx.refs.settingsSave.disabled = false;
-      ctx.refs.settingsSave.textContent = "保存设置";
-      return;
-    }
     if (settingsSection === "danger") {
       renderDangerSection();
-      ctx.refs.settingsSave.disabled = false;
-      ctx.refs.settingsSave.textContent = "保存设置";
+      ctx.refs.settingsSave.disabled = true;
+      ctx.refs.settingsSave.textContent = "无需保存";
       return;
     }
-    renderStubSection(settingsSection);
-    ctx.refs.settingsSave.disabled = true;
-    ctx.refs.settingsSave.textContent = "保存设置";
   }
 
   function renderModelSection() {
@@ -282,193 +253,6 @@ export function createSettingsModal(ctx, options = {}) {
     );
   }
 
-  function renderGatesSection() {
-    const dashboard = ctx.getDashboard();
-    const project = dashboard?.project ?? {};
-    const memoryExtraction = project.memory_extraction ?? {};
-    const factCheck = project.fact_check ?? {};
-    ctx.refs.settingsDetail.replaceChildren();
-
-    const head = document.createElement("header");
-    head.className = "spd-head";
-    const ic = document.createElement("span");
-    ic.className = "spd-av lg";
-    ic.append(icon("check", 16));
-    const h3 = document.createElement("h3");
-    h3.textContent = "质量门禁";
-    head.append(ic, h3);
-    ctx.refs.settingsDetail.append(head);
-
-    const intro = document.createElement("p");
-    intro.className = "spd-hint";
-    intro.textContent = "本地门禁默认全开；这里可以关掉记忆提取 / 事实核对，或让事实核对变成硬门禁。";
-    ctx.refs.settingsDetail.append(intro);
-
-    settingsFields.memoryExtractionEnabled = settingToggle("启用章节记忆抽取（每章自动落设定 / 时间线）", memoryExtraction.enabled !== false);
-
-    settingsFields.factCheckEnabled = settingToggle("启用事实核对（基于既有设定比对新章节）", factCheck.enabled !== false);
-    settingsFields.factCheckHard = settingToggle("事实核对硬模式：发现设定矛盾直接打回修订", factCheck.hard === true);
-    const factCheckHint = document.createElement("div");
-    factCheckHint.className = "spd-hint";
-    factCheckHint.textContent = "硬模式：发现设定矛盾直接打回修订。";
-    factCheckHint.id = "settings-fact-check-hard-hint";
-
-    // 内建只读门禁占位
-    const titleGateRow = document.createElement("div");
-    titleGateRow.className = "spd-field spd-toggle";
-    const titleGateLabel = document.createElement("div");
-    titleGateLabel.className = "spd-label";
-    const titleGateSpan = document.createElement("span");
-    titleGateSpan.textContent = "章节标题校验 · 内建始终开启";
-    titleGateLabel.append(titleGateSpan);
-    const titleGatePill = document.createElement("span");
-    titleGatePill.className = "spd-hint mono";
-    titleGatePill.textContent = "always-on";
-    titleGateLabel.append(titleGatePill);
-    titleGateRow.append(titleGateLabel);
-
-    ctx.refs.settingsDetail.append(
-      settingsFields.memoryExtractionEnabled.field,
-      settingsFields.factCheckEnabled.field,
-      settingsFields.factCheckHard.field,
-      factCheckHint,
-      titleGateRow
-    );
-  }
-
-  function renderResearchSection() {
-    const dashboard = ctx.getDashboard();
-    const research = dashboard?.config?.effective?.research_config ?? dashboard?.project?.research_config ?? {};
-    ctx.refs.settingsDetail.replaceChildren();
-
-    const head = document.createElement("header");
-    head.className = "spd-head";
-    const ic = document.createElement("span");
-    ic.className = "spd-av lg";
-    ic.append(icon("search", 16));
-    const h3 = document.createElement("h3");
-    h3.textContent = "联网搜索";
-    head.append(ic, h3);
-    ctx.refs.settingsDetail.append(head);
-
-    const intro = document.createElement("p");
-    intro.className = "spd-hint";
-    intro.textContent = "只在这里登记联网搜索接口地址与密钥变量名。";
-    ctx.refs.settingsDetail.append(intro);
-
-    settingsFields.searchEndpoint = settingField("联网搜索接口地址", "text", {
-      value: research.search_endpoint ?? "",
-      placeholder: "https://api.example.com/search"
-    });
-    settingsFields.searchKeyEnv = settingField("搜索密钥环境变量名", "text", {
-      value: research.search_api_key_env ?? "",
-      placeholder: "SEARCH_API_KEY"
-    });
-
-    ctx.refs.settingsDetail.append(
-      settingsFields.searchEndpoint.field,
-      settingsFields.searchKeyEnv.field
-    );
-  }
-
-  function renderPermissionsSection() {
-    const dashboard = ctx.getDashboard();
-    const project = dashboard?.project ?? {};
-    const projectRoot = ctx.getCurrentProjectRoot();
-    const isArchived = Boolean(project.archived_at);
-    ctx.refs.settingsDetail.replaceChildren();
-
-    const head = document.createElement("header");
-    head.className = "spd-head";
-    const ic = document.createElement("span");
-    ic.className = "spd-av lg";
-    ic.append(icon("help", 16));
-    const h3 = document.createElement("h3");
-    h3.textContent = "权限与确认";
-    head.append(ic, h3);
-    ctx.refs.settingsDetail.append(head);
-
-    const intro = document.createElement("p");
-    intro.className = "spd-hint";
-    intro.textContent = "四档单选：只读 / 确认后修改 / 自动修改 / YOLO。";
-    ctx.refs.settingsDetail.append(intro);
-
-    if (!projectRoot) {
-      const noProj = document.createElement("div");
-      noProj.className = "spd-hint";
-      noProj.textContent = "请先新建或打开一部小说，再设置权限档。";
-      ctx.refs.settingsDetail.append(noProj);
-      settingsFields.permissionTier = null;
-      return;
-    }
-
-    if (isArchived) {
-      const archivedNote = document.createElement("div");
-      archivedNote.className = "spd-hint";
-      archivedNote.textContent = "项目已归档，权限模式不可改（始终为只读）。";
-      ctx.refs.settingsDetail.append(archivedNote);
-    }
-
-    const radioGroup = document.createElement("div");
-    radioGroup.className = "spd-radio-group";
-    radioGroup.setAttribute("role", "radiogroup");
-    radioGroup.setAttribute("aria-label", "权限模式");
-    radioGroup.id = "settings-permission-tiers";
-
-    const initialTier = isArchived ? "read_only" : detectPermissionTier(project.tool_permissions);
-    settingsFields.permissionTier = { selected: initialTier, group: radioGroup };
-
-    for (const tier of PERMISSION_TIERS) {
-      const option = document.createElement("label");
-      option.className = "spd-radio-option" + (tier.id === "yolo" ? " spd-radio-option--yolo" : "");
-      option.setAttribute("data-tier-id", tier.id);
-
-      const input = document.createElement("input");
-      input.type = "radio";
-      input.name = "permission-tier";
-      input.value = tier.id;
-      input.checked = tier.id === initialTier;
-      input.disabled = isArchived;
-      input.id = `settings-permission-tier-${tier.id}`;
-      input.setAttribute("aria-describedby", `settings-permission-tier-${tier.id}-desc`);
-      input.addEventListener("change", () => {
-        if (input.checked && settingsFields.permissionTier) {
-          settingsFields.permissionTier.selected = tier.id;
-        }
-        refreshPermissionTierOptions();
-      });
-
-      const tx = document.createElement("div");
-      tx.className = "spd-radio-tx";
-      const label = document.createElement("strong");
-      label.textContent = tier.label;
-      const desc = document.createElement("small");
-      desc.id = `settings-permission-tier-${tier.id}-desc`;
-      desc.textContent = tier.desc;
-      tx.append(label, desc);
-      option.append(input, tx);
-      if (tier.id === "yolo" && tier.warn) {
-        const warn = document.createElement("div");
-        warn.className = "spd-radio-warn";
-        warn.textContent = tier.warn;
-        option.append(warn);
-      }
-      radioGroup.append(option);
-    }
-    ctx.refs.settingsDetail.append(radioGroup);
-    refreshPermissionTierOptions();
-  }
-
-  function refreshPermissionTierOptions() {
-    const group = document.getElementById("settings-permission-tiers");
-    if (!group) return;
-    const options = [...group.querySelectorAll(".spd-radio-option")];
-    for (const opt of options) {
-      const input = opt.querySelector('input[type="radio"]');
-      opt.classList.toggle("spd-radio-option--on", Boolean(input?.checked));
-    }
-  }
-
   function renderDangerSection() {
     const dashboard = ctx.getDashboard();
     const project = dashboard?.project ?? {};
@@ -482,13 +266,13 @@ export function createSettingsModal(ctx, options = {}) {
     ic.className = "spd-av lg";
     ic.append(icon("bolt", 16));
     const h3 = document.createElement("h3");
-    h3.textContent = "危险区";
+    h3.textContent = "项目管理";
     head.append(ic, h3);
     ctx.refs.settingsDetail.append(head);
 
     const intro = document.createElement("p");
     intro.className = "spd-hint";
-    intro.textContent = "高风险操作：归档/解除归档与打开项目文件夹。";
+    intro.textContent = "管理当前项目的归档状态和本地文件夹。";
     ctx.refs.settingsDetail.append(intro);
 
     // 归档/解除归档
@@ -570,24 +354,6 @@ export function createSettingsModal(ctx, options = {}) {
     ctx.refs.settingsDetail.append(folderField);
   }
 
-  function renderStubSection(sectionId) {
-    const def = SETTINGS_SECTIONS.find((s) => s.id === sectionId);
-    if (!def) return;
-    // Clear any previously rendered detail
-    ctx.refs.settingsDetail.replaceChildren();
-    const stub = document.createElement("div");
-    stub.className = "sp-stub";
-    const tag = document.createElement("span");
-    tag.className = "sp-stub-tag";
-    tag.textContent = def.milestone ? `${def.milestone} 提供` : "稍后提供";
-    const h3 = document.createElement("h3");
-    h3.textContent = def.label;
-    const p = document.createElement("p");
-    p.textContent = `「${def.label}」分区的设置将在后续任务中提供。本任务先搭好 6 分区导航骨架。`;
-    stub.append(tag, h3, p);
-    ctx.refs.settingsDetail.append(stub);
-  }
-
   function closeSettingsModal() {
     // Closing the modal aborts any in-flight connection test and clears the
     // temporary key the user typed. Reopening will not prefill the secret.
@@ -659,7 +425,7 @@ export function createSettingsModal(ctx, options = {}) {
       name.textContent = provider.name;
       button.append(av, name);
       button.addEventListener("click", async () => {
-        const previousEnv = settingsFields.apiKeyEnv?.input?.value ?? "";
+        const previousEnv = currentApiKeyEnv;
         const previousKey = settingsFields.apiKey?.input?.value ?? "";
         settingsProviderId = provider.id;
         renderSettingsProviders();
@@ -667,7 +433,7 @@ export function createSettingsModal(ctx, options = {}) {
         // Restore the key the user was typing if the env name did not change.
         // Different env names mean different providers/keys, so we intentionally
         // leave the field empty there.
-        if (previousEnv && previousKey && settingsFields.apiKeyEnv?.input?.value === previousEnv) {
+        if (previousEnv && previousKey && currentApiKeyEnv === previousEnv) {
           if (settingsFields.apiKey?.input && !settingsFields.apiKey.input.value) {
             settingsFields.apiKey.input.value = previousKey;
           }
@@ -710,11 +476,9 @@ export function createSettingsModal(ctx, options = {}) {
     // 模型字段优先用全局清单里的默认模型：没有项目时也要能显示已配好的模型。
     const globalDefault = globalModels.default_model;
     // globalDefault 是 buildModelProfile 的输出（app-server），已含本表单要用的
-    // provider/model_name/base_url/api_key_env/pricing/temperature，无需再投影一份。
+    // provider/model_name/base_url/api_key_env，无需再投影一份。
     const active = dashboard?.project?.active_model ?? globalDefault ?? {};
     const profile = dashboard?.model_profile ?? globalDefault ?? {};
-    const budgetConfig = dashboard?.config?.effective?.budget_config ?? dashboard?.project?.budget_config ?? {};
-    const permissions = dashboard?.config?.effective?.tool_permissions ?? dashboard?.project?.tool_permissions ?? {};
     const usingThisPreset = detectProviderPreset(active) === provider.id;
 
     ctx.refs.settingsDetail.replaceChildren();
@@ -752,6 +516,7 @@ export function createSettingsModal(ctx, options = {}) {
     // 打开设置即可看到完整 key，可用眼睛按钮查看、复制按钮复制。
     // （本地个人使用，不做遮罩隐藏。）
     const apiKeyEnvValue = usingThisPreset && active.api_key_env ? active.api_key_env : preset.apiKeyEnv;
+    currentApiKeyEnv = apiKeyEnvValue;
     const savedForEnv = (globalModels.models ?? []).find((model) => model.api_key_env && model.api_key_env === apiKeyEnvValue);
     const hasSavedKey = savedForEnv?.api_key_saved ?? (usingThisPreset && profile.api_key_saved);
     settingsFields.apiKey = settingField("API Key", "password", {
@@ -769,14 +534,6 @@ export function createSettingsModal(ctx, options = {}) {
     settingsFields.apiKeyError = document.createElement("div");
     settingsFields.apiKeyError.className = "spd-field-error";
     settingsFields.apiKeyError.hidden = true;
-
-    settingsFields.apiKeyEnv = settingField("密钥环境变量名（不是密钥本身）", "text", {
-      value: apiKeyEnvValue,
-      placeholder: "XIAOMI_MIMO_API_KEY"
-    });
-    settingsFields.apiKeyEnvError = document.createElement("div");
-    settingsFields.apiKeyEnvError.className = "spd-field-error";
-    settingsFields.apiKeyEnvError.hidden = true;
 
     const keyHint = document.createElement("div");
     keyHint.className = "spd-hint";
@@ -805,52 +562,14 @@ export function createSettingsModal(ctx, options = {}) {
     testRow.append(testBtn);
     settingsFields.testConnectionBtn = testBtn;
 
-    settingsFields.maxCalls = settingField("模型调用上限", "number", { value: budgetConfig.max_model_calls ?? "", placeholder: "留空 = 不限" });
-    const budgetHeading = document.createElement("h4");
-    budgetHeading.className = "spd-section";
-    budgetHeading.textContent = "预算上限";
-    settingsFields.maxCost = settingField("成本上限（元，需先配置价格）", "number", { value: budgetConfig.max_cost ?? "" });
-    settingsFields.maxTokens = settingField("token 总量上限", "number", { value: budgetConfig.max_total_tokens ?? "" });
-    const priceHeading = document.createElement("h4");
-    priceHeading.className = "spd-section";
-    priceHeading.textContent = "价格（用于成本估算）";
-    // 价格/温度跟随「表单当前展示的模型」：正在用且属于当前供应商预设 → 用已存值；
-    // 否则（切供应商预览）→ 空，由官方价表自动带出，不把上一个模型的价错配过来。
-    const pricing = usingThisPreset ? (active.pricing ?? {}) : {};
-    settingsFields.priceInput = settingField("输入价（元/百万 token）", "number", { value: pricing.input_per_million ?? "" });
-    settingsFields.priceOutput = settingField("输出价（元/百万 token）", "number", { value: pricing.output_per_million ?? "" });
-    settingsFields.priceCacheHit = settingField("缓存命中价（元/百万 token，可选）", "number", { value: pricing.cache_hit_per_million ?? "" });
-    const priceHint = document.createElement("div");
-    priceHint.className = "spd-hint";
-    priceHint.textContent = "未填写价格时不显示成本估算。";
-    settingsFields.temperature = settingField("写作温度（0–2，可选，留空用厂商默认）", "number", {
-      value: usingThisPreset ? (active.temperature ?? "") : "",
-      min: 0, max: 2, step: 0.1
-    });
-    settingsFields.temperatureError = document.createElement("div");
-    settingsFields.temperatureError.className = "spd-field-error";
-    settingsFields.temperatureError.hidden = true;
-    settingsFields.network = settingToggle("联网搜索/抓取权限", permissions.network_allowed === true);
-
-    const profileHeading = document.createElement("h4");
-    profileHeading.className = "spd-section";
-    profileHeading.textContent = "写作目标";
-    settingsFields.profileTitle = settingField("小说名", "text", { value: dashboard?.project?.title ?? "" });
-
     ctx.refs.settingsDetail.append(
       settingsFields.model.field, settingsFields.modelError,
       settingsFields.baseUrl.field, settingsFields.baseUrlError, endpointHint,
-      settingsFields.apiKey.field, settingsFields.apiKeyError, settingsFields.apiKeyEnv.field, settingsFields.apiKeyEnvError, keyHint,
-      testRow, connectionStatus,
-      priceHeading, settingsFields.priceInput.field, settingsFields.priceOutput.field, settingsFields.priceCacheHit.field, priceHint,
-      settingsFields.temperature.field, settingsFields.temperatureError,
-      budgetHeading, settingsFields.maxCost.field, settingsFields.maxTokens.field, settingsFields.maxCalls.field,
-      settingsFields.network.field,
-      profileHeading, settingsFields.profileTitle.field
+      settingsFields.apiKey.field, settingsFields.apiKeyError, keyHint,
+      testRow, connectionStatus
     );
     bindEndpointPreview();
     updateEndpointPreview();
-    bindOfficialPricingFill();
     applyConnectionButtonState();
   }
 
@@ -894,8 +613,6 @@ export function createSettingsModal(ctx, options = {}) {
       model_name: settingsFields.modelError,
       base_url: settingsFields.baseUrlError,
       api_key: settingsFields.apiKeyError,
-      api_key_env: settingsFields.apiKeyEnvError,
-      temperature: settingsFields.temperatureError,
     };
     for (const key of Object.keys(map)) {
       const node = map[key];
@@ -932,7 +649,7 @@ export function createSettingsModal(ctx, options = {}) {
       provider: PROVIDER_PRESETS[SETTINGS_PROVIDERS.find((p) => p.id === settingsProviderId)?.preset ?? "custom"]?.provider ?? "openai-compatible",
       model_name: settingsFields.model.input.value.trim(),
       base_url: settingsFields.baseUrl.input.value.trim(),
-      api_key_env: settingsFields.apiKeyEnv.input.value.trim(),
+      api_key_env: currentApiKeyEnv,
     };
     // Empty key field is intentional: when the user leaves it blank we trust
     // the server-side stored secret for the same env. The server re-checks
@@ -1078,65 +795,6 @@ export function createSettingsModal(ctx, options = {}) {
     return btn;
   }
 
-  function settingToggle(labelText, on) {
-    const field = document.createElement("div");
-    field.className = "spd-field spd-toggle";
-    const label = document.createElement("div");
-    label.className = "spd-label";
-    const span = document.createElement("span");
-    span.textContent = labelText;
-    label.append(span);
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `sw${on ? " on" : ""}`;
-    button.setAttribute("aria-pressed", on ? "true" : "false");
-    button.setAttribute("aria-label", labelText);
-    const dot = document.createElement("span");
-    dot.className = "sw-dot";
-    button.append(dot);
-    button.addEventListener("click", () => {
-      const next = button.getAttribute("aria-pressed") !== "true";
-      button.classList.toggle("on", next);
-      button.setAttribute("aria-pressed", next ? "true" : "false");
-    });
-    field.append(label, button);
-    return { field, input: button, get checked() { return button.getAttribute("aria-pressed") === "true"; } };
-  }
-
-  // 选模型自动带出官方价：统一走 shared 的 fillOfficialPricing（与保存时补缺同一份规则）。
-  // 两条触发路径：
-  //  - 模型名变更（input / change）：overwrite=true——价格以模型名为准：
-  //    匹配则整组重置为官方价，不匹配则清空（对空对象补缺结果就是空），
-  //    避免把上一个模型的价错配给新模型保存出去。
-  //  - 初始渲染（打开设置 / 切供应商 / 选用已保存模型）：overwrite=false——
-  //    只补空缺字段，已保存或用户手填的值绝不覆盖。
-  function bindOfficialPricingFill() {
-    const input = settingsFields.model?.input;
-    if (!input || input.dataset.boundPricingFill === "true") return;
-    input.dataset.boundPricingFill = "true";
-    const pairs = [
-      [settingsFields.priceInput?.input, "input_per_million"],
-      [settingsFields.priceOutput?.input, "output_per_million"],
-      [settingsFields.priceCacheHit?.input, "cache_hit_per_million"]
-    ];
-    const applyOfficial = (overwrite) => {
-      // 收集当前表单值作补缺基准；overwrite 时基准为空，结果即官方价整组（或未收录时的空）。
-      const base = {};
-      if (!overwrite) {
-        for (const [field, key] of pairs) if (field?.value) base[key] = field.value;
-      }
-      const filled = fillOfficialPricing(input.value.trim(), "", base);
-      for (const [field, key] of pairs) {
-        if (!field) continue;
-        const value = filled[key];
-        if (overwrite || !field.value) field.value = value != null ? String(value) : "";
-      }
-    };
-    input.addEventListener("input", () => applyOfficial(true));
-    input.addEventListener("change", () => applyOfficial(true));
-    applyOfficial(false);
-  }
-
   function bindEndpointPreview() {
     if (settingsFields.baseUrl.input.dataset.boundPreview === "true") return;
     settingsFields.baseUrl.input.addEventListener("input", updateEndpointPreview);
@@ -1145,9 +803,8 @@ export function createSettingsModal(ctx, options = {}) {
 
   function updateEndpointPreview() {
     const baseUrl = settingsFields.baseUrl.input.value.trim();
-    settingsFields.endpointHint.textContent = baseUrl
-      ? `完整请求地址：${resolveModelEndpoint(baseUrl)}`
-      : "完整请求地址：未填写基础 URL";
+    settingsFields.endpointHint.hidden = !baseUrl;
+    settingsFields.endpointHint.textContent = baseUrl ? `完整请求地址：${resolveModelEndpoint(baseUrl)}` : "";
   }
 
   function detectProviderPreset(activeModel = {}) {
@@ -1168,21 +825,8 @@ export function createSettingsModal(ctx, options = {}) {
       await saveWritingSection();
       return;
     }
-    if (settingsSection === "gates") {
-      await saveGatesSection();
-      return;
-    }
-    if (settingsSection === "permissions") {
-      await savePermissionsSection();
-      return;
-    }
-    if (settingsSection === "research") {
-      await saveResearchSection();
-      return;
-    }
     if (settingsSection === "danger") {
-      // 危险区不通过 settings/update 写：归档按钮已自行处理并关闭弹窗；此处兜底 toast 提示。
-      ctx.showToast("危险区操作请使用上面的按钮。", "info");
+      // 项目管理动作各自即时生效，不依赖底部保存按钮。
       return;
     }
     await saveModelSection();
@@ -1190,11 +834,6 @@ export function createSettingsModal(ctx, options = {}) {
 
   async function saveModelSection() {
     const provider = SETTINGS_PROVIDERS.find((p) => p.id === settingsProviderId) ?? SETTINGS_PROVIDERS[0];
-    const apiKeyEnv = settingsFields.apiKeyEnv.input.value.trim();
-    if (apiKeyEnv && !isEnvironmentVariableName(apiKeyEnv)) {
-      ctx.showToast("密钥环境变量名只能用字母、数字、下划线，且不能以数字开头，例如 XIAOMI_MIMO_API_KEY。", "error");
-      return;
-    }
     // 模型切换确认（计划 UI Copy Audit 保留项）：app-server 每次调用重读
     // project.yaml——任务进行中保存设置会静默切换写作模型。仅当「模型确有变更」
     // 且「任务进行中（active Run 或排队输入）」时弹确认；取消则不保存。API Key/
@@ -1216,18 +855,8 @@ export function createSettingsModal(ctx, options = {}) {
           model_name: settingsFields.model.input.value.trim(),
           base_url: settingsFields.baseUrl.input.value.trim(),
           api_key: settingsFields.apiKey.input.value.trim(),
-          api_key_env: apiKeyEnv,
-          pricing: settingsFields.priceInput.input.value && settingsFields.priceOutput.input.value
-            ? compactObject({
-                input_per_million: Number(settingsFields.priceInput.input.value),
-                output_per_million: Number(settingsFields.priceOutput.input.value),
-                cache_hit_per_million: settingsFields.priceCacheHit.input.value ? Number(settingsFields.priceCacheHit.input.value) : undefined
-              })
-            : undefined
+          api_key_env: currentApiKeyEnv
         });
-        // 温度：留空不携带（厂商默认），填了才带。
-        const tRaw = String(settingsFields.temperature?.input?.value ?? "").trim();
-        if (tRaw !== "") activeModelPayload.temperature = Number(tRaw);
         await postJsonImpl("/api/settings/model-profile", {
           active_model: activeModelPayload
         });
@@ -1238,23 +867,6 @@ export function createSettingsModal(ctx, options = {}) {
         throw error;
       }
       await fetchGlobalModels();
-
-      // 第二步：项目专属设置（联网权限、预算、书名）——只在有项目时才发。
-      const currentProjectRoot = ctx.getCurrentProjectRoot();
-      if (currentProjectRoot) {
-        await postJsonImpl("/api/settings/update", {
-          tool_permissions: { network_allowed: settingsFields.network.checked },
-          budget_config: {
-            max_model_calls: settingsFields.maxCalls.input.value,
-            max_cost: settingsFields.maxCost.input.value,
-            max_total_tokens: settingsFields.maxTokens.input.value
-          },
-          project_profile: compactObject({
-            title: settingsFields.profileTitle?.input?.value?.trim()
-          })
-        });
-      }
-
       await ctx.loadDashboard();
     });
   }
@@ -1313,68 +925,6 @@ export function createSettingsModal(ctx, options = {}) {
     });
   }
 
-  async function saveGatesSection() {
-    const currentProjectRoot = ctx.getCurrentProjectRoot();
-    if (!currentProjectRoot) {
-      ctx.showToast("请先新建或打开一部小说，再保存质量门禁。", "info");
-      return;
-    }
-    await runSave(async () => {
-      await postJsonImpl("/api/settings/update", {
-        memory_extraction: { enabled: settingsFields.memoryExtractionEnabled.checked },
-        fact_check: {
-          enabled: settingsFields.factCheckEnabled.checked,
-          hard: settingsFields.factCheckHard.checked
-        }
-      });
-      await ctx.loadDashboard();
-    });
-  }
-
-  async function saveResearchSection() {
-    const currentProjectRoot = ctx.getCurrentProjectRoot();
-    if (!currentProjectRoot) {
-      ctx.showToast("请先新建或打开一部小说，再保存联网搜索配置。", "info");
-      return;
-    }
-    await runSave(async () => {
-      await postJsonImpl("/api/settings/update", {
-        research_config: compactObject({
-          search_endpoint: settingsFields.searchEndpoint.input.value.trim(),
-          search_api_key_env: settingsFields.searchKeyEnv.input.value.trim()
-        })
-      });
-      await ctx.loadDashboard();
-    });
-  }
-
-  async function savePermissionsSection() {
-    const currentProjectRoot = ctx.getCurrentProjectRoot();
-    if (!currentProjectRoot) {
-      ctx.showToast("请先新建或打开一部小说，再保存权限设置。", "info");
-      return;
-    }
-    const tierField = settingsFields.permissionTier;
-    if (!tierField) {
-      ctx.showToast("请先选择权限档。", "info");
-      return;
-    }
-    const tier = PERMISSION_TIERS.find((t) => t.id === tierField.selected) ?? PERMISSION_TIERS[1];
-    if (tier.id === "yolo") {
-      const confirmYolo = window.confirm("YOLO 会自动执行写入和控制操作。确认开启？");
-      if (!confirmYolo) return;
-    }
-    await runSave(async () => {
-      await postJsonImpl("/api/settings/update", {
-        tool_permissions: tier.combo
-      });
-      await ctx.loadDashboard();
-      // 与 composer.applyTier 一致：用 mode pill 脉冲代替成功 toast，避免噪音。
-      document.getElementById("mode-pill")?.classList.add("cbar-pill--pulse");
-      window.setTimeout(() => document.getElementById("mode-pill")?.classList.remove("cbar-pill--pulse"), 400);
-    });
-  }
-
   async function runSave(fn) {
     const seq = ++saveSequence;
     ctx.refs.settingsSave.disabled = true;
@@ -1419,7 +969,7 @@ export function createSettingsModal(ctx, options = {}) {
       if (settingsFields.model) settingsFields.model.input.value = values.model_name ?? "";
       if (settingsFields.baseUrl) settingsFields.baseUrl.input.value = values.base_url ?? "";
       if (settingsFields.apiKey) settingsFields.apiKey.input.value = values.api_key ?? "";
-      if (settingsFields.apiKeyEnv) settingsFields.apiKeyEnv.input.value = values.api_key_env ?? "";
+      if (values.api_key_env) currentApiKeyEnv = values.api_key_env;
     },
     // 仅供测试：直接触发保存（等价于点「保存设置」）。
     saveSettingsForTest() {
@@ -1450,15 +1000,14 @@ export function createSettingsModal(ctx, options = {}) {
       item.del.click();
       await new Promise((resolve) => setTimeout(resolve, 0));
     },
-    // 仅供测试：读取模型表单字段值（model_name / base_url / api_key / api_key_env）。
+    // 仅供测试：读取模型表单字段值（api_key_env 是内部密钥槽，不对应可见输入框）。
     getModelFieldValue(fieldName) {
       const byName = {
         model_name: settingsFields.model,
         base_url: settingsFields.baseUrl,
-        api_key: settingsFields.apiKey,
-        api_key_env: settingsFields.apiKeyEnv
+        api_key: settingsFields.apiKey
       };
-      return byName[fieldName]?.input?.value ?? "";
+      return fieldName === "api_key_env" ? currentApiKeyEnv : (byName[fieldName]?.input?.value ?? "");
     }
   };
 }

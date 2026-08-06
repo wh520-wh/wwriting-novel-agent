@@ -15,6 +15,7 @@ const drawerPanelsPath = path.join(here, "..", "..", "src", "app-shell", "drawer
 const chapterPresentationPath = path.join(here, "..", "..", "src", "app-shell", "chapter-presentation.mjs");
 const indexHtmlPath = path.join(here, "..", "..", "src", "app-shell", "index.html");
 const stylesPath = path.join(here, "..", "..", "src", "app-shell", "styles.css");
+const iconsPath = path.join(here, "..", "..", "src", "app-shell", "icons.js");
 
 const appSource = await fs.readFile(appJsPath, "utf8");
 const apiClientSource = await fs.readFile(apiClientPath, "utf8");
@@ -23,11 +24,25 @@ const drawerPanelsSource = await fs.readFile(drawerPanelsPath, "utf8");
 const chapterPresentationSource = await fs.readFile(chapterPresentationPath, "utf8");
 const indexHtmlSource = await fs.readFile(indexHtmlPath, "utf8");
 const stylesSource = await fs.readFile(stylesPath, "utf8");
+const iconsSource = await fs.readFile(iconsPath, "utf8");
 
 test("顶栏不显示待命胶囊或闪烁状态条", () => {
   assert.doesNotMatch(indexHtmlSource, /project-status|>待命</u);
   assert.doesNotMatch(appSource, /refs\.status|setStatus\(|is-busy/u);
   assert.doesNotMatch(stylesSource, /topbar\.is-busy|topbarSweep|pillShimmer/u);
+});
+
+test("项目列表使用 Codex 式紧凑单行导航", () => {
+  assert.match(iconsSource, /folder:\s*["']/u, "项目导航应提供文件夹图标");
+  assert.match(appSource, /icon\(["']folder["'],\s*16\)/u, "每个项目应以文件夹图标开头");
+  assert.doesNotMatch(appSource, /proj-cover|proj-dot|proj-sub|deriveProjectIdentity/u);
+  assert.match(stylesSource, /\.proj-icon\s*\{/u);
+  assert.match(stylesSource, /\.proj\.active\s*\{[^}]*background:[^}]*\}/u);
+  assert.doesNotMatch(stylesSource, /\.proj\.active\s*\{[^}]*(?:box-shadow|border-color):/u);
+});
+
+test("空项目侧栏保持简洁，不重复教授主界面的创建操作", () => {
+  assert.doesNotMatch(appSource, /点上方「新建小说」开始/u);
 });
 
 test("app.js wires the project scope module", () => {
@@ -100,6 +115,21 @@ test("drawer-panels.js 直接调用确定性导出 route，无旧业务入口", 
   assert.ok(drawerPanelsSource.includes("function renderChapterPanel"));
   assert.ok(drawerPanelsSource.includes("function renderModelPanel"));
   assert.ok(drawerPanelsSource.includes("function renderCostPanel"));
+});
+
+test("章节导出操作使用文字按钮，不得复用固定宽度的图标按钮", () => {
+  assert.match(
+    drawerPanelsSource,
+    /exportBtn\.className\s*=\s*["']small-button export-btn["']/u,
+    "导出成书应使用可容纳文字的按钮样式"
+  );
+  assert.match(
+    drawerPanelsSource,
+    /revealBtn\.className\s*=\s*["']small-button export-reveal-btn["']/u,
+    "打开导出文件夹应使用可容纳文字的按钮样式"
+  );
+  assert.match(stylesSource, /\.export-toolbar\s*\{[^}]*display:\s*flex/u, "导出工具栏应保持稳定的横向布局");
+  assert.match(stylesSource, /\.export-toolbar\s+\.small-button\s*\{[^}]*white-space:\s*nowrap/u, "导出按钮文字不得被压缩换行");
 });
 
 test("settings-modal.js re-exports the pure connection helpers", () => {

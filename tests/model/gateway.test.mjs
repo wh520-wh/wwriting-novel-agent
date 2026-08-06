@@ -224,6 +224,31 @@ test("重试耗尽后抛出原错误", async () => {
   assert.equal(calls, 2);
 });
 
+test("流式 attempt 已输出正文后失败时不自动重试，避免重复增量", async () => {
+  let calls = 0;
+  const tokens = [];
+  const adapter = {
+    async complete(request) {
+      calls += 1;
+      request.metadata.onToken("partial");
+      throw new ProviderTransportError("stream interrupted", { reason: "network" });
+    }
+  };
+  const gateway = makeGateway(adapter, { retryMax: 3, retryBaseDelayMs: 1, retryMaxDelayMs: 1 });
+
+  await assert.rejects(
+    () => gateway.complete({
+      ...BASE_REQUEST,
+      stream: true,
+      metadata: { onToken: (token) => tokens.push(token) }
+    }),
+    (error) => error.code === "provider_transport_error" && error.reason === "network"
+  );
+
+  assert.equal(calls, 1, "已公开正文的 attempt 不能再透明重试");
+  assert.deepEqual(tokens, ["partial"]);
+});
+
 test("onRetry 回调携带正确字段", async () => {
   const retryLog = [];
   let calls = 0;

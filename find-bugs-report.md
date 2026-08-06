@@ -67,3 +67,15 @@
 ## 附：搜寻范围
 
 探索 agent 与怀疑者共读取约 30 个文件，重点：`agent-engine.mjs`、`agent-output-parsing.mjs`、`agent-loop.mjs`、`writing-agent-session.mjs`、`agent-transcript.mjs`、`cancellation.mjs`、`provider-adapters.mjs`、`quality-gates.mjs`、`tool-runtime.mjs`、`failure-actions.mjs`、`derive-failure-card.mjs`、`failure-card.js`、`thread-renderer.js`、`app.js`、`agent-truth.mjs`、`run-presentation.mjs`、`settings-runtime.mjs`、`settings-modal.js`、`project-store.mjs`、`shared/failure-commands.mjs`，及 `tests/` 下相关测试。
+
+---
+
+## 第 3 轮（2026-08-06 · app-shell / AgentSurface 边界硬化）
+
+未提交改动聚焦 `app-shell/{app.js,icons.js,styles.css,agent/{index,view,state,api}.js,agent/slash-commands.mjs}`。方法：广撒网提议 -> 单次批量自我对抗核查（本环境无子 agent 可派发，按技能「无子 agent 回退」从零重读代码逐条反驳，等价于第二 AI 视角）。报告 3，拒绝 1。
+
+1. **submit 补快照不防项目切换**（中）：`agent/index.js:113-124` submit .then 无项目守卫 + `agent/api.js:121-124` openProject 只 abort SSE controller、不 abort pendingRequests + `agent/state.js:85-93` session_id 不等即 resetState+用快照事件重建 -> A 的补快照响应迟到时把 A 会话重建进 B。同根变体：`agent/index.js:42-51` onReconnect（预存在，非本轮新增）。
+2. **submit 失败把旧文本灌进新项目输入框**（低-中）：`agent/view.js:776-783` .catch `if (input.value.length === 0) input.value = text;` 无项目守卫；view.reset() 已移除错误气泡（不可见），但 input 元素保留，A 的失败文本静默填进 B 的输入框。
+3. **Enter/Tab 未守 isComposing**（中）：`agent/view.js` keydown 两处 Enter（菜单关->提交、菜单开->选命令）都不查 `event.isComposing`；中文 IME 按 Enter 确认候选即误发残缺文本/误选命令。`src/app-shell` 全仓 `isComposing|keyCode|composition` 零命中。提交路径预存在，斜杠菜单路径本轮新增。
+
+被拒绝：inputId 对账「死代码」+ 重复文本并发 -- 经 FIFO text 匹配 + seq 顺序快照验证构造不出稳定孤儿气泡，inputId 匹配仍服务于 SSE 迟到事件，判健壮、不报告。

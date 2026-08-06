@@ -35,7 +35,7 @@ import { canEnterWorkflow, workflowPolicy } from "./workflows.mjs";
 import { runLegacyImport } from "./legacy-import.mjs";
 import { loadProject } from "../project-store.mjs";
 import { pathExists } from "../fs-utils.mjs";
-import { createRedactor } from "../shell/redaction.mjs";
+import { createRedactor, createStreamingRedactor } from "../shell/redaction.mjs";
 
 import {
   appendChapterSegment,
@@ -57,11 +57,92 @@ const SOURCES = new Set(["chat", "maintenance"]);
 // 防御循环异常悬挂。长原子操作（不可中断提交）不受 abort 影响也会在毫秒级完成，
 // 不会接近该上限。
 const IDLE_WAIT_TIMEOUT_MS = 60000;
+const ASSISTANT_DELTA_FLUSH_MS = 24;
+const ASSISTANT_DELTA_MAX_PENDING_CHARS = 2048;
 
 function fail(code, message) {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+// Provider token 的低开销持久化出口：回调只同步入队，按一帧左右的时间窗口合并，
+// 且任何时刻最多一个 journal 写入在途。这样既保留真实首 token 时延，也不会让
+// 高频 token 为每个字符触发一次 events append + session.json 原子重写。
+function createAssistantDeltaWriter(journal, { runId, inputId, secrets }) {
+  const streamingRedactor = createStreamingRedactor({ secrets });
+  let rawText = "";
+  let safeText = "";
+  let pending = "";
+  let timer = null;
+  let inFlight = null;
+  let closed = false;
+
+  const schedule = () => {
+    if (closed || timer !== null || inFlight || pending.length === 0) return;
+    timer = setTimeout(pump, ASSISTANT_DELTA_FLUSH_MS);
+  };
+
+  const appendSafe = (text) => {
+    if (!text) return;
+    safeText += text;
+    pending += text;
+    if (pending.length >= ASSISTANT_DELTA_MAX_PENDING_CHARS && !inFlight) {
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+      pump();
+    } else {
+      schedule();
+    }
+  };
+
+  function pump() {
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+    if (inFlight || pending.length === 0) return;
+    const text = pending;
+    pending = "";
+    inFlight = journal.append({
+      type: "assistant_message_delta",
+      run_id: runId,
+      payload: { input_id: inputId, text }
+    }).catch(() => {
+      // completed 仍携带权威全文；增量落盘失败不能把已成功的模型调用误报为失败。
+    }).finally(() => {
+      inFlight = null;
+      if (pending.length >= ASSISTANT_DELTA_MAX_PENDING_CHARS) {
+        pump();
+      } else {
+        schedule();
+      }
+    });
+  }
+
+  return {
+    get rawText() {
+      return rawText;
+    },
+    push(token) {
+      if (closed) return;
+      const raw = String(token ?? "");
+      if (!raw) return;
+      rawText += raw;
+      appendSafe(streamingRedactor.push(raw));
+    },
+    async finish({ flushTail = true } = {}) {
+      if (!closed) {
+        if (flushTail) appendSafe(streamingRedactor.flush());
+        closed = true;
+      }
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+      while (inFlight || pending.length > 0) {
+        if (!inFlight) pump();
+        if (inFlight) await inFlight;
+      }
+      return { rawText, safeText };
+    }
+  };
 }
 
 function createMutex() {
@@ -240,7 +321,10 @@ export function createAgentRuntime({
       context_window: Number.isFinite(Number(project?.context_window))
         ? Number(project.context_window)
         : undefined,
-      ...active
+      ...active,
+      // 项目级思考强度（project.yaml.reasoning_effort）：仅透传，是否真正发送
+      // 由 adapter 按模型 capability（reasoningEffortLevels）决定，auto/缺省不发。
+      ...(typeof project?.reasoning_effort === "string" ? { reasoning_effort: project.reasoning_effort } : {})
     };
   }
 
@@ -518,6 +602,12 @@ export function createAgentRuntime({
       // api_key_env 等），adapter 依赖它选择模型与读取密钥。assemblePrompt 只
       // 消费 context_window，不负责回填，这里在调用前挂载。
       request.modelConfig = modelConfig;
+      request.stream = true;
+      const deltaWriter = createAssistantDeltaWriter(journal, { runId, inputId, secrets });
+      request.metadata = {
+        ...(request.metadata ?? {}),
+        onToken: (token) => deltaWriter.push(token)
+      };
 
       // ---- 模型轮次（失败路径必须闭合 model turn）----
       await journal.append({ type: "model_turn_started", run_id: runId, payload: {} });
@@ -526,9 +616,19 @@ export function createAgentRuntime({
         state.firstTurn.resolve();
       }
       let reply;
+      let streamedReply = null;
       try {
         reply = await state.modelGateway.complete(request, { signal: state.controller?.signal });
+        const finalRawText = String(reply?.text ?? "");
+        // 兼容只漏掉尾帧回调、但最终响应正文完整的 Gateway：仅当前缀严格一致时
+        // 补入尾部；完全不触发 onToken 的非流式 Gateway 不制造伪增量。
+        if (deltaWriter.rawText.length > 0 && finalRawText.startsWith(deltaWriter.rawText)) {
+          deltaWriter.push(finalRawText.slice(deltaWriter.rawText.length));
+        }
+        streamedReply = await deltaWriter.finish();
       } catch (error) {
+        // 失败/取消时只排空已经确认安全的正文前缀，不 flush 可能仍是半截密钥的 carry。
+        await deltaWriter.finish({ flushTail: false });
         await journal.append({ type: "model_turn_completed", run_id: runId, payload: {} }).catch(() => {});
         if (isAbort(error, state)) return "interrupted";
         await failRun(state, runId, { error, inputId });
@@ -621,13 +721,20 @@ export function createAgentRuntime({
 
       // ---- 文本回复：当前输入完成 ----
       const text = String(reply?.text ?? "");
+      // completed 仍以最终回复的一次性脱敏为权威；正常 Provider 契约下，流式
+      // redactor 的拼接结果与这里严格一致。非流式 Gateway 没有 delta，直接终态。
+      const safeText = redactor.redact(text);
+      if (streamedReply?.rawText && streamedReply.safeText !== safeText) {
+        const error = new Error("Provider token stream 与最终正文不一致。");
+        error.code = "provider_stream_mismatch";
+        await failRun(state, runId, { error, inputId });
+        return "failed";
+      }
       await appendSafeTranscript(journal, { role: "assistant", content: text });
-      // 事件带最终回复文本：AgentSurface 据此渲染助手气泡。模型可能复述工具
-      // 输出中的密钥，因此持久事件与 transcript 使用同一脱敏口径。
       await journal.append({
         type: "assistant_message_completed",
         run_id: runId,
-        payload: { input_id: inputId, text: redactor.redact(text) }
+        payload: { input_id: inputId, text: safeText }
       });
       // 完成批次（input_consumed + grant 清除）的读-判-写放进项目互斥锁，杜绝与
       // cancelRunForStop 交错产生「同一 input 双终态」（input_cancelled 与

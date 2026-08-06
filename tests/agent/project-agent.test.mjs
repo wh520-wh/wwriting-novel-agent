@@ -176,6 +176,216 @@ test("assistant tool_calls 以 OpenAI 线上格式进入后续模型请求", asy
   );
 });
 
+test("Provider 正文 token 在模型请求完成前进入 assistant_message_delta", async (t) => {
+  let modelCompleted = false;
+  const h = await openHarness(t, {
+    gatewayScript: [async (request) => {
+      assert.equal(request.stream, true, "Agent 模型轮次应显式启用 Provider 流式响应");
+      assert.equal(typeof request.metadata?.onToken, "function");
+      request.metadata.onToken("真");
+      await sleep(120);
+      request.metadata.onToken("实");
+      await sleep(120);
+      modelCompleted = true;
+      return { text: "真实" };
+    }],
+    gatewayDelayMs: 0
+  });
+
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "测试真实流式", source: "chat" });
+  const during = await waitFor(
+    h.agent,
+    h.projectRoot,
+    (_session, snapshot) => eventsOfType(snapshot.events, "assistant_message_delta").length > 0,
+    { describe: "模型请求完成前收到正文增量" }
+  );
+
+  assert.equal(modelCompleted, false, "delta 必须来自在途 Provider token，不能等最终文本返回后再补发");
+  assert.equal(eventsOfType(during.events, "assistant_message_delta")[0].payload.text, "真");
+
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  assert.equal(eventsOfType(events, "assistant_message_delta").map((event) => event.payload.text).join(""), "真实");
+  assert.equal(eventsOfType(events, "assistant_message_completed").at(-1).payload.text, "真实");
+});
+
+test("OpenAI-compatible SSE 经 Gateway 与 ProjectAgent 实时到达 journal", async (t) => {
+  const fixture = await createProjectAgentHarness({
+    project: {
+      active_model: {
+        provider: "openai-compatible",
+        model_name: "integration-model",
+        base_url: "https://provider.test/v1"
+      }
+    }
+  });
+  t.after(() => fixture.cleanup());
+
+  const encoder = new TextEncoder();
+  let providerFinished = false;
+  const { createOpenAICompatibleAdapter } = await import("../../src/core/model/openai-compatible.mjs");
+  const { createModelGateway } = await import("../../src/core/model/gateway.mjs");
+  const { createProjectAgent } = await import("../../src/core/agent/index.mjs");
+  const adapter = createOpenAICompatibleAdapter({
+    apiKey: "test-key",
+    fetchImpl: async (_url, options) => {
+      const body = JSON.parse(options.body);
+      assert.equal(body.stream, true);
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"直"}}]}\n\n'));
+            setTimeout(() => {
+              controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"连"},"finish_reason":"stop"}]}\n\n'));
+              controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+              providerFinished = true;
+              controller.close();
+            }, 140);
+          }
+        }),
+        async text() {
+          throw new Error("流式路径不应读取 response.text()");
+        }
+      };
+    }
+  });
+  const gateway = createModelGateway({ adapter, retryMax: 0 });
+  const agent = createProjectAgent({ modelGateway: gateway });
+  await agent.open({ projectRoot: fixture.projectRoot });
+
+  await agent.submit({ projectRoot: fixture.projectRoot, text: "验证纵向流式", source: "chat" });
+  const during = await waitFor(
+    agent,
+    fixture.projectRoot,
+    (_session, snapshot) => eventsOfType(snapshot.events, "assistant_message_delta").length > 0,
+    { describe: "SSE 首 token 到达 journal" }
+  );
+  assert.equal(providerFinished, false, "首段 journal delta 必须早于 SSE 完成");
+  assert.equal(eventsOfType(during.events, "assistant_message_delta")[0].payload.text, "直");
+
+  await waitForIdle(agent, fixture.projectRoot);
+  const events = await readEvents(agent, fixture.projectRoot);
+  assert.equal(eventsOfType(events, "assistant_message_delta").map((event) => event.payload.text).join(""), "直连");
+  assert.equal(eventsOfType(events, "assistant_message_completed").at(-1).payload.text, "直连");
+});
+
+test("高频 token 合并写入 journal，拼接正文保持完整", async (t) => {
+  const tokens = Array.from({ length: 200 }, (_, index) => String(index % 10));
+  const text = tokens.join("");
+  const h = await openHarness(t, {
+    gatewayScript: [async (request) => {
+      for (const token of tokens) request.metadata.onToken(token);
+      return { text };
+    }],
+    gatewayDelayMs: 0
+  });
+
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "高频流式", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  const deltas = eventsOfType(events, "assistant_message_delta");
+  assert.ok(deltas.length > 0 && deltas.length < 10, `200 个 token 应被显著合并，实际 ${deltas.length} 条事件`);
+  assert.equal(deltas.map((event) => event.payload.text).join(""), text);
+  assert.equal(eventsOfType(events, "assistant_message_completed").at(-1).payload.text, text);
+});
+
+test("正文 secret 跨 token 边界时增量与 completed 使用同一脱敏结果", async (t) => {
+  const secret = "super-secret-token-77";
+  const h = await openHarness(t, {
+    secrets: [secret],
+    gatewayScript: [async (request) => {
+      request.metadata.onToken("hello super-secret-to");
+      request.metadata.onToken("ken-77 world");
+      return { text: `hello ${secret} world` };
+    }],
+    gatewayDelayMs: 0
+  });
+
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "测试脱敏", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  const streamed = eventsOfType(events, "assistant_message_delta").map((event) => event.payload.text).join("");
+  const completed = eventsOfType(events, "assistant_message_completed").at(-1).payload.text;
+  assert.equal(streamed, "hello [REDACTED] world");
+  assert.equal(completed, streamed);
+  assert.ok(!JSON.stringify(events).includes(secret));
+});
+
+test("停止后忽略 Gateway 迟到的正文 token", async (t) => {
+  const h = await openHarness(t, {
+    gatewayScript: [async (request, { signal }) => {
+      request.metadata.onToken("停止前");
+      await new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => {
+          setTimeout(() => request.metadata.onToken("迟到内容"), 20);
+          reject(new DOMException("aborted", "AbortError"));
+        }, { once: true });
+      });
+      return { text: "不可达" };
+    }],
+    gatewayDelayMs: 0
+  });
+
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "开始后停止", source: "chat" });
+  await waitFor(
+    h.agent,
+    h.projectRoot,
+    (_session, snapshot) => eventsOfType(snapshot.events, "assistant_message_delta").length > 0,
+    { describe: "停止前正文 token" }
+  );
+  await h.agent.stop({ projectRoot: h.projectRoot, reason: "user_stop" });
+  await sleep(60);
+
+  const events = await readEvents(h.agent, h.projectRoot);
+  const streamed = eventsOfType(events, "assistant_message_delta").map((event) => event.payload.text).join("");
+  assert.equal(streamed, "停止前");
+  assert.ok(!streamed.includes("迟到内容"));
+});
+
+test("非流式 Gateway 只产生 completed，不把最终正文二次切块", async (t) => {
+  const longText = "长回复".repeat(40) + "结尾";
+  const h = await openHarness(t, {
+    gatewayScript: [{ reply: { text: longText } }]
+  });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "写长一点", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  const deltas = eventsOfType(events, "assistant_message_delta");
+  assert.equal(deltas.length, 0, "没有 Provider token 回调时不得制造伪流式事件");
+  const completed = eventsOfType(events, "assistant_message_completed");
+  assert.ok(completed.length >= 1, "应产生 assistant_message_completed");
+  assert.equal(completed[completed.length - 1].payload.text, longText);
+});
+
+test("工具调用后的新模型轮次重置临时正文，只保留最终答复", async (t) => {
+  const h = await openHarness(t, {
+    gatewayScript: [
+      async (request) => {
+        request.metadata.onToken("正在读取资料……");
+        return {
+          text: "正在读取资料……",
+          toolCalls: [tool("read_file", { path: "OUTLINE.md" })]
+        };
+      },
+      async (request) => {
+        request.metadata.onToken("这是最终答复。");
+        return { text: "这是最终答复。" };
+      }
+    ],
+    gatewayDelayMs: 0
+  });
+
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "读取后回答", source: "chat" });
+  const snapshot = await waitForIdle(h.agent, h.projectRoot);
+
+  assert.equal(snapshot.session.active_run.assistant_text, "这是最终答复。");
+  const completed = eventsOfType(snapshot.events, "assistant_message_completed");
+  assert.equal(completed.at(-1).payload.text, "这是最终答复。");
+});
+
 test("运行中 submit 进入 FIFO 队列，不创建第二个 Run", async (t) => {
   const h = await openHarness(t, {
     gatewayScript: [
@@ -523,17 +733,17 @@ test("update_plan 存入 journal 并反映在 Session projection", async (t) => 
   const plan = {
     explanation: "先核对已完成章节",
     items: [
-      { step: "检查已有章节", status: "in_progress" },
-      { step: "修正冲突", status: "pending" },
-      { step: "验证修改", status: "pending" }
+      { id: "check", step: "检查已有章节", status: "in_progress" },
+      { id: "fix", step: "修正冲突", status: "pending" },
+      { id: "verify", step: "验证修改", status: "pending" }
     ]
   };
   const finalPlan = {
     explanation: "先核对已完成章节",
     items: [
-      { step: "检查已有章节", status: "completed" },
-      { step: "修正冲突", status: "completed" },
-      { step: "验证修改", status: "completed" }
+      { id: "check", step: "检查已有章节", status: "completed" },
+      { id: "fix", step: "修正冲突", status: "completed" },
+      { id: "verify", step: "验证修改", status: "completed" }
     ]
   };
   const h = await openHarness(t, {

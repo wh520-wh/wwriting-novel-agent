@@ -195,6 +195,9 @@ export function normalizeSettingsPatch(patch = {}) {
   if (patch.output_style !== undefined) {
     normalized.output_style = normalizeOutputStyle(patch.output_style);
   }
+  if (patch.reasoning_effort !== undefined) {
+    normalized.reasoning_effort = normalizeReasoningEffort(patch.reasoning_effort);
+  }
   if (patch.archived_at !== undefined) {
     if (patch.archived_at === null) {
       normalized.archived_at = null;
@@ -239,6 +242,9 @@ function mergeProjectSettings(project, patch) {
   if (patch.output_style !== undefined) {
     next.output_style = patch.output_style;
   }
+  if (patch.reasoning_effort !== undefined) {
+    next.reasoning_effort = patch.reasoning_effort;
+  }
   if (patch.archived_at !== undefined) {
     next.archived_at = patch.archived_at;
   }
@@ -270,6 +276,20 @@ function mergeProjectSettings(project, patch) {
     next.fact_check = mergeNullableSection(project.fact_check, patch.fact_check);
   }
   return next;
+}
+
+const REASONING_EFFORT_LEVELS = new Set(["auto", "low", "medium", "high"]);
+
+// 项目级思考强度：auto（默认，不发送 reasoning_effort）/low/medium/high。
+// 未配置的既有项目读取时视为 auto（请求构造层只认 low/medium/high）。
+function normalizeReasoningEffort(value) {
+  if (value === null || value === "") {
+    return "auto";
+  }
+  if (typeof value !== "string" || !REASONING_EFFORT_LEVELS.has(value.trim())) {
+    throw new SettingsValidationError("invalid_reasoning_effort", "reasoning_effort must be one of auto/low/medium/high.");
+  }
+  return value.trim();
 }
 
 function normalizeProjectProfile(profile) {

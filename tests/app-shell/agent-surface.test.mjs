@@ -45,6 +45,7 @@ class MockElement {
     this.children = [];
     this.isConnected = false;
     this._text = "";
+    this._html = "";
     this._attrs = {};
     this._listeners = new Map();
     this._value = "";
@@ -86,12 +87,24 @@ class MockElement {
   }
 
   get textContent() {
-    return this._text + this.children
-      .map((c) => (typeof c.textContent === "string" ? c.textContent : ""))
-      .join("");
+    return this._text +
+      (this._html ? this._html.replace(/<[^>]*>/g, "") : "") +
+      this.children
+        .map((c) => (typeof c.textContent === "string" ? c.textContent : ""))
+        .join("");
   }
   set textContent(value) {
     this._text = String(value);
+    this._html = "";
+    this.children = [];
+  }
+
+  get innerHTML() {
+    return this._html;
+  }
+  set innerHTML(value) {
+    this._html = String(value ?? "");
+    this._text = "";
     this.children = [];
   }
 
@@ -294,19 +307,23 @@ function makeFakeApi(overrides = {}) {
   return api;
 }
 
-async function makeSurface({ apiOverrides = {}, callbacks = {}, useRealTransport = false } = {}) {
+async function makeSurface({ apiOverrides = {}, callbacks = {}, useRealTransport = false, requestFrame = null } = {}) {
   const root = new MockElement("div");
   const api = useRealTransport ? null : makeFakeApi(apiOverrides);
   const opened = [];
   const chapters = [];
+  const projectActions = [];
   const { createAgentSurface } = await import("../../src/app-shell/agent/index.js");
   const surface = createAgentSurface({
     root,
     api,
+    requestFrame,
     onOpenSettings: (section) => opened.push(section),
-    onOpenChapter: (chapterNo) => chapters.push(chapterNo)
+    onOpenChapter: (chapterNo) => chapters.push(chapterNo),
+    onCreateProject: callbacks.onCreateProject ?? (() => projectActions.push("create")),
+    onOpenProjectFolder: callbacks.onOpenProjectFolder ?? (() => projectActions.push("open"))
   });
-  return { root, api, surface, opened, chapters };
+  return { root, api, surface, opened, chapters, projectActions };
 }
 
 function snapshotOf(state, events = []) {
@@ -371,6 +388,213 @@ test("空闲发送：输入文本后发送按钮提交到 api，输入框清空"
   send._fire("click");
   assert.deepEqual(api.calls.filter((c) => c[0] === "submit").map((c) => c[1]), ["继续写第一章"]);
   assert.equal(input.value, "", "发送后输入框应清空");
+});
+
+test("提交失败：保留用户消息、恢复输入并显示可见错误", async () => {
+  const { root, surface } = await makeSurface({
+    apiOverrides: {
+      submit: async () => { throw new Error("项目状态目录不可写"); }
+    }
+  });
+  await surface.openProject("D:\\novel");
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  input.value = "继续写第一章";
+  root.querySelector('[data-testid="agent-send"]')._fire("click");
+  await tick();
+
+  const messages = root.querySelectorAll('[data-testid="agent-user-message"]');
+  assert.equal(messages.length, 1, "请求失败也不能让用户输入凭空消失");
+  assert.match(messages[0].textContent, /继续写第一章/u);
+  assert.equal(input.value, "继续写第一章", "失败后应恢复原输入，方便重试");
+  assert.match(root.querySelector('[data-testid="agent-submit-error"]')?.textContent ?? "", /项目状态目录不可写/u);
+});
+
+test("提交成功：主动补快照并把即时消息收敛为单条正式记录", async () => {
+  let snapshotCalls = 0;
+  const { root, api, surface } = await makeSurface({
+    apiOverrides: {
+      submit: async (text) => {
+        api.calls.push(["submit", text]);
+        return { ok: true, input_id: "in-refresh", run_id: "run-refresh", status: "running" };
+      },
+      fetchSnapshot: async ({ afterSeq = 0 } = {}) => {
+        snapshotCalls += 1;
+        api.calls.push(["fetchSnapshot", afterSeq]);
+        if (snapshotCalls === 1) return null;
+        return snapshotOf(session({ last_seq: 1 }), [
+          { ...ev("input_queued", { input_id: "in-refresh", text: "继续写第一章", source: "chat" }), seq: 1 }
+        ]);
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  input.value = "继续写第一章";
+  root.querySelector('[data-testid="agent-send"]')._fire("click");
+
+  await waitUntil(() => snapshotCalls === 2);
+  const messages = root.querySelectorAll('[data-testid="agent-user-message"]');
+  assert.equal(messages.length, 1, "即时消息与 journal 消息应合并，不能重复");
+  assert.equal(messages[0].dataset.state ?? "", "", "正式记录不再带 pending 状态");
+  assert.equal(root.querySelector('[data-testid="agent-submit-error"]'), null);
+});
+
+test("提交补快照迟到：切换项目后不得用旧项目会话覆盖新项目", async () => {
+  let snapshotCalls = 0;
+  let resolveOldSnapshot;
+  const oldSnapshot = new Promise((resolve) => { resolveOldSnapshot = resolve; });
+  const { root, api, surface } = await makeSurface({
+    apiOverrides: {
+      submit: async (text) => {
+        api.calls.push(["submit", text]);
+        return { ok: true, input_id: "in-a", run_id: "run-a", status: "running" };
+      },
+      fetchSnapshot: async ({ afterSeq = 0 } = {}) => {
+        snapshotCalls += 1;
+        api.calls.push(["fetchSnapshot", afterSeq]);
+        if (snapshotCalls === 1) return null;
+        if (snapshotCalls === 2) return oldSnapshot;
+        return snapshotOf(session({
+          session_id: "sess-b", project_root: "D:\\novel-b", last_seq: 1
+        }), [
+          { ...ev("input_queued", { input_id: "in-b", text: "B 项目消息", source: "chat" }, { session_id: "sess-b" }), seq: 1 }
+        ]);
+      }
+    }
+  });
+
+  await surface.openProject("D:\\novel-a");
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  input.value = "A 项目消息";
+  root.querySelector('[data-testid="agent-send"]')._fire("click");
+  await waitUntil(() => snapshotCalls === 2);
+
+  await surface.openProject("D:\\novel-b");
+  assert.match(root.textContent, /B 项目消息/u, "切换完成后应显示 B 项目会话");
+
+  resolveOldSnapshot(snapshotOf(session({
+    session_id: "sess-a", project_root: "D:\\novel-a", last_seq: 1
+  }), [
+    { ...ev("input_queued", { input_id: "in-a", text: "A 项目消息", source: "chat" }, { session_id: "sess-a" }), seq: 1 }
+  ]));
+  await tick();
+  await tick();
+
+  assert.match(root.textContent, /B 项目消息/u, "A 的迟到快照不得清空 B 会话");
+  assert.doesNotMatch(root.textContent, /A 项目消息/u, "A 的历史不得渲染进 B 项目");
+});
+
+test("提交失败迟到：切换项目后不得把旧文本恢复进新项目输入框", async () => {
+  let rejectOldSubmit;
+  const oldSubmit = new Promise((_resolve, reject) => { rejectOldSubmit = reject; });
+  const { root, api, surface } = await makeSurface({
+    apiOverrides: {
+      submit: (text) => {
+        api.calls.push(["submit", text]);
+        return oldSubmit;
+      }
+    }
+  });
+
+  await surface.openProject("D:\\novel-a");
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  input.value = "只属于 A 的文本";
+  root.querySelector('[data-testid="agent-send"]')._fire("click");
+  await surface.openProject("D:\\novel-b");
+  assert.equal(input.value, "", "B 项目的输入框初始为空");
+
+  rejectOldSubmit(new Error("A 项目提交失败"));
+  await tick();
+  await tick();
+
+  assert.equal(input.value, "", "旧项目失败回调不得改写 B 项目输入框");
+  assert.equal(root.querySelectorAll('[data-testid="agent-user-message"]').length, 0, "B 对话不得出现 A 的失败消息");
+  assert.equal(root.querySelector('[data-testid="agent-submit-error"]'), null, "B 对话不得出现 A 的错误提示");
+});
+
+test("输入斜杠显示命令补全，可用键盘选择但不会立即提交", async () => {
+  const { root, api, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  input.value = "/";
+  input._fire("input");
+
+  const menu = root.querySelector('[data-testid="agent-slash-menu"]');
+  assert.ok(menu, "输入 / 后应出现命令菜单");
+  assert.equal(menu.hidden, false);
+  assert.equal(root.querySelectorAll('[data-testid="agent-slash-option"]').length, 5);
+
+  input.value = "/se";
+  input._fire("input");
+  assert.equal(root.querySelectorAll('[data-testid="agent-slash-option"]').length, 1, "前缀应筛选命令");
+  let prevented = false;
+  input._fire("keydown", { key: "ArrowDown", shiftKey: false, preventDefault: () => { prevented = true; } });
+  input._fire("keydown", { key: "Enter", shiftKey: false, preventDefault: () => { prevented = true; } });
+  assert.equal(prevented, true);
+  assert.equal(input.value, "/settings");
+  assert.equal(menu.hidden, true);
+  assert.equal(api.calls.filter((call) => call[0] === "submit").length, 0, "补全只填入命令，不应直接执行");
+});
+
+test("中文输入法组合态：Enter 与 keyCode 229 不得发送消息", async () => {
+  const { root, api, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  input.value = "正在确认候选词";
+  let prevented = 0;
+
+  input._fire("keydown", {
+    key: "Enter", shiftKey: false, isComposing: true, keyCode: 13,
+    preventDefault: () => { prevented += 1; }
+  });
+  input._fire("keydown", {
+    key: "Enter", shiftKey: false, isComposing: false, keyCode: 229,
+    preventDefault: () => { prevented += 1; }
+  });
+
+  assert.equal(prevented, 0, "组合态按键应完全交给输入法处理");
+  assert.equal(input.value, "正在确认候选词", "输入内容不得被提前清空");
+  assert.equal(api.calls.filter((call) => call[0] === "submit").length, 0, "组合态 Enter 不得提交");
+});
+
+test("中文输入法组合态：斜杠菜单中的 Enter 与 Tab 不得选择命令", async () => {
+  const { root, api, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  const menu = root.querySelector('[data-testid="agent-slash-menu"]');
+  input.value = "/se";
+  input._fire("input");
+  let prevented = 0;
+
+  input._fire("keydown", {
+    key: "Enter", shiftKey: false, isComposing: true, keyCode: 13,
+    preventDefault: () => { prevented += 1; }
+  });
+  input._fire("keydown", {
+    key: "Tab", shiftKey: false, isComposing: false, keyCode: 229,
+    preventDefault: () => { prevented += 1; }
+  });
+
+  assert.equal(prevented, 0, "组合态按键不应被命令菜单截获");
+  assert.equal(input.value, "/se", "组合态不得把输入替换为命令");
+  assert.equal(menu.hidden, false, "命令菜单保持原状，等待输入法结束");
+  assert.equal(api.calls.filter((call) => call[0] === "submit").length, 0);
+});
+
+test("composer 是多行命令台：保留纯输入控制，发送按钮使用可访问图标", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+
+  const shell = root.querySelector('[data-testid="agent-composer-shell"]');
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  const send = root.querySelector('[data-testid="agent-send"]');
+
+  assert.ok(shell, "输入框和工具栏应收拢在同一个命令台内");
+  assert.equal(input.rows, 3, "命令台默认应提供稳定的多行输入空间");
+  assert.equal(root.querySelector('[data-testid="agent-command-trigger"]'), null, "不增加重复斜杠输入的按钮");
+  assert.equal(send.getAttribute("aria-label"), "发送");
+  assert.ok(send.querySelector("svg"), "发送应使用清晰图标而不是长文本按钮");
+  assert.equal(send.textContent, "", "图标按钮不重复显示发送文字");
 });
 
 test("Enter 键发送（不带 Shift）", async () => {
@@ -514,25 +738,40 @@ test("项目切换：重新 openProject 重置对话与队列，transport 作用
   assert.equal(input.disabled, false, "新项目 composer 可用");
 });
 
-test("无项目时 composer 禁用；打开项目后可用", async () => {
+test("无项目时隐藏 composer；打开项目后显示并可用", async () => {
   const { root, surface } = await makeSurface();
+  const composer = root.querySelector('[data-testid="agent-composer"]');
   const input = root.querySelector('[data-testid="agent-composer-input"]');
   const send = root.querySelector('[data-testid="agent-send"]');
+  assert.equal(composer.hidden, true, "未打开项目时不应露出一套看似损坏的输入区");
   assert.equal(input.disabled, true, "未打开项目时输入框禁用");
   assert.equal(send.disabled, true);
   await surface.openProject("D:\\novel");
+  assert.equal(composer.hidden, false, "打开项目后显示 composer");
   assert.equal(input.disabled, false, "打开项目后输入框可用");
   assert.equal(send.disabled, false);
 });
 
-test("空会话提示：无项目时显示「新建或打开项目」，打开项目后隐藏", async () => {
-  const { root, surface } = await makeSurface();
+test("无项目初始页：呈现 Codex 式起点，入口复用新建和打开项目流程", async () => {
+  const { root, surface, projectActions } = await makeSurface();
   const empty = root.querySelector('[data-testid="agent-empty"]');
-  assert.ok(empty, "无项目时应渲染空会话提示");
-  assert.equal(empty.hidden, false, "无项目时提示可见");
-  assert.match(empty.textContent, /新建或打开项目/u);
+  const run = root.querySelector('[data-testid="agent-run"]');
+  const create = root.querySelector('[data-testid="agent-empty-create"]');
+  const open = root.querySelector('[data-testid="agent-empty-open"]');
+  assert.ok(empty && create && open, "无项目时应渲染完整初始页与两个已有项目入口");
+  assert.equal(empty.hidden, false, "无项目时初始页可见");
+  assert.match(empty.textContent, /从一部小说开始/u);
+  assert.match(empty.textContent, /新建小说/u);
+  assert.match(empty.textContent, /打开本地文件夹/u);
+  create._fire("click");
+  open._fire("click");
+  assert.deepEqual(projectActions, ["create", "open"], "初始页不应另造项目流程");
+  assert.equal(run.hidden, true, "没有 Run 时不应留下空状态分隔线");
   await surface.openProject("D:\\novel");
-  assert.equal(empty.hidden, true, "打开项目后提示隐藏（有项目时为空会话，不显示欢迎词）");
+  assert.equal(empty.hidden, true, "打开项目后初始页隐藏（有项目时为空会话，不显示欢迎词）");
+  assert.equal(run.hidden, true, "项目已打开但尚未执行时仍保持干净");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  assert.equal(run.hidden, false, "有活动 Run 时才显示执行区域");
   await surface.openProject("D:\\novel-b");
   assert.equal(empty.hidden, true, "切换项目后仍隐藏");
 });
@@ -591,24 +830,134 @@ test("Plan：活动 Run 展开、终态后折叠；计划项只读（无编辑�
       { step: "验证修改", status: "pending" }
     ]
   }));
-  const plan = root.querySelector('[data-testid="agent-plan"]');
-  assert.ok(plan, "应渲染 Plan");
-  assert.equal(plan.open, true, "活动 Run 的 Plan 应展开");
-  const items = plan.querySelectorAll(".agent-plan-item");
+  const overlay = root.querySelector('[data-testid="agent-plan-overlay"]');
+  assert.ok(overlay, "应渲染 Plan 悬浮层");
+  // 默认折叠态：3 项（in_progress 优先 + 相邻）
+  let items = overlay.querySelectorAll(".agent-plan-item");
   assert.equal(items.length, 3);
-  assert.equal(items[0].dataset.status, "completed");
   assert.equal(items[1].dataset.status, "in_progress");
+  assert.equal(items[0].dataset.status, "completed");
   assert.equal(items[2].dataset.status, "pending");
-  assert.match(plan.textContent, /检查已有章节/u);
-  assert.match(plan.textContent, /先核对已完成章节/u);
-  // 无任何编辑入口
-  assert.equal(plan.querySelectorAll("input, textarea, [contenteditable]").length, 0, "Plan 不得有编辑控件");
-  assert.equal(plan.querySelectorAll("button").length, 0, "Plan 不得有操作按钮");
-  // 终态 → 折叠
+  assert.match(overlay.textContent, /检查已有章节/u);
+  // 折叠态只显示 step：explanation 不出现
+  assert.doesNotMatch(overlay.textContent, /先核对已完成章节/u, "折叠态不显示 explanation");
+  // 无任何编辑入口：悬浮层只有最小化与折叠/展开两个显示控制
+  assert.equal(overlay.querySelectorAll("input, textarea, [contenteditable]").length, 0, "Plan 不得有编辑控件");
+  const buttons = overlay.querySelectorAll("button");
+  assert.equal(buttons.length, 2, "摘要/完整态只有两个显示控制，无任务编辑入口");
+  assert.ok(overlay.querySelector('[data-testid="agent-plan-minimize"]'), "应可收至最小态");
+  assert.ok(overlay.querySelector('[data-testid="agent-plan-expand"]'), "折叠态应显示展开按钮");
+  // 展开态：全部 3 项 + explanation
+  overlay.querySelector('[data-testid="agent-plan-expand"]')._fire("click");
+  assert.ok(root.querySelector('[data-testid="agent-plan-overlay"]').querySelector('[data-testid="agent-plan-collapse"]'), "展开态应显示折叠按钮");
+  items = root.querySelector('[data-testid="agent-plan-overlay"]').querySelectorAll(".agent-plan-item");
+  assert.equal(items.length, 3, "展开态显示全部计划项");
+  assert.match(root.querySelector('[data-testid="agent-plan-overlay"]').textContent, /先核对已完成章节/u, "展开态显示 explanation");
+  // 折叠后内容仍在（可展开回看）
+  root.querySelector('[data-testid="agent-plan-overlay"]').querySelector('[data-testid="agent-plan-collapse"]')._fire("click");
+  assert.ok(root.querySelector('[data-testid="agent-plan-overlay"]').querySelector('[data-testid="agent-plan-expand"]'), "再折叠后显示展开按钮");
+  assert.equal(root.querySelector('[data-testid="agent-plan-overlay"]').querySelectorAll(".agent-plan-item").length, 3);
+  // Run 终态 → 保留供回看（不隐藏、不重建）
   surface.applyEvent(ev("run_cancelled", { reason: "user_stop" }));
-  assert.equal(plan.open, false, "Run 终态后 Plan 应折叠");
-  assert.equal(plan.querySelectorAll(".agent-plan-item").length, 3, "折叠后计划内容仍在（可展开回看）");
+  assert.ok(root.querySelector('[data-testid="agent-plan-overlay"]'), "Run 终态后悬浮层保留供回看");
+  // 新输入 → 旧计划退出悬浮层
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  input.value = "继续";
+  root.querySelector('[data-testid="agent-send"]')._fire("click");
+  assert.equal(root.querySelector('[data-testid="agent-plan-overlay"]'), null, "新输入开始旧计划退出悬浮层");
 });
+
+test("Plan 三态：最小态只留进度入口，恢复后回到摘要态", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("plan_updated", {
+    items: [
+      { id: "p1", step: "准备素材", status: "completed" },
+      { id: "p2", step: "撰写章节", status: "in_progress" },
+      { id: "p3", step: "校对正文", status: "pending" },
+      { id: "p4", step: "提交结果", status: "pending" }
+    ]
+  }));
+
+  let overlay = root.querySelector('[data-testid="agent-plan-overlay"]');
+  assert.equal(overlay.dataset.mode, "summary");
+  overlay.querySelector('[data-testid="agent-plan-minimize"]')._fire("click");
+  overlay = root.querySelector('[data-testid="agent-plan-overlay"]');
+  assert.equal(overlay.dataset.mode, "minimal");
+  assert.equal(overlay.querySelectorAll(".agent-plan-item").length, 0, "最小态不得继续遮挡正文");
+  const restore = overlay.querySelector('[data-testid="agent-plan-restore"]');
+  assert.ok(restore, "最小态只留下恢复入口");
+  assert.match(restore.textContent, /1\/4/u, "最小入口应给出有用的完成进度");
+  assert.equal(overlay.querySelectorAll("button").length, 1);
+
+  restore._fire("click");
+  overlay = root.querySelector('[data-testid="agent-plan-overlay"]');
+  assert.equal(overlay.dataset.mode, "summary");
+  assert.equal(overlay.querySelectorAll(".agent-plan-item").length, 3);
+});
+
+test("Plan 折叠态智能选取：in_progress 及相邻步骤优先", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("plan_updated", {
+    items: [
+      { id: "p1", step: "一", status: "completed" },
+      { id: "p2", step: "二", status: "completed" },
+      { id: "p3", step: "三", status: "in_progress" },
+      { id: "p4", step: "四", status: "pending" },
+      { id: "p5", step: "五", status: "pending" }
+    ]
+  }));
+  const overlay = root.querySelector('[data-testid="agent-plan-overlay"]');
+  const ids = [...overlay.querySelectorAll(".agent-plan-item")].map((el) => el.dataset.planId);
+  assert.deepEqual(ids, ["p2", "p3", "p4"], "折叠态应取 in_progress 及其相邻步骤");
+});
+
+test("Plan 折叠态无 in_progress 时取前三；旧格式无 id 以 step 兜底", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("plan_updated", {
+    items: [
+      { step: "第一步", status: "completed" },
+      { step: "第二步", status: "completed" },
+      { step: "第三步", status: "completed" },
+      { step: "第四步", status: "pending" }
+    ]
+  }));
+  const overlay = root.querySelector('[data-testid="agent-plan-overlay"]');
+  const ids = [...overlay.querySelectorAll(".agent-plan-item")].map((el) => el.dataset.planId);
+  assert.deepEqual(ids, ["第一步", "第二步", "第三步"], "无 in_progress 时机械取前三；旧格式以 step 兜底");
+});
+
+test("Plan 展开态显示 description；折叠态不显示", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("plan_updated", {
+    items: [
+      { id: "a", step: "第一步", status: "in_progress", description: "补充说明文字" },
+      { id: "b", step: "第二步", status: "pending" }
+    ]
+  }));
+  let overlay = root.querySelector('[data-testid="agent-plan-overlay"]');
+  assert.doesNotMatch(overlay.textContent, /补充说明文字/u, "折叠态只显示 step");
+  overlay.querySelector('[data-testid="agent-plan-expand"]')._fire("click");
+  overlay = root.querySelector('[data-testid="agent-plan-overlay"]');
+  assert.match(overlay.textContent, /补充说明文字/u, "展开态显示 description");
+});
+
+test("无计划的简单任务不渲染空计划面板", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  assert.equal(root.querySelector('[data-testid="agent-plan-overlay"]'), null, "无计划不显示空面板");
+  surface.applyEvent(ev("run_completed", {}));
+  assert.equal(root.querySelector('[data-testid="agent-plan-overlay"]'), null);
+});
+
 
 // ===========================================================================
 // 活动流：合并 / 20 行 / 64 KiB / details / 标记 / 不渲染私有推理
@@ -658,8 +1007,126 @@ test("活动标签映射：shell→运行命令、read_file→读取文件；thi
   // 思考标签：model turn 未闭合 → 状态行显示思考中
   surface.applyEvent(ev("model_turn_started", {}));
   assert.match(root.querySelector('[data-testid="agent-run-status"]').textContent, /思考中/u);
+  // 思考中流动反馈：三个动画点（CSS 侧提供动画与 reduced-motion 降级）
+  const thinking = root.querySelector('[data-testid="agent-thinking"]');
+  assert.ok(thinking, "思考中应显示流动反馈点");
+  assert.equal(thinking.querySelectorAll(".agent-thinking-dot").length, 3);
+  assert.equal(thinking.getAttribute("aria-hidden"), "true");
   surface.applyEvent(ev("model_turn_completed", {}));
   assert.doesNotMatch(root.querySelector('[data-testid="agent-run-status"]').textContent, /思考中/u);
+  assert.equal(root.querySelector('[data-testid="agent-thinking"]'), null, "思考结束后反馈点移除");
+});
+
+// ===========================================================================
+// 增量正文流（步骤7）：assistant_message_delta 累积渲染 + completed 终态对齐
+// ===========================================================================
+
+// MockElement 不支持组合属性选择器：用单选择器 + dataset 判定定位流式气泡。
+function streamBubble(root) {
+  const els = root.querySelectorAll('[data-testid="agent-assistant-message"]');
+  return els.find((el) => el.dataset.streaming === "true") ?? null;
+}
+
+test("assistant_message_delta 累积渲染，completed 带全文时终态对齐", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("assistant_message_delta", { input_id: "in-1", text: "第一部分。" }));
+  surface.applyEvent(ev("assistant_message_delta", { input_id: "in-1", text: "第二部分。" }));
+  await tick();
+  let stream = streamBubble(root);
+  assert.ok(stream, "delta 期间应显示流式气泡");
+  assert.match(stream.textContent, /第一部分。第二部分。/u, "流式气泡展示累积文本");
+  // completed 带全文 → 终态气泡以全文对齐，流式气泡移除
+  surface.applyEvent(ev("assistant_message_completed", { input_id: "in-1", text: "第一部分。第二部分。" }));
+  assert.equal(streamBubble(root), null, "终态后流式气泡移除");
+  const finals = root.querySelectorAll('[data-testid="agent-assistant-message"]');
+  assert.equal(finals.length, 1, "只有一条终态助手消息");
+  assert.match(finals[0].textContent, /第一部分。第二部分。/u);
+});
+
+test("新模型轮次清除工具轮次的临时正文，后续 token 从空白气泡开始", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+
+  surface.applyEvent(ev("model_turn_started", {}));
+  surface.applyEvent(ev("assistant_message_delta", { text: "正在读取资料……" }));
+  await tick();
+  assert.match(streamBubble(root).textContent, /正在读取资料/u);
+  surface.applyEvent(ev("model_turn_completed", {}));
+
+  surface.applyEvent(ev("model_turn_started", {}));
+  assert.equal(streamBubble(root), null, "工具完成后的新模型轮次应移除上一轮临时正文");
+  surface.applyEvent(ev("assistant_message_delta", { text: "最终答复" }));
+  await tick();
+  assert.equal(streamBubble(root).textContent, "最终答复");
+});
+
+test("assistant_message_completed 不带全文时以 delta 累积值为终态", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("assistant_message_delta", { text: "增量内容" }));
+  await tick();
+  surface.applyEvent(ev("assistant_message_completed", { input_id: "in-1" }));
+  const finals = root.querySelectorAll('[data-testid="agent-assistant-message"]');
+  assert.equal(finals.length, 1, "无全文的 completed 应以累积值产生终态气泡");
+  assert.match(finals[0].textContent, /增量内容/u);
+});
+
+test("rAF 合帧节流：同一任务内多个 delta 只调度一帧渲染", async () => {
+  const frames = [];
+  const { root, surface } = await makeSurface({ requestFrame: (cb) => frames.push(cb) });
+  await surface.openProject("D:\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("assistant_message_delta", { text: "a" }));
+  surface.applyEvent(ev("assistant_message_delta", { text: "b" }));
+  surface.applyEvent(ev("assistant_message_delta", { text: "c" }));
+  assert.equal(frames.length, 1, "三个 delta 只调度一帧");
+  assert.equal(streamBubble(root), null, "帧执行前不渲染");
+  frames[0]();
+  const stream = streamBubble(root);
+  assert.ok(stream, "帧执行后渲染流式气泡");
+  assert.match(stream.textContent, /abc/u, "帧渲染应取最新累积文本");
+});
+
+test("重连快照回放：投影含未达 delta 时回放不重复累积", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  // 首次快照：应用 delta a、b（前端 lastSeq = 11）
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() }), [
+    { ...ev("assistant_message_delta", { text: "a" }), seq: 10, event_id: "evt-10" },
+    { ...ev("assistant_message_delta", { text: "b" }), seq: 11, event_id: "evt-11" }
+  ]));
+  await tick();
+  // 断线重连快照：服务端投影已含 delta 1..3（assistant_text="abc"），回放 12..14
+  surface.applySnapshot(snapshotOf(
+    session({ status: "running", active_run: activeRun({ assistant_text: "abc" }) }),
+    [
+      { ...ev("assistant_message_delta", { text: "c" }), seq: 12, event_id: "evt-12" },
+      { ...ev("assistant_message_delta", { text: "d" }), seq: 13, event_id: "evt-13" },
+      { ...ev("assistant_message_completed", { input_id: "in-1", text: "abcd" }), seq: 14, event_id: "evt-14" }
+    ]
+  ));
+  const finals = root.querySelectorAll('[data-testid="agent-assistant-message"]');
+  assert.equal(finals.length, 1, "重连后终态气泡唯一");
+  assert.match(finals[0].textContent, /abcd/u, "重放 delta 与实时一致，不与投影累积重复相加");
+});
+
+test("助手正文增量渲染 Markdown：粗体/代码/段落进入 innerHTML", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("assistant_message_delta", { text: "**重点** 与 `code`" }));
+  await tick();
+  const stream = streamBubble(root);
+  assert.ok(stream, "delta 期间应显示流式气泡");
+  assert.match(stream.querySelector(".agent-message-text").innerHTML, /<strong>重点<\/strong>/u, "粗体应渲染为 strong");
+  assert.match(stream.querySelector(".agent-message-text").innerHTML, /<code>code<\/code>/u, "行内代码应渲染为 code");
+  surface.applyEvent(ev("assistant_message_completed", { input_id: "in-1", text: "**重点** 与 `code`" }));
+  const final = root.querySelector('[data-testid="agent-assistant-message"]');
+  assert.match(final.querySelector(".agent-message-text").innerHTML, /<strong>重点<\/strong>/u, "终态消息同样渲染 Markdown");
 });
 
 test("状态标记映射：running=• / completed=✓ / failed=✗ / cancelled=已停止", async () => {
@@ -1123,15 +1590,15 @@ test("重建对话 DOM：近底部时重新锚定末端；阅读更早内容时�
 // 布局基线：agent.css 保留 900px 内容列与模型菜单视口钳制
 // ===========================================================================
 
-test("agent.css 保留 900px 内容列与模型菜单视口钳制（Task 11 基线）", async () => {
+test("agent.css 保留 900px 内容列、向上菜单与三态计划布局", async () => {
   const css = await fs.readFile(path.join(here, "..", "..", "src", "app-shell", "agent", "agent.css"), "utf8");
   assert.match(css, /--content-column:\s*900px/u, "根变量应定义 900px 内容列");
   assert.match(css, /\.agent-conversation[\s\S]*max-width:\s*var\(--content-column\)/u, "对话共享内容列");
   assert.match(css, /\.agent-composer[\s\S]*max-width:\s*var\(--content-column\)/u, "composer 共享内容列");
   assert.match(
     css,
-    /width:\s*min\(420px,\s*calc\(100vw - 32px\)\)/u,
-    "模型菜单宽度应为 min(420px, 100vw - 32px)"
+    /\.agent-composer-popover\s*\{[^}]*bottom:\s*calc\(100% \+ 7px\)[^}]*max-width:\s*min\(360px,\s*calc\(100vw - 32px\)\)/u,
+    "composer 菜单应向上浮出并保留视口安全区"
   );
   assert.match(css, /overflow-wrap:\s*anywhere/u, "模型名称应允许任意位置换行");
   // 排队文本换行不遮「立即」：grid 稳定轨道（minmax(0,1fr) + auto 按钮列）
@@ -1150,6 +1617,40 @@ test("agent.css 保留 900px 内容列与模型菜单视口钳制（Task 11 基�
   assert.match(css, /\.agent-stop-btn\s*,\s*\.agent-retry-btn\s*,\s*\.agent-promote[\s\S]*min-width/u, "控制按钮应有固定最小宽度");
   // 窄视口无重叠
   assert.match(css, /@media\s*\(max-width:\s*560px\)[\s\S]*\.agent-queue-item\s*\{/u, "窄视口应调整排队布局避免重叠");
+  assert.match(
+    css,
+    /\.agent-composer-shell\s*\{[^}]*display:\s*grid[^}]*border-radius:\s*8px[^}]*box-shadow:/u,
+    "composer 应是有明确层级的紧凑命令台，而不是单行长条"
+  );
+  assert.match(
+    css,
+    /\.agent-message--assistant\s+\.agent-message-text\s*\{[^}]*background:\s*transparent[^}]*border:\s*0/u,
+    "Agent 回复应使用安静的无框正文层级"
+  );
+  assert.match(css, /\.agent-activities:empty\s*,\s*\.agent-queue:empty\s*\{[^}]*display:\s*none/u, "空活动和空队列不应留下分隔线");
+  // Plan 悬浮层：绝对定位覆盖层（不占网格轨道、不压缩消息列）
+  assert.match(
+    css,
+    /\.agent-plan-overlay\s*\{[^}]*position:\s*absolute[^}]*top:\s*14px[^}]*z-index:\s*30/u,
+    "悬浮层应绝对定位于右上覆盖层（第二图层）"
+  );
+  assert.match(css, /\.agent-plan-overlay\[data-mode="minimal"\]\s*\{[^}]*width:\s*auto[^}]*background:\s*transparent/u, "最小态不得保留遮挡正文的大卡片");
+  assert.match(css, /\.agent-surface\s*\{[^}]*position:\s*relative/u, "surface 应提供悬浮层定位锚点");
+  // 窄窗口降级：composer 上方的非模态浮层（同节点复用，仍不压缩消息列）
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*720px\)[\s\S]*\.agent-plan-overlay\s*\{[^}]*bottom:[^}]*left:[^}]*right:[^}]*width:\s*auto/u,
+    "窄窗口应降级为 composer 上方的非模态浮层"
+  );
+  // 思考中流动反馈 + reduced-motion 禁用
+  assert.match(css, /@keyframes\s+agent-thinking-blink/u, "思考中应有流动动画");
+  assert.match(
+    css,
+    /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*\.agent-thinking-dot\s*\{[^}]*animation:\s*none/u,
+    "reduced-motion 应禁用思考动画"
+  );
+  // 助手正文 Markdown 层次（步骤7）
+  assert.match(css, /\.agent-message-text\.agent-markdown\s*\{[^}]*white-space:\s*normal/u, "Markdown 正文应切换为普通换行");
 });
 
 // ===========================================================================
@@ -1295,6 +1796,41 @@ test("transport: openProject 拉取带项目作用域的初始快照（afterSeq=
     assert.ok(snap, "应请求 snapshot 端点");
     assert.equal(snap.url, "/api/agent/snapshot?projectRoot=D%3A%5Cnovel&afterSeq=0&limit=200");
     surface.destroy();
+  });
+});
+
+test("transport: openProject 中止旧项目仍在途的 HTTP 请求", async () => {
+  let oldRequestSignal = null;
+  await withFetch((url, options) => {
+    if (url.startsWith("/api/project/events")) return { ok: true, status: 200, body: neverStream() };
+    if (url === "/api/agent/input") {
+      oldRequestSignal = options.signal;
+      return new Promise((_resolve, reject) => {
+        const abort = () => {
+          const error = new Error("aborted");
+          error.name = "AbortError";
+          reject(error);
+        };
+        if (options.signal?.aborted) abort();
+        else options.signal?.addEventListener("abort", abort, { once: true });
+      });
+    }
+    return snapshotResponse(null);
+  }, async () => {
+    const { root, surface } = await makeSurface({ useRealTransport: true });
+    try {
+      await surface.openProject("D:\\novel-a");
+      const input = root.querySelector('[data-testid="agent-composer-input"]');
+      input.value = "A 项目在途请求";
+      root.querySelector('[data-testid="agent-send"]')._fire("click");
+      await waitUntil(() => oldRequestSignal !== null);
+
+      await surface.openProject("D:\\novel-b");
+      assert.equal(oldRequestSignal.aborted, true, "切项目必须中止旧项目所有在途 HTTP 请求");
+    } finally {
+      surface.destroy();
+      await tick();
+    }
   });
 });
 
@@ -1474,4 +2010,367 @@ test("禁止文案：生产 UI 不含已删除的旧教学/占位文案", async 
     }
   }
   assert.deepEqual(offenders, [], "生产 UI 不得包含已删除的旧教学/占位文案");
+});
+
+// ===========================================================================
+// 步骤2：工具活动行显示文件路径（tool_call_started args.path）
+// ===========================================================================
+
+test("活动行：read/write/edit 带 path 时标签显示项目相对路径", async () => {
+  const { root, surface } = await makeSurface();
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() }), [
+    toolStarted("a1", "read_file", { path: "src/core/x.mjs" }),
+    toolStarted("a2", "write_file", { path: "chapters/01.md" }),
+    toolStarted("a3", "edit_file", { path: "docs/plan.md" })
+  ]));
+  const labels = [...root.querySelectorAll(".agent-activity-label")].map((el) => el.textContent);
+  assert.deepEqual(labels, [
+    "读取文件 src/core/x.mjs",
+    "写入文件 chapters/01.md",
+    "修改文件 docs/plan.md"
+  ]);
+});
+
+test("活动行：无 path 的工具回退泛化文案，不出现 undefined", async () => {
+  const { root, surface } = await makeSurface();
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() }), [
+    toolStarted("a1", "read_file", {}),
+    toolStarted("a2", "edit_file", { file: "旧字段名" }),
+    toolStarted("a3", "shell", { command: "npm test" }),
+    toolStarted("a4", "read_file", JSON.stringify({ path: "str-json.md" }))
+  ]));
+  const labels = [...root.querySelectorAll(".agent-activity-label")].map((el) => el.textContent);
+  assert.equal(labels[0], "读取文件");
+  assert.equal(labels[1], "修改文件");
+  assert.equal(labels[2], "运行命令");
+  assert.equal(labels[3], "读取文件 str-json.md", "字符串化 JSON 的 args 也应解析出 path");
+});
+
+// ===========================================================================
+// 步骤3：composer 三控件（模型 / 权限模式 / 思考强度）
+// ===========================================================================
+
+function modelProfile(id, name, { display = name, baseUrl = "https://x/v1", active = false, capabilities = undefined } = {}) {
+  return { id, model_name: name, display, base_url: baseUrl, active, ...(capabilities ? { capabilities } : {}) };
+}
+
+function deepseekOptions(overrides = {}) {
+  return {
+    models: [
+      modelProfile("ds-r", "deepseek-reasoner", {
+        display: "DeepSeek Reasoner",
+        baseUrl: "https://api.deepseek.com",
+        active: true,
+        capabilities: { reasoningEffortLevels: ["low", "medium", "high"] }
+      }),
+      modelProfile("mimo-7b", "mimo-7b", { display: "MiMo 7B" })
+    ],
+    activeModel: { provider: "deepseek", model_name: "deepseek-reasoner", base_url: "https://api.deepseek.com" },
+    toolPermissions: { read_only: false, safe_edit: true, auto_edit: false, yolo: false },
+    reasoningEffort: "auto",
+    ...overrides
+  };
+}
+
+function menuOption(root, testid, value) {
+  return [...root.querySelectorAll(`[data-testid="${testid}"]`)]
+    .find((option) => option.dataset.value === value);
+}
+
+test("composer 三控件：openProject 后加载选项并渲染（testid 齐全）", async () => {
+  const { root, surface } = await makeSurface({
+    apiOverrides: {
+      fetchComposerOptions: async () => deepseekOptions({ reasoningEffort: "high" })
+    }
+  });
+  // 未打开项目：三控件禁用
+  const modelSel = root.querySelector('[data-testid="agent-model-select"]');
+  const permSel = root.querySelector('[data-testid="agent-permission-select"]');
+  const effortSel = root.querySelector('[data-testid="agent-effort-select"]');
+  assert.ok(modelSel && permSel && effortSel, "三控件应有 testid");
+  assert.equal(modelSel.disabled, true, "未打开项目时模型选择禁用");
+  assert.equal(effortSel.disabled, true);
+
+  await surface.openProject("D:\\novel");
+
+  assert.equal(modelSel.disabled, false);
+  assert.equal(modelSel.tagName, "button", "不得退回系统原生 select");
+  assert.equal(modelSel.dataset.value, "ds-r");
+  assert.match(modelSel.textContent, /DeepSeek Reasoner/u);
+  assert.deepEqual(
+    [...root.querySelectorAll('[data-testid="agent-model-option"]')].map((o) => o.textContent),
+    ["DeepSeek Reasoner", "MiMo 7B"]
+  );
+  assert.equal(permSel.disabled, false);
+  assert.equal(root.querySelectorAll('[data-testid="agent-permission-option"]').length, 4, "权限四档：只读/确认后修改/自动修改/YOLO");
+  assert.equal(permSel.dataset.value, "confirm");
+  assert.equal(effortSel.disabled, false, "DeepSeek thinking 模型提供思考强度档位");
+  assert.deepEqual([...root.querySelectorAll('[data-testid="agent-effort-option"]')].map((o) => o.dataset.value), ["auto", "low", "medium", "high"]);
+  assert.equal(effortSel.dataset.value, "high");
+
+  modelSel._fire("click", { stopPropagation() {} });
+  assert.equal(root.querySelector('[data-testid="agent-model-menu"]').hidden, false, "菜单应由触发按钮打开");
+  assert.equal(modelSel.getAttribute("aria-expanded"), "true");
+});
+
+test("composer 思考强度能力来自模型清单，不在前端按供应商或模型名猜测", async () => {
+  const { root, surface } = await makeSurface({
+    apiOverrides: {
+      fetchComposerOptions: async () => ({
+        models: [modelProfile("custom-thinking", "custom-thinking", {
+          active: true,
+          capabilities: { reasoningEffortLevels: ["low", "medium", "high"] }
+        })],
+        activeModel: { provider: "openai-compatible", model_name: "custom-thinking", base_url: "https://x/v1" },
+        toolPermissions: {},
+        reasoningEffort: "medium"
+      })
+    }
+  });
+
+  await surface.openProject("D:\\novel");
+
+  const effortSel = root.querySelector('[data-testid="agent-effort-select"]');
+  assert.equal(effortSel.disabled, false);
+  assert.deepEqual([...root.querySelectorAll('[data-testid="agent-effort-option"]')].map((option) => option.dataset.value), ["auto", "low", "medium", "high"]);
+  assert.equal(effortSel.dataset.value, "medium");
+});
+
+test("composer 模型清单缺少项目当前模型时，仍显示实际生效模型", async () => {
+  const { root, surface } = await makeSurface({
+    apiOverrides: {
+      fetchComposerOptions: async () => ({
+        models: [],
+        activeModel: { provider: "mock", model_name: "mock-writer", base_url: "" },
+        toolPermissions: {},
+        reasoningEffort: "auto"
+      })
+    }
+  });
+  await surface.openProject("D:\\legacy-novel");
+
+  const model = root.querySelector('[data-testid="agent-model-select"]');
+  assert.equal(model.dataset.value, "mock-writer");
+  assert.match(model.textContent, /mock-writer/u);
+  assert.equal(model.disabled, true, "只有未导入的当前模型时只展示事实，不伪装成可切换选项");
+  assert.equal(root.querySelectorAll('[data-testid="agent-model-option"]').length, 1);
+});
+
+test("composer 模型选择：change 调 switchModel，响应更新控件与能力", async () => {
+  const switched = [];
+  const { root, surface } = await makeSurface({
+    apiOverrides: {
+      fetchComposerOptions: async () => deepseekOptions(),
+      switchModel: async (modelId) => {
+        switched.push(modelId);
+        return {
+          capabilities: {}, // mimo：无 reasoningEffortLevels
+          project: { tool_permissions: { read_only: false, safe_edit: true, auto_edit: true, yolo: false } },
+          available_models: [
+            modelProfile("mimo-7b", "mimo-7b", { display: "MiMo 7B", active: true }),
+            modelProfile("ds-r", "deepseek-reasoner", { display: "DeepSeek Reasoner", baseUrl: "https://api.deepseek.com" })
+          ]
+        };
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+  const modelSel = root.querySelector('[data-testid="agent-model-select"]');
+  const effortSel = root.querySelector('[data-testid="agent-effort-select"]');
+  assert.equal(effortSel.disabled, false, "切换前 DeepSeek 支持强度");
+
+  menuOption(root, "agent-model-option", "mimo-7b")._fire("click", { stopPropagation() {} });
+  await tick();
+
+  assert.deepEqual(switched, ["mimo-7b"], "应调用 switchModel(modelId)");
+  assert.equal(modelSel.dataset.value, "mimo-7b", "切换成功后菜单保持新模型");
+  assert.equal(root.querySelectorAll('[data-testid="agent-effort-option"]').length, 1, "mimo 不支持思考强度，只剩「自动」");
+  assert.equal(effortSel.disabled, true);
+  assert.equal(effortSel.dataset.value, "auto");
+});
+
+test("composer 权限选择：所有档位直接落盘，YOLO 不弹确认", async () => {
+  const updated = [];
+  const realConfirm = globalThis.confirm;
+  let confirmCalls = 0;
+  globalThis.confirm = () => { confirmCalls += 1; return false; };
+  try {
+    const { root, surface } = await makeSurface({
+      apiOverrides: {
+        fetchComposerOptions: async () => deepseekOptions({ models: [] }),
+        updatePermissions: async (combo) => {
+          updated.push(combo);
+          return { ok: true };
+        }
+      }
+    });
+    await surface.openProject("D:\\novel");
+    const permSel = root.querySelector('[data-testid="agent-permission-select"]');
+
+    menuOption(root, "agent-permission-option", "yolo")._fire("click", { stopPropagation() {} });
+    await tick();
+    assert.equal(updated.length, 1);
+    assert.deepEqual(updated[0], { read_only: false, safe_edit: true, auto_edit: true, yolo: true });
+    assert.equal(permSel.dataset.value, "yolo");
+    assert.equal(confirmCalls, 0, "YOLO 是权限选择，不应打断用户要求二次确认");
+
+    // 非 yolo 档：直接落盘，无确认
+    menuOption(root, "agent-permission-option", "auto")._fire("click", { stopPropagation() {} });
+    await tick();
+    assert.equal(updated.length, 2);
+    assert.deepEqual(updated[1], { read_only: false, safe_edit: true, auto_edit: true, yolo: false });
+    assert.equal(permSel.dataset.value, "auto");
+  } finally {
+    globalThis.confirm = realConfirm;
+  }
+});
+
+test("composer 思考强度：不支持模型仅「自动」且禁用；选择后调 updateReasoningEffort", async () => {
+  const efforts = [];
+  const { root, surface } = await makeSurface({
+    apiOverrides: {
+      fetchComposerOptions: async () => ({
+        models: [modelProfile("mimo-7b", "mimo-7b", { active: true })],
+        activeModel: { provider: "mimo", model_name: "mimo-7b", base_url: "https://x/v1" },
+        toolPermissions: {},
+        reasoningEffort: "medium"
+      }),
+      updateReasoningEffort: async (effort) => {
+        efforts.push(effort);
+        return { ok: true };
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+  const effortSel = root.querySelector('[data-testid="agent-effort-select"]');
+  assert.equal(root.querySelectorAll('[data-testid="agent-effort-option"]').length, 1);
+  assert.equal(effortSel.disabled, true, "不支持模型不得伪装低/中/高可用");
+  assert.equal(effortSel.dataset.value, "auto", "不支持模型固定显示「自动」");
+
+  // 换到支持的模型后恢复四档并落盘
+  const { root: root2, surface: surface2 } = await makeSurface({
+    apiOverrides: {
+      fetchComposerOptions: async () => deepseekOptions(),
+      updateReasoningEffort: async (effort) => {
+        efforts.push(effort);
+        return { ok: true };
+      }
+    }
+  });
+  await surface2.openProject("D:\\novel");
+  const effortSel2 = root2.querySelector('[data-testid="agent-effort-select"]');
+  assert.equal(effortSel2.disabled, false);
+  menuOption(root2, "agent-effort-option", "high")._fire("click", { stopPropagation() {} });
+  await tick();
+  assert.deepEqual(efforts, ["high"], "应调用 updateReasoningEffort(high)");
+  assert.equal(effortSel2.dataset.value, "high");
+});
+
+test("composer：Run 进行中切换模型/权限不报错、不改运行状态", async () => {
+  const { root, surface } = await makeSurface({
+    apiOverrides: {
+      fetchComposerOptions: async () => deepseekOptions(),
+      switchModel: async (modelId) => ({
+        capabilities: { reasoningEffortLevels: ["low", "medium", "high"] },
+        project: { tool_permissions: { read_only: false, safe_edit: true, auto_edit: true, yolo: false } },
+        available_models: [
+          modelProfile("mimo-7b", "mimo-7b", { display: "MiMo 7B", active: true }),
+          modelProfile("ds-r", "deepseek-reasoner", { display: "DeepSeek Reasoner", baseUrl: "https://api.deepseek.com" })
+        ]
+      }),
+      updatePermissions: async () => ({ ok: true })
+    }
+  });
+  await surface.openProject("D:\\novel");
+  surface.applyEvent(ev("run_started", { workflow: "general", input_id: "in-1" }));
+  const statusEl = root.querySelector('[data-testid="agent-run-status"]');
+  assert.equal(statusEl.textContent, "运行中");
+
+  const modelSel = root.querySelector('[data-testid="agent-model-select"]');
+  menuOption(root, "agent-model-option", "mimo-7b")._fire("click", { stopPropagation() {} });
+  const permSel = root.querySelector('[data-testid="agent-permission-select"]');
+  menuOption(root, "agent-permission-option", "read_only")._fire("click", { stopPropagation() {} });
+  await tick();
+
+  assert.equal(root.querySelector('[data-testid="agent-error"]'), null, "切换不渲染错误卡");
+  assert.equal(root.querySelector('[data-testid="agent-run-status"]').textContent, "运行中", "运行状态不受切换影响");
+  assert.equal(root.querySelector('[data-testid="agent-stop"]') !== null, true, "停止按钮仍在");
+});
+
+test("composer 选项加载失败：控件保持禁用，不阻断对话", async () => {
+  const { root, surface } = await makeSurface({
+    apiOverrides: {
+      fetchComposerOptions: async () => {
+        throw new Error("network down");
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+  assert.equal(root.querySelector('[data-testid="agent-model-select"]').disabled, true);
+  assert.equal(root.querySelector('[data-testid="agent-permission-select"]').disabled, true);
+  assert.equal(root.querySelector('[data-testid="agent-effort-select"]').disabled, true);
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  input.value = "继续";
+  root.querySelector('[data-testid="agent-send"]')._fire("click");
+  await tick();
+  assert.ok(root.querySelector('[data-testid="agent-user-message"]'), "对话发送不受选项加载失败影响");
+});
+
+test("transport: composer 选项读取与切换使用正确端点、作用域与 body", async () => {
+    await withFetch((url, options) => {
+      if (url.startsWith("/api/project/events")) return { ok: true, status: 200, body: neverStream() };
+      if (url === "/api/settings/models") {
+        return jsonResponse({ ok: true, default_model: null, models: [
+          modelProfile("mimo-7b", "mimo-7b", { display: "MiMo 7B" }),
+          modelProfile("ds-r", "deepseek-reasoner", {
+            display: "DeepSeek Reasoner",
+            baseUrl: "https://api.deepseek.com",
+            active: true,
+            capabilities: { reasoningEffortLevels: ["low", "medium", "high"] }
+          })
+        ] });
+      }
+      if (url.startsWith("/api/dashboard?")) {
+        return jsonResponse({
+          ok: true, hasProject: true, project: {}, config: {
+            effective: {
+              active_model: { provider: "deepseek", model_name: "deepseek-reasoner", base_url: "https://api.deepseek.com" },
+              tool_permissions: { read_only: false, safe_edit: true, auto_edit: false, yolo: false }
+            }
+          }
+        });
+      }
+      if (url === "/api/settings/model-switch") {
+        return jsonResponse({ ok: true, capabilities: {}, project: { tool_permissions: {} }, available_models: [] });
+      }
+      if (url === "/api/settings/update") return jsonResponse({ ok: true });
+      return snapshotResponse(null);
+    }, async (calls) => {
+      const { root, surface } = await makeSurface({ useRealTransport: true });
+      await surface.openProject("D:\\novel");
+      const urls = calls.map((c) => String(c.url));
+      assert.ok(urls.includes("/api/settings/models"), "应读取全局模型清单");
+      assert.ok(urls.some((u) => u.startsWith("/api/dashboard?projectRoot=")), "应读取带项目作用域的 dashboard");
+      const modelSel = root.querySelector('[data-testid="agent-model-select"]');
+      const effortSel = root.querySelector('[data-testid="agent-effort-select"]');
+      assert.equal(root.querySelectorAll('[data-testid="agent-effort-option"]').length, 4, "初始加载应读取服务端模型能力");
+      assert.equal(modelSel.dataset.value, "ds-r");
+
+      menuOption(root, "agent-model-option", "mimo-7b")._fire("click", { stopPropagation() {} });
+      await waitUntil(() => calls.some((c) => String(c.url) === "/api/settings/model-switch"));
+      const sw = calls.find((c) => String(c.url) === "/api/settings/model-switch");
+      assert.deepEqual(JSON.parse(sw.options.body), { projectRoot: "D:\\novel", model_id: "mimo-7b" });
+      await waitUntil(() => root.querySelectorAll('[data-testid="agent-effort-option"]').length === 1, { timeoutMs: 2000 });
+      assert.equal(effortSel.disabled, true, "切换后以服务端 capabilities 为准（无强度档）");
+
+      const permSel = root.querySelector('[data-testid="agent-permission-select"]');
+      menuOption(root, "agent-permission-option", "yolo")._fire("click", { stopPropagation() {} });
+      await waitUntil(() => calls.filter((c) => String(c.url) === "/api/settings/update").length === 1);
+      const upd = calls.find((c) => String(c.url) === "/api/settings/update");
+      assert.deepEqual(JSON.parse(upd.options.body), {
+        projectRoot: "D:\\novel",
+        tool_permissions: { read_only: false, safe_edit: true, auto_edit: true, yolo: true }
+      });
+      surface.destroy();
+    });
 });

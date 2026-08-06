@@ -149,20 +149,6 @@ function findElementByLabel(label) {
   return domRegistry.find((el) => el.getAttribute("aria-label") === label) ?? null;
 }
 
-// 重渲染会新建一组表单元素，findElementByLabel 只找到第一组（旧元素）；
-// 需要断言「最新渲染」时用这个反向查找（registry 末尾是最新元素）。
-function findLatestElementByLabel(label) {
-  return [...domRegistry].reverse().find((el) => el.getAttribute("aria-label") === label) ?? null;
-}
-
-// 输入/输出/缓存命中价三连断言。期望值统一按字符串比较，
-// 兼容 mock 保留原始类型（真实 DOM 的 input.value 恒为字符串）。
-function assertOfficialPriceFields(expected, find = findElementByLabel) {
-  assert.equal(String(find("输入价（元/百万 token）").value), String(expected.input));
-  assert.equal(String(find("输出价（元/百万 token）").value), String(expected.output));
-  assert.equal(String(find("缓存命中价（元/百万 token，可选）").value), String(expected.cache));
-}
-
 // ---------------------------------------------------------------------------
 // Pure helper tests (existing)
 // ---------------------------------------------------------------------------
@@ -262,7 +248,7 @@ test("没有项目时保存模型：走全局路由，不再提示先新建小�
   assert.equal(toasts.some((t) => /先新建或打开一部小说/.test(t.message)), false);
 });
 
-test("有项目时保存模型：模型走全局路由，项目专属设置仍走项目路由", async () => {
+test("有项目时保存模型：只更新全局模型，不暗改项目级专家配置", async () => {
   const calls = [];
   const modal = createSettingsModalForTest({
     getCurrentProjectRoot: () => "D:/novels/demo",
@@ -282,10 +268,7 @@ test("有项目时保存模型：模型走全局路由，项目专属设置仍�
 
   const urls = calls.map((c) => c.url);
   assert.equal(urls.includes("/api/settings/model-profile"), true);
-  assert.equal(urls.includes("/api/settings/update"), true);
-  // 模型信息不能再混在项目设置请求里
-  const projectCall = calls.find((c) => c.url === "/api/settings/update");
-  assert.equal(projectCall.body.active_model, undefined);
+  assert.equal(urls.includes("/api/settings/update"), false);
 });
 
 test("没有项目时表单显示全局默认模型，而不是预设默认值", async () => {
@@ -403,10 +386,10 @@ test("模型字段校验失败后再保存：成功路径仍正常工作", async
   assert.equal(calls.filter((c) => c.url === "/api/settings/model-profile").length, 1);
   assert.equal(calls.some((c) => c.url === "/api/settings/update"), false);
 
-  // 第二次：校验通过，完整走完保存流程（含项目设置 update）
+  // 第二次：校验通过，只完成模型保存，不产生隐式项目设置写入
   await modal.saveSettingsForTest();
   assert.equal(calls.filter((c) => c.url === "/api/settings/model-profile").length, 2);
-  assert.equal(calls.filter((c) => c.url === "/api/settings/update").length, 1);
+  assert.equal(calls.filter((c) => c.url === "/api/settings/update").length, 0);
 });
 
 // ---------------------------------------------------------------------------
@@ -456,98 +439,26 @@ test("设置里显示已配好的模型，可以点击选用或删除", async ()
   assert.equal(modal.getModelFieldValue("model_name"), "mimo-v2.5-pro");
 });
 
-// ---------------------------------------------------------------------------
-// 选模型自动带出官方价（shared/official-pricing.mjs 预配置）
-// ---------------------------------------------------------------------------
-
-test("输入官方收录的模型名时，价格框自动带出官方价；切模型时官方价彼此替换", async () => {
+test("模型设置只显示连接所需字段，不渲染价格、预算和运行参数", async () => {
   const modal = createSettingsModalForTest();
   await modal.openSettingsModal();
 
-  modal.setModelFieldsForTest({ model_name: "deepseek-v4-flash" });
-  findElementByLabel("模型")._fire("input");
-  assertOfficialPriceFields({ input: 1, output: 2, cache: 0.02 });
-
-  // 切换模型名（datalist 选择触发 change）：带出新模型官方价，不留旧模型的价格。
-  modal.setModelFieldsForTest({ model_name: "deepseek-v4-pro" });
-  findElementByLabel("模型")._fire("change");
-  assertOfficialPriceFields({ input: 3, output: 6, cache: 0.025 });
-});
-
-test("改成未收录官方价的模型名时清空价格框，不残留上一模型的价", async () => {
-  const modal = createSettingsModalForTest();
-  await modal.openSettingsModal();
-  // 打开设置默认已按预设模型带出官方价（deepseek-v4-pro: 3/6/0.025）。
-  assert.equal(findElementByLabel("输入价（元/百万 token）").value, "3");
-
-  modal.setModelFieldsForTest({ model_name: "deepseek-chat" });
-  findElementByLabel("模型")._fire("input");
-  assertOfficialPriceFields({ input: "", output: "", cache: "" });
-});
-
-test("打开设置无任何模型时，按默认预设模型带出官方价", async () => {
-  const modal = createSettingsModalForTest();
-  await modal.openSettingsModal();
-
-  assert.equal(findElementByLabel("模型").value, "deepseek-v4-pro");
-  assertOfficialPriceFields({ input: 3, output: 6, cache: 0.025 });
-});
-
-test("已保存价格不被初始带出覆盖，仅补空缺的缓存命中价", async () => {
-  const modal = createSettingsModalForTest({
-    getDashboard: () => ({ project: { active_model: {
-      provider: "openai-compatible",
-      model_name: "deepseek-v4-flash",
-      base_url: "https://api.deepseek.com",
-      api_key_env: "DEEPSEEK_API_KEY",
-      pricing: { input_per_million: 3, output_per_million: 6 }
-    } } })
-  });
-  await modal.openSettingsModal();
-
-  assertOfficialPriceFields({ input: 3, output: 6, cache: 0.02 });
-});
-
-test("切供应商时价格跟随新预设模型，不带旧模型的价格", async () => {
-  const modal = createSettingsModalForTest({
-    getDashboard: () => ({ project: { active_model: {
-      provider: "openai-compatible",
-      model_name: "deepseek-v4-flash",
-      base_url: "https://api.deepseek.com",
-      api_key_env: "DEEPSEEK_API_KEY",
-      pricing: { input_per_million: 1, output_per_million: 2, cache_hit_per_million: 0.02 }
-    } } })
-  });
-  await modal.openSettingsModal();
-  assert.equal(modal.getModelFieldValue("model_name"), "deepseek-v4-flash");
-  assert.equal(findElementByLabel("输入价（元/百万 token）").value, 1);
-
-  // 切到小米 MiMo 供应商：模型框切到预设 mimo-v2.5-pro，价格应带出 MiMo 官方价。
-  // 每次渲染会新建一组表单元素，断言取最新渲染的那一组（registry 末尾）。
-  const spItems = domRegistry.filter((el) => el.className.startsWith("sp-item"));
-  spItems[1].click();
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(modal.getModelFieldValue("model_name"), "mimo-v2.5-pro");
-  assertOfficialPriceFields({ input: 3, output: 6, cache: 0.025 }, findLatestElementByLabel);
-});
-
-test("无项目时，全局默认模型已保存的价格也回填进表单", async () => {
-  const modal = createSettingsModalForTest({
-    getJsonImpl: async () => ({
-      ok: true,
-      default_model: {
-        provider: "openai-compatible",
-        model_name: "deepseek-v4-flash",
-        base_url: "https://api.deepseek.com",
-        api_key_env: "DEEPSEEK_API_KEY",
-        pricing: { input_per_million: 1, output_per_million: 2, cache_hit_per_million: 0.02 }
-      },
-      models: []
-    })
-  });
-  await modal.openSettingsModal();
-  // 回填路径直接放数字；真实 DOM 的 input.value 一律是字符串，这里 mock 保留原类型。
-  assertOfficialPriceFields({ input: 1, output: 2, cache: 0.02 });
+  for (const label of ["模型", "API 地址 · 基础 URL", "API Key"]) {
+    assert.ok(findElementByLabel(label), `应保留 ${label}`);
+  }
+  for (const label of [
+    "输入价（元/百万 token）",
+    "输出价（元/百万 token）",
+    "缓存命中价（元/百万 token，可选）",
+    "模型调用上限",
+    "成本上限（元，需先配置价格）",
+    "token 总量上限",
+    "写作温度（0–2，可选，留空用厂商默认）",
+    "联网搜索/抓取权限",
+    "密钥环境变量名（不是密钥本身）"
+  ]) {
+    assert.equal(findElementByLabel(label), null, `普通用户界面不应暴露 ${label}`);
+  }
 });
 
 // ---------------------------------------------------------------------------

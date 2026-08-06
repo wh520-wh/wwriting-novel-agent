@@ -551,6 +551,27 @@ test("流式：CRLF 分隔帧", async () => {
   assert.equal(result.text, "Hello World");
 });
 
+test("流式：长响应只保留有界诊断信息，不缓存全部 SSE 事件", async () => {
+  const frameCount = 1_000;
+  const frames = Array.from(
+    { length: frameCount },
+    () => 'data: {"choices":[{"delta":{"content":"x"}}]}'
+  );
+  frames.push("data: [DONE]");
+
+  const adapter = makeAdapter({
+    fetchImpl: async () => streamResponse(sseFrames(frames))
+  });
+  const result = await adapter.complete({
+    messages: [{ role: "user", content: "write a long answer" }],
+    modelConfig: { model_name: "writer-model", stream: true }
+  });
+
+  assert.equal(result.text, "x".repeat(frameCount));
+  assert.equal(result.raw.event_count, frameCount);
+  assert.equal("events" in result.raw, false);
+});
+
 test("流式：帧跨 chunk 边界时正确拼接", async () => {
   const adapter = makeAdapter({
     fetchImpl: async () => ({
@@ -657,7 +678,7 @@ test("流式：malformed 帧触发 onMalformedSseFrame 回调（携带原文与�
   assert.ok(seen[0].error instanceof SyntaxError, "回调携带 JSON.parse 的原错误");
 });
 
-test("流式：content 为空时回退 reasoning_content", async () => {
+test("流式：reasoning_content 可作最终兼容回退，但不进入可见 token 回调", async () => {
   const tokens = [];
   const adapter = makeAdapter({
     fetchImpl: async () =>
@@ -678,8 +699,31 @@ test("流式：content 为空时回退 reasoning_content", async () => {
       }
     }
   });
-  assert.deepEqual(tokens, ["think", "ing"]);
+  assert.deepEqual(tokens, [], "私有推理 token 不得进入对话增量流");
   assert.equal(result.text, "thinking");
+});
+
+test("流式：同时包含 reasoning_content 与 content 时只输出可见正文", async () => {
+  const tokens = [];
+  const adapter = makeAdapter({
+    fetchImpl: async () =>
+      streamResponse(
+        sseFrames([
+          'data: {"choices":[{"delta":{"content":"","reasoning_content":"private-thought"}}]}',
+          'data: {"choices":[{"delta":{"content":"visible-answer"}}]}',
+          "data: [DONE]"
+        ])
+      )
+  });
+
+  const result = await adapter.complete({
+    messages: [{ role: "user", content: "hi" }],
+    modelConfig: { model_name: "deepseek-reasoner", stream: true },
+    metadata: { onToken: (token) => tokens.push(token) }
+  });
+
+  assert.deepEqual(tokens, ["visible-answer"]);
+  assert.equal(result.text, "visible-answer");
 });
 
 test("流式：tool_calls delta 增量累积并解析 arguments", async () => {
@@ -766,4 +810,65 @@ test("OpenAICompatibleAdapter 构造与工厂等价", () => {
   assert.ok(viaClass instanceof OpenAICompatibleAdapter);
   assert.ok(viaFactory instanceof OpenAICompatibleAdapter);
   assert.equal(viaFactory.baseUrl, "https://api.example.test/v1");
+});
+
+// ---------------------------------------------------------------------------
+// 思考强度（reasoning_effort）真实映射
+// ---------------------------------------------------------------------------
+
+test("DeepSeek thinking 模型配置 low 档位时请求体携带 reasoning_effort", async () => {
+  let captured = null;
+  const adapter = makeAdapter({
+    fetchImpl: async (url, init) => {
+      captured = { body: JSON.parse(init.body) };
+      return jsonResponse({ choices: [{ message: { content: "ok" } }] });
+    }
+  });
+  await adapter.complete({
+    messages: [{ role: "user", content: "hi" }],
+    modelConfig: {
+      base_url: "https://api.deepseek.com/v1",
+      model_name: "deepseek-v4-pro",
+      reasoning_effort: "low"
+    }
+  });
+  assert.equal(captured.body.reasoning_effort, "low");
+});
+
+test("auto 档位不发送 reasoning_effort", async () => {
+  let captured = null;
+  const adapter = makeAdapter({
+    fetchImpl: async (url, init) => {
+      captured = { body: JSON.parse(init.body) };
+      return jsonResponse({ choices: [{ message: { content: "ok" } }] });
+    }
+  });
+  await adapter.complete({
+    messages: [{ role: "user", content: "hi" }],
+    modelConfig: {
+      base_url: "https://api.deepseek.com/v1",
+      model_name: "deepseek-v4-pro",
+      reasoning_effort: "auto"
+    }
+  });
+  assert.equal("reasoning_effort" in captured.body, false);
+});
+
+test("未验证模型（MiMo/未知）即使配置档位也绝不发送 reasoning_effort", async () => {
+  let captured = null;
+  const adapter = makeAdapter({
+    fetchImpl: async (url, init) => {
+      captured = { body: JSON.parse(init.body) };
+      return jsonResponse({ choices: [{ message: { content: "ok" } }] });
+    }
+  });
+  await adapter.complete({
+    messages: [{ role: "user", content: "hi" }],
+    modelConfig: {
+      base_url: "https://api.mimo.example.test/v1",
+      model_name: "mimo-v2.5",
+      reasoning_effort: "high"
+    }
+  });
+  assert.equal("reasoning_effort" in captured.body, false);
 });

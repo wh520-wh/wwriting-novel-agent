@@ -1,4 +1,4 @@
-// 四档权限定义（settings-modal.js 与 composer.js 共享）
+// 四档权限定义（settings-modal.js 与 Agent composer 三控件共享）
 // spec §4.3 矩阵：read_only > safe_edit:false > 归档 > yolo/auto_edit
 
 export const PERMISSION_TIERS = [

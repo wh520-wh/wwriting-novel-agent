@@ -53,7 +53,7 @@
 //   general: list_files { path } / search_files { query, path? } / read_file { path } /
 //            write_file { path, content } / edit_file { path, ... } /
 //            shell { command, cwd?, timeout_ms?, purpose? }
-//   deep:    update_plan { explanation?, items: [{step,status}] }（status ∈
+//   deep:    update_plan { explanation?, items: [{id,step,status,description?}] }（status ∈
 //            pending|in_progress|completed，最多一个 in_progress）/
 //            enter_workflow { workflow: "general"|"chapter"|"init"|"review", reason } /
 //            append_chapter_segment { project_id, chapter_no, segment_no, content } /
@@ -200,7 +200,7 @@ export async function createLegacyProjectRoot(workspaceRoot, options = {}) {
 // script 条目：
 //   { reply: { text } } 或 { reply: { toolCalls: [{ id, name, arguments }] } }
 //   { error: Error }                 —— 该轮模型调用失败（Run 进入可恢复失败）
-//   (request) => reply               —— 自定义断言/返回
+//   (request, { signal }) => reply   —— 自定义断言/流式 token/返回
 //   { reply, repeat: true }          —— 不消费脚本游标（可无限复用）
 // 脚本耗尽后返回默认文本答复。delayMs 用于让并发断言可被观测。
 export function createMockModelGateway({ script = [], delayMs = 30 } = {}) {
@@ -219,7 +219,7 @@ export function createMockModelGateway({ script = [], delayMs = 30 } = {}) {
       if (entry && !entry.repeat) cursor += 1;
       let reply;
       if (entry && typeof entry === "function") {
-        reply = await entry(request);
+        reply = await entry(request, { signal });
       } else if (entry?.error) {
         reply = { error: entry.error };
       } else if (entry?.reply) {

@@ -1,10 +1,13 @@
+const { windowColors } = require("./window-colors.cjs");
+
+const TITLE_BAR_HEIGHT = 34;
+
 function desktopWindowChrome(platform = process.platform, dark = false) {
   if (platform !== "win32") return {};
+  const tokens = windowColors(dark);
   return {
     titleBarStyle: "hidden",
-    titleBarOverlay: dark
-      ? { color: "#191713", symbolColor: "#ede6d6", height: 34 }
-      : { color: "#f4f3f0", symbolColor: "#24211c", height: 34 }
+    titleBarOverlay: { color: tokens.background, symbolColor: tokens.symbol, height: TITLE_BAR_HEIGHT }
   };
 }
 

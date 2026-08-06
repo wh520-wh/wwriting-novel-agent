@@ -113,7 +113,12 @@ try {
   assert.doesNotMatch(drawerPanelsJs, /sendChatMessageWithUX|renderRunPanel|renderReviewerPanel/u, "drawer-panels 不得引用旧聊天导出与运行/审查面板");
   // agent.css 布局基线
   assert.match(agentCss, /--content-column:\s*900px/u, "agent.css 应保留 900px 内容列");
-  assert.match(agentCss, /width:\s*min\(420px,\s*calc\(100vw - 32px\)\)/u, "agent.css 应保留模型菜单视口钳制");
+  assert.match(
+    agentCss,
+    /\.agent-composer-menu--model \.agent-composer-popover\s*\{[^}]*width:\s*min\(320px,\s*calc\(100vw - 32px\)\)/u,
+    "agent.css 应保留统一模型菜单视口钳制"
+  );
+  assert.match(agentCss, /\.agent-composer-popover\s*\{[^}]*bottom:\s*calc\(100% \+ 7px\)/u, "Composer 菜单应向上展开");
 
   // ---- HTTP 公共行为 ----
   assert.equal(dashboard.ok, true);
@@ -194,7 +199,11 @@ try {
     )
   );
 } finally {
-  child.kill();
+  if (child.exitCode === null && child.signalCode === null) child.kill();
+  if (child.exitCode === null && child.signalCode === null) {
+    await new Promise((resolve) => child.once("close", resolve));
+  }
+  await fs.rm(root, { recursive: true, force: true });
 }
 
 async function pathExists(target) {

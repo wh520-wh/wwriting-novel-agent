@@ -56,6 +56,7 @@ export function createState() {
     thinking: 0,            // 未闭合 model turn 计数（>0 显示「思考中」标签）
     decisions: new Map(),   // decision_id -> decision
     errors: [],             // run_failed 事实（新 Run 启动时清空）
+    assistantStream: null,  // { runId, text } —— 增量正文累积（流式气泡），completed 后清空
     revisions: { messages: 0, run: 0, plan: 0, queue: 0, activities: 0, decisions: 0, errors: 0 }
   };
 }
@@ -141,17 +142,38 @@ export function reduceEvent(state, event) {
       bump(state, ["messages", "queue"]);
       break;
     }
+    case "assistant_message_delta": {
+      // 增量正文累积（按 run 维度单槽，不产生新 message 对象）：delta 到达即追加，
+      // 直到 assistant_message_completed 定稿。累积字段独立于服务端投影（快照会整体
+      // 替换 session.active_run），重连回放按 seq 去重追加，不与投影中的累积重复相加。
+      const delta = typeof payload.text === "string" ? payload.text : "";
+      if (delta.length === 0) break;
+      const runId = event.run_id ?? null;
+      if (!state.assistantStream || state.assistantStream.runId !== runId) {
+        state.assistantStream = { runId, text: "" };
+      }
+      state.assistantStream.text += delta;
+      bump(state, ["messages"]);
+      break;
+    }
     case "assistant_message_completed": {
-      // journal 事件只携带 input_id；若未来附带 text 则渲染助手气泡，否则只是轮次标记。
-      if (typeof payload.text === "string" && payload.text.length > 0) {
+      // 终态对齐：completed 携带全文则以之为权威最终值，否则以 delta 累积值为准；
+      // 两者皆空（纯轮次标记）不产生气泡。
+      const accumulated = state.assistantStream?.text ?? "";
+      const finalText =
+        typeof payload.text === "string" && payload.text.length > 0
+          ? payload.text
+          : accumulated;
+      if (finalText.length > 0) {
         state.conversation.push({
           role: "assistant",
-          text: payload.text,
+          text: finalText,
           input_id: payload.input_id ?? null,
           seq
         });
         bump(state, ["messages"]);
       }
+      state.assistantStream = null;
       break;
     }
     case "run_started": {
@@ -186,6 +208,8 @@ export function reduceEvent(state, event) {
       }
       activateInput(state, payload.input_id ?? null);
       state.errors = [];
+      // 新 Run（或重试恢复）从零累积正文增量，旧流式气泡立即退出。
+      state.assistantStream = null;
       bump(state, ["run", "plan", "queue", "decisions", "errors"]);
       break;
     }
@@ -281,7 +305,14 @@ export function reduceEvent(state, event) {
       if (run && Array.isArray(payload.items)) {
         run.visible_plan = {
           explanation: typeof payload.explanation === "string" ? payload.explanation : null,
-          items: payload.items.map((item) => ({ step: item.step, status: item.status }))
+          items: payload.items.map((item) => {
+            // 步骤6：保留稳定 id 与可选 description（旧事件无这些字段则省略，
+            // 前端显示用 step 兜底）。
+            const entry = { step: item.step, status: item.status };
+            if (item.id !== undefined) entry.id = item.id;
+            if (item.description !== undefined) entry.description = item.description;
+            return entry;
+          })
         };
         bump(state, ["plan"]);
       }
@@ -289,7 +320,9 @@ export function reduceEvent(state, event) {
     }
     case "model_turn_started": {
       state.thinking += 1;
-      bump(state, ["run"]);
+      state.assistantStream = null;
+      if (state.session?.active_run) state.session.active_run.assistant_text = null;
+      bump(state, ["run", "messages"]);
       break;
     }
     case "model_turn_completed": {

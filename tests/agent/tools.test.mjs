@@ -229,6 +229,9 @@ test("deep 工具 schema 与计划一致", () => {
   const plan = byName.get("update_plan");
   assert.deepEqual(Object.keys(plan.parameters.properties), ["explanation", "items"]);
   assert.deepEqual(plan.parameters.properties.items.items.properties.status.enum, ["pending", "in_progress", "completed"]);
+  assert.deepEqual(plan.parameters.properties.items.items.required, ["id", "step", "status"], "plan 项必须携带稳定 id");
+  assert.ok(plan.parameters.properties.items.items.properties.id, "plan 项应有 id 字段");
+  assert.ok(plan.parameters.properties.items.items.properties.description, "plan 项应有可选 description");
   const workflow = byName.get("enter_workflow");
   assert.deepEqual(workflow.parameters.properties.workflow.enum, ["general", "chapter", "init", "review"]);
   assert.deepEqual(
@@ -695,7 +698,7 @@ test("plan_updated 事件侧脱敏（与 enter_workflow reason 一致）", async
   const result = await h.tools.execute(
     toolCall("update_plan", {
       explanation: "检查 api_key=abc123secret",
-      items: [{ step: "读取 sk-abcdefghijklmnop", status: "in_progress" }]
+      items: [{ id: "read", step: "读取 sk-abcdefghijklmnop", status: "in_progress" }]
     }),
     h.context
   );
@@ -965,8 +968,8 @@ test("单个 AfterToolUse 抛错不影响主流程", async (t) => {
 test("update_plan 校验计划状态并写 plan_updated", async (t) => {
   const h = await setup(t);
   const items = [
-    { step: "检查已有章节", status: "in_progress" },
-    { step: "修正冲突", status: "pending" }
+    { id: "check", step: "检查已有章节", status: "in_progress", description: "对照章节清单" },
+    { id: "fix", step: "修正冲突", status: "pending" }
   ];
   const result = await h.tools.execute(toolCall("update_plan", { explanation: "先核对", items }), h.context);
   assert.equal(result.ok, true);
@@ -979,18 +982,33 @@ test("update_plan 校验计划状态并写 plan_updated", async (t) => {
   const bad = await h.tools.execute(
     toolCall("update_plan", {
       items: [
-        { step: "a", status: "in_progress" },
-        { step: "b", status: "in_progress" }
+        { id: "a", step: "a", status: "in_progress" },
+        { id: "b", step: "b", status: "in_progress" }
       ]
     }),
     h.context
   );
   assert.equal(bad.ok, false);
   assert.equal(bad.error, "bad_args");
-  const badStatus = await h.tools.execute(toolCall("update_plan", { items: [{ step: "a", status: "done" }] }), h.context);
+  const badStatus = await h.tools.execute(toolCall("update_plan", { items: [{ id: "a", step: "a", status: "done" }] }), h.context);
   assert.equal(badStatus.ok, false);
   const empty = await h.tools.execute(toolCall("update_plan", { items: [] }), h.context);
   assert.equal(empty.ok, false);
+  // 缺 id / 重复 id 拒绝
+  const noId = await h.tools.execute(toolCall("update_plan", { items: [{ step: "a", status: "pending" }] }), h.context);
+  assert.equal(noId.ok, false, "新事件缺 id 应被工具 schema 拒绝");
+  assert.equal(noId.error, "bad_args");
+  const dupId = await h.tools.execute(
+    toolCall("update_plan", {
+      items: [
+        { id: "a", step: "a", status: "pending" },
+        { id: "a", step: "b", status: "pending" }
+      ]
+    }),
+    h.context
+  );
+  assert.equal(dupId.ok, false, "重复 id 应被拒绝");
+  assert.equal(dupId.error, "bad_args");
   assertClosure(await readEvents(h.journal));
 });
 

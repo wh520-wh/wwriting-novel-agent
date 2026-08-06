@@ -139,6 +139,14 @@ test("无项目也能列出、选用、删除模型", async () => {
     const listJson = await listed.json();
     assert.equal(listed.status, 200);
     assert.equal(listJson.models.length, 2);
+    const deepseek = listJson.models.find((model) => model.model_name === "deepseek-chat");
+    const mimo = listJson.models.find((model) => model.model_name === "mimo-v1");
+    assert.equal(deepseek.capabilities.supportsTools, true);
+    assert.equal(deepseek.capabilities.supportsStreaming, true);
+    assert.equal(deepseek.capabilities.supportsThinking, false);
+    assert.equal(mimo.capabilities.supportsTools, true);
+    assert.equal(mimo.capabilities.supportsThinking, false);
+    assert.deepEqual(listJson.default_model.capabilities, deepseek.capabilities);
 
     const selected = await post(port, "/api/settings/model-select", { model_id: "deepseek-chat" });
     assert.equal(selected.status, 200);
