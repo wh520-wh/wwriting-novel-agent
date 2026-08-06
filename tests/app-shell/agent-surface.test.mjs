@@ -8,7 +8,7 @@
 //   - 停止防连点（点击即禁用、失败恢复、终态后不再有第二横幅）；
 //   - 计划：活动展开/终态折叠、无手动编辑入口；
 //   - 确认：普通三选、extreme 精确文字前禁用、终态 decision 锁定；
-//   - 不渲染私有推理；思考/活动标签可见；
+//   - reasoning 不进入 Assistant 正文，但进入 reasoning 工作项；思考/活动标签可见；
 //   - 近底部自动滚动、重建后不打断阅读更早内容；
 //   - 模型菜单视口钳制与内容列 CSS 基线（agent.css 断言）。
 import assert from "node:assert/strict";
@@ -960,7 +960,7 @@ test("无计划的简单任务不渲染空计划面板", async () => {
 
 
 // ===========================================================================
-// 活动流：合并 / 20 行 / 64 KiB / details / 标记 / 不渲染私有推理
+// 活动流：合并 / 20 行 / 64 KiB / details / 标记 / reasoning 工作项分离
 // ===========================================================================
 
 test("同一 activity_id 合并输出且不重复创建行", () => {
@@ -1158,20 +1158,28 @@ test("状态标记映射：running=• / completed=✓ / failed=✗ / cancelled=
   assert.equal(markOf("a3"), "已停止");
 });
 
-test("思考状态不渲染隐藏推理文本（私有 reasoning 字段绝不显示）", async () => {
+test("reasoning 不进入 Assistant 正文，但进入 reasoning 工作项", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
-  surface.applyEvent(ev("model_turn_started", { reasoning: "private chain-of-thought", hidden_tokens: "xyz" }));
-  assert.match(root.textContent, /思考中/u);
-  assert.doesNotMatch(root.textContent, /private chain-of-thought/u);
-  assert.doesNotMatch(root.textContent, /hidden_tokens|xyz/u);
-  surface.applyEvent(ev("tool_call_started", {
-    tool_call_id: "tc-a1", activity_id: "a1", name: "read_file",
-    args: { path: "chapter.md" },
-    reasoning_content: "secret"
+  surface.applyEvent(ev("model_turn_started", { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }));
+  surface.applyEvent(ev("reasoning_delta", { turn_id: "turn-1", input_id: "in-1", text: "先检查事实，再回答。" }));
+  surface.applyEvent(ev("reasoning_completed", {
+    turn_id: "turn-1", input_id: "in-1",
+    text: "先检查事实，再回答。", availability: "available"
   }));
-  assert.doesNotMatch(root.textContent, /secret/u);
+  surface.applyEvent(ev("model_turn_completed", { turn_id: "turn-1", input_id: "in-1", outcome: "completed" }));
+  surface.applyEvent(ev("assistant_message_completed", { input_id: "in-1", text: "最终回答" }));
+
+  const assistantBodies = root.querySelectorAll('[data-testid="agent-assistant-message"]');
+  assert.equal(assistantBodies.length, 1, "最终正文只渲染一条 Assistant 消息");
+  assert.match(assistantBodies[0].textContent, /最终回答/u);
+  assert.doesNotMatch(assistantBodies[0].textContent, /先检查事实/u, "reasoning 不得进入 Assistant 正文");
+
+  // reasoning 必须进入独立 reasoning 工作项（Task 6 的 .agent-work-group 容器内）
+  const workGroup = root.querySelector(".agent-work-group");
+  assert.ok(workGroup, "应渲染工作组（reasoning 工作项所在容器）");
+  assert.match(workGroup.textContent, /先检查事实，再回答。/u, "reasoning 全文进入 reasoning 工作项");
 });
 
 test("行结构：details/summary 原生可键盘展开，输出是唯一 .agent-activity-output", async () => {

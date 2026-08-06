@@ -872,3 +872,55 @@ test("未验证模型（MiMo/未知）即使配置档位也绝不发送 reasonin
   });
   assert.equal("reasoning_effort" in captured.body, false);
 });
+
+// ---------------------------------------------------------------------------
+// 契约：reasoning 与公开正文分离（Task 1 冻结 §2.1）
+// ---------------------------------------------------------------------------
+
+test("契约：非流式返回独立的 reply.reasoning，正文与 reasoning 互不兜底", async () => {
+  const adapter = makeAdapter({
+    fetchImpl: async () =>
+      jsonResponse({
+        choices: [{ message: { content: "最终回答", reasoning_content: "先检查事实，再回答。" } }],
+        usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 }
+      })
+  });
+  const reply = await adapter.complete({
+    messages: [{ role: "user", content: "hi" }],
+    modelConfig: { model_name: "deepseek-reasoner" }
+  });
+  assert.equal(reply.text, "最终回答");
+  assert.equal(reply.reasoning, "先检查事实，再回答。");
+});
+
+test("契约：流式 reasoning 只进 onReasoningToken，onToken 只收公开正文", async () => {
+  const tokens = [];
+  const reasoningTokens = [];
+  const adapter = makeAdapter({
+    fetchImpl: async () =>
+      streamResponse(
+        sseFrames([
+          'data: {"choices":[{"delta":{"content":"","reasoning_content":"先检查事实，"}}]}',
+          'data: {"choices":[{"delta":{"content":"","reasoning_content":"再回答。"}}]}',
+          'data: {"choices":[{"delta":{"content":"最终回答"}}]}',
+          "data: [DONE]"
+        ])
+      )
+  });
+  const reply = await adapter.complete({
+    messages: [{ role: "user", content: "hi" }],
+    modelConfig: { model_name: "deepseek-reasoner", stream: true },
+    metadata: {
+      onToken(token) {
+        tokens.push(token);
+      },
+      onReasoningToken(token) {
+        reasoningTokens.push(token);
+      }
+    }
+  });
+  assert.deepEqual(tokens, ["最终回答"], "onToken 只接收公开正文，reasoning 不得混入");
+  assert.deepEqual(reasoningTokens, ["先检查事实，", "再回答。"]);
+  assert.equal(reply.text, "最终回答");
+  assert.equal(reply.reasoning, "先检查事实，再回答。");
+});

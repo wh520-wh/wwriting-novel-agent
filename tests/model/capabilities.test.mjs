@@ -177,3 +177,19 @@ test("resolveModelCapabilities: v4-flash 与非 DeepSeek 模型不声明 reasoni
   });
   assert.equal("reasoningEffortLevels" in mimo, false);
 });
+
+// ---------------------------------------------------------------------------
+// 契约：reasoning 能力三态（Task 1 冻结 §2.2）
+// ---------------------------------------------------------------------------
+
+test("契约：reasoningContent 是三态之一，默认 unknown（不能因单次空响应判定不支持）", () => {
+  const caps = resolveModelCapabilities({
+    base_url: "https://api.openai.com/v1",
+    model_name: "gpt-4o"
+  });
+  assert.ok(
+    ["supported", "unsupported", "unknown"].includes(caps.reasoningContent),
+    "reasoningContent 必须是 supported | unsupported | unknown 三态之一"
+  );
+  assert.equal(caps.reasoningContent, "unknown");
+});

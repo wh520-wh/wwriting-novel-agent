@@ -1133,8 +1133,8 @@ test("append 无需显式 load（自初始化）", async (t) => {
   assert.equal(events[1].seq, 2);
 });
 
-test("FIXED_EVENT_TYPES 包含计划固定的 29 个事件类型", () => {
-  assert.equal(FIXED_EVENT_TYPES.length, 29);
+test("FIXED_EVENT_TYPES 包含计划固定的 31 个事件类型（含 reasoning 事件）", () => {
+  assert.equal(FIXED_EVENT_TYPES.length, 31);
   assert.deepEqual(
     [...FIXED_EVENT_TYPES].sort(),
     [
@@ -1155,6 +1155,8 @@ test("FIXED_EVENT_TYPES 包含计划固定的 29 个事件类型", () => {
       "permission_grant_cleared",
       "permission_grant_created",
       "plan_updated",
+      "reasoning_completed",
+      "reasoning_delta",
       "run_cancelled",
       "run_completed",
       "run_failed",
@@ -1169,6 +1171,48 @@ test("FIXED_EVENT_TYPES 包含计划固定的 29 个事件类型", () => {
       "workflow_changed"
     ].sort()
   );
+});
+
+test("契约：reasoning_delta/reasoning_completed 是固定事件类型，v2 turn 事件按 §2.3 payload 闭环", async (t) => {
+  assert.ok(FIXED_EVENT_TYPES.includes("reasoning_delta"));
+  assert.ok(FIXED_EVENT_TYPES.includes("reasoning_completed"));
+
+  const root = await makeWorkspace(t);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  await journal.load();
+  await journal.append({ type: "input_queued", payload: { input_id: "in-1", text: "写一段" } });
+  await journal.append({
+    type: "run_started",
+    run_id: "run-1",
+    payload: { workflow: "general", input_id: "in-1" }
+  });
+  await journal.append({
+    type: "model_turn_started",
+    run_id: "run-1",
+    payload: { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }
+  });
+  await journal.append({
+    type: "reasoning_delta",
+    run_id: "run-1",
+    payload: { turn_id: "turn-1", input_id: "in-1", text: "先检查事实，再回答。" }
+  });
+  await journal.append({
+    type: "reasoning_completed",
+    run_id: "run-1",
+    payload: { turn_id: "turn-1", input_id: "in-1", text: "先检查事实，再回答。", availability: "available" }
+  });
+  await journal.append({
+    type: "model_turn_completed",
+    run_id: "run-1",
+    payload: { turn_id: "turn-1", input_id: "in-1", outcome: "completed" }
+  });
+
+  const events = await journal.read({});
+  const byType = Object.fromEntries(events.map((event) => [event.type, event]));
+  assert.equal(byType.model_turn_started.payload.reasoning_capability, "supported");
+  assert.equal(byType.reasoning_delta.payload.text, "先检查事实，再回答。");
+  assert.equal(byType.reasoning_completed.payload.availability, "available");
+  assert.equal(byType.model_turn_completed.payload.outcome, "completed");
 });
 
 // ---------------------------------------------------------------------------

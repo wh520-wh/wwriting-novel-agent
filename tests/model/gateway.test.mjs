@@ -799,3 +799,26 @@ test("createModelGateway 拒绝无 complete 的 adapter", () => {
     TypeError
   );
 });
+
+// ---------------------------------------------------------------------------
+// 契约：reply.reasoning 透传（Task 1 冻结 §2.1）
+// ---------------------------------------------------------------------------
+
+test("契约：gateway 透传 reply.reasoning，reasoning 与正文互不兜底", async () => {
+  const reasoningTokens = [];
+  const adapter = {
+    async complete(request) {
+      request.metadata.onReasoningToken?.("先检查事实，");
+      request.metadata.onReasoningToken?.("再回答。");
+      return { text: "最终回答", reasoning: "先检查事实，再回答。", usage: {} };
+    }
+  };
+  const gateway = makeGateway(adapter);
+  const reply = await gateway.complete({
+    ...BASE_REQUEST,
+    metadata: { onReasoningToken: (token) => reasoningTokens.push(token) }
+  });
+  assert.equal(reply.text, "最终回答");
+  assert.equal(reply.reasoning, "先检查事实，再回答。");
+  assert.deepEqual(reasoningTokens, ["先检查事实，", "再回答。"]);
+});
