@@ -153,3 +153,36 @@ test("次级操作融入背景，消息层级不依赖成排胶囊按钮", () =>
     "发送按钮应保持独立、清楚的主操作层级"
   );
 });
+
+// ===========================================================================
+// 冻结布局约束（Task 7 Step 3）：固定宽度 + 360/768/1280 无横向溢出
+// ===========================================================================
+
+test("冻结布局约束：360/768/1280 无横向溢出（百分比优先 + 固定上限）", () => {
+  // 三档视口宽度推演（对话内容宽 = min(视口, 900px) - 左右各 20px 内边距）：
+  //   360px  → 内容 320px：用户 ≤min(72%,640px)=230px、助手 ≤min(100%,760px)=320px、工作组 320px；
+  //   768px  → 内容 728px：用户 ≤524px、助手 ≤728px、工作组 728px；
+  //   1280px → 内容 860px（列封顶 900px）：用户 ≤619px、助手 ≤760px、工作组 860px。
+  // 百分比项 ≤ 容器自身宽度，固定上限只在容器足够宽时封顶，因此三档都不会撑出横向滚动。
+  assert.match(agentCssSource, /max-width:\s*min\(72%,\s*640px\)/u, "用户消息：72% 优先，封顶 640px");
+  assert.match(agentCssSource, /width:\s*min\(100%,\s*760px\)/u, "助手 Markdown：100% 优先，封顶 760px");
+  assert.match(agentCssSource, /width:\s*min\(100%,\s*900px\)/u, "工作组：100% 优先，封顶 900px");
+  // 长内容（URL/代码/长单词）原地换行，不撑破消息容器。
+  assert.match(agentCssSource, /\.agent-message-text\s*\{[^}]*overflow-wrap:\s*anywhere/u, "消息文本应任意位置换行");
+  // 对话容器本身 width:100% + box-sizing:border-box，padding 计入宽度不溢出。
+  assert.match(
+    agentCssSource,
+    /\.agent-conversation\s*\{[^}]*width:\s*100%[^}]*max-width:\s*var\(--content-column\)[^}]*box-sizing:\s*border-box/u,
+    "对话容器宽度含内边距，不横向溢出"
+  );
+});
+
+test("冻结布局约束：用户消息靠右，ticker 固定两行，详情 320px 内部滚动", () => {
+  assert.match(agentCssSource, /\.agent-message--user\s*\{[^}]*align-self:\s*flex-end/u, "用户消息靠右");
+  assert.match(
+    agentCssSource,
+    /\.agent-reasoning-ticker\s*\{[^}]*min-height:\s*2lh[^}]*max-height:\s*2lh[^}]*line-clamp:\s*2/u,
+    "reasoning ticker 高度锁定两行，文本替换不改变工作项高度"
+  );
+  assert.match(agentCssSource, /\.agent-reasoning-detail\s*\{[^}]*max-height:\s*320px[^}]*overflow-y:\s*auto/u, "详情 max-height:320px 内部滚动");
+});

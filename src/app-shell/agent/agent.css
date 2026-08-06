@@ -74,6 +74,40 @@
   box-sizing: border-box;
 }
 
+/* 「回到最新」：上滚离开底部后浮出的锚点（sticky 贴住滚动视口底缘）。 */
+.agent-scroll-latest {
+  position: sticky;
+  bottom: 14px;
+  align-self: flex-end;
+  margin-top: auto;
+  flex: 0 0 auto;
+  z-index: 10;
+  border: 1px solid var(--agent-line-strong);
+  border-radius: 999px;
+  background: var(--agent-panel-solid);
+  color: var(--agent-ink);
+  box-shadow: 0 8px 22px -14px rgba(24, 32, 27, 0.55);
+  padding: 7px 14px;
+  font: 600 12.5px/1 var(--sans, system-ui, sans-serif);
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+.agent-scroll-latest[hidden] {
+  display: none;
+}
+
+.agent-scroll-latest:hover {
+  border-color: var(--agent-accent);
+  background: var(--agent-accent-soft);
+  color: var(--agent-accent);
+}
+
+.agent-scroll-latest:focus-visible {
+  outline: 2px solid var(--agent-accent);
+  outline-offset: 2px;
+}
+
 .agent-composer {
   position: relative;
   flex: 0 0 auto;
@@ -408,7 +442,6 @@
 .agent-message {
   display: flex;
   width: fit-content;
-  max-width: min(78%, 640px);
   animation: agent-message-arrive 180ms cubic-bezier(.2, .75, .25, 1) both;
 }
 
@@ -419,6 +452,7 @@
 
 .agent-message--user {
   align-self: flex-end;
+  max-width: min(72%, 640px); /* 用户消息：72% 优先，封顶 640px，靠右 */
 }
 
 .agent-message--assistant {
@@ -452,6 +486,7 @@
 /* 助手正文 Markdown（步骤7）：段落/列表/代码/引用层次；流式增量重渲染同一节点 */
 .agent-message-text.agent-markdown {
   white-space: normal;
+  width: min(100%, 760px); /* 助手正文：100% 优先，封顶 760px */
 }
 
 .agent-message-text.agent-markdown p {
@@ -602,6 +637,7 @@
 
 /* ---- 工作组（Task 6）：reasoning/tool/plan 有序时间线，插入对话时间流 ------------- */
 .agent-work-group {
+  width: min(100%, 900px); /* 工作组：100% 优先，封顶 900px */
   border: 1px solid var(--agent-line);
   border-radius: 8px;
   background: color-mix(in srgb, var(--agent-panel-muted) 82%, transparent);
@@ -700,6 +736,8 @@
 
 .agent-reasoning-ticker {
   width: 100%;
+  min-height: 2lh; /* 固定两行：文本替换不改变工作项高度 */
+  max-height: 2lh;
   color: var(--text-muted);
   font-weight: var(--weight-regular);
   font-size: 12px;
@@ -717,7 +755,7 @@
   font-weight: var(--weight-regular);
   font-size: 12px;
   line-height: 1.55;
-  max-height: 220px;
+  max-height: 320px;
   overflow-y: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -1305,7 +1343,8 @@
   .agent-composer-shell,
   .agent-send,
   .agent-empty-action,
-  .agent-composer-menu-trigger {
+  .agent-composer-menu-trigger,
+  .agent-scroll-latest {
     transition: none;
   }
 
