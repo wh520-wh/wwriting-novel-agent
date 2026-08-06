@@ -2,6 +2,43 @@
 
 **把长篇小说写作当作工程来管理的本地桌面智能体。**
 
+---
+
+## 🚀 重磅升级：统一 Agent 内核与对话控制面
+
+> **v2 架构：一个 Agent 内核、一个项目会话、一个聊天控制面。** 本次升级用一次有边界的直接重构替换了历史形成的双 Agent 编排与多套对话 UI，项目看起来像围绕一个内核连贯设计出来的。
+
+### 升级亮点
+
+- **单一后端内核（ProjectAgent）**：聊天循环、写作循环、章节队列、旁路问题、停止恢复全部合并为一个深 `ProjectAgent` 内核。对外只暴露一个公共接口（`src/core/agent/index.mjs`），内部使用统一 journal、PromptAssembler、ToolRuntime 与 WorkflowPolicy。旧的双 Agent 编排、TaskQueue、failure/retry 命令矩阵、事件总线全部删除（净删除约 4.1 万行旧代码）。
+- **单一前端控制面（AgentSurface）**：对话、活动流、Visible Plan、排队队列、`立即`/`停止`、权限确认卡收敛为一个 `AgentSurface`（`src/app-shell/agent/index.js`）。旧的 thread renderer、composer 业务正则、准备写作卡、完成卡、顶部执行状态全部移除。
+- **Journal 事件溯源**：Session、Run、队列、计划、决策、授权全部以事件形式记录在 `.wwriting/agent/events.jsonl`，`session.json` 是可重建投影。崩溃重启从断点恢复，`立即` 在同一 Run 内提升消息，`停止` 干净收敛并清除临时授权。
+- **权限与安全不变量全量保留**：只读自动、普通副作用确认、`本条输入允许同类操作`（按输入粒度授权）、YOLO、extreme 精确确认文字、Shell 进程树停止、命令/输出流式脱敏——逐项通过前置验收语料。
+- **自研模型网关（ModelGateway）**：retry、超时、心跳、usage、成本记账与 OpenAI-compatible 原生 function calling 集中在干净的 model 层；provider adapter 不再包含任何写作业务身份或工具表。
+- **项目操作深模块**：章节事务（真实字数 → 门禁 → 正式文件 → 索引 → 记忆 → checkpoint 原子协调）、蓝图三文件一致提交、只读审查——运行时只编排，项目事务守护内容。
+- **一次迁移、永久停写旧状态**：旧项目的 `agent_state.json`、`task_queue.json`、`chat_history.jsonl` 等只在首次打开时只读导入一次（blueprint_status 迁入 `project.yaml`），之后永不再写。
+- **全量验证闭环**：924 个单元/集成测试全绿、25 个统一验收场景、四视口布局截图回归（1024/1440/1920 + 模型菜单）、两个真实 OpenAI-compatible 模型端到端短跑（工具选择/权限拒绝/章节提交/`立即`/`停止`/重试）全部通过。
+
+### 变更摘要（对比上一版）
+
+| 维度 | 旧架构 | 新架构 |
+|---|---|---|
+| 后端入口 | 双 Agent（agent-engine + chat-agent）+ TaskQueue | 唯一 `ProjectAgent` 接口 |
+| 前端入口 | thread-renderer + composer + activity-strip | 唯一 `AgentSurface` |
+| 状态真相源 | `agent_state.json` + 多套运行态文件 | `events.jsonl`（journal） |
+| 权限模型 | 任务级 `taskId` 授权 | 输入级 `active_input_id` 授权 |
+| 实时事件 | chat_activity + run-events 双协议 | journal 事件流 + `/api/agent/snapshot` |
+| 模型层 | 业务逻辑混入 provider | 纯 transport 的 ModelGateway + capabilities |
+| 章节事务 | 分散在引擎内 | project operations 深模块（原子/可回滚） |
+| 恢复 | 失败命令 + retry 候选表 | `ProjectAgent.retry()` + journal 重建 |
+
+### 升级方式
+
+- 已有项目：直接打开，首次打开自动完成一次性迁移（旧状态文件保留在磁盘但不再读写）。
+- 新项目：`project.yaml` 自带 `blueprint_status`，`agent_state.json` 不再出现。
+
+---
+
 WWriting 不是"你描述、它代写"的生成器。它是一个桌面写作工作台：所有写作都通过**同一个聊天对话面**（AgentSurface）发起——模型自主读取项目文件、调用工具、修改章节与蓝图，应用负责调度、落盘、状态恢复、字数校验、成本统计和权限边界。你随时能看到模型正在做什么，中断了可以从断点继续，写完的每一章都是你文件夹里真实存在的文件。
 
 **数据在你手里，交付可验证。**
