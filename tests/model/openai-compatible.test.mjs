@@ -439,10 +439,10 @@ test("请求 json_object 输出时按 capability 注入 response_format", async 
 });
 
 // ---------------------------------------------------------------------------
-// 推理内容兜底
+// 推理内容与公开正文分离（契约 §2.1：互不兜底）
 // ---------------------------------------------------------------------------
 
-test("content 为空时回退 reasoning_content（非流式）", async () => {
+test("非流式：content 为空时正文为空串，reasoning 独立返回（不兜底）", async () => {
   const adapter = makeAdapter({
     fetchImpl: async () =>
       jsonResponse({
@@ -451,10 +451,11 @@ test("content 为空时回退 reasoning_content（非流式）", async () => {
       })
   });
   const result = await adapter.complete({ messages: [{ role: "user", content: "hi" }], modelConfig: { model_name: "deepseek-reasoner" } });
-  assert.equal(result.text, "reasoning output");
+  assert.equal(result.text, "", "正文为空时不得回退 reasoning_content");
+  assert.equal(result.reasoning, "reasoning output");
 });
 
-test("content 优先于 reasoning_content", async () => {
+test("非流式：content 与 reasoning_content 各归各位，互不干扰", async () => {
   const adapter = makeAdapter({
     fetchImpl: async () =>
       jsonResponse({
@@ -464,9 +465,10 @@ test("content 优先于 reasoning_content", async () => {
   });
   const result = await adapter.complete({ messages: [{ role: "user", content: "hi" }], modelConfig: { model_name: "deepseek-reasoner" } });
   assert.equal(result.text, "final");
+  assert.equal(result.reasoning, "reasoning");
 });
 
-test("content 缺失时回退 reasoning_content", async () => {
+test("非流式：content 缺失时正文为空串，reasoning 独立返回（不兜底）", async () => {
   const adapter = makeAdapter({
     fetchImpl: async () =>
       jsonResponse({
@@ -475,16 +477,18 @@ test("content 缺失时回退 reasoning_content", async () => {
       })
   });
   const result = await adapter.complete({ messages: [{ role: "user", content: "hi" }], modelConfig: { model_name: "deepseek-reasoner" } });
-  assert.equal(result.text, "only reasoning");
+  assert.equal(result.text, "", "content 缺失时不得回退 reasoning_content");
+  assert.equal(result.reasoning, "only reasoning");
 });
 
-test("output_text 字段优先（部分兼容代理格式）", async () => {
+test("非流式：output_text 仅在无 content/text 时兜底（部分兼容代理格式）", async () => {
   const adapter = makeAdapter({
     fetchImpl: async () =>
-      jsonResponse({ output_text: "direct output", choices: [{ message: { content: "other" } }] })
+      jsonResponse({ output_text: "direct output" })
   });
   const result = await adapter.complete({ messages: [{ role: "user", content: "hi" }], modelConfig: { model_name: "m" } });
   assert.equal(result.text, "direct output");
+  assert.equal(result.reasoning, "");
 });
 
 // ---------------------------------------------------------------------------
@@ -678,8 +682,9 @@ test("流式：malformed 帧触发 onMalformedSseFrame 回调（携带原文与�
   assert.ok(seen[0].error instanceof SyntaxError, "回调携带 JSON.parse 的原错误");
 });
 
-test("流式：reasoning_content 可作最终兼容回退，但不进入可见 token 回调", async () => {
+test("流式：reasoning_content 只进 onReasoningToken 与 reply.reasoning，不兜底正文", async () => {
   const tokens = [];
+  const reasoningTokens = [];
   const adapter = makeAdapter({
     fetchImpl: async () =>
       streamResponse(
@@ -696,15 +701,21 @@ test("流式：reasoning_content 可作最终兼容回退，但不进入可见 t
     metadata: {
       onToken(token) {
         tokens.push(token);
+      },
+      onReasoningToken(token) {
+        reasoningTokens.push(token);
       }
     }
   });
   assert.deepEqual(tokens, [], "私有推理 token 不得进入对话增量流");
-  assert.equal(result.text, "thinking");
+  assert.deepEqual(reasoningTokens, ["think", "ing"]);
+  assert.equal(result.text, "", "无公开正文时 text 必须为空串，不兜底");
+  assert.equal(result.reasoning, "thinking");
 });
 
-test("流式：同时包含 reasoning_content 与 content 时只输出可见正文", async () => {
+test("流式：同时包含 reasoning_content 与 content 时各走各的通道", async () => {
   const tokens = [];
+  const reasoningTokens = [];
   const adapter = makeAdapter({
     fetchImpl: async () =>
       streamResponse(
@@ -719,11 +730,16 @@ test("流式：同时包含 reasoning_content 与 content 时只输出可见正�
   const result = await adapter.complete({
     messages: [{ role: "user", content: "hi" }],
     modelConfig: { model_name: "deepseek-reasoner", stream: true },
-    metadata: { onToken: (token) => tokens.push(token) }
+    metadata: {
+      onToken: (token) => tokens.push(token),
+      onReasoningToken: (token) => reasoningTokens.push(token)
+    }
   });
 
-  assert.deepEqual(tokens, ["visible-answer"]);
+  assert.deepEqual(tokens, ["visible-answer"], "onToken 只接收公开正文");
+  assert.deepEqual(reasoningTokens, ["private-thought"]);
   assert.equal(result.text, "visible-answer");
+  assert.equal(result.reasoning, "private-thought");
 });
 
 test("流式：tool_calls delta 增量累积并解析 arguments", async () => {

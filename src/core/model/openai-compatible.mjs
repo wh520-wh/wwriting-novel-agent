@@ -188,8 +188,10 @@ export class OpenAICompatibleAdapter {
 // ---------------------------------------------------------------------------
 
 function normalizeCompletion(raw) {
+  const { text, reasoning } = extractMessage(raw);
   return {
-    text: extractText(raw),
+    text,
+    reasoning,
     toolCalls: extractToolCalls(raw),
     raw,
     usage: normalizeOpenAIUsage(raw.usage ?? {}),
@@ -231,29 +233,31 @@ function extractToolCalls(raw) {
     .filter(Boolean);
 }
 
-function extractText(raw) {
-  if (typeof raw.output_text === "string" && raw.output_text) {
-    return raw.output_text;
-  }
+// 非流式正文/reasoning 提取（契约 §2.1：两字段分离，互不兜底）。
+// 提取顺序与旧 extractText 不同：content（公开正文）→ firstChoice.text →
+// output_text；正文为空时绝不把 reasoning_content 回退进 text。
+function extractMessage(raw) {
   const firstChoice = raw.choices?.[0];
   const message = firstChoice?.message;
-  let text = "";
-  if (typeof message?.content === "string") {
-    text = message.content;
-  } else if (Array.isArray(message?.content)) {
-    text = message.content
+  const text = extractContent(message?.content) || firstChoice?.text || raw.output_text || "";
+  const reasoning = typeof message?.reasoning_content === "string"
+    ? message.reasoning_content
+    : "";
+  return { text, reasoning };
+}
+
+// content 可能是字符串或多段数组（部分代理返回 [{ type: "text", text }]）。
+function extractContent(content) {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
       .map((part) => (typeof part === "string" ? part : part?.text ?? ""))
       .filter(Boolean)
       .join("");
   }
-  // 推理模型可能在 content 为空时把内容放在 reasoning_content
-  if (!text && typeof message?.reasoning_content === "string") {
-    text = message.reasoning_content;
-  }
-  if (!text && typeof firstChoice?.text === "string") {
-    text = firstChoice.text;
-  }
-  return text;
+  return "";
 }
 
 // ---------------------------------------------------------------------------
@@ -301,7 +305,10 @@ async function readStream(responseBody, metadata) {
     const reasoningToken = extractReasoningStreamToken(event);
     metadata.onActivity?.(token || reasoningToken);
     applyStreamToolCallDeltas(streamToolCalls, event);
-    if (reasoningToken) reasoningText += reasoningToken;
+    if (reasoningToken) {
+      reasoningText += reasoningToken;
+      metadata.onReasoningToken?.(reasoningToken, event);
+    }
     if (token) {
       text += token;
       metadata.onToken?.(token, event);
@@ -350,7 +357,8 @@ async function readStream(responseBody, metadata) {
   }
 
   return {
-    text: text || reasoningText,
+    text,
+    reasoning: reasoningText,
     toolCalls: finalizeStreamToolCalls(streamToolCalls),
     raw: { stream: true, event_count: eventCount, malformed_sse_frame_count: malformedSseFrameCount },
     usage: normalizeOpenAIUsage(usage ?? {}),

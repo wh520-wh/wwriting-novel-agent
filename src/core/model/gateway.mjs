@@ -9,8 +9,8 @@
 // 公共形状（Task 1 harness 冻结）：
 //   const gateway = createModelGateway({ adapter, retryMax, timeoutMs, ... });
 //   const result = await gateway.complete(request, { signal });
-//   result -> { text, toolCalls, raw, usageReport, costSummary, modelConfig,
-//               attempts, retried, cached }
+//   result -> { text, reasoning, toolCalls, raw, usageReport, costSummary,
+//               modelConfig, attempts, retried, cached }
 //
 // request 为装配完成的模型请求：{ messages, tools, toolChoice, modelConfig,
 // stream, metadata }。gateway 不解析业务提示、不选择模型——模型与阶段配置由
@@ -79,6 +79,7 @@ export function createModelGateway({
           const usageReport = normalizeUsageReport({ provider, model, usage: {}, rawUsage: {}, cost: null });
           return {
             text: cached.text,
+            reasoning: cached.reasoning ?? "",
             toolCalls: normalizeToolCalls(cached.toolCalls ?? []),
             raw: cached.raw,
             usageReport,
@@ -142,25 +143,26 @@ export function createModelGateway({
       };
 
       // onActivity 经 metadata 传给 adapter：流式 adapter 在解析每个 SSE 帧时
-      // 回调，同时保持长流心跳新鲜。onToken 按 attempt 包装：一旦本 attempt 已把
-      // 可见正文交给上层，就不能再透明重试，否则用户会收到重复前缀。
-      let emittedVisibleToken = false;
-      const metadataWithActivity = {
+      // 回调，同时保持长流心跳新鲜。onToken/onReasoningToken 按 attempt 包装：
+      // 一旦本 attempt 已把任一可见流（公开正文或 reasoning）交给上层，就不能
+      // 再透明重试，否则用户会收到重复正文/重复推理。
+      let emittedProviderToken = false;
+      const metadataForAttempt = {
         ...metadata,
         ...(onActivity ? { onActivity } : {}),
-        ...(typeof metadata.onToken === "function"
-          ? {
-              onToken(token, event) {
-                if (String(token ?? "").length > 0) emittedVisibleToken = true;
-                metadata.onToken(token, event);
-              }
-            }
-          : {})
+        onToken(token, event) {
+          if (String(token ?? "")) emittedProviderToken = true;
+          metadata.onToken?.(token, event);
+        },
+        onReasoningToken(token, event) {
+          if (String(token ?? "")) emittedProviderToken = true;
+          metadata.onReasoningToken?.(token, event);
+        }
       };
 
       try {
         const response = await adapter.complete(
-          { ...request, metadata: metadataWithActivity },
+          { ...request, metadata: metadataForAttempt },
           { signal: combinedSignal }
         );
 
@@ -170,6 +172,7 @@ export function createModelGateway({
         if (cacheKey) {
           cachePut(cacheKey, {
             text: response.text ?? "",
+            reasoning: response.reasoning ?? "",
             toolCalls: response.toolCalls ?? [],
             raw: response.raw ?? response
           });
@@ -188,6 +191,7 @@ export function createModelGateway({
         }
         return {
           text: response.text ?? "",
+          reasoning: response.reasoning ?? "",
           toolCalls: normalizeToolCalls(response.toolCalls ?? []),
           raw: response.raw ?? response,
           usageReport,
@@ -214,7 +218,7 @@ export function createModelGateway({
         // Timeout：包装为 ProviderTransportError
         if (timedOut) {
           const timeoutError = new ProviderTransportError("Request timed out.", { reason: "timeout" });
-          if (emittedVisibleToken) {
+          if (emittedProviderToken) {
             recordFailed(timeoutError, { provider, model, stage, chapter });
             throw timeoutError;
           }
@@ -229,7 +233,7 @@ export function createModelGateway({
           throw timeoutError;
         }
 
-        if (emittedVisibleToken) {
+        if (emittedProviderToken) {
           recordFailed(error, { provider, model, stage, chapter });
           throw error;
         }
