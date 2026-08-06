@@ -15,6 +15,7 @@
 //
 // 事件 payload 里出现的私有推理字段（reasoning / chain-of-thought 等）一律不进入
 // 派生状态；view 只拿到 label 与脱敏文本。
+import { createWorkState, orderedWorkItems, reduceWorkEvent } from "./work-items.mjs";
 
 export const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
 export const ACTIVITY_TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
@@ -53,11 +54,11 @@ export function createState() {
     lastSeq: 0,
     conversation: [],       // { role, text, input_id, seq }
     activities: new Map(),  // activity_id -> activity
-    thinking: 0,            // 未闭合 model turn 计数（>0 显示「思考中」标签）
+    work: createWorkState(), // 有序工作项投影（Task 5：reasoning/tool/plan 时间线）
     decisions: new Map(),   // decision_id -> decision
     errors: [],             // run_failed 事实（新 Run 启动时清空）
     assistantStream: null,  // { runId, text } —— 增量正文累积（流式气泡），completed 后清空
-    revisions: { messages: 0, run: 0, plan: 0, queue: 0, activities: 0, decisions: 0, errors: 0 }
+    revisions: { messages: 0, run: 0, queue: 0, activities: 0, decisions: 0, errors: 0 }
   };
 }
 
@@ -95,7 +96,7 @@ export function reduceSnapshot(state, snapshot) {
     }
     state.session = authoritativeSession;
     // 同会话的新快照（断线补齐等）：投影被整体替换，全部派生视图需要重新同步。
-    bump(state, ["messages", "run", "plan", "queue", "activities", "decisions", "errors"]);
+    bump(state, ["messages", "run", "queue", "activities", "decisions", "errors"]);
     for (const event of list) reduceEvent(state, event);
     state.session = authoritativeSession;
     return false;
@@ -210,7 +211,7 @@ export function reduceEvent(state, event) {
       state.errors = [];
       // 新 Run（或重试恢复）从零累积正文增量，旧流式气泡立即退出。
       state.assistantStream = null;
-      bump(state, ["run", "plan", "queue", "decisions", "errors"]);
+      bump(state, ["run", "queue", "decisions", "errors"]);
       break;
     }
     case "run_status_changed": {
@@ -314,19 +315,22 @@ export function reduceEvent(state, event) {
             return entry;
           })
         };
-        bump(state, ["plan"]);
+        // 计划自身的 revision 计数已删除：计划的时序由 work 投影的 plan 工作项
+        // sortSeq 承担（Task 5 Step 6），旧 view 的 overlay 靠 syncPlan 的
+        // 内容签名驱动渲染。
       }
       break;
     }
     case "model_turn_started": {
-      state.thinking += 1;
+      // 未闭合 model turn 的判断已由 thinking 计数迁移到 work 投影（Task 5）：
+      // hasOpenModelTurn 派生自 work 组的 reasoning 工作项 / legacy 开放 turn。
       state.assistantStream = null;
       if (state.session?.active_run) state.session.active_run.assistant_text = null;
       bump(state, ["run", "messages"]);
       break;
     }
     case "model_turn_completed": {
-      if (state.thinking > 0) state.thinking -= 1;
+      // thinking 计数已删除；v1 legacy turn 的闭合由 reduceWorkEvent 处理。
       bump(state, ["run"]);
       break;
     }
@@ -469,6 +473,9 @@ export function reduceEvent(state, event) {
     default:
       break;
   }
+  // 每个 journal 事件先进入现有会话 reducer，再进入 work 投影（Task 5 Step 6）。
+  // reduceWorkEvent 只读事件字段（run_id/seq/project_root/payload），不读 DOM。
+  reduceWorkEvent(state.work, event);
 }
 
 function appendActivityText(activity, delta) {
@@ -527,6 +534,14 @@ export function isRunActive(run) {
   return Boolean(run) && !TERMINAL_RUN_STATUSES.has(run.status);
 }
 
+// 思考中判断（Task 5 起由 work 投影派生，不再维护独立 thinking 计数）：
+// 活动 Run 的 work 组里存在 running 的 reasoning 工作项，或有未闭合的
+// v1 legacy model turn（无 turn_id 的旧事件，journal 的 legacyOpenTurns 语义）。
 export function hasOpenModelTurn(state) {
-  return state.thinking > 0;
+  const run = state.session?.active_run;
+  if (!run || TERMINAL_RUN_STATUSES.has(run.status)) return false;
+  const group = state.work?.groups.get(run.id);
+  if (!group) return false;
+  if (group.legacyOpenTurns > 0) return true;
+  return orderedWorkItems(group).some((item) => item.kind === "reasoning" && item.state === "running");
 }
