@@ -66,9 +66,9 @@ async function readRawEvents(root) {
 }
 
 // 手工构造一条事件（用于模拟崩溃现场的 events.jsonl）。
-function makeEvent(seq, { root, type, sessionId = "sess-1", runId = null, payload = {} }) {
+function makeEvent(seq, { root, type, sessionId = "sess-1", runId = null, payload = {}, schemaVersion = 1 }) {
   return {
-    schema_version: 1,
+    schema_version: schemaVersion,
     seq,
     event_id: `evt-${seq}`,
     session_id: sessionId,
@@ -177,8 +177,8 @@ test("append 分配连续 seq、盖章事件字段并原子重写 session.json",
     run_id: "run-1",
     payload: { workflow: "general", input_id: "in-1" }
   });
-  await journal.append({ type: "model_turn_started", run_id: "run-1", payload: {} });
-  await journal.append({ type: "model_turn_completed", run_id: "run-1", payload: {} });
+  await journal.append({ type: "model_turn_started", run_id: "run-1", payload: { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" } });
+  await journal.append({ type: "model_turn_completed", run_id: "run-1", payload: { turn_id: "turn-1", input_id: "in-1", outcome: "completed" } });
   await journal.append({ type: "input_consumed", run_id: "run-1", payload: { input_id: "in-1" } });
   await journal.append({ type: "run_completed", run_id: "run-1", payload: {} });
 
@@ -188,7 +188,7 @@ test("append 分配连续 seq、盖章事件字段并原子重写 session.json",
   assert.equal(runStarted.type, "run_started");
   assert.equal(runStarted.run_id, "run-1");
   assert.equal(runStarted.project_root, root);
-  assert.equal(runStarted.schema_version, 1);
+  assert.equal(runStarted.schema_version, 2, "新追加事件盖章 v2 schema");
   assert.equal(runStarted.session_id, events[0].session_id);
   assert.equal(new Date(runStarted.at).getTime(), BASE_TIME + 2000);
   assert.equal(runStarted.payload.workflow, "general");
@@ -1216,6 +1216,348 @@ test("契约：reasoning_delta/reasoning_completed 是固定事件类型，v2 tu
 });
 
 // ---------------------------------------------------------------------------
+// journal v2：schema 升级、turn 校验与旧日志兼容（Task 3）
+// ---------------------------------------------------------------------------
+
+test("v2 append 缺 turn_id 的 model_turn_*/reasoning 事件必须拒绝且不污染 journal", async (t) => {
+  const root = await makeWorkspace(t);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  await journal.load();
+  await journal.append({ type: "input_queued", payload: { input_id: "in-1", text: "写一段" } });
+  await journal.append({
+    type: "run_started",
+    run_id: "run-1",
+    payload: { workflow: "general", input_id: "in-1" }
+  });
+
+  await assert.rejects(
+    () =>
+      journal.append({
+        type: "model_turn_started",
+        run_id: "run-1",
+        payload: { input_id: "in-1", reasoning_capability: "supported" }
+      }),
+    /turn_id/
+  );
+  await assert.rejects(
+    () =>
+      journal.append({
+        type: "model_turn_completed",
+        run_id: "run-1",
+        payload: { input_id: "in-1", outcome: "completed" }
+      }),
+    /turn_id/
+  );
+  await assert.rejects(
+    () =>
+      journal.append({
+        type: "reasoning_delta",
+        run_id: "run-1",
+        payload: { input_id: "in-1", text: "x" }
+      }),
+    /turn_id/
+  );
+  await assert.rejects(
+    () =>
+      journal.append({
+        type: "reasoning_completed",
+        run_id: "run-1",
+        payload: { input_id: "in-1", text: "x", availability: "available" }
+      }),
+    /turn_id/
+  );
+
+  // 被拒绝的事件一律不落盘，后续合法 v2 turn 事件可正常追加
+  const session = await journal.getSession();
+  assert.equal(session.last_seq, 3, "4 条缺 turn_id 的事件必须全部被拒绝");
+  await journal.append({
+    type: "model_turn_started",
+    run_id: "run-1",
+    payload: { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }
+  });
+  assert.equal((await journal.getSession()).last_seq, 4);
+});
+
+test("v2 turn 校验：delta 引用未知 turn、completed 重复/未开始、非法 outcome/availability 均拒绝", async (t) => {
+  const root = await makeWorkspace(t);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  await journal.load();
+  await journal.append({ type: "input_queued", payload: { input_id: "in-1", text: "写一段" } });
+  await journal.append({
+    type: "run_started",
+    run_id: "run-1",
+    payload: { workflow: "general", input_id: "in-1" }
+  });
+
+  await assert.rejects(
+    () =>
+      journal.append({
+        type: "reasoning_delta",
+        run_id: "run-1",
+        payload: { turn_id: "ghost", input_id: "in-1", text: "x" }
+      }),
+    /未知 turn/
+  );
+  await assert.rejects(
+    () =>
+      journal.append({
+        type: "model_turn_completed",
+        run_id: "run-1",
+        payload: { turn_id: "turn-1", input_id: "in-1", outcome: "completed" }
+      }),
+    /未开始的 turn/
+  );
+
+  // 合法顺序：started → delta → completed(reasoning) → completed(turn)
+  await journal.append({
+    type: "model_turn_started",
+    run_id: "run-1",
+    payload: { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }
+  });
+  // turn 已开始后：非法 availability 必须拒绝
+  await assert.rejects(
+    () =>
+      journal.append({
+        type: "reasoning_completed",
+        run_id: "run-1",
+        payload: { turn_id: "turn-1", input_id: "in-1", text: "x", availability: "weird" }
+      }),
+    /availability 非法/
+  );
+  await assert.rejects(
+    () =>
+      journal.append({
+        type: "model_turn_started",
+        run_id: "run-1",
+        payload: { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }
+      }),
+    /重复开始/
+  );
+  // turn 已开始后：空 delta 仍必须拒绝
+  await assert.rejects(
+    () =>
+      journal.append({
+        type: "reasoning_delta",
+        run_id: "run-1",
+        payload: { turn_id: "turn-1", input_id: "in-1", text: "" }
+      }),
+    /非空字符串/
+  );
+  await journal.append({
+    type: "reasoning_completed",
+    run_id: "run-1",
+    payload: { turn_id: "turn-1", input_id: "in-1", text: "x", availability: "available" }
+  });
+  // reasoning_completed 只出现一次
+  await assert.rejects(
+    () =>
+      journal.append({
+        type: "reasoning_completed",
+        run_id: "run-1",
+        payload: { turn_id: "turn-1", input_id: "in-1", text: "y", availability: "available" }
+      }),
+    /已 completed/
+  );
+  await assert.rejects(
+    () =>
+      journal.append({
+        type: "model_turn_completed",
+        run_id: "run-1",
+        payload: { turn_id: "turn-1", input_id: "in-1", outcome: "weird" }
+      }),
+    /outcome 非法/
+  );
+  await journal.append({
+    type: "model_turn_completed",
+    run_id: "run-1",
+    payload: { turn_id: "turn-1", input_id: "in-1", outcome: "completed" }
+  });
+  // turn 已闭合：completed 只出现一次
+  await assert.rejects(
+    () =>
+      journal.append({
+        type: "model_turn_completed",
+        run_id: "run-1",
+        payload: { turn_id: "turn-1", input_id: "in-1", outcome: "completed" }
+      }),
+    /未开始的 turn/
+  );
+  await journal.append({ type: "input_consumed", run_id: "run-1", payload: { input_id: "in-1" } });
+  await journal.append({ type: "run_completed", run_id: "run-1", payload: {} });
+  assert.equal((await journal.getSession()).active_run.status, "completed");
+});
+
+test("纯 v1 日志（无 turn_id 的 model_turn_*）可打开并按顺序建立/关闭 legacy turn 栈", async (t) => {
+  const root = await makeWorkspace(t);
+  const events = [
+    makeEvent(1, { root, type: "session_created" }),
+    makeEvent(2, { root, type: "input_queued", payload: { input_id: "in-1", text: "你好" } }),
+    makeEvent(3, { root, type: "run_started", runId: "run-1", payload: { workflow: "general", input_id: "in-1" } }),
+    makeEvent(4, { root, type: "model_turn_started", runId: "run-1" }),
+    makeEvent(5, { root, type: "model_turn_completed", runId: "run-1" }),
+    makeEvent(6, { root, type: "input_consumed", runId: "run-1", payload: { input_id: "in-1" } }),
+    makeEvent(7, { root, type: "run_completed", runId: "run-1" })
+  ];
+  await writeCrashJournal(root, events);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  const session = await journal.load();
+  assert.equal(session.schema_version, 1, "纯 v1 日志重放后 projection 保持 v1");
+  assert.equal(session.active_run.id, "run-1");
+  assert.equal(session.active_run.status, "completed", "v1 日志不能被打开阻塞，也不能误标记 interrupted");
+  // legacy turn 栈正确闭合：无 dangling，不需要 run_interrupted 恢复
+  assert.equal((await journal.read({})).filter((event) => event.type === "run_interrupted").length, 0);
+  // 工作时钟字段对 v1 重放同样可回放：completed 有 finished_at
+  assert.equal(session.active_run.finished_at, events[6].at);
+});
+
+test("v1 日志重放后可继续追加 v2 事件，projection 升为 v2 且新事件盖章 v2", async (t) => {
+  const root = await makeWorkspace(t);
+  const events = [
+    makeEvent(1, { root, type: "session_created" }),
+    makeEvent(2, { root, type: "input_queued", payload: { input_id: "in-1", text: "一" } }),
+    makeEvent(3, { root, type: "run_started", runId: "run-1", payload: { workflow: "general", input_id: "in-1" } }),
+    makeEvent(4, { root, type: "model_turn_started", runId: "run-1" }),
+    makeEvent(5, { root, type: "model_turn_completed", runId: "run-1" }),
+    makeEvent(6, { root, type: "input_consumed", runId: "run-1", payload: { input_id: "in-1" } }),
+    makeEvent(7, { root, type: "run_completed", runId: "run-1" })
+  ];
+  await writeCrashJournal(root, events);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  const before = await journal.load();
+  assert.equal(before.schema_version, 1);
+
+  // 同一 Session 上继续追加 v2 事件（v1 session 后继续追加）
+  await journal.append({ type: "input_queued", payload: { input_id: "in-2", text: "二" } });
+  await journal.append({
+    type: "run_started",
+    run_id: "run-2",
+    payload: { workflow: "general", input_id: "in-2" }
+  });
+  await journal.append({
+    type: "model_turn_started",
+    run_id: "run-2",
+    payload: { turn_id: "turn-2", input_id: "in-2", reasoning_capability: "supported" }
+  });
+  await journal.append({
+    type: "reasoning_delta",
+    run_id: "run-2",
+    payload: { turn_id: "turn-2", input_id: "in-2", text: "先查事实" }
+  });
+  await journal.append({
+    type: "reasoning_completed",
+    run_id: "run-2",
+    payload: { turn_id: "turn-2", input_id: "in-2", text: "先查事实", availability: "available" }
+  });
+  await journal.append({
+    type: "model_turn_completed",
+    run_id: "run-2",
+    payload: { turn_id: "turn-2", input_id: "in-2", outcome: "completed" }
+  });
+  await journal.append({ type: "input_consumed", run_id: "run-2", payload: { input_id: "in-2" } });
+  await journal.append({ type: "run_completed", run_id: "run-2", payload: {} });
+
+  const after = await journal.getSession();
+  assert.equal(after.schema_version, 2, "追加 v2 事件后 session projection 取最高 schema version");
+  assert.equal(after.active_run.id, "run-2");
+  assert.equal(after.active_run.status, "completed");
+  const raw = await journal.read({});
+  const appended = raw.filter((event) => event.seq > 7);
+  assert.ok(appended.length > 0);
+  assert.ok(appended.every((event) => event.schema_version === 2), "后续 append 全部盖章 v2");
+  assert.ok(appended.some((event) => event.type === "reasoning_delta"), "reasoning_delta 已落盘");
+});
+
+// ---------------------------------------------------------------------------
+// 有效工作耗时：由 journal 投影负责（Task 3）
+// ---------------------------------------------------------------------------
+
+test("工作时钟：active_elapsed_ms 排除 waiting_user（10s 运行 + 30s 等待 + 5s 恢复运行）", async (t) => {
+  const root = await makeWorkspace(t);
+  let now = BASE_TIME;
+  const clock = () => now;
+  const journal = createAgentJournal({ projectRoot: root, clock, idFactory: createIds() });
+  await journal.load();
+  await journal.append({ type: "input_queued", payload: { input_id: "in-1", text: "写一段" } });
+
+  now += 10_000;
+  await journal.append({
+    type: "run_started",
+    run_id: "run-1",
+    payload: { workflow: "general", input_id: "in-1" }
+  });
+  now += 10_000;
+  await journal.append({ type: "run_status_changed", run_id: "run-1", payload: { status: "waiting_user" } });
+  now += 30_000;
+  await journal.append({ type: "run_status_changed", run_id: "run-1", payload: { status: "running" } });
+  now += 5_000;
+  await journal.append({ type: "input_consumed", run_id: "run-1", payload: { input_id: "in-1" } });
+  await journal.append({ type: "run_completed", run_id: "run-1", payload: {} });
+
+  const session = await journal.getSession();
+  assert.equal(session.active_run.active_elapsed_ms, 15_000, "有效耗时 = 10s 首次运行 + 5s 恢复后运行，30s 等待不计入");
+  assert.equal(session.active_run.active_since, null, "终态后不再计时");
+  assert.equal(session.active_run.finished_at, new Date(BASE_TIME + 55_000).toISOString());
+});
+
+test("retry 保留累计有效耗时并重新设置 active_since", async (t) => {
+  const root = await makeWorkspace(t);
+  let now = BASE_TIME;
+  const clock = () => now;
+  const journal = createAgentJournal({ projectRoot: root, clock, idFactory: createIds() });
+  await journal.load();
+
+  now += 5_000;
+  await journal.append({ type: "run_started", run_id: "run-1", payload: { workflow: "general" } });
+  now += 5_000;
+  await journal.append({ type: "run_failed", run_id: "run-1", payload: { error: "boom", code: "model_error" } });
+  let session = await journal.getSession();
+  assert.equal(session.active_run.active_elapsed_ms, 5_000);
+  assert.equal(session.active_run.active_since, null);
+  assert.equal(session.active_run.finished_at, new Date(BASE_TIME + 10_000).toISOString());
+
+  now += 60_000;
+  await journal.append({ type: "run_started", run_id: "run-1", payload: { workflow: "general" } });
+  session = await journal.getSession();
+  assert.equal(session.active_run.active_elapsed_ms, 5_000, "retry 保留累计耗时（60s 失败期不计入）");
+  assert.equal(session.active_run.active_since, new Date(BASE_TIME + 70_000).toISOString(), "retry 重新设置 active_since");
+  // 注意：transitionWorkClock 按 brief 原样实现，retry 后 finished_at 保留旧终态值，
+  // 直到下一次终态事件覆盖（对活动 Run 的展示语义无影响）。
+});
+
+test("崩溃恢复：未闭合 reasoning turn 仍触发既有 interrupted 恢复", async (t) => {
+  const root = await makeWorkspace(t);
+  const events = [
+    makeEvent(1, { root, type: "session_created" }),
+    makeEvent(2, { root, type: "input_queued", payload: { input_id: "in-1", text: "写一段" } }),
+    makeEvent(3, { root, type: "run_started", runId: "run-1", payload: { workflow: "general", input_id: "in-1" } }),
+    makeEvent(4, {
+      root,
+      type: "model_turn_started",
+      runId: "run-1",
+      schemaVersion: 2,
+      payload: { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }
+    }),
+    makeEvent(5, {
+      root,
+      type: "reasoning_delta",
+      runId: "run-1",
+      schemaVersion: 2,
+      payload: { turn_id: "turn-1", input_id: "in-1", text: "推理到一半……" }
+    })
+  ];
+  await writeCrashJournal(root, events);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  const session = await journal.load();
+  assert.equal(session.active_run.status, "interrupted", "未闭合 reasoning turn 的 Run 必须标记 interrupted");
+  assert.equal(session.last_seq, 6, "5 条崩溃事件 + 1 条恢复 run_interrupted");
+  const all = await journal.read({});
+  assert.equal(all.filter((event) => event.type === "run_interrupted").length, 1);
+  // 幂等：再次 load 不重复标记
+  await journal.load();
+  assert.equal((await journal.read({})).filter((event) => event.type === "run_interrupted").length, 1);
+});
+
+// ---------------------------------------------------------------------------
 // plan_updated 结构化深化：id/description 与旧格式兼容
 // ---------------------------------------------------------------------------
 
@@ -1319,10 +1661,10 @@ test("model_turn_started 为新 Provider 轮次重置临时正文", async (t) =>
   const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
   await journal.load();
   await journal.append({ type: "run_started", run_id: "run-1", payload: { workflow: "general" } });
-  await journal.append({ type: "model_turn_started", run_id: "run-1", payload: {} });
+  await journal.append({ type: "model_turn_started", run_id: "run-1", payload: { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" } });
   await journal.append({ type: "assistant_message_delta", run_id: "run-1", payload: { text: "工具轮前言" } });
-  await journal.append({ type: "model_turn_completed", run_id: "run-1", payload: {} });
-  await journal.append({ type: "model_turn_started", run_id: "run-1", payload: {} });
+  await journal.append({ type: "model_turn_completed", run_id: "run-1", payload: { turn_id: "turn-1", input_id: "in-1", outcome: "completed" } });
+  await journal.append({ type: "model_turn_started", run_id: "run-1", payload: { turn_id: "turn-2", input_id: "in-1", reasoning_capability: "supported" } });
 
   const session = await journal.getSession();
   assert.equal(session.active_run.assistant_text, null);

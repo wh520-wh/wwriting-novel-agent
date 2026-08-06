@@ -41,7 +41,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { ensureDir, pathExists, writeJsonAtomic } from "../fs-utils.mjs";
 
-// 计划固定的 28 个 journal 事件类型；未知类型一律拒绝。
+// 计划固定的 31 个 journal 事件类型；未知类型一律拒绝。
 export const FIXED_EVENT_TYPES = Object.freeze([
   "session_created",
   "run_started",
@@ -64,6 +64,8 @@ export const FIXED_EVENT_TYPES = Object.freeze([
   "permission_grant_cleared",
   "workflow_changed",
   "plan_updated",
+  "reasoning_completed",
+  "reasoning_delta",
   "history_compacted",
   "checkpoint_linked",
   "assistant_message_delta",
@@ -105,6 +107,10 @@ const TERMINAL_EVENT_TO_STATUS = Object.freeze({
   run_cancelled: "cancelled",
   run_interrupted: "interrupted"
 });
+
+// 新追加事件的 schema version（Task 3 起为 2）：reducer 同时接受旧 v1 与 v2
+// 事件（v1 重放走 legacy 分支），session projection 记录已重放事件的最高版本。
+const EVENT_SCHEMA_VERSION = 2;
 
 // Run 状态到 Session 状态的映射：终结的 Run 使 Session 回到 idle。
 const RUN_STATUS_TO_SESSION = Object.freeze({
@@ -185,8 +191,30 @@ function createRun(event, { workflow, inputId }) {
     // 以全文终态对齐或保留累积）。可回放可恢复，重建 projection 与实时一致。
     assistant_text: null,
     active_grants: [],
-    started_at: event.at
+    started_at: event.at,
+    finished_at: null,
+    // 有效工作时钟：只累计 active（running/interrupting/stopping）状态下的耗时，
+    // waiting_user 由 transitionWorkClock 排除。active_since 为 null 表示当前
+    // 不在有效工作区间（等待确认/已终结）；active_elapsed_ms 为累计有效耗时。
+    active_elapsed_ms: 0,
+    active_since: event.at
   };
+}
+
+// 工作时钟转换：每次状态转换/终态事件必须先调用本函数，再写 run.status。
+//   - 离开 active 状态（等待确认/终结）时把 [active_since, at] 计入累计耗时并
+//     置空 active_since（等待用户的时间不计入有效工作耗时）；
+//   - 进入 active 状态且当前不在计时区间时重新设置 active_since；
+//   - 终态同时落 finished_at。
+// retry（terminal→running）保留 active_elapsed_ms 并重新设置 active_since。
+function transitionWorkClock(run, nextStatus, at) {
+  const active = new Set(["running", "interrupting", "stopping"]);
+  if (run.active_since && !active.has(nextStatus)) {
+    run.active_elapsed_ms += Math.max(0, Date.parse(at) - Date.parse(run.active_since));
+    run.active_since = null;
+  }
+  if (!run.active_since && active.has(nextStatus)) run.active_since = at;
+  if (["completed", "failed", "cancelled", "interrupted"].includes(nextStatus)) run.finished_at = at;
 }
 
 function activateInput(session, inputId) {
@@ -204,7 +232,8 @@ function createSideState() {
   return {
     eventIds: new Set(), // 全量 event_id（reducer 去重校验，含重放路径）
     openToolCalls: new Map(), // tool_call_id -> 开始事件的 seq
-    openModelTurns: 0, // 未闭合 model turn 计数（供崩溃恢复检测）
+    openModelTurns: new Map(), // v2 turn_id -> { seq, reasoningCompleted }（供崩溃恢复检测）
+    legacyOpenTurns: [], // v1 旧日志重放时的未闭合 turn 栈（legacy-<event_id>）
     openDecisions: new Map(), // decision_id -> seq
     terminalInputs: new Set(), // 已 consumed/cancelled 的 input id
     inputMeta: new Map() // input_id -> { id, text, status, queued_at }（re-queue 用）
@@ -270,8 +299,10 @@ function reduceEvent(session, event, side) {
           fail(`两个 active Run：Run ${run.id} 尚在 ${run.status}，拒绝启动 ${event.run_id}`);
         }
         if (run.id === event.run_id) {
-          // retry：恢复同一可恢复 Run（保留 workflow/started_at/visible_plan）；
-          // 正文增量按尝试重置（新尝试的 delta 从空开始累积）。
+          // retry：恢复同一可恢复 Run（保留 workflow/started_at/visible_plan/累计
+          // 有效耗时）；正文增量按尝试重置（新尝试的 delta 从空开始累积）。
+          // 工作时钟：保留 active_elapsed_ms 并重新设置 active_since。
+          transitionWorkClock(run, "running", event.at);
           run.status = "running";
           session.status = "running";
           run.assistant_text = null;
@@ -305,6 +336,8 @@ function reduceEvent(session, event, side) {
           fail(`Run ${run.id} 从终结状态 ${run.status} 转为 ${target} 必须携带 retry: true`);
         }
       }
+      // 有效工作时钟先行：waiting_user 不计入耗时，恢复 running 时重新计时
+      transitionWorkClock(run, target, event.at);
       run.status = target;
       session.status = RUN_STATUS_TO_SESSION[target];
       if (targetTerminal) run.active_input_id = null;
@@ -404,6 +437,7 @@ function reduceEvent(session, event, side) {
       if (activeRun.status === "stopping") {
         fail(`Run ${run.id} 正在停止，不能写入 interrupt_requested`);
       }
+      transitionWorkClock(activeRun, "interrupting", event.at);
       activeRun.status = "interrupting";
       session.status = "interrupting";
       break;
@@ -411,6 +445,7 @@ function reduceEvent(session, event, side) {
 
     case "interrupt_safe_point_reached": {
       const activeRun = requireActiveRun("interrupt_safe_point_reached");
+      transitionWorkClock(activeRun, "running", event.at);
       activeRun.status = "running";
       session.status = "running";
       break;
@@ -421,14 +456,65 @@ function reduceEvent(session, event, side) {
       // 每个 Provider 轮次拥有独立的临时正文。工具轮次可能先流出一句操作前言，
       // 下一轮必须从空白开始，避免前言与最终答复在 projection 中串接。
       activeRun.assistant_text = null;
-      side.openModelTurns += 1;
+      const turnId = payload.turn_id;
+      if (turnId == null) {
+        // v1 旧日志重放（schema_version 1 的 model_turn_* 没有 turn_id）：按开始
+        // 顺序压入 legacy turn 栈，由下一条 v1 completed 关闭栈顶。只有 v1 重放
+        // 走该分支；v2 追加缺 turn_id 一律拒绝。
+        if (event.schema_version !== 1) fail("model_turn_started 必须携带 turn_id");
+        side.legacyOpenTurns.push(`legacy-${event.event_id}`);
+        break;
+      }
+      requireString(turnId, "turn_id");
+      requireString(payload.input_id, "input_id");
+      requireString(payload.reasoning_capability, "reasoning_capability");
+      if (side.openModelTurns.has(turnId)) fail(`model turn ${turnId} 重复开始`);
+      side.openModelTurns.set(turnId, { seq: event.seq, reasoningCompleted: false });
       break;
     }
 
     case "model_turn_completed": {
       requireActiveRun("model_turn_completed");
-      if (side.openModelTurns <= 0) fail("model_turn_completed 没有对应的 model_turn_started");
-      side.openModelTurns -= 1;
+      const turnId = payload.turn_id;
+      if (turnId == null) {
+        if (event.schema_version !== 1) fail("model_turn_completed 必须携带 turn_id");
+        const legacyId = side.legacyOpenTurns.pop();
+        if (!legacyId) fail("model_turn_completed 没有对应的 model_turn_started");
+        break;
+      }
+      requireString(turnId, "turn_id");
+      requireString(payload.input_id, "input_id");
+      const outcome = requireString(payload.outcome, "outcome");
+      if (!["completed", "failed", "cancelled"].includes(outcome)) {
+        fail(`model_turn_completed 的 outcome 非法: ${String(outcome)}`);
+      }
+      // completed 只出现一次：delete 失败即该 turn 尚未开始或已闭合
+      if (!side.openModelTurns.delete(turnId)) fail(`model_turn_completed 引用未开始的 turn ${turnId}`);
+      break;
+    }
+
+    case "reasoning_delta": {
+      requireActiveRun("reasoning_delta");
+      const turnId = requireString(payload.turn_id, "turn_id");
+      if (!side.openModelTurns.has(turnId)) fail(`reasoning_delta 引用未知 turn ${turnId}`);
+      requireString(payload.text, "text");
+      requireString(payload.input_id, "input_id");
+      break;
+    }
+
+    case "reasoning_completed": {
+      requireActiveRun("reasoning_completed");
+      const turnId = requireString(payload.turn_id, "turn_id");
+      const meta = side.openModelTurns.get(turnId);
+      if (!meta) fail(`reasoning_completed 引用未知 turn ${turnId}`);
+      if (meta.reasoningCompleted) fail(`turn ${turnId} 的 reasoning 已 completed（不得重复）`);
+      requireString(payload.input_id, "input_id");
+      if (typeof payload.text !== "string") fail("reasoning_completed 必须携带 text");
+      const availability = payload.availability;
+      if (!["available", "unsupported", "empty"].includes(availability)) {
+        fail(`reasoning_completed 的 availability 非法: ${String(availability)}`);
+      }
+      meta.reasoningCompleted = true;
       break;
     }
 
@@ -598,6 +684,7 @@ function reduceEvent(session, event, side) {
       if (session.queued_inputs.length > 0) {
         fail(`run_completed 时队列非空（${session.queued_inputs.length} 条输入未消费），拒绝终结`);
       }
+      transitionWorkClock(activeRun, "completed", event.at);
       activeRun.status = "completed";
       activeRun.active_input_id = null;
       session.status = "idle";
@@ -608,7 +695,9 @@ function reduceEvent(session, event, side) {
     case "run_cancelled":
     case "run_interrupted": {
       const activeRun = requireActiveRun(type);
-      activeRun.status = TERMINAL_EVENT_TO_STATUS[type];
+      const terminalStatus = TERMINAL_EVENT_TO_STATUS[type];
+      transitionWorkClock(activeRun, terminalStatus, event.at);
+      activeRun.status = terminalStatus;
       activeRun.active_input_id = null;
       session.status = "idle";
       break;
@@ -616,6 +705,12 @@ function reduceEvent(session, event, side) {
 
     default:
       fail(`未知 journal 事件类型: ${type}`);
+  }
+
+  // session projection 记录已重放事件的最高 schema version：纯 v1 日志保持 1，
+  // 追加过 v2 事件后升为 2。
+  if (Number.isInteger(event.schema_version) && event.schema_version > session.schema_version) {
+    session.schema_version = event.schema_version;
   }
 
   session.last_seq = event.seq;
@@ -726,7 +821,7 @@ export function createAgentJournal({ projectRoot, clock = defaultClock, idFactor
     if (base == null || typeof base !== "object") fail("事件必须是对象");
     if (typeof base.type !== "string") fail("事件必须携带 type");
     return {
-      schema_version: 1,
+      schema_version: EVENT_SCHEMA_VERSION,
       seq,
       event_id: base.event_id ?? idFactory(),
       session_id: state.session.session_id,
@@ -742,7 +837,8 @@ export function createAgentJournal({ projectRoot, clock = defaultClock, idFactor
     return {
       eventIds: new Set(side.eventIds),
       openToolCalls: new Map(side.openToolCalls),
-      openModelTurns: side.openModelTurns,
+      openModelTurns: new Map(side.openModelTurns),
+      legacyOpenTurns: [...side.legacyOpenTurns],
       openDecisions: new Map(side.openDecisions),
       terminalInputs: new Set(side.terminalInputs),
       inputMeta: new Map(side.inputMeta)
@@ -753,11 +849,14 @@ export function createAgentJournal({ projectRoot, clock = defaultClock, idFactor
     return { session: structuredClone(current.session), ...cloneSide(current) };
   }
 
-  // dangling assistant 活动：非终结 Run 上存在未闭合 model turn 或 tool call。
+  // dangling assistant 活动：非终结 Run 上存在未闭合 model turn（v2 按 turn_id、
+  // v1 按 legacy 栈）或 tool call。
   function detectDangling(current) {
     const run = current.session.active_run;
     if (!run || TERMINAL_RUN_STATUSES.has(run.status)) return null;
-    if (current.openModelTurns > 0 || current.openToolCalls.size > 0) return run;
+    if (current.openModelTurns.size > 0 || current.legacyOpenTurns.length > 0 || current.openToolCalls.size > 0) {
+      return run;
+    }
     return null;
   }
 
