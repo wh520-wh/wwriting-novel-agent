@@ -1,6 +1,8 @@
-// 四级技能 catalog 单测（计划 Task 9）。
+// 四级技能 catalog 单测（计划 Task 9 + Task 10）。
 // 四层同名时 active 一定来自 project（项目 > 全局 > 随应用分发 > 内置）；
 // 只扫描每个 root 的直接子目录；同 root 重复 name 拒绝；默认 root 在 service 内解析。
+// Task 10：src/skills/<name>/SKILL.md 五个内置技能文件与 BUILTIN_SKILLS 内容等价，
+// catalog 以 src/skills 为 builtin root 时全部来自 source: "builtin"，且不向项目写入 skill.json。
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { realpath as realpathAsync } from "node:fs/promises";
@@ -13,6 +15,17 @@ import {
   SKILL_SOURCE_PRIORITY
 } from "../../src/core/skills/catalog.mjs";
 import { createSkillService } from "../../src/core/skills/index.mjs";
+import { readSkillFile } from "../../src/core/skills/skill-file.mjs";
+import { BUILTIN_SKILLS } from "../../src/core/skill-runtime.mjs";
+
+// Task 10：内置技能文件化后的真实根目录（src/skills），与 service 默认 builtinRoot 一致。
+const BUILTIN_ROOT = path.resolve(import.meta.dirname, "..", "..", "src", "skills");
+const BUILTIN_SKILL_NAMES = Object.keys(BUILTIN_SKILLS);
+
+// 内容快照比较：折叠空白后按子串包含比对，容忍正文的分行/段落重组。
+function normalizeWhitespace(value) {
+  return String(value).replace(/\s+/gu, " ").trim();
+}
 
 function makeTemp(prefix = "wwr-catalog-") {
   return mkdtempSync(path.join(tmpdir(), prefix));
@@ -264,4 +277,111 @@ test("discoverSkills 直接调用与 service.catalog 行为一致", async (t) =>
   assert.ok(Object.isFrozen(discovered));
   assert.ok(Object.isFrozen(discovered.active));
   assert.ok(Object.isFrozen(discovered.shadowed));
+});
+
+// ---------------------------------------------------------------------------
+// Task 10：内置技能文件化（src/skills/<name>/SKILL.md）
+// ---------------------------------------------------------------------------
+
+test("五个内置技能文件存在，frontmatter 与 BUILTIN_SKILLS 等价且正文非空壳", async (t) => {
+  assert.equal(BUILTIN_SKILL_NAMES.length, 5, "BUILTIN_SKILLS 应为五个内置技能");
+
+  for (const name of BUILTIN_SKILL_NAMES) {
+    const old = BUILTIN_SKILLS[name];
+    const skill = await readSkillFile(path.join(BUILTIN_ROOT, name), { source: "builtin" });
+
+    // name/description/version → 顶层 frontmatter，逐字等价。
+    assert.equal(skill.name, old.name, `${name} frontmatter name`);
+    assert.equal(skill.description, old.description, `${name} frontmatter description`);
+    assert.equal(skill.version, old.version, `${name} frontmatter version`);
+
+    // scope/priority → metadata.wwriting，逐字等价。
+    const wwriting = skill.metadata.wwriting;
+    assert.ok(wwriting, `${name} 必须声明 metadata.wwriting`);
+    assert.equal(wwriting.scope, old.scope, `${name} metadata.wwriting.scope`);
+    assert.equal(wwriting.priority, old.priority, `${name} metadata.wwriting.priority`);
+
+    // hooks → metadata.wwriting.hooks：stage/action/check 结构等价；
+    // append_prompt.content 与 check.prompt 移入正文（此处不要求重复保留）。
+    const projectHook = (hook) => ({ stage: hook.stage, action: hook.action, check: hook.check });
+    assert.deepEqual(
+      wwriting.hooks.map(projectHook),
+      old.hooks.map(projectHook),
+      `${name} metadata.wwriting.hooks 应与旧 hooks 结构等价`
+    );
+
+    // 正文必须携带全部 append_prompt 指令与 check prompt（不能只是空壳 frontmatter）。
+    const body = normalizeWhitespace(skill.body);
+    assert.ok(skill.body.startsWith("# "), `${name} 正文应以标题开头`);
+    for (const hook of old.hooks) {
+      if (hook.action === "append_prompt" && hook.content) {
+        assert.ok(
+          body.includes(normalizeWhitespace(hook.content)),
+          `${name} 正文 Instructions 应包含 append_prompt.content（stage=${hook.stage}）`
+        );
+      }
+      if (hook.action === "check" && hook.prompt) {
+        assert.ok(
+          body.includes(normalizeWhitespace(hook.prompt)),
+          `${name} 正文 Review checklist 应包含 check.prompt（check=${hook.check}）`
+        );
+        assert.ok(
+          skill.body.includes(hook.check),
+          `${name} 正文应保留 hook checker id ${hook.check}`
+        );
+      }
+    }
+  }
+});
+
+test("catalog 以 src/skills 为 builtin root 时五个内置技能全部来自 source: builtin", async (t) => {
+  const projectRoot = makeTemp();
+  const userHome = makeTemp();
+  const resourcesPath = makeTemp();
+  t.after(() => {
+    for (const dir of [projectRoot, userHome, resourcesPath]) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  const service = createSkillService({ userHome, resourcesPath, builtinRoot: BUILTIN_ROOT });
+  const { active, shadowed } = await service.catalog({ projectRoot });
+
+  assert.equal(shadowed.length, 0, "无同名覆盖时不应有 shadowed");
+  assert.equal(active.length, BUILTIN_SKILL_NAMES.length, `active 应恰好是五个内置技能，得到 ${active.map((s) => s.name).join(",")}`);
+  const byName = new Map(active.map((skill) => [skill.name, skill]));
+  for (const name of BUILTIN_SKILL_NAMES) {
+    const skill = byName.get(name);
+    assert.ok(skill, `catalog 应发现内置技能 ${name}`);
+    assert.equal(skill.source, "builtin", `${name} 应来自 builtin 层`);
+    assert.equal(skill.metadata.wwriting.priority, BUILTIN_SKILLS[name].priority, `${name} priority 应保留`);
+  }
+});
+
+test("新建项目不会生成 skills/*/skill.json：内置技能来自 src/skills 而非项目目录", async (t) => {
+  // 模拟新项目：projectRoot/skills 目录存在但为空（与 createProjectRoot 夹具一致）。
+  const projectRoot = makeTemp();
+  fs.mkdirSync(path.join(projectRoot, "skills"), { recursive: true });
+  const userHome = makeTemp();
+  const resourcesPath = makeTemp();
+  t.after(() => {
+    for (const dir of [projectRoot, userHome, resourcesPath]) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  const service = createSkillService({ userHome, resourcesPath, builtinRoot: BUILTIN_ROOT });
+  const { active } = await service.catalog({ projectRoot });
+  assert.equal(active.length, BUILTIN_SKILL_NAMES.length);
+  assert.ok(active.every((skill) => skill.source === "builtin"), "全部内置技能均来自 builtin 层");
+
+  // catalog 只从 src/skills 发现内置：项目 skills/ 目录保持为空，不产生任何 skill.json。
+  assert.deepEqual(fs.readdirSync(path.join(projectRoot, "skills")), [], "项目 skills/ 目录应为空");
+  for (const name of BUILTIN_SKILL_NAMES) {
+    assert.equal(
+      fs.existsSync(path.join(projectRoot, "skills", name, "skill.json")),
+      false,
+      `项目 skills/${name}/skill.json 不应被生成`
+    );
+  }
 });
