@@ -229,14 +229,19 @@ test("service.read 拒绝穿越技能目录的资源路径", async (t) => {
 test("默认 root 在 service 内统一解析，测试通过 factory 注入临时目录", async (t) => {
   // createSkillService() 无参：userHome 默认 os.homedir()、resourcesPath 默认
   // process.resourcesPath（node 下 undefined）、builtinRoot 默认 src/skills。
-  // 用唯一技能名避免与真实用户目录中任何同名技能冲突。
+  // Task 11 后 catalog 会先跑 ensureMigrated 迁移；注入临时 userHome，保证测试
+  // 不触碰真实用户目录，也不在真实 home 写 migration marker。
   const projectRoot = makeTemp();
+  const userHome = makeTemp();
   const unique = `zz-task9-default-root-${process.pid}`;
   fs.mkdirSync(path.join(projectRoot, "skills"), { recursive: true });
   makeSkill(path.join(projectRoot, "skills"), unique, { body: "# From Default Service" });
-  t.after(() => rmSync(projectRoot, { recursive: true, force: true }));
+  t.after(() => {
+    rmSync(projectRoot, { recursive: true, force: true });
+    rmSync(userHome, { recursive: true, force: true });
+  });
 
-  const service = createSkillService();
+  const service = createSkillService({ userHome });
   const { active } = await service.catalog({ projectRoot });
   const found = active.find((s) => s.name === unique);
   assert.ok(found, `默认 service 应发现注入 projectRoot 下的技能，得到 ${JSON.stringify(active.map((s) => s.name))}`);
