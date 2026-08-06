@@ -1,0 +1,149 @@
+{
+  "research_date": "2026-08-05",
+  "evidence": [
+    {
+      "id": "E1",
+      "competitor": "Grok Build main agent",
+      "claim": "The Grok Build source snapshot defines a compact main system prompt around identity, reversible-action safety, tool-selection principles, background tasks, and output efficiency.",
+      "source_url": "https://github.com/xai-org/grok-build",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-05",
+      "evidence_locator": "C:/Users/32694/Desktop/grokbuild源码/core-prompts/grok-build核心提示词-英文版.md:26-72",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E2",
+      "competitor": "Grok Build role prompts",
+      "claim": "The Grok Build source snapshot separates subagent, coding agent, goal planner, strategist, summarizer, and adversarial verifier instructions instead of placing every role in the main prompt.",
+      "source_url": "https://github.com/xai-org/grok-build",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-05",
+      "evidence_locator": "C:/Users/32694/Desktop/grokbuild源码/core-prompts/grok-build核心提示词-英文版.md:9-22,75-147,463-758",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E3",
+      "competitor": "Codex CLI prompt assembly",
+      "claim": "The Codex CLI source snapshot describes one model-selected base prompt plus conditional runtime fragments for sandbox mode, approval policy, goals, review, realtime, and context compaction; tool descriptions and AGENTS.md are dynamic rather than fixed in the snapshot.",
+      "source_url": "https://github.com/openai/codex/blob/main/codex-rs/core/prompt_with_apply_patch_instructions.md",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-05",
+      "evidence_locator": "C:/Users/32694/Desktop/codex cli 源码/Codex-CLI-系统提示词.md:17-36,309-376",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E4",
+      "competitor": "Codex CLI execution guidance",
+      "claim": "The Codex CLI source snapshot instructs the agent to continue until the request is resolved, verify work through focused then broader tests, and communicate progress during substantial work.",
+      "source_url": "https://github.com/openai/codex/blob/main/codex-rs/core/prompt_with_apply_patch_instructions.md",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-05",
+      "evidence_locator": "C:/Users/32694/Desktop/codex cli 源码/Codex-CLI-系统提示词.md:116-173",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E5",
+      "competitor": "Claude Code prompt assembly",
+      "claim": "The Claude Code 2.1.88 package snapshot describes an entry prompt followed by seven fixed prompt fragments, with tools, MCP state, CLAUDE.md or AGENTS.md content, and system reminders supplied dynamically.",
+      "source_url": "https://www.npmjs.com/package/@anthropic-ai/claude-code",
+      "source_type": "package_registry",
+      "accessed_on": "2026-08-05",
+      "evidence_locator": "C:/Users/32694/Desktop/claudecode2.1.88/Claude-Code-2.1.88-系统提示词.md:3-29,160-167",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E6",
+      "competitor": "Claude Code tool and permission guidance",
+      "claim": "The Claude Code 2.1.88 package snapshot tells the model to respond to permission denial by adjusting its approach, prefer dedicated tools over Bash when available, parallelize independent tool calls, and keep user-facing output concise.",
+      "source_url": "https://www.npmjs.com/package/@anthropic-ai/claude-code",
+      "source_type": "package_registry",
+      "accessed_on": "2026-08-05",
+      "evidence_locator": "C:/Users/32694/Desktop/claudecode2.1.88/Claude-Code-2.1.88-系统提示词.md:70-78,106-133",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E7",
+      "competitor": "WWriting current chat prompt",
+      "claim": "WWriting's current buildSystemPrompt combines identity, a JSON-fence tool protocol, start_run and queue_chapters workflow rules, rendered tool documentation, output style, and a changing project snapshot in one system message, even though native tools are also sent to compatible providers.",
+      "source_url": "https://github.com/wh520-wh/wwriting-novel-agent/blob/main/src/core/chat/agent-protocol.mjs",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-05",
+      "evidence_locator": "D:/WWriting/src/core/chat/agent-protocol.mjs:85-110; D:/WWriting/src/core/chat/chat-context.mjs:32-49",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E8",
+      "competitor": "WWriting current chapter prompt",
+      "claim": "WWriting's provider adapter contains a separate WRITING_TOOL_DEFINITIONS table and injects a chapter-writer system identity based on the allowed tool count, creating a second prompt and tool-description path outside the chat registry.",
+      "source_url": "https://github.com/wh520-wh/wwriting-novel-agent/blob/main/src/core/provider-adapters.mjs",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-05",
+      "evidence_locator": "D:/WWriting/src/core/provider-adapters.mjs:290-432,451-477",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E9",
+      "competitor": "WWriting assumed post-plan runtime",
+      "claim": "The ready implementation plan adds typed tool schemas, autonomous /init modelInstruction expansion, arbitrary Shell, risk classification, task grants, unified chat_activity events, and confirmation flows, but scopes these changes primarily through the chat-agent path rather than a single shared Agent runtime.",
+      "source_url": "https://github.com/wh520-wh/wwriting-novel-agent",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-05",
+      "evidence_locator": "D:/WWriting/docs/superpowers/plans/2026-08-05-agent-autonomous-init-and-shell-tools.md:24-59,103-1770",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E10",
+      "competitor": "WWriting prompt prefix architecture",
+      "claim": "WWriting already distinguishes stable and dynamic chapter prompt blocks and has repository research documenting that changing dynamic content inside the stable prefix harms cache reuse.",
+      "source_url": "https://github.com/wh520-wh/wwriting-novel-agent/tree/main/docs/research",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-05",
+      "evidence_locator": "D:/WWriting/src/core/agent-engine.mjs:1204-1211,1377-1472; D:/WWriting/docs/research/2026-07-31-codewhale-deepseek-cache.md:18-47",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E11",
+      "competitor": "WWriting product baseline",
+      "claim": "WWriting describes itself as a local desktop long-form novel Agent whose chapters and durable project artifacts remain in the user's project folder and can be inspected with ordinary file tools.",
+      "source_url": "https://github.com/wh520-wh/wwriting-novel-agent",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-05",
+      "evidence_locator": "D:/WWriting/README.md:1-20,64-84",
+      "classification": "fact",
+      "confidence": "high"
+    }
+  ],
+  "recommendations": [
+    {
+      "id": "R1",
+      "priority": "P0",
+      "statement": "Build one PromptAssembler and one byte-stable Static Core shared by chat and chapter workflows; remove duplicate natural-language tool catalogs and provider-layer role prompts.",
+      "evidence_ids": ["E3", "E5", "E7", "E8"],
+      "acceptance_signal": "Static Core contains no project snapshot, permission value, tool list, or task content; chat and chapter requests produce the same Static Core hash."
+    },
+    {
+      "id": "R2",
+      "priority": "P1",
+      "statement": "Represent Runtime Policy, Project Instructions, Workflow Policy, and Dynamic Context as named ordered layers owned by the unified Agent runtime.",
+      "evidence_ids": ["E2", "E3", "E5", "E9", "E10"],
+      "acceptance_signal": "Snapshot tests attribute every prompt segment to one layer, and changing progress, permissions, or workflow changes only the expected layer."
+    },
+    {
+      "id": "R3",
+      "priority": "P2",
+      "statement": "Validate prompt behavior through a provider matrix covering generic file work, deep-tool chapter submission, permission denial, stop and resume, /init, and prompt-injection isolation.",
+      "evidence_ids": ["E4", "E6", "E9"],
+      "acceptance_signal": "At least two OpenAI-compatible models complete every scenario using native schemas without a duplicated textual tool directory, and every completion claim traces to a tool result or runtime terminal state."
+    }
+  ]
+}

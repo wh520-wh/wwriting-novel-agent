@@ -517,27 +517,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   app-region: no-drag;
 }
 
-.topbar::after {
-  content: ""; position: absolute; left: 0; right: 0; bottom: -1px;
-  height: 2px; width: 36%;
-  background: linear-gradient(90deg, transparent, var(--accent), transparent);
-  border-radius: 99px;
-  opacity: 0; transform: translateX(-110%);
-  pointer-events: none;
-}
-
-.topbar.is-busy::after {
-  opacity: 0.85;
-  animation: topbarSweep 1.6s cubic-bezier(.55,.2,.4,.85) infinite;
-}
-
-@keyframes topbarSweep {
-  0% { transform: translateX(-110%); }
-  60% { transform: translateX(190%); }
-  100% { transform: translateX(330%); }
-}
-
-.topbar button, .topbar .pill, .topbar input, .topbar select,
+.topbar button, .topbar input, .topbar select,
 .topbar a, .topbar [role="button"] {
   -webkit-app-region: no-drag;
   app-region: no-drag;
@@ -586,47 +566,6 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 }
 
 .topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: 0 1 auto; flex-wrap: nowrap; justify-content: flex-end; min-width: 0; }
-
-
-.pill {
-  display: inline-flex; align-items: center; gap: 6px;
-  min-height: 26px; padding: 0 10px; border-radius: 99px;
-  border: 1px solid var(--line); background: var(--surface);
-  font-size: 11.5px; font-weight: 600; color: var(--muted);
-  white-space: nowrap;
-}
-
-.pill .pdot { width: 6px; height: 6px; border-radius: 99px; background: var(--ghost); }
-
-.pill.running {
-  border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent);
-  position: relative; overflow: hidden;
-}
-
-.pill.running .pdot { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
-
-.pill.running::before {
-  content: ""; position: absolute; inset: 0;
-  background: linear-gradient(110deg, transparent 30%, rgba(58,110,208,0.18) 50%, transparent 70%);
-  transform: translateX(-100%);
-  animation: pillShimmer 2.4s ease-in-out infinite;
-  pointer-events: none;
-}
-
-@keyframes pillShimmer {
-  0% { transform: translateX(-100%); }
-  60%, 100% { transform: translateX(110%); }
-}
-
-.pill.completed { border-color: var(--green-line); background: var(--green-soft); color: var(--green); }
-
-.pill.completed .pdot { background: var(--green); }
-
-.pill.blocked { border-color: var(--red-line); background: var(--amber-soft); color: var(--amber); }
-
-.pill.blocked .pdot { background: var(--amber); }
-
-.pill.mono { font-family: var(--mono); font-weight: 550; }
 
 
 .tbtn {
@@ -1539,13 +1478,9 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 /* 无障碍：prefers-reduced-motion 下关闭动画（只保留仍存活组件的降级规则；
    .spin/.thread-wrap/.skeleton/.step-meta/.send/.rise 等旧组件类已随 Task 9 删除） */
 @media (prefers-reduced-motion: reduce) {
-  .proj-dot.running, .pill.running .pdot { animation: none; }
-
-  .pill.running::before { animation: none; opacity: 0; }
+  .proj-dot.running { animation: none; }
 
   .toast { animation: none; opacity: 1; transform: none; }
-
-  .topbar.is-busy::after { animation: none; opacity: .55; transform: none; width: 100%; }
 
   .app { animation: none; }
 

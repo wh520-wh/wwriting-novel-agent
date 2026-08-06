@@ -59,6 +59,10 @@ export function runShellCommand({ command, cwd, timeoutMs = 120000, signal, onOu
     };
     child.stdout?.on("data", (chunk) => capture("stdout", chunk));
     child.stderr?.on("data", (chunk) => capture("stderr", chunk));
+    let resolveChildClosed;
+    const childClosed = new Promise((resolve) => {
+      resolveChildClosed = resolve;
+    });
 
     const finishError = async (code, message) => {
       if (settled) return; // settled 后双 settle：清理已做过，直接忽略后续超时/abort/error 事件
@@ -68,6 +72,7 @@ export function runShellCommand({ command, cwd, timeoutMs = 120000, signal, onOu
       // durationMs 在终止进程树之前记录，超时路径的耗时不应包含 taskkill 等待
       const durationMs = Date.now() - startedAt;
       await terminateProcessTree(child);
+      await waitForChildClose(childClosed, child);
       const error = new Error(message);
       error.code = code;
       error.stdout = stdout;
@@ -76,14 +81,8 @@ export function runShellCommand({ command, cwd, timeoutMs = 120000, signal, onOu
       reject(error);
     };
     const onAbort = () => void finishError("shell_cancelled", "命令已停止。").catch(reject);
-    signal?.addEventListener("abort", onAbort, { once: true });
-    timer = setTimeout(
-      () => void finishError("shell_timeout", `命令超过 ${timeoutMs}ms 未结束。`).catch(reject),
-      timeoutMs
-    );
-
-    child.on("error", (error) => void finishError(error.code ?? "shell_spawn_failed", error.message).catch(reject));
     child.on("close", (exitCode, closeSignal) => {
+      resolveChildClosed();
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
@@ -98,7 +97,37 @@ export function runShellCommand({ command, cwd, timeoutMs = 120000, signal, onOu
         durationMs: Date.now() - startedAt
       });
     });
+    signal?.addEventListener("abort", onAbort, { once: true });
+    timer = setTimeout(
+      () => void finishError("shell_timeout", `命令超过 ${timeoutMs}ms 未结束。`).catch(reject),
+      timeoutMs
+    );
+    // 防御外部 signal 实现未按标准同步派发 abort 事件的情况。
+    if (signal?.aborted) void onAbort();
+
+    child.on("error", (error) => void finishError(error.code ?? "shell_spawn_failed", error.message).catch(reject));
   });
+}
+
+async function waitForChildClose(childClosed, child, timeoutMs = 2000) {
+  let timer = null;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      // taskkill 正常情况下会先触发 close；若系统拒绝 taskkill 或管道仍被
+      // 后代进程持有，主动销毁本地句柄，避免 Agent/测试进程永久挂起。
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      try {
+        child.kill();
+      } catch {
+        // 子进程已经退出时忽略
+      }
+      resolve();
+    }, timeoutMs);
+    timer.unref?.();
+  });
+  await Promise.race([childClosed, timeout]);
+  if (timer) clearTimeout(timer);
 }
 
 async function terminateProcessTree(child) {

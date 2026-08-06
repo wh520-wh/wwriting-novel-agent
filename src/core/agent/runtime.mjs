@@ -35,6 +35,7 @@ import { canEnterWorkflow, workflowPolicy } from "./workflows.mjs";
 import { runLegacyImport } from "./legacy-import.mjs";
 import { loadProject } from "../project-store.mjs";
 import { pathExists } from "../fs-utils.mjs";
+import { createRedactor } from "../shell/redaction.mjs";
 
 import {
   appendChapterSegment,
@@ -89,6 +90,7 @@ export function createAgentRuntime({
   // 与 modelGateway 二选一；测试 harness 继续只传 modelGateway。
   gatewayFactory = null,
   shell = null,
+  projectLocks = null,
   secrets = [],
   idFactory = randomUUID
 } = {}) {
@@ -96,6 +98,7 @@ export function createAgentRuntime({
     throw new TypeError("createProjectAgent 需要注入带 complete(request, { signal }) 的 modelGateway");
   }
   const resolveGateway = typeof gatewayFactory === "function" ? gatewayFactory : () => modelGateway;
+  const redactor = createRedactor({ secrets });
 
   const projects = new Map(); // projectRoot -> project state
 
@@ -117,6 +120,7 @@ export function createAgentRuntime({
         projectOperations,
         journal,
         shellRuntime: shell,
+        projectLocks,
         secrets,
         idFactory
       });
@@ -295,13 +299,52 @@ export function createAgentRuntime({
 
   // 历史 = transcript 全量（prompt 模块负责受保护窗口与预算压缩）；
   // 当前正在处理的输入从历史中排除（它以 currentInput 单独入 prompt）。
-  async function buildHistory(journal, excludeInputId = null) {
+  async function buildHistory(journal, excludeInputId = null, volatileRecords = []) {
     const records = await journal.readTranscript();
-    const filtered =
+    const volatileToolCallIds = new Set();
+    for (const record of volatileRecords) {
+      if (record?.role === "tool") volatileToolCallIds.add(record.tool_call_id ?? null);
+      for (const toolCall of record?.tool_calls ?? []) {
+        volatileToolCallIds.add(toolCall?.id ?? null);
+      }
+    }
+    const filteredByInput =
       excludeInputId === null
         ? records
         : records.filter((record) => !(record.input_id != null && record.input_id === excludeInputId));
-    return transcriptToMessages(filtered);
+    const filtered = filteredByInput.filter((record) => {
+      if (record?.role === "tool") return !volatileToolCallIds.has(record.tool_call_id);
+      if (record?.role === "assistant" && Array.isArray(record.tool_calls)) {
+        return !record.tool_calls.some((toolCall) => volatileToolCallIds.has(toolCall?.id));
+      }
+      return true;
+    });
+    return transcriptToMessages([...filtered, ...volatileRecords]);
+  }
+
+  function redactTranscriptRecord(record) {
+    try {
+      return JSON.parse(redactor.redact(JSON.stringify(record)));
+    } catch {
+      return { role: record?.role ?? "note", content: "[REDACTED]" };
+    }
+  }
+
+  async function appendSafeTranscript(journal, record) {
+    await journal.appendTranscript(redactTranscriptRecord(record));
+  }
+
+  function persistentToolResult(name, toolResult) {
+    const persisted = structuredClone(toolResult);
+    if (persisted?.ok && persisted.result && name === "read_file") {
+      const content = String(persisted.result.content ?? "");
+      delete persisted.result.content;
+      persisted.result.content_length = content.length;
+    }
+    if (persisted?.ok && persisted.result && name === "search_files" && Array.isArray(persisted.result.matches)) {
+      persisted.result.matches = persisted.result.matches.map(({ excerpt: _excerpt, ...match }) => match);
+    }
+    return persisted;
   }
 
   // 按工作流政策过滤深工具（general 六工具恒可用）。
@@ -319,7 +362,7 @@ export function createAgentRuntime({
   async function ensureUserMessageInTranscript(journal, inputId, inputText) {
     const records = await journal.readTranscript();
     if (records.some((record) => record.input_id === inputId)) return;
-    await journal.appendTranscript({ role: "user", content: inputText, input_id: inputId });
+    await appendSafeTranscript(journal, { role: "user", content: inputText, input_id: inputId });
   }
 
   // Task 2 冻结语义：每条 input 恰好一个 input_consumed/input_cancelled 终态事件。
@@ -352,7 +395,7 @@ export function createAgentRuntime({
     if (!Array.isArray(droppedCalls) || droppedCalls.length === 0) return;
     for (const toolCall of droppedCalls) {
       const id = toolCall?.id ?? toolCall?.tool_call_id ?? null;
-      await state.journal.appendTranscript({
+      await appendSafeTranscript(state.journal, {
         role: "tool",
         tool_call_id: id,
         name: toolCall?.name ?? null,
@@ -420,6 +463,7 @@ export function createAgentRuntime({
   // 返回 "done" | "interrupted" | "stopped" | "failed" | "terminated"。
   async function processInput(state, runId, inputId, inputText) {
     const { journal, tools } = state;
+    const volatileToolRecords = [];
     await ensureUserMessageInTranscript(journal, inputId, inputText);
 
     while (true) {
@@ -463,7 +507,7 @@ export function createAgentRuntime({
           project,
           inputText
         }).catch(() => []),
-        history: await buildHistory(journal, inputId),
+        history: await buildHistory(journal, inputId, volatileToolRecords),
         currentInput: inputText,
         tools: allowedDefinitions(tools, policy),
         modelConfig
@@ -497,7 +541,7 @@ export function createAgentRuntime({
       // 闭合 transcript，绝不留下悬空的 assistant tool_calls（retry/history 复用）。
       const toolCalls = Array.isArray(reply?.toolCalls) && reply.toolCalls.length > 0 ? reply.toolCalls : null;
       if (toolCalls) {
-        await journal.appendTranscript({
+        const assistantToolRecord = {
           role: "assistant",
           content: null,
           tool_calls: toolCalls.map((tc) => ({
@@ -505,7 +549,9 @@ export function createAgentRuntime({
             name: tc?.name ?? null,
             arguments: tc?.arguments ?? null
           }))
-        });
+        };
+        volatileToolRecords.push(assistantToolRecord);
+        await appendSafeTranscript(journal, assistantToolRecord);
       }
 
       const afterCall = await journal.getSession();
@@ -549,18 +595,25 @@ export function createAgentRuntime({
             resetController(state);
             return "interrupted";
           }
+          const activeToolPolicy = workflowPolicy(runBeforeTool.workflow);
           const toolResult = await tools.execute(toolCall, {
             projectRoot: state.key,
             project,
             run_id: runId,
             active_input_id: inputId,
+            allowed_tool_names: [...GENERAL_TOOL_NAMES, ...(activeToolPolicy.allowedDeepTools ?? [])],
             signal: state.controller?.signal
           });
-          await journal.appendTranscript({
+          const toolRecord = {
             role: "tool",
             tool_call_id: toolCall?.id ?? toolCall?.tool_call_id ?? null,
             name: toolCall?.name ?? null,
             content: JSON.stringify(toolResult)
+          };
+          volatileToolRecords.push(toolRecord);
+          await appendSafeTranscript(journal, {
+            ...toolRecord,
+            content: JSON.stringify(persistentToolResult(toolCall?.name ?? null, toolResult))
           });
         }
         continue; // 工具结果已入 transcript，继续下一模型轮次
@@ -568,14 +621,13 @@ export function createAgentRuntime({
 
       // ---- 文本回复：当前输入完成 ----
       const text = String(reply?.text ?? "");
-      await journal.appendTranscript({ role: "assistant", content: text });
-      // 事件带最终回复文本：AgentSurface 据此渲染助手气泡（state.js 仅在
-      // payload.text 非空时入对话）。最终回复不是推理，无隐私问题；journal 投影
-      // 对该事件是 no-op，无额外校验面。
+      await appendSafeTranscript(journal, { role: "assistant", content: text });
+      // 事件带最终回复文本：AgentSurface 据此渲染助手气泡。模型可能复述工具
+      // 输出中的密钥，因此持久事件与 transcript 使用同一脱敏口径。
       await journal.append({
         type: "assistant_message_completed",
         run_id: runId,
-        payload: { input_id: inputId, text }
+        payload: { input_id: inputId, text: redactor.redact(text) }
       });
       // 完成批次（input_consumed + grant 清除）的读-判-写放进项目互斥锁，杜绝与
       // cancelRunForStop 交错产生「同一 input 双终态」（input_cancelled 与

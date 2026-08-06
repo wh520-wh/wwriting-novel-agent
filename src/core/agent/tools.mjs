@@ -42,7 +42,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { isPathInside, pathExists, writeFileAtomic } from "../fs-utils.mjs";
+import { isPathInside, pathExists, resolveFilesystemPath, writeFileAtomic } from "../fs-utils.mjs";
 import { classifyShellCommand, resolveProjectScope } from "../shell/risk.mjs";
 import { createRedactor, createStreamingRedactor } from "../shell/redaction.mjs";
 
@@ -112,6 +112,19 @@ function redactJsonValue(redactor, value) {
   } catch {
     return null;
   }
+}
+
+function auditToolResult(name, result) {
+  const audit = structuredClone(result ?? {});
+  if (name === "read_file") {
+    const content = String(audit.content ?? "");
+    delete audit.content;
+    audit.content_length = content.length;
+  }
+  if (name === "search_files" && Array.isArray(audit.matches)) {
+    audit.matches = audit.matches.map(({ excerpt: _excerpt, ...match }) => match);
+  }
+  return audit;
 }
 
 // ---------------------------------------------------------------------------
@@ -323,6 +336,7 @@ export function createToolRuntime({
   journal,
   permissionPolicy,
   shellRuntime,
+  projectLocks = null,
   secrets = [],
   idFactory = randomUUID
 } = {}) {
@@ -1257,6 +1271,17 @@ export function createToolRuntime({
       return { ok: false, tool_call_id: toolCallId, name, error: error.code ?? "bad_args", message: error.message };
     }
 
+    // 在动作分类、受保护路径检查和实际执行前统一解析真实路径，避免 junction/
+    // symlink 把项目外目标伪装成项目内。只覆盖带路径参数的通用工具；shell 的
+    // cwd 同样必须用真实路径参与 scope 与实际进程启动。
+    if (context.projectRoot) {
+      if (["list_files", "search_files", "read_file", "write_file", "edit_file"].includes(name)) {
+        args.path = await resolveFilesystemPath(path.resolve(context.projectRoot, args.path ?? "."));
+      } else if (name === "shell" && args.cwd) {
+        args.cwd = await resolveFilesystemPath(path.resolve(context.projectRoot, args.cwd));
+      }
+    }
+
     // 活动 Run 是工具事件的载体；没有 Run 时工具不可用（Task 6 编排保证不会发生）
     const session = await currentSession().catch(() => null);
     if (!session?.active_run) {
@@ -1265,6 +1290,30 @@ export function createToolRuntime({
     const inputId = context.active_input_id ?? session.active_run.active_input_id ?? null;
 
     const definition = TOOLS.get(name);
+    const allowedToolNames = Array.isArray(context.allowed_tool_names)
+      ? new Set(context.allowed_tool_names)
+      : null;
+
+    // 工具定义暴露只是模型提示层，执行层必须独立强制授权。否则模型或 provider
+    // 即使返回了当前工作流未暴露的深工具名，仍会命中全局注册表并执行。
+    if (definition && allowedToolNames && !allowedToolNames.has(name)) {
+      await appendStarted({ tool_call_id: toolCallId, activity_id: activityId, name, args }, runId);
+      await appendFailed({
+        tool_call_id: toolCallId,
+        activity_id: activityId,
+        name,
+        error: "tool_not_allowed",
+        message: "当前工作流不允许使用此工具。",
+        technical: { rule: "tool_not_allowed", name }
+      }, runId);
+      return {
+        ok: false,
+        tool_call_id: toolCallId,
+        name,
+        error: "tool_not_allowed",
+        message: "当前工作流不允许使用此工具。"
+      };
+    }
 
     // 系统构建归一化动作（模型不可提供/覆盖 risk/scope/extreme/grant_key/确认类型）
     let action = null;
@@ -1430,7 +1479,10 @@ export function createToolRuntime({
         vetoed = true; // BeforeToolUse 否决：工具从未执行，AfterToolUse 审计不触发
         throw toolError("before_tool_use_denied", hookResult.reason ?? "工具被拒绝执行。", { rule: "before_tool_use" });
       }
-      result = await definition.run(args, context, { emitDelta: (event) => delta.emit(event) });
+      const runTool = () => definition.run(args, context, { emitDelta: (event) => delta.emit(event) });
+      result = projectLocks && action.category !== "read"
+        ? await projectLocks.runExclusive(context.projectRoot, runTool)
+        : await runTool();
     } catch (caught) {
       error = caught;
     }
@@ -1481,7 +1533,7 @@ export function createToolRuntime({
         tool_call_id: toolCallId,
         activity_id: activityId,
         name,
-        ...redactJsonValue(redactor, result ?? {})
+        ...redactJsonValue(redactor, auditToolResult(name, result))
       }
     });
     await runAfterToolUse({

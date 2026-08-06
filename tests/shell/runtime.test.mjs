@@ -68,6 +68,20 @@ test("shell 响应 AbortSignal", async () => {
   await assert.rejects(pending, (error) => error.code === "shell_cancelled");
 });
 
+test("shell 取消返回后 cwd 可立即删除", { skip: process.platform !== "win32" }, async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "ww-shell-release-"));
+  const controller = new AbortController();
+  const command = `"${process.execPath}" -e "setTimeout(()=>{},30000)"`;
+  const pending = runShellCommand({ command, cwd, timeoutMs: 30000, signal: controller.signal });
+  await sleep(200);
+  controller.abort("用户停止");
+  await assert.rejects(pending, (error) => error.code === "shell_cancelled");
+  await assert.doesNotReject(
+    () => fs.rm(cwd, { recursive: true, force: true }),
+    "取消完成后不得仍有进程占用工作目录"
+  );
+});
+
 test("shell 调用前已 abort 直接 reject 且不 spawn", async () => {
   const controller = new AbortController();
   controller.abort();

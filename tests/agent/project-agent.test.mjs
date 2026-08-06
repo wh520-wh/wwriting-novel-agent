@@ -488,6 +488,33 @@ test("同一 agent 实例下不同项目可并行运行", async (t) => {
   assert.ok(overlap, "不同项目的模型轮次应并发（时间重叠）");
 });
 
+test("工具调用与读取结果只瞬时提供给模型，持久 transcript/journal 不泄漏", async (t) => {
+  const SECRET = "super-secret-token-77";
+  const PRIVATE_CONTENT = "尚未公开的正文内容-42";
+  let secretPath = null;
+  const h = await openHarness(t, {
+    secrets: [SECRET],
+    gatewayScript: [
+      async () => ({ toolCalls: [tool("read_file", { path: secretPath })] }),
+      async (request) => {
+        assert.ok(JSON.stringify(request).includes(PRIVATE_CONTENT), "下一模型轮次仍应收到完整读取结果");
+        return { text: "读取完成。" };
+      }
+    ]
+  });
+  secretPath = path.join(h.projectRoot, `${SECRET}.md`);
+  await fs.writeFile(secretPath, PRIVATE_CONTENT, "utf8");
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "读取指定文件", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+
+  const transcriptRaw = await fs.readFile(path.join(h.projectRoot, ".wwriting", "agent", "transcript.jsonl"), "utf8");
+  assert.ok(!transcriptRaw.includes(SECRET), "transcript 不得保存工具参数中的 secret");
+  assert.ok(!transcriptRaw.includes(PRIVATE_CONTENT), "transcript 不得保存 read_file 全文");
+  const eventRaw = JSON.stringify(await readEvents(h.agent, h.projectRoot));
+  assert.ok(!eventRaw.includes(SECRET), "journal 事件不得保存工具参数中的 secret");
+  assert.ok(!eventRaw.includes(PRIVATE_CONTENT), "tool_call_completed 不得保存 read_file 全文");
+});
+
 // ---------------------------------------------------------------------------
 // Visible Plan
 // ---------------------------------------------------------------------------

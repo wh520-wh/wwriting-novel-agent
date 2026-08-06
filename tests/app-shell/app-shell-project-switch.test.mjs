@@ -75,8 +75,7 @@ function makeRefs() {
   threadStatus.textContent = "announce-loaded";
   const toastStack = new MockElement("div"); toastStack.id = "toast-stack";
   toastStack.children = [];
-  const status = new MockElement("span"); status.id = "project-status";
-  return { title, sub, thread, threadStatus, toastStack, status };
+  return { title, sub, thread, threadStatus, toastStack };
 }
 
 // ---- the gate factory (this is the shape extracted from app.js) ----

@@ -80,6 +80,23 @@ export function createAgentSurface({
     let snapshot = null;
     try {
       snapshot = await t.fetchSnapshot({ afterSeq: 0 });
+      if (snapshot?.session && Array.isArray(snapshot.events)) {
+        const events = [...snapshot.events];
+        let cursor = events.reduce((max, event) => Math.max(max, Number(event?.seq) || 0), 0);
+        const targetSeq = Number(snapshot.session.last_seq) || cursor;
+        // 首次打开必须补齐所有事件后再渲染。否则固定 200 条的第一页只能还原
+        // 历史中间态，并会丢失后续消息、活动终态和模型轮次闭合事件。
+        while (cursor < targetSeq) {
+          const page = await t.fetchSnapshot({ afterSeq: cursor });
+          const pageEvents = Array.isArray(page?.events) ? page.events : [];
+          const nextCursor = pageEvents.reduce((max, event) => Math.max(max, Number(event?.seq) || 0), cursor);
+          if (nextCursor <= cursor) break;
+          events.push(...pageEvents);
+          cursor = nextCursor;
+          if (page?.session) snapshot.session = page.session;
+        }
+        snapshot = { ...snapshot, events };
+      }
     } catch {
       // 首次加载失败：保留空会话，SSE 重连补齐
     }

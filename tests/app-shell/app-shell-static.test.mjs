@@ -13,12 +13,22 @@ const apiClientPath = path.join(here, "..", "..", "src", "app-shell", "api-clien
 const quickRailPath = path.join(here, "..", "..", "src", "app-shell", "components", "quick-rail.js");
 const drawerPanelsPath = path.join(here, "..", "..", "src", "app-shell", "drawer-panels.js");
 const chapterPresentationPath = path.join(here, "..", "..", "src", "app-shell", "chapter-presentation.mjs");
+const indexHtmlPath = path.join(here, "..", "..", "src", "app-shell", "index.html");
+const stylesPath = path.join(here, "..", "..", "src", "app-shell", "styles.css");
 
 const appSource = await fs.readFile(appJsPath, "utf8");
 const apiClientSource = await fs.readFile(apiClientPath, "utf8");
 const quickRailSource = await fs.readFile(quickRailPath, "utf8");
 const drawerPanelsSource = await fs.readFile(drawerPanelsPath, "utf8");
 const chapterPresentationSource = await fs.readFile(chapterPresentationPath, "utf8");
+const indexHtmlSource = await fs.readFile(indexHtmlPath, "utf8");
+const stylesSource = await fs.readFile(stylesPath, "utf8");
+
+test("顶栏不显示待命胶囊或闪烁状态条", () => {
+  assert.doesNotMatch(indexHtmlSource, /project-status|>待命</u);
+  assert.doesNotMatch(appSource, /refs\.status|setStatus\(|is-busy/u);
+  assert.doesNotMatch(stylesSource, /topbar\.is-busy|topbarSweep|pillShimmer/u);
+});
 
 test("app.js wires the project scope module", () => {
   assert.match(
