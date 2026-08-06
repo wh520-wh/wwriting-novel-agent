@@ -17,6 +17,7 @@ import http from "node:http";
 import fs from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadAppStateSync } from "./app-state.mjs";
 import { createProjectLockRegistry } from "./project-lock.mjs";
 import { createRouter, resolveReadProjectRoot } from "./http/router.mjs";
@@ -248,7 +249,29 @@ async function syncProjectModelFromGlobalSafe(projectRoot, secretsRoot) {
 // 静态资源（旧 app-server serveStatic 语义保留）：app-shell 文件与 /shared/ 模块
 // ---------------------------------------------------------------------------
 
+// marked 的浏览器 ESM 构建路径锚定在本仓库 node_modules（与运行时 workspaceRoot
+// 配置无关——测试会把 workspaceRoot 指向临时目录，生产也可能传项目根）。
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const MARKED_ESM_PATH = path.join(repoRoot, "node_modules", "marked", "lib", "marked.esm.js");
+
 async function serveStatic(pathname, response, { staticRoot }) {
+  // 只允许 /vendor/marked.esm.js 这一个白名单路径映射到 node_modules 里的
+  // marked ESM 构建（浏览器 import map 的 "marked" 裸说明符指向它）；
+  // node_modules 整体不作为静态目录暴露，其余 /vendor/* 一律 404。
+  if (pathname === "/vendor/marked.esm.js") {
+    try {
+      const content = await fs.readFile(MARKED_ESM_PATH);
+      response.writeHead(200, {
+        "content-type": "text/javascript; charset=utf-8",
+        "cache-control": "no-store"
+      });
+      response.end(content);
+    } catch {
+      response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      response.end("未找到");
+    }
+    return;
+  }
   const sharedPrefix = "/shared/";
   const isSharedModule = pathname.startsWith(sharedPrefix);
   const root = pathname.startsWith(sharedPrefix)

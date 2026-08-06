@@ -483,72 +483,130 @@
   color: var(--agent-ink);
 }
 
-/* 助手正文 Markdown（步骤7）：段落/列表/代码/引用层次；流式增量重渲染同一节点 */
+/* 助手正文 Markdown（Task 8 Step 5）：流式与终态共用同一个 .agent-markdown
+   容器与完全相同的排版路径——只有内容和 streaming state 变化，不为终态复制
+   一套 typography（无 .is-streaming h* / .is-complete h* 重复规则）。 */
 .agent-message-text.agent-markdown {
   white-space: normal;
   width: min(100%, 760px); /* 助手正文：100% 优先，封顶 760px */
 }
 
-.agent-message-text.agent-markdown p {
+/* §2.6 标题/正文层级：H1/H2 靠字号、字重、间距和 H2 的细分隔线建立层级，
+   不使用 accent/green/渐变；H3–H6 不使用状态色；正文默认 regular，
+   只有 Markdown <strong> 使用 bold。 */
+.agent-markdown {
+  color: var(--agent-answer-fg);
+  font-size: 14px;
+  line-height: 1.68;
+}
+.agent-markdown h1 { color: var(--agent-heading-fg); font-size: 20px; line-height: 1.35; font-weight: var(--weight-bold); }
+.agent-markdown h2 { color: var(--agent-heading-fg); font-size: 17px; line-height: 1.4; font-weight: var(--weight-bold); }
+.agent-markdown h3 { color: var(--agent-subheading-fg); font-size: 15px; line-height: 1.45; font-weight: var(--weight-semibold); }
+.agent-markdown :is(h4, h5, h6) { color: var(--agent-subheading-fg); font-size: 14px; line-height: 1.5; font-weight: var(--weight-semibold); }
+.agent-markdown a { color: var(--text-link); font-weight: var(--weight-medium); text-decoration: underline; }
+.agent-markdown blockquote { color: var(--text-muted); }
+.agent-markdown :not(pre) > code { color: var(--text-secondary); font-size: 12.5px; }
+
+.agent-markdown h1,
+.agent-markdown h2,
+.agent-markdown h3,
+.agent-markdown :is(h4, h5, h6) {
+  margin: 14px 0 6px;
+}
+.agent-markdown h1:first-child,
+.agent-markdown h2:first-child,
+.agent-markdown h3:first-child,
+.agent-markdown :is(h4, h5, h6):first-child {
+  margin-top: 0;
+}
+.agent-markdown h2 {
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--agent-line); /* H2 细分隔线：建立层级不只靠字号 */
+}
+
+.agent-markdown p {
   margin: 0 0 8px;
 }
-
-.agent-message-text.agent-markdown p:last-child {
+.agent-markdown p:last-child {
   margin-bottom: 0;
 }
-
-.agent-message-text.agent-markdown ul,
-.agent-message-text.agent-markdown ol {
+.agent-markdown ul,
+.agent-markdown ol {
   margin: 0 0 8px;
   padding-left: 20px;
 }
-
-.agent-message-text.agent-markdown li {
+.agent-markdown li {
   margin: 2px 0;
 }
-
-.agent-message-text.agent-markdown code {
+/* 嵌套列表：子列表不再叠加段落间距 */
+.agent-markdown li > ul,
+.agent-markdown li > ol {
+  margin: 2px 0 0;
+}
+.agent-markdown :not(pre) > code {
   background: var(--code-bg, rgba(0, 0, 0, 0.06));
   border-radius: 4px;
   padding: 1px 4px;
   font-family: var(--mono, ui-monospace, Consolas, monospace);
-  font-size: 12.5px;
 }
-
-.agent-message-text.agent-markdown pre.md-fence {
+.agent-markdown pre.md-fence {
   background: var(--code-bg, rgba(0, 0, 0, 0.06));
   border-radius: 8px;
   padding: 10px 12px;
-  overflow-x: auto;
+  overflow-x: auto; /* code overflow：横向滚动 */
   font-family: var(--mono, ui-monospace, Consolas, monospace);
   font-size: 12.5px;
   line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-
-.agent-message-text.agent-markdown pre.md-fence code {
+.agent-markdown pre.md-fence code {
   background: transparent;
   padding: 0;
+  color: var(--agent-ink);
 }
-
-.agent-message-text.agent-markdown blockquote {
+.agent-markdown blockquote {
   margin: 0 0 8px;
   padding-left: 12px;
-  border-left: 3px solid var(--agent-line-strong);
-  color: var(--muted, #7a7468);
+  border-left: 3px solid var(--agent-line-strong); /* 左边线保留：语义不只靠颜色 */
 }
-
-.agent-message-text.agent-markdown h4,
-.agent-message-text.agent-markdown h5 {
-  margin: 10px 0 6px;
-  font-size: 14px;
+.agent-markdown del {
+  color: var(--text-muted);
 }
-
-.agent-message-text.agent-markdown hr {
+.agent-markdown hr {
   border: 0;
   border-top: 1px solid var(--agent-line);
   margin: 10px 0;
+}
+
+/* 表格：横向滚动 + th/td 边界。marked 直出 <table>（无包裹层），
+   display:block + overflow-x:auto 是不撑破对话列（正文 760px 封顶）的最小方案。 */
+.agent-markdown table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 0 0 8px;
+}
+.agent-markdown table th,
+.agent-markdown table td {
+  border: 1px solid var(--agent-line-strong);
+  padding: 6px 10px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.agent-markdown table thead th {
+  background: var(--agent-panel-muted);
+  font-weight: var(--weight-semibold);
+  color: var(--agent-heading-fg);
+}
+
+/* task checkbox：只读展示，不允许交互勾选 */
+.agent-markdown input[type="checkbox"] {
+  margin: 0 6px 0 0;
+  vertical-align: -2px;
+  accent-color: var(--agent-accent);
+  pointer-events: none;
 }
 
 .agent-message[data-state="pending"] { opacity: .78; }

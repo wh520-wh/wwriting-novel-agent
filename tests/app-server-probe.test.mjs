@@ -317,6 +317,29 @@ test("output-styles 与静态资源服务", async () => {
   }
 });
 
+test("vendor 白名单：/vendor/marked.esm.js 可访问，node_modules 不整体暴露", async () => {
+  const { server, port } = await setupServer();
+  try {
+    const vendor = await fetch(`http://127.0.0.1:${port}/vendor/marked.esm.js`);
+    assert.equal(vendor.status, 200);
+    assert.ok(String(vendor.headers.get("content-type")).includes("javascript"));
+    const body = await vendor.text();
+    assert.ok(body.length > 0);
+    assert.ok(body.includes("marked"));
+    // node_modules 不能作为静态目录直接访问（只走上面那条白名单路径）。
+    const direct = await fetch(`http://127.0.0.1:${port}/node_modules/marked/lib/marked.esm.js`);
+    assert.equal(direct.status, 404);
+    // 白名单之外的其他 vendor 路径不得伪造。
+    const other = await fetch(`http://127.0.0.1:${port}/vendor/package.json`);
+    assert.equal(other.status, 404);
+    // index.html 的 import map 必须指向白名单路径。
+    const html = await fetch(`http://127.0.0.1:${port}/`).then((res) => res.text());
+    assert.ok(html.includes('"marked":"/vendor/marked.esm.js"'), html);
+  } finally {
+    await closeServer(server);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Agent HTTP 契约
 // ---------------------------------------------------------------------------
