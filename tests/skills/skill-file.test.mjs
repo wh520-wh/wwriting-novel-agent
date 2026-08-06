@@ -4,7 +4,7 @@
 // 绝对资源路径、../ 穿越、资源 realpath 逃逸、超 512KiB 的 SKILL.md。
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -55,6 +55,32 @@ async function expectRejected(promise, code) {
     assert.equal(error.code, code, `期望 code ${code}，得到 ${error.code}（${error.message}）`);
     return true;
   });
+}
+
+// 在技能目录内创建指向技能目录外部的逃逸链接，返回可读用的相对路径；两者都不可用
+// 返回 null（调用方跳过测试）。优先文件 symlink（POSIX / 开发者模式 Windows）；普通
+// Windows 无管理员/开发者模式时文件 symlink 抛 EPERM，回退为目录 junction——junction
+// 不需要特权，Dirent.isSymbolicLink() 为 true 且 fs.realpath 解析到目标目录，同样触发
+// realpath 逃逸路径。relPath 决定链接位置：逃逸枚举测试放在 references/ 之下，逃逸
+// 读取测试放在技能目录顶层（避免枚举阶段拦截，单独测 readSkillResource 的 containment）。
+function tryCreateEscapeLink(skillDir, outsideRoot, relPath) {
+  const fileTarget = path.join(outsideRoot, "outside-secret.txt");
+  writeFileSync(fileTarget, "secret", "utf8");
+  try {
+    symlinkSync(fileTarget, path.join(skillDir, relPath));
+    return relPath;
+  } catch (error) {
+    if (error?.code !== "EPERM" && error?.code !== "EACCES") throw error;
+  }
+  const dirTarget = path.join(outsideRoot, "outside-dir");
+  mkdirSync(dirTarget, { recursive: true });
+  try {
+    symlinkSync(dirTarget, path.join(skillDir, relPath), "junction");
+    return relPath;
+  } catch (error) {
+    if (error?.code === "EPERM" || error?.code === "EACCES") return null;
+    throw error;
+  }
 }
 
 test("合法技能返回冻结的 {name, description, body, dir, source, metadata, resources}", async (t) => {
@@ -170,27 +196,22 @@ test("拒绝缺失 SKILL.md 的目录", async (t) => {
 });
 
 test("资源枚举拒绝 realpath 逃逸技能目录的 symlink", async (t) => {
-  let outsideFile;
-  try {
-    const root = makeTemp();
-    const skillDir = path.join(root, "alpha");
-    await fs.mkdir(path.join(skillDir, "references"), { recursive: true });
-    await fs.writeFile(path.join(skillDir, "SKILL.md"), VALID_SKILL, "utf8");
-    outsideFile = path.join(root, "outside-secret.txt");
-    await fs.writeFile(outsideFile, "secret", "utf8");
-    symlinkSync(outsideFile, path.join(skillDir, "references", "evil.txt"));
-    t.after(() => rmSync(root, { recursive: true, force: true }));
-    await expectRejected(
-      readSkillFile(skillDir, { source: "project" }),
-      "skill_resource_unsafe"
-    );
-  } catch (error) {
-    if (error?.code === "EPERM" || error?.code === "EACCES") {
-      t.skip(`当前环境无法创建 symlink（${error.code}），跳过逃逸测试`);
-      return;
-    }
-    throw error;
+  const root = makeTemp();
+  const skillDir = path.join(root, "suspense-chapter-end");
+  await fs.mkdir(path.join(skillDir, "references"), { recursive: true });
+  await fs.writeFile(path.join(skillDir, "SKILL.md"), VALID_SKILL, "utf8");
+  // 逃逸链接放在 references/ 之下：枚举 scripts/references/assets 时必然遇到。
+  const rel = tryCreateEscapeLink(skillDir, root, "references/evil.txt");
+  if (!rel) {
+    t.skip("当前环境既不能创建 symlink 也不能创建 junction，跳过逃逸枚举测试");
+    rmSync(root, { recursive: true, force: true });
+    return;
   }
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  await expectRejected(
+    readSkillFile(skillDir, { source: "project" }),
+    "skill_resource_unsafe"
+  );
 });
 
 test("readSkillResource 按需读取 SKILL.md", async (t) => {
@@ -266,25 +287,22 @@ test("readSkillResource 拒绝超过 1MiB 的文本资源", async (t) => {
 });
 
 test("readSkillResource 拒绝通过 symlink 逃逸技能目录的资源", async (t) => {
-  try {
-    const root = makeTemp();
-    const skillDir = path.join(root, "alpha");
-    await fs.mkdir(path.join(skillDir, "references"), { recursive: true });
-    await fs.writeFile(path.join(skillDir, "SKILL.md"), VALID_SKILL, "utf8");
-    const outside = path.join(root, "outside.txt");
-    await fs.writeFile(outside, "secret", "utf8");
-    symlinkSync(outside, path.join(skillDir, "references", "evil.txt"));
-    t.after(() => rmSync(root, { recursive: true, force: true }));
-    const skill = await readSkillFile(skillDir, { source: "project" });
-    await expectRejected(
-      readSkillResource(skill, "references/evil.txt"),
-      "skill_resource_unsafe"
-    );
-  } catch (error) {
-    if (error?.code === "EPERM" || error?.code === "EACCES") {
-      t.skip(`当前环境无法创建 symlink（${error.code}），跳过逃逸测试`);
-      return;
-    }
-    throw error;
+  const root = makeTemp();
+  const skillDir = path.join(root, "suspense-chapter-end");
+  await fs.mkdir(path.join(skillDir, "references"), { recursive: true });
+  await fs.writeFile(path.join(skillDir, "SKILL.md"), VALID_SKILL, "utf8");
+  // 逃逸链接放在技能目录顶层（不在 scripts/references/assets 下），枚举不拦截，
+  // 单独验证 readSkillResource 自身的 realpath containment。
+  const rel = tryCreateEscapeLink(skillDir, root, "evil.txt");
+  if (!rel) {
+    t.skip("当前环境既不能创建 symlink 也不能创建 junction，跳过逃逸读取测试");
+    rmSync(root, { recursive: true, force: true });
+    return;
   }
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const skill = await readSkillFile(skillDir, { source: "project" });
+  await expectRejected(
+    readSkillResource(skill, rel),
+    "skill_resource_unsafe"
+  );
 });
