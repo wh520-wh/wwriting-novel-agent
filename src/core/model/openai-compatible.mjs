@@ -116,6 +116,12 @@ export class OpenAICompatibleAdapter {
       ...(caps.supportsTemperature ? optionalNumber("temperature", modelConfig.temperature) : {}),
       ...(caps.supportsTopP ? optionalNumber("top_p", modelConfig.top_p) : {}),
       ...optionalNumber("max_tokens", modelConfig.max_output_tokens ?? modelConfig.max_tokens),
+      // 思考强度真实映射：仅当模型 capability 声明了 reasoningEffortLevels 且项目
+      // 配置了非 auto 档位时发送 reasoning_effort；auto/缺省/未验证模型完全不携带。
+      ...(Array.isArray(caps.reasoningEffortLevels) &&
+          caps.reasoningEffortLevels.includes(modelConfig.reasoning_effort)
+        ? { reasoning_effort: modelConfig.reasoning_effort }
+        : {}),
       ...(tools ? { tools, tool_choice: request.toolChoice ?? "auto" } : {}),
       ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
       ...(modelConfig.extra_body ?? {})
@@ -265,8 +271,10 @@ async function readStream(responseBody, metadata) {
   const decoder = new TextDecoder();
   let buffer = "";
   let text = "";
+  let reasoningText = "";
   let usage = null;
-  const events = [];
+  let eventCount = 0;
+  let lastEvent = null;
   const streamToolCalls = [];
   let malformedSseFrameCount = 0;
   let sawDone = false;
@@ -284,13 +292,16 @@ async function readStream(responseBody, metadata) {
       metadata.onMalformedSseFrame?.({ data, error });
       return;
     }
-    events.push(event);
+    eventCount += 1;
+    lastEvent = event;
     if (event.usage) usage = event.usage;
     // 流式心跳：每个解析出的事件回调一次（usage-only 帧返回空串也照常回调，
     // 调用方据此判断"有 token 但无正文"；回调本身保持长流心跳新鲜）。
     const token = extractStreamToken(event);
-    metadata.onActivity?.(token);
+    const reasoningToken = extractReasoningStreamToken(event);
+    metadata.onActivity?.(token || reasoningToken);
     applyStreamToolCallDeltas(streamToolCalls, event);
+    if (reasoningToken) reasoningText += reasoningToken;
     if (token) {
       text += token;
       metadata.onToken?.(token, event);
@@ -322,27 +333,26 @@ async function readStream(responseBody, metadata) {
   }
 
   // Truncation detection：malformed 帧或缺失流结束信号都视为可能截断
-  const lastEvent = events.length > 0 ? events[events.length - 1] : null;
   const lastFinishReason = lastEvent?.choices?.[0]?.finish_reason ?? null;
   if (malformedSseFrameCount > 0) {
     if (!sawDone && !lastFinishReason) {
       throw new ProviderTransportError(
         `Stream ended with ${malformedSseFrameCount} malformed SSE frame(s) and no termination signal.`,
-        { reason: "network", body: JSON.stringify({ truncatedContentLength: text.length, malformedSseFrameCount }) }
+        { reason: "network", body: JSON.stringify({ truncatedContentLength: text.length + reasoningText.length, malformedSseFrameCount }) }
       );
     }
   }
-  if (events.length > 0 && !sawDone && !lastFinishReason) {
+  if (eventCount > 0 && !sawDone && !lastFinishReason) {
     throw new ProviderTransportError(
       "Stream ended without DONE or finish_reason — possible truncation.",
-      { reason: "network", body: JSON.stringify({ truncatedContentLength: text.length, events: events.length }) }
+      { reason: "network", body: JSON.stringify({ truncatedContentLength: text.length + reasoningText.length, events: eventCount }) }
     );
   }
 
   return {
-    text,
+    text: text || reasoningText,
     toolCalls: finalizeStreamToolCalls(streamToolCalls),
-    raw: { stream: true, events, malformed_sse_frame_count: malformedSseFrameCount },
+    raw: { stream: true, event_count: eventCount, malformed_sse_frame_count: malformedSseFrameCount },
     usage: normalizeOpenAIUsage(usage ?? {}),
     cost: null
   };
@@ -378,8 +388,13 @@ function finalizeStreamToolCalls(streamToolCalls) {
 
 function extractStreamToken(event) {
   const delta = event.choices?.[0]?.delta ?? {};
-  // 空字符串时用 reasoning_content 兜底，避免推理模型 content 为空时丢 token
-  return delta.content || delta.reasoning_content || event.choices?.[0]?.text || "";
+  // 只有公开正文进入 onToken；reasoning_content 属于私有推理通道。
+  return delta.content || event.choices?.[0]?.text || "";
+}
+
+function extractReasoningStreamToken(event) {
+  const delta = event.choices?.[0]?.delta ?? {};
+  return delta.reasoning_content || "";
 }
 
 // ---------------------------------------------------------------------------

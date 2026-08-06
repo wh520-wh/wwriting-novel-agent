@@ -24,6 +24,10 @@ import {
   ACTIVITY_TERMINAL_STATUSES,
   TERMINAL_RUN_STATUSES
 } from "./state.js";
+import { matchSlashCommands } from "./slash-commands.mjs";
+import { renderMarkdown } from "../markdown-lite.mjs";
+import { PERMISSION_TIERS } from "../permission-tiers.mjs";
+import { icon } from "../icons.js";
 
 const MAX_ROWS = 20;
 const OUTPUT_TRUNCATED_MARK = "（输出过长已截断）\n";
@@ -33,9 +37,10 @@ const SCROLL_THRESHOLD = 48;
 const ACTIVITY_LABELS = {
   list_files: () => "查看文件列表",
   search_files: (a) => (a?.query ? `搜索「${a.query}」` : "搜索文件"),
-  read_file: () => "读取文件",
-  write_file: () => "写入文件",
-  edit_file: () => "修改文件",
+  // 带 path 的工具优先显示项目相对路径（args 已脱敏）；无 path 回退泛化文案。
+  read_file: (a) => (a?.path ? `读取文件 ${a.path}` : "读取文件"),
+  write_file: (a) => (a?.path ? `写入文件 ${a.path}` : "写入文件"),
+  edit_file: (a) => (a?.path ? `修改文件 ${a.path}` : "修改文件"),
   shell: () => "运行命令",
   update_plan: () => "更新任务计划",
   enter_workflow: () => "切换工作流",
@@ -55,6 +60,16 @@ const RUN_STATUS_TEXT = {
 };
 
 const PLAN_MARKS = { completed: "✓", in_progress: "•", pending: "○" };
+
+// 折叠态 3 项选取（步骤5 产品决策 4）：优先包含 in_progress 项，再取相邻步骤
+// （前一个/后一个）；没有 in_progress 时取前 3 项。纯函数，供单测直接调用。
+export function pickCollapsedPlanItems(items) {
+  if (!Array.isArray(items)) return [];
+  const list = items.filter(Boolean);
+  const index = list.findIndex((item) => item?.status === "in_progress");
+  if (index < 0) return list.slice(0, 3);
+  return list.slice(Math.max(0, index - 1), Math.min(list.length, index + 2));
+}
 
 // 详情字段固定顺序（验收契约）。
 const FIELD_ORDER = ["参数", "命令", "目录", "退出码", "耗时", "错误"];
@@ -84,7 +99,15 @@ export function markFor(status) {
   return "•";
 }
 
-export function createAgentView({ root, document: doc = globalThis.document }) {
+export function createAgentView({ root, document: doc = globalThis.document, requestFrame = null }) {
+  // 增量正文渲染的合帧节流：真实 DOM 用 requestAnimationFrame；无 rAF 环境
+  // （测试/SSR）回退 setTimeout(0)，行为等价——同一任务内多次变更只渲染一次。
+  const scheduleFrame =
+    requestFrame ??
+    (typeof globalThis.requestAnimationFrame === "function"
+      ? (cb) => globalThis.requestAnimationFrame(cb)
+      : (cb) => setTimeout(cb, 0));
+
   // ---- 静态骨架 ------------------------------------------------------------
   const surface = doc.createElement("div");
   surface.className = "agent-surface";
@@ -99,26 +122,76 @@ export function createAgentView({ root, document: doc = globalThis.document }) {
   const messages = doc.createElement("div");
   messages.className = "agent-messages";
 
-  // 空会话提示：无项目时显示「新建或打开项目」，有项目时空会话不显示任何内容。
-  // role=status：辅助技术可感知"当前无项目"这一状态提示。
+  // 未选择项目时的产品起点。项目动作仍由 app.js 持有，这里只呈现入口，
+  // 避免在 AgentSurface 内复制新建/打开项目的业务流程。
   const emptyState = doc.createElement("div");
   emptyState.className = "agent-empty";
   emptyState.dataset.testid = "agent-empty";
-  emptyState.setAttribute("role", "status");
-  emptyState.textContent = "新建或打开项目";
+  emptyState.setAttribute("aria-labelledby", "agent-empty-title");
+  const emptyMark = doc.createElement("div");
+  emptyMark.className = "agent-empty-mark";
+  emptyMark.setAttribute("aria-hidden", "true");
+  const viewIcon = (name, size, className) => icon(name, size, className, doc);
+  emptyMark.append(viewIcon("book", 27));
+  const emptyTitle = doc.createElement("h1");
+  emptyTitle.id = "agent-empty-title";
+  emptyTitle.className = "agent-empty-title";
+  emptyTitle.textContent = "从一部小说开始";
+  const emptyLead = doc.createElement("p");
+  emptyLead.className = "agent-empty-lead";
+  emptyLead.textContent = "建立新的写作项目，或继续已有作品。";
+  const emptyActions = doc.createElement("div");
+  emptyActions.className = "agent-empty-actions";
+
+  function createEmptyAction({ testid, iconName, title, description, action }) {
+    const button = doc.createElement("button");
+    button.type = "button";
+    button.className = "agent-empty-action";
+    button.dataset.testid = testid;
+    const actionIcon = doc.createElement("span");
+    actionIcon.className = "agent-empty-action-icon";
+    actionIcon.setAttribute("aria-hidden", "true");
+    actionIcon.append(viewIcon(iconName, 18));
+    const copy = doc.createElement("span");
+    copy.className = "agent-empty-action-copy";
+    const label = doc.createElement("strong");
+    label.textContent = title;
+    const detail = doc.createElement("span");
+    detail.textContent = description;
+    copy.append(label, detail);
+    button.append(actionIcon, copy, viewIcon("chevR", 16));
+    button.addEventListener("click", () => actions[action]?.());
+    return button;
+  }
+
+  emptyActions.append(
+    createEmptyAction({
+      testid: "agent-empty-create",
+      iconName: "compose",
+      title: "新建小说",
+      description: "创建一个新的写作项目",
+      action: "createProject"
+    }),
+    createEmptyAction({
+      testid: "agent-empty-open",
+      iconName: "folder",
+      title: "打开本地文件夹",
+      description: "继续已有的 WWriting 项目",
+      action: "openProjectFolder"
+    })
+  );
+  emptyState.append(emptyMark, emptyTitle, emptyLead, emptyActions);
 
   const runSection = doc.createElement("div");
   runSection.className = "agent-run";
   runSection.dataset.testid = "agent-run";
   const runHeader = doc.createElement("div");
   runHeader.className = "agent-run-header";
-  const planSlot = doc.createElement("div");
-  planSlot.className = "agent-plan-slot";
   const decisionsSlot = doc.createElement("div");
   decisionsSlot.className = "agent-decisions";
   const errorsSlot = doc.createElement("div");
   errorsSlot.className = "agent-errors";
-  runSection.append(runHeader, planSlot, decisionsSlot, errorsSlot);
+  runSection.append(runHeader, decisionsSlot, errorsSlot);
 
   const activities = doc.createElement("div");
   activities.className = "agent-activities";
@@ -132,18 +205,104 @@ export function createAgentView({ root, document: doc = globalThis.document }) {
 
   const composer = doc.createElement("div");
   composer.className = "agent-composer";
+  composer.dataset.testid = "agent-composer";
+  const slashMenu = doc.createElement("div");
+  slashMenu.id = "agent-slash-menu";
+  slashMenu.className = "agent-slash-menu";
+  slashMenu.dataset.testid = "agent-slash-menu";
+  slashMenu.setAttribute("role", "listbox");
+  slashMenu.setAttribute("aria-label", "斜杠命令");
+  slashMenu.hidden = true;
   const input = doc.createElement("textarea");
   input.className = "agent-composer-input";
   input.dataset.testid = "agent-composer-input";
   input.placeholder = "输入消息";
-  input.rows = 1;
+  input.rows = 3;
   input.setAttribute("aria-label", "给智能体下达指令");
+  input.setAttribute("aria-controls", "agent-slash-menu");
+  const composerShell = doc.createElement("div");
+  composerShell.className = "agent-composer-shell";
+  composerShell.dataset.testid = "agent-composer-shell";
+  const composerToolbar = doc.createElement("div");
+  composerToolbar.className = "agent-composer-toolbar";
   const send = doc.createElement("button");
   send.type = "button";
   send.className = "agent-send";
   send.dataset.testid = "agent-send";
-  send.textContent = "发送";
-  composer.append(input, send);
+  send.setAttribute("aria-label", "发送");
+  send.title = "发送";
+  send.append(viewIcon("arrowUp", 17));
+  // 三控件（模型 / 权限模式 / 思考强度）共享同一桌面菜单内核。
+  // 菜单是 composer 内的向上浮层，不交给系统原生 select 决定方向和样式。
+  const controls = doc.createElement("div");
+  controls.className = "agent-composer-controls";
+  const composerMenus = [];
+
+  function createComposerMenu({ kind, triggerTestId, menuTestId, label }) {
+    const wrap = doc.createElement("div");
+    wrap.className = `agent-composer-menu agent-composer-menu--${kind}`;
+    const trigger = doc.createElement("button");
+    trigger.type = "button";
+    trigger.className = "agent-composer-menu-trigger";
+    trigger.dataset.testid = triggerTestId;
+    trigger.setAttribute("aria-label", label);
+    trigger.setAttribute("aria-haspopup", "listbox");
+    trigger.setAttribute("aria-expanded", "false");
+    const value = doc.createElement("span");
+    value.className = "agent-composer-menu-value";
+    const chevron = viewIcon("chevR", 13, "agent-composer-menu-chevron");
+    trigger.append(value, chevron);
+    const menu = doc.createElement("div");
+    menu.className = "agent-composer-popover";
+    menu.dataset.testid = menuTestId;
+    menu.setAttribute("role", "listbox");
+    menu.setAttribute("aria-label", label);
+    menu.hidden = true;
+    wrap.append(trigger, menu);
+    const control = { kind, wrap, trigger, value, menu, items: [] };
+    composerMenus.push(control);
+
+    trigger.addEventListener("click", (event) => {
+      event?.stopPropagation?.();
+      if (trigger.disabled) return;
+      const shouldOpen = menu.hidden;
+      closeComposerMenus();
+      if (shouldOpen) openComposerMenu(control);
+    });
+    trigger.addEventListener("keydown", (event) => {
+      if (trigger.disabled) return;
+      if (["Enter", " ", "ArrowUp", "ArrowDown"].includes(event.key)) {
+        event.preventDefault();
+        closeComposerMenus();
+        openComposerMenu(control, event.key === "ArrowUp" ? -1 : 1);
+      }
+    });
+    menu.addEventListener("keydown", (event) => handleComposerMenuKeydown(control, event));
+    return control;
+  }
+
+  const modelControl = createComposerMenu({
+    kind: "model",
+    triggerTestId: "agent-model-select",
+    menuTestId: "agent-model-menu",
+    label: "选择模型"
+  });
+  const permissionControl = createComposerMenu({
+    kind: "permission",
+    triggerTestId: "agent-permission-select",
+    menuTestId: "agent-permission-menu",
+    label: "权限模式"
+  });
+  const effortControl = createComposerMenu({
+    kind: "effort",
+    triggerTestId: "agent-effort-select",
+    menuTestId: "agent-effort-menu",
+    label: "思考强度"
+  });
+  controls.append(modelControl.wrap, permissionControl.wrap, effortControl.wrap);
+  composerToolbar.append(controls, send);
+  composerShell.append(input, composerToolbar);
+  composer.append(slashMenu, composerShell);
 
   surface.append(conv, composer);
   root.append(surface);
@@ -151,29 +310,60 @@ export function createAgentView({ root, document: doc = globalThis.document }) {
   // ---- 视图内部状态 ----------------------------------------------------------
   let actions = {};            // 最近一次 render 传入的动作回调
   let stopPending = false;     // 停止请求在途（防连点）
+  let viewGeneration = 0;      // reset 后旧异步回调不得修改新项目视图
+  let composerOptions = null;  // setComposerOptions 注入的控件选项（null = 未加载，控件禁用）
+  let controlsSignature = "";  // 选项签名：未变化时不重建菜单（避免打断正在选择的用户）
+  let composerEnabled = false; // 最近一次 syncComposer 的项目可用态
+  let slashMatches = [];
+  let slashActiveIndex = 0;
   let lastMessageSeq = -1;
-  let planNode = null;         // 已渲染的 Plan <details>（终态折叠只切换 open，不重建节点）
+  let currentState = null;     // 最近一次 render 的 state（供异步帧回调读取）
+  // ---- Plan 悬浮层本地状态（不落 journal；truth 在 journal 的 plan_updated）----
+  let planOverlay = null;         // 悬浮层根节点（内容按需重建）
+  let planOverlayHidden = false;  // 新输入/新 Run 隐藏旧计划；新计划内容到达恢复显示
+  let planMode = "summary";       // minimal / summary / full（本地 UI 态）
+  let currentPlan = null;         // 最近渲染的 plan（toggle 重建内容用）
+  let renderedPlanSignature = null; // 已处理的计划内容签名（同内容快照替换不打断显隐）
+  let renderedPlanContent = null;   // 当前 DOM 中列表内容签名
+  // ---- 增量正文流（Task 步骤7）：累积文本 → Markdown，rAF 合帧节流 ----
+  let streamBubble = null;         // 流式 assistant 气泡（delta 期间的临时节点）
+  let streamRenderPending = false; // 已有未决帧渲染
+  let renderedStreamText = null;   // 最近已渲染的累积文本
   const rows = new Map();      // activity_id -> row（合并同活动）
   const trimmedIds = new Set(); // 已按 20 行上限裁剪的活动 id（不再重建）
   const decisionCards = new Map(); // decision_id -> card（diff 更新，保留 extreme 输入）
+  const pendingSubmissions = []; // 仅保留仍在途的即时消息；终态立即移出，避免会话内累积
   const rendered = {
     messages: -1, run: -1, plan: -1, queue: -1, decisions: -1, errors: -1,
     runId: null, runStatus: null
   };
 
   function reset() {
+    viewGeneration += 1;
     messages.replaceChildren();
     runHeader.replaceChildren();
-    planSlot.replaceChildren();
     decisionsSlot.replaceChildren();
     errorsSlot.replaceChildren();
     activities.replaceChildren();
     queueSlot.replaceChildren();
-    planNode = null;
+    removePlanOverlay();
+    planOverlayHidden = false;
+    planMode = "summary";
+    currentPlan = null;
+    renderedPlanSignature = null;
+    renderedPlanContent = null;
+    currentState = null;
+    if (streamBubble) { streamBubble.remove(); streamBubble = null; }
+    streamRenderPending = false;
+    renderedStreamText = null;
     rows.clear();
     trimmedIds.clear();
     for (const card of decisionCards.values()) card.remove();
     decisionCards.clear();
+    pendingSubmissions.length = 0;
+    composerOptions = null;
+    controlsSignature = "";
+    closeSlashMenu();
     lastMessageSeq = -1;
     rendered.messages = rendered.run = rendered.plan = rendered.queue = -1;
     rendered.decisions = rendered.errors = -1;
@@ -183,6 +373,8 @@ export function createAgentView({ root, document: doc = globalThis.document }) {
   }
 
   function destroy() {
+    doc.removeEventListener?.("pointerdown", handleComposerOutsidePointer, true);
+    doc.removeEventListener?.("focusin", handleComposerOutsideFocus, true);
     surface.remove();
   }
 
@@ -206,33 +398,93 @@ export function createAgentView({ root, document: doc = globalThis.document }) {
   }
 
   // ---- 对话 ----------------------------------------------------------------
+  function createMessageBubble(role, textValue, { markdown = false } = {}) {
+    const bubble = doc.createElement("div");
+    bubble.className = `agent-message agent-message--${role}`;
+    bubble.dataset.testid = `agent-${role}-message`;
+    const text = doc.createElement("div");
+    text.className = "agent-message-text" + (markdown ? " agent-markdown" : "");
+    if (markdown) {
+      // 助手正文按累积文本重渲染 Markdown（renderMarkdown 纯函数，先转义后结构转换）。
+      text.innerHTML = renderMarkdown(String(textValue ?? ""));
+    } else {
+      text.textContent = String(textValue ?? "");
+    }
+    bubble.append(text);
+    return bubble;
+  }
+
+  function reconcilePendingSubmission(entry) {
+    let index = pendingSubmissions.findIndex((item) =>
+      item.inputId != null && item.inputId === entry.input_id
+    );
+    if (index < 0) {
+      index = pendingSubmissions.findIndex((item) =>
+        item.text === String(entry.text ?? "")
+      );
+    }
+    if (index < 0) return;
+    pendingSubmissions[index].node.remove();
+    pendingSubmissions.splice(index, 1);
+  }
+
   function syncMessages(state) {
     if (rendered.messages === state.revisions.messages) return;
     for (const entry of state.conversation) {
       if (entry.seq != null && entry.seq <= lastMessageSeq) continue;
       if (entry.role === "user") {
-        const bubble = doc.createElement("div");
-        bubble.className = "agent-message agent-message--user";
-        bubble.dataset.testid = "agent-user-message";
-        const text = doc.createElement("div");
-        text.className = "agent-message-text";
-        text.textContent = String(entry.text ?? "");
-        bubble.append(text);
-        messages.append(bubble);
+        reconcilePendingSubmission(entry);
+        messages.append(createMessageBubble("user", entry.text));
       } else if (typeof entry.text === "string" && entry.text.length > 0) {
-        const bubble = doc.createElement("div");
-        bubble.className = "agent-message agent-message--assistant";
-        bubble.dataset.testid = "agent-assistant-message";
-        const text = doc.createElement("div");
-        text.className = "agent-message-text";
-        text.textContent = entry.text;
-        bubble.append(text);
-        messages.append(bubble);
+        // 助手正文走 Markdown 渲染（与流式气泡同一口径，增量/终态一致）。
+        messages.append(createMessageBubble("assistant", entry.text, { markdown: true }));
       }
       if (entry.seq != null) lastMessageSeq = entry.seq;
     }
     rendered.messages = state.revisions.messages;
     maybeScrollToBottom();
+  }
+
+  // ---- 增量正文流：累积文本 → Markdown，rAF 合帧节流 -------------------------
+  function scheduleStreamRender() {
+    if (streamRenderPending) return;
+    streamRenderPending = true;
+    scheduleFrame(() => {
+      streamRenderPending = false;
+      renderStreamNow();
+    });
+  }
+
+  function renderStreamNow() {
+    const text = currentState?.assistantStream?.text ?? "";
+    if (!text) {
+      if (streamBubble) { streamBubble.remove(); streamBubble = null; }
+      renderedStreamText = null;
+      return;
+    }
+    if (!streamBubble) {
+      streamBubble = createMessageBubble("assistant", text, { markdown: true });
+      streamBubble.dataset.streaming = "true";
+      messages.append(streamBubble);
+    } else {
+      const textEl = streamBubble.querySelector(".agent-message-text");
+      if (textEl) textEl.innerHTML = renderMarkdown(text);
+    }
+    renderedStreamText = text;
+    maybeScrollToBottom();
+  }
+
+  function syncStream(state) {
+    const text = state.assistantStream?.text ?? "";
+    if (!text) {
+      // 终态/切换：立即移除流式气泡并取消未决帧（帧回调即使执行也只是空转）。
+      if (streamBubble) { streamBubble.remove(); streamBubble = null; }
+      streamRenderPending = false;
+      renderedStreamText = null;
+      return;
+    }
+    if (text === renderedStreamText) return;
+    scheduleStreamRender();
   }
 
   // ---- 当前 Run：状态行（停止/重试）+ Plan + 决策/错误 ------------------------
@@ -251,6 +503,19 @@ export function createAgentView({ root, document: doc = globalThis.document }) {
     status.dataset.testid = "agent-run-status";
     status.textContent = runStatusText(run, state);
     runHeader.append(status);
+    // 思考中流动反馈（短促、可降级；prefers-reduced-motion 下 CSS 禁用动画）。
+    if (hasOpenModelTurn(state)) {
+      const thinking = doc.createElement("span");
+      thinking.className = "agent-thinking";
+      thinking.dataset.testid = "agent-thinking";
+      thinking.setAttribute("aria-hidden", "true");
+      for (let i = 0; i < 3; i += 1) {
+        const dot = doc.createElement("span");
+        dot.className = "agent-thinking-dot";
+        thinking.append(dot);
+      }
+      runHeader.append(thinking);
+    }
     if (isRunActive(run)) {
       const stop = doc.createElement("button");
       stop.type = "button";
@@ -298,6 +563,7 @@ export function createAgentView({ root, document: doc = globalThis.document }) {
 
   function syncRun(state) {
     const run = getActiveRun(state);
+    runSection.hidden = !run;
     const runId = run?.id ?? null;
     const runChanged = rendered.runId !== runId;
     // retry：同 run id 从终态重新进入 running（run_failed/run_interrupted 后重试恢复）。
@@ -315,9 +581,12 @@ export function createAgentView({ root, document: doc = globalThis.document }) {
     if (runChanged) {
       rendered.runId = runId;
       stopPending = false;
-      // 新 Run：清空上一轮的 Plan/决策/错误槽位并强制重建
-      planSlot.replaceChildren();
-      planNode = null;
+      planMode = "summary";
+      // 新 Run：旧计划退出悬浮层（下一条 plan_updated 到达再显示），清空决策/错误
+      planOverlayHidden = true;
+      removePlanOverlay();
+      renderedPlanSignature = null;
+      renderedPlanContent = null;
       for (const card of decisionCards.values()) card.remove();
       decisionCards.clear();
       errorsSlot.replaceChildren();
@@ -328,24 +597,106 @@ export function createAgentView({ root, document: doc = globalThis.document }) {
     rendered.runStatus = run?.status ?? null;
   }
 
-  function buildPlanNode(plan) {
-    const details = doc.createElement("details");
-    details.className = "agent-plan";
-    details.dataset.testid = "agent-plan";
-    const summary = doc.createElement("summary");
-    summary.textContent = "任务计划";
-    details.append(summary);
-    if (typeof plan.explanation === "string" && plan.explanation.length > 0) {
-      const explanation = doc.createElement("p");
-      explanation.className = "agent-plan-explanation";
-      explanation.textContent = plan.explanation;
-      details.append(explanation);
+  // ---- Visible Plan 悬浮层（步骤5）：右上覆盖层，只显示与折叠，无编辑入口 ----
+  function ensurePlanOverlay() {
+    if (planOverlay) return planOverlay;
+    planOverlay = doc.createElement("div");
+    planOverlay.className = "agent-plan-overlay";
+    planOverlay.dataset.testid = "agent-plan-overlay";
+    surface.append(planOverlay);
+    return planOverlay;
+  }
+
+  function removePlanOverlay() {
+    if (planOverlay) {
+      planOverlay.remove();
+      planOverlay = null;
+    }
+  }
+
+  function buildPlanOverlayContent(plan) {
+    const overlay = ensurePlanOverlay();
+    currentPlan = plan;
+    overlay.replaceChildren();
+    overlay.dataset.mode = planMode;
+    const items = Array.isArray(plan.items) ? plan.items : [];
+    const completed = items.filter((item) => item?.status === "completed").length;
+    const progress = `${completed}/${items.length}`;
+
+    if (planMode === "minimal") {
+      const restore = doc.createElement("button");
+      restore.type = "button";
+      restore.className = "agent-plan-restore";
+      restore.dataset.testid = "agent-plan-restore";
+      restore.setAttribute("aria-label", `展开任务计划，已完成 ${completed} 项，共 ${items.length} 项`);
+      restore.title = "展开任务计划";
+      restore.append(viewIcon("doc", 15));
+      const restoreProgress = doc.createElement("span");
+      restoreProgress.textContent = progress;
+      restore.append(restoreProgress);
+      restore.addEventListener("click", () => {
+        planMode = "summary";
+        if (planOverlay && currentPlan) buildPlanOverlayContent(currentPlan);
+      });
+      overlay.append(restore);
+      return;
+    }
+
+    const header = doc.createElement("div");
+    header.className = "agent-plan-overlay-header";
+    const heading = doc.createElement("div");
+    heading.className = "agent-plan-heading";
+    const title = doc.createElement("span");
+    title.className = "agent-plan-overlay-title";
+    title.textContent = "任务计划";
+    const progressLabel = doc.createElement("span");
+    progressLabel.className = "agent-plan-progress";
+    progressLabel.textContent = progress;
+    heading.append(title, progressLabel);
+    const headerActions = doc.createElement("div");
+    headerActions.className = "agent-plan-actions";
+    const minimize = doc.createElement("button");
+    minimize.type = "button";
+    minimize.className = "agent-plan-icon-btn";
+    minimize.dataset.testid = "agent-plan-minimize";
+    minimize.setAttribute("aria-label", "最小化任务计划");
+    minimize.title = "最小化";
+    minimize.textContent = "−";
+    minimize.addEventListener("click", () => {
+      planMode = "minimal";
+      if (planOverlay && currentPlan) buildPlanOverlayContent(currentPlan);
+    });
+    const toggle = doc.createElement("button");
+    toggle.type = "button";
+    toggle.className = `agent-plan-icon-btn agent-plan-icon-btn--${planMode}`;
+    toggle.dataset.testid = planMode === "full" ? "agent-plan-collapse" : "agent-plan-expand";
+    toggle.setAttribute("aria-label", planMode === "full" ? "折叠任务计划" : "展开任务计划");
+    toggle.title = planMode === "full" ? "折叠" : "展开";
+    toggle.append(viewIcon("chevR", 14));
+    toggle.addEventListener("click", () => {
+      planMode = planMode === "full" ? "summary" : "full";
+      if (planOverlay && currentPlan) buildPlanOverlayContent(currentPlan);
+    });
+    headerActions.append(minimize, toggle);
+    header.append(heading, headerActions);
+    overlay.append(header);
+    // 摘要态只显示 step；完整态显示 explanation 与 description（如有）。
+    if (planMode === "full") {
+      if (typeof plan.explanation === "string" && plan.explanation.length > 0) {
+        const explanation = doc.createElement("p");
+        explanation.className = "agent-plan-explanation";
+        explanation.textContent = plan.explanation;
+        overlay.append(explanation);
+      }
     }
     const list = doc.createElement("ol");
     list.className = "agent-plan-items";
-    for (const item of plan.items) {
+    const shown = planMode === "full" ? items : pickCollapsedPlanItems(items);
+    for (const item of shown) {
       const li = doc.createElement("li");
       li.className = "agent-plan-item";
+      // 旧格式事件（无 id）以 step 兜底，保证每个计划项可被定位/测试。
+      li.dataset.planId = item.id ?? item.step ?? "";
       li.dataset.status = item.status;
       const mark = doc.createElement("span");
       mark.className = "agent-plan-mark";
@@ -354,27 +705,49 @@ export function createAgentView({ root, document: doc = globalThis.document }) {
       step.className = "agent-plan-step";
       step.textContent = String(item.step ?? "");
       li.append(mark, step);
+      if (planMode === "full" && typeof item.description === "string" && item.description.length > 0) {
+        const description = doc.createElement("div");
+        description.className = "agent-plan-description";
+        description.textContent = item.description;
+        li.append(description);
+      }
       list.append(li);
     }
-    details.append(list);
-    return details;
+    overlay.append(list);
+  }
+
+  function planSignature(plan) {
+    if (!plan) return null;
+    return JSON.stringify({
+      explanation: plan.explanation ?? null,
+      items: plan.items ?? []
+    });
   }
 
   function syncPlan(state) {
-    const run = getActiveRun(state);
-    if (rendered.plan !== state.revisions.plan) {
+    const plan = getVisiblePlan(state);
+    const signature = planSignature(plan);
+    if (signature !== renderedPlanSignature) {
+      // 新计划内容（plan_updated 事件或内容不同的快照）→ 显示并重建。
+      renderedPlanSignature = signature;
       rendered.plan = state.revisions.plan;
-      planSlot.replaceChildren();
-      planNode = null;
-      const plan = getVisiblePlan(state);
-      if (plan && Array.isArray(plan.items) && plan.items.length > 0) {
-        planNode = buildPlanNode(plan);
-        planSlot.append(planNode);
-      }
+      if (signature) planOverlayHidden = false;
+    } else if (rendered.plan !== state.revisions.plan) {
+      // 同内容 revision（快照整体替换等）只吸收，不打断当前显隐/折叠态，
+      // 避免提交后快照把旧计划又"复活"出来。
+      rendered.plan = state.revisions.plan;
     }
-    // 活动 Run 展开；Run 终态后折叠（同一节点切换 open，只读，无编辑入口）。
-    if (planNode) planNode.open = isRunActive(run);
-    if (planNode) maybeScrollToBottom();
+    // 生命周期：无计划不渲染空面板；新输入（submit）隐藏旧计划；Run 终态保留供回看。
+    if (!signature || planOverlayHidden) {
+      removePlanOverlay();
+      return;
+    }
+    const overlay = ensurePlanOverlay();
+    if (renderedPlanContent !== signature) {
+      renderedPlanContent = signature;
+      buildPlanOverlayContent(plan);
+    }
+    maybeScrollToBottom();
   }
 
   // ---- 决策卡：普通确认 + 红色 extreme 精确文字确认 ---------------------------
@@ -650,26 +1023,307 @@ export function createAgentView({ root, document: doc = globalThis.document }) {
   }
 
   // ---- composer：项目打开即可用（运行中保持可用，普通发送进入队列） ------------
+  function closeSlashMenu() {
+    slashMatches = [];
+    slashActiveIndex = 0;
+    slashMenu.hidden = true;
+    slashMenu.replaceChildren();
+    input.removeAttribute?.("aria-activedescendant");
+  }
+
+  function selectSlashCommand(index = slashActiveIndex) {
+    const item = slashMatches[index];
+    if (!item) return false;
+    input.value = item.command;
+    closeSlashMenu();
+    input.focus?.();
+    return true;
+  }
+
+  function renderSlashMenu() {
+    slashMatches = matchSlashCommands(input.value);
+    slashActiveIndex = 0;
+    slashMenu.replaceChildren();
+    if (slashMatches.length === 0 || input.disabled) {
+      closeSlashMenu();
+      return;
+    }
+    slashMenu.hidden = false;
+    slashMatches.forEach((item, index) => {
+      const option = doc.createElement("button");
+      option.id = `agent-slash-option-${index}`;
+      option.type = "button";
+      option.className = "agent-slash-option";
+      option.dataset.testid = "agent-slash-option";
+      option.setAttribute("role", "option");
+      option.setAttribute("aria-selected", index === slashActiveIndex ? "true" : "false");
+      const command = doc.createElement("span");
+      command.className = "agent-slash-command";
+      command.textContent = item.command;
+      const label = doc.createElement("span");
+      label.className = "agent-slash-label";
+      label.textContent = item.label;
+      option.append(command, label);
+      option.addEventListener("click", () => selectSlashCommand(index));
+      slashMenu.append(option);
+    });
+    input.setAttribute("aria-activedescendant", "agent-slash-option-0");
+  }
+
+  function moveSlashSelection(delta) {
+    if (slashMenu.hidden || slashMatches.length === 0) return false;
+    slashActiveIndex = (slashActiveIndex + delta + slashMatches.length) % slashMatches.length;
+    const options = slashMenu.querySelectorAll('[data-testid="agent-slash-option"]');
+    options.forEach?.((option, index) => {
+      option.setAttribute("aria-selected", index === slashActiveIndex ? "true" : "false");
+    });
+    input.setAttribute("aria-activedescendant", `agent-slash-option-${slashActiveIndex}`);
+    return true;
+  }
+
+  // ---- composer 三菜单：模型 / 权限模式 / 思考强度（选项由 setComposerOptions 注入） ----
+  const EFFORT_LABELS = { low: "低", medium: "中", high: "高" };
+
+  function closeComposerMenus() {
+    for (const control of composerMenus) {
+      control.menu.hidden = true;
+      control.trigger.setAttribute("aria-expanded", "false");
+    }
+  }
+
+  function openComposerMenu(control, direction = 1) {
+    control.menu.hidden = false;
+    control.trigger.setAttribute("aria-expanded", "true");
+    const selectedIndex = Math.max(0, control.items.findIndex((item) => item.dataset.selected === "true"));
+    const index = direction < 0 ? control.items.length - 1 : selectedIndex;
+    control.items[index]?.focus?.();
+  }
+
+  function handleComposerMenuKeydown(control, event) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeComposerMenus();
+      control.trigger.focus?.();
+      return;
+    }
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    event.preventDefault();
+    const active = control.items.indexOf(doc.activeElement);
+    const delta = event.key === "ArrowDown" ? 1 : -1;
+    const next = (Math.max(0, active) + delta + control.items.length) % control.items.length;
+    control.items[next]?.focus?.();
+  }
+
+  function handleComposerOutsidePointer(event) {
+    if (!controls.contains?.(event.target)) closeComposerMenus();
+  }
+
+  function handleComposerOutsideFocus(event) {
+    if (!controls.contains?.(event.target)) closeComposerMenus();
+  }
+
+  doc.addEventListener?.("pointerdown", handleComposerOutsidePointer, true);
+  doc.addEventListener?.("focusin", handleComposerOutsideFocus, true);
+
+  function setMenuValue(control, currentValue, fallbackLabel = "") {
+    const selected = control.items.find((item) => item.dataset.value === currentValue);
+    control.trigger.dataset.value = currentValue;
+    control.value.textContent = selected?.dataset.label ?? fallbackLabel;
+    for (const item of control.items) {
+      const active = item.dataset.value === currentValue;
+      item.dataset.selected = active ? "true" : "false";
+      item.setAttribute("aria-selected", active ? "true" : "false");
+    }
+  }
+
+  function fillMenu(control, options, currentValue, enabled, onSelect) {
+    control.menu.replaceChildren();
+    control.items = options.map((item) => {
+      const option = doc.createElement("button");
+      option.type = "button";
+      option.className = "agent-composer-option";
+      option.dataset.testid = `agent-${control.kind}-option`;
+      option.dataset.value = item.value;
+      option.dataset.label = item.label;
+      option.setAttribute("role", "option");
+      if (item.title) option.title = item.title;
+      const copy = doc.createElement("span");
+      copy.className = "agent-composer-option-copy";
+      const label = doc.createElement("strong");
+      label.textContent = item.label;
+      copy.append(label);
+      if (item.description) {
+        const description = doc.createElement("span");
+        description.textContent = item.description;
+        copy.append(description);
+      }
+      const check = viewIcon("check", 15, "agent-composer-option-check");
+      option.append(copy, check);
+      option.addEventListener("click", (event) => {
+        event?.stopPropagation?.();
+        closeComposerMenus();
+        if (item.value !== control.trigger.dataset.value) onSelect(item.value);
+      });
+      control.menu.append(option);
+      return option;
+    });
+    control.trigger.disabled = !enabled;
+    setMenuValue(control, currentValue, options[0]?.label ?? "");
+    if (!enabled) control.menu.hidden = true;
+  }
+
+  function syncComposerControls() {
+    const options = composerOptions;
+    const levels = Array.isArray(options?.reasoningEffortLevels) && options.reasoningEffortLevels.length > 0
+      ? options.reasoningEffortLevels
+      : null;
+    // 签名未变不重建：避免打断用户正在打开的菜单。
+    const signature = JSON.stringify({
+      enabled: composerEnabled,
+      models: options?.models ?? null,
+      modelSelectionEnabled: options?.modelSelectionEnabled ?? null,
+      activeModelId: options?.activeModelId ?? null,
+      permissionTier: options?.permissionTier ?? null,
+      effort: options?.reasoningEffort ?? null,
+      levels
+    });
+    if (signature === controlsSignature) {
+      // 选项未变也校准当前值：选择只在落盘成功后生效，失败时回退显示旧值。
+      syncControlValues(options, levels);
+      return;
+    }
+    controlsSignature = signature;
+
+    // 模型：未加载或无已导入模型时单项占位并禁用。
+    const models = Array.isArray(options?.models) ? options.models : [];
+    const modelOptions = models.length > 0
+      ? models.map((model) => ({
+          value: String(model.id ?? model.model_name ?? ""),
+          label: String(model.display ?? model.model_name ?? model.id ?? ""),
+          title: String(model.display ?? model.model_name ?? "")
+        }))
+      : [{ value: "", label: "未导入模型" }];
+    fillMenu(
+      modelControl,
+      modelOptions,
+      String(options?.activeModelId ?? ""),
+      composerEnabled && models.length > 0 && options?.modelSelectionEnabled !== false,
+      (modelId) => actions.switchModel?.(modelId)
+    );
+
+    // 权限模式：固定四档。
+    fillMenu(
+      permissionControl,
+      PERMISSION_TIERS.map((tier) => ({ value: tier.id, label: tier.label, description: tier.desc })),
+      String(options?.permissionTier ?? "confirm"),
+      composerEnabled && Boolean(options),
+      (tierId) => actions.setPermissionTier?.(tierId)
+    );
+
+    // 思考强度：当前模型声明了档位才提供低/中/高；否则只有「自动」且禁用（不伪装可用）。
+    const effortOptions = levels
+      ? [{ value: "auto", label: "自动" }, ...levels.map((level) => ({ value: level, label: EFFORT_LABELS[level] ?? level }))]
+      : [{ value: "auto", label: "自动" }];
+    fillMenu(
+      effortControl,
+      effortOptions,
+      levels ? String(options?.reasoningEffort ?? "auto") : "auto",
+      composerEnabled && Boolean(levels),
+      (effort) => actions.setReasoningEffort?.(effort)
+    );
+  }
+
+  function syncControlValues(options, levels) {
+    const modelValue = String(options?.activeModelId ?? "");
+    setMenuValue(modelControl, modelValue, "未导入模型");
+    const permissionValue = String(options?.permissionTier ?? "confirm");
+    setMenuValue(permissionControl, permissionValue, "确认后修改");
+    const effortValue = levels ? String(options?.reasoningEffort ?? "auto") : "auto";
+    setMenuValue(effortControl, effortValue, "自动");
+  }
+
   function syncComposer(state) {
     const enabled = Boolean(state.projectRoot);
     input.disabled = !enabled;
     send.disabled = !enabled;
-    // 空会话提示：有项目时隐藏（空会话不显示欢迎词），无项目时显示「新建或打开项目」。
+    composer.hidden = !enabled;
+    surface.classList.toggle("agent-surface--empty", !enabled);
+    composerEnabled = enabled;
+    syncComposerControls();
+    // 有项目时隐藏产品起点；项目内的空会话保持干净，不显示欢迎词。
     emptyState.hidden = enabled;
+    if (!enabled) {
+      closeSlashMenu();
+      closeComposerMenus();
+    }
   }
 
   function submitFromComposer() {
     const text = String(input.value ?? "").trim();
     if (!text) return;
+    // 新输入开始，旧计划立即退出悬浮层（不等待下一次 render；新 plan_updated 再显示）
+    planOverlayHidden = true;
+    removePlanOverlay();
+    const submissionGeneration = viewGeneration;
+    let request;
     try {
-      Promise.resolve(actions.submit?.(text)).catch(() => {});
-    } catch {
-      // 提交失败静默：状态一致性由 SSE/快照恢复
+      request = actions.submit?.(text);
+    } catch (error) {
+      request = Promise.reject(error);
     }
+    if (request?.localOnly === true) {
+      input.value = "";
+      closeSlashMenu();
+      return;
+    }
+
+    const bubble = createMessageBubble("user", text);
+    bubble.dataset.state = "pending";
+    messages.append(bubble);
+    const pending = { text, node: bubble, inputId: null };
+    pendingSubmissions.push(pending);
     input.value = "";
+    closeSlashMenu();
+    maybeScrollToBottom();
+    Promise.resolve(request).then((result) => {
+      if (submissionGeneration !== viewGeneration) return;
+      pending.inputId = result?.input_id ?? null;
+    }).catch((error) => {
+      if (submissionGeneration !== viewGeneration) return;
+      const pendingIndex = pendingSubmissions.indexOf(pending);
+      if (pendingIndex >= 0) pendingSubmissions.splice(pendingIndex, 1);
+      bubble.dataset.state = "failed";
+      const failure = doc.createElement("span");
+      failure.className = "agent-submit-error";
+      failure.dataset.testid = "agent-submit-error";
+      failure.textContent = `发送失败：${String(error?.message ?? "请求失败")}`;
+      bubble.append(failure);
+      if (String(input.value ?? "").length === 0) input.value = text;
+      maybeScrollToBottom();
+    });
   }
 
+  input.addEventListener("input", () => renderSlashMenu());
+  input.addEventListener("focus", () => closeComposerMenus());
   input.addEventListener("keydown", (event) => {
+    if (event.isComposing || event.keyCode === 229) return;
+    if (!slashMenu.hidden) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        moveSlashSelection(event.key === "ArrowDown" ? 1 : -1);
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault();
+        selectSlashCommand();
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeSlashMenu();
+        return;
+      }
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       submitFromComposer();
@@ -678,9 +1332,17 @@ export function createAgentView({ root, document: doc = globalThis.document }) {
   send.addEventListener("click", () => submitFromComposer());
 
   // ---- 对外 ----------------------------------------------------------------
+  // 三控件选项不属于 snapshot/SSE state，由 index.js 加载/变更后单独注入。
+  function setComposerOptions(options) {
+    composerOptions = options ?? null;
+    syncComposerControls();
+  }
+
   function render(state, actionBag = {}) {
     actions = actionBag;
+    currentState = state;
     syncMessages(state);
+    syncStream(state);
     syncRun(state);
     syncPlan(state);
     syncActivities(state);
@@ -690,5 +1352,5 @@ export function createAgentView({ root, document: doc = globalThis.document }) {
     syncComposer(state);
   }
 
-  return { render, reset, destroy };
+  return { render, reset, destroy, setComposerOptions };
 }

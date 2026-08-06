@@ -19,3 +19,8 @@ docs/superpowers/
 # 本地研究资料，不推送（用户要求）
 docs/research/2026-07-31-codewhale-deepseek-cache-ledger.json
 docs/research/2026-07-31-codewhale-deepseek-cache.md
+
+# 构建产物（验证目录）与本地运行时状态
+.local/
+dist-desktop-verify/
+dist-desktop-verify-2/

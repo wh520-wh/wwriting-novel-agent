@@ -16,8 +16,8 @@
 //   确认但不跳过 extreme / fresh 精确文字确认不可复用且不可模型提供 /
 //   Shell cwd/超时/增量输出/进程树停止与 1 MiB 流尾（runtime.test.mjs 承载）/
 //   命令、参数、分块流式密钥、最终输出与 journal 详情全量脱敏 /
-//   同一活动合并而不重复渲染；私有推理永不渲染 / 900px 共享内容列与模型菜单
-//   视口钳制在 cutover 后保留 / 停止中止命令并清除授权
+//   同一活动合并而不重复渲染；私有推理永不渲染 / 900px 共享内容列与统一
+//   Composer 菜单视口钳制在 cutover 后保留 / 停止中止命令并清除授权
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -112,7 +112,7 @@ step("场景 2 · 复杂任务计划更新");
 {
   const h = await createProjectAgentHarness({
     gatewayScript: [
-      { reply: { toolCalls: [tool("update_plan", { explanation: "先读取章节，再修正冲突", items: [{ step: "检查已有章节", status: "in_progress" }] })] } },
+      { reply: { toolCalls: [tool("update_plan", { explanation: "先读取章节，再修正冲突", items: [{ id: "inspect", step: "检查已有章节", status: "in_progress" }] })] } },
       { reply: { text: "计划已更新，继续处理。" } }
     ]
   });
@@ -888,6 +888,7 @@ step("场景 24 · 活动合并与私有推理排除");
       this.children = [];
       this._parent = null;
       this._text = "";
+      this._innerHTML = "";
       this.dataset = {};
       this.style = {};
       this._attrs = {};
@@ -899,19 +900,49 @@ step("场景 24 · 活动合并与私有推理排除");
       this.scrollTop = 0;
       this.scrollHeight = 0;
       this.clientHeight = 0;
+      const classes = new Set();
       let className = "";
       Object.defineProperty(this, "className", {
         get() { return className; },
-        set(value) { className = String(value ?? ""); },
+        set(value) {
+          className = String(value ?? "");
+          classes.clear();
+          for (const item of className.split(/\s+/u).filter(Boolean)) classes.add(item);
+        },
         enumerable: true,
         configurable: true
       });
+      this.classList = {
+        add: (...items) => {
+          for (const item of items) classes.add(item);
+          className = [...classes].join(" ");
+        },
+        remove: (...items) => {
+          for (const item of items) classes.delete(item);
+          className = [...classes].join(" ");
+        },
+        contains: (item) => classes.has(item),
+        toggle: (item, force) => {
+          const enabled = force === undefined ? !classes.has(item) : Boolean(force);
+          if (enabled) classes.add(item);
+          else classes.delete(item);
+          className = [...classes].join(" ");
+          return enabled;
+        }
+      };
     }
     get textContent() {
       return this._text + this.children.map((child) => child.textContent).join("");
     }
     set textContent(value) {
       this._text = String(value ?? "");
+      this._innerHTML = "";
+      this.children = [];
+    }
+    get innerHTML() { return this._innerHTML; }
+    set innerHTML(value) {
+      this._innerHTML = String(value ?? "");
+      this._text = this._innerHTML.replace(/<[^>]*>/gu, "");
       this.children = [];
     }
     setAttribute(name, value) { this._attrs[name] = String(value); }
@@ -966,7 +997,10 @@ step("场景 24 · 活动合并与私有推理排除");
       "真实事件流不得携带私有推理字段"
     );
 
-    const doc = { createElement: (tag) => new MockElement(tag) };
+    const doc = {
+      createElement: (tag) => new MockElement(tag),
+      createElementNS: (_namespace, tag) => new MockElement(tag)
+    };
     const root = new MockElement("div");
     const { createAgentSurface } = await import("../src/app-shell/agent/index.js");
     const surface = createAgentSurface({ root, api: null, document: doc });
@@ -1019,9 +1053,9 @@ step("场景 24 · 活动合并与私有推理排除");
 }
 
 // ---------------------------------------------------------------------------
-// 场景 25：共享 900px 内容列与模型菜单视口钳制在 cutover 后保留
+// 场景 25：共享 900px 内容列与统一 Composer 菜单视口钳制
 // ---------------------------------------------------------------------------
-step("场景 25 · 900px 内容列与模型菜单视口钳制");
+step("场景 25 · 900px 内容列与统一菜单视口钳制");
 {
   const agentCssUrl = new URL("../src/app-shell/agent/agent.css", import.meta.url);
   const stylesCssUrl = new URL("../src/app-shell/styles.css", import.meta.url);
@@ -1037,9 +1071,11 @@ step("场景 25 · 900px 内容列与模型菜单视口钳制");
     /\.agent-composer[\s\S]*max-width:\s*var\(--content-column\)/u.test(agentCss),
     "composer 应共享 max-width: var(--content-column)"
   );
-  assert.ok(agentCss.includes("min(420px, calc(100vw - 32px))"), "模型菜单宽度应为 min(420px, 100vw - 32px)（16px 安全区）");
+  assert.ok(agentCss.includes("min(320px, calc(100vw - 32px))"), "模型菜单应保留 16px 视口安全区");
+  assert.ok(agentCss.includes("bottom: calc(100% + 7px)"), "统一菜单应从 composer 向上展开");
+  assert.ok(!agentCss.includes(".model-popover") && !agentCss.includes(".mode-popover"), "旧菜单实现不得残留");
   assert.ok(agentCss.includes("overflow-wrap: anywhere"), "长模型名称应允许任意位置换行");
-  record("900px 内容列与模型菜单钳制：cutover 后 CSS 基线保留", true, "agent.css + styles.css");
+  record("900px 内容列与统一菜单钳制：CSS 基线保留", true, "agent.css + styles.css");
 }
 
 // ---------------------------------------------------------------------------

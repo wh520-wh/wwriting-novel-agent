@@ -5,6 +5,7 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { listenWithFallback } = require("./server-start.cjs");
 const { desktopWindowChrome } = require("./window-chrome.cjs");
+const { windowColors } = require("./window-colors.cjs");
 
 const rootDir = path.resolve(__dirname, "..", "..");
 let port = Number(process.env.PORT || 4173);
@@ -81,7 +82,7 @@ app.whenReady().then(async () => {
   }
 
   const isDark = nativeTheme.shouldUseDarkColors;
-  const backgroundColor = isDark ? "#191713" : "#f4f3f0";
+  const backgroundColor = windowColors(isDark).background;
   const window = new BrowserWindow({
     width: 1320,
     height: 860,
@@ -103,7 +104,7 @@ app.whenReady().then(async () => {
     if (overlay) {
       window.setTitleBarOverlay(overlay);
     }
-    window.setBackgroundColor(dark ? "#191713" : "#f4f3f0");
+    window.setBackgroundColor(windowColors(dark).background);
   });
 
   await window.loadURL(`http://127.0.0.1:${port}`);

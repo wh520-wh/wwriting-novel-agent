@@ -15,7 +15,6 @@ import { createDrawerPanels } from "./drawer-panels.js";
 import { createSettingsModal } from "./settings-modal.js";
 import { createProjectScope } from "./project-scope.mjs";
 import { createAgentSurface } from "./agent/index.js";
-import { deriveProjectIdentity } from "./project-identity.mjs";
 import { loadDefaultTier } from "./permission-defaults.mjs";
 import { getTierById } from "./permission-tiers.mjs";
 
@@ -98,7 +97,9 @@ const agentSurface = createAgentSurface({
   root: refs.agentSurface,
   api: null, // 默认 transport：agent/api.js（复用 api-client 通用 helper）
   onOpenSettings: (section) => openSettingsModal(section),
-  onOpenChapter: (chapterNo) => openReader(chapterNo)
+  onOpenChapter: (chapterNo) => openReader(chapterNo),
+  onCreateProject: () => openCreateModal(),
+  onOpenProjectFolder: () => openFromFolder()
 });
 
 const settingsModal = createSettingsModal({
@@ -307,10 +308,6 @@ function renderProjectListFiltered() {
       parts.push(...archived.map((project) => {
         const row = renderProjectNav(project, projectListData.selectedProjectRoot);
         row.classList.add("proj-archived");
-        const titleEl = row.querySelector(".proj-title");
-        if (titleEl && !titleEl.textContent.startsWith("\u{1F4E6}")) {
-          titleEl.textContent = "\u{1F4E6} " + titleEl.textContent;
-        }
         return row;
       }));
     }
@@ -318,7 +315,7 @@ function renderProjectListFiltered() {
   refs.projectList.replaceChildren(
     ...(parts.length > 0
       ? parts
-      : [renderProjectEmpty(query ? "没有匹配的小说。" : "还没有小说，点上方「新建小说」开始")])
+      : [renderProjectEmpty(query ? "没有匹配的小说。" : "还没有小说")])
   );
 }
 
@@ -367,30 +364,26 @@ function commitProjectSwitch(projectRoot) {
 }
 
 function renderProjectNav(project, selectedProjectRoot) {
+  const isSelected = pathEquals(project.projectRoot, selectedProjectRoot);
   const row = document.createElement("div");
-  row.className = `proj-row${pathEquals(project.projectRoot, selectedProjectRoot) ? " active" : ""}`;
+  row.className = `proj-row${isSelected ? " active" : ""}`;
   const button = document.createElement("button");
   button.type = "button";
-  button.className = `proj${pathEquals(project.projectRoot, selectedProjectRoot) ? " active" : ""}`;
-  const identity = deriveProjectIdentity({ project, projectRoot: project.projectRoot });
-  const cover = document.createElement("span");
-  cover.className = "proj-cover";
-  cover.dataset.projectTheme = identity.theme;
-  cover.setAttribute("aria-hidden", "true");
-  cover.textContent = identity.monogram;
+  button.className = `proj${isSelected ? " active" : ""}`;
+  if (isSelected) button.setAttribute("aria-current", "page");
+  button.title = project.title ?? "未命名小说";
   button.addEventListener("click", () => openProject(project.projectRoot));
-  const dot = document.createElement("span");
-  dot.className = "proj-dot";
+  const projectIcon = document.createElement("span");
+  projectIcon.className = "proj-icon";
+  projectIcon.setAttribute("aria-hidden", "true");
+  projectIcon.append(icon("folder", 16));
   const main = document.createElement("span");
   main.className = "proj-main";
   const title = document.createElement("span");
   title.className = "proj-title";
   title.textContent = project.title ?? "未命名小说";
-  const sub = document.createElement("span");
-  sub.className = "proj-sub";
-  sub.textContent = project.model_label ?? project.story_seed ?? project.projectRoot;
-  main.append(title, sub);
-  button.append(cover, dot, main);
+  main.append(title);
+  button.append(projectIcon, main);
   const menu = document.createElement("div");
   menu.className = "proj-menu";
   const remove = document.createElement("button");

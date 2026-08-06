@@ -69,6 +69,7 @@ const FIXED_EVENT_TYPES = [
   "plan_updated",
   "history_compacted",
   "checkpoint_linked",
+  "assistant_message_delta",
   "assistant_message_completed",
   "run_completed",
   "run_failed",
@@ -132,6 +133,7 @@ function assertPlanItems(items) {
   for (const item of items) {
     assert.ok(PLAN_STATUSES.includes(item.status), `未知 plan 状态: ${item.status}`);
     assert.ok(typeof item.step === "string" && item.step.length > 0);
+    assert.ok(typeof item.id === "string" && item.id.length > 0, "plan 项应携带稳定 id");
   }
 }
 
@@ -468,25 +470,25 @@ test("复杂任务更新 Visible Plan", async (t) => {
   const planA = {
     explanation: "先核对已完成章节",
     items: [
-      { step: "检查已有章节", status: "in_progress" },
-      { step: "修正冲突", status: "pending" },
-      { step: "验证修改", status: "pending" }
+      { id: "check", step: "检查已有章节", status: "in_progress" },
+      { id: "fix", step: "修正冲突", status: "pending" },
+      { id: "verify", step: "验证修改", status: "pending" }
     ]
   };
   const planB = {
     explanation: "先核对已完成章节",
     items: [
-      { step: "检查已有章节", status: "completed" },
-      { step: "修正冲突", status: "in_progress" },
-      { step: "验证修改", status: "pending" }
+      { id: "check", step: "检查已有章节", status: "completed" },
+      { id: "fix", step: "修正冲突", status: "in_progress" },
+      { id: "verify", step: "验证修改", status: "pending" }
     ]
   };
   const planC = {
     explanation: "先核对已完成章节",
     items: [
-      { step: "检查已有章节", status: "completed" },
-      { step: "修正冲突", status: "completed" },
-      { step: "验证修改", status: "completed" }
+      { id: "check", step: "检查已有章节", status: "completed" },
+      { id: "fix", step: "修正冲突", status: "completed" },
+      { id: "verify", step: "验证修改", status: "completed" }
     ]
   };
   const h = await openHarness(t, {
@@ -867,16 +869,17 @@ test("活动 id 在成功、失败、拒绝、抢占与停止时闭环", async (
 // AgentSurface 布局基线
 // ---------------------------------------------------------------------------
 
-test("AgentSurface 保留 900px 内容基线与模型菜单视口钳制", async () => {
+test("AgentSurface 保留 900px 内容基线与统一菜单视口钳制", async () => {
   const { createAgentSurface } = await import("../../src/app-shell/agent/index.js");
   assert.equal(typeof createAgentSurface, "function", "AgentSurface 必须导出 createAgentSurface 工厂");
   const css = await fs.readFile(path.join(ROOT, "src", "app-shell", "agent", "agent.css"), "utf8");
   assert.match(css, /--content-column:\s*900px/u, "根变量应定义 900px 内容列");
   assert.match(
     css,
-    /width:\s*min\(420px,\s*calc\(100vw - 32px\)\)/u,
-    "模型菜单宽度应为 min(420px, 100vw - 32px)"
+    /\.agent-composer-menu--model \.agent-composer-popover\s*\{[^}]*width:\s*min\(320px,\s*calc\(100vw - 32px\)\)/u,
+    "模型菜单应使用统一 popover，并保留 16px 视口安全区"
   );
+  assert.match(css, /\.agent-composer-popover\s*\{[^}]*bottom:\s*calc\(100% \+ 7px\)/u, "菜单应从 composer 向上展开");
   assert.match(css, /overflow-wrap:\s*anywhere/u, "模型名称应允许任意位置换行");
 });
 

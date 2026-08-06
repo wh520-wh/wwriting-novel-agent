@@ -66,6 +66,7 @@ export const FIXED_EVENT_TYPES = Object.freeze([
   "plan_updated",
   "history_compacted",
   "checkpoint_linked",
+  "assistant_message_delta",
   "assistant_message_completed",
   "run_completed",
   "run_failed",
@@ -180,6 +181,9 @@ function createRun(event, { workflow, inputId }) {
     workflow,
     active_input_id: inputId,
     visible_plan: null,
+    // 正文增量累积（assistant_message_delta 追加；assistant_message_completed
+    // 以全文终态对齐或保留累积）。可回放可恢复，重建 projection 与实时一致。
+    assistant_text: null,
     active_grants: [],
     started_at: event.at
   };
@@ -266,9 +270,11 @@ function reduceEvent(session, event, side) {
           fail(`两个 active Run：Run ${run.id} 尚在 ${run.status}，拒绝启动 ${event.run_id}`);
         }
         if (run.id === event.run_id) {
-          // retry：恢复同一可恢复 Run（保留 workflow/started_at/visible_plan）
+          // retry：恢复同一可恢复 Run（保留 workflow/started_at/visible_plan）；
+          // 正文增量按尝试重置（新尝试的 delta 从空开始累积）。
           run.status = "running";
           session.status = "running";
+          run.assistant_text = null;
         } else {
           session.active_run = createRun(event, { workflow, inputId });
           session.status = "running";
@@ -411,7 +417,10 @@ function reduceEvent(session, event, side) {
     }
 
     case "model_turn_started": {
-      requireActiveRun("model_turn_started");
+      const activeRun = requireActiveRun("model_turn_started");
+      // 每个 Provider 轮次拥有独立的临时正文。工具轮次可能先流出一句操作前言，
+      // 下一轮必须从空白开始，避免前言与最终答复在 projection 中串接。
+      activeRun.assistant_text = null;
       side.openModelTurns += 1;
       break;
     }
@@ -529,8 +538,22 @@ function reduceEvent(session, event, side) {
         if (!PLAN_STATUSES.includes(item.status)) {
           fail(`plan items[${index}].status 非法: ${String(item.status)}`);
         }
-        return { step: item.step, status: item.status };
+        // 向后兼容：旧格式 plan_updated 事件（items 无 id/description）必须能正常回放；
+        // 缺 id 时按位置生成占位 id（item-<index>），比宽容通过更简单且投影形状统一
+        const id = item.id === undefined ? `item-${index}` : item.id;
+        if (typeof id !== "string" || id.length === 0) fail(`plan items[${index}].id 必须是非空字符串`);
+        if (item.description !== undefined && typeof item.description !== "string") {
+          fail(`plan items[${index}].description 必须是字符串`);
+        }
+        const entry = { id, step: item.step, status: item.status };
+        if (typeof item.description === "string") entry.description = item.description;
+        return entry;
       });
+      const planIds = new Set();
+      for (const item of normalized) {
+        if (planIds.has(item.id)) fail(`plan 项 id 重复: ${item.id}`);
+        planIds.add(item.id);
+      }
       const inProgress = normalized.filter((item) => item.status === "in_progress");
       if (inProgress.length > 1) fail(`最多一个 in_progress plan 项，实际 ${inProgress.length} 个`);
       activeRun.visible_plan = {
@@ -540,9 +563,31 @@ function reduceEvent(session, event, side) {
       break;
     }
 
+    case "assistant_message_delta": {
+      const activeRun = requireActiveRun("assistant_message_delta");
+      const delta = payload.text;
+      if (typeof delta !== "string" || delta.length === 0) {
+        fail("assistant_message_delta 必须携带非空 text");
+      }
+      // 在 active_run 累积正文：delta 拼接 + completed 终态对齐（或保留累积），
+      // 重建 projection（重放）与实时追加得到同一结果。
+      activeRun.assistant_text = (activeRun.assistant_text ?? "") + delta;
+      break;
+    }
+
+    case "assistant_message_completed": {
+      // 终态对齐：携带全文则以 payload.text 为权威最终值（覆盖累积）；不携带
+      // 全文时保留 delta 序列累积的结果。assistant_text 只对「delta 已到、
+      // completed 未到」的中间态有意义，completed 到达后即定稿。
+      const activeRun = requireActiveRun("assistant_message_completed");
+      if (typeof payload.text === "string" && payload.text.length > 0) {
+        activeRun.assistant_text = payload.text;
+      }
+      break;
+    }
+
     case "history_compacted":
     case "checkpoint_linked":
-    case "assistant_message_completed":
       // 不影响 Session projection（transcript/领域审计类事件）
       break;
 

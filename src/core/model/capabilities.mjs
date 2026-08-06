@@ -55,7 +55,10 @@ function resolveDeepSeekCapabilities(modelConfig) {
     supportsTopP: !supportsThinking && !isDeepSeekV4Flash,
     supportsJsonOutput: true,
     supportsTools: true,
-    supportsStreaming: true
+    supportsStreaming: true,
+    // 已验证的 DeepSeek thinking 模型支持低/中/高三档思考强度（reasoning_effort）；
+    // 其余模型（含 v4-flash、MiMo 与未验证模型）缺省此字段，请求体绝不携带该参数。
+    ...(supportsThinking ? { reasoningEffortLevels: ["low", "medium", "high"] } : {})
   };
 }
 

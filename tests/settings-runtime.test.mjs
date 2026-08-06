@@ -411,3 +411,23 @@ test("runtime apply failure keeps durable new files and requests restart", async
     ["secrets", "temporary-test-key"],
   ]);
 });
+
+test("reasoning_effort 项目级读写：合法档位落盘 project.yaml，非法值拒绝", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-settings-effort-"));
+  const { projectRoot } = await createProject(root, { slug: "project" });
+
+  // 未配置的既有项目无该字段，读取方按 auto（不发送 reasoning_effort）处理。
+  const before = await loadProject(projectRoot);
+  assert.equal(before.reasoning_effort, undefined);
+
+  await updateProjectSettings(projectRoot, { reasoning_effort: "high" });
+  assert.equal((await loadProject(projectRoot)).reasoning_effort, "high");
+
+  await updateProjectSettings(projectRoot, { reasoning_effort: "auto" });
+  assert.equal((await loadProject(projectRoot)).reasoning_effort, "auto");
+
+  await assert.rejects(
+    () => updateProjectSettings(projectRoot, { reasoning_effort: "extreme" }),
+    /reasoning_effort/
+  );
+});

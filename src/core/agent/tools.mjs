@@ -1015,7 +1015,7 @@ export function createToolRuntime({
 
   register("update_plan", {
     interruptible: false,
-    description: "更新当前任务的可见执行计划。状态只允许 pending/in_progress/completed，最多一个 in_progress。",
+    description: "更新当前任务的可见执行计划（全量替换整表）。每项需稳定 id；状态只允许 pending/in_progress/completed，最多一个 in_progress。",
     schema: {
       type: "object",
       properties: {
@@ -1023,14 +1023,16 @@ export function createToolRuntime({
         items: {
           type: "array",
           minItems: 1,
-          description: "计划步骤（全量替换）",
+          description: "计划步骤（全量替换；增删改都通过替换整表表达，id 在多次更新间保持稳定）",
           items: {
             type: "object",
             properties: {
+              id: { type: "string", minLength: 1, description: "稳定标识：同一计划步骤在多次更新间复用同一 id" },
               step: { type: "string", minLength: 1, description: "可验证的执行步骤" },
-              status: { type: "string", enum: [...PLAN_STATUSES], description: "pending | in_progress | completed" }
+              status: { type: "string", enum: [...PLAN_STATUSES], description: "pending | in_progress | completed" },
+              description: { type: "string", description: "可选：步骤补充说明" }
             },
-            required: ["step", "status"],
+            required: ["id", "step", "status"],
             additionalProperties: false
           }
         }
@@ -1049,6 +1051,9 @@ export function createToolRuntime({
         throw toolError("bad_args", "参数无效：items 不能为空。", { rule: "bad_args", fields: ["items"] });
       }
       const normalized = items.map((item, index) => {
+        if (item == null || typeof item.id !== "string" || item.id.trim() === "") {
+          throw toolError("bad_args", `参数无效：items[${index}].id 必须是非空字符串。`, { rule: "bad_args", fields: [`items[${index}].id`] });
+        }
         if (item == null || typeof item.step !== "string" || item.step.trim() === "") {
           throw toolError("bad_args", `参数无效：items[${index}].step 必须是字符串。`, { rule: "bad_args", fields: [`items[${index}].step`] });
         }
@@ -1058,8 +1063,20 @@ export function createToolRuntime({
             fields: [`items[${index}].status`]
           });
         }
-        return { step: item.step, status: item.status };
+        if (item.description !== undefined && typeof item.description !== "string") {
+          throw toolError("bad_args", `参数无效：items[${index}].description 必须是字符串。`, { rule: "bad_args", fields: [`items[${index}].description`] });
+        }
+        const entry = { id: item.id, step: item.step, status: item.status };
+        if (typeof item.description === "string") entry.description = item.description;
+        return entry;
       });
+      const seenIds = new Set();
+      for (const item of normalized) {
+        if (seenIds.has(item.id)) {
+          throw toolError("bad_args", `参数无效：计划项 id 重复：${item.id}。`, { rule: "bad_args", fields: ["items"] });
+        }
+        seenIds.add(item.id);
+      }
       if (normalized.filter((item) => item.status === "in_progress").length > 1) {
         throw toolError("bad_args", "参数无效：最多一个 in_progress 计划项。", { rule: "bad_args", fields: ["items"] });
       }
@@ -1071,7 +1088,11 @@ export function createToolRuntime({
         run_id: context.run_id,
         payload: {
           explanation: explanation === null ? null : redactor.redact(explanation),
-          items: normalized.map((item) => ({ step: redactor.redact(item.step), status: item.status }))
+          items: normalized.map((item) => {
+            const entry = { id: item.id, step: redactor.redact(item.step), status: item.status };
+            if (item.description !== undefined) entry.description = redactor.redact(item.description);
+            return entry;
+          })
         }
       });
       return { updated: true, items: normalized };

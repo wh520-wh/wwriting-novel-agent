@@ -142,10 +142,21 @@ export function createModelGateway({
       };
 
       // onActivity 经 metadata 传给 adapter：流式 adapter 在解析每个 SSE 帧时
-      // 回调，同时保持长流心跳新鲜。
-      const metadataWithActivity = onActivity
-        ? { ...metadata, onActivity }
-        : metadata;
+      // 回调，同时保持长流心跳新鲜。onToken 按 attempt 包装：一旦本 attempt 已把
+      // 可见正文交给上层，就不能再透明重试，否则用户会收到重复前缀。
+      let emittedVisibleToken = false;
+      const metadataWithActivity = {
+        ...metadata,
+        ...(onActivity ? { onActivity } : {}),
+        ...(typeof metadata.onToken === "function"
+          ? {
+              onToken(token, event) {
+                if (String(token ?? "").length > 0) emittedVisibleToken = true;
+                metadata.onToken(token, event);
+              }
+            }
+          : {})
+      };
 
       try {
         const response = await adapter.complete(
@@ -203,6 +214,10 @@ export function createModelGateway({
         // Timeout：包装为 ProviderTransportError
         if (timedOut) {
           const timeoutError = new ProviderTransportError("Request timed out.", { reason: "timeout" });
+          if (emittedVisibleToken) {
+            recordFailed(timeoutError, { provider, model, stage, chapter });
+            throw timeoutError;
+          }
           if (isRetryable(timeoutError) && attempt < retryMax) {
             onActivity?.();
             retried = true;
@@ -212,6 +227,11 @@ export function createModelGateway({
           }
           recordFailed(timeoutError, { provider, model, stage, chapter });
           throw timeoutError;
+        }
+
+        if (emittedVisibleToken) {
+          recordFailed(error, { provider, model, stage, chapter });
+          throw error;
         }
 
         if (isRetryable(error) && attempt < retryMax) {

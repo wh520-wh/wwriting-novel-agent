@@ -8,6 +8,9 @@
 //   POST /api/agent/decision/:decisionId     decide(decisionId, choice)
 //   GET  /api/agent/snapshot?afterSeq&limit  fetchSnapshot()
 //   GET  /api/project/events?afterSeq        connectEvents()（SSE 轮询流，断线指数退避重连）
+//   GET  /api/settings/models + /api/dashboard  fetchComposerOptions()（composer 三控件选项）
+//   POST /api/settings/model-switch            switchModel(modelId)（落盘项目默认模型）
+//   POST /api/settings/update                  updatePermissions(combo) / updateReasoningEffort(effort)
 //
 // 复用 api-client.js 的通用 helper：withProjectScope（URL 作用域）与
 // readResponseJson（响应解析）。fetch 实现可注入（测试用），默认全局 fetch。
@@ -47,6 +50,11 @@ export function createAgentApi({
 
   function root() {
     return currentRoot ?? getProjectRoot();
+  }
+
+  function abortPendingRequests() {
+    for (const abortController of pendingRequests) abortController.abort();
+    pendingRequests.clear();
   }
 
   async function request(url, options = {}) {
@@ -117,10 +125,44 @@ export function createAgentApi({
     return request(url, { cache: "no-store" });
   }
 
-  // 切换项目：关闭旧事件流，后续请求使用新作用域。
+  // composer 三控件选项：模型清单（全局）+ 当前项目生效配置（dashboard）。
+  // 契约：GET /api/settings/models → { models }（每项带 active 与 capabilities）；
+  //       GET /api/dashboard?projectRoot → config.effective.{active_model, tool_permissions, reasoning_effort}。
+  async function fetchComposerOptions() {
+    const [modelsData, dashboard] = await Promise.all([
+      request("/api/settings/models", { cache: "no-store" }),
+      request(withProjectScope("/api/dashboard", root()), { cache: "no-store" })
+    ]);
+    const effective = dashboard?.config?.effective ?? {};
+    return {
+      models: Array.isArray(modelsData?.models) ? modelsData.models : [],
+      activeModel: effective.active_model ?? dashboard?.project?.active_model ?? null,
+      toolPermissions: effective.tool_permissions ?? dashboard?.project?.tool_permissions ?? {},
+      reasoningEffort: typeof effective.reasoning_effort === "string" ? effective.reasoning_effort : "auto"
+    };
+  }
+
+  // 模型切换即落盘为当前项目默认模型；响应带 capabilities / available_models / project。
+  async function switchModel(modelId) {
+    return postJson("/api/settings/model-switch", { projectRoot: root(), model_id: modelId });
+  }
+
+  // 权限模式：combo 四布尔整体落盘（与设置页同一契约）。
+  async function updatePermissions(toolPermissions) {
+    return postJson("/api/settings/update", { projectRoot: root(), tool_permissions: toolPermissions });
+  }
+
+  // 思考强度：auto/low/medium/high 落盘（仅 thinking 模型生效，由后端能力矩阵决定发送）。
+  async function updateReasoningEffort(effort) {
+    return postJson("/api/settings/update", { projectRoot: root(), reasoning_effort: effort });
+  }
+
+  // 切换项目：关闭旧事件流和旧项目请求，后续请求使用新作用域。
   async function openProject(projectRoot) {
-    currentRoot = projectRoot;
     controller?.abort();
+    controller = null;
+    abortPendingRequests();
+    currentRoot = projectRoot;
   }
 
   // SSE /api/project/events：断线后按指数退避重连（上限 maxDelayMs）。
@@ -209,8 +251,7 @@ export function createAgentApi({
     destroyed = true;
     controller?.abort();
     controller = null;
-    for (const abortController of pendingRequests) abortController.abort();
-    pendingRequests.clear();
+    abortPendingRequests();
   }
 
   return {
@@ -221,6 +262,10 @@ export function createAgentApi({
     retry,
     decide,
     fetchSnapshot,
+    fetchComposerOptions,
+    switchModel,
+    updatePermissions,
+    updateReasoningEffort,
     connectEvents,
     destroy
   };

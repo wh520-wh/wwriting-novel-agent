@@ -478,9 +478,9 @@ test("workflow_changed 与 plan_updated 反映在 projection", async (t) => {
     payload: {
       explanation: "先核对已完成章节",
       items: [
-        { step: "检查已有章节", status: "in_progress" },
-        { step: "修正冲突", status: "pending" },
-        { step: "验证修改", status: "pending" }
+        { id: "check", step: "检查已有章节", status: "in_progress", description: "对照章节清单" },
+        { id: "fix", step: "修正冲突", status: "pending" },
+        { id: "verify", step: "验证修改", status: "pending" }
       ]
     }
   });
@@ -490,9 +490,9 @@ test("workflow_changed 与 plan_updated 反映在 projection", async (t) => {
   assert.deepEqual(session.active_run.visible_plan, {
     explanation: "先核对已完成章节",
     items: [
-      { step: "检查已有章节", status: "in_progress" },
-      { step: "修正冲突", status: "pending" },
-      { step: "验证修改", status: "pending" }
+      { id: "check", step: "检查已有章节", status: "in_progress", description: "对照章节清单" },
+      { id: "fix", step: "修正冲突", status: "pending" },
+      { id: "verify", step: "验证修改", status: "pending" }
     ]
   });
 });
@@ -1133,11 +1133,12 @@ test("append 无需显式 load（自初始化）", async (t) => {
   assert.equal(events[1].seq, 2);
 });
 
-test("FIXED_EVENT_TYPES 包含计划固定的 28 个事件类型", () => {
-  assert.equal(FIXED_EVENT_TYPES.length, 28);
+test("FIXED_EVENT_TYPES 包含计划固定的 29 个事件类型", () => {
+  assert.equal(FIXED_EVENT_TYPES.length, 29);
   assert.deepEqual(
     [...FIXED_EVENT_TYPES].sort(),
     [
+      "assistant_message_delta",
       "assistant_message_completed",
       "checkpoint_linked",
       "decision_requested",
@@ -1168,4 +1169,163 @@ test("FIXED_EVENT_TYPES 包含计划固定的 28 个事件类型", () => {
       "workflow_changed"
     ].sort()
   );
+});
+
+// ---------------------------------------------------------------------------
+// plan_updated 结构化深化：id/description 与旧格式兼容
+// ---------------------------------------------------------------------------
+
+test("plan_updated 新格式：id/description 进入 projection", async (t) => {
+  const root = await makeWorkspace(t);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  await journal.load();
+  await journal.append({ type: "run_started", run_id: "run-1", payload: { workflow: "general" } });
+  await journal.append({
+    type: "plan_updated",
+    run_id: "run-1",
+    payload: {
+      items: [
+        { id: "a", step: "第一步", status: "in_progress", description: "补充说明" },
+        { id: "b", step: "第二步", status: "pending" }
+      ]
+    }
+  });
+  const session = await journal.getSession();
+  assert.deepEqual(session.active_run.visible_plan.items, [
+    { id: "a", step: "第一步", status: "in_progress", description: "补充说明" },
+    { id: "b", step: "第二步", status: "pending" }
+  ]);
+});
+
+test("plan_updated 旧格式（无 id/description）回放兼容：按位置生成占位 id", async (t) => {
+  const root = await makeWorkspace(t);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  await journal.load();
+  await journal.append({ type: "run_started", run_id: "run-1", payload: { workflow: "general" } });
+  await journal.append({
+    type: "plan_updated",
+    run_id: "run-1",
+    payload: {
+      items: [
+        { step: "旧步骤一", status: "in_progress" },
+        { step: "旧步骤二", status: "pending" }
+      ]
+    }
+  });
+  const session = await journal.getSession();
+  assert.deepEqual(session.active_run.visible_plan.items, [
+    { id: "item-0", step: "旧步骤一", status: "in_progress" },
+    { id: "item-1", step: "旧步骤二", status: "pending" }
+  ]);
+});
+
+test("reducer 拒绝重复 id 的 plan 项", async (t) => {
+  const root = await makeWorkspace(t);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  await journal.load();
+  await journal.append({ type: "run_started", run_id: "run-1", payload: { workflow: "general" } });
+  await assert.rejects(
+    () =>
+      journal.append({
+        type: "plan_updated",
+        run_id: "run-1",
+        payload: {
+          items: [
+            { id: "a", step: "一", status: "pending" },
+            { id: "a", step: "二", status: "pending" }
+          ]
+        }
+      }),
+    /id 重复/
+  );
+});
+
+// ---------------------------------------------------------------------------
+// assistant_message_delta 增量正文投影（步骤7）
+// ---------------------------------------------------------------------------
+
+test("assistant_message_delta 在 active_run 累积正文，completed 全文终态对齐", async (t) => {
+  const root = await makeWorkspace(t);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  await journal.load();
+  await journal.append({ type: "run_started", run_id: "run-1", payload: { workflow: "general" } });
+  await journal.append({ type: "assistant_message_delta", run_id: "run-1", payload: { input_id: "in-1", text: "第一部分。" } });
+  await journal.append({ type: "assistant_message_delta", run_id: "run-1", payload: { input_id: "in-1", text: "第二部分。" } });
+  let session = await journal.getSession();
+  assert.equal(session.active_run.assistant_text, "第一部分。第二部分。", "delta 应累积到 run 投影");
+  // completed 携带全文 → 以全文为权威终态（覆盖累积）
+  await journal.append({ type: "assistant_message_completed", run_id: "run-1", payload: { input_id: "in-1", text: "第一部分。第二部分。" } });
+  session = await journal.getSession();
+  assert.equal(session.active_run.assistant_text, "第一部分。第二部分。");
+});
+
+test("assistant_message_completed 不带全文时保留 delta 累积", async (t) => {
+  const root = await makeWorkspace(t);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  await journal.load();
+  await journal.append({ type: "run_started", run_id: "run-1", payload: { workflow: "general" } });
+  await journal.append({ type: "assistant_message_delta", run_id: "run-1", payload: { text: "累积正文" } });
+  await journal.append({ type: "assistant_message_completed", run_id: "run-1", payload: { input_id: "in-1" } });
+  const session = await journal.getSession();
+  assert.equal(session.active_run.assistant_text, "累积正文");
+});
+
+test("model_turn_started 为新 Provider 轮次重置临时正文", async (t) => {
+  const root = await makeWorkspace(t);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  await journal.load();
+  await journal.append({ type: "run_started", run_id: "run-1", payload: { workflow: "general" } });
+  await journal.append({ type: "model_turn_started", run_id: "run-1", payload: {} });
+  await journal.append({ type: "assistant_message_delta", run_id: "run-1", payload: { text: "工具轮前言" } });
+  await journal.append({ type: "model_turn_completed", run_id: "run-1", payload: {} });
+  await journal.append({ type: "model_turn_started", run_id: "run-1", payload: {} });
+
+  const session = await journal.getSession();
+  assert.equal(session.active_run.assistant_text, null);
+});
+
+test("assistant_message_delta 校验：空 text 拒绝；无活动 Run 拒绝", async (t) => {
+  const root = await makeWorkspace(t);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  await journal.load();
+  await journal.append({ type: "run_started", run_id: "run-1", payload: { workflow: "general" } });
+  await assert.rejects(
+    () => journal.append({ type: "assistant_message_delta", run_id: "run-1", payload: { text: "" } }),
+    /非空 text/u
+  );
+  await journal.append({ type: "run_completed", run_id: "run-1", payload: {} });
+  await assert.rejects(
+    () => journal.append({ type: "assistant_message_delta", run_id: "run-1", payload: { text: "x" } }),
+    /需要(?:活动|非终结) Run/u
+  );
+});
+
+test("retry 恢复同一 Run 时重置 assistant_text", async (t) => {
+  const root = await makeWorkspace(t);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  await journal.load();
+  await journal.append({ type: "run_started", run_id: "run-1", payload: { workflow: "general" } });
+  await journal.append({ type: "assistant_message_delta", run_id: "run-1", payload: { text: "旧尝试正文" } });
+  await journal.append({ type: "run_failed", run_id: "run-1", payload: { error: "模型失败", code: "model_error" } });
+  await journal.append({ type: "run_started", run_id: "run-1", payload: { workflow: "general" } });
+  let session = await journal.getSession();
+  assert.equal(session.active_run.assistant_text, null, "retry 后正文增量应重置");
+  await journal.append({ type: "assistant_message_delta", run_id: "run-1", payload: { text: "新尝试正文" } });
+  session = await journal.getSession();
+  assert.equal(session.active_run.assistant_text, "新尝试正文");
+});
+
+test("assistant_message_delta 崩溃恢复：events.jsonl 重放重建同一投影", async (t) => {
+  const root = await makeWorkspace(t);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  await journal.load();
+  await journal.append({ type: "run_started", run_id: "run-1", payload: { workflow: "general" } });
+  await journal.append({ type: "assistant_message_delta", run_id: "run-1", payload: { text: "增量一" } });
+  await journal.append({ type: "assistant_message_delta", run_id: "run-1", payload: { text: "增量二" } });
+  // 模拟崩溃：session.json 落后于 events.jsonl，load() 重放修复
+  await fs.writeFile(path.join(agentDir(root), "session.json"), JSON.stringify({ stale: true }));
+  const recovered = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  await recovered.load();
+  const session = await recovered.getSession();
+  assert.equal(session.active_run.assistant_text, "增量一增量二", "重放 delta 得到与实时一致的结果");
 });

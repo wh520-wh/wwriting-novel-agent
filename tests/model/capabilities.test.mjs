@@ -151,3 +151,29 @@ test("resolveModelCapabilities 对缺省 modelConfig 回落默认", () => {
   const caps = resolveModelCapabilities();
   assert.deepEqual(caps, DEFAULT_CAPABILITIES);
 });
+
+test("resolveModelCapabilities: DeepSeek thinking 模型声明 reasoningEffortLevels 低/中/高", () => {
+  const caps = resolveModelCapabilities({
+    base_url: "https://api.deepseek.com/v1",
+    model_name: "deepseek-v4-pro"
+  });
+  assert.deepEqual(caps.reasoningEffortLevels, ["low", "medium", "high"]);
+  const reasoner = resolveModelCapabilities({
+    base_url: "https://api.deepseek.com/v1",
+    model_name: "deepseek-reasoner"
+  });
+  assert.deepEqual(reasoner.reasoningEffortLevels, ["low", "medium", "high"]);
+});
+
+test("resolveModelCapabilities: v4-flash 与非 DeepSeek 模型不声明 reasoningEffortLevels", () => {
+  const flash = resolveModelCapabilities({
+    base_url: "https://api.deepseek.com/v1",
+    model_name: "deepseek-v4-flash"
+  });
+  assert.equal("reasoningEffortLevels" in flash, false);
+  const mimo = resolveModelCapabilities({
+    base_url: "https://api.mimo.example.test/v1",
+    model_name: "mimo-v2.5"
+  });
+  assert.equal("reasoningEffortLevels" in mimo, false);
+});

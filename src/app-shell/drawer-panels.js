@@ -61,7 +61,7 @@ export function createDrawerPanels(ctx) {
     toolbar.className = "export-toolbar";
     const exportBtn = document.createElement("button");
     exportBtn.type = "button";
-    exportBtn.className = "tbtn export-btn";
+    exportBtn.className = "small-button export-btn";
     exportBtn.textContent = "导出成书";
     exportBtn.addEventListener("click", () => {
       void exportBook(data, exportBtn);
@@ -70,7 +70,7 @@ export function createDrawerPanels(ctx) {
     if (window.wwritingDesktop?.revealPath) {
       const revealBtn = document.createElement("button");
       revealBtn.type = "button";
-      revealBtn.className = "tbtn export-reveal-btn";
+      revealBtn.className = "small-button export-reveal-btn";
       revealBtn.textContent = "打开导出文件夹";
       revealBtn.addEventListener("click", () => {
         const root = data.projectRoot ?? data.project?.projectRoot;
