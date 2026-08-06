@@ -23,6 +23,7 @@ import path from "node:path";
 import test from "node:test";
 import { createAgentJournal } from "../../src/core/agent/journal.mjs";
 import { createToolRuntime } from "../../src/core/agent/tools.mjs";
+import { createProjectLockRegistry } from "../../src/core/project-lock.mjs";
 import { EXTREME_COMMANDS } from "../fixtures/command-risk-corpus.mjs";
 
 // 本机可用的 extreme 命令（Windows 语料第一条为 del 清盘）
@@ -120,6 +121,7 @@ async function setup(t, options = {}) {
     projectOperations,
     journal,
     shellRuntime,
+    projectLocks: options.projectLocks,
     secrets: options.secrets ?? [],
     ...(options.runtime ?? {})
   });
@@ -523,6 +525,55 @@ test("auto_edit 自动放行项目内 write，项目外仍需确认", async (t) 
   const events = await readEvents(h.journal);
   assert.equal(eventsOfType(events, "decision_requested").length, 1);
   assertClosure(events);
+});
+
+test("junction 指向项目外时按真实路径判定，不能绕过 auto_edit", { skip: process.platform !== "win32" }, async (t) => {
+  const h = await setup(t, { permissions: { auto_edit: true } });
+  const outsideRoot = path.join(h.dir, "outside");
+  await fs.mkdir(outsideRoot, { recursive: true });
+  const junction = path.join(h.projectRoot, "external-link");
+  await fs.symlink(outsideRoot, junction, "junction");
+
+  const pending = h.tools.execute(
+    toolCall("write_file", { path: "external-link/pwn.txt", content: "outside" }),
+    h.context
+  );
+  const decision = await nextDecision(h.journal);
+  assert.equal(decision.payload.kind, "normal");
+  await h.tools.resolveDecision({ decisionId: decision.payload.decision_id, choice: "allow" });
+  const result = await pending;
+  assert.equal(result.ok, true);
+  assert.equal(await fs.readFile(path.join(outsideRoot, "pwn.txt"), "utf8"), "outside");
+});
+
+test("Agent 写工具与 HTTP 操作共用同一个项目锁", async (t) => {
+  const projectLocks = createProjectLockRegistry();
+  const h = await setup(t, { permissions: { auto_edit: true }, projectLocks });
+  let releaseHttpOperation;
+  const httpOperationStarted = new Promise((resolve) => {
+    void projectLocks.runExclusive(h.projectRoot, async () => {
+      resolve();
+      await new Promise((release) => { releaseHttpOperation = release; });
+    });
+  });
+  await httpOperationStarted;
+
+  let settled = false;
+  const write = h.tools.execute(
+    toolCall("write_file", { path: "locked.txt", content: "serialized" }),
+    h.context
+  ).then((result) => {
+    settled = true;
+    return result;
+  });
+  await sleep(30);
+  assert.equal(settled, false, "HTTP 操作持锁期间 Agent 写入必须等待");
+  assert.equal(await pathExists(path.join(h.projectRoot, "locked.txt")), false);
+
+  releaseHttpOperation();
+  const result = await write;
+  assert.equal(result.ok, true);
+  assert.equal(await fs.readFile(path.join(h.projectRoot, "locked.txt"), "utf8"), "serialized");
 });
 
 // ---------------------------------------------------------------------------

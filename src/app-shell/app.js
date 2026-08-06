@@ -30,7 +30,6 @@ const refs = {
   openFolder: document.querySelector("#open-folder"),
   openSettings: document.querySelector("#open-settings"),
   title: document.querySelector("#project-title"),
-  status: document.querySelector("#project-status"),
   topbarSub: document.querySelector("#topbar-sub"),
   privacyToggle: document.querySelector("#privacy-toggle"),
   privacyLabel: document.querySelector("#privacy-label"),
@@ -75,7 +74,6 @@ const refs = {
   shortcutsScrim: document.querySelector("#shortcuts-scrim"),
   shortcutsX: document.querySelector("#shortcuts-x"),
   toastStack: document.querySelector("#toast-stack"),
-  topbar: document.querySelector(".topbar"),
   quickRail: document.querySelector("#quick-rail")
 };
 
@@ -324,14 +322,11 @@ function renderProjectListFiltered() {
   );
 }
 
-async function loadDashboard(options = {}) {
+async function loadDashboard() {
   const requestId = ++dashboardRequestId;
   const activeProjectRoot = currentProjectRoot;
   let token = projectScope.capture(activeProjectRoot);
 
-  if (options.silent !== true) {
-    setStatus("loading");
-  }
   try {
     const dashboardUrl = withProjectScope("/api/dashboard", activeProjectRoot);
     const data = await getJson(dashboardUrl);
@@ -426,7 +421,6 @@ function renderDashboard(data) {
     currentProjectRoot = null;
     refs.title.textContent = "开始创作";
     refs.topbarSub.textContent = "新建或打开一部小说，开始你的创作。";
-    setStatus("idle");
     renderQuickRailIfPresent();
     refreshDrawerIfOpen();
     return;
@@ -447,20 +441,6 @@ function renderDashboard(data) {
   refs.topbarSub.textContent = modelProfile.is_mock
     ? `模型未配置 · 请在设置里选一个 · ${progressCopy}`
     : progressCopy;
-
-  // 归档态 UI：只反映项目文件事实。
-  if (Boolean(project.archived_at)) {
-    refs.status.className = "pill ghost";
-    const adot = document.createElement("span");
-    adot.className = "pdot";
-    refs.status.replaceChildren(adot, document.createTextNode("已归档"));
-    if (refs.topbar) refs.topbar.classList.remove("is-busy");
-  } else {
-    refs.status.className = "pill ghost";
-    const adot = document.createElement("span");
-    adot.className = "pdot";
-    refs.status.replaceChildren(adot, document.createTextNode("待命"));
-  }
 
   renderQuickRailIfPresent();
   refreshDrawerIfOpen();
@@ -485,7 +465,6 @@ function renderError(error) {
   refs.topbarSub.textContent = error.message;
   refs.projectOpenStatus.style.display = "block";
   refs.projectOpenStatus.textContent = error.message;
-  setStatus("blocked");
 }
 
 async function forgetProject(projectRoot) {
@@ -625,30 +604,6 @@ async function applyDefaultTierForNewProject(projectRoot) {
   } catch {
     // 套用失败不阻塞
   }
-}
-
-function setStatus(status) {
-  refs.status.className = `pill ${statusClass(status)}`;
-  refs.status.replaceChildren();
-  const dot = document.createElement("span");
-  dot.className = "pdot";
-  refs.status.append(dot, document.createTextNode(statusText(status)));
-  if (refs.topbar) refs.topbar.classList.toggle("is-busy", status === "loading");
-}
-
-function statusClass(status) {
-  // 注：Run 运行状态由 AgentSurface 呈现（agent-run-status），顶栏不再产生
-  // "running"；此函数只服务加载/失败/待命三态。
-  if (status === "blocked") return "blocked";
-  if (status === "loading") return "ghost";
-  return "ghost";
-}
-
-function statusText(status) {
-  // 同上：旧顶栏"运行中"文案随控制面迁移删除（AgentSurface 持有运行态文案）。
-  if (status === "blocked") return "读取失败";
-  if (status === "loading") return "加载中";
-  return "待命";
 }
 
 function setCreateStatus(text, kind) {

@@ -313,6 +313,51 @@ function snapshotOf(state, events = []) {
   return { session: state, events };
 }
 
+test("首次快照以服务端 session 为准，早期事件不能把终态回放成 running", async () => {
+  const { root, surface } = await makeSurface();
+  const authoritative = session({
+    status: "idle",
+    last_seq: 400,
+    active_run: activeRun({ status: "completed", active_input_id: null })
+  });
+  surface.applySnapshot(snapshotOf(authoritative, [
+    { ...ev("run_started", { workflow: "general", input_id: "in-1" }), seq: 1 },
+    { ...ev("model_turn_started"), seq: 2 }
+  ]));
+  assert.equal(root.querySelector('[data-testid="agent-stop"]'), null, "权威终态下不得显示停止按钮");
+  assert.ok(root.textContent.includes("已完成"));
+  assert.equal(authoritative.status, "idle", "reducer 不应修改调用方传入的 projection");
+  assert.equal(authoritative.active_run.status, "completed");
+});
+
+test("首次打开长会话会分页补齐事件后再渲染", async () => {
+  const afterSeqs = [];
+  const finalSession = session({
+    status: "idle",
+    last_seq: 3,
+    active_run: activeRun({ status: "completed", active_input_id: null })
+  });
+  const { root, surface } = await makeSurface({
+    apiOverrides: {
+      fetchSnapshot: async ({ afterSeq }) => {
+        afterSeqs.push(afterSeq);
+        if (afterSeq === 0) {
+          return snapshotOf(finalSession, [
+            { ...ev("input_queued", { input_id: "in-1", text: "长会话消息", source: "chat" }), seq: 1 }
+          ]);
+        }
+        return snapshotOf(finalSession, [
+          { ...ev("run_started", { workflow: "general", input_id: "in-1" }), seq: 2 },
+          { ...ev("run_completed"), seq: 3 }
+        ]);
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+  assert.deepEqual(afterSeqs, [0, 1]);
+  assert.ok(root.textContent.includes("长会话消息"));
+});
+
 // ===========================================================================
 // 用户行为：发送 / 排队 / 立即 / 停止 / 重试 / 项目切换 / 斜杠输入
 // ===========================================================================

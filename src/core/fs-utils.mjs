@@ -19,6 +19,27 @@ export async function pathExists(targetPath) {
   }
 }
 
+// 返回路径解析后的真实文件系统位置，处理目录 junction、文件 symlink，以及
+// 尚不存在目标文件时最近真实父目录下的新 basename。用于安全边界判断，避免
+// 仅按字符串比较时把项目内链接误判为项目内。
+export async function resolveFilesystemPath(targetPath) {
+  const absolute = path.resolve(targetPath);
+  let cursor = absolute;
+  const suffix = [];
+  while (true) {
+    try {
+      const realParent = await fs.realpath(cursor);
+      return path.join(realParent, ...suffix.reverse());
+    } catch (error) {
+      if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") throw error;
+      const parent = path.dirname(cursor);
+      if (parent === cursor) return absolute;
+      suffix.push(path.basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
 export function safeJoin(rootPath, ...parts) {
   const root = path.resolve(rootPath);
   const target = path.resolve(root, ...parts);

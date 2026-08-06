@@ -516,8 +516,10 @@ step("场景 16 · 自主 /init");
   const script = [];
   const h = await createProjectAgentHarness({ gatewayScript: script });
   script.push(
+    // 模型自主选择 init 工作流；运行时只负责约束合法转移与工具边界
+    { reply: { toolCalls: [tool("enter_workflow", { workflow: "init", reason: "建立项目蓝图" })] } },
     // 模型自主选择读取项目上下文（不固定顺序、无软件预判）
-      { reply: { toolCalls: [tool("read_file", { path: "OUTLINE.md" }), tool("read_file", { path: "SETTING.md" })] } },
+    { reply: { toolCalls: [tool("read_file", { path: "OUTLINE.md" }), tool("read_file", { path: "SETTING.md" })] } },
     { reply: { toolCalls: [tool("commit_blueprint", { project_id: h.project.project_id, outline: "# OUTLINE.md\n\n第一章 裁员名单\n", setting: "# SETTING.md\n\n程序员职场。\n", evidence_paths: [] })] } },
     { reply: { text: "/init 完成，已建立蓝图。" } }
   );

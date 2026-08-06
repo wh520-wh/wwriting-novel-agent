@@ -205,3 +205,28 @@ test("review 政策认可修复路径：review → chapter 直接切换", async 
   assert.deepEqual(changed.map((event) => event.payload.workflow), ["review", "chapter"]);
   assert.equal(eventsOfType(snap.events, "run_completed").length, 1);
 });
+
+test("运行时再次强制工作流工具授权：general 不能直接调用 commit_blueprint", async (t) => {
+  const h = await createProjectAgentHarness({
+    gatewayScript: [
+      { reply: { toolCalls: [{ id: "call_denied_blueprint", name: "commit_blueprint", arguments: {
+        project_id: "placeholder",
+        outline: "# 不应提交",
+        setting: "不应写入"
+      } }] } },
+      { reply: { text: "已继续处理。" } }
+    ]
+  });
+  t.after(() => h.cleanup());
+  await h.agent.open({ projectRoot: h.projectRoot });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "普通请求", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const snap = await h.agent.snapshot({ projectRoot: h.projectRoot, afterSeq: 0, limit: 100000 });
+  const completed = eventsOfType(snap.events, "tool_call_completed")
+    .filter((event) => event.payload.name === "commit_blueprint");
+  const failed = eventsOfType(snap.events, "tool_call_failed")
+    .filter((event) => event.payload.name === "commit_blueprint");
+  assert.equal(completed.length, 0);
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0].payload.error, "tool_not_allowed");
+});

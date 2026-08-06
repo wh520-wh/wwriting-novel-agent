@@ -81,16 +81,23 @@ export function reduceSnapshot(state, snapshot) {
   const { session, events } = snapshot;
   const list = Array.isArray(events) ? events : [];
   if (session && typeof session === "object") {
+    const authoritativeSession = structuredClone(session);
     if (state.sessionId !== session.session_id) {
       resetState(state);
       state.sessionId = session.session_id ?? null;
-      state.session = session;
+      // 事件负责重建对话/活动等派生状态；会话 projection 在回放结束后覆盖，
+      // 防止首批历史事件把服务端已完成的 Run 回放成 running。
+      state.session = null;
       for (const event of list) reduceEvent(state, event);
+      state.session = authoritativeSession;
       return true;
     }
-    state.session = session;
+    state.session = authoritativeSession;
     // 同会话的新快照（断线补齐等）：投影被整体替换，全部派生视图需要重新同步。
     bump(state, ["messages", "run", "plan", "queue", "activities", "decisions", "errors"]);
+    for (const event of list) reduceEvent(state, event);
+    state.session = authoritativeSession;
+    return false;
   }
   for (const event of list) reduceEvent(state, event);
   return false;

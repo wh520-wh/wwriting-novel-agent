@@ -75,6 +75,7 @@ export function createAppShellServer({
   const agent = createProjectAgent({
     gatewayFactory: (projectRoot) => modelGateway.gatewayFor(projectRoot).gateway,
     shell: runShellCommand,
+    projectLocks,
     secrets
   });
 
