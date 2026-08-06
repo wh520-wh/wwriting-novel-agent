@@ -480,6 +480,18 @@ test("无项目时 composer 禁用；打开项目后可用", async () => {
   assert.equal(send.disabled, false);
 });
 
+test("空会话提示：无项目时显示「新建或打开项目」，打开项目后隐藏", async () => {
+  const { root, surface } = await makeSurface();
+  const empty = root.querySelector('[data-testid="agent-empty"]');
+  assert.ok(empty, "无项目时应渲染空会话提示");
+  assert.equal(empty.hidden, false, "无项目时提示可见");
+  assert.match(empty.textContent, /新建或打开项目/u);
+  await surface.openProject("D:\\novel");
+  assert.equal(empty.hidden, true, "打开项目后提示隐藏（有项目时为空会话，不显示欢迎词）");
+  await surface.openProject("D:\\novel-b");
+  assert.equal(empty.hidden, true, "切换项目后仍隐藏");
+});
+
 test("运行中 composer 保持可用（普通发送排队）", async () => {
   const { root, api, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
@@ -1364,4 +1376,57 @@ test("transport: destroy 停止重连（不再发起新请求）", async () => {
     await new Promise((resolve) => setTimeout(resolve, 40));
     assert.equal(calls.length, countAfterDestroy, "destroy 后不得继续重连");
   });
+});
+
+// ===========================================================================
+// 禁止文案（Task 10 Step 2）：UI Copy Audit 删除的旧教学/占位文案不得重新
+// 出现在生产 UI 中。断言扫描 src/app-shell（vendor/ 除外）的全部生产文件；
+// 字面量用片段拼接组装，避免本测试文件自身包含完整禁用文案。
+// ===========================================================================
+
+test("禁止文案：生产 UI 不含已删除的旧教学/占位文案", async () => {
+  // 取舍：片段拼接避免完整字面量出现在本文件（全仓库 grep 禁用文案需零命中）。
+  // 代价是前缀片段（如「继续思」「前面还」）可能命中未来合法文案——调整片段
+  // 切分点即可放过，不要为了绕过断言而放宽扫描范围。
+  // 每个条目 = 完整文案的两个片段（运行时拼接后再比对）。
+  const PROHIBITED_PAIRS = [
+    ["将在当前安全步骤后", "处理"],
+    ["等待任务收", "尾"],
+    ["继续思", "考"],
+    ["前面还", "有"],
+    ["下一个执", "行"],
+    ["输入指令，或 ", "/write"],
+    ["试试：", "开始写作"],
+    ["蓝图已生成，可以开", "始写作"],
+    ["故事正在落", "笔"],
+    ["运行 /review 命令后生", "成"],
+    ["发送指令后开", "始生成"]
+  ];
+  const root = path.join(here, "..", "..", "src", "app-shell");
+  const files = [];
+  const walk = async (dir) => {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name === "vendor") continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full);
+      } else if (/\.(js|mjs|html)$/.test(entry.name)) {
+        files.push(full);
+      }
+    }
+  };
+  await walk(root);
+  assert.ok(files.length > 0, "应扫描到生产 UI 文件");
+  const offenders = [];
+  for (const file of files) {
+    const source = await fs.readFile(file, "utf8");
+    for (const [head, tail] of PROHIBITED_PAIRS) {
+      const literal = head + tail;
+      if (source.includes(literal)) {
+        offenders.push(`${path.relative(here, file)}: ${literal}`);
+      }
+    }
+  }
+  assert.deepEqual(offenders, [], "生产 UI 不得包含已删除的旧教学/占位文案");
 });

@@ -85,6 +85,7 @@ class MockElement {
 // Browser-ish globals so vendor/gsap (UMD) and motion-runtime can load in Node.
 globalThis.self = globalThis;
 globalThis.window = globalThis.window ?? {};
+globalThis.window.setTimeout ??= (handler, timeout, ...args) => setTimeout(handler, timeout, ...args);
 globalThis.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
 
 /** @type {MockElement[]} */
@@ -116,12 +117,15 @@ const { createSettingsModal } = await import("../../src/app-shell/settings-modal
 
 function createSettingsModalForTest(overrides = {}) {
   domRegistry = [];
+  // refs 单独解构：partial refs 只覆盖对应字段，不会被 ...overrides 整体替换 ctx.refs。
+  const { refs: refsOverride = {}, ...rest } = overrides;
   const refs = {
     settingsSearch: new MockElement("input"),
     settingsSave: new MockElement("button"),
     settingsScrim: new MockElement("div"),
     settingsDetail: new MockElement("div"),
-    settingsProviderList: new MockElement("div")
+    settingsProviderList: new MockElement("div"),
+    ...refsOverride
   };
   const ctx = {
     refs,
@@ -131,7 +135,7 @@ function createSettingsModalForTest(overrides = {}) {
     showToast: () => {},
     getLastFocused: () => null,
     setLastFocused: () => {},
-    ...overrides
+    ...rest
   };
   return createSettingsModal(ctx, {
     getJsonImpl: overrides.getJsonImpl ?? (async () => ({ ok: true, default_model: null, models: [] })),
@@ -542,4 +546,82 @@ test("无项目时，全局默认模型已保存的价格也回填进表单", as
   await modal.openSettingsModal();
   // 回填路径直接放数字；真实 DOM 的 input.value 一律是字符串，这里 mock 保留原类型。
   assertOfficialPriceFields({ input: 1, output: 2, cache: 0.02 });
+});
+
+// ---------------------------------------------------------------------------
+// 保存反馈（Task 10：成功不弹 Toast，保存按钮先显示「已保存」再关闭弹窗）
+// ---------------------------------------------------------------------------
+
+test("保存成功后按钮先显示「已保存」，不弹成功 Toast；短暂停留后弹窗关闭", async () => {
+  const calls = [];
+  const toasts = [];
+  const saveButton = new MockElement("button");
+  const scrim = new MockElement("div");
+  const modal = createSettingsModalForTest({
+    refs: { settingsSave: saveButton, settingsScrim: scrim },
+    getCurrentProjectRoot: () => "D:/novels/demo",
+    showToast: (message, kind) => toasts.push({ message, kind }),
+    postJsonImpl: async (url, body) => {
+      calls.push({ url, body });
+      return { ok: true };
+    }
+  });
+  await modal.openSettingsModal();
+  modal.setModelFieldsForTest({
+    model_name: "deepseek-chat",
+    base_url: "https://api.deepseek.com",
+    api_key: "sk-test-1234",
+    api_key_env: "DEEPSEEK_API_KEY"
+  });
+  await modal.saveSettingsForTest();
+
+  // 保存完成后、关闭定时器触发前：按钮显示「已保存」，弹窗仍在，且无成功 Toast。
+  assert.equal(saveButton.textContent, "已保存", "保存成功后按钮应显示「已保存」");
+  assert.equal(scrim.classList.contains("show"), true, "「已保存」可见期间弹窗尚未关闭");
+  assert.equal(toasts.some((t) => t.kind === "success"), false, "保存成功不得弹成功 Toast");
+
+  // 等待关闭定时器（700ms + 余量）：弹窗关闭、按钮文案恢复为「保存设置」。
+  await new Promise((resolve) => setTimeout(resolve, 900));
+  assert.equal(scrim.classList.contains("show"), false, "短暂停留后弹窗应关闭");
+  assert.equal(saveButton.textContent, "保存设置", "关闭后按钮文案应恢复为「保存设置」");
+});
+
+test("连续两次保存：旧关闭定时器失效，不关闭新弹窗", async () => {
+  let failNextSave = false;
+  const saveButton = new MockElement("button");
+  const scrim = new MockElement("div");
+  const modal = createSettingsModalForTest({
+    refs: { settingsSave: saveButton, settingsScrim: scrim },
+    getCurrentProjectRoot: () => "",
+    postJsonImpl: async (url, body) => {
+      if (url === "/api/settings/model-profile" && failNextSave) {
+        throw Object.assign(new Error("模型信息不完整，请检查标红的字段。"), {
+          fields: { model_name: "请输入模型名称" }
+        });
+      }
+      return { ok: true };
+    }
+  });
+  await modal.openSettingsModal();
+  modal.setModelFieldsForTest({
+    model_name: "deepseek-chat",
+    base_url: "https://api.deepseek.com",
+    api_key: "sk-test-1234",
+    api_key_env: "DEEPSEEK_API_KEY"
+  });
+
+  // 第一次保存成功：调度 700ms 后关闭弹窗的定时器（seq=1）。
+  await modal.saveSettingsForTest();
+  assert.equal(saveButton.textContent, "已保存", "第一次保存成功后按钮应显示「已保存」");
+  assert.equal(scrim.classList.contains("show"), true, "「已保存」展示期间弹窗仍在");
+  // 第二次保存立刻失败（seq=2）：前一次的关闭定时器必须失效。
+  failNextSave = true;
+  await modal.saveSettingsForTest();
+  assert.equal(saveButton.textContent, "保存设置", "失败后按钮文案应立即恢复为规范标签");
+  // 等过前一次定时器窗口（700ms + 余量）。按钮文案在此场景无法区分守卫是否存在
+  // （旧定时器恢复的正是同一文案）；唯一可区分的副作用是 closeSettingsModal 移除
+  // scrim 的 show——必须断言它来锁住该回归。
+  await new Promise((resolve) => setTimeout(resolve, 900));
+  assert.equal(saveButton.textContent, "保存设置", "旧关闭定时器不得覆盖按钮文案");
+  assert.equal(scrim.classList.contains("show"), true, "旧关闭定时器不得关闭弹窗（失败后弹窗应保持打开供重试）");
 });

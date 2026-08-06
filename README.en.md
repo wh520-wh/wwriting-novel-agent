@@ -2,7 +2,7 @@
 
 **A local-first desktop agent that manages long-form novel writing like an engineering project.**
 
-WWriting is not a "describe it, it writes it" generator. It is a desktop writing workbench: the application handles orchestration, durable file persistence, state recovery, word-count verification, cost accounting, and permission boundaries — the model only completes one small step at a time. You can watch progress at any moment, resume from a checkpoint after an interruption, and every finished chapter is a real file in your own folder.
+WWriting is not a "describe it, it writes it" generator. It is a desktop writing workbench: all writing goes through a single chat surface (AgentSurface) — the agent reads project files, calls tools, and edits chapters and blueprints on its own, while the application handles orchestration, durable file persistence, state recovery, word-count verification, cost accounting, and permission boundaries. You can watch what the agent is doing at any moment, resume from the journal after an interruption, and every finished chapter is a real file in your own folder.
 
 **Your data stays on your machine. Delivery is verifiable.**
 
@@ -12,12 +12,15 @@ WWriting is not a "describe it, it writes it" generator. It is a desktop writing
 - **Chapter state machine**: plan → draft → review → revise → finalize → summarize.
 - **Real word-count gate**: only locally counted words count; short chapters trigger a rewrite gate, with a failure card offering "write N more words" or "accept current draft".
 - **Tool-call-only delivery**: the model must deliver chapters through tool calls; chat messages are rejected — structurally preventing lazy or hallucinated "delivery".
-- **Checkpoint resume**: pick up where you left off after an interruption — chapter and stage preserved.
+- **Journal recovery**: Session/Run/queue/plan/decision live in the project journal; after an interruption or restart you resume from the breakpoint without losing progress.
+- **Visible plan**: complex runs show a step-by-step plan that updates as the work progresses and collapses when the run ends.
+- **Cross-project parallelism**: every project has its own session and queue; different projects can run in parallel.
+- **Deterministic export**: "Export book" reads local files directly — no model call, no extra cost.
 - **Cost & cache reports**: tokens, model calls, cost estimates, and provider cache metrics recorded per run.
 - **Skill system**: manifest / hooks / enable / disable / import; ships with a built-in cliffhanger-ending skill.
 - **Controlled web research**: offline by default; fetched sources are snapshotted and marked as untrusted material, never executed as instructions.
 - **OpenAI-compatible model adapters**: official DeepSeek and Xiaomi MiMo presets; paste an API key and go. Keys are stored locally only.
-- **Verification culture**: 1002 unit/integration tests plus a one-command local acceptance suite (`npm run verify:local`) — even UI regressions ("buttons visible but unclickable") are guarded by a real Electron click-through harness.
+- **Verification culture**: 900+ unit/integration tests plus a one-command local acceptance suite (`npm run verify:local`) — even UI regressions ("buttons visible but unclickable") are guarded by a real Electron click-through harness.
 
 ## Quick Start
 
@@ -52,9 +55,10 @@ The desktop app includes a native folder picker: open a WWriting project directo
 ## Usage
 
 1. Launch the desktop app; pick a recent project from the left rail, or click "Open Local Folder".
-2. The center workbench shows: project title and story seed, completed chapters and total valid words, the chapter pipeline, recent run events, skill management, and research/search tools.
-3. The right settings panel configures: provider, model name, base URL, API key, max output tokens, max model calls, network permission, and search endpoint.
-4. Saving settings shows "Saving / Saved / Error" feedback; the config is written to the project's `project.yaml` and recorded in `run_log.jsonl`.
+2. The center area is the single chat surface: type natural-language instructions ("continue chapter 3", "check the character setting") and the agent decides which files to read, which commands to run, and what to edit. Queued inputs show their original text with a `排队` badge; `立即` interrupts the current run to promote the message, `停止` cancels the current run and clears temporary grants.
+3. The right settings panel configures: provider, model name, base URL, API key, writing parameters, permission tier, quality gates, and search endpoint.
+4. Saving settings shows brief "Saved" feedback on the button (no toast); the config is written to the project's `project.yaml` and recorded in `run_log.jsonl`.
+5. The project panel drawer shows project facts: chapters and export, model config, skills, research sources, and cost.
 
 Full user guide: [docs/USER_GUIDE.zh-CN.md](docs/USER_GUIDE.zh-CN.md) (Chinese).
 
@@ -63,18 +67,24 @@ Full user guide: [docs/USER_GUIDE.zh-CN.md](docs/USER_GUIDE.zh-CN.md) (Chinese).
 A WWriting project directory contains at least:
 
 ```text
-project.yaml        # project config, target chapters, model & permission config, enabled skills
-agent_state.json    # current chapter, current stage, budget, checkpoint
-run_log.jsonl       # event log
+project.yaml        # project identity, config, blueprint_status
+run_log.jsonl       # domain audit: chapter commits, blueprint commits, exports
 chapters/           # final chapter files
 drafts/             # drafts and planning files
 memory/             # chapter index, real word counts, checksums, gate results
-checkpoints/        # resumable stage snapshots
+checkpoints/        # chapter consistency stage snapshots
 sources/            # research/fetch source snapshots
 skills/             # project skills
 cost.json           # model call cost summary
 cache_report.json   # cache keys and provider cache metrics
+OUTLINE.md          # blueprint: story outline (created/improved by /init)
+SETTING.md          # blueprint: world & setting (created/improved by /init)
+AGENTS.md           # project writing instructions (created/improved by /init)
+.wwriting/agent/    # agent journal: events.jsonl (source of truth), session.json,
+                    #   transcript.jsonl, migration.json (one-time legacy migration)
 ```
+
+Legacy `agent_state.json` / `task_queue.json` files from older versions are migrated once into the new structure on first open and never written again.
 
 ## Models & Networking
 
@@ -94,7 +104,7 @@ cache_report.json   # cache keys and provider cache metrics
 ## Verification Commands
 
 ```powershell
-npm test                            # 1002 unit/integration tests
+npm test                            # 900+ unit/integration tests
 npm run verify:local                # full local acceptance (includes packaging; slow)
 npm run verify:app-shell            # GUI, project open, settings write-back, skills, research tools
 npm run verify:app-clickability     # real Electron window, clicks every critical button

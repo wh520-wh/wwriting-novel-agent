@@ -57,6 +57,18 @@
   gap: 10px;
 }
 
+/* 空会话提示：无项目时显示「新建或打开项目」，有项目时隐藏 */
+.agent-empty {
+  color: var(--faint, #9a9184);
+  font-size: 13px;
+  text-align: center;
+  padding: 28px 12px;
+}
+
+.agent-empty[hidden] {
+  display: none;
+}
+
 .agent-message {
   display: flex;
   max-width: min(78%, 640px);
