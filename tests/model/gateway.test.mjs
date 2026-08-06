@@ -822,3 +822,46 @@ test("契约：gateway 透传 reply.reasoning，reasoning 与正文互不兜底"
   assert.equal(reply.reasoning, "先检查事实，再回答。");
   assert.deepEqual(reasoningTokens, ["先检查事实，", "再回答。"]);
 });
+
+test("流式 attempt 已输出 reasoning token 后失败时不自动重试，避免重复推理", async () => {
+  let calls = 0;
+  const reasoningTokens = [];
+  const adapter = {
+    async complete(request) {
+      calls += 1;
+      request.metadata.onReasoningToken("think");
+      throw new ProviderTransportError("stream interrupted", { reason: "network" });
+    }
+  };
+  const gateway = makeGateway(adapter, { retryMax: 3, retryBaseDelayMs: 1, retryMaxDelayMs: 1 });
+
+  await assert.rejects(
+    () => gateway.complete({
+      ...BASE_REQUEST,
+      stream: true,
+      metadata: { onReasoningToken: (token) => reasoningTokens.push(token) }
+    }),
+    (error) => error.code === "provider_transport_error" && error.reason === "network"
+  );
+
+  assert.equal(calls, 1, "已公开 reasoning 的 attempt 不能再透明重试");
+  assert.deepEqual(reasoningTokens, ["think"]);
+});
+
+test("缓存命中：reasoning 一并存取，第二次返回相同 reasoning", async () => {
+  let calls = 0;
+  const adapter = {
+    async complete() {
+      calls += 1;
+      return { text: "辅助响应", reasoning: "辅助推理", usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } };
+    }
+  };
+  const gateway = makeGateway(adapter);
+  const first = await gateway.complete(cacheRequest());
+  const second = await gateway.complete(cacheRequest());
+
+  assert.equal(calls, 1, "第二次应命中缓存，不再调 adapter");
+  assert.equal(first.reasoning, "辅助推理");
+  assert.equal(second.cached, true);
+  assert.equal(second.reasoning, "辅助推理", "缓存命中时 reasoning 一并返回");
+});

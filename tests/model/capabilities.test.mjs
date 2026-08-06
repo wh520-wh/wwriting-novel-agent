@@ -193,3 +193,26 @@ test("契约：reasoningContent 是三态之一，默认 unknown（不能因单�
   );
   assert.equal(caps.reasoningContent, "unknown");
 });
+
+test("契约：已验证返回 reasoning 的 DeepSeek thinking 模型标记 supported", () => {
+  for (const modelName of ["deepseek-v4-pro", "deepseek-reasoner"]) {
+    const caps = resolveModelCapabilities({
+      base_url: "https://api.deepseek.com/v1",
+      model_name: modelName
+    });
+    assert.equal(caps.reasoningContent, "supported", `${modelName} 应标记 supported`);
+  }
+});
+
+test("契约：未验证模型（v4-flash/未知）保持 unknown，不因无返回记录判定不支持", () => {
+  const flash = resolveModelCapabilities({
+    base_url: "https://api.deepseek.com/v1",
+    model_name: "deepseek-v4-flash"
+  });
+  assert.equal(flash.reasoningContent, "unknown");
+  const mimo = resolveModelCapabilities({
+    base_url: "https://api.mimo.example.test/v1",
+    model_name: "mimo-v2.5"
+  });
+  assert.equal(mimo.reasoningContent, "unknown");
+});

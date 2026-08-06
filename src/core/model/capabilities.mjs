@@ -16,6 +16,10 @@ const PROVIDER_CAPABILITY_RESOLVERS = [];
 // 未匹配任何供应商 resolver 时的默认能力：全能力开放。
 export const DEFAULT_CAPABILITIES = Object.freeze({
   supportsThinking: false,
+  // reasoning 能力三态（契约 §2.2）：supported（已验证返回 reasoning_content）/
+  // unsupported（明确不返回的已知模型）/ unknown（默认，未验证）。只承担 UI
+  // 可见性判断，不参与采样——采样参数与 reasoning effort 仍由 supportsThinking 决定。
+  reasoningContent: "unknown",
   requiresAutoToolChoice: false,
   supportsTemperature: true,
   supportsTopP: true,
@@ -56,6 +60,10 @@ function resolveDeepSeekCapabilities(modelConfig) {
     supportsJsonOutput: true,
     supportsTools: true,
     supportsStreaming: true,
+    // 已验证会返回 reasoning 的 DeepSeek thinking 模型设为 supported（三态之一，
+    // 供 UI 可见性判断）；v4-flash 等未验证模型保持默认 unknown——不能因单次
+    // 空响应永久判定不支持。supportsThinking 仍只负责采样参数与 reasoning effort。
+    ...(supportsThinking ? { reasoningContent: "supported" } : {}),
     // 已验证的 DeepSeek thinking 模型支持低/中/高三档思考强度（reasoning_effort）；
     // 其余模型（含 v4-flash、MiMo 与未验证模型）缺省此字段，请求体绝不携带该参数。
     ...(supportsThinking ? { reasoningEffortLevels: ["low", "medium", "high"] } : {})
