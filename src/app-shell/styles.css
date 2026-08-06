@@ -80,6 +80,34 @@
   --r: 8px;
   --r-sm: 8px;
 
+  /* Semantic text tokens */
+  --text-primary: var(--ink);       /* 关键正文、主标题 */
+  --text-secondary: var(--ink-2);   /* 次级标题、已完成操作 */
+  --text-muted: var(--muted);       /* 耗时、路径、说明、引用 */
+  --text-placeholder: var(--faint); /* 非必要 placeholder/disabled，不能承载关键信息 */
+  --text-link: var(--accent);
+  --text-success: var(--green);
+  --text-warning: var(--amber);
+  --text-danger: var(--red);
+
+  /* Typography weights */
+  --weight-regular: 400;
+  --weight-medium: 550;
+  --weight-semibold: 650;
+  --weight-bold: 700;
+
+  /* Agent component tokens */
+  --agent-answer-fg: var(--text-primary);
+  --agent-heading-fg: var(--text-primary);
+  --agent-subheading-fg: var(--text-secondary);
+  --agent-work-title-fg: var(--text-secondary);
+  --agent-work-label-fg: var(--text-secondary);
+  --agent-work-live-fg: var(--text-primary);
+  --agent-work-meta-fg: var(--text-muted);
+  --agent-plan-current-fg: var(--text-primary);
+  --agent-plan-rest-fg: var(--text-secondary);
+  --agent-plan-complete-fg: var(--text-muted);
+
   /* Task 11：共享内容列 — 工作台 / 准备卡 / 线程 / composer 统一宽度与居中 */
   --content-column: 900px;
   --content-gutter: clamp(14px, 2.2vw, 24px);

@@ -600,215 +600,222 @@
   color: var(--agent-accent);
 }
 
-/* ---- Visible Plan 悬浮层（步骤5）：对话区右上覆盖层，不占网格轨道 ------------- */
-.agent-surface {
-  position: relative; /* 悬浮层定位锚点 */
-}
-
-.agent-plan-overlay {
-  position: absolute;
-  top: 14px;
-  right: max(var(--content-gutter, 20px), calc((100% - var(--content-column)) / 2 + var(--content-gutter, 20px)));
-  z-index: 30;
-  width: min(304px, calc(100vw - 32px));
-  max-height: min(42vh, 320px);
-  overflow-y: auto;
-  box-sizing: border-box;
-  padding: 5px 12px 11px;
-  border: 1px solid var(--agent-line-strong);
+/* ---- 工作组（Task 6）：reasoning/tool/plan 有序时间线，插入对话时间流 ------------- */
+.agent-work-group {
+  border: 1px solid var(--agent-line);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--agent-panel-solid) 84%, transparent);
-  backdrop-filter: blur(20px) saturate(1.2);
-  box-shadow: 0 16px 36px -26px rgba(24, 32, 27, 0.5), 0 3px 10px -8px rgba(24, 32, 27, 0.24);
-  transform-origin: top right;
-  animation: agent-plan-arrive 160ms cubic-bezier(.2, .75, .25, 1) both;
+  background: color-mix(in srgb, var(--agent-panel-muted) 82%, transparent);
+  overflow: hidden;
 }
 
-.agent-plan-overlay[data-mode="full"] {
-  width: min(360px, calc(100vw - 32px));
-  max-height: min(58vh, 520px);
-}
-
-.agent-plan-overlay[data-mode="minimal"] {
-  width: auto;
-  max-height: none;
-  overflow: visible;
-  padding: 0;
-  border-color: transparent;
-  background: transparent;
-  backdrop-filter: none;
-  box-shadow: none;
-}
-
-@keyframes agent-plan-arrive {
-  from { opacity: 0; transform: translateY(-3px) scale(.99); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
-}
-
-.agent-plan-overlay-header {
+.agent-work-group > summary {
+  cursor: pointer;
+  list-style: none;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  align-items: baseline;
   gap: 10px;
-  padding: 8px 0 4px;
+  padding: 10px 12px;
+  user-select: none;
+  transition: background 100ms ease;
 }
 
-.agent-plan-overlay-title {
-  font-size: 12.5px;
-  font-weight: 650;
-  color: var(--ink-2, #4a453a);
+.agent-work-group > summary:hover,
+.agent-work-group > summary:focus-visible {
+  background: color-mix(in srgb, var(--agent-panel-solid) 55%, transparent);
 }
 
-.agent-plan-heading,
-.agent-plan-actions {
+.agent-work-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.agent-work-status {
+  color: var(--agent-work-title-fg);
+  font-weight: var(--weight-semibold);
+  font-size: 13px;
+}
+
+.agent-work-duration {
+  color: var(--agent-work-meta-fg);
+  font-weight: var(--weight-regular);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-work-items {
   display: flex;
-  align-items: center;
-}
-
-.agent-plan-heading {
-  min-width: 0;
+  flex-direction: column;
   gap: 7px;
+  padding: 2px 12px 12px;
+  border-top: 1px solid var(--agent-line-3);
 }
 
-.agent-plan-progress {
-  color: var(--agent-muted);
+/* 统一子项行：label / icon / path / meta 一行内换行排列，detail 与计划独占一行 */
+.agent-work-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.agent-work-item__icon {
+  flex: 0 0 auto;
+  width: 14px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--agent-work-meta-fg);
+}
+
+.agent-work-item__icon[data-state="completed"] {
+  color: var(--text-success);
+}
+
+.agent-work-item__icon[data-state="failed"] {
+  color: var(--text-danger);
+}
+
+.agent-work-item__label {
+  color: var(--agent-work-label-fg);
+  font-weight: var(--weight-medium);
+}
+
+.agent-work-item__state {
+  color: var(--text-danger);
+}
+
+.agent-work-item__meta {
+  color: var(--agent-work-meta-fg);
+  font-weight: var(--weight-regular);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+.agent-tool-path {
+  color: var(--agent-work-meta-fg);
+  font-weight: var(--weight-regular);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.agent-reasoning-ticker {
+  width: 100%;
+  color: var(--text-muted);
+  font-weight: var(--weight-regular);
+  font-size: 12px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.agent-reasoning-detail {
+  width: 100%;
+  color: var(--text-secondary);
+  font-weight: var(--weight-regular);
+  font-size: 12px;
+  line-height: 1.55;
+  max-height: 220px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.agent-plan__title {
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+
+.agent-plan__count {
+  color: var(--text-muted);
+  font-weight: var(--weight-medium);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
 
-.agent-plan-actions {
-  gap: 1px;
-}
-
-.agent-plan-icon-btn {
-  width: 28px;
-  height: 28px;
-  display: grid;
-  place-items: center;
-  border: 0;
-  background: transparent;
-  color: var(--agent-muted);
-  cursor: pointer;
-  font: 500 17px/1 var(--sans, system-ui, sans-serif);
-  padding: 0;
-  border-radius: 6px;
-  transition: background 100ms ease, color 100ms ease;
-}
-
-.agent-plan-icon-btn:hover,
-.agent-plan-icon-btn:focus-visible,
-.agent-plan-restore:hover,
-.agent-plan-restore:focus-visible {
-  outline: 0;
-  background: var(--agent-panel-muted);
-  color: var(--agent-ink);
-}
-
-.agent-plan-icon-btn--summary svg {
-  transform: rotate(90deg);
-}
-
-.agent-plan-icon-btn--full svg {
-  transform: rotate(-90deg);
-}
-
-.agent-plan-restore {
-  height: 34px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 9px;
-  border: 1px solid var(--agent-line);
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--agent-panel-solid) 82%, transparent);
-  backdrop-filter: blur(18px) saturate(1.15);
-  box-shadow: 0 8px 22px -18px rgba(24, 32, 27, 0.55);
-  color: var(--agent-muted);
-  font: 600 11px/1 var(--sans, system-ui, sans-serif);
-  font-variant-numeric: tabular-nums;
-  cursor: pointer;
-  transition: background 100ms ease, color 100ms ease, border-color 100ms ease;
-}
-
-.agent-plan-explanation {
-  font-size: 12.5px;
-  color: var(--muted, #7a7468);
-  margin: 0 0 8px;
-  overflow-wrap: anywhere;
-}
-
-.agent-plan-items {
-  list-style: none;
-  margin: 0;
-  padding: 0;
+.agent-plan-list {
+  width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
 }
 
 .agent-plan-item {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr); /* 稳定轨道：标记列固定宽 */
+  grid-template-columns: 18px minmax(0, 1fr); /* 稳定轨道：标记列固定宽，状态变化不推动文本列 */
   align-items: baseline;
   gap: 8px;
-  font-size: 13px;
+  color: var(--agent-plan-rest-fg);
+  font-weight: var(--weight-regular);
+  font-size: 12.5px;
   line-height: 1.45;
 }
 
-.agent-plan-mark {
+.agent-plan-item[data-status="in_progress"] {
+  color: var(--agent-plan-current-fg);
+  font-weight: var(--weight-semibold);
+}
+
+.agent-plan-item[data-status="completed"] {
+  color: var(--agent-plan-complete-fg);
+  font-weight: var(--weight-regular);
+  text-decoration: none;
+}
+
+.agent-plan-item[data-status="completed"] .agent-plan-item__icon {
+  color: var(--text-success);
+}
+
+.agent-plan-item__icon {
   display: inline-grid;
   place-items: center;
   width: 18px;
   height: 18px;
   font-size: 11px;
-  border-radius: 0;
-  background: transparent;
-  color: var(--faint, #9a9184);
+  color: var(--text-muted);
 }
 
-.agent-plan-item[data-status="completed"] .agent-plan-mark {
-  color: var(--green, #4e8a5b);
-}
-
-.agent-plan-item[data-status="in_progress"] .agent-plan-mark {
-  color: var(--accent, #7c9a6e);
-}
-
-.agent-plan-step {
+.agent-plan-item__step {
   min-width: 0;
   overflow-wrap: anywhere;
-  color: var(--ink, #26221a);
 }
 
-/* ---- 思考中流动反馈：短促、可降级（prefers-reduced-motion 禁用动画） ---------- */
-.agent-thinking {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 0 2px;
-}
-
-.agent-thinking-dot {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--agent-muted);
-  animation: agent-thinking-blink 1.1s ease-in-out infinite;
-}
-
-.agent-thinking-dot:nth-child(2) { animation-delay: 0.15s; }
-.agent-thinking-dot:nth-child(3) { animation-delay: 0.3s; }
-
-@keyframes agent-thinking-blink {
-  0%, 100% { opacity: 0.25; }
-  50% { opacity: 1; }
-}
-
+.agent-plan-explanation,
 .agent-plan-description {
   grid-column: 1 / -1;
   font-size: 12px;
-  color: var(--muted, #7a7468);
+  color: var(--text-muted);
   overflow-wrap: anywhere;
+}
+
+.agent-plan-explanation {
+  margin: 0 0 4px;
+}
+
+/* ---- 统一 Text Shimmer（Step 7）：动效 class 只由 visibleLiveTargets 切换 ------- */
+.agent-live-text {
+  color: transparent;
+  background: linear-gradient(90deg, var(--muted) 0 34%, var(--ink) 48%, var(--muted) 62% 100%);
+  background-size: 220% 100%;
+  background-clip: text;
+  animation: agent-text-shimmer 1.45s linear infinite;
+}
+
+@keyframes agent-text-shimmer {
+  to { background-position: -220% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-live-text {
+    color: var(--muted);
+    background: none;
+    animation: none;
+  }
 }
 
 /* ---- 活动流：details/summary 原生折叠，字段与输出在折叠区 ------------------- */
@@ -1221,19 +1228,6 @@
   cursor: default;
 }
 
-/* 窄窗口降级（步骤5 产品决策 5）：composer 上方的非模态浮层，仍不压缩消息列；
- * 宽窗口保持右上覆盖层。同节点复用，仅切换定位。 */
-@media (max-width: 720px) {
-  .agent-plan-overlay {
-    top: auto;
-    bottom: 170px;
-    left: var(--content-gutter, 20px);
-    right: var(--content-gutter, 20px);
-    width: auto;
-    max-width: none;
-  }
-}
-
 /* ---- 窄视口：无重叠 -------------------------------------------------------- */
 @media (max-width: 560px) {
   .agent-surface--empty .agent-conversation {
@@ -1304,8 +1298,7 @@
   .agent-message,
   .agent-slash-menu,
   .agent-empty,
-  .agent-composer-popover,
-  .agent-plan-overlay {
+  .agent-composer-popover {
     animation: none;
   }
 
@@ -1323,18 +1316,12 @@
   .agent-empty-action:hover {
     transform: none;
   }
-
-  .agent-thinking-dot {
-    animation: none;
-    opacity: 0.5;
-  }
 }
 
 @media (prefers-reduced-transparency: reduce) {
   .agent-composer-shell,
   .agent-slash-menu,
-  .agent-composer-popover,
-  .agent-plan-overlay {
+  .agent-composer-popover {
     background: var(--agent-panel-solid);
     backdrop-filter: none;
   }
@@ -1343,8 +1330,7 @@
 @media (prefers-contrast: more) {
   .agent-composer-shell,
   .agent-slash-menu,
-  .agent-composer-popover,
-  .agent-plan-overlay {
+  .agent-composer-popover {
     background: var(--agent-panel-solid);
     border-color: var(--agent-ink);
     box-shadow: none;
@@ -1354,11 +1340,5 @@
   .agent-queue-item,
   .agent-run {
     border-color: var(--agent-ink);
-  }
-}
-
-@media (prefers-reduced-transparency: reduce) {
-  .agent-plan-overlay[data-mode="minimal"] {
-    background: transparent;
   }
 }
