@@ -1009,6 +1009,81 @@ test("无 dangling 活动时 load 不标记 interrupted（Run 保持 running 可
   assert.equal((await journal.read({})).filter((event) => event.type === "run_interrupted").length, 0);
 });
 
+test("reducer 拒绝在 stopping 状态上写入 interrupt_requested（promote 不能击穿 stop）", async (t) => {
+  const root = await makeWorkspace(t);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  await journal.load();
+  await journal.append({ type: "input_queued", payload: { input_id: "in-1", text: "任务" } });
+  await journal.append({
+    type: "run_started",
+    run_id: "run-1",
+    payload: { workflow: "general", input_id: "in-1" }
+  });
+  await journal.append({ type: "run_status_changed", run_id: "run-1", payload: { status: "stopping" } });
+  await assert.rejects(
+    () => journal.append({ type: "interrupt_requested", run_id: "run-1", payload: {} }),
+    /正在停止/
+  );
+  // 被拒绝后 journal 不被污染：状态保持 stopping，可继续正常停止收敛
+  assert.equal((await journal.getSession()).active_run.status, "stopping");
+  await journal.appendBatch([
+    { type: "input_cancelled", run_id: "run-1", payload: { input_id: "in-1" } },
+    { type: "run_cancelled", run_id: "run-1", payload: { reason: "user_stop" } }
+  ]);
+  assert.equal((await journal.getSession()).active_run.status, "cancelled");
+});
+
+test("reducer 拒绝非空队列上的 run_completed（输入不得滞留跨 Run 边界）", async (t) => {
+  const root = await makeWorkspace(t);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  await journal.load();
+  await journal.append({ type: "input_queued", payload: { input_id: "in-1", text: "一" } });
+  await journal.append({ type: "input_queued", payload: { input_id: "in-2", text: "二" } });
+  await journal.append({
+    type: "run_started",
+    run_id: "run-1",
+    payload: { workflow: "general", input_id: "in-1" }
+  });
+  await assert.rejects(
+    () => journal.append({ type: "run_completed", run_id: "run-1", payload: {} }),
+    /队列非空/
+  );
+  // 队列清空后可以正常自然终结
+  await journal.append({ type: "input_consumed", run_id: "run-1", payload: { input_id: "in-1" } });
+  await journal.append({ type: "input_consumed", run_id: "run-1", payload: { input_id: "in-2" } });
+  await journal.append({ type: "run_completed", run_id: "run-1", payload: {} });
+  const session = await journal.getSession();
+  assert.equal(session.active_run.status, "completed");
+  assert.deepEqual(session.queued_inputs, []);
+});
+
+test("崩溃恢复闭合遗留的未解决 decision（decision_resolved cancelled）", async (t) => {
+  const root = await makeWorkspace(t);
+  const events = [
+    makeEvent(1, { root, type: "session_created" }),
+    makeEvent(2, { root, type: "input_queued", payload: { input_id: "in-1", text: "写入文件" } }),
+    makeEvent(3, { root, type: "run_started", runId: "run-1", payload: { workflow: "general", input_id: "in-1" } }),
+    makeEvent(4, { root, type: "model_turn_started", runId: "run-1" }),
+    makeEvent(5, { root, type: "model_turn_completed", runId: "run-1" }),
+    makeEvent(6, { root, type: "tool_call_started", runId: "run-1", payload: { tool_call_id: "tc-1", name: "write_file" } }),
+    makeEvent(7, { root, type: "run_status_changed", runId: "run-1", payload: { status: "waiting_user" } }),
+    makeEvent(8, { root, type: "decision_requested", runId: "run-1", payload: { decision_id: "d-1", activity_id: "a-1", input_id: "in-1" } })
+  ];
+  await writeCrashJournal(root, events);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  const session = await journal.load();
+  assert.equal(session.active_run.status, "interrupted");
+  const all = await journal.read({});
+  const resolved = all.filter((event) => event.type === "decision_resolved");
+  assert.equal(resolved.length, 1, "恢复必须闭合崩溃遗留的 decision");
+  assert.equal(resolved[0].payload.decision_id, "d-1");
+  assert.equal(resolved[0].payload.choice, "cancelled");
+  assert.equal(resolved[0].run_id, "run-1");
+  // 幂等：再次 load 不重复闭合
+  await journal.load();
+  assert.equal((await journal.read({})).filter((event) => event.type === "decision_resolved").length, 1);
+});
+
 // ---------------------------------------------------------------------------
 // 并发与隔离
 // ---------------------------------------------------------------------------
