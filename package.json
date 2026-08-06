@@ -12,7 +12,7 @@
     "desktop:electron": "electron src/desktop/electron-main.cjs",
     "package:dir": "electron-builder --dir --win",
     "package:installer": "node scripts/package-installer.mjs",
-    "test": "node --test tests/*.test.mjs tests/app-shell/*.test.mjs tests/agent/*.test.mjs tests/model/*.test.mjs tests/shell/*.test.mjs tests/project-operations/*.test.mjs tests/http/*.test.mjs tests/architecture/*.test.mjs tests/acceptance/*.test.mjs",
+    "test": "node --test tests/*.test.mjs tests/app-shell/*.test.mjs tests/agent/*.test.mjs tests/model/*.test.mjs tests/shell/*.test.mjs tests/project-operations/*.test.mjs tests/http/*.test.mjs tests/skills/*.test.mjs tests/architecture/*.test.mjs tests/acceptance/*.test.mjs",
     "verify:unified-agent": "node scripts/verify-unified-agent.mjs",
     "verify:local": "node scripts/verify-local-all.mjs",
     "verify:desktop-shell": "node scripts/verify-desktop-shell.mjs",
@@ -65,6 +65,7 @@
   },
   "dependencies": {
     "ignore": "^5.3.2",
-    "marked": "^18.0.9"
+    "marked": "^18.0.9",
+    "yaml": "^2.9.0"
   }
 }
