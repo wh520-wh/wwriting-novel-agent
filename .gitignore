@@ -24,3 +24,4 @@ docs/research/2026-07-31-codewhale-deepseek-cache.md
 .local/
 dist-desktop-verify/
 dist-desktop-verify-2/
+.worktrees/
