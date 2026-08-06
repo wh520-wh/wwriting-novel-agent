@@ -668,6 +668,72 @@ test("同一项目同一时刻只有一个模型轮次", async (t) => {
   }
 });
 
+test("串行活动契约：reasoning 与工具调用永不同时非空，且同一时刻最多一个工具", async (t) => {
+  // 冻结当前 Runtime 的串行事实（Task 4 Step 6）：一个 reasoning turn + 两个
+  // tool call 的完整事件序列中，openReasoning 与 openTools 永不同时非空，且
+  // openTools.size <= 1。这证明 UI 默认只应出现一个动效；未来若 Runtime 真正
+  // 改成并行工具，必须先显式修改这条 Runtime 契约测试，再允许 UI 的双工具
+  // 动效分支被生产触发。
+  const h = await openHarness(t, {
+    gatewayScript: [
+      async (request) => {
+        request.metadata.onReasoningToken("先检查事实，");
+        request.metadata.onReasoningToken("再决定步骤。");
+        return { toolCalls: [tool("read_file", { path: "OUTLINE.md" })] };
+      },
+      async () => ({ toolCalls: [tool("list_files", { path: h.projectRoot })] }),
+      { reply: { text: "完成。" } }
+    ],
+    gatewayDelayMs: 0
+  });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "串行验证", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+
+  const events = await readEvents(h.agent, h.projectRoot);
+  const openReasoning = new Set();
+  const openTools = new Set();
+  const assertSerial = () => {
+    assert.ok(
+      openReasoning.size === 0 || openTools.size === 0,
+      "reasoning 与工具调用不得同时非空"
+    );
+    assert.ok(openTools.size <= 1, "当前实现同一时刻最多一个工具");
+  };
+  for (const event of events) {
+    if (event.type === "reasoning_delta") {
+      openReasoning.add(event.payload.turn_id);
+    } else if (event.type === "reasoning_completed") {
+      openReasoning.delete(event.payload.turn_id);
+    } else if (event.type === "tool_call_started") {
+      openTools.add(event.payload.tool_call_id ?? event.payload.id);
+    } else if (event.type === "tool_call_completed" || event.type === "tool_call_failed") {
+      openTools.delete(event.payload.tool_call_id ?? event.payload.id);
+    }
+    assertSerial();
+  }
+  assert.deepEqual([...openReasoning], [], "reasoning 必须收敛");
+  assert.deepEqual([...openTools], [], "工具调用必须收敛");
+  // 冻结的 v2 turn 生命周期顺序：started -> reasoning_delta* -> reasoning_completed
+  // -> model_turn_completed（reasoning 轮次里 reasoning_delta 可被批量合并成一条）。
+  const turnLifecycle = events
+    .filter((event) =>
+      ["model_turn_started", "reasoning_delta", "reasoning_completed", "model_turn_completed"].includes(event.type)
+    )
+    .map((event) => event.type);
+  const firstReasoningDelta = turnLifecycle.indexOf("reasoning_delta");
+  const firstReasoningCompleted = turnLifecycle.indexOf("reasoning_completed");
+  const firstTurnCompleted = turnLifecycle.indexOf("model_turn_completed");
+  assert.ok(firstReasoningDelta !== -1, "reasoning 轮次应产生 reasoning_delta");
+  assert.ok(
+    turnLifecycle.indexOf("model_turn_started") < firstReasoningDelta,
+    "reasoning_delta 必须位于 model_turn_started 之后"
+  );
+  assert.ok(
+    firstReasoningDelta < firstReasoningCompleted && firstReasoningCompleted < firstTurnCompleted,
+    "顺序必须为 started -> reasoning_delta* -> reasoning_completed -> model_turn_completed"
+  );
+});
+
 test("同一 agent 实例下不同项目可并行运行", async (t) => {
   // 一个 agent 实例 + 一个 gateway，两个项目同时跑：模型轮次应时间重叠
   const h1 = await createProjectAgentHarness({ gatewayScript: [] });
