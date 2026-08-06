@@ -350,10 +350,16 @@ test("其他测试目录不得 import Agent 文件（tests/agent/ 例外，可�
 // 规则 B：AgentSurface 只能经 src/app-shell/agent/index.js 对外暴露
 // ---------------------------------------------------------------------------
 
+// 规则 B 的唯一例外：tests/app-shell/work-items.test.mjs 是 work-items 纯投影的
+// 内部 seam 测试（计划 Task 5 明确要求创建该文件并直接测 reduceWorkEvent），
+// 与规则 A2 授予 tests/agent/ 内部 seam 权利的意图一致。
+const SURFACE_SEAM_TESTS = new Set(["tests/app-shell/work-items.test.mjs"]);
+
 test("AgentSurface 只能通过 src/app-shell/agent/index.js 对外暴露", () => {
   const violations = [];
   for (const [rel, file] of analyzed) {
     if (rel.startsWith(SURFACE_DIR)) continue;
+    if (SURFACE_SEAM_TESTS.has(rel)) continue;
     for (const { spec, target } of file.imports) {
       if (!target.startsWith(SURFACE_DIR)) continue;
       if (target !== SURFACE_INDEX) {
