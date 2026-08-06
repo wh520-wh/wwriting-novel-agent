@@ -106,6 +106,76 @@ test("idle submit 创建且只创建一个 Run；submit 落盘即返回", async 
   assertActivityClosure(events);
 });
 
+test("模型请求携带 modelConfig（provider/model_name/base_url/api_key_env 来自项目 active_model）", async (t) => {
+  // 回归：Task 11 Step 4 真实模型短跑发现 gateway 契约要求 runtime 把
+  // modelConfig 挂到 request 上（gateway/adapter 依赖 model_name/base_url/
+  // api_key_env 选择模型与读取密钥），assemblePrompt 不负责回填。
+  const h = await openHarness(t, {
+    project: {
+      active_model: {
+        provider: "openai-compatible",
+        model_name: "regression-model-7f2",
+        base_url: "https://api.example.com/v1",
+        api_key_env: "DEEPSEEK_API_KEY"
+      }
+    },
+    gatewayScript: [{ reply: { text: "好。" } }]
+  });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "你好", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  assert.ok(h.gateway.calls.length >= 1, "应产生至少一次模型调用");
+  const request = h.gateway.calls[0].request;
+  assert.ok(request && typeof request === "object", "请求对象应存在");
+  assert.ok(request.modelConfig && typeof request.modelConfig === "object", "request 必须携带 modelConfig");
+  assert.equal(request.modelConfig.provider, "openai-compatible");
+  assert.equal(request.modelConfig.model_name, "regression-model-7f2");
+  assert.equal(request.modelConfig.base_url, "https://api.example.com/v1");
+  assert.equal(request.modelConfig.api_key_env, "DEEPSEEK_API_KEY");
+  // 纯文本回复（无工具调用）必须携带最终回复文本：AgentSurface 据此渲染助手
+  // 气泡（state.js 仅在 payload.text 非空时入对话），缺失则"简单任务→简明回答"
+  // 在 UI 不可见（Task 11 代码审查发现并修复的死路径）。
+  const events = await readEvents(h.agent, h.projectRoot);
+  const completed = eventsOfType(events, "assistant_message_completed");
+  assert.ok(completed.length >= 1, "纯文本回复应产生 assistant_message_completed");
+  assert.equal(completed[0].payload.text, "好。", "assistant_message_completed 必须携带最终回复文本");
+});
+
+test("assistant tool_calls 以 OpenAI 线上格式进入后续模型请求", async (t) => {
+  // 回归：Task 11 Step 4 真实模型验证发现 assistant tool_calls 以内部扁平形状
+  // { id, name, arguments(对象) } 进入请求，DeepSeek/小米等 OpenAI-compatible
+  // 提供方直接 400（missing field `type`）。线上格式要求
+  // { id, type: "function", function: { name, arguments: JSON 字符串 } }。
+  const h = await openHarness(t, {
+    gatewayScript: [
+      { reply: { toolCalls: [tool("read_file", { path: "OUTLINE.md" })] } },
+      { reply: { text: "完成。" } }
+    ]
+  });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "读取大纲", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  assert.ok(h.gateway.calls.length >= 2, "应产生至少两轮模型调用");
+  const second = h.gateway.calls[1].request;
+  const assistant = (second.messages ?? []).find(
+    (m) => m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length > 0
+  );
+  assert.ok(assistant, "第二轮请求应包含 assistant tool_calls 消息");
+  const call = assistant.tool_calls[0];
+  assert.equal(call.type, "function", "tool_call 必须带 type: function");
+  assert.ok(call.function && typeof call.function === "object", "tool_call 必须带 function 包装");
+  assert.equal(call.function.name, "read_file");
+  assert.equal(typeof call.function.arguments, "string", "arguments 必须是 JSON 字符串");
+  assert.ok(call.function.arguments.includes("OUTLINE.md"), "arguments 字符串应包含调用参数");
+  // 工具轮之后终结回复同样要携带最终文本（供助手气泡渲染）。
+  const events = await readEvents(h.agent, h.projectRoot);
+  const completed = eventsOfType(events, "assistant_message_completed");
+  assert.ok(completed.length >= 1, "应产生 assistant_message_completed");
+  assert.equal(
+    completed[completed.length - 1].payload.text,
+    "完成。",
+    "assistant_message_completed 必须携带最终回复文本"
+  );
+});
+
 test("运行中 submit 进入 FIFO 队列，不创建第二个 Run", async (t) => {
   const h = await openHarness(t, {
     gatewayScript: [

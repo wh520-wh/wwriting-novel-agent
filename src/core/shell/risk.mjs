@@ -1,7 +1,7 @@
 // src/core/shell/risk.mjs
 //
-// 统一 Agent 内核计划 Task 4：从前置计划 `src/core/chat/command-risk.mjs` 端口迁入
-// 的命令风险分类，行为保持不变：
+// 统一 Agent 内核计划 Task 4：从前置计划的 command-risk 模块端口迁入的命令风险
+// 分类，行为保持不变：
 //   - 按命令首词识别副作用类别：read/write/delete/install/network/process/control；
 //   - 项目内外 scope 判定（`..foo` 是项目内目录名，不算越界；跨盘符算 outside）；
 //   - 高危模式（格式化磁盘、清盘、删除盘符根等）直接标 extreme，即使被

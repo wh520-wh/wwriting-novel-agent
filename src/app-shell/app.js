@@ -633,19 +633,20 @@ function setStatus(status) {
   const dot = document.createElement("span");
   dot.className = "pdot";
   refs.status.append(dot, document.createTextNode(statusText(status)));
-  if (refs.topbar) refs.topbar.classList.toggle("is-busy", status === "running" || status === "loading");
+  if (refs.topbar) refs.topbar.classList.toggle("is-busy", status === "loading");
 }
 
 function statusClass(status) {
+  // 注：Run 运行状态由 AgentSurface 呈现（agent-run-status），顶栏不再产生
+  // "running"；此函数只服务加载/失败/待命三态。
   if (status === "blocked") return "blocked";
-  if (status === "running") return "running";
   if (status === "loading") return "ghost";
   return "ghost";
 }
 
 function statusText(status) {
+  // 同上：旧顶栏"运行中"文案随控制面迁移删除（AgentSurface 持有运行态文案）。
   if (status === "blocked") return "读取失败";
-  if (status === "running") return "运行中";
   if (status === "loading") return "加载中";
   return "待命";
 }

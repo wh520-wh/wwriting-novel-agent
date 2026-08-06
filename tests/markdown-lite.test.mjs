@@ -73,7 +73,7 @@ test("cleanAssistantContent removes leaked XML tool-call protocol but keeps pros
   const content = [
     "我会先安排第一章。",
     "<tool_call>",
-    '{"tool_calls":[{"tool":"queue_chapters","args":{"instruction":"开始写第1章"}}]}',
+    '{"tool_calls":[{"tool":"start_writing","args":{"instruction":"开始写第1章"}}]}',
     "</tool_call>"
   ].join("\n");
   assert.equal(cleanAssistantContent(content), "我会先安排第一章。");

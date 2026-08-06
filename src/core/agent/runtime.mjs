@@ -241,6 +241,17 @@ export function createAgentRuntime({
   }
 
   // transcript 记录 → 干净的 OpenAI 消息形状（去掉 input_id 等内部字段）。
+  // assistant 的 tool_calls 必须还原为 OpenAI 线上格式（{ id, type: "function",
+  // function: { name, arguments: JSON 字符串 } }）——transcript 里存的是内部规范
+  // 形状 { id, name, arguments(对象) }（Task 11 Step 4 真实模型验证发现 DeepSeek/
+  // 小米等 OpenAI-compatible 提供方对扁平 tool_calls 直接 400）。
+  //
+  // Rule 7 职责边界：wire 转换放在 runtime（而不是 adapter）的取舍——runtime 是
+  // 唯一同时拥有 transcript 内部形状与「请求必须适配提供方言」信息的装配点，
+  // adapter 保持窄而薄（只做传输与响应归一化）。当前线上形状按 OpenAI 方言
+  // 固定；未来若接入要求其它 tool_calls 形状的提供方（如 Anthropic 的
+  // { id, name, input }），应由 provider-aware 转换（在 gateway 的
+  // dispatchAdapter 或按 provider 分支的 serializer）扩展，不要改 transcript 形状。
   function transcriptToMessages(records) {
     const messages = [];
     for (const record of records) {
@@ -249,11 +260,26 @@ export function createAgentRuntime({
       } else if (record?.role === "assistant") {
         const message = { role: "assistant", content: record.content ?? null };
         if (Array.isArray(record.tool_calls) && record.tool_calls.length > 0) {
-          message.tool_calls = record.tool_calls.map((tc) => ({
-            id: tc?.id ?? null,
-            name: tc?.name ?? null,
-            arguments: tc?.arguments ?? null
-          }));
+          message.tool_calls = record.tool_calls.map((tc) => {
+            const rawArguments = tc?.arguments;
+            // 线上格式要求 arguments 是 JSON 对象字符串。number/boolean 等标量
+            // 不是合法 arguments 对象，序列化后同样不是对象——统一回落空对象，
+            // 避免把 "5" 这类字符串当参数发给提供方。
+            const argumentsText =
+              rawArguments != null && typeof rawArguments === "object"
+                ? JSON.stringify(rawArguments)
+                : typeof rawArguments === "string"
+                  ? rawArguments
+                  : "{}";
+            return {
+              id: tc?.id ?? null,
+              type: "function",
+              function: {
+                name: tc?.name ?? null,
+                arguments: argumentsText
+              }
+            };
+          });
         }
         messages.push(message);
       } else if (record?.role === "tool") {
@@ -414,6 +440,7 @@ export function createAgentRuntime({
       // ---- 装配模型请求 ----
       const project = await loadProjectSafe(state.key);
       const policy = workflowPolicy(run.workflow);
+      const modelConfig = modelConfigOf(project);
       const request = assemblePrompt({
         runtime: {
           absoluteProjectRoot: state.key,
@@ -439,8 +466,14 @@ export function createAgentRuntime({
         history: await buildHistory(journal, inputId),
         currentInput: inputText,
         tools: allowedDefinitions(tools, policy),
-        modelConfig: modelConfigOf(project)
+        modelConfig
       });
+      // gateway 契约（src/core/model/gateway.mjs）：request 必须是装配完成的模型
+      // 请求 { messages, tools, toolChoice, modelConfig, stream, metadata }——
+      // 模型与阶段配置由 runtime 解析后放入 modelConfig（base_url/model_name/
+      // api_key_env 等），adapter 依赖它选择模型与读取密钥。assemblePrompt 只
+      // 消费 context_window，不负责回填，这里在调用前挂载。
+      request.modelConfig = modelConfig;
 
       // ---- 模型轮次（失败路径必须闭合 model turn）----
       await journal.append({ type: "model_turn_started", run_id: runId, payload: {} });
@@ -536,26 +569,39 @@ export function createAgentRuntime({
       // ---- 文本回复：当前输入完成 ----
       const text = String(reply?.text ?? "");
       await journal.appendTranscript({ role: "assistant", content: text });
+      // 事件带最终回复文本：AgentSurface 据此渲染助手气泡（state.js 仅在
+      // payload.text 非空时入对话）。最终回复不是推理，无隐私问题；journal 投影
+      // 对该事件是 no-op，无额外校验面。
       await journal.append({
         type: "assistant_message_completed",
         run_id: runId,
-        payload: { input_id: inputId }
+        payload: { input_id: inputId, text }
       });
-      const beforeConsume = await journal.getSession();
-      const grantsOfInput =
-        beforeConsume.active_run?.active_grants?.filter((grant) => grant.input_id === inputId) ?? [];
-      const completionBatch = [];
-      if (await needsCompletionConsumed(journal, runId, inputId)) {
-        completionBatch.push({ type: "input_consumed", run_id: runId, payload: { input_id: inputId } });
-      }
-      for (const grant of grantsOfInput) {
-        completionBatch.push({
-          type: "permission_grant_cleared",
-          run_id: runId,
-          payload: { grant_id: grant.id, input_id: grant.input_id, grant_key: grant.grant_key, reason: "input_consumed" }
-        });
-      }
-      await journal.appendBatch(completionBatch);
+      // 完成批次（input_consumed + grant 清除）的读-判-写放进项目互斥锁，杜绝与
+      // cancelRunForStop 交错产生「同一 input 双终态」（input_cancelled 与
+      // input_consumed 并存，违反 Task 2 冻结语义）：无论谁先拿到锁，后到者看到的
+      // 投影都是终态——Run 已取消/停止时跳过完成批次（停止路径负责取消输入与
+      // 清除 grant）；返回 "done" 后由 advanceOrComplete 读到终态收敛。
+      await state.mutex.run(async () => {
+        const sessionNow = await journal.getSession();
+        const runNow = sessionNow.active_run;
+        if (!runNow || TERMINAL_RUN_STATUSES.has(runNow.status)) return false;
+        const grantsOfInput =
+          runNow.active_grants?.filter((grant) => grant.input_id === inputId) ?? [];
+        const completionBatch = [];
+        if (await needsCompletionConsumed(journal, runId, inputId)) {
+          completionBatch.push({ type: "input_consumed", run_id: runId, payload: { input_id: inputId } });
+        }
+        for (const grant of grantsOfInput) {
+          completionBatch.push({
+            type: "permission_grant_cleared",
+            run_id: runId,
+            payload: { grant_id: grant.id, input_id: grant.input_id, grant_key: grant.grant_key, reason: "input_consumed" }
+          });
+        }
+        if (completionBatch.length > 0) await journal.appendBatch(completionBatch);
+        return true;
+      });
       return "done";
     }
   }

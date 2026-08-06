@@ -139,7 +139,9 @@ function createSettingsModalForTest(overrides = {}) {
   };
   return createSettingsModal(ctx, {
     getJsonImpl: overrides.getJsonImpl ?? (async () => ({ ok: true, default_model: null, models: [] })),
-    postJsonImpl: overrides.postJsonImpl ?? (async () => ({ ok: true }))
+    postJsonImpl: overrides.postJsonImpl ?? (async () => ({ ok: true })),
+    // 模型切换确认函数：显式注入（默认 window.confirm，node 测试环境不可用）。
+    confirmImpl: overrides.confirmImpl ?? (() => true)
   });
 }
 
@@ -624,4 +626,209 @@ test("连续两次保存：旧关闭定时器失效，不关闭新弹窗", async
   await new Promise((resolve) => setTimeout(resolve, 900));
   assert.equal(saveButton.textContent, "保存设置", "旧关闭定时器不得覆盖按钮文案");
   assert.equal(scrim.classList.contains("show"), true, "旧关闭定时器不得关闭弹窗（失败后弹窗应保持打开供重试）");
+});
+
+// ---------------------------------------------------------------------------
+// 模型切换确认（计划 UI Copy Audit 保留项，Task 11 最终审查修复）：
+// 仅当「模型确有变更」且「任务进行中（active Run 或排队输入）」时弹确认，
+// 取消则不保存；API Key/环境变量变更不算模型变更。
+// ---------------------------------------------------------------------------
+
+const RUNNING_SNAPSHOT = {
+  ok: true,
+  session: {
+    schema_version: 1,
+    session_id: "s1",
+    status: "running",
+    active_run: { id: "r1", status: "running" },
+    queued_inputs: [],
+    last_seq: 0,
+    updated_at: new Date().toISOString()
+  },
+  events: []
+};
+
+const IDLE_SNAPSHOT = {
+  ok: true,
+  session: {
+    schema_version: 1,
+    session_id: "s1",
+    status: "idle",
+    active_run: { id: "r1", status: "completed" },
+    queued_inputs: [],
+    last_seq: 0,
+    updated_at: new Date().toISOString()
+  },
+  events: []
+};
+
+function snapshotJsonImpl(snapshot) {
+  return async (url) => {
+    if (url.startsWith("/api/agent/snapshot")) return snapshot;
+    return { ok: true, default_model: null, models: [] };
+  };
+}
+
+test("模型变更且任务进行中：保存前弹确认（精确文案），确认后保存", async () => {
+  const calls = [];
+  const toasts = [];
+  let confirmMessage = null;
+  const modal = createSettingsModalForTest({
+    getCurrentProjectRoot: () => "D:/novels/demo",
+    getJsonImpl: snapshotJsonImpl(RUNNING_SNAPSHOT),
+    postJsonImpl: async (url, body) => {
+      calls.push({ url, body });
+      return { ok: true, model_profile: { display: "t" }, models: [] };
+    },
+    showToast: (message, kind) => toasts.push({ message, kind }),
+    confirmImpl: (message) => {
+      confirmMessage = message;
+      return true;
+    }
+  });
+  await modal.openSettingsModal();
+  modal.setModelFieldsForTest({
+    model_name: "deepseek-chat",
+    base_url: "https://api.deepseek.com",
+    api_key: "sk-test-1234",
+    api_key_env: "DEEPSEEK_API_KEY"
+  });
+  await modal.saveSettingsForTest();
+
+  assert.equal(confirmMessage, "切换后将由新模型继续，本章文风可能变化。继续？");
+  assert.equal(calls.some((c) => c.url === "/api/settings/model-profile"), true, "确认后应保存模型");
+});
+
+test("模型变更且任务进行中：取消确认则不保存", async () => {
+  const calls = [];
+  const toasts = [];
+  const modal = createSettingsModalForTest({
+    getCurrentProjectRoot: () => "D:/novels/demo",
+    getJsonImpl: snapshotJsonImpl(RUNNING_SNAPSHOT),
+    postJsonImpl: async (url, body) => {
+      calls.push({ url, body });
+      return { ok: true, model_profile: { display: "t" }, models: [] };
+    },
+    showToast: (message, kind) => toasts.push({ message, kind }),
+    confirmImpl: () => false
+  });
+  await modal.openSettingsModal();
+  modal.setModelFieldsForTest({
+    model_name: "deepseek-chat",
+    base_url: "https://api.deepseek.com",
+    api_key: "sk-test-1234",
+    api_key_env: "DEEPSEEK_API_KEY"
+  });
+  await modal.saveSettingsForTest();
+
+  assert.equal(calls.some((c) => c.url === "/api/settings/model-profile"), false, "取消后不得保存模型");
+  assert.equal(calls.some((c) => c.url === "/api/settings/update"), false, "取消后不得发项目设置");
+  assert.equal(toasts.some((t) => /已取消保存/.test(t.message)), true, "取消应给出提示");
+});
+
+test("模型未变更：任务进行中也不弹确认，直接保存", async () => {
+  const calls = [];
+  let confirmCalls = 0;
+  const modal = createSettingsModalForTest({
+    getDashboard: () => ({
+      project: {
+        active_model: {
+          provider: "openai-compatible",
+          model_name: "deepseek-chat",
+          base_url: "https://api.deepseek.com",
+          api_key_env: "DEEPSEEK_API_KEY"
+        }
+      }
+    }),
+    getCurrentProjectRoot: () => "D:/novels/demo",
+    getJsonImpl: snapshotJsonImpl(RUNNING_SNAPSHOT),
+    postJsonImpl: async (url, body) => {
+      calls.push({ url, body });
+      return { ok: true, model_profile: { display: "t" }, models: [] };
+    },
+    confirmImpl: () => {
+      confirmCalls += 1;
+      return true;
+    }
+  });
+  await modal.openSettingsModal();
+  modal.setModelFieldsForTest({
+    model_name: "deepseek-chat",
+    base_url: "https://api.deepseek.com",
+    api_key: "sk-test-1234",
+    api_key_env: "DEEPSEEK_API_KEY"
+  });
+  await modal.saveSettingsForTest();
+
+  assert.equal(confirmCalls, 0, "模型未变更不得弹确认");
+  assert.equal(calls.some((c) => c.url === "/api/settings/model-profile"), true, "直接保存");
+});
+
+test("任务空闲时模型变更：不弹确认，直接保存", async () => {
+  const calls = [];
+  let confirmCalls = 0;
+  const modal = createSettingsModalForTest({
+    getCurrentProjectRoot: () => "D:/novels/demo",
+    getJsonImpl: snapshotJsonImpl(IDLE_SNAPSHOT),
+    postJsonImpl: async (url, body) => {
+      calls.push({ url, body });
+      return { ok: true, model_profile: { display: "t" }, models: [] };
+    },
+    confirmImpl: () => {
+      confirmCalls += 1;
+      return true;
+    }
+  });
+  await modal.openSettingsModal();
+  modal.setModelFieldsForTest({
+    model_name: "deepseek-chat",
+    base_url: "https://api.deepseek.com",
+    api_key: "sk-test-1234",
+    api_key_env: "DEEPSEEK_API_KEY"
+  });
+  await modal.saveSettingsForTest();
+
+  assert.equal(confirmCalls, 0, "空闲任务不得弹确认");
+  assert.equal(calls.some((c) => c.url === "/api/settings/model-profile"), true, "直接保存");
+});
+
+test("排队输入非空也算任务进行中：模型变更需确认", async () => {
+  const calls = [];
+  let confirmCalls = 0;
+  const queuedSnapshot = {
+    ok: true,
+    session: {
+      schema_version: 1,
+      session_id: "s1",
+      status: "running",
+      active_run: { id: "r1", status: "running" },
+      queued_inputs: [{ id: "q1", text: "排队任务", status: "queued" }],
+      last_seq: 0,
+      updated_at: new Date().toISOString()
+    },
+    events: []
+  };
+  const modal = createSettingsModalForTest({
+    getCurrentProjectRoot: () => "D:/novels/demo",
+    getJsonImpl: snapshotJsonImpl(queuedSnapshot),
+    postJsonImpl: async (url, body) => {
+      calls.push({ url, body });
+      return { ok: true, model_profile: { display: "t" }, models: [] };
+    },
+    confirmImpl: () => {
+      confirmCalls += 1;
+      return true;
+    }
+  });
+  await modal.openSettingsModal();
+  modal.setModelFieldsForTest({
+    model_name: "deepseek-chat",
+    base_url: "https://api.deepseek.com",
+    api_key: "sk-test-1234",
+    api_key_env: "DEEPSEEK_API_KEY"
+  });
+  await modal.saveSettingsForTest();
+
+  assert.equal(confirmCalls, 1, "排队输入存在时应弹确认");
+  assert.equal(calls.some((c) => c.url === "/api/settings/model-profile"), true, "确认后保存");
 });

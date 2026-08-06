@@ -12,8 +12,8 @@
 // 设计不变量（来自计划 Task 4 Step 3–8）：
 //   - 恰好注册六个 general 工具（list_files/search_files/read_file/write_file/edit_file/shell）
 //     与五个 deep 工具（update_plan/enter_workflow/append_chapter_segment/commit_chapter/
-//     commit_blueprint）；不注册 start_run/pause_run/queue_chapters/resolve_failure/export_book
-//     或逐文件便利工具。
+//     commit_blueprint）；不注册旧编排工具（start_ 前缀启停、queue_ 前缀排队、
+//     resolve_failure、export_book 等）或逐文件便利工具。
 //   - 每个工具 schema 必须产生系统构建的归一化 ToolAction 后才进入权限评估；模型只能提供
 //     purpose，不能提供或覆盖 risk/scope/extreme/grant_key/confirmation 类型（schema 不暴露
 //     这些字段，additionalProperties: false）。

@@ -5,14 +5,19 @@
 // 被合并的 fault/longrun/mvp/chat-online 有价值场景。真实模型场景在配置
 // DEEPSEEK_API_KEY 时额外执行（可跳过）。
 //
-// 场景清单（Task 11 Step 2 + Task 9 Step 6）：
-//   简单回答无计划 / 复杂任务计划更新 / 同项目 FIFO / 立即同 run id /
-//   停止取消 Run 与排队输入 / 重试恢复同一 Run / 跨项目并行 /
-//   通用读取编辑 Shell / 章节事务 / 蓝图事务 / 只读审查 /
-//   重启 journal 恢复 / legacy 导入幂等 / 新项目无旧状态文件 /
-//   确定性导出无模型调用 / 自主 /init 保留原文并读取项目上下文 /
-//   普通写入暂停确认 / 同类授权仅限当前输入 / YOLO 跳过普通确认不跳过 extreme /
-//   extreme 需要当前精确文字 / Shell 增量输出与脱敏 / 停止中止命令并清除授权
+// 场景清单（Task 11 Step 2 本地矩阵的 25 个场景，Task 9 Step 6 版 22 场景补全后）：
+//   简单回答无计划 / 复杂任务真实里程碑更新计划 / 同项目 FIFO 队列 /
+//   立即保持同一 run id / 停止取消当前 Run 与排队输入 / 重试恢复同一可恢复 Run /
+//   跨项目并行 / 通用读取编辑 Shell / 章节事务 / 蓝图事务 / 只读审查 /
+//   重启 journal 恢复 / legacy 导入幂等 + blueprint_status 迁移 /
+//   legacy 旧状态一次性导入且永不再次写入 / 新项目无旧状态文件 /
+//   无撕裂原子写入 / 确定性导出无模型调用 / 自主 /init 保留原文并用单一 Agent 循环 /
+//   普通写入暂停确认 / 同类授权仅限当前输入（grant 随输入清除）/ YOLO 跳过普通
+//   确认但不跳过 extreme / fresh 精确文字确认不可复用且不可模型提供 /
+//   Shell cwd/超时/增量输出/进程树停止与 1 MiB 流尾（runtime.test.mjs 承载）/
+//   命令、参数、分块流式密钥、最终输出与 journal 详情全量脱敏 /
+//   同一活动合并而不重复渲染；私有推理永不渲染 / 900px 共享内容列与模型菜单
+//   视口钳制在 cutover 后保留 / 停止中止命令并清除授权
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -439,8 +444,15 @@ step("场景 13 · legacy 导入幂等");
     await h.agent.open({ projectRoot: h.projectRoot });
     const eventsAfterSecond = await readEvents(h.agent, h.projectRoot);
     assert.equal(eventsAfterSecond.length, eventsAfterFirst.length, "第二次 open 不得产生新事件");
-    assert.equal(await pathExists(path.join(h.projectRoot, LEGACY_STATE_FILE)), true, "旧文件保留不删除（只读导入）");
-    record("legacy 导入：幂等 + blueprint_status 迁移 + 旧文件保留", true, `blueprint_status=${project.blueprint_status}`);
+    // 旧状态文件保留（只读导入），且完整跑一轮后不再被写入
+    const legacyStatePath = path.join(h.projectRoot, LEGACY_STATE_FILE);
+    assert.equal(await pathExists(legacyStatePath), true, "旧文件保留不删除（只读导入）");
+    const stateBefore = await fs.readFile(legacyStatePath, "utf8");
+    await h.agent.submit({ projectRoot: h.projectRoot, text: "导入后继续写作" });
+    await waitForIdle(h.agent, h.projectRoot);
+    const stateAfter = await fs.readFile(legacyStatePath, "utf8");
+    assert.equal(stateAfter, stateBefore, "legacy 导入后完整跑一轮也不得再写入旧状态文件");
+    record("legacy 导入：幂等 + blueprint_status 迁移 + 旧文件只读保留", true, `blueprint_status=${project.blueprint_status}`);
   } finally {
     await h.cleanup();
   }
@@ -641,48 +653,78 @@ step("场景 19 · YOLO 模式");
 }
 
 // ---------------------------------------------------------------------------
-// 场景 20：extreme 需要当前决策的精确文字
+// 场景 20：extreme 需要当前决策的精确文字，且历史文字不可复用
 // ---------------------------------------------------------------------------
-step("场景 20 · extreme 精确文字确认");
+step("场景 20 · extreme 精确文字确认与不可复用");
 {
   const h = await createProjectAgentHarness({
     gatewayScript: [
       // stub shell（不产生真实进程）：extreme 判定只来自风险语料，命令本身不执行
-      { reply: { toolCalls: [tool("shell", { command: "rm -rf /", purpose: "extreme 测试" })] } },
+      { reply: { toolCalls: [tool("shell", { command: "rm -rf /", purpose: "extreme 测试一" })] } },
+      { reply: { toolCalls: [tool("shell", { command: "rm -rf $HOME", purpose: "extreme 测试二" })] } },
       { reply: { text: "已执行。" } }
     ]
   });
   try {
     await h.agent.open({ projectRoot: h.projectRoot });
     await h.agent.submit({ projectRoot: h.projectRoot, text: "执行删除测试" });
+    // 第一个 extreme 决策
     await waitForEvent(h.agent, h.projectRoot, "decision_requested");
-    const decision = (await readEvents(h.agent, h.projectRoot)).filter((e) => e.type === "decision_requested").at(-1).payload;
-    assert.equal(decision.kind, "extreme");
+    const first = (await readEvents(h.agent, h.projectRoot)).filter((e) => e.type === "decision_requested")[0].payload;
+    assert.equal(first.kind, "extreme");
     // 错误文字 → confirmation_mismatch
     await assert.rejects(
-      h.agent.decide({ projectRoot: h.projectRoot, decisionId: decision.decision_id, choice: "随便写的文字" }),
+      h.agent.decide({ projectRoot: h.projectRoot, decisionId: first.decision_id, choice: "随便写的文字" }),
       (error) => error.code === "confirmation_mismatch",
       "错误确认文字必须被拒绝"
     );
     // 精确文字 → 执行
-    await h.agent.decide({ projectRoot: h.projectRoot, decisionId: decision.decision_id, choice: decision.confirmation_text });
+    await h.agent.decide({ projectRoot: h.projectRoot, decisionId: first.decision_id, choice: first.confirmation_text });
+    // 第二个 extreme 决策：必须生成全新文字，历史文字不能解锁
+    const pollDeadline = Date.now() + 20000;
+    let second = null;
+    while (Date.now() < pollDeadline) {
+      const { events } = await h.agent.snapshot({ projectRoot: h.projectRoot, afterSeq: 0, limit: 100000 });
+      const decisions = eventsOfType(events, "decision_requested").map((e) => e.payload);
+      if (decisions.length >= 2) {
+        second = decisions[1];
+        break;
+      }
+      await sleep(25);
+    }
+    assert.ok(second, "第二个 extreme 决策应出现");
+    assert.notEqual(second.confirmation_text, first.confirmation_text, "每个 extreme 动作必须生成全新的确认文字");
+    await assert.rejects(
+      h.agent.decide({ projectRoot: h.projectRoot, decisionId: second.decision_id, choice: first.confirmation_text }),
+      (error) => error.code === "confirmation_mismatch",
+      "历史确认文字不得解锁新的 extreme 动作"
+    );
+    await h.agent.decide({ projectRoot: h.projectRoot, decisionId: second.decision_id, choice: second.confirmation_text });
     await waitForIdle(h.agent, h.projectRoot);
     const events = await readEvents(h.agent, h.projectRoot);
     const resolved = eventsOfType(events, "decision_resolved");
-    assert.equal(resolved.length, 1, "精确文字应使决策成功解析");
-    record("extreme：错误文字拒绝，精确文字执行", true, `text=${decision.confirmation_text}`);
+    assert.equal(resolved.length, 2, "两个决策都应成功解析");
+    assert.equal(
+      eventsOfType(events, "tool_call_completed").filter((e) => e.payload?.name === "shell").length,
+      2,
+      "精确文字确认后两个 extreme 命令都应执行"
+    );
+    record("extreme：错误文字拒绝、历史文字不可复用、精确文字执行", true, "决策数=2");
   } finally {
     await h.cleanup();
   }
 }
 
 // ---------------------------------------------------------------------------
-// 场景 21：Shell 增量输出 + 命令/输出脱敏（真实 Shell）
+// 场景 21：Shell 增量输出 + 命令/参数/分块密钥/最终输出/journal 详情全量脱敏
 // ---------------------------------------------------------------------------
-step("场景 21 · Shell 增量输出与脱敏");
+step("场景 21 · Shell 增量输出与全量脱敏");
 {
   const secret = "ww-secret-9f3a7c";
-  const command = `node -e "console.log('start');console.log('${secret}');setTimeout(()=>console.log('done'),200)"`;
+  // 命令文本本身包含完整密钥（命令侧脱敏）；输出按 chunk 拆分密钥
+  //（流式脱敏：首行整段打印，随后两行分别打印前半/后半，跨 chunk 拼接）。
+  const command =
+    `node -e "console.log('head ${secret} tail');setTimeout(function(){console.log('p1 ${secret.slice(0, 5)}');console.log('p2 ${secret.slice(5)}')},80)"`;
   const h = await createProjectAgentHarness({
     gatewayScript: [
       { reply: { toolCalls: [tool("shell", { command, purpose: "输出脱敏验证" })] } },
@@ -696,16 +738,22 @@ step("场景 21 · Shell 增量输出与脱敏");
     await h.agent.submit({ projectRoot: h.projectRoot, text: "运行输出脱敏测试命令" });
     await driveToIdle(h.agent, h.projectRoot);
     const events = await readEvents(h.agent, h.projectRoot);
+    const journalText = events.map((e) => JSON.stringify(e)).join("\n");
+    assert.ok(!journalText.includes(secret), "journal 任何事件（命令/参数/增量/结果/详情）都不得包含密钥");
     const deltas = eventsOfType(events, "tool_output_delta");
     assert.ok(deltas.length >= 2, "应产生增量输出事件");
-    const outputs = deltas.map((e) => JSON.stringify(e.payload)).join("\n");
-    assert.ok(!outputs.includes(secret), "journal 中的输出不得包含密钥");
-    assert.ok(outputs.includes("[REDACTED]"), "密钥应被脱敏标记");
-    const completed = eventsOfType(events, "tool_call_completed").map((e) => e.payload);
-    const shellCall = completed.find((c) => c.name === "shell");
-    assert.ok(shellCall, "shell 工具应完成");
-    assert.ok(!JSON.stringify(shellCall).includes(secret), "工具结果同样脱敏");
-    record("Shell 增量输出 + 脱敏", true, `deltas=${deltas.length}（密钥已脱敏）`);
+    assert.ok(
+      deltas.map((e) => JSON.stringify(e.payload)).join("\n").includes("[REDACTED]"),
+      "流式输出中的密钥（含跨 chunk 拆分）应被脱敏标记"
+    );
+    const started = eventsOfType(events, "tool_call_started").map((e) => e.payload).find((c) => c.name === "shell");
+    assert.ok(started, "shell 工具应开始");
+    assert.ok(JSON.stringify(started).includes("[REDACTED]"), "命令/参数侧脱敏应生效");
+    assert.ok(!JSON.stringify(started).includes(secret), "started 事件的 command/args 不得含密钥");
+    const completed = eventsOfType(events, "tool_call_completed").map((e) => e.payload).find((c) => c.name === "shell");
+    assert.ok(completed, "shell 工具应完成");
+    assert.ok(!JSON.stringify(completed).includes(secret), "最终输出同样脱敏");
+    record("Shell 全量脱敏：命令/参数/分块流/最终输出/journal 详情", true, `deltas=${deltas.length}`);
   } finally {
     await h.cleanup();
   }
@@ -763,6 +811,233 @@ step("场景 22 · 停止中止命令并清除授权");
   } finally {
     await h.cleanup();
   }
+}
+
+// ---------------------------------------------------------------------------
+// 场景 23：无撕裂原子写入（session.json = 临时文件 + rename；events.jsonl 行完整）
+// ---------------------------------------------------------------------------
+step("场景 23 · 无撕裂原子写入");
+{
+  const h = await createProjectAgentHarness({
+    gatewayScript: [
+      { reply: { toolCalls: [tool("read_file", { path: "OUTLINE.md" })] } },
+      { reply: { text: "第一轮完成" } },
+      { reply: { toolCalls: [tool("read_file", { path: "project.yaml" })] } },
+      { reply: { text: "第二轮完成" } }
+    ],
+    // 每轮模型调用延迟 150ms（共 4 轮）+ read_file 执行时间：运行窗口约 0.7s，
+    // 轮询间隔 4ms 约产生 150+ 次采样。sawRunning 断言理论上存在 flake 可能，
+    // 但 4ms 采样密度下在完整 running 窗口内一次都读不到的概率可忽略；若未来
+    // 硬件/调度退化导致 flake，优先加长 gatewayDelayMs 而不是放宽断言——该断言
+    // 保证「观察确实发生在写入活跃期」，是撕裂检测成立的前提。
+    gatewayDelayMs: 150
+  });
+  try {
+    await h.agent.open({ projectRoot: h.projectRoot });
+    await h.agent.submit({ projectRoot: h.projectRoot, text: "多轮任务" });
+    const agentDir = path.join(h.projectRoot, ".wwriting", "agent");
+    const sessionPath = path.join(agentDir, "session.json");
+    // 运行中高频轮询 session.json：任何时刻都必须读到完整 JSON（原子重写，无撕裂）
+    const pollDeadline = Date.now() + 20000;
+    let reads = 0;
+    let sawRunning = false;
+    while (Date.now() < pollDeadline) {
+      const raw = await fs.readFile(sessionPath, "utf8").catch(() => null);
+      if (raw !== null) {
+        reads += 1;
+        const parsed = JSON.parse(raw); // 撕裂写入会在这里抛错
+        if (parsed?.status === "running") sawRunning = true;
+      }
+      const session = await readSession(h.agent, h.projectRoot);
+      if (session.status === "idle") break;
+      await sleep(4);
+    }
+    assert.ok(reads > 0, "运行期间应能持续读到 session.json");
+    assert.ok(sawRunning, "应观察到 running 状态的 session 投影");
+    await waitForIdle(h.agent, h.projectRoot);
+    // 事件文件每行都是完整 JSON 且 seq 严格连续（无中间缺口、无撕裂行）
+    const eventsRaw = await fs.readFile(path.join(agentDir, "events.jsonl"), "utf8");
+    const lines = eventsRaw.split("\n").filter((line) => line.trim() !== "");
+    let prevSeq = 0;
+    for (const line of lines) {
+      const event = JSON.parse(line); // 中间缺口/半行会在这里抛错
+      assert.ok(Number.isInteger(event.seq) && event.seq === prevSeq + 1, "事件 seq 必须连续无缺口");
+      prevSeq = event.seq;
+    }
+    // 原子写入不得残留临时文件
+    const leftovers = (await fs.readdir(agentDir)).filter((name) => name.endsWith(".tmp"));
+    assert.equal(leftovers.length, 0, "原子写入后不得残留临时文件");
+    record("原子写入：运行中 session.json 无撕裂、事件行完整且 seq 连续、无 tmp 残留", true, `reads=${reads}`);
+  } finally {
+    await h.cleanup();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 场景 24：真实端到端——活动合并、助手气泡（最终回复文本上屏）、私有推理零泄漏
+// ---------------------------------------------------------------------------
+step("场景 24 · 活动合并与私有推理排除");
+{
+  // 最小 DOM mock（无 JSDOM，与 agent-surface.test.mjs 同一风格）。只经公共 seam
+  // src/app-shell/agent/index.js 驱动 AgentSurface（依赖规则测试的要求）。
+  class MockElement {
+    constructor(tag) {
+      this.tagName = tag;
+      this.children = [];
+      this._parent = null;
+      this._text = "";
+      this.dataset = {};
+      this.style = {};
+      this._attrs = {};
+      this._listeners = new Map();
+      this._value = "";
+      this.hidden = false;
+      this.disabled = false;
+      this.open = false;
+      this.scrollTop = 0;
+      this.scrollHeight = 0;
+      this.clientHeight = 0;
+      let className = "";
+      Object.defineProperty(this, "className", {
+        get() { return className; },
+        set(value) { className = String(value ?? ""); },
+        enumerable: true,
+        configurable: true
+      });
+    }
+    get textContent() {
+      return this._text + this.children.map((child) => child.textContent).join("");
+    }
+    set textContent(value) {
+      this._text = String(value ?? "");
+      this.children = [];
+    }
+    setAttribute(name, value) { this._attrs[name] = String(value); }
+    getAttribute(name) { return this._attrs[name] ?? null; }
+    append(...nodes) {
+      for (const node of nodes) {
+        if (node._parent) node._parent.removeChild(node);
+        node._parent = this;
+        this.children.push(node);
+      }
+    }
+    appendChild(node) { this.append(node); return node; }
+    replaceChildren(...nodes) {
+      for (const child of this.children) child._parent = null;
+      this.children = [];
+      this.append(...nodes);
+    }
+    removeChild(node) {
+      const index = this.children.indexOf(node);
+      if (index >= 0) this.children.splice(index, 1);
+      node._parent = null;
+    }
+    remove() { if (this._parent) this._parent.removeChild(this); }
+    addEventListener() { /* 无交互，仅记录 */ }
+    get value() { return this._value; }
+    set value(v) { this._value = String(v ?? ""); }
+  }
+  // 真实端到端：真实 runtime（mock 模型网关 + stub shell）产生真实事件流，喂给
+  // AgentSurface 渲染并断言 DOM。代码审查指出：手工伪造事件（尤其伪造带 text 的
+  // assistant_message_completed）会掩盖「最终回复文本未进事件」的死路径——这里
+  // 不再注入任何伪造事件。
+  const h = await createProjectAgentHarness({
+    gatewayScript: [
+      { reply: { toolCalls: [tool("shell", { command: "echo hi", purpose: "活动流" })] } },
+      { reply: { text: "这是最终回复。" } }
+    ]
+  });
+  try {
+    await h.agent.open({ projectRoot: h.projectRoot });
+    await h.agent.submit({ projectRoot: h.projectRoot, text: "写一段并总结" });
+    await driveToIdle(h.agent, h.projectRoot);
+    const events = await readEvents(h.agent, h.projectRoot);
+    // 真实 runtime 必须把最终回复文本写入 assistant_message_completed（Task 11
+    // 代码审查修复：state.js 仅在 payload.text 非空时渲染助手气泡）。
+    const completed = eventsOfType(events, "assistant_message_completed");
+    assert.ok(completed.length >= 1, "应产生 assistant_message_completed");
+    assert.equal(completed[0].payload.text, "这是最终回复。", "真实 runtime 必须携带最终回复文本");
+    // 真实事件流本身不得携带任何私有推理字段
+    const journalText = events.map((e) => JSON.stringify(e)).join("\n");
+    assert.ok(
+      !journalText.includes("reasoning") && !journalText.includes("chain_of_thought"),
+      "真实事件流不得携带私有推理字段"
+    );
+
+    const doc = { createElement: (tag) => new MockElement(tag) };
+    const root = new MockElement("div");
+    const { createAgentSurface } = await import("../src/app-shell/agent/index.js");
+    const surface = createAgentSurface({ root, api: null, document: doc });
+    for (const event of events) surface.applyEvent(event);
+
+    const allNodes = [];
+    (function walk(node) {
+      allNodes.push(node);
+      for (const child of node.children) walk(child);
+    })(root);
+    // 同一 activity_id 只渲染一行，增量输出合并到同一输出节点
+    const activityRows = allNodes.filter((node) => node.dataset?.activityId != null);
+    assert.equal(activityRows.length, 1, "同一 activity_id 必须合并为单行，不得重复渲染");
+    const outputNode = allNodes.find((node) => node.className === "agent-activity-output");
+    assert.ok(outputNode, "应存在活动输出节点");
+    assert.equal(outputNode.textContent, "stub stdout: echo hi", "活动输出应为真实 shell 增量");
+    // 对话：用户气泡 + 助手气泡（真实最终回复文本上屏，不再依赖伪造事件）
+    assert.equal(
+      allNodes.filter((n) => n.dataset?.testid === "agent-user-message").length,
+      1,
+      "恰好一个用户气泡"
+    );
+    assert.equal(
+      allNodes.filter((n) => n.dataset?.testid === "agent-assistant-message").length,
+      1,
+      "恰好一个助手气泡"
+    );
+    const rootText = root.textContent;
+    assert.ok(rootText.includes("写一段并总结"), "用户消息应渲染");
+    assert.ok(rootText.includes("这是最终回复。"), "助手气泡应渲染真实最终回复文本");
+
+    // reducer 卫生检查（对真实事件克隆后追加推理字段重放，不污染真实流）：
+    // 即便未来事件 payload 携带推理字段，也不得渲染。
+    const hygieneRoot = new MockElement("div");
+    const hygieneSurface = createAgentSurface({ root: hygieneRoot, api: null, document: doc });
+    for (const event of events) {
+      hygieneSurface.applyEvent(
+        event.type === "model_turn_started" || event.type === "model_turn_completed"
+          ? { ...event, payload: { ...event.payload, reasoning: "私有思考一", chain_of_thought: "内部推理一", private_reasoning: "不应渲染" } }
+          : event
+      );
+    }
+    assert.ok(!hygieneRoot.textContent.includes("私有思考"), "私有推理不得渲染");
+    assert.ok(!hygieneRoot.textContent.includes("内部推理"), "chain-of-thought 不得渲染");
+    assert.ok(!hygieneRoot.textContent.includes("不应渲染"), "private_reasoning 字段不得渲染");
+    record("活动合并 + 助手气泡：真实事件流单行渲染、最终回复上屏、推理零泄漏", true, "rows=1");
+  } finally {
+    await h.cleanup();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 场景 25：共享 900px 内容列与模型菜单视口钳制在 cutover 后保留
+// ---------------------------------------------------------------------------
+step("场景 25 · 900px 内容列与模型菜单视口钳制");
+{
+  const agentCssUrl = new URL("../src/app-shell/agent/agent.css", import.meta.url);
+  const stylesCssUrl = new URL("../src/app-shell/styles.css", import.meta.url);
+  const agentCss = await fs.readFile(agentCssUrl, "utf8");
+  const stylesCss = await fs.readFile(stylesCssUrl, "utf8");
+  assert.ok(stylesCss.includes("--content-column: 900px"), "styles.css 应定义 900px 内容列变量");
+  assert.ok(agentCss.includes("--content-column: 900px"), "agent.css 应定义 900px 内容列变量");
+  assert.ok(
+    /\.agent-conversation[\s\S]*max-width:\s*var\(--content-column\)/u.test(agentCss),
+    "对话应共享 max-width: var(--content-column)"
+  );
+  assert.ok(
+    /\.agent-composer[\s\S]*max-width:\s*var\(--content-column\)/u.test(agentCss),
+    "composer 应共享 max-width: var(--content-column)"
+  );
+  assert.ok(agentCss.includes("min(420px, calc(100vw - 32px))"), "模型菜单宽度应为 min(420px, 100vw - 32px)（16px 安全区）");
+  assert.ok(agentCss.includes("overflow-wrap: anywhere"), "长模型名称应允许任意位置换行");
+  record("900px 内容列与模型菜单钳制：cutover 后 CSS 基线保留", true, "agent.css + styles.css");
 }
 
 // ---------------------------------------------------------------------------

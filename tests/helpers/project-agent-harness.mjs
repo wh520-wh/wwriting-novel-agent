@@ -127,7 +127,7 @@ export async function createProjectRoot(workspaceRoot, options = {}) {
     run_mode: "auto",
     default_writer_model: "mock-writer",
     default_reviewer_model: "mock-reviewer",
-    active_model: { provider: "mock", model_name: "mock-writer" },
+    active_model: options.active_model ?? { provider: "mock", model_name: "mock-writer" },
     enabled_skills: [],
     output_style: "creative",
     archived_at: null,

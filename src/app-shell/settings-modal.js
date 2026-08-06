@@ -39,6 +39,13 @@ export function createSettingsModal(ctx, options = {}) {
   const {
     getJsonImpl = getJson,
     postJsonImpl = postJson,
+    // 模型切换确认的确认函数（可注入以便测试；默认原生 confirm，桌面场景无需新 UI）。
+    confirmImpl = (message) => {
+      if (typeof window !== "undefined" && typeof window.confirm === "function") {
+        return window.confirm(message);
+      }
+      return true;
+    }
   } = options;
 
   let settingsProviderId = "deepseek";
@@ -59,6 +66,11 @@ export function createSettingsModal(ctx, options = {}) {
   // different providers (different api_key_env).
   let lastTypedApiKey = "";
   let lastTypedApiKeyEnv = "";
+  // 「当前已生效模型」快照（模型切换确认的基线）：打开设置时从项目/全局默认捕获。
+  // 模型变更比较只含 model_name 与 base_url——API Key/环境变量变更是凭据修复，
+  // 不改变文风语义，不需要确认。
+  const MODEL_SWITCH_CONFIRM_COPY = "切换后将由新模型继续，本章文风可能变化。继续？";
+  const savedModelRef = { current: null };
 
   async function fetchModelSecret(envName) {
     try {
@@ -106,6 +118,10 @@ export function createSettingsModal(ctx, options = {}) {
     if (activeModel) {
       settingsProviderId = detectProviderPreset(activeModel);
     }
+    // 模型切换确认的基线：保存时若 model_name/base_url 与之不同且任务进行中则弹确认。
+    savedModelRef.current = activeModel
+      ? { model_name: activeModel.model_name ?? null, base_url: activeModel.base_url ?? null }
+      : null;
     // Cancel any in-flight test from a previous session and clear temporary state.
     resetConnectionState();
     ctx.refs.settingsSearch.value = "";
@@ -663,10 +679,17 @@ export function createSettingsModal(ctx, options = {}) {
   }
 
   // 选用已存模型：设为全局默认，并把它的字段回填到右侧表单。
+  // 「选用」是显式单点动作，语义即「立即切换」，不重复弹确认（模型切换确认只
+  // 挂在保存路径；若未来要求一致，在此处加同一守卫即可）。
   async function selectSavedModel(model) {
     await postJsonImpl("/api/settings/model-select", { model_id: model.id });
     await fetchGlobalModels();
     settingsProviderId = detectProviderPreset(model);
+    // 表单回填为刚选用的模型：保存时以此为基线，避免「选用后立即保存」重复确认。
+    savedModelRef.current = {
+      model_name: model.model_name ?? null,
+      base_url: model.base_url ?? null
+    };
     renderSettingsProviders();
     await renderSettingsDetail();
   }
@@ -1172,6 +1195,17 @@ export function createSettingsModal(ctx, options = {}) {
       ctx.showToast("密钥环境变量名只能用字母、数字、下划线，且不能以数字开头，例如 XIAOMI_MIMO_API_KEY。", "error");
       return;
     }
+    // 模型切换确认（计划 UI Copy Audit 保留项）：app-server 每次调用重读
+    // project.yaml——任务进行中保存设置会静默切换写作模型。仅当「模型确有变更」
+    // 且「任务进行中（active Run 或排队输入）」时弹确认；取消则不保存。API Key/
+    // 环境变量变更不算模型变更（凭据修复，不改变文风语义）。选用已存模型路径
+    // 是显式单点动作，不重复确认（见 selectSavedModel）。
+    if (modelSelectionChanged() && await taskInProgress()) {
+      if (!confirmImpl(MODEL_SWITCH_CONFIRM_COPY)) {
+        ctx.showToast("已取消保存：模型保持不变。", "info");
+        return;
+      }
+    }
     await runSave(async () => {
       // 第一步：模型配置存全局（~/.wwriting/model-profiles.json），不需要项目。
       // 服务端对 ModelConfigValidationError 一律回 400 + fields，postJson 会抛错携带 error.fields，
@@ -1223,6 +1257,40 @@ export function createSettingsModal(ctx, options = {}) {
 
       await ctx.loadDashboard();
     });
+  }
+
+  // 模型变更判定：表单新值（model_name/base_url）与打开设置时的已生效模型基线
+  // 比较。无基线（无项目且无全局默认）视为变更（防御性）；URL 做尾斜杠归一化，
+  // "https://api.deepseek.com" 与 "https://api.deepseek.com/" 不算变更。
+  function modelSelectionChanged() {
+    const newModelName = settingsFields.model?.input?.value?.trim() ?? "";
+    const newBaseUrl = normalizeModelUrl(settingsFields.baseUrl?.input?.value?.trim() ?? "");
+    const saved = savedModelRef.current;
+    if (!saved) return true;
+    return newModelName !== String(saved.model_name ?? "") || newBaseUrl !== normalizeModelUrl(String(saved.base_url ?? ""));
+  }
+
+  function normalizeModelUrl(url) {
+    return url.replace(/\/+$/u, "").toLowerCase();
+  }
+
+  // 任务进行中判定：agent snapshot 显示 active Run（非终态）或排队输入非空。
+  // 快照拉取失败（如项目从未打开）按「不在进行中」处理——确认只在能确定有任务时
+  // 才弹，避免网络抖动阻塞保存。
+  async function taskInProgress() {
+    const currentProjectRoot = ctx.getCurrentProjectRoot?.();
+    if (!currentProjectRoot) return false;
+    try {
+      const data = await getJsonImpl(`/api/agent/snapshot?projectRoot=${encodeURIComponent(currentProjectRoot)}&afterSeq=0&limit=1`);
+      const session = data?.session ?? null;
+      if (!session) return false;
+      if (Array.isArray(session.queued_inputs) && session.queued_inputs.length > 0) return true;
+      const run = session.active_run;
+      if (!run) return false;
+      return ["running", "waiting_user", "interrupting", "stopping"].includes(run.status);
+    } catch {
+      return false;
+    }
   }
 
   async function saveWritingSection() {
