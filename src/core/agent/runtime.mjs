@@ -32,6 +32,7 @@ import { createAgentJournal } from "./journal.mjs";
 import { createToolRuntime } from "./tools.mjs";
 import { assemblePrompt } from "./prompt.mjs";
 import { canEnterWorkflow, workflowPolicy } from "./workflows.mjs";
+import { runLegacyImport } from "./legacy-import.mjs";
 import { loadProject } from "../project-store.mjs";
 import { pathExists } from "../fs-utils.mjs";
 
@@ -678,18 +679,23 @@ export function createAgentRuntime({
   }
 
   // 等待循环开始第一次模型轮次（或循环结束），带超时兜底。
+  // 超时兜底必须显式 clearTimeout：Promise.race 不会取消落选方，遗留的 10s
+  // 定时器会让进程空转（Task 7 观测到的残留 handle，focused tests 无法退出）。
   async function waitForFirstTurn(state) {
     const signal = state.firstTurn;
     if (!signal) return;
-    await Promise.race([
-      signal.promise,
-      sleep(10000).then(() => {
+    let timer = null;
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => {
         if (!signal.resolved) {
           signal.resolved = true;
           signal.resolve();
         }
-      })
-    ]);
+        resolve();
+      }, 10000);
+    });
+    await Promise.race([signal.promise, timeout]);
+    clearTimeout(timer);
   }
 
   // -------------------------------------------------------------------------
@@ -730,8 +736,18 @@ export function createAgentRuntime({
     }
     const state = ensureProject(projectRoot);
     await state.journal.load();
+    // Task 7：首次 open 对旧项目执行一次性只读 legacy 导入（幂等）。导入失败不
+    // 阻塞 open：journal 已恢复、应用可继续工作；migration.json.legacy_imported
+    // 保持 false，下次 open() 重试（legacy-import 的 legacy_id / legacy 标记保证
+    // 重试不产生重复事件或消息）。
+    try {
+      await runLegacyImport({ projectRoot: state.key, journal: state.journal, idFactory });
+    } catch (error) {
+      console.warn(`[agent] legacy 导入失败（下次 open 重试）: ${error?.message ?? String(error)}`);
+    }
     // 恢复：只恢复有效非终态 Run（journal.load 已把 dangling assistant 活动标记
-    // 为 interrupted；那些 Run 等待 retry，不自动恢复）
+    // 为 interrupted；那些 Run 等待 retry，不自动恢复；legacy 导入的未完成 Run
+    // 是合法非终态，按同一语义接续执行）
     const session = await state.journal.getSession();
     const run = session.active_run;
     if (run && !TERMINAL_RUN_STATUSES.has(run.status)) {
