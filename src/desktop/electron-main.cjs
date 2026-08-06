@@ -54,6 +54,23 @@ app.whenReady().then(async () => {
     return true;
   });
 
+  // 外部链接（Task 8）：main 进程重新解析 URL，只接受 http:/https: 才交给系统
+  // 默认浏览器；渲染进程侧已对 [data-external-link] preventDefault，这里不依赖
+  // 渲染进程自证，即使被绕过也只放行 http/https。
+  ipcMain.handle("wwriting:open-external-url", async (_event, rawUrl) => {
+    let url;
+    try {
+      url = new URL(String(rawUrl ?? ""));
+    } catch {
+      throw new Error("无效的链接");
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      throw new Error("仅允许 http/https 链接");
+    }
+    await shell.openExternal(url.toString());
+    return true;
+  });
+
   const { createAppShellServer } = await import(pathToFileURL(path.join(rootDir, "src", "core", "app-server.mjs")).href);
   server = createAppShellServer({
     workspaceRoot: process.env.WORKSPACE_ROOT || rootDir,

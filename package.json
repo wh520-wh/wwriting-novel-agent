@@ -64,6 +64,7 @@
     "electron-builder": "^26.8.1"
   },
   "dependencies": {
-    "ignore": "^5.3.2"
+    "ignore": "^5.3.2",
+    "marked": "^18.0.9"
   }
 }

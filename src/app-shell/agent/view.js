@@ -420,6 +420,27 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     latestButton.hidden = followLatest;
   });
 
+  // ---- 外部链接：交给系统默认浏览器（Task 8 Step 4）---------------------------
+  // markdown-lite 只在 http:/https: 时输出 [data-external-link]；这里对
+  // [data-external-link] 做事件委托并 preventDefault：Electron 走 preload 暴露的
+  // openExternalUrl（main 进程二次校验协议），普通浏览器开发模式回退
+  // window.open(url, "_blank", "noopener,noreferrer")。
+  function handleExternalLinkClick(event) {
+    const anchor = event.target?.closest?.("[data-external-link]");
+    if (!anchor) return;
+    event.preventDefault();
+    const href = anchor.getAttribute("href");
+    if (!href) return;
+    const desktop = globalThis.wwritingDesktop;
+    if (desktop?.openExternalUrl) {
+      Promise.resolve(desktop.openExternalUrl(href)).catch(() => {});
+      return;
+    }
+    globalThis.open?.(href, "_blank", "noopener,noreferrer");
+  }
+
+  conv.addEventListener("click", handleExternalLinkClick);
+
   // ---- 对话 ----------------------------------------------------------------
   function createMessageBubble(role, textValue, { markdown = false } = {}) {
     const bubble = doc.createElement("div");

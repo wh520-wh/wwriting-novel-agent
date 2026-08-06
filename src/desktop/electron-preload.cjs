@@ -5,5 +5,6 @@ contextBridge.exposeInMainWorld("wwritingDesktop", {
   shell: "electron",
   selectProjectFolder: () => ipcRenderer.invoke("wwriting:select-project-folder"),
   revealPath: (p) => ipcRenderer.invoke("wwriting:reveal-path", p),
-  setTitleBarTheme: (dark) => ipcRenderer.invoke("wwriting:set-title-bar-theme", dark)
+  setTitleBarTheme: (dark) => ipcRenderer.invoke("wwriting:set-title-bar-theme", dark),
+  openExternalUrl: (url) => ipcRenderer.invoke("wwriting:open-external-url", url)
 });
