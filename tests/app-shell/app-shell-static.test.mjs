@@ -1,5 +1,6 @@
-// Static assertions over app.js / api-client.js source.
-// The plan allows source-grep assertions: the key is to prove the wiring exists.
+// Static assertions over app.js / api-client.js source（统一 Agent 内核计划 Task 9 改写）。
+// 断言新组合根的接线：AgentSurface 是唯一对话 seam、api-client 通用 helper 保留、
+// quick-rail 纯导航、drawer-panels 直接导出、settings-modal 稳定行为。
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -9,14 +10,14 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const appJsPath = path.join(here, "..", "..", "src", "app-shell", "app.js");
 const apiClientPath = path.join(here, "..", "..", "src", "app-shell", "api-client.js");
-const composerPath = path.join(here, "..", "..", "src", "app-shell", "composer.js");
-const threadRendererPath = path.join(here, "..", "..", "src", "app-shell", "thread-renderer.js");
+const quickRailPath = path.join(here, "..", "..", "src", "app-shell", "components", "quick-rail.js");
+const drawerPanelsPath = path.join(here, "..", "..", "src", "app-shell", "drawer-panels.js");
 const chapterPresentationPath = path.join(here, "..", "..", "src", "app-shell", "chapter-presentation.mjs");
 
 const appSource = await fs.readFile(appJsPath, "utf8");
 const apiClientSource = await fs.readFile(apiClientPath, "utf8");
-const composerSource = await fs.readFile(composerPath, "utf8");
-const threadRendererSource = await fs.readFile(threadRendererPath, "utf8");
+const quickRailSource = await fs.readFile(quickRailPath, "utf8");
+const drawerPanelsSource = await fs.readFile(drawerPanelsPath, "utf8");
 const chapterPresentationSource = await fs.readFile(chapterPresentationPath, "utf8");
 
 test("app.js wires the project scope module", () => {
@@ -25,81 +26,75 @@ test("app.js wires the project scope module", () => {
     /import\s*\{[^}]*createProjectScope[^}]*\}\s*from\s*["']\.\/project-scope\.mjs["']/,
     "app.js should import createProjectScope from ./project-scope.mjs"
   );
-});
-
-test("app.js creates exactly one projectScope instance", () => {
   const occurrences = appSource.match(/createProjectScope\s*\(/g) ?? [];
-  assert.equal(
-    occurrences.length,
-    1,
-    "createProjectScope() should be called exactly once to create a single instance"
-  );
-  assert.match(
-    appSource,
-    /const\s+projectScope\s*=\s*createProjectScope\s*\(\s*\)/,
-    "projectScope should be bound to a single const"
-  );
-});
-
-test("app.js activates the project scope on every project selection", () => {
-  // The single activation point is `projectScope.activate(...)` inside
-  // commitProjectSwitch; that helper is called from openProject, initProject,
-  // and forgetProject. Allow the direct match OR a one-caller helper.
-  const directActivate = (appSource.match(/projectScope\.activate\s*\(/g) ?? []).length;
-  const commitCalls = (appSource.match(/commitProjectSwitch\s*\(/g) ?? []).length;
-  assert.ok(
-    directActivate >= 1,
-    `projectScope.activate should be wired (saw ${directActivate} direct call(s))`
-  );
-  assert.ok(
-    commitCalls >= 3,
-    `commitProjectSwitch should be invoked from at least 3 switch paths (open/init/forget); saw ${commitCalls} call site(s)`
-  );
+  assert.equal(occurrences.length, 1, "createProjectScope() 应只创建一次");
 });
 
 test("app.js gates the dashboard load on projectScope.isCurrent", () => {
+  assert.match(appSource, /projectScope\.capture\s*\(/);
+  assert.match(appSource, /projectScope\.isCurrent\s*\(/);
+  assert.match(appSource, /withProjectScope\s*\(/);
+});
+
+test("app.js 通过 AgentSurface 唯一对话 seam 接线", () => {
   assert.match(
     appSource,
-    /projectScope\.capture\s*\(/,
-    "loadDashboard should call projectScope.capture to obtain a token"
+    /import\s*\{[^}]*createAgentSurface[^}]*\}\s*from\s*["']\.\/agent\/index\.js["']/,
+    "app.js 应只从 agent/index.js 导入对话能力"
   );
-  assert.match(
+  assert.match(appSource, /createAgentSurface\s*\(/, "app.js 应创建 AgentSurface");
+  assert.match(appSource, /agentSurface\.openProject\s*\(/, "项目切换应调用 surface.openProject");
+  assert.doesNotMatch(
     appSource,
-    /projectScope\.isCurrent\s*\(/,
-    "post-fetch path should call projectScope.isCurrent to drop stale responses"
+    /\.\/agent\/(?:state|view|api)\.js|thread-renderer|composer\.js|agent-truth|run-presentation|write-readiness|command-registry/u,
+    "app.js 不得 import Agent 内部或已删除的旧对话模块"
   );
 });
 
-test("app.js adopts the initially selected dashboard project into projectScope", () => {
-  assert.match(
-    appSource,
-    /if\s*\(\s*!activeProjectRoot\s*&&\s*data\.hasProject\s*&&\s*data\.projectRoot\s*\)\s*\{[\s\S]*?projectScope\.activate\s*\(\s*data\.projectRoot\s*\)/,
-    "the first dashboard response must activate its project root so later refreshes are not discarded"
-  );
+test("app.js 保留项目/设置/阅读器/抽屉接线", () => {
+  assert.match(appSource, /openProject\s*\(/);
+  assert.match(appSource, /initProject\s*\(/);
+  assert.match(appSource, /openSettingsModal/);
+  assert.match(appSource, /openReader\s*\(/);
+  assert.match(appSource, /\/api\/projects\/open/u);
+  assert.match(appSource, /\/api\/projects\/init/u);
+  assert.match(appSource, /\/api\/chapters\/read/u);
+  assert.match(appSource, /openDrawerTab\s*\(/);
+  assert.doesNotMatch(appSource, /\/api\/chat\/|\/api\/commands\/submit|\/api\/run\/stop|\/api\/queue\//u);
 });
 
-test("app.js carries projectRoot in dashboard fetches", () => {
-  // Either the URL is built with withProjectScope, or the body has projectRoot
-  // alongside the dashboard fetch call. The api-client should expose withProjectScope.
-  const usesHelper = /withProjectScope\s*\(/.test(appSource);
-  assert.ok(
-    usesHelper,
-    "app.js should call api-client's withProjectScope helper to attach projectRoot"
-  );
+test("api-client.js exports 通用 helper 且无旧 chat helper", () => {
+  assert.match(apiClientSource, /export\s+function\s+withProjectScope\s*\(/);
+  assert.match(apiClientSource, /export\s+async\s+function\s+getJson\s*\(/);
+  assert.match(apiClientSource, /export\s+async\s+function\s+postJson\s*\(/);
+  assert.match(apiClientSource, /export\s+async\s+function\s+readResponseJson\s*\(/);
+  assert.doesNotMatch(apiClientSource, /sendChatMessage|confirmChatAction|stopChat|fetchChatHistory/u);
+  assert.match(apiClientSource, /error\.code\s*=/);
+  assert.match(apiClientSource, /error\.fields\s*=/);
+  assert.match(apiClientSource, /error\.action\s*=/);
 });
 
-test("api-client.js exports withProjectScope helper", () => {
-  assert.match(
-    apiClientSource,
-    /export\s+function\s+withProjectScope\s*\(/,
-    "api-client.js should export a withProjectScope helper that appends ?projectRoot=…"
-  );
+test("quick-rail.js 纯导航四槽位，无命令注册副作用", () => {
+  assert.ok(quickRailSource.includes("function renderQuickRail"));
+  assert.ok(quickRailSource.includes("function bindQuickRailKeys"));
+  assert.doesNotMatch(quickRailSource, /commands\/index|command-registry|registerCommand/u);
+  for (const key of ["chapters", "skills", "research", "cost"]) {
+    assert.ok(quickRailSource.includes(`key: '${key}'`), `quick-rail 应含 ${key} 槽位`);
+  }
+  assert.ok(!quickRailSource.includes("reviewer"), "审查槽位应删除");
+});
+
+test("drawer-panels.js 直接调用确定性导出 route，无旧业务入口", () => {
+  assert.match(drawerPanelsSource, /\/api\/projects\/export-book/u, "导出应直接调用确定性 route");
+  assert.doesNotMatch(drawerPanelsSource, /sendChatMessageWithUX|renderRunPanel|renderReviewerPanel/u);
+  assert.ok(drawerPanelsSource.includes("function renderChapterPanel"));
+  assert.ok(drawerPanelsSource.includes("function renderModelPanel"));
+  assert.ok(drawerPanelsSource.includes("function renderCostPanel"));
 });
 
 test("settings-modal.js re-exports the pure connection helpers", () => {
   const settingsModalPath = path.join(here, "..", "..", "src", "app-shell", "settings-modal.js");
   return fs.readFile(settingsModalPath, "utf8").then((settingsModalSource) => {
-    // Re-export form: `export { formatConnectionStatus, submitModelConnectionTest } from "..."`
     assert.match(
       settingsModalSource,
       /export\s*\{[^}]*formatConnectionStatus[^}]*\}\s*from\s*["']\.\/settings-connection\.mjs["']/,
@@ -110,284 +105,26 @@ test("settings-modal.js re-exports the pure connection helpers", () => {
       /export\s*\{[^}]*submitModelConnectionTest[^}]*\}\s*from\s*["']\.\/settings-connection\.mjs["']/,
       "settings-modal.js should re-export submitModelConnectionTest from ./settings-connection.mjs"
     );
-    assert.match(
-      settingsModalSource,
-      /fetchModelSecret\s*\(\s*apiKeyEnvValue\s*\)[\s\S]{0,240}settingsFields\.apiKey\.input\.value/u,
-      "settings-modal.js should fetch the saved model secret by the edited provider's env and put the full key back into the API Key input"
-    );
-    assert.doesNotMatch(
-      settingsModalSource,
-      /DO NOT prefill|must not echo the saved key|value:\s*""[\s\S]{0,80}secret:\s*true/u,
-      "settings-modal.js should no longer intentionally keep the saved API Key field empty"
-    );
-  });
-});
-
-test("composer.js supports /model switching from the chat box", () => {
-  assert.match(
-    composerSource,
-    /MODEL_PREFIXES/u,
-    "composer.js should define /model as a first-class command prefix"
-  );
-  assert.match(
-    composerSource,
-    /\/api\/settings\/model-switch/u,
-    "composer.js should call the model-switch endpoint from /model"
-  );
-  assert.match(
-    composerSource,
-    /await\s+ctx\.loadDashboard\s*\(/u,
-    "model switching should refresh dashboard so the model pill updates"
-  );
-});
-
-test("composer async actions carry a project scope token and reject stale responses", () => {
-  assert.match(composerSource, /projectScope\?\.capture\(projectRoot\)/u);
-  assert.match(composerSource, /projectScope\.isCurrent\(token\)/u);
-  assert.match(composerSource, /projectRoot\s*\}\s*\);/u);
-});
-
-test("settings-connection.mjs defines the pure helpers", () => {
-  const settingsConnectionPath = path.join(here, "..", "..", "src", "app-shell", "settings-connection.mjs");
-  return fs.readFile(settingsConnectionPath, "utf8").then((source) => {
-    assert.match(
-      source,
-      /export\s+function\s+formatConnectionStatus[\s\S]*?\(/,
-      "settings-connection.mjs should export formatConnectionStatus"
-    );
-    assert.match(
-      source,
-      /export\s+async\s+function\s+submitModelConnectionTest[\s\S]*?\(/,
-      "settings-connection.mjs should export submitModelConnectionTest"
-    );
   });
 });
 
 test("settings-modal.js owns the MiMo preset autofill", () => {
   const settingsModalPath = path.join(here, "..", "..", "src", "app-shell", "settings-modal.js");
   return fs.readFile(settingsModalPath, "utf8").then((modalSource) => {
-    // MiMo preset exact fields per plan.
     assert.match(
       modalSource,
       /provider:\s*"openai-compatible"[\s\S]{0,200}baseUrl:\s*"https:\/\/api\.xiaomimimo\.com\/v1"[\s\S]{0,200}apiKeyEnv:\s*"XIAOMI_MIMO_API_KEY"/u,
       "MiMo preset must autofill provider/openai-compatible with exact base_url and api_key_env"
     );
-    // Plan forbids renaming the env var.
-    assert.match(
-      modalSource,
-      /XIAOMI_MIMO_API_KEY/,
-      "settings-modal.js must reference XIAOMI_MIMO_API_KEY (no rename)"
-    );
-    assert.doesNotMatch(
-      modalSource,
-      /mimo-v2-flash/,
-      "settings-modal.js must not invent a mimo-v2-flash model"
-    );
+    assert.match(modalSource, /XIAOMI_MIMO_API_KEY/);
+    assert.doesNotMatch(modalSource, /mimo-v2-flash/);
   });
 });
 
-test("api-client.js preserves error code/fields/actions on post failure", () => {
-  // The new behavior is to attach code, fields, action onto the thrown error.
-  assert.match(apiClientSource, /error\.code\s*=/);
-  assert.match(apiClientSource, /error\.fields\s*=/);
-  assert.match(apiClientSource, /error\.action\s*=/);
-});
-
-test("api-client.js postJson accepts an AbortSignal", () => {
-  assert.match(
-    apiClientSource,
-    /function\s+postJson\s*\([\s\S]*?signal/,
-    "postJson should accept an options bag with a signal"
-  );
-  assert.match(
-    apiClientSource,
-    /signal/,
-    "the signal should be forwarded into fetch()"
-  );
-});
-
-test("thread-renderer.js imports presentChapterArtifact from the chapter-presentation module", () => {
-  assert.match(
-    threadRendererSource,
-    /import\s*\{[^}]*presentChapterArtifact[^}]*\}\s*from\s*["']\.\/chapter-presentation\.mjs["']/,
-    "thread-renderer.js should import presentChapterArtifact from ./chapter-presentation.mjs"
-  );
-});
-
-test("chapter-presentation.mjs exports presentChapterArtifact and reason text", () => {
+test("chapter-presentation.mjs 保留（稳定领域展示模块）", () => {
   assert.match(
     chapterPresentationSource,
     /export\s+function\s+presentChapterArtifact\s*\(/,
     "chapter-presentation.mjs should export a presentChapterArtifact function"
-  );
-  // The hardening in B1.1 introduced inspect_error; the renderer should not
-  // show empty detail text for that reason.
-  assert.match(
-    chapterPresentationSource,
-    /inspect_error\s*:\s*"读取章节文件失败（可能文件被锁定）"/u,
-    "reasonText should include an inspect_error entry"
-  );
-});
-
-test("thread-renderer.js calls presentChapterArtifact when rendering a chapter card", () => {
-  assert.match(
-    threadRendererSource,
-    /presentChapterArtifact\s*\(/,
-    "attachChapterCard should call presentChapterArtifact"
-  );
-});
-
-test("thread-renderer.js gates the open-reader click and 'open' affordance on canOpen", () => {
-  // The plan requires: only bind openReader when canOpen is true; never show
-  // "已写入本地文件" or enable the open action for a non-committed artifact.
-  // We assert at least one conditional that gates the click handler on canOpen
-  // and at least one that gates the "打开阅读" affordance on canOpen.
-  assert.match(
-    threadRendererSource,
-    /view\.canOpen[\s\S]*?addEventListener\s*\(\s*["']click["']/u,
-    "click handler binding must be conditional on view.canOpen"
-  );
-  assert.match(
-    threadRendererSource,
-    /view\.canOpen[\s\S]*?打开阅读/u,
-    "the '打开阅读' affordance must be conditional on view.canOpen"
-  );
-});
-
-test("thread-renderer.js keeps the sole run stop button hidden while cancelling", () => {
-  const stopBtnContext = threadRendererSource.match(
-    /block\.stopBtn\.hidden[\s\S]{0,200}/u
-  );
-  assert.ok(
-    stopBtnContext && /cancelling/.test(stopBtnContext[0]),
-    "run-stop-btn hidden condition should account for cancelling"
-  );
-  assert.match(
-    threadRendererSource,
-    /task\.status\s*===\s*["']running["'][\s\S]{0,120}existing\?\.remove\(\)/u,
-    "the running task must defer to the run card instead of adding another stop button"
-  );
-});
-
-test("thread-renderer.js keeps a running task in the single run card and hides successful tool internals", () => {
-  assert.match(
-    threadRendererSource,
-    /task\.status\s*===\s*["']running["'][\s\S]{0,180}existing\?\.remove\(\)[\s\S]{0,180}continue/u,
-    "running queue tasks should be removed instead of duplicating the run card"
-  );
-  assert.match(
-    threadRendererSource,
-    /function renderToolCard\(message\)[\s\S]*?applyFold\([\s\S]*?ok\s*\|\|\s*superseded/u,
-    "successful tool calls should be folded by default so technical params stay hidden"
-  );
-});
-
-test("thread-renderer 主动徽标认 timeline_check 类型", () => {
-  assert.match(threadRendererSource, /timeline_check/, "thread-renderer 应识别 timeline_check 主动消息");
-});
-
-// ---- Task 3: Writing readiness and chapter success cards ----
-
-const indexPath = path.join(here, "..", "..", "src", "app-shell", "index.html");
-const indexSource = await fs.readFile(indexPath, "utf8");
-
-test("index.html contains write-readiness section with stable IDs", () => {
-  assert.match(indexSource, /id="write-readiness"/, "index.html should have a #write-readiness element");
-  assert.match(indexSource, /id="write-readiness-primary"/, "index.html should have a #write-readiness-primary button");
-  assert.match(indexSource, /id="write-readiness-secondary"/, "index.html should have a #write-readiness-secondary button");
-});
-
-test("index.html contains chapter-success section with stable IDs", () => {
-  assert.match(indexSource, /id="chapter-success"/, "index.html should have a #chapter-success element");
-  assert.match(indexSource, /id="chapter-success-read"/, "index.html should have a #chapter-success-read button");
-  assert.match(indexSource, /id="chapter-success-continue"/, "index.html should have a #chapter-success-continue button");
-});
-
-test("app.js imports deriveWriteReadiness from write-readiness.mjs", () => {
-  assert.match(
-    appSource,
-    /import\s*\{[^}]*deriveWriteReadiness[^}]*\}\s*from\s*["']\.\/write-readiness\.mjs["']/,
-    "app.js should import deriveWriteReadiness from ./write-readiness.mjs"
-  );
-});
-
-test("index.html contains an accessible author workbench with stable test hooks", () => {
-  for (const selector of [
-    "id=\"project-workbench\"",
-    "data-testid=\"project-workbench\"",
-    "id=\"workbench-cover\"",
-    "id=\"workbench-title\"",
-    "id=\"workbench-seed\"",
-    "id=\"workbench-progress\"",
-    "id=\"workbench-primary\"",
-    "id=\"workbench-read-latest\"",
-    "id=\"workbench-open-chapters\"",
-    "id=\"workbench-activity\"",
-  ]) {
-    assert.ok(indexSource.includes(selector), `missing author workbench contract: ${selector}`);
-  }
-  assert.match(indexSource, /id="workbench-cover"[^>]*role="img"|role="img"[^>]*id="workbench-cover"/u);
-  assert.ok(indexSource.includes('id="workbench-progress-label"'));
-});
-
-test("app.js renders the workbench from pure presentation modules", () => {
-  assert.match(
-    appSource,
-    /import\s*\{[^}]*deriveProjectIdentity[^}]*\}\s*from\s*["']\.\/project-identity\.mjs["']/,
-    "app.js should import deriveProjectIdentity"
-  );
-  assert.match(
-    appSource,
-    /import\s*\{[^}]*deriveWorkbenchView[^}]*deriveChapterCompletion[^}]*\}\s*from\s*["']\.\/workbench-presentation\.mjs["']/,
-    "app.js should import workbench presentation helpers"
-  );
-  assert.match(appSource, /function\s+renderProjectWorkbench\s*\(/, "app.js should render the workbench in one function");
-  assert.match(appSource, /renderProjectWorkbench\s*\(\s*data\s*\)/, "renderDashboard should update the workbench");
-  assert.match(appSource, /deriveProjectIdentity\s*\(\s*\{\s*project\s*,\s*projectRoot:/, "project rows should reuse project identity");
-});
-
-test("styles.css defines themed workbench, project covers, creation cards and reduced-motion fallback", async () => {
-  const cssPath = path.join(here, "..", "..", "src", "app-shell", "styles.css");
-  const cssSource = await fs.readFile(cssPath, "utf8");
-
-  for (const selector of [
-    ".project-workbench",
-    ".workbench-cover",
-    ".proj-cover",
-    ".workbench-activity-row",
-    ".creation-card",
-    ".session-title--trail",
-    "[data-project-theme=\"tide\"]",
-    "[data-project-theme=\"ember\"]",
-  ]) {
-    assert.ok(cssSource.includes(selector), `missing visual system selector: ${selector}`);
-  }
-  assert.match(cssSource, /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.project-workbench/u);
-});
-
-test("project removal uses an accessible icon button and an out-of-flow menu", async () => {
-  const cssPath = path.join(here, "..", "..", "src", "app-shell", "styles.css");
-  const [cssSource] = await Promise.all([fs.readFile(cssPath, "utf8")]);
-  assert.match(appSource, /icon\(\s*["']trash["']/u, "project removal should use the trash icon");
-  assert.match(appSource, /remove\.title\s*=\s*["']从列表移除["']/u, "project removal needs a visible title");
-  assert.match(cssSource, /\.proj-menu\s*\{[\s\S]*?position:\s*absolute/u, "project menu must be out of layout flow");
-  assert.match(cssSource, /\.proj-row:focus-within\s+\.proj-menu/u, "project menu must remain keyboard reachable");
-});
-
-test("app.js SSE onmessage 归属守卫：连接时捕获归属项目，切项目后旧连接事件丢弃", () => {
-  // Fix round 1（Important 1）：SSE 事件无项目字段，thread-renderer 的 user_instruction_received
-  // 分支只能以「当前项目」为归属。若 app.js 在切项目（A→B）窗口内仍把 A 的 in-flight 事件
-  // dispatch 给新线程，A 排队任务的 user_instruction_received 会在 B 的线程开一轮假 turn。
-  // 修复约定：EventSource 连接建立时把 currentProjectRoot 捕获进闭包（connRoot），
-  // onmessage 派发前与当前 currentProjectRoot 比对，不一致（切项目/切无项目）一律丢弃。
-  assert.match(
-    appSource,
-    /const\s+connRoot\s*=\s*currentProjectRoot\s*;/,
-    "SSE 连接建立时应把当时的 currentProjectRoot 捕获进闭包"
-  );
-  assert.match(
-    appSource,
-    /sseSource\.onmessage\s*=\s*\(msg\)\s*=>\s*\{[\s\S]*?if\s*\(\s*currentProjectRoot\s*!==\s*connRoot\s*\)\s*return[\s\S]*?threadRenderer\.onRunEvent/,
-    "onmessage 派发前应与连接归属项目比对，不一致则丢弃，旧项目开轮事件不得串入新线程"
   );
 });

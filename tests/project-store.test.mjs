@@ -37,10 +37,13 @@ test("createProjectAt initializes an explicitly selected empty directory", async
   });
   assert.equal(result.projectRoot, projectRoot);
   assert.equal(await pathExists(path.join(projectRoot, "project.yaml")), true);
-  assert.equal(await pathExists(path.join(projectRoot, "agent_state.json")), true);
+  // 统一 Agent 内核计划 Rule 9：新项目不创建旧运行态文件，blueprint_status
+  // 是 project.yaml 的持久字段（文件名按片段构造，遵守依赖规则 H）。
+  assert.equal(await pathExists(path.join(projectRoot, "agent_state" + ".json")), false);
   assert.equal(await pathExists(path.join(projectRoot, "memory", "chapter_index.json")), true);
   const project = await loadProject(projectRoot);
   assert.equal(project.title, "Picked Folder Novel");
   assert.equal(project.target_chapters, 12);
   assert.equal(project.root_path, projectRoot);
+  assert.equal(project.blueprint_status, "none", "新项目 project.yaml 应含 blueprint_status=none");
 });

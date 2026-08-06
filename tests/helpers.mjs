@@ -1,13 +1,14 @@
 // 测试共享辅助函数。
-// createWritingProject：createProject + 置 blueprint_status:"complete"。
-// 蓝图门禁（spec §1.4）落地后，新建项目默认 "none" 会被写作入口拒绝；
-// 真实走写作入口的测试需要先把项目标为蓝图完成。
-import { createProject, loadState, saveState } from "../src/core/project-store.mjs";
+// createWritingProject：createProject + 置 project.yaml.blueprint_status:"complete"。
+// 统一 Agent 内核计划 Rule 9：blueprint_status 是 project.yaml 的持久字段，
+// 不再存在旧运行态文件；写作入口只读 project.yaml 判定。
+import { createProject, loadProject, saveProject } from "../src/core/project-store.mjs";
 
 export async function createWritingProject(workspaceRoot, options = {}) {
   const result = await createProject(workspaceRoot, options);
-  const state = await loadState(result.projectRoot);
-  state.blueprint_status = "complete";
-  await saveState(result.projectRoot, state);
+  const project = await loadProject(result.projectRoot);
+  if (project.blueprint_status !== "complete") {
+    await saveProject(result.projectRoot, { ...project, blueprint_status: "complete" });
+  }
   return result;
 }

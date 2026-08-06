@@ -21,7 +21,9 @@ import {
 } from "./local-model-profiles.mjs";
 import { ModelConfigValidationError, validateModelConfig } from "./model-config-validation.mjs";
 import { fillOfficialPricing, normalizePricing } from "./model-pricing.mjs";
-import { writingRequiredCapabilitiesOk } from "./provider-adapters.mjs";
+// 统一 Agent 内核计划 Task 9 cutover：能力判定改用 model/capabilities.mjs，
+// 不依赖旧 provider adapter implementation。
+import { writingRequiredCapabilitiesOk } from "./model/capabilities.mjs";
 
 export class GlobalModelSettingsError extends Error {
   constructor(code, message) {

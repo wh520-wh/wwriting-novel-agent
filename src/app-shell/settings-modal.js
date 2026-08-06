@@ -1,6 +1,6 @@
 import { icon } from "./icons.js";
 import { compactObject, isEnvironmentVariableName, resolveModelEndpoint } from "./utils.js";
-import { getJson, postJson, sendChatMessage } from "./api-client.js";
+import { getJson, postJson } from "./api-client.js";
 import { motion } from "./motion-runtime.js";
 import { PERMISSION_TIERS, detectPermissionTier } from "./permission-tiers.mjs";
 import { formatConnectionStatus, submitModelConnectionTest } from "./settings-connection.mjs";
@@ -491,9 +491,21 @@ export function createSettingsModal(ctx, options = {}) {
     archiveBtn.id = isArchived ? "settings-unarchive-trigger" : "settings-archive-trigger";
     archiveBtn.textContent = isArchived ? "解除归档" : "归档此项目";
     archiveBtn.addEventListener("click", () => {
-      closeSettingsModal();
-      const message = isArchived ? "解除归档" : "归档这个项目";
-      void sendChatMessage(message).catch((error) => ctx.showToast(error.message, "error"));
+      // 归档是确定性设置变更（Rule 6：不为确定性功能创建 Agent 工具/对话路径）
+      archiveBtn.disabled = true;
+      void postJson("/api/settings/update", {
+        projectRoot: ctx.getCurrentProjectRoot?.(),
+        archived_at: isArchived ? null : new Date().toISOString()
+      })
+        .then(async () => {
+          closeSettingsModal();
+          ctx.showToast(isArchived ? "已解除归档。" : "项目已归档，只读。", "success");
+          await ctx.loadDashboard?.();
+        })
+        .catch((error) => {
+          ctx.showToast(error?.message ?? "归档操作失败。", "error");
+          archiveBtn.disabled = false;
+        });
     });
     archiveField.append(archiveLabel, archiveBtn);
     settingsFields.archiveButton = { field: archiveField, input: archiveBtn };

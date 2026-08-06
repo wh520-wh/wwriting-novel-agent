@@ -18,6 +18,10 @@
 
 export const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
 export const ACTIVITY_TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
+// 取消类工具错误码：这些错误表示活动被停止/作废（用户停止、决策取消、信号中止），
+// 不是执行失败，终态标记为 cancelled（"已停止"）而不是 failed（"✗"）。
+// 与 tools.mjs 的 emitToolCancelled 路径（tool_cancelled / shell_cancelled）保持一致。
+export const ACTIVITY_CANCELLED_ERROR_CODES = new Set(["tool_cancelled", "shell_cancelled"]);
 
 // run_status_changed 的 session.status 镜像（与 journal.mjs RUN_STATUS_TO_SESSION 一致）。
 const RUN_STATUS_TO_SESSION = {
@@ -337,7 +341,7 @@ export function reduceEvent(state, event) {
     case "tool_call_failed": {
       const activity = state.activities.get(payload.activity_id ?? null);
       if (!activity) break;
-      activity.status = payload.error === "tool_cancelled" ? "cancelled" : "failed";
+      activity.status = ACTIVITY_CANCELLED_ERROR_CODES.has(payload.error) ? "cancelled" : "failed";
       activity.error = typeof payload.message === "string" ? payload.message
         : typeof payload.error === "string" ? payload.error : null;
       if (payload.duration_ms != null) activity.duration_ms = payload.duration_ms;

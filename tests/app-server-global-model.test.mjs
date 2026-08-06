@@ -7,7 +7,7 @@ import { createAppShellServer } from "../src/core/app-server.mjs";
 import { loadLocalSecrets } from "../src/core/local-secrets.mjs";
 import { loadLocalModelProfiles, upsertLocalModelProfile } from "../src/core/local-model-profiles.mjs";
 import { createProject, loadProject, saveProject } from "../src/core/project-store.mjs";
-import { registerProviderCapabilityResolver } from "../src/core/provider-adapters.mjs";
+import { registerProviderCapabilityResolver } from "../src/core/model/capabilities.mjs";
 
 const FETCH_BLOCKED_PORTS = new Set([
   1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79,

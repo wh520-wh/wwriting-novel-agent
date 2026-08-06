@@ -15,12 +15,12 @@
 // 运行中 submit 返回 HTTP 200 + status:"queued"（FIFO 队列，同一 run_id）；
 // 空闲 submit 创建新 Run，返回 status:"running"。错误统一由 router 适配。
 //
-// 作用域语义（Task 9 接线时评估是否补强）：本模块不做项目注册校验，projectRoot
-// 直接透传给 ProjectAgent——journal 会惰性创建 .wwriting/agent/（对任意路径）。
-// 本地单机应用的暴露面有限（只有本机 UI 会调这些端点），且与 ProjectAgent 的
-// open/submit 语义一致（open 同样不校验注册）；旧 app-server 的 resolveRead/
-// WriteProjectRoot 注册校验由 project-routes 保留。若未来暴露到网络，应在
-// composition root 对 /api/agent/* 统一加作用域检查。
+// 作用域语义（Task 9 评审闭环）：本模块自身不做项目注册校验——projectRoot 由
+// 注入的 resolveProjectRoot(root) 解析；组合根（app-server.mjs）注入与 project-routes
+// 一致的注册校验（resolveReadProjectRoot：当前选中 / 工作区内 / 最近列表 + 磁盘
+// project.yaml），未注册路径返回 400 INVALID_PROJECT_SCOPE，journal 不会对任意路径
+// 惰性创建 .wwriting/agent/。单元测试直接组装本模块时不注入该校验（本地项目
+// 目录即合法作用域），保持传输层与作用域策略解耦。
 import { HttpError } from "../http-error.mjs";
 
 const SNAPSHOT_LIMIT_MAX = 1000;
@@ -30,7 +30,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export function createAgentRoutes({ agent, eventsPollIntervalMs = EVENTS_POLL_INTERVAL_MS } = {}) {
+export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPollIntervalMs = EVENTS_POLL_INTERVAL_MS } = {}) {
   if (!agent || typeof agent.submit !== "function") {
     throw new TypeError("createAgentRoutes 需要注入 ProjectAgent（src/core/agent/index.mjs）");
   }
@@ -43,10 +43,19 @@ export function createAgentRoutes({ agent, eventsPollIntervalMs = EVENTS_POLL_IN
     return value;
   }
 
+  // 作用域解析：先要求非空 projectRoot，再交给注入的注册校验（组合根职责）。
+  async function resolveScope(body, query = {}) {
+    const projectRoot = requireProjectRoot(body, query);
+    if (typeof resolveProjectRoot === "function") {
+      return resolveProjectRoot(projectRoot);
+    }
+    return projectRoot;
+  }
+
   return {
     // 空闲 → 创建新 Run（status:"running"）；运行中 → FIFO 队列（status:"queued"，同 run_id）。
     "POST /api/agent/input": async ({ body }) => {
-      const projectRoot = requireProjectRoot(body);
+      const projectRoot = await resolveScope(body);
       const text = body?.text;
       if (typeof text !== "string" || text.trim().length === 0) {
         throw new HttpError(400, "empty_input", "text 必须是非空字符串。");
@@ -62,7 +71,7 @@ export function createAgentRoutes({ agent, eventsPollIntervalMs = EVENTS_POLL_IN
 
     // 立即：同一 Run 内打断并提升排队输入，返回同一 run_id。
     "POST /api/agent/input/:inputId/promote": async ({ params, body }) => {
-      const projectRoot = requireProjectRoot(body);
+      const projectRoot = await resolveScope(body);
       const result = await agent.promote({ projectRoot, inputId: params.inputId });
       return {
         ok: true,
@@ -74,7 +83,7 @@ export function createAgentRoutes({ agent, eventsPollIntervalMs = EVENTS_POLL_IN
 
     // 停止：只作用于当前活动 Run；路径 runId 必须与活动 Run 一致，否则 404。
     "POST /api/agent/run/:runId/stop": async ({ params, body }) => {
-      const projectRoot = requireProjectRoot(body);
+      const projectRoot = await resolveScope(body);
       const { session } = await agent.snapshot({ projectRoot, afterSeq: 0, limit: 1 });
       const run = session?.active_run;
       if (!run || run.id !== params.runId) {
@@ -86,7 +95,7 @@ export function createAgentRoutes({ agent, eventsPollIntervalMs = EVENTS_POLL_IN
 
     // 重试：继续同一可恢复 Run（failed/interrupted）。
     "POST /api/agent/run/:runId/retry": async ({ params, body }) => {
-      const projectRoot = requireProjectRoot(body);
+      const projectRoot = await resolveScope(body);
       const result = await agent.retry({ projectRoot, runId: params.runId });
       return {
         ok: true,
@@ -98,7 +107,7 @@ export function createAgentRoutes({ agent, eventsPollIntervalMs = EVENTS_POLL_IN
 
     // 决策：choice ∈ allow/allow_input/deny；extreme 决策要求 choice 为精确确认文字。
     "POST /api/agent/decision/:decisionId": async ({ params, body }) => {
-      const projectRoot = requireProjectRoot(body);
+      const projectRoot = await resolveScope(body);
       const choice = body?.choice;
       if (typeof choice !== "string" || choice.length === 0) {
         throw new HttpError(400, "invalid_choice", "choice 必须是非空字符串。");
@@ -109,7 +118,7 @@ export function createAgentRoutes({ agent, eventsPollIntervalMs = EVENTS_POLL_IN
 
     // 快照：{ session, events } 是 AgentSurface 的唯一实时数据源。
     "GET /api/agent/snapshot": async ({ query }) => {
-      const projectRoot = requireProjectRoot({}, query);
+      const projectRoot = await resolveScope({}, query);
       const afterSeq = Number.isFinite(Number(query.afterSeq)) ? Math.max(0, Number(query.afterSeq)) : 0;
       const limit = Number.isFinite(Number(query.limit))
         ? Math.min(SNAPSHOT_LIMIT_MAX, Math.max(1, Number(query.limit)))
@@ -127,7 +136,7 @@ export function createAgentRoutes({ agent, eventsPollIntervalMs = EVENTS_POLL_IN
     // 事件（伴随 response.destroyed=true）。write 到已销毁响应不抛错（静默丢弃），
     // 不能依赖 write 失败兜底。
     "GET /api/project/events": async ({ query, request, response }) => {
-      const projectRoot = requireProjectRoot({}, query);
+      const projectRoot = await resolveScope({}, query);
       const afterSeqParam = Number(query.afterSeq);
       let afterSeq = Number.isFinite(afterSeqParam) ? Math.max(0, afterSeqParam) : 0;
       let closed = false;

@@ -1,3 +1,5 @@
+// 通用 HTTP helper（统一 Agent 内核计划 Task 9：保留通用 GET/POST/JSON/project-scope
+// helper；旧聊天助手已删除——AgentSurface transport 收敛到 agent/api.js）。
 // 附加 ?projectRoot=... 到 URL。给需要显式作用域的端点用。
 // 任何模块（包括 app.js）都应该走这个 helper，避免散落手写 URLSearchParams。
 export function withProjectScope(pathname, projectRoot) {
@@ -47,34 +49,4 @@ export async function readResponseJson(response) {
   } catch {
     return { ok: false, message: text.slice(0, 240) || `HTTP ${response.status}` };
   }
-}
-
-export async function sendChatMessage(message, options = {}) {
-  const { projectRoot, ...requestOptions } = options;
-  return await postJson("/api/chat/send", { message, ...(projectRoot ? { projectRoot } : {}) }, requestOptions);
-}
-
-// Task 8/9 确认契约：decision ∈ once / task / reject / force（服务端 serveChatConfirm 白名单；
-// 旧 {approve: boolean} 兼容由服务端处理，前端一律发 decision）。极端确认 decision=force 必须
-// 原样带回 confirmation_text（服务端比对不匹配即拒绝）。
-export async function confirmChatAction(decision, options = {}) {
-  const { projectRoot = null, confirmationText = "", ...requestOptions } = options;
-  return await postJson("/api/chat/confirm", {
-    ...(projectRoot ? { projectRoot } : {}),
-    decision,
-    confirmationText,
-  }, requestOptions);
-}
-
-export async function stopChat(options = {}) {
-  return await postJson("/api/chat/stop", {}, options);
-}
-
-export async function fetchChatHistory({ after = null, limit = 100, projectRoot = null } = {}, options = {}) {
-  const params = new URLSearchParams();
-  if (after) params.set("after", after);
-  if (limit) params.set("limit", String(limit));
-  if (projectRoot) params.set("projectRoot", projectRoot);
-  const qs = params.toString();
-  return await getJson(`/api/chat/history${qs ? `?${qs}` : ""}`, options);
 }

@@ -1,8 +1,14 @@
+// 模型连接测试（统一 Agent 内核计划 Task 9 cutover）。
+//
+// 只做最小只读连接探测，不写项目文件、不创建 Run、不追加模型 transcript：
+// 通过新 ModelGateway + OpenAI-compatible adapter（model/openai-compatible.mjs）
+// 发送一次最小请求。错误分类与脱敏语义保持旧行为。
 import {
   ModelConfigValidationError,
   validateModelConfig,
 } from "./model-config-validation.mjs";
-import { OpenAICompatibleAdapter } from "./provider-adapters.mjs";
+import { createModelGateway } from "./model/gateway.mjs";
+import { OpenAICompatibleAdapter } from "./model/openai-compatible.mjs";
 
 const PROBE_TIMEOUT_MS = 10_000;
 const PROBE_PROMPT = "仅回复 OK";
@@ -108,6 +114,9 @@ export async function testModelConnection({
   }
 }
 
+// 最小连接请求：经 ModelGateway 走新 OpenAI-compatible adapter（Task 9）。
+// gateway 只做单次调用（retryMax 0）——探测自身的 runWithRetry 负责重试，
+// 避免双重退避；per-attempt 超时按探测 10s 配置。
 export async function completeOpenAICompatibleProbe({
   config,
   apiKey,
@@ -115,26 +124,34 @@ export async function completeOpenAICompatibleProbe({
   maxTokens,
   signal,
 }) {
-  const adapter = new OpenAICompatibleAdapter({
-    baseUrl: config.base_url,
-    apiKey,
-    apiKeyEnv: config.api_key_env,
+  const gateway = createModelGateway({
+    adapter: new OpenAICompatibleAdapter({
+      baseUrl: config.base_url,
+      apiKey,
+      apiKeyEnv: config.api_key_env,
+    }),
+    retryMax: 0,
+    timeoutMs: PROBE_TIMEOUT_MS,
+    totalDeadlineMs: PROBE_TIMEOUT_MS,
+    heartbeatMs: 0,
   });
 
-  const response = await adapter.generate({
-    model: config.model_name,
-    modelConfig: {
-      model_name: config.model_name,
-      base_url: config.base_url,
-      api_key: apiKey,
-      api_key_env: config.api_key_env,
-      max_tokens: maxTokens,
-      max_output_tokens: maxTokens,
+  const response = await gateway.complete(
+    {
+      messages,
       stream: false,
+      modelConfig: {
+        model_name: config.model_name,
+        base_url: config.base_url,
+        api_key: apiKey,
+        api_key_env: config.api_key_env,
+        max_tokens: maxTokens,
+        max_output_tokens: maxTokens,
+        timeout_ms: PROBE_TIMEOUT_MS,
+      },
     },
-    messages,
-    signal,
-  });
+    { signal },
+  );
   if (!response || typeof response.text !== "string" || !response.text.trim()) {
     const rawSummary = summarizeResponseForDiagnostics(response?.raw);
     const message = rawSummary
@@ -175,7 +192,7 @@ async function runWithRetry(fn, { maxAttempts = 1, retryDelayMs = 2000, signal }
       if (isCallerAbort(error, signal)) {
         throw error;
       }
-      // Retry only on transport-level errors (same classification as ModelClient)
+      // Retry only on transport-level errors (same classification as ModelGateway)
       const isTransportError =
         error.code === "provider_transport_error" &&
         (error.reason === "server-retryable" || error.reason === "timeout" || error.reason === "network");

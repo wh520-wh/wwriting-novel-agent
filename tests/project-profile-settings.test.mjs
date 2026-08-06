@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { updateProjectSettings } from "../src/core/settings-runtime.mjs";
-import { createProject, loadProject, loadState, saveState } from "../src/core/project-store.mjs";
+import { createProject, loadProject } from "../src/core/project-store.mjs";
 import { readEvents } from "../src/core/event-log.mjs";
 
 async function makeProject(prefix) {
@@ -31,33 +31,24 @@ test("project_profile can update title / target_chapters / min_words_per_chapter
   assert.equal(onDisk.target_chapters, 10);
 });
 
-test("raising target_chapters reopens a completed project", async () => {
+test("raising target_chapters 只改配置真相源，不再写运行态/发出重开事件", async () => {
   const projectRoot = await makeProject("wwriting-reopen-");
-  const state = await loadState(projectRoot);
-  await saveState(projectRoot, {
-    ...state,
-    project_status: "completed",
-    current_stage: "completed",
-    current_chapter_no: 4
-  });
-  await updateProjectSettings(projectRoot, { project_profile: { target_chapters: 6 } });
-  const next = await loadState(projectRoot);
-  assert.equal(next.project_status, "idle");
-  assert.equal(next.current_stage, "queued");
+  const next = await updateProjectSettings(projectRoot, { project_profile: { target_chapters: 6 } });
+  assert.equal(next.target_chapters, 6);
+  const onDisk = await loadProject(projectRoot);
+  assert.equal(onDisk.target_chapters, 6);
   const events = await readEvents(projectRoot);
-  assert.ok(events.some((e) => e.type === "project_reopened"));
+  assert.ok(
+    !events.some((e) => e.type === "project_reopened"),
+    "统一 Agent 内核 Rule 9：配置更新不得再写运行态或发出重开事件"
+  );
 });
 
-test("target_chapters below written chapters does not reopen", async () => {
+test("target_chapters 低于已写章节不产生任何额外副作用", async () => {
   const projectRoot = await makeProject("wwriting-noreopen-");
-  const state = await loadState(projectRoot);
-  await saveState(projectRoot, {
-    ...state,
-    project_status: "completed",
-    current_stage: "completed",
-    current_chapter_no: 4
-  });
   await updateProjectSettings(projectRoot, { project_profile: { target_chapters: 2 } });
-  const next = await loadState(projectRoot);
-  assert.equal(next.project_status, "completed");
+  const onDisk = await loadProject(projectRoot);
+  assert.equal(onDisk.target_chapters, 2);
+  const events = await readEvents(projectRoot);
+  assert.ok(!events.some((e) => e.type === "project_reopened"));
 });

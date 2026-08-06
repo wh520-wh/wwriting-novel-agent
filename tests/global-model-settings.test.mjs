@@ -17,7 +17,7 @@ import {
   saveGlobalModelProfile,
   selectGlobalModelProfile
 } from "../src/core/global-model-settings.mjs";
-import { registerProviderCapabilityResolver } from "../src/core/provider-adapters.mjs";
+import { registerProviderCapabilityResolver } from "../src/core/model/capabilities.mjs";
 
 async function tempRoot() {
   return fs.mkdtemp(path.join(os.tmpdir(), "wwriting-globalmodel-"));
