@@ -49,6 +49,9 @@ export function createSettingsModal(ctx, options = {}) {
   const settingsFields = {};
   // connection-test state machine: "idle" | "testing" | "success" | "failure" | "aborted" | "saving"
   let connectionState = "idle";
+  // 保存序号：runSave 的「已保存」关闭定时器带序号，连续保存时旧定时器失效，
+  // 不会关闭新弹窗或覆盖新按钮文案。
+  let saveSequence = 0;
   // Single in-flight AbortController per modal so closing/switching cancels cleanly.
   let connectionAbortController = null;
   // Preserve the API Key the user is currently typing when switching providers,
@@ -218,7 +221,7 @@ export function createSettingsModal(ctx, options = {}) {
 
     const intro = document.createElement("p");
     intro.className = "spd-hint";
-    intro.textContent = "控制每章的篇幅、目标章节数和输出风格。这些字段会直接进入 prompt 上下文。";
+    intro.textContent = "控制每章的篇幅、目标章节数和输出风格。";
     ctx.refs.settingsDetail.append(intro);
 
     settingsFields.targetChapters = settingField("目标章节数（提高它可以继续已完成的小说）", "number", {
@@ -334,7 +337,7 @@ export function createSettingsModal(ctx, options = {}) {
 
     const intro = document.createElement("p");
     intro.className = "spd-hint";
-    intro.textContent = "联网搜索走环境变量；只在这里登记 endpoint 和 key 变量名。";
+    intro.textContent = "只在这里登记联网搜索接口地址与密钥变量名。";
     ctx.refs.settingsDetail.append(intro);
 
     settingsFields.searchEndpoint = settingField("联网搜索接口地址", "text", {
@@ -371,7 +374,7 @@ export function createSettingsModal(ctx, options = {}) {
 
     const intro = document.createElement("p");
     intro.className = "spd-hint";
-    intro.textContent = "四档单选；切档会立即同步到 composer 底部的权限标签，项目内不再二次确认。";
+    intro.textContent = "四档单选：只读 / 确认后修改 / 自动修改 / YOLO。";
     ctx.refs.settingsDetail.append(intro);
 
     if (!projectRoot) {
@@ -469,7 +472,7 @@ export function createSettingsModal(ctx, options = {}) {
 
     const intro = document.createElement("p");
     intro.className = "spd-hint";
-    intro.textContent = "高风险操作都在这里：归档/解除归档会进入对话确认链；打开项目文件夹走桌面桥。";
+    intro.textContent = "高风险操作：归档/解除归档与打开项目文件夹。";
     ctx.refs.settingsDetail.append(intro);
 
     // 归档/解除归档
@@ -513,9 +516,7 @@ export function createSettingsModal(ctx, options = {}) {
 
     const archiveHint = document.createElement("div");
     archiveHint.className = "spd-hint";
-    archiveHint.textContent = isArchived
-      ? "归档后只读；解除归档会走对话确认链，恢复 active 状态。"
-      : "归档后项目进入只读态；通过对话链确认后写入 archived_at。";
+    archiveHint.textContent = "归档后项目只读。";
     ctx.refs.settingsDetail.append(archiveHint);
 
     // 打开项目文件夹
@@ -546,16 +547,11 @@ export function createSettingsModal(ctx, options = {}) {
         void reveal(projectRoot).catch(() => ctx.showToast("打开项目文件夹失败。", "error"));
         return;
       }
-      ctx.showToast("当前环境不支持打开文件夹（需要 Electron 桥）。", "info");
+      ctx.showToast("当前环境不支持打开文件夹。", "info");
     });
     folderField.append(folderLabel, folderBtn);
     settingsFields.folderButton = { field: folderField, input: folderBtn };
     ctx.refs.settingsDetail.append(folderField);
-
-    const folderHint = document.createElement("div");
-    folderHint.className = "spd-hint";
-    folderHint.textContent = "桌面端会调用 shell.openPath；预览环境会提示「需要 Electron 桥」。";
-    ctx.refs.settingsDetail.append(folderHint);
   }
 
   function renderStubSection(sectionId) {
@@ -761,7 +757,7 @@ export function createSettingsModal(ctx, options = {}) {
 
     const keyHint = document.createElement("div");
     keyHint.className = "spd-hint";
-    keyHint.textContent = "API Key 只保存在本机应用 secrets，项目文件只记录变量名。";
+    keyHint.textContent = "API Key 仅保存在本机。";
 
     // 测试连接 状态行：放在密钥字段之后、密码提示之后。
     const connectionStatus = document.createElement("div");
@@ -803,7 +799,7 @@ export function createSettingsModal(ctx, options = {}) {
     settingsFields.priceCacheHit = settingField("缓存命中价（元/百万 token，可选）", "number", { value: pricing.cache_hit_per_million ?? "" });
     const priceHint = document.createElement("div");
     priceHint.className = "spd-hint";
-    priceHint.textContent = "按供应商定价页填写。不填则成本显示为未配置价格，不会按 0 计算。";
+    priceHint.textContent = "未填写价格时不显示成本估算。";
     settingsFields.temperature = settingField("写作温度（0–2，可选，留空用厂商默认）", "number", {
       value: usingThisPreset ? (active.temperature ?? "") : "",
       min: 0, max: 2, step: 0.1
@@ -1162,8 +1158,8 @@ export function createSettingsModal(ctx, options = {}) {
       return;
     }
     if (settingsSection === "danger") {
-      // 危险区不通过 settings/update 写：归档按钮已自行 close+sendChatMessage；此处兜底 toast 提示。
-      ctx.showToast("危险区操作直接走对话链，请用上面的按钮。", "info");
+      // 危险区不通过 settings/update 写：归档按钮已自行处理并关闭弹窗；此处兜底 toast 提示。
+      ctx.showToast("危险区操作请使用上面的按钮。", "info");
       return;
     }
     await saveModelSection();
@@ -1180,7 +1176,6 @@ export function createSettingsModal(ctx, options = {}) {
       // 第一步：模型配置存全局（~/.wwriting/model-profiles.json），不需要项目。
       // 服务端对 ModelConfigValidationError 一律回 400 + fields，postJson 会抛错携带 error.fields，
       // 因此校验失败在这里捕获：逐项标红后继续抛出，由 runSave 兜底 toast 展示服务端原文错误。
-      let modelResult;
       try {
         const activeModelPayload = compactObject({
           provider: PROVIDER_PRESETS[provider.preset].provider,
@@ -1199,7 +1194,7 @@ export function createSettingsModal(ctx, options = {}) {
         // 温度：留空不携带（厂商默认），填了才带。
         const tRaw = String(settingsFields.temperature?.input?.value ?? "").trim();
         if (tRaw !== "") activeModelPayload.temperature = Number(tRaw);
-        modelResult = await postJsonImpl("/api/settings/model-profile", {
+        await postJsonImpl("/api/settings/model-profile", {
           active_model: activeModelPayload
         });
       } catch (error) {
@@ -1226,9 +1221,6 @@ export function createSettingsModal(ctx, options = {}) {
         });
       }
 
-      const profile = modelResult.model_profile ?? {};
-      ctx.showToast(`模型设置已保存：${profile.display ?? provider.name}`, "success");
-      closeSettingsModal();
       await ctx.loadDashboard();
     });
   }
@@ -1249,8 +1241,6 @@ export function createSettingsModal(ctx, options = {}) {
         }),
         output_style: settingsFields.outputStyle?.input?.value ?? "creative"
       });
-      ctx.showToast("写作参数已保存。", "success");
-      closeSettingsModal();
       await ctx.loadDashboard();
     });
   }
@@ -1269,8 +1259,6 @@ export function createSettingsModal(ctx, options = {}) {
           hard: settingsFields.factCheckHard.checked
         }
       });
-      ctx.showToast("质量门禁已保存。", "success");
-      closeSettingsModal();
       await ctx.loadDashboard();
     });
   }
@@ -1288,8 +1276,6 @@ export function createSettingsModal(ctx, options = {}) {
           search_api_key_env: settingsFields.searchKeyEnv.input.value.trim()
         })
       });
-      ctx.showToast("联网搜索配置已保存。", "success");
-      closeSettingsModal();
       await ctx.loadDashboard();
     });
   }
@@ -1307,16 +1293,13 @@ export function createSettingsModal(ctx, options = {}) {
     }
     const tier = PERMISSION_TIERS.find((t) => t.id === tierField.selected) ?? PERMISSION_TIERS[1];
     if (tier.id === "yolo") {
-      const confirmYolo = window.confirm(
-        "YOLO 模式将跳过普通确认并允许访问项目以外的目录。极端危险操作仍会要求输入确认文字。\n确定要开启 YOLO 模式吗？"
-      );
+      const confirmYolo = window.confirm("YOLO 会自动执行写入和控制操作。确认开启？");
       if (!confirmYolo) return;
     }
     await runSave(async () => {
       await postJsonImpl("/api/settings/update", {
         tool_permissions: tier.combo
       });
-      closeSettingsModal();
       await ctx.loadDashboard();
       // 与 composer.applyTier 一致：用 mode pill 脉冲代替成功 toast，避免噪音。
       document.getElementById("mode-pill")?.classList.add("cbar-pill--pulse");
@@ -1325,6 +1308,7 @@ export function createSettingsModal(ctx, options = {}) {
   }
 
   async function runSave(fn) {
+    const seq = ++saveSequence;
     ctx.refs.settingsSave.disabled = true;
     const originalText = ctx.refs.settingsSave.textContent;
     ctx.refs.settingsSave.textContent = "保存中...";
@@ -1333,11 +1317,21 @@ export function createSettingsModal(ctx, options = {}) {
     applyConnectionButtonState();
     try {
       await fn();
+      // 成功不弹 Toast：先显示「已保存」，短暂停留（700ms）后再关闭弹窗，
+      // 保证用户能看到保存反馈。关闭定时器带保存序号，连续保存时旧定时器直接失效。
+      ctx.refs.settingsSave.textContent = "已保存";
+      window.setTimeout(() => {
+        if (seq !== saveSequence) return;
+        closeSettingsModal();
+        ctx.refs.settingsSave.textContent = originalText;
+      }, 700);
     } catch (error) {
       ctx.showToast(error.message, "error");
+      // 恢复为规范标签而非 originalText：上一次保存的「已保存」可能尚未到恢复定时器，
+      // 失败后不得沿用「已保存」误导用户。
+      ctx.refs.settingsSave.textContent = "保存设置";
     } finally {
       ctx.refs.settingsSave.disabled = false;
-      ctx.refs.settingsSave.textContent = originalText;
       connectionState = previousState === "testing" ? "testing" : "idle";
       applyConnectionButtonState();
     }

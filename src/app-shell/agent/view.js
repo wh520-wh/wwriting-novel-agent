@@ -99,6 +99,14 @@ export function createAgentView({ root, document: doc = globalThis.document }) {
   const messages = doc.createElement("div");
   messages.className = "agent-messages";
 
+  // 空会话提示：无项目时显示「新建或打开项目」，有项目时空会话不显示任何内容。
+  // role=status：辅助技术可感知"当前无项目"这一状态提示。
+  const emptyState = doc.createElement("div");
+  emptyState.className = "agent-empty";
+  emptyState.dataset.testid = "agent-empty";
+  emptyState.setAttribute("role", "status");
+  emptyState.textContent = "新建或打开项目";
+
   const runSection = doc.createElement("div");
   runSection.className = "agent-run";
   runSection.dataset.testid = "agent-run";
@@ -120,7 +128,7 @@ export function createAgentView({ root, document: doc = globalThis.document }) {
   queueSlot.className = "agent-queue";
   queueSlot.dataset.testid = "agent-queue";
 
-  conv.append(messages, runSection, activities, queueSlot);
+  conv.append(emptyState, messages, runSection, activities, queueSlot);
 
   const composer = doc.createElement("div");
   composer.className = "agent-composer";
@@ -646,6 +654,8 @@ export function createAgentView({ root, document: doc = globalThis.document }) {
     const enabled = Boolean(state.projectRoot);
     input.disabled = !enabled;
     send.disabled = !enabled;
+    // 空会话提示：有项目时隐藏（空会话不显示欢迎词），无项目时显示「新建或打开项目」。
+    emptyState.hidden = enabled;
   }
 
   function submitFromComposer() {
