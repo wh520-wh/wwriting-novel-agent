@@ -82,12 +82,34 @@ export async function migrateProjectAgentStorage({ projectRoot, targetAgentRoot,
   if (await hasNonEmptyFile(path.join(targetAgentRoot, "events.jsonl"))) {
     return { imported: false, reason: "target_not_empty" };
   }
+  // 计划修复（整支审阅）：复制事务化。先复制到 targetAgentRoot 下同父级的 staging
+  // 目录，再逐项原子 rename 进目标；失败时回滚已移入目标的内容并删除 staging，
+  // 保证目标回到空状态——下次 open 仍可重试，journal.load() 永远读不到半份复制
+  //（ENOSPC/EACCES/Windows 杀软锁等中途失败不再留下孤儿 events.jsonl）。
+  const staging = path.join(targetAgentRoot, `.staging-${process.pid}-${Date.now()}`);
+  const moved = [];
   try {
     await validateLegacyEvents(path.join(source, "events.jsonl"));
-    for (const name of COPY_FILES) await copyIfPresent(path.join(source, name), path.join(targetAgentRoot, name));
-    await copyDirectoryIfPresent(path.join(source, "checkpoints"), path.join(targetAgentRoot, "checkpoints"));
+    await fs.mkdir(staging, { recursive: true });
+    for (const name of COPY_FILES) await copyIfPresent(path.join(source, name), path.join(staging, name));
+    await copyDirectoryIfPresent(path.join(source, "checkpoints"), path.join(staging, "checkpoints"));
+    // 逐项原子 rename：staging 中缺席的项 = 源中本就不存在，跳过（防御 ENOENT）。
+    for (const name of await fs.readdir(staging)) {
+      try {
+        await fs.rename(path.join(staging, name), path.join(targetAgentRoot, name));
+        moved.push(name);
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+    }
+    await fs.rm(staging, { recursive: true, force: true });
     return { imported: true };
   } catch (error) {
+    // 回滚：删除已移入目标的内容（尽力而为）与残留 staging，目标回到空状态
+    for (const name of moved) {
+      await fs.rm(path.join(targetAgentRoot, name), { recursive: true, force: true }).catch(() => {});
+    }
+    await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
     diagnostic("[workspace-migration] legacy agent import failed", error);
     return { imported: false, reason: "invalid_source" };
   }

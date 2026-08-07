@@ -183,6 +183,48 @@ test("events.jsonl 中间损坏：拒绝导入且目标保持干净（允许新�
   assert.deepEqual(await snapshotDir(agentDir), before, "原目录字节必须完全一致");
 });
 
+// 计划修复（整支审阅）：复制中途失败（session.json 是目录 → copyFile 抛错）时，
+// staging 事务化 + 回滚必须让目标回到空状态，修复源后可重试成功。
+test("复制中途失败：拒绝导入、目标无半份产物（无 events.jsonl / .staging-*），修复后重试成功", async (t) => {
+  const ws = await makeWorkspace(t);
+  const projectRoot = path.join(ws, "project");
+  const agentDir = await createLegacyAgentDir(projectRoot, {
+    events: [legacyEvent(1), legacyEvent(2, { type: "input_queued", payload: { input_id: "i1", text: "旧" } })]
+  });
+  // 损坏源：session.json 换成同名目录（COPY_FILES 顺序为 events.jsonl → session.json，
+  // events.jsonl 已复制进 staging 之后复制失败——确定性注入复制中途失败）
+  await fs.rm(path.join(agentDir, "session.json"));
+  await fs.mkdir(path.join(agentDir, "session.json"));
+  const before = await snapshotDir(agentDir);
+  const targetAgentRoot = path.join(ws, "user-data", "workspaces", "ws_test", "agent");
+
+  const result = await migrateProjectAgentStorage({ projectRoot, targetAgentRoot });
+  assert.deepEqual(result, { imported: false, reason: "invalid_source" });
+
+  // 事务化回滚：目标回到空状态，无半份 events.jsonl、无 .staging-* 残留
+  const leftover = (await pathExists(targetAgentRoot)) ? await fs.readdir(targetAgentRoot) : [];
+  assert.deepEqual(leftover, [], "复制失败后目标目录必须干净（回滚 events.jsonl 且无 .staging-*）");
+  assert.deepEqual(await snapshotDir(agentDir), before, "原目录字节必须完全一致");
+
+  // 修复源（session.json 恢复为合法文件）后重试成功，源仍只读
+  await fs.rm(path.join(agentDir, "session.json"), { recursive: true });
+  await fs.writeFile(
+    path.join(agentDir, "session.json"),
+    JSON.stringify({ schema_version: 1, session_id: "legacy-sess" }, null, 2) + "\n",
+    "utf8"
+  );
+  const repaired = await snapshotDir(agentDir);
+  const retry = await migrateProjectAgentStorage({ projectRoot, targetAgentRoot });
+  assert.deepEqual(retry, { imported: true });
+  assert.equal(await pathExists(path.join(targetAgentRoot, "events.jsonl")), true, "重试应完成迁移");
+  assert.equal(
+    await fs.readFile(path.join(targetAgentRoot, "events.jsonl"), "utf8"),
+    await fs.readFile(path.join(agentDir, "events.jsonl"), "utf8"),
+    "重试复制应字节级一致"
+  );
+  assert.deepEqual(await snapshotDir(agentDir), repaired, "重试后源目录字节必须完全一致");
+});
+
 test("尾部半行截断（崩溃痕迹）容忍后导入，字节级一致复制", async (t) => {
   const ws = await makeWorkspace(t);
   const projectRoot = path.join(ws, "project");
