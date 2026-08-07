@@ -188,6 +188,31 @@ test("loadDashboardData can disable latest-project fallback", async () => {
   assert.equal(data.hasProject, false);
 });
 
+test("loadDashboardData 对普通文件夹（无 project.yaml）返回 hasProject:false 最小工作区，不抛 ENOENT", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-dashboard-plain-"));
+  const projectRoot = path.join(root, "普通文件夹");
+  await fs.mkdir(projectRoot, { recursive: true });
+  await fs.writeFile(path.join(projectRoot, "notes.txt"), "普通资料：写作参考笔记。\n", "utf8");
+
+  // 显式打开普通文件夹（projectRoot 存在但无 project.yaml）：走新分支，不能 ENOENT
+  const data = await loadDashboardData(root, { projectRoot });
+  assert.equal(data.ok, true);
+  assert.equal(data.hasProject, false);
+  assert.equal(data.projectRoot, projectRoot, "应保留已打开普通文件夹的 projectRoot");
+  assert.equal(data.project, null);
+  assert.equal(data.code, undefined, "不得返回错误码");
+  assert.ok(!JSON.stringify(data).includes("ENOENT"), "不得泄露 ENOENT");
+  // 磁盘事实：普通文件夹不被改写成项目
+  let projectYamlCreated = false;
+  try {
+    await fs.access(path.join(projectRoot, "project.yaml"));
+    projectYamlCreated = true;
+  } catch {
+    // 不存在即为预期
+  }
+  assert.equal(projectYamlCreated, false, "普通文件夹不得创建 project.yaml");
+});
+
 test("loadDashboardData returns cacheSummary when cache report is missing", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-dashboard-cache-empty-"));
   const { projectRoot } = await createWritingProject(root, { slug: "project" });

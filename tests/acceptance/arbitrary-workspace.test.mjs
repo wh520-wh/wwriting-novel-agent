@@ -108,6 +108,11 @@ export async function startArbitraryWorkspaceServer(t, { projectRoot, stateRoot,
       const data = await res.json().catch(() => null);
       return { res, data };
     },
+    async get(route) {
+      const res = await fetch(`${baseUrl}${route}`, { cache: "no-store" });
+      const data = await res.json().catch(() => null);
+      return { res, data };
+    },
     // 轮询 /api/agent/snapshot 直到 session 回到 idle（mirror harness 的 waitForIdle）。
     async waitForIdle(targetRoot) {
       await waitFor(async () => {
@@ -149,6 +154,13 @@ test("空目录无需 project.yaml 即可发送第一条消息，journal 只写 
   });
   const opened = await app.post("/api/projects/open", { projectRoot });
   assert.equal(opened.res.status, 200);
+  // Task 13 回归钉：普通文件夹打开后 /api/dashboard 必须是健康的最小工作区形状
+  //（ok:true / hasProject:false / projectRoot 保留），不能是 ENOENT 500。
+  const dash = await app.get(`/api/dashboard?projectRoot=${encodeURIComponent(projectRoot)}`);
+  assert.equal(dash.res.status, 200, "普通文件夹 dashboard 不得 INTERNAL_ERROR(500)");
+  assert.equal(dash.data.ok, true);
+  assert.equal(dash.data.hasProject, false);
+  assert.equal(dash.data.projectRoot, projectRoot, "dashboard 应保留已打开普通文件夹的 projectRoot");
   const sent = await app.post("/api/agent/input", { projectRoot, text: "你好" });
   assert.equal(sent.res.status, 200);
   await app.waitForIdle(projectRoot);
