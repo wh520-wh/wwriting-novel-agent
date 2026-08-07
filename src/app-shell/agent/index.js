@@ -137,6 +137,29 @@ export function createAgentSurface({
     if (!event || typeof event !== "object") return;
     reduceEvent(state, event);
     view.render(state, actions);
+    maybeRefreshAfterTerminal(event);
+  }
+
+  // Run 终态后补一次权威快照：增量事件只带 status，不带 journal 冻结的
+  // active_elapsed_ms 等 session 字段；不刷新的话工作组终态耗时文案会停留在
+  // 提交瞬间的旧快照值（如“工作了 0 秒”）。终态每个 seq 只刷一次。
+  const TERMINAL_RUN_EVENTS = new Set(["run_completed", "run_failed", "run_cancelled", "run_interrupted"]);
+  let terminalRefreshSeq = -1;
+  function maybeRefreshAfterTerminal(event) {
+    if (!TERMINAL_RUN_EVENTS.has(event?.type)) return;
+    const seq = Number(event.seq);
+    if (Number.isFinite(seq) && seq === terminalRefreshSeq) return;
+    if (Number.isFinite(seq)) terminalRefreshSeq = seq;
+    const t = ensureApi();
+    if (typeof t.fetchSnapshot !== "function") return;
+    const scope = currentProjectScope();
+    Promise.resolve(t.fetchSnapshot({ afterSeq: state.lastSeq }))
+      .then((snapshot) => {
+        if (snapshot && isCurrentProjectScope(scope)) applySnapshot(snapshot);
+      })
+      .catch(() => {
+        // 刷新失败不阻断：SSE 断线补齐路径会在下次重连重试
+      });
   }
 
   async function openProject(projectRoot) {

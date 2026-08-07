@@ -22,16 +22,12 @@ import path from "node:path";
 import { pathExists } from "../fs-utils.mjs";
 import { discoverSkills } from "./catalog.mjs";
 import { stageSkillSource } from "./importer.mjs";
-import { buildSkillMd, ensureMigrated, readMigrationMarker } from "./legacy-migration.mjs";
+import { ensureMigrated, readMigrationMarker } from "./legacy-migration.mjs";
 import { assertSafeSkillDirName, readSkillFile, readSkillResource, skillError } from "./skill-file.mjs";
 import {
   runPostProcessHooksWithSkills,
   runSkillChecksWithSkills
 } from "./hooks.mjs";
-
-// 旧 manifest → SKILL.md 正文转换（Task 11 迁移管线与 /api/skills/import 的
-// manifest 对象契约共用同一转换规则；只在 seam 上暴露，生产模块不得直接使用）。
-export { buildSkillMd };
 
 // 内置技能根目录 src/skills（Task 10 落地五个内置 SKILL.md；当前允许缺失）。
 const DEFAULT_BUILTIN_ROOT = path.resolve(import.meta.dirname, "..", "..", "skills");

@@ -700,11 +700,20 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       userToggled: false,    // 用户手动折叠后，投影的 expanded 不再覆盖
       durationTimer: null
     };
-    // toggle 事件必须立即重应用动效（防止折叠后外层与隐藏子项同时保留动画）。
+    // toggle 事件只负责立即重应用动效（按当前展开态），不再用它判定「用户手动切换」：
+    // Chromium 会在 <details open> 插入文档时异步补发一个 toggle 事件（实测 trusted），
+    // 若在此置位 userToggled，会把「完成自动折叠」吞掉（详情折叠被用户手势标记阻塞）。
+    // userToggled 只由真实的 summary 交互（点击 / Enter / Space）置位。
     details.addEventListener("toggle", () => {
-      record.userToggled = true;
       const g = currentState?.work?.groups.get(record.groupId);
       if (g) applyLiveTargets(record, g);
+    });
+    const markUserToggled = () => {
+      record.userToggled = true;
+    };
+    summary.addEventListener("click", markUserToggled);
+    summary.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") markUserToggled();
     });
     workGroups.set(group.id, record);
     return record;
