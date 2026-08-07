@@ -225,7 +225,8 @@ async function parseLegacyManifest(manifestPath) {
 // | append_prompt.content | 正文“Instructions”                     |
 // | check.prompt         | 正文“Review checklist”并保留 checker id |
 // post_process.content 移入正文“Post-process”（Task 12 从正文取 prompt/content）。
-// 本函数同时在 seam 上暴露（/api/skills/import 的 manifest 对象契约复用同一转换）。
+// 本函数只在本模块（迁移管线）内部使用；manifest 对象契约的复用入口是
+// skillService.importSkill（importer.mjs），不再经 seam 暴露。
 export function buildSkillMd(manifest) {
   const name = String(manifest.name);
   const hooks = Array.isArray(manifest.hooks)

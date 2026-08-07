@@ -47,7 +47,11 @@ export function createAppShellServer({
   testModelConnection = null,
   // Task 12：skills service seam。缺省全局单例；测试注入临时 root 的 service，
   // 避免迁移 marker 写进真实用户目录。
-  skills = null
+  skills = null,
+  // Task 15（visual acceptance）：确定性 gateway 注入点，与 testLoadDashboardData
+  // 同级。生产调用不传该参数、行为不变；传入时取代默认 per-project ModelGateway
+  // 组装，由测试控制器提供可暂停/恢复的 gateway（scripts/capture-visual-acceptance.cjs）。
+  testGatewayFactory = null
 } = {}) {
   const workspace = path.resolve(workspaceRoot);
   const localSecretsRoot = path.resolve(secretsRoot);
@@ -74,11 +78,17 @@ export function createAppShellServer({
 
   const projectLocks = createProjectLockRegistry();
   const modelGateway = createAppModelGateway();
+  // Task 15：gatewayFactory 注入点。缺省走默认 per-project ModelGateway 组装
+  //（含 CostTracker/cost.json 记账）；testGatewayFactory 注入时整个替换。
+  const gatewayFactory =
+    typeof testGatewayFactory === "function"
+      ? testGatewayFactory
+      : (projectRoot) => modelGateway.gatewayFor(projectRoot).gateway;
 
   // ProjectAgent：唯一 Agent seam。shell 接真实 Shell 运行时；每个项目持有独立
   // gateway（per-project 成本记账），provider 适配按请求 modelConfig 分发。
   const agent = createProjectAgent({
-    gatewayFactory: (projectRoot) => modelGateway.gatewayFor(projectRoot).gateway,
+    gatewayFactory,
     shell: runShellCommand,
     projectLocks,
     secrets,

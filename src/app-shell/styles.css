@@ -1278,8 +1278,9 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .toast svg { color: var(--green); }
 @media (max-width: 880px) {
-
-  .app { grid-template-columns: 0 1fr; }
+  /* .rail display:none 后仍是两列网格的话，唯一在流的 .main 会被自动放进 0px
+     轨道（整页空白）。窄屏只保留一列，让主列占满宽度。 */
+  .app { grid-template-columns: minmax(0, 1fr); }
 
   .rail { display: none; }
 }
