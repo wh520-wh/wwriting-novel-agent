@@ -55,9 +55,9 @@
 //            shell { command, cwd?, timeout_ms?, purpose? }
 //   deep:    update_plan { explanation?, items: [{id,step,status,description?}] }（status ∈
 //            pending|in_progress|completed，最多一个 in_progress）/
-//            enter_workflow { workflow: "general"|"chapter"|"init"|"review", reason } /
+//            enter_workflow { workflow: "general"|"chapter"|"init", reason }（Task 10：review 已删除）/
 //            append_chapter_segment { project_id, chapter_no, segment_no, content } /
-//            commit_chapter { project_id, chapter_no, expected_draft_checksum?, exception_decisions? } /
+//            commit_chapter { project_id, chapter_no, expected_draft_checksum? }（Task 10：无门禁例外）/
 //            commit_blueprint { project_id, outline, setting, evidence_paths }
 //
 // ## 事件与投影契约

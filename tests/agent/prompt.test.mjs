@@ -117,26 +117,28 @@ budget: {{jsonObject}}
   );
 });
 
-test("WORKFLOW_POLICIES 包含四条逐字政策", () => {
-  assert.deepEqual(Object.keys(WORKFLOW_POLICIES).sort(), ["chapter", "general", "init", "review"]);
+test("WORKFLOW_POLICIES 包含三条逐字政策（Task 10：review 已删除）", () => {
+  assert.deepEqual(Object.keys(WORKFLOW_POLICIES).sort(), ["chapter", "general", "init"]);
   assert.equal(
     WORKFLOW_POLICIES.general,
     `[Workflow: general]
-理解用户当前目标，自主选择回答、读取、编辑、运行命令或进入正式工作流。只有正式生成、修订并提交章节时进入 chapter；需要初始化长期蓝图时进入 init；需要系统审稿时进入 review。普通文件任务在验证目标文件或命令结果后完成。`
+理解用户当前目标，自主选择回答、读取、编辑、运行命令或进入正式工作流。只有正式生成、修订并提交章节时进入 chapter。用户要求审核时直接读取相关文件、判断并按要求修改，不进入专门 workflow。普通文件任务在验证目标文件或命令结果后完成。`
   );
+  assert.ok(!WORKFLOW_POLICIES.general.includes("需要初始化长期蓝图时进入 init"), "general 政策不得再含旧蓝图/init 提示");
+  assert.ok(!WORKFLOW_POLICIES.general.includes("需要系统审稿时进入 review"), "general 政策不得再含审稿入口");
   assert.ok(WORKFLOW_POLICIES.chapter.startsWith("[Workflow: chapter]"));
   assert.ok(WORKFLOW_POLICIES.chapter.includes("append_chapter_segment"));
   assert.ok(WORKFLOW_POLICIES.chapter.includes("commit_chapter"));
   assert.ok(WORKFLOW_POLICIES.chapter.includes("任一条件不满足时不得声称章节完成。"));
+  assert.ok(!WORKFLOW_POLICIES.chapter.includes("真实字数满足项目门槛"), "chapter 政策不得再要求字数门禁");
+  assert.ok(!WORKFLOW_POLICIES.chapter.includes("质量、事实和连续性检查已通过"), "chapter 政策不得再要求质量门禁");
   assert.ok(WORKFLOW_POLICIES.init.startsWith("[Workflow: init]"));
   assert.ok(WORKFLOW_POLICIES.init.includes("创建或谨慎更新 WWRITING.md"));
   assert.ok(WORKFLOW_POLICIES.init.includes("区分用户已确认事实、文件可证事实与模型推测"));
   assert.ok(WORKFLOW_POLICIES.init.includes("已有文件不得盲目覆盖"));
   assert.ok(!WORKFLOW_POLICIES.init.includes("commit_blueprint"), "init 政策不得再要求 commit_blueprint");
   assert.ok(WORKFLOW_POLICIES.init.includes("完成后简短报告实际检查和修改的文件"));
-  assert.ok(WORKFLOW_POLICIES.review.startsWith("[Workflow: review]"));
-  assert.ok(WORKFLOW_POLICIES.review.includes("默认只读"));
-  assert.ok(WORKFLOW_POLICIES.review.includes("不在 review 中静默修改正文。"));
+  assert.ok(!Object.hasOwn(WORKFLOW_POLICIES, "review"), "WORKFLOW_POLICIES 不得再包含 review");
 });
 
 // ---------------------------------------------------------------------------

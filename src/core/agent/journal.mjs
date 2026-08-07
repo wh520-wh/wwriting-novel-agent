@@ -97,7 +97,7 @@ export const RUN_STATUSES = Object.freeze([
   "interrupted"
 ]);
 
-export const WORKFLOWS = Object.freeze(["general", "chapter", "init", "review"]);
+export const WORKFLOWS = Object.freeze(["general", "chapter", "init"]);
 export const PLAN_STATUSES = Object.freeze(["pending", "in_progress", "completed"]);
 
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);

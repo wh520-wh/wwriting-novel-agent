@@ -1,16 +1,14 @@
 // src/core/agent/workflows.mjs —— 工作流政策（统一 Agent 内核计划 Task 6）。
 //
-// 深模块内部实现：四种工作流政策（general/chapter/init/review）集中在这里，
+// 深模块内部实现：三种工作流政策（general/chapter/init）集中在这里，
 // 供 runtime 装配 prompt 时选择层文本、过滤允许的深工具、选择 dynamic context
 // 并判断 Run 是否可终结。workflow 只能通过 enter_workflow 工具改变（workflow_changed
 // 事件由 tools.mjs 的该工具写入 journal）；本模块不提供任何直接改工作流的 API。
 //
-// 嵌套拒绝规则（canEnterWorkflow）：
+// 嵌套拒绝规则（canEnterWorkflow，Task 10：review 已删除，无深→深修复路径特例）：
 //   - 从 general 可以进入任意工作流；
 //   - 从任意工作流可以回到 general；
-//   - review 政策文本明确允许"回到 general 或 chapter 后执行修复"，
-//     因此 review → chapter 是唯一被认可的深→深修复路径；
-//   - 其余深→深切换（chapter→init、init→chapter、chapter→review 等）一律拒绝，
+//   - 其余深→深切换（chapter→init、init→chapter 等）一律拒绝，
 //     同一工作流内的空切换（含 general→general）同样拒绝。
 //
 // 每个政策记录固定形状：
@@ -20,7 +18,7 @@
 //   completionEvaluator —— (ctx) -> boolean 该工作流下 Run 是否可终结
 import { inspectChapterContext } from "../project-operations/chapter.mjs";
 
-export const WORKFLOW_NAMES = Object.freeze(["general", "chapter", "init", "review"]);
+export const WORKFLOW_NAMES = Object.freeze(["general", "chapter", "init"]);
 
 // 中文章节号解析：支持阿拉伯数字与常见中文数字（一~九十九）。
 const CN_DIGITS = Object.freeze({
@@ -75,10 +73,10 @@ async function selectChapterContext({ projectRoot, inputText }) {
 }
 
 // 完成条件求值：模型以文本结束当前输入（无工具调用）且队列清空后 Run 终结。
-// 当前各工作流共享同一宽松判定——正式完成不变量（字数/质量/连续性门禁、章节索引
-// 与 checkpoint 一致更新）由 project operations 的提交事务守护，政策文本也已要求
-// 模型在未满足条件时不得声称完成。completionEvaluator 作为政策字段保留，供未来
-// 按工作流收紧终结条件（例如 chapter 要求最近一次 commit 成功才允许终结）；
+// 当前各工作流共享同一宽松判定——内容质量（字数/文笔/标题格式/旧 checker）一律
+// 不是完成门禁（Task 10：commit_chapter 只保留存储安全约束，政策文本同样只要求
+// 章节已由 commit_chapter 一致落盘）。completionEvaluator 作为政策字段保留，供
+// 未来按工作流收紧终结条件（例如 chapter 要求最近一次 commit 成功才允许终结）；
 // 收紧时注意不要让 mock/真实模型在脚本耗尽时无限循环（当前宽松判定避免该风险）。
 function defaultCompletionEvaluator() {
   return true;
@@ -109,13 +107,6 @@ export const WORKFLOW_POLICY_RECORDS = Object.freeze({
     // init 政策要求模型先检查现有记忆和真实文件，不预先注入项目文件内容
     contextSelector: async () => [],
     completionEvaluator: defaultCompletionEvaluator
-  }),
-
-  review: Object.freeze({
-    promptId: "review",
-    allowedDeepTools: Object.freeze(["update_plan", "enter_workflow"]),
-    contextSelector: async () => [],
-    completionEvaluator: defaultCompletionEvaluator
   })
 });
 
@@ -123,10 +114,12 @@ export function workflowPolicy(workflowName) {
   return WORKFLOW_POLICY_RECORDS[workflowName] ?? WORKFLOW_POLICY_RECORDS.general;
 }
 
-// 嵌套拒绝（见文件头规则）。current/target 均为 WORKFLOW_NAMES 之一。
+// 嵌套拒绝（见文件头规则）。current/target 均为 WORKFLOW_NAMES 之一；
+// 未知目标（含已删除的 review）一律拒绝，不进入任何切换。
 export function canEnterWorkflow(current, target) {
   if (current === target) return false; // 空切换
+  if (!WORKFLOW_NAMES.includes(target)) return false; // 未知/已删除工作流不得进入
   if (current === "general") return true;
   if (target === "general") return true;
-  return current === "review" && target === "chapter"; // 政策文本认可的修复路径
+  return false; // 深→深一律拒绝（review 已删除，不再有修复路径特例）
 }

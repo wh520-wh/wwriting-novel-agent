@@ -28,7 +28,6 @@ const events = [
   { type: "model_retry", data: { reason: "timeout", model: "deepseek-v4-pro" } },
   { type: "model_call_started", chapter_no: 1 },
   usageEvent(1, { input: 1200, output: 1800, cached: 100, hitRate: 0.083 }),
-  { type: "quality_gate_failed", chapter_no: 1, message: "word-count gate failed", data: {} },
   { type: "model_call_started", chapter_no: 2 },
   usageEvent(2, { input: 1500, output: 2500, cached: 0, hitRate: 0 }),
   { type: "model_call_started", chapter_no: 2 }
@@ -42,15 +41,16 @@ test("analyzeCost 按章聚合 token 与调用次数", () => {
   assert.equal(report.byChapter["2"].calls, 1);
 });
 
-test("analyzeCost 统计重试、未完成调用与补写门禁", () => {
+test("analyzeCost 统计重试与未完成调用；门禁补写恒为零", () => {
   const report = analyzeCost({ events });
   assert.equal(report.calls.started, 4);
   assert.equal(report.calls.completed, 3);
   assert.equal(report.calls.abandoned, 1);
   assert.equal(report.retries.count, 1);
   assert.equal(report.retries.byReason.timeout, 1);
-  assert.equal(report.refills.gateFailures, 1);
-  assert.equal(report.refills.byChapter["1"], 1);
+  // Task 10：内容质量门禁已删除，gate-failure 补写统计恒为零
+  assert.equal(report.refills.gateFailures, 0);
+  assert.deepEqual(report.refills.byChapter, {});
 });
 
 test("analyzeCost 汇总缓存命中率与版本变化", () => {

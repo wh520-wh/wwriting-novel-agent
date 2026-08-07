@@ -2,13 +2,13 @@
 //
 // tests/agent/ 是允许测试内部 seam 的目录：本文件直接导入 workflows.mjs 与
 // prompt.mjs 的 WORKFLOW_POLICIES，覆盖：
-//   - 四个政策记录（general/chapter/init/review）的固定形状
+//   - 三个政策记录（general/chapter/init；Task 10 已删除 review）的固定形状
 //   - promptId 与 prompt.mjs WORKFLOW_POLICIES 键一一对应
 //   - allowedDeepTools：chapter 允许 append_chapter_segment/commit_chapter，
 //     init 只允许 update_plan/enter_workflow（Task 7：不再暴露 commit_blueprint），
-//     review 无任何提交/追加深工具，general 无领域深工具
-//   - 嵌套拒绝（canEnterWorkflow）：general 可进任意工作流；深→深只认可
-//     review→chapter 修复路径；同工作流空切换拒绝
+//     general 无领域深工具
+//   - 嵌套拒绝（canEnterWorkflow）：general 可进任意工作流；深→深一律拒绝
+//     （review 已删除，无修复路径特例）；同工作流空切换拒绝
 //   - 章节号解析（中英文数字）
 //   - chapter 政策上下文选择器注入 inspectChapterContext 动态上下文
 //   - workflow 只能通过 enter_workflow 工具改变（经公共 seam 集成验证）
@@ -32,8 +32,9 @@ const DEEP_NAMES = ["update_plan", "enter_workflow", "append_chapter_segment", "
 // 政策记录形状
 // ---------------------------------------------------------------------------
 
-test("四个政策记录存在且 promptId 与 prompt.mjs 的 WORKFLOW_POLICIES 键一致", () => {
+test("三个政策记录存在且 promptId 与 prompt.mjs 的 WORKFLOW_POLICIES 键一致", () => {
   assert.deepEqual([...Object.keys(WORKFLOW_POLICY_RECORDS)].sort(), [...WORKFLOW_NAMES].sort());
+  assert.deepEqual([...WORKFLOW_NAMES].sort(), ["chapter", "general", "init"], "Task 10：review workflow 必须删除");
   for (const name of WORKFLOW_NAMES) {
     const record = WORKFLOW_POLICY_RECORDS[name];
     assert.ok(record, `缺少 ${name} 政策记录`);
@@ -48,6 +49,9 @@ test("四个政策记录存在且 promptId 与 prompt.mjs 的 WORKFLOW_POLICIES 
   }
   // workflowPolicy 未知名兜底 general
   assert.equal(workflowPolicy("no_such_workflow").promptId, "general");
+  // Task 10 删除契约：WORKFLOW_POLICIES 不得再包含 review
+  assert.ok(!Object.hasOwn(WORKFLOW_POLICIES, "review"), "prompt.mjs 不得再定义 review 政策文本");
+  assert.ok(!Object.hasOwn(WORKFLOW_POLICY_RECORDS, "review"), "workflows.mjs 不得再定义 review 政策记录");
 });
 
 test("allowedDeepTools：各工作流只暴露自己的领域深工具", () => {
@@ -66,10 +70,6 @@ test("allowedDeepTools：各工作流只暴露自己的领域深工具", () => {
     ["enter_workflow", "update_plan"],
     "init 只允许计划与工作流切换"
   );
-  // review：只读审查，无任何提交/追加深工具
-  for (const toolName of ["append_chapter_segment", "commit_chapter", "commit_blueprint"]) {
-    assert.ok(!allowed("review").has(toolName), `review 不得允许 ${toolName}`);
-  }
   // general：无领域深工具（只有 update_plan 与进入工作流的 enter_workflow）
   for (const toolName of ["append_chapter_segment", "commit_chapter", "commit_blueprint"]) {
     assert.ok(!allowed("general").has(toolName), `general 不得允许 ${toolName}`);
@@ -82,21 +82,19 @@ test("allowedDeepTools：各工作流只暴露自己的领域深工具", () => {
 
 test("canEnterWorkflow 拒绝嵌套工作流", () => {
   // general → 任意工作流
-  for (const target of ["chapter", "init", "review"]) {
+  for (const target of ["chapter", "init"]) {
     assert.equal(canEnterWorkflow("general", target), true, `general → ${target} 应允许`);
   }
   // 任意工作流 → general
-  for (const current of ["chapter", "init", "review"]) {
+  for (const current of ["chapter", "init"]) {
     assert.equal(canEnterWorkflow(current, "general"), true, `${current} → general 应允许`);
   }
-  // 深→深一律拒绝（除了政策文本认可的 review → chapter 修复路径）
+  // 深→深一律拒绝（Task 10：review 已删除，不再有 review → chapter 修复路径）
   assert.equal(canEnterWorkflow("chapter", "init"), false, "chapter → init 是嵌套，拒绝");
   assert.equal(canEnterWorkflow("init", "chapter"), false, "init → chapter 是嵌套，拒绝");
-  assert.equal(canEnterWorkflow("chapter", "review"), false, "chapter → review 是嵌套，拒绝");
-  assert.equal(canEnterWorkflow("init", "review"), false, "init → review 是嵌套，拒绝");
-  assert.equal(canEnterWorkflow("review", "init"), false, "review → init 是嵌套，拒绝");
-  // review 政策文本：若用户要求修复，回到 general 或 chapter 后执行
-  assert.equal(canEnterWorkflow("review", "chapter"), true, "review → chapter 是政策认可的修复路径");
+  // review 不是合法工作流：未知名目标一律拒绝（回退 general 兜底也不放开嵌套）
+  assert.equal(canEnterWorkflow("general", "review"), false, "review 已删除，不允许进入");
+  assert.equal(canEnterWorkflow("review", "chapter"), false, "review 已删除，不允许作为来源");
   // 同工作流空切换拒绝
   for (const name of WORKFLOW_NAMES) {
     assert.equal(canEnterWorkflow(name, name), false, `${name} → ${name} 是空切换，拒绝`);
@@ -136,10 +134,10 @@ test("chapter 上下文选择器注入章节位置动态上下文", async (t) =>
   assert.deepEqual(broken, []);
 });
 
-test("general/init/review 上下文选择器不注入项目文件内容", async (t) => {
+test("general/init 上下文选择器不注入项目文件内容", async (t) => {
   const h = await createProjectAgentHarness({ gatewayScript: [{ reply: { text: "好。" } }] });
   t.after(() => h.cleanup());
-  for (const name of ["general", "init", "review"]) {
+  for (const name of ["general", "init"]) {
     const items = await WORKFLOW_POLICY_RECORDS[name].contextSelector({
       projectRoot: h.projectRoot,
       inputText: "处理这个项目",
@@ -193,24 +191,6 @@ test("嵌套工作流被拒绝：chapter 中直接进入 init 的工具调用失
   assert.equal(denied.length, 1, "嵌套 enter_workflow 必须失败");
   assert.equal(denied[0].payload.error, "before_tool_use_denied");
   assert.equal(eventsOfType(events, "run_completed").length, 1);
-});
-
-test("review 政策认可修复路径：review → chapter 直接切换", async (t) => {
-  const h = await createProjectAgentHarness({
-    gatewayScript: [
-      { reply: { toolCalls: [{ id: "call_ew_1", name: "enter_workflow", arguments: { workflow: "review", reason: "审稿" } }] } },
-      { reply: { toolCalls: [{ id: "call_ew_2", name: "enter_workflow", arguments: { workflow: "chapter", reason: "修复问题" } }] } },
-      { reply: { text: "修复完成。" } }
-    ]
-  });
-  t.after(() => h.cleanup());
-  await h.agent.open({ projectRoot: h.projectRoot });
-  await h.agent.submit({ projectRoot: h.projectRoot, text: "审稿并修复", source: "chat" });
-  await waitForIdle(h.agent, h.projectRoot);
-  const snap = await h.agent.snapshot({ projectRoot: h.projectRoot, afterSeq: 0, limit: 100000 });
-  const changed = eventsOfType(snap.events, "workflow_changed");
-  assert.deepEqual(changed.map((event) => event.payload.workflow), ["review", "chapter"]);
-  assert.equal(eventsOfType(snap.events, "run_completed").length, 1);
 });
 
 test("运行时再次强制工作流工具授权：general 不能直接调用 commit_blueprint", async (t) => {

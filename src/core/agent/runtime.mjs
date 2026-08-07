@@ -50,7 +50,6 @@ import {
   inspectChapterContext
 } from "../project-operations/chapter.mjs";
 import { commitBlueprint, inspectBlueprintContext } from "../project-operations/blueprint.mjs";
-import { reviewProject } from "../project-operations/review.mjs";
 
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
@@ -147,13 +146,12 @@ export function createAgentRuntime({
       const projectOperations = {
         inspectChapterContext,
         appendChapterSegment,
-        // 章节提交的技能钩子经同一个 skills service 解析（Task 12）：生产用全局
-        // 单例；测试注入临时 service 后全链路不再触碰真实用户目录。
-        commitChapter: (args, options) => commitChapter(args, { ...(options ?? {}), skills: projectSkills }),
+        // Task 10：commitChapter 只保留存储安全约束，不再消费技能注入（确定性
+        // 技能钩子已删除）；直接透传原函数，保持写探针 options 兼容。
+        commitChapter,
         commitChapterMemory,
         inspectBlueprintContext,
-        commitBlueprint,
-        reviewProject
+        commitBlueprint
       };
       const tools = createToolRuntime({
         projectOperations,

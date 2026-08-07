@@ -5,12 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadOutputStyles } from "../src/core/output-style-loader.mjs";
 
-test("loadOutputStyles returns at least 2 bundled styles", async () => {
+test("loadOutputStyles bundled 不含 review 风格", async () => {
   const styles = await loadOutputStyles({});
-  assert.ok(styles.length >= 2);
   const names = styles.map((s) => s.name);
   assert.ok(names.includes("creative"));
-  assert.ok(names.includes("review"));
+  assert.ok(!names.includes("review"), "Task 10：bundled 不得再包含 review 风格（改名保留同一模式也禁止）");
+  const bundledReview = styles.find((s) => s.source === "bundled" && /审稿|review/u.test(`${s.name} ${s.description}`));
+  assert.equal(bundledReview, undefined, "bundled 不得以任何名称保留审稿模式");
 });
 
 test("loadOutputStyles loads user-level .md files", async () => {

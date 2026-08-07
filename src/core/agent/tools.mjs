@@ -61,7 +61,7 @@ const MAX_SEARCH_MATCHES = 50; // search_files 命中上限
 const MAX_SEARCH_DEPTH = 12; // search_files 递归深度上限
 const SEARCH_SKIP_DIRS = new Set([".wwriting", "node_modules", ".git", "checkpoints"]);
 
-const WORKFLOWS = Object.freeze(["general", "chapter", "init", "review"]);
+const WORKFLOWS = Object.freeze(["general", "chapter", "init"]);
 const PLAN_STATUSES = Object.freeze(["pending", "in_progress", "completed"]);
 
 const HOOK_PHASES = Object.freeze(["BeforeToolUse", "AfterToolUse"]);
@@ -1251,11 +1251,11 @@ export function createToolRuntime({
 
   register("enter_workflow", {
     interruptible: false,
-    description: "切换当前 Run 的工作流（general/chapter/init/review）。只改变工作流策略，不启动第二个 Agent。",
+    description: "切换当前 Run 的工作流（general/chapter/init）。只改变工作流策略，不启动第二个 Agent。",
     schema: {
       type: "object",
       properties: {
-        workflow: { type: "string", enum: [...WORKFLOWS], description: "general | chapter | init | review" },
+        workflow: { type: "string", enum: [...WORKFLOWS], description: "general | chapter | init" },
         reason: { type: "string", minLength: 1, description: "切换原因（给用户看的简短说明）" }
       },
       required: ["workflow", "reason"],
@@ -1329,14 +1329,13 @@ export function createToolRuntime({
 
   register("commit_chapter", {
     interruptible: false, // 正式章节事务是原子提交，不可中断
-    description: "正式提交一章：真实字数、质量/事实/连续性门禁、正式文件、章节索引、章节记忆与 checkpoint 一致更新。",
+    description: "正式提交一章：真实字数记录、正式文件、章节索引、章节记忆与 checkpoint 一致更新（只保留存储安全约束，不做字数/标题/技能内容门禁）。",
     schema: {
       type: "object",
       properties: {
         project_id: { type: "string", description: "项目 id" },
         chapter_no: { type: "integer", minimum: 1, description: "章节号（从 1 开始）" },
-        expected_draft_checksum: { type: "string", description: "可选：期望草稿校验和（防止提交漂移后的旧草稿）" },
-        exception_decisions: { type: "array", description: "可选：用户明确决定的门禁例外", items: { type: "object" } }
+        expected_draft_checksum: { type: "string", description: "可选：期望草稿校验和（防止提交漂移后的旧草稿）" }
       },
       required: ["project_id", "chapter_no"],
       additionalProperties: false
@@ -1359,8 +1358,7 @@ export function createToolRuntime({
         projectRoot: context.projectRoot,
         projectId,
         chapterNo,
-        expectedDraftChecksum: typeof args.expected_draft_checksum === "string" ? args.expected_draft_checksum : null,
-        exceptionDecisions: Array.isArray(args.exception_decisions) ? args.exception_decisions : null
+        expectedDraftChecksum: typeof args.expected_draft_checksum === "string" ? args.expected_draft_checksum : null
       });
       // 正式提交链接项目 checkpoint：journal 只记录引用
       await appendEvent({
