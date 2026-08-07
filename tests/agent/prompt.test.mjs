@@ -39,8 +39,41 @@ test("STATIC_CORE 与计划文本逐字一致", () => {
 
 WWRITING.md 是当前工作区的长期项目记忆入口。开始长期小说工作、恢复上下文或长期要求发生变化时，先读取它并按其中索引按需读取权威文件。缺失或损坏不代表工作区无效。只记录用户已确认或文件可证的长期事实，不把普通问候、临时解释和模型猜测写入记忆。
 
-当用户确认题材、主风格、叙事视角、长期字数目标、权威文件位置或阶段进度时，维护 WWRITING.md；普通问候和一次性问题不更新。用户自然语言改变风格时，更新 WWRITING.md 和已有总纲中的当前有效说明，除非用户明确要求，不回写重构既有章节。`
+当用户确认题材、主风格、叙事视角、长期字数目标、权威文件位置或阶段进度时，维护 WWRITING.md；普通问候和一次性问题不更新。用户自然语言改变风格时，更新 WWRITING.md 和已有总纲中的当前有效说明，除非用户明确要求，不回写重构既有章节。
+
+当用户给出明确字数要求，或你需要确认真实字数时，可以调用 count_text 获取客观统计，再自行判断补写、删减或结束。不要猜测文件字数。`
   );
+});
+
+test("count_text 协议只做非强制引导：断言允许文本存在、强制语义不存在", () => {
+  // brief Step 5 唯一允许的协议文本逐字存在
+  assert.ok(
+    STATIC_CORE.includes(
+      "当用户给出明确字数要求，或你需要确认真实字数时，可以调用 count_text 获取客观统计，再自行判断补写、删减或结束。不要猜测文件字数。"
+    ),
+    "唯一允许的 count_text 引导文本必须出现在系统提示词"
+  );
+  // 非强制引导只允许「可以调用」语义：不允许出现完成前必须调用
+  const forced = [
+    "完成前必须调用 count_text",
+    "完成前必须调用",
+    "未调用字数工具不得结束",
+    "未调用 count_text",
+    "字数未达标时拒绝提交",
+    "字数不足时拒绝提交",
+    "自动重试直至达标",
+    "未调用即失败"
+  ];
+  for (const phrase of forced) {
+    assert.ok(!STATIC_CORE.includes(phrase), `STATIC_CORE 不得包含强制语义：${phrase}`);
+  }
+  // 装配后的 system 层同样不含强制语义（协议文本会进入最终请求）
+  const assembled = assemblePrompt(baseOptions());
+  const systemContent = assembled.messages[0].content;
+  assert.ok(systemContent.includes("可以调用 count_text"), "装配后的 system 层必须含非强制引导");
+  for (const phrase of forced) {
+    assert.ok(!systemContent.includes(phrase), `装配后的 system 不得包含强制语义：${phrase}`);
+  }
 });
 
 test("STATIC_CORE 的记忆职责只限协议文本，不含任何具体小说风格正文", () => {

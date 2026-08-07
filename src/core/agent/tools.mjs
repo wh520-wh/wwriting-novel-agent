@@ -10,12 +10,13 @@
 // BeforeToolUse/AfterToolUse hook 执行、可中断/原子工具分类、脱敏与受保护路径。
 //
 // 设计不变量（来自计划 Task 4 Step 3–8）：
-//   - 恰好注册七个 general 工具（list_files/search_files/read_file/write_file/edit_file/shell/
-//     read_skill）与五个 deep 工具（update_plan/enter_workflow/append_chapter_segment/
+//   - 恰好注册八个 general 工具（list_files/search_files/read_file/write_file/edit_file/shell/
+//     read_skill/count_text）与五个 deep 工具（update_plan/enter_workflow/append_chapter_segment/
 //     commit_chapter/commit_blueprint）；不注册旧编排工具（start_ 前缀启停、queue_ 前缀排队、
 //     resolve_failure、export_book 等）或逐文件便利工具。read_skill（Task 12）是只读
 //     工具：只能按 active catalog name 解析，realpath containment/1MiB 上限/二进制
-//     asset 由 skills service（src/core/skills/index.mjs）执行。
+//     asset 由 skills service（src/core/skills/index.mjs）执行。count_text（Task 9）是
+//     只读客观字数工具：工作区内 .md/.txt，minimum/target 只计算差额不判定通过或失败。
 //   - 每个工具 schema 必须产生系统构建的归一化 ToolAction 后才进入权限评估；模型只能提供
 //     purpose，不能提供或覆盖 risk/scope/extreme/grant_key/confirmation 类型（schema 不暴露
 //     这些字段，additionalProperties: false）。
@@ -48,6 +49,7 @@ import { isPathInside, pathExists, resolveFilesystemPath, writeFileAtomic } from
 import { classifyShellCommand, resolveProjectScope } from "../shell/risk.mjs";
 import { createRedactor, createStreamingRedactor } from "../shell/redaction.mjs";
 import { skillService } from "../skills/index.mjs";
+import { analyzeTextCount } from "../word-count.mjs";
 
 // ---------------------------------------------------------------------------
 // 常量
@@ -358,6 +360,41 @@ function parseToolArguments(raw) {
   }
   if (typeof raw === "object" && !Array.isArray(raw)) return raw;
   throw toolError("bad_args", "工具参数不是合法对象。", { rule: "bad_args", fields: ["arguments"] });
+}
+
+// ---------------------------------------------------------------------------
+// count_text 执行体（Task 9 Step 4）。只读客观统计：工作区内 .md/.txt，
+// minimum/target 只计算差额，不判定通过或失败（冻结契约 §2.2）。
+// 路径安全与 read_file 同模式：resolveFilesystemPath 解析真实路径后
+// isPathInside 做包含性检查；ENOENT 折叠为 { path, exists: false }。
+// ---------------------------------------------------------------------------
+
+async function executeCountText(args, context) {
+  const relative = requireStringArg(args, "path", "path");
+  const target = await resolveFilesystemPath(path.resolve(context.projectRoot, relative));
+  if (!isPathInside(context.projectRoot, target)) {
+    throw toolError("path_outside_workspace", "只能统计当前工作区内的文件。", { path: relative });
+  }
+  if (![".md", ".txt"].includes(path.extname(target).toLowerCase())) {
+    throw toolError("unsupported_text_file", "只支持 Markdown 或纯文本文件。", { path: relative });
+  }
+  const source = await fs.readFile(target, "utf8").catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (source === null) return { path: relative, exists: false };
+  const counts = analyzeTextCount(source);
+  const minimum = Number.isInteger(args.minimum) ? args.minimum : null;
+  const targetCount = Number.isInteger(args.target) ? args.target : null;
+  return {
+    path: relative,
+    exists: true,
+    ...counts,
+    minimum,
+    target: targetCount,
+    minimum_gap: minimum === null ? null : counts.effective_count - minimum,
+    target_gap: targetCount === null ? null : counts.effective_count - targetCount
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1081,6 +1118,44 @@ export function createToolRuntime({
       // 二进制 asset 处理在 skill-file.readSkillResource 内执行；本版本不执行 scripts。
       const result = await skills.read({ projectRoot: context.projectRoot, name, resource });
       return { ...result };
+    }
+  });
+
+  // ---- general: count_text (Task 9) --------------------------------------
+  // 通用只读工具：所有 workflow 可见；权限 action 与 read_file 同口径
+  //（category=read、scope 按目标路径判定、grantKey read:*），schema description
+  // 逐字来自 brief Step 3（minimum/target 只计算差额，不判定通过或失败）。
+
+  register("count_text", {
+    interruptible: false,
+    description: "统计工作区内 Markdown 或纯文本文件的客观字数；minimum/target 只计算差额，不判定通过或失败。",
+    schema: {
+      type: "object",
+      properties: {
+        path: { type: "string", minLength: 1, description: "文件路径（相对项目根或绝对路径），仅限工作区内 .md/.txt 文件" },
+        minimum: { type: "integer", minimum: 0, description: "可选：字数下限，只用于计算差额，不代表程序门禁" },
+        target: { type: "integer", minimum: 0, description: "可选：字数目标，只用于计算差额，不代表程序门禁" }
+      },
+      required: ["path"],
+      additionalProperties: false
+    },
+    describeAction(args, context) {
+      // 缺省路径只用于动作分类（read 项目内自动放行）；真实路径校验与 bad_args
+      // 在 run()（executeCountText 的 requireStringArg）完成。权限 action 的
+      // description 显示「统计文本字数」（brief Step 3）。
+      const target = path.resolve(context.projectRoot, args.path ?? ".");
+      return fileAction({
+        tool: "count_text",
+        args,
+        context,
+        targetPath: target,
+        category: "read",
+        title: "统计文本字数",
+        description: "统计文本字数"
+      });
+    },
+    async run(args, context) {
+      return executeCountText(args, context);
     }
   });
 

@@ -54,7 +54,8 @@ import { reviewProject } from "../project-operations/review.mjs";
 
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
-// 通用工具恒可用于所有 workflow（Task 12：read_skill 让所有工作流都能按需读技能）。
+// 通用工具恒可用于所有 workflow（Task 12：read_skill 让所有工作流都能按需读技能；
+// Task 9：count_text 是只读客观字数工具，同样对所有工作流可见）。
 const GENERAL_TOOL_NAMES = new Set([
   "list_files",
   "search_files",
@@ -62,7 +63,8 @@ const GENERAL_TOOL_NAMES = new Set([
   "write_file",
   "edit_file",
   "shell",
-  "read_skill"
+  "read_skill",
+  "count_text"
 ]);
 
 const SOURCES = new Set(["chat", "maintenance"]);
