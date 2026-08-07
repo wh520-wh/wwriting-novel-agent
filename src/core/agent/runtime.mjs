@@ -37,6 +37,7 @@ import { runLegacyImport } from "./legacy-import.mjs";
 import { migrateProjectAgentStorage } from "../workspaces/migration.mjs";
 import { loadProject } from "../project-store.mjs";
 import { pathExists } from "../fs-utils.mjs";
+import { readProjectMemory } from "../project-memory.mjs";
 import { createRedactor } from "../shell/redaction.mjs";
 import { resolveModelCapabilities } from "../model/capabilities.mjs";
 import { createJournalDeltaWriter, reasoningAvailability } from "./stream-writer.mjs";
@@ -556,6 +557,11 @@ export function createAgentRuntime({
       const project = await resolveWorkspaceConfig(state.key);
       const policy = workflowPolicy(run.workflow);
       const modelConfig = modelConfigOf(project);
+      // Task 6：每个模型轮重新读取 WWRITING.md（新对话、上下文压缩后的下一轮、
+      // 模型切换、retry 和应用重启都会重新读取）。readProjectMemory 容错：缺失
+      // 返回空、不可读返回 unreadable 标记，绝不阻止 prompt、不把全文永久缓存到
+      // ensureProject() state。
+      const projectMemory = await readProjectMemory(state.key);
       const request = assemblePrompt({
         runtime: {
           absoluteProjectRoot: state.key,
@@ -571,6 +577,7 @@ export function createAgentRuntime({
           budget: {}
         },
         projectInstructions: await readProjectInstructions(state.key),
+        projectMemory,
         workflow: run.workflow,
         skillCatalog: await state.readSkillCatalog(),
         dynamicContext: await policy.contextSelector({
