@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { createAppShellServer } from "../src/core/app-server.mjs";
 import { loadProject, saveProject } from "../src/core/project-store.mjs";
+import { workspaceIdForPath } from "../src/core/workspaces/store.mjs";
 
 // —— 测试服务器小工具(对齐 tests/app-server-probe.test.mjs 的既有范式) ——
 const FETCH_BLOCKED_PORTS = new Set([
@@ -69,16 +70,17 @@ async function setupServer() {
     min_words_per_chapter: 10,
     target_words_per_chapter: 20
   });
+  const stateRoot = path.join(root, ".state");
   const server = createAppShellServer({
     workspaceRoot: root,
     selectedProjectRoot: projectRoot,
-    stateRoot: path.join(root, ".state"),
+    stateRoot,
     secretsRoot: path.join(root, ".secrets"),
     staticRoot: path.resolve("src", "app-shell"),
     port: 0
   });
   const port = await listenOnFetchSafePort(server);
-  return { root, projectRoot, server, port };
+  return { root, projectRoot, server, port, stateRoot };
 }
 
 test("模型错误 → snapshot 显示 failed Run → 修复配置后 retry 恢复同一 Run", async () => {
@@ -169,12 +171,12 @@ test("运行中 submit 排队（HTTP 200 + queued），stop 收敛为 cancelled"
 });
 
 // 构造一个当前实现会以原始 Node fs 错误炸掉的 API 请求（契约测试红阶段）：
-// 第一次输入让 journal 完成落盘并缓存进 runtime；随后删除项目内 .wwriting/agent，
-// 第二次输入 append 因父目录缺失抛出原始 ENOENT —— 当前错误适配原样回传
-// "ENOENT: no such file or directory, open '...'"（SPEC §11 禁止）。Task 3/4
-// 把 journal 迁入应用私有目录并统一错误脱敏后本契约转绿。
+// 第一次输入让 journal 完成落盘并缓存进 runtime；随后删除应用私有 agent 目录
+//（Task 3/4 起 journal 位于 <stateRoot>/workspaces/<ws_id>/agent，不再是项目内
+// .wwriting/agent），第二次输入 append 因父目录缺失抛出原始 ENOENT —— 统一错误
+// 脱敏后响应正文不得泄露 ENOENT/绝对路径/堆栈（SPEC §11）。
 async function triggerUnreadableWorkspaceRequest() {
-  const { projectRoot, server, port } = await setupServer();
+  const { projectRoot, server, port, stateRoot } = await setupServer();
   try {
     const first = await postJson(port, "/api/agent/input", { projectRoot, text: "你好" });
     assert.equal(first.res.status, 200);
@@ -183,7 +185,8 @@ async function triggerUnreadableWorkspaceRequest() {
       const { data } = await getJson(port, `/api/agent/snapshot?projectRoot=${encodeURIComponent(projectRoot)}`);
       return data.session?.active_run?.status === "completed" ? true : null;
     });
-    await fs.rm(path.join(projectRoot, ".wwriting", "agent"), { recursive: true, force: true });
+    const privateAgentDir = path.join(stateRoot, "workspaces", workspaceIdForPath(projectRoot), "agent");
+    await fs.rm(privateAgentDir, { recursive: true, force: true });
     const second = await postJson(port, "/api/agent/input", { projectRoot, text: "再来一条" });
     return { status: second.res.status, body: JSON.stringify(second.data) };
   } finally {

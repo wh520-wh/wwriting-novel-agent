@@ -17,10 +17,10 @@
 //
 // 作用域语义（Task 9 评审闭环）：本模块自身不做项目注册校验——projectRoot 由
 // 注入的 resolveProjectRoot(root) 解析；组合根（app-server.mjs）注入与 project-routes
-// 一致的注册校验（resolveReadProjectRoot：当前选中 / 工作区内 / 最近列表 + 磁盘
-// project.yaml），未注册路径返回 400 INVALID_PROJECT_SCOPE，journal 不会对任意路径
-// 惰性创建 .wwriting/agent/。单元测试直接组装本模块时不注入该校验（本地项目
-// 目录即合法作用域），保持传输层与作用域策略解耦。
+// 一致的注册校验（resolveReadProjectRoot：当前选中 / 工作区内 / 最近列表 + 磁盘目录
+// 可访问，不要求 project.yaml），未注册路径返回 400 INVALID_WORKSPACE_SCOPE，
+// journal 不会对任意路径惰性创建目录。单元测试直接组装本模块时不注入该校验（本地
+// 项目目录即合法作用域），保持传输层与作用域策略解耦。
 import { HttpError } from "../http-error.mjs";
 
 const SNAPSHOT_LIMIT_MAX = 1000;

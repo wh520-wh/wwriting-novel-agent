@@ -183,6 +183,9 @@ export function createSettingsRoutes({
   secretsRoot,
   connectionTester = null,
   selection = null,
+  // 计划 Task 4 Step 5：组合根注入同一个 workspaceStore（应用私有 settings 真相源）。
+  // 本任务只接收不消费；Task 5 起 settings 写入 <stateRoot>/workspaces/<id>/settings.json。
+  workspaceStore = null,
   // Task 12：skills service seam（src/core/skills/index.mjs）。生产缺省用全局
   // 单例；测试注入临时 root 的 service，避免迁移 marker 写进真实用户目录。
   skills = null

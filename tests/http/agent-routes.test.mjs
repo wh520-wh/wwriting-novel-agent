@@ -346,3 +346,32 @@ test("retry 已终结（completed）的 Run → 409 run_not_recoverable", async 
   assert.equal(retried.data.ok, false);
   assert.equal(retried.data.code, "run_not_recoverable");
 });
+
+test("原始 Node 文件错误不回传响应正文（统一错误脱敏契约）", async (t) => {
+  // 计划 Task 4 Step 6：agent 抛出原始 ENOENT（如 journal 目录被外部删除）时，
+  // 响应正文不得出现 ENOENT/绝对路径/堆栈，message 只使用 publicErrorMessage 的
+  // 固定中文文案，code 收敛为 INTERNAL_ERROR。
+  const router = createRouter();
+  const server = await startHttpServer(t, {
+    router,
+    routeModules: [
+      createAgentRoutes({
+        agent: {
+          submit: async () => {
+            const error = new Error(
+              "ENOENT: no such file or directory, open 'C:\\Users\\test\\userData\\workspaces\\ws_x\\agent\\events.jsonl'"
+            );
+            error.code = "ENOENT";
+            throw error;
+          }
+        }
+      })
+    ]
+  });
+  const { res, data } = await server.post("/api/agent/input", { projectRoot: "C:\\any\\folder", text: "你好" });
+  assert.equal(res.status, 500);
+  assert.equal(data.ok, false);
+  assert.equal(data.code, "INTERNAL_ERROR");
+  assert.match(data.message, /无法读取|请检查|重试/u);
+  assert.doesNotMatch(JSON.stringify(data), /ENOENT|node:fs|at\s+\w+|[A-Z]:\\.*userData/iu);
+});

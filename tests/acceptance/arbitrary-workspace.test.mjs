@@ -16,6 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createAppShellServer } from "../../src/core/app-server.mjs";
+import { validateWorkspaceRoot } from "../../src/core/app-dashboard.mjs";
 import { closeServer, listenOnFetchSafePort } from "../helpers/http-test.mjs";
 import { createMockModelGateway } from "../helpers/project-agent-harness.mjs";
 
@@ -116,6 +117,19 @@ export async function startArbitraryWorkspaceServer(t, { projectRoot, stateRoot,
     }
   };
 }
+
+// ---------------------------------------------------------------------------
+// 目录资格（计划 Task 4 Step 1 的目录资格测试）
+// ---------------------------------------------------------------------------
+
+test("validateWorkspaceRoot 只要求目录存在且可访问", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-root-"));
+  await fs.writeFile(path.join(root, "notes.txt"), "资料", "utf8");
+  assert.equal(await validateWorkspaceRoot(root), path.resolve(root));
+  await assert.rejects(() => validateWorkspaceRoot(path.join(root, "missing")), /文件夹不存在/u);
+  await assert.rejects(() => validateWorkspaceRoot(path.join(root, "notes.txt")), /不是文件夹/u);
+  await assert.rejects(() => validateWorkspaceRoot("   "), /请选择一个工作文件夹/u);
+});
 
 // ---------------------------------------------------------------------------
 // 契约测试（当前实现按契约原因失败 —— 红阶段）
