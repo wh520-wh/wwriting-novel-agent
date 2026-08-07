@@ -28,8 +28,15 @@ import path from "node:path";
 import { existsSync } from "node:fs";
 import { HttpError } from "../http-error.mjs";
 import { exportBook } from "../book-export.mjs";
-import { loadDashboardData, readChapterContent, validateProjectRoot, canInitializeProjectRoot } from "../app-dashboard.mjs";
+import {
+  loadDashboardData,
+  readChapterContent,
+  validateProjectRoot,
+  validateWorkspaceRoot,
+  canInitializeProjectRoot
+} from "../app-dashboard.mjs";
 import { forgetRecentProject, loadAppState, recordRecentProject, samePath } from "../app-state.mjs";
+import { workspaceIdForPath } from "../workspaces/store.mjs";
 import { loadConfigLayers } from "../config-runtime.mjs";
 import { createResearchAdapter } from "../research-adapters.mjs";
 import { fetchWebPage, searchWeb } from "../research-tools.mjs";
@@ -65,7 +72,10 @@ export function createProjectRoutes({
   projectLocks = null,
   agent = null,
   dashboardLoader = loadDashboardData,
-  selection = null
+  selection = null,
+  // 计划 Task 4 Step 5：组合根注入同一个 workspaceStore（应用私有 settings 真相源）。
+  // 模块不得自行拼 stateRoot/workspaces 路径。
+  workspaceStore = null
 } = {}) {
   // 共享的项目选择状态（composition root 注入同一个可变引用，settings-routes 共用）。
   const selectedRef = selection ?? { current: null };
@@ -144,32 +154,56 @@ export function createProjectRoutes({
       if (projects.some((project) => samePath(project.projectRoot, root))) {
         continue;
       }
-      if (!existsSync(path.join(root, "project.yaml"))) {
+      // 目录仍可访问才入列表（计划 Task 4：project.yaml 不再是列表资格条件）；
+      // 已删除/无权限目录不出现在列表里。
+      try {
+        await validateWorkspaceRoot(root);
+      } catch {
         continue;
       }
-      let title = item.title ?? path.basename(root);
-      let storySeed = item.story_seed ?? "";
-      let activeModel = null;
-      let archivedAt = null;
-      try {
-        const project = await loadProject(root);
-        title = project.title ?? title;
-        storySeed = project.story_seed ?? storySeed;
-        const config = await loadConfigLayers(root, project).catch(() => null);
-        activeModel = config?.effective?.active_model ?? project.active_model ?? null;
-        archivedAt = project.archived_at ?? null;
-      } catch (error) {
-        console.warn("[project-routes] Failed to load project metadata:", error.message);
+      const workspaceSettings = workspaceStore ? await workspaceStore.loadSettings(root) : null;
+      if (existsSync(path.join(root, "project.yaml"))) {
+        // 旧项目：project.yaml 是元数据真相源（沿用既有契约）。
+        let title = item.title ?? path.basename(root);
+        let storySeed = item.story_seed ?? "";
+        let activeModel = null;
+        let archivedAt = null;
+        try {
+          const project = await loadProject(root);
+          title = project.title ?? title;
+          storySeed = project.story_seed ?? storySeed;
+          const config = await loadConfigLayers(root, project).catch(() => null);
+          activeModel = config?.effective?.active_model ?? project.active_model ?? null;
+          archivedAt = project.archived_at ?? null;
+        } catch (error) {
+          console.warn("[project-routes] Failed to load project metadata:", error.message);
+        }
+        projects.push({
+          projectRoot: root,
+          workspace_id: item.workspace_id ?? workspaceIdForPath(root),
+          title,
+          story_seed: storySeed,
+          active_model: activeModel,
+          model_label: modelDisplayName(activeModel),
+          archived_at: archivedAt,
+          external: !isPathInside(workspace, root),
+          legacy_project: true
+        });
+      } else {
+        // 普通目录：工作区设置（应用私有）是模型真相源（计划 Task 4 Step 4 形状）。
+        const activeModel = workspaceSettings?.active_model ?? null;
+        projects.push({
+          projectRoot: root,
+          workspace_id: item.workspace_id ?? workspaceIdForPath(root),
+          title: item.title || path.basename(root),
+          story_seed: item.story_seed || "",
+          active_model: activeModel,
+          model_label: modelDisplayName(activeModel),
+          archived_at: null,
+          external: !isPathInside(workspace, root),
+          legacy_project: false
+        });
       }
-      projects.push({
-        projectRoot: root,
-        title,
-        story_seed: storySeed,
-        active_model: activeModel,
-        model_label: modelDisplayName(activeModel),
-        archived_at: archivedAt,
-        external: !isPathInside(workspace, root)
-      });
     }
     const selectedInList = currentSelected && projects.some((project) => samePath(project.projectRoot, currentSelected))
       ? currentSelected
@@ -182,16 +216,23 @@ export function createProjectRoutes({
     };
   }
 
+  // 忘记后回落到下一个可用目录：只检查目录可访问，不检查 project.yaml（计划 Task 4 Step 4）。
   async function resolveSelectedAfterForget(forgottenRoot) {
     const currentSelected = selected();
-    if (currentSelected && !samePath(currentSelected, forgottenRoot) && existsSync(path.join(currentSelected, "project.yaml"))) {
-      return path.resolve(currentSelected);
+    if (currentSelected && !samePath(currentSelected, forgottenRoot)) {
+      try {
+        return await validateWorkspaceRoot(currentSelected);
+      } catch {
+        // 当前选中已不可访问：继续找最近列表
+      }
     }
     const state = await loadAppState(stateRoot);
     for (const item of state.recentProjects) {
       const candidate = path.resolve(item.projectRoot);
-      if (existsSync(path.join(candidate, "project.yaml"))) {
-        return candidate;
+      try {
+        return await validateWorkspaceRoot(candidate);
+      } catch {
+        // 目录不可访问，继续找下一个
       }
     }
     return null;
@@ -243,9 +284,10 @@ export function createProjectRoutes({
 
     "GET /api/projects/list": async () => buildProjectList(),
 
+    // 打开任意可访问文件夹即成为工作区（计划 Task 4 Step 2）：不再要求 project.yaml。
     "POST /api/projects/open": async ({ body }) => {
       try {
-        const projectRoot = await validateProjectRoot(body.projectRoot ?? body.path ?? "");
+        const projectRoot = await validateWorkspaceRoot(body.projectRoot ?? body.path ?? "");
         selectedRef.current = projectRoot;
         await rememberProject(projectRoot);
         return { ok: true, projectRoot };

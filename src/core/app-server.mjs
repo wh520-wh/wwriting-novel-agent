@@ -25,6 +25,7 @@ import { createAgentRoutes } from "./http/agent-routes.mjs";
 import { createProjectRoutes } from "./http/project-routes.mjs";
 import { createSettingsRoutes } from "./http/settings-routes.mjs";
 import { createProjectAgent } from "./agent/index.mjs";
+import { createWorkspaceStore } from "./workspaces/store.mjs";
 import { createModelGateway } from "./model/gateway.mjs";
 import { OpenAICompatibleAdapter } from "./model/openai-compatible.mjs";
 import { createMockAdapter } from "./model/mock.mjs";
@@ -56,6 +57,10 @@ export function createAppShellServer({
   const workspace = path.resolve(workspaceRoot);
   const localSecretsRoot = path.resolve(secretsRoot);
   const appStateRoot = path.resolve(stateRoot ?? secretsRoot);
+  // 计划 Task 4 Step 5：应用私有 workspace store 只在这里创建一次（stable workspace
+  // id + <stateRoot>/workspaces/<id>/ 私有数据），注入 project/settings routes 与
+  // Agent journal 存储根；各模块不得自行拼 stateRoot/workspaces 路径。
+  const workspaceStore = createWorkspaceStore({ stateRoot: appStateRoot });
   const dashboardLoader = testLoadDashboardData
     ?? ((workspaceRootArg, options = {}) => loadDashboardData(workspaceRootArg, { ...options, skillService: skills ?? undefined }));
   const connectionTester = testModelConnection ?? runModelConnectionTest ?? null;
@@ -64,9 +69,10 @@ export function createAppShellServer({
   // 共享的项目选择状态（project-routes / settings-routes 注入同一可变引用）。
   const selection = { current: selectedProjectRoot ? path.resolve(selectedProjectRoot) : null };
   if (!selection.current) {
-    // 持久会话：未显式指定项目时，恢复上次打开且仍有效的小说。
+    // 持久会话：未显式指定项目时，恢复上次打开且仍有效的工作区。只检查目录存在
+    //（计划 Task 4 Step 5：不检查 project.yaml）。
     const lastProjectRoot = loadAppStateSync(appStateRoot).lastProjectRoot;
-    if (lastProjectRoot && existsSync(path.join(lastProjectRoot, "project.yaml"))) {
+    if (lastProjectRoot && existsSync(lastProjectRoot)) {
       selection.current = lastProjectRoot;
     }
   }
@@ -87,11 +93,14 @@ export function createAppShellServer({
 
   // ProjectAgent：唯一 Agent seam。shell 接真实 Shell 运行时；每个项目持有独立
   // gateway（per-project 成本记账），provider 适配按请求 modelConfig 分发。
+  // 计划 Task 3/4：journal 落应用私有 storageRoot（workspaceStore.agentRootFor），
+  // 绝不写回项目内 .wwriting/agent。
   const agent = createProjectAgent({
     gatewayFactory,
     shell: runShellCommand,
     projectLocks,
     secrets,
+    agentStorageRootFor: (projectRoot) => workspaceStore.agentRootFor(projectRoot),
     ...(skills ? { skills } : {})
   });
 
@@ -101,9 +110,10 @@ export function createAppShellServer({
     createAgentRoutes({
       agent,
       // /api/agent/* 与 /api/project/events 的作用域校验（Task 9 评审闭环）：
-      // 与 project-routes 同一套注册语义（当前选中/工作区内/最近列表 + 磁盘
-      // project.yaml），未注册路径 400 INVALID_PROJECT_SCOPE，journal 不得对任意
-      // 路径惰性建目录。selected 在请求时读取（selection 是共享可变引用）。
+      // 与 project-routes 同一套注册语义（当前选中/工作区内/最近列表 + 磁盘目录
+      // 可访问，不要求 project.yaml），未注册路径 400 INVALID_WORKSPACE_SCOPE，
+      // journal 不得对任意路径惰性建目录。selected 在请求时读取（selection 是
+      // 共享可变引用）。
       resolveProjectRoot: (projectRoot) => resolveReadProjectRoot({
         requestedRoot: projectRoot,
         selected: selection.current,
@@ -118,7 +128,8 @@ export function createAppShellServer({
       projectLocks,
       agent,
       dashboardLoader,
-      selection
+      selection,
+      workspaceStore
     }),
     createSettingsRoutes({
       workspace,
@@ -126,6 +137,8 @@ export function createAppShellServer({
       secretsRoot: localSecretsRoot,
       connectionTester,
       selection,
+      // 计划 Task 4 Step 5：注入同一个 workspaceStore（Task 5 起写应用私有 settings）。
+      workspaceStore,
       ...(skills ? { skills } : {})
     })
   ];

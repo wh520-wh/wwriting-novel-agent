@@ -15,11 +15,10 @@
 //   - 返回对象 → router 以 200 + JSON 响应（cache-control: no-store）；
 //   - 返回 undefined → handler 已自行写响应（如 SSE 端点）；
 //   - 抛出错误 → router 统一适配为 JSON 错误响应。
-import { existsSync } from "node:fs";
 import path from "node:path";
 import { HttpError, sendError } from "../http-error.mjs";
 import { loadAppState, samePath } from "../app-state.mjs";
-import { validateProjectRoot } from "../app-dashboard.mjs";
+import { validateProjectRoot, validateWorkspaceRoot } from "../app-dashboard.mjs";
 import { isPathInside } from "../fs-utils.mjs";
 
 const MAX_BODY_BYTES = 200_000;
@@ -45,7 +44,7 @@ const STATUS_400_CODES = new Set([
   "promote_failed",
   // 项目/设置领域
   "invalid_settings_patch",
-  "INVALID_PROJECT_SCOPE",
+  "INVALID_WORKSPACE_SCOPE",
   "PROJECT_ARCHIVED",
   "model_unsupported",
   "configuration_missing"
@@ -134,8 +133,10 @@ export async function resolveActiveProjectRoot({ selected }) {
   return target;
 }
 
-// 读请求作用域：请求携带的 projectRoot 优先，缺省回落当前选中项目。目标必须
-// 已注册（当前选中/最近列表/工作区内部）且磁盘上有 project.yaml，否则 400。
+// 读请求作用域（计划 Task 4 Step 3）：请求携带的 projectRoot 优先，缺省回落当前
+// 选中项目。目标必须已注册（当前选中/工作区内/最近列表），且磁盘目标仍是可访问
+// 目录；project.yaml 不再是聊天资格条件。未注册 → 400 INVALID_WORKSPACE_SCOPE；
+// 已注册但目录当前不可访问 → 404 WORKSPACE_UNAVAILABLE。
 export async function resolveReadProjectRoot({ requestedRoot, selected, workspace, stateRoot }) {
   const target = requestedRoot ?? selected;
   if (!target) {
@@ -150,10 +151,14 @@ export async function resolveReadProjectRoot({ requestedRoot, selected, workspac
     const state = await loadAppState(stateRoot);
     registered = state.recentProjects.some((project) => samePath(project.projectRoot, resolvedTarget));
   }
-  if (!registered || !existsSync(path.join(resolvedTarget, "project.yaml"))) {
-    throw new HttpError(400, "INVALID_PROJECT_SCOPE", "请求的项目未注册");
+  if (!registered) {
+    throw new HttpError(400, "INVALID_WORKSPACE_SCOPE", "请求的工作区未注册");
   }
-  return resolvedTarget;
+  try {
+    return await validateWorkspaceRoot(resolvedTarget);
+  } catch {
+    throw new HttpError(404, "WORKSPACE_UNAVAILABLE", "工作文件夹当前无法访问，请重新选择。");
+  }
 }
 
 // 写请求作用域：读作用域之外还要求请求/期望项目与当前选中一致，避免项目切换

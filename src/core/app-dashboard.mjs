@@ -201,6 +201,27 @@ function stripChapterMarkup(raw) {
     .trim();
 }
 
+// 工作区资格（计划 Task 4）：文件夹 = 工作区 = 项目。只要求目录存在且可访问，
+// Git、project.yaml、.wwriting/、WWRITING.md 都不是聊天资格条件（SPEC §2.1）。
+// 错误必须是可行动中文文案（用户看不到 ENOENT/路径/堆栈）。
+export async function validateWorkspaceRoot(projectRoot) {
+  if (typeof projectRoot !== "string" || projectRoot.trim() === "") {
+    throw new Error("请选择一个工作文件夹。");
+  }
+  const target = path.resolve(projectRoot);
+  let stat;
+  try {
+    stat = await fs.stat(target);
+    await fs.access(target);
+  } catch {
+    throw new Error("工作文件夹不存在或无法访问，请检查后重试。");
+  }
+  if (!stat.isDirectory()) throw new Error("选择的路径不是文件夹。");
+  return target;
+}
+
+// 旧结构化领域内部兼容：仅当目录里确实有 project.yaml 时才用于旧领域操作，
+// 不再参与聊天资格判断（POST /api/projects/open 改走 validateWorkspaceRoot）。
 export async function validateProjectRoot(projectRoot) {
   const target = path.resolve(projectRoot);
   const projectFile = safeJoin(target, "project.yaml");

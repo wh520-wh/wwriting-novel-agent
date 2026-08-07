@@ -191,12 +191,12 @@ test("projects list / open / init / forget", async () => {
   }
 });
 
-test("未注册项目返回 400 INVALID_PROJECT_SCOPE；打开非项目文件夹返回 400", async () => {
+test("未注册项目返回 400 INVALID_WORKSPACE_SCOPE；打开不存在路径返回 400", async () => {
   const { server, port } = await setupServer();
   try {
     const ghost = await getJson(port, `/api/dashboard?projectRoot=${encodeURIComponent(path.join(os.tmpdir(), "no-such-wwriting-project"))}`);
     assert.equal(ghost.res.status, 400);
-    assert.equal(ghost.data.code, "INVALID_PROJECT_SCOPE");
+    assert.equal(ghost.data.code, "INVALID_WORKSPACE_SCOPE");
     const open = await postJson(port, "/api/projects/open", { projectRoot: path.join(os.tmpdir(), "not-a-project") });
     assert.equal(open.res.status, 400);
     assert.equal(open.data.code, "project_open_failed");
@@ -205,7 +205,7 @@ test("未注册项目返回 400 INVALID_PROJECT_SCOPE；打开非项目文件夹
   }
 });
 
-test("未注册项目路径的 /api/agent/* 拒绝 400 INVALID_PROJECT_SCOPE（作用域校验闭环）", async () => {
+test("未注册项目路径的 /api/agent/* 拒绝 400 INVALID_WORKSPACE_SCOPE（作用域校验闭环）", async () => {
   const { server, port } = await setupServer();
   const unregistered = path.join(os.tmpdir(), "wwriting-unregistered-agent-target");
   await fs.rm(unregistered, { recursive: true, force: true }); // 清掉历史残留，保证副作用断言可靠
@@ -213,11 +213,11 @@ test("未注册项目路径的 /api/agent/* 拒绝 400 INVALID_PROJECT_SCOPE（�
     // 提交输入：未注册路径不得通过（journal 不得对任意路径惰性建目录）。
     const input = await postJson(port, "/api/agent/input", { projectRoot: unregistered, text: "任务一" });
     assert.equal(input.res.status, 400);
-    assert.equal(input.data.code, "INVALID_PROJECT_SCOPE");
+    assert.equal(input.data.code, "INVALID_WORKSPACE_SCOPE");
     // 快照与 SSE 同属读端点，同样受作用域约束。
     const snapshot = await getJson(port, `/api/agent/snapshot?projectRoot=${encodeURIComponent(unregistered)}`);
     assert.equal(snapshot.res.status, 400);
-    assert.equal(snapshot.data.code, "INVALID_PROJECT_SCOPE");
+    assert.equal(snapshot.data.code, "INVALID_WORKSPACE_SCOPE");
     // 校验失败的副作用检查：未注册路径不得被创建任何 agent 状态。
     const agentDir = path.join(unregistered, ".wwriting", "agent");
     await assert.rejects(fs.access(agentDir), "未注册项目不得创建 .wwriting/agent/");

@@ -149,7 +149,7 @@ test("GET /api/diagnostics：agent.snapshot 注入稳定 loader，旧契约保�
   assert.equal(typeof data.costHealth, "object");
   assert.equal(typeof data.recoveryHint, "object");
   assert.ok(Array.isArray(data.recentEvents));
-  // 未注册项目 → 400 INVALID_PROJECT_SCOPE / 404
+  // 未注册项目 → 400 INVALID_WORKSPACE_SCOPE / 404 no_project
   const missing = await s.get(`/api/diagnostics?projectRoot=${encodeURIComponent(path.join(os.tmpdir(), "no-such-project"))}`);
   assert.ok([400, 404].includes(missing.res.status), `未注册项目应 4xx，实际 ${missing.res.status}`);
 });

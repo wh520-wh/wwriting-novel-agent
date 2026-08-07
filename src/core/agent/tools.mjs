@@ -105,6 +105,29 @@ function toolError(code, message, technical = null) {
   return error;
 }
 
+// Node 文件/系统错误判定（计划 Task 4 Step 6）：带 syscall 的 fs 错误与
+// E*/ERR_*/UV_* 系统码都属于 Node 原始错误，message 不得进入用户正文。
+function isNodeSystemError(error) {
+  if (!error) return false;
+  if (typeof error.syscall === "string" && error.syscall.length > 0) return true;
+  return /^(?:E[A-Z]+|ERR_[A-Z0-9_]+|UV_[A-Z0-9_]+)$/u.test(String(error.code ?? ""));
+}
+
+// Node 文件错误 → 简短工具错误：固定中文 message + 原始错误进 technical（供
+// 诊断日志；technical 不得渲染成用户正文）。
+function sanitizeToolFailure(error) {
+  if (isNodeSystemError(error)) {
+    return {
+      message: "无法读取工作区文件，请检查文件夹是否仍可访问后重试。",
+      technical: {
+        ...(error?.technical && typeof error.technical === "object" ? error.technical : null),
+        node_error: { code: error.code ?? null, message: error.message ?? String(error) }
+      }
+    };
+  }
+  return { message: error?.message ?? "工具执行失败。", technical: error?.technical ?? null };
+}
+
 // ---------------------------------------------------------------------------
 // 脱敏辅助
 // ---------------------------------------------------------------------------
@@ -1560,16 +1583,18 @@ export function createToolRuntime({
     await delta.flush().catch(() => {});
 
     if (error) {
-      // 错误 message 可能内嵌参数值（如 args.path 含 token 形片段）：事件与返回值
-      // 都先过脱敏，避免密钥形态文本随错误信息离开 ToolRuntime
-      const failedMessage = redactor.redact(error.message);
+      // Node 文件错误先映射为简短工具错误（计划 Task 4 Step 6）；随后错误 message
+      // 可能内嵌参数值（如 args.path 含 token 形片段）：事件与返回值都先过脱敏，
+      // 避免密钥形态文本随错误信息离开 ToolRuntime
+      const sanitized = sanitizeToolFailure(error);
+      const failedMessage = redactor.redact(sanitized.message);
       const failedPayload = {
         tool_call_id: toolCallId,
         activity_id: activityId,
         name,
         error: error.code ?? "tool_failed",
         message: failedMessage,
-        technical: error.technical ?? null,
+        technical: sanitized.technical ?? null,
         duration_ms: Number.isFinite(error.durationMs) ? error.durationMs : null
       };
       if (typeof error.stdout === "string") failedPayload.stdout = redactor.redact(error.stdout);
