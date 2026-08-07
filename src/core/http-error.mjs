@@ -50,7 +50,7 @@ export function publicErrorMessage(error) {
 
 // Node 系统错误码（fs/uv/ERR_*）不得作为响应 code 暴露；程序写死的领域 code
 //（HttpError 与 agent 领域小写 code）原样保留，前端依赖它们做分支处理。
-const NODE_ERROR_CODE_RE = /^(?:E[A-Z]+|ERR_[A-Z0-9_]+|UV_[A-Z0-9_]+)$/u;
+const NODE_ERROR_CODE_RE = /^(?:E[A-Z0-9]+|ERR_[A-Z0-9_]+|UV_[A-Z0-9_]+)$/u;
 
 export function safePublicErrorCode(error) {
   const code = typeof error?.code === "string" && error.code.length > 0 ? error.code : null;

@@ -21,7 +21,7 @@
 // 可访问，不要求 project.yaml），未注册路径返回 400 INVALID_WORKSPACE_SCOPE，
 // journal 不会对任意路径惰性创建目录。单元测试直接组装本模块时不注入该校验（本地
 // 项目目录即合法作用域），保持传输层与作用域策略解耦。
-import { HttpError } from "../http-error.mjs";
+import { HttpError, publicErrorMessage, safePublicErrorCode } from "../http-error.mjs";
 
 const SNAPSHOT_LIMIT_MAX = 1000;
 const EVENTS_POLL_INTERVAL_MS = 500;
@@ -162,10 +162,13 @@ export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPoll
               afterSeq = Math.max(afterSeq, Number(event?.seq) || 0);
             }
           } catch (error) {
-            // 快照失败（如项目未注册）推送一条错误事件后关闭流
+            // 快照失败（如项目未注册 / 工作区不可读）推送一条错误事件后关闭流。
+            // 统一错误脱敏（计划 Task 4 Step 6）：data 行的 message/code 只使用
+            // publicErrorMessage / safePublicErrorCode —— 原始 Node fs 错误文本与
+            // 内部绝对路径不得随 SSE data 行离开服务器（SPEC §11）。
             if (!isGone()) {
               response.write(
-                `event: error\ndata: ${JSON.stringify({ ok: false, code: error?.code ?? "internal_error", message: error?.message ?? "事件流错误" })}\n\n`
+                `event: error\ndata: ${JSON.stringify({ ok: false, code: safePublicErrorCode(error), message: publicErrorMessage(error) })}\n\n`
               );
             }
             break;

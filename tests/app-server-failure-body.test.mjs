@@ -6,6 +6,7 @@ import test from "node:test";
 import { createAppShellServer } from "../src/core/app-server.mjs";
 import { loadProject, saveProject } from "../src/core/project-store.mjs";
 import { workspaceIdForPath } from "../src/core/workspaces/store.mjs";
+import { publicErrorMessage, safePublicErrorCode } from "../src/core/http-error.mjs";
 
 // —— 测试服务器小工具(对齐 tests/app-server-probe.test.mjs 的既有范式) ——
 const FETCH_BLOCKED_PORTS = new Set([
@@ -59,6 +60,19 @@ async function waitFor(predicate, { timeout = 15000 } = {}) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error("Timed out waiting for condition");
+}
+
+// SSE 累积读取直到 predicate 命中（镜像 app-server-events-stream.test.mjs 的范式）。
+async function readChunkUntil(reader, decoder, predicate) {
+  let buffer = "";
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    if (predicate(buffer)) return buffer;
+  }
+  throw new Error("Timed out waiting for SSE condition");
 }
 
 async function setupServer() {
@@ -199,4 +213,62 @@ test("API 失败正文不泄露 ENOENT、堆栈和绝对内部路径", async () 
   assert.ok(status >= 400);
   assert.doesNotMatch(body, /ENOENT|node:fs|at\s+\w+|[A-Z]:\\.*userData/iu);
   assert.match(body, /无法读取|请检查|重试/u);
+});
+
+test("SSE 错误事件 data 行同样脱敏：不泄露原始 fs 错误与内部路径", async () => {
+  // 评审 Critical：GET /api/project/events 的快照轮询失败路径原样写
+  // `error?.message`/`error?.code` 进 data 行，原始 Node fs 错误（绝对内部路径）
+  // 会随 data: 离开服务器。这里把 events.jsonl 替换成同名目录 → journal.read 的
+  // fs.readFile 抛原始 EISDIR（syscall=read），验证 data 行只含脱敏后的 message/code。
+  const { projectRoot, server, port, stateRoot } = await setupServer();
+  const controller = new AbortController();
+  try {
+    const first = await postJson(port, "/api/agent/input", { projectRoot, text: "你好" });
+    assert.equal(first.res.status, 200);
+    await waitFor(async () => {
+      const { data } = await getJson(port, `/api/agent/snapshot?projectRoot=${encodeURIComponent(projectRoot)}`);
+      return data.session?.active_run?.status === "completed" ? true : null;
+    });
+    const eventsPath = path.join(stateRoot, "workspaces", workspaceIdForPath(projectRoot), "agent", "events.jsonl");
+    await fs.access(eventsPath); // journal 已落盘
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/project/events?projectRoot=${encodeURIComponent(projectRoot)}`, {
+      signal: controller.signal
+    });
+    assert.equal(res.status, 200);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    await readChunkUntil(reader, decoder, (chunk) => chunk.includes("connected"));
+
+    // 让工作区私有存储变为不可读：events.jsonl → 同名目录（跨平台确定性触发 EISDIR）
+    await fs.rm(eventsPath, { force: true });
+    await fs.mkdir(eventsPath);
+    const block = await readChunkUntil(reader, decoder, (chunk) => chunk.includes("event: error"));
+
+    // 流里可能已有此前的正常 journal data 行；event: error 后的最后一条 data: 才是错误事件。
+    const dataLines = block.split("\n").filter((line) => line.startsWith("data:"));
+    assert.ok(dataLines.length >= 1, "应至少推送一条 data: 行");
+    const dataLine = dataLines[dataLines.length - 1];
+    const payload = JSON.parse(dataLine.slice(5).trim());
+    assert.equal(payload.ok, false);
+    assert.equal(payload.code, "INTERNAL_ERROR", "EISDIR 属 Node 系统码，必须收敛为 INTERNAL_ERROR");
+    assert.match(payload.message, /操作未完成|重试/u, "message 应使用 publicErrorMessage 的脱敏文案");
+    assert.doesNotMatch(
+      dataLine,
+      /EISDIR|ENOENT|EACCES|EPERM|ENOTDIR|node:fs|at\s+\w+|userData|workspaces/iu,
+      "SSE data 行不得含原始 fs 错误文本或内部绝对路径"
+    );
+  } finally {
+    controller.abort();
+    await closeServer(server);
+  }
+});
+
+test("带数字的 errno 码（如 E2BIG）同样收敛为 INTERNAL_ERROR", () => {
+  // 评审 Minor：NODE_ERROR_CODE_RE 的 E[A-Z]+ 漏掉 E2BIG 这类带数字的 errno 码，
+  // 会以 "code":"E2BIG" 暴露。修复后任何 E<digit>… 系统码都收敛。
+  const e2big = new Error("E2BIG: argument list too long");
+  e2big.code = "E2BIG";
+  assert.equal(safePublicErrorCode(e2big), "INTERNAL_ERROR");
+  assert.equal(publicErrorMessage(e2big), "操作未完成，请重试；若问题持续，请打开诊断信息。");
 });
