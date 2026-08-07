@@ -116,7 +116,7 @@ function manuscriptFenceRender(token) {
 export function renderMarkdown(source) {
   // trimEnd：marked 输出末尾的换行会污染 textContent/innerHTML 的等值断言
   // （旧渲染器无尾随换行），真实 DOM 中尾随空白也不可见。
-  return marked.parse(String(source ?? ""), {
+  const html = marked.parse(String(source ?? ""), {
     gfm: true,
     breaks: true,
     renderer,
@@ -124,5 +124,8 @@ export function renderMarkdown(source) {
       block: [manuscriptFenceToken],
       renderers: { manuscriptFence: manuscriptFenceRender }
     }
-  }).trimEnd();
+  });
+  // marked 直接输出 <table>，因此由渲染边界补上滚动层。表格本身保持语义结构，
+  // 由 CSS 固定为正文列宽，窄视口只滚动该区域而不压缩单元格。
+  return html.replace(/<table>([\s\S]*?)<\/table>/gu, '<div class="agent-markdown-table-scroll"><table>$1</table></div>').trimEnd();
 }

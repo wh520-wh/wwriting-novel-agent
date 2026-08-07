@@ -57,14 +57,11 @@
   box-sizing: border-box;
 }
 
-/* 「回到最新」：上滚离开底部后浮出的锚点（sticky 贴住滚动视口底缘）。 */
+/* 「回到最新」：位于滚动区与 composer 之间，始终不覆盖消息内容。 */
 .agent-scroll-latest {
-  position: sticky;
-  bottom: 14px;
   align-self: flex-end;
-  margin-top: auto;
   flex: 0 0 auto;
-  z-index: 10;
+  margin: 0 max(var(--content-gutter, 20px), calc((100% - var(--content-column)) / 2 + var(--content-gutter, 20px))) 0 auto;
   border: 1px solid var(--agent-line-strong);
   border-radius: 999px;
   background: var(--agent-panel-solid);
@@ -562,14 +559,18 @@
   margin: 10px 0;
 }
 
-/* 表格：横向滚动 + th/td 边界。marked 直出 <table>（无包裹层），
-   display:block + overflow-x:auto 是不撑破对话列（正文 760px 封顶）的最小方案。 */
-.agent-markdown table {
-  display: block;
+/* 表格保持 760px 正文列，窄屏仅滚动包装层，不把各列压成逐字换行。 */
+.agent-markdown-table-scroll {
   max-width: 100%;
   overflow-x: auto;
-  border-collapse: collapse;
   margin: 0 0 8px;
+}
+.agent-markdown-table-scroll table {
+  width: 760px;
+  min-width: 760px;
+  table-layout: fixed;
+  border-collapse: collapse;
+  margin: 0;
 }
 .agent-markdown table th,
 .agent-markdown table td {
@@ -577,6 +578,8 @@
   padding: 6px 10px;
   font-size: 13px;
   line-height: 1.55;
+  overflow-wrap: anywhere;
+  vertical-align: top;
 }
 .agent-markdown table thead th {
   background: var(--agent-panel-muted);

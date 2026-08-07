@@ -740,21 +740,21 @@ const EXTRA_CHECKS = {
     })()`);
     return [{ name: "settings-footer-clearance", pass: result.pass, detail: result.detail }];
   },
-  // P1-2：Markdown 宽表格的横向滚动容器存在（display:block + overflow-x:auto，
-  // plan Step 5 的 760px 列内滚动方案；正文 overflow-wrap:anywhere 使单元格在列内
-  // 换行、不撑破正文列，因此按评审定义检查「容器存在」而非强制溢出）。
-  markdownTableScroll: async (win) => {
+  // Markdown 宽表格：包装层负责滚动，表格保持 760px，窄视口必须真实溢出。
+  markdownTableScroll: async (win, { requireOverflow = false } = {}) => {
+    const overflowRequirement = requireOverflow ? " && actualOverflow" : "";
     const result = await read(win, `(() => {
-      const table = document.querySelector(".agent-markdown table");
-      if (!table) return { pass: false, detail: "未找到 Markdown 表格" };
-      const cs = getComputedStyle(table);
-      const overflowX = cs.overflowX;
-      const scrollContainer = overflowX === "auto" || overflowX === "scroll" || cs.display === "block";
+      const container = document.querySelector(".agent-markdown-table-scroll");
+      const table = container?.querySelector("table");
+      if (!container || !table) return { pass: false, detail: "未找到 Markdown 表格滚动层" };
+      const cs = getComputedStyle(container);
+      const scrollContainer = cs.overflowX === "auto" || cs.overflowX === "scroll";
+      const actualOverflow = container.scrollWidth > container.clientWidth;
       return {
-        pass: scrollContainer,
-        detail: "overflowX=" + overflowX + " display=" + cs.display +
-          " scrollWidth=" + table.scrollWidth + " clientWidth=" + table.clientWidth +
-          "（单元格在 760px 列内换行，不撑破正文列）"
+        pass: scrollContainer${overflowRequirement},
+        detail: "overflowX=" + cs.overflowX +
+          " scrollWidth=" + container.scrollWidth + " clientWidth=" + container.clientWidth +
+          " tableWidth=" + Math.round(table.getBoundingClientRect().width)
       };
     })()`);
     return [{ name: "markdown-table-scroll", pass: result.pass, detail: result.detail }];
@@ -1531,9 +1531,9 @@ async function main() {
     return true;
   })()`);
   await sleep(300);
-  const markdownChecks = async (w) => {
+  const markdownChecks = async (w, options) => {
     const out = [];
-    out.push(...(await EXTRA_CHECKS.markdownTableScroll(w)));
+    out.push(...(await EXTRA_CHECKS.markdownTableScroll(w, options)));
     out.push(...(await EXTRA_CHECKS.taskListStates(w)));
     return out;
   };
@@ -1541,7 +1541,7 @@ async function main() {
     file: "09b-chat-wide-markdown-1440x900.png",
     viewport: [1440, 900],
     scenario: "chat-wide-table",
-    expected: "1440x900：Markdown 任务列表（[x]/[ ]）与宽表格（超 760px 列，横向滚动容器）",
+    expected: "1440x900：Markdown 任务列表（[x]/[ ]）与 760px 宽表格（窄视口由独立容器横向滚动）",
     spec: "Task 15 Step 5 场景 09（追加带序号 PNG）/ 验收矩阵「Markdown」",
     overlapSelectors: OVERLAP_SELECTORS.chat,
     extraChecks: markdownChecks
@@ -1563,7 +1563,7 @@ async function main() {
     expected: "390x844 窄视口：宽 Markdown 表格横向滚动、任务列表不遮挡/不溢出",
     spec: "Task 15 Step 5 场景 09（窄视口补拍）/ Step 7 验收第 4 条",
     overlapSelectors: OVERLAP_SELECTORS.chat,
-    extraChecks: markdownChecks
+    extraChecks: (w) => markdownChecks(w, { requireOverflow: true })
   });
 
   // ---- 页面 console 残留检查（模块加载错误会留下 MIME/解析错误）----
@@ -1689,7 +1689,7 @@ function renderManifest(context, { startedAt, projectRoot, auditRecords }) {
     "- `panel-button-single-line`（07）：390 窄屏顶栏「面板」按钮单行显示（`scrollHeight ≤ clientHeight` 且 `scrollWidth ≤ clientWidth`），不拆行。",
     "- `settings-footer-clearance`（08）：768x900 设置技能列表滚到底后，最后一行与固定操作栏 `.spd-foot` bbox 不相交，且完整位于滚动视口内。",
     "- `sweep-direction`（01/02，评审 P1-1）：三帧 PNG 中 label bbox 内的最暗列（扫光 ink 带）x 坐标严格递增（t000 < t400 < t900），机器证明扫光从左向右；相位由 Web Animations API pause+seek 固定（680/920/1160ms，1450ms 周期）。",
-    "- `markdown-table-scroll`（09b/09c，评审 P1-2）：Markdown 表格的横向滚动容器存在（`overflow-x: auto` + `display:block`，plan Step 5 方案）；单元格在 760px 正文列内换行、不撑破列。",
+    "- `markdown-table-scroll`（09b/09c，评审 P1-2）：Markdown 表格由独立容器承载（`overflow-x: auto`），表格保持 760px 宽；390px 视口必须出现真实横向溢出，列不会压缩为逐字换行。",
     "- `task-list-states`（09b/09c，评审 P1-2）：任务列表同时渲染 checked 与未勾选 checkbox（[x]/[ ] 两态）。",
     "",
     "评审补拍说明：09b-chat-wide-markdown-1440x900.png 与 09c-chat-table-narrow-390x844.png 为同场景追加带序号 PNG（计划 §Step 5 允许；不得省略需验收的文字角色，全部写入 MANIFEST）。",

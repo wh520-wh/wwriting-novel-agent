@@ -87,11 +87,12 @@ test("删除线", () => {
   assert.ok(renderMarkdown("~~删除~~").includes("<del>删除</del>"), renderMarkdown("~~删除~~"));
 });
 
-test("GFM 表格产生 <table> 与 th/td", () => {
+test("GFM 表格输出独立横向滚动层，保留 <table> 与 th/td", () => {
   const html = renderMarkdown("| 标题 | 值 |\n| --- | --- |\n| 甲 | 1 |");
-  assert.ok(html.includes("<table>"), html);
+  assert.ok(html.includes('<div class="agent-markdown-table-scroll"><table>'), html);
   assert.ok(html.includes("<th>标题</th>"), html);
   assert.ok(html.includes("<td>甲</td>"), html);
+  assert.ok(html.endsWith("</table></div>"), html);
 });
 
 test("GFM task list 渲染为只读 checkbox", () => {

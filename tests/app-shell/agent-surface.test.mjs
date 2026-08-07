@@ -1763,6 +1763,21 @@ test("滚动锁：用户上滚后保持 scrollTop 并出现「回到最新」", 
   assert.equal(latest.hidden, false, "按钮持续可见直到用户回到最新");
 });
 
+test("回到最新位于会话与输入框之间，不覆盖滚动内容", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  const conversation = root.querySelector('[data-testid="agent-conversation"]');
+  const latest = root.querySelector('[data-testid="agent-scroll-latest"]');
+  const composer = root.querySelector('[data-testid="agent-composer"]');
+  const surfaceElement = root.children[0];
+
+  assert.notEqual(latest._parent, conversation, "回到最新不能作为会话滚动内容的覆盖层");
+  assert.ok(
+    surfaceElement.children.indexOf(latest) < surfaceElement.children.indexOf(composer),
+    "回到最新应放在会话和输入框之间"
+  );
+});
+
 test("滚动锁：点击「回到最新」滚到底部并恢复 follow 模式", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
@@ -1935,6 +1950,17 @@ test("agent.css 保留 900px 内容列、向上菜单与工作组/动效布局",
   );
   // 助手正文 Markdown 层次（步骤7）
   assert.match(css, /\.agent-message-text\.agent-markdown\s*\{[^}]*white-space:\s*normal/u, "Markdown 正文应切换为普通换行");
+  assert.match(
+    css,
+    /\.agent-markdown-table-scroll\s*\{[^}]*max-width:\s*100%[^}]*overflow-x:\s*auto/u,
+    "Markdown 表格应由独立包装层承载横向滚动"
+  );
+  assert.match(
+    css,
+    /\.agent-markdown-table-scroll table\s*\{[^}]*width:\s*760px[^}]*min-width:\s*760px[^}]*table-layout:\s*fixed/u,
+    "表格应保持 760px 列宽，窄屏不压缩列"
+  );
+  assert.doesNotMatch(css, /\.agent-scroll-latest\s*\{[^}]*position:\s*sticky/u, "回到最新不得覆盖会话内容");
   // styles.css：2.6 semantic text / weight / agent component token 已声明（不重定义 primitive）
   assert.match(styles, /--text-primary:\s*var\(--ink\)/u, "semantic text token 使用现有 primitive 别名");
   assert.match(styles, /--text-danger:\s*var\(--red\)/u, "danger token 映射红色 primitive");

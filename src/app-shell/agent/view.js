@@ -212,7 +212,6 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     latestButton.hidden = true;
     scrollToBottom();
   });
-  conv.append(latestButton);
 
   const composer = doc.createElement("div");
   composer.className = "agent-composer";
@@ -315,7 +314,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   composerShell.append(input, composerToolbar);
   composer.append(slashMenu, composerShell);
 
-  surface.append(conv, composer);
+  surface.append(conv, latestButton, composer);
   root.append(surface);
 
   // ---- 视图内部状态 ----------------------------------------------------------
