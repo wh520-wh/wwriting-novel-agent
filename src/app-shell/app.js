@@ -6,7 +6,6 @@
 // run presentation / write readiness / activity strip / suggestions / command
 // registry 的状态（Rule 4/5：UI 不做业务决策，Agent 状态由 AgentSurface 消费
 // snapshot/event）。
-import { renderQuickRail, bindQuickRailKeys } from "./components/quick-rail.js";
 import { motion } from "./motion-runtime.js";
 import { getJson, postJson, withProjectScope } from "./api-client.js";
 import { formatNumber, pathBaseName, pathEquals, translateStage } from "./utils.js";
@@ -34,6 +33,7 @@ const refs = {
   privacyLabel: document.querySelector("#privacy-label"),
   themeToggle: document.querySelector("#theme-toggle"),
   themeLabel: document.querySelector("#theme-label"),
+  openDrawer: document.querySelector("#open-drawer"),
   agentSurface: document.querySelector("#agent-surface"),
   drawerScrim: document.querySelector("#drawer-scrim"),
   drawer: document.querySelector("#drawer"),
@@ -72,8 +72,7 @@ const refs = {
   createX: document.querySelector("#create-x"),
   shortcutsScrim: document.querySelector("#shortcuts-scrim"),
   shortcutsX: document.querySelector("#shortcuts-x"),
-  toastStack: document.querySelector("#toast-stack"),
-  quickRail: document.querySelector("#quick-rail")
+  toastStack: document.querySelector("#toast-stack")
 };
 
 const desktop = window.wwritingDesktop;
@@ -195,6 +194,8 @@ refs.drawerTabs.addEventListener("click", (event) => {
   const tab = event.target.closest("[data-dtab]");
   if (tab) setDrawerTab(tab.dataset.dtab);
 });
+// Task 12：右侧 quick rail 已删除，章节/资料/成本入口统一经顶部「面板」按钮进入 drawer。
+refs.openDrawer?.addEventListener("click", () => openDrawerTab("chapters"));
 
 if (!refs.readerClose.title) refs.readerClose.title = "关闭";
 refs.readerClose.addEventListener("click", closeReader);
@@ -419,7 +420,6 @@ function renderDashboard(data) {
     currentProjectRoot = null;
     refs.title.textContent = "开始创作";
     refs.topbarSub.textContent = "新建或打开一部小说，开始你的创作。";
-    renderQuickRailIfPresent();
     refreshDrawerIfOpen();
     return;
   }
@@ -440,17 +440,7 @@ function renderDashboard(data) {
     ? `模型未配置 · 请在设置里选一个 · ${progressCopy}`
     : progressCopy;
 
-  renderQuickRailIfPresent();
   refreshDrawerIfOpen();
-}
-
-function renderQuickRailIfPresent() {
-  if (refs.quickRail) {
-    renderQuickRail(refs.quickRail, {
-      onOpenTab: openDrawerTab,
-      onOpenSettings: (section) => openSettingsModal(section)
-    });
-  }
 }
 
 // 抽屉打开时重渲并保留滚动位置。
@@ -873,32 +863,6 @@ function showToast(message, type = "info") {
 // 模块体执行完毕（所有 const/let 已离开 TDZ）后再启动。
 initThemeMode();
 initPrivacyMode();
-
-// Quick Rail 初始化：纯导航。
-if (refs.quickRail) {
-  bindQuickRailKeys(refs.quickRail, openDrawerTab, (section) => openSettingsModal(section));
-  renderQuickRail(refs.quickRail, {
-    onOpenTab: openDrawerTab,
-    // 技能槽位打开设置弹窗的「Agent 技能」分区（Task 13）。
-    onOpenSettings: (section) => openSettingsModal(section)
-  });
-}
-
-// 窄屏折叠逻辑：<1100px 隐藏 Quick Rail，显示折叠按钮
-function updateQuickRailLayout() {
-  const narrow = window.innerWidth < 1100;
-  if (refs.quickRail) refs.quickRail.hidden = narrow;
-  const collapsed = document.getElementById('qr-collapsed');
-  if (collapsed) collapsed.hidden = !narrow;
-}
-window.addEventListener('resize', updateQuickRailLayout);
-updateQuickRailLayout();
-
-const qrCollapsed = document.getElementById('qr-collapsed');
-if (qrCollapsed && !qrCollapsed.title) qrCollapsed.title = "快捷面板";
-document.getElementById('qr-collapsed')?.addEventListener('click', () => {
-  openDrawerTab('chapters');
-});
 
 motion.setupMotion();
 window.__wwritingMotionReady = true;

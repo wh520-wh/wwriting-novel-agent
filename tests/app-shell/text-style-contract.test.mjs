@@ -388,3 +388,28 @@ test("圆角不超过 8px：无 9–98px 卡片圆角，radius token 全部 ≤8
     assert.match(value, /^8px$/u, `${token} 应为 8px（当前 ${value}）`);
   }
 });
+
+// ===========================================================================
+// 9) Task 12：Assistant 正文 regular；浅色主题轻冷中性灰（无纯白大块/泛黄纸色）
+// ===========================================================================
+test("Task 12：Assistant 正文 regular；浅色主题轻冷中性灰、无纯白大块", () => {
+  const markdown = extractDecls(extractBlock(agentCssSource, ".agent-markdown"));
+  assert.equal(markdown["font-weight"], "var(--weight-regular)", "Assistant 正文应为 regular");
+
+  // 浅色主背景/surface/rail 不得是纯白，且为冷调或中性灰（蓝 ≥ 红，排除泛黄纸色）。
+  const surfaces = [
+    ["--bg", resolveVar("--bg")],
+    ["--surface", resolveVar("--surface")],
+    ["--rail", resolveVar("--rail")]
+  ];
+  for (const [name, value] of surfaces) {
+    assert.notEqual(value, "#ffffff", `${name} 不得是纯白大块`);
+    assert.match(value, /^#[0-9a-fA-F]{6}$/u, `${name} 应是 hex primitive`);
+    const r = parseInt(value.slice(1, 3), 16);
+    const b = parseInt(value.slice(5, 7), 16);
+    assert.ok(b >= r, `${name}（${value}）应为冷调或中性灰（蓝≥红）`);
+  }
+  // H1/H2 深色分级：同为深色 primary，不统一染 accent/green。
+  assert.equal(resolveVar("--agent-heading-fg"), "#202522", "标题应为深色 primary");
+  assert.notEqual(resolveVar("--agent-heading-fg"), resolveVar("--accent"), "标题不得染 accent");
+});

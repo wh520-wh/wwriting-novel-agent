@@ -1045,3 +1045,60 @@ test("保留名称 shadowed 项显示专属说明且不可删除", async () => {
     "shadowed 行不得有删除按钮"
   );
 });
+
+// ---------------------------------------------------------------------------
+// Task 12：设置技能分区无卡片行契约 + 内置风格只读展示（不破坏自定义技能管理）
+// ---------------------------------------------------------------------------
+
+test("技能分区 CSS 契约：无卡片行、详情可滚动、来源用 muted 短标签", async () => {
+  const fs = await import("node:fs/promises");
+  const path = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const styles = await fs.readFile(path.join(here, "..", "..", "src", "app-shell", "styles.css"), "utf8");
+  // brief Step 6 verbatim：无框分隔行（透明、border 0、radius 0、仅下细分隔线）。
+  assert.match(
+    styles,
+    /\.spd-skill-row\s*\{[^}]*border:\s*0[^}]*border-bottom:\s*1px\s+solid\s+var\(--line\)[^}]*border-radius:\s*0[^}]*background:\s*transparent/u,
+    ".spd-skill-row 应为无框分隔行"
+  );
+  assert.match(
+    styles,
+    /\.spd-skill-detail-body\s*\{[^}]*max-height:\s*min\(52vh,\s*520px\)[^}]*overflow(?:-y)?:\s*auto/u,
+    "内置风格详情应在 min(52vh, 520px) 内滚动"
+  );
+  // 「内置」来源使用 muted 短标签，不用 accent pill。
+  assert.match(styles, /\.spd-skill-source\s*\{[^}]*color:\s*var\(--text-muted\)/u, "来源标签应为 muted 短标签");
+  assert.doesNotMatch(styles, /\.spd-skill-source\s*\{[^}]*background:\s*var\(--accent-soft\)/u, "来源标签不得使用 accent pill");
+  assert.doesNotMatch(styles, /\.spd-skill-row\s*\{[^}]*background:\s*var\(--surface\)/u, "技能行不得是卡片底");
+});
+
+test("内置风格行只读展示：无 toggle/edit/delete 控件；自定义技能管理能力仍存在", async () => {
+  const modal = createSettingsModalForTest({
+    getCurrentProjectRoot: () => "D:/novels/demo",
+    getJsonImpl: styleCatalogJsonImpl()
+  });
+  await modal.openSettingsModal("skills");
+  await modal.waitForSkillsCatalog();
+
+  const styleRows = modal.getBuiltinStyleRowsForTest();
+  assert.equal(styleRows.length, 3);
+  for (const row of styleRows) {
+    assert.equal(row.hasDelete, false, `${row.name} 行不得有删除按钮`);
+  }
+  // 只读行内部不得出现任何 toggle/edit/delete 类子控件。
+  // domRegistry 会累积多次渲染的元素（replaceChildren 不清理注册表），
+  // 因此只要求 ≥3 且逐个校验无子控件。
+  const readonlyEls = domRegistry.filter((el) => String(el.className).includes("spd-skill-row--readonly"));
+  assert.ok(readonlyEls.length >= 3, "应渲染至少三个只读风格行元素");
+  for (const rowEl of readonlyEls) {
+    const hasChildControls = rowEl.children.some(
+      (c) => c.tagName === "BUTTON" || /spd-skill-(?:del|edit)|toggle|switch/u.test(String(c.className ?? ""))
+    );
+    assert.equal(hasChildControls, false, "内置风格行内不得出现任何 toggle/edit/delete 控件");
+  }
+  // 自定义技能管理能力仍存在：添加/打开目录入口保留。
+  assert.ok(domRegistry.some((el) => el.id === "skills-add"), "「添加技能」入口应保留");
+  assert.ok(domRegistry.some((el) => el.id === "skills-open-dir"), "「打开技能目录」入口应保留");
+  assert.ok(domRegistry.some((el) => el.id === "skills-scope-project"), "项目 scope 切换应保留");
+});

@@ -884,11 +884,11 @@ test("活动 id 在成功、失败、拒绝、抢占与停止时闭环", async (
 // AgentSurface 布局基线
 // ---------------------------------------------------------------------------
 
-test("AgentSurface 保留 900px 内容基线与统一菜单视口钳制", async () => {
+test("AgentSurface 保留 1040px 内容基线与统一菜单视口钳制", async () => {
   const { createAgentSurface } = await import("../../src/app-shell/agent/index.js");
   assert.equal(typeof createAgentSurface, "function", "AgentSurface 必须导出 createAgentSurface 工厂");
   const css = await fs.readFile(path.join(ROOT, "src", "app-shell", "agent", "agent.css"), "utf8");
-  assert.match(css, /--content-column:\s*900px/u, "根变量应定义 900px 内容列");
+  assert.match(css, /--content-column:\s*1040px/u, "根变量应定义 1040px 内容列");
   assert.match(
     css,
     /\.agent-composer-menu--model \.agent-composer-popover\s*\{[^}]*width:\s*min\(320px,\s*calc\(100vw - 32px\)\)/u,
