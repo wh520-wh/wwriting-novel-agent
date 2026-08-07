@@ -10,7 +10,7 @@
 //     保持旧响应契约；
 //   - 既有非 Agent 契约抽查：projects/list、projects/open、projects/init、
 //     research/search（网络未开 → 403 network_not_allowed）、settings/update、
-//     settings/model-secret、skills/enable、output-styles。
+//     settings/model-secret、skills/catalog、output-styles。
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -220,14 +220,13 @@ test("既有契约抽查：projects/list、open、init、research、settings、s
   assert.equal(probe.res.status, 400);
   assert.equal(probe.data.code, "configuration_missing");
 
-  // skills/enable：内置技能（发现即生效，无 enabled_skills 集合）
-  const skill = await s.post("/api/skills/enable", { name: "suspense-chapter-end" });
-  assert.equal(skill.res.status, 200);
-  assert.equal(skill.data.ok, true);
-  assert.equal(skill.data.skill, "suspense-chapter-end");
-  assert.equal(skill.data.enabled_skills, undefined, "Task 12：不再返回 enabled_skills");
-  const skillBad = await s.post("/api/skills/enable", { name: "不存在" });
-  assert.equal(skillBad.res.status, 400);
+  // skills/catalog：内置技能发现即生效（无 enabled_skills / 启停集合）
+  const skillCatalog = await s.get("/api/skills/catalog");
+  assert.equal(skillCatalog.res.status, 200);
+  assert.equal(skillCatalog.data.ok, true);
+  assert.ok(skillCatalog.data.active.some((skill) => skill.name === "suspense-chapter-end"));
+  assert.equal(skillCatalog.data.active[0]["enabled_in_" + "project"], undefined, "Task 13：catalog 不返回启停字段");
+  assert.ok(Array.isArray(skillCatalog.data.migration_errors), "catalog 携带 migration_errors 数组");
 
   // output-styles
   const styles = await s.get("/api/output-styles");

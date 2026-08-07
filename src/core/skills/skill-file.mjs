@@ -132,6 +132,28 @@ function validateSkillName(name, dirName) {
   }
 }
 
+// 技能目录名合法性（Task 13 carry-forward）：validateSkillName 只要求 name 非空且等于
+// 目录名，目录名来自技能根的 readdir 单段——这里把「安全单段」约束显式化，供
+// removeSkill / ZIP 导入重命名复用。允许中文等任意非空字符（本产品中文技能名）。
+export function assertSafeSkillDirName(name) {
+  if (typeof name !== "string" || name.length === 0) {
+    throw skillError("skill_invalid_name", `非法技能名: ${name}`);
+  }
+  if (name === "." || name === ".." || /[\\/]/u.test(name) || name.includes("\0")) {
+    throw skillError("skill_invalid_name", `非法技能名: ${name}`);
+  }
+  return name;
+}
+
+// 只读 SKILL.md frontmatter 的 name（ZIP 导入 staging 重命名用；不校验目录名，
+// 校验由 stageZipImport 之后的 readSkillFile 完成）。缺 name 返回 null。
+export async function readSkillNameOnly(skillDir) {
+  const raw = await readFileOrThrow(path.join(skillDir, "SKILL.md"));
+  const { frontmatter } = splitFrontmatter(raw);
+  const data = parseYaml(frontmatter);
+  return typeof data?.name === "string" && data.name.length > 0 ? data.name : null;
+}
+
 // 枚举 scripts/references/assets 下的全部文件；每个文件的真实路径（realpath）
 // 必须仍在技能目录 realpath 内，逃逸即拒绝整个技能。
 async function enumerateResources(skillDir, skillReal) {

@@ -41,6 +41,23 @@ export async function postJson(url, body, { signal } = {}) {
   return data;
 }
 
+export async function deleteJson(url, body, { signal } = {}) {
+  const response = await fetch(url, {
+    method: "DELETE",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body ?? {}),
+    signal
+  });
+  const data = await readResponseJson(response);
+  if (!response.ok || data.ok === false) {
+    const error = new Error(data.message ?? "请求失败");
+    error.code = data.code;
+    error.status = response.status;
+    throw error;
+  }
+  return data;
+}
+
 export async function readResponseJson(response) {
   const text = await response.text();
   if (!text) return { ok: response.ok };

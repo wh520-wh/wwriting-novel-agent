@@ -11,7 +11,8 @@ import { skillService } from "./skills/index.mjs";
 // 只返回项目/章节/成本/设置/技能/资料等静态与领域事实；不再读取旧运行态文件，
 // 不再返回旧审查报告、故障卡、recent tool events 或运行进度推断（运行状态由
 // AgentSurface 消费 ProjectAgent snapshot；dashboard 不推测 Agent 是否繁忙）。
-// Task 12：技能列表改读新 catalog（发现即生效，无 enabled_in_project 启停集合）。
+// Task 12：技能列表改读新 catalog；Task 13：DTO 移除启停集合字段（发现即生效）。
+//（发现即生效，无启停集合）。
 export async function loadDashboardData(workspaceRoot, options = {}) {
   const workspace = path.resolve(workspaceRoot);
   const projectRoot = options.projectRoot
@@ -279,10 +280,8 @@ async function readSkills(projectRoot, skills) {
         version: skill.version,
         type: skill.metadata?.wwriting?.type ?? null,
         scope: skill.metadata?.wwriting?.scope ?? "chapter",
-        // 发现即生效：新模型没有启停集合，目录里的技能都是 active。
-        // enabled_in_project 保留为 true 供旧 drawer 渲染（Task 13 移除该字段）。
-        enabled: true,
-        enabled_in_project: true,
+        // Task 13：无启停集合、无 per-project 启用集；目录里的技能都是 active，
+        // DTO 不再返回启停字段。
         source_type: skill.source,
         priority: skill.metadata?.wwriting?.priority ?? 100,
         description: skill.description ?? "",

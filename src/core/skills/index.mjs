@@ -1,14 +1,16 @@
 // 生产代码唯一 Skills service seam（计划 Task 9，brief Step 5 verbatim；Task 11 接入迁移）。
 //
-// catalog/read/importSkill/removeSkill 在工作前统一调用 ensureMigrated({projectRoot})：
-// 全局迁移 Promise 每进程每个 userHome 只创建一次，项目迁移 Promise 按 canonical
-// projectRoot 缓存；新 catalog 只在迁移完成后运行，并且永远不读取 skill.json/yaml/yml。
-// catalog 结果携带 migration_errors（迁移失败项），供 UI 展示。
+// catalog/read/importSkill/removeSkill/migrationErrors 在工作前统一调用
+// ensureMigrated({projectRoot})：全局迁移 Promise 每进程每个 userHome 只创建一次，
+// 项目迁移 Promise 按 canonical projectRoot 缓存；新 catalog 只在迁移完成后运行，
+// 并且永远不读取 skill.json/yaml/yml。catalog 结果携带 migration_errors（迁移失败项），
+// 供 UI 展示；migrationErrors() 额外重读 migration marker 提供「新鲜」失败项（Task 13）。
 //
 // 生产模块只允许从这里导入；底层文件（skill-file.mjs / catalog.mjs / legacy-migration.mjs /
-// hooks.mjs）仅由本 service 与 tests/skills/ 使用。默认 root 在 service 内统一解析，
-// 测试通过 factory 注入临时目录。Task 13 升级 importSkill（ZIP/大小校验/原子 rename），
-// 不建立第二个入口。
+// hooks.mjs / importer.mjs）仅由本 service 与 tests/skills/ 使用。默认 root 在 service
+// 内统一解析，测试通过 factory 注入临时目录。Task 13 把 importSkill 升级为安全导入
+//（文件夹/ZIP → 目标盘临时目录 → 逐 entry 校验展开 → 验证 SKILL.md → 原子 rename；
+// 重名 409 / replace 覆盖），不建立第二个入口。
 //
 // Task 12：runSkillChecks/runPostProcessHooks 也经本 seam 暴露——hooks 的确定性实现
 // 在 hooks.mjs（只接收技能列表），这里负责从 service 解析 active catalog 并绑定
@@ -19,8 +21,9 @@ import os from "node:os";
 import path from "node:path";
 import { pathExists } from "../fs-utils.mjs";
 import { discoverSkills } from "./catalog.mjs";
-import { buildSkillMd, ensureMigrated } from "./legacy-migration.mjs";
-import { readSkillFile, readSkillResource, skillError } from "./skill-file.mjs";
+import { stageSkillSource } from "./importer.mjs";
+import { buildSkillMd, ensureMigrated, readMigrationMarker } from "./legacy-migration.mjs";
+import { assertSafeSkillDirName, readSkillFile, readSkillResource, skillError } from "./skill-file.mjs";
 import {
   runPostProcessHooksWithSkills,
   runSkillChecksWithSkills
@@ -51,34 +54,53 @@ export function createSkillService({ userHome = os.homedir(), resourcesPath = pr
       if (!skill) throw skillError("skill_not_found", `未发现技能: ${name}`);
       return readSkillResource(skill, resource);
     },
-    // 最小目录导入（Task 13 升级为 importer.mjs：ZIP/大小校验/原子 rename）。
-    async importSkill({ projectRoot, sourceDir, scope = "project", replace = false }) {
+    // 安全导入（Task 13 升级）：source 为文件夹或 ZIP 路径。文件夹/ZIP 都先落到
+    // 目标盘（目标技能根父目录）的临时目录，逐 entry 校验后展开、验证 SKILL.md，
+    // 再原子 rename 到目标根；重名默认 skill_exists（HTTP 409 语义），replace:true
+    // 仅在 UI 二次确认后传入。
+    async importSkill({ projectRoot, source, scope = "project", replace = false }) {
       await ensureMigrated({ projectRoot, userHome });
       assertValidScope(scope);
-      const sourceSkill = await readSkillFile(sourceDir, { source: "import" });
-      const targetDir = path.join(skillRootFor({ projectRoot, scope, userHome }), sourceSkill.name);
-      if (await pathExists(targetDir)) {
-        if (!replace) throw skillError("skill_exists", `技能已存在: ${sourceSkill.name}`);
-        await fs.rm(targetDir, { recursive: true, force: true });
+      const targetRoot = skillRootFor({ projectRoot, scope, userHome });
+      await fs.mkdir(targetRoot, { recursive: true });
+      const staged = await stageSkillSource({ source, targetRoot });
+      try {
+        const targetDir = path.join(targetRoot, staged.name);
+        const exists = await pathExists(targetDir);
+        if (exists && !replace) throw skillError("skill_exists", `技能已存在: ${staged.name}`);
+        if (exists && replace) {
+          await fs.rm(targetDir, { recursive: true, force: true });
+        }
+        // 原子 rename：staging 与 targetRoot 同盘（stageSkillSource 建在 targetRoot
+        // 父目录下）。replace 分支先删旧目录再 rename（短暂空窗可接受）。
+        await fs.rename(staged.dir, targetDir);
+        return readSkillFile(targetDir, { source: scope });
+      } finally {
+        await fs.rm(staged.stagingRoot, { recursive: true, force: true }).catch(() => {});
       }
-      await fs.mkdir(targetDir, { recursive: true });
-      const files = [["SKILL.md", "SKILL.md"], ...sourceSkill.resources.map((resource) => [resource.rel, resource.rel])];
-      for (const [rel, destRel] of files) {
-        const dest = path.join(targetDir, destRel);
-        await fs.mkdir(path.dirname(dest), { recursive: true });
-        await fs.copyFile(path.join(sourceDir, rel), dest);
-      }
-      return readSkillFile(targetDir, { source: scope });
     },
-    // 删除指定 scope 下的技能目录（name 校验防路径穿越）。
+    // 删除指定 scope 下的技能目录（name 校验与 readSkillFile 的目录名语义对齐：
+    // 允许中文等任意非空单段名，拒绝路径分隔符与 . / .. 防穿越）。
     async removeSkill({ projectRoot, name, scope = "project" }) {
       await ensureMigrated({ projectRoot, userHome });
       assertValidScope(scope);
-      assertSafeSkillName(name);
+      assertSafeSkillDirName(name);
       const targetDir = path.join(skillRootFor({ projectRoot, scope, userHome }), name);
       if (!(await pathExists(targetDir))) throw skillError("skill_not_found", `未发现技能: ${name}`);
       await fs.rm(targetDir, { recursive: true, force: true });
       return { name, scope, removed: true };
+    },
+    // 迁移失败项（Task 13 carry-forward）：不依赖进程内缓存的首次迁移结果，
+    // 直接重读 migration marker，settings 的 catalog 路由据此展示「新鲜」失败项。
+    async migrationErrors({ projectRoot }) {
+      const [globalMarker, projectMarker] = await Promise.all([
+        readMigrationMarker({ scope: "global", userHome }),
+        projectRoot ? readMigrationMarker({ scope: "project", userHome }) : Promise.resolve(null)
+      ]);
+      return Object.freeze([
+        ...(globalMarker?.failed ?? []),
+        ...(projectMarker?.failed ?? [])
+      ]);
     }
   };
 }
@@ -90,13 +112,6 @@ function skillRootFor({ projectRoot, scope, userHome }) {
 function assertValidScope(scope) {
   if (scope !== "global" && scope !== "project") {
     throw skillError("skill_invalid_scope", `非法 scope: ${scope}`);
-  }
-}
-
-// 与旧 runtime isSafeSkillName 一致；拒绝 "." / ".." 防穿越。
-function assertSafeSkillName(name) {
-  if (typeof name !== "string" || !/^[A-Za-z0-9_][A-Za-z0-9._-]*$/u.test(name) || name === "." || name === "..") {
-    throw skillError("skill_invalid_name", `非法技能名: ${name}`);
   }
 }
 

@@ -106,6 +106,16 @@ async function getJson(port, route) {
   return { res, data: await res.json() };
 }
 
+async function deleteJson(port, route, body = {}) {
+  const res = await fetch(`http://127.0.0.1:${port}${route}`, {
+    method: "DELETE",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  return { res, data };
+}
+
 async function waitFor(predicate, { timeout = 15000 } = {}) {
   const start = Date.now();
   while (Date.now() - start < timeout) {
@@ -262,8 +272,8 @@ test("章节读取、确定性导出与诊断", async () => {
   }
 });
 
-test("资料搜索/抓取与技能启用/禁用/导入", async () => {
-  const { projectRoot, server, port } = await setupServer();
+test("资料搜索/抓取与技能 catalog/import/delete", async () => {
+  const { root, projectRoot, server, port } = await setupServer();
   const searchServer = await createMockSearchServer();
   try {
     // 联网权限：资料搜索需要 network_allowed（设置路由写 project.yaml）；
@@ -280,24 +290,55 @@ test("资料搜索/抓取与技能启用/禁用/导入", async () => {
     assert.equal(search.data.ok, true);
     assert.equal(search.data.results.length, 1);
     assert.equal(search.data.results[0].title, "App Shell Probe");
-    const enable = await postJson(port, "/api/skills/enable", { name: "suspense-chapter-end" });
-    assert.equal(enable.res.status, 200);
-    assert.equal(enable.data.ok, true);
-    assert.equal(enable.data.skill, "suspense-chapter-end");
-    assert.equal(enable.data.enabled_skills, undefined, "Task 12：不再返回 enabled_skills（无启停集合）");
-    const disable = await postJson(port, "/api/skills/disable", { name: "suspense-chapter-end" });
-    assert.equal(disable.res.status, 200);
-    const imported = await postJson(port, "/api/skills/import", {
-      manifest: {
-        name: "probe-style",
-        version: "1.0.0",
-        type: "style",
-        scope: "chapter",
-        hooks: [{ stage: "planning", action: "append_prompt", content: "Keep it short." }]
-      }
-    });
+
+    // catalog：内置技能可发现；DTO 不含启停字段（无启停集合）。
+    const catalog = await getJson(port, "/api/skills/catalog");
+    assert.equal(catalog.res.status, 200);
+    assert.ok(catalog.data.active.some((s) => s.name === "suspense-chapter-end"));
+    assert.equal(catalog.data.active[0]["enabled_in_" + "project"], undefined, "Task 13：catalog 不返回启停字段");
+    assert.equal(catalog.data.active[0].enabled, undefined, "Task 13：catalog 不返回 enabled");
+    assert.equal(catalog.data.has_project, true);
+    assert.equal(catalog.data.project_root, projectRoot);
+
+    // 从文件夹导入项目 scope。
+    const skillDir = path.join(root, "probe-style");
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(
+      path.join(skillDir, "SKILL.md"),
+      "---\nname: probe-style\ndescription: 探针风格\n---\n\n# Probe Style\n",
+      "utf8"
+    );
+    const imported = await postJson(port, "/api/skills/import", { source_path: skillDir, scope: "project" });
     assert.equal(imported.res.status, 200);
     assert.equal(imported.data.skill, "probe-style");
+    assert.equal(imported.data.scope, "project");
+    assert.ok(imported.data.source === "project");
+
+    // 重名默认 409 skill_exists；replace:true 覆盖。
+    const dup = await postJson(port, "/api/skills/import", { source_path: skillDir, scope: "project" });
+    assert.equal(dup.res.status, 409);
+    assert.equal(dup.data.code, "skill_exists");
+    const replaced = await postJson(port, "/api/skills/import", { source_path: skillDir, scope: "project", replace: true });
+    assert.equal(replaced.res.status, 200);
+
+    // catalog 中 probe-style 来自 project 层。
+    const after = await getJson(port, "/api/skills/catalog");
+    const probe = after.data.active.find((s) => s.name === "probe-style");
+    assert.equal(probe.source, "project");
+    assert.ok(probe.path.includes(path.join("skills", "probe-style")));
+
+    // 删除：DELETE /api/skills/:name { scope }。
+    const removed = await deleteJson(port, "/api/skills/probe-style", { scope: "project" });
+    assert.equal(removed.res.status, 200);
+    assert.equal(removed.data.removed, true);
+    const afterDelete = await getJson(port, "/api/skills/catalog");
+    assert.equal(
+      afterDelete.data.active.some((s) => s.name === "probe-style" && s.source === "project"),
+      false,
+      "删除后项目层不再发现 probe-style"
+    );
+    const removedAgain = await deleteJson(port, "/api/skills/probe-style", { scope: "project" });
+    assert.equal(removedAgain.res.status, 404);
   } finally {
     // closeAllConnections：强制断开应用服务器 fetch 留下的 keep-alive 连接，
     // 否则 mock server 的 close() 会等待连接自然超时而挂起。
@@ -485,7 +526,10 @@ test("旧控制面路由全部返回 404", async () => {
       ["POST", "/api/que" + "ue/cancel", {}],
       ["POST", "/api/comman" + "ds/ask", { question: "现在写到第几章？" }],
       ["POST", "/api/projec" + "ts/init-blueprint", {}],
-      ["POST", "/api/failu" + "res/resolve", {}]
+      ["POST", "/api/failu" + "res/resolve", {}],
+      // Task 13：技能启停集合已删除（enable/disable 端点不复存在）。
+      ["POST", "/api/ski" + "lls/enable", { name: "suspense-chapter-end" }],
+      ["POST", "/api/ski" + "lls/disable", { name: "suspense-chapter-end" }]
     ];
     for (const [method, route, body] of oldRoutes) {
       const res = await fetch(`http://127.0.0.1:${port}${route}`, {

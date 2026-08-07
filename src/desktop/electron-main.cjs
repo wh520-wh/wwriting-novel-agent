@@ -71,6 +71,58 @@ app.whenReady().then(async () => {
     return true;
   });
 
+  // 技能管理（Task 13）：选择技能文件夹 / 技能 ZIP 包（对话框只负责选路径，
+  // 校验与导入由服务端 importer 完成）。
+  ipcMain.handle("wwriting:select-skill-folder", async () => {
+    const result = await dialog.showOpenDialog({
+      title: "选择技能文件夹（含 SKILL.md）",
+      properties: ["openDirectory"]
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+      return null;
+    }
+    return result.filePaths[0];
+  });
+
+  ipcMain.handle("wwriting:select-skill-zip", async () => {
+    const result = await dialog.showOpenDialog({
+      title: "选择技能 ZIP 包",
+      properties: ["openFile"],
+      filters: [{ name: "ZIP 档案", extensions: ["zip"] }]
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+      return null;
+    }
+    return result.filePaths[0];
+  });
+
+  // 打开技能目录（Task 13）：main 进程自己计算 canonical 技能根，绝不接受渲染进程
+  // 传入任意 reveal 路径。global → %USERPROFILE%\.wwriting\skills；project →
+  // <校验过的项目根>\skills（项目根必须是真实 WWriting 项目，保留现有项目目录
+  // 安全规则）。scope 只允许 global / project。
+  ipcMain.handle("wwriting:reveal-skill-directory", async (_event, scope, projectRoot) => {
+    let target;
+    if (scope === "global") {
+      target = path.join(os.homedir(), ".wwriting", "skills");
+    } else if (scope === "project") {
+      const { validateProjectRoot } = await import(
+        pathToFileURL(path.join(rootDir, "src", "core", "app-dashboard.mjs")).href
+      );
+      const root = await validateProjectRoot(String(projectRoot ?? ""));
+      target = path.join(root, "skills");
+    } else {
+      throw new Error("无效的技能目录 scope");
+    }
+    try {
+      fs.mkdirSync(target, { recursive: true });
+    } catch (err) {
+      throw new Error(`无法创建目录: ${err.message}`);
+    }
+    const result = await shell.openPath(target);
+    if (result) throw new Error(`无法打开路径: ${result}`);
+    return true;
+  });
+
   const { createAppShellServer } = await import(pathToFileURL(path.join(rootDir, "src", "core", "app-server.mjs")).href);
   server = createAppShellServer({
     workspaceRoot: process.env.WORKSPACE_ROOT || rootDir,

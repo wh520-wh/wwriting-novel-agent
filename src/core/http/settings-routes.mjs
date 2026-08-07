@@ -11,7 +11,6 @@
 // provider-adapters.mjs，本模块不依赖旧文件）。
 //
 // 导出共享 helper 给 project-routes.mjs（模型档案展示与全局模型同步）。
-import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { HttpError } from "../http-error.mjs";
@@ -19,7 +18,7 @@ import { loadProject, saveProject } from "../project-store.mjs";
 import { loadConfigLayers } from "../config-runtime.mjs";
 import { appendEvent } from "../event-log.mjs";
 import { loadOutputStyles } from "../output-style-loader.mjs";
-import { buildSkillMd, skillService } from "../skills/index.mjs";
+import { skillService } from "../skills/index.mjs";
 import {
   findLocalModelProfile,
   getDefaultLocalModelProfile,
@@ -37,7 +36,7 @@ import {
 import { ModelConfigValidationError, validateModelConfig } from "../model-config-validation.mjs";
 import { SettingsValidationError, normalizeSettingsPatch, saveModelSettingsTransaction, updateProjectSettings } from "../settings-runtime.mjs";
 import { resolveModelCapabilities, writingRequiredCapabilitiesOk } from "../model/capabilities.mjs";
-import { resolveActiveProjectRoot, resolveActiveWriteProjectRoot } from "./router.mjs";
+import { resolveActiveProjectRoot, resolveActiveWriteProjectRoot, resolveReadProjectRoot } from "./router.mjs";
 
 // ---------------------------------------------------------------------------
 // 模型档案展示 helper（旧 app-server 语义保留；project-routes 复用）
@@ -169,8 +168,13 @@ export async function syncProjectModelFromGlobal(projectRoot, secretsRoot) {
   }
 }
 
-function isSafeSkillName(name) {
-  return typeof name === "string" && /^[A-Za-z0-9_][A-Za-z0-9._-]*$/u.test(name);
+// 技能目录名（HTTP 层兜底校验：与 seam 的 assertSafeSkillDirName 语义一致，
+// 允许中文等任意非空单段名，拒绝路径分隔符与 . / .. 防穿越）。
+function assertSkillNameParam(name) {
+  if (typeof name !== "string" || name.length === 0 || name === "." || name === ".." || /[\\/]/u.test(name) || name.includes("\0")) {
+    throw new HttpError(400, "skill_invalid_name", `非法技能名: ${name}`);
+  }
+  return name;
 }
 
 export function createSettingsRoutes({
@@ -547,70 +551,99 @@ export function createSettingsRoutes({
       }
     },
 
-    // 技能 enable/disable/import（Task 12：不再读写 project.enabled_skills。
-    // enable/disable 只校验技能在 active catalog 可发现——新模型发现即生效，
-    // 没有启停集合；Task 13 将删除这两个端点并替换为 catalog/import/delete API）。
-    "POST /api/skills/enable": async ({ body }) => runSkillMutation("enable", body),
-    "POST /api/skills/disable": async ({ body }) => runSkillMutation("disable", body),
-    "POST /api/skills/import": async ({ body }) => runSkillMutation("import", body)
+    // 技能（Task 13：catalog/import/delete 替代 enable/disable；无启停集合）。
+    "GET /api/skills/catalog": async ({ query }) => {
+      try {
+        const projectRoot = await resolveCatalogProjectRoot(ctx, query.projectRoot);
+        const [catalogData, migrationErrors] = await Promise.all([
+          skillServiceRef.catalog({ projectRoot }),
+          skillServiceRef.migrationErrors({ projectRoot })
+        ]);
+        return {
+          ok: true,
+          has_project: Boolean(projectRoot),
+          project_root: projectRoot,
+          active: catalogData.active.map(toCatalogEntry),
+          shadowed: catalogData.shadowed.map(toCatalogEntry),
+          migration_errors: migrationErrors
+        };
+      } catch (error) {
+        throw error instanceof HttpError
+          ? error
+          : new HttpError(500, "skills_catalog_failed", error?.message ?? String(error));
+      }
+    },
+
+    "POST /api/skills/import": async ({ body }) => {
+      try {
+        const sourcePath = String(body?.source_path ?? "").trim();
+        if (!sourcePath) {
+          throw new HttpError(400, "invalid_skill_source", "请选择要导入的技能文件夹或 ZIP 包。");
+        }
+        const scope = body?.scope === "global" ? "global" : "project";
+        const replace = body?.replace === true;
+        const projectRoot = scope === "project" ? await resolveActiveProjectRoot(ctx) : null;
+        if (scope === "project") await assertNotArchived(projectRoot);
+        const imported = await skillServiceRef.importSkill({ projectRoot, source: sourcePath, scope, replace });
+        return {
+          ok: true,
+          skill: imported.name,
+          scope,
+          projectRoot,
+          source: imported.source
+        };
+      } catch (error) {
+        throw mapSkillError(error);
+      }
+    },
+
+    "DELETE /api/skills/:name": async ({ params, body }) => {
+      try {
+        const name = assertSkillNameParam(params.name);
+        const scope = body?.scope === "global" ? "global" : "project";
+        const projectRoot = scope === "project" ? await resolveActiveProjectRoot(ctx) : null;
+        if (scope === "project") await assertNotArchived(projectRoot);
+        const removed = await skillServiceRef.removeSkill({ projectRoot, name, scope });
+        return { ok: true, ...removed };
+      } catch (error) {
+        throw mapSkillError(error);
+      }
+    }
   };
 
-  async function runSkillMutation(action, body) {
+  // catalog 路由不要求必须有项目：无项目时只返回 global/builtin/bundled 层。
+  // 项目根解析复用 dashboard 的注册语义（当前选中/工作区内/最近列表 + 磁盘
+  // project.yaml）——catalog 虽只读，但 ensureMigrated 会写迁移 backup，不能让
+  // 任意 projectRoot 查询触发对任意目录的迁移写入。
+  async function resolveCatalogProjectRoot(ctxRef, requestedRoot) {
     try {
-      const projectRoot = await resolveActiveProjectRoot(ctx);
-      await assertNotArchived(projectRoot);
-      const project = await loadProject(projectRoot);
-      let skillName = body.name;
-      if (action === "import") {
-        // 新模型：导入 = 把 manifest 对象转换为 SKILL.md 后经 service seam 写入
-        // 项目技能目录（旧 importProjectSkill 直接写 skill.json 的路径已删除；
-        // 转换规则与迁移管线共用 buildSkillMd）。
-        const manifest = body.manifest ?? body;
-        if (!isSafeSkillName(manifest?.name)) {
-          throw new Error("技能名称无效。");
-        }
-        const imported = await importSkillFromManifest(projectRoot, manifest);
-        skillName = imported.name;
-      }
-      if (!isSafeSkillName(skillName)) {
-        throw new Error("技能名称无效。");
-      }
-
-      if (action === "enable" || action === "import") {
-        // 只按 active catalog name 解析：目录里存在的技能就是可用的。
-        const { active } = await skillServiceRef.catalog({ projectRoot });
-        if (!active.some((skill) => skill.name === skillName)) {
-          throw new Error(`技能未安装：${skillName}`);
-        }
-      }
-      // disable：无操作（发现即生效，无启停集合；不写 project.yaml）。
-
-      await appendEvent(projectRoot, {
-        type: "skill_configuration_changed",
-        project_id: project.project_id,
-        message: `skill ${action}: ${skillName}`,
-        data: { skill: skillName, action }
+      return await resolveReadProjectRoot({
+        requestedRoot,
+        selected: ctxRef.selected,
+        workspace: ctxRef.workspace,
+        stateRoot: ctxRef.stateRoot
       });
-      return {
-        ok: true,
-        projectRoot,
-        skill: skillName
-      };
-    } catch (error) {
-      throw error instanceof HttpError ? error : new HttpError(400, "BAD_REQUEST", error?.message ?? String(error));
+    } catch {
+      return null;
     }
   }
 
-  // manifest 对象 → 临时目录 SKILL.md → service seam importSkill（scope=project）。
-  async function importSkillFromManifest(projectRoot, manifest) {
-    const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-skill-import-"));
-    try {
-      const staging = path.join(tmpRoot, String(manifest.name));
-      await fs.mkdir(staging, { recursive: true });
-      await fs.writeFile(path.join(staging, "SKILL.md"), buildSkillMd(manifest), "utf8");
-      return await skillServiceRef.importSkill({ projectRoot, sourceDir: staging, scope: "project" });
-    } finally {
-      await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
-    }
+  // catalog DTO：active/shadowed 都返回 name/source/description/path。
+  function toCatalogEntry(skill) {
+    return {
+      name: skill.name,
+      source: skill.source,
+      description: skill.description ?? "",
+      path: skill.dir
+    };
+  }
+
+  // 技能领域错误 → HTTP：skill_exists=409、skill_not_found=404，其余 400。
+  function mapSkillError(error) {
+    if (error instanceof HttpError) return error;
+    const status = error?.code === "skill_exists" ? 409
+      : error?.code === "skill_not_found" ? 404
+        : 400;
+    return new HttpError(status, error?.code ?? "BAD_REQUEST", error?.message ?? String(error));
   }
 }

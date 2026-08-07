@@ -28,7 +28,7 @@ class MockElement {
       _classes: new Set(),
       add: (...names) => { for (const n of names) this.classList._classes.add(n); },
       remove: (...names) => { for (const n of names) this.classList._classes.delete(n); },
-      toggle(name, force) {
+      toggle: (name, force) => {
         if (force === undefined) {
           if (this.classList._classes.has(name)) { this.classList._classes.delete(name); return false; }
           this.classList._classes.add(name); return true;
@@ -140,6 +140,7 @@ function createSettingsModalForTest(overrides = {}) {
   return createSettingsModal(ctx, {
     getJsonImpl: overrides.getJsonImpl ?? (async () => ({ ok: true, default_model: null, models: [] })),
     postJsonImpl: overrides.postJsonImpl ?? (async () => ({ ok: true })),
+    deleteJsonImpl: overrides.deleteJsonImpl ?? (async () => ({ ok: true })),
     // 模型切换确认函数：显式注入（默认 window.confirm，node 测试环境不可用）。
     confirmImpl: overrides.confirmImpl ?? (() => true)
   });
@@ -742,4 +743,187 @@ test("排队输入非空也算任务进行中：模型变更需确认", async ()
 
   assert.equal(confirmCalls, 1, "排队输入存在时应弹确认");
   assert.equal(calls.some((c) => c.url === "/api/settings/model-profile"), true, "确认后保存");
+});
+
+// ---------------------------------------------------------------------------
+// 「Agent 技能」分区（Task 13）：segmented control / 技能列表 / 来源标签 /
+// 覆盖说明 / 打开目录 / 添加菜单（文件夹/ZIP）/ 删除；无任何启停控件。
+// ---------------------------------------------------------------------------
+
+const SKILLS_CATALOG = {
+  ok: true,
+  has_project: true,
+  project_root: "D:/novels/demo",
+  active: [
+    { name: "suspense-chapter-end", source: "builtin", description: "章节结尾悬念", path: "D:/builtin/suspense-chapter-end" },
+    { name: "my-style", source: "global", description: "我的文风", path: "D:/home/.wwriting/skills/my-style" },
+    { name: "project-voice", source: "project", description: "项目语感", path: "D:/novels/demo/skills/project-voice" }
+  ],
+  shadowed: [
+    { name: "my-style", source: "bundled", description: "随应用分发的旧版本", path: "D:/bundled/my-style" }
+  ],
+  migration_errors: []
+};
+
+// catalog 桩：/api/skills/catalog 返回给定数据，其余走默认空模型清单。
+function catalogJsonImpl(data) {
+  return async (url) => {
+    if (url.startsWith("/api/skills/catalog")) return data;
+    return { ok: true, default_model: null, models: [] };
+  };
+}
+
+function findElementById(id) {
+  return domRegistry.find((el) => el.id === id) ?? null;
+}
+
+test("「Agent 技能」分区：segmented control、技能列表与来源标签，无启停控件", async () => {
+  const modal = createSettingsModalForTest({
+    getCurrentProjectRoot: () => "D:/novels/demo",
+    getJsonImpl: catalogJsonImpl(SKILLS_CATALOG)
+  });
+  await modal.openSettingsModal("skills");
+  await modal.waitForSkillsCatalog();
+
+  assert.equal(modal.getSkillsScope(), "global", "默认管理全局目录");
+  const globalBtn = findElementById("skills-scope-global");
+  const projectBtn = findElementById("skills-scope-project");
+  assert.ok(globalBtn, "应有「全局」segmented 按钮");
+  assert.ok(projectBtn, "应有「项目」segmented 按钮");
+  assert.equal(projectBtn.disabled, false, "有项目时项目 segment 可用");
+
+  const rows = modal.getSkillsRowsForTest();
+  assert.equal(rows.length, 3);
+  const myStyle = rows.find((r) => r.name === "my-style");
+  assert.equal(myStyle.source, "global");
+  assert.equal(myStyle.deletable, true, "全局来源技能在全局 scope 下可删除");
+  const suspense = rows.find((r) => r.name === "suspense-chapter-end");
+  assert.equal(suspense.source, "builtin");
+  assert.equal(suspense.deletable, false, "内置技能不可删除");
+  const projectVoice = rows.find((r) => r.name === "project-voice");
+  assert.equal(projectVoice.deletable, false, "项目来源技能在全局 scope 下不可删除");
+
+  // 无任何启停控件 / 批量启用
+  assert.equal(domRegistry.some((el) => el.textContent === "启用" || el.textContent === "禁用"), false);
+  assert.equal(domRegistry.some((el) => el.textContent === "全部" + "启用"), false);
+});
+
+test("「Agent 技能」分区：切到项目 scope 后只有项目来源技能可删除", async () => {
+  const modal = createSettingsModalForTest({
+    getCurrentProjectRoot: () => "D:/novels/demo",
+    getJsonImpl: catalogJsonImpl(SKILLS_CATALOG)
+  });
+  await modal.openSettingsModal("skills");
+  await modal.waitForSkillsCatalog();
+
+  modal.setSkillsScopeForTest("project");
+  assert.equal(modal.getSkillsScope(), "project");
+  const rows = modal.getSkillsRowsForTest();
+  const projectVoice = rows.find((r) => r.name === "project-voice");
+  assert.equal(projectVoice.deletable, true, "项目 scope 下项目来源技能可删除");
+  const myStyle = rows.find((r) => r.name === "my-style");
+  assert.equal(myStyle.deletable, false, "全局来源技能在项目 scope 下不可删除");
+});
+
+test("无项目时「项目」segment 禁用，仍可浏览全局技能", async () => {
+  const modal = createSettingsModalForTest({
+    getCurrentProjectRoot: () => "",
+    getJsonImpl: catalogJsonImpl({ ...SKILLS_CATALOG, has_project: false, project_root: null })
+  });
+  await modal.openSettingsModal("skills");
+  await modal.waitForSkillsCatalog();
+
+  const projectBtn = findElementById("skills-scope-project");
+  assert.equal(projectBtn.disabled, true, "无项目时项目 segment 禁用");
+  assert.equal(modal.getSkillsScope(), "global");
+  assert.ok(modal.getSkillsRowsForTest().some((r) => r.name === "my-style"));
+});
+
+test("添加技能：选择文件夹导入；重名 409 二次确认后带 replace 重试", async () => {
+  const calls = [];
+  const confirms = [];
+  globalThis.window.wwritingDesktop = { selectSkillFolder: async () => "D:/skills/my-style" };
+  try {
+    const modal = createSettingsModalForTest({
+      getCurrentProjectRoot: () => "D:/novels/demo",
+      getJsonImpl: catalogJsonImpl(SKILLS_CATALOG),
+      confirmImpl: (message) => { confirms.push(message); return true; },
+      postJsonImpl: async (url, body) => {
+        calls.push({ url, body });
+        if (url === "/api/skills/import" && !body.replace) {
+          throw Object.assign(new Error("技能已存在: my-style"), { status: 409, code: "skill_exists" });
+        }
+        return { ok: true, skill: "my-style", scope: body.scope, source: body.scope };
+      }
+    });
+    await modal.openSettingsModal("skills");
+    await modal.waitForSkillsCatalog();
+
+    const addBtn = findElementById("skills-add");
+    assert.ok(addBtn, "应有「添加技能」按钮");
+    addBtn._fire("click");
+    const folderOpt = findElementById("skills-add-folder");
+    assert.ok(folderOpt, "添加菜单应包含「从文件夹导入」");
+    folderOpt._fire("click");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(confirms.length, 1, "重名应弹一次二次确认");
+    assert.ok(calls.some((c) => c.url === "/api/skills/import" && c.body.scope === "global" && !c.body.replace),
+      "第一次导入不带 replace");
+    assert.ok(calls.some((c) => c.url === "/api/skills/import" && c.body.scope === "global" && c.body.replace === true),
+      "确认后带 replace:true 重试");
+  } finally {
+    delete globalThis.window.wwritingDesktop;
+  }
+});
+
+test("删除技能：确认后 DELETE /api/skills/:name 并携带当前 scope", async () => {
+  const calls = [];
+  const confirms = [];
+  const modal = createSettingsModalForTest({
+    getCurrentProjectRoot: () => "D:/novels/demo",
+    getJsonImpl: catalogJsonImpl(SKILLS_CATALOG),
+    confirmImpl: (message) => { confirms.push(message); return true; },
+    deleteJsonImpl: async (url, body) => {
+      calls.push({ url, body });
+      return { ok: true, removed: true };
+    }
+  });
+  await modal.openSettingsModal("skills");
+  await modal.waitForSkillsCatalog();
+
+  const myStyle = modal.getSkillsRowsForTest().find((r) => r.name === "my-style");
+  assert.ok(myStyle.del, "全局来源技能应有删除按钮");
+  myStyle.del._fire("click");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(confirms.length, 1, "删除前应确认");
+  assert.ok(calls.some((c) => c.url === "/api/skills/my-style" && c.body.scope === "global"),
+    "DELETE 应携带当前 scope");
+});
+
+test("打开技能目录：调用 revealSkillDirectory(scope, projectRoot)，不传任意路径", async () => {
+  const reveals = [];
+  globalThis.window.wwritingDesktop = {
+    revealSkillDirectory: async (scope, projectRoot) => { reveals.push({ scope, projectRoot }); return true; }
+  };
+  try {
+    const modal = createSettingsModalForTest({
+      getCurrentProjectRoot: () => "D:/novels/demo",
+      getJsonImpl: catalogJsonImpl(SKILLS_CATALOG)
+    });
+    await modal.openSettingsModal("skills");
+    await modal.waitForSkillsCatalog();
+
+    const openDir = findElementById("skills-open-dir");
+    assert.ok(openDir, "应有打开目录 icon button");
+    openDir._fire("click");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(reveals.length, 1);
+    assert.equal(reveals[0].scope, "global");
+    assert.equal(reveals[0].projectRoot, "D:/novels/demo");
+  } finally {
+    delete globalThis.window.wwritingDesktop;
+  }
 });
