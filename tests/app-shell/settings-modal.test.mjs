@@ -747,6 +747,57 @@ test("排队输入非空也算任务进行中：模型变更需确认", async ()
 });
 
 // ---------------------------------------------------------------------------
+// Task 14：普通文件夹（hasProject:false）下写作参数/项目管理分区只显示说明，
+// 保存禁用，绝不向 /api/settings/update 发旧版小说项目专属的写请求。
+// ---------------------------------------------------------------------------
+
+test("普通文件夹下写作参数分区显示说明且保存按钮禁用", async () => {
+  const saveButton = new MockElement("button");
+  const postCalls = [];
+  const modal = createSettingsModalForTest({
+    refs: { settingsSave: saveButton },
+    getDashboard: () => ({ hasProject: false, project: null, projectRoot: "D:/plain/folder" }),
+    getCurrentProjectRoot: () => "D:/plain/folder",
+    postJsonImpl: async (url, body) => {
+      postCalls.push({ url, body });
+      return { ok: true };
+    }
+  });
+  await modal.openSettingsModal("writing");
+
+  const hints = domRegistry.filter((el) => el.className === "spd-hint");
+  assert.ok(
+    hints.some((h) => h.textContent.includes("仅旧版小说项目可用")),
+    "普通文件夹应显示旧版小说项目专属说明"
+  );
+  assert.equal(saveButton.disabled, true, "普通文件夹下保存按钮应禁用");
+  assert.equal(saveButton.textContent, "无需保存");
+  assert.equal(domRegistry.some((el) => el.id === "settings-output-style"), false, "不应渲染输出风格下拉");
+
+  await modal.saveSettingsForTest();
+  assert.equal(postCalls.some((c) => c.url === "/api/settings/update"), false, "保存不得向 /api/settings/update 发请求");
+});
+
+test("普通文件夹下项目管理分区显示说明且无归档按钮", async () => {
+  const saveButton = new MockElement("button");
+  const modal = createSettingsModalForTest({
+    refs: { settingsSave: saveButton },
+    getDashboard: () => ({ hasProject: false, project: null, projectRoot: "D:/plain/folder" }),
+    getCurrentProjectRoot: () => "D:/plain/folder"
+  });
+  await modal.openSettingsModal("danger");
+
+  const hints = domRegistry.filter((el) => el.className === "spd-hint");
+  assert.ok(
+    hints.some((h) => h.textContent.includes("仅旧版小说项目可用")),
+    "普通文件夹应显示旧版小说项目专属说明"
+  );
+  assert.equal(domRegistry.some((el) => el.id === "settings-archive-trigger"), false, "不应渲染归档按钮");
+  assert.equal(domRegistry.some((el) => el.id === "settings-unarchive-trigger"), false, "不应渲染解除归档按钮");
+  assert.equal(saveButton.disabled, true, "保存按钮保持禁用");
+});
+
+// ---------------------------------------------------------------------------
 // 「Agent 技能」分区（Task 13）：segmented control / 技能列表 / 来源标签 /
 // 覆盖说明 / 打开目录 / 添加菜单（文件夹/ZIP）/ 删除；无任何启停控件。
 // ---------------------------------------------------------------------------

@@ -411,25 +411,6 @@ export function updateActivityStrip(root, previous, next) {
   });
 }
 
-/**
- * Triggers a scale bounce on a Quick Rail badge element.
- */
-export function bumpQuickRailBadge(button) {
-  if (!button || !_gsapLoaded || !gsap) return;
-  const badge = button.querySelector(".qr-badge");
-  if (!badge) return;
-
-  if (isReducedMotion()) return;
-
-  safeAnimate(() => {
-    gsap.fromTo(
-      badge,
-      { scale: 1.35 },
-      { scale: 1, duration: MOTION.base, ease: MOTION.emphasis }
-    );
-  });
-}
-
 /* ─── Public semantic API object ─── */
 
 export const motion = {
@@ -442,5 +423,4 @@ export const motion = {
   insertFailureCard,
   resolveFailureCard,
   updateActivityStrip,
-  bumpQuickRailBadge,
 };
