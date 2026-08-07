@@ -720,10 +720,11 @@ export function createSettingsRoutes({
   }
 
   // catalog DTO：active/shadowed 都返回 name/source/description/readonly/protected/
-  // display_name/category；绝不返回本地绝对 path 给 UI（冻结契约 §11 用户不得看到
-  // 绝对内部存储路径）。
+  // display_name/category；shadowed 项额外携带 shadow_reason（reserved_builtin 由
+  // UI 用于区分「保留名称不可覆盖」与普通优先级覆盖）。绝不返回本地绝对 path 给
+  // UI（冻结契约 §11 用户不得看到绝对内部存储路径）。
   function toCatalogEntry(skill) {
-    return {
+    const entry = {
       name: skill.name,
       source: skill.source,
       description: skill.description ?? "",
@@ -732,6 +733,10 @@ export function createSettingsRoutes({
       display_name: skill.display_name ?? skill.name,
       category: skill.category ?? null
     };
+    if (typeof skill.shadow_reason === "string" && skill.shadow_reason) {
+      entry.shadow_reason = skill.shadow_reason;
+    }
+    return entry;
   }
 
   // 技能领域错误 → HTTP：skill_exists=409、skill_not_found=404、skill_reserved=403，
