@@ -24,6 +24,7 @@ class MockElement {
     this._listeners = new Map();
     this.className = "";
     this.isConnected = true;
+    this.innerHTML = "";
     this.classList = {
       _classes: new Set(),
       add: (...names) => { for (const n of names) this.classList._classes.add(n); },
@@ -926,4 +927,121 @@ test("打开技能目录：调用 revealSkillDirectory(scope, projectRoot)，不
   } finally {
     delete globalThis.window.wwritingDesktop;
   }
+});
+
+// ---------------------------------------------------------------------------
+// Task 8：「内置写作风格」无框只读分区
+// ---------------------------------------------------------------------------
+
+const STYLE_NAMES = new Set(["balanced", "fast-readable", "psychological-literary"]);
+
+const STYLE_SKILLS_CATALOG = {
+  ok: true,
+  has_project: true,
+  project_root: "D:/novels/demo",
+  active: [
+    { name: "suspense-chapter-end", source: "builtin", description: "章节结尾悬念" },
+    { name: "my-style", source: "global", description: "我的文风" },
+    { name: "balanced", source: "builtin", description: "在情节、人物、描写与可读性之间保持均衡；生成、续写、改写、润色或审核中文小说正文时使用。", readonly: true, protected: true, category: "writing-style", display_name: "均衡" },
+    { name: "fast-readable", source: "builtin", description: "用清楚因果、直接冲突和易扫读段落写快节奏中文网文正文。", readonly: true, protected: true, category: "writing-style", display_name: "快节奏易读" },
+    { name: "psychological-literary", source: "builtin", description: "在大众网文可读性内加强人物动机、心理变化与潜台词，不写晦涩意识流。", readonly: true, protected: true, category: "writing-style", display_name: "心理文学" }
+  ],
+  shadowed: [
+    { name: "balanced", source: "project", description: "项目伪造版本", shadow_reason: "reserved_builtin" }
+  ],
+  migration_errors: []
+};
+
+// catalog 桩 + 技能详情桩：/api/skills/:name 返回给定 content。
+function styleCatalogJsonImpl(detailContents = {}) {
+  return async (url) => {
+    if (url.startsWith("/api/skills/catalog")) return STYLE_SKILLS_CATALOG;
+    const match = /\/api\/skills\/([^/?]+)/u.exec(url);
+    if (match && detailContents[match[1]] !== undefined) {
+      return { ok: true, name: match[1], content: detailContents[match[1]] };
+    }
+    return { ok: true, default_model: null, models: [] };
+  };
+}
+
+test("「内置写作风格」分区：三个只读分隔行，无删除/编辑/启用控件，不进入普通技能列表", async () => {
+  const modal = createSettingsModalForTest({
+    getCurrentProjectRoot: () => "D:/novels/demo",
+    getJsonImpl: styleCatalogJsonImpl()
+  });
+  await modal.openSettingsModal("skills");
+  await modal.waitForSkillsCatalog();
+
+  const styleRows = modal.getBuiltinStyleRowsForTest();
+  assert.equal(styleRows.length, 3, "应渲染三个内置写作风格行");
+  assert.deepEqual(
+    styleRows.map((r) => r.name).sort(),
+    ["balanced", "fast-readable", "psychological-literary"]
+  );
+  for (const row of styleRows) {
+    assert.equal(row.readonly, true, `${row.name} 行应标记只读`);
+    assert.equal(row.hasDelete, false, `${row.name} 行不得有删除按钮`);
+  }
+  // 普通技能列表不得包含三个风格（避免重复展示）。
+  const regular = modal.getSkillsRowsForTest();
+  assert.ok(!regular.some((r) => STYLE_NAMES.has(r.name)), "风格技能不得出现在普通技能列表");
+  // 三个风格行均无删除按钮（只读，无编辑/启停/覆盖控件）。
+  assert.ok(styleRows.every((r) => !r.hasDelete), "风格行不得有任何删除按钮");
+});
+
+test("点击内置写作风格行：GET /api/skills/:name 并在设置详情区展开完整只读正文", async () => {
+  const detailCalls = [];
+  const content = "---\nname: balanced\ndescription: 均衡描述\n---\n\n# 均衡\n\n只在生成、续写、改写、润色或审核中文小说正文时使用本技能。\n\n## 写法\n\n- 心理描写落在具体刺激上。";
+  const modal = createSettingsModalForTest({
+    getCurrentProjectRoot: () => "D:/novels/demo",
+    getJsonImpl: async (url) => {
+      if (url.startsWith("/api/skills/catalog")) return STYLE_SKILLS_CATALOG;
+      if (url.includes("/api/skills/balanced")) {
+        detailCalls.push(url);
+        return { ok: true, name: "balanced", content };
+      }
+      return { ok: true, default_model: null, models: [] };
+    }
+  });
+  await modal.openSettingsModal("skills");
+  await modal.waitForSkillsCatalog();
+
+  const row = modal.getBuiltinStyleRowsForTest().find((r) => r.name === "balanced");
+  assert.ok(row, "应渲染 balanced 只读行");
+  row.click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(detailCalls.length, 1, "点击行应请求一次技能详情");
+  assert.ok(detailCalls[0].includes("/api/skills/balanced"), "详情请求应命中 /api/skills/balanced");
+  assert.ok(detailCalls[0].includes("projectRoot"), "详情请求应携带项目作用域");
+  const body = domRegistry.find((el) => el.className === "spd-skill-detail-body agent-markdown");
+  assert.ok(body, "详情区应渲染技能正文容器");
+  assert.ok(
+    body.innerHTML.includes("只在生成、续写、改写、润色或审核中文小说正文时使用本技能。"),
+    "详情应展示完整只读正文"
+  );
+  assert.ok(!body.innerHTML.includes("name: balanced"), "详情正文不应包含 frontmatter");
+});
+
+test("保留名称 shadowed 项显示专属说明且不可删除", async () => {
+  const modal = createSettingsModalForTest({
+    getCurrentProjectRoot: () => "D:/novels/demo",
+    getJsonImpl: styleCatalogJsonImpl()
+  });
+  await modal.openSettingsModal("skills");
+  await modal.waitForSkillsCatalog();
+
+  const shadowedRows = domRegistry.filter((el) => el.className === "spd-skill-row shadowed");
+  const reservedRow = shadowedRows.find((r) => r.dataset.skillName === "balanced");
+  assert.ok(reservedRow, "保留名称的项目同名项应出现在被覆盖区");
+  assert.equal(reservedRow.dataset.shadowReason, "reserved_builtin");
+  const shadowMain = reservedRow.children.find((c) => c.className === "spd-skill-main");
+  const desc = shadowMain?.children.find((c) => c.className === "spd-skill-desc");
+  assert.ok(desc, "shadowed 行应包含说明文本");
+  assert.ok(desc.textContent.includes("保留名称"), "保留名称 shadowed 应显示专属说明");
+  assert.equal(
+    [...reservedRow.children].some((c) => c.className === "spd-skill-del"),
+    false,
+    "shadowed 行不得有删除按钮"
+  );
 });

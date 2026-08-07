@@ -650,6 +650,21 @@ export function createSettingsRoutes({
       }
     },
 
+    // Task 8 Step 5：只读技能详情 API（渐进加载 read_skill 的服务端底座）。
+    // 注册必须位于 "GET /api/skills/catalog" 之后（router 按注册顺序首匹配，
+    // 先注册静态路径避免 "catalog" 被 :name 吞掉）。无项目时 builtin/global
+    // 技能仍可读（resolveCatalogProjectRoot 失败回落 null，与 catalog 同语义）。
+    "GET /api/skills/:name": async ({ params, query }) => {
+      try {
+        const projectRoot = await resolveCatalogProjectRoot(ctx, query.projectRoot);
+        const name = assertSkillNameParam(params.name);
+        const resource = await skillServiceRef.read({ projectRoot, name, resource: "SKILL.md" });
+        return { ok: true, name, content: resource.content };
+      } catch (error) {
+        throw mapSkillError(error);
+      }
+    },
+
     "POST /api/skills/import": async ({ body }) => {
       try {
         const sourcePath = String(body?.source_path ?? "").trim();
@@ -704,22 +719,29 @@ export function createSettingsRoutes({
     }
   }
 
-  // catalog DTO：active/shadowed 都返回 name/source/description/path。
+  // catalog DTO：active/shadowed 都返回 name/source/description/readonly/protected/
+  // display_name/category；绝不返回本地绝对 path 给 UI（冻结契约 §11 用户不得看到
+  // 绝对内部存储路径）。
   function toCatalogEntry(skill) {
     return {
       name: skill.name,
       source: skill.source,
       description: skill.description ?? "",
-      path: skill.dir
+      readonly: skill.readonly === true,
+      protected: skill.protected === true,
+      display_name: skill.display_name ?? skill.name,
+      category: skill.category ?? null
     };
   }
 
-  // 技能领域错误 → HTTP：skill_exists=409、skill_not_found=404，其余 400。
+  // 技能领域错误 → HTTP：skill_exists=409、skill_not_found=404、skill_reserved=403，
+  // 其余 400。
   function mapSkillError(error) {
     if (error instanceof HttpError) return error;
     const status = error?.code === "skill_exists" ? 409
       : error?.code === "skill_not_found" ? 404
-        : 400;
+        : error?.code === "skill_reserved" ? 403
+          : 400;
     return new HttpError(status, error?.code ?? "BAD_REQUEST", error?.message ?? String(error));
   }
 }
