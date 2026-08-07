@@ -17,6 +17,7 @@ import path from "node:path";
 import test from "node:test";
 import { createAppShellServer } from "../../src/core/app-server.mjs";
 import { validateWorkspaceRoot } from "../../src/core/app-dashboard.mjs";
+import { createWorkspaceStore } from "../../src/core/workspaces/store.mjs";
 import { closeServer, listenOnFetchSafePort } from "../helpers/http-test.mjs";
 import { createMockModelGateway } from "../helpers/project-agent-harness.mjs";
 
@@ -201,4 +202,68 @@ test("普通目录模型切换后，模型请求 modelConfig 是所选模型且�
   assert.equal(captured.length, 1, "普通目录模型请求应恰好发生一次");
   assert.equal(captured[0].model_name, "deepseek-chat");
   assert.equal(await pathExists(path.join(projectRoot, "project.yaml")), false);
+});
+
+// ---------------------------------------------------------------------------
+// 旧项目只读迁移（计划 Task 11）：迁移失败 fixture 仍可完成第一条消息
+// ---------------------------------------------------------------------------
+
+// 对旧项目只读源（.wwriting/agent 递归 + project.yaml）做字节快照。
+async function snapshotLegacySources(projectRoot) {
+  const entries = {};
+  async function walk(rel) {
+    const target = path.join(projectRoot, rel);
+    const stat = await fs.stat(target);
+    if (stat.isDirectory()) {
+      for (const name of await fs.readdir(target)) await walk(path.join(rel, name));
+    } else {
+      entries[rel] = await fs.readFile(target);
+    }
+  }
+  for (const rel of ["project.yaml", path.join(".wwriting", "agent")]) {
+    if (await pathExists(path.join(projectRoot, rel))) await walk(rel);
+  }
+  return entries;
+}
+
+test("旧项目 project.yaml 损坏：迁移失败仍可完成第一条消息，原数据字节不变", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-legacy-corrupt-"));
+  const projectRoot = path.join(root, "旧项目");
+  const stateRoot = path.join(root, "user-data");
+  await fs.mkdir(path.join(projectRoot, ".wwriting", "agent"), { recursive: true });
+  const events = [
+    JSON.stringify({
+      schema_version: 1,
+      seq: 1,
+      event_id: "evt-1",
+      session_id: "legacy-sess",
+      run_id: null,
+      project_root: projectRoot,
+      type: "session_created",
+      at: "2026-08-01T00:00:00.000Z",
+      payload: {}
+    })
+  ].join("\n") + "\n";
+  await fs.writeFile(path.join(projectRoot, ".wwriting", "agent", "events.jsonl"), events, "utf8");
+  // project.yaml 损坏：同名目录（readFile 抛 EISDIR，open 不得失败）
+  await fs.mkdir(path.join(projectRoot, "project.yaml"));
+  const before = await snapshotLegacySources(projectRoot);
+
+  const app = await startArbitraryWorkspaceServer(t, {
+    projectRoot,
+    stateRoot,
+    gatewayScript: [{ reply: { text: "你好，旧项目也可以继续工作。" } }]
+  });
+  const opened = await app.post("/api/projects/open", { projectRoot });
+  assert.equal(opened.res.status, 200, "迁移失败不得阻塞打开");
+  assert.doesNotMatch(JSON.stringify(opened.data), /ENOENT|node:fs|at\s+\w+/iu, "失败正文不得泄露原始错误");
+  const sent = await app.post("/api/agent/input", { projectRoot, text: "你好" });
+  assert.equal(sent.res.status, 200);
+  await app.waitForIdle(projectRoot);
+
+  // 聊天资格不依赖迁移成功；迁移失败不产生 WWRITING.md；标记保持 false（下次重试）
+  assert.deepEqual(await snapshotLegacySources(projectRoot), before, "原 project.yaml 与 .wwriting/agent 字节必须完全不变");
+  assert.equal(await pathExists(path.join(projectRoot, "WWRITING.md")), false, "损坏时不写 WWRITING.md");
+  const store = createWorkspaceStore({ stateRoot });
+  assert.equal((await store.loadSettings(projectRoot)).legacy_project_imported, false, "迁移失败标记保持 false");
 });
