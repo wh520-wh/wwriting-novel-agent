@@ -188,6 +188,7 @@ refs.newNovel.addEventListener("click", () => openCreateModal());
 refs.openFolder.addEventListener("click", () => openFromFolder());
 refs.openSettings.addEventListener("click", () => openSettingsModal());
 refs.projectFilter?.addEventListener("input", () => renderProjectListFiltered());
+if (!refs.drawerClose.title) refs.drawerClose.title = "关闭抽屉";
 refs.drawerClose.addEventListener("click", () => closeDrawer());
 refs.drawerScrim.addEventListener("click", () => closeDrawer());
 refs.drawerTabs.addEventListener("click", (event) => {
@@ -195,10 +196,12 @@ refs.drawerTabs.addEventListener("click", (event) => {
   if (tab) setDrawerTab(tab.dataset.dtab);
 });
 
+if (!refs.readerClose.title) refs.readerClose.title = "关闭";
 refs.readerClose.addEventListener("click", closeReader);
 refs.readerScrim.addEventListener("click", (event) => {
   if (event.target === refs.readerScrim) closeReader();
 });
+if (!refs.settingsX.title) refs.settingsX.title = "关闭设置";
 refs.settingsX.addEventListener("click", closeSettingsModal);
 refs.settingsCancel.addEventListener("click", closeSettingsModal);
 refs.settingsScrim.addEventListener("click", (event) => {
@@ -207,11 +210,13 @@ refs.settingsScrim.addEventListener("click", (event) => {
 refs.settingsSave.addEventListener("click", () => saveSettings());
 refs.settingsSearch.addEventListener("input", () => renderSettingsProviders());
 refs.settingsAdd.addEventListener("click", () => settingsModal.resetToCustom());
+if (!refs.createX.title) refs.createX.title = "关闭";
 refs.createX.addEventListener("click", closeCreateModal);
 // 新建弹窗：只通过右上角 X 或 Esc 关闭，避免点击遮罩误触丢失已填内容。
 refs.createBrowse.addEventListener("click", () => browseForCreatePath());
 refs.createSubmit.addEventListener("click", () => initProject(refs.createPath.value.trim()));
 
+if (!refs.shortcutsX.title) refs.shortcutsX.title = "关闭";
 refs.shortcutsX.addEventListener("click", () => closeShortcuts());
 refs.shortcutsScrim.addEventListener("click", (event) => {
   if (event.target === refs.shortcutsScrim) closeShortcuts();
@@ -889,6 +894,8 @@ function updateQuickRailLayout() {
 window.addEventListener('resize', updateQuickRailLayout);
 updateQuickRailLayout();
 
+const qrCollapsed = document.getElementById('qr-collapsed');
+if (qrCollapsed && !qrCollapsed.title) qrCollapsed.title = "快捷面板";
 document.getElementById('qr-collapsed')?.addEventListener('click', () => {
   openDrawerTab('chapters');
 });

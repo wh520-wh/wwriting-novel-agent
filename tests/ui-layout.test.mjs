@@ -139,8 +139,13 @@ test("次级操作融入背景，消息层级不依赖成排胶囊按钮", () =>
   );
   assert.match(
     agentCssSource,
-    /--agent-user-bg:\s*#f2f4f3;/u,
-    "用户消息应使用安静的浅中性表面"
+    /--agent-user-bg:\s*var\(--rail\);/u,
+    "用户消息应使用安静的浅中性表面（引用全局 rail 表面 primitive）"
+  );
+  assert.match(
+    agentCssSource,
+    /--agent-user-ink:\s*var\(--btn\);/u,
+    "用户消息文字应引用全局 ink primitive，不硬编码色值"
   );
   assert.match(
     agentCssSource,

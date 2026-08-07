@@ -35,16 +35,11 @@
   --green-soft: #edf4ee;
   --green-line: #d3e3d7;
   --amber: #8a6d2f;
-  --amber-soft: #f7f0e0;
+  --amber-soft: #fcf6ec; /* 足够亮：amber 文字在 soft 上 ≥4.5:1（WCAG AA） */
   --amber-line: #e8dcbd;
   --red: #a4422f;
   --red-soft: #f9eeea;
   --red-line: #ead3cf;
-
-  /* 中性态（SKIPPED/跳过/待确认 —— 不归红色系，spec §2.3-U6） */
-  --neutral-bg: #eef1ef;
-  --neutral-text: #777f7a;
-  --neutral-border: #d8ded9;
 
   /* primary action */
   --btn: #252b27;
@@ -60,15 +55,6 @@
   /* 方向相反的半透明叠色（暗色下自动反转） */
   --spine-line: rgba(0, 0, 0, 0.06);      /* 会话封面书脊线 */
   --code-bg: rgba(0, 0, 0, 0.08);         /* 气泡内 code 块底 */
-
-  /* type scale (for future use) */
-  --text-xs: 11px;
-  --text-sm: 12px;
-  --text-base: 13px;
-  --text-md: 14px;
-  --text-lg: 15px;
-  --text-xl: 16px;
-  --text-2xl: 19px;
 
   --shadow-xs: 0 1px 2px rgba(24, 32, 27, 0.05);
   --shadow-sm: 0 1px 3px rgba(24, 32, 27, 0.07);
@@ -168,11 +154,6 @@
   --red-soft: #352420;
   --red-line: #5c3d36;
 
-  /* 中性态（暗色书房变体，对齐 --faint） */
-  --neutral-bg: #292e2b;
-  --neutral-text: #929c96;
-  --neutral-border: #3c443f;
-
   --btn: #e2e9e4;
   --btn-2: #f5f8f6;
   --btn-ink: #202522;
@@ -269,9 +250,9 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .stat .v, .kv dd, .spd-input, .pill, .step-meta { font-variant-numeric: tabular-nums; }
 
 
-/* Codex-style focus ring */
+/* Codex-style focus ring —— accent 只用于链接、focus、当前计划项 marker 和 testing */
 :where(button, [role="button"], a, input, textarea, select, summary):focus-visible {
-  outline: 2px solid var(--accent-line);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
   border-radius: 6px;
 }
@@ -349,7 +330,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   background: transparent;
   color: var(--ink);
   font-family: var(--sans);
-  font-size: 18px; font-weight: 720;
+  font-size: 18px; font-weight: 700;
   box-shadow: none;
   -webkit-app-region: drag;
   app-region: drag;
@@ -435,19 +416,19 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .rail-filter input:hover { background: color-mix(in srgb, var(--rail-2) 70%, transparent); }
 
-.rail-filter input:focus { border-color: var(--line-hover); background: var(--surface); box-shadow: 0 0 0 3px var(--focus-ring); }
+.rail-filter input:focus { border-color: var(--accent); background: var(--surface); box-shadow: 0 0 0 3px var(--focus-ring); }
 
 .rail-group-label {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding: 10px 8px 6px;
-  font-size: 11px; font-weight: 650; letter-spacing: 0; text-transform: none;
-  color: var(--faint); white-space: nowrap;
+  font-size: 11px; line-height: 1.4; font-weight: 550; letter-spacing: 0; text-transform: none;
+  color: var(--text-muted); white-space: nowrap;
 }
 
 .rail-group-label > span:first-child { overflow: hidden; text-overflow: ellipsis; }
 
 .rail-group-label .count {
-  font-family: var(--mono); font-size: 10.5px; color: var(--faint);
+  font-family: var(--mono); font-size: 11px; color: var(--text-muted);
   background: transparent; border-radius: 0; padding: 0;
 }
 
@@ -583,7 +564,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .topbar-title-row { display: flex; align-items: center; gap: 9px; min-width: 0; }
 
 .topbar-title-row h1 {
-  font-size: 14px; font-weight: 650; letter-spacing: 0;
+  font-size: 14px; line-height: 1.35; font-weight: 650; letter-spacing: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
@@ -595,7 +576,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 
 .tbtn {
-  width: 30px; height: 30px;
+  width: 32px; height: 32px;
   display: inline-grid; place-items: center;
   padding: 0; border-radius: 6px;
   border: 1px solid transparent; background: transparent;
@@ -638,7 +619,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .drawer-head { display: flex; align-items: center; gap: 10px; padding: 14px 14px 12px 18px; border-bottom: 1px solid var(--line); }
 
-.drawer-head h3 { font-size: 14px; font-weight: 680; }
+.drawer-head h3 { font-size: 14px; line-height: 1.35; font-weight: 650; color: var(--text-primary); }
 
 .drawer-head .icon-btn { margin-left: auto; }
 
@@ -664,6 +645,14 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .dpanel-head .pill { margin-left: auto; }
 
+/* 统一的 pill/标签基元：drawer 面板头、状态徽标共用（颜色变体只改 border/ink） */
+.pill {
+  display: inline-flex; align-items: center;
+  padding: 1px 8px; border-radius: 99px;
+  font-size: 11px; line-height: 1.5; font-weight: 550;
+  color: var(--text-muted); background: var(--surface-2); border: 1px solid var(--line);
+}
+
 .dpanel-body { padding: 13px 14px; }
 
 .export-toolbar {
@@ -687,7 +676,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .cost-warning-banner {
   display: flex; align-items: center; gap: 8px;
   padding: 10px 14px; margin: 0 14px 12px;
-  border: 1px solid var(--amber-line); border-radius: var(--r-md);
+  border: 1px solid var(--amber-line); border-radius: var(--r);
   background: var(--amber-soft); color: var(--amber); font-size: 12.5px;
 }
 
@@ -699,7 +688,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .cost-section:first-of-type { border-top: 0; }
 
-.cost-section-title { font-size: 11.5px; font-weight: 680; color: var(--muted); margin: 0 0 8px; letter-spacing: 0.04em; text-transform: uppercase; }
+.cost-section-title { font-size: 11.5px; font-weight: 550; color: var(--muted); margin: 0 0 8px; letter-spacing: 0; text-transform: uppercase; }
 
 .cost-section-body { display: grid; gap: 6px; }
 
@@ -762,7 +751,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .chrow {
   width: 100%; text-align: left;
   display: grid; grid-template-columns: 30px minmax(0,1fr) auto auto; gap: 11px; align-items: center;
-  padding: 9px 10px; border-radius: 9px; border: 1px solid transparent;
+  padding: 9px 10px; border-radius: var(--r); border: 1px solid transparent;
   border-left: 2px solid var(--ghost);
   transition: background .12s, border-color .12s;
 }
@@ -790,7 +779,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .chrow.todo .ch-name { color: var(--ghost); font-weight: 400; }
 
-.ch-meta { font-size: 11px; color: var(--faint); white-space: nowrap; }
+.ch-meta { font-size: 11px; color: var(--muted); white-space: nowrap; }
 
 .ch-state { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; white-space: nowrap; }
 
@@ -798,7 +787,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .ch-state.todo { color: var(--ghost); }
 
-.ch-go { color: var(--faint); }
+.ch-go { color: var(--muted); }
 
 .chrow.completed:hover .ch-go { color: var(--accent); }
 
@@ -814,19 +803,19 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .dfield > span { font-size: 12px; font-weight: 600; color: var(--ink-2); }
 
 .dfield input, .dfield select {
-  width: 100%; min-height: 36px; border: 1px solid var(--line); border-radius: 9px;
+  width: 100%; min-height: 36px; border: 1px solid var(--line); border-radius: var(--r);
   background: var(--surface); padding: 8px 11px; font-size: 13px; outline: none;
   transition: border-color .12s, box-shadow .12s;
 }
 
-.dfield input:focus, .dfield select:focus { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--focus-ring); }
+.dfield input:focus, .dfield select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-ring); }
 
-.dfield small { font-size: 11px; color: var(--faint); }
+.dfield small { font-size: 12px; color: var(--text-muted); }
 
 .provider-pick.on { border-color: var(--ink); background: var(--surface); box-shadow: inset 0 0 0 1px var(--ink); }
 
 .save-btn {
-  width: 100%; min-height: 38px; border-radius: 10px; margin-top: 4px;
+  width: 100%; min-height: 38px; border-radius: var(--r); margin-top: 4px;
   background: var(--btn-gradient); color: var(--btn-ink); font-weight: 650; font-size: 13px;
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.13);
 }
@@ -842,7 +831,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .evt .em { font-size: 11.5px; color: var(--muted); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.evt .ex { font-size: 10.5px; color: var(--faint); font-family: var(--mono); white-space: nowrap; }
+.evt .ex { font-size: 11px; color: var(--text-muted); font-family: var(--mono); white-space: nowrap; }
 
 .evt.warn .et { color: var(--amber); }
 
@@ -911,8 +900,8 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .sp-section-item.on .sp-section-ic { background: var(--accent-soft); color: var(--accent); }
 
 .sp-section-item .sp-section-soon {
-  margin-left: auto; font-size: 9.5px; font-weight: 600; letter-spacing: .03em;
-  color: var(--faint); background: var(--rail-2); border-radius: 99px; padding: 2px 7px;
+  margin-left: auto; font-size: 10px; font-weight: 550; letter-spacing: 0;
+  color: var(--text-muted); background: var(--rail-2); border-radius: 99px; padding: 2px 7px;
 }
 
 .sp-side-model { min-height: 0; display: grid; grid-template-rows: auto minmax(0,1fr) auto; }
@@ -929,17 +918,17 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .sp-stub .sp-stub-tag {
   display: inline-flex; align-self: start; align-items: center; gap: 6px;
-  font-size: 10.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
-  color: var(--amber); background: var(--amber-soft); border: 1px solid #e9dcc3;
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0; text-transform: uppercase;
+  color: var(--amber); background: var(--amber-soft); border: 1px solid var(--amber-line);
   border-radius: 99px; padding: 2px 9px;
 }
 
 .sp-search {
   display: flex; align-items: center; gap: 9px; margin: 14px 14px 8px;
-  padding: 0 11px; height: 38px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
+  padding: 0 11px; height: 38px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface);
 }
 
-.sp-search svg { color: var(--faint); flex: 0 0 auto; }
+.sp-search svg { color: var(--muted); flex: 0 0 auto; }
 
 .sp-search input { flex: 1; border: none; outline: none; background: transparent; font-size: 13px; }
 
@@ -948,7 +937,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .sp-item {
   width: 100%; text-align: left;
   display: grid; grid-template-columns: 28px minmax(0,1fr) auto; gap: 10px; align-items: center;
-  padding: 8px 10px; border-radius: 10px; border: 1px solid transparent;
+  padding: 8px 10px; border-radius: var(--r); border: 1px solid transparent;
   transition: background .12s, border-color .12s;
 }
 
@@ -962,12 +951,12 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.2);
 }
 
-.sp-av.lg { width: 34px; height: 34px; border-radius: 10px; font-size: 13px; }
+.sp-av.lg { width: 34px; height: 34px; border-radius: var(--r); font-size: 13px; }
 
 .sp-name { min-width: 0; font-size: 13px; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .sp-add {
-  margin: 8px 14px 14px; height: 40px; border-radius: 10px; border: 1px dashed var(--line);
+  margin: 8px 14px 14px; height: 40px; border-radius: var(--r); border: 1px dashed var(--line);
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   color: var(--ink-2); font-size: 13px; font-weight: 600; transition: background .12s, border-color .12s;
 }
@@ -984,23 +973,23 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .spd-head { display: flex; align-items: center; gap: 12px; padding-right: 36px; padding-bottom: 18px; border-bottom: 1px solid var(--line-2); margin-bottom: 20px; }
 
-.spd-head h3 { font-size: 17px; font-weight: 680; white-space: nowrap; }
+.spd-head h3 { font-size: 19px; line-height: 1.35; font-weight: 700; color: var(--text-primary); white-space: nowrap; }
 
 .spd-head .icon-btn { width: 26px; height: 26px; }
 
 
 .spd-field { margin-bottom: 22px; }
 
-.spd-label { display: flex; align-items: center; gap: 7px; margin-bottom: 9px; font-size: 14px; font-weight: 650; white-space: nowrap; }
+.spd-label { display: flex; align-items: center; gap: 7px; margin-bottom: 9px; font-size: 14px; line-height: 1.4; font-weight: 650; white-space: nowrap; }
 
-.spd-label svg { color: var(--faint); }
+.spd-label svg { color: var(--muted); }
 
-.spd-label > span:first-child { color: var(--ink); }
+.spd-label > span:first-child { color: var(--text-primary); }
 
-.spd-key input:focus, .spd-input:focus { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--focus-ring); }
+.spd-key input:focus, .spd-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-ring); }
 
 .spd-test {
-  height: 40px; padding: 0 18px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface);
+  height: 40px; padding: 0 18px; border-radius: var(--r); border: 1px solid var(--line); background: var(--surface);
   font-size: 13px; font-weight: 600; color: var(--ink-2); box-shadow: var(--shadow-xs); flex: 0 0 auto;
   transition: background .12s;
 }
@@ -1008,14 +997,14 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .spd-test:hover { background: var(--hover); }
 
 .spd-input {
-  width: 100%; height: 40px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
+  width: 100%; height: 40px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface);
   padding: 0 13px; font-size: 13px; font-family: var(--mono); outline: none;
   transition: border-color .2s, box-shadow .2s, background .2s;
 }
 
 .spd-input-wrap { position: relative; display: block; }
 
-.spd-input-wrap .spd-input { padding-right: 80px; letter-spacing: 0.06em; }
+.spd-input-wrap .spd-input { padding-right: 80px; letter-spacing: 0; }
 
 .spd-affix {
   position: absolute; top: 50%; transform: translateY(-50%);
@@ -1029,7 +1018,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .spd-affix:hover { background: var(--hover); color: var(--ink); }
 
-.spd-affix:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent-line); }
+.spd-affix:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
 
 .spd-affix:active { transform: translateY(-50%) scale(.92); }
 
@@ -1039,16 +1028,17 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .spd-affix.copied { color: var(--green); background: var(--green-soft); }
 
-.spd-hint { margin-top: 8px; font-size: 11.5px; color: var(--faint); }
+.spd-hint { margin-top: 8px; font-size: 12px; line-height: 1.55; color: var(--text-muted); }
 
-.spd-hint .mono { color: var(--muted); }
+.spd-hint .mono { color: var(--text-muted); }
 
 
 .spd-field-error {
   margin-top: -12px;
   margin-bottom: 12px;
-  font-size: 11.5px;
-  color: var(--red);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-danger);
   background: var(--red-soft);
   border: 1px solid color-mix(in srgb, var(--red) 30%, var(--line));
   border-radius: var(--r-sm);
@@ -1069,7 +1059,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .spd-test-connection {
   height: 36px;
   padding: 0 16px;
-  border-radius: 10px;
+  border-radius: var(--r);
   border: 1px solid var(--line);
   background: var(--surface);
   font-size: 12.5px;
@@ -1094,9 +1084,10 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   margin-top: 0;
   margin-bottom: 14px;
   min-height: 18px;
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+  font-weight: 550;
+  color: var(--text-muted);
 }
 
 .spd-connection-status[data-state="success"] {
@@ -1127,11 +1118,24 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .spd-foot { display: flex; align-items: center; gap: 10px; justify-content: flex-end; padding: 13px 22px; border-top: 1px solid var(--line); background: var(--surface-2); }
 
-.spd-cancel { height: 38px; padding: 0 16px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); font-size: 13px; font-weight: 600; color: var(--ink-2); white-space: nowrap; }
+.spd-cancel { height: 38px; padding: 0 16px; border-radius: var(--r); border: 1px solid var(--line); background: var(--surface); font-size: 13px; font-weight: 600; color: var(--ink-2); white-space: nowrap; }
 
 .spd-cancel:hover { background: var(--hover); }
 
-.spd-save { height: 38px; padding: 0 20px; border-radius: 10px; background: var(--btn-gradient); color: var(--btn-ink); font-size: 13px; font-weight: 650; box-shadow: inset 0 1px 0 rgba(255,255,255,0.13); white-space: nowrap; }
+/* 设置弹窗内二级动作按钮（项目管理分区的归档/打开文件夹）——与 .spd-cancel 同一组件语言 */
+.sp-btn {
+  height: 36px; padding: 0 14px; border-radius: var(--r);
+  border: 1px solid var(--line); background: var(--surface);
+  font: inherit; font-size: 12.5px; font-weight: 600; color: var(--ink-2);
+  box-shadow: var(--shadow-xs); cursor: pointer; white-space: nowrap;
+  transition: background .12s, border-color .12s, color .12s;
+}
+
+.sp-btn:hover:not(:disabled) { background: var(--hover); border-color: var(--line-hover); color: var(--ink); }
+
+.sp-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.spd-save { height: 38px; padding: 0 20px; border-radius: var(--r); background: var(--btn-gradient); color: var(--btn-ink); font-size: 13px; font-weight: 650; box-shadow: inset 0 1px 0 rgba(255,255,255,0.13); white-space: nowrap; }
 
 .spd-save:hover { filter: brightness(1.13); }
 
@@ -1175,11 +1179,11 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .reader-head { display: flex; align-items: flex-start; gap: 12px; padding: 18px 20px 14px; border-bottom: 1px solid var(--line); }
 
-.reader-head .path { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.reader-head .path { font-family: var(--mono); font-size: 11.5px; color: var(--text-muted); }
 
-.reader-head h2 { font-size: 19px; letter-spacing: -0.01em; margin-top: 3px; }
+.reader-head h2 { font-size: 19px; letter-spacing: 0; margin-top: 3px; }
 
-.reader-head .sub { font-size: 11.5px; color: var(--faint); font-family: var(--mono); margin-top: 4px; }
+.reader-head .sub { font-size: 11.5px; color: var(--text-muted); font-family: var(--mono); margin-top: 4px; }
 
 .reader-body {
   overflow: auto; padding: 22px 26px 30px;
@@ -1209,9 +1213,9 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .create-card::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 3px; background: linear-gradient(90deg, var(--accent), var(--green)); opacity: .85; }
 
-.create-card .eyebrow { font-size: 11px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+.create-card .eyebrow { font-size: 11px; font-weight: 750; letter-spacing: 0; text-transform: uppercase; color: var(--accent); }
 
-.create-card h2 { font-size: 24px; letter-spacing: -0.02em; }
+.create-card h2 { font-size: 24px; letter-spacing: 0; }
 
 .create-card p.lead { font-size: 13.5px; color: var(--muted); line-height: 1.55; }
 
@@ -1564,11 +1568,11 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .small-button:hover { border-color: var(--accent-line); color: var(--accent); }
 .small-button.promote { background: var(--accent); color: var(--btn-ink); border-color: var(--accent); }
 .spd-toggle { display: flex; align-items: center; justify-content: space-between; }
-.toast.error { background: #7a2622; }
-.toast.error svg { color: #f4b8b2; }
+.toast.error { background: var(--red); color: var(--btn-ink); }
+.toast.error svg { color: var(--btn-ink); }
 .spd-hint.error { color: var(--red); }
 .spd-hint.success { color: var(--green); }
-.spd-section { margin: 18px 0 4px; font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: 0.02em; }
+.spd-section { margin: 18px 0 4px; font-size: 15px; line-height: 1.4; font-weight: 650; color: var(--text-primary); letter-spacing: 0; }
 
 /* ============================================================
    Agent 技能分区（Task 13）：segmented control / 技能行 / 添加菜单
@@ -1608,7 +1612,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .spd-addmenu-pop button:hover { background: var(--hover); color: var(--ink); }
 .spd-skill-heading {
   margin: 12px 0 4px; font-size: 12px; font-weight: 600;
-  color: var(--muted); letter-spacing: 0.02em;
+  color: var(--text-muted); letter-spacing: 0;
 }
 .spd-skill-list .spd-skill-heading:first-child { margin-top: 0; }
 .spd-skill-row {
@@ -1620,7 +1624,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .spd-skill-main { flex: 1 1 auto; min-width: 0; }
 .spd-skill-name { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--ink); }
 .spd-skill-source {
-  font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em;
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0;
   color: var(--accent); background: var(--accent-soft);
   border-radius: 99px; padding: 2px 8px;
 }
@@ -1647,7 +1651,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
    S4.5 Task 14 · 阅读器工具排与沉浸模式
    ============================================================ */
 .reader-tools { display: flex; align-items: center; gap: 4px; flex: none; }
-.reader-tools .icon-btn { font-size: 12px; min-width: 30px; }
+.reader-tools .icon-btn { font-size: 12px; min-width: 32px; height: 32px; }
 .reader-tools .icon-btn:disabled { opacity: .35; cursor: default; }
 .reader.reader--wide { width: min(96vw, 1100px); }
 .reader--wide .reader-head .path, .reader--wide .reader-head .sub { display: none; }
@@ -1674,8 +1678,10 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .sp-list-heading {
   padding: 10px 12px 4px;
   font-size: 11px;
-  letter-spacing: .04em;
-  color: var(--faint);
+  line-height: 1.4;
+  font-weight: 550;
+  letter-spacing: 0;
+  color: var(--text-muted);
 }
 .sp-saved-item {
   display: flex;
@@ -1700,7 +1706,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   height: 24px;
   border: 0;
   background: transparent;
-  color: var(--faint);
+  color: var(--muted);
   border-radius: var(--r-sm);
   cursor: pointer;
   line-height: 1;
