@@ -22,7 +22,7 @@
 //
 // 运行：node scripts/capture-visual-acceptance.cjs --round 1
 // 期望：退出码 0，输出 evidence directory 与 multimodal-review-prompt.md 绝对路径。
-const { app, BrowserWindow } = require("electron");
+const { app, BrowserWindow, nativeImage } = require("electron");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -67,6 +67,10 @@ const CAMPAIGN = "2026-08-07-agent-work-log-markdown-skills";
 // read_skill 的注入延迟：给 tool-after-reasoning 三帧（t000/t400/t900 + 捕获开销）
 // 留足窗口；5s 覆盖约 3.5s 的最坏捕获序列仍有 1.5s 余量。
 const SKILL_READ_DELAY_MS = 5000;
+// agent-text-shimmer 动画周期 1450ms（plan-verbatim，不修改 CSS）。评审 P1-1：
+// 实测亮带只在周期后段进入 13px「思考中」标签的字形内部，且最暗列随 currentTime
+// 单调右移（600→1240ms 区间）；选 680/920/1160ms 使扫光带清晰位于左/中/右。
+const SHIMMER_PHASES_MS = [680, 920, 1160];
 const VIEWPORT_DEFAULT = { width: 1280, height: 800 };
 const VIEWPORT_NARROW = { width: 390, height: 844 };
 const VIEWPORT_MEDIUM = { width: 768, height: 900 };
@@ -415,7 +419,10 @@ const AUDIT_SCRIPT = `(() => {
     if (!el || !el.isConnected) return false;
     const cs = getComputedStyle(el);
     if (cs.display === "none" || cs.visibility === "hidden") return false;
-    return cs.animationName !== "none" && cs.animationPlayState === "running";
+    // playState 接受 paused：评审 P1-1 的确定性采集会用 Web Animations API
+    // pause+seek 把扫光带固定到左/中/右相位；标签仍是 live 目标（agent-live-text
+    // 与 animationName 不变），审计记录保持真实。
+    return cs.animationName !== "none" && (cs.animationPlayState === "running" || cs.animationPlayState === "paused");
   };
   const groups = [...document.querySelectorAll("details.agent-work-group")];
   const openActivityIds = [];
@@ -625,6 +632,17 @@ async function auditAndCapture(win, ctx, spec) {
   const overlap = await checkNoOverlap(win, spec.overlapSelectors);
   const extraResults = spec.extraChecks ? await spec.extraChecks(win) : [];
 
+  // 评审 P1-1：记录 motion 帧的 live label bbox（sweep-direction 检查用）
+  if (spec.sweepPhase != null) {
+    const bbox = await read(win, `(() => {
+      const el = document.querySelector(".agent-work-item__label.agent-live-text");
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)];
+    })()`);
+    ctx.sweepFrames.push({ scenario: spec.scenario, file: spec.file, phase: spec.sweepPhase, bbox });
+  }
+
   const problems = [
     ...pixelCheck.problems,
     ...(overflow ? [overflow] : []),
@@ -721,6 +739,36 @@ const EXTRA_CHECKS = {
       };
     })()`);
     return [{ name: "settings-footer-clearance", pass: result.pass, detail: result.detail }];
+  },
+  // P1-2：Markdown 宽表格的横向滚动容器存在（display:block + overflow-x:auto，
+  // plan Step 5 的 760px 列内滚动方案；正文 overflow-wrap:anywhere 使单元格在列内
+  // 换行、不撑破正文列，因此按评审定义检查「容器存在」而非强制溢出）。
+  markdownTableScroll: async (win) => {
+    const result = await read(win, `(() => {
+      const table = document.querySelector(".agent-markdown table");
+      if (!table) return { pass: false, detail: "未找到 Markdown 表格" };
+      const cs = getComputedStyle(table);
+      const overflowX = cs.overflowX;
+      const scrollContainer = overflowX === "auto" || overflowX === "scroll" || cs.display === "block";
+      return {
+        pass: scrollContainer,
+        detail: "overflowX=" + overflowX + " display=" + cs.display +
+          " scrollWidth=" + table.scrollWidth + " clientWidth=" + table.clientWidth +
+          "（单元格在 760px 列内换行，不撑破正文列）"
+      };
+    })()`);
+    return [{ name: "markdown-table-scroll", pass: result.pass, detail: result.detail }];
+  },
+  // P1-2：任务列表渲染出 [x]（checked）与 [ ]（未勾选）两类状态
+  taskListStates: async (win) => {
+    const result = await read(win, `(() => {
+      const boxes = [...document.querySelectorAll(".agent-markdown input[type=checkbox]")];
+      if (boxes.length === 0) return { pass: false, detail: "未找到任务列表 checkbox" };
+      const checked = boxes.filter((b) => b.checked).length;
+      const unchecked = boxes.length - checked;
+      return { pass: checked >= 1 && unchecked >= 1, detail: "total=" + boxes.length + " checked=" + checked + " unchecked=" + unchecked };
+    })()`);
+    return [{ name: "task-list-states", pass: result.pass, detail: result.detail }];
   }
 };
 
@@ -773,8 +821,9 @@ const REPLY_A = [
   "3. 需要提交时可直接继续对话，我会先走章节质量门禁。"
 ].join("\n");
 
-// 场景 09 的安全 Markdown 样例：H1–H6、正文、strong、链接、blockquote、
-// inline code、fenced code 全部角色，排版紧凑以放进 1440x900 首屏。
+// 场景 09 的安全 Markdown 样例：H1–H6、正文、strong、链接、blockquote、inline code、
+// fenced code，外加（评审 P1-2）多状态任务列表与超 760px 列的宽 GFM 表格（触发横向
+// 滚动）。表格/任务列表在正文底部，由 09b/09c 承载。
 const MARKDOWN_SAMPLE = [
   "# 一级标题",
   "",
@@ -797,7 +846,24 @@ const MARKDOWN_SAMPLE = [
   "```js",
   "const greeting = \"hello\";",
   "console.log(greeting);",
-  "```"
+  "```",
+  "",
+  "## 任务清单",
+  "",
+  "- [x] 已完成：核对章节质量门禁并通过",
+  "- [x] 已完成：提交第一章正式稿",
+  "- [ ] 待办：继续第二章草稿",
+  "- [ ] 待办：审阅连续性记忆并更新",
+  "",
+  "## 章节进度表（宽表格：正文列 760px 封顶，超宽时横向滚动）",
+  "",
+  "| 章节 | 标题 | 状态 | 实际字数 | 门禁结果 | 连续性记忆 | 备注说明（含校验和） |",
+  "|---|---|---|---|---|---|---|",
+  "| 第 1 章 | 老宅的钟声——开场悬念与人物登场的建立 | 已提交 | 3456 | 通过 | 一致 | checkpoint: ckpt-2026-08-07-9f3a2c1e7b4d5a6f8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7 |",
+  "| 第 2 章 | 雨夜访客——人物关系推进与冲突升级的节奏 | 已提交 | 3890 | 通过 | 一致 | sha256: b5e9c8a7d6f504132e8976f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4 |",
+  "| 第 3 章 | 阁楼的旧信——线索回收与真相铺垫的展开 | 草稿中 | 2103 | 待审 | 待确认 | 结尾待补悬念，字数未达最低线，需补写一段收束 |",
+  "| 第 4 章 | 空屋灯火——转折与收束的节奏控制要点 | 未开始 | 0 | — | — | 等待大纲更新后再动笔，避免设定冲突 |",
+  "| 第 5 章 | 黎明之前——终章前的高潮与伏笔收束计划 | 未开始 | 0 | — | — | 计划为下一阶段预留，暂不启动 |"
 ].join("\n");
 
 // ---------------------------------------------------------------------------
@@ -928,6 +994,69 @@ async function scrollConversationToBottom(win) {
   await sleep(250);
 }
 
+// 评审 P1-1：用 Web Animations API 把 agent-text-shimmer 暂停并 seek 到指定相位，
+// 使扫光带确定性地位于标签左/中/右。找不到动画（reduced-motion 等）时返回 0，
+// 由调用方回退时间捕获并记录警告。
+async function seekShimmerPhase(win, ctx, phaseMs) {
+  const paused = await win.webContents.executeJavaScript(`(() => {
+    let count = 0;
+    for (const el of document.querySelectorAll(".agent-work-item__label.agent-live-text")) {
+      if (getComputedStyle(el).animationName !== "agent-text-shimmer") continue;
+      for (const anim of el.getAnimations()) {
+        if (anim.animationName === "agent-text-shimmer") {
+          anim.pause();
+          anim.currentTime = ${phaseMs};
+          count += 1;
+        }
+      }
+    }
+    return count;
+  })()`);
+  if (paused === 0) {
+    ctx.environmentNotes.push(`[warn] seekShimmerPhase(${phaseMs}ms) 未找到 agent-text-shimmer 动画，回退时间捕获`);
+  }
+  win.webContents.invalidate();
+  await sleep(150); // 等合成器应用 seeking 后的帧
+  return paused;
+}
+
+// 评审 P1-1 客观检查：对同一场景的三帧 PNG，在 label bbox 内找最暗列（扫光 ink 带
+// 比 muted 文本更暗），断言最暗列 x 严格递增（t000 < t400 < t900），给出扫光从左向右
+// 的机器证据。返回 { ok, positions }。
+async function checkSweepDirection(ctx, scenario, frames) {
+  const positions = [];
+  for (const frame of frames) {
+    const img = nativeImage.createFromPath(path.join(ctx.roundDir, frame.file));
+    const { width: w, height: h } = img.getSize();
+    const bmp = img.toBitmap();
+    const [left, top, width, height] = frame.bbox;
+    let darkestCol = -1;
+    let darkestVal = 256;
+    for (let x = left; x < left + width && x < w; x += 1) {
+      let colMin = 256;
+      for (let y = top; y < top + height && y < h; y += 1) {
+        const i = (y * w + x) * 4;
+        const lum = 0.3 * bmp[i] + 0.59 * bmp[i + 1] + 0.11 * bmp[i + 2];
+        if (lum < colMin) colMin = lum;
+      }
+      if (colMin < darkestVal) {
+        darkestVal = colMin;
+        darkestCol = x;
+      }
+    }
+    positions.push({ file: frame.file, darkestCol, darkestVal: Math.round(darkestVal) });
+  }
+  const [a, b, c] = positions;
+  const ok = a.darkestCol >= 0 && b.darkestCol >= 0 && c.darkestCol >= 0 &&
+    a.darkestCol < b.darkestCol && b.darkestCol < c.darkestCol && (c.darkestCol - a.darkestCol) >= 2;
+  const summary = positions.map((p) => `${p.file.split("-")[0]}=x${p.darkestCol}(lum${p.darkestVal})`).join(" ");
+  console.log(`  [客观检查] sweep-direction(${scenario}) ${ok ? "PASS" : "FAIL"} — ${summary}`);
+  if (!ok) {
+    throw new Error(`sweep-direction 检查失败（${scenario}）：最暗列未严格递增 — ${JSON.stringify(positions)}`);
+  }
+  return { ok, positions };
+}
+
 async function waitForSettingsSection(win, section) {
   const ok = await (async () => {
     const deadline = Date.now() + 8000;
@@ -979,6 +1108,7 @@ async function main() {
     mainRepo,
     manifest: [],
     checkRows: [],
+    sweepFrames: [],
     auditRecords: {},
     environmentNotes: []
   };
@@ -1090,70 +1220,80 @@ async function main() {
     ]
   ]);
 
-  // ---- 01: reasoning-running（3 帧，单 hold 内间隔捕获）----
+  // ---- 01: reasoning-running（3 帧；评审 P1-1：WAAPI pause+seek 固定扫光相位）----
   console.log("[scenario] 01-reasoning-running");
   await submitViaComposer(win, "请分析项目进度");
   await gateway.controller.waitForHold(20000);
   await waitForReasoningRunning(win);
+  await seekShimmerPhase(win, context, SHIMMER_PHASES_MS[0]); // 左
   await auditAndCapture(win, context, {
     file: "01-reasoning-running-1280x800-t000.png",
     viewport: [1280, 800],
     scenario: "reasoning-running",
     auditKey: "reasoning-running",
-    expected: "工作组展开；reasoning 运行态：label“思考中”+ 扫光动画，摘要最多两行",
+    sweepPhase: 0,
+    expected: "工作组展开；reasoning 运行态：label“思考中”+ 扫光带位于左侧",
     spec: "Task 15 验收矩阵「流式 reasoning」+ Step 5 场景 01",
     overlapSelectors: OVERLAP_SELECTORS.chat
   });
-  await sleep(400);
+  await seekShimmerPhase(win, context, SHIMMER_PHASES_MS[1]); // 中
   await auditAndCapture(win, context, {
     file: "01-reasoning-running-1280x800-t400.png",
     viewport: [1280, 800],
     scenario: "reasoning-running",
-    expected: "同 t000；扫光从左向右移动，文字不位移，容器不跳动",
+    sweepPhase: 1,
+    expected: "扫光带位于中部；文字不位移，容器不跳动",
     spec: "Task 15 Step 5 场景 01 / Step 7 验收第 6 条",
     overlapSelectors: OVERLAP_SELECTORS.chat
   });
-  await sleep(500);
+  await seekShimmerPhase(win, context, SHIMMER_PHASES_MS[2]); // 右
   await auditAndCapture(win, context, {
     file: "01-reasoning-running-1280x800-t900.png",
     viewport: [1280, 800],
     scenario: "reasoning-running",
-    expected: "同 t000；文本按自然片段替换，label“思考中”保持原位",
+    sweepPhase: 2,
+    expected: "扫光带位于右侧；label“思考中”保持原位",
     spec: "Task 15 Step 5 场景 01 / Step 7 验收第 6 条",
     overlapSelectors: OVERLAP_SELECTORS.chat
   });
+  await checkSweepDirection(context, "reasoning-running", context.sweepFrames.filter((f) => f.scenario === "reasoning-running"));
   gateway.controller.release();
 
-  // ---- 02: tool-after-reasoning（read_skill 慢窗口 3s，无需 hold）----
+  // ---- 02: tool-after-reasoning（read_skill 慢窗口 5s；评审 P1-1 同款 seek）----
   console.log("[scenario] 02-tool-after-reasoning");
   await waitForToolRunning(win, "正在调用 read_skill");
+  await seekShimmerPhase(win, context, SHIMMER_PHASES_MS[0]); // 左
   await auditAndCapture(win, context, {
     file: "02-tool-after-reasoning-1280x800-t000.png",
     viewport: [1280, 800],
     scenario: "tool-after-reasoning",
     auditKey: "tool-after-reasoning",
-    expected: "reasoning 已完成（“已完成思考”，无动画）；工具运行态“正在调用 read_skill”+ 扫光，唯一动效",
+    sweepPhase: 0,
+    expected: "reasoning 已完成（“已完成思考”，无动画）；工具运行态“正在调用 read_skill”+ 扫光带位于左侧，唯一动效",
     spec: "Task 15 Step 5 场景 02 / Step 6 动效唯一性",
     overlapSelectors: OVERLAP_SELECTORS.chat
   });
-  await sleep(400);
+  await seekShimmerPhase(win, context, SHIMMER_PHASES_MS[1]); // 中
   await auditAndCapture(win, context, {
     file: "02-tool-after-reasoning-1280x800-t400.png",
     viewport: [1280, 800],
     scenario: "tool-after-reasoning",
-    expected: "同 t000；工具扫光移动，reasoning 完成态不动",
+    sweepPhase: 1,
+    expected: "扫光带位于中部；reasoning 完成态不动",
     spec: "Task 15 Step 7 验收第 6 条",
     overlapSelectors: OVERLAP_SELECTORS.chat
   });
-  await sleep(500);
+  await seekShimmerPhase(win, context, SHIMMER_PHASES_MS[2]); // 右
   await auditAndCapture(win, context, {
     file: "02-tool-after-reasoning-1280x800-t900.png",
     viewport: [1280, 800],
     scenario: "tool-after-reasoning",
-    expected: "同 t000；工具扫光移动，reasoning 完成态不动",
+    sweepPhase: 2,
+    expected: "扫光带位于右侧；reasoning 完成态不动",
     spec: "Task 15 Step 7 验收第 6 条",
     overlapSelectors: OVERLAP_SELECTORS.chat
   });
+  await checkSweepDirection(context, "tool-after-reasoning", context.sweepFrames.filter((f) => f.scenario === "tool-after-reasoning"));
 
   // ---- 03/03b: 计划（三态 1/3 → 2/3）----
   console.log("[scenario] 03-plan-updated");
@@ -1249,7 +1389,8 @@ async function main() {
       h4: ".agent-markdown h4", h5: ".agent-markdown h5", h6: ".agent-markdown h6",
       strong: ".agent-markdown strong", links: '.agent-markdown a[data-external-link]',
       blockquote: ".agent-markdown blockquote", inlineCode: ".agent-markdown code",
-      fence: ".agent-markdown pre.md-fence", body: ".agent-markdown p"
+      fence: ".agent-markdown pre.md-fence", body: ".agent-markdown p",
+      table: ".agent-markdown table", taskCheckbox: '.agent-markdown input[type=checkbox]'
     };
     const counts = {};
     for (const [key, sel] of Object.entries(roles)) {
@@ -1263,9 +1404,11 @@ async function main() {
   assert.ok(markdownRoles.body >= 1, `正文段落缺失: ${JSON.stringify(markdownRoles)}`);
   assert.ok(markdownRoles.strong >= 1 && markdownRoles.links >= 1 && markdownRoles.blockquote >= 1, `strong/链接/引用缺失: ${JSON.stringify(markdownRoles)}`);
   assert.ok(markdownRoles.inlineCode >= 1 && markdownRoles.fence >= 1, `inline code/fenced code 缺失: ${JSON.stringify(markdownRoles)}`);
+  assert.ok(markdownRoles.table >= 1, `Markdown 表格缺失: ${JSON.stringify(markdownRoles)}`);
+  assert.ok(markdownRoles.taskCheckbox >= 2, `任务列表 checkbox 缺失: ${JSON.stringify(markdownRoles)}`);
   assert.equal(gateway.controller.state.callLog.some((call) => call.result === "default"), false, `gateway 出现默认答复（步骤队列错位）: ${JSON.stringify(gateway.controller.state.callLog)}`);
   delete markdownRoles._bubbles;
-  console.log(`  ✓ Markdown 角色齐备: ${JSON.stringify(markdownRoles)}`);
+  console.log(`  ✓ Markdown 角色齐备（含表格/任务列表）: ${JSON.stringify(markdownRoles)}`);
   await scrollConversationToBottom(win);
 
   // ---- 06: 设置页 Agent 技能（1280x800）----
@@ -1338,20 +1481,28 @@ async function main() {
     expect: async () => !(await overlayVisible(win, "settings-scrim"))
   });
 
-  // ---- 09: 宽屏 1440x900（Markdown 全部角色）----
+  // ---- 09: 宽屏 1440x900（Markdown 全部角色；评审 P1-2 增补表格/任务列表）----
+  // 正文样例变长后一屏放不下全部角色：09 拍 H1-H6 等首段角色，09b 拍表格+任务列表
+  //（1440x900），09c 拍同一表格的窄视口（390x844）行为。全部写入 MANIFEST。
   console.log("[scenario] 09-chat-wide");
   await setViewport(win, VIEWPORT_WIDE.width, VIEWPORT_WIDE.height);
-  await scrollConversationToBottom(win);
+  // 滚动到 Markdown 消息顶部（H1 开头），09 覆盖 H1-H6 等首段角色
+  await win.webContents.executeJavaScript(`(() => {
+    const h1 = document.querySelector(".agent-message--assistant .agent-markdown h1");
+    if (h1) h1.scrollIntoView({ block: "start" });
+    return true;
+  })()`);
+  await sleep(300);
   await auditAndCapture(win, context, {
     file: "09-chat-wide-1440x900.png",
     viewport: [1440, 900],
     scenario: "chat-wide",
-    expected: "1440x900 宽屏：H1-H6、正文、strong、链接、blockquote、inline code、fenced code 全部可见且排版完整",
+    expected: "1440x900 宽屏：H1-H6、正文、strong、链接、blockquote、inline code、fenced code 可见且排版完整",
     spec: "Task 15 Step 5 场景 09 / Step 7 验收第 3、8 条",
     overlapSelectors: OVERLAP_SELECTORS.chat
   });
 
-  // 确认 09 截图里所有文字角色都在视口内（不可见时追加带序号 PNG）
+  // 09 首段角色可见性校验（H1-H6 等必须在视口内；表格/任务列表由 09b/09c 覆盖）
   const visibleRoles = await read(win, `(() => {
     const bubble = [...document.querySelectorAll(".agent-message--assistant .agent-markdown")].at(-1);
     if (!bubble) return { missing: ["bubble"] };
@@ -1371,23 +1522,49 @@ async function main() {
     }
     return { missing };
   })()`);
-  if (visibleRoles.missing.length > 0) {
-    await win.webContents.executeJavaScript(`(() => {
-      const conv = document.querySelector('[data-testid="agent-conversation"]');
-      if (conv) conv.scrollTop = conv.scrollHeight;
-      return true;
-    })()`);
-    await sleep(300);
-    await auditAndCapture(win, context, {
-      file: "09b-chat-wide-markdown-rest-1440x900.png",
-      viewport: [1440, 900],
-      scenario: "chat-wide",
-      expected: `09 未全部落入首屏的 Markdown 角色补拍：${visibleRoles.missing.join("、")}`,
-      spec: "Task 15 Step 5 场景 09（视口放不下时允许追加带序号 PNG）",
-      overlapSelectors: OVERLAP_SELECTORS.chat
-    });
-    console.log(`  [note] 09 首屏缺少角色，追加 09b 补拍: ${visibleRoles.missing.join("、")}`);
-  }
+  assert.deepEqual(visibleRoles.missing, [], `09 首屏 Markdown 角色缺失: ${JSON.stringify(visibleRoles.missing)}`);
+
+  // 09b：滚动到表格，拍表格 + 任务列表（1440x900），带两项客观检查
+  await win.webContents.executeJavaScript(`(() => {
+    const table = document.querySelector(".agent-message--assistant .agent-markdown table");
+    if (table) table.scrollIntoView({ block: "start" });
+    return true;
+  })()`);
+  await sleep(300);
+  const markdownChecks = async (w) => {
+    const out = [];
+    out.push(...(await EXTRA_CHECKS.markdownTableScroll(w)));
+    out.push(...(await EXTRA_CHECKS.taskListStates(w)));
+    return out;
+  };
+  await auditAndCapture(win, context, {
+    file: "09b-chat-wide-markdown-1440x900.png",
+    viewport: [1440, 900],
+    scenario: "chat-wide-table",
+    expected: "1440x900：Markdown 任务列表（[x]/[ ]）与宽表格（超 760px 列，横向滚动容器）",
+    spec: "Task 15 Step 5 场景 09（追加带序号 PNG）/ 验收矩阵「Markdown」",
+    overlapSelectors: OVERLAP_SELECTORS.chat,
+    extraChecks: markdownChecks
+  });
+
+  // 09c：窄视口 390x844 拍同一表格（验证窄屏表格横向滚动/760px 约束）
+  console.log("[scenario] 09c-chat-table-narrow");
+  await setViewport(win, VIEWPORT_NARROW.width, VIEWPORT_NARROW.height);
+  await win.webContents.executeJavaScript(`(() => {
+    const table = document.querySelector(".agent-message--assistant .agent-markdown table");
+    if (table) table.scrollIntoView({ block: "start" });
+    return true;
+  })()`);
+  await sleep(300);
+  await auditAndCapture(win, context, {
+    file: "09c-chat-table-narrow-390x844.png",
+    viewport: [390, 844],
+    scenario: "chat-table-narrow",
+    expected: "390x844 窄视口：宽 Markdown 表格横向滚动、任务列表不遮挡/不溢出",
+    spec: "Task 15 Step 5 场景 09（窄视口补拍）/ Step 7 验收第 4 条",
+    overlapSelectors: OVERLAP_SELECTORS.chat,
+    extraChecks: markdownChecks
+  });
 
   // ---- 页面 console 残留检查（模块加载错误会留下 MIME/解析错误）----
   for (const message of consoleMessages) {
@@ -1436,7 +1613,9 @@ async function main() {
     "06-settings-agent-skills-1280x800.png",
     "07-chat-narrow-390x844.png",
     "08-settings-medium-768x900.png",
-    "09-chat-wide-1440x900.png"
+    "09-chat-wide-1440x900.png",
+    "09b-chat-wide-markdown-1440x900.png",
+    "09c-chat-table-narrow-390x844.png"
   ];
   for (const file of expectedFiles) {
     const target = path.join(roundDir, file);
@@ -1509,6 +1688,11 @@ function renderManifest(context, { startedAt, projectRoot, auditRecords }) {
     "- `reasoning-detail-scroll`（05）：展开的 reasoning 详情 `scrollHeight > clientHeight`，证明 320px 限高内层滚动区真实存在。",
     "- `panel-button-single-line`（07）：390 窄屏顶栏「面板」按钮单行显示（`scrollHeight ≤ clientHeight` 且 `scrollWidth ≤ clientWidth`），不拆行。",
     "- `settings-footer-clearance`（08）：768x900 设置技能列表滚到底后，最后一行与固定操作栏 `.spd-foot` bbox 不相交，且完整位于滚动视口内。",
+    "- `sweep-direction`（01/02，评审 P1-1）：三帧 PNG 中 label bbox 内的最暗列（扫光 ink 带）x 坐标严格递增（t000 < t400 < t900），机器证明扫光从左向右；相位由 Web Animations API pause+seek 固定（680/920/1160ms，1450ms 周期）。",
+    "- `markdown-table-scroll`（09b/09c，评审 P1-2）：Markdown 表格的横向滚动容器存在（`overflow-x: auto` + `display:block`，plan Step 5 方案）；单元格在 760px 正文列内换行、不撑破列。",
+    "- `task-list-states`（09b/09c，评审 P1-2）：任务列表同时渲染 checked 与未勾选 checkbox（[x]/[ ] 两态）。",
+    "",
+    "评审补拍说明：09b-chat-wide-markdown-1440x900.png 与 09c-chat-table-narrow-390x844.png 为同场景追加带序号 PNG（计划 §Step 5 允许；不得省略需验收的文字角色，全部写入 MANIFEST）。",
     "",
     "## 动效唯一性审计（live-indicator-audit.json）",
     "",
