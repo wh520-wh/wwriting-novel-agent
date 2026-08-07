@@ -105,6 +105,7 @@ export function createDrawerPanels(ctx) {
     row.className = `chrow ${done ? "completed" : "todo"}`;
     row.type = "button";
     row.disabled = !done;
+    row.title = chapter.title || (done ? "已定稿章节" : "待生成");
     const n = document.createElement("span");
     n.className = "ch-n mono";
     n.textContent = String(chapter.chapter_no).padStart(2, "0");

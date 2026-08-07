@@ -481,9 +481,13 @@ export function createSettingsModal(ctx, options = {}) {
     addBtn.className = "small-button";
     addBtn.id = "skills-add";
     addBtn.textContent = "添加技能";
+    addBtn.setAttribute("aria-haspopup", "menu");
+    addBtn.setAttribute("aria-expanded", "false");
+    const syncAddMenuAria = () => addBtn.setAttribute("aria-expanded", addWrap.classList.contains("open") ? "true" : "false");
     addBtn.addEventListener("click", () => {
       const open = !addWrap.classList.contains("open");
       addWrap.classList.toggle("open", open);
+      syncAddMenuAria();
     });
     const addMenu = document.createElement("div");
     addMenu.className = "spd-addmenu-pop";
@@ -493,6 +497,7 @@ export function createSettingsModal(ctx, options = {}) {
     folderOpt.textContent = "从文件夹导入…";
     folderOpt.addEventListener("click", () => {
       addWrap.classList.remove("open");
+      syncAddMenuAria();
       void addSkillFromFolder();
     });
     const zipOpt = document.createElement("button");
@@ -501,6 +506,7 @@ export function createSettingsModal(ctx, options = {}) {
     zipOpt.textContent = "从 ZIP 包导入…";
     zipOpt.addEventListener("click", () => {
       addWrap.classList.remove("open");
+      syncAddMenuAria();
       void addSkillFromZip();
     });
     addMenu.append(folderOpt, zipOpt);

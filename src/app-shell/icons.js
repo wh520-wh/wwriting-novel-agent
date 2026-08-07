@@ -28,6 +28,7 @@ export function icon(name, size = 16, cls, doc = globalThis.document) {
   svg.setAttribute("fill", "none");
   svg.setAttribute("stroke", "currentColor");
   svg.setAttribute("stroke-width", "1.7");
+  svg.setAttribute("aria-hidden", "true");
   svg.setAttribute("stroke-linecap", "round");
   svg.setAttribute("stroke-linejoin", "round");
   if (cls) svg.setAttribute("class", cls);
