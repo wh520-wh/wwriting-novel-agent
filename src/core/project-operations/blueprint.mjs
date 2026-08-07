@@ -4,6 +4,12 @@
 // 一致提交。Agent runtime 只编排（init workflow 的模型生成职责属于 ProjectAgent，
 // 本模块只做三文件确定性提交）。
 //
+// Task 7 状态：/init 已改为维护 WWRITING.md（不生成固定蓝图、不要求 commit_blueprint），
+// 本模块按 KEEP-for-legacy 分支保留——旧显式 chapter/legacy 流程兼容、review.mjs
+// 的 BLUEPRINT_PLACEHOLDER 引用与 project-store/legacy-import 的 blueprint_status
+// 字段仍依赖它；它不再是新工作区 /init 的必经路径。若后续任务删除全部生产引用
+// （review.mjs 删除后），可连同 deep 工具注册一并移除本模块。
+//
 // 边界：
 //   - 不接收 ModelGateway、不调用模型。
 //   - 不读写旧 agent_state 状态文件；blueprint_status 的真相源是 project.yaml

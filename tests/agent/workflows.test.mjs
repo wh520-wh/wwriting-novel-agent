@@ -5,7 +5,8 @@
 //   - 四个政策记录（general/chapter/init/review）的固定形状
 //   - promptId 与 prompt.mjs WORKFLOW_POLICIES 键一一对应
 //   - allowedDeepTools：chapter 允许 append_chapter_segment/commit_chapter，
-//     init 允许 commit_blueprint，review 无任何提交/追加深工具，general 无领域深工具
+//     init 只允许 update_plan/enter_workflow（Task 7：不再暴露 commit_blueprint），
+//     review 无任何提交/追加深工具，general 无领域深工具
 //   - 嵌套拒绝（canEnterWorkflow）：general 可进任意工作流；深→深只认可
 //     review→chapter 修复路径；同工作流空切换拒绝
 //   - 章节号解析（中英文数字）
@@ -55,10 +56,16 @@ test("allowedDeepTools：各工作流只暴露自己的领域深工具", () => {
   assert.ok(allowed("chapter").has("append_chapter_segment"));
   assert.ok(allowed("chapter").has("commit_chapter"));
   assert.ok(!allowed("chapter").has("commit_blueprint"));
-  // init：允许蓝图提交，但不得直接写/提交章节正文
-  assert.ok(allowed("init").has("commit_blueprint"));
+  // init（Task 7）：/init 维护 WWRITING.md，只暴露 update_plan/enter_workflow；
+  // 不得暴露 commit_blueprint，也不得直接写/提交章节正文
+  assert.ok(!allowed("init").has("commit_blueprint"), "init 不得再暴露 commit_blueprint");
   assert.ok(!allowed("init").has("append_chapter_segment"));
   assert.ok(!allowed("init").has("commit_chapter"));
+  assert.deepEqual(
+    [...allowed("init")].sort(),
+    ["enter_workflow", "update_plan"],
+    "init 只允许计划与工作流切换"
+  );
   // review：只读审查，无任何提交/追加深工具
   for (const toolName of ["append_chapter_segment", "commit_chapter", "commit_blueprint"]) {
     assert.ok(!allowed("review").has(toolName), `review 不得允许 ${toolName}`);
@@ -229,4 +236,33 @@ test("运行时再次强制工作流工具授权：general 不能直接调用 co
   assert.equal(completed.length, 0);
   assert.equal(failed.length, 1);
   assert.equal(failed[0].payload.error, "tool_not_allowed");
+});
+
+test("init 工作流也不再暴露 commit_blueprint：运行层拒绝且不写蓝图文件", async (t) => {
+  const h = await createProjectAgentHarness({
+    gatewayScript: [
+      { reply: { toolCalls: [{ id: "call_ew_init", name: "enter_workflow", arguments: { workflow: "init", reason: "/init" } }] } },
+      { reply: { toolCalls: [{ id: "call_init_blueprint", name: "commit_blueprint", arguments: {
+        project_id: "placeholder",
+        outline: "# 不应提交",
+        setting: "不应写入",
+        evidence_paths: []
+      } }] } },
+      { reply: { text: "已继续处理。" } }
+    ]
+  });
+  t.after(() => h.cleanup());
+  await h.agent.open({ projectRoot: h.projectRoot });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "/init", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const snap = await h.agent.snapshot({ projectRoot: h.projectRoot, afterSeq: 0, limit: 100000 });
+  const completed = eventsOfType(snap.events, "tool_call_completed")
+    .filter((event) => event.payload.name === "commit_blueprint");
+  const failed = eventsOfType(snap.events, "tool_call_failed")
+    .filter((event) => event.payload.name === "commit_blueprint");
+  assert.equal(completed.length, 0, "init 工作流中 commit_blueprint 不得完成");
+  assert.equal(failed.length, 1, "init 工作流中 commit_blueprint 必须被拒绝");
+  assert.equal(failed[0].payload.error, "tool_not_allowed");
+  assert.equal(eventsOfType(snap.events, "workflow_changed").length, 1, "应进入 init 工作流");
+  assert.equal(eventsOfType(snap.events, "run_completed").length, 1, "拒绝后 Run 正常完成");
 });

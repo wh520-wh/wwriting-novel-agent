@@ -101,8 +101,12 @@ export const WORKFLOW_POLICY_RECORDS = Object.freeze({
 
   init: Object.freeze({
     promptId: "init",
-    allowedDeepTools: Object.freeze(["update_plan", "enter_workflow", "commit_blueprint"]),
-    // init 政策要求模型自主决定读取顺序，不预先注入项目文件内容
+    // Task 7：/init 是维护 WWRITING.md 的普通请求；只暴露计划与工作流切换，
+    // 不暴露/要求 commit_blueprint（旧蓝图一致提交仅供 legacy 兼容，已从所有
+    // 工作流默认工具集移除）。模型用通用文件工具（list_files/read_file/
+    // write_file）创建或谨慎更新 WWRITING.md。
+    allowedDeepTools: Object.freeze(["update_plan", "enter_workflow"]),
+    // init 政策要求模型先检查现有记忆和真实文件，不预先注入项目文件内容
     contextSelector: async () => [],
     completionEvaluator: defaultCompletionEvaluator
   }),
