@@ -33,7 +33,8 @@ import { runShellCommand } from "./shell/runtime.mjs";
 import { CostTracker } from "./cost-tracker.mjs";
 import { isPathInside, safeJoin } from "./fs-utils.mjs";
 import { applyLocalSecretsToEnv, defaultSecretsRoot, loadLocalSecretsSync } from "./local-secrets.mjs";
-import { loadProject } from "./project-store.mjs";
+import { loadEffectiveWorkspaceConfig } from "./config-runtime.mjs";
+import { getDefaultLocalModelProfile } from "./local-model-profiles.mjs";
 import { testModelConnection as runModelConnectionTest } from "./model-connection-test.mjs";
 import { loadDashboardData } from "./app-dashboard.mjs";
 
@@ -83,7 +84,12 @@ export function createAppShellServer({
   );
 
   const projectLocks = createProjectLockRegistry();
-  const modelGateway = createAppModelGateway();
+  // 任务 5：组合根统一的有效工作区配置解析（应用私有 settings 优先 + 旧 project.yaml
+  // 只读兼容输入 + 全局默认模型兜底）。Runtime 每模型轮调用（不缓存整份配置），
+  // gateway adapter 每次模型调用调用——模型/权限切换在下一轮自然生效。
+  const resolveEffectiveConfig = (projectRoot) =>
+    effectiveWorkspaceConfigFor(projectRoot, { workspaceStore, secretsRoot: localSecretsRoot });
+  const modelGateway = createAppModelGateway({ resolveEffectiveConfig });
   // Task 15：gatewayFactory 注入点。缺省走默认 per-project ModelGateway 组装
   //（含 CostTracker/cost.json 记账）；testGatewayFactory 注入时整个替换。
   const gatewayFactory =
@@ -94,13 +100,15 @@ export function createAppShellServer({
   // ProjectAgent：唯一 Agent seam。shell 接真实 Shell 运行时；每个项目持有独立
   // gateway（per-project 成本记账），provider 适配按请求 modelConfig 分发。
   // 计划 Task 3/4：journal 落应用私有 storageRoot（workspaceStore.agentRootFor），
-  // 绝不写回项目内 .wwriting/agent。
+  // 绝不写回项目内 .wwriting/agent。Task 5：模型/权限配置经 resolveEffectiveConfig
+  // 注入 runtime，每轮读取（不再缓存整份配置）。
   const agent = createProjectAgent({
     gatewayFactory,
     shell: runShellCommand,
     projectLocks,
     secrets,
     agentStorageRootFor: (projectRoot) => workspaceStore.agentRootFor(projectRoot),
+    workspaceConfigLoader: resolveEffectiveConfig,
     ...(skills ? { skills } : {})
   });
 
@@ -189,7 +197,27 @@ export function createAppShellServer({
 // ModelGateway 组装：provider 分发 adapter + per-project gateway/cost tracker
 // ---------------------------------------------------------------------------
 
-function createAppModelGateway() {
+// 任务 5 Step 4：有效工作区配置 + 全局默认模型兜底。
+//
+// 普通目录没有 project.yaml 时，不能因为缺旧文件就回落 mock——只要用户确实配置了
+// 全局默认模型（model-profiles.json 的 default_model_id），就走全局默认模型；只有
+// 用户完全没有配置任何模型时才走 mock。全局默认模型的兜底同时注入 Runtime 的
+// workspaceConfigLoader 与 gateway adapter，保证 request.modelConfig 与 adapter 的
+// provider 分发一致（openai-compatible adapter 从 request.modelConfig 取
+// base_url/model_name，二者不一致会导致配置错误）。
+async function effectiveWorkspaceConfigFor(projectRoot, { workspaceStore, secretsRoot }) {
+  const effective = await loadEffectiveWorkspaceConfig(projectRoot, { workspaceStore });
+  if (!effective.active_model || typeof effective.active_model.provider !== "string") {
+    const profile = await getDefaultLocalModelProfile(secretsRoot);
+    if (profile) {
+      const { id: _id, saved_at: _saved, ...fields } = profile;
+      effective.active_model = fields;
+    }
+  }
+  return effective;
+}
+
+function createAppModelGateway({ resolveEffectiveConfig }) {
   const mockAdapter = createMockAdapter();
   const entries = new Map(); // projectRoot -> { gateway, costTracker, lastWrittenCalls }
 
@@ -201,26 +229,23 @@ function createAppModelGateway() {
       const summary = readJsonSyncSafe(safeJoin(key, "cost.json"));
       const costTracker = new CostTracker({ summary });
       // 每项目一个 provider 分发 adapter：runtime 请求虽然携带每轮 fresh 的
-      // modelConfig（runtime.mjs modelConfigOf），但这里仍每次重读项目当前
-      // active_model 决定 provider 与 adapter 参数——运行中切换模型后下一次调用
-      // 自然走新配置（组合根职责，长驻服务器语义）。
-      //
-      // 与 scripts/rebuild-memory.mjs 的 dispatchAdapter 语义对比（Task 9 评审）：
-      // 那里直接读 request.modelConfig.provider——对一次性 CLI 足够且更贴近该次
-      // 调用的配置快照；这里重读 project.yaml 是为长驻服务器提供「切换模型立即
-      // 生效」的组合根语义。两处各自正确，不抽公共 helper。
+      // modelConfig（runtime.mjs modelConfigOf），但这里仍每次重读有效工作区配置
+      // 决定 provider 与 adapter 参数——运行中切换模型后下一次调用自然走新配置
+      //（组合根职责，长驻服务器语义）。任务 5：有效配置 = 应用私有 settings 优先
+      // + 旧 project.yaml 只读兼容 + 全局默认模型兜底；不再直接读 project.yaml。
       const dispatchAdapter = {
         async complete(request, { signal } = {}) {
-          let provider = "mock";
-          let active = {};
+          let active = null;
           try {
-            const project = await loadProject(key);
-            active = project?.active_model ?? {};
-            provider = typeof active.provider === "string" ? active.provider : "mock";
+            const effective = await resolveEffectiveConfig(key);
+            active = effective.active_model && typeof effective.active_model.provider === "string"
+              ? effective.active_model
+              : null;
           } catch {
-            // project.yaml 读取失败：回落 mock（与旧 mock 兜底语义一致）
-            provider = "mock";
+            // 有效配置读取失败：回落 mock（与旧 mock 兜底语义一致）
+            active = null;
           }
+          const provider = typeof active?.provider === "string" ? active.provider : "mock";
           if (provider === "openai-compatible") {
             const adapter = new OpenAICompatibleAdapter({
               baseUrl: active.base_url,

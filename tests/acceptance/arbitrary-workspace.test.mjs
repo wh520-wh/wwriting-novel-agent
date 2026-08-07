@@ -156,3 +156,49 @@ test("空目录无需 project.yaml 即可发送第一条消息，journal 只写 
   assert.equal(await pathExists(path.join(projectRoot, ".wwriting", "agent")), false);
   assert.equal(await containsWorkspaceJournal(stateRoot), true);
 });
+
+// 任务 5：普通目录的模型配置从 project.yaml 解耦。切换模型写入应用私有 settings，
+// 下一模型轮的 request.modelConfig 必须是所选模型；project.yaml 绝不创建。
+test("普通目录模型切换后，模型请求 modelConfig 是所选模型且不创建 project.yaml", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-plain-model-"));
+  const projectRoot = path.join(root, "普通文件夹");
+  const stateRoot = path.join(root, "user-data");
+  await fs.mkdir(projectRoot, { recursive: true });
+
+  const captured = [];
+  const app = await startArbitraryWorkspaceServer(t, {
+    projectRoot,
+    stateRoot,
+    gatewayScript: [
+      (request) => {
+        captured.push(request.modelConfig);
+        return { text: "收到，用所选模型回复。" };
+      }
+    ]
+  });
+  const opened = await app.post("/api/projects/open", { projectRoot });
+  assert.equal(opened.res.status, 200);
+  // 先保存一个全局模型，再把它切给普通工作区
+  const saved = await app.post("/api/settings/model-profile", {
+    active_model: {
+      provider: "openai-compatible",
+      model_name: "deepseek-chat",
+      base_url: "https://api.deepseek.com",
+      api_key_env: "DEEPSEEK_API_KEY",
+      api_key: "sk-test-abc"
+    }
+  });
+  assert.equal(saved.res.status, 200);
+  const switched = await app.post("/api/settings/model-switch", {
+    projectRoot,
+    model_id: "deepseek-chat"
+  });
+  assert.equal(switched.res.status, 200);
+  const sent = await app.post("/api/agent/input", { projectRoot, text: "你好" });
+  assert.equal(sent.res.status, 200);
+  await app.waitForIdle(projectRoot);
+
+  assert.equal(captured.length, 1, "普通目录模型请求应恰好发生一次");
+  assert.equal(captured[0].model_name, "deepseek-chat");
+  assert.equal(await pathExists(path.join(projectRoot, "project.yaml")), false);
+});

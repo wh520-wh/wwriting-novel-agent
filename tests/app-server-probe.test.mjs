@@ -12,6 +12,7 @@ import path from "node:path";
 import test from "node:test";
 import { createAppShellServer } from "../src/core/app-server.mjs";
 import { loadProject, saveProject } from "../src/core/project-store.mjs";
+import { createWorkspaceStore } from "../src/core/workspaces/store.mjs";
 
 const FETCH_BLOCKED_PORTS = new Set([
   1, 7, 9, 11, 13, 15, 17, 19, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79,
@@ -481,8 +482,8 @@ test("全局模型保存/选用/删除与连接测试注入", async () => {
   }
 });
 
-test("模型切换写 project.yaml 并带能力信息", async () => {
-  const { projectRoot, server, port } = await setupServer();
+test("模型切换写应用私有 settings 并带能力信息", async () => {
+  const { root, projectRoot, server, port } = await setupServer();
   try {
     await postJson(port, "/api/settings/model-profile", {
       active_model: {
@@ -497,8 +498,12 @@ test("模型切换写 project.yaml 并带能力信息", async () => {
     assert.equal(switched.res.status, 200);
     assert.equal(switched.data.project.active_model.model_name, "writer-large");
     assert.ok(switched.data.capabilities);
+    // 任务 5：模型写入应用私有 workspace settings；project.yaml 不再双写（保留为回滚依据）
+    const store = createWorkspaceStore({ stateRoot: path.join(root, ".state") });
+    const settings = await store.loadSettings(projectRoot);
+    assert.equal(settings.active_model.model_name, "writer-large");
     const project = await loadProject(projectRoot);
-    assert.equal(project.active_model.model_name, "writer-large");
+    assert.notEqual(project.active_model.model_name, "writer-large", "project.yaml 保留为回滚依据，不被改写");
   } finally {
     await closeServer(server);
   }

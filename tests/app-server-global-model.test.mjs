@@ -8,6 +8,16 @@ import { loadLocalSecrets } from "../src/core/local-secrets.mjs";
 import { loadLocalModelProfiles, upsertLocalModelProfile } from "../src/core/local-model-profiles.mjs";
 import { createProject, loadProject, saveProject } from "../src/core/project-store.mjs";
 import { registerProviderCapabilityResolver } from "../src/core/model/capabilities.mjs";
+import { createWorkspaceStore } from "../src/core/workspaces/store.mjs";
+
+async function pathExists(target) {
+  try {
+    await fs.access(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const FETCH_BLOCKED_PORTS = new Set([
   1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79,
@@ -74,6 +84,27 @@ async function setupServerWithProject(options = {}) {
   });
   const port = await listenOnFetchSafePort(server);
   return { root, projectRoot, secretsRoot, server, port };
+}
+
+// 普通文件夹（无 project.yaml）的模型配置工作区：打开即选中，预存一个全局模型
+// 供 model-switch 选用（任务 5 Step 1 测试基建）。
+async function setupPlainWorkspace() {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-plain-"));
+  const projectRoot = path.join(root, "plain-workspace");
+  const stateRoot = path.join(root, ".state");
+  const secretsRoot = path.join(root, ".secrets");
+  await fs.mkdir(projectRoot, { recursive: true });
+  const server = createAppShellServer({
+    workspaceRoot: root,
+    selectedProjectRoot: projectRoot,
+    stateRoot,
+    secretsRoot,
+    port: 0
+  });
+  const port = await listenOnFetchSafePort(server);
+  // 先保存一个全局模型（deepseek-chat 成为默认），model-switch 才能选中它。
+  await post(port, "/api/settings/model-profile", { active_model: SAMPLE_MODEL });
+  return { root, projectRoot, stateRoot, secretsRoot, server, port };
 }
 
 async function post(port, pathname, body) {
@@ -307,9 +338,13 @@ test("建项目后随时换模型：切换后项目用清单里的另一个模�
       model_id: "deepseek-chat"
     });
     assert.equal(switched.status, 200);
-    const after = await loadProject(target);
-    assert.equal(after.active_model.model_name, "deepseek-chat");
-    assert.equal(after.active_model.base_url, "https://api.deepseek.com");
+    // 模型写入应用私有 workspace settings；project.yaml 不再双写（保留原值）
+    const store = createWorkspaceStore({ stateRoot: path.join(root, ".state") });
+    const settings = await store.loadSettings(target);
+    assert.equal(settings.active_model.model_name, "deepseek-chat");
+    assert.equal(settings.active_model.base_url, "https://api.deepseek.com");
+    const legacy = await loadProject(target);
+    assert.equal(legacy.active_model.model_name, "mimo-v1", "project.yaml 保留为回滚依据，不被改写");
     // 响应里的清单完整：两个模型都在
     assert.equal(switched.json.available_models.length, 2);
   } finally {
@@ -353,12 +388,13 @@ test("切换模型保留温度配置：project.yaml 与全局清单 temperature 
       model_id: "deepseek-chat"
     });
     assert.equal(switched.status, 200);
-    // project.yaml：active_model.temperature 保留
-    const after = await loadProject(target);
-    assert.equal(after.active_model.temperature, 0.7);
+    // 应用私有 workspace settings：active_model.temperature 保留
+    const store = createWorkspaceStore({ stateRoot: path.join(root, ".state") });
+    const settings = await store.loadSettings(target);
+    assert.equal(settings.active_model.temperature, 0.7);
     // 全局 model-profiles.json：对应条目 temperature 保留（不被整条替换剥掉）
-    const store = await loadLocalModelProfiles(secretsRoot);
-    assert.equal(store.models.find((m) => m.id === "deepseek-chat").temperature, 0.7);
+    const globalStore = await loadLocalModelProfiles(secretsRoot);
+    assert.equal(globalStore.models.find((m) => m.id === "deepseek-chat").temperature, 0.7);
   } finally {
     await closeServer(server);
   }
@@ -408,7 +444,7 @@ test("切换模型响应带 capabilities 与 conflicts", async () => {
     (c) => String(c.base_url ?? "").includes("no-temp.example"),
     () => ({ supportsTemperature: false })
   );
-  const { projectRoot, secretsRoot, server, port } = await setupServerWithProject();
+  const { root, projectRoot, secretsRoot, server, port } = await setupServerWithProject();
   try {
     // 项目 active_model 原配置 temperature：模拟「项目已配置温度」（Task 1 后温度随
     // 全局保存 → 项目同步存在于 active_model.temperature）
@@ -435,9 +471,10 @@ test("切换模型响应带 capabilities 与 conflicts", async () => {
     // 只缺温度能力，工具/流式仍在：C 档校验不拦这类模型（B 档只告知不阻止）
     assert.equal(json.capabilities.supportsTools, true);
     assert.deepEqual(json.conflicts, ["该模型不支持温度设置，写作温度不会生效。"]);
-    // 切换落盘完成：项目已指向 no-temp 模型
-    const after = await loadProject(projectRoot);
-    assert.equal(after.active_model.model_name, "no-temp");
+    // 切换落盘完成：应用私有 workspace settings 已指向 no-temp 模型
+    const store = createWorkspaceStore({ stateRoot: path.join(root, ".state") });
+    const settings = await store.loadSettings(projectRoot);
+    assert.equal(settings.active_model.model_name, "no-temp");
   } finally {
     await closeServer(server);
   }
@@ -489,6 +526,47 @@ test("选用模型：C 档模型选用被拒", async () => {
     // 清单还在：被拒后没有改默认指针，no-tools 依然可删
     const store = await loadLocalModelProfiles(secretsRoot);
     assert.equal(store.models.length, 1);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+// 任务 5 Step 1：普通目录（无 project.yaml）的模型配置写入应用私有 workspace
+// settings，绝不创建 project.yaml；旧项目的 project.yaml 只作兼容输入。
+test("普通目录使用应用私有 active_model，不创建 project.yaml", async () => {
+  const { root, projectRoot, stateRoot, server, port } = await setupPlainWorkspace();
+  try {
+    const switched = await post(port, "/api/settings/model-switch", {
+      projectRoot,
+      model_id: "deepseek-chat"
+    });
+    assert.equal(switched.status, 200);
+    const store = createWorkspaceStore({ stateRoot });
+    assert.equal((await store.loadSettings(projectRoot)).active_model.model_name, "deepseek-chat");
+    assert.equal(await pathExists(path.join(projectRoot, "project.yaml")), false);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+// 任务 5 Step 5：model-switch 写应用私有 settings，不再双写 project.yaml。
+test("普通目录模型切换后 project.yaml 不存在，设置只落应用私有 settings", async () => {
+  const { root, projectRoot, stateRoot, server, port } = await setupPlainWorkspace();
+  try {
+    const switched = await post(port, "/api/settings/model-switch", {
+      projectRoot,
+      model_id: "deepseek-chat"
+    });
+    assert.equal(switched.status, 200);
+    // 响应中的模型配置来自有效工作区配置（settings 优先）
+    assert.equal(switched.json.model_profile.model_name, "deepseek-chat");
+    // 项目目录始终干净：无 project.yaml、无 .wwriting
+    assert.equal(await pathExists(path.join(projectRoot, "project.yaml")), false);
+    assert.equal(await pathExists(path.join(projectRoot, ".wwriting")), false);
+    // settings.json 位于应用私有目录
+    const store = createWorkspaceStore({ stateRoot });
+    const settings = await store.loadSettings(projectRoot);
+    assert.equal(settings.active_model.model_name, "deepseek-chat");
   } finally {
     await closeServer(server);
   }

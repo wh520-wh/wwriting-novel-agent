@@ -6,9 +6,11 @@ import test from "node:test";
 import { readEvents } from "../src/core/event-log.mjs";
 import { loadConfigLayers } from "../src/core/config-runtime.mjs";
 import { createProject, loadProject } from "../src/core/project-store.mjs";
+import { createWorkspaceStore } from "../src/core/workspaces/store.mjs";
 import {
   normalizeSettingsPatch,
   saveModelSettingsTransaction,
+  saveWorkspaceSettings,
   SettingsValidationError,
   updateProjectSettings
 } from "../src/core/settings-runtime.mjs";
@@ -448,5 +450,74 @@ test("reasoning_effort 项目级读写：合法档位落盘 project.yaml，非�
   await assert.rejects(
     () => updateProjectSettings(projectRoot, { reasoning_effort: "extreme" }),
     /reasoning_effort/
+  );
+});
+
+// ---------------------------------------------------------------------------
+// 任务 5：模型/权限写入应用私有 workspace settings（旧 project.yaml 只读保留）
+// ---------------------------------------------------------------------------
+
+test("saveWorkspaceSettings 写应用私有 settings，旧 project.yaml 保留为回滚依据", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-settings-ws-"));
+  const { projectRoot } = await createProject(root, {
+    slug: "project",
+    active_model: {
+      provider: "openai-compatible",
+      model_name: "legacy-model",
+      base_url: "https://old.example.com/v1",
+      api_key_env: "OLD_KEY_ENV"
+    },
+    network_allowed: true
+  });
+  const store = createWorkspaceStore({ stateRoot: path.join(root, "state") });
+
+  await saveWorkspaceSettings(projectRoot, {
+    workspaceStore: store,
+    activeModel: {
+      provider: "openai-compatible",
+      model_name: "deepseek-chat",
+      base_url: "https://api.deepseek.com",
+      api_key_env: "DEEPSEEK_API_KEY"
+    }
+  });
+
+  const settings = await store.loadSettings(projectRoot);
+  assert.equal(settings.active_model.model_name, "deepseek-chat");
+  // 首次配置写入安全默认权限（应用私有 settings 的 4 布尔字段为准；旧 project.yaml
+  // 的 4 布尔权限不迁移——SPEC §9.1「权限默认值写入应用私有 workspace settings」）
+  assert.equal(settings.tool_permissions.network_allowed, false);
+  // project.yaml 原文件不动
+  const project = await loadProject(projectRoot);
+  assert.equal(project.active_model.model_name, "legacy-model");
+  assert.equal(project.active_model.base_url, "https://old.example.com/v1");
+});
+
+test("saveWorkspaceSettings 普通目录不创建 project.yaml", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-settings-ws-plain-"));
+  const projectRoot = path.join(root, "plain");
+  await fs.mkdir(projectRoot, { recursive: true });
+  const store = createWorkspaceStore({ stateRoot: path.join(root, "state") });
+
+  await saveWorkspaceSettings(projectRoot, {
+    workspaceStore: store,
+    activeModel: { provider: "openai-compatible", model_name: "deepseek-chat" },
+    toolPermissions: { network_allowed: true }
+  });
+
+  const settings = await store.loadSettings(projectRoot);
+  assert.equal(settings.active_model.model_name, "deepseek-chat");
+  assert.equal(settings.tool_permissions.network_allowed, true);
+  assert.equal(settings.tool_permissions.yolo, false, "未显式配置的权限保持安全默认");
+  const exists = await fs
+    .access(path.join(projectRoot, "project.yaml"))
+    .then(() => true)
+    .catch(() => false);
+  assert.equal(exists, false, "普通目录绝不能创建 project.yaml");
+});
+
+test("saveWorkspaceSettings 缺 workspaceStore 抛 SettingsValidationError", async () => {
+  await assert.rejects(
+    () => saveWorkspaceSettings("/tmp/project", { activeModel: { provider: "mock", model_name: "x" } }),
+    (error) => error instanceof SettingsValidationError && error.code === "invalid_workspace_store"
   );
 });

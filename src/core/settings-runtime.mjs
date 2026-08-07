@@ -1,5 +1,6 @@
 import { appendEvent } from "./event-log.mjs";
 import { loadProject, saveProject } from "./project-store.mjs";
+import { loadEffectiveWorkspaceConfig } from "./config-runtime.mjs";
 import {
   applyLocalSecretsToEnv,
   loadLocalSecrets,
@@ -149,6 +150,28 @@ export async function saveModelSettingsTransaction({
     secret_saved: Boolean(transientApiKey),
     secret_env: validated.api_key_env ?? null
   };
+}
+
+// 任务 5：模型/权限写入应用私有 workspace settings 的统一入口。
+//
+// 先读当前有效配置（旧 project.yaml 只读兼容输入 + 应用私有 settings，合并契约见
+// config-runtime.loadEffectiveWorkspaceConfig），再把模型与权限成对写入
+// workspaceStore.saveSettings——绝不写回 project.yaml（旧文件保留为回滚依据，旧项目
+// 首次打开即完成只读导入，之后不双写）。任何一次写入都同时携带 active_model 与
+// tool_permissions，避免 store 归一化（4 布尔白名单）把另一侧字段重置成安全默认。
+export async function saveWorkspaceSettings(projectRoot, {
+  workspaceStore = null,
+  activeModel = null,
+  toolPermissions = null
+} = {}) {
+  if (!workspaceStore || typeof workspaceStore.saveSettings !== "function") {
+    throw new SettingsValidationError("invalid_workspace_store", "workspaceStore is required.");
+  }
+  const before = await loadEffectiveWorkspaceConfig(projectRoot, { workspaceStore });
+  return workspaceStore.saveSettings(projectRoot, {
+    active_model: activeModel ?? before.active_model,
+    tool_permissions: toolPermissions ?? before.tool_permissions
+  });
 }
 
 // 预算限制只来自有效项目配置（project.yaml.budget_config）；不再同步到任何
