@@ -1045,6 +1045,11 @@ export function createAgentRuntime({
     if (!SOURCES.has(source)) {
       throw fail("invalid_source", `source 只允许 ${[...SOURCES].join("/")}，仅用于审计来源。`);
     }
+    // 计划修复（整支审阅）：submit 前确保 open 序列已执行——幂等（已迁移目录
+    // target_not_empty 直接返回；已绑定循环 startLoop 复用现有 Promise）。这同时兜住
+    // 启动恢复的选中工作区（不经 /open 路由也能在第一条消息前完成旧 journal 迁移与
+    // 崩溃恢复：残留非终态 Run 先被接续，消息再 FIFO 排队而不是挂在死 Run 后面）。
+    await open({ projectRoot });
     const state = ensureProject(projectRoot);
     await state.journal.load();
     // 互斥锁内只做读-判-写与循环启动；waitForFirstTurn 必须在锁外等待（循环的

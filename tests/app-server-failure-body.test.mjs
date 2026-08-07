@@ -158,6 +158,11 @@ test("运行中 submit 排队（HTTP 200 + queued），stop 收敛为 cancelled"
       model_name: "slow-model",
       base_url: "http://127.0.0.1:1/v1",
       api_key_env: "FAIL_KEY",
+      // 计划修复（整支审阅）：submit 前的惰性 open 使第二条 submit 的到达时间晚于
+      // 原先；若 api_key 缺失，resolveApiKey 在首次模型轮同步抛配置错误，第一条
+      // Run 毫秒级终结，排队断言退化为竞态。显式给 api_key → 连接拒绝成为可重试
+      // 的 transport 错误（指数退避），Run 在排队窗口内保持非终结，断言确定。
+      api_key: "sk-test-refused",
       timeout_ms: 800,
       total_deadline_ms: 4000
     };
@@ -185,22 +190,29 @@ test("运行中 submit 排队（HTTP 200 + queued），stop 收敛为 cancelled"
 });
 
 // 构造一个当前实现会以原始 Node fs 错误炸掉的 API 请求（契约测试红阶段）：
-// 第一次输入让 journal 完成落盘并缓存进 runtime；随后删除应用私有 agent 目录
+// 第一次输入让 journal 完成落盘并缓存进 runtime；随后破坏应用私有 agent 目录
 //（Task 3/4 起 journal 位于 <stateRoot>/workspaces/<ws_id>/agent，不再是项目内
-// .wwriting/agent），第二次输入 append 因父目录缺失抛出原始 ENOENT —— 统一错误
+// .wwriting/agent），第二次输入 append 因存储不可写抛出原始错误 —— 统一错误
 // 脱敏后响应正文不得泄露 ENOENT/绝对路径/堆栈（SPEC §11）。
+//
+// 计划修复（整支审阅）：submit 前的惰性 open 会经 runLegacyImport 的
+// writeMigration 重建被整体删除的私有目录（writeJsonAtomic → ensureDir），纯删除
+// 不再触发 ENOENT。改用同名文件占位：open 的 ensureDir 对已存在文件抛 EEXIST（被
+// open 兜底吞掉），随后 submit 的 append 对"父路径是文件"抛 ENOTDIR → 错误路径
+// 确定性触发且存储不可重建。
 async function triggerUnreadableWorkspaceRequest() {
   const { projectRoot, server, port, stateRoot } = await setupServer();
   try {
     const first = await postJson(port, "/api/agent/input", { projectRoot, text: "你好" });
     assert.equal(first.res.status, 200);
-    // 等 Run 完成：journal 状态已缓存进 runtime，之后删除存储目录才能触发 ENOENT
+    // 等 Run 完成：journal 状态已缓存进 runtime，之后破坏存储目录才能触发 fs 错误
     await waitFor(async () => {
       const { data } = await getJson(port, `/api/agent/snapshot?projectRoot=${encodeURIComponent(projectRoot)}`);
       return data.session?.active_run?.status === "completed" ? true : null;
     });
     const privateAgentDir = path.join(stateRoot, "workspaces", workspaceIdForPath(projectRoot), "agent");
     await fs.rm(privateAgentDir, { recursive: true, force: true });
+    await fs.writeFile(privateAgentDir, "storage-blocked", "utf8");
     const second = await postJson(port, "/api/agent/input", { projectRoot, text: "再来一条" });
     return { status: second.res.status, body: JSON.stringify(second.data) };
   } finally {
