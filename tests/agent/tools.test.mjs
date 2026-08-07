@@ -2,7 +2,8 @@
 //
 // tests/agent/ 是允许测试内部 seam 的目录：本文件直接导入 tools.mjs 与 journal.mjs，
 // 覆盖计划 Task 4 Step 6–9 要求的全部不变量：
-//   - 恰好 12 个工具的 typed schema（七个 general + 五个 deep，Task 12 加 read_skill）；
+//   - 恰好 13 个工具的 typed schema（八个 general + 五个 deep，Task 12 加 read_skill、
+//     Task 9 加 count_text）；
 //     模型不能提供/覆盖 risk/scope/extreme/grant_key
 //   - 系统拥有的风险分类（shell 的 extreme 由运行时判定，模型参数不参与）
 //   - 硬能力拒绝优先（dangerous 封印/归档/read_only/safe_edit=false），extreme 确认
@@ -30,7 +31,7 @@ import { EXTREME_COMMANDS } from "../fixtures/command-risk-corpus.mjs";
 // 本机可用的 extreme 命令（Windows 语料第一条为 del 清盘）
 const EXTREME_COMMAND = EXTREME_COMMANDS[0];
 
-const GENERAL_NAMES = ["list_files", "search_files", "read_file", "write_file", "edit_file", "shell", "read_skill"];
+const GENERAL_NAMES = ["list_files", "search_files", "read_file", "write_file", "edit_file", "shell", "read_skill", "count_text"];
 const DEEP_NAMES = ["update_plan", "enter_workflow", "append_chapter_segment", "commit_chapter", "commit_blueprint"];
 // 旧编排工具名全部按片段拼接（避免本文件自身成为 Task 11 Step 6 全库 rg 的命中点，
 // 与 dependency-rules.test.mjs 对旧数据文件名的片段约定一致；即使当前 rg 只禁
@@ -198,11 +199,11 @@ async function nextDecision(journal, count = 1) {
 // Step 4/5：注册表与 typed schema、系统拥有的风险
 // ---------------------------------------------------------------------------
 
-test("恰好注册七个 general 与五个 deep 工具", () => {
+test("恰好注册八个 general 与五个 deep 工具", () => {
   const tools = createToolRuntime({ journal: { append: async () => {} } });
   const names = tools.definitions().map((def) => def.function.name);
   assert.deepEqual(names, [...GENERAL_NAMES, ...DEEP_NAMES]);
-  assert.equal(names.length, 12, "工具总数应为 12（Task 12：read_skill 加入 general）");
+  assert.equal(names.length, 13, "工具总数应为 13（Task 9：count_text 加入 general）");
   for (const banned of BANNED_NAMES) {
     assert.ok(!names.includes(banned), `不得注册 ${banned}`);
   }
