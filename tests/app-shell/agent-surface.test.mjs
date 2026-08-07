@@ -853,6 +853,30 @@ test("Plan 作为工作组子项：全部任务可见、无编辑控件；终态
   assert.match(group.querySelector(".agent-work-status").textContent, /工作了/u, "终态状态行带耗时文案");
 });
 
+test("多 Run：首个完成组的终态耗时保持自身值，不被第二个 Run 的时钟覆盖", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  const T0 = "2026-08-06T00:00:00.000Z";
+  const atSec = (s) => new Date(Date.parse(T0) + s * 1000).toISOString();
+  // Run A：0→10s 完成（带一个 reasoning 项，工作组才会渲染）
+  surface.applyEvent(ev("run_started", { workflow: "general", input_id: "in-1" }, { at: atSec(0) }));
+  surface.applyEvent(ev("model_turn_started", { turn_id: "turn-a", input_id: "in-1", reasoning_capability: "supported" }, { at: atSec(5) }));
+  surface.applyEvent(ev("reasoning_completed", { turn_id: "turn-a", input_id: "in-1", text: "分析完成", availability: "available" }, { at: atSec(5) }));
+  surface.applyEvent(ev("run_completed", {}, { at: atSec(10) }));
+  const groupA = root.querySelector(".agent-work-group");
+  assert.ok(groupA, "Run A 工作组存在");
+  assert.match(groupA.querySelector(".agent-work-status").textContent, /工作了 10 秒/u, "Run A 完成：自身 10 秒");
+  // Run B 开始（运行中，快照级 active_elapsed_ms 为 0）—— 不得覆盖 Run A 的终态文案
+  surface.applyEvent(ev("run_started", { workflow: "general", input_id: "in-2" }, { run_id: "run-2", at: atSec(20) }));
+  surface.applyEvent(ev("model_turn_started", { turn_id: "turn-b", input_id: "in-2", reasoning_capability: "supported" }, { run_id: "run-2", at: atSec(20) }));
+  const groups = [...root.querySelectorAll(".agent-work-group")];
+  assert.equal(groups.length, 2, "两个工作组");
+  assert.equal(groups[0].querySelector(".agent-work-status").textContent, "工作了 10 秒", "Run A 文案保持自身值");
+  assert.equal(groups[1].querySelector(".agent-work-status").textContent, "工作中", "Run B 运行中文案");
+  assert.equal(groups[1].open, true, "Run B 运行中展开");
+});
+
 test("计划子项只读展示：计数与全部任务都在工作组内", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");

@@ -104,15 +104,17 @@ export function reasoningLabel(state) {
 export const PLAN_LABEL = "任务计划";
 
 // 工作组状态文案（Task 5 Step 4）：运行中显示"工作中"；终态按组状态给耗时文案。
-// run 是 journal 投影的 session.active_run：active_elapsed_ms 由 journal 工作
-// 时钟提供（waiting_user 不计时），终态时 active_since 为 null，累计值即最终耗时。
+// 每组的耗时来自组自身投影的冻结时钟（Task 15 修复）：不再读当前 active run 的
+// active_elapsed_ms —— 第二个 Run 开始后旧组的终态文案不再被新 Run 的时钟覆盖。
 export function formatDuration(ms) {
   if (!Number.isFinite(ms) || ms < 0) return "0 秒";
   return `${Math.round(ms / 1000)} 秒`;
 }
 
-export function groupStatusText(group, run) {
-  const seconds = formatDuration(run?.active_elapsed_ms ?? 0);
+export function groupStatusText(group) {
+  // 终态使用冻结的 elapsedMs；未冻结时回落累计 activeMs（不应发生）
+  const elapsed = Number.isFinite(group?.elapsedMs) ? group.elapsedMs : (group?.activeMs ?? 0);
+  const seconds = formatDuration(elapsed);
   switch (group.status) {
     case "completed": return `工作了 ${seconds}`;
     case "failed": return `工作了 ${seconds} · 失败`;
@@ -172,6 +174,28 @@ function itemDetail(target, projectRoot) {
 // reduceWorkEvent：按事件类型投影工作组/子工作
 // ---------------------------------------------------------------------------
 
+// 工作组自身的有效工作时钟（Task 15 修复）：镜像 journal transitionWorkClock
+//（src/core/agent/journal.mjs）——只累计 running/interrupting/stopping 状态下的
+// 耗时，waiting_user 与终态不计入；终态时把累计值冻结到 elapsedMs。投影因此
+// 能给出每组自己的终态耗时，不依赖（且不被）当前 active run 的快照字段覆盖。
+const GROUP_ACTIVE_STATUSES = new Set(["running", "interrupting", "stopping"]);
+const GROUP_TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
+
+function transitionGroupClock(group, nextStatus, at) {
+  const atMs = Date.parse(at);
+  if (!Number.isFinite(atMs)) return; // 事件无有效时间戳：不影响时钟
+  if (group.activeSince !== null && !GROUP_ACTIVE_STATUSES.has(nextStatus)) {
+    group.activeMs += Math.max(0, atMs - Date.parse(group.activeSince));
+    group.activeSince = null;
+  }
+  if (group.activeSince === null && GROUP_ACTIVE_STATUSES.has(nextStatus)) {
+    group.activeSince = at;
+  }
+  if (GROUP_TERMINAL_STATUSES.has(nextStatus)) {
+    group.elapsedMs = group.activeMs;
+  }
+}
+
 function ensureGroup(work, runId, seq) {
   let group = work.groups.get(runId);
   if (!group) {
@@ -182,6 +206,12 @@ function ensureGroup(work, runId, seq) {
       firstSeq: seq,
       sortSeq: seq,
       items: new Map(),
+      // 工作时钟（镜像 journal）：startedAt 首个 run_started；activeMs 累计有效耗时；
+      // activeSince 当前活动区间起点（null=等待/终态）；elapsedMs 终态冻结值。
+      startedAt: null,
+      activeMs: 0,
+      activeSince: null,
+      elapsedMs: null,
       // v1 旧日志/旧测试事件的未闭合 model turn 计数（镜像 journal legacyOpenTurns）：
       // 只供 hasOpenModelTurn 判断"思考中"，v1 没有 reasoning 内容，不产生工作项。
       legacyOpenTurns: 0
@@ -191,7 +221,8 @@ function ensureGroup(work, runId, seq) {
   return group;
 }
 
-function setGroupStatus(group, status, seq) {
+function setGroupStatus(group, status, seq, at) {
+  transitionGroupClock(group, status, at);
   group.status = status;
   group.expanded = groupExpandedDefault(status);
   group.sortSeq = seq;
@@ -380,23 +411,29 @@ export function reduceWorkEvent(work, event) {
     }
     case "run_started": {
       const group = ensureGroup(work, runId, seq);
-      setGroupStatus(group, "running", seq);
+      // 新 Run：记录 startedAt 并清零累计；retry（同 runId 已终态）：保留累计
+      // 耗时，由 transitionGroupClock 在进入 running 时重新置 activeSince。
+      if (group.startedAt === null) {
+        group.startedAt = event.at ?? null;
+        group.activeMs = 0;
+      }
+      setGroupStatus(group, "running", seq, event.at);
       group.legacyOpenTurns = 0; // 新尝试（含 retry）不继承旧开放的 legacy turn
       break;
     }
     case "run_status_changed": {
       const group = ensureGroup(work, runId, seq);
       if (typeof payload.status === "string" && payload.status.length > 0) {
-        setGroupStatus(group, payload.status, seq);
+        setGroupStatus(group, payload.status, seq, event.at);
       }
       break;
     }
     case "interrupt_requested": {
-      setGroupStatus(ensureGroup(work, runId, seq), "interrupting", seq);
+      setGroupStatus(ensureGroup(work, runId, seq), "interrupting", seq, event.at);
       break;
     }
     case "interrupt_safe_point_reached": {
-      setGroupStatus(ensureGroup(work, runId, seq), "running", seq);
+      setGroupStatus(ensureGroup(work, runId, seq), "running", seq, event.at);
       break;
     }
     case "run_completed":
@@ -405,7 +442,7 @@ export function reduceWorkEvent(work, event) {
     case "run_interrupted": {
       const group = ensureGroup(work, runId, seq);
       const terminal = { run_completed: "completed", run_failed: "failed", run_cancelled: "cancelled", run_interrupted: "interrupted" };
-      setGroupStatus(group, terminal[event.type], seq);
+      setGroupStatus(group, terminal[event.type], seq, event.at);
       group.legacyOpenTurns = 0;
       break;
     }

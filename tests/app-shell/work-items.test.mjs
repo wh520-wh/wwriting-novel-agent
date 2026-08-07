@@ -229,59 +229,121 @@ test("Step 3/4: reasoning 与 tool 立即终结，waiting_user 压制不伪造",
   assert.deepEqual(openWorkItemIds(waitGroup), ["tool:a3"], "恢复 running 后未闭合 item 重新成为 live");
 });
 
-test("Step 4: 工作组展开默认值与终态耗时文案", () => {
+test("Step 4: 工作组展开默认值与终态耗时文案（每组自带时钟，不再读当前 run）", () => {
+  const T0 = "2026-08-06T00:00:00.000Z";
+  const atSec = (s) => new Date(Date.parse(T0) + s * 1000).toISOString();
+
   // running → expanded=true，文案"工作中"
-  let work = reduceAll([ev("run_started", { workflow: "general", input_id: "in-1" }, 1)]);
+  let work = reduceAll([ev("run_started", { workflow: "general", input_id: "in-1" }, 1, { at: atSec(0) })]);
   let group = groupOf(work);
   assert.equal(group.status, "running");
   assert.equal(group.expanded, true);
-  assert.equal(groupStatusText(group, { active_elapsed_ms: 42000 }), "工作中");
+  assert.equal(group.activeMs, 0);
+  assert.equal(group.activeSince, atSec(0), "运行开始即进入活动区间");
+  assert.equal(group.elapsedMs, null);
+  assert.equal(groupStatusText(group), "工作中");
 
-  // completed → 自动折叠，工作了 42 秒
+  // completed → 自动折叠，工作了 42 秒（组自身时钟 0→42s）
   work = reduceAll([
-    ev("run_started", { workflow: "general", input_id: "in-1" }, 1),
-    ev("run_completed", {}, 2)
+    ev("run_started", { workflow: "general", input_id: "in-1" }, 1, { at: atSec(0) }),
+    ev("run_completed", {}, 2, { at: atSec(42) })
   ]);
   group = groupOf(work);
   assert.equal(group.status, "completed");
   assert.equal(group.expanded, false);
-  assert.equal(groupStatusText(group, { active_elapsed_ms: 42000 }), "工作了 42 秒");
+  assert.equal(group.elapsedMs, 42000, "终态冻结自身累计耗时");
+  assert.equal(group.activeSince, null, "终态离开活动区间");
+  assert.equal(groupStatusText(group), "工作了 42 秒");
 
   // failed → 保持展开，工作了 42 秒 · 失败
   work = reduceAll([
-    ev("run_started", { workflow: "general", input_id: "in-1" }, 1),
-    ev("run_failed", { error: "模型超时", code: "model_timeout" }, 2)
+    ev("run_started", { workflow: "general", input_id: "in-1" }, 1, { at: atSec(0) }),
+    ev("run_failed", { error: "模型超时", code: "model_timeout" }, 2, { at: atSec(42) })
   ]);
   group = groupOf(work);
   assert.equal(group.expanded, true);
-  assert.equal(groupStatusText(group, { active_elapsed_ms: 42000 }), "工作了 42 秒 · 失败");
+  assert.equal(groupStatusText(group), "工作了 42 秒 · 失败");
 
   // cancelled → 工作了 18 秒 · 已停止
   work = reduceAll([
-    ev("run_started", { workflow: "general", input_id: "in-1" }, 1),
-    ev("run_cancelled", { reason: "user_stop" }, 2)
+    ev("run_started", { workflow: "general", input_id: "in-1" }, 1, { at: atSec(0) }),
+    ev("run_cancelled", { reason: "user_stop" }, 2, { at: atSec(18) })
   ]);
   group = groupOf(work);
   assert.equal(group.expanded, true);
-  assert.equal(groupStatusText(group, { active_elapsed_ms: 18000 }), "工作了 18 秒 · 已停止");
+  assert.equal(groupStatusText(group), "工作了 18 秒 · 已停止");
 
-  // interrupted → 保持展开
+  // interrupted → 保持展开，工作了 18 秒 · 已中断
   work = reduceAll([
-    ev("run_started", { workflow: "general", input_id: "in-1" }, 1),
-    ev("run_interrupted", { reason: "recovery_dangling" }, 2)
+    ev("run_started", { workflow: "general", input_id: "in-1" }, 1, { at: atSec(0) }),
+    ev("run_interrupted", { reason: "recovery_dangling" }, 2, { at: atSec(18) })
   ]);
   group = groupOf(work);
   assert.equal(group.status, "interrupted");
   assert.equal(group.expanded, true);
+  assert.equal(groupStatusText(group), "工作了 18 秒 · 已中断");
 
-  // waiting_user → 保持展开
+  // waiting_user → 保持展开；等待不计时，文案"工作中"
   work = reduceAll([
-    ev("run_started", { workflow: "general", input_id: "in-1" }, 1),
-    ev("run_status_changed", { status: "waiting_user" }, 2)
+    ev("run_started", { workflow: "general", input_id: "in-1" }, 1, { at: atSec(0) }),
+    ev("run_status_changed", { status: "waiting_user" }, 2, { at: atSec(10) })
   ]);
   group = groupOf(work);
   assert.equal(group.status, "waiting_user");
   assert.equal(group.expanded, true);
+  assert.equal(group.activeMs, 10000, "进入等待前已累计 10s");
+  assert.equal(group.activeSince, null, "等待期间不在活动区间");
+  assert.equal(groupStatusText(group), "工作中");
+});
+
+test("工作时钟镜像 journal transitionWorkClock：waiting_user 不计时，终态冻结自身值", () => {
+  const T0 = "2026-08-06T00:00:00.000Z";
+  const atSec = (s) => new Date(Date.parse(T0) + s * 1000).toISOString();
+  const work = reduceAll([
+    ev("run_started", { workflow: "general", input_id: "in-1" }, 1, { at: atSec(0) }), // 运行开始
+    ev("run_status_changed", { status: "waiting_user" }, 2, { at: atSec(10) }),        // 运行 10s → 等待
+    ev("run_status_changed", { status: "running" }, 3, { at: atSec(40) }),             // 等待 30s → 恢复
+    ev("run_completed", {}, 4, { at: atSec(45) })                                      // 再运行 5s → 完成
+  ]);
+  const group = groupOf(work);
+  assert.equal(group.activeMs, 15000, "10s + 5s，等待 30s 不计入");
+  assert.equal(group.elapsedMs, 15000, "终态冻结累计有效耗时");
+  assert.equal(groupStatusText(group), "工作了 15 秒");
+});
+
+test("两个 Run：首个完成组的 elapsedMs 冻结在自身值，不被第二个 Run 的事件覆盖", () => {
+  const T0 = "2026-08-06T00:00:00.000Z";
+  const atSec = (s) => new Date(Date.parse(T0) + s * 1000).toISOString();
+  const work = reduceAll([
+    ev("run_started", { workflow: "general", input_id: "in-1" }, 1, { at: atSec(0) }),
+    ev("run_completed", {}, 2, { at: atSec(10) }),
+    ev("run_started", { workflow: "general", input_id: "in-2" }, 3, { run_id: "run-2", at: atSec(20) }),
+    ev("model_turn_started", { turn_id: "turn-b", input_id: "in-2", reasoning_capability: "supported" }, 4, { run_id: "run-2", at: atSec(25) }),
+    ev("run_completed", {}, 5, { run_id: "run-2", at: atSec(30) })
+  ]);
+  const groupA = work.groups.get("run-1");
+  const groupB = work.groups.get("run-2");
+  assert.ok(groupA && groupB, "两个工作组");
+  assert.equal(groupA.elapsedMs, 10000, "run A 冻结在自身 10s");
+  assert.equal(groupA.status, "completed");
+  assert.equal(groupB.elapsedMs, 10000, "run B 自身 10s（20→30s）");
+  assert.equal(groupStatusText(groupA), "工作了 10 秒");
+  assert.equal(groupStatusText(groupB), "工作了 10 秒");
+});
+
+test("retry 同一 runId：保留累计有效耗时并重新计时", () => {
+  const T0 = "2026-08-06T00:00:00.000Z";
+  const atSec = (s) => new Date(Date.parse(T0) + s * 1000).toISOString();
+  const work = reduceAll([
+    ev("run_started", { workflow: "general", input_id: "in-1" }, 1, { at: atSec(0) }),
+    ev("run_failed", { error: "模型超时", code: "model_timeout" }, 2, { at: atSec(10) }),
+    ev("run_started", { workflow: "general", input_id: "in-1" }, 3, { at: atSec(20) }), // retry 同一 runId
+    ev("run_completed", {}, 4, { at: atSec(25) })
+  ]);
+  const group = groupOf(work);
+  assert.equal(group.startedAt, atSec(0), "retry 保留原 startedAt");
+  assert.equal(group.elapsedMs, 15000, "10s + 5s：保留失败前累计，retry 后重新计时");
+  assert.equal(groupStatusText(group), "工作了 15 秒");
 });
 
 test("v1 兼容：无 turn_id 的 model_turn 事件只计数开放 turn，不产生 reasoning 工作项", () => {
