@@ -167,3 +167,33 @@ test("运行中 submit 排队（HTTP 200 + queued），stop 收敛为 cancelled"
     await closeServer(server);
   }
 });
+
+// 构造一个当前实现会以原始 Node fs 错误炸掉的 API 请求（契约测试红阶段）：
+// 第一次输入让 journal 完成落盘并缓存进 runtime；随后删除项目内 .wwriting/agent，
+// 第二次输入 append 因父目录缺失抛出原始 ENOENT —— 当前错误适配原样回传
+// "ENOENT: no such file or directory, open '...'"（SPEC §11 禁止）。Task 3/4
+// 把 journal 迁入应用私有目录并统一错误脱敏后本契约转绿。
+async function triggerUnreadableWorkspaceRequest() {
+  const { projectRoot, server, port } = await setupServer();
+  try {
+    const first = await postJson(port, "/api/agent/input", { projectRoot, text: "你好" });
+    assert.equal(first.res.status, 200);
+    // 等 Run 完成：journal 状态已缓存进 runtime，之后删除存储目录才能触发 ENOENT
+    await waitFor(async () => {
+      const { data } = await getJson(port, `/api/agent/snapshot?projectRoot=${encodeURIComponent(projectRoot)}`);
+      return data.session?.active_run?.status === "completed" ? true : null;
+    });
+    await fs.rm(path.join(projectRoot, ".wwriting", "agent"), { recursive: true, force: true });
+    const second = await postJson(port, "/api/agent/input", { projectRoot, text: "再来一条" });
+    return { status: second.res.status, body: JSON.stringify(second.data) };
+  } finally {
+    await closeServer(server);
+  }
+}
+
+test("API 失败正文不泄露 ENOENT、堆栈和绝对内部路径", async () => {
+  const { status, body } = await triggerUnreadableWorkspaceRequest();
+  assert.ok(status >= 400);
+  assert.doesNotMatch(body, /ENOENT|node:fs|at\s+\w+|[A-Z]:\\.*userData/iu);
+  assert.match(body, /无法读取|请检查|重试/u);
+});
