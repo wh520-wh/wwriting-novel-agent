@@ -30,6 +30,19 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
     };
   }
 
+  // 普通文件夹（无 project.yaml）也是合法工作区（SPEC §2.1）：应用私有 history
+  // 在 stateRoot，文件夹本身即可立即聊天。返回 hasProject:false 的最小工作区形状，
+  // 绝不把 ENOENT/内部错误暴露给用户（SPEC §11）。
+  if (!(await pathExists(safeJoin(projectRoot, "project.yaml")))) {
+    return {
+      ok: true,
+      hasProject: false,
+      workspaceRoot: workspace,
+      projectRoot,
+      project: null
+    };
+  }
+
   const [project, chapterIndex, events, cost, cache] = await Promise.all([
     loadProject(projectRoot),
     readJson(safeJoin(projectRoot, "memory", "chapter_index.json"), { chapters: [] }),
