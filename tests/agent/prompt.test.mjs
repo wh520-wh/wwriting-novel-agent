@@ -36,7 +36,9 @@ test("STATIC_CORE 与计划文本逐字一致", () => {
 
 运行时送达的新用户消息优先于较早假设。读取最新消息和任务事件，必要时调整计划或工作流。完成前检查可观察结果；最终简洁说明实际完成的内容、验证依据和仍需作者决定的问题。
 
-WWRITING.md 是当前工作区的长期项目记忆入口。开始长期小说工作、恢复上下文或长期要求发生变化时，先读取它并按其中索引按需读取权威文件。缺失或损坏不代表工作区无效。只记录用户已确认或文件可证的长期事实，不把普通问候、临时解释和模型猜测写入记忆。`
+WWRITING.md 是当前工作区的长期项目记忆入口。开始长期小说工作、恢复上下文或长期要求发生变化时，先读取它并按其中索引按需读取权威文件。缺失或损坏不代表工作区无效。只记录用户已确认或文件可证的长期事实，不把普通问候、临时解释和模型猜测写入记忆。
+
+当用户确认题材、主风格、叙事视角、长期字数目标、权威文件位置或阶段进度时，维护 WWRITING.md；普通问候和一次性问题不更新。用户自然语言改变风格时，更新 WWRITING.md 和已有总纲中的当前有效说明，除非用户明确要求，不回写重构既有章节。`
   );
 });
 
@@ -45,6 +47,10 @@ test("STATIC_CORE 的记忆职责只限协议文本，不含任何具体小说�
   //（balanced/fast-readable/psychological-literary 的写法正文由 read_skill 按需读取）
   assert.ok(STATIC_CORE.includes("WWRITING.md 是当前工作区的长期项目记忆入口"));
   assert.ok(STATIC_CORE.includes("缺失或损坏不代表工作区无效"));
+  // Task 7 Step 4：非强制维护时机协议必须出现在系统提示词
+  assert.ok(STATIC_CORE.includes("当用户确认题材、主风格、叙事视角、长期字数目标、权威文件位置或阶段进度时，维护 WWRITING.md"));
+  assert.ok(STATIC_CORE.includes("普通问候和一次性问题不更新"));
+  assert.ok(STATIC_CORE.includes("除非用户明确要求，不回写重构既有章节"));
   assert.ok(!STATIC_CORE.includes("快节奏易读"));
   assert.ok(!STATIC_CORE.includes("心理文学"));
   assert.ok(!STATIC_CORE.includes("场景尽快进入"));
@@ -89,9 +95,11 @@ test("WORKFLOW_POLICIES 包含四条逐字政策", () => {
   assert.ok(WORKFLOW_POLICIES.chapter.includes("commit_chapter"));
   assert.ok(WORKFLOW_POLICIES.chapter.includes("任一条件不满足时不得声称章节完成。"));
   assert.ok(WORKFLOW_POLICIES.init.startsWith("[Workflow: init]"));
-  assert.ok(WORKFLOW_POLICIES.init.includes("保留用户发送的 `/init` 原文"));
-  assert.ok(WORKFLOW_POLICIES.init.includes("commit_blueprint"));
-  assert.ok(WORKFLOW_POLICIES.init.includes("没有蓝图或 blueprint_status 不是 complete 时也不得阻塞普通写作。"));
+  assert.ok(WORKFLOW_POLICIES.init.includes("创建或谨慎更新 WWRITING.md"));
+  assert.ok(WORKFLOW_POLICIES.init.includes("区分用户已确认事实、文件可证事实与模型推测"));
+  assert.ok(WORKFLOW_POLICIES.init.includes("已有文件不得盲目覆盖"));
+  assert.ok(!WORKFLOW_POLICIES.init.includes("commit_blueprint"), "init 政策不得再要求 commit_blueprint");
+  assert.ok(WORKFLOW_POLICIES.init.includes("完成后简短报告实际检查和修改的文件"));
   assert.ok(WORKFLOW_POLICIES.review.startsWith("[Workflow: review]"));
   assert.ok(WORKFLOW_POLICIES.review.includes("默认只读"));
   assert.ok(WORKFLOW_POLICIES.review.includes("不在 review 中静默修改正文。"));

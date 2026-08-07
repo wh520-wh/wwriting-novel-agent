@@ -1301,10 +1301,14 @@ export function createToolRuntime({
   });
 
   // ---- deep: commit_blueprint ----------------------------------------------
+  // Task 7：/init 不再暴露/要求 commit_blueprint（init.allowedDeepTools 只剩
+  // update_plan/enter_workflow，运行层 allowed_tool_names 同样拒绝）。本工具按
+  // KEEP-for-legacy 分支保留注册（旧显式 chapter/legacy 流程兼容、blueprint.mjs
+  // 仍有生产引用），但不再由任何工作流默认工具集暴露。
 
   register("commit_blueprint", {
     interruptible: false, // 蓝图三文件一致提交是原子事务
-    description: "一致提交 OUTLINE.md、SETTING.md 与 project.yaml 的 blueprint_status（init 工作流专用）。",
+    description: "一致提交 OUTLINE.md、SETTING.md 与 project.yaml 的 blueprint_status（旧显式蓝图流程兼容保留，不再由工作流暴露）。",
     schema: {
       type: "object",
       properties: {

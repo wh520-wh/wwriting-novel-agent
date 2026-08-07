@@ -8,10 +8,10 @@
 // 场景清单（Task 11 Step 2 本地矩阵的 25 个场景，Task 9 Step 6 版 22 场景补全后）：
 //   简单回答无计划 / 复杂任务真实里程碑更新计划 / 同项目 FIFO 队列 /
 //   立即保持同一 run id / 停止取消当前 Run 与排队输入 / 重试恢复同一可恢复 Run /
-//   跨项目并行 / 通用读取编辑 Shell / 章节事务 / 蓝图事务 / 只读审查 /
+//   跨项目并行 / 通用读取编辑 Shell / 章节事务 / init 蓝图门禁移除 / 只读审查 /
 //   重启 journal 恢复 / legacy 导入幂等 + blueprint_status 迁移 /
 //   legacy 旧状态一次性导入且永不再次写入 / 新项目无旧状态文件 /
-//   无撕裂原子写入 / 确定性导出无模型调用 / 自主 /init 保留原文并用单一 Agent 循环 /
+//   无撕裂原子写入 / 确定性导出无模型调用 / 自主 /init 读取目录并创建 WWRITING.md /
 //   普通写入暂停确认 / 同类授权仅限当前输入（grant 随输入清除）/ YOLO 跳过普通
 //   确认但不跳过 extreme / fresh 精确文字确认不可复用且不可模型提供 /
 //   Shell cwd/超时/增量输出/进程树停止与 1 MiB 流尾（runtime.test.mjs 承载）/
@@ -28,6 +28,7 @@ import {
   createMockModelGateway,
   eventsOfType,
   LEGACY_STATE_FILE,
+  openPlainFolderHarness,
   readEvents,
   readSession,
   sleep,
@@ -351,28 +352,38 @@ step("场景 9 · 章节事务");
 }
 
 // ---------------------------------------------------------------------------
-// 场景 10：蓝图事务（OUTLINE/SETTING/project.yaml 一致提交）
+// 场景 10：init 不再暴露蓝图提交（commit_blueprint 被运行层拒绝，无固定蓝图门禁）
 // ---------------------------------------------------------------------------
-step("场景 10 · 蓝图事务");
+step("场景 10 · init 蓝图门禁移除");
 {
   const script = [];
   const h = await createProjectAgentHarness({ gatewayScript: script });
   script.push(
     { reply: { toolCalls: [tool("enter_workflow", { workflow: "init", reason: "/init 项目理解" })] } },
-    { reply: { toolCalls: [tool("commit_blueprint", { project_id: h.project.project_id, outline: "# OUTLINE.md\n\n第一章 雨夜来信\n第二章 档案室\n", setting: "# SETTING.md\n\n现代都市，档案管理员林晚。\n", evidence_paths: ["AGENTS.md"] })] } },
-    { reply: { text: "/init 完成，蓝图已提交。" } }
+    // 模型即使尝试旧蓝图提交，init 工作流也不再暴露 commit_blueprint：
+    // 运行层 allowed_tool_names 强制拒绝，不写 OUTLINE/SETTING/project.yaml
+    { reply: { toolCalls: [tool("commit_blueprint", { project_id: h.project.project_id, outline: "# OUTLINE.md\n\n第一章 雨夜来信\n", setting: "# SETTING.md\n\n现代都市。\n", evidence_paths: [] })] } },
+    { reply: { text: "/init 完成，已维护项目记忆。" } }
   );
   try {
     await h.agent.open({ projectRoot: h.projectRoot });
     await h.agent.submit({ projectRoot: h.projectRoot, text: "/init 都市职场小说，程序员主角" });
     await waitForIdle(h.agent, h.projectRoot);
+    const events = await readEvents(h.agent, h.projectRoot);
+    const failed = eventsOfType(events, "tool_call_failed").filter((event) => event.payload.name === "commit_blueprint");
+    assert.equal(failed.length, 1, "init 工作流调用 commit_blueprint 必须失败");
+    assert.equal(failed[0].payload.error, "tool_not_allowed", "拒绝原因必须是运行层工具白名单");
+    assert.equal(
+      eventsOfType(events, "tool_call_completed").filter((event) => event.payload.name === "commit_blueprint").length,
+      0,
+      "commit_blueprint 不得完成"
+    );
     const outline = await fs.readFile(path.join(h.projectRoot, "OUTLINE.md"), "utf8");
-    const setting = await fs.readFile(path.join(h.projectRoot, "SETTING.md"), "utf8");
-    assert.ok(outline.includes("雨夜来信"), "OUTLINE 应写入新内容");
-    assert.ok(setting.includes("林晚"), "SETTING 应写入新内容");
+    assert.ok(outline.includes("> 蓝图未生成，请运行 /init"), "init 不得改写 OUTLINE.md");
     const project = parseSimpleYaml(await fs.readFile(path.join(h.projectRoot, "project.yaml"), "utf8"));
-    assert.equal(project.blueprint_status, "complete", "project.yaml 应同步 blueprint_status=complete");
-    record("蓝图事务：OUTLINE/SETTING/blueprint_status 一致提交", true, "blueprint_status=complete");
+    assert.equal(project.blueprint_status, "none", "init 不得写入 blueprint_status=complete");
+    assert.equal(eventsOfType(events, "run_completed").length, 1, "拒绝后 Run 正常完成，不阻塞普通写作");
+    record("init：蓝图提交被运行层拒绝，不生成固定蓝图", true, "tool_not_allowed");
   } finally {
     await h.cleanup();
   }
@@ -514,23 +525,20 @@ step("场景 15 · 确定性导出");
 }
 
 // ---------------------------------------------------------------------------
-// 场景 16：自主 /init 保留用户原文并自主读取项目上下文
+// 场景 16：自主 /init 在空目录用通用文件工具创建 WWRITING.md（无固定蓝图门禁）
 // ---------------------------------------------------------------------------
 step("场景 16 · 自主 /init");
 {
   const original = "/init 都市职场小说，程序员主角林晚在裁员潮中觉醒";
-  const script = [];
-  const h = await createProjectAgentHarness({ gatewayScript: script });
-  script.push(
-    // 模型自主选择 init 工作流；运行时只负责约束合法转移与工具边界
-    { reply: { toolCalls: [tool("enter_workflow", { workflow: "init", reason: "建立项目蓝图" })] } },
-    // 模型自主选择读取项目上下文（不固定顺序、无软件预判）
-    { reply: { toolCalls: [tool("read_file", { path: "OUTLINE.md" }), tool("read_file", { path: "SETTING.md" })] } },
-    { reply: { toolCalls: [tool("commit_blueprint", { project_id: h.project.project_id, outline: "# OUTLINE.md\n\n第一章 裁员名单\n", setting: "# SETTING.md\n\n程序员职场。\n", evidence_paths: [] })] } },
-    { reply: { text: "/init 完成，已建立蓝图。" } }
-  );
+  const h = await openPlainFolderHarness({
+    gatewayScript: [
+      // 模型自主读取目录，用普通通用工具创建/更新 WWRITING.md（不进入旧蓝图流程）
+      { reply: { toolCalls: [tool("list_files", { path: "." })] } },
+      { reply: { toolCalls: [tool("write_file", { path: "WWRITING.md", content: "# WWriting 项目记忆\n\n## 项目定位\n\n- 项目：都市职场小说\n" })] } },
+      { reply: { text: "/init 完成，已建立项目记忆。" } }
+    ]
+  });
   try {
-    await h.agent.open({ projectRoot: h.projectRoot });
     await h.agent.submit({ projectRoot: h.projectRoot, text: original });
     await waitForIdle(h.agent, h.projectRoot);
     const events = await readEvents(h.agent, h.projectRoot);
@@ -539,10 +547,14 @@ step("场景 16 · 自主 /init");
     assert.equal(queued[0].payload.text, original, "/init 必须保留用户原文");
     const toolCalls = eventsOfType(events, "tool_call_completed");
     const names = toolCalls.map((e) => e.payload?.name);
-    assert.ok(names.includes("read_file"), "模型应自主读取项目上下文");
-    assert.ok(names.includes("commit_blueprint"), "模型应自主提交蓝图");
+    assert.ok(names.includes("list_files"), "模型应先读取目录");
+    assert.ok(names.includes("write_file"), "模型应用 write_file 创建 WWRITING.md");
     assert.equal(eventsOfType(events, "run_completed").length, 1, "/init 使用同一个 Agent 循环");
-    record("/init：保留原文 + 自主读取 + 单循环完成", true, `tools=${names.join(",")}`);
+    assert.equal(await pathExists(path.join(h.projectRoot, "WWRITING.md")), true, "应创建 WWRITING.md");
+    for (const name of ["project.yaml", "OUTLINE.md", "SETTING.md", "AGENTS.md"]) {
+      assert.equal(await pathExists(path.join(h.projectRoot, name)), false, `不得创建固定蓝图 ${name}`);
+    }
+    record("/init：保留原文 + 读取目录 + 创建 WWRITING.md + 无固定蓝图", true, `tools=${names.join(",")}`);
   } finally {
     await h.cleanup();
   }

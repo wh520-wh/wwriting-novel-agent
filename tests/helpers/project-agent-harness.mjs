@@ -348,6 +348,97 @@ export async function createProjectAgentHarness(options = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// 普通文件夹夹具（Task 7 /init）：空目录，无 project.yaml/OUTLINE/SETTING/
+// AGENTS.md。与 createProjectAgentHarness 相同的存储与技能隔离；注入
+// workspaceConfigLoader 让项目内普通写自动放行（无 project.yaml 时 runtime 的
+// FALLBACK 权限是 ask 会暂停等待确认，/init 场景的 write_file 需要 auto_edit
+// 才不悬挂）。
+// ---------------------------------------------------------------------------
+
+export const VALID_MEMORY = `---
+schema_version: 1
+---
+
+# WWriting 项目记忆
+
+## 项目定位
+
+- 项目：验收测试小说
+
+## 当前有效要求
+
+- 单章目标约 3000 字。
+
+## 权威文件
+
+- 正文：正文/
+`;
+
+export async function openPlainFolderHarness(options = {}) {
+  const {
+    gatewayScript = [],
+    gatewayDelayMs = 30,
+    secrets = []
+  } = options;
+  const gateway = createMockModelGateway({ script: gatewayScript, delayMs: gatewayDelayMs });
+  const { createProjectAgent } = await import("../../src/core/agent/index.mjs");
+  const { createSkillService } = await import("../../src/core/skills/index.mjs");
+  const { createWorkspaceStore } = await import("../../src/core/workspaces/store.mjs");
+
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-plain-folder-"));
+  try {
+    const projectRoot = path.join(workspaceRoot, "普通文件夹");
+    await fs.mkdir(projectRoot, { recursive: true });
+    const stateRoot = path.join(workspaceRoot, "user-data");
+    const store = createWorkspaceStore({ stateRoot });
+    const skills = createSkillService({
+      userHome: path.join(projectRoot, ".test-skill-home"),
+      resourcesPath: null
+    });
+    const agent = createProjectAgent({
+      modelGateway: gateway,
+      shell: createStubShell(),
+      secrets,
+      skills,
+      agentStorageRootFor: (root) => store.agentRootFor(root),
+      // 普通文件夹没有 project.yaml：注入与旧项目等价的安全写权限（auto_edit），
+      // 让 /init 的 write_file 自动放行而不是暂停等待确认
+      workspaceConfigLoader: async () => ({
+        project_id: null,
+        output_format: "md",
+        archived_at: null,
+        active_model: null,
+        tool_permissions: {
+          network_allowed: false,
+          safe_edit: true,
+          read_only: false,
+          auto_edit: true,
+          yolo: false,
+          dangerous: false
+        }
+      })
+    });
+    return {
+      agent,
+      gateway,
+      workspaceRoot,
+      stateRoot,
+      projectRoot,
+      project: null,
+      skills,
+      store,
+      agentRoot: store.agentRootFor(projectRoot),
+      async cleanup() {
+        await fs.rm(workspaceRoot, { recursive: true, force: true });
+      }
+    };
+  } catch (error) {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 观测辅助：全部走 ProjectAgent 公共接口
 // ---------------------------------------------------------------------------
 

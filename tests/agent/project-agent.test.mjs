@@ -26,9 +26,11 @@ import test from "node:test";
 import { EXTREME_COMMANDS } from "../fixtures/command-risk-corpus.mjs";
 import {
   LEGACY_STATE_FILE,
+  VALID_MEMORY,
   createMockModelGateway,
   createProjectAgentHarness,
   eventsOfType,
+  openPlainFolderHarness,
   pathExists,
   readEvents,
   readSession,
@@ -1345,6 +1347,58 @@ test("不可读 WWRITING.md（目录占位）不阻止模型轮次", async (t) =
   await waitForIdle(h.agent, h.projectRoot);
   const events = await readEvents(h.agent, h.projectRoot);
   assert.equal(eventsOfType(events, "run_completed").length, 1, "不可读记忆不得导致 Run 失败");
+  assertActivityClosure(events);
+});
+
+// ---------------------------------------------------------------------------
+// /init 初始化技能（Task 7）：维护 WWRITING.md，不生成固定蓝图
+// ---------------------------------------------------------------------------
+
+test("/init 在空目录创建 WWRITING.md，不生成固定蓝图", async (t) => {
+  const h = await openPlainFolderHarness({
+    gatewayScript: [
+      { reply: { toolCalls: [tool("list_files", { path: "." })] } },
+      { reply: { toolCalls: [tool("write_file", { path: "WWRITING.md", content: VALID_MEMORY })] } },
+      { reply: { text: "已建立项目记忆。" } }
+    ]
+  });
+  t.after(() => h.cleanup());
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "/init" });
+  await waitForIdle(h.agent, h.projectRoot);
+  assert.equal(await pathExists(path.join(h.projectRoot, "WWRITING.md")), true);
+  for (const name of ["project.yaml", "OUTLINE.md", "SETTING.md", "AGENTS.md"]) {
+    assert.equal(await pathExists(path.join(h.projectRoot, name)), false);
+  }
+});
+
+test("/init 在已有文件目录先读目录与已有记忆，只更新 WWRITING.md", async (t) => {
+  const h = await openPlainFolderHarness({
+    gatewayScript: [
+      { reply: { toolCalls: [tool("list_files", { path: "." })] } },
+      { reply: { toolCalls: [tool("read_file", { path: "WWRITING.md" })] } },
+      { reply: { toolCalls: [tool("write_file", { path: "WWRITING.md", content: VALID_MEMORY })] } },
+      { reply: { text: "已更新项目记忆。" } }
+    ]
+  });
+  t.after(() => h.cleanup());
+  // 已有创作文件 + 已有记忆：模型必须读取真实文件，且更新后仍不得生成固定蓝图
+  await fs.mkdir(path.join(h.projectRoot, "正文"), { recursive: true });
+  await fs.writeFile(path.join(h.projectRoot, "正文", "第001章.md"), "雨夜，信在桌上。\n", "utf8");
+  await fs.writeFile(path.join(h.projectRoot, "WWRITING.md"), VALID_MEMORY, "utf8");
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "/init" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  const toolNames = eventsOfType(events, "tool_call_completed").map((event) => event.payload?.name);
+  assert.ok(toolNames.includes("list_files"), "应先读取目录");
+  assert.ok(toolNames.includes("read_file"), "应先读取已有记忆");
+  assert.ok(toolNames.includes("write_file"), "应写入更新后的 WWRITING.md");
+  const readIndex = toolNames.indexOf("read_file");
+  const writeIndex = toolNames.indexOf("write_file");
+  assert.ok(writeIndex > readIndex, "写记忆前必须先读取已有记忆，不得盲目覆盖");
+  assert.equal(await fs.readFile(path.join(h.projectRoot, "WWRITING.md"), "utf8"), VALID_MEMORY, "WWRITING.md 应被更新");
+  for (const name of ["project.yaml", "OUTLINE.md", "SETTING.md", "AGENTS.md"]) {
+    assert.equal(await pathExists(path.join(h.projectRoot, name)), false, `不得创建固定蓝图 ${name}`);
+  }
   assertActivityClosure(events);
 });
 
