@@ -1,6 +1,7 @@
 import { icon } from "./icons.js";
 import { compactObject, resolveModelEndpoint } from "./utils.js";
 import { deleteJson, getJson, postJson, withProjectScope } from "./api-client.js";
+import { renderMarkdown } from "./markdown-lite.mjs";
 import { motion } from "./motion-runtime.js";
 import { formatConnectionStatus, submitModelConnectionTest } from "./settings-connection.mjs";
 
@@ -582,8 +583,14 @@ export function createSettingsModal(ctx, options = {}) {
   function buildSkillList(catalog) {
     const frag = document.createDocumentFragment();
     const scopeLabel = skillsScope === "global" ? "全局" : "项目";
+    // Task 8：内置写作风格（readonly 的内置技能）在独立无框分区展示，不混入
+    // 「全局/项目」管理与「其他来源」列表。
+    const styleSkills = (catalog.active ?? []).filter(
+      (skill) => skill.source === "builtin" && skill.readonly === true
+    );
+    const styleNames = new Set(styleSkills.map((skill) => skill.name));
     const scoped = catalog.active.filter((skill) => skill.source === skillsScope);
-    const others = catalog.active.filter((skill) => skill.source !== skillsScope);
+    const others = catalog.active.filter((skill) => skill.source !== skillsScope && !styleNames.has(skill.name));
 
     if (catalog.active.length === 0) {
       const empty = document.createElement("p");
@@ -622,6 +629,8 @@ export function createSettingsModal(ctx, options = {}) {
       for (const skill of catalog.shadowed) {
         const row = document.createElement("div");
         row.className = "spd-skill-row shadowed";
+        row.dataset.skillName = skill.name;
+        row.dataset.shadowReason = skill.shadow_reason ?? "";
         const main = document.createElement("div");
         main.className = "spd-skill-main";
         const nameLine = document.createElement("div");
@@ -634,11 +643,22 @@ export function createSettingsModal(ctx, options = {}) {
         nameLine.append(nameSpan, src);
         const desc = document.createElement("div");
         desc.className = "spd-skill-desc";
-        desc.textContent = "被更高优先级同名技能覆盖，不生效。";
+        desc.textContent = skill.shadow_reason === "reserved_builtin"
+          ? "保留名称，内置写作风格不可覆盖或删除。"
+          : "被更高优先级同名技能覆盖，不生效。";
         main.append(nameLine, desc);
         row.append(main);
         frag.append(row);
       }
+    }
+
+    // Task 8：内置写作风格无框只读分区（三个分隔行，点击在详情区展开完整正文）。
+    if (styleSkills.length > 0) {
+      const styleHeading = document.createElement("div");
+      styleHeading.className = "spd-skill-heading";
+      styleHeading.textContent = "内置写作风格";
+      frag.append(styleHeading);
+      for (const skill of styleSkills) frag.append(buildBuiltinStyleRow(skill));
     }
     return frag;
   }
@@ -674,6 +694,88 @@ export function createSettingsModal(ctx, options = {}) {
       row.append(del);
     }
     return row;
+  }
+
+  // Task 8：技能行的「名称 + 一行说明」文本块（名称优先显示 display_name）。
+  function buildSkillText(skill) {
+    const main = document.createElement("div");
+    main.className = "spd-skill-main";
+    const nameLine = document.createElement("div");
+    nameLine.className = "spd-skill-name";
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = skill.display_name || skill.name;
+    nameLine.append(nameSpan);
+    const desc = document.createElement("div");
+    desc.className = "spd-skill-desc";
+    desc.textContent = skill.description || "";
+    main.append(nameLine, desc);
+    return main;
+  }
+
+  // Task 8 brief Step 6 verbatim：内置写作风格无框分隔行（button），点击展开只读详情。
+  // 注：代码库图标注册表无 "chevron-right"，改用实际存在的 chevR（adaptation）。
+  function buildBuiltinStyleRow(skill) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "spd-skill-row spd-skill-row--readonly";
+    row.dataset.skillName = skill.name;
+    row.append(buildSkillText(skill), icon("chevR", 14));
+    row.addEventListener("click", () => openReadonlySkillDetail(skill.name));
+    return row;
+  }
+
+  // Task 8 Step 5/6：只读详情——GET /api/skills/:name（带项目作用域），在同一
+  // settings detail 区渲染完整正文。无删除/编辑/覆盖控件。
+  async function openReadonlySkillDetail(name) {
+    try {
+      const url = withProjectScope(`/api/skills/${encodeURIComponent(name)}`, ctx.getCurrentProjectRoot());
+      const data = await getJsonImpl(url);
+      if (!data?.ok) throw new Error(data?.message ?? "技能详情加载失败。");
+      renderReadonlySkillDetail(name, data.content);
+    } catch (error) {
+      ctx.showToast(error?.message ?? "技能详情加载失败。", "error");
+    }
+  }
+
+  function renderReadonlySkillDetail(name, content) {
+    const detail = ctx.refs.settingsDetail;
+    detail.replaceChildren();
+
+    const head = document.createElement("header");
+    head.className = "spd-head";
+    const ic = document.createElement("span");
+    ic.className = "spd-av lg";
+    ic.append(icon("skill", 16));
+    const h3 = document.createElement("h3");
+    h3.textContent = name;
+    head.append(ic, h3);
+    detail.append(head);
+
+    const back = document.createElement("button");
+    back.type = "button";
+    back.className = "sp-btn";
+    back.id = "skills-detail-back";
+    back.textContent = "返回技能列表";
+    back.addEventListener("click", () => { void renderSkillsSection(); });
+    detail.append(back);
+
+    // 正文用现有 Markdown 字级（agent-markdown），容器局部滚动（max-height 由
+    // styles.css 提供）。frontmatter 不展示，只展开技能正文。
+    const body = document.createElement("div");
+    body.className = "spd-skill-detail-body agent-markdown";
+    body.innerHTML = renderMarkdown(stripSkillFrontmatter(content));
+    detail.append(body);
+  }
+
+  // 去掉 SKILL.md 开头的 frontmatter（`---\n…\n---`），只保留正文。
+  function stripSkillFrontmatter(content) {
+    const text = String(content ?? "");
+    const lines = text.split(/\r?\n/u);
+    if (lines[0]?.trim() === "---") {
+      const closeIndex = lines.findIndex((line, i) => i > 0 && line.trim() === "---");
+      if (closeIndex > 0) return lines.slice(closeIndex + 1).join("\n").trimStart();
+    }
+    return text;
   }
 
   function buildMigrationErrors(catalog) {
@@ -1442,6 +1544,18 @@ export function createSettingsModal(ctx, options = {}) {
           source: row.dataset.skillSource ?? "",
           deletable: [...row.children].some((c) => c.className === "spd-skill-del"),
           del: [...row.children].find((c) => c.className === "spd-skill-del") ?? null
+        }));
+    },
+    // 仅供测试：读取「内置写作风格」只读行（name/readonly/是否有删除按钮/click）。
+    getBuiltinStyleRowsForTest() {
+      if (!skillsRefs.list) return [];
+      return [...skillsRefs.list.children]
+        .filter((el) => el.className.includes("spd-skill-row--readonly"))
+        .map((row) => ({
+          name: row.dataset.skillName ?? "",
+          readonly: row.className.includes("--readonly"),
+          hasDelete: [...row.children].some((c) => c.className === "spd-skill-del"),
+          click: () => row.click()
         }));
     },
     // 仅供测试：等待技能 catalog 拉取完成（fetchSkillsCatalog 是异步的）。

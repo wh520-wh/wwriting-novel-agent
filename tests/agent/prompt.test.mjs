@@ -9,6 +9,7 @@ import {
   RUNTIME_POLICY_RULES,
   RUNTIME_POLICY_TEMPLATE,
   STATIC_CORE,
+  STYLE_SELECTION_RULE,
   WORKFLOW_POLICIES,
   assemblePrompt,
   assembleProjectMemoryBlock,
@@ -242,6 +243,54 @@ test("assembleSkillCatalogBlock 空目录/无技能返回空串", () => {
   assert.equal(assembleSkillCatalogBlock([]), "");
   assert.equal(assembleSkillCatalogBlock([{ description: "无 name" }]), "");
   assert.equal(assembleSkillCatalogBlock(null), "");
+});
+
+test("风格选择规则（brief Step 7）只注入短描述与选择规则，三个完整正文绝不进入目录块", () => {
+  const block = assembleSkillCatalogBlock([
+    { name: "balanced", description: "在情节、人物、描写与可读性之间保持均衡。" },
+    { name: "fast-readable", description: "用清楚因果、直接冲突和易扫读段落写快节奏中文网文正文。" },
+    { name: "psychological-literary", description: "在大众网文可读性内加强人物动机、心理变化与潜台词。" }
+  ]);
+  // 选择规则逐字注入且只注入一次。
+  assert.ok(block.includes(STYLE_SELECTION_RULE), "风格选择规则必须出现在目录块");
+  assert.equal(block.split(STYLE_SELECTION_RULE).length, 2, "风格选择规则只能注入一次");
+  // 目录块仍只有 name/description 摘要。
+  assert.ok(block.includes("- balanced: 在情节、人物、描写与可读性之间保持均衡。"));
+  assert.ok(block.includes("- psychological-literary: 在大众网文可读性内加强人物动机、心理变化与潜台词。"));
+  // 三个技能的完整正文关键句绝不进入目录块（渐进加载走 read_skill）。
+  assert.ok(!block.includes("只在生成、续写、改写、润色或审核中文小说正文时使用本技能"), "不得注入正文边界句");
+  assert.ok(!block.includes("先确认本场景的目标"), "不得注入 balanced 正文");
+  assert.ok(!block.includes("爽点来自"), "不得注入 fast-readable 正文");
+  assert.ok(!block.includes("心理描写必须由现场刺激触发"), "不得注入 psychological-literary 正文");
+  assert.ok(!block.includes("交付前静默检查"), "不得注入交付前静默检查");
+});
+
+test("风格选择规则不占位：目录为空时不注入（与空 Project Instructions 同语义）", () => {
+  assert.equal(assembleSkillCatalogBlock([]), "");
+  assert.equal(assembleSkillCatalogBlock(undefined), "");
+  const assembled = assemblePrompt(baseOptions({ skillCatalog: undefined }));
+  assert.ok(!assembled.messages[0].content.includes(STYLE_SELECTION_RULE));
+  assert.ok(!assembled.messages[0].content.includes("[Available Skills]"));
+});
+
+test("assemblePrompt 的 system 只携带风格短描述与选择规则，不带任何完整正文", () => {
+  const assembled = assemblePrompt(baseOptions({
+    skillCatalog: [
+      { name: "balanced", description: "在情节、人物、描写与可读性之间保持均衡。" },
+      { name: "fast-readable", description: "用清楚因果、直接冲突和易扫读段落写快节奏中文网文正文。" },
+      { name: "psychological-literary", description: "在大众网文可读性内加强人物动机、心理变化与潜台词。" }
+    ]
+  }));
+  const content = assembled.messages[0].content;
+  assert.ok(content.includes(STYLE_SELECTION_RULE), "选择规则应在 system 中");
+  // 三个技能的完整正文关键句（SPEC §6.4）不得常驻 system prompt。
+  assert.ok(!content.includes("只在生成、续写、改写、润色或审核中文小说正文时使用本技能"), "正文边界句不得常驻 system");
+  assert.ok(!content.includes("爽点来自"), "fast-readable 正文不得常驻 system");
+  assert.ok(!content.includes("心理描写必须由现场刺激触发"), "psychological-literary 正文不得常驻 system");
+  assert.ok(!content.includes("交付前静默检查"), "交付前静默检查不得常驻 system");
+  assert.ok(!content.includes("普通聊天不使用小说文风"), "psychological-literary 边界句不得常驻 system");
+  // system 只携带短描述。
+  assert.ok(content.includes("- balanced: 在情节、人物、描写与可读性之间保持均衡。"));
 });
 
 test("assemblePrompt 把目录块放在 Project Instructions 后、Workflow Policy 前", () => {

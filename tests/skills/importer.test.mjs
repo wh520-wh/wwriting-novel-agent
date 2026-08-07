@@ -17,11 +17,14 @@ import path from "node:path";
 import test from "node:test";
 import { crc32 } from "node:zlib";
 import { createSkillService } from "../../src/core/skills/index.mjs";
+import { PROTECTED_BUILTIN_SKILLS } from "../../src/core/skills/catalog.mjs";
 import {
   MAX_ZIP_ENTRY_BYTES,
   MAX_ZIP_TOTAL_BYTES,
   stageSkillSource
 } from "../../src/core/skills/importer.mjs";
+
+const RESERVED_NAMES = [...PROTECTED_BUILTIN_SKILLS];
 
 // ---------------------------------------------------------------------------
 // 夹具：手工构造 STORED（无压缩）ZIP。
@@ -493,6 +496,69 @@ test("seam removeSkill：危险名字拒绝（.. / 路径分隔符 / 空）", as
         `危险技能名必须拒绝: ${JSON.stringify(bad)}`
       );
     }
+  } finally {
+    await cleanup(projectRoot, userHome);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Task 8：保留名称（三个内置写作风格）不可 import / replace / remove
+// ---------------------------------------------------------------------------
+
+test("seam：保留名称不可导入——importSkill 解析出保留名后、落盘前拒绝（含 replace）", async () => {
+  const projectRoot = await makeTemp("wwr-proj-");
+  const userHome = await makeTemp("wwr-home-");
+  const sourceRoot = await makeTemp("wwr-src-");
+  try {
+    for (const name of RESERVED_NAMES) {
+      const sourceDir = path.join(sourceRoot, name);
+      await fs.mkdir(sourceDir, { recursive: true });
+      await fs.writeFile(path.join(sourceDir, "SKILL.md"), SKILL_MD(name), "utf8");
+
+      const service = createSkillService({ userHome, resourcesPath: await makeTemp(), builtinRoot: await makeTemp() });
+      await assert.rejects(
+        service.importSkill({ projectRoot, source: sourceDir, scope: "project" }),
+        (error) => error.code === "skill_reserved",
+        `保留名称 ${name} 的导入必须拒绝`
+      );
+      await assert.rejects(
+        service.importSkill({ projectRoot, source: sourceDir, scope: "project", replace: true }),
+        (error) => error.code === "skill_reserved",
+        `保留名称 ${name} 的 replace 导入也必须拒绝`
+      );
+      await assert.rejects(
+        service.importSkill({ projectRoot, source: sourceDir, scope: "global" }),
+        (error) => error.code === "skill_reserved",
+        `保留名称 ${name} 的全局导入也必须拒绝`
+      );
+      // 拒绝必须发生在写盘前：目标技能根不得出现同名技能目录（staging 已清理）。
+      assert.equal(existsSync(path.join(projectRoot, "skills", name)), false, `${name} 不得落盘到项目技能根`);
+      assert.equal(existsSync(path.join(userHome, ".wwriting", "skills", name)), false, `${name} 不得落盘到全局技能根`);
+    }
+  } finally {
+    await cleanup(projectRoot, userHome, sourceRoot);
+  }
+});
+
+test("seam：保留名称不可删除——removeSkill 拒绝 skill_reserved 且不触碰同名目录", async () => {
+  const projectRoot = await makeTemp("wwr-proj-");
+  const userHome = await makeTemp("wwr-home-");
+  try {
+    // 项目里确实存在一个同名目录：删除必须被拦截，且目录必须原样保留（写盘前拒绝）。
+    const fakeDir = path.join(projectRoot, "skills", "balanced");
+    await fs.mkdir(fakeDir, { recursive: true });
+    await fs.writeFile(path.join(fakeDir, "SKILL.md"), SKILL_MD("balanced"), "utf8");
+
+    const service = createSkillService({ userHome, resourcesPath: await makeTemp(), builtinRoot: await makeTemp() });
+    for (const scope of ["project", "global"]) {
+      await assert.rejects(
+        service.removeSkill({ projectRoot, name: "balanced", scope }),
+        (error) => error.code === "skill_reserved",
+        `${scope} scope 的 removeSkill 必须拒绝保留名称`
+      );
+    }
+    assert.equal(existsSync(fakeDir), true, "removeSkill 拒绝后不得删除同名目录");
+    assert.equal(existsSync(path.join(fakeDir, "SKILL.md")), true, "同名目录内容不得被改动");
   } finally {
     await cleanup(projectRoot, userHome);
   }

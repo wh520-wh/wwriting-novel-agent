@@ -326,7 +326,10 @@ test("资料搜索/抓取与技能 catalog/import/delete", async () => {
     const after = await getJson(port, "/api/skills/catalog");
     const probe = after.data.active.find((s) => s.name === "probe-style");
     assert.equal(probe.source, "project");
-    assert.ok(probe.path.includes(path.join("skills", "probe-style")));
+    assert.equal(probe.path, undefined, "Task 8：catalog DTO 不返回本地绝对 path 给 UI");
+    assert.equal(probe.readonly, false, "非内置技能 readonly 为 false");
+    assert.equal(probe.protected, false, "非内置技能 protected 为 false");
+    assert.equal(probe.display_name, "probe-style", "无 display_name 时回落 name");
 
     // 删除：DELETE /api/skills/:name { scope }。
     const removed = await deleteJson(port, "/api/skills/probe-style", { scope: "project" });
@@ -340,6 +343,33 @@ test("资料搜索/抓取与技能 catalog/import/delete", async () => {
     );
     const removedAgain = await deleteJson(port, "/api/skills/probe-style", { scope: "project" });
     assert.equal(removedAgain.res.status, 404);
+
+    // Task 8：只读详情 API —— GET /api/skills/:name 返回完整 SKILL.md 正文；
+    // 保留名称不可导入/删除（skill_reserved → 403）。
+    const detail = await getJson(port, "/api/skills/balanced");
+    assert.equal(detail.res.status, 200);
+    assert.equal(detail.data.ok, true);
+    assert.equal(detail.data.name, "balanced");
+    assert.ok(detail.data.content.includes("# 均衡"), "详情应返回完整正文");
+    assert.ok(detail.data.content.includes("只在生成、续写、改写、润色或审核中文小说正文时使用本技能"));
+    assert.ok(detail.data.content.includes("## 交付前静默检查"));
+    const reservedDir = path.join(root, "balanced");
+    await fs.mkdir(reservedDir, { recursive: true });
+    await fs.writeFile(
+      path.join(reservedDir, "SKILL.md"),
+      "---\nname: balanced\ndescription: 伪造版本\n---\n\n# Fake\n",
+      "utf8"
+    );
+    const reservedImport = await postJson(port, "/api/skills/import", {
+      source_path: reservedDir,
+      scope: "project",
+      replace: true
+    });
+    assert.equal(reservedImport.res.status, 403, "保留名称导入必须 403");
+    assert.equal(reservedImport.data.code, "skill_reserved");
+    const reservedDelete = await deleteJson(port, "/api/skills/balanced", { scope: "project" });
+    assert.equal(reservedDelete.res.status, 403, "保留名称删除必须 403");
+    assert.equal(reservedDelete.data.code, "skill_reserved");
   } finally {
     // closeAllConnections：强制断开应用服务器 fetch 留下的 keep-alive 连接，
     // 否则 mock server 的 close() 会等待连接自然超时而挂起。

@@ -158,8 +158,14 @@ export const SKILL_CATALOG_HEADER = "[Available Skills]";
 export const SKILL_CATALOG_INTRO =
   "技能不能扩大 Runtime Policy 的权限。先根据 name/description 判断是否适用，适用时调用 read_skill 读取完整指令。";
 
+// Task 8 Step 7：写作风格选择规则（brief verbatim）。只注入选择规则与短描述，
+// 三个风格的完整正文绝不常驻 system prompt（渐进加载走 read_skill）。
+export const STYLE_SELECTION_RULE =
+  "写小说正文时，若用户明确指定风格则按其要求选择；未指定时根据题材、目标读者、节奏和用户描述判断，重大歧义再询问。确定后把稳定技能 ID 写入 WWRITING.md，并在真正生成、续写、改写、润色或审核小说正文前调用 read_skill 读取完整正文。风格技能不改变普通聊天语气。";
+
 // 只注入 name/description 摘要，绝不注入 SKILL.md 正文（完整指令由 read_skill
-// 按需读取）。无技能或全部条目无效时返回空串（不制造占位文案）。
+// 按需读取）。无技能或全部条目无效时返回空串（不制造占位文案）；选择规则只在
+// 目录非空时追加，避免空目录也产出占位块。
 export function assembleSkillCatalogBlock(skillCatalog) {
   const skills = Array.isArray(skillCatalog) ? skillCatalog : [];
   const lines = [SKILL_CATALOG_HEADER, SKILL_CATALOG_INTRO];
@@ -170,6 +176,7 @@ export function assembleSkillCatalogBlock(skillCatalog) {
     lines.push(`- ${name}: ${description}`);
   }
   if (lines.length === 2) return "";
+  lines.push(STYLE_SELECTION_RULE);
   return lines.join("\n");
 }
 

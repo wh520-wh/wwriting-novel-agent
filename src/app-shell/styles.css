@@ -1661,6 +1661,30 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .spd-skill-error-row { font-size: 12px; line-height: 1.5; color: var(--amber, var(--ink-2)); overflow-wrap: anywhere; }
 
 /* ============================================================
+   Task 8 · 内置写作风格只读分区（无框分隔行 + 只读详情）
+   三个风格以分隔行展示名称和一行说明，点击行展开完整只读正文；
+   不使用卡片套卡片，不显示开关、删除、编辑或覆盖按钮。
+   ============================================================ */
+.spd-skill-row--readonly {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; text-align: left; cursor: pointer;
+  background: transparent; border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0; margin-bottom: 0;
+  padding: 9px 2px; font: inherit; color: inherit;
+}
+.spd-skill-row--readonly:hover { background: var(--surface-2); }
+.spd-skill-row--readonly .spd-skill-name { color: var(--accent); }
+.spd-skill-row--readonly .spd-skill-desc { -webkit-line-clamp: 1; }
+.spd-skill-row--readonly > svg { flex: 0 0 auto; color: var(--muted); }
+.spd-skill-detail-body {
+  max-height: min(52vh, 520px);
+  overflow-y: auto;
+  margin-top: 12px;
+  padding: 2px 4px 8px;
+}
+
+/* ============================================================
    S4.5 Task 14 · 阅读器工具排与沉浸模式
    ============================================================ */
 .reader-tools { display: flex; align-items: center; gap: 4px; flex: none; }
