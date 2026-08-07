@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   createWorkState,
+  formatDuration,
   groupStatusText,
   openWorkItemIds,
   orderedWorkItems,
@@ -380,4 +381,16 @@ test("openWorkItemIds 只列 running 项；plan 静态子项永不 live", () => 
   assert.equal(planItem.state, "completed", "plan 项从不作为 live 目标");
   assert.deepEqual(openWorkItemIds(group), ["tool:a1"], "只列 running 的 tool 项");
   assert.deepEqual(visibleLiveTargets(group, { expanded: false }), ["group:run-1"]);
+});
+
+test("Task 3: formatDuration 按秒/分/小时自动进位（向下取整，无 60 秒/60 分）", () => {
+  assert.equal(formatDuration(0), "0 秒");
+  assert.equal(formatDuration(59_999), "59 秒");
+  assert.equal(formatDuration(60_000), "1 分");
+  assert.equal(formatDuration(3_599_999), "59 分");
+  assert.equal(formatDuration(3_600_000), "1 小时");
+  assert.equal(formatDuration(-1), "0 秒");
+  assert.equal(formatDuration(Number.NaN), "0 秒");
+  // 非整秒向下取整：59.6 秒不得显示成不存在的 60 秒
+  assert.equal(formatDuration(59_600), "59 秒");
 });
