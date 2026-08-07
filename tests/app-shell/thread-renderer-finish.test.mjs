@@ -264,9 +264,8 @@ test("Run 完成后只渲染一次终态：无重复状态横幅，活动终态�
   surface.applyEvent(ev("run_completed", {}));
   surface.applySnapshot(snapshotOf(session({ status: "idle", active_run: activeRun({ status: "completed" }) })));
 
-  // 活动行只有一条，且终态标记只出现一次
-  const activitiesRoot = root.querySelector('[data-testid="agent-activities"]');
-  const activityRows = activitiesRoot?.querySelectorAll(".agent-activity-item") ?? [];
+  // 活动行只有一条，且终态标记只出现一次（活动行已插入 messages 时间线）
+  const activityRows = root.querySelectorAll(".agent-activity-item");
   assert.equal(activityRows.length, 1, "同一活动只渲染一行");
   assert.equal(activityRows[0].dataset.state, "completed");
   const completedMarks = activityRows[0].querySelectorAll(".agent-activity-mark");
@@ -294,8 +293,7 @@ test("停止不产生第二个已停止横幅：终态只渲染一次", async ()
   // 再次推送同样的终态快照（轮询重放）：不得重复渲染横幅
   surface.applySnapshot(snapshotOf(session({ status: "idle", active_run: activeRun({ status: "cancelled" }) })));
 
-  const activitiesRoot = root.querySelector('[data-testid="agent-activities"]');
-  const activityRows = activitiesRoot?.querySelectorAll(".agent-activity-item") ?? [];
+  const activityRows = root.querySelectorAll(".agent-activity-item");
   assert.equal(activityRows.length, 1, "停止后仍只有一条活动行");
   assert.equal(activityRows[0].dataset.state, "cancelled");
   const cancelledMarks = activityRows[0].querySelectorAll(".agent-activity-mark");
@@ -320,8 +318,7 @@ test("终态活动折叠在原生 details 内（无手动编辑入口）", async
   surface.applyEvent(ev("run_completed", {}));
   surface.applySnapshot(snapshotOf(session({ status: "idle", active_run: activeRun({ status: "completed" }) })));
 
-  const activitiesRoot = root.querySelector('[data-testid="agent-activities"]');
-  const row = activitiesRoot?.querySelector(".agent-activity-item");
+  const row = root.querySelector(".agent-activity-item");
   assert.ok(row, "活动行应存在");
   const details = row.querySelector("details");
   assert.ok(details, "活动行应使用原生 details 折叠");

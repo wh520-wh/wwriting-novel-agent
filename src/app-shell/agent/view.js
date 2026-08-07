@@ -189,6 +189,8 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   errorsSlot.className = "agent-errors";
   runSection.append(runHeader, decisionsSlot, errorsSlot);
 
+  // 旧活动流 host：活动行已改为插入 messages 统一时间线（按 seq 落位）。
+  // host 保留为空容器以兼容既有 CSS（:empty 隐藏）与测试选择器。
   const activities = doc.createElement("div");
   activities.className = "agent-activities";
   activities.dataset.testid = "agent-activities";
@@ -357,6 +359,9 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     viewGeneration += 1;
     for (const record of workGroups.values()) clearWorkGroupTimers(record);
     workGroups.clear();
+    // 活动行已插入 messages 统一时间线：先移除 rows 中仍挂着的节点，
+    // 再整体清空 messages 与 seq 映射，最后清空旧 .agent-activities host。
+    for (const row of rows.values()) row.wrap.remove();
     messages.replaceChildren();
     timelineSeqs.clear();
     runHeader.replaceChildren();
@@ -1112,7 +1117,8 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     if (state.errors.length > 0) afterRender();
   }
 
-  // ---- 活动流（单条流，同 activity_id 合并；20 行保留；64 KiB 输出尾） ---------
+  // ---- 活动流（单条流，同 activity_id 合并；20 行保留；64 KiB 输出尾；
+  //      行插入 messages 统一时间线，按事件 seq 落位） ------------------------
   function buildActivityRow(activity) {
     const wrap = doc.createElement("div");
     wrap.className = "agent-activity-item";
@@ -1202,6 +1208,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     for (const [id, row] of rows) {
       if (ACTIVITY_TERMINAL_STATUSES.has(row.wrap.dataset.state)) {
         row.wrap.remove();
+        timelineSeqs.delete(row.wrap);
         rows.delete(id);
         trimmedIds.add(id);
         return;
@@ -1216,6 +1223,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     for (const [id, row] of rows) {
       if (!state.activities.has(id)) {
         row.wrap.remove();
+        timelineSeqs.delete(row.wrap);
         rows.delete(id);
       }
     }
@@ -1225,7 +1233,9 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       if (!row) {
         row = buildActivityRow(activity);
         rows.set(activity.activity_id, row);
-        activities.append(row.wrap);
+        // 活动行插入 messages 同一时间线，按事件 seq 落位（完成态位于
+        // Assistant 正文之前）；旧事件无 seq 时由 insertTimeline 追加到末端。
+        insertTimeline(row.wrap, activity.seq);
         trimRows();
         updateActivityRow(row, activity);
         afterRender();
