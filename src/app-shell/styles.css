@@ -969,7 +969,12 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 /* right pane */
 .sp-detail { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0,1fr) auto; }
 
-.sp-detail-scroll { min-height: 0; overflow: auto; padding: 22px 26px 12px; }
+.sp-detail-scroll {
+  min-height: 0; overflow: auto;
+  /* P1-3 修复：底部留出足够安全间距（12px→28px），列表滚到底时最后一行
+     与固定操作栏之间有可见空隙，不被 .spd-foot 遮挡。 */
+  padding: 22px 26px 28px;
+}
 
 .spd-head { display: flex; align-items: center; gap: 12px; padding-right: 36px; padding-bottom: 18px; border-bottom: 1px solid var(--line-2); margin-bottom: 20px; }
 
@@ -1464,7 +1469,14 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 }
 
 
-.qr-collapsed-btn { display: none; }
+.qr-collapsed-btn {
+  display: none;
+  /* P1-2 修复：窄屏顶栏空间紧张时，"面板"不得被 flex 挤压成两行逐字；
+     nowrap 禁止换行，flex:0 0 auto 防止收缩（.tbtn 固定 32px 宽）。 */
+  white-space: nowrap;
+  flex: 0 0 auto;
+  min-width: 32px;
+}
 @media (max-width: 1100px) {
 
   .qr-collapsed-btn { display: inline-flex; }
