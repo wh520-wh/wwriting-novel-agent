@@ -133,11 +133,30 @@ async function waitForChildClose(childClosed, child, timeoutMs = 2000) {
 async function terminateProcessTree(child) {
   if (!child.pid || child.exitCode !== null) return;
   if (process.platform === "win32") {
-    // taskkill /T /F：Windows 下递归终止整棵进程树，/F 强制结束
+    // taskkill /T /F：Windows 下递归终止整棵进程树，/F 强制结束。
+    // 等待 taskkill 的 close 事件确认结果；非零退出或 error（如受限环境拒绝访问）
+    // 不吞掉——回退到直接 kill 子进程，由 waitForChildClose 以 2 秒兜底收尾。
+    // taskkill 的退出码/输出仅供诊断，绝不回传给最终用户（错误字段契约见 finishError）。
     await new Promise((resolve) => {
       const killer = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true });
-      killer.on("close", resolve);
-      killer.on("error", resolve);
+      killer.on("error", () => {
+        try {
+          child.kill();
+        } catch {
+          // 子进程已经退出时忽略
+        }
+        resolve();
+      });
+      killer.on("close", (exitCode) => {
+        if (exitCode !== 0) {
+          try {
+            child.kill();
+          } catch {
+            // 子进程已经退出时忽略
+          }
+        }
+        resolve();
+      });
     });
     return;
   }
