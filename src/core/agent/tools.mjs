@@ -110,7 +110,7 @@ function toolError(code, message, technical = null) {
 function isNodeSystemError(error) {
   if (!error) return false;
   if (typeof error.syscall === "string" && error.syscall.length > 0) return true;
-  return /^(?:E[A-Z]+|ERR_[A-Z0-9_]+|UV_[A-Z0-9_]+)$/u.test(String(error.code ?? ""));
+  return /^(?:E[A-Z0-9]+|ERR_[A-Z0-9_]+|UV_[A-Z0-9_]+)$/u.test(String(error.code ?? ""));
 }
 
 // Node 文件错误 → 简短工具错误：固定中文 message + 原始错误进 technical（供
