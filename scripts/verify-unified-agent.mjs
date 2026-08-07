@@ -16,7 +16,7 @@
 //   确认但不跳过 extreme / fresh 精确文字确认不可复用且不可模型提供 /
 //   Shell cwd/超时/增量输出/进程树停止与 1 MiB 流尾（runtime.test.mjs 承载）/
 //   命令、参数、分块流式密钥、最终输出与 journal 详情全量脱敏 /
-//   同一活动合并而不重复渲染；私有推理永不渲染 / 900px 共享内容列与统一
+//   同一活动合并而不重复渲染；私有推理永不渲染 / 1040px 共享内容列与统一
 //   Composer 菜单视口钳制在 cutover 后保留 / 停止中止命令并清除授权
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -1084,16 +1084,16 @@ step("场景 24 · 活动合并与私有推理排除");
 }
 
 // ---------------------------------------------------------------------------
-// 场景 25：共享 900px 内容列与统一 Composer 菜单视口钳制
+// 场景 25：共享 1040px 内容列与统一 Composer 菜单视口钳制
 // ---------------------------------------------------------------------------
-step("场景 25 · 900px 内容列与统一菜单视口钳制");
+step("场景 25 · 1040px 内容列与统一菜单视口钳制");
 {
   const agentCssUrl = new URL("../src/app-shell/agent/agent.css", import.meta.url);
   const stylesCssUrl = new URL("../src/app-shell/styles.css", import.meta.url);
   const agentCss = await fs.readFile(agentCssUrl, "utf8");
   const stylesCss = await fs.readFile(stylesCssUrl, "utf8");
-  assert.ok(stylesCss.includes("--content-column: 900px"), "styles.css 应定义 900px 内容列变量");
-  assert.ok(agentCss.includes("--content-column: 900px"), "agent.css 应定义 900px 内容列变量");
+  assert.ok(stylesCss.includes("--content-column: 1040px"), "styles.css 应定义 1040px 内容列变量");
+  assert.ok(agentCss.includes("--content-column: 1040px"), "agent.css 应定义 1040px 内容列变量");
   assert.ok(
     /\.agent-conversation[\s\S]*max-width:\s*var\(--content-column\)/u.test(agentCss),
     "对话应共享 max-width: var(--content-column)"
@@ -1106,7 +1106,7 @@ step("场景 25 · 900px 内容列与统一菜单视口钳制");
   assert.ok(agentCss.includes("bottom: calc(100% + 7px)"), "统一菜单应从 composer 向上展开");
   assert.ok(!agentCss.includes(".model-popover") && !agentCss.includes(".mode-popover"), "旧菜单实现不得残留");
   assert.ok(agentCss.includes("overflow-wrap: anywhere"), "长模型名称应允许任意位置换行");
-  record("900px 内容列与统一菜单钳制：CSS 基线保留", true, "agent.css + styles.css");
+  record("1040px 内容列与统一菜单钳制：CSS 基线保留", true, "agent.css + styles.css");
 }
 
 // ---------------------------------------------------------------------------
