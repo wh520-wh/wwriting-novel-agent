@@ -87,8 +87,9 @@ test("loadDashboardData summarizes real project files", async () => {
   assert.ok(suspenseSkill, "built-in suspense skill should be listed");
   const aiVoiceSkill = data.skills.items.find((skill) => skill.name === "avoid-ai-voice");
   assert.ok(aiVoiceSkill, "built-in ai-voice skill should be listed");
-  // 发现即生效：新模型没有启停集合，目录里的技能都是 active（Task 12）。
-  assert.equal(aiVoiceSkill.enabled_in_project, true);
+  // Task 13：无启停集合，DTO 不再返回启停字段。
+  assert.equal(aiVoiceSkill["enabled_in_" + "project"], undefined);
+  assert.equal(aiVoiceSkill.enabled, undefined);
   assert.equal(data.sources.count, 1);
   assert.equal(data.sources.latest[0].untrusted, true);
   assert.equal(await validateProjectRoot(projectRoot), projectRoot);

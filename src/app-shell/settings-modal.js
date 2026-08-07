@@ -1,6 +1,6 @@
 import { icon } from "./icons.js";
 import { compactObject, resolveModelEndpoint } from "./utils.js";
-import { getJson, postJson } from "./api-client.js";
+import { deleteJson, getJson, postJson, withProjectScope } from "./api-client.js";
 import { motion } from "./motion-runtime.js";
 import { formatConnectionStatus, submitModelConnectionTest } from "./settings-connection.mjs";
 
@@ -24,6 +24,7 @@ const SETTINGS_PROVIDERS = [
 const SETTINGS_SECTIONS = [
   { id: "model", label: "模型与密钥", icon: "settings", ready: true },
   { id: "writing", label: "写作参数", icon: "compose", ready: true },
+  { id: "skills", label: "Agent 技能", icon: "skill", ready: true },
   { id: "danger", label: "项目管理", icon: "folder", ready: true }
 ];
 
@@ -34,6 +35,7 @@ export function createSettingsModal(ctx, options = {}) {
   const {
     getJsonImpl = getJson,
     postJsonImpl = postJson,
+    deleteJsonImpl = deleteJson,
     // 模型切换确认的确认函数（可注入以便测试；默认原生 confirm，桌面场景无需新 UI）。
     confirmImpl = (message) => {
       if (typeof window !== "undefined" && typeof window.confirm === "function") {
@@ -45,6 +47,12 @@ export function createSettingsModal(ctx, options = {}) {
 
   let settingsProviderId = "deepseek";
   let settingsSection = "model";
+  // 技能管理 scope（Task 13）：segmented control 的当前目录范围。
+  let skillsScope = "global";
+  // 技能 catalog 快照（settings 的 GET /api/skills/catalog）。
+  let skillsCatalog = { active: [], shadowed: [], migration_errors: [] };
+  // 技能分区内的节点引用（scope 切换 / 导入删除后局部重渲染，不重建整个分区）。
+  const skillsRefs = { list: null, errors: null, globalBtn: null, projectBtn: null, addWrap: null };
   // 模型清单来自全局（~/.wwriting/model-profiles.json），与项目无关。
   // 打开设置时拉一次，保存/删除/选用后刷新。
   let globalModels = { default_model: null, models: [] };
@@ -100,8 +108,10 @@ export function createSettingsModal(ctx, options = {}) {
     }
   }
 
-  async function openSettingsModal() {
-    settingsSection = "model";
+  // section 可选：快捷 rail / Agent 斜杠命令（/settings、/model）可指定打开的分区；
+  // 非法值回落 model。
+  async function openSettingsModal(section = "model") {
+    settingsSection = SETTINGS_SECTIONS.some((s) => s.id === section) ? section : "model";
     // 模型清单来自全局配置，与项目无关：先拉一次，没打开项目时表单也能显示已配好的模型。
     await fetchGlobalModels();
     const dashboard = ctx.getDashboard();
@@ -173,9 +183,16 @@ export function createSettingsModal(ctx, options = {}) {
       return;
     }
     if (settingsSection === "writing") {
-      renderWritingSection();
+      void renderWritingSection();
       ctx.refs.settingsSave.disabled = false;
       ctx.refs.settingsSave.textContent = "保存设置";
+      return;
+    }
+    if (settingsSection === "skills") {
+      // 技能动作各自即时生效，不依赖底部保存按钮。
+      void renderSkillsSection();
+      ctx.refs.settingsSave.disabled = true;
+      ctx.refs.settingsSave.textContent = "无需保存";
       return;
     }
     if (settingsSection === "danger") {
@@ -352,6 +369,355 @@ export function createSettingsModal(ctx, options = {}) {
     folderField.append(folderLabel, folderBtn);
     settingsFields.folderButton = { field: folderField, input: folderBtn };
     ctx.refs.settingsDetail.append(folderField);
+  }
+
+  // -------------------------------------------------------------------------
+  // 「Agent 技能」分区（Task 13）：全局/项目 segmented control、技能列表（来源
+  // 标签）、覆盖说明、打开目录 icon button、添加菜单（文件夹/ZIP）、删除按钮。
+  // 不存在任何开关、批量启用按钮或项目启用集合——发现即生效。
+  // -------------------------------------------------------------------------
+
+  const SKILL_SOURCE_LABELS = { project: "项目", global: "全局", bundled: "随应用分发", builtin: "内置" };
+
+  function skillSourceLabel(source) {
+    return SKILL_SOURCE_LABELS[source] ?? String(source ?? "");
+  }
+
+  async function fetchSkillsCatalog() {
+    const url = withProjectScope("/api/skills/catalog", ctx.getCurrentProjectRoot());
+    try {
+      const data = await getJsonImpl(url);
+      if (data?.ok) {
+        skillsCatalog = {
+          active: Array.isArray(data.active) ? data.active : [],
+          shadowed: Array.isArray(data.shadowed) ? data.shadowed : [],
+          migration_errors: Array.isArray(data.migration_errors) ? data.migration_errors : []
+        };
+      }
+    } catch (error) {
+      ctx.showToast(error?.message ?? "技能清单加载失败。", "error");
+      skillsCatalog = { active: [], shadowed: [], migration_errors: [] };
+    }
+    return skillsCatalog;
+  }
+
+  async function renderSkillsSection() {
+    const detail = ctx.refs.settingsDetail;
+    detail.replaceChildren();
+
+    const head = document.createElement("header");
+    head.className = "spd-head";
+    const ic = document.createElement("span");
+    ic.className = "spd-av lg";
+    ic.append(icon("skill", 16));
+    const h3 = document.createElement("h3");
+    h3.textContent = "Agent 技能";
+    head.append(ic, h3);
+    detail.append(head);
+
+    const intro = document.createElement("p");
+    intro.className = "spd-hint";
+    intro.textContent = "技能是写作规则包：起草时自动注入规则，审稿时按清单检查。导入到目录即生效，无需手动启用。";
+    detail.append(intro);
+
+    // 全局/项目 segmented control（决定导入/删除/打开目录的目标目录）。
+    const projectRoot = ctx.getCurrentProjectRoot();
+    if (skillsScope === "project" && !projectRoot) skillsScope = "global";
+    const seg = document.createElement("div");
+    seg.className = "spd-segmented";
+    seg.setAttribute("role", "group");
+    seg.setAttribute("aria-label", "技能目录范围");
+    const globalBtn = document.createElement("button");
+    globalBtn.type = "button";
+    globalBtn.className = `spd-seg${skillsScope === "global" ? " on" : ""}`;
+    globalBtn.dataset.scope = "global";
+    globalBtn.id = "skills-scope-global";
+    globalBtn.textContent = "全局";
+    const projectBtn = document.createElement("button");
+    projectBtn.type = "button";
+    projectBtn.className = `spd-seg${skillsScope === "project" ? " on" : ""}`;
+    projectBtn.dataset.scope = "project";
+    projectBtn.id = "skills-scope-project";
+    projectBtn.textContent = "项目";
+    projectBtn.disabled = !projectRoot;
+    if (!projectRoot) projectBtn.title = "打开项目后才能管理项目技能";
+    const setSkillsScope = (scope) => {
+      if (skillsScope === scope || (scope === "project" && !ctx.getCurrentProjectRoot())) return;
+      skillsScope = scope;
+      skillsRefs.globalBtn?.classList.toggle("on", skillsScope === "global");
+      skillsRefs.projectBtn?.classList.toggle("on", skillsScope === "project");
+      renderSkillsList();
+    };
+    globalBtn.addEventListener("click", () => setSkillsScope("global"));
+    projectBtn.addEventListener("click", () => setSkillsScope("project"));
+    skillsRefs.globalBtn = globalBtn;
+    skillsRefs.projectBtn = projectBtn;
+    seg.append(globalBtn, projectBtn);
+    detail.append(seg);
+
+    // 覆盖说明（同名技能按优先级生效）。
+    const override = document.createElement("p");
+    override.className = "spd-hint";
+    override.textContent = "同名技能按 项目 > 全局 > 随应用分发 > 内置 的优先级生效，高优先级覆盖低优先级。";
+    detail.append(override);
+
+    // 工具条：打开目录 icon button + 添加技能菜单（文件夹/ZIP）。
+    const toolbar = document.createElement("div");
+    toolbar.className = "spd-skill-toolbar";
+    const openDir = document.createElement("button");
+    openDir.type = "button";
+    openDir.className = "icon-btn";
+    openDir.id = "skills-open-dir";
+    openDir.title = "打开当前范围的技能目录";
+    openDir.setAttribute("aria-label", "打开技能目录");
+    openDir.append(icon("folder", 15));
+    openDir.addEventListener("click", () => openSkillDirectory());
+    toolbar.append(openDir);
+
+    const addWrap = document.createElement("div");
+    addWrap.className = "spd-addmenu";
+    const addBtn = document.createElement("button");
+    addBtn.type = "button";
+    addBtn.className = "small-button";
+    addBtn.id = "skills-add";
+    addBtn.textContent = "添加技能";
+    addBtn.addEventListener("click", () => {
+      const open = !addWrap.classList.contains("open");
+      addWrap.classList.toggle("open", open);
+    });
+    const addMenu = document.createElement("div");
+    addMenu.className = "spd-addmenu-pop";
+    const folderOpt = document.createElement("button");
+    folderOpt.type = "button";
+    folderOpt.id = "skills-add-folder";
+    folderOpt.textContent = "从文件夹导入…";
+    folderOpt.addEventListener("click", () => {
+      addWrap.classList.remove("open");
+      void addSkillFromFolder();
+    });
+    const zipOpt = document.createElement("button");
+    zipOpt.type = "button";
+    zipOpt.id = "skills-add-zip";
+    zipOpt.textContent = "从 ZIP 包导入…";
+    zipOpt.addEventListener("click", () => {
+      addWrap.classList.remove("open");
+      void addSkillFromZip();
+    });
+    addMenu.append(folderOpt, zipOpt);
+    addWrap.append(addBtn, addMenu);
+    skillsRefs.addWrap = addWrap;
+    toolbar.append(addWrap);
+    detail.append(toolbar);
+
+    // 列表 + 迁移失败容器（refresh 只重渲这两个节点）。
+    const list = document.createElement("div");
+    list.className = "spd-skill-list";
+    list.id = "skills-list";
+    skillsRefs.list = list;
+    detail.append(list);
+    const errors = document.createElement("div");
+    errors.id = "skills-migration-errors";
+    skillsRefs.errors = errors;
+    detail.append(errors);
+
+    await renderSkillsCatalogBody();
+  }
+
+  // 拉取最新 catalog 并重渲列表区（scope 切换 / 导入删除后刷新）。
+  async function renderSkillsCatalogBody() {
+    const catalog = await fetchSkillsCatalog();
+    renderSkillsList(catalog);
+  }
+
+  function renderSkillsList(catalog = skillsCatalog) {
+    if (!skillsRefs.list) return;
+    skillsRefs.list.replaceChildren(buildSkillList(catalog));
+    if (skillsRefs.errors) {
+      skillsRefs.errors.replaceChildren(buildMigrationErrors(catalog));
+    }
+  }
+
+  function buildSkillList(catalog) {
+    const frag = document.createDocumentFragment();
+    const scopeLabel = skillsScope === "global" ? "全局" : "项目";
+    const scoped = catalog.active.filter((skill) => skill.source === skillsScope);
+    const others = catalog.active.filter((skill) => skill.source !== skillsScope);
+
+    if (catalog.active.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "dpanel-empty";
+      empty.textContent = "未发现技能。";
+      frag.append(empty);
+      return frag;
+    }
+
+    const scopedHeading = document.createElement("div");
+    scopedHeading.className = "spd-skill-heading";
+    scopedHeading.textContent = `${scopeLabel}目录`;
+    frag.append(scopedHeading);
+    if (scoped.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "dpanel-empty";
+      empty.textContent = `「${scopeLabel}」目录下还没有技能，可用上方「添加技能」导入。`;
+      frag.append(empty);
+    } else {
+      for (const skill of scoped) frag.append(buildSkillRow(skill, { deletable: true }));
+    }
+
+    if (others.length > 0) {
+      const otherHeading = document.createElement("div");
+      otherHeading.className = "spd-skill-heading";
+      otherHeading.textContent = "其他来源";
+      frag.append(otherHeading);
+      for (const skill of others) frag.append(buildSkillRow(skill, { deletable: false }));
+    }
+
+    if (catalog.shadowed.length > 0) {
+      const shadowHeading = document.createElement("div");
+      shadowHeading.className = "spd-skill-heading";
+      shadowHeading.textContent = "被覆盖";
+      frag.append(shadowHeading);
+      for (const skill of catalog.shadowed) {
+        const row = document.createElement("div");
+        row.className = "spd-skill-row shadowed";
+        const main = document.createElement("div");
+        main.className = "spd-skill-main";
+        const nameLine = document.createElement("div");
+        nameLine.className = "spd-skill-name";
+        const nameSpan = document.createElement("span");
+        nameSpan.textContent = skill.name;
+        const src = document.createElement("span");
+        src.className = "spd-skill-source";
+        src.textContent = skillSourceLabel(skill.source);
+        nameLine.append(nameSpan, src);
+        const desc = document.createElement("div");
+        desc.className = "spd-skill-desc";
+        desc.textContent = "被更高优先级同名技能覆盖，不生效。";
+        main.append(nameLine, desc);
+        row.append(main);
+        frag.append(row);
+      }
+    }
+    return frag;
+  }
+
+  function buildSkillRow(skill, { deletable }) {
+    const row = document.createElement("div");
+    row.className = "spd-skill-row";
+    row.dataset.skillName = skill.name;
+    row.dataset.skillSource = skill.source;
+    const main = document.createElement("div");
+    main.className = "spd-skill-main";
+    const nameLine = document.createElement("div");
+    nameLine.className = "spd-skill-name";
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = skill.name;
+    const src = document.createElement("span");
+    src.className = "spd-skill-source";
+    src.textContent = skillSourceLabel(skill.source);
+    nameLine.append(nameSpan, src);
+    const desc = document.createElement("div");
+    desc.className = "spd-skill-desc";
+    desc.textContent = skill.description || "";
+    main.append(nameLine, desc);
+    row.append(main);
+    if (deletable) {
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "spd-skill-del";
+      del.setAttribute("aria-label", `删除技能 ${skill.name}`);
+      del.title = "删除技能";
+      del.append(icon("trash", 14));
+      del.addEventListener("click", () => { void deleteSkill(skill.name); });
+      row.append(del);
+    }
+    return row;
+  }
+
+  function buildMigrationErrors(catalog) {
+    const frag = document.createDocumentFragment();
+    if (!Array.isArray(catalog.migration_errors) || catalog.migration_errors.length === 0) return frag;
+    const box = document.createElement("div");
+    box.className = "spd-skill-errors";
+    const heading = document.createElement("div");
+    heading.className = "spd-skill-heading";
+    heading.textContent = "迁移失败";
+    const hint = document.createElement("p");
+    hint.className = "spd-hint";
+    hint.textContent = "以下旧格式技能未能自动迁移，仍保留在源目录（可修复后重开应用重试）：";
+    box.append(heading, hint);
+    for (const errorItem of catalog.migration_errors) {
+      const row = document.createElement("div");
+      row.className = "spd-skill-error-row";
+      row.textContent = `${errorItem.name ?? "?"}（${errorItem.scope === "project" ? "项目" : "全局"}）：${errorItem.error}`;
+      box.append(row);
+    }
+    frag.append(box);
+    return frag;
+  }
+
+  // 导入：重名默认 409，仅 UI 二次确认后带 replace:true 重试（冻结契约）。
+  async function importSkillSource(sourcePath, replace = false) {
+    const scopeLabel = skillsScope === "global" ? "全局" : "项目";
+    try {
+      await postJsonImpl("/api/skills/import", {
+        source_path: sourcePath,
+        scope: skillsScope,
+        ...(replace ? { replace: true } : {})
+      });
+      ctx.showToast(`已导入技能到${scopeLabel}目录。`, "success");
+      await renderSkillsCatalogBody();
+    } catch (error) {
+      if (error?.status === 409 && error?.code === "skill_exists" && !replace) {
+        if (confirmImpl("同名技能已存在，是否覆盖？覆盖会替换现有内容。")) {
+          return importSkillSource(sourcePath, true);
+        }
+        return;
+      }
+      ctx.showToast(error?.message ?? "技能导入失败。", "error");
+    }
+  }
+
+  async function addSkillFromFolder() {
+    const picker = window.wwritingDesktop?.selectSkillFolder;
+    if (typeof picker !== "function") {
+      ctx.showToast("当前环境不支持选择文件夹，请使用桌面版。", "info");
+      return;
+    }
+    const sourcePath = await picker();
+    if (sourcePath) await importSkillSource(sourcePath);
+  }
+
+  async function addSkillFromZip() {
+    const picker = window.wwritingDesktop?.selectSkillZip;
+    if (typeof picker !== "function") {
+      ctx.showToast("当前环境不支持选择 ZIP，请使用桌面版。", "info");
+      return;
+    }
+    const sourcePath = await picker();
+    if (sourcePath) await importSkillSource(sourcePath);
+  }
+
+  function openSkillDirectory() {
+    const reveal = window.wwritingDesktop?.revealSkillDirectory;
+    if (typeof reveal !== "function") {
+      ctx.showToast("当前环境不支持打开文件夹。", "info");
+      return;
+    }
+    void reveal(skillsScope, ctx.getCurrentProjectRoot() ?? null)
+      .then(() => ctx.showToast("已打开技能目录。", "info"))
+      .catch(() => ctx.showToast("打开技能目录失败。", "error"));
+  }
+
+  async function deleteSkill(name) {
+    if (!confirmImpl(`删除技能「${name}」？将删除其目录。`)) return;
+    try {
+      await deleteJsonImpl(`/api/skills/${encodeURIComponent(name)}`, { scope: skillsScope });
+      ctx.showToast(`已删除技能：${name}`, "success");
+      await renderSkillsCatalogBody();
+    } catch (error) {
+      ctx.showToast(error?.message ?? "技能删除失败。", "error");
+    }
   }
 
   function closeSettingsModal() {
@@ -829,6 +1195,10 @@ export function createSettingsModal(ctx, options = {}) {
       // 项目管理动作各自即时生效，不依赖底部保存按钮。
       return;
     }
+    if (settingsSection === "skills") {
+      // 技能导入/删除/打开目录各自即时生效，不依赖底部保存按钮。
+      return;
+    }
     await saveModelSection();
   }
 
@@ -1008,6 +1378,33 @@ export function createSettingsModal(ctx, options = {}) {
         api_key: settingsFields.apiKey
       };
       return fieldName === "api_key_env" ? currentApiKeyEnv : (byName[fieldName]?.input?.value ?? "");
+    },
+    // 仅供测试：当前技能管理 scope（"global" | "project"）。
+    getSkillsScope() {
+      return skillsScope;
+    },
+    // 仅供测试：切换技能管理 scope 并重渲列表。
+    setSkillsScopeForTest(scope) {
+      skillsScope = scope === "project" ? "project" : "global";
+      skillsRefs.globalBtn?.classList.toggle("on", skillsScope === "global");
+      skillsRefs.projectBtn?.classList.toggle("on", skillsScope === "project");
+      renderSkillsList();
+    },
+    // 仅供测试：读取技能列表（name/source/deletable/删除按钮）。
+    getSkillsRowsForTest() {
+      if (!skillsRefs.list) return [];
+      return [...skillsRefs.list.children]
+        .filter((el) => el.className === "spd-skill-row")
+        .map((row) => ({
+          name: row.dataset.skillName ?? "",
+          source: row.dataset.skillSource ?? "",
+          deletable: [...row.children].some((c) => c.className === "spd-skill-del"),
+          del: [...row.children].find((c) => c.className === "spd-skill-del") ?? null
+        }));
+    },
+    // 仅供测试：等待技能 catalog 拉取完成（fetchSkillsCatalog 是异步的）。
+    async waitForSkillsCatalog() {
+      await renderSkillsCatalogBody();
     }
   };
 }

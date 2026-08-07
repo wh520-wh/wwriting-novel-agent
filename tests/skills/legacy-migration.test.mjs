@@ -448,7 +448,7 @@ test("importSkill/removeSkill 先完成迁移再工作，重名默认 409 语义
   });
 
   const service = createSkillService({ userHome, resourcesPath: makeTemp(), builtinRoot: makeTemp() });
-  const imported = await service.importSkill({ projectRoot, sourceDir, scope: "project" });
+  const imported = await service.importSkill({ projectRoot, source: sourceDir, scope: "project" });
 
   assert.equal(imported.name, "imported-skill");
   assert.equal(fs.readdirSync(path.join(projectRoot, "skills", "imported-skill")).sort().join(","), "SKILL.md,references", "SKILL.md 与资源一并导入");
@@ -458,11 +458,11 @@ test("importSkill/removeSkill 先完成迁移再工作，重名默认 409 语义
 
   // 重名默认拒绝（Task 13 的 409 语义）。
   await assert.rejects(
-    service.importSkill({ projectRoot, sourceDir, scope: "project" }),
+    service.importSkill({ projectRoot, source: sourceDir, scope: "project" }),
     (error) => error.code === "skill_exists"
   );
   // replace: true 覆盖。
-  await service.importSkill({ projectRoot, sourceDir, scope: "project", replace: true });
+  await service.importSkill({ projectRoot, source: sourceDir, scope: "project", replace: true });
   assert.equal(fs.existsSync(path.join(projectRoot, "skills", "imported-skill", "SKILL.md")), true);
 
   // remove 删除技能目录。
@@ -480,7 +480,7 @@ test("importSkill/removeSkill 先完成迁移再工作，重名默认 409 语义
     (error) => error.code === "skill_invalid_name"
   );
   await assert.rejects(
-    service.importSkill({ projectRoot, sourceDir, scope: "elsewhere" }),
+    service.importSkill({ projectRoot, source: sourceDir, scope: "elsewhere" }),
     (error) => error.code === "skill_invalid_scope"
   );
 });
@@ -503,7 +503,7 @@ test("global scope 的导入与删除走 userHome 技能根", async (t) => {
   });
 
   const service = createSkillService({ userHome, resourcesPath: makeTemp(), builtinRoot: makeTemp() });
-  await service.importSkill({ projectRoot, sourceDir, scope: "global" });
+  await service.importSkill({ projectRoot, source: sourceDir, scope: "global" });
   const globalDir = path.join(userHome, ".wwriting", "skills", "global-imported");
   assert.equal(fs.existsSync(path.join(globalDir, "SKILL.md")), true, "全局导入写入 userHome 技能根");
   assert.equal(fs.existsSync(path.join(projectRoot, "skills", "global-imported")), false);

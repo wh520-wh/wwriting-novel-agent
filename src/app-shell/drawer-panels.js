@@ -1,11 +1,12 @@
 import { icon } from "./icons.js";
-import { formatNumber, formatMoney, formatTime, translateStage, translateSkillType, translateSourceKind, translateEventType } from "./utils.js";
+import { formatNumber, formatMoney, formatTime, translateStage, translateSourceKind, translateEventType } from "./utils.js";
 import { postJson } from "./api-client.js";
 import { renderCostPanel as renderCostPanelComponent } from "./components/cost-panel.js";
 
-// 抽屉面板（统一 Agent 内核计划 Task 9）：只保留项目领域事实（章节/模型/技能/
-// 资料/成本）。删除运行面板与审查面板——运行事实只在 Agent 对话当前轮展示；
-// “导出成书”直接 POST 确定性导出 route，不再经聊天发送。
+// 抽屉面板（统一 Agent 内核计划 Task 9）：只保留项目领域事实（章节/模型/资料/
+// 成本）。删除运行面板与审查面板——运行事实只在 Agent 对话当前轮展示；“导出成书”
+// 直接 POST 确定性导出 route，不再经聊天发送。Task 13：技能管理迁入设置弹窗的
+// 「Agent 技能」分区，抽屉不再有技能 tab / 列表 / 启停按钮。
 export function createDrawerPanels(ctx) {
   // ctx provides: refs, getDrawerTab, setDrawerTab, getDashboard, loadDashboard,
   //   openReader, openSettingsModal, showToast, showActionError, closeDrawer
@@ -19,7 +20,6 @@ export function createDrawerPanels(ctx) {
     }
     if (drawerTab === "chapters") renderChapterPanel(dashboard);
     else if (drawerTab === "model") renderModelPanel(dashboard);
-    else if (drawerTab === "skills") renderSkillsPanel(dashboard);
     else if (drawerTab === "research") renderResearchPanel(dashboard);
     else renderCostPanel(dashboard);
   }
@@ -173,11 +173,6 @@ export function createDrawerPanels(ctx) {
     dl.append(dt, dd);
   }
 
-  function renderSkillsPanel(data) {
-    const skills = buildSkillsPanel(data);
-    ctx.refs.drawerBody.replaceChildren(skills.panel);
-  }
-
   function renderResearchPanel(data) {
     const sources = data.sources?.latest ?? [];
     const research = dpanel("资料来源", formatNumber(data.sources?.count ?? 0));
@@ -292,84 +287,6 @@ export function createDrawerPanels(ctx) {
     ex.textContent = translateStage(event.stage ?? "-");
     row.append(et, em, ex);
     return row;
-  }
-
-  function buildSkillRow(skill) {
-    const row = document.createElement("div");
-    row.className = "evt";
-    const desc = document.createElement("span");
-    desc.className = "et";
-    desc.textContent = skill.description ?? skill.name;
-    desc.title = skill.description ?? skill.name;
-    const meta = document.createElement("span");
-    meta.className = "em";
-    meta.textContent = `${translateSkillType(skill.type)} · ${skill.name}`;
-    const action = document.createElement("button");
-    action.className = "small-button";
-    action.type = "button";
-    action.textContent = skill.enabled_in_project ? "禁用" : "启用";
-    action.addEventListener("click", async () => {
-      action.disabled = true;
-      try {
-        await postJson(skill.enabled_in_project ? "/api/skills/disable" : "/api/skills/enable", { name: skill.name });
-        ctx.showToast(`技能已${skill.enabled_in_project ? "禁用" : "启用"}：${skill.description ?? skill.name}`, "success");
-        await ctx.loadDashboard();
-      } catch (error) {
-        ctx.showActionError(error);
-        action.disabled = false;
-      }
-    });
-    row.append(desc, meta, action);
-    return row;
-  }
-
-  function buildSkillsPanel(data) {
-    const skillItems = data.skills?.items ?? [];
-    const enabledCount = skillItems.filter((s) => s.enabled_in_project).length;
-    const skills = dpanel("技能", `${enabledCount} 启用`);
-
-    const intro = document.createElement("div");
-    intro.className = "skill-intro";
-    intro.textContent = "写作技能包：开启后，写作时自动注入规则，审稿时按清单检查质量。";
-
-    const pendingSkills = skillItems.filter((s) => !s.enabled_in_project);
-    const enableAllBtn = document.createElement("button");
-    enableAllBtn.type = "button";
-    enableAllBtn.className = "small-button promote";
-    enableAllBtn.textContent = "全部启用";
-    enableAllBtn.disabled = pendingSkills.length === 0;
-    enableAllBtn.addEventListener("click", async () => {
-      enableAllBtn.disabled = true;
-      let ok = 0;
-      let failed = 0;
-      for (const skill of pendingSkills) {
-        try {
-          await postJson("/api/skills/enable", { name: skill.name });
-          ok += 1;
-        } catch (error) {
-          failed += 1;
-          console.error("enable skill failed:", skill.name, error);
-        }
-      }
-      if (failed > 0) {
-        ctx.showToast(`技能启用：成功 ${ok} 个，失败 ${failed} 个`, "error");
-      } else {
-        ctx.showToast(`已启用 ${ok} 个技能，写作时会自动生效`, "success");
-      }
-      await ctx.loadDashboard();
-    });
-
-    const toolbar = document.createElement("div");
-    toolbar.className = "skill-toolbar";
-    toolbar.append(intro, enableAllBtn);
-    skills.body.append(toolbar);
-
-    if (skillItems.length === 0) {
-      skills.body.append(drawerEmpty("未发现技能。"));
-    } else {
-      for (const skill of skillItems) skills.body.append(buildSkillRow(skill));
-    }
-    return skills;
   }
 
   return { renderDrawerBody };

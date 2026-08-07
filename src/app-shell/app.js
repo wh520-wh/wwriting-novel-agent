@@ -441,7 +441,10 @@ function renderDashboard(data) {
 
 function renderQuickRailIfPresent() {
   if (refs.quickRail) {
-    renderQuickRail(refs.quickRail, { onOpenTab: openDrawerTab });
+    renderQuickRail(refs.quickRail, {
+      onOpenTab: openDrawerTab,
+      onOpenSettings: (section) => openSettingsModal(section)
+    });
   }
 }
 
@@ -868,8 +871,12 @@ initPrivacyMode();
 
 // Quick Rail 初始化：纯导航。
 if (refs.quickRail) {
-  bindQuickRailKeys(refs.quickRail, openDrawerTab);
-  renderQuickRail(refs.quickRail, { onOpenTab: openDrawerTab });
+  bindQuickRailKeys(refs.quickRail, openDrawerTab, (section) => openSettingsModal(section));
+  renderQuickRail(refs.quickRail, {
+    onOpenTab: openDrawerTab,
+    // 技能槽位打开设置弹窗的「Agent 技能」分区（Task 13）。
+    onOpenSettings: (section) => openSettingsModal(section)
+  });
 }
 
 // 窄屏折叠逻辑：<1100px 隐藏 Quick Rail，显示折叠按钮

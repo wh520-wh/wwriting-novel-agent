@@ -318,3 +318,17 @@ async function canonicalPath(targetPath) {
     return path.resolve(targetPath);
   }
 }
+
+// 重新读取 migration marker（Task 13 carry-forward：settings 的 catalog 路由用它
+// 展示「新鲜」的失败项——进程内 Promise 缓存可能陈旧，上次会话的失败重启后 UI
+// 仍要能看到）。返回解析后的 marker 对象；不存在/不可读返回 null。
+export async function readMigrationMarker({ scope, userHome }) {
+  const backupRoot = userHome ? path.join(userHome, ".wwriting", "migrations", BACKUP_ROOT_NAME) : null;
+  if (!backupRoot || (scope !== "global" && scope !== "project")) return null;
+  try {
+    const markerPath = path.join(backupRoot, scope, "migration-marker.json");
+    return JSON.parse(await fs.readFile(markerPath, "utf8"));
+  } catch {
+    return null;
+  }
+}
