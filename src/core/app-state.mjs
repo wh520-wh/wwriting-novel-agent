@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { workspaceIdForPath } from "./workspaces/store.mjs";
 
 const STATE_FILE = "app-state.json";
 const MAX_RECENTS = 12;
@@ -15,6 +16,10 @@ function normalizeState(parsed) {
         .filter((item) => item && typeof item.projectRoot === "string")
         .map((item) => ({
           projectRoot: path.resolve(item.projectRoot),
+          // 旧 app-state.json 没有 workspace_id：按路径补齐稳定 id；已有则保留。
+          workspace_id: typeof item.workspace_id === "string"
+            ? item.workspace_id
+            : workspaceIdForPath(item.projectRoot),
           title: typeof item.title === "string" ? item.title : path.basename(item.projectRoot),
           story_seed: typeof item.story_seed === "string" ? item.story_seed : "",
           openedAt: typeof item.openedAt === "string" ? item.openedAt : null
@@ -62,6 +67,7 @@ export async function recordRecentProject(stateRoot, project) {
   const state = await loadAppState(stateRoot);
   const entry = {
     projectRoot: resolvedRoot,
+    workspace_id: workspaceIdForPath(resolvedRoot),
     title: typeof project.title === "string" && project.title.trim() ? project.title : path.basename(resolvedRoot),
     story_seed: typeof project.story_seed === "string" ? project.story_seed : "",
     openedAt: new Date().toISOString()

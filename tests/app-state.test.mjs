@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { forgetRecentProject, loadAppState, loadAppStateSync, recordRecentProject } from "../src/core/app-state.mjs";
+import { workspaceIdForPath } from "../src/core/workspaces/store.mjs";
 
 test("recordRecentProject dedupes by path, preserves position, and updates metadata in place", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-appstate-"));
@@ -114,4 +115,40 @@ test("loadAppStateSync warns when an existing state file is invalid", async () =
 
   assert.equal(warnings.length, 1);
   assert.match(String(warnings[0][0]), /\[app-state\]/u);
+});
+
+test("旧 app-state.json 无 workspace_id 时加载补齐且不丢 recent 顺序", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-appstate-upgrade-"));
+  const legacy = {
+    lastProjectRoot: "/novels/b",
+    recentProjects: [
+      { projectRoot: "/novels/b", title: "B", story_seed: "", openedAt: "2026-08-01T00:00:00.000Z" },
+      { projectRoot: "/novels/a", title: "A", story_seed: "s", openedAt: "2026-08-02T00:00:00.000Z" }
+    ]
+  };
+  await fs.writeFile(path.join(root, "app-state.json"), JSON.stringify(legacy), "utf8");
+  const state = await loadAppState(root);
+  assert.equal(state.recentProjects.length, 2);
+  assert.equal(state.recentProjects[0].projectRoot, path.resolve("/novels/b"));
+  assert.equal(state.recentProjects[1].projectRoot, path.resolve("/novels/a"));
+  assert.equal(state.recentProjects[0].workspace_id, workspaceIdForPath("/novels/b"));
+  assert.equal(state.recentProjects[1].workspace_id, workspaceIdForPath("/novels/a"));
+});
+
+test("recordRecentProject 条目包含稳定 workspace_id，重开不挪动 recent 位置", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-appstate-wsid-"));
+  await recordRecentProject(root, { projectRoot: "/novels/a", title: "A" });
+  await recordRecentProject(root, { projectRoot: "/novels/b", title: "B" });
+  const state = await recordRecentProject(root, { projectRoot: "/novels/a", title: "A2" });
+  assert.equal(state.recentProjects.length, 2);
+  // 重新打开 a 不挪动位置：b 仍在前。
+  assert.equal(state.recentProjects[0].projectRoot, path.resolve("/novels/b"));
+  assert.equal(state.recentProjects[1].projectRoot, path.resolve("/novels/a"));
+  // 每个条目都带稳定 workspace_id，且与 store 的 id 函数一致。
+  assert.match(state.recentProjects[0].workspace_id, /^ws_[a-f0-9]{32}$/u);
+  assert.equal(state.recentProjects[0].workspace_id, workspaceIdForPath("/novels/b"));
+  assert.equal(state.recentProjects[1].workspace_id, workspaceIdForPath("/novels/a"));
+  // 再次加载后 id 保持不变（同路径重开恢复同一 id）。
+  const reloaded = await loadAppState(root);
+  assert.equal(reloaded.recentProjects[1].workspace_id, state.recentProjects[1].workspace_id);
 });
