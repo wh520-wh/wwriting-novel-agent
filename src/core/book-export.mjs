@@ -4,7 +4,7 @@ import { loadChapterIndex, loadProject } from "./project-store.mjs";
 import { countEffectiveWords } from "./word-count.mjs";
 import { pathExists, safeJoin, writeFileAtomic } from "./fs-utils.mjs";
 
-const HEAD_TITLE_RE = /^\s{0,3}#{1,3}\s*第\s*[^\s章]+\s*章[^\n]*\n+/u; // 同 quality-gates 标题判定的剥离版
+const HEAD_TITLE_RE = /^\s{0,3}#{1,3}\s*第\s*[^\s章]+\s*章[^\n]*\n+/u; // 同标题门检判定的剥离版（识别「第 N 章」标题行）
 
 // 剥离写作流水线产物（与 app-dashboard.stripChapterMarkup 同规则，导出路径此前遗漏）：
 // 草稿英文头 `# Chapter 001` 与每段标记 `<!-- segment:N checksum:... -->` 不是正文。

@@ -217,9 +217,17 @@ export function createSettingsModal(ctx, options = {}) {
       return;
     }
     if (settingsSection === "writing") {
-      void renderWritingSection();
-      ctx.refs.settingsSave.disabled = false;
-      ctx.refs.settingsSave.textContent = "保存设置";
+      if (ctx.getDashboard()?.hasProject === true) {
+        void renderWritingSection();
+        ctx.refs.settingsSave.disabled = false;
+        ctx.refs.settingsSave.textContent = "保存设置";
+      } else {
+        // 普通文件夹没有 project.yaml，写作参数无可读写对象：只显示说明，
+        // 禁用底部保存，避免出现无法生效的保存按钮（旧版小说项目专属分区）。
+        renderLegacyOnlySection("compose", "写作参数", "写作参数仅旧版小说项目可用。");
+        ctx.refs.settingsSave.disabled = true;
+        ctx.refs.settingsSave.textContent = "无需保存";
+      }
       return;
     }
     if (settingsSection === "skills") {
@@ -230,7 +238,11 @@ export function createSettingsModal(ctx, options = {}) {
       return;
     }
     if (settingsSection === "danger") {
-      renderDangerSection();
+      if (ctx.getDashboard()?.hasProject === true) {
+        renderDangerSection();
+      } else {
+        renderLegacyOnlySection("bolt", "项目管理", "项目管理仅旧版小说项目可用。");
+      }
       ctx.refs.settingsSave.disabled = true;
       ctx.refs.settingsSave.textContent = "无需保存";
       return;
@@ -240,6 +252,26 @@ export function createSettingsModal(ctx, options = {}) {
   function renderModelSection() {
     renderSettingsProviders();
     renderSettingsDetail();
+  }
+
+  // 旧版小说项目专属分区（写作参数/项目管理）在普通文件夹（hasProject:false）
+  // 下无可操作内容：渲染头部 + 简短 muted 说明。与 renderSectionBody 的保存按钮
+  // 禁用逻辑配合，确保不会出现「点了保存却落空」的死角入口。
+  function renderLegacyOnlySection(iconName, title, note) {
+    ctx.refs.settingsDetail.replaceChildren();
+    const head = document.createElement("header");
+    head.className = "spd-head";
+    const ic = document.createElement("span");
+    ic.className = "spd-av lg";
+    ic.append(icon(iconName, 16));
+    const h3 = document.createElement("h3");
+    h3.textContent = title;
+    head.append(ic, h3);
+    ctx.refs.settingsDetail.append(head);
+    const noteEl = document.createElement("p");
+    noteEl.className = "spd-hint";
+    noteEl.textContent = note;
+    ctx.refs.settingsDetail.append(noteEl);
   }
 
   async function renderWritingSection() {
@@ -747,7 +779,10 @@ export function createSettingsModal(ctx, options = {}) {
     ic.className = "spd-av lg";
     ic.append(icon("skill", 16));
     const h3 = document.createElement("h3");
-    h3.textContent = name;
+    // Task 14：详情头部优先显示 catalog DTO 的 display_name（如「均衡」），
+    // 缺省回落技能 ID（detail API 只返回 name + content）。
+    const entry = (skillsCatalog.active ?? []).find((skill) => skill.name === name);
+    h3.textContent = entry?.display_name || name;
     head.append(ic, h3);
     detail.append(head);
 
@@ -1421,7 +1456,7 @@ export function createSettingsModal(ctx, options = {}) {
 
   async function saveWritingSection() {
     const currentProjectRoot = ctx.getCurrentProjectRoot();
-    if (!currentProjectRoot) {
+    if (!currentProjectRoot || ctx.getDashboard()?.hasProject !== true) {
       ctx.showToast("请先新建或打开一部小说，再保存写作参数。", "info");
       return;
     }
