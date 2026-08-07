@@ -1,12 +1,12 @@
 // src/core/project-operations/chapter.mjs —— 章节项目事务（统一 Agent 内核计划 Task 5）。
 //
-// 职责（Rule 6 深模块）：章节草稿、质量门禁、正式提交、章节索引、章节记忆、摘要
-// 与 checkpoint 一致性。Agent runtime 只编排；本模块是唯一的章节领域事实读写方。
+// 职责（Rule 6 深模块）：章节草稿、正式提交、章节索引、章节记忆、摘要与 checkpoint
+// 一致性。Agent runtime 只编排；本模块是唯一的章节领域事实读写方。
 //
 // 边界：
 //   - 本模块不接收 ModelGateway、不调用模型。模型类检查（fact-check、记忆提取）
-//     由 ProjectAgent runtime 完成，结果经调用参数（exceptionDecisions / extraction）
-//     传入本模块做确定性落盘。
+//     由 ProjectAgent runtime 完成，结果经调用参数（extraction）传入本模块做
+//     确定性落盘。
 //   - 本模块不读写旧 agent_state 状态文件；章节位置与完成事实只由章节文件 +
 //     memory/chapter_index.json 推导（Rule 9）。
 //   - 不写 Agent journal（events.jsonl 归 runtime）；正式提交的领域事实写
@@ -14,7 +14,7 @@
 //     失败会连同已写文件一起回滚（截断到先前大小，或删除新建的空文件）。
 //   - 磁盘格式与旧实现保持兼容：章节文件 chapters/NNN.ext、草稿 drafts/NNN.draft.ext、
 //     memory/chapter_index.json、memory/chapter_memory.json、checkpoints/{id}.json。
-//   - 错误契约：领域错误（参数、门禁、校验和、索引 JSON 损坏）统一抛
+//   - 错误契约：领域错误（参数、存储安全、校验和、索引 JSON 损坏）统一抛
 //     ProjectOperationError；写入期的系统 I/O 错误原样抛出（保证已回滚，可能附加
 //     error.rollbackWarnings）。process 级不可恢复错误不在此列。
 //   - 测试 seam：所有导出操作接受可选第二参数 options = { hooks: { beforeWrite } }。
@@ -26,10 +26,11 @@
 // 读取、正式文件提交）、src/core/agent-engine.mjs（finalizeChapter / completeChapter /
 // extractChapterMemory 的领域事实）。不复制 run loop / state dispatch / transcript。
 //
-// 门禁基数：post-process 技能钩子先于门禁执行，word/title/cap/skill 门禁与
-// actual_words/checksum/章节记忆统一基于最终提交内容（commitContent）——索引里的
-// 字数门禁结果与真实字数永不矛盾。恢复路径（正式文件已存在）不重跑 post-process，
-// 门禁直接基于正式文件内容。
+// Task 10 存储安全契约：commit_chapter 只保留草稿存在、路径边界、项目身份、校验和、
+// 原子写入、回滚与索引一致性约束；字数、标题格式或技能 checker 一律不是门禁，不能
+// 阻止写入、提交或 Agent 结束。actual_words 只作客观记录（索引/历史兼容），不决定
+// 能否提交。post-process 技能钩子与内容质量门禁已全部删除；索引固定写
+// quality_gate_results: []（仅新提交生效，旧索引已有 gate 结果不批量改写）。
 
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -47,8 +48,6 @@ import {
   writeJsonAtomic
 } from "../fs-utils.mjs";
 import { loadChapterIndex, loadProject, upsertChapter } from "../project-store.mjs";
-import { runPostProcessHooks, runSkillChecks } from "../skills/index.mjs";
-import { runTitleGate, runWordCapGate, runWordCountGate } from "../quality-gates.mjs";
 import { countEffectiveWords } from "../word-count.mjs";
 import { recordChapterMemory } from "../chapter-memory.mjs";
 import {
@@ -345,40 +344,15 @@ export async function appendChapterSegment({ projectRoot, projectId, chapterNo, 
 }
 
 // ---------------------------------------------------------------------------
-// 门禁例外（用户明确决定）：runtime 把用户对模型类检查（fact/continuity）与
-// 确定性门禁失败的决定作为 exceptionDecisions 传入，本模块在事务内记录。
-// ---------------------------------------------------------------------------
-
-function normalizeExceptions(exceptionDecisions) {
-  if (!Array.isArray(exceptionDecisions)) {
-    return [];
-  }
-  return exceptionDecisions
-    .filter((item) => item && typeof item === "object")
-    .map((item) => ({
-      gate: typeof item.gate === "string" ? item.gate : null,
-      decision: typeof item.decision === "string" ? item.decision : "allow",
-      chapter_no: Number.isInteger(item.chapter_no) ? item.chapter_no : null,
-      reason: typeof item.reason === "string" ? item.reason : null
-    }))
-    .filter((item) => item.gate !== null && (item.decision === "allow" || item.decision === "allow_input"));
-}
-
-function hasException(exceptions, gateName, chapterNo) {
-  return exceptions.some(
-    (exception) =>
-      exception.gate === gateName && (exception.chapter_no === null || exception.chapter_no === chapterNo)
-  );
-}
-
-// ---------------------------------------------------------------------------
 // commitChapter —— 原子正式提交：
-//   post-process 技能钩子 → word/title/cap/skill 门禁（基于最终提交内容，失败门禁
-//   需对应用户例外）→ 正式文件 → 章节索引 → 章节记忆 → checkpoint → run_log 领域事件。
+//   Task 10：只保留存储安全约束（草稿存在、项目身份、expected 校验和、原子写入
+//   与回滚）。内容质量（字数/标题格式/技能 checker）一律不是门禁；索引固定写
+//   quality_gate_results: []，仅新提交生效，旧索引已有 gate 结果不批量改写。
+//   写入顺序：正式文件 → 章节记忆 → 章节索引 → checkpoint → run_log 领域事件。
 // 任一写失败：恢复被覆盖文件的先前字节，run_log 截断/删除，不留下半写状态。
 // ---------------------------------------------------------------------------
 
-export async function commitChapter({ projectRoot, projectId, chapterNo, expectedDraftChecksum = null, exceptionDecisions = null }, options = {}) {
+export async function commitChapter({ projectRoot, projectId, chapterNo, expectedDraftChecksum = null }, options = {}) {
   assertProjectRoot(projectRoot);
   assertChapterNo(chapterNo);
   const project = await loadProjectForOperation(projectRoot, projectId);
@@ -403,7 +377,7 @@ export async function commitChapter({ projectRoot, projectId, chapterNo, expecte
       actual_words: countEffectiveWords(content),
       checksum: sha256(content),
       checkpoint_id: null,
-      quality_gates: []
+      quality_gate_results: []
     };
   }
 
@@ -439,60 +413,8 @@ export async function commitChapter({ projectRoot, projectId, chapterNo, expecte
     );
   }
 
-  // ---- 提交内容：常规路径先跑 post-process 技能钩子；恢复路径不重写正式文件 ----
-  let commitContent = sourceContent;
-  let postProcess = null;
-  let draftNeedsRewrite = false;
-  if (!usedFinal) {
-    postProcess = await runPostProcessHooks(projectRoot, project, {
-      chapter_no: chapterNo,
-      stage: "post_process",
-      content: sourceContent,
-      // options.skills：active 技能列表或带 catalog() 的 service（测试/运行时注入）。
-      skills: options.skills ?? undefined
-    });
-    if (postProcess.results.some((result) => result.status === "applied")) {
-      commitContent = postProcess.content;
-      draftNeedsRewrite = true;
-    }
-  }
-
-  // ---- 门禁（确定性；全部基于最终提交内容，写入前完成，失败不落任何文件）----
-  const wordGate = runWordCountGate(commitContent, Number(project.min_words_per_chapter) || 0);
-  const titleGate = runTitleGate(commitContent, chapterNo);
-  const wordCapGate = runWordCapGate(wordGate.actual_words, {
-    targetWords: Number(project.target_words_per_chapter) || 0,
-    maxWords: Number(project.max_words_per_chapter) || 0,
-    outputPricePerMillion: project.active_model?.pricing?.output_per_million ?? null
-  });
-  const skillGateResults = await runSkillChecks(projectRoot, project, "reviewing", {
-    chapter_no: chapterNo,
-    stage: "reviewing",
-    content: commitContent,
-    skills: options.skills ?? undefined
-  });
-  const gates = [wordGate, titleGate, wordCapGate, ...skillGateResults];
-  const exceptions = normalizeExceptions(exceptionDecisions);
-  const failedGates = gates.filter((gate) => gate.status === "failed");
-  if (failedGates.length > 0) {
-    const unexcepted = failedGates.filter((gate) => !hasException(exceptions, gate.gate, chapterNo));
-    if (unexcepted.length > 0) {
-      throw new ProjectOperationError("quality_gate_failed", "章节门禁未通过，拒绝提交。", {
-        gates: unexcepted
-      });
-    }
-  }
-  // 有用户例外的失败门禁记录为 excepted（连同决定），保留在索引与 checkpoint 中。
-  const resolvedGates = gates.map((gate) => {
-    if (gate.status === "failed" && hasException(exceptions, gate.gate, chapterNo)) {
-      const exception = exceptions.find(
-        (e) => e.gate === gate.gate && (e.chapter_no === null || e.chapter_no === chapterNo)
-      );
-      return { ...gate, status: "excepted", exception: { ...exception } };
-    }
-    return gate;
-  });
-
+  // ---- 提交内容与客观记录：不运行 post-process 技能钩子，也不做任何内容门禁 ----
+  const commitContent = sourceContent;
   const actualWords = countEffectiveWords(commitContent);
   const checksum = sha256(commitContent);
 
@@ -508,9 +430,6 @@ export async function commitChapter({ projectRoot, projectId, chapterNo, expecte
     const existed = await pathExists(filePath);
     backups.push({ path: filePath, bytes: existed ? await fs.readFile(filePath, "utf8") : null });
   };
-  if (draftNeedsRewrite) {
-    await track(draftPath); // post-process 改写了草稿，回滚需还原
-  }
   if (!usedFinal) {
     await track(finalPath); // 常规提交创建正式文件；回滚时删除
   }
@@ -521,10 +440,6 @@ export async function commitChapter({ projectRoot, projectId, chapterNo, expecte
 
   try {
     if (!usedFinal) {
-      if (draftNeedsRewrite) {
-        await probe({ path: draftPath, kind: "draft" });
-        await writeFileAtomic(draftPath, commitContent);
-      }
       await probe({ path: finalPath, kind: "final" });
       await writeFileAtomic(finalPath, commitContent);
     }
@@ -537,7 +452,7 @@ export async function commitChapter({ projectRoot, projectId, chapterNo, expecte
       checksum,
       content: commitContent
     });
-    // 章节索引：正式文件、真实字数、校验和、门禁结果
+    // 章节索引：正式文件、真实字数、校验和；Task 10 起门禁结果固定为空数组
     await probe({ path: chapterIndexPath, kind: "chapter_index" });
     await upsertChapter(projectRoot, {
       chapter_no: chapterNo,
@@ -546,7 +461,7 @@ export async function commitChapter({ projectRoot, projectId, chapterNo, expecte
       final_path: finalPath,
       actual_words: actualWords,
       checksum,
-      quality_gate_results: resolvedGates
+      quality_gate_results: []
     });
     // checkpoint：与旧 checkpoints/{id}.json 格式兼容（project-store.writeCheckpoint
     // 会写旧 agent_state 状态文件，本模块不得触碰，故本地写 checkpoint 文件本体）
@@ -555,9 +470,7 @@ export async function commitChapter({ projectRoot, projectId, chapterNo, expecte
       project,
       chapterNo,
       checkpointId,
-      artifact: { chapter_no: chapterNo, final_path: finalPath, checksum, duplicate: usedFinal },
-      gates: resolvedGates,
-      postProcess
+      artifact: { chapter_no: chapterNo, final_path: finalPath, checksum, duplicate: usedFinal }
     }));
     // run_log 领域事实（计划 Rule 9：章节提交是 run_log 记录的领域事实）；
     // 追加在事务内：失败时连同已写文件一起回滚。
@@ -625,12 +538,11 @@ export async function commitChapter({ projectRoot, projectId, chapterNo, expecte
     actual_words: actualWords,
     checksum,
     checkpoint_id: path.basename(checkpointPath, ".json"),
-    quality_gates: resolvedGates,
-    skill_hooks: postProcess?.hooks ?? []
+    quality_gate_results: []
   };
 }
 
-function buildCheckpoint({ project, chapterNo, checkpointId, artifact, gates, postProcess }) {
+function buildCheckpoint({ project, chapterNo, checkpointId, artifact }) {
   return {
     schema_version: 1,
     checkpoint_id: checkpointId,
@@ -655,15 +567,13 @@ function buildCheckpoint({ project, chapterNo, checkpointId, artifact, gates, po
     cost_summary: null,
     cache_report: null,
     cache_key: null,
-    skill_hooks: postProcess?.hooks ?? [],
-    skill_gate_results: postProcess?.results ?? [],
     context_package_hash: null,
     transcript: null,
     tool_calls: [],
     tool_results: [],
     state_before: null,
     state_after: null,
-    quality_gate_results: gates,
+    quality_gate_results: [],
     error: null
   };
 }

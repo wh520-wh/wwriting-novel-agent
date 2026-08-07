@@ -1201,9 +1201,9 @@ test("章节提交一致更新正式文件、索引、记忆与 checkpoint", asy
   assertActivityClosure(events);
 });
 
-test("质量门禁失败转入修订路径：失败结果回喂模型，修订后提交成功", async (t) => {
-  // 修订追加段同样要满足全部技能门禁：动作开场 + 结尾悬念 + 对话占比。
-  const LONG_ADDITION = `林深在老宅门口站了很久，猛地抬起头，听见门环响了一声。他转动钥匙，低声道：“这把钥匙，是谁留下的？”门内传来齿轮转动的声音——老宅的钟，果然在午夜敲了十三下。他沿着走廊走到书房，翻开那本落满灰尘的日记，第一页写着他自己的名字，日期却是三十年前。门外忽然传来急促的敲门声。`;
+test("短章节首次提交即成功：字数/标题/技能 checker 不再拒绝提交", async (t) => {
+  // Task 10：commit_chapter 只保留存储安全约束。第一次 commit 就成功，不进入
+  // 任何修订/门禁重试路径；Agent 一轮完成章节提交。
   const h = await openHarness(t, {
     project: { min_words_per_chapter: 100, target_words_per_chapter: 120 },
     gatewayScript: [
@@ -1223,36 +1223,25 @@ test("质量门禁失败转入修订路径：失败结果回喂模型，修订�
       async () => ({
         toolCalls: [tool("commit_chapter", { project_id: h.project.project_id ?? null, chapter_no: 1 })]
       }),
-      async () => ({
-        toolCalls: [
-          tool("append_chapter_segment", {
-            project_id: h.project.project_id ?? null,
-            chapter_no: 1,
-            segment_no: 2,
-            content: LONG_ADDITION
-          })
-        ]
-      }),
-      async () => ({
-        toolCalls: [tool("commit_chapter", { project_id: h.project.project_id ?? null, chapter_no: 1 })]
-      }),
-      { reply: { text: "修订后提交完成。" } }
+      { reply: { text: "第一章提交完成。" } }
     ]
   });
   await h.agent.submit({ projectRoot: h.projectRoot, text: "写满一章", source: "chat" });
   await waitForIdle(h.agent, h.projectRoot);
   const events = await readEvents(h.agent, h.projectRoot);
   const failed = eventsOfType(events, "tool_call_failed").filter((event) => event.payload.name === "commit_chapter");
-  assert.equal(failed.length, 1, "首次提交因字数门禁失败");
-  assert.equal(failed[0].payload.error, "quality_gate_failed");
+  assert.equal(failed.length, 0, "短章节提交不得失败（无字数/质量门禁）");
   assert.equal(
     eventsOfType(events, "tool_call_completed").filter((event) => event.payload.name === "commit_chapter").length,
     1,
-    "修订后提交应成功"
+    "首次提交即成功"
   );
   const finalPath = path.join(h.projectRoot, "chapters", "001.md");
-  assert.equal(await pathExists(finalPath), true, "修订后正式文件应落盘");
-  assert.equal(eventsOfType(events, "run_completed").length, 1, "失败不应终结 Run，修订路径继续");
+  assert.equal(await pathExists(finalPath), true, "正式文件应落盘");
+  const index = JSON.parse(await fs.readFile(path.join(h.projectRoot, "memory", "chapter_index.json"), "utf8"));
+  const entry = index.chapters.find((chapter) => chapter.chapter_no === 1);
+  assert.deepEqual(entry.quality_gate_results, [], "索引不得记录任何门禁结果");
+  assert.equal(eventsOfType(events, "run_completed").length, 1, "一轮完成，无修订重试");
   assertActivityClosure(events);
 });
 

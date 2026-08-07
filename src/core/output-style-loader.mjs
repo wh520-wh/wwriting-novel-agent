@@ -2,18 +2,14 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { parseSimpleYaml } from "./simple-yaml.mjs";
 
-// 内置 2 种风格(bundled 优先级最低,用户/项目同名会替换)
+// 内置 1 种风格(bundled 优先级最低,用户/项目同名会替换)。
+// Task 10：review output style 已删除（审稿改由自然语言驱动模型完成），
+// 不得仅改文案保留同一模式。
 const BUNDLED_STYLES = [
   {
     name: "creative",
     description: "创作模式:长跑章节生成,强调氛围、人物心理、节奏",
     body: "你正在创作长篇小说。当前目标是写出有沉浸感、人物驱动的章节。\n- 优先呈现人物心理和情绪变化\n- 对话要符合角色设定和场景氛围\n- 每章结尾保留悬念或转折钩子",
-    source: "bundled",
-  },
-  {
-    name: "review",
-    description: "审稿模式:检查节奏、连贯性、设定一致性",
-    body: "你正在审稿当前章节。请重点检查:\n- 节奏是否拖沓或仓促\n- 人物言行是否符合已建立的性格\n- 设定是否前后矛盾(地名、时间线、术语)\n- 字数与目标差距\n- 章节结尾是否有钩子",
     source: "bundled",
   },
 ];

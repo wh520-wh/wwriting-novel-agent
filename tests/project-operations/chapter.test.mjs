@@ -12,12 +12,13 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { createProjectRoot, LEGACY_STATE_FILE, catalogSkillsFor } from "../helpers/project-agent-harness.mjs";
+import { createProjectRoot, LEGACY_STATE_FILE } from "../helpers/project-agent-harness.mjs";
 import { loadChapterIndex, loadProject } from "../../src/core/project-store.mjs";
 import { loadChapterMemory } from "../../src/core/chapter-memory.mjs";
 import { loadContinuity, loadContinuityState, saveContinuity } from "../../src/core/continuity-store.mjs";
 import { parseSimpleYaml, serializeSimpleYaml } from "../../src/core/simple-yaml.mjs";
 import { sha256 } from "../../src/core/fs-utils.mjs";
+import { countEffectiveWords } from "../../src/core/word-count.mjs";
 import {
   appendChapterSegment,
   commitChapter as rawCommitChapter,
@@ -26,23 +27,11 @@ import {
   ProjectOperationError
 } from "../../src/core/project-operations/chapter.mjs";
 
-// Task 12：章节提交的技能钩子改读新 catalog（内置技能发现即生效，无 enabled_skills）。
-// 每个项目注入临时 skills service 的 active 列表——migration marker 只写进项目内
-// 临时 home，绝不触碰真实用户目录。按 projectRoot 缓存，避免重复迁移。
-const skillOptionsCache = new Map();
-async function skillOptions(projectRoot) {
-  if (!skillOptionsCache.has(projectRoot)) {
-    skillOptionsCache.set(projectRoot, { skills: await catalogSkillsFor(projectRoot) });
-  }
-  return skillOptionsCache.get(projectRoot);
-}
+// Task 10：commitChapter 不再消费技能注入（确定性技能钩子已删除），直接使用原函数。
+// 写探针 options（hooks.beforeWrite）仍由调用点显式传入。
+const commitChapter = rawCommitChapter;
 
-// 统一包装：所有 commitChapter 调用自动携带 skills 注入（与写探针 options 并存）。
-const commitChapter = async (args, options = {}) =>
-  rawCommitChapter(args, { ...(await skillOptions(args.projectRoot)), ...options });
-
-// 内置技能发现即生效后，LONG_PROSE 必须通过全部四个确定性技能门禁
-//（suspense-ending / chapter-opening / ai-voice / dialogue-ratio）。
+// LONG_PROSE 是普通合格章节正文（Task 10 起无任何技能 checker，提交即成功）。
 const LONG_PROSE = `# 第一章 雨夜来信
 
 雨夜，雨声突然变大。林深猛地推开门，冲进老宅的客厅。他浑身湿透，抹了一把脸，低声道：“信上说，老宅的钟会在午夜敲十三下。”烛光下，墙上的照片里竟是多年不见的父亲。他正要细看，门外却传来一阵急促的敲门声。`;
@@ -301,6 +290,33 @@ test("appendChapterSegment 索引更新失败时还原草稿（已有草稿还�
 // commitChapter：正式提交四件套（正式文件/索引/记忆/checkpoint）+ run_log
 // ---------------------------------------------------------------------------
 
+test("commitChapter 不以字数、标题或技能 checker 拒绝提交", async () => {
+  const { workspace, projectRoot, project } = await makeProject({ min_words_per_chapter: 3000 });
+  try {
+    await appendChapterSegment({
+      projectRoot,
+      projectId: project.project_id,
+      chapterNo: 1,
+      segmentNo: 1,
+      content: "他推开门。"
+    });
+    const result = await commitChapter({ projectRoot, projectId: project.project_id, chapterNo: 1 });
+    assert.equal(result.ok, true);
+    // actual_words 是 countEffectiveWords(commitContent) 的客观记录：正文 4 字 +
+    // 草稿头 "# Chapter 001" 的有效 token，由真实落盘内容计算，不决定能否提交。
+    const finalContent = await fs.readFile(path.join(projectRoot, "chapters", "001.md"), "utf8");
+    assert.equal(result.actual_words, countEffectiveWords(finalContent));
+    assert.ok(result.actual_words >= 4, "短章节也客观记录真实字数");
+    assert.deepEqual(result.quality_gate_results, []);
+    // 索引同样只记录空门禁结果，正式文件与记忆正常落盘
+    const entry = (await loadChapterIndex(projectRoot)).chapters.find((c) => c.chapter_no === 1);
+    assert.deepEqual(entry.quality_gate_results, []);
+    assert.ok((await loadChapterMemory(projectRoot)).chapters.some((c) => c.chapter_no === 1));
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});
+
 test("commitChapter 一致更新正式文件、索引、章节记忆、checkpoint 与 run_log", async () => {
   const { workspace, projectRoot, project } = await makeProject();
   try {
@@ -359,97 +375,53 @@ test("commitChapter 支持 txt 输出格式的章节文件", async () => {
   }
 });
 
-test("commitChapter 字数门禁失败时拒绝提交且不留任何半写状态", async () => {
-  const { workspace, projectRoot, project } = await makeProject();
+test("commitChapter 短章节直接提交：字数不足不拒绝，无半写状态残留", async () => {
+  const { workspace, projectRoot, project } = await makeProject({ min_words_per_chapter: 3000 });
   try {
-    await appendChapterSegment({ projectRoot, projectId: project.project_id, chapterNo: 1, segmentNo: 1, content: "短。", });
-    await assert.rejects(
-      () => commitChapter({ projectRoot, projectId: project.project_id, chapterNo: 1 }),
-      (error) =>
-        error instanceof ProjectOperationError &&
-        error.code === "quality_gate_failed" &&
-        error.details.gates.some((gate) => gate.gate === "word-count-gate")
-    );
-    // 无正式文件、索引未 completed、无记忆、无 checkpoint
-    await assert.rejects(() => fs.stat(path.join(projectRoot, "chapters", "001.md")), (error) => error.code === "ENOENT");
-    assert.equal((await loadChapterIndex(projectRoot)).chapters[0].status, "queued");
-    assert.equal((await loadChapterMemory(projectRoot)).chapters.length, 0);
-    assert.equal((await checkpointFiles(projectRoot)).length, 0);
-    assert.equal((await readRunLog(projectRoot)).trim(), "");
+    await appendChapterSegment({ projectRoot, projectId: project.project_id, chapterNo: 1, segmentNo: 1, content: "短。" });
+    const result = await commitChapter({ projectRoot, projectId: project.project_id, chapterNo: 1 });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.quality_gate_results, []);
+    // 正式文件落盘、索引 completed、记忆与 checkpoint 齐备、run_log 记录领域事实
+    assert.ok((await fs.readFile(path.join(projectRoot, "chapters", "001.md"), "utf8")).includes("短。"));
+    assert.equal((await loadChapterIndex(projectRoot)).chapters[0].status, "completed");
+    assert.ok((await loadChapterMemory(projectRoot)).chapters.length >= 1);
+    assert.equal((await checkpointFiles(projectRoot)).length, 1);
+    assert.match(await readRunLog(projectRoot), /chapter_completed/u);
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
   }
 });
 
-test("commitChapter 标题门禁拒绝串章标题", async () => {
+test("commitChapter 标题格式不同不拒绝：串章标题同样提交", async () => {
   const { workspace, projectRoot, project } = await makeProject();
   try {
     const wrongTitle = `# 第二章 别人的章节\n\n${LONG_PROSE.replace(/^# 第一章 雨夜来信\n\n/u, "")}`;
     await appendChapterSegment({ projectRoot, projectId: project.project_id, chapterNo: 1, segmentNo: 1, content: wrongTitle });
-    await assert.rejects(
-      () => commitChapter({ projectRoot, projectId: project.project_id, chapterNo: 1 }),
-      (error) =>
-        error instanceof ProjectOperationError &&
-        error.code === "quality_gate_failed" &&
-        error.details.gates.some((gate) => gate.gate === "chapter-title-gate")
-    );
-    await assert.rejects(() => fs.stat(path.join(projectRoot, "chapters", "001.md")), (error) => error.code === "ENOENT");
+    const result = await commitChapter({ projectRoot, projectId: project.project_id, chapterNo: 1 });
+    assert.equal(result.ok, true);
+    assert.equal(result.actual_words >= 50, true);
+    const entry = (await loadChapterIndex(projectRoot)).chapters.find((c) => c.chapter_no === 1);
+    assert.equal(entry.status, "completed");
+    assert.deepEqual(entry.quality_gate_results, []);
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
   }
 });
 
-test("commitChapter 技能门禁失败可被用户例外覆盖并记录 excepted", async () => {
+test("commitChapter 技能 checker 不再生效：平缓结尾正文直接提交", async () => {
   const { workspace, projectRoot, project } = await makeProject();
   try {
-    // 新模型：内置技能发现即生效，无需（也不再存在）enabled_skills。正文以动作
-    // 开场（猛然，通过 chapter-opening）、带对话（通过 dialogue-ratio）、无 AI 腔
-    //（通过 ai-voice），但结尾平缓——只有 suspense-ending 门禁失败。
+    // 旧模型下会触发 suspense-ending 技能门禁的正文；Task 10 起不再检查。
     const flatProse = `# 第一章 平静的早晨
 
 林深猛然从床上坐起来，压低声音：“门外有人，脚步声很急，不太对劲。”他披上外套走到窗边，看着雨中的街道。天亮时，他数了数门口留下的脚印，不多不少，正好两行。什么都没有发生。`;
     await appendChapterSegment({ projectRoot, projectId: project.project_id, chapterNo: 1, segmentNo: 1, content: flatProse });
-    await assert.rejects(
-      () => commitChapter({ projectRoot, projectId: project.project_id, chapterNo: 1 }),
-      (error) =>
-        error instanceof ProjectOperationError &&
-        error.code === "quality_gate_failed" &&
-        error.details.gates.some((gate) => gate.gate === "skill:suspense-chapter-end")
-    );
-    const result = await commitChapter({
-      projectRoot,
-      projectId: project.project_id,
-      chapterNo: 1,
-      exceptionDecisions: [{ gate: "skill:suspense-chapter-end", decision: "allow", chapter_no: 1, reason: "作者明确接受平缓结尾" }]
-    });
+    const result = await commitChapter({ projectRoot, projectId: project.project_id, chapterNo: 1 });
     assert.equal(result.ok, true);
     const entry = (await loadChapterIndex(projectRoot)).chapters.find((c) => c.chapter_no === 1);
-    const gate = entry.quality_gate_results.find((g) => g.gate === "skill:suspense-chapter-end");
-    assert.equal(gate.status, "excepted");
-  } finally {
-    await fs.rm(workspace, { recursive: true, force: true });
-  }
-});
-
-test("commitChapter 字数门禁失败可被用户例外覆盖", async () => {
-  const { workspace, projectRoot, project } = await makeProject();
-  try {
-    await appendChapterSegment({ projectRoot, projectId: project.project_id, chapterNo: 1, segmentNo: 1, content: "短。" });
-    const result = await commitChapter({
-      projectRoot,
-      projectId: project.project_id,
-      chapterNo: 1,
-      exceptionDecisions: [
-        { gate: "word-count-gate", decision: "allow_input", chapter_no: 1 },
-        // 新模型：内置技能检查全部 active；"短。" 同时触发章节开头/结尾/对话技能门禁
-        { gate: "skill:suspense-chapter-end", decision: "allow", chapter_no: 1 },
-        { gate: "skill:chapter-opening-hook", decision: "allow", chapter_no: 1 },
-        { gate: "skill:dialogue-not-summary", decision: "allow", chapter_no: 1 }
-      ]
-    });
-    assert.equal(result.ok, true);
-    const entry = (await loadChapterIndex(projectRoot)).chapters.find((c) => c.chapter_no === 1);
-    assert.equal(entry.quality_gate_results.find((g) => g.gate === "word-count-gate").status, "excepted");
+    assert.equal(entry.status, "completed");
+    assert.deepEqual(entry.quality_gate_results, []);
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
   }
@@ -528,7 +500,7 @@ test("commitChapter 中断恢复：final 已落盘但索引未完成时只修索
   }
 });
 
-test("commitChapter 应用 post-process 技能钩子到正式文件并记录 checkpoint", async () => {
+test("commitChapter 不再执行 post-process 技能钩子：hooks 元数据保持惰性", async () => {
   const { workspace, projectRoot, project } = await makeProject();
   try {
     const skillDir = path.join(projectRoot, "skills", "post-note");
@@ -552,12 +524,14 @@ test("commitChapter 应用 post-process 技能钩子到正式文件并记录 che
     );
     await appendChapterSegment({ projectRoot, projectId: project.project_id, chapterNo: 1, segmentNo: 1, content: LONG_PROSE });
     const result = await commitChapter({ projectRoot, projectId: project.project_id, chapterNo: 1 });
+    assert.equal(result.ok, true);
     const chapter = await fs.readFile(path.join(projectRoot, "chapters", "001.md"), "utf8");
-    assert.ok(chapter.includes("Post-process marker."));
-    assert.ok(result.skill_hooks.length > 0);
+    assert.ok(!chapter.includes("Post-process marker."), "post-process 钩子不得改写正式文件");
+    assert.equal(result.skill_hooks, undefined, "提交结果不再报告技能钩子");
     const checkpoints = await checkpointFiles(projectRoot);
     const checkpoint = JSON.parse(await fs.readFile(path.join(projectRoot, "checkpoints", checkpoints[0]), "utf8"));
-    assert.ok(checkpoint.skill_hooks.length > 0);
+    assert.equal(checkpoint.skill_hooks, undefined, "checkpoint 不再记录技能钩子");
+    assert.deepEqual(checkpoint.quality_gate_results, []);
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
   }

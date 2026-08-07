@@ -236,14 +236,15 @@ test("deep 工具 schema 与计划一致", () => {
   assert.ok(plan.parameters.properties.items.items.properties.id, "plan 项应有 id 字段");
   assert.ok(plan.parameters.properties.items.items.properties.description, "plan 项应有可选 description");
   const workflow = byName.get("enter_workflow");
-  assert.deepEqual(workflow.parameters.properties.workflow.enum, ["general", "chapter", "init", "review"]);
+  assert.deepEqual(workflow.parameters.properties.workflow.enum, ["general", "chapter", "init"], "Task 10：review workflow 必须从 enum 删除");
   assert.deepEqual(
     Object.keys(byName.get("append_chapter_segment").parameters.properties).sort(),
     ["chapter_no", "content", "project_id", "segment_no"]
   );
   assert.deepEqual(
     Object.keys(byName.get("commit_chapter").parameters.properties).sort(),
-    ["chapter_no", "exception_decisions", "expected_draft_checksum", "project_id"]
+    ["chapter_no", "expected_draft_checksum", "project_id"],
+    "Task 10：commit_chapter 不得再暴露 exception_decisions"
   );
   assert.deepEqual(
     Object.keys(byName.get("commit_blueprint").parameters.properties).sort(),
@@ -1179,13 +1180,13 @@ test("append_chapter_segment / commit_chapter / commit_blueprint 调用注入的
   assert.equal(segmentArgs.signal, h.context.signal);
 
   const commit = await h.tools.execute(
-    toolCall("commit_chapter", { project_id: "p1", chapter_no: 1, expected_draft_checksum: "sha256:x", exception_decisions: [{ reason: "事实例外" }] }),
+    toolCall("commit_chapter", { project_id: "p1", chapter_no: 1, expected_draft_checksum: "sha256:x" }),
     h.context
   );
   assert.equal(commit.ok, true);
   assert.deepEqual(h.opsCalls[1][0], "commitChapter");
   assert.equal(h.opsCalls[1][1].expectedDraftChecksum, "sha256:x");
-  assert.deepEqual(h.opsCalls[1][1].exceptionDecisions, [{ reason: "事实例外" }]);
+  assert.equal("exceptionDecisions" in h.opsCalls[1][1], false, "Task 10：commit_chapter 不再传递 exceptionDecisions");
   const events = await readEvents(h.journal);
   assert.ok(eventsOfType(events, "checkpoint_linked").some((event) => event.payload.chapter_no === 1), "提交必须链接 checkpoint");
 

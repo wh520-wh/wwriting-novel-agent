@@ -2,6 +2,8 @@ export function analyzeCost({ events = [], costSummary = null, cacheReport = nul
   const calls = { started: 0, completed: 0, abandoned: 0 };
   const retries = { count: 0, byReason: {} };
   const byChapter = {};
+  // Task 10：内容质量门禁已删除，不再统计 gate-failure 补写（保持输出形状，
+  // 恒为零，避免改动 audit-cost 脚本的输出契约）。
   const refills = { gateFailures: 0, byChapter: {} };
   const samples = [];
 
@@ -11,11 +13,6 @@ export function analyzeCost({ events = [], costSummary = null, cacheReport = nul
       retries.count += 1;
       const reason = event.data?.reason ?? "unknown";
       retries.byReason[reason] = (retries.byReason[reason] ?? 0) + 1;
-    }
-    if (event.type === "quality_gate_failed" && event.message === "word-count gate failed") {
-      refills.gateFailures += 1;
-      const key = String(event.chapter_no ?? "unknown");
-      refills.byChapter[key] = (refills.byChapter[key] ?? 0) + 1;
     }
     if (event.type === "model_usage_recorded") {
       calls.completed += 1;

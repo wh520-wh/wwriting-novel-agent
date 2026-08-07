@@ -32,6 +32,7 @@ import {
   LEGACY_TASK_QUEUE_FILE,
   createProjectAgentHarness,
   eventsOfType,
+  openPlainFolderHarness,
   pathExists,
   readEvents,
   readSession,
@@ -90,7 +91,7 @@ const RUN_STATUSES = [
   "cancelled",
   "interrupted"
 ];
-const WORKFLOWS = ["general", "chapter", "init", "review"];
+const WORKFLOWS = ["general", "chapter", "init"];
 const PLAN_STATUSES = ["pending", "in_progress", "completed"];
 
 const EXTREME_COMMANDS =
@@ -965,6 +966,54 @@ test("章节提交同时更新正式文件、索引、记忆与 checkpoint", asy
   // run_log 记录领域事实
   const runLog = await fs.readFile(path.join(h.projectRoot, "run_log.jsonl"), "utf8");
   assert.ok(runLog.trim().length > 0, "章节提交应在 run_log 记录领域事实");
+});
+
+test("自然语言审核：模型用 read_file/edit_file 直接修正，工作流保持 general，无 reviewProject", async (t) => {
+  // Task 10：程序化审稿已删除。用户用自然语言提出审核要求，模型在普通工作区
+  // 用通用读取/编辑工具完成，journal workflow 全程 general，绝不出现 reviewProject。
+  const ORIGINAL = "雨夜，林深推开门。他低声说：\"信上说，老宅的钟会在午夜敲十三下。\"\n";
+  const h = await openPlainFolderHarness({
+    gatewayScript: [
+      async (request) => {
+        const system = (request.messages ?? []).find((m) => m.role === "system")?.content ?? "";
+        assert.ok(
+          system.includes("用户要求审核时直接读取相关文件、判断并按要求修改，不进入专门 workflow"),
+          "general 政策应写明自然语言审核路径"
+        );
+        return { toolCalls: [tool("read_file", { path: "正文/第001章.md" })] };
+      },
+      async () => ({
+        toolCalls: [tool("edit_file", { path: "正文/第001章.md", find: "他低声说", replace: "他猛地抬头，低声说" })]
+      }),
+      { reply: { text: "已检查第 1 章：人物动作与后文紧张情绪不一致，已把'他低声说'改为'他猛地抬头，低声说'。" } }
+    ]
+  });
+  t.after(() => h.cleanup());
+  await fs.mkdir(path.join(h.projectRoot, "正文"), { recursive: true });
+  await fs.writeFile(path.join(h.projectRoot, "正文", "第001章.md"), ORIGINAL, "utf8");
+  await h.agent.open({ projectRoot: h.projectRoot });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "检查第 1 章人物前后是否一致并直接修正", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  // workflow 全程 general：没有任何 workflow_changed 事件
+  assert.equal(eventsOfType(events, "workflow_changed").length, 0, "自然语言审核不得切换工作流");
+  // 模型通过普通工具完成：read_file 读取、edit_file 直接修正
+  assert.ok(
+    eventsOfType(events, "tool_call_completed").some((event) => event.payload.name === "read_file"),
+    "模型应调用 read_file 读取章节"
+  );
+  assert.ok(
+    eventsOfType(events, "tool_call_completed").some((event) => event.payload.name === "edit_file"),
+    "模型应调用 edit_file 直接修正"
+  );
+  // 删除契约：任何事件都不得引用 reviewProject / review workflow
+  const serialized = JSON.stringify(events);
+  assert.ok(!serialized.includes("reviewProject"), "不得出现 reviewProject 工具调用");
+  assert.ok(!serialized.includes("workflow_changed"), "不得写入 review workflow 切换事件");
+  const content = await fs.readFile(path.join(h.projectRoot, "正文", "第001章.md"), "utf8");
+  assert.ok(content.includes("他猛地抬头，低声说"), "直接修正应落盘");
+  assert.equal(eventsOfType(events, "run_completed").length, 1, "普通 Agent 一轮完成审核");
+  assertActivityClosure(events);
 });
 
 test("新项目不创建旧状态文件", async (t) => {
