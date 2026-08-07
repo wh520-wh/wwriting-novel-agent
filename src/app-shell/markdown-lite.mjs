@@ -74,8 +74,8 @@ renderer.code = ({ text }) => `<pre class="md-fence"><code>${escapeHtml(text)}</
 // 衬线文稿块 + peek + 字数标）；未闭合（流式进行中）产出同样 type 但 closed=false
 // 的 token，渲染为纯文本段落回退——旧渲染器对未闭合围栏的既有行为。
 
-const PROSE_FENCE_RE = /^```(稿|prose)[ \t]*\n/;
-const FENCE_CLOSE_RE = /^```[ \t]*$/;
+const PROSE_FENCE_RE = /^```(稿|prose)[ \t]*(?:\r?\n)/;
+const FENCE_CLOSE_RE = /^```[ \t]*(?:\r?$)/;
 
 function manuscriptFenceToken(src) {
   const match = PROSE_FENCE_RE.exec(src);

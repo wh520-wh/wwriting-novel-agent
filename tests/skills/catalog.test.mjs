@@ -280,6 +280,43 @@ test("目录中无 SKILL.md 的目录被静默跳过", async (t) => {
   assert.deepEqual(shadowed, []);
 });
 
+test("单个非法 SKILL.md 不拖垮整层 catalog：合法技能保留，损坏目录进入 errors", async (t) => {
+  const projectRoot = makeTemp();
+  fs.mkdirSync(path.join(projectRoot, "skills"), { recursive: true });
+  makeSkill(path.join(projectRoot, "skills"), "good", { body: "# Good" });
+  // 非法技能：frontmatter name 与目录名不一致（readSkillFile 拒绝）。
+  const badDir = path.join(projectRoot, "skills", "bad");
+  fs.mkdirSync(badDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(badDir, "SKILL.md"),
+    "---\nname: other-name\ndescription: mismatch\n---\n\n# Bad\n",
+    "utf8"
+  );
+  t.after(() => rmSync(projectRoot, { recursive: true, force: true }));
+
+  const discovered = await discoverSkills({
+    projectRoot,
+    userHome: makeTemp(),
+    resourcesPath: makeTemp(),
+    builtinRoot: makeTemp()
+  });
+  assert.deepEqual(
+    discovered.active.map((s) => s.name),
+    ["good"],
+    "同层一个坏技能不影响合法技能被发现"
+  );
+  assert.equal(discovered.errors.length, 1, "损坏目录必须进入 errors");
+  assert.equal(discovered.errors[0].dir, badDir, "errors 携带损坏目录路径");
+  assert.ok(discovered.errors[0].error.includes("other-name"), "errors 携带失败原因");
+  assert.deepEqual(discovered.shadowed, [], "无同名覆盖");
+
+  // service.catalog 同样把 errors 透出（settings DTO 据此展示）。
+  const service = createSkillService({ userHome: makeTemp(), resourcesPath: makeTemp(), builtinRoot: makeTemp() });
+  const merged = await service.catalog({ projectRoot });
+  assert.equal(merged.errors.length, 1, "service.catalog 透出 errors");
+  assert.ok(Object.isFrozen(discovered.errors), "errors 数组冻结");
+});
+
 test("service.read 返回 active（project 层）SKILL.md 完整正文", async (t) => {
   const projectRoot = makeTemp();
   const builtinRoot = makeTemp();

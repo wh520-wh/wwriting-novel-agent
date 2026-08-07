@@ -1349,11 +1349,13 @@ test("reasoning 详情兜底：available 全文 / unsupported / empty 文案", a
 test("工作组 duration 使用 active_elapsed_ms + active_since；waiting_user 暂停", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
-  const since = Date.now() - 3000;
+  // journal 快照的 active_since 是 ISO 字符串（event.at = toISOString()）——
+  // 数值型 fixture 会掩盖 liveElapsedMs 的 Date.parse 解析（回归：Critical 1）。
+  const since = new Date(Date.now() - 3000).toISOString();
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun({ active_elapsed_ms: 42000, active_since: since }) })));
   surface.applyEvent(ev("model_turn_started", { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }));
   const duration = root.querySelector(".agent-work-duration");
-  assert.match(duration.textContent, /45 秒/u, "active_elapsed_ms + (now - active_since) 进入 duration 文本");
+  assert.match(duration.textContent, /45 秒/u, "active_elapsed_ms + (now - active_since) 进入 duration 文本（ISO active_since 也增量）");
   // waiting_user：active_since 为 null → 公式不再增量（计时暂停）
   surface.applySnapshot(snapshotOf(session({
     status: "waiting_user",

@@ -68,6 +68,10 @@ export async function readSkillResource(skill, resource = "SKILL.md") {
     throw skillError("skill_resource_unsafe", `资源真实路径逃逸技能目录: ${resource}`);
   }
   const stat = await fs.stat(realAbs);
+  // 目录/非普通文件（EISDIR 场景）：不裸抛 fs 错误，映射为技能错误。
+  if (!stat.isFile()) {
+    throw skillError("skill_resource_not_found", `资源不是文件: ${resource}`);
+  }
   const limit = resource === "SKILL.md" ? MAX_SKILL_FILE_BYTES : MAX_SKILL_RESOURCE_BYTES;
   if (stat.size > limit) {
     throw skillError("skill_resource_too_large", `资源超过 ${limit} 字节: ${resource}`);
@@ -134,12 +138,20 @@ function validateSkillName(name, dirName) {
 
 // 技能目录名合法性（Task 13 carry-forward）：validateSkillName 只要求 name 非空且等于
 // 目录名，目录名来自技能根的 readdir 单段——这里把「安全单段」约束显式化，供
-// removeSkill / ZIP 导入重命名复用。允许中文等任意非空字符（本产品中文技能名）。
+// removeSkill / ZIP 导入重命名复用。允许中文等任意非空字符（本产品中文技能名）；
+// Windows 平台会因非法字符/保留设备名无法落盘，跨平台一律拒绝这些名字。
 export function assertSafeSkillDirName(name) {
   if (typeof name !== "string" || name.length === 0) {
     throw skillError("skill_invalid_name", `非法技能名: ${name}`);
   }
   if (name === "." || name === ".." || /[\\/]/u.test(name) || name.includes("\0")) {
+    throw skillError("skill_invalid_name", `非法技能名: ${name}`);
+  }
+  if (/[<>:"|?*]/u.test(name)) {
+    throw skillError("skill_invalid_name", `非法技能名: ${name}`);
+  }
+  // Windows 保留设备名（CON/PRN/AUX/NUL/COM1-9/LPT1-9，含带扩展名形式，大小写不敏感）。
+  if (/^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/iu.test(name)) {
     throw skillError("skill_invalid_name", `非法技能名: ${name}`);
   }
   return name;

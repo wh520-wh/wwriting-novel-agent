@@ -357,6 +357,18 @@ test("v1 兼容：无 turn_id 的 model_turn 事件只计数开放 turn，不产
   assert.equal(orderedWorkItems(group).length, 0, "v1 无 reasoning 内容，不产生工作项");
 });
 
+test("stopping 状态同样压制 live item（停止始终静态，Task 6 Step 7 rule 5）", () => {
+  const work = reduceAll([
+    ev("run_started", { workflow: "general", input_id: "in-1" }, 1),
+    ev("tool_call_started", { tool_call_id: "tc-s", activity_id: "a-s", name: "shell", args: { command: "npm test" } }, 2),
+    ev("run_status_changed", { status: "stopping" }, 3)
+  ]);
+  const group = groupOf(work);
+  assert.deepEqual(openWorkItemIds(group), [], "stopping 压制 live item");
+  assert.equal(group.items.get("tool:a-s").state, "running", "不伪造 completed");
+  assert.deepEqual(visibleLiveTargets(group, { expanded: true }), [], "展开状态下也无 live 目标");
+});
+
 test("openWorkItemIds 只列 running 项；plan 静态子项永不 live", () => {
   const work = reduceAll([
     ev("run_started", { workflow: "general", input_id: "in-1" }, 1),

@@ -163,13 +163,23 @@ export function createAgentRuntime({
         mutex: createMutex(),
         // Prompt 的 Available Skills 目录摘要：只取 name/description，绝不注入正文
         // （完整指令由 read_skill 按需读取）。catalog 失败不阻塞 agent（沿用兜底语义）。
+        // 每 runId 记忆一次发现结果（Important 4）：模型每个轮次都会走到这里，
+        // 不记忆则每个轮次都要重读 + YAML 解析全部 SKILL.md 并遍历资源树。
+        catalogCache: null,
         readSkillCatalog: async () => {
-          try {
-            const { active } = await projectSkills.catalog({ projectRoot: key });
-            return active.map((skill) => ({ name: skill.name, description: skill.description ?? "" }));
-          } catch {
-            return [];
+          if (state.catalogCache && state.catalogCache.runId === state.runId) {
+            return state.catalogCache.promise;
           }
+          const promise = (async () => {
+            try {
+              const { active } = await projectSkills.catalog({ projectRoot: key });
+              return active.map((skill) => ({ name: skill.name, description: skill.description ?? "" }));
+            } catch {
+              return [];
+            }
+          })();
+          state.catalogCache = { runId: state.runId, promise };
+          return promise;
         }
       };
       // 嵌套 workflow 拒绝：enter_workflow 是改变工作流的唯一入口，由 BeforeToolUse
@@ -900,6 +910,8 @@ export function createAgentRuntime({
           state.runId = null;
           state.controller = null;
           state.firstTurn = null;
+          // Run 结束：清掉 skill catalog 记忆，下次 Run 重新发现（技能可能已变更）。
+          state.catalogCache = null;
         }
       }
     })();

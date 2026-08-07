@@ -48,7 +48,9 @@ export function orderedWorkItems(group) {
 }
 
 export function openWorkItemIds(group) {
-  if (["waiting_user", "completed", "failed", "cancelled", "interrupted"].includes(group.status)) return [];
+  // 停止始终静态（计划 Task 6 Step 7 rule 5）：waiting_user 与终态之外的 stopping
+  // 也压制 live item——停止窗口内 running 标签不得继续闪烁。
+  if (["waiting_user", "completed", "failed", "cancelled", "interrupted", "stopping"].includes(group.status)) return [];
   return orderedWorkItems(group).filter((item) => item.state === "running").map((item) => item.id);
 }
 

@@ -176,6 +176,29 @@ test("assistant tool_calls 以 OpenAI 线上格式进入后续模型请求", asy
   );
 });
 
+test("skillCatalog 每 Run 只发现一次（多轮模型轮次共享同一 catalog 记忆）", async (t) => {
+  // 回归：Important 4 —— readSkillCatalog 在每个模型轮次的 prompt 装配时都会被
+  // 调用；不记忆时两轮模型轮次 = 两次完整 catalog 发现（重读全部 SKILL.md）。
+  // 记忆生效时底层 service.catalog 在整个 Run 内只执行一次。
+  const h = await openHarness(t, {
+    gatewayScript: [
+      { reply: { toolCalls: [tool("read_file", { path: "OUTLINE.md" })] } },
+      { reply: { text: "完成。" } }
+    ]
+  });
+  let catalogCalls = 0;
+  const originalCatalog = h.skills.catalog.bind(h.skills);
+  // 计数包装挂在 harness 注入的同一 service 对象上（agent 持有同一引用）。
+  h.skills.catalog = async ({ projectRoot }) => {
+    if (projectRoot === h.projectRoot) catalogCalls += 1;
+    return originalCatalog({ projectRoot });
+  };
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "读取大纲", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  assert.ok(h.gateway.calls.length >= 2, "应产生至少两轮模型调用");
+  assert.equal(catalogCalls, 1, "整个 Run 只发现一次 catalog（两轮轮次共享记忆）");
+});
+
 test("Provider 正文 token 在模型请求完成前进入 assistant_message_delta", async (t) => {
   let modelCompleted = false;
   const h = await openHarness(t, {
