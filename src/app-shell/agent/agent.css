@@ -1,7 +1,8 @@
-/* src/app-shell/agent/agent.css —— AgentSurface 对话控制面样式（Task 8 Step 5）。
+/* src/app-shell/agent/agent.css —— AgentSurface 对话控制面样式（Task 8 Step 5，
+ * Task 12：主内容轴 1040px、用户气泡 800px、时间线无框化）。
  *
- * 布局基线（前置计划 Task 11 验收）：
- *   - 对话与 composer 共享 --content-column: 900px（与工作台/旧线程同一列）；
+ * 布局基线（前置计划 Task 11/12 验收）：
+ *   - 对话与 composer 共享 --content-column: 1040px（与工作台/旧线程同一列）；
  *   - 排队文本任意位置换行，不遮住「立即」；
  *   - plan 行使用稳定 grid 轨道（状态标记列固定宽，状态变化不推动文本列）；
  *   - 按钮/图标尺寸不随状态变化抖动；
@@ -11,7 +12,7 @@
  */
 
 :root {
-  --content-column: 900px;
+  --content-column: 1040px;
 }
 
 /* ---- 表面骨架：对话滚动区 + 底部 composer -------------------------------- */
@@ -47,9 +48,9 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  width: 100%;
+  width: min(100%, 1040px); /* Task 12：主内容轴 1040px，布局流内居中 */
   max-width: var(--content-column);
-  margin: 0 auto;
+  margin-inline: auto;
   padding: 28px var(--content-gutter, 20px) 24px;
   display: flex;
   flex-direction: column;
@@ -91,11 +92,17 @@
 .agent-composer {
   position: relative;
   flex: 0 0 auto;
-  width: 100%;
+  width: min(100%, 1040px); /* Task 12：与对话共用 1040px 主内容轴 */
   max-width: var(--content-column);
-  margin: 0 auto;
+  margin-inline: auto;
   padding: 12px var(--content-gutter, 20px) 18px;
   box-sizing: border-box;
+}
+
+/* 主内容轴上限的字面量契约（Task 12 brief Step 1）：对话与 composer 统一 1040px。 */
+.agent-conversation,
+.agent-composer {
+  max-width: 1040px;
 }
 
 .agent-surface--empty .agent-conversation {
@@ -432,12 +439,12 @@
 
 .agent-message--user {
   align-self: flex-end;
-  max-width: min(72%, 640px); /* 用户消息：72% 优先，封顶 640px，靠右 */
+  max-width: min(800px, calc(100% - 32px)); /* 用户气泡：封顶 800px，留 32px 边距，靠右 */
 }
 
 .agent-message--assistant {
   align-self: flex-start;
-  max-width: min(88%, 720px);
+  max-width: min(100%, 800px);
 }
 
 .agent-message-text {
@@ -468,16 +475,17 @@
    一套 typography（无 .is-streaming h* / .is-complete h* 重复规则）。 */
 .agent-message-text.agent-markdown {
   white-space: normal;
-  width: min(100%, 760px); /* 助手正文：100% 优先，封顶 760px */
+  width: min(100%, 800px); /* 助手正文：100% 优先，封顶 800px，与用户气泡上限一致 */
 }
 
 /* §2.6 标题/正文层级：H1/H2 靠字号、字重、间距和 H2 的细分隔线建立层级，
-   不使用 accent/green/渐变；H3–H6 不使用状态色；正文默认 regular，
-   只有 Markdown <strong> 使用 bold。 */
+   不使用 accent/green/渐变；H3–H6 不使用状态色；正文默认 regular（Task 12
+   显式声明 font-weight），只有 Markdown <strong> 使用 bold。 */
 .agent-markdown {
   color: var(--agent-answer-fg);
   font-size: 14px;
   line-height: 1.68;
+  font-weight: var(--weight-regular);
 }
 .agent-markdown h1 { color: var(--agent-heading-fg); font-size: 20px; line-height: 1.35; font-weight: var(--weight-bold); }
 .agent-markdown h2 { color: var(--agent-heading-fg); font-size: 17px; line-height: 1.4; font-weight: var(--weight-bold); }
@@ -533,6 +541,7 @@
   background: var(--code-bg);
   border-radius: 8px;
   padding: 10px 12px;
+  max-width: 100%; /* 溢出在内容列内部处理，不扩大主轴（Task 12 Step 3） */
   overflow-x: auto; /* code overflow：横向滚动 */
   font-family: var(--mono, ui-monospace, Consolas, monospace);
   font-size: 12.5px;
@@ -559,15 +568,15 @@
   margin: 10px 0;
 }
 
-/* 表格保持 760px 正文列，窄屏仅滚动包装层，不把各列压成逐字换行。 */
+/* 表格保持 800px 正文列，窄屏仅滚动包装层，不把各列压成逐字换行。 */
 .agent-markdown-table-scroll {
   max-width: 100%;
   overflow-x: auto;
   margin: 0 0 8px;
 }
 .agent-markdown-table-scroll table {
-  width: 760px;
-  min-width: 760px;
+  width: 800px;
+  min-width: 800px;
   table-layout: fixed;
   border-collapse: collapse;
   margin: 0;
@@ -680,13 +689,15 @@
   color: var(--agent-accent);
 }
 
-/* ---- 工作组（Task 6）：reasoning/tool/plan 有序时间线，插入对话时间流 ------------- */
+/* ---- 工作组（Task 6/12）：reasoning/tool/plan 有序时间线，插入对话时间流。
+   Task 12：无框化——容器透明、无边框、无圆角、无阴影，层级只靠图标、缩进、
+   间距、字重和细时间线表达（brief Step 4 verbatim 的类名适配）。 */
 .agent-work-group {
-  width: min(100%, 900px); /* 工作组：100% 优先，封顶 900px */
-  border: 1px solid var(--agent-line);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--agent-panel-muted) 82%, transparent);
-  overflow: hidden;
+  width: min(100%, 1040px); /* 工作组：与对话共用 1040px 主内容轴 */
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  border-radius: 0;
 }
 
 .agent-work-group > summary {
@@ -695,14 +706,14 @@
   display: flex;
   align-items: baseline;
   gap: 10px;
-  padding: 10px 12px;
+  padding: 8px 2px;
   user-select: none;
   transition: background 100ms ease;
 }
 
 .agent-work-group > summary:hover,
 .agent-work-group > summary:focus-visible {
-  background: color-mix(in srgb, var(--agent-panel-solid) 55%, transparent);
+  background: var(--agent-panel-muted);
 }
 
 .agent-work-group > summary::-webkit-details-marker {
@@ -727,18 +738,48 @@
   display: flex;
   flex-direction: column;
   gap: 7px;
-  padding: 2px 12px 12px;
+  padding: 2px 2px 6px;
   border-top: 1px solid var(--agent-line-3);
 }
 
-/* 统一子项行：label / icon / path / meta 一行内换行排列，detail 与计划独占一行 */
+/* 统一子项行：label / icon / path / meta 一行内换行排列，detail 与计划独占一行。
+   子项缩进 24px，并在左侧 8px 处画出 1px 细时间线（brief Step 4 verbatim）。 */
 .agent-work-item {
+  position: relative;
+  padding: 5px 0 5px 24px;
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   gap: 2px 8px;
   font-size: 12.5px;
   line-height: 1.5;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  border-radius: 0;
+}
+
+.agent-work-item::before {
+  content: "";
+  position: absolute;
+  inset-inline-start: 8px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--line);
+}
+
+/* 思考/工具/计划子元素同样无框（brief Step 4 的 .agent-reasoning/.agent-tool/
+   .agent-plan 适配到实际类名）：一律透明、无边、无圆角、无阴影。 */
+.agent-reasoning-ticker,
+.agent-reasoning-detail,
+.agent-tool-path,
+.agent-plan-list,
+.agent-plan-item {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  border-radius: 0;
 }
 
 .agent-work-item__icon {
@@ -1381,6 +1422,13 @@
   .agent-composer-input {
     min-height: 66px;
   }
+}
+
+/* Task 12 Step 3 verbatim（类名适配）：≤768px 主列占满宽度，用户气泡放宽到 16px 边距。 */
+@media (max-width: 768px) {
+  .agent-conversation,
+  .agent-composer { width: 100%; }
+  .agent-message--user { max-width: calc(100% - 16px); }
 }
 
 @media (prefers-reduced-motion: reduce) {

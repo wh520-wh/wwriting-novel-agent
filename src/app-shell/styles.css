@@ -5,13 +5,14 @@
 :root {
   color-scheme: light;
 
-  /* surfaces — the rail carries structure, content stays quiet */
-  --bg: #ffffff;
-  --rail: #f2f4f3;
-  --rail-2: #e7ebe8;
-  --surface: #ffffff;
-  --surface-2: #f7f9f8;
-  --surface-3: #eef2ef;
+  /* surfaces — 轻冷中性灰：主背景/左栏/输入区相邻层级只有轻微明度差，
+     不使用泛黄纸张色，不让大块纯白形成刺眼断层（Task 12 Step 5）。 */
+  --bg: #f7f8f9;
+  --rail: #f2f4f5;
+  --rail-2: #e9ecee;
+  --surface: #f7f8f9;
+  --surface-2: #f4f6f7;
+  --surface-3: #edf0f2;
 
   /* ink */
   --ink: #202522;
@@ -21,11 +22,11 @@
   --ghost: #b6bdb8;
 
   /* lines */
-  --line: #dde2df;
-  --line-2: #e8ece9;
-  --line-3: #f0f2f1;
-  --line-hover: #cfd6d1;
-  --hover: #e8ece9;
+  --line: #dce1e5;
+  --line-2: #e6e9ec;
+  --line-3: #eff1f3;
+  --line-hover: #cdd4da;
+  --hover: #e6e9ec;
 
   /* status accents — bookish inks: verdant, ochre, oxblood */
   --accent: #3f6b4f;
@@ -94,8 +95,8 @@
   --agent-plan-rest-fg: var(--text-secondary);
   --agent-plan-complete-fg: var(--text-muted);
 
-  /* Task 11：共享内容列 — 工作台 / 准备卡 / 线程 / composer 统一宽度与居中 */
-  --content-column: 900px;
+  /* Task 11/12：共享内容列 — 工作台 / 准备卡 / 线程 / composer 统一宽度与居中（1040px） */
+  --content-column: 1040px;
   --content-gutter: clamp(14px, 2.2vw, 24px);
 
   --sans:
@@ -1211,7 +1212,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .create-card {
   width: min(560px, 100%); border: 1px solid var(--line); border-radius: var(--r-xl);
-  background: linear-gradient(180deg, #fff, var(--surface-2)); padding: 30px 32px 28px;
+  background: linear-gradient(180deg, var(--surface), var(--surface-2)); padding: 30px 32px 28px;
   box-shadow: var(--shadow); display: grid; gap: 13px; position: relative; overflow: hidden;
   opacity: 0; transition: opacity .2s;
 }
@@ -1415,71 +1416,34 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 }
 
 
-/* Quick Rail */
+/* 主列内容容器（Topbar + AgentSurface）。右侧 quick rail 已删除（Task 12）。 */
 .main-inner { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 
-.quick-rail {
-  width: 48px; flex: 0 0 48px;
-  border-left: 1px solid var(--line);
-  background: var(--rail-2);
-  display: flex; flex-direction: column;
-  align-items: center; padding: 12px 0; gap: 6px;
-}
-
-.qr-slot {
-  width: 36px; height: 36px;
-  border-radius: var(--r-sm);
-  position: relative;
-  display: flex; align-items: center; justify-content: center;
-  border: none; background: transparent; cursor: pointer;
-}
-
-.qr-slot:hover { background: var(--hover); }
-
-.qr-icon { display: flex; color: var(--muted); }
-
-.qr-badge {
-  position: absolute; bottom: 0; right: 0;
-  font-size: 9px; padding: 1px 4px;
+/* 顶部「面板」按钮：quick rail 删除后，章节/资料/成本经 drawer 到达。
+   带文字标签的次级操作，窄屏退化为纯图标按钮。 */
+.topbar-actions .drawer-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: auto;
+  min-width: 0;
+  height: 32px;
+  padding: 0 11px;
   border-radius: 6px;
-  background: var(--surface); border: 1px solid var(--line);
-}
-
-.qr-badge.level-warning { background: var(--amber-soft); color: var(--amber); border-color: transparent; }
-
-.qr-badge.level-over { background: var(--red-soft); color: var(--red); border-color: transparent; }
-
-.qr-badge.dot::after {
-  content: ''; position: absolute; top: -2px; right: -2px;
-  width: 6px; height: 6px; background: var(--red); border-radius: 50%;
-}
-
-.qr-popover {
-  position: fixed;
-  background: var(--ink); color: var(--surface);
-  font-size: 12px; padding: 8px 12px; border-radius: var(--r-sm);
-  white-space: pre-line;
-  box-shadow: var(--shadow);
-  pointer-events: none;
-  z-index: 1000;
-}
-@media (max-width: 1100px) {
-
-  .quick-rail { display: none; }
-}
-
-
-.qr-collapsed-btn {
-  display: none;
-  /* P1-2 修复：窄屏顶栏空间紧张时，"面板"不得被 flex 挤压成两行逐字；
-     nowrap 禁止换行，flex:0 0 auto 防止收缩（.tbtn 固定 32px 宽）。 */
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 12.5px;
+  font-weight: 600;
   white-space: nowrap;
-  flex: 0 0 auto;
-  min-width: 32px;
+  transition: background 100ms ease, color 100ms ease;
 }
-@media (max-width: 1100px) {
-
-  .qr-collapsed-btn { display: inline-flex; }
+.topbar-actions .drawer-toggle:hover { background: var(--hover); color: var(--ink); }
+.topbar-actions .drawer-toggle span { display: inline; }
+.topbar-actions .drawer-toggle svg { display: block; color: var(--muted); }
+@media (max-width: 560px) {
+  .topbar-actions .drawer-toggle span { display: none; }
+  .topbar-actions .drawer-toggle { width: 32px; padding: 0; justify-content: center; }
 }
 
 
@@ -1487,8 +1451,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .drawer,
 .settings-modal,
 .create-card,
-.motion-active,
-.qr-badge {
+.motion-active {
   will-change: transform;
 }
 @media (prefers-reduced-motion: reduce) {
@@ -1496,8 +1459,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   .drawer,
   .settings-modal,
   .create-card,
-  .motion-active,
-  .qr-badge {
+  .motion-active {
     will-change: auto;
   }
 }
@@ -1630,16 +1592,17 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .spd-skill-list .spd-skill-heading:first-child { margin-top: 0; }
 .spd-skill-row {
   display: flex; align-items: center; gap: 8px;
-  padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-sm);
-  background: var(--surface); margin-bottom: 6px;
+  padding: 9px 2px; margin: 0;
+  border: 0; border-bottom: 1px solid var(--line);
+  border-radius: 0; background: transparent;
 }
 .spd-skill-row.shadowed { opacity: 0.65; }
 .spd-skill-main { flex: 1 1 auto; min-width: 0; }
 .spd-skill-name { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--ink); }
 .spd-skill-source {
   font-size: 10.5px; font-weight: 600; letter-spacing: 0;
-  color: var(--accent); background: var(--accent-soft);
-  border-radius: 99px; padding: 2px 8px;
+  color: var(--text-muted); background: transparent;
+  border-radius: 0; padding: 0;
 }
 .spd-skill-desc {
   margin-top: 2px; font-size: 12px; line-height: 1.5;
@@ -1699,7 +1662,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .shortcuts-card {
   position: relative; width: min(420px, 100%);
   border: 1px solid var(--line); border-radius: var(--r-xl);
-  background: linear-gradient(180deg, #fff, var(--surface-2));
+  background: linear-gradient(180deg, var(--surface), var(--surface-2));
   padding: 26px 28px 24px; box-shadow: var(--shadow-pop);
 }
 .shortcuts-card h2 { font-size: 17px; margin-bottom: 14px; }

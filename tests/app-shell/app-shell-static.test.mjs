@@ -1,6 +1,8 @@
-// Static assertions over app.js / api-client.js source（统一 Agent 内核计划 Task 9 改写）。
+// Static assertions over app.js / api-client.js source（统一 Agent 内核计划 Task 9 改写，
+// Task 12 追加：quick rail 删除后的静态契约与抽屉可达性）。
 // 断言新组合根的接线：AgentSurface 是唯一对话 seam、api-client 通用 helper 保留、
-// quick-rail 纯导航、drawer-panels 直接导出、settings-modal 稳定行为。
+// quick rail 已整体删除且功能可经顶部按钮/drawer 到达、drawer-panels 直接导出、
+// settings-modal 稳定行为。
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -10,21 +12,23 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const appJsPath = path.join(here, "..", "..", "src", "app-shell", "app.js");
 const apiClientPath = path.join(here, "..", "..", "src", "app-shell", "api-client.js");
-const quickRailPath = path.join(here, "..", "..", "src", "app-shell", "components", "quick-rail.js");
 const drawerPanelsPath = path.join(here, "..", "..", "src", "app-shell", "drawer-panels.js");
 const chapterPresentationPath = path.join(here, "..", "..", "src", "app-shell", "chapter-presentation.mjs");
 const indexHtmlPath = path.join(here, "..", "..", "src", "app-shell", "index.html");
 const stylesPath = path.join(here, "..", "..", "src", "app-shell", "styles.css");
 const iconsPath = path.join(here, "..", "..", "src", "app-shell", "icons.js");
+const agentCssPath = path.join(here, "..", "..", "src", "app-shell", "agent", "agent.css");
+const slashCommandsPath = path.join(here, "..", "..", "src", "app-shell", "agent", "slash-commands.mjs");
 
 const appSource = await fs.readFile(appJsPath, "utf8");
 const apiClientSource = await fs.readFile(apiClientPath, "utf8");
-const quickRailSource = await fs.readFile(quickRailPath, "utf8");
 const drawerPanelsSource = await fs.readFile(drawerPanelsPath, "utf8");
 const chapterPresentationSource = await fs.readFile(chapterPresentationPath, "utf8");
 const indexHtmlSource = await fs.readFile(indexHtmlPath, "utf8");
 const stylesSource = await fs.readFile(stylesPath, "utf8");
 const iconsSource = await fs.readFile(iconsPath, "utf8");
+const agentCssSource = await fs.readFile(agentCssPath, "utf8");
+const slashCommandsSource = await fs.readFile(slashCommandsPath, "utf8");
 
 test("顶栏不显示待命胶囊或闪烁状态条", () => {
   assert.doesNotMatch(indexHtmlSource, /project-status|>待命</u);
@@ -99,14 +103,28 @@ test("api-client.js exports 通用 helper 且无旧 chat helper", () => {
   assert.match(apiClientSource, /error\.action\s*=/);
 });
 
-test("quick-rail.js 纯导航四槽位，无命令注册副作用", () => {
-  assert.ok(quickRailSource.includes("function renderQuickRail"));
-  assert.ok(quickRailSource.includes("function bindQuickRailKeys"));
-  assert.doesNotMatch(quickRailSource, /commands\/index|command-registry|registerCommand/u);
-  for (const key of ["chapters", "skills", "research", "cost"]) {
-    assert.ok(quickRailSource.includes(`key: '${key}'`), `quick-rail 应含 ${key} 槽位`);
+test("Task 12 静态契约：quick rail 删除、无框时间线、1040px 主轴、/review 下线", () => {
+  // brief Step 1 verbatim 断言：
+  assert.doesNotMatch(indexHtmlSource, /id="quick-rail"|id="qr-collapsed"/u, "quick rail 与折叠按钮应整体删除");
+  assert.doesNotMatch(appSource, /renderQuickRail|bindQuickRailKeys/u, "app.js 不得引用 quick rail 渲染/键盘绑定");
+  assert.doesNotMatch(slashCommandsSource, /\/review/u, "斜杠命令不得再含 /review");
+  assert.doesNotMatch(
+    agentCssSource,
+    /\.agent-(?:work|reasoning|tool|plan)[^{]*\{[^}]*background:\s*var\(--(?:surface|accent|green|red)/su,
+    "时间线容器不得使用 surface/accent/green/red 底色"
+  );
+  assert.match(agentCssSource, /max-width:\s*1040px/u, "主内容轴应为 1040px");
+});
+
+test("quick rail 删除后：顶部按钮打开 drawer，drawer 分区保持可点击", () => {
+  assert.match(indexHtmlSource, /id="open-drawer"/u, "顶栏应有抽屉入口按钮");
+  assert.match(appSource, /open-drawer/u, "app.js 应绑定抽屉入口按钮");
+  assert.match(appSource, /openDrawerTab\s*\(/u, "抽屉入口应接线 openDrawerTab");
+  // 章节/模型/资料/成本四个 drawer 分区仍然存在并可点击。
+  for (const tab of ["chapters", "model", "research", "cost"]) {
+    assert.ok(indexHtmlSource.includes(`data-dtab="${tab}"`), `drawer 应保留 ${tab} 分区`);
   }
-  assert.ok(!quickRailSource.includes("reviewer"), "审查槽位应删除");
+  assert.doesNotMatch(stylesSource, /\.quick-rail|\.qr-slot|\.qr-collapsed-btn/u, "quick rail 样式应整体删除");
 });
 
 test("drawer-panels.js 直接调用确定性导出 route，无旧业务入口", () => {

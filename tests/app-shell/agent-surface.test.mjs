@@ -523,7 +523,7 @@ test("输入斜杠显示命令补全，可用键盘选择但不会立即提交",
   const menu = root.querySelector('[data-testid="agent-slash-menu"]');
   assert.ok(menu, "输入 / 后应出现命令菜单");
   assert.equal(menu.hidden, false);
-  assert.equal(root.querySelectorAll('[data-testid="agent-slash-option"]').length, 5);
+  assert.equal(root.querySelectorAll('[data-testid="agent-slash-option"]').length, 4, "补全应为 /init /write /model /settings 四项");
 
   input.value = "/se";
   input._fire("input");
@@ -1846,13 +1846,13 @@ test("reasoning ticker：增量替换复用同一元素，高度锁定固定两�
 });
 
 // ===========================================================================
-// 布局基线：agent.css 保留 900px 内容列与模型菜单视口钳制
+// 布局基线：agent.css 保留 1040px 内容列与模型菜单视口钳制
 // ===========================================================================
 
-test("agent.css 保留 900px 内容列、向上菜单与工作组/动效布局", async () => {
+test("agent.css 保留 1040px 内容列、向上菜单与工作组/动效布局", async () => {
   const css = await fs.readFile(path.join(here, "..", "..", "src", "app-shell", "agent", "agent.css"), "utf8");
   const styles = await fs.readFile(path.join(here, "..", "..", "src", "app-shell", "styles.css"), "utf8");
-  assert.match(css, /--content-column:\s*900px/u, "根变量应定义 900px 内容列");
+  assert.match(css, /--content-column:\s*1040px/u, "根变量应定义 1040px 内容列");
   assert.match(css, /\.agent-conversation[\s\S]*max-width:\s*var\(--content-column\)/u, "对话共享内容列");
   assert.match(css, /\.agent-composer[\s\S]*max-width:\s*var\(--content-column\)/u, "composer 共享内容列");
   assert.match(
@@ -1892,8 +1892,19 @@ test("agent.css 保留 900px 内容列、向上菜单与工作组/动效布局",
   assert.doesNotMatch(css, /\.agent-plan-overlay/u, "旧 plan overlay CSS 已删除");
   assert.doesNotMatch(css, /agent-thinking-dot|agent-thinking-blink|agent-plan-mark|agent-plan-restore/u, "旧三点思考/悬浮层控件 CSS 已删除");
   assert.doesNotMatch(css, /@media\s*\(max-width:\s*720px\)/u, "旧窄窗口悬浮层降级规则已删除");
-  // 工作组（Step 3）：details 容器 + 稳定选择器（不靠 nth-child/文案/内联 style）
-  assert.match(css, /\.agent-work-group\s*\{[^}]*border-radius:\s*8px/u, "工作组是圆角折叠容器");
+  // 工作组（Step 3/12）：details 容器 + 稳定选择器（不靠 nth-child/文案/内联 style）；
+  // Task 12 后无框：透明、无边框、无圆角、无阴影，平级时间线。
+  assert.match(
+    css,
+    /\.agent-work-group\s*\{[^}]*background:\s*transparent[^}]*border:\s*0[^}]*box-shadow:\s*none[^}]*border-radius:\s*0/u,
+    "工作组是无框时间线容器（透明/无边/无圆角/无阴影）"
+  );
+  assert.match(
+    css,
+    /\.agent-work-item\s*\{[^}]*position:\s*relative[^}]*padding:\s*5px\s+0\s+5px\s+24px/u,
+    "工作子项应缩进并承载细时间线"
+  );
+  assert.match(css, /\.agent-work-item::before\s*\{[^}]*width:\s*1px[^}]*background:\s*var\(--line\)/u, "子项应有 1px 细时间线");
   assert.match(
     css,
     /\.agent-work-status\s*\{[^}]*color:\s*var\(--agent-work-title-fg\)[^}]*font-weight:\s*var\(--weight-semibold\)/u,
@@ -1957,8 +1968,8 @@ test("agent.css 保留 900px 内容列、向上菜单与工作组/动效布局",
   );
   assert.match(
     css,
-    /\.agent-markdown-table-scroll table\s*\{[^}]*width:\s*760px[^}]*min-width:\s*760px[^}]*table-layout:\s*fixed/u,
-    "表格应保持 760px 列宽，窄屏不压缩列"
+    /\.agent-markdown-table-scroll table\s*\{[^}]*width:\s*800px[^}]*min-width:\s*800px[^}]*table-layout:\s*fixed/u,
+    "表格应保持 800px 列宽，窄屏不压缩列"
   );
   assert.doesNotMatch(css, /\.agent-scroll-latest\s*\{[^}]*position:\s*sticky/u, "回到最新不得覆盖会话内容");
   // styles.css：2.6 semantic text / weight / agent component token 已声明（不重定义 primitive）
@@ -1973,12 +1984,12 @@ test("agent.css 保留 900px 内容列、向上菜单与工作组/动效布局",
 // 冻结布局约束（Task 7 Step 3）：固定宽度 + 响应式无横向溢出
 // ===========================================================================
 
-test("冻结布局约束：助手正文 760px / 工作组 900px / 用户消息 72%·640px 靠右 / ticker 2lh / 详情 320px", async () => {
+test("冻结布局约束：助手正文 800px / 工作组 1040px / 用户消息 min(800px,100%-32px) 靠右 / ticker 2lh / 详情 320px", async () => {
   const css = await fs.readFile(path.join(here, "..", "..", "src", "app-shell", "agent", "agent.css"), "utf8");
   assert.match(css, /\.agent-message--user\s*\{[^}]*align-self:\s*flex-end/u, "用户消息靠右");
-  assert.match(css, /max-width:\s*min\(72%,\s*640px\)/u, "用户消息 max-width: min(72%, 640px)");
-  assert.match(css, /width:\s*min\(100%,\s*760px\)/u, "助手 Markdown width: min(100%, 760px)");
-  assert.match(css, /width:\s*min\(100%,\s*900px\)/u, "工作组 width: min(100%, 900px)");
+  assert.match(css, /max-width:\s*min\(800px,\s*calc\(100% - 32px\)\)/u, "用户消息 max-width: min(800px, calc(100% - 32px))");
+  assert.match(css, /width:\s*min\(100%,\s*800px\)/u, "助手 Markdown width: min(100%, 800px)");
+  assert.match(css, /width:\s*min\(100%,\s*1040px\)/u, "工作组 width: min(100%, 1040px)");
   assert.match(
     css,
     /\.agent-reasoning-ticker\s*\{[^}]*min-height:\s*2lh[^}]*max-height:\s*2lh[^}]*line-clamp:\s*2/u,

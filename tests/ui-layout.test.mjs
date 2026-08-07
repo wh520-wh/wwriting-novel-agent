@@ -1,10 +1,10 @@
-// 统一 Agent 内核计划 Task 9 改写：UI 布局契约。
+// 统一 Agent 内核计划 Task 9 改写（Task 12 更新）：UI 布局契约。
 //
 // 保留的布局基线：
-//   - 共享 900px 内容列：AgentSurface 对话与 composer 使用 --content-column（agent.css）；
+//   - 共享 1040px 内容列：AgentSurface 对话与 composer 使用 --content-column（agent.css）；
 //   - composer 菜单从触发器向上浮出，并保留 16px 视口安全区（agent.css）；
 //   - 设置弹窗只暴露普通作者真正需要的模型、写作和项目管理；
-//   - 主列结构：单一对话挂载点、导航、设置、阅读器、确定性工具；
+//   - 主列结构：单一对话挂载点、顶部 drawer 入口、设置、阅读器、确定性工具；
 //   - 旧对话/任务卡/准备卡结构与样式不得残留。
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -21,9 +21,9 @@ const cssSource = await fs.readFile(path.join(srcDir, "styles.css"), "utf8");
 const agentCssSource = await fs.readFile(path.join(srcDir, "agent", "agent.css"), "utf8");
 const settingsSource = await fs.readFile(path.join(srcDir, "settings-modal.js"), "utf8");
 
-test("共享内容列：AgentSurface 对话与 composer 使用同一 900px 列", () => {
-  assert.match(cssSource, /--content-column:\s*900px/u, "styles.css 应定义 900px 内容列变量");
-  assert.match(agentCssSource, /--content-column:\s*900px/u, "agent.css 应定义 900px 内容列变量");
+test("共享内容列：AgentSurface 对话与 composer 使用同一 1040px 列", () => {
+  assert.match(cssSource, /--content-column:\s*1040px/u, "styles.css 应定义 1040px 内容列变量");
+  assert.match(agentCssSource, /--content-column:\s*1040px/u, "agent.css 应定义 1040px 内容列变量");
   assert.match(
     agentCssSource,
     /\.agent-conversation[\s\S]*max-width:\s*var\(--content-column\)/u,
@@ -46,9 +46,10 @@ test("composer 菜单锚定触发器向上浮出，并受视口约束", () => {
   assert.match(agentCssSource, /overflow-wrap:\s*anywhere/u, "模型名称应允许任意位置换行");
 });
 
-test("主列结构：单一对话挂载点 + 导航 + 设置 + 阅读器 + 确定性工具", () => {
+test("主列结构：单一对话挂载点 + 顶部抽屉入口 + 设置 + 阅读器 + 确定性工具", () => {
   assert.ok(indexSource.includes('id="agent-surface"'), "index.html 应含唯一对话挂载点");
-  assert.ok(indexSource.includes('id="quick-rail"'), "导航应保留");
+  assert.ok(indexSource.includes('id="open-drawer"'), "顶部应有 drawer 入口按钮（替代 quick rail）");
+  assert.ok(!indexSource.includes('id="quick-rail"'), "右侧 quick rail 应整体删除");
   assert.ok(indexSource.includes("settings-modal"), "设置弹窗应保留");
   assert.ok(indexSource.includes("reader-scrim"), "章节阅读器应保留");
   assert.ok(indexSource.includes("toast-stack"), "toast 栈应保留");
@@ -163,21 +164,21 @@ test("次级操作融入背景，消息层级不依赖成排胶囊按钮", () =>
 // 冻结布局约束（Task 7 Step 3）：固定宽度 + 360/768/1280 无横向溢出
 // ===========================================================================
 
-test("冻结布局约束：360/768/1280 无横向溢出（百分比优先 + 固定上限）", () => {
-  // 三档视口宽度推演（对话内容宽 = min(视口, 900px) - 左右各 20px 内边距）：
-  //   360px  → 内容 320px：用户 ≤min(72%,640px)=230px、助手 ≤min(100%,760px)=320px、工作组 320px；
-  //   768px  → 内容 728px：用户 ≤524px、助手 ≤728px、工作组 728px；
-  //   1280px → 内容 860px（列封顶 900px）：用户 ≤619px、助手 ≤760px、工作组 860px。
-  // 百分比项 ≤ 容器自身宽度，固定上限只在容器足够宽时封顶，因此三档都不会撑出横向滚动。
-  assert.match(agentCssSource, /max-width:\s*min\(72%,\s*640px\)/u, "用户消息：72% 优先，封顶 640px");
-  assert.match(agentCssSource, /width:\s*min\(100%,\s*760px\)/u, "助手 Markdown：100% 优先，封顶 760px");
-  assert.match(agentCssSource, /width:\s*min\(100%,\s*900px\)/u, "工作组：100% 优先，封顶 900px");
+test("冻结布局约束：390/768/1280 无横向溢出（百分比优先 + 固定上限）", () => {
+  // 四档视口宽度推演（对话内容宽 = min(视口, 1040px) - 左右各 gutter 内边距）：
+  //   390px  → 内容约 358px：用户 ≤min(800px,100%-32px)=326px、助手 ≤min(100%,800px)=358px、工作组 358px；
+  //   768px  → 内容约 728px：用户 ≤696px、助手 ≤728px、工作组 728px；
+  //   1280px → 内容约 1040px（列封顶 1040px）：用户 ≤800px、助手 ≤800px、工作组 1040px。
+  // 百分比项 ≤ 容器自身宽度，固定上限只在容器足够宽时封顶，因此各档都不会撑出横向滚动。
+  assert.match(agentCssSource, /max-width:\s*min\(800px,\s*calc\(100% - 32px\)\)/u, "用户消息：封顶 800px，留 32px 边距");
+  assert.match(agentCssSource, /width:\s*min\(100%,\s*800px\)/u, "助手 Markdown：100% 优先，封顶 800px");
+  assert.match(agentCssSource, /width:\s*min\(100%,\s*1040px\)/u, "工作组：100% 优先，封顶 1040px");
   // 长内容（URL/代码/长单词）原地换行，不撑破消息容器。
   assert.match(agentCssSource, /\.agent-message-text\s*\{[^}]*overflow-wrap:\s*anywhere/u, "消息文本应任意位置换行");
-  // 对话容器本身 width:100% + box-sizing:border-box，padding 计入宽度不溢出。
+  // 对话容器本身 width:min(100%,1040px) + box-sizing:border-box，padding 计入宽度不溢出。
   assert.match(
     agentCssSource,
-    /\.agent-conversation\s*\{[^}]*width:\s*100%[^}]*max-width:\s*var\(--content-column\)[^}]*box-sizing:\s*border-box/u,
+    /\.agent-conversation\s*\{[^}]*width:\s*min\(100%,\s*1040px\)[^}]*max-width:\s*var\(--content-column\)[^}]*box-sizing:\s*border-box/u,
     "对话容器宽度含内边距，不横向溢出"
   );
 });
