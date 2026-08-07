@@ -1,10 +1,10 @@
-// scripts/verify-app-clickability.cjs —— 新 UI 点击可达性验证（统一 Agent 内核计划
-// Task 9 改写）。
+// scripts/verify-app-clickability.cjs —— 新 UI 点击可达性验证（Task 13 改写）。
 //
-// 用 HTTP 公共行为准备数据（createProjectAt + 章节领域事实 + agent 简单对话），
-// 在 Electron 中逐个点击新界面的可见元素并断言 UI 状态：项目导航、快捷面板四槽位、
-// 抽屉分区、阅读器、设置弹窗、新建弹窗、主题/隐私开关、AgentSurface composer 发送、
-// 确定性导出按钮。不得 import 已删除的 agent-engine/failure store/side-question。
+// 普通文件夹（无 project.yaml）+ 应用私有 stateRoot：不再创建旧项目、不再通过
+// reviewing 门禁提交章节。在 Electron 中逐个点击新界面的可见元素并断言 UI 状态：
+// 项目导航打开普通文件夹、顶部 drawer 入口（章节/模型/资料/成本）、设置页内置风格
+// 详情（只读、可展开正文）、composer 发送、运行中停止、失败后重试、主题/隐私开关、
+// 新建弹窗与快捷键浮层。不得 import 已删除的 agent-engine/failure store/side-question。
 //
 // 点击机制：本会话不投递真实指针事件（sendInputEvent/CDP Input 均无 click），
 // 采用合成 el.click() + elementFromPoint 中心命中测试（见 clickAndRead 注释）。
@@ -37,34 +37,51 @@ app.whenReady().then(() => main().catch((error) => {
   cleanup(1);
 }));
 
+// 可编排确定性 gateway：hold（等待停止）/ error（可恢复失败）/ reply。队列按模型
+// 调用顺序消费，耗尽后返回安全默认答复。
+function createClickGatewayFactory() {
+  const steps = [];
+  const gateway = {
+    async complete(request, { signal } = {}) {
+      const step = steps.shift() ?? { type: "reply", text: "（点击验证默认答复）" };
+      switch (step.type) {
+        case "hold": {
+          if (step.released) return { text: "（已放行）" };
+          await new Promise((resolve, reject) => {
+            step.release = resolve;
+            if (signal) {
+              signal.addEventListener("abort", () => {
+                const error = new Error("The operation was aborted.");
+                error.name = "AbortError";
+                reject(error);
+              }, { once: true });
+            }
+          });
+          return { text: "（已放行）" };
+        }
+        case "error": {
+          const error = new Error("模型调用失败（可恢复）");
+          error.code = "model_error";
+          throw error;
+        }
+        default:
+          return { text: String(step.text ?? "（点击验证默认答复）") };
+      }
+    },
+    setSteps(list) { steps.length = 0; steps.push(...list); }
+  };
+  return { factory: () => gateway, gateway };
+}
+
 async function main() {
   const { createAppShellServer } = await import(pathToFileURL(path.join(rootDir, "src", "core", "app-server.mjs")).href);
-  const { createProjectAt } = await import(pathToFileURL(path.join(rootDir, "src", "core", "project-store.mjs")).href);
-  const { parseSimpleYaml } = await import(pathToFileURL(path.join(rootDir, "src", "core", "simple-yaml.mjs")).href);
+  const { gateway, factory } = createClickGatewayFactory();
 
+  // ---- 普通文件夹 + 应用私有 stateRoot（不再创建 project.yaml）----
   const demoRoot = path.join(rootDir, ".demo_runs", `clickability-${Date.now()}`);
-  const { projectRoot } = await createProjectAt(path.join(demoRoot, "clickability-novel"), {
-    title: "Clickability Novel",
-    story_seed: "A short project used to verify every visible app-shell button can execute.",
-    target_chapters: 2,
-    min_words_per_chapter: 10,
-    target_words_per_chapter: 20
-  });
-  // 章节事实：提交两章（UI 验证不依赖 Agent 写章）。正文必须通过内置技能
-  // reviewing 门禁（suspense-ending/chapter-opening/dialogue-ratio/ai-voice）。
-  const { commitChapter, appendChapterSegment } = await import(pathToFileURL(path.join(rootDir, "src", "core", "project-operations", "chapter.mjs")).href);
-  const project = parseSimpleYaml(await fs.promises.readFile(path.join(projectRoot, "project.yaml"), "utf8"));
-  const GATE_PASSING_CHAPTER = "雨夜，雨声突然变大。林深猛地推开门，冲进老宅的客厅。他浑身湿透，抹了一把脸，低声道：“信上说，老宅的钟会在午夜敲十三下。”烛光下，墙上的照片里竟是多年不见的父亲。他正要细看，门外却传来一阵急促的敲门声。";
-  for (const chapterNo of [1, 2]) {
-    await appendChapterSegment({
-      projectRoot,
-      projectId: project.project_id,
-      chapterNo,
-      segmentNo: 1,
-      content: GATE_PASSING_CHAPTER
-    });
-    await commitChapter({ projectRoot, projectId: project.project_id, chapterNo });
-  }
+  const projectRoot = path.join(demoRoot, "普通文件夹");
+  fs.mkdirSync(projectRoot, { recursive: true });
+  fs.writeFileSync(path.join(projectRoot, "notes.txt"), "普通资料：写作参考笔记。\n", "utf8");
 
   server = createAppShellServer({
     workspaceRoot: demoRoot,
@@ -72,7 +89,8 @@ async function main() {
     stateRoot: path.join(demoRoot, ".state"),
     secretsRoot: path.join(demoRoot, ".secrets"),
     staticRoot: path.join(rootDir, "src", "app-shell"),
-    port: 0
+    port: 0,
+    testGatewayFactory: factory
   });
   const boundPort = await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server.address().port)));
 
@@ -96,49 +114,38 @@ async function main() {
 
   await win.loadURL(`http://127.0.0.1:${boundPort}`);
   await waitUntil(win, "Boolean(window.__wwritingMotionReady)", "motion runtime must initialize", 10000);
-  await waitUntil(win, "document.querySelector('#project-title')?.textContent.includes('Clickability Novel')", "dashboard must load the project", 10000);
+  // 普通文件夹出现在项目列表（basename 即标题），点击后经真实 UI 流程打开
+  await waitUntil(win, "document.querySelector('#project-list')?.children.length > 0", "project list must render the plain folder", 10000);
+  const rowClicked = await win.webContents.executeJavaScript(`(() => {
+    const row = [...document.querySelectorAll('.proj-row')].find((el) => el.textContent.includes('普通文件夹'));
+    if (!row) return false;
+    const btn = row.querySelector('button');
+    const rect = btn.getBoundingClientRect();
+    const center = { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+    const hit = document.elementFromPoint(center.x, center.y);
+    btn.click();
+    return Boolean(hit && (hit === btn || btn.contains(hit)));
+  })()`);
+  assert.equal(rowClicked, true, "普通文件夹行必须中心可命中并点击");
+  await waitUntil(win, "document.querySelector('[data-testid=\"agent-composer-input\"]') !== null && !document.querySelector('[data-testid=\"agent-composer-input\"]').disabled", "AgentSurface composer must enable after opening the plain folder", 10000);
   await waitUntil(win, "document.querySelector('[data-testid=\"agent-surface\"]') !== null", "AgentSurface must mount", 10000);
 
   const clicks = [];
 
-  // ① 项目导航：刷新
+  // ① 项目导航：刷新（普通文件夹仍在列表）
   clicks.push(await clickAndRead(win, "#refresh", {
     label: "refresh",
     settleMs: 300,
     expect: () => read(win, "Boolean(document.querySelector('#project-list')?.children.length > 0)")
   }));
 
-  // ② 快捷面板四槽位（纯导航）：章节
-  clicks.push(await clickAndReadStable(win, '.quick-rail .qr-slot[data-key="chapters"]', {
-    label: "qr-chapters",
-    settleMs: 300,
+  // ② 顶部 drawer 入口（Task 12 删除右侧 quick rail 后唯一入口）：章节 tab 打开
+  clicks.push(await clickAndReadStable(win, "#open-drawer", {
+    label: "open-drawer-chapters",
+    settleMs: 400,
     expect: () => read(win, "document.getElementById('drawer').classList.contains('show') && document.querySelector('.dtab[data-dtab=\"chapters\"]').classList.contains('on')")
   }));
-  // 抽屉里已提交章节可点击 → 打开阅读器
-  clicks.push(await clickAndReadStable(win, ".chrow.completed", {
-    label: "chrow-open-reader",
-    settleMs: 400,
-    expect: () => overlayVisible(win, "reader-scrim")
-  }));
-  clicks.push(await clickAndRead(win, "#reader-font-plus", {
-    label: "reader-font-plus",
-    settleMs: 150,
-    expect: () => read(win, "document.getElementById('reader-body').style.fontSize !== ''")
-  }));
-  clicks.push(await clickAndRead(win, "#reader-close", {
-    label: "reader-close",
-    settleMs: 200,
-    expect: async () => !(await overlayVisible(win, "reader-scrim"))
-  }));
-
-  // ③ 导出成书（确定性工具，位于章节面板）：直接 POST route，成功 toast
-  clicks.push(await clickAndReadStable(win, ".export-btn", {
-    label: "export-book",
-    settleMs: 900,
-    expect: () => read(win, "document.querySelectorAll('.toast-stack .toast').length > 0")
-  }));
-
-  // ④ 抽屉其它分区（Task 13：技能管理已迁入设置页，抽屉无 skills tab）
+  // ③ drawer 其它分区仍可点击（Task 13：技能管理已迁入设置页，抽屉无 skills tab）
   for (const tab of ["model", "research", "cost"]) {
     clicks.push(await clickAndReadStable(win, `.drawer-tabs [data-dtab="${tab}"]`, {
       label: `drawer-${tab}`,
@@ -146,15 +153,14 @@ async function main() {
       expect: () => read(win, `document.querySelector('.dtab[data-dtab="${tab}"]').classList.contains('on')`)
     }));
   }
-
-  // ⑤ 关闭抽屉
+  // ④ 关闭抽屉
   clicks.push(await clickAndReadStable(win, "#drawer-close", {
     label: "drawer-close",
     settleMs: 300,
     expect: async () => !(await read(win, "document.getElementById('drawer').classList.contains('show')"))
   }));
 
-  // ⑥ 设置弹窗：打开 → 分区导航 → 关闭
+  // ⑤ 设置弹窗：打开 → Agent 技能分区 → 内置风格详情（只读、可展开正文）→ 关闭
   clicks.push(await clickAndRead(win, "#open-settings", {
     label: "open-settings",
     settleMs: 300,
@@ -162,11 +168,30 @@ async function main() {
   }));
   const sectionCount = await read(win, "document.querySelectorAll('.sp-section-item').length");
   assert.ok(sectionCount >= 3, `settings sections should render, got ${sectionCount}`);
-  // Task 13：技能管理在设置页的「Agent 技能」分区（catalog/import/delete 入口）
   clicks.push(await clickAndRead(win, '.sp-section-item[data-section="skills"]', {
     label: "settings-skills-section",
     settleMs: 300,
     expect: () => read(win, "document.querySelector('.sp-section-item[data-section=\"skills\"]').classList.contains('on')")
+  }));
+  // 内置写作风格只读行（Task 8：无 toggle/delete/edit 的行）存在且可点击
+  await waitUntil(win, "document.querySelectorAll('.spd-skill-row--readonly').length >= 3", "builtin style rows must render", 8000);
+  const readonlyHasNoControls = await read(win, `(() => {
+    const rows = [...document.querySelectorAll('.spd-skill-row--readonly')];
+    return {
+      noToggle: rows.every((row) => !row.querySelector('.spd-skill-toggle, .spd-skill-del, .spd-skill-edit')),
+      names: rows.map((row) => row.dataset.skillName)
+    };
+  })()`);
+  assert.equal(readonlyHasNoControls.noToggle, true, `内置风格行不得有启用/删除/编辑控件: ${JSON.stringify(readonlyHasNoControls)}`);
+  clicks.push(await clickAndRead(win, '.spd-skill-row--readonly', {
+    label: "settings-builtin-style-detail",
+    settleMs: 600,
+    expect: () => read(win, "Boolean(document.querySelector('#skills-detail-back')) && (document.querySelector('.spd-skill-detail-body')?.textContent || '').length > 0")
+  }));
+  clicks.push(await clickAndRead(win, "#skills-detail-back", {
+    label: "skills-detail-back",
+    settleMs: 400,
+    expect: () => read(win, "Boolean(document.querySelector('#skills-list')) || Boolean(document.querySelector('.spd-skill-heading'))")
   }));
   clicks.push(await clickAndRead(win, "#settings-x", {
     label: "settings-close",
@@ -174,7 +199,7 @@ async function main() {
     expect: async () => !(await overlayVisible(win, "settings-scrim"))
   }));
 
-  // ⑦ 新建弹窗：打开 → 关闭
+  // ⑥ 新建弹窗：打开 → 关闭（普通文件夹场景仍可创建新项目）
   clicks.push(await clickAndRead(win, "#new-novel", {
     label: "new-novel",
     settleMs: 300,
@@ -186,7 +211,7 @@ async function main() {
     expect: async () => !(await overlayVisible(win, "create-scrim"))
   }));
 
-  // ⑧ 主题与隐私开关
+  // ⑦ 主题与隐私开关
   clicks.push(await clickAndRead(win, "#theme-toggle", {
     label: "theme-toggle",
     settleMs: 150,
@@ -208,25 +233,39 @@ async function main() {
     expect: () => read(win, "document.getElementById('app').dataset.privacy === 'off'")
   }));
 
-  // ⑨ AgentSurface composer：发送普通消息 → 对话中出现用户消息、Run 完成
-  await win.webContents.executeJavaScript(`
-    (() => {
-      const input = document.querySelector('[data-testid="agent-composer-input"]');
-      input.value = "你好，请确认你能收到消息";
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      return true;
-    })();
-  `);
-  clicks.push(await clickAndRead(win, '[data-testid="agent-send"]', {
-    label: "agent-send",
-    settleMs: 1200,
-    expect: () => read(win, "[...document.querySelectorAll('[data-testid=\"agent-user-message\"]')].some((el) => el.textContent.includes('你好'))")
-  }));
-  // 纯文本回复不产生活动行：journal 的 assistant_message_completed 只带 input_id，
-  // 因此以 Run 状态行进入「已完成」作为回复已渲染的判据（失败则出现错误卡）。
-  await waitUntil(win, "[...document.querySelectorAll('[data-testid=\"agent-assistant-message\"]')].length > 0 || [...document.querySelectorAll('.agent-activity-item')].some((el) => el.dataset.state === 'completed') || [...document.querySelectorAll('[data-testid=\"agent-run-status\"]')].some((el) => el.textContent === '已完成') || document.querySelectorAll('[data-testid=\"agent-error\"]').length > 0", "agent reply must render", 15000);
+  // ⑧ AgentSurface composer：发送普通消息 → 用户消息出现、Run 完成
+  gateway.setSteps([{ type: "reply", text: "你好，我在这里。普通文件夹也可以直接聊天。" }]);
+  await sendComposerText(win, "你好，请确认你能收到消息");
+  await waitUntil(win, "[...document.querySelectorAll('[data-testid=\"agent-user-message\"]')].some((el) => el.textContent.includes('你好'))", "user message must render", 10000);
+  await waitUntil(win, "document.querySelector('.agent-run-status')?.textContent === '已完成' || document.querySelectorAll('[data-testid=\"agent-error\"]').length > 0", "agent reply run must complete", 20000);
+  assert.equal(await read(win, "document.querySelectorAll('[data-testid=\"agent-error\"]').length"), 0, "正常聊天不得出现错误卡");
+  await waitForComposerEnabled(win);
 
-  // ⑩ 快捷键浮层：? 开 → X 关（keydown 监听挂在 document 上，需在 document 派发）
+  // ⑨ 停止：运行中（gateway hold）点击停止 → Run 取消
+  gateway.setSteps([{ type: "hold" }]);
+  await sendComposerText(win, "开始一个长时间任务，稍后我会停止你");
+  await waitUntil(win, "Boolean(document.querySelector('[data-testid=\"agent-stop\"]')) && !document.querySelector('[data-testid=\"agent-stop\"]').disabled", "stop button must appear while run is active", 10000);
+  clicks.push(await clickAndRead(win, '[data-testid="agent-stop"]', {
+    label: "agent-stop",
+    settleMs: 2500,
+    expect: () => read(win, "['已停止','已中断'].includes(document.querySelector('.agent-run-status')?.textContent)")
+  }));
+  await waitUntil(win, "document.querySelector('.agent-run-status')?.textContent === '已停止' || document.querySelector('.agent-run-status')?.textContent === '已中断'", "run must be cancelled after stop", 15000);
+  await waitForComposerEnabled(win);
+
+  // ⑩ 重试：失败（gateway error）后点击重试 → 同一 Run 恢复并完成
+  gateway.setSteps([{ type: "error" }, { type: "reply", text: "重试成功，本轮已经完成。" }]);
+  await sendComposerText(win, "触发一次可恢复失败，然后重试");
+  await waitUntil(win, "document.querySelector('.agent-run-status')?.textContent === '操作失败' && Boolean(document.querySelector('[data-testid=\"agent-retry\"]'))", "run must fail and show retry button", 15000);
+  clicks.push(await clickAndRead(win, '[data-testid="agent-retry"]', {
+    label: "agent-retry",
+    settleMs: 2500,
+    expect: () => read(win, "document.querySelector('.agent-run-status')?.textContent === '已完成' || document.querySelector('.agent-run-status')?.textContent === '运行中' || document.querySelector('.agent-run-status')?.textContent === '思考中'")
+  }));
+  await waitUntil(win, "document.querySelector('.agent-run-status')?.textContent === '已完成'", "retried run must complete", 20000);
+  assert.equal(await read(win, "document.querySelectorAll('[data-testid=\"agent-error\"]').length"), 0, "重试成功后不得残留错误卡");
+
+  // ⑪ 快捷键浮层：? 开 → X 关（keydown 监听挂在 document 上，需在 document 派发）
   await win.webContents.executeJavaScript(`
     (() => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: '?', bubbles: true }));
@@ -240,9 +279,9 @@ async function main() {
     expect: async () => !(await overlayVisible(win, "shortcuts-scrim"))
   }));
 
-  // ⑪ 旧 UI 不得残留可点击元素
+  // ⑫ 旧 UI 不得残留可点击元素
   const removedSelectors = await read(win, `
-    ["#topbar-stop", "#composer-submit", "#mode-pill", "[data-testid='msg-copy']", ".failure-card", "#workbench-primary"].map((sel) => [sel, Boolean(document.querySelector(sel))])
+    ["#topbar-stop", "#composer-submit", "#mode-pill", "[data-testid='msg-copy']", ".failure-card", "#workbench-primary", "#quick-rail", "#qr-collapsed"].map((sel) => [sel, Boolean(document.querySelector(sel))])
   `);
   for (const [selector, present] of removedSelectors) {
     assert.equal(present, false, `旧 UI 元素不得残留: ${selector}`);
@@ -281,6 +320,31 @@ async function main() {
 }
 
 app.on("window-all-closed", () => cleanup(0));
+
+async function sendComposerText(win, text) {
+  await waitForComposerEnabled(win);
+  const sent = await win.webContents.executeJavaScript(`
+    (() => {
+      const input = document.querySelector('[data-testid="agent-composer-input"]');
+      const send = document.querySelector('[data-testid="agent-send"]');
+      if (!input || !send) return { ok: false, reason: "composer missing" };
+      if (send.disabled) return { ok: false, reason: "send disabled" };
+      input.value = ${JSON.stringify(text)};
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      const rect = send.getBoundingClientRect();
+      const hit = document.elementFromPoint(Math.round(rect.left + rect.width / 2), Math.round(rect.top + rect.height / 2));
+      const hitTestable = Boolean(hit && (hit === send || send.contains(hit)));
+      send.click();
+      return { ok: true, hitTestable };
+    })()
+  `);
+  assert.equal(sent.ok, true, `composer 提交失败: ${sent.reason}`);
+  assert.equal(sent.hitTestable, true, "发送按钮中心必须可命中");
+}
+
+async function waitForComposerEnabled(win) {
+  await waitUntil(win, "document.querySelector('[data-testid=\"agent-composer-input\"]') !== null && !document.querySelector('[data-testid=\"agent-composer-input\"]').disabled", "composer must be enabled", 15000);
+}
 
 async function clickAndRead(win, selector, { label = selector, expect = null, settleMs = 180 } = {}) {
   // 环境说明：本脚本运行的 Electron 会话（无交互窗口站）不投递真实指针事件

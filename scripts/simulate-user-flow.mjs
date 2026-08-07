@@ -1,212 +1,308 @@
-// scripts/simulate-user-flow.mjs
-// 用户真实操作全链路模拟（真实模型端到端回归，统一 Agent 内核计划 Task 9 改写）。
+// scripts/simulate-user-flow.mjs —— 用户真实操作全链路模拟（Task 13 改写）。
 //
-// 只走 ProjectAgent 公共接口（src/core/agent/index.mjs），覆盖：
-//   阶段1 新建项目（blueprint_status none，无 agent_state）
-//   阶段2 /init 作为普通聊天输入（保留原文，模型自主理解项目）
-//   阶段3 写第 1 章（chapter workflow 完成正式提交）
-//   阶段4 修改第 1 章（编辑正文）
-//   阶段5 运行中排队（第二次发送进入 FIFO）
-//   阶段6 立即（promote 打断当前输入，同一 Run）
-//   阶段7 停止（stop 取消 Run）
-// 真实 API 会暴露 mock 测试测不出的协议问题（如空 assistant 消息 400）。
+// 普通文件夹（无 project.yaml）+ 应用私有 stateRoot 的真实用户流程：
+//   1. 创建含普通 notes.txt 的文件夹；
+//   2. 打开并发送“你好”（任意文件夹即可聊天）；
+//   3. 调用 /init 创建 WWRITING.md（不生成固定蓝图）；
+//   4. 用户要求快节奏网文，模型读 fast-readable 技能并更新项目记忆；
+//   5. 写一个短章节，调用 count_text 后自主结束（客观工具，非完成门禁）；
+//   6. 重开同路径恢复历史；
+//   7. 验证项目根无 project.yaml 与 .wwriting/agent。
+//
+// 每个阶段输出 PASS/FAIL 与实际证据路径；不输出 token、密钥或内部存储细节。
+// 确定性模型脚本驱动（与测试 harness 同形），无需真实模型与 API key。
 //
 // 用法：
-//   DEEPSEEK_API_KEY=sk-xxx node scripts/simulate-user-flow.mjs
-//   可选：MODEL_NAME=deepseek-v4-flash（默认 flash，最便宜）
+//   node scripts/simulate-user-flow.mjs
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { createProjectAt } from "../src/core/project-store.mjs";
+import { randomUUID } from "node:crypto";
 import { createProjectAgent } from "../src/core/agent/index.mjs";
-import { createModelGateway } from "../src/core/model/gateway.mjs";
-import { OpenAICompatibleAdapter } from "../src/core/model/openai-compatible.mjs";
-import { runShellCommand } from "../src/core/shell/runtime.mjs";
-import { CostTracker } from "../src/core/cost-tracker.mjs";
-import { readJson, safeJoin } from "../src/core/fs-utils.mjs";
+import { createWorkspaceStore } from "../src/core/workspaces/store.mjs";
+import { createSkillService } from "../src/core/skills/index.mjs";
 
-const API_KEY = process.env.DEEPSEEK_API_KEY;
-if (!API_KEY) {
-  console.error("缺少 DEEPSEEK_API_KEY 环境变量（真实模型必须）。");
-  process.exit(2);
+// ---------------------------------------------------------------------------
+// 确定性模型 gateway（与 tests/helpers 的 mock 同形）：按脚本依次消费
+// ---------------------------------------------------------------------------
+
+function createMockGateway(script) {
+  const calls = [];
+  let cursor = 0;
+  const gateway = {
+    calls,
+    async complete(request, { signal } = {}) {
+      if (signal?.aborted) {
+        const error = new Error("model call aborted");
+        error.code = "model_aborted";
+        throw error;
+      }
+      const entry = script[cursor] ?? null;
+      if (entry && !entry.repeat) cursor += 1;
+      let reply;
+      if (entry && typeof entry === "function") {
+        reply = await entry(request, { signal });
+      } else if (entry?.error) {
+        reply = { error: entry.error };
+      } else if (entry?.reply) {
+        reply = entry.reply;
+      } else {
+        reply = { text: "（默认答复）" };
+      }
+      calls.push({ request, reply });
+      if (reply?.error) throw reply.error;
+      return reply;
+    }
+  };
+  return gateway;
 }
-const MODEL_NAME = process.env.MODEL_NAME ?? "deepseek-v4-flash";
 
-const results = [];
-function record(stage, ok, detail) {
-  results.push({ stage, ok, detail });
-  console.log(`  ${ok ? "✓" : "✗"} ${stage}: ${detail}`);
+function tool(name, args) {
+  return { id: `call_${name}_${randomUUID().slice(0, 8)}`, name, arguments: args };
 }
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// 等待 session 回到 idle（或超时抛错）。
-async function waitForIdle(agent, projectRoot, { timeoutMs = 600000 } = {}) {
+async function pathExists(target) {
+  try {
+    await fs.access(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForIdle(agent, projectRoot, { timeoutMs = 60000 } = {}) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const { session } = await agent.snapshot({ projectRoot, afterSeq: 0, limit: 1 });
     if (session.status === "idle") return session;
-    await sleep(1500);
+    await sleep(200);
   }
   throw new Error("等待 Agent 空闲超时");
 }
 
-// 等待特定事件出现。
-async function waitForEvent(agent, projectRoot, type, { timeoutMs = 600000 } = {}) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const { events } = await agent.snapshot({ projectRoot, afterSeq: 0, limit: 100000 });
-    if (events.some((e) => e.type === type)) return;
-    await sleep(1000);
-  }
-  throw new Error(`等待事件 ${type} 超时`);
+const results = [];
+function record(stage, ok, detail, evidence = []) {
+  results.push({ stage, ok, detail, evidence });
+  console.log(`  ${ok ? "PASS" : "FAIL"} ${stage}: ${detail}`);
+  for (const item of evidence) console.log(`    · 证据: ${item}`);
 }
+
+const WWRITING_CONTENT = `---
+schema_version: 1
+writing_style_skill: fast-readable
+---
+
+# WWriting 项目记忆
+
+## 项目定位
+
+- 项目：快节奏网文《雨夜来信》
+- 当前目标：按快节奏易读风格推进第一卷
+
+## 当前有效要求
+
+- 单章篇幅较短，先完成一个短章节。
+- 场景尽快进入冲突，段落易扫读。
+
+## 写作风格
+
+- 技能：fast-readable
+- 补充：冲突直接，重要转折允许少量心理描写。
+
+## 权威文件
+
+- 正文：正文/
+
+## 当前进度
+
+- 已完成：第 1 章（短章节）
+- 下一步：按风格续写第 2 章
+`;
+
+const CHAPTER_CONTENT = [
+  "雨夜，林晚刚关掉台灯，手机屏幕在黑暗里亮起来。",
+  "",
+  "屏幕上只有一行字：\"你母亲留下的信，在老宅的钟座后面。\"",
+  "",
+  "发信人是一个陌生号码。他拨回去，对面已关机。",
+  "",
+  "窗外雨声渐密。林晚抓起钥匙，冲进雨里。"
+].join("\n");
 
 const tAll = Date.now();
-const root = await fs.mkdtemp(path.join(os.tmpdir(), "usersim-"));
-console.log(`用户流程模拟（模型: ${MODEL_NAME}）`);
+const demoRoot = path.join(process.cwd(), ".demo_runs", `user-flow-${Date.now()}`);
+const evidenceRoot = demoRoot;
+console.log("用户流程模拟（普通文件夹 + 应用私有 stateRoot）");
+console.log(`证据根目录: ${evidenceRoot}`);
+
+// ---------------------------------------------------------------------------
+// 组装：普通文件夹 harness（无 project.yaml；应用私有 stateRoot）
+// ---------------------------------------------------------------------------
+
+const gateway = createMockGateway([
+  // 阶段2：打开并发送“你好”
+  { reply: { text: "你好，我可以在这个工作区协助你。没有 project.yaml 也能直接开始。" } },
+  // 阶段3：/init 创建 WWRITING.md（先读目录，再写入项目记忆；不生成固定蓝图）
+  { reply: { toolCalls: [tool("list_files", { path: "." })] } },
+  { reply: { toolCalls: [tool("write_file", { path: "WWRITING.md", content: WWRITING_CONTENT })] } },
+  { reply: { text: "已根据目录内容创建 WWRITING.md 项目记忆。" } },
+  // 阶段4：用户要求快节奏网文 → 读 fast-readable 技能，更新记忆（写入风格 ID）
+  { reply: { toolCalls: [tool("read_skill", { name: "fast-readable" })] } },
+  { reply: { toolCalls: [tool("write_file", { path: "WWRITING.md", content: WWRITING_CONTENT })] } },
+  { reply: { text: "已读取快节奏易读风格技能，并把风格 ID 写入项目记忆。" } },
+  // 阶段5：写短章节 → 调用 count_text 客观核对 → 自主结束
+  { reply: { toolCalls: [tool("write_file", { path: "正文/第001章.md", content: CHAPTER_CONTENT })] } },
+  { reply: { toolCalls: [tool("count_text", { path: "正文/第001章.md" })] } },
+  { reply: { text: "短章节已完成。已调用字数工具核对实际字数，内容满足快节奏易读的节奏要求。" } },
+  // 阶段6：重开后的确认消息（可选；重开本身在阶段6单独验证）
+  { reply: { text: "历史已恢复，之前的对话内容都在。" } }
+]);
+
+const workspaceRoot = demoRoot;
+const projectRoot = path.join(workspaceRoot, "普通文件夹");
+const stateRoot = path.join(workspaceRoot, "user-data");
+const secretsRoot = path.join(workspaceRoot, ".secrets");
+const skillsHome = path.join(workspaceRoot, "skills-home");
 
 try {
-  // ---- 阶段1：用户新建项目 ----
-  console.log("【阶段1】用户新建项目");
-  const { projectRoot } = await createProjectAt(path.join(root, "novel"), {
-    title: "都市职场",
-    story_seed: "程序员林晚在大厂内卷中觉醒"
-  });
-  const project = await (async () => {
-    const yaml = await fs.readFile(path.join(projectRoot, "project.yaml"), "utf8");
-    const { parseSimpleYaml } = await import("../src/core/simple-yaml.mjs");
-    return parseSimpleYaml(yaml);
-  })();
-  record("新建项目 blueprint_status none", project.blueprint_status === "none", `blueprint_status=${project.blueprint_status}`);
-  let stateFileExists = true;
-  try {
-    await fs.access(path.join(projectRoot, "agent_state" + ".json"));
-  } catch {
-    stateFileExists = false;
-  }
-  record("新项目不创建旧运行态文件", stateFileExists === false, stateFileExists ? "存在（BAD）" : "不存在（GOOD）");
+  // ---- 阶段1：创建含普通 notes.txt 的文件夹 ----
+  console.log("【阶段1】创建普通文件夹");
+  await fs.mkdir(projectRoot, { recursive: true });
+  await fs.mkdir(skillsHome, { recursive: true });
+  const notesPath = path.join(projectRoot, "notes.txt");
+  await fs.writeFile(notesPath, "普通资料：写作参考笔记。\n", "utf8");
+  record("普通文件夹就绪", await pathExists(notesPath), "notes.txt 已创建", [notesPath]);
 
-  // 配置真实模型
-  const { saveProject } = await import("../src/core/project-store.mjs");
-  const loaded = await (async () => {
-    const yaml = await fs.readFile(path.join(projectRoot, "project.yaml"), "utf8");
-    const { parseSimpleYaml } = await import("../src/core/simple-yaml.mjs");
-    return parseSimpleYaml(yaml);
-  })();
-  loaded.active_model = {
-    provider: "openai-compatible",
-    model_name: MODEL_NAME,
-    base_url: "https://api.deepseek.com",
-    api_key_env: "DEEPSEEK_API_KEY"
-  };
-  await saveProject(projectRoot, loaded);
-
-  // 组合根：真实 gateway + 真实 shell
-  const existingCost = await readJson(safeJoin(projectRoot, "cost.json"), null);
-  const modelGateway = createModelGateway({
-    adapter: new OpenAICompatibleAdapter({ apiKeyEnv: "DEEPSEEK_API_KEY" }),
-    retryMax: 2,
-    timeoutMs: 120000,
-    totalDeadlineMs: 300000,
-    costTracker: new CostTracker({ summary: existingCost })
+  // ---- 组装 Agent（应用私有 stateRoot + 普通文件夹配置）----
+  const store = createWorkspaceStore({ stateRoot });
+  const skills = createSkillService({ userHome: skillsHome });
+  const agent = createProjectAgent({
+    modelGateway: gateway,
+    shell: async ({ command, cwd, timeoutMs, purpose, signal, onOutput } = {}) => {
+      if (signal?.aborted) {
+        const error = new Error("shell cancelled");
+        error.code = "shell_cancelled";
+        throw error;
+      }
+      const stdout = `stub stdout: ${command}`;
+      if (onOutput) onOutput({ stream: "stdout", text: stdout });
+      return { exitCode: 0, cwd, signal: null, durationMs: 0, stdout, stderr: "" };
+    },
+    skills,
+    agentStorageRootFor: (root) => store.agentRootFor(root),
+    // 普通文件夹没有 project.yaml：注入与旧项目等价的安全写权限（auto_edit），
+    // 让 /init 与写作的 write_file 自动放行而不是暂停等待确认
+    workspaceConfigLoader: async () => ({
+      project_id: null,
+      output_format: "md",
+      archived_at: null,
+      active_model: null,
+      tool_permissions: {
+        network_allowed: false,
+        safe_edit: true,
+        read_only: false,
+        auto_edit: true,
+        yolo: false,
+        dangerous: false
+      }
+    })
   });
-  const agent = createProjectAgent({ modelGateway, shell: runShellCommand });
+
+  // ---- 阶段2：打开并发送“你好” ----
+  console.log("【阶段2】打开文件夹并发送第一条消息");
   await agent.open({ projectRoot });
+  const sessionBefore = await agent.snapshot({ projectRoot, afterSeq: 0, limit: 100000 });
+  await agent.submit({ projectRoot, text: "你好", source: "chat" });
+  await waitForIdle(agent, projectRoot);
+  const afterHello = await agent.snapshot({ projectRoot, afterSeq: 0, limit: 100000 });
+  const journalPath = path.join(store.agentRootFor(projectRoot), "events.jsonl");
+  const helloOk = afterHello.events.some((e) => e.type === "assistant_message_completed");
+  record("第一条消息完成（你好）", helloOk, "普通文件夹无需 project.yaml 即可聊天", [
+    journalPath,
+    path.join(projectRoot, "notes.txt")
+  ]);
+  const helloSessionId = afterHello.session.session_id;
 
-  // ---- 阶段2：用户触发 /init（普通聊天输入，保留原文）----
-  console.log("【阶段2】用户触发 /init");
-  const t0 = Date.now();
-  const initText = "/init 都市职场小说，程序员主角林晚在裁员潮中觉醒，写一份项目理解与蓝图";
-  try {
-    await agent.submit({ projectRoot, text: initText, source: "chat" });
-    await waitForIdle(agent, projectRoot);
-    const { events } = await agent.snapshot({ projectRoot, afterSeq: 0, limit: 100000 });
-    const queued = events.find((e) => e.type === "input_queued");
-    record("/init 保留原文并完成项目理解", queued?.payload?.text === initText, `耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s | 原文保留=${queued?.payload?.text === initText}`);
-  } catch (e) {
-    record("/init 保留原文并完成项目理解", false, `异常: ${e.message.slice(0, 120)}`);
+  // ---- 阶段3：调用 /init 创建 WWRITING.md ----
+  console.log("【阶段3】/init 创建 WWRITING.md");
+  await agent.submit({ projectRoot, text: "/init", source: "chat" });
+  await waitForIdle(agent, projectRoot);
+  const wwMemoryPath = path.join(projectRoot, "WWRITING.md");
+  const initOk = await pathExists(wwMemoryPath);
+  record("/init 创建 WWRITING.md", initOk, initOk ? "项目记忆已落盘" : "WWRITING.md 缺失", initOk ? [wwMemoryPath] : [projectRoot]);
+  const blueprintChecks = [];
+  for (const name of ["OUTLINE.md", "SETTING.md", "AGENTS.md"]) {
+    blueprintChecks.push([name, await pathExists(path.join(projectRoot, name))]);
   }
+  const noBlueprint = blueprintChecks.every(([, exists]) => !exists);
+  record("/init 不生成固定蓝图", noBlueprint, `OUTLINE/SETTING/AGENTS 均未创建 (${blueprintChecks.map(([n, e]) => `${n}=${e ? "存在" : "无"}`).join(", ")})`, [projectRoot]);
 
-  // ---- 阶段3：写第 1 章 ----
-  console.log("【阶段3】写作第 1 章");
-  const t1 = Date.now();
-  let ch1ok = false;
-  try {
-    await agent.submit({ projectRoot, text: "写第 1 章：雨夜来信，按项目设定完成正式提交。", source: "chat" });
-    await waitForIdle(agent, projectRoot);
-    const chapterFile = path.join(projectRoot, "chapters", "001.md");
-    await fs.access(chapterFile);
-    ch1ok = true;
-    record("第 1 章写作完成", ch1ok, `耗时 ${((Date.now() - t1) / 1000).toFixed(1)}s | chapters/001.md 已落盘`);
-  } catch (e) {
-    record("第 1 章写作完成", false, `异常: ${e.message.slice(0, 120)}`);
+  // ---- 阶段4：用户要求快节奏网文 → 模型读 fast-readable 并更新记忆 ----
+  console.log("【阶段4】快节奏网文风格确认");
+  await agent.submit({ projectRoot, text: "这本要按快节奏易读的网文风格来写", source: "chat" });
+  await waitForIdle(agent, projectRoot);
+  const events4 = (await agent.snapshot({ projectRoot, afterSeq: 0, limit: 100000 })).events;
+  const toolCalls4 = events4.filter((e) => e.type === "tool_call_completed").map((e) => e.payload?.name);
+  const memoryContent = await fs.readFile(wwMemoryPath, "utf8");
+  const styleOk = toolCalls4.includes("read_skill") && memoryContent.includes("fast-readable");
+  record("模型读 fast-readable 并更新记忆", styleOk, `工具序列=${toolCalls4.join("→")}，记忆含 fast-readable=${memoryContent.includes("fast-readable")}`, [wwMemoryPath, journalPath]);
+
+  // ---- 阶段5：写短章节 + count_text 后自主结束 ----
+  console.log("【阶段5】短章节 + 字数工具");
+  await agent.submit({ projectRoot, text: "写一个短章节，写完用字数工具核对一下", source: "chat" });
+  await waitForIdle(agent, projectRoot);
+  const chapterPath = path.join(projectRoot, "正文", "第001章.md");
+  const chapterOk = await pathExists(chapterPath);
+  const events5 = (await agent.snapshot({ projectRoot, afterSeq: 0, limit: 100000 })).events;
+  const toolCalls5 = events5.filter((e) => e.type === "tool_call_completed").map((e) => e.payload?.name);
+  const countOk = toolCalls5.includes("count_text");
+  const countEvent = events5.find((e) => e.type === "tool_call_completed" && e.payload?.name === "count_text");
+  const countMetrics = countEvent?.payload
+    ? Object.fromEntries(["cjk_characters", "latin_words", "numeric_tokens", "punctuation_characters", "non_whitespace_characters", "effective_count"]
+        .filter((key) => countEvent.payload[key] !== undefined)
+        .map((key) => [key, countEvent.payload[key]]))
+    : null;
+  record("短章节已写入", chapterOk, chapterOk ? "正文/第001章.md 已落盘" : "章节文件缺失", chapterOk ? [chapterPath] : [projectRoot]);
+  record("count_text 调用后自主结束", countOk, countOk
+    ? `count_text 已调用，客观指标=${JSON.stringify(countMetrics)}（无门禁判定字段）`
+    : "未调用 count_text", [journalPath]);
+
+  // ---- 阶段6：重开同路径恢复历史 ----
+  console.log("【阶段6】重开同路径恢复历史");
+  const eventsBeforeReopen = (await agent.snapshot({ projectRoot, afterSeq: 0, limit: 100000 })).events;
+  await agent.open({ projectRoot });
+  const afterReopen = await agent.snapshot({ projectRoot, afterSeq: 0, limit: 100000 });
+  const historyOk = afterReopen.session.session_id === helloSessionId
+    && afterReopen.events.length >= eventsBeforeReopen.length
+    && afterReopen.events.some((e) => e.type === "assistant_message_completed");
+  record("重开恢复历史", historyOk, historyOk
+    ? `session_id=${afterReopen.session.session_id}，事件 ${eventsBeforeReopen.length} → ${afterReopen.events.length}，历史完整`
+    : `session_id=${helloSessionId} → ${afterReopen.session.session_id}`, [journalPath, path.join(store.agentRootFor(projectRoot), "session.json")]);
+
+  // ---- 阶段7：验证项目根无 project.yaml 与 .wwriting/agent ----
+  console.log("【阶段7】存储边界验证");
+  const pyExists = await pathExists(path.join(projectRoot, "project.yaml"));
+  const wwAgentExists = await pathExists(path.join(projectRoot, ".wwriting", "agent"));
+  const stateJournalOk = await pathExists(journalPath);
+  record("无 project.yaml", !pyExists, pyExists ? "存在（BAD）" : "不存在（GOOD）", [path.join(projectRoot, "project.yaml")]);
+  record("无 .wwriting/agent", !wwAgentExists, wwAgentExists ? "存在（BAD）" : "不存在（GOOD）", [path.join(projectRoot, ".wwriting", "agent")]);
+  record("应用私有历史在 stateRoot", stateJournalOk, stateJournalOk ? "events.jsonl 在应用私有目录" : "events.jsonl 缺失", [journalPath]);
+
+  // ---- 汇总 ----
+  const failed = results.filter((r) => !r.ok);
+  console.log(`\n=== 汇总：${results.length - failed.length}/${results.length} 阶段通过，总耗时 ${((Date.now() - tAll) / 1000).toFixed(1)}s ===`);
+  console.log(`证据根目录（保留可复查）: ${evidenceRoot}`);
+  if (failed.length > 0) {
+    console.log("未通过阶段：");
+    for (const f of failed) console.log(`  FAIL ${f.stage}: ${f.detail}`);
+    process.exit(1);
   }
-
-  // ---- 阶段4：修改第 1 章 ----
-  console.log("【阶段4】修改第 1 章（编辑正文）");
-  const t2 = Date.now();
-  let editOk = false;
-  try {
-    await agent.submit({ projectRoot, text: "把第 1 章开头改成从雨夜收到匿名电话开始，保持其余内容不变。", source: "chat" });
-    await waitForIdle(agent, projectRoot);
-    editOk = true;
-    record("第 1 章编辑完成", editOk, `耗时 ${((Date.now() - t2) / 1000).toFixed(1)}s`);
-  } catch (e) {
-    record("第 1 章编辑完成", false, `异常: ${e.message.slice(0, 120)}`);
-  }
-
-  // ---- 阶段5：运行中排队 ----
-  console.log("【阶段5】运行中排队（FIFO）");
-  try {
-    await agent.submit({ projectRoot, text: "写第 2 章", source: "chat" });
-    const second = await agent.submit({ projectRoot, text: "第 2 章写好后再补充一段雨中场景", source: "chat" });
-    record("运行中发送进入 FIFO 队列", second.queued === true, `queued=${second.queued} 同 run=${second.run_id !== null}`);
-    await waitForIdle(agent, projectRoot);
-  } catch (e) {
-    record("运行中发送进入 FIFO 队列", false, `异常: ${e.message.slice(0, 120)}`);
-  }
-
-  // ---- 阶段6：立即（promote 打断当前输入，同一 Run）----
-  console.log("【阶段6】立即（promote）");
-  try {
-    await agent.submit({ projectRoot, text: "写第 3 章：档案室的秘密", source: "chat" });
-    const queuedInput = await agent.submit({ projectRoot, text: "先插入一个设定补充任务", source: "chat" });
-    const before = await agent.snapshot({ projectRoot, afterSeq: 0, limit: 1 });
-    const runId = before.session.active_run?.id;
-    const promoted = await agent.promote({ projectRoot, inputId: queuedInput.input_id });
-    record("立即保持同一 Run id", promoted.run_id === runId && promoted.promoted === true, `run=${promoted.run_id}`);
-    await waitForIdle(agent, projectRoot);
-  } catch (e) {
-    record("立即保持同一 Run id", false, `异常: ${e.message.slice(0, 120)}`);
-  }
-
-  // ---- 阶段7：停止（stop 取消当前 Run）----
-  console.log("【阶段7】停止（stop）");
-  try {
-    await agent.submit({ projectRoot, text: "写第 4 章：漫长的雨夜（长任务）", source: "chat" });
-    // 给模型一点时间开始
-    await sleep(4000);
-    const stopped = await agent.stop({ projectRoot, reason: "user_stop" });
-    record("停止取消当前 Run", stopped.cancelled === true, `cancelled=${stopped.cancelled}`);
-    await waitForIdle(agent, projectRoot);
-  } catch (e) {
-    record("停止取消当前 Run", false, `异常: ${e.message.slice(0, 120)}`);
-  }
-
-  await modelGateway.costTracker.writeProjectReport(projectRoot).catch(() => {});
-} finally {
-  await fs.rm(root, { recursive: true, force: true });
-}
-
-// ---- 汇总 ----
-const failed = results.filter((r) => !r.ok);
-console.log(`\n=== 汇总：${results.length - failed.length}/${results.length} 阶段通过，总耗时 ${((Date.now() - tAll) / 1000).toFixed(1)}s ===`);
-if (failed.length > 0) {
-  console.log("未通过阶段：");
-  for (const f of failed) console.log(`  ✗ ${f.stage}: ${f.detail}`);
+  console.log("全链路通过。");
+  process.exit(0);
+} catch (error) {
+  console.error(`用户流程模拟异常: ${error?.message ?? String(error)}`);
   process.exit(1);
 }
-console.log("全链路通过（真实模型）。");

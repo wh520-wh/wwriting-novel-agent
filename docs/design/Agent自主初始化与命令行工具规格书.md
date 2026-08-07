@@ -10,11 +10,12 @@ WWriting 已把写作控制面收敛为**单一 Agent 内核 + 单一对话面**
 
 ## 1. /init 是普通聊天请求
 
-- `/init` 是一条普通聊天请求，可以在写作的任何阶段使用；模型判断需要时也会自主执行蓝图相关工作，软件不强制用户先运行 `/init`。
-- Agent 决定检查哪些项目文件，以及 `OUTLINE.md`、`SETTING.md`、`AGENTS.md` 是否需要变更。
-- 缺少蓝图文件不阻塞日常写作。
+- `/init` 是一条普通聊天请求，可以在写作的任何阶段使用；模型判断需要时也会自主建立项目记忆，软件不强制用户先运行 `/init`。
+- `/init` 负责创建或谨慎更新项目根的 `WWRITING.md`（项目记忆入口），**不生成固定蓝图**、不要求预先填写题材、章节数或字数。
+- 已有的 `OUTLINE.md`、`SETTING.md`、`AGENTS.md` 只作为普通权威文件被索引进 `WWRITING.md`，不强制存在；缺少 `WWRITING.md`、总纲或章节不影响聊天、读取与普通文件编辑。
 - `/init` 与其他指令走完全相同的 Agent 循环与事件流：可见的思考/活动/确认/错误状态、同一队列、同一停止机制；保留用户发送的 `/init` 原文与附加要求。
-- 已有蓝图文件应优先改进和补齐，不得无理由整体覆盖；模型必须报告检查依据与实际变更。
+- 已有记忆与创作文件应优先读取、谨慎合并，不得无理由整体覆盖；模型必须报告检查依据与实际变更。
+- `WWRITING.md` 是用户可查看、可手工编辑的项目记忆：Agent 负责日常创建、整理、去重和更新；用户删除它表示要求重新建立记忆，不表示该目录不再是工作区。
 
 ## 2. 自主读取政策（normal 模式）
 
@@ -51,20 +52,21 @@ WWriting 已把写作控制面收敛为**单一 Agent 内核 + 单一对话面**
 
 ## 7. 数据与恢复
 
-- Session/Run/queue/plan/decision 的真相源是 Agent journal（`<projectRoot>/.wwriting/agent/events.jsonl`，`session.json` 为可重建投影）。
+- Session/Run/queue/plan/decision 的真相源是**应用私有 Agent journal**（`<userData>/workspaces/<workspace-id>/agent/events.jsonl`，`session.json` 为可重建投影）；应用私有历史不进入创作目录。
 - provider 消息连续性由 `transcript.jsonl` 承担；模型循环、workflow、stop/立即 由 ProjectAgent（`src/core/agent/`，`createProjectAgent` seam）编排。
-- 旧项目首次打开时执行一次性只读 legacy 导入（幂等，`migration.json` 标记）；新项目不再产生 `agent_state.json`、`task_queue.json`、`failures.jsonl`、`chat_history.jsonl`。
-- 不同项目各自持有独立 journal 实例与队列，互不共享锁，可以并行运行（跨项目并行）。
+- 旧项目首次打开时执行一次性只读 legacy 导入（幂等，`migration.json` 标记）；新工作区不再产生 `project.yaml`、`agent_state.json`、`task_queue.json`、`failures.jsonl`、`chat_history.jsonl`。
+- 不同工作区各自持有独立 journal 实例与队列，互不共享锁，可以并行运行（跨工作区并行）。
 
-## 8. 蓝图文件（由 /init 维护）
+## 8. 项目记忆与权威文件（/init 维护）
 
-- `OUTLINE.md`（故事大纲）、`SETTING.md`（世界观与设定）、`AGENTS.md`（项目写作说明）为可持续维护的项目事实；`commit_blueprint` 一致提交三者与 `project.yaml.blueprint_status`。
-- 蓝图缺失不阻塞写作；`blueprint_status` 只作为事实信息存在于 `project.yaml`，不控制作者能否写作。
+- `<projectRoot>/WWRITING.md` 是每个长期工作区的项目记忆入口：当前有效要求、写作风格 ID、进度和权威文件索引都在这里；它不是第二份总纲，也不是聊天数据库。
+- `OUTLINE.md`（故事大纲）、`SETTING.md`（世界观与设定）、`AGENTS.md`（项目写作说明）不再是强制蓝图三件套；已存在时作为普通权威文件由 `/init` 索引进 `WWRITING.md`，新项目不预生成空占位文件。
+- 写作风格（如 `fast-readable`）确定后写入 `WWRITING.md` 的稳定技能 ID；三个内置风格（`balanced` / `fast-readable` / `psychological-literary`）随应用分发、只读不可删除，通过自然语言指定或由模型判断选择。
 
 ## 9. 验证要点（对应验收）
 
-- 新项目无蓝图仍可写作；`/init` 进入普通聊天 Agent 且可重复运行；已有蓝图不被盲目覆盖。
+- 普通文件夹（无 `project.yaml`）可发送第一条消息；`/init` 在无任何小说文件的目录可创建 `WWRITING.md`，且不生成固定蓝图；已有记忆不被盲目覆盖。
 - 普通确认、input 级同类授权与授权清理；YOLO 跳过普通确认但不跳过 extreme；fresh 精确文字确认不可复用、不可由模型代填。
 - Shell cwd/超时/增量输出/进程树停止/1 MiB 独立流尾；密钥与 journal 详情脱敏。
 - 同一 activity 合并、私有推理不渲染；`/init` 保留用户原文并使用同一个 Agent 循环。
-- 跨项目并行；stop 取消当前 Run 并清除临时授权；`立即` 保持同一 run id。
+- 跨工作区并行；stop 取消当前 Run 并清除临时授权；`立即` 保持同一 run id。

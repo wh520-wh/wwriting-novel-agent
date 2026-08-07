@@ -1,82 +1,81 @@
-// scripts/verify-app-shell.mjs —— App Shell 验证（统一 Agent 内核计划 Task 9 改写）。
+// scripts/verify-app-shell.mjs —— App Shell 验证（Task 13 改写）。
 //
-// 用 HTTP 公共行为准备数据（/api/projects/init + 确定性领域模块补充分章节事实），
-// 启动真实 server，验证：
-//   - 页面结构：单一对话挂载点（AgentSurface）、导航、抽屉、设置、阅读器、确定性工具；
+// 普通文件夹（无 project.yaml）+ 应用私有 stateRoot。不再创建旧项目、不再通过
+// reviewing 门禁提交章节；文件夹本身即可打开并聊天，应用私有历史只写 stateRoot。
+// 验证：
+//   - 页面结构：单一对话挂载点（AgentSurface）、顶部 drawer 四分区、设置页 Agent 技能
+//     分区与内置风格详情、composer/停止/重试入口、确定性工具；
 //   - 静态契约：app.js 只 import agent/index.js（AgentSurface seam）、api-client 无旧
-//     chat helper、quick-rail 纯导航、drawer-panels 直接调用导出 route；
-//   - HTTP 公共行为：/api/agent/input 跑通、snapshot 可见、dashboard 领域事实、
-//     诊断注入 snapshot、export-book 返回真实路径、新项目无旧运行态文件。
+//     chat helper、drawer-panels 直接调用导出 route、agent.css 1040px 主内容轴；
+//   - HTTP 公共行为：普通文件夹打开 + 第一条消息、dashboard hasProject:false 且保留
+//     projectRoot、journal 只写 stateRoot/workspaces/<id>/agent、文件夹根不产生
+//     project.yaml/.wwriting/agent 与旧运行态文件、快照可见、Run 终结；
+//   - 安全 GFM 与工作组投影（真实 journal 事件经公共 seam 渲染）保持既有契约。
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import { spawn } from "node:child_process";
-import net from "node:net";
+import os from "node:os";
 import path from "node:path";
-import { createProject } from "../src/core/project-store.mjs";
+import { createAppShellServer } from "../src/core/app-server.mjs";
 
-const port = await getFreePort();
-const root = path.resolve(".demo_runs", `app-shell-${Date.now()}`);
-const secretsRoot = path.join(root, ".local-secrets");
-
-// ---- 准备项目：HTTP 公共行为（/api/projects/init）+ 章节事实落盘 ----
-const { projectRoot } = await createProject(root, {
-  slug: "dashboard-novel",
-  title: "Dashboard Novel",
-  story_seed: "A project created for app shell smoke verification.",
-  target_chapters: 2,
-  min_words_per_chapter: 10,
-  target_words_per_chapter: 20,
-  network_allowed: true
-});
-const project = await (async () => {
-  const { parseSimpleYaml } = await import("../src/core/simple-yaml.mjs");
-  return parseSimpleYaml(await fs.readFile(path.join(projectRoot, "project.yaml"), "utf8"));
-})();
-
-// 章节事实：用项目领域模块提交两章（shell 验证不依赖 Agent 写章，只验证渲染与 API 流）。
-// 正文必须通过内置技能 reviewing 门禁（suspense-ending/chapter-opening/dialogue-ratio/ai-voice）。
-const { commitChapter, appendChapterSegment } = await import("../src/core/project-operations/chapter.mjs");
-const GATE_PASSING_CHAPTER = "雨夜，雨声突然变大。林深猛地推开门，冲进老宅的客厅。他浑身湿透，抹了一把脸，低声道：“信上说，老宅的钟会在午夜敲十三下。”烛光下，墙上的照片里竟是多年不见的父亲。他正要细看，门外却传来一阵急促的敲门声。";
-for (const chapterNo of [1, 2]) {
-  await appendChapterSegment({
-    projectRoot,
-    projectId: project.project_id,
-    chapterNo,
-    segmentNo: 1,
-    content: GATE_PASSING_CHAPTER
-  });
-  await commitChapter({ projectRoot, projectId: project.project_id, chapterNo });
+// 确定性 gateway：脚本耗尽后返回安全默认答复（普通聊天不必依赖真实模型）。
+function createScriptedGatewayFactory(script) {
+  const queue = script ? [...script] : [];
+  const gateway = {
+    async complete(request, { signal } = {}) {
+      if (signal?.aborted) {
+        const error = new Error("The operation was aborted.");
+        error.name = "AbortError";
+        throw error;
+      }
+      const entry = queue.shift();
+      if (entry?.error) throw entry.error;
+      return entry ?? { text: "（verify 默认答复）" };
+    }
+  };
+  return () => gateway;
 }
 
-const child = spawn(process.execPath, ["scripts/serve-app-shell.mjs"], {
-  cwd: process.cwd(),
-  env: {
-    ...process.env,
-    PORT: String(port),
-    PROJECT_ROOT: projectRoot,
-    WWRITING_SECRETS_ROOT: secretsRoot
-  },
-  stdio: ["ignore", "pipe", "pipe"]
-});
-let stderrText = "";
-child.stderr.on("data", (chunk) => {
-  stderrText += chunk.toString("utf8");
-});
+// ---- 准备：普通文件夹 + 应用私有 stateRoot ----
+const demoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-shell-"));
+const projectRoot = path.join(demoRoot, "普通文件夹");
+const stateRoot = path.join(demoRoot, "user-data");
+const secretsRoot = path.join(demoRoot, ".secrets");
+await fs.mkdir(projectRoot, { recursive: true });
+await fs.writeFile(path.join(projectRoot, "notes.txt"), "普通资料：写作参考笔记。\n", "utf8");
 
+let server = null;
 try {
-  await waitForServer(port);
-  const [html, js, apiClientJs, quickRailJs, drawerPanelsJs, agentIndexJs, agentCss, dashboard] = await Promise.all([
+  const gatewayFactory = createScriptedGatewayFactory([
+    { text: "你好，我可以在这个工作区协助你。" }
+  ]);
+  server = createAppShellServer({
+    workspaceRoot: demoRoot,
+    selectedProjectRoot: null,
+    stateRoot,
+    secretsRoot,
+    staticRoot: path.resolve("src", "app-shell"),
+    port: 0,
+    testGatewayFactory: gatewayFactory
+  });
+  const port = await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server.address().port)));
+
+  // ---- 打开普通文件夹（不再要求 project.yaml）----
+  const opened = await postJson(`http://127.0.0.1:${port}/api/projects/open`, { projectRoot });
+  assert.equal(opened.ok, true);
+
+  const [html, js, apiClientJs, drawerPanelsJs, agentIndexJs, agentCss, settingsModalJs, viewJs, dashboard] = await Promise.all([
     fetchText(`http://127.0.0.1:${port}/`),
     fetchText(`http://127.0.0.1:${port}/app.js`),
     fetchText(`http://127.0.0.1:${port}/api-client.js`),
-    fetchText(`http://127.0.0.1:${port}/components/quick-rail.js`),
     fetchText(`http://127.0.0.1:${port}/drawer-panels.js`),
     fetchText(`http://127.0.0.1:${port}/agent/index.js`),
     fetchText(`http://127.0.0.1:${port}/agent/agent.css`),
+    fetchText(`http://127.0.0.1:${port}/settings-modal.js`),
+    fetchText(`http://127.0.0.1:${port}/agent/view.js`),
     fetchJson(`http://127.0.0.1:${port}/api/dashboard`)
   ]);
 
-  // ---- 页面结构：单一对话挂载点 + 导航/设置/阅读器/确定性工具 ----
+  // ---- 页面结构：单一对话挂载点 + 顶部 drawer/设置/阅读器 ----
   assert.ok(html.includes("小说智能体"));
   assert.ok(html.includes("新建小说"));
   assert.ok(html.includes("我的小说"));
@@ -86,22 +85,31 @@ try {
   assert.ok(!html.includes('id="thread"'), "旧线程容器不得残留");
   assert.ok(!html.includes('id="composer-input"'), "旧 composer 不得残留");
   assert.ok(!html.includes('id="topbar-stop"'), "旧顶栏停止按钮不得残留");
+  assert.ok(!html.includes('id="quick-rail"'), "右侧 quick rail 不得残留");
   assert.ok(!html.includes("data-dtab=\"run\""), "运行抽屉分区不得残留");
   assert.ok(!html.includes("data-dtab=\"reviewer\""), "审查抽屉分区不得残留");
-  for (const selector of ["id=\"drawer\"", "drawer-body", "data-dtab=\"chapters\"", "data-dtab=\"model\"", "data-dtab=\"research\"", "data-dtab=\"cost\""]) {
-    assert.ok(html.includes(selector), `缺少抽屉结构: ${selector}`);
-  }
-  // Task 13：技能管理从抽屉移入设置页（Agent 技能 分区），抽屉不再有 skills tab
   assert.ok(!html.includes("data-dtab=\"skills\""), "技能管理已迁入设置页，抽屉不得保留 skills tab");
+  // Task 13：顶部 drawer 入口 + 章节/模型/资料/成本四个分区仍存在
+  assert.ok(html.includes('id="open-drawer"'), "顶栏应有 drawer 入口按钮");
+  for (const tab of ["chapters", "model", "research", "cost"]) {
+    assert.ok(html.includes(`data-dtab="${tab}"`), `drawer 应保留 ${tab} 分区`);
+  }
   assert.ok(html.includes("settings-modal"));
   assert.ok(html.includes("reader-scrim"));
-  assert.ok(html.includes("id=\"quick-rail\""));
   assert.ok(html.includes("toast-stack"));
 
-  // 设置页技能分区：Agent 技能 tab 存在（Task 13，skills catalog/import/delete 入口）
-  const settingsModalJs = await fetchText(`http://127.0.0.1:${port}/settings-modal.js`);
+  // 设置页技能分区 + 内置风格只读详情（Task 13：设置内置风格详情契约）
   assert.match(settingsModalJs, /id:\s*"skills"/u, "settings-modal 应声明 Agent 技能 tab");
   assert.ok(settingsModalJs.includes("Agent 技能"), "设置页应渲染 Agent 技能 分区");
+  assert.ok(settingsModalJs.includes("内置写作风格"), "设置页应渲染 内置写作风格 分区");
+  assert.ok(settingsModalJs.includes("spd-skill-row--readonly"), "内置风格行应使用只读无框行样式");
+  assert.ok(settingsModalJs.includes("skills-detail-back"), "内置风格详情应有返回技能列表按钮");
+
+  // AgentSurface composer / 停止 / 重试 入口（Task 13 可点击性契约的静态面）
+  assert.ok(viewJs.includes('agent-composer-input"'), "view.js 应渲染 composer 输入框");
+  assert.ok(viewJs.includes('agent-send"'), "view.js 应渲染发送按钮");
+  assert.ok(viewJs.includes('agent-stop"'), "view.js 应渲染停止按钮");
+  assert.ok(viewJs.includes('agent-retry"'), "view.js 应渲染重试按钮");
 
   // ---- 静态契约：AgentSurface 是唯一对话 seam ----
   assert.match(js, /import\s*\{[^}]*createAgentSurface[^}]*\}\s*from\s*["']\.\/agent\/index\.js["']/, "app.js 应 import AgentSurface seam");
@@ -113,15 +121,12 @@ try {
   assert.match(apiClientJs, /export async function postJson/);
   assert.match(apiClientJs, /export function withProjectScope/);
   assert.doesNotMatch(apiClientJs, /sendChatMessage|confirmChatAction|stopChat|fetchChatHistory/u, "api-client 不得保留旧 chat helper");
-  // quick-rail：纯导航四槽位，无命令注册副作用
-  assert.doesNotMatch(quickRailJs, /commands\/index|command-registry/u, "quick-rail 不得有命令注册副作用");
-  assert.ok(quickRailJs.includes("function renderQuickRail"));
-  assert.ok(quickRailJs.includes("function bindQuickRailKeys"));
-  // drawer-panels：直接调用导出 route
+  // drawer-panels：直接调用导出 route，无运行/审查面板
   assert.match(drawerPanelsJs, /\/api\/projects\/export-book/u, "drawer-panels 应直接调用导出 route");
   assert.doesNotMatch(drawerPanelsJs, /sendChatMessageWithUX|renderRunPanel|renderReviewerPanel/u, "drawer-panels 不得引用旧聊天导出与运行/审查面板");
-  // agent.css 布局基线
-  assert.match(agentCss, /--content-column:\s*900px/u, "agent.css 应保留 900px 内容列");
+  // agent.css 布局基线（Task 12：1040px 主内容轴）
+  assert.match(agentCss, /--content-column:\s*1040px/u, "agent.css 应保留 1040px 主内容轴");
+  assert.match(agentCss, /max-width:\s*1040px/u, "agent.css 应保留 1040px 字面量契约");
   assert.match(
     agentCss,
     /\.agent-composer-menu--model \.agent-composer-popover\s*\{[^}]*width:\s*min\(320px,\s*calc\(100vw - 32px\)\)/u,
@@ -130,47 +135,13 @@ try {
   assert.match(agentCss, /\.agent-composer-popover\s*\{[^}]*bottom:\s*calc\(100% \+ 7px\)/u, "Composer 菜单应向上展开");
 
   // ---- HTTP 公共行为 ----
+  // 普通文件夹：dashboard 是 hasProject:false 的最小工作区形状，不再 INTERNAL_ERROR
   assert.equal(dashboard.ok, true);
-  assert.equal(dashboard.hasProject, true);
-  assert.equal(dashboard.model_profile.display, "Mock / mock-writer");
-  assert.equal(dashboard.summary.completedChapters, 2);
-  assert.equal(dashboard.summary.targetChapters, 2);
-  assert.equal(dashboard.summary.progressPercent, 100);
-  assert.equal(dashboard.project.title, "Dashboard Novel");
-  assert.ok(dashboard.chapters.some((chapter) => chapter.artifact?.state === "committed"));
-  assert.ok(dashboard.skills.items.length >= 5, "built-in skill pack should list 5+ skills");
-  assert.ok(dashboard.skills.items.some((skill) => skill.name === "avoid-ai-voice"), "built-in skill should be listed");
-  // dashboard 不再返回运行推断字段
-  assert.equal(dashboard.summary.projectStatus, undefined, "dashboard 不得再返回旧运行状态推断");
-  assert.equal(dashboard.review, undefined, "dashboard 不得再返回旧审查报告");
-  assert.equal(dashboard.failures, undefined, "dashboard 不得再返回故障卡");
-  assert.equal(dashboard.recent_tool_events, undefined, "dashboard 不得再返回 recent tool events");
+  assert.equal(dashboard.hasProject, false);
+  assert.equal(dashboard.projectRoot, projectRoot, "dashboard 应保留已打开普通文件夹的 projectRoot");
+  assert.equal(dashboard.project, null);
 
-  // 章节阅读
-  const chapterRead = await fetchJson(`http://127.0.0.1:${port}/api/chapters/read?chapter=1`);
-  assert.equal(chapterRead.ok, true);
-  assert.equal(chapterRead.chapter_no, 1);
-  assert.ok(chapterRead.content.length > 0);
-  const chapterReadMissing = await fetch(`http://127.0.0.1:${port}/api/chapters/read?chapter=999`);
-  assert.equal(chapterReadMissing.ok, false);
-
-  // 诊断：注入 agent.snapshot 的稳定 loader
-  const diagnostics = await fetchJson(`http://127.0.0.1:${port}/api/diagnostics?projectRoot=${encodeURIComponent(projectRoot)}`);
-  assert.equal(diagnostics.ok, true);
-  assert.equal(typeof diagnostics.queue, "object");
-  assert.equal(typeof diagnostics.costHealth, "object");
-  assert.equal(typeof diagnostics.recoveryHint, "object");
-  assert.ok(Array.isArray(diagnostics.recentEvents));
-
-  // 项目列表与打开
-  const projectList = await fetchJson(`http://127.0.0.1:${port}/api/projects/list`);
-  assert.equal(projectList.ok, true);
-  assert.ok(projectList.projects.some((p) => p.projectRoot === projectRoot));
-  await postJson(`http://127.0.0.1:${port}/api/projects/open`, { projectRoot });
-  const reopenedDashboard = await fetchJson(`http://127.0.0.1:${port}/api/dashboard`);
-  assert.equal(reopenedDashboard.projectRoot, projectRoot);
-
-  // Agent HTTP：mock provider 简单对话跑通（快照可见、Run 终结）
+  // 第一条消息（普通文件夹与旧项目同等聊天能力）
   const agentInput = await postJson(`http://127.0.0.1:${port}/api/agent/input`, { projectRoot, text: "你好" });
   assert.equal(agentInput.ok, true);
   assert.equal(agentInput.status, "running");
@@ -178,18 +149,12 @@ try {
   assert.equal(snapshot.session.status, "idle");
   assert.equal(snapshot.session.active_run.status, "completed");
 
-  // 确定性导出：直接 route，返回真实路径且不创建 Run
-  const callsBefore = snapshot.events.filter((e) => e.type === "run_started").length;
-  const exported = await postJson(`http://127.0.0.1:${port}/api/projects/export-book`, { projectRoot, format: "txt" });
-  assert.equal(exported.ok, true);
-  assert.ok(exported.path.length > 0);
-  assert.ok(exported.chapters >= 1);
-  const exportContent = await fs.readFile(exported.path, "utf8");
-  assert.ok(exportContent.includes("老宅的钟会在午夜敲十三下"), "导出应包含章节正文");
-  const after = await fetchJson(`http://127.0.0.1:${port}/api/agent/snapshot?projectRoot=${encodeURIComponent(projectRoot)}`);
-  assert.equal(after.events.filter((e) => e.type === "run_started").length, callsBefore, "导出不得创建 Agent Run");
-
-  // 新项目无旧状态文件
+  // 应用私有历史只写 stateRoot：workspaces/<id>/agent/events.jsonl 必须存在，
+  // 文件夹根不得出现 project.yaml / .wwriting/agent / 旧运行态文件
+  const journalFound = await containsWorkspaceJournal(stateRoot);
+  assert.equal(journalFound, true, "journal 应写入应用私有 stateRoot/workspaces/<id>/agent");
+  assert.equal(await pathExists(path.join(projectRoot, "project.yaml")), false, "普通文件夹不得创建 project.yaml");
+  assert.equal(await pathExists(path.join(projectRoot, ".wwriting", "agent")), false, "项目内不得创建 .wwriting/agent");
   const LEGACY_NAMES = ["agent_state", "task_queue"].map((n) => n + ".json").concat(["failures", "chat_history"].map((n) => n + ".jsonl"));
   for (const name of LEGACY_NAMES) {
     assert.equal(await pathExists(path.join(projectRoot, name)), false, `不得创建 ${name}`);
@@ -344,7 +309,6 @@ try {
   }
   // 工作组静态契约：served view.js 渲染 details.agent-work-group 与两种空内容文案；
   // served work-items.mjs 投影 已完成思考 终态标签与 工作中 组状态文案
-  const viewJs = await fetchText(`http://127.0.0.1:${port}/agent/view.js`);
   const workItemsJs = await fetchText(`http://127.0.0.1:${port}/agent/work-items.mjs`);
   assert.ok(viewJs.includes("agent-work-group"), "view.js 应渲染 details.agent-work-group");
   assert.ok(viewJs.includes("当前模型不支持查看"), "view.js 应输出 unsupported 空内容文案");
@@ -352,19 +316,23 @@ try {
   assert.ok(workItemsJs.includes("已完成思考"), "work-items.mjs 应输出 已完成思考 终态标签");
   assert.ok(workItemsJs.includes("工作中"), "work-items.mjs 应输出工作组运行状态文案");
 
-  // ---- 技能 catalog API：内置发现 + 项目同名覆盖（project > 内置）----
+  // ---- 技能 catalog API：内置发现 + 普通文件夹项目同名覆盖（项目 > 内置）----
   const catalogBefore = await fetchJson(`http://127.0.0.1:${port}/api/skills/catalog?projectRoot=${encodeURIComponent(projectRoot)}`);
   assert.equal(catalogBefore.ok, true);
-  assert.equal(catalogBefore.has_project, true);
-  assert.equal(catalogBefore.project_root, projectRoot);
   assert.ok(catalogBefore.active.length >= 5, "catalog 应列出 5+ 内置技能");
   assert.ok(
     catalogBefore.active.some((skill) => skill.name === "avoid-ai-voice" && skill.source === "builtin"),
     "内置技能应出现在 active catalog"
   );
+  // 三个内置写作风格（只读、保留名）
+  for (const style of ["balanced", "fast-readable", "psychological-literary"]) {
+    const skill = catalogBefore.active.find((item) => item.name === style);
+    assert.ok(skill, `内置写作风格 ${style} 应出现在 catalog`);
+    assert.equal(skill.readonly, true, `${style} 应标记为只读`);
+    assert.equal(skill.source, "builtin", `${style} 应来自内置`);
+  }
   assert.ok(Array.isArray(catalogBefore.shadowed), "shadowed 应为数组");
-  assert.ok(Array.isArray(catalogBefore.migration_errors), "migration_errors 应为数组");
-  // 项目同名覆盖：放入 <projectRoot>\skills\<name>\SKILL.md 即被发现并覆盖内置版本
+  // 普通文件夹项目同名技能覆盖：放入 <projectRoot>\skills\<name>\SKILL.md 即被发现
   await fs.mkdir(path.join(projectRoot, "skills", "avoid-ai-voice"), { recursive: true });
   await fs.writeFile(
     path.join(projectRoot, "skills", "avoid-ai-voice", "SKILL.md"),
@@ -393,19 +361,38 @@ try {
         ok: true,
         url: `http://127.0.0.1:${port}`,
         projectRoot,
-        completedChapters: dashboard.summary.completedChapters,
-        checks: { gfm: true, workGroup: true, skillsCatalog: true }
+        hasProject: dashboard.hasProject,
+        checks: { gfm: true, workGroup: true, skillsCatalog: true, plainFolderJournal: journalFound }
       },
       null,
       2
     )
   );
 } finally {
-  if (child.exitCode === null && child.signalCode === null) child.kill();
-  if (child.exitCode === null && child.signalCode === null) {
-    await new Promise((resolve) => child.once("close", resolve));
+  if (server) {
+    await new Promise((resolve) => server.close(resolve));
   }
-  await fs.rm(root, { recursive: true, force: true });
+  await fs.rm(demoRoot, { recursive: true, force: true }).catch(() => {});
+}
+
+async function containsWorkspaceJournal(stateRoot) {
+  const workspacesDir = path.join(stateRoot, "workspaces");
+  let entries;
+  try {
+    entries = await fs.readdir(workspacesDir, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const agentDir = path.join(workspacesDir, entry.name, "agent");
+    try {
+      if ((await fs.readdir(agentDir)).includes("events.jsonl")) return true;
+    } catch {
+      // 该 workspace 尚无 agent 目录，继续扫描
+    }
+  }
+  return false;
 }
 
 async function pathExists(target) {
@@ -415,19 +402,6 @@ async function pathExists(target) {
   } catch {
     return false;
   }
-}
-
-async function waitForServer(targetPort) {
-  const started = Date.now();
-  while (Date.now() - started < 5000) {
-    try {
-      await fetchText(`http://127.0.0.1:${targetPort}/`);
-      return;
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-  }
-  throw new Error(`app shell server did not start. ${stderrText}`);
 }
 
 async function waitForSnapshotIdle(targetPort, projectRoot) {
@@ -462,23 +436,4 @@ async function postJson(url, body) {
   const data = await response.json();
   assert.equal(data.ok, true);
   return data;
-}
-
-function getFreePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      const port = typeof address === "object" && address ? address.port : null;
-      server.close(() => {
-        if (!port) {
-          reject(new Error("failed to allocate a free port"));
-          return;
-        }
-        resolve(port);
-      });
-    });
-  });
 }

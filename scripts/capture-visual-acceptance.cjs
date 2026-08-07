@@ -1,27 +1,34 @@
-// scripts/capture-visual-acceptance.cjs —— 确定性视觉证据采集（计划 Task 15 Step 5-8）。
+// scripts/capture-visual-acceptance.cjs —— 确定性视觉证据采集（Task 13 改写）。
 //
 // 职责：为独立多模态验收模型生成完整、自洽、可核对的视觉证据目录：
-//   MANIFEST.md / live-indicator-audit.json / multimodal-review-prompt.md + 9 张（+1 张补充）
-//   指定命名的 PNG。每轮一个目录，禁止覆盖上一轮。
+//   MANIFEST.md / live-indicator-audit.json / multimodal-review-prompt.md +
+//   17 张指定命名的 PNG（conversation-completed ×4 视口、reasoning-running 三帧、
+//   tool-after-reasoning 三帧、markdown-fixture ×2、settings-builtin-styles ×2、
+//   settings-style-detail、drawer、plain-folder-first-message）。
+// 每轮一个目录（--output 指定），禁止覆盖上一轮。
 //
-// 驱动路径（Step 5 冻结契约）：
-//   - 在同一进程启动真实 app-shell server（createAppShellServer），注入与
-//     testLoadDashboardData 同级的 testGatewayFactory 与临时 root 的 skills service；
+// 驱动路径（全部经真实 UI / API / journal SSE）：
+//   - 在同一进程启动真实 app-shell server（createAppShellServer），注入
+//     testGatewayFactory 与临时 root 的 skills service；
+//   - 真实项目（visual acceptance fixture）驱动对话/设置/drawer 场景；
+//   - 普通文件夹（无 project.yaml）+ 应用私有 stateRoot 驱动
+//     plain-folder-first-message 场景（真实 UI 打开流程 + composer 发送）；
 //   - 用真实 /api/agent/input（经 composer UI 点击）、journal SSE（UI 实时渲染）
 //     和 UI 点击驱动全部场景；禁止向 DOM 填假 HTML；
-//   - 测试控制器可暂停/恢复确定性 gateway（hold/release），让 reasoning 运行态、
-//     计划中间态可被稳定截图。
+//   - 测试控制器可暂停/恢复确定性 gateway（hold/release），让 reasoning 运行态
+//     可被稳定截图。
 //
-// 动效唯一性（Step 6）：每个 motion frame 捕获前执行 DOM 审计；sequential 场景
-// 动效文字 >1、terminal 场景 >0、展开工作组中 groupHeaderAnimated=true 都立即
-// 退出 1，绝不交给视觉模型掩盖。当前 Runtime 串行执行工具，MANIFEST 写
+// 动效唯一性：每个 motion frame 捕获前执行 DOM 审计；sequential 场景动效文字
+// >1、terminal 场景 >0、展开工作组中 groupHeaderAnimated=true 都立即退出 1，
+// 绝不交给视觉模型掩盖。当前 Runtime 串行执行工具，MANIFEST 写
 // parallel_runtime_supported: false，不制造并行截图。
 //
-// 非主观检查（Step 5）：图片宽高与视口一致、像素非全白/全透明、页面无横向
-// overflow、关键 selector 的 bounding box 不相交——任一失败即退出 1。
+// 非主观检查：图片宽高与视口一致、像素非全白/全透明、页面无横向 overflow、
+// 关键 selector 的 bounding box 不相交——任一失败即退出 1。四视口
+// （390x844/768x900/1280x800/1440x900）由 conversation-completed 全覆盖。
 //
-// 运行：node scripts/capture-visual-acceptance.cjs --round 1
-// 期望：退出码 0，输出 evidence directory 与 multimodal-review-prompt.md 绝对路径。
+// 运行：node scripts/capture-visual-acceptance.cjs --output artifacts/visual-acceptance/<campaign>/round-01
+// 期望：退出码 0，输出 evidence directory 与 MANIFEST 全部声明文件。
 const { app, BrowserWindow, nativeImage } = require("electron");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -30,10 +37,9 @@ const crypto = require("node:crypto");
 const { pathToFileURL } = require("node:url");
 const assert = require("node:assert/strict");
 
-// Bootstrap：brief Step 8 的命令是 `node scripts/capture-visual-acceptance.cjs --round 1`，
-// 而 require("electron") 在普通 node 下只返回可执行文件路径。检测到未运行在
-// Electron 运行时内时，以 electron 重新拉起本脚本（stdio 与退出码透传）；
-// `electron scripts/...` 直接运行同一段代码，不经过重拉。
+// Bootstrap：`node scripts/capture-visual-acceptance.cjs --output <dir>` 在普通 node
+// 下 require("electron") 只返回可执行文件路径。检测到未运行在 Electron 运行时内时，
+// 以 electron 重新拉起本脚本（stdio 与退出码透传）。
 {
   let electronEntry = null;
   try {
@@ -50,7 +56,7 @@ const assert = require("node:assert/strict");
       binary = null;
     }
     if (typeof binary !== "string" || binary.length === 0) {
-      console.error("capture-visual-acceptance 必须以 Electron 运行（node scripts/capture-visual-acceptance.cjs --round N）");
+      console.error("capture-visual-acceptance 必须以 Electron 运行（node scripts/capture-visual-acceptance.cjs --output <dir>）");
       process.exit(1);
     }
     const result = spawnSync(binary, [__filename, ...process.argv.slice(2)], { stdio: "inherit" });
@@ -63,18 +69,18 @@ process.stdout.on("error", (err) => { if (err.code !== "EPIPE") throw err; });
 process.stderr.on("error", (err) => { if (err.code !== "EPIPE") throw err; });
 
 const SCRIPT_DIR = __dirname;
-const CAMPAIGN = "2026-08-07-agent-work-log-markdown-skills";
 // read_skill 的注入延迟：给 tool-after-reasoning 三帧（t000/t400/t900 + 捕获开销）
 // 留足窗口；5s 覆盖约 3.5s 的最坏捕获序列仍有 1.5s 余量。
 const SKILL_READ_DELAY_MS = 5000;
-// agent-text-shimmer 动画周期 1450ms（plan-verbatim，不修改 CSS）。评审 P1-1：
-// 实测亮带只在周期后段进入 13px「思考中」标签的字形内部，且最暗列随 currentTime
-// 单调右移（600→1240ms 区间）；选 680/920/1160ms 使扫光带清晰位于左/中/右。
+// agent-text-shimmer 动画周期 1450ms（plan-verbatim，不修改 CSS）。选 680/920/1160ms
+// 使扫光带清晰位于左/中/右（评审 P1-1 的确定性相位方案）。
 const SHIMMER_PHASES_MS = [680, 920, 1160];
 const VIEWPORT_DEFAULT = { width: 1280, height: 800 };
 const VIEWPORT_NARROW = { width: 390, height: 844 };
 const VIEWPORT_MEDIUM = { width: 768, height: 900 };
 const VIEWPORT_WIDE = { width: 1440, height: 900 };
+// 四视口验收（SPEC §10.3）：conversation-completed 必须在每个视口验证无横向溢出。
+const VIEWPORTS = [VIEWPORT_NARROW, VIEWPORT_MEDIUM, VIEWPORT_DEFAULT, VIEWPORT_WIDE];
 
 let server = null;
 let userDataDir = null;
@@ -107,12 +113,15 @@ app.whenReady().then(() =>
 // ---------------------------------------------------------------------------
 
 function parseArgs(argv) {
-  const index = argv.indexOf("--round");
-  const round = index >= 0 ? Number(argv[index + 1]) : 1;
-  if (!Number.isInteger(round) || round < 1) {
-    throw new Error("--round 必须是正整数（如 --round 1）");
+  const index = argv.indexOf("--output");
+  if (index < 0) {
+    throw new Error("必须指定 --output <证据目录>（如 --output artifacts/visual-acceptance/<campaign>/round-01）");
   }
-  return { round };
+  const output = argv[index + 1];
+  if (!output || output.trim() === "") {
+    throw new Error("--output 缺少目录参数");
+  }
+  return { output: output.trim() };
 }
 
 // 证据必须落在主仓库（D:\WWriting）的 artifacts/ 下，即使脚本从 worktree 运行。
@@ -144,14 +153,10 @@ function mainRepoRootOf(scriptDir) {
   return candidate; // 兜底：当前仓库根（非 worktree 时即主仓库）
 }
 
-function roundDirFor(mainRepo, round) {
-  return path.join(
-    mainRepo,
-    "artifacts",
-    "visual-acceptance",
-    CAMPAIGN,
-    `round-${String(round).padStart(2, "0")}`
-  );
+// --output 的相对路径按主仓库根解析（保证 brief 的完整命令在任何目录运行都落在
+// 同一证据目录，符合仓库既有 artifact 约定）；绝对路径原样使用。
+function resolveOutputDir(mainRepo, output) {
+  return path.isAbsolute(output) ? output : path.join(mainRepo, output);
 }
 
 // ---------------------------------------------------------------------------
@@ -411,7 +416,7 @@ async function setViewport(win, width, height) {
 }
 
 // ---------------------------------------------------------------------------
-// DOM 审计（Step 6）：motion uniqueness 客观证据
+// DOM 审计：motion uniqueness 客观证据（开放 activity ID + live class 数量）
 // ---------------------------------------------------------------------------
 
 const AUDIT_SCRIPT = `(() => {
@@ -419,9 +424,6 @@ const AUDIT_SCRIPT = `(() => {
     if (!el || !el.isConnected) return false;
     const cs = getComputedStyle(el);
     if (cs.display === "none" || cs.visibility === "hidden") return false;
-    // playState 接受 paused：评审 P1-1 的确定性采集会用 Web Animations API
-    // pause+seek 把扫光带固定到左/中/右相位；标签仍是 live 目标（agent-live-text
-    // 与 animationName 不变），审计记录保持真实。
     return cs.animationName !== "none" && (cs.animationPlayState === "running" || cs.animationPlayState === "paused");
   };
   const groups = [...document.querySelectorAll("details.agent-work-group")];
@@ -463,7 +465,7 @@ async function runDomAudit(win) {
 
 function auditModeOf(scenario) {
   // sequential：运行中（允许恰好 1 个动效文字）；terminal：终态/静态（必须 0 个）
-  return ["reasoning-running", "tool-after-reasoning", "plan-updated", "plan-updated-2of3"].includes(scenario)
+  return ["reasoning-running", "tool-after-reasoning"].includes(scenario)
     ? "sequential"
     : "terminal";
 }
@@ -530,8 +532,6 @@ async function checkHorizontalOverflow(win) {
 }
 
 // 关键 selector 的 bounding box 两两不相交（祖先/子孙对排除；1px 容差）。
-// 每个元素先裁剪到最近滚动容器（overflow 裁剪祖先，无则视口）：布局 rect 会越出
-// 裁剪边界（如展开工作组延伸到 composer 下方），但视觉上被容器裁剪、并未真的遮挡。
 async function checkNoOverlap(win, selectors) {
   return read(
     win,
@@ -594,8 +594,13 @@ const OVERLAP_SELECTORS = {
     ".sp-section-item",
     ".sp-section-panel",
     "#settings-x",
-    ".spd-segmented",
+    ".spd-skill-row--readonly",
     "#skills-list"
+  ],
+  drawer: [
+    ".drawer-tabs",
+    "#drawer-body",
+    "#drawer-close"
   ]
 };
 
@@ -605,15 +610,17 @@ async function auditAndCapture(win, ctx, spec) {
   const audit = await runDomAudit(win);
   const mode = auditModeOf(spec.scenario);
   validateAudit(audit, spec.scenario, mode);
-  if (spec.auditKey && !ctx.auditRecords[spec.auditKey]) {
-    ctx.auditRecords[spec.auditKey] = {
-      scenario: spec.auditKey,
-      openActivityIds: audit.openActivityIds,
-      visibleAnimatedLabels: audit.visibleAnimatedLabels,
-      visibleAnimatedCount: audit.visibleAnimatedCount,
-      groupHeaderAnimated: audit.groupHeaderAnimated
-    };
-  }
+  ctx.auditRecords[spec.file] = {
+    file: spec.file,
+    scenario: spec.scenario,
+    viewport: `${spec.viewport[0]}x${spec.viewport[1]}`,
+    mode,
+    openActivityIds: audit.openActivityIds,
+    visibleAnimatedLabels: audit.visibleAnimatedLabels,
+    visibleAnimatedCount: audit.visibleAnimatedCount,
+    groupHeaderAnimated: audit.groupHeaderAnimated,
+    parallel_runtime_supported: false
+  };
 
   // 2) capturePage（offscreen 在 setContentSize 后可能出现一帧空白：重试至非空白）
   const [width, height] = spec.viewport;
@@ -627,12 +634,12 @@ async function auditAndCapture(win, ctx, spec) {
     windowRef.webContents.invalidate();
   }
 
-  // 3) 页面级非主观检查 + 场景客观检查（评审 P1-1/P1-2/P1-3 新增）
+  // 3) 页面级非主观检查 + 场景客观检查
   const overflow = await checkHorizontalOverflow(win);
   const overlap = await checkNoOverlap(win, spec.overlapSelectors);
   const extraResults = spec.extraChecks ? await spec.extraChecks(win) : [];
 
-  // 评审 P1-1：记录 motion 帧的 live label bbox（sweep-direction 检查用）
+  // 记录 motion 帧的 live label bbox（sweep-direction 检查用）
   if (spec.sweepPhase != null) {
     const bbox = await read(win, `(() => {
       const el = document.querySelector(".agent-work-item__label.agent-live-text");
@@ -662,6 +669,9 @@ async function auditAndCapture(win, ctx, spec) {
     absolutePath: path.join(ctx.roundDir, spec.file),
     viewport: `${width}x${height}`,
     scenario: spec.scenario,
+    state: spec.state,
+    dataSource: spec.dataSource,
+    parallel_runtime_supported: false,
     expected: spec.expected,
     spec: spec.spec,
     sha256,
@@ -681,65 +691,8 @@ async function auditAndCapture(win, ctx, spec) {
   console.log(`  ✓ ${spec.file}  (${width}x${height}, ${png.length} B, sha256 ${sha256.slice(0, 12)}…)${extraText}`);
 }
 
-// 场景客观检查（评审 P1-1/P1-2/P1-3）：返回 [{ name, pass, detail }]。
-// 注意：页面内表达式一律用字符串拼接，避免在 read 的外层模板字面量里嵌套反引号/${}。
+// 场景客观检查：返回 [{ name, pass, detail }]。
 const EXTRA_CHECKS = {
-  // P1-1：reasoning 展开详情的 320px 限高内层滚动区必须真实存在（内容溢出）
-  reasoningExpandedScroll: async (win) => {
-    const result = await read(win, `(() => {
-      const detail = [...document.querySelectorAll('.agent-work-item[data-kind="reasoning"] .agent-reasoning-detail:not([hidden])')]
-        .find((el) => el.isConnected);
-      if (!detail) return { pass: false, detail: "未找到展开的 reasoning 详情" };
-      const cs = getComputedStyle(detail);
-      return {
-        pass: detail.scrollHeight > detail.clientHeight,
-        detail: "scrollHeight=" + detail.scrollHeight + " clientHeight=" + detail.clientHeight +
-          " maxHeight=" + cs.maxHeight + " overflowY=" + cs.overflowY
-      };
-    })()`);
-    return [{ name: "reasoning-detail-scroll", pass: result.pass, detail: result.detail }];
-  },
-  // P1-2：窄屏顶栏「面板」按钮单行显示（不拆成两行逐字）
-  panelButtonSingleLine: async (win) => {
-    const result = await read(win, `(() => {
-      const b = document.getElementById("qr-collapsed");
-      if (!b) return { pass: false, detail: "未找到 #qr-collapsed" };
-      const r = b.getBoundingClientRect();
-      const oneLine = b.scrollHeight <= b.clientHeight + 1 && b.scrollWidth <= b.clientWidth + 1;
-      return {
-        pass: oneLine,
-        detail: "rect=" + Math.round(r.width) + "x" + Math.round(r.height) +
-          " client=" + b.clientWidth + "x" + b.clientHeight +
-          " scroll=" + b.scrollWidth + "x" + b.scrollHeight +
-          " text=\\"" + (b.textContent || "").trim() + "\\""
-      };
-    })()`);
-    return [{ name: "panel-button-single-line", pass: result.pass, detail: result.detail }];
-  },
-  // P1-3：设置页技能列表底部——footer 与最后一行不重叠，且最后一行完整在滚动视口内
-  settingsFooterClearance: async (win) => {
-    const result = await read(win, `(() => {
-      const foot = document.querySelector(".spd-foot");
-      const rows = [...document.querySelectorAll(".spd-skill-row")];
-      const last = rows.at(-1);
-      const scroll = document.getElementById("settings-detail") || document.querySelector(".sp-detail-scroll");
-      if (!foot || !last || !scroll) return { pass: false, detail: "foot=" + Boolean(foot) + " last=" + Boolean(last) + " scroll=" + Boolean(scroll) };
-      const fr = foot.getBoundingClientRect();
-      const lr = last.getBoundingClientRect();
-      const sr = scroll.getBoundingClientRect();
-      const intersects = fr.left < lr.right - 1 && lr.left < fr.right - 1 && fr.top < lr.bottom - 1 && lr.top < fr.bottom - 1;
-      const withinViewport = lr.top >= sr.top - 1 && lr.bottom <= sr.bottom + 1;
-      return {
-        pass: !intersects && withinViewport,
-        detail: "foot=[" + Math.round(fr.top) + ".." + Math.round(fr.bottom) + "]" +
-          " lastRow=[" + Math.round(lr.top) + ".." + Math.round(lr.bottom) + "]" +
-          " scrollView=[" + Math.round(sr.top) + ".." + Math.round(sr.bottom) + "]" +
-          " scrollTop=" + scroll.scrollTop + "/" + (scroll.scrollHeight - scroll.clientHeight) +
-          " intersects=" + intersects + " within=" + withinViewport
-      };
-    })()`);
-    return [{ name: "settings-footer-clearance", pass: result.pass, detail: result.detail }];
-  },
   // Markdown 宽表格：包装层负责滚动，表格保持 760px，窄视口必须真实溢出。
   markdownTableScroll: async (win, { requireOverflow = false } = {}) => {
     const overflowRequirement = requireOverflow ? " && actualOverflow" : "";
@@ -759,7 +712,7 @@ const EXTRA_CHECKS = {
     })()`);
     return [{ name: "markdown-table-scroll", pass: result.pass, detail: result.detail }];
   },
-  // P1-2：任务列表渲染出 [x]（checked）与 [ ]（未勾选）两类状态
+  // 任务列表渲染出 [x]（checked）与 [ ]（未勾选）两类状态
   taskListStates: async (win) => {
     const result = await read(win, `(() => {
       const boxes = [...document.querySelectorAll(".agent-markdown input[type=checkbox]")];
@@ -769,61 +722,81 @@ const EXTRA_CHECKS = {
       return { pass: checked >= 1 && unchecked >= 1, detail: "total=" + boxes.length + " checked=" + checked + " unchecked=" + unchecked };
     })()`);
     return [{ name: "task-list-states", pass: result.pass, detail: result.detail }];
+  },
+  // 内置风格详情：只读详情正文非空、无启用/删除/编辑控件
+  builtinStyleDetail: async (win) => {
+    const result = await read(win, `(() => {
+      const back = document.getElementById("skills-detail-back");
+      const body = document.querySelector(".spd-skill-detail-body");
+      if (!back || !body) return { pass: false, detail: "back=" + Boolean(back) + " body=" + Boolean(body) };
+      const controls = [...document.querySelectorAll(".spd-skill-detail-body .spd-skill-toggle, .spd-skill-detail-body .spd-skill-del, .spd-skill-detail-body .spd-skill-edit")].length;
+      return {
+        pass: (body.textContent || "").length > 0 && controls === 0,
+        detail: "bodyLen=" + (body.textContent || "").length + " controls=" + controls
+      };
+    })()`);
+    return [{ name: "builtin-style-detail", pass: result.pass, detail: result.detail }];
+  },
+  // 普通文件夹第一条消息：无错误卡、无读取失败、composer 可用
+  plainFolderFirstMessage: async (win) => {
+    const result = await read(win, `(() => ({
+      title: document.getElementById("project-title")?.textContent ?? null,
+      errorCards: document.querySelectorAll('[data-testid="agent-error"]').length,
+      userMessages: document.querySelectorAll('[data-testid="agent-user-message"]').length,
+      assistantMessages: document.querySelectorAll('[data-testid="agent-assistant-message"]').length,
+      runStatus: document.querySelector(".agent-run-status")?.textContent ?? null,
+      composerDisabled: document.querySelector('[data-testid="agent-composer-input"]')?.disabled ?? null
+    }))()`);
+    const pass = result.title !== "读取失败" && result.errorCards === 0 && result.userMessages >= 1 && result.assistantMessages >= 1 && result.runStatus === "已完成" && result.composerDisabled === false;
+    return [{ name: "plain-folder-first-message", pass, detail: JSON.stringify(result) }];
   }
 };
 
 // ---------------------------------------------------------------------------
-// 场景内容契约
+// 场景内容契约（新世界语义：无字数/质量门禁、自然语言驱动）
 // ---------------------------------------------------------------------------
 
-// 第一轮思考：足够长（约 80 行 / 4KB+，评审 P1-1 修复），让完成态详情超过
-// .agent-reasoning-detail 的 320px 限高（13px/1.65 行高 ≈ 14.9 行可见），
-// 场景 05 必须客观展示内层滚动区（scrollHeight > clientHeight）。
+// 第一轮思考：足够长，让完成态工作组与时间线内容丰富；内容围绕风格技能、项目
+// 记忆与字数工具，不出现字数/质量门禁语义。
 const TURN1_REASONING = (() => {
   const lines = [
-    "收到分析项目进度的请求，先建立检查顺序，避免重复劳动，也保证结论有依据。",
-    "总体方案：按章节逐一核对大纲位置、草稿状态、字数与质量门禁、连续性记忆与风格。"
+    "收到按快节奏易读风格写一个短章节的请求，先确认写作约束与项目记忆，避免凭空发挥。",
+    "总体方案：先读取内置风格技能，核对项目记忆里的当前要求，再规划短章节并落笔。"
   ];
-  for (let chapter = 1; chapter <= 20; chapter += 1) {
-    lines.push(`第 ${chapter} 章检查：先核对本章在提纲中的位置，以及与前后的衔接关系。`);
-    lines.push(`再读取本章草稿，确认字数、分节与对话占比都在既定范围之内。`);
-    lines.push(`重点检查章节结尾是否有悬念落点，是否引入了新人物而未交代来历。`);
-    lines.push(`确认本章没有时间线跳跃，人名、地名与记忆库中的记录保持一致。`);
+  for (let chapter = 1; chapter <= 12; chapter += 1) {
+    lines.push(`第 ${chapter} 步检查：确认风格选择依据，题材与目标读者是否支持快节奏易读。`);
+    lines.push(`再核对项目记忆里的当前有效要求，避免与已确认事实冲突。`);
+    lines.push(`确认本章的冲突进入点、段落信息密度与结尾悬念是否符合风格目标。`);
     if (chapter % 3 === 0) {
-      lines.push(`本组检查发现第 ${chapter - 1} 章存在一段可优化的过渡，已记入建议清单。`);
+      lines.push(`本组检查后把新的长期事实补充进项目记忆，不把聊天历史机械追加。`);
     }
   }
-  lines.push("以上检查全部按顺序完成，结果汇入最终建议，不把检查过程写进正文。");
+  lines.push("以上检查全部按顺序完成，随后直接落笔短章节并调用字数工具核对实际字数。");
   return lines;
 })();
 const TURN1_REASONING_TEXT = TURN1_REASONING.join("");
 
-const PLAN_1 = {
-  explanation: "先核对已完成章节",
+// 计划：全部完成（本次工作已收尾；只保留唯一当前项加粗的视觉契约交给 reviewer）
+const PLAN_COMPLETED = {
+  explanation: "按快节奏易读风格完成短章节",
   items: [
-    { id: "p1", step: "检查已有章节", status: "completed" },
-    { id: "p2", step: "修正冲突", status: "in_progress" },
-    { id: "p3", step: "验证修改", status: "pending" }
-  ]
-};
-const PLAN_2 = {
-  items: [
-    { id: "p2", step: "修正冲突", status: "completed" },
-    { id: "p3", step: "验证修改", status: "pending" }
+    { id: "p1", step: "读取内置风格技能", status: "completed" },
+    { id: "p2", step: "核对项目记忆", status: "completed" },
+    { id: "p3", step: "撰写短章节并统计字数", status: "completed" }
   ]
 };
 
 const REPLY_A = [
-  "项目进度分析完成。大纲与章节状态均已核对，结论如下：",
+  "短章节已经写好，正文落在 正文/第001章.md。",
   "",
-  "1. 第一、二章已提交，字数达标，可以继续推进第三章草稿。",
-  "2. 写作时保持当前克制语气，避免 AI 腔；检查项已按任务计划整理在上方。",
-  "3. 需要提交时可直接继续对话，我会先走章节质量门禁。"
+  "写作时按快节奏易读风格推进：场景尽快进入冲突，段落以短句和明确动词为主，章节结尾留了新的变化。",
+  "",
+  "同时调用字数工具核对了实际字数，并把风格技能 ID 与本章进度更新进了项目记忆，后续新对话可以按索引恢复。"
 ].join("\n");
 
-// 场景 09 的安全 Markdown 样例：H1–H6、正文、strong、链接、blockquote、inline code、
-// fenced code，外加（评审 P1-2）多状态任务列表与超 760px 列的宽 GFM 表格（触发横向
-// 滚动）。表格/任务列表在正文底部，由 09b/09c 承载。
+// Markdown 渲染样例：H1–H6、正文、strong、链接、blockquote、inline code、
+// fenced code，外加多状态任务列表与超 760px 列的宽 GFM 表格（触发容器内横向
+// 滚动，页面级不溢出）。不出现字数/质量门禁字段。
 const MARKDOWN_SAMPLE = [
   "# 一级标题",
   "",
@@ -850,21 +823,31 @@ const MARKDOWN_SAMPLE = [
   "",
   "## 任务清单",
   "",
-  "- [x] 已完成：核对章节质量门禁并通过",
-  "- [x] 已完成：提交第一章正式稿",
-  "- [ ] 待办：继续第二章草稿",
-  "- [ ] 待办：审阅连续性记忆并更新",
+  "- [x] 已完成：确认风格技能",
+  "- [x] 已完成：核对项目记忆",
+  "- [ ] 待办：续写下一章",
+  "- [ ] 待办：更新权威文件索引",
   "",
-  "## 章节进度表（宽表格：正文列 760px 封顶，超宽时横向滚动）",
+  "## 章节进度表（宽表格：正文列 760px 封顶，超宽时容器内横向滚动）",
   "",
-  "| 章节 | 标题 | 状态 | 实际字数 | 门禁结果 | 连续性记忆 | 备注说明（含校验和） |",
-  "|---|---|---|---|---|---|---|",
-  "| 第 1 章 | 老宅的钟声——开场悬念与人物登场的建立 | 已提交 | 3456 | 通过 | 一致 | checkpoint: ckpt-2026-08-07-9f3a2c1e7b4d5a6f8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7 |",
-  "| 第 2 章 | 雨夜访客——人物关系推进与冲突升级的节奏 | 已提交 | 3890 | 通过 | 一致 | sha256: b5e9c8a7d6f504132e8976f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4 |",
-  "| 第 3 章 | 阁楼的旧信——线索回收与真相铺垫的展开 | 草稿中 | 2103 | 待审 | 待确认 | 结尾待补悬念，字数未达最低线，需补写一段收束 |",
-  "| 第 4 章 | 空屋灯火——转折与收束的节奏控制要点 | 未开始 | 0 | — | — | 等待大纲更新后再动笔，避免设定冲突 |",
-  "| 第 5 章 | 黎明之前——终章前的高潮与伏笔收束计划 | 未开始 | 0 | — | — | 计划为下一阶段预留，暂不启动 |"
+  "| 章节 | 标题 | 状态 | 风格 | 记忆备注 |",
+  "|---|---|---|---|---|",
+  "| 第 1 章 | 雨夜来信——开场悬念与人物登场的建立 | 已提交 | 快节奏易读 | 与项目记忆一致 |",
+  "| 第 2 章 | 城中旧事——人物关系推进与冲突升级的节奏 | 草稿中 | 快节奏易读 | 等待确认后再定稿 |",
+  "| 第 3 章 | 阁楼的旧信——线索回收与真相铺垫的展开 | 草稿中 | 待定 | 尚未开始动笔 |",
+  "| 第 4 章 | 空屋灯火——转折与收束的节奏控制要点 | 未开始 | — | 等待大纲更新后再动笔 |",
+  "| 第 5 章 | 黎明之前——终章前的高潮与伏笔收束计划 | 未开始 | — | 计划为下一阶段预留 |"
 ].join("\n");
+
+// 数据来源说明（MANIFEST 每行记录）
+const DATA_SOURCE = {
+  gatewayUi: "testGatewayFactory 确定性脚本 + 真实 /api/agent/input（composer UI 点击）+ journal SSE 实时渲染",
+  uiClick: "真实 UI 点击 + 真实 /api/agent/input + journal SSE 实时渲染",
+  settings: "真实 UI 点击打开设置 + 真实 /api/skills/catalog",
+  settingsDetail: "真实 UI 点击内置风格行 + 真实 /api/skills/:name 只读详情",
+  drawer: "真实 UI 点击顶部面板按钮（章节分区）",
+  plainFolder: "真实 /api/projects/open 普通文件夹 + 真实 UI 打开流程 + composer 发送第一条消息"
+};
 
 // ---------------------------------------------------------------------------
 // 场景驱动
@@ -890,7 +873,6 @@ async function submitViaComposer(win, text) {
   assert.equal(result.hitTestable, true, `发送按钮中心不可命中（顶层 ${result.hitTag}）`);
 }
 
-// 工作组 DOM 等待辅助（检查最后一个工作组，对应最近一次输入）
 const LAST_GROUP = `[...document.querySelectorAll("details.agent-work-group")].at(-1)`;
 
 async function waitForReasoningRunning(win) {
@@ -913,24 +895,6 @@ async function waitForToolRunning(win, labelText) {
       return Boolean(label && label.textContent.includes(${JSON.stringify(labelText)}) && getComputedStyle(label).animationName !== "none");
     })()`,
     `工具运行态（${labelText} + 动画）`,
-    10000
-  );
-}
-
-async function waitForPlanCount(win, countText) {
-  await waitUntil(
-    win,
-    `document.querySelector('.agent-plan__count')?.textContent === ${JSON.stringify(countText)}`,
-    `计划计数 ${countText}`,
-    10000
-  );
-}
-
-async function waitForPlanStatuses(win, statuses) {
-  await waitUntil(
-    win,
-    `JSON.stringify([...document.querySelectorAll('.agent-plan-item')].map((el) => el.dataset.status)) === ${JSON.stringify(JSON.stringify(statuses))}`,
-    `计划状态 ${statuses.join("/")}`,
     10000
   );
 }
@@ -978,13 +942,12 @@ async function waitForRunTerminal(win, groupOpen, diag = {}, minGroups = 1) {
 async function waitForSkillsList(win) {
   await waitUntil(
     win,
-    `document.querySelector("#skills-list")?.children.length > 0`,
+    `document.querySelector("#skills-list")?.children.length > 0 || document.querySelector(".spd-skill-row--readonly") !== null`,
     "设置页技能列表渲染",
     8000
   );
 }
 
-// 对话滚动到最新（场景 05 的点击会把会话滚到顶部附近，followLatest 不再自动回底）。
 async function scrollConversationToBottom(win) {
   await win.webContents.executeJavaScript(`(() => {
     const conv = document.querySelector('[data-testid="agent-conversation"]');
@@ -994,9 +957,9 @@ async function scrollConversationToBottom(win) {
   await sleep(250);
 }
 
-// 评审 P1-1：用 Web Animations API 把 agent-text-shimmer 暂停并 seek 到指定相位，
-// 使扫光带确定性地位于标签左/中/右。找不到动画（reduced-motion 等）时返回 0，
-// 由调用方回退时间捕获并记录警告。
+// 用 Web Animations API 把 agent-text-shimmer 暂停并 seek 到指定相位，使扫光带
+// 确定性地位于标签左/中/右。找不到动画（reduced-motion 等）时返回 0，由调用方
+// 回退时间捕获并记录警告。
 async function seekShimmerPhase(win, ctx, phaseMs) {
   const paused = await win.webContents.executeJavaScript(`(() => {
     let count = 0;
@@ -1020,9 +983,8 @@ async function seekShimmerPhase(win, ctx, phaseMs) {
   return paused;
 }
 
-// 评审 P1-1 客观检查：对同一场景的三帧 PNG，在 label bbox 内找最暗列（扫光 ink 带
-// 比 muted 文本更暗），断言最暗列 x 严格递增（t000 < t400 < t900），给出扫光从左向右
-// 的机器证据。返回 { ok, positions }。
+// 对同一场景的三帧 PNG，在 label bbox 内找最暗列（扫光 ink 带比 muted 文本更暗），
+// 断言最暗列 x 严格递增（t000 < t400 < t900），给出扫光从左向右的机器证据。
 async function checkSweepDirection(ctx, scenario, frames) {
   const positions = [];
   for (const frame of frames) {
@@ -1072,11 +1034,9 @@ async function waitForSettingsSection(win, section) {
       modal: Boolean(document.querySelector("#settings-modal")),
       navItems: [...document.querySelectorAll(".sp-section-item")].map((el) => ({
         section: el.dataset.section,
-        on: el.classList.contains("on"),
-        aria: el.getAttribute("aria-current")
+        on: el.classList.contains("on")
       })),
-      sideSection: document.querySelector(".sp-side")?.dataset.section ?? null,
-      modalInert: document.getElementById("settings-scrim")?.getAttribute("inert") ?? null
+      sideSection: document.querySelector(".sp-side")?.dataset.section ?? null
     }))()`);
     throw new Error(`设置分区 ${section} 激活超时。settings DOM: ${JSON.stringify(dump)}`);
   }
@@ -1088,9 +1048,9 @@ async function waitForSettingsSection(win, section) {
 // ---------------------------------------------------------------------------
 
 async function main() {
-  const { round } = parseArgs(process.argv.slice(2));
+  const { output } = parseArgs(process.argv.slice(2));
   const mainRepo = mainRepoRootOf(SCRIPT_DIR);
-  const roundDir = roundDirFor(mainRepo, round);
+  const roundDir = resolveOutputDir(mainRepo, output);
   if (fs.existsSync(roundDir)) {
     const entries = fs.readdirSync(roundDir);
     if (entries.length > 0) {
@@ -1103,7 +1063,7 @@ async function main() {
 
   const startedAt = new Date().toISOString();
   const context = {
-    round,
+    output,
     roundDir,
     mainRepo,
     manifest: [],
@@ -1112,7 +1072,7 @@ async function main() {
     auditRecords: {},
     environmentNotes: []
   };
-  console.log(`[capture-visual-acceptance] round-${String(round).padStart(2, "0")}`);
+  console.log(`[capture-visual-acceptance] ${path.basename(roundDir)}`);
   console.log(`  证据目录: ${roundDir}`);
 
   // ---- 测试项目 + 临时技能 home（read_skill 走临时 root，不碰真实用户目录）----
@@ -1128,6 +1088,10 @@ async function main() {
     target_words_per_chapter: 20,
     tool_permissions: { yolo: true }
   });
+  // 普通文件夹场景 fixture：无 project.yaml，仅一个普通 notes.txt
+  const plainFolder = path.join(demoRoot, "普通文件夹");
+  fs.mkdirSync(plainFolder, { recursive: true });
+  fs.writeFileSync(path.join(plainFolder, "notes.txt"), "普通资料：写作参考笔记。\n", "utf8");
 
   // ---- server：testGatewayFactory + 延迟 skills service 注入 ----
   const { createAppShellServer } = await import(pathToFileURL(path.join(SCRIPT_DIR, "..", "src", "core", "app-server.mjs")).href);
@@ -1146,8 +1110,8 @@ async function main() {
   });
   const boundPort = await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server.address().port)));
 
-  // ---- BrowserWindow（offscreen 渲染：本环境可见窗口 capturePage 抛 UnknownVizError，
-  // 实测 offscreen + force-device-scale-factor=1 精确返回视口尺寸）----
+  // ---- BrowserWindow（offscreen 渲染：可见窗口 capturePage 抛 UnknownVizError；
+  // offscreen + force-device-scale-factor=1 精确返回视口尺寸）----
   const win = new BrowserWindow({
     width: VIEWPORT_DEFAULT.width,
     height: VIEWPORT_DEFAULT.height,
@@ -1156,8 +1120,6 @@ async function main() {
     autoHideMenuBar: true,
     webPreferences: {
       offscreen: true,
-      // 关键：offscreen 隐藏窗口默认 backgroundThrottling，缩小视口后合成器不再
-      // 重绘（capturePage 返回全白帧）；关闭节流后任意视口尺寸都能正常产出内容。
       backgroundThrottling: false,
       preload: path.join(SCRIPT_DIR, "..", "src", "desktop", "electron-preload.cjs"),
       contextIsolation: true,
@@ -1172,199 +1134,162 @@ async function main() {
     consoleMessages.push(String(text));
   });
 
-  await win.loadURL(`http://127.0.0.1:${boundPort}`);
-  await waitUntil(win, "Boolean(window.__wwritingMotionReady)", "motion runtime 初始化", 10000);
-  await waitUntil(win, "document.querySelector('#project-title')?.textContent.includes('视觉验收样例小说')", "dashboard 加载项目", 10000);
-  await waitUntil(win, "document.querySelector('[data-testid=\"agent-composer-input\"]') !== null && !document.querySelector('[data-testid=\"agent-composer-input\"]').disabled", "AgentSurface composer 可用", 10000);
-  await waitUntil(win, "Boolean(document.querySelector('[data-testid=\"agent-conversation\"]'))", "对话容器挂载", 8000);
-
-  // OS 级 reduced-motion 归一化（仅在命中时注入等价动效样式；不改产品 CSS/HTML）。
-  const reduceMotion = await read(win, "window.matchMedia('(prefers-reduced-motion: reduce)').matches");
-  if (reduceMotion) {
-    await win.webContents.executeJavaScript(`
-      (() => {
-        const style = document.createElement("style");
-        style.id = "vac-motion-normalization";
-        style.textContent = '@media (prefers-reduced-motion: reduce){ .agent-live-text { color: transparent; background: linear-gradient(90deg, var(--muted) 0 34%, var(--ink) 48%, var(--muted) 62% 100%); background-size: 220% 100%; background-clip: text; -webkit-background-clip: text; animation: agent-text-shimmer 1.45s linear infinite !important; } }';
-        document.head.append(style);
-        return true;
-      })()
-    `);
-    context.environmentNotes.push("OS prefers-reduced-motion 命中：注入 agent.css 等价动效样式（仅测试环境归一化，用于让扫光动画按产品设计运行）");
-    console.log("  [note] OS prefers-reduced-motion=reduce：已注入等效动效样式");
+  async function bootToProject(titleText) {
+    await win.loadURL(`http://127.0.0.1:${boundPort}`);
+    await waitUntil(win, "Boolean(window.__wwritingMotionReady)", "motion runtime 初始化", 10000);
+    await waitUntil(win, "document.querySelector('#project-title')?.textContent.includes('" + titleText + "')", "dashboard 加载项目", 10000);
+    await waitUntil(win, "document.querySelector('[data-testid=\"agent-composer-input\"]') !== null", "AgentSurface composer 挂载", 10000);
+    await waitUntil(win, "Boolean(document.querySelector('[data-testid=\"agent-conversation\"]'))", "对话容器挂载", 8000);
+    // OS 级 reduced-motion 归一化（仅在命中时注入等价动效样式；不改产品 CSS/HTML）。
+    const reduceMotion = await read(win, "window.matchMedia('(prefers-reduced-motion: reduce)').matches");
+    if (reduceMotion) {
+      await win.webContents.executeJavaScript(`
+        (() => {
+          const style = document.createElement("style");
+          style.id = "vac-motion-normalization";
+          style.textContent = '@media (prefers-reduced-motion: reduce){ .agent-live-text { color: transparent; background: linear-gradient(90deg, var(--muted) 0 34%, var(--ink) 48%, var(--muted) 62% 100%); background-size: 220% 100%; background-clip: text; -webkit-background-clip: text; animation: agent-text-shimmer 1.45s linear infinite !important; } }';
+          document.head.append(style);
+          return true;
+        })()
+      `);
+      context.environmentNotes.push("OS prefers-reduced-motion 命中：注入 agent.css 等价动效样式（仅测试环境归一化，用于让扫光动画按产品设计运行）");
+      console.log("  [note] OS prefers-reduced-motion=reduce：已注入等效动效样式");
+    }
   }
+
+  await bootToProject("视觉验收样例小说");
 
   // =========================================================================
   // 场景驱动（全部经真实 UI / API / journal SSE 路径）
   // =========================================================================
 
-  // ---- 输入 A：reasoning → tool → plan → reply ----
+  // ---- 输入 A：reasoning → tool(read_skill 慢窗口) → plan → reply ----
   gateway.controller.setScripts([
     [
       { type: "reasoning", tokens: TURN1_REASONING },
       { type: "hold" }, // 01: reasoning-running 三帧
-      { type: "reasoning", tokens: ["接下来读取技能说明，确认写作约束。"] },
-      { type: "tool", name: "read_skill", arguments: { name: "avoid-ai-voice" } }, // 02: 慢工具
-      { type: "reasoning", tokens: ["正在规划执行计划。"] },
-      { type: "tool", name: "update_plan", arguments: PLAN_1 }, // 计划 1/3（三态）
-      { type: "reasoning", tokens: ["核对计划进度。"] },
-      { type: "hold" }, // 03: 计划 1/3（completed/in_progress/pending）
-      { type: "tool", name: "update_plan", arguments: PLAN_2 }, // 计划 2/3
-      { type: "reasoning", tokens: ["完成规划收尾。"] },
-      { type: "hold" }, // 03b: 计划 2/3
+      { type: "reasoning", tokens: ["读取风格技能说明，确认写作约束。"] },
+      { type: "tool", name: "read_skill", arguments: { name: "fast-readable" } }, // 02: 慢工具
+      { type: "reasoning", tokens: ["更新任务计划，收尾本次工作。"] },
+      { type: "tool", name: "update_plan", arguments: PLAN_COMPLETED },
       { type: "reply", text: REPLY_A }
     ],
     [
       { type: "reasoning", tokens: ["准备 Markdown 渲染样例。"] },
       { type: "reply", text: MARKDOWN_SAMPLE }
+    ],
+    [
+      { type: "reply", text: "你好，我可以在普通文件夹里协助你写作。没有 project.yaml 也能直接开始。" }
     ]
   ]);
 
-  // ---- 01: reasoning-running（3 帧；评审 P1-1：WAAPI pause+seek 固定扫光相位）----
+  // ---- 01: reasoning-running（3 帧；WAAPI pause+seek 固定扫光相位）----
   console.log("[scenario] 01-reasoning-running");
-  await submitViaComposer(win, "请分析项目进度");
+  await submitViaComposer(win, "请按快节奏易读风格写一个短章节");
   await gateway.controller.waitForHold(20000);
   await waitForReasoningRunning(win);
   await seekShimmerPhase(win, context, SHIMMER_PHASES_MS[0]); // 左
   await auditAndCapture(win, context, {
-    file: "01-reasoning-running-1280x800-t000.png",
+    file: "reasoning-running-t000-1280x800.png",
     viewport: [1280, 800],
     scenario: "reasoning-running",
-    auditKey: "reasoning-running",
     sweepPhase: 0,
+    state: "reasoning 运行中（思考中 + 扫光带位于左侧）",
+    dataSource: DATA_SOURCE.gatewayUi,
     expected: "工作组展开；reasoning 运行态：label“思考中”+ 扫光带位于左侧",
-    spec: "Task 15 验收矩阵「流式 reasoning」+ Step 5 场景 01",
+    spec: "Task 13 Step 4 / SPEC §10.1 工作组时间线",
     overlapSelectors: OVERLAP_SELECTORS.chat
   });
   await seekShimmerPhase(win, context, SHIMMER_PHASES_MS[1]); // 中
   await auditAndCapture(win, context, {
-    file: "01-reasoning-running-1280x800-t400.png",
+    file: "reasoning-running-t400-1280x800.png",
     viewport: [1280, 800],
     scenario: "reasoning-running",
     sweepPhase: 1,
+    state: "reasoning 运行中（扫光带位于中部）",
+    dataSource: DATA_SOURCE.gatewayUi,
     expected: "扫光带位于中部；文字不位移，容器不跳动",
-    spec: "Task 15 Step 5 场景 01 / Step 7 验收第 6 条",
+    spec: "Task 13 Step 4 / 动效唯一性",
     overlapSelectors: OVERLAP_SELECTORS.chat
   });
   await seekShimmerPhase(win, context, SHIMMER_PHASES_MS[2]); // 右
   await auditAndCapture(win, context, {
-    file: "01-reasoning-running-1280x800-t900.png",
+    file: "reasoning-running-t900-1280x800.png",
     viewport: [1280, 800],
     scenario: "reasoning-running",
     sweepPhase: 2,
+    state: "reasoning 运行中（扫光带位于右侧）",
+    dataSource: DATA_SOURCE.gatewayUi,
     expected: "扫光带位于右侧；label“思考中”保持原位",
-    spec: "Task 15 Step 5 场景 01 / Step 7 验收第 6 条",
+    spec: "Task 13 Step 4 / 动效唯一性",
     overlapSelectors: OVERLAP_SELECTORS.chat
   });
   await checkSweepDirection(context, "reasoning-running", context.sweepFrames.filter((f) => f.scenario === "reasoning-running"));
   gateway.controller.release();
 
-  // ---- 02: tool-after-reasoning（read_skill 慢窗口 5s；评审 P1-1 同款 seek）----
+  // ---- 02: tool-after-reasoning（read_skill 慢窗口 5s；同款 seek）----
   console.log("[scenario] 02-tool-after-reasoning");
   await waitForToolRunning(win, "正在调用 read_skill");
   await seekShimmerPhase(win, context, SHIMMER_PHASES_MS[0]); // 左
   await auditAndCapture(win, context, {
-    file: "02-tool-after-reasoning-1280x800-t000.png",
+    file: "tool-after-reasoning-t000-1280x800.png",
     viewport: [1280, 800],
     scenario: "tool-after-reasoning",
-    auditKey: "tool-after-reasoning",
     sweepPhase: 0,
+    state: "reasoning 已完成；工具运行中（read_skill + 扫光带位于左侧）",
+    dataSource: DATA_SOURCE.gatewayUi,
     expected: "reasoning 已完成（“已完成思考”，无动画）；工具运行态“正在调用 read_skill”+ 扫光带位于左侧，唯一动效",
-    spec: "Task 15 Step 5 场景 02 / Step 6 动效唯一性",
+    spec: "Task 13 Step 4 / 动效唯一性",
     overlapSelectors: OVERLAP_SELECTORS.chat
   });
   await seekShimmerPhase(win, context, SHIMMER_PHASES_MS[1]); // 中
   await auditAndCapture(win, context, {
-    file: "02-tool-after-reasoning-1280x800-t400.png",
+    file: "tool-after-reasoning-t400-1280x800.png",
     viewport: [1280, 800],
     scenario: "tool-after-reasoning",
     sweepPhase: 1,
+    state: "reasoning 已完成；工具运行中（扫光带位于中部）",
+    dataSource: DATA_SOURCE.gatewayUi,
     expected: "扫光带位于中部；reasoning 完成态不动",
-    spec: "Task 15 Step 7 验收第 6 条",
+    spec: "Task 13 Step 4 / 动效唯一性",
     overlapSelectors: OVERLAP_SELECTORS.chat
   });
   await seekShimmerPhase(win, context, SHIMMER_PHASES_MS[2]); // 右
   await auditAndCapture(win, context, {
-    file: "02-tool-after-reasoning-1280x800-t900.png",
+    file: "tool-after-reasoning-t900-1280x800.png",
     viewport: [1280, 800],
     scenario: "tool-after-reasoning",
     sweepPhase: 2,
+    state: "reasoning 已完成；工具运行中（扫光带位于右侧）",
+    dataSource: DATA_SOURCE.gatewayUi,
     expected: "扫光带位于右侧；reasoning 完成态不动",
-    spec: "Task 15 Step 7 验收第 6 条",
+    spec: "Task 13 Step 4 / 动效唯一性",
     overlapSelectors: OVERLAP_SELECTORS.chat
   });
   await checkSweepDirection(context, "tool-after-reasoning", context.sweepFrames.filter((f) => f.scenario === "tool-after-reasoning"));
 
-  // ---- 03/03b: 计划（三态 1/3 → 2/3）----
-  console.log("[scenario] 03-plan-updated");
-  await gateway.controller.waitForHold(20000); // 03 hold
-  await waitForPlanCount(win, "1/3");
-  await waitForPlanStatuses(win, ["completed", "in_progress", "pending"]);
-  await auditAndCapture(win, context, {
-    file: "03-plan-updated-1280x800.png",
-    viewport: [1280, 800],
-    scenario: "plan-updated",
-    expected: "任务计划 1/3：一个 completed（绿色勾选 icon，regular）+ 一个 in_progress（加粗）+ 一个 pending（常规）",
-    spec: "Task 15 Step 5 场景 03 / Step 7 验收第 9 条",
-    overlapSelectors: OVERLAP_SELECTORS.chat
-  });
-  gateway.controller.release();
-  await gateway.controller.waitForHold(20000); // 03b hold
-  await waitForPlanCount(win, "2/3");
-  await auditAndCapture(win, context, {
-    file: "03b-plan-updated-2of3-1280x800.png",
-    viewport: [1280, 800],
-    scenario: "plan-updated-2of3",
-    expected: "任务计划 2/3：两个 completed + 一个 pending（与测试冻结契约 2/3 一致）",
-    spec: "Task 15 Step 5 场景 03（2/3 计数；三态对比见 03-plan-updated）",
-    overlapSelectors: OVERLAP_SELECTORS.chat
-  });
-  gateway.controller.release();
-
-  // ---- 04: completed-collapsed ----
-  console.log("[scenario] 04-completed-collapsed");
+  // ---- 03: conversation-completed（四个视口，同一完成会话）----
+  console.log("[scenario] 03-conversation-completed");
   await waitForRunTerminal(win, false, { port: boundPort, projectRoot });
-  await auditAndCapture(win, context, {
-    file: "04-completed-collapsed-1280x800.png",
-    viewport: [1280, 800],
-    scenario: "completed",
-    auditKey: "completed",
-    expected: "工作组完成态自动折叠：summary 显示“工作了 N 秒”，无任何扫光残留",
-    spec: "Task 15 Step 5 场景 04 / Step 6 终态 0 动效",
-    overlapSelectors: OVERLAP_SELECTORS.chat
-  });
+  await scrollConversationToBottom(win);
+  for (const vp of VIEWPORTS) {
+    await setViewport(win, vp.width, vp.height);
+    await scrollConversationToBottom(win);
+    await auditAndCapture(win, context, {
+      file: `conversation-completed-${vp.width}x${vp.height}.png`,
+      viewport: [vp.width, vp.height],
+      scenario: "conversation-completed",
+      state: "会话完成态：用户消息 + 自动折叠工作组（工作了 N 秒）+ 最终正文 + composer",
+      dataSource: DATA_SOURCE.gatewayUi,
+      expected: `${vp.width}x${vp.height} 会话完成态：无横向溢出、无遮挡、composer 不遮最后一条消息`,
+      spec: "Task 13 Step 4 / SPEC §10.3 四视口响应式验收",
+      overlapSelectors: OVERLAP_SELECTORS.chat
+    });
+  }
+  await setViewport(win, VIEWPORT_DEFAULT.width, VIEWPORT_DEFAULT.height);
 
-  // ---- 05: reasoning-expanded（点击工作组 summary 展开，真实 UI 点击）----
-  console.log("[scenario] 05-reasoning-expanded");
-  await clickAndRead(win, "details.agent-work-group > summary", {
-    label: "open-completed-group",
-    expect: () => read(win, `${LAST_GROUP}.open === true`)
-  });
-  await waitUntil(win, `Boolean(${LAST_GROUP}.querySelector('.agent-reasoning-detail:not([hidden])'))`, "reasoning 详情展开", 5000);
-  // 把首个（turn-1，长文本）reasoning 详情滚到视口中央，露出限高与滚动区
-  await win.webContents.executeJavaScript(`(() => {
-    const detail = [...document.querySelectorAll('.agent-work-item[data-kind="reasoning"] .agent-reasoning-detail:not([hidden])')]
-      .find((el) => el.isConnected);
-    if (detail) detail.scrollIntoView({ block: "center" });
-    return true;
-  })()`);
-  await sleep(300);
-  await auditAndCapture(win, context, {
-    file: "05-reasoning-expanded-1280x800.png",
-    viewport: [1280, 800],
-    scenario: "reasoning-expanded",
-    expected: "已完成思考详情展开：完整推理文本，max-height 320px 限高与内层滚动区（内容溢出 320px）",
-    spec: "Task 15 Step 5 场景 05 / Step 7 验收第 2 条",
-    overlapSelectors: OVERLAP_SELECTORS.chat,
-    extraChecks: EXTRA_CHECKS.reasoningExpandedScroll
-  });
-  await clickAndRead(win, "details.agent-work-group > summary", {
-    label: "collapse-completed-group",
-    expect: () => read(win, `${LAST_GROUP}.open === false`)
-  });
-
-  // ---- 输入 B：Markdown 渲染样例（09/07 共用）----
-  console.log("[scenario] 09/07-markdown-sample");
+  // ---- 04: markdown-fixture（1280x800 顶部角色 + 390x844 表格行为）----
+  console.log("[scenario] 04-markdown-fixture");
   await submitViaComposer(win, "请展示 Markdown 渲染效果");
   // 输入 B 会新建第二个工作组：必须等新组出现并终态，不能只看 A 的旧组
   await waitForRunTerminal(win, false, { port: boundPort, projectRoot }, 2);
@@ -1383,7 +1308,6 @@ async function main() {
     console.log(`  [diag] gateway calls=${JSON.stringify(gateway.controller.state.callLog)} dom=${JSON.stringify(diag)}`);
   }
   const markdownRoles = await read(win, `(() => {
-    const bubbles = [...document.querySelectorAll(".agent-message--assistant .agent-message-text")];
     const roles = {
       h1: ".agent-markdown h1", h2: ".agent-markdown h2", h3: ".agent-markdown h3",
       h4: ".agent-markdown h4", h5: ".agent-markdown h5", h6: ".agent-markdown h6",
@@ -1396,7 +1320,6 @@ async function main() {
     for (const [key, sel] of Object.entries(roles)) {
       counts[key] = document.querySelectorAll(".agent-message--assistant " + sel).length;
     }
-    counts._bubbles = bubbles.map((el) => ({ text: (el.textContent || "").slice(0, 200), markdown: el.classList.contains("agent-markdown") }));
     return counts;
   })()`);
   assert.ok(markdownRoles.h1 >= 1 && markdownRoles.h2 >= 1 && markdownRoles.h3 >= 1, `H1-H3 缺失: ${JSON.stringify(markdownRoles)}`);
@@ -1407,12 +1330,55 @@ async function main() {
   assert.ok(markdownRoles.table >= 1, `Markdown 表格缺失: ${JSON.stringify(markdownRoles)}`);
   assert.ok(markdownRoles.taskCheckbox >= 2, `任务列表 checkbox 缺失: ${JSON.stringify(markdownRoles)}`);
   assert.equal(gateway.controller.state.callLog.some((call) => call.result === "default"), false, `gateway 出现默认答复（步骤队列错位）: ${JSON.stringify(gateway.controller.state.callLog)}`);
-  delete markdownRoles._bubbles;
   console.log(`  ✓ Markdown 角色齐备（含表格/任务列表）: ${JSON.stringify(markdownRoles)}`);
-  await scrollConversationToBottom(win);
 
-  // ---- 06: 设置页 Agent 技能（1280x800）----
-  console.log("[scenario] 06-settings-agent-skills");
+  const markdownChecks = async (w, options) => {
+    const out = [];
+    out.push(...(await EXTRA_CHECKS.markdownTableScroll(w, options)));
+    out.push(...(await EXTRA_CHECKS.taskListStates(w)));
+    return out;
+  };
+  // 1280x800：Markdown 消息首段角色 + 表格/任务列表可见
+  await win.webContents.executeJavaScript(`(() => {
+    const bubble = [...document.querySelectorAll(".agent-message--assistant .agent-markdown")].at(-1);
+    if (bubble) bubble.scrollIntoView({ block: "start" });
+    return true;
+  })()`);
+  await sleep(300);
+  await auditAndCapture(win, context, {
+    file: "markdown-fixture-1280x800.png",
+    viewport: [1280, 800],
+    scenario: "markdown-fixture",
+    state: "Markdown 渲染完成态（H1-H6/正文/链接/引用/代码/表格/任务列表）",
+    dataSource: DATA_SOURCE.gatewayUi,
+    expected: "1280x800：Markdown 全部角色排版完整，表格在容器内滚动、页面级不溢出",
+    spec: "Task 13 Step 4 / SPEC §10.3 响应式验收",
+    overlapSelectors: OVERLAP_SELECTORS.chat,
+    extraChecks: markdownChecks
+  });
+  // 390x844：同一表格的窄视口行为（容器内横向滚动）
+  await setViewport(win, VIEWPORT_NARROW.width, VIEWPORT_NARROW.height);
+  await win.webContents.executeJavaScript(`(() => {
+    const table = document.querySelector(".agent-message--assistant .agent-markdown table");
+    if (table) table.scrollIntoView({ block: "start" });
+    return true;
+  })()`);
+  await sleep(300);
+  await auditAndCapture(win, context, {
+    file: "markdown-fixture-390x844.png",
+    viewport: [390, 844],
+    scenario: "markdown-fixture",
+    state: "Markdown 渲染完成态（窄视口表格容器内滚动）",
+    dataSource: DATA_SOURCE.gatewayUi,
+    expected: "390x844 窄视口：宽 Markdown 表格容器内横向滚动、任务列表不遮挡/不溢出、页面级无横向溢出",
+    spec: "Task 13 Step 4 / SPEC §10.3 响应式验收",
+    overlapSelectors: OVERLAP_SELECTORS.chat,
+    extraChecks: (w) => markdownChecks(w, { requireOverflow: true })
+  });
+
+  // ---- 05: settings-builtin-styles（1280x800 + 390x844）----
+  console.log("[scenario] 05-settings-builtin-styles");
+  await setViewport(win, VIEWPORT_DEFAULT.width, VIEWPORT_DEFAULT.height);
   await clickAndRead(win, "#open-settings", {
     label: "open-settings",
     expect: () => overlayVisible(win, "settings-scrim")
@@ -1423,148 +1389,127 @@ async function main() {
   });
   await waitForSkillsList(win);
   await auditAndCapture(win, context, {
-    file: "06-settings-agent-skills-1280x800.png",
+    file: "settings-builtin-styles-1280x800.png",
     viewport: [1280, 800],
-    scenario: "settings-agent-skills",
-    expected: "设置页「Agent 技能」分区：全局/项目分段控件 + 技能列表；无启用开关、无卡片套卡片",
-    spec: "Task 15 Step 5 场景 06 / Step 7 验收第 5 条",
+    scenario: "settings-builtin-styles",
+    state: "设置页 Agent 技能分区：内置写作风格只读行（无启用/删除/编辑控件）",
+    dataSource: DATA_SOURCE.settings,
+    expected: "设置页「Agent 技能」分区：内置写作风格分区展示三个只读行，无卡片套卡片、无启用开关",
+    spec: "Task 13 Step 4 / SPEC §6.1 内置风格只读展示",
     overlapSelectors: OVERLAP_SELECTORS.settings
+  });
+  await setViewport(win, VIEWPORT_NARROW.width, VIEWPORT_NARROW.height);
+  await auditAndCapture(win, context, {
+    file: "settings-builtin-styles-390x844.png",
+    viewport: [390, 844],
+    scenario: "settings-builtin-styles",
+    state: "设置页 Agent 技能分区（390x844 窄视口）",
+    dataSource: DATA_SOURCE.settings,
+    expected: "390x844 窄视口设置技能分区：布局完整、无横向溢出、无遮挡",
+    spec: "Task 13 Step 4 / SPEC §10.3 响应式验收",
+    overlapSelectors: OVERLAP_SELECTORS.settings
+  });
+
+  // ---- 06: settings-style-detail（1280x800，点击内置风格行展开只读详情）----
+  console.log("[scenario] 06-settings-style-detail");
+  await setViewport(win, VIEWPORT_DEFAULT.width, VIEWPORT_DEFAULT.height);
+  await clickAndRead(win, '.spd-skill-row--readonly', {
+    label: "open-builtin-style-detail",
+    settleMs: 200
+  });
+  // 注入的 skills service 对 read 有 5s 延迟（read_skill 慢工具窗口共用同一 service）：
+  // 详情正文要等真实 read 完成后才渲染，显式等待而不是猜测时序
+  await waitUntil(win, "Boolean(document.getElementById('skills-detail-back')) && (document.querySelector('.spd-skill-detail-body')?.textContent || '').length > 0", "内置风格详情正文渲染", 12000);
+  await auditAndCapture(win, context, {
+    file: "settings-style-detail-1280x800.png",
+    viewport: [1280, 800],
+    scenario: "settings-style-detail",
+    state: "内置风格只读详情（完整正文，可滚动，无编辑/删除/启用控件）",
+    dataSource: DATA_SOURCE.settingsDetail,
+    expected: "内置写作风格详情：完整 SKILL.md 正文经 agent-markdown 渲染，无启用/删除/编辑控件",
+    spec: "Task 13 Step 4 / SPEC §6.1 可查看但不可编辑",
+    overlapSelectors: OVERLAP_SELECTORS.settings,
+    extraChecks: EXTRA_CHECKS.builtinStyleDetail
+  });
+  await clickAndRead(win, "#skills-detail-back", {
+    label: "skills-detail-back",
+    expect: () => read(win, "document.querySelector('.spd-skill-row--readonly') !== null")
   });
   await clickAndRead(win, "#settings-x", {
     label: "settings-close",
     expect: async () => !(await overlayVisible(win, "settings-scrim"))
   });
 
-  // ---- 07: 窄屏 390x844（聊天视图）----
-  console.log("[scenario] 07-chat-narrow");
-  await setViewport(win, VIEWPORT_NARROW.width, VIEWPORT_NARROW.height);
-  await auditAndCapture(win, context, {
-    file: "07-chat-narrow-390x844.png",
-    viewport: [390, 844],
-    scenario: "chat-narrow",
-    expected: "390x844 窄屏聊天：对话/工作组/正文不遮挡、不横向溢出、控件不碰撞；顶栏「面板」单行",
-    spec: "Task 15 Step 5 场景 07 / Step 7 验收第 4 条",
-    overlapSelectors: OVERLAP_SELECTORS.chat,
-    extraChecks: EXTRA_CHECKS.panelButtonSingleLine
+  // ---- 07: drawer（1280x800，顶部面板按钮打开章节分区）----
+  console.log("[scenario] 07-drawer");
+  await clickAndRead(win, "#open-drawer", {
+    label: "open-drawer",
+    expect: () => read(win, "document.getElementById('drawer').classList.contains('show') && document.querySelector('.dtab[data-dtab=\"chapters\"]').classList.contains('on')")
   });
-
-  // ---- 08: 中等屏 768x900（设置页技能分区）----
-  // 768 ≤ 880：左侧 rail（含 #open-settings）被窄屏媒体查询隐藏，应用自身的
-  // 窄屏设置入口是 composer 斜杠命令 /settings（真实 UI 路径）。
-  console.log("[scenario] 08-settings-medium");
-  await setViewport(win, VIEWPORT_MEDIUM.width, VIEWPORT_MEDIUM.height);
-  await submitViaComposer(win, "/settings");
-  await waitUntil(win, "document.getElementById('settings-scrim')?.classList.contains('show')", "设置弹窗经 /settings 打开", 8000);
-  await clickAndRead(win, '.sp-section-item[data-section="skills"]', {
-    label: "settings-skills-section-medium",
-    expect: () => waitForSettingsSection(win, "skills")
-  });
-  await waitForSkillsList(win);
-  // P1-3：技能列表滚到底，让最后一行完整可见并展示底部安全间距（评审修复后的几何）
-  await win.webContents.executeJavaScript(`(() => {
-    const scroll = document.getElementById("settings-detail") || document.querySelector(".sp-detail-scroll");
-    if (scroll) scroll.scrollTop = scroll.scrollHeight;
-    return true;
-  })()`);
-  await sleep(400);
-  await auditAndCapture(win, context, {
-    file: "08-settings-medium-768x900.png",
-    viewport: [768, 900],
-    scenario: "settings-medium",
-    expected: "768x900 设置页「Agent 技能」分区：布局完整、最后一行不遮挡/不溢出、与固定操作栏留有安全间距",
-    spec: "Task 15 Step 5 场景 08 / Step 7 验收第 4 条",
-    overlapSelectors: OVERLAP_SELECTORS.settings,
-    extraChecks: EXTRA_CHECKS.settingsFooterClearance
-  });
-  await clickAndRead(win, "#settings-x", {
-    label: "settings-close-medium",
-    expect: async () => !(await overlayVisible(win, "settings-scrim"))
-  });
-
-  // ---- 09: 宽屏 1440x900（Markdown 全部角色；评审 P1-2 增补表格/任务列表）----
-  // 正文样例变长后一屏放不下全部角色：09 拍 H1-H6 等首段角色，09b 拍表格+任务列表
-  //（1440x900），09c 拍同一表格的窄视口（390x844）行为。全部写入 MANIFEST。
-  console.log("[scenario] 09-chat-wide");
-  await setViewport(win, VIEWPORT_WIDE.width, VIEWPORT_WIDE.height);
-  // 滚动到 Markdown 消息顶部（H1 开头），09 覆盖 H1-H6 等首段角色
-  await win.webContents.executeJavaScript(`(() => {
-    const h1 = document.querySelector(".agent-message--assistant .agent-markdown h1");
-    if (h1) h1.scrollIntoView({ block: "start" });
-    return true;
-  })()`);
   await sleep(300);
   await auditAndCapture(win, context, {
-    file: "09-chat-wide-1440x900.png",
-    viewport: [1440, 900],
-    scenario: "chat-wide",
-    expected: "1440x900 宽屏：H1-H6、正文、strong、链接、blockquote、inline code、fenced code 可见且排版完整",
-    spec: "Task 15 Step 5 场景 09 / Step 7 验收第 3、8 条",
-    overlapSelectors: OVERLAP_SELECTORS.chat
+    file: "drawer-1280x800.png",
+    viewport: [1280, 800],
+    scenario: "drawer",
+    state: "顶部面板按钮打开的 drawer（章节分区 + 导出工具栏）",
+    dataSource: DATA_SOURCE.drawer,
+    expected: "drawer 章节分区：章节目录、导出成书工具条；顶部入口可点击、分区导航正常",
+    spec: "Task 13 Step 4 / SPEC §10.2 取消右侧竖轨后入口收敛到顶部按钮",
+    overlapSelectors: OVERLAP_SELECTORS.drawer
+  });
+  await clickAndRead(win, "#drawer-close", {
+    label: "drawer-close",
+    expect: async () => !(await read(win, "document.getElementById('drawer').classList.contains('show')"))
   });
 
-  // 09 首段角色可见性校验（H1-H6 等必须在视口内；表格/任务列表由 09b/09c 覆盖）
-  const visibleRoles = await read(win, `(() => {
-    const bubble = [...document.querySelectorAll(".agent-message--assistant .agent-markdown")].at(-1);
-    if (!bubble) return { missing: ["bubble"] };
-    const roles = {
-      h1: "h1", h2: "h2", h3: "h3", h4: "h4", h5: "h5", h6: "h6",
-      body: "p", strong: "strong", links: "a[data-external-link]",
-      blockquote: "blockquote", inlineCode: "code", fence: "pre.md-fence"
-    };
-    const missing = [];
-    for (const [key, sel] of Object.entries(roles)) {
-      const el = bubble.querySelector(sel);
-      if (!el) { missing.push(key); continue; }
-      const r = el.getBoundingClientRect();
-      if (r.bottom > window.innerHeight || r.top < 0 || r.right > window.innerWidth + 1 || r.left < -1) {
-        missing.push(key + "(off-viewport)");
-      }
-    }
-    return { missing };
+  // ---- 08: plain-folder-first-message（1280x800，普通文件夹第一条消息）----
+  console.log("[scenario] 08-plain-folder-first-message");
+  // 注册普通文件夹（应用私有 stateRoot 记录 workspace id；不创建 project.yaml）
+  const registered = await fetch(`http://127.0.0.1:${boundPort}/api/projects/open`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ projectRoot: plainFolder })
+  });
+  assert.equal(registered.status, 200, "普通文件夹必须可打开");
+  // 重载页面：普通文件夹出现在项目列表，经真实 UI 流程打开
+  await bootToProject("开始创作");
+  await waitUntil(win, "document.querySelector('#project-list')?.children.length > 0", "项目列表渲染普通文件夹", 10000);
+  const rowOpened = await win.webContents.executeJavaScript(`(() => {
+    const row = [...document.querySelectorAll('.proj-row')].find((el) => el.textContent.includes('普通文件夹'));
+    if (!row) return { ok: false, reason: "row missing" };
+    const btn = row.querySelector('button');
+    const rect = btn.getBoundingClientRect();
+    const center = { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+    const hit = document.elementFromPoint(center.x, center.y);
+    const hitTestable = Boolean(hit && (hit === btn || btn.contains(hit)));
+    btn.click();
+    return { ok: true, hitTestable };
   })()`);
-  assert.deepEqual(visibleRoles.missing, [], `09 首屏 Markdown 角色缺失: ${JSON.stringify(visibleRoles.missing)}`);
-
-  // 09b：滚动到表格，拍表格 + 任务列表（1440x900），带两项客观检查
-  await win.webContents.executeJavaScript(`(() => {
-    const table = document.querySelector(".agent-message--assistant .agent-markdown table");
-    if (table) table.scrollIntoView({ block: "start" });
-    return true;
-  })()`);
-  await sleep(300);
-  const markdownChecks = async (w, options) => {
-    const out = [];
-    out.push(...(await EXTRA_CHECKS.markdownTableScroll(w, options)));
-    out.push(...(await EXTRA_CHECKS.taskListStates(w)));
-    return out;
-  };
+  assert.equal(rowOpened.ok, true, `普通文件夹行缺失: ${rowOpened.reason}`);
+  assert.equal(rowOpened.hitTestable, true, "普通文件夹行中心必须可命中");
+  await waitUntil(win, "document.querySelector('[data-testid=\"agent-composer-input\"]') !== null && !document.querySelector('[data-testid=\"agent-composer-input\"]').disabled", "普通文件夹 composer 可用", 10000);
+  await setViewport(win, VIEWPORT_DEFAULT.width, VIEWPORT_DEFAULT.height);
+  await submitViaComposer(win, "你好");
+  await waitUntil(win, "[...document.querySelectorAll('[data-testid=\"agent-user-message\"]')].some((el) => el.textContent.includes('你好'))", "普通文件夹第一条用户消息渲染", 10000);
+  await waitForRunTerminal(win, false, { port: boundPort, projectRoot: plainFolder });
+  // 客观检查：无错误卡、无读取失败、第一条消息已交换
+  await scrollConversationToBottom(win);
   await auditAndCapture(win, context, {
-    file: "09b-chat-wide-markdown-1440x900.png",
-    viewport: [1440, 900],
-    scenario: "chat-wide-table",
-    expected: "1440x900：Markdown 任务列表（[x]/[ ]）与 760px 宽表格（窄视口由独立容器横向滚动）",
-    spec: "Task 15 Step 5 场景 09（追加带序号 PNG）/ 验收矩阵「Markdown」",
+    file: "plain-folder-first-message-1280x800.png",
+    viewport: [1280, 800],
+    scenario: "plain-folder-first-message",
+    state: "普通文件夹（无 project.yaml）打开并完成第一条消息",
+    dataSource: DATA_SOURCE.plainFolder,
+    expected: "普通文件夹打开后可直接聊天：第一条“你好”已交换、无读取失败、无错误卡、composer 可用",
+    spec: "Task 13 Step 4 / SPEC §2.1 任意文件夹即可聊天 + §12 验收",
     overlapSelectors: OVERLAP_SELECTORS.chat,
-    extraChecks: markdownChecks
+    extraChecks: EXTRA_CHECKS.plainFolderFirstMessage
   });
-
-  // 09c：窄视口 390x844 拍同一表格（验证窄屏表格横向滚动/760px 约束）
-  console.log("[scenario] 09c-chat-table-narrow");
-  await setViewport(win, VIEWPORT_NARROW.width, VIEWPORT_NARROW.height);
-  await win.webContents.executeJavaScript(`(() => {
-    const table = document.querySelector(".agent-message--assistant .agent-markdown table");
-    if (table) table.scrollIntoView({ block: "start" });
-    return true;
-  })()`);
-  await sleep(300);
-  await auditAndCapture(win, context, {
-    file: "09c-chat-table-narrow-390x844.png",
-    viewport: [390, 844],
-    scenario: "chat-table-narrow",
-    expected: "390x844 窄视口：宽 Markdown 表格横向滚动、任务列表不遮挡/不溢出",
-    spec: "Task 15 Step 5 场景 09（窄视口补拍）/ Step 7 验收第 4 条",
-    overlapSelectors: OVERLAP_SELECTORS.chat,
-    extraChecks: (w) => markdownChecks(w, { requireOverflow: true })
-  });
+  // 磁盘事实：普通文件夹根无 project.yaml / .wwriting/agent
+  assert.equal(fs.existsSync(path.join(plainFolder, "project.yaml")), false, "普通文件夹不得创建 project.yaml");
+  assert.equal(fs.existsSync(path.join(plainFolder, ".wwriting", "agent")), false, "普通文件夹不得创建 .wwriting/agent");
+  const journalInStateRoot = fs.existsSync(path.join(demoRoot, ".state", "workspaces"));
+  assert.equal(journalInStateRoot, true, "应用私有历史必须写入 stateRoot/workspaces");
 
   // ---- 页面 console 残留检查（模块加载错误会留下 MIME/解析错误）----
   for (const message of consoleMessages) {
@@ -1576,58 +1521,86 @@ async function main() {
   // 证据文件
   // =========================================================================
 
-  // live-indicator-audit.json（Step 6：三个冻结记录）
+  // live-indicator-audit.json：每张图开放 activity ID + live class 数量
   const auditJsonPath = path.join(roundDir, "live-indicator-audit.json");
-  const auditRecords = [
-    context.auditRecords["reasoning-running"],
-    context.auditRecords["tool-after-reasoning"],
-    context.auditRecords["completed"]
-  ];
-  for (const record of auditRecords) {
-    assert.ok(record, "live-indicator-audit 缺少冻结记录");
-  }
-  fs.writeFileSync(auditJsonPath, JSON.stringify(auditRecords, null, 2) + "\n", "utf8");
+  const auditRecords = Object.values(context.auditRecords).sort((a, b) => a.file.localeCompare(b.file));
+  assert.ok(auditRecords.length >= 17, `live-indicator-audit 应覆盖全部 ${context.manifest.length} 张图，实际 ${auditRecords.length}`);
+  fs.writeFileSync(
+    auditJsonPath,
+    JSON.stringify(
+      {
+        parallel_runtime_supported: false,
+        notes: "每条记录对应 MANIFEST 中的一张 PNG；openActivityIds 为捕获时开放的 activity id（运行中工作项），visibleAnimatedCount 为 live class 动效文字数量。sequential 场景 ≤1、terminal 场景 =0，违反即采集失败。图片与 JSON 冲突时视觉验收判 FAIL。",
+        records: auditRecords
+      },
+      null,
+      2
+    ) + "\n",
+    "utf8"
+  );
 
   // MANIFEST.md
   const manifestPath = path.join(roundDir, "MANIFEST.md");
-  fs.writeFileSync(manifestPath, renderManifest(context, { startedAt, projectRoot, auditRecords }), "utf8");
+  fs.writeFileSync(manifestPath, renderManifest(context, { startedAt, projectRoot, plainFolder }), "utf8");
 
-  // multimodal-review-prompt.md（Step 7：verbatim + 本轮绝对目录）
+  // multimodal-review-prompt.md（独立多模态验收模型任务书）
   const promptPath = path.join(roundDir, "multimodal-review-prompt.md");
   fs.writeFileSync(promptPath, renderReviewPrompt(roundDir), "utf8");
 
-  // ---- 校验证据目录完整 ----
+  // ---- 校验证据目录完整（MANIFEST 声明的 PNG 全部存在、非空）----
   const expectedFiles = [
     "MANIFEST.md",
     "live-indicator-audit.json",
     "multimodal-review-prompt.md",
-    "01-reasoning-running-1280x800-t000.png",
-    "01-reasoning-running-1280x800-t400.png",
-    "01-reasoning-running-1280x800-t900.png",
-    "02-tool-after-reasoning-1280x800-t000.png",
-    "02-tool-after-reasoning-1280x800-t400.png",
-    "02-tool-after-reasoning-1280x800-t900.png",
-    "03-plan-updated-1280x800.png",
-    "04-completed-collapsed-1280x800.png",
-    "05-reasoning-expanded-1280x800.png",
-    "06-settings-agent-skills-1280x800.png",
-    "07-chat-narrow-390x844.png",
-    "08-settings-medium-768x900.png",
-    "09-chat-wide-1440x900.png",
-    "09b-chat-wide-markdown-1440x900.png",
-    "09c-chat-table-narrow-390x844.png"
+    "conversation-completed-390x844.png",
+    "conversation-completed-768x900.png",
+    "conversation-completed-1280x800.png",
+    "conversation-completed-1440x900.png",
+    "reasoning-running-t000-1280x800.png",
+    "reasoning-running-t400-1280x800.png",
+    "reasoning-running-t900-1280x800.png",
+    "tool-after-reasoning-t000-1280x800.png",
+    "tool-after-reasoning-t400-1280x800.png",
+    "tool-after-reasoning-t900-1280x800.png",
+    "markdown-fixture-390x844.png",
+    "markdown-fixture-1280x800.png",
+    "settings-builtin-styles-390x844.png",
+    "settings-builtin-styles-1280x800.png",
+    "settings-style-detail-1280x800.png",
+    "drawer-1280x800.png",
+    "plain-folder-first-message-1280x800.png"
   ];
+  const pngNames = expectedFiles.filter((name) => name.endsWith(".png"));
+  const declaredInManifest = new Set(context.manifest.map((entry) => entry.file));
   for (const file of expectedFiles) {
     const target = path.join(roundDir, file);
     assert.ok(fs.existsSync(target) && fs.statSync(target).size > 0, `缺少证据文件: ${file}`);
   }
+  for (const name of pngNames) {
+    assert.ok(declaredInManifest.has(name), `PNG 未声明进 MANIFEST: ${name}`);
+  }
+  // MANIFEST 声明的 PNG 必须全部落盘（多余/缺失都会导致验收失败）
+  for (const entry of context.manifest) {
+    assert.ok(fs.existsSync(path.join(roundDir, entry.file)), `MANIFEST 声明的 PNG 未落盘: ${entry.file}`);
+  }
+  // 全部 PNG 可解码且尺寸与 MANIFEST 一致
+  for (const name of pngNames) {
+    const image = nativeImage.createFromPath(path.join(roundDir, name));
+    const entry = context.manifest.find((item) => item.file === name);
+    const size = image.getSize();
+    const [w, h] = entry.viewport.split("x").map(Number);
+    assert.ok(!image.isEmpty(), `PNG 不可解码: ${name}`);
+    assert.equal(size.width, w, `${name} 尺寸宽不符: ${size.width} != ${w}`);
+    assert.equal(size.height, h, `${name} 尺寸高不符: ${size.height} != ${h}`);
+  }
+
   const allFiles = fs.readdirSync(roundDir).sort();
   console.log(`  生成文件（${allFiles.length}）: ${allFiles.join(", ")}`);
 
   return {
     output: [
       "",
-      "功能验证完成，等待独立多模态视觉验收。",
+      "视觉证据采集完成。",
       `Evidence directory: ${roundDir}`,
       `Multimodal review prompt: ${promptPath}`,
       `Generated: ${allFiles.length} files (${context.manifest.length} PNGs, manifest, audit, prompt)`,
@@ -1641,7 +1614,7 @@ async function main() {
 // 证据文件渲染
 // ---------------------------------------------------------------------------
 
-function renderManifest(context, { startedAt, projectRoot, auditRecords }) {
+function renderManifest(context, { startedAt, projectRoot, plainFolder }) {
   const checkRows = context.checkRows
     .map((row) => {
       const extra = Array.isArray(row.extra) && row.extra.length > 0
@@ -1651,10 +1624,13 @@ function renderManifest(context, { startedAt, projectRoot, auditRecords }) {
     })
     .join("\n");
   const pngRows = context.manifest
-    .map((entry, index) => `| ${index + 1} | \`${entry.file}\` | \`${entry.absolutePath}\` | ${entry.viewport} | ${entry.scenario} | ${entry.expected} | ${entry.spec} | \`${entry.sha256}\` |`)
-    .join("\n");
-  const auditRows = auditRecords
-    .map((record) => `| ${record.scenario} | \`${JSON.stringify(record.openActivityIds)}\` | \`${JSON.stringify(record.visibleAnimatedLabels)}\` | ${record.visibleAnimatedCount} | ${record.groupHeaderAnimated} |`)
+    .map((entry, index) => {
+      const audit = context.auditRecords[entry.file];
+      const auditRef = audit
+        ? `\`${JSON.stringify(audit.openActivityIds)}\` / ${audit.visibleAnimatedCount} 个动效`
+        : "—";
+      return `| ${index + 1} | \`${entry.file}\` | ${entry.viewport} | ${entry.state} | ${entry.dataSource} | ${entry.parallel_runtime_supported} | ${auditRef} | ${entry.expected} | \`${entry.sha256}\` |`;
+    })
     .join("\n");
   const notes = context.environmentNotes.length > 0
     ? context.environmentNotes.map((note) => `- ${note}`).join("\n")
@@ -1662,12 +1638,12 @@ function renderManifest(context, { startedAt, projectRoot, auditRecords }) {
   return [
     "# 视觉验收证据清单",
     "",
-    `- 轮次：round-${String(context.round).padStart(2, "0")}`,
     `- 采集时间：${startedAt}`,
-    `- 采集脚本：scripts/capture-visual-acceptance.cjs`,
-    `- 测试项目：${projectRoot}`,
-    `- 覆盖视口：1280x800、768x900、390x844、1440x900`,
-    `- parallel_runtime_supported: false（当前 Runtime 串行执行工具；未制造并行截图；只有 MANIFEST 为 true 且 audit 同时列出两个开放 activity_id 时，两工具文字同时动才允许）`,
+    `- 采集脚本：scripts/capture-visual-acceptance.cjs（Task 13 改写）`,
+    `- 真实项目：${projectRoot}`,
+    `- 普通文件夹场景：${plainFolder}（无 project.yaml；应用私有历史在 stateRoot）`,
+    `- 覆盖视口：390x844、768x900、1280x800、1440x900（conversation-completed 四视口全覆盖）`,
+    `- parallel_runtime_supported: false（当前 Runtime 串行执行工具；未制造并行截图。只有 MANIFEST 为 true 且 audit 同时列出两个开放 activity_id 时，两工具文字同时动才允许）`,
     "",
     "## 非主观检查结果",
     "",
@@ -1675,7 +1651,7 @@ function renderManifest(context, { startedAt, projectRoot, auditRecords }) {
     "|---|---|",
     "| 图片宽高与视口一致 | PASS（全部 PNG） |",
     "| 像素非全白/全透明 | PASS |",
-    "| 页面无横向 overflow | PASS |",
+    "| 页面无横向 overflow（四个视口） | PASS |",
     "| 关键 selector bounding box 不相交 | PASS |",
     "",
     "逐文件检查明细：",
@@ -1685,35 +1661,36 @@ function renderManifest(context, { startedAt, projectRoot, auditRecords }) {
     checkRows,
     "",
     "场景客观检查说明：",
-    "- `reasoning-detail-scroll`（05）：展开的 reasoning 详情 `scrollHeight > clientHeight`，证明 320px 限高内层滚动区真实存在。",
-    "- `panel-button-single-line`（07）：390 窄屏顶栏「面板」按钮单行显示（`scrollHeight ≤ clientHeight` 且 `scrollWidth ≤ clientWidth`），不拆行。",
-    "- `settings-footer-clearance`（08）：768x900 设置技能列表滚到底后，最后一行与固定操作栏 `.spd-foot` bbox 不相交，且完整位于滚动视口内。",
-    "- `sweep-direction`（01/02，评审 P1-1）：三帧 PNG 中 label bbox 内的最暗列（扫光 ink 带）x 坐标严格递增（t000 < t400 < t900），机器证明扫光从左向右；相位由 Web Animations API pause+seek 固定（680/920/1160ms，1450ms 周期）。",
-    "- `markdown-table-scroll`（09b/09c，评审 P1-2）：Markdown 表格由独立容器承载（`overflow-x: auto`），表格保持 760px 宽；390px 视口必须出现真实横向溢出，列不会压缩为逐字换行。",
-    "- `task-list-states`（09b/09c，评审 P1-2）：任务列表同时渲染 checked 与未勾选 checkbox（[x]/[ ] 两态）。",
-    "",
-    "评审补拍说明：09b-chat-wide-markdown-1440x900.png 与 09c-chat-table-narrow-390x844.png 为同场景追加带序号 PNG（计划 §Step 5 允许；不得省略需验收的文字角色，全部写入 MANIFEST）。",
+    "- `sweep-direction`（reasoning-running / tool-after-reasoning）：三帧 PNG 中 label bbox 内的最暗列（扫光 ink 带）x 坐标严格递增（t000 < t400 < t900），机器证明扫光从左向右；相位由 Web Animations API pause+seek 固定（680/920/1160ms，1450ms 周期）。",
+    "- `markdown-table-scroll`（markdown-fixture）：Markdown 表格由独立容器承载（`overflow-x: auto`），表格保持 760px 宽；390px 视口必须出现真实容器内溢出（页面级不溢出）。",
+    "- `task-list-states`（markdown-fixture）：任务列表同时渲染 checked 与未勾选 checkbox（[x]/[ ] 两态）。",
+    "- `builtin-style-detail`（settings-style-detail）：只读详情正文非空，且无启用/删除/编辑控件。",
+    "- `plain-folder-first-message`（plain-folder-first-message）：标题非“读取失败”、无错误卡、用户/助手消息各 ≥1、Run 已完成、composer 可用；磁盘上文件夹根无 `project.yaml`、无 `.wwriting/agent`。",
     "",
     "## 动效唯一性审计（live-indicator-audit.json）",
     "",
-    "| 场景 | openActivityIds | visibleAnimatedLabels | 动效数 | groupHeaderAnimated |",
-    "|---|---|---|---|---|",
-    auditRows,
+    "| 文件 | 场景 | 状态 | openActivityIds | 动效文字 | 动效数 | groupHeaderAnimated |",
+    "|---|---|---|---|---|---|---|",
+    ...context.manifest.map((entry) => {
+      const audit = context.auditRecords[entry.file];
+      return `| \`${entry.file}\` | ${entry.scenario} | ${entry.state} | \`${JSON.stringify(audit?.openActivityIds ?? [])}\` | \`${JSON.stringify(audit?.visibleAnimatedLabels ?? [])}\` | ${audit?.visibleAnimatedCount ?? 0} | ${audit?.groupHeaderAnimated ?? false} |`;
+    }),
     "",
-    "所有 sequential 场景捕获时动效文字均 ≤1，terminal 场景均 =0，展开工作组无 groupHeaderAnimated=true；任一违反采集脚本已退出 1。",
+    "所有 sequential 场景（reasoning-running / tool-after-reasoning）捕获时动效文字均 ≤1，terminal 场景均 =0，展开工作组无 groupHeaderAnimated=true；任一违反采集脚本已退出 1。图片与 audit JSON 冲突时视觉验收判 FAIL。",
     "",
     "## PNG 清单",
     "",
-    "| # | 文件 | 绝对路径 | viewport | 场景 | 期望文案 | 对应规格 | SHA-256 |",
-    "|---|---|---|---|---|---|---|---|",
+    "| # | 文件 | viewport | 状态 | 数据来源 | parallel_runtime_supported | 开放 activity / 动效数 | 期望文案 | SHA-256 |",
+    "|---|---|---|---|---|---|---|---|---|---|",
     pngRows,
     "",
     "## 场景内容契约说明",
     "",
-    "- 03-plan-updated-1280x800.png 显示三个计划状态（completed / in_progress / pending）以便比较字重与颜色；计划计数按冻结实现为 completed/total，三态时显示 `任务计划 1/3`。",
-    "- 03b-plan-updated-2of3-1280x800.png 为补充图（同场景追加带序号 PNG）：第二次 update_plan 后计划为 completed/completed/pending，计数 `任务计划 2/3`，与 tests/app-shell/agent-surface.test.mjs 的 2/3 冻结语义一致。",
-    "- 02-tool-after-reasoning 的慢工具为真实 read_skill（经注入的临时 root skills service，读真实的 SKILL.md，仅测试注入 5s 延迟）；read_file 无法被确定性延长，故运行态标签为“正在调用 read_skill”（Step 6 审计如实记录实际标签，不伪造“正在读取文件”）。",
-    "- 09-chat-wide-1440x900.png 覆盖 H1–H6、正文、strong、链接、blockquote、inline code、fenced code；若首屏放不下会自动追加 09b。",
+    "- reasoning-running / tool-after-reasoning 的慢工具为真实 read_skill（经注入的临时 root skills service，读真实的 SKILL.md，仅测试注入 5s 延迟）；运行态标签如实记录，不伪造“正在读取文件”。",
+    "- conversation-completed 在四个视口分别采集同一完成会话：用户消息、自动折叠工作组（工作了 N 秒）、最终正文与 composer，验证无横向溢出、无遮挡。",
+    "- settings-builtin-styles / settings-style-detail 覆盖设置页「Agent 技能」分区：三个内置写作风格只读行（均衡/快节奏易读/心理文学），点击行展开只读详情（完整 SKILL.md 正文，无启用开关、无编辑/删除控件、无卡片套卡片）。",
+    "- drawer 覆盖顶部「面板」按钮打开的章节分区（含导出成书工具条）；右侧常驻竖轨已删除，入口收敛到顶部按钮。",
+    "- plain-folder-first-message 覆盖普通文件夹（仅 notes.txt，无 project.yaml）打开后第一条“你好”：真实 /api/projects/open + 真实 UI 打开流程 + composer 发送。",
     "",
     "## 环境说明",
     "",
@@ -1733,17 +1710,18 @@ function renderReviewPrompt(roundDir) {
     "请先读取该目录中的 MANIFEST.md 和 live-indicator-audit.json，再逐张检查目录内全部 PNG。若缺图、图片打不开、尺寸与 MANIFEST 不符或关键状态未覆盖，结论必须是 BLOCKED，不能猜测。",
     "",
     "验收内容：",
-    "1. 工作组、思考、工具、任务计划是否为清楚的平级时间线；最终 Assistant 正文是否在工作组下方。",
-    "2. reasoning 运行态是否稳定为最多两行；完成态“已完成思考”是否可辨识；展开详情是否有合理限高和滚动区域。",
-    "3. Markdown 表格、任务列表、代码块、引用、链接是否排版完整，没有撑破 760px 正文列。",
-    "4. 1280x800、1440x900、768x900、390x844 下是否有遮挡、截字、横向溢出、控件碰撞或不合理留白。",
-    "5. 设置页 Agent 技能分区是否延续当前白色/中性、紧凑、克制的桌面产品语言；是否不存在项目启用开关和卡片套卡片。",
+    "1. 工作组、思考、工具是否为清楚的平级时间线；最终 Assistant 正文是否在工作组下方。",
+    "2. reasoning 运行态是否稳定为最多两行；完成态“已完成思考”是否可辨识。",
+    "3. Markdown 表格、任务列表、代码块、引用、链接是否排版完整，没有撑破 760px 正文列；窄视口表格在容器内滚动，页面不横向溢出。",
+    "4. 390x844、768x900、1280x800、1440x900 下是否有遮挡、截字、横向溢出、控件碰撞或不合理留白（conversation-completed 四视口必须逐张检查）。",
+    "5. 设置页 Agent 技能分区：内置写作风格（均衡/快节奏易读/心理文学）是否无框只读展示，不存在项目启用开关、删除/编辑按钮和卡片套卡片；详情正文是否完整可读。",
     "6. 对比 reasoning-running 三帧和 tool-after-reasoning 三帧：文字扫光是否从左向右、文字不位移、容器不跳动。",
-    "7. 着重检查动效唯一性：顺序场景中任何一帧不得同时看到“思考中”和工具文字都在扫光；展开工作组时外层“工作中”不得同时扫光；completed 截图不得残留任何扫光。只有 MANIFEST 明确 parallel_runtime_supported: true 且 audit 同时列出两个开放 activity_id 时，两个工具文字同时动才允许。",
+    "7. 着重检查动效唯一性：顺序场景中任何一帧不得同时看到“思考中”和工具文字都在扫光；展开工作组时外层“工作中”不得同时扫光；terminal 场景（conversation-completed / markdown-fixture / settings / drawer / plain-folder）不得残留任何扫光。只有 MANIFEST 明确 parallel_runtime_supported: true 且 audit 同时列出两个开放 activity_id 时，两个工具文字同时动才允许。",
     "8. 逐项检查文字层级：Assistant 正文是否为 regular；H1/H2 是否以深色、字号和字重建立层级而没有滥用 accent/green；H3–H6 是否克制且明显低于 H1/H2；链接、引用、inline code 是否分别具有颜色之外的下划线、左边线、等宽字体信号。",
-    "9. 检查任务计划：只有“任务计划”标题和唯一当前项加粗；待办与已完成项不加粗；已完成文字不加删除线且没有整行变绿，只有勾选 icon 为绿色。若一张图中多个非标题计划项同时显著加粗，判 FAIL。",
+    "9. 检查任务计划（若可见）：只有“任务计划”标题和唯一当前项加粗；已完成文字不加删除线且没有整行变绿，只有勾选 icon 为绿色。",
     "10. 检查状态色边界：完成/失败只给 icon 或短状态词使用 green/red，工具名、路径、说明和整段回答不得一起染色；等待/停止为中性静态状态。标题、正文和 plan row 出现大面积 accent/green/red，判 FAIL。",
-    "11. 色彩、字号、字重、间距、分隔线、圆角、图标和交互层级是否跨对话、设置、drawer 一致；muted 辅助文字仍须清晰可读，不能淡到需要费力辨认。",
+    "11. plain-folder-first-message：顶部不得出现“读取失败”或错误卡；第一条“你好”必须已交换；composer 可用；不得看到 ENOENT、绝对内部路径或 Node.js 原始异常。",
+    "12. 色彩、字号、字重、间距、分隔线、圆角、图标和交互层级是否跨对话、设置、drawer 一致；muted 辅助文字仍须清晰可读，不能淡到需要费力辨认。",
     "",
     "不要仅凭单张静态图判断动画，必须交叉比较同场景 t000/t400/t900 三帧与 live-indicator-audit.json。JSON 只能证明 class 数量，图片负责证明视觉上确实只有相应文字在动；两者冲突时判 FAIL。",
     "",
@@ -1756,7 +1734,7 @@ function renderReviewPrompt(roundDir) {
     "按 P0/P1/P2/P3 从高到低列出。每条必须包含：严重级别、图片文件名、具体区域、观察到的问题、违反的验收项、建议修改。没有问题时写“无”。",
     "",
     "## Motion Uniqueness",
-    "分别报告 reasoning-running、tool-after-reasoning、completed、parallel-tools（若存在）的可见动效数量，并说明图片帧与 audit JSON 是否一致。",
+    "分别报告 reasoning-running、tool-after-reasoning、conversation-completed、markdown-fixture、settings-builtin-styles、settings-style-detail、drawer、plain-folder-first-message 的可见动效数量，并说明图片帧与 audit JSON 是否一致。",
     "",
     "## Viewport Coverage",
     "逐个报告 390x844、768x900、1280x800、1440x900：PASS/FAIL/BLOCKED。",
