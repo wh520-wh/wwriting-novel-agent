@@ -806,7 +806,7 @@ test("工具调用与读取结果只瞬时提供给模型，持久 transcript/jo
   await h.agent.submit({ projectRoot: h.projectRoot, text: "读取指定文件", source: "chat" });
   await waitForIdle(h.agent, h.projectRoot);
 
-  const transcriptRaw = await fs.readFile(path.join(h.projectRoot, ".wwriting", "agent", "transcript.jsonl"), "utf8");
+  const transcriptRaw = await fs.readFile(path.join(h.agentRoot, "transcript.jsonl"), "utf8");
   assert.ok(!transcriptRaw.includes(SECRET), "transcript 不得保存工具参数中的 secret");
   assert.ok(!transcriptRaw.includes(PRIVATE_CONTENT), "transcript 不得保存 read_file 全文");
   const eventRaw = JSON.stringify(await readEvents(h.agent, h.projectRoot));
@@ -1287,23 +1287,48 @@ test("非法 source 与空输入一律拒绝（source 不能绕过权限）", as
   );
 });
 
-test("新项目不创建旧状态文件，Agent 状态只落在 .wwriting/agent/", async (t) => {
+test("新项目不创建旧状态文件，Agent 状态只落在应用私有 agentRoot", async (t) => {
   const h = await openHarness(t, { gatewayScript: [{ reply: { text: "好。" } }] });
   await h.agent.submit({ projectRoot: h.projectRoot, text: "你好", source: "chat" });
   await waitForIdle(h.agent, h.projectRoot);
   assert.equal(await pathExists(path.join(h.projectRoot, LEGACY_STATE_FILE)), false);
-  const agentDir = path.join(h.projectRoot, ".wwriting", "agent");
+  assert.equal(await pathExists(path.join(h.projectRoot, ".wwriting", "agent")), false, "新会话不得写回项目内 .wwriting/agent");
   for (const name of ["events.jsonl", "session.json", "transcript.jsonl", "migration.json"]) {
-    assert.equal(await pathExists(path.join(agentDir, name)), true, `${name} 应存在`);
+    assert.equal(await pathExists(path.join(h.agentRoot, name)), true, `${name} 应落在应用私有 agentRoot`);
   }
+});
+
+test("旧 .wwriting/agent 中间损坏：open() 拒绝迁移但允许新会话（journal 落应用私有目录）", async (t) => {
+  const h = await createProjectAgentHarness({ gatewayScript: [{ reply: { text: "好。" } }] });
+  t.after(() => h.cleanup());
+  // 构造中间损坏的旧 journal（seq 1、2 合法，第 3 行损坏）
+  const legacyDir = path.join(h.projectRoot, ".wwriting", "agent");
+  await fs.mkdir(legacyDir, { recursive: true });
+  const legacyEvents = [
+    JSON.stringify({ schema_version: 1, seq: 1, event_id: "e1", session_id: "legacy-s", run_id: null, project_root: h.projectRoot, type: "session_created", at: new Date().toISOString(), payload: {} }),
+    JSON.stringify({ schema_version: 1, seq: 2, event_id: "e2", session_id: "legacy-s", run_id: null, project_root: h.projectRoot, type: "input_queued", at: new Date().toISOString(), payload: { input_id: "i1", text: "旧" } }),
+    "{broken"
+  ].join("\n") + "\n";
+  await fs.writeFile(path.join(legacyDir, "events.jsonl"), legacyEvents, "utf8");
+
+  await h.agent.open({ projectRoot: h.projectRoot });
+  // 新会话仍可建立：私有目录从零创建 session（迁移被拒、目标目录保持干净）
+  const session = await readSession(h.agent, h.projectRoot);
+  assert.ok(session.session_id, "open() 必须允许新会话");
+  assert.equal(await pathExists(path.join(h.agentRoot, "events.jsonl")), true, "新 journal 落应用私有目录");
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "你好", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  assert.equal(eventsOfType(events, "session_created").length, 1, "新会话以私有目录为准");
+  assert.equal(await fs.readFile(path.join(legacyDir, "events.jsonl"), "utf8"), legacyEvents, "旧 journal 必须保持字节不变");
 });
 
 // ---------------------------------------------------------------------------
 // 规格审查修复验证：promote×stop、transcript 闭合、滞留输入、终态结果
 // ---------------------------------------------------------------------------
 
-async function readTranscriptFile(projectRoot) {
-  const raw = await fs.readFile(path.join(projectRoot, ".wwriting", "agent", "transcript.jsonl"), "utf8");
+async function readTranscriptFile(agentRoot) {
+  const raw = await fs.readFile(path.join(agentRoot, "transcript.jsonl"), "utf8");
   return raw
     .split("\n")
     .filter((line) => line.trim() !== "")
@@ -1391,7 +1416,7 @@ test("promote 中断后 transcript 无悬空 tool_calls（未执行工具补 can
   );
   await waitForIdle(h.agent, h.projectRoot);
   // 被中断的工具调用链必须完整闭合（工具 1 已执行失败、工具 2 补 cancelled 记录）
-  const transcript = await readTranscriptFile(h.projectRoot);
+  const transcript = await readTranscriptFile(h.agentRoot);
   assertNoDanglingToolCalls(transcript);
   const events = await readEvents(h.agent, h.projectRoot);
   assert.equal(eventsOfType(events, "run_completed").length, 1);

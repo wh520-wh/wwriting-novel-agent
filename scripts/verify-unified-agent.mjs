@@ -256,8 +256,10 @@ step("场景 7 · 跨项目并行");
     const gatewayA = createMockModelGateway({ script: [async () => { await sleep(500); return { text: "A 完成" }; }], delayMs: 0 });
     const gatewayB = createMockModelGateway({ script: [async () => { await sleep(500); return { text: "B 完成" }; }], delayMs: 0 });
     const { createProjectAgent } = await import("../src/core/agent/index.mjs");
-    const agentA = createProjectAgent({ modelGateway: gatewayA });
-    const agentB = createProjectAgent({ modelGateway: gatewayB });
+    const { createWorkspaceStore } = await import("../src/core/workspaces/store.mjs");
+    const store = createWorkspaceStore({ stateRoot: path.join(workspace, "user-data") });
+    const agentA = createProjectAgent({ modelGateway: gatewayA, agentStorageRootFor: (root) => store.agentRootFor(root) });
+    const agentB = createProjectAgent({ modelGateway: gatewayB, agentStorageRootFor: (root) => store.agentRootFor(root) });
     await agentA.open({ projectRoot: aRoot });
     await agentB.open({ projectRoot: bRoot });
     const a = agentA.submit({ projectRoot: aRoot, text: "A 的任务" });
@@ -416,7 +418,7 @@ step("场景 12 · 重启 journal 恢复");
     const sessionBefore = await readSession(h.agent, h.projectRoot);
     // 新实例 = 模拟应用重启
     const { createProjectAgent } = await import("../src/core/agent/index.mjs");
-    const revived = createProjectAgent({ modelGateway: h.gateway });
+    const revived = createProjectAgent({ modelGateway: h.gateway, agentStorageRootFor: (root) => h.store.agentRootFor(root) });
     await revived.open({ projectRoot: h.projectRoot });
     const sessionAfter = await revived.snapshot({ projectRoot: h.projectRoot, afterSeq: 0, limit: 100000 });
     assert.equal(sessionAfter.session.session_id, sessionBefore.session_id, "重启后 Session 一致");
@@ -841,7 +843,7 @@ step("场景 23 · 无撕裂原子写入");
   try {
     await h.agent.open({ projectRoot: h.projectRoot });
     await h.agent.submit({ projectRoot: h.projectRoot, text: "多轮任务" });
-    const agentDir = path.join(h.projectRoot, ".wwriting", "agent");
+    const agentDir = h.agentRoot;
     const sessionPath = path.join(agentDir, "session.json");
     // 运行中高频轮询 session.json：任何时刻都必须读到完整 JSON（原子重写，无撕裂）
     const pollDeadline = Date.now() + 20000;

@@ -998,7 +998,7 @@ test("旧项目把 blueprint_status 迁入 project.yaml 且不再写旧状态文
   const yaml = await fs.readFile(path.join(h.projectRoot, "project.yaml"), "utf8");
   assert.match(yaml, /blueprint_status:\s*["']?complete["']?/u, "blueprint_status 应迁入 project.yaml");
 
-  const migrationPath = path.join(h.projectRoot, ".wwriting", "agent", "migration.json");
+  const migrationPath = path.join(h.agentRoot, "migration.json");
   assert.equal(await pathExists(migrationPath), true, "迁移完成后应写入 migration.json");
   const migration = JSON.parse(await fs.readFile(migrationPath, "utf8"));
   assert.equal(migration.legacy_imported, true, "migration.json 应标记 legacy_imported");

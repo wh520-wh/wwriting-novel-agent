@@ -53,6 +53,15 @@ function agentDir(root) {
   return path.join(root, ".wwriting", "agent");
 }
 
+async function pathExists(target) {
+  try {
+    await fs.access(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function readSessionFile(root) {
   return JSON.parse(await fs.readFile(path.join(agentDir(root), "session.json"), "utf8"));
 }
@@ -107,7 +116,7 @@ test("load 惰性创建 .wwriting/agent 并在锁内追加 session_created", asy
   }
   assert.equal((await fs.stat(path.join(dir, "checkpoints"))).isDirectory(), true, "checkpoints/ 应为目录");
   const migration = JSON.parse(await fs.readFile(path.join(dir, "migration.json"), "utf8"));
-  assert.deepEqual(migration, { schema_version: 1, legacy_imported: false });
+  assert.deepEqual(migration, { schema_version: 1, legacy_imported: false, project_agent_imported: false });
 
   // 第一个锁定 load 追加 session_created 并写出第一份 session.json
   const events = await journal.read({});
@@ -140,6 +149,38 @@ test("load 惰性创建 .wwriting/agent 并在锁内追加 session_created", asy
   const again = await journal.load();
   assert.equal(again.session_id, session.session_id);
   assert.equal((await journal.read({})).length, 1);
+});
+
+test("journal 使用 storageRoot 落盘，同时事件仍记录真实 project_root", async (t) => {
+  const root = await makeWorkspace(t);
+  const projectRoot = path.join(root, "project");
+  const storageRoot = path.join(root, "private-agent");
+  const journal = createAgentJournal({ projectRoot, storageRoot });
+  await journal.load();
+  await journal.append({ type: "input_queued", payload: { input_id: "i1", text: "你好" } });
+  assert.equal(await pathExists(path.join(storageRoot, "events.jsonl")), true);
+  assert.equal(await pathExists(path.join(projectRoot, ".wwriting", "agent", "events.jsonl")), false);
+  const event = JSON.parse((await fs.readFile(path.join(storageRoot, "events.jsonl"), "utf8")).trim().split("\n").at(-1));
+  assert.equal(event.project_root, path.resolve(projectRoot));
+});
+
+test("journal 的 migration 标记经 readMigration/writeMigration 读写应用私有目录", async (t) => {
+  const root = await makeWorkspace(t);
+  const projectRoot = path.join(root, "project");
+  const storageRoot = path.join(root, "private-agent");
+  const journal = createAgentJournal({ projectRoot, storageRoot });
+  await journal.load();
+  const initial = await journal.readMigration();
+  assert.deepEqual(initial, { schema_version: 1, legacy_imported: false, project_agent_imported: false });
+  await journal.writeMigration({ schema_version: 1, legacy_imported: true, imported_at: "2026-08-07T00:00:00.000Z" });
+  assert.deepEqual(await journal.readMigration(), {
+    schema_version: 1,
+    legacy_imported: true,
+    imported_at: "2026-08-07T00:00:00.000Z"
+  });
+  // 标记落在应用私有目录（storageRoot），项目内 .wwriting/agent 不出现 migration.json
+  assert.equal(await pathExists(path.join(storageRoot, "migration.json")), true);
+  assert.equal(await pathExists(path.join(projectRoot, ".wwriting", "agent", "migration.json")), false);
 });
 
 test("同一实例并发 load 只产生一个 session_created（锁内才发明 Session id）", async (t) => {

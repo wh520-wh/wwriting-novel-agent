@@ -315,3 +315,27 @@ test("完整链路：open() 触发导入后，一轮 Agent 运行也不写旧状
   const events = await readEvents(h.agent, h.projectRoot);
   assert.equal(eventsOfType(events, "session_created").length, 1, "多次 open 不重复创建 session");
 });
+
+test("缺少 project.yaml：跳过 blueprint 字段迁移但仍可导入对话", async (t) => {
+  const workspace = await makeWorkspace();
+  t.after(() => fs.rm(workspace, { recursive: true, force: true }));
+  // 普通文件夹：只有旧聊天文件，没有 project.yaml
+  const projectRoot = path.join(workspace, "plain-folder");
+  await fs.mkdir(projectRoot, { recursive: true });
+  await fs.appendFile(
+    path.join(projectRoot, CHAT_HISTORY_FILE),
+    `${JSON.stringify({ role: "user", text: "旧对话" })}\n`,
+    "utf8"
+  );
+  const journal = createAgentJournal({ projectRoot });
+  await journal.load();
+  const result = await runLegacyImport({ projectRoot, journal });
+  assert.equal(result.imported, true, "缺少 project.yaml 仍应导入对话");
+  assert.equal(result.blueprint_status, null, "缺少 project.yaml 时跳过 blueprint 字段迁移");
+  const messages = (await journal.readTranscript()).filter((r) => r.role === "user" || r.role === "assistant");
+  assert.deepEqual(messages.map((record) => record.content), ["旧对话"], "对话仍应导入");
+  assert.equal(await pathExists(path.join(projectRoot, "project.yaml")), false, "不得创建 project.yaml");
+  // 幂等：第二次导入不再执行
+  const again = await runLegacyImport({ projectRoot, journal });
+  assert.equal(again.imported, false);
+});

@@ -302,6 +302,7 @@ export async function createProjectAgentHarness(options = {}) {
   }
   const { createProjectAgent } = await import("../../src/core/agent/index.mjs");
   const { createSkillService } = await import("../../src/core/skills/index.mjs");
+  const { createWorkspaceStore } = await import("../../src/core/workspaces/store.mjs");
 
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-acceptance-"));
   try {
@@ -310,18 +311,32 @@ export async function createProjectAgentHarness(options = {}) {
       : await createProjectRoot(workspaceRoot, projectOptions);
     // 临时 root 的 skills service：prompt 目录摘要 / read_skill / 章节技能门禁
     // 全链路使用它，migration marker 只写进工作区，绝不触碰真实用户目录。
+    // Task 3：每个测试独立 stateRoot；Agent journal 经 createWorkspaceStore 的稳定
+    // workspace id 落应用私有目录（stateRoot/workspaces/<id>/agent），绝不写回项目
+    // 内 .wwriting/agent（生产组合根在 Task 4 注入同一 seam）。
+    const stateRoot = path.join(workspaceRoot, "user-data");
+    const store = createWorkspaceStore({ stateRoot });
     const skills = createSkillService({
       userHome: path.join(projectRoot, ".test-skill-home"),
       resourcesPath: null
     });
-    const agent = createProjectAgent({ modelGateway: gateway, shell, secrets, skills });
+    const agent = createProjectAgent({
+      modelGateway: gateway,
+      shell,
+      secrets,
+      skills,
+      agentStorageRootFor: (root) => store.agentRootFor(root)
+    });
     return {
       agent,
       gateway,
       workspaceRoot,
+      stateRoot,
       projectRoot,
       project,
       skills,
+      store,
+      agentRoot: store.agentRootFor(projectRoot),
       async cleanup() {
         await fs.rm(workspaceRoot, { recursive: true, force: true });
       }

@@ -34,6 +34,7 @@ import { createToolRuntime } from "./tools.mjs";
 import { assemblePrompt } from "./prompt.mjs";
 import { canEnterWorkflow, workflowPolicy } from "./workflows.mjs";
 import { runLegacyImport } from "./legacy-import.mjs";
+import { migrateProjectAgentStorage } from "../workspaces/migration.mjs";
 import { loadProject } from "../project-store.mjs";
 import { pathExists } from "../fs-utils.mjs";
 import { createRedactor } from "../shell/redaction.mjs";
@@ -110,7 +111,11 @@ export function createAgentRuntime({
   // Task 12：skills service seam（src/core/skills/index.mjs）。生产缺省用全局
   // 单例；测试注入临时 root 的 service，避免迁移 marker 写进真实用户目录。
   skills = null,
-  idFactory = randomUUID
+  idFactory = randomUUID,
+  // Task 3：journal 落盘位置（生产组合根必须显式传应用私有 storageRoot；默认
+  // 项目内 .wwriting/agent 只保留给低层兼容测试）与旧 journal 只读迁移器。
+  agentStorageRootFor = (projectRoot) => path.join(projectRoot, ".wwriting", "agent"),
+  workspaceMigrator = migrateProjectAgentStorage
 } = {}) {
   if (!modelGateway && typeof gatewayFactory !== "function") {
     throw new TypeError("createProjectAgent 需要注入带 complete(request, { signal }) 的 modelGateway");
@@ -126,7 +131,11 @@ export function createAgentRuntime({
     const key = path.resolve(projectRoot);
     let state = projects.get(key);
     if (!state) {
-      const journal = createAgentJournal({ projectRoot: key, idFactory });
+      const journal = createAgentJournal({
+        projectRoot: key,
+        storageRoot: agentStorageRootFor(key),
+        idFactory
+      });
       const projectOperations = {
         inspectChapterContext,
         appendChapterSegment,
@@ -976,11 +985,23 @@ export function createAgentRuntime({
       throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
     }
     const state = ensureProject(projectRoot);
+    // Task 3 固定顺序：先迁移旧 .wwriting/agent → journal.load() → 更老的 legacy
+    // flat-file import → 恢复 Run。迁移必须发生在 load() 之前，迁移进来的事件对
+    // 新会话立即可见；迁移失败/无源数据不阻塞 open（migrator 只返回结果不抛错，
+    // 这里再兜一层，绝不把原始文件错误带到 HTTP 层）。
+    try {
+      await workspaceMigrator({
+        projectRoot: state.key,
+        targetAgentRoot: agentStorageRootFor(state.key)
+      });
+    } catch (error) {
+      console.warn(`[agent] legacy journal 迁移失败（不影响 open）: ${error?.message ?? String(error)}`);
+    }
     await state.journal.load();
     // Task 7：首次 open 对旧项目执行一次性只读 legacy 导入（幂等）。导入失败不
-    // 阻塞 open：journal 已恢复、应用可继续工作；migration.json.legacy_imported
-    // 保持 false，下次 open() 重试（legacy-import 的 legacy_id / legacy 标记保证
-    // 重试不产生重复事件或消息）。
+    // 阻塞 open：journal 已恢复、应用可继续工作；migration.legacy_imported 保持
+    // false，下次 open() 重试（legacy-import 的 legacy_id / legacy 标记保证重试
+    // 不产生重复事件或消息）。
     try {
       await runLegacyImport({ projectRoot: state.key, journal: state.journal, idFactory });
     } catch (error) {
