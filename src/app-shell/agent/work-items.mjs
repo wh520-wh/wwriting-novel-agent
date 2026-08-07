@@ -110,7 +110,11 @@ export const PLAN_LABEL = "任务计划";
 // active_elapsed_ms —— 第二个 Run 开始后旧组的终态文案不再被新 Run 的时钟覆盖。
 export function formatDuration(ms) {
   if (!Number.isFinite(ms) || ms < 0) return "0 秒";
-  return `${Math.round(ms / 1000)} 秒`;
+  const totalSeconds = Math.floor(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds} 秒`;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) return `${totalMinutes} 分`;
+  return `${Math.floor(totalMinutes / 60)} 小时`;
 }
 
 export function groupStatusText(group) {
