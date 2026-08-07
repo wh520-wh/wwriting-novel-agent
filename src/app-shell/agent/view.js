@@ -931,7 +931,9 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       record.details.open = group.expanded;
     }
     if (TERMINAL_RUN_STATUSES.has(group.status)) {
-      record.status.textContent = groupStatusText(group, run);
+      // 终态耗时取组自身投影的冻结时钟（Task 15 修复），不读当前 active run：
+      // 第二个 Run 开始后旧组的文案不再被新 Run 的 active_elapsed_ms 覆盖。
+      record.status.textContent = groupStatusText(group);
       record.duration.textContent = "";
     } else {
       record.status.textContent = "工作中";
