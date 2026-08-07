@@ -41,6 +41,7 @@ import { loadConfigLayers } from "../config-runtime.mjs";
 import { createResearchAdapter } from "../research-adapters.mjs";
 import { fetchWebPage, searchWeb } from "../research-tools.mjs";
 import { loadProject, createProjectAt } from "../project-store.mjs";
+import { migrateLegacyProject } from "../workspaces/migration.mjs";
 import { loadProjectDiagnostics } from "../project-diagnostics.mjs";
 import { isPathInside } from "../fs-utils.mjs";
 import {
@@ -95,6 +96,22 @@ export function createProjectRoutes({
     } catch {
       // 项目元数据读取失败（文件缺失或格式错误），仅记录路径
       await recordRecentProject(stateRoot, { projectRoot });
+    }
+  }
+
+  // 计划 Task 11：旧 project.yaml 一次性只读迁移（best-effort）。
+  // 只在实际存在 project.yaml 且尚未导入（legacy_project_imported !== true）时调用；
+  // migrateLegacyProject 自身不抛错，这里再加一层兜底，保证打开任意目录永远成功
+  //（SPEC §9.1/§11：聊天资格从不依赖迁移成功）。新工作区不创建 project.yaml。
+  async function migrateLegacyProjectOnOpen(projectRoot) {
+    if (!workspaceStore || typeof workspaceStore.saveSettings !== "function") return;
+    if (!existsSync(path.join(projectRoot, "project.yaml"))) return;
+    try {
+      const settings = await workspaceStore.loadSettings(projectRoot);
+      if (settings.legacy_project_imported) return;
+      await migrateLegacyProject({ projectRoot, workspaceStore });
+    } catch (error) {
+      console.warn("[project-routes] 旧项目迁移失败（不影响聊天）:", error?.message ?? error);
     }
   }
 
@@ -290,6 +307,7 @@ export function createProjectRoutes({
         const projectRoot = await validateWorkspaceRoot(body.projectRoot ?? body.path ?? "");
         selectedRef.current = projectRoot;
         await rememberProject(projectRoot);
+        await migrateLegacyProjectOnOpen(projectRoot);
         return { ok: true, projectRoot };
       } catch (error) {
         throw error instanceof HttpError ? error : new HttpError(400, "project_open_failed", error?.message ?? String(error));
