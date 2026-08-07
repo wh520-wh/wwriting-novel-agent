@@ -2,7 +2,7 @@
 //
 // 唯一允许读取旧项目数据文件的生产模块（依赖规则测试 H 的白名单之一；Task 9 的
 // 全库 rg 证明只允许本文件与 tests/agent/legacy-import.test.mjs 出现这些文件名）。
-// 只在首次 open() 时执行（journal 初始化后、migration.json.legacy_imported 为 false）：
+// 只在首次 open() 时执行（journal 初始化后、migration.legacy_imported 为 false）：
 //
 //   1. 只读旧文件（绝不双写、重命名或删除）：
 //        agent_state.json / chat_history.jsonl / chat_transcript.jsonl /
@@ -18,17 +18,20 @@
 //      接续执行。
 //   5. 把 durable blueprint_status 写入 project.yaml，顺序固定：旧状态显式
 //      complete/none/partial → 用之；否则章节产物存在 → "legacy"；否则 "none"。
-//      幂等：值相同不重写。
+//      幂等：值相同不重写。project.yaml 缺失/损坏时跳过该字段迁移，但仍可导入
+//      对话（普通文件夹没有 project.yaml 也能聊天，SPEC §0.1）。
 //   6. 原子性：journal 写入与 project.yaml 更新全部成功后才把
-//      migration.json.legacy_imported 置 true；中途失败保持 false，下次 open()
-//      重试——legacy_id / legacy 标记幂等保证重试不产生重复事件或消息。
+//      migration.legacy_imported 置 true（经 journal.readMigration()/writeMigration()
+//      读写应用私有 migration.json，绝不自行拼项目内迁移路径）；中途失败保持
+//      false，下次 open() 重试——legacy_id / legacy 标记幂等保证重试不产生重复
+//      事件或消息。
 //
 // 本模块不依赖 agent 内部其他模块（无循环依赖）；由 runtime.mjs 的 open() 调用。
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { loadProject, saveProject, hasChapterArtifacts } from "../project-store.mjs";
-import { pathExists, readJson, writeJsonAtomic } from "../fs-utils.mjs";
+import { pathExists, readJson } from "../fs-utils.mjs";
 
 // 旧数据文件名（本文件是依赖规则白名单，允许出现字面量）。
 const LEGACY_STATE_FILE = "agent_state.json";
@@ -37,9 +40,6 @@ const LEGACY_CHAT_TRANSCRIPT_FILE = "chat_transcript.jsonl";
 const LEGACY_PENDING_ACTION_FILE = "chat_pending_action.json";
 const LEGACY_TASK_QUEUE_FILE = "task_queue.json";
 const LEGACY_FAILURES_FILE = "failures.jsonl";
-
-const MIGRATION_DIR_REL = path.join(".wwriting", "agent");
-const MIGRATION_FILE = "migration.json";
 
 // blueprint_status 的显式合法值（旧世界持久字段）；其余值视为缺失。
 const EXPLICIT_BLUEPRINT_STATUSES = new Set(["complete", "none", "partial"]);
@@ -160,8 +160,9 @@ async function buildErrorFactRecords(projectRoot) {
   }
   return records;
 }
-
-// blueprint_status 迁移（幂等：project.yaml 已是目标值时绝不重写）。
+// blueprint_status 迁移（幂等：project.yaml 已是目标值时绝不重写）。缺少
+// project.yaml（普通文件夹没有旧配置文件也能聊天）或读取失败时跳过该字段
+// 迁移，返回 { status: null, changed: false }，对话导入不受影响。
 async function migrateBlueprintStatus(projectRoot, legacyState) {
   let status = legacyState?.blueprint_status;
   if (typeof status !== "string" || !EXPLICIT_BLUEPRINT_STATUSES.has(status)) {
@@ -174,7 +175,13 @@ async function migrateBlueprintStatus(projectRoot, legacyState) {
     }
     status = artifacts ? "legacy" : "none";
   }
-  const project = await loadProject(projectRoot);
+  let project;
+  try {
+    project = await loadProject(projectRoot);
+  } catch {
+    // project.yaml 缺失/损坏：跳过 blueprint 字段迁移，但仍可导入对话
+    return { status: null, changed: false };
+  }
   if (project?.blueprint_status === status) {
     return { status, changed: false };
   }
@@ -256,8 +263,7 @@ export async function runLegacyImport({
   if (typeof projectRoot !== "string" || projectRoot.length === 0) {
     throw new Error("runLegacyImport 需要 projectRoot");
   }
-  const migrationPath = path.join(projectRoot, MIGRATION_DIR_REL, MIGRATION_FILE);
-  const migration = await readJson(migrationPath, { schema_version: 1, legacy_imported: false });
+  const migration = await journal.readMigration();
   if (migration?.legacy_imported === true) {
     return { imported: false, blueprint_status: null, run: null };
   }
@@ -267,7 +273,7 @@ export async function runLegacyImport({
     readJsonTolerant(path.join(projectRoot, LEGACY_TASK_QUEUE_FILE))
   ]);
 
-  // 1) 项目元数据：blueprint_status 迁移（幂等）。
+  // 1) 项目元数据：blueprint_status 迁移（幂等；project.yaml 缺失时跳过）。
   const blueprint = await migrateBlueprintStatus(projectRoot, legacyState);
 
   // 2) transcript：可见历史 + 未解决错误事实（按 legacy_id 幂等去重）。
@@ -293,8 +299,9 @@ export async function runLegacyImport({
     idFactory
   });
 
-  // 4) journal 与 project.yaml 全部成功后，最后原子置位迁移标记。
-  await writeJsonAtomic(migrationPath, {
+  // 4) journal 与 project.yaml 全部成功后，最后原子置位迁移标记（应用私有
+  // migration.json，由 journal 管理；绝不覆盖项目内旧标记）。
+  await journal.writeMigration({
     schema_version: 1,
     legacy_imported: true,
     imported_at: clock()

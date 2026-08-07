@@ -5,7 +5,8 @@
 // 重试全部在 runtime.mjs 内部实现，不得被外部调用方 import。
 //
 // 公共接口（固定）：
-//   const agent = createProjectAgent(dependencies);  // { modelGateway, shell?, secrets? }
+//   const agent = createProjectAgent(dependencies);  // { modelGateway, shell?, secrets?,
+//                                                     //   skills?, agentStorageRootFor?, workspaceMigrator? }
 //   await agent.open({ projectRoot });
 //   await agent.submit({ projectRoot, text, source });   // source ∈ {"chat","maintenance"}
 //   await agent.promote({ projectRoot, inputId });

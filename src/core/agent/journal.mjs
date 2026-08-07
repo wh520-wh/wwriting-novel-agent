@@ -7,11 +7,12 @@
 // projection；transcript.jsonl 只保存合法模型消息链与历史摘要，不承担产品状态；
 // migration.json 标记一次性 legacy 导入（Task 7 使用）；checkpoints/ 为预留目录。
 //
-// 存储布局（<projectRoot>/.wwriting/agent/）：
+// 存储布局（agentDir = storageRoot，默认 <projectRoot>/.wwriting/agent/ 仅供低层
+// 兼容测试；生产组合根必须显式传应用私有 storageRoot）：
 //   events.jsonl      —— canonical source
 //   session.json      —— 可重建 projection（每次追加后原子重写）
 //   transcript.jsonl  —— 模型消息链/历史摘要
-//   migration.json    —— { schema_version: 1, legacy_imported: false }
+//   migration.json    —— { schema_version: 1, legacy_imported: false, project_agent_imported: false }
 //   checkpoints/      —— 预留目录
 //
 // 崩溃模型：appendBatch 先分配连续 seq、对克隆状态严格校验（dry-run，违规在落盘前
@@ -39,7 +40,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { ensureDir, pathExists, writeJsonAtomic } from "../fs-utils.mjs";
+import { ensureDir, pathExists, readJson, writeJsonAtomic } from "../fs-utils.mjs";
 
 // 计划固定的 31 个 journal 事件类型；未知类型一律拒绝。
 export const FIXED_EVENT_TYPES = Object.freeze([
@@ -126,8 +127,6 @@ const RUN_STATUS_TO_SESSION = Object.freeze({
   cancelled: "idle",
   interrupted: "idle"
 });
-
-const AGENT_DIR_REL = path.join(".wwriting", "agent");
 
 function fail(message) {
   throw new Error(message);
@@ -737,12 +736,17 @@ function reduceEvents(events) {
 // 进程重启（跨进程）恢复通过新实例 load() 完成——旧实例已退出，不存在并发写。
 // ---------------------------------------------------------------------------
 
-export function createAgentJournal({ projectRoot, clock = defaultClock, idFactory = defaultIdFactory } = {}) {
+export function createAgentJournal({
+  projectRoot,
+  storageRoot = path.join(path.resolve(projectRoot), ".wwriting", "agent"),
+  clock = defaultClock,
+  idFactory = defaultIdFactory
+} = {}) {
   if (typeof projectRoot !== "string" || projectRoot.length === 0) {
     fail("projectRoot 必须是项目根目录");
   }
   const root = path.resolve(projectRoot);
-  const agentDir = path.join(root, AGENT_DIR_REL);
+  const agentDir = path.resolve(storageRoot);
   const eventsPath = path.join(agentDir, "events.jsonl");
   const sessionPath = path.join(agentDir, "session.json");
   const transcriptPath = path.join(agentDir, "transcript.jsonl");
@@ -754,7 +758,7 @@ export function createAgentJournal({ projectRoot, clock = defaultClock, idFactor
   let state = null; // reduceEvents 的结果：{ session, openToolCalls, ... }
   let projectionWriteError = null; // 最近一次 session.json 写入失败（尽力而为语义）
 
-  // load() 必须惰性创建 .wwriting/agent/、空 events.jsonl、空 transcript.jsonl、
+  // load() 必须惰性创建 agentDir（storageRoot）、空 events.jsonl、空 transcript.jsonl、
   // checkpoints/ 与 migration.json。
   async function ensureStorage() {
     await ensureDir(agentDir);
@@ -763,7 +767,7 @@ export function createAgentJournal({ projectRoot, clock = defaultClock, idFactor
       if (!(await pathExists(filePath))) await fs.writeFile(filePath, "", "utf8");
     }
     if (!(await pathExists(migrationPath))) {
-      await writeJsonAtomic(migrationPath, { schema_version: 1, legacy_imported: false });
+      await writeJsonAtomic(migrationPath, { schema_version: 1, legacy_imported: false, project_agent_imported: false });
     }
   }
 
@@ -977,6 +981,18 @@ export function createAgentJournal({ projectRoot, clock = defaultClock, idFactor
     });
   }
 
+  // migration 标记：一次性迁移状态（migration.json 位于应用私有 agentDir，绝不
+  // 落在项目目录）。由更老的 legacy flat-file 导入（legacy-import.mjs）读写；
+  // 本模块不自行决定标记值，只提供读写通道。
+  async function readMigration() {
+    await initialize();
+    return readJson(migrationPath, { schema_version: 1, legacy_imported: false, project_agent_imported: false });
+  }
+
+  async function writeMigration(value) {
+    await writeJsonAtomic(migrationPath, value);
+  }
+
   // 追加单条事件（自动初始化，分配下一个连续 seq，重写 session.json）。
   // 返回 projection 的独立副本：调用方篡改返回值不会污染内部状态。
   async function append(event) {
@@ -1049,6 +1065,8 @@ export function createAgentJournal({ projectRoot, clock = defaultClock, idFactor
 
   const journal = {
     load,
+    readMigration,
+    writeMigration,
     append,
     appendBatch,
     read,
