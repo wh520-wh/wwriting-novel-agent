@@ -374,3 +374,17 @@ test("streaming/terminal 命中同一 .agent-markdown typography；无 .is-strea
     assert.match(rule.selector, /\.agent-markdown/u, `标题字级只能由 .agent-markdown 路径定义：${rule.selector}`);
   }
 });
+
+// ===========================================================================
+// 8) 圆角契约（Task 14 Step 1）：卡片/控件圆角 ≤8px（99px/999px 圆形 pill 与头像除外）
+// ===========================================================================
+test("圆角不超过 8px：无 9–98px 卡片圆角，radius token 全部 ≤8px", () => {
+  for (const [file, src] of [["styles.css", stylesSource], ["agent.css", agentCssSource]]) {
+    const offenders = [...src.matchAll(/border-radius:\s*(9|[1-8][0-9])px/gu)].map((m) => m[0]);
+    assert.equal(offenders.length, 0, `${file} 不得出现 9–98px 圆角：${offenders.join(", ")}`);
+  }
+  for (const token of ["--r", "--r-sm", "--r-lg", "--r-xl"]) {
+    const value = rootTokens[token] ?? "";
+    assert.match(value, /^8px$/u, `${token} 应为 8px（当前 ${value}）`);
+  }
+});
