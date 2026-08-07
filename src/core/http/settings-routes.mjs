@@ -15,13 +15,12 @@ import os from "node:os";
 import path from "node:path";
 import { HttpError } from "../http-error.mjs";
 import { loadProject, saveProject } from "../project-store.mjs";
-import { loadConfigLayers } from "../config-runtime.mjs";
+import { loadConfigLayers, loadEffectiveWorkspaceConfig } from "../config-runtime.mjs";
 import { appendEvent } from "../event-log.mjs";
 import { loadOutputStyles } from "../output-style-loader.mjs";
 import { skillService } from "../skills/index.mjs";
 import {
   findLocalModelProfile,
-  getDefaultLocalModelProfile,
   loadLocalModelProfiles,
   upsertLocalModelProfile
 } from "../local-model-profiles.mjs";
@@ -34,9 +33,15 @@ import {
   selectGlobalModelProfile
 } from "../global-model-settings.mjs";
 import { ModelConfigValidationError, validateModelConfig } from "../model-config-validation.mjs";
-import { SettingsValidationError, normalizeSettingsPatch, saveModelSettingsTransaction, updateProjectSettings } from "../settings-runtime.mjs";
+import {
+  SettingsValidationError,
+  normalizeSettingsPatch,
+  saveModelSettingsTransaction,
+  saveWorkspaceSettings,
+  updateProjectSettings
+} from "../settings-runtime.mjs";
 import { resolveModelCapabilities, writingRequiredCapabilitiesOk } from "../model/capabilities.mjs";
-import { resolveActiveProjectRoot, resolveActiveWriteProjectRoot, resolveReadProjectRoot } from "./router.mjs";
+import { resolveActiveProjectRoot, resolveReadProjectRoot, resolveWriteProjectRoot } from "./router.mjs";
 
 // ---------------------------------------------------------------------------
 // 模型档案展示 helper（旧 app-server 语义保留；project-routes 复用）
@@ -184,7 +189,9 @@ export function createSettingsRoutes({
   connectionTester = null,
   selection = null,
   // 计划 Task 4 Step 5：组合根注入同一个 workspaceStore（应用私有 settings 真相源）。
-  // 本任务只接收不消费；Task 5 起 settings 写入 <stateRoot>/workspaces/<id>/settings.json。
+  // 任务 5：模型切换与权限保存写入 <stateRoot>/workspaces/<id>/settings.json，不再
+  // 写回 project.yaml（旧文件只读保留为回滚依据）。未注入时回退预任务 5 的
+  // project.yaml 写路径（旧组合根兼容，见 tests/http/project-routes.test.mjs）。
   workspaceStore = null,
   // Task 12：skills service seam（src/core/skills/index.mjs）。生产缺省用全局
   // 单例；测试注入临时 root 的 service，避免迁移 marker 写进真实用户目录。
@@ -193,6 +200,7 @@ export function createSettingsRoutes({
   if (!secretsRoot) {
     throw new TypeError("createSettingsRoutes 需要注入 secretsRoot");
   }
+  const hasWorkspaceStore = Boolean(workspaceStore && typeof workspaceStore.saveSettings === "function");
   const skillServiceRef = skills ?? skillService;
   // 共享的项目选择状态（composition root 注入同一个可变引用，project-routes 共用）。
   const selectedRef = selection ?? { current: null };
@@ -204,8 +212,13 @@ export function createSettingsRoutes({
     stateRoot
   };
 
+  // 归档校验对普通目录（无 project.yaml）宽容：应用私有 settings 不保存归档状态，
+  // 归档只来自旧 project.yaml（有效配置合并后 archived_at 反映旧文件），普通目录
+  // 恒为未归档。返回读取到的有效配置/项目对象供调用方复用。
   async function assertNotArchived(projectRoot) {
-    const project = await loadProject(projectRoot);
+    const project = hasWorkspaceStore
+      ? await loadEffectiveWorkspaceConfig(projectRoot, { workspaceStore })
+      : await loadProject(projectRoot);
     if (project.archived_at) {
       throw new HttpError(400, "PROJECT_ARCHIVED", "项目已归档（只读）。请先解除归档再执行此操作。");
     }
@@ -214,9 +227,17 @@ export function createSettingsRoutes({
 
   return {
     // 设置更新：非模型字段校验先于落盘（请求原子）；错误带 fields 供逐项标红。
+    // 任务 5：写作用域解析不再要求 project.yaml（普通目录同样是合法工作区）；
+    // tool_permissions 写入应用私有 workspace settings，其余字段继续走 project.yaml。
     "POST /api/settings/update": async ({ body }) => {
       try {
-        const projectRoot = await resolveActiveWriteProjectRoot(ctx, body);
+        const projectRoot = await resolveWriteProjectRoot({
+          requestedRoot: body?.projectRoot ?? undefined,
+          expectedProjectRoot: body?.expectedProjectRoot ?? undefined,
+          selected: ctx.selected,
+          workspace: ctx.workspace,
+          stateRoot: ctx.stateRoot
+        });
         await assertNotArchived(projectRoot);
         const activeModel = body?.active_model && typeof body.active_model === "object"
           ? { ...body.active_model }
@@ -224,6 +245,7 @@ export function createSettingsRoutes({
         const nonModelPatch = { ...body };
         delete nonModelPatch.active_model;
         delete nonModelPatch.projectRoot;
+        delete nonModelPatch.expectedProjectRoot;
         let normalizedNonModelPatch = null;
         if (Object.keys(nonModelPatch).length > 0) {
           try {
@@ -240,33 +262,66 @@ export function createSettingsRoutes({
         }
 
         let result = null;
-        let mergedProject;
+        // 模型保存（旧契约保留：写 project.yaml + secrets + env，供未注入
+        // workspaceStore 的旧组合根使用；当前前端模型保存走 model-profile /
+        // model-switch，本路径无活跃消费者）。
         if (activeModel) {
           result = await saveModelSettingsTransaction({ projectRoot, secretsRoot, activeModel });
-          mergedProject = result.project;
-          if (normalizedNonModelPatch && Object.keys(normalizedNonModelPatch).length > 0) {
-            mergedProject = await updateProjectSettings(projectRoot, normalizedNonModelPatch);
+          await upsertLocalModelProfile(secretsRoot, result.project.active_model);
+        }
+        if (hasWorkspaceStore) {
+          // 任务 5 Step 5：权限保存写应用私有 workspace settings（成对携带模型，
+          // 旧 project.yaml 只读保留为回滚依据）。
+          if (normalizedNonModelPatch?.tool_permissions) {
+            const before = await loadEffectiveWorkspaceConfig(projectRoot, { workspaceStore });
+            await saveWorkspaceSettings(projectRoot, {
+              workspaceStore,
+              toolPermissions: { ...before.tool_permissions, ...normalizedNonModelPatch.tool_permissions }
+            });
           }
-          await upsertLocalModelProfile(secretsRoot, mergedProject.active_model);
-        } else {
-          mergedProject = await updateProjectSettings(projectRoot, normalizedNonModelPatch);
+          // 其余非模型、非权限字段仍走旧 project.yaml 路径（旧项目兼容）。
+          const legacyPatch = { ...(normalizedNonModelPatch ?? {}) };
+          delete legacyPatch.tool_permissions;
+          if (Object.keys(legacyPatch).length > 0) {
+            await updateProjectSettings(projectRoot, legacyPatch);
+          }
+        } else if (normalizedNonModelPatch && Object.keys(normalizedNonModelPatch).length > 0) {
+          // 旧组合根（未注入 workspaceStore）：整包继续写 project.yaml（预任务 5 行为）。
+          await updateProjectSettings(projectRoot, normalizedNonModelPatch);
         }
 
-        const config = await loadConfigLayers(projectRoot, mergedProject);
-        return {
-          ok: true,
-          projectRoot,
-          project: {
+        let finalProject;
+        let finalEffective;
+        if (hasWorkspaceStore) {
+          finalEffective = await loadEffectiveWorkspaceConfig(projectRoot, { workspaceStore });
+          finalProject = {
+            project_id: finalEffective.project_id ?? null,
+            active_model: finalEffective.active_model,
+            stage_overrides: finalEffective.stage_overrides ?? { enabled: false },
+            tool_permissions: finalEffective.tool_permissions ?? {},
+            budget_config: finalEffective.budget_config ?? {},
+            research_config: finalEffective.research_config ?? {}
+          };
+        } else {
+          const mergedProject = await loadProject(projectRoot);
+          const config = await loadConfigLayers(projectRoot, mergedProject);
+          finalEffective = config.effective;
+          finalProject = {
             project_id: mergedProject.project_id,
             active_model: mergedProject.active_model,
             stage_overrides: mergedProject.stage_overrides,
             tool_permissions: mergedProject.tool_permissions ?? {},
             budget_config: mergedProject.budget_config ?? {},
             research_config: mergedProject.research_config ?? {}
-          },
-          effective_config: config.effective,
-          model_profile: buildModelProfile(config.effective.active_model, secretsRoot),
-          available_models: await buildAvailableModelProfiles(secretsRoot, config.effective.active_model),
+          };
+        }
+        return {
+          ok: true,
+          projectRoot,
+          project: finalProject,
+          effective_config: finalEffective,
+          model_profile: buildModelProfile(finalEffective.active_model, secretsRoot),
+          available_models: await buildAvailableModelProfiles(secretsRoot, finalEffective.active_model),
           secret_saved: result?.secret_saved ?? false,
           secret_env: result?.secret_env ?? null
         };
@@ -326,11 +381,18 @@ export function createSettingsRoutes({
       }
     },
 
-    // 模型切换：写作必需能力缺失的模型在写 project.yaml 前拦截（C 档）。
+    // 模型切换：写作必需能力缺失的模型在写配置前拦截（C 档）。
+    // 任务 5：普通目录（无 project.yaml）同样可以切换模型；切换写入应用私有
+    // workspace settings，不再写回 project.yaml（旧文件只读保留为回滚依据）。
     "POST /api/settings/model-switch": async ({ body }) => {
       try {
-        const projectRoot = await resolveActiveWriteProjectRoot(ctx, body);
-        await assertNotArchived(projectRoot);
+        const projectRoot = await resolveWriteProjectRoot({
+          requestedRoot: body?.projectRoot ?? undefined,
+          expectedProjectRoot: body?.expectedProjectRoot ?? undefined,
+          selected: ctx.selected,
+          workspace: ctx.workspace,
+          stateRoot: ctx.stateRoot
+        });
         const modelId = String(body.model_id ?? body.modelId ?? body.model_name ?? "").trim();
         if (!modelId) {
           throw new HttpError(400, "invalid_model_id", "model_id is required.");
@@ -342,28 +404,38 @@ export function createSettingsRoutes({
         if (!writingRequiredCapabilitiesOk(profile)) {
           throw new HttpError(400, "model_unsupported", "该模型不支持工具调用，无法用于小说写作。");
         }
-        const beforeSwitchProject = await loadProject(projectRoot);
+        const before = await assertNotArchived(projectRoot);
         const caps = resolveModelCapabilities(profile);
         const conflicts = [];
-        if (caps.supportsTemperature === false && beforeSwitchProject.active_model?.temperature !== undefined) {
+        if (caps.supportsTemperature === false && before.active_model?.temperature !== undefined) {
           conflicts.push("该模型不支持温度设置，写作温度不会生效。");
         }
-        const project = await updateProjectSettings(projectRoot, { active_model: modelConfigFromLocalProfile(profile) });
-        await upsertLocalModelProfile(secretsRoot, project.active_model);
-        const config = await loadConfigLayers(projectRoot, project);
+        const nextModel = modelConfigFromLocalProfile(profile);
+        if (hasWorkspaceStore) {
+          // 任务 5 Step 5：模型切换统一走 saveWorkspaceSettings——成对携带
+          // active_model 与 tool_permissions（保留当前有效权限）。
+          await saveWorkspaceSettings(projectRoot, { workspaceStore, activeModel: nextModel });
+        } else {
+          // 旧组合根（未注入 workspaceStore）：写 project.yaml（预任务 5 行为）。
+          await updateProjectSettings(projectRoot, { active_model: nextModel });
+        }
+        await upsertLocalModelProfile(secretsRoot, nextModel);
+        const effective = hasWorkspaceStore
+          ? await loadEffectiveWorkspaceConfig(projectRoot, { workspaceStore })
+          : (await loadConfigLayers(projectRoot, await loadProject(projectRoot))).effective;
         return {
           ok: true,
           projectRoot,
           capabilities: caps,
           conflicts,
           project: {
-            project_id: project.project_id,
-            active_model: project.active_model,
-            tool_permissions: project.tool_permissions ?? {}
+            project_id: effective.project_id ?? null,
+            active_model: effective.active_model,
+            tool_permissions: effective.tool_permissions ?? {}
           },
-          effective_config: config.effective,
-          model_profile: buildModelProfile(config.effective.active_model, secretsRoot),
-          available_models: await buildAvailableModelProfiles(secretsRoot, config.effective.active_model)
+          effective_config: effective,
+          model_profile: buildModelProfile(effective.active_model, secretsRoot),
+          available_models: await buildAvailableModelProfiles(secretsRoot, effective.active_model)
         };
       } catch (error) {
         throw error instanceof HttpError ? error : new HttpError(400, "model_switch_failed", error?.message ?? String(error));

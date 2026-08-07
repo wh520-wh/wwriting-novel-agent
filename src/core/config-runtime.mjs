@@ -1,4 +1,6 @@
 import { readJson, safeJoin } from "./fs-utils.mjs";
+import { loadProject } from "./project-store.mjs";
+import { workspaceIdForPath } from "./workspaces/store.mjs";
 
 export const DEFAULT_CONFIG = {
   active_model: {
@@ -24,6 +26,47 @@ export const DEFAULT_CONFIG = {
   chat_max_tool_rounds: 32,
   auto_resume_on_start: false,
 };
+
+// 任务 5：普通工作区（无 project.yaml / 无应用私有 settings）的有效配置安全默认。
+// 与既有 per-project 兜底对齐：无 YOLO、无自动编辑、网络关闭、无归档、输出格式 md；
+// tool_permissions 形状对齐 DEFAULT_CONFIG（safe_edit 默认 true，与 createProject 一致）。
+export const FALLBACK_WORKSPACE_CONFIG = Object.freeze({
+  project_id: null,
+  output_format: "md",
+  archived_at: null,
+  active_model: null,
+  tool_permissions: Object.freeze({
+    read_only: false,
+    safe_edit: true,
+    test_allowed: false,
+    network_allowed: false,
+    dangerous: false,
+    auto_edit: false,
+    yolo: false
+  })
+});
+
+// 任务 5：统一工作区有效配置合并（冻结契约，见任务 5 简报 Step 2 / 计划 §2.3）。
+// 合并顺序：FALLBACK → 旧 project.yaml（只读兼容输入）→ 应用私有 workspace settings
+// （优先）。active_model 与 tool_permissions 按字段优先；projectRoot/workspace_id
+// 由调用方路径稳定派生。旧 project.yaml 只作兼容输入，绝不在此写入。
+export async function loadEffectiveWorkspaceConfig(projectRoot, { workspaceStore }) {
+  const legacyProject = await loadProject(projectRoot).catch(() => ({}));
+  const privateSettings = await workspaceStore.loadSettings(projectRoot);
+  return {
+    ...FALLBACK_WORKSPACE_CONFIG,
+    ...legacyProject,
+    ...privateSettings,
+    active_model: privateSettings.active_model ?? legacyProject.active_model ?? null,
+    tool_permissions: {
+      ...FALLBACK_WORKSPACE_CONFIG.tool_permissions,
+      ...(legacyProject.tool_permissions ?? {}),
+      ...(privateSettings.tool_permissions ?? {})
+    },
+    projectRoot,
+    workspace_id: workspaceIdForPath(projectRoot)
+  };
+}
 
 export async function loadConfigLayers(projectRoot, project = {}, options = {}) {
   const [globalConfig, localConfig, policyConfig] = await Promise.all([

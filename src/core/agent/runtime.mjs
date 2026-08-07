@@ -115,7 +115,12 @@ export function createAgentRuntime({
   // Task 3：journal 落盘位置（生产组合根必须显式传应用私有 storageRoot；默认
   // 项目内 .wwriting/agent 只保留给低层兼容测试）与旧 journal 只读迁移器。
   agentStorageRootFor = (projectRoot) => path.join(projectRoot, ".wwriting", "agent"),
-  workspaceMigrator = migrateProjectAgentStorage
+  workspaceMigrator = migrateProjectAgentStorage,
+  // Task 5：每模型轮读取有效工作区配置的加载器（组合根注入 loadEffectiveWorkspaceConfig
+  // + 全局默认模型兜底）。缺省读 project.yaml（与旧 loadProjectSafe 语义一致），供低层
+  // 测试与无注入调用方使用。每轮调用、不在 Runtime 缓存整份配置——模型/权限切换在下一
+  // 模型轮自然生效。
+  workspaceConfigLoader = null
 } = {}) {
   if (!modelGateway && typeof gatewayFactory !== "function") {
     throw new TypeError("createProjectAgent 需要注入带 complete(request, { signal }) 的 modelGateway");
@@ -276,6 +281,11 @@ export function createAgentRuntime({
       return FALLBACK_PROJECT;
     }
   }
+
+  // 有效配置加载器：注入优先，缺省回退 loadProjectSafe（旧语义）。
+  const resolveWorkspaceConfig = typeof workspaceConfigLoader === "function"
+    ? workspaceConfigLoader
+    : loadProjectSafe;
 
   function permissionModeOf(project) {
     const tp = project?.tool_permissions ?? {};
@@ -543,7 +553,7 @@ export function createAgentRuntime({
       }
 
       // ---- 装配模型请求 ----
-      const project = await loadProjectSafe(state.key);
+      const project = await resolveWorkspaceConfig(state.key);
       const policy = workflowPolicy(run.workflow);
       const modelConfig = modelConfigOf(project);
       const request = assemblePrompt({
