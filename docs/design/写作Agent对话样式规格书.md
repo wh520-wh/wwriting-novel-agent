@@ -38,18 +38,20 @@
 ## 3. 整体布局
 
 ```
-┌─ 顶栏：项目标题 + 状态（待命/已归档）+ 隐私/主题 ────────────────┐
-│                                                                │
-│  [对话]   用户气泡（右侧）                                       │
-│           Agent 消息（左侧）                                    │
-│  [当前 Run] 状态行：思考中 / 运行命令 / 等待确认 + [停止/重试]     │
-│           （任务计划悬浮于右上方，不占对话网格）                │
-│  [活动流]  • 运行命令  npm test                    ✓            │
-│           ▸ 读取文件  chapter.md                                │
-│  [排队]    先改第三章  排队  [立即]                               │
-│  [composer] ┌ 输入消息（稳定三行） ──────────────────────┐       │
-│             └────────────────────────────────────── [↑] ┘       │
-└──────────────────────────────────────────────────────────────┘
+┌─ 顶栏：项目标题 + 状态（待命/已归档）+ 隐私/主题 ─────────────────────┐
+│                                                                     │
+│  [对话]   用户气泡（右侧）                                            │
+│           Agent 消息（左侧，安全 GFM 渲染）                           │
+│  [工作组]  ▾ 工作中  工作 12 秒（details/summary，可展开/折叠）        │
+│             思考中 ▸（reasoning:turn-1）     —— 运行中最多两行扫光     │
+│             已完成思考 ✓（reasoning:turn-1）—— 展开显示全文/空文案    │
+│             ▸ 运行命令  npm test                    ✓                 │
+│             ▸ 读取文件  chapter.md                                   │
+│             任务计划  2/3（plan:run-1）                              │
+│  [排队]    先改第三章  排队  [立即]                                    │
+│  [composer] ┌ 输入消息（稳定三行） ──────────────────────┐             │
+│             └────────────────────────────────────── [↑] ┘             │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 - 对话与 composer 共享 `--content-column: 900px` 内容列，居中；模型菜单宽度受 `min(420px, calc(100vw - 32px))` 约束，左右各留 16px 视口安全区，长名称任意位置换行。
@@ -109,7 +111,7 @@
 
 - 标记：运行中 `•` / 完成 `✓` / 失败 `✗` / 已停止（取消类错误码 tool_cancelled、shell_cancelled）`已停止`。
 - 点击行头展开折叠详情，字段顺序固定：**参数 → 命令 → 目录 → 退出码 → 耗时 → 错误**；输出区保留最后 64 KiB，截断前置 `（输出过长已截断）`。
-- 私有推理字段（reasoning / chain-of-thought）绝不渲染。
+- 私有推理正文不在此渲染：chain-of-thought / private_reasoning 等链式字段绝不进入活动行；reasoning 内容的唯一展示入口是 §4.9 的 `已完成思考` 项。
 
 ### 4.4 排队输入
 
@@ -143,6 +145,41 @@
 
 - 宽度 `min(420px, calc(100vw - 32px))`，视口左右各 16px 安全区，`max-height: min(520px, calc(100vh - 96px))`。
 - 长名称 `white-space: normal; overflow-wrap: anywhere`，完整显示名走 `title`。
+
+### 4.9 工作组（Agent Work Group）
+
+- 一个 Run 的思考、工具调用、任务计划按发生顺序合并为一个**工作组**，插入对话时间流：`<details class="agent-work-group">`，`<summary>` 内为状态文案 + 耗时，正文为有序子项（`agent-work-item`）。
+- 子项 id 与种类：`reasoning:<turn_id>` / `tool:<activity_id>` / `plan:<run_id>`；排序规则：reasoning/tool 以开始事件 seq 排序，完成事件不移动位置；plan 首次出现位置固定，每次 `plan_updated` 内容更新并移动到最新位置（同一任务 id 绝不重复添加）。
+- 状态文案与展开默认值（投影给出，用户可在 DOM 侧覆盖）：
+
+| 组状态 | summary 文案 | 默认展开 |
+|---|---|---|
+| running / interrupting / stopping | `工作中` | 展开 |
+| waiting_user | `工作中` | 展开（等待授权期间不计时） |
+| completed | `工作了 X 秒` | 折叠 |
+| failed | `工作了 X 秒 · 失败` | 展开 |
+| cancelled | `工作了 X 秒 · 已停止` | 展开 |
+| interrupted | `工作了 X 秒 · 已中断` | 展开 |
+
+- **耗时口径**：只显示**有效工作耗时**——`active_elapsed_ms` 累计 active（running/interrupting/stopping）区间，等待用户确认授权的时间不计入；终态时累计值即最终耗时。
+- **思考项**：`model_turn_started` 创建 `reasoning:<turn_id>`，运行中标签 `思考中`（最多两行、按自然片段替换、不推动对话滚动）；`reasoning_completed` 到达后标签变为 **`已完成思考`**。展开详情的文案按可用性三态：
+  - `available`（模型支持且本轮有已确认安全的内容）→ 显示思考全文；
+  - `unsupported`（模型明确不支持查看）→ `当前模型不支持查看`；
+  - `empty`（支持但本轮无内容）→ `本次没有可查看的思考内容`。
+- 每个模型轮次恰好一个 `已完成思考` 项，与工具动作严格按事件 seq 交替排列；两个模型轮次产生两个独立思考项。
+- reasoning 内容只经 `reasoning_delta` / `reasoning_completed` 进入 journal，**绝不写入下一轮模型上下文，也绝不混入 assistant 正文通道**。
+
+### 4.10 安全 GFM（Markdown 渲染）
+
+- 单一 marked 解析器路径（`gfm: true, breaks: true`），不再保留第二套渲染器；表格、任务列表、删除线、行内/围栏代码、引用、标题全部按 GFM 语义渲染。
+- 安全拦截固定顺序：
+  - raw HTML 整体转义为纯文本（`<script>` 不会执行）；
+  - 链接只放行显式 `http:` / `https:`，其余 scheme（`javascript:` / `data:` / `file:` 等）不生成 `<a>`，只保留标签文字；合法链接带 `data-external-link`；
+  - 图片不发起远程加载，只输出转义后的替代文字；
+  - 代码块内容转义。
+- 链接交给系统默认浏览器：view.js 对 `[data-external-link]` 事件委托 + `preventDefault`，Electron 走 preload 的 `openExternalUrl`（main 二次校验），普通浏览器回退 `window.open`。
+- `稿`/`prose` 围栏块渲染为衬线文稿块（含 `peek` class 与字数标）；流式未闭合围栏按纯文本段落回退。
+- 渲染产物宽度必须被 `--content-column: 900px` 约束，表格/代码块不得撑破正文列。
 
 ---
 
@@ -189,7 +226,7 @@
 - 输入成功后 AgentSurface 主动补拉一次增量 snapshot；SSE 继续承担实时事件流。消息首次可见性不能只依赖 SSE 长连接。
 - `/settings`、`/model` 精确输入只打开设置对应分区，不创建 Run；其余任何斜杠前缀字符串（含 `/init`、`/review`、`/write`）都是普通输入。
 - 运行事实与排队状态由 journal 事件驱动，顶栏不再显示队列派生状态。
-- 助手正文以 `assistant_message_delta` 增量到达、`assistant_message_completed` 定稿；前端对累积正文做 Markdown 增量渲染（rAF 合帧节流），断线重连由快照/回放保证一致；私有推理永不展示。
+- 助手正文以 `assistant_message_delta` 增量到达、`assistant_message_completed` 定稿；前端对累积正文做 Markdown 增量渲染（rAF 合帧节流，安全 GFM 见 §4.10），断线重连由快照/回放保证一致；reasoning 内容的展示只经 §4.9 的 `已完成思考` 项。
 
 ---
 
@@ -207,6 +244,7 @@
 - 动效从简：按下反馈在 80–100ms 内发生；新消息与菜单只允许短促 opacity/translate 动效，不循环、不弹跳。状态变化不改变行高，按钮/标记尺寸不随状态抖动。
 - 必须同时支持 `prefers-reduced-motion`、`prefers-reduced-transparency` 和 `prefers-contrast: more`；减弱动态后保留静态/颜色反馈，高对比模式使用实色表面与明确边界。
 - “思考中”使用短促、可降级的流动点反馈（三点闪烁），不得展示任何私有推理文本；必须支持 `prefers-reduced-motion`（减弱后静态呈现）。
+- **动效唯一性**：当前 Runtime 串行执行工具——可见扫光数量最多 1（reasoning 或工具文字二选一），终态/折叠工作组为 0；只有运行时真实存在两个同时开放的 `activity_id` 才允许数量为 2。完成折叠或用户手动折叠时必须立即移除工作组内的残余扫光。
 
 ---
 
@@ -231,5 +269,25 @@
 2. 活动行合并、20 行上限、64 KiB 输出尾、字段顺序、停止防连点、终态单横幅、extreme 卡不重建均为验收契约，不得放宽。
 3. 文案改动必须遵守第 5 节；删除文案不得以教学句替代。
 4. 新组件颜色从既有令牌派生，保持低饱和纸感；不得引入第三种错误色。
-5. 私有推理字段永不进入派生状态与 DOM。
+5. reasoning 内容只经 §4.9 的 `已完成思考` 项展示；chain-of-thought / private_reasoning 等链式字段永不进入派生状态与 DOM，reasoning 永不注入下一轮模型上下文。
 6. 新增事件类型先入 journal 固定事件表，再在 state.js 归约、view.js 渲染；未知类型一律忽略。
+
+---
+
+## 10. 技能发现契约（Skills）
+
+技能由目录中的 `SKILL.md` 声明，放入目录即被发现，**不需要在项目中启用**（verbatim）：
+
+```text
+全局技能：%USERPROFILE%\.wwriting\skills\<skill-name>\SKILL.md
+项目技能：<projectRoot>\skills\<skill-name>\SKILL.md
+同名覆盖：项目 > 全局 > 随应用分发 > 内置
+放入目录即被发现；适用条件写在 SKILL.md，不需要在项目中启用。
+```
+
+- 只扫描直接子目录中的 `SKILL.md`；无 `SKILL.md` 的目录不是技能，静默跳过。
+- `SKILL.md` frontmatter：`name`（必填，必须与目录名一致）、`description`；`version` 与 `metadata.wwriting.hooks` 为可选扩展，未知 metadata 保留但不执行。
+- 跨层同名由优先级解决，catalog 返回 `active`（最高优先级副本）与 `shadowed`（被覆盖的底层副本），UI 显示当前生效来源；**没有启用/禁用集合，没有“全部启用”开关**。
+- 适用条件（如章节号范围、检查项）写在 `SKILL.md` 的 `metadata.wwriting.hooks` / 正文小节，不经过项目配置。
+- 设置 → Agent 技能分区 = catalog/import/delete 唯一入口：文件夹/ZIP 导入、重名覆盖提示、打开目录、删除。
+- 旧 manifest（skill.yaml/json）只在迁移时作为输入，迁移后 live 目录只有 `SKILL.md`，旧文件只存在于 migration backup。
