@@ -28,6 +28,37 @@ const SETTINGS_SECTIONS = [
   { id: "danger", label: "项目管理", icon: "folder", ready: true }
 ];
 
+// 添加技能菜单（.spd-addmenu）的关闭行为：点击菜单外部或按 Esc 只关菜单，不关整个
+// 设置弹窗。Esc 用 capture 监听先于 app.js 的弹窗级 Esc，stopImmediatePropagation
+// 阻断后者（避免一次 Esc 同时关掉菜单与弹窗）。返回解除监听的函数。
+function bindAddMenuDismissal(addWrap, syncAddMenuAria) {
+  if (typeof document === "undefined" || typeof document.addEventListener !== "function") return null;
+  const close = () => {
+    if (!addWrap.classList.contains("open")) return;
+    addWrap.classList.remove("open");
+    syncAddMenuAria();
+  };
+  const onDocClick = (event) => {
+    if (!addWrap.classList.contains("open")) return;
+    const target = event?.target ?? null;
+    if (target && typeof addWrap.contains === "function" && addWrap.contains(target)) return;
+    close();
+  };
+  const onDocKeydown = (event) => {
+    if (event?.key === "Escape" && addWrap.classList.contains("open")) {
+      close();
+      event.stopImmediatePropagation?.();
+      event.preventDefault?.();
+    }
+  };
+  document.addEventListener("click", onDocClick);
+  document.addEventListener("keydown", onDocKeydown, true);
+  return () => {
+    document.removeEventListener("click", onDocClick);
+    document.removeEventListener("keydown", onDocKeydown, true);
+  };
+}
+
 
 export function createSettingsModal(ctx, options = {}) {
   // ctx provides: refs, getDashboard, getCurrentProjectRoot, showToast, loadDashboard,
@@ -53,6 +84,8 @@ export function createSettingsModal(ctx, options = {}) {
   let skillsCatalog = { active: [], shadowed: [], migration_errors: [] };
   // 技能分区内的节点引用（scope 切换 / 导入删除后局部重渲染，不重建整个分区）。
   const skillsRefs = { list: null, errors: null, globalBtn: null, projectBtn: null, addWrap: null };
+  // 添加技能菜单的文档级关闭监听；重渲/换分区前先解除旧监听避免泄漏。
+  let removeAddMenuDismissal = null;
   // 模型清单来自全局（~/.wwriting/model-profiles.json），与项目无关。
   // 打开设置时拉一次，保存/删除/选用后刷新。
   let globalModels = { default_model: null, models: [] };
@@ -512,6 +545,9 @@ export function createSettingsModal(ctx, options = {}) {
     addMenu.append(folderOpt, zipOpt);
     addWrap.append(addBtn, addMenu);
     skillsRefs.addWrap = addWrap;
+    // 点击菜单外部 / Esc 关闭菜单（Esc 只关菜单不关弹窗；重渲先解除旧监听）。
+    removeAddMenuDismissal?.();
+    removeAddMenuDismissal = bindAddMenuDismissal(addWrap, syncAddMenuAria);
     toolbar.append(addWrap);
     detail.append(toolbar);
 

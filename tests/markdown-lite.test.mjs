@@ -130,6 +130,18 @@ test("流式未闭合稿围栏按纯文本段落回退，不抛错（延续旧�
   assert.ok(!html.includes("manuscript-block"));
 });
 
+test("稿块围栏兼容 CRLF 行尾与闭合围栏尾随空格", () => {
+  const html = renderMarkdown("```稿\r\n正文段。\r\n```  \r\n");
+  assert.ok(html.includes("manuscript-block"), html);
+  assert.ok(html.includes("正文段。"), html);
+  assert.ok(!html.includes("```"), "围栏不得泄漏到渲染结果");
+  // CRLF 下的流式未闭合（打开围栏后无闭合行）同样按纯文本回退。
+  const stream = renderMarkdown("```prose\r\n只有开头");
+  assert.ok(stream.startsWith("<p>"), stream);
+  assert.ok(stream.includes("只有开头"));
+  assert.ok(!stream.includes("manuscript-block"));
+});
+
 test("混合文档整体顺序正确：说明 → 稿块 → 列表", () => {
   const html = renderMarkdown("说明文字。\n\n```稿\n正文段。\n```\n\n- 要点");
   const iText = html.indexOf("<p>说明文字。</p>");

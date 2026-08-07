@@ -101,6 +101,9 @@ export const PLAN_STATUSES = Object.freeze(["pending", "in_progress", "completed
 
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
+// 有效工作时钟状态（transitionWorkClock 复用；模块级常量避免每次调用重建 Set）。
+const WORK_CLOCK_ACTIVE_STATUSES = new Set(["running", "interrupting", "stopping"]);
+
 const TERMINAL_EVENT_TO_STATUS = Object.freeze({
   run_completed: "completed",
   run_failed: "failed",
@@ -208,12 +211,11 @@ function createRun(event, { workflow, inputId }) {
 //   - 终态同时落 finished_at。
 // retry（terminal→running）保留 active_elapsed_ms 并重新设置 active_since。
 function transitionWorkClock(run, nextStatus, at) {
-  const active = new Set(["running", "interrupting", "stopping"]);
-  if (run.active_since && !active.has(nextStatus)) {
+  if (run.active_since && !WORK_CLOCK_ACTIVE_STATUSES.has(nextStatus)) {
     run.active_elapsed_ms += Math.max(0, Date.parse(at) - Date.parse(run.active_since));
     run.active_since = null;
   }
-  if (!run.active_since && active.has(nextStatus)) run.active_since = at;
+  if (!run.active_since && WORK_CLOCK_ACTIVE_STATUSES.has(nextStatus)) run.active_since = at;
   if (["completed", "failed", "cancelled", "interrupted"].includes(nextStatus)) run.finished_at = at;
 }
 

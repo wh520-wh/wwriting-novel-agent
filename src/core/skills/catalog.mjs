@@ -28,6 +28,7 @@ const ROOTS = [
 export async function discoverSkills({ projectRoot, userHome, resourcesPath, builtinRoot }) {
   const active = new Map(); // name → 最高优先级副本
   const shadowed = [];      // 同名但被更高优先级覆盖的副本（优先级升序）
+  const errors = [];        // 解析失败的技能目录 { dir, error }：跳过但不拖垮整层
 
   for (const { source, rootOf } of ROOTS) {
     const root = rootOf({ projectRoot, userHome, resourcesPath, builtinRoot });
@@ -51,7 +52,15 @@ export async function discoverSkills({ projectRoot, userHome, resourcesPath, bui
       if (!stat.isDirectory()) continue;
       // 目录中存在合法 SKILL.md 即可发现；无 SKILL.md 的目录不是技能，静默跳过。
       if (!(await pathExists(path.join(skillDir, "SKILL.md")))) continue;
-      const skill = await readSkillFile(skillDir, { source });
+      // 单个技能目录损坏/非法只跳过该目录并记入 errors，绝不让一层坏技能
+      // 拖垮整个 catalog（否则 agent 静默拿到空列表、settings 500）。
+      let skill;
+      try {
+        skill = await readSkillFile(skillDir, { source });
+      } catch (error) {
+        errors.push({ dir: skillDir, error: error?.message ?? String(error) });
+        continue;
+      }
       const previous = active.get(skill.name);
       if (previous) shadowed.push(previous);
       active.set(skill.name, skill);
@@ -60,6 +69,7 @@ export async function discoverSkills({ projectRoot, userHome, resourcesPath, bui
 
   return Object.freeze({
     active: Object.freeze([...active.values()]),
-    shadowed: Object.freeze(shadowed)
+    shadowed: Object.freeze(shadowed),
+    errors: Object.freeze(errors)
   });
 }

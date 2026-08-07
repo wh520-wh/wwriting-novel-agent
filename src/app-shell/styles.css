@@ -619,7 +619,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .drawer-head { display: flex; align-items: center; gap: 10px; padding: 14px 14px 12px 18px; border-bottom: 1px solid var(--line); }
 
-.drawer-head h3 { font-size: 14px; line-height: 1.35; font-weight: 650; color: var(--text-primary); }
+.drawer-head h3 { font-size: 14px; line-height: 1.35; font-weight: var(--weight-semibold); color: var(--text-primary); }
 
 .drawer-head .icon-btn { margin-left: auto; }
 
@@ -973,7 +973,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .spd-head { display: flex; align-items: center; gap: 12px; padding-right: 36px; padding-bottom: 18px; border-bottom: 1px solid var(--line-2); margin-bottom: 20px; }
 
-.spd-head h3 { font-size: 19px; line-height: 1.35; font-weight: 700; color: var(--text-primary); white-space: nowrap; }
+.spd-head h3 { font-size: 19px; line-height: 1.35; font-weight: var(--weight-bold); color: var(--text-primary); white-space: nowrap; }
 
 .spd-head .icon-btn { width: 26px; height: 26px; }
 
@@ -1573,7 +1573,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .toast.error svg { color: var(--btn-ink); }
 .spd-hint.error { color: var(--red); }
 .spd-hint.success { color: var(--green); }
-.spd-section { margin: 18px 0 4px; font-size: 15px; line-height: 1.4; font-weight: 650; color: var(--text-primary); letter-spacing: 0; }
+.spd-section { margin: 18px 0 4px; font-size: 15px; line-height: 1.4; font-weight: var(--weight-semibold); color: var(--text-primary); letter-spacing: 0; }
 
 /* ============================================================
    Agent 技能分区（Task 13）：segmented control / 技能行 / 添加菜单

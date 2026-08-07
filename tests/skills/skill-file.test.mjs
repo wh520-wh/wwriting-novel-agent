@@ -11,6 +11,7 @@ import test from "node:test";
 import {
   MAX_SKILL_FILE_BYTES,
   MAX_SKILL_RESOURCE_BYTES,
+  assertSafeSkillDirName,
   readSkillFile,
   readSkillResource
 } from "../../src/core/skills/skill-file.mjs";
@@ -272,6 +273,34 @@ test("readSkillResource 拒绝不存在的资源", async (t) => {
     readSkillResource(skill, "references/missing.md"),
     "skill_resource_not_found"
   );
+});
+
+test("readSkillResource 对目录资源返回 skill_resource_not_found（不裸抛 EISDIR）", async (t) => {
+  const { root, skillDir } = await makeSkill("suspense-chapter-end", VALID_SKILL);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(skillDir, "references", "dirres"), { recursive: true });
+  const skill = await readSkillFile(skillDir, { source: "project" });
+  await expectRejected(
+    readSkillResource(skill, "references/dirres"),
+    "skill_resource_not_found"
+  );
+});
+
+test("assertSafeSkillDirName 拒绝 Windows 非法字符与保留设备名", () => {
+  const invalid = [
+    "a<b", "a>b", "a:b", 'a"b', "a|b", "a?b", "a*b",
+    "CON", "con", "PRN", "AUX", "NUL", "NUL.txt", "COM1", "com9", "LPT1", "lpt9.txt"
+  ];
+  for (const bad of invalid) {
+    assert.throws(
+      () => assertSafeSkillDirName(bad),
+      (error) => error.code === "skill_invalid_name",
+      `Windows 非法技能名必须拒绝: ${JSON.stringify(bad)}`
+    );
+  }
+  for (const ok of ["正常技能", "skill-name", "CON-note", "COMIX", "a b"]) {
+    assert.equal(assertSafeSkillDirName(ok), ok, `合法技能名必须通过: ${JSON.stringify(ok)}`);
+  }
 });
 
 test("readSkillResource 拒绝超过 1MiB 的文本资源", async (t) => {

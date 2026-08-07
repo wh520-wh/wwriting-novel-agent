@@ -174,25 +174,33 @@ async function stageZipImport({ sourceZip, targetRoot }) {
   try {
     await fs.mkdir(staging, { recursive: true });
     // pass 2：展开（相对路径已全部通过 pass 1 校验；写入前再做 containment 兜底）。
-    for (const { entry } of entries) {
-      let rel = entry.fileName.replace(/\\/gu, "/");
-      if (stripPrefix) {
-        if (rel === stripPrefix || rel.startsWith(`${stripPrefix}/`)) {
-          rel = rel.slice(stripPrefix.length).replace(/^\//u, "");
+    // 展开期 IO/解压失败（损坏数据、磁盘错误等）映射为带 code 的技能错误，
+    // 让 HTTP 层返回结构化错误而不是裸 fs 异常。
+    try {
+      for (const { entry } of entries) {
+        let rel = entry.fileName.replace(/\\/gu, "/");
+        if (stripPrefix) {
+          if (rel === stripPrefix || rel.startsWith(`${stripPrefix}/`)) {
+            rel = rel.slice(stripPrefix.length).replace(/^\//u, "");
+          }
         }
+        if (rel.length === 0) continue; // 顶层目录条目
+        const dest = path.resolve(staging, rel);
+        if (path.relative(path.resolve(staging), dest).startsWith("..")) {
+          throw skillError("skill_zip_unsafe", `ZIP entry 逃逸技能目录: ${entry.fileName}`);
+        }
+        if (entry.fileName.endsWith("/")) {
+          await fs.mkdir(dest, { recursive: true });
+          continue;
+        }
+        await fs.mkdir(path.dirname(dest), { recursive: true });
+        const readStream = await zipfile.openReadStreamPromise(entry);
+        await pipeToFile(readStream, dest);
       }
-      if (rel.length === 0) continue; // 顶层目录条目
-      const dest = path.resolve(staging, rel);
-      if (path.relative(path.resolve(staging), dest).startsWith("..")) {
-        throw skillError("skill_zip_unsafe", `ZIP entry 逃逸技能目录: ${entry.fileName}`);
-      }
-      if (entry.fileName.endsWith("/")) {
-        await fs.mkdir(dest, { recursive: true });
-        continue;
-      }
-      await fs.mkdir(path.dirname(dest), { recursive: true });
-      const readStream = await zipfile.openReadStreamPromise(entry);
-      await pipeToFile(readStream, dest);
+    } catch (error) {
+      // 校验类错误（SkillError）原样透传；其余按展开失败映射。
+      if (error?.name === "SkillError") throw error;
+      throw skillError("skill_zip_invalid", `ZIP 展开失败: ${error?.message ?? String(error)}`);
     }
 
     // 验证 SKILL.md 并取 frontmatter name；目录名与 name 不一致时按 name 重命名。

@@ -660,7 +660,9 @@ export function createAgentView({ root, document: doc = globalThis.document, req
 
   function liveElapsedMs(run, now = Date.now()) {
     const elapsed = Number(run?.active_elapsed_ms ?? 0);
-    const since = run?.active_since != null ? Number(run.active_since) : null;
+    // journal 的 active_since 是 ISO 字符串（event.at = toISOString()）；Date.parse
+    // 解析它得到毫秒时间戳。无法解析/缺失时 since 为 NaN，回落累计值（不增量）。
+    const since = run?.active_since != null ? Date.parse(run.active_since) : null;
     if (Number.isFinite(since) && Number.isFinite(elapsed)) {
       return Math.max(0, elapsed + Math.max(0, now - since));
     }

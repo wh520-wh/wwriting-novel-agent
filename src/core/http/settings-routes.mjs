@@ -565,7 +565,8 @@ export function createSettingsRoutes({
           project_root: projectRoot,
           active: catalogData.active.map(toCatalogEntry),
           shadowed: catalogData.shadowed.map(toCatalogEntry),
-          migration_errors: migrationErrors
+          migration_errors: migrationErrors,
+          errors: catalogData.errors
         };
       } catch (error) {
         throw error instanceof HttpError
