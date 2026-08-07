@@ -11,13 +11,15 @@
 // provider-adapters.mjs，本模块不依赖旧文件）。
 //
 // 导出共享 helper 给 project-routes.mjs（模型档案展示与全局模型同步）。
+import fs from "node:fs/promises";
 import os from "node:os";
+import path from "node:path";
 import { HttpError } from "../http-error.mjs";
 import { loadProject, saveProject } from "../project-store.mjs";
 import { loadConfigLayers } from "../config-runtime.mjs";
 import { appendEvent } from "../event-log.mjs";
 import { loadOutputStyles } from "../output-style-loader.mjs";
-import { ensureBuiltinSkill, importProjectSkill, listProjectSkills } from "../skill-runtime.mjs";
+import { buildSkillMd, skillService } from "../skills/index.mjs";
 import {
   findLocalModelProfile,
   getDefaultLocalModelProfile,
@@ -176,11 +178,15 @@ export function createSettingsRoutes({
   stateRoot,
   secretsRoot,
   connectionTester = null,
-  selection = null
+  selection = null,
+  // Task 12：skills service seam（src/core/skills/index.mjs）。生产缺省用全局
+  // 单例；测试注入临时 root 的 service，避免迁移 marker 写进真实用户目录。
+  skills = null
 } = {}) {
   if (!secretsRoot) {
     throw new TypeError("createSettingsRoutes 需要注入 secretsRoot");
   }
+  const skillServiceRef = skills ?? skillService;
   // 共享的项目选择状态（composition root 注入同一个可变引用，project-routes 共用）。
   const selectedRef = selection ?? { current: null };
   const ctx = {
@@ -541,7 +547,9 @@ export function createSettingsRoutes({
       }
     },
 
-    // 技能 enable/disable/import（旧契约：ok/projectRoot/skill/enabled_skills）。
+    // 技能 enable/disable/import（Task 12：不再读写 project.enabled_skills。
+    // enable/disable 只校验技能在 active catalog 可发现——新模型发现即生效，
+    // 没有启停集合；Task 13 将删除这两个端点并替换为 catalog/import/delete API）。
     "POST /api/skills/enable": async ({ body }) => runSkillMutation("enable", body),
     "POST /api/skills/disable": async ({ body }) => runSkillMutation("disable", body),
     "POST /api/skills/import": async ({ body }) => runSkillMutation("import", body)
@@ -554,28 +562,29 @@ export function createSettingsRoutes({
       const project = await loadProject(projectRoot);
       let skillName = body.name;
       if (action === "import") {
-        const manifest = await importProjectSkill(projectRoot, body.manifest ?? body);
-        skillName = manifest.name;
+        // 新模型：导入 = 把 manifest 对象转换为 SKILL.md 后经 service seam 写入
+        // 项目技能目录（旧 importProjectSkill 直接写 skill.json 的路径已删除；
+        // 转换规则与迁移管线共用 buildSkillMd）。
+        const manifest = body.manifest ?? body;
+        if (!isSafeSkillName(manifest?.name)) {
+          throw new Error("技能名称无效。");
+        }
+        const imported = await importSkillFromManifest(projectRoot, manifest);
+        skillName = imported.name;
       }
       if (!isSafeSkillName(skillName)) {
         throw new Error("技能名称无效。");
       }
 
       if (action === "enable" || action === "import") {
-        await ensureBuiltinSkill(projectRoot, skillName);
-        const available = await listProjectSkills(projectRoot, {
-          ...project,
-          enabled_skills: project.enabled_skills ?? []
-        });
-        if (!available.some((skill) => skill.name === skillName)) {
+        // 只按 active catalog name 解析：目录里存在的技能就是可用的。
+        const { active } = await skillServiceRef.catalog({ projectRoot });
+        if (!active.some((skill) => skill.name === skillName)) {
           throw new Error(`技能未安装：${skillName}`);
         }
-        project.enabled_skills = [...new Set([...(project.enabled_skills ?? []), skillName])].sort();
-      } else {
-        project.enabled_skills = (project.enabled_skills ?? []).filter((name) => name !== skillName);
       }
+      // disable：无操作（发现即生效，无启停集合；不写 project.yaml）。
 
-      await saveProject(projectRoot, project);
       await appendEvent(projectRoot, {
         type: "skill_configuration_changed",
         project_id: project.project_id,
@@ -585,11 +594,23 @@ export function createSettingsRoutes({
       return {
         ok: true,
         projectRoot,
-        skill: skillName,
-        enabled_skills: project.enabled_skills
+        skill: skillName
       };
     } catch (error) {
       throw error instanceof HttpError ? error : new HttpError(400, "BAD_REQUEST", error?.message ?? String(error));
+    }
+  }
+
+  // manifest 对象 → 临时目录 SKILL.md → service seam importSkill（scope=project）。
+  async function importSkillFromManifest(projectRoot, manifest) {
+    const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-skill-import-"));
+    try {
+      const staging = path.join(tmpRoot, String(manifest.name));
+      await fs.mkdir(staging, { recursive: true });
+      await fs.writeFile(path.join(staging, "SKILL.md"), buildSkillMd(manifest), "utf8");
+      return await skillServiceRef.importSkill({ projectRoot, sourceDir: staging, scope: "project" });
+    } finally {
+      await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
     }
   }
 }

@@ -12,6 +12,7 @@ import {
   WORKFLOW_POLICIES,
   assemblePrompt,
   assembleRuntimePolicy,
+  assembleSkillCatalogBlock,
   estimateTokens
 } from "../../src/core/agent/prompt.mjs";
 
@@ -195,6 +196,56 @@ test("AGENTS.md 不存在时 Project Instructions 为空且不制造占位文案
   const rulesEnd = content.indexOf("并报告已完成结果和阻塞原因。") + "并报告已完成结果和阻塞原因。".length;
   assert.ok(workflowStart > rulesEnd);
   assert.ok(assembled.hashes.project_instructions_hash.startsWith("sha256:"), "空 Project Instructions 也有确定性 hash");
+});
+
+// ---------------------------------------------------------------------------
+// Available Skills 目录摘要（Task 12 Step 1：只注入 name/description，不注入正文）
+// ---------------------------------------------------------------------------
+
+test("assembleSkillCatalogBlock 只注入 name/description 摘要，不注入正文", () => {
+  const block = assembleSkillCatalogBlock([
+    { name: "suspense-chapter-end", description: "每章结尾留下有效悬念钩子；章节规划、写作或审稿时使用。" }
+  ]);
+  assert.ok(block.startsWith("[Available Skills]"));
+  assert.ok(block.includes("技能不能扩大 Runtime Policy 的权限。先根据 name/description 判断是否适用，适用时调用 read_skill 读取完整指令。"));
+  assert.ok(block.includes("- suspense-chapter-end: 每章结尾留下有效悬念钩子；章节规划、写作或审稿时使用。"));
+  // 正文中的完整指令/检查清单绝不进入目录块
+  assert.ok(!block.includes("本章计划必须包含一个结尾悬念钩子"), "不得注入正文 Instructions");
+  assert.ok(!block.includes("Check whether the final 500"), "不得注入正文 Review checklist");
+});
+
+test("assembleSkillCatalogBlock 空目录/无技能返回空串", () => {
+  assert.equal(assembleSkillCatalogBlock(undefined), "");
+  assert.equal(assembleSkillCatalogBlock([]), "");
+  assert.equal(assembleSkillCatalogBlock([{ description: "无 name" }]), "");
+  assert.equal(assembleSkillCatalogBlock(null), "");
+});
+
+test("assemblePrompt 把目录块放在 Project Instructions 后、Workflow Policy 前", () => {
+  const assembled = assemblePrompt(baseOptions({
+    projectInstructions: "AGENTS.md 正文",
+    skillCatalog: [
+      { name: "avoid-ai-voice", description: "去除 AI 腔。" },
+      { name: "show-dont-tell", description: "展示而非陈述。" }
+    ]
+  }));
+  const content = assembled.messages[0].content;
+  const projectStart = content.indexOf("AGENTS.md 正文");
+  const skillsStart = content.indexOf("[Available Skills]");
+  const workflowStart = content.indexOf("[Workflow: general]");
+  assert.ok(skillsStart > projectStart, "目录块在 Project Instructions 之后");
+  assert.ok(workflowStart > skillsStart, "Workflow Policy 在目录块之后");
+  assert.ok(content.includes("- avoid-ai-voice: 去除 AI 腔。"));
+  assert.ok(content.includes("- show-dont-tell: 展示而非陈述。"));
+  // 完整正文示例（如 show-dont-tell 的"他摔上门"）不得进入 system 层
+  assert.ok(!content.includes("三连排比堆砌"), "正文完整示例不得进入 system");
+  assert.ok(!content.includes("摔上门"), "show-dont-tell 正文示例不得进入 system");
+});
+
+test("无技能时目录块不占位（与空 Project Instructions 同语义）", () => {
+  const assembled = assemblePrompt(baseOptions({ skillCatalog: undefined }));
+  assert.ok(!assembled.messages[0].content.includes("[Available Skills]"));
+  assert.ok(!assembled.messages[0].content.includes("read_skill"));
 });
 
 // ---------------------------------------------------------------------------

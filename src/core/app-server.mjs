@@ -44,12 +44,16 @@ export function createAppShellServer({
   stateRoot = null,
   port = 4173,
   testLoadDashboardData = null,
-  testModelConnection = null
+  testModelConnection = null,
+  // Task 12：skills service seam。缺省全局单例；测试注入临时 root 的 service，
+  // 避免迁移 marker 写进真实用户目录。
+  skills = null
 } = {}) {
   const workspace = path.resolve(workspaceRoot);
   const localSecretsRoot = path.resolve(secretsRoot);
   const appStateRoot = path.resolve(stateRoot ?? secretsRoot);
-  const dashboardLoader = testLoadDashboardData ?? loadDashboardData;
+  const dashboardLoader = testLoadDashboardData
+    ?? ((workspaceRootArg, options = {}) => loadDashboardData(workspaceRootArg, { ...options, skillService: skills ?? undefined }));
   const connectionTester = testModelConnection ?? runModelConnectionTest ?? null;
   applyLocalSecretsToEnv(loadLocalSecretsSync(localSecretsRoot));
 
@@ -77,7 +81,8 @@ export function createAppShellServer({
     gatewayFactory: (projectRoot) => modelGateway.gatewayFor(projectRoot).gateway,
     shell: runShellCommand,
     projectLocks,
-    secrets
+    secrets,
+    ...(skills ? { skills } : {})
   });
 
   // 路由组装：各 route module 返回 handler 表（"METHOD /path" -> handler）。
@@ -110,7 +115,8 @@ export function createAppShellServer({
       stateRoot: appStateRoot,
       secretsRoot: localSecretsRoot,
       connectionTester,
-      selection
+      selection,
+      ...(skills ? { skills } : {})
     })
   ];
   for (const module of routeModules) {

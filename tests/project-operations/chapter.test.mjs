@@ -12,7 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { createProjectRoot, LEGACY_STATE_FILE } from "../helpers/project-agent-harness.mjs";
+import { createProjectRoot, LEGACY_STATE_FILE, catalogSkillsFor } from "../helpers/project-agent-harness.mjs";
 import { loadChapterIndex, loadProject } from "../../src/core/project-store.mjs";
 import { loadChapterMemory } from "../../src/core/chapter-memory.mjs";
 import { loadContinuity, loadContinuityState, saveContinuity } from "../../src/core/continuity-store.mjs";
@@ -20,15 +20,32 @@ import { parseSimpleYaml, serializeSimpleYaml } from "../../src/core/simple-yaml
 import { sha256 } from "../../src/core/fs-utils.mjs";
 import {
   appendChapterSegment,
-  commitChapter,
+  commitChapter as rawCommitChapter,
   commitChapterMemory,
   inspectChapterContext,
   ProjectOperationError
 } from "../../src/core/project-operations/chapter.mjs";
 
+// Task 12：章节提交的技能钩子改读新 catalog（内置技能发现即生效，无 enabled_skills）。
+// 每个项目注入临时 skills service 的 active 列表——migration marker 只写进项目内
+// 临时 home，绝不触碰真实用户目录。按 projectRoot 缓存，避免重复迁移。
+const skillOptionsCache = new Map();
+async function skillOptions(projectRoot) {
+  if (!skillOptionsCache.has(projectRoot)) {
+    skillOptionsCache.set(projectRoot, { skills: await catalogSkillsFor(projectRoot) });
+  }
+  return skillOptionsCache.get(projectRoot);
+}
+
+// 统一包装：所有 commitChapter 调用自动携带 skills 注入（与写探针 options 并存）。
+const commitChapter = async (args, options = {}) =>
+  rawCommitChapter(args, { ...(await skillOptions(args.projectRoot)), ...options });
+
+// 内置技能发现即生效后，LONG_PROSE 必须通过全部四个确定性技能门禁
+//（suspense-ending / chapter-opening / ai-voice / dialogue-ratio）。
 const LONG_PROSE = `# 第一章 雨夜来信
 
-雨下了一整夜。林深读完那封没有署名的信，手指微微发凉。信里只写了一句：老宅的钟，会在午夜敲十三下。他把信折好放进抽屉，又忍不住取出来再看一遍。窗外一声闷雷，街灯忽明忽暗。天亮之前，他决定回老宅看看。`;
+雨夜，雨声突然变大。林深猛地推开门，冲进老宅的客厅。他浑身湿透，抹了一把脸，低声道：“信上说，老宅的钟会在午夜敲十三下。”烛光下，墙上的照片里竟是多年不见的父亲。他正要细看，门外却传来一阵急促的敲门声。`;
 
 async function makeProject(options = {}) {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-ops-chapter-"));
@@ -385,8 +402,12 @@ test("commitChapter 标题门禁拒绝串章标题", async () => {
 test("commitChapter 技能门禁失败可被用户例外覆盖并记录 excepted", async () => {
   const { workspace, projectRoot, project } = await makeProject();
   try {
-    await writeProjectYamlWith(projectRoot, { enabled_skills: ["suspense-chapter-end"] });
-    const flatProse = `# 第一章 平静的早晨\n\n林深吃过早饭，把碗洗了，又给窗台上的花浇了水，然后坐在沙发上看完了一整本杂志，喝了两杯茶。午后他出门散步，沿河边走了三公里，回家时天还没黑。`;
+    // 新模型：内置技能发现即生效，无需（也不再存在）enabled_skills。正文以动作
+    // 开场（猛然，通过 chapter-opening）、带对话（通过 dialogue-ratio）、无 AI 腔
+    //（通过 ai-voice），但结尾平缓——只有 suspense-ending 门禁失败。
+    const flatProse = `# 第一章 平静的早晨
+
+林深猛然从床上坐起来，压低声音：“门外有人，脚步声很急，不太对劲。”他披上外套走到窗边，看着雨中的街道。天亮时，他数了数门口留下的脚印，不多不少，正好两行。什么都没有发生。`;
     await appendChapterSegment({ projectRoot, projectId: project.project_id, chapterNo: 1, segmentNo: 1, content: flatProse });
     await assert.rejects(
       () => commitChapter({ projectRoot, projectId: project.project_id, chapterNo: 1 }),
@@ -418,7 +439,13 @@ test("commitChapter 字数门禁失败可被用户例外覆盖", async () => {
       projectRoot,
       projectId: project.project_id,
       chapterNo: 1,
-      exceptionDecisions: [{ gate: "word-count-gate", decision: "allow_input", chapter_no: 1 }]
+      exceptionDecisions: [
+        { gate: "word-count-gate", decision: "allow_input", chapter_no: 1 },
+        // 新模型：内置技能检查全部 active；"短。" 同时触发章节开头/结尾/对话技能门禁
+        { gate: "skill:suspense-chapter-end", decision: "allow", chapter_no: 1 },
+        { gate: "skill:chapter-opening-hook", decision: "allow", chapter_no: 1 },
+        { gate: "skill:dialogue-not-summary", decision: "allow", chapter_no: 1 }
+      ]
     });
     assert.equal(result.ok, true);
     const entry = (await loadChapterIndex(projectRoot)).chapters.find((c) => c.chapter_no === 1);

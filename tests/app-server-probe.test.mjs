@@ -74,6 +74,9 @@ async function setupServer(options = {}) {
     target_words_per_chapter: 20,
     ...(options.project ?? {})
   });
+  // Task 12：注入临时 root 的 skills service（migration marker 不碰真实用户目录）。
+  const { createSkillService } = await import("../src/core/skills/index.mjs");
+  const skills = createSkillService({ userHome: path.join(root, ".skills-home"), resourcesPath: null });
   const server = createAppShellServer({
     workspaceRoot: root,
     selectedProjectRoot: options.selected ?? projectRoot,
@@ -81,6 +84,7 @@ async function setupServer(options = {}) {
     secretsRoot: path.join(root, ".secrets"),
     staticRoot: path.resolve("src", "app-shell"),
     port: 0,
+    skills,
     ...(options.testModelConnection ? { testModelConnection: options.testModelConnection } : {})
   });
   const port = await listenOnFetchSafePort(server);
@@ -115,8 +119,11 @@ async function waitFor(predicate, { timeout = 15000 } = {}) {
 async function commitChapter(projectRoot, chapterNo, content) {
   const project = await loadProject(projectRoot);
   const { appendChapterSegment, commitChapter: commit } = await import("../src/core/project-operations/chapter.mjs");
+  const { createSkillService } = await import("../src/core/skills/index.mjs");
+  const skillsService = createSkillService({ userHome: path.join(projectRoot, ".test-skill-home"), resourcesPath: null });
+  const { active } = await skillsService.catalog({ projectRoot });
   await appendChapterSegment({ projectRoot, projectId: project.project_id, chapterNo, segmentNo: 1, content });
-  await commit({ projectRoot, projectId: project.project_id, chapterNo });
+  await commit({ projectRoot, projectId: project.project_id, chapterNo }, { skills: active });
 }
 
 // ---------------------------------------------------------------------------
@@ -126,7 +133,7 @@ async function commitChapter(projectRoot, chapterNo, content) {
 test("dashboard 返回领域事实且不包含运行推断", async () => {
   const { projectRoot, server, port } = await setupServer();
   try {
-    await commitChapter(projectRoot, 1, "第一章正文：雨夜来信的开篇。");
+    await commitChapter(projectRoot, 1, "雨夜，一封没有署名的信突然落在门缝里。他猛地抬头，低声道：“谁在送信？老宅的钟会在午夜敲响。”信纸背面写着：真相就在老宅。他攥紧信，冲出门去。");
     const { res, data } = await getJson(port, `/api/dashboard?projectRoot=${encodeURIComponent(projectRoot)}`);
     assert.equal(res.status, 200);
     assert.equal(data.ok, true);
@@ -230,7 +237,7 @@ test("归档项目拒绝写端点", async () => {
 test("章节读取、确定性导出与诊断", async () => {
   const { projectRoot, server, port } = await setupServer();
   try {
-    await commitChapter(projectRoot, 1, "第一章正文：雨夜来信的开篇。");
+    await commitChapter(projectRoot, 1, "雨夜来信突然出现在门缝里。他猛地抬头，低声道：“谁在送信？老宅的钟会在午夜敲响。”信纸背面写着：真相就在老宅。他攥紧信，冲出门去。");
     const read = await getJson(port, `/api/chapters/read?chapter=1`);
     assert.equal(read.res.status, 200);
     assert.equal(read.data.chapter_no, 1);
@@ -275,7 +282,9 @@ test("资料搜索/抓取与技能启用/禁用/导入", async () => {
     assert.equal(search.data.results[0].title, "App Shell Probe");
     const enable = await postJson(port, "/api/skills/enable", { name: "suspense-chapter-end" });
     assert.equal(enable.res.status, 200);
-    assert.ok(enable.data.enabled_skills.includes("suspense-chapter-end"));
+    assert.equal(enable.data.ok, true);
+    assert.equal(enable.data.skill, "suspense-chapter-end");
+    assert.equal(enable.data.enabled_skills, undefined, "Task 12：不再返回 enabled_skills（无启停集合）");
     const disable = await postJson(port, "/api/skills/disable", { name: "suspense-chapter-end" });
     assert.equal(disable.res.status, 200);
     const imported = await postJson(port, "/api/skills/import", {

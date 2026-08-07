@@ -2,7 +2,8 @@
 //
 // tests/agent/ 是允许测试内部 seam 的目录：本文件直接导入 tools.mjs 与 journal.mjs，
 // 覆盖计划 Task 4 Step 6–9 要求的全部不变量：
-//   - 恰好 11 个工具的 typed schema；模型不能提供/覆盖 risk/scope/extreme/grant_key
+//   - 恰好 12 个工具的 typed schema（七个 general + 五个 deep，Task 12 加 read_skill）；
+//     模型不能提供/覆盖 risk/scope/extreme/grant_key
 //   - 系统拥有的风险分类（shell 的 extreme 由运行时判定，模型参数不参与）
 //   - 硬能力拒绝优先（dangerous 封印/归档/read_only/safe_edit=false），extreme 确认
 //     不能覆盖能力禁用
@@ -29,7 +30,7 @@ import { EXTREME_COMMANDS } from "../fixtures/command-risk-corpus.mjs";
 // 本机可用的 extreme 命令（Windows 语料第一条为 del 清盘）
 const EXTREME_COMMAND = EXTREME_COMMANDS[0];
 
-const GENERAL_NAMES = ["list_files", "search_files", "read_file", "write_file", "edit_file", "shell"];
+const GENERAL_NAMES = ["list_files", "search_files", "read_file", "write_file", "edit_file", "shell", "read_skill"];
 const DEEP_NAMES = ["update_plan", "enter_workflow", "append_chapter_segment", "commit_chapter", "commit_blueprint"];
 // 旧编排工具名全部按片段拼接（避免本文件自身成为 Task 11 Step 6 全库 rg 的命中点，
 // 与 dependency-rules.test.mjs 对旧数据文件名的片段约定一致；即使当前 rg 只禁
@@ -197,10 +198,11 @@ async function nextDecision(journal, count = 1) {
 // Step 4/5：注册表与 typed schema、系统拥有的风险
 // ---------------------------------------------------------------------------
 
-test("恰好注册六个 general 与五个 deep 工具", () => {
+test("恰好注册七个 general 与五个 deep 工具", () => {
   const tools = createToolRuntime({ journal: { append: async () => {} } });
   const names = tools.definitions().map((def) => def.function.name);
   assert.deepEqual(names, [...GENERAL_NAMES, ...DEEP_NAMES]);
+  assert.equal(names.length, 12, "工具总数应为 12（Task 12：read_skill 加入 general）");
   for (const banned of BANNED_NAMES) {
     assert.ok(!names.includes(banned), `不得注册 ${banned}`);
   }
@@ -246,6 +248,139 @@ test("deep 工具 schema 与计划一致", () => {
     Object.keys(byName.get("commit_blueprint").parameters.properties).sort(),
     ["evidence_paths", "outline", "project_id", "setting"]
   );
+});
+
+// ---------------------------------------------------------------------------
+// read_skill（Task 12 Step 2/3：schema 逐字、只读自动放行、二进制 asset）
+// ---------------------------------------------------------------------------
+
+const BUILTIN_ROOT = path.resolve(import.meta.dirname, "..", "..", "src", "skills");
+
+// 临时 root 的 skills service（内置技能来自仓库 src/skills；migration marker 只
+// 写进临时 home，绝不触碰真实用户目录）。
+async function tempSkillService(t) {
+  const homeRoot = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-tools-skill-"));
+  const home = path.join(homeRoot, "home");
+  t.after(async () => {
+    await fs.rm(homeRoot, { recursive: true, force: true });
+  });
+  const { createSkillService } = await import("../../src/core/skills/index.mjs");
+  return createSkillService({ userHome: home, resourcesPath: null, builtinRoot: BUILTIN_ROOT });
+}
+
+test("read_skill schema 与 Task 12 冻结契约逐字一致", () => {
+  const tools = createToolRuntime({ journal: { append: async () => {} } });
+  const tool = tools.definitions().find((def) => def.function.name === "read_skill").function;
+  assert.equal(tool.description, "读取已发现 Agent Skill 的 SKILL.md 或其安全资源。");
+  assert.deepEqual(Object.keys(tool.parameters.properties), ["name", "resource"]);
+  assert.deepEqual(tool.parameters.required, ["name"]);
+  assert.equal(tool.parameters.additionalProperties, false);
+  assert.equal(
+    tool.parameters.properties.resource.description,
+    "默认 SKILL.md；也可为 references/...、scripts/...、assets/..."
+  );
+  // 只读类别：项目内 read 自动放行，不产生决策、不弹写入确认（见下方执行测试）
+});
+
+test("read_skill 按 active catalog name 返回 SKILL.md 正文，只读自动放行无决策", async (t) => {
+  const h = await setup(t, { runtime: { skills: await tempSkillService(t) } });
+  const result = await h.tools.execute(
+    toolCall("read_skill", { name: "suspense-chapter-end" }),
+    h.context
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.result.name, "suspense-chapter-end");
+  assert.equal(result.result.resource, "SKILL.md");
+  assert.ok(result.result.content.includes("## Instructions"), "返回 SKILL.md 完整正文");
+  assert.ok(result.result.content.includes("悬念"), "正文含技能指令");
+  assert.equal(typeof result.result.path, "string");
+  assert.ok(Number.isInteger(result.result.bytes));
+  // 项目内只读：自动放行，不弹确认
+  const events = await readEvents(h.journal);
+  assert.equal(eventsOfType(events, "decision_requested").length, 0, "read_skill 是只读工具，不得要求确认");
+  assertClosure(events);
+});
+
+test("read_skill 读取命名安全资源（references/...）", async (t) => {
+  const h = await setup(t, { runtime: { skills: await tempSkillService(t) } });
+  // 项目层技能带 references 资源
+  const skillDir = path.join(h.projectRoot, "skills", "ref-skill");
+  await fs.mkdir(path.join(skillDir, "references"), { recursive: true });
+  await fs.writeFile(
+    path.join(skillDir, "SKILL.md"),
+    "---\nname: ref-skill\ndescription: ref\n---\n\n# Ref\n",
+    "utf8"
+  );
+  await fs.writeFile(path.join(skillDir, "references", "guide.md"), "# 参考\n", "utf8");
+  const result = await h.tools.execute(
+    toolCall("read_skill", { name: "ref-skill", resource: "references/guide.md" }),
+    h.context
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.result.content, "# 参考\n");
+});
+
+test("read_skill 未知技能名返回 skill_not_found", async (t) => {
+  const h = await setup(t, { runtime: { skills: await tempSkillService(t) } });
+  const result = await h.tools.execute(toolCall("read_skill", { name: "no-such-skill" }), h.context);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "skill_not_found");
+});
+
+test("read_skill 拒绝穿越技能目录的资源路径", async (t) => {
+  const h = await setup(t, { runtime: { skills: await tempSkillService(t) } });
+  const skillDir = path.join(h.projectRoot, "skills", "esc-skill");
+  await fs.mkdir(skillDir, { recursive: true });
+  await fs.writeFile(
+    path.join(skillDir, "SKILL.md"),
+    "---\nname: esc-skill\ndescription: esc\n---\n\n# Esc\n",
+    "utf8"
+  );
+  await fs.writeFile(path.join(h.projectRoot, "secret.txt"), "x", "utf8");
+  const result = await h.tools.execute(
+    toolCall("read_skill", { name: "esc-skill", resource: "../../secret.txt" }),
+    h.context
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "skill_resource_unsafe");
+});
+
+test("read_skill 二进制 asset 返回元数据+绝对路径，不把二进制塞进模型上下文", async (t) => {
+  const h = await setup(t, { runtime: { skills: await tempSkillService(t) } });
+  const skillDir = path.join(h.projectRoot, "skills", "bin-skill");
+  await fs.mkdir(path.join(skillDir, "assets"), { recursive: true });
+  await fs.writeFile(
+    path.join(skillDir, "SKILL.md"),
+    "---\nname: bin-skill\ndescription: bin\n---\n\n# Bin\n",
+    "utf8"
+  );
+  const payload = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x0a, 0x1a, 0x0a, 0x00, 0x01, 0x02]);
+  await fs.writeFile(path.join(skillDir, "assets", "cover.png"), payload);
+  const result = await h.tools.execute(
+    toolCall("read_skill", { name: "bin-skill", resource: "assets/cover.png" }),
+    h.context
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.result.binary, true, "二进制 asset 标记 binary=true");
+  assert.equal(result.result.content, undefined, "二进制内容不得进入模型上下文");
+  assert.equal(result.result.bytes, payload.length);
+  assert.ok(result.result.path.endsWith(path.join("assets", "cover.png")), "返回绝对路径");
+  // 审计事件同样不含二进制内容（content_length 只针对文本读取）
+  const events = await readEvents(h.journal);
+  const completed = eventsOfType(events, "tool_call_completed").find((event) => event.payload.name === "read_skill");
+  assert.ok(completed, "read_skill 应有 tool_call_completed");
+  assert.equal(completed.payload.binary, true);
+  assert.equal(completed.payload.content, undefined);
+  assertClosure(events);
+});
+
+test("read_skill 未注入 skills service 时返回 工具不可用。", async (t) => {
+  // setup 缺省注入全局单例；这里显式注入空 service 模拟未接线
+  const h = await setup(t, { runtime: { skills: {} } });
+  const result = await h.tools.execute(toolCall("read_skill", { name: "suspense-chapter-end" }), h.context);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "not_wired");
+  assert.equal(result.message, "工具不可用。");
 });
 
 // ---------------------------------------------------------------------------

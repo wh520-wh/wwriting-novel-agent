@@ -1106,9 +1106,29 @@ test("活动 id 在成功、失败、拒绝、抢占与停止时闭环", async (
 // 章节提交
 // ---------------------------------------------------------------------------
 
+// Task 12：Agent prompt 只注入技能目录摘要（name/description）；完整 SKILL.md
+// 正文只经 read_skill 按需读取。
+test("Agent prompt 注入技能目录摘要，完整正文只在 read_skill 结果出现", async (t) => {
+  const h = await openHarness(t, {
+    gatewayScript: [
+      async (request) => {
+        const system = (request.messages ?? []).find((message) => message.role === "system")?.content ?? "";
+        assert.ok(system.includes("[Available Skills]"), "system 应包含技能目录块");
+        assert.ok(system.includes("- suspense-chapter-end: "), "目录块包含内置技能 name/description");
+        assert.ok(system.includes("每章结尾都要留下悬念钩子"), "目录块包含内置技能 description");
+        assert.ok(!system.includes("本章计划必须包含一个结尾悬念钩子"), "目录块不得注入正文 Instructions");
+        assert.ok(!system.includes("三连排比堆砌"), "目录块不得注入正文完整示例");
+        return { reply: { text: "已读技能目录。" } };
+      }
+    ]
+  });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "有哪些技能", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+});
+
 const CHAPTER_CONTENT = `# 第一章 雨夜来信
 
-雨下了一整夜。林深读完那封没有署名的信，手指微微发凉。信里只写了一句：老宅的钟，会在午夜敲十三下。他把信折好放进抽屉，又忍不住取出来再看一遍。窗外一声闷雷，街灯忽明忽暗。天亮之前，他决定回老宅看看。`;
+雨夜，雨声突然变大。林深猛地推开门，冲进老宅的客厅。他浑身湿透，抹了一把脸，低声道：“信上说，老宅的钟会在午夜敲十三下。”烛光下，墙上的照片里竟是多年不见的父亲。他正要细看，门外却传来一阵急促的敲门声。`;
 
 test("章节提交一致更新正式文件、索引、记忆与 checkpoint", async (t) => {
   const h = await openHarness(t, {
@@ -1157,7 +1177,8 @@ test("章节提交一致更新正式文件、索引、记忆与 checkpoint", asy
 });
 
 test("质量门禁失败转入修订路径：失败结果回喂模型，修订后提交成功", async (t) => {
-  const LONG_ADDITION = `林深在老宅门口站了很久。门环锈迹斑斑，锁孔里塞着一把钥匙。他转动钥匙，听见门内传来齿轮转动的声音——老宅的钟，果然在午夜敲了十三下。他沿着走廊走到书房，翻开那本落满灰尘的日记，第一页写着他自己的名字，日期却是三十年前。`;
+  // 修订追加段同样要满足全部技能门禁：动作开场 + 结尾悬念 + 对话占比。
+  const LONG_ADDITION = `林深在老宅门口站了很久，猛地抬起头，听见门环响了一声。他转动钥匙，低声道：“这把钥匙，是谁留下的？”门内传来齿轮转动的声音——老宅的钟，果然在午夜敲了十三下。他沿着走廊走到书房，翻开那本落满灰尘的日记，第一页写着他自己的名字，日期却是三十年前。门外忽然传来急促的敲门声。`;
   const h = await openHarness(t, {
     project: { min_words_per_chapter: 100, target_words_per_chapter: 120 },
     gatewayScript: [

@@ -47,7 +47,7 @@ import {
   writeJsonAtomic
 } from "../fs-utils.mjs";
 import { loadChapterIndex, loadProject, upsertChapter } from "../project-store.mjs";
-import { runPostProcessHooks, runSkillChecks } from "../skill-runtime.mjs";
+import { runPostProcessHooks, runSkillChecks } from "../skills/index.mjs";
 import { runTitleGate, runWordCapGate, runWordCountGate } from "../quality-gates.mjs";
 import { countEffectiveWords } from "../word-count.mjs";
 import { recordChapterMemory } from "../chapter-memory.mjs";
@@ -447,7 +447,9 @@ export async function commitChapter({ projectRoot, projectId, chapterNo, expecte
     postProcess = await runPostProcessHooks(projectRoot, project, {
       chapter_no: chapterNo,
       stage: "post_process",
-      content: sourceContent
+      content: sourceContent,
+      // options.skills：active 技能列表或带 catalog() 的 service（测试/运行时注入）。
+      skills: options.skills ?? undefined
     });
     if (postProcess.results.some((result) => result.status === "applied")) {
       commitContent = postProcess.content;
@@ -466,7 +468,8 @@ export async function commitChapter({ projectRoot, projectId, chapterNo, expecte
   const skillGateResults = await runSkillChecks(projectRoot, project, "reviewing", {
     chapter_no: chapterNo,
     stage: "reviewing",
-    content: commitContent
+    content: commitContent,
+    skills: options.skills ?? undefined
   });
   const gates = [wordGate, titleGate, wordCapGate, ...skillGateResults];
   const exceptions = normalizeExceptions(exceptionDecisions);

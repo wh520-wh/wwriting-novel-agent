@@ -4,7 +4,6 @@ import path from "node:path";
 import { appendEvent } from "./event-log.mjs";
 import { assertSafeSlug, ensureDir, pathExists, readJson, safeJoin, sha256, writeFileAtomic, writeJsonAtomic } from "./fs-utils.mjs";
 import { CHAPTER_MEMORY_SCHEMA_VERSION } from "./chapter-memory.mjs";
-import { ensureBuiltinSkill } from "./skill-runtime.mjs";
 import { parseSimpleYaml, serializeSimpleYaml } from "./simple-yaml.mjs";
 
 export const SCHEMA_VERSION = 1;
@@ -45,11 +44,11 @@ export async function createProjectAt(projectRoot, options = {}) {
     },
     // 统一 Agent 内核计划 Rule 9：project.yaml 保存项目身份、配置与 blueprint_status；
     // .wwriting/agent/ 由 ProjectAgent 惰性创建，旧运行态文件不再创建。
+    // Task 12：不再默认填充 enabled_skills（技能改为发现即生效，无启停集合）。
     blueprint_status: options.blueprint_status ?? "none",
     stage_overrides: options.stage_overrides ?? {
       enabled: false
     },
-    enabled_skills: options.enabled_skills ?? [],
     output_style: options.output_style ?? "creative",
     archived_at: options.archived_at ?? null,
     tool_permissions: {
@@ -82,9 +81,8 @@ export async function createProjectAt(projectRoot, options = {}) {
   await writeFileAtomic(safeJoin(target, "OUTLINE.md"), "# OUTLINE.md\n\n> 蓝图未生成，请运行 /init\n");
   await writeFileAtomic(safeJoin(target, "SETTING.md"), "# SETTING.md\n\n> 蓝图未生成，请运行 /init\n");
   await writeFileAtomic(safeJoin(target, "prompts", "drafting.v1.md"), "章节正文必须通过工具调用写入本地文件。\n");
-  for (const skillName of project.enabled_skills) {
-    await ensureBuiltinSkill(target, skillName);
-  }
+  // Task 12：新项目不再为 enabled_skills 写入 skills/*/skill.json——内置技能来自
+  // src/skills 的 SKILL.md，由 catalog 发现；项目 skills/ 目录保持为空。
   await appendEvent(target, {
     type: "project_created",
     project_id: project.project_id,
@@ -99,8 +97,19 @@ export async function loadProject(projectRoot) {
   return parseSimpleYaml(source);
 }
 
+// Task 12：保存配置时移除已废弃的 enabled_skills 字段（旧 project.yaml 允许
+// parser 忽略一版；这里在落盘前剥离，保证新保存的配置不再携带启停集合）。
+// 不能把空数组解释成"自动启用"，也不保留任何启停分支。
 export async function saveProject(projectRoot, project) {
-  return writeFileAtomic(safeJoin(projectRoot, "project.yaml"), serializeSimpleYaml(project));
+  const cleaned = stripDeprecatedProjectFields(project);
+  return writeFileAtomic(safeJoin(projectRoot, "project.yaml"), serializeSimpleYaml(cleaned));
+}
+
+function stripDeprecatedProjectFields(project) {
+  if (!project || typeof project !== "object" || Array.isArray(project)) return project;
+  if (!Object.hasOwn(project, "enabled_skills")) return project;
+  const { enabled_skills: _ignored, ...rest } = project;
+  return rest;
 }
 
 // 章节产物证据（统一 Agent 内核计划 Task 7 legacy 语义）：chapters/ 目录有章节

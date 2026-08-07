@@ -1,7 +1,8 @@
 // 四级技能 catalog 单测（计划 Task 9 + Task 10）。
 // 四层同名时 active 一定来自 project（项目 > 全局 > 随应用分发 > 内置）；
 // 只扫描每个 root 的直接子目录；同 root 重复 name 拒绝；默认 root 在 service 内解析。
-// Task 10：src/skills/<name>/SKILL.md 五个内置技能文件与 BUILTIN_SKILLS 内容等价，
+// Task 10：src/skills/<name>/SKILL.md 五个内置技能文件与旧 BUILTIN_SKILLS 内容等价
+// （BUILTIN_SKILLS 常量随 Task 12 删除，改用冻结快照保持等价断言），
 // catalog 以 src/skills 为 builtin root 时全部来自 source: "builtin"，且不向项目写入 skill.json。
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -16,11 +17,133 @@ import {
 } from "../../src/core/skills/catalog.mjs";
 import { createSkillService } from "../../src/core/skills/index.mjs";
 import { readSkillFile } from "../../src/core/skills/skill-file.mjs";
-import { BUILTIN_SKILLS } from "../../src/core/skill-runtime.mjs";
 
 // Task 10：内置技能文件化后的真实根目录（src/skills），与 service 默认 builtinRoot 一致。
 const BUILTIN_ROOT = path.resolve(import.meta.dirname, "..", "..", "src", "skills");
-const BUILTIN_SKILL_NAMES = Object.keys(BUILTIN_SKILLS);
+
+// 旧 BUILTIN_SKILLS 常量（Task 12 已删除）的冻结快照：五个内置技能的
+// name/description/version/scope/priority/hooks（含正文等价断言需要的
+// append_prompt.content 与 check.prompt 原文）。
+const BUILTIN_SKILL_SNAPSHOT = Object.freeze({
+  "suspense-chapter-end": Object.freeze({
+    name: "suspense-chapter-end",
+    version: "1.0.0",
+    scope: "chapter",
+    priority: 50,
+    description: "每章结尾都要留下悬念钩子：震惊性话语、推翻认知的新事实或突然逼近的危险。",
+    hooks: Object.freeze([
+      Object.freeze({
+        stage: "planning",
+        action: "append_prompt",
+        content: "本章计划必须包含一个结尾悬念钩子。\n优先使用以下类型：一句令人震惊的话、一个推翻此前认知的新事实、或一个突然逼近的危险。"
+      }),
+      Object.freeze({
+        stage: "reviewing",
+        action: "check",
+        check: "suspense-ending",
+        prompt: "Check whether the final 500 visible characters contain a meaningful suspense hook."
+      })
+    ])
+  }),
+  "chapter-opening-hook": Object.freeze({
+    name: "chapter-opening-hook",
+    version: "1.0.0",
+    scope: "chapter",
+    priority: 40,
+    description: "每章开头必须用正在发生的事抓人：动作、冲突或悬念开场，不写天气和环境铺垫。",
+    hooks: Object.freeze([
+      Object.freeze({
+        stage: "planning",
+        action: "append_prompt",
+        content: "本章开头前两句话必须进入一个正在发生的事件（人物行动、冲突、悬念或意外）。\n禁止以天气、环境描写或背景说明开场。"
+      }),
+      Object.freeze({
+        stage: "reviewing",
+        action: "check",
+        check: "chapter-opening",
+        prompt: "检查正文开头约 150 个可见字符内是否有一个正在发生的动作、冲突或悬念。"
+      })
+    ])
+  }),
+  "avoid-ai-voice": Object.freeze({
+    name: "avoid-ai-voice",
+    version: "1.0.0",
+    scope: "chapter",
+    priority: 30,
+    description: "去除 AI 腔：不堆排比、不用模糊修饰词和总结式收尾，读起来像人写的。",
+    hooks: Object.freeze([
+      Object.freeze({
+        stage: "drafting",
+        action: "append_prompt",
+        content: [
+          "去除 AI 腔，这些写法一律不用：",
+          "1) 三连排比堆砌（如“他握住刀，握住恨，握住……”）；",
+          "2) 段尾用总结句收束情绪（如“她终于明白了……”）；",
+          "3) 模糊修饰词连发（仿佛、似乎、不禁、不由得、莫名、悄然、缓缓、微微、瞬间、顿时、一股莫名的、一种说不出的）；",
+          "4) 抒情长句连续不断，情绪改用具体动作和实物承载；",
+          "5) “如果说……那么……”式的议论句式。"
+        ].join("\n")
+      }),
+      Object.freeze({
+        stage: "reviewing",
+        action: "check",
+        check: "ai-voice",
+        prompt: "统计正文中模糊修饰词（仿佛/似乎/不禁/不由得/莫名/悄然/缓缓/微微/瞬间/顿时等）的出现密度，判断是否超标。"
+      })
+    ])
+  }),
+  "dialogue-not-summary": Object.freeze({
+    name: "dialogue-not-summary",
+    version: "1.0.0",
+    scope: "chapter",
+    priority: 40,
+    description: "对话推进剧情：人物各有声音、不重复已知信息；本章对话占比合理。",
+    hooks: Object.freeze([
+      Object.freeze({
+        stage: "drafting",
+        action: "append_prompt",
+        content: [
+          "对话规则：",
+          "1) 每段对话必须有目的：推进情节、暴露人设或制造冲突；",
+          "2) 禁止用对话复述读者已知的信息（“如你所知……”式）；",
+          "3) 人物各有口头禅和句式，不要所有人一个腔调；",
+          "4) 对话配动作与反应（表情、停顿、小动作），避免“他说道”“她答道”连发。"
+        ].join("\n")
+      }),
+      Object.freeze({
+        stage: "reviewing",
+        action: "check",
+        check: "dialogue-ratio",
+        prompt: "计算本章引号内对话占总可见字符的比例，对话过少或过多都要标记。"
+      })
+    ])
+  }),
+  "show-dont-tell": Object.freeze({
+    name: "show-dont-tell",
+    version: "1.0.0",
+    scope: "chapter",
+    priority: 50,
+    description: "展示而非陈述：用动作、反应和细节表现情绪与性格，不直接贴标签。",
+    hooks: Object.freeze([
+      Object.freeze({
+        stage: "drafting",
+        action: "append_prompt",
+        content: [
+          "展示而非陈述：不直接宣告情绪或性格（如“他很生气”“她是个善良的人”）。",
+          "改用具体动作、身体反应、环境细节和他人反应：",
+          "例：他摔上门，钥匙在锁孔里断成两截——而不是：他很生气。",
+          "例：她蹲下来把碎纸一片片捡起，摆回信封——而不是：她是个细心的人。"
+        ].join("\n")
+      }),
+      Object.freeze({
+        stage: "revising",
+        action: "append_prompt",
+        content: "修订时检查：正文中是否还有直接宣告情绪、性格或结论的句子？把它们改写成具体动作与细节。"
+      })
+    ])
+  })
+});
+const BUILTIN_SKILL_NAMES = Object.keys(BUILTIN_SKILL_SNAPSHOT);
 
 // 内容快照比较：折叠空白后按子串包含比对，容忍正文的分行/段落重组。
 function normalizeWhitespace(value) {
@@ -288,11 +411,11 @@ test("discoverSkills 直接调用与 service.catalog 行为一致", async (t) =>
 // Task 10：内置技能文件化（src/skills/<name>/SKILL.md）
 // ---------------------------------------------------------------------------
 
-test("五个内置技能文件存在，frontmatter 与 BUILTIN_SKILLS 等价且正文非空壳", async (t) => {
-  assert.equal(BUILTIN_SKILL_NAMES.length, 5, "BUILTIN_SKILLS 应为五个内置技能");
+test("五个内置技能文件存在，frontmatter 与旧 BUILTIN_SKILLS 快照等价且正文非空壳", async (t) => {
+  assert.equal(BUILTIN_SKILL_NAMES.length, 5, "内置技能应为五个");
 
   for (const name of BUILTIN_SKILL_NAMES) {
-    const old = BUILTIN_SKILLS[name];
+    const old = BUILTIN_SKILL_SNAPSHOT[name];
     const skill = await readSkillFile(path.join(BUILTIN_ROOT, name), { source: "builtin" });
 
     // name/description/version → 顶层 frontmatter，逐字等价。
@@ -359,7 +482,7 @@ test("catalog 以 src/skills 为 builtin root 时五个内置技能全部来自 
     const skill = byName.get(name);
     assert.ok(skill, `catalog 应发现内置技能 ${name}`);
     assert.equal(skill.source, "builtin", `${name} 应来自 builtin 层`);
-    assert.equal(skill.metadata.wwriting.priority, BUILTIN_SKILLS[name].priority, `${name} priority 应保留`);
+    assert.equal(skill.metadata.wwriting.priority, BUILTIN_SKILL_SNAPSHOT[name].priority, `${name} priority 应保留`);
   }
 });
 
