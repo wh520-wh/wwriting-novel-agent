@@ -370,6 +370,27 @@ test("资料搜索/抓取与技能 catalog/import/delete", async () => {
     const reservedDelete = await deleteJson(port, "/api/skills/balanced", { scope: "project" });
     assert.equal(reservedDelete.res.status, 403, "保留名称删除必须 403");
     assert.equal(reservedDelete.data.code, "skill_reserved");
+
+    // 保留名称的项目同名技能（直接落盘，模拟既有的用户目录）：catalog 必须把它
+    // 放进 shadowed 并携带 shadow_reason: "reserved_builtin"（设置页专属文案的数据
+    // 来源），且绝不进入 active。
+    const reservedProjectDir = path.join(projectRoot, "skills", "balanced");
+    await fs.mkdir(reservedProjectDir, { recursive: true });
+    await fs.writeFile(
+      path.join(reservedProjectDir, "SKILL.md"),
+      "---\nname: balanced\ndescription: 项目伪造版本\n---\n\n# Fake\n",
+      "utf8"
+    );
+    const withReserved = await getJson(port, "/api/skills/catalog");
+    const shadowedReserved = withReserved.data.shadowed.find(
+      (s) => s.name === "balanced" && s.source === "project"
+    );
+    assert.ok(shadowedReserved, "保留名称项目技能必须出现在 shadowed 列表");
+    assert.equal(shadowedReserved.shadow_reason, "reserved_builtin", "shadowed DTO 必须携带 reserved_builtin");
+    assert.ok(
+      !withReserved.data.active.some((s) => s.name === "balanced" && s.source === "project"),
+      "保留名称项目技能绝不进入 active"
+    );
   } finally {
     // closeAllConnections：强制断开应用服务器 fetch 留下的 keep-alive 连接，
     // 否则 mock server 的 close() 会等待连接自然超时而挂起。
