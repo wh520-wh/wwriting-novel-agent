@@ -128,7 +128,6 @@ export async function createProjectRoot(workspaceRoot, options = {}) {
     default_writer_model: "mock-writer",
     default_reviewer_model: "mock-reviewer",
     active_model: options.active_model ?? { provider: "mock", model_name: "mock-writer" },
-    enabled_skills: [],
     output_style: "creative",
     archived_at: null,
     tool_permissions: {
@@ -263,6 +262,16 @@ function createStubShell({ delayMs = STUB_SHELL_DELAY_MS } = {}) {
 // 主入口
 // ---------------------------------------------------------------------------
 
+// Task 12：技能目录注入。内置技能来自仓库 src/skills（只读）；global 层 userHome
+// 指向临时目录，migration marker 绝不写进真实用户目录。返回 active 技能列表。
+export async function catalogSkillsFor(projectRoot) {
+  const { createSkillService } = await import("../../src/core/skills/index.mjs");
+  const home = path.join(projectRoot, ".test-skill-home");
+  const service = createSkillService({ userHome: home, resourcesPath: null });
+  const { active } = await service.catalog({ projectRoot });
+  return active;
+}
+
 // options:
 //   gatewayScript / gatewayDelayMs —— mock 模型脚本
 //   realShell —— true 时使用真实 Shell 运行时（Task 4 后可用）
@@ -292,19 +301,27 @@ export async function createProjectAgentHarness(options = {}) {
     shell = createStubShell();
   }
   const { createProjectAgent } = await import("../../src/core/agent/index.mjs");
+  const { createSkillService } = await import("../../src/core/skills/index.mjs");
 
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-acceptance-"));
   try {
     const { projectRoot, project } = legacy
       ? await createLegacyProjectRoot(workspaceRoot, projectOptions)
       : await createProjectRoot(workspaceRoot, projectOptions);
-    const agent = createProjectAgent({ modelGateway: gateway, shell, secrets });
+    // 临时 root 的 skills service：prompt 目录摘要 / read_skill / 章节技能门禁
+    // 全链路使用它，migration marker 只写进工作区，绝不触碰真实用户目录。
+    const skills = createSkillService({
+      userHome: path.join(projectRoot, ".test-skill-home"),
+      resourcesPath: null
+    });
+    const agent = createProjectAgent({ modelGateway: gateway, shell, secrets, skills });
     return {
       agent,
       gateway,
       workspaceRoot,
       projectRoot,
       project,
+      skills,
       async cleanup() {
         await fs.rm(workspaceRoot, { recursive: true, force: true });
       }

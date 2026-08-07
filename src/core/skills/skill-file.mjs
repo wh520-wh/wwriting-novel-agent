@@ -48,6 +48,8 @@ export async function readSkillFile(skillDir, { source }) {
 
 // 按需读取技能目录内的资源（SKILL.md 或 scripts/references/assets 下文件）。
 // 执行 realpath containment（真实路径必须仍在技能 realpath 内）与大小校验。
+// 二进制 asset（前 8KiB 含 NUL 字节）返回元数据 + 绝对路径，不把二进制内容
+// 塞进模型上下文（Task 12 read_skill 冻结契约）。
 export async function readSkillResource(skill, resource = "SKILL.md") {
   assertSafeResource(resource);
   const skillDir = path.resolve(skill.dir);
@@ -70,8 +72,14 @@ export async function readSkillResource(skill, resource = "SKILL.md") {
   if (stat.size > limit) {
     throw skillError("skill_resource_too_large", `资源超过 ${limit} 字节: ${resource}`);
   }
-  const content = await fs.readFile(realAbs, "utf8");
-  return Object.freeze({ name: skill.name, resource, content, path: realAbs, bytes: stat.size });
+  if (stat.size === 0) {
+    return Object.freeze({ name: skill.name, resource, content: "", path: realAbs, bytes: 0 });
+  }
+  const buffer = await fs.readFile(realAbs);
+  if (looksBinary(buffer)) {
+    return Object.freeze({ name: skill.name, resource, binary: true, path: realAbs, bytes: stat.size });
+  }
+  return Object.freeze({ name: skill.name, resource, content: buffer.toString("utf8"), path: realAbs, bytes: stat.size });
 }
 
 // ---------------------------------------------------------------------------
@@ -169,9 +177,15 @@ async function walkResourceDir(absDir, relPrefix, resources, skillReal) {
   }
 }
 
+// 二进制探测：前 8KiB 中出现 NUL 字节即视为二进制（与 git 的启发式一致）。
+// 纯文本 UTF-8 文件不含 NUL，误判率极低。
+function looksBinary(buffer) {
+  const probe = buffer.subarray(0, Math.min(buffer.length, 8192));
+  return probe.includes(0);
+}
+
 // 拒绝绝对路径、盘符路径与任何 `..` 段（Windows 也拒绝反斜杠书写）。
-function assertSafeResource(resource) {
-  if (typeof resource !== "string" || resource.length === 0) {
+function assertSafeResource(resource) {  if (typeof resource !== "string" || resource.length === 0) {
     throw skillError("skill_resource_unsafe", "资源路径不能为空");
   }
   if (path.isAbsolute(resource) || /^[A-Za-z]:/u.test(resource)) {

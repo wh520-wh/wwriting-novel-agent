@@ -8,7 +8,8 @@
 //   - 同一项目一次只执行一个 AgentRun（一个模型/工具循环）；不同项目互不共享锁，
 //     可以并行运行。
 //   - 模型循环：消费活动输入 → assemblePrompt（runtime policy / AGENTS.md /
-//     workflow policy / dynamic context / history / currentInput）→ gateway.complete →
+//     Available Skills 目录摘要 / workflow policy / dynamic context / history /
+//     currentInput）→ gateway.complete →
 //     工具调用逐个 tools.execute（权限/确认/decision 流程）→ 结果入 transcript →
 //     循环直到模型无工具调用且队列清空，Run 终结。
 //   - 立即（promote）：同一 journal 批次原子写入 interrupt_requested + input_promoted
@@ -38,6 +39,7 @@ import { pathExists } from "../fs-utils.mjs";
 import { createRedactor } from "../shell/redaction.mjs";
 import { resolveModelCapabilities } from "../model/capabilities.mjs";
 import { createJournalDeltaWriter, reasoningAvailability } from "./stream-writer.mjs";
+import { skillService } from "../skills/index.mjs";
 
 import {
   appendChapterSegment,
@@ -50,7 +52,16 @@ import { reviewProject } from "../project-operations/review.mjs";
 
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
-const GENERAL_TOOL_NAMES = new Set(["list_files", "search_files", "read_file", "write_file", "edit_file", "shell"]);
+// 通用工具恒可用于所有 workflow（Task 12：read_skill 让所有工作流都能按需读技能）。
+const GENERAL_TOOL_NAMES = new Set([
+  "list_files",
+  "search_files",
+  "read_file",
+  "write_file",
+  "edit_file",
+  "shell",
+  "read_skill"
+]);
 
 const SOURCES = new Set(["chat", "maintenance"]);
 
@@ -96,6 +107,9 @@ export function createAgentRuntime({
   shell = null,
   projectLocks = null,
   secrets = [],
+  // Task 12：skills service seam（src/core/skills/index.mjs）。生产缺省用全局
+  // 单例；测试注入临时 root 的 service，避免迁移 marker 写进真实用户目录。
+  skills = null,
   idFactory = randomUUID
 } = {}) {
   if (!modelGateway && typeof gatewayFactory !== "function") {
@@ -103,6 +117,8 @@ export function createAgentRuntime({
   }
   const resolveGateway = typeof gatewayFactory === "function" ? gatewayFactory : () => modelGateway;
   const redactor = createRedactor({ secrets });
+  // 技能 service：注入优先，缺省全局单例（生产组合根不传，catalog 迁移先行）。
+  const projectSkills = skills ?? skillService;
 
   const projects = new Map(); // projectRoot -> project state
 
@@ -114,7 +130,9 @@ export function createAgentRuntime({
       const projectOperations = {
         inspectChapterContext,
         appendChapterSegment,
-        commitChapter,
+        // 章节提交的技能钩子经同一个 skills service 解析（Task 12）：生产用全局
+        // 单例；测试注入临时 service 后全链路不再触碰真实用户目录。
+        commitChapter: (args, options) => commitChapter(args, { ...(options ?? {}), skills: projectSkills }),
         commitChapterMemory,
         inspectBlueprintContext,
         commitBlueprint,
@@ -126,6 +144,7 @@ export function createAgentRuntime({
         shellRuntime: shell,
         projectLocks,
         secrets,
+        skills: projectSkills,
         idFactory
       });
       state = {
@@ -134,13 +153,24 @@ export function createAgentRuntime({
         tools,
         projectOperations,
         modelGateway: resolveGateway(key),
+        skills: projectSkills,
         // 当前 Run 的循环控制（一次一个模型/工具循环）
         runId: null,
         controller: null,
         loopPromise: null,
         firstTurn: null,
         stopReason: "user_stop",
-        mutex: createMutex()
+        mutex: createMutex(),
+        // Prompt 的 Available Skills 目录摘要：只取 name/description，绝不注入正文
+        // （完整指令由 read_skill 按需读取）。catalog 失败不阻塞 agent（沿用兜底语义）。
+        readSkillCatalog: async () => {
+          try {
+            const { active } = await projectSkills.catalog({ projectRoot: key });
+            return active.map((skill) => ({ name: skill.name, description: skill.description ?? "" }));
+          } catch {
+            return [];
+          }
+        }
       };
       // 嵌套 workflow 拒绝：enter_workflow 是改变工作流的唯一入口，由 BeforeToolUse
       // hook 在工具执行（写 workflow_changed）之前校验转移是否合法。
@@ -208,14 +238,13 @@ export function createAgentRuntime({
   }
 
   // project.yaml 缺失/损坏时的最小兜底（只读工具仍可用；深工具由 project
-  // operations 自行校验）。兜底对象永不被持久化。
+  // operations 自行校验）。兜底对象永不被持久化。Task 12：enabled_skills 已废弃。
   const FALLBACK_PROJECT = Object.freeze({
     project_id: null,
     tool_permissions: {},
     output_format: "md",
     archived_at: null,
     active_model: null,
-    enabled_skills: [],
     min_words_per_chapter: 0,
     target_words_per_chapter: 0
   });
@@ -347,6 +376,12 @@ export function createAgentRuntime({
       const content = String(persisted.result.content ?? "");
       delete persisted.result.content;
       persisted.result.content_length = content.length;
+    }
+    if (persisted?.ok && persisted.result && name === "read_skill" && typeof persisted.result.content === "string") {
+      // read_skill 正文不进持久 transcript（与 read_file 同口径：只留长度）；
+      // 二进制 asset 结果没有 content，原样保留元数据 + 绝对路径。
+      persisted.result.content_length = persisted.result.content.length;
+      delete persisted.result.content;
     }
     if (persisted?.ok && persisted.result && name === "search_files" && Array.isArray(persisted.result.matches)) {
       persisted.result.matches = persisted.result.matches.map(({ excerpt: _excerpt, ...match }) => match);
@@ -508,6 +543,7 @@ export function createAgentRuntime({
         },
         projectInstructions: await readProjectInstructions(state.key),
         workflow: run.workflow,
+        skillCatalog: await state.readSkillCatalog(),
         dynamicContext: await policy.contextSelector({
           projectRoot: state.key,
           session,

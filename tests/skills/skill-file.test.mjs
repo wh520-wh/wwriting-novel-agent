@@ -286,6 +286,22 @@ test("readSkillResource 拒绝超过 1MiB 的文本资源", async (t) => {
   );
 });
 
+test("readSkillResource 二进制 asset 返回元数据+绝对路径，不返回 content（Task 12）", async (t) => {
+  const { root, skillDir } = await makeSkill("suspense-chapter-end", VALID_SKILL);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(skillDir, "assets"));
+  const payload = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x0a, 0x1a, 0x0a, 0x01, 0x02, 0x03]);
+  await fs.writeFile(path.join(skillDir, "assets", "cover.png"), payload);
+  const skill = await readSkillFile(skillDir, { source: "project" });
+
+  const result = await readSkillResource(skill, "assets/cover.png");
+  assert.equal(result.binary, true);
+  assert.equal(result.content, undefined, "二进制内容不得进入模型上下文");
+  assert.equal(result.bytes, payload.length);
+  assert.equal(result.path, await fs.realpath(path.join(skillDir, "assets", "cover.png")));
+  assert.ok(Object.isFrozen(result));
+});
+
 test("readSkillResource 拒绝通过 symlink 逃逸技能目录的资源", async (t) => {
   const root = makeTemp();
   const skillDir = path.join(root, "suspense-chapter-end");

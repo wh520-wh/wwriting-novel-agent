@@ -890,7 +890,7 @@ test("AgentSurface 保留 900px 内容基线与统一菜单视口钳制", async 
 test("章节提交同时更新正式文件、索引、记忆与 checkpoint", async (t) => {
   const CHAPTER_CONTENT = `# 第一章 雨夜来信
 
-雨下了一整夜。林深读完那封没有署名的信，手指微微发凉。信里只写了一句：老宅的钟，会在午夜敲十三下。他把信折好放进抽屉，又忍不住取出来再看一遍。窗外一声闷雷，街灯忽明忽暗。天亮之前，他决定回老宅看看。`;
+雨夜，雨声突然变大。林深猛地推开门，冲进老宅的客厅。他浑身湿透，抹了一把脸，低声道：“信上说，老宅的钟会在午夜敲十三下。”烛光下，墙上的照片里竟是多年不见的父亲。他正要细看，门外却传来一阵急促的敲门声。`;
   const h = await openHarness(t, {
     project: { min_words_per_chapter: 50, target_words_per_chapter: 80 },
     gatewayScript: [

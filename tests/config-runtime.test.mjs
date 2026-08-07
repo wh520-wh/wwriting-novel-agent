@@ -18,7 +18,6 @@ test("config layers merge global, project, local, then policy", () => {
     },
     projectConfig: {
       active_model: { provider: "project", model_name: "project-writer" },
-      enabled_skills: ["suspense-chapter-end"],
       tool_permissions: { network_allowed: true, safe_edit: true, dangerous: true }
     },
     localConfig: {
@@ -33,7 +32,6 @@ test("config layers merge global, project, local, then policy", () => {
   });
 
   assert.deepEqual(effective.active_model, { provider: "local", model_name: "local-writer" });
-  assert.deepEqual(effective.enabled_skills, ["suspense-chapter-end"]);
   assert.equal(effective.tool_permissions.network_allowed, false);
   assert.equal(effective.tool_permissions.dangerous, false);
   assert.equal(effective.tool_permissions.read_only, true);

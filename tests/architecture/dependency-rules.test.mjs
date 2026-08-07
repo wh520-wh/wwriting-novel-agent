@@ -75,6 +75,8 @@ const AGENT_INDEX = "src/core/agent/index.mjs";
 const SURFACE_DIR = "src/app-shell/agent/";
 const SURFACE_INDEX = "src/app-shell/agent/index.js";
 const PROJECT_OPS_DIR = "src/core/project-operations/";
+const SKILLS_DIR = "src/core/skills/";
+const SKILLS_INDEX = "src/core/skills/index.mjs";
 
 // 规则 A 的扫描集合：生产源码（agent 目录内部除外）+ scripts + 契约测试目录。
 const A_SCAN_SET = (rel) =>
@@ -96,7 +98,7 @@ const LEGACY_ALLOWLIST = new Set([
 //   EXPECTED_MISSING_DIRS —— 计划中由后续任务（Task 2–8）创建的目录，当前允许
 //   缺失；一旦出现即照常纳入扫描（无需额外处理）。
 const REQUIRED_SCAN_ROOTS = ["src", "tests", "scripts"];
-const REQUIRED_CONTRACT_DIRS = ["tests/acceptance", "tests/architecture", "tests/helpers"];
+const REQUIRED_CONTRACT_DIRS = ["tests/acceptance", "tests/architecture", "tests/helpers", "tests/skills"];
 const EXPECTED_MISSING_DIRS = [
   "src/core/agent",
   "src/core/model",
@@ -427,6 +429,32 @@ test("生产文件不得 import 旧控制面模块", () => {
     for (const { spec, target } of file.imports) {
       if (BANNED_MODULES.includes(target)) {
         violations.push(`${rel} -> "${spec}" 解析为 ${target}；旧控制面模块禁止 import`);
+      }
+    }
+  }
+  assert.equal(violations.length, 0, formatList(violations));
+});
+
+// ---------------------------------------------------------------------------
+// 规则 I（Task 12）：Skills 只能经 src/core/skills/index.mjs 使用
+// ---------------------------------------------------------------------------
+
+test("生产文件只能从 src/core/skills/index.mjs 导入；tests/skills/ 才可测内部 seam", () => {
+  const violations = [];
+  for (const [rel, file] of analyzed) {
+    // src/core/skills/ 内部文件（index.mjs / skill-file / catalog / hooks /
+    // legacy-migration）正常互相引用，不参与本规则。
+    if (rel.startsWith(SKILLS_DIR)) continue;
+    const inProduction = rel.startsWith("src/");
+    const inSkillsTests = rel.startsWith("tests/skills/");
+    if (!inProduction && !inSkillsTests) continue;
+    for (const { spec, target } of file.imports) {
+      if (!target.startsWith(SKILLS_DIR)) continue;
+      if (inProduction && target !== SKILLS_INDEX) {
+        violations.push(`${rel} -> "${spec}" 解析为 ${target}；生产文件只允许 ${SKILLS_INDEX}`);
+      }
+      if (!inSkillsTests && target !== SKILLS_INDEX) {
+        violations.push(`${rel} -> "${spec}" 解析为 ${target}；非 tests/skills/ 测试目录只能导入 ${SKILLS_INDEX}`);
       }
     }
   }

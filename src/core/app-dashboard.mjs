@@ -5,12 +5,13 @@ import { readEvents } from "./event-log.mjs";
 import { isPathInside, pathExists, readJson, safeJoin } from "./fs-utils.mjs";
 import { loadProject } from "./project-store.mjs";
 import { inspectChapterArtifact } from "./chapter-artifact.mjs";
-import { listProjectSkills } from "./skill-runtime.mjs";
+import { skillService } from "./skills/index.mjs";
 
 // 项目仪表盘（统一 Agent 内核计划 Task 9 重写）。
 // 只返回项目/章节/成本/设置/技能/资料等静态与领域事实；不再读取旧运行态文件，
 // 不再返回旧审查报告、故障卡、recent tool events 或运行进度推断（运行状态由
 // AgentSurface 消费 ProjectAgent snapshot；dashboard 不推测 Agent 是否繁忙）。
+// Task 12：技能列表改读新 catalog（发现即生效，无 enabled_in_project 启停集合）。
 export async function loadDashboardData(workspaceRoot, options = {}) {
   const workspace = path.resolve(workspaceRoot);
   const projectRoot = options.projectRoot
@@ -38,10 +39,11 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
   const config = await loadConfigLayers(projectRoot, project);
   const effectiveProject = {
     ...project,
-    effective_config: config.effective,
-    enabled_skills: config.effective.enabled_skills ?? project.enabled_skills ?? []
+    effective_config: config.effective
   };
-  const [skills, sources] = await Promise.all([readSkills(projectRoot, effectiveProject), readSources(projectRoot)]);
+  // skills service：注入优先（测试传临时 root 的 service），缺省全局单例。
+  const skills = options.skillService ?? skillService;
+  const [skillsData, sources] = await Promise.all([readSkills(projectRoot, skills), readSources(projectRoot)]);
 
   const indexedChapters = chapterIndex.chapters ?? [];
   const chapters = await Promise.all(
@@ -100,7 +102,7 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
       effective: config.effective,
       layers: config.layers
     },
-    skills,
+    skills: skillsData,
     sources
   };
 }
@@ -266,25 +268,28 @@ export async function findProjectRoots(workspaceRoot, options = {}) {
   }
 }
 
-async function readSkills(projectRoot, project) {
+async function readSkills(projectRoot, skills) {
   try {
-    const skills = await listProjectSkills(projectRoot, project);
+    const { active, migration_errors } = await skills.catalog({ projectRoot });
     return {
       error: null,
-      items: skills.map((skill) => ({
+      migration_errors,
+      items: active.map((skill) => ({
         name: skill.name,
         version: skill.version,
-        type: skill.type,
-        scope: skill.scope,
-        enabled: skill.enabled !== false,
-        enabled_in_project: skill.enabled_in_project === true,
-        source_type: skill.source_type,
-        priority: skill.priority,
+        type: skill.metadata?.wwriting?.type ?? null,
+        scope: skill.metadata?.wwriting?.scope ?? "chapter",
+        // 发现即生效：新模型没有启停集合，目录里的技能都是 active。
+        // enabled_in_project 保留为 true 供旧 drawer 渲染（Task 13 移除该字段）。
+        enabled: true,
+        enabled_in_project: true,
+        source_type: skill.source,
+        priority: skill.metadata?.wwriting?.priority ?? 100,
         description: skill.description ?? "",
-        hooks: skill.hooks.map((hook) => ({
+        hooks: (skill.metadata?.wwriting?.hooks ?? []).map((hook) => ({
           stage: hook.stage,
           action: hook.action,
-          priority: hook.priority
+          priority: hook.priority ?? skill.metadata?.wwriting?.priority ?? 100
         }))
       }))
     };

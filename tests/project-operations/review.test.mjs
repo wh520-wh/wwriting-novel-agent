@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { createProjectRoot } from "../helpers/project-agent-harness.mjs";
+import { createProjectRoot, catalogSkillsFor } from "../helpers/project-agent-harness.mjs";
 import { saveContinuity } from "../../src/core/continuity-store.mjs";
 import { sha256 } from "../../src/core/fs-utils.mjs";
 import { countEffectiveWords } from "../../src/core/word-count.mjs";
@@ -18,9 +18,10 @@ import { parseSimpleYaml, serializeSimpleYaml } from "../../src/core/simple-yaml
 import { appendChapterSegment, commitChapter, commitChapterMemory } from "../../src/core/project-operations/chapter.mjs";
 import { ReviewOperationError, reviewProject } from "../../src/core/project-operations/review.mjs";
 
+// 内置技能发现即生效后，LONG_PROSE 必须通过全部四个确定性技能门禁。
 const LONG_PROSE = `# 第一章 雨夜来信
 
-雨下了一整夜。林深读完那封没有署名的信，手指微微发凉。信里只写了一句：老宅的钟，会在午夜敲十三下。他把信折好放进抽屉，又忍不住取出来再看一遍。窗外一声闷雷，街灯忽明忽暗。天亮之前，他决定回老宅看看。`;
+雨夜，雨声突然变大。林深猛地推开门，冲进老宅的客厅。他浑身湿透，抹了一把脸，低声道：“信上说，老宅的钟会在午夜敲十三下。”烛光下，墙上的照片里竟是多年不见的父亲。他正要细看，门外却传来一阵急促的敲门声。`;
 
 async function makeProject(options = {}) {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-ops-review-"));
@@ -30,7 +31,9 @@ async function makeProject(options = {}) {
 
 async function commitCleanChapter(projectRoot, project, chapterNo = 1) {
   await appendChapterSegment({ projectRoot, projectId: project.project_id, chapterNo, segmentNo: 1, content: LONG_PROSE });
-  const committed = await commitChapter({ projectRoot, projectId: project.project_id, chapterNo });
+  // Task 12：技能钩子改读新 catalog（临时 home 注入，migration marker 不碰真实用户目录）。
+  const { skills } = await catalogSkillsFor(projectRoot).then((active) => ({ skills: active }));
+  const committed = await commitChapter({ projectRoot, projectId: project.project_id, chapterNo }, { skills });
   await commitChapterMemory({
     projectRoot,
     chapterNo,

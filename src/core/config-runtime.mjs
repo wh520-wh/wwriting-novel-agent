@@ -21,7 +21,6 @@ export const DEFAULT_CONFIG = {
   budget_config: {},
   cache_config: {},
   research_config: {},
-  enabled_skills: [],
   chat_max_tool_rounds: 32,
   auto_resume_on_start: false,
 };
@@ -112,7 +111,6 @@ export function normalizeConfigLayer(layer = {}, options = {}) {
   copyIfDefined(config, source, "budget_config");
   copyIfDefined(config, source, "cache_config");
   copyIfDefined(config, source, "research_config");
-  copyIfDefined(config, source, "enabled_skills");
   copyIfDefined(config, source, "default_writer_model");
   copyIfDefined(config, source, "default_reviewer_model");
   copyIfDefined(config, source, "chat_max_tool_rounds");

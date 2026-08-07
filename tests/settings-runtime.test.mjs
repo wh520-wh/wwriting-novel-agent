@@ -412,6 +412,25 @@ test("runtime apply failure keeps durable new files and requests restart", async
   ]);
 });
 
+test("updateProjectSettings 保存时移除旧 project.yaml 的 enabled_skills 字段", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-settings-strip-"));
+  const { projectRoot } = await createProject(root, { slug: "project" });
+  // 模拟旧版本 project.yaml 残留 enabled_skills
+  const { parseSimpleYaml, serializeSimpleYaml } = await import("../src/core/simple-yaml.mjs");
+  const { saveProject } = await import("../src/core/project-store.mjs");
+  const legacy = { ...(await loadProject(projectRoot)), enabled_skills: ["suspense-chapter-end"] };
+  await saveProject(projectRoot, legacy);
+  assert.equal((await loadProject(projectRoot)).enabled_skills, undefined);
+
+  // 经 settings runtime 保存一次后，enabled_skills 不再出现
+  await updateProjectSettings(projectRoot, { reasoning_effort: "high" });
+  const project = await loadProject(projectRoot);
+  assert.equal(project.reasoning_effort, "high");
+  assert.equal(project.enabled_skills, undefined, "settings 保存后 enabled_skills 必须被移除");
+  const source = await fs.readFile(path.join(projectRoot, "project.yaml"), "utf8");
+  assert.ok(!source.includes("enabled_skills"), "project.yaml 文本不得再出现 enabled_skills");
+});
+
 test("reasoning_effort 项目级读写：合法档位落盘 project.yaml，非法值拒绝", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-settings-effort-"));
   const { projectRoot } = await createProject(root, { slug: "project" });

@@ -20,6 +20,7 @@ import { createRouter } from "../../src/core/http/router.mjs";
 import { createProjectRoutes } from "../../src/core/http/project-routes.mjs";
 import { createSettingsRoutes } from "../../src/core/http/settings-routes.mjs";
 import { createProjectLockRegistry } from "../../src/core/project-lock.mjs";
+import { createSkillService } from "../../src/core/skills/index.mjs";
 import { recordRecentProject } from "../../src/core/app-state.mjs";
 import { loadProject, saveProject, upsertChapter } from "../../src/core/project-store.mjs";
 import { startHttpServer } from "../helpers/http-test.mjs";
@@ -47,6 +48,8 @@ async function setupServer(t, harnessOptions = {}) {
     stateRoot,
     secretsRoot,
     selection,
+    // Task 12：注入临时 root 的 skills service（migration marker 不碰真实用户目录）
+    skills: createSkillService({ userHome: path.join(workspace, ".skills-home"), resourcesPath: null }),
     // 注入桩 connectionTester：让 test-connection 走到密钥校验与统一 finally 清理
     // 路径（不注入时 503 model_probe_unavailable）
     connectionTester: async () => ({ ok: true, code: null, message: "ok", latency_ms: 5 })
@@ -217,11 +220,12 @@ test("既有契约抽查：projects/list、open、init、research、settings、s
   assert.equal(probe.res.status, 400);
   assert.equal(probe.data.code, "configuration_missing");
 
-  // skills/enable：内置技能
+  // skills/enable：内置技能（发现即生效，无 enabled_skills 集合）
   const skill = await s.post("/api/skills/enable", { name: "suspense-chapter-end" });
   assert.equal(skill.res.status, 200);
   assert.equal(skill.data.ok, true);
-  assert.ok(skill.data.enabled_skills.includes("suspense-chapter-end"));
+  assert.equal(skill.data.skill, "suspense-chapter-end");
+  assert.equal(skill.data.enabled_skills, undefined, "Task 12：不再返回 enabled_skills");
   const skillBad = await s.post("/api/skills/enable", { name: "不存在" });
   assert.equal(skillBad.res.status, 400);
 

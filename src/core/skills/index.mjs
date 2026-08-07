@@ -5,17 +5,30 @@
 // projectRoot 缓存；新 catalog 只在迁移完成后运行，并且永远不读取 skill.json/yaml/yml。
 // catalog 结果携带 migration_errors（迁移失败项），供 UI 展示。
 //
-// 生产模块只允许从这里导入；底层文件（skill-file.mjs / catalog.mjs / legacy-migration.mjs）
-// 仅由本 service 与 tests/skills/ 使用。默认 root 在 service 内统一解析，测试通过
-// factory 注入临时目录。Task 13 升级 importSkill（ZIP/大小校验/原子 rename），不建立
-// 第二个入口。
+// 生产模块只允许从这里导入；底层文件（skill-file.mjs / catalog.mjs / legacy-migration.mjs /
+// hooks.mjs）仅由本 service 与 tests/skills/ 使用。默认 root 在 service 内统一解析，
+// 测试通过 factory 注入临时目录。Task 13 升级 importSkill（ZIP/大小校验/原子 rename），
+// 不建立第二个入口。
+//
+// Task 12：runSkillChecks/runPostProcessHooks 也经本 seam 暴露——hooks 的确定性实现
+// 在 hooks.mjs（只接收技能列表），这里负责从 service 解析 active catalog 并绑定
+// skillService。调用方可通过 context.skills 注入 active 技能列表或带 catalog() 的
+// service（测试/运行时注入，避免触碰真实用户目录）。
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathExists } from "../fs-utils.mjs";
 import { discoverSkills } from "./catalog.mjs";
-import { ensureMigrated } from "./legacy-migration.mjs";
+import { buildSkillMd, ensureMigrated } from "./legacy-migration.mjs";
 import { readSkillFile, readSkillResource, skillError } from "./skill-file.mjs";
+import {
+  runPostProcessHooksWithSkills,
+  runSkillChecksWithSkills
+} from "./hooks.mjs";
+
+// 旧 manifest → SKILL.md 正文转换（Task 11 迁移管线与 /api/skills/import 的
+// manifest 对象契约共用同一转换规则；只在 seam 上暴露，生产模块不得直接使用）。
+export { buildSkillMd };
 
 // 内置技能根目录 src/skills（Task 10 落地五个内置 SKILL.md；当前允许缺失）。
 const DEFAULT_BUILTIN_ROOT = path.resolve(import.meta.dirname, "..", "..", "skills");
@@ -88,3 +101,31 @@ function assertSafeSkillName(name) {
 }
 
 export const skillService = createSkillService();
+
+// ---------------------------------------------------------------------------
+// 确定性技能钩子（Task 12 Step 4）：service seam 暴露入口
+// ---------------------------------------------------------------------------
+
+// 解析 hooks 输入：context.skills 可以是 active 技能数组、带 catalog() 的 service，
+// 缺省使用全局 skillService（生产路径，迁移先行）。
+async function resolveHookSkills(context, projectRoot) {
+  if (Array.isArray(context.skills)) return context.skills;
+  if (context.skills && typeof context.skills.catalog === "function") {
+    const { active } = await context.skills.catalog({ projectRoot });
+    return active;
+  }
+  const { active } = await skillService.catalog({ projectRoot });
+  return active;
+}
+
+// 保持旧 runSkillChecks(projectRoot, project, stage, context) 调用形状（章节提交使用）。
+export async function runSkillChecks(projectRoot, project, stage, context = {}) {
+  const skills = await resolveHookSkills(context, projectRoot);
+  return runSkillChecksWithSkills(skills, stage, context);
+}
+
+// 保持旧 runPostProcessHooks(projectRoot, project, context) 调用形状。
+export async function runPostProcessHooks(projectRoot, project, context = {}) {
+  const skills = await resolveHookSkills(context, projectRoot);
+  return runPostProcessHooksWithSkills(skills, context);
+}

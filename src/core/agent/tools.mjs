@@ -10,10 +10,12 @@
 // BeforeToolUse/AfterToolUse hook 执行、可中断/原子工具分类、脱敏与受保护路径。
 //
 // 设计不变量（来自计划 Task 4 Step 3–8）：
-//   - 恰好注册六个 general 工具（list_files/search_files/read_file/write_file/edit_file/shell）
-//     与五个 deep 工具（update_plan/enter_workflow/append_chapter_segment/commit_chapter/
-//     commit_blueprint）；不注册旧编排工具（start_ 前缀启停、queue_ 前缀排队、
-//     resolve_failure、export_book 等）或逐文件便利工具。
+//   - 恰好注册七个 general 工具（list_files/search_files/read_file/write_file/edit_file/shell/
+//     read_skill）与五个 deep 工具（update_plan/enter_workflow/append_chapter_segment/
+//     commit_chapter/commit_blueprint）；不注册旧编排工具（start_ 前缀启停、queue_ 前缀排队、
+//     resolve_failure、export_book 等）或逐文件便利工具。read_skill（Task 12）是只读
+//     工具：只能按 active catalog name 解析，realpath containment/1MiB 上限/二进制
+//     asset 由 skills service（src/core/skills/index.mjs）执行。
 //   - 每个工具 schema 必须产生系统构建的归一化 ToolAction 后才进入权限评估；模型只能提供
 //     purpose，不能提供或覆盖 risk/scope/extreme/grant_key/confirmation 类型（schema 不暴露
 //     这些字段，additionalProperties: false）。
@@ -45,6 +47,7 @@ import path from "node:path";
 import { isPathInside, pathExists, resolveFilesystemPath, writeFileAtomic } from "../fs-utils.mjs";
 import { classifyShellCommand, resolveProjectScope } from "../shell/risk.mjs";
 import { createRedactor, createStreamingRedactor } from "../shell/redaction.mjs";
+import { skillService } from "../skills/index.mjs";
 
 // ---------------------------------------------------------------------------
 // 常量
@@ -118,6 +121,13 @@ function auditToolResult(name, result) {
   const audit = structuredClone(result ?? {});
   if (name === "read_file") {
     const content = String(audit.content ?? "");
+    delete audit.content;
+    audit.content_length = content.length;
+  }
+  if (name === "read_skill" && typeof audit.content === "string") {
+    // read_skill 正文不进审计事件（与 read_file 同口径：只留长度）；
+    // 二进制 asset 结果没有 content，原样保留元数据 + 绝对路径。
+    const content = audit.content;
     delete audit.content;
     audit.content_length = content.length;
   }
@@ -338,6 +348,7 @@ export function createToolRuntime({
   shellRuntime,
   projectLocks = null,
   secrets = [],
+  skills = skillService,
   idFactory = randomUUID
 } = {}) {
   if (!journal || typeof journal.append !== "function") {
@@ -1011,6 +1022,45 @@ export function createToolRuntime({
     }
   });
 
+  // ---- general: read_skill -------------------------------------------------
+
+  register("read_skill", {
+    interruptible: false,
+    description: "读取已发现 Agent Skill 的 SKILL.md 或其安全资源。",
+    schema: {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        resource: { type: "string", description: "默认 SKILL.md；也可为 references/...、scripts/...、assets/..." }
+      },
+      required: ["name"],
+      additionalProperties: false
+    },
+    describeAction(args, context) {
+      return baseAction({
+        category: "read",
+        scope: "project",
+        targetClass: "project-root",
+        grantKey: "read:project:project-root",
+        title: "读取技能",
+        description: redactor.redact(String(args.name ?? "")),
+        targets: []
+      });
+    },
+    async run(args, context) {
+      const name = requireStringArg(args, "name", "name");
+      if (typeof skills?.read !== "function") {
+        throw toolError("not_wired", "工具不可用。", { rule: "not_wired", tool: "read_skill" });
+      }
+      const resource =
+        typeof args.resource === "string" && args.resource.trim() !== "" ? args.resource : "SKILL.md";
+      // 只能按 active catalog name 解析；realpath containment、1MiB 文本上限与
+      // 二进制 asset 处理在 skill-file.readSkillResource 内执行；本版本不执行 scripts。
+      const result = await skills.read({ projectRoot: context.projectRoot, name, resource });
+      return { ...result };
+    }
+  });
+
   // ---- deep: update_plan ---------------------------------------------------
 
   register("update_plan", {
@@ -1551,10 +1601,12 @@ export function createToolRuntime({
       type: "tool_call_completed",
       run_id: runId,
       payload: {
+        // 审计字段展开在前，name/tool_call_id/activity_id 恒为工具权威值——
+        // read_skill 结果自身携带技能 name，绝不能覆盖工具名（Task 12 回归）。
+        ...redactJsonValue(redactor, auditToolResult(name, result)),
         tool_call_id: toolCallId,
         activity_id: activityId,
-        name,
-        ...redactJsonValue(redactor, auditToolResult(name, result))
+        name
       }
     });
     await runAfterToolUse({

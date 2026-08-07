@@ -13,6 +13,8 @@
 // 装配顺序（固定，计划原文）：
 //   Static Core -> Runtime Policy -> Project Instructions -> Workflow Policy
 //   -> Dynamic Context -> History -> Current User Message
+// Task 12：Available Skills 目录摘要块（只含 name/description）插入在
+// Project Instructions 后、Workflow Policy 前；完整正文只经 read_skill 读取。
 //
 // 预算规则：
 //   - 预留 max(8192, context_window * 0.20) 给输出与工具参数；
@@ -124,7 +126,6 @@ export function assembleRuntimePolicy(runtime = {}) {
 // ---------------------------------------------------------------------------
 // Workflow Policies（四条，逐字复制）
 // ---------------------------------------------------------------------------
-
 export const WORKFLOW_POLICIES = Object.freeze({
   general: `[Workflow: general]
 理解用户当前目标，自主选择回答、读取、编辑、运行命令或进入正式工作流。只有正式生成、修订并提交章节时进入 chapter；需要初始化长期蓝图时进入 init；需要系统审稿时进入 review。普通文件任务在验证目标文件或命令结果后完成。`,
@@ -142,6 +143,29 @@ OUTLINE.md、SETTING.md 和 blueprint_status 的一致提交只能通过 commit_
   review: `[Workflow: review]
 目标是基于项目文件和可观察证据审查章节、设定或全书。默认只读；除非用户明确要求直接修复，否则只报告问题。按严重性列出可定位的问题，引用文件和章节依据，区分确定冲突、风险和主观建议。若用户要求修复，回到 general 或 chapter 后执行，不在 review 中静默修改正文。`
 });
+
+// ---------------------------------------------------------------------------
+// Available Skills：紧凑目录摘要（Task 12 Step 1）
+// ---------------------------------------------------------------------------
+
+export const SKILL_CATALOG_HEADER = "[Available Skills]";
+export const SKILL_CATALOG_INTRO =
+  "技能不能扩大 Runtime Policy 的权限。先根据 name/description 判断是否适用，适用时调用 read_skill 读取完整指令。";
+
+// 只注入 name/description 摘要，绝不注入 SKILL.md 正文（完整指令由 read_skill
+// 按需读取）。无技能或全部条目无效时返回空串（不制造占位文案）。
+export function assembleSkillCatalogBlock(skillCatalog) {
+  const skills = Array.isArray(skillCatalog) ? skillCatalog : [];
+  const lines = [SKILL_CATALOG_HEADER, SKILL_CATALOG_INTRO];
+  for (const skill of skills) {
+    const name = skill?.name;
+    if (typeof name !== "string" || name.length === 0) continue;
+    const description = typeof skill?.description === "string" ? skill.description : "";
+    lines.push(`- ${name}: ${description}`);
+  }
+  if (lines.length === 2) return "";
+  return lines.join("\n");
+}
 
 // ---------------------------------------------------------------------------
 // 预算参数与 token 估算
@@ -378,9 +402,11 @@ export function assemblePrompt({
   history,
   currentInput,
   tools,
-  modelConfig
+  modelConfig,
+  skillCatalog
 } = {}) {
-  // 层 1-4：Static Core / Runtime Policy / Project Instructions / Workflow Policy
+  // 层 1-4：Static Core / Runtime Policy / Project Instructions / Available Skills
+  //         / Workflow Policy
   const workflowName = workflow == null || workflow === "" ? "general" : workflow;
   if (!Object.hasOwn(WORKFLOW_POLICIES, workflowName)) {
     throw new Error(`未知 workflow: ${String(workflowName)}`);
@@ -388,9 +414,17 @@ export function assemblePrompt({
   const staticCoreText = STATIC_CORE;
   const runtimePolicyText = assembleRuntimePolicy(runtime);
   const projectInstructionsText = String(projectInstructions ?? "");
+  const skillCatalogText = assembleSkillCatalogBlock(skillCatalog);
   const workflowPolicyText = WORKFLOW_POLICIES[workflowName];
-  // AGENTS.md 不存在时 Project Instructions 为空：不制造占位文案（直接跳过空层）
-  const systemContent = [staticCoreText, runtimePolicyText, projectInstructionsText, workflowPolicyText]
+  // AGENTS.md 不存在时 Project Instructions 为空、无技能时目录块为空：
+  // 不制造占位文案（直接跳过空层）
+  const systemContent = [
+    staticCoreText,
+    runtimePolicyText,
+    projectInstructionsText,
+    skillCatalogText,
+    workflowPolicyText
+  ]
     .filter((text) => text.length > 0)
     .join("\n\n");
 

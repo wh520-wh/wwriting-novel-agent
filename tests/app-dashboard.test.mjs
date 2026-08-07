@@ -10,7 +10,30 @@ import { sha256 } from "../src/core/fs-utils.mjs";
 import { searchWeb } from "../src/core/research-tools.mjs";
 import { updateProjectSettings } from "../src/core/settings-runtime.mjs";
 
+// Task 12：dashboard 技能列表改读新 catalog。注入临时 root 的 skills service
+//（内置技能来自仓库 src/skills；migration marker 只写进项目内临时 home，绝不
+// 触碰真实用户目录）。按 projectRoot 缓存 service，避免重复迁移。
+const skillServiceCache = new Map();
+async function skillServiceFor(projectRoot) {
+  if (!skillServiceCache.has(projectRoot)) {
+    const { createSkillService } = await import("../src/core/skills/index.mjs");
+    const home = path.join(projectRoot, ".test-skill-home");
+    skillServiceCache.set(projectRoot, createSkillService({ userHome: home, resourcesPath: null }));
+  }
+  return skillServiceCache.get(projectRoot);
+}
+
+async function activeSkillsFor(projectRoot) {
+  const { active } = await (await skillServiceFor(projectRoot)).catalog({ projectRoot });
+  return active;
+}
+
+async function loadDashboard(root, projectRoot, extra = {}) {
+  return loadDashboardData(root, { ...extra, projectRoot, skillService: await skillServiceFor(projectRoot) });
+}
+
 // 章节事实辅助：用项目领域模块提交一章（dashboard 测试不依赖 Agent 写章）。
+// 正文必须通过全部四个确定性技能门禁（内置技能发现即生效）。
 async function commitChapterViaOperations(projectRoot, chapterNo, content) {
   const project = await loadProject(projectRoot);
   const { appendChapterSegment, commitChapter } = await import("../src/core/project-operations/chapter.mjs");
@@ -21,7 +44,10 @@ async function commitChapterViaOperations(projectRoot, chapterNo, content) {
     segmentNo: 1,
     content
   });
-  await commitChapter({ projectRoot, projectId: project.project_id, chapterNo });
+  await commitChapter(
+    { projectRoot, projectId: project.project_id, chapterNo },
+    { skills: await activeSkillsFor(projectRoot) }
+  );
 }
 
 test("loadDashboardData summarizes real project files", async () => {
@@ -33,8 +59,8 @@ test("loadDashboardData summarizes real project files", async () => {
     target_words_per_chapter: 20,
     network_allowed: true
   });
-  await commitChapterViaOperations(projectRoot, 1, "第一章正文：雨夜，一封没有署名的信落在门缝里。");
-  await commitChapterViaOperations(projectRoot, 2, "第二章正文：档案管理员林晚决定追查寄信人。");
+  await commitChapterViaOperations(projectRoot, 1, "雨夜，一封没有署名的信突然落在门缝里。他猛地抬头，低声道：“谁在送信？老宅的钟会在午夜敲响。”信纸背面写着：真相就在老宅。他攥紧信，冲出门去。");
+  await commitChapterViaOperations(projectRoot, 2, "档案管理员林晚猛地推开档案室的门，低声道：“信上说的老宅，真有钟声吗？”她翻开登记簿，指尖停在一行字上：三十年前，老宅钟楼失踪过一个人。窗外忽然传来敲门声。");
   await searchWeb(
     projectRoot,
     { project_id: "dashboard-project", tool_permissions: { network_allowed: true } },
@@ -48,7 +74,7 @@ test("loadDashboardData summarizes real project files", async () => {
     }
   );
 
-  const data = await loadDashboardData(root, { projectRoot });
+  const data = await loadDashboard(root, projectRoot);
   assert.equal(data.hasProject, true);
   assert.equal(data.summary.completedChapters, 2);
   assert.equal(data.summary.targetChapters, 2);
@@ -61,7 +87,8 @@ test("loadDashboardData summarizes real project files", async () => {
   assert.ok(suspenseSkill, "built-in suspense skill should be listed");
   const aiVoiceSkill = data.skills.items.find((skill) => skill.name === "avoid-ai-voice");
   assert.ok(aiVoiceSkill, "built-in ai-voice skill should be listed");
-  assert.equal(aiVoiceSkill.enabled_in_project, false);
+  // 发现即生效：新模型没有启停集合，目录里的技能都是 active（Task 12）。
+  assert.equal(aiVoiceSkill.enabled_in_project, true);
   assert.equal(data.sources.count, 1);
   assert.equal(data.sources.latest[0].untrusted, true);
   assert.equal(await validateProjectRoot(projectRoot), projectRoot);
@@ -75,9 +102,9 @@ test("loadDashboardData 不再返回运行状态推断与旧领域字段", async
     min_words_per_chapter: 10,
     target_words_per_chapter: 20
   });
-  await commitChapterViaOperations(projectRoot, 1, "第一章正文：雨夜来信的开篇。");
+  await commitChapterViaOperations(projectRoot, 1, "雨夜，一封没有署名的信突然落在门缝里。他猛地抬头，低声道：“谁在送信？老宅的钟会在午夜敲响。”信纸背面写着：真相就在老宅。他攥紧信，冲出门去。");
 
-  const data = await loadDashboardData(root, { projectRoot });
+  const data = await loadDashboard(root, projectRoot);
   // Rule 9：dashboard 不推测 Agent 是否繁忙
   assert.equal(data.summary.projectStatus, undefined);
   assert.equal(data.summary.currentStage, undefined);
@@ -102,7 +129,7 @@ test("loadDashboardData reports configured model-call budget from effective sett
     }
   });
 
-  const data = await loadDashboardData(root, { projectRoot });
+  const data = await loadDashboard(root, projectRoot);
   // 预算限制只来自有效项目配置（Rule 9）
   assert.equal(data.project.budget_config.max_model_calls, 77);
 });
@@ -115,7 +142,7 @@ test("readChapterContent returns clean prose without segment markup", async () =
     min_words_per_chapter: 10,
     target_words_per_chapter: 20
   });
-  await commitChapterViaOperations(projectRoot, 1, "第一章正文：雨夜来信的开篇。");
+  await commitChapterViaOperations(projectRoot, 1, "雨夜，一封没有署名的信突然落在门缝里。他猛地抬头，低声道：“谁在送信？老宅的钟会在午夜敲响。”信纸背面写着：真相就在老宅。他攥紧信，冲出门去。");
   const chapter = await readChapterContent(projectRoot, 1);
   assert.equal(chapter.ok, true);
   assert.equal(chapter.chapter_no, 1);
@@ -143,11 +170,8 @@ test("loadDashboardData allows an explicitly opened external project", async () 
     min_words_per_chapter: 10,
     target_words_per_chapter: 20
   });
-  await commitChapterViaOperations(projectRoot, 1, "第一章正文：外部项目正文。");
-  const data = await loadDashboardData(workspace, {
-    projectRoot,
-    allowExternalProjectRoot: true
-  });
+  await commitChapterViaOperations(projectRoot, 1, "雨夜，一封没有署名的信突然落在门缝里。他猛地抬头，低声道：“谁在送信？老宅的钟会在午夜敲响。”信纸背面写着：真相就在老宅。他攥紧信，冲出门去。");
+  const data = await loadDashboard(workspace, projectRoot, { allowExternalProjectRoot: true });
   assert.equal(data.hasProject, true);
   assert.equal(data.projectRoot, projectRoot);
   assert.equal(data.summary.completedChapters, 1);
@@ -167,7 +191,7 @@ test("loadDashboardData returns cacheSummary when cache report is missing", asyn
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-dashboard-cache-empty-"));
   const { projectRoot } = await createWritingProject(root, { slug: "project" });
 
-  const data = await loadDashboardData(root, { projectRoot });
+  const data = await loadDashboard(root, projectRoot);
 
   assert.deepEqual(data.cacheSummary, {
     available: false,
@@ -216,7 +240,7 @@ test("loadDashboardData explains stable cache key without provider metrics", asy
     )
   );
 
-  const data = await loadDashboardData(root, { projectRoot });
+  const data = await loadDashboard(root, projectRoot);
 
   assert.equal(data.cacheSummary.available, true);
   assert.equal(data.cacheSummary.providerMetricsAvailable, false);
@@ -237,7 +261,7 @@ test("dashboard does not count an indexed chapter whose file is missing", async 
     actual_words: 1200,
   });
 
-  const dashboard = await loadDashboardData(root, { projectRoot });
+  const dashboard = await loadDashboard(root, projectRoot);
 
   assert.equal(dashboard.summary.completedChapters, 0);
   assert.equal(dashboard.chapters[0].artifact.state, "invalid");
@@ -263,7 +287,7 @@ test("dashboard exposes a verified artifact for a readable chapter file", async 
     actual_words: 2,
   });
 
-  const dashboard = await loadDashboardData(root, { projectRoot });
+  const dashboard = await loadDashboard(root, projectRoot);
 
   assert.equal(dashboard.summary.completedChapters, 1);
   assert.equal(dashboard.chapters[0].artifact.state, "committed");
