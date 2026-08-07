@@ -1037,6 +1037,25 @@ test("活动标签映射：shell→运行命令、read_file→读取文件；rea
   assert.equal(root.querySelector('[data-testid="agent-thinking"]'), null, "旧三点动画反馈已删除");
 });
 
+test("工具活动按 seq 位于 Assistant 正文之前（同一时间线）", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(toolStarted("a1", "list_files", { path: "D:\\novel" }, { seq: 2 }));
+  surface.applyEvent(ev("tool_call_completed", {
+    tool_call_id: "tc-a1", activity_id: "a1", name: "list_files", exit_code: 0, duration_ms: 12
+  }, { seq: 3 }));
+  surface.applyEvent(ev("assistant_message_completed", { input_id: "in-1", text: "文件清单如下" }, { seq: 4 }));
+  const activity = root.querySelector('[data-activity-id="a1"]');
+  const assistant = root.querySelector('[data-testid="agent-assistant-message"]');
+  assert.ok(activity, "工具活动行应渲染");
+  assert.ok(assistant, "Assistant 正文应渲染");
+  const timeline = (node) => node._parent.children.indexOf(node);
+  assert.ok(timeline(activity) < timeline(assistant), "完成态工具活动行应位于 Assistant 正文之前");
+  assert.equal(activity._parent, assistant._parent, "活动行与 Assistant 正文同属 messages 时间线");
+  assert.match(activity.textContent, /查看文件列表/u, "完成态活动仍显示工具摘要");
+});
+
 // ===========================================================================
 // 增量正文流（步骤7）：assistant_message_delta 累积渲染 + completed 终态对齐
 // ===========================================================================
