@@ -620,14 +620,16 @@ async function auditAndCapture(win, ctx, spec) {
     windowRef.webContents.invalidate();
   }
 
-  // 3) 页面级非主观检查
+  // 3) 页面级非主观检查 + 场景客观检查（评审 P1-1/P1-2/P1-3 新增）
   const overflow = await checkHorizontalOverflow(win);
   const overlap = await checkNoOverlap(win, spec.overlapSelectors);
+  const extraResults = spec.extraChecks ? await spec.extraChecks(win) : [];
 
   const problems = [
     ...pixelCheck.problems,
     ...(overflow ? [overflow] : []),
-    ...(overlap.ok ? [] : [`关键 selector bounding box 相交: ${overlap.pairs.join("; ")}`])
+    ...(overlap.ok ? [] : [`关键 selector bounding box 相交: ${overlap.pairs.join("; ")}`]),
+    ...extraResults.filter((r) => !r.pass).map((r) => `客观检查失败 [${r.name}]: ${r.detail}`)
   ];
   if (problems.length > 0) {
     throw new Error(`${spec.file} 非主观检查失败: ${problems.join(" | ")}`);
@@ -652,35 +654,100 @@ async function auditAndCapture(win, ctx, spec) {
     imageSize: `${width}x${height}`,
     pixels: pixelCheck.pass ? "PASS" : "FAIL",
     overflow: overflow ? "FAIL" : "PASS",
-    overlap: overlap.ok ? "PASS" : "FAIL"
+    overlap: overlap.ok ? "PASS" : "FAIL",
+    extra: extraResults
   });
-  console.log(`  ✓ ${spec.file}  (${width}x${height}, ${png.length} B, sha256 ${sha256.slice(0, 12)}…)`);
+  const extraText = extraResults.length > 0
+    ? `  [客观检查] ${extraResults.map((r) => `${r.name}=${r.pass ? "PASS" : "FAIL"}`).join(", ")}`
+    : "";
+  console.log(`  ✓ ${spec.file}  (${width}x${height}, ${png.length} B, sha256 ${sha256.slice(0, 12)}…)${extraText}`);
 }
+
+// 场景客观检查（评审 P1-1/P1-2/P1-3）：返回 [{ name, pass, detail }]。
+// 注意：页面内表达式一律用字符串拼接，避免在 read 的外层模板字面量里嵌套反引号/${}。
+const EXTRA_CHECKS = {
+  // P1-1：reasoning 展开详情的 320px 限高内层滚动区必须真实存在（内容溢出）
+  reasoningExpandedScroll: async (win) => {
+    const result = await read(win, `(() => {
+      const detail = [...document.querySelectorAll('.agent-work-item[data-kind="reasoning"] .agent-reasoning-detail:not([hidden])')]
+        .find((el) => el.isConnected);
+      if (!detail) return { pass: false, detail: "未找到展开的 reasoning 详情" };
+      const cs = getComputedStyle(detail);
+      return {
+        pass: detail.scrollHeight > detail.clientHeight,
+        detail: "scrollHeight=" + detail.scrollHeight + " clientHeight=" + detail.clientHeight +
+          " maxHeight=" + cs.maxHeight + " overflowY=" + cs.overflowY
+      };
+    })()`);
+    return [{ name: "reasoning-detail-scroll", pass: result.pass, detail: result.detail }];
+  },
+  // P1-2：窄屏顶栏「面板」按钮单行显示（不拆成两行逐字）
+  panelButtonSingleLine: async (win) => {
+    const result = await read(win, `(() => {
+      const b = document.getElementById("qr-collapsed");
+      if (!b) return { pass: false, detail: "未找到 #qr-collapsed" };
+      const r = b.getBoundingClientRect();
+      const oneLine = b.scrollHeight <= b.clientHeight + 1 && b.scrollWidth <= b.clientWidth + 1;
+      return {
+        pass: oneLine,
+        detail: "rect=" + Math.round(r.width) + "x" + Math.round(r.height) +
+          " client=" + b.clientWidth + "x" + b.clientHeight +
+          " scroll=" + b.scrollWidth + "x" + b.scrollHeight +
+          " text=\\"" + (b.textContent || "").trim() + "\\""
+      };
+    })()`);
+    return [{ name: "panel-button-single-line", pass: result.pass, detail: result.detail }];
+  },
+  // P1-3：设置页技能列表底部——footer 与最后一行不重叠，且最后一行完整在滚动视口内
+  settingsFooterClearance: async (win) => {
+    const result = await read(win, `(() => {
+      const foot = document.querySelector(".spd-foot");
+      const rows = [...document.querySelectorAll(".spd-skill-row")];
+      const last = rows.at(-1);
+      const scroll = document.getElementById("settings-detail") || document.querySelector(".sp-detail-scroll");
+      if (!foot || !last || !scroll) return { pass: false, detail: "foot=" + Boolean(foot) + " last=" + Boolean(last) + " scroll=" + Boolean(scroll) };
+      const fr = foot.getBoundingClientRect();
+      const lr = last.getBoundingClientRect();
+      const sr = scroll.getBoundingClientRect();
+      const intersects = fr.left < lr.right - 1 && lr.left < fr.right - 1 && fr.top < lr.bottom - 1 && lr.top < fr.bottom - 1;
+      const withinViewport = lr.top >= sr.top - 1 && lr.bottom <= sr.bottom + 1;
+      return {
+        pass: !intersects && withinViewport,
+        detail: "foot=[" + Math.round(fr.top) + ".." + Math.round(fr.bottom) + "]" +
+          " lastRow=[" + Math.round(lr.top) + ".." + Math.round(lr.bottom) + "]" +
+          " scrollView=[" + Math.round(sr.top) + ".." + Math.round(sr.bottom) + "]" +
+          " scrollTop=" + scroll.scrollTop + "/" + (scroll.scrollHeight - scroll.clientHeight) +
+          " intersects=" + intersects + " within=" + withinViewport
+      };
+    })()`);
+    return [{ name: "settings-footer-clearance", pass: result.pass, detail: result.detail }];
+  }
+};
 
 // ---------------------------------------------------------------------------
 // 场景内容契约
 // ---------------------------------------------------------------------------
 
-// 第一轮思考：足够长（约 950 字），让完成态详情超过 .agent-reasoning-detail 的
-// 320px 限高出现滚动区（场景 05「展开详情是否有合理限高和滚动区域」可验收）。
-const TURN1_REASONING = [
-  "收到分析项目进度的请求，先建立检查顺序，避免重复劳动，也保证结论有依据。",
-  "第一步核对大纲结构：前三章是主线引入，第四章进入冲突转折，第五章预计收束。",
-  "第二步检查章节提交状态：第一、二章已正式提交，第三章仍在草稿中，尚未通过门禁。",
-  "第三步对照任务计划：检查已有章节已完成，修正冲突进行中，验证修改待开始，进度符合预期。",
-  "同时需要确认是否有章节门禁失败或连续性记忆冲突，这类问题会直接阻塞后续提交。",
-  "再检查成本与运行状态：会话空闲、无排队输入、没有残留的失败运行，可以安全继续。",
-  "字数统计显示前两章均已超过最低字数要求，正文语气克制，没有明显 AI 腔的堆砌感。",
-  "章节记忆与时间线一致：上一章的结尾与下一章的开头没有时间跳跃或视角错乱。",
-  "写作风格检查：对话占比、章节悬念与收束结构都符合当前项目的既定风格。",
-  "从最近几次提交看，改稿集中在对话节奏和悬念落点，说明风格已经稳定下来。",
-  "剩余风险主要是第三章草稿的完整性，以及后续章节的人名、地名一致性。",
-  "为了避免把检查过程写进正文，最后把结论压缩为三条可执行建议，按优先级排列。",
-  "第一条建议：继续完善第三章草稿，走完质量门禁后再提交。",
-  "第二条建议：下一章展开时保持当前视角与语气，避免节奏突变。",
-  "第三条建议：如需大改设定，先更新大纲与记忆，再动正文。",
-  "以上检查均已实际完成，不是推测；结论可以直接作为下一步行动的输入。"
-];
+// 第一轮思考：足够长（约 80 行 / 4KB+，评审 P1-1 修复），让完成态详情超过
+// .agent-reasoning-detail 的 320px 限高（13px/1.65 行高 ≈ 14.9 行可见），
+// 场景 05 必须客观展示内层滚动区（scrollHeight > clientHeight）。
+const TURN1_REASONING = (() => {
+  const lines = [
+    "收到分析项目进度的请求，先建立检查顺序，避免重复劳动，也保证结论有依据。",
+    "总体方案：按章节逐一核对大纲位置、草稿状态、字数与质量门禁、连续性记忆与风格。"
+  ];
+  for (let chapter = 1; chapter <= 20; chapter += 1) {
+    lines.push(`第 ${chapter} 章检查：先核对本章在提纲中的位置，以及与前后的衔接关系。`);
+    lines.push(`再读取本章草稿，确认字数、分节与对话占比都在既定范围之内。`);
+    lines.push(`重点检查章节结尾是否有悬念落点，是否引入了新人物而未交代来历。`);
+    lines.push(`确认本章没有时间线跳跃，人名、地名与记忆库中的记录保持一致。`);
+    if (chapter % 3 === 0) {
+      lines.push(`本组检查发现第 ${chapter - 1} 章存在一段可优化的过渡，已记入建议清单。`);
+    }
+  }
+  lines.push("以上检查全部按顺序完成，结果汇入最终建议，不把检查过程写进正文。");
+  return lines;
+})();
 const TURN1_REASONING_TEXT = TURN1_REASONING.join("");
 
 const PLAN_1 = {
@@ -1146,9 +1213,10 @@ async function main() {
     file: "05-reasoning-expanded-1280x800.png",
     viewport: [1280, 800],
     scenario: "reasoning-expanded",
-    expected: "已完成思考详情展开：完整推理文本，max-height 320px 限高与滚动区",
+    expected: "已完成思考详情展开：完整推理文本，max-height 320px 限高与内层滚动区（内容溢出 320px）",
     spec: "Task 15 Step 5 场景 05 / Step 7 验收第 2 条",
-    overlapSelectors: OVERLAP_SELECTORS.chat
+    overlapSelectors: OVERLAP_SELECTORS.chat,
+    extraChecks: EXTRA_CHECKS.reasoningExpandedScroll
   });
   await clickAndRead(win, "details.agent-work-group > summary", {
     label: "collapse-completed-group",
@@ -1231,9 +1299,10 @@ async function main() {
     file: "07-chat-narrow-390x844.png",
     viewport: [390, 844],
     scenario: "chat-narrow",
-    expected: "390x844 窄屏聊天：对话/工作组/正文不遮挡、不横向溢出、控件不碰撞",
+    expected: "390x844 窄屏聊天：对话/工作组/正文不遮挡、不横向溢出、控件不碰撞；顶栏「面板」单行",
     spec: "Task 15 Step 5 场景 07 / Step 7 验收第 4 条",
-    overlapSelectors: OVERLAP_SELECTORS.chat
+    overlapSelectors: OVERLAP_SELECTORS.chat,
+    extraChecks: EXTRA_CHECKS.panelButtonSingleLine
   });
 
   // ---- 08: 中等屏 768x900（设置页技能分区）----
@@ -1248,13 +1317,21 @@ async function main() {
     expect: () => waitForSettingsSection(win, "skills")
   });
   await waitForSkillsList(win);
+  // P1-3：技能列表滚到底，让最后一行完整可见并展示底部安全间距（评审修复后的几何）
+  await win.webContents.executeJavaScript(`(() => {
+    const scroll = document.getElementById("settings-detail") || document.querySelector(".sp-detail-scroll");
+    if (scroll) scroll.scrollTop = scroll.scrollHeight;
+    return true;
+  })()`);
+  await sleep(400);
   await auditAndCapture(win, context, {
     file: "08-settings-medium-768x900.png",
     viewport: [768, 900],
     scenario: "settings-medium",
-    expected: "768x900 设置页「Agent 技能」分区：布局完整、无遮挡/溢出/碰撞",
+    expected: "768x900 设置页「Agent 技能」分区：布局完整、最后一行不遮挡/不溢出、与固定操作栏留有安全间距",
     spec: "Task 15 Step 5 场景 08 / Step 7 验收第 4 条",
-    overlapSelectors: OVERLAP_SELECTORS.settings
+    overlapSelectors: OVERLAP_SELECTORS.settings,
+    extraChecks: EXTRA_CHECKS.settingsFooterClearance
   });
   await clickAndRead(win, "#settings-x", {
     label: "settings-close-medium",
@@ -1387,7 +1464,12 @@ async function main() {
 
 function renderManifest(context, { startedAt, projectRoot, auditRecords }) {
   const checkRows = context.checkRows
-    .map((row) => `| ${row.file} | ${row.imageSize} | ${row.pixels} | ${row.overflow} | ${row.overlap} |`)
+    .map((row) => {
+      const extra = Array.isArray(row.extra) && row.extra.length > 0
+        ? row.extra.map((r) => `${r.name}=${r.pass ? "PASS" : "FAIL"}`).join("<br>")
+        : "—";
+      return `| ${row.file} | ${row.imageSize} | ${row.pixels} | ${row.overflow} | ${row.overlap} | ${extra} |`;
+    })
     .join("\n");
   const pngRows = context.manifest
     .map((entry, index) => `| ${index + 1} | \`${entry.file}\` | \`${entry.absolutePath}\` | ${entry.viewport} | ${entry.scenario} | ${entry.expected} | ${entry.spec} | \`${entry.sha256}\` |`)
@@ -1419,9 +1501,14 @@ function renderManifest(context, { startedAt, projectRoot, auditRecords }) {
     "",
     "逐文件检查明细：",
     "",
-    "| 文件 | 图片尺寸 | 像素非空白 | 无横向溢出 | bbox 不相交 |",
-    "|---|---|---|---|---|",
+    "| 文件 | 图片尺寸 | 像素非空白 | 无横向溢出 | bbox 不相交 | 场景客观检查 |",
+    "|---|---|---|---|---|---|",
     checkRows,
+    "",
+    "场景客观检查说明：",
+    "- `reasoning-detail-scroll`（05）：展开的 reasoning 详情 `scrollHeight > clientHeight`，证明 320px 限高内层滚动区真实存在。",
+    "- `panel-button-single-line`（07）：390 窄屏顶栏「面板」按钮单行显示（`scrollHeight ≤ clientHeight` 且 `scrollWidth ≤ clientWidth`），不拆行。",
+    "- `settings-footer-clearance`（08）：768x900 设置技能列表滚到底后，最后一行与固定操作栏 `.spd-foot` bbox 不相交，且完整位于滚动视口内。",
     "",
     "## 动效唯一性审计（live-indicator-audit.json）",
     "",
