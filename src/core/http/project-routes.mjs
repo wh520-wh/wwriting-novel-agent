@@ -308,6 +308,16 @@ export function createProjectRoutes({
         selectedRef.current = projectRoot;
         await rememberProject(projectRoot);
         await migrateLegacyProjectOnOpen(projectRoot);
+        // 计划修复（整支审阅）：打开即触发 Agent 侧 open 序列（旧 .wwriting/agent 迁移 →
+        // journal.load → legacy 导入 → 崩溃恢复），与 project.yaml 迁移同一时机。幂等
+        //（target_not_empty 守卫 / legacy 标记 / startLoop 复用），失败不阻断打开。
+        if (agent && typeof agent.open === "function") {
+          try {
+            await agent.open({ projectRoot });
+          } catch (error) {
+            console.warn("[project-routes] agent open 失败（不影响聊天）:", error?.message ?? String(error));
+          }
+        }
         return { ok: true, projectRoot };
       } catch (error) {
         throw error instanceof HttpError ? error : new HttpError(400, "project_open_failed", error?.message ?? String(error));

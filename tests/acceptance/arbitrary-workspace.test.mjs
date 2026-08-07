@@ -17,7 +17,7 @@ import path from "node:path";
 import test from "node:test";
 import { createAppShellServer } from "../../src/core/app-server.mjs";
 import { validateWorkspaceRoot } from "../../src/core/app-dashboard.mjs";
-import { createWorkspaceStore } from "../../src/core/workspaces/store.mjs";
+import { createWorkspaceStore, workspaceIdForPath } from "../../src/core/workspaces/store.mjs";
 import { closeServer, listenOnFetchSafePort } from "../helpers/http-test.mjs";
 import { createMockModelGateway } from "../helpers/project-agent-harness.mjs";
 
@@ -278,4 +278,67 @@ test("旧项目 project.yaml 损坏：迁移失败仍可完成第一条消息，
   assert.equal(await pathExists(path.join(projectRoot, "WWRITING.md")), false, "损坏时不写 WWRITING.md");
   const store = createWorkspaceStore({ stateRoot });
   assert.equal((await store.loadSettings(projectRoot)).legacy_project_imported, false, "迁移失败标记保持 false");
+});
+
+// ---------------------------------------------------------------------------
+// 计划修复（整支审阅）：POST /api/projects/open 即触发 Agent 侧 open 序列
+// ---------------------------------------------------------------------------
+
+// 旧 .wwriting/agent journal 迁移必须经真实 HTTP 表面（POST /api/projects/open）
+// 触发：eager open 单独完成迁移（私有 events.jsonl 含旧事件、原文件字节不变），
+// 迁移后的会话可直接收发消息（链路完整）。
+test("打开旧项目即触发 .wwriting/agent journal 迁移到私有目录，原文件字节不变", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-open-migrate-"));
+  const projectRoot = path.join(root, "旧项目");
+  const stateRoot = path.join(root, "user-data");
+  await fs.mkdir(path.join(projectRoot, ".wwriting", "agent"), { recursive: true });
+  // 合法旧 journal：seq 从 1 连续（journal.load() 重放所需的最小形状，与
+  // workspace-migration 夹具一致——session_created 首事件 + input_queued）
+  const legacyEvents = [
+    JSON.stringify({
+      schema_version: 1,
+      seq: 1,
+      event_id: "evt-1",
+      session_id: "legacy-sess",
+      run_id: null,
+      project_root: projectRoot,
+      type: "session_created",
+      at: "2026-08-01T00:00:00.000Z",
+      payload: {}
+    }),
+    JSON.stringify({
+      schema_version: 1,
+      seq: 2,
+      event_id: "evt-2",
+      session_id: "legacy-sess",
+      run_id: null,
+      project_root: projectRoot,
+      type: "input_queued",
+      at: "2026-08-01T00:00:01.000Z",
+      payload: { input_id: "i1", text: "旧消息" }
+    })
+  ].join("\n") + "\n";
+  const sourceEventsPath = path.join(projectRoot, ".wwriting", "agent", "events.jsonl");
+  await fs.writeFile(sourceEventsPath, legacyEvents, "utf8");
+  const before = await fs.readFile(sourceEventsPath);
+
+  const app = await startArbitraryWorkspaceServer(t, {
+    projectRoot,
+    stateRoot,
+    gatewayScript: [{ reply: { text: "已接入。" } }]
+  });
+  const opened = await app.post("/api/projects/open", { projectRoot });
+  assert.equal(opened.res.status, 200);
+  assert.deepEqual(opened.data, { ok: true, projectRoot }, "响应形状契约不变");
+
+  // eager open 单独即可完成迁移：私有 events.jsonl 已含旧事件（无需先发消息）
+  const targetAgentRoot = path.join(stateRoot, "workspaces", workspaceIdForPath(projectRoot), "agent");
+  const migrated = await fs.readFile(path.join(targetAgentRoot, "events.jsonl"), "utf8");
+  assert.equal(migrated, legacyEvents, "迁移应为字节级一致复制（含旧 seq）");
+  assert.deepEqual(await fs.readFile(sourceEventsPath), before, "原 .wwriting/agent/events.jsonl 字节必须完全不变");
+
+  // 链路完整：迁移后的会话可直接发送第一条消息并回到 idle
+  const sent = await app.post("/api/agent/input", { projectRoot, text: "你好" });
+  assert.equal(sent.res.status, 200);
+  await app.waitForIdle(projectRoot);
 });

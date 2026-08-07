@@ -339,3 +339,21 @@ test("缺少 project.yaml：跳过 blueprint 字段迁移但仍可导入对话",
   const again = await runLegacyImport({ projectRoot, journal });
   assert.equal(again.imported, false);
 });
+
+// 计划修复（整支审阅）：submit 内的惰性 open 兜底——未先调用 open() 直接 submit，
+// 第一条消息前也必须完成旧 .wwriting/agent journal 迁移与 legacy 导入（启动恢复的
+// 选中工作区不走 /open 路由也能接续）。
+test("计划修复：submit 未先 open 也完成 legacy 导入与 blueprint_status 迁移", async (t) => {
+  const h = await createProjectAgentHarness({ legacy: true, gatewayScript: [{ reply: { text: "好。" } }] });
+  t.after(() => h.cleanup());
+  // 直接 submit（不经 open()）：惰性 open 序列应先执行 legacy 导入
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "继续写作", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+
+  // legacy 导入已生效：blueprint_status 迁入 project.yaml（旧项目夹具缺失该字段）
+  const yaml = await readText(path.join(h.projectRoot, "project.yaml"));
+  assert.match(yaml, /blueprint_status:\s*["']?complete["']?/u, "submit 触发的 open 应完成 blueprint_status 迁移");
+  // 一轮对话正常完成，会话回到 idle（惰性 open 不打断 submit 主流程）
+  const snapshot = await h.agent.snapshot({ projectRoot: h.projectRoot, afterSeq: 0, limit: 100000 });
+  assert.equal(snapshot.session.status, "idle", "一轮对话后会话回到 idle");
+});
