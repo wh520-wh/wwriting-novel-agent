@@ -44,7 +44,7 @@ import {
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(here, "..", "..");
 
-// 计划固定的 journal 事件类型（28 个）。
+// 计划固定的 journal 事件类型（31 个）。
 const FIXED_EVENT_TYPES = [
   "session_created",
   "run_started",
@@ -67,6 +67,8 @@ const FIXED_EVENT_TYPES = [
   "permission_grant_cleared",
   "workflow_changed",
   "plan_updated",
+  "reasoning_completed",
+  "reasoning_delta",
   "history_compacted",
   "checkpoint_linked",
   "assistant_message_delta",
@@ -108,7 +110,12 @@ async function openHarness(t, options) {
 }
 
 function assertSessionShape(session) {
-  assert.equal(session.schema_version, 1);
+  // §2.3：session projection 记录已重放事件的最高 schema version——全新 Session
+  //（仅 bootstrap session_created）为 1；追加过 v2 事件后升为 2。
+  assert.ok(
+    session.schema_version === 1 || session.schema_version === 2,
+    `session schema_version 应为 1 或 2，实际 ${String(session.schema_version)}`
+  );
   assert.ok(typeof session.session_id === "string" && session.session_id.length > 0);
   assert.ok(SESSION_STATUSES.includes(session.status), `未知 session status: ${session.status}`);
   assert.ok(Number.isInteger(session.last_seq) && session.last_seq >= 0);
@@ -209,7 +216,14 @@ test("session 投影与 journal 事件符合冻结契约", async (t) => {
   assert.ok(events.length >= 1, "journal 至少要有 session_created");
   let prevSeq = 0;
   for (const event of events) {
-    assert.equal(event.schema_version, 1);
+    // §2.3：bootstrap session_created 保持 v1（journal.mjs initialize 手工盖章）；
+    // 其余新追加事件统一盖章 v2（EVENT_SCHEMA_VERSION）。旧 v1 日志重放场景由
+    // journal-recovery.test.mjs 单独覆盖，本测试只面对全新 journal。
+    assert.equal(
+      event.schema_version,
+      event.type === "session_created" ? 1 : 2,
+      `${event.type} 的 schema_version 应符合 v1/v2 追加契约`
+    );
     assert.ok(Number.isInteger(event.seq) && event.seq > prevSeq, "seq 必须严格递增");
     prevSeq = event.seq;
     assert.ok(typeof event.event_id === "string" && event.event_id.length > 0);

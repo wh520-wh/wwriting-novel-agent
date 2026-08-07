@@ -311,6 +311,10 @@ step("场景 8 · 通用读取/编辑/Shell");
   }
 }
 
+// 通过全部内置技能 reviewing 门禁的章节正文（suspense-ending/chapter-opening/
+// dialogue-ratio/ai-voice 都要 passed；短占位文已不能通过 Task 12 门禁）。
+const GATE_PASSING_CHAPTER = "雨夜，雨声突然变大。林深猛地推开门，冲进老宅的客厅。他浑身湿透，抹了一把脸，低声道：“信上说，老宅的钟会在午夜敲十三下。”烛光下，墙上的照片里竟是多年不见的父亲。他正要细看，门外却传来一阵急促的敲门声。";
+
 // ---------------------------------------------------------------------------
 // 场景 9：章节事务（草稿 → 提交 → 文件/索引/记忆/checkpoint 一致）
 // ---------------------------------------------------------------------------
@@ -320,7 +324,7 @@ step("场景 9 · 章节事务");
   const h = await createProjectAgentHarness({ project: { min_words_per_chapter: 10, target_words_per_chapter: 20 }, gatewayScript: script });
   script.push(
     { reply: { toolCalls: [tool("enter_workflow", { workflow: "chapter", reason: "写第一章" })] } },
-    { reply: { toolCalls: [tool("append_chapter_segment", { project_id: h.project.project_id, chapter_no: 1, segment_no: 1, content: "雨夜，一封没有署名的信落在门缝里。" })] } },
+    { reply: { toolCalls: [tool("append_chapter_segment", { project_id: h.project.project_id, chapter_no: 1, segment_no: 1, content: GATE_PASSING_CHAPTER })] } },
     { reply: { toolCalls: [tool("commit_chapter", { project_id: h.project.project_id, chapter_no: 1 })] } },
     { reply: { text: "第一章已完成。" } }
   );
@@ -487,7 +491,7 @@ step("场景 15 · 确定性导出");
   const h = await createProjectAgentHarness({ project: { min_words_per_chapter: 10, target_words_per_chapter: 20 }, gatewayScript: script });
   script.push(
     { reply: { toolCalls: [tool("enter_workflow", { workflow: "chapter", reason: "写第一章" })] } },
-    { reply: { toolCalls: [tool("append_chapter_segment", { project_id: h.project.project_id, chapter_no: 1, segment_no: 1, content: "雨夜来信的开篇段落，讲述了主角在雨夜收到一封没有署名的信，决定追查寄信人。" })] } },
+    { reply: { toolCalls: [tool("append_chapter_segment", { project_id: h.project.project_id, chapter_no: 1, segment_no: 1, content: GATE_PASSING_CHAPTER })] } },
     { reply: { toolCalls: [tool("commit_chapter", { project_id: h.project.project_id, chapter_no: 1 })] } },
     { reply: { text: "完成" } }
   );
@@ -500,7 +504,7 @@ step("场景 15 · 确定性导出");
     assert.equal(h.gateway.calls.length, callsBefore, "导出不得调用模型");
     assert.equal(await pathExists(result.path), true, "导出文件应存在");
     const content = await fs.readFile(result.path, "utf8");
-    assert.ok(content.includes("雨夜来信的开篇段落"), "导出应包含章节正文");
+    assert.ok(content.includes("老宅的钟会在午夜敲十三下"), "导出应包含章节正文");
     record("确定性导出：直接 book-export，无模型调用", true, `path=${path.basename(result.path)}`);
   } finally {
     await h.cleanup();
@@ -990,12 +994,25 @@ step("场景 24 · 活动合并与私有推理排除");
     const completed = eventsOfType(events, "assistant_message_completed");
     assert.ok(completed.length >= 1, "应产生 assistant_message_completed");
     assert.equal(completed[0].payload.text, "这是最终回复。", "真实 runtime 必须携带最终回复文本");
-    // 真实事件流本身不得携带任何私有推理字段
+    // 真实事件流不得携带任何私有推理内容：本场景 gateway 未产生 reasoning token，
+    // 因此不应出现 reasoning_delta；每轮恰好一次的 reasoning_completed 必须以空
+    // text 闭合（不得有可用内容）；chain_of_thought / private_reasoning / 裸
+    // reasoning 载荷字段在任意事件里都不得出现（reasoning_capability 是能力标签，
+    // 不属于私有推理内容）。
+    const reasoningDeltas = events.filter((event) => event.type === "reasoning_delta");
+    assert.equal(reasoningDeltas.length, 0, "未产生 reasoning token 的场景不得出现 reasoning_delta");
+    const reasoningCompleteds = eventsOfType(events, "reasoning_completed");
+    assert.ok(reasoningCompleteds.length >= 1, "每条 model turn 都应闭合一次 reasoning_completed");
+    for (const event of reasoningCompleteds) {
+      assert.equal(event.payload.text, "", "无 reasoning token 时 completed 必须携带空 text");
+      assert.notEqual(event.payload.availability, "available", "空 reasoning 不得标记为 available");
+    }
     const journalText = events.map((e) => JSON.stringify(e)).join("\n");
     assert.ok(
-      !journalText.includes("reasoning") && !journalText.includes("chain_of_thought"),
-      "真实事件流不得携带私有推理字段"
+      !journalText.includes("chain_of_thought") && !journalText.includes("private_reasoning"),
+      "私有推理字段不得进入事件流"
     );
+    assert.ok(!/"reasoning"\s*:/u.test(journalText), "不得出现裸 reasoning 载荷字段");
 
     const doc = {
       createElement: (tag) => new MockElement(tag),
@@ -1076,6 +1093,63 @@ step("场景 25 · 900px 内容列与统一菜单视口钳制");
   assert.ok(!agentCss.includes(".model-popover") && !agentCss.includes(".mode-popover"), "旧菜单实现不得残留");
   assert.ok(agentCss.includes("overflow-wrap: anywhere"), "长模型名称应允许任意位置换行");
   record("900px 内容列与统一菜单钳制：CSS 基线保留", true, "agent.css + styles.css");
+}
+
+// ---------------------------------------------------------------------------
+// 场景 26：reasoning 原文逐 token 持久化，正文（assistant 事件）零泄漏
+// ---------------------------------------------------------------------------
+step("场景 26 · reasoning 原文持久化且正文无泄漏");
+{
+  const REASONING = "这是模型私下的思考过程，绝不应出现在任何公开正文里。";
+  const h = await createProjectAgentHarness({
+    gatewayScript: [
+      async (request) => {
+        // 流式 reasoning：逐 token 交给 onReasoningToken（§2.1：只进 reasoning 通道）
+        request.metadata.onReasoningToken("这是模型私下的思考过程，");
+        request.metadata.onReasoningToken("绝不应出现在任何公开正文里。");
+        return { text: "这是公开回复，不含思考内容。" };
+      }
+    ],
+    gatewayDelayMs: 0
+  });
+  try {
+    await h.agent.open({ projectRoot: h.projectRoot });
+    await h.agent.submit({ projectRoot: h.projectRoot, text: "带思考的提问" });
+    await waitForIdle(h.agent, h.projectRoot);
+    const events = await readEvents(h.agent, h.projectRoot);
+
+    // 原文持久化：reasoning_delta 增量拼接必须与原文完全一致（可被批量合并成一条）
+    const deltas = eventsOfType(events, "reasoning_delta");
+    assert.ok(deltas.length >= 1, "reasoning 轮次应产生 reasoning_delta");
+    const persisted = deltas.map((event) => event.payload?.text ?? "").join("");
+    assert.equal(persisted, REASONING, "reasoning 原文必须逐 token 持久化（增量拼接一致）");
+
+    // reasoning_completed 恰好一次，携带安全全文与 availability
+    const completed = eventsOfType(events, "reasoning_completed");
+    assert.equal(completed.length, 1, "每条 model turn 恰好一次 reasoning_completed");
+    assert.equal(completed[0].payload.text, REASONING, "reasoning_completed 必须携带原文全文");
+    assert.equal(completed[0].payload.availability, "available");
+
+    // 正文无泄漏：reasoning 原文只允许出现在 reasoning_delta/reasoning_completed，
+    // 其余任何事件（尤其 assistant_message_* 正文通道）都不得携带。
+    const reasoningSeqs = new Set(
+      events.filter((event) => event.type === "reasoning_delta" || event.type === "reasoning_completed").map((event) => event.seq)
+    );
+    for (const event of events) {
+      if (reasoningSeqs.has(event.seq)) continue;
+      assert.ok(
+        !JSON.stringify(event.payload).includes(REASONING),
+        `${event.type} (seq=${event.seq}) 不得携带 reasoning 原文`
+      );
+    }
+    assert.ok(
+      eventsOfType(events, "assistant_message_completed").some((event) => event.payload.text === "这是公开回复，不含思考内容。"),
+      "公开正文应正常持久化到 assistant_message_completed"
+    );
+    record("reasoning：原文逐 token 持久化 + 正文零泄漏", true, `deltas=${deltas.length}`);
+  } finally {
+    await h.cleanup();
+  }
 }
 
 // ---------------------------------------------------------------------------

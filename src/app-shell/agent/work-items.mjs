@@ -16,7 +16,28 @@
 // 工作组（本模块自有形状，不在冻结契约内）：{ id(=runId), status, expanded,
 // firstSeq, sortSeq, items: Map, legacyOpenTurns }。expanded 是投影给出的展开
 // 默认值（用户可在 DOM 侧覆盖），见 groupExpandedDefault。
-import path from "node:path";
+//
+// 本模块是浏览器模块（app-shell 页面直接 import）：不得依赖 node: 内建。
+// 相对路径投影需要的最小路径判定（isAbsolutePath / relativePath）内联在本文件。
+
+// 浏览器安全路径判定：Windows 盘符（C:\）与 POSIX 根（/、\）视为绝对路径。
+function isAbsolutePath(target) {
+  return /^[A-Za-z]:[\\/]/u.test(target) || target.startsWith("/") || target.startsWith("\\");
+}
+
+// projectRoot → target 的相对路径（两者统一为正斜杠后按段比较；越出根的部分
+// 用 ../ 表示，跨盘/绝对结果由调用方丢弃）。语义对齐 node:path.relative 在
+// work-items 场景下需要的行为。
+function relativePath(from, to) {
+  const fromParts = String(from).replace(/\\/g, "/").replace(/\/+$/u, "").split("/");
+  const toParts = String(to).replace(/\\/g, "/").split("/");
+  let i = 0;
+  while (i < fromParts.length && i < toParts.length && fromParts[i] === toParts[i]) i += 1;
+  if (i === fromParts.length && i === toParts.length) return "";
+  const segments = [];
+  for (let up = fromParts.length - i; up > 0; up -= 1) segments.push("..");
+  return segments.concat(toParts.slice(i)).join("/");
+}
 
 export function createWorkState() {
   return { groups: new Map(), turnToRun: new Map(), activityToRun: new Map() };
@@ -127,14 +148,14 @@ export function relativeProjectPath(target, projectRoot) {
   if (typeof target !== "string" || target.length === 0) return null;
   if (typeof projectRoot !== "string" || projectRoot.length === 0) return null;
   try {
-    if (!path.isAbsolute(target)) {
+    if (!isAbsolutePath(target)) {
       // 目标本身已是相对路径（args.path 常见用法）：只排除 ../ 穿越项目根的写法
       const normalized = target.replace(/\\/g, "/");
       return normalized.startsWith("..") ? null : normalized;
     }
-    const rel = path.relative(projectRoot, target);
+    const rel = relativePath(projectRoot, target);
     if (rel === "") return null;
-    if (!rel.startsWith("..") && !path.isAbsolute(rel)) return rel.replace(/\\/g, "/");
+    if (!rel.startsWith("..") && !isAbsolutePath(rel)) return rel.replace(/\\/g, "/");
   } catch {
     // 非法路径不伪造
   }

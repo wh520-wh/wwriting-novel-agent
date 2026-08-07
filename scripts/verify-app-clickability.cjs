@@ -50,16 +50,18 @@ async function main() {
     min_words_per_chapter: 10,
     target_words_per_chapter: 20
   });
-  // 章节事实：提交两章（UI 验证不依赖 Agent 写章）
+  // 章节事实：提交两章（UI 验证不依赖 Agent 写章）。正文必须通过内置技能
+  // reviewing 门禁（suspense-ending/chapter-opening/dialogue-ratio/ai-voice）。
   const { commitChapter, appendChapterSegment } = await import(pathToFileURL(path.join(rootDir, "src", "core", "project-operations", "chapter.mjs")).href);
   const project = parseSimpleYaml(await fs.promises.readFile(path.join(projectRoot, "project.yaml"), "utf8"));
+  const GATE_PASSING_CHAPTER = "雨夜，雨声突然变大。林深猛地推开门，冲进老宅的客厅。他浑身湿透，抹了一把脸，低声道：“信上说，老宅的钟会在午夜敲十三下。”烛光下，墙上的照片里竟是多年不见的父亲。他正要细看，门外却传来一阵急促的敲门声。";
   for (const chapterNo of [1, 2]) {
     await appendChapterSegment({
       projectRoot,
       projectId: project.project_id,
       chapterNo,
       segmentNo: 1,
-      content: `第 ${chapterNo} 章正文，用于点击验证。`
+      content: GATE_PASSING_CHAPTER
     });
     await commitChapter({ projectRoot, projectId: project.project_id, chapterNo });
   }
@@ -136,8 +138,8 @@ async function main() {
     expect: () => read(win, "document.querySelectorAll('.toast-stack .toast').length > 0")
   }));
 
-  // ④ 抽屉其它分区
-  for (const tab of ["model", "skills", "research", "cost"]) {
+  // ④ 抽屉其它分区（Task 13：技能管理已迁入设置页，抽屉无 skills tab）
+  for (const tab of ["model", "research", "cost"]) {
     clicks.push(await clickAndReadStable(win, `.drawer-tabs [data-dtab="${tab}"]`, {
       label: `drawer-${tab}`,
       settleMs: 300,
@@ -160,6 +162,12 @@ async function main() {
   }));
   const sectionCount = await read(win, "document.querySelectorAll('.sp-section-item').length");
   assert.ok(sectionCount >= 3, `settings sections should render, got ${sectionCount}`);
+  // Task 13：技能管理在设置页的「Agent 技能」分区（catalog/import/delete 入口）
+  clicks.push(await clickAndRead(win, '.sp-section-item[data-section="skills"]', {
+    label: "settings-skills-section",
+    settleMs: 300,
+    expect: () => read(win, "document.querySelector('.sp-section-item[data-section=\"skills\"]').classList.contains('on')")
+  }));
   clicks.push(await clickAndRead(win, "#settings-x", {
     label: "settings-close",
     settleMs: 300,
@@ -389,7 +397,12 @@ async function waitUntil(win, expression, describe, timeoutMs = 5000) {
 }
 
 async function read(win, expression) {
-  return win.webContents.executeJavaScript(`(() => ${expression})()`);
+  try {
+    return await win.webContents.executeJavaScript(`(() => ${expression})()`);
+  } catch (error) {
+    console.error(`[read failed] expression: ${expression}\n  ${error?.message ?? error}`);
+    throw error;
+  }
 }
 
 async function clearStaleClosingStates(win) {

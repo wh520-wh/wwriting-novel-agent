@@ -91,11 +91,17 @@ memory/chapter_index.json
 
 模型执行期间，当前这一轮会显示：
 
+- **工作组**：思考、工具调用与任务计划按发生顺序合并为一个时间线组，标题显示 `工作中`。Run 结束后：**完成自动折叠**（点击可展开回看），**失败/停止/中断保持展开**。
 - **状态行**：思考中、读取文件、运行命令、等待确认、正在停止、已停止等，文案保持简短。
-- **任务计划（Visible Plan）**：复杂任务开始时模型会给出分步计划，随执行逐项标记完成；Run 结束后折叠，可展开回看。
+- **思考项（已完成思考）**：每轮模型调用对应一个独立的 `已完成思考` 项，与工具动作严格按发生顺序排列。展开时的文案分三种：
+  - 模型支持且本轮有内容 → 显示思考全文；
+  - 模型明确不支持查看思考内容 → 显示 `当前模型不支持查看`；
+  - 支持但本轮没有可查看的内容 → 显示 `本次没有可查看的思考内容`。
+  思考内容只写入本地日志，**不会注入下一轮模型上下文，也不会混入正文**。
+- **任务计划（Visible Plan）**：复杂任务开始时模型会给出分步计划，随执行逐项标记完成；更新时同一计划项只保留一个、内容更新并移动到最新时间点；Run 结束后折叠，可展开回看。
 - **活动行**：每一次工具调用（读取文件、修改文件、运行命令、提交章节等）单独成行，点击可展开查看参数、命令、退出码、耗时和输出；运行中的行持续显示新增输出。
 
-模型思考内容（私有推理）不会显示；界面只展示可验证的活动状态与结果。
+**耗时口径**：工作组与状态行显示的耗时是**有效工作耗时**——等待你确认授权的时间不计入。Run 结束后给出最终值（如 `工作了 12 秒`）。
 
 ### 4.3 排队、立即与停止
 
@@ -119,6 +125,14 @@ Run 结束后，状态行显示"已完成"。已定稿的章节会出现在左�
 ### 4.6 确定性导出
 
 在"项目面板 → 章节"点击"导出成书"：应用直接读取本地文件导出成书（txt 格式），**不经过模型、不产生额外成本**。导出完成后会提示文件位置和字数，桌面端还可一键"打开导出文件夹"。
+
+### 4.7 安全 Markdown 渲染
+
+Agent 的正文回复支持安全 GFM（GitHub Flavored Markdown）：表格、任务列表（勾选框）、链接、删除线、行内代码、围栏代码块、引用和标题都正常排版。为安全起见：
+
+- 原始 HTML（如 `<script>`）一律按纯文本显示，不会执行。
+- 链接只放行 `http:` / `https:`；`javascript:`、`data:`、`file:` 等危险 URL 不会生成可点击链接。
+- 图片不从网络加载，只显示替代文字。
 
 ## 5. /init 与权限
 
@@ -226,34 +240,28 @@ source_summaries.md
 
 ## 8. 技能管理
 
-技能用于扩展写作流程，例如风格控制、章节结尾悬念、质量门禁或后处理。
-
-当前内置示例：
+技能用于扩展写作流程，例如风格控制、章节结尾悬念、质量门禁或后处理。技能由一个目录里的 `SKILL.md` 文件声明，**放入目录即被发现，不需要在项目中启用**：
 
 ```text
-suspense-chapter-end
+全局技能：%USERPROFILE%\.wwriting\skills\<skill-name>\SKILL.md
+项目技能：<projectRoot>\skills\<skill-name>\SKILL.md
+同名覆盖：项目 > 全局 > 随应用分发 > 内置
+放入目录即被发现；适用条件写在 SKILL.md，不需要在项目中启用。
 ```
 
-它会：
+当前内置示例（随应用分发/内置层）：
+
+```text
+suspense-chapter-end  show-dont-tell  avoid-ai-voice  chapter-opening-hook  dialogue-not-summary
+```
+
+例如 `suspense-chapter-end`：
 
 - 在 planning 阶段要求设计章节结尾悬念。
 - 在 reviewing 阶段检查最后 500 个可见字符是否有钩子。
 - 检查失败时阻止章节直接定稿。
 
-技能 manifest 的核心结构：
-
-```yaml
-name: suspense-chapter-end
-version: 1.0.0
-type: flow-control
-scope: chapter
-hooks:
-  - stage: planning
-    action: append_prompt
-    content: 本章大纲必须包含一个结尾悬念设计。
-```
-
-技能启用和禁用都会更新 `project.yaml.enabled_skills`，并写入运行日志。
+同名技能按 `项目 > 全局 > 随应用分发 > 内置` 覆盖，UI（设置 → Agent 技能）会标注当前生效的来源。技能系统**没有启用/禁用开关**，也没有"全部启用"——适用条件（如章节号范围、检查项）直接写在 `SKILL.md` 里。
 
 ## 9. 章节生成的核心规则
 
@@ -411,26 +419,28 @@ npm run package:dir
 
 ### 16.1 自定义技能
 
-在 `~/.wwriting/skills/<my-skill>/skill.yaml`（或 `skill.json`）写一个 manifest：
+技能就是一个包含 `SKILL.md` 的目录，放入固定目录即被发现：
 
-```yaml
-name: my-style
-version: 1.0.0
-type: style
-paths:
-  - chapters/poetry/**
-hooks:
-  - stage: drafting
-    action: append_prompt
-    content: "在每章草稿后追加：'请加入俳句式的短句。'"
+```text
+全局技能：%USERPROFILE%\.wwriting\skills\<skill-name>\SKILL.md
+项目技能：<projectRoot>\skills\<skill-name>\SKILL.md
+同名覆盖：项目 > 全局 > 随应用分发 > 内置
+放入目录即被发现；适用条件写在 SKILL.md，不需要在项目中启用。
 ```
 
-重启应用后，这个技能会在 `chapters/poetry/**` 目录下自动激活。技能来源优先级：
+`SKILL.md` 以 YAML frontmatter 声明名称与说明（`name` 必须与目录名一致），正文写指令：
 
-1. 内置（BUILTIN_SKILLS）
-2. bundled-dist（`process.resourcesPath/skills`）
-3. 用户（`~/.wwriting/skills`）
-4. 项目（`<projectRoot>/skills`）
+```markdown
+---
+name: my-style
+description: 我的写作风格
+version: 1.0.0
+---
+
+正文作为 prompt 片段：写作时要求……（例如"对话多用短句与具体动作"）。
+```
+
+适用条件（如检查项、章节号范围）写在 frontmatter 的 `metadata.wwriting.hooks` 或正文小节（`## Review checklist`、`## Post-process` 等）里。同名的项目技能覆盖全局与内置版本；设置 → Agent 技能分区会列出目录里的全部技能、当前生效来源，并支持文件夹/ZIP 导入、覆盖确认与删除。
 
 ### 16.2 自定义输出风格
 
@@ -450,6 +460,7 @@ description: 我的写作风格
 
 - **一个对话面**：写作、审稿、蓝图、提问都在同一个输入框发起；不存在独立的"开始写作"入口或准备卡片。
 - **过程可见**：当前这一轮显示状态行（思考中 / 读取文件 / 运行命令 / 等待确认）与逐条活动行；每个工具动作完成即出现在活动流。
+- **工作组与思考**：思考、工具、任务计划按发生顺序组成工作组（完成自动折叠、失败/停止保持展开）；每轮模型调用一个独立的 `已完成思考`，展开可看思考全文或明确的两类空文案；耗时只计有效工作，排除等待授权。
 - **随时停止**：当前轮的状态行上有「停止」按钮，可取消本次 Run；进行中的文件写入保持完整，不会留半截。
 - **排队与立即**：运行中发送的消息显示原文 + `排队`，点「立即」打断当前轮并优先执行，不创建第二个 Agent。
 - **任务计划**：复杂任务显示 Visible Plan，逐项更新完成状态，结束后折叠可回看。
