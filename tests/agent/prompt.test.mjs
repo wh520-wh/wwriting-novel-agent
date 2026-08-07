@@ -11,6 +11,7 @@ import {
   STATIC_CORE,
   WORKFLOW_POLICIES,
   assemblePrompt,
+  assembleProjectMemoryBlock,
   assembleRuntimePolicy,
   assembleSkillCatalogBlock,
   estimateTokens
@@ -33,8 +34,22 @@ test("STATIC_CORE 与计划文本逐字一致", () => {
 
 多步骤、长时间、依赖明显或执行路径可能变化的任务使用 update_plan；简单回答和单步操作直接完成。计划只展示可验证的执行步骤，不展示私有思维过程，并在真实里程碑更新状态。
 
-运行时送达的新用户消息优先于较早假设。读取最新消息和任务事件，必要时调整计划或工作流。完成前检查可观察结果；最终简洁说明实际完成的内容、验证依据和仍需作者决定的问题。`
+运行时送达的新用户消息优先于较早假设。读取最新消息和任务事件，必要时调整计划或工作流。完成前检查可观察结果；最终简洁说明实际完成的内容、验证依据和仍需作者决定的问题。
+
+WWRITING.md 是当前工作区的长期项目记忆入口。开始长期小说工作、恢复上下文或长期要求发生变化时，先读取它并按其中索引按需读取权威文件。缺失或损坏不代表工作区无效。只记录用户已确认或文件可证的长期事实，不把普通问候、临时解释和模型猜测写入记忆。`
   );
+});
+
+test("STATIC_CORE 的记忆职责只限协议文本，不含任何具体小说风格正文", () => {
+  // Task 6 Step 5：static core 只加入 WWRITING.md 职责，不注入具体风格正文
+  //（balanced/fast-readable/psychological-literary 的写法正文由 read_skill 按需读取）
+  assert.ok(STATIC_CORE.includes("WWRITING.md 是当前工作区的长期项目记忆入口"));
+  assert.ok(STATIC_CORE.includes("缺失或损坏不代表工作区无效"));
+  assert.ok(!STATIC_CORE.includes("快节奏易读"));
+  assert.ok(!STATIC_CORE.includes("心理文学"));
+  assert.ok(!STATIC_CORE.includes("场景尽快进入"));
+  assert.ok(!STATIC_CORE.includes("爽点"));
+  assert.ok(!STATIC_CORE.includes("对白短而有目的"));
 });
 
 test("RUNTIME_POLICY_TEMPLATE 与计划模板逐字一致", () => {
@@ -246,6 +261,91 @@ test("无技能时目录块不占位（与空 Project Instructions 同语义）"
   const assembled = assemblePrompt(baseOptions({ skillCatalog: undefined }));
   assert.ok(!assembled.messages[0].content.includes("[Available Skills]"));
   assert.ok(!assembled.messages[0].content.includes("read_skill"));
+});
+
+// ---------------------------------------------------------------------------
+// Project Memory 独立层（Task 6：WWRITING.md 项目记忆）
+// ---------------------------------------------------------------------------
+
+test("assembleProjectMemoryBlock：空/缺失 memory 返回空串，不制造占位文案", () => {
+  assert.equal(assembleProjectMemoryBlock(undefined), "");
+  assert.equal(assembleProjectMemoryBlock(null), "");
+  assert.equal(assembleProjectMemoryBlock({}), "");
+  assert.equal(assembleProjectMemoryBlock({ content: "" }), "");
+  assert.equal(assembleProjectMemoryBlock({ content: "   \n  " }), "");
+});
+
+test("assembleProjectMemoryBlock：有内容时带 [Project Memory: WWRITING.md] 头且不去除正文空白", () => {
+  const content = "# WWriting 项目记忆\n\n- 项目：示例小说\n- 当前目标：完成第一卷初稿";
+  const block = assembleProjectMemoryBlock({ exists: true, content, styleSkill: null });
+  assert.ok(block.startsWith("[Project Memory: WWRITING.md]\n"));
+  assert.ok(block.includes("- 项目：示例小说"));
+  assert.ok(block.includes("- 当前目标：完成第一卷初稿"));
+  // memory 是受信任的项目指令层：不得套 untrusted-data 包装
+  assert.ok(!block.includes("untrusted-data"));
+  assert.ok(!block.includes("[Untrusted Data"));
+  // 纯空白被 trim 掉后只剩空串
+  assert.equal(assembleProjectMemoryBlock({ content: "\n  \n" }), "");
+});
+
+test("Project Memory 是独立 prompt 层：Static Core -> Runtime Policy -> Project Instructions -> Project Memory -> Available Skills -> Workflow Policy", () => {
+  const assembled = assemblePrompt(baseOptions({
+    projectInstructions: "AGENTS.md 正文：本项目文风冷峻克制。",
+    projectMemory: {
+      exists: true,
+      content: "# WWriting 项目记忆\n\n- 当前目标：完成第一章初稿",
+      styleSkill: null
+    },
+    skillCatalog: [
+      { name: "fast-readable", description: "快节奏易读。" },
+      { name: "balanced", description: "均衡。" }
+    ]
+  }));
+  const content = assembled.messages[0].content;
+  const staticEnd = content.indexOf(STATIC_CORE) + STATIC_CORE.length;
+  const runtimeStart = content.indexOf("[Runtime Policy]");
+  const projectStart = content.indexOf("AGENTS.md 正文");
+  const memoryStart = content.indexOf("[Project Memory: WWRITING.md]");
+  const skillsStart = content.indexOf("[Available Skills]");
+  const workflowStart = content.indexOf("[Workflow: general]");
+  assert.ok(runtimeStart > staticEnd, "Runtime Policy 在 Static Core 之后");
+  assert.ok(projectStart > runtimeStart, "Project Instructions 在 Runtime Policy 之后");
+  assert.ok(memoryStart > projectStart, "Project Memory 在 Project Instructions 之后");
+  assert.ok(skillsStart > memoryStart, "Available Skills 在 Project Memory 之后");
+  assert.ok(workflowStart > skillsStart, "Workflow Policy 在 Available Skills 之后");
+  assert.ok(content.includes("- 当前目标：完成第一章初稿"), "记忆正文应进入 system 层");
+});
+
+test("无 memory 时不出现 Project Memory 占位块（与空 Project Instructions 同语义）", () => {
+  const assembled = assemblePrompt(baseOptions());
+  // 注意：STATIC_CORE 的职责文本本身会提及 WWRITING.md（Task 6 Step 5），因此
+  // 这里只断言「Project Memory 层块」不出现，不断言整段 system 不含该字符串。
+  assert.ok(!assembled.messages[0].content.includes("[Project Memory: WWRITING.md]"));
+});
+
+test("project_memory_hash 独立计算，不并入 AGENTS.md hash", () => {
+  const base = assemblePrompt(baseOptions());
+  const memoryV1 = { exists: true, content: "记忆内容 v1", styleSkill: null };
+  const v1 = assemblePrompt(baseOptions({ projectMemory: memoryV1 }));
+  const v2 = assemblePrompt(baseOptions({
+    projectMemory: { exists: true, content: "记忆内容 v2", styleSkill: null }
+  }));
+  // 空 memory 也有确定性 hash（与 project_instructions_hash 同口径：sha256("")）
+  assert.ok(base.hashes.project_memory_hash.startsWith("sha256:"));
+  // 有内容时 memory hash 必须与 AGENTS.md hash 不同（独立计算、互不并入）
+  assert.notEqual(v1.hashes.project_memory_hash, v1.hashes.project_instructions_hash, "有内容时 memory hash 不得与 AGENTS.md hash 相同");
+  // memory 变化只影响 project_memory_hash
+  assert.notEqual(v1.hashes.project_memory_hash, base.hashes.project_memory_hash);
+  assert.notEqual(v2.hashes.project_memory_hash, v1.hashes.project_memory_hash);
+  for (const key of ["static_core_hash", "runtime_hash", "project_instructions_hash", "workflow_hash", "dynamic_hash"]) {
+    assert.equal(v1.hashes[key], base.hashes[key], `${key} 不得随 memory 内容变化`);
+  }
+  // 其他层变化不影响 project_memory_hash
+  const changedInstructions = assemblePrompt(baseOptions({
+    projectMemory: memoryV1,
+    projectInstructions: "另一份 AGENTS.md 正文"
+  }));
+  assert.equal(changedInstructions.hashes.project_memory_hash, v1.hashes.project_memory_hash);
 });
 
 // ---------------------------------------------------------------------------

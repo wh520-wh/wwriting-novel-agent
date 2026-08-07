@@ -10,11 +10,14 @@
 //   - WORKFLOW_POLICIES：四条工作流政策（general/chapter/init/review）。
 //   - assemblePrompt：按固定层序装配 messages、执行预算裁剪、独立 hash。
 //
-// 装配顺序（固定，计划原文）：
-//   Static Core -> Runtime Policy -> Project Instructions -> Workflow Policy
-//   -> Dynamic Context -> History -> Current User Message
+// 装配顺序（固定，计划原文 + Task 6 记忆层）：
+//   Static Core -> Runtime Policy -> Project Instructions -> Project Memory
+//   -> Available Skills -> Workflow Policy -> Dynamic Context -> History
+//   -> Current User Message
 // Task 12：Available Skills 目录摘要块（只含 name/description）插入在
 // Project Instructions 后、Workflow Policy 前；完整正文只经 read_skill 读取。
+// Task 6：Project Memory 层承载 WWRITING.md 正文（独立 project_memory_hash），
+// 位于 Project Instructions 之后、Available Skills 之前；缺失时跳过不占位。
 //
 // 预算规则：
 //   - 预留 max(8192, context_window * 0.20) 给输出与工具参数；
@@ -22,7 +25,8 @@
 //     剩余 10% 给当前消息与协议开销（系统层 + 当前消息，不可裁剪，超限上报）；
 //   - 最近 12 个 user/assistant 轮次、当前消息、未闭合 tool-call 链与
 //     未解决 decision（protected 标记）不压缩；
-//   - hash：static_core/runtime/project_instructions/workflow/dynamic 独立计算。
+//   - hash：static_core/runtime/project_instructions/project_memory/workflow/dynamic
+//     独立计算。
 //
 // 本模块不包含状态机、不读取文件、不调用模型；AGENTS.md 的读取是 runtime
 // 的职责，本模块只负责把读到的正文放进 Project Instructions 层（AGENTS.md
@@ -44,7 +48,9 @@ export const STATIC_CORE = `你是 WWriting 的本地小说项目 Agent。你与
 
 多步骤、长时间、依赖明显或执行路径可能变化的任务使用 update_plan；简单回答和单步操作直接完成。计划只展示可验证的执行步骤，不展示私有思维过程，并在真实里程碑更新状态。
 
-运行时送达的新用户消息优先于较早假设。读取最新消息和任务事件，必要时调整计划或工作流。完成前检查可观察结果；最终简洁说明实际完成的内容、验证依据和仍需作者决定的问题。`;
+运行时送达的新用户消息优先于较早假设。读取最新消息和任务事件，必要时调整计划或工作流。完成前检查可观察结果；最终简洁说明实际完成的内容、验证依据和仍需作者决定的问题。
+
+WWRITING.md 是当前工作区的长期项目记忆入口。开始长期小说工作、恢复上下文或长期要求发生变化时，先读取它并按其中索引按需读取权威文件。缺失或损坏不代表工作区无效。只记录用户已确认或文件可证的长期事实，不把普通问候、临时解释和模型猜测写入记忆。`;
 
 // ---------------------------------------------------------------------------
 // Runtime Policy（模板 + 渲染）
@@ -165,6 +171,19 @@ export function assembleSkillCatalogBlock(skillCatalog) {
   }
   if (lines.length === 2) return "";
   return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Project Memory：WWRITING.md 项目记忆层（Task 6 Step 3）
+// ---------------------------------------------------------------------------
+
+// WWRITING.md 是受信任的项目指令层（与 AGENTS.md 同层语义），不套 untrusted-data
+// 包装；空/缺失 memory 返回空串（不制造占位文案）。装配顺序固定在 Project
+// Instructions 之后、Available Skills 之前。该层单独计算 project_memory_hash，
+// 不并入 AGENTS.md hash。
+export function assembleProjectMemoryBlock(memory) {
+  const text = String(memory?.content ?? "").trim();
+  return text ? `[Project Memory: WWRITING.md]\n${text}` : "";
 }
 
 // ---------------------------------------------------------------------------
@@ -397,6 +416,7 @@ function compressHistory(history, capTokens) {
 export function assemblePrompt({
   runtime,
   projectInstructions,
+  projectMemory,
   workflow,
   dynamicContext,
   history,
@@ -405,8 +425,8 @@ export function assemblePrompt({
   modelConfig,
   skillCatalog
 } = {}) {
-  // 层 1-4：Static Core / Runtime Policy / Project Instructions / Available Skills
-  //         / Workflow Policy
+  // 层 1-6：Static Core / Runtime Policy / Project Instructions / Project Memory
+  //         / Available Skills / Workflow Policy
   const workflowName = workflow == null || workflow === "" ? "general" : workflow;
   if (!Object.hasOwn(WORKFLOW_POLICIES, workflowName)) {
     throw new Error(`未知 workflow: ${String(workflowName)}`);
@@ -414,29 +434,32 @@ export function assemblePrompt({
   const staticCoreText = STATIC_CORE;
   const runtimePolicyText = assembleRuntimePolicy(runtime);
   const projectInstructionsText = String(projectInstructions ?? "");
+  const projectMemoryText = assembleProjectMemoryBlock(projectMemory);
   const skillCatalogText = assembleSkillCatalogBlock(skillCatalog);
   const workflowPolicyText = WORKFLOW_POLICIES[workflowName];
-  // AGENTS.md 不存在时 Project Instructions 为空、无技能时目录块为空：
-  // 不制造占位文案（直接跳过空层）
+  // AGENTS.md 不存在时 Project Instructions 为空、WWRITING.md 缺失时 Project
+  // Memory 为空、无技能时目录块为空：不制造占位文案（直接跳过空层）
   const systemContent = [
     staticCoreText,
     runtimePolicyText,
     projectInstructionsText,
+    projectMemoryText,
     skillCatalogText,
     workflowPolicyText
   ]
     .filter((text) => text.length > 0)
     .join("\n\n");
 
-  // 层 5：Dynamic Context（untrusted-data wrapper，独立 user 消息，绝不进 System 层）
+  // 层 7：Dynamic Context（untrusted-data wrapper，独立 user 消息，绝不进 System 层）
   const dynamicItems = Array.isArray(dynamicContext) ? dynamicContext : [];
   const dynamicFullText = renderDynamicContextBlock(dynamicItems);
 
-  // 独立 hash：各层互不影响
+  // 独立 hash：各层互不影响（project_memory_hash 单独计算，不并入 AGENTS.md hash）
   const hashes = {
     static_core_hash: sha256(staticCoreText),
     runtime_hash: sha256(runtimePolicyText),
     project_instructions_hash: sha256(projectInstructionsText),
+    project_memory_hash: sha256(projectMemoryText),
     workflow_hash: sha256(workflowPolicyText),
     dynamic_hash: sha256(dynamicFullText)
   };

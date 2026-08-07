@@ -1255,6 +1255,100 @@ test("质量门禁失败转入修订路径：失败结果回喂模型，修订�
 });
 
 // ---------------------------------------------------------------------------
+// WWRITING.md 项目记忆（Task 6：runtime 每模型轮重新读取）
+// ---------------------------------------------------------------------------
+
+test("WWRITING.md 内容注入 system 层；缺失时不出现记忆块且不阻止聊天", async (t) => {
+  const h = await openHarness(t, {
+    gatewayScript: [
+      async (request) => {
+        // 第一轮：WWRITING.md 尚不存在 -> 不出现 Project Memory 块（缺失不阻止聊天）
+        const system = (request.messages ?? []).find((m) => m.role === "system")?.content ?? "";
+        assert.ok(!system.includes("[Project Memory: WWRITING.md]"), "缺失的 WWRITING.md 不得出现记忆块");
+        await fs.writeFile(
+          path.join(h.projectRoot, "WWRITING.md"),
+          "# WWriting 项目记忆\n\n- 项目：雨夜小说\n- 当前目标：完成第一章初稿\n",
+          "utf8"
+        );
+        return { toolCalls: [tool("read_file", { path: "OUTLINE.md" })] };
+      },
+      async (request) => {
+        // 第二轮：写入后重新读取 -> 记忆块与正文进入 system
+        const system = (request.messages ?? []).find((m) => m.role === "system")?.content ?? "";
+        assert.ok(system.includes("[Project Memory: WWRITING.md]"), "写入后应出现 Project Memory 层");
+        assert.ok(system.includes("- 项目：雨夜小说"), "记忆正文应进入 system");
+        assert.ok(system.includes("- 当前目标：完成第一章初稿"), "记忆正文完整进入 system");
+        return { text: "已读取项目记忆。" };
+      }
+    ]
+  });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "继续写作", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  assert.equal(await pathExists(path.join(h.projectRoot, "WWRITING.md")), true);
+  const events = await readEvents(h.agent, h.projectRoot);
+  assertActivityClosure(events);
+});
+
+test("两次模型轮之间改写 WWRITING.md，后续轮次 request 必须包含新内容", async (t) => {
+  const h = await openHarness(t, {
+    gatewayScript: [
+      async (request) => {
+        // 第一轮 prompt 已装配（无记忆）；落盘 v1 供第二轮读取
+        await fs.writeFile(
+          path.join(h.projectRoot, "WWRITING.md"),
+          "# WWriting 项目记忆\n\n- 版本：v1\n",
+          "utf8"
+        );
+        return { toolCalls: [tool("read_file", { path: "OUTLINE.md" })] };
+      },
+      async (request) => {
+        // 第二轮必须读到 v1
+        const system = (request.messages ?? []).find((m) => m.role === "system")?.content ?? "";
+        assert.ok(system.includes("- 版本：v1"), "第二轮请求必须包含 v1 记忆内容");
+        // 模拟用户在两次模型轮之间手工改写 WWRITING.md
+        await fs.writeFile(
+          path.join(h.projectRoot, "WWRITING.md"),
+          "# WWriting 项目记忆\n\n- 版本：v2\n- 新目标：改写第三章\n",
+          "utf8"
+        );
+        return { toolCalls: [tool("read_file", { path: "SETTING.md" })] };
+      },
+      async (request) => {
+        // 第三轮必须读到改写后的 v2（每模型轮重新读取，不依赖上下文残留）
+        const system = (request.messages ?? []).find((m) => m.role === "system")?.content ?? "";
+        assert.ok(!system.includes("- 版本：v1"), "旧内容不得残留");
+        assert.ok(system.includes("- 版本：v2"), "第三轮请求必须包含改写后的 v2 内容");
+        assert.ok(system.includes("- 新目标：改写第三章"), "改写内容应在同一轮生效");
+        return { text: "已根据最新记忆继续。" };
+      }
+    ]
+  });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "继续写作", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  assert.equal(eventsOfType(events, "model_turn_started").length, 3, "应有三轮模型轮次");
+  assertActivityClosure(events);
+});
+
+test("不可读 WWRITING.md（目录占位）不阻止模型轮次", async (t) => {
+  const h = await openHarness(t, {
+    gatewayScript: [
+      async (request) => {
+        const system = (request.messages ?? []).find((m) => m.role === "system")?.content ?? "";
+        assert.ok(!system.includes("[Project Memory: WWRITING.md]"), "不可读记忆不注入，但不阻止 prompt");
+        return { text: "继续。" };
+      }
+    ]
+  });
+  await fs.mkdir(path.join(h.projectRoot, "WWRITING.md"), { recursive: true });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "继续任务", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  assert.equal(eventsOfType(events, "run_completed").length, 1, "不可读记忆不得导致 Run 失败");
+  assertActivityClosure(events);
+});
+
+// ---------------------------------------------------------------------------
 // 审计来源与存储
 // ---------------------------------------------------------------------------
 
