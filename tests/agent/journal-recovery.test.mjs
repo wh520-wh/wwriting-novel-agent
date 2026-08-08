@@ -1255,8 +1255,8 @@ test("append 无需显式 load（自初始化）", async (t) => {
   assert.equal(events[1].seq, 2);
 });
 
-test("FIXED_EVENT_TYPES 包含计划固定的 33 个事件类型（含 reasoning、journal_recovery_boundary 与 context_usage_updated）", () => {
-  assert.equal(FIXED_EVENT_TYPES.length, 33);
+test("FIXED_EVENT_TYPES 包含计划固定的 40 个事件类型（含 reasoning、journal_recovery_boundary、context_usage_updated 与 7 个压缩类型）", () => {
+  assert.equal(FIXED_EVENT_TYPES.length, 40);
   assert.deepEqual(
     [...FIXED_EVENT_TYPES].sort(),
     [
@@ -1264,6 +1264,13 @@ test("FIXED_EVENT_TYPES 包含计划固定的 33 个事件类型（含 reasoning
       "assistant_message_completed",
       "checkpoint_linked",
       "context_usage_updated",
+      "context_compaction_cancelled",
+      "context_compaction_cancel_requested",
+      "context_compaction_completed",
+      "context_compaction_failed",
+      "context_compaction_noop",
+      "context_compaction_running",
+      "context_compaction_started",
       "decision_requested",
       "decision_resolved",
       "history_compacted",
@@ -1980,7 +1987,7 @@ test("缺口恢复·仅 transcript 坏段：不触发 events 恢复（manifest �
   const j2 = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
   const session = await j2.load();
   // events 流不受 transcript 缺口污染：无 history_degraded、无 boundary、事件完整
-  assert.equal(session.history_degraded, undefined, "仅 transcript 损坏不得标记 events 降级");
+  assert.equal(session.history_degraded, false, "仅 transcript 损坏不得标记 events 降级");
   assert.equal(session.last_seq, 2);
   assert.deepEqual(j2.gaps, [], "journal.gaps 只反映 events 流缺口");
   const events = await j2.read({});

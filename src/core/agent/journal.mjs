@@ -80,6 +80,13 @@ export const FIXED_EVENT_TYPES = Object.freeze([
   "history_compacted",
   "checkpoint_linked",
   "context_usage_updated",
+  "context_compaction_started",
+  "context_compaction_running",
+  "context_compaction_cancel_requested",
+  "context_compaction_completed",
+  "context_compaction_failed",
+  "context_compaction_cancelled",
+  "context_compaction_noop",
   "assistant_message_delta",
   "assistant_message_completed",
   "run_completed",
@@ -113,6 +120,9 @@ export const WORKFLOWS = Object.freeze(["general", "chapter", "init"]);
 export const PLAN_STATUSES = Object.freeze(["pending", "in_progress", "completed"]);
 
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
+
+// 非终态压缩状态（Task 8）：started/running/cancelling 之间不允许开启新的压缩。
+const COMPACTION_NON_TERMINAL_STATES = new Set(["started", "running", "cancelling"]);
 
 // 有效工作时钟状态（transitionWorkClock 复用；模块级常量避免每次调用重建 Set）。
 const WORK_CLOCK_ACTIVE_STATUSES = new Set(["running", "interrupting", "stopping"]);
@@ -193,6 +203,15 @@ function createEmptySession({ sessionId, projectRoot, at }) {
     //（旧 session 重放/项目刚打开），UI 显示"计算中/待校准"，绝不用假 0 冒充
     // 真实占用。revisions.context 只随 context_usage_updated 递增，供 UI 增量订阅。
     context_usage: null,
+    // Task 8：active context checkpoint 指针与最近一次压缩投影。
+    // active_context_checkpoint_id 只在 context_compaction_completed 时切换；
+    // failed/cancelled 必须保持旧值。compaction 为最近一次压缩的投影
+    //（CompactionProjection typedef：id/trigger/state/attempt/source_checkpoint_id/
+    // checkpoint_id/pending_input_id/error_code/started_at/updated_at）。
+    active_context_checkpoint_id: null,
+    compaction: null,
+    history_degraded: false,
+    history_gaps: [],
     revisions: { context: 0 },
     last_seq: 0,
     updated_at: at
@@ -373,6 +392,8 @@ function reduceEvent(session, event, side) {
         status: "queued",
         queued_at: payload.queued_at ?? event.at
       };
+      // Task 8：/compact 队列项带 kind:"compact"（运行中排队不打断当前模型/工具）
+      if (payload.kind === "compact") item.kind = "compact";
       session.queued_inputs.push(item);
       side.inputMeta.set(inputId, item);
       break;
@@ -707,6 +728,138 @@ function reduceEvent(session, event, side) {
       break;
     }
 
+    // -----------------------------------------------------------------------
+    // Task 8：上下文压缩事件（计划 §2 CompactionProjection）。压缩是 Session 级
+    // 活动：不要求活动 Run、不改变普通 Run 的 active_input_id；started/running/
+    // cancelling 只更新 compaction 投影。只有 context_compaction_completed 才切换
+    // active_context_checkpoint_id；failed/cancelled 必须保持旧值。Run/input 的
+    // 收敛（waiting_user/input_cancelled/run_cancelled）由 runtime 负责，reducer
+    // 不隐式终结输入。
+    // -----------------------------------------------------------------------
+
+    case "context_compaction_started": {
+      const compactionId = requireString(payload.compaction_id, "compaction_id");
+      const trigger = payload.trigger;
+      if (trigger !== "automatic" && trigger !== "manual") {
+        fail(`context_compaction_started 的 trigger 非法: ${String(trigger)}`);
+      }
+      // 只拒绝并发压缩：前一个压缩尚未终结时不允许开启新的 compaction_id。
+      if (
+        session.compaction &&
+        session.compaction.id !== compactionId &&
+        COMPACTION_NON_TERMINAL_STATES.has(session.compaction.state)
+      ) {
+        fail(`压缩事件 compaction_id ${compactionId} 与进行中的投影 ${session.compaction.id} 不一致`);
+      }
+      session.compaction = {
+        id: compactionId,
+        trigger,
+        state: "started",
+        attempt: payload.attempt ?? 1,
+        source_checkpoint_id: payload.source_checkpoint_id ?? null,
+        checkpoint_id: payload.checkpoint_id ?? null,
+        pending_input_id: payload.pending_input_id ?? null,
+        error_code: null,
+        started_at: payload.started_at ?? event.at,
+        updated_at: event.at
+      };
+      break;
+    }
+
+    case "context_compaction_running":
+    case "context_compaction_cancel_requested": {
+      const compactionId = requireString(payload.compaction_id, "compaction_id");
+      if (session.compaction && session.compaction.id !== compactionId) {
+        fail(`压缩事件 compaction_id ${compactionId} 与当前投影 ${session.compaction.id} 不一致`);
+      }
+      const nextState = type === "context_compaction_running" ? "running" : "cancelling";
+      if (!session.compaction) {
+        // 防御：running/cancel_requested 前缺少 started（如手工构造的日志）——
+        // 从 payload 补投影，避免投影形状缺失。
+        session.compaction = {
+          id: compactionId,
+          trigger: payload.trigger === "manual" ? "manual" : "automatic",
+          state: nextState,
+          attempt: payload.attempt ?? 1,
+          source_checkpoint_id: payload.source_checkpoint_id ?? null,
+          checkpoint_id: payload.checkpoint_id ?? null,
+          pending_input_id: payload.pending_input_id ?? null,
+          error_code: null,
+          started_at: payload.started_at ?? event.at,
+          updated_at: event.at
+        };
+      } else {
+        session.compaction.state = nextState;
+        session.compaction.updated_at = event.at;
+      }
+      break;
+    }
+
+    case "context_compaction_completed": {
+      const compactionId = requireString(payload.compaction_id, "compaction_id");
+      if (session.compaction && session.compaction.id !== compactionId) {
+        fail(`压缩事件 compaction_id ${compactionId} 与当前投影 ${session.compaction.id} 不一致`);
+      }
+      // 只有 completed 才切换 active context 指针（候选已原子提交并落盘）。
+      const checkpointId = requireString(payload.checkpoint_id, "checkpoint_id");
+      session.active_context_checkpoint_id = checkpointId;
+      const prev = session.compaction;
+      session.compaction = {
+        id: compactionId,
+        trigger: prev?.trigger ?? (payload.trigger === "manual" ? "manual" : "automatic"),
+        state: "completed",
+        attempt: payload.attempt ?? prev?.attempt ?? 1,
+        source_checkpoint_id: payload.source_checkpoint_id ?? prev?.source_checkpoint_id ?? null,
+        checkpoint_id: checkpointId,
+        pending_input_id: prev?.pending_input_id ?? payload.pending_input_id ?? null,
+        error_code: null,
+        started_at: prev?.started_at ?? payload.started_at ?? event.at,
+        updated_at: event.at
+      };
+      break;
+    }
+
+    case "context_compaction_failed":
+    case "context_compaction_cancelled": {
+      const compactionId = requireString(payload.compaction_id, "compaction_id");
+      if (session.compaction && session.compaction.id !== compactionId) {
+        fail(`压缩事件 compaction_id ${compactionId} 与当前投影 ${session.compaction.id} 不一致`);
+      }
+      // 失败/取消不切换 active_context_checkpoint_id（旧上下文继续生效）。
+      const prev = session.compaction;
+      session.compaction = {
+        id: compactionId,
+        trigger: prev?.trigger ?? (payload.trigger === "manual" ? "manual" : "automatic"),
+        state: type === "context_compaction_failed" ? "failed" : "cancelled",
+        attempt: payload.attempt ?? prev?.attempt ?? 1,
+        source_checkpoint_id: prev?.source_checkpoint_id ?? payload.source_checkpoint_id ?? null,
+        checkpoint_id: prev?.checkpoint_id ?? payload.checkpoint_id ?? null,
+        pending_input_id: prev?.pending_input_id ?? payload.pending_input_id ?? null,
+        error_code: payload.error_code ?? null,
+        started_at: prev?.started_at ?? payload.started_at ?? event.at,
+        updated_at: event.at
+      };
+      break;
+    }
+
+    case "context_compaction_noop": {
+      // 无历史可压缩：不调用模型，只记录 noop 投影（UI 显示"无需压缩"）。
+      const compactionId = requireString(payload.compaction_id, "compaction_id");
+      session.compaction = {
+        id: compactionId,
+        trigger: payload.trigger === "manual" ? "manual" : "automatic",
+        state: "noop",
+        attempt: payload.attempt ?? 1,
+        source_checkpoint_id: null,
+        checkpoint_id: null,
+        pending_input_id: null,
+        error_code: null,
+        started_at: event.at,
+        updated_at: event.at
+      };
+      break;
+    }
+
     case "history_compacted":
     case "checkpoint_linked":
       // 不影响 Session projection（transcript/领域审计类事件）
@@ -928,9 +1081,15 @@ export function createAgentJournal({
   // 猜测 tool/decision 是否打开）。
   async function degradedState(anchor) {
     const side = createSideState();
+    const gapRecords = (eventsStore.gaps ?? []).map((gap) => ({
+      start_seq: gap?.start_seq ?? null,
+      end_seq: gap?.end_seq ?? null,
+      reason: gap?.reason ?? null
+    }));
     if (anchor && !anchor.projection.needs_history_clear && (await isAnchorValid(anchor))) {
       const session = structuredClone(anchor.projection);
       session.history_degraded = true;
+      session.history_gaps = gapRecords;
       try {
         const { events } = await eventsStore.readAfter({ afterSeq: anchor.last_seq, limit: null });
         for (const event of events) {
@@ -954,6 +1113,7 @@ export function createAgentJournal({
       at: normalizeAt(clock())
     });
     session.history_degraded = true;
+    session.history_gaps = gapRecords;
     session.needs_history_clear = true;
     return { session, ...side };
   }
@@ -1046,7 +1206,12 @@ export function createAgentJournal({
         // 锚定重放无法重建锚点前的 side 状态（open tool/turn/decision 未知）：
         // 保守地把非终结 Run 标记 interrupted——绝不能把无法验证的 dangling
         // assistant 状态交给 provider（干净关闭中途的 Run 同样走此恢复）。
-        await appendBatchLocked(buildDanglingRecoveryBatch());
+        // Task 8：压缩进行中（非终态 compaction）的 Run 处于发送前预检安全点——
+        // 没有未闭合 model turn/tool call，保守中断不适用；由 runtime 的 open()
+        // 按收敛矩阵把 Run 收敛为 waiting_user（绝不自动调用普通模型）。
+        if (!state.session.compaction || !COMPACTION_NON_TERMINAL_STATES.has(state.session.compaction.state)) {
+          await appendBatchLocked(buildDanglingRecoveryBatch());
+        }
       } else if (dangling) {
         await appendBatchLocked(buildDanglingRecoveryBatch());
       }

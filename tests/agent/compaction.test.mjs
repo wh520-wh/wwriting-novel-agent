@@ -5,6 +5,9 @@
 // 保护五字段；selectProtectedRecentTurns 的 12 轮 / 大型工具输出 / 未闭合链 / 最新 2 轮边界。
 import assert from "node:assert/strict";
 import test from "node:test";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {
   COMPACTION_PROMPT,
   PROTECTED_SUMMARY_FIELDS,
@@ -14,6 +17,8 @@ import {
   selectProtectedRecentTurns,
   validateCompactionSummary
 } from "../../src/core/agent/compaction-prompt.mjs";
+import { createCompactionCoordinator } from "../../src/core/agent/compaction.mjs";
+import { FIXED_EVENT_TYPES, createAgentJournal } from "../../src/core/agent/journal.mjs";
 
 // ---------------------------------------------------------------------------
 // COMPACTION_PROMPT：规格草案 §6 逐字（LF 行尾、JSON 块两空格缩进）
@@ -292,4 +297,579 @@ test("selectProtectedRecentTurns：未闭合 tool-call 链完整保留且不得�
   // 最新 2 轮仍在
   assert.deepEqual(result.protected_turns.at(-1).id, "turn-15");
   assert.deepEqual(result.protected_turns.at(-2).id, "turn-14");
+});
+
+// ---------------------------------------------------------------------------
+// Task 8：压缩状态机（coordinator 单测，fake gateway/clock/checkpoint store；
+// 与 real journal 的集成在 project-agent.test.mjs / journal-recovery.test.mjs）
+// ---------------------------------------------------------------------------
+
+const BASE_TIME = Date.parse("2026-08-08T00:00:00.000Z");
+
+function fakeClock() {
+  let n = 0;
+  return () => BASE_TIME + n++ * 1000;
+}
+
+function fakeId() {
+  let n = 0;
+  return () => `id-${(n += 1)}`;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// journal fake：只记录事件（coordinator 追加的压缩事件不做 reducer 校验）。
+function createFakeJournal() {
+  const recorded = [];
+  return {
+    _events: recorded,
+    async append(event) {
+      const stamped = {
+        schema_version: 2,
+        seq: recorded.length + 1,
+        event_id: event.event_id ?? `evt-${recorded.length + 1}`,
+        session_id: "session-1",
+        run_id: event.run_id ?? null,
+        project_root: "project",
+        type: event.type,
+        at: new Date(BASE_TIME + recorded.length * 1000).toISOString(),
+        payload: event.payload ?? {}
+      };
+      recorded.push(stamped);
+      return stamped;
+    },
+    async read({ afterSeq = 0, limit } = {}) {
+      let out = recorded.filter((event) => event.seq > afterSeq);
+      if (limit != null) out = out.slice(0, limit);
+      return out;
+    }
+  };
+}
+
+// checkpoint store fake：commit 时向 journal 追加 completed 并切换指针。
+function createFakeCheckpointStore({ oldCheckpointId = null } = {}) {
+  let pointer = {
+    schema_version: 1,
+    checkpoint_id: oldCheckpointId,
+    commit_id: null,
+    committed_at: null,
+    source_seq_end: null,
+    sha256: null
+  };
+  let failCommit = false;
+  return {
+    _setFailCommit(value) {
+      failCommit = value;
+    },
+    async readActive() {
+      return { ...pointer };
+    },
+    async writeCandidate(candidate) {
+      return `candidate-${candidate.checkpoint_id}`;
+    },
+    async validateCandidate() {
+      return { schema_ok: true, protected_state_ok: true, target_ok: true, hash_ok: false };
+    },
+    async commitCandidate(candidate, { journal, commitEvent } = {}) {
+      if (failCommit) {
+        const error = new Error("故障注入：提交失败");
+        error.code = "checkpoint_write_failed";
+        throw error;
+      }
+      const payload = {
+        compaction_id: commitEvent?.payload?.compaction_id ?? null,
+        trigger: candidate.trigger ?? null,
+        attempt: commitEvent?.payload?.attempt ?? 1,
+        source_checkpoint_id: candidate.source_checkpoint_id ?? null,
+        checkpoint_id: candidate.checkpoint_id,
+        source_seq: candidate.source_seq ?? null,
+        source_transcript_seq: candidate.source_transcript_seq ?? null,
+        provider_model_id: candidate.provider_model_id ?? null,
+        estimated_tokens_before: commitEvent?.payload?.estimated_tokens_before ?? null,
+        estimated_tokens_after: commitEvent?.payload?.estimated_tokens_after ?? null,
+        released_tokens: commitEvent?.payload?.released_tokens ?? null,
+        summary_schema_version: 1,
+        duration_ms: commitEvent?.payload?.duration_ms ?? null,
+        validation: { schema_ok: true, protected_state_ok: true, target_ok: true, hash_ok: true },
+        error_code: null,
+        cancel_reason: null
+      };
+      if (journal) {
+        await journal.append({ event_id: commitEvent?.event_id, type: "context_compaction_completed", payload });
+      }
+      pointer = {
+        schema_version: 1,
+        checkpoint_id: candidate.checkpoint_id,
+        commit_id: commitEvent?.payload?.compaction_id ?? null,
+        committed_at: new Date().toISOString(),
+        source_seq_end: candidate.source_seq?.end ?? null,
+        sha256: "hash"
+      };
+      return { checkpoint_id: candidate.checkpoint_id, event_id: commitEvent?.event_id, sha256: "hash", pointer: { ...pointer }, validation: payload.validation };
+    },
+    async discardCandidate() {},
+    async reconcileAfterCrash() {
+      return { status: "noop", cleaned: [], appended: [] };
+    }
+  };
+}
+
+function makeModelConfig(overrides = {}) {
+  return {
+    provider: "mock",
+    model_name: "mock-model",
+    configured_model_id: "mock-model",
+    effective_context_window: 256_000,
+    compaction_threshold: 204_800,
+    window_source: "default_256k",
+    ...overrides
+  };
+}
+
+function fakeBuildInput(overrides = {}) {
+  const sourceState = {
+    source_checkpoint_id: null,
+    source_seq: { start: 1, end: 40 },
+    source_transcript_seq: { start: 1, end: 20 },
+    configured_model_id: "mock-model",
+    provider_model_id: "mock-model",
+    trigger: "automatic",
+    effective_context_window: 256_000,
+    target_tokens: 64_000,
+    current_task: "完成第三章初稿",
+    user_confirmed_decisions: ["主角改名为林默"],
+    pending_steps: ["写完第三章结尾"],
+    open_tool_calls: [],
+    reload_from_workspace: ["WWRITING.md"]
+  };
+  return async () => ({
+    sourceMaterial: "压缩源材料：早期历史",
+    sourceState,
+    recent_messages: [{ role: "user", content: "最近原文" }],
+    open_tool_calls: [],
+    reload_from_workspace: ["WWRITING.md"],
+    estimated_tokens_before: 90_000,
+    noop: false,
+    ...overrides
+  });
+}
+
+// fake gateway：脚本 + 调用记录（含 signal，供取消断言）。
+function createFakeGateway({ script = [], delayMs = 0 } = {}) {
+  const calls = [];
+  let cursor = 0;
+  return {
+    calls,
+    async complete(request, { signal } = {}) {
+      const entry = script[cursor] ?? null;
+      if (entry && !entry.repeat) cursor += 1;
+      if (delayMs > 0) await sleep(delayMs);
+      if (entry && typeof entry === "function") {
+        const started = { request, signal };
+        calls.push(started);
+        const reply = await entry(request, { signal });
+        started.reply = reply;
+        if (reply?.error) throw reply.error;
+        return reply;
+      }
+      if (entry?.error) {
+        calls.push({ request, signal, reply: { error: entry.error } });
+        throw entry.error;
+      }
+      const reply = entry?.reply ?? { text: "（默认答复）" };
+      calls.push({ request, signal, reply });
+      return reply;
+    }
+  };
+}
+
+function transientError(code = "provider_transport_error", reason = "network") {
+  const error = new Error(`传输错误：${reason}`);
+  error.code = code;
+  error.reason = reason;
+  return error;
+}
+
+function createCoordinator({ journal, gateway, store, buildInput } = {}) {
+  return createCompactionCoordinator({
+    journal: journal ?? createFakeJournal(),
+    gateway,
+    checkpointStore: store ?? createFakeCheckpointStore(),
+    buildInput: buildInput ?? fakeBuildInput(),
+    clock: fakeClock(),
+    idFactory: fakeId()
+  });
+}
+
+async function waitForEvent(journal, type, { timeoutMs = 2000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (journal._events.some((event) => event.type === type)) return;
+    await sleep(5);
+  }
+  throw new Error(`等待事件 ${type} 超时`);
+}
+
+test("coordinator.start：成功事件顺序严格为 started → running → completed，request 形状固定", async () => {
+  const journal = createFakeJournal();
+  const gateway = createFakeGateway({ script: [{ reply: { text: JSON.stringify(validSummary()) } }] });
+  const store = createFakeCheckpointStore({ oldCheckpointId: "ck-old" });
+  const coordinator = createCoordinator({ journal, gateway, store });
+  const modelConfig = makeModelConfig();
+  const outcome = await coordinator.start({
+    projectRoot: "project",
+    trigger: "automatic",
+    pendingInputId: "in-1",
+    modelConfig,
+    signal: new AbortController().signal
+  });
+  assert.equal(outcome.status, "completed");
+  assert.ok(outcome.compaction_id && outcome.checkpoint_id);
+  assert.deepEqual(
+    journal._events.map((event) => event.type),
+    ["context_compaction_started", "context_compaction_running", "context_compaction_completed"]
+  );
+  // request 形状（brief Step 2 逐字）
+  assert.equal(gateway.calls.length, 1);
+  const request = gateway.calls[0].request;
+  assert.deepEqual(request.messages[0], { role: "system", content: COMPACTION_PROMPT });
+  assert.equal(request.messages[1].role, "user");
+  assert.equal(request.messages[1].content, "压缩源材料：早期历史");
+  assert.equal(request.tools, undefined);
+  assert.equal(request.toolChoice, undefined);
+  assert.equal(request.stream, false);
+  assert.equal(request.modelConfig, modelConfig, "压缩调用携带当前 modelConfig");
+  assert.equal(request.metadata.stage, "context_compaction");
+  assert.equal(request.metadata.cacheable, false);
+  assert.equal(request.metadata.compaction_id, outcome.compaction_id);
+  // completed payload 固定字段（不可用值写 null）
+  const completed = journal._events.find((event) => event.type === "context_compaction_completed");
+  assert.equal(completed.payload.compaction_id, outcome.compaction_id);
+  assert.equal(completed.payload.trigger, "automatic");
+  assert.equal(completed.payload.attempt, 1);
+  assert.equal(completed.payload.source_checkpoint_id, "ck-old");
+  assert.equal(completed.payload.checkpoint_id, outcome.checkpoint_id);
+  assert.deepEqual(completed.payload.source_seq, { start: 1, end: 40 });
+  assert.deepEqual(completed.payload.source_transcript_seq, { start: 1, end: 20 });
+  assert.equal(completed.payload.provider_model_id, "mock-model");
+  assert.equal(completed.payload.estimated_tokens_before, 90_000);
+  assert.equal(completed.payload.summary_schema_version, 1);
+  assert.equal(typeof completed.payload.duration_ms, "number");
+  assert.deepEqual(completed.payload.validation, { schema_ok: true, protected_state_ok: true, target_ok: true, hash_ok: true });
+  assert.equal(completed.payload.error_code, null);
+  assert.equal(completed.payload.cancel_reason, null);
+  // 指针切换到新 checkpoint
+  assert.equal((await store.readActive()).checkpoint_id, outcome.checkpoint_id);
+});
+
+test("coordinator.start：第一次瞬时传输错误后自动再请求一次，第二次成功（adapter 请求数为 2）", async () => {
+  const journal = createFakeJournal();
+  const gateway = createFakeGateway({
+    script: [
+      { error: transientError("provider_transport_error", "network") },
+      { reply: { text: JSON.stringify(validSummary()) } }
+    ]
+  });
+  const coordinator = createCoordinator({ journal, gateway });
+  const outcome = await coordinator.start({
+    projectRoot: "project",
+    trigger: "automatic",
+    pendingInputId: "in-1",
+    modelConfig: makeModelConfig(),
+    signal: new AbortController().signal
+  });
+  assert.equal(outcome.status, "completed");
+  assert.equal(gateway.calls.length, 2);
+  // 自动重试属于同一压缩 attempt（spec §6）：attempt 保持 1
+  assert.deepEqual(
+    journal._events.map((event) => event.type),
+    ["context_compaction_started", "context_compaction_running", "context_compaction_completed"]
+  );
+  assert.equal(journal._events.at(-1).payload.attempt, 1);
+});
+
+test("coordinator.start：schema 失败不自动第二次请求", async () => {
+  const journal = createFakeJournal();
+  const gateway = createFakeGateway({ script: [{ reply: { text: "{ 不是 JSON" } }] });
+  const coordinator = createCoordinator({ journal, gateway });
+  const outcome = await coordinator.start({
+    projectRoot: "project",
+    trigger: "automatic",
+    modelConfig: makeModelConfig(),
+    signal: new AbortController().signal
+  });
+  assert.equal(outcome.status, "failed");
+  assert.equal(outcome.error_code, "compaction_json");
+  assert.equal(gateway.calls.length, 1, "结构失败不得重复请求");
+  assert.deepEqual(
+    journal._events.map((event) => event.type),
+    ["context_compaction_started", "context_compaction_running", "context_compaction_failed"]
+  );
+  const failed = journal._events.at(-1);
+  assert.equal(failed.payload.error_code, "compaction_json");
+  assert.equal(failed.payload.compaction_id, outcome.compaction_id);
+});
+
+test("coordinator.start：持久化失败不自动第二次请求", async () => {
+  const journal = createFakeJournal();
+  const gateway = createFakeGateway({ script: [{ reply: { text: JSON.stringify(validSummary()) } }] });
+  const store = createFakeCheckpointStore();
+  store._setFailCommit(true);
+  const coordinator = createCoordinator({ journal, gateway, store });
+  const outcome = await coordinator.start({
+    projectRoot: "project",
+    trigger: "automatic",
+    modelConfig: makeModelConfig(),
+    signal: new AbortController().signal
+  });
+  assert.equal(outcome.status, "failed");
+  assert.equal(outcome.error_code, "checkpoint_write_failed");
+  assert.equal(gateway.calls.length, 1, "持久化失败不得重复请求");
+  assert.equal(journal._events.at(-1).type, "context_compaction_failed");
+});
+
+test("coordinator：第二次失败后 failed，retry 产生新 attempt（attempt=2），cancel 对终态幂等", async () => {
+  const journal = createFakeJournal();
+  const gateway = createFakeGateway({
+    script: [
+      { error: transientError("provider_transport_error", "server-retryable") },
+      { error: transientError("provider_transport_error", "timeout") },
+      { reply: { text: JSON.stringify(validSummary()) } }
+    ]
+  });
+  const coordinator = createCoordinator({ journal, gateway });
+  const first = await coordinator.start({
+    projectRoot: "project",
+    trigger: "manual",
+    modelConfig: makeModelConfig(),
+    signal: new AbortController().signal
+  });
+  assert.equal(first.status, "failed");
+  assert.equal(gateway.calls.length, 2, "第二次仍失败即熔断，不再请求");
+  assert.equal(journal._events.at(-1).type, "context_compaction_failed");
+  // 用户手动重试：新 attempt（attempt=2），成功
+  const retried = await coordinator.retry({ compactionId: first.compaction_id, signal: new AbortController().signal });
+  assert.equal(retried.status, "completed");
+  assert.equal(retried.attempt, 2);
+  const startedEvents = journal._events.filter((event) => event.type === "context_compaction_started");
+  assert.equal(startedEvents.length, 2);
+  assert.equal(startedEvents[1].payload.attempt, 2);
+  // 终态上 cancel：无操作
+  const cancelled = await coordinator.cancel({ compactionId: first.compaction_id });
+  assert.equal(cancelled.status, "already_terminal");
+});
+
+test("coordinator：running 中 cancel 先追加 cancel_requested，底层结束后才追加 cancelled，旧 checkpoint 不变", async () => {
+  const journal = createFakeJournal();
+  const gateway = createFakeGateway({
+    script: [
+      (request, { signal }) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => {
+            reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+          }, { once: true });
+        })
+    ]
+  });
+  const store = createFakeCheckpointStore({ oldCheckpointId: "ck-old" });
+  const coordinator = createCoordinator({ journal, gateway, store });
+  const startPromise = coordinator.start({
+    projectRoot: "project",
+    trigger: "automatic",
+    pendingInputId: "in-1",
+    modelConfig: makeModelConfig(),
+    signal: new AbortController().signal
+  });
+  await waitForEvent(journal, "context_compaction_running");
+  const started = journal._events.find((event) => event.type === "context_compaction_started");
+  const cancelPromise = coordinator.cancel({ compactionId: started.payload.compaction_id });
+  const cancelled = await cancelPromise;
+  assert.equal(cancelled.status, "cancelled");
+  const outcome = await startPromise;
+  assert.equal(outcome.status, "cancelled");
+  // 顺序：cancel_requested 必须先于 cancelled；cancelled 只在底层结束后追加
+  assert.deepEqual(
+    journal._events.map((event) => event.type),
+    ["context_compaction_started", "context_compaction_running", "context_compaction_cancel_requested", "context_compaction_cancelled"]
+  );
+  assert.equal(journal._events.at(-1).payload.cancel_reason, "user_cancel");
+  assert.ok(!journal._events.some((event) => event.type === "context_compaction_completed"));
+  // 旧 active checkpoint 不变（取消不覆盖指针）
+  assert.equal((await store.readActive()).checkpoint_id, "ck-old");
+  // 底层请求确实被 abort（ESC 复用同一 signal 链）
+  assert.equal(gateway.calls[0].signal.aborted, true);
+});
+
+test("coordinator.retry：进程重启后可凭 journal 事件重建 entry（无内存态时从 started 事件恢复）", async () => {
+  // 场景：压缩在 attempt 1 失败后进程重启 → coordinator 无内存 entry；
+  // retry 从 journal 的 started 事件重建 entry 并继续（不重新 start）。
+  const journal = createFakeJournal();
+  const gateway = createFakeGateway({ script: [{ reply: { text: JSON.stringify(validSummary()) } }] });
+  const coordinator = createCoordinator({ journal, gateway });
+  // 手工写入一次失败的压缩事件（模拟重启现场：started + running + failed）
+  await journal.append({
+    type: "context_compaction_started",
+    payload: { compaction_id: "comp-restart", trigger: "automatic", attempt: 1, source_checkpoint_id: null, checkpoint_id: "ck-restart", pending_input_id: "in-9", started_at: new Date(BASE_TIME).toISOString() }
+  });
+  await journal.append({ type: "context_compaction_running", payload: { compaction_id: "comp-restart", trigger: "automatic", attempt: 1 } });
+  await journal.append({
+    type: "context_compaction_failed",
+    payload: { compaction_id: "comp-restart", trigger: "automatic", attempt: 1, error_code: "provider_transport_error" }
+  });
+  const retried = await coordinator.retry({ compactionId: "comp-restart", signal: new AbortController().signal });
+  assert.equal(retried.status, "completed");
+  assert.equal(retried.attempt, 2);
+  const startedEvents = journal._events.filter((event) => event.type === "context_compaction_started");
+  assert.equal(startedEvents.length, 2);
+  assert.equal(startedEvents[1].payload.attempt, 2);
+  assert.equal(startedEvents[1].payload.compaction_id, "comp-restart");
+  assert.equal(startedEvents[1].payload.checkpoint_id, "ck-restart");
+  assert.equal(startedEvents[1].payload.pending_input_id, "in-9");
+  assert.equal(journal._events.at(-1).type, "context_compaction_completed");
+});
+
+// ---------------------------------------------------------------------------
+// Task 8：journal reducer 压缩投影（真实 journal）
+// ---------------------------------------------------------------------------
+
+function makeTmpDir(t) {
+  return fs.mkdtemp(path.join(os.tmpdir(), "ww-compaction-journal-"));
+}
+
+function createRealJournal(t, root) {
+  return createAgentJournal({ projectRoot: root, clock: fakeClock(), idFactory: fakeId() });
+}
+
+test("FIXED_EVENT_TYPES 包含 7 个压缩事件类型", () => {
+  for (const type of [
+    "context_compaction_started",
+    "context_compaction_running",
+    "context_compaction_cancel_requested",
+    "context_compaction_completed",
+    "context_compaction_failed",
+    "context_compaction_cancelled",
+    "context_compaction_noop"
+  ]) {
+    assert.ok(FIXED_EVENT_TYPES.includes(type), `FIXED_EVENT_TYPES 必须包含 ${type}`);
+  }
+});
+
+test("journal reducer：session 初始含 compaction 相关投影字段", async (t) => {
+  const root = await makeTmpDir(t);
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const journal = createRealJournal(t, root);
+  const session = await journal.load();
+  assert.equal(session.active_context_checkpoint_id, null);
+  assert.equal(session.compaction, null);
+  assert.equal(session.history_degraded, false);
+  assert.deepEqual(session.history_gaps, []);
+});
+
+test("journal reducer：压缩事件只更新 compaction projection，不改变 active_input_id；completed 才切换 active 指针", async (t) => {
+  const root = await makeTmpDir(t);
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const journal = createRealJournal(t, root);
+  await journal.append({ type: "input_queued", payload: { input_id: "in-1", text: "一" } });
+  await journal.append({ type: "run_started", run_id: "run-1", payload: { workflow: "general", input_id: "in-1" } });
+  let session = await journal.getSession();
+  assert.equal(session.active_run.active_input_id, "in-1");
+
+  // started/running/cancel_requested：只更新 compaction 投影
+  await journal.append({
+    type: "context_compaction_started",
+    payload: { compaction_id: "comp-1", trigger: "automatic", attempt: 1, source_checkpoint_id: null, checkpoint_id: "ck-1", pending_input_id: "in-1", started_at: new Date(BASE_TIME).toISOString() }
+  });
+  session = await journal.getSession();
+  assert.equal(session.compaction.state, "started");
+  assert.equal(session.compaction.id, "comp-1");
+  assert.equal(session.compaction.trigger, "automatic");
+  assert.equal(session.compaction.attempt, 1);
+  assert.equal(session.compaction.source_checkpoint_id, null);
+  assert.equal(session.compaction.checkpoint_id, "ck-1");
+  assert.equal(session.compaction.pending_input_id, "in-1");
+  assert.equal(session.active_run.active_input_id, "in-1", "started 不得改变普通 Run 的 active_input_id");
+  assert.equal(session.active_context_checkpoint_id, null);
+
+  await journal.append({ type: "context_compaction_running", payload: { compaction_id: "comp-1", trigger: "automatic", attempt: 1 } });
+  session = await journal.getSession();
+  assert.equal(session.compaction.state, "running");
+  assert.equal(session.active_run.active_input_id, "in-1", "running 不得改变 active_input_id");
+
+  await journal.append({ type: "context_compaction_cancel_requested", payload: { compaction_id: "comp-1", trigger: "automatic", cancel_reason: "user_esc" } });
+  session = await journal.getSession();
+  assert.equal(session.compaction.state, "cancelling");
+
+  // 取消：不切换 active 指针
+  await journal.append({
+    type: "context_compaction_cancelled",
+    payload: { compaction_id: "comp-1", trigger: "automatic", attempt: 1, cancel_reason: "user_esc" }
+  });
+  session = await journal.getSession();
+  assert.equal(session.compaction.state, "cancelled");
+  assert.equal(session.compaction.error_code, null);
+  assert.equal(session.active_context_checkpoint_id, null, "cancelled 必须保持旧 active 指针");
+  assert.equal(session.active_run.active_input_id, "in-1", "cancelled 事件本身不终结输入（收敛由 runtime 负责）");
+});
+
+test("journal reducer：completed 切换 active_context_checkpoint_id；failed 保持旧值并记录 error_code", async (t) => {
+  const root = await makeTmpDir(t);
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const journal = createRealJournal(t, root);
+  // 压缩 1 完成 → active 指针切换到 ck-1
+  await journal.append({
+    type: "context_compaction_started",
+    payload: { compaction_id: "comp-1", trigger: "automatic", attempt: 1, source_checkpoint_id: null, checkpoint_id: "ck-1", pending_input_id: "in-1", started_at: new Date(BASE_TIME).toISOString() }
+  });
+  await journal.append({
+    type: "context_compaction_completed",
+    payload: { compaction_id: "comp-1", trigger: "automatic", attempt: 1, checkpoint_id: "ck-1", source_checkpoint_id: null }
+  });
+  let session = await journal.getSession();
+  assert.equal(session.compaction.state, "completed");
+  assert.equal(session.active_context_checkpoint_id, "ck-1", "completed 才切换 active 指针");
+  // 压缩 2 失败 → active 指针保持 ck-1，error_code 记录
+  await journal.append({
+    type: "context_compaction_started",
+    payload: { compaction_id: "comp-2", trigger: "automatic", attempt: 1, source_checkpoint_id: "ck-1", checkpoint_id: "ck-2", pending_input_id: "in-2", started_at: new Date(BASE_TIME).toISOString() }
+  });
+  await journal.append({
+    type: "context_compaction_failed",
+    payload: { compaction_id: "comp-2", trigger: "automatic", attempt: 1, error_code: "compaction_json" }
+  });
+  session = await journal.getSession();
+  assert.equal(session.compaction.state, "failed");
+  assert.equal(session.compaction.error_code, "compaction_json");
+  assert.equal(session.compaction.source_checkpoint_id, "ck-1");
+  assert.equal(session.active_context_checkpoint_id, "ck-1", "failed 必须保持旧 active 指针");
+});
+
+test("journal reducer：noop 事件把 compaction 投影置为 noop", async (t) => {
+  const root = await makeTmpDir(t);
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const journal = createRealJournal(t, root);
+  await journal.append({
+    type: "context_compaction_noop",
+    payload: { compaction_id: "comp-noop", trigger: "manual", reason: "nothing_to_compact" }
+  });
+  const session = await journal.getSession();
+  assert.equal(session.compaction.state, "noop");
+  assert.equal(session.compaction.trigger, "manual");
+  assert.equal(session.compaction.id, "comp-noop");
+  assert.equal(session.active_context_checkpoint_id, null);
+});
+
+test("journal reducer：压缩事件与当前 compaction_id 不一致时拒绝", async (t) => {
+  const root = await makeTmpDir(t);
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const journal = createRealJournal(t, root);
+  await journal.append({
+    type: "context_compaction_started",
+    payload: { compaction_id: "comp-1", trigger: "automatic", attempt: 1, checkpoint_id: "ck-1", started_at: new Date(BASE_TIME).toISOString() }
+  });
+  await assert.rejects(
+    () => journal.append({ type: "context_compaction_failed", payload: { compaction_id: "comp-other", attempt: 1, error_code: "x" } }),
+    /compaction_id/u
+  );
 });
