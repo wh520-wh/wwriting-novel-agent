@@ -6,6 +6,7 @@
 // stop 取消 Run 与排队输入、retry 同一可恢复 Run、decide 决策、snapshot 分页、
 // /api/project/events SSE 推送，以及错误码 → HTTP 状态映射。
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { createRouter } from "../../src/core/http/router.mjs";
@@ -374,4 +375,453 @@ test("原始 Node 文件错误不回传响应正文（统一错误脱敏契约�
   assert.equal(data.code, "INTERNAL_ERROR");
   assert.match(data.message, /无法读取|请检查|重试/u);
   assert.doesNotMatch(JSON.stringify(data), /ENOENT|node:fs|at\s+\w+|[A-Z]:\\.*userData/iu);
+});
+
+// ---------------------------------------------------------------------------
+// Task 5：尾部分页（tail/beforeSeq）、历史导出与不可逆清空
+// ---------------------------------------------------------------------------
+
+// 直接向 segment store 写合法事件（session_created + history_compacted），快速
+// 构造 500+ 事件的 journal——避免逐 Run 推进模型循环（history_compacted 在
+// reducer 中无副作用，不累积 queued inputs，也不会产生活动 Run）。
+async function seedJournalEvents(agentRoot, projectRoot, { count = 500, sessionId = "seed-session" } = {}) {
+  const eventsDir = path.join(agentRoot, "segments", "events");
+  await fs.mkdir(eventsDir, { recursive: true });
+  const at = "2026-01-01T00:00:00.000Z";
+  const record = (seq) => ({
+    schema_version: 2,
+    seq,
+    event_id: `seed-${seq}`,
+    session_id: sessionId,
+    run_id: null,
+    project_root: projectRoot,
+    at,
+    type: seq === 1 ? "session_created" : "history_compacted",
+    payload: seq === 1 ? {} : { reason: "seed", compacted_at: at, message_count: 1 }
+  });
+  const lines = Array.from({ length: count }, (_, i) => JSON.stringify(record(i + 1)));
+  await fs.writeFile(path.join(eventsDir, "00000001.jsonl"), `${lines.join("\n")}\n`, "utf8");
+}
+
+// 构造带中间坏段的 journal：seg1=[1..4]、seg2=[5..8]+非法行（坏段）、seg3=[9..12]。
+async function seedCorruptJournal(agentRoot, projectRoot) {
+  const eventsDir = path.join(agentRoot, "segments", "events");
+  await fs.mkdir(eventsDir, { recursive: true });
+  const at = "2026-01-01T00:00:00.000Z";
+  const record = (seq) => ({
+    schema_version: 2,
+    seq,
+    event_id: `gap-${seq}`,
+    session_id: "gap-session",
+    run_id: null,
+    project_root: projectRoot,
+    at,
+    type: seq === 1 ? "session_created" : "history_compacted",
+    payload: seq === 1 ? {} : { reason: "seed", compacted_at: at, message_count: 1 }
+  });
+  const segment = (id, from, to, extra = "") => {
+    const lines = Array.from({ length: to - from + 1 }, (_, i) => JSON.stringify(record(from + i)));
+    return `${lines.join("\n")}${extra ? `\n${extra}` : ""}\n`;
+  };
+  await fs.writeFile(path.join(eventsDir, "00000001.jsonl"), segment(1, 1, 4), "utf8");
+  await fs.writeFile(path.join(eventsDir, "00000002.jsonl"), segment(2, 5, 8, "{broken json"), "utf8");
+  await fs.writeFile(path.join(eventsDir, "00000003.jsonl"), segment(3, 9, 12), "utf8");
+}
+
+test("Task 5 snapshot beforeSeq 分页：返回最近旧页（401–500、has_more、gaps）", async (t) => {
+  const s = await setupServer(t);
+  await seedJournalEvents(s.h.agentRoot, s.h.projectRoot, { count: 500 });
+  await s.h.agent.open({ projectRoot: s.h.projectRoot });
+
+  const page = await s.h.agent.snapshot({ projectRoot: s.h.projectRoot, beforeSeq: 501, limit: 100 });
+  assert.equal(page.events.length, 100);
+  assert.equal(page.events[0].seq, 401);
+  assert.equal(page.events.at(-1).seq, 500);
+  assert.equal(page.has_more, true);
+  assert.deepEqual(page.gaps, []);
+  assert.equal(page.session.session_id, "seed-session");
+  assert.equal(page.session.status, "idle");
+  assert.equal(page.session.last_seq, 500);
+
+  // tail 页：最新 limit 条
+  const tail = await s.h.agent.snapshot({ projectRoot: s.h.projectRoot, tail: true, limit: 3 });
+  assert.deepEqual(tail.events.map((e) => e.seq), [498, 499, 500]);
+  assert.equal(tail.has_more, true, "tail 页之前还有更旧事件");
+
+  // afterSeq=0 只表示从头读取（旧客户端兼容）：从 seq 1 起
+  const fromStart = await s.h.agent.snapshot({ projectRoot: s.h.projectRoot, afterSeq: 0, limit: 5 });
+  assert.deepEqual(fromStart.events.map((e) => e.seq), [1, 2, 3, 4, 5]);
+  assert.equal(fromStart.has_more, true);
+
+  // HTTP 形状：beforeSeq 查询参数
+  const res = await s.get(
+    `/api/agent/snapshot?projectRoot=${encodeURIComponent(s.h.projectRoot)}&beforeSeq=501&limit=100`
+  );
+  assert.equal(res.res.status, 200);
+  assert.equal(res.data.ok, true);
+  assert.equal(res.data.events.length, 100);
+  assert.equal(res.data.events[0].seq, 401);
+  assert.equal(res.data.events.at(-1).seq, 500);
+  assert.equal(res.data.has_more, true);
+  assert.deepEqual(res.data.gaps, []);
+  assert.equal(res.data.session.session_id, "seed-session");
+});
+
+test("Task 5 clearHistory 守卫：活动 Run → history_busy；空闲未确认 → confirmation_required", async (t) => {
+  const s = await setupServer(t, {
+    gatewayScript: [
+      async () => {
+        await sleep(600);
+        return { text: "慢答复" };
+      }
+    ],
+    gatewayDelayMs: 0
+  });
+  await seedJournalEvents(s.h.agentRoot, s.h.projectRoot, { count: 500 });
+  await s.h.agent.open({ projectRoot: s.h.projectRoot });
+
+  // 空闲且未确认 → 区别于 history_busy 的 code
+  await assert.rejects(
+    s.h.agent.clearHistory({ projectRoot: s.h.projectRoot }),
+    (error) => error.code === "confirmation_required"
+  );
+
+  // 活动 Run 且未确认 → history_busy（brief Step 1：busy 校验先于确认校验）
+  const created = await s.h.agent.submit({ projectRoot: s.h.projectRoot, text: "慢任务" });
+  assert.equal(created.queued, false);
+  await assert.rejects(
+    s.h.agent.clearHistory({ projectRoot: s.h.projectRoot }),
+    (error) => error.code === "history_busy"
+  );
+  // 活动 Run 即使带了确认也 history_busy
+  await assert.rejects(
+    s.h.agent.clearHistory({ projectRoot: s.h.projectRoot, confirmIrreversible: true }),
+    (error) => error.code === "history_busy"
+  );
+  await waitForIdle(s.h.agent, s.h.projectRoot);
+});
+
+test("Task 5 clearHistory 成功后同一实例立即可用：新 session_id、seq 从 1、旧消息不回写", async (t) => {
+  const s = await setupServer(t, { gatewayScript: [{ reply: { text: "新会话答复" }, repeat: true }] });
+  await seedJournalEvents(s.h.agentRoot, s.h.projectRoot, { count: 500 });
+  await s.h.agent.open({ projectRoot: s.h.projectRoot });
+  const old = await s.h.agent.snapshot({ projectRoot: s.h.projectRoot, tail: true, limit: 5 });
+  assert.equal(old.session.last_seq, 500);
+
+  const result = await s.h.agent.clearHistory({ projectRoot: s.h.projectRoot, confirmIrreversible: true });
+  assert.equal(typeof result.session_id, "string");
+  assert.notEqual(result.session_id, old.session.session_id, "清空后必须产生新 session_id");
+
+  // 同一 ProjectAgent 实例立即 snapshot：seq 从新 generation 的 1 开始、旧消息不回写
+  const fresh = await s.h.agent.snapshot({ projectRoot: s.h.projectRoot, afterSeq: 0, limit: 1000 });
+  assert.equal(fresh.session.session_id, result.session_id);
+  assert.equal(fresh.session.last_seq, 1, "新 session 从 seq 1 开始");
+  assert.equal(fresh.events.length, 1, "清空后只有新的 session_created");
+  assert.equal(fresh.events[0].type, "session_created");
+  assert.equal(fresh.events[0].seq, 1);
+  assert.deepEqual(fresh.gaps, []);
+
+  // 同一实例 append 可用：新 Run 从 seq 2 起、旧事件不回写
+  await s.h.agent.submit({ projectRoot: s.h.projectRoot, text: "清空后的第一条消息" });
+  await waitForIdle(s.h.agent, s.h.projectRoot);
+  const after = await s.h.agent.snapshot({ projectRoot: s.h.projectRoot, afterSeq: 0, limit: 100000 });
+  assert.ok(after.events.some((e) => e.type === "run_started"), "新 Run 事件已落盘");
+  assert.equal(after.events[0].seq, 1, "session_created 是唯一的 seq 1 事件");
+  assert.ok(
+    after.events.filter((e) => e.type !== "session_created").every((e) => e.seq >= 2),
+    "新事件从 seq 2 开始，不复用旧 seq"
+  );
+  assert.ok(after.events.every((e) => e.session_id === result.session_id));
+  assert.equal(after.events.some((e) => e.event_id === "seed-1"), false, "旧事件不得回写");
+
+  // cleared-history 落盘：clear-manifest.json 记录原因与旧 session
+  const clearedRoot = path.join(s.h.agentRoot, "cleared-history");
+  const clearedEntries = await fs.readdir(clearedRoot);
+  assert.equal(clearedEntries.length, 1);
+  const clearManifest = JSON.parse(
+    await fs.readFile(path.join(clearedRoot, clearedEntries[0], "clear-manifest.json"), "utf8")
+  );
+  assert.equal(clearManifest.reason, "user_clear");
+  assert.equal(clearManifest.old_session_id, old.session.session_id);
+
+  // 项目根数据不受影响：章节/总纲/设定/正式 checkpoint 不得被清空触碰
+  for (const name of ["OUTLINE.md", "SETTING.md", "chapters", "checkpoints", "memory", "run_log.jsonl"]) {
+    try {
+      await fs.access(path.join(s.h.projectRoot, name));
+    } catch {
+      assert.fail(`清空不得触碰项目根 ${name}`);
+    }
+  }
+});
+
+test("Task 5 HTTP：POST /api/agent/history/export 返回 NDJSON 下载且不含未脱敏 secret", async (t) => {
+  const s = await setupServer(t, {
+    gatewayScript: [{ reply: { text: "关键信息：超级机密" } }],
+    secrets: ["超级机密"]
+  });
+  await seedJournalEvents(s.h.agentRoot, s.h.projectRoot, { count: 60 });
+  await s.h.agent.open({ projectRoot: s.h.projectRoot });
+  await s.h.agent.submit({ projectRoot: s.h.projectRoot, text: "你好" });
+  await waitForIdle(s.h.agent, s.h.projectRoot);
+
+  const res = await fetch(`${s.base}/api/agent/history/export`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ projectRoot: s.h.projectRoot })
+  });
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get("content-type") ?? "", /application\/x-ndjson/u);
+  assert.match(res.headers.get("content-disposition") ?? "", /attachment/u);
+  assert.match(res.headers.get("content-disposition") ?? "", /wwriting-agent-history\.jsonl/u);
+  const body = await res.text();
+  const lines = body.trim().split("\n").map((line) => JSON.parse(line));
+  assert.ok(lines.length >= 60, "导出包含 seed 事件");
+  assert.ok(lines.some((line) => line.stream === "event" && line.record?.type === "session_created"));
+  assert.ok(lines.some((line) => line.stream === "transcript" && line.record?.role === "assistant"), "导出包含 transcript 记录");
+  assert.ok(lines.every((line) => ["event", "transcript", "gap"].includes(line.stream)), "每行都是 event/transcript/gap");
+  assert.doesNotMatch(body, /超级机密/u, "导出响应不得包含未脱敏 secret");
+});
+
+test("Task 5 HTTP：export 的 gap 行保留损坏范围且不含隔离文件原文；退化 journal 可清空", async (t) => {
+  const s = await setupServer(t);
+  await seedCorruptJournal(s.h.agentRoot, s.h.projectRoot);
+  await s.h.agent.open({ projectRoot: s.h.projectRoot });
+
+  const res = await fetch(`${s.base}/api/agent/history/export`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ projectRoot: s.h.projectRoot })
+  });
+  assert.equal(res.status, 200);
+  const body = await res.text();
+  assert.doesNotMatch(body, /broken json/u, "隔离文件原文不得出现在导出中");
+  const lines = body.trim().split("\n").map((line) => JSON.parse(line));
+  const gapLines = lines.filter((line) => line.stream === "gap");
+  assert.equal(gapLines.length, 1, "坏段范围应有一条 gap 行");
+  assert.deepEqual(gapLines[0].record, {
+    stream: "events",
+    start_seq: 5,
+    end_seq: 8,
+    reason: "segment_corrupt"
+  });
+  const eventLines = lines.filter((line) => line.stream === "event");
+  assert.deepEqual(eventLines.map((line) => line.record.seq), [1, 2, 3, 4, 9, 10, 11, 12], "健康段按序导出");
+
+  // 退化（needs_history_clear）journal 可以清空，清空后不再标记退化
+  const cleared = await s.h.agent.clearHistory({ projectRoot: s.h.projectRoot, confirmIrreversible: true });
+  const fresh = await s.h.agent.snapshot({ projectRoot: s.h.projectRoot, afterSeq: 0, limit: 100 });
+  assert.equal(fresh.session.session_id, cleared.session_id);
+  assert.equal(fresh.events.length, 1);
+  assert.equal(fresh.session.needs_history_clear, undefined, "清空后不再标记 needs_history_clear");
+});
+
+test("Task 5 HTTP：POST /api/agent/history/clear 缺确认 400、活动 Run 409、成功 200", async (t) => {
+  const s = await setupServer(t, {
+    gatewayScript: [
+      async () => {
+        await sleep(600);
+        return { text: "慢答复" };
+      }
+    ],
+    gatewayDelayMs: 0
+  });
+  await seedJournalEvents(s.h.agentRoot, s.h.projectRoot, { count: 120 });
+  await s.h.agent.open({ projectRoot: s.h.projectRoot });
+
+  // 缺少 confirm_irreversible:true → 400 confirmation_required
+  const missing = await s.post("/api/agent/history/clear", { projectRoot: s.h.projectRoot });
+  assert.equal(missing.res.status, 400);
+  assert.equal(missing.data.ok, false);
+  assert.equal(missing.data.code, "confirmation_required");
+
+  // 活动 Run → 409 history_busy（即使带了 confirm）
+  const running = await s.post("/api/agent/input", { projectRoot: s.h.projectRoot, text: "慢任务" });
+  assert.equal(running.data.status, "running");
+  const busy = await s.post("/api/agent/history/clear", {
+    projectRoot: s.h.projectRoot,
+    confirm_irreversible: true
+  });
+  assert.equal(busy.res.status, 409);
+  assert.equal(busy.data.ok, false);
+  assert.equal(busy.data.code, "history_busy");
+  await waitForIdle(s.h.agent, s.h.projectRoot);
+
+  // 空闲 + confirm → 200 新 session
+  const cleared = await s.post("/api/agent/history/clear", {
+    projectRoot: s.h.projectRoot,
+    confirm_irreversible: true
+  });
+  assert.equal(cleared.res.status, 200);
+  assert.equal(cleared.data.ok, true);
+  assert.equal(typeof cleared.data.session_id, "string");
+  assert.equal(cleared.data.status, "idle");
+  const snap = await s.get(`/api/agent/snapshot?projectRoot=${encodeURIComponent(s.h.projectRoot)}&afterSeq=0&limit=100`);
+  assert.equal(snap.data.session.session_id, cleared.data.session_id);
+  assert.equal(snap.data.events.length, 1, "清空后只剩新 session_created");
+});
+
+// ---------------------------------------------------------------------------
+// Task 9：压缩取消/重试路由 + /compact 排队契约 + snapshot tail HTTP 形状
+// ---------------------------------------------------------------------------
+
+// 压缩路由测试用最小 stub agent（submit 满足 createAgentRoutes 的注入校验），
+// 契约与错误映射聚焦在路由层；真实压缩状态机语义已由 Task 8 的
+// tests/agent/compaction.test.mjs 覆盖。
+function compactionStubAgent(overrides = {}) {
+  return {
+    submit: async () => ({ input_id: "in-1", run_id: "run-1", queued: false }),
+    cancelCompaction: async () => ({ status: "cancelled", compaction_id: "c-1" }),
+    retryCompaction: async () => ({ status: "completed", compaction_id: "c-1", attempt: 2 }),
+    ...overrides
+  };
+}
+
+function compactionHttpServer(t, agent) {
+  const router = createRouter();
+  return startHttpServer(t, {
+    router,
+    routeModules: [createAgentRoutes({ agent })]
+  });
+}
+
+test("Task 9 POST /api/agent/compaction/:id/cancel 返回 200 + { ok, compaction_id, cancelling }", async (t) => {
+  const server = await compactionHttpServer(t, compactionStubAgent());
+  const { res, data } = await server.post("/api/agent/compaction/c-1/cancel", { projectRoot: "D:\\any" });
+  assert.equal(res.status, 200);
+  assert.equal(data.ok, true);
+  assert.equal(data.compaction_id, "c-1");
+  assert.equal(data.cancelling, true, "取消请求被接受");
+});
+
+test("Task 9 POST /api/agent/compaction/:id/retry 返回 200 + { ok, compaction_id, retried }", async (t) => {
+  const server = await compactionHttpServer(t, compactionStubAgent());
+  const { res, data } = await server.post("/api/agent/compaction/c-1/retry", { projectRoot: "D:\\any" });
+  assert.equal(res.status, 200);
+  assert.equal(data.ok, true);
+  assert.equal(data.compaction_id, "c-1");
+  assert.equal(data.retried, true, "重试请求被接受");
+});
+
+test("Task 9 不存在的 compaction id → 404 compaction_not_found（cancel 与 retry）", async (t) => {
+  const agent = compactionStubAgent({
+    cancelCompaction: async () => {
+      const error = new Error("compaction ghost 不存在。");
+      error.code = "compaction_not_found";
+      throw error;
+    },
+    retryCompaction: async () => {
+      const error = new Error("compaction ghost 不存在。");
+      error.code = "compaction_not_found";
+      throw error;
+    }
+  });
+  const server = await compactionHttpServer(t, agent);
+  const cancel = await server.post("/api/agent/compaction/ghost/cancel", { projectRoot: "D:\\any" });
+  assert.equal(cancel.res.status, 404);
+  assert.equal(cancel.data.ok, false);
+  assert.equal(cancel.data.code, "compaction_not_found");
+  const retry = await server.post("/api/agent/compaction/ghost/retry", { projectRoot: "D:\\any" });
+  assert.equal(retry.res.status, 404);
+  assert.equal(retry.data.ok, false);
+  assert.equal(retry.data.code, "compaction_not_found");
+});
+
+test("Task 9 压缩状态冲突（重试已终结/进行中/无 Run）→ 409", async (t) => {
+  const agent = compactionStubAgent({
+    retryCompaction: async () => {
+      const error = new Error("压缩已完成，无法重试。");
+      error.code = "compaction_not_retryable";
+      throw error;
+    }
+  });
+  const server = await compactionHttpServer(t, agent);
+  const retry = await server.post("/api/agent/compaction/c-1/retry", { projectRoot: "D:\\any" });
+  assert.equal(retry.res.status, 409);
+  assert.equal(retry.data.ok, false);
+  assert.equal(retry.data.code, "compaction_not_retryable");
+});
+
+test("Task 9 压缩领域错误码在白名单内：特定中文文案透传（M2 修复）", async (t) => {
+  // 回归：五个压缩 code 曾经不在 SAFE_PUBLIC_ERROR_CODES 白名单内，message 一律被
+  // 收敛为通用文案，「压缩任务不存在」等可读原因永远到不了用户。白名单放行后
+  // 固定文案必须原样透传。
+  const cases = [
+    { code: "invalid_compaction_id", status: 400, message: "压缩任务标识无效。" },
+    { code: "compaction_not_found", status: 404, message: "压缩任务不存在或已结束。" },
+    { code: "compaction_not_retryable", status: 409, message: "压缩已结束，无法重试。" },
+    { code: "compaction_in_flight", status: 409, message: "压缩正在进行中，无法重试。" },
+    { code: "compaction_no_run", status: 409, message: "当前没有可继续压缩的 Run。" }
+  ];
+  for (const { code, status, message } of cases) {
+    const agent = compactionStubAgent({
+      retryCompaction: async () => {
+        const error = new Error("占位：此文案会被路由映射替换");
+        error.code = code;
+        throw error;
+      }
+    });
+    const server = await compactionHttpServer(t, agent);
+    const retry = await server.post("/api/agent/compaction/c-1/retry", { projectRoot: "D:ny" });
+    assert.equal(retry.res.status, status, `${code} 状态码`);
+    assert.equal(retry.data.ok, false);
+    assert.equal(retry.data.code, code);
+    assert.equal(retry.data.message, message, `${code} 特定文案必须透传（不得收敛为通用文案）`);
+  }
+});
+
+test("Task 9 取消/重试不泄漏底层错误文本（统一脱敏契约）", async (t) => {
+  const agent = compactionStubAgent({
+    cancelCompaction: async () => {
+      const error = new Error(
+        "ENOENT: no such file or directory, open 'C:\\Users\\test\\userData\\workspaces\\ws_x\\agent\\events.jsonl'"
+      );
+      error.code = "ENOENT";
+      throw error;
+    }
+  });
+  const server = await compactionHttpServer(t, agent);
+  const { res, data } = await server.post("/api/agent/compaction/c-1/cancel", {
+    projectRoot: "C:\\any\\folder"
+  });
+  assert.equal(res.status, 500);
+  assert.equal(data.ok, false);
+  assert.equal(data.code, "INTERNAL_ERROR");
+  assert.doesNotMatch(JSON.stringify(data), /ENOENT|node:fs|at\s+\w+|[A-Z]:\\.*userData/iu);
+});
+
+test("Task 9 运行中提交 /compact 返回 queued 而不是新 Run", async (t) => {
+  const s = await setupServer(t, {
+    gatewayScript: [
+      async () => {
+        await sleep(600);
+        return { text: "第一轮完成" };
+      },
+      { reply: { text: "排队任务完成" } }
+    ],
+    gatewayDelayMs: 0
+  });
+  const first = await s.post("/api/agent/input", { projectRoot: s.h.projectRoot, text: "任务一" });
+  assert.equal(first.data.status, "running");
+  const compact = await s.post("/api/agent/input", { projectRoot: s.h.projectRoot, text: "/compact" });
+  assert.equal(compact.res.status, 200);
+  assert.equal(compact.data.ok, true);
+  assert.equal(compact.data.status, "queued", "/compact 运行中应排队而不是新 Run");
+  assert.equal(compact.data.run_id, first.data.run_id, "排队沿用同一 Run id");
+  await waitForIdle(s.h.agent, s.h.projectRoot);
+  const events = await readEvents(s.h.agent, s.h.projectRoot);
+  assert.equal(eventsOfType(events, "run_started").length, 1, "/compact 排队不得创建新 Run");
+});
+
+test("Task 9 GET /api/agent/snapshot?tail=1 返回最新尾页", async (t) => {
+  const s = await setupServer(t);
+  await seedJournalEvents(s.h.agentRoot, s.h.projectRoot, { count: 500 });
+  await s.h.agent.open({ projectRoot: s.h.projectRoot });
+  const res = await s.get(
+    `/api/agent/snapshot?projectRoot=${encodeURIComponent(s.h.projectRoot)}&tail=1&limit=3`
+  );
+  assert.equal(res.res.status, 200);
+  assert.equal(res.data.ok, true);
+  assert.deepEqual(res.data.events.map((e) => e.seq), [498, 499, 500]);
+  assert.equal(res.data.has_more, true, "尾页之前还有更旧事件");
+  assert.equal(res.data.session.last_seq, 500);
 });

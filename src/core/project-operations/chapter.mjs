@@ -9,7 +9,7 @@
 //     确定性落盘。
 //   - 本模块不读写旧 agent_state 状态文件；章节位置与完成事实只由章节文件 +
 //     memory/chapter_index.json 推导（Rule 9）。
-//   - 不写 Agent journal（events.jsonl 归 runtime）；正式提交的领域事实写
+//   - 不写 Agent journal（journal 事件归 runtime 的 segments）；正式提交的领域事实写
 //     run_log.jsonl（event-log.mjs，计划 Rule 9）。run_log 追加属于事务边界内：
 //     失败会连同已写文件一起回滚（截断到先前大小，或删除新建的空文件）。
 //   - 磁盘格式与旧实现保持兼容：章节文件 chapters/NNN.ext、草稿 drafts/NNN.draft.ext、

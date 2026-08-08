@@ -20,11 +20,14 @@
 // 位于 Project Instructions 之后、Available Skills 之前；缺失时跳过不占位。
 //
 // 预算规则：
+//   - 预算窗口 = 唯一内部字段 effective_context_window（runtime 经 modelConfigOf
+//     传入，Task 2 起不再读项目手工 context_window，也没有 128000 默认路径）；
 //   - 预留 max(8192, context_window * 0.20) 给输出与工具参数；
 //   - Dynamic Context <= 可用输入预算 35%，History <= 55%，
 //     剩余 10% 给当前消息与协议开销（系统层 + 当前消息，不可裁剪，超限上报）；
-//   - 最近 12 个 user/assistant 轮次、当前消息、未闭合 tool-call 链与
-//     未解决 decision（protected 标记）不压缩；
+//   - History 不再静默丢最旧轮次（Task 6 删除 compressHistory 压缩路径）：超限
+//     只在上报 overflowTokens，是否压缩由 context-window.mjs 的发送前门禁决定；
+//     受保护最近 12 轮与结构化摘要由 Task 7 selectProtectedRecentTurns 处理；
 //   - hash：static_core/runtime/project_instructions/project_memory/workflow/dynamic
 //     独立计算。
 //
@@ -33,6 +36,7 @@
 // 正文位于 Runtime Policy 之后，不能扩大权限、伪造工具或覆盖安全规则）。
 
 import { sha256 } from "../fs-utils.mjs";
+import { DEFAULT_CONTEXT_WINDOW } from "../model/model-identity.mjs";
 
 // ---------------------------------------------------------------------------
 // 最终 Static Core（逐字复制，勿改）
@@ -202,10 +206,10 @@ export const RESERVED_OUTPUT_RATIO = 0.2;
 // 层预算比例：Dynamic Context 35%、History 55%，剩余 10% 给当前消息与协议开销
 export const DYNAMIC_CONTEXT_RATIO = 0.35;
 export const HISTORY_RATIO = 0.55;
-// 受保护的最近轮次数：最近 12 个 user/assistant 轮次不压缩
-export const PROTECTED_HISTORY_TURNS = 12;
-// modelConfig 未提供 context_window 时的默认值（与常见长上下文模型一致）
-export const DEFAULT_CONTEXT_WINDOW = 128000;
+// 预算窗口的唯一来源：runtime 经 modelConfigOf 传入 effective_context_window
+//（Task 2 起由模型 ID 尾标解析）。缺省回落模型身份默认 256k——不存在 128000
+// 默认路径，也不读取项目手工 context_window 字段。DEFAULT_CONTEXT_WINDOW 由
+// ../model/model-identity.mjs 导入（单一真相源）。
 
 // CJK 感知 token 估算：汉字/全角字符按 1 token，其余字符按 1/4 token
 // （估算启发式，确定性；中文小说的 prompt 以汉字为主）。
@@ -315,7 +319,7 @@ function truncateDynamicContext(items, capTokens) {
 }
 
 // ---------------------------------------------------------------------------
-// History：受保护窗口 + 预算压缩
+// History：合法性过滤 + 超限上报（Task 6 起不再预算压缩/静默丢轮次）
 // ---------------------------------------------------------------------------
 
 function historyMessageTokens(item) {
@@ -331,20 +335,6 @@ function historyMessageTokens(item) {
 
 function countTurns(items) {
   return items.reduce((n, item) => (item?.role === "user" || item?.role === "assistant" ? n + 1 : n), 0);
-}
-
-// 从尾部向前找受保护窗口起点：第 PROTECTED_HISTORY_TURNS 个 user/assistant
-// 轮次的第一个消息下标；不足 12 轮时返回 0。
-function findProtectedTailStart(items) {
-  let turns = 0;
-  for (let i = items.length - 1; i >= 0; i -= 1) {
-    const role = items[i]?.role;
-    if (role === "user" || role === "assistant") {
-      turns += 1;
-      if (turns >= PROTECTED_HISTORY_TURNS) return i;
-    }
-  }
-  return 0;
 }
 
 // 过滤游离 tool 消息：tool 结果消息必须属于最近一个 assistant 声明的 tool_calls
@@ -374,43 +364,26 @@ function dropOrphanToolMessages(items) {
   return kept;
 }
 
-// 预算压缩：总 token 未超 55% 上限时原样返回（仍过滤游离 tool 消息）；超限时
-// 丢弃受保护窗口之外的最旧轮次（最近 12 轮 + protected 标记的 decision 消息
-// 绝不压缩）；窗口自身仍超限时上报 overflowTokens，不裁剪受保护内容。
+// 历史规范化（Task 6）：只做合法性过滤与超限上报，不再静默丢最旧轮次。
+//   - 总 token 无论是否超过 History 预算都原样保留（dropOrphanToolMessages 仍
+//     过滤游离 tool 消息，保证消息链对 provider 合法）；
+//   - 超限只在 overflowTokens 上报，是否压缩由 context-window.mjs 的发送前门禁
+//     决定（estimateRequestUsage/shouldCompact）；受保护最近 12 轮与结构化摘要
+//     是 Task 7 selectProtectedRecentTurns 的职责，不在本模块。
 // 返回 { messages, droppedTurns, protectedTurns, tokens, overflowTokens }。
-function compressHistory(history, capTokens) {
+function normalizeHistory(history, capTokens) {
   const items = Array.isArray(history) ? history : [];
   if (items.length === 0) {
     return { messages: [], droppedTurns: 0, protectedTurns: 0, tokens: 0, overflowTokens: 0 };
   }
-  const totalTokens = items.reduce((sum, item) => sum + historyMessageTokens(item), 0);
-  if (totalTokens <= capTokens) {
-    const kept = dropOrphanToolMessages(items);
-    return {
-      messages: kept,
-      droppedTurns: 0,
-      protectedTurns: countTurns(kept),
-      tokens: kept.reduce((sum, item) => sum + historyMessageTokens(item), 0),
-      overflowTokens: 0
-    };
-  }
-
-  const tailStart = findProtectedTailStart(items);
-  const protectedSet = new Set();
-  for (let i = tailStart; i < items.length; i += 1) protectedSet.add(i);
-  items.forEach((item, i) => {
-    if (item?.protected === true) protectedSet.add(i);
-  });
-
-  const droppedTurns = countTurns(items.filter((_, i) => !protectedSet.has(i)));
-  const kept = dropOrphanToolMessages(items.filter((_, i) => protectedSet.has(i)));
-  const keptTokens = kept.reduce((sum, item) => sum + historyMessageTokens(item), 0);
+  const kept = dropOrphanToolMessages(items);
+  const tokens = kept.reduce((sum, item) => sum + historyMessageTokens(item), 0);
   return {
     messages: kept,
-    droppedTurns,
+    droppedTurns: 0,
     protectedTurns: countTurns(kept),
-    tokens: keptTokens,
-    overflowTokens: Math.max(0, keptTokens - capTokens)
+    tokens,
+    overflowTokens: Math.max(0, tokens - capTokens)
   };
 }
 
@@ -470,10 +443,13 @@ export function assemblePrompt({
     dynamic_hash: sha256(dynamicFullText)
   };
 
-  // 预算：预留输出/工具参数后，按 35%/55%/10% 分配
+  // 预算：预留输出/工具参数后，按 35%/55%/10% 分配。预算窗口 = 唯一内部字段
+  // effective_context_window（Task 2 起 runtime 经 modelConfigOf 传入）；缺省
+  // 回落模型身份默认 256k（model-identity 的 DEFAULT_CONTEXT_WINDOW），不再
+  // 读取项目手工 context_window、也没有 128000 默认路径。
   const contextWindow =
-    Number.isFinite(modelConfig?.context_window) && modelConfig.context_window > 0
-      ? Math.floor(modelConfig.context_window)
+    Number.isFinite(modelConfig?.effective_context_window) && modelConfig.effective_context_window > 0
+      ? Math.floor(modelConfig.effective_context_window)
       : DEFAULT_CONTEXT_WINDOW;
   const reservedForOutputTokens = Math.max(
     RESERVED_OUTPUT_FLOOR_TOKENS,
@@ -486,7 +462,7 @@ export function assemblePrompt({
   const protocolBudget = Math.max(0, availableInputTokens - dynamicBudget - historyBudget);
 
   const dynamic = truncateDynamicContext(dynamicItems, dynamicBudget);
-  const compressed = compressHistory(history, historyBudget);
+  const historyLayer = normalizeHistory(history, historyBudget);
   const currentTokens = estimateTokens(String(currentInput ?? ""));
   const systemTokens = estimateTokens(systemContent);
   const protocolTokens = systemTokens + currentTokens;
@@ -504,11 +480,11 @@ export function assemblePrompt({
         truncated: dynamic.truncated
       },
       history: {
-        usedTokens: compressed.tokens,
+        usedTokens: historyLayer.tokens,
         capTokens: historyBudget,
-        overflowTokens: compressed.overflowTokens,
-        droppedTurns: compressed.droppedTurns,
-        protectedTurns: compressed.protectedTurns
+        overflowTokens: historyLayer.overflowTokens,
+        droppedTurns: historyLayer.droppedTurns,
+        protectedTurns: historyLayer.protectedTurns
       },
       current: { usedTokens: currentTokens },
       protocol: {
@@ -522,7 +498,7 @@ export function assemblePrompt({
   const messages = [
     { role: "system", content: systemContent },
     ...(dynamic.text ? [{ role: "user", content: dynamic.text }] : []),
-    ...compressed.messages,
+    ...historyLayer.messages,
     { role: "user", content: String(currentInput ?? "") }
   ];
 

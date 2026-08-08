@@ -207,6 +207,38 @@ test("默认重试上限 5 次：网络错误耗尽后共 6 次调用", async ()
   assert.equal(calls, 6, "默认 retryMax=5：1 次初始 + 5 次重试");
 });
 
+test("逐请求不传 retryMax 时普通 complete() 仍按构造默认 retryMax=5 重试", async () => {
+  let calls = 0;
+  const adapter = {
+    async complete() {
+      calls += 1;
+      throw new ProviderTransportError("network down", { reason: "network" });
+    }
+  };
+  const gateway = makeGateway(adapter, { retryBaseDelayMs: 1, retryMaxDelayMs: 1 });
+  await assert.rejects(
+    () => gateway.complete(BASE_REQUEST),
+    (err) => err.code === "provider_transport_error" && err.reason === "network"
+  );
+  assert.equal(calls, 6, "未传 per-request retryMax：仍按构造默认 retryMax=5（1 次初始 + 5 次重试）");
+});
+
+test("逐请求 retryMax=0：瞬时网络错误只调用 adapter 一次", async () => {
+  let adapterCalls = 0;
+  const adapter = {
+    async complete() {
+      adapterCalls += 1;
+      throw new ProviderTransportError("network down", { reason: "network" });
+    }
+  };
+  const gateway = makeGateway(adapter);
+  await assert.rejects(
+    gateway.complete(BASE_REQUEST, { retryMax: 0 }),
+    /network/u
+  );
+  assert.equal(adapterCalls, 1);
+});
+
 test("重试耗尽后抛出原错误", async () => {
   let calls = 0;
   const adapter = {

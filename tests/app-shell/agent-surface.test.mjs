@@ -136,6 +136,13 @@ class MockElement {
       this._parent = null;
     }
   }
+  get parentElement() {
+    return this._parent;
+  }
+  contains(node) {
+    if (node === this) return true;
+    return this.children.some((child) => child instanceof MockElement && child.contains(node));
+  }
   setAttribute(name, value) {
     this._attrs[name] = String(value);
   }
@@ -198,6 +205,20 @@ before(() => {
     createElementNS: (_ns, tag) => new MockElement(tag),
     createTextNode: (text) => new TextNode(text),
     createDocumentFragment: () => new MockElement("fragment"),
+    // Task 11：圆环/composer 的 doc 级 pointerdown/keydown 监听（外部关闭/ESC）。
+    _listeners: new Map(),
+    addEventListener(type, handler) {
+      if (!this._listeners.has(type)) this._listeners.set(type, []);
+      this._listeners.get(type).push(handler);
+    },
+    removeEventListener(type, handler) {
+      const list = this._listeners.get(type) ?? [];
+      const index = list.indexOf(handler);
+      if (index >= 0) list.splice(index, 1);
+    },
+    _fire(type, ...args) {
+      for (const fn of this._listeners.get(type) ?? []) fn(...args);
+    }
   };
 });
 
@@ -300,6 +321,8 @@ function makeFakeApi(overrides = {}) {
     stop: async (runId) => { calls.push(["stop", runId]); return { ok: true }; },
     retry: async (runId) => { calls.push(["retry", runId]); return { ok: true }; },
     decide: async (decisionId, choice) => { calls.push(["decide", decisionId, choice]); return { ok: true }; },
+    retryCompaction: async (compactionId) => { calls.push(["retryCompaction", compactionId]); return { ok: true }; },
+    cancelCompaction: async (compactionId) => { calls.push(["cancelCompaction", compactionId]); return { ok: true, status: "cancelled" }; },
     fetchSnapshot: async () => { calls.push(["fetchSnapshot"]); return null; },
     connectEvents: () => { calls.push(["connectEvents"]); },
     destroy: () => { calls.push(["destroy"]); },
@@ -348,8 +371,8 @@ test("首次快照以服务端 session 为准，早期事件不能把终态回�
   assert.equal(authoritative.active_run.status, "completed");
 });
 
-test("首次打开长会话会分页补齐事件后再渲染", async () => {
-  const afterSeqs = [];
+test("首次打开：openProject 以 tail 语义拉取尾部 200 条并渲染，不再分页补齐全量", async () => {
+  const opts = [];
   const finalSession = session({
     status: "idle",
     last_seq: 3,
@@ -357,22 +380,21 @@ test("首次打开长会话会分页补齐事件后再渲染", async () => {
   });
   const { root, surface } = await makeSurface({
     apiOverrides: {
-      fetchSnapshot: async ({ afterSeq }) => {
-        afterSeqs.push(afterSeq);
-        if (afterSeq === 0) {
+      fetchSnapshot: async (options) => {
+        opts.push(options);
+        if (options.tail) {
           return snapshotOf(finalSession, [
-            { ...ev("input_queued", { input_id: "in-1", text: "长会话消息", source: "chat" }), seq: 1 }
+            { ...ev("input_queued", { input_id: "in-1", text: "长会话消息", source: "chat" }), seq: 1 },
+            { ...ev("run_started", { workflow: "general", input_id: "in-1" }), seq: 2 },
+            { ...ev("run_completed", {}), seq: 3 }
           ]);
         }
-        return snapshotOf(finalSession, [
-          { ...ev("run_started", { workflow: "general", input_id: "in-1" }), seq: 2 },
-          { ...ev("run_completed"), seq: 3 }
-        ]);
+        return snapshotOf(finalSession, []);
       }
     }
   });
   await surface.openProject("D:\\novel");
-  assert.deepEqual(afterSeqs, [0, 1]);
+  assert.deepEqual(opts, [{ tail: true, limit: 200 }], "首次调用使用 tail 语义，不再分页补齐全量");
   assert.ok(root.textContent.includes("长会话消息"));
 });
 
@@ -523,7 +545,9 @@ test("输入斜杠显示命令补全，可用键盘选择但不会立即提交",
   const menu = root.querySelector('[data-testid="agent-slash-menu"]');
   assert.ok(menu, "输入 / 后应出现命令菜单");
   assert.equal(menu.hidden, false);
-  assert.equal(root.querySelectorAll('[data-testid="agent-slash-option"]').length, 4, "补全应为 /init /write /model /settings 四项");
+  assert.equal(root.querySelectorAll('[data-testid="agent-slash-option"]').length, 5, "补全应为 /init /write /compact /model /settings 五项");
+  assert.ok(menu.textContent.includes("/compact"), "/compact 应在补全列表中");
+  assert.ok(menu.textContent.includes("压缩当前上下文"), "/compact 带中文标签");
 
   input.value = "/se";
   input._fire("input");
@@ -802,16 +826,16 @@ test("/settings 与 /model 精确输入：调用设置导航回调，不 POST Ag
   assert.equal(api.calls.filter((c) => c[0] === "submit").length, 0, "不得 POST Agent 输入");
 });
 
-test("/init、/review、/write 是普通 Agent 输入", async () => {
+test("/init、/review、/write、/compact 是普通 Agent 输入（/compact now 不带前缀判断）", async () => {
   const { root, api, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
   const input = root.querySelector('[data-testid="agent-composer-input"]');
-  for (const text of ["/init 了解我的项目", "/review", "/write 第三章"]) {
+  for (const text of ["/init 了解我的项目", "/review", "/write 第三章", "/compact", "/compact now"]) {
     input.value = text;
     root.querySelector('[data-testid="agent-send"]')._fire("click");
   }
   assert.deepEqual(api.calls.filter((c) => c[0] === "submit").map((c) => c[1]), [
-    "/init 了解我的项目", "/review", "/write 第三章"
+    "/init 了解我的项目", "/review", "/write 第三章", "/compact", "/compact now"
   ]);
 });
 
@@ -2149,7 +2173,7 @@ test("transport: submit/promote/stop/retry/decide 使用正确端点、作用域
   });
 });
 
-test("transport: openProject 拉取带项目作用域的初始快照（afterSeq=0）", async () => {
+test("transport: openProject 拉取带项目作用域的初始快照（tail 尾页）", async () => {
   await withFetch((url) => {
     if (url.startsWith("/api/project/events")) return { ok: true, status: 200, body: neverStream() };
     return snapshotResponse(null);
@@ -2158,7 +2182,7 @@ test("transport: openProject 拉取带项目作用域的初始快照（afterSeq=
     await surface.openProject("D:\\novel");
     const snap = calls.find((c) => c.url.startsWith("/api/agent/snapshot?"));
     assert.ok(snap, "应请求 snapshot 端点");
-    assert.equal(snap.url, "/api/agent/snapshot?projectRoot=D%3A%5Cnovel&afterSeq=0&limit=200");
+    assert.equal(snap.url, "/api/agent/snapshot?projectRoot=D%3A%5Cnovel&tail=1&limit=200");
     surface.destroy();
   });
 });
@@ -2274,8 +2298,8 @@ test("transport: SSE 断线补齐（onReconnect 快照）后事件连续无缺�
       };
     }
     if (url.startsWith("/api/agent/snapshot")) {
-      // 初始快照（afterSeq=0）为空；断线补齐（afterSeq=1）返回 seq2-3
-      if (url.includes("afterSeq=0")) return snapshotResponse(null);
+      // 初始快照（tail 尾页）为空；断线补齐（afterSeq=1）返回 seq2-3
+      if (url.includes("tail=1")) return snapshotResponse(null);
       return jsonResponse({
         ok: true,
         session: null,
@@ -2737,4 +2761,948 @@ test("transport: composer 选项读取与切换使用正确端点、作用域与
       });
       surface.destroy();
     });
+});
+
+// ===========================================================================
+// Task 9：历史生命周期与压缩取消/重试 API
+// ===========================================================================
+// 按依赖规则 B（tests/architecture/dependency-rules.test.mjs），AgentSurface
+// 只能经 src/app-shell/agent/index.js 暴露，测试不得直接 import api.js；因此
+// 传输层经 surface 公共 seam 验证（fake transport 断言委托/状态行为 + 真实
+// transport 断言端点/body/非 JSON 文本）。cancelCompaction/retryCompaction 尚无
+// surface 入口（Task 12 的 handleEscape 接线），其 URL/body 契约由
+// tests/http/agent-routes.test.mjs 的路径断言固定。
+
+test("surface: exportHistory 只委托 transport，不改本地状态", async () => {
+  const { api, surface } = await makeSurface({
+    apiOverrides: {
+      exportHistory: async () => {
+        api.calls.push(["exportHistory"]);
+        return { text: "line1\nline2\n", status: 200 };
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+  const result = await surface.exportHistory();
+  assert.deepEqual(api.calls.at(-1), ["exportHistory"]);
+  assert.equal(result.text, "line1\nline2\n");
+});
+
+test("surface: exportHistory 真实 transport 返回 NDJSON 原文（不按 JSON 解析）", async () => {
+  const ndjson = '{"stream":"event","record":{}}\n{"stream":"transcript","record":{}}\n';
+  await withFetch((url, options) => {
+    if (url.startsWith("/api/project/events")) return { ok: true, status: 200, body: neverStream() };
+    if (url.startsWith("/api/agent/history/export")) {
+      assert.equal(options.method, "POST");
+      return { ok: true, status: 200, text: async () => ndjson };
+    }
+    if (url.startsWith("/api/agent/snapshot")) return snapshotResponse(null);
+    return jsonResponse({ ok: true });
+  }, async (calls) => {
+    const { surface } = await makeSurface({ useRealTransport: true });
+    await surface.openProject("D:\\novel");
+    const result = await surface.exportHistory();
+    const exportCall = calls.find((c) => String(c.url) === "/api/agent/history/export");
+    assert.ok(exportCall, "应调用 history/export 端点");
+    assert.deepEqual(JSON.parse(exportCall.options.body), { projectRoot: "D:\\novel" });
+    assert.equal(result.text, ndjson, "应原样返回 NDJSON 文本，而不是 JSON 解析结果");
+    assert.equal(result.status, 200);
+    surface.destroy();
+  });
+});
+
+test("surface: clearHistory 成功后重置投影并重开当前项目（clear-reconnect）", async () => {
+  const { root, api, surface } = await makeSurface({
+    apiOverrides: {
+      clearHistory: async (options) => {
+        api.calls.push(["clearHistory", options]);
+        return { ok: true, session_id: "sess-new", status: "idle", generation_id: "g2" };
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+  surface.applyEvent(ev("input_queued", { input_id: "in-1", text: "旧会话消息", source: "chat" }));
+  assert.ok(root.textContent.includes("旧会话消息"));
+
+  const result = await surface.clearHistory({ confirm_irreversible: true });
+  assert.deepEqual(api.calls.filter((c) => c[0] === "clearHistory"), [
+    ["clearHistory", { confirm_irreversible: true }]
+  ]);
+  assert.equal(result.session_id, "sess-new", "清空结果透传给调用方");
+  assert.equal(api.calls.filter((c) => c[0] === "openProject").length, 2, "清空后重新打开项目（重连）");
+  assert.equal(api.calls.filter((c) => c[0] === "connectEvents").length, 2, "清空后重建 SSE 连接");
+  assert.doesNotMatch(root.textContent, /旧会话消息/u, "清空后旧消息不得残留");
+});
+
+test("surface: clearHistory 失败（409 history_busy）保留状态并向调用方抛错", async () => {
+  const { root, api, surface } = await makeSurface({
+    apiOverrides: {
+      clearHistory: async () => {
+        api.calls.push(["clearHistory"]);
+        const error = new Error("Agent 正在运行，无法清空历史。");
+        error.code = "history_busy";
+        error.status = 409;
+        throw error;
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+  surface.applyEvent(ev("input_queued", { input_id: "in-1", text: "保留消息", source: "chat" }));
+  await assert.rejects(
+    surface.clearHistory({ confirm_irreversible: true }),
+    (error) => error.code === "history_busy"
+  );
+  assert.ok(root.textContent.includes("保留消息"), "失败后消息保留");
+  assert.equal(api.calls.filter((c) => c[0] === "openProject").length, 1, "失败不重开项目");
+});
+
+test("transport surface: clearHistory 终止旧 SSE 并按新 session 重连（真实 transport）", async () => {
+  let eventsFetches = 0;
+  await withFetch((url) => {
+    if (url.startsWith("/api/project/events")) {
+      eventsFetches += 1;
+      return { ok: true, status: 200, body: neverStream() };
+    }
+    if (url.startsWith("/api/agent/history/clear")) {
+      return jsonResponse({ ok: true, session_id: "sess-new", status: "idle", generation_id: "g2" });
+    }
+    if (url.startsWith("/api/agent/snapshot")) {
+      return jsonResponse({
+        ok: true,
+        session: session({ session_id: "sess-new" }),
+        events: [],
+        gaps: [],
+        has_more: false
+      });
+    }
+    return jsonResponse({ ok: true });
+  }, async (calls) => {
+    const { surface } = await makeSurface({ useRealTransport: true });
+    await surface.openProject("D:\\novel");
+    await surface.clearHistory({ confirm_irreversible: true });
+    const clear = calls.find((c) => String(c.url) === "/api/agent/history/clear");
+    assert.ok(clear, "应调用 history/clear 端点");
+    assert.deepEqual(JSON.parse(clear.options.body), {
+      projectRoot: "D:\\novel",
+      confirm_irreversible: true
+    });
+    const snaps = calls.filter((c) => String(c.url).startsWith("/api/agent/snapshot?"));
+    assert.ok(snaps.length >= 2, "初始 + 清空后各拉一次快照");
+    assert.ok(eventsFetches >= 2, "清空后重建 SSE（旧连接被 transport.openProject 终止）");
+    surface.destroy();
+  });
+});
+
+// ===========================================================================
+// Task 13：AgentSurface 公开 seam——Task 9 的历史生命周期方法始终可用
+// ===========================================================================
+
+test("surface: 未打开项目时 exportHistory/clearHistory 不抛错（公开 seam 方法）", async () => {
+  const { api, surface } = await makeSurface();
+  assert.equal(typeof surface.exportHistory, "function", "surface 应始终暴露 exportHistory");
+  assert.equal(typeof surface.clearHistory, "function", "surface 应始终暴露 clearHistory");
+  const exported = await surface.exportHistory();
+  const cleared = await surface.clearHistory({ confirm_irreversible: true });
+  assert.equal(exported, null, "无 transport 实现时导出返回 null");
+  assert.equal(cleared, undefined, "无项目时清空返回 undefined（不发起请求）");
+  assert.ok(!api.calls.some((c) => c[0] === "exportHistory" || c[0] === "clearHistory"),
+    "未打开项目不得向 transport 发起历史请求");
+});
+
+// ===========================================================================
+// Task 10：尾部首屏、前置分页与稳定时间线 key（brief Step 1-4 契约）
+// ===========================================================================
+
+const T10_T0 = "2026-08-06T00:00:00.000Z";
+
+// 生成连续历史事件（seq 1..count）：单个 Run 内多轮「思考→工具→答复」。
+// 每轮 6 个事件：model_turn_started / reasoning_completed / model_turn_completed /
+// tool_call_started / tool_call_completed / assistant_message_completed。
+function generateTurnHistory(count, { sessionId = "sess-test", runId = "run-1" } = {}) {
+  const events = [];
+  const push = (seq, type, payload, extra = {}) => {
+    events.push({ seq, event_id: `evt-${seq}`, session_id: sessionId, run_id: runId, type, payload, at: T10_T0, ...extra });
+  };
+  push(1, "session_created", {});
+  push(2, "input_queued", { input_id: "in-1", text: "继续", source: "chat" });
+  push(3, "run_started", { workflow: "general", input_id: "in-1" });
+  let seq = 4;
+  let turn = 1;
+  while (seq <= count) {
+    const pad = (type, payload, extra = {}) => {
+      if (seq <= count) push(seq, type, payload, extra);
+      seq += 1;
+    };
+    pad("model_turn_started", { turn_id: `turn-${turn}`, input_id: "in-1", reasoning_capability: "supported" });
+    pad("reasoning_completed", { turn_id: `turn-${turn}`, input_id: "in-1", text: "", availability: "empty" });
+    pad("model_turn_completed", { turn_id: `turn-${turn}`, input_id: "in-1", outcome: "completed" });
+    pad("tool_call_started", { tool_call_id: `tc-${turn}`, activity_id: `act-${turn}`, name: "list_files", args: { path: "D:\\novel" }, action: null });
+    pad("tool_call_completed", { tool_call_id: `tc-${turn}`, activity_id: `act-${turn}`, name: "list_files", exit_code: 0, duration_ms: 5 });
+    pad("assistant_message_completed", { input_id: "in-1", text: `第 ${turn} 轮答复` });
+    turn += 1;
+  }
+  return events;
+}
+
+test("Task 10 首屏：openProject 以 tail 拉取最后 200 条；滚动到顶触发 beforeSeq 前置页且锚点不跳动", async () => {
+  const allEvents = generateTurnHistory(1000); // seq 1..1000
+  const tailEvents = allEvents.filter((e) => e.seq >= 801);
+  const frontEvents = allEvents.filter((e) => e.seq >= 601 && e.seq <= 800);
+  const apiCalls = [];
+  let conv = null; // 前置页 stub 用它模拟「插入后内容高度增加」
+  const { root, surface } = await makeSurface({
+    apiOverrides: {
+      fetchSnapshot: async (opts) => {
+        apiCalls.push(["snapshot", opts]);
+        if (opts.tail) {
+          return {
+            ok: true,
+            session: session({ status: "running", last_seq: 1000, active_run: activeRun({ status: "running" }) }),
+            events: tailEvents,
+            gaps: [],
+            has_more: true
+          };
+        }
+        if (opts.beforeSeq === 801) {
+          conv.scrollHeight += 400; // 模拟前置页插入后的内容高度增量
+          return { ok: true, session: null, events: frontEvents, gaps: [], has_more: true };
+        }
+        return { ok: true, session: null, events: [], gaps: [], has_more: false };
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+
+  assert.deepEqual(apiCalls[0], ["snapshot", { tail: true, limit: 200 }], "首次调用必须是 tail 语义（不再分页补齐全量）");
+  const keys = [...root.querySelectorAll("[data-event-key]")].map((el) => el.dataset.eventKey);
+  assert.equal(keys.length, new Set(keys).size, "尾部页节点 event key 无重复");
+  assert.ok(keys.length > 0, "尾部页应渲染消息/活动/工作组节点");
+
+  // 滚动到顶 → 前置页；插入前记录 oldHeight/oldTop，插入后按差恢复 scrollTop（不跳动）
+  conv = root.querySelector('[data-testid="agent-conversation"]');
+  conv.scrollHeight = 600;
+  conv.clientHeight = 200;
+  conv.scrollTop = 0;
+  const heightBefore = conv.scrollHeight;
+  const topBefore = conv.scrollTop;
+  conv._fire("scroll");
+  await tick();
+  await tick();
+
+  assert.deepEqual(apiCalls.at(-1), ["snapshot", { beforeSeq: 801, limit: 200 }], "滚动到顶应触发 beforeSeq 前置页");
+  const keysAfter = [...root.querySelectorAll("[data-event-key]")].map((el) => el.dataset.eventKey);
+  assert.equal(keysAfter.length, new Set(keysAfter).size, "前置页合并后 event key 仍无重复");
+  assert.ok(keysAfter.length > keys.length, "前置页应追加更早的消息节点");
+  assert.equal(
+    conv.scrollTop,
+    topBefore + (conv.scrollHeight - heightBefore),
+    "前置插入后按 oldHeight→newHeight 差恢复 scrollTop，原消息锚点不跳动"
+  );
+});
+
+test("Task 10 去重：重复同一 seq 的 SSE 与重复前置页不重复生成消息", async () => {
+  const allEvents = generateTurnHistory(400); // seq 1..400
+  const tailEvents = allEvents.filter((e) => e.seq >= 201);
+  const frontEvents = allEvents.filter((e) => e.seq >= 101 && e.seq <= 200);
+  const apiCalls = [];
+  const { root, surface } = await makeSurface({
+    apiOverrides: {
+      fetchSnapshot: async (opts) => {
+        apiCalls.push(["snapshot", opts]);
+        if (opts.tail) {
+          return {
+            ok: true,
+            session: session({ status: "running", last_seq: 400, active_run: activeRun({ status: "running" }) }),
+            events: tailEvents,
+            gaps: [],
+            has_more: true
+          };
+        }
+        if (opts.beforeSeq === 201) {
+          return { ok: true, session: null, events: frontEvents, gaps: [], has_more: true };
+        }
+        return { ok: true, session: null, events: [], gaps: [], has_more: false };
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+  const countKeys = () => [...root.querySelectorAll("[data-event-key]")].map((el) => el.dataset.eventKey);
+  const afterTail = countKeys();
+  assert.ok(afterTail.length > 0);
+
+  // 重复 SSE：同一 seq 的同一事件再次推送 → 不新增节点
+  surface.applyEvent({ ...tailEvents.at(-1) });
+  assert.deepEqual(countKeys(), afterTail, "重复同一 seq 的 SSE 不得重复生成消息");
+
+  // 滚动到顶 → 前置页
+  const conv = root.querySelector('[data-testid="agent-conversation"]');
+  conv.scrollHeight = 400;
+  conv.clientHeight = 200;
+  conv.scrollTop = 0;
+  conv._fire("scroll");
+  await tick();
+  await tick();
+  const afterFront = countKeys();
+  assert.ok(afterFront.length > afterTail.length, "前置页应追加更早消息");
+  assert.equal(afterFront.length, new Set(afterFront).size, "前置页与尾页合并后 key 无重复");
+
+  // 重复前置页（同一页再次 applySnapshot）：merge 去重，不新增节点
+  surface.applySnapshot({ ok: true, session: null, events: frontEvents, gaps: [], has_more: true });
+  assert.deepEqual(countKeys(), afterFront, "重复前置页不得重复生成消息");
+});
+
+test("Task 10 跨页链：尾页先显示 completed 占位，前置页合并后定位到 started seq 且不倒退为 running", async () => {
+  const mk = (seq, type, payload, extra = {}) => ({
+    seq, event_id: `evt-${seq}`, session_id: "sess-test", run_id: "run-1", type, payload, at: T10_T0, ...extra
+  });
+  // 尾页：只有 tool_call_completed（started 在前置页才加载）
+  const tailEvents = [
+    mk(801, "history_compacted", { reason: "seed", compacted_at: T10_T0, message_count: 1 }),
+    mk(802, "tool_call_completed", { tool_call_id: "tc-1", activity_id: "act-1", name: "list_files", exit_code: 0, duration_ms: 12 }),
+    mk(803, "assistant_message_completed", { input_id: "in-1", text: "这是默认可见的最终答案。" }),
+    mk(804, "run_completed", {})
+  ];
+  const frontEvents = [
+    mk(601, "run_started", { workflow: "general", input_id: "in-1" }),
+    mk(602, "model_turn_started", { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }),
+    mk(603, "reasoning_completed", { turn_id: "turn-1", input_id: "in-1", text: "", availability: "empty" }),
+    mk(604, "model_turn_completed", { turn_id: "turn-1", input_id: "in-1", outcome: "completed" }),
+    mk(700, "tool_call_started", { tool_call_id: "tc-1", activity_id: "act-1", name: "list_files", args: { path: "D:\\novel" }, action: null })
+  ];
+  const apiCalls = [];
+  const { root, surface } = await makeSurface({
+    apiOverrides: {
+      fetchSnapshot: async (opts) => {
+        apiCalls.push(["snapshot", opts]);
+        if (opts.tail) {
+          return {
+            ok: true,
+            session: session({ status: "idle", last_seq: 804, active_run: activeRun({ status: "completed", active_input_id: null }) }),
+            events: tailEvents,
+            gaps: [],
+            has_more: true
+          };
+        }
+        if (opts.beforeSeq === 801) {
+          return { ok: true, session: null, events: frontEvents, gaps: [], has_more: false };
+        }
+        return { ok: true, session: null, events: [], gaps: [], has_more: false };
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+
+  // 尾页阶段：completed 占位行已可见（started 尚未加载），正文默认可见
+  const toolRow = root.querySelector('[data-activity-id="act-1"]');
+  assert.ok(toolRow, "尾页应渲染 completed 占位活动行");
+  assert.equal(toolRow.dataset.state, "completed", "占位行保持终态 completed");
+  assert.match(
+    root.querySelector('[data-testid="agent-assistant-message"]')?.textContent ?? "",
+    /默认可见的最终答案/u,
+    "尾页正文默认可见"
+  );
+
+  // 前置页合并后：工具行定位到 started seq（700），保持 completed，不倒退为 running
+  const conv = root.querySelector('[data-testid="agent-conversation"]');
+  conv.scrollHeight = 400;
+  conv.clientHeight = 200;
+  conv.scrollTop = 0;
+  conv._fire("scroll");
+  await tick();
+  await tick();
+
+  assert.deepEqual(apiCalls.at(-1), ["snapshot", { beforeSeq: 801, limit: 200 }]);
+  const rowAfter = root.querySelector('[data-activity-id="act-1"]');
+  assert.ok(rowAfter, "前置页合并后工具行仍存在");
+  assert.equal(rowAfter.dataset.seq, "700", "工具行定位到 started seq");
+  assert.equal(rowAfter.dataset.state, "completed", "终态保持 completed，不得倒退为 running");
+  const assistantAfter = root.querySelector('[data-testid="agent-assistant-message"]');
+  const timelineIndex = (el) => el._parent.children.indexOf(el);
+  assert.ok(timelineIndex(rowAfter) < timelineIndex(assistantAfter), "工具活动行仍位于助手正文之前");
+  const group = root.querySelector(".agent-work-group");
+  assert.ok(group, "前置页合并后应渲染工作组");
+  assert.equal(group.querySelector('[data-kind="tool"]')?.dataset.state, "completed", "工作组 tool 项保持完成态");
+});
+
+test("Task 10 SSE 游标：tail 快照推进 lastSeq，connectEvents 从已加载最大 seq 续流；乱序走重建、递增走增量", async () => {
+  // 真实 transport（withFetch stub）：断言 openProject 后事件流 URL 的 afterSeq
+  // 等于已加载尾页最大 seq（而非 0 从头重放全量）。
+  const allEvents = generateTurnHistory(250); // seq 1..250
+  const tailEvents = allEvents.filter((e) => e.seq >= 51); // 尾页 200 条，seq 51..250
+  await withFetch((url) => {
+    if (url.startsWith("/api/project/events")) return { ok: true, status: 200, body: neverStream() };
+    if (url.startsWith("/api/agent/snapshot")) {
+      return jsonResponse({
+        ok: true,
+        session: session({ status: "running", last_seq: 250, active_run: activeRun({ status: "running" }) }),
+        events: tailEvents,
+        gaps: [],
+        has_more: true
+      });
+    }
+    if (url.startsWith("/api/settings/models")) return jsonResponse({ ok: true, models: [] });
+    if (url.startsWith("/api/dashboard")) {
+      return jsonResponse({ ok: true, hasProject: true, project: {}, config: { effective: {} } });
+    }
+    return jsonResponse({ ok: true });
+  }, async (calls) => {
+    const { root, surface } = await makeSurface({ useRealTransport: true });
+    await surface.openProject("D:\\novel");
+    await waitUntil(() => calls.some((c) => String(c.url).startsWith("/api/project/events?")));
+    const eventsUrl = calls.find((c) => String(c.url).startsWith("/api/project/events?"));
+    assert.match(
+      String(eventsUrl.url),
+      /afterSeq=250/,
+      "SSE 应从已加载最大 seq 续流（lastSeq 已由 tail 快照推进），不得 afterSeq=0 重放全量"
+    );
+
+    // 严格递增事件：增量 fast path，正常渲染
+    const countBefore = root.querySelectorAll("[data-event-key]").length;
+    surface.applyEvent({
+      seq: 251, event_id: "e251", session_id: "sess-test", run_id: "run-1",
+      type: "input_queued", payload: { input_id: "in-new", text: "递增消息" }, at: T10_T0
+    });
+    assert.ok(
+      root.querySelectorAll("[data-event-key]").length > countBefore,
+      "严格递增事件应进入增量路径并渲染"
+    );
+
+    // 乱序新事件（seq < lastSeq）：全集重建，消息按 seq 前置、不重复、不丢旧消息
+    surface.applyEvent({
+      seq: 30, event_id: "e30", session_id: "sess-test", run_id: "run-1",
+      type: "input_queued", payload: { input_id: "in-old", text: "乱序旧消息" }, at: T10_T0
+    });
+    const keys = [...root.querySelectorAll("[data-event-key]")].map((el) => el.dataset.eventKey);
+    assert.equal(keys.length, new Set(keys).size, "重建后 event key 仍无重复");
+    const oldBubble = [...root.querySelectorAll('[data-testid="agent-user-message"]')]
+      .find((el) => el.textContent.includes("乱序旧消息"));
+    const incrBubble = [...root.querySelectorAll('[data-testid="agent-user-message"]')]
+      .find((el) => el.textContent.includes("递增消息"));
+    assert.ok(oldBubble && incrBubble, "乱序与递增事件都渲染且互不丢失");
+    const timelineIndex = (el) => el._parent.children.indexOf(el);
+    assert.ok(timelineIndex(oldBubble) < timelineIndex(incrBubble), "乱序旧消息按 seq 位于递增新消息之前");
+    surface.destroy();
+  });
+});
+
+// ===========================================================================
+// Task 11：上下文圆环、压缩状态行与发送门禁
+// ===========================================================================
+
+test("项目打开后上下文圆环始终存在；未装配时 popover 显示「计算中」而不是假 0", async () => {
+  const { root, surface } = await makeSurface();
+  assert.equal(root.querySelector('[data-testid="agent-composer"]').hidden, true, "未打开项目时 composer 隐藏（圆环随 composer 不可见）");
+  await surface.openProject("D:\novel");
+  const ring = root.querySelector('[data-testid="agent-context-ring"]');
+  assert.ok(ring, "项目打开后圆环始终存在（不只在运行/超阈值时）");
+  const popover = root.querySelector('[data-testid="agent-context-popover"]');
+  assert.ok(popover, "popover 应存在");
+  ring._fire("click");
+  assert.equal(popover.dataset.open, "true");
+  assert.match(popover.textContent, /计算中|待校准/u, "未装配显示计算中");
+  assert.doesNotMatch(popover.textContent, /0\s*(?:tokens|%)|0%/u, "计算中绝不显示假 0");
+});
+
+test("context_usage_updated 后 popover 显示已用 tokens、窗口、百分比与窗口来源", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  surface.applyEvent(ev("context_usage_updated", {
+    usage: {
+      status: "ready", used_tokens: 163840, raw_tokens: 150000,
+      effective_context_window: 256000, compaction_threshold: 204800,
+      ratio: 0.64, window_source: "default_256k", estimator: "local",
+      approximate: true, model: "deepseek-chat",
+      updated_at: "2026-08-08T00:00:00.000Z"
+    }
+  }));
+  const ring = root.querySelector('[data-testid="agent-context-ring"]');
+  ring._fire("click");
+  const popover = root.querySelector('[data-testid="agent-context-popover"]');
+  assert.match(popover.textContent, /约.*163,840|163,840/u, "应显示已用 tokens（约 + 千分位）");
+  assert.match(popover.textContent, /256,000/u, "应显示窗口大小");
+  assert.match(popover.textContent, /64%/u, "应显示百分比");
+  assert.match(popover.textContent, /256k|1M/u, "应显示窗口来源");
+});
+
+test("popover 点击固定、再次点击/外部点击/ESC 关闭", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  const ring = root.querySelector('[data-testid="agent-context-ring"]');
+  const popover = root.querySelector('[data-testid="agent-context-popover"]');
+  ring._fire("click");
+  assert.equal(popover.dataset.open, "true");
+  assert.equal(ring.dataset.pinned, "true", "点击固定");
+  ring._fire("click");
+  assert.equal(popover.dataset.open, "false", "再次点击关闭");
+  ring._fire("click");
+  globalThis.document._fire("pointerdown", { target: root });
+  assert.equal(popover.dataset.open, "false", "外部点击关闭");
+  // Task 12：ESC 经 surface 统一路由（dismissTopLayer）关闭，圆环自身不再
+  // 挂 document-level keydown，避免与全局路由重复执行。
+  ring._fire("click");
+  const unwire = wireEscRoute(surface);
+  try {
+    const event = fireEsc();
+    assert.equal(popover.dataset.open, "false", "ESC 关闭（经 surface.handleEscape 统一路由）");
+    assert.equal(event.defaultPrevented, true);
+  } finally {
+    unwire();
+  }
+});
+
+test("压缩状态行：同一 compaction_id 单行顶替 开始压缩→压缩进行中→已压缩完成", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-1", trigger: "automatic" }));
+  let row = root.querySelector('[data-testid="agent-compaction-row"]');
+  assert.ok(row, "started 后出现压缩状态行");
+  assert.equal(row.textContent, "开始压缩");
+  surface.applyEvent(ev("context_compaction_running", { compaction_id: "c-1" }));
+  row = root.querySelector('[data-testid="agent-compaction-row"]');
+  assert.equal(row.textContent, "压缩进行中");
+  assert.ok(row.parentElement.querySelector('[data-testid="agent-compaction-cancel"]'), "running 显示取消按钮");
+  surface.applyEvent(ev("context_compaction_completed", { compaction_id: "c-1", checkpoint_id: "cp-1" }));
+  row = root.querySelector('[data-testid="agent-compaction-row"]');
+  assert.equal(row.textContent, "已压缩完成");
+  assert.equal(root.querySelectorAll('[data-testid="agent-compaction-row"]').length, 1, "同一 compaction_id 只有一行");
+  assert.equal(row.parentElement.querySelector('[data-testid="agent-compaction-cancel"]'), null, "完成后移除按钮");
+  assert.doesNotMatch(row.textContent, /token|模型|耗时|\d+\s*ms/u, "完成文案不显示 token/模型/耗时");
+});
+
+test("压缩失败：状态行「压缩失败」+ 重试/取消按钮，发送禁用直到用户操作", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  const send = root.querySelector('[data-testid="agent-send"]');
+  assert.equal(send.disabled, false, "无压缩时发送可用");
+  surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-2", trigger: "automatic" }));
+  surface.applyEvent(ev("context_compaction_running", { compaction_id: "c-2" }));
+  assert.equal(send.disabled, true, "压缩进行中发送禁用");
+  surface.applyEvent(ev("context_compaction_failed", { compaction_id: "c-2", error_code: "model_error" }));
+  const row = root.querySelector('[data-testid="agent-compaction-row"]');
+  assert.equal(row.textContent, "压缩失败");
+  assert.ok(row.parentElement.querySelector('[data-testid="agent-compaction-retry"]'), "失败显示重试按钮");
+  assert.ok(row.parentElement.querySelector('[data-testid="agent-compaction-cancel"]'), "失败显示取消按钮");
+  assert.equal(send.disabled, true, "失败后发送保持禁用（等待用户 重试/取消）");
+});
+
+test("压缩取消完成：发送恢复，draft 留在 textarea；无需压缩时发送正常", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  const send = root.querySelector('[data-testid="agent-send"]');
+  input.value = "保留的草稿";
+  surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-3", trigger: "automatic" }));
+  surface.applyEvent(ev("context_compaction_cancel_requested", { compaction_id: "c-3" }));
+  assert.equal(root.querySelector('[data-testid="agent-compaction-row"]').textContent, "正在取消");
+  assert.equal(send.disabled, true, "取消中发送禁用");
+  surface.applyEvent(ev("context_compaction_cancelled", { compaction_id: "c-3", cancel_reason: "user" }));
+  assert.equal(root.querySelector('[data-testid="agent-compaction-row"]').textContent, "已取消");
+  assert.equal(send.disabled, false, "取消完成后发送恢复");
+  assert.equal(input.value, "保留的草稿", "draft 留在 textarea，恢复后原样可发");
+  surface.applyEvent(ev("context_compaction_noop", { compaction_id: "c-4", trigger: "automatic" }));
+  const noopRow = [...root.querySelectorAll('[data-testid="agent-compaction-row"]')]
+    .find((el) => el.parentElement.dataset.compactionId === "c-4");
+  assert.equal(noopRow.textContent, "无需压缩");
+  assert.equal(root.querySelector('[data-testid="agent-send"]').disabled, false, "noop 不阻塞发送");
+});
+
+test("压缩行动作按钮调用 retryCompaction / cancelCompaction", async () => {
+  const { root, api, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-5", trigger: "automatic" }));
+  surface.applyEvent(ev("context_compaction_running", { compaction_id: "c-5" }));
+  surface.applyEvent(ev("context_compaction_failed", { compaction_id: "c-5", error_code: "model_error" }));
+  const row = root.querySelector('[data-testid="agent-compaction-row"]');
+  row.parentElement.querySelector('[data-testid="agent-compaction-retry"]')._fire("click");
+  row.parentElement.querySelector('[data-testid="agent-compaction-cancel"]')._fire("click");
+  const calls = api.calls.filter((c) => c[0] === "retryCompaction" || c[0] === "cancelCompaction");
+  assert.deepEqual(calls, [["retryCompaction", "c-5"], ["cancelCompaction", "c-5"]]);
+});
+
+test("不同 compaction_id 各行独立渲染，终态行保留在时间线", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-1", trigger: "automatic" }));
+  surface.applyEvent(ev("context_compaction_running", { compaction_id: "c-1" }));
+  surface.applyEvent(ev("context_compaction_completed", { compaction_id: "c-1", checkpoint_id: "cp-1" }));
+  surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-2", trigger: "manual" }));
+  surface.applyEvent(ev("context_compaction_running", { compaction_id: "c-2" }));
+  const rows = root.querySelectorAll('[data-testid="agent-compaction-row"]');
+  assert.equal(rows.length, 2, "两个 compaction_id 各一行");
+  assert.equal(rows[0].textContent, "已压缩完成", "c-1 终态行保留");
+  assert.equal(rows[1].textContent, "压缩进行中");
+});
+
+
+test("压缩投影与状态行在乱序全集重建后保持（增量 fast path 与 rebuild 一致）", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-1", trigger: "automatic" }));
+  surface.applyEvent(ev("context_compaction_running", { compaction_id: "c-1" }));
+  surface.applyEvent(ev("context_compaction_completed", { compaction_id: "c-1", checkpoint_id: "cp-1" }));
+  // 乱序旧事件（seq < lastSeq）触发按已加载全集重建
+  surface.applyEvent({ ...ev("input_queued", { input_id: "in-old", text: "旧消息", source: "chat" }), seq: 10 });
+  const row = root.querySelector('[data-testid="agent-compaction-row"]');
+  assert.equal(row.textContent, "已压缩完成", "重建后压缩行保持终态");
+  assert.equal(root.querySelector('[data-testid="agent-send"]').disabled, false, "重建后发送门禁状态正确");
+});
+
+test("圆环活性：仅运行中/压缩进行中加 agent-context-ring--active，终态移除", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  const ring = root.querySelector('[data-testid="agent-context-ring"]');
+  assert.equal(ring.classList.contains("agent-context-ring--active"), false, "空闲圆环无活性 class");
+  surface.applyEvent(ev("run_started", { workflow: "general", input_id: "in-1" }));
+  assert.equal(ring.classList.contains("agent-context-ring--active"), true, "运行中加活性 class");
+  surface.applyEvent(ev("run_completed", {}));
+  assert.equal(ring.classList.contains("agent-context-ring--active"), false, "运行终态移除活性 class");
+  surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-1", trigger: "automatic" }));
+  surface.applyEvent(ev("context_compaction_running", { compaction_id: "c-1" }));
+  assert.equal(ring.classList.contains("agent-context-ring--active"), true, "压缩进行中加活性 class");
+  surface.applyEvent(ev("context_compaction_completed", { compaction_id: "c-1", checkpoint_id: "cp-1" }));
+  assert.equal(ring.classList.contains("agent-context-ring--active"), false, "压缩终态移除活性 class");
+});
+
+test("reduced-motion 下圆环不加活性 class（无循环动画）", async () => {
+  const realWindow = globalThis.window;
+  globalThis.window = {
+    matchMedia: () => ({ matches: true, addEventListener() {}, removeEventListener() {} })
+  };
+  try {
+    const { root, surface } = await makeSurface();
+    await surface.openProject("D:\\novel");
+    surface.applyEvent(ev("run_started", { workflow: "general", input_id: "in-1" }));
+    const ring = root.querySelector('[data-testid="agent-context-ring"]');
+    assert.equal(ring.classList.contains("agent-context-ring--active"), false, "reduced-motion 下圆环保持静态");
+  } finally {
+    if (realWindow === undefined) delete globalThis.window;
+    else globalThis.window = realWindow;
+  }
+});
+
+test("Task 11 CSS：popover 过渡、压缩行、主题 token 与 reduced-motion 降级", async () => {
+  const css = await fs.readFile(path.join(here, "..", "..", "src", "app-shell", "agent", "agent.css"), "utf8");
+  // popover 进入/退出：120–180ms opacity + transform translateY(2px) scale(.98)
+  assert.match(
+    css,
+    /\.agent-context-popover\s*\{[^}]*transition:\s*[^}]*150ms[^}]*\}/u,
+    "popover 过渡应为 150ms（120–180ms 区间）"
+  );
+  assert.match(
+    css,
+    /transform:\s*translate\(-50%,\s*2px\)\s*scale\(\.98\)/u,
+    "popover 进入态 transform: translateY(2px) scale(.98)"
+  );
+  // 浅色/深色自适应：popover 背景由 theme token 驱动，无硬编码色值
+  assert.match(
+    css,
+    /\.agent-context-popover\s*\{[^}]*background:\s*color-mix\([^}]*var\(--agent-panel-solid\)[^}]*\}/u,
+    "popover 背景使用 theme token（浅色/深色自适应）"
+  );
+  assert.match(css, /\.agent-context-ring\s*\{[^}]*cursor:\s*pointer/u, "圆环按钮样式存在");
+  assert.match(css, /\.agent-compaction-row\s*\{/u, "压缩行样式存在");
+  assert.match(css, /\.agent-compaction-btn\s*\{/u, "压缩行动作按钮样式存在");
+  // reduced-motion：popover 过渡关闭
+  assert.match(
+    css,
+    /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*\.agent-context-popover[\s\S]*transition:\s*none/u,
+    "reduced-motion 下 popover 过渡关闭"
+  );
+  // 无框基线：消息/推理/活动容器不得出现表面底色
+  assert.doesNotMatch(css, /\.agent-activity-item\s*\{[^}]*background:\s*var\(--(?:surface|accent)/u);
+  assert.doesNotMatch(css, /\.agent-reasoning-(?:ticker|detail)\s*\{[^}]*background:\s*var\(--(?:surface|accent)/u);
+});
+
+// ===========================================================================
+// Task 12：统一 ESC 路由（真实 document 事件顺序契约）
+// ===========================================================================
+// app.js 的 document keydown 是 ESC 唯一入口：先关 app 顶层（drawer/reader/
+// settings/create/shortcuts），未消费时交给 agentSurface.handleEscape()。
+// 这里用与 app.js 相同的接线把 surface 挂到 mock document 上，再用真实
+// document 事件驱动，保证「一层 ESC 只执行第一项」的契约端到端成立。
+// 覆盖（brief Step 1）：
+//   - 菜单/弹层打开 + Run running → 只关闭最上层，不调用 stop；
+//   - 无弹层 + compaction running → 只调用 cancelCompaction 一次；
+//   - 无弹层 + 普通 Run running → 只调用 stop 一次；
+//   - 空闲 → 不 preventDefault、不调用 API、不 Toast；
+//   - 连按两次 ESC 只产生一个请求；请求失败或同 id 终态到达后才释放 latch。
+
+function wireEscRoute(surface) {
+  const handler = (event) => {
+    if (event?.key !== "Escape") return;
+    if (event.defaultPrevented) return; // 内层（textarea 关闭 slash menu 等）已消费
+    const handled = surface.handleEscape();
+    if (handled) event.preventDefault?.();
+  };
+  globalThis.document.addEventListener("keydown", handler);
+  return () => globalThis.document.removeEventListener("keydown", handler);
+}
+
+function fireEsc() {
+  const event = { key: "Escape", defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+  globalThis.document._fire("keydown", event);
+  return event;
+}
+
+function escCalls(api, name) {
+  return api.calls.filter((c) => c[0] === name).map((c) => c[1]);
+}
+
+test("ESC：context popover 打开 + Run running → 只关闭弹层，不调用 stop/cancelCompaction", async () => {
+  const { root, api, surface } = await makeSurface();
+  const unwire = wireEscRoute(surface);
+  try {
+    await surface.openProject("D:\\novel");
+    surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+    const ring = root.querySelector('[data-testid="agent-context-ring"]');
+    const popover = root.querySelector('[data-testid="agent-context-popover"]');
+    ring._fire("click");
+    assert.equal(popover.dataset.open, "true", "弹层已打开");
+    const event = fireEsc();
+    assert.equal(popover.dataset.open, "false", "ESC 只关闭最上层弹层");
+    assert.equal(event.defaultPrevented, true, "关闭弹层应消费 ESC");
+    assert.equal(escCalls(api, "stop").length, 0, "不得调用 stop");
+    assert.equal(escCalls(api, "cancelCompaction").length, 0, "不得调用 cancelCompaction");
+  } finally {
+    unwire();
+  }
+});
+
+test("ESC：slash menu 打开 + Run running → textarea 只关闭菜单，全局路由不再停止 Run", async () => {
+  const { root, api, surface } = await makeSurface();
+  const unwire = wireEscRoute(surface);
+  try {
+    await surface.openProject("D:\\novel");
+    surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+    const input = root.querySelector('[data-testid="agent-composer-input"]');
+    input.value = "/";
+    input._fire("input");
+    const menu = root.querySelector('[data-testid="agent-slash-menu"]');
+    assert.equal(menu.hidden, false, "slash menu 已打开");
+    // textarea 自己的 keydown：只在此处消费 ESC 并 preventDefault（事件随后冒泡到 document）
+    let prevented = false;
+    input._fire("keydown", { key: "Escape", shiftKey: false, preventDefault: () => { prevented = true; } });
+    assert.equal(prevented, true, "slash menu 打开时 textarea 消费 ESC");
+    assert.equal(menu.hidden, true, "菜单已关闭");
+    // 冒泡到 document：defaultPrevented → 全局路由不再处理 → Run 不被停止
+    globalThis.document._fire("keydown", { key: "Escape", defaultPrevented: true, preventDefault() { this.defaultPrevented = true; } });
+    assert.equal(escCalls(api, "stop").length, 0, "菜单已消费 ESC，不得再停止 Run");
+    assert.equal(escCalls(api, "cancelCompaction").length, 0);
+  } finally {
+    unwire();
+  }
+});
+
+test("ESC：composer 菜单打开 + Run running → 只关闭菜单，不调用 stop", async () => {
+  await withFetch((url) => {
+    if (url.startsWith("/api/project/events")) return { ok: true, status: 200, body: neverStream() };
+    if (url === "/api/settings/models") {
+      return jsonResponse({ ok: true, models: [modelProfile("m-1", "m-1", { display: "M1", active: true })] });
+    }
+    if (url.startsWith("/api/dashboard?")) {
+      return jsonResponse({
+        ok: true, hasProject: true, project: {}, config: {
+          effective: {
+            active_model: { provider: "x", model_name: "m-1", base_url: "https://x/v1" },
+            tool_permissions: {}, reasoning_effort: "auto"
+          }
+        }
+      });
+    }
+    if (url.startsWith("/api/agent/snapshot")) {
+      return snapshotResponse(session({ status: "running", active_run: activeRun() }));
+    }
+    return jsonResponse({ ok: true });
+  }, async (calls) => {
+    const { root, surface } = await makeSurface({ useRealTransport: true });
+    const unwire = wireEscRoute(surface);
+    try {
+      await surface.openProject("D:\\novel");
+      const trigger = root.querySelector('[data-testid="agent-model-select"]');
+      await waitUntil(() => trigger.disabled === false);
+      const menu = root.querySelector('[data-testid="agent-model-menu"]');
+      trigger._fire("click");
+      assert.equal(menu.hidden, false, "模型菜单已打开");
+      const event = fireEsc();
+      assert.equal(menu.hidden, true, "ESC 只关闭菜单");
+      assert.equal(event.defaultPrevented, true, "关闭菜单应消费 ESC");
+      const stopCalls = calls.filter((c) => String(c.url).endsWith("/run/run-1/stop") && c.options.method === "POST");
+      assert.equal(stopCalls.length, 0, "不得调用 stop");
+    } finally {
+      unwire();
+      surface.destroy();
+    }
+  });
+});
+
+test("ESC：无弹层 + compaction running（同时 Run running）→ 只 cancelCompaction 一次，不 stop", async () => {
+  const { api, surface } = await makeSurface();
+  const unwire = wireEscRoute(surface);
+  try {
+    await surface.openProject("D:\\novel");
+    surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+    surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-1", trigger: "automatic" }));
+    surface.applyEvent(ev("context_compaction_running", { compaction_id: "c-1" }));
+    const event = fireEsc();
+    assert.equal(event.defaultPrevented, true, "压缩取消请求消费 ESC");
+    assert.deepEqual(escCalls(api, "cancelCompaction"), ["c-1"], "压缩优先于普通 Run");
+    assert.equal(escCalls(api, "stop").length, 0, "压缩在途不得转而停止 Run");
+  } finally {
+    unwire();
+  }
+});
+
+test("ESC：无弹层 + 普通 Run running → 只 stop 一次", async () => {
+  const { api, surface } = await makeSurface();
+  const unwire = wireEscRoute(surface);
+  try {
+    await surface.openProject("D:\\novel");
+    surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+    const event = fireEsc();
+    assert.equal(event.defaultPrevented, true, "停止请求消费 ESC");
+    assert.deepEqual(escCalls(api, "stop"), ["run-1"]);
+    assert.equal(escCalls(api, "cancelCompaction").length, 0);
+  } finally {
+    unwire();
+  }
+});
+
+test("ESC：空闲 → 不 preventDefault、不调用 API", async () => {
+  const { api, surface } = await makeSurface();
+  const unwire = wireEscRoute(surface);
+  try {
+    await surface.openProject("D:\\novel");
+    const before = api.calls.length; // openProject 自身产生的 openProject/fetchSnapshot/connectEvents
+    const event = fireEsc();
+    assert.equal(event.defaultPrevented, false, "空闲 ESC 不 preventDefault");
+    assert.equal(api.calls.length, before, "空闲 ESC 不新增任何 API 调用");
+  } finally {
+    unwire();
+  }
+});
+
+test("ESC 去重：压缩取消在途连按两次只发一次请求；cancelling 吞掉；同 id 终态释放 latch", async () => {
+  const { api, surface } = await makeSurface();
+  const unwire = wireEscRoute(surface);
+  try {
+    await surface.openProject("D:\\novel");
+    surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-1", trigger: "automatic" }));
+    surface.applyEvent(ev("context_compaction_running", { compaction_id: "c-1" }));
+    fireEsc();
+    fireEsc();
+    assert.equal(escCalls(api, "cancelCompaction").length, 1, "连按两次只发一次取消请求");
+    // 后端确认进入 cancelling：后续 ESC 一律吞掉
+    surface.applyEvent(ev("context_compaction_cancel_requested", { compaction_id: "c-1" }));
+    fireEsc();
+    assert.equal(escCalls(api, "cancelCompaction").length, 1, "cancelling 期间 ESC 吞掉");
+    assert.equal(escCalls(api, "stop").length, 0, "cancelling 期间不得转而停止普通 Run");
+    // 同 id 终态到达 → latch 释放；此后 ESC 不再产生新请求
+    surface.applyEvent(ev("context_compaction_cancelled", { compaction_id: "c-1", cancel_reason: "user" }));
+    fireEsc();
+    assert.equal(escCalls(api, "cancelCompaction").length, 1, "终态后不再取消");
+    assert.equal(escCalls(api, "stop").length, 0);
+  } finally {
+    unwire();
+  }
+});
+
+test("ESC 去重：停止在途连按两次只发一次 stop；stopping 吞掉；同 id run 终态释放 latch", async () => {
+  const { api, surface } = await makeSurface();
+  const unwire = wireEscRoute(surface);
+  try {
+    await surface.openProject("D:\\novel");
+    surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+    fireEsc();
+    fireEsc();
+    assert.equal(escCalls(api, "stop").length, 1, "连按两次只发一次 stop");
+    // stopping 期间 ESC 吞掉，不得再次 stop
+    surface.applyEvent(ev("run_status_changed", { status: "stopping", reason: "user_stop" }));
+    fireEsc();
+    assert.equal(escCalls(api, "stop").length, 1, "stopping 期间 ESC 吞掉");
+    // 同 id run 终态 → latch 释放
+    surface.applyEvent(ev("run_cancelled", { reason: "user_stop" }));
+    fireEsc();
+    assert.equal(escCalls(api, "stop").length, 1, "终态后不再 stop");
+  } finally {
+    unwire();
+  }
+});
+
+test("ESC 去重：重连补齐快照里的同 id 终态必须释放 latch（I4，不得死锁 ESC）", async () => {
+  const { api, surface } = await makeSurface();
+  const unwire = wireEscRoute(surface);
+  try {
+    await surface.openProject("D:" + "\novel");
+    surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+    fireEsc();
+    assert.deepEqual(escCalls(api, "stop"), ["run-1"], "停止请求发出");
+    // SSE 断线：cancel 已生效但 run_cancelled 事件从未经 applyEvent 送达——重连
+    // 补齐快照（afterSeq 从合并后的 max seq 续读）把终态事件带回来了。
+    surface.applySnapshot(snapshotOf(
+      session({ status: "idle", last_seq: 9, active_run: activeRun({ status: "cancelled", active_input_id: null }) }),
+      [{ ...ev("run_cancelled", { reason: "user_stop" }), seq: 9 }]
+    ));
+    // latch 必须已释放：压缩在途时 ESC 走 cancelCompaction 而不是被吞掉
+    surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-1", trigger: "automatic" }));
+    surface.applyEvent(ev("context_compaction_running", { compaction_id: "c-1" }));
+    fireEsc();
+    assert.deepEqual(escCalls(api, "cancelCompaction"), ["c-1"], "快照终态释放 latch：ESC 可取消压缩");
+    assert.equal(escCalls(api, "stop").length, 1, "不得重复 stop");
+  } finally {
+    unwire();
+  }
+});
+
+test("ESC 去重：取消请求失败立即释放 latch，再次 ESC 可重试", async () => {
+  const { api, surface } = await makeSurface({
+    apiOverrides: {
+      cancelCompaction: async (compactionId) => {
+        api.calls.push(["cancelCompaction", compactionId]);
+        throw new Error("compaction 已结束");
+      }
+    }
+  });
+  const unwire = wireEscRoute(surface);
+  try {
+    await surface.openProject("D:\\novel");
+    surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-1", trigger: "automatic" }));
+    surface.applyEvent(ev("context_compaction_running", { compaction_id: "c-1" }));
+    fireEsc();
+    await tick();
+    fireEsc();
+    assert.equal(escCalls(api, "cancelCompaction").length, 2, "失败后 latch 释放，再次 ESC 可重试");
+  } finally {
+    unwire();
+  }
+});
+
+test("transport surface: handleEscape 的 stop/cancelCompaction 使用正确端点、作用域与 body（真实 transport）", async () => {
+  await withFetch((url) => {
+    if (url.startsWith("/api/project/events")) return { ok: true, status: 200, body: neverStream() };
+    if (url.startsWith("/api/agent/snapshot")) return snapshotResponse(session({ status: "running", active_run: activeRun() }));
+    return jsonResponse({ ok: true });
+  }, async (calls) => {
+    const { surface } = await makeSurface({ useRealTransport: true });
+    const unwire = wireEscRoute(surface);
+    try {
+      await surface.openProject("D:\\novel");
+      fireEsc();
+      await tick();
+      const stopCalls = calls.filter((c) => String(c.url).endsWith("/api/agent/run/run-1/stop"));
+      assert.equal(stopCalls.length, 1, "ESC 经真实 transport 调用 stop 端点");
+      assert.deepEqual(JSON.parse(stopCalls[0].options.body), { projectRoot: "D:\\novel" });
+      // 同 id run 终态释放 latch 后，压缩在途时 ESC 走 cancel 端点
+      surface.applyEvent(ev("run_cancelled", { reason: "user_stop" }));
+      surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-1", trigger: "automatic" }));
+      surface.applyEvent(ev("context_compaction_running", { compaction_id: "c-1" }));
+      fireEsc();
+      await tick();
+      const cancelCalls = calls.filter((c) => String(c.url).endsWith("/api/agent/compaction/c-1/cancel"));
+      assert.equal(cancelCalls.length, 1, "ESC 经真实 transport 调用 cancel 端点");
+      assert.deepEqual(JSON.parse(cancelCalls[0].options.body), { projectRoot: "D:\\novel" });
+    } finally {
+      unwire();
+      surface.destroy();
+    }
+  });
 });

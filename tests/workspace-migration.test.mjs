@@ -191,7 +191,7 @@ test("复制中途失败：拒绝导入、目标无半份产物（无 events.jso
   const agentDir = await createLegacyAgentDir(projectRoot, {
     events: [legacyEvent(1), legacyEvent(2, { type: "input_queued", payload: { input_id: "i1", text: "旧" } })]
   });
-  // 损坏源：session.json 换成同名目录（COPY_FILES 顺序为 events.jsonl → session.json，
+  // 损坏源：session.json 换成同名目录（LEGACY_COPY_FILES 顺序为 events.jsonl → session.json，
   // events.jsonl 已复制进 staging 之后复制失败——确定性注入复制中途失败）
   await fs.rm(path.join(agentDir, "session.json"));
   await fs.mkdir(path.join(agentDir, "session.json"));
@@ -290,6 +290,103 @@ test("源目录缺失时返回 missing 且不创建目标目录", async (t) => {
   const result = await migrateProjectAgentStorage({ projectRoot, targetAgentRoot });
   assert.deepEqual(result, { imported: false, reason: "missing" });
   assert.equal(await pathExists(targetAgentRoot), false, "无源数据时不应创建目标目录");
+});
+
+// ---------------------------------------------------------------------------
+// 新分段格式迁移（计划 Task 4 Step 2 case 5 / Step 7）
+// ---------------------------------------------------------------------------
+
+// 新格式 journal 夹具：segments/ + journal-manifest.json + session.json +
+// active-context.json + checkpoints/，不存在单体 events.jsonl/transcript.jsonl。
+async function createNewFormatAgentDir(projectRoot) {
+  const agentDir = path.join(projectRoot, ".wwriting", "agent");
+  await fs.mkdir(path.join(agentDir, "segments", "events"), { recursive: true });
+  await fs.mkdir(path.join(agentDir, "segments", "transcript"), { recursive: true });
+  await fs.mkdir(path.join(agentDir, "checkpoints"), { recursive: true });
+  await fs.writeFile(
+    path.join(agentDir, "journal-manifest.json"),
+    JSON.stringify({
+      schema_version: 1,
+      generation_id: "gen-new-1",
+      events_root: "segments/events",
+      transcript_root: "segments/transcript",
+      last_event_seq: 2,
+      last_transcript_seq: 1,
+      gaps: []
+    }, null, 2) + "\n",
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(agentDir, "segments", "events", "00000001.jsonl"),
+    `${JSON.stringify({ schema_version: 2, seq: 1, event_id: "evt-1", session_id: "new-sess", run_id: null, project_root: projectRoot, type: "session_created", at: "2026-08-01T00:00:00.000Z", payload: {} })}\n`,
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(agentDir, "segments", "transcript", "00000001.jsonl"),
+    `${JSON.stringify({ transcript_seq: 1, role: "user", content: "新格式对话" })}\n`,
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(agentDir, "session.json"),
+    JSON.stringify({ schema_version: 1, session_id: "new-sess", last_seq: 2, status: "idle" }, null, 2) + "\n",
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(agentDir, "active-context.json"),
+    JSON.stringify({ schema_version: 1, context_id: "ctx-1" }, null, 2) + "\n",
+    "utf8"
+  );
+  await fs.writeFile(path.join(agentDir, "checkpoints", "cp-1.json"), JSON.stringify({ checkpoint_id: "cp-1" }) + "\n", "utf8");
+  return agentDir;
+}
+
+test("源已是新分段格式：复制 segments/、journal-manifest.json、session.json、active-context.json 与 checkpoints/，不复制单体 events.jsonl", async (t) => {
+  const ws = await makeWorkspace(t);
+  const projectRoot = path.join(ws, "project");
+  const agentDir = await createNewFormatAgentDir(projectRoot);
+  const before = await snapshotDir(agentDir);
+  const targetAgentRoot = path.join(ws, "user-data", "workspaces", "ws_test", "agent");
+
+  const result = await migrateProjectAgentStorage({ projectRoot, targetAgentRoot });
+  assert.deepEqual(result, { imported: true });
+
+  // 新格式白名单逐字节一致复制
+  for (const rel of [
+    "journal-manifest.json",
+    "session.json",
+    "active-context.json",
+    "segments/events/00000001.jsonl",
+    "segments/transcript/00000001.jsonl",
+    "checkpoints/cp-1.json"
+  ]) {
+    assert.equal(
+      await fs.readFile(path.join(targetAgentRoot, rel), "utf8"),
+      await fs.readFile(path.join(agentDir, rel), "utf8"),
+      `${rel} 应与源字节一致`
+    );
+  }
+  // 新格式源不复制单体 events.jsonl/transcript.jsonl（journal 在目标端直接读 segments）
+  assert.equal(await pathExists(path.join(targetAgentRoot, "events.jsonl")), false);
+  assert.equal(await pathExists(path.join(targetAgentRoot, "transcript.jsonl")), false);
+  // 原目录字节不变（源只读）
+  assert.deepEqual(await snapshotDir(agentDir), before, "原 .wwriting/agent 字节必须完全一致");
+});
+
+test("回归：新格式目标无 events.jsonl 时第二次 open 仍返回 target_not_empty，不会复制旧源", async (t) => {
+  const ws = await makeWorkspace(t);
+  const projectRoot = path.join(ws, "project");
+  const agentDir = await createNewFormatAgentDir(projectRoot);
+  const before = await snapshotDir(agentDir);
+  const targetAgentRoot = path.join(ws, "user-data", "workspaces", "ws_test", "agent");
+
+  const first = await migrateProjectAgentStorage({ projectRoot, targetAgentRoot });
+  assert.deepEqual(first, { imported: true });
+  assert.equal(await pathExists(path.join(targetAgentRoot, "events.jsonl")), false, "新格式目标不含单体 events.jsonl");
+
+  // 第二次 open：目标已有新格式数据（manifest + segments）→ target_not_empty
+  const second = await migrateProjectAgentStorage({ projectRoot, targetAgentRoot });
+  assert.deepEqual(second, { imported: false, reason: "target_not_empty" });
+  assert.deepEqual(await snapshotDir(agentDir), before, "原目录字节必须完全一致");
 });
 
 // ---------------------------------------------------------------------------

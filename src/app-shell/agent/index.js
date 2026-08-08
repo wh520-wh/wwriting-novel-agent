@@ -14,7 +14,7 @@
 // Agent 输入；其余任何斜杠前缀字符串（含 /init、/review、/write）都是普通输入。
 // 旧 decision id（已终结/已 supersede）不能应用到更新的待决动作：decide 动作
 // 只放行 reducer 中仍为 pending 的 decision_id。
-import { createState, reduceSnapshot, reduceEvent, resetState } from "./state.js";
+import { createState, reduceSnapshot, reduceEvent, resetState, TERMINAL_RUN_STATUSES } from "./state.js";
 import { createAgentView } from "./view.js";
 import { createAgentApi } from "./api.js";
 import { localSlashSection } from "./slash-commands.mjs";
@@ -35,7 +35,9 @@ export function createAgentSurface({
   let transport = api ?? null;
   let destroyed = false;
   let projectGeneration = 0;
+  let loadingEarlier = false; // 前置分页防重复（view 侧也有同名单标记，双保险）
   let composerOptions = null; // 三控件当前选项（view 侧由 view.reset 清空）
+  let escapeLatch = null;     // ESC 去重锁：HTTP 成功只表示请求已接收，终态事件/失败才释放
 
   function normalizeComposerOptions(data) {
     const importedModels = Array.isArray(data?.models) ? data.models : [];
@@ -131,6 +133,11 @@ export function createAgentSurface({
     const rebuild = reduceSnapshot(state, snapshot);
     if (rebuild) view.reset();
     view.render(state, actions);
+    // I4：ESC 去重锁的释放必须覆盖快照路径。SSE 断线后重连补齐按合并后的 max seq
+    // 增量拉快照，若取消请求与 context_compaction_cancelled/run_cancelled 之间的
+    // 连接恰好断开，终态事件永远不会经 applyEvent 送达（被快照吞掉）——这里对
+    // 快照事件列表做同 id 终态检查，否则 latch 永驻、ESC 停止/取消永久失效。
+    for (const event of snapshot.events ?? []) clearEscapeLatch(event);
   }
 
   function applyEvent(event) {
@@ -138,6 +145,53 @@ export function createAgentSurface({
     reduceEvent(state, event);
     view.render(state, actions);
     maybeRefreshAfterTerminal(event);
+    clearEscapeLatch(event);
+  }
+
+  // ESC 去重锁释放（Task 12）：HTTP 成功只表示「取消/停止请求已接收」，不能释放
+  // latch；只有同一 id 的终态事件到达才清除。请求失败由 handleEscape 的 catch
+  // 立即释放（允许用户重试）。终态映射：
+  //   compaction: context_compaction_cancelled/completed/failed
+  //   run:        run_cancelled/completed/failed/interrupted
+  const ESCAPE_LATCH_TERMINALS = new Map([
+    ["context_compaction_cancelled", "compaction"],
+    ["context_compaction_completed", "compaction"],
+    ["context_compaction_failed", "compaction"],
+    ["run_cancelled", "run"],
+    ["run_completed", "run"],
+    ["run_failed", "run"],
+    ["run_interrupted", "run"]
+  ]);
+  function clearEscapeLatch(event) {
+    if (!escapeLatch) return;
+    const kind = ESCAPE_LATCH_TERMINALS.get(event?.type);
+    if (!kind || kind !== escapeLatch.kind) return;
+    const id = kind === "compaction" ? event?.payload?.compaction_id : event?.run_id;
+    if (id != null && String(id) === String(escapeLatch.id)) escapeLatch = null;
+  }
+
+  // Task 12 Step 2（brief 提供代码 verbatim）：AgentSurface 唯一 ESC 出口。
+  // 一次键只执行第一项：dismissTopLayer（slash menu → composer menu → context
+  // popover）→ 压缩取消 → Run 停止。latch/cancelling/stopping 期间后续 ESC
+  // 一律吞掉，不得转而停止普通 Run。
+  function handleEscape() {
+    if (view.dismissTopLayer()) return true;
+    const compaction = state.compaction;
+    if (escapeLatch || compaction?.state === "cancelling") return true;
+    if (["started", "running"].includes(compaction?.state)) {
+      escapeLatch = { kind: "compaction", id: compaction.id };
+      Promise.resolve(ensureApi().cancelCompaction(compaction.id))
+        .catch(() => { escapeLatch = null; });
+      return true;
+    }
+    const run = state.session?.active_run;
+    if (run && !TERMINAL_RUN_STATUSES.has(run.status)) {
+      escapeLatch = { kind: "run", id: run.id };
+      Promise.resolve(ensureApi().stop(run.id))
+        .catch(() => { escapeLatch = null; });
+      return true;
+    }
+    return false;
   }
 
   // Run 终态后补一次权威快照：增量事件只带 status，不带 journal 冻结的
@@ -167,32 +221,16 @@ export function createAgentSurface({
     projectGeneration = scope.generation;
     resetState(state, { projectRoot });
     composerOptions = null;
+    escapeLatch = null; // 项目切换是硬边界：旧项目的终态事件不会到达，必须释放 latch
     view.reset();
     const t = ensureApi();
     if (typeof t.openProject === "function") await t.openProject(projectRoot);
     if (!isCurrentProjectScope(scope)) return;
     let snapshot = null;
     try {
-      snapshot = await t.fetchSnapshot({ afterSeq: 0 });
-      if (!isCurrentProjectScope(scope)) return;
-      if (snapshot?.session && Array.isArray(snapshot.events)) {
-        const events = [...snapshot.events];
-        let cursor = events.reduce((max, event) => Math.max(max, Number(event?.seq) || 0), 0);
-        const targetSeq = Number(snapshot.session.last_seq) || cursor;
-        // 首次打开必须补齐所有事件后再渲染。否则固定 200 条的第一页只能还原
-        // 历史中间态，并会丢失后续消息、活动终态和模型轮次闭合事件。
-        while (cursor < targetSeq) {
-          const page = await t.fetchSnapshot({ afterSeq: cursor });
-          if (!isCurrentProjectScope(scope)) return;
-          const pageEvents = Array.isArray(page?.events) ? page.events : [];
-          const nextCursor = pageEvents.reduce((max, event) => Math.max(max, Number(event?.seq) || 0), cursor);
-          if (nextCursor <= cursor) break;
-          events.push(...pageEvents);
-          cursor = nextCursor;
-          if (page?.session) snapshot.session = page.session;
-        }
-        snapshot = { ...snapshot, events };
-      }
+      // Task 10：首屏只取最新尾部页（tail），更早历史由滚动到顶触发 beforeSeq
+      // 前置分页加载（loadEarlier）。不再按 afterSeq 循环补齐全量 Journal。
+      snapshot = await t.fetchSnapshot({ tail: true, limit: 200 });
     } catch {
       // 首次加载失败：保留空会话，SSE 重连补齐
     }
@@ -235,9 +273,39 @@ export function createAgentSurface({
 
   const actions = {
     submit,
+    // 前置分页（Task 10 Step 4）：view 滚动到顶（≤240px）且有更早历史时调用。
+    // 插入前记录 oldHeight/oldTop，插入后按差恢复 scrollTop 保持锚点；失败只
+    // 显示一次可重试提示且不清空当前消息。
+    loadEarlier: async (beforeSeq) => {
+      if (loadingEarlier) return;
+      const seq = Number(beforeSeq);
+      if (!Number.isFinite(seq) || seq <= 0) return;
+      loadingEarlier = true;
+      const t = ensureApi();
+      const scope = currentProjectScope();
+      view.prepareEarlierInsert();
+      try {
+        const page = await t.fetchSnapshot({ beforeSeq: seq, limit: 200 });
+        if (!isCurrentProjectScope(scope)) return;
+        if (page && (Array.isArray(page.events) || Array.isArray(page.gaps))) {
+          applySnapshot(page);
+          view.clearHistoryLoadError();
+        }
+      } catch {
+        view.showHistoryLoadError(seq);
+      } finally {
+        view.restoreScrollAnchor();
+        view.setLoadingEarlier(false);
+        loadingEarlier = false;
+      }
+    },
     promote: (inputId) => ensureApi().promote(inputId),
     stop: (runId) => ensureApi().stop(runId),
     retry: (runId) => ensureApi().retry(runId),
+    // Task 11：压缩状态行动作按钮——重试同一 compaction_id 的新 attempt /
+    // 取消（ESC、按钮与 HTTP 都调用同一后端方法）。
+    retryCompaction: (compactionId) => ensureApi().retryCompaction(compactionId),
+    cancelCompaction: (compactionId) => ensureApi().cancelCompaction(compactionId),
     decide: (decisionId, choice) => {
       // 终态/未知/已 supersede 的 decision 保持锁定：不发出请求。
       if (!isPendingDecision(decisionId)) return;
@@ -304,6 +372,32 @@ export function createAgentSurface({
   // 初始空状态渲染：未打开项目时 composer 立即处于禁用态。
   view.render(state, actions);
 
+  // 历史导出（Task 9）：纯委托 transport，返回 NDJSON 原文（{ text }），不解析、
+  // 不碰 DOM 或 Journal 文件。
+  function exportHistory() {
+    const t = ensureApi();
+    if (typeof t.exportHistory !== "function") return Promise.resolve(null);
+    return t.exportHistory();
+  }
+
+  // 不可逆清空（Task 9）：transport 成功后才动本地状态——清空投影、重建视图并
+  // 重新打开当前项目。openProject 内部经 transport.openProject 终止旧 SSE、按新
+  // session（tail 尾页）重拉快照并连接新事件流（clear-reconnect 语义）。失败
+  // （409 history_busy / 400 confirmation_required）时状态保持不动，错误抛给调用方。
+  async function clearHistory(options = {}) {
+    const t = ensureApi();
+    if (typeof t.clearHistory !== "function") return undefined;
+    const projectRoot = state.projectRoot;
+    if (!projectRoot) return undefined;
+    const scope = currentProjectScope();
+    const result = await t.clearHistory(options);
+    if (!isCurrentProjectScope(scope)) return undefined;
+    resetState(state, { projectRoot });
+    view.reset();
+    await openProject(projectRoot);
+    return result;
+  }
+
   function destroy() {
     destroyed = true;
     projectGeneration += 1;
@@ -319,6 +413,9 @@ export function createAgentSurface({
     openProject,
     applySnapshot,
     applyEvent,
+    handleEscape,
+    exportHistory,
+    clearHistory,
     destroy
   };
 }

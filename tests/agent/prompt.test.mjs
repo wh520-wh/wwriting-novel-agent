@@ -213,7 +213,7 @@ function baseOptions(overrides = {}) {
     history: [{ role: "user", content: "上一轮问题" }, { role: "assistant", content: "上一轮回答" }],
     currentInput: "继续写第三章",
     tools: [{ type: "function", function: { name: "read_file" } }],
-    modelConfig: { context_window: 100000 },
+    modelConfig: { effective_context_window: 100000 },
     ...overrides
   };
 }
@@ -551,7 +551,7 @@ test("无 Dynamic Context 时不生成动态消息，dynamic_hash 为稳定空�
 
 // contextWindow=100000: reserved=max(8192,20000)=20000, available=80000,
 // dynamic=28000, history=44000, protocol=8000
-const BUDGET_OPTIONS = { modelConfig: { context_window: 100000 } };
+const BUDGET_OPTIONS = { modelConfig: { effective_context_window: 100000 } };
 
 test("预留输出/工具参数：max(8192, context_window * 0.20)", () => {
   const assembled = assemblePrompt(baseOptions(BUDGET_OPTIONS));
@@ -559,12 +559,21 @@ test("预留输出/工具参数：max(8192, context_window * 0.20)", () => {
   assert.equal(report.reservedForOutputTokens, 20000);
   assert.equal(report.availableInputTokens, 80000);
   // 小窗口时按 8192 下限
-  const small = assemblePrompt(baseOptions({ modelConfig: { context_window: 20000 } }));
+  const small = assemblePrompt(baseOptions({ modelConfig: { effective_context_window: 20000 } }));
   assert.equal(small.budgetReport.reservedForOutputTokens, 8192);
   assert.equal(small.budgetReport.availableInputTokens, 11808);
-  // 缺省 context_window 使用默认值
+});
+
+test("预算窗口只读 effective_context_window：缺省回落模型身份默认 256k（Task 6，无 128000 默认路径）", () => {
+  // 缺省 effective_context_window 回落 256k（model-identity 的默认档）
   const missing = assemblePrompt(baseOptions({ modelConfig: {} }));
-  assert.equal(missing.budgetReport.contextWindow, 128000);
+  assert.equal(missing.budgetReport.contextWindow, 256000);
+  // 手工 context_window 字段不再被读取：传入 100000 也无 effect
+  const manual = assemblePrompt(baseOptions({ modelConfig: { context_window: 100000 } }));
+  assert.equal(manual.budgetReport.contextWindow, 256000, "不得读取项目手工 context_window");
+  // 1M 档原样进入预算
+  const million = assemblePrompt(baseOptions({ modelConfig: { effective_context_window: 1_000_000 } }));
+  assert.equal(million.budgetReport.contextWindow, 1_000_000);
 });
 
 test("Dynamic Context 超 35% 上限时截断（保留完整条目 + 截断标记）", () => {
@@ -598,7 +607,7 @@ test("Dynamic Context 未超 35% 上限时全部保留且不截断", () => {
   assert.ok(assembled.messages[1].content.includes("字".repeat(5000)));
 });
 
-test("History 超 55% 上限时丢弃最旧轮次，最近 12 轮不压缩", () => {
+test("History 超 55% 上限不再静默丢弃：全量保留并上报 overflow（Task 6）", () => {
   // 15 个轮次 × 5000 汉字 = 75000 tokens > 44000（每条一个 user 或 assistant 消息）
   const history = Array.from({ length: 15 }, (_, i) => ({
     role: i % 2 === 0 ? "user" : "assistant",
@@ -606,18 +615,18 @@ test("History 超 55% 上限时丢弃最旧轮次，最近 12 轮不压缩", () 
   }));
   const assembled = assemblePrompt(baseOptions({ ...BUDGET_OPTIONS, dynamicContext: [], history }));
   const layer = assembled.budgetReport.layers.history;
-  assert.equal(layer.droppedTurns, 3, "丢弃最旧的 3 轮");
-  assert.equal(layer.protectedTurns, 12, "最近 12 轮完整保留");
-  assert.equal(layer.overflowTokens, 60000 - 44000, "受保护窗口自身超限时上报 overflow，不裁剪");
-  // 消息序列：system + 12 轮历史 + current
-  assert.equal(assembled.messages.length, 14);
-  // 丢弃的是最早的 3 轮（history[0..2]），剩余历史以 history[3]（assistant）开头
-  assert.equal(assembled.messages[1].role, "assistant");
+  assert.equal(layer.droppedTurns, 0, "超限不再丢最旧轮次");
+  assert.equal(layer.protectedTurns, 15, "全部轮次原样保留");
+  assert.equal(layer.overflowTokens, 75000 - 44000, "超限只上报 overflow");
+  // 消息序列：system + 15 轮历史 + current，一条不少
+  assert.equal(assembled.messages.length, 17);
+  // 最早一轮仍以 history[0]（user）开头，未被丢弃
+  assert.equal(assembled.messages[1].role, "user");
   assert.equal(assembled.messages[1].content, "字".repeat(5000));
-  // 被保留的轮次内容完整，未受裁剪；最后一条是当前用户消息
-  assert.equal(assembled.messages[12].role, "user");
-  assert.equal(assembled.messages[12].content, "字".repeat(5000));
-  assert.deepEqual(assembled.messages[13], { role: "user", content: "继续写第三章" });
+  // 被保留的轮次内容完整，未受裁剪；最后一条历史消息后紧跟当前用户消息
+  assert.equal(assembled.messages[15].role, "user");
+  assert.equal(assembled.messages[15].content, "字".repeat(5000));
+  assert.deepEqual(assembled.messages[16], { role: "user", content: "继续写第三章" });
 });
 
 test("History 未超 55% 上限时全部保留", () => {
@@ -632,7 +641,7 @@ test("History 未超 55% 上限时全部保留", () => {
   assert.equal(assembled.messages.length, 4);
 });
 
-test("protected 标记的 decision 消息即使在窗口外也不丢弃", () => {
+test("protected 标记的 decision 消息随全量历史保留（Task 6 不再丢弃任何轮次）", () => {
   const history = [
     { role: "user", content: "字".repeat(5000), protected: true }, // 未解决 decision 消息
     ...Array.from({ length: 13 }, (_, i) => ({
@@ -642,8 +651,9 @@ test("protected 标记的 decision 消息即使在窗口外也不丢弃", () => 
   ];
   const assembled = assemblePrompt(baseOptions({ ...BUDGET_OPTIONS, dynamicContext: [], history }));
   const layer = assembled.budgetReport.layers.history;
-  assert.equal(layer.droppedTurns, 1, "只丢弃窗口外的非 protected 轮次");
-  assert.equal(layer.protectedTurns, 13, "12 轮窗口 + 1 条窗口外 protected 消息");
+  assert.equal(layer.droppedTurns, 0, "超限不丢弃任何轮次");
+  assert.equal(layer.protectedTurns, 14, "全部 14 轮保留");
+  assert.ok(layer.overflowTokens > 0, "超限上报 overflow");
   assert.ok(assembled.messages.some((m) => m.content === "字".repeat(5000) && m.protected === true));
 });
 
@@ -683,8 +693,8 @@ test("同一 assistant 多个 tool_calls 的连续 tool 结果全部保留（预
   assert.equal(assembled.budgetReport.layers.history.droppedTurns, 0);
 });
 
-test("同一 assistant 多个 tool_calls 的连续 tool 结果全部保留（预算外路径）", () => {
-  // 13 轮超大文本超 55% 上限触发压缩；tool 链位于受保护窗口（最后 12 轮）内
+test("同一 assistant 多个 tool_calls 的连续 tool 结果全部保留（预算外路径，Task 6 不丢轮次）", () => {
+  // 13 轮超大文本超 55% 上限，但历史不再被压缩丢弃——tool 链随全量历史保留
   const history = [
     ...Array.from({ length: 13 }, (_, i) => ({
       role: i % 2 === 0 ? "user" : "assistant",
@@ -703,12 +713,12 @@ test("同一 assistant 多个 tool_calls 的连续 tool 结果全部保留（预
   ];
   const assembled = assemblePrompt(baseOptions({ ...BUDGET_OPTIONS, dynamicContext: [], history }));
   const layer = assembled.budgetReport.layers.history;
-  assert.equal(layer.droppedTurns, 2, "丢弃最旧的 2 轮，tool 链所在的最后 12 轮保留");
+  assert.equal(layer.droppedTurns, 0, "预算外路径同样不丢轮次");
+  assert.ok(layer.overflowTokens > 0, "超限上报 overflow");
   const contents = assembled.messages.map((m) => m.content ?? "");
-  assert.ok(contents.includes("结果一"), "压缩后第一条连续 tool 结果必须保留");
-  assert.ok(contents.includes("结果二"), "压缩后第二条连续 tool 结果必须保留（同一链）");
-  // tool 消息不是轮次，protectedTurns 仍按 user/assistant 计数
-  assert.equal(layer.protectedTurns, 12);
+  assert.ok(contents.includes("结果一"), "连续 tool 结果必须保留");
+  assert.ok(contents.includes("结果二"), "同一链的 tool 结果必须保留");
+  assert.equal(layer.protectedTurns, 14, "protectedTurns 按 user/assistant 轮次计数（含 tool_calls assistant 消息）");
 });
 
 test("当前用户消息永不截断或丢弃，超限在 protocol 层上报", () => {

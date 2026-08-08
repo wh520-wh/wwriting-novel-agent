@@ -8,8 +8,12 @@
 //   POST /api/agent/input/:inputId/promote { projectRoot }      -> { ok, run_id, input_id, promoted }
 //   POST /api/agent/run/:runId/stop       { projectRoot }       -> { ok, run_id, cancelled }
 //   POST /api/agent/run/:runId/retry      { projectRoot }       -> { ok, run_id, input_id, retried }
+//   POST /api/agent/compaction/:compactionId/cancel { projectRoot } -> { ok, compaction_id, cancelling }
+//   POST /api/agent/compaction/:compactionId/retry  { projectRoot } -> { ok, compaction_id, retried }
 //   POST /api/agent/decision/:decisionId  { projectRoot, choice } -> { ok, decision_id, granted }
-//   GET  /api/agent/snapshot?projectRoot&afterSeq&limit          -> { ok, session, events }
+//   GET  /api/agent/snapshot?projectRoot&afterSeq&beforeSeq&tail&limit -> { ok, session, events, gaps, has_more }
+//   POST /api/agent/history/export       { projectRoot } -> NDJSON 下载（application/x-ndjson + attachment）
+//   POST /api/agent/history/clear        { projectRoot, confirm_irreversible } -> { ok, session_id, status, generation_id }
 //   GET  /api/project/events?projectRoot  （SSE：轮询 journal，逐条推送事件）
 //
 // 运行中 submit 返回 HTTP 200 + status:"queued"（FIFO 队列，同一 run_id）；
@@ -50,6 +54,36 @@ export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPoll
       return resolveProjectRoot(projectRoot);
     }
     return projectRoot;
+  }
+
+  // 压缩领域错误 → HttpError（Task 9）：runtime.mjs 的 fail(code) 抛出的域 code
+  // 在这里映射为固定状态码与中文文案，交给 router 统一输出（sendError 会按
+  // publicErrorMessage 白名单决定是否透传 message；未在白名单内的 code 一律
+  // 收敛为通用文案，绝不泄漏底层错误文本）。
+  const COMPACTION_ERROR_STATUS = {
+    invalid_compaction_id: 400,
+    compaction_not_found: 404,
+    compaction_not_retryable: 409,
+    compaction_in_flight: 409,
+    compaction_no_run: 409
+  };
+  const COMPACTION_ERROR_MESSAGE = {
+    invalid_compaction_id: "压缩任务标识无效。",
+    compaction_not_found: "压缩任务不存在或已结束。",
+    compaction_not_retryable: "压缩已结束，无法重试。",
+    compaction_in_flight: "压缩正在进行中，无法重试。",
+    compaction_no_run: "当前没有可继续压缩的 Run。"
+  };
+  async function runCompactionAction(action) {
+    try {
+      return await action();
+    } catch (error) {
+      const status = COMPACTION_ERROR_STATUS[error?.code];
+      if (status) {
+        throw new HttpError(status, error.code, COMPACTION_ERROR_MESSAGE[error.code]);
+      }
+      throw error;
+    }
   }
 
   return {
@@ -105,6 +139,29 @@ export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPoll
       };
     },
 
+    // 压缩取消/重试（Task 9）：ESC、按钮与 HTTP 都调用同一后端方法（Task 8
+    // Step 7，复用当前项目 state 的 AbortController，不创建第二套终止协议）。
+    // 成功响应里的 cancelling/retried 表示「请求已被接受」；压缩本身随后续
+    // context_compaction_* 事件收敛到终态，前端以事件为准（Task 11/12）。
+    // 错误码 → HTTP 状态在本模块内显式映射（与下方 clearHistory 同一模式）：
+    // 不存在的 compaction id → 404，状态冲突/无 Run → 409，非法 id → 400；
+    // 其余错误交给 router 统一脱敏（不泄漏底层错误文本）。
+    "POST /api/agent/compaction/:compactionId/cancel": async ({ params, body }) => {
+      const projectRoot = await resolveScope(body);
+      const result = await runCompactionAction(() =>
+        agent.cancelCompaction({ projectRoot, compactionId: params.compactionId })
+      );
+      return { ok: true, compaction_id: result.compaction_id, cancelling: true };
+    },
+
+    "POST /api/agent/compaction/:compactionId/retry": async ({ params, body }) => {
+      const projectRoot = await resolveScope(body);
+      const result = await runCompactionAction(() =>
+        agent.retryCompaction({ projectRoot, compactionId: params.compactionId })
+      );
+      return { ok: true, compaction_id: result.compaction_id, retried: true };
+    },
+
     // 决策：choice ∈ allow/allow_input/deny；extreme 决策要求 choice 为精确确认文字。
     "POST /api/agent/decision/:decisionId": async ({ params, body }) => {
       const projectRoot = await resolveScope(body);
@@ -116,15 +173,80 @@ export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPoll
       return { ok: true, decision_id: result.decision_id, granted: result.granted };
     },
 
-    // 快照：{ session, events } 是 AgentSurface 的唯一实时数据源。
+    // 快照：{ session, events, gaps, has_more } 是 AgentSurface 的唯一实时数据源。
+    // Task 5 双向分页：tail=true → 最新尾部页；beforeSeq → 该 seq 之前的旧页；
+    // 缺省 → afterSeq 增量拉取（afterSeq=0 只表示从头读取，旧客户端兼容）。
     "GET /api/agent/snapshot": async ({ query }) => {
       const projectRoot = await resolveScope({}, query);
       const afterSeq = Number.isFinite(Number(query.afterSeq)) ? Math.max(0, Number(query.afterSeq)) : 0;
+      const beforeSeqParam = Number(query.beforeSeq);
+      const beforeSeq = Number.isFinite(beforeSeqParam) && beforeSeqParam > 0 ? beforeSeqParam : null;
+      const tail = query.tail === "true" || query.tail === "1";
       const limit = Number.isFinite(Number(query.limit))
         ? Math.min(SNAPSHOT_LIMIT_MAX, Math.max(1, Number(query.limit)))
         : 100;
-      const { session, events } = await agent.snapshot({ projectRoot, afterSeq, limit });
-      return { ok: true, session, events };
+      const { session, events, gaps, has_more } = await agent.snapshot({
+        projectRoot,
+        afterSeq,
+        beforeSeq,
+        tail,
+        limit
+      });
+      return { ok: true, session, events, gaps, has_more };
+    },
+
+    // 历史导出（NDJSON 下载）：只读动作，不追加 Journal 事件。每行
+    // { stream: "event"|"transcript"|"gap", record }；gap 行只保留损坏范围。
+    // 响应不包含 API Key/模型密钥/未脱敏 provider header（runtime redactor 逐条
+    // 脱敏）；流中途失败（如段文件被外部破坏）以脱敏错误行收尾，不泄漏原始路径。
+    "POST /api/agent/history/export": async ({ body, response }) => {
+      const projectRoot = await resolveScope(body);
+      response.writeHead(200, {
+        "content-type": "application/x-ndjson; charset=utf-8",
+        "content-disposition": 'attachment; filename="wwriting-agent-history.jsonl"',
+        "cache-control": "no-store"
+      });
+      try {
+        for await (const line of agent.exportHistory({ projectRoot })) {
+          if (response.destroyed || response.writableEnded) return;
+          response.write(`${JSON.stringify(line)}\n`);
+        }
+        if (!response.writableEnded) response.end();
+      } catch (error) {
+        if (!response.writableEnded && !response.destroyed) {
+          response.write(
+            `${JSON.stringify({
+              stream: "error",
+              record: { code: safePublicErrorCode(error), message: publicErrorMessage(error) }
+            })}\n`
+          );
+          response.end();
+        }
+      }
+    },
+
+    // 不可逆清空：仅当 session idle 且确认 confirm_irreversible:true。活动 Run →
+    // 409 history_busy；缺少确认 → 400 confirmation_required（busy 校验先于确认）。
+    "POST /api/agent/history/clear": async ({ body }) => {
+      const projectRoot = await resolveScope(body);
+      const confirmIrreversible = body?.confirm_irreversible === true;
+      try {
+        const result = await agent.clearHistory({ projectRoot, confirmIrreversible });
+        return {
+          ok: true,
+          session_id: result.session_id,
+          status: result.status,
+          generation_id: result.generation_id
+        };
+      } catch (error) {
+        if (error?.code === "history_busy") {
+          throw new HttpError(409, "history_busy", "Agent 正在运行，无法清空历史。");
+        }
+        if (error?.code === "confirmation_required") {
+          throw new HttpError(400, "confirmation_required", "清空历史不可逆，必须显式确认。");
+        }
+        throw error;
+      }
     },
 
     // SSE 端点（Task 9 接线后成为唯一 Agent 实时流）：轮询 journal 快照，

@@ -13,7 +13,13 @@
 //   await agent.decide({ projectRoot, decisionId, choice });
 //   await agent.stop({ projectRoot, reason: "user_stop" });
 //   await agent.retry({ projectRoot, runId });
+//   // Task 8：压缩重试/取消（ESC、按钮与 HTTP 都调用同一取消方法）
+//   await agent.retryCompaction({ projectRoot, compactionId });
+//   await agent.cancelCompaction({ projectRoot, compactionId });
 //   await agent.snapshot({ projectRoot, afterSeq, limit }); // -> { session, events }
+//   // Task 5：尾部分页（tail/beforeSeq）、历史导出与不可逆清空
+//   for await (const line of agent.exportHistory({ projectRoot })); // -> { stream, record }
+//   await agent.clearHistory({ projectRoot, confirmIrreversible }); // -> { session_id, status, ... }
 import { createAgentRuntime } from "./runtime.mjs";
 
 export function createProjectAgent(dependencies = {}) {
@@ -25,6 +31,10 @@ export function createProjectAgent(dependencies = {}) {
     decide: (params) => runtime.decide(params),
     stop: (params) => runtime.stop(params),
     retry: (params) => runtime.retry(params),
-    snapshot: (params) => runtime.snapshot(params)
+    retryCompaction: (params) => runtime.retryCompaction(params),
+    cancelCompaction: (params) => runtime.cancelCompaction(params),
+    snapshot: (params) => runtime.snapshot(params),
+    exportHistory: (params) => runtime.exportHistory(params),
+    clearHistory: (params) => runtime.clearHistory(params)
   };
 }

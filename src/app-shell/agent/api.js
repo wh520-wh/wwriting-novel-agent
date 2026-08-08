@@ -5,8 +5,12 @@
 //   POST /api/agent/input/:inputId/promote   promote(inputId)
 //   POST /api/agent/run/:runId/stop          stop(runId)
 //   POST /api/agent/run/:runId/retry         retry(runId)
+//   POST /api/agent/compaction/:id/cancel    cancelCompaction(id)
+//   POST /api/agent/compaction/:id/retry     retryCompaction(id)
 //   POST /api/agent/decision/:decisionId     decide(decisionId, choice)
-//   GET  /api/agent/snapshot?afterSeq&limit  fetchSnapshot()
+//   GET  /api/agent/snapshot?afterSeq|beforeSeq|tail&limit  fetchSnapshot()
+//   POST /api/agent/history/export          exportHistory()（NDJSON 文本，不按 JSON 解析）
+//   POST /api/agent/history/clear           clearHistory({ confirm_irreversible })
 //   GET  /api/project/events?afterSeq        connectEvents()（SSE 轮询流，断线指数退避重连）
 //   GET  /api/settings/models + /api/dashboard  fetchComposerOptions()（composer 三控件选项）
 //   POST /api/settings/model-switch            switchModel(modelId)（落盘项目默认模型）
@@ -117,12 +121,70 @@ export function createAgentApi({
     });
   }
 
-  async function fetchSnapshot({ afterSeq = 0, limit = SNAPSHOT_LIMIT } = {}) {
-    const url =
-      withProjectScope("/api/agent/snapshot", root()) +
-      `&afterSeq=${Math.max(0, Number(afterSeq) || 0)}` +
-      `&limit=${Math.max(1, Number(limit) || SNAPSHOT_LIMIT)}`;
+  async function fetchSnapshot({ afterSeq = 0, beforeSeq = null, tail = false, limit = SNAPSHOT_LIMIT } = {}) {
+    // 双向分页（Task 9）：tail=true → 最新尾部页；beforeSeq → 该 seq 之前的旧页；
+    // 缺省 → afterSeq 增量拉取（afterSeq=0 只表示从头读取，旧调用方不变）。
+    // 优先级与后端一致：tail > beforeSeq > afterSeq。
+    const params = new URLSearchParams();
+    if (tail === true) {
+      params.set("tail", "1");
+    } else if (Number.isFinite(Number(beforeSeq)) && Number(beforeSeq) > 0) {
+      params.set("beforeSeq", String(Math.floor(Number(beforeSeq))));
+    } else {
+      params.set("afterSeq", String(Math.max(0, Number(afterSeq) || 0)));
+    }
+    params.set("limit", String(Math.max(1, Number(limit) || SNAPSHOT_LIMIT)));
+    const url = withProjectScope("/api/agent/snapshot", root()) + "&" + params.toString();
     return request(url, { cache: "no-store" });
+  }
+
+  // 压缩取消/重试（Task 9）：ESC、按钮与 HTTP 都调用同一后端方法。
+  async function cancelCompaction(compactionId) {
+    return postJson(`/api/agent/compaction/${encodeURIComponent(compactionId)}/cancel`, {
+      projectRoot: root()
+    });
+  }
+
+  async function retryCompaction(compactionId) {
+    return postJson(`/api/agent/compaction/${encodeURIComponent(compactionId)}/retry`, {
+      projectRoot: root()
+    });
+  }
+
+  // 历史导出（Task 9）：响应是 NDJSON 文本流，不是 JSON —— 不能用 readResponseJson
+  // 解析，原文交给调用方（Task 13 触发下载）。仍登记 pending request AbortController，
+  // 切项目/destroy 时一并中止。
+  async function exportHistory() {
+    const abortController = new AbortController();
+    pendingRequests.add(abortController);
+    try {
+      const response = await fetchImpl("/api/agent/history/export", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectRoot: root() }),
+        signal: abortController.signal
+      });
+      if (!response.ok) {
+        const data = await readResponseJson(response).catch(() => null);
+        const error = new Error(data?.message ?? "导出失败，请重试。");
+        error.code = data?.code;
+        error.status = response.status;
+        throw error;
+      }
+      const text = await response.text();
+      return { text, status: response.status };
+    } finally {
+      pendingRequests.delete(abortController);
+    }
+  }
+
+  // 不可逆清空（Task 9）：需显式 confirm_irreversible:true（服务端守卫）。
+  // 活动 Run → 409 history_busy；缺确认 → 400 confirmation_required（前端按码分支）。
+  async function clearHistory({ confirm_irreversible = false } = {}) {
+    return postJson("/api/agent/history/clear", {
+      projectRoot: root(),
+      confirm_irreversible: confirm_irreversible === true
+    });
   }
 
   // composer 三控件选项：模型清单（全局）+ 当前项目生效配置（dashboard）。
@@ -261,7 +323,11 @@ export function createAgentApi({
     stop,
     retry,
     decide,
+    cancelCompaction,
+    retryCompaction,
     fetchSnapshot,
+    exportHistory,
+    clearHistory,
     fetchComposerOptions,
     switchModel,
     updatePermissions,
