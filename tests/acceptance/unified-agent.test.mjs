@@ -22,7 +22,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
-import test from "node:test";
+import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -98,6 +98,183 @@ const EXTREME_COMMANDS =
   process.platform === "win32"
     ? ["del /f /s /q C:\\*.*", "format D:"]
     : ["rm -rf /", "rm -rf $HOME"];
+
+// ---------------------------------------------------------------------------
+// Task 1 复现夹具回放用的最小 DOM mock（与 thread-renderer-finish.test.mjs 同一
+// 行为：不解析 innerHTML，因此 markdown 渲染的助手正文 textContent 为空——这正
+// 是「正文缺失」缺陷的纯 DOM 复现；Task 10 修复后必须转绿）。
+// ---------------------------------------------------------------------------
+
+class TextNode {
+  constructor(text) {
+    this.text = String(text);
+  }
+  get textContent() {
+    return this.text;
+  }
+  set textContent(value) {
+    this.text = String(value);
+  }
+}
+
+class MockElement {
+  constructor(tag) {
+    this.tagName = tag;
+    this.hidden = false;
+    this.style = {};
+    this.dataset = {};
+    this.children = [];
+    this._parent = null;
+    this._text = "";
+    this._attrs = {};
+    this._listeners = new Map();
+    this._value = "";
+    this.scrollTop = 0;
+    this.scrollHeight = 0;
+    this.clientHeight = 0;
+    const classSet = new Set();
+    Object.defineProperty(this, "className", {
+      get() { return [...classSet].join(" "); },
+      set(value) {
+        classSet.clear();
+        for (const c of String(value).split(/\s+/)) if (c) classSet.add(c);
+      },
+      enumerable: true,
+      configurable: true,
+    });
+    this.classList = {
+      add: (...cs) => cs.forEach((c) => classSet.add(c)),
+      remove: (...cs) => cs.forEach((c) => classSet.delete(c)),
+      contains: (c) => classSet.has(c),
+      has: (c) => classSet.has(c),
+      toggle: (c, force) => {
+        if (force === undefined) {
+          if (classSet.has(c)) { classSet.delete(c); return false; }
+          classSet.add(c); return true;
+        }
+        if (force) classSet.add(c); else classSet.delete(c);
+        return force;
+      },
+      toString: () => [...classSet].join(" "),
+    };
+  }
+
+  get value() {
+    return this._value;
+  }
+  set value(v) {
+    this._value = String(v ?? "");
+  }
+
+  get textContent() {
+    return this._text + this.children
+      .map((c) => (typeof c.textContent === "string" ? c.textContent : ""))
+      .join("");
+  }
+  set textContent(value) {
+    this._text = String(value);
+    this.children = [];
+  }
+
+  append(...nodes) {
+    for (const node of nodes) {
+      if (node instanceof MockElement) node._parent = this;
+      this.children.push(node);
+    }
+  }
+  appendChild(node) {
+    if (node instanceof MockElement) node._parent = this;
+    this.children.push(node);
+    return node;
+  }
+  replaceChildren(...nodes) {
+    for (const child of this.children) {
+      if (child instanceof MockElement) child._parent = null;
+    }
+    this.children = [...nodes];
+    for (const node of nodes) {
+      if (node instanceof MockElement) node._parent = this;
+    }
+  }
+  remove() {
+    if (this._parent) {
+      const index = this._parent.children.indexOf(this);
+      if (index >= 0) this._parent.children.splice(index, 1);
+      this._parent = null;
+    }
+  }
+  setAttribute(name, value) {
+    this._attrs[name] = String(value);
+  }
+  getAttribute(name) {
+    return this._attrs[name] ?? null;
+  }
+  addEventListener(type, handler) {
+    if (!this._listeners.has(type)) this._listeners.set(type, []);
+    this._listeners.get(type).push(handler);
+  }
+  _fire(type, ...args) {
+    for (const fn of this._listeners.get(type) ?? []) fn(...args);
+  }
+
+  static _dataKey(name) {
+    return name.replace(/-([a-z])/g, (_m, c) => c.toUpperCase());
+  }
+
+  _matches(selector) {
+    if (selector.startsWith(".")) return this.classList.contains(selector.slice(1));
+    const presenceSel = selector.match(/^\[data-([\w-]+)\]$/);
+    if (presenceSel) {
+      const key = MockElement._dataKey(presenceSel[1]);
+      return this.dataset[key] !== undefined && this.dataset[key] !== "";
+    }
+    const dataSel = selector.match(/^\[data-([\w-]+)="?([^"\]]*)"?\]$/);
+    if (dataSel) {
+      const key = MockElement._dataKey(dataSel[1]);
+      return String(this.dataset[key] ?? "") === dataSel[2];
+    }
+    return String(this.tagName).toLowerCase() === selector.toLowerCase();
+  }
+
+  querySelector(selector) {
+    for (const child of this.children) {
+      if (!(child instanceof MockElement)) continue;
+      if (child._matches(selector)) return child;
+      const found = child.querySelector(selector);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  querySelectorAll(selector) {
+    const out = [];
+    const walk = (el) => {
+      for (const child of el.children) {
+        if (!(child instanceof MockElement)) continue;
+        if (child._matches(selector)) out.push(child);
+        walk(child);
+      }
+    };
+    walk(this);
+    return out;
+  }
+}
+
+const realDoc = globalThis.document;
+
+before(() => {
+  globalThis.document = {
+    createElement: (tag) => new MockElement(tag),
+    createElementNS: (_ns, tag) => new MockElement(tag),
+    createTextNode: (text) => new TextNode(text),
+    createDocumentFragment: () => new MockElement("fragment"),
+  };
+});
+
+after(() => {
+  if (realDoc === undefined) delete globalThis.document;
+  else globalThis.document = realDoc;
+});
 
 // ---------------------------------------------------------------------------
 // 辅助
@@ -1063,4 +1240,61 @@ test("旧项目把 blueprint_status 迁入 project.yaml 且不再写旧状态文
   const stateAfter = await fs.readFile(statePath, "utf8");
   assert.equal(stateAfter, stateBefore, "legacy 导入后不得再写入旧状态文件");
   assertActivityClosure(await readEvents(h.agent, h.projectRoot));
+});
+
+// ---------------------------------------------------------------------------
+// Task 1 复现夹具：tool-before-answer 经生产入口回放
+// ---------------------------------------------------------------------------
+
+// 快照只返回服务端权威会话投影；事件全部经 SSE 增量路径逐条 applyEvent，
+// 与生产「打开项目拿快照 + 长连接推送增量」一致，不直接调用 insertTimeline()。
+function makeFixtureApi(fixture) {
+  return {
+    openProject: async () => {},
+    submit: async () => ({ ok: true }),
+    promote: async () => ({ ok: true }),
+    stop: async () => ({ ok: true }),
+    retry: async () => ({ ok: true }),
+    decide: async () => ({ ok: true }),
+    fetchSnapshot: async ({ afterSeq }) =>
+      afterSeq === 0 ? { ok: true, session: fixture.session, events: [] } : null,
+    connectEvents: () => {},
+    destroy: () => {}
+  };
+}
+
+test("生产入口回放 tool-before-answer：工具活动节点 DOM 顺序早于助手最终答案正文", async () => {
+  const fixture = JSON.parse(
+    await fs.readFile(path.join(ROOT, "tests", "fixtures", "agent-ui", "tool-before-answer.json"), "utf8")
+  );
+  const root = new MockElement("div");
+  const { createAgentSurface } = await import("../../src/app-shell/agent/index.js");
+  const surface = createAgentSurface({ root, api: makeFixtureApi(fixture) });
+  await surface.openProject("D:\\novel");
+  for (const event of fixture.events) surface.applyEvent(event);
+
+  const group = root.querySelector(".agent-work-group");
+  assert.ok(group, "回放应渲染 completed 工作组");
+  assert.equal(group.open, false, "completed 工作组应自动折叠为关闭态");
+
+  const assistant = root.querySelector(".agent-message--assistant");
+  assert.ok(assistant, "折叠工作组时 .agent-message--assistant 节点仍应存在");
+  // 正文缺失缺陷复现：纯 DOM mock 不解析 innerHTML，助手正文 textContent 为空
+  // → 该断言失败（正文缺失）。Task 10 修复后必须转绿。
+  assert.match(
+    root.querySelector(".agent-message--assistant")?.textContent ?? "",
+    /默认可见的最终答案/u,
+    "助手最终答案正文不得为空，必须保持默认可见"
+  );
+
+  // 工具顺序契约：真实 list_files 一类的活动节点必须位于助手正文之前。
+  const toolRow = root.querySelector(".agent-activity-item");
+  const assistantBubble = root.querySelector('[data-testid="agent-assistant-message"]');
+  assert.ok(toolRow, "回放应渲染工具活动行");
+  assert.ok(assistantBubble, "回放应渲染助手最终答案气泡");
+  const timelineIndex = (el) => el._parent.children.indexOf(el);
+  assert.ok(
+    timelineIndex(toolRow) < timelineIndex(assistantBubble),
+    "工具活动节点必须位于助手最终答案之前（工具顺序早于正文）"
+  );
 });
