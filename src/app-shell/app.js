@@ -109,6 +109,10 @@ const settingsModal = createSettingsModal({
   loadDashboard,
   getLastFocused: () => lastFocused,
   setLastFocused: (el) => { lastFocused = el; },
+  // Task 13：对话导出/清空即时动作。clearHistory 必须转发 options
+  // （confirm_irreversible:true），surface 内部负责清空后的重置与重开当前项目。
+  exportAgentHistory: () => agentSurface.exportHistory(),
+  clearAgentHistory: (options) => agentSurface.clearHistory(options),
 });
 const { openSettingsModal, closeSettingsModal, renderSettingsProviders, renderSettingsDetail, saveSettings } = settingsModal;
 
