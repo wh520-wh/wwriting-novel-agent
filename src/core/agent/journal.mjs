@@ -124,6 +124,22 @@ const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "inte
 // 非终态压缩状态（Task 8）：started/running/cancelling 之间不允许开启新的压缩。
 const COMPACTION_NON_TERMINAL_STATES = new Set(["started", "running", "cancelling"]);
 
+// 压缩恢复尚未完成（Run 处于压缩收敛安全点，无 dangling assistant 活动）：
+//   - 非终态压缩（started/running/cancelling）：压缩调用在途；
+//   - 终态 failed/cancelled 但仍有 pending_input_id：崩溃窗口——failed/cancelled
+//     事件已落盘而 Run/input 收敛（waiting_user / input_cancelled + run_cancelled）
+//     尚未追加。这两种情况下 Run 都只可能在发送前预检安全点，不存在未闭合
+//     model turn/tool call，保守中断不适用；收敛交给 runtime 的 open()。
+function hasPendingCompactionRecovery(session) {
+  const compaction = session?.compaction;
+  if (compaction == null) return false;
+  if (COMPACTION_NON_TERMINAL_STATES.has(compaction.state)) return true;
+  if ((compaction.state === "failed" || compaction.state === "cancelled") && compaction.pending_input_id != null) {
+    return true;
+  }
+  return false;
+}
+
 // 有效工作时钟状态（transitionWorkClock 复用；模块级常量避免每次调用重建 Set）。
 const WORK_CLOCK_ACTIVE_STATUSES = new Set(["running", "interrupting", "stopping"]);
 
@@ -1206,10 +1222,11 @@ export function createAgentJournal({
         // 锚定重放无法重建锚点前的 side 状态（open tool/turn/decision 未知）：
         // 保守地把非终结 Run 标记 interrupted——绝不能把无法验证的 dangling
         // assistant 状态交给 provider（干净关闭中途的 Run 同样走此恢复）。
-        // Task 8：压缩进行中（非终态 compaction）的 Run 处于发送前预检安全点——
-        // 没有未闭合 model turn/tool call，保守中断不适用；由 runtime 的 open()
-        // 按收敛矩阵把 Run 收敛为 waiting_user（绝不自动调用普通模型）。
-        if (!state.session.compaction || !COMPACTION_NON_TERMINAL_STATES.has(state.session.compaction.state)) {
+        // Task 8：压缩恢复尚未完成的 Run 处于发送前预检安全点——没有未闭合
+        // model turn/tool call，保守中断不适用；由 runtime 的 open() 按收敛矩阵
+        // 把 Run 收敛为 waiting_user（绝不自动调用普通模型）。覆盖压缩在途
+        //（非终态）与 failed/cancelled 事件已落盘但 Run/input 收敛未落盘的崩溃窗口。
+        if (!hasPendingCompactionRecovery(state.session)) {
           await appendBatchLocked(buildDanglingRecoveryBatch());
         }
       } else if (dangling) {

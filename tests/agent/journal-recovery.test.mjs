@@ -2060,3 +2060,52 @@ test("锚定重放失败回退全量重放：跨锚点的 turn 闭合不误报�
   assert.equal(session.active_run.status, "running", "全量重放应正确处理跨锚点闭合");
   assert.equal((await j2.read({})).filter((event) => event.type === "run_interrupted").length, 0);
 });
+
+
+test("锚定重放·压缩 failed 崩溃窗口：failed 已落盘而 Run/input 收敛未落盘时不得保守中断", async (t) => {
+  const root = await makeWorkspace(t);
+  const clock = createClock();
+  const j1 = createAgentJournal({ projectRoot: root, clock, idFactory: createIds() });
+  await j1.load();
+  await j1.append({ type: "input_queued", payload: { input_id: "in-1", text: "一" } });
+  await j1.append({ type: "run_started", run_id: "run-1", payload: { workflow: "general", input_id: "in-1" } });
+  await j1.append({
+    type: "context_compaction_started",
+    payload: { compaction_id: "comp-1", trigger: "automatic", attempt: 1, source_checkpoint_id: null, checkpoint_id: "ck-1", pending_input_id: "in-1", started_at: new Date(BASE_TIME + 4000).toISOString() }
+  });
+  await j1.append({ type: "context_compaction_running", payload: { compaction_id: "comp-1", trigger: "automatic", attempt: 1 } });
+  await j1.append({ type: "context_compaction_failed", payload: { compaction_id: "comp-1", trigger: "automatic", attempt: 1, error_code: "compaction_json" } });
+  // 崩溃窗口：context_compaction_failed 已落盘（终态）而
+  // run_status_changed(waiting_user) 尚未落盘（session.json 锚点在 failed）。
+  const j2 = createAgentJournal({ projectRoot: root, clock, idFactory: createIds() });
+  const session = await j2.load();
+  assert.equal(session.active_run.status, "running", "压缩 failed 崩溃窗口的 Run 不得保守中断（收敛交给 runtime）");
+  assert.equal(session.compaction.state, "failed");
+  assert.equal(session.compaction.pending_input_id, "in-1");
+  assert.equal((await j2.read({})).filter((event) => event.type === "run_interrupted").length, 0);
+  // 幂等：再次 load 仍不中断
+  await j2.load();
+  assert.equal((await j2.read({})).filter((event) => event.type === "run_interrupted").length, 0);
+});
+
+test("锚定重放·压缩 cancelled 崩溃窗口：cancelled 已落盘而收敛未落盘时不得保守中断", async (t) => {
+  const root = await makeWorkspace(t);
+  const clock = createClock();
+  const j1 = createAgentJournal({ projectRoot: root, clock, idFactory: createIds() });
+  await j1.load();
+  await j1.append({ type: "input_queued", payload: { input_id: "in-1", text: "一" } });
+  await j1.append({ type: "run_started", run_id: "run-1", payload: { workflow: "general", input_id: "in-1" } });
+  await j1.append({
+    type: "context_compaction_started",
+    payload: { compaction_id: "comp-1", trigger: "automatic", attempt: 1, source_checkpoint_id: null, checkpoint_id: "ck-1", pending_input_id: "in-1", started_at: new Date(BASE_TIME + 4000).toISOString() }
+  });
+  await j1.append({ type: "context_compaction_running", payload: { compaction_id: "comp-1", trigger: "automatic", attempt: 1 } });
+  await j1.append({ type: "context_compaction_cancel_requested", payload: { compaction_id: "comp-1", trigger: "automatic", cancel_reason: "user_esc" } });
+  await j1.append({ type: "context_compaction_cancelled", payload: { compaction_id: "comp-1", trigger: "automatic", attempt: 1, cancel_reason: "user_esc" } });
+  const j2 = createAgentJournal({ projectRoot: root, clock, idFactory: createIds() });
+  const session = await j2.load();
+  assert.equal(session.active_run.status, "running", "压缩 cancelled 崩溃窗口的 Run 不得保守中断");
+  assert.equal(session.compaction.state, "cancelled");
+  assert.equal(session.compaction.pending_input_id, "in-1");
+  assert.equal((await j2.read({})).filter((event) => event.type === "run_interrupted").length, 0);
+});
