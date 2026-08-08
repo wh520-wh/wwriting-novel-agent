@@ -88,6 +88,22 @@ test("发送 chat completion 请求并提取 usage（含 prompt_tokens_details.c
   assert.equal(result.toolCalls.length, 0);
 });
 
+test("请求体 model 使用 modelConfig.model_name（runtime 传入剥离尾标后的基础 ID，adapter 透传不剥离）", async () => {
+  let captured = null;
+  const adapter = makeAdapter({
+    fetchImpl: async (url, init) => {
+      captured = JSON.parse(init.body);
+      return jsonResponse({ choices: [{ message: { content: "ok" } }] });
+    }
+  });
+  // modelConfigOf 已把 model[1m][foo] 解析为基础 ID "model"；adapter 原样发送。
+  await adapter.complete({
+    messages: [{ role: "user", content: "hi" }],
+    modelConfig: { model_name: "model" }
+  });
+  assert.equal(captured.model, "model");
+});
+
 test("complete 默认走 chat/completions endpoint，且支持自定义 endpoint", async () => {
   let capturedUrl = null;
   const adapter = makeAdapter({

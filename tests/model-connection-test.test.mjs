@@ -233,6 +233,39 @@ test("timeout is classified as request_timeout", async () => {
   assert.equal(result.code, "request_timeout");
 });
 
+test("probe 展示保留 configured ID、gateway 收到剥离尾标后的基础 ID", async () => {
+  // 走真实 probe（默认 complete=completeOpenAICompatibleProbe），用桩 fetch
+  // 捕获发给 gateway 的请求体：model[1m][foo] 尾标只在传输边界剥离。
+  const originalFetch = globalThis.fetch;
+  let captured = null;
+  globalThis.fetch = async (_url, init) => {
+    captured = JSON.parse(init.body);
+    return {
+      ok: true,
+      status: 200,
+      async text() {
+        return JSON.stringify({ choices: [{ message: { content: "OK" } }] });
+      },
+    };
+  };
+  try {
+    const result = await testModelConnection({
+      config: {
+        provider: "openai-compatible",
+        model_name: "model[1m][foo]",
+        base_url: "https://api.example.com/v1",
+        api_key_env: "TEST_KEY",
+      },
+      secrets: { TEST_KEY: "k" },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.model_name, "model[1m][foo]", "响应展示保留 configured model id");
+    assert.equal(captured.model, "model", "gateway 发送剥离尾标后的基础 ID");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("completeOpenAICompatibleProbe 对思考模型不注入 temperature", async () => {
   // 走真实 probe（默认 complete=completeOpenAICompatibleProbe），
   // 用桩 fetch 捕获发给 deepseek-v4-pro（思考模型）的请求体，

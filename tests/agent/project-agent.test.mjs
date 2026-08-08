@@ -142,6 +142,40 @@ test("模型请求携带 modelConfig（provider/model_name/base_url/api_key_env 
   assert.equal(completed[0].payload.text, "好。", "assistant_message_completed 必须携带最终回复文本");
 });
 
+test("模型 ID 尾标解析：active_model 原样持久化，modelConfig 携带基础 ID 与有效上下文窗口", async (t) => {
+  // Task 2 契约：设置/项目对象中的原始 model_name（含 [1m][foo] 尾标）保持不变；
+  // gateway 只收到剥离尾标后的基础 ID；有效上下文窗口/压缩阈值由尾标解析。
+  const h = await openHarness(t, {
+    project: {
+      active_model: {
+        provider: "openai-compatible",
+        model_name: "model[1m][foo]",
+        base_url: "https://api.example.com/v1",
+        api_key_env: "DEEPSEEK_API_KEY"
+      }
+    },
+    gatewayScript: [{ reply: { text: "好。" } }]
+  });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "你好", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  assert.ok(h.gateway.calls.length >= 1, "应产生至少一次模型调用");
+  const request = h.gateway.calls[0].request;
+  assert.ok(request.modelConfig && typeof request.modelConfig === "object", "request 必须携带 modelConfig");
+  assert.equal(request.modelConfig.provider, "openai-compatible");
+  assert.equal(request.modelConfig.configured_model_id, "model[1m][foo]");
+  assert.equal(request.modelConfig.model_name, "model", "gateway 收到剥离尾标后的基础 ID");
+  assert.equal(request.modelConfig.effective_context_window, 1_000_000);
+  assert.equal(request.modelConfig.compaction_threshold, 967_000);
+  assert.equal(request.modelConfig.window_source, "model_id_1m");
+  assert.equal(request.modelConfig.base_url, "https://api.example.com/v1");
+  assert.equal(request.modelConfig.api_key_env, "DEEPSEEK_API_KEY");
+  // 持久配置不被改写（plan invariant 9）：内存项目对象与磁盘 project.yaml 的
+  // 原始 model_name 都必须仍是 model[1m][foo]。
+  assert.equal(h.project.active_model.model_name, "model[1m][foo]");
+  const persisted = await fs.readFile(path.join(h.projectRoot, "project.yaml"), "utf8");
+  assert.match(persisted, /model\[1m\]\[foo\]/u, "project.yaml 中的原始 model_name 保持不变");
+});
+
 test("assistant tool_calls 以 OpenAI 线上格式进入后续模型请求", async (t) => {
   // 回归：Task 11 Step 4 真实模型验证发现 assistant tool_calls 以内部扁平形状
   // { id, name, arguments(对象) } 进入请求，DeepSeek/小米等 OpenAI-compatible
