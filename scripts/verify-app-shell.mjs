@@ -149,8 +149,9 @@ try {
   assert.equal(snapshot.session.status, "idle");
   assert.equal(snapshot.session.active_run.status, "completed");
 
-  // 应用私有历史只写 stateRoot：workspaces/<id>/agent/events.jsonl 必须存在，
-  // 文件夹根不得出现 project.yaml / .wwriting/agent / 旧运行态文件
+  // 应用私有历史只写 stateRoot：workspaces/<id>/agent 必须存在 journal 数据
+  //（journal-manifest.json / segments/，新分段格式），文件夹根不得出现
+  // project.yaml / .wwriting/agent / 旧运行态文件
   const journalFound = await containsWorkspaceJournal(stateRoot);
   assert.equal(journalFound, true, "journal 应写入应用私有 stateRoot/workspaces/<id>/agent");
   assert.equal(await pathExists(path.join(projectRoot, "project.yaml")), false, "普通文件夹不得创建 project.yaml");
@@ -387,7 +388,10 @@ async function containsWorkspaceJournal(stateRoot) {
     if (!entry.isDirectory()) continue;
     const agentDir = path.join(workspacesDir, entry.name, "agent");
     try {
-      if ((await fs.readdir(agentDir)).includes("events.jsonl")) return true;
+      const names = await fs.readdir(agentDir);
+      if (names.includes("journal-manifest.json") || names.includes("segments") || names.includes("events.jsonl")) {
+        return true;
+      }
     } catch {
       // 该 workspace 尚无 agent 目录，继续扫描
     }

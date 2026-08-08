@@ -1,30 +1,39 @@
 // src/core/agent/journal.mjs
 //
-// 项目级 Agent journal（统一 Agent 内核计划 Task 2）。
+// 项目级 Agent journal（统一 Agent 内核计划 Task 2；Task 4 起物理层分段化）。
 //
-// journal 是 Agent 状态的唯一真相源（计划 Rule 9）：events.jsonl 记录 Session/Run/
+// journal 是 Agent 状态的唯一真相源（计划 Rule 9）：事件日志记录 Session/Run/
 // queue/plan/decision/grant/activity 的全部事件；session.json 是可重建的 Session/Run
-// projection；transcript.jsonl 只保存合法模型消息链与历史摘要，不承担产品状态；
+// projection；transcript 只保存合法模型消息链与历史摘要，不承担产品状态；
 // migration.json 标记一次性 legacy 导入（Task 7 使用）；checkpoints/ 为预留目录。
 //
 // 存储布局（agentDir = storageRoot，默认 <projectRoot>/.wwriting/agent/ 仅供低层
 // 兼容测试；生产组合根必须显式传应用私有 storageRoot）：
-//   events.jsonl      —— canonical source
-//   session.json      —— 可重建 projection（每次追加后原子重写）
-//   transcript.jsonl  —— 模型消息链/历史摘要
-//   migration.json    —— { schema_version: 1, legacy_imported: false, project_agent_imported: false }
-//   checkpoints/      —— 预留目录
+//   segments/events/*.jsonl        —— canonical source（分段 JSONL，可轮转）
+//   segments/transcript/*.jsonl    —— 模型消息链/历史摘要（同分段格式）
+//   journal-manifest.json          —— 派生数据（generation/roots/last seqs/gaps）
+//   session.json                   —— 可重建 projection（每次追加后原子重写）
+//   migration.json                 —— { schema_version: 1, legacy_imported: false, project_agent_imported: false }
+//   checkpoints/                   —— 预留目录
+//
+// 物理 I/O（追加/读取/轮转/索引/legacy 迁移）全部委托给 journal-segments.mjs 的
+// segment store；本模块只保留 reducer、事件盖章、投影与恢复编排。事件 JSONL 是
+// 真相；manifest 与 .index.json 都是可删除重建的派生数据。旧单体 events.jsonl /
+// transcript.jsonl 只在一次性 legacy 迁移时出现（导入后改名为 *.legacy.jsonl）；
+// runtime 不得再依赖这两个路径判断当前存储。
 //
 // 崩溃模型：appendBatch 先分配连续 seq、对克隆状态严格校验（dry-run，违规在落盘前
-// 拒绝），再追加完整 JSON 行，最后原子重写 session.json（临时文件 + rename，复用
-// fs-utils.writeJsonAtomic，Windows 兼容）。两步之间崩溃时 session.json 落后于
-// events.jsonl，由下一次 load() 在同一把锁内重放 journal 并修复 projection。
-// load() 还负责恢复：中间 seq 缺口视为损坏并报错（不静默跳过）；缺失尾部（不完整
-// 的最后一行 = 崩溃痕迹）截断修复；"dangling assistant 活动"（未闭合的 model turn /
-// tool call）的 Run 不能恢复执行，恢复逻辑把其不可恢复 grant 全部清除并把 Run 标记
-// 为 interrupted（对应事件 run_interrupted），绝不让这种状态被交给 provider。
+// 拒绝），再追加完整 JSON 行到 segment store，最后原子重写 session.json（临时文件 +
+// rename，复用 fs-utils.writeJsonAtomic，Windows 兼容）。两步之间崩溃时 session.json
+// 落后于事件日志，由下一次 load() 在同一把锁内重放 journal 并修复 projection。
+// load() 还负责恢复：segment 中间损坏被隔离为 .corrupt（manifest 记录 gap，绝不
+// 猜测跳过）；缺失尾部（不完整的最后一行 = 崩溃痕迹）截断修复；"dangling assistant
+// 活动"（未闭合的 model turn / tool call）的 Run 不能恢复执行，恢复逻辑把其不可恢复
+// grant 全部清除并把 Run 标记为 interrupted（对应事件 run_interrupted），绝不让这种
+// 状态被交给 provider。存在中间 gap 时以有效的 session.json 为只读恢复锚点，清除
+// active Run/queued inputs 并追加 journal_recovery_boundary（resume_allowed:false）。
 //
-// 投影写入语义：session.json 是可重建的尽力而为缓存，events.jsonl 才是真相源。
+// 投影写入语义：session.json 是可重建的尽力而为缓存，事件日志才是真相源。
 // append/appendBatch 的 resolve 只与事件实际落盘绑定；session.json 原子重写失败
 //（磁盘满/权限）不阻断追加也不抛错，失败信息通过 journal.projection_write_error
 // 暴露，下一次 load() 会重放修复。append/appendBatch/load/getSession 返回的都是
@@ -41,8 +50,9 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { ensureDir, pathExists, readJson, writeJsonAtomic } from "../fs-utils.mjs";
+import { createJournalSegmentStore } from "./journal-segments.mjs";
 
-// 计划固定的 31 个 journal 事件类型；未知类型一律拒绝。
+// 计划固定的 32 个 journal 事件类型；未知类型一律拒绝。
 export const FIXED_EVENT_TYPES = Object.freeze([
   "session_created",
   "run_started",
@@ -74,7 +84,8 @@ export const FIXED_EVENT_TYPES = Object.freeze([
   "run_completed",
   "run_failed",
   "run_cancelled",
-  "run_interrupted"
+  "run_interrupted",
+  "journal_recovery_boundary"
 ]);
 
 export const SESSION_STATUSES = Object.freeze([
@@ -678,6 +689,23 @@ function reduceEvent(session, event, side) {
       // 不影响 Session projection（transcript/领域审计类事件）
       break;
 
+    case "journal_recovery_boundary": {
+      // 恢复边界（Task 4）：以当前 session projection 为新的状态锚点——旧 Run 必须
+      // 已收敛（恢复流程先追加 run_interrupted/input_cancelled），边界本身只清空
+      // side 的开放活动集合（这些开放 tool/decision/model turn 属于被放弃的旧
+      // generation，不再有后续事件闭合它们），并把 session 置 idle。从该边界开始
+      // 允许用户创建新的 Run；旧 Run 一律 interrupted、不自动恢复。
+      if (session.active_run && !TERMINAL_RUN_STATUSES.has(session.active_run.status)) {
+        fail("journal_recovery_boundary 前必须没有活动 Run（旧 Run 应已 interrupted）");
+      }
+      side.openToolCalls.clear();
+      side.openDecisions.clear();
+      side.openModelTurns.clear();
+      side.legacyOpenTurns.length = 0;
+      session.status = "idle";
+      break;
+    }
+
     case "run_completed": {
       const activeRun = requireActiveRun("run_completed");
       // 竞态守卫（Task 6 规格审查）：队列非空时拒绝自然终结——未消费输入不得
@@ -719,16 +747,6 @@ function reduceEvent(session, event, side) {
   return session;
 }
 
-// 从零重放事件序列，返回 { session, ...side }。首个事件必须是 session_created。
-function reduceEvents(events) {
-  let session = null;
-  const side = createSideState();
-  for (const event of events) {
-    session = reduceEvent(session, event, side);
-  }
-  return { session, ...side };
-}
-
 // ---------------------------------------------------------------------------
 // createAgentJournal：journal 实例工厂
 //
@@ -747,77 +765,228 @@ export function createAgentJournal({
   }
   const root = path.resolve(projectRoot);
   const agentDir = path.resolve(storageRoot);
-  const eventsPath = path.join(agentDir, "events.jsonl");
   const sessionPath = path.join(agentDir, "session.json");
-  const transcriptPath = path.join(agentDir, "transcript.jsonl");
   const migrationPath = path.join(agentDir, "migration.json");
   const checkpointsDir = path.join(agentDir, "checkpoints");
+  // 旧单体格式文件只用于一次性 legacy 迁移（导入后改名为 *.legacy.jsonl）
+  const legacyEventsPath = path.join(agentDir, "events.jsonl");
+  const legacyTranscriptPath = path.join(agentDir, "transcript.jsonl");
+  // 物理 I/O 全部委托给 segment store（Task 4）；manifest 为两个 stream 共享
+  const manifestPath = path.join(agentDir, "journal-manifest.json");
+  const eventsStore = createJournalSegmentStore({
+    root: path.join(agentDir, "segments", "events"),
+    streamName: "events",
+    manifestPath
+  });
+  const transcriptStore = createJournalSegmentStore({
+    root: path.join(agentDir, "segments", "transcript"),
+    streamName: "transcript",
+    manifestPath
+  });
   const mutex = createMutex();
 
   let loaded = false;
   let state = null; // reduceEvents 的结果：{ session, openToolCalls, ... }
   let projectionWriteError = null; // 最近一次 session.json 写入失败（尽力而为语义）
 
-  // load() 必须惰性创建 agentDir（storageRoot）、空 events.jsonl、空 transcript.jsonl、
-  // checkpoints/ 与 migration.json。
+  // load() 必须惰性创建 agentDir（storageRoot）、checkpoints/ 与 migration.json。
+  // 新格式 journal 不再创建单体 events.jsonl/transcript.jsonl（旧文件只出现在
+  // legacy 迁移场景，由 migrateLegacy 处理）。
   async function ensureStorage() {
     await ensureDir(agentDir);
     await ensureDir(checkpointsDir);
-    for (const filePath of [eventsPath, transcriptPath]) {
-      if (!(await pathExists(filePath))) await fs.writeFile(filePath, "", "utf8");
-    }
     if (!(await pathExists(migrationPath))) {
       await writeJsonAtomic(migrationPath, { schema_version: 1, legacy_imported: false, project_agent_imported: false });
     }
   }
 
-  // 逐行解析 events.jsonl（基于 Buffer 计算字节偏移，崩溃断在多字节 UTF-8 字符
-  // 中间时偏移仍然精确）。容忍"缺失尾部"（最后一行不完整 = 崩溃痕迹），返回截断
-  // 字节偏移；中间的非法行视为日志损坏，直接报错。
-  async function readEventsFile() {
-    const buf = await fs.readFile(eventsPath);
-    const lines = [];
-    let start = 0;
-    for (let i = 0; i < buf.length; i += 1) {
-      if (buf[i] === 0x0a) {
-        lines.push({ text: buf.toString("utf8", start, i), startByte: start });
-        start = i + 1;
-      }
+  // 旧单体格式一次性迁移：events.jsonl/transcript.jsonl → segments，原文件改名
+  // *.legacy.jsonl。只在检测到旧文件时执行；幂等由 store.importLegacy 保证。
+  async function migrateLegacy() {
+    const [hasEvents, hasTranscript] = await Promise.all([
+      pathExists(legacyEventsPath),
+      pathExists(legacyTranscriptPath)
+    ]);
+    if (hasEvents) {
+      await eventsStore.importLegacy({ filePath: legacyEventsPath, kind: "events" });
     }
-    if (start < buf.length) {
-      lines.push({ text: buf.toString("utf8", start), startByte: start });
+    if (hasTranscript) {
+      await transcriptStore.importLegacy({ filePath: legacyTranscriptPath, kind: "transcript" });
     }
-    const events = [];
-    let truncateAt = null;
-    for (let i = 0; i < lines.length; i += 1) {
-      const { text, startByte } = lines[i];
-      if (text.trim() === "") continue;
-      try {
-        events.push(JSON.parse(text));
-      } catch {
-        if (i === lines.length - 1) {
-          truncateAt = startByte;
-        } else {
-          fail(`events.jsonl 第 ${i + 1} 行不是合法 JSON（事件日志损坏，存在中间缺口）`);
-        }
-      }
-    }
-    return {
-      events,
-      truncateAt,
-      endsWithNewline: buf.length > 0 && buf[buf.length - 1] === 0x0a
-    };
   }
 
-  // load 遇中间 seq 缺口不得静默跳过：报错，等待人工/迁移修复。
-  function validateSeqContiguity(events) {
-    for (let i = 0; i < events.length; i += 1) {
-      const expected = i + 1;
-      const actual = events[i]?.seq;
-      if (!Number.isInteger(actual) || actual !== expected) {
-        fail(`events.jsonl 存在 seq 缺口：第 ${i + 1} 条应为 ${expected}，实际 ${String(actual)}`);
+  // 读取 session.json 恢复锚点；不可读/形状非法返回 null（走全量重放）。
+  async function readSessionAnchor() {
+    try {
+      if (!(await pathExists(sessionPath))) return null;
+      const parsed = JSON.parse(await fs.readFile(sessionPath, "utf8"));
+      if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+      if (typeof parsed.session_id !== "string" || parsed.session_id.length === 0) return null;
+      if (!Number.isInteger(parsed.last_seq) || parsed.last_seq < 0) return null;
+      return { projection: parsed, session_id: parsed.session_id, last_seq: parsed.last_seq };
+    } catch {
+      return null;
+    }
+  }
+
+  // 锚点有效性：session_id 与日志首事件一致、last_seq 不超过日志末尾、且日志确实
+  // 存在 seq == last_seq 的事件（"last_seq 对应事件 id"校验）。
+  async function isAnchorValid(anchor) {
+    if (!anchor) return false;
+    const first = (await eventsStore.readAfter({ afterSeq: 0, limit: 1 })).events[0];
+    if (!first || first.session_id !== anchor.session_id) return false;
+    if (anchor.last_seq > eventsStore.lastSeq) return false;
+    if (anchor.last_seq > 0) {
+      const at = (await eventsStore.readAfter({ afterSeq: anchor.last_seq - 1, limit: 1 })).events[0];
+      if (!at || at.seq !== anchor.last_seq) return false;
+    }
+    return true;
+  }
+
+  // 空 journal 的第一次锁定 load：在锁内发明 Session id 并追加 session_created。
+  // 新建 generation 必须先写 manifest（store.load 已创建）再写第一条 session_created。
+  async function createFirstSession(side) {
+    const sessionId = idFactory(); // 契约：Session id 先于 event_id 生成（旧测试断言 id-1）
+    const first = {
+      schema_version: 1,
+      seq: 1,
+      event_id: idFactory(),
+      session_id: sessionId,
+      run_id: null,
+      project_root: root,
+      type: "session_created",
+      at: normalizeAt(clock()),
+      payload: {}
+    };
+    await eventsStore.append([first]);
+    return reduceEvent(null, first, side);
+  }
+
+  // 常规恢复：锚点有效时只重放 last_seq 之后的事件（避免百万事件全量重放）；
+  // 否则流式全量重放（单次只保留当前行与 reducer state，不整日志读入内存）。
+  async function buildState(anchor) {
+    if (anchor && (await isAnchorValid(anchor))) {
+      const { events } = await eventsStore.readAfter({ afterSeq: anchor.last_seq, limit: null });
+      const session = structuredClone(anchor.projection);
+      const side = createSideState();
+      for (const event of events) {
+        session = reduceEvent(session, event, side);
+      }
+      return { session, ...side };
+    }
+    let session = null;
+    const side = createSideState();
+    for await (const event of eventsStore.streamAll()) {
+      session = reduceEvent(session, event, side);
+    }
+    if (session === null) {
+      session = await createFirstSession(side);
+    }
+    return { session, ...side };
+  }
+
+  // 中间坏段（gap）恢复：不能全量重放（reducer 不能猜测跳过缺口）。
+  // session.json 有效 → 以它为只读恢复锚点，投影标记 history_degraded，
+  // 健康尾部事件仍重放；随后由 appendGapRecovery 追加收敛事件与边界。
+  // 锚点也无效 → 只读打开健康历史（标记 needs_history_clear，等 Task 5 清空）。
+  async function degradedState(anchor) {
+    const side = createSideState();
+    if (anchor && (await isAnchorValid(anchor))) {
+      const session = structuredClone(anchor.projection);
+      session.history_degraded = true;
+      const { events } = await eventsStore.readAfter({ afterSeq: anchor.last_seq, limit: null });
+      for (const event of events) {
+        session = reduceEvent(session, event, side);
+      }
+      return { session, ...side };
+    }
+    // 投影也无效：用健康历史首事件的 session_id 保持身份，其余置为确定的空状态，
+    // 不在缺失状态上猜测 tool/decision 是否打开。
+    const first = (await eventsStore.readAfter({ afterSeq: 0, limit: 1 })).events[0];
+    const session = createEmptySession({
+      sessionId: first?.session_id ?? idFactory(),
+      projectRoot: root,
+      at: normalizeAt(clock())
+    });
+    session.history_degraded = true;
+    session.needs_history_clear = true;
+    return { session, ...side };
+  }
+
+  // gap 恢复事件：先取消活动输入与排队输入（活动输入必须在 run_interrupted 之前
+  // 收敛），再标记旧 Run interrupted，最后追加 journal_recovery_boundary
+  //（携带 gap 范围与 resume_allowed:false）。
+  async function appendGapRecovery(gaps) {
+    const batch = [];
+    const run = state.session.active_run;
+    if (run?.active_input_id != null) {
+      batch.push({ type: "input_cancelled", run_id: run.id, payload: { input_id: run.active_input_id } });
+    }
+    for (const item of state.session.queued_inputs) {
+      batch.push({ type: "input_cancelled", run_id: run?.id ?? null, payload: { input_id: item.id } });
+    }
+    if (run && !TERMINAL_RUN_STATUSES.has(run.status)) {
+      batch.push({ type: "run_interrupted", run_id: run.id, payload: { reason: "recovery_history_gap" } });
+    }
+    const gap = gaps[0];
+    batch.push({
+      type: "journal_recovery_boundary",
+      payload: {
+        gap_start: gap?.start_seq ?? null,
+        gap_end: gap?.end_seq ?? null,
+        reason: gap?.reason ?? "segment_corrupt",
+        resume_allowed: false
+      }
+    });
+    if (batch.length > 0) await appendBatchLocked(batch);
+  }
+
+  // 必须在 mutex 内调用。首次 load：创建存储布局 → 迁移旧单体格式 → 按恢复策略
+  // 建立 projection → 追加恢复事件 → 写出第一份 session.json。
+  async function initialize() {
+    if (loaded) return;
+    await ensureStorage();
+    await eventsStore.load();
+    await transcriptStore.load();
+    await migrateLegacy();
+    const gaps = eventsStore.gaps;
+    const anchor = await readSessionAnchor();
+    if (gaps.length > 0) {
+      state = await degradedState(anchor);
+      await appendGapRecovery(gaps);
+    } else {
+      state = await buildState(anchor);
+      const dangling = detectDangling(state);
+      if (dangling) {
+        // 崩溃恢复：dangling assistant 活动的 Run 不能恢复执行（绝不能把这种状态发
+        // 给 provider）——先清除其全部不可恢复 grant（计划权限生命周期规则），闭合
+        // 崩溃遗留的未解决 decision（保证"每条 decision 收敛"），再把 Run 标记为
+        // interrupted。
+        const recoveryBatch = [];
+        for (const grant of state.session.active_run.active_grants) {
+          recoveryBatch.push({
+            type: "permission_grant_cleared",
+            run_id: state.session.active_run.id,
+            payload: { input_id: grant.input_id, grant_key: grant.grant_key, grant_id: grant.id }
+          });
+        }
+        for (const decisionId of state.openDecisions.keys()) {
+          recoveryBatch.push({
+            type: "decision_resolved",
+            run_id: state.session.active_run.id,
+            payload: { decision_id: decisionId, choice: "cancelled", reason: "recovery_dangling_decision" }
+          });
+        }
+        recoveryBatch.push({
+          type: "run_interrupted",
+          run_id: state.session.active_run.id,
+          payload: { reason: "recovery_dangling_assistant_activity" }
+        });
+        await appendBatchLocked(recoveryBatch);
       }
     }
+    await writeSessionJson();
+    loaded = true;
   }
 
   // 由 journal 统一盖章：seq/event_id/at/session_id/project_root/schema_version。
@@ -866,10 +1035,10 @@ export function createAgentJournal({
     return null;
   }
 
-  // 尽力而为的投影写入：session.json 可重建（events.jsonl 才是真相源），写入失败
+  // 尽力而为的投影写入：session.json 可重建（事件日志才是真相源），写入失败
   //（磁盘满/权限）不阻断 append、不抛错——通过 journal.projection_write_error 暴露
-  // 给观察者，下一次 load() 会重放修复。append 的 resolve/reject 只与 events.jsonl
-  // 的实际落盘绑定，与投影写入成功与否无关。
+  // 给观察者，下一次 load() 会重放修复。append 的 resolve/reject 只与事件日志的
+  // 实际落盘绑定，与投影写入成功与否无关。
   async function writeSessionJson() {
     try {
       await writeJsonAtomic(sessionPath, state.session);
@@ -884,8 +1053,8 @@ export function createAgentJournal({
   }
 
   // 必须在 mutex 内调用。顺序：分配连续 seq → 对克隆状态严格 dry-run（任何不变量
-  // 违规在落盘前拒绝，journal 不被污染）→ 追加完整 JSON 行 → 提交状态 → 原子重写
-  // session.json。
+  // 违规在落盘前拒绝，journal 不被污染）→ 追加完整 JSON 行到 segment store →
+  // 提交状态 → 原子重写 session.json。
   async function appendBatchLocked(batch) {
     if (state == null) fail("journal 尚未初始化");
     if (!Array.isArray(batch)) fail("appendBatch 需要事件数组");
@@ -900,76 +1069,10 @@ export function createAgentJournal({
     for (const event of stamped) {
       nextState.session = reduceEvent(nextState.session, event, nextState);
     }
-    const lines = stamped.map((event) => JSON.stringify(event)).join("\n") + "\n";
-    await fs.appendFile(eventsPath, lines, "utf8");
+    await eventsStore.append(stamped);
     state = nextState;
     await writeSessionJson();
     return state.session;
-  }
-
-  // 必须在 mutex 内调用。首次 load：创建存储布局，在锁内发明 Session id 并追加
-  // session_created，随后写出第一份 session.json projection；之后重放全量事件修复
-  // projection，并执行 dangling 恢复。
-  async function initialize() {
-    if (loaded) return;
-    await ensureStorage();
-    const { events, truncateAt, endsWithNewline } = await readEventsFile();
-    if (truncateAt !== null) {
-      await fs.truncate(eventsPath, truncateAt);
-    }
-    let parsed = events;
-    if (parsed.length === 0) {
-      // 第一次锁定 load：在锁内创建 Session id
-      const sessionId = idFactory();
-      const first = {
-        schema_version: 1,
-        seq: 1,
-        event_id: idFactory(),
-        session_id: sessionId,
-        run_id: null,
-        project_root: root,
-        type: "session_created",
-        at: normalizeAt(clock()),
-        payload: {}
-      };
-      await fs.appendFile(eventsPath, `${JSON.stringify(first)}\n`, "utf8");
-      parsed = [first];
-    } else if (!endsWithNewline && truncateAt === null) {
-      // 补齐尾部换行，避免后续追加把两行粘在一起
-      await fs.appendFile(eventsPath, "\n", "utf8");
-    }
-    validateSeqContiguity(parsed);
-    state = reduceEvents(parsed);
-    const dangling = detectDangling(state);
-    if (dangling) {
-      // 崩溃恢复：dangling assistant 活动的 Run 不能恢复执行（绝不能把这种状态发
-      // 给 provider）——先清除其全部不可恢复 grant（计划权限生命周期规则），闭合
-      // 崩溃遗留的未解决 decision（保证"每条 decision 收敛"），再把 Run 标记为
-      // interrupted。
-      const recoveryBatch = [];
-      for (const grant of state.session.active_run.active_grants) {
-        recoveryBatch.push({
-          type: "permission_grant_cleared",
-          run_id: state.session.active_run.id,
-          payload: { input_id: grant.input_id, grant_key: grant.grant_key, grant_id: grant.id }
-        });
-      }
-      for (const decisionId of state.openDecisions.keys()) {
-        recoveryBatch.push({
-          type: "decision_resolved",
-          run_id: state.session.active_run.id,
-          payload: { decision_id: decisionId, choice: "cancelled", reason: "recovery_dangling_decision" }
-        });
-      }
-      recoveryBatch.push({
-        type: "run_interrupted",
-        run_id: state.session.active_run.id,
-        payload: { reason: "recovery_dangling_assistant_activity" }
-      });
-      await appendBatchLocked(recoveryBatch);
-    }
-    await writeSessionJson();
-    loaded = true;
   }
 
   // 恢复 journal：创建目录、重放事件、修复 projection、处理 dangling 恢复。
@@ -1021,45 +1124,73 @@ export function createAgentJournal({
     });
   }
 
-  // 原始事件读取（seq > afterSeq，最多 limit 条，默认全部）。不触发初始化/恢复/
-  // 截断修复——那些只由 load() 负责（Task 6 的 open() 会先调用 load()）；消费者
-  // 应在首次 read 前调用 load()，否则拿到的可能是未修复的原始内容。
+  // 原始事件读取（seq > afterSeq，最多 limit 条，默认全部）。委托 segment store。
+  // 不触发初始化/恢复——那些只由 load() 负责（Task 6 的 open() 会先调用 load()）；
+  // 消费者应在首次 read 前调用 load()，否则拿到的可能是未迁移/未修复的原始内容。
   async function read({ afterSeq = 0, limit } = {}) {
     return mutex.run(async () => {
-      if (!(await pathExists(eventsPath))) return [];
-      const { events } = await readEventsFile();
-      const filtered = events
-        .filter((event) => event.seq > afterSeq)
-        .sort((a, b) => a.seq - b.seq);
-      return limit == null ? filtered : filtered.slice(0, limit);
+      const { events } = await eventsStore.readAfter({ afterSeq, limit });
+      return events;
+    });
+  }
+
+  // 尾部分页/倒序读取（Task 5 分页 API 的物理基础；Task 4 提供委托）。
+  async function readTail({ limit } = {}) {
+    return mutex.run(async () => {
+      await initialize();
+      return eventsStore.readTail({ limit });
+    });
+  }
+
+  async function readBefore({ beforeSeq, limit } = {}) {
+    return mutex.run(async () => {
+      await initialize();
+      return eventsStore.readBefore({ beforeSeq, limit });
+    });
+  }
+
+  async function readAfter({ afterSeq = 0, limit } = {}) {
+    return mutex.run(async () => {
+      await initialize();
+      return eventsStore.readAfter({ afterSeq, limit });
     });
   }
 
   // transcript 与 Session projection 无关：只追加合法模型消息链与历史摘要。
+  // 每条新 record 由 Journal 盖 transcript_seq（store 用它排序/分页）。
   async function appendTranscript(record) {
     return mutex.run(async () => {
       if (record == null || typeof record !== "object" || Array.isArray(record)) {
         fail("transcript record 必须是对象");
       }
-      await fs.appendFile(transcriptPath, `${JSON.stringify(record)}\n`, "utf8");
+      await initialize();
+      const stamped = { ...record, transcript_seq: transcriptStore.lastSeq + 1 };
+      await transcriptStore.append([stamped]);
     });
   }
 
   async function readTranscript() {
     return mutex.run(async () => {
-      if (!(await pathExists(transcriptPath))) return [];
-      const raw = await fs.readFile(transcriptPath, "utf8");
-      const records = [];
-      for (const line of raw.split("\n")) {
-        const trimmed = line.trim();
-        if (trimmed === "") continue;
-        try {
-          records.push(JSON.parse(trimmed));
-        } catch {
-          // transcript 是尽力而为的展示数据：跳过损坏行，不阻塞读取
-        }
-      }
-      return records;
+      await initialize();
+      const { events } = await transcriptStore.readAfter({ afterSeq: 0 });
+      return events;
+    });
+  }
+
+  // 分页读取（runtime 后续切换，不再全量读单文件）。
+  async function readTranscriptAfter({ afterSeq = 0, limit } = {}) {
+    return mutex.run(async () => {
+      await initialize();
+      const { events } = await transcriptStore.readAfter({ afterSeq, limit });
+      return events;
+    });
+  }
+
+  async function readTranscriptTail({ limit } = {}) {
+    return mutex.run(async () => {
+      await initialize();
+      const { events } = await transcriptStore.readTail({ limit });
+      return events;
     });
   }
 
@@ -1070,14 +1201,24 @@ export function createAgentJournal({
     append,
     appendBatch,
     read,
+    readTail,
+    readBefore,
+    readAfter,
     getSession,
     appendTranscript,
-    readTranscript
+    readTranscript,
+    readTranscriptAfter,
+    readTranscriptTail
   };
   // 可观察字段：最近一次 session.json 写入失败（尽力而为语义），成功写入后为 null。
   Object.defineProperty(journal, "projection_write_error", {
     enumerable: true,
     get: () => projectionWriteError
+  });
+  // 可观察字段：journal 恢复发现的中间缺口（只读；Task 5 分页/清理使用）。
+  Object.defineProperty(journal, "gaps", {
+    enumerable: true,
+    get: () => eventsStore.gaps
   });
   return journal;
 }

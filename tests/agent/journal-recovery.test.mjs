@@ -109,14 +109,26 @@ test("load 惰性创建 .wwriting/agent 并在锁内追加 session_created", asy
 
   const session = await journal.load();
 
-  // 存储布局：events.jsonl / session.json / transcript.jsonl / migration.json / checkpoints/
+  // 存储布局（新分段格式）：segments/events、segments/transcript、session.json、
+  // journal-manifest.json、migration.json、checkpoints/；不再创建单体 events.jsonl/
+  // transcript.jsonl
   const dir = agentDir(root);
-  for (const name of ["events.jsonl", "session.json", "transcript.jsonl", "migration.json"]) {
+  for (const name of ["session.json", "migration.json", "journal-manifest.json"]) {
     assert.equal(await fs.access(path.join(dir, name)).then(() => true).catch(() => false), true, `${name} 应存在`);
   }
+  assert.equal(await pathExists(path.join(dir, "events.jsonl")), false, "新格式 journal 不得创建单体 events.jsonl");
+  assert.equal(await pathExists(path.join(dir, "transcript.jsonl")), false, "新格式 journal 不得创建单体 transcript.jsonl");
   assert.equal((await fs.stat(path.join(dir, "checkpoints"))).isDirectory(), true, "checkpoints/ 应为目录");
+  assert.equal((await fs.stat(path.join(dir, "segments", "events"))).isDirectory(), true, "segments/events 应为目录");
+  assert.equal((await fs.stat(path.join(dir, "segments", "transcript"))).isDirectory(), true, "segments/transcript 应为目录");
   const migration = JSON.parse(await fs.readFile(path.join(dir, "migration.json"), "utf8"));
   assert.deepEqual(migration, { schema_version: 1, legacy_imported: false, project_agent_imported: false });
+  const manifest = JSON.parse(await fs.readFile(path.join(dir, "journal-manifest.json"), "utf8"));
+  assert.equal(manifest.schema_version, 1);
+  assert.equal(typeof manifest.generation_id, "string");
+  assert.equal(manifest.events_root, "segments/events");
+  assert.equal(manifest.transcript_root, "segments/transcript");
+  assert.deepEqual(manifest.gaps, []);
 
   // 第一个锁定 load 追加 session_created 并写出第一份 session.json
   const events = await journal.read({});
@@ -158,9 +170,15 @@ test("journal 使用 storageRoot 落盘，同时事件仍记录真实 project_ro
   const journal = createAgentJournal({ projectRoot, storageRoot });
   await journal.load();
   await journal.append({ type: "input_queued", payload: { input_id: "i1", text: "你好" } });
-  assert.equal(await pathExists(path.join(storageRoot, "events.jsonl")), true);
-  assert.equal(await pathExists(path.join(projectRoot, ".wwriting", "agent", "events.jsonl")), false);
-  const event = JSON.parse((await fs.readFile(path.join(storageRoot, "events.jsonl"), "utf8")).trim().split("\n").at(-1));
+  assert.equal(await pathExists(path.join(storageRoot, "segments", "events", "00000001.jsonl")), true, "事件应落在 storageRoot 的 segments/events");
+  assert.equal(await pathExists(path.join(storageRoot, "events.jsonl")), false, "storageRoot 不得出现单体 events.jsonl");
+  assert.equal(await pathExists(path.join(projectRoot, ".wwriting", "agent")), false, "项目目录不得出现 .wwriting/agent");
+  const event = JSON.parse(
+    (await fs.readFile(path.join(storageRoot, "segments", "events", "00000001.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .at(-1)
+  );
   assert.equal(event.project_root, path.resolve(projectRoot));
 });
 
@@ -363,13 +381,17 @@ test("appendTranscript 与 Session projection 互不影响", async (t) => {
   await journal.appendTranscript({ role: "user", text: "第一条消息" });
   await journal.appendTranscript({ role: "assistant", text: "回复", usage: { tokens: 10 } });
 
+  // 每条新 record 由 Journal 盖 transcript_seq（不改 role/content 等原始字段）
   const records = await journal.readTranscript();
   assert.deepEqual(records, [
-    { role: "user", text: "第一条消息" },
-    { role: "assistant", text: "回复", usage: { tokens: 10 } }
+    { role: "user", text: "第一条消息", transcript_seq: 1 },
+    { role: "assistant", text: "回复", usage: { tokens: 10 }, transcript_seq: 2 }
   ]);
-  // 逐行 JSON
-  const raw = await fs.readFile(path.join(agentDir(root), "transcript.jsonl"), "utf8");
+  // 逐行 JSON，落在 segments/transcript
+  const segment = path.join(agentDir(root), "segments", "transcript", "00000001.jsonl");
+  assert.equal(await pathExists(segment), true, "transcript 应落在 segments/transcript");
+  assert.equal(await pathExists(path.join(agentDir(root), "transcript.jsonl")), false, "不得创建单体 transcript.jsonl");
+  const raw = await fs.readFile(segment, "utf8");
   const lines = raw.split("\n").filter((line) => line.trim() !== "");
   assert.equal(lines.length, 2);
   assert.ok(lines.every((line) => JSON.parse(line)), "transcript 每行都是合法 JSON");
@@ -911,6 +933,7 @@ test("load 容忍缺失尾部（不完整最后一行）并截断修复", async 
     makeEvent(5, { root, type: "model_turn_completed", runId: "run-1" })
   ];
   await fs.mkdir(agentDir(root), { recursive: true });
+  // 旧单体格式（legacy）：5 条完整事件 + 尾部半行 → legacy 迁移丢弃半行
   await fs.writeFile(
     path.join(agentDir(root), "events.jsonl"),
     events.map((event) => JSON.stringify(event)).join("\n") + "\n" + '{"partial',
@@ -919,13 +942,17 @@ test("load 容忍缺失尾部（不完整最后一行）并截断修复", async 
 
   const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
   const session = await journal.load();
-  assert.equal(session.last_seq, 5, "缺失尾部应被容忍并截断");
+  assert.equal(session.last_seq, 5, "缺失尾部应被容忍（迁移时丢弃半行）");
   assert.equal(session.active_run.status, "running");
 
-  // 文件已截断为完整行，后续 append 正常衔接
-  const raw = await fs.readFile(path.join(agentDir(root), "events.jsonl"), "utf8");
+  // 旧文件已迁移改名为 events.legacy.jsonl；segments 只含 5 条完整事件
+  assert.equal(await pathExists(path.join(agentDir(root), "events.jsonl")), false, "events.jsonl 迁移后应被改名");
+  assert.equal(await pathExists(path.join(agentDir(root), "events.legacy.jsonl")), true, "旧文件应保留为 events.legacy.jsonl");
+  const segment = path.join(agentDir(root), "segments", "events", "00000001.jsonl");
+  const raw = await fs.readFile(segment, "utf8");
   const lines = raw.split("\n").filter((line) => line.trim() !== "");
-  assert.equal(lines.length, 5);
+  assert.equal(lines.length, 5, "segments 只含完整事件，半行不进 segment");
+  // 后续 append 正常衔接
   await journal.append({ type: "input_queued", payload: { input_id: "in-2", text: "二" } });
   const last = (await journal.read({})).at(-1);
   assert.equal(last.seq, 6);
@@ -1174,8 +1201,8 @@ test("append 无需显式 load（自初始化）", async (t) => {
   assert.equal(events[1].seq, 2);
 });
 
-test("FIXED_EVENT_TYPES 包含计划固定的 31 个事件类型（含 reasoning 事件）", () => {
-  assert.equal(FIXED_EVENT_TYPES.length, 31);
+test("FIXED_EVENT_TYPES 包含计划固定的 32 个事件类型（含 reasoning 与 journal_recovery_boundary）", () => {
+  assert.equal(FIXED_EVENT_TYPES.length, 32);
   assert.deepEqual(
     [...FIXED_EVENT_TYPES].sort(),
     [
@@ -1191,6 +1218,7 @@ test("FIXED_EVENT_TYPES 包含计划固定的 31 个事件类型（含 reasoning
       "input_queued",
       "interrupt_requested",
       "interrupt_safe_point_reached",
+      "journal_recovery_boundary",
       "model_turn_completed",
       "model_turn_started",
       "permission_grant_cleared",
@@ -1212,6 +1240,41 @@ test("FIXED_EVENT_TYPES 包含计划固定的 31 个事件类型（含 reasoning
       "workflow_changed"
     ].sort()
   );
+});
+
+test("journal_recovery_boundary：以 session projection 为新状态锚点，清空 side 开放活动并置 session idle", async (t) => {
+  const root = await makeWorkspace(t);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  await journal.load();
+  // 完成一个 Run，留下一个已打开的 tool call 侧状态（后续不再闭合它）
+  await journal.append({ type: "input_queued", payload: { input_id: "in-1", text: "一" } });
+  await journal.append({ type: "run_started", run_id: "run-1", payload: { workflow: "general", input_id: "in-1" } });
+  await journal.append({ type: "tool_call_started", run_id: "run-1", payload: { tool_call_id: "tc-1", name: "shell" } });
+  await journal.append({ type: "input_consumed", run_id: "run-1", payload: { input_id: "in-1" } });
+  await journal.append({ type: "run_completed", run_id: "run-1", payload: {} });
+
+  // 恢复边界：旧 Run 已终结（idle），边界以当前 projection 为锚点
+  await journal.append({
+    type: "journal_recovery_boundary",
+    payload: { gap_start: 5, gap_end: 8, reason: "segment_corrupt", resume_allowed: false }
+  });
+  let session = await journal.getSession();
+  assert.equal(session.status, "idle", "边界后 session 必须 idle");
+  assert.equal(session.active_run.status, "completed", "旧 Run 保持终结状态（锚点）");
+
+  // 边界后允许创建新的 Run（旧开放 tool call 不再阻塞）
+  await journal.append({ type: "run_started", run_id: "run-2", payload: { workflow: "general" } });
+  session = await journal.getSession();
+  assert.equal(session.active_run.id, "run-2");
+  assert.equal(session.status, "running");
+  await journal.append({ type: "run_completed", run_id: "run-2", payload: {} });
+
+  const all = await journal.read({});
+  const boundary = all.filter((event) => event.type === "journal_recovery_boundary");
+  assert.equal(boundary.length, 1);
+  assert.equal(boundary[0].payload.resume_allowed, false);
+  assert.equal(boundary[0].payload.gap_start, 5);
+  assert.equal(boundary[0].payload.gap_end, 8);
 });
 
 test("契约：reasoning_delta/reasoning_completed 是固定事件类型，v2 turn 事件按 §2.3 payload 闭环", async (t) => {

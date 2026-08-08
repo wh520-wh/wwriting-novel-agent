@@ -230,8 +230,8 @@ test("API 失败正文不泄露 ENOENT、堆栈和绝对内部路径", async () 
 test("SSE 错误事件 data 行同样脱敏：不泄露原始 fs 错误与内部路径", async () => {
   // 评审 Critical：GET /api/project/events 的快照轮询失败路径原样写
   // `error?.message`/`error?.code` 进 data 行，原始 Node fs 错误（绝对内部路径）
-  // 会随 data: 离开服务器。这里把 events.jsonl 替换成同名目录 → journal.read 的
-  // fs.readFile 抛原始 EISDIR（syscall=read），验证 data 行只含脱敏后的 message/code。
+  // 会随 data: 离开服务器。这里把 events segment 替换成同名目录 → journal.read 的
+  // segment 读取抛原始 EISDIR（syscall=read），验证 data 行只含脱敏后的 message/code。
   const { projectRoot, server, port, stateRoot } = await setupServer();
   const controller = new AbortController();
   try {
@@ -241,8 +241,22 @@ test("SSE 错误事件 data 行同样脱敏：不泄露原始 fs 错误与内部
       const { data } = await getJson(port, `/api/agent/snapshot?projectRoot=${encodeURIComponent(projectRoot)}`);
       return data.session?.active_run?.status === "completed" ? true : null;
     });
-    const eventsPath = path.join(stateRoot, "workspaces", workspaceIdForPath(projectRoot), "agent", "events.jsonl");
+    const eventsPath = path.join(
+      stateRoot,
+      "workspaces",
+      workspaceIdForPath(projectRoot),
+      "agent",
+      "segments",
+      "events",
+      "00000001.jsonl"
+    );
     await fs.access(eventsPath); // journal 已落盘
+
+    // 让工作区私有存储变为不可读：events segment → 同名目录（跨平台确定性触发
+    // EISDIR）。分段 store 只在真正读取 segment 时才触碰文件（空闲轮询返回空页
+    // 不读盘），因此先破坏存储、再以 afterSeq=0 打开 SSE——首次轮询必然读取坏段。
+    await fs.rm(eventsPath, { force: true });
+    await fs.mkdir(eventsPath);
 
     const res = await fetch(`http://127.0.0.1:${port}/api/project/events?projectRoot=${encodeURIComponent(projectRoot)}`, {
       signal: controller.signal
@@ -252,12 +266,9 @@ test("SSE 错误事件 data 行同样脱敏：不泄露原始 fs 错误与内部
     const decoder = new TextDecoder();
     await readChunkUntil(reader, decoder, (chunk) => chunk.includes("connected"));
 
-    // 让工作区私有存储变为不可读：events.jsonl → 同名目录（跨平台确定性触发 EISDIR）
-    await fs.rm(eventsPath, { force: true });
-    await fs.mkdir(eventsPath);
     const block = await readChunkUntil(reader, decoder, (chunk) => chunk.includes("event: error"));
 
-    // 流里可能已有此前的正常 journal data 行；event: error 后的最后一条 data: 才是错误事件。
+    // 流里只应有 connected + error；event: error 后的最后一条 data: 才是错误事件。
     const dataLines = block.split("\n").filter((line) => line.startsWith("data:"));
     assert.ok(dataLines.length >= 1, "应至少推送一条 data: 行");
     const dataLine = dataLines[dataLines.length - 1];

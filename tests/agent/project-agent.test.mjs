@@ -842,7 +842,10 @@ test("工具调用与读取结果只瞬时提供给模型，持久 transcript/jo
   await h.agent.submit({ projectRoot: h.projectRoot, text: "读取指定文件", source: "chat" });
   await waitForIdle(h.agent, h.projectRoot);
 
-  const transcriptRaw = await fs.readFile(path.join(h.agentRoot, "transcript.jsonl"), "utf8");
+  const transcriptRaw = await fs.readFile(
+    path.join(h.agentRoot, "segments", "transcript", "00000001.jsonl"),
+    "utf8"
+  );
   assert.ok(!transcriptRaw.includes(SECRET), "transcript 不得保存工具参数中的 secret");
   assert.ok(!transcriptRaw.includes(PRIVATE_CONTENT), "transcript 不得保存 read_file 全文");
   const eventRaw = JSON.stringify(await readEvents(h.agent, h.projectRoot));
@@ -1458,15 +1461,20 @@ test("非法 source 与空输入一律拒绝（source 不能绕过权限）", as
   );
 });
 
-test("新项目不创建旧状态文件，Agent 状态只落在应用私有 agentRoot", async (t) => {
+test("新项目不创建旧状态文件，Agent 状态只落在应用私有 agentRoot（新分段格式）", async (t) => {
   const h = await openHarness(t, { gatewayScript: [{ reply: { text: "好。" } }] });
   await h.agent.submit({ projectRoot: h.projectRoot, text: "你好", source: "chat" });
   await waitForIdle(h.agent, h.projectRoot);
   assert.equal(await pathExists(path.join(h.projectRoot, LEGACY_STATE_FILE)), false);
   assert.equal(await pathExists(path.join(h.projectRoot, ".wwriting", "agent")), false, "新会话不得写回项目内 .wwriting/agent");
-  for (const name of ["events.jsonl", "session.json", "transcript.jsonl", "migration.json"]) {
+  // 新格式 journal：segments/ + journal-manifest.json + session.json + migration.json
+  for (const name of ["session.json", "migration.json", "journal-manifest.json"]) {
     assert.equal(await pathExists(path.join(h.agentRoot, name)), true, `${name} 应落在应用私有 agentRoot`);
   }
+  assert.equal(await pathExists(path.join(h.agentRoot, "segments", "events")), true, "segments/events 应存在");
+  assert.equal(await pathExists(path.join(h.agentRoot, "segments", "transcript")), true, "segments/transcript 应存在");
+  assert.equal(await pathExists(path.join(h.agentRoot, "events.jsonl")), false, "新项目不得创建单体 events.jsonl");
+  assert.equal(await pathExists(path.join(h.agentRoot, "transcript.jsonl")), false, "新项目不得创建单体 transcript.jsonl");
 });
 
 test("旧 .wwriting/agent 中间损坏：open() 拒绝迁移但允许新会话（journal 落应用私有目录）", async (t) => {
@@ -1486,7 +1494,8 @@ test("旧 .wwriting/agent 中间损坏：open() 拒绝迁移但允许新会话�
   // 新会话仍可建立：私有目录从零创建 session（迁移被拒、目标目录保持干净）
   const session = await readSession(h.agent, h.projectRoot);
   assert.ok(session.session_id, "open() 必须允许新会话");
-  assert.equal(await pathExists(path.join(h.agentRoot, "events.jsonl")), true, "新 journal 落应用私有目录");
+  assert.equal(await pathExists(path.join(h.agentRoot, "journal-manifest.json")), true, "新 journal 落应用私有目录（新分段格式）");
+  assert.equal(await pathExists(path.join(h.agentRoot, "segments", "events")), true, "新 journal 应创建 segments/events");
   await h.agent.submit({ projectRoot: h.projectRoot, text: "你好", source: "chat" });
   await waitForIdle(h.agent, h.projectRoot);
   const events = await readEvents(h.agent, h.projectRoot);
@@ -1498,12 +1507,19 @@ test("旧 .wwriting/agent 中间损坏：open() 拒绝迁移但允许新会话�
 // 规格审查修复验证：promote×stop、transcript 闭合、滞留输入、终态结果
 // ---------------------------------------------------------------------------
 
+// 读取 transcript 全部记录（新分段格式：segments/transcript/ 下的所有 segment）。
 async function readTranscriptFile(agentRoot) {
-  const raw = await fs.readFile(path.join(agentRoot, "transcript.jsonl"), "utf8");
-  return raw
-    .split("\n")
-    .filter((line) => line.trim() !== "")
-    .map((line) => JSON.parse(line));
+  const dir = path.join(agentRoot, "segments", "transcript");
+  const names = (await fs.readdir(dir).catch(() => [])).filter((name) => /^\d{8}\.jsonl$/u.test(name)).sort();
+  const records = [];
+  for (const name of names) {
+    const raw = await fs.readFile(path.join(dir, name), "utf8");
+    for (const line of raw.split("\n")) {
+      if (line.trim() === "") continue;
+      records.push(JSON.parse(line));
+    }
+  }
+  return records;
 }
 
 // 每条 assistant tool_calls 消息的每个 tool_call_id 之后必须有对应 tool 结果。
