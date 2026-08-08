@@ -741,6 +741,34 @@ test("Task 9 压缩状态冲突（重试已终结/进行中/无 Run）→ 409", 
   assert.equal(retry.data.code, "compaction_not_retryable");
 });
 
+test("Task 9 压缩领域错误码在白名单内：特定中文文案透传（M2 修复）", async (t) => {
+  // 回归：五个压缩 code 曾经不在 SAFE_PUBLIC_ERROR_CODES 白名单内，message 一律被
+  // 收敛为通用文案，「压缩任务不存在」等可读原因永远到不了用户。白名单放行后
+  // 固定文案必须原样透传。
+  const cases = [
+    { code: "invalid_compaction_id", status: 400, message: "压缩任务标识无效。" },
+    { code: "compaction_not_found", status: 404, message: "压缩任务不存在或已结束。" },
+    { code: "compaction_not_retryable", status: 409, message: "压缩已结束，无法重试。" },
+    { code: "compaction_in_flight", status: 409, message: "压缩正在进行中，无法重试。" },
+    { code: "compaction_no_run", status: 409, message: "当前没有可继续压缩的 Run。" }
+  ];
+  for (const { code, status, message } of cases) {
+    const agent = compactionStubAgent({
+      retryCompaction: async () => {
+        const error = new Error("占位：此文案会被路由映射替换");
+        error.code = code;
+        throw error;
+      }
+    });
+    const server = await compactionHttpServer(t, agent);
+    const retry = await server.post("/api/agent/compaction/c-1/retry", { projectRoot: "D:ny" });
+    assert.equal(retry.res.status, status, `${code} 状态码`);
+    assert.equal(retry.data.ok, false);
+    assert.equal(retry.data.code, code);
+    assert.equal(retry.data.message, message, `${code} 特定文案必须透传（不得收敛为通用文案）`);
+  }
+});
+
 test("Task 9 取消/重试不泄漏底层错误文本（统一脱敏契约）", async (t) => {
   const agent = compactionStubAgent({
     cancelCompaction: async () => {

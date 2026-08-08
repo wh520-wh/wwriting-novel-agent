@@ -133,6 +133,11 @@ export function createAgentSurface({
     const rebuild = reduceSnapshot(state, snapshot);
     if (rebuild) view.reset();
     view.render(state, actions);
+    // I4：ESC 去重锁的释放必须覆盖快照路径。SSE 断线后重连补齐按合并后的 max seq
+    // 增量拉快照，若取消请求与 context_compaction_cancelled/run_cancelled 之间的
+    // 连接恰好断开，终态事件永远不会经 applyEvent 送达（被快照吞掉）——这里对
+    // 快照事件列表做同 id 终态检查，否则 latch 永驻、ESC 停止/取消永久失效。
+    for (const event of snapshot.events ?? []) clearEscapeLatch(event);
   }
 
   function applyEvent(event) {

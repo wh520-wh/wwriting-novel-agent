@@ -335,7 +335,9 @@ export function createJournalSegmentStore({
 
   // 活动段索引可能落后于实际文件（索引在 stride 点写入）：从最后一个 offset 起
   // 读到 EOF 校正 count/endSeq/bytes（有界读取：至多 stride + 尾部记录）。
-  // 返回 true 表示索引已失效（offset 越过文件尾），需要重建。
+  // 返回 true 表示索引已失效（offset 越过文件尾），需要重建；返回
+  // { corrupt: true } 表示索引之后的尾部出现非法行（I3 修复：视为段损坏，调用方
+  // 走隔离路径——绝不让 load 因单个坏行拒绝打开工作区）。
   async function refreshActiveTail(segment) {
     const offsets = segment.offsets ?? [];
     const lastOffset = offsets.at(-1);
@@ -346,7 +348,12 @@ export function createJournalSegmentStore({
       if (lastOffset.byte > stat.size) return true; // 截短后 offset 失效
       const chunk = Buffer.alloc(stat.size - lastOffset.byte);
       await handle.read(chunk, 0, chunk.length, lastOffset.byte);
-      const { records } = parseJsonLines(chunk);
+      let records;
+      try {
+        ({ records } = parseJsonLines(chunk));
+      } catch {
+        return { corrupt: true };
+      }
       segment.count = (offsets.length - 1) * indexStride + records.length;
       segment.endSeq = segment.startSeq + segment.count - 1;
       segment.bytes = lastOffset.byte + chunk.length;
@@ -461,18 +468,22 @@ export function createJournalSegmentStore({
     // 3d. 活动段索引可能落后于实际文件：从最后一个 offset 校正（有界读取）
     if (rebuildMode === "inline" && segments.length > 0 && !signal?.aborted) {
       const newest = segments.at(-1);
-      if (newest.index && (await refreshActiveTail(newest))) {
-        const outcome = await rebuildIndex(newest);
-        if (outcome.corrupt) {
-          await isolateSegment(newest, {
-            ...buildGapRange(newest, outcome.parsedCount),
-            reason: "segment_corrupt",
-            stream: streamName
-          });
-        } else if (outcome.empty) {
-          await fs.rm(newest.path, { force: true });
-          await fs.rm(newest.indexPath, { force: true });
-          segments = segments.filter((s) => s.id !== newest.id);
+      if (newest.index) {
+        const tail = await refreshActiveTail(newest);
+        if (tail === true || tail?.corrupt === true) {
+          // 索引失效（截短）或索引之后的尾部损坏：全量扫描重建/隔离。
+          const outcome = await rebuildIndex(newest);
+          if (outcome.corrupt) {
+            await isolateSegment(newest, {
+              ...buildGapRange(newest, outcome.parsedCount),
+              reason: "segment_corrupt",
+              stream: streamName
+            });
+          } else if (outcome.empty) {
+            await fs.rm(newest.path, { force: true });
+            await fs.rm(newest.indexPath, { force: true });
+            segments = segments.filter((s) => s.id !== newest.id);
+          }
         }
       }
     }
@@ -598,9 +609,13 @@ export function createJournalSegmentStore({
     return byte;
   }
 
-  // 读取 [fromByte, toByte] 并解析为记录数组。非法行（非尾部半行）抛错。
+  // 读取 [fromByte, toByte] 并解析为记录数组。非法行（非尾部半行）表示段损坏：
+  // I3 修复——索引有效但内容位腐的 sealed 段在这里被懒隔离（重命名 .corrupt +
+  // manifest 记录 gap），并抛结构化 SEGMENT_GAP 交给 journal 走缺口恢复/重试读取，
+  // 绝不把原始"段损坏"错误抛给上层阻塞工作区打开。
   async function readSegmentChunk(segment, fromByte, toByte = null) {
     const handle = await fs.open(segment.path, "r");
+    let handleClosed = false;
     try {
       const stat = await handle.stat();
       if (stat.isDirectory()) {
@@ -615,10 +630,26 @@ export function createJournalSegmentStore({
       if (end <= start) return [];
       const buffer = Buffer.alloc(end - start);
       await handle.read(buffer, 0, buffer.length, start);
-      const { records } = parseJsonLines(buffer);
+      let records;
+      try {
+        ({ records } = parseJsonLines(buffer));
+      } catch {
+        // 先关闭句柄再隔离（Windows 下 rename 需要句柄释放）。
+        await handle.close().catch(() => {});
+        handleClosed = true;
+        const outcome = await scanSegment(segment);
+        const parsedCount =
+          outcome?.corrupt === true ? outcome.parsedCount : Number.isInteger(segment.count) ? segment.count : 0;
+        await isolateSegment(segment, {
+          ...buildGapRange(segment, parsedCount),
+          reason: "segment_corrupt",
+          stream: streamName
+        });
+        throw segmentGapError();
+      }
       return records;
     } finally {
-      await handle.close().catch(() => {});
+      if (!handleClosed) await handle.close().catch(() => {});
     }
   }
 
@@ -819,6 +850,52 @@ export function createJournalSegmentStore({
     return { generation_id: manifest.generation_id, old_generation_id: oldId, moved_to: target };
   }
 
+  // generation 轮转回滚（Task 5 clearHistory 故障恢复）：把 fromDir 下已移走的旧
+  // segments 目录移回原位置，移除本流在 manifest 中的轮转记录并恢复旧
+  // generation_id（双流共享 manifest，两次 restore 写同一 oldId，幂等），重置
+  // store 内存状态并重新加载。未实际轮转过的流调用它只做 manifest 对齐 + 重载。
+  // 返回 { restored, generation_id }。
+  async function restoreGeneration({ fromDir, generationId = null } = {}) {
+    await loadIfNeeded();
+    const current = manifest ?? (await ensureManifest());
+    const oldId = generationId ?? current.generation_id;
+    const dirName = `${oldId}-${streamName}`;
+    const source = path.join(fromDir, dirName);
+    if (await pathExists(source)) {
+      if (activeSegment?.fd) {
+        await activeSegment.fd.sync().catch(() => {});
+        await activeSegment.fd.close().catch(() => {});
+        activeSegment.fd = null;
+      }
+      if (!(await pathExists(resolvedRoot))) {
+        await fs.rename(source, resolvedRoot);
+      } else {
+        // 两种可能：目标目录从未真正移动（rename 失败前 ensureDir 只创建了空目录），
+        // 或 startGeneration 成功后的 load() 已把原目录重建为空壳——都只移走空目录，
+        // 绝不覆盖可能存在的真实数据。
+        const rootEntries = await fs.readdir(resolvedRoot).catch(() => []);
+        if (rootEntries.length === 0) {
+          await fs.rm(resolvedRoot, { recursive: true, force: true });
+          await fs.rename(source, resolvedRoot);
+        } else {
+          // 异常现场（目标非空）：保留源目录不删，仅告警——不猜测销毁数据。
+          console.warn(`[journal-segments] restoreGeneration 无法移回 ${source}：目标 ${resolvedRoot} 非空`);
+        }
+      }
+    }
+    await updateManifest((cur) => ({
+      generation_id: oldId,
+      generations: (cur.generations ?? []).filter((g) => !(g.stream === streamName && g.generation_id === oldId))
+    }));
+    segments = [];
+    activeSegment = null;
+    lastSeq = 0;
+    gaps = [];
+    loadedFlag = false;
+    await load();
+    return { restored: true, generation_id: oldId };
+  }
+
   return {
     load,
     append,
@@ -828,6 +905,7 @@ export function createJournalSegmentStore({
     streamAll,
     importLegacy,
     startGeneration,
+    restoreGeneration,
     rebuildMissingIndexes,
     get manifest() {
       return manifest;

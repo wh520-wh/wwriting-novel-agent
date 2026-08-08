@@ -314,10 +314,19 @@ export function createCompactionCoordinator({
         duration_ms: durationOf(entry)
       }
     };
+    // I5：提交前最后确认取消。cancel 在指针切换前到达 → 取消优先（不切换指针、
+    // 追加 cancelled）；指针切换后的取消竞态由 cancel() 按实际终态报告（completed
+    // 绝不再追加 cancelled/failed——否则 journal 同时持有两个终态，UI 显示已取消
+    // 而上下文其实已切换）。
+    if (entry.state === "cancelling") {
+      return finalizeCancelled(entry, entry.cancelReason ?? "user_cancel");
+    }
     try {
       await checkpointStore.writeCandidate(candidate);
       await checkpointStore.validateCandidate(candidate, sourceState);
       const committed = await checkpointStore.commitCandidate(candidate, { journal, commitEvent, sourceState });
+      // 提交成功（指针已切换）：即使 cancel 在提交期间到达，也按 completed 收敛——
+      // 提交是原子事实，取消请求只是"没赶上"。
       entry.state = "completed";
       if (committed?.checkpoint_id != null) entry.checkpointId = committed.checkpoint_id;
       return {
@@ -336,6 +345,7 @@ export function createCompactionCoordinator({
   async function finalizeFailure(entry, error) {
     entry.state = "failed";
     const errorCode = error?.code ?? "compaction_failed";
+    entry.errorCode = errorCode;
     const payload = buildPayload(entry, { error_code: errorCode, duration_ms: durationOf(entry) });
     assertPayloadComplete(payload);
     await journal.append({ type: "context_compaction_failed", payload }).catch(() => {});
@@ -395,6 +405,20 @@ export function createCompactionCoordinator({
       });
       return { status: "noop", compaction_id: compactionId, reason: built.reason ?? "nothing_to_compact" };
     }
+    if (built?.too_large === true) {
+      // I1：源材料超出压缩请求窗口——快速失败（不调用模型、不追加 started）。
+      // Run 收敛到 waiting_user，错误码可诊断（compaction_source_exceeds_window）；
+      // 输入保持 pending，用户可清空历史后重试，绝不把超窗请求发给 provider。
+      entry.source = built ?? {};
+      entry.state = "failed";
+      const tooLargePayload = buildPayload(entry, {
+        error_code: "compaction_source_exceeds_window",
+        duration_ms: 0
+      });
+      assertPayloadComplete(tooLargePayload);
+      await journal.append({ type: "context_compaction_failed", payload: tooLargePayload }).catch(() => {});
+      return { status: "failed", compaction_id: compactionId, attempt: 1, error_code: "compaction_source_exceeds_window" };
+    }
     await journal.append({
       type: "context_compaction_started",
       payload: {
@@ -444,6 +468,18 @@ export function createCompactionCoordinator({
       });
       return { status: "noop", compaction_id: compactionId };
     }
+    if (built?.too_large === true) {
+      // I1：retry 重建源后仍超出窗口——与 start 同一快速失败语义（不调用模型）。
+      entry.source = built ?? {};
+      entry.state = "failed";
+      const tooLargePayload = buildPayload(entry, {
+        error_code: "compaction_source_exceeds_window",
+        duration_ms: 0
+      });
+      assertPayloadComplete(tooLargePayload);
+      await journal.append({ type: "context_compaction_failed", payload: tooLargePayload }).catch(() => {});
+      return { status: "failed", compaction_id: compactionId, attempt: entry.attempt, error_code: "compaction_source_exceeds_window" };
+    }
     entry.source = built ?? {};
     if (entry.modelConfig == null && built?.modelConfig != null) entry.modelConfig = built.modelConfig;
     await journal.append({
@@ -475,9 +511,9 @@ export function createCompactionCoordinator({
     }
     if (entry.state === "cancelling") {
       await entry.pending?.catch(() => {});
-      return { status: "cancelled", compaction_id: compactionId };
+      return actualOutcome(entry, compactionId);
     }
-    // started/running → cancelling；底层结束后（entry.pending resolve）才返回 cancelled
+    // started/running → cancelling；底层结束后（entry.pending resolve）才返回终态。
     entry.state = "cancelling";
     entry.cancelReason = "user_cancel";
     await journal
@@ -488,6 +524,19 @@ export function createCompactionCoordinator({
       .catch(() => {});
     entry.requestController?.abort();
     await entry.pending?.catch(() => {});
+    return actualOutcome(entry, compactionId);
+  }
+
+  // I5：cancel 等待期间 attempt 可能已推进到终态（提交与取消竞态）——按实际终态
+  // 报告，绝不把"已成功提交（指针已切换）"的压缩误报为取消（否则调用方会把
+  // 成功的压缩收敛成 input_cancelled + run_cancelled）。
+  function actualOutcome(entry, compactionId) {
+    if (entry.state === "completed") {
+      return { status: "completed", compaction_id: compactionId, checkpoint_id: entry.checkpointId };
+    }
+    if (entry.state === "failed") {
+      return { status: "failed", compaction_id: compactionId, error_code: entry.errorCode ?? null };
+    }
     return { status: "cancelled", compaction_id: compactionId, cancel_reason: entry.cancelReason };
   }
 

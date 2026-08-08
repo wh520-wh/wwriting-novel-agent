@@ -237,9 +237,12 @@ ESC 需要增加真实交互回归：分别覆盖“关闭最上层菜单但不�
 | 向前 200 事件分页 | `read_previous_page_ms <= 500` | 2 | 3 | PASS |
 
 说明：`index_rebuild_ms` 为删除全部 `.index.json` 派生索引后 inline 全量重建耗时
-（1M 约 2.1s / 2 GiB 约 14s）；生产路径使用 background 模式——load 立即返回、尾部
-健康段先可读、索引重建作为受 AbortSignal 保护的后台任务继续（该行为由
-`journal-segments.mjs` 与 `tests/agent/journal-recovery.test.mjs` 覆盖）。中间坏段
+（1M 约 2.1s / 2 GiB 约 14s）；生产路径使用 inline 模式——load 期间同步重建
+缺失/损坏的索引（索引是派生数据，可重建；打开耗时由尾部截断与有界读取保证，
+上述 1M 打开仅 239ms）。background 模式是 store 层能力（load 立即返回、尾部
+健康段先可读、索引重建作为受 AbortSignal 保护的后台任务继续），当前无生产调用方
+传入 `rebuildMode`，其行为由 `journal-segments.mjs` 与
+`tests/agent/journal-recovery.test.mjs` 覆盖。中间坏段
 隔离后前后健康段可读、工作区可打开同样由 journal-recovery 测试覆盖，不属于本
 基准脚本的数值门槛。
 
