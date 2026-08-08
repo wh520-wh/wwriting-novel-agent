@@ -1,0 +1,28 @@
+// Codex 风格 UI 改版的源码级视觉契约（Task 1 骨架，后续任务逐块追加）。
+//
+// 冻结基线（与 docs/superpowers/plans/2026-08-09-codex-style-ui-redesign.md 对应）：
+//   - agent.css 无 raw hex（颜色一律 var(--token)）；hex 只允许在 styles.css
+//     :root 与 [data-theme="dark"] 两个 primitive 块；
+//   - 对话与 composer 共享 --content-column: 1040px；
+//   - Task 2+：运行区无横杠、工作项无左侧竖线、--r-card: 12px；
+//   - Task 3+：工作组为细边框圆角卡片；Task 4+：状态小条与压缩条；
+//   - Task 5+：composer 卡片化、顶栏发丝下边框、项目行圆角。
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { test } from "node:test";
+
+const root = path.resolve(new URL(".", import.meta.url).pathname.replace(/^\/([A-Z]:)/u, "$1"), "../..");
+const read = (rel) => readFileSync(path.join(root, rel), "utf8");
+export function cssBlock(css, selector) {
+  const start = css.indexOf(selector + " {");
+  assert.ok(start >= 0, `selector not found: ${selector}`);
+  const end = css.indexOf("}", start);
+  return css.slice(start, end + 1);
+}
+
+test("基线保留：agent.css 无 raw hex、内容列 1040px", () => {
+  const css = read("src/app-shell/agent/agent.css");
+  assert.ok(!/#[0-9a-fA-F]{3,8}\b/u.test(css.replace(/var\([^)]*\)/gu, "")));
+  assert.match(css, /var\(--content-column\)/u);
+});
