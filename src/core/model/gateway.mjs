@@ -8,7 +8,7 @@
 //
 // 公共形状（Task 1 harness 冻结）：
 //   const gateway = createModelGateway({ adapter, retryMax, timeoutMs, ... });
-//   const result = await gateway.complete(request, { signal });
+//   const result = await gateway.complete(request, { signal, retryMax });
 //   result -> { text, reasoning, toolCalls, raw, usageReport, costSummary,
 //               modelConfig, attempts, retried, cached }
 //
@@ -54,9 +54,12 @@ export function createModelGateway({
 
   const responseCache = new Map();
 
-  async function complete(request, { signal = undefined } = {}) {
+  async function complete(request, { signal = undefined, retryMax: requestRetryMax = retryMax } = {}) {
     if (request == null || typeof request !== "object") {
       throw new TypeError("gateway.complete 需要 request 对象");
+    }
+    if (!Number.isInteger(requestRetryMax) || requestRetryMax < 0) {
+      throw new TypeError("gateway.complete retryMax 必须是非负整数");
     }
     const modelConfig = request.modelConfig ?? {};
     const provider = modelConfig.provider ?? "unknown";
@@ -102,7 +105,7 @@ export function createModelGateway({
     // 通知上层发「连接已恢复」。
     let retried = false;
 
-    for (let attempt = 0; attempt <= retryMax; attempt += 1) {
+    for (let attempt = 0; attempt <= requestRetryMax; attempt += 1) {
       const elapsed = Date.now() - startTime;
       if (elapsed >= totalDeadline) {
         // 总期限已过：立即抛错，不重试（重试只会多等一次退避后必然超时）
@@ -222,7 +225,7 @@ export function createModelGateway({
             recordFailed(timeoutError, { provider, model, stage, chapter });
             throw timeoutError;
           }
-          if (isRetryable(timeoutError) && attempt < retryMax) {
+          if (isRetryable(timeoutError) && attempt < requestRetryMax) {
             onActivity?.();
             retried = true;
             costTracker.recordRetry();
@@ -238,7 +241,7 @@ export function createModelGateway({
           throw error;
         }
 
-        if (isRetryable(error) && attempt < retryMax) {
+        if (isRetryable(error) && attempt < requestRetryMax) {
           onActivity?.();
           retried = true;
           costTracker.recordRetry();
@@ -251,7 +254,7 @@ export function createModelGateway({
         throw error;
       }
     }
-    // 不可达：循环上限 retryMax 次重试后必然 throw
+    // 不可达：循环上限 requestRetryMax 次重试后必然 throw
     throw new ProviderTransportError("Request failed after exhausting retries.", { reason: "network" });
   }
 
