@@ -304,6 +304,32 @@ export function createAgentSurface({
   // 初始空状态渲染：未打开项目时 composer 立即处于禁用态。
   view.render(state, actions);
 
+  // 历史导出（Task 9）：纯委托 transport，返回 NDJSON 原文（{ text }），不解析、
+  // 不碰 DOM 或 Journal 文件。
+  function exportHistory() {
+    const t = ensureApi();
+    if (typeof t.exportHistory !== "function") return Promise.resolve(null);
+    return t.exportHistory();
+  }
+
+  // 不可逆清空（Task 9）：transport 成功后才动本地状态——清空投影、重建视图并
+  // 重新打开当前项目。openProject 内部经 transport.openProject 终止旧 SSE、按新
+  // session（afterSeq=0）重拉快照并连接新事件流（clear-reconnect 语义）。失败
+  // （409 history_busy / 400 confirmation_required）时状态保持不动，错误抛给调用方。
+  async function clearHistory(options = {}) {
+    const t = ensureApi();
+    if (typeof t.clearHistory !== "function") return undefined;
+    const projectRoot = state.projectRoot;
+    if (!projectRoot) return undefined;
+    const scope = currentProjectScope();
+    const result = await t.clearHistory(options);
+    if (!isCurrentProjectScope(scope)) return undefined;
+    resetState(state, { projectRoot });
+    view.reset();
+    await openProject(projectRoot);
+    return result;
+  }
+
   function destroy() {
     destroyed = true;
     projectGeneration += 1;
@@ -319,6 +345,10 @@ export function createAgentSurface({
     openProject,
     applySnapshot,
     applyEvent,
+    exportHistory,
+    clearHistory,
+    // Task 12 将在本 return 对象增加 handleEscape()（唯一 ESC 出口）；这里不预留
+    // 同名方法，避免与 Task 12 的实现语义冲突。
     destroy
   };
 }
