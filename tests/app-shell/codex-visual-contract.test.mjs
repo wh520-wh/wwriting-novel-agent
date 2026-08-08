@@ -36,3 +36,11 @@ test("Codex 基线：运行区无横杠、工作项无左侧竖线", () => {
 test("Codex 基线：styles.css 提供 --r-card 12px", () => {
   assert.match(read("src/app-shell/styles.css"), /--r-card:\s*12px/u);
 });
+
+test("Codex 基线：工作组为细边框圆角卡片", () => {
+  const css = read("src/app-shell/agent/agent.css");
+  const group = cssBlock(css, ".agent-work-group");
+  assert.match(group, /border:\s*1px solid var\(--agent-line\)/u);
+  assert.match(group, /border-radius:\s*var\(--r-card\)/u);
+  assert.match(group, /box-shadow:\s*var\(--shadow-xs\)/u);
+});

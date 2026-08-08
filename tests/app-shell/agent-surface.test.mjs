@@ -1936,11 +1936,11 @@ test("agent.css 保留 1040px 内容列、向上菜单与工作组/动效布局"
   assert.doesNotMatch(css, /agent-thinking-dot|agent-thinking-blink|agent-plan-mark|agent-plan-restore/u, "旧三点思考/悬浮层控件 CSS 已删除");
   assert.doesNotMatch(css, /@media\s*\(max-width:\s*720px\)/u, "旧窄窗口悬浮层降级规则已删除");
   // 工作组（Step 3/12）：details 容器 + 稳定选择器（不靠 nth-child/文案/内联 style）；
-  // Task 12 后无框：透明、无边框、无圆角、无阴影，平级时间线。
+  // Codex 改版后为细边框圆角卡片，保留 1040px 内容轴。
   assert.match(
     css,
-    /\.agent-work-group\s*\{[^}]*background:\s*transparent[^}]*border:\s*0[^}]*box-shadow:\s*none[^}]*border-radius:\s*0/u,
-    "工作组是无框时间线容器（透明/无边/无圆角/无阴影）"
+    /\.agent-work-group\s*\{[^}]*width:\s*min\(100%,\s*1040px\)[^}]*border:\s*1px\s+solid\s+var\(--agent-line\)[^}]*border-radius:\s*var\(--r-card\)[^}]*box-shadow:\s*var\(--shadow-xs\)/u,
+    "工作组是细边框圆角卡片，保留 1040px 内容轴"
   );
   assert.match(
     css,
