@@ -83,7 +83,7 @@ export function createContextRing({
   svg.setAttribute("focusable", "false");
 
   const track = doc.createElementNS(NS, "circle");
-  track.className = "agent-context-ring-track";
+  track.classList.add("agent-context-ring-track");
   track.setAttribute("cx", "12");
   track.setAttribute("cy", "12");
   track.setAttribute("r", String(RING_RADIUS));
@@ -91,7 +91,7 @@ export function createContextRing({
   track.setAttribute("stroke-width", "2");
 
   const value = doc.createElementNS(NS, "circle");
-  value.className = "agent-context-ring-value";
+  value.classList.add("agent-context-ring-value");
   value.setAttribute("cx", "12");
   value.setAttribute("cy", "12");
   value.setAttribute("r", String(RING_RADIUS));
