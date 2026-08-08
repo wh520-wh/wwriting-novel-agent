@@ -82,7 +82,7 @@ const SAFE_EDIT_CONTENT_REL = [path.join("chapters"), path.join("drafts"), "OUTL
 
 // 受保护路径规则（Step 7）：通用 edit 与 shell 拒绝直接写
 const PROTECTED_RULES = Object.freeze({
-  agent_journal: "agent_journal", // <projectRoot>/.wwriting/agent/ 全部（events.jsonl、session.json、transcript.jsonl、migration.json、checkpoints/）
+  agent_journal: "agent_journal", // <projectRoot>/.wwriting/agent/ 全部（segments/、journal-manifest.json、session.json、migration.json、checkpoints/）
   project_checkpoints: "project_checkpoints", // <projectRoot>/checkpoints/
   chapter_index: "chapter_index", // memory/chapter_index.json
   chapter_file: "chapter_file", // 进行中的正式章节文件（chapters/NNN.ext）
