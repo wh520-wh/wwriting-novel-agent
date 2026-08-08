@@ -1255,14 +1255,15 @@ test("append 无需显式 load（自初始化）", async (t) => {
   assert.equal(events[1].seq, 2);
 });
 
-test("FIXED_EVENT_TYPES 包含计划固定的 32 个事件类型（含 reasoning 与 journal_recovery_boundary）", () => {
-  assert.equal(FIXED_EVENT_TYPES.length, 32);
+test("FIXED_EVENT_TYPES 包含计划固定的 33 个事件类型（含 reasoning、journal_recovery_boundary 与 context_usage_updated）", () => {
+  assert.equal(FIXED_EVENT_TYPES.length, 33);
   assert.deepEqual(
     [...FIXED_EVENT_TYPES].sort(),
     [
       "assistant_message_delta",
       "assistant_message_completed",
       "checkpoint_linked",
+      "context_usage_updated",
       "decision_requested",
       "decision_resolved",
       "history_compacted",

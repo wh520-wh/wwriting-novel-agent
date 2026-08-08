@@ -45,7 +45,7 @@ import {
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(here, "..", "..");
 
-// 计划固定的 journal 事件类型（31 个）。
+// 计划固定的 journal 事件类型（32 个；Task 6 加入 context_usage_updated）。
 const FIXED_EVENT_TYPES = [
   "session_created",
   "run_started",
@@ -72,6 +72,7 @@ const FIXED_EVENT_TYPES = [
   "reasoning_delta",
   "history_compacted",
   "checkpoint_linked",
+  "context_usage_updated",
   "assistant_message_delta",
   "assistant_message_completed",
   "run_completed",
