@@ -98,6 +98,60 @@ async function writeCrashJournal(root, events) {
   );
 }
 
+// 构造带中间坏段的 journal 夹具（新分段格式，手工写 segments 模拟磁盘损坏）：
+//   seg1 = [1..2]（session_created + input_queued）
+//   seg2 = [3..4] + 非法行（坏段，无索引 → load 重建时隔离，名义范围 [3,4]）
+//   seg3 = tail（默认 [5..7]：model_turn_completed + input_consumed + run_completed）
+// anchor 可选：写入 session.json（恢复锚点）。
+async function writeGapJournal(root, { anchor = null, tail = null } = {}) {
+  const dir = agentDir(root);
+  await fs.mkdir(path.join(dir, "segments", "events"), { recursive: true });
+  await fs.mkdir(path.join(dir, "segments", "transcript"), { recursive: true });
+  const events = {
+    1: makeEvent(1, { root, type: "session_created" }),
+    2: makeEvent(2, { root, type: "input_queued", payload: { input_id: "in-1", text: "一" } }),
+    3: makeEvent(3, { root, type: "run_started", runId: "run-1", payload: { workflow: "general", input_id: "in-1" } }),
+    4: makeEvent(4, { root, type: "model_turn_started", runId: "run-1" })
+  };
+  const tailEvents = tail ?? [
+    makeEvent(5, { root, type: "model_turn_completed", runId: "run-1" }),
+    makeEvent(6, { root, type: "input_consumed", runId: "run-1", payload: { input_id: "in-1" } }),
+    makeEvent(7, { root, type: "run_completed", runId: "run-1", payload: {} })
+  ];
+  await fs.writeFile(
+    path.join(dir, "segments", "events", "00000001.jsonl"),
+    [events[1], events[2]].map((event) => JSON.stringify(event)).join("\n") + "\n",
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(dir, "segments", "events", "00000002.jsonl"),
+    [events[3], events[4]].map((event) => JSON.stringify(event)).join("\n") + "\n" + "{broken\n",
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(dir, "segments", "events", "00000003.jsonl"),
+    tailEvents.map((event) => JSON.stringify(event)).join("\n") + "\n",
+    "utf8"
+  );
+  if (anchor) {
+    await fs.writeFile(path.join(dir, "session.json"), JSON.stringify(anchor, null, 2) + "\n", "utf8");
+  }
+  return dir;
+}
+
+function makeAnchor(root, { lastSeq, status = "idle", run = null, queued = [] }) {
+  return {
+    schema_version: 1,
+    session_id: "sess-1",
+    project_root: root,
+    status,
+    active_run: run,
+    queued_inputs: queued,
+    last_seq: lastSeq,
+    updated_at: new Date(BASE_TIME + lastSeq * 1000).toISOString()
+  };
+}
+
 // ---------------------------------------------------------------------------
 // 存储布局与 session 生命周期
 // ---------------------------------------------------------------------------
@@ -1818,4 +1872,183 @@ test("assistant_message_delta 崩溃恢复：events.jsonl 重放重建同一投�
   await recovered.load();
   const session = await recovered.getSession();
   assert.equal(session.active_run.assistant_text, "增量一增量二", "重放 delta 得到与实时一致的结果");
+});
+// ---------------------------------------------------------------------------
+// 中间坏段（gap）恢复（Task 4 修复）：journal 级 degraded/needs-clear 语义
+// ---------------------------------------------------------------------------
+
+test("缺口恢复·无锚点：只读降级（needs_history_clear），不崩溃不追加恢复事件", async (t) => {
+  const root = await makeWorkspace(t);
+  await writeGapJournal(root);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  const session = await journal.load();
+  assert.equal(session.history_degraded, true, "缺口存在时必须标记 history_degraded");
+  assert.equal(session.needs_history_clear, true, "无有效锚点时必须标记 needs_history_clear");
+  assert.equal(session.status, "idle");
+  assert.equal(session.last_seq, 0, "needs-clear 投影从空状态开始（不猜测缺口上的状态）");
+  // 健康事件可读，坏段范围跳过；只读降级不得追加任何恢复事件
+  const events = await journal.read({});
+  assert.deepEqual(events.map((event) => event.seq), [1, 2, 5, 6, 7], "健康事件可读，坏段范围跳过");
+  assert.equal(events.some((event) => event.type === "journal_recovery_boundary"), false, "只读降级不得追加 boundary");
+  assert.deepEqual(journal.gaps, [{ start_seq: 3, end_seq: 4, reason: "segment_corrupt" }]);
+  // needs-clear 状态在下次打开保持（不被误判为有效锚点）
+  const again = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  const againSession = await again.load();
+  assert.equal(againSession.needs_history_clear, true, "needs-clear 状态应跨打开保持");
+});
+
+test("缺口恢复·陈旧锚点（落在坏段内）：视为无效 → 只读降级，不崩溃", async (t) => {
+  const root = await makeWorkspace(t);
+  // last_seq 4 对应的事件位于坏段（seq 3-4 丢失）→ isAnchorValid 失败
+  await writeGapJournal(root, { anchor: makeAnchor(root, { lastSeq: 4, status: "running" }) });
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  const session = await journal.load();
+  assert.equal(session.needs_history_clear, true, "落在坏段内的锚点必须走只读降级（不得崩溃）");
+  assert.equal(session.history_degraded, true);
+});
+
+test("缺口恢复·新鲜锚点（健康尾部已收敛）：追加一次 boundary，二次打开幂等", async (t) => {
+  const root = await makeWorkspace(t);
+  await writeGapJournal(root, {
+    anchor: makeAnchor(root, { lastSeq: 7, run: { id: "run-1", status: "completed" } })
+  });
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  const session = await journal.load();
+  assert.equal(session.history_degraded, true);
+  assert.equal(session.status, "idle");
+  const events = await journal.read({});
+  const boundaries = events.filter((event) => event.type === "journal_recovery_boundary");
+  assert.equal(boundaries.length, 1, "新鲜锚点应追加一次 boundary");
+  assert.equal(boundaries[0].payload.resume_allowed, false);
+  assert.equal(boundaries[0].payload.gap_start, 3);
+  assert.equal(boundaries[0].payload.gap_end, 4);
+  assert.equal(boundaries[0].seq, 8, "boundary 必须从 store 实际尾部续号（修复：不再从锚点/空投影号续）");
+  // 幂等：新实例再次打开不重复追加 boundary
+  const again = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  await again.load();
+  const events2 = await again.read({});
+  assert.equal(events2.filter((event) => event.type === "journal_recovery_boundary").length, 1, "恢复已完成不得重复追加 boundary");
+});
+
+test("缺口恢复·活动 Run：先取消输入再中断 Run，随后 boundary 允许新 Run", async (t) => {
+  const root = await makeWorkspace(t);
+  // 尾部在 Run 进行中：seq 5 model_turn_completed、seq 6 tool_call_started（Run 仍 running）
+  const tail = [
+    makeEvent(5, { root, type: "model_turn_completed", runId: "run-1" }),
+    makeEvent(6, { root, type: "tool_call_started", runId: "run-1", payload: { tool_call_id: "tc-1", name: "shell" } })
+  ];
+  await writeGapJournal(root, {
+    tail,
+    anchor: makeAnchor(root, {
+      lastSeq: 6,
+      status: "running",
+      run: { id: "run-1", status: "running", active_input_id: "in-1", active_grants: [] }
+    })
+  });
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  const session = await journal.load();
+  assert.equal(session.history_degraded, true);
+  assert.equal(session.active_run.status, "interrupted", "缺口恢复必须把活动 Run 标记 interrupted");
+  assert.equal(session.active_run.active_input_id, null, "活动输入必须收敛");
+  assert.deepEqual(session.queued_inputs, []);
+  assert.equal(session.status, "idle");
+  const events = await journal.read({});
+  assert.equal(events.filter((event) => event.type === "run_interrupted").length, 1);
+  assert.equal(events.filter((event) => event.type === "input_cancelled").length, 1);
+  assert.equal(events.filter((event) => event.type === "journal_recovery_boundary").length, 1);
+  // 从边界开始允许创建新的 Run
+  await journal.append({ type: "run_started", run_id: "run-2", payload: { workflow: "general" } });
+  const after = await journal.getSession();
+  assert.equal(after.active_run.id, "run-2");
+  assert.equal(after.status, "running");
+});
+
+test("缺口恢复·仅 transcript 坏段：不触发 events 恢复（manifest 按 stream 隔离）", async (t) => {
+  const root = await makeWorkspace(t);
+  // 正常 journal：事件 + 一条 transcript
+  const j1 = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  await j1.load();
+  await j1.append({ type: "input_queued", payload: { input_id: "in-1", text: "一" } });
+  await j1.appendTranscript({ role: "user", content: "旧对话" });
+  // 损坏 transcript 段（注入非法行 + 删除索引 → load 重建时隔离）
+  const transcriptDir = path.join(agentDir(root), "segments", "transcript");
+  const transcriptSegment = path.join(transcriptDir, "00000001.jsonl");
+  await fs.appendFile(transcriptSegment, "{broken\n", "utf8");
+  await fs.rm(path.join(transcriptDir, "00000001.index.json"), { force: true });
+
+  const j2 = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  const session = await j2.load();
+  // events 流不受 transcript 缺口污染：无 history_degraded、无 boundary、事件完整
+  assert.equal(session.history_degraded, undefined, "仅 transcript 损坏不得标记 events 降级");
+  assert.equal(session.last_seq, 2);
+  assert.deepEqual(j2.gaps, [], "journal.gaps 只反映 events 流缺口");
+  const events = await j2.read({});
+  assert.equal(events.filter((event) => event.type === "journal_recovery_boundary").length, 0, "不得追加 events boundary");
+  assert.equal(events.filter((event) => event.type === "run_interrupted").length, 0, "不得中断健康 Run");
+  // transcript 流的缺口独立可观察（manifest 与 journal 同一文件）
+  const { createJournalSegmentStore } = await import("../../src/core/agent/journal-segments.mjs");
+  const store = createJournalSegmentStore({
+    root: transcriptDir,
+    streamName: "transcript",
+    manifestPath: path.join(agentDir(root), "journal-manifest.json")
+  });
+  await store.load();
+  assert.deepEqual(store.gaps, [{ start_seq: 1, end_seq: 1, reason: "segment_corrupt" }], "transcript 缺口由 transcript 流自身报告");
+});
+
+test("锚定重放·非终结 Run 保守中断：干净关闭中途不得把无法验证的 dangling 状态交给 provider", async (t) => {
+  const root = await makeWorkspace(t);
+  const clock = createClock();
+  const j1 = createAgentJournal({ projectRoot: root, clock, idFactory: createIds() });
+  await j1.load();
+  await j1.append({ type: "input_queued", payload: { input_id: "in-1", text: "一" } });
+  await j1.append({ type: "run_started", run_id: "run-1", payload: { workflow: "general", input_id: "in-1" } });
+  await j1.append({
+    type: "model_turn_started",
+    run_id: "run-1",
+    payload: { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }
+  });
+  await j1.append({ type: "tool_call_started", run_id: "run-1", payload: { tool_call_id: "tc-1", name: "shell" } });
+  // session.json 在 last_seq 5（有效锚点）→ 锚定重放无法重建锚点前的 side 状态
+  const j2 = createAgentJournal({ projectRoot: root, clock, idFactory: createIds() });
+  const session = await j2.load();
+  assert.equal(session.active_run.status, "interrupted", "锚定重放下非终结 Run 必须保守中断");
+  assert.equal((await j2.read({})).filter((event) => event.type === "run_interrupted").length, 1);
+  // 幂等：再次 load 不重复标记
+  await j2.load();
+  assert.equal((await j2.read({})).filter((event) => event.type === "run_interrupted").length, 1);
+});
+
+test("锚定重放失败回退全量重放：跨锚点的 turn 闭合不误报损坏", async (t) => {
+  const root = await makeWorkspace(t);
+  const clock = createClock();
+  const j1 = createAgentJournal({ projectRoot: root, clock, idFactory: createIds() });
+  await j1.load();
+  await j1.append({ type: "input_queued", payload: { input_id: "in-1", text: "一" } });
+  await j1.append({ type: "run_started", run_id: "run-1", payload: { workflow: "general", input_id: "in-1" } });
+  await j1.append({
+    type: "model_turn_started",
+    run_id: "run-1",
+    payload: { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }
+  });
+  // 崩溃现场：model_turn_completed 已落盘（seq 5）但 session.json 还停在 seq 4
+  const { session_id } = await j1.getSession();
+  const tailEvent = {
+    schema_version: 2,
+    seq: 5,
+    event_id: "evt-manual-5",
+    session_id,
+    run_id: "run-1",
+    project_root: root,
+    type: "model_turn_completed",
+    at: new Date(BASE_TIME + 5000).toISOString(),
+    payload: { turn_id: "turn-1", input_id: "in-1", outcome: "completed" }
+  };
+  await fs.appendFile(path.join(agentDir(root), "segments", "events", "00000001.jsonl"), `${JSON.stringify(tailEvent)}\n`, "utf8");
+
+  const j2 = createAgentJournal({ projectRoot: root, clock, idFactory: createIds() });
+  const session = await j2.load();
+  // 锚点重放引用锚点前开始的 turn → 失败 → 回退全量重放：闭合正常、Run 保持 running
+  assert.equal(session.active_run.status, "running", "全量重放应正确处理跨锚点闭合");
+  assert.equal((await j2.read({})).filter((event) => event.type === "run_interrupted").length, 0);
 });

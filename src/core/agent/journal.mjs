@@ -784,6 +784,9 @@ export function createAgentJournal({
     manifestPath
   });
   const mutex = createMutex();
+  // store 层 load/重建的 AbortSignal（Task 5 clear-history 等会在需要时中止后台任务；
+  // 本任务只负责把信号接进 store，保证重建可中断）。
+  const loadSignal = new AbortController();
 
   let loaded = false;
   let state = null; // reduceEvents 的结果：{ session, openToolCalls, ... }
@@ -866,13 +869,19 @@ export function createAgentJournal({
   // 否则流式全量重放（单次只保留当前行与 reducer state，不整日志读入内存）。
   async function buildState(anchor) {
     if (anchor && (await isAnchorValid(anchor))) {
-      const { events } = await eventsStore.readAfter({ afterSeq: anchor.last_seq, limit: null });
-      const session = structuredClone(anchor.projection);
-      const side = createSideState();
-      for (const event of events) {
-        session = reduceEvent(session, event, side);
+      try {
+        const { events } = await eventsStore.readAfter({ afterSeq: anchor.last_seq, limit: null });
+        const session = structuredClone(anchor.projection);
+        const side = createSideState();
+        for (const event of events) {
+          session = reduceEvent(session, event, side);
+        }
+        return { state: { session, ...side }, anchored: true };
+      } catch (error) {
+        if (error?.code === "SEGMENT_GAP") throw error; // 坏段：由上层走缺口恢复
+        // 锚点尾重放失败（如跨锚点的 turn/tool 闭合事件引用锚点前的 side 状态）：
+        // 回退全量重放——side 状态完整，可正确处理闭合，不误报损坏。
       }
-      return { session, ...side };
     }
     let session = null;
     const side = createSideState();
@@ -882,27 +891,37 @@ export function createAgentJournal({
     if (session === null) {
       session = await createFirstSession(side);
     }
-    return { session, ...side };
+    return { state: { session, ...side }, anchored: false };
   }
 
   // 中间坏段（gap）恢复：不能全量重放（reducer 不能猜测跳过缺口）。
-  // session.json 有效 → 以它为只读恢复锚点，投影标记 history_degraded，
-  // 健康尾部事件仍重放；随后由 appendGapRecovery 追加收敛事件与边界。
-  // 锚点也无效 → 只读打开健康历史（标记 needs_history_clear，等 Task 5 清空）。
+  // session.json 有效且未标记 needs_history_clear → 以它为只读恢复锚点，投影标记
+  // history_degraded，健康尾部事件仍重放（重放失败只保留锚点投影本身）；随后由
+  // appendGapRecovery 追加收敛事件与边界。锚点也无效/需清空 → 只读打开健康历史
+  //（标记 needs_history_clear，等 Task 5 清空；绝不追加恢复事件，不在缺失状态上
+  // 猜测 tool/decision 是否打开）。
   async function degradedState(anchor) {
     const side = createSideState();
-    if (anchor && (await isAnchorValid(anchor))) {
+    if (anchor && !anchor.projection.needs_history_clear && (await isAnchorValid(anchor))) {
       const session = structuredClone(anchor.projection);
       session.history_degraded = true;
-      const { events } = await eventsStore.readAfter({ afterSeq: anchor.last_seq, limit: null });
-      for (const event of events) {
-        session = reduceEvent(session, event, side);
+      try {
+        const { events } = await eventsStore.readAfter({ afterSeq: anchor.last_seq, limit: null });
+        for (const event of events) {
+          session = reduceEvent(session, event, side);
+        }
+      } catch {
+        // 健康尾部事件无法在缺口锚点上重放（如引用了缺口内创建的活动）：
+        // 只保留锚点投影本身（健康历史仍可经 API 只读访问）
       }
       return { session, ...side };
     }
-    // 投影也无效：用健康历史首事件的 session_id 保持身份，其余置为确定的空状态，
-    // 不在缺失状态上猜测 tool/decision 是否打开。
-    const first = (await eventsStore.readAfter({ afterSeq: 0, limit: 1 })).events[0];
+    let first = null;
+    try {
+      first = (await eventsStore.readAfter({ afterSeq: 0, limit: 1 })).events[0];
+    } catch {
+      first = null;
+    }
     const session = createEmptySession({
       sessionId: first?.session_id ?? idFactory(),
       projectRoot: root,
@@ -913,11 +932,16 @@ export function createAgentJournal({
     return { session, ...side };
   }
 
+  // 缺口之后是否已存在 journal_recovery_boundary（恢复已完成 → 幂等跳过）。
+  async function hasRecoveryBoundaryAfter(afterSeq) {
+    const { events } = await eventsStore.readAfter({ afterSeq, limit: null });
+    return events.some((event) => event.type === "journal_recovery_boundary");
+  }
+
   // gap 恢复事件：先取消活动输入与排队输入（活动输入必须在 run_interrupted 之前
   // 收敛），再标记旧 Run interrupted，最后追加 journal_recovery_boundary
   //（携带 gap 范围与 resume_allowed:false）。
-  async function appendGapRecovery(gaps) {
-    const batch = [];
+  async function appendGapRecovery(gaps) {    const batch = [];
     const run = state.session.active_run;
     if (run?.active_input_id != null) {
       batch.push({ type: "input_cancelled", run_id: run.id, payload: { input_id: run.active_input_id } });
@@ -941,48 +965,63 @@ export function createAgentJournal({
     if (batch.length > 0) await appendBatchLocked(batch);
   }
 
+  // dangling assistant 恢复批次：清空不可恢复 grant、闭合遗留 decision、标记
+  // run_interrupted（全量重放检测到 dangling 与锚定重放保守中断共用）。
+  function buildDanglingRecoveryBatch() {
+    const run = state.session.active_run;
+    if (!run) return [];
+    const recoveryBatch = [];
+    for (const grant of run.active_grants ?? []) {
+      recoveryBatch.push({
+        type: "permission_grant_cleared",
+        run_id: run.id,
+        payload: { input_id: grant.input_id, grant_key: grant.grant_key, grant_id: grant.id }
+      });
+    }
+    for (const decisionId of state.openDecisions.keys()) {
+      recoveryBatch.push({
+        type: "decision_resolved",
+        run_id: run.id,
+        payload: { decision_id: decisionId, choice: "cancelled", reason: "recovery_dangling_decision" }
+      });
+    }
+    recoveryBatch.push({
+      type: "run_interrupted",
+      run_id: run.id,
+      payload: { reason: "recovery_dangling_assistant_activity" }
+    });
+    return recoveryBatch;
+  }
+
   // 必须在 mutex 内调用。首次 load：创建存储布局 → 迁移旧单体格式 → 按恢复策略
   // 建立 projection → 追加恢复事件 → 写出第一份 session.json。
   async function initialize() {
     if (loaded) return;
     await ensureStorage();
-    await eventsStore.load();
-    await transcriptStore.load();
+    await eventsStore.load({ signal: loadSignal.signal });
+    await transcriptStore.load({ signal: loadSignal.signal });
     await migrateLegacy();
     const gaps = eventsStore.gaps;
     const anchor = await readSessionAnchor();
     if (gaps.length > 0) {
       state = await degradedState(anchor);
-      await appendGapRecovery(gaps);
+      // 幂等 + 只读语义：needs-clear（锚点无效）不追加任何恢复事件；缺口之后已存在
+      // journal_recovery_boundary（恢复已完成）时不重复追加。
+      const lastGapEnd = gaps.reduce((max, gap) => Math.max(max, gap.end_seq ?? 0), 0);
+      if (!state.session.needs_history_clear && !(await hasRecoveryBoundaryAfter(lastGapEnd))) {
+        await appendGapRecovery(gaps);
+      }
     } else {
-      state = await buildState(anchor);
+      const { state: built, anchored } = await buildState(anchor);
+      state = built;
       const dangling = detectDangling(state);
-      if (dangling) {
-        // 崩溃恢复：dangling assistant 活动的 Run 不能恢复执行（绝不能把这种状态发
-        // 给 provider）——先清除其全部不可恢复 grant（计划权限生命周期规则），闭合
-        // 崩溃遗留的未解决 decision（保证"每条 decision 收敛"），再把 Run 标记为
-        // interrupted。
-        const recoveryBatch = [];
-        for (const grant of state.session.active_run.active_grants) {
-          recoveryBatch.push({
-            type: "permission_grant_cleared",
-            run_id: state.session.active_run.id,
-            payload: { input_id: grant.input_id, grant_key: grant.grant_key, grant_id: grant.id }
-          });
-        }
-        for (const decisionId of state.openDecisions.keys()) {
-          recoveryBatch.push({
-            type: "decision_resolved",
-            run_id: state.session.active_run.id,
-            payload: { decision_id: decisionId, choice: "cancelled", reason: "recovery_dangling_decision" }
-          });
-        }
-        recoveryBatch.push({
-          type: "run_interrupted",
-          run_id: state.session.active_run.id,
-          payload: { reason: "recovery_dangling_assistant_activity" }
-        });
-        await appendBatchLocked(recoveryBatch);
+      if (anchored && state.session.active_run && !TERMINAL_RUN_STATUSES.has(state.session.active_run.status)) {
+        // 锚定重放无法重建锚点前的 side 状态（open tool/turn/decision 未知）：
+        // 保守地把非终结 Run 标记 interrupted——绝不能把无法验证的 dangling
+        // assistant 状态交给 provider（干净关闭中途的 Run 同样走此恢复）。
+        await appendBatchLocked(buildDanglingRecoveryBatch());
+      } else if (dangling) {
+        await appendBatchLocked(buildDanglingRecoveryBatch());
       }
     }
     await writeSessionJson();
@@ -1060,7 +1099,10 @@ export function createAgentJournal({
     if (!Array.isArray(batch)) fail("appendBatch 需要事件数组");
     if (batch.length === 0) return state.session;
     const stamped = [];
-    let seq = state.session.last_seq;
+    // 正常路径 session.last_seq === store 尾部；缺口恢复路径锚点可能落后于 store
+    // 尾部（或空投影 last_seq=0）——必须以 store 实际尾部续号，否则 store 的连续
+    // 性校验会拒绝恢复批次。
+    let seq = Math.max(state.session.last_seq, eventsStore.lastSeq);
     for (const base of batch) {
       seq += 1;
       stamped.push(stampEvent(base, seq));
