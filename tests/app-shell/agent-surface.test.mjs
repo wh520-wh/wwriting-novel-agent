@@ -348,8 +348,8 @@ test("首次快照以服务端 session 为准，早期事件不能把终态回�
   assert.equal(authoritative.active_run.status, "completed");
 });
 
-test("首次打开长会话会分页补齐事件后再渲染", async () => {
-  const afterSeqs = [];
+test("首次打开：openProject 以 tail 语义拉取尾部 200 条并渲染，不再分页补齐全量", async () => {
+  const opts = [];
   const finalSession = session({
     status: "idle",
     last_seq: 3,
@@ -357,22 +357,21 @@ test("首次打开长会话会分页补齐事件后再渲染", async () => {
   });
   const { root, surface } = await makeSurface({
     apiOverrides: {
-      fetchSnapshot: async ({ afterSeq }) => {
-        afterSeqs.push(afterSeq);
-        if (afterSeq === 0) {
+      fetchSnapshot: async (options) => {
+        opts.push(options);
+        if (options.tail) {
           return snapshotOf(finalSession, [
-            { ...ev("input_queued", { input_id: "in-1", text: "长会话消息", source: "chat" }), seq: 1 }
+            { ...ev("input_queued", { input_id: "in-1", text: "长会话消息", source: "chat" }), seq: 1 },
+            { ...ev("run_started", { workflow: "general", input_id: "in-1" }), seq: 2 },
+            { ...ev("run_completed", {}), seq: 3 }
           ]);
         }
-        return snapshotOf(finalSession, [
-          { ...ev("run_started", { workflow: "general", input_id: "in-1" }), seq: 2 },
-          { ...ev("run_completed"), seq: 3 }
-        ]);
+        return snapshotOf(finalSession, []);
       }
     }
   });
   await surface.openProject("D:\\novel");
-  assert.deepEqual(afterSeqs, [0, 1]);
+  assert.deepEqual(opts, [{ tail: true, limit: 200 }], "首次调用使用 tail 语义，不再分页补齐全量");
   assert.ok(root.textContent.includes("长会话消息"));
 });
 
@@ -2149,7 +2148,7 @@ test("transport: submit/promote/stop/retry/decide 使用正确端点、作用域
   });
 });
 
-test("transport: openProject 拉取带项目作用域的初始快照（afterSeq=0）", async () => {
+test("transport: openProject 拉取带项目作用域的初始快照（tail 尾页）", async () => {
   await withFetch((url) => {
     if (url.startsWith("/api/project/events")) return { ok: true, status: 200, body: neverStream() };
     return snapshotResponse(null);
@@ -2158,7 +2157,7 @@ test("transport: openProject 拉取带项目作用域的初始快照（afterSeq=
     await surface.openProject("D:\\novel");
     const snap = calls.find((c) => c.url.startsWith("/api/agent/snapshot?"));
     assert.ok(snap, "应请求 snapshot 端点");
-    assert.equal(snap.url, "/api/agent/snapshot?projectRoot=D%3A%5Cnovel&afterSeq=0&limit=200");
+    assert.equal(snap.url, "/api/agent/snapshot?projectRoot=D%3A%5Cnovel&tail=1&limit=200");
     surface.destroy();
   });
 });
@@ -2274,8 +2273,8 @@ test("transport: SSE 断线补齐（onReconnect 快照）后事件连续无缺�
       };
     }
     if (url.startsWith("/api/agent/snapshot")) {
-      // 初始快照（afterSeq=0）为空；断线补齐（afterSeq=1）返回 seq2-3
-      if (url.includes("afterSeq=0")) return snapshotResponse(null);
+      // 初始快照（tail 尾页）为空；断线补齐（afterSeq=1）返回 seq2-3
+      if (url.includes("tail=1")) return snapshotResponse(null);
       return jsonResponse({
         ok: true,
         session: null,
@@ -2867,4 +2866,219 @@ test("transport surface: clearHistory 终止旧 SSE 并按新 session 重连（�
     assert.ok(eventsFetches >= 2, "清空后重建 SSE（旧连接被 transport.openProject 终止）");
     surface.destroy();
   });
+});
+
+// ===========================================================================
+// Task 10：尾部首屏、前置分页与稳定时间线 key（brief Step 1-4 契约）
+// ===========================================================================
+
+const T10_T0 = "2026-08-06T00:00:00.000Z";
+
+// 生成连续历史事件（seq 1..count）：单个 Run 内多轮「思考→工具→答复」。
+// 每轮 6 个事件：model_turn_started / reasoning_completed / model_turn_completed /
+// tool_call_started / tool_call_completed / assistant_message_completed。
+function generateTurnHistory(count, { sessionId = "sess-test", runId = "run-1" } = {}) {
+  const events = [];
+  const push = (seq, type, payload, extra = {}) => {
+    events.push({ seq, event_id: `evt-${seq}`, session_id: sessionId, run_id: runId, type, payload, at: T10_T0, ...extra });
+  };
+  push(1, "session_created", {});
+  push(2, "input_queued", { input_id: "in-1", text: "继续", source: "chat" });
+  push(3, "run_started", { workflow: "general", input_id: "in-1" });
+  let seq = 4;
+  let turn = 1;
+  while (seq <= count) {
+    const pad = (type, payload, extra = {}) => {
+      if (seq <= count) push(seq, type, payload, extra);
+      seq += 1;
+    };
+    pad("model_turn_started", { turn_id: `turn-${turn}`, input_id: "in-1", reasoning_capability: "supported" });
+    pad("reasoning_completed", { turn_id: `turn-${turn}`, input_id: "in-1", text: "", availability: "empty" });
+    pad("model_turn_completed", { turn_id: `turn-${turn}`, input_id: "in-1", outcome: "completed" });
+    pad("tool_call_started", { tool_call_id: `tc-${turn}`, activity_id: `act-${turn}`, name: "list_files", args: { path: "D:\\novel" }, action: null });
+    pad("tool_call_completed", { tool_call_id: `tc-${turn}`, activity_id: `act-${turn}`, name: "list_files", exit_code: 0, duration_ms: 5 });
+    pad("assistant_message_completed", { input_id: "in-1", text: `第 ${turn} 轮答复` });
+    turn += 1;
+  }
+  return events;
+}
+
+test("Task 10 首屏：openProject 以 tail 拉取最后 200 条；滚动到顶触发 beforeSeq 前置页且锚点不跳动", async () => {
+  const allEvents = generateTurnHistory(1000); // seq 1..1000
+  const tailEvents = allEvents.filter((e) => e.seq >= 801);
+  const frontEvents = allEvents.filter((e) => e.seq >= 601 && e.seq <= 800);
+  const apiCalls = [];
+  let conv = null; // 前置页 stub 用它模拟「插入后内容高度增加」
+  const { root, surface } = await makeSurface({
+    apiOverrides: {
+      fetchSnapshot: async (opts) => {
+        apiCalls.push(["snapshot", opts]);
+        if (opts.tail) {
+          return {
+            ok: true,
+            session: session({ status: "running", last_seq: 1000, active_run: activeRun({ status: "running" }) }),
+            events: tailEvents,
+            gaps: [],
+            has_more: true
+          };
+        }
+        if (opts.beforeSeq === 801) {
+          conv.scrollHeight += 400; // 模拟前置页插入后的内容高度增量
+          return { ok: true, session: null, events: frontEvents, gaps: [], has_more: true };
+        }
+        return { ok: true, session: null, events: [], gaps: [], has_more: false };
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+
+  assert.deepEqual(apiCalls[0], ["snapshot", { tail: true, limit: 200 }], "首次调用必须是 tail 语义（不再分页补齐全量）");
+  const keys = [...root.querySelectorAll("[data-event-key]")].map((el) => el.dataset.eventKey);
+  assert.equal(keys.length, new Set(keys).size, "尾部页节点 event key 无重复");
+  assert.ok(keys.length > 0, "尾部页应渲染消息/活动/工作组节点");
+
+  // 滚动到顶 → 前置页；插入前记录 oldHeight/oldTop，插入后按差恢复 scrollTop（不跳动）
+  conv = root.querySelector('[data-testid="agent-conversation"]');
+  conv.scrollHeight = 600;
+  conv.clientHeight = 200;
+  conv.scrollTop = 0;
+  const heightBefore = conv.scrollHeight;
+  const topBefore = conv.scrollTop;
+  conv._fire("scroll");
+  await tick();
+  await tick();
+
+  assert.deepEqual(apiCalls.at(-1), ["snapshot", { beforeSeq: 801, limit: 200 }], "滚动到顶应触发 beforeSeq 前置页");
+  const keysAfter = [...root.querySelectorAll("[data-event-key]")].map((el) => el.dataset.eventKey);
+  assert.equal(keysAfter.length, new Set(keysAfter).size, "前置页合并后 event key 仍无重复");
+  assert.ok(keysAfter.length > keys.length, "前置页应追加更早的消息节点");
+  assert.equal(
+    conv.scrollTop,
+    topBefore + (conv.scrollHeight - heightBefore),
+    "前置插入后按 oldHeight→newHeight 差恢复 scrollTop，原消息锚点不跳动"
+  );
+});
+
+test("Task 10 去重：重复同一 seq 的 SSE 与重复前置页不重复生成消息", async () => {
+  const allEvents = generateTurnHistory(400); // seq 1..400
+  const tailEvents = allEvents.filter((e) => e.seq >= 201);
+  const frontEvents = allEvents.filter((e) => e.seq >= 101 && e.seq <= 200);
+  const apiCalls = [];
+  const { root, surface } = await makeSurface({
+    apiOverrides: {
+      fetchSnapshot: async (opts) => {
+        apiCalls.push(["snapshot", opts]);
+        if (opts.tail) {
+          return {
+            ok: true,
+            session: session({ status: "running", last_seq: 400, active_run: activeRun({ status: "running" }) }),
+            events: tailEvents,
+            gaps: [],
+            has_more: true
+          };
+        }
+        if (opts.beforeSeq === 201) {
+          return { ok: true, session: null, events: frontEvents, gaps: [], has_more: true };
+        }
+        return { ok: true, session: null, events: [], gaps: [], has_more: false };
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+  const countKeys = () => [...root.querySelectorAll("[data-event-key]")].map((el) => el.dataset.eventKey);
+  const afterTail = countKeys();
+  assert.ok(afterTail.length > 0);
+
+  // 重复 SSE：同一 seq 的同一事件再次推送 → 不新增节点
+  surface.applyEvent({ ...tailEvents.at(-1) });
+  assert.deepEqual(countKeys(), afterTail, "重复同一 seq 的 SSE 不得重复生成消息");
+
+  // 滚动到顶 → 前置页
+  const conv = root.querySelector('[data-testid="agent-conversation"]');
+  conv.scrollHeight = 400;
+  conv.clientHeight = 200;
+  conv.scrollTop = 0;
+  conv._fire("scroll");
+  await tick();
+  await tick();
+  const afterFront = countKeys();
+  assert.ok(afterFront.length > afterTail.length, "前置页应追加更早消息");
+  assert.equal(afterFront.length, new Set(afterFront).size, "前置页与尾页合并后 key 无重复");
+
+  // 重复前置页（同一页再次 applySnapshot）：merge 去重，不新增节点
+  surface.applySnapshot({ ok: true, session: null, events: frontEvents, gaps: [], has_more: true });
+  assert.deepEqual(countKeys(), afterFront, "重复前置页不得重复生成消息");
+});
+
+test("Task 10 跨页链：尾页先显示 completed 占位，前置页合并后定位到 started seq 且不倒退为 running", async () => {
+  const mk = (seq, type, payload, extra = {}) => ({
+    seq, event_id: `evt-${seq}`, session_id: "sess-test", run_id: "run-1", type, payload, at: T10_T0, ...extra
+  });
+  // 尾页：只有 tool_call_completed（started 在前置页才加载）
+  const tailEvents = [
+    mk(801, "history_compacted", { reason: "seed", compacted_at: T10_T0, message_count: 1 }),
+    mk(802, "tool_call_completed", { tool_call_id: "tc-1", activity_id: "act-1", name: "list_files", exit_code: 0, duration_ms: 12 }),
+    mk(803, "assistant_message_completed", { input_id: "in-1", text: "这是默认可见的最终答案。" }),
+    mk(804, "run_completed", {})
+  ];
+  const frontEvents = [
+    mk(601, "run_started", { workflow: "general", input_id: "in-1" }),
+    mk(602, "model_turn_started", { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }),
+    mk(603, "reasoning_completed", { turn_id: "turn-1", input_id: "in-1", text: "", availability: "empty" }),
+    mk(604, "model_turn_completed", { turn_id: "turn-1", input_id: "in-1", outcome: "completed" }),
+    mk(700, "tool_call_started", { tool_call_id: "tc-1", activity_id: "act-1", name: "list_files", args: { path: "D:\\novel" }, action: null })
+  ];
+  const apiCalls = [];
+  const { root, surface } = await makeSurface({
+    apiOverrides: {
+      fetchSnapshot: async (opts) => {
+        apiCalls.push(["snapshot", opts]);
+        if (opts.tail) {
+          return {
+            ok: true,
+            session: session({ status: "idle", last_seq: 804, active_run: activeRun({ status: "completed", active_input_id: null }) }),
+            events: tailEvents,
+            gaps: [],
+            has_more: true
+          };
+        }
+        if (opts.beforeSeq === 801) {
+          return { ok: true, session: null, events: frontEvents, gaps: [], has_more: false };
+        }
+        return { ok: true, session: null, events: [], gaps: [], has_more: false };
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+
+  // 尾页阶段：completed 占位行已可见（started 尚未加载），正文默认可见
+  const toolRow = root.querySelector('[data-activity-id="act-1"]');
+  assert.ok(toolRow, "尾页应渲染 completed 占位活动行");
+  assert.equal(toolRow.dataset.state, "completed", "占位行保持终态 completed");
+  assert.match(
+    root.querySelector('[data-testid="agent-assistant-message"]')?.textContent ?? "",
+    /默认可见的最终答案/u,
+    "尾页正文默认可见"
+  );
+
+  // 前置页合并后：工具行定位到 started seq（700），保持 completed，不倒退为 running
+  const conv = root.querySelector('[data-testid="agent-conversation"]');
+  conv.scrollHeight = 400;
+  conv.clientHeight = 200;
+  conv.scrollTop = 0;
+  conv._fire("scroll");
+  await tick();
+  await tick();
+
+  assert.deepEqual(apiCalls.at(-1), ["snapshot", { beforeSeq: 801, limit: 200 }]);
+  const rowAfter = root.querySelector('[data-activity-id="act-1"]');
+  assert.ok(rowAfter, "前置页合并后工具行仍存在");
+  assert.equal(rowAfter.dataset.seq, "700", "工具行定位到 started seq");
+  assert.equal(rowAfter.dataset.state, "completed", "终态保持 completed，不得倒退为 running");
+  const assistantAfter = root.querySelector('[data-testid="agent-assistant-message"]');
+  const timelineIndex = (el) => el._parent.children.indexOf(el);
+  assert.ok(timelineIndex(rowAfter) < timelineIndex(assistantAfter), "工具活动行仍位于助手正文之前");
+  const group = root.querySelector(".agent-work-group");
+  assert.ok(group, "前置页合并后应渲染工作组");
+  assert.equal(group.querySelector('[data-kind="tool"]')?.dataset.state, "completed", "工作组 tool 项保持完成态");
 });

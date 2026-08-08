@@ -35,6 +35,7 @@ export function createAgentSurface({
   let transport = api ?? null;
   let destroyed = false;
   let projectGeneration = 0;
+  let loadingEarlier = false; // 前置分页防重复（view 侧也有同名单标记，双保险）
   let composerOptions = null; // 三控件当前选项（view 侧由 view.reset 清空）
 
   function normalizeComposerOptions(data) {
@@ -173,26 +174,9 @@ export function createAgentSurface({
     if (!isCurrentProjectScope(scope)) return;
     let snapshot = null;
     try {
-      snapshot = await t.fetchSnapshot({ afterSeq: 0 });
-      if (!isCurrentProjectScope(scope)) return;
-      if (snapshot?.session && Array.isArray(snapshot.events)) {
-        const events = [...snapshot.events];
-        let cursor = events.reduce((max, event) => Math.max(max, Number(event?.seq) || 0), 0);
-        const targetSeq = Number(snapshot.session.last_seq) || cursor;
-        // 首次打开必须补齐所有事件后再渲染。否则固定 200 条的第一页只能还原
-        // 历史中间态，并会丢失后续消息、活动终态和模型轮次闭合事件。
-        while (cursor < targetSeq) {
-          const page = await t.fetchSnapshot({ afterSeq: cursor });
-          if (!isCurrentProjectScope(scope)) return;
-          const pageEvents = Array.isArray(page?.events) ? page.events : [];
-          const nextCursor = pageEvents.reduce((max, event) => Math.max(max, Number(event?.seq) || 0), cursor);
-          if (nextCursor <= cursor) break;
-          events.push(...pageEvents);
-          cursor = nextCursor;
-          if (page?.session) snapshot.session = page.session;
-        }
-        snapshot = { ...snapshot, events };
-      }
+      // Task 10：首屏只取最新尾部页（tail），更早历史由滚动到顶触发 beforeSeq
+      // 前置分页加载（loadEarlier）。不再按 afterSeq 循环补齐全量 Journal。
+      snapshot = await t.fetchSnapshot({ tail: true, limit: 200 });
     } catch {
       // 首次加载失败：保留空会话，SSE 重连补齐
     }
@@ -235,6 +219,32 @@ export function createAgentSurface({
 
   const actions = {
     submit,
+    // 前置分页（Task 10 Step 4）：view 滚动到顶（≤240px）且有更早历史时调用。
+    // 插入前记录 oldHeight/oldTop，插入后按差恢复 scrollTop 保持锚点；失败只
+    // 显示一次可重试提示且不清空当前消息。
+    loadEarlier: async (beforeSeq) => {
+      if (loadingEarlier) return;
+      const seq = Number(beforeSeq);
+      if (!Number.isFinite(seq) || seq <= 0) return;
+      loadingEarlier = true;
+      const t = ensureApi();
+      const scope = currentProjectScope();
+      view.prepareEarlierInsert();
+      try {
+        const page = await t.fetchSnapshot({ beforeSeq: seq, limit: 200 });
+        if (!isCurrentProjectScope(scope)) return;
+        if (page && (Array.isArray(page.events) || Array.isArray(page.gaps))) {
+          applySnapshot(page);
+          view.clearHistoryLoadError();
+        }
+      } catch {
+        view.showHistoryLoadError(seq);
+      } finally {
+        view.restoreScrollAnchor();
+        view.setLoadingEarlier(false);
+        loadingEarlier = false;
+      }
+    },
     promote: (inputId) => ensureApi().promote(inputId),
     stop: (runId) => ensureApi().stop(runId),
     retry: (runId) => ensureApi().retry(runId),
@@ -314,7 +324,7 @@ export function createAgentSurface({
 
   // 不可逆清空（Task 9）：transport 成功后才动本地状态——清空投影、重建视图并
   // 重新打开当前项目。openProject 内部经 transport.openProject 终止旧 SSE、按新
-  // session（afterSeq=0）重拉快照并连接新事件流（clear-reconnect 语义）。失败
+  // session（tail 尾页）重拉快照并连接新事件流（clear-reconnect 语义）。失败
   // （409 history_busy / 400 confirmation_required）时状态保持不动，错误抛给调用方。
   async function clearHistory(options = {}) {
     const t = ensureApi();
