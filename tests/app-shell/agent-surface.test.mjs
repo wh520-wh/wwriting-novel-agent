@@ -3082,3 +3082,64 @@ test("Task 10 跨页链：尾页先显示 completed 占位，前置页合并后�
   assert.ok(group, "前置页合并后应渲染工作组");
   assert.equal(group.querySelector('[data-kind="tool"]')?.dataset.state, "completed", "工作组 tool 项保持完成态");
 });
+
+test("Task 10 SSE 游标：tail 快照推进 lastSeq，connectEvents 从已加载最大 seq 续流；乱序走重建、递增走增量", async () => {
+  // 真实 transport（withFetch stub）：断言 openProject 后事件流 URL 的 afterSeq
+  // 等于已加载尾页最大 seq（而非 0 从头重放全量）。
+  const allEvents = generateTurnHistory(250); // seq 1..250
+  const tailEvents = allEvents.filter((e) => e.seq >= 51); // 尾页 200 条，seq 51..250
+  await withFetch((url) => {
+    if (url.startsWith("/api/project/events")) return { ok: true, status: 200, body: neverStream() };
+    if (url.startsWith("/api/agent/snapshot")) {
+      return jsonResponse({
+        ok: true,
+        session: session({ status: "running", last_seq: 250, active_run: activeRun({ status: "running" }) }),
+        events: tailEvents,
+        gaps: [],
+        has_more: true
+      });
+    }
+    if (url.startsWith("/api/settings/models")) return jsonResponse({ ok: true, models: [] });
+    if (url.startsWith("/api/dashboard")) {
+      return jsonResponse({ ok: true, hasProject: true, project: {}, config: { effective: {} } });
+    }
+    return jsonResponse({ ok: true });
+  }, async (calls) => {
+    const { root, surface } = await makeSurface({ useRealTransport: true });
+    await surface.openProject("D:\\novel");
+    await waitUntil(() => calls.some((c) => String(c.url).startsWith("/api/project/events?")));
+    const eventsUrl = calls.find((c) => String(c.url).startsWith("/api/project/events?"));
+    assert.match(
+      String(eventsUrl.url),
+      /afterSeq=250/,
+      "SSE 应从已加载最大 seq 续流（lastSeq 已由 tail 快照推进），不得 afterSeq=0 重放全量"
+    );
+
+    // 严格递增事件：增量 fast path，正常渲染
+    const countBefore = root.querySelectorAll("[data-event-key]").length;
+    surface.applyEvent({
+      seq: 251, event_id: "e251", session_id: "sess-test", run_id: "run-1",
+      type: "input_queued", payload: { input_id: "in-new", text: "递增消息" }, at: T10_T0
+    });
+    assert.ok(
+      root.querySelectorAll("[data-event-key]").length > countBefore,
+      "严格递增事件应进入增量路径并渲染"
+    );
+
+    // 乱序新事件（seq < lastSeq）：全集重建，消息按 seq 前置、不重复、不丢旧消息
+    surface.applyEvent({
+      seq: 30, event_id: "e30", session_id: "sess-test", run_id: "run-1",
+      type: "input_queued", payload: { input_id: "in-old", text: "乱序旧消息" }, at: T10_T0
+    });
+    const keys = [...root.querySelectorAll("[data-event-key]")].map((el) => el.dataset.eventKey);
+    assert.equal(keys.length, new Set(keys).size, "重建后 event key 仍无重复");
+    const oldBubble = [...root.querySelectorAll('[data-testid="agent-user-message"]')]
+      .find((el) => el.textContent.includes("乱序旧消息"));
+    const incrBubble = [...root.querySelectorAll('[data-testid="agent-user-message"]')]
+      .find((el) => el.textContent.includes("递增消息"));
+    assert.ok(oldBubble && incrBubble, "乱序与递增事件都渲染且互不丢失");
+    const timelineIndex = (el) => el._parent.children.indexOf(el);
+    assert.ok(timelineIndex(oldBubble) < timelineIndex(incrBubble), "乱序旧消息按 seq 位于递增新消息之前");
+    surface.destroy();
+  });
+});
