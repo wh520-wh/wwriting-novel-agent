@@ -40,6 +40,7 @@ import { pathExists } from "../fs-utils.mjs";
 import { readProjectMemory } from "../project-memory.mjs";
 import { createRedactor } from "../shell/redaction.mjs";
 import { resolveModelCapabilities } from "../model/capabilities.mjs";
+import { parseModelIdentity } from "../model/model-identity.mjs";
 import { createJournalDeltaWriter, reasoningAvailability } from "./stream-writer.mjs";
 import { skillService } from "../skills/index.mjs";
 
@@ -297,13 +298,18 @@ export function createAgentRuntime({
 
   function modelConfigOf(project) {
     const active = project?.active_model ?? {};
+    // Task 2：有效上下文窗口由模型 ID 尾标解析（[1m]/[1M] → 1M，缺省 256k），
+    // 不再读取 project.context_window。持久配置保持原样：只覆盖运行时副本
+    // （model_name 为剥离尾标后的 provider 基础 ID），绝不写回 active_model。
+    const identity = parseModelIdentity(active.model_name ?? "");
     return {
-      provider: typeof active.provider === "string" ? active.provider : "unknown",
-      model_name: active.model_name ?? null,
-      context_window: Number.isFinite(Number(project?.context_window))
-        ? Number(project.context_window)
-        : undefined,
       ...active,
+      provider: typeof active.provider === "string" ? active.provider : "unknown",
+      configured_model_id: identity.configured_model_id,
+      model_name: identity.provider_model_id,
+      effective_context_window: identity.effective_context_window,
+      compaction_threshold: identity.compaction_threshold,
+      window_source: identity.window_source,
       // 项目级思考强度（project.yaml.reasoning_effort）：仅透传，是否真正发送
       // 由 adapter 按模型 capability（reasoningEffortLevels）决定，auto/缺省不发。
       ...(typeof project?.reasoning_effort === "string" ? { reasoning_effort: project.reasoning_effort } : {})
@@ -595,7 +601,9 @@ export function createAgentRuntime({
       // 请求 { messages, tools, toolChoice, modelConfig, stream, metadata }——
       // 模型与阶段配置由 runtime 解析后放入 modelConfig（base_url/model_name/
       // api_key_env 等），adapter 依赖它选择模型与读取密钥。assemblePrompt 只
-      // 消费 context_window，不负责回填，这里在调用前挂载。
+      // 消费 context_window（Task 2 起 modelConfigOf 不再提供该字段，回落 prompt
+      // 自身默认值；effective_context_window 供后续上下文门禁消费），不负责回填，
+      // 这里在调用前挂载。
       request.modelConfig = modelConfig;
       request.stream = true;
       // 每个 Provider 轮次拥有稳定 turn id（v2 事件契约 §2.3）与独立 writer 对：
