@@ -336,6 +336,79 @@ async function eventsStoreCount(store) {
   return tail.events.length;
 }
 
+test("恢复 3b：非满中间坏段的 gap 不吞并健康后继段（后继落在旧名义范围内）", async (t) => {
+  const root = await makeRoot(t, "recovery-corrupt-successor");
+  const storeRoot = path.join(root, "events");
+  await fs.mkdir(storeRoot, { recursive: true });
+  // 手工构造三段：seg1=[1,2]、seg2=[3,4]+非法行（坏段，仅 2 条合法记录——非满段）、
+  // seg3=[5,6]（健康后继）。旧实现对非满坏段按 maxSegmentRecords 外推名义范围 [3,6]，
+  // 会把 seg3 整段吞成 gap；修复后必须只覆盖 [3,4]。
+  await fs.writeFile(path.join(storeRoot, "00000001.jsonl"), events(1, 2).map((e) => JSON.stringify(e)).join("\n") + "\n", "utf8");
+  await fs.writeFile(path.join(storeRoot, "00000002.jsonl"), events(3, 4).map((e) => JSON.stringify(e)).join("\n") + "\n" + "{broken\n", "utf8");
+  await fs.writeFile(path.join(storeRoot, "00000003.jsonl"), events(5, 6).map((e) => JSON.stringify(e)).join("\n") + "\n", "utf8");
+
+  const store = makeStore(storeRoot);
+  const info = await store.load();
+  assert.equal(await pathExists(path.join(storeRoot, "00000002.jsonl.corrupt")), true, "坏段应被隔离");
+  assert.deepEqual(info.gaps, [{ start_seq: 3, end_seq: 4, reason: "segment_corrupt" }], "gap 只覆盖坏段名义范围");
+  assert.equal(info.last_seq, 6, "last_seq 与可读事件一致（健康后继在列）");
+  const tail = await store.readTail({ limit: 10 });
+  assert.deepEqual(tail.events.map((e) => e.seq), [1, 2, 5, 6], "健康后继段必须可读，不得被吞并");
+  const after = await store.readAfter({ afterSeq: 4 });
+  assert.deepEqual(after.events.map((e) => e.seq), [5, 6], "gap 之后的后继段可读");
+  const before = await store.readBefore({ beforeSeq: 5, limit: 10 });
+  assert.deepEqual(before.events.map((e) => e.seq), [1, 2], "gap 之前的健康段可读");
+});
+
+test("后台索引重建：load 立即返回尾部页，重建作为 AbortSignal 保护的后台任务继续", async (t) => {
+  const root = await makeRoot(t, "rebuild-bg");
+  const storeRoot = path.join(root, "events");
+  const store = makeStore(storeRoot);
+  await store.load();
+  await store.append(events(1, 11)); // 3 个 segment
+  // 删除全部索引 → 模拟缺索引（后台重建的慢速 seam）
+  for (const name of await fs.readdir(storeRoot)) {
+    if (name.endsWith(".index.json")) await fs.rm(path.join(storeRoot, name));
+  }
+
+  const bg = createJournalSegmentStore({
+    root: storeRoot,
+    streamName: "events",
+    maxSegmentRecords: 4,
+    maxSegmentBytes: 512,
+    indexStride: 2,
+    rebuildDelayMs: 40
+  });
+  const info = await bg.load({ rebuildMode: "background" });
+  // load 立即返回：尾部页立即可用（不阻塞在重建上）
+  const tail = await bg.readTail({ limit: 10 });
+  assert.deepEqual(tail.events.map((e) => e.seq), [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+  // 重建仍在进行（索引尚未写回）
+  assert.equal(await pathExists(path.join(storeRoot, "00000002.index.json")), false, "后台重建不应阻塞 load 的尾部页");
+  // 等待后台任务完成 → 索引补齐
+  assert.ok(info.rebuilding, "background load 应返回 rebuilding promise");
+  await info.rebuilding;
+  assert.equal(await pathExists(path.join(storeRoot, "00000002.index.json")), true, "重建应补齐索引");
+  assert.equal(await pathExists(path.join(storeRoot, "00000001.index.json")), true);
+  assert.equal(await pathExists(path.join(storeRoot, "00000003.index.json")), true);
+
+  // AbortSignal：已中止的 load 不启动后台重建，懒扫描仍可读
+  const controller = new AbortController();
+  controller.abort();
+  const ab = createJournalSegmentStore({
+    root: storeRoot,
+    streamName: "events",
+    maxSegmentRecords: 4,
+    maxSegmentBytes: 512,
+    indexStride: 2,
+    rebuildDelayMs: 40
+  });
+  const abInfo = await ab.load({ rebuildMode: "background", signal: controller.signal });
+  assert.equal(abInfo.rebuilding, null, "已中止的 load 不得启动后台重建");
+  const abTail = await ab.readTail({ limit: 10 });
+  assert.equal(abTail.events.length, 10, "懒扫描仍可读取尾部页");
+});
+
 // 常量契约（brief 固定值）
 test("固定常量：SEGMENT_MAX_BYTES / SEGMENT_MAX_RECORDS / INDEX_STRIDE", () => {
   assert.equal(SEGMENT_MAX_BYTES, 16 * 1024 * 1024);

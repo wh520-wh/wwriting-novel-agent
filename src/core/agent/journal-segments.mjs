@@ -52,6 +52,10 @@ function fail(message) {
   throw new Error(message);
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function defaultManifest(generationId) {
   return {
     schema_version: 1,
@@ -112,7 +116,8 @@ export function createJournalSegmentStore({
   indexStride = INDEX_STRIDE,
   readFile = fs.readFile, // 全文件读取 seam：只用于 legacy 导入；常规读取不经过它
   generationId = null,
-  manifestPath = null // 默认 <agentDir>/journal-manifest.json
+  manifestPath = null, // 默认 <agentDir>/journal-manifest.json
+  rebuildDelayMs = 0 // 测试 seam：模拟慢速后台索引重建（默认 0）
 } = {}) {
   if (typeof root !== "string" || root.length === 0) fail("root 必须是 segment 目录");
   if (streamName !== "events" && streamName !== "transcript") fail(`streamName 必须是 events|transcript：${String(streamName)}`);
@@ -124,7 +129,7 @@ export function createJournalSegmentStore({
   let activeSegment = null;
   let lastSeq = 0;
   let manifest = null;
-  let gaps = [];
+  let gaps = []; // 只含本 stream 的缺口（manifest 按 stream 命名空间隔离）
   let loadedFlag = false;
 
   async function readManifestFile() {
@@ -158,20 +163,30 @@ export function createJournalSegmentStore({
     return next;
   }
 
+  // 返回只含本 stream 的缺口（去掉 manifest 内的 stream 命名空间字段）。
+  function visibleGaps() {
+    return gaps.map(({ stream: _stream, ...rest }) => rest);
+  }
+
   function isGapSegment(segment) {
     return gaps.some(
       (gap) => segment.startSeq >= gap.start_seq && segment.endSeq <= gap.end_seq
     );
   }
 
-  // 坏段的名义范围：封存段 = 满段（start + maxSegmentRecords - 1）；最新段按已解析
-  // 记录数（坏行之后的记录不可信）。prev 必须是已加载的健康段（处理顺序保证）。
+  // 坏段的名义范围。健康后继存在时精确取 [prev.end+1, next.start-1]——绝不吞并
+  // 字节有效的后继段（旧实现对非满坏段按 maxSegmentRecords 外推，会把落在该窗口内
+  // 的健康段整段标记为 gap）；后继元数据未知（也是坏段/未建索引）或坏段即最新段时，
+  // 按已解析记录数取保守下界（坏行之后的记录不可信）。
   function buildGapRange(segment, parsedCount) {
     const idx = segments.findIndex((s) => s.id === segment.id);
     const prev = idx > 0 ? segments[idx - 1] : null;
-    const isNewest = idx === segments.length - 1;
+    const next = idx >= 0 && idx < segments.length - 1 ? segments[idx + 1] : null;
     const startSeq = prev ? prev.endSeq + 1 : 1;
-    const endSeq = isNewest ? startSeq + Math.max(0, parsedCount - 1) : startSeq + maxSegmentRecords - 1;
+    const endSeq =
+      next && Number.isInteger(next.startSeq)
+        ? next.startSeq - 1
+        : startSeq + Math.max(0, parsedCount - 1);
     return { start_seq: startSeq, end_seq: endSeq };
   }
 
@@ -184,7 +199,7 @@ export function createJournalSegmentStore({
     const next = await updateManifest((current) => ({
       gaps: [...(current.gaps ?? []), gap]
     }));
-    gaps = next.gaps;
+    gaps = next.gaps.filter((g) => g.stream === streamName);
     return gap;
   }
 
@@ -218,8 +233,10 @@ export function createJournalSegmentStore({
     }
   }
 
-  // 重建索引：扫描整个 segment（≤16MB 有界）。遇到非法行返回 gap 信号由调用方隔离。
-  async function rebuildIndex(segment) {
+  // 扫描一个 segment（≤16MB 有界）：解析行、构建 offsets、检测损坏。不写索引。
+  // 返回 { corrupt: true, parsedCount }（坏段）/ { empty: true }（空文件）/ {}（成功，
+  // 且把 startSeq/endSeq/count/bytes/offsets 写入 segment）。
+  async function scanSegment(segment) {
     const buffer = await fs.readFile(segment.path);
     const lines = splitBufferLines(buffer);
     const offsets = [];
@@ -234,7 +251,7 @@ export function createJournalSegmentStore({
         record = JSON.parse(line.text);
       } catch {
         if (i === lines.length - 1 && !line.hasNewline) break; // 尾部半行（load 已截断）
-        return { gap: true, parsedCount: count };
+        return { corrupt: true, parsedCount: count };
       }
       if (count === 0) firstSeq = record[seqField];
       if (count % indexStride === 0) offsets.push({ seq: record[seqField], byte });
@@ -247,8 +264,44 @@ export function createJournalSegmentStore({
     segment.count = count;
     segment.bytes = byte;
     segment.offsets = offsets;
+    return {};
+  }
+
+  // 重建索引 = 扫描 + 原子写索引。遇到非法行返回 gap 信号由调用方隔离。
+  async function rebuildIndex(segment) {
+    const outcome = await scanSegment(segment);
+    if (outcome.corrupt || outcome.empty) return outcome;
     await writeIndex(segment, { sealed: false });
     return {};
+  }
+
+  // 坏段信号：读路径在懒扫描（background 模式）发现损坏时隔离并抛出，由 journal
+  // 识别后走缺口恢复；inline 模式下 load 已隔离，读路径不会遇到。
+  function segmentGapError() {
+    const error = new Error("segment 损坏已隔离为缺口（SEGMENT_GAP）");
+    error.code = "SEGMENT_GAP";
+    return error;
+  }
+
+  // 懒元数据：background 模式下未重建的段在首次读取时扫描（memoized）。发现损坏时
+  // 隔离 + 记录 gap + 抛 SEGMENT_GAP（调用方决定降级路径）。
+  async function ensureSegmentMetadata(segment) {
+    if (Number.isInteger(segment.count)) return;
+    const outcome = await scanSegment(segment);
+    if (outcome.corrupt) {
+      await isolateSegment(segment, {
+        ...buildGapRange(segment, outcome.parsedCount),
+        reason: "segment_corrupt",
+        stream: streamName
+      });
+      throw segmentGapError();
+    }
+    if (outcome.empty) {
+      await fs.rm(segment.path, { force: true });
+      await fs.rm(segment.indexPath, { force: true });
+      segments = segments.filter((s) => s.id !== segment.id);
+      if (activeSegment?.id === segment.id) activeSegment = null;
+    }
   }
 
   // 只检查最新 segment 尾部：末尾半行（崩溃痕迹）自动截断，随后索引失效 → 重建。
@@ -307,7 +360,36 @@ export function createJournalSegmentStore({
     if (!loadedFlag) await load();
   }
 
-  async function load({ signal } = {}) {
+  // 后台索引重建：为所有未建索引（缺/坏）的段补写索引，AbortSignal 可在段间中断。
+  // 发现坏段时隔离并记录 gap。供 background 模式的 detached 后台任务调用。
+  async function rebuildMissingIndexes({ signal } = {}) {
+    let rebuilt = 0;
+    for (const segment of [...segments]) {
+      if (signal?.aborted) break;
+      if (segment.index) continue; // 已有索引（懒扫描只填元数据，不算已建索引）
+      if (rebuildDelayMs > 0) await sleep(rebuildDelayMs);
+      const outcome = await scanSegment(segment);
+      if (outcome.corrupt) {
+        await isolateSegment(segment, {
+          ...buildGapRange(segment, outcome.parsedCount),
+          reason: "segment_corrupt",
+          stream: streamName
+        });
+      } else if (outcome.empty) {
+        await fs.rm(segment.path, { force: true });
+        await fs.rm(segment.indexPath, { force: true });
+        segments = segments.filter((s) => s.id !== segment.id);
+        if (activeSegment?.id === segment.id) activeSegment = null;
+      } else {
+        await writeIndex(segment, { sealed: false });
+        rebuilt += 1;
+      }
+    }
+    if (segments.length > 0) lastSeq = segments.at(-1).endSeq;
+    return { rebuilt, gaps: visibleGaps() };
+  }
+
+  async function load({ signal, rebuildMode = "inline" } = {}) {
     // 重复 load（如迁移后刷新）先关闭上一个活动段句柄，防止 fd 泄漏与
     // Windows 下目录 rename 因占用文件失败
     if (activeSegment?.fd) {
@@ -316,7 +398,7 @@ export function createJournalSegmentStore({
     }
     await ensureDir(resolvedRoot);
     await ensureManifest();
-    gaps = [...(manifest.gaps ?? [])];
+    gaps = (manifest.gaps ?? []).filter((g) => g.stream === streamName);
     // 1. 列出 segment 文件（.corrupt 不匹配 SEGMENT_RE，天然被排除）
     const names = (await fs.readdir(resolvedRoot)).filter((name) => SEGMENT_RE.test(name)).sort();
     segments = names.map((name) => ({
@@ -328,7 +410,9 @@ export function createJournalSegmentStore({
     if (segments.length > 0 && !signal?.aborted) {
       await truncateTrailingPartial(segments.at(-1));
     }
-    // 3. 读取已有索引；缺失/损坏 → 从 segment 重建（AbortSignal 可中断）
+    // 3. pass 1：读取全部已有索引。隔离决策需要后继段元数据，坏段必须等所有健康段
+    // 元数据就绪后再隔离（两遍），否则 gap 范围会误吞健康后继。
+    const deferred = []; // 索引缺失/损坏的段
     for (const segment of segments) {
       if (signal?.aborted) break;
       const index = await readIndex(segment);
@@ -339,30 +423,51 @@ export function createJournalSegmentStore({
         segment.count = index.event_count;
         segment.bytes = index.bytes;
         segment.offsets = index.offsets;
-        continue;
-      }
-      const outcome = await rebuildIndex(segment);
-      if (outcome.gap) {
-        await isolateSegment(segment, {
-          ...buildGapRange(segment, outcome.parsedCount),
-          reason: "segment_corrupt"
-        });
-      } else if (outcome.empty) {
-        // 空 segment（轮转后未写入即崩溃）：删除空文件与残留索引
-        await fs.rm(segment.path, { force: true });
-        await fs.rm(segment.indexPath, { force: true });
-        segments = segments.filter((s) => s.id !== segment.id);
+      } else {
+        deferred.push(segment);
       }
     }
-    // 3b. 活动段索引可能落后于实际文件：从最后一个 offset 校正（有界读取）
-    if (segments.length > 0 && !signal?.aborted) {
+    // 3. pass 2：处理缺失/损坏索引的段（inline 全量扫描；background 只扫最新段，
+    // 其余段懒扫描——load 立即返回，索引重建作为 AbortSignal 保护的后台任务继续）
+    const corrupt = [];
+    const empties = [];
+    for (const segment of deferred) {
+      if (signal?.aborted) break;
+      if (rebuildMode === "background" && segment.id !== segments.at(-1)?.id) continue;
+      const outcome = await scanSegment(segment);
+      if (outcome.corrupt) {
+        corrupt.push({ segment, parsedCount: outcome.parsedCount });
+      } else if (outcome.empty) {
+        empties.push(segment);
+      } else if (rebuildMode === "inline") {
+        await writeIndex(segment, { sealed: false });
+      }
+    }
+    for (const segment of empties) {
+      // 空 segment（轮转后未写入即崩溃）：删除空文件与残留索引
+      await fs.rm(segment.path, { force: true });
+      await fs.rm(segment.indexPath, { force: true });
+      segments = segments.filter((s) => s.id !== segment.id);
+    }
+    // 3c. 隔离坏段（此刻所有健康段元数据已知，gap 范围精确）
+    for (const { segment, parsedCount } of corrupt) {
+      if (signal?.aborted) break;
+      await isolateSegment(segment, {
+        ...buildGapRange(segment, parsedCount),
+        reason: "segment_corrupt",
+        stream: streamName
+      });
+    }
+    // 3d. 活动段索引可能落后于实际文件：从最后一个 offset 校正（有界读取）
+    if (rebuildMode === "inline" && segments.length > 0 && !signal?.aborted) {
       const newest = segments.at(-1);
       if (newest.index && (await refreshActiveTail(newest))) {
         const outcome = await rebuildIndex(newest);
-        if (outcome.gap) {
+        if (outcome.corrupt) {
           await isolateSegment(newest, {
             ...buildGapRange(newest, outcome.parsedCount),
-            reason: "segment_corrupt"
+            reason: "segment_corrupt",
+            stream: streamName
           });
         } else if (outcome.empty) {
           await fs.rm(newest.path, { force: true });
@@ -387,6 +492,12 @@ export function createJournalSegmentStore({
       streamName === "events" ? { last_event_seq: lastSeq } : { last_transcript_seq: lastSeq }
     );
     loadedFlag = true;
+    // background 模式：索引重建作为受 AbortSignal 保护的后台任务继续（detached）。
+    let rebuilding = null;
+    if (rebuildMode === "background" && !signal?.aborted) {
+      rebuilding = rebuildMissingIndexes({ signal });
+      rebuilding.catch(() => {});
+    }
     return {
       segments: segments.map((s) => ({
         id: s.id,
@@ -396,8 +507,9 @@ export function createJournalSegmentStore({
         bytes: s.bytes,
         sealed: s.index?.sealed ?? false
       })),
-      gaps: [...gaps],
-      last_seq: lastSeq
+      gaps: visibleGaps(),
+      last_seq: lastSeq,
+      rebuilding
     };
   }
 
@@ -518,6 +630,7 @@ export function createJournalSegmentStore({
       if (signal?.aborted) throw new DOMException("aborted", "AbortError");
       const segment = segments[i];
       if (isGapSegment(segment)) continue; // 坏段已在 manifest 记录，跳过
+      await ensureSegmentMetadata(segment); // background 模式下懒扫描未建索引的段
       const want = Math.min(remaining, segment.count);
       if (want <= 0) continue;
       const startSeq = segment.endSeq - want + 1;
@@ -529,7 +642,7 @@ export function createJournalSegmentStore({
       events.unshift(...taken);
       remaining -= taken.length;
     }
-    return { events, gaps: [...gaps] };
+    return { events, gaps: visibleGaps() };
   }
 
   async function readBefore({ beforeSeq, limit, signal } = {}) {
@@ -541,6 +654,7 @@ export function createJournalSegmentStore({
       if (signal?.aborted) throw new DOMException("aborted", "AbortError");
       const segment = segments[i];
       if (isGapSegment(segment)) continue;
+      await ensureSegmentMetadata(segment);
       if (segment.startSeq > targetEnd) continue; // 该段整体在目标之后
       const available = Math.max(0, Math.min(segment.count, targetEnd - segment.startSeq + 1));
       const take = Math.min(remaining, available);
@@ -555,7 +669,7 @@ export function createJournalSegmentStore({
       events.unshift(...taken);
       remaining -= taken.length;
     }
-    return { events, gaps: [...gaps] };
+    return { events, gaps: visibleGaps() };
   }
 
   async function readAfter({ afterSeq = 0, limit, signal } = {}) {
@@ -567,6 +681,7 @@ export function createJournalSegmentStore({
       if (signal?.aborted) throw new DOMException("aborted", "AbortError");
       const segment = segments[i];
       if (isGapSegment(segment)) continue;
+      await ensureSegmentMetadata(segment);
       if (segment.endSeq < targetStart) continue;
       const skip = Math.max(0, targetStart - segment.startSeq);
       const take = Math.min(remaining, segment.count - skip);
@@ -578,7 +693,7 @@ export function createJournalSegmentStore({
       events.push(...taken);
       remaining -= taken.length;
     }
-    return { events, gaps: [...gaps] };
+    return { events, gaps: visibleGaps() };
   }
 
   // 顺序流式导出（Task 5 export 复用）：按序 yield 健康段的记录。
@@ -588,6 +703,7 @@ export function createJournalSegmentStore({
     for (const segment of segments) {
       if (signal?.aborted) throw new DOMException("aborted", "AbortError");
       if (isGapSegment(segment)) continue;
+      await ensureSegmentMetadata(segment);
       const records = await readSegmentChunk(segment, 0, null);
       for (const record of records) yield record;
     }
@@ -706,11 +822,13 @@ export function createJournalSegmentStore({
     streamAll,
     importLegacy,
     startGeneration,
+    rebuildMissingIndexes,
     get manifest() {
       return manifest;
     },
     get gaps() {
-      return gaps;
+      // 只暴露本 stream 的缺口（manifest 按 stream 命名空间隔离）
+      return visibleGaps();
     },
     get lastSeq() {
       return lastSeq;
