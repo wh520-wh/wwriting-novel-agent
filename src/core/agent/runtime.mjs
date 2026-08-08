@@ -32,6 +32,7 @@ import { randomUUID } from "node:crypto";
 import { createAgentJournal } from "./journal.mjs";
 import { createToolRuntime } from "./tools.mjs";
 import { assemblePrompt } from "./prompt.mjs";
+import { estimateRequestUsage, observeProviderUsage } from "./context-window.mjs";
 import { canEnterWorkflow, workflowPolicy } from "./workflows.mjs";
 import { runLegacyImport } from "./legacy-import.mjs";
 import { migrateProjectAgentStorage } from "../workspaces/migration.mjs";
@@ -177,6 +178,10 @@ export function createAgentRuntime({
         firstTurn: null,
         stopReason: "user_stop",
         mutex: createMutex(),
+        // Task 6：当前 session 的上下文估算校准倍率（provider usage 的 EMA 比例，
+        // 夹在 0.5..2.0，只属于当前 session；clearHistory 时一并复位）。null 表示
+        // 尚无 provider 观测，估算用默认倍率 1 并保持 approximate。
+        contextCalibration: null,
         // Prompt 的 Available Skills 目录摘要：只取 name/description，绝不注入正文
         // （完整指令由 read_skill 按需读取）。catalog 失败不阻塞 agent（沿用兜底语义）。
         // 每 runId 记忆一次发现结果（Important 4）：模型每个轮次都会走到这里，
@@ -600,12 +605,28 @@ export function createAgentRuntime({
       // gateway 契约（src/core/model/gateway.mjs）：request 必须是装配完成的模型
       // 请求 { messages, tools, toolChoice, modelConfig, stream, metadata }——
       // 模型与阶段配置由 runtime 解析后放入 modelConfig（base_url/model_name/
-      // api_key_env 等），adapter 依赖它选择模型与读取密钥。assemblePrompt 只
-      // 消费 context_window（Task 2 起 modelConfigOf 不再提供该字段，回落 prompt
-      // 自身默认值；effective_context_window 供后续上下文门禁消费），不负责回填，
-      // 这里在调用前挂载。
+      // api_key_env 等），adapter 依赖它选择模型与读取密钥。assemblePrompt 的预算
+      // 直接消费 effective_context_window（Task 2 起 modelConfigOf 恒提供该字段），
+      // 不负责回填，这里在调用前挂载。
       request.modelConfig = modelConfig;
       request.stream = true;
+      // Task 6：统一上下文门禁预检。估算的唯一输入是已装配完成的最终 request——
+      // currentInput 已由 assemblePrompt 放入最后一条 user message，这里绝不再把
+      // currentInput 单独传入（单输入规则，避免双算）。每次预检追加
+      // context_usage_updated，payload 只含数字与模型基础 ID，不含 prompt 原文。
+      const contextEstimate = estimateRequestUsage({
+        messages: request.messages,
+        tools: request.tools ?? [],
+        effectiveContextWindow: modelConfig.effective_context_window,
+        calibration: state.contextCalibration ?? 1
+      });
+      await journal.append({
+        type: "context_usage_updated",
+        run_id: runId,
+        payload: {
+          usage: { ...contextEstimate, model: modelConfig.model_name }
+        }
+      });
       // 每个 Provider 轮次拥有稳定 turn id（v2 事件契约 §2.3）与独立 writer 对：
       // onToken 只接收公开正文、onReasoningToken 只接收 reasoning，两者不得互相
       // 兜底（§2.1）；reasoning 只经 reasoning_delta/reasoning_completed 进入
@@ -682,6 +703,30 @@ export function createAgentRuntime({
         }
         streamedReply = await assistantWriter.finish();
         reasoningResult = await reasoningWriter.finish();
+        // Task 6 校准（成功路径）：provider 返回 input usage 后更新当前 session 的
+        // EMA 倍率（夹在 0.5..2.0）。校准只影响下一次本地估算；无 input usage 时
+        // 维持 approximate。同样追加 context_usage_updated，payload 只含数字与
+        // 模型基础 ID。
+        const calibration = observeProviderUsage({
+          estimated: contextEstimate,
+          usageReport: reply?.usageReport,
+          previousCalibration: state.contextCalibration
+        });
+        if (calibration.calibration != null) state.contextCalibration = calibration.calibration;
+        const calibratedEstimate = estimateRequestUsage({
+          messages: request.messages,
+          tools: request.tools ?? [],
+          effectiveContextWindow: modelConfig.effective_context_window,
+          calibration: state.contextCalibration ?? 1
+        });
+        calibratedEstimate.approximate = calibration.approximate;
+        await journal.append({
+          type: "context_usage_updated",
+          run_id: runId,
+          payload: {
+            usage: { ...calibratedEstimate, model: modelConfig.model_name }
+          }
+        });
       } catch (error) {
         // 失败/取消时只排空已经确认安全的正文前缀，不 flush 可能仍是半截密钥的 carry。
         await assistantWriter.finish({ flushTail: false });
@@ -1340,12 +1385,13 @@ export function createAgentRuntime({
     return state.mutex.run(async () => {
       const result = await state.journal.clearHistory({ confirmIrreversible });
       // 清掉旧 session 的运行时残留（清空只在 idle 时放行，正常无飞行循环；
-      // 这里防御性复位，绝不把旧 generation 的高位游标/循环带到新会话）。
+      // 这里防御性复位，绝不把旧 generation 的高位游标/循环/上下文校准带到新会话）。
       state.runId = null;
       state.controller = null;
       state.loopPromise = null;
       state.firstTurn = null;
       state.catalogCache = null;
+      state.contextCalibration = null;
       state.stopReason = "user_stop";
       return {
         session_id: result.session_id,

@@ -52,7 +52,7 @@ import path from "node:path";
 import { ensureDir, pathExists, readJson, writeJsonAtomic } from "../fs-utils.mjs";
 import { createJournalSegmentStore } from "./journal-segments.mjs";
 
-// 计划固定的 32 个 journal 事件类型；未知类型一律拒绝。
+// 计划固定的 33 个 journal 事件类型；未知类型一律拒绝。
 export const FIXED_EVENT_TYPES = Object.freeze([
   "session_created",
   "run_started",
@@ -79,6 +79,7 @@ export const FIXED_EVENT_TYPES = Object.freeze([
   "reasoning_delta",
   "history_compacted",
   "checkpoint_linked",
+  "context_usage_updated",
   "assistant_message_delta",
   "assistant_message_completed",
   "run_completed",
@@ -188,6 +189,11 @@ function createEmptySession({ sessionId, projectRoot, at }) {
     status: "idle",
     active_run: null,
     queued_inputs: [],
+    // Task 6：上下文用量投影。null 表示尚无任何 context_usage_updated 事件
+    //（旧 session 重放/项目刚打开），UI 显示"计算中/待校准"，绝不用假 0 冒充
+    // 真实占用。revisions.context 只随 context_usage_updated 递增，供 UI 增量订阅。
+    context_usage: null,
+    revisions: { context: 0 },
     last_seq: 0,
     updated_at: at
   };
@@ -681,6 +687,23 @@ function reduceEvent(session, event, side) {
       if (typeof payload.text === "string" && payload.text.length > 0) {
         activeRun.assistant_text = payload.text;
       }
+      break;
+    }
+
+    case "context_usage_updated": {
+      // Task 6：上下文用量投影（计划 §2 CONTEXT_EVENT_TYPES）。不要求活动 Run、
+      // 不改变 Run 状态：只把最新 ContextUsage 深拷贝进 session.context_usage，
+      // 并 bump context revision（供 UI 增量订阅）。旧 session 重放没有该事件时
+      // context_usage 保持 null → UI 显示"计算中"，绝不出现假 0。
+      const usage = payload.usage;
+      if (usage === null || typeof usage !== "object" || Array.isArray(usage)) {
+        fail("context_usage_updated 必须携带 usage 对象");
+      }
+      session.context_usage = structuredClone(usage);
+      session.revisions = {
+        ...(session.revisions ?? {}),
+        context: (session.revisions?.context ?? 0) + 1
+      };
       break;
     }
 

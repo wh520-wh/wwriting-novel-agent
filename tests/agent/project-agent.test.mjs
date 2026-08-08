@@ -24,6 +24,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { EXTREME_COMMANDS } from "../fixtures/command-risk-corpus.mjs";
+import { serializeSimpleYaml } from "../../src/core/simple-yaml.mjs";
 import {
   LEGACY_STATE_FILE,
   VALID_MEMORY,
@@ -174,6 +175,121 @@ test("模型 ID 尾标解析：active_model 原样持久化，modelConfig 携带
   assert.equal(h.project.active_model.model_name, "model[1m][foo]");
   const persisted = await fs.readFile(path.join(h.projectRoot, "project.yaml"), "utf8");
   assert.match(persisted, /model\[1m\]\[foo\]/u, "project.yaml 中的原始 model_name 保持不变");
+});
+
+// ---------------------------------------------------------------------------
+// Task 6：统一上下文用量（context_usage_updated 预检/校准 + session 投影）
+// ---------------------------------------------------------------------------
+
+test("每次模型轮预检追加 context_usage_updated：估算唯一输入是装配完成的最终请求", async (t) => {
+  // 单输入规则：currentInput 已由 assemblePrompt 放入最后一条 user message，这里
+  // 只对 request.messages/tools 估算一次。payload 只含数字与模型基础 ID。
+  const marker = "上下文门禁验收消息-7f3a";
+  const h = await openHarness(t, { gatewayScript: [{ reply: { text: "好的。" } }] });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: marker, source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  const usageEvents = eventsOfType(events, "context_usage_updated");
+  assert.ok(usageEvents.length >= 1, "预检必须追加 context_usage_updated");
+  const preflight = usageEvents[0].payload.usage;
+  assert.equal(preflight.status, "ready");
+  assert.equal(preflight.estimator, "local");
+  assert.equal(preflight.approximate, true, "无 provider usage 时保持近似");
+  assert.equal(preflight.effective_context_window, 256_000, "缺省模型身份窗口 256k");
+  assert.equal(preflight.compaction_threshold, 204_800);
+  assert.equal(preflight.window_source, "default_256k");
+  assert.equal(preflight.model, "mock-writer", "payload 携带模型基础 ID");
+  assert.ok(preflight.used_tokens >= preflight.raw_tokens, "used 含安全系数，恒 >= raw");
+  assert.ok(Number.isFinite(preflight.ratio) && preflight.ratio > 0);
+  assert.ok(!Number.isNaN(Date.parse(preflight.updated_at)), "updated_at 为 ISO-8601");
+  // payload 绝不含 prompt 原文（单输入规则 + 脱敏契约）
+  for (const event of usageEvents) {
+    assert.ok(!JSON.stringify(event.payload).includes(marker), "context_usage_updated payload 不得含 prompt 原文");
+  }
+  // session 投影：context_usage 深拷贝最新 ContextUsage，context revision 随事件递增
+  const session = await readSession(h.agent, h.projectRoot);
+  assert.deepEqual(session.context_usage, usageEvents.at(-1).payload.usage, "投影是深拷贝，与最新事件一致");
+  assert.equal(session.revisions.context, usageEvents.length, "每个事件 bump 一次 context revision");
+  assert.ok(session.revisions.context >= 2, "一次模型轮 = 预检 + 校准两条事件");
+});
+
+test("provider 返回 input usage 后校准当前会话：approximate 变 false，估算按 EMA 倍率缩放", async (t) => {
+  const h = await openHarness(t, {
+    gatewayScript: [
+      (request) => ({ text: "好。", usageReport: { inputTokens: 500 } })
+    ]
+  });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "校准验收", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  const usageEvents = eventsOfType(events, "context_usage_updated");
+  assert.ok(usageEvents.length >= 2, "预检 + 校准各一条");
+  const preflight = usageEvents[0].payload.usage;
+  const calibrated = usageEvents.at(-1).payload.usage;
+  assert.equal(preflight.approximate, true);
+  assert.equal(calibrated.approximate, false, "provider 有 input usage 时退出近似");
+  assert.equal(calibrated.raw_tokens, preflight.raw_tokens, "同一请求，raw 不变");
+  assert.ok(calibrated.used_tokens < preflight.used_tokens, "500/估算 < 0.5 被夹到 0.5，估算按倍率缩小");
+  // session 投影带校准结果（供上下文圆环显示精确占用）
+  const session = await readSession(h.agent, h.projectRoot);
+  assert.equal(session.context_usage.approximate, false);
+  assert.equal(session.context_usage.used_tokens, calibrated.used_tokens);
+});
+
+test("provider 无 input usage 时维持 approximate:true，不产生校准", async (t) => {
+  const h = await openHarness(t, { gatewayScript: [{ reply: { text: "普通回复" } }] });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "无 usage 验收", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  const usageEvents = eventsOfType(events, "context_usage_updated");
+  assert.ok(usageEvents.length >= 1);
+  for (const event of usageEvents) {
+    assert.equal(event.payload.usage.approximate, true, "无 input usage 不得退出近似");
+  }
+  const session = await readSession(h.agent, h.projectRoot);
+  assert.equal(session.context_usage.approximate, true);
+});
+
+test("模型从 1M 切到 256k：切换动作不追加压缩事件，下一次 submit 预检按新窗口重新计算", async (t) => {
+  const h = await openHarness(t, {
+    project: {
+      active_model: {
+        provider: "mock",
+        model_name: "mock[1m][foo]",
+        base_url: "https://api.example.com/v1",
+        api_key_env: "DEEPSEEK_API_KEY"
+      }
+    },
+    gatewayScript: [{ reply: { text: "第一轮" } }, { reply: { text: "第二轮" } }]
+  });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "第一次", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  // 切换前：1M 档窗口
+  let events = await readEvents(h.agent, h.projectRoot);
+  let last = eventsOfType(events, "context_usage_updated").at(-1).payload.usage;
+  assert.equal(last.effective_context_window, 1_000_000);
+  assert.equal(last.compaction_threshold, 967_000);
+  assert.equal(last.window_source, "model_id_1m");
+  assert.equal(last.model, "mock");
+
+  // 切换模型（1M → 256k）：只改 project.yaml，不追加任何 journal 事件
+  h.project.active_model = { provider: "mock", model_name: "mock" };
+  await fs.writeFile(path.join(h.projectRoot, "project.yaml"), serializeSimpleYaml(h.project), "utf8");
+  events = await readEvents(h.agent, h.projectRoot);
+  assert.equal(eventsOfType(events, "context_usage_updated").length, 2, "切换动作本身不追加 context 事件");
+
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "第二次", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  events = await readEvents(h.agent, h.projectRoot);
+  last = eventsOfType(events, "context_usage_updated").at(-1).payload.usage;
+  assert.equal(last.effective_context_window, 256_000, "下一次 submit 预检按新窗口重新计算");
+  assert.equal(last.compaction_threshold, 204_800);
+  assert.equal(last.window_source, "default_256k");
+  assert.equal(last.model, "mock");
+  // 压缩事件（Task 8 机制）在整个流程中都不出现：切换本身不触发压缩
+  assert.equal(events.filter((event) => event.type.startsWith("context_compaction")).length, 0);
+  const session = await readSession(h.agent, h.projectRoot);
+  assert.equal(session.context_usage.effective_context_window, 256_000);
 });
 
 test("assistant tool_calls 以 OpenAI 线上格式进入后续模型请求", async (t) => {
