@@ -31,11 +31,17 @@ import { randomUUID } from "node:crypto";
 
 import { createAgentJournal } from "./journal.mjs";
 import { createToolRuntime } from "./tools.mjs";
-import { assemblePrompt } from "./prompt.mjs";
-import { estimateRequestUsage, observeProviderUsage, shouldCompact, exceedsHardWindow } from "./context-window.mjs";
+import { assemblePrompt, estimateTokens } from "./prompt.mjs";
+import {
+  estimateRequestUsage,
+  observeProviderUsage,
+  shouldCompact,
+  exceedsHardWindow,
+  OUTPUT_SAFETY_RESERVE
+} from "./context-window.mjs";
 import { createContextCheckpointStore } from "./context-checkpoints.mjs";
 import { createCompactionCoordinator, COMPACTION_BLOCKED_STATES, COMPACTION_NON_TERMINAL_STATES } from "./compaction.mjs";
-import { selectProtectedRecentTurns } from "./compaction-prompt.mjs";
+import { COMPACTION_PROMPT, selectProtectedRecentTurns } from "./compaction-prompt.mjs";
 import { canEnterWorkflow, workflowPolicy } from "./workflows.mjs";
 import { runLegacyImport } from "./legacy-import.mjs";
 import { migrateProjectAgentStorage } from "../workspaces/migration.mjs";
@@ -85,6 +91,11 @@ const ASSISTANT_DELTA_MAX_PENDING_CHARS = 2048;
 // transcript 原文（受保护近期原文 + 门禁所需的向前页），绝不为装配 prompt 把
 // 全部 transcript 载入内存；达到阈值即先压缩。
 const HISTORY_PAGE_LIMIT = 8000;
+// Task 8/I1：压缩源材料预算——早期历史逐字内容（summarized_history）封顶为窗口的
+// 该比例，保证压缩请求自身能装进上下文窗口（预算只裁剪"已早于受保护窗口"的最旧
+// 轮次，受保护近期原文与旧 checkpoint 摘要不受影响；封顶后的最终估算仍由
+// buildCompactionSource 的窗口预检把关）。
+const COMPACTION_SOURCE_BUDGET_RATIO = 0.5;
 // 一轮 = 一条 user input 与其 assistant 正文（与 compaction-prompt.mjs 同义）。
 // Task 8：transcript 轮次重建的 tool output 阈值沿用 Task 7 默认。
 const CHECKPOINT_FILE_PREFIX = "context-";
@@ -587,10 +598,34 @@ export function createAgentRuntime({
         ? effectiveModelConfig.effective_context_window
         : 256_000;
     const targetTokens = Math.round(window * 0.25);
-    const { protected_turns, summarized_turns } = selectProtectedRecentTurns({ turns, targetTokens });
+    const { protected_turns, summarized_turns: allSummarizedTurns } = selectProtectedRecentTurns({ turns, targetTokens });
     // 无可压缩历史：无 checkpoint 且没有早于受保护窗口的轮次 → noop
-    if (oldCheckpoint == null && summarized_turns.length === 0) {
+    if (oldCheckpoint == null && allSummarizedTurns.length === 0) {
       return { noop: true, reason: "nothing_to_compact" };
+    }
+    // I1：预算封顶。summarized_history 是最早的轮次、逐字进入压缩请求——100k+ 轮次
+    // transcript 的首次压缩若原样拼接会让请求超过窗口（provider 拒绝 → Run 永久卡在
+    // waiting_user，retry 同源同结果）。按每轮估算（与 sourceMaterial 逐字投影同口径）
+    // 从最旧轮次开始裁剪，保留紧邻受保护窗口的最新被摘要轮次；拼接前裁剪还约束了
+    // JSON.stringify 的内存。
+    let summarized_turns = allSummarizedTurns;
+    const sourceBudgetTokens = Math.floor(window * COMPACTION_SOURCE_BUDGET_RATIO);
+    if (sourceBudgetTokens > 0 && summarized_turns.length > 0) {
+      const kept = [];
+      let used = 0;
+      for (let i = summarized_turns.length - 1; i >= 0; i -= 1) {
+        const inc = estimateTokens(
+          JSON.stringify({
+            user: summarized_turns[i].user_text,
+            assistant: summarized_turns[i].assistant_text,
+            tool_activities: summarized_turns[i].tool_activities ?? []
+          })
+        );
+        if (kept.length > 0 && used + inc > sourceBudgetTokens) break;
+        kept.push(summarized_turns[i]);
+        used += inc;
+      }
+      summarized_turns = kept.reverse();
     }
     const sourceMaterial = JSON.stringify(
       {
@@ -639,6 +674,32 @@ export function createAgentRuntime({
       tools: [],
       effectiveContextWindow: window
     }).used_tokens;
+    // I1 预检：压缩请求自身（固定指令 + sourceMaterial）必须能装进窗口。超限直接
+    // 拒绝（coordinator 按 compaction_source_exceeds_window 快速失败、不调用模型），
+    // 绝不把超窗请求发给 provider——provider 拒绝只会让 Run 永久卡在 waiting_user。
+    // 预算封顶已把常规超限消解掉，此检查是受保护近期原文/旧摘要超大时的兜底。
+    const compactionRequestEstimate = estimateRequestUsage({
+      messages: [
+        { role: "system", content: COMPACTION_PROMPT },
+        { role: "user", content: sourceMaterial }
+      ],
+      tools: [],
+      effectiveContextWindow: window
+    }).used_tokens;
+    if (compactionRequestEstimate + OUTPUT_SAFETY_RESERVE >= window) {
+      return {
+        noop: false,
+        too_large: true,
+        reason: "source_exceeds_window",
+        sourceMaterial,
+        sourceState,
+        recent_messages: recentMessages,
+        open_tool_calls: openToolCalls,
+        reload_from_workspace: sourceState.reload_from_workspace,
+        estimated_tokens_before: estimatedTokensBefore,
+        modelConfig: effectiveModelConfig
+      };
+    }
     return {
       sourceMaterial,
       sourceState,
@@ -1086,11 +1147,20 @@ export function createAgentRuntime({
         estimatedInput: contextEstimate.used_tokens,
         window: modelConfig.effective_context_window
       });
+      // Task 8 修复（C1）：无 active checkpoint 时 buildHistory 只读最近
+      // HISTORY_PAGE_LIMIT 条 transcript 原文；一旦 transcript 总长超过该尾部页，
+      // 即使 token 估算远低于软阈值（高轮次/低 token 会话），最旧记录也会被静默
+      // 排除出 prompt 且永远不会触发压缩——门禁必须加"尾部页溢出"这一条，不能把
+      // 首压完全交给估算。有 checkpoint 时历史装配已受 checkpoint + delta 约束，
+      // 不重复触发。
+      const activePointer = await state.checkpointStore.readActive();
+      const transcriptBeyondTail =
+        activePointer.checkpoint_id == null && journal.transcriptLastSeq > HISTORY_PAGE_LIMIT;
       const alreadyAttempted =
         compactionAttemptedForInput ||
         (session.compaction?.pending_input_id === inputId &&
           ["completed", "failed", "cancelled", "noop"].includes(session.compaction?.state));
-      if (preflightCompact && !alreadyAttempted) {
+      if ((preflightCompact || transcriptBeyondTail) && !alreadyAttempted) {
         // 安全点：工具结果刚闭合时先追加 interrupt_safe_point_reached 再压缩，
         // 绝不在工具原子写入中途压缩。
         if (closedToolResult) {
@@ -2028,8 +2098,19 @@ export function createAgentRuntime({
     if (!compaction || compaction.id !== compactionId) {
       throw fail("compaction_not_found", `compaction ${compactionId} 不存在。`);
     }
-    await state.compactionCoordinator.cancel({ compactionId });
+    const outcome = await state.compactionCoordinator.cancel({ compactionId });
     const compactionNow = (await state.journal.getSession()).compaction;
+    // I5：取消请求与提交竞态——coordinator 报告实际终态（或会话投影已是 completed）
+    // 时，压缩确实成功（指针已切换、completed 已落盘），原输入由 runLoop 继续，
+    // 绝不把成功压缩收敛成 input_cancelled + run_cancelled（UI 不得显示"已取消"
+    // 覆盖已切换的上下文）。
+    if (outcome?.status === "completed" || outcome?.state === "completed") {
+      return {
+        status: "completed",
+        compaction_id: compactionId,
+        checkpoint_id: outcome?.checkpoint_id ?? compactionNow?.checkpoint_id ?? null
+      };
+    }
     await convergeCompactionCancelled(state, compactionNow);
     return { status: "cancelled", compaction_id: compactionId };
   }

@@ -2004,6 +2004,151 @@ test("缺口恢复·仅 transcript 坏段：不触发 events 恢复（manifest �
   assert.deepEqual(store.gaps, [{ start_seq: 1, end_seq: 1, reason: "segment_corrupt" }], "transcript 缺口由 transcript 流自身报告");
 });
 
+// I3 修复：索引有效但内容位腐的 sealed 段——工作区必须照常打开，读路径返回缺口。
+function writeSegmentIndex(root, segmentId, startSeq, endSeq) {
+  return fs.writeFile(
+    path.join(root, `${String(segmentId).padStart(8, "0")}.index.json`),
+    JSON.stringify({
+      schema_version: 1,
+      segment_id: segmentId,
+      start_seq: startSeq,
+      end_seq: endSeq,
+      event_count: endSeq - startSeq + 1,
+      bytes: 0,
+      offsets: [{ seq: startSeq, byte: 0 }],
+      sealed: true
+    }) + "\n",
+    "utf8"
+  );
+}
+
+test("I3：索引有效但内容位腐的 sealed 段 → 工作区照常打开，读取返回缺口而非原始损坏错误", async (t) => {
+  const root = await makeWorkspace(t);
+  const dir = agentDir(root);
+  const eventsDir = path.join(dir, "segments", "events");
+  const transcriptDir = path.join(dir, "segments", "transcript");
+  await fs.mkdir(eventsDir, { recursive: true });
+  await fs.mkdir(transcriptDir, { recursive: true });
+  // seg1=[1..4]（session_created + in-1 run 开始）、seg2=[5..7]+非法行（索引有效，
+  // 声称 [5..7]，load 信任索引不扫描）、seg3=[8..13]（run-2 完整闭环）
+  const seg1 = [
+    makeEvent(1, { root, type: "session_created" }),
+    makeEvent(2, { root, type: "input_queued", payload: { input_id: "in-1", text: "一" } }),
+    makeEvent(3, { root, type: "run_started", runId: "run-1", payload: { workflow: "general", input_id: "in-1" } }),
+    makeEvent(4, { root, type: "input_consumed", runId: "run-1", payload: { input_id: "in-1" } })
+  ];
+  const seg2 = [
+    makeEvent(5, { root, type: "run_completed", runId: "run-1", payload: {} }),
+    makeEvent(6, { root, type: "input_queued", payload: { input_id: "in-2", text: "二" } }),
+    makeEvent(7, { root, type: "run_started", runId: "run-2", payload: { workflow: "general", input_id: "in-2" } })
+  ];
+  const seg3 = [
+    makeEvent(8, { root, type: "model_turn_started", runId: "run-2" }),
+    makeEvent(9, { root, type: "model_turn_completed", runId: "run-2" }),
+    makeEvent(10, { root, type: "input_consumed", runId: "run-2", payload: { input_id: "in-2" } }),
+    makeEvent(11, { root, type: "run_completed", runId: "run-2", payload: {} }),
+    makeEvent(12, { root, type: "input_queued", payload: { input_id: "in-3", text: "三" } }),
+    makeEvent(13, { root, type: "run_started", runId: "run-3", payload: { workflow: "general", input_id: "in-3" } })
+  ];
+  await fs.writeFile(path.join(eventsDir, "00000001.jsonl"), seg1.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf8");
+  await writeSegmentIndex(eventsDir, 1, 1, 4);
+  await fs.writeFile(path.join(eventsDir, "00000002.jsonl"), seg2.map((e) => JSON.stringify(e)).join("\n") + "\n" + "{broken\n", "utf8");
+  await writeSegmentIndex(eventsDir, 2, 5, 7);
+  await fs.writeFile(path.join(eventsDir, "00000003.jsonl"), seg3.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf8");
+  await writeSegmentIndex(eventsDir, 3, 8, 13);
+  // 新鲜锚点：last_seq 13（健康尾部），session idle
+  await fs.writeFile(
+    path.join(dir, "session.json"),
+    JSON.stringify(makeAnchor(root, { lastSeq: 13, status: "idle" }), null, 2) + "\n",
+    "utf8"
+  );
+
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  const session = await journal.load(); // 必须不 reject（I3：位腐 sealed 段不得阻塞打开）
+  assert.equal(session.status, "idle");
+  assert.equal(session.history_degraded == null || session.history_degraded === false, true, "load 阶段索引被信任，未发现缺口");
+  assert.deepEqual(journal.gaps, []);
+
+  // 读路径命中坏段：隔离为 gap，返回健康事件（不抛原始"段损坏"错误）
+  const events = await journal.read({});
+  assert.deepEqual(
+    events.map((e) => e.seq),
+    [1, 2, 3, 4, 8, 9, 10, 11, 12, 13],
+    "坏段范围被跳过，前后健康段可读"
+  );
+  assert.deepEqual(journal.gaps, [{ start_seq: 5, end_seq: 7, reason: "segment_corrupt" }]);
+  assert.equal(await pathExists(path.join(eventsDir, "00000002.jsonl.corrupt")), true, "坏段应重命名为 .corrupt");
+
+  // 重启：缺口已在 manifest，恢复为降级打开（history_degraded），不再抛错
+  const again = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  const session2 = await again.load();
+  assert.equal(session2.history_degraded, true, "重启后按缺口降级打开");
+  assert.deepEqual(session2.history_gaps, [{ start_seq: 5, end_seq: 7, reason: "segment_corrupt" }]);
+  assert.equal((await again.read({})).filter((e) => e.seq >= 5 && e.seq <= 7).length, 0, "坏段记录不可见");
+});
+
+test("clearHistory 轮转中途失败：回滚两流目录与 manifest，journal 保持原会话可用，可重试清空", async (t) => {
+  const root = await makeWorkspace(t);
+  const clock = createClock();
+  const j1 = createAgentJournal({ projectRoot: root, clock, idFactory: createIds() });
+  await j1.load();
+  await j1.append({ type: "input_queued", payload: { input_id: "in-1", text: "一" } });
+  await j1.append({ type: "run_started", run_id: "run-1", payload: { workflow: "general", input_id: "in-1" } });
+  await j1.append({ type: "input_consumed", run_id: "run-1", payload: { input_id: "in-1" } });
+  await j1.append({ type: "run_completed", run_id: "run-1", payload: {} });
+  await j1.appendTranscript({ role: "user", content: "旧对话" });
+  await j1.appendTranscript({ role: "assistant", content: "旧回复" });
+  const before = await j1.getSession();
+
+  // 注入：transcript 流轮转的目录 rename 失败（events 已轮转完成——旧的半清空现场）。
+  const originalRename = fs.rename;
+  fs.rename = async (from, to) => {
+    if (String(to).endsWith("-transcript")) {
+      const error = new Error("注入：transcript 目录轮转失败");
+      error.code = "EBUSY";
+      throw error;
+    }
+    return originalRename(from, to);
+  };
+  try {
+    await assert.rejects(
+      j1.clearHistory({ confirmIrreversible: true }),
+      (e) => e.code === "EBUSY",
+      "清空必须把轮转失败抛给调用方"
+    );
+  } finally {
+    fs.rename = originalRename;
+  }
+
+  // 回滚后：会话、事件、transcript 全部原样；append 不出现 seq 缺口
+  const after = await j1.getSession();
+  assert.equal(after.session_id, before.session_id, "回滚后 session 不变");
+  assert.equal(after.last_seq, before.last_seq, "回滚后 last_seq 保持原值");
+  const events = await j1.read({});
+  assert.deepEqual(
+    events.map((e) => e.seq),
+    Array.from({ length: before.last_seq }, (_, i) => i + 1),
+    "events 全部可读且无缺口"
+  );
+  const records = await j1.readTranscript();
+  assert.deepEqual(records.map((r) => r.content), ["旧对话", "旧回复"], "transcript 全部可读");
+  await j1.append({ type: "input_queued", payload: { input_id: "in-2", text: "二" } });
+  assert.equal((await j1.read({})).at(-1).seq, before.last_seq + 1, "回滚后 append 续号正常（无 seq 缺口）");
+  // 无半清空现场：cleared-history 下不残留已移走的目录/文件
+  const clearedRoot = path.join(agentDir(root), "cleared-history");
+  const clearedDirs = await fs.readdir(clearedRoot).catch(() => []);
+  for (const dirName of clearedDirs) {
+    const inner = await fs.readdir(path.join(clearedRoot, dirName)).catch(() => []);
+    assert.deepEqual(inner, [], `回滚后 cleared-history/${dirName} 不应残留任何目录或文件`);
+  }
+  // 可重试：再次清空成功，且旧数据确实归档
+  const result = await j1.clearHistory({ confirmIrreversible: true });
+  assert.ok(result.session_id && result.generation_id, "重试清空必须成功");
+  assert.notEqual(result.session_id, before.session_id, "重试清空产生新 session");
+  const afterClear = await j1.readTranscript();
+  assert.deepEqual(afterClear, [], "重试清空后 transcript 为空（新 generation）");
+});
+
 test("锚定重放·非终结 Run 保守中断：干净关闭中途不得把无法验证的 dangling 状态交给 provider", async (t) => {
   const root = await makeWorkspace(t);
   const clock = createClock();

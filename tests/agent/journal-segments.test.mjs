@@ -447,6 +447,77 @@ test("Task 5 streamAll：顺序 yield 健康记录，坏段缺口经 gaps 单独
   assert.equal(yielded.some((r) => JSON.stringify(r).includes("broken")), false, "隔离文件原文不得被 yield");
 });
 
+// I3 修复：索引有效但内容位腐的 sealed 段必须被懒隔离，读取返回缺口而非原始损坏错误。
+function writeIndexFile(root, segmentId, { startSeq, endSeq, count, sealed = true }) {
+  return fs.writeFile(
+    path.join(root, `${String(segmentId).padStart(8, "0")}.index.json`),
+    JSON.stringify({
+      schema_version: 1,
+      segment_id: segmentId,
+      start_seq: startSeq,
+      end_seq: endSeq,
+      event_count: count,
+      bytes: 0,
+      offsets: [{ seq: startSeq, byte: 0 }],
+      sealed
+    }) + "\n",
+    "utf8"
+  );
+}
+
+test("I3：索引有效但内容位腐的 sealed 段 → 首次读抛结构化 SEGMENT_GAP 并隔离，随后健康段可读", async (t) => {
+  const root = await makeRoot(t, "recovery-sealed-rot");
+  const storeRoot = path.join(root, "events");
+  await fs.mkdir(storeRoot, { recursive: true });
+  // 三段：seg1=[1,2]、seg2=[3,4]+非法行（索引仍声称 [3,4]，load 信任索引不扫描）、
+  // seg3=[5,6]（健康后继）。
+  await fs.writeFile(path.join(storeRoot, "00000001.jsonl"), events(1, 2).map((e) => JSON.stringify(e)).join("\n") + "\n", "utf8");
+  await writeIndexFile(storeRoot, 1, { startSeq: 1, endSeq: 2, count: 2 });
+  await fs.writeFile(path.join(storeRoot, "00000002.jsonl"), events(3, 4).map((e) => JSON.stringify(e)).join("\n") + "\n" + "{broken\n", "utf8");
+  await writeIndexFile(storeRoot, 2, { startSeq: 3, endSeq: 4, count: 2 });
+  await fs.writeFile(path.join(storeRoot, "00000003.jsonl"), events(5, 6).map((e) => JSON.stringify(e)).join("\n") + "\n", "utf8");
+  await writeIndexFile(storeRoot, 3, { startSeq: 5, endSeq: 6, count: 2 });
+
+  const store = makeStore(storeRoot);
+  const info = await store.load();
+  assert.deepEqual(info.gaps, [], "索引有效：load 阶段不隔离（懒扫描不覆盖 sealed 段）");
+  assert.equal(info.last_seq, 6, "load 后 last_seq 正常（索引被信任）");
+
+  // 首次读命中坏段：结构化 SEGMENT_GAP（不是原始"段损坏"文本错误）
+  await assert.rejects(() => store.readTail({ limit: 10 }), (e) => e.code === "SEGMENT_GAP");
+  // 隔离完成后：坏段改名、gap 记录精确、健康段可读
+  assert.equal(await pathExists(path.join(storeRoot, "00000002.jsonl.corrupt")), true, "坏段应重命名为 .corrupt");
+  assert.deepEqual(store.gaps, [{ start_seq: 3, end_seq: 4, reason: "segment_corrupt" }], "gap 只覆盖坏段范围");
+  const tail = await store.readTail({ limit: 10 });
+  assert.deepEqual(tail.events.map((e) => e.seq), [1, 2, 5, 6], "健康段可读，gap 范围跳过");
+  assert.deepEqual(tail.gaps, [{ start_seq: 3, end_seq: 4, reason: "segment_corrupt" }]);
+  const after = await store.readAfter({ afterSeq: 4 });
+  assert.deepEqual(after.events.map((e) => e.seq), [5, 6], "gap 之后的后继段可读");
+  const before = await store.readBefore({ beforeSeq: 5, limit: 10 });
+  assert.deepEqual(before.events.map((e) => e.seq), [1, 2], "gap 之前的健康段可读");
+});
+
+test("I3：活动段索引之后的尾部损坏 → load 不拒绝，隔离为 gap（工作区可打开）", async (t) => {
+  const root = await makeRoot(t, "recovery-active-tail-rot");
+  const storeRoot = path.join(root, "events");
+  await fs.mkdir(storeRoot, { recursive: true });
+  // 活动段：索引指向 seq 1（byte 0），但内容在索引之后有带换行的损坏行——
+  // 不是无换行半行（load 的截断不处理它），refreshActiveTail 必须隔离而非抛错。
+  await fs.writeFile(
+    path.join(storeRoot, "00000001.jsonl"),
+    events(1, 2).map((e) => JSON.stringify(e)).join("\n") + "\n" + "{broken\n",
+    "utf8"
+  );
+  await writeIndexFile(storeRoot, 1, { startSeq: 1, endSeq: 2, count: 2, sealed: false });
+
+  const store = makeStore(storeRoot);
+  const info = await store.load(); // 必须不 reject
+  assert.equal(await pathExists(path.join(storeRoot, "00000001.jsonl.corrupt")), true, "损坏尾部必须隔离为 .corrupt");
+  assert.deepEqual(info.gaps, [{ start_seq: 1, end_seq: 2, reason: "segment_corrupt" }], "gap 覆盖整段（保守下界）");
+  assert.equal(info.last_seq, 0, "隔离后无健康记录");
+  assert.deepEqual((await store.readTail({ limit: 10 })).events, [], "隔离后读取为空而非抛错");
+});
+
 test("Task 5 startGeneration 共享 manifest：双流以同一 oldGenerationId 轮转，历史归属一致", async (t) => {
   const root = await makeRoot(t, "rotate-shared-gen");
   const eventsRoot = path.join(root, "events");

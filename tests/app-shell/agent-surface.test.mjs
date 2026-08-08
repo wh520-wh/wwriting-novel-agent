@@ -3628,6 +3628,31 @@ test("ESC 去重：停止在途连按两次只发一次 stop；stopping 吞掉�
   }
 });
 
+test("ESC 去重：重连补齐快照里的同 id 终态必须释放 latch（I4，不得死锁 ESC）", async () => {
+  const { api, surface } = await makeSurface();
+  const unwire = wireEscRoute(surface);
+  try {
+    await surface.openProject("D:" + "\novel");
+    surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+    fireEsc();
+    assert.deepEqual(escCalls(api, "stop"), ["run-1"], "停止请求发出");
+    // SSE 断线：cancel 已生效但 run_cancelled 事件从未经 applyEvent 送达——重连
+    // 补齐快照（afterSeq 从合并后的 max seq 续读）把终态事件带回来了。
+    surface.applySnapshot(snapshotOf(
+      session({ status: "idle", last_seq: 9, active_run: activeRun({ status: "cancelled", active_input_id: null }) }),
+      [{ ...ev("run_cancelled", { reason: "user_stop" }), seq: 9 }]
+    ));
+    // latch 必须已释放：压缩在途时 ESC 走 cancelCompaction 而不是被吞掉
+    surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-1", trigger: "automatic" }));
+    surface.applyEvent(ev("context_compaction_running", { compaction_id: "c-1" }));
+    fireEsc();
+    assert.deepEqual(escCalls(api, "cancelCompaction"), ["c-1"], "快照终态释放 latch：ESC 可取消压缩");
+    assert.equal(escCalls(api, "stop").length, 1, "不得重复 stop");
+  } finally {
+    unwire();
+  }
+});
+
 test("ESC 去重：取消请求失败立即释放 latch，再次 ESC 可重试", async () => {
   const { api, surface } = await makeSurface({
     apiOverrides: {

@@ -1215,8 +1215,26 @@ export function createAgentJournal({
         await appendGapRecovery(gaps);
       }
     } else {
-      const { state: built, anchored } = await buildState(anchor);
-      state = built;
+      let built;
+      try {
+        built = await buildState(anchor);
+      } catch (error) {
+        if (error?.code !== "SEGMENT_GAP") throw error;
+        // I3：索引有效但内容位腐的 sealed 段在重放读路径被懒隔离——load 扫描
+        // 不覆盖它（索引可读），只能在这里转缺口恢复打开。绝不因单个坏段让
+        // 工作区打开失败（规格 §2：中间分段损坏不得使整个工作区无法打开）。
+        const freshGaps = eventsStore.gaps;
+        state = await degradedState(anchor);
+        const lastGapEnd = freshGaps.reduce((max, gap) => Math.max(max, gap.end_seq ?? 0), 0);
+        if (!state.session.needs_history_clear && !(await hasRecoveryBoundaryAfter(lastGapEnd))) {
+          await appendGapRecovery(freshGaps);
+        }
+        await writeSessionJson();
+        loaded = true;
+        return;
+      }
+      state = built.state;
+      const anchored = built.anchored;
       const dangling = detectDangling(state);
       if (anchored && state.session.active_run && !TERMINAL_RUN_STATUSES.has(state.session.active_run.status)) {
         // 锚定重放无法重建锚点前的 side 状态（open tool/turn/decision 未知）：
@@ -1375,12 +1393,25 @@ export function createAgentJournal({
     });
   }
 
+  // I3：读路径 SEGMENT_GAP 重试。索引有效但内容位腐的 sealed 段在首次读取时被懒
+  // 隔离（.corrupt + manifest gap），读取抛 SEGMENT_GAP；隔离完成后重试一次即得到
+  // 健康事件 + gaps 元数据——运行期读取"返回缺口"而非把原始损坏错误抛给上层。
+  // 重试仍失败（连续多个坏段）则继续传播，由调用方按缺口恢复处理。
+  async function withSegmentGapRetry(task) {
+    try {
+      return await task();
+    } catch (error) {
+      if (error?.code !== "SEGMENT_GAP") throw error;
+      return task();
+    }
+  }
+
   // 原始事件读取（seq > afterSeq，最多 limit 条，默认全部）。委托 segment store。
   // 不触发初始化/恢复——那些只由 load() 负责（Task 6 的 open() 会先调用 load()）；
   // 消费者应在首次 read 前调用 load()，否则拿到的可能是未迁移/未修复的原始内容。
   async function read({ afterSeq = 0, limit } = {}) {
     return mutex.run(async () => {
-      const { events } = await eventsStore.readAfter({ afterSeq, limit });
+      const { events } = await withSegmentGapRetry(() => eventsStore.readAfter({ afterSeq, limit }));
       return events;
     });
   }
@@ -1389,21 +1420,21 @@ export function createAgentJournal({
   async function readTail({ limit } = {}) {
     return mutex.run(async () => {
       await initialize();
-      return eventsStore.readTail({ limit });
+      return withSegmentGapRetry(() => eventsStore.readTail({ limit }));
     });
   }
 
   async function readBefore({ beforeSeq, limit } = {}) {
     return mutex.run(async () => {
       await initialize();
-      return eventsStore.readBefore({ beforeSeq, limit });
+      return withSegmentGapRetry(() => eventsStore.readBefore({ beforeSeq, limit }));
     });
   }
 
   async function readAfter({ afterSeq = 0, limit } = {}) {
     return mutex.run(async () => {
       await initialize();
-      return eventsStore.readAfter({ afterSeq, limit });
+      return withSegmentGapRetry(() => eventsStore.readAfter({ afterSeq, limit }));
     });
   }
 
@@ -1423,7 +1454,7 @@ export function createAgentJournal({
   async function readTranscript() {
     return mutex.run(async () => {
       await initialize();
-      const { events } = await transcriptStore.readAfter({ afterSeq: 0 });
+      const { events } = await withSegmentGapRetry(() => transcriptStore.readAfter({ afterSeq: 0 }));
       return events;
     });
   }
@@ -1432,7 +1463,7 @@ export function createAgentJournal({
   async function readTranscriptAfter({ afterSeq = 0, limit } = {}) {
     return mutex.run(async () => {
       await initialize();
-      const { events } = await transcriptStore.readAfter({ afterSeq, limit });
+      const { events } = await withSegmentGapRetry(() => transcriptStore.readAfter({ afterSeq, limit }));
       return events;
     });
   }
@@ -1440,7 +1471,7 @@ export function createAgentJournal({
   async function readTranscriptTail({ limit } = {}) {
     return mutex.run(async () => {
       await initialize();
-      const { events } = await transcriptStore.readTail({ limit });
+      const { events } = await withSegmentGapRetry(() => transcriptStore.readTail({ limit }));
       return events;
     });
   }
@@ -1474,8 +1505,13 @@ export function createAgentJournal({
     if (!eventsStore.loaded) await eventsStore.load();
     if (!transcriptStore.loaded) await transcriptStore.load();
     const sanitize = redact ?? ((record) => record);
-    for await (const record of eventsStore.streamAll()) {
-      yield { stream: "event", record: sanitize(record) };
+    try {
+      for await (const record of eventsStore.streamAll()) {
+        yield { stream: "event", record: sanitize(record) };
+      }
+    } catch (error) {
+      if (error?.code !== "SEGMENT_GAP") throw error;
+      // I3：坏段在导出中途被懒隔离——跳过该段继续导出健康段（gap 行单独报告）
     }
     for (const gap of eventsStore.gaps) {
       yield {
@@ -1483,8 +1519,13 @@ export function createAgentJournal({
         record: { stream: "events", start_seq: gap.start_seq, end_seq: gap.end_seq, reason: gap.reason }
       };
     }
-    for await (const record of transcriptStore.streamAll()) {
-      yield { stream: "transcript", record: sanitize(record) };
+    try {
+      for await (const record of transcriptStore.streamAll()) {
+        yield { stream: "transcript", record: sanitize(record) };
+      }
+    } catch (error) {
+      if (error?.code !== "SEGMENT_GAP") throw error;
+      // I3：同上——坏段在导出中途被懒隔离，跳过继续
     }
     for (const gap of transcriptStore.gaps) {
       yield {
@@ -1502,6 +1543,30 @@ export function createAgentJournal({
   // projectionWriteError → 用新 generation 重新初始化（追加新 session_created）。
   // 绝不触碰项目根下的章节/总纲/设定/WWRITING.md/正式 checkpoint（那些在项目根，
   // 不在 agentDir 内）。
+  // I2：清空中途失败回滚。把已轮转/已移走的目录与文件移回原位，恢复 manifest 的
+  // generation 记录（startGeneration 已把 store 内存重置为空 generation，restoreGeneration
+  // 负责移回目录 + 重载旧数据），并移除本次写入的 clear-manifest。journal 的会话投影
+  // 自始至终未变（旧 session），恢复后 append/read 立即回到原状；loadSignal 未被 abort
+  //（abort 已推迟到轮转成功之后），仍可用。回滚自身尽力而为，不掩盖原始失败。
+  async function rollbackAfterFailedClear({ moved, clearedDir, oldGenerationId }) {
+    for (const streamName of ["events", "transcript"]) {
+      const store = streamName === "events" ? eventsStore : transcriptStore;
+      await store.restoreGeneration({ fromDir: clearedDir, generationId: oldGenerationId }).catch(() => {});
+    }
+    for (const name of [...moved].reverse()) {
+      const source = path.join(clearedDir, name);
+      const target = name === "checkpoints" ? checkpointsDir : path.join(agentDir, name);
+      try {
+        await fs.rename(source, target);
+      } catch (error) {
+        if (error?.code !== "ENOENT") {
+          console.warn(`[journal] 清空回滚：无法把 ${source} 移回 ${target}：${error?.message ?? String(error)}`);
+        }
+      }
+    }
+    await fs.rm(path.join(clearedDir, "clear-manifest.json"), { force: true }).catch(() => {});
+  }
+
   async function clearHistory({ confirmIrreversible = false } = {}) {
     return mutex.run(async () => {
       await initialize();
@@ -1518,44 +1583,55 @@ export function createAgentJournal({
         error.code = "confirmation_required";
         throw error;
       }
-      // 1. 停止并等待后台索引重建（AbortSignal 在段间中断，任务自行收尾）
-      loadSignal.abort();
-      await backgroundRebuild?.catch(() => {});
-      backgroundRebuild = null;
-      // 2. 准备 cleared-history/<timestamp>/
+      // 1. 准备 cleared-history/<timestamp>/
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
       const clearedDir = path.join(agentDir, "cleared-history", timestamp);
       await ensureDir(clearedDir);
-      // 3. 在实例 mutex 内轮转两个 store：旧 segments 移入 clearedDir，manifest
+      // 2. 在实例 mutex 内轮转两个 store：旧 segments 移入 clearedDir，manifest
       //    记录旧 generation 的位置与可读范围。双流共享 manifest，必须固定同一
       //    oldGenerationId（以 manifest 文件为准），否则第二次轮转的 in-memory
       //    manifest 会拿到第一次轮转刚写入的新 generation id。
+      //    I2 修复：两次轮转 + 文件移走 + clear-manifest 写入整体包在 try/catch 里。
+      //    任一步失败都回滚（目录/文件移回、manifest 与 store 内存状态恢复），
+      //    journal 保持原会话可用——绝不留"events 已轮转成空 generation 而
+      //    transcript/会话仍是旧数据"的半清空现场（那会让 append 全部 seq 缺口拒绝）。
       const oldGenerationId = (await readCurrentGenerationId()) ?? eventsStore.manifest?.generation_id ?? null;
-      await eventsStore.startGeneration({ historyDir: clearedDir, reason: "user_clear", oldGenerationId });
-      await transcriptStore.startGeneration({ historyDir: clearedDir, reason: "user_clear", oldGenerationId });
-      // 4. 移走旧 session.json / active-context.json / context checkpoints/
       const moved = [];
-      for (const name of ["session.json", "active-context.json"]) {
-        const source = path.join(agentDir, name);
-        if (await pathExists(source)) {
-          await fs.rename(source, path.join(clearedDir, name));
-          moved.push(name);
+      try {
+        await eventsStore.startGeneration({ historyDir: clearedDir, reason: "user_clear", oldGenerationId });
+        await transcriptStore.startGeneration({ historyDir: clearedDir, reason: "user_clear", oldGenerationId });
+        // 3. 移走旧 session.json / active-context.json / context checkpoints/
+        for (const name of ["session.json", "active-context.json"]) {
+          const source = path.join(agentDir, name);
+          if (await pathExists(source)) {
+            await fs.rename(source, path.join(clearedDir, name));
+            moved.push(name);
+          }
         }
+        if (await pathExists(checkpointsDir)) {
+          await fs.rename(checkpointsDir, path.join(clearedDir, "checkpoints"));
+          moved.push("checkpoints");
+        }
+        // 4. 写 clear-manifest.json（不可逆操作的落盘记录）
+        await writeJsonAtomic(path.join(clearedDir, "clear-manifest.json"), {
+          schema_version: 1,
+          cleared_at: new Date().toISOString(),
+          reason: "user_clear",
+          old_session_id: current.session_id,
+          old_generation_id: oldGenerationId,
+          moved,
+          cleared_dir: clearedDir
+        });
+      } catch (error) {
+        await rollbackAfterFailedClear({ moved, clearedDir, oldGenerationId });
+        throw error;
       }
-      if (await pathExists(checkpointsDir)) {
-        await fs.rename(checkpointsDir, path.join(clearedDir, "checkpoints"));
-        moved.push("checkpoints");
-      }
-      // 5. 写 clear-manifest.json（不可逆操作的落盘记录）
-      await writeJsonAtomic(path.join(clearedDir, "clear-manifest.json"), {
-        schema_version: 1,
-        cleared_at: new Date().toISOString(),
-        reason: "user_clear",
-        old_session_id: current.session_id,
-        old_generation_id: oldGenerationId,
-        moved,
-        cleared_dir: clearedDir
-      });
+      // 5. 停止并等待后台索引重建（I2 修复：轮转完成后再中止——inline 模式无后台
+      //    任务；一旦中止发生在轮转失败前，失败路径会留下永久 aborted 的 controller，
+      //    后续 store.load 全程短读。轮转成功后再 abort，失败路径的 loadSignal 保持可用）。
+      loadSignal.abort();
+      await backgroundRebuild?.catch(() => {});
+      backgroundRebuild = null;
       // 6. 清空本实例状态并创建新 generation + session_created（复用同一实例的
       //    后续 snapshot/append 立即看到新 session，绝不留旧 runtime state）
       loaded = false;
@@ -1605,6 +1681,13 @@ export function createAgentJournal({
   Object.defineProperty(journal, "lastSeq", {
     enumerable: true,
     get: () => eventsStore.lastSeq
+  });
+  // 可观察字段：transcript 流的最后一个已落盘 seq（Task 8 预检门禁据此判断
+  // transcript 是否已超出无 checkpoint 时的 in-context 尾部页，防止高轮次/低 token
+  // 会话绕过估算门禁导致最旧记录被静默排除）。
+  Object.defineProperty(journal, "transcriptLastSeq", {
+    enumerable: true,
+    get: () => transcriptStore.lastSeq
   });
   return journal;
 }

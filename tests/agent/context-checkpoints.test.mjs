@@ -504,6 +504,56 @@ test("故障注入：pointer replace 后杀断 → 对账裁决 2（marker 补�
   assert.deepEqual((await fs.readdir(path.join(dir, "checkpoints"))).sort(), ["context-ck-new.json", "context-ck-old.json"]);
 });
 
+test("I5：指针切换后 completed append 失败 → best-effort 不报失败，marker 保留、对账裁决 2 补写", async () => {
+  const { dir, journal, newCandidate, newSourceState, newCommitEvent } = await setupSecondCompaction();
+  const store = createContextCheckpointStore({ agentDir: dir, clock: fakeClock(), idFactory: fakeId() });
+
+  // 提交前指针还是 ck-old；注入 appendCompleted 失败（指针已切换后的步骤必须
+  // best-effort——绝不把已成功的提交误报成失败，否则 journal 同时持有双终态）。
+  const result = await store.commitCandidate(newCandidate, {
+    journal,
+    commitEvent: newCommitEvent,
+    sourceState: newSourceState,
+    faults: { failBefore: "appendCompleted" }
+  });
+  assert.equal(result.checkpoint_id, "ck-new", "指针已切换的提交仍报告成功");
+  assert.equal((await store.readActive()).checkpoint_id, "ck-new", "active 指针已切换");
+  const events = await journal.read({ afterSeq: 0 });
+  assert.equal(
+    events.filter((e) => e.type === "context_compaction_completed").length,
+    1,
+    "completed 事件未追加（append 失败）——只有旧 ck-old 的 completed"
+  );
+  assert.equal((await listMarkers(dir)).length, 1, "marker 保留等待对账");
+  // 对账裁决 2：marker 保存完整 payload，补写同一 event_id 的 completed
+  const restarted = createContextCheckpointStore({ agentDir: dir, clock: fakeClock(), idFactory: fakeId() });
+  const report = await restarted.reconcileAfterCrash({ journal });
+  assert.equal(report.verdict, "2_completed_reappended");
+  const events2 = await journal.read({ afterSeq: 0 });
+  const reappended = events2.filter((e) => e.type === "context_compaction_completed" && e.event_id === "ev-new");
+  assert.equal(reappended.length, 1, "对账补写同 event_id 的 completed");
+  assert.deepEqual(await listMarkers(dir), [], "对账后 marker 清理");
+});
+
+test("I5：指针切换后 marker 删除失败 → best-effort 不报失败，对账裁决 3 清理 marker", async () => {
+  const { dir, journal, newCandidate, newSourceState, newCommitEvent } = await setupSecondCompaction();
+  const store = createContextCheckpointStore({ agentDir: dir, clock: fakeClock(), idFactory: fakeId() });
+
+  const result = await store.commitCandidate(newCandidate, {
+    journal,
+    commitEvent: newCommitEvent,
+    sourceState: newSourceState,
+    faults: { failBefore: "deleteMarker" }
+  });
+  assert.equal(result.checkpoint_id, "ck-new", "marker 删除失败不得把成功提交变失败");
+  assert.equal((await store.readActive()).checkpoint_id, "ck-new");
+  assert.equal((await listMarkers(dir)).length, 1, "marker 遗留（对账清理）");
+  const restarted = createContextCheckpointStore({ agentDir: dir, clock: fakeClock(), idFactory: fakeId() });
+  const report = await restarted.reconcileAfterCrash({ journal });
+  assert.equal(report.verdict, "3_marker_cleaned");
+  assert.deepEqual(await listMarkers(dir), [], "对账后 marker 清理");
+});
+
 test("故障注入：completed append 后杀断 → 对账裁决 3（只删 marker，不重复追加）", async () => {
   const { dir, journal, newCandidate, newSourceState, newCommitEvent } = await setupSecondCompaction();
 

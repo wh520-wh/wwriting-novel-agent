@@ -512,6 +512,94 @@ async function waitForEvent(journal, type, { timeoutMs = 2000 } = {}) {
   throw new Error(`等待事件 ${type} 超时`);
 }
 
+test("coordinator：源材料超出窗口（too_large）→ 快速失败不调用模型，错误码固定，retry 同源同失败", async () => {
+  const journal = createFakeJournal();
+  const gateway = createFakeGateway();
+  const tooLargeBuildInput = async () => ({
+    noop: false,
+    too_large: true,
+    reason: "source_exceeds_window",
+    sourceMaterial: "x".repeat(400_000),
+    sourceState: {
+      source_checkpoint_id: null,
+      source_seq: { start: 1, end: 40 },
+      source_transcript_seq: { start: 1, end: 20 },
+      configured_model_id: "mock-model",
+      provider_model_id: "mock-model",
+      trigger: "automatic",
+      effective_context_window: 256_000,
+      target_tokens: 64_000,
+      current_task: "",
+      user_confirmed_decisions: [],
+      pending_steps: [],
+      open_tool_calls: [],
+      reload_from_workspace: []
+    },
+    estimated_tokens_before: 260_000,
+    modelConfig: makeModelConfig()
+  });
+  const coordinator = createCoordinator({
+    journal,
+    gateway,
+    buildInput: tooLargeBuildInput
+  });
+  const result = await coordinator.start({ projectRoot: "/p", trigger: "automatic", modelConfig: makeModelConfig() });
+  assert.equal(result.status, "failed");
+  assert.equal(result.error_code, "compaction_source_exceeds_window");
+  assert.equal(gateway.calls.length, 0, "超窗源材料不得调用模型（provider 拒绝会让 Run 永久卡死）");
+  const events = journal._events;
+  assert.equal(events.some((e) => e.type === "context_compaction_started"), false, "不得追加 started（无模型调用）");
+  const failed = events.find((e) => e.type === "context_compaction_failed");
+  assert.ok(failed, "必须追加 context_compaction_failed");
+  assert.equal(failed.payload.error_code, "compaction_source_exceeds_window");
+  assert.equal(failed.payload.compaction_id, result.compaction_id);
+  assert.equal(failed.payload.estimated_tokens_before, 260_000);
+  // retry：重建源后仍超窗 → 同样快速失败，不调用模型
+  const retried = await coordinator.retry({ compactionId: result.compaction_id });
+  assert.equal(retried.status, "failed");
+  assert.equal(retried.error_code, "compaction_source_exceeds_window");
+  assert.equal(gateway.calls.length, 0, "retry 同样不得调用模型");
+  const failedEvents = events.filter((e) => e.type === "context_compaction_failed");
+  assert.equal(failedEvents.length, 2, "start 与 retry 各追加一次 failed");
+});
+
+test("coordinator：取消与提交竞态（cancel 落在提交期间）→ 提交胜出，不追加 cancelled，cancel 报告 completed", async () => {
+  const journal = createFakeJournal();
+  const gateway = createFakeGateway({ script: [{ reply: { text: JSON.stringify(validSummary()) } }] });
+  // 挡住 writeCandidate：让 cancel 精确落在"reply 已到、提交进行中"的窗口
+  let releaseWrite;
+  const writeGate = new Promise((resolve) => { releaseWrite = resolve; });
+  const baseStore = createFakeCheckpointStore();
+  const store = {
+    ...baseStore,
+    async writeCandidate(input) {
+      await writeGate;
+      return baseStore.writeCandidate(input);
+    }
+  };
+  const coordinator = createCoordinator({ journal, gateway, store });
+  const startPromise = coordinator.start({ projectRoot: "/p", trigger: "automatic", modelConfig: makeModelConfig() });
+  await waitForEvent(journal, "context_compaction_running");
+  await sleep(20); // 微任务链推进到 writeCandidate（被 writeGate 挡住）
+  const compactionId = journal._events.find((e) => e.type === "context_compaction_started").payload.compaction_id;
+  const cancelPromise = coordinator.cancel({ compactionId });
+  await sleep(10);
+  releaseWrite();
+  const startResult = await startPromise;
+  const cancelResult = await cancelPromise;
+  assert.equal(startResult.status, "completed", "提交胜出：start 收敛 completed");
+  assert.equal(cancelResult.status, "completed", "cancel 必须按实际终态（completed）报告，不得误报取消");
+  assert.equal(cancelResult.checkpoint_id, startResult.checkpoint_id);
+  assert.equal(
+    journal._events.some((e) => e.type === "context_compaction_cancelled"),
+    false,
+    "指针已切换后绝不追加 cancelled（否则 UI 显示已取消而上下文已切换）"
+  );
+  const completed = journal._events.filter((e) => e.type === "context_compaction_completed");
+  assert.equal(completed.length, 1, "completed 恰好一次");
+  assert.equal(journal._events.filter((e) => e.type === "context_compaction_failed").length, 0, "无 failed");
+});
+
 test("coordinator.start：成功事件顺序严格为 started → running → completed，request 形状固定", async () => {
   const journal = createFakeJournal();
   const gateway = createFakeGateway({ script: [{ reply: { text: JSON.stringify(validSummary()) } }] });

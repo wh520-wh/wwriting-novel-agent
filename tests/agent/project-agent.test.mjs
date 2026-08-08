@@ -1895,6 +1895,92 @@ function compactionSummaryScript({ count = 40, compactionReply = validCompaction
   return Array.from({ length: count }, () => compactionAwareEntry(compactionReply, normalReply));
 }
 
+// C1 修复：预置 transcript（在 agent.open 之前直接写入 segments/transcript，避免
+// 逐轮 submit 的成本）。写入极短轮次记录——8005 条估算约 111k tokens，远低于
+// 204_800 软阈值：估算门禁永远不触发，只有"尾部页溢出"门禁能触发首压。
+async function seedTranscriptRecords(h, count, content = "一") {
+  const { createJournalSegmentStore } = await import("../../src/core/agent/journal-segments.mjs");
+  const root = path.join(h.agentRoot, "segments", "transcript");
+  const store = createJournalSegmentStore({
+    root,
+    streamName: "transcript",
+    manifestPath: path.join(h.agentRoot, "journal-manifest.json")
+  });
+  await store.load();
+  const records = [];
+  for (let i = 1; i <= count; i += 1) {
+    records.push({ transcript_seq: i, role: i % 2 === 1 ? "user" : "assistant", content });
+  }
+  await store.append(records);
+}
+
+// I1 修复：超大 transcript 首次压缩的 sourceMaterial 必须按窗口预算封顶——压缩
+// 请求自身能装进窗口，绝不被 provider 拒绝（那会让 Run 永久卡在 waiting_user）。
+test("I1：超大 transcript 首压 sourceMaterial 按窗口预算封顶（压缩请求可装进窗口）", async (t) => {
+  const h = await createProjectAgentHarness({
+    gatewayScript: compactionSummaryScript({ count: 20 }),
+    gatewayDelayMs: 0
+  });
+  t.after(() => h.cleanup());
+  // 8005 条、每条 50 CJK 字符（一轮 ≈100 tokens）：估算（尾部 8000 条）≈ 440k
+  // tokens 超过软阈值，必然触发压缩；但 8005 条逐字拼接的 sourceMaterial 若不加
+  // 封顶会远超 256k 窗口（400k+ 字符），provider 会拒绝请求。
+  await seedTranscriptRecords(h, 8005, "章".repeat(50));
+  await h.agent.open({ projectRoot: h.projectRoot });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "你好", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const compactionCall = h.gateway.calls.find((call) => call.request.metadata?.stage === "context_compaction");
+  assert.ok(compactionCall, "必须发生压缩模型调用");
+  const sourceMaterial = String(compactionCall.request.messages[1].content ?? "");
+  assert.ok(
+    sourceMaterial.length < 300_000,
+    `sourceMaterial 必须按预算封顶（实际 ${sourceMaterial.length} 字符；未封顶约 500k+）`
+  );
+  // 压缩请求能装进 256k 窗口：sourceMaterial（≈130k tokens）+ 指令 + 输出余量
+  const events = await readEvents(h.agent, h.projectRoot);
+  const compactionEvents = events.filter((event) => event.type.startsWith("context_compaction"));
+  assert.deepEqual(
+    compactionEvents.map((event) => event.type),
+    ["context_compaction_started", "context_compaction_running", "context_compaction_completed"],
+    "封顶后压缩必须正常完成"
+  );
+  assert.equal(eventsOfType(events, "run_completed").length, 1, "压缩后输入继续并完成");
+  const session = await readSession(h.agent, h.projectRoot);
+  assert.ok(session.active_context_checkpoint_id, "active checkpoint 必须建立");
+});
+
+test("C1：transcript 超过无 checkpoint 尾部页（高轮次/低 token）→ 估算未达阈值也强制首压", async (t) => {
+  const h = await createProjectAgentHarness({
+    gatewayScript: compactionSummaryScript({ count: 20 }),
+    gatewayDelayMs: 0
+  });
+  t.after(() => h.cleanup());
+  // 预置 8005 条极短轮次（无 checkpoint）：估算 ≈111k tokens < 204_800 软阈值，
+  // 但 transcript 已超出 buildHistory 的尾部页（8000）——不压缩会把最旧记录静默
+  // 排除出 prompt，且永远不会触发估算门禁。
+  await seedTranscriptRecords(h, 8005);
+  await h.agent.open({ projectRoot: h.projectRoot });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "你好", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  const compactionEvents = events.filter((event) => event.type.startsWith("context_compaction"));
+  assert.deepEqual(
+    compactionEvents.map((event) => event.type),
+    ["context_compaction_started", "context_compaction_running", "context_compaction_completed"],
+    "尾部页溢出必须触发一次完整首压（估算低于软阈值也必须压缩）"
+  );
+  const completed = compactionEvents.at(-1);
+  assert.equal(completed.payload.trigger, "automatic");
+  assert.equal(completed.payload.error_code, null);
+  // 压缩成功后原输入继续并完成，active checkpoint 建立
+  assert.equal(eventsOfType(events, "run_completed").length, 1, "首压后输入继续并完成");
+  assert.equal(eventsOfType(events, "input_consumed").length, 1);
+  const session = await readSession(h.agent, h.projectRoot);
+  assert.equal(session.active_context_checkpoint_id, completed.payload.checkpoint_id, "压缩后 active checkpoint 必须建立");
+  const checkpointFile = path.join(h.agentRoot, "checkpoints", `context-${completed.payload.checkpoint_id}.json`);
+  assert.equal(await pathExists(checkpointFile), true, "checkpoint 正式文件必须落盘");
+});
+
 test("自动压缩：达到阈值先压缩（started→running→completed），成功后继续原输入并完成 Run", async (t) => {
   const h = await openHarness(t, {
     gatewayScript: compactionSummaryScript(),
@@ -1934,6 +2020,34 @@ test("自动压缩：达到阈值先压缩（started→running→completed），
   assert.equal(session.compaction.trigger, "automatic");
   const checkpointFile = path.join(h.agentRoot, "checkpoints", `context-${completed.payload.checkpoint_id}.json`);
   assert.equal(await pathExists(checkpointFile), true, "checkpoint 正式文件必须落盘");
+});
+
+test("I5：压缩已完成后的 cancel 同 id 不得误报取消（输入继续、Run 正常完成、无 run_cancelled）", async (t) => {
+  let releaseNormal;
+  const normalGate = new Promise((resolve) => { releaseNormal = resolve; });
+  const script = [];
+  for (let i = 0; i < 13; i += 1) script.push(() => ({ text: `回复 ${i}` }));
+  script.push(compactionAwareEntry(validCompactionSummary(), async () => {
+    await normalGate; // 压缩完成后挡住原输入的模型轮，制造稳定窗口
+    return { text: "压缩后继续。" };
+  }));
+  script.push(() => ({ text: "后续回复。" }));
+  const h = await openHarness(t, { gatewayScript: script, gatewayDelayMs: 0 });
+  await seedTurns(h, 13);
+  await h.agent.submit({ projectRoot: h.projectRoot, text: AUTO_COMPACT_INPUT, source: "chat" });
+  // 压缩已 completed、原输入模型轮被 normalGate 挡住（run 仍 running）
+  await waitFor(h.agent, h.projectRoot, (session) => session.compaction?.state === "completed" && session.active_run?.status === "running", { describe: "压缩 completed 且输入在途" });
+  const completedEvent = (await readEvents(h.agent, h.projectRoot)).find((e) => e.type === "context_compaction_completed");
+  assert.ok(completedEvent, "压缩必须已完成");
+  const result = await h.agent.cancelCompaction({ projectRoot: h.projectRoot, compactionId: completedEvent.payload.compaction_id });
+  assert.equal(result.status, "completed", "已完成压缩的取消请求必须报告实际完成（不得误报取消）");
+  releaseNormal();
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  assert.equal(eventsOfType(events, "run_cancelled").length, 0, "已完成的压缩不得收敛出 run_cancelled");
+  assert.equal(eventsOfType(events, "input_cancelled").length, 0, "已完成的压缩不得收敛出 input_cancelled");
+  assert.equal(eventsOfType(events, "run_completed").length, 14, "原输入照常继续并完成");
+  assert.equal(eventsOfType(events, "input_consumed").length, 14);
 });
 
 test("自动压缩失败：Run 进入 waiting_user（不悬挂/不自动重启），重试成功后只继续原输入一次，cancel 后输入终态回 draft", async (t) => {

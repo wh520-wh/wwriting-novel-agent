@@ -519,17 +519,35 @@ export function createContextCheckpointStore({ agentDir, clock = defaultClock, i
     await injectFault(faults, "replacePointer", "after");
 
     // 追加 completed 事件（event_id 预先写入 marker；journal 尊重预写 event_id）。
-    await injectFault(faults, "appendCompleted", "before");
+    // I5 修复：指针已切换后的一切步骤都是 best-effort——completed 追加失败由
+    // reconcileAfterCrash 裁决 2 补写（marker 保存完整 payload 与预写 event_id），
+    // marker 删除失败由裁决 3 清理。绝不允许"指针已切换"的提交被误报成失败
+    //（否则 journal 同时持有 completed 与 failed 两个终态，Run 错误收敛 waiting_user）。
     if (journal == null) {
       throw checkpointError("checkpoint_commit_requires_journal", "commitCandidate 需要 journal 才能追加 completed 事件");
     }
-    await journal.append({ event_id: marker.event_id, type: "context_compaction_completed", payload: marker.payload });
+    let completedAppended = false;
+    try {
+      await injectFault(faults, "appendCompleted", "before");
+      await journal.append({ event_id: marker.event_id, type: "context_compaction_completed", payload: marker.payload });
+      completedAppended = true;
+    } catch {
+      // 指针已切换：completed 事件由崩溃对账裁决 2 补写（marker 必须保留），不向上抛。
+    }
     await injectFault(faults, "appendCompleted", "after");
 
-    // 删除提交 marker。
-    await injectFault(faults, "deleteMarker", "before");
-    await removeIfExists(markerPath);
-    await injectFault(faults, "deleteMarker", "after");
+    // 删除提交 marker：仅当 completed 已落盘才删。completed 追加失败的现场必须保留
+    // marker，否则对账没有裁决 2 的凭据（指针已切换 + 无 marker + 无 completed 会被
+    // 裁决 4 误判为存储损坏）。
+    if (completedAppended) {
+      try {
+        await injectFault(faults, "deleteMarker", "before");
+        await removeIfExists(markerPath);
+      } catch {
+        // 指针已切换：marker 遗留由崩溃对账裁决 3 清理，不向上抛。
+      }
+      await injectFault(faults, "deleteMarker", "after");
+    }
 
     return {
       checkpoint_id: finalized.checkpoint_id,
