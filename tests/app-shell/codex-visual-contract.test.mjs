@@ -44,3 +44,18 @@ test("Codex 基线：工作组为细边框圆角卡片", () => {
   assert.match(group, /border-radius:\s*var\(--r-card\)/u);
   assert.match(group, /box-shadow:\s*var\(--shadow-xs\)/u);
 });
+
+test("Codex 基线：状态行是紧凑小条（无全宽边框）", () => {
+  const css = read("src/app-shell/agent/agent.css");
+  const header = cssBlock(css, ".agent-run-header");
+  assert.match(header, /display:\s*flex/u);
+  assert.ok(!/border-(top|bottom)/u.test(header));
+  assert.match(css, /\.agent-run-dot/u, "状态点必须存在");
+});
+
+test("Codex 基线：压缩行为细边框紧凑条", () => {
+  const css = read("src/app-shell/agent/agent.css");
+  const row = cssBlock(css, ".agent-compaction");
+  assert.match(row, /border:\s*1px solid var\(--agent-line\)/u);
+  assert.match(row, /border-radius:\s*var\(--r\)/u);
+});

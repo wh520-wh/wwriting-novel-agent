@@ -626,8 +626,32 @@
 .agent-run-header {
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: space-between;
+  gap: 12px;
   min-height: 30px; /* 状态文案变化不改变行高 */
+  padding: 4px 2px;
+}
+
+.agent-run-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--agent-muted);
+  font-size: 12px;
+}
+
+/* 状态点静态：只做颜色反馈（live=accent / 终态=muted），不引入循环动画，
+   避免与运行中 .agent-live-text 扫光构成两个活性动效目标。 */
+.agent-run-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--agent-muted);
+  transition: background 160ms ease;
+}
+
+.agent-run-dot[data-live="true"] {
+  background: var(--agent-accent);
 }
 
 .agent-run-status {
@@ -1639,13 +1663,17 @@
   color: var(--text-secondary);
 }
 
-/* ---- 压缩状态行（Task 11 Step 4）：单行顶替，无卡片容器 -------------------- */
+/* ---- 压缩状态行（Task 11 Step 4）：单行顶替，细边框紧凑条 ------------------ */
 .agent-compaction {
   max-width: min(100%, 1040px);
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
-  padding: 4px 2px;
+  border: 1px solid var(--agent-line);
+  background: var(--agent-panel-solid);
+  border-radius: var(--r);
+  padding: 8px 12px;
 }
 
 .agent-compaction-row {

@@ -702,7 +702,14 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     status.className = "agent-run-status";
     status.dataset.testid = "agent-run-status";
     status.textContent = runStatusText(run, state);
-    runHeader.append(status);
+    // Codex 改版：状态文案与活性状态点包进紧凑 chip（testid 保留）。
+    const chip = doc.createElement("span");
+    chip.className = "agent-run-chip";
+    const dot = doc.createElement("span");
+    dot.className = "agent-run-dot";
+    dot.dataset.live = String(run?.status === "running" || run?.status === "stopping");
+    chip.append(dot, status);
+    runHeader.append(chip);
     if (isRunActive(run)) {
       const stop = doc.createElement("button");
       stop.type = "button";
