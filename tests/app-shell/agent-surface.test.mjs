@@ -2738,3 +2738,133 @@ test("transport: composer 选项读取与切换使用正确端点、作用域与
       surface.destroy();
     });
 });
+
+// ===========================================================================
+// Task 9：历史生命周期与压缩取消/重试 API
+// ===========================================================================
+// 按依赖规则 B（tests/architecture/dependency-rules.test.mjs），AgentSurface
+// 只能经 src/app-shell/agent/index.js 暴露，测试不得直接 import api.js；因此
+// 传输层经 surface 公共 seam 验证（fake transport 断言委托/状态行为 + 真实
+// transport 断言端点/body/非 JSON 文本）。cancelCompaction/retryCompaction 尚无
+// surface 入口（Task 12 的 handleEscape 接线），其 URL/body 契约由
+// tests/http/agent-routes.test.mjs 的路径断言固定。
+
+test("surface: exportHistory 只委托 transport，不改本地状态", async () => {
+  const { api, surface } = await makeSurface({
+    apiOverrides: {
+      exportHistory: async () => {
+        api.calls.push(["exportHistory"]);
+        return { text: "line1\nline2\n", status: 200 };
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+  const result = await surface.exportHistory();
+  assert.deepEqual(api.calls.at(-1), ["exportHistory"]);
+  assert.equal(result.text, "line1\nline2\n");
+});
+
+test("surface: exportHistory 真实 transport 返回 NDJSON 原文（不按 JSON 解析）", async () => {
+  const ndjson = '{"stream":"event","record":{}}\n{"stream":"transcript","record":{}}\n';
+  await withFetch((url, options) => {
+    if (url.startsWith("/api/project/events")) return { ok: true, status: 200, body: neverStream() };
+    if (url.startsWith("/api/agent/history/export")) {
+      assert.equal(options.method, "POST");
+      return { ok: true, status: 200, text: async () => ndjson };
+    }
+    if (url.startsWith("/api/agent/snapshot")) return snapshotResponse(null);
+    return jsonResponse({ ok: true });
+  }, async (calls) => {
+    const { surface } = await makeSurface({ useRealTransport: true });
+    await surface.openProject("D:\\novel");
+    const result = await surface.exportHistory();
+    const exportCall = calls.find((c) => String(c.url) === "/api/agent/history/export");
+    assert.ok(exportCall, "应调用 history/export 端点");
+    assert.deepEqual(JSON.parse(exportCall.options.body), { projectRoot: "D:\\novel" });
+    assert.equal(result.text, ndjson, "应原样返回 NDJSON 文本，而不是 JSON 解析结果");
+    assert.equal(result.status, 200);
+    surface.destroy();
+  });
+});
+
+test("surface: clearHistory 成功后重置投影并重开当前项目（clear-reconnect）", async () => {
+  const { root, api, surface } = await makeSurface({
+    apiOverrides: {
+      clearHistory: async (options) => {
+        api.calls.push(["clearHistory", options]);
+        return { ok: true, session_id: "sess-new", status: "idle", generation_id: "g2" };
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+  surface.applyEvent(ev("input_queued", { input_id: "in-1", text: "旧会话消息", source: "chat" }));
+  assert.ok(root.textContent.includes("旧会话消息"));
+
+  const result = await surface.clearHistory({ confirm_irreversible: true });
+  assert.deepEqual(api.calls.filter((c) => c[0] === "clearHistory"), [
+    ["clearHistory", { confirm_irreversible: true }]
+  ]);
+  assert.equal(result.session_id, "sess-new", "清空结果透传给调用方");
+  assert.equal(api.calls.filter((c) => c[0] === "openProject").length, 2, "清空后重新打开项目（重连）");
+  assert.equal(api.calls.filter((c) => c[0] === "connectEvents").length, 2, "清空后重建 SSE 连接");
+  assert.doesNotMatch(root.textContent, /旧会话消息/u, "清空后旧消息不得残留");
+});
+
+test("surface: clearHistory 失败（409 history_busy）保留状态并向调用方抛错", async () => {
+  const { root, api, surface } = await makeSurface({
+    apiOverrides: {
+      clearHistory: async () => {
+        api.calls.push(["clearHistory"]);
+        const error = new Error("Agent 正在运行，无法清空历史。");
+        error.code = "history_busy";
+        error.status = 409;
+        throw error;
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+  surface.applyEvent(ev("input_queued", { input_id: "in-1", text: "保留消息", source: "chat" }));
+  await assert.rejects(
+    surface.clearHistory({ confirm_irreversible: true }),
+    (error) => error.code === "history_busy"
+  );
+  assert.ok(root.textContent.includes("保留消息"), "失败后消息保留");
+  assert.equal(api.calls.filter((c) => c[0] === "openProject").length, 1, "失败不重开项目");
+});
+
+test("transport surface: clearHistory 终止旧 SSE 并按新 session 重连（真实 transport）", async () => {
+  let eventsFetches = 0;
+  await withFetch((url) => {
+    if (url.startsWith("/api/project/events")) {
+      eventsFetches += 1;
+      return { ok: true, status: 200, body: neverStream() };
+    }
+    if (url.startsWith("/api/agent/history/clear")) {
+      return jsonResponse({ ok: true, session_id: "sess-new", status: "idle", generation_id: "g2" });
+    }
+    if (url.startsWith("/api/agent/snapshot")) {
+      return jsonResponse({
+        ok: true,
+        session: session({ session_id: "sess-new" }),
+        events: [],
+        gaps: [],
+        has_more: false
+      });
+    }
+    return jsonResponse({ ok: true });
+  }, async (calls) => {
+    const { surface } = await makeSurface({ useRealTransport: true });
+    await surface.openProject("D:\\novel");
+    await surface.clearHistory({ confirm_irreversible: true });
+    const clear = calls.find((c) => String(c.url) === "/api/agent/history/clear");
+    assert.ok(clear, "应调用 history/clear 端点");
+    assert.deepEqual(JSON.parse(clear.options.body), {
+      projectRoot: "D:\\novel",
+      confirm_irreversible: true
+    });
+    const snaps = calls.filter((c) => String(c.url).startsWith("/api/agent/snapshot?"));
+    assert.ok(snaps.length >= 2, "初始 + 清空后各拉一次快照");
+    assert.ok(eventsFetches >= 2, "清空后重建 SSE（旧连接被 transport.openProject 终止）");
+    surface.destroy();
+  });
+});

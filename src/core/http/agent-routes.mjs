@@ -8,9 +8,11 @@
 //   POST /api/agent/input/:inputId/promote { projectRoot }      -> { ok, run_id, input_id, promoted }
 //   POST /api/agent/run/:runId/stop       { projectRoot }       -> { ok, run_id, cancelled }
 //   POST /api/agent/run/:runId/retry      { projectRoot }       -> { ok, run_id, input_id, retried }
+//   POST /api/agent/compaction/:compactionId/cancel { projectRoot } -> { ok, compaction_id, cancelling }
+//   POST /api/agent/compaction/:compactionId/retry  { projectRoot } -> { ok, compaction_id, retried }
 //   POST /api/agent/decision/:decisionId  { projectRoot, choice } -> { ok, decision_id, granted }
 //   GET  /api/agent/snapshot?projectRoot&afterSeq&beforeSeq&tail&limit -> { ok, session, events, gaps, has_more }
-//   POST /api/agent/history/export       { projectRoot } -> NDJSON 下载（text/plain + attachment）
+//   POST /api/agent/history/export       { projectRoot } -> NDJSON 下载（application/x-ndjson + attachment）
 //   POST /api/agent/history/clear        { projectRoot, confirm_irreversible } -> { ok, session_id, status, generation_id }
 //   GET  /api/project/events?projectRoot  （SSE：轮询 journal，逐条推送事件）
 //
@@ -52,6 +54,36 @@ export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPoll
       return resolveProjectRoot(projectRoot);
     }
     return projectRoot;
+  }
+
+  // 压缩领域错误 → HttpError（Task 9）：runtime.mjs 的 fail(code) 抛出的域 code
+  // 在这里映射为固定状态码与中文文案，交给 router 统一输出（sendError 会按
+  // publicErrorMessage 白名单决定是否透传 message；未在白名单内的 code 一律
+  // 收敛为通用文案，绝不泄漏底层错误文本）。
+  const COMPACTION_ERROR_STATUS = {
+    invalid_compaction_id: 400,
+    compaction_not_found: 404,
+    compaction_not_retryable: 409,
+    compaction_in_flight: 409,
+    compaction_no_run: 409
+  };
+  const COMPACTION_ERROR_MESSAGE = {
+    invalid_compaction_id: "压缩任务标识无效。",
+    compaction_not_found: "压缩任务不存在或已结束。",
+    compaction_not_retryable: "压缩已结束，无法重试。",
+    compaction_in_flight: "压缩正在进行中，无法重试。",
+    compaction_no_run: "当前没有可继续压缩的 Run。"
+  };
+  async function runCompactionAction(action) {
+    try {
+      return await action();
+    } catch (error) {
+      const status = COMPACTION_ERROR_STATUS[error?.code];
+      if (status) {
+        throw new HttpError(status, error.code, COMPACTION_ERROR_MESSAGE[error.code]);
+      }
+      throw error;
+    }
   }
 
   return {
@@ -107,6 +139,29 @@ export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPoll
       };
     },
 
+    // 压缩取消/重试（Task 9）：ESC、按钮与 HTTP 都调用同一后端方法（Task 8
+    // Step 7，复用当前项目 state 的 AbortController，不创建第二套终止协议）。
+    // 成功响应里的 cancelling/retried 表示「请求已被接受」；压缩本身随后续
+    // context_compaction_* 事件收敛到终态，前端以事件为准（Task 11/12）。
+    // 错误码 → HTTP 状态在本模块内显式映射（与下方 clearHistory 同一模式）：
+    // 不存在的 compaction id → 404，状态冲突/无 Run → 409，非法 id → 400；
+    // 其余错误交给 router 统一脱敏（不泄漏底层错误文本）。
+    "POST /api/agent/compaction/:compactionId/cancel": async ({ params, body }) => {
+      const projectRoot = await resolveScope(body);
+      const result = await runCompactionAction(() =>
+        agent.cancelCompaction({ projectRoot, compactionId: params.compactionId })
+      );
+      return { ok: true, compaction_id: result.compaction_id, cancelling: true };
+    },
+
+    "POST /api/agent/compaction/:compactionId/retry": async ({ params, body }) => {
+      const projectRoot = await resolveScope(body);
+      const result = await runCompactionAction(() =>
+        agent.retryCompaction({ projectRoot, compactionId: params.compactionId })
+      );
+      return { ok: true, compaction_id: result.compaction_id, retried: true };
+    },
+
     // 决策：choice ∈ allow/allow_input/deny；extreme 决策要求 choice 为精确确认文字。
     "POST /api/agent/decision/:decisionId": async ({ params, body }) => {
       const projectRoot = await resolveScope(body);
@@ -147,8 +202,8 @@ export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPoll
     "POST /api/agent/history/export": async ({ body, response }) => {
       const projectRoot = await resolveScope(body);
       response.writeHead(200, {
-        "content-type": "text/plain; charset=utf-8",
-        "content-disposition": 'attachment; filename="agent-history.ndjson"',
+        "content-type": "application/x-ndjson; charset=utf-8",
+        "content-disposition": 'attachment; filename="wwriting-agent-history.jsonl"',
         "cache-control": "no-store"
       });
       try {

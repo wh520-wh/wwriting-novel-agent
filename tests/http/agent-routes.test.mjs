@@ -570,8 +570,9 @@ test("Task 5 HTTP：POST /api/agent/history/export 返回 NDJSON 下载且不含
     body: JSON.stringify({ projectRoot: s.h.projectRoot })
   });
   assert.equal(res.status, 200);
-  assert.match(res.headers.get("content-type") ?? "", /text\/plain/u);
+  assert.match(res.headers.get("content-type") ?? "", /application\/x-ndjson/u);
   assert.match(res.headers.get("content-disposition") ?? "", /attachment/u);
+  assert.match(res.headers.get("content-disposition") ?? "", /wwriting-agent-history\.jsonl/u);
   const body = await res.text();
   const lines = body.trim().split("\n").map((line) => JSON.parse(line));
   assert.ok(lines.length >= 60, "导出包含 seed 事件");
@@ -657,4 +658,142 @@ test("Task 5 HTTP：POST /api/agent/history/clear 缺确认 400、活动 Run 409
   const snap = await s.get(`/api/agent/snapshot?projectRoot=${encodeURIComponent(s.h.projectRoot)}&afterSeq=0&limit=100`);
   assert.equal(snap.data.session.session_id, cleared.data.session_id);
   assert.equal(snap.data.events.length, 1, "清空后只剩新 session_created");
+});
+
+// ---------------------------------------------------------------------------
+// Task 9：压缩取消/重试路由 + /compact 排队契约 + snapshot tail HTTP 形状
+// ---------------------------------------------------------------------------
+
+// 压缩路由测试用最小 stub agent（submit 满足 createAgentRoutes 的注入校验），
+// 契约与错误映射聚焦在路由层；真实压缩状态机语义已由 Task 8 的
+// tests/agent/compaction.test.mjs 覆盖。
+function compactionStubAgent(overrides = {}) {
+  return {
+    submit: async () => ({ input_id: "in-1", run_id: "run-1", queued: false }),
+    cancelCompaction: async () => ({ status: "cancelled", compaction_id: "c-1" }),
+    retryCompaction: async () => ({ status: "completed", compaction_id: "c-1", attempt: 2 }),
+    ...overrides
+  };
+}
+
+function compactionHttpServer(t, agent) {
+  const router = createRouter();
+  return startHttpServer(t, {
+    router,
+    routeModules: [createAgentRoutes({ agent })]
+  });
+}
+
+test("Task 9 POST /api/agent/compaction/:id/cancel 返回 200 + { ok, compaction_id, cancelling }", async (t) => {
+  const server = await compactionHttpServer(t, compactionStubAgent());
+  const { res, data } = await server.post("/api/agent/compaction/c-1/cancel", { projectRoot: "D:\\any" });
+  assert.equal(res.status, 200);
+  assert.equal(data.ok, true);
+  assert.equal(data.compaction_id, "c-1");
+  assert.equal(data.cancelling, true, "取消请求被接受");
+});
+
+test("Task 9 POST /api/agent/compaction/:id/retry 返回 200 + { ok, compaction_id, retried }", async (t) => {
+  const server = await compactionHttpServer(t, compactionStubAgent());
+  const { res, data } = await server.post("/api/agent/compaction/c-1/retry", { projectRoot: "D:\\any" });
+  assert.equal(res.status, 200);
+  assert.equal(data.ok, true);
+  assert.equal(data.compaction_id, "c-1");
+  assert.equal(data.retried, true, "重试请求被接受");
+});
+
+test("Task 9 不存在的 compaction id → 404 compaction_not_found（cancel 与 retry）", async (t) => {
+  const agent = compactionStubAgent({
+    cancelCompaction: async () => {
+      const error = new Error("compaction ghost 不存在。");
+      error.code = "compaction_not_found";
+      throw error;
+    },
+    retryCompaction: async () => {
+      const error = new Error("compaction ghost 不存在。");
+      error.code = "compaction_not_found";
+      throw error;
+    }
+  });
+  const server = await compactionHttpServer(t, agent);
+  const cancel = await server.post("/api/agent/compaction/ghost/cancel", { projectRoot: "D:\\any" });
+  assert.equal(cancel.res.status, 404);
+  assert.equal(cancel.data.ok, false);
+  assert.equal(cancel.data.code, "compaction_not_found");
+  const retry = await server.post("/api/agent/compaction/ghost/retry", { projectRoot: "D:\\any" });
+  assert.equal(retry.res.status, 404);
+  assert.equal(retry.data.ok, false);
+  assert.equal(retry.data.code, "compaction_not_found");
+});
+
+test("Task 9 压缩状态冲突（重试已终结/进行中/无 Run）→ 409", async (t) => {
+  const agent = compactionStubAgent({
+    retryCompaction: async () => {
+      const error = new Error("压缩已完成，无法重试。");
+      error.code = "compaction_not_retryable";
+      throw error;
+    }
+  });
+  const server = await compactionHttpServer(t, agent);
+  const retry = await server.post("/api/agent/compaction/c-1/retry", { projectRoot: "D:\\any" });
+  assert.equal(retry.res.status, 409);
+  assert.equal(retry.data.ok, false);
+  assert.equal(retry.data.code, "compaction_not_retryable");
+});
+
+test("Task 9 取消/重试不泄漏底层错误文本（统一脱敏契约）", async (t) => {
+  const agent = compactionStubAgent({
+    cancelCompaction: async () => {
+      const error = new Error(
+        "ENOENT: no such file or directory, open 'C:\\Users\\test\\userData\\workspaces\\ws_x\\agent\\events.jsonl'"
+      );
+      error.code = "ENOENT";
+      throw error;
+    }
+  });
+  const server = await compactionHttpServer(t, agent);
+  const { res, data } = await server.post("/api/agent/compaction/c-1/cancel", {
+    projectRoot: "C:\\any\\folder"
+  });
+  assert.equal(res.status, 500);
+  assert.equal(data.ok, false);
+  assert.equal(data.code, "INTERNAL_ERROR");
+  assert.doesNotMatch(JSON.stringify(data), /ENOENT|node:fs|at\s+\w+|[A-Z]:\\.*userData/iu);
+});
+
+test("Task 9 运行中提交 /compact 返回 queued 而不是新 Run", async (t) => {
+  const s = await setupServer(t, {
+    gatewayScript: [
+      async () => {
+        await sleep(600);
+        return { text: "第一轮完成" };
+      },
+      { reply: { text: "排队任务完成" } }
+    ],
+    gatewayDelayMs: 0
+  });
+  const first = await s.post("/api/agent/input", { projectRoot: s.h.projectRoot, text: "任务一" });
+  assert.equal(first.data.status, "running");
+  const compact = await s.post("/api/agent/input", { projectRoot: s.h.projectRoot, text: "/compact" });
+  assert.equal(compact.res.status, 200);
+  assert.equal(compact.data.ok, true);
+  assert.equal(compact.data.status, "queued", "/compact 运行中应排队而不是新 Run");
+  assert.equal(compact.data.run_id, first.data.run_id, "排队沿用同一 Run id");
+  await waitForIdle(s.h.agent, s.h.projectRoot);
+  const events = await readEvents(s.h.agent, s.h.projectRoot);
+  assert.equal(eventsOfType(events, "run_started").length, 1, "/compact 排队不得创建新 Run");
+});
+
+test("Task 9 GET /api/agent/snapshot?tail=1 返回最新尾页", async (t) => {
+  const s = await setupServer(t);
+  await seedJournalEvents(s.h.agentRoot, s.h.projectRoot, { count: 500 });
+  await s.h.agent.open({ projectRoot: s.h.projectRoot });
+  const res = await s.get(
+    `/api/agent/snapshot?projectRoot=${encodeURIComponent(s.h.projectRoot)}&tail=1&limit=3`
+  );
+  assert.equal(res.res.status, 200);
+  assert.equal(res.data.ok, true);
+  assert.deepEqual(res.data.events.map((e) => e.seq), [498, 499, 500]);
+  assert.equal(res.data.has_more, true, "尾页之前还有更旧事件");
+  assert.equal(res.data.session.last_seq, 500);
 });
