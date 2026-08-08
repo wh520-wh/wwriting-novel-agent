@@ -149,10 +149,15 @@ function mergeGaps(state, gaps) {
   }
 }
 
-// 事件并入稳定 store（按 event_key 去重），并维护已加载最小 seq（前置分页游标）。
+// 事件并入稳定 store（按 event_key 去重），并维护已加载最小/最大 seq：
+// minSeq 是前置分页游标；lastSeq 随快照/前置页一并推进（snapshot 里的事件同样
+// 是「已见」事件），保证首屏 tail 后 connectEvents 从已加载最大 seq 续流，而不是
+// afterSeq=0 把整本 Journal 在 SSE 上重放（brief Step 2「lastSeq 只取已见最大
+// seq」+ Step 4「保留 state.lastSeq 作为 SSE 增量游标」）。
 function mergeEventsIntoStore(state, list) {
   let added = false;
   let min = state.minSeq;
+  let max = state.lastSeq;
   for (const event of list) {
     const key = eventKey(event);
     if (key == null) continue;
@@ -161,9 +166,13 @@ function mergeEventsIntoStore(state, list) {
       added = true;
     }
     const seq = Number(event.seq);
-    if (Number.isFinite(seq)) min = min == null ? seq : Math.min(min, seq);
+    if (Number.isFinite(seq)) {
+      min = min == null ? seq : Math.min(min, seq);
+      if (seq > max) max = seq;
+    }
   }
   state.minSeq = min;
+  state.lastSeq = max;
   return added;
 }
 
