@@ -1,0 +1,855 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>写作 Agent · 对话样式预览 v4</title>
+<style>
+  :root {
+    --bg: #fafbfc;
+    --panel: #ffffff;
+    --border: #e4e7ea;
+    --line: #e4e7ea;
+    --line-soft: #edf0f2;
+    --text: #1a1d21;
+    --text-dim: #6b7280;
+    --text-faint: #9aa1a9;
+    --accent: #3f6b4f;
+    --accent-deep: #2f533f;
+    --think-bg: #ffffff;
+    --tool-bg: #ffffff;
+    --bubble-user: #edf0f2;
+    --chip-bg: #f4f5f7;
+    --retry-bg: #fcf6ec;
+    --retry-border: #e8dcbd;
+    --retry-text: #8a6d2f;
+    --ok-green: #2c6e49;
+    --err-bg: #f9eeea;
+    --err-border: #ead3cf;
+    --err-text: #a4422f;
+    --err-soft: #b07a6c;
+    --r: 8px;
+    --r-card: 12px;
+    --shadow: 0 1px 3px rgb(16 24 40 / .06);
+    --serif: "Noto Serif SC", "Source Han Serif SC", "STSong", "SimSun", serif;
+    --sans: "PingFang SC", "Microsoft YaHei", sans-serif;
+    --mono: ui-monospace, Consolas, "Courier New", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    background-image: radial-gradient(rgba(63,107,79,0.04) 1px, transparent 1px);
+    background-size: 22px 22px;
+    font-family: var(--sans);
+    color: var(--text);
+    padding: 36px 16px 64px;
+  }
+
+  .page-head { max-width: 680px; margin: 0 auto 20px; }
+  .page-head h1 { font-size: 20px; font-weight: 600; margin-bottom: 6px; }
+  .page-head p { font-size: 13px; color: var(--text-dim); line-height: 1.8; }
+  .page-head .hl { color: var(--accent); font-weight: 600; }
+
+  /* ===== 窗口 ===== */
+  .window {
+    max-width: 680px; margin: 0 auto;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    box-shadow: 0 10px 34px rgba(90,70,40,0.10);
+    overflow: hidden;
+  }
+  .win-bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    background: #faf7f0;
+    font-size: 13px; color: var(--text-dim);
+  }
+  .win-bar .dot { width: 10px; height: 10px; border-radius: 50%; }
+  .win-bar .dot.r { background: #e07b6b; }
+  .win-bar .dot.y { background: #e0c26b; }
+  .win-bar .dot.g { background: #7bb27e; }
+  .win-bar .title { margin-left: 6px; letter-spacing: .3px; }
+  .win-bar .save-hint { margin-left: auto; font-size: 12px; color: var(--text-faint); }
+
+  .thread { padding: 22px 20px 20px; display: flex; flex-direction: column; gap: 18px; }
+
+  /* ===== 用户消息 ===== */
+  .msg-user { align-self: flex-end; max-width: 80%; }
+  .msg-user .bubble {
+    background: var(--bubble-user);
+    border-radius: 14px 14px 4px 14px;
+    padding: 10px 14px;
+    font-size: 14px; line-height: 1.7;
+  }
+
+  /* ===== agent 一轮 ===== */
+  .turn-agent { display: flex; flex-direction: column; gap: 8px; }
+
+  /* 思考块：细边框圆角折叠卡片，展开为明细 */
+  .think-block {
+    border: 1px solid var(--line);
+    border-radius: var(--r-card);
+    background: var(--panel);
+    box-shadow: var(--shadow);
+    padding: 8px 12px;
+    font-size: 13px; color: var(--text-dim);
+    overflow: hidden; cursor: pointer; user-select: none;
+  }
+  .think-head { display: flex; align-items: center; gap: 8px; padding: 2px 2px; }
+  .think-head .caret { transition: transform .2s; font-size: 11px; }
+  .think-block.open .caret { transform: rotate(90deg); }
+  .think-head .dotting::after {
+    content: "…"; display: inline-block; width: 1em; text-align: left;
+    animation: dots 1.2s steps(3) infinite; overflow: hidden; vertical-align: bottom;
+  }
+  @keyframes dots { 0% { width: 0; } 100% { width: 1em; } }
+  .think-body {
+    display: none;
+    padding: 6px 0 0;
+    line-height: 1.8;
+    color: #6f6a5f;
+    white-space: pre-wrap;
+  }
+  .think-block.open .think-body { display: block; }
+
+  /* 工具行（过程态）：细边框圆角卡片，一行小字 */
+  .tool-card {
+    display: flex; align-items: center; gap: 8px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-card);
+    background: var(--panel);
+    box-shadow: var(--shadow);
+    padding: 8px 12px;
+    font-size: 13px; color: var(--text-dim);
+    max-width: 82%;
+  }
+  .tool-card .ic { color: var(--accent); }
+  .tool-card .status { margin-left: auto; font-size: 12px; color: var(--text-faint); white-space: nowrap; }
+  .tool-card .status.bad { color: var(--err-text); }
+
+  /* 重试状态行（过程态 · 琥珀色，无框） */
+  .retry-line {
+    display: flex; align-items: center; gap: 8px;
+    padding: 2px 2px;
+    font-size: 13px; color: var(--retry-text);
+    max-width: 82%;
+    animation: chipIn .25s ease;
+  }
+  .retry-line .pulse {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #d9a544; flex: none;
+    animation: pulse 1s ease infinite;
+  }
+  @keyframes pulse { 50% { opacity: .25; transform: scale(.75); } }
+  .retry-line b { color: #8a6a2a; }
+
+  /* 恢复提示（正确态过渡 · 绿色） */
+  .recover-line {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12px; color: var(--ok-green);
+    padding: 2px 4px;
+    animation: chipIn .3s ease;
+  }
+
+  /* 错误态（红色）：无边框，只靠低饱和红底与文字色区分 */
+  .msg-error {
+    background: var(--err-bg);
+    border-radius: 12px;
+    padding: 12px 14px;
+    max-width: 94%;
+    animation: cardIn .35s ease;
+  }
+  .e-head { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: var(--err-text); }
+  .e-head .e-time { margin-left: auto; font-size: 12px; font-weight: 400; color: #c08d80; }
+  .e-body { font-size: 13px; line-height: 1.7; color: #8c4a3a; margin-top: 6px; }
+  .e-code {
+    font-family: var(--mono); font-size: 12px;
+    background: rgba(160,61,42,.08);
+    border: 1px solid rgba(160,61,42,.16);
+    padding: 1px 6px; border-radius: 6px;
+    white-space: nowrap;
+  }
+  .e-note { font-size: 12px; color: var(--err-soft); margin-top: 6px; line-height: 1.6; }
+  .e-actions { display: flex; gap: 8px; margin-top: 10px; }
+  .e-btn {
+    font-size: 12px; padding: 5px 14px;
+    border-radius: 999px;
+    border: 1px solid #dfa99b;
+    background: #fff; color: var(--err-text);
+    cursor: pointer; transition: background .15s;
+  }
+  .e-btn:hover { background: #f6e3dd; }
+
+  /* 流式正文段落 */
+  .stream-area { display: flex; flex-direction: column; gap: 10px; }
+  .para {
+    font-family: var(--serif);
+    font-size: 15px; line-height: 2.0;
+    color: var(--text);
+    padding: 2px 2px;
+    white-space: pre-wrap;
+    max-height: 600px;
+    transition: max-height .38s ease, opacity .38s ease, padding .38s ease;
+    overflow: hidden;
+  }
+  .para.folding { max-height: 0; opacity: 0; padding-top: 0; padding-bottom: 0; }
+  .cursor {
+    display: inline-block; width: 2px; height: 17px;
+    background: var(--accent);
+    animation: blink 1s steps(1) infinite;
+    vertical-align: -2px; margin-left: 1px;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* 段落折叠后的文字标记：无框小字，hover 提示可点 */
+  .para-chips { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+  .p-chip {
+    padding: 2px 0;
+    font-size: 12px; color: var(--text-dim);
+    cursor: pointer; user-select: none;
+    border-bottom: 1px dashed transparent;
+    transition: border-color .15s, color .15s;
+    animation: chipIn .25s ease;
+  }
+  .p-chip:hover { color: var(--accent); border-bottom-color: var(--accent); }
+  .p-chip.unfinished { color: var(--retry-text); }
+  @keyframes chipIn { from { opacity: 0; transform: translateY(4px); } }
+
+  /* 偷看：纯衬线小字，无底色，只做视觉上的"浮现" */
+  .para-peek {
+    font-family: var(--serif);
+    font-size: 14px; line-height: 1.9;
+    color: #6f6a5f;
+    padding: 4px 2px;
+    white-space: pre-wrap;
+    animation: chipIn .25s ease;
+  }
+
+  /* ===== 完成态（折叠终态）：无卡片、无边框，纯文字流 ===== */
+  .done-card { overflow: hidden; }
+  .done-card.enter { animation: cardIn .45s ease; }
+  @keyframes cardIn { from { opacity: 0; transform: translateY(8px); } }
+  .done-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 2px 2px;
+    cursor: pointer; user-select: none;
+  }
+  .done-head .ok {
+    width: 18px; height: 18px; border-radius: 50%;
+    background: var(--accent); color: #fff;
+    font-size: 11px; display: flex; align-items: center; justify-content: center;
+    flex: none;
+  }
+  .done-head .t { font-size: 15px; font-weight: 600; }
+  .done-head .toggle {
+    margin-left: auto; font-size: 12px; color: var(--accent);
+    transition: transform .25s;
+  }
+  .done-card.open .done-head .toggle { transform: rotate(180deg); }
+  .done-meta {
+    display: flex; flex-wrap: wrap; gap: 10px;
+    padding: 4px 2px 6px 28px;
+  }
+  .meta-chip {
+    font-size: 12px; color: var(--text-dim);
+  }
+  .done-preview {
+    padding: 0 2px 10px 28px;
+    font-family: var(--serif);
+    font-size: 13px; color: var(--text-faint);
+    line-height: 1.7;
+  }
+  .done-detail {
+    max-height: 0; overflow: hidden;
+    transition: max-height .45s ease;
+  }
+  .done-card.open .done-detail { max-height: 4000px; }
+  .detail-inner {
+    border-top: 1px dashed var(--border);
+    margin: 0 2px; padding: 10px 2px 12px;
+  }
+  .detail-think {
+    font-size: 13px; color: var(--text-dim);
+    padding: 2px 2px 10px;
+    line-height: 1.8;
+  }
+  .detail-think .lbl {
+    display: block; font-size: 12px; color: var(--text-faint);
+    margin-bottom: 4px; font-family: var(--sans);
+  }
+  .full-text {
+    font-family: var(--serif);
+    font-size: 15px; line-height: 2.1;
+    white-space: pre-wrap;
+  }
+
+  .hidden { display: none !important; }
+  #statusSlot, #errorSlot { display: flex; flex-direction: column; gap: 8px; }
+  #statusSlot, #liveDone { border: none; color: var(--text-dim); font-size: 12px; padding: 4px 2px; }
+
+  /* ===== 场景控制 ===== */
+  .scenario-bar {
+    max-width: 680px; margin: 16px auto 0;
+    display: flex; flex-wrap: wrap; gap: 8px; justify-content: center;
+  }
+  .btn {
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--text);
+    border-radius: 999px;
+    padding: 8px 16px;
+    font-size: 13px; cursor: pointer;
+    transition: background .15s;
+  }
+  .btn:hover { background: #efece4; }
+  .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .btn.primary:hover { background: var(--accent-deep); }
+  .btn:disabled { opacity: .55; cursor: default; }
+
+  /* ===== 图例 ===== */
+  .legend {
+    max-width: 680px; margin: 22px auto 0;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 18px;
+    font-size: 13px; line-height: 1.9; color: var(--text-dim);
+  }
+  .legend b { color: var(--text); font-weight: 600; }
+  .legend .row { display: flex; gap: 8px; align-items: baseline; }
+  .legend .n { color: var(--accent); font-weight: 700; width: 22px; flex: none; }
+
+  @media (max-width: 560px) {
+    .done-meta, .done-preview { padding-left: 14px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="page-head">
+  <h1>写作 Agent · 对话样式预览 v4</h1>
+  <p>五种场景演示完整状态体系：<b class="hl">正常写作</b>、<b class="hl">一句话写 20 章</b>、<b class="hl">网络波动重试后恢复</b>、<b class="hl">重试 5 次仍失败 → 红色报错</b>、<b class="hl">API Key 错误 → 不重试直接报错</b>。上方历史消息即折叠终态。</p>
+</div>
+
+<div class="window">
+  <div class="win-bar">
+    <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+    <span class="title">《雾锁边城》 · 第 5 章</span>
+    <span class="save-hint">已自动保存</span>
+  </div>
+
+  <div class="thread">
+
+    <!-- ===== 历史第 1 轮 ===== -->
+    <div class="msg-user"><div class="bubble">帮我开个头，主角深夜回到老屋。</div></div>
+    <div class="turn-agent">
+      <div class="done-card">
+        <div class="done-head">
+          <span class="ok">✓</span>
+          <span class="t">第 5 章 · 第 1 节</span>
+          <span class="toggle">展开 ⌄</span>
+        </div>
+        <div class="done-meta">
+          <span class="meta-chip">🧠 已思考</span>
+          <span class="meta-chip">✎ 撰写 1 段</span>
+          <span class="meta-chip wc"></span>
+        </div>
+        <div class="done-preview"></div>
+        <div class="done-detail"><div class="detail-inner">
+          <div class="detail-think"><span class="lbl">思考过程</span>开篇先立氛围：雨夜、小镇、独行。用听觉（鞋底声）代替视觉铺陈，把"回老屋"写成一种靠近，而不是到达。钥匙在门楣上——说明他对这里的记忆没有断过。</div>
+          <div class="full-text">夜里十一点，客车在镇口丢下他一个人。雨刚停，站牌下的积水映着半盏路灯。他提着行李走过三条街，鞋底踩水的声音一路跟着他，直到那扇熟悉的木门前——钥匙还在老地方，门楣上面。</div>
+        </div></div>
+      </div>
+    </div>
+
+    <!-- ===== 历史第 2 轮 ===== -->
+    <div class="msg-user"><div class="bubble">节奏慢一点，加一点老屋的细节。</div></div>
+    <div class="turn-agent">
+      <div class="done-card">
+        <div class="done-head">
+          <span class="ok">✓</span>
+          <span class="t">第 5 章 · 第 2 节</span>
+          <span class="toggle">展开 ⌄</span>
+        </div>
+        <div class="done-meta">
+          <span class="meta-chip">🧠 已思考</span>
+          <span class="meta-chip">✎ 撰写 1 段</span>
+          <span class="meta-chip wc"></span>
+        </div>
+        <div class="done-preview"></div>
+        <div class="done-detail"><div class="detail-inner">
+          <div class="detail-think"><span class="lbl">思考过程</span>放慢节奏靠物件：旧日历、松了的铰链、虚掩的柜门。不写情绪，让物件自己说话。"没有开灯，先走到窗边"留一个不合常理的动作，给后面埋钩子。</div>
+          <div class="full-text">屋里的一切都比记忆里矮了一截。八仙桌上的玻璃板压着去年的日历，厨房的碗柜门虚掩着，铰链松了，风一吹就轻轻磕碰，像有人在很耐心地敲。他把行李放下，没有开灯，先摸黑走到了窗边。</div>
+        </div></div>
+      </div>
+    </div>
+
+    <!-- ===== 当前一轮（演示区） ===== -->
+    <div class="msg-user" id="liveUser"><div class="bubble">继续写第 5 章，主角要发现真相。</div></div>
+    <div class="turn-agent" id="liveTurn">
+
+      <div class="think-block" id="thinkBlock">
+        <div class="think-head"><span class="caret">▶</span><span class="label dotting" id="thinkLabel">思考中</span></div>
+        <div class="think-body" id="thinkBody"></div>
+      </div>
+
+      <div class="tool-card" id="toolCard">
+        <span class="ic">✎</span><span class="label" id="toolLabel">正在撰写</span><span class="status" id="toolStatus"></span>
+      </div>
+
+      <div id="statusSlot" class="hidden"></div>
+
+      <div class="stream-area" id="streamArea"></div>
+      <div class="para-chips hidden" id="paraChips"></div>
+      <div id="peekSlot"></div>
+
+      <div id="errorSlot" class="hidden"></div>
+
+      <div class="done-card hidden" id="liveDone">
+        <div class="done-head">
+          <span class="ok">✓</span>
+          <span class="t" id="doneTitle">第 5 章 · 第 3 节</span>
+          <span class="toggle">展开 ⌄</span>
+        </div>
+        <div class="done-meta">
+          <span class="meta-chip">🧠 已思考</span>
+          <span class="meta-chip" id="doneParaChip"></span>
+          <span class="meta-chip" id="doneWc"></span>
+        </div>
+        <div class="done-preview" id="donePreview"></div>
+        <div class="done-detail"><div class="detail-inner">
+          <div class="detail-think"><span class="lbl">思考过程</span><span id="doneThink"></span></div>
+          <div class="full-text" id="doneFull"></div>
+        </div></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="scenario-bar">
+  <button class="btn primary" data-s="normal">▶ 正常写作（3 段）</button>
+  <button class="btn" data-s="long20">📚 一句话写 20 章</button>
+  <button class="btn" data-s="retryOk">⚡ 网络波动 · 重试后恢复</button>
+  <button class="btn" data-s="retryFail">⚡ 重试 5 次仍失败</button>
+  <button class="btn" data-s="apiKey">⛔ API Key 错误</button>
+  <button class="btn" id="resetBtn">↺ 重置</button>
+</div>
+
+<div class="legend">
+  <div class="row"><span class="n">1</span><span><b>无头像、无署名行</b>，助手消息直接以内容开始。</span></div>
+  <div class="row"><span class="n">2</span><span><b>思考块</b> 逐字流出，想完自动合拢，可手动点开再看。</span></div>
+  <div class="row"><span class="n">3</span><span><b>✎ 工具卡片</b> 实时显示进度（第几段 / 总进度 x/20），不占满窗口。</span></div>
+  <div class="row"><span class="n">4</span><span><b>正文流式输出</b> 衬线字体逐字出现，<b>每段写完即折叠成圆片</b>，点圆片可偷看该段。</span></div>
+  <div class="row"><span class="n">5</span><span>全部完成后<b>整体收进完成卡片</b>：标题、摘要圆片、一句预览，点「展开」看全文。历史消息就是这个终态。</span></div>
+  <div class="row"><span class="n">6</span><span><b>⚡ 网络波动（过程态）</b> 琥珀色状态行显示「正在自动重试 n/5」，最多 5 次；恢复后绿色小字提示，从断点继续写作，不重写已写内容。</span></div>
+  <div class="row"><span class="n">7</span><span><b>⛔ 错误态（红色卡片）</b> 重试 5 次仍失败 → 红卡报错并保留进度；<b>API Key 等鉴权/配置错误不重试</b>，请求直接以红卡返回。红卡含错误码与操作按钮。</span></div>
+</div>
+
+<script>
+  /* ================= 文案数据 ================= */
+  const THINK_TEXT = "本节冲突点是线索暴露。先用环境铺垫压低节奏，让主角独自在屋里移动——灯光、灰尘、脱落的墙皮。然后把照片推出来：照片上的人是他，日期却是十年前他不在城里的那天。用矛盾收尾，制造悬念，不做任何解释。";
+  const PARAS = [
+    "他推开门，灯光从背后漏进来，灰尘在光柱里慢慢打转。屋里比记忆中冷，墙角的水渍比上个月又扩了一圈，像一张正在生长的地图。他没有开灯，站在门口听了一会儿——整栋楼安静得，能听见自己的心跳。",
+    "柜子后面的墙皮脱落了一块，露出一个四角钉着的小相框。他蹲下去，指尖碰到玻璃的那一瞬间就后悔了——照片已经泛黄，边角卷起，但上面的人他还是一眼就认了出来。是他自己，穿着那件他早就不记得有过的深灰色外套，站在江边，笑得很放松。",
+    "照片的右下角印着一行褪色的小字：二〇一五年十月，临江码头。他盯着那行字看了很久。十年前，他明明在省城——那整整一个月，他一步都没有离开过。"
+  ];
+  const LONG_THINK = "20 章一次写完。先定节奏线：发现照片 → 追查大火 → 同名遇难者 → 阁楼日记 → 真相 → 雾锁边城。每章 60 到 80 字，短句推进，章章留钩，结尾收在第 24 章的雾里。";
+  const CHAPTERS = [
+    "他推开门，灯光漏进来，灰尘在光柱里打转。柜子后面的墙皮脱落了一块，露出半张泛黄的照片。",
+    "照片上的人是他自己，穿着不记得有过的深灰外套，站在江边笑得很放松。右下角一行小字：二〇一五年十月，临江码头。",
+    "十年前他明明在省城，一个月没有离开过。他把照片翻过来，背面有一行陌生的笔迹：别相信你记得的事。",
+    "夜里他睡不着，把全城的旧报纸翻了个遍。二〇一五年十月，临江码头有过一场大火，烧掉了一整排仓库。",
+    "火灾遇难者名单里，有一个名字和他同名同姓。他盯着那个名字看了很久，直到灯丝烧断，屋里黑下来。",
+    "第二天他去了码头。仓库早拆了，原地立着一栋新楼，门卫说这里从来没有什么仓库。",
+    "门卫的茶杯底下压着一张旧合影，边角露出半件深灰色的外套。他没有声张，转身走进了雨里。",
+    "他回老屋翻母亲的遗物，在缝纫机抽屉最底层找到一把钥匙，标签写着：临江仓库，七号。",
+    "钥匙开不了任何一扇现在的门。他坐在江边坐到涨潮，水声里，他忽然想起一段不属于他的记忆。",
+    "记忆里他也在火里，抱着一个箱子往外跑。有人在他身后喊他的名字——喊的是另一个名字。",
+    "他去找当年的救火队员。老人已经糊涂了，只反复说一句话：那天我们救出来的人，比数上去的多一个。",
+    "多出来的那个人是谁？他查医院的记录：十月十七日深夜，急诊收治过一个烧伤的男人，登记的名字是假的。",
+    "假名字的笔迹，和照片背后那行字一模一样。他的手心开始出汗——那是他自己的笔迹。",
+    "他连夜赶回老屋，撬开阁楼。箱子里有一本日记，第一页写着：如果你看到这本日记，说明我又失败了。",
+    "日记里记着一次又一次的重来。每一次，他都回到这座小城；每一次，他都忘了自己为什么回来。",
+    "最后一页只写了一行：火是你自己放的，为了忘掉那个人。窗外，雨又下了起来。",
+    "他把日记和照片一起烧了。火光里，他看见江对岸有个穿深灰外套的人，正朝这边望。",
+    "那人转身走进雾里。他追出去，江桥上空无一人，只有栏杆上放着半张没烧完的照片。",
+    "照片上是两个人。一个是他；另一个人的脸被烧掉了，只看得出那个人搂着“他”的肩膀。",
+    "他把剩下的半张照片贴在胸口，忽然很想知道那个人叫什么。雾从江面漫上来，锁住了整座边城。"
+  ];
+  const RETRY_THINK = "沿用上一节的悬疑节奏：先写他进屋的体感，再把照片的矛盾推出来收尾。网络不稳时保住已写内容，恢复后从断点续写，不重写。";
+  const DEFAULT_USER_MSG = "继续写第 5 章，主角要发现真相。";
+
+  /* ================= 工具函数 ================= */
+  const $ = id => document.getElementById(id);
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const countChars = s => s.replace(/\s/g, "").length;
+
+  let playing = false;
+  let cancelled = false;
+  let chipSeq = 0;
+  let lastScenario = "normal"; // 错误卡「↻ 重试」按钮重新发起的场景
+
+  // 历史卡片：自动算字数 + 生成预览
+  document.querySelectorAll(".done-card").forEach(card => {
+    const full = card.querySelector(".full-text");
+    const wc = card.querySelector(".wc");
+    const pv = card.querySelector(".done-preview");
+    if (full && wc) wc.textContent = countChars(full.textContent) + " 字";
+    if (full && pv && !pv.textContent) pv.textContent = "“" + full.textContent.trim().slice(0, 24) + "……”";
+  });
+
+  // 完成卡片展开/收起（事件委托，历史 + 当前通用）
+  document.addEventListener("click", e => {
+    const head = e.target.closest(".done-head");
+    if (head) head.parentElement.classList.toggle("open");
+  });
+
+  // 思考块手动开合
+  $("thinkBlock").addEventListener("click", () => $("thinkBlock").classList.toggle("open"));
+
+  // 段落圆片：点开偷看该段
+  $("paraChips").addEventListener("click", e => {
+    const chip = e.target.closest(".p-chip");
+    if (!chip || chip._peek === undefined) return;
+    const slot = $("peekSlot");
+    if (slot.dataset.open === chip._key) { slot.innerHTML = ""; slot.dataset.open = ""; return; }
+    slot.innerHTML = "";
+    const peek = document.createElement("div");
+    peek.className = "para-peek";
+    peek.textContent = chip._peek;
+    slot.appendChild(peek);
+    slot.dataset.open = chip._key;
+  });
+
+  function setUserMsg(t) { $("liveUser").querySelector(".bubble").textContent = t; }
+
+  async function streamInto(el, text, speed, withCursor) {
+    let cursor = null;
+    if (withCursor) { cursor = document.createElement("span"); cursor.className = "cursor"; }
+    for (let i = 0; i < text.length; i++) {
+      if (cancelled) return false;
+      el.textContent = text.slice(0, i + 1);
+      if (cursor) el.appendChild(cursor);
+      await sleep(speed);
+    }
+    return true;
+  }
+
+  // 流式写一段，可在 interruptAt 处插入中断回调（如网络重试）
+  async function streamPara(p, text, speed, interruptAt = null, onInterrupt = null) {
+    const cursor = document.createElement("span");
+    cursor.className = "cursor";
+    for (let i = 0; i < text.length; i++) {
+      if (cancelled) return "cancel";
+      if (interruptAt !== null && i === interruptAt && onInterrupt) {
+        const ok = await onInterrupt();
+        if (!ok || cancelled) return "abort";
+      }
+      p.textContent = text.slice(0, i + 1);
+      p.appendChild(cursor);
+      await sleep(speed);
+    }
+    return "done";
+  }
+
+  async function foldPara(p, chipText, peekText, unfinished = false) {
+    p.classList.add("folding");
+    await sleep(400);
+    p.remove();
+    const chip = document.createElement("span");
+    chip.className = "p-chip" + (unfinished ? " unfinished" : "");
+    chip.textContent = chipText;
+    if (peekText) { chip._peek = peekText; chip._key = "c" + (++chipSeq); chip.title = "点击偷看本段"; }
+    $("paraChips").classList.remove("hidden");
+    $("paraChips").appendChild(chip);
+  }
+
+  async function doThink(text, speed = 26) {
+    $("thinkBlock").classList.remove("hidden");
+    $("thinkBlock").classList.add("open");
+    $("thinkLabel").textContent = "思考中";
+    $("thinkLabel").classList.add("dotting");
+    if (!await streamInto($("thinkBody"), text, speed, false)) return false;
+    $("thinkBlock").classList.remove("open");
+    $("thinkLabel").textContent = "已思考";
+    $("thinkLabel").classList.remove("dotting");
+    await sleep(350);
+    return !cancelled;
+  }
+
+  // 网络重试序列：succeedAt = 第几次尝试恢复；传 Infinity 表示 5 次全部失败
+  async function retrySequence(succeedAt) {
+    const slot = $("statusSlot");
+    slot.classList.remove("hidden");
+    slot.innerHTML = "";
+    const line = document.createElement("div");
+    line.className = "retry-line";
+    line.innerHTML = `<span class="pulse"></span><span>⚡ 网络波动，正在自动重试 <b>1</b>/5 …</span>`;
+    slot.appendChild(line);
+    for (let k = 1; k <= 5; k++) {
+      line.querySelector("b").textContent = k;
+      await sleep(800);
+      if (cancelled) return "cancel";
+      if (k === succeedAt) {
+        slot.innerHTML = "";
+        const rec = document.createElement("div");
+        rec.className = "recover-line";
+        rec.textContent = "✓ 连接已恢复（第 " + k + " 次重试成功），从断点继续写作";
+        slot.appendChild(rec);
+        await sleep(1100);
+        return "recovered";
+      }
+    }
+    slot.innerHTML = "";
+    slot.classList.add("hidden");
+    return "exhausted";
+  }
+
+  function showError(cfg) {
+    const slot = $("errorSlot");
+    slot.classList.remove("hidden");
+    slot.innerHTML = "";
+    const card = document.createElement("div");
+    card.className = "msg-error";
+    const time = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+    // actions 支持两种形态：纯字符串 = 静态按钮；{label, retry:true} = 可点击的「重试」按钮。
+    const renderBtn = (a) =>
+      typeof a === "string"
+        ? `<button class="e-btn">${a}</button>`
+        : `<button class="e-btn" data-retry="1">${a.label}</button>`;
+    // note 只放「用户需要知道的后果」（如进度已保留），空值不渲染。
+    const noteHtml = cfg.note ? `<div class="e-note">${cfg.note}</div>` : "";
+    card.innerHTML =
+      `<div class="e-head"><span>⛔</span><span>${cfg.title}</span><span class="e-time">${time}</span></div>` +
+      `<div class="e-body">${cfg.body} <span class="e-code">${cfg.code}</span></div>` +
+      noteHtml +
+      `<div class="e-actions">${cfg.actions.map(renderBtn).join("")}</div>`;
+    slot.appendChild(card);
+    // 手动重试：用户主动点「↻ 重试」时重新发起请求（重放当前场景）。
+    // 鉴权/配置类错误不自动重试（R2），但用户手动点重试是被允许的。
+    card.querySelectorAll("[data-retry]").forEach(btn => {
+      btn.addEventListener("click", () => play(lastScenario));
+    });
+  }
+
+  function fillDone(cfg) {
+    $("thinkBlock").classList.add("hidden");
+    $("toolCard").classList.add("hidden");
+    $("paraChips").classList.add("hidden");
+    $("peekSlot").innerHTML = "";
+    $("statusSlot").classList.add("hidden");
+    $("doneTitle").textContent = cfg.title;
+    $("doneParaChip").textContent = cfg.paraChip;
+    $("doneWc").textContent = countChars(cfg.full) + " 字";
+    $("donePreview").textContent = "“" + cfg.preview + "……”";
+    $("doneThink").textContent = cfg.think;
+    $("doneFull").textContent = cfg.full;
+    $("liveDone").classList.remove("hidden");
+    $("liveDone").classList.add("enter");
+  }
+
+  /* ================= 场景 ================= */
+
+  // 场景 1：正常写作（3 段）
+  async function scNormal() {
+    setUserMsg(DEFAULT_USER_MSG);
+    if (!await doThink(THINK_TEXT)) return;
+    $("toolCard").classList.remove("hidden");
+    $("paraChips").classList.remove("hidden");
+    for (let i = 0; i < PARAS.length; i++) {
+      $("toolLabel").textContent = `正在撰写 第 ${i + 1} 段 · 共 ${PARAS.length} 段`;
+      $("toolStatus").textContent = "进行中";
+      $("toolStatus").classList.remove("bad");
+      const p = document.createElement("div");
+      p.className = "para";
+      $("streamArea").appendChild(p);
+      if (await streamPara(p, PARAS[i], 20) !== "done") return;
+      $("toolStatus").textContent = `完成 ✓ ${i + 1}/${PARAS.length}`;
+      await sleep(320);
+      if (cancelled) return;
+      await foldPara(p, `✎ 第 ${i + 1} 段 · ${countChars(PARAS[i])} 字`, PARAS[i]);
+      await sleep(360);
+      if (cancelled) return;
+    }
+    await sleep(500);
+    fillDone({
+      title: "第 5 章 · 第 3 节",
+      paraChip: `✎ 撰写 ${PARAS.length} 段`,
+      full: PARAS.join("\n\n"),
+      preview: PARAS[0].slice(0, 24),
+      think: THINK_TEXT
+    });
+  }
+
+  // 场景 2：一句话写 20 章
+  async function scLong20() {
+    setUserMsg("一口气把第 5 章到第 24 章写完，共 20 章。");
+    if (!await doThink(LONG_THINK, 22)) return;
+    $("toolCard").classList.remove("hidden");
+    $("paraChips").classList.remove("hidden");
+    for (let i = 0; i < CHAPTERS.length; i++) {
+      const n = i + 5;
+      $("toolLabel").textContent = `正在撰写 第 ${n} 章`;
+      $("toolStatus").textContent = `总进度 ${i + 1}/${CHAPTERS.length}`;
+      const p = document.createElement("div");
+      p.className = "para";
+      $("streamArea").appendChild(p);
+      if (await streamPara(p, CHAPTERS[i], 12) !== "done") return;
+      await sleep(200);
+      if (cancelled) return;
+      await foldPara(p, `📖 第 ${n} 章 · ${countChars(CHAPTERS[i])} 字`, `第 ${n} 章\n${CHAPTERS[i]}`);
+      await sleep(240);
+      if (cancelled) return;
+    }
+    await sleep(500);
+    const full = CHAPTERS.map((t, i) => `第 ${i + 5} 章\n${t}`).join("\n\n");
+    fillDone({
+      title: "第 5–24 章 · 全部完成",
+      paraChip: `✎ 撰写 ${CHAPTERS.length} 章`,
+      full: full,
+      preview: CHAPTERS[0].slice(0, 24),
+      think: LONG_THINK
+    });
+  }
+
+  // 场景 3：网络波动，重试 3 次后恢复
+  async function scRetryOk() {
+    setUserMsg(DEFAULT_USER_MSG);
+    if (!await doThink(RETRY_THINK)) return;
+    $("toolCard").classList.remove("hidden");
+    $("paraChips").classList.remove("hidden");
+    const parts = [PARAS[0], PARAS[2]];
+    for (let i = 0; i < parts.length; i++) {
+      $("toolLabel").textContent = `正在撰写 第 ${i + 1} 段 · 共 ${parts.length} 段`;
+      $("toolStatus").textContent = "进行中";
+      const p = document.createElement("div");
+      p.className = "para";
+      $("streamArea").appendChild(p);
+      const interruptAt = i === 0 ? Math.floor(parts[i].length * 0.45) : null;
+      const r = await streamPara(p, parts[i], 20, interruptAt,
+        i === 0 ? async () => (await retrySequence(3)) === "recovered" : null);
+      if (r !== "done") return;
+      $("toolStatus").textContent = `完成 ✓ ${i + 1}/${parts.length}`;
+      await sleep(320);
+      if (cancelled) return;
+      await foldPara(p, `✎ 第 ${i + 1} 段 · ${countChars(parts[i])} 字`, parts[i]);
+      await sleep(360);
+      if (cancelled) return;
+    }
+    await sleep(500);
+    fillDone({
+      title: "第 5 章 · 第 3 节",
+      paraChip: `✎ 撰写 ${parts.length} 段`,
+      full: parts.join("\n\n"),
+      preview: parts[0].slice(0, 24),
+      think: RETRY_THINK
+    });
+  }
+
+  // 场景 4：重试 5 次仍失败 → 红色报错，保留进度
+  async function scRetryFail() {
+    setUserMsg(DEFAULT_USER_MSG);
+    if (!await doThink(RETRY_THINK)) return;
+    $("toolCard").classList.remove("hidden");
+    $("paraChips").classList.remove("hidden");
+    $("toolLabel").textContent = "正在撰写 第 1 段 · 共 3 段";
+    $("toolStatus").textContent = "进行中";
+    const p = document.createElement("div");
+    p.className = "para";
+    $("streamArea").appendChild(p);
+    const text = PARAS[0];
+    const r = await streamPara(p, text, 20, Math.floor(text.length * 0.35),
+      async () => (await retrySequence(Infinity)) === "recovered");
+    if (r === "cancel") return;
+    // 失败：折叠残段，红卡报错
+    const partial = p.textContent;
+    $("toolStatus").textContent = "已中断";
+    $("toolStatus").classList.add("bad");
+    await foldPara(p, `✎ 第 1 段（未完成）· ${countChars(partial)} 字`, partial, true);
+    showError({
+      title: "网络请求失败 · 已自动重试 5 次",
+      body: "仍无法连接模型服务（连接超时）。请检查网络，或稍后点「继续写作」。",
+      code: "network_retry_exhausted · ETIMEDOUT",
+      note: "已保留当前进度：第 1 段写到一半（" + countChars(partial) + " 字）。恢复后从断点续写，已写内容不会重写。",
+      actions: [{ label: "↻ 重试", retry: true }, "↻ 继续写作", "复制错误详情"]
+    });
+  }
+
+  // 场景 5：API Key 错误 → 不重试，直接红卡
+  async function scApiKey() {
+    setUserMsg(DEFAULT_USER_MSG);
+    await sleep(900); // 请求发出后立即被服务端拒绝
+    if (cancelled) return;
+    showError({
+      title: "模型调用失败 · 401",
+      body: "API Key 无效或已过期。请检查「设置 → 模型服务」中的 Key 是否填写正确、账户是否有余额。",
+      code: "401 Unauthorized · invalid_api_key",
+      note: null,
+      actions: [{ label: "↻ 重试", retry: true }, "打开设置", "复制错误详情"]
+    });
+  }
+
+  /* ================= 播放控制 ================= */
+  function resetLive() {
+    cancelled = false;
+    setUserMsg(DEFAULT_USER_MSG);
+    $("thinkBlock").classList.add("hidden");
+    $("thinkBlock").classList.remove("open");
+    $("thinkBody").textContent = "";
+    $("thinkLabel").textContent = "思考中";
+    $("thinkLabel").classList.add("dotting");
+    $("toolCard").classList.add("hidden");
+    $("toolLabel").textContent = "正在撰写";
+    $("toolStatus").textContent = "";
+    $("toolStatus").classList.remove("bad");
+    $("statusSlot").classList.add("hidden");
+    $("statusSlot").innerHTML = "";
+    $("streamArea").innerHTML = "";
+    $("paraChips").innerHTML = "";
+    $("paraChips").classList.add("hidden");
+    $("peekSlot").innerHTML = "";
+    $("peekSlot").dataset.open = "";
+    $("errorSlot").classList.add("hidden");
+    $("errorSlot").innerHTML = "";
+    $("liveDone").classList.add("hidden");
+    $("liveDone").classList.remove("open", "enter");
+  }
+
+  function setButtonsDisabled(d) {
+    document.querySelectorAll(".scenario-bar .btn").forEach(b => b.disabled = d);
+  }
+
+  async function play(s) {
+    if (playing) return;
+    playing = true;
+    lastScenario = s;
+    setButtonsDisabled(true);
+    resetLive();
+    try {
+      if (s === "normal") await scNormal();
+      else if (s === "long20") await scLong20();
+      else if (s === "retryOk") await scRetryOk();
+      else if (s === "retryFail") await scRetryFail();
+      else if (s === "apiKey") await scApiKey();
+    } finally {
+      playing = false;
+      setButtonsDisabled(false);
+    }
+  }
+
+  document.querySelectorAll(".scenario-bar [data-s]").forEach(btn => {
+    btn.addEventListener("click", () => play(btn.dataset.s));
+  });
+  $("resetBtn").addEventListener("click", () => {
+    cancelled = true;
+    setTimeout(() => { resetLive(); playing = false; setButtonsDisabled(false); }, 50);
+  });
+
+  resetLive();
+</script>
+
+</body>
+</html>
