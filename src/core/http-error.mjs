@@ -26,6 +26,9 @@ export class HttpError extends Error {
 //   - model_unsupported：固定文案「该模型不支持工具调用…」，不拼异常；
 //   - model_profile_not_found：`未找到已配置模型：${modelId}`，只拼用户标识
 //     （与白名单内 run_not_found 拼 runId 同构），不拼异常。
+// 压缩领域五个 code（agent-routes.mjs 的 COMPACTION_ERROR_MESSAGE 固定文案）同样
+// 程序写死、不拼底层异常——白名单放行后特定文案才能到达用户（否则一律收敛为通用
+// 文案，用户看不到「压缩任务不存在」这类可读原因）。
 // 凡是 handler 用 error?.message 包底层的 code（如 project_open_failed 的兜底
 // catch）一律不收录，避免原始错误文本随白名单透传。
 export const SAFE_PUBLIC_ERROR_CODES = new Set([
@@ -37,7 +40,12 @@ export const SAFE_PUBLIC_ERROR_CODES = new Set([
   "invalid_choice",
   "run_not_found",
   "model_unsupported",
-  "model_profile_not_found"
+  "model_profile_not_found",
+  "invalid_compaction_id",
+  "compaction_not_found",
+  "compaction_not_retryable",
+  "compaction_in_flight",
+  "compaction_no_run"
 ]);
 
 export function publicErrorMessage(error) {

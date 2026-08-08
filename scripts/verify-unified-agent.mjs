@@ -834,7 +834,7 @@ step("场景 22 · 停止中止命令并清除授权");
 }
 
 // ---------------------------------------------------------------------------
-// 场景 23：无撕裂原子写入（session.json = 临时文件 + rename；events.jsonl 行完整）
+// 场景 23：无撕裂原子写入（session.json = 临时文件 + rename；events segment 行完整）
 // ---------------------------------------------------------------------------
 step("场景 23 · 无撕裂原子写入");
 {
@@ -875,8 +875,12 @@ step("场景 23 · 无撕裂原子写入");
     assert.ok(reads > 0, "运行期间应能持续读到 session.json");
     assert.ok(sawRunning, "应观察到 running 状态的 session 投影");
     await waitForIdle(h.agent, h.projectRoot);
-    // 事件文件每行都是完整 JSON 且 seq 严格连续（无中间缺口、无撕裂行）
-    const eventsRaw = await fs.readFile(path.join(agentDir, "events.jsonl"), "utf8");
+    // 事件文件每行都是完整 JSON 且 seq 严格连续（无中间缺口、无撕裂行）。
+    // 新分段格式：事件落在 agentDir/segments/events（可能多段，按序合并）。
+    const eventsDir = path.join(agentDir, "segments", "events");
+    const segmentNames = (await fs.readdir(eventsDir)).filter((name) => /^\d{8}\.jsonl$/u.test(name)).sort();
+    assert.ok(segmentNames.length >= 1, "应存在 events segment");
+    const eventsRaw = (await Promise.all(segmentNames.map((name) => fs.readFile(path.join(eventsDir, name), "utf8")))).join("");
     const lines = eventsRaw.split("\n").filter((line) => line.trim() !== "");
     let prevSeq = 0;
     for (const line of lines) {

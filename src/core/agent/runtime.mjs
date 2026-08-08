@@ -31,7 +31,17 @@ import { randomUUID } from "node:crypto";
 
 import { createAgentJournal } from "./journal.mjs";
 import { createToolRuntime } from "./tools.mjs";
-import { assemblePrompt } from "./prompt.mjs";
+import { assemblePrompt, estimateTokens } from "./prompt.mjs";
+import {
+  estimateRequestUsage,
+  observeProviderUsage,
+  shouldCompact,
+  exceedsHardWindow,
+  OUTPUT_SAFETY_RESERVE
+} from "./context-window.mjs";
+import { createContextCheckpointStore } from "./context-checkpoints.mjs";
+import { createCompactionCoordinator, COMPACTION_BLOCKED_STATES, COMPACTION_NON_TERMINAL_STATES } from "./compaction.mjs";
+import { COMPACTION_PROMPT, selectProtectedRecentTurns } from "./compaction-prompt.mjs";
 import { canEnterWorkflow, workflowPolicy } from "./workflows.mjs";
 import { runLegacyImport } from "./legacy-import.mjs";
 import { migrateProjectAgentStorage } from "../workspaces/migration.mjs";
@@ -40,6 +50,7 @@ import { pathExists } from "../fs-utils.mjs";
 import { readProjectMemory } from "../project-memory.mjs";
 import { createRedactor } from "../shell/redaction.mjs";
 import { resolveModelCapabilities } from "../model/capabilities.mjs";
+import { parseModelIdentity } from "../model/model-identity.mjs";
 import { createJournalDeltaWriter, reasoningAvailability } from "./stream-writer.mjs";
 import { skillService } from "../skills/index.mjs";
 
@@ -75,6 +86,19 @@ const SOURCES = new Set(["chat", "maintenance"]);
 const IDLE_WAIT_TIMEOUT_MS = 60000;
 const ASSISTANT_DELTA_FLUSH_MS = 24;
 const ASSISTANT_DELTA_MAX_PENDING_CHARS = 2048;
+
+// Task 8：无 active checkpoint 时 buildHistory 只读取最近 HISTORY_PAGE_LIMIT 条
+// transcript 原文（受保护近期原文 + 门禁所需的向前页），绝不为装配 prompt 把
+// 全部 transcript 载入内存；达到阈值即先压缩。
+const HISTORY_PAGE_LIMIT = 8000;
+// Task 8/I1：压缩源材料预算——早期历史逐字内容（summarized_history）封顶为窗口的
+// 该比例，保证压缩请求自身能装进上下文窗口（预算只裁剪"已早于受保护窗口"的最旧
+// 轮次，受保护近期原文与旧 checkpoint 摘要不受影响；封顶后的最终估算仍由
+// buildCompactionSource 的窗口预检把关）。
+const COMPACTION_SOURCE_BUDGET_RATIO = 0.5;
+// 一轮 = 一条 user input 与其 assistant 正文（与 compaction-prompt.mjs 同义）。
+// Task 8：transcript 轮次重建的 tool output 阈值沿用 Task 7 默认。
+const CHECKPOINT_FILE_PREFIX = "context-";
 
 function fail(code, message) {
   const error = new Error(message);
@@ -138,9 +162,10 @@ export function createAgentRuntime({
     const key = path.resolve(projectRoot);
     let state = projects.get(key);
     if (!state) {
+      const storageRoot = agentStorageRootFor(key);
       const journal = createAgentJournal({
         projectRoot: key,
-        storageRoot: agentStorageRootFor(key),
+        storageRoot,
         idFactory
       });
       const projectOperations = {
@@ -169,6 +194,7 @@ export function createAgentRuntime({
         projectOperations,
         modelGateway: resolveGateway(key),
         skills: projectSkills,
+        storageRoot,
         // 当前 Run 的循环控制（一次一个模型/工具循环）
         runId: null,
         controller: null,
@@ -176,6 +202,10 @@ export function createAgentRuntime({
         firstTurn: null,
         stopReason: "user_stop",
         mutex: createMutex(),
+        // Task 6：当前 session 的上下文估算校准倍率（provider usage 的 EMA 比例，
+        // 夹在 0.5..2.0，只属于当前 session；clearHistory 时一并复位）。null 表示
+        // 尚无 provider 观测，估算用默认倍率 1 并保持 approximate。
+        contextCalibration: null,
         // Prompt 的 Available Skills 目录摘要：只取 name/description，绝不注入正文
         // （完整指令由 read_skill 按需读取）。catalog 失败不阻塞 agent（沿用兜底语义）。
         // 每 runId 记忆一次发现结果（Important 4）：模型每个轮次都会走到这里，
@@ -197,6 +227,26 @@ export function createAgentRuntime({
           return promise;
         }
       };
+      // Task 8：active context checkpoint 存储 + 压缩协调器（每项目一个）。
+      // checkpoint store 与 journal 使用同一 storageRoot（active-context.json /
+      // compaction-commit-*.json / checkpoints/ 与 segments/ 同根）。
+      state.checkpointStore = createContextCheckpointStore({ agentDir: storageRoot, idFactory });
+      state.compactionCoordinator = createCompactionCoordinator({
+        journal,
+        gateway: state.modelGateway,
+        checkpointStore: state.checkpointStore,
+        buildInput: (params) =>
+          buildCompactionSource({
+            journal,
+            checkpointStore: state.checkpointStore,
+            storageRoot,
+            ...params,
+            // 进程重启后的 retry 走协调器重建路径，entry.projectRoot 为空——
+            // 闭包默认注入本项目根，供 buildCompactionSource 解析当前 modelConfig。
+            projectRoot: params.projectRoot ?? key
+          }),
+        idFactory
+      });
       // 嵌套 workflow 拒绝：enter_workflow 是改变工作流的唯一入口，由 BeforeToolUse
       // hook 在工具执行（写 workflow_changed）之前校验转移是否合法。
       tools.registerHook("BeforeToolUse", async ({ tool, args }) => {
@@ -232,25 +282,24 @@ export function createAgentRuntime({
     }
   }
 
+  // 首次"活动"信号：普通模型轮次（model_turn_started）与压缩调用（Task 8）都
+  // 算作 Run 的第一个活动——submit 等待它拿到控制权（「立即」/「停止」需要
+  // 飞行中的活动可打断）。
+  function resolveFirstTurnIfPending(state) {
+    if (state.firstTurn && !state.firstTurn.resolved) {
+      state.firstTurn.resolved = true;
+      state.firstTurn.resolve();
+    }
+  }
+
   // -------------------------------------------------------------------------
   // 模型/工具循环
   // -------------------------------------------------------------------------
 
-  // 从 journal 事件里找回 input 文本（活动输入不在 projection 的 queued_inputs 里）。
+  // 从 journal 事件里找回输入元数据（text + kind；findInputMeta 见 Task 8）。
   // 上限语义（Task 6 规格审查 Minor）：只扫描最近 100k 条事件；超出上限的输入
   // 视为找不到（返回 null，runLoop 对该输入做消费跳过）——长会话场景应由 UI 分页
   // 与历史压缩避免依赖无限回溯。
-  async function findInputText(journal, inputId) {
-    const events = await journal.read({ afterSeq: 0, limit: 100000 });
-    for (let i = events.length - 1; i >= 0; i -= 1) {
-      const event = events[i];
-      if (event.type === "input_queued" && event.payload?.input_id === inputId) {
-        return typeof event.payload.text === "string" ? event.payload.text : null;
-      }
-    }
-    return null;
-  }
-
   async function readProjectInstructions(projectRoot) {
     try {
       const target = path.join(projectRoot, "AGENTS.md");
@@ -297,13 +346,18 @@ export function createAgentRuntime({
 
   function modelConfigOf(project) {
     const active = project?.active_model ?? {};
+    // Task 2：有效上下文窗口由模型 ID 尾标解析（[1m]/[1M] → 1M，缺省 256k），
+    // 不再读取 project.context_window。持久配置保持原样：只覆盖运行时副本
+    // （model_name 为剥离尾标后的 provider 基础 ID），绝不写回 active_model。
+    const identity = parseModelIdentity(active.model_name ?? "");
     return {
-      provider: typeof active.provider === "string" ? active.provider : "unknown",
-      model_name: active.model_name ?? null,
-      context_window: Number.isFinite(Number(project?.context_window))
-        ? Number(project.context_window)
-        : undefined,
       ...active,
+      provider: typeof active.provider === "string" ? active.provider : "unknown",
+      configured_model_id: identity.configured_model_id,
+      model_name: identity.provider_model_id,
+      effective_context_window: identity.effective_context_window,
+      compaction_threshold: identity.compaction_threshold,
+      window_source: identity.window_source,
       // 项目级思考强度（project.yaml.reasoning_effort）：仅透传，是否真正发送
       // 由 adapter 按模型 capability（reasoningEffortLevels）决定，auto/缺省不发。
       ...(typeof project?.reasoning_effort === "string" ? { reasoning_effort: project.reasoning_effort } : {})
@@ -363,10 +417,13 @@ export function createAgentRuntime({
     return messages;
   }
 
-  // 历史 = transcript 全量（prompt 模块负责受保护窗口与预算压缩）；
-  // 当前正在处理的输入从历史中排除（它以 currentInput 单独入 prompt）。
-  async function buildHistory(journal, excludeInputId = null, volatileRecords = []) {
-    const records = await journal.readTranscript();
+  // Task 8：历史装配不再无界读取全部 transcript。有 active checkpoint 时展开
+  // 结构化摘要 + checkpoint 近期原文，再 readTranscriptAfter({ afterSeq:
+  // checkpoint.source_transcript_seq.end }) 补增量；没有 checkpoint 时只读取
+  // 受保护近期原文（尾部一页）——达到阈值由预检门禁先压缩，绝不为装配 prompt
+  // 把全部 transcript 载入内存。当前正在处理的输入从历史中排除（它以
+  // currentInput 单独入 prompt）。
+  async function buildHistory({ journal, checkpointStore, storageRoot, excludeInputId = null, volatileRecords = [] }) {
     const volatileToolCallIds = new Set();
     for (const record of volatileRecords) {
       if (record?.role === "tool") volatileToolCallIds.add(record.tool_call_id ?? null);
@@ -374,18 +431,285 @@ export function createAgentRuntime({
         volatileToolCallIds.add(toolCall?.id ?? null);
       }
     }
-    const filteredByInput =
-      excludeInputId === null
-        ? records
-        : records.filter((record) => !(record.input_id != null && record.input_id === excludeInputId));
-    const filtered = filteredByInput.filter((record) => {
-      if (record?.role === "tool") return !volatileToolCallIds.has(record.tool_call_id);
-      if (record?.role === "assistant" && Array.isArray(record.tool_calls)) {
-        return !record.tool_calls.some((toolCall) => volatileToolCallIds.has(toolCall?.id));
+    const filter = (records) =>
+      records
+        .filter((record) => !(excludeInputId != null && record.input_id != null && record.input_id === excludeInputId))
+        .filter((record) => {
+          if (record?.role === "tool") return !volatileToolCallIds.has(record.tool_call_id);
+          if (record?.role === "assistant" && Array.isArray(record.tool_calls)) {
+            return !record.tool_calls.some((toolCall) => volatileToolCallIds.has(toolCall?.id));
+          }
+          return true;
+        });
+    const pointer = await checkpointStore.readActive();
+    if (pointer.checkpoint_id != null) {
+      const checkpoint = await readCheckpointFile(storageRoot, pointer.checkpoint_id).catch(() => null);
+      if (checkpoint != null) {
+        const delta = await journal.readTranscriptAfter({ afterSeq: checkpoint.source_transcript_seq?.end ?? 0 });
+        return [...checkpointToMessages(checkpoint), ...transcriptToMessages([...filter(delta), ...volatileRecords])];
       }
-      return true;
+    }
+    const tail = await journal.readTranscriptTail({ limit: HISTORY_PAGE_LIMIT });
+    return transcriptToMessages([...filter(tail), ...volatileRecords]);
+  }
+
+  // 读取 active checkpoint 正式文件（checkpoints/context-<id>.json）。
+  async function readCheckpointFile(storageRoot, checkpointId) {
+    const target = path.join(storageRoot, "checkpoints", `${CHECKPOINT_FILE_PREFIX}${checkpointId}.json`);
+    return JSON.parse(await fs.readFile(target, "utf8"));
+  }
+
+  // 展开 active checkpoint：结构化摘要 → 独立 user 块（历史层），随后是 checkpoint
+  // 近期原文（已存为合法消息链，直接作为消息）。open_tool_calls 是恢复元数据，
+  // 未闭合调用链本身已包含在 recent_messages 内。
+  function checkpointToMessages(checkpoint) {
+    const messages = [];
+    if (checkpoint?.summary != null && typeof checkpoint.summary === "object") {
+      messages.push({ role: "user", content: `[上下文压缩摘要]\n${JSON.stringify(checkpoint.summary, null, 2)}` });
+    }
+    if (Array.isArray(checkpoint?.recent_messages)) {
+      messages.push(...checkpoint.recent_messages);
+    }
+    return messages;
+  }
+
+  // 从 transcript 记录重建"轮次"（一轮 = 一条 user input 与其 assistant 正文）。
+  // 返回 selectProtectedRecentTurns 可用的 turns（含 transcript_seq 范围与
+  // tool_activities）。transcript 不存 result_summary，已闭合大输出保留原文，
+  // 由 protected 窗口语义决定是否进入摘要。
+  function buildTurnsFromTranscript(records) {
+    const turns = [];
+    let current = null;
+    const push = () => {
+      if (current) turns.push(current);
+      current = null;
+    };
+    const fresh = (seq) => ({
+      id: seq != null ? `turn-${seq}` : `turn-${turns.length}`,
+      user_text: "",
+      assistant_text: null,
+      transcript_seq_start: seq,
+      transcript_seq_end: seq,
+      token_estimate: null,
+      tool_activities: []
     });
-    return transcriptToMessages([...filtered, ...volatileRecords]);
+    for (const record of records ?? []) {
+      const seq = record?.transcript_seq ?? null;
+      if (record?.role === "user") {
+        push();
+        current = fresh(seq);
+        current.user_text = String(record.content ?? "");
+      } else if (record?.role === "assistant") {
+        if (!current) current = fresh(seq);
+        if (typeof record.content === "string" && record.content.length > 0) current.assistant_text = record.content;
+        current.transcript_seq_end = seq;
+        for (const toolCall of record?.tool_calls ?? []) {
+          current.tool_activities.push({
+            tool_call_id: toolCall?.id ?? toolCall?.tool_call_id ?? null,
+            name: toolCall?.name ?? null,
+            status: "open",
+            arguments: toolCall?.arguments ?? null,
+            output: null,
+            result_summary: null,
+            journal_ref: seq != null ? `transcript ${seq}` : null
+          });
+        }
+      } else if (record?.role === "tool") {
+        if (!current) current = fresh(seq);
+        current.transcript_seq_end = seq;
+        const id = record?.tool_call_id ?? null;
+        const activity = current.tool_activities.find((a) => a.tool_call_id === id);
+        if (activity) {
+          activity.status = "closed";
+          activity.output = String(record.content ?? "");
+        } else {
+          current.tool_activities.push({
+            tool_call_id: id,
+            name: record?.name ?? null,
+            status: "closed",
+            arguments: null,
+            output: String(record.content ?? ""),
+            result_summary: null,
+            journal_ref: seq != null ? `transcript ${seq}` : null
+          });
+        }
+      }
+    }
+    push();
+    return turns;
+  }
+
+  function collectOpenToolCalls(protectedTurns, inherited) {
+    const open = [];
+    for (const turn of protectedTurns) {
+      for (const activity of turn?.tool_activities ?? []) {
+        if (activity?.status === "open") {
+          open.push({
+            tool_call_id: activity.tool_call_id ?? null,
+            name: activity.name ?? null,
+            status: "open",
+            arguments: activity.arguments ?? null,
+            journal_ref: activity.journal_ref ?? null
+          });
+        }
+      }
+    }
+    return open.length > 0 ? open : Array.isArray(inherited) ? inherited : [];
+  }
+
+  // Task 8：压缩源材料（coordinator 经 buildInput 注入调用）。读取 active
+  // checkpoint（若有）→ 重建 delta 轮次 → selectProtectedRecentTurns → 生成
+  // sourceMaterial / recent_messages / sourceState。无 checkpoint 且没有早于
+  // 受保护窗口的历史时返回 noop（不调用模型）。
+  async function buildCompactionSource({
+    journal,
+    checkpointStore,
+    storageRoot,
+    sourceCheckpointId = null,
+    trigger = "automatic",
+    modelConfig = null,
+    session = null,
+    projectRoot = null
+  } = {}) {
+    // 进程重启后的压缩 retry：协调器 entry 无内存 modelConfig——按 projectRoot
+    // 解析当前有效配置（modelConfigOf(resolveWorkspaceConfig)），保证候选校验的
+    // configured_model_id/provider_model_id 与压缩请求的 modelConfig 始终可用。
+    let effectiveModelConfig = modelConfig;
+    if (effectiveModelConfig == null && typeof projectRoot === "string" && projectRoot.length > 0) {
+      try {
+        const project = await resolveWorkspaceConfig(projectRoot);
+        effectiveModelConfig = modelConfigOf(project);
+      } catch {
+        effectiveModelConfig = null;
+      }
+    }
+    const pointer = await checkpointStore.readActive();
+    let oldCheckpoint = null;
+    if (pointer.checkpoint_id != null) {
+      oldCheckpoint = await readCheckpointFile(storageRoot, pointer.checkpoint_id).catch(() => null);
+    }
+    const fromSeq = oldCheckpoint?.source_transcript_seq?.end ?? 0;
+    const delta =
+      fromSeq > 0 ? await journal.readTranscriptAfter({ afterSeq: fromSeq }) : await journal.readTranscript();
+    const lastTailSeq = delta.at(-1)?.transcript_seq ?? fromSeq;
+    const turns = buildTurnsFromTranscript(delta);
+    const window =
+      Number.isFinite(effectiveModelConfig?.effective_context_window) && effectiveModelConfig.effective_context_window > 0
+        ? effectiveModelConfig.effective_context_window
+        : 256_000;
+    const targetTokens = Math.round(window * 0.25);
+    const { protected_turns, summarized_turns: allSummarizedTurns } = selectProtectedRecentTurns({ turns, targetTokens });
+    // 无可压缩历史：无 checkpoint 且没有早于受保护窗口的轮次 → noop
+    if (oldCheckpoint == null && allSummarizedTurns.length === 0) {
+      return { noop: true, reason: "nothing_to_compact" };
+    }
+    // I1：预算封顶。summarized_history 是最早的轮次、逐字进入压缩请求——100k+ 轮次
+    // transcript 的首次压缩若原样拼接会让请求超过窗口（provider 拒绝 → Run 永久卡在
+    // waiting_user，retry 同源同结果）。按每轮估算（与 sourceMaterial 逐字投影同口径）
+    // 从最旧轮次开始裁剪，保留紧邻受保护窗口的最新被摘要轮次；拼接前裁剪还约束了
+    // JSON.stringify 的内存。
+    let summarized_turns = allSummarizedTurns;
+    const sourceBudgetTokens = Math.floor(window * COMPACTION_SOURCE_BUDGET_RATIO);
+    if (sourceBudgetTokens > 0 && summarized_turns.length > 0) {
+      const kept = [];
+      let used = 0;
+      for (let i = summarized_turns.length - 1; i >= 0; i -= 1) {
+        const inc = estimateTokens(
+          JSON.stringify({
+            user: summarized_turns[i].user_text,
+            assistant: summarized_turns[i].assistant_text,
+            tool_activities: summarized_turns[i].tool_activities ?? []
+          })
+        );
+        if (kept.length > 0 && used + inc > sourceBudgetTokens) break;
+        kept.push(summarized_turns[i]);
+        used += inc;
+      }
+      summarized_turns = kept.reverse();
+    }
+    const sourceMaterial = JSON.stringify(
+      {
+        old_summary: oldCheckpoint?.summary ?? null,
+        old_recent_messages: oldCheckpoint?.recent_messages ?? [],
+        summarized_history: summarized_turns.map((turn) => ({
+          user: turn.user_text,
+          assistant: turn.assistant_text,
+          tool_activities: turn.tool_activities ?? []
+        })),
+        protected_recent_turns: protected_turns.map((turn) => ({
+          user: turn.user_text,
+          assistant: turn.assistant_text,
+          tool_activities: turn.tool_activities ?? []
+        }))
+      },
+      null,
+      2
+    );
+    // checkpoint 近期原文 = 受保护轮次范围内的原始消息链（复用线上消息转换，
+    // 保证 assistant tool_calls 以 { id, type, function } 形状进入后续请求）。
+    const minProtectedSeq = Math.min(
+      ...protected_turns.map((turn) => (Number.isInteger(turn.transcript_seq_start) ? turn.transcript_seq_start : Infinity))
+    );
+    const recentMessages = transcriptToMessages(
+      delta.filter((record) => record.transcript_seq == null || record.transcript_seq >= minProtectedSeq)
+    );
+    const openToolCalls = collectOpenToolCalls(protected_turns, oldCheckpoint?.open_tool_calls ?? []);
+    const sourceState = {
+      source_checkpoint_id: pointer.checkpoint_id ?? null,
+      source_seq: { start: 1, end: Math.max(journal.lastSeq ?? 0, 1) },
+      source_transcript_seq: { start: 1, end: lastTailSeq },
+      configured_model_id: effectiveModelConfig?.configured_model_id ?? null,
+      provider_model_id: effectiveModelConfig?.model_name ?? null,
+      trigger,
+      effective_context_window: window,
+      target_tokens: targetTokens,
+      current_task: oldCheckpoint?.summary?.current_task ?? "",
+      user_confirmed_decisions: oldCheckpoint?.summary?.user_confirmed_decisions ?? [],
+      pending_steps: oldCheckpoint?.summary?.pending_steps ?? [],
+      open_tool_calls: openToolCalls,
+      reload_from_workspace: oldCheckpoint?.reload_from_workspace ?? []
+    };
+    const estimatedTokensBefore = estimateRequestUsage({
+      messages: [{ role: "user", content: sourceMaterial }, ...recentMessages],
+      tools: [],
+      effectiveContextWindow: window
+    }).used_tokens;
+    // I1 预检：压缩请求自身（固定指令 + sourceMaterial）必须能装进窗口。超限直接
+    // 拒绝（coordinator 按 compaction_source_exceeds_window 快速失败、不调用模型），
+    // 绝不把超窗请求发给 provider——provider 拒绝只会让 Run 永久卡在 waiting_user。
+    // 预算封顶已把常规超限消解掉，此检查是受保护近期原文/旧摘要超大时的兜底。
+    const compactionRequestEstimate = estimateRequestUsage({
+      messages: [
+        { role: "system", content: COMPACTION_PROMPT },
+        { role: "user", content: sourceMaterial }
+      ],
+      tools: [],
+      effectiveContextWindow: window
+    }).used_tokens;
+    if (compactionRequestEstimate + OUTPUT_SAFETY_RESERVE >= window) {
+      return {
+        noop: false,
+        too_large: true,
+        reason: "source_exceeds_window",
+        sourceMaterial,
+        sourceState,
+        recent_messages: recentMessages,
+        open_tool_calls: openToolCalls,
+        reload_from_workspace: sourceState.reload_from_workspace,
+        estimated_tokens_before: estimatedTokensBefore,
+        modelConfig: effectiveModelConfig
+      };
+    }
+    return {
+      sourceMaterial,
+      sourceState,
+      recent_messages: recentMessages,
+      open_tool_calls: openToolCalls,
+      reload_from_workspace: sourceState.reload_from_workspace,
+      estimated_tokens_before: estimatedTokensBefore,
+      modelConfig: effectiveModelConfig,
+      noop: false
+    };
   }
 
   function redactTranscriptRecord(record) {
@@ -531,12 +855,205 @@ export function createAgentRuntime({
     });
   }
 
+  // 从 journal 事件找回输入元数据（text + kind）。上限语义同 findInputText：
+  // 只扫描最近 100k 条事件；超出上限视为找不到（返回 text: null）。
+  async function findInputMeta(journal, inputId) {
+    const events = await journal.read({ afterSeq: 0, limit: 100000 });
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const event = events[i];
+      if (event.type === "input_queued" && event.payload?.input_id === inputId) {
+        return {
+          text: typeof event.payload.text === "string" ? event.payload.text : null,
+          kind: event.payload.kind === "compact" ? "compact" : null
+        };
+      }
+    }
+    return { text: null, kind: null };
+  }
+
+  // 该 Run 是否为 /compact 输入而创建（空闲发起）还是运行中排队（in-run）。
+  // 决定手动压缩失败/取消后的收敛：in-run 恢复 resume_run_status("running")，
+  // 空闲发起则 run_cancelled → idle。
+  async function isCompactRunIdleInitiated(state, runId, compactInputId) {
+    const events = await state.journal.read({ afterSeq: 0, limit: 100000 });
+    for (const event of events) {
+      if (event.type !== "run_started" || event.run_id !== runId) continue;
+      return event.payload?.input_id === compactInputId;
+    }
+    return true;
+  }
+
+  // 压缩取消收敛（幂等，项目互斥锁内读-判-写）：
+  //   - 自动：input_cancelled(reason:"compaction_cancelled") + 排队输入一并取消 +
+  //     grant 清除 + run_cancelled（矩阵：Run cancelled、文本回 draft）；
+  //   - 手动 in-run：input_cancelled(compaction_cancelled) + 恢复 running；
+  //   - 手动空闲：input_cancelled(compaction_cancelled) + run_cancelled → idle。
+  // 返回 "converged" | "already_terminal" | "input_settled"。
+  async function convergeCompactionCancelled(state, compaction) {
+    return state.mutex.run(async () => {
+      const session = await state.journal.getSession();
+      const run = session.active_run;
+      if (!run || TERMINAL_RUN_STATUSES.has(run.status)) return "already_terminal";
+      const inputId = compaction?.pending_input_id ?? null;
+      const inputLive =
+        inputId != null &&
+        (run.active_input_id === inputId || session.queued_inputs.some((item) => item.id === inputId));
+      if (!inputLive) return "input_settled";
+      const isManual = compaction?.trigger === "manual";
+      const idleInitiated = isManual ? await isCompactRunIdleInitiated(state, run.id, inputId) : false;
+      const batch = [];
+      const inputIds = [];
+      if (run.active_input_id != null) inputIds.push(run.active_input_id);
+      for (const item of session.queued_inputs) inputIds.push(item.id);
+      for (const id of inputIds) {
+        batch.push({
+          type: "input_cancelled",
+          run_id: run.id,
+          payload: { input_id: id, reason: id === inputId ? "compaction_cancelled" : "compaction_run_cancelled" }
+        });
+      }
+      if (isManual && !idleInitiated) {
+        // 手动 in-run 取消：恢复 resume_run_status（running），队列继续消费
+        batch.push({
+          type: "run_status_changed",
+          run_id: run.id,
+          payload: { status: "running", reason: "compaction_cancelled", resume_run_status: "running" }
+        });
+      } else {
+        for (const grant of run.active_grants ?? []) {
+          batch.push({
+            type: "permission_grant_cleared",
+            run_id: run.id,
+            payload: { grant_id: grant.id, input_id: grant.input_id, grant_key: grant.grant_key, reason: "compaction_cancelled" }
+          });
+        }
+        batch.push({ type: "run_cancelled", run_id: run.id, payload: { reason: "compaction_cancelled" } });
+      }
+      if (batch.length > 0) await state.journal.appendBatch(batch);
+      return "converged";
+    });
+  }
+
+  // 手动 /compact 处理（在安全点由 runLoop 调用，active_input_id 已是 compact
+  // item）。返回 "compacted" | "compaction_blocked" | "compaction_resumed" |
+  // "interrupted"。
+  async function processCompact(state, runId, inputId) {
+    const session = await state.journal.getSession();
+    const run = session.active_run;
+    if (!run || run.id !== runId || TERMINAL_RUN_STATUSES.has(run.status)) return "compaction_blocked";
+    const project = await resolveWorkspaceConfig(state.key);
+    const modelConfig = modelConfigOf(project);
+    const idleInitiated = await isCompactRunIdleInitiated(state, runId, inputId);
+    // 相同队列中后续重复 /compact：输入安全点取消（duplicate_compact），避免
+    // 连续无意义压缩（spec §5.5）。
+    await state.mutex.run(async () => {
+      const s = await state.journal.getSession();
+      const r = s.active_run;
+      if (!r || r.id !== runId || TERMINAL_RUN_STATUSES.has(r.status)) return;
+      const laterDuplicates = s.queued_inputs.filter((item) => item.kind === "compact");
+      if (laterDuplicates.length > 0) {
+        await state.journal.appendBatch(
+          laterDuplicates.map((item) => ({
+            type: "input_cancelled",
+            run_id: runId,
+            payload: { input_id: item.id, reason: "duplicate_compact" }
+          }))
+        );
+      }
+    });
+    // 先构建源材料做 noop 预检（无可压缩历史则不调用模型）
+    const built = await buildCompactionSource({
+      journal: state.journal,
+      checkpointStore: state.checkpointStore,
+      storageRoot: state.storageRoot,
+      sourceCheckpointId: null,
+      trigger: "manual",
+      modelConfig,
+      session,
+      projectRoot: state.key
+    });
+    if (built.noop) {
+      await state.journal.append({
+        type: "context_compaction_noop",
+        run_id: runId,
+        payload: { compaction_id: idFactory(), trigger: "manual", reason: built.reason ?? "nothing_to_compact" }
+      });
+      await state.mutex.run(async () => {
+        const s = await state.journal.getSession();
+        const r = s.active_run;
+        if (!r || r.id !== runId || TERMINAL_RUN_STATUSES.has(r.status)) return;
+        await state.journal.append({
+          type: "input_consumed",
+          run_id: runId,
+          payload: { input_id: inputId }
+        });
+      });
+      return "compacted";
+    }
+    resolveFirstTurnIfPending(state);
+    const outcome = await state.compactionCoordinator.start({
+      projectRoot: state.key,
+      trigger: "manual",
+      pendingInputId: inputId,
+      modelConfig,
+      signal: state.controller?.signal
+    });
+    if (outcome.status === "completed") {
+      await state.mutex.run(async () => {
+        const s = await state.journal.getSession();
+        const r = s.active_run;
+        if (!r || r.id !== runId || TERMINAL_RUN_STATUSES.has(r.status)) return;
+        await state.journal.append({ type: "input_consumed", run_id: runId, payload: { input_id: inputId } });
+      });
+      return "compacted";
+    }
+    if (outcome.status === "failed") {
+      // 手动 /compact 失败：compact queue item 无终态（可重试），Run → waiting_user
+      // 并保存 resume_run_status。互斥锁内读-判-写：cancel 恰在此时收敛则跳过。
+      await state.mutex.run(async () => {
+        const s = await state.journal.getSession();
+        const r = s.active_run;
+        if (r && r.id === runId && !TERMINAL_RUN_STATUSES.has(r.status) && r.status !== "waiting_user") {
+          await state.journal.append({
+            type: "run_status_changed",
+            run_id: runId,
+            payload: {
+              status: "waiting_user",
+              reason: "compaction_failed",
+              resume_run_status: idleInitiated ? null : "running",
+              error_code: outcome.error_code ?? null
+            }
+          });
+        }
+      });
+      resetController(state);
+      return "compaction_blocked";
+    }
+    // cancelled
+    const sessionNow = await state.journal.getSession();
+    const runNow = sessionNow.active_run;
+    if (!runNow || runNow.id !== runId || TERMINAL_RUN_STATUSES.has(runNow.status)) return "compaction_blocked";
+    if (runNow.status === "stopping" || runNow.status === "interrupting") {
+      return "interrupted"; // 停止/立即路径负责收敛
+    }
+    const compactionProjection = (await state.journal.getSession()).compaction;
+    await convergeCompactionCancelled(state, compactionProjection);
+    if (idleInitiated) return "compaction_blocked";
+    // 手动 in-run 取消：input_cancelled + 恢复 resume_run_status，队列继续消费
+    return "compaction_resumed";
+  }
+
   // 处理一个输入：模型轮次循环直到文本回复 / 中断 / 停止 / 失败。
-  // 返回 "done" | "interrupted" | "stopped" | "failed" | "terminated"。
+  // 返回 "done" | "compaction_blocked" | "interrupted" | "stopped" | "failed"
+  // | "terminated"。compaction_blocked 表示自动压缩失败/取消后 Run 已收敛为
+  // waiting_user 或 cancelled，runLoop 必须显式处理（不继续循环、不 run_completed）。
   async function processInput(state, runId, inputId, inputText) {
     const { journal, tools } = state;
     const volatileToolRecords = [];
-    await ensureUserMessageInTranscript(journal, inputId, inputText);
+    // Task 8：ensureUserMessageInTranscript 移到首次自动压缩门禁之后——压缩成功才
+    // 写入 transcript；cancelled/failed 时输入保持 draft/可重试，不调用普通模型。
+    let compactionAttemptedForInput = false;
+    let closedToolResult = false;
 
     while (true) {
       const session = await journal.getSession();
@@ -586,7 +1103,13 @@ export function createAgentRuntime({
           project,
           inputText
         }).catch(() => []),
-        history: await buildHistory(journal, inputId, volatileToolRecords),
+        history: await buildHistory({
+          journal,
+          checkpointStore: state.checkpointStore,
+          storageRoot: state.storageRoot,
+          excludeInputId: inputId,
+          volatileRecords: volatileToolRecords
+        }),
         currentInput: inputText,
         tools: allowedDefinitions(tools, policy),
         modelConfig
@@ -594,10 +1117,113 @@ export function createAgentRuntime({
       // gateway 契约（src/core/model/gateway.mjs）：request 必须是装配完成的模型
       // 请求 { messages, tools, toolChoice, modelConfig, stream, metadata }——
       // 模型与阶段配置由 runtime 解析后放入 modelConfig（base_url/model_name/
-      // api_key_env 等），adapter 依赖它选择模型与读取密钥。assemblePrompt 只
-      // 消费 context_window，不负责回填，这里在调用前挂载。
+      // api_key_env 等），adapter 依赖它选择模型与读取密钥。assemblePrompt 的预算
+      // 直接消费 effective_context_window（Task 2 起 modelConfigOf 恒提供该字段），
+      // 不负责回填，这里在调用前挂载。
       request.modelConfig = modelConfig;
       request.stream = true;
+      // Task 6：统一上下文门禁预检。估算的唯一输入是已装配完成的最终 request——
+      // currentInput 已由 assemblePrompt 放入最后一条 user message，这里绝不再把
+      // currentInput 单独传入（单输入规则，避免双算）。每次预检追加
+      // context_usage_updated，payload 只含数字与模型基础 ID，不含 prompt 原文。
+      const contextEstimate = estimateRequestUsage({
+        messages: request.messages,
+        tools: request.tools ?? [],
+        effectiveContextWindow: modelConfig.effective_context_window,
+        calibration: state.contextCalibration ?? 1
+      });
+      await journal.append({
+        type: "context_usage_updated",
+        run_id: runId,
+        payload: {
+          usage: { ...contextEstimate, model: modelConfig.model_name }
+        }
+      });
+      // Task 8：首次自动压缩门禁（brief Step 4/5）。同一待发送输入最多触发一次
+      // 自动压缩：成功/取消/失败后 compactionAttemptedForInput 置位；重新估算时
+      // 低于硬窗口继续发送、仍高于软阈值不再压缩、仍超硬窗口则 failRun
+      //（error_code context_window_exceeded，原始输入回 UI draft）。
+      const preflightCompact = shouldCompact({
+        estimatedInput: contextEstimate.used_tokens,
+        window: modelConfig.effective_context_window
+      });
+      // Task 8 修复（C1）：无 active checkpoint 时 buildHistory 只读最近
+      // HISTORY_PAGE_LIMIT 条 transcript 原文；一旦 transcript 总长超过该尾部页，
+      // 即使 token 估算远低于软阈值（高轮次/低 token 会话），最旧记录也会被静默
+      // 排除出 prompt 且永远不会触发压缩——门禁必须加"尾部页溢出"这一条，不能把
+      // 首压完全交给估算。有 checkpoint 时历史装配已受 checkpoint + delta 约束，
+      // 不重复触发。
+      const activePointer = await state.checkpointStore.readActive();
+      const transcriptBeyondTail =
+        activePointer.checkpoint_id == null && journal.transcriptLastSeq > HISTORY_PAGE_LIMIT;
+      const alreadyAttempted =
+        compactionAttemptedForInput ||
+        (session.compaction?.pending_input_id === inputId &&
+          ["completed", "failed", "cancelled", "noop"].includes(session.compaction?.state));
+      if ((preflightCompact || transcriptBeyondTail) && !alreadyAttempted) {
+        // 安全点：工具结果刚闭合时先追加 interrupt_safe_point_reached 再压缩，
+        // 绝不在工具原子写入中途压缩。
+        if (closedToolResult) {
+          await journal.append({ type: "interrupt_safe_point_reached", run_id: runId, payload: {} });
+        }
+        resolveFirstTurnIfPending(state);
+        const compaction = await state.compactionCoordinator.start({
+          projectRoot: state.key,
+          trigger: "automatic",
+          pendingInputId: inputId,
+          modelConfig,
+          signal: state.controller?.signal
+        });
+        compactionAttemptedForInput = true;
+        if (compaction.status === "completed" || compaction.status === "noop") {
+          // 压缩成功（或无可压缩历史）：把输入写入 transcript，使用新 active
+          // context 继续——重新预检（低于硬窗口直接发送）。
+          await ensureUserMessageInTranscript(journal, inputId, inputText);
+          continue;
+        }
+        if (compaction.status === "failed") {
+          // 自动压缩失败：Run 进入 waiting_user（不悬挂、不自动重启），输入保持
+          // pending 可重试；发送门禁保持禁用直到 retry 成功或 cancel。互斥锁内
+          // 读-判-写：若 cancel 恰在此时收敛（run_cancelled 终态），跳过追加。
+          await state.mutex.run(async () => {
+            const s = await journal.getSession();
+            const r = s.active_run;
+            if (r && r.id === runId && !TERMINAL_RUN_STATUSES.has(r.status) && r.status !== "waiting_user") {
+              await journal.append({
+                type: "run_status_changed",
+                run_id: runId,
+                payload: { status: "waiting_user", reason: "compaction_failed", error_code: compaction.error_code ?? null }
+              });
+            }
+          });
+          resetController(state);
+          return "compaction_blocked";
+        }
+        // cancelled：自动压缩取消 → input_cancelled(reason:"compaction_cancelled")
+        // + Run cancelled + 文本回 draft（输入从未写入 transcript）。
+        const sessionNow = await journal.getSession();
+        const runNow = sessionNow.active_run;
+        if (!runNow || runNow.id !== runId || TERMINAL_RUN_STATUSES.has(runNow.status)) return "compaction_blocked";
+        if (runNow.status === "stopping" || runNow.status === "interrupting") {
+          return "interrupted"; // 停止/立即路径负责收敛
+        }
+        const compactionProjection = (await journal.getSession()).compaction;
+        await convergeCompactionCancelled(state, compactionProjection);
+        return "compaction_blocked";
+      }
+      if (preflightCompact && alreadyAttempted) {
+        // 已为本输入压缩过：仍高于软阈值不再次压缩；仍超硬窗口 → failRun。
+        if (exceedsHardWindow({ estimatedInput: contextEstimate.used_tokens, window: modelConfig.effective_context_window })) {
+          await failRun(state, runId, {
+            error: Object.assign(new Error("上下文仍超过硬窗口上限，无法发送。"), { code: "context_window_exceeded" }),
+            inputId
+          });
+          return "failed";
+        }
+        // 低于硬窗口：继续发送（不重复压缩）
+      }
+      // 未达到阈值（或已压缩且低于硬窗口）：把输入写入 transcript 并调用模型
+      await ensureUserMessageInTranscript(journal, inputId, inputText);
       // 每个 Provider 轮次拥有稳定 turn id（v2 事件契约 §2.3）与独立 writer 对：
       // onToken 只接收公开正文、onReasoningToken 只接收 reasoning，两者不得互相
       // 兜底（§2.1）；reasoning 只经 reasoning_delta/reasoning_completed 进入
@@ -674,6 +1300,30 @@ export function createAgentRuntime({
         }
         streamedReply = await assistantWriter.finish();
         reasoningResult = await reasoningWriter.finish();
+        // Task 6 校准（成功路径）：provider 返回 input usage 后更新当前 session 的
+        // EMA 倍率（夹在 0.5..2.0）。校准只影响下一次本地估算；无 input usage 时
+        // 维持 approximate。同样追加 context_usage_updated，payload 只含数字与
+        // 模型基础 ID。
+        const calibration = observeProviderUsage({
+          estimated: contextEstimate,
+          usageReport: reply?.usageReport,
+          previousCalibration: state.contextCalibration
+        });
+        if (calibration.calibration != null) state.contextCalibration = calibration.calibration;
+        const calibratedEstimate = estimateRequestUsage({
+          messages: request.messages,
+          tools: request.tools ?? [],
+          effectiveContextWindow: modelConfig.effective_context_window,
+          calibration: state.contextCalibration ?? 1
+        });
+        calibratedEstimate.approximate = calibration.approximate;
+        await journal.append({
+          type: "context_usage_updated",
+          run_id: runId,
+          payload: {
+            usage: { ...calibratedEstimate, model: modelConfig.model_name }
+          }
+        });
       } catch (error) {
         // 失败/取消时只排空已经确认安全的正文前缀，不 flush 可能仍是半截密钥的 carry。
         await assistantWriter.finish({ flushTail: false });
@@ -770,6 +1420,8 @@ export function createAgentRuntime({
             ...toolRecord,
             content: JSON.stringify(persistentToolResult(toolCall?.name ?? null, toolResult))
           });
+          // Task 8：工具结果刚闭合——下一次预检若触发压缩，先追加安全点标记
+          closedToolResult = true;
         }
         continue; // 工具结果已入 transcript，继续下一模型轮次
       }
@@ -822,8 +1474,8 @@ export function createAgentRuntime({
 
   // 输入完成后的队列推进 / Run 终结：在项目互斥锁内完成读-判-写，杜绝与 submit
   // 的竞态（submit 恰落在「队列判空」与「run_completed 落盘」之间时，新输入会
-  // 滞留跨 Run 边界）。返回 "advance" | "completed" | "interrupting" | "stopping"
-  // | "terminal" | "gone"。
+  // 滞留跨 Run 边界）。返回 "advance" | "compact" | "completed" | "interrupting"
+  // | "stopping" | "terminal" | "gone"。
   async function advanceOrComplete(state, runId) {
     return state.mutex.run(async () => {
       const session = await state.journal.getSession();
@@ -833,6 +1485,17 @@ export function createAgentRuntime({
       if (run.status === "stopping") return "stopping";
       if (run.status === "interrupting" || state.controller?.signal.aborted) return "interrupting";
       if (session.queued_inputs.length > 0) {
+        const head = session.queued_inputs[0];
+        if (head.kind === "compact") {
+          // Task 8：/compact 在安全点被"消费"——激活但不给终态事件（失败时
+          // compact item 必须保持无终态可重试/可取消），由 processCompact 收尾。
+          await state.journal.append({
+            type: "input_promoted",
+            run_id: runId,
+            payload: { input_id: head.id, reason: "compact_safe_point" }
+          });
+          return "compact";
+        }
         await state.journal.append({
           type: "input_consumed",
           run_id: runId,
@@ -846,6 +1509,8 @@ export function createAgentRuntime({
   }
 
   // 外层循环：逐个消费输入；队列清空且满足完成条件后 Run 终结。
+  // compaction_blocked（自动压缩失败/取消、手动压缩失败/空闲取消）必须显式
+  // 处理：复位 controller 并停止循环——绝不继续循环、绝不调用 run_completed。
   async function runLoop(state, runId) {
     while (true) {
       const session = await state.journal.getSession();
@@ -866,24 +1531,41 @@ export function createAgentRuntime({
       if (inputId === null) {
         // 无活动输入：互斥锁内激活队首或自然终结（兜底路径）
         const fallback = await advanceOrComplete(state, runId);
-        if (fallback === "advance" || fallback === "interrupting" || fallback === "stopping") continue;
+        if (fallback === "advance" || fallback === "compact" || fallback === "interrupting" || fallback === "stopping") continue;
         return;
       }
 
-      const inputText = await findInputText(state.journal, inputId);
-      if (inputText === null) {
+      const inputMeta = await findInputMeta(state.journal, inputId);
+      if (inputMeta.text === null) {
         // 恢复的日志中找不到该输入（陈旧记录）：消费跳过，避免卡死
         await state.journal.append({ type: "input_consumed", run_id: runId, payload: { input_id: inputId } });
         continue;
       }
 
-      const outcome = await processInput(state, runId, inputId, inputText);
-      if (outcome === "stopped" || outcome === "failed" || outcome === "terminated") return;
+      if (inputMeta.kind === "compact") {
+        const compactOutcome = await processCompact(state, runId, inputId, inputMeta.text);
+        if (compactOutcome === "compacted" || compactOutcome === "compaction_resumed") {
+          const after = await advanceOrComplete(state, runId);
+          if (after === "advance" || after === "compact" || after === "interrupting" || after === "stopping") continue;
+          return; // completed / terminal / gone
+        }
+        if (compactOutcome === "interrupted") continue;
+        // compaction_blocked（失败 → waiting_user；空闲取消 → run_cancelled）
+        resetController(state);
+        return;
+      }
+
+      const outcome = await processInput(state, runId, inputId, inputMeta.text);
+      if (outcome === "stopped" || outcome === "failed" || outcome === "terminated" || outcome === "compaction_blocked") {
+        if (outcome === "compaction_blocked") resetController(state);
+        return;
+      }
       if (outcome === "interrupted") continue; // 立即：重新读取状态与被提升的输入
 
-      // 输入完成：互斥锁内复查队列并推进/终结（阻断 submit 竞态滞留）
+      // 输入完成：互斥锁内复查队列并推进/终结（阻断 submit 竞态滞留）；
+      // "compact" = 队首是 /compact 已被安全点激活，继续循环处理
       const after = await advanceOrComplete(state, runId);
-      if (after === "advance" || after === "interrupting" || after === "stopping") continue;
+      if (after === "advance" || after === "compact" || after === "interrupting" || after === "stopping") continue;
       return; // completed / terminal / gone
     }
   }
@@ -1015,6 +1697,10 @@ export function createAgentRuntime({
       console.warn(`[agent] legacy journal 迁移失败（不影响 open）: ${error?.message ?? String(error)}`);
     }
     await state.journal.load();
+    // Task 8：checkpoint 崩溃对账（提交 marker 裁决 + 孤儿清理）必须在检查压缩
+    // 投影之前执行——对账可能补写 completed（裁决 2）或 failed（裁决 1），使压缩
+    // 变为终态。storage 损坏（checkpoint_corrupt）暴露可诊断错误，不猜测回滚。
+    await state.checkpointStore.reconcileAfterCrash({ journal: state.journal });
     // Task 7：首次 open 对旧项目执行一次性只读 legacy 导入（幂等）。导入失败不
     // 阻塞 open：journal 已恢复、应用可继续工作；migration.legacy_imported 保持
     // false，下次 open() 重试（legacy-import 的 legacy_id / legacy 标记保证重试
@@ -1024,12 +1710,58 @@ export function createAgentRuntime({
     } catch (error) {
       console.warn(`[agent] legacy 导入失败（下次 open 重试）: ${error?.message ?? String(error)}`);
     }
+    // Task 8：非终态压缩对账（brief Step 3 结尾）。先通过 commit marker 对账
+    //（上面 reconcileAfterCrash），未完成 attempt 统一追加
+    // context_compaction_cancelled(reason:"process_restarted")，然后按收敛矩阵
+    // 把 Run 收敛为 waiting_user（自动失败/取消、手动失败均保持 waiting_user，
+    // 不自动模型调用）。active_context_checkpoint_id 保持旧值（cancelled 不切换）。
+    const loadedSession = await state.journal.getSession();
+    const loadedCompaction = loadedSession.compaction;
+    if (loadedCompaction && COMPACTION_BLOCKED_STATES.includes(loadedCompaction.state)) {
+      if (COMPACTION_NON_TERMINAL_STATES.includes(loadedCompaction.state)) {
+        await state.journal.append({
+          type: "context_compaction_cancelled",
+          payload: {
+            compaction_id: loadedCompaction.id,
+            trigger: loadedCompaction.trigger,
+            attempt: loadedCompaction.attempt ?? 1,
+            source_checkpoint_id: loadedCompaction.source_checkpoint_id ?? null,
+            checkpoint_id: loadedCompaction.checkpoint_id ?? null,
+            source_seq: null,
+            source_transcript_seq: null,
+            provider_model_id: null,
+            estimated_tokens_before: null,
+            estimated_tokens_after: null,
+            released_tokens: null,
+            summary_schema_version: 1,
+            duration_ms: null,
+            validation: null,
+            error_code: null,
+            cancel_reason: "process_restarted"
+          }
+        });
+      }
+      // 收敛 Run/input：残留 running（崩溃窗口）收敛为 waiting_user；
+      // 已是 waiting_user 保持原状。输入保持 pending（无终态），等待用户 retry/cancel。
+      const recoveryRun = (await state.journal.getSession()).active_run;
+      if (recoveryRun && !TERMINAL_RUN_STATUSES.has(recoveryRun.status) && recoveryRun.status === "running") {
+        await state.journal.append({
+          type: "run_status_changed",
+          run_id: recoveryRun.id,
+          payload: { status: "waiting_user", reason: "process_restarted", resume_run_status: null }
+        });
+      }
+    }
     // 恢复：只恢复有效非终态 Run（journal.load 已把 dangling assistant 活动标记
     // 为 interrupted；那些 Run 等待 retry，不自动恢复；legacy 导入的未完成 Run
-    // 是合法非终态，按同一语义接续执行）
+    // 是合法非终态，按同一语义接续执行）。压缩处于阻塞状态（started/running/
+    // cancelling/failed/cancelled）时绝不自动启动循环——绝不让旧 processInput
+    // 自动再次执行。
     const session = await state.journal.getSession();
     const run = session.active_run;
-    if (run && !TERMINAL_RUN_STATUSES.has(run.status)) {
+    const compactionBlocked =
+      session.compaction != null && COMPACTION_BLOCKED_STATES.includes(session.compaction.state);
+    if (run && !TERMINAL_RUN_STATUSES.has(run.status) && !compactionBlocked) {
       startLoop(state, run.id);
     }
     return { session_id: session.session_id, status: session.status };
@@ -1054,6 +1786,9 @@ export function createAgentRuntime({
     await state.journal.load();
     // 互斥锁内只做读-判-写与循环启动；waitForFirstTurn 必须在锁外等待（循环的
     // 安全点路径 cancelRunForStop/advanceOrComplete 需要取同一把锁，锁内等待会死锁）。
+    // Task 8：只把精确的 text === "/compact" 识别为 kind:"compact"；"/compact now"
+    // 等其余文本都是普通输入。
+    const kind = text === "/compact" ? "compact" : undefined;
     const created = await state.mutex.run(async () => {
       const session = await state.journal.getSession();
       const run = session.active_run;
@@ -1064,7 +1799,7 @@ export function createAgentRuntime({
         await state.journal.appendBatch([
           {
             type: "input_queued",
-            payload: { input_id: inputId, text, source }
+            payload: { input_id: inputId, text, source, ...(kind === undefined ? {} : { kind }) }
           },
           {
             type: "run_started",
@@ -1075,10 +1810,10 @@ export function createAgentRuntime({
         startLoop(state, runId);
         return { input_id: inputId, run_id: runId, queued: false };
       }
-      // 运行中：FIFO 队列
+      // 运行中：FIFO 队列（/compact 不打断当前模型/工具，按普通消息排队）
       await state.journal.append({
         type: "input_queued",
-        payload: { input_id: inputId, text, source }
+        payload: { input_id: inputId, text, source, ...(kind === undefined ? {} : { kind }) }
       });
       return { input_id: inputId, run_id: run.id, queued: true };
     });
@@ -1267,13 +2002,201 @@ export function createAgentRuntime({
     });
   }
 
-  async function snapshot({ projectRoot, afterSeq = 0, limit = 100 } = {}) {
+  // 压缩重试（Task 8 Step 7）：继续同一 compaction_id 的新 attempt。只允许
+  // failed/cancelled（取消后 pending input 仍在时）状态；成功后原输入只继续一次
+  //（输入写回 transcript 前的收敛由 runLoop/processInput 处理，绝不让旧
+  // processInput 自动再次执行）。ESC/按钮/HTTP 与 cancelCompaction 复用同一
+  // AbortSignal 链。
+  async function retryCompaction({ projectRoot, compactionId }) {
+    if (typeof compactionId !== "string" || compactionId.length === 0) {
+      throw fail("invalid_compaction_id", "compactionId 必须是非空字符串。");
+    }
     const state = ensureProject(projectRoot);
     await state.journal.load();
     const session = await state.journal.getSession();
-    const events = await state.journal.read({ afterSeq, limit });
-    return { session, events };
+    const compaction = session.compaction;
+    if (!compaction || compaction.id !== compactionId) {
+      throw fail("compaction_not_found", `compaction ${compactionId} 不存在。`);
+    }
+    if (compaction.state === "completed" || compaction.state === "noop") {
+      throw fail("compaction_not_retryable", `压缩已${compaction.state === "completed" ? "完成" : "无需压缩"}，无法重试。`);
+    }
+    if (compaction.state === "started" || compaction.state === "running" || compaction.state === "cancelling") {
+      throw fail("compaction_in_flight", "压缩正在进行中，无法重试。");
+    }
+    const run = session.active_run;
+    if (!run || TERMINAL_RUN_STATUSES.has(run.status)) {
+      throw fail("compaction_no_run", "当前没有可继续压缩的 Run。");
+    }
+    const outcome = await state.compactionCoordinator.retry({
+      compactionId,
+      signal: state.controller?.signal
+    });
+    if (outcome.status === "completed" || outcome.status === "noop") {
+      // 恢复 Run 为 running 并重启循环。手动 /compact 的 retry 成功后 compact
+      // item 已达成目的（input_consumed 收敛，绝不重复启动第二次压缩）；自动压缩
+      // 的 retry 成功后原 pending input 由 processInput 继续（压缩成功后预检低于
+      // 硬窗口直接发送；仍超阈值因已尝试不再重复压缩）。retry 重建源后无可压缩
+      // 历史（noop）视为等价成功——输入照常继续，由 processInput 重新预检。
+      await state.mutex.run(async () => {
+        const s = await state.journal.getSession();
+        const r = s.active_run;
+        if (r && r.id === run.id && !TERMINAL_RUN_STATUSES.has(r.status) && r.status !== "running") {
+          await state.journal.append({
+            type: "run_status_changed",
+            run_id: run.id,
+            payload: { status: "running", reason: "compaction_retried" }
+          });
+        }
+        if (compaction.trigger === "manual") {
+          const s2 = await state.journal.getSession();
+          const r2 = s2.active_run;
+          if (r2 && r2.id === run.id && !TERMINAL_RUN_STATUSES.has(r2.status)) {
+            await state.journal.append({
+              type: "input_consumed",
+              run_id: run.id,
+              payload: { input_id: compaction.pending_input_id }
+            });
+          }
+        }
+      });
+      startLoop(state, run.id);
+      return { status: "completed", compaction_id: compactionId, attempt: outcome.attempt };
+    }
+    if (outcome.status === "failed") {
+      // 仍失败：Run 保持 waiting_user，发送门禁保持禁用（熔断后只等用户再次 retry/cancel）
+      const s = await state.journal.getSession();
+      const r = s.active_run;
+      if (r && r.id === run.id && !TERMINAL_RUN_STATUSES.has(r.status) && r.status !== "waiting_user") {
+        await state.journal.append({
+          type: "run_status_changed",
+          run_id: run.id,
+          payload: { status: "waiting_user", reason: "compaction_failed", error_code: outcome.error_code ?? null }
+        });
+      }
+      return { status: "failed", compaction_id: compactionId, attempt: outcome.attempt, error_code: outcome.error_code };
+    }
+    // cancelled（ESC 中断重试）：取消收敛（input_cancelled + run_cancelled / 恢复）
+    const compactionNow = (await state.journal.getSession()).compaction;
+    await convergeCompactionCancelled(state, compactionNow);
+    return { status: "cancelled", compaction_id: compactionId };
   }
 
-  return { open, submit, promote, decide, stop, retry, snapshot };
+  // 压缩取消（Task 8 Step 7）：ESC、按钮与 HTTP 取消都调用本方法，复用当前
+  // project state 的 AbortController（不创建第二套进程终止协议）。running 时
+  // 先进入 cancelling（cancel_requested），底层确认终止后追加 cancelled，随后
+  // 按触发来源收敛 Run/input（自动 → input_cancelled + run_cancelled，文本回
+  // draft；手动 → input_cancelled + 恢复 resume_run_status 或 idle）。
+  async function cancelCompaction({ projectRoot, compactionId }) {
+    if (typeof compactionId !== "string" || compactionId.length === 0) {
+      throw fail("invalid_compaction_id", "compactionId 必须是非空字符串。");
+    }
+    const state = ensureProject(projectRoot);
+    await state.journal.load();
+    const session = await state.journal.getSession();
+    const compaction = session.compaction;
+    if (!compaction || compaction.id !== compactionId) {
+      throw fail("compaction_not_found", `compaction ${compactionId} 不存在。`);
+    }
+    const outcome = await state.compactionCoordinator.cancel({ compactionId });
+    const compactionNow = (await state.journal.getSession()).compaction;
+    // I5：取消请求与提交竞态——coordinator 报告实际终态（或会话投影已是 completed）
+    // 时，压缩确实成功（指针已切换、completed 已落盘），原输入由 runLoop 继续，
+    // 绝不把成功压缩收敛成 input_cancelled + run_cancelled（UI 不得显示"已取消"
+    // 覆盖已切换的上下文）。
+    if (outcome?.status === "completed" || outcome?.state === "completed") {
+      return {
+        status: "completed",
+        compaction_id: compactionId,
+        checkpoint_id: outcome?.checkpoint_id ?? compactionNow?.checkpoint_id ?? null
+      };
+    }
+    await convergeCompactionCancelled(state, compactionNow);
+    return { status: "cancelled", compaction_id: compactionId };
+  }
+
+  // 快照：{ session, events, gaps, has_more } 是 AgentSurface 的唯一实时数据源。
+  // Task 5 双向分页：
+  //   tail === true      → journal.readTail({ limit })（首次展示：尾部最新一页）
+  //   beforeSeq != null  → journal.readBefore({ beforeSeq, limit })（向上滚动旧页）
+  //   否则               → journal.readAfter({ afterSeq, limit })（增量拉取）
+  // afterSeq=0 只表示从头读取（旧客户端兼容），AgentSurface 首次打开不得用
+  // afterSeq=0 补齐所有历史（前端改用 tail/beforeSeq，Task 9/10 接线）。
+  async function snapshot({ projectRoot, afterSeq = 0, beforeSeq = null, tail = false, limit = 100 } = {}) {
+    const state = ensureProject(projectRoot);
+    await state.journal.load();
+    const session = await state.journal.getSession();
+    let page;
+    if (tail === true) {
+      page = await state.journal.readTail({ limit });
+    } else if (beforeSeq != null) {
+      page = await state.journal.readBefore({ beforeSeq, limit });
+    } else {
+      page = await state.journal.readAfter({ afterSeq, limit });
+    }
+    const events = page.events;
+    const lastSeq = state.journal.lastSeq;
+    let has_more;
+    if (tail === true) {
+      has_more = events.length > 0 ? events[0].seq > 1 : lastSeq > 0;
+    } else if (beforeSeq != null) {
+      has_more = events.length > 0 ? events[0].seq > 1 : beforeSeq > 1;
+    } else {
+      has_more = events.length > 0 ? events.at(-1).seq < lastSeq : lastSeq > afterSeq;
+    }
+    return { session, events, gaps: page.gaps, has_more };
+  }
+
+  // 历史导出（NDJSON 异步流）：只读动作，不追加 Journal 事件；由 journal 层顺序
+  // 迭代 events/transcript 两个 segment store，每行 { stream, record }；对每条
+  // record 应用 runtime 的 redactor（API key/模型密钥/provider header 脱敏）。
+  async function* exportHistory({ projectRoot } = {}) {
+    if (typeof projectRoot !== "string" || projectRoot.length === 0) {
+      throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
+    }
+    const state = ensureProject(projectRoot);
+    yield* state.journal.exportHistory({
+      redact: (record) => {
+        try {
+          return JSON.parse(redactor.redact(JSON.stringify(record)));
+        } catch {
+          return { role: record?.role ?? "note", content: "[REDACTED]" };
+        }
+      }
+    });
+  }
+
+  // 不可逆清空：只允许 session idle 且 confirmIrreversible === true（守卫在
+  // journal 内、与其 mutex 串行）；成功后清空同一 journal 实例并立即创建新
+  // generation + session_created。runtime 侧在项目互斥锁内调用，并清掉本项目的
+  // per-Run 循环状态（runId/controller/loopPromise/firstTurn/catalogCache），
+  // 保证 projects Map 里不留旧 session 的运行时状态——同一实例立即可用。
+  async function clearHistory({ projectRoot, confirmIrreversible = false } = {}) {
+    if (typeof projectRoot !== "string" || projectRoot.length === 0) {
+      throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
+    }
+    const state = ensureProject(projectRoot);
+    await state.journal.load();
+    return state.mutex.run(async () => {
+      const result = await state.journal.clearHistory({ confirmIrreversible });
+      // 清掉旧 session 的运行时残留（清空只在 idle 时放行，正常无飞行循环；
+      // 这里防御性复位，绝不把旧 generation 的高位游标/循环/上下文校准带到新会话）。
+      state.runId = null;
+      state.controller = null;
+      state.loopPromise = null;
+      state.firstTurn = null;
+      state.catalogCache = null;
+      state.contextCalibration = null;
+      state.stopReason = "user_stop";
+      return {
+        session_id: result.session_id,
+        status: result.status,
+        generation_id: result.generation_id,
+        old_session_id: result.old_session_id,
+        cleared_dir: result.cleared_dir
+      };
+    });
+  }
+
+  return { open, submit, promote, decide, stop, retry, retryCompaction, cancelCompaction, snapshot, exportHistory, clearHistory };
 }

@@ -2,8 +2,9 @@
 //
 // 冻结的目标契约（SPEC §2.1/§11；Task 2/3/4/6 实现，本任务只写失败测试）：
 //   - 空目录/普通文件夹无需 project.yaml 即可打开并发送第一条消息；
-//   - 新会话 journal（events.jsonl）只写应用私有 stateRoot/workspaces/<id>/agent，
-//     不回写项目内 .wwriting/agent，项目目录内也不新增 project.yaml；
+//   - 新会话 journal（分段 segments + journal-manifest.json）只写应用私有
+//     stateRoot/workspaces/<id>/agent，不回写项目内 .wwriting/agent，项目目录内也
+//     不新增 project.yaml；
 //   - 打开与第一条消息的失败正文不得泄露 ENOENT/堆栈/绝对内部路径
 //     （后者在 tests/app-server-failure-body.test.mjs 覆盖）。
 //
@@ -50,7 +51,8 @@ async function waitFor(predicate, { timeout = 20000, describe = "条件" } = {})
 }
 
 // containsWorkspaceJournal(stateRoot)：stateRoot/workspaces 下任意 <id>/agent/
-// 目录存在 events.jsonl 即为 true（应用私有 workspace 布局见 SPEC §2.1）。
+// 目录存在 journal 数据（journal-manifest.json、segments/ 或旧单体 events.jsonl）
+// 即为 true（应用私有 workspace 布局见 SPEC §2.1）。
 export async function containsWorkspaceJournal(stateRoot) {
   const workspacesDir = path.join(stateRoot, "workspaces");
   let entries;
@@ -63,7 +65,10 @@ export async function containsWorkspaceJournal(stateRoot) {
     if (!entry.isDirectory()) continue;
     const agentDir = path.join(workspacesDir, entry.name, "agent");
     try {
-      if ((await fs.readdir(agentDir)).includes("events.jsonl")) return true;
+      const names = await fs.readdir(agentDir);
+      if (names.includes("journal-manifest.json") || names.includes("segments") || names.includes("events.jsonl")) {
+        return true;
+      }
     } catch {
       // 该 workspace 尚无 agent 目录，继续扫描
     }
@@ -331,10 +336,14 @@ test("打开旧项目即触发 .wwriting/agent journal 迁移到私有目录，�
   assert.equal(opened.res.status, 200);
   assert.deepEqual(opened.data, { ok: true, projectRoot }, "响应形状契约不变");
 
-  // eager open 单独即可完成迁移：私有 events.jsonl 已含旧事件（无需先发消息）
+  // eager open 单独即可完成迁移：私有目录已含旧事件（无需先发消息）。迁移先把
+  // events.jsonl 字节级复制进目标；journal.load() 随后把它转进 segments 并改名
+  // events.legacy.jsonl（原文件字节不变）。
   const targetAgentRoot = path.join(stateRoot, "workspaces", workspaceIdForPath(projectRoot), "agent");
-  const migrated = await fs.readFile(path.join(targetAgentRoot, "events.jsonl"), "utf8");
-  assert.equal(migrated, legacyEvents, "迁移应为字节级一致复制（含旧 seq）");
+  const migrated = await fs.readFile(path.join(targetAgentRoot, "events.legacy.jsonl"), "utf8");
+  assert.equal(migrated, legacyEvents, "旧事件应完整迁移进私有目录（events.legacy.jsonl 字节级一致）");
+  const segmentEvents = await fs.readFile(path.join(targetAgentRoot, "segments", "events", "00000001.jsonl"), "utf8");
+  assert.equal(segmentEvents, legacyEvents, "旧事件应进入 segments/events（journal 已迁移）");
   assert.deepEqual(await fs.readFile(sourceEventsPath), before, "原 .wwriting/agent/events.jsonl 字节必须完全不变");
 
   // 链路完整：迁移后的会话可直接发送第一条消息并回到 idle

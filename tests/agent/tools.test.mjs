@@ -722,11 +722,10 @@ test("Agent 写工具与 HTTP 操作共用同一个项目锁", async (t) => {
 
 test("通用写工具拒绝直接写受保护路径", async (t) => {
   const h = await setup(t);
-  // journal 审计事件会正常追加 events.jsonl / 重写 session.json；用唯一 marker
+  // journal 审计事件会正常追加到 segments/events（新分段格式）；用唯一 marker
   // 断言被拒的写入内容从未落盘
   const MARKER = "PROTECTED_WRITE_MARKER_9f3c";
   const agentDir = path.join(h.projectRoot, ".wwriting", "agent");
-  const transcriptBefore = await fs.readFile(path.join(agentDir, "transcript.jsonl"), "utf8");
   const protectedTargets = [
     ["events.jsonl", ".wwriting/agent/events.jsonl"],
     ["session.json", ".wwriting/agent/session.json"],
@@ -744,13 +743,16 @@ test("通用写工具拒绝直接写受保护路径", async (t) => {
     assert.equal(result.ok, false, `write_file 应拒绝 ${label}`);
     assert.equal(result.message, "当前权限不允许修改文件。");
   }
-  const eventsFile = await fs.readFile(path.join(agentDir, "events.jsonl"), "utf8");
+  // events 落在 segments/events；拒绝写入不得产生脏行（每行仍是合法 JSON）
+  const eventsSegment = path.join(agentDir, "segments", "events", "00000001.jsonl");
+  const eventsFile = await fs.readFile(eventsSegment, "utf8");
   for (const line of eventsFile.split("\n").filter((l) => l.trim() !== "")) {
-    assert.doesNotThrow(() => JSON.parse(line), "events.jsonl 必须保持合法 JSONL（被拒写入不得产生脏行）");
+    assert.doesNotThrow(() => JSON.parse(line), "events segment 必须保持合法 JSONL（被拒写入不得产生脏行）");
   }
   const sessionFile = await fs.readFile(path.join(agentDir, "session.json"), "utf8");
   assert.ok(!sessionFile.includes(MARKER), "session.json 投影不得包含被拒写入内容");
-  assert.equal(await fs.readFile(path.join(agentDir, "transcript.jsonl"), "utf8"), transcriptBefore, "transcript.jsonl 不受影响");
+  // 本测试未追加任何 transcript：不得创建单体 transcript.jsonl（新格式）
+  assert.equal(await pathExists(path.join(agentDir, "transcript.jsonl")), false, "不得创建单体 transcript.jsonl");
   assert.equal(await pathExists(path.join(agentDir, "private.txt")), false);
   assert.equal(await pathExists(path.join(h.projectRoot, "checkpoints", "cp.json")), false);
   assert.equal(await pathExists(path.join(h.projectRoot, "memory", "chapter_index.json")), false);

@@ -292,6 +292,8 @@ export function reduceWorkEvent(work, event) {
             kind: "reasoning",
             firstSeq: seq,
             sortSeq: seq,
+            start_seq: seq, // Task 10：start 位置（与 firstSeq 一致，重建后仍稳定）
+            terminal_seq: null,
             state: "running",
             label: reasoningLabel("running"),
             detail: null,
@@ -319,6 +321,7 @@ export function reduceWorkEvent(work, event) {
         // reasoning_completed 到达 → 立即 running → completed（不移动位置）
         item.state = "completed";
         item.label = reasoningLabel("completed");
+        item.terminal_seq = seq; // Task 10：终态事件 seq 落位（start 位置不变）
         if (typeof payload.text === "string") item.text = payload.text;
         if (typeof payload.availability === "string") item.availability = payload.availability;
       }
@@ -349,6 +352,8 @@ export function reduceWorkEvent(work, event) {
           kind: "tool",
           firstSeq: seq,
           sortSeq: seq,
+          start_seq: seq, // Task 10：start 位置（与 firstSeq 一致，重建后仍稳定）
+          terminal_seq: null,
           state: "running",
           label: toolLabel(payload.name, "running"),
           detail: itemDetail(target, event.project_root),
@@ -374,6 +379,7 @@ export function reduceWorkEvent(work, event) {
         // tool_call_completed 到达 → 立即终结
         item.state = "completed";
         item.label = toolLabel(item.tool, "completed");
+        item.terminal_seq = seq; // Task 10：终态事件 seq 落位（start 位置不变）
       }
       break;
     }
@@ -383,6 +389,7 @@ export function reduceWorkEvent(work, event) {
         const cancelled = CANCELLED_ERROR_CODES.has(payload.error);
         item.state = cancelled ? "cancelled" : "failed";
         item.label = toolLabel(item.tool, item.state);
+        item.terminal_seq = seq; // Task 10：终态事件 seq 落位（start 位置不变）
         item.error = typeof payload.message === "string" && payload.message.length > 0
           ? payload.message
           : typeof payload.error === "string" && payload.error.length > 0 ? payload.error : null;

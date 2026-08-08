@@ -218,7 +218,7 @@ try {
   await agent.submit({ projectRoot, text: "你好", source: "chat" });
   await waitForIdle(agent, projectRoot);
   const afterHello = await agent.snapshot({ projectRoot, afterSeq: 0, limit: 100000 });
-  const journalPath = path.join(store.agentRootFor(projectRoot), "events.jsonl");
+  const journalPath = path.join(store.agentRootFor(projectRoot), "journal-manifest.json");
   const helloOk = afterHello.events.some((e) => e.type === "assistant_message_completed");
   record("第一条消息完成（你好）", helloOk, "普通文件夹无需 project.yaml 即可聊天", [
     journalPath,
@@ -289,7 +289,7 @@ try {
   const stateJournalOk = await pathExists(journalPath);
   record("无 project.yaml", !pyExists, pyExists ? "存在（BAD）" : "不存在（GOOD）", [path.join(projectRoot, "project.yaml")]);
   record("无 .wwriting/agent", !wwAgentExists, wwAgentExists ? "存在（BAD）" : "不存在（GOOD）", [path.join(projectRoot, ".wwriting", "agent")]);
-  record("应用私有历史在 stateRoot", stateJournalOk, stateJournalOk ? "events.jsonl 在应用私有目录" : "events.jsonl 缺失", [journalPath]);
+  record("应用私有历史在 stateRoot", stateJournalOk, stateJournalOk ? "journal-manifest.json 在应用私有目录" : "journal-manifest.json 缺失", [journalPath]);
 
   // ---- 汇总 ----
   const failed = results.filter((r) => !r.ok);

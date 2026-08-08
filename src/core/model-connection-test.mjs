@@ -9,6 +9,7 @@ import {
 } from "./model-config-validation.mjs";
 import { createModelGateway } from "./model/gateway.mjs";
 import { OpenAICompatibleAdapter } from "./model/openai-compatible.mjs";
+import { parseModelIdentity } from "./model/model-identity.mjs";
 
 const PROBE_TIMEOUT_MS = 10_000;
 const PROBE_PROMPT = "仅回复 OK";
@@ -60,6 +61,10 @@ export async function testModelConnection({
     };
   }
 
+  // Task 2：模型 ID 尾标（如 model[1m][foo]）只在传输边界剥离——传给 gateway 的
+  // model_name 用 provider_model_id；响应展示与配置对象保留 configured ID。
+  const identity = parseModelIdentity(config.model_name ?? "");
+
   const timeoutController = new AbortController();
   const timeoutHandle = setTimeout(
     () => timeoutController.abort(new DOMException("probe timeout", "TimeoutError")),
@@ -72,7 +77,7 @@ export async function testModelConnection({
   try {
     await runWithRetry(
       () => complete({
-        config,
+        config: { ...config, model_name: identity.provider_model_id },
         apiKey,
         messages: [{ role: "user", content: PROBE_PROMPT }],
         maxTokens: PROBE_MAX_TOKENS,
@@ -124,6 +129,9 @@ export async function completeOpenAICompatibleProbe({
   maxTokens,
   signal,
 }) {
+  // Task 2：传输边界再剥离一次（幂等）。经 testModelConnection 调用时 config
+  // 已是 provider_model_id；直接调用本函数时也保证 gateway 收到基础 ID。
+  const identity = parseModelIdentity(config.model_name ?? "");
   const gateway = createModelGateway({
     adapter: new OpenAICompatibleAdapter({
       baseUrl: config.base_url,
@@ -141,7 +149,7 @@ export async function completeOpenAICompatibleProbe({
       messages,
       stream: false,
       modelConfig: {
-        model_name: config.model_name,
+        model_name: identity.provider_model_id,
         base_url: config.base_url,
         api_key: apiKey,
         api_key_env: config.api_key_env,

@@ -186,3 +186,44 @@ test("chapter-presentation.mjs 保留（稳定领域展示模块）", () => {
     "chapter-presentation.mjs should export a presentChapterArtifact function"
   );
 });
+
+test("Task 12：app.js 把未消费 ESC 交给 AgentSurface（统一 ESC 路由）", () => {
+  assert.match(appSource, /function\s+closeAppTopLayer\s*\(/, "app.js 应提供 closeAppTopLayer()");
+  assert.match(appSource, /agentSurface\.handleEscape\s*\(/, "app.js 应把未消费 ESC 交给 surface.handleEscape");
+  assert.match(appSource, /event\.defaultPrevented/, "内层已消费的 ESC 不得再进入全局路由");
+  assert.match(
+    appSource,
+    /if\s*\(\s*closeAppTopLayer\(\)\s*\)\s*\{\s*event\.preventDefault\(\);\s*return;\s*\}/,
+    "app 顶层 ESC 关闭保持原有优先级"
+  );
+});
+
+test("Task 12：slash-commands 提供 /compact 补全（识别仍由 runtime 严格 === 完成）", () => {
+  assert.match(slashCommandsSource, /command:\s*"\/compact"/u, "/compact 应在补全列表");
+  assert.match(slashCommandsSource, /压缩当前上下文/u, "/compact 带中文标签");
+  assert.doesNotMatch(slashCommandsSource, /startsWith\(\s*["']\/compact/u, "前端不得用 startsWith(/compact) 决定压缩");
+});
+
+test("Task 12：生产 bundle 文本不含 Worked for / નિર્ણ（运行态文案全中文）", async () => {
+  // app-shell 以原生 ES 模块发布（无打包器），「bundle 文本」= src/app-shell
+  // 全部源码拼接；断言用户可见运行态文案不存在英文残留与 Gujarati 乱码。
+  const root = path.join(here, "..", "..", "src", "app-shell");
+  const files = [];
+  const walk = async (dir) => {
+    for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) await walk(full);
+      else if (/\.(?:js|mjs|html|css)$/u.test(entry.name)) files.push(full);
+    }
+  };
+  await walk(root);
+  assert.ok(files.length > 0, "应收集到 app-shell 源码文件");
+  const bundle = (await Promise.all(files.map((f) => fs.readFile(f, "utf8")))).join("\n");
+  assert.doesNotMatch(bundle, /Worked for/u, "bundle 不得包含英文耗时文案 Worked for");
+  assert.doesNotMatch(bundle, /નિર્ણ/u, "bundle 不得包含 Gujarati 乱码 નિર્ણ");
+  assert.doesNotMatch(
+    bundle,
+    /String\(\s*(?:run\.status|entry\.state)\s*\)/u,
+    "状态文本不得回退为英文 status code（必须来自单一中文 map）"
+  );
+});
