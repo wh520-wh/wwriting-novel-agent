@@ -295,3 +295,37 @@
 - 适用条件（如章节号范围、检查项）写在 `SKILL.md` 的 `metadata.wwriting.hooks` / 正文小节，不经过项目配置。
 - 设置 → Agent 技能分区 = catalog/import/delete 唯一入口：文件夹/ZIP 导入、重名覆盖提示、打开目录、删除。
 - 旧 manifest（skill.yaml/json）只在迁移时作为输入，迁移后 live 目录只有 `SKILL.md`，旧文件只存在于 migration backup。
+
+---
+
+## 11. 实现证据（Codex 风格 UI 改版，2026-08-09）
+
+> 状态：按 `docs/superpowers/plans/2026-08-09-codex-style-ui-redesign.md` 逐任务实施，
+> 下列证据均为本机实际执行结果。截图矩阵的**人工过目**尚未执行（本环境无多模态），
+> 如实标注待复核，绝不把未执行的检查写成通过。
+
+### 11.1 视觉契约测试（全部通过）
+
+- `tests/app-shell/codex-visual-contract.test.mjs`：新基线源码级契约（无横杠/工作卡片/状态小条/压缩条/composer 卡片/顶栏发丝线），逐任务追加断言。
+- `tests/app-shell/text-style-contract.test.mjs`：圆角 ≤12px、对话画布非纯白冷调、卡片白底允许、字级/对比度/1040px/无 raw hex 保留。
+- `tests/app-shell/agent-surface.test.mjs`：工作组卡片契约、composer 卡片契约随动重定。
+- 全量 `npm test`：0 failed（详见 11.2）。
+
+### 11.2 自动验证门
+
+- `npm test` → 0 failed（基线 1420 用例通过；新增 codex-visual-contract 后只增不减）。
+- 硬三件套全部 exit 0：
+  - `npm run verify:app-clickability`
+  - `npm run verify:app-shell`
+  - `npm run verify:desktop-shell`
+
+### 11.3 截图矩阵（待人工过目）
+
+`node scripts/capture-visual-acceptance.cjs --output artifacts/visual-acceptance/2026-08-09-codex-matrix` ——
+产物目录已生成，五场景 + 浅/深 × 桌面/窄窗截图需人工过目确认：无横杠、卡片成型、正文仍衬线。
+
+> 采集脚本本次有一处稳健性修复（非产品行为改动）：`submitViaComposer` 原先只等 composer
+> input 存在就开始命中测试，而项目打开前 composer 处于 `hidden`（display:none），send 按钮
+> rect 全零、`elementFromPoint` 落在视口原点返回 `<html>`，间歇失败。已加"composer 可见且
+> 发送可用"等待护栏（与 verify-app-clickability 的 waitForComposerEnabled 同款），
+> 修复后连续采集稳定 exit 0。

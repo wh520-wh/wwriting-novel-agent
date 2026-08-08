@@ -108,8 +108,8 @@ test("对话控制面提供即时反馈、清晰材料层与完整无障碍降�
   );
   assert.match(
     agentCssSource,
-    /\.agent-composer-shell\s*\{[^}]*border-radius:\s*8px[^}]*backdrop-filter:[^}]*box-shadow:/u,
-    "composer 应是带有层次感的 8px 操作材料层"
+    /\.agent-composer-shell\s*\{[^}]*border-radius:\s*var\(--r-card\)[^}]*backdrop-filter:[^}]*box-shadow:\s*var\(--shadow-sm\)/u,
+    "composer 应是带有层次感的圆角卡片材料层"
   );
   assert.match(
     agentCssSource,
