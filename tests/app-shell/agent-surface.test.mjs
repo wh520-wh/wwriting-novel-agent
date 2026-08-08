@@ -2894,6 +2894,22 @@ test("transport surface: clearHistory 终止旧 SSE 并按新 session 重连（�
 });
 
 // ===========================================================================
+// Task 13：AgentSurface 公开 seam——Task 9 的历史生命周期方法始终可用
+// ===========================================================================
+
+test("surface: 未打开项目时 exportHistory/clearHistory 不抛错（公开 seam 方法）", async () => {
+  const { api, surface } = await makeSurface();
+  assert.equal(typeof surface.exportHistory, "function", "surface 应始终暴露 exportHistory");
+  assert.equal(typeof surface.clearHistory, "function", "surface 应始终暴露 clearHistory");
+  const exported = await surface.exportHistory();
+  const cleared = await surface.clearHistory({ confirm_irreversible: true });
+  assert.equal(exported, null, "无 transport 实现时导出返回 null");
+  assert.equal(cleared, undefined, "无项目时清空返回 undefined（不发起请求）");
+  assert.ok(!api.calls.some((c) => c[0] === "exportHistory" || c[0] === "clearHistory"),
+    "未打开项目不得向 transport 发起历史请求");
+});
+
+// ===========================================================================
 // Task 10：尾部首屏、前置分页与稳定时间线 key（brief Step 1-4 契约）
 // ===========================================================================
 

@@ -29,9 +29,24 @@ const SETTINGS_SECTIONS = [
   { id: "danger", label: "项目管理", icon: "folder", ready: true }
 ];
 
+// 通用嵌套层 Esc 关闭（Task 13）：Esc 用 capture 监听先于 app.js 的弹窗级 Esc，
+// stopImmediatePropagation 阻断后者（避免一次 Esc 同时关掉嵌套层与弹窗，也阻断
+// AgentSurface 的 Run 停止路由）。返回解除监听的函数。
+function bindNestedLayerDismissal({ isOpen, close, doc = document } = {}) {
+  if (typeof doc === "undefined" || typeof doc.addEventListener !== "function") return null;
+  const onDocKeydown = (event) => {
+    if (event?.key !== "Escape" || !isOpen()) return;
+    close();
+    event.stopImmediatePropagation?.();
+    event.preventDefault?.();
+  };
+  doc.addEventListener("keydown", onDocKeydown, true);
+  return () => doc.removeEventListener("keydown", onDocKeydown, true);
+}
+
 // 添加技能菜单（.spd-addmenu）的关闭行为：点击菜单外部或按 Esc 只关菜单，不关整个
-// 设置弹窗。Esc 用 capture 监听先于 app.js 的弹窗级 Esc，stopImmediatePropagation
-// 阻断后者（避免一次 Esc 同时关掉菜单与弹窗）。返回解除监听的函数。
+// 设置弹窗。Esc 走 bindNestedLayerDismissal 的 capture 监听（先于 app.js 的弹窗级
+// Esc，stopImmediatePropagation 阻断后者）。返回解除监听的函数。
 function bindAddMenuDismissal(addWrap, syncAddMenuAria) {
   if (typeof document === "undefined" || typeof document.addEventListener !== "function") return null;
   const close = () => {
@@ -45,18 +60,14 @@ function bindAddMenuDismissal(addWrap, syncAddMenuAria) {
     if (target && typeof addWrap.contains === "function" && addWrap.contains(target)) return;
     close();
   };
-  const onDocKeydown = (event) => {
-    if (event?.key === "Escape" && addWrap.classList.contains("open")) {
-      close();
-      event.stopImmediatePropagation?.();
-      event.preventDefault?.();
-    }
-  };
   document.addEventListener("click", onDocClick);
-  document.addEventListener("keydown", onDocKeydown, true);
+  const unbindEsc = bindNestedLayerDismissal({
+    isOpen: () => addWrap.classList.contains("open"),
+    close
+  });
   return () => {
     document.removeEventListener("click", onDocClick);
-    document.removeEventListener("keydown", onDocKeydown, true);
+    unbindEsc?.();
   };
 }
 
@@ -87,6 +98,11 @@ export function createSettingsModal(ctx, options = {}) {
   const skillsRefs = { list: null, errors: null, globalBtn: null, projectBtn: null, addWrap: null };
   // 添加技能菜单的文档级关闭监听；重渲/换分区前先解除旧监听避免泄漏。
   let removeAddMenuDismissal = null;
+  // 对话历史分区（Task 13）：导出/清空按钮与活动 Run 门禁提示（重渲时更新引用）。
+  let historyRefs = { exportBtn: null, clearBtn: null, hint: null };
+  // 清空确认层（settings 内最上层）的节点引用与文档级 Esc 监听。
+  let clearConfirmRef = { layer: null, ack: null, confirmBtn: null, error: null };
+  let removeClearConfirmDismissal = null;
   // 模型清单来自全局（~/.wwriting/model-profiles.json），与项目无关。
   // 打开设置时拉一次，保存/删除/选用后刷新。
   let globalModels = { default_model: null, models: [] };
@@ -435,6 +451,232 @@ export function createSettingsModal(ctx, options = {}) {
     folderField.append(folderLabel, folderBtn);
     settingsFields.folderButton = { field: folderField, input: folderBtn };
     ctx.refs.settingsDetail.append(folderField);
+
+    // 对话历史（Task 13）：导出可选、清空二次确认、活动 Run 门禁。对话历史保存在
+    // 项目状态目录，与创作文件分离——清空不触碰章节、总纲、设定与 WWRITING.md。
+    const historyHeading = document.createElement("h4");
+    historyHeading.className = "spd-section";
+    historyHeading.textContent = "对话历史";
+    ctx.refs.settingsDetail.append(historyHeading);
+
+    const historyIntro = document.createElement("p");
+    historyIntro.className = "spd-hint";
+    historyIntro.textContent = "导出或清空本项目与 Agent 的对话记录；不影响任何创作文件。";
+    ctx.refs.settingsDetail.append(historyIntro);
+
+    const historyField = document.createElement("div");
+    historyField.className = "spd-field spd-toggle";
+    const historyLabel = document.createElement("div");
+    historyLabel.className = "spd-label";
+    const historySpan = document.createElement("span");
+    historySpan.textContent = "对话历史保存在项目状态目录。";
+    historyLabel.append(historySpan);
+    const historyBtns = document.createElement("div");
+    historyBtns.style.display = "flex";
+    historyBtns.style.gap = "8px";
+    const exportButton = actionButton("导出对话历史", () => void exportHistoryFlow(exportButton));
+    exportButton.id = "export-history-trigger";
+    const clearButton = actionButton("清空对话历史", () => openClearHistoryConfirm());
+    clearButton.id = "clear-history-trigger";
+    historyBtns.append(exportButton, clearButton);
+    historyField.append(historyLabel, historyBtns);
+    ctx.refs.settingsDetail.append(historyField);
+
+    // 活动 Run 门禁提示：任务进行中清空按钮禁用，先停止任务。
+    const runHint = document.createElement("div");
+    runHint.className = "spd-hint";
+    runHint.id = "clear-history-run-hint";
+    runHint.textContent = "任务进行中，请先停止任务后再清空对话历史。";
+    runHint.hidden = true;
+    ctx.refs.settingsDetail.append(runHint);
+
+    historyRefs = { exportBtn: exportButton, clearBtn: clearButton, hint: runHint };
+    // 活动 Run 判定是异步快照检查：渲染后更新按钮禁用态与提示可见性。
+    void refreshHistoryRunGate();
+  }
+
+  // 设置详情内的二级动作按钮（与 .sp-btn 同一组件语言）。
+  function actionButton(text, onClick) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "sp-btn";
+    btn.textContent = text;
+    btn.addEventListener("click", onClick);
+    return btn;
+  }
+
+  // 活动 Run / 排队输入进行中：清空按钮禁用并显示「先停止任务」提示。
+  async function refreshHistoryRunGate() {
+    const busy = await taskInProgress();
+    if (!historyRefs.clearBtn) return;
+    historyRefs.clearBtn.disabled = busy;
+    if (historyRefs.hint) historyRefs.hint.hidden = !busy;
+  }
+
+  // 导出对话历史（可选动作，不是清空的前置条件）：surface 返回 NDJSON 原文，
+  // 这里触发下载并提示；失败只提示，不影响后续清空。
+  async function exportHistoryFlow(btn) {
+    if (typeof ctx.exportAgentHistory !== "function") {
+      ctx.showToast("当前环境不支持导出对话历史。", "info");
+      return;
+    }
+    if (btn) btn.disabled = true;
+    try {
+      const result = await ctx.exportAgentHistory();
+      const text = result?.text;
+      if (typeof text !== "string" || text.length === 0) throw new Error("导出结果为空。");
+      downloadHistoryText(text, historyExportFilename());
+      ctx.showToast("对话历史已导出。", "success");
+    } catch (error) {
+      ctx.showToast(error?.message ?? "导出对话历史失败。", "error");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  function historyExportFilename() {
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    return `对话历史-${ts}.ndjson`;
+  }
+
+  function downloadHistoryText(text, filename) {
+    const blob = new Blob([text], { type: "application/x-ndjson" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  // 清空确认层（Task 13）：settings 内最上层，覆盖整个弹窗。未勾选确认时确认
+  // 按钮禁用，绝不发请求；ESC 只关本层（capture 监听阻断弹窗级 Esc 与 Run 停止）。
+  function openClearHistoryConfirm() {
+    if (clearConfirmRef.layer) return;
+    // 确认层是当前最上层：先解除更低的添加菜单文档监听，ESC 只作用于确认层。
+    removeAddMenuDismissal?.();
+
+    const layer = document.createElement("div");
+    layer.className = "spd-confirm-layer";
+    layer.id = "clear-history-confirm";
+    layer.hidden = false;
+    Object.assign(layer.style, {
+      position: "absolute",
+      inset: "0",
+      zIndex: "20",
+      background: "rgba(20, 18, 14, 0.45)",
+      display: "grid",
+      placeItems: "center",
+      padding: "28px"
+    });
+
+    const card = document.createElement("div");
+    card.className = "spd-confirm-card";
+    Object.assign(card.style, {
+      width: "min(430px, 100%)",
+      background: "var(--surface)",
+      border: "1px solid var(--line)",
+      borderRadius: "var(--r-xl)",
+      boxShadow: "var(--shadow-pop)",
+      padding: "22px 24px",
+      display: "grid",
+      gap: "14px"
+    });
+
+    const title = document.createElement("h4");
+    title.className = "spd-section";
+    title.style.margin = "0";
+    title.textContent = "清空对话历史";
+
+    const copy = document.createElement("p");
+    copy.className = "spd-confirm-copy spd-hint";
+    copy.style.margin = "0";
+    copy.textContent = "此操作不可恢复，将删除本项目全部对话历史；不影响章节、总纲、设定与 WWRITING.md 等创作文件。如需保留可先导出对话历史。";
+
+    const ackLabel = document.createElement("label");
+    ackLabel.style.display = "flex";
+    ackLabel.style.alignItems = "center";
+    ackLabel.style.gap = "8px";
+    ackLabel.style.fontSize = "13px";
+    const ack = document.createElement("input");
+    ack.type = "checkbox";
+    ack.id = "clear-history-ack";
+    ack.style.width = "16px";
+    ack.style.height = "16px";
+    const ackSpan = document.createElement("span");
+    ackSpan.textContent = "我确认要清空对话历史";
+    ackLabel.append(ack, ackSpan);
+
+    const error = document.createElement("div");
+    error.className = "spd-field-error";
+    error.id = "clear-history-error";
+    error.hidden = true;
+
+    const actions = document.createElement("div");
+    actions.style.display = "flex";
+    actions.style.justifyContent = "flex-end";
+    actions.style.gap = "10px";
+    const cancelBtn = actionButton("取消", () => closeClearHistoryConfirm());
+    cancelBtn.id = "clear-history-cancel";
+    const confirmBtn = actionButton("清空对话历史", () => void runClearHistory(confirmBtn));
+    confirmBtn.id = "clear-history-confirm-btn";
+    confirmBtn.disabled = true;
+    actions.append(cancelBtn, confirmBtn);
+
+    ack.addEventListener("change", () => {
+      confirmBtn.disabled = !ack.checked;
+    });
+
+    card.append(title, copy, ackLabel, error, actions);
+    layer.append(card);
+    ctx.refs.settingsScrim.append(layer);
+
+    clearConfirmRef = { layer, ack, confirmBtn, error };
+    removeClearConfirmDismissal = bindNestedLayerDismissal({
+      // 只有设置弹窗开着且确认层存在时才消费 Esc，避免影响其他层。
+      isOpen: () => clearConfirmRef.layer !== null && ctx.refs.settingsScrim.classList.contains("show"),
+      close: closeClearHistoryConfirm
+    });
+    // 点击确认层背景（卡片外部）关闭本层，不触碰弹窗级处理器。
+    layer.addEventListener("click", (event) => {
+      if (event?.target === layer) closeClearHistoryConfirm();
+    });
+    cancelBtn.focus();
+  }
+
+  function closeClearHistoryConfirm() {
+    removeClearConfirmDismissal?.();
+    removeClearConfirmDismissal = null;
+    if (!clearConfirmRef.layer) return;
+    clearConfirmRef.layer.replaceChildren();
+    clearConfirmRef.layer.hidden = true;
+    clearConfirmRef.layer = null;
+  }
+
+  function showClearHistoryError(message) {
+    if (!clearConfirmRef.error) return;
+    clearConfirmRef.error.textContent = message;
+    clearConfirmRef.error.hidden = false;
+  }
+
+  async function runClearHistory(confirmBtn) {
+    if (confirmBtn.disabled) return;
+    if (typeof ctx.clearAgentHistory !== "function") {
+      showClearHistoryError("当前环境不支持清空对话历史。");
+      return;
+    }
+    confirmBtn.disabled = true;
+    try {
+      // surface.clearHistory 内部负责重置投影并重开当前项目（clear-reconnect）。
+      await ctx.clearAgentHistory({ confirm_irreversible: true });
+      closeClearHistoryConfirm();
+      ctx.showToast("对话历史已清空，创作文件未改动。", "success");
+    } catch (error) {
+      // 请求期间确认层被关闭（ESC/取消）：丢弃迟到的失败反馈。
+      if (!clearConfirmRef.layer) return;
+      showClearHistoryError(error?.message ?? "清空对话历史失败。");
+      confirmBtn.disabled = !clearConfirmRef.ack?.checked;
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -900,6 +1142,8 @@ export function createSettingsModal(ctx, options = {}) {
   }
 
   function closeSettingsModal() {
+    // 清空确认层随设置弹窗一起关闭（X/关闭/遮罩/Esc 任一路径都先关嵌套层）。
+    closeClearHistoryConfirm();
     // Closing the modal aborts any in-flight connection test and clears the
     // temporary key the user typed. Reopening will not prefill the secret.
     resetConnectionState();

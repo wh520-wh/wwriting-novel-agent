@@ -93,6 +93,7 @@ globalThis.window.matchMedia = () => ({ matches: false, addEventListener() {}, r
 let domRegistry = [];
 function installDomMock() {
   domRegistry = [];
+  const docListeners = new Map();
   globalThis.document = {
     createElement(tag) {
       const el = new MockElement(tag);
@@ -103,7 +104,20 @@ function installDomMock() {
     createDocumentFragment() { return new MockElement("document-fragment"); },
     getElementById() { return null; },
     querySelector() { return null; },
-    activeElement: null
+    activeElement: null,
+    // Task 13：嵌套层（添加菜单 / 清空确认）的文档级 Esc/click 监听需要可注册与触发。
+    addEventListener(type, handler) {
+      if (!docListeners.has(type)) docListeners.set(type, []);
+      docListeners.get(type).push(handler);
+    },
+    removeEventListener(type, handler) {
+      const list = docListeners.get(type) ?? [];
+      const index = list.indexOf(handler);
+      if (index >= 0) list.splice(index, 1);
+    },
+    _fire(type, ...args) {
+      for (const fn of docListeners.get(type) ?? []) fn(...args);
+    }
   };
 }
 installDomMock();
@@ -1152,4 +1166,224 @@ test("内置风格行只读展示：无 toggle/edit/delete 控件；自定义技
   assert.ok(domRegistry.some((el) => el.id === "skills-add"), "「添加技能」入口应保留");
   assert.ok(domRegistry.some((el) => el.id === "skills-open-dir"), "「打开技能目录」入口应保留");
   assert.ok(domRegistry.some((el) => el.id === "skills-scope-project"), "项目 scope 切换应保留");
+});
+
+// ---------------------------------------------------------------------------
+// Task 13：对话历史导出与清空确认（项目管理分区）
+// ---------------------------------------------------------------------------
+
+function tickAsync() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+// 项目管理分区需要 hasProject:true 的项目 + 项目根目录（活动 Run 门禁依赖根目录）。
+function dangerHarness(overrides = {}) {
+  return createSettingsModalForTest({
+    getDashboard: () => ({ hasProject: true, project: { archived_at: null } }),
+    getCurrentProjectRoot: () => "D:/novels/demo",
+    ...overrides
+  });
+}
+
+test("项目管理分区：有「导出对话历史」和「清空对话历史」按钮", async () => {
+  const modal = dangerHarness();
+  await modal.openSettingsModal("danger");
+  await tickAsync();
+
+  const exportBtn = findElementById("export-history-trigger");
+  const clearBtn = findElementById("clear-history-trigger");
+  assert.ok(exportBtn, "应有「导出对话历史」按钮");
+  assert.ok(clearBtn, "应有「清空对话历史」按钮");
+  assert.equal(exportBtn.textContent, "导出对话历史");
+  assert.equal(clearBtn.textContent, "清空对话历史");
+});
+
+test("点击清空先出现二次确认：正文含「不可恢复」与「不影响章节、总纲、设定与 WWRITING.md」", async () => {
+  const modal = dangerHarness();
+  await modal.openSettingsModal("danger");
+  await tickAsync();
+
+  findElementById("clear-history-trigger")._fire("click");
+  const layer = findElementById("clear-history-confirm");
+  assert.ok(layer, "点击清空应出现二次确认层");
+
+  const copy = domRegistry.find((el) => String(el.className).includes("spd-confirm-copy"));
+  assert.ok(copy, "确认层应包含说明正文");
+  assert.match(copy.textContent, /不可恢复/u);
+  assert.match(copy.textContent, /不影响章节、总纲、设定与 WWRITING\.md/u);
+
+  // 取消按钮可关闭确认层
+  findElementById("clear-history-cancel")._fire("click");
+  assert.equal(findElementById("clear-history-confirm").hidden, true, "取消后确认层应关闭");
+});
+
+test("未勾选确认时不发请求；勾选后才调用 clearAgentHistory({ confirm_irreversible: true })", async () => {
+  const clearCalls = [];
+  const modal = dangerHarness({
+    clearAgentHistory: async (options) => {
+      clearCalls.push(options);
+      return { ok: true, session_id: "sess-new" };
+    }
+  });
+  await modal.openSettingsModal("danger");
+  await tickAsync();
+
+  findElementById("clear-history-trigger")._fire("click");
+  const confirmBtn = findElementById("clear-history-confirm-btn");
+  const ack = findElementById("clear-history-ack");
+  assert.equal(confirmBtn.disabled, true, "未勾选时确认按钮应禁用");
+
+  confirmBtn._fire("click");
+  await tickAsync();
+  assert.equal(clearCalls.length, 0, "未勾选确认时不得发起清空请求");
+
+  ack.checked = true;
+  ack._fire("change");
+  assert.equal(confirmBtn.disabled, false, "勾选后确认按钮应可用");
+  confirmBtn._fire("click");
+  await tickAsync();
+
+  assert.deepEqual(clearCalls, [{ confirm_irreversible: true }], "应携带 confirm_irreversible: true");
+});
+
+test("确认清空成功：关闭确认层、提示创作文件未改动；导出是可选动作且无其他请求", async () => {
+  const clearCalls = [];
+  const exportCalls = [];
+  const toasts = [];
+  const postCalls = [];
+  const modal = dangerHarness({
+    clearAgentHistory: async (options) => {
+      clearCalls.push(options);
+      return { ok: true, session_id: "sess-new" };
+    },
+    exportAgentHistory: async () => {
+      exportCalls.push(1);
+      return { text: "line1\nline2\n", status: 200 };
+    },
+    showToast: (message, kind) => toasts.push({ message, kind }),
+    postJsonImpl: async (url, body) => {
+      postCalls.push({ url, body });
+      return { ok: true };
+    }
+  });
+  await modal.openSettingsModal("danger");
+  await tickAsync();
+
+  findElementById("clear-history-trigger")._fire("click");
+  const ack = findElementById("clear-history-ack");
+  ack.checked = true;
+  ack._fire("change");
+  findElementById("clear-history-confirm-btn")._fire("click");
+  await tickAsync();
+
+  assert.equal(clearCalls.length, 1);
+  assert.deepEqual(clearCalls[0], { confirm_irreversible: true });
+  assert.equal(findElementById("clear-history-confirm").hidden, true, "成功后确认层关闭");
+  assert.equal(exportCalls.length, 0, "清空不要求先导出（导出是可选动作）");
+  assert.equal(postCalls.length, 0, "清空不向任何文件/设置接口发请求");
+  assert.ok(toasts.some((t) => t.message === "对话历史已清空，创作文件未改动。"), "应提示创作文件未改动");
+});
+
+test("清空失败：保留确认层和错误文案，可重试", async () => {
+  let fail = true;
+  const modal = dangerHarness({
+    clearAgentHistory: async () => {
+      if (fail) {
+        fail = false;
+        const error = new Error("Agent 正在运行，无法清空历史。");
+        error.code = "history_busy";
+        error.status = 409;
+        throw error;
+      }
+      return { ok: true, session_id: "sess-new" };
+    }
+  });
+  await modal.openSettingsModal("danger");
+  await tickAsync();
+
+  findElementById("clear-history-trigger")._fire("click");
+  const ack = findElementById("clear-history-ack");
+  ack.checked = true;
+  ack._fire("change");
+  findElementById("clear-history-confirm-btn")._fire("click");
+  await tickAsync();
+
+  assert.equal(findElementById("clear-history-confirm").hidden, false, "失败后确认层应保留");
+  const errorEl = findElementById("clear-history-error");
+  assert.equal(errorEl.hidden, false, "失败后应显示错误文案");
+  assert.match(errorEl.textContent, /无法清空历史/u);
+
+  // 勾选状态保留，可直接重试；重试成功关闭确认层
+  findElementById("clear-history-confirm-btn")._fire("click");
+  await tickAsync();
+  assert.equal(findElementById("clear-history-confirm").hidden, true, "重试成功后确认层关闭");
+});
+
+test("清空确认打开时 ESC 只关闭确认层：不关设置弹窗、不停止 Run", async () => {
+  const scrim = new MockElement("div");
+  const modal = dangerHarness({ refs: { settingsScrim: scrim } });
+  await modal.openSettingsModal("danger");
+  await tickAsync();
+
+  findElementById("clear-history-trigger")._fire("click");
+  assert.equal(findElementById("clear-history-confirm").hidden, false, "确认层应打开");
+
+  let stopped = false;
+  let prevented = false;
+  document._fire("keydown", {
+    key: "Escape",
+    stopImmediatePropagation: () => { stopped = true; },
+    preventDefault: () => { prevented = true; }
+  });
+
+  assert.equal(findElementById("clear-history-confirm").hidden, true, "ESC 应关闭确认层");
+  assert.equal(scrim.classList.contains("show"), true, "ESC 不得关闭设置弹窗");
+  assert.equal(stopped, true, "ESC 应被嵌套层消费（阻断弹窗级与 Run 停止路由）");
+  assert.equal(prevented, true, "ESC 应阻止默认行为");
+});
+
+test("活动 Run 时清空按钮禁用并提示先停止任务", async () => {
+  const modal = dangerHarness({
+    getJsonImpl: snapshotJsonImpl(RUNNING_SNAPSHOT)
+  });
+  await modal.openSettingsModal("danger");
+  await tickAsync();
+
+  const clearBtn = findElementById("clear-history-trigger");
+  assert.equal(clearBtn.disabled, true, "活动 Run 时清空按钮应禁用");
+  const hint = findElementById("clear-history-run-hint");
+  assert.equal(hint.hidden, false, "活动 Run 时应显示提示");
+  assert.match(hint.textContent, /先停止任务/u);
+});
+
+test("任务空闲时清空按钮可用且无先停止任务提示", async () => {
+  const modal = dangerHarness({
+    getJsonImpl: snapshotJsonImpl(IDLE_SNAPSHOT)
+  });
+  await modal.openSettingsModal("danger");
+  await tickAsync();
+
+  const clearBtn = findElementById("clear-history-trigger");
+  assert.equal(clearBtn.disabled, false, "空闲时清空按钮应可用");
+  assert.equal(findElementById("clear-history-run-hint").hidden, true, "空闲时不显示先停止任务提示");
+});
+
+test("导出对话历史：调用注入的 exportAgentHistory 并提示已导出", async () => {
+  const exportCalls = [];
+  const toasts = [];
+  const modal = dangerHarness({
+    exportAgentHistory: async () => {
+      exportCalls.push(1);
+      return { text: "line1\nline2\n", status: 200 };
+    },
+    showToast: (message, kind) => toasts.push({ message, kind })
+  });
+  await modal.openSettingsModal("danger");
+  await tickAsync();
+
+  findElementById("export-history-trigger")._fire("click");
+  await tickAsync();
+
+  assert.equal(exportCalls.length, 1, "点击导出应调用 exportAgentHistory");
+  assert.ok(toasts.some((t) => t.message === "对话历史已导出。"), "导出成功应提示");
 });
