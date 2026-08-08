@@ -136,6 +136,13 @@ class MockElement {
       this._parent = null;
     }
   }
+  get parentElement() {
+    return this._parent;
+  }
+  contains(node) {
+    if (node === this) return true;
+    return this.children.some((child) => child instanceof MockElement && child.contains(node));
+  }
   setAttribute(name, value) {
     this._attrs[name] = String(value);
   }
@@ -198,6 +205,20 @@ before(() => {
     createElementNS: (_ns, tag) => new MockElement(tag),
     createTextNode: (text) => new TextNode(text),
     createDocumentFragment: () => new MockElement("fragment"),
+    // Task 11：圆环/composer 的 doc 级 pointerdown/keydown 监听（外部关闭/ESC）。
+    _listeners: new Map(),
+    addEventListener(type, handler) {
+      if (!this._listeners.has(type)) this._listeners.set(type, []);
+      this._listeners.get(type).push(handler);
+    },
+    removeEventListener(type, handler) {
+      const list = this._listeners.get(type) ?? [];
+      const index = list.indexOf(handler);
+      if (index >= 0) list.splice(index, 1);
+    },
+    _fire(type, ...args) {
+      for (const fn of this._listeners.get(type) ?? []) fn(...args);
+    }
   };
 });
 
@@ -300,6 +321,8 @@ function makeFakeApi(overrides = {}) {
     stop: async (runId) => { calls.push(["stop", runId]); return { ok: true }; },
     retry: async (runId) => { calls.push(["retry", runId]); return { ok: true }; },
     decide: async (decisionId, choice) => { calls.push(["decide", decisionId, choice]); return { ok: true }; },
+    retryCompaction: async (compactionId) => { calls.push(["retryCompaction", compactionId]); return { ok: true }; },
+    cancelCompaction: async (compactionId) => { calls.push(["cancelCompaction", compactionId]); return { ok: true, status: "cancelled" }; },
     fetchSnapshot: async () => { calls.push(["fetchSnapshot"]); return null; },
     connectEvents: () => { calls.push(["connectEvents"]); },
     destroy: () => { calls.push(["destroy"]); },
@@ -3142,4 +3165,224 @@ test("Task 10 SSE 游标：tail 快照推进 lastSeq，connectEvents 从已加�
     assert.ok(timelineIndex(oldBubble) < timelineIndex(incrBubble), "乱序旧消息按 seq 位于递增新消息之前");
     surface.destroy();
   });
+});
+
+// ===========================================================================
+// Task 11：上下文圆环、压缩状态行与发送门禁
+// ===========================================================================
+
+test("项目打开后上下文圆环始终存在；未装配时 popover 显示「计算中」而不是假 0", async () => {
+  const { root, surface } = await makeSurface();
+  assert.equal(root.querySelector('[data-testid="agent-composer"]').hidden, true, "未打开项目时 composer 隐藏（圆环随 composer 不可见）");
+  await surface.openProject("D:\novel");
+  const ring = root.querySelector('[data-testid="agent-context-ring"]');
+  assert.ok(ring, "项目打开后圆环始终存在（不只在运行/超阈值时）");
+  const popover = root.querySelector('[data-testid="agent-context-popover"]');
+  assert.ok(popover, "popover 应存在");
+  ring._fire("click");
+  assert.equal(popover.dataset.open, "true");
+  assert.match(popover.textContent, /计算中|待校准/u, "未装配显示计算中");
+  assert.doesNotMatch(popover.textContent, /0\s*(?:tokens|%)|0%/u, "计算中绝不显示假 0");
+});
+
+test("context_usage_updated 后 popover 显示已用 tokens、窗口、百分比与窗口来源", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  surface.applyEvent(ev("context_usage_updated", {
+    usage: {
+      status: "ready", used_tokens: 163840, raw_tokens: 150000,
+      effective_context_window: 256000, compaction_threshold: 204800,
+      ratio: 0.64, window_source: "default_256k", estimator: "local",
+      approximate: true, model: "deepseek-chat",
+      updated_at: "2026-08-08T00:00:00.000Z"
+    }
+  }));
+  const ring = root.querySelector('[data-testid="agent-context-ring"]');
+  ring._fire("click");
+  const popover = root.querySelector('[data-testid="agent-context-popover"]');
+  assert.match(popover.textContent, /约.*163,840|163,840/u, "应显示已用 tokens（约 + 千分位）");
+  assert.match(popover.textContent, /256,000/u, "应显示窗口大小");
+  assert.match(popover.textContent, /64%/u, "应显示百分比");
+  assert.match(popover.textContent, /256k|1M/u, "应显示窗口来源");
+});
+
+test("popover 点击固定、再次点击/外部点击/ESC 关闭", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  const ring = root.querySelector('[data-testid="agent-context-ring"]');
+  const popover = root.querySelector('[data-testid="agent-context-popover"]');
+  ring._fire("click");
+  assert.equal(popover.dataset.open, "true");
+  assert.equal(ring.dataset.pinned, "true", "点击固定");
+  ring._fire("click");
+  assert.equal(popover.dataset.open, "false", "再次点击关闭");
+  ring._fire("click");
+  globalThis.document._fire("pointerdown", { target: root });
+  assert.equal(popover.dataset.open, "false", "外部点击关闭");
+  ring._fire("click");
+  globalThis.document._fire("keydown", { key: "Escape" });
+  assert.equal(popover.dataset.open, "false", "ESC 关闭");
+});
+
+test("压缩状态行：同一 compaction_id 单行顶替 开始压缩→压缩进行中→已压缩完成", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-1", trigger: "automatic" }));
+  let row = root.querySelector('[data-testid="agent-compaction-row"]');
+  assert.ok(row, "started 后出现压缩状态行");
+  assert.equal(row.textContent, "开始压缩");
+  surface.applyEvent(ev("context_compaction_running", { compaction_id: "c-1" }));
+  row = root.querySelector('[data-testid="agent-compaction-row"]');
+  assert.equal(row.textContent, "压缩进行中");
+  assert.ok(row.parentElement.querySelector('[data-testid="agent-compaction-cancel"]'), "running 显示取消按钮");
+  surface.applyEvent(ev("context_compaction_completed", { compaction_id: "c-1", checkpoint_id: "cp-1" }));
+  row = root.querySelector('[data-testid="agent-compaction-row"]');
+  assert.equal(row.textContent, "已压缩完成");
+  assert.equal(root.querySelectorAll('[data-testid="agent-compaction-row"]').length, 1, "同一 compaction_id 只有一行");
+  assert.equal(row.parentElement.querySelector('[data-testid="agent-compaction-cancel"]'), null, "完成后移除按钮");
+  assert.doesNotMatch(row.textContent, /token|模型|耗时|\d+\s*ms/u, "完成文案不显示 token/模型/耗时");
+});
+
+test("压缩失败：状态行「压缩失败」+ 重试/取消按钮，发送禁用直到用户操作", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  const send = root.querySelector('[data-testid="agent-send"]');
+  assert.equal(send.disabled, false, "无压缩时发送可用");
+  surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-2", trigger: "automatic" }));
+  surface.applyEvent(ev("context_compaction_running", { compaction_id: "c-2" }));
+  assert.equal(send.disabled, true, "压缩进行中发送禁用");
+  surface.applyEvent(ev("context_compaction_failed", { compaction_id: "c-2", error_code: "model_error" }));
+  const row = root.querySelector('[data-testid="agent-compaction-row"]');
+  assert.equal(row.textContent, "压缩失败");
+  assert.ok(row.parentElement.querySelector('[data-testid="agent-compaction-retry"]'), "失败显示重试按钮");
+  assert.ok(row.parentElement.querySelector('[data-testid="agent-compaction-cancel"]'), "失败显示取消按钮");
+  assert.equal(send.disabled, true, "失败后发送保持禁用（等待用户 重试/取消）");
+});
+
+test("压缩取消完成：发送恢复，draft 留在 textarea；无需压缩时发送正常", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  const send = root.querySelector('[data-testid="agent-send"]');
+  input.value = "保留的草稿";
+  surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-3", trigger: "automatic" }));
+  surface.applyEvent(ev("context_compaction_cancel_requested", { compaction_id: "c-3" }));
+  assert.equal(root.querySelector('[data-testid="agent-compaction-row"]').textContent, "正在取消");
+  assert.equal(send.disabled, true, "取消中发送禁用");
+  surface.applyEvent(ev("context_compaction_cancelled", { compaction_id: "c-3", cancel_reason: "user" }));
+  assert.equal(root.querySelector('[data-testid="agent-compaction-row"]').textContent, "已取消");
+  assert.equal(send.disabled, false, "取消完成后发送恢复");
+  assert.equal(input.value, "保留的草稿", "draft 留在 textarea，恢复后原样可发");
+  surface.applyEvent(ev("context_compaction_noop", { compaction_id: "c-4", trigger: "automatic" }));
+  const noopRow = [...root.querySelectorAll('[data-testid="agent-compaction-row"]')]
+    .find((el) => el.parentElement.dataset.compactionId === "c-4");
+  assert.equal(noopRow.textContent, "无需压缩");
+  assert.equal(root.querySelector('[data-testid="agent-send"]').disabled, false, "noop 不阻塞发送");
+});
+
+test("压缩行动作按钮调用 retryCompaction / cancelCompaction", async () => {
+  const { root, api, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-5", trigger: "automatic" }));
+  surface.applyEvent(ev("context_compaction_running", { compaction_id: "c-5" }));
+  surface.applyEvent(ev("context_compaction_failed", { compaction_id: "c-5", error_code: "model_error" }));
+  const row = root.querySelector('[data-testid="agent-compaction-row"]');
+  row.parentElement.querySelector('[data-testid="agent-compaction-retry"]')._fire("click");
+  row.parentElement.querySelector('[data-testid="agent-compaction-cancel"]')._fire("click");
+  const calls = api.calls.filter((c) => c[0] === "retryCompaction" || c[0] === "cancelCompaction");
+  assert.deepEqual(calls, [["retryCompaction", "c-5"], ["cancelCompaction", "c-5"]]);
+});
+
+test("不同 compaction_id 各行独立渲染，终态行保留在时间线", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-1", trigger: "automatic" }));
+  surface.applyEvent(ev("context_compaction_running", { compaction_id: "c-1" }));
+  surface.applyEvent(ev("context_compaction_completed", { compaction_id: "c-1", checkpoint_id: "cp-1" }));
+  surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-2", trigger: "manual" }));
+  surface.applyEvent(ev("context_compaction_running", { compaction_id: "c-2" }));
+  const rows = root.querySelectorAll('[data-testid="agent-compaction-row"]');
+  assert.equal(rows.length, 2, "两个 compaction_id 各一行");
+  assert.equal(rows[0].textContent, "已压缩完成", "c-1 终态行保留");
+  assert.equal(rows[1].textContent, "压缩进行中");
+});
+
+
+test("压缩投影与状态行在乱序全集重建后保持（增量 fast path 与 rebuild 一致）", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-1", trigger: "automatic" }));
+  surface.applyEvent(ev("context_compaction_running", { compaction_id: "c-1" }));
+  surface.applyEvent(ev("context_compaction_completed", { compaction_id: "c-1", checkpoint_id: "cp-1" }));
+  // 乱序旧事件（seq < lastSeq）触发按已加载全集重建
+  surface.applyEvent({ ...ev("input_queued", { input_id: "in-old", text: "旧消息", source: "chat" }), seq: 10 });
+  const row = root.querySelector('[data-testid="agent-compaction-row"]');
+  assert.equal(row.textContent, "已压缩完成", "重建后压缩行保持终态");
+  assert.equal(root.querySelector('[data-testid="agent-send"]').disabled, false, "重建后发送门禁状态正确");
+});
+
+test("圆环活性：仅运行中/压缩进行中加 agent-context-ring--active，终态移除", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  const ring = root.querySelector('[data-testid="agent-context-ring"]');
+  assert.equal(ring.classList.contains("agent-context-ring--active"), false, "空闲圆环无活性 class");
+  surface.applyEvent(ev("run_started", { workflow: "general", input_id: "in-1" }));
+  assert.equal(ring.classList.contains("agent-context-ring--active"), true, "运行中加活性 class");
+  surface.applyEvent(ev("run_completed", {}));
+  assert.equal(ring.classList.contains("agent-context-ring--active"), false, "运行终态移除活性 class");
+  surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-1", trigger: "automatic" }));
+  surface.applyEvent(ev("context_compaction_running", { compaction_id: "c-1" }));
+  assert.equal(ring.classList.contains("agent-context-ring--active"), true, "压缩进行中加活性 class");
+  surface.applyEvent(ev("context_compaction_completed", { compaction_id: "c-1", checkpoint_id: "cp-1" }));
+  assert.equal(ring.classList.contains("agent-context-ring--active"), false, "压缩终态移除活性 class");
+});
+
+test("reduced-motion 下圆环不加活性 class（无循环动画）", async () => {
+  const realWindow = globalThis.window;
+  globalThis.window = {
+    matchMedia: () => ({ matches: true, addEventListener() {}, removeEventListener() {} })
+  };
+  try {
+    const { root, surface } = await makeSurface();
+    await surface.openProject("D:\\novel");
+    surface.applyEvent(ev("run_started", { workflow: "general", input_id: "in-1" }));
+    const ring = root.querySelector('[data-testid="agent-context-ring"]');
+    assert.equal(ring.classList.contains("agent-context-ring--active"), false, "reduced-motion 下圆环保持静态");
+  } finally {
+    if (realWindow === undefined) delete globalThis.window;
+    else globalThis.window = realWindow;
+  }
+});
+
+test("Task 11 CSS：popover 过渡、压缩行、主题 token 与 reduced-motion 降级", async () => {
+  const css = await fs.readFile(path.join(here, "..", "..", "src", "app-shell", "agent", "agent.css"), "utf8");
+  // popover 进入/退出：120–180ms opacity + transform translateY(2px) scale(.98)
+  assert.match(
+    css,
+    /\.agent-context-popover\s*\{[^}]*transition:\s*[^}]*150ms[^}]*\}/u,
+    "popover 过渡应为 150ms（120–180ms 区间）"
+  );
+  assert.match(
+    css,
+    /transform:\s*translate\(-50%,\s*2px\)\s*scale\(\.98\)/u,
+    "popover 进入态 transform: translateY(2px) scale(.98)"
+  );
+  // 浅色/深色自适应：popover 背景由 theme token 驱动，无硬编码色值
+  assert.match(
+    css,
+    /\.agent-context-popover\s*\{[^}]*background:\s*color-mix\([^}]*var\(--agent-panel-solid\)[^}]*\}/u,
+    "popover 背景使用 theme token（浅色/深色自适应）"
+  );
+  assert.match(css, /\.agent-context-ring\s*\{[^}]*cursor:\s*pointer/u, "圆环按钮样式存在");
+  assert.match(css, /\.agent-compaction-row\s*\{/u, "压缩行样式存在");
+  assert.match(css, /\.agent-compaction-btn\s*\{/u, "压缩行动作按钮样式存在");
+  // reduced-motion：popover 过渡关闭
+  assert.match(
+    css,
+    /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*\.agent-context-popover[\s\S]*transition:\s*none/u,
+    "reduced-motion 下 popover 过渡关闭"
+  );
+  // 无框基线：消息/推理/活动容器不得出现表面底色
+  assert.doesNotMatch(css, /\.agent-activity-item\s*\{[^}]*background:\s*var\(--(?:surface|accent)/u);
+  assert.doesNotMatch(css, /\.agent-reasoning-(?:ticker|detail)\s*\{[^}]*background:\s*var\(--(?:surface|accent)/u);
 });

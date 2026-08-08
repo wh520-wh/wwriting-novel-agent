@@ -58,13 +58,20 @@ export function createState() {
     minSeq: null,           // 已加载事件的最小 seq（前置分页游标，null=尚未加载事件）
     hasEarlier: false,      // page.has_more：更早历史是否仍存在（滚动到顶触发 loadEarlier）
     historyGaps: [],        // { kind:"history_gap", event_key, start_seq, end_seq, reason }
+    // Task 11：上下文用量与压缩投影（镜像核心 CompactionProjection 语义）。
+    // contextUsage 为最新 ContextUsage（null=尚无 context_usage_updated 事件，
+    // UI 显示「计算中」，绝不用假 0 冒充）；compaction 为最近一次压缩的单槽投影；
+    // compactionRows 按 compaction_id 保留每次压缩的状态行（终态行仍留在时间线）。
+    contextUsage: null,
+    compaction: null,
+    compactionRows: new Map(), // compaction_id -> { compaction_id, seq, event_key, state, trigger, error_code }
     conversation: [],       // { role, text, input_id, seq, event_key }
     activities: new Map(),  // activity_id -> activity（含 start_seq/terminal_seq/事件 key）
     work: createWorkState(), // 有序工作项投影（Task 5：reasoning/tool/plan 时间线）
     decisions: new Map(),   // decision_id -> decision
     errors: [],             // run_failed 事实（新 Run 启动时清空）
     assistantStream: null,  // { runId, text } —— 增量正文累积（流式气泡），completed 后清空
-    revisions: { messages: 0, run: 0, queue: 0, activities: 0, decisions: 0, errors: 0 }
+    revisions: { messages: 0, run: 0, queue: 0, activities: 0, decisions: 0, errors: 0, context: 0 }
   };
 }
 
@@ -598,6 +605,127 @@ function applyEventToState(state, event) {
       bump(state, ["run"]);
       break;
     }
+    // ---- 上下文用量与压缩投影（Task 11 Step 3，镜像核心语义） --------------
+    // context_usage_updated 只更新 contextUsage 并 bump context revision；
+    // 7 个压缩事件更新 compaction 单槽投影并 upsert 对应 compaction_id 的状态行
+    //（保留 seq 与 compaction_id；终态后状态行仍留在时间线，由 compactionRows 承载）。
+    case "context_usage_updated": {
+      const usage = payload.usage;
+      if (usage !== null && typeof usage === "object" && !Array.isArray(usage)) {
+        state.contextUsage = structuredClone(usage);
+        bump(state, ["context"]);
+      }
+      break;
+    }
+    case "context_compaction_started": {
+      const compactionId = payload.compaction_id ?? null;
+      if (compactionId == null) break;
+      state.compaction = {
+        id: compactionId,
+        trigger: payload.trigger === "manual" ? "manual" : "automatic",
+        state: "started",
+        attempt: payload.attempt ?? 1,
+        source_checkpoint_id: payload.source_checkpoint_id ?? null,
+        checkpoint_id: payload.checkpoint_id ?? null,
+        pending_input_id: payload.pending_input_id ?? null,
+        error_code: null,
+        started_at: payload.started_at ?? event.at ?? null,
+        updated_at: event.at ?? null
+      };
+      upsertCompactionRow(state, compactionId, seq, key, "started", state.compaction);
+      bump(state, ["context"]);
+      break;
+    }
+    case "context_compaction_running":
+    case "context_compaction_cancel_requested": {
+      const compactionId = payload.compaction_id ?? null;
+      if (compactionId == null) break;
+      const nextState = type === "context_compaction_running" ? "running" : "cancelling";
+      if (state.compaction && state.compaction.id === compactionId) {
+        state.compaction.state = nextState;
+        state.compaction.error_code = null;
+        state.compaction.updated_at = event.at ?? null;
+      } else {
+        // 防御：running/cancelling 前缺 started（如手工构造日志）——从 payload
+        // 补投影，避免投影形状缺失（与核心 journal reducer 行为一致）。
+        state.compaction = {
+          id: compactionId,
+          trigger: payload.trigger === "manual" ? "manual" : "automatic",
+          state: nextState,
+          attempt: payload.attempt ?? 1,
+          source_checkpoint_id: payload.source_checkpoint_id ?? null,
+          checkpoint_id: payload.checkpoint_id ?? null,
+          pending_input_id: payload.pending_input_id ?? null,
+          error_code: null,
+          started_at: payload.started_at ?? event.at ?? null,
+          updated_at: event.at ?? null
+        };
+      }
+      upsertCompactionRow(state, compactionId, seq, key, nextState, state.compaction);
+      bump(state, ["context"]);
+      break;
+    }
+    case "context_compaction_completed": {
+      const compactionId = payload.compaction_id ?? null;
+      if (compactionId == null) break;
+      const prev = state.compaction && state.compaction.id === compactionId ? state.compaction : null;
+      state.compaction = {
+        id: compactionId,
+        trigger: prev?.trigger ?? (payload.trigger === "manual" ? "manual" : "automatic"),
+        state: "completed",
+        attempt: payload.attempt ?? prev?.attempt ?? 1,
+        source_checkpoint_id: prev?.source_checkpoint_id ?? payload.source_checkpoint_id ?? null,
+        checkpoint_id: payload.checkpoint_id ?? null,
+        pending_input_id: prev?.pending_input_id ?? payload.pending_input_id ?? null,
+        error_code: null,
+        started_at: prev?.started_at ?? payload.started_at ?? event.at ?? null,
+        updated_at: event.at ?? null
+      };
+      upsertCompactionRow(state, compactionId, seq, key, "completed", state.compaction);
+      bump(state, ["context"]);
+      break;
+    }
+    case "context_compaction_failed":
+    case "context_compaction_cancelled": {
+      const compactionId = payload.compaction_id ?? null;
+      if (compactionId == null) break;
+      const prev = state.compaction && state.compaction.id === compactionId ? state.compaction : null;
+      const nextState = type === "context_compaction_failed" ? "failed" : "cancelled";
+      state.compaction = {
+        id: compactionId,
+        trigger: prev?.trigger ?? (payload.trigger === "manual" ? "manual" : "automatic"),
+        state: nextState,
+        attempt: payload.attempt ?? prev?.attempt ?? 1,
+        source_checkpoint_id: prev?.source_checkpoint_id ?? payload.source_checkpoint_id ?? null,
+        checkpoint_id: prev?.checkpoint_id ?? payload.checkpoint_id ?? null,
+        pending_input_id: prev?.pending_input_id ?? payload.pending_input_id ?? null,
+        error_code: payload.error_code ?? null,
+        started_at: prev?.started_at ?? payload.started_at ?? event.at ?? null,
+        updated_at: event.at ?? null
+      };
+      upsertCompactionRow(state, compactionId, seq, key, nextState, state.compaction);
+      bump(state, ["context"]);
+      break;
+    }
+    case "context_compaction_noop": {
+      const compactionId = payload.compaction_id ?? null;
+      if (compactionId == null) break;
+      state.compaction = {
+        id: compactionId,
+        trigger: payload.trigger === "manual" ? "manual" : "automatic",
+        state: "noop",
+        attempt: payload.attempt ?? 1,
+        source_checkpoint_id: null,
+        checkpoint_id: null,
+        pending_input_id: null,
+        error_code: null,
+        started_at: event.at ?? null,
+        updated_at: event.at ?? null
+      };
+      upsertCompactionRow(state, compactionId, seq, key, "noop", state.compaction);
+      bump(state, ["context"]);
+      break;
+    }
     // 不进入派生 UI 状态的事件（许可/审计/领域类）
     default:
       break;
@@ -646,6 +774,28 @@ function createActivityTombstone(state, activityId, { event, payload, seq, key, 
   });
 }
 
+// 压缩状态行的 per-id upsert：首次见到某 compaction_id 时以该事件 seq/key 为
+// 时间线锚点（started 优先；started 缺失时回退首个已见事件），之后只更新
+// state/trigger/error_code。重建（rebuildDerivedState）按 seq 重放时首见事件
+// 稳定，锚点与 event_key 跨重建保持一致。
+function upsertCompactionRow(state, compactionId, seq, key, stateText, projection) {
+  let entry = state.compactionRows.get(compactionId);
+  if (!entry) {
+    state.compactionRows.set(compactionId, {
+      compaction_id: compactionId,
+      seq,
+      event_key: key,
+      state: stateText,
+      trigger: projection.trigger,
+      error_code: projection.error_code
+    });
+    return;
+  }
+  entry.state = stateText;
+  entry.trigger = projection.trigger ?? entry.trigger;
+  entry.error_code = projection.error_code ?? entry.error_code;
+}
+
 // 按已加载全集重建派生投影（Task 10 Step 2）：前置页或任何乱序事件到达后，
 // 按 (seq, event_key) 排序 loadedEvents，从空的 conversation/activity/work/
 // decisions/errors/assistantStream 重放。一次重建只处理当前已加载页（数百到数千
@@ -666,8 +816,12 @@ function rebuildDerivedState(state) {
   state.decisions = new Map();
   state.errors = [];
   state.assistantStream = null;
+  // Task 11：上下文用量/压缩投影同样由事件重放重建（确定性与增量路径一致）。
+  state.contextUsage = null;
+  state.compaction = null;
+  state.compactionRows = new Map();
   for (const event of events) applyEventToState(state, event);
-  bump(state, ["messages", "run", "queue", "activities", "decisions", "errors"]);
+  bump(state, ["messages", "run", "queue", "activities", "decisions", "errors", "context"]);
 }
 
 function appendActivityText(activity, delta) {
@@ -720,6 +874,30 @@ export function getPendingDecisions(state) {
     if (decision.status === "pending") out.push(decision);
   }
   return out;
+}
+
+// ---- Task 11：上下文用量 / 压缩投影 getter（view 只通过这些读取）------------
+
+export function getContextUsage(state) {
+  return state.contextUsage ?? null;
+}
+
+export function getCompaction(state) {
+  return state.compaction ?? null;
+}
+
+// 按 compaction_id 的状态行（Map 顺序 = 首见顺序，view 逐行渲染/更新）。
+export function getCompactionRows(state) {
+  return state.compactionRows;
+}
+
+// 压缩阻塞普通发送的状态（镜像核心 COMPACTION_BLOCKED_STATES 的视图口径）：
+// 在途（started/running/cancelling）与失败（等待用户 重试/取消 决策）禁用发送；
+// completed/cancelled/noop 均恢复正常发送（取消完成把文本留在 draft，send 恢复）。
+export const COMPACTION_BLOCKED_STATES = new Set(["started", "running", "cancelling", "failed"]);
+
+export function compactionBlocksSend(compaction) {
+  return Boolean(compaction) && COMPACTION_BLOCKED_STATES.has(compaction.state);
 }
 
 export function isRunActive(run) {

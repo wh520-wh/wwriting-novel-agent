@@ -20,9 +20,14 @@ import {
   getQueuedInputs,
   isRunActive,
   hasOpenModelTurn,
+  getContextUsage,
+  getCompaction,
+  getCompactionRows,
+  compactionBlocksSend,
   ACTIVITY_TERMINAL_STATUSES,
   TERMINAL_RUN_STATUSES
 } from "./state.js";
+import { createContextRing } from "./context-ring.js";
 import { matchSlashCommands } from "./slash-commands.mjs";
 import { renderMarkdown } from "../markdown-lite.mjs";
 import { PERMISSION_TIERS } from "../permission-tiers.mjs";
@@ -64,6 +69,32 @@ const RUN_STATUS_TEXT = {
   interrupted: "已中断",
   completed: "已完成"
 };
+
+// Task 11 Step 4：压缩状态行固定文案映射（同一位置单行顶替；完成/失败/取消后
+// 状态行仍留在时间线）。完成文案绝不携带 token/模型/耗时等详细数据。
+const COMPACTION_ROW_LABELS = {
+  started: "开始压缩",
+  running: "压缩进行中",
+  cancelling: "正在取消",
+  completed: "已压缩完成",
+  failed: "压缩失败",
+  cancelled: "已取消",
+  noop: "无需压缩"
+};
+
+// 各状态的动作按钮：failed → 重试+取消；running → 取消；其余无按钮。
+const COMPACTION_ROW_BUTTONS = {
+  started: [],
+  running: ["cancel"],
+  cancelling: [],
+  completed: [],
+  failed: ["retry", "cancel"],
+  cancelled: [],
+  noop: []
+};
+
+// 压缩在途/失败都算「真实活动」：圆环给出轻微活性反馈。
+const COMPACTION_ACTIVE_STATES = new Set(["started", "running", "cancelling"]);
 
 const PLAN_MARKS = { completed: "✓", in_progress: "•", pending: "○" };
 
@@ -312,7 +343,9 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     label: "思考强度"
   });
   controls.append(modelControl.wrap, permissionControl.wrap, effortControl.wrap);
-  composerToolbar.append(controls, send);
+  // Task 11：上下文圆环（用量仪表）挂载在 composer 工具栏，项目打开后始终可见。
+  const contextRing = createContextRing({ document: doc });
+  composerToolbar.append(controls, contextRing.element, send);
   composerShell.append(input, composerToolbar);
   composer.append(slashMenu, composerShell);
 
@@ -341,6 +374,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   const rows = new Map();      // activity_id -> row（合并同活动）
   const trimmedIds = new Set(); // 已按 20 行上限裁剪的活动 id（不再重建）
   const decisionCards = new Map(); // decision_id -> card（diff 更新，保留 extreme 输入）
+  const compactionRowNodes = new Map(); // compaction_id -> { wrap, row, label, actions }（Task 11）
   const pendingSubmissions = []; // 仅保留仍在途的即时消息；终态立即移出，避免会话内累积
   // ---- 前置分页（Task 10）：滚动到顶加载更早历史，锚点不跳动 ----
   let loadingEarlier = false;      // 与 index.js 双保险的防重复标记
@@ -349,7 +383,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   let historyGapErrorSeq = null;
   const rendered = {
     messages: -1, run: -1, queue: -1, decisions: -1, errors: -1,
-    runId: null, runStatus: null
+    runId: null, runStatus: null, context: -1
   };
 
   function clearWorkGroupTimers(record) {
@@ -383,6 +417,13 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     trimmedIds.clear();
     for (const card of decisionCards.values()) card.remove();
     decisionCards.clear();
+    for (const record of compactionRowNodes.values()) {
+      record.wrap.remove();
+      if (record.eventKey != null) messageNodes.delete(record.eventKey);
+      timelineSeqs.delete(record.wrap);
+    }
+    compactionRowNodes.clear();
+    contextRing.dismiss();
     pendingSubmissions.length = 0;
     composerOptions = null;
     controlsSignature = "";
@@ -392,6 +433,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     if (historyGapErrorNode) { historyGapErrorNode.remove(); historyGapErrorNode = null; historyGapErrorSeq = null; }
     rendered.messages = rendered.run = rendered.queue = -1;
     rendered.decisions = rendered.errors = -1;
+    rendered.context = -1;
     rendered.runId = null;
     rendered.runStatus = null;
     stopPending = false;
@@ -404,6 +446,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     workGroups.clear();
     timelineSeqs.clear();
     messageNodes.clear();
+    contextRing.destroy();
     surface.remove();
   }
 
@@ -1614,8 +1657,12 @@ export function createAgentView({ root, document: doc = globalThis.document, req
 
   function syncComposer(state) {
     const enabled = Boolean(state.projectRoot);
+    // Task 11：压缩阻塞状态（started/running/cancelling/failed）禁用发送；
+    // completed/cancelled/noop 恢复。输入框保持可编辑——取消完成时 draft 留在
+    // textarea，发送恢复后原样可发。
+    const compactionBlocked = compactionBlocksSend(getCompaction(state));
     input.disabled = !enabled;
-    send.disabled = !enabled;
+    send.disabled = !enabled || compactionBlocked;
     composer.hidden = !enabled;
     surface.classList.toggle("agent-surface--empty", !enabled);
     composerEnabled = enabled;
@@ -1720,6 +1767,105 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     }
   }
 
+  // ---- 压缩状态行（Task 11 Step 4）：每个 compaction_id 一行，单行顶替 -------
+  // 行结构：外层 .agent-compaction（时间线节点，带 compaction_id）包含
+  // .agent-compaction-row（固定文案所在行，textContent 只等于 LABELS 文案）与
+  // .agent-compaction-actions（动作按钮）。同一行只更新 label textContent 与
+  // 动作按钮，不重建 DOM；完成/取消/noop 移除按钮。
+  function buildCompactionRow(entry) {
+    const wrap = doc.createElement("div");
+    wrap.className = "agent-compaction";
+    wrap.dataset.compactionId = entry.compaction_id;
+    const row = doc.createElement("div");
+    row.className = "agent-compaction-row";
+    row.dataset.testid = "agent-compaction-row";
+    const label = doc.createElement("span");
+    label.className = "agent-compaction-label";
+    row.append(label);
+    const actions = doc.createElement("div");
+    actions.className = "agent-compaction-actions";
+    wrap.append(row, actions);
+    return { wrap, row, label, actions, seq: null, eventKey: null, buttonsSignature: "" };
+  }
+
+  function updateCompactionRow(record, entry) {
+    const labelText = COMPACTION_ROW_LABELS[entry.state] ?? String(entry.state);
+    if (record.label.textContent !== labelText) record.label.textContent = labelText;
+    record.wrap.dataset.state = entry.state;
+    // 按钮只按状态签名重建：失败 → 重试+取消；running → 取消；其余无按钮。
+    const buttons = COMPACTION_ROW_BUTTONS[entry.state] ?? [];
+    const signature = buttons.join(",");
+    if (signature === record.buttonsSignature) return;
+    record.buttonsSignature = signature;
+    record.actions.replaceChildren();
+    if (buttons.includes("retry")) {
+      const retry = doc.createElement("button");
+      retry.type = "button";
+      retry.className = "agent-compaction-btn";
+      retry.dataset.testid = "agent-compaction-retry";
+      retry.textContent = "重试";
+      retry.addEventListener("click", () => actions.retryCompaction?.(entry.compaction_id));
+      record.actions.append(retry);
+    }
+    if (buttons.includes("cancel")) {
+      const cancel = doc.createElement("button");
+      cancel.type = "button";
+      cancel.className = "agent-compaction-btn";
+      cancel.dataset.testid = "agent-compaction-cancel";
+      cancel.textContent = "取消";
+      cancel.addEventListener("click", () => actions.cancelCompaction?.(entry.compaction_id));
+      record.actions.append(cancel);
+    }
+  }
+
+  function syncCompactionRows(state) {
+    for (const entry of getCompactionRows(state).values()) {
+      let record = compactionRowNodes.get(entry.compaction_id);
+      if (!record) {
+        record = buildCompactionRow(entry);
+        compactionRowNodes.set(entry.compaction_id, record);
+        record.seq = entry.seq;
+        record.eventKey = entry.event_key;
+        insertTimeline(record.wrap, entry.seq, entry.event_key);
+        updateCompactionRow(record, entry);
+        afterRender();
+        continue;
+      }
+      // 重建后锚点前移（前置页补到了 started）：移除并按新锚点重插。
+      if (record.seq !== entry.seq || record.eventKey !== entry.event_key) {
+        if (record.eventKey != null) messageNodes.delete(record.eventKey);
+        record.wrap.remove();
+        timelineSeqs.delete(record.wrap);
+        record.seq = entry.seq;
+        record.eventKey = entry.event_key;
+        insertTimeline(record.wrap, entry.seq, entry.event_key);
+      }
+      updateCompactionRow(record, entry);
+    }
+    // state 层已移除的 id（重建后不存在）：同步移除对应 DOM 行。
+    for (const [id, record] of compactionRowNodes) {
+      if (!getCompactionRows(state).has(id)) {
+        record.wrap.remove();
+        if (record.eventKey != null) messageNodes.delete(record.eventKey);
+        timelineSeqs.delete(record.wrap);
+        compactionRowNodes.delete(id);
+      }
+    }
+  }
+
+  // ---- 上下文圆环（Task 11）：每次 render 同步 ------------------------------
+  // 活性依赖 run 状态与压缩状态，不只随 context 事件变化，因此不被
+  // revisions.context 门控；压缩状态行仍由 revisions.context 驱动。
+  function syncContext(state) {
+    contextRing.setUsage(getContextUsage(state));
+    const run = getActiveRun(state);
+    const compaction = getCompaction(state);
+    const active =
+      Boolean(run && isRunActive(run)) ||
+      Boolean(compaction && COMPACTION_ACTIVE_STATES.has(compaction.state));
+    contextRing.setActive(active);
+  }
+
   function render(state, actionBag = {}) {
     actions = actionBag;
     currentState = state;
@@ -1731,6 +1877,11 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     syncDecisions(state);
     syncErrors(state);
     syncGaps(state);
+    syncContext(state);
+    if (rendered.context !== state.revisions.context) {
+      rendered.context = state.revisions.context;
+      syncCompactionRows(state);
+    }
     syncQueue(state);
     syncComposer(state);
   }
