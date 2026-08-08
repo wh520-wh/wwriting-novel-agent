@@ -415,3 +415,85 @@ test("固定常量：SEGMENT_MAX_BYTES / SEGMENT_MAX_RECORDS / INDEX_STRIDE", ()
   assert.equal(SEGMENT_MAX_RECORDS, 25_000);
   assert.equal(INDEX_STRIDE, 256);
 });
+
+// ---------------------------------------------------------------------------
+// Task 5：顺序流式导出（streamAll）与共享 manifest 的 generation 轮转
+// ---------------------------------------------------------------------------
+
+test("Task 5 streamAll：顺序 yield 健康记录，坏段缺口经 gaps 单独报告且不 yield", async (t) => {
+  const root = await makeRoot(t, "export-streamall");
+  const storeRoot = path.join(root, "events");
+  const store = makeStore(storeRoot);
+  await store.load();
+  await store.append(events(1, 12)); // 3 个 segment：1-4 / 5-8 / 9-12
+
+  // 手工向中间 segment 注入非法行并删除索引 → load 隔离为 gap [5,8]
+  const middle = path.join(storeRoot, "00000002.jsonl");
+  const lines = (await fs.readFile(middle, "utf8")).split("\n");
+  lines.splice(1, 0, "{broken json");
+  await fs.writeFile(middle, lines.join("\n"), "utf8");
+  await fs.rm(path.join(storeRoot, "00000002.index.json"), { force: true });
+
+  const reloaded = makeStore(storeRoot);
+  await reloaded.load();
+  const yielded = [];
+  for await (const record of reloaded.streamAll()) yielded.push(record);
+  assert.deepEqual(
+    yielded.map((r) => r.seq),
+    [1, 2, 3, 4, 9, 10, 11, 12],
+    "streamAll 必须跳过坏段、按 seq 顺序 yield 健康记录"
+  );
+  assert.deepEqual(reloaded.gaps, [{ start_seq: 5, end_seq: 8, reason: "segment_corrupt" }], "坏段范围经 gaps 单独报告");
+  assert.equal(yielded.some((r) => JSON.stringify(r).includes("broken")), false, "隔离文件原文不得被 yield");
+});
+
+test("Task 5 startGeneration 共享 manifest：双流以同一 oldGenerationId 轮转，历史归属一致", async (t) => {
+  const root = await makeRoot(t, "rotate-shared-gen");
+  const eventsRoot = path.join(root, "events");
+  const transcriptRoot = path.join(root, "transcript");
+  const manifestPath = path.join(root, "journal-manifest.json");
+  const eventsStore = createJournalSegmentStore({
+    root: eventsRoot,
+    streamName: "events",
+    manifestPath,
+    maxSegmentRecords: 4,
+    maxSegmentBytes: 512,
+    indexStride: 2
+  });
+  const transcriptStore = createJournalSegmentStore({
+    root: transcriptRoot,
+    streamName: "transcript",
+    manifestPath,
+    maxSegmentRecords: 4,
+    maxSegmentBytes: 512,
+    indexStride: 2
+  });
+  await eventsStore.load();
+  await transcriptStore.load();
+  await eventsStore.append(events(1, 5));
+  await transcriptStore.append(transcriptRecords(1, 3));
+  const oldGenerationId = eventsStore.manifest.generation_id;
+  assert.equal(transcriptStore.manifest.generation_id, oldGenerationId, "双流共享同一 generation_id");
+
+  // 双流轮转必须归属同一旧 generation（共享 manifest：第二次轮转若不固定
+  // oldGenerationId 会把新 events generation id 误记为 transcript 的旧 id）。
+  // 以 manifest 文件为真相（各自 in-memory manifest 在另一流轮转后可能滞后）。
+  const historyDir = path.join(root, "cleared-history", "ts");
+  const r1 = await eventsStore.startGeneration({ historyDir, reason: "user_clear", oldGenerationId });
+  const r2 = await transcriptStore.startGeneration({ historyDir, reason: "user_clear", oldGenerationId });
+  assert.equal(r1.old_generation_id, oldGenerationId);
+  assert.equal(r2.old_generation_id, oldGenerationId);
+  const manifestOnDisk = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+  assert.equal(manifestOnDisk.generations.length, 2, "manifest 记录两条旧 generation");
+  assert.equal(manifestOnDisk.generations[0].generation_id, oldGenerationId);
+  assert.equal(manifestOnDisk.generations[1].generation_id, oldGenerationId, "transcript 轮转不得误用新 events generation id");
+  assert.notEqual(manifestOnDisk.generation_id, oldGenerationId, "当前 generation 必须是新 id");
+  assert.equal(await pathExists(path.join(historyDir, `${oldGenerationId}-events`)), true, "旧 events 段移入历史目录");
+  assert.equal(await pathExists(path.join(historyDir, `${oldGenerationId}-transcript`)), true, "旧 transcript 段移入历史目录");
+
+  // 新 generation 从空开始，两流可立即写入（不复用旧 seq）
+  await eventsStore.append(events(1, 2));
+  assert.deepEqual((await eventsStore.readTail({ limit: 10 })).events.map((e) => e.seq), [1, 2]);
+  await transcriptStore.append(transcriptRecords(1, 1));
+  assert.deepEqual((await transcriptStore.readTail({ limit: 10 })).events.map((r) => r.transcript_seq), [1]);
+});

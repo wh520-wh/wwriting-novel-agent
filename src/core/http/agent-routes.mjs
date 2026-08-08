@@ -9,7 +9,9 @@
 //   POST /api/agent/run/:runId/stop       { projectRoot }       -> { ok, run_id, cancelled }
 //   POST /api/agent/run/:runId/retry      { projectRoot }       -> { ok, run_id, input_id, retried }
 //   POST /api/agent/decision/:decisionId  { projectRoot, choice } -> { ok, decision_id, granted }
-//   GET  /api/agent/snapshot?projectRoot&afterSeq&limit          -> { ok, session, events }
+//   GET  /api/agent/snapshot?projectRoot&afterSeq&beforeSeq&tail&limit -> { ok, session, events, gaps, has_more }
+//   POST /api/agent/history/export       { projectRoot } -> NDJSON 下载（text/plain + attachment）
+//   POST /api/agent/history/clear        { projectRoot, confirm_irreversible } -> { ok, session_id, status, generation_id }
 //   GET  /api/project/events?projectRoot  （SSE：轮询 journal，逐条推送事件）
 //
 // 运行中 submit 返回 HTTP 200 + status:"queued"（FIFO 队列，同一 run_id）；
@@ -116,15 +118,80 @@ export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPoll
       return { ok: true, decision_id: result.decision_id, granted: result.granted };
     },
 
-    // 快照：{ session, events } 是 AgentSurface 的唯一实时数据源。
+    // 快照：{ session, events, gaps, has_more } 是 AgentSurface 的唯一实时数据源。
+    // Task 5 双向分页：tail=true → 最新尾部页；beforeSeq → 该 seq 之前的旧页；
+    // 缺省 → afterSeq 增量拉取（afterSeq=0 只表示从头读取，旧客户端兼容）。
     "GET /api/agent/snapshot": async ({ query }) => {
       const projectRoot = await resolveScope({}, query);
       const afterSeq = Number.isFinite(Number(query.afterSeq)) ? Math.max(0, Number(query.afterSeq)) : 0;
+      const beforeSeqParam = Number(query.beforeSeq);
+      const beforeSeq = Number.isFinite(beforeSeqParam) && beforeSeqParam > 0 ? beforeSeqParam : null;
+      const tail = query.tail === "true" || query.tail === "1";
       const limit = Number.isFinite(Number(query.limit))
         ? Math.min(SNAPSHOT_LIMIT_MAX, Math.max(1, Number(query.limit)))
         : 100;
-      const { session, events } = await agent.snapshot({ projectRoot, afterSeq, limit });
-      return { ok: true, session, events };
+      const { session, events, gaps, has_more } = await agent.snapshot({
+        projectRoot,
+        afterSeq,
+        beforeSeq,
+        tail,
+        limit
+      });
+      return { ok: true, session, events, gaps, has_more };
+    },
+
+    // 历史导出（NDJSON 下载）：只读动作，不追加 Journal 事件。每行
+    // { stream: "event"|"transcript"|"gap", record }；gap 行只保留损坏范围。
+    // 响应不包含 API Key/模型密钥/未脱敏 provider header（runtime redactor 逐条
+    // 脱敏）；流中途失败（如段文件被外部破坏）以脱敏错误行收尾，不泄漏原始路径。
+    "POST /api/agent/history/export": async ({ body, response }) => {
+      const projectRoot = await resolveScope(body);
+      response.writeHead(200, {
+        "content-type": "text/plain; charset=utf-8",
+        "content-disposition": 'attachment; filename="agent-history.ndjson"',
+        "cache-control": "no-store"
+      });
+      try {
+        for await (const line of agent.exportHistory({ projectRoot })) {
+          if (response.destroyed || response.writableEnded) return;
+          response.write(`${JSON.stringify(line)}\n`);
+        }
+        if (!response.writableEnded) response.end();
+      } catch (error) {
+        if (!response.writableEnded && !response.destroyed) {
+          response.write(
+            `${JSON.stringify({
+              stream: "error",
+              record: { code: safePublicErrorCode(error), message: publicErrorMessage(error) }
+            })}\n`
+          );
+          response.end();
+        }
+      }
+    },
+
+    // 不可逆清空：仅当 session idle 且确认 confirm_irreversible:true。活动 Run →
+    // 409 history_busy；缺少确认 → 400 confirmation_required（busy 校验先于确认）。
+    "POST /api/agent/history/clear": async ({ body }) => {
+      const projectRoot = await resolveScope(body);
+      const confirmIrreversible = body?.confirm_irreversible === true;
+      try {
+        const result = await agent.clearHistory({ projectRoot, confirmIrreversible });
+        return {
+          ok: true,
+          session_id: result.session_id,
+          status: result.status,
+          generation_id: result.generation_id
+        };
+      } catch (error) {
+        if (error?.code === "history_busy") {
+          throw new HttpError(409, "history_busy", "Agent 正在运行，无法清空历史。");
+        }
+        if (error?.code === "confirmation_required") {
+          throw new HttpError(400, "confirmation_required", "清空历史不可逆，必须显式确认。");
+        }
+        throw error;
+      }
     },
 
     // SSE 端点（Task 9 接线后成为唯一 Agent 实时流）：轮询 journal 快照，

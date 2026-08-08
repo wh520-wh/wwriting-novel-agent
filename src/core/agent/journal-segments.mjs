@@ -770,10 +770,16 @@ export function createJournalSegmentStore({
   // 字段存在）。把当前 segments 目录移动到 historyDir 下（保留可读历史），manifest
   // 记录旧 generation 的位置与可读范围，随后重置为新 generation（新 segments 从空
   // 开始、不复用旧 seq/事件 id）。
-  async function startGeneration({ historyDir, reason = "user_clear" } = {}) {
+  //
+  // oldGenerationId：events/transcript 两流共享同一个 manifest 文件，clear-history
+  // 需要把两流的旧数据归属到同一个旧 generation id。第二次轮转若不固定该 id，
+  // 会读到第一次轮转刚写入的新 generation id，把 transcript 历史误记到不存在的
+  // 新 generation 名下。Task 5 调用方（journal.clearHistory）先取 manifest 的当前
+  // generation_id 再传给两次轮转；缺省（不传）时保持旧行为（用 manifest 当前 id）。
+  async function startGeneration({ historyDir, reason = "user_clear", oldGenerationId = null } = {}) {
     await loadIfNeeded();
     const current = manifest ?? (await ensureManifest());
-    const oldId = current.generation_id;
+    const oldId = oldGenerationId ?? current.generation_id;
     const dirName = `${oldId}-${streamName}`;
     const target = path.join(historyDir, dirName);
     await ensureDir(path.dirname(target));

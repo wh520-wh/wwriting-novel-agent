@@ -6,6 +6,7 @@
 // stop 取消 Run 与排队输入、retry 同一可恢复 Run、decide 决策、snapshot 分页、
 // /api/project/events SSE 推送，以及错误码 → HTTP 状态映射。
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { createRouter } from "../../src/core/http/router.mjs";
@@ -374,4 +375,286 @@ test("原始 Node 文件错误不回传响应正文（统一错误脱敏契约�
   assert.equal(data.code, "INTERNAL_ERROR");
   assert.match(data.message, /无法读取|请检查|重试/u);
   assert.doesNotMatch(JSON.stringify(data), /ENOENT|node:fs|at\s+\w+|[A-Z]:\\.*userData/iu);
+});
+
+// ---------------------------------------------------------------------------
+// Task 5：尾部分页（tail/beforeSeq）、历史导出与不可逆清空
+// ---------------------------------------------------------------------------
+
+// 直接向 segment store 写合法事件（session_created + history_compacted），快速
+// 构造 500+ 事件的 journal——避免逐 Run 推进模型循环（history_compacted 在
+// reducer 中无副作用，不累积 queued inputs，也不会产生活动 Run）。
+async function seedJournalEvents(agentRoot, projectRoot, { count = 500, sessionId = "seed-session" } = {}) {
+  const eventsDir = path.join(agentRoot, "segments", "events");
+  await fs.mkdir(eventsDir, { recursive: true });
+  const at = "2026-01-01T00:00:00.000Z";
+  const record = (seq) => ({
+    schema_version: 2,
+    seq,
+    event_id: `seed-${seq}`,
+    session_id: sessionId,
+    run_id: null,
+    project_root: projectRoot,
+    at,
+    type: seq === 1 ? "session_created" : "history_compacted",
+    payload: seq === 1 ? {} : { reason: "seed", compacted_at: at, message_count: 1 }
+  });
+  const lines = Array.from({ length: count }, (_, i) => JSON.stringify(record(i + 1)));
+  await fs.writeFile(path.join(eventsDir, "00000001.jsonl"), `${lines.join("\n")}\n`, "utf8");
+}
+
+// 构造带中间坏段的 journal：seg1=[1..4]、seg2=[5..8]+非法行（坏段）、seg3=[9..12]。
+async function seedCorruptJournal(agentRoot, projectRoot) {
+  const eventsDir = path.join(agentRoot, "segments", "events");
+  await fs.mkdir(eventsDir, { recursive: true });
+  const at = "2026-01-01T00:00:00.000Z";
+  const record = (seq) => ({
+    schema_version: 2,
+    seq,
+    event_id: `gap-${seq}`,
+    session_id: "gap-session",
+    run_id: null,
+    project_root: projectRoot,
+    at,
+    type: seq === 1 ? "session_created" : "history_compacted",
+    payload: seq === 1 ? {} : { reason: "seed", compacted_at: at, message_count: 1 }
+  });
+  const segment = (id, from, to, extra = "") => {
+    const lines = Array.from({ length: to - from + 1 }, (_, i) => JSON.stringify(record(from + i)));
+    return `${lines.join("\n")}${extra ? `\n${extra}` : ""}\n`;
+  };
+  await fs.writeFile(path.join(eventsDir, "00000001.jsonl"), segment(1, 1, 4), "utf8");
+  await fs.writeFile(path.join(eventsDir, "00000002.jsonl"), segment(2, 5, 8, "{broken json"), "utf8");
+  await fs.writeFile(path.join(eventsDir, "00000003.jsonl"), segment(3, 9, 12), "utf8");
+}
+
+test("Task 5 snapshot beforeSeq 分页：返回最近旧页（401–500、has_more、gaps）", async (t) => {
+  const s = await setupServer(t);
+  await seedJournalEvents(s.h.agentRoot, s.h.projectRoot, { count: 500 });
+  await s.h.agent.open({ projectRoot: s.h.projectRoot });
+
+  const page = await s.h.agent.snapshot({ projectRoot: s.h.projectRoot, beforeSeq: 501, limit: 100 });
+  assert.equal(page.events.length, 100);
+  assert.equal(page.events[0].seq, 401);
+  assert.equal(page.events.at(-1).seq, 500);
+  assert.equal(page.has_more, true);
+  assert.deepEqual(page.gaps, []);
+  assert.equal(page.session.session_id, "seed-session");
+  assert.equal(page.session.status, "idle");
+  assert.equal(page.session.last_seq, 500);
+
+  // tail 页：最新 limit 条
+  const tail = await s.h.agent.snapshot({ projectRoot: s.h.projectRoot, tail: true, limit: 3 });
+  assert.deepEqual(tail.events.map((e) => e.seq), [498, 499, 500]);
+  assert.equal(tail.has_more, true, "tail 页之前还有更旧事件");
+
+  // afterSeq=0 只表示从头读取（旧客户端兼容）：从 seq 1 起
+  const fromStart = await s.h.agent.snapshot({ projectRoot: s.h.projectRoot, afterSeq: 0, limit: 5 });
+  assert.deepEqual(fromStart.events.map((e) => e.seq), [1, 2, 3, 4, 5]);
+  assert.equal(fromStart.has_more, true);
+
+  // HTTP 形状：beforeSeq 查询参数
+  const res = await s.get(
+    `/api/agent/snapshot?projectRoot=${encodeURIComponent(s.h.projectRoot)}&beforeSeq=501&limit=100`
+  );
+  assert.equal(res.res.status, 200);
+  assert.equal(res.data.ok, true);
+  assert.equal(res.data.events.length, 100);
+  assert.equal(res.data.events[0].seq, 401);
+  assert.equal(res.data.events.at(-1).seq, 500);
+  assert.equal(res.data.has_more, true);
+  assert.deepEqual(res.data.gaps, []);
+  assert.equal(res.data.session.session_id, "seed-session");
+});
+
+test("Task 5 clearHistory 守卫：活动 Run → history_busy；空闲未确认 → confirmation_required", async (t) => {
+  const s = await setupServer(t, {
+    gatewayScript: [
+      async () => {
+        await sleep(600);
+        return { text: "慢答复" };
+      }
+    ],
+    gatewayDelayMs: 0
+  });
+  await seedJournalEvents(s.h.agentRoot, s.h.projectRoot, { count: 500 });
+  await s.h.agent.open({ projectRoot: s.h.projectRoot });
+
+  // 空闲且未确认 → 区别于 history_busy 的 code
+  await assert.rejects(
+    s.h.agent.clearHistory({ projectRoot: s.h.projectRoot }),
+    (error) => error.code === "confirmation_required"
+  );
+
+  // 活动 Run 且未确认 → history_busy（brief Step 1：busy 校验先于确认校验）
+  const created = await s.h.agent.submit({ projectRoot: s.h.projectRoot, text: "慢任务" });
+  assert.equal(created.queued, false);
+  await assert.rejects(
+    s.h.agent.clearHistory({ projectRoot: s.h.projectRoot }),
+    (error) => error.code === "history_busy"
+  );
+  // 活动 Run 即使带了确认也 history_busy
+  await assert.rejects(
+    s.h.agent.clearHistory({ projectRoot: s.h.projectRoot, confirmIrreversible: true }),
+    (error) => error.code === "history_busy"
+  );
+  await waitForIdle(s.h.agent, s.h.projectRoot);
+});
+
+test("Task 5 clearHistory 成功后同一实例立即可用：新 session_id、seq 从 1、旧消息不回写", async (t) => {
+  const s = await setupServer(t, { gatewayScript: [{ reply: { text: "新会话答复" }, repeat: true }] });
+  await seedJournalEvents(s.h.agentRoot, s.h.projectRoot, { count: 500 });
+  await s.h.agent.open({ projectRoot: s.h.projectRoot });
+  const old = await s.h.agent.snapshot({ projectRoot: s.h.projectRoot, tail: true, limit: 5 });
+  assert.equal(old.session.last_seq, 500);
+
+  const result = await s.h.agent.clearHistory({ projectRoot: s.h.projectRoot, confirmIrreversible: true });
+  assert.equal(typeof result.session_id, "string");
+  assert.notEqual(result.session_id, old.session.session_id, "清空后必须产生新 session_id");
+
+  // 同一 ProjectAgent 实例立即 snapshot：seq 从新 generation 的 1 开始、旧消息不回写
+  const fresh = await s.h.agent.snapshot({ projectRoot: s.h.projectRoot, afterSeq: 0, limit: 1000 });
+  assert.equal(fresh.session.session_id, result.session_id);
+  assert.equal(fresh.session.last_seq, 1, "新 session 从 seq 1 开始");
+  assert.equal(fresh.events.length, 1, "清空后只有新的 session_created");
+  assert.equal(fresh.events[0].type, "session_created");
+  assert.equal(fresh.events[0].seq, 1);
+  assert.deepEqual(fresh.gaps, []);
+
+  // 同一实例 append 可用：新 Run 从 seq 2 起、旧事件不回写
+  await s.h.agent.submit({ projectRoot: s.h.projectRoot, text: "清空后的第一条消息" });
+  await waitForIdle(s.h.agent, s.h.projectRoot);
+  const after = await s.h.agent.snapshot({ projectRoot: s.h.projectRoot, afterSeq: 0, limit: 100000 });
+  assert.ok(after.events.some((e) => e.type === "run_started"), "新 Run 事件已落盘");
+  assert.equal(after.events[0].seq, 1, "session_created 是唯一的 seq 1 事件");
+  assert.ok(
+    after.events.filter((e) => e.type !== "session_created").every((e) => e.seq >= 2),
+    "新事件从 seq 2 开始，不复用旧 seq"
+  );
+  assert.ok(after.events.every((e) => e.session_id === result.session_id));
+  assert.equal(after.events.some((e) => e.event_id === "seed-1"), false, "旧事件不得回写");
+
+  // cleared-history 落盘：clear-manifest.json 记录原因与旧 session
+  const clearedRoot = path.join(s.h.agentRoot, "cleared-history");
+  const clearedEntries = await fs.readdir(clearedRoot);
+  assert.equal(clearedEntries.length, 1);
+  const clearManifest = JSON.parse(
+    await fs.readFile(path.join(clearedRoot, clearedEntries[0], "clear-manifest.json"), "utf8")
+  );
+  assert.equal(clearManifest.reason, "user_clear");
+  assert.equal(clearManifest.old_session_id, old.session.session_id);
+
+  // 项目根数据不受影响：章节/总纲/设定/正式 checkpoint 不得被清空触碰
+  for (const name of ["OUTLINE.md", "SETTING.md", "chapters", "checkpoints", "memory", "run_log.jsonl"]) {
+    try {
+      await fs.access(path.join(s.h.projectRoot, name));
+    } catch {
+      assert.fail(`清空不得触碰项目根 ${name}`);
+    }
+  }
+});
+
+test("Task 5 HTTP：POST /api/agent/history/export 返回 NDJSON 下载且不含未脱敏 secret", async (t) => {
+  const s = await setupServer(t, {
+    gatewayScript: [{ reply: { text: "关键信息：超级机密" } }],
+    secrets: ["超级机密"]
+  });
+  await seedJournalEvents(s.h.agentRoot, s.h.projectRoot, { count: 60 });
+  await s.h.agent.open({ projectRoot: s.h.projectRoot });
+  await s.h.agent.submit({ projectRoot: s.h.projectRoot, text: "你好" });
+  await waitForIdle(s.h.agent, s.h.projectRoot);
+
+  const res = await fetch(`${s.base}/api/agent/history/export`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ projectRoot: s.h.projectRoot })
+  });
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get("content-type") ?? "", /text\/plain/u);
+  assert.match(res.headers.get("content-disposition") ?? "", /attachment/u);
+  const body = await res.text();
+  const lines = body.trim().split("\n").map((line) => JSON.parse(line));
+  assert.ok(lines.length >= 60, "导出包含 seed 事件");
+  assert.ok(lines.some((line) => line.stream === "event" && line.record?.type === "session_created"));
+  assert.ok(lines.some((line) => line.stream === "transcript" && line.record?.role === "assistant"), "导出包含 transcript 记录");
+  assert.ok(lines.every((line) => ["event", "transcript", "gap"].includes(line.stream)), "每行都是 event/transcript/gap");
+  assert.doesNotMatch(body, /超级机密/u, "导出响应不得包含未脱敏 secret");
+});
+
+test("Task 5 HTTP：export 的 gap 行保留损坏范围且不含隔离文件原文；退化 journal 可清空", async (t) => {
+  const s = await setupServer(t);
+  await seedCorruptJournal(s.h.agentRoot, s.h.projectRoot);
+  await s.h.agent.open({ projectRoot: s.h.projectRoot });
+
+  const res = await fetch(`${s.base}/api/agent/history/export`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ projectRoot: s.h.projectRoot })
+  });
+  assert.equal(res.status, 200);
+  const body = await res.text();
+  assert.doesNotMatch(body, /broken json/u, "隔离文件原文不得出现在导出中");
+  const lines = body.trim().split("\n").map((line) => JSON.parse(line));
+  const gapLines = lines.filter((line) => line.stream === "gap");
+  assert.equal(gapLines.length, 1, "坏段范围应有一条 gap 行");
+  assert.deepEqual(gapLines[0].record, {
+    stream: "events",
+    start_seq: 5,
+    end_seq: 8,
+    reason: "segment_corrupt"
+  });
+  const eventLines = lines.filter((line) => line.stream === "event");
+  assert.deepEqual(eventLines.map((line) => line.record.seq), [1, 2, 3, 4, 9, 10, 11, 12], "健康段按序导出");
+
+  // 退化（needs_history_clear）journal 可以清空，清空后不再标记退化
+  const cleared = await s.h.agent.clearHistory({ projectRoot: s.h.projectRoot, confirmIrreversible: true });
+  const fresh = await s.h.agent.snapshot({ projectRoot: s.h.projectRoot, afterSeq: 0, limit: 100 });
+  assert.equal(fresh.session.session_id, cleared.session_id);
+  assert.equal(fresh.events.length, 1);
+  assert.equal(fresh.session.needs_history_clear, undefined, "清空后不再标记 needs_history_clear");
+});
+
+test("Task 5 HTTP：POST /api/agent/history/clear 缺确认 400、活动 Run 409、成功 200", async (t) => {
+  const s = await setupServer(t, {
+    gatewayScript: [
+      async () => {
+        await sleep(600);
+        return { text: "慢答复" };
+      }
+    ],
+    gatewayDelayMs: 0
+  });
+  await seedJournalEvents(s.h.agentRoot, s.h.projectRoot, { count: 120 });
+  await s.h.agent.open({ projectRoot: s.h.projectRoot });
+
+  // 缺少 confirm_irreversible:true → 400 confirmation_required
+  const missing = await s.post("/api/agent/history/clear", { projectRoot: s.h.projectRoot });
+  assert.equal(missing.res.status, 400);
+  assert.equal(missing.data.ok, false);
+  assert.equal(missing.data.code, "confirmation_required");
+
+  // 活动 Run → 409 history_busy（即使带了 confirm）
+  const running = await s.post("/api/agent/input", { projectRoot: s.h.projectRoot, text: "慢任务" });
+  assert.equal(running.data.status, "running");
+  const busy = await s.post("/api/agent/history/clear", {
+    projectRoot: s.h.projectRoot,
+    confirm_irreversible: true
+  });
+  assert.equal(busy.res.status, 409);
+  assert.equal(busy.data.ok, false);
+  assert.equal(busy.data.code, "history_busy");
+  await waitForIdle(s.h.agent, s.h.projectRoot);
+
+  // 空闲 + confirm → 200 新 session
+  const cleared = await s.post("/api/agent/history/clear", {
+    projectRoot: s.h.projectRoot,
+    confirm_irreversible: true
+  });
+  assert.equal(cleared.res.status, 200);
+  assert.equal(cleared.data.ok, true);
+  assert.equal(typeof cleared.data.session_id, "string");
+  assert.equal(cleared.data.status, "idle");
+  const snap = await s.get(`/api/agent/snapshot?projectRoot=${encodeURIComponent(s.h.projectRoot)}&afterSeq=0&limit=100`);
+  assert.equal(snap.data.session.session_id, cleared.data.session_id);
+  assert.equal(snap.data.events.length, 1, "清空后只剩新 session_created");
 });

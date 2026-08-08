@@ -785,8 +785,11 @@ export function createAgentJournal({
   });
   const mutex = createMutex();
   // store 层 load/重建的 AbortSignal（Task 5 clear-history 等会在需要时中止后台任务；
-  // 本任务只负责把信号接进 store，保证重建可中断）。
-  const loadSignal = new AbortController();
+  // 本任务只负责把信号接进 store，保证重建可中断）。clearHistory 会中止并重建该信号。
+  let loadSignal = new AbortController();
+  // 最近一次 store.load（background 模式）启动的后台索引重建 promise；
+  // clearHistory 先中止信号再等待它收尾（当前默认 inline 模式，防御性保留）。
+  let backgroundRebuild = null;
 
   let loaded = false;
   let state = null; // reduceEvents 的结果：{ session, openToolCalls, ... }
@@ -998,8 +1001,9 @@ export function createAgentJournal({
   async function initialize() {
     if (loaded) return;
     await ensureStorage();
-    await eventsStore.load({ signal: loadSignal.signal });
-    await transcriptStore.load({ signal: loadSignal.signal });
+    const eventsInfo = await eventsStore.load({ signal: loadSignal.signal });
+    const transcriptInfo = await transcriptStore.load({ signal: loadSignal.signal });
+    backgroundRebuild = eventsInfo.rebuilding ?? transcriptInfo.rebuilding ?? null;
     await migrateLegacy();
     const gaps = eventsStore.gaps;
     const anchor = await readSessionAnchor();
@@ -1236,6 +1240,134 @@ export function createAgentJournal({
     });
   }
 
+  // -------------------------------------------------------------------------
+  // Task 5：历史导出（只读）与不可逆清空（generation 轮转）
+  // -------------------------------------------------------------------------
+
+  // manifest 的当前 generation_id 以文件为准：events/transcript 两流共享同一
+  // manifest，任一流轮转都会改写文件，但各自的内存 manifest 可能滞后（轮转后
+  // 另一流的 updateManifest 只刷新自己的副本）。读取失败回落内存值。
+  async function readCurrentGenerationId() {
+    try {
+      const raw = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+      return typeof raw?.generation_id === "string" && raw.generation_id.length > 0
+        ? raw.generation_id
+        : null;
+    } catch {
+      return eventsStore.manifest?.generation_id ?? null;
+    }
+  }
+
+  // 顺序流式导出 events + transcript 两个 store，加上各自的 gap 范围行。
+  // 只读动作：不调用 initialize()（那会追加 session_created/恢复事件），只确保
+  // store 已加载（store.load 只扫描/建索引，不追加 Journal 事件）。每行形状
+  // { stream: "event"|"transcript"|"gap", record }；gap 行只保留损坏范围
+  // （start_seq/end_seq/reason），绝不复制被隔离的坏段文件原文。redact 由调用方
+  // （runtime 持有 redactor）注入，对每条 record 做脱敏（防 API key/模型密钥/
+  // provider header 泄漏）。
+  async function* exportHistory({ redact = null } = {}) {
+    if (!eventsStore.loaded) await eventsStore.load();
+    if (!transcriptStore.loaded) await transcriptStore.load();
+    const sanitize = redact ?? ((record) => record);
+    for await (const record of eventsStore.streamAll()) {
+      yield { stream: "event", record: sanitize(record) };
+    }
+    for (const gap of eventsStore.gaps) {
+      yield {
+        stream: "gap",
+        record: { stream: "events", start_seq: gap.start_seq, end_seq: gap.end_seq, reason: gap.reason }
+      };
+    }
+    for await (const record of transcriptStore.streamAll()) {
+      yield { stream: "transcript", record: sanitize(record) };
+    }
+    for (const gap of transcriptStore.gaps) {
+      yield {
+        stream: "gap",
+        record: { stream: "transcript", start_seq: gap.start_seq, end_seq: gap.end_seq, reason: gap.reason }
+      };
+    }
+  }
+
+  // 不可逆清空：只允许 session idle 且 confirmIrreversible === true，且必须在
+  // 本实例 mutex 内执行（与 append/load 串行）。顺序：中止并等待后台索引重建 →
+  // 把两个 store 的旧 segments 轮转到 cleared-history/<timestamp>/（manifest 记录
+  // 旧 generation）→ 移走旧 session.json / active-context.json / context
+  // checkpoints/ → 写 clear-manifest.json → 清空本实例 loaded/state/
+  // projectionWriteError → 用新 generation 重新初始化（追加新 session_created）。
+  // 绝不触碰项目根下的章节/总纲/设定/WWRITING.md/正式 checkpoint（那些在项目根，
+  // 不在 agentDir 内）。
+  async function clearHistory({ confirmIrreversible = false } = {}) {
+    return mutex.run(async () => {
+      await initialize();
+      const current = state.session;
+      // busy 校验先于确认校验（brief Step 1：活动 Run 未确认也返回 history_busy）。
+      const busy = current.active_run && !TERMINAL_RUN_STATUSES.has(current.active_run.status);
+      if (busy) {
+        const error = new Error("Agent 正在运行，无法清空历史。");
+        error.code = "history_busy";
+        throw error;
+      }
+      if (confirmIrreversible !== true) {
+        const error = new Error("清空历史不可逆，必须显式确认。");
+        error.code = "confirmation_required";
+        throw error;
+      }
+      // 1. 停止并等待后台索引重建（AbortSignal 在段间中断，任务自行收尾）
+      loadSignal.abort();
+      await backgroundRebuild?.catch(() => {});
+      backgroundRebuild = null;
+      // 2. 准备 cleared-history/<timestamp>/
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const clearedDir = path.join(agentDir, "cleared-history", timestamp);
+      await ensureDir(clearedDir);
+      // 3. 在实例 mutex 内轮转两个 store：旧 segments 移入 clearedDir，manifest
+      //    记录旧 generation 的位置与可读范围。双流共享 manifest，必须固定同一
+      //    oldGenerationId（以 manifest 文件为准），否则第二次轮转的 in-memory
+      //    manifest 会拿到第一次轮转刚写入的新 generation id。
+      const oldGenerationId = (await readCurrentGenerationId()) ?? eventsStore.manifest?.generation_id ?? null;
+      await eventsStore.startGeneration({ historyDir: clearedDir, reason: "user_clear", oldGenerationId });
+      await transcriptStore.startGeneration({ historyDir: clearedDir, reason: "user_clear", oldGenerationId });
+      // 4. 移走旧 session.json / active-context.json / context checkpoints/
+      const moved = [];
+      for (const name of ["session.json", "active-context.json"]) {
+        const source = path.join(agentDir, name);
+        if (await pathExists(source)) {
+          await fs.rename(source, path.join(clearedDir, name));
+          moved.push(name);
+        }
+      }
+      if (await pathExists(checkpointsDir)) {
+        await fs.rename(checkpointsDir, path.join(clearedDir, "checkpoints"));
+        moved.push("checkpoints");
+      }
+      // 5. 写 clear-manifest.json（不可逆操作的落盘记录）
+      await writeJsonAtomic(path.join(clearedDir, "clear-manifest.json"), {
+        schema_version: 1,
+        cleared_at: new Date().toISOString(),
+        reason: "user_clear",
+        old_session_id: current.session_id,
+        old_generation_id: oldGenerationId,
+        moved,
+        cleared_dir: clearedDir
+      });
+      // 6. 清空本实例状态并创建新 generation + session_created（复用同一实例的
+      //    后续 snapshot/append 立即看到新 session，绝不留旧 runtime state）
+      loaded = false;
+      state = null;
+      projectionWriteError = null;
+      loadSignal = new AbortController();
+      await initialize();
+      return {
+        session_id: state.session.session_id,
+        status: state.session.status,
+        generation_id: (await readCurrentGenerationId()) ?? eventsStore.manifest?.generation_id ?? null,
+        old_session_id: current.session_id,
+        cleared_dir: clearedDir
+      };
+    });
+  }
+
   const journal = {
     load,
     readMigration,
@@ -1250,7 +1382,9 @@ export function createAgentJournal({
     appendTranscript,
     readTranscript,
     readTranscriptAfter,
-    readTranscriptTail
+    readTranscriptTail,
+    exportHistory,
+    clearHistory
   };
   // 可观察字段：最近一次 session.json 写入失败（尽力而为语义），成功写入后为 null。
   Object.defineProperty(journal, "projection_write_error", {
@@ -1261,6 +1395,11 @@ export function createAgentJournal({
   Object.defineProperty(journal, "gaps", {
     enumerable: true,
     get: () => eventsStore.gaps
+  });
+  // 可观察字段：events 流的最后一个已落盘 seq（snapshot 计算 has_more 用）。
+  Object.defineProperty(journal, "lastSeq", {
+    enumerable: true,
+    get: () => eventsStore.lastSeq
   });
   return journal;
 }

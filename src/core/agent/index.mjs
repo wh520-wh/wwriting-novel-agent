@@ -14,6 +14,9 @@
 //   await agent.stop({ projectRoot, reason: "user_stop" });
 //   await agent.retry({ projectRoot, runId });
 //   await agent.snapshot({ projectRoot, afterSeq, limit }); // -> { session, events }
+//   // Task 5：尾部分页（tail/beforeSeq）、历史导出与不可逆清空
+//   for await (const line of agent.exportHistory({ projectRoot })); // -> { stream, record }
+//   await agent.clearHistory({ projectRoot, confirmIrreversible }); // -> { session_id, status, ... }
 import { createAgentRuntime } from "./runtime.mjs";
 
 export function createProjectAgent(dependencies = {}) {
@@ -25,6 +28,8 @@ export function createProjectAgent(dependencies = {}) {
     decide: (params) => runtime.decide(params),
     stop: (params) => runtime.stop(params),
     retry: (params) => runtime.retry(params),
-    snapshot: (params) => runtime.snapshot(params)
+    snapshot: (params) => runtime.snapshot(params),
+    exportHistory: (params) => runtime.exportHistory(params),
+    clearHistory: (params) => runtime.clearHistory(params)
   };
 }
