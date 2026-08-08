@@ -248,6 +248,10 @@ export function createAgentSurface({
     promote: (inputId) => ensureApi().promote(inputId),
     stop: (runId) => ensureApi().stop(runId),
     retry: (runId) => ensureApi().retry(runId),
+    // Task 11：压缩状态行动作按钮——重试同一 compaction_id 的新 attempt /
+    // 取消（ESC、按钮与 HTTP 都调用同一后端方法）。
+    retryCompaction: (compactionId) => ensureApi().retryCompaction(compactionId),
+    cancelCompaction: (compactionId) => ensureApi().cancelCompaction(compactionId),
     decide: (decisionId, choice) => {
       // 终态/未知/已 supersede 的 decision 保持锁定：不发出请求。
       if (!isPendingDecision(decisionId)) return;
