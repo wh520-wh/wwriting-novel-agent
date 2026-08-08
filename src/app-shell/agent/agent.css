@@ -689,34 +689,49 @@
 }
 
 /* ---- 工作组（Task 6/12）：reasoning/tool/plan 有序时间线，插入对话时间流。
-   Task 12：无框化——容器透明、无边框、无圆角、无阴影，层级只靠图标、缩进、
-   间距、字重和细时间线表达（brief Step 4 verbatim 的类名适配）。 */
+   Codex 改版：细边框圆角折叠卡片——收起一行状态+耗时，展开为明细；
+   层级由卡片承载，不再依赖左侧细时间线。 */
 .agent-work-group {
-  width: min(100%, 1040px); /* 工作组：与对话共用 1040px 主内容轴 */
-  background: transparent;
-  border: 0;
-  box-shadow: none;
-  border-radius: 0;
+  width: min(100%, 1040px); /* 保留：与对话共用 1040px 主内容轴 */
+  border: 1px solid var(--agent-line);
+  border-radius: var(--r-card);
+  background: var(--agent-panel-solid);
+  box-shadow: var(--shadow-xs);
+  overflow: hidden;
 }
 
 .agent-work-group > summary {
   cursor: pointer;
   list-style: none;
   display: flex;
-  align-items: baseline;
-  gap: 10px;
-  padding: 8px 2px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
   user-select: none;
-  transition: background 100ms ease;
-}
-
-.agent-work-group > summary:hover,
-.agent-work-group > summary:focus-visible {
-  background: var(--agent-panel-muted);
 }
 
 .agent-work-group > summary::-webkit-details-marker {
   display: none;
+}
+
+.agent-work-group[open] > summary {
+  border-bottom: 1px solid var(--agent-line-3);
+}
+
+.agent-work-group > summary::after {
+  content: "";
+  margin-left: auto;
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid var(--agent-muted);
+  border-bottom: 1.5px solid var(--agent-muted);
+  transform: rotate(45deg);
+  transition: transform 140ms ease;
+}
+
+.agent-work-group[open] > summary::after {
+  transform: rotate(225deg);
 }
 
 .agent-work-status {
@@ -737,8 +752,7 @@
   display: flex;
   flex-direction: column;
   gap: 7px;
-  padding: 2px 2px 6px;
-  border-top: 1px solid var(--agent-line-3);
+  padding: 4px 8px 8px; /* 原 border-top 由 summary 下边框承担，移除 */
 }
 
 /* 统一子项行：label / icon / path / meta 一行内换行排列，detail 与计划独占一行。
