@@ -1945,9 +1945,9 @@ test("agent.css 保留 1040px 内容列、向上菜单与工作组/动效布局"
   assert.match(
     css,
     /\.agent-work-item\s*\{[^}]*position:\s*relative[^}]*padding:\s*5px\s+0\s+5px\s+24px/u,
-    "工作子项应缩进并承载细时间线"
+    "工作子项保留缩进（左侧时间线已随 Codex 改版移除）"
   );
-  assert.match(css, /\.agent-work-item::before\s*\{[^}]*width:\s*1px[^}]*background:\s*var\(--line\)/u, "子项应有 1px 细时间线");
+  assert.doesNotMatch(css, /\.agent-work-item::before/u, "Codex 改版后工作项不得有左侧竖线");
   assert.match(
     css,
     /\.agent-work-status\s*\{[^}]*color:\s*var\(--agent-work-title-fg\)[^}]*font-weight:\s*var\(--weight-semibold\)/u,

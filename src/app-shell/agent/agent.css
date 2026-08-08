@@ -621,7 +621,6 @@
   flex-direction: column;
   gap: 8px;
   padding-top: 12px;
-  border-top: 1px solid var(--agent-line);
 }
 
 .agent-run-header {
@@ -743,7 +742,7 @@
 }
 
 /* 统一子项行：label / icon / path / meta 一行内换行排列，detail 与计划独占一行。
-   子项缩进 24px，并在左侧 8px 处画出 1px 细时间线（brief Step 4 verbatim）。 */
+   子项缩进 24px（左侧细时间线已随 Codex 改版移除）。 */
 .agent-work-item {
   position: relative;
   padding: 5px 0 5px 24px;
@@ -757,16 +756,6 @@
   border: 0;
   box-shadow: none;
   border-radius: 0;
-}
-
-.agent-work-item::before {
-  content: "";
-  position: absolute;
-  inset-inline-start: 8px;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: var(--line);
 }
 
 /* 思考/工具/计划子元素同样无框（brief Step 4 的 .agent-reasoning/.agent-tool/
@@ -1479,8 +1468,7 @@
   }
 
   .agent-activity-item,
-  .agent-queue-item,
-  .agent-run {
+  .agent-queue-item {
     border-color: var(--agent-ink);
   }
 }

@@ -5,13 +5,13 @@
 :root {
   color-scheme: light;
 
-  /* surfaces — 轻冷中性灰：主背景/左栏/输入区相邻层级只有轻微明度差，
-     不使用泛黄纸张色，不让大块纯白形成刺眼断层（Task 12 Step 5）。 */
-  --bg: #f7f8f9;
-  --rail: #f2f4f5;
+  /* surfaces — 冷调浅灰 + 白卡片：主背景/左栏/输入区相邻层级只有轻微明度差，
+     卡片（surface）可为纯白，画布（bg）保持非白冷调避免刺眼断层。 */
+  --bg: #fafbfc;
+  --rail: #f4f5f7;
   --rail-2: #e9ecee;
-  --surface: #f7f8f9;
-  --surface-2: #f4f6f7;
+  --surface: #ffffff;
+  --surface-2: #f7f8f9;
   --surface-3: #edf0f2;
 
   /* ink */
@@ -22,9 +22,9 @@
   --ghost: #b6bdb8;
 
   /* lines */
-  --line: #dce1e5;
-  --line-2: #e6e9ec;
-  --line-3: #eff1f3;
+  --line: #e4e7ea;
+  --line-2: #d9dde1;
+  --line-3: #edf0f2;
   --line-hover: #cdd4da;
   --hover: #e6e9ec;
 
@@ -57,15 +57,16 @@
   --spine-line: rgba(0, 0, 0, 0.06);      /* 会话封面书脊线 */
   --code-bg: rgba(0, 0, 0, 0.08);         /* 气泡内 code 块底 */
 
-  --shadow-xs: 0 1px 2px rgba(24, 32, 27, 0.05);
-  --shadow-sm: 0 1px 3px rgba(24, 32, 27, 0.07);
-  --shadow: 0 12px 32px -18px rgba(24, 32, 27, 0.28), 0 2px 8px -5px rgba(24, 32, 27, 0.12);
-  --shadow-pop: 0 22px 54px -24px rgba(24, 32, 27, 0.34), 0 5px 16px -9px rgba(24, 32, 27, 0.18);
+  --shadow-xs: 0 1px 2px rgb(16 24 40 / .04);
+  --shadow-sm: 0 1px 3px rgb(16 24 40 / .06), 0 1px 2px rgb(16 24 40 / .04);
+  --shadow: 0 4px 12px rgb(16 24 40 / .08);
+  --shadow-pop: 0 8px 24px rgb(16 24 40 / .12);
 
-  --r-xl: 8px;
-  --r-lg: 8px;
+  --r-sm: 6px;
   --r: 8px;
-  --r-sm: 8px;
+  --r-lg: 10px;
+  --r-xl: 12px;
+  --r-card: 12px;
 
   /* Semantic text tokens */
   --text-primary: var(--ink);       /* 关键正文、主标题 */
@@ -123,11 +124,11 @@
 :root[data-theme="dark"] {
   color-scheme: dark;
 
-  --bg: #171a18;
-  --rail: #1d211f;
+  --bg: #16181a;
+  --rail: #141618;
   --rail-2: #292e2b;
-  --surface: #202422;
-  --surface-2: #252a27;
+  --surface: #1d2023;
+  --surface-2: #202327;
   --surface-3: #2b312d;
 
   --ink: #eef2ef;
@@ -136,9 +137,9 @@
   --faint: #858f89;
   --ghost: #626b65;
 
-  --line: #343a36;
-  --line-2: #2c312e;
-  --line-3: #272c29;
+  --line: #2a2e32;
+  --line-2: #33383d;
+  --line-3: #24282c;
   --line-hover: #48514b;
   --hover: #2a302c;
 
@@ -168,10 +169,10 @@
   --spine-line: rgba(255, 255, 255, 0.08);
   --code-bg: rgba(255, 255, 255, 0.08);
 
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.42), 0 1px 1px rgba(0, 0, 0, 0.35);
-  --shadow: 0 14px 40px -18px rgba(0, 0, 0, 0.6), 0 2px 8px -4px rgba(0, 0, 0, 0.45);
-  --shadow-pop: 0 24px 70px -28px rgba(0, 0, 0, 0.7), 0 6px 18px -10px rgba(0, 0, 0, 0.5);
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / .3);
+  --shadow-sm: 0 1px 3px rgb(0 0 0 / .35);
+  --shadow: 0 4px 12px rgb(0 0 0 / .4);
+  --shadow-pop: 0 8px 24px rgb(0 0 0 / .5);
 }
 
 

@@ -26,3 +26,13 @@ test("基线保留：agent.css 无 raw hex、内容列 1040px", () => {
   assert.ok(!/#[0-9a-fA-F]{3,8}\b/u.test(css.replace(/var\([^)]*\)/gu, "")));
   assert.match(css, /var\(--content-column\)/u);
 });
+
+test("Codex 基线：运行区无横杠、工作项无左侧竖线", () => {
+  const css = read("src/app-shell/agent/agent.css");
+  assert.ok(!/\.agent-run\s*\{[^}]*border-top/u.test(css), "agent-run 横杠必须移除");
+  assert.ok(!/\.agent-work-item::before/u.test(css), "工作项左侧竖线必须移除");
+});
+
+test("Codex 基线：styles.css 提供 --r-card 12px", () => {
+  assert.match(read("src/app-shell/styles.css"), /--r-card:\s*12px/u);
+});
