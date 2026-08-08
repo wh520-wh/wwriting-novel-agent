@@ -5,7 +5,10 @@
 //   - Run 完成后不再有第二个状态横幅；停止不产生重复的已停止横幅；
 //   - 终态活动折叠在 details 内（native details/summary），无手动编辑入口。
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { after, before, test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 class TextNode {
   constructor(text) {
@@ -347,4 +350,61 @@ test("重放快照后工作组按时间线落位：最终回复位于 work group
   assert.ok(group._parent === assistant._parent, "工作组与最终回复同属时间线");
   const index = (el) => el._parent.children.indexOf(el);
   assert.ok(index(group) < index(assistant), "最终回复位于 work group 之后");
+});
+
+// ---------------------------------------------------------------------------
+// Task 1 复现夹具：真实事件链经生产入口回放（openProject → snapshot → 逐条 SSE）。
+// 只通过 createAgentSurface().openProject() 与 applyEvent() 驱动，不直接调用
+// insertTimeline()。夹具见 tests/fixtures/agent-ui/*.json（计划 Task 1 Step 1）。
+// ---------------------------------------------------------------------------
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+
+async function loadAgentUiFixture(name) {
+  return JSON.parse(await fs.readFile(path.join(here, "..", "fixtures", "agent-ui", name), "utf8"));
+}
+
+// 快照只返回服务端权威会话投影；事件全部经 SSE 增量路径逐条 applyEvent，
+// 与生产「打开项目拿快照 + 长连接推送增量」一致。
+function makeFixtureApi(fixture) {
+  return {
+    openProject: async () => {},
+    submit: async () => ({ ok: true }),
+    promote: async () => ({ ok: true }),
+    stop: async () => ({ ok: true }),
+    retry: async () => ({ ok: true }),
+    decide: async () => ({ ok: true }),
+    fetchSnapshot: async ({ afterSeq }) =>
+      afterSeq === 0 ? { ok: true, session: fixture.session, events: [] } : null,
+    connectEvents: () => {},
+    destroy: () => {}
+  };
+}
+
+async function replayFixture(fixture) {
+  const root = new MockElement("div");
+  const { createAgentSurface } = await import("../../src/app-shell/agent/index.js");
+  const surface = createAgentSurface({ root, api: makeFixtureApi(fixture) });
+  await surface.openProject("D:\\novel");
+  for (const event of fixture.events) surface.applyEvent(event);
+  return { root, surface };
+}
+
+test("生产入口回放 final-answer-hidden：折叠工作组后助手最终答案正文仍存在且非空", async () => {
+  const fixture = await loadAgentUiFixture("final-answer-hidden.json");
+  const { root } = await replayFixture(fixture);
+
+  const group = root.querySelector(".agent-work-group");
+  assert.ok(group, "回放应渲染 completed 工作组");
+  assert.equal(group.open, false, "completed 工作组应自动折叠为关闭态");
+
+  const assistant = root.querySelector(".agent-message--assistant");
+  assert.ok(assistant, "折叠工作组时 .agent-message--assistant 节点仍应存在");
+  // 正文缺失缺陷复现：纯 DOM mock 不解析 innerHTML，markdown 渲染的助手正文
+  // textContent 为空 → 该断言失败（正文缺失）。Task 10 修复后必须转绿。
+  assert.match(
+    root.querySelector(".agent-message--assistant")?.textContent ?? "",
+    /默认可见的最终答案/u,
+    "助手最终答案正文不得为空，必须保持默认可见"
+  );
 });
