@@ -376,39 +376,39 @@ test("streaming/terminal 命中同一 .agent-markdown typography；无 .is-strea
 });
 
 // ===========================================================================
-// 8) 圆角契约（Task 14 Step 1）：卡片/控件圆角 ≤8px（99px/999px 圆形 pill 与头像除外）
+// 8) 圆角契约（Codex 基线）：卡片/控件圆角 ≤12px（99px/999px 圆形 pill 与头像除外）
 // ===========================================================================
-test("圆角不超过 8px：无 9–98px 卡片圆角，radius token 全部 ≤8px", () => {
+test("圆角不超过 12px：radius token 全部 ≤12px，无 13–98px 圆角", () => {
   for (const [file, src] of [["styles.css", stylesSource], ["agent.css", agentCssSource]]) {
-    const offenders = [...src.matchAll(/border-radius:\s*(9|[1-8][0-9])px/gu)].map((m) => m[0]);
-    assert.equal(offenders.length, 0, `${file} 不得出现 9–98px 圆角：${offenders.join(", ")}`);
+    const offenders = [...src.matchAll(/border-radius:\s*(1[3-9]|2[0-9]|[3-8][0-9]|9[0-8])px/gu)].map((m) => m[0]);
+    assert.equal(offenders.length, 0, `${file} 不得出现 13–98px 圆角：${offenders.join(", ")}`);
   }
-  for (const token of ["--r", "--r-sm", "--r-lg", "--r-xl"]) {
+  for (const token of ["--r", "--r-sm", "--r-lg", "--r-xl", "--r-card"]) {
     const value = rootTokens[token] ?? "";
-    assert.match(value, /^8px$/u, `${token} 应为 8px（当前 ${value}）`);
+    assert.match(value, /^\d+px$/u, `${token} 应为 px 值（当前 ${value}）`);
+    assert.ok(parseInt(value, 10) <= 12, `${token} 应 ≤12px（当前 ${value}）`);
   }
 });
 
 // ===========================================================================
-// 9) Task 12：Assistant 正文 regular；浅色主题轻冷中性灰（无纯白大块/泛黄纸色）
+// 9) Codex 基线：Assistant 正文 regular；对话画布非纯白冷调，卡片白底允许
 // ===========================================================================
-test("Task 12：Assistant 正文 regular；浅色主题轻冷中性灰、无纯白大块", () => {
+test("Codex 基线：Assistant 正文 regular；对话画布非纯白冷调，卡片白底允许", () => {
   const markdown = extractDecls(extractBlock(agentCssSource, ".agent-markdown"));
   assert.equal(markdown["font-weight"], "var(--weight-regular)", "Assistant 正文应为 regular");
 
-  // 浅色主背景/surface/rail 不得是纯白，且为冷调或中性灰（蓝 ≥ 红，排除泛黄纸色）。
-  const surfaces = [
-    ["--bg", resolveVar("--bg")],
-    ["--surface", resolveVar("--surface")],
-    ["--rail", resolveVar("--rail")]
-  ];
-  for (const [name, value] of surfaces) {
-    assert.notEqual(value, "#ffffff", `${name} 不得是纯白大块`);
-    assert.match(value, /^#[0-9a-fA-F]{6}$/u, `${name} 应是 hex primitive`);
-    const r = parseInt(value.slice(1, 3), 16);
-    const b = parseInt(value.slice(5, 7), 16);
-    assert.ok(b >= r, `${name}（${value}）应为冷调或中性灰（蓝≥红）`);
-  }
+  // 对话画布（--agent-canvas → --bg）不得纯白且为冷调/中性（蓝 ≥ 红，排除泛黄纸色）；
+  // 卡片白底（--surface=#ffffff）允许；rail 仍不得纯白。
+  const canvasDecl = [...agentCssSource.matchAll(/--agent-canvas:\s*([^;]+);/gu)][0]?.[1] ?? "";
+  assert.match(canvasDecl, /var\(--bg\)/u, "--agent-canvas 应引用 --bg");
+  const bg = resolveVar("--bg");
+  assert.notEqual(bg, "#ffffff", "对话画布（--bg）不得纯白");
+  assert.match(bg, /^#[0-9a-fA-F]{6}$/u, "--bg 应是 hex primitive");
+  const r = parseInt(bg.slice(1, 3), 16);
+  const b = parseInt(bg.slice(5, 7), 16);
+  assert.ok(b >= r, "--bg 应为冷调或中性灰（蓝≥红）");
+  const rail = resolveVar("--rail");
+  assert.notEqual(rail, "#ffffff", "--rail 不得纯白");
   // H1/H2 深色分级：同为深色 primary，不统一染 accent/green。
   assert.equal(resolveVar("--agent-heading-fg"), "#202522", "标题应为深色 primary");
   assert.notEqual(resolveVar("--agent-heading-fg"), resolveVar("--accent"), "标题不得染 accent");
