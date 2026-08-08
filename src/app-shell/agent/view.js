@@ -328,7 +328,6 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   let composerEnabled = false; // 最近一次 syncComposer 的项目可用态
   let slashMatches = [];
   let slashActiveIndex = 0;
-  let lastMessageSeq = -1;
   let followLatest = true;     // 显式 follow 状态：仅用户接近底部时跟随（滚动锁，Task 7）
   let currentState = null;     // 最近一次 render 的 state（供异步帧回调读取）
   // ---- 增量正文流（Task 步骤7）：累积文本 → Markdown，rAF 合帧节流 ----
@@ -338,10 +337,16 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   // ---- 工作组（Task 6）：reasoning/tool/plan 时间线 ------------------------------
   const workGroups = new Map();   // runId -> 工作组 DOM 记录
   const timelineSeqs = new Map(); // messages 子节点 -> seq（跨气泡/工作组排序）
+  const messageNodes = new Map(); // event_key -> 时间线节点（Task 10：稳定 key，重建/去重）
   const rows = new Map();      // activity_id -> row（合并同活动）
   const trimmedIds = new Set(); // 已按 20 行上限裁剪的活动 id（不再重建）
   const decisionCards = new Map(); // decision_id -> card（diff 更新，保留 extreme 输入）
   const pendingSubmissions = []; // 仅保留仍在途的即时消息；终态立即移出，避免会话内累积
+  // ---- 前置分页（Task 10）：滚动到顶加载更早历史，锚点不跳动 ----
+  let loadingEarlier = false;      // 与 index.js 双保险的防重复标记
+  let earlierAnchor = null;        // { oldHeight, oldTop }：前置插入前记录
+  let historyGapErrorNode = null;  // 加载失败的一次性可重试提示
+  let historyGapErrorSeq = null;
   const rendered = {
     messages: -1, run: -1, queue: -1, decisions: -1, errors: -1,
     runId: null, runStatus: null
@@ -360,10 +365,11 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     for (const record of workGroups.values()) clearWorkGroupTimers(record);
     workGroups.clear();
     // 活动行已插入 messages 统一时间线：先移除 rows 中仍挂着的节点，
-    // 再整体清空 messages 与 seq 映射，最后清空旧 .agent-activities host。
+    // 再整体清空 messages 与 seq/key 映射，最后清空旧 .agent-activities host。
     for (const row of rows.values()) row.wrap.remove();
     messages.replaceChildren();
     timelineSeqs.clear();
+    messageNodes.clear();
     runHeader.replaceChildren();
     decisionsSlot.replaceChildren();
     errorsSlot.replaceChildren();
@@ -381,7 +387,9 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     composerOptions = null;
     controlsSignature = "";
     closeSlashMenu();
-    lastMessageSeq = -1;
+    loadingEarlier = false;
+    earlierAnchor = null;
+    if (historyGapErrorNode) { historyGapErrorNode.remove(); historyGapErrorNode = null; historyGapErrorSeq = null; }
     rendered.messages = rendered.run = rendered.queue = -1;
     rendered.decisions = rendered.errors = -1;
     rendered.runId = null;
@@ -395,6 +403,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     for (const record of workGroups.values()) clearWorkGroupTimers(record);
     workGroups.clear();
     timelineSeqs.clear();
+    messageNodes.clear();
     surface.remove();
   }
 
@@ -419,9 +428,62 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     if (followLatest) scrollToBottom();
   }
 
+  // ---- 前置分页（Task 10 Step 4）：距顶部 ≤240px 且有更早历史时加载前置页 ----
+  const EARLIER_SCROLL_THRESHOLD = 240;
+  function maybeLoadEarlier() {
+    if (loadingEarlier) return;
+    if (!currentState?.hasEarlier) return;
+    const minSeq = currentState.minSeq;
+    if (minSeq == null) return;
+    if (Number(conv.scrollTop ?? 0) > EARLIER_SCROLL_THRESHOLD) return;
+    loadingEarlier = true; // 防重复：请求结束后由 index.js 调 setLoadingEarlier(false) 恢复
+    actions.loadEarlier?.(minSeq);
+  }
+
+  // 前置插入前记录 oldHeight/oldTop；插入完成后按 newHeight-oldHeight+oldTop
+  // 恢复 scrollTop，保证原消息锚点不跳动。
+  function prepareEarlierInsert() {
+    earlierAnchor = { oldHeight: Number(conv.scrollHeight ?? 0), oldTop: Number(conv.scrollTop ?? 0) };
+  }
+  function restoreScrollAnchor() {
+    if (!earlierAnchor) return;
+    const newHeight = Number(conv.scrollHeight ?? 0);
+    const added = newHeight - earlierAnchor.oldHeight;
+    if (added >= 0) conv.scrollTop = added + earlierAnchor.oldTop;
+    earlierAnchor = null;
+  }
+
+  // 前置页加载失败：只显示一次可重试的历史缺口提示，不清空当前消息。
+  function showHistoryLoadError(beforeSeq) {
+    if (historyGapErrorNode) return;
+    historyGapErrorSeq = beforeSeq;
+    historyGapErrorNode = doc.createElement("div");
+    historyGapErrorNode.className = "agent-history-gap agent-history-gap--error";
+    historyGapErrorNode.dataset.testid = "agent-history-gap-error";
+    const text = doc.createElement("span");
+    text.textContent = "此处有一段历史不可读";
+    const retry = doc.createElement("button");
+    retry.type = "button";
+    retry.dataset.testid = "agent-history-gap-retry";
+    retry.textContent = "重试";
+    retry.addEventListener("click", () => {
+      actions.loadEarlier?.(historyGapErrorSeq);
+    });
+    historyGapErrorNode.append(text, retry);
+    insertTimeline(historyGapErrorNode, beforeSeq, null);
+  }
+  function clearHistoryLoadError() {
+    if (!historyGapErrorNode) return;
+    historyGapErrorNode.remove();
+    timelineSeqs.delete(historyGapErrorNode);
+    historyGapErrorNode = null;
+    historyGapErrorSeq = null;
+  }
+
   conv.addEventListener("scroll", () => {
     followLatest = distanceFromBottom(conv) <= SCROLL_THRESHOLD;
     latestButton.hidden = followLatest;
+    maybeLoadEarlier();
   });
 
   // ---- 外部链接：交给系统默认浏览器（Task 8 Step 4）---------------------------
@@ -476,20 +538,36 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     pendingSubmissions.splice(index, 1);
   }
 
-  // 时间线插入：气泡与工作组共享 messages 容器，按事件 seq 落位，保证
-  // 「最终回复位于对应 work group 之后」（快照重放路径同样成立）。
-  function insertTimeline(node, seq) {
+  // 时间线插入：气泡、活动行与工作组共享 messages 容器，按 (seq, event_key)
+  // 稳定排序落位（Task 10：同时支持前置与后置；相同 seq 按 event key 字典序）。
+  // eventKey 不为 null 时做稳定 key 去重，并给节点打上 data-event-key/data-seq。
+  function insertTimeline(node, seq, eventKey = null) {
+    if (eventKey != null) {
+      if (messageNodes.has(eventKey)) return; // 重建/重复页：不重复插入
+      messageNodes.set(eventKey, node);
+      node.dataset.eventKey = eventKey;
+    }
+    if (seq != null) node.dataset.seq = String(seq);
     if (seq == null) {
       messages.append(node);
+      timelineSeqs.set(node, seq);
       return;
     }
     const children = messages.children;
     let index = children.length;
     for (let i = children.length - 1; i >= 0; i -= 1) {
       const childSeq = timelineSeqs.get(children[i]);
-      if (childSeq != null && childSeq <= seq) {
+      if (childSeq == null) continue; // 无 seq 节点（流式气泡等）固定靠后
+      if (childSeq < seq) {
         index = i + 1;
         break;
+      }
+      if (childSeq === seq) {
+        const childKey = children[i].dataset?.eventKey ?? "";
+        if (childKey <= (eventKey ?? "")) {
+          index = i + 1;
+          break;
+        }
       }
       index = i;
     }
@@ -509,15 +587,15 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   function syncMessages(state) {
     if (rendered.messages === state.revisions.messages) return;
     for (const entry of state.conversation) {
-      if (entry.seq != null && entry.seq <= lastMessageSeq) continue;
+      const eventKey = entry.event_key ?? null;
+      if (eventKey != null && messageNodes.has(eventKey)) continue; // 已渲染（重建去重）
       if (entry.role === "user") {
         reconcilePendingSubmission(entry);
-        insertTimeline(createMessageBubble("user", entry.text), entry.seq);
+        insertTimeline(createMessageBubble("user", entry.text), entry.seq, eventKey);
       } else if (typeof entry.text === "string" && entry.text.length > 0) {
         // 助手正文走 Markdown 渲染（与流式气泡同一口径，增量/终态一致）。
-        insertTimeline(createMessageBubble("assistant", entry.text, { markdown: true }), entry.seq);
+        insertTimeline(createMessageBubble("assistant", entry.text, { markdown: true }), entry.seq, eventKey);
       }
-      if (entry.seq != null) lastMessageSeq = entry.seq;
     }
     rendered.messages = state.revisions.messages;
     afterRender();
@@ -681,6 +759,11 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     return item.text;
   }
 
+  // 工作组的稳定时间线 key：runId + 首次事件 seq（跨重建稳定；firstSeq 前移时重插）。
+  function workGroupKey(group) {
+    return `work:${group.id}:${group.firstSeq}`;
+  }
+
   function createWorkGroup(group) {
     const details = doc.createElement("details");
     details.className = "agent-work-group";
@@ -695,7 +778,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     const itemsEl = doc.createElement("div");
     itemsEl.className = "agent-work-items";
     details.append(summary, itemsEl);
-    insertTimeline(details, group.firstSeq);
+    insertTimeline(details, group.firstSeq, workGroupKey(group));
     const record = {
       groupId: group.id,
       details,
@@ -704,7 +787,9 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       itemsEl,
       rows: new Map(),       // itemId -> row
       userToggled: false,    // 用户手动折叠后，投影的 expanded 不再覆盖
-      durationTimer: null
+      durationTimer: null,
+      groupSeq: group.firstSeq,
+      groupKey: workGroupKey(group)
     };
     // toggle 事件只负责立即重应用动效（按当前展开态），不再用它判定「用户手动切换」：
     // Chromium 会在 <details open> 插入文档时异步补发一个 toggle 事件（实测 trusted），
@@ -984,12 +1069,24 @@ export function createAgentView({ root, document: doc = globalThis.document, req
         record = createWorkGroup(group);
         changed = true;
       }
+      // 重建后组的 firstSeq 前移（前置页补齐了组的首事件）：重插 details 定位。
+      if (record.groupSeq !== group.firstSeq) {
+        if (record.groupKey != null) messageNodes.delete(record.groupKey);
+        record.details.remove();
+        timelineSeqs.delete(record.details);
+        record.groupSeq = group.firstSeq;
+        record.groupKey = workGroupKey(group);
+        insertTimeline(record.details, group.firstSeq, record.groupKey);
+        changed = true;
+      }
       if (updateWorkGroup(record, group, run)) changed = true;
     }
     for (const [id, record] of workGroups) {
       if (!seen.has(id)) {
         clearWorkGroupTimers(record);
         record.details.remove();
+        if (record.groupKey != null) messageNodes.delete(record.groupKey);
+        timelineSeqs.delete(record.details);
         workGroups.delete(id);
       }
     }
@@ -1209,11 +1306,18 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       if (ACTIVITY_TERMINAL_STATUSES.has(row.wrap.dataset.state)) {
         row.wrap.remove();
         timelineSeqs.delete(row.wrap);
+        if (row.eventKey != null) messageNodes.delete(row.eventKey);
         rows.delete(id);
         trimmedIds.add(id);
         return;
       }
     }
+  }
+
+  // 活动行的时间线锚点：优先 started seq（终态按开始位置落位），tombstone
+  // 阶段（started 尚未加载）回退 terminal seq，旧事件无 seq 时追加到末端。
+  function activityAnchor(activity) {
+    return activity.start_seq ?? activity.terminal_seq ?? activity.seq ?? null;
   }
 
   function syncActivities(state) {
@@ -1224,22 +1328,37 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       if (!state.activities.has(id)) {
         row.wrap.remove();
         timelineSeqs.delete(row.wrap);
+        if (row.eventKey != null) messageNodes.delete(row.eventKey);
         rows.delete(id);
       }
     }
     for (const activity of state.activities.values()) {
       if (trimmedIds.has(activity.activity_id)) continue;
+      const anchor = activityAnchor(activity);
+      const anchorKey = activity.start_event_key ?? activity.terminal_event_key ?? null;
       let row = rows.get(activity.activity_id);
       if (!row) {
         row = buildActivityRow(activity);
         rows.set(activity.activity_id, row);
+        row.seq = anchor;
+        row.eventKey = anchorKey;
         // 活动行插入 messages 同一时间线，按事件 seq 落位（完成态位于
         // Assistant 正文之前）；旧事件无 seq 时由 insertTimeline 追加到末端。
-        insertTimeline(row.wrap, activity.seq);
+        insertTimeline(row.wrap, anchor, anchorKey);
         trimRows();
         updateActivityRow(row, activity);
         afterRender();
         continue;
+      }
+      // 重建后锚点前移（tombstone → started 就位）：移除并按新锚点重插。
+      if (row.seq !== anchor || row.eventKey !== anchorKey) {
+        if (row.eventKey != null) messageNodes.delete(row.eventKey);
+        row.wrap.remove();
+        timelineSeqs.delete(row.wrap);
+        row.seq = anchor;
+        row.eventKey = anchorKey;
+        insertTimeline(row.wrap, anchor, anchorKey);
+        afterRender();
       }
       if (updateActivityRow(row, activity)) afterRender();
     }
@@ -1586,6 +1705,21 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     syncComposerControls();
   }
 
+  // ---- 历史 gap（Task 10 Step 2）：page.gaps 投影为时间线节点，不伪造消息 ----
+  function syncGaps(state) {
+    for (const gap of state.historyGaps) {
+      if (messageNodes.has(gap.event_key)) continue;
+      const node = doc.createElement("div");
+      node.className = "agent-history-gap";
+      node.dataset.testid = "agent-history-gap";
+      const text = doc.createElement("span");
+      text.className = "agent-history-gap-text";
+      text.textContent = "此处有一段历史不可读";
+      node.append(text);
+      insertTimeline(node, gap.start_seq, gap.event_key);
+    }
+  }
+
   function render(state, actionBag = {}) {
     actions = actionBag;
     currentState = state;
@@ -1596,9 +1730,24 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     syncActivities(state);
     syncDecisions(state);
     syncErrors(state);
+    syncGaps(state);
     syncQueue(state);
     syncComposer(state);
   }
 
-  return { render, reset, destroy, setComposerOptions };
+  function setLoadingEarlier(enabled) {
+    loadingEarlier = enabled === true;
+  }
+
+  return {
+    render,
+    reset,
+    destroy,
+    setComposerOptions,
+    prepareEarlierInsert,
+    restoreScrollAnchor,
+    showHistoryLoadError,
+    clearHistoryLoadError,
+    setLoadingEarlier
+  };
 }

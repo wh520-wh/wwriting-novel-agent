@@ -102,8 +102,10 @@ const EXTREME_COMMANDS =
 
 // ---------------------------------------------------------------------------
 // Task 1 复现夹具回放用的最小 DOM mock（与 thread-renderer-finish.test.mjs 同一
-// 行为：不解析 innerHTML，因此 markdown 渲染的助手正文 textContent 为空——这正
-// 是「正文缺失」缺陷的纯 DOM 复现；Task 10 修复后必须转绿）。
+// 行为）。Task 10 起 mock 解析 innerHTML（与 agent-surface.test.mjs 同口径）：
+// view.js 用 text.innerHTML = renderMarkdown(...) 写入助手正文，textContent 必须
+// 把 HTML 标签剥掉后计入，否则助手正文在断言里为空——这是「正文缺失」在纯 DOM
+// mock 下的伪缺陷，生产行为本就正确。
 // ---------------------------------------------------------------------------
 
 class TextNode {
@@ -127,6 +129,7 @@ class MockElement {
     this.children = [];
     this._parent = null;
     this._text = "";
+    this._html = "";
     this._attrs = {};
     this._listeners = new Map();
     this._value = "";
@@ -168,12 +171,27 @@ class MockElement {
   }
 
   get textContent() {
-    return this._text + this.children
-      .map((c) => (typeof c.textContent === "string" ? c.textContent : ""))
-      .join("");
+    // Task 10：mock 解析 innerHTML（与 agent-surface.test.mjs 同口径）——
+    // view.js 用 text.innerHTML = renderMarkdown(...) 写入助手正文，textContent
+    // 必须把 HTML 标签剥掉后计入，否则助手正文在断言里为空（正文缺失伪缺陷）。
+    return this._text +
+      (this._html ? this._html.replace(/<[^>]*>/g, "") : "") +
+      this.children
+        .map((c) => (typeof c.textContent === "string" ? c.textContent : ""))
+        .join("");
   }
   set textContent(value) {
     this._text = String(value);
+    this._html = "";
+    this.children = [];
+  }
+
+  get innerHTML() {
+    return this._html;
+  }
+  set innerHTML(value) {
+    this._html = String(value ?? "");
+    this._text = "";
     this.children = [];
   }
 
@@ -1257,8 +1275,8 @@ function makeFixtureApi(fixture) {
     stop: async () => ({ ok: true }),
     retry: async () => ({ ok: true }),
     decide: async () => ({ ok: true }),
-    fetchSnapshot: async ({ afterSeq }) =>
-      afterSeq === 0 ? { ok: true, session: fixture.session, events: [] } : null,
+    fetchSnapshot: async ({ tail }) =>
+      tail ? { ok: true, session: fixture.session, events: [] } : null,
     connectEvents: () => {},
     destroy: () => {}
   };

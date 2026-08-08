@@ -1480,3 +1480,33 @@
     border-color: var(--agent-ink);
   }
 }
+
+/* 历史 gap（Task 10）：不可读段落的占位标记，不伪造消息内容 */
+.agent-history-gap {
+  max-width: min(100%, 1040px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0;
+  padding: 8px 14px;
+  color: var(--text-muted);
+  font-size: 13px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+}
+
+.agent-history-gap--error button {
+  margin-left: auto;
+  padding: 2px 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.agent-history-gap--error button:hover {
+  color: var(--agent-ink);
+  border-color: var(--agent-ink);
+}
