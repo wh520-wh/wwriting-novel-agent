@@ -854,6 +854,20 @@ const DATA_SOURCE = {
 // ---------------------------------------------------------------------------
 
 async function submitViaComposer(win, text) {
+  // 项目打开前 composer 是 hidden（display:none），input/send 虽在 DOM 但 rect 全零、
+  // 命中测试落在视口原点返回 <html>。先等待 composer 可见且发送可用再提交
+  // （与 verify-app-clickability 的 waitForComposerEnabled 同款护栏）。
+  await waitUntil(
+    win,
+    `(() => {
+      const c = document.querySelector('.agent-composer');
+      const i = document.querySelector('[data-testid="agent-composer-input"]');
+      const s = document.querySelector('[data-testid="agent-send"]');
+      return Boolean(c && !c.hidden && i && !i.disabled && s && !s.disabled);
+    })()`,
+    "composer 可见且发送可用",
+    15000
+  );
   const result = await win.webContents.executeJavaScript(`
     (() => {
       const input = document.querySelector('[data-testid="agent-composer-input"]');
