@@ -14,7 +14,7 @@
 // Agent 输入；其余任何斜杠前缀字符串（含 /init、/review、/write）都是普通输入。
 // 旧 decision id（已终结/已 supersede）不能应用到更新的待决动作：decide 动作
 // 只放行 reducer 中仍为 pending 的 decision_id。
-import { createState, reduceSnapshot, reduceEvent, resetState } from "./state.js";
+import { createState, reduceSnapshot, reduceEvent, resetState, TERMINAL_RUN_STATUSES } from "./state.js";
 import { createAgentView } from "./view.js";
 import { createAgentApi } from "./api.js";
 import { localSlashSection } from "./slash-commands.mjs";
@@ -37,6 +37,7 @@ export function createAgentSurface({
   let projectGeneration = 0;
   let loadingEarlier = false; // 前置分页防重复（view 侧也有同名单标记，双保险）
   let composerOptions = null; // 三控件当前选项（view 侧由 view.reset 清空）
+  let escapeLatch = null;     // ESC 去重锁：HTTP 成功只表示请求已接收，终态事件/失败才释放
 
   function normalizeComposerOptions(data) {
     const importedModels = Array.isArray(data?.models) ? data.models : [];
@@ -139,6 +140,53 @@ export function createAgentSurface({
     reduceEvent(state, event);
     view.render(state, actions);
     maybeRefreshAfterTerminal(event);
+    clearEscapeLatch(event);
+  }
+
+  // ESC 去重锁释放（Task 12）：HTTP 成功只表示「取消/停止请求已接收」，不能释放
+  // latch；只有同一 id 的终态事件到达才清除。请求失败由 handleEscape 的 catch
+  // 立即释放（允许用户重试）。终态映射：
+  //   compaction: context_compaction_cancelled/completed/failed
+  //   run:        run_cancelled/completed/failed/interrupted
+  const ESCAPE_LATCH_TERMINALS = new Map([
+    ["context_compaction_cancelled", "compaction"],
+    ["context_compaction_completed", "compaction"],
+    ["context_compaction_failed", "compaction"],
+    ["run_cancelled", "run"],
+    ["run_completed", "run"],
+    ["run_failed", "run"],
+    ["run_interrupted", "run"]
+  ]);
+  function clearEscapeLatch(event) {
+    if (!escapeLatch) return;
+    const kind = ESCAPE_LATCH_TERMINALS.get(event?.type);
+    if (!kind || kind !== escapeLatch.kind) return;
+    const id = kind === "compaction" ? event?.payload?.compaction_id : event?.run_id;
+    if (id != null && String(id) === String(escapeLatch.id)) escapeLatch = null;
+  }
+
+  // Task 12 Step 2（brief 提供代码 verbatim）：AgentSurface 唯一 ESC 出口。
+  // 一次键只执行第一项：dismissTopLayer（slash menu → composer menu → context
+  // popover）→ 压缩取消 → Run 停止。latch/cancelling/stopping 期间后续 ESC
+  // 一律吞掉，不得转而停止普通 Run。
+  function handleEscape() {
+    if (view.dismissTopLayer()) return true;
+    const compaction = state.compaction;
+    if (escapeLatch || compaction?.state === "cancelling") return true;
+    if (["started", "running"].includes(compaction?.state)) {
+      escapeLatch = { kind: "compaction", id: compaction.id };
+      Promise.resolve(ensureApi().cancelCompaction(compaction.id))
+        .catch(() => { escapeLatch = null; });
+      return true;
+    }
+    const run = state.session?.active_run;
+    if (run && !TERMINAL_RUN_STATUSES.has(run.status)) {
+      escapeLatch = { kind: "run", id: run.id };
+      Promise.resolve(ensureApi().stop(run.id))
+        .catch(() => { escapeLatch = null; });
+      return true;
+    }
+    return false;
   }
 
   // Run 终态后补一次权威快照：增量事件只带 status，不带 journal 冻结的
@@ -168,6 +216,7 @@ export function createAgentSurface({
     projectGeneration = scope.generation;
     resetState(state, { projectRoot });
     composerOptions = null;
+    escapeLatch = null; // 项目切换是硬边界：旧项目的终态事件不会到达，必须释放 latch
     view.reset();
     const t = ensureApi();
     if (typeof t.openProject === "function") await t.openProject(projectRoot);
@@ -359,10 +408,9 @@ export function createAgentSurface({
     openProject,
     applySnapshot,
     applyEvent,
+    handleEscape,
     exportHistory,
     clearHistory,
-    // Task 12 将在本 return 对象增加 handleEscape()（唯一 ESC 出口）；这里不预留
-    // 同名方法，避免与 Task 12 的实现语义冲突。
     destroy
   };
 }

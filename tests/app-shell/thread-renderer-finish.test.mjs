@@ -424,3 +424,15 @@ test("生产入口回放 final-answer-hidden：折叠工作组后助手最终答
     "助手最终答案正文不得为空，必须保持默认可见"
   );
 });
+
+test("Task 12 全中文文案：回放 Task 1 夹具，界面无 Worked for / નિર્ણ / 英文 running 文案", async () => {
+  for (const name of ["final-answer-hidden.json", "tool-before-answer.json"]) {
+    const fixture = await loadAgentUiFixture(name);
+    const { root } = await replayFixture(fixture);
+    const text = root.textContent;
+    assert.doesNotMatch(text, /Worked for/u, `${name} 不得出现英文耗时文案`);
+    assert.doesNotMatch(text, /નિર્ણ/u, `${name} 不得出现 Gujarati 乱码`);
+    assert.doesNotMatch(text, /\b(?:Running|Thinking|waiting_user|interrupting|stopping)\b/u, `${name} 状态文本应为全中文`);
+    assert.match(text, /工作中|工作了/u, `${name} 工作组状态行使用中文文案`);
+  }
+});

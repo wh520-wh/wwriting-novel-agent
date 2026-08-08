@@ -4,7 +4,8 @@
 //   - role=button / tabindex=0 / aria-describedby / aria-expanded；
 //   - 未装配（usage=null）时 popover 显示「计算中」而不是假 0，圆环无 dash；
 //   - usage 就绪后 SVG circle stroke-dasharray 由 ratio 映射（不用 canvas）；
-//   - hover/focus 打开、点击固定（data-pinned="true"）、再次点击/外部点击/ESC 关闭；
+//   - hover/focus 打开、点击固定（data-pinned="true"）、再次点击/外部点击关闭；
+//   - ESC 关闭经 surface 统一路由（dismissTopLayer → dismiss()），圆环不自挂 document keydown；
 //   - popover 内容含已用 tokens、窗口、百分比、窗口来源；
 //   - setActive 只在显式激活时加 agent-context-ring--active；reduced-motion 下不加；
 //   - popover 不改变布局高度（绝对定位，不带布局位移的 transform/opacity 过渡）。
@@ -324,14 +325,19 @@ test("popover 内部 pointerdown 不关闭", () => {
   assert.equal(popover.dataset.open, "true", "popover 内部点击保持打开");
 });
 
-test("ESC 关闭已固定 popover", () => {
-  const { root } = makeRing();
+test("ESC 经统一路由关闭（Task 12）：圆环不挂 document-level keydown，dismiss() 是关闭入口", () => {
+  const { root, ring } = makeRing();
   const button = root.querySelector('[data-testid="agent-context-ring"]');
   const popover = root.querySelector('[data-testid="agent-context-popover"]');
   button._fire("click");
   assert.equal(popover.dataset.open, "true");
+  // 圆环自身不再消费 document ESC（全局路由 app.js → surface.handleEscape →
+  // dismissTopLayer → dismiss() 是唯一关闭路径），防止与全局路由重复执行。
   doc._fire("keydown", { key: "Escape", preventDefault: () => {} });
-  assert.equal(popover.dataset.open, "false", "ESC 关闭");
+  assert.equal(popover.dataset.open, "true", "圆环不自行消费 document ESC");
+  // surface 的 dismissTopLayer 调用 dismiss() 关闭并取消固定。
+  ring.dismiss();
+  assert.equal(popover.dataset.open, "false", "dismiss() 关闭 popover");
   assert.equal(button.dataset.pinned, undefined);
 });
 
