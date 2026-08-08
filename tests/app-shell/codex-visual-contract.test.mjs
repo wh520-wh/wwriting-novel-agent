@@ -59,3 +59,17 @@ test("Codex 基线：压缩行为细边框紧凑条", () => {
   assert.match(row, /border:\s*1px solid var\(--agent-line\)/u);
   assert.match(row, /border-radius:\s*var\(--r\)/u);
 });
+
+test("Codex 基线：composer 为白底细边框圆角卡片带轻阴影", () => {
+  const css = read("src/app-shell/agent/agent.css");
+  const shell = cssBlock(css, ".agent-composer-shell");
+  assert.match(shell, /border:\s*1px solid var\(--agent-line\)/u);
+  assert.match(shell, /border-radius:\s*var\(--r-card\)/u);
+  assert.match(shell, /box-shadow:\s*var\(--shadow-sm\)/u);
+});
+
+test("Codex 基线：顶栏发丝下边框、项目行圆角", () => {
+  const css = read("src/app-shell/styles.css");
+  assert.match(cssBlock(css, ".topbar"), /border-bottom:\s*1px solid var\(--line-3\)/u);
+  assert.match(cssBlock(css, ".proj"), /border-radius:\s*var\(--r\)/u);
+});

@@ -441,7 +441,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   display: grid; grid-template-columns: 18px minmax(0,1fr); gap: 8px;
   align-items: center;
   padding: 7px 38px 7px 10px;
-  border-radius: 6px;
+  border-radius: var(--r);
   transition: background 100ms ease, color 100ms ease, transform 80ms ease;
 }
 
@@ -520,7 +520,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   --window-control-space: 0px;
   padding: 10px calc(20px + var(--window-control-space)) 10px 20px;
   min-height: 40px;
-  border-bottom: 1px solid color-mix(in srgb, var(--line) 64%, transparent);
+  border-bottom: 1px solid var(--line-3);
   background: color-mix(in srgb, var(--bg) 86%, transparent);
   backdrop-filter: saturate(1.2) blur(18px);
   -webkit-app-region: no-drag;
