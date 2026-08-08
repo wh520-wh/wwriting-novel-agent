@@ -1275,13 +1275,87 @@ export function createAgentRuntime({
     });
   }
 
-  async function snapshot({ projectRoot, afterSeq = 0, limit = 100 } = {}) {
+  // 快照：{ session, events, gaps, has_more } 是 AgentSurface 的唯一实时数据源。
+  // Task 5 双向分页：
+  //   tail === true      → journal.readTail({ limit })（首次展示：尾部最新一页）
+  //   beforeSeq != null  → journal.readBefore({ beforeSeq, limit })（向上滚动旧页）
+  //   否则               → journal.readAfter({ afterSeq, limit })（增量拉取）
+  // afterSeq=0 只表示从头读取（旧客户端兼容），AgentSurface 首次打开不得用
+  // afterSeq=0 补齐所有历史（前端改用 tail/beforeSeq，Task 9/10 接线）。
+  async function snapshot({ projectRoot, afterSeq = 0, beforeSeq = null, tail = false, limit = 100 } = {}) {
     const state = ensureProject(projectRoot);
     await state.journal.load();
     const session = await state.journal.getSession();
-    const events = await state.journal.read({ afterSeq, limit });
-    return { session, events };
+    let page;
+    if (tail === true) {
+      page = await state.journal.readTail({ limit });
+    } else if (beforeSeq != null) {
+      page = await state.journal.readBefore({ beforeSeq, limit });
+    } else {
+      page = await state.journal.readAfter({ afterSeq, limit });
+    }
+    const events = page.events;
+    const lastSeq = state.journal.lastSeq;
+    let has_more;
+    if (tail === true) {
+      has_more = events.length > 0 ? events[0].seq > 1 : lastSeq > 0;
+    } else if (beforeSeq != null) {
+      has_more = events.length > 0 ? events[0].seq > 1 : beforeSeq > 1;
+    } else {
+      has_more = events.length > 0 ? events.at(-1).seq < lastSeq : lastSeq > afterSeq;
+    }
+    return { session, events, gaps: page.gaps, has_more };
   }
 
-  return { open, submit, promote, decide, stop, retry, snapshot };
+  // 历史导出（NDJSON 异步流）：只读动作，不追加 Journal 事件；由 journal 层顺序
+  // 迭代 events/transcript 两个 segment store，每行 { stream, record }；对每条
+  // record 应用 runtime 的 redactor（API key/模型密钥/provider header 脱敏）。
+  async function* exportHistory({ projectRoot } = {}) {
+    if (typeof projectRoot !== "string" || projectRoot.length === 0) {
+      throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
+    }
+    const state = ensureProject(projectRoot);
+    yield* state.journal.exportHistory({
+      redact: (record) => {
+        try {
+          return JSON.parse(redactor.redact(JSON.stringify(record)));
+        } catch {
+          return { role: record?.role ?? "note", content: "[REDACTED]" };
+        }
+      }
+    });
+  }
+
+  // 不可逆清空：只允许 session idle 且 confirmIrreversible === true（守卫在
+  // journal 内、与其 mutex 串行）；成功后清空同一 journal 实例并立即创建新
+  // generation + session_created。runtime 侧在项目互斥锁内调用，并清掉本项目的
+  // per-Run 循环状态（runId/controller/loopPromise/firstTurn/catalogCache），
+  // 保证 projects Map 里不留旧 session 的运行时状态——同一实例立即可用。
+  async function clearHistory({ projectRoot, confirmIrreversible = false } = {}) {
+    if (typeof projectRoot !== "string" || projectRoot.length === 0) {
+      throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
+    }
+    const state = ensureProject(projectRoot);
+    await state.journal.load();
+    return state.mutex.run(async () => {
+      const result = await state.journal.clearHistory({ confirmIrreversible });
+      // 清掉旧 session 的运行时残留（清空只在 idle 时放行，正常无飞行循环；
+      // 这里防御性复位，绝不把旧 generation 的高位游标/循环带到新会话）。
+      state.runId = null;
+      state.controller = null;
+      state.loopPromise = null;
+      state.firstTurn = null;
+      state.catalogCache = null;
+      state.stopReason = "user_stop";
+      return {
+        session_id: result.session_id,
+        status: result.status,
+        generation_id: result.generation_id,
+        old_session_id: result.old_session_id,
+        cleared_dir: result.cleared_dir
+      };
+    });
+  }
+
+  return { open, submit, promote, decide, stop, retry, snapshot, exportHistory, clearHistory };
 }
