@@ -197,6 +197,17 @@ refs.drawerTabs.addEventListener("click", (event) => {
 // Task 12：右侧 quick rail 已删除，章节/资料/成本入口统一经顶部「面板」按钮进入 drawer。
 refs.openDrawer?.addEventListener("click", () => openDrawerTab("chapters"));
 
+// Task 12 Step 3：app 顶层（快捷键/阅读器/设置/新建/抽屉）的 ESC 关闭保持原有
+// 优先级，返回是否已关闭某层；未关闭的 ESC 再交给 AgentSurface（压缩取消/停止）。
+function closeAppTopLayer() {
+  if (refs.shortcutsScrim.classList.contains("show")) { closeShortcuts(); return true; }
+  if (refs.readerScrim.classList.contains("show")) { closeReader(); return true; }
+  if (refs.settingsScrim.classList.contains("show")) { closeSettingsModal(); return true; }
+  if (refs.createScrim.classList.contains("show")) { closeCreateModal(); return true; }
+  if (refs.drawer.classList.contains("show")) { closeDrawer(); return true; }
+  return false;
+}
+
 if (!refs.readerClose.title) refs.readerClose.title = "关闭";
 refs.readerClose.addEventListener("click", closeReader);
 refs.readerScrim.addEventListener("click", (event) => {
@@ -243,11 +254,12 @@ document.addEventListener("keydown", (event) => {
     if (event.key === "ArrowRight") { event.preventDefault(); openAdjacentChapter(1); return; }
   }
   if (event.key === "Escape") {
-    if (refs.shortcutsScrim.classList.contains("show")) return closeShortcuts();
-    if (refs.readerScrim.classList.contains("show")) return closeReader();
-    if (refs.settingsScrim.classList.contains("show")) return closeSettingsModal();
-    if (refs.createScrim.classList.contains("show")) return closeCreateModal();
-    if (refs.drawer.classList.contains("show")) return closeDrawer();
+    // Task 12：内层（textarea 关闭 slash menu、composer 菜单 ESC 等）已消费的
+    // ESC 不得再进入全局路由，保证一次键只执行第一项。
+    if (event.defaultPrevented) return;
+    if (closeAppTopLayer()) { event.preventDefault(); return; }
+    const handled = agentSurface.handleEscape();
+    if (handled) event.preventDefault();
   }
   if (event.key === "?" && !isEditableTarget(event.target)) {
     event.preventDefault();

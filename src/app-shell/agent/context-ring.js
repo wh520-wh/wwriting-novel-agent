@@ -2,8 +2,10 @@
 //
 // 窄职责纯 DOM/可访问性模块：不读取 session/usage 状态、不订阅业务事件；surface
 // （view 经 render 循环）把最新 ContextUsage 推进 setUsage()、把运行态推进
-// setActive()，并读取 element 挂载。popover 的开关/固定/外部关闭/ESC 全部在
-// 模块内自管，只通过 onToggle/onDismiss 回调告知 surface。
+// setActive()，并读取 element 挂载。popover 的开关/固定/外部关闭（pointerdown）
+// 在模块内自管，ESC 关闭经 surface 的 dismissTopLayer() 调用 dismiss()（Task 12：
+// ESC 统一路由，模块不再挂 document-level keydown），只通过 onToggle/onDismiss
+// 回调告知 surface。
 //
 // 可访问性：按钮 role=button + tabindex=0 + aria-expanded + aria-describedby；
 // 圆环用 SVG <circle> 的 stroke-dasharray 映射 ratio（不用 canvas）。
@@ -243,15 +245,10 @@ export function createContextRing({
     // 外部点击（含 popover 自身之外的任何位置）关闭并取消固定。
     if (target == null || wrap.contains?.(target) !== true) setOpen(false);
   }
-  function handleDocKeydown(event) {
-    if (!open) return;
-    if (event?.key === "Escape") {
-      event?.preventDefault?.();
-      setOpen(false);
-    }
-  }
+  // Task 12：ESC 不再由圆环自消费 document-level keydown —— 会与全局路由
+  // （app.js → surface.handleEscape → dismissTopLayer）重复执行。关闭由
+  // dismissTopLayer 调用本模块的 dismiss() 完成（唯一路径）。
   doc.addEventListener?.("pointerdown", handleDocPointerdown, true);
-  doc.addEventListener?.("keydown", handleDocKeydown);
 
   // ---- 对外 ----------------------------------------------------------------
   function setUsage(next) {
@@ -275,7 +272,6 @@ export function createContextRing({
 
   function destroy() {
     doc.removeEventListener?.("pointerdown", handleDocPointerdown, true);
-    doc.removeEventListener?.("keydown", handleDocKeydown);
     wrap.remove();
   }
 

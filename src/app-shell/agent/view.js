@@ -690,7 +690,8 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   function runStatusText(run, state) {
     if (RUN_STATUS_TEXT[run.status]) return RUN_STATUS_TEXT[run.status];
     if (run.status === "running") return hasOpenModelTurn(state) ? "思考中" : "运行中";
-    return String(run.status);
+    // Task 12：状态文本必须来自单一 map，未知状态不得回退为英文 status code。
+    return "处理中";
   }
 
   function renderRunHeader(state) {
@@ -1504,6 +1505,24 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     }
   }
 
+  // Task 12 Step 2：可关闭顶层按固定优先级只执行第一项 —— slash menu →
+  // composer 菜单 → context popover。返回是否消费了 ESC（true=已关闭某一层）。
+  function dismissTopLayer() {
+    if (!slashMenu.hidden) {
+      closeSlashMenu();
+      return true;
+    }
+    if (composerMenus.some((control) => !control.menu.hidden)) {
+      closeComposerMenus();
+      return true;
+    }
+    if (contextRing.popover?.dataset?.open === "true") {
+      contextRing.dismiss();
+      return true;
+    }
+    return false;
+  }
+
   function openComposerMenu(control, direction = 1) {
     control.menu.hidden = false;
     control.trigger.setAttribute("aria-expanded", "true");
@@ -1789,7 +1808,8 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   }
 
   function updateCompactionRow(record, entry) {
-    const labelText = COMPACTION_ROW_LABELS[entry.state] ?? String(entry.state);
+    // Task 12：未知压缩状态回退中文文案，不回退为英文 state code。
+    const labelText = COMPACTION_ROW_LABELS[entry.state] ?? "处理中";
     if (record.label.textContent !== labelText) record.label.textContent = labelText;
     record.wrap.dataset.state = entry.state;
     // 按钮只按状态签名重建：失败 → 重试+取消；running → 取消；其余无按钮。
@@ -1899,6 +1919,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     restoreScrollAnchor,
     showHistoryLoadError,
     clearHistoryLoadError,
-    setLoadingEarlier
+    setLoadingEarlier,
+    dismissTopLayer
   };
 }

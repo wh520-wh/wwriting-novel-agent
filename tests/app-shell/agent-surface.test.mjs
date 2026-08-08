@@ -545,7 +545,9 @@ test("输入斜杠显示命令补全，可用键盘选择但不会立即提交",
   const menu = root.querySelector('[data-testid="agent-slash-menu"]');
   assert.ok(menu, "输入 / 后应出现命令菜单");
   assert.equal(menu.hidden, false);
-  assert.equal(root.querySelectorAll('[data-testid="agent-slash-option"]').length, 4, "补全应为 /init /write /model /settings 四项");
+  assert.equal(root.querySelectorAll('[data-testid="agent-slash-option"]').length, 5, "补全应为 /init /write /compact /model /settings 五项");
+  assert.ok(menu.textContent.includes("/compact"), "/compact 应在补全列表中");
+  assert.ok(menu.textContent.includes("压缩当前上下文"), "/compact 带中文标签");
 
   input.value = "/se";
   input._fire("input");
@@ -824,16 +826,16 @@ test("/settings 与 /model 精确输入：调用设置导航回调，不 POST Ag
   assert.equal(api.calls.filter((c) => c[0] === "submit").length, 0, "不得 POST Agent 输入");
 });
 
-test("/init、/review、/write 是普通 Agent 输入", async () => {
+test("/init、/review、/write、/compact 是普通 Agent 输入（/compact now 不带前缀判断）", async () => {
   const { root, api, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
   const input = root.querySelector('[data-testid="agent-composer-input"]');
-  for (const text of ["/init 了解我的项目", "/review", "/write 第三章"]) {
+  for (const text of ["/init 了解我的项目", "/review", "/write 第三章", "/compact", "/compact now"]) {
     input.value = text;
     root.querySelector('[data-testid="agent-send"]')._fire("click");
   }
   assert.deepEqual(api.calls.filter((c) => c[0] === "submit").map((c) => c[1]), [
-    "/init 了解我的项目", "/review", "/write 第三章"
+    "/init 了解我的项目", "/review", "/write 第三章", "/compact", "/compact now"
   ]);
 });
 
@@ -3219,9 +3221,17 @@ test("popover 点击固定、再次点击/外部点击/ESC 关闭", async () => 
   ring._fire("click");
   globalThis.document._fire("pointerdown", { target: root });
   assert.equal(popover.dataset.open, "false", "外部点击关闭");
+  // Task 12：ESC 经 surface 统一路由（dismissTopLayer）关闭，圆环自身不再
+  // 挂 document-level keydown，避免与全局路由重复执行。
   ring._fire("click");
-  globalThis.document._fire("keydown", { key: "Escape" });
-  assert.equal(popover.dataset.open, "false", "ESC 关闭");
+  const unwire = wireEscRoute(surface);
+  try {
+    const event = fireEsc();
+    assert.equal(popover.dataset.open, "false", "ESC 关闭（经 surface.handleEscape 统一路由）");
+    assert.equal(event.defaultPrevented, true);
+  } finally {
+    unwire();
+  }
 });
 
 test("压缩状态行：同一 compaction_id 单行顶替 开始压缩→压缩进行中→已压缩完成", async () => {
@@ -3385,4 +3395,273 @@ test("Task 11 CSS：popover 过渡、压缩行、主题 token 与 reduced-motion
   // 无框基线：消息/推理/活动容器不得出现表面底色
   assert.doesNotMatch(css, /\.agent-activity-item\s*\{[^}]*background:\s*var\(--(?:surface|accent)/u);
   assert.doesNotMatch(css, /\.agent-reasoning-(?:ticker|detail)\s*\{[^}]*background:\s*var\(--(?:surface|accent)/u);
+});
+
+// ===========================================================================
+// Task 12：统一 ESC 路由（真实 document 事件顺序契约）
+// ===========================================================================
+// app.js 的 document keydown 是 ESC 唯一入口：先关 app 顶层（drawer/reader/
+// settings/create/shortcuts），未消费时交给 agentSurface.handleEscape()。
+// 这里用与 app.js 相同的接线把 surface 挂到 mock document 上，再用真实
+// document 事件驱动，保证「一层 ESC 只执行第一项」的契约端到端成立。
+// 覆盖（brief Step 1）：
+//   - 菜单/弹层打开 + Run running → 只关闭最上层，不调用 stop；
+//   - 无弹层 + compaction running → 只调用 cancelCompaction 一次；
+//   - 无弹层 + 普通 Run running → 只调用 stop 一次；
+//   - 空闲 → 不 preventDefault、不调用 API、不 Toast；
+//   - 连按两次 ESC 只产生一个请求；请求失败或同 id 终态到达后才释放 latch。
+
+function wireEscRoute(surface) {
+  const handler = (event) => {
+    if (event?.key !== "Escape") return;
+    if (event.defaultPrevented) return; // 内层（textarea 关闭 slash menu 等）已消费
+    const handled = surface.handleEscape();
+    if (handled) event.preventDefault?.();
+  };
+  globalThis.document.addEventListener("keydown", handler);
+  return () => globalThis.document.removeEventListener("keydown", handler);
+}
+
+function fireEsc() {
+  const event = { key: "Escape", defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+  globalThis.document._fire("keydown", event);
+  return event;
+}
+
+function escCalls(api, name) {
+  return api.calls.filter((c) => c[0] === name).map((c) => c[1]);
+}
+
+test("ESC：context popover 打开 + Run running → 只关闭弹层，不调用 stop/cancelCompaction", async () => {
+  const { root, api, surface } = await makeSurface();
+  const unwire = wireEscRoute(surface);
+  try {
+    await surface.openProject("D:\\novel");
+    surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+    const ring = root.querySelector('[data-testid="agent-context-ring"]');
+    const popover = root.querySelector('[data-testid="agent-context-popover"]');
+    ring._fire("click");
+    assert.equal(popover.dataset.open, "true", "弹层已打开");
+    const event = fireEsc();
+    assert.equal(popover.dataset.open, "false", "ESC 只关闭最上层弹层");
+    assert.equal(event.defaultPrevented, true, "关闭弹层应消费 ESC");
+    assert.equal(escCalls(api, "stop").length, 0, "不得调用 stop");
+    assert.equal(escCalls(api, "cancelCompaction").length, 0, "不得调用 cancelCompaction");
+  } finally {
+    unwire();
+  }
+});
+
+test("ESC：slash menu 打开 + Run running → textarea 只关闭菜单，全局路由不再停止 Run", async () => {
+  const { root, api, surface } = await makeSurface();
+  const unwire = wireEscRoute(surface);
+  try {
+    await surface.openProject("D:\\novel");
+    surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+    const input = root.querySelector('[data-testid="agent-composer-input"]');
+    input.value = "/";
+    input._fire("input");
+    const menu = root.querySelector('[data-testid="agent-slash-menu"]');
+    assert.equal(menu.hidden, false, "slash menu 已打开");
+    // textarea 自己的 keydown：只在此处消费 ESC 并 preventDefault（事件随后冒泡到 document）
+    let prevented = false;
+    input._fire("keydown", { key: "Escape", shiftKey: false, preventDefault: () => { prevented = true; } });
+    assert.equal(prevented, true, "slash menu 打开时 textarea 消费 ESC");
+    assert.equal(menu.hidden, true, "菜单已关闭");
+    // 冒泡到 document：defaultPrevented → 全局路由不再处理 → Run 不被停止
+    globalThis.document._fire("keydown", { key: "Escape", defaultPrevented: true, preventDefault() { this.defaultPrevented = true; } });
+    assert.equal(escCalls(api, "stop").length, 0, "菜单已消费 ESC，不得再停止 Run");
+    assert.equal(escCalls(api, "cancelCompaction").length, 0);
+  } finally {
+    unwire();
+  }
+});
+
+test("ESC：composer 菜单打开 + Run running → 只关闭菜单，不调用 stop", async () => {
+  await withFetch((url) => {
+    if (url.startsWith("/api/project/events")) return { ok: true, status: 200, body: neverStream() };
+    if (url === "/api/settings/models") {
+      return jsonResponse({ ok: true, models: [modelProfile("m-1", "m-1", { display: "M1", active: true })] });
+    }
+    if (url.startsWith("/api/dashboard?")) {
+      return jsonResponse({
+        ok: true, hasProject: true, project: {}, config: {
+          effective: {
+            active_model: { provider: "x", model_name: "m-1", base_url: "https://x/v1" },
+            tool_permissions: {}, reasoning_effort: "auto"
+          }
+        }
+      });
+    }
+    if (url.startsWith("/api/agent/snapshot")) {
+      return snapshotResponse(session({ status: "running", active_run: activeRun() }));
+    }
+    return jsonResponse({ ok: true });
+  }, async (calls) => {
+    const { root, surface } = await makeSurface({ useRealTransport: true });
+    const unwire = wireEscRoute(surface);
+    try {
+      await surface.openProject("D:\\novel");
+      const trigger = root.querySelector('[data-testid="agent-model-select"]');
+      await waitUntil(() => trigger.disabled === false);
+      const menu = root.querySelector('[data-testid="agent-model-menu"]');
+      trigger._fire("click");
+      assert.equal(menu.hidden, false, "模型菜单已打开");
+      const event = fireEsc();
+      assert.equal(menu.hidden, true, "ESC 只关闭菜单");
+      assert.equal(event.defaultPrevented, true, "关闭菜单应消费 ESC");
+      const stopCalls = calls.filter((c) => String(c.url).endsWith("/run/run-1/stop") && c.options.method === "POST");
+      assert.equal(stopCalls.length, 0, "不得调用 stop");
+    } finally {
+      unwire();
+      surface.destroy();
+    }
+  });
+});
+
+test("ESC：无弹层 + compaction running（同时 Run running）→ 只 cancelCompaction 一次，不 stop", async () => {
+  const { api, surface } = await makeSurface();
+  const unwire = wireEscRoute(surface);
+  try {
+    await surface.openProject("D:\\novel");
+    surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+    surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-1", trigger: "automatic" }));
+    surface.applyEvent(ev("context_compaction_running", { compaction_id: "c-1" }));
+    const event = fireEsc();
+    assert.equal(event.defaultPrevented, true, "压缩取消请求消费 ESC");
+    assert.deepEqual(escCalls(api, "cancelCompaction"), ["c-1"], "压缩优先于普通 Run");
+    assert.equal(escCalls(api, "stop").length, 0, "压缩在途不得转而停止 Run");
+  } finally {
+    unwire();
+  }
+});
+
+test("ESC：无弹层 + 普通 Run running → 只 stop 一次", async () => {
+  const { api, surface } = await makeSurface();
+  const unwire = wireEscRoute(surface);
+  try {
+    await surface.openProject("D:\\novel");
+    surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+    const event = fireEsc();
+    assert.equal(event.defaultPrevented, true, "停止请求消费 ESC");
+    assert.deepEqual(escCalls(api, "stop"), ["run-1"]);
+    assert.equal(escCalls(api, "cancelCompaction").length, 0);
+  } finally {
+    unwire();
+  }
+});
+
+test("ESC：空闲 → 不 preventDefault、不调用 API", async () => {
+  const { api, surface } = await makeSurface();
+  const unwire = wireEscRoute(surface);
+  try {
+    await surface.openProject("D:\\novel");
+    const before = api.calls.length; // openProject 自身产生的 openProject/fetchSnapshot/connectEvents
+    const event = fireEsc();
+    assert.equal(event.defaultPrevented, false, "空闲 ESC 不 preventDefault");
+    assert.equal(api.calls.length, before, "空闲 ESC 不新增任何 API 调用");
+  } finally {
+    unwire();
+  }
+});
+
+test("ESC 去重：压缩取消在途连按两次只发一次请求；cancelling 吞掉；同 id 终态释放 latch", async () => {
+  const { api, surface } = await makeSurface();
+  const unwire = wireEscRoute(surface);
+  try {
+    await surface.openProject("D:\\novel");
+    surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-1", trigger: "automatic" }));
+    surface.applyEvent(ev("context_compaction_running", { compaction_id: "c-1" }));
+    fireEsc();
+    fireEsc();
+    assert.equal(escCalls(api, "cancelCompaction").length, 1, "连按两次只发一次取消请求");
+    // 后端确认进入 cancelling：后续 ESC 一律吞掉
+    surface.applyEvent(ev("context_compaction_cancel_requested", { compaction_id: "c-1" }));
+    fireEsc();
+    assert.equal(escCalls(api, "cancelCompaction").length, 1, "cancelling 期间 ESC 吞掉");
+    assert.equal(escCalls(api, "stop").length, 0, "cancelling 期间不得转而停止普通 Run");
+    // 同 id 终态到达 → latch 释放；此后 ESC 不再产生新请求
+    surface.applyEvent(ev("context_compaction_cancelled", { compaction_id: "c-1", cancel_reason: "user" }));
+    fireEsc();
+    assert.equal(escCalls(api, "cancelCompaction").length, 1, "终态后不再取消");
+    assert.equal(escCalls(api, "stop").length, 0);
+  } finally {
+    unwire();
+  }
+});
+
+test("ESC 去重：停止在途连按两次只发一次 stop；stopping 吞掉；同 id run 终态释放 latch", async () => {
+  const { api, surface } = await makeSurface();
+  const unwire = wireEscRoute(surface);
+  try {
+    await surface.openProject("D:\\novel");
+    surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+    fireEsc();
+    fireEsc();
+    assert.equal(escCalls(api, "stop").length, 1, "连按两次只发一次 stop");
+    // stopping 期间 ESC 吞掉，不得再次 stop
+    surface.applyEvent(ev("run_status_changed", { status: "stopping", reason: "user_stop" }));
+    fireEsc();
+    assert.equal(escCalls(api, "stop").length, 1, "stopping 期间 ESC 吞掉");
+    // 同 id run 终态 → latch 释放
+    surface.applyEvent(ev("run_cancelled", { reason: "user_stop" }));
+    fireEsc();
+    assert.equal(escCalls(api, "stop").length, 1, "终态后不再 stop");
+  } finally {
+    unwire();
+  }
+});
+
+test("ESC 去重：取消请求失败立即释放 latch，再次 ESC 可重试", async () => {
+  const { api, surface } = await makeSurface({
+    apiOverrides: {
+      cancelCompaction: async (compactionId) => {
+        api.calls.push(["cancelCompaction", compactionId]);
+        throw new Error("compaction 已结束");
+      }
+    }
+  });
+  const unwire = wireEscRoute(surface);
+  try {
+    await surface.openProject("D:\\novel");
+    surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-1", trigger: "automatic" }));
+    surface.applyEvent(ev("context_compaction_running", { compaction_id: "c-1" }));
+    fireEsc();
+    await tick();
+    fireEsc();
+    assert.equal(escCalls(api, "cancelCompaction").length, 2, "失败后 latch 释放，再次 ESC 可重试");
+  } finally {
+    unwire();
+  }
+});
+
+test("transport surface: handleEscape 的 stop/cancelCompaction 使用正确端点、作用域与 body（真实 transport）", async () => {
+  await withFetch((url) => {
+    if (url.startsWith("/api/project/events")) return { ok: true, status: 200, body: neverStream() };
+    if (url.startsWith("/api/agent/snapshot")) return snapshotResponse(session({ status: "running", active_run: activeRun() }));
+    return jsonResponse({ ok: true });
+  }, async (calls) => {
+    const { surface } = await makeSurface({ useRealTransport: true });
+    const unwire = wireEscRoute(surface);
+    try {
+      await surface.openProject("D:\\novel");
+      fireEsc();
+      await tick();
+      const stopCalls = calls.filter((c) => String(c.url).endsWith("/api/agent/run/run-1/stop"));
+      assert.equal(stopCalls.length, 1, "ESC 经真实 transport 调用 stop 端点");
+      assert.deepEqual(JSON.parse(stopCalls[0].options.body), { projectRoot: "D:\\novel" });
+      // 同 id run 终态释放 latch 后，压缩在途时 ESC 走 cancel 端点
+      surface.applyEvent(ev("run_cancelled", { reason: "user_stop" }));
+      surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-1", trigger: "automatic" }));
+      surface.applyEvent(ev("context_compaction_running", { compaction_id: "c-1" }));
+      fireEsc();
+      await tick();
+      const cancelCalls = calls.filter((c) => String(c.url).endsWith("/api/agent/compaction/c-1/cancel"));
+      assert.equal(cancelCalls.length, 1, "ESC 经真实 transport 调用 cancel 端点");
+      assert.deepEqual(JSON.parse(cancelCalls[0].options.body), { projectRoot: "D:\\novel" });
+    } finally {
+      unwire();
+      surface.destroy();
+    }
+  });
 });
