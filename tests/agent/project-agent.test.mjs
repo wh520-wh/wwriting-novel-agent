@@ -1843,3 +1843,429 @@ test("promote/stop 在 Run 终结后的竞态不悬挂（幂等拒绝或安全�
     /没有可打断的活动 Run/
   );
 });
+
+// ---------------------------------------------------------------------------
+// Task 8：上下文压缩运行时集成（自动门禁、/compact、取消/重试、重启恢复）
+// ---------------------------------------------------------------------------
+
+function validCompactionSummary() {
+  return {
+    schema_version: 1,
+    current_task: "完成第三章初稿",
+    user_confirmed_decisions: ["主角改名为林默"],
+    verified_facts: ["林默 17 岁"],
+    files_and_artifacts: ["chapters/003.md"],
+    completed_steps: ["拟定第三章大纲"],
+    pending_steps: ["写完第三章结尾"],
+    pending_decisions: ["第三章是否保留梦境场景"],
+    failures_and_recovery: [],
+    open_tool_calls: [],
+    recent_user_intent: "继续写第三章",
+    omitted_information: [],
+    reload_from_workspace: ["WWRITING.md"]
+  };
+}
+
+// 达到 256k 档发送前压缩阈值（204_800）且低于硬窗口（224_000）的待发送文本；
+// 系统层开销约 3-5k tokens，195_000 CJK 字符估算 ≈ 214k（含 1.08 安全系数）。
+const AUTO_COMPACT_INPUT = "汉".repeat(195_000);
+// 压缩后仍超过硬窗口（估算 + 32_000 输出余量 ≥ 256_000）的输入。
+const OVER_HARD_WINDOW_INPUT = "汉".repeat(240_000);
+
+// 逐轮播种 transcript（/compact 与自动压缩需要 >12 轮历史才非 noop）。
+async function seedTurns(h, count) {
+  for (let i = 0; i < count; i += 1) {
+    await h.agent.submit({ projectRoot: h.projectRoot, text: `第 ${i} 轮输入`, source: "chat" });
+    await waitForIdle(h.agent, h.projectRoot);
+  }
+}
+
+function compactionAwareEntry(compactionReply, normalReply) {
+  return (request) => {
+    if (request.metadata?.stage === "context_compaction") {
+      if (typeof compactionReply === "function") return compactionReply(request);
+      return { text: JSON.stringify(compactionReply) };
+    }
+    if (typeof normalReply === "function") return normalReply(request);
+    return { text: normalReply };
+  };
+}
+
+function compactionSummaryScript({ count = 40, compactionReply = validCompactionSummary(), normalReply = "正常回复。" } = {}) {
+  return Array.from({ length: count }, () => compactionAwareEntry(compactionReply, normalReply));
+}
+
+test("自动压缩：达到阈值先压缩（started→running→completed），成功后继续原输入并完成 Run", async (t) => {
+  const h = await openHarness(t, {
+    gatewayScript: compactionSummaryScript(),
+    gatewayDelayMs: 0
+  });
+  await seedTurns(h, 13);
+  await h.agent.submit({ projectRoot: h.projectRoot, text: AUTO_COMPACT_INPUT, source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  const compactionEvents = events.filter((event) => event.type.startsWith("context_compaction"));
+  assert.deepEqual(
+    compactionEvents.map((event) => event.type),
+    ["context_compaction_started", "context_compaction_running", "context_compaction_completed"],
+    "自动压缩事件顺序必须严格为 started → running → completed"
+  );
+  const completed = compactionEvents.at(-1);
+  assert.equal(completed.payload.trigger, "automatic");
+  assert.equal(completed.payload.attempt, 1);
+  assert.equal(completed.payload.summary_schema_version, 1);
+  assert.equal(completed.payload.error_code, null);
+  assert.equal(completed.payload.cancel_reason, null);
+  // 压缩调用形状：stream:false、无工具、metadata 固定
+  const compactionCall = h.gateway.calls.find((call) => call.request.metadata?.stage === "context_compaction");
+  assert.ok(compactionCall, "必须有一次压缩模型调用");
+  assert.equal(compactionCall.request.stream, false);
+  assert.equal(compactionCall.request.tools, undefined);
+  assert.equal(compactionCall.request.metadata.cacheable, false);
+  // 压缩成功后输入继续：普通模型调用 + input_consumed + run_completed
+  const normalCalls = h.gateway.calls.filter((call) => call.request.metadata?.stage !== "context_compaction");
+  assert.equal(normalCalls.length, 14, "13 轮播种 + 1 轮压缩后继续");
+  assert.equal(eventsOfType(events, "input_consumed").length, 14);
+  assert.equal(eventsOfType(events, "run_completed").length, 14);
+  // active context 指针切换 + checkpoint 文件落盘 + 投影
+  const session = await readSession(h.agent, h.projectRoot);
+  assert.equal(session.active_context_checkpoint_id, completed.payload.checkpoint_id, "completed 必须切换 active 指针");
+  assert.equal(session.compaction.state, "completed");
+  assert.equal(session.compaction.trigger, "automatic");
+  const checkpointFile = path.join(h.agentRoot, "checkpoints", `context-${completed.payload.checkpoint_id}.json`);
+  assert.equal(await pathExists(checkpointFile), true, "checkpoint 正式文件必须落盘");
+});
+
+test("自动压缩失败：Run 进入 waiting_user（不悬挂/不自动重启），重试成功后只继续原输入一次，cancel 后输入终态回 draft", async (t) => {
+  const script = [];
+  for (let i = 0; i < 13; i += 1) script.push(() => ({ text: `回复 ${i}` }));
+  script.push(() => {
+    const error = new Error("压缩响应不是合法 JSON");
+    error.code = "compaction_json";
+    throw error;
+  });
+  script.push(compactionAwareEntry(validCompactionSummary(), "重试后正常回复。"));
+  for (let i = 0; i < 6; i += 1) script.push(() => ({ text: "后续回复。" }));
+  const h = await openHarness(t, { gatewayScript: script, gatewayDelayMs: 0 });
+  await seedTurns(h, 13);
+  await h.agent.submit({ projectRoot: h.projectRoot, text: AUTO_COMPACT_INPUT, source: "chat" });
+  const failed = await waitFor(
+    h.agent,
+    h.projectRoot,
+    (session) => session.compaction?.state === "failed" && session.active_run?.status === "waiting_user",
+    { describe: "压缩失败" }
+  );
+  // 失败后：Run waiting_user、输入无终态、不调用普通模型
+  assert.equal(failed.session.status, "waiting_user");
+  assert.equal(failed.session.active_run.status, "waiting_user");
+  assert.ok(failed.session.active_run.active_input_id, "输入保持 pending（无终态，可重试）");
+  const beforeRetry = await readEvents(h.agent, h.projectRoot);
+  assert.equal(beforeRetry.filter((event) => event.type === "input_cancelled").length, 0, "失败不得终结输入");
+  assert.equal(beforeRetry.filter((event) => event.type === "run_cancelled").length, 0, "失败不得取消 Run");
+  assert.equal(h.gateway.calls.length, 13, "13 轮播种 + 1 次失败压缩调用（结构失败不自动重试）；失败后不调用普通模型");
+  const failedEvent = beforeRetry.find((event) => event.type === "context_compaction_failed");
+  assert.equal(failedEvent.payload.error_code, "compaction_json");
+  // 再次 open()（幂等重启路径）不得自动调用普通模型
+  await h.agent.open({ projectRoot: h.projectRoot });
+  assert.equal(h.gateway.calls.length, 13, "open() 后不自动调用普通模型");
+  // 重试：压缩成功 → 恢复 running → 只继续原输入一次 → Run 完成
+  await h.agent.retryCompaction({ projectRoot: h.projectRoot, compactionId: failedEvent.payload.compaction_id });
+  await waitForIdle(h.agent, h.projectRoot);
+  const afterRetry = await readEvents(h.agent, h.projectRoot);
+  const retryStarted = afterRetry.filter((event) => event.type === "context_compaction_started").at(-1);
+  assert.equal(retryStarted.payload.attempt, 2, "手动重试是新 attempt");
+  assert.equal(retryStarted.payload.compaction_id, failedEvent.payload.compaction_id, "重试继续同一 compaction");
+  assert.equal(afterRetry.filter((event) => event.type === "context_compaction_completed").length, 1);
+  assert.equal(eventsOfType(afterRetry, "input_consumed").length, 14, "原输入只继续一次并完成");
+  assert.equal(eventsOfType(afterRetry, "run_completed").length, 14);
+});
+
+test("自动压缩失败后取消：input_cancelled(compaction_cancelled) + run_cancelled，文本回 draft，会话 idle", async (t) => {
+  const script = [];
+  for (let i = 0; i < 13; i += 1) script.push(() => ({ text: `回复 ${i}` }));
+  script.push(() => {
+    const error = new Error("压缩响应不是合法 JSON");
+    error.code = "compaction_json";
+    throw error;
+  });
+  const h = await openHarness(t, { gatewayScript: script, gatewayDelayMs: 0 });
+  await seedTurns(h, 13);
+  await h.agent.submit({ projectRoot: h.projectRoot, text: AUTO_COMPACT_INPUT, source: "chat" });
+  await waitFor(h.agent, h.projectRoot, (session) => session.compaction?.state === "failed" && session.active_run?.status === "waiting_user", { describe: "压缩失败且 Run 收敛 waiting_user" });
+  const failedEvent = (await readEvents(h.agent, h.projectRoot)).find((event) => event.type === "context_compaction_failed");
+  await h.agent.cancelCompaction({ projectRoot: h.projectRoot, compactionId: failedEvent.payload.compaction_id });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  const cancelled = eventsOfType(events, "input_cancelled").filter(
+    (event) => event.payload.reason === "compaction_cancelled"
+  );
+  assert.equal(cancelled.length, 1, "取消必须终结该输入（reason compaction_cancelled）");
+  assert.equal(eventsOfType(events, "run_cancelled").length, 1, "Run 必须 cancelled");
+  const session = await readSession(h.agent, h.projectRoot);
+  assert.equal(session.status, "idle");
+  assert.equal(session.active_context_checkpoint_id, null, "失败/取消不得切换 active 指针");
+  assert.equal(session.compaction.state, "failed", "取消不改写失败压缩的投影（历史失败保留）");
+  assert.equal(
+    events.filter((event) => event.type === "input_queued" && event.payload.text === AUTO_COMPACT_INPUT).length,
+    1
+  );
+});
+
+test("自动压缩取消（ESC 复用 AbortController）：cancel_requested 先于 cancelled，输入取消、Run cancelled、draft 恢复", async (t) => {
+  const script = [];
+  for (let i = 0; i < 13; i += 1) script.push(() => ({ text: `回复 ${i}` }));
+  script.push((request, { signal }) =>
+    new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => {
+        reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+      }, { once: true });
+    })
+  );
+  const h = await openHarness(t, { gatewayScript: script, gatewayDelayMs: 0 });
+  await seedTurns(h, 13);
+  await h.agent.submit({ projectRoot: h.projectRoot, text: AUTO_COMPACT_INPUT, source: "chat" });
+  await waitFor(h.agent, h.projectRoot, (_session, snap) => eventsOfType(snap.events, "context_compaction_running").length > 0, { describe: "压缩进行中" });
+  const started = (await readEvents(h.agent, h.projectRoot)).find((event) => event.type === "context_compaction_started");
+  await h.agent.cancelCompaction({ projectRoot: h.projectRoot, compactionId: started.payload.compaction_id });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  const compactionEvents = events.filter((event) => event.type.startsWith("context_compaction"));
+  assert.deepEqual(
+    compactionEvents.map((event) => event.type),
+    ["context_compaction_started", "context_compaction_running", "context_compaction_cancel_requested", "context_compaction_cancelled"],
+    "running 中取消必须 cancel_requested 先于 cancelled"
+  );
+  assert.equal(compactionEvents.at(-1).payload.cancel_reason, "user_cancel");
+  const cancelled = eventsOfType(events, "input_cancelled").filter((event) => event.payload.reason === "compaction_cancelled");
+  assert.equal(cancelled.length, 1);
+  assert.equal(eventsOfType(events, "run_cancelled").length, 1);
+  const session = await readSession(h.agent, h.projectRoot);
+  assert.equal(session.status, "idle");
+  assert.equal(session.active_context_checkpoint_id, null, "取消不切换 active 指针");
+});
+
+test("自动压缩后仍超硬窗口：failRun(context_window_exceeded)，不重复压缩，输入可恢复", async (t) => {
+  const h = await openHarness(t, { gatewayScript: compactionSummaryScript(), gatewayDelayMs: 0 });
+  await seedTurns(h, 13);
+  await h.agent.submit({ projectRoot: h.projectRoot, text: OVER_HARD_WINDOW_INPUT, source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  const compactions = events.filter((event) => event.type.startsWith("context_compaction"));
+  assert.equal(compactions.length, 3, "只压缩一次（started/running/completed），不重复压缩");
+  const failed = eventsOfType(events, "run_failed");
+  assert.equal(failed.length, 1, "仍超硬窗口必须 failRun");
+  assert.equal(failed[0].payload.code, "context_window_exceeded");
+  assert.equal(eventsOfType(events, "input_cancelled").length, 0, "输入保持可恢复（未终结）");
+  const session = await readSession(h.agent, h.projectRoot);
+  assert.equal(session.active_run.status, "failed");
+  assert.equal(
+    session.active_context_checkpoint_id,
+    events.find((event) => event.type === "context_compaction_completed").payload.checkpoint_id
+  );
+});
+
+test("submit 只把精确 text === '/compact' 识别为压缩指令；'/compact now' 是普通输入", async (t) => {
+  const h = await openHarness(t, {
+    gatewayScript: [{ reply: { text: "普通回复。" } }, { reply: { text: "普通回复 2。" } }],
+    gatewayDelayMs: 0
+  });
+  // 空闲 + 无可压缩历史：直接 noop，不调用模型
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "/compact", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  let events = await readEvents(h.agent, h.projectRoot);
+  const noop = eventsOfType(events, "context_compaction_noop");
+  assert.equal(noop.length, 1, "无可压缩历史必须 noop");
+  assert.equal(noop[0].payload.trigger, "manual");
+  assert.equal(noop[0].payload.reason, "nothing_to_compact");
+  assert.equal(h.gateway.calls.length, 0, "noop 不调用模型");
+  const queued = eventsOfType(events, "input_queued");
+  assert.equal(queued[0].payload.kind, "compact", "input_queued 必须带 kind:\"compact\"");
+  // "/compact now" 是普通输入：正常模型调用
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "/compact now", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  events = await readEvents(h.agent, h.projectRoot);
+  const queuedNow = eventsOfType(events, "input_queued").at(-1);
+  assert.equal(queuedNow.payload.kind, undefined, "/compact now 不是压缩指令");
+  assert.equal(h.gateway.calls.length, 1, "/compact now 走普通模型调用");
+});
+
+test("手动 /compact：有可压缩历史时启动手动压缩（trigger manual），成功后 Run 完成", async (t) => {
+  const h = await openHarness(t, { gatewayScript: compactionSummaryScript(), gatewayDelayMs: 0 });
+  await seedTurns(h, 13);
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "/compact", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  const compactionEvents = events.filter((event) => event.type.startsWith("context_compaction"));
+  assert.deepEqual(
+    compactionEvents.map((event) => event.type),
+    ["context_compaction_started", "context_compaction_running", "context_compaction_completed"]
+  );
+  const completed = compactionEvents.at(-1);
+  assert.equal(completed.payload.trigger, "manual");
+  assert.equal(completed.payload.source_checkpoint_id, null);
+  const session = await readSession(h.agent, h.projectRoot);
+  assert.equal(session.active_context_checkpoint_id, completed.payload.checkpoint_id);
+  assert.equal(session.status, "idle");
+  // compact item 被消费
+  const compactQueued = eventsOfType(events, "input_queued").at(-1);
+  assert.equal(compactQueued.payload.kind, "compact");
+  assert.equal(eventsOfType(events, "input_consumed").length, 14, "13 轮播种 + compact item");
+});
+
+test("运行中 /compact 排队不打断当前模型/工具；重复 compact item 在安全点取消（duplicate_compact）", async (t) => {
+  const h = await openHarness(t, {
+    gatewayScript: [{ reply: { text: "第一条。" }, repeat: true }],
+    gatewayDelayMs: 60
+  });
+  const first = await h.agent.submit({ projectRoot: h.projectRoot, text: "第一条输入", source: "chat" });
+  await sleep(30);
+  // 运行中追加两个 /compact：排队，不打断
+  const c1 = await h.agent.submit({ projectRoot: h.projectRoot, text: "/compact", source: "chat" });
+  assert.equal(c1.queued, true);
+  const c2 = await h.agent.submit({ projectRoot: h.projectRoot, text: "/compact", source: "chat" });
+  assert.equal(c2.queued, true);
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  const queued = eventsOfType(events, "input_queued");
+  assert.equal(queued.filter((event) => event.payload.kind === "compact").length, 2, "两个 /compact 排队");
+  assert.equal(queued[1].payload.kind, "compact");
+  assert.equal(queued[2].payload.kind, "compact");
+  // 第二个重复 compact 在安全点被取消
+  const duplicates = eventsOfType(events, "input_cancelled").filter((event) => event.payload.reason === "duplicate_compact");
+  assert.equal(duplicates.length, 1, "后续重复 compact item 追加 input_cancelled(duplicate_compact)");
+  assert.equal(duplicates[0].payload.input_id, c2.input_id);
+  // 第一个 compact：无可压缩历史 → noop（不调用模型）
+  assert.equal(eventsOfType(events, "context_compaction_noop").length, 1);
+  // 第一条输入正常完成，未被打断
+  assert.equal(eventsOfType(events, "assistant_message_completed").length, 1);
+  assert.equal(h.gateway.calls.length, 1, "只有第一条输入的普通模型调用，压缩不调用模型");
+  assert.equal(eventsOfType(events, "run_completed").length, 1);
+  assert.equal(first.run_id, c1.run_id, "/compact 排队不创建第二个 Run");
+});
+
+test("手动 /compact 失败：compact item 无终态，Run waiting_user 保存 resume_run_status；取消后恢复 idle", async (t) => {
+  const script = [];
+  for (let i = 0; i < 13; i += 1) script.push(() => ({ text: `回复 ${i}` }));
+  script.push(() => {
+    const error = new Error("5xx");
+    error.code = "provider_transport_error";
+    error.reason = "server-retryable";
+    throw error;
+  });
+  script.push(() => {
+    const error = new Error("timeout");
+    error.code = "provider_transport_error";
+    error.reason = "timeout";
+    throw error;
+  });
+  const h = await openHarness(t, { gatewayScript: script, gatewayDelayMs: 0 });
+  await seedTurns(h, 13);
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "/compact", source: "chat" });
+  await waitFor(h.agent, h.projectRoot, (session) => session.compaction?.state === "failed" && session.active_run?.status === "waiting_user", { describe: "手动压缩失败且 Run 收敛 waiting_user" });
+  const failedSession = await readSession(h.agent, h.projectRoot);
+  assert.equal(failedSession.status, "waiting_user");
+  assert.equal(failedSession.active_run.status, "waiting_user");
+  assert.equal(h.gateway.calls.length, 13, "13 轮播种 + 手动压缩熔断（瞬时错误自动重试一次 → 2 次请求，失败调用不记录）");
+  const events = await readEvents(h.agent, h.projectRoot);
+  const failed = eventsOfType(events, "context_compaction_failed").at(-1);
+  assert.equal(failed.payload.trigger, "manual");
+  assert.equal(failed.payload.attempt, 1);
+  const compactItemId = eventsOfType(events, "input_queued").at(-1).payload.input_id;
+  assert.equal(eventsOfType(events, "input_consumed").length, 13, "compact item 未被消费");
+  assert.equal(
+    eventsOfType(events, "input_cancelled").filter((event) => event.payload.input_id === compactItemId).length,
+    0,
+    "compact item 无终态（可重试/可取消）"
+  );
+  // 取消 → input_cancelled + run_cancelled → idle（空闲发起的手动压缩）
+  await h.agent.cancelCompaction({ projectRoot: h.projectRoot, compactionId: failed.payload.compaction_id });
+  await waitForIdle(h.agent, h.projectRoot);
+  const after = await readEvents(h.agent, h.projectRoot);
+  const cancelledInputs = eventsOfType(after, "input_cancelled").filter((event) => event.payload.reason === "compaction_cancelled");
+  assert.equal(cancelledInputs.length, 1);
+  assert.equal(eventsOfType(after, "run_cancelled").length, 1);
+  const session = await readSession(h.agent, h.projectRoot);
+  assert.equal(session.status, "idle", "取消后 composer 立即可发（idle）");
+});
+
+test("重启恢复：进程在压缩 running 中重启，不自动调用普通模型；未完成 attempt 追加 cancelled(process_restarted)，Run 收敛 waiting_user", async (t) => {
+  const script = [];
+  for (let i = 0; i < 13; i += 1) script.push(() => ({ text: `回复 ${i}` }));
+  script.push((request, { signal }) =>
+    new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => {
+        reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+      }, { once: true });
+    })
+  );
+  const h = await openHarness(t, { gatewayScript: script, gatewayDelayMs: 0 });
+  await seedTurns(h, 13);
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "/compact", source: "chat" });
+  await waitFor(h.agent, h.projectRoot, (_session, snap) => eventsOfType(snap.events, "context_compaction_running").length > 0, { describe: "压缩进行中（重启前）" });
+  const started = (await readEvents(h.agent, h.projectRoot)).find((event) => event.type === "context_compaction_started");
+
+  // 模拟进程重启：同一 projectRoot/agentRoot 上创建全新 agent 实例
+  const bGateway = createMockModelGateway({ script: [], delayMs: 0 });
+  const { createProjectAgent } = await import("../../src/core/agent/index.mjs");
+  const b = createProjectAgent({
+    modelGateway: bGateway,
+    skills: h.skills,
+    agentStorageRootFor: (root) => h.store.agentRootFor(root)
+  });
+  const opened = await b.open({ projectRoot: h.projectRoot });
+  assert.equal(opened.status, "waiting_user", "重启后 Run 收敛为 waiting_user");
+  assert.equal(bGateway.calls.length, 0, "重启绝不自动调用普通模型");
+  const bEvents = await readEvents(b, h.projectRoot);
+  const restartCancelled = eventsOfType(bEvents, "context_compaction_cancelled").filter(
+    (event) => event.payload.cancel_reason === "process_restarted"
+  );
+  assert.equal(restartCancelled.length, 1, "未完成 attempt 追加 cancelled(process_restarted)");
+  assert.equal(restartCancelled[0].payload.compaction_id, started.payload.compaction_id);
+  const bSnapshot = await b.snapshot({ projectRoot: h.projectRoot, afterSeq: 0, limit: 100000 });
+  assert.equal(bSnapshot.session.compaction.state, "cancelled");
+  assert.equal(bSnapshot.session.active_run.status, "waiting_user");
+  assert.ok(bSnapshot.session.active_run.active_input_id, "输入保持 pending（等待用户 retry/cancel）");
+  // 取消收敛 → idle（composer 立即可发）
+  await b.cancelCompaction({ projectRoot: h.projectRoot, compactionId: started.payload.compaction_id });
+  const idle = await waitFor(b, h.projectRoot, (session) => session.status === "idle", { describe: "重启后取消收敛 idle" });
+  assert.equal(idle.session.compaction.state, "cancelled");
+  assert.equal(eventsOfType(idle.events, "run_cancelled").length, 1);
+});
+
+test("运行中手动 /compact 取消：input_cancelled(compaction_cancelled) + 恢复 resume_run_status(running)，Run 继续完成", async (t) => {
+  const script = [];
+  for (let i = 0; i < 13; i += 1) script.push(() => ({ text: `回复 ${i}` }));
+  script.push(async () => {
+    await sleep(120);
+    return { text: "继续输入完成。" };
+  });
+  script.push((request, { signal }) =>
+    new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => {
+        reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+      }, { once: true });
+    })
+  );
+  const h = await openHarness(t, { gatewayScript: script, gatewayDelayMs: 0 });
+  await seedTurns(h, 13);
+  // 运行中排队 /compact（不打断当前输入）
+  const first = await h.agent.submit({ projectRoot: h.projectRoot, text: "继续输入", source: "chat" });
+  await sleep(30);
+  const compact = await h.agent.submit({ projectRoot: h.projectRoot, text: "/compact", source: "chat" });
+  assert.equal(compact.queued, true);
+  // 第一个输入完成 → 安全点消费 compact → 手动压缩进入 running → ESC 取消
+  await waitFor(h.agent, h.projectRoot, (_session, snap) => eventsOfType(snap.events, "context_compaction_running").length > 0, { describe: "手动压缩进行中" });
+  const started = (await readEvents(h.agent, h.projectRoot)).find((event) => event.type === "context_compaction_started");
+  assert.equal(started.payload.trigger, "manual");
+  await h.agent.cancelCompaction({ projectRoot: h.projectRoot, compactionId: started.payload.compaction_id });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  // 取消收敛：input_cancelled(compaction_cancelled) + 恢复 resume_run_status
+  const cancelled = eventsOfType(events, "input_cancelled").filter((event) => event.payload.reason === "compaction_cancelled");
+  assert.equal(cancelled.length, 1);
+  assert.equal(cancelled[0].payload.input_id, compact.input_id);
+  assert.equal(eventsOfType(events, "run_cancelled").length, 0, "in-run 取消不得取消整个 Run");
+  assert.equal(eventsOfType(events, "run_completed").length, 14, "Run 恢复 running 后继续完成");
+  assert.equal(eventsOfType(events, "input_consumed").length, 14);
+  assert.equal(first.run_id, compact.run_id, "/compact 排队不创建第二个 Run");
+});
