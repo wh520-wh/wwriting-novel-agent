@@ -229,7 +229,10 @@ export function createAgentRuntime({
             journal,
             checkpointStore: state.checkpointStore,
             storageRoot,
-            ...params
+            ...params,
+            // 进程重启后的 retry 走协调器重建路径，entry.projectRoot 为空——
+            // 闭包默认注入本项目根，供 buildCompactionSource 解析当前 modelConfig。
+            projectRoot: params.projectRoot ?? key
           }),
         idFactory
       });
@@ -557,6 +560,18 @@ export function createAgentRuntime({
     session = null,
     projectRoot = null
   } = {}) {
+    // 进程重启后的压缩 retry：协调器 entry 无内存 modelConfig——按 projectRoot
+    // 解析当前有效配置（modelConfigOf(resolveWorkspaceConfig)），保证候选校验的
+    // configured_model_id/provider_model_id 与压缩请求的 modelConfig 始终可用。
+    let effectiveModelConfig = modelConfig;
+    if (effectiveModelConfig == null && typeof projectRoot === "string" && projectRoot.length > 0) {
+      try {
+        const project = await resolveWorkspaceConfig(projectRoot);
+        effectiveModelConfig = modelConfigOf(project);
+      } catch {
+        effectiveModelConfig = null;
+      }
+    }
     const pointer = await checkpointStore.readActive();
     let oldCheckpoint = null;
     if (pointer.checkpoint_id != null) {
@@ -568,8 +583,8 @@ export function createAgentRuntime({
     const lastTailSeq = delta.at(-1)?.transcript_seq ?? fromSeq;
     const turns = buildTurnsFromTranscript(delta);
     const window =
-      Number.isFinite(modelConfig?.effective_context_window) && modelConfig.effective_context_window > 0
-        ? modelConfig.effective_context_window
+      Number.isFinite(effectiveModelConfig?.effective_context_window) && effectiveModelConfig.effective_context_window > 0
+        ? effectiveModelConfig.effective_context_window
         : 256_000;
     const targetTokens = Math.round(window * 0.25);
     const { protected_turns, summarized_turns } = selectProtectedRecentTurns({ turns, targetTokens });
@@ -608,8 +623,8 @@ export function createAgentRuntime({
       source_checkpoint_id: pointer.checkpoint_id ?? null,
       source_seq: { start: 1, end: Math.max(journal.lastSeq ?? 0, 1) },
       source_transcript_seq: { start: 1, end: lastTailSeq },
-      configured_model_id: modelConfig?.configured_model_id ?? null,
-      provider_model_id: modelConfig?.model_name ?? null,
+      configured_model_id: effectiveModelConfig?.configured_model_id ?? null,
+      provider_model_id: effectiveModelConfig?.model_name ?? null,
       trigger,
       effective_context_window: window,
       target_tokens: targetTokens,
@@ -631,7 +646,7 @@ export function createAgentRuntime({
       open_tool_calls: openToolCalls,
       reload_from_workspace: sourceState.reload_from_workspace,
       estimated_tokens_before: estimatedTokensBefore,
-      modelConfig,
+      modelConfig: effectiveModelConfig,
       noop: false
     };
   }
@@ -1947,11 +1962,12 @@ export function createAgentRuntime({
       compactionId,
       signal: state.controller?.signal
     });
-    if (outcome.status === "completed") {
+    if (outcome.status === "completed" || outcome.status === "noop") {
       // 恢复 Run 为 running 并重启循环。手动 /compact 的 retry 成功后 compact
       // item 已达成目的（input_consumed 收敛，绝不重复启动第二次压缩）；自动压缩
       // 的 retry 成功后原 pending input 由 processInput 继续（压缩成功后预检低于
-      // 硬窗口直接发送；仍超阈值因已尝试不再重复压缩）。
+      // 硬窗口直接发送；仍超阈值因已尝试不再重复压缩）。retry 重建源后无可压缩
+      // 历史（noop）视为等价成功——输入照常继续，由 processInput 重新预检。
       await state.mutex.run(async () => {
         const s = await state.journal.getSession();
         const r = s.active_run;

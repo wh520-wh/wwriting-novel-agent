@@ -873,3 +873,184 @@ test("journal reducer：压缩事件与当前 compaction_id 不一致时拒绝",
     /compaction_id/u
   );
 });
+
+// ---------------------------------------------------------------------------
+// Task 8 fix：重启崩溃窗口（runtime open() 收敛 + retry/cancel 可用）与
+// noop→硬窗口路径（brief Step 1 case 8 覆盖 started/cancelling/failed）
+// ---------------------------------------------------------------------------
+
+import {
+  createMockModelGateway,
+  createProjectAgentHarness,
+  eventsOfType,
+  readEvents,
+  readSession,
+  waitFor,
+  waitForIdle
+} from "../helpers/project-agent-harness.mjs";
+
+// 手工构造"进程在压缩中途崩溃"的 journal（真实 journal 实例，session.json 锚点
+// 停在最后一条事件）：compactionState ∈ started/running/cancelling/failed/
+// cancelled。failed/cancelled 表示"终态事件已落盘而 Run/input 收敛未落盘"的
+// 崩溃窗口。seedTranscript 为 retry 播种 >12 轮历史（保证 retry 非 noop）。
+async function buildCrashWindowJournal(h, { compactionState, inputText = "压缩后继续的输入", seedTranscript = false } = {}) {
+  const journal = createAgentJournal({ projectRoot: h.projectRoot, storageRoot: h.agentRoot });
+  await journal.load();
+  if (seedTranscript) {
+    for (let i = 0; i < 14; i += 1) {
+      await journal.appendTranscript({ role: "user", content: `第 ${i} 轮`, input_id: `seed-${i}` });
+      await journal.appendTranscript({ role: "assistant", content: `回复 ${i}` });
+    }
+  }
+  const inputId = `crash-in-${compactionState}`;
+  const runId = `crash-run-${compactionState}`;
+  const compactionId = `crash-comp-${compactionState}`;
+  const batch = [
+    { type: "input_queued", payload: { input_id: inputId, text: inputText, source: "chat" } },
+    { type: "run_started", run_id: runId, payload: { workflow: "general", input_id: inputId } },
+    {
+      type: "context_compaction_started",
+      payload: {
+        compaction_id: compactionId,
+        trigger: "automatic",
+        attempt: 1,
+        source_checkpoint_id: null,
+        checkpoint_id: "ck-crash",
+        pending_input_id: inputId,
+        started_at: new Date().toISOString()
+      }
+    }
+  ];
+  if (compactionState !== "started") {
+    batch.push({ type: "context_compaction_running", payload: { compaction_id: compactionId, trigger: "automatic", attempt: 1 } });
+  }
+  if (compactionState === "cancelling" || compactionState === "cancelled") {
+    batch.push({ type: "context_compaction_cancel_requested", payload: { compaction_id: compactionId, trigger: "automatic", cancel_reason: "user_esc" } });
+  }
+  if (compactionState === "failed") {
+    batch.push({ type: "context_compaction_failed", payload: { compaction_id: compactionId, trigger: "automatic", attempt: 1, error_code: "compaction_json" } });
+  }
+  if (compactionState === "cancelled") {
+    batch.push({ type: "context_compaction_cancelled", payload: { compaction_id: compactionId, trigger: "automatic", attempt: 1, cancel_reason: "user_esc" } });
+  }
+  await journal.appendBatch(batch);
+  return { journal, inputId, runId, compactionId };
+}
+
+function crashWindowGatewayScript() {
+  return [
+    (request) =>
+      request.metadata?.stage === "context_compaction"
+        ? { text: JSON.stringify(validSummary()) }
+        : { text: "正常回复。" },
+    () => ({ text: "后续回复。" })
+  ];
+}
+
+test("重启恢复：压缩 started 状态崩溃 → cancelled(process_restarted) + waiting_user，不自动调用模型，cancel 收敛 idle", async (t) => {
+  const h = await createProjectAgentHarness({ gatewayScript: [], gatewayDelayMs: 0 });
+  t.after(() => h.cleanup());
+  const { compactionId } = await buildCrashWindowJournal(h, { compactionState: "started" });
+  const opened = await h.agent.open({ projectRoot: h.projectRoot });
+  assert.equal(opened.status, "waiting_user", "started 崩溃重启后收敛 waiting_user");
+  assert.equal(h.gateway.calls.length, 0, "重启绝不自动调用普通模型");
+  const events = await readEvents(h.agent, h.projectRoot);
+  const restartCancelled = eventsOfType(events, "context_compaction_cancelled").filter(
+    (event) => event.payload.cancel_reason === "process_restarted"
+  );
+  assert.equal(restartCancelled.length, 1, "未完成 attempt 追加 cancelled(process_restarted)");
+  assert.equal(restartCancelled[0].payload.compaction_id, compactionId);
+  const session = await readSession(h.agent, h.projectRoot);
+  assert.equal(session.active_run.status, "waiting_user");
+  assert.equal(session.compaction.state, "cancelled");
+  assert.ok(session.active_run.active_input_id, "输入保持 pending（等待用户 retry/cancel）");
+  // cancel 可用 → idle（composer 立即可发）
+  await h.agent.cancelCompaction({ projectRoot: h.projectRoot, compactionId });
+  await waitForIdle(h.agent, h.projectRoot);
+  assert.equal((await readSession(h.agent, h.projectRoot)).status, "idle");
+});
+
+test("重启恢复：压缩 cancelling 状态崩溃 → cancelled(process_restarted) + waiting_user，不自动调用模型，cancel 收敛 idle", async (t) => {
+  const h = await createProjectAgentHarness({ gatewayScript: [], gatewayDelayMs: 0 });
+  t.after(() => h.cleanup());
+  const { compactionId } = await buildCrashWindowJournal(h, { compactionState: "cancelling" });
+  const opened = await h.agent.open({ projectRoot: h.projectRoot });
+  assert.equal(opened.status, "waiting_user", "cancelling 崩溃重启后收敛 waiting_user");
+  assert.equal(h.gateway.calls.length, 0);
+  const events = await readEvents(h.agent, h.projectRoot);
+  const restartCancelled = eventsOfType(events, "context_compaction_cancelled").filter(
+    (event) => event.payload.cancel_reason === "process_restarted"
+  );
+  assert.equal(restartCancelled.length, 1);
+  assert.equal(restartCancelled[0].payload.compaction_id, compactionId);
+  const session = await readSession(h.agent, h.projectRoot);
+  assert.equal(session.active_run.status, "waiting_user");
+  assert.equal(session.compaction.state, "cancelled");
+  assert.ok(session.active_run.active_input_id, "输入保持 pending");
+  await h.agent.cancelCompaction({ projectRoot: h.projectRoot, compactionId });
+  await waitForIdle(h.agent, h.projectRoot);
+  assert.equal((await readSession(h.agent, h.projectRoot)).status, "idle");
+});
+
+test("重启恢复：failed 崩溃窗口（failed 已落盘、收敛未落盘）→ waiting_user，retry 可用并完成输入", async (t) => {
+  const h = await createProjectAgentHarness({ gatewayScript: crashWindowGatewayScript(), gatewayDelayMs: 0 });
+  t.after(() => h.cleanup());
+  const { compactionId } = await buildCrashWindowJournal(h, { compactionState: "failed", seedTranscript: true });
+  const opened = await h.agent.open({ projectRoot: h.projectRoot });
+  assert.equal(opened.status, "waiting_user", "failed 崩溃窗口必须收敛 waiting_user（不得 interrupted）");
+  assert.equal(h.gateway.calls.length, 0, "重启绝不自动调用普通模型");
+  const events = await readEvents(h.agent, h.projectRoot);
+  assert.equal(eventsOfType(events, "run_interrupted").length, 0, "不得保守中断");
+  assert.equal(eventsOfType(events, "context_compaction_cancelled").length, 0, "failed 已是终态，不追加 process_restarted 取消");
+  const session = await readSession(h.agent, h.projectRoot);
+  assert.equal(session.active_run.status, "waiting_user");
+  assert.equal(session.compaction.state, "failed");
+  assert.ok(session.active_run.active_input_id, "输入保持 pending");
+  // retry 可用：压缩重试成功 → 恢复 running → 输入继续 → Run 完成
+  const retried = await h.agent.retryCompaction({ projectRoot: h.projectRoot, compactionId });
+  assert.equal(retried.status, "completed", "重试必须可用（不得抛 compaction_no_run）");
+  await waitForIdle(h.agent, h.projectRoot);
+  const afterRetry = await readEvents(h.agent, h.projectRoot);
+  assert.equal(eventsOfType(afterRetry, "run_completed").length, 1, "重试后输入继续并完成 Run");
+  assert.equal(eventsOfType(afterRetry, "context_compaction_completed").length, 1);
+  assert.equal((await readSession(h.agent, h.projectRoot)).active_run.status, "completed");
+});
+
+test("重启恢复：failed 崩溃窗口 cancel 可用 → input_cancelled(compaction_cancelled) + run_cancelled → idle", async (t) => {
+  const h = await createProjectAgentHarness({ gatewayScript: [], gatewayDelayMs: 0 });
+  t.after(() => h.cleanup());
+  const { compactionId } = await buildCrashWindowJournal(h, { compactionState: "failed" });
+  const opened = await h.agent.open({ projectRoot: h.projectRoot });
+  assert.equal(opened.status, "waiting_user");
+  assert.equal(eventsOfType((await readEvents(h.agent, h.projectRoot)), "run_interrupted").length, 0);
+  await h.agent.cancelCompaction({ projectRoot: h.projectRoot, compactionId });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  assert.equal(
+    eventsOfType(events, "input_cancelled").filter((event) => event.payload.reason === "compaction_cancelled").length,
+    1,
+    "取消必须可用并终结输入"
+  );
+  assert.equal(eventsOfType(events, "run_cancelled").length, 1);
+  assert.equal((await readSession(h.agent, h.projectRoot)).status, "idle");
+});
+
+test("自动门禁：大输入 + 极小历史 → noop（不调用模型）→ 仍超硬窗口 → failRun(context_window_exceeded)", async (t) => {
+  const h = await createProjectAgentHarness({ gatewayScript: [], gatewayDelayMs: 0 });
+  t.after(() => h.cleanup());
+  await h.agent.open({ projectRoot: h.projectRoot });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "汉".repeat(240_000), source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  const compactions = events.filter((event) => event.type.startsWith("context_compaction"));
+  assert.deepEqual(
+    compactions.map((event) => event.type),
+    ["context_compaction_noop"],
+    "无可压缩历史只追加 noop，不调用模型"
+  );
+  assert.equal(h.gateway.calls.length, 0, "noop 路径零模型调用");
+  const failed = eventsOfType(events, "run_failed");
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0].payload.code, "context_window_exceeded", "仍超硬窗口必须 failRun(context_window_exceeded)");
+  assert.equal(eventsOfType(events, "input_cancelled").length, 0, "输入保持可恢复");
+});

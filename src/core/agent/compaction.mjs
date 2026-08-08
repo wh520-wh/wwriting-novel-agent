@@ -376,18 +376,8 @@ export function createCompactionCoordinator({
       projectRoot: projectRoot ?? null
     };
     compactions.set(compactionId, entry);
-    await journal.append({
-      type: "context_compaction_started",
-      payload: {
-        compaction_id: compactionId,
-        trigger: entry.trigger,
-        attempt: 1,
-        source_checkpoint_id: entry.sourceCheckpointId,
-        checkpoint_id: checkpointId,
-        pending_input_id: pendingInputId,
-        started_at: startedAt
-      }
-    });
+    // 先构建源材料做 noop 预检：无可压缩历史时"直接追加 context_compaction_noop"
+    //（brief Step 6），不产生 started/running 事件、不调用模型。
     const built = await buildInput({
       journal,
       checkpointStore,
@@ -405,6 +395,18 @@ export function createCompactionCoordinator({
       });
       return { status: "noop", compaction_id: compactionId, reason: built.reason ?? "nothing_to_compact" };
     }
+    await journal.append({
+      type: "context_compaction_started",
+      payload: {
+        compaction_id: compactionId,
+        trigger: entry.trigger,
+        attempt: 1,
+        source_checkpoint_id: entry.sourceCheckpointId,
+        checkpoint_id: checkpointId,
+        pending_input_id: pendingInputId,
+        started_at: startedAt
+      }
+    });
     entry.source = built ?? {};
     if (entry.modelConfig == null && built?.modelConfig != null) entry.modelConfig = built.modelConfig;
     const attemptPromise = runAttempt(entry, { signal });
