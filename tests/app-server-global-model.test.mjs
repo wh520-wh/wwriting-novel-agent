@@ -116,6 +116,19 @@ async function post(port, pathname, body) {
   return { status: response.status, json: await response.json() };
 }
 
+// Task 6：轮询 dashboard 直到会话列表满足条件。submit 的注册表写入在提交路径内，
+// 但列表可见性用轮询兜底时序（与 probe 的 waitFor 同款模式）。
+async function waitForDashboardSessions(port, projectRoot, predicate, { timeout = 15000 } = {}) {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    const res = await fetch(`http://127.0.0.1:${port}/api/dashboard?projectRoot=${encodeURIComponent(projectRoot)}`);
+    const data = await res.json();
+    if (predicate(data.sessions)) return data;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("Timed out waiting for dashboard sessions");
+}
+
 const SAMPLE_MODEL = {
   provider: "openai-compatible",
   model_name: "deepseek-chat",
@@ -567,6 +580,31 @@ test("普通目录模型切换后 project.yaml 不存在，设置只落应用私
     const store = createWorkspaceStore({ stateRoot });
     const settings = await store.loadSettings(projectRoot);
     assert.equal(settings.active_model.model_name, "deepseek-chat");
+  } finally {
+    await closeServer(server);
+  }
+});
+
+// Task 6：/api/dashboard 直接返回当前项目的会话列表（前端左侧栏渲染对话列表，
+// 免去先拉 project list 再逐项目拉 sessions）。品牌新项目 → 空列表；submit 一条后
+// → sessions 长度 1 且 active_session_id 指向该会话。
+test("dashboard 返回会话列表与最近活跃会话", async () => {
+  const { projectRoot, server, port } = await setupServerWithProject();
+  try {
+    const before = await fetch(`http://127.0.0.1:${port}/api/dashboard?projectRoot=${encodeURIComponent(projectRoot)}`);
+    const beforeJson = await before.json();
+    assert.equal(before.status, 200);
+    assert.equal(beforeJson.hasProject, true);
+    assert.deepEqual(beforeJson.sessions, []);
+    assert.equal(beforeJson.active_session_id, null);
+
+    const input = await post(port, "/api/agent/input", { projectRoot, text: "你好" });
+    assert.equal(input.status, 200);
+    assert.equal(typeof input.json.session_id, "string", "缺省 input 惰性创建会话");
+
+    const dashboard = await waitForDashboardSessions(port, projectRoot, (sessions) => sessions.length === 1);
+    assert.equal(dashboard.sessions[0].session_id, input.json.session_id);
+    assert.equal(dashboard.active_session_id, input.json.session_id, "最近活跃会话指向刚提交的会话");
   } finally {
     await closeServer(server);
   }

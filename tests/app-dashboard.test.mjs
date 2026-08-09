@@ -233,6 +233,33 @@ test("loadDashboardData returns cacheSummary when cache report is missing", asyn
   });
 });
 
+// Task 6 评审（代码审查 Changes Needed）：会话列表降级必须真实生效——不传 agent
+// 或 agent.sessions 抛错都返回空列表且不抛错。若 readSessions 的守卫（typeof
+// agent?.sessions !== "function"）或 catch 被删，这两个断言必挂。
+test("loadDashboardData 会话列表降级：无 agent 或 sessions 抛错 → 空列表且不抛错", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-dashboard-sessions-degrade-"));
+  const { projectRoot } = await createWritingProject(root, { slug: "project" });
+
+  // 场景 1：不传 agent → sessions: [] / active_session_id: null
+  const noAgent = await loadDashboard(root, projectRoot);
+  assert.equal(noAgent.ok, true);
+  assert.equal(noAgent.hasProject, true);
+  assert.deepEqual(noAgent.sessions, []);
+  assert.equal(noAgent.active_session_id, null);
+
+  // 场景 2：agent.sessions 抛错 → 同样降级，且 loadDashboardData 不抛错
+  const throwingAgent = {
+    sessions: async () => {
+      throw new Error("boom");
+    }
+  };
+  const degraded = await loadDashboard(root, projectRoot, { agent: throwingAgent });
+  assert.equal(degraded.ok, true);
+  assert.equal(degraded.hasProject, true);
+  assert.deepEqual(degraded.sessions, []);
+  assert.equal(degraded.active_session_id, null);
+});
+
 test("loadDashboardData explains stable cache key without provider metrics", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-dashboard-cache-summary-"));
   const { projectRoot } = await createWritingProject(root, { slug: "project" });
