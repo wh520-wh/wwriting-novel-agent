@@ -339,6 +339,27 @@ test("deleteSession：DELETE /api/agent/sessions/:id?projectRoot=", async (t) =>
 });
 
 // ---------------------------------------------------------------------------
+// promote：会话作用域（Task 8 硬衔接——缺 sessionId 会跨会话误打断，见
+// Task 7 审查；后端 promote 的 target 由 body.sessionId 决定）
+// ---------------------------------------------------------------------------
+
+test("promote body 带当前会话 sessionId（多会话下不得跨会话误打断）", async (t) => {
+  const { api, calls } = withApi(t);
+  api.openProject("P", "sid-1");
+  await api.promote("in-2");
+  const call = calls.find((c) => c.url === "/api/agent/input/in-2/promote");
+  assert.equal(call.method, "POST");
+  assert.deepEqual(call.body, { projectRoot: "P", sessionId: "sid-1" });
+});
+
+test("未设置会话时 promote body 不带 sessionId（缺省兼容）", async (t) => {
+  const { api, calls } = withApi(t);
+  await api.promote("in-2");
+  const call = calls.find((c) => c.url === "/api/agent/input/in-2/promote");
+  assert.deepEqual(call.body, { projectRoot: "P" }, "不得出现 sessionId 键");
+});
+
+// ---------------------------------------------------------------------------
 // sessionRoot
 // ---------------------------------------------------------------------------
 

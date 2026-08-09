@@ -112,9 +112,9 @@ export function createAgentApi({
   }
 
   async function promote(inputId) {
-    return postJson(`/api/agent/input/${encodeURIComponent(inputId)}/promote`, {
-      projectRoot: root()
-    });
+    // 会话作用域（Task 8 硬衔接）：promote 的 target 由 body.sessionId 决定，
+    // 缺 sessionId 会命中其他会话的 last-active 队列，跨会话误打断。
+    return postJson(`/api/agent/input/${encodeURIComponent(inputId)}/promote`, scopedBody());
   }
 
   async function stop(runId) {
