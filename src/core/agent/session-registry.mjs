@@ -7,7 +7,8 @@
 //     （归档会话也返回，Task 10 设置页需列出"已归档对话"，由调用方按需过滤）
 //   - 所有写 index.json 的操作经进程内互斥锁串行化（先读后写，避免并发丢数据），
 //     写盘用 writeJsonAtomic（临时文件 + rename），读用 readJson
-//   - last_seq 由 runtime（Task 4）每次 append 后经 touch 同步写入，本模块只保存
+//   - last_seq 由调用方经 setLastSeq 同步写入（Task 3 单流迁移、Task 4 runtime 每次
+//     append 后），本模块只保存
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { readJson, writeJsonAtomic } from "../fs-utils.mjs";
@@ -181,6 +182,22 @@ export function createSessionRegistry({ root }) {
     });
   }
 
+  // 写入已存在会话的 last_seq（Task 3 单流迁移初始化游标、Task 4 runtime 每次
+  // append 后同步）。与 create/touch 同经互斥锁串行化；值必须是非负整数。
+  async function setLastSeq(sessionId, lastSeq) {
+    return mutex.run(async () => {
+      if (!Number.isInteger(lastSeq) || lastSeq < 0) {
+        throw new Error(`last_seq 必须是非负整数: ${String(lastSeq)}`);
+      }
+      const store = await load();
+      const meta = store.sessions.find((s) => s.session_id === sessionId);
+      if (!meta) throw new Error(`会话不存在: ${sessionId}`);
+      meta.last_seq = lastSeq;
+      await save(store);
+      return meta;
+    });
+  }
+
   // 二次永久删除：从注册表移除元数据，并清空 last_active 指向（Task 10 设置页）。
   async function removePermanently(sessionId) {
     return mutex.run(async () => {
@@ -192,5 +209,5 @@ export function createSessionRegistry({ root }) {
     });
   }
 
-  return { list, get, create, rename, archive, restore, setLastActive, getLastActive, touch, removePermanently };
+  return { list, get, create, rename, archive, restore, setLastActive, getLastActive, touch, setLastSeq, removePermanently };
 }
