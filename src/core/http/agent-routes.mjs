@@ -3,18 +3,24 @@
 // 只通过注入的 ProjectAgent（src/core/agent/index.mjs 公共接口）访问 Agent 能力，
 // 不 import agent 内部文件（依赖规则 D）。本模块不创建 ModelClient、锁或 store。
 //
-// 路由清单（响应只含 ids 与结构化状态，不含解释性成功文案）：
-//   POST /api/agent/input                 { projectRoot, text } -> { ok, input_id, run_id, status }
-//   POST /api/agent/input/:inputId/promote { projectRoot }      -> { ok, run_id, input_id, promoted }
-//   POST /api/agent/run/:runId/stop       { projectRoot }       -> { ok, run_id, cancelled }
-//   POST /api/agent/run/:runId/retry      { projectRoot }       -> { ok, run_id, input_id, retried }
-//   POST /api/agent/compaction/:compactionId/cancel { projectRoot } -> { ok, compaction_id, cancelling }
-//   POST /api/agent/compaction/:compactionId/retry  { projectRoot } -> { ok, compaction_id, retried }
-//   POST /api/agent/decision/:decisionId  { projectRoot, choice } -> { ok, decision_id, granted }
-//   GET  /api/agent/snapshot?projectRoot&afterSeq&beforeSeq&tail&limit -> { ok, session, events, gaps, has_more }
-//   POST /api/agent/history/export       { projectRoot } -> NDJSON 下载（application/x-ndjson + attachment）
-//   POST /api/agent/history/clear        { projectRoot, confirm_irreversible } -> { ok, session_id, status, generation_id }
-//   GET  /api/project/events?projectRoot  （SSE：轮询 journal，逐条推送事件）
+// 路由清单（响应只含 ids 与结构化状态，不含解释性成功文案；全部既有 Agent 端点
+// 可选透传 sessionId，缺省 = 最近活跃会话，Task 4 runtime 语义）：
+//   POST /api/agent/input                 { projectRoot, text, sessionId? } -> { ok, input_id, run_id, session_id, status }
+//   POST /api/agent/input/:inputId/promote { projectRoot, sessionId? }       -> { ok, run_id, input_id, promoted }
+//   POST /api/agent/run/:runId/stop       { projectRoot, sessionId? }        -> { ok, run_id, cancelled }
+//   POST /api/agent/run/:runId/retry      { projectRoot, sessionId? }        -> { ok, run_id, input_id, retried }
+//   POST /api/agent/compaction/:compactionId/cancel { projectRoot, sessionId? } -> { ok, compaction_id, cancelling }
+//   POST /api/agent/compaction/:compactionId/retry  { projectRoot, sessionId? } -> { ok, compaction_id, retried }
+//   POST /api/agent/decision/:decisionId  { projectRoot, choice, sessionId? } -> { ok, decision_id, granted }
+//   GET  /api/agent/snapshot?projectRoot&sessionId&afterSeq&beforeSeq&tail&limit -> { ok, session, events, gaps, has_more }
+//   POST /api/agent/history/export       { projectRoot, sessionId? } -> NDJSON 下载（application/x-ndjson + attachment）
+//   POST /api/agent/history/clear        { projectRoot, sessionId?, confirm_irreversible } -> { ok, session_id, status, generation_id }
+//   GET  /api/project/events?projectRoot&sessionId&afterSeq （SSE：按会话轮询 journal，逐条推送事件）
+// Task 5 会话 CRUD：
+//   GET    /api/agent/sessions?projectRoot                -> { ok, sessions, active_session_id }
+//   POST   /api/agent/sessions          { projectRoot, title? } -> { ok, session }
+//   PATCH  /api/agent/sessions/:sessionId { projectRoot, title? | archived?: true|false } -> { ok, session }
+//   DELETE /api/agent/sessions/:sessionId?projectRoot     -> { ok, session_id }（永久删除）
 //
 // 运行中 submit 返回 HTTP 200 + status:"queued"（FIFO 队列，同一 run_id）；
 // 空闲 submit 创建新 Run，返回 status:"running"。错误统一由 router 适配。
@@ -56,6 +62,27 @@ export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPoll
     return projectRoot;
   }
 
+  // 会话定向（Task 5）：body/query 里的可选 sessionId。缺省（undefined）= 最近活跃
+  // 会话（Task 4 runtime 语义，旧调用方行为不变）；显式提供但为空/非字符串 → 400。
+  function optionalSessionId(body, query = {}) {
+    const value = body?.sessionId ?? query.sessionId;
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== "string" || value.length === 0) {
+      throw new HttpError(400, "invalid_session_id", "sessionId 必须是非空字符串。");
+    }
+    return value;
+  }
+
+  // 新建/改名/归档/恢复的 title 校验（HTTP 边界先于 registry；registry 对空标题
+  // 抛带 code 的 invalid_session_title，路由层拦截后不会再触达）。
+  function requireTitle(body) {
+    const title = body?.title;
+    if (typeof title !== "string" || title.trim().length === 0) {
+      throw new HttpError(400, "invalid_session_title", "title 必须是非空字符串。");
+    }
+    return title;
+  }
+
   // 压缩领域错误 → HttpError（Task 9）：runtime.mjs 的 fail(code) 抛出的域 code
   // 在这里映射为固定状态码与中文文案，交给 router 统一输出（sendError 会按
   // publicErrorMessage 白名单决定是否透传 message；未在白名单内的 code 一律
@@ -88,17 +115,20 @@ export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPoll
 
   return {
     // 空闲 → 创建新 Run（status:"running"）；运行中 → FIFO 队列（status:"queued"，同 run_id）。
+    // sessionId 可选：缺省 = 最近活跃；无会话时惰性创建（响应带 session_id）。
     "POST /api/agent/input": async ({ body }) => {
       const projectRoot = await resolveScope(body);
+      const sessionId = optionalSessionId(body);
       const text = body?.text;
       if (typeof text !== "string" || text.trim().length === 0) {
         throw new HttpError(400, "empty_input", "text 必须是非空字符串。");
       }
-      const result = await agent.submit({ projectRoot, text, source: "chat" });
+      const result = await agent.submit({ projectRoot, text, source: "chat", sessionId });
       return {
         ok: true,
         input_id: result.input_id,
         run_id: result.run_id,
+        session_id: result.session_id,
         status: result.queued === true ? "queued" : "running"
       };
     },
@@ -106,7 +136,8 @@ export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPoll
     // 立即：同一 Run 内打断并提升排队输入，返回同一 run_id。
     "POST /api/agent/input/:inputId/promote": async ({ params, body }) => {
       const projectRoot = await resolveScope(body);
-      const result = await agent.promote({ projectRoot, inputId: params.inputId });
+      const sessionId = optionalSessionId(body);
+      const result = await agent.promote({ projectRoot, inputId: params.inputId, sessionId });
       return {
         ok: true,
         run_id: result.run_id,
@@ -115,22 +146,24 @@ export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPoll
       };
     },
 
-    // 停止：只作用于当前活动 Run；路径 runId 必须与活动 Run 一致，否则 404。
+    // 停止：只作用于当前会话的活动 Run；路径 runId 必须与活动 Run 一致，否则 404。
     "POST /api/agent/run/:runId/stop": async ({ params, body }) => {
       const projectRoot = await resolveScope(body);
-      const { session } = await agent.snapshot({ projectRoot, afterSeq: 0, limit: 1 });
+      const sessionId = optionalSessionId(body);
+      const { session } = await agent.snapshot({ projectRoot, sessionId, afterSeq: 0, limit: 1 });
       const run = session?.active_run;
       if (!run || run.id !== params.runId) {
         throw new HttpError(404, "run_not_found", `Run ${params.runId} 不是当前会话的活动 Run。`);
       }
-      const result = await agent.stop({ projectRoot, reason: "user_stop" });
+      const result = await agent.stop({ projectRoot, reason: "user_stop", sessionId });
       return { ok: true, run_id: result.run_id, cancelled: result.cancelled === true };
     },
 
     // 重试：继续同一可恢复 Run（failed/interrupted）。
     "POST /api/agent/run/:runId/retry": async ({ params, body }) => {
       const projectRoot = await resolveScope(body);
-      const result = await agent.retry({ projectRoot, runId: params.runId });
+      const sessionId = optionalSessionId(body);
+      const result = await agent.retry({ projectRoot, runId: params.runId, sessionId });
       return {
         ok: true,
         run_id: result.run_id,
@@ -148,16 +181,18 @@ export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPoll
     // 其余错误交给 router 统一脱敏（不泄漏底层错误文本）。
     "POST /api/agent/compaction/:compactionId/cancel": async ({ params, body }) => {
       const projectRoot = await resolveScope(body);
+      const sessionId = optionalSessionId(body);
       const result = await runCompactionAction(() =>
-        agent.cancelCompaction({ projectRoot, compactionId: params.compactionId })
+        agent.cancelCompaction({ projectRoot, sessionId, compactionId: params.compactionId })
       );
       return { ok: true, compaction_id: result.compaction_id, cancelling: true };
     },
 
     "POST /api/agent/compaction/:compactionId/retry": async ({ params, body }) => {
       const projectRoot = await resolveScope(body);
+      const sessionId = optionalSessionId(body);
       const result = await runCompactionAction(() =>
-        agent.retryCompaction({ projectRoot, compactionId: params.compactionId })
+        agent.retryCompaction({ projectRoot, sessionId, compactionId: params.compactionId })
       );
       return { ok: true, compaction_id: result.compaction_id, retried: true };
     },
@@ -165,11 +200,12 @@ export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPoll
     // 决策：choice ∈ allow/allow_input/deny；extreme 决策要求 choice 为精确确认文字。
     "POST /api/agent/decision/:decisionId": async ({ params, body }) => {
       const projectRoot = await resolveScope(body);
+      const sessionId = optionalSessionId(body);
       const choice = body?.choice;
       if (typeof choice !== "string" || choice.length === 0) {
         throw new HttpError(400, "invalid_choice", "choice 必须是非空字符串。");
       }
-      const result = await agent.decide({ projectRoot, decisionId: params.decisionId, choice });
+      const result = await agent.decide({ projectRoot, sessionId, decisionId: params.decisionId, choice });
       return { ok: true, decision_id: result.decision_id, granted: result.granted };
     },
 
@@ -178,6 +214,7 @@ export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPoll
     // 缺省 → afterSeq 增量拉取（afterSeq=0 只表示从头读取，旧客户端兼容）。
     "GET /api/agent/snapshot": async ({ query }) => {
       const projectRoot = await resolveScope({}, query);
+      const sessionId = optionalSessionId({}, query);
       const afterSeq = Number.isFinite(Number(query.afterSeq)) ? Math.max(0, Number(query.afterSeq)) : 0;
       const beforeSeqParam = Number(query.beforeSeq);
       const beforeSeq = Number.isFinite(beforeSeqParam) && beforeSeqParam > 0 ? beforeSeqParam : null;
@@ -187,6 +224,7 @@ export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPoll
         : 100;
       const { session, events, gaps, has_more } = await agent.snapshot({
         projectRoot,
+        sessionId,
         afterSeq,
         beforeSeq,
         tail,
@@ -201,13 +239,14 @@ export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPoll
     // 脱敏）；流中途失败（如段文件被外部破坏）以脱敏错误行收尾，不泄漏原始路径。
     "POST /api/agent/history/export": async ({ body, response }) => {
       const projectRoot = await resolveScope(body);
+      const sessionId = optionalSessionId(body);
       response.writeHead(200, {
         "content-type": "application/x-ndjson; charset=utf-8",
         "content-disposition": 'attachment; filename="wwriting-agent-history.jsonl"',
         "cache-control": "no-store"
       });
       try {
-        for await (const line of agent.exportHistory({ projectRoot })) {
+        for await (const line of agent.exportHistory({ projectRoot, sessionId })) {
           if (response.destroyed || response.writableEnded) return;
           response.write(`${JSON.stringify(line)}\n`);
         }
@@ -229,9 +268,10 @@ export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPoll
     // 409 history_busy；缺少确认 → 400 confirmation_required（busy 校验先于确认）。
     "POST /api/agent/history/clear": async ({ body }) => {
       const projectRoot = await resolveScope(body);
+      const sessionId = optionalSessionId(body);
       const confirmIrreversible = body?.confirm_irreversible === true;
       try {
-        const result = await agent.clearHistory({ projectRoot, confirmIrreversible });
+        const result = await agent.clearHistory({ projectRoot, sessionId, confirmIrreversible });
         return {
           ok: true,
           session_id: result.session_id,
@@ -249,6 +289,57 @@ export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPoll
       }
     },
 
+    // -----------------------------------------------------------------------
+    // Task 5：会话 CRUD（注册表元数据；journal 由 runtime 首次使用才物化）
+    // -----------------------------------------------------------------------
+
+    // 会话列表 + 最近活跃（dashboard 会话栏数据源）。缺省 = 最近活跃指针；
+    // 品牌新项目（无会话）→ sessions:[] 且 active_session_id:null（惰性）。
+    "GET /api/agent/sessions": async ({ query }) => {
+      const projectRoot = await resolveScope({}, query);
+      const { sessions, active_session_id } = await agent.sessions({ projectRoot });
+      return { ok: true, sessions, active_session_id };
+    },
+
+    // 新建会话（前端"+"按钮）：title 可选（缺省 = "新对话"），只写注册表条目。
+    "POST /api/agent/sessions": async ({ body }) => {
+      const projectRoot = await resolveScope(body);
+      const title = body?.title;
+      if (title !== undefined && (typeof title !== "string" || title.trim().length === 0)) {
+        throw new HttpError(400, "invalid_session_title", "title 必须是非空字符串。");
+      }
+      const session = await agent.newSession({ projectRoot, title });
+      return { ok: true, session };
+    },
+
+    // 改名 / 归档 / 恢复：archived:true → 归档、false → 恢复；否则 title → 改名。
+    // 三者互斥（title 与 archived 同传时 archived 优先）。archived 必须为真实
+    // boolean（true/false），调用方是自家前端；字符串 "true" 会落入改名分支。
+    // 不存在的会话 → 404 session_not_found（registry 自带 code，HTTP 层按码映射）。
+    "PATCH /api/agent/sessions/:sessionId": async ({ params, body }) => {
+      const projectRoot = await resolveScope(body);
+      const sessionId = params.sessionId;
+      if (body?.archived === true) {
+        const session = await agent.archiveSession({ projectRoot, sessionId });
+        return { ok: true, session };
+      }
+      if (body?.archived === false) {
+        const session = await agent.restoreSession({ projectRoot, sessionId });
+        return { ok: true, session };
+      }
+      const title = requireTitle(body);
+      const session = await agent.renameSession({ projectRoot, sessionId, title });
+      return { ok: true, session };
+    },
+
+    // 永久删除（注册表元数据 + 数据目录）；会话运行中 → 409 session_busy（runtime
+    // deleteSession 在项目互斥锁内检查并拒绝）。不存在的会话幂等删除（200）。
+    "DELETE /api/agent/sessions/:sessionId": async ({ params, query }) => {
+      const projectRoot = await resolveScope({}, query);
+      const result = await agent.deleteSession({ projectRoot, sessionId: params.sessionId });
+      return { ok: true, session_id: result.session_id };
+    },
+
     // SSE 端点（Task 9 接线后成为唯一 Agent 实时流）：轮询 journal 快照，
     // 按 afterSeq 增量推送事件；连接关闭即停止轮询。
     //
@@ -259,6 +350,7 @@ export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPoll
     // 不能依赖 write 失败兜底。
     "GET /api/project/events": async ({ query, request, response }) => {
       const projectRoot = await resolveScope({}, query);
+      const sessionId = optionalSessionId({}, query);
       const afterSeqParam = Number(query.afterSeq);
       let afterSeq = Number.isFinite(afterSeqParam) ? Math.max(0, afterSeqParam) : 0;
       let closed = false;
@@ -277,7 +369,12 @@ export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPoll
         response.write(": connected\n\n");
         while (!isGone()) {
           try {
-            const { events } = await agent.snapshot({ projectRoot, afterSeq, limit: 100 });
+            // Task 5：按会话轮询——sessionId 缺省 = 最近活跃（旧调用方行为不变），
+            // afterSeq 按该会话 seq 推进（各会话事件流 seq 各自单调递增）。
+            // 注意：缺省时每次 poll 都重新解析最近活跃；若活跃会话中途切换，
+            // afterSeq 沿用旧会话的 seq 空间，对新会话会重放/漏推。显式 sessionId
+            // 是安全的；前端切换会话应显式带 sessionId 重连。
+            const { events } = await agent.snapshot({ projectRoot, sessionId, afterSeq, limit: 100 });
             for (const event of events) {
               if (isGone()) break;
               response.write(`data: ${JSON.stringify(event)}\n\n`);
