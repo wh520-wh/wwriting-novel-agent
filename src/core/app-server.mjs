@@ -63,7 +63,14 @@ export function createAppShellServer({
   // Agent journal 存储根；各模块不得自行拼 stateRoot/workspaces 路径。
   const workspaceStore = createWorkspaceStore({ stateRoot: appStateRoot });
   const dashboardLoader = testLoadDashboardData
-    ?? ((workspaceRootArg, options = {}) => loadDashboardData(workspaceRootArg, { ...options, skillService: skills ?? undefined }));
+    ?? ((workspaceRootArg, options = {}) => loadDashboardData(workspaceRootArg, {
+      ...options,
+      skillService: skills ?? undefined,
+      // Task 6：把 ProjectAgent 注入 dashboard 组装，loadDashboardData 内部把
+      // agent.sessions(projectRoot) 并入响应；未注入/调用失败 → sessions:[]。
+      // agent 在下方创建（组合根），本闭包只在请求时被调用，届时已就绪。
+      agent
+    }));
   const connectionTester = testModelConnection ?? runModelConnectionTest ?? null;
   applyLocalSecretsToEnv(loadLocalSecretsSync(localSecretsRoot));
 

@@ -13,6 +13,8 @@ import { skillService } from "./skills/index.mjs";
 // AgentSurface 消费 ProjectAgent snapshot；dashboard 不推测 Agent 是否繁忙）。
 // Task 12：技能列表改读新 catalog；Task 13：DTO 移除启停集合字段（发现即生效）。
 //（发现即生效，无启停集合）。
+// Task 6：可选注入 options.agent，把 agent.sessions(projectRoot) 的会话列表并入
+// 响应（前端左侧栏渲染对话列表）；未注入或调用失败 → 空列表，不阻塞 dashboard。
 export async function loadDashboardData(workspaceRoot, options = {}) {
   const workspace = path.resolve(workspaceRoot);
   const projectRoot = options.projectRoot
@@ -26,7 +28,9 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
       ok: true,
       hasProject: false,
       workspaceRoot: workspace,
-      project: null
+      project: null,
+      sessions: [],
+      active_session_id: null
     };
   }
 
@@ -34,21 +38,25 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
   // 在 stateRoot，文件夹本身即可立即聊天。返回 hasProject:false 的最小工作区形状，
   // 绝不把 ENOENT/内部错误暴露给用户（SPEC §11）。
   if (!(await pathExists(safeJoin(projectRoot, "project.yaml")))) {
+    const sessionData = await readSessions(projectRoot, options.agent);
     return {
       ok: true,
       hasProject: false,
       workspaceRoot: workspace,
       projectRoot,
-      project: null
+      project: null,
+      sessions: sessionData.sessions,
+      active_session_id: sessionData.active_session_id
     };
   }
 
-  const [project, chapterIndex, events, cost, cache] = await Promise.all([
+  const [project, chapterIndex, events, cost, cache, sessionData] = await Promise.all([
     loadProject(projectRoot),
     readJson(safeJoin(projectRoot, "memory", "chapter_index.json"), { chapters: [] }),
     readEvents(projectRoot, { limit: 80 }),
     readJson(safeJoin(projectRoot, "cost.json"), null),
-    readJson(safeJoin(projectRoot, "cache_report.json"), null)
+    readJson(safeJoin(projectRoot, "cache_report.json"), null),
+    readSessions(projectRoot, options.agent)
   ]);
   const config = await loadConfigLayers(projectRoot, project);
   const effectiveProject = {
@@ -117,8 +125,31 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
       layers: config.layers
     },
     skills: skillsData,
-    sources
+    sources,
+    // Task 6：会话列表 + 最近活跃会话（前端左侧栏渲染对话列表）。
+    sessions: sessionData.sessions,
+    active_session_id: sessionData.active_session_id
   };
+}
+
+// Task 6：把 agent.sessions(projectRoot) 并入 dashboard。agent 由组合根可选注入；
+// 未注入或调用失败 → 空列表，绝不阻塞 dashboard（与 skills 缺省语义一致）。
+// 品牌新项目由 agent 侧返回 { sessions: [], active_session_id: null }（惰性）。
+// 降级可诊断：sessions 抛错时 console.warn 落一行（projectRoot + 错误信息）。
+async function readSessions(projectRoot, agent) {
+  if (typeof agent?.sessions !== "function") {
+    return { sessions: [], active_session_id: null };
+  }
+  try {
+    const result = await agent.sessions({ projectRoot });
+    return {
+      sessions: Array.isArray(result?.sessions) ? result.sessions : [],
+      active_session_id: result?.active_session_id ?? null
+    };
+  } catch (error) {
+    console.warn(`[app-dashboard] 会话列表加载失败，降级为空列表（${projectRoot}）: ${error?.message ?? String(error)}`);
+    return { sessions: [], active_session_id: null };
+  }
 }
 
 function buildCacheSummary(cache) {
