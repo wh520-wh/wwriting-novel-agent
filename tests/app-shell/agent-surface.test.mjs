@@ -345,7 +345,8 @@ async function makeSurface({ apiOverrides = {}, callbacks = {}, useRealTransport
     onOpenSettings: (section) => opened.push(section),
     onOpenChapter: (chapterNo) => chapters.push(chapterNo),
     onCreateProject: callbacks.onCreateProject ?? (() => projectActions.push("create")),
-    onOpenProjectFolder: callbacks.onOpenProjectFolder ?? (() => projectActions.push("open"))
+    onOpenProjectFolder: callbacks.onOpenProjectFolder ?? (() => projectActions.push("open")),
+    onSessionsChanged: callbacks.onSessionsChanged ?? (() => {})
   });
   return { root, api, surface, opened, chapters, projectActions };
 }
@@ -3725,4 +3726,287 @@ test("transport surface: handleEscape 的 stop/cancelCompaction 使用正确端�
       surface.destroy();
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// Task 8 多会话：switchSession / 新对话占位 / busy / 会话代次守卫
+// ---------------------------------------------------------------------------
+
+test("switchSession：切换会话重拉快照并重置视图；新对话占位提交后回调会话列表", async () => {
+  const calls = [];
+  const sessions = [
+    { session_id: "sid-1", title: "会话一", archived_at: null },
+    { session_id: "sid-2", title: "会话二", archived_at: null }
+  ];
+  const sid1Snapshot = snapshotOf(session({ session_id: "sid-1", last_seq: 3 }), [
+    { ...ev("input_queued", { input_id: "in-1", text: "会话一消息", source: "chat" }, { session_id: "sid-1" }), seq: 1 },
+    { ...ev("run_started", { workflow: "general", input_id: "in-1" }, { session_id: "sid-1" }), seq: 2 },
+    { ...ev("run_completed", {}), seq: 3 }
+  ]);
+  const sid2Snapshot = snapshotOf(session({ session_id: "sid-2", last_seq: 1 }), [
+    { ...ev("input_queued", { input_id: "in-2", text: "会话二消息", source: "chat" }, { session_id: "sid-2" }), seq: 1 }
+  ]);
+  const sessionsChanged = [];
+  const { root, surface } = await makeSurface({
+    apiOverrides: {
+      openProject: async (rootPath, sessionId) => { calls.push(["openProject", rootPath, sessionId ?? null]); },
+      fetchSnapshot: async (options) => {
+        calls.push(["fetchSnapshot", options]);
+        if (options?.sessionId === "sid-1") return sid1Snapshot;
+        if (options?.sessionId === "sid-2") return sid2Snapshot;
+        return null;
+      },
+      submit: async (text) => { calls.push(["submit", text]); return { ok: true, session_id: "sid-3", input_id: "in-3" }; },
+      createSession: async () => {
+        const meta = { session_id: "sid-3", title: "新对话", archived_at: null };
+        sessions.push(meta);
+        return { session: meta };
+      },
+      sessions: async () => ({ sessions: [...sessions], active_session_id: null })
+    },
+    callbacks: {
+      onSessionsChanged: (list, active) => sessionsChanged.push([list, active])
+    }
+  });
+
+  await surface.openProject("D:\\novel", "sid-1");
+  const snap1 = calls.findLast((c) => c[0] === "fetchSnapshot");
+  assert.equal(snap1[1].sessionId, "sid-1", "openProject 按指定会话拉快照");
+  assert.equal(snap1[1].tail, true, "首见会话用尾页语义");
+  assert.match(root.textContent, /会话一消息/u);
+
+  await surface.switchSession("sid-2");
+  const snap2 = calls.findLast((c) => c[0] === "fetchSnapshot");
+  assert.equal(snap2[1].sessionId, "sid-2", "switchSession 按新会话拉快照");
+  assert.equal(snap2[1].tail, true, "首见会话用尾页语义");
+  assert.match(root.textContent, /会话二消息/u);
+  assert.doesNotMatch(root.textContent, /会话一消息/u, "切换会话必须清空旧会话消息（state 重置）");
+
+  // 切回缓存会话：按已见游标增量补齐，不重拉全量
+  await surface.switchSession("sid-1");
+  const snap3 = calls.findLast((c) => c[0] === "fetchSnapshot");
+  assert.equal(snap3[1].sessionId, "sid-1");
+  assert.equal(snap3[1].afterSeq, 3, "缓存会话切回按已见游标增量补齐");
+  assert.match(root.textContent, /会话一消息/u);
+
+  // 新对话占位：本地未落盘，列表出现 draft 项
+  surface.newSessionPlaceholder();
+  await waitUntil(() => sessionsChanged.some(([list]) => list.some((s) => String(s.session_id).startsWith("draft-"))));
+  const draftNotice = sessionsChanged.find(([list]) => list.some((s) => String(s.session_id).startsWith("draft-")));
+  assert.ok(draftNotice, "占位应通知会话列表");
+  const draftEntry = draftNotice[0].find((s) => String(s.session_id).startsWith("draft-"));
+  assert.equal(draftEntry.title, "新对话", "占位标题为新对话");
+  assert.equal(draftNotice[1], draftEntry.session_id, "占位即当前活跃会话");
+  assert.ok(
+    calls.some((c) => c[0] === "openProject" && c[1] === "D:\\novel" && c[2] === null),
+    "占位进入时中止旧 SSE 连接（transport.openProject 清请求作用域）"
+  );
+
+  // 占位提交：createSession 落盘 → 替换占位 → submit → 刷新列表
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  input.value = "新对话的第一条消息";
+  root.querySelector('[data-testid="agent-send"]')._fire("click");
+  await waitUntil(() => sessionsChanged.some(([list]) => list.some((s) => s.session_id === "sid-3")));
+  assert.ok(
+    calls.some((c) => c[0] === "openProject" && c[1] === "D:\\novel" && c[2] === "sid-3"),
+    "占位提交后 transport 切到新会话"
+  );
+  assert.ok(calls.some((c) => c[0] === "submit" && c[1] === "新对话的第一条消息"), "输入提交到新会话");
+  const finalList = sessionsChanged[sessionsChanged.length - 1][0];
+  assert.ok(finalList.some((s) => s.session_id === "sid-3"), "刷新后列表含新会话");
+  assert.ok(!finalList.some((s) => String(s.session_id).startsWith("draft-")), "提交后占位从列表消失");
+});
+
+test("setBusy：禁用发送键并提示另一个对话在运行，输入框不锁", async () => {
+  const { root, api, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  const send = root.querySelector('[data-testid="agent-send"]');
+  assert.equal(send.disabled, false);
+  assert.equal(input.placeholder, "输入消息");
+
+  surface.setBusy(true);
+  assert.equal(send.disabled, true, "busy 时发送键禁用");
+  assert.equal(input.disabled, false, "busy 时输入框不锁（草稿可继续编辑）");
+  assert.equal(input.placeholder, "另一个对话正在运行");
+
+  // 回车与发送键一致：busy 时不得提交，输入保留
+  const submitsBefore = api.calls.filter((c) => c[0] === "submit").length;
+  input.value = "回车提交文本";
+  input._fire("keydown", { key: "Enter", shiftKey: false, isComposing: false, preventDefault: () => {} });
+  assert.equal(api.calls.filter((c) => c[0] === "submit").length, submitsBefore, "busy 时回车不提交");
+  assert.equal(input.value, "回车提交文本", "回车被拦截时输入保留");
+
+  surface.setBusy(false);
+  assert.equal(send.disabled, false, "busy 解除后发送恢复");
+  assert.equal(input.placeholder, "输入消息");
+});
+
+test("迟到的会话快照不污染新会话：switchSession 后旧代次响应丢弃", async () => {
+  let resolveOld;
+  const oldSnapshot = new Promise((resolve) => { resolveOld = resolve; });
+  let sid1Fetched = false;
+  const { root, surface } = await makeSurface({
+    apiOverrides: {
+      openProject: async () => {},
+      fetchSnapshot: async (options) => {
+        if (options?.sessionId === "sid-1") {
+          sid1Fetched = true;
+          return oldSnapshot;
+        }
+        if (options?.sessionId === "sid-2") {
+          return snapshotOf(session({ session_id: "sid-2", last_seq: 1 }), [
+            { ...ev("input_queued", { input_id: "in-2", text: "B 会话消息", source: "chat" }, { session_id: "sid-2" }), seq: 1 }
+          ]);
+        }
+        return null;
+      }
+    }
+  });
+
+  const p0 = surface.openProject("D:\\novel", "sid-1");
+  await waitUntil(() => sid1Fetched);
+
+  await surface.switchSession("sid-2");
+  assert.match(root.textContent, /B 会话消息/u);
+
+  resolveOld(snapshotOf(session({ session_id: "sid-1", last_seq: 2 }), [
+    { ...ev("input_queued", { input_id: "in-1", text: "A 会话消息", source: "chat" }, { session_id: "sid-1" }), seq: 1 }
+  ]));
+  await p0;
+  await tick();
+  await tick();
+
+  assert.match(root.textContent, /B 会话消息/u, "当前会话视图保持 B 内容");
+  assert.doesNotMatch(root.textContent, /A 会话消息/u, "A 的迟到快照不得污染 B 会话");
+});
+
+test("submit 遇 project_busy：surface 自动置 busy、错误透出、草稿保留", async () => {
+  const { root, surface } = await makeSurface({
+    apiOverrides: {
+      submit: async () => {
+        const error = new Error("另一个对话正在运行，请稍候。");
+        error.code = "project_busy";
+        throw error;
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  const send = root.querySelector('[data-testid="agent-send"]');
+  input.value = "排队中的文本";
+  send._fire("click");
+  await tick();
+
+  assert.equal(input.value, "排队中的文本", "project_busy 时草稿保留在 composer");
+  assert.equal(send.disabled, true, "surface 收到 project_busy 后自动置 busy（发送键禁用）");
+  assert.equal(input.disabled, false, "busy 不锁输入框");
+  assert.equal(input.placeholder, "另一个对话正在运行");
+  assert.match(
+    root.querySelector('[data-testid="agent-submit-error"]')?.textContent ?? "",
+    /另一个对话正在运行/u,
+    "错误消息透出"
+  );
+});
+
+test("draft 提交竞态：createSession 在途时切走会话，不投递、不污染、草稿保留", async () => {
+  let releaseCreate;
+  const createGate = new Promise((resolve) => { releaseCreate = resolve; });
+  let createCalled = false;
+  const submitCalls = [];
+  const sessions = [{ session_id: "sid-1", title: "会话一", archived_at: null }];
+  const sid1Snapshot = snapshotOf(session({ session_id: "sid-1", last_seq: 1 }), [
+    { ...ev("input_queued", { input_id: "in-1", text: "会话一消息", source: "chat" }, { session_id: "sid-1" }), seq: 1 }
+  ]);
+  const { root, surface } = await makeSurface({
+    apiOverrides: {
+      openProject: async () => {},
+      fetchSnapshot: async (options) => {
+        if (options?.sessionId === "sid-1") return sid1Snapshot;
+        return null;
+      },
+      createSession: async () => {
+        createCalled = true;
+        await createGate;
+        const meta = { session_id: "sid-new", title: "新对话", archived_at: null };
+        sessions.push(meta);
+        return { session: meta };
+      },
+      submit: async (text) => { submitCalls.push(text); return { ok: true }; },
+      sessions: async () => ({ sessions: [...sessions], active_session_id: null })
+    }
+  });
+
+  await surface.openProject("D:\\novel", "sid-1");
+  surface.newSessionPlaceholder();
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  input.value = "竞态草稿";
+  root.querySelector('[data-testid="agent-send"]')._fire("click");
+  await waitUntil(() => createCalled);
+
+  // createSession 落盘在途：用户切到已有会话
+  await surface.switchSession("sid-1");
+  releaseCreate();
+  await tick();
+  await tick();
+
+  assert.deepEqual(submitCalls, [], "会话已切走，草稿不得投递到错误会话");
+  assert.match(root.textContent, /会话一消息/u, "当前视图仍是切走后的会话内容（缓存未被污染）");
+  assert.equal(input.value, "竞态草稿", "草稿回填到当前 composer，用户输入不丢");
+});
+
+test("discardDraft：停留占位视图时拒绝置空（自保护），占位保留", async () => {
+  const { surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  const draftId = surface.newSessionPlaceholder();
+  surface.discardDraft();
+  assert.equal(surface.newSessionPlaceholder(), draftId, "停留占位时 discardDraft 被拒绝，占位保留");
+  assert.ok(draftId.startsWith("draft-"), "占位 id 为本地 draft");
+});
+
+test("draft 提交失败（createSession 被中止）：切走后草稿回填 composer，输入不丢", async () => {
+  let rejectCreate;
+  const createGate = new Promise((_resolve, reject) => { rejectCreate = reject; });
+  let createCalled = false;
+  const sessions = [{ session_id: "sid-1", title: "会话一", archived_at: null }];
+  const sid1Snapshot = snapshotOf(session({ session_id: "sid-1", last_seq: 1 }), [
+    { ...ev("input_queued", { input_id: "in-1", text: "会话一消息", source: "chat" }, { session_id: "sid-1" }), seq: 1 }
+  ]);
+  const { root, surface } = await makeSurface({
+    apiOverrides: {
+      openProject: async () => {},
+      fetchSnapshot: async (options) => {
+        if (options?.sessionId === "sid-1") return sid1Snapshot;
+        return null;
+      },
+      // createSession 挂起模拟 POST 在途：切走时真实 transport 的 switchSession →
+      // transport.openProject 会 abortPendingRequests 把 createSession 一并中止
+      // （AbortError，不经代次守卫的直接失败）。fake 里以「切走后 gate reject」
+      // 复现同一时序：代次已切走 + createSession 以失败结束。
+      createSession: async () => {
+        createCalled = true;
+        await createGate;
+      },
+      submit: async () => ({ ok: true }),
+      sessions: async () => ({ sessions: [...sessions], active_session_id: null })
+    }
+  });
+
+  await surface.openProject("D:\\novel", "sid-1");
+  surface.newSessionPlaceholder();
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  input.value = "失败草稿";
+  root.querySelector('[data-testid="agent-send"]')._fire("click");
+  await waitUntil(() => createCalled);
+
+  // createSession 在途：用户切到已有会话（视图代次已切走，view 失败路径被
+  // viewGeneration 守卫拦截，草稿只能由 surface 主动回填）
+  await surface.switchSession("sid-1");
+  const abortError = new Error("aborted");
+  abortError.name = "AbortError";
+  rejectCreate(abortError);
+  await tick();
+  await tick();
+
+  assert.equal(input.value, "失败草稿", "切走后 createSession 被中止，草稿仍回填 composer，输入不丢");
 });

@@ -377,6 +377,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   let composerOptions = null;  // setComposerOptions 注入的控件选项（null = 未加载，控件禁用）
   let controlsSignature = "";  // 选项签名：未变化时不重建菜单（避免打断正在选择的用户）
   let composerEnabled = false; // 最近一次 syncComposer 的项目可用态
+  let composerBusy = false;    // Task 8：项目其他会话运行中（setBusy 设置），禁发送保输入
   let slashMatches = [];
   let slashActiveIndex = 0;
   let followLatest = true;     // 显式 follow 状态：仅用户接近底部时跟随（滚动锁，Task 7）
@@ -1712,8 +1713,11 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     // completed/cancelled/noop 恢复。输入框保持可编辑——取消完成时 draft 留在
     // textarea，发送恢复后原样可发。
     const compactionBlocked = compactionBlocksSend(getCompaction(state));
+    // Task 8：项目级串行门——其他会话运行中（project_busy / setBusy）禁用发送键，
+    // placeholder 提示，输入框不锁（草稿可继续编辑、busy 解除后原样可发）。
     input.disabled = !enabled;
-    send.disabled = !enabled || compactionBlocked;
+    send.disabled = !enabled || compactionBlocked || composerBusy;
+    input.placeholder = composerBusy ? "另一个对话正在运行" : "输入消息";
     composer.hidden = !enabled;
     surface.classList.toggle("agent-surface--empty", !enabled);
     composerEnabled = enabled;
@@ -1724,6 +1728,21 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       closeSlashMenu();
       closeComposerMenus();
     }
+  }
+
+  // Task 8：项目其他会话运行中（app.js / Task 9 或 submit 的 project_busy 调用）。
+  // 只禁发送、改提示，不锁输入；state 变化时 syncComposer 沿用该标志。
+  function setBusy(isBusy) {
+    composerBusy = isBusy === true;
+    if (currentState) syncComposer(currentState);
+  }
+
+  // Task 8：提交因会话竞态被丢弃时回填草稿。view 的失败路径受 viewGeneration
+  // 守卫保护（切走后的旧回调不改新视图），此方法由 surface 主动调用；仅当输入
+  // 框为空时回填，避免覆盖用户已输入的新内容。
+  function restoreComposerText(text) {
+    if (String(input.value ?? "").length > 0) return;
+    input.value = String(text ?? "");
   }
 
   function submitFromComposer() {
@@ -1791,6 +1810,8 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
+      // Task 8：项目其他会话运行中（busy）发送键/回车一律不提交，输入保留。
+      if (composerBusy) return;
       submitFromComposer();
     }
   });
@@ -1947,6 +1968,8 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     reset,
     destroy,
     setComposerOptions,
+    setBusy,
+    restoreComposerText,
     prepareEarlierInsert,
     restoreScrollAnchor,
     showHistoryLoadError,
