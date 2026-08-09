@@ -1070,14 +1070,34 @@ test("工具活动按 seq 位于 Assistant 正文之前（同一时间线）", a
     tool_call_id: "tc-a1", activity_id: "a1", name: "list_files", exit_code: 0, duration_ms: 12
   }, { seq: 3 }));
   surface.applyEvent(ev("assistant_message_completed", { input_id: "in-1", text: "文件清单如下" }, { seq: 4 }));
-  const activity = root.querySelector('[data-activity-id="a1"]');
+  // 信息读取类工具成功（Task 1）：不渲染独立活动行，时间线条目由工作组工具行承载
+  assert.equal(root.querySelector('[data-activity-id="a1"]'), null, "成功完成的 list_files 不再渲染独立活动行");
+  const toolRow = root.querySelector(".agent-work-group");
+  assert.ok(toolRow, "工作组承载工具标签行");
   const assistant = root.querySelector('[data-testid="agent-assistant-message"]');
-  assert.ok(activity, "工具活动行应渲染");
   assert.ok(assistant, "Assistant 正文应渲染");
   const timeline = (node) => node._parent.children.indexOf(node);
-  assert.ok(timeline(activity) < timeline(assistant), "完成态工具活动行应位于 Assistant 正文之前");
-  assert.equal(activity._parent, assistant._parent, "活动行与 Assistant 正文同属 messages 时间线");
-  assert.match(activity.textContent, /查看文件列表/u, "完成态活动仍显示工具摘要");
+  assert.ok(timeline(toolRow) < timeline(assistant), "完成态工具条目应位于 Assistant 正文之前");
+  assert.equal(toolRow._parent, assistant._parent, "工作组与 Assistant 正文同属 messages 时间线");
+  assert.match(toolRow.textContent, /查看文件列表/u, "工作组工具行保留工具摘要");
+});
+
+test("read_file 成功结果在消息流只渲染一次：工作组工具行保留，活动行省略（Task 1）", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(toolStarted("r1", "read_file", { path: "D:\\novel\\chapters\\001.md" }, { project_root: "D:\\novel" }));
+  surface.applyEvent(outputDelta("r1", "# 第一章\n雨夜，老宅。"));
+  surface.applyEvent(ev("tool_call_completed", {
+    tool_call_id: "tc-r1", activity_id: "r1", name: "read_file", exit_code: 0
+  }));
+  // 消息流中 read_file 只出现一条：工作组工具标签行（已读取文件 + 相对路径）
+  assert.equal(root.querySelectorAll('[data-activity-id]').length, 0, "成功完成的 read_file 不再渲染独立活动行");
+  // MockElement 不支持组合选择器：用单类选择器 + dataset.kind 过滤（与既有用例同款）
+  const toolRows = [...root.querySelectorAll(".agent-work-item")].filter((el) => el.dataset.kind === "tool");
+  assert.equal(toolRows.length, 1, "工作组保留唯一的工具标签行");
+  assert.match(toolRows[0].textContent, /已读取文件/u, "工具行显示完成态摘要");
+  assert.match(toolRows[0].textContent, /chapters\/001\.md/u, "工具行展示项目相对路径");
 });
 
 // ===========================================================================
@@ -1480,9 +1500,9 @@ test("I-2 行数上限：超限裁剪最早的终态行，运行中的行保留"
   await surface.openProject("D:\\novel");
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
   for (let i = 1; i <= 19; i += 1) {
-    surface.applyEvent(toolStarted(`a${i}`, "read_file", { path: `f${i}` }));
+    surface.applyEvent(toolStarted(`a${i}`, "shell", { command: `c${i}` }));
     surface.applyEvent(ev("tool_call_completed", {
-      tool_call_id: `tc-a${i}`, activity_id: `a${i}`, name: "read_file", exit_code: 0
+      tool_call_id: `tc-a${i}`, activity_id: `a${i}`, name: "shell", exit_code: 0
     }));
   }
   surface.applyEvent(toolStarted("r1", "shell", { command: "cmd1" }));
@@ -3058,7 +3078,7 @@ test("Task 10 跨页链：尾页先显示 completed 占位，前置页合并后�
   // 尾页：只有 tool_call_completed（started 在前置页才加载）
   const tailEvents = [
     mk(801, "history_compacted", { reason: "seed", compacted_at: T10_T0, message_count: 1 }),
-    mk(802, "tool_call_completed", { tool_call_id: "tc-1", activity_id: "act-1", name: "list_files", exit_code: 0, duration_ms: 12 }),
+    mk(802, "tool_call_completed", { tool_call_id: "tc-1", activity_id: "act-1", name: "write_file", exit_code: 0, duration_ms: 12 }),
     mk(803, "assistant_message_completed", { input_id: "in-1", text: "这是默认可见的最终答案。" }),
     mk(804, "run_completed", {})
   ];
@@ -3067,7 +3087,7 @@ test("Task 10 跨页链：尾页先显示 completed 占位，前置页合并后�
     mk(602, "model_turn_started", { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }),
     mk(603, "reasoning_completed", { turn_id: "turn-1", input_id: "in-1", text: "", availability: "empty" }),
     mk(604, "model_turn_completed", { turn_id: "turn-1", input_id: "in-1", outcome: "completed" }),
-    mk(700, "tool_call_started", { tool_call_id: "tc-1", activity_id: "act-1", name: "list_files", args: { path: "D:\\novel" }, action: null })
+    mk(700, "tool_call_started", { tool_call_id: "tc-1", activity_id: "act-1", name: "write_file", args: { path: "D:\\novel" }, action: null })
   ];
   const apiCalls = [];
   const { root, surface } = await makeSurface({
