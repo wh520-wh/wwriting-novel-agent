@@ -480,11 +480,14 @@
 
 /* §2.6 标题/正文层级：H1/H2 靠字号、字重、间距和 H2 的细分隔线建立层级，
    不使用 accent/green/渐变；H3–H6 不使用状态色；正文默认 regular（Task 12
-   显式声明 font-weight），只有 Markdown <strong> 使用 bold。 */
+   显式声明 font-weight），只有 Markdown <strong> 使用 bold。
+   正文神圣（CLAUDE.md / 计划 Global Constraints / 原型 v4 基线）：衬线
+   var(--serif)、15px、行高 ≥2.0，无框直出不包卡片。 */
 .agent-markdown {
   color: var(--agent-answer-fg);
-  font-size: 14px;
-  line-height: 1.68;
+  font-family: var(--serif);
+  font-size: 15px;
+  line-height: 2.0;
   font-weight: var(--weight-regular);
 }
 .agent-markdown h1 { color: var(--agent-heading-fg); font-size: 20px; line-height: 1.35; font-weight: var(--weight-bold); }
