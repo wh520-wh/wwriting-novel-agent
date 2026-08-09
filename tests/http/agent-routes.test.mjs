@@ -534,8 +534,10 @@ test("Task 5 clearHistory 成功后同一实例立即可用：新 session_id、s
   assert.ok(after.events.every((e) => e.session_id === result.session_id));
   assert.equal(after.events.some((e) => e.event_id === "seed-1"), false, "旧事件不得回写");
 
-  // cleared-history 落盘：clear-manifest.json 记录原因与旧 session
-  const clearedRoot = path.join(s.h.agentRoot, "cleared-history");
+  // cleared-history 落盘：clear-manifest.json 记录原因与旧 session（多会话布局下
+  // 位于 sessions/<id>/ 内——会话 journal 的存储根）
+  const { active_session_id } = await s.h.agent.sessions({ projectRoot: s.h.projectRoot });
+  const clearedRoot = path.join(s.h.agentRoot, "sessions", active_session_id, "cleared-history");
   const clearedEntries = await fs.readdir(clearedRoot);
   assert.equal(clearedEntries.length, 1);
   const clearManifest = JSON.parse(

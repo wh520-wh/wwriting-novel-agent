@@ -237,15 +237,21 @@ test("SSE 错误事件 data 行同样脱敏：不泄露原始 fs 错误与内部
   try {
     const first = await postJson(port, "/api/agent/input", { projectRoot, text: "你好" });
     assert.equal(first.res.status, 200);
+    let sessionId = null;
     await waitFor(async () => {
       const { data } = await getJson(port, `/api/agent/snapshot?projectRoot=${encodeURIComponent(projectRoot)}`);
+      sessionId = data.session?.session_id ?? sessionId;
       return data.session?.active_run?.status === "completed" ? true : null;
     });
+    // 多会话布局：会话 journal 位于 agent/sessions/<id>/segments/events（惰性创建
+    // 会话的 journal 内部 id 与注册表 id 一致）
     const eventsPath = path.join(
       stateRoot,
       "workspaces",
       workspaceIdForPath(projectRoot),
       "agent",
+      "sessions",
+      sessionId,
       "segments",
       "events",
       "00000001.jsonl"

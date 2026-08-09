@@ -527,9 +527,24 @@ export function createJournalSegmentStore({
   async function rotate() {
     if (activeSegment) {
       const old = activeSegment;
-      // 轮转前先 fsync 当前文件
-      await old.fd.sync();
-      await old.fd.close();
+      // 轮转前先 fsync 当前文件。句柄通常已随上次 append 关闭（Windows rename
+      // 兼容，见 append）：关闭后重新打开做 fsync，保持"sealed 段落盘"的持久性
+      // 语义不因句柄策略改变而弱化。
+      //
+      // 重开必须用可写句柄（"r+"）：Windows 上只读句柄（"r"）调用 fsync 抛
+      // EPERM（本机实测）。"r+" 不改变文件内容/追加位置语义，且要求文件已存在
+      //（轮转对象必然是已写过的活动段，天然满足）。
+      if (old.fd) {
+        await old.fd.sync();
+        await old.fd.close();
+      } else {
+        const syncFd = await fs.open(old.path, "r+");
+        try {
+          await syncFd.sync();
+        } finally {
+          await syncFd.close();
+        }
+      }
       old.fd = null;
       // 把索引标记 sealed:true（原子写）
       await writeIndex(old, { sealed: true });
@@ -582,6 +597,10 @@ export function createJournalSegmentStore({
       if (activeSegment.count % indexStride === 0) {
         activeSegment.offsets.push({ seq, byte: activeSegment.bytes });
       }
+      if (activeSegment.fd == null) {
+        // 句柄已在批次结束后关闭（见下）：下次 append 按需重开
+        activeSegment.fd = await fs.open(activeSegment.path, "a");
+      }
       await activeSegment.fd.write(line, "utf8");
       activeSegment.count += 1;
       activeSegment.bytes += lineBytes;
@@ -596,6 +615,13 @@ export function createJournalSegmentStore({
     await updateManifest((current) =>
       streamName === "events" ? { last_event_seq: lastSeq } : { last_transcript_seq: lastSeq }
     );
+    // Windows：目录 rename（Task 3 会话迁移的 moveSessionEntries、clear-history 轮转）
+    // 在目录内存在打开句柄时会 EPERM。批次写完即关闭活动段句柄——下次 append 按需
+    // 重开（见上），本 store 不再长期占用段文件，含段目录的 rename 不再被阻塞。
+    if (activeSegment?.fd) {
+      await activeSegment.fd.close().catch(() => {});
+      activeSegment.fd = null;
+    }
   }
 
   // 最近字节偏移：index 中最后一个 offset.seq <= target 的 byte；无索引 → 0。

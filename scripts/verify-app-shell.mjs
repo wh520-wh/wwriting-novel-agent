@@ -376,6 +376,30 @@ try {
   await fs.rm(demoRoot, { recursive: true, force: true }).catch(() => {});
 }
 
+// 递归判定：agent 根或任一 sessions/<id>/（Task 4 多会话布局）下存在 journal
+// 数据（journal-manifest.json / segments / 单体 events.jsonl / 注册表 index.json）
+// 即视为"有 journal 数据"——判空逻辑必须认识 sessions/ 布局。
+async function hasJournalData(dir) {
+  let names;
+  try {
+    names = await fs.readdir(dir);
+  } catch {
+    return false;
+  }
+  if (names.includes("journal-manifest.json") || names.includes("segments") || names.includes("events.jsonl")) {
+    return true;
+  }
+  if (names.includes("sessions")) {
+    const sessionsDir = path.join(dir, "sessions");
+    const sessionNames = await fs.readdir(sessionsDir).catch(() => []);
+    if (sessionNames.includes("index.json")) return true;
+    for (const name of sessionNames) {
+      if (await hasJournalData(path.join(sessionsDir, name))) return true;
+    }
+  }
+  return false;
+}
+
 async function containsWorkspaceJournal(stateRoot) {
   const workspacesDir = path.join(stateRoot, "workspaces");
   let entries;
@@ -386,15 +410,7 @@ async function containsWorkspaceJournal(stateRoot) {
   }
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    const agentDir = path.join(workspacesDir, entry.name, "agent");
-    try {
-      const names = await fs.readdir(agentDir);
-      if (names.includes("journal-manifest.json") || names.includes("segments") || names.includes("events.jsonl")) {
-        return true;
-      }
-    } catch {
-      // 该 workspace 尚无 agent 目录，继续扫描
-    }
+    if (await hasJournalData(path.join(workspacesDir, entry.name, "agent"))) return true;
   }
   return false;
 }

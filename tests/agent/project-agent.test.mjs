@@ -595,12 +595,16 @@ test("运行中 submit 进入 FIFO 队列，不创建第二个 Run", async (t) =
   assertActivityClosure(events);
 });
 
-test("open() 幂等：重复 open 不创建第二个 Session，也不干扰已完成 Run", async (t) => {
+test("open() 幂等：重复 open 不创建会话（惰性），提交后恰好一个 Session 且 Run 正常完成", async (t) => {
   const h = await openHarness(t, { gatewayScript: [{ reply: { text: "好。" } }] });
-  const before = await readSession(h.agent, h.projectRoot);
+  // Task 4 惰性创建：品牌新项目 open（含重复 open）不物化会话、不产生会话条目
+  const before = await h.agent.sessions({ projectRoot: h.projectRoot });
+  assert.equal(before.sessions.length, 0, "open 后无会话条目");
   await h.agent.open({ projectRoot: h.projectRoot });
-  const after = await readSession(h.agent, h.projectRoot);
-  assert.equal(after.session_id, before.session_id);
+  const after = await h.agent.sessions({ projectRoot: h.projectRoot });
+  assert.equal(after.sessions.length, 0, "重复 open 不创建会话");
+  const snap = await h.agent.snapshot({ projectRoot: h.projectRoot });
+  assert.equal(snap.session, null, "无会话快照为空");
   await h.agent.submit({ projectRoot: h.projectRoot, text: "你好", source: "chat" });
   await waitForIdle(h.agent, h.projectRoot);
   const events = await readEvents(h.agent, h.projectRoot);
@@ -955,11 +959,11 @@ test("工具调用与读取结果只瞬时提供给模型，持久 transcript/jo
   });
   secretPath = path.join(h.projectRoot, `${SECRET}.md`);
   await fs.writeFile(secretPath, PRIVATE_CONTENT, "utf8");
-  await h.agent.submit({ projectRoot: h.projectRoot, text: "读取指定文件", source: "chat" });
+  const submitted = await h.agent.submit({ projectRoot: h.projectRoot, text: "读取指定文件", source: "chat" });
   await waitForIdle(h.agent, h.projectRoot);
 
   const transcriptRaw = await fs.readFile(
-    path.join(h.agentRoot, "segments", "transcript", "00000001.jsonl"),
+    path.join(h.agentRoot, "sessions", submitted.session_id, "segments", "transcript", "00000001.jsonl"),
     "utf8"
   );
   assert.ok(!transcriptRaw.includes(SECRET), "transcript 不得保存工具参数中的 secret");
@@ -1577,18 +1581,20 @@ test("非法 source 与空输入一律拒绝（source 不能绕过权限）", as
   );
 });
 
-test("新项目不创建旧状态文件，Agent 状态只落在应用私有 agentRoot（新分段格式）", async (t) => {
+test("新项目不创建旧状态文件，Agent 状态只落在应用私有 agentRoot/sessions/<id>（新分段格式）", async (t) => {
   const h = await openHarness(t, { gatewayScript: [{ reply: { text: "好。" } }] });
-  await h.agent.submit({ projectRoot: h.projectRoot, text: "你好", source: "chat" });
+  const result = await h.agent.submit({ projectRoot: h.projectRoot, text: "你好", source: "chat" });
   await waitForIdle(h.agent, h.projectRoot);
   assert.equal(await pathExists(path.join(h.projectRoot, LEGACY_STATE_FILE)), false);
   assert.equal(await pathExists(path.join(h.projectRoot, ".wwriting", "agent")), false, "新会话不得写回项目内 .wwriting/agent");
-  // 新格式 journal：segments/ + journal-manifest.json + session.json + migration.json
+  // 多会话布局（Task 4）：journal 落在应用私有 agentRoot/sessions/<id>/ 下。
+  // 每会话独立存储根：segments/ + journal-manifest.json + session.json + migration.json
+  const sessionDir = path.join(h.agentRoot, "sessions", result.session_id);
   for (const name of ["session.json", "migration.json", "journal-manifest.json"]) {
-    assert.equal(await pathExists(path.join(h.agentRoot, name)), true, `${name} 应落在应用私有 agentRoot`);
+    assert.equal(await pathExists(path.join(sessionDir, name)), true, `${name} 应落在应用私有 agentRoot/sessions/<id>`);
   }
-  assert.equal(await pathExists(path.join(h.agentRoot, "segments", "events")), true, "segments/events 应存在");
-  assert.equal(await pathExists(path.join(h.agentRoot, "segments", "transcript")), true, "segments/transcript 应存在");
+  assert.equal(await pathExists(path.join(sessionDir, "segments", "events")), true, "segments/events 应存在");
+  assert.equal(await pathExists(path.join(sessionDir, "segments", "transcript")), true, "segments/transcript 应存在");
   assert.equal(await pathExists(path.join(h.agentRoot, "events.jsonl")), false, "新项目不得创建单体 events.jsonl");
   assert.equal(await pathExists(path.join(h.agentRoot, "transcript.jsonl")), false, "新项目不得创建单体 transcript.jsonl");
 });
@@ -1607,13 +1613,15 @@ test("旧 .wwriting/agent 中间损坏：open() 拒绝迁移但允许新会话�
   await fs.writeFile(path.join(legacyDir, "events.jsonl"), legacyEvents, "utf8");
 
   await h.agent.open({ projectRoot: h.projectRoot });
-  // 新会话仍可建立：私有目录从零创建 session（迁移被拒、目标目录保持干净）
-  const session = await readSession(h.agent, h.projectRoot);
-  assert.ok(session.session_id, "open() 必须允许新会话");
-  assert.equal(await pathExists(path.join(h.agentRoot, "journal-manifest.json")), true, "新 journal 落应用私有目录（新分段格式）");
-  assert.equal(await pathExists(path.join(h.agentRoot, "segments", "events")), true, "新 journal 应创建 segments/events");
-  await h.agent.submit({ projectRoot: h.projectRoot, text: "你好", source: "chat" });
+  // 惰性创建：open() 不物化会话（损坏的旧数据不被迁移、不产生会话条目）
+  const { sessions } = await h.agent.sessions({ projectRoot: h.projectRoot });
+  assert.equal(sessions.length, 0, "损坏旧数据不产生会话条目");
+  // 首条消息物化新会话：私有目录 sessions/<id>/ 从零创建（迁移被拒、目标目录保持干净）
+  const result = await h.agent.submit({ projectRoot: h.projectRoot, text: "你好", source: "chat" });
   await waitForIdle(h.agent, h.projectRoot);
+  const sessionDir = path.join(h.agentRoot, "sessions", result.session_id);
+  assert.equal(await pathExists(path.join(sessionDir, "journal-manifest.json")), true, "新 journal 落应用私有目录（新分段格式）");
+  assert.equal(await pathExists(path.join(sessionDir, "segments", "events")), true, "新 journal 应创建 segments/events");
   const events = await readEvents(h.agent, h.projectRoot);
   assert.equal(eventsOfType(events, "session_created").length, 1, "新会话以私有目录为准");
   assert.equal(await fs.readFile(path.join(legacyDir, "events.jsonl"), "utf8"), legacyEvents, "旧 journal 必须保持字节不变");
@@ -1790,15 +1798,15 @@ test("promote 与 stop 竞态：终态时不误报成功（promoted: false 或�
     eventsOfType(snap.events, "tool_call_started").length >= 1
   );
   const queued = (await readSession(h.agent, h.projectRoot)).queued_inputs[0];
-  const promotePromise = h.agent.promote({ projectRoot: h.projectRoot, inputId: queued.id });
+  // 立即挂 rejection 处理器（避免竞态窗口内的 unhandled rejection）：promote 与
+  // stop 并发，任一方先落盘都是合法结果——test 下方同时容忍拒绝与 promoted:false。
+  const promotePromise = h.agent.promote({ projectRoot: h.projectRoot, inputId: queued.id }).then(
+    (value) => value,
+    (error) => ({ rejected: error })
+  );
   const stopResult = await h.agent.stop({ projectRoot: h.projectRoot, reason: "user_stop" });
   assert.equal(stopResult.cancelled, true);
-  let promoteResult;
-  try {
-    promoteResult = await promotePromise;
-  } catch (error) {
-    promoteResult = { rejected: error };
-  }
+  const promoteResult = await promotePromise;
   if (promoteResult.rejected) {
     assert.match(promoteResult.rejected.message, /停止|没有可打断/, "stopping 预检查或终态拒绝");
   } else {
@@ -1895,16 +1903,19 @@ function compactionSummaryScript({ count = 40, compactionReply = validCompaction
   return Array.from({ length: count }, () => compactionAwareEntry(compactionReply, normalReply));
 }
 
-// C1 修复：预置 transcript（在 agent.open 之前直接写入 segments/transcript，避免
-// 逐轮 submit 的成本）。写入极短轮次记录——8005 条估算约 111k tokens，远低于
-// 204_800 软阈值：估算门禁永远不触发，只有"尾部页溢出"门禁能触发首压。
-async function seedTranscriptRecords(h, count, content = "一") {
+// C1 修复：预置 transcript（在 session journal 首次 load 之前直接写入
+// sessions/<id>/segments/transcript，避免逐轮 submit 的成本）。写入极短轮次记录——
+// 8005 条估算约 111k tokens，远低于 204_800 软阈值：估算门禁永远不触发，只有
+// "尾部页溢出"门禁能触发首压。多会话布局下必须先 newSession 拿到 sessionId，
+// 预置进该会话目录（journal 首次 load 前写入，store 才能在 load 时读到）。
+async function seedTranscriptRecords(h, count, content = "一", sessionId) {
   const { createJournalSegmentStore } = await import("../../src/core/agent/journal-segments.mjs");
-  const root = path.join(h.agentRoot, "segments", "transcript");
+  const sessionDir = path.join(h.agentRoot, "sessions", sessionId);
+  const root = path.join(sessionDir, "segments", "transcript");
   const store = createJournalSegmentStore({
     root,
     streamName: "transcript",
-    manifestPath: path.join(h.agentRoot, "journal-manifest.json")
+    manifestPath: path.join(sessionDir, "journal-manifest.json")
   });
   await store.load();
   const records = [];
@@ -1925,9 +1936,12 @@ test("I1：超大 transcript 首压 sourceMaterial 按窗口预算封顶（压�
   // 8005 条、每条 50 CJK 字符（一轮 ≈100 tokens）：估算（尾部 8000 条）≈ 440k
   // tokens 超过软阈值，必然触发压缩；但 8005 条逐字拼接的 sourceMaterial 若不加
   // 封顶会远超 256k 窗口（400k+ 字符），provider 会拒绝请求。
-  await seedTranscriptRecords(h, 8005, "章".repeat(50));
-  await h.agent.open({ projectRoot: h.projectRoot });
-  await h.agent.submit({ projectRoot: h.projectRoot, text: "你好", source: "chat" });
+  // 多会话布局：先 newSession 拿 sessionId，预置 transcript 进该会话目录
+  //（journal 首次 load 前写入），再 open(sessionId) 物化会话后提交。
+  const seeded = await h.agent.newSession({ projectRoot: h.projectRoot, title: "播种" });
+  await seedTranscriptRecords(h, 8005, "章".repeat(50), seeded.session_id);
+  await h.agent.open({ projectRoot: h.projectRoot, sessionId: seeded.session_id });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "你好", source: "chat", sessionId: seeded.session_id });
   await waitForIdle(h.agent, h.projectRoot);
   const compactionCall = h.gateway.calls.find((call) => call.request.metadata?.stage === "context_compaction");
   assert.ok(compactionCall, "必须发生压缩模型调用");
@@ -1958,9 +1972,10 @@ test("C1：transcript 超过无 checkpoint 尾部页（高轮次/低 token）→
   // 预置 8005 条极短轮次（无 checkpoint）：估算 ≈111k tokens < 204_800 软阈值，
   // 但 transcript 已超出 buildHistory 的尾部页（8000）——不压缩会把最旧记录静默
   // 排除出 prompt，且永远不会触发估算门禁。
-  await seedTranscriptRecords(h, 8005);
-  await h.agent.open({ projectRoot: h.projectRoot });
-  await h.agent.submit({ projectRoot: h.projectRoot, text: "你好", source: "chat" });
+  const seeded = await h.agent.newSession({ projectRoot: h.projectRoot, title: "播种" });
+  await seedTranscriptRecords(h, 8005, "一", seeded.session_id);
+  await h.agent.open({ projectRoot: h.projectRoot, sessionId: seeded.session_id });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "你好", source: "chat", sessionId: seeded.session_id });
   await waitForIdle(h.agent, h.projectRoot);
   const events = await readEvents(h.agent, h.projectRoot);
   const compactionEvents = events.filter((event) => event.type.startsWith("context_compaction"));
@@ -1977,7 +1992,7 @@ test("C1：transcript 超过无 checkpoint 尾部页（高轮次/低 token）→
   assert.equal(eventsOfType(events, "input_consumed").length, 1);
   const session = await readSession(h.agent, h.projectRoot);
   assert.equal(session.active_context_checkpoint_id, completed.payload.checkpoint_id, "压缩后 active checkpoint 必须建立");
-  const checkpointFile = path.join(h.agentRoot, "checkpoints", `context-${completed.payload.checkpoint_id}.json`);
+  const checkpointFile = path.join(h.agentRoot, "sessions", seeded.session_id, "checkpoints", `context-${completed.payload.checkpoint_id}.json`);
   assert.equal(await pathExists(checkpointFile), true, "checkpoint 正式文件必须落盘");
 });
 
@@ -2018,7 +2033,7 @@ test("自动压缩：达到阈值先压缩（started→running→completed），
   assert.equal(session.active_context_checkpoint_id, completed.payload.checkpoint_id, "completed 必须切换 active 指针");
   assert.equal(session.compaction.state, "completed");
   assert.equal(session.compaction.trigger, "automatic");
-  const checkpointFile = path.join(h.agentRoot, "checkpoints", `context-${completed.payload.checkpoint_id}.json`);
+  const checkpointFile = path.join(h.agentRoot, "sessions", session.session_id, "checkpoints", `context-${completed.payload.checkpoint_id}.json`);
   assert.equal(await pathExists(checkpointFile), true, "checkpoint 正式文件必须落盘");
 });
 
