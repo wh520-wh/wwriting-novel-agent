@@ -358,10 +358,17 @@ test("其他测试目录不得 import Agent 文件（tests/agent/ 例外，可�
 // createReasoningTicker），与规则 A2 授予 tests/agent/ 内部 seam 权利的意图一致。
 // Task 11 追加：agent-context-ring.test.mjs 直接测纯 DOM 圆环模块
 // createContextRing（brief Step 1/2 的模块级契约测试，同一 seam 意图）。
+// Task 7 追加：agent-api.test.mjs 直接测传输层 createAgentApi（api.js 是
+// AgentSurface 的正式依赖——index.js 经 createAgentApi() 构造 transport）；它以
+// 注入 fetchImpl 方式做请求形状单元测试，与 agent-surface.test.mjs 经 fake api
+// 验证 surface 行为互补：后者只能断言 surface 的调用形状，覆盖不到 transport 的
+// URL/body 构造细节。agent-surface.test.mjs 不在名单内：它只 import index.js
+//（规则 B 允许的公共 seam），不触碰内部 seam。
 const SURFACE_SEAM_TESTS = new Set([
   "tests/app-shell/work-items.test.mjs",
   "tests/app-shell/reasoning-ticker.test.mjs",
-  "tests/app-shell/agent-context-ring.test.mjs"
+  "tests/app-shell/agent-context-ring.test.mjs",
+  "tests/app-shell/agent-api.test.mjs"
 ]);
 
 test("AgentSurface 只能通过 src/app-shell/agent/index.js 对外暴露", () => {
