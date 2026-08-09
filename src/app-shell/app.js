@@ -13,6 +13,7 @@ import { icon } from "./icons.js";
 import { createDrawerPanels } from "./drawer-panels.js";
 import { createSettingsModal } from "./settings-modal.js";
 import { createProjectScope } from "./project-scope.mjs";
+import { createSessionSidebar } from "./session-sidebar.mjs";
 import { createAgentSurface } from "./agent/index.js";
 import { loadDefaultTier } from "./permission-defaults.mjs";
 import { getTierById } from "./permission-tiers.mjs";
@@ -25,6 +26,7 @@ const refs = {
   projectFilter: document.querySelector("#project-filter"),
   projectList: document.querySelector("#project-list"),
   projectOpenStatus: document.querySelector("#project-open-status"),
+  railScroll: document.querySelector(".rail-scroll"),
   openFolder: document.querySelector("#open-folder"),
   openSettings: document.querySelector("#open-settings"),
   title: document.querySelector("#project-title"),
@@ -89,7 +91,7 @@ let lastFocused = null;
 let createModalMode = "new";
 let readerChapterNo = null;
 let projectListData = null;
-let archivedExpanded = false;
+let lastActiveSessionId = null; // 最近一次 onSessionsChanged 的活跃会话（deleteSession 兜底用）
 
 // ---- AgentSurface：唯一对话 seam ----
 const agentSurface = createAgentSurface({
@@ -98,7 +100,37 @@ const agentSurface = createAgentSurface({
   onOpenSettings: (section) => openSettingsModal(section),
   onOpenChapter: (chapterNo) => openReader(chapterNo),
   onCreateProject: () => openCreateModal(),
-  onOpenProjectFolder: () => openFromFolder()
+  onOpenProjectFolder: () => openFromFolder(),
+  // Task 9：会话列表刷新 → 左侧栏两级树（只重渲当前项目组 + busy 复位）。draft
+  // 占位已由 surface 插入列表头部（{ session_id, title, status: "draft" }），
+  // 侧边栏按 status === "draft" 特判。
+  onSessionsChanged: (sessions, activeSessionId) => {
+    lastActiveSessionId = activeSessionId ?? null;
+    sessionSidebar.handleSessionsChanged(currentProjectRoot, sessions, activeSessionId);
+  },
+  // Task 9：SSE run 终态 → 重拉会话列表并复位 busy。app.js 不消费 SSE（surface 是
+  // 唯一消费者），这里经 surface 的 onRunTerminal 钩子转发；busy 复位由
+  // onSessionsChanged → handleSessionsChanged 内的检查承担（有 running → true，
+  // 全部非 running → false）。终态事件按当前会话流到达；跨会话运行结束的复位缺口
+  // 见 session-sidebar.mjs 的 syncBusy 注释（openProject/switchSession 刷新兜底）。
+  onRunTerminal: () => {
+    agentSurface.refreshSessions();
+  }
+});
+
+// Task 9：左侧栏两级树（项目折叠组 → 对话列表）。渲染、折叠状态、懒加载缓存与
+// 会话操作都在 session-sidebar.mjs；app.js 只提供数据源与 surface 接线。
+const sessionSidebar = createSessionSidebar({
+  listEl: refs.projectList,
+  countEl: refs.projectCount,
+  filterEl: refs.projectFilter,
+  scrollEl: refs.railScroll,
+  getProjectListData: () => projectListData,
+  getCurrentProjectRoot: () => currentProjectRoot,
+  fetchSessions: async (projectRoot) => getJson(withProjectScope("/api/agent/sessions", projectRoot)),
+  renderProjectRow: (project, selectedProjectRoot) => renderProjectNav(project, selectedProjectRoot),
+  surface: agentSurface,
+  showToast
 });
 
 const settingsModal = createSettingsModal({
@@ -294,51 +326,10 @@ async function loadProjectList() {
   }
 }
 
+// Task 9：项目列表（含两级树渲染）整体委托 session-sidebar.mjs——项目行仍由
+// renderProjectNav 提供（回调注入），折叠箭头/会话组/已归档折叠组/空态由模块渲染。
 function renderProjectListFiltered() {
-  if (!projectListData) return;
-  const query = (refs.projectFilter?.value ?? "").trim().toLowerCase();
-  const filtered = query
-    ? projectListData.projects.filter((project) =>
-        [project.title, project.story_seed, project.model_label].some((text) =>
-          String(text ?? "").toLowerCase().includes(query)
-        )
-      )
-    : projectListData.projects;
-  const active = filtered.filter((p) => !p.archived_at);
-  const archived = filtered.filter((p) => p.archived_at);
-  refs.projectCount.textContent = formatNumber(filtered.length);
-  const parts = [];
-  if (active.length > 0) {
-    parts.push(...active.map((project) => renderProjectNav(project, projectListData.selectedProjectRoot)));
-  }
-  if (archived.length > 0) {
-    const toggle = document.createElement("div");
-    toggle.className = "rail-group-label rail-archived-toggle";
-    toggle.setAttribute("role", "button");
-    toggle.setAttribute("tabindex", "0");
-    const labelSpan = document.createElement("span");
-    labelSpan.textContent = "已归档";
-    const countSpan = document.createElement("span");
-    countSpan.className = "count";
-    countSpan.textContent = String(archived.length);
-    toggle.append(labelSpan, countSpan);
-    const toggleArchived = () => { archivedExpanded = !archivedExpanded; renderProjectListFiltered(); };
-    toggle.addEventListener("click", toggleArchived);
-    toggle.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleArchived(); } });
-    parts.push(toggle);
-    if (archivedExpanded) {
-      parts.push(...archived.map((project) => {
-        const row = renderProjectNav(project, projectListData.selectedProjectRoot);
-        row.classList.add("proj-archived");
-        return row;
-      }));
-    }
-  }
-  refs.projectList.replaceChildren(
-    ...(parts.length > 0
-      ? parts
-      : [renderProjectEmpty(query ? "没有匹配的小说。" : "还没有小说")])
-  );
+  sessionSidebar.render();
 }
 
 async function loadDashboard() {
@@ -360,6 +351,9 @@ async function loadDashboard() {
   } catch (error) {
     if (requestId !== dashboardRequestId) return;
     if (!projectScope.isCurrent(token)) return;
+    // Task 9：dashboard 失败时当前项目会话组降级为可重试失败行
+    //（否则「加载中…」永不消失）。
+    sessionSidebar.markSessionsFailed(activeProjectRoot);
     renderError(error);
   }
 }
@@ -382,7 +376,26 @@ function commitProjectSwitch(projectRoot) {
   projectScope.activate(projectRoot);
   currentProjectRoot = projectRoot;
   clearTransientState();
-  agentSurface.openProject(projectRoot);
+  // Task 9：会话级代次推进——在途会话切换的续作一律丢弃；openProject 完成后拉一次
+  // 会话列表（Task 8 契约：surface 不自动拉）更新活跃高亮 + busy 复位。
+  sessionSidebar.invalidateProject();
+  Promise.resolve(agentSurface.openProject(projectRoot)).then(() => {
+    agentSurface.refreshSessions();
+  });
+}
+
+// Task 8 契约：删除会话后若删的是当前活跃会话 → 切到该项目的最近活跃会话
+//（surface.switchSession(null) 由后端 last-active 解析），无其他会话则进入占位新对话。
+// Task 9 侧边栏无删除入口（会话操作仅改名/归档）；Task 10 设置页「已归档对话」
+// 删除时调用本函数。
+async function deleteSessionAndResolveActive(sessionId) {
+  await agentSurface.deleteSession(sessionId);
+  if (lastActiveSessionId !== sessionId) return;
+  await sessionSidebar.switchSession(null);
+  const remaining = sessionSidebar.getSessions(currentProjectRoot);
+  if (!remaining || remaining.sessions.length === 0) {
+    agentSurface.newSessionPlaceholder();
+  }
 }
 
 function renderProjectNav(project, selectedProjectRoot) {
@@ -436,6 +449,7 @@ function renderDashboard(data) {
     currentProjectRoot = null;
     refs.title.textContent = "开始创作";
     refs.topbarSub.textContent = "新建或打开一部小说，开始你的创作。";
+    sessionSidebar.syncBusy(); // 无项目：busy 复位
     refreshDrawerIfOpen();
     return;
   }
@@ -446,6 +460,10 @@ function renderDashboard(data) {
     currentProjectRoot = data.projectRoot;
     agentSurface.openProject(data.projectRoot);
   }
+
+  // Task 9：dashboard 会话数据 seed 当前项目（两级树当前项目组数据源，含 run_status
+  // 状态点与 busy 复位依据）；懒加载缓存以最新 dashboard 为准。
+  sessionSidebar.seedSessions(data.projectRoot, data.sessions ?? [], data.active_session_id ?? null);
 
   const summary = data.summary;
   const project = data.project;

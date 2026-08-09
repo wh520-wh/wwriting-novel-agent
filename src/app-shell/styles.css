@@ -1363,6 +1363,225 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 }
 
 
+/* ===== 两级树：项目折叠组 → 会话列表（Task 9） ===== */
+/* 带会话组的项目行：左缘让位给折叠箭头 */
+.proj-row.proj-sessioned .proj {
+  padding-left: 32px;
+}
+
+.proj-chevron {
+  position: absolute;
+  inset-inline-start: 8px;
+  top: 50%;
+  width: 20px;
+  height: 20px;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 150ms ease, background 150ms ease;
+}
+
+.proj-chevron:hover {
+  color: var(--ink);
+  background: var(--rail-2);
+}
+
+.proj-chevron:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.proj-chevron svg {
+  transition: transform 160ms ease;
+}
+
+.proj-chevron[aria-expanded="true"] svg {
+  transform: rotate(90deg);
+}
+
+.session-group {
+  margin: 2px 0 4px 10px;
+  padding-left: 10px;
+  border-left: 1px solid var(--line);
+}
+
+.session-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 2px 2px;
+}
+
+.session-group-label {
+  font-size: 11px;
+  line-height: 1.4;
+  font-weight: 550;
+  color: var(--text-muted);
+}
+
+.session-add {
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 150ms ease, background 150ms ease;
+}
+
+.session-add:hover {
+  color: var(--ink);
+  background: var(--rail-2);
+}
+
+.session-add:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.session-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+  padding: 6px 30px 6px 2px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  color: var(--ink-2);
+  transition: background 150ms ease;
+}
+
+.session-row:hover {
+  background: var(--hover);
+}
+
+.session-row.active {
+  background: var(--rail-2);
+}
+
+.session-row.active .session-title {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.session-row.session-draft {
+  cursor: default;
+}
+
+.session-status {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.session-status[data-status="running"] {
+  background: var(--accent);
+}
+
+.session-status[data-status="failed"] {
+  background: var(--red);
+}
+
+.session-title {
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-menu {
+  position: absolute;
+  inset-inline-end: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms ease;
+}
+
+/* hover 显隐操作：仅在有 hover 能力的设备显示；:focus-within 保证键盘可达 */
+@media (hover: hover) {
+  .session-row:hover .session-menu,
+  .session-row:focus-within .session-menu {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+.session-draft .session-menu {
+  display: none;
+}
+
+.session-op {
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  background: color-mix(in srgb, var(--rail-2) 90%, transparent);
+  color: var(--muted);
+  border-radius: 5px;
+  cursor: pointer;
+  transition: color 150ms ease, background 150ms ease, border-color 150ms ease;
+}
+
+.session-op:hover,
+.session-op:focus-visible {
+  color: var(--ink);
+  background: var(--surface);
+  border-color: var(--line);
+}
+
+.session-op:disabled {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.session-empty,
+.session-loading {
+  padding: 6px 2px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.session-retry {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 2px;
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 150ms ease, background 150ms ease;
+}
+
+.session-retry:hover,
+.session-retry:focus-visible {
+  color: var(--ink);
+  background: var(--hover);
+}
+
+
+
 /* 故障卡 */
 .failure-card {
   margin: 12px 0;
