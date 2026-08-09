@@ -35,6 +35,14 @@ function compareByUpdatedAtDesc(a, b) {
   return 0;
 }
 
+// 领域错误统一带 code（不 import runtime 的 fail；HTTP 层按 code 映射状态码，
+// message 仅作人类可读原因——code 是契约，message 不是，调用方不得按文案匹配）。
+function codedError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
 export function createSessionRegistry({ root }) {
   const indexPath = path.join(root, "sessions", "index.json");
   const mutex = createMutex();
@@ -114,9 +122,9 @@ export function createSessionRegistry({ root }) {
     return mutex.run(async () => {
       const store = await load();
       const meta = store.sessions.find((s) => s.session_id === sessionId);
-      if (!meta) throw new Error(`会话不存在: ${sessionId}`);
+      if (!meta) throw codedError("session_not_found", `会话不存在: ${sessionId}`);
       const trimmed = String(title ?? "").trim();
-      if (!trimmed) throw new Error("标题不能为空");
+      if (!trimmed) throw codedError("invalid_session_title", "标题不能为空");
       meta.title = trimmed;
       meta.updated_at = new Date().toISOString();
       await save(store);
@@ -128,7 +136,7 @@ export function createSessionRegistry({ root }) {
     return mutex.run(async () => {
       const store = await load();
       const meta = store.sessions.find((s) => s.session_id === sessionId);
-      if (!meta) throw new Error(`会话不存在: ${sessionId}`);
+      if (!meta) throw codedError("session_not_found", `会话不存在: ${sessionId}`);
       meta.archived_at = new Date().toISOString();
       meta.updated_at = meta.archived_at;
       await save(store);
@@ -140,7 +148,7 @@ export function createSessionRegistry({ root }) {
     return mutex.run(async () => {
       const store = await load();
       const meta = store.sessions.find((s) => s.session_id === sessionId);
-      if (!meta) throw new Error(`会话不存在: ${sessionId}`);
+      if (!meta) throw codedError("session_not_found", `会话不存在: ${sessionId}`);
       meta.archived_at = null;
       meta.updated_at = new Date().toISOString();
       await save(store);
@@ -191,7 +199,7 @@ export function createSessionRegistry({ root }) {
       }
       const store = await load();
       const meta = store.sessions.find((s) => s.session_id === sessionId);
-      if (!meta) throw new Error(`会话不存在: ${sessionId}`);
+      if (!meta) throw codedError("session_not_found", `会话不存在: ${sessionId}`);
       meta.last_seq = lastSeq;
       await save(store);
       return meta;

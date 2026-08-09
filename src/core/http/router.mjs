@@ -42,6 +42,9 @@ const STATUS_400_CODES = new Set([
   "bad_args",
   "confirmation_mismatch",
   "promote_failed",
+  // Task 5 会话 CRUD：sessionId/title 校验
+  "invalid_session_id",
+  "invalid_session_title",
   // 项目/设置领域
   "invalid_settings_patch",
   "INVALID_WORKSPACE_SCOPE",
@@ -57,7 +60,9 @@ const STATUS_404_CODES = new Set([
   "run_not_found",
   "dir_not_found",
   "file_not_found",
-  "model_profile_not_found"
+  "model_profile_not_found",
+  // Task 5 会话 CRUD：显式 sessionId 指向不存在的会话
+  "session_not_found"
 ]);
 
 const STATUS_409_CODES = new Set([
@@ -68,7 +73,11 @@ const STATUS_409_CODES = new Set([
   "decision_superseded",
   // retry 已终结（completed/cancelled 等不可恢复状态）的 Run：当前状态不允许该操作
   "run_not_recoverable",
-  "PROJECT_SCOPE_CHANGED"
+  "PROJECT_SCOPE_CHANGED",
+  // Task 5 多会话串行门：其他会话运行中（project_busy，前端禁用发送键）/
+  // 该会话自身运行中（session_busy，前端提示删除冲突；运行中检查仅 deleteSession 有）
+  "project_busy",
+  "session_busy"
 ]);
 
 const STATUS_503_CODES = new Set(["model_probe_unavailable"]);
