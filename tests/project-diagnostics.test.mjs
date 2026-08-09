@@ -67,7 +67,9 @@ test("diagnostics 暴露 costHealth 且不读全量日志", async () => {
   assert.equal(diagnostics.costHealth.costAvailable, false);
   assert.equal(diagnostics.costHealth.maxCacheVersion, 8);
   assert.equal(diagnostics.costHealth.lastCacheHitRate, 0.14);
-  assert.equal(diagnostics.project.status, "unknown", "无 snapshot 时 status 为 unknown");
+  // Task 4 惰性创建：无会话（agentSnapshot 为 null / 空项目）时 status 回落 'idle'
+  //（旧契约快照恒有 idle 会话；空项目 dashboard 显示不变）
+  assert.equal(diagnostics.project.status, "idle", "无 snapshot 时 status 为 idle");
   assert.equal(diagnostics.queue.runningCount, 0);
 });
 

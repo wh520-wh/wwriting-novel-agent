@@ -24,7 +24,9 @@ export async function loadProjectDiagnostics(projectRoot, { agentSnapshot = null
   return {
     ok: true,
     project: {
-      status: session?.status ?? "unknown",
+      // Task 4 惰性创建：无会话（品牌新项目）时保持旧契约 project_status='idle'
+      //（旧行为 snapshot 恒有会话且状态为 idle），dashboard 对空项目显示不变。
+      status: session?.status ?? "idle",
       stage: run?.status ?? null,
       chapter: deriveCurrentChapter(chapterIndex),
       reason: run?.status && ["failed", "interrupted", "cancelled"].includes(run.status)

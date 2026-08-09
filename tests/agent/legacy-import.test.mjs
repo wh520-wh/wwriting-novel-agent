@@ -290,7 +290,7 @@ test("chat_transcript 在 chat_history 缺失时兜底导入", async (t) => {
   );
 });
 
-test("完整链路：open() 触发导入后，一轮 Agent 运行也不写旧状态文件", async (t) => {
+test("完整链路：首次 submit 触发导入后，一轮 Agent 运行也不写旧状态文件", async (t) => {
   const h = await createProjectAgentHarness({ legacy: true, gatewayScript: [{ reply: { text: "好。" } }] });
   t.after(() => h.cleanup());
   // 补充旧任务队列与失败记录（夹具默认只有 state + chat history）
@@ -301,12 +301,17 @@ test("完整链路：open() 触发导入后，一轮 Agent 运行也不写旧状
   await fs.writeFile(path.join(h.projectRoot, FAILURES_FILE), `${JSON.stringify({ id: "f-1", message: "旧失败", resolution: null })}\n`, "utf8");
   const before = await snapshotFiles(h.projectRoot);
 
+  // Task 4 行为变更：open() 不物化会话（惰性创建），flat-file 导入推迟到首次
+  // 发消息物化会话时（runLegacyImport 在会话恢复对账中执行）。
   await h.agent.open({ projectRoot: h.projectRoot });
-  const yaml = await readText(path.join(h.projectRoot, "project.yaml"));
-  assert.match(yaml, /blueprint_status:\s*["']?complete["']?/u);
+  const yamlBefore = await readText(path.join(h.projectRoot, "project.yaml"));
+  assert.doesNotMatch(yamlBefore, /blueprint_status:\s*["']?complete["']?/u, "open() 后导入尚未发生（惰性）");
 
+  // 首次 submit 物化会话 → 导入完成（blueprint_status 迁入 project.yaml 等）
   await h.agent.submit({ projectRoot: h.projectRoot, text: "继续写作", source: "chat" });
   await waitForIdle(h.agent, h.projectRoot);
+  const yaml = await readText(path.join(h.projectRoot, "project.yaml"));
+  assert.match(yaml, /blueprint_status:\s*["']?complete["']?/u, "首次 submit 后 blueprint_status 应迁入 project.yaml");
 
   const after = await snapshotFiles(h.projectRoot);
   for (const name of Object.keys(before)) {
@@ -314,6 +319,15 @@ test("完整链路：open() 触发导入后，一轮 Agent 运行也不写旧状
   }
   const events = await readEvents(h.agent, h.projectRoot);
   assert.equal(eventsOfType(events, "session_created").length, 1, "多次 open 不重复创建 session");
+
+  // 旧 flat-file 历史完整落入会话流：chat_history 逐条进入 transcript（经
+  // exportHistory 读取会话的 transcript 流，验证导入不丢数据）
+  const exported = [];
+  for await (const line of h.agent.exportHistory({ projectRoot: h.projectRoot })) exported.push(line);
+  const importedUserTexts = exported
+    .filter((line) => line.stream === "transcript" && line.record?.role === "user")
+    .map((line) => line.record.content);
+  assert.ok(importedUserTexts.includes("旧对话第一条"), "旧 chat_history 完整落入会话 transcript 流");
 });
 
 test("缺少 project.yaml：跳过 blueprint 字段迁移但仍可导入对话", async (t) => {

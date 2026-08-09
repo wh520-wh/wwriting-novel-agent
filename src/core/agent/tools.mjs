@@ -543,6 +543,14 @@ export function createToolRuntime({
     record.outcome = new Promise((resolve) => {
       resolveOutcome = resolve;
     });
+    // decision_requested 落盘后才放行取消收敛：abort 可能在 requestDecision 写入
+    // decision_requested 之前到达（如 promote/stop 恰在工具确认窗口内触发），若
+    // decision_resolved 先落盘，reducer 以「引用未知 decision」拒绝（静默 catch），
+    // 决策永久悬空（活动闭环断裂）。cancel 等待 request 落盘后再追加 resolved。
+    let markRequested;
+    record.requested = new Promise((resolve) => {
+      markRequested = resolve;
+    });
     // 唯一收口：置终态、清理 abort 监听并恢复挂起的 execute
     record.finish = (outcome) => {
       if (record.terminal) return;
@@ -556,6 +564,8 @@ export function createToolRuntime({
       record.terminal = true;
       record.cleanupAbort?.();
       try {
+        // 必须等 decision_requested 先落盘（见上），否则 reducer 拒绝 resolved
+        await record.requested;
         await journal.append({
           type: "decision_resolved",
           run_id: record.runId,
@@ -575,6 +585,7 @@ export function createToolRuntime({
     record.cleanupAbort = () => context.signal?.removeEventListener("abort", onAbort);
     context.signal?.addEventListener("abort", onAbort, { once: true });
     decisions.set(record.decisionId, record);
+    record.markRequested = markRequested;
     return record;
   }
 
@@ -1800,23 +1811,29 @@ export function createToolRuntime({
       run_id: runId,
       payload: { status: "waiting_user" }
     });
-    await appendEvent({
-      type: "decision_requested",
-      run_id: runId,
-      payload: redactJsonValue(redactor, {
-        decision_id: decisionId,
-        activity_id: activityId,
-        input_id: inputId,
-        tool_call_id: toolCallId,
-        name,
-        kind,
-        title: action.title ?? name,
-        description: action.description ?? null,
-        confirmation_text: confirmationText,
-        fingerprint: actionFingerprint(name, action),
-        technical: { rule: kind === "extreme" ? "extreme_confirm" : "permission_confirm", fields: ["choice"] }
-      })
-    });
+    try {
+      await appendEvent({
+        type: "decision_requested",
+        run_id: runId,
+        payload: redactJsonValue(redactor, {
+          decision_id: decisionId,
+          activity_id: activityId,
+          input_id: inputId,
+          tool_call_id: toolCallId,
+          name,
+          kind,
+          title: action.title ?? name,
+          description: action.description ?? null,
+          confirmation_text: confirmationText,
+          fingerprint: actionFingerprint(name, action),
+          technical: { rule: kind === "extreme" ? "extreme_confirm" : "permission_confirm", fields: ["choice"] }
+        })
+      });
+    } finally {
+      // 无论落盘成败都放行 cancel（成功 → resolved 紧随其后；失败 → 请求本身已
+      // 抛错、journal 无 open decision，收敛由上层失败路径负责）
+      record.markRequested();
+    }
     const outcome = await record.outcome;
     if (outcome.granted !== "cancelled") {
       await appendEvent({

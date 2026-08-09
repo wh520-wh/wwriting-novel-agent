@@ -61,17 +61,33 @@ export async function containsWorkspaceJournal(stateRoot) {
   } catch {
     return false;
   }
+  // 递归判定：agent 根或任一 sessions/<id>/（Task 4 多会话布局）下存在 journal
+  // 数据（journal-manifest.json / segments / 单体 events.jsonl / 注册表 index.json）
+  // 即视为"有 journal 数据"——判空逻辑必须认识 sessions/ 布局，否则迁移场景下
+  // 旧数据已搬进 sessions/ 后根目录判空会误判（影响 workspace 复制门闩的测试语义）。
+  const hasJournalData = async (dir) => {
+    let names;
+    try {
+      names = await fs.readdir(dir);
+    } catch {
+      return false;
+    }
+    if (names.includes("journal-manifest.json") || names.includes("segments") || names.includes("events.jsonl")) {
+      return true;
+    }
+    if (names.includes("sessions")) {
+      const sessionsDir = path.join(dir, "sessions");
+      const sessionNames = await fs.readdir(sessionsDir).catch(() => []);
+      if (sessionNames.includes("index.json")) return true;
+      for (const name of sessionNames) {
+        if (await hasJournalData(path.join(sessionsDir, name))) return true;
+      }
+    }
+    return false;
+  };
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    const agentDir = path.join(workspacesDir, entry.name, "agent");
-    try {
-      const names = await fs.readdir(agentDir);
-      if (names.includes("journal-manifest.json") || names.includes("segments") || names.includes("events.jsonl")) {
-        return true;
-      }
-    } catch {
-      // 该 workspace 尚无 agent 目录，继续扫描
-    }
+    if (await hasJournalData(path.join(workspacesDir, entry.name, "agent"))) return true;
   }
   return false;
 }
@@ -336,18 +352,30 @@ test("打开旧项目即触发 .wwriting/agent journal 迁移到私有目录，�
   assert.equal(opened.res.status, 200);
   assert.deepEqual(opened.data, { ok: true, projectRoot }, "响应形状契约不变");
 
-  // eager open 单独即可完成迁移：私有目录已含旧事件（无需先发消息）。迁移先把
-  // events.jsonl 字节级复制进目标；journal.load() 随后把它转进 segments 并改名
-  // events.legacy.jsonl（原文件字节不变）。
+  // Task 4 行为变更：open() 只把 .wwriting/agent 的单文件旧数据复制到私有目录根
+  //（workspaceMigrator 的 copy 型迁移）；导入（journal.load 的 migrateLegacy：转
+  // segments + 改名 events.legacy.jsonl）推迟到首次发消息物化会话时。
   const targetAgentRoot = path.join(stateRoot, "workspaces", workspaceIdForPath(projectRoot), "agent");
-  const migrated = await fs.readFile(path.join(targetAgentRoot, "events.legacy.jsonl"), "utf8");
-  assert.equal(migrated, legacyEvents, "旧事件应完整迁移进私有目录（events.legacy.jsonl 字节级一致）");
-  const segmentEvents = await fs.readFile(path.join(targetAgentRoot, "segments", "events", "00000001.jsonl"), "utf8");
-  assert.equal(segmentEvents, legacyEvents, "旧事件应进入 segments/events（journal 已迁移）");
+  const copied = await fs.readFile(path.join(targetAgentRoot, "events.jsonl"), "utf8");
+  assert.equal(copied, legacyEvents, "open() 后旧事件应复制进私有目录根（尚未导入/改名）");
   assert.deepEqual(await fs.readFile(sourceEventsPath), before, "原 .wwriting/agent/events.jsonl 字节必须完全不变");
 
-  // 链路完整：迁移后的会话可直接发送第一条消息并回到 idle
+  // 链路完整：发送第一条消息（物化会话 → 导入旧 flat-file 历史），并回到 idle
   const sent = await app.post("/api/agent/input", { projectRoot, text: "你好" });
   assert.equal(sent.res.status, 200);
   await app.waitForIdle(projectRoot);
+
+  // 首次消息后旧单对话历史完整落入会话 1 的流：segments 导入 + 原文件改名
+  const sessionDirs = (await fs.readdir(path.join(targetAgentRoot, "sessions"))).filter(
+    (name) => !name.endsWith(".json")
+  );
+  assert.equal(sessionDirs.length, 1, "恰好一个会话目录");
+  const sessionDir = path.join(targetAgentRoot, "sessions", sessionDirs[0]);
+  const migrated = await fs.readFile(path.join(sessionDir, "events.legacy.jsonl"), "utf8");
+  assert.equal(migrated, legacyEvents, "旧事件应完整迁移进会话目录（events.legacy.jsonl 字节级一致）");
+  const segmentEvents = await fs.readFile(path.join(sessionDir, "segments", "events", "00000001.jsonl"), "utf8");
+  assert.ok(
+    segmentEvents.startsWith(legacyEvents),
+    "旧事件逐条进入会话 segments/events 流头（其后追加新 Run 事件）"
+  );
 });

@@ -1239,11 +1239,20 @@ test("旧项目把 blueprint_status 迁入 project.yaml 且不再写旧状态文
   const stateBefore = await fs.readFile(statePath, "utf8");
   assert.ok(stateBefore.length > 0, "旧项目夹具应存在旧状态文件");
 
+  // Task 4 惰性创建：open() 不物化会话，flat-file 导入推迟到首次发消息
   await h.agent.open({ projectRoot: h.projectRoot });
+  const yamlBefore = await fs.readFile(path.join(h.projectRoot, "project.yaml"), "utf8");
+  assert.doesNotMatch(yamlBefore, /blueprint_status:\s*["']?complete["']?/u, "open() 后迁移尚未发生（惰性）");
+
+  // 首次 submit 物化会话 → 导入完成
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "继续写作", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
   const yaml = await fs.readFile(path.join(h.projectRoot, "project.yaml"), "utf8");
   assert.match(yaml, /blueprint_status:\s*["']?complete["']?/u, "blueprint_status 应迁入 project.yaml");
 
-  const migrationPath = path.join(h.agentRoot, "migration.json");
+  // 迁移标记落在会话目录（多会话布局：sessions/<id>/migration.json）
+  const { active_session_id } = await h.agent.sessions({ projectRoot: h.projectRoot });
+  const migrationPath = path.join(h.agentRoot, "sessions", active_session_id, "migration.json");
   assert.equal(await pathExists(migrationPath), true, "迁移完成后应写入 migration.json");
   const migration = JSON.parse(await fs.readFile(migrationPath, "utf8"));
   assert.equal(migration.legacy_imported, true, "migration.json 应标记 legacy_imported");
@@ -1254,8 +1263,6 @@ test("旧项目把 blueprint_status 迁入 project.yaml 且不再写旧状态文
   assert.equal(eventsOfType(events, "session_created").length, 1, "第二次 open 不得重复创建 session");
 
   // 完整跑一轮后旧状态文件不得再被写入
-  await h.agent.submit({ projectRoot: h.projectRoot, text: "继续写作", source: "chat" });
-  await waitForIdle(h.agent, h.projectRoot);
   const stateAfter = await fs.readFile(statePath, "utf8");
   assert.equal(stateAfter, stateBefore, "legacy 导入后不得再写入旧状态文件");
   assertActivityClosure(await readEvents(h.agent, h.projectRoot));
@@ -1483,7 +1490,7 @@ test("1M 窗口端到端：model[1M] 基础 ID 剥离 → 预检推到压缩点 
   assert.equal(session.active_context_checkpoint_id, completed.payload.checkpoint_id, "completed 必须切换 active 指针");
   assert.equal(session.compaction.state, "completed");
   assert.equal(session.compaction.trigger, "automatic");
-  const checkpointFile = path.join(h.agentRoot, "checkpoints", `context-${completed.payload.checkpoint_id}.json`);
+  const checkpointFile = path.join(h.agentRoot, "sessions", session.session_id, "checkpoints", `context-${completed.payload.checkpoint_id}.json`);
   assert.equal(await pathExists(checkpointFile), true, "checkpoint 正式文件必须落盘");
 
   // 7) 原输入再发送：最后一次普通调用携带大输入原文

@@ -119,7 +119,23 @@ test("POST /api/projects/export-book：合并有序已提交章节到 TXT，无�
   const events = await readEvents(s.h.agent, s.h.projectRoot);
   assert.equal(eventsOfType(events, "run_started").length, 0, "导出不得创建 Agent Run");
   const session = (await s.h.agent.snapshot({ projectRoot: s.h.projectRoot, afterSeq: 0, limit: 100 })).session;
-  assert.equal(session.active_run, null, "导出后仍无活动 Run");
+  // Task 4 惰性创建：空项目无会话（session 为 null）→ 无活动 Run（?. 守卫）
+  assert.equal(session?.active_run ?? null, null, "导出后仍无活动 Run");
+});
+
+test("POST /api/projects/export-book：空项目（无会话）不 500", async (t) => {
+  // 惰性创建回归钉：空项目（从未发消息、无 agent 会话）导出必须 200，
+  // 不因 agent 侧空会话快照而 500（路由不读 agent 会话，直接导出空书籍）。
+  const s = await setupServer(t);
+  s.selection.current = s.h.projectRoot;
+  const { res, data } = await s.post("/api/projects/export-book", {
+    projectRoot: s.h.projectRoot,
+    format: "txt"
+  });
+  assert.equal(res.status, 200, "空项目 export-book 不得 500");
+  assert.equal(data.ok, true);
+  assert.equal(data.chapters, 0, "空项目导出 0 个章节");
+  assert.equal(typeof data.characters, "number", "characters 仍为有效字数");
 });
 
 test("POST /api/projects/export-book：归档项目拒绝", async (t) => {

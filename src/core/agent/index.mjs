@@ -20,6 +20,15 @@
 //   // Task 5：尾部分页（tail/beforeSeq）、历史导出与不可逆清空
 //   for await (const line of agent.exportHistory({ projectRoot })); // -> { stream, record }
 //   await agent.clearHistory({ projectRoot, confirmIrreversible }); // -> { session_id, status, ... }
+//   // Task 4：多会话管理（sessionId 缺省 = 最近活跃；品牌新项目 = 空/惰性创建）
+//   await agent.sessions({ projectRoot });       // -> { sessions: SessionMeta[], active_session_id }
+//   await agent.newSession({ projectRoot, title });           // -> SessionMeta
+//   await agent.renameSession({ projectRoot, sessionId, title });
+//   await agent.archiveSession({ projectRoot, sessionId });
+//   await agent.restoreSession({ projectRoot, sessionId });
+//   await agent.deleteSession({ projectRoot, sessionId });    // 永久删除（元数据 + 数据目录）
+//   // 其余方法（open/submit/promote/decide/stop/retry/retryCompaction/
+//   // cancelCompaction/snapshot/exportHistory/clearHistory）均可选传 sessionId。
 import { createAgentRuntime } from "./runtime.mjs";
 
 export function createProjectAgent(dependencies = {}) {
@@ -35,6 +44,12 @@ export function createProjectAgent(dependencies = {}) {
     cancelCompaction: (params) => runtime.cancelCompaction(params),
     snapshot: (params) => runtime.snapshot(params),
     exportHistory: (params) => runtime.exportHistory(params),
-    clearHistory: (params) => runtime.clearHistory(params)
+    clearHistory: (params) => runtime.clearHistory(params),
+    sessions: (params) => runtime.sessions(params),
+    newSession: (params) => runtime.newSession(params),
+    renameSession: (params) => runtime.renameSession(params),
+    archiveSession: (params) => runtime.archiveSession(params),
+    restoreSession: (params) => runtime.restoreSession(params),
+    deleteSession: (params) => runtime.deleteSession(params)
   };
 }

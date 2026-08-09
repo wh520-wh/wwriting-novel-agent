@@ -133,6 +133,32 @@ test("分段轮转：events/transcript 各 11 条产生 3 个 segment；readTail
   assert.deepEqual(seamCalls, [], "readTail/readBefore/readAfter 不得调用全文件 readFile seam");
 });
 
+// Task 4 回归钉：活动段 fd 随上一批次关闭（Windows rename 兼容）后，下一次 append
+// 跨段轮转时 rotate 必须重开可写句柄 fsync——修前用 "r" 只读句柄 fsync，Windows 抛
+// EPERM（本机实测），跨批次轮转即 append 失败、运行中 Run 被判失败。
+test("跨批次轮转：fd 已随上一批次关闭时 rotate 重开可写句柄 fsync，跨段追加成功", async (t) => {
+  const root = await makeRoot(t, "rotate-fd");
+  const eventsRoot = path.join(root, "events");
+  const store = createJournalSegmentStore({
+    root: eventsRoot,
+    streamName: "events",
+    maxSegmentRecords: 2,
+    indexStride: 1
+  });
+  await store.load();
+  // 每个批次结束 fd 关闭；第 2 个批次起每次都在 fd 关闭的旧段上轮转
+  await store.append(events(1, 2));
+  await store.append(events(3, 4));
+  await store.append(events(5, 6));
+  await store.append(events(7, 8));
+  assert.equal((await segmentFiles(eventsRoot)).length, 4, "每 2 条一个 segment（4 个）");
+  const page = await store.readAfter({ afterSeq: 0 });
+  assert.deepEqual(page.events.map((e) => e.seq), [1, 2, 3, 4, 5, 6, 7, 8], "跨段追加后全部记录可读");
+  // 轮转后旧段 sealed 索引已原子写（fsync 完成后才封存）
+  const sealed = JSON.parse(await fs.readFile(path.join(eventsRoot, "00000001.index.json"), "utf8"));
+  assert.equal(sealed.sealed, true, "轮转段 sealed 索引必须落盘");
+});
+
 // ---------------------------------------------------------------------------
 // Step 2：恢复与迁移
 // ---------------------------------------------------------------------------

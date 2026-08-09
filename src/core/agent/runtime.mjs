@@ -30,6 +30,8 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { createAgentJournal } from "./journal.mjs";
+import { createSessionRegistry } from "./session-registry.mjs";
+import { migrateSingleSessionToRegistry } from "./journal-session-migration.mjs";
 import { createToolRuntime } from "./tools.mjs";
 import { assemblePrompt, estimateTokens } from "./prompt.mjs";
 import {
@@ -121,6 +123,46 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// 会话标题派生（Task 4）：首条消息摘要——trim 后折叠空白并截取前 20 字符，空则
+// "新对话"。与 session-registry 的 title 兜底口径一致（空白标题回落 "新对话"）。
+export function deriveSessionTitle(text) {
+  const trimmed = String(text ?? "").trim();
+  if (trimmed === "") return "新对话";
+  return trimmed.split(/\s+/u).join(" ").slice(0, 20);
+}
+
+// 注册表同步（Task 4 Global Constraints 的落地口径）：touch 刷新 updated_at
+//（sessions() 排序依据），setLastSeq 刷新 SSE 恢复游标。同步是派生元数据
+//（journal 事件流才是真相源），失败只告警、绝不回滚已成功的 append。
+//
+// 与原计划"每会话 journal append 后同步"的微调（按实际代码调整，理由如下）：
+//   - 同步点收窄到「调用方可等待的用户动作」：submit/promote/stop/retry/
+//     retryCompaction/cancelCompaction/clearHistory 与 open() 的 lastSeq 校准。
+//     运行循环内部逐事件 append 不做同步——循环是 fire-and-forget（无人 await），
+//     同步会延长 append 的生命周期到"轮询已观察到 idle 之后"，与外部删除
+//     （测试清理 fs.rm、用户删项目目录）竞态：注册表写盘（临时文件 + rename）
+//     与目录遍历交错会产生孤儿临时文件 / 目录非空（Windows ENOTEMPTY）。
+//   - 由此 last_seq/updated_at 在一次运行期间滞后到最近一次用户动作为止；SSE
+//     恢复游标从略早的 seq 重放（客户端按 seq 去重，正确性不受影响），open() 的
+//     幂等校准保证每次打开会话时游标准确。
+function syncSessionRegistry(state, sessionState) {
+  return (async () => {
+    try {
+      await state.registry.touch(sessionState.sessionId);
+      await state.registry.setLastSeq(sessionState.sessionId, sessionState.journal.lastSeq);
+    } catch (error) {
+      console.warn(`[agent] 注册表同步失败（尽力而为）: ${error?.message ?? String(error)}`);
+    }
+  })();
+}
+
+function requireSessionId(sessionId) {
+  if (typeof sessionId !== "string" || sessionId.length === 0) {
+    throw fail("invalid_session_id", "sessionId 必须是非空字符串。");
+  }
+  return sessionId;
+}
+
 // ---------------------------------------------------------------------------
 // 每项目状态：journal + ToolRuntime + 当前 Run 的循环控制
 // ---------------------------------------------------------------------------
@@ -162,12 +204,9 @@ export function createAgentRuntime({
     const key = path.resolve(projectRoot);
     let state = projects.get(key);
     if (!state) {
-      const storageRoot = agentStorageRootFor(key);
-      const journal = createAgentJournal({
-        projectRoot: key,
-        storageRoot,
-        idFactory
-      });
+      // Task 4：agentRoot 即应用的私有 agent storage root；每会话的 journal/
+      // checkpoint 落在 <agentRoot>/sessions/<id>/ 下（ensureSessionState）。
+      const agentRoot = agentStorageRootFor(key);
       const projectOperations = {
         inspectChapterContext,
         appendChapterSegment,
@@ -178,34 +217,25 @@ export function createAgentRuntime({
         inspectBlueprintContext,
         commitBlueprint
       };
-      const tools = createToolRuntime({
-        projectOperations,
-        journal,
-        shellRuntime: shell,
-        projectLocks,
-        secrets,
-        skills: projectSkills,
-        idFactory
-      });
       state = {
         key,
-        journal,
-        tools,
+        agentRoot,
+        // Task 4：会话注册表（<agentRoot>/sessions/index.json）+ 每会话运行状态
+        registry: createSessionRegistry({ root: agentRoot }),
+        sessions: new Map(), // sessionId -> sessionState（ensureSessionState 惰性物化）
         projectOperations,
         modelGateway: resolveGateway(key),
         skills: projectSkills,
-        storageRoot,
-        // 当前 Run 的循环控制（一次一个模型/工具循环）
+        // 当前 Run 的循环控制（一次一个模型/工具循环）。Task 4 串行门保证整个
+        // 项目同时至多一个非终态 Run，因此循环控制保持项目级即可；loopSessionId
+        // 记录该循环属于哪个会话（clearHistory 跨会话复位判断用）。
         runId: null,
+        loopSessionId: null,
         controller: null,
         loopPromise: null,
         firstTurn: null,
         stopReason: "user_stop",
         mutex: createMutex(),
-        // Task 6：当前 session 的上下文估算校准倍率（provider usage 的 EMA 比例，
-        // 夹在 0.5..2.0，只属于当前 session；clearHistory 时一并复位）。null 表示
-        // 尚无 provider 观测，估算用默认倍率 1 并保持 approximate。
-        contextCalibration: null,
         // Prompt 的 Available Skills 目录摘要：只取 name/description，绝不注入正文
         // （完整指令由 read_skill 按需读取）。catalog 失败不阻塞 agent（沿用兜底语义）。
         // 每 runId 记忆一次发现结果（Important 4）：模型每个轮次都会走到这里，
@@ -227,45 +257,252 @@ export function createAgentRuntime({
           return promise;
         }
       };
-      // Task 8：active context checkpoint 存储 + 压缩协调器（每项目一个）。
-      // checkpoint store 与 journal 使用同一 storageRoot（active-context.json /
-      // compaction-commit-*.json / checkpoints/ 与 segments/ 同根）。
-      state.checkpointStore = createContextCheckpointStore({ agentDir: storageRoot, idFactory });
-      state.compactionCoordinator = createCompactionCoordinator({
-        journal,
-        gateway: state.modelGateway,
-        checkpointStore: state.checkpointStore,
-        buildInput: (params) =>
-          buildCompactionSource({
-            journal,
-            checkpointStore: state.checkpointStore,
-            storageRoot,
-            ...params,
-            // 进程重启后的 retry 走协调器重建路径，entry.projectRoot 为空——
-            // 闭包默认注入本项目根，供 buildCompactionSource 解析当前 modelConfig。
-            projectRoot: params.projectRoot ?? key
-          }),
-        idFactory
-      });
-      // 嵌套 workflow 拒绝：enter_workflow 是改变工作流的唯一入口，由 BeforeToolUse
-      // hook 在工具执行（写 workflow_changed）之前校验转移是否合法。
-      tools.registerHook("BeforeToolUse", async ({ tool, args }) => {
-        if (tool !== "enter_workflow") return undefined;
-        const session = await journal.getSession();
-        const run = session.active_run;
-        if (!run) return undefined;
-        const target = String(args?.workflow ?? "");
-        if (!canEnterWorkflow(run.workflow, target)) {
-          return {
-            allow: false,
-            reason: `不能从 ${run.workflow} 直接进入 ${target}；请先回到 general。`
-          };
-        }
-        return undefined;
-      });
       projects.set(key, state);
     }
     return state;
+  }
+
+  // 首次物化会话时，把 agentRoot 根的旧单文件格式遗留（events.jsonl/transcript.jsonl/
+  // session.json/checkpoints/，无 segments/）搬入该会话目录（Task 4 行为变更）：
+  // workspaceMigrator 只把 <projectRoot>/.wwriting/agent 的单文件旧数据复制到
+  // agentRoot 根，而 journal 的 migrateLegacy 只扫描自身 storageRoot
+  //（sessions/<id>/）——不搬进会话目录，旧单对话历史将永远悬空（数据丢失）。
+  // 因此 flat-file 遗留历史改为「首次发消息物化会话时」进入会话 1 的流（不再在
+  // open() 时可见）；segments 形态的旧数据由 migrateSingleSessionToRegistry 处理，
+  // 不走这里（其 isSessionEntry 已含 events.jsonl/transcript.jsonl）。
+  // 只对第一个物化的会话生效：旧单对话数据归属会话 1；目标目录已有 journal 数据
+  //（重试/异常现场）时不倾倒旧文件，避免与既有事件流混入。
+  async function adoptRootLegacyFlatFiles(state, sessionId) {
+    if (state.sessions.size > 0) return; // 只收养给第一个物化的会话
+    const agentRoot = state.agentRoot;
+    const targetDir = path.join(agentRoot, "sessions", sessionId);
+    if (
+      (await pathExists(path.join(targetDir, "segments"))) ||
+      (await pathExists(path.join(targetDir, "journal-manifest.json"))) ||
+      (await pathExists(path.join(targetDir, "session.json")))
+    ) {
+      return;
+    }
+    await fs.mkdir(targetDir, { recursive: true });
+    for (const name of ["events.jsonl", "transcript.jsonl", "session.json", "checkpoints"]) {
+      const source = path.join(agentRoot, name);
+      if (!(await pathExists(source))) continue;
+      const target = path.join(targetDir, name);
+      if (await pathExists(target)) continue;
+      try {
+        await fs.rename(source, target);
+      } catch (error) {
+        // 搬移失败不阻塞会话（数据留在根，可手工找回）；告警暴露，不吞静默
+        console.warn(`[agent] 旧单文件遗留搬移失败（不影响会话）: ${error?.message ?? String(error)}`);
+      }
+    }
+  }
+
+  // 物化（或复用）某会话的运行状态：独立 journal/checkpoint/tools/压缩协调器，
+  // 存储根 = <agentRoot>/sessions/<id>/。注册表条目由调用方先行保证存在（open/
+  // submit/newSession 已 create 或校验）。
+  //
+  // 会话 id 对齐结论（Task 4 前序审查要点 3，调查后决策）：
+  //   - 新会话（惰性创建/newSession/open 首开）：journal 首次空载（load() 内部
+  //     createFirstSession）用一次性 idFactory 产出「注册表 id」作为其内部
+  //     session_id——两者相等，事件的 session_id 与外部书签一致；
+  //   - 迁移会话：journal 内部沿用其 session.json/事件流里的旧 id，注册表 id 仅作
+  //     外部书签，两者不需要相等。理由：journal.append 的事件由 stampEvent 统一盖
+  //     session_id（取 journal 自身投影的 session_id，见 journal.mjs），reducer 的
+  //     "事件 session_id 必须一致"校验只约束同一日志流内部，与注册表/外部 id 无关；
+  //     运行时只要把 sessionId → journal 实例的映射维护正确即可。
+  async function ensureSessionState(state, sessionId) {
+    let sessionState = state.sessions.get(sessionId);
+    if (sessionState) return sessionState;
+    await adoptRootLegacyFlatFiles(state, sessionId);
+    const storageRoot = path.join(state.agentRoot, "sessions", sessionId);
+    let sessionIdConsumed = false;
+    const sessionJournalIdFactory = () => {
+      if (!sessionIdConsumed) {
+        sessionIdConsumed = true;
+        return sessionId;
+      }
+      return idFactory();
+    };
+    const journal = createAgentJournal({
+      projectRoot: state.key,
+      storageRoot,
+      idFactory: sessionJournalIdFactory
+    });
+    // Task 8：active context checkpoint 存储 + 压缩协调器（每会话一份，与 journal
+    // 同一 storageRoot：active-context.json / compaction-commit-*.json /
+    // checkpoints/ 与 segments/ 同根）。
+    const checkpointStore = createContextCheckpointStore({ agentDir: storageRoot, idFactory });
+    const tools = createToolRuntime({
+      projectOperations: state.projectOperations,
+      journal,
+      shellRuntime: shell,
+      projectLocks,
+      secrets,
+      skills: state.skills,
+      idFactory
+    });
+    const compactionCoordinator = createCompactionCoordinator({
+      journal,
+      gateway: state.modelGateway,
+      checkpointStore,
+      buildInput: (params) =>
+        buildCompactionSource({
+          journal,
+          checkpointStore,
+          storageRoot,
+          ...params,
+          // 进程重启后的 retry 走协调器重建路径，entry.projectRoot 为空——
+          // 闭包默认注入本项目根，供 buildCompactionSource 解析当前 modelConfig。
+          projectRoot: params.projectRoot ?? state.key
+        }),
+      idFactory
+    });
+    // 嵌套 workflow 拒绝：enter_workflow 是改变工作流的唯一入口，由 BeforeToolUse
+    // hook 在工具执行（写 workflow_changed）之前校验转移是否合法（绑定本会话 journal）。
+    tools.registerHook("BeforeToolUse", async ({ tool, args }) => {
+      if (tool !== "enter_workflow") return undefined;
+      const session = await journal.getSession();
+      const run = session.active_run;
+      if (!run) return undefined;
+      const target = String(args?.workflow ?? "");
+      if (!canEnterWorkflow(run.workflow, target)) {
+        return {
+          allow: false,
+          reason: `不能从 ${run.workflow} 直接进入 ${target}；请先回到 general。`
+        };
+      }
+      return undefined;
+    });
+    sessionState = {
+      sessionId,
+      storageRoot,
+      journal,
+      checkpointStore,
+      tools,
+      compactionCoordinator,
+      // 当前 session 的上下文估算校准倍率（provider usage 的 EMA 比例，夹在
+      // 0.5..2.0，只属于本会话；clearHistory 时一并复位）。null 表示尚无 provider
+      // 观测，估算用默认倍率 1 并保持 approximate。
+      contextCalibration: null
+    };
+    state.sessions.set(sessionId, sessionState);
+    return sessionState;
+  }
+
+  // 解析目标会话 id：显式 sessionId → registry.get 校验存在；缺省 → 最近活跃；
+  // 都没有 → null（品牌新项目，不物化任何会话——惰性创建）。
+  async function resolveSessionId(state, sessionId) {
+    if (sessionId != null && sessionId !== "") {
+      const meta = await state.registry.get(sessionId);
+      if (!meta) throw fail("session_not_found", `会话不存在: ${sessionId}`);
+      return sessionId;
+    }
+    return state.registry.getLastActive();
+  }
+
+  // 解析目标会话状态（不存在 → null，不物化新会话）。
+  async function resolveSessionState(state, sessionId) {
+    const id = await resolveSessionId(state, sessionId);
+    if (id == null) return null;
+    return await ensureSessionState(state, id);
+  }
+
+  // 项目级迁移序列（Task 4 前序审查要点 1，按实际代码调整后的固定顺序）：
+  //   1) 先跑 migrateSingleSessionToRegistry（幂等）：把 agentRoot 根已存在的旧单流
+  //      数据搬入 sessions/<id>/ 并注册会话 1；
+  //   2) workspaceMigrator（copy 型）只在注册表尚不存在时运行（首次打开）：把旧
+  //      .wwriting/agent 数据拷入 agentRoot 根，随后在同一 open 内再迁移一次，让旧
+  //      对话首开即可见。注册表已存在后绝不复制——workspaceMigrator 的 hasJournalData
+  //      判空会把旧项目内数据重新拷进 agentRoot 根，造成根级孤儿 segments/。
+  // 该顺序满足"migrate 先行"，同时堵住"迁移清空根目录后被 workspace 复制回填"的
+  // 二次复制漏洞（单看 migrate-first 或 workspace-first 都留洞，门闩是注册表存在性）。
+  async function migrateProjectData(state) {
+    const agentRoot = state.agentRoot;
+    try {
+      await migrateSingleSessionToRegistry({ agentRoot, idFactory });
+    } catch (error) {
+      console.warn(`[agent] 会话迁移失败（不影响 open）: ${error?.message ?? String(error)}`);
+    }
+    if (!(await pathExists(path.join(agentRoot, "sessions", "index.json")))) {
+      try {
+        await workspaceMigrator({
+          projectRoot: state.key,
+          targetAgentRoot: agentRoot
+        });
+      } catch (error) {
+        console.warn(`[agent] legacy journal 迁移失败（不影响 open）: ${error?.message ?? String(error)}`);
+      }
+      try {
+        await migrateSingleSessionToRegistry({ agentRoot, idFactory });
+      } catch (error) {
+        console.warn(`[agent] 会话迁移失败（不影响 open）: ${error?.message ?? String(error)}`);
+      }
+    }
+  }
+
+  // 会话 load 后的崩溃对账（等价旧 open() 的恢复序列，不含 startLoop——循环启动
+  // 由调用方在串行门通过后决定）：checkpoint 对账 → legacy 导入 → 非终态压缩收敛
+  // → lastSeq 校准（幂等，消解 Task 3 create 与 setLastSeq 之间崩溃的 last_seq=0 窗口）。
+  async function reconcileSessionAfterLoad(state, sessionState) {
+    // Task 8：checkpoint 崩溃对账（提交 marker 裁决 + 孤儿清理）必须在检查压缩
+    // 投影之前执行——对账可能补写 completed（裁决 2）或 failed（裁决 1），使压缩
+    // 变为终态。storage 损坏（checkpoint_corrupt）暴露可诊断错误，不猜测回滚。
+    await sessionState.checkpointStore.reconcileAfterCrash({ journal: sessionState.journal });
+    // Task 7：首次 open 对旧项目执行一次性只读 legacy 导入（幂等）。导入失败不
+    // 阻塞 open：journal 已恢复、应用可继续工作；migration.legacy_imported 保持
+    // false，下次 open() 重试（legacy-import 的 legacy_id / legacy 标记保证重试
+    // 不产生重复事件或消息）。
+    try {
+      await runLegacyImport({ projectRoot: state.key, journal: sessionState.journal, idFactory });
+    } catch (error) {
+      console.warn(`[agent] legacy 导入失败（下次 open 重试）: ${error?.message ?? String(error)}`);
+    }
+    // Task 8：非终态压缩对账（brief Step 3 结尾）。先通过 commit marker 对账
+    //（上面 reconcileAfterCrash），未完成 attempt 统一追加
+    // context_compaction_cancelled(reason:"process_restarted")，然后按收敛矩阵
+    // 把 Run 收敛为 waiting_user（自动失败/取消、手动失败均保持 waiting_user，
+    // 不自动模型调用）。active_context_checkpoint_id 保持旧值（cancelled 不切换）。
+    const loadedSession = await sessionState.journal.getSession();
+    const loadedCompaction = loadedSession.compaction;
+    if (loadedCompaction && COMPACTION_BLOCKED_STATES.includes(loadedCompaction.state)) {
+      if (COMPACTION_NON_TERMINAL_STATES.includes(loadedCompaction.state)) {
+        await sessionState.journal.append({
+          type: "context_compaction_cancelled",
+          payload: {
+            compaction_id: loadedCompaction.id,
+            trigger: loadedCompaction.trigger,
+            attempt: loadedCompaction.attempt ?? 1,
+            source_checkpoint_id: loadedCompaction.source_checkpoint_id ?? null,
+            checkpoint_id: loadedCompaction.checkpoint_id ?? null,
+            source_seq: null,
+            source_transcript_seq: null,
+            provider_model_id: null,
+            estimated_tokens_before: null,
+            estimated_tokens_after: null,
+            released_tokens: null,
+            summary_schema_version: 1,
+            duration_ms: null,
+            validation: null,
+            error_code: null,
+            cancel_reason: "process_restarted"
+          }
+        });
+      }
+      // 收敛 Run/input：残留 running（崩溃窗口）收敛为 waiting_user；
+      // 已是 waiting_user 保持原状。输入保持 pending（无终态），等待用户 retry/cancel。
+      const recoveryRun = (await sessionState.journal.getSession()).active_run;
+      if (recoveryRun && !TERMINAL_RUN_STATUSES.has(recoveryRun.status) && recoveryRun.status === "running") {
+        await sessionState.journal.append({
+          type: "run_status_changed",
+          run_id: recoveryRun.id,
+          payload: { status: "waiting_user", reason: "process_restarted", resume_run_status: null }
+        });
+      }
+    }
+    // lastSeq 校准由调用方（open/submit 收尾的 syncSessionRegistry）完成，见
+    // syncSessionRegistry 的注释（幂等校准消解 Task 3 create 与 setLastSeq 之间
+    // 崩溃的 last_seq=0 窗口）。
   }
 
   function abortController(state) {
@@ -787,11 +1024,11 @@ export function createAgentRuntime({
   // 中断/停止丢弃的模型工具调用以 cancelled 记录闭合 transcript：assistant
   // tool_calls 消息之后必须有对应的 tool 结果，否则历史含畸形消息链（provider
   // 会拒绝、retry 复用历史时同样受影响）。
-  async function closeDroppedToolCalls(state, droppedCalls) {
+  async function closeDroppedToolCalls(state, sessionState, droppedCalls) {
     if (!Array.isArray(droppedCalls) || droppedCalls.length === 0) return;
     for (const toolCall of droppedCalls) {
       const id = toolCall?.id ?? toolCall?.tool_call_id ?? null;
-      await appendSafeTranscript(state.journal, {
+      await appendSafeTranscript(sessionState.journal, {
         role: "tool",
         tool_call_id: id,
         name: toolCall?.name ?? null,
@@ -810,9 +1047,9 @@ export function createAgentRuntime({
   // grant，再 run_cancelled。幂等：Run 已终结时直接返回。在项目互斥锁内执行
   // 读-判-写：并发 submit 要么先落盘（本批次把它一并取消），要么后落盘（属于
   // 下一个 Run），杜绝输入滞留。
-  async function cancelRunForStop(state, reason) {
+  async function cancelRunForStop(state, sessionState, reason) {
     return state.mutex.run(async () => {
-      const session = await state.journal.getSession();
+      const session = await sessionState.journal.getSession();
       const run = session.active_run;
       if (!run || TERMINAL_RUN_STATUSES.has(run.status)) return;
       const batch = [];
@@ -834,17 +1071,17 @@ export function createAgentRuntime({
         run_id: run.id,
         payload: { reason: reason ?? "user_stop" }
       });
-      await state.journal.appendBatch(batch);
+      await sessionState.journal.appendBatch(batch);
     });
   }
 
   // 模型调用失败 → run_failed（可恢复）。保留该输入的 grant（输入未终结，
   // retry 同一输入继续使用）；失败路径已闭合 model turn。
-  async function failRun(state, runId, { error, inputId }) {
-    const session = await state.journal.getSession();
+  async function failRun(state, sessionState, runId, { error, inputId }) {
+    const session = await sessionState.journal.getSession();
     const run = session.active_run;
     if (!run || run.id !== runId || TERMINAL_RUN_STATUSES.has(run.status)) return;
-    await state.journal.append({
+    await sessionState.journal.append({
       type: "run_failed",
       run_id: runId,
       payload: {
@@ -874,8 +1111,8 @@ export function createAgentRuntime({
   // 该 Run 是否为 /compact 输入而创建（空闲发起）还是运行中排队（in-run）。
   // 决定手动压缩失败/取消后的收敛：in-run 恢复 resume_run_status("running")，
   // 空闲发起则 run_cancelled → idle。
-  async function isCompactRunIdleInitiated(state, runId, compactInputId) {
-    const events = await state.journal.read({ afterSeq: 0, limit: 100000 });
+  async function isCompactRunIdleInitiated(state, sessionState, runId, compactInputId) {
+    const events = await sessionState.journal.read({ afterSeq: 0, limit: 100000 });
     for (const event of events) {
       if (event.type !== "run_started" || event.run_id !== runId) continue;
       return event.payload?.input_id === compactInputId;
@@ -889,9 +1126,9 @@ export function createAgentRuntime({
   //   - 手动 in-run：input_cancelled(compaction_cancelled) + 恢复 running；
   //   - 手动空闲：input_cancelled(compaction_cancelled) + run_cancelled → idle。
   // 返回 "converged" | "already_terminal" | "input_settled"。
-  async function convergeCompactionCancelled(state, compaction) {
+  async function convergeCompactionCancelled(state, sessionState, compaction) {
     return state.mutex.run(async () => {
-      const session = await state.journal.getSession();
+      const session = await sessionState.journal.getSession();
       const run = session.active_run;
       if (!run || TERMINAL_RUN_STATUSES.has(run.status)) return "already_terminal";
       const inputId = compaction?.pending_input_id ?? null;
@@ -900,7 +1137,7 @@ export function createAgentRuntime({
         (run.active_input_id === inputId || session.queued_inputs.some((item) => item.id === inputId));
       if (!inputLive) return "input_settled";
       const isManual = compaction?.trigger === "manual";
-      const idleInitiated = isManual ? await isCompactRunIdleInitiated(state, run.id, inputId) : false;
+      const idleInitiated = isManual ? await isCompactRunIdleInitiated(state, sessionState, run.id, inputId) : false;
       const batch = [];
       const inputIds = [];
       if (run.active_input_id != null) inputIds.push(run.active_input_id);
@@ -929,7 +1166,7 @@ export function createAgentRuntime({
         }
         batch.push({ type: "run_cancelled", run_id: run.id, payload: { reason: "compaction_cancelled" } });
       }
-      if (batch.length > 0) await state.journal.appendBatch(batch);
+      if (batch.length > 0) await sessionState.journal.appendBatch(batch);
       return "converged";
     });
   }
@@ -937,22 +1174,22 @@ export function createAgentRuntime({
   // 手动 /compact 处理（在安全点由 runLoop 调用，active_input_id 已是 compact
   // item）。返回 "compacted" | "compaction_blocked" | "compaction_resumed" |
   // "interrupted"。
-  async function processCompact(state, runId, inputId) {
-    const session = await state.journal.getSession();
+  async function processCompact(state, sessionState, runId, inputId) {
+    const session = await sessionState.journal.getSession();
     const run = session.active_run;
     if (!run || run.id !== runId || TERMINAL_RUN_STATUSES.has(run.status)) return "compaction_blocked";
     const project = await resolveWorkspaceConfig(state.key);
     const modelConfig = modelConfigOf(project);
-    const idleInitiated = await isCompactRunIdleInitiated(state, runId, inputId);
+    const idleInitiated = await isCompactRunIdleInitiated(state, sessionState, runId, inputId);
     // 相同队列中后续重复 /compact：输入安全点取消（duplicate_compact），避免
     // 连续无意义压缩（spec §5.5）。
     await state.mutex.run(async () => {
-      const s = await state.journal.getSession();
+      const s = await sessionState.journal.getSession();
       const r = s.active_run;
       if (!r || r.id !== runId || TERMINAL_RUN_STATUSES.has(r.status)) return;
       const laterDuplicates = s.queued_inputs.filter((item) => item.kind === "compact");
       if (laterDuplicates.length > 0) {
-        await state.journal.appendBatch(
+        await sessionState.journal.appendBatch(
           laterDuplicates.map((item) => ({
             type: "input_cancelled",
             run_id: runId,
@@ -963,9 +1200,9 @@ export function createAgentRuntime({
     });
     // 先构建源材料做 noop 预检（无可压缩历史则不调用模型）
     const built = await buildCompactionSource({
-      journal: state.journal,
-      checkpointStore: state.checkpointStore,
-      storageRoot: state.storageRoot,
+      journal: sessionState.journal,
+      checkpointStore: sessionState.checkpointStore,
+      storageRoot: sessionState.storageRoot,
       sourceCheckpointId: null,
       trigger: "manual",
       modelConfig,
@@ -973,16 +1210,16 @@ export function createAgentRuntime({
       projectRoot: state.key
     });
     if (built.noop) {
-      await state.journal.append({
+      await sessionState.journal.append({
         type: "context_compaction_noop",
         run_id: runId,
         payload: { compaction_id: idFactory(), trigger: "manual", reason: built.reason ?? "nothing_to_compact" }
       });
       await state.mutex.run(async () => {
-        const s = await state.journal.getSession();
+        const s = await sessionState.journal.getSession();
         const r = s.active_run;
         if (!r || r.id !== runId || TERMINAL_RUN_STATUSES.has(r.status)) return;
-        await state.journal.append({
+        await sessionState.journal.append({
           type: "input_consumed",
           run_id: runId,
           payload: { input_id: inputId }
@@ -991,7 +1228,7 @@ export function createAgentRuntime({
       return "compacted";
     }
     resolveFirstTurnIfPending(state);
-    const outcome = await state.compactionCoordinator.start({
+    const outcome = await sessionState.compactionCoordinator.start({
       projectRoot: state.key,
       trigger: "manual",
       pendingInputId: inputId,
@@ -1000,10 +1237,10 @@ export function createAgentRuntime({
     });
     if (outcome.status === "completed") {
       await state.mutex.run(async () => {
-        const s = await state.journal.getSession();
+        const s = await sessionState.journal.getSession();
         const r = s.active_run;
         if (!r || r.id !== runId || TERMINAL_RUN_STATUSES.has(r.status)) return;
-        await state.journal.append({ type: "input_consumed", run_id: runId, payload: { input_id: inputId } });
+        await sessionState.journal.append({ type: "input_consumed", run_id: runId, payload: { input_id: inputId } });
       });
       return "compacted";
     }
@@ -1011,10 +1248,10 @@ export function createAgentRuntime({
       // 手动 /compact 失败：compact queue item 无终态（可重试），Run → waiting_user
       // 并保存 resume_run_status。互斥锁内读-判-写：cancel 恰在此时收敛则跳过。
       await state.mutex.run(async () => {
-        const s = await state.journal.getSession();
+        const s = await sessionState.journal.getSession();
         const r = s.active_run;
         if (r && r.id === runId && !TERMINAL_RUN_STATUSES.has(r.status) && r.status !== "waiting_user") {
-          await state.journal.append({
+          await sessionState.journal.append({
             type: "run_status_changed",
             run_id: runId,
             payload: {
@@ -1030,14 +1267,14 @@ export function createAgentRuntime({
       return "compaction_blocked";
     }
     // cancelled
-    const sessionNow = await state.journal.getSession();
+    const sessionNow = await sessionState.journal.getSession();
     const runNow = sessionNow.active_run;
     if (!runNow || runNow.id !== runId || TERMINAL_RUN_STATUSES.has(runNow.status)) return "compaction_blocked";
     if (runNow.status === "stopping" || runNow.status === "interrupting") {
       return "interrupted"; // 停止/立即路径负责收敛
     }
-    const compactionProjection = (await state.journal.getSession()).compaction;
-    await convergeCompactionCancelled(state, compactionProjection);
+    const compactionProjection = (await sessionState.journal.getSession()).compaction;
+    await convergeCompactionCancelled(state, sessionState, compactionProjection);
     if (idleInitiated) return "compaction_blocked";
     // 手动 in-run 取消：input_cancelled + 恢复 resume_run_status，队列继续消费
     return "compaction_resumed";
@@ -1047,8 +1284,8 @@ export function createAgentRuntime({
   // 返回 "done" | "compaction_blocked" | "interrupted" | "stopped" | "failed"
   // | "terminated"。compaction_blocked 表示自动压缩失败/取消后 Run 已收敛为
   // waiting_user 或 cancelled，runLoop 必须显式处理（不继续循环、不 run_completed）。
-  async function processInput(state, runId, inputId, inputText) {
-    const { journal, tools } = state;
+  async function processInput(state, sessionState, runId, inputId, inputText) {
+    const { journal, tools } = sessionState;
     const volatileToolRecords = [];
     // Task 8：ensureUserMessageInTranscript 移到首次自动压缩门禁之后——压缩成功才
     // 写入 transcript；cancelled/failed 时输入保持 draft/可重试，不调用普通模型。
@@ -1061,7 +1298,7 @@ export function createAgentRuntime({
       if (!run || run.id !== runId) return "terminated";
       if (TERMINAL_RUN_STATUSES.has(run.status)) return "terminated";
       if (run.status === "stopping") {
-        await cancelRunForStop(state, state.stopReason);
+        await cancelRunForStop(state, sessionState, state.stopReason);
         return "stopped";
       }
       if (run.status === "interrupting" || state.controller?.signal.aborted) {
@@ -1105,8 +1342,8 @@ export function createAgentRuntime({
         }).catch(() => []),
         history: await buildHistory({
           journal,
-          checkpointStore: state.checkpointStore,
-          storageRoot: state.storageRoot,
+          checkpointStore: sessionState.checkpointStore,
+          storageRoot: sessionState.storageRoot,
           excludeInputId: inputId,
           volatileRecords: volatileToolRecords
         }),
@@ -1130,7 +1367,7 @@ export function createAgentRuntime({
         messages: request.messages,
         tools: request.tools ?? [],
         effectiveContextWindow: modelConfig.effective_context_window,
-        calibration: state.contextCalibration ?? 1
+        calibration: sessionState.contextCalibration ?? 1
       });
       await journal.append({
         type: "context_usage_updated",
@@ -1153,7 +1390,7 @@ export function createAgentRuntime({
       // 排除出 prompt 且永远不会触发压缩——门禁必须加"尾部页溢出"这一条，不能把
       // 首压完全交给估算。有 checkpoint 时历史装配已受 checkpoint + delta 约束，
       // 不重复触发。
-      const activePointer = await state.checkpointStore.readActive();
+      const activePointer = await sessionState.checkpointStore.readActive();
       const transcriptBeyondTail =
         activePointer.checkpoint_id == null && journal.transcriptLastSeq > HISTORY_PAGE_LIMIT;
       const alreadyAttempted =
@@ -1167,7 +1404,7 @@ export function createAgentRuntime({
           await journal.append({ type: "interrupt_safe_point_reached", run_id: runId, payload: {} });
         }
         resolveFirstTurnIfPending(state);
-        const compaction = await state.compactionCoordinator.start({
+        const compaction = await sessionState.compactionCoordinator.start({
           projectRoot: state.key,
           trigger: "automatic",
           pendingInputId: inputId,
@@ -1208,13 +1445,13 @@ export function createAgentRuntime({
           return "interrupted"; // 停止/立即路径负责收敛
         }
         const compactionProjection = (await journal.getSession()).compaction;
-        await convergeCompactionCancelled(state, compactionProjection);
+        await convergeCompactionCancelled(state, sessionState, compactionProjection);
         return "compaction_blocked";
       }
       if (preflightCompact && alreadyAttempted) {
         // 已为本输入压缩过：仍高于软阈值不再次压缩；仍超硬窗口 → failRun。
         if (exceedsHardWindow({ estimatedInput: contextEstimate.used_tokens, window: modelConfig.effective_context_window })) {
-          await failRun(state, runId, {
+          await failRun(state, sessionState, runId, {
             error: Object.assign(new Error("上下文仍超过硬窗口上限，无法发送。"), { code: "context_window_exceeded" }),
             inputId
           });
@@ -1307,14 +1544,14 @@ export function createAgentRuntime({
         const calibration = observeProviderUsage({
           estimated: contextEstimate,
           usageReport: reply?.usageReport,
-          previousCalibration: state.contextCalibration
+          previousCalibration: sessionState.contextCalibration
         });
-        if (calibration.calibration != null) state.contextCalibration = calibration.calibration;
+        if (calibration.calibration != null) sessionState.contextCalibration = calibration.calibration;
         const calibratedEstimate = estimateRequestUsage({
           messages: request.messages,
           tools: request.tools ?? [],
           effectiveContextWindow: modelConfig.effective_context_window,
-          calibration: state.contextCalibration ?? 1
+          calibration: sessionState.contextCalibration ?? 1
         });
         calibratedEstimate.approximate = calibration.approximate;
         await journal.append({
@@ -1335,7 +1572,7 @@ export function createAgentRuntime({
           reasoningText: partialReasoning.safeText
         }).catch(() => {});
         if (isAbort(error, state)) return "interrupted";
-        await failRun(state, runId, { error, inputId });
+        await failRun(state, sessionState, runId, { error, inputId });
         return "failed";
       }
       // 成功：先 reasoning_completed 闭合 reasoning，最后 model_turn_completed。
@@ -1362,17 +1599,17 @@ export function createAgentRuntime({
       const afterCall = await journal.getSession();
       const runAfterCall = afterCall.active_run;
       if (!runAfterCall || runAfterCall.id !== runId || TERMINAL_RUN_STATUSES.has(runAfterCall.status)) {
-        await closeDroppedToolCalls(state, toolCalls);
+        await closeDroppedToolCalls(state, sessionState, toolCalls);
         return "terminated";
       }
       if (runAfterCall.status === "stopping") {
-        await closeDroppedToolCalls(state, toolCalls);
-        await cancelRunForStop(state, state.stopReason);
+        await closeDroppedToolCalls(state, sessionState, toolCalls);
+        await cancelRunForStop(state, sessionState, state.stopReason);
         return "stopped";
       }
       if (runAfterCall.status === "interrupting" || state.controller?.signal.aborted) {
         // 被打断的模型回复不再处理；安全点后读取最新输入（被提升的输入）
-        await closeDroppedToolCalls(state, toolCalls);
+        await closeDroppedToolCalls(state, sessionState, toolCalls);
         await journal.append({ type: "interrupt_safe_point_reached", run_id: runId, payload: {} });
         resetController(state);
         return "interrupted";
@@ -1386,16 +1623,16 @@ export function createAgentRuntime({
           const beforeTool = await journal.getSession();
           const runBeforeTool = beforeTool.active_run;
           if (!runBeforeTool || runBeforeTool.id !== runId || TERMINAL_RUN_STATUSES.has(runBeforeTool.status)) {
-            await closeDroppedToolCalls(state, toolCalls.slice(index));
+            await closeDroppedToolCalls(state, sessionState, toolCalls.slice(index));
             return "terminated";
           }
           if (runBeforeTool.status === "stopping") {
-            await closeDroppedToolCalls(state, toolCalls.slice(index));
-            await cancelRunForStop(state, state.stopReason);
+            await closeDroppedToolCalls(state, sessionState, toolCalls.slice(index));
+            await cancelRunForStop(state, sessionState, state.stopReason);
             return "stopped";
           }
           if (runBeforeTool.status === "interrupting" || state.controller?.signal.aborted) {
-            await closeDroppedToolCalls(state, toolCalls.slice(index));
+            await closeDroppedToolCalls(state, sessionState, toolCalls.slice(index));
             await journal.append({ type: "interrupt_safe_point_reached", run_id: runId, payload: {} });
             resetController(state);
             return "interrupted";
@@ -1434,7 +1671,7 @@ export function createAgentRuntime({
       if (streamedReply?.rawText && streamedReply.safeText !== safeText) {
         const error = new Error("Provider token stream 与最终正文不一致。");
         error.code = "provider_stream_mismatch";
-        await failRun(state, runId, { error, inputId });
+        await failRun(state, sessionState, runId, { error, inputId });
         return "failed";
       }
       await appendSafeTranscript(journal, { role: "assistant", content: text });
@@ -1476,9 +1713,9 @@ export function createAgentRuntime({
   // 的竞态（submit 恰落在「队列判空」与「run_completed 落盘」之间时，新输入会
   // 滞留跨 Run 边界）。返回 "advance" | "compact" | "completed" | "interrupting"
   // | "stopping" | "terminal" | "gone"。
-  async function advanceOrComplete(state, runId) {
+  async function advanceOrComplete(state, sessionState, runId) {
     return state.mutex.run(async () => {
-      const session = await state.journal.getSession();
+      const session = await sessionState.journal.getSession();
       const run = session.active_run;
       if (!run || run.id !== runId) return "gone";
       if (TERMINAL_RUN_STATUSES.has(run.status)) return "terminal";
@@ -1489,21 +1726,21 @@ export function createAgentRuntime({
         if (head.kind === "compact") {
           // Task 8：/compact 在安全点被"消费"——激活但不给终态事件（失败时
           // compact item 必须保持无终态可重试/可取消），由 processCompact 收尾。
-          await state.journal.append({
+          await sessionState.journal.append({
             type: "input_promoted",
             run_id: runId,
             payload: { input_id: head.id, reason: "compact_safe_point" }
           });
           return "compact";
         }
-        await state.journal.append({
+        await sessionState.journal.append({
           type: "input_consumed",
           run_id: runId,
           payload: { input_id: session.queued_inputs[0].id }
         });
         return "advance";
       }
-      await state.journal.append({ type: "run_completed", run_id: runId, payload: {} });
+      await sessionState.journal.append({ type: "run_completed", run_id: runId, payload: {} });
       return "completed";
     });
   }
@@ -1511,18 +1748,18 @@ export function createAgentRuntime({
   // 外层循环：逐个消费输入；队列清空且满足完成条件后 Run 终结。
   // compaction_blocked（自动压缩失败/取消、手动压缩失败/空闲取消）必须显式
   // 处理：复位 controller 并停止循环——绝不继续循环、绝不调用 run_completed。
-  async function runLoop(state, runId) {
+  async function runLoop(state, sessionState, runId) {
     while (true) {
-      const session = await state.journal.getSession();
+      const session = await sessionState.journal.getSession();
       const run = session.active_run;
       if (!run || run.id !== runId) return;
       if (TERMINAL_RUN_STATUSES.has(run.status)) return;
       if (run.status === "stopping") {
-        await cancelRunForStop(state, state.stopReason);
+        await cancelRunForStop(state, sessionState, state.stopReason);
         return;
       }
       if (run.status === "interrupting" || state.controller?.signal.aborted) {
-        await state.journal.append({ type: "interrupt_safe_point_reached", run_id: runId, payload: {} });
+        await sessionState.journal.append({ type: "interrupt_safe_point_reached", run_id: runId, payload: {} });
         resetController(state);
         continue;
       }
@@ -1530,22 +1767,22 @@ export function createAgentRuntime({
       const inputId = run.active_input_id;
       if (inputId === null) {
         // 无活动输入：互斥锁内激活队首或自然终结（兜底路径）
-        const fallback = await advanceOrComplete(state, runId);
+        const fallback = await advanceOrComplete(state, sessionState, runId);
         if (fallback === "advance" || fallback === "compact" || fallback === "interrupting" || fallback === "stopping") continue;
         return;
       }
 
-      const inputMeta = await findInputMeta(state.journal, inputId);
+      const inputMeta = await findInputMeta(sessionState.journal, inputId);
       if (inputMeta.text === null) {
         // 恢复的日志中找不到该输入（陈旧记录）：消费跳过，避免卡死
-        await state.journal.append({ type: "input_consumed", run_id: runId, payload: { input_id: inputId } });
+        await sessionState.journal.append({ type: "input_consumed", run_id: runId, payload: { input_id: inputId } });
         continue;
       }
 
       if (inputMeta.kind === "compact") {
-        const compactOutcome = await processCompact(state, runId, inputId, inputMeta.text);
+        const compactOutcome = await processCompact(state, sessionState, runId, inputId, inputMeta.text);
         if (compactOutcome === "compacted" || compactOutcome === "compaction_resumed") {
-          const after = await advanceOrComplete(state, runId);
+          const after = await advanceOrComplete(state, sessionState, runId);
           if (after === "advance" || after === "compact" || after === "interrupting" || after === "stopping") continue;
           return; // completed / terminal / gone
         }
@@ -1555,7 +1792,7 @@ export function createAgentRuntime({
         return;
       }
 
-      const outcome = await processInput(state, runId, inputId, inputMeta.text);
+      const outcome = await processInput(state, sessionState, runId, inputId, inputMeta.text);
       if (outcome === "stopped" || outcome === "failed" || outcome === "terminated" || outcome === "compaction_blocked") {
         if (outcome === "compaction_blocked") resetController(state);
         return;
@@ -1564,7 +1801,7 @@ export function createAgentRuntime({
 
       // 输入完成：互斥锁内复查队列并推进/终结（阻断 submit 竞态滞留）；
       // "compact" = 队首是 /compact 已被安全点激活，继续循环处理
-      const after = await advanceOrComplete(state, runId);
+      const after = await advanceOrComplete(state, sessionState, runId);
       if (after === "advance" || after === "compact" || after === "interrupting" || after === "stopping") continue;
       return; // completed / terminal / gone
     }
@@ -1576,7 +1813,7 @@ export function createAgentRuntime({
   // resolve；submit 创建 Run 后等待它，保证调用方拿到控制权时模型轮次已在飞行
   // （「立即」在飞行期间到达，被打断的输入才有可打断的活动），循环结束也 resolve
   // 以免停止先于首轮时悬挂等待者。
-  function startLoop(state, runId) {
+  function startLoop(state, sessionState, runId) {
     if (state.loopPromise && state.runId === runId) return state.loopPromise;
     const previous = state.loopPromise;
     let resolveFirstTurn;
@@ -1584,6 +1821,9 @@ export function createAgentRuntime({
       resolveFirstTurn = resolve;
     });
     state.runId = runId;
+    // Task 4：记录当前飞行循环属于哪个会话（clearHistory 按此判断是否可复位
+    // 项目级循环状态——清空其他会话历史不得破坏运行中会话的可中断性）。
+    state.loopSessionId = sessionState.sessionId;
     state.controller = new AbortController();
     state.stopReason = "user_stop";
     state.firstTurn = { promise: firstTurn, resolve: resolveFirstTurn, resolved: false };
@@ -1596,14 +1836,14 @@ export function createAgentRuntime({
         }
       }
       try {
-        await runLoop(state, runId);
+        await runLoop(state, sessionState, runId);
       } catch (error) {
         // 兜底：循环异常时把 Run 收敛为 failed，绝不悬挂项目
         try {
-          const session = await state.journal.getSession();
+          const session = await sessionState.journal.getSession();
           const run = session.active_run;
           if (run && run.id === runId && !TERMINAL_RUN_STATUSES.has(run.status)) {
-            await failRun(state, runId, {
+            await failRun(state, sessionState, runId, {
               error: { message: String(error?.message ?? error), code: "runtime_error" },
               inputId: run.active_input_id
             });
@@ -1616,6 +1856,7 @@ export function createAgentRuntime({
         if (state.loopPromise === promise) {
           state.loopPromise = null;
           state.runId = null;
+          state.loopSessionId = null;
           state.controller = null;
           state.firstTurn = null;
           // Run 结束：清掉 skill catalog 记忆，下次 Run 重新发现（技能可能已变更）。
@@ -1652,10 +1893,10 @@ export function createAgentRuntime({
   // -------------------------------------------------------------------------
 
   // 等待 Run 离开中间态：回到 running（安全点已到）或终结。
-  async function waitForRunResolved(state, runId, { timeoutMs = IDLE_WAIT_TIMEOUT_MS } = {}) {
+  async function waitForRunResolved(state, sessionState, runId, { timeoutMs = IDLE_WAIT_TIMEOUT_MS } = {}) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const session = await state.journal.getSession();
+      const session = await sessionState.journal.getSession();
       const run = session.active_run;
       if (!run || run.id !== runId) return "gone";
       if (TERMINAL_RUN_STATUSES.has(run.status)) return "terminal";
@@ -1665,10 +1906,10 @@ export function createAgentRuntime({
     return "timeout";
   }
 
-  async function waitForIdle(state, { timeoutMs = IDLE_WAIT_TIMEOUT_MS } = {}) {
+  async function waitForIdle(state, sessionState, { timeoutMs = IDLE_WAIT_TIMEOUT_MS } = {}) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const session = await state.journal.getSession();
+      const session = await sessionState.journal.getSession();
       if (session.status === "idle") return;
       await sleep(10);
     }
@@ -1679,95 +1920,46 @@ export function createAgentRuntime({
   // 公共接口
   // -------------------------------------------------------------------------
 
-  async function open({ projectRoot }) {
+  async function open({ projectRoot, sessionId = null }) {
     if (typeof projectRoot !== "string" || projectRoot.length === 0) {
       throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
     }
     const state = ensureProject(projectRoot);
-    // Task 3 固定顺序：先迁移旧 .wwriting/agent → journal.load() → 更老的 legacy
-    // flat-file import → 恢复 Run。迁移必须发生在 load() 之前，迁移进来的事件对
-    // 新会话立即可见；迁移失败/无源数据不阻塞 open（migrator 只返回结果不抛错，
-    // 这里再兜一层，绝不把原始文件错误带到 HTTP 层）。
-    try {
-      await workspaceMigrator({
-        projectRoot: state.key,
-        targetAgentRoot: agentStorageRootFor(state.key)
-      });
-    } catch (error) {
-      console.warn(`[agent] legacy journal 迁移失败（不影响 open）: ${error?.message ?? String(error)}`);
+    // Task 4 迁移序列（幂等）：migrate 先行 + workspace 复制按注册表存在性门控
+    //（顺序理由见 migrateProjectData）。迁移失败/无源数据不阻塞 open。
+    await migrateProjectData(state);
+    // 解析目标会话：显式 sessionId → registry.get 校验存在；缺省 → 最近活跃
+    //（迁移出的会话 1 即"对话 1"）；品牌新项目（无任何会话）→ 空项目状态，
+    // 不建 journal、不建会话（惰性创建）。
+    const targetId = await resolveSessionId(state, sessionId);
+    if (targetId == null) {
+      return { session_id: null, status: "idle" };
     }
-    await state.journal.load();
-    // Task 8：checkpoint 崩溃对账（提交 marker 裁决 + 孤儿清理）必须在检查压缩
-    // 投影之前执行——对账可能补写 completed（裁决 2）或 failed（裁决 1），使压缩
-    // 变为终态。storage 损坏（checkpoint_corrupt）暴露可诊断错误，不猜测回滚。
-    await state.checkpointStore.reconcileAfterCrash({ journal: state.journal });
-    // Task 7：首次 open 对旧项目执行一次性只读 legacy 导入（幂等）。导入失败不
-    // 阻塞 open：journal 已恢复、应用可继续工作；migration.legacy_imported 保持
-    // false，下次 open() 重试（legacy-import 的 legacy_id / legacy 标记保证重试
-    // 不产生重复事件或消息）。
-    try {
-      await runLegacyImport({ projectRoot: state.key, journal: state.journal, idFactory });
-    } catch (error) {
-      console.warn(`[agent] legacy 导入失败（下次 open 重试）: ${error?.message ?? String(error)}`);
-    }
-    // Task 8：非终态压缩对账（brief Step 3 结尾）。先通过 commit marker 对账
-    //（上面 reconcileAfterCrash），未完成 attempt 统一追加
-    // context_compaction_cancelled(reason:"process_restarted")，然后按收敛矩阵
-    // 把 Run 收敛为 waiting_user（自动失败/取消、手动失败均保持 waiting_user，
-    // 不自动模型调用）。active_context_checkpoint_id 保持旧值（cancelled 不切换）。
-    const loadedSession = await state.journal.getSession();
-    const loadedCompaction = loadedSession.compaction;
-    if (loadedCompaction && COMPACTION_BLOCKED_STATES.includes(loadedCompaction.state)) {
-      if (COMPACTION_NON_TERMINAL_STATES.includes(loadedCompaction.state)) {
-        await state.journal.append({
-          type: "context_compaction_cancelled",
-          payload: {
-            compaction_id: loadedCompaction.id,
-            trigger: loadedCompaction.trigger,
-            attempt: loadedCompaction.attempt ?? 1,
-            source_checkpoint_id: loadedCompaction.source_checkpoint_id ?? null,
-            checkpoint_id: loadedCompaction.checkpoint_id ?? null,
-            source_seq: null,
-            source_transcript_seq: null,
-            provider_model_id: null,
-            estimated_tokens_before: null,
-            estimated_tokens_after: null,
-            released_tokens: null,
-            summary_schema_version: 1,
-            duration_ms: null,
-            validation: null,
-            error_code: null,
-            cancel_reason: "process_restarted"
-          }
-        });
-      }
-      // 收敛 Run/input：残留 running（崩溃窗口）收敛为 waiting_user；
-      // 已是 waiting_user 保持原状。输入保持 pending（无终态），等待用户 retry/cancel。
-      const recoveryRun = (await state.journal.getSession()).active_run;
-      if (recoveryRun && !TERMINAL_RUN_STATUSES.has(recoveryRun.status) && recoveryRun.status === "running") {
-        await state.journal.append({
-          type: "run_status_changed",
-          run_id: recoveryRun.id,
-          payload: { status: "waiting_user", reason: "process_restarted", resume_run_status: null }
-        });
-      }
-    }
+    const sessionState = await ensureSessionState(state, targetId);
+    await sessionState.journal.load();
+    // 崩溃对账（checkpoint/legacy/压缩收敛；不在此启动循环——见下）
+    await reconcileSessionAfterLoad(state, sessionState);
+    // lastSeq 校准 + updated_at（幂等）：以该会话 journal 的实际 lastSeq 校准注册表，
+    // 消解迁移"create 与 setLastSeq 之间崩溃"留下的 last_seq=0 窗口
+    //（journal-session-migration 文件头；校准失败只告警，派生元数据以事件流为准）。
+    await syncSessionRegistry(state, sessionState);
     // 恢复：只恢复有效非终态 Run（journal.load 已把 dangling assistant 活动标记
     // 为 interrupted；那些 Run 等待 retry，不自动恢复；legacy 导入的未完成 Run
     // 是合法非终态，按同一语义接续执行）。压缩处于阻塞状态（started/running/
     // cancelling/failed/cancelled）时绝不自动启动循环——绝不让旧 processInput
     // 自动再次执行。
-    const session = await state.journal.getSession();
+    const session = await sessionState.journal.getSession();
     const run = session.active_run;
     const compactionBlocked =
       session.compaction != null && COMPACTION_BLOCKED_STATES.includes(session.compaction.state);
     if (run && !TERMINAL_RUN_STATUSES.has(run.status) && !compactionBlocked) {
-      startLoop(state, run.id);
+      startLoop(state, sessionState, run.id);
     }
-    return { session_id: session.session_id, status: session.status };
+    // session_id 返回注册表 id（外部书签）；status 为恢复后的会话状态。
+    return { session_id: targetId, status: session.status };
   }
 
-  async function submit({ projectRoot, text, source = "chat" }) {
+  async function submit({ projectRoot, text, source = "chat", sessionId = null }) {
     if (typeof projectRoot !== "string" || projectRoot.length === 0) {
       throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
     }
@@ -1777,26 +1969,61 @@ export function createAgentRuntime({
     if (!SOURCES.has(source)) {
       throw fail("invalid_source", `source 只允许 ${[...SOURCES].join("/")}，仅用于审计来源。`);
     }
-    // 计划修复（整支审阅）：submit 前确保 open 序列已执行——幂等（已迁移目录
-    // target_not_empty 直接返回；已绑定循环 startLoop 复用现有 Promise）。这同时兜住
-    // 启动恢复的选中工作区（不经 /open 路由也能在第一条消息前完成旧 journal 迁移与
-    // 崩溃恢复：残留非终态 Run 先被接续，消息再 FIFO 排队而不是挂在死 Run 后面）。
-    await open({ projectRoot });
+    // Task 4：迁移序列（幂等）兜住不经 /open 路由的直连提交（启动恢复的选中
+    // 工作区第一条消息前完成旧 journal 迁移）。
     const state = ensureProject(projectRoot);
-    await state.journal.load();
-    // 互斥锁内只做读-判-写与循环启动；waitForFirstTurn 必须在锁外等待（循环的
-    // 安全点路径 cancelRunForStop/advanceOrComplete 需要取同一把锁，锁内等待会死锁）。
+    await migrateProjectData(state);
     // Task 8：只把精确的 text === "/compact" 识别为 kind:"compact"；"/compact now"
     // 等其余文本都是普通输入。
     const kind = text === "/compact" ? "compact" : undefined;
+    // 互斥锁内只做会话解析、串行门、读-判-写与循环启动；waitForFirstTurn 必须在
+    // 锁外等待（循环的安全点路径 cancelRunForStop/advanceOrComplete 需要取同一把
+    // 锁，锁内等待会死锁）。
     const created = await state.mutex.run(async () => {
-      const session = await state.journal.getSession();
+      // 1) 会话解析：显式 sessionId → 校验存在；缺省 → 最近活跃；都没有 → 惰性
+      //    创建新会话（registry.create + journal 首次 load 写 session_created）。
+      let targetId = sessionId;
+      if (targetId != null) {
+        const meta = await state.registry.get(targetId);
+        if (!meta) throw fail("session_not_found", `会话不存在: ${targetId}`);
+      } else {
+        targetId = await state.registry.getLastActive();
+      }
+      // 2) 串行门：目标会话之外若有任一会话存在非终态 run → project_busy。
+      //    惰性创建路径（targetId == null）下，所有已物化会话都算"其他会话"；
+      //    目标会话尚未物化、不可能有 run。门禁在创建/恢复之前执行，被拒的提交
+      //    不产生任何会话副作用。同会话运行中走下方 FIFO 队列（行为不变）。
+      for (const [sid, other] of state.sessions) {
+        if (targetId != null && sid === targetId) continue;
+        const otherSession = await other.journal.getSession();
+        if (otherSession.active_run && !TERMINAL_RUN_STATUSES.has(otherSession.active_run.status)) {
+          throw fail("project_busy", "另一个对话正在运行，请稍候。");
+        }
+      }
+      // 3) 惰性创建（缺省且无会话）
+      if (targetId == null) {
+        const meta = await state.registry.create({ title: deriveSessionTitle(text) });
+        targetId = meta.session_id;
+      }
+      const sessionState = await ensureSessionState(state, targetId);
+      await sessionState.journal.load();
+      await reconcileSessionAfterLoad(state, sessionState);
+      // 4) 恢复可恢复 Run（等价旧 submit → open() 的启动恢复）：非终态且未被压缩
+      //    阻塞 → 接续执行（新输入在下方 FIFO 排队在其后）。串行门已保证没有
+      //    其他会话的飞行循环，此处启动是安全的。
+      const session = await sessionState.journal.getSession();
       const run = session.active_run;
+      const compactionBlocked =
+        session.compaction != null && COMPACTION_BLOCKED_STATES.includes(session.compaction.state);
+      if (run && !TERMINAL_RUN_STATUSES.has(run.status) && !compactionBlocked) {
+        startLoop(state, sessionState, run.id);
+      }
+      // 5) 现有 FIFO / 新 Run 逻辑（作用于目标会话的 journal）
       const inputId = idFactory();
       if (!run || TERMINAL_RUN_STATUSES.has(run.status)) {
         // 空闲：创建新 Run
         const runId = idFactory();
-        await state.journal.appendBatch([
+        await sessionState.journal.appendBatch([
           {
             type: "input_queued",
             payload: { input_id: inputId, text, source, ...(kind === undefined ? {} : { kind }) }
@@ -1807,15 +2034,18 @@ export function createAgentRuntime({
             payload: { workflow: "general", input_id: inputId }
           }
         ]);
-        startLoop(state, runId);
-        return { input_id: inputId, run_id: runId, queued: false };
+        startLoop(state, sessionState, runId);
+        // 注册表同步（调用方可等待的边界；lastSeq 读取当前实际尾部，并发 append 不丢）
+        await syncSessionRegistry(state, sessionState);
+        return { input_id: inputId, run_id: runId, queued: false, session_id: targetId };
       }
       // 运行中：FIFO 队列（/compact 不打断当前模型/工具，按普通消息排队）
-      await state.journal.append({
+      await sessionState.journal.append({
         type: "input_queued",
         payload: { input_id: inputId, text, source, ...(kind === undefined ? {} : { kind }) }
       });
-      return { input_id: inputId, run_id: run.id, queued: true };
+      await syncSessionRegistry(state, sessionState);
+      return { input_id: inputId, run_id: run.id, queued: true, session_id: targetId };
     });
     if (!created.queued) {
       // 等待第一个模型轮次开始（或循环已结束）：保证调用方拿到控制权时
@@ -1825,16 +2055,18 @@ export function createAgentRuntime({
     return created;
   }
 
-  async function promote({ projectRoot, inputId }) {
+  async function promote({ projectRoot, inputId, sessionId = null }) {
     if (typeof inputId !== "string" || inputId.length === 0) {
       throw fail("invalid_input_id", "inputId 必须是非空字符串。");
     }
     const state = ensureProject(projectRoot);
-    await state.journal.load();
+    const sessionState = await resolveSessionState(state, sessionId);
+    if (!sessionState) throw fail("no_active_run", "当前没有可打断的活动 Run。");
+    await sessionState.journal.load();
     // 预检查 + 批次落盘在项目互斥锁内原子完成：并发双 promote 不会同时通过
     // 预检查；stop/submit 与 promote 的读-判-写互斥。
     const runId = await state.mutex.run(async () => {
-      const session = await state.journal.getSession();
+      const session = await sessionState.journal.getSession();
       const run = session.active_run;
       if (!run || TERMINAL_RUN_STATUSES.has(run.status)) {
         throw fail("no_active_run", "当前没有可打断的活动 Run。");
@@ -1864,18 +2096,19 @@ export function createAgentRuntime({
         });
       }
       try {
-        await state.journal.appendBatch(batch);
+        await sessionState.journal.appendBatch(batch);
       } catch (error) {
         if (error?.message?.includes("需要活动 Run") || error?.message?.includes("非排队") || error?.message?.includes("正在停止")) {
           throw fail("promote_failed", "无法提升该输入：Run 已终结、正在停止或输入已被消费。");
         }
         throw error;
       }
+      await syncSessionRegistry(state, sessionState);
       return run.id;
     });
     // abort 活动模型请求或可中断工具，等待原子操作到达安全点
     abortController(state);
-    const outcome = await waitForRunResolved(state, runId);
+    const outcome = await waitForRunResolved(state, sessionState, runId);
     if (outcome === "timeout") {
       throw fail("promote_timeout", "等待中断安全点超时。");
     }
@@ -1886,7 +2119,7 @@ export function createAgentRuntime({
     return { run_id: runId, input_id: inputId, promoted: true };
   }
 
-  async function decide({ projectRoot, decisionId, choice }) {
+  async function decide({ projectRoot, decisionId, choice, sessionId = null }) {
     if (typeof decisionId !== "string" || decisionId.length === 0) {
       throw fail("invalid_decision_id", "decisionId 必须是非空字符串。");
     }
@@ -1894,42 +2127,68 @@ export function createAgentRuntime({
       throw fail("invalid_choice", "choice 必须是非空字符串。");
     }
     const state = ensureProject(projectRoot);
-    await state.journal.load();
-    return state.tools.resolveDecision({ decisionId, choice, confirmationText: choice });
+    const sessionState = await resolveSessionState(state, sessionId);
+    if (!sessionState) throw fail("decision_not_found", "决策不存在或已过期。");
+    await sessionState.journal.load();
+    return sessionState.tools.resolveDecision({ decisionId, choice, confirmationText: choice });
   }
 
-  async function stop({ projectRoot, reason = "user_stop" }) {
+  async function stop({ projectRoot, reason = "user_stop", sessionId = null }) {
     const state = ensureProject(projectRoot);
-    await state.journal.load();
-    const session = await state.journal.getSession();
-    const run = session.active_run;
-    if (!run || TERMINAL_RUN_STATUSES.has(run.status)) {
-      return { run_id: null, cancelled: false }; // 没有可停止的 Run：无操作
-    }
-    if (run.status === "stopping") {
-      await waitForIdle(state);
-      return { run_id: run.id, cancelled: true };
-    }
-    try {
-      await state.journal.append({
-        type: "run_status_changed",
-        run_id: run.id,
-        payload: { status: "stopping", reason }
-      });
-    } catch (error) {
-      // 竞态：Run 恰在此时终结，停止自然失效（reducer 拒绝终结状态上的
-      // run_status_changed）；真实 journal 错误必须 abort + 上抛，不能吞掉。
-      const message = error?.message ?? "";
-      if (message.includes("需要活动 Run") || message.includes("必须携带 retry") || message.includes("不能再次进入")) {
-        return { run_id: run.id, cancelled: false };
+    // 会话解析 + 读-判-写放进项目互斥锁，与 promote 的临界区串行化：调用顺序
+    // 决定胜负——stop 先调用时其 stopping 落盘必然先于 promote 的读-判-写，
+    // 杜绝「promote 在 stop 落盘前读到 running 而误提升成功」的竞态（Task 4 的
+    // 注册表解析 I/O 让两条链的先后不再由调用顺序唯一决定）。
+    const outcome = await state.mutex.run(async () => {
+      const sessionState = await resolveSessionState(state, sessionId);
+      if (!sessionState) {
+        return { run_id: null, cancelled: false, sessionState: null }; // 没有会话：无操作
       }
+      await sessionState.journal.load();
+      const session = await sessionState.journal.getSession();
+      const run = session.active_run;
+      if (!run || TERMINAL_RUN_STATUSES.has(run.status)) {
+        return { run_id: null, cancelled: false, sessionState }; // 没有可停止的 Run：无操作
+      }
+      if (run.status === "stopping") {
+        return { run_id: run.id, cancelled: true, sessionState, alreadyStopping: true };
+      }
+      try {
+        await sessionState.journal.append({
+          type: "run_status_changed",
+          run_id: run.id,
+          payload: { status: "stopping", reason }
+        });
+      } catch (error) {
+        // 竞态：Run 恰在此时终结，停止自然失效（reducer 拒绝终结状态上的
+        // run_status_changed）；真实 journal 错误由外层 .catch abort + 上抛。
+        const message = error?.message ?? "";
+        if (message.includes("需要活动 Run") || message.includes("必须携带 retry") || message.includes("不能再次进入")) {
+          return { run_id: run.id, cancelled: false, sessionState };
+        }
+        throw error;
+      }
+      state.stopReason = reason;
+      return { run_id: run.id, cancelled: true, sessionState };
+    }).catch((error) => {
+      // mutex.run 内已对可识别竞态返回；这里的 reject 是真实 journal 错误
       abortController(state);
       throw error;
+    });
+    // 锁外：abort + 等待收敛（循环的安全点路径 cancelRunForStop 需要取同一把锁，
+    // 锁内等待会死锁）
+    if (!outcome.cancelled) {
+      return { run_id: outcome.run_id ?? null, cancelled: false };
     }
-    state.stopReason = reason;
+    const { sessionState } = outcome;
+    if (outcome.alreadyStopping) {
+      await waitForIdle(state, sessionState);
+      return { run_id: outcome.run_id, cancelled: true };
+    }
     abortController(state);
-    await waitForIdle(state);
-    return { run_id: run.id, cancelled: true };
+    await waitForIdle(state, sessionState);
+    await syncSessionRegistry(state, sessionState);
+    return { run_id: outcome.run_id, cancelled: true };
   }
 
   // 从 journal 事件找回可恢复 Run 的未终结输入（run_failed 记录了 input_id；
@@ -1964,14 +2223,16 @@ export function createAgentRuntime({
     return openInputs.length > 0 ? openInputs[openInputs.length - 1] : null;
   }
 
-  async function retry({ projectRoot, runId }) {
+  async function retry({ projectRoot, runId, sessionId = null }) {
     if (typeof runId !== "string" || runId.length === 0) {
       throw fail("invalid_run_id", "runId 必须是非空字符串。");
     }
     const state = ensureProject(projectRoot);
-    await state.journal.load();
+    const sessionState = await resolveSessionState(state, sessionId);
+    if (!sessionState) throw fail("run_not_found", "没有可恢复的 Run。");
+    await sessionState.journal.load();
     return state.mutex.run(async () => {
-      const session = await state.journal.getSession();
+      const session = await sessionState.journal.getSession();
       const run = session.active_run;
       if (!run) throw fail("run_not_found", "没有可恢复的 Run。");
       if (run.id !== runId) throw fail("run_not_found", `Run ${runId} 不是当前会话的 Run。`);
@@ -1981,23 +2242,24 @@ export function createAgentRuntime({
       if (run.status !== "failed" && run.status !== "interrupted") {
         throw fail("run_not_recoverable", `只有 failed/interrupted 的 Run 可以重试，当前为 ${run.status}。`);
       }
-      let inputId = await findTerminalInputId(state.journal, runId);
+      let inputId = await findTerminalInputId(sessionState.journal, runId);
       if (inputId === null) {
         // 兜底：以 transcript 最近一条用户消息重建输入（崩溃现场无 input 记录）
-        const records = await state.journal.readTranscript();
+        const records = await sessionState.journal.readTranscript();
         const lastUser = [...records].reverse().find((record) => record?.role === "user");
         inputId = idFactory();
-        await state.journal.append({
+        await sessionState.journal.append({
           type: "input_queued",
           payload: { input_id: inputId, text: String(lastUser?.content ?? "继续执行") }
         });
       }
-      await state.journal.append({
+      await sessionState.journal.append({
         type: "run_started",
         run_id: runId,
         payload: { workflow: run.workflow, input_id: inputId }
       });
-      startLoop(state, runId);
+      await syncSessionRegistry(state, sessionState);
+      startLoop(state, sessionState, runId);
       return { run_id: runId, input_id: inputId, retried: true };
     });
   }
@@ -2007,13 +2269,15 @@ export function createAgentRuntime({
   //（输入写回 transcript 前的收敛由 runLoop/processInput 处理，绝不让旧
   // processInput 自动再次执行）。ESC/按钮/HTTP 与 cancelCompaction 复用同一
   // AbortSignal 链。
-  async function retryCompaction({ projectRoot, compactionId }) {
+  async function retryCompaction({ projectRoot, compactionId, sessionId = null }) {
     if (typeof compactionId !== "string" || compactionId.length === 0) {
       throw fail("invalid_compaction_id", "compactionId 必须是非空字符串。");
     }
     const state = ensureProject(projectRoot);
-    await state.journal.load();
-    const session = await state.journal.getSession();
+    const sessionState = await resolveSessionState(state, sessionId);
+    if (!sessionState) throw fail("compaction_not_found", `compaction ${compactionId} 不存在。`);
+    await sessionState.journal.load();
+    const session = await sessionState.journal.getSession();
     const compaction = session.compaction;
     if (!compaction || compaction.id !== compactionId) {
       throw fail("compaction_not_found", `compaction ${compactionId} 不存在。`);
@@ -2028,7 +2292,7 @@ export function createAgentRuntime({
     if (!run || TERMINAL_RUN_STATUSES.has(run.status)) {
       throw fail("compaction_no_run", "当前没有可继续压缩的 Run。");
     }
-    const outcome = await state.compactionCoordinator.retry({
+    const outcome = await sessionState.compactionCoordinator.retry({
       compactionId,
       signal: state.controller?.signal
     });
@@ -2039,20 +2303,20 @@ export function createAgentRuntime({
       // 硬窗口直接发送；仍超阈值因已尝试不再重复压缩）。retry 重建源后无可压缩
       // 历史（noop）视为等价成功——输入照常继续，由 processInput 重新预检。
       await state.mutex.run(async () => {
-        const s = await state.journal.getSession();
+        const s = await sessionState.journal.getSession();
         const r = s.active_run;
         if (r && r.id === run.id && !TERMINAL_RUN_STATUSES.has(r.status) && r.status !== "running") {
-          await state.journal.append({
+          await sessionState.journal.append({
             type: "run_status_changed",
             run_id: run.id,
             payload: { status: "running", reason: "compaction_retried" }
           });
         }
         if (compaction.trigger === "manual") {
-          const s2 = await state.journal.getSession();
+          const s2 = await sessionState.journal.getSession();
           const r2 = s2.active_run;
           if (r2 && r2.id === run.id && !TERMINAL_RUN_STATUSES.has(r2.status)) {
-            await state.journal.append({
+            await sessionState.journal.append({
               type: "input_consumed",
               run_id: run.id,
               payload: { input_id: compaction.pending_input_id }
@@ -2060,25 +2324,28 @@ export function createAgentRuntime({
           }
         }
       });
-      startLoop(state, run.id);
+      startLoop(state, sessionState, run.id);
+      await syncSessionRegistry(state, sessionState);
       return { status: "completed", compaction_id: compactionId, attempt: outcome.attempt };
     }
     if (outcome.status === "failed") {
       // 仍失败：Run 保持 waiting_user，发送门禁保持禁用（熔断后只等用户再次 retry/cancel）
-      const s = await state.journal.getSession();
+      const s = await sessionState.journal.getSession();
       const r = s.active_run;
       if (r && r.id === run.id && !TERMINAL_RUN_STATUSES.has(r.status) && r.status !== "waiting_user") {
-        await state.journal.append({
+        await sessionState.journal.append({
           type: "run_status_changed",
           run_id: run.id,
           payload: { status: "waiting_user", reason: "compaction_failed", error_code: outcome.error_code ?? null }
         });
       }
+      await syncSessionRegistry(state, sessionState);
       return { status: "failed", compaction_id: compactionId, attempt: outcome.attempt, error_code: outcome.error_code };
     }
     // cancelled（ESC 中断重试）：取消收敛（input_cancelled + run_cancelled / 恢复）
-    const compactionNow = (await state.journal.getSession()).compaction;
-    await convergeCompactionCancelled(state, compactionNow);
+    const compactionNow = (await sessionState.journal.getSession()).compaction;
+    await convergeCompactionCancelled(state, sessionState, compactionNow);
+    await syncSessionRegistry(state, sessionState);
     return { status: "cancelled", compaction_id: compactionId };
   }
 
@@ -2087,31 +2354,35 @@ export function createAgentRuntime({
   // 先进入 cancelling（cancel_requested），底层确认终止后追加 cancelled，随后
   // 按触发来源收敛 Run/input（自动 → input_cancelled + run_cancelled，文本回
   // draft；手动 → input_cancelled + 恢复 resume_run_status 或 idle）。
-  async function cancelCompaction({ projectRoot, compactionId }) {
+  async function cancelCompaction({ projectRoot, compactionId, sessionId = null }) {
     if (typeof compactionId !== "string" || compactionId.length === 0) {
       throw fail("invalid_compaction_id", "compactionId 必须是非空字符串。");
     }
     const state = ensureProject(projectRoot);
-    await state.journal.load();
-    const session = await state.journal.getSession();
+    const sessionState = await resolveSessionState(state, sessionId);
+    if (!sessionState) throw fail("compaction_not_found", `compaction ${compactionId} 不存在。`);
+    await sessionState.journal.load();
+    const session = await sessionState.journal.getSession();
     const compaction = session.compaction;
     if (!compaction || compaction.id !== compactionId) {
       throw fail("compaction_not_found", `compaction ${compactionId} 不存在。`);
     }
-    const outcome = await state.compactionCoordinator.cancel({ compactionId });
-    const compactionNow = (await state.journal.getSession()).compaction;
+    const outcome = await sessionState.compactionCoordinator.cancel({ compactionId });
+    const compactionNow = (await sessionState.journal.getSession()).compaction;
     // I5：取消请求与提交竞态——coordinator 报告实际终态（或会话投影已是 completed）
     // 时，压缩确实成功（指针已切换、completed 已落盘），原输入由 runLoop 继续，
     // 绝不把成功压缩收敛成 input_cancelled + run_cancelled（UI 不得显示"已取消"
     // 覆盖已切换的上下文）。
     if (outcome?.status === "completed" || outcome?.state === "completed") {
+      await syncSessionRegistry(state, sessionState);
       return {
         status: "completed",
         compaction_id: compactionId,
         checkpoint_id: outcome?.checkpoint_id ?? compactionNow?.checkpoint_id ?? null
       };
     }
-    await convergeCompactionCancelled(state, compactionNow);
+    await convergeCompactionCancelled(state, sessionState, compactionNow);
+    await syncSessionRegistry(state, sessionState);
     return { status: "cancelled", compaction_id: compactionId };
   }
 
@@ -2122,20 +2393,25 @@ export function createAgentRuntime({
   //   否则               → journal.readAfter({ afterSeq, limit })（增量拉取）
   // afterSeq=0 只表示从头读取（旧客户端兼容），AgentSurface 首次打开不得用
   // afterSeq=0 补齐所有历史（前端改用 tail/beforeSeq，Task 9/10 接线）。
-  async function snapshot({ projectRoot, afterSeq = 0, beforeSeq = null, tail = false, limit = 100 } = {}) {
+  async function snapshot({ projectRoot, sessionId = null, afterSeq = 0, beforeSeq = null, tail = false, limit = 100 } = {}) {
     const state = ensureProject(projectRoot);
-    await state.journal.load();
-    const session = await state.journal.getSession();
+    const sessionState = await resolveSessionState(state, sessionId);
+    if (!sessionState) {
+      // 无会话：空快照（惰性创建——不产生会话条目）
+      return { session: null, events: [], gaps: [], has_more: false };
+    }
+    await sessionState.journal.load();
+    const session = await sessionState.journal.getSession();
     let page;
     if (tail === true) {
-      page = await state.journal.readTail({ limit });
+      page = await sessionState.journal.readTail({ limit });
     } else if (beforeSeq != null) {
-      page = await state.journal.readBefore({ beforeSeq, limit });
+      page = await sessionState.journal.readBefore({ beforeSeq, limit });
     } else {
-      page = await state.journal.readAfter({ afterSeq, limit });
+      page = await sessionState.journal.readAfter({ afterSeq, limit });
     }
     const events = page.events;
-    const lastSeq = state.journal.lastSeq;
+    const lastSeq = sessionState.journal.lastSeq;
     let has_more;
     if (tail === true) {
       has_more = events.length > 0 ? events[0].seq > 1 : lastSeq > 0;
@@ -2150,12 +2426,14 @@ export function createAgentRuntime({
   // 历史导出（NDJSON 异步流）：只读动作，不追加 Journal 事件；由 journal 层顺序
   // 迭代 events/transcript 两个 segment store，每行 { stream, record }；对每条
   // record 应用 runtime 的 redactor（API key/模型密钥/provider header 脱敏）。
-  async function* exportHistory({ projectRoot } = {}) {
+  async function* exportHistory({ projectRoot, sessionId = null } = {}) {
     if (typeof projectRoot !== "string" || projectRoot.length === 0) {
       throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
     }
     const state = ensureProject(projectRoot);
-    yield* state.journal.exportHistory({
+    const sessionState = await resolveSessionState(state, sessionId);
+    if (!sessionState) return; // 无会话：空流
+    yield* sessionState.journal.exportHistory({
       redact: (record) => {
         try {
           return JSON.parse(redactor.redact(JSON.stringify(record)));
@@ -2171,23 +2449,36 @@ export function createAgentRuntime({
   // generation + session_created。runtime 侧在项目互斥锁内调用，并清掉本项目的
   // per-Run 循环状态（runId/controller/loopPromise/firstTurn/catalogCache），
   // 保证 projects Map 里不留旧 session 的运行时状态——同一实例立即可用。
-  async function clearHistory({ projectRoot, confirmIrreversible = false } = {}) {
+  async function clearHistory({ projectRoot, sessionId = null, confirmIrreversible = false } = {}) {
     if (typeof projectRoot !== "string" || projectRoot.length === 0) {
       throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
     }
     const state = ensureProject(projectRoot);
-    await state.journal.load();
+    const sessionState = await resolveSessionState(state, sessionId);
+    if (!sessionState) throw fail("session_not_found", "会话不存在。");
+    await sessionState.journal.load();
     return state.mutex.run(async () => {
-      const result = await state.journal.clearHistory({ confirmIrreversible });
-      // 清掉旧 session 的运行时残留（清空只在 idle 时放行，正常无飞行循环；
-      // 这里防御性复位，绝不把旧 generation 的高位游标/循环/上下文校准带到新会话）。
-      state.runId = null;
-      state.controller = null;
-      state.loopPromise = null;
-      state.firstTurn = null;
-      state.catalogCache = null;
-      state.contextCalibration = null;
-      state.stopReason = "user_stop";
+      const result = await sessionState.journal.clearHistory({ confirmIrreversible });
+      // 项目级循环状态复位只针对「无飞行循环」或「飞行循环属于被清空的会话」：
+      // journal 守卫只保证目标会话 idle，若另一会话 B 正在运行（串行门保证是唯一
+      // 运行），无条件复位 state.controller/loopPromise 会让 B 失去可中断性，且
+      // submit 的恢复路径会因 loopPromise 已空为同一 runId 启动第二个并发循环
+      //（双重模型调用）。清空空闲会话历史不应被其他会话运行阻塞，也绝不清运行中
+      // 会话的控制状态。
+      const runInFlight = state.loopPromise != null;
+      if (!runInFlight || state.loopSessionId === sessionState.sessionId) {
+        state.runId = null;
+        state.loopSessionId = null;
+        state.controller = null;
+        state.loopPromise = null;
+        state.firstTurn = null;
+        state.catalogCache = null;
+        state.stopReason = "user_stop";
+      }
+      // 目标会话自身的校准只属于它，恒复位
+      sessionState.contextCalibration = null;
+      // 注册表同步（clearHistory 不经逐事件同步通道，这里显式 touch + lastSeq）
+      await syncSessionRegistry(state, sessionState);
       return {
         session_id: result.session_id,
         status: result.status,
@@ -2198,5 +2489,104 @@ export function createAgentRuntime({
     });
   }
 
-  return { open, submit, promote, decide, stop, retry, retryCompaction, cancelCompaction, snapshot, exportHistory, clearHistory };
+  // -------------------------------------------------------------------------
+  // Task 4：多会话管理 API（全部委托 session-registry）
+  // -------------------------------------------------------------------------
+
+  // 会话列表 + 最近活跃（dashboard 数据源；先跑迁移序列，旧项目首开即含"对话 1"）。
+  async function sessions({ projectRoot }) {
+    if (typeof projectRoot !== "string" || projectRoot.length === 0) {
+      throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
+    }
+    const state = ensureProject(projectRoot);
+    await migrateProjectData(state);
+    const list = await state.registry.list();
+    const active = await state.registry.getLastActive();
+    return { sessions: list, active_session_id: active };
+  }
+
+  // 显式建会话（前端"+"按钮 / 对话 B 场景）。只写注册表条目；journal 在首次
+  // open/submit 时惰性物化（会话事件流的 session_created 那时才写入）。
+  async function newSession({ projectRoot, title }) {
+    if (typeof projectRoot !== "string" || projectRoot.length === 0) {
+      throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
+    }
+    const state = ensureProject(projectRoot);
+    await migrateProjectData(state);
+    return state.registry.create({ title });
+  }
+
+  async function renameSession({ projectRoot, sessionId, title }) {
+    if (typeof projectRoot !== "string" || projectRoot.length === 0) {
+      throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
+    }
+    requireSessionId(sessionId);
+    const state = ensureProject(projectRoot);
+    return state.registry.rename(sessionId, title);
+  }
+
+  async function archiveSession({ projectRoot, sessionId }) {
+    if (typeof projectRoot !== "string" || projectRoot.length === 0) {
+      throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
+    }
+    requireSessionId(sessionId);
+    const state = ensureProject(projectRoot);
+    return state.registry.archive(sessionId);
+  }
+
+  async function restoreSession({ projectRoot, sessionId }) {
+    if (typeof projectRoot !== "string" || projectRoot.length === 0) {
+      throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
+    }
+    requireSessionId(sessionId);
+    const state = ensureProject(projectRoot);
+    return state.registry.restore(sessionId);
+  }
+
+  // 永久删除（Task 10 设置页）：注册表元数据 + 会话数据目录一并移除。
+  // 守卫：会话运行中（非终态 run）拒绝删除，避免删除后残留飞行循环。
+  // 检查 + 删除在项目互斥锁内原子完成：与并发 submit 的读-判-写串行化，杜绝
+  // 「检查时未落 run → 删除 → submit 写已删会话」的窗口（submit 与会话解析、
+  // 串行门同锁）。
+  async function deleteSession({ projectRoot, sessionId }) {
+    if (typeof projectRoot !== "string" || projectRoot.length === 0) {
+      throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
+    }
+    requireSessionId(sessionId);
+    const state = ensureProject(projectRoot);
+    return state.mutex.run(async () => {
+      const sessionState = state.sessions.get(sessionId);
+      if (sessionState) {
+        const session = await sessionState.journal.getSession();
+        if (session.active_run && !TERMINAL_RUN_STATUSES.has(session.active_run.status)) {
+          throw fail("session_busy", "该会话正在运行，无法删除。");
+        }
+      }
+      await state.registry.removePermanently(sessionId);
+      state.sessions.delete(sessionId);
+      // 数据目录一并移除（永久删除 = 元数据 + 事件流）；目录不存在则忽略。
+      await fs.rm(path.join(state.agentRoot, "sessions", sessionId), { recursive: true, force: true }).catch(() => {});
+      return { deleted: true, session_id: sessionId };
+    });
+  }
+
+  return {
+    open,
+    submit,
+    promote,
+    decide,
+    stop,
+    retry,
+    retryCompaction,
+    cancelCompaction,
+    snapshot,
+    exportHistory,
+    clearHistory,
+    sessions,
+    newSession,
+    renameSession,
+    archiveSession,
+    restoreSession,
+    deleteSession
+  };
 }

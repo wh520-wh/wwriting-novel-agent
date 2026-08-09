@@ -86,7 +86,14 @@ export async function writeFileAtomic(targetPath, content) {
   } finally {
     await handle.close();
   }
-  await renameWithRetry(tmpPath, targetPath);
+  try {
+    await renameWithRetry(tmpPath, targetPath);
+  } catch (error) {
+    // 写失败清理临时文件：rename 失败（目标被并发删除/占用、磁盘错误等）时 tmp
+    // 是孤儿垃圾，残留会污染目录（Windows 下 rmdir 会因孤儿 tmp 报 ENOTEMPTY）。
+    await fs.rm(tmpPath, { force: true }).catch(() => {});
+    throw error;
+  }
   return {
     path: targetPath,
     bytes_written: Buffer.byteLength(content, "utf8"),
