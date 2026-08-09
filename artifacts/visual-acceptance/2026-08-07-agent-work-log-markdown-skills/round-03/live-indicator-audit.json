@@ -1,0 +1,31 @@
+[
+  {
+    "scenario": "reasoning-running",
+    "openActivityIds": [
+      "reasoning:f001ba2f-575d-4625-b518-7342034405ac"
+    ],
+    "visibleAnimatedLabels": [
+      "思考中"
+    ],
+    "visibleAnimatedCount": 1,
+    "groupHeaderAnimated": false
+  },
+  {
+    "scenario": "tool-after-reasoning",
+    "openActivityIds": [
+      "tool:36057d31-befb-44f3-b9b8-e9d41daa598d"
+    ],
+    "visibleAnimatedLabels": [
+      "正在调用 read_skill"
+    ],
+    "visibleAnimatedCount": 1,
+    "groupHeaderAnimated": false
+  },
+  {
+    "scenario": "completed",
+    "openActivityIds": [],
+    "visibleAnimatedLabels": [],
+    "visibleAnimatedCount": 0,
+    "groupHeaderAnimated": false
+  }
+]

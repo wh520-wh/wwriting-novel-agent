@@ -1,0 +1,49 @@
+{
+  "campaign": "2026-08-08-compaction-matrix",
+  "driver": ".tmp/capture-compaction-matrix.cjs（可见窗口 Electron，临时工具未提交）",
+  "note": "真实 app-shell server + 注入 testGatewayFactory + 真实 /api/agent/input + journal SSE 实时渲染后 capturePage。offscreen 采集在本机抛 UnknownVizError（与 CI 无头一致），改用可见窗口。图片为真实渲染像素，等待人工/多模态复核。",
+  "generated_at": "2026-08-08T15:29:53.674Z",
+  "rows": [
+    {
+      "file": "light-desktop-idle.png",
+      "size": "1280x800",
+      "state": "浅色/桌面/空闲",
+      "automated": "theme=light 断言 + 圆环挂载 + 无横向溢出 + PNG 非空",
+      "expected": "圆环静态、Assistant 正文默认可见、无彩色大卡",
+      "verification": "captured-pending-human-review"
+    },
+    {
+      "file": "dark-desktop-running.png",
+      "size": "1280x800",
+      "state": "深色/桌面/运行中",
+      "automated": "theme=dark 断言（页面加载前生效）+ 运行态文字（思考中/运行中）+ 无横向溢出 + PNG 非空",
+      "expected": "仅当前活动文字或圆环有轻微活性反馈",
+      "verification": "captured-pending-human-review"
+    },
+    {
+      "file": "light-narrow-compacting.png",
+      "size": "390x844",
+      "state": "浅色/窄窗/压缩中",
+      "automated": "13 轮真实历史 + 195K 字符输入触发真实自动压缩 + 压缩行「压缩进行中」断言 + 无横向溢出 + PNG 非空",
+      "expected": "状态单行顶替、popover 不越界、composer 不跳动",
+      "verification": "captured-pending-human-review"
+    },
+    {
+      "file": "dark-narrow-failed-cancelled.png",
+      "size": "390x844",
+      "state": "深色/窄窗/失败",
+      "automated": "theme=dark + 13 轮历史 + 非法 JSON 压缩响应 → 压缩行「压缩失败」+ 重试/取消按钮断言 + 终态 0 个循环动画 + 无横向溢出 + PNG 非空",
+      "expected": "重试/取消可点、输入不丢、终态无循环动画",
+      "verification": "captured-pending-human-review"
+    },
+    {
+      "file": "reduced-running-compacting.png",
+      "size": "1280x800",
+      "state": "reduced-motion/压缩中",
+      "automated": "--force-prefers-reduced-motion 真实命中（matchMedia reduce=true）+ 0 个循环动画 + 压缩行「压缩进行中」断言 + 无横向溢出 + PNG 非空",
+      "expected": "无位移/循环，状态和颜色仍可辨识",
+      "verification": "captured-pending-human-review"
+    }
+  ],
+  "bug_found_and_fixed": "strict-mode ES 模块在真实 DOM 对 SVG <circle> 执行 className= 赋值抛 Cannot set property className of #<SVGElement>（getter-only），context-ring.js 在启动时即崩溃导致整个 app shell 无法加载。已改为 classList.add()（真实 DOM 与测试 mock 均兼容）；修复后 5 行矩阵全部可采集，tests/app-shell 302 项全通过。"
+}
