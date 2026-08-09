@@ -446,30 +446,44 @@ step("场景 12 · 重启 journal 恢复");
 }
 
 // ---------------------------------------------------------------------------
-// 场景 13：legacy 导入幂等 + blueprint_status 迁移
+// 场景 13：legacy 导入幂等 + blueprint_status 迁移（多会话惰性创建语义）
 // ---------------------------------------------------------------------------
 step("场景 13 · legacy 导入幂等");
 {
-  const h = await createProjectAgentHarness({ legacy: true, gatewayScript: [] });
+  const h = await createProjectAgentHarness({ legacy: true, gatewayScript: [{ reply: { text: "继续写。" } }] });
   try {
+    // 多会话 Task 4 惰性创建：open() 不物化会话、不产生事件；旧断言「open 后即
+    // session_created」是单流旧世界的急切创建语义，已随惰性创建变更——legacy
+    // 导入与 blueprint_status 迁移延迟到会话物化（首次 submit 时的 session load，
+    // 见 runtime.reconcileSessionAfterLoad → runLegacyImport）。
     await h.agent.open({ projectRoot: h.projectRoot });
+    const sessionsAfterOpen = await h.agent.sessions({ projectRoot: h.projectRoot });
+    assert.equal(sessionsAfterOpen.sessions.length, 0, "open 后惰性：未发消息不产生会话条目");
     const eventsAfterFirst = await readEvents(h.agent, h.projectRoot);
-    assert.ok(eventsOfType(eventsAfterFirst, "session_created").length >= 1);
-    const project = parseSimpleYaml(await fs.readFile(path.join(h.projectRoot, "project.yaml"), "utf8"));
-    assert.ok(["complete", "none", "partial", "legacy"].includes(project.blueprint_status), "blueprint_status 应迁移到 project.yaml");
-    // 第二次 open：幂等，不产生重复事件
+    assert.equal(eventsAfterFirst.length, 0, "open 后惰性：不产生事件");
+    // 第二次 open：幂等，不创建会话
     await h.agent.open({ projectRoot: h.projectRoot });
-    const eventsAfterSecond = await readEvents(h.agent, h.projectRoot);
-    assert.equal(eventsAfterSecond.length, eventsAfterFirst.length, "第二次 open 不得产生新事件");
+    const sessionsAfterSecond = await h.agent.sessions({ projectRoot: h.projectRoot });
+    assert.equal(sessionsAfterSecond.sessions.length, 0, "第二次 open 不得创建会话");
     // 旧状态文件保留（只读导入），且完整跑一轮后不再被写入
     const legacyStatePath = path.join(h.projectRoot, LEGACY_STATE_FILE);
     assert.equal(await pathExists(legacyStatePath), true, "旧文件保留不删除（只读导入）");
     const stateBefore = await fs.readFile(legacyStatePath, "utf8");
-    await h.agent.submit({ projectRoot: h.projectRoot, text: "导入后继续写作" });
+    // 首次提交：惰性物化会话（session_created）+ legacy 导入（blueprint_status 迁移）
+    const result = await h.agent.submit({ projectRoot: h.projectRoot, text: "导入后继续写作" });
+    assert.ok(result.session_id, "首次提交应返回 session_id");
     await waitForIdle(h.agent, h.projectRoot);
+    const project = parseSimpleYaml(await fs.readFile(path.join(h.projectRoot, "project.yaml"), "utf8"));
+    assert.ok(["complete", "none", "partial", "legacy"].includes(project.blueprint_status), "blueprint_status 应迁移到 project.yaml");
+    const eventsAfterRun = await readEvents(h.agent, h.projectRoot);
+    assert.ok(eventsOfType(eventsAfterRun, "session_created").length >= 1, "首次提交物化会话应产生 session_created");
     const stateAfter = await fs.readFile(legacyStatePath, "utf8");
     assert.equal(stateAfter, stateBefore, "legacy 导入后完整跑一轮也不得再写入旧状态文件");
-    record("legacy 导入：幂等 + blueprint_status 迁移 + 旧文件只读保留", true, `blueprint_status=${project.blueprint_status}`);
+    // 提交后重复 open：仍幂等，不产生新事件
+    await h.agent.open({ projectRoot: h.projectRoot });
+    const eventsAfterFinalOpen = await readEvents(h.agent, h.projectRoot);
+    assert.equal(eventsAfterFinalOpen.length, eventsAfterRun.length, "提交后的 open 不得产生新事件");
+    record("legacy 导入：惰性会话创建 + blueprint_status 迁移 + 旧文件只读保留", true, `blueprint_status=${project.blueprint_status}`);
   } finally {
     await h.cleanup();
   }
@@ -854,9 +868,12 @@ step("场景 23 · 无撕裂原子写入");
   });
   try {
     await h.agent.open({ projectRoot: h.projectRoot });
-    await h.agent.submit({ projectRoot: h.projectRoot, text: "多轮任务" });
+    const submitted = await h.agent.submit({ projectRoot: h.projectRoot, text: "多轮任务" });
     const agentDir = h.agentRoot;
-    const sessionPath = path.join(agentDir, "session.json");
+    // 多会话分片（Task 3）：journal 位于 agentRoot/sessions/<id>/（session.json 投影
+    // + segments/events 事件段），agentRoot 根部不再有单体 session.json。
+    const sessionDir = path.join(agentDir, "sessions", submitted.session_id);
+    const sessionPath = path.join(sessionDir, "session.json");
     // 运行中高频轮询 session.json：任何时刻都必须读到完整 JSON（原子重写，无撕裂）
     const pollDeadline = Date.now() + 20000;
     let reads = 0;
@@ -876,8 +893,8 @@ step("场景 23 · 无撕裂原子写入");
     assert.ok(sawRunning, "应观察到 running 状态的 session 投影");
     await waitForIdle(h.agent, h.projectRoot);
     // 事件文件每行都是完整 JSON 且 seq 严格连续（无中间缺口、无撕裂行）。
-    // 新分段格式：事件落在 agentDir/segments/events（可能多段，按序合并）。
-    const eventsDir = path.join(agentDir, "segments", "events");
+    // 多会话分段格式：事件落在 sessions/<id>/segments/events（可能多段，按序合并）。
+    const eventsDir = path.join(sessionDir, "segments", "events");
     const segmentNames = (await fs.readdir(eventsDir)).filter((name) => /^\d{8}\.jsonl$/u.test(name)).sort();
     assert.ok(segmentNames.length >= 1, "应存在 events segment");
     const eventsRaw = (await Promise.all(segmentNames.map((name) => fs.readFile(path.join(eventsDir, name), "utf8")))).join("");
@@ -888,8 +905,8 @@ step("场景 23 · 无撕裂原子写入");
       assert.ok(Number.isInteger(event.seq) && event.seq === prevSeq + 1, "事件 seq 必须连续无缺口");
       prevSeq = event.seq;
     }
-    // 原子写入不得残留临时文件
-    const leftovers = (await fs.readdir(agentDir)).filter((name) => name.endsWith(".tmp"));
+    // 原子写入不得残留临时文件（session.json 在会话目录内原子重写，tmp 与目标同目录）
+    const leftovers = (await fs.readdir(sessionDir)).filter((name) => name.endsWith(".tmp"));
     assert.equal(leftovers.length, 0, "原子写入后不得残留临时文件");
     record("原子写入：运行中 session.json 无撕裂、事件行完整且 seq 连续、无 tmp 残留", true, `reads=${reads}`);
   } finally {
