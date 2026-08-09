@@ -70,6 +70,10 @@ const RUN_STATUS_TEXT = {
   completed: "已完成"
 };
 
+// 信息读取类工具（Task 1）：成功完成时内容回显只保留在工作组工具标签行
+// （"已读取文件 …"），不再渲染独立活动行，避免消息流重复同一读取结果。
+const SILENT_READ_TOOLS = new Set(["read_file", "read_multiple", "list_files", "read_directory"]);
+
 // Task 11 Step 4：压缩状态行固定文案映射（同一位置单行顶替；完成/失败/取消后
 // 状态行仍留在时间线）。完成文案绝不携带 token/模型/耗时等详细数据。
 const COMPACTION_ROW_LABELS = {
@@ -117,6 +121,20 @@ function activityLabel(activity) {
   const fn = ACTIVITY_LABELS[activity?.name];
   if (fn) return fn(parseArgs(activity?.args));
   return activity?.name ? `工具 ${activity.name}` : "调用工具中";
+}
+
+// 静默读取活动判定（Task 1）：成功完成（无错误）的信息读取类工具不再渲染独立
+// 活动行——工具名与 activityLabel() 同源，只取 activity.name（state.js 的
+// tool_call_started 投影：`name: payload.name ?? null`）；若将来改名称来源，
+// 两处需同步。
+function isSilentReadActivity(activity) {
+  if (!activity || activity.status !== "completed") return false;
+  // state 层暂未单独记录 stderr（tool_output_delta 未区分 stream）；读取工具的
+  // 错误输出经 tool_call_failed 落为 failed/cancelled，已被上面的状态检查拦截。
+  // 该守卫为防御性保留：未来引入 stderr 字段时也不吞错误输出。
+  if (activity.stderr) return false;
+  const name = String(activity.name ?? "");
+  return SILENT_READ_TOOLS.has(name);
 }
 
 export function markFor(status) {
@@ -1374,9 +1392,16 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   function syncActivities(state) {
     if (rendered.activities === state.revisions.activities) return;
     rendered.activities = state.revisions.activities;
+    // 静默读取活动（Task 1）：活动仍保留在 state（供将来展开详情），但消息流
+    // 不再渲染独立活动行——成功完成的 read_file 等由工作组工具标签行单独呈现。
+    const silentIds = new Set();
+    for (const activity of state.activities.values()) {
+      if (isSilentReadActivity(activity)) silentIds.add(activity.activity_id);
+    }
     // state 层已按上限丢弃的活动：同步移除对应 DOM 行（不依赖历史扫描）。
+    // 静默读取活动同样在此移除（运行中渲染过的行在完成时消失，只留工具标签行）。
     for (const [id, row] of rows) {
-      if (!state.activities.has(id)) {
+      if (!state.activities.has(id) || silentIds.has(id)) {
         row.wrap.remove();
         timelineSeqs.delete(row.wrap);
         if (row.eventKey != null) messageNodes.delete(row.eventKey);
@@ -1384,7 +1409,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       }
     }
     for (const activity of state.activities.values()) {
-      if (trimmedIds.has(activity.activity_id)) continue;
+      if (trimmedIds.has(activity.activity_id) || silentIds.has(activity.activity_id)) continue;
       const anchor = activityAnchor(activity);
       const anchorKey = activity.start_event_key ?? activity.terminal_event_key ?? null;
       let row = rows.get(activity.activity_id);
