@@ -27,7 +27,7 @@
 // 关键 selector 的 bounding box 不相交——任一失败即退出 1。四视口
 // （390x844/768x900/1280x800/1440x900）由 conversation-completed 全覆盖。
 //
-// 运行：node scripts/capture-visual-acceptance.cjs --output artifacts/visual-acceptance/<campaign>/round-01
+// 运行：node scripts/capture-visual-acceptance.cjs --output artifacts/visual-acceptance/<campaign>/round-01 [--theme light|dark]
 // 期望：退出码 0，输出 evidence directory 与 MANIFEST 全部声明文件。
 const { app, BrowserWindow, nativeImage } = require("electron");
 const fs = require("node:fs");
@@ -121,7 +121,12 @@ function parseArgs(argv) {
   if (!output || output.trim() === "") {
     throw new Error("--output 缺少目录参数");
   }
-  return { output: output.trim() };
+  const themeIdx = argv.indexOf("--theme");
+  const theme = themeIdx >= 0 ? argv[themeIdx + 1] : "light";
+  if (!["light", "dark"].includes(theme)) {
+    throw new Error(`--theme 只支持 light|dark（当前 ${theme}）`);
+  }
+  return { output: output.trim(), theme };
 }
 
 // 证据必须落在主仓库（D:\WWriting）的 artifacts/ 下，即使脚本从 worktree 运行。
@@ -997,38 +1002,40 @@ async function seekShimmerPhase(win, ctx, phaseMs) {
   return paused;
 }
 
-// 对同一场景的三帧 PNG，在 label bbox 内找最暗列（扫光 ink 带比 muted 文本更暗），
-// 断言最暗列 x 严格递增（t000 < t400 < t900），给出扫光从左向右的机器证据。
+// 对同一场景的三帧 PNG，在 label bbox 内找扫光带列：浅色下扫光 ink 带比 muted 文本
+// 更暗（取最暗列）；深色下扫光亮带（muted→ink 浅色渐变）比周围更亮（取最亮列）。
+// 断言跟踪列 x 严格递增（t000 < t400 < t900），给出扫光从左向右的机器证据。
 async function checkSweepDirection(ctx, scenario, frames) {
+  const isDark = ctx.theme === "dark";
   const positions = [];
   for (const frame of frames) {
     const img = nativeImage.createFromPath(path.join(ctx.roundDir, frame.file));
     const { width: w, height: h } = img.getSize();
     const bmp = img.toBitmap();
     const [left, top, width, height] = frame.bbox;
-    let darkestCol = -1;
-    let darkestVal = 256;
+    let trackCol = -1;
+    let trackVal = isDark ? -1 : 256;
     for (let x = left; x < left + width && x < w; x += 1) {
-      let colMin = 256;
+      let colVal = isDark ? 0 : 256;
       for (let y = top; y < top + height && y < h; y += 1) {
         const i = (y * w + x) * 4;
         const lum = 0.3 * bmp[i] + 0.59 * bmp[i + 1] + 0.11 * bmp[i + 2];
-        if (lum < colMin) colMin = lum;
+        if (isDark ? lum > colVal : lum < colVal) colVal = lum;
       }
-      if (colMin < darkestVal) {
-        darkestVal = colMin;
-        darkestCol = x;
+      if (isDark ? colVal > trackVal : colVal < trackVal) {
+        trackVal = colVal;
+        trackCol = x;
       }
     }
-    positions.push({ file: frame.file, darkestCol, darkestVal: Math.round(darkestVal) });
+    positions.push({ file: frame.file, darkestCol: trackCol, darkestVal: Math.round(trackVal) });
   }
   const [a, b, c] = positions;
   const ok = a.darkestCol >= 0 && b.darkestCol >= 0 && c.darkestCol >= 0 &&
     a.darkestCol < b.darkestCol && b.darkestCol < c.darkestCol && (c.darkestCol - a.darkestCol) >= 2;
   const summary = positions.map((p) => `${p.file.split("-")[0]}=x${p.darkestCol}(lum${p.darkestVal})`).join(" ");
-  console.log(`  [客观检查] sweep-direction(${scenario}) ${ok ? "PASS" : "FAIL"} — ${summary}`);
+  console.log(`  [客观检查] sweep-direction(${scenario}, ${ctx.theme}) ${ok ? "PASS" : "FAIL"} — ${summary}`);
   if (!ok) {
-    throw new Error(`sweep-direction 检查失败（${scenario}）：最暗列未严格递增 — ${JSON.stringify(positions)}`);
+    throw new Error(`sweep-direction 检查失败（${scenario}, ${ctx.theme}）：跟踪列未严格递增 — ${JSON.stringify(positions)}`);
   }
   return { ok, positions };
 }
@@ -1062,7 +1069,7 @@ async function waitForSettingsSection(win, section) {
 // ---------------------------------------------------------------------------
 
 async function main() {
-  const { output } = parseArgs(process.argv.slice(2));
+  const { output, theme } = parseArgs(process.argv.slice(2));
   const mainRepo = mainRepoRootOf(SCRIPT_DIR);
   const roundDir = resolveOutputDir(mainRepo, output);
   if (fs.existsSync(roundDir)) {
@@ -1080,6 +1087,7 @@ async function main() {
     output,
     roundDir,
     mainRepo,
+    theme,
     manifest: [],
     checkRows: [],
     sweepFrames: [],
@@ -1172,6 +1180,14 @@ async function main() {
   }
 
   await bootToProject("视觉验收样例小说");
+
+  // ---- 主题归一：经真实 #theme-toggle 切换到目标主题（--theme light|dark）----
+  // 切换幂等：先读当前主题，不一致才点击（主题持久化在 localStorage，避免上次运行残留）。
+  if ((await read(win, `document.documentElement.dataset.theme`)) !== theme) {
+    await win.webContents.executeJavaScript(`document.querySelector("#theme-toggle")?.click(); true`);
+    await waitUntil(win, `document.documentElement.dataset.theme === ${JSON.stringify(theme)}`, `切换到 ${theme} 主题`, 8000);
+  }
+  context.environmentNotes.push(`主题：${theme}（经 #theme-toggle 真实切换）`);
 
   // =========================================================================
   // 场景驱动（全部经真实 UI / API / journal SSE 路径）
@@ -1654,6 +1670,7 @@ function renderManifest(context, { startedAt, projectRoot, plainFolder }) {
     "",
     `- 采集时间：${startedAt}`,
     `- 采集脚本：scripts/capture-visual-acceptance.cjs（Task 13 改写）`,
+    `- 主题：${context.theme}（经 #theme-toggle 真实切换）`,
     `- 真实项目：${projectRoot}`,
     `- 普通文件夹场景：${plainFolder}（无 project.yaml；应用私有历史在 stateRoot）`,
     `- 覆盖视口：390x844、768x900、1280x800、1440x900（conversation-completed 四视口全覆盖）`,
