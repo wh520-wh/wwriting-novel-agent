@@ -17,6 +17,7 @@ import fs from "node:fs/promises";
 import test from "node:test";
 
 import { createAgentJournal } from "../../src/core/agent/journal.mjs";
+import { deriveSessionTitle } from "../../src/core/agent/runtime.mjs";
 import {
   createProjectAgentHarness,
   eventsOfType,
@@ -297,6 +298,35 @@ test("newSession/renameSession/archiveSession/restoreSession/deleteSession 委�
   await h.agent.deleteSession({ projectRoot: h.projectRoot, sessionId: meta.session_id });
   const { sessions: afterDelete } = await h.agent.sessions({ projectRoot: h.projectRoot });
   assert.equal(afterDelete.length, 0, "永久删除后注册表不再含该会话");
+});
+
+test("自动命名：newSession（无 title）→ submit 显式 sessionId → title 为首条消息摘要", async (t) => {
+  const h = await createProjectAgentHarness({ gatewayScript: [{ reply: { text: "好。" } }] });
+  t.after(() => h.cleanup());
+  // "+" 按钮流程：createSession()（无 title → 默认 "新对话"）→ submit(text, sessionId)
+  const meta = await h.agent.newSession({ projectRoot: h.projectRoot });
+  assert.equal(meta.title, "新对话", "无 title 时默认标题");
+  const text = "  自动   命名   的消息内容   ";
+  await h.agent.submit({ projectRoot: h.projectRoot, text, source: "chat", sessionId: meta.session_id });
+  const { sessions } = await h.agent.sessions({ projectRoot: h.projectRoot });
+  assert.equal(sessions.length, 1);
+  assert.equal(
+    sessions[0].title,
+    deriveSessionTitle(text),
+    "显式创建会话在首条消息后按消息摘要自动命名（与惰性创建路径一致）"
+  );
+  await waitForIdle(h.agent, h.projectRoot);
+});
+
+test("自动命名：用户已改名的会话不受 submit 影响（标题保持）", async (t) => {
+  const h = await createProjectAgentHarness({ gatewayScript: [{ reply: { text: "好。" } }] });
+  t.after(() => h.cleanup());
+  const meta = await h.agent.newSession({ projectRoot: h.projectRoot });
+  await h.agent.renameSession({ projectRoot: h.projectRoot, sessionId: meta.session_id, title: "我的大纲" });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "第一条消息", source: "chat", sessionId: meta.session_id });
+  const { sessions } = await h.agent.sessions({ projectRoot: h.projectRoot });
+  assert.equal(sessions[0].title, "我的大纲", "用户已改名（title ≠ 新对话）的会话绝不被自动命名覆盖");
+  await waitForIdle(h.agent, h.projectRoot);
 });
 
 // ---------------------------------------------------------------------------

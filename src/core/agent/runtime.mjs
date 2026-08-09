@@ -156,6 +156,28 @@ function syncSessionRegistry(state, sessionState) {
   })();
 }
 
+// 自动命名（Task 11 验收缺口修复）："+" 按钮流程是 createSession()（无 title →
+// "新对话"）→ submit(text, sessionId)——显式创建的会话不会经惰性创建路径的
+// create({ title: deriveSessionTitle(text) }) 命名。这里在输入成功入队后按消息摘要
+// 命名，与惰性创建路径对齐（首条消息前 20 字截断，见 deriveSessionTitle）。
+//
+// 语义约束：
+//   - 只改默认标题：用户已改名（title !== "新对话"）的会话绝不动；
+//   - best-effort（fire-and-forget + catch）：rename 失败只告警，绝不阻塞消息投递
+//     （命名是派生元数据，事件流才是真相；改名可稍后手工进行）；
+//   - 只在入队成功后调用（调用方保证 input_queued 已落盘），避免"重命名了却没
+//     消息"的不一致。
+async function autoNameSessionIfDefault(state, sessionId, text) {
+  try {
+    const meta = await state.registry.get(sessionId);
+    if (meta && meta.title === "新对话") {
+      await state.registry.rename(sessionId, deriveSessionTitle(text));
+    }
+  } catch (error) {
+    console.warn(`[agent] 自动命名失败（不影响消息投递）: ${error?.message ?? String(error)}`);
+  }
+}
+
 function requireSessionId(sessionId) {
   if (typeof sessionId !== "string" || sessionId.length === 0) {
     throw fail("invalid_session_id", "sessionId 必须是非空字符串。");
@@ -2037,6 +2059,8 @@ export function createAgentRuntime({
         startLoop(state, sessionState, runId);
         // 注册表同步（调用方可等待的边界；lastSeq 读取当前实际尾部，并发 append 不丢）
         await syncSessionRegistry(state, sessionState);
+        // 自动命名：显式创建（"新对话"默认标题）的会话按首条消息摘要命名
+        await autoNameSessionIfDefault(state, targetId, text);
         return { input_id: inputId, run_id: runId, queued: false, session_id: targetId };
       }
       // 运行中：FIFO 队列（/compact 不打断当前模型/工具，按普通消息排队）
@@ -2045,6 +2069,8 @@ export function createAgentRuntime({
         payload: { input_id: inputId, text, source, ...(kind === undefined ? {} : { kind }) }
       });
       await syncSessionRegistry(state, sessionState);
+      // 自动命名：显式创建（"新对话"默认标题）的会话按首条消息摘要命名
+      await autoNameSessionIfDefault(state, targetId, text);
       return { input_id: inputId, run_id: run.id, queued: true, session_id: targetId };
     });
     if (!created.queued) {
