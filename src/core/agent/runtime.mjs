@@ -2494,6 +2494,15 @@ export function createAgentRuntime({
   // -------------------------------------------------------------------------
 
   // 会话列表 + 最近活跃（dashboard 数据源；先跑迁移序列，旧项目首开即含"对话 1"）。
+  // Task 9：为每个会话附加 run_status 投影（左侧栏状态点 + busy 复位数据源）——
+  // 只对已物化会话读取其 journal 的 active_run：非终态（running/waiting_user 等）
+  // → "running"；failed → "failed"；其余（无 run / completed/cancelled/interrupted）
+  // → "idle"。未物化会话（注册表条目尚无 journal）恒为 "idle"。journal 读取失败
+  // 不阻塞列表（降级 idle）。dashboard 与 GET /api/agent/sessions 经同一方法透出。
+  // 轮询成本：每次调用对每个已物化会话做一次 journal.getSession()——initialize 的
+  // loaded 缓存避免磁盘重放（只在首次真正读取/重放），之后是内存 structuredClone
+  // 当前投影；busy 期间前端每 5s 重拉一轮（session-sidebar.mjs），N 个会话的成本
+  // 为 N 次内存克隆 + 注册表读盘，量级可接受。
   async function sessions({ projectRoot }) {
     if (typeof projectRoot !== "string" || projectRoot.length === 0) {
       throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
@@ -2502,7 +2511,24 @@ export function createAgentRuntime({
     await migrateProjectData(state);
     const list = await state.registry.list();
     const active = await state.registry.getLastActive();
-    return { sessions: list, active_session_id: active };
+    const withRunStatus = await Promise.all(list.map(async (meta) => {
+      let runStatus = "idle";
+      const sessionState = state.sessions.get(meta.session_id);
+      if (sessionState) {
+        try {
+          const session = await sessionState.journal.getSession();
+          const run = session?.active_run ?? null;
+          if (run) {
+            if (!TERMINAL_RUN_STATUSES.has(run.status)) runStatus = "running";
+            else if (run.status === "failed") runStatus = "failed";
+          }
+        } catch {
+          // journal 读取失败不阻塞列表（保持 idle）
+        }
+      }
+      return { ...meta, run_status: runStatus };
+    }));
+    return { sessions: withRunStatus, active_session_id: active };
   }
 
   // 显式建会话（前端"+"按钮 / 对话 B 场景）。只写注册表条目；journal 在首次

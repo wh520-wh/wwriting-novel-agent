@@ -299,6 +299,81 @@ test("newSession/renameSession/archiveSession/restoreSession/deleteSession 委�
   assert.equal(afterDelete.length, 0, "永久删除后注册表不再含该会话");
 });
 
+// ---------------------------------------------------------------------------
+// Task 9：sessions() 的 run_status 投影（侧边栏状态点 + busy 复位数据源）
+// ---------------------------------------------------------------------------
+
+test("sessions() 投影 run_status：运行中 → running；未物化 → idle；终态 → idle；失败 → failed", async (t) => {
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const h = await createProjectAgentHarness({
+    gatewayScript: [
+      async () => {
+        await gate;
+        return { text: "A 完成。" };
+      },
+      { error: new Error("模型调用失败") }
+    ],
+    gatewayDelayMs: 0
+  });
+  t.after(() => h.cleanup());
+
+  // 会话 A 运行中（阻塞在模型调用）→ run_status "running"
+  const a = await h.agent.submit({ projectRoot: h.projectRoot, text: "A 任务", source: "chat" });
+  await waitFor(h.agent, h.projectRoot, (_session, snap) =>
+    eventsOfType(snap.events, "model_turn_started").length >= 1
+  );
+  let running = await h.agent.sessions({ projectRoot: h.projectRoot });
+  assert.equal(
+    running.sessions.find((s) => s.session_id === a.session_id).run_status,
+    "running",
+    "运行中的会话 → run_status running"
+  );
+
+  // 未物化会话（newSession 只写注册表条目）→ "idle"
+  const b = await h.agent.newSession({ projectRoot: h.projectRoot, title: "对话 B" });
+  const withB = await h.agent.sessions({ projectRoot: h.projectRoot });
+  assert.equal(
+    withB.sessions.find((s) => s.session_id === b.session_id).run_status,
+    "idle",
+    "未物化会话 → run_status idle"
+  );
+  // 其他会话的条目不互相污染：B 的投影不得影响 A 的 running
+  assert.equal(withB.sessions.find((s) => s.session_id === a.session_id).run_status, "running");
+
+  // A 终态（completed）→ "idle"
+  release();
+  const aDeadline = Date.now() + 20000;
+  while (Date.now() < aDeadline) {
+    const snap = await h.agent.snapshot({ projectRoot: h.projectRoot, sessionId: a.session_id, afterSeq: 0, limit: 100000 });
+    if (snap.session?.status === "idle") break;
+    await sleep(25);
+  }
+  const afterA = await h.agent.sessions({ projectRoot: h.projectRoot });
+  assert.equal(
+    afterA.sessions.find((s) => s.session_id === a.session_id).run_status,
+    "idle",
+    "终态（completed）→ run_status idle"
+  );
+
+  // B 提交 → 模型失败 → run_failed → "failed"
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "B 任务", source: "chat", sessionId: b.session_id });
+  const bDeadline = Date.now() + 20000;
+  while (Date.now() < bDeadline) {
+    const snap = await h.agent.snapshot({ projectRoot: h.projectRoot, sessionId: b.session_id, afterSeq: 0, limit: 100000 });
+    if (snap.session?.status === "idle" && eventsOfType(snap.events, "run_failed").length >= 1) break;
+    await sleep(25);
+  }
+  const afterB = await h.agent.sessions({ projectRoot: h.projectRoot });
+  assert.equal(
+    afterB.sessions.find((s) => s.session_id === b.session_id).run_status,
+    "failed",
+    "失败终态 → run_status failed"
+  );
+});
+
 test("显式 sessionId 不存在：open/submit 拒绝", async (t) => {
   const h = await createProjectAgentHarness({ gatewayScript: [{ reply: { text: "好。" } }] });
   t.after(() => h.cleanup());

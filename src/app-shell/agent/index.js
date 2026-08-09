@@ -28,6 +28,9 @@ export function createAgentSurface({
   onCreateProject = () => {},
   onOpenProjectFolder = () => {},
   onSessionsChanged = () => {},
+  // Task 9：Run 终态事件（run_completed/failed/cancelled/interrupted）通知回调。
+  // SSE 是 surface 的唯一消费者，app.js 需经此钩子在终态后重拉会话列表并复位 busy。
+  onRunTerminal = () => {},
   document: doc = globalThis.document,
   requestFrame = null
 }) {
@@ -223,6 +226,9 @@ export function createAgentSurface({
     const seq = Number(event.seq);
     if (Number.isFinite(seq) && seq === terminalRefreshSeq) return;
     if (Number.isFinite(seq)) terminalRefreshSeq = seq;
+    // Task 9：通知 app.js（左侧栏重拉会话列表 + busy 复位）。终态事件沿当前会话
+    // 事件流到达；跨会话运行结束的复位由 app.js 的 openProject/switchSession 刷新兜底。
+    onRunTerminal(event);
     const t = ensureApi();
     if (typeof t.fetchSnapshot !== "function") return;
     const scope = currentProjectScope();
