@@ -145,6 +145,11 @@ const settingsModal = createSettingsModal({
   // （confirm_irreversible:true），surface 内部负责清空后的重置与重开当前项目。
   exportAgentHistory: () => agentSurface.exportHistory(),
   clearAgentHistory: (options) => agentSurface.clearHistory(options),
+  // Task 10：设置页「已归档对话」分类的会话操作。恢复直接走 surface；永久删除走
+  // deleteSessionAndResolveActive——删的恰好是当前活跃会话时切到最近活跃会话
+  // （归档会话正常不会是活跃会话，但 active_session_id 可能残留指向它，走它最安全）。
+  restoreSession: (sessionId) => agentSurface.restoreSession(sessionId),
+  deleteSession: (sessionId) => deleteSessionAndResolveActive(sessionId),
 });
 const { openSettingsModal, closeSettingsModal, renderSettingsProviders, renderSettingsDetail, saveSettings } = settingsModal;
 
