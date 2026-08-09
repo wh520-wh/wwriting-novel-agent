@@ -1142,6 +1142,27 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .sp-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
+/* Task 10 · 设置页「已归档对话」分类：行 = 标题 + 归档时间 + 恢复/永久删除。
+   行卡片同 .spd-skill-row 组件语言；危险按钮沿用 --red/--red-soft 先例。 */
+.spd-archived-list { display: grid; gap: 6px; margin-top: 10px; }
+.spd-archived-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: var(--r);
+  background: var(--surface);
+}
+.spd-archived-main { flex: 1 1 auto; min-width: 0; }
+.spd-archived-title { font-size: 13px; font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.spd-archived-when { margin-top: 2px; font-size: 12px; color: var(--text-muted); }
+.spd-archived-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+.spd-archived-actions .sp-btn { height: 30px; padding: 0 10px; font-size: 12px; }
+/* 两个按钮都有焦点环：通用 accent 规则与 danger 的 red 规则同为 (0,3,0) 特异性，
+   red 规则后定义生效——删除按钮的焦点环是 red，不被通用 accent 规则压掉。 */
+.spd-archived-actions .sp-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
+.spd-archived-actions .sp-btn-danger:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--red); }
+.sp-btn-danger { display: inline-flex; align-items: center; gap: 6px; color: var(--red); border-color: var(--red-line, var(--line)); }
+.sp-btn-danger:hover:not(:disabled) { background: var(--red-soft); border-color: var(--red); color: var(--red); }
+
 .spd-save { height: 38px; padding: 0 20px; border-radius: var(--r); background: var(--btn-gradient); color: var(--btn-ink); font-size: 13px; font-weight: 650; box-shadow: inset 0 1px 0 rgba(255,255,255,0.13); white-space: nowrap; }
 
 .spd-save:hover { filter: brightness(1.13); }

@@ -1387,3 +1387,255 @@ test("导出对话历史：调用注入的 exportAgentHistory 并提示已导出
   assert.equal(exportCalls.length, 1, "点击导出应调用 exportAgentHistory");
   assert.ok(toasts.some((t) => t.message === "对话历史已导出。"), "导出成功应提示");
 });
+
+// ---------------------------------------------------------------------------
+// Task 10：设置页「已归档对话」分类（项目管理分区）
+// 数据源 = dashboard.sessions（含归档会话）；分类仅在有归档会话时渲染，
+// 按归档时间倒序；行 = 标题 + 归档时间 + 「恢复」/「永久删除」。
+// ---------------------------------------------------------------------------
+
+const ARCHIVED_SESSIONS = [
+  { session_id: "active-1", title: "当前对话", archived_at: null, updated_at: "2026-08-09T00:00:00.000Z" },
+  { session_id: "s1", title: "主线大纲讨论", archived_at: "2026-07-01T08:00:00.000Z", updated_at: "2026-07-01T08:00:00.000Z" },
+  { session_id: "s2", title: "角色设定头脑风暴", archived_at: "2026-08-02T10:00:00.000Z", updated_at: "2026-08-02T10:00:00.000Z" }
+];
+
+function archivedDashboard(sessions) {
+  return { hasProject: true, project: { archived_at: null }, sessions, active_session_id: "active-1" };
+}
+
+function archivedRowEls() {
+  return domRegistry.filter((el) => el.className === "spd-archived-row");
+}
+
+test("「已归档对话」分类：列出归档会话（标题 + 归档时间），按归档时间倒序，未归档不出现", async () => {
+  const modal = createSettingsModalForTest({
+    getDashboard: () => archivedDashboard(ARCHIVED_SESSIONS),
+    getCurrentProjectRoot: () => "D:/novels/demo"
+  });
+  await modal.openSettingsModal("danger");
+  await tickAsync();
+
+  assert.ok(
+    domRegistry.some((el) => el.className === "spd-section" && el.textContent === "已归档对话"),
+    "存在归档会话时应渲染「已归档对话」分类标题"
+  );
+  const rows = archivedRowEls();
+  assert.equal(rows.length, 2, "只列出归档会话，未归档会话不出现");
+  assert.deepEqual(rows.map((r) => r.dataset.sessionId), ["s2", "s1"], "分类内按归档时间倒序");
+
+  // 条目标题 + 归档时间（行内主区块 = 标题行 + 时间行）。
+  const s2Main = rows[0].children.find((c) => c.className === "spd-archived-main");
+  assert.ok(s2Main, "归档行应包含标题/时间主区块");
+  const s2Title = s2Main.children.find((c) => c.className === "spd-archived-title");
+  assert.equal(s2Title.textContent, "角色设定头脑风暴");
+  const s2When = s2Main.children.find((c) => c.className === "spd-archived-when");
+  assert.match(s2When.textContent, /归档于 \d{4}\/\d{2}\/\d{2} \d{2}:\d{2}/, "应展示归档时间");
+
+  assert.equal(rows.some((r) => r.dataset.sessionId === "active-1"), false, "未归档会话不得出现在分类里");
+});
+
+test("无归档会话时「已归档对话」分类不渲染", async () => {
+  const modal = createSettingsModalForTest({
+    getDashboard: () => archivedDashboard([{ session_id: "active-1", title: "当前对话", archived_at: null }]),
+    getCurrentProjectRoot: () => "D:/novels/demo"
+  });
+  await modal.openSettingsModal("danger");
+  await tickAsync();
+
+  assert.equal(archivedRowEls().length, 0, "无归档会话时不得渲染归档行");
+  assert.equal(
+    domRegistry.some((el) => el.className === "spd-section" && el.textContent === "已归档对话"),
+    false,
+    "无归档会话时不得显示分类标题"
+  );
+});
+
+test("点击恢复：调用注入 restoreSession 并提示已恢复对话", async () => {
+  const restores = [];
+  const toasts = [];
+  const modal = createSettingsModalForTest({
+    getDashboard: () => archivedDashboard(ARCHIVED_SESSIONS),
+    getCurrentProjectRoot: () => "D:/novels/demo",
+    restoreSession: async (sessionId) => {
+      restores.push(sessionId);
+      return { ok: true };
+    },
+    loadDashboard: async () => {},
+    showToast: (message, kind) => toasts.push({ message, kind })
+  });
+  await modal.openSettingsModal("danger");
+  await tickAsync();
+
+  const restoreBtn = findElementById("archived-restore-s1");
+  assert.ok(restoreBtn, "归档行应有「恢复」按钮");
+  restoreBtn._fire("click");
+  await tickAsync();
+
+  assert.deepEqual(restores, ["s1"], "点击恢复应调用注入的 restoreSession");
+  assert.ok(toasts.some((t) => t.message === "已恢复对话 主线大纲讨论"), "恢复成功应提示");
+});
+
+test("永久删除：确认文案固定，确认后调用注入 deleteSession", async () => {
+  const deletes = [];
+  const confirms = [];
+  const toasts = [];
+  const modal = createSettingsModalForTest({
+    getDashboard: () => archivedDashboard(ARCHIVED_SESSIONS),
+    getCurrentProjectRoot: () => "D:/novels/demo",
+    deleteSession: async (sessionId) => {
+      deletes.push(sessionId);
+      return { ok: true };
+    },
+    loadDashboard: async () => {},
+    showToast: (message, kind) => toasts.push({ message, kind }),
+    confirmImpl: (message) => {
+      confirms.push(message);
+      return true;
+    }
+  });
+  await modal.openSettingsModal("danger");
+  await tickAsync();
+
+  const deleteBtn = findElementById("archived-delete-s1");
+  assert.ok(deleteBtn, "归档行应有「永久删除」按钮");
+  deleteBtn._fire("click");
+  await tickAsync();
+
+  assert.deepEqual(
+    confirms,
+    ["永久删除后不可恢复，该对话的全部历史将被移除。确认？"],
+    "永久删除必须触发固定文案的二次确认"
+  );
+  assert.deepEqual(deletes, ["s1"], "确认后应调用注入的 deleteSession");
+  assert.ok(toasts.some((t) => t.message === "已永久删除对话 主线大纲讨论"), "删除成功应提示");
+});
+
+test("永久删除：取消确认则不调用 deleteSession", async () => {
+  const deletes = [];
+  const modal = createSettingsModalForTest({
+    getDashboard: () => archivedDashboard(ARCHIVED_SESSIONS),
+    getCurrentProjectRoot: () => "D:/novels/demo",
+    deleteSession: async (sessionId) => {
+      deletes.push(sessionId);
+      return { ok: true };
+    },
+    confirmImpl: () => false
+  });
+  await modal.openSettingsModal("danger");
+  await tickAsync();
+
+  findElementById("archived-delete-s1")._fire("click");
+  await tickAsync();
+
+  assert.deepEqual(deletes, [], "取消确认后不得调用 deleteSession");
+});
+
+test("恢复失败：提示错误 toast，不刷新分区", async () => {
+  const toasts = [];
+  let loadCalls = 0;
+  const modal = createSettingsModalForTest({
+    getDashboard: () => archivedDashboard(ARCHIVED_SESSIONS),
+    getCurrentProjectRoot: () => "D:/novels/demo",
+    restoreSession: async () => {
+      throw new Error("恢复失败：会话不存在。");
+    },
+    loadDashboard: async () => { loadCalls += 1; },
+    showToast: (message, kind) => toasts.push({ message, kind })
+  });
+  await modal.openSettingsModal("danger");
+  await tickAsync();
+
+  findElementById("archived-restore-s1")._fire("click");
+  await tickAsync();
+
+  assert.ok(
+    toasts.some((t) => t.kind === "error" && t.message === "恢复失败：会话不存在。"),
+    "恢复失败应提示服务端/错误文案"
+  );
+  assert.equal(loadCalls, 0, "恢复失败不得重拉 dashboard");
+});
+
+test("永久删除成功：列表刷新，归档行消失", async () => {
+  let currentSessions = ARCHIVED_SESSIONS.slice();
+  const modal = createSettingsModalForTest({
+    getDashboard: () => archivedDashboard(currentSessions),
+    getCurrentProjectRoot: () => "D:/novels/demo",
+    deleteSession: async (sessionId) => {
+      currentSessions = currentSessions.filter((s) => s.session_id !== sessionId);
+      return { ok: true };
+    },
+    loadDashboard: async () => {},
+    showToast: () => {},
+    confirmImpl: () => true
+  });
+  await modal.openSettingsModal("danger");
+  await tickAsync();
+
+  findElementById("archived-delete-s1")._fire("click");
+  await tickAsync();
+
+  // 重渲后的当前挂载列表只含剩余归档会话（domRegistry 累积旧元素，用挂载树断言）。
+  const detail = modal.getSettingsDetailForTest();
+  const list = detail.children.find((el) => el.id === "archived-sessions-list");
+  assert.ok(list, "仍有归档会话时分类应保留");
+  assert.deepEqual(
+    list.children.map((row) => row.dataset.sessionId),
+    ["s2"],
+    "删除 s1 后只剩 s2"
+  );
+});
+
+test("恢复请求 in-flight：按钮禁用、完成后复位", async () => {
+  let resolveRestore;
+  const restorePromise = new Promise((resolve) => { resolveRestore = resolve; });
+  const modal = createSettingsModalForTest({
+    getDashboard: () => archivedDashboard(ARCHIVED_SESSIONS),
+    getCurrentProjectRoot: () => "D:/novels/demo",
+    restoreSession: () => restorePromise,
+    loadDashboard: async () => {},
+    showToast: () => {}
+  });
+  await modal.openSettingsModal("danger");
+  await tickAsync();
+
+  const restoreBtn = findElementById("archived-restore-s1");
+  restoreBtn._fire("click");
+  assert.equal(restoreBtn.disabled, true, "请求进行中恢复按钮应禁用（防双击双调）");
+
+  resolveRestore({ ok: true });
+  await tickAsync();
+  await tickAsync();
+  assert.equal(restoreBtn.disabled, false, "请求完成后按钮应复位");
+});
+
+test("恢复 in-flight 期间切到其他分区：完成时不重渲当前分区", async () => {
+  let resolveRestore;
+  const restorePromise = new Promise((resolve) => { resolveRestore = resolve; });
+  const modal = createSettingsModalForTest({
+    getDashboard: () => archivedDashboard(ARCHIVED_SESSIONS),
+    getCurrentProjectRoot: () => "D:/novels/demo",
+    restoreSession: () => restorePromise,
+    loadDashboard: async () => {},
+    showToast: () => {}
+  });
+  await modal.openSettingsModal("danger");
+  await tickAsync();
+
+  findElementById("archived-restore-s1")._fire("click");
+  await tickAsync(); // restore 请求 in-flight
+
+  // 用户切到模型分区（可能正在填 API Key）：设置分区状态并渲染模型表单。
+  await modal.openSettingsModal("model");
+  resolveRestore({ ok: true });
+  await tickAsync();
+  await tickAsync();
+
+  // 完成时不得把当前模型分区整体替换成项目管理内容（表单输入不丢）。
+  // 用 detail 直接层 className 区分：model 分区有 spd-test-row，danger 分区有
+  // spd-archived-list（子元素的 id 在更深层，不适合直接层断言）。
+  const detail = modal.getSettingsDetailForTest();
+  const classes = detail.children.map((el) => String(el.className ?? ""));
+  assert.ok(classes.includes("spd-test-row"), "模型分区内容应保留");
+  assert.equal(classes.includes("spd-archived-list"), false, "不得重渲为项目管理分区");
+});

@@ -29,6 +29,14 @@ const SETTINGS_SECTIONS = [
   { id: "danger", label: "项目管理", icon: "folder", ready: true }
 ];
 
+// 「已归档对话」归档时间展示格式（Task 10）：模块级单例避免每次渲染新建
+// Intl.DateTimeFormat；hour12:false 显式锁定 24 小时制，避免个别环境 zh-CN 默认
+// 12 小时制。
+const ARCHIVED_TIME_FORMAT = new Intl.DateTimeFormat("zh-CN", {
+  year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", hour12: false
+});
+
 // 通用嵌套层 Esc 关闭（Task 13）：Esc 用 capture 监听先于 app.js 的弹窗级 Esc，
 // stopImmediatePropagation 阻断后者（避免一次 Esc 同时关掉嵌套层与弹窗，也阻断
 // AgentSurface 的 Run 停止路由）。返回解除监听的函数。
@@ -493,6 +501,142 @@ export function createSettingsModal(ctx, options = {}) {
     historyRefs = { exportBtn: exportButton, clearBtn: clearButton, hint: runHint };
     // 活动 Run 判定是异步快照检查：渲染后更新按钮禁用态与提示可见性。
     void refreshHistoryRunGate();
+
+    // 「已归档对话」分类（Task 10）：仅在存在归档会话时渲染（与技能分区
+    // 「被覆盖」等条件渲染先例同款）；分类内按归档时间倒序。
+    renderArchivedSessionsBlock(ctx.refs.settingsDetail);
+  }
+
+  // 「已归档对话」分类（Task 10）：列出 archived_at != null 的会话（标题 + 归档
+  // 时间 + 恢复/永久删除）。数据源 = dashboard.sessions（含归档会话，与设置页
+  // 其他分区同一数据 seam）；无归档会话时整个分类不渲染。
+  function renderArchivedSessionsBlock(detail) {
+    const archived = archivedSessions();
+    if (archived.length === 0) return;
+
+    const heading = document.createElement("h4");
+    heading.className = "spd-section";
+    heading.textContent = "已归档对话";
+    detail.append(heading);
+
+    const intro = document.createElement("p");
+    intro.className = "spd-hint";
+    intro.textContent = "归档的对话不参与新对话，可在此恢复或永久删除。";
+    detail.append(intro);
+
+    const list = document.createElement("div");
+    list.className = "spd-archived-list";
+    list.id = "archived-sessions-list";
+    for (const session of archived) list.append(buildArchivedSessionRow(session));
+    detail.append(list);
+  }
+
+  // 归档会话快照：dashboard.sessions 中 archived_at 非空者，按归档时间倒序。
+  function archivedSessions() {
+    return (ctx.getDashboard()?.sessions ?? [])
+      .filter((session) => session.archived_at != null)
+      .sort((a, b) => String(b.archived_at).localeCompare(String(a.archived_at)));
+  }
+
+  function buildArchivedSessionRow(session) {
+    const row = document.createElement("div");
+    row.className = "spd-archived-row";
+    row.dataset.sessionId = session.session_id;
+
+    const main = document.createElement("div");
+    main.className = "spd-archived-main";
+    const title = document.createElement("div");
+    title.className = "spd-archived-title";
+    title.textContent = session.title ?? "新对话";
+    const when = document.createElement("div");
+    when.className = "spd-archived-when";
+    when.textContent = `归档于 ${formatArchivedTime(session.archived_at)}`;
+    main.append(title, when);
+
+    const actions = document.createElement("div");
+    actions.className = "spd-archived-actions";
+
+    const restore = actionButton("恢复", () => { void restoreArchivedSession(session, restore); });
+    restore.id = `archived-restore-${session.session_id}`;
+    restore.setAttribute("aria-label", `恢复对话 ${session.title ?? "新对话"}`);
+    actions.append(restore);
+
+    // 危险操作按钮：复用 .sp-btn 组件语言 + .sp-btn-danger 红系样式。
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "sp-btn sp-btn-danger";
+    del.id = `archived-delete-${session.session_id}`;
+    del.setAttribute("aria-label", `永久删除对话 ${session.title ?? "新对话"}`);
+    del.title = "永久删除对话";
+    del.append(icon("trash", 14), "永久删除");
+    del.addEventListener("click", () => { void deleteArchivedSession(session, del); });
+    actions.append(del);
+
+    row.append(main, actions);
+    return row;
+  }
+
+  // in-flight 按钮禁用对齐 exportHistoryFlow 先例：请求期间 disabled=true 防双击
+  // 双调，finally 复位（成功后重渲的按钮是全新节点，对旧节点复位无副作用）。
+  async function restoreArchivedSession(session, btn) {
+    if (btn) btn.disabled = true;
+    try {
+      if (typeof ctx.restoreSession !== "function") {
+        ctx.showToast("当前环境不支持恢复对话。", "info");
+        return;
+      }
+      const label = session.title ?? "新对话";
+      await ctx.restoreSession(session.session_id);
+      ctx.showToast(`已恢复对话 ${label}`, "success");
+      await refreshArchivedSessions();
+    } catch (error) {
+      ctx.showToast(error?.message ?? "恢复对话失败。", "error");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function deleteArchivedSession(session, btn) {
+    if (btn) btn.disabled = true;
+    try {
+      const label = session.title ?? "新对话";
+      // 永久删除是危险操作：先二次确认，取消则不发起任何请求。
+      if (!confirmImpl("永久删除后不可恢复，该对话的全部历史将被移除。确认？")) return;
+      if (typeof ctx.deleteSession !== "function") {
+        ctx.showToast("当前环境不支持删除对话。", "info");
+        return;
+      }
+      // ctx.deleteSession 由 app.js 注入 deleteSessionAndResolveActive：删的是当前
+      // 活跃会话时切到最近活跃会话（归档会话正常不会是活跃会话，但 active_session_id
+      // 可能残留指向它，走它最安全）。surface 内部已刷新侧边栏，这里重拉 dashboard
+      // 供本分区重渲。
+      await ctx.deleteSession(session.session_id);
+      ctx.showToast(`已永久删除对话 ${label}`, "success");
+      await refreshArchivedSessions();
+    } catch (error) {
+      ctx.showToast(error?.message ?? "删除对话失败。", "error");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  // 恢复/永久删除成功后刷新分区：重拉 dashboard（更新 sessions 快照）再整区重渲，
+  // 归档会话消失/解除归档后列表与条件渲染自然回到最新状态。
+  // 竞态守卫：请求 in-flight 期间用户可能切到其他分区（甚至正在填 API Key）或关闭
+  // 弹窗——数据已由 loadDashboard 缓存，跳过重渲即可，用户切回 danger 分区时
+  // renderSectionBody 会用最新 dashboard 渲染，不丢任何表单输入。
+  async function refreshArchivedSessions() {
+    await ctx.loadDashboard?.();
+    if (settingsSection !== "danger" || !ctx.refs.settingsScrim.classList.contains("show")) return;
+    renderDangerSection();
+  }
+
+  function formatArchivedTime(value) {
+    if (!value) return "";
+    const date = new Date(value);
+    // 非 ISO 字符串会得到 Invalid Date，format 抛 RangeError：兜底为空串。
+    if (Number.isNaN(date.getTime())) return "";
+    return ARCHIVED_TIME_FORMAT.format(date);
   }
 
   // 设置详情内的二级动作按钮（与 .sp-btn 同一组件语言）。
@@ -1840,6 +1984,11 @@ export function createSettingsModal(ctx, options = {}) {
     // 仅供测试：等待技能 catalog 拉取完成（fetchSkillsCatalog 是异步的）。
     async waitForSkillsCatalog() {
       await renderSkillsCatalogBody();
+    },
+    // 仅供测试：读取当前 settings detail 区挂载的子元素（判断分区切换竞态下
+    // 内容是否被意外重渲；domRegistry 会累积历史元素，不能用它断言当前挂载）。
+    getSettingsDetailForTest() {
+      return ctx.refs.settingsDetail;
     }
   };
 }
