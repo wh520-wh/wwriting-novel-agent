@@ -1,7 +1,7 @@
 // src/app-shell/agent/api.js —— AgentSurface transport（Task 8 Step 1 的一部分）。
 //
 // /api/agent/* 传输层：
-//   POST /api/agent/input                    submit(text)
+//   POST /api/agent/input                    submit(text, sessionId?)
 //   POST /api/agent/input/:inputId/promote   promote(inputId)
 //   POST /api/agent/run/:runId/stop          stop(runId)
 //   POST /api/agent/run/:runId/retry         retry(runId)
@@ -11,6 +11,10 @@
 //   GET  /api/agent/snapshot?afterSeq|beforeSeq|tail&limit  fetchSnapshot()
 //   POST /api/agent/history/export          exportHistory()（NDJSON 文本，不按 JSON 解析）
 //   POST /api/agent/history/clear           clearHistory({ confirm_irreversible })
+//   GET  /api/agent/sessions?projectRoot     sessions()
+//   POST /api/agent/sessions                 createSession(title?)
+//   PATCH /api/agent/sessions/:sessionId     renameSession/archiveSession/restoreSession
+//   DELETE /api/agent/sessions/:sessionId?projectRoot  deleteSession(sessionId)
 //   GET  /api/project/events?afterSeq        connectEvents()（SSE 轮询流，断线指数退避重连）
 //   GET  /api/settings/models + /api/dashboard  fetchComposerOptions()（composer 三控件选项）
 //   POST /api/settings/model-switch            switchModel(modelId)（落盘项目默认模型）
@@ -50,10 +54,18 @@ export function createAgentApi({
   let controller = null;  // 当前 SSE 连接的 AbortController
   let destroyed = false;
   let currentRoot = null;
+  let currentSessionId = null; // 当前会话（openProject/setSession 设置；null → 请求不带 sessionId）
   const pendingRequests = new Set(); // 在途请求的 AbortController（destroy 时全部中止）
 
   function root() {
     return currentRoot ?? getProjectRoot();
+  }
+
+  // 会话作用域请求体：projectRoot 打底，设置当前会话时附加 sessionId。
+  function scopedBody(extra = {}) {
+    const body = { projectRoot: root(), ...extra };
+    if (currentSessionId) body.sessionId = currentSessionId;
+    return body;
   }
 
   function abortPendingRequests() {
@@ -92,8 +104,11 @@ export function createAgentApi({
     });
   }
 
-  async function submit(text) {
-    return postJson("/api/agent/input", { projectRoot: root(), text });
+  async function submit(text, sessionId = currentSessionId) {
+    // sessionId 缺省不传 → 后端惰性创建/取活跃会话；显式参数优先于当前会话。
+    const body = { projectRoot: root(), text };
+    if (sessionId) body.sessionId = sessionId;
+    return postJson("/api/agent/input", body);
   }
 
   async function promote(inputId) {
@@ -103,29 +118,23 @@ export function createAgentApi({
   }
 
   async function stop(runId) {
-    return postJson(`/api/agent/run/${encodeURIComponent(runId)}/stop`, {
-      projectRoot: root()
-    });
+    return postJson(`/api/agent/run/${encodeURIComponent(runId)}/stop`, scopedBody());
   }
 
   async function retry(runId) {
-    return postJson(`/api/agent/run/${encodeURIComponent(runId)}/retry`, {
-      projectRoot: root()
-    });
+    return postJson(`/api/agent/run/${encodeURIComponent(runId)}/retry`, scopedBody());
   }
 
   async function decide(decisionId, choice) {
-    return postJson(`/api/agent/decision/${encodeURIComponent(decisionId)}`, {
-      projectRoot: root(),
-      choice
-    });
+    return postJson(`/api/agent/decision/${encodeURIComponent(decisionId)}`, scopedBody({ choice }));
   }
 
-  async function fetchSnapshot({ afterSeq = 0, beforeSeq = null, tail = false, limit = SNAPSHOT_LIMIT } = {}) {
+  async function fetchSnapshot({ afterSeq = 0, beforeSeq = null, tail = false, limit = SNAPSHOT_LIMIT, sessionId = currentSessionId } = {}) {
     // 双向分页（Task 9）：tail=true → 最新尾部页；beforeSeq → 该 seq 之前的旧页；
     // 缺省 → afterSeq 增量拉取（afterSeq=0 只表示从头读取，旧调用方不变）。
-    // 优先级与后端一致：tail > beforeSeq > afterSeq。
+    // 优先级与后端一致：tail > beforeSeq > afterSeq。会话走 URL query。
     const params = new URLSearchParams();
+    if (sessionId) params.set("sessionId", sessionId);
     if (tail === true) {
       params.set("tail", "1");
     } else if (Number.isFinite(Number(beforeSeq)) && Number(beforeSeq) > 0) {
@@ -140,15 +149,11 @@ export function createAgentApi({
 
   // 压缩取消/重试（Task 9）：ESC、按钮与 HTTP 都调用同一后端方法。
   async function cancelCompaction(compactionId) {
-    return postJson(`/api/agent/compaction/${encodeURIComponent(compactionId)}/cancel`, {
-      projectRoot: root()
-    });
+    return postJson(`/api/agent/compaction/${encodeURIComponent(compactionId)}/cancel`, scopedBody());
   }
 
   async function retryCompaction(compactionId) {
-    return postJson(`/api/agent/compaction/${encodeURIComponent(compactionId)}/retry`, {
-      projectRoot: root()
-    });
+    return postJson(`/api/agent/compaction/${encodeURIComponent(compactionId)}/retry`, scopedBody());
   }
 
   // 历史导出（Task 9）：响应是 NDJSON 文本流，不是 JSON —— 不能用 readResponseJson
@@ -161,7 +166,7 @@ export function createAgentApi({
       const response = await fetchImpl("/api/agent/history/export", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ projectRoot: root() }),
+        body: JSON.stringify(scopedBody()),
         signal: abortController.signal
       });
       if (!response.ok) {
@@ -181,10 +186,62 @@ export function createAgentApi({
   // 不可逆清空（Task 9）：需显式 confirm_irreversible:true（服务端守卫）。
   // 活动 Run → 409 history_busy；缺确认 → 400 confirmation_required（前端按码分支）。
   async function clearHistory({ confirm_irreversible = false } = {}) {
-    return postJson("/api/agent/history/clear", {
-      projectRoot: root(),
+    return postJson("/api/agent/history/clear", scopedBody({
       confirm_irreversible: confirm_irreversible === true
+    }));
+  }
+
+  // 会话管理（Task 7 多会话）：列表 / 新建 / 重命名 / 归档 / 恢复 / 删除。
+  // PATCH body 互斥：{ projectRoot, title } 或 { projectRoot, archived: true|false }；
+  // DELETE 用 query projectRoot。
+  function sessions() {
+    return request(withProjectScope("/api/agent/sessions", root()), { cache: "no-store" });
+  }
+
+  async function createSession(title) {
+    const body = { projectRoot: root() };
+    if (title) body.title = title;
+    return postJson("/api/agent/sessions", body);
+  }
+
+  function patchSession(sessionId, fields) {
+    return request(`/api/agent/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectRoot: root(), ...fields })
     });
+  }
+
+  function renameSession(sessionId, title) {
+    return patchSession(sessionId, { title });
+  }
+
+  function archiveSession(sessionId) {
+    return patchSession(sessionId, { archived: true });
+  }
+
+  function restoreSession(sessionId) {
+    return patchSession(sessionId, { archived: false });
+  }
+
+  function deleteSession(sessionId) {
+    return request(withProjectScope(`/api/agent/sessions/${encodeURIComponent(sessionId)}`, root()), {
+      method: "DELETE"
+    });
+  }
+
+  // 当前会话：setSession 显式切换；sessionRoot 供调用方读取会话作用域。
+  // 契约：setSession 仅改变后续请求的作用域（body/query 的 sessionId，以及下次
+  // connectEvents 发起的 SSE URL）；活跃 SSE 连接不会被中止，已建立的连接仍按
+  // 连接建立时捕获的 currentSessionId 继续推送旧会话事件。切换会话必须经
+  // openProject/connectEvents 重建连接（streamEvents 在发起请求时捕获
+  // currentSessionId）——直接 setSession 不切流，调用方不得依赖旧连接自动跟随。
+  function setSession(sessionId) {
+    currentSessionId = sessionId ?? null;
+  }
+
+  function sessionRoot() {
+    return { projectRoot: root(), sessionId: currentSessionId ?? null };
   }
 
   // composer 三控件选项：模型清单（全局）+ 当前项目生效配置（dashboard）。
@@ -219,12 +276,13 @@ export function createAgentApi({
     return postJson("/api/settings/update", { projectRoot: root(), reasoning_effort: effort });
   }
 
-  // 切换项目：关闭旧事件流和旧项目请求，后续请求使用新作用域。
-  async function openProject(projectRoot) {
+  // 切换项目/会话：关闭旧事件流和旧项目请求，后续请求使用新作用域。
+  async function openProject(projectRoot, sessionId) {
     controller?.abort();
     controller = null;
     abortPendingRequests();
     currentRoot = projectRoot;
+    currentSessionId = sessionId ?? null;
   }
 
   // SSE /api/project/events：断线后按指数退避重连（上限 maxDelayMs）。
@@ -270,7 +328,8 @@ export function createAgentApi({
   // 已知限制（自定义 server 契约）：事件流按 \n\n 分块，data: 单行 JSON，
   // 不做多行 data 拼接（/api/project/events 永不发送多行 data）。
   async function streamEvents({ projectRoot, afterSeq, signal }) {
-    const url = withProjectScope("/api/project/events", projectRoot) + `&afterSeq=${Math.max(0, Number(afterSeq) || 0)}`;
+    let url = withProjectScope("/api/project/events", projectRoot) + `&afterSeq=${Math.max(0, Number(afterSeq) || 0)}`;
+    if (currentSessionId) url += `&sessionId=${encodeURIComponent(currentSessionId)}`;
     const response = await fetchImpl(url, { cache: "no-store", signal });
     if (!response.ok) {
       const data = await readResponseJson(response).catch(() => null);
@@ -333,6 +392,14 @@ export function createAgentApi({
     updatePermissions,
     updateReasoningEffort,
     connectEvents,
+    setSession,
+    sessionRoot,
+    sessions,
+    createSession,
+    renameSession,
+    archiveSession,
+    restoreSession,
+    deleteSession,
     destroy
   };
 }
