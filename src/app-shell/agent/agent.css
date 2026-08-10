@@ -819,48 +819,31 @@
   overflow-wrap: anywhere;
 }
 
-/* ---- 工具工作项详情：details/summary 原生折叠，字段与输出在折叠区 ------------ */
-.agent-tool-details {
-  flex-basis: 100%; /* 独占一行：标签/path/meta 在上，详情在下 */
-  border-top: 1px solid var(--agent-line);
-  margin-top: 4px;
-  padding-top: 4px;
-}
-
-.agent-tool-details > summary {
+/* ---- 工具工作项详情：整行点击展开（R1），div 详情区 + 行尾 caret ------------ */
+.agent-work-item[data-kind="tool"] {
   cursor: pointer;
-  list-style: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 0;
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--text-muted);
-  user-select: none;
 }
 
-.agent-tool-details > summary:hover,
-.agent-tool-details > summary:focus-visible {
-  background: color-mix(in srgb, var(--agent-panel-muted) 72%, transparent);
-}
-
-.agent-tool-details > summary::-webkit-details-marker {
-  display: none;
-}
-
-.agent-tool-details > summary::after {
-  content: "";
-  width: 6px;
-  height: 6px;
+.agent-tool-caret {
+  margin-left: auto;
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
   border-right: 1.5px solid var(--agent-muted);
   border-bottom: 1.5px solid var(--agent-muted);
   transform: rotate(45deg);
   transition: transform 140ms ease;
 }
 
-.agent-tool-details[open] > summary::after {
+.agent-work-item.agent-tool-details--open .agent-tool-caret {
   transform: rotate(225deg);
+}
+
+.agent-tool-details {
+  flex-basis: 100%; /* 独占一行：标签/path/meta 在上，详情在下 */
+  border-top: 1px solid var(--agent-line);
+  margin-top: 4px;
+  padding-top: 4px;
 }
 
 .agent-tool-fields {
@@ -1483,13 +1466,14 @@
   display: inline-flex;
   align-items: center;
   height: 30px; /* 与工具栏触发按钮等高 */
-  margin-left: 6px;
+  margin-left: 10px; /* R5：与发送键拉开距离（6 → 10） */
+  margin-right: 2px;
 }
 
 .agent-context-ring {
   position: relative;
-  width: 24px;
-  height: 24px;
+  width: 28px;  /* R5：调大（24 → 28） */
+  height: 28px; /* R5：调大（24 → 28） */
   display: grid;
   place-items: center;
   padding: 0;
@@ -1529,7 +1513,7 @@
   inset: 0;
   display: grid;
   place-items: center;
-  font-size: 8px;
+  font-size: 9px; /* R5：随圆环微调（8 → 9） */
   font-weight: 700;
   line-height: 1;
   font-variant-numeric: tabular-nums;

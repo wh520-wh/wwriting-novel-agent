@@ -41,8 +41,8 @@ test("项目列表使用 Codex 式紧凑单行导航", () => {
   assert.match(appSource, /icon\(["']folder["'],\s*16\)/u, "每个项目应以文件夹图标开头");
   assert.doesNotMatch(appSource, /proj-cover|proj-dot|proj-sub|deriveProjectIdentity/u);
   assert.match(stylesSource, /\.proj-icon\s*\{/u);
-  assert.match(stylesSource, /\.proj\.active\s*\{[^}]*background:[^}]*\}/u);
-  assert.doesNotMatch(stylesSource, /\.proj\.active\s*\{[^}]*(?:box-shadow|border-color):/u);
+  // R3/B1：项目不可选中——不再存在 .proj.active 选中态样式（行主体点击只折叠/展开）。
+  assert.doesNotMatch(stylesSource, /\.proj\.active/u, "项目行不可选中：应无 .proj.active 样式");
 });
 
 test("空项目侧栏保持简洁，不重复教授主界面的创建操作", () => {

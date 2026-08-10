@@ -3,8 +3,8 @@
 // 无 JSDOM：最小 DOM 桩 + 注入假 surface（spy 记录调用），直接驱动
 // createSessionSidebar（app.js 的薄接线层在这里用假依赖替换）。
 // 覆盖：dashboard 会话渲染与活跃高亮、折叠/展开 + localStorage、
-// 点击会话/「+」/改名/归档、其他项目懒加载与缓存、draft 占位特判、
-// busy 复位（run_status 联动）、项目行点击展开。
+// 点击会话/改名/归档、其他项目懒加载与缓存、draft 占位特判、
+// busy 复位（run_status 联动）、项目行点击折叠/展开、跨项目会话委托。
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -85,6 +85,21 @@ class MockElement {
   addEventListener(type, fn) {
     if (!this._listeners.has(type)) this._listeners.set(type, []);
     this._listeners.get(type).push(fn);
+  }
+  querySelector(selector) {
+    // 最小实现：仅支持类选择器（.cls），匹配后代中的首个元素（Task 2 的
+    // decorateRow 与测试均用 .proj 定位行内主体按钮）。
+    const cls = selector.startsWith(".") ? selector.slice(1) : null;
+    if (!cls) return null;
+    const find = (node) => {
+      for (const child of node.children) {
+        if (child.classList.contains(cls)) return child;
+        const hit = find(child);
+        if (hit) return hit;
+      }
+      return null;
+    };
+    return find(this);
   }
   dispatch(type, event = {}) {
     let stopped = false;
@@ -201,7 +216,7 @@ function makeTimerRecorder() {
 // 夹具：真实 DOM 元素由桩 document 创建，注入假依赖
 // ---------------------------------------------------------------------------
 
-function makeFixture({ projects = [], selectedProjectRoot = null, currentProjectRoot = null, sessionData = {}, initialStorage = {}, timers = null, fetchSessionsOverride = null } = {}) {
+function makeFixture({ projects = [], selectedProjectRoot = null, currentProjectRoot = null, sessionData = {}, initialStorage = {}, timers = null, fetchSessionsOverride = null, openProjectAndSession = null } = {}) {
   const doc = makeDocument();
   const listEl = doc.createElement("div");
   const countEl = doc.createElement("span");
@@ -211,9 +226,11 @@ function makeFixture({ projects = [], selectedProjectRoot = null, currentProject
   for (const [key, value] of Object.entries(initialStorage)) storage.setItem(key, value);
   const surface = makeSurface();
   const fetchCalls = [];
-  const openCalls = [];
+  const openProjectCalls = [];
   // 默认注入定时器记录器：测试绝不启动真实 setInterval（避免悬挂）
   const timerRecorder = timers ?? makeTimerRecorder();
+  // 跨项目会话切换的委托记录（app.js 侧注入 openProjectAndSession）
+  const delegated = openProjectAndSession ?? (async (root, sid) => openProjectCalls.push([root, sid]));
   const sidebar = createSessionSidebar({
     listEl,
     countEl,
@@ -231,7 +248,6 @@ function makeFixture({ projects = [], selectedProjectRoot = null, currentProject
       const btn = doc.createElement("button");
       btn.className = "proj";
       btn.append(doc.createTextNode(project.title ?? ""));
-      btn.addEventListener("click", () => openCalls.push(project.projectRoot));
       row.append(btn);
       return row;
     },
@@ -241,9 +257,10 @@ function makeFixture({ projects = [], selectedProjectRoot = null, currentProject
     storage,
     setIntervalFn: timerRecorder.setInterval.bind(timerRecorder),
     clearIntervalFn: timerRecorder.clearInterval.bind(timerRecorder),
+    openProjectAndSession: delegated,
     doc
   });
-  return { sidebar, listEl, countEl, filterEl, scrollEl, storage, surface, fetchCalls, openCalls, doc, timers: timerRecorder };
+  return { sidebar, listEl, countEl, filterEl, scrollEl, storage, surface, fetchCalls, openProjectCalls, doc, timers: timerRecorder };
 }
 
 function allDescendants(el) {
@@ -258,9 +275,6 @@ function groupsOf(listEl) {
 }
 function chevronOf(row) {
   return row.children.find((c) => c.classList.contains("proj-chevron"));
-}
-function addOf(group) {
-  return group.children[0].children[1];
 }
 function menuOf(row) {
   return row.children.find((c) => c.classList.contains("session-menu"));
@@ -286,8 +300,7 @@ test("渲染当前项目会话列表：标题正确、s1 活跃、状态点按 r
   const groups = groupsOf(f.listEl);
   assert.equal(groups.length, 1, "当前项目渲染一个会话组");
   assert.equal(groups[0].dataset.projectRoot, P);
-  assert.equal(groups[0].children[0].className.includes("session-group-head"), true);
-  assert.equal(groups[0].children[0].children[0].textContent, "对话");
+  assert.equal(groups[0].children[0].dataset.sessionId, "s1", "会话组以会话行开始（「对话」组头已移除）");
 
   const rows = rowsOf(f.listEl);
   assert.equal(rows.length, 2, "两个 session-row");
@@ -340,7 +353,7 @@ test("点击箭头折叠/展开：会话行消失/恢复，折叠状态写 local
   assert.equal(chevronOf(f.listEl.children[0]).getAttribute("aria-expanded"), "true");
 });
 
-test("点击项目行主体（非箭头）→ 展开项目", () => {
+test("点击项目行 .proj 按钮 → 折叠/展开会话列表，不再触发项目切换", () => {
   const P1 = "D:/projects/p1";
   const P2 = "D:/projects/p2";
   const f = makeFixture({
@@ -357,18 +370,20 @@ test("点击项目行主体（非箭头）→ 展开项目", () => {
   assert.equal(groupsOf(f.listEl).length, 1, "P2 折叠时不渲染会话组");
 
   const row2 = f.listEl.children[2];
-  const btn2 = row2.children[0];
-  btn2.dispatch("click", {});
-  assert.deepEqual(f.openCalls, [P2], "行主体点击触发 renderProjectRow 内部切换（app.js openProject）");
-  assert.equal(groupsOf(f.listEl).length, 2, "点击行主体后 P2 展开");
+  row2.querySelector(".proj").dispatch("click", {});
+  assert.deepEqual(f.openProjectCalls, [], "项目行点击不再触发项目打开/切换");
+  assert.equal(groupsOf(f.listEl).length, 2, "点击 .proj 后 P2 展开");
   assert.equal(chevronOf(f.listEl.children[2]).getAttribute("aria-expanded"), "true");
+
+  f.listEl.children[2].querySelector(".proj").dispatch("click", {});
+  assert.equal(groupsOf(f.listEl).length, 1, "再点 .proj 收起");
 });
 
 // ---------------------------------------------------------------------------
 // 3) 会话操作：切换 / 新建 / 改名 / 归档
 // ---------------------------------------------------------------------------
 
-test("点击会话 → surface.switchSession + 切换后 refreshSessions；「+」→ newSessionPlaceholder", async () => {
+test("点击会话 → surface.switchSession + 切换后 refreshSessions", async () => {
   const P = "D:/projects/p1";
   const f = makeFixture({
     projects: [{ projectRoot: P, title: "小说一" }],
@@ -386,9 +401,24 @@ test("点击会话 → surface.switchSession + 切换后 refreshSessions；「+�
   await flush();
   assert.deepEqual(f.surface.calls.switchSession, ["s2"], "点击 s2 → switchSession(s2)");
   assert.ok(f.surface.calls.refreshSessions.length >= 1, "切换后刷新列表（活跃高亮 + busy 复位）");
+});
 
-  addOf(groupsOf(f.listEl)[0]).dispatch("click", {});
-  assert.deepEqual(f.surface.calls.newSessionPlaceholder, [1], "「+」→ newSessionPlaceholder");
+test("点击其他项目的会话行 → 委托 openProjectAndSession(ownerRoot, sessionId)", async () => {
+  const P1 = "D:/projects/p1";
+  const P2 = "D:/projects/p2";
+  const f = makeFixture({
+    projects: [
+      { projectRoot: P1, title: "小说一" },
+      { projectRoot: P2, title: "小说二" }
+    ],
+    selectedProjectRoot: P1,
+    currentProjectRoot: P1,
+    sessionData: { [P2]: { sessions: [{ session_id: "s2", title: "对话二", run_status: "idle" }], active_session_id: "s2" } }
+  });
+  f.sidebar.seedSessions(P1, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.render();
+  await f.sidebar.switchSession("s2", P2);
+  assert.deepEqual(f.openProjectCalls, [[P2, "s2"]], "跨项目会话切换走 openProjectAndSession");
 });
 
 test("会话操作：改名走 prompt + renameSession + toast；归档直接 archiveSession + toast", async () => {
