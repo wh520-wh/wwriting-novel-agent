@@ -9,6 +9,7 @@ import { createWritingProject } from "./helpers.mjs";
 import { sha256 } from "../src/core/fs-utils.mjs";
 import { searchWeb } from "../src/core/research-tools.mjs";
 import { updateProjectSettings } from "../src/core/settings-runtime.mjs";
+import { createWorkspaceStore } from "../src/core/workspaces/store.mjs";
 
 // Task 12：dashboard 技能列表改读新 catalog。注入临时 root 的 skills service
 //（内置技能来自仓库 src/skills；migration marker 只写进项目内临时 home，绝不
@@ -133,6 +134,58 @@ test("loadDashboardData reports configured model-call budget from effective sett
   const data = await loadDashboard(root, projectRoot);
   // 预算限制只来自有效项目配置（Rule 9）
   assert.equal(data.project.budget_config.max_model_calls, 77);
+});
+
+// Task 1：dashboard 读路径必须与写路径同源——composer 选 YOLO 档时 settings-routes
+// 把 tool_permissions 写入应用私有 workspace settings；重开后 dashboard 若只读 config
+// 层（project.yaml + config/*.json）会回落到默认 confirm。注入真实 workspaceStore
+// 后必须读到 workspace 真相源（与 settings-routes / agent runtime 同一权威）。
+test("loadDashboardData 以 workspace settings 为 effective config 权威（YOLO 档持久）", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-dashboard-ws-settings-"));
+  const { projectRoot } = await createWritingProject(root, {
+    slug: "project",
+    target_chapters: 1,
+    min_words_per_chapter: 10,
+    target_words_per_chapter: 20
+  });
+  // 与 settings-routes POST /api/settings/update 的写路径一致（YOLO 组合同时开
+  // auto_edit；model-switch 把模型写入同一 settings 的 active_model）。
+  const workspaceStore = createWorkspaceStore({ stateRoot: root });
+  await workspaceStore.saveSettings(projectRoot, {
+    active_model: { provider: "mock", model_name: "ws-model" },
+    tool_permissions: { yolo: true, auto_edit: true }
+  });
+
+  const data = await loadDashboard(root, projectRoot, { workspaceStore });
+  // 有效配置来自 workspace settings，而非旧 config 层默认（confirm）。
+  assert.equal(data.config.effective.tool_permissions.yolo, true);
+  assert.equal(data.config.effective.tool_permissions.auto_edit, true);
+  // active_model 同样以 workspace settings 为准（覆盖 project.yaml 的默认 mock-writer）。
+  assert.equal(data.config.effective.active_model.model_name, "ws-model");
+  // DTO 的 project.tool_permissions / active_model 与 effective 同源（drawer-panels
+  // 先读 effective 再回退 project.tool_permissions，两者必须一致）。
+  assert.equal(data.project.tool_permissions.yolo, true);
+  assert.equal(data.project.tool_permissions.auto_edit, true);
+  assert.equal(data.project.active_model.model_name, "ws-model");
+  // layers 仍由 loadConfigLayers 提供，不被 workspace 覆盖。
+  assert.ok(data.config.layers?.project, "layers 仍来自 loadConfigLayers");
+});
+
+// 空 store 兜底：注入 workspaceStore 但从未 saveSettings → 合并顺序固定为
+// FALLBACK → 旧 project.yaml → 应用私有 settings（空），project.yaml 默认值胜出，
+// 绝不回落到更宽松的档位。
+test("loadDashboardData 空 workspace settings 时回落到 project.yaml 默认档位", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-dashboard-ws-empty-"));
+  const { projectRoot } = await createWritingProject(root, {
+    slug: "project",
+    target_chapters: 1
+  });
+  const workspaceStore = createWorkspaceStore({ stateRoot: root });
+
+  const data = await loadDashboard(root, projectRoot, { workspaceStore });
+  assert.equal(data.config.effective.tool_permissions.yolo, false);
+  assert.equal(data.config.effective.tool_permissions.auto_edit, false);
+  assert.equal(data.project.tool_permissions.yolo, false);
 });
 
 test("readChapterContent returns clean prose without segment markup", async () => {
