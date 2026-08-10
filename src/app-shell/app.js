@@ -127,9 +127,10 @@ const sessionSidebar = createSessionSidebar({
   getProjectListData: () => projectListData,
   getCurrentProjectRoot: () => currentProjectRoot,
   fetchSessions: async (projectRoot) => getJson(withProjectScope("/api/agent/sessions", projectRoot)),
-  renderProjectRow: (project, selectedProjectRoot) => renderProjectNav(project, selectedProjectRoot),
+  renderProjectRow: (project) => renderProjectNav(project),
   surface: agentSurface,
-  showToast
+  showToast,
+  openProjectAndSession
 });
 
 const settingsModal = createSettingsModal({
@@ -376,14 +377,14 @@ function clearTransientState() {
   readerChapterNo = null;
 }
 
-function commitProjectSwitch(projectRoot) {
+function commitProjectSwitch(projectRoot, activeSessionId = null) {
   projectScope.activate(projectRoot);
   currentProjectRoot = projectRoot;
   clearTransientState();
   // Task 9：会话级代次推进——在途会话切换的续作一律丢弃；openProject 完成后拉一次
   // 会话列表（Task 8 契约：surface 不自动拉）更新活跃高亮 + busy 复位。
   sessionSidebar.invalidateProject();
-  Promise.resolve(agentSurface.openProject(projectRoot)).then(() => {
+  Promise.resolve(agentSurface.openProject(projectRoot, activeSessionId)).then(() => {
     agentSurface.refreshSessions();
   });
 }
@@ -404,16 +405,16 @@ async function deleteSessionAndResolveActive(sessionId) {
   }
 }
 
-function renderProjectNav(project, selectedProjectRoot) {
-  const isSelected = pathEquals(project.projectRoot, selectedProjectRoot);
+// R3/B1：项目行不可选中（无 active/aria-current），.proj 主体点击只折叠/展开
+//（由 session-sidebar 的 decorateRow 绑定）；切换项目唯一入口 = 点击其他项目的
+// 会话行（session-sidebar 委托 openProjectAndSession）。
+function renderProjectNav(project) {
   const row = document.createElement("div");
-  row.className = `proj-row${isSelected ? " active" : ""}`;
+  row.className = "proj-row";
   const button = document.createElement("button");
   button.type = "button";
-  button.className = `proj${isSelected ? " active" : ""}`;
-  if (isSelected) button.setAttribute("aria-current", "page");
+  button.className = "proj";
   button.title = project.title ?? "未命名小说";
-  button.addEventListener("click", () => openProject(project.projectRoot));
   const projectIcon = document.createElement("span");
   projectIcon.className = "proj-icon";
   projectIcon.setAttribute("aria-hidden", "true");
@@ -427,6 +428,20 @@ function renderProjectNav(project, selectedProjectRoot) {
   button.append(projectIcon, main);
   const menu = document.createElement("div");
   menu.className = "proj-menu";
+  // R4：新对话加号移入项目行（垃圾桶左侧）
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "proj-add";
+  add.replaceChildren(icon("plus", 14));
+  add.setAttribute("aria-label", `在 ${project.title ?? "未命名小说"} 新建对话`);
+  add.title = "新对话";
+  add.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    if (!pathEquals(project.projectRoot, currentProjectRoot)) {
+      await openProjectAndSession(project.projectRoot); // 全流程切项目（POST + commit + loadAll）
+    }
+    agentSurface.newSessionPlaceholder();
+  });
   const remove = document.createElement("button");
   remove.type = "button";
   remove.className = "proj-remove";
@@ -437,7 +452,7 @@ function renderProjectNav(project, selectedProjectRoot) {
     event.stopPropagation();
     forgetProject(project.projectRoot);
   });
-  menu.append(remove);
+  menu.append(add, remove);
   row.append(button, menu);
   return row;
 }
@@ -524,6 +539,32 @@ async function openProject(projectRoot) {
     await loadAll();
   } catch (error) {
     refs.projectOpenStatus.style.display = "none";
+    if (error.code === "project_open_failed" && error.message.includes("不是有效的 WWriting 项目文件夹")) {
+      openCreateModal(projectRoot, { mode: "init-folder" });
+      showToast("该文件夹不是项目，可初始化为新小说。", "info");
+    } else {
+      showActionError(error);
+    }
+  }
+}
+
+// Task 2：跨项目会话切换的委托入口（点击其他项目会话行 / 其行内「+」新建）。
+// 镜像 openProject 骨架，但可带 sessionId 直达目标会话；已选中项目 + 未指定会话
+// 时为 no-op（同一项目内的会话切换不经过这里）。
+async function openProjectAndSession(projectRoot, sessionId = null) {
+  if (!projectRoot) return;
+  if (pathEquals(projectRoot, currentProjectRoot) && sessionId == null) return; // 已选中项目 + 不指定会话：no-op
+  refs.projectOpenStatus.style.display = "block";
+  refs.projectOpenStatus.textContent = "正在打开...";
+  try {
+    await postJson("/api/projects/open", { projectRoot });
+    commitProjectSwitch(projectRoot, sessionId);
+    refs.projectOpenStatus.style.display = "none";
+    refs.projectOpenStatus.textContent = "";
+    await loadAll();
+  } catch (error) {
+    refs.projectOpenStatus.style.display = "none";
+    refs.projectOpenStatus.textContent = "";
     if (error.code === "project_open_failed" && error.message.includes("不是有效的 WWriting 项目文件夹")) {
       openCreateModal(projectRoot, { mode: "init-folder" });
       showToast("该文件夹不是项目，可初始化为新小说。", "info");

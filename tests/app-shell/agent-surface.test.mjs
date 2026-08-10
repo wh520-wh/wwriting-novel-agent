@@ -3,8 +3,9 @@
 // 覆盖（Task 8 Step 6 + 从 chat-activity-view.test.mjs 迁移的全部仍然有效断言）：
 //   - 空闲发送 / 运行中排队发送 / 立即 / 同一 run id / 停止 / 重试 / 项目切换；
 //   - /settings、/model 无 Run 时导航；/init、/review、/write 作为普通文本提交；
-//   - 工具：同 activity_id 合并到同一工作项、details/summary 原生折叠、
-//     字段顺序、64 KiB 输出尾 + 「输出过长已截断」；
+//   - 工具：同 activity_id 合并到同一工作项、整行点击展开详情（R1，div +
+//     角色按钮，去 details/summary）、字段顺序、64 KiB 输出尾 +
+//     「输出过长已截断」；
 //   - 停止防连点（点击即禁用、失败恢复、终态后不再有第二个横幅）；
 //   - 计划：活动展开/终态折叠、无手动编辑入口；
 //   - 确认：普通三选、extreme 精确文字前禁用、终态 decision 锁定；
@@ -1415,25 +1416,22 @@ test("reasoning 详情兜底：available 全文 / unsupported / empty 文案", a
   assert.equal(await runScenario("empty", null, ""), "本次没有可查看的思考内容");
 });
 
-test("工作组 duration 使用 active_elapsed_ms + active_since；waiting_user 暂停", async () => {
+test("工作组 duration 运行中由工作组投影时钟驱动，waiting_user 暂停", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
-  // journal 快照的 active_since 是 ISO 字符串（event.at = toISOString()）——
-  // 数值型 fixture 会掩盖 liveElapsedMs 的 Date.parse 解析（回归：Critical 1）。
-  const since = new Date(Date.now() - 3000).toISOString();
-  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun({ active_elapsed_ms: 42000, active_since: since }) })));
-  surface.applyEvent(ev("model_turn_started", { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }));
+  // 增量事件路径：run_started 增量投影不含 active_elapsed_ms/active_since（回归源），
+  // 时钟必须来自事件 at 驱动的工作组投影（group.activeMs + (now - activeSince)）。
+  const startAt = new Date(Date.now() - 3000).toISOString();
+  surface.applyEvent(ev("run_started", { workflow: "general", input_id: "in-1" }, { at: startAt }));
+  surface.applyEvent(ev("model_turn_started", { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }, { at: startAt }));
   const duration = root.querySelector(".agent-work-duration");
-  assert.match(duration.textContent, /45 秒/u, "active_elapsed_ms + (now - active_since) 进入 duration 文本（ISO active_since 也增量）");
-  // waiting_user：active_since 为 null → 公式不再增量（计时暂停）
-  surface.applySnapshot(snapshotOf(session({
-    status: "waiting_user",
-    active_run: activeRun({ status: "waiting_user", active_elapsed_ms: 45000, active_since: null })
-  })));
-  assert.equal(root.querySelector(".agent-work-duration").textContent, "45 秒", "waiting_user 计时暂停");
+  assert.match(duration.textContent, /3 秒/u, "运行中耗时 = 工作组时钟（now − activeSince ≈ 3 秒），不再是 0 秒");
+  // waiting_user：离开 active → activeMs 冻结、activeSince 置空，不再增量
+  surface.applyEvent(ev("run_status_changed", { status: "waiting_user" }, { at: new Date(Date.now() - 1000).toISOString() }));
+  assert.equal(duration.textContent, "2 秒", "waiting_user 暂停在离开 active 时刻（2s = 3000ms − 1000ms）");
 });
 
-test("工具详情行结构：details/summary 原生可键盘展开，输出是唯一 .agent-tool-output", async () => {
+test("工具详情行：整行可点击展开/收起，去掉独立「详情」summary", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
@@ -1444,14 +1442,25 @@ test("工具详情行结构：details/summary 原生可键盘展开，输出是�
   surface.applyEvent(outputDelta("a1", "line1\n"));
   const row = root.querySelector('[data-item-id="tool:a1"]');
   assert.ok(row, "工具工作项应存在");
-  const details = row.querySelector("details");
-  assert.ok(details, "工具详情应使用 <details>（原生键盘可展开）");
-  assert.ok(details.querySelector("summary"), "details 内应有 summary");
-  const outputs = row.querySelectorAll(".agent-tool-output");
-  assert.equal(outputs.length, 1, "输出是唯一 .agent-tool-output");
-  assert.equal(outputs[0].textContent, "line1\n");
+  assert.equal(row.querySelector("details"), null, "不再使用 details/summary 控件");
+  assert.equal(row.querySelector(".agent-tool-details").tagName, "div", "详情改为 div");
+  assert.equal(row.getAttribute("role"), "button", "整行 role=button");
+  assert.equal(row.getAttribute("aria-expanded"), "false", "默认收起");
+  const output = row.querySelector(".agent-tool-output");
+  assert.ok(output, "输出是唯一 .agent-tool-output");
+  assert.equal(output.textContent, "line1\n");
   assert.match(row.textContent, /npm test/u);
   assert.match(row.textContent, /D:\\Book/u);
+  assert.equal(output.hidden, true, "收起时输出不可见");
+  row._fire("click");
+  assert.equal(row.getAttribute("aria-expanded"), "true", "点击整行展开");
+  assert.equal(output.hidden, false, "展开后输出可见");
+  row._fire("keydown", { key: "Enter", preventDefault: () => {} });
+  assert.equal(row.getAttribute("aria-expanded"), "false", "Enter 再次收起");
+  assert.equal(output.hidden, true, "收起后输出隐藏");
+  // 内容区（字段/输出）点击不触发收起：MockElement 无 closest，用假 target 驱动守卫
+  row._fire("click", { target: { closest: () => row.querySelector(".agent-tool-details") } });
+  assert.equal(row.getAttribute("aria-expanded"), "false", "点击详情区不切换折叠态");
 });
 
 test("工具详情字段顺序：参数 → 命令 → 目录 → 退出码 → 耗时；失败工具 → 错误 在最后", async () => {
@@ -2387,9 +2396,13 @@ test("工具工作项：无 path 的工具回退泛化文案，不出现 undefin
   assert.equal(labels[3], "正在读取文件");
   // 无 path 时路径元素隐藏（不渲染空文本）
   assert.ok(toolRows().every((el) => el.querySelector(".agent-tool-path").hidden), "无 path 的路径元素应隐藏");
-  // 无字段无输出时整个详情区隐藏；有命令字段时显示
+  // 无字段无输出时整个详情区隐藏；有命令字段时默认收起（点击整行展开）
   assert.ok(toolRows()[0].querySelector(".agent-tool-details").hidden, "无字段无输出时详情区隐藏");
-  assert.equal(toolRows()[2].querySelector(".agent-tool-details").hidden, false, "有命令字段时详情区显示");
+  const row2 = toolRows()[2];
+  const details2 = row2.querySelector(".agent-tool-details");
+  assert.equal(details2.hidden, true, "有命令字段时默认收起");
+  row2._fire("click");
+  assert.equal(details2.hidden, false, "点击行后详情展开");
 });
 
 // ===========================================================================

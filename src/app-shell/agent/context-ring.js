@@ -77,8 +77,8 @@ export function createContextRing({
 
   const svg = doc.createElementNS(NS, "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("width", "24");
-  svg.setAttribute("height", "24");
+  svg.setAttribute("width", "28");
+  svg.setAttribute("height", "28");
   svg.setAttribute("aria-hidden", "true");
   svg.setAttribute("focusable", "false");
 

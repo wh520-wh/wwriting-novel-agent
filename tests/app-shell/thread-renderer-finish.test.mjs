@@ -3,7 +3,8 @@
 // 原 thread-renderer-finish 测试的仍然有效行为迁移到 AgentSurface：
 //   - 终态（completed/cancelled）每活动只渲染一次标记，不重复播报；
 //   - Run 完成后不再有第二个状态横幅；停止不产生重复的已停止横幅；
-//   - 终态活动折叠在 details 内（native details/summary），无手动编辑入口。
+//   - 终态活动折叠在 work-group 的 details 内；工具工作项详情为整行点击
+//     （R1，div + 角色按钮，去 details/summary），无手动编辑入口。
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -322,7 +323,7 @@ test("停止不产生第二个已停止横幅：终态只渲染一次", async ()
   assert.equal(root.querySelector("[data-testid='agent-stop']"), null);
 });
 
-test("终态工具工作项折叠在原生 details 内（无手动编辑入口）", async () => {
+test("终态工具工作项折叠为整行点击（div 详情区，无手动编辑入口）", async () => {
   const { root, surface } = await makeSurface();
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
   surface.applyEvent(ev("tool_call_started", {
@@ -339,10 +340,11 @@ test("终态工具工作项折叠在原生 details 内（无手动编辑入口�
 
   const row = [...root.querySelectorAll(".agent-work-item")].find((el) => el.dataset.kind === "tool");
   assert.ok(row, "工具工作项应存在");
-  const details = row.querySelector("details");
-  assert.ok(details, "工具详情应使用原生 details 折叠");
-  assert.ok(details.querySelector(".agent-tool-fields"), "详情字段应折叠在 details 内");
-  assert.ok(details.querySelector("summary"), "details 内应有 summary");
+  assert.equal(row.querySelector("details"), null, "工具详情不再使用原生 details");
+  const details = row.querySelector(".agent-tool-details");
+  assert.equal(details.tagName, "div", "详情区改为 div");
+  assert.ok(details.querySelector(".agent-tool-fields"), "详情字段在详情区内");
+  assert.equal(details.hidden, true, "终态工具默认收起");
 });
 
 test("重放快照后工作组按时间线落位：最终回复位于 work group 之后", async () => {

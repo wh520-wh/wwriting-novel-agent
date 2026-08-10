@@ -2,7 +2,8 @@
 //
 // 职责边界（app.js 只做薄接线）：
 //   - 渲染项目行（经 renderProjectRow 回调，app.js 保留 renderProjectNav 与其
-//     折叠箭头装饰）+ 展开态下的会话组（组头「对话」+「+」、会话行、状态点）；
+//     折叠箭头装饰）+ 展开态下的会话组：会话组直接以会话行开始（组头与「+」已
+//     移除，加号移入项目行，R4）；
 //   - 折叠状态 localStorage 持久化（key wwriting:projects:collapsed，默认展开）；
 //   - 懒加载：当前项目会话来自 dashboard seed（不重复拉），展开其他未缓存项目时
 //     懒调 fetchSessions(projectRoot) 并缓存（内存 Map，本次会话内不重复拉）；
@@ -15,7 +16,7 @@
 //     已切到别的项目/会话则丢弃后续动作。projectScope 守卫 dashboard 拉取（项目级），
 //     本守卫覆盖会话级切换。
 import { icon } from "./icons.js";
-import { formatNumber } from "./utils.js";
+import { formatNumber, pathEquals } from "./utils.js";
 
 const COLLAPSED_STORAGE_KEY = "wwriting:projects:collapsed";
 // busy 周期刷新间隔：其他会话的运行终态不沿本会话 SSE 流到达（事件流按当前会话
@@ -43,6 +44,7 @@ export function createSessionSidebar({
   storage = globalThis.localStorage,
   setIntervalFn = globalThis.setInterval,
   clearIntervalFn = globalThis.clearInterval,
+  openProjectAndSession = async () => {},
   doc = globalThis.document
 }) {
   const collapsedByRoot = loadCollapsed();
@@ -152,7 +154,7 @@ export function createSessionSidebar({
     if (countEl) countEl.textContent = formatNumber(filtered.length);
     const parts = [];
     for (const project of active) {
-      const row = renderProjectRow(project, data.selectedProjectRoot);
+      const row = renderProjectRow(project);
       row.classList.add("proj-sessioned");
       decorateRow(row, project);
       parts.push(row);
@@ -162,7 +164,7 @@ export function createSessionSidebar({
       parts.push(renderArchivedToggle(archived.length));
       if (archivedExpanded) {
         for (const project of archived) {
-          const row = renderProjectRow(project, data.selectedProjectRoot);
+          const row = renderProjectRow(project);
           row.classList.add("proj-archived");
           parts.push(row);
         }
@@ -172,9 +174,9 @@ export function createSessionSidebar({
     listEl.replaceChildren(...parts);
   }
 
-  // 项目行装饰：折叠箭头（role=button + aria-expanded）+ 行主体点击展开。
-  // 点击箭头 = 仅折叠/展开（stopPropagation 不触发行逻辑）；点击行主体（.proj
-  // 按钮，其内部已绑定 openProject）＝ 切换项目 + 展开。
+  // 项目行装饰：折叠箭头（role=button + aria-expanded）+ .proj 主体点击折叠/展开。
+  // 项目不可选中（R3/B1）：点击行主体只折叠/展开会话列表，不再触发项目切换；
+  // 切换项目唯一入口 = 点击其他项目的会话行（app.js 委托 openProjectAndSession）。
   function decorateRow(row, project) {
     const collapsed = isCollapsed(project.projectRoot);
     const chevron = doc.createElement("span");
@@ -197,8 +199,10 @@ export function createSessionSidebar({
       }
     });
     row.appendChild(chevron);
-    row.addEventListener("click", () => {
-      if (isCollapsed(project.projectRoot)) setCollapsed(project.projectRoot, false);
+    const body = row.querySelector(".proj") ?? row;
+    body.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleCollapsed(project.projectRoot);
     });
   }
 
@@ -243,11 +247,10 @@ export function createSessionSidebar({
 
   function buildSessionGroupChildren(root) {
     const parts = [];
-    parts.push(buildSessionGroupHead());
     const entry = sessionCache.get(root);
     if (entry) {
       const visible = entry.sessions.filter((session) => session.status === "draft" || !session.archived_at);
-      for (const session of visible) parts.push(renderSessionRow(session, entry.activeSessionId));
+      for (const session of visible) parts.push(renderSessionRow(session, entry.activeSessionId, root));
       if (visible.length === 0) parts.push(emptyRow("还没有对话"));
     } else if (failedRoots.has(root)) {
       // dashboard seed 失败与懒拉失败共用降级行（可点击重试）。
@@ -297,23 +300,6 @@ export function createSessionSidebar({
     loadSessions(root);
   }
 
-  function buildSessionGroupHead() {
-    const head = doc.createElement("div");
-    head.className = "session-group-head";
-    const label = doc.createElement("span");
-    label.className = "session-group-label";
-    label.textContent = "对话";
-    const add = doc.createElement("button");
-    add.type = "button";
-    add.className = "session-add";
-    add.title = "新对话";
-    add.setAttribute("aria-label", "新对话");
-    add.append(icon("plus", 14, null, doc));
-    add.addEventListener("click", () => surface.newSessionPlaceholder());
-    head.append(label, add);
-    return head;
-  }
-
   // 定向重渲某项目的会话组（onSessionsChanged / 懒加载完成时；沿用 refreshDrawerIfOpen
   // 的保滚动思路——重渲前后保持滚动容器 scrollTop）。组已不在 DOM（折叠/被过滤）则跳过。
   function rerenderGroup(root) {
@@ -327,7 +313,7 @@ export function createSessionSidebar({
   }
 
   // ---- 会话行 ----
-  function renderSessionRow(session, activeSessionId) {
+  function renderSessionRow(session, activeSessionId, ownerRoot) {
     const isDraft = session.status === "draft";
     const isActive = !isDraft && session.session_id === activeSessionId;
     const row = doc.createElement("div");
@@ -364,7 +350,7 @@ export function createSessionSidebar({
     row.append(dot, title, menu);
     row.addEventListener("click", () => {
       if (isDraft) return; // 点击占位项 = 留在占位视图
-      commitSessionSwitch(session.session_id);
+      commitSessionSwitch(session.session_id, ownerRoot);
     });
     row.addEventListener("keydown", (event) => {
       // 仅行自身聚焦时响应（改名/归档按钮的 keydown 冒泡到这里必须忽略，
@@ -373,7 +359,7 @@ export function createSessionSidebar({
       if (isDraft) return;
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault(); // 防 Space 滚动
-        commitSessionSwitch(session.session_id);
+        commitSessionSwitch(session.session_id, ownerRoot);
       }
     });
     return row;
@@ -398,9 +384,14 @@ export function createSessionSidebar({
   }
 
   // ---- 会话操作 ----
-  function commitSessionSwitch(sessionId) {
+  function commitSessionSwitch(sessionId, ownerRoot = null) {
     sessionSwitchGeneration += 1; // 每次切换都推进代次：旧切换的续作一律丢弃
     const token = captureSessionToken();
+    if (ownerRoot && !pathEquals(ownerRoot, token.projectRoot)) {
+      // 跨项目：全流程打开目标项目并激活目标会话（内部完成 commitProjectSwitch →
+      // invalidateProject 推进代次，token 已失效，无需续作刷新）
+      return Promise.resolve(openProjectAndSession(ownerRoot, sessionId)).catch(() => {});
+    }
     // 切走 draft 占位：surface 在 switchSession 内部已刷新一次列表（agent/index.js
     // 的切走收尾 prevDraft 分支），这里跳过续作刷新避免双刷；其余切换仍需 app 侧
     // 刷新（Task 8 契约：surface 不自动拉）。活跃指针取自会话缓存（与渲染同源）。

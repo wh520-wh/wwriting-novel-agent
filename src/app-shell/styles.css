@@ -447,8 +447,6 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .proj:hover { background: var(--hover); }
 
-.proj.active { background: var(--rail-2); }
-
 .proj-icon {
   width: 18px; height: 18px;
   display: grid; place-items: center;
@@ -464,8 +462,6 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   font-size: 13.5px; font-weight: 500; color: var(--ink-2);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-
-.proj.active .proj-title { color: var(--ink); font-weight: 600; }
 
 
 .rail-foot {
@@ -1348,6 +1344,10 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   top: 50%;
   z-index: 1;
   transform: translateY(-50%);
+  /* R4：加号 + 垃圾桶水平并排 */
+  display: flex;
+  align-items: center;
+  gap: 2px;
   opacity: 0;
   pointer-events: none;
   transition: opacity 120ms ease, transform 120ms ease;
@@ -1381,6 +1381,31 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   color: var(--red);
   background: var(--surface);
   border-color: var(--line);
+}
+
+
+/* R4：新对话加号（项目行内，垃圾桶左侧） */
+.proj-add {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.proj-add:hover,
+.proj-add:focus-visible {
+  color: var(--ink);
+  background: var(--rail-2);
+}
+
+.proj-add:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
 }
 
 
@@ -1427,44 +1452,6 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   margin: 2px 0 4px 10px;
   padding-left: 10px;
   border-left: 1px solid var(--line);
-}
-
-.session-group-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 4px 2px 2px;
-}
-
-.session-group-label {
-  font-size: 11px;
-  line-height: 1.4;
-  font-weight: 550;
-  color: var(--text-muted);
-}
-
-.session-add {
-  width: 24px;
-  height: 24px;
-  min-width: 24px;
-  min-height: 24px;
-  display: grid;
-  place-items: center;
-  border-radius: 5px;
-  color: var(--muted);
-  cursor: pointer;
-  transition: color 150ms ease, background 150ms ease;
-}
-
-.session-add:hover {
-  color: var(--ink);
-  background: var(--rail-2);
-}
-
-.session-add:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -1px;
 }
 
 .session-row {

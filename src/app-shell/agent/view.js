@@ -704,15 +704,16 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   // 重复计时器，避免泄漏；details 挂载后计时正常工作。
   const DURATION_ACTIVE_STATUSES = new Set(["running", "interrupting", "stopping"]);
 
-  function liveElapsedMs(run, now = Date.now()) {
-    const elapsed = Number(run?.active_elapsed_ms ?? 0);
-    // journal 的 active_since 是 ISO 字符串（event.at = toISOString()）；Date.parse
-    // 解析它得到毫秒时间戳。无法解析/缺失时 since 为 NaN，回落累计值（不增量）。
-    const since = run?.active_since != null ? Date.parse(run.active_since) : null;
-    if (Number.isFinite(since) && Number.isFinite(elapsed)) {
-      return Math.max(0, elapsed + Math.max(0, now - since));
+  // 运行中耗时唯一数据源：工作组投影时钟（与终态 Task 15 同源，journal 同算法）。
+  // activeSince 是事件 at 的 ISO 字符串；waiting_user/终态时 activeSince 为 null，
+  // 返回已累计的 activeMs（冻结）。
+  function groupLiveElapsedMs(group, now = Date.now()) {
+    const activeMs = Number(group?.activeMs ?? 0);
+    const since = group?.activeSince != null ? Date.parse(group.activeSince) : null;
+    if (Number.isFinite(since) && Number.isFinite(activeMs)) {
+      return Math.max(0, activeMs + Math.max(0, now - since));
     }
-    return Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0;
+    return Number.isFinite(activeMs) ? Math.max(0, activeMs) : 0;
   }
 
   function reasoningDetailText(item) {
@@ -799,23 +800,55 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       meta.className = "agent-work-item__meta";
       wrap.append(meta);
       row.meta = meta;
-      // 工具详情：折叠在原生 details 内（参数/命令/目录/退出码/耗时/错误 +
-      // 输出块）。标签 + path 行始终可见，详情区无内容时整体隐藏。
-      const details = doc.createElement("details");
+      const caret = doc.createElement("span");
+      caret.className = "agent-tool-caret";
+      caret.setAttribute("aria-hidden", "true");
+      wrap.append(caret);
+      row.caret = caret;
+      // 工具详情：整行点击切换（R1）。类名保留 .agent-tool-details（div），
+      // 字段/输出在其中；无内容时整体隐藏（与旧 details 语义一致）。
+      const details = doc.createElement("div");
       details.className = "agent-tool-details";
-      const summary = doc.createElement("summary");
-      summary.textContent = "详情";
       const detail = doc.createElement("div");
       detail.className = "agent-tool-fields";
       const output = doc.createElement("pre");
       output.className = "agent-tool-output";
-      details.append(summary, detail, output);
+      details.append(detail, output);
       wrap.append(details);
       row.details = details;
       row.detail = detail;
       row.fieldEls = new Map();   // 字段名 -> field 容器（内容在 pre 内）
       row.outputEl = output;
       row.fieldsSignature = null;
+      row.hasContent = false;
+      row.toolOpen = false;
+      // 整行切换（a11y：role=button + Enter/Space；点击内容区不触发收起）
+      wrap.setAttribute("role", "button");
+      wrap.setAttribute("tabindex", "0");
+      wrap.setAttribute("aria-expanded", "false");
+      const setToolOpen = (open) => {
+        row.toolOpen = open;
+        wrap.setAttribute("aria-expanded", open ? "true" : "false");
+        wrap.classList.toggle("agent-tool-details--open", open);
+        row.details.hidden = !row.hasContent || !open;
+        // 输出块与详情区同步可见（真实 DOM 中 hidden 由父级级联；测试桩
+        // 不级联，需显式设置，且对真实 DOM 是幂等冗余）。
+        row.outputEl.hidden = !row.hasContent || !open;
+      };
+      wrap.addEventListener("click", (event) => {
+        const target = event?.target ?? wrap;
+        if (target.closest?.(".agent-tool-details")) return; // 内容区点击不切换
+        setToolOpen(!row.toolOpen);
+      });
+      wrap.addEventListener("keydown", (event) => {
+        // 真实 DOM 聚焦行自身时 target===wrap；MockElement._fire 不透传 target，
+        // 缺省视为行自身（否则测试桩下 Enter/Space 永不触发）。
+        if ((event?.target ?? wrap) !== wrap) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault(); // 防 Space 滚动
+          setToolOpen(!row.toolOpen);
+        }
+      });
     } else if (item.kind === "reasoning") {
       const tickerEl = doc.createElement("div");
       tickerEl.className = "agent-reasoning-ticker";
@@ -930,10 +963,11 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   }
 
   // 工具详情字段：参数 → 命令 → 目录 → 退出码 → 耗时 → 错误（固定顺序，折叠在
-  // details 内）。输出块在 truncated 时前置截断提示。字段只在签名变化时写入
-  // DOM（避免每次 update 重建）；输出文本直接比对避免重复写。全部字段为空且
-  // 无输出时隐藏整个折叠区（标签 + path 行照常显示）——空判定从已构建的字段
-  // 行派生（隐藏字段不算），输出侧与渲染文本共用 outputText。
+  // .agent-tool-details div 内，R1 后整行点击切换）。输出块在 truncated 时前置
+  // 截断提示。字段只在签名变化时写入 DOM（避免每次 update 重建）；输出文本直接
+  // 比对避免重复写。全部字段为空且无输出时隐藏整个折叠区（标签 + path 行照常
+  // 显示）——空判定从已构建的字段行派生（隐藏字段不算），输出侧与渲染文本共用
+  // outputText。可见性 = hasContent 且用户已展开（toolOpen）。
   function updateToolDetails(row, item) {
     const values = {
       "参数": item.args != null && typeof item.args === "object" && Object.keys(item.args).length > 0
@@ -981,7 +1015,11 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       const field = row.fieldEls.get(name);
       return field != null && !field.hidden;
     });
-    row.details.hidden = !hasVisibleField && outputText.length === 0;
+    row.hasContent = hasVisibleField || outputText.length > 0;
+    row.details.hidden = !row.hasContent || !row.toolOpen;
+    // 输出块与详情区同步可见（真实 DOM 中父级 hidden 级联即可；测试桩不级联，
+    // 需显式设置，对真实 DOM 是幂等冗余）。
+    row.outputEl.hidden = !row.hasContent || !row.toolOpen;
   }
 
   function updatePlanContent(row, plan) {
@@ -1040,8 +1078,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
         record.durationTimer = null;
         return;
       }
-      const run = currentState ? getActiveRun(currentState) : null;
-      record.duration.textContent = formatDuration(liveElapsedMs(run));
+      record.duration.textContent = formatDuration(groupLiveElapsedMs(g));
     }, 1000);
   }
 
@@ -1054,19 +1091,20 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     }
   }
 
-  function updateWorkGroup(record, group, run) {
+  function updateWorkGroup(record, group) {
     // 展开默认值只在用户未手动切换时应用；完成后投影 expanded=false → 自动折叠。
     if (!record.userToggled && record.details.open !== group.expanded) {
       record.details.open = group.expanded;
     }
     if (TERMINAL_RUN_STATUSES.has(group.status)) {
-      // 终态耗时取组自身投影的冻结时钟（Task 15 修复），不读当前 active run：
-      // 第二个 Run 开始后旧组的文案不再被新 Run 的 active_elapsed_ms 覆盖。
+      // 终态耗时取组自身投影的冻结时钟（Task 15 修复）——与运行中分支（L1069 的
+      // groupLiveElapsedMs）同源：整个组状态都读工作组投影时钟，不读当前 active run，
+      // 第二个 Run 开始后旧组的文案不再被新 Run 覆盖。
       record.status.textContent = groupStatusText(group);
       record.duration.textContent = "";
     } else {
       record.status.textContent = "工作中";
-      record.duration.textContent = formatDuration(liveElapsedMs(run));
+      record.duration.textContent = formatDuration(groupLiveElapsedMs(group));
     }
     ensureGroupClock(record, group);
 
@@ -1096,7 +1134,6 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   }
 
   function syncWork(state) {
-    const run = getActiveRun(state);
     const seen = new Set();
     let changed = false;
     for (const group of state.work.groups.values()) {
@@ -1117,7 +1154,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
         insertTimeline(record.details, group.firstSeq, record.groupKey);
         changed = true;
       }
-      if (updateWorkGroup(record, group, run)) changed = true;
+      if (updateWorkGroup(record, group)) changed = true;
     }
     for (const [id, record] of workGroups) {
       if (!seen.has(id)) {
