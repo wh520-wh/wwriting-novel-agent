@@ -266,7 +266,11 @@ export function createProjectRoutes({
       const data = await dashboardLoader(workspace, {
         projectRoot: scopedRoot,
         allowExternalProjectRoot: Boolean(scopedRoot),
-        disableProjectFallback: !scopedRoot
+        disableProjectFallback: !scopedRoot,
+        // Task 1：dashboard 读路径与写路径同源——传入应用私有 workspaceStore，
+        // 让 loadDashboardData 用 loadEffectiveWorkspaceConfig 覆盖 effective config
+        //（YOLO 等权限档在重开后按 workspace settings 持久显示）。
+        workspaceStore
       });
       if (data?.hasProject) {
         data.model_profile = buildModelProfile(data.project?.active_model, secretsRoot);

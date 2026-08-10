@@ -69,7 +69,10 @@ export function createAppShellServer({
       // Task 6：把 ProjectAgent 注入 dashboard 组装，loadDashboardData 内部把
       // agent.sessions(projectRoot) 并入响应；未注入/调用失败 → sessions:[]。
       // agent 在下方创建（组合根），本闭包只在请求时被调用，届时已就绪。
-      agent
+      agent,
+      // Task 1：dashboard 读路径与写路径同源——注入应用私有 workspaceStore，
+      // loadDashboardData 用 loadEffectiveWorkspaceConfig 覆盖 effective config。
+      workspaceStore
     }));
   const connectionTester = testModelConnection ?? runModelConnectionTest ?? null;
   applyLocalSecretsToEnv(loadLocalSecretsSync(localSecretsRoot));

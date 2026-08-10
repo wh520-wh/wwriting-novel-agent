@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { loadConfigLayers } from "./config-runtime.mjs";
+import { loadConfigLayers, loadEffectiveWorkspaceConfig } from "./config-runtime.mjs";
 import { readEvents } from "./event-log.mjs";
 import { isPathInside, pathExists, readJson, safeJoin } from "./fs-utils.mjs";
 import { loadProject } from "./project-store.mjs";
@@ -59,6 +59,19 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
     readSessions(projectRoot, options.agent)
   ]);
   const config = await loadConfigLayers(projectRoot, project);
+  // 读路径必须与写路径同源（Task 1）：settings-routes 把权限档/模型/推理强度写入应用
+  // 私有 workspace settings，agent runtime 以 loadEffectiveWorkspaceConfig 为权威；
+  // dashboard 若只读 config 层（project.yaml + config/*.json），YOLO 等档位重开后
+  // 会回落到默认 confirm。注入 workspaceStore 时用同一权威覆盖 effective 字段；
+  // 该权威同样覆盖 project.yaml 里可能领先于 local/policy 层的 stage_overrides /
+  // budget_config / research_config——agent runtime 也不读 config/*.json 层。
+  let effectiveWs = null;
+  if (typeof options.workspaceStore?.loadSettings === "function") {
+    effectiveWs = await loadEffectiveWorkspaceConfig(projectRoot, { workspaceStore: options.workspaceStore });
+    // 覆盖 active_model / tool_permissions 等字段（workspace settings 优先，与
+    // settings-routes 合并顺序一致）；config.layers 仍由 loadConfigLayers 提供。
+    config.effective = { ...config.effective, ...effectiveWs };
+  }
   const effectiveProject = {
     ...project,
     effective_config: config.effective
@@ -99,7 +112,10 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
       run_mode: project.run_mode,
       active_model: config.effective.active_model,
       stage_overrides: config.effective.stage_overrides,
-      tool_permissions: project.tool_permissions ?? {},
+      // 与 config.effective 同源（drawer-panels 消费 effective.tool_permissions 优先，
+      // 再回退 project.tool_permissions）：注入 workspaceStore 时用 workspace 真相源，
+      // 保证 DTO 内部一致。
+      tool_permissions: effectiveWs?.tool_permissions ?? project.tool_permissions ?? {},
       archived_at: project.archived_at ?? null,
       budget_config: config.effective.budget_config,
       research_config: config.effective.research_config
