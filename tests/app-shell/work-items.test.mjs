@@ -394,3 +394,101 @@ test("Task 3: formatDuration 按秒/分/小时自动进位（向下取整，无 
   // 非整秒向下取整：59.6 秒不得显示成不存在的 60 秒
   assert.equal(formatDuration(59_600), "59 秒");
 });
+
+test("Task 2: tool_output_delta 跨多次增量累计输出；未知 activity_id 忽略", () => {
+  const work = reduceAll([
+    ev("run_started", { workflow: "general", input_id: "in-1" }, 1),
+    ev("tool_call_started", { tool_call_id: "tc-1", activity_id: "a1", name: "shell", args: { command: "npm test" } }, 2),
+    ev("tool_output_delta", { activity_id: "a1", text: "PASS " }, 3),
+    ev("tool_output_delta", { activity_id: "a1", text: "1/1" }, 4)
+  ]);
+  const item = groupOf(work).items.get("tool:a1");
+  assert.equal(item.output, "PASS 1/1", "增量按到达顺序拼接");
+  assert.equal(item.truncated, false);
+  assert.equal(item.exit_code, null, "初始 null");
+  assert.equal(item.duration_ms, null, "初始 null");
+  assert.equal(item.state, "running", "delta 不改变工具状态");
+
+  // 未知 activity_id：忽略、不崩溃、不凭空创建工具项
+  const workUnknown = reduceAll([
+    ev("run_started", { workflow: "general", input_id: "in-1" }, 1),
+    ev("tool_output_delta", { activity_id: "ghost", text: "x" }, 2),
+    ev("tool_call_started", { tool_call_id: "tc-2", activity_id: "a2", name: "read_file", args: { path: "x.md" } }, 3),
+    ev("tool_output_delta", { activity_id: "ghost", text: "y" }, 4)
+  ]);
+  assert.equal(groupOf(workUnknown).items.size, 1, "未知 activity_id 不创建工具项");
+  assert.equal(groupOf(workUnknown).items.get("tool:a2").output, "", "已知项不受陌生 delta 影响");
+});
+
+test("Task 2: 输出超过 64 KiB 保留尾部并置 truncated=true", () => {
+  const HEAD = "a".repeat(40_000);
+  const TAIL = "b".repeat(40_000);
+  const work = reduceAll([
+    ev("run_started", { workflow: "general", input_id: "in-1" }, 1),
+    ev("tool_call_started", { tool_call_id: "tc-1", activity_id: "a1", name: "shell", args: { command: "npm test" } }, 2),
+    ev("tool_output_delta", { activity_id: "a1", text: HEAD }, 3),
+    ev("tool_output_delta", { activity_id: "a1", text: TAIL }, 4)
+  ]);
+  const item = groupOf(work).items.get("tool:a1");
+  assert.equal(item.output.length, 64 * 1024, "保留最后 64 KiB");
+  assert.equal(item.truncated, true, "截断标记置位");
+  assert.ok(item.output.endsWith(TAIL), "最新内容保留在尾部");
+  assert.ok(item.output.startsWith("a".repeat(25_536)), "更早内容仅裁掉头部溢出部分");
+});
+
+test("Task 2: tool_call_completed 写入 exit_code（0 合法）与 duration_ms", () => {
+  const work = reduceAll([
+    ev("run_started", { workflow: "general", input_id: "in-1" }, 1),
+    ev("tool_call_started", { tool_call_id: "tc-1", activity_id: "a1", name: "shell", args: { command: "npm test" } }, 2),
+    ev("tool_output_delta", { activity_id: "a1", text: "ok" }, 3),
+    ev("tool_call_completed", { tool_call_id: "tc-1", activity_id: "a1", exit_code: 0, duration_ms: 1234 }, 4)
+  ]);
+  const item = groupOf(work).items.get("tool:a1");
+  assert.equal(item.state, "completed");
+  assert.equal(item.exit_code, 0, "0 是合法退出码，不得被空值检查吞掉");
+  assert.equal(item.duration_ms, 1234);
+  assert.equal(item.output, "ok", "completed 不清空已累计输出");
+
+  // 事件未携带 exit_code/duration_ms → 保持初始 null
+  const workNoMeta = reduceAll([
+    ev("run_started", { workflow: "general", input_id: "in-1" }, 1),
+    ev("tool_call_started", { tool_call_id: "tc-2", activity_id: "a2", name: "read_file", args: { path: "x.md" } }, 2),
+    ev("tool_call_completed", { tool_call_id: "tc-2", activity_id: "a2", name: "read_file" }, 3)
+  ]);
+  const noMeta = groupOf(workNoMeta).items.get("tool:a2");
+  assert.equal(noMeta.state, "completed");
+  assert.equal(noMeta.exit_code, null);
+  assert.equal(noMeta.duration_ms, null);
+});
+
+test("Task 2: tool_call_failed 追加 stdout/stderr；终态仍按 CANCELLED_ERROR_CODES", () => {
+  const workFailed = reduceAll([
+    ev("run_started", { workflow: "general", input_id: "in-1" }, 1),
+    ev("tool_call_started", { tool_call_id: "tc-1", activity_id: "a1", name: "shell", args: { command: "npm test" } }, 2),
+    ev("tool_call_failed", { tool_call_id: "tc-1", activity_id: "a1", error: "boom", message: "命令失败", stdout: "1 failed", stderr: "Error: boom", duration_ms: 5000 }, 3)
+  ]);
+  const failedItem = groupOf(workFailed).items.get("tool:a1");
+  assert.equal(failedItem.state, "failed");
+  assert.equal(failedItem.output, "1 failedError: boom", "stdout 先于 stderr 追加");
+  assert.equal(failedItem.error, "命令失败");
+  assert.equal(failedItem.duration_ms, 5000, "失败事件携带的耗时同样投影");
+
+  // tool_cancelled：输出同样保留，终态为 cancelled；空 stderr 不追加
+  const workCancelled = reduceAll([
+    ev("run_started", { workflow: "general", input_id: "in-1" }, 1),
+    ev("tool_call_started", { tool_call_id: "tc-2", activity_id: "a2", name: "shell", args: { command: "npm test" } }, 2),
+    ev("tool_call_failed", { tool_call_id: "tc-2", activity_id: "a2", error: "tool_cancelled", message: "已停止", stdout: "partial", stderr: "" }, 3)
+  ]);
+  const cancelledItem = groupOf(workCancelled).items.get("tool:a2");
+  assert.equal(cancelledItem.state, "cancelled");
+  assert.equal(cancelledItem.label, "已停止运行命令");
+  assert.equal(cancelledItem.output, "partial", "空 stderr 不追加");
+
+  // 无 stdout/stderr 字段 → 输出保持空
+  const workNoOut = reduceAll([
+    ev("run_started", { workflow: "general", input_id: "in-1" }, 1),
+    ev("tool_call_started", { tool_call_id: "tc-3", activity_id: "a3", name: "read_file", args: { path: "x.md" } }, 2),
+    ev("tool_call_failed", { tool_call_id: "tc-3", activity_id: "a3", error: "boom" }, 3)
+  ]);
+  assert.equal(groupOf(workNoOut).items.get("tool:a3").output, "");
+});
