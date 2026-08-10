@@ -12,12 +12,12 @@
 
 - **单一后端内核（ProjectAgent）**：聊天循环、写作循环、章节队列、停止恢复全部合并为一个深 `ProjectAgent` 内核。对外只暴露一个公共接口（`src/core/agent/index.mjs`），内部使用统一 journal、PromptAssembler、ToolRuntime 与 WorkflowPolicy。旧的双 Agent 编排、TaskQueue、failure/retry 命令矩阵、事件总线全部删除（净删除约 4.1 万行旧代码）。
 - **单一前端控制面（AgentSurface）**：对话、活动流、Visible Plan、排队队列、`立即`/`停止`、权限确认卡收敛为一个 `AgentSurface`（`src/app-shell/agent/index.js`）。旧的 thread renderer、composer 业务正则、准备写作卡、完成卡、顶部执行状态全部移除。
-- **Journal 事件溯源（应用私有）**：Session、Run、队列、计划、决策、授权全部以事件形式记录在**应用私有工作区目录**（`<userData>/workspaces/<workspace-id>/agent/events.jsonl`），不写入创作文件夹；`session.json` 是可重建投影。崩溃重启从断点恢复，`立即` 在同一 Run 内提升消息，`停止` 干净收敛并清除临时授权。
+- **Journal 事件溯源（应用私有）**：Session、Run、队列、计划、决策、授权全部以事件形式记录在**应用私有工作区目录**（`<userData>/workspaces/<workspace-id>/agent/sessions/<session-id>/segments/events/`，每个会话独立事件流、可轮转），不写入创作文件夹；`session.json` 是可重建投影。崩溃重启从断点恢复，`立即` 在同一 Run 内提升消息，`停止` 干净收敛并清除临时授权。
 - **权限与安全不变量全量保留**：只读自动、普通副作用确认、`本条输入允许同类操作`（按输入粒度授权）、YOLO、extreme 精确确认文字、Shell 进程树停止、命令/输出流式脱敏——逐项通过前置验收语料。
 - **自研模型网关（ModelGateway）**：retry、超时、心跳、usage、成本记账与 OpenAI-compatible 原生 function calling 集中在干净的 model 层；provider adapter 不再包含任何写作业务身份或工具表。
 - **项目操作深模块**：章节写入经草稿存在、路径边界、原子写入、索引一致性与校验和等存储安全约束；字数统计（`count_text`）是模型可选的客观工具，不构成完成门禁。蓝图不再是强制三件套，`WWRITING.md` 是项目长期记忆入口。
-- **一次迁移、永久停写旧状态**：旧项目的 `agent_state.json`、`task_queue.json`、`chat_history.jsonl` 等只在首次打开时只读导入一次（整理进 `WWRITING.md` 与应用私有 settings），之后永不再写；原文件保留不删。
-- **全量验证闭环**：924 个单元/集成测试全绿、25 个统一验收场景、四视口布局截图回归（1024/1440/1920 + 模型菜单）、两个真实 OpenAI-compatible 模型端到端短跑（工具选择/权限拒绝/章节提交/`立即`/`停止`/重试）全部通过。
+- **一次迁移、永久停写旧状态**：旧项目的 `agent_state.json`、`task_queue.json`、`chat_history.jsonl` 等只在首次打开时只读导入一次（整理进 `WWRITING.md` 与应用私有 settings），之后永不再写；原文件保留不删。旧单流/纯 flat 对话数据也在首次打开时确定性迁入"对话 1"（`sessions/<id>/`），立即可见、可继续。
+- **全量验证闭环**：1522 个单元/集成测试全绿、25 个统一验收场景、四视口布局截图回归（1024/1440/1920 + 模型菜单）、两个真实 OpenAI-compatible 模型端到端短跑（工具选择/权限拒绝/章节提交/`立即`/`停止`/重试）全部通过。
 
 ### 变更摘要（对比上一版）
 
@@ -56,12 +56,13 @@ WWriting 不是"你描述、它代写"的生成器。它是一个桌面写作工
 - **Journal 断点恢复**：Session/Run/队列/计划/决策全部记录在应用私有目录，中断或重启后从断点继续，不丢进度。
 - **任务计划可见**：当前 Run 的 Visible Plan 随执行实时更新，完成后折叠可回看。
 - **跨项目并行**：每个工作区独立会话与队列，不同工作区可以并行运行。
+- **同项目多对话**：左侧栏按项目展开会话列表（两级树），可新建、重命名、归档、恢复多条独立对话；同一项目串行执行（同时只跑一个 Run），保证章节、记忆等共享写面一致。
 - **确定性导出**："导出成书"直接走本地导出流程，不经过模型、不产生额外成本。
 - **成本与缓存报告**：记录 token、模型调用、成本估算和 provider 缓存字段，用多少一目了然。
 - **内置写作风格技能**：均衡、快节奏易读、心理文学三个只读内置风格，随应用分发、可查看但不可删除或修改；通过自然语言指定或由模型根据题材判断选择，选定后记录进 `WWRITING.md`。
 - **受控网页搜索/抓取**：默认禁网；来源快照标记为"不可信资料"，不作为系统指令执行。
 - **OpenAI兼容格式模型接入**：内置 DeepSeek 官方、小米 MiMo 官方预设，粘贴 API Key 即可用；API Key 仅保存在本机。
-- **可验证的开发文化**：900+ 个单元/集成测试 + 一键本地验收（`npm run verify:local`），连"按钮看得到但点不动"这类 UI 回归都有真实 Electron 点击防线。
+- **可验证的开发文化**：1500+ 个单元/集成测试 + 一键本地验收（`npm run verify:local`），连"按钮看得到但点不动"这类 UI 回归都有真实 Electron 点击防线。
 
 ## 快速开始
 
@@ -105,7 +106,7 @@ npm run desktop:electron
 
 ### 聊天、Session 与 Run
 
-- **Session**：一个工作区对应一条持续的会话，对话历史跨重启保留（存在应用私有目录）。
+- **Session（对话）**：一个工作区可有多个会话，左侧栏两级树切换、同项目串行执行（一次只跑一个 Run，避免共享写面冲突）；对话历史跨重启保留（存在应用私有目录）。
 - **Run**：每一条消息启动一次执行。模型循环、工具调用、Visible Plan 都属于当前 Run。
 - **FIFO 队列**：运行中发送的消息先进先出排队，显示原文 + `排队` + `立即`。
 - **`立即` 与 `停止`**：`立即` 打断当前轮、把排队消息提升为活动输入（同一 Run 内切换输入，不创建第二个 Agent）；`停止` 取消当前 Run 并清除本次的临时授权。
@@ -166,7 +167,7 @@ AGENTS.md           # 可选：项目写作说明（普通权威文件，可由 
 ## 验证命令
 
 ```powershell
-npm test                            # 900+ 个单元/集成测试
+npm test                            # 1500+ 个单元/集成测试
 npm run verify:local                # 完整本地验收（含打包，较慢）
 npm run verify:app-shell            # GUI、项目打开、设置、技能、资料工具
 npm run verify:app-clickability     # 真实 Electron 窗口逐项点击关键按钮

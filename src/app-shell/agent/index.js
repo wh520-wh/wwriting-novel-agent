@@ -274,8 +274,8 @@ export function createAgentSurface({
     sessionGeneration = scope.sessionGeneration;
     streamGeneration = -1; // 旧事件流立即作废（新流 connectEvents 后恢复为当前代次）
 
-    // 切走未提交的新对话占位：占位消失并同步刷新列表（占位项移除）。停留占位
-    // 视图时 discardDraft 会被拒绝（自保护），因此这里统一在切走时收尾。
+    // 切走未提交的新对话占位：占位消失并同步刷新列表（占位项移除）。占位只在
+    // 停留其视图时存在，切走是它唯一的收尾路径，这里统一处理。
     const prevDraft = draftSessionId;
     const isDraft = prevDraft != null && sessionId === prevDraft;
     activeSessionId = sessionId ?? null;
@@ -365,14 +365,6 @@ export function createAgentSurface({
     return draftSessionId;
   }
 
-  // discardDraft 只做「停留占位视图时」的自保护：拒绝置空占位——置空会让后续
-  // submit 的 draft 判定失效（activeSessionId 仍指向占位 id），把输入投到占位前
-  // 的旧会话。占位项的实际清理发生在 switchSession 切走时（清 draft 标记 +
-  // refreshSessions），因此切走后 draftSessionId 已为 null，这里无需再做清除。
-  function discardDraft() {
-    if (activeSessionId === draftSessionId) return;
-  }
-
   // 拉取会话列表 → onSessionsChanged（draft 占位插入到列表头部）。任务 9 左侧
   // 栏以此为数据源；列表刷新失败不阻断对话。活跃通知缺口：openProject/switchSession
   // 不触发 refreshSessions，Task 9 侧边栏须在这些操作后自行调 refreshSessions()
@@ -409,46 +401,23 @@ export function createAgentSurface({
   }
 
   // 会话 CRUD（委托 transport + 刷新列表）。删除当前会话时由调用方（Task 9）
-  // 负责 switchSession 切走，这里只保证列表与后端一致。
-  async function archiveSession(sessionId) {
+  // 负责 switchSession 切走，这里只保证列表与后端一致。四个动作共享同一骨架：
+  // ensureApi → 代次守卫 → await → 刷新列表（transport 方法缺失时静默返回 undefined）。
+  function sessionAction(methodName, args) {
     const t = ensureApi();
-    if (typeof t.archiveSession !== "function") return undefined;
+    if (typeof t[methodName] !== "function") return undefined;
     const scope = currentProjectScope();
-    const result = await t.archiveSession(sessionId);
-    if (!isCurrentProjectScope(scope)) return result;
-    refreshSessions();
-    return result;
+    return Promise.resolve(t[methodName](...args)).then((result) => {
+      if (!isCurrentProjectScope(scope)) return result;
+      refreshSessions();
+      return result;
+    });
   }
 
-  async function restoreSession(sessionId) {
-    const t = ensureApi();
-    if (typeof t.restoreSession !== "function") return undefined;
-    const scope = currentProjectScope();
-    const result = await t.restoreSession(sessionId);
-    if (!isCurrentProjectScope(scope)) return result;
-    refreshSessions();
-    return result;
-  }
-
-  async function renameSession(sessionId, title) {
-    const t = ensureApi();
-    if (typeof t.renameSession !== "function") return undefined;
-    const scope = currentProjectScope();
-    const result = await t.renameSession(sessionId, title);
-    if (!isCurrentProjectScope(scope)) return result;
-    refreshSessions();
-    return result;
-  }
-
-  async function deleteSession(sessionId) {
-    const t = ensureApi();
-    if (typeof t.deleteSession !== "function") return undefined;
-    const scope = currentProjectScope();
-    const result = await t.deleteSession(sessionId);
-    if (!isCurrentProjectScope(scope)) return result;
-    refreshSessions();
-    return result;
-  }
+  const archiveSession = (sessionId) => sessionAction("archiveSession", [sessionId]);
+  const restoreSession = (sessionId) => sessionAction("restoreSession", [sessionId]);
+  const renameSession = (sessionId, title) => sessionAction("renameSession", [sessionId, title]);
+  const deleteSession = (sessionId) => sessionAction("deleteSession", [sessionId]);
 
   function submit(text) {
     const trimmed = String(text ?? "").trim();
@@ -689,7 +658,6 @@ export function createAgentSurface({
     clearHistory,
     switchSession,
     newSessionPlaceholder,
-    discardDraft,
     refreshSessions,
     setBusy,
     archiveSession,

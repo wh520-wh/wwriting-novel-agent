@@ -112,7 +112,7 @@ export async function writeJsonAtomic(targetPath, value) {
   return writeFileAtomic(targetPath, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-async function renameWithRetry(sourcePath, targetPath) {
+export async function renameWithRetry(sourcePath, targetPath) {
   let lastError = null;
   for (let attempt = 1; attempt <= 6; attempt += 1) {
     try {

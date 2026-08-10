@@ -13,7 +13,7 @@
 ## 2. 会话注册表（`sessions/index.json`）
 
 - 实现：`src/core/agent/session-registry.mjs`。注册表是会话元数据真相源，位于应用私有 agentRoot 的 `sessions/index.json`（workspace 存储根下，不落项目目录）。
-- 条目字段：`session_id` / `title` / `created_at` / `archived_at` / `last_seq` 等；`title` 缺省为「新对话」，惰性创建路径以首条消息摘要命名（`deriveSessionTitle`，`src/core/agent/runtime.mjs`）。
+- 条目字段：`session_id` / `title` / `created_at` / `updated_at` / `archived_at`；`title` 缺省为「新对话」，惰性创建路径以首条消息摘要命名（`deriveSessionTitle`，`src/core/agent/runtime.mjs`）。
 - `sessions()` 列表附加 `run_status` 投影（`runtime.mjs` 的 `sessions()`）：只对已物化会话读取其 journal 的 `active_run`——非终态 → `running`，`failed` → `failed`，其余 → `idle`。该投影是左侧栏状态点与前端 busy 复位的唯一数据源。
 - 会话 CRUD（newSession/renameSession/archiveSession/restoreSession/deleteSession）全部委托注册表，经 HTTP 路由（`src/core/http/agent-routes.mjs`）与前端传输层（`src/app-shell/agent/api.js`）透出。
 

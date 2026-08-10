@@ -702,12 +702,39 @@ export function createContextCheckpointStore({ agentDir, clock = defaultClock, i
     return report;
   }
 
+  // 清空历史（journal.clearHistory 的会话目录轮转）时，把本 store 的全部文件
+  //（active-context.json + checkpoints/）整体移入 clearedDir，返回被移走的条目名
+  //（restoreFromClear 原样移回）。journal 是轮转的事务协调者，但本 store 的文件
+  // 布局是私有实现细节——由 store 自己决定如何退休/恢复，journal 不再硬编码文件名。
+  async function retireForClear(clearedDir) {
+    const moved = [];
+    for (const name of ["active-context.json", "checkpoints"]) {
+      const source = path.join(root, name);
+      if (!(await pathExists(source))) continue;
+      await fs.rename(source, path.join(clearedDir, name));
+      moved.push(name);
+    }
+    return moved;
+  }
+
+  // 清空回滚：把 retireForClear 移走的条目从 clearedDir 移回 agentDir。
+  async function restoreFromClear(moved, clearedDir) {
+    for (const name of moved) {
+      const source = path.join(clearedDir, name);
+      const target = path.join(root, name);
+      if (!(await pathExists(source))) continue;
+      await fs.rename(source, target);
+    }
+  }
+
   return {
     readActive,
     writeCandidate,
     validateCandidate,
     commitCandidate,
     discardCandidate,
-    reconcileAfterCrash
+    reconcileAfterCrash,
+    retireForClear,
+    restoreFromClear
   };
 }

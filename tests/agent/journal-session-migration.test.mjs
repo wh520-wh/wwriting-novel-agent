@@ -6,7 +6,7 @@
 //   - 迁移动作：segments/ 整目录 + session.json + journal-manifest.json 及同一
 //     storageRoot 布局下的 checkpoints/ 等一并搬入 sessions/<id>/，内容不重写
 //     （逐行一致）；
-//   - 注册表：getLastActive === <id>、title === "对话 1"、last_seq === 最大事件 seq；
+//   - 注册表：getLastActive === <id>、title === "对话 1"；
 //   - 迁移标记合并写入 migration.json，不覆盖既有键（legacy_imported/imported_at）；
 //   - 幂等：再次调用 → { migrated:false, sessionId:null }（index.json 或标记存在即跳过）；
 //   - 边界：agentRoot 不存在 / 无旧数据 / sessions/index.json 已存在 → 不迁移不抛错；
@@ -18,7 +18,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { createAgentJournal } from "../../src/core/agent/journal.mjs";
-import { migrateSingleSessionToRegistry } from "../../src/core/agent/journal-session-migration.mjs";
+import { migrateSingleSessionToRegistry, adoptLegacyFlatFilesToRegistry } from "../../src/core/agent/journal-session-migration.mjs";
 import { createSessionRegistry } from "../../src/core/agent/session-registry.mjs";
 
 const BASE_TIME = Date.parse("2026-08-06T00:00:00.000Z");
@@ -87,7 +87,7 @@ async function writeOldSingleStream(root, { events, sessionJson = null, manifest
   await fs.writeFile(
     path.join(agentRoot, "migration.json"),
     JSON.stringify(
-      { schema_version: 1, legacy_imported: true, project_agent_imported: false, imported_at: "2026-08-07T00:00:00.000Z" },
+      { schema_version: 1, legacy_imported: true, imported_at: "2026-08-07T00:00:00.000Z" },
       null,
       2
     ) + "\n",
@@ -119,7 +119,7 @@ function makeSessionProjection(root, { lastSeq, status, run }) {
 // 主迁移路径
 // ---------------------------------------------------------------------------
 
-test("迁移：旧单流搬入 sessions/<id>，注册表写入会话 1 且 last_seq 为最大事件 seq", async (t) => {
+test("迁移：旧单流搬入 sessions/<id>，注册表写入会话 1", async (t) => {
   const root = await makeRoot(t);
   const projectRoot = path.join(root, "project");
   const events = [
@@ -175,12 +175,11 @@ test("迁移：旧单流搬入 sessions/<id>，注册表写入会话 1 且 last_
   // migration.json 是 journal 级状态，不搬入会话目录
   assert.equal(await pathExists(path.join(agentRoot, "sessions", "sid-1", "migration.json")), false, "migration.json 不得搬入会话目录");
 
-  // 注册表：最近活跃 / title / last_seq（= 迁移流最大事件 seq）
+  // 注册表：最近活跃 / title
   const reg = createSessionRegistry({ root: agentRoot });
   assert.equal(await reg.getLastActive(), "sid-1");
   const meta = await reg.get("sid-1");
   assert.equal(meta.title, "对话 1");
-  assert.equal(meta.last_seq, 3, "last_seq 应写入迁移流最大事件 seq");
 
   // 迁移标记合并写入，不覆盖既有字段
   const marker = JSON.parse(await fs.readFile(path.join(agentRoot, "migration.json"), "utf8"));
@@ -195,6 +194,63 @@ test("迁移：旧单流搬入 sessions/<id>，注册表写入会话 1 且 last_
   // 幂等：再次调用 → migrated:false
   const again = await migrateSingleSessionToRegistry({ agentRoot, idFactory: () => "sid-1" });
   assert.deepEqual(again, { migrated: false, sessionId: null });
+});
+
+test("纯 flat 遗留（无 segments）→ adoptLegacyFlatFilesToRegistry 迁入会话 1", async (t) => {
+  const root = await makeRoot(t);
+  const agentRoot = path.join(root, ".wwriting", "agent");
+  await fs.mkdir(agentRoot, { recursive: true });
+  await fs.writeFile(path.join(agentRoot, "events.jsonl"), `{"seq":1,"type":"session_created"}\n`, "utf8");
+  await fs.writeFile(path.join(agentRoot, "transcript.jsonl"), `{"role":"user","content":"旧对话"}\n`, "utf8");
+  await fs.writeFile(path.join(agentRoot, "session.json"), JSON.stringify({ schema_version: 1, session_id: "flat-sess" }) + "\n", "utf8");
+  await fs.mkdir(path.join(agentRoot, "checkpoints"), { recursive: true });
+
+  const r = await adoptLegacyFlatFilesToRegistry({ agentRoot, idFactory: () => "sid-flat" });
+  assert.equal(r.migrated, true);
+  assert.equal(r.sessionId, "sid-flat");
+
+  // flat 条目搬入会话目录（内容不重写），注册表与会话 1 对齐，标记写入
+  const sessionDir = path.join(agentRoot, "sessions", "sid-flat");
+  assert.equal(await pathExists(path.join(sessionDir, "events.jsonl")), true, "events.jsonl 应搬入会话目录");
+  assert.equal(await pathExists(path.join(sessionDir, "transcript.jsonl")), true, "transcript.jsonl 应搬入会话目录");
+  assert.equal(await pathExists(path.join(sessionDir, "session.json")), true, "session.json 应搬入会话目录");
+  assert.equal(await pathExists(path.join(sessionDir, "checkpoints")), true, "checkpoints/ 应搬入会话目录");
+  assert.equal(await pathExists(path.join(agentRoot, "events.jsonl")), false, "根上不再残留 flat 文件");
+  const reg = createSessionRegistry({ root: agentRoot });
+  assert.equal(await reg.getLastActive(), "sid-flat");
+  assert.equal((await reg.get("sid-flat")).title, "对话 1");
+  const marker = JSON.parse(await fs.readFile(path.join(agentRoot, "migration.json"), "utf8"));
+  assert.equal(marker.sessions_migrated, true);
+
+  // 幂等：再次调用 → migrated:false（index.json 已存在）
+  assert.deepEqual(
+    await adoptLegacyFlatFilesToRegistry({ agentRoot, idFactory: () => "sid-other" }),
+    { migrated: false, sessionId: null }
+  );
+});
+
+test("纯 flat 无源 / 已注册：adoptLegacyFlatFilesToRegistry 不迁移不抛错", async (t) => {
+  const root = await makeRoot(t);
+
+  // 无任何 flat 条目 → 无源
+  const empty = path.join(root, "empty-agent");
+  await fs.mkdir(empty, { recursive: true });
+  assert.deepEqual(
+    await adoptLegacyFlatFilesToRegistry({ agentRoot: empty, idFactory: () => "sid-x" }),
+    { migrated: false, sessionId: null }
+  );
+
+  // sessions/index.json 已存在（注册表已建立）→ 跳过，根上的 flat 文件原样保留
+  const adopted = path.join(root, "adopted-agent");
+  await fs.mkdir(adopted, { recursive: true });
+  await fs.writeFile(path.join(adopted, "events.jsonl"), "x\n", "utf8");
+  const reg = createSessionRegistry({ root: adopted });
+  await reg.create({ sessionId: "existing", title: "已有会话" });
+  assert.deepEqual(
+    await adoptLegacyFlatFilesToRegistry({ agentRoot: adopted, idFactory: () => "sid-y" }),
+    { migrated: false, sessionId: null }
+  );
+  assert.equal(await pathExists(path.join(adopted, "events.jsonl")), true, "已注册时不搬动根上文件");
 });
 
 // ---------------------------------------------------------------------------
@@ -249,7 +305,7 @@ test("搬迁残留自愈：目标已有部分条目（segments 未搬）时重�
   );
   const reg = createSessionRegistry({ root: agentRoot });
   assert.equal(await reg.getLastActive(), "sid-1");
-  assert.equal((await reg.get("sid-1")).last_seq, 3);
+  assert.equal((await reg.get("sid-1")).title, "对话 1");
 });
 
 // ---------------------------------------------------------------------------
@@ -300,7 +356,7 @@ test("边界：migration.json 已标记 sessions_migrated → 跳过迁移", asy
   // 手工写入已完成标记（模拟迁移完成但 index.json 缺失的现场）
   await fs.writeFile(
     path.join(agentRoot, "migration.json"),
-    JSON.stringify({ schema_version: 1, legacy_imported: false, project_agent_imported: false, sessions_migrated: true }, null, 2) + "\n",
+    JSON.stringify({ schema_version: 1, legacy_imported: false, sessions_migrated: true }, null, 2) + "\n",
     "utf8"
   );
 

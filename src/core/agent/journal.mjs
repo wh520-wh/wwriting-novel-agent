@@ -13,7 +13,7 @@
 //   segments/transcript/*.jsonl    —— 模型消息链/历史摘要（同分段格式）
 //   journal-manifest.json          —— 派生数据（generation/roots/last seqs/gaps）
 //   session.json                   —— 可重建 projection（每次追加后原子重写）
-//   migration.json                 —— { schema_version: 1, legacy_imported: false, project_agent_imported: false }
+//   migration.json                 —— { schema_version: 1, legacy_imported: false }
 //   checkpoints/                   —— 预留目录
 //
 // 物理 I/O（追加/读取/轮转/索引/legacy 迁移）全部委托给 journal-segments.mjs 的
@@ -50,6 +50,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { ensureDir, pathExists, readJson, writeJsonAtomic } from "../fs-utils.mjs";
+import { createMutex } from "../async-utils.mjs";
 import { createJournalSegmentStore } from "./journal-segments.mjs";
 
 // 计划固定的 33 个 journal 事件类型；未知类型一律拒绝。
@@ -196,16 +197,7 @@ function toolCallIdOf(payload) {
 
 // 进程内异步互斥锁：同一 journal 实例的所有操作（load/append/appendBatch/read/
 // transcript）串行执行；不同实例各自持有独立锁，互不共享。
-function createMutex() {
-  let tail = Promise.resolve();
-  return {
-    run(task) {
-      const result = tail.then(() => task());
-      tail = result.then(() => undefined, () => undefined);
-      return result;
-    }
-  };
-}
+//（createMutex 实现在 src/core/async-utils.mjs，与 runtime/session-registry 共享）
 
 function createEmptySession({ sessionId, projectRoot, at }) {
   return {
@@ -950,7 +942,14 @@ export function createAgentJournal({
   projectRoot,
   storageRoot = path.join(path.resolve(projectRoot), ".wwriting", "agent"),
   clock = defaultClock,
-  idFactory = defaultIdFactory
+  idFactory = defaultIdFactory,
+  // 会话目录轮转的"额外文件"钩子（Task 9：clearHistory 把整个旧会话收进
+  // cleared-history）。journal 是轮转事务的协调者，但只负责自己的文件
+  //（segments/session.json/manifest）；checkpoint store 等其它文件的所有者经
+  // 这两个钩子自行退休/恢复——journal 不硬编码它们的文件名。缺省无钩子（底层
+  // 直用 journal 的测试/场景没有这些文件）。
+  retireExtraFiles = null,
+  restoreExtraFiles = null
 } = {}) {
   if (typeof projectRoot !== "string" || projectRoot.length === 0) {
     fail("projectRoot 必须是项目根目录");
@@ -994,7 +993,7 @@ export function createAgentJournal({
     await ensureDir(agentDir);
     await ensureDir(checkpointsDir);
     if (!(await pathExists(migrationPath))) {
-      await writeJsonAtomic(migrationPath, { schema_version: 1, legacy_imported: false, project_agent_imported: false });
+      await writeJsonAtomic(migrationPath, { schema_version: 1, legacy_imported: false });
     }
   }
 
@@ -1358,7 +1357,7 @@ export function createAgentJournal({
   // 本模块不自行决定标记值，只提供读写通道。
   async function readMigration() {
     await initialize();
-    return readJson(migrationPath, { schema_version: 1, legacy_imported: false, project_agent_imported: false });
+    return readJson(migrationPath, { schema_version: 1, legacy_imported: false });
   }
 
   async function writeMigration(value) {
@@ -1548,21 +1547,25 @@ export function createAgentJournal({
   // 负责移回目录 + 重载旧数据），并移除本次写入的 clear-manifest。journal 的会话投影
   // 自始至终未变（旧 session），恢复后 append/read 立即回到原状；loadSignal 未被 abort
   //（abort 已推迟到轮转成功之后），仍可用。回滚自身尽力而为，不掩盖原始失败。
-  async function rollbackAfterFailedClear({ moved, clearedDir, oldGenerationId }) {
+  async function rollbackAfterFailedClear({ moved, clearedDir, oldGenerationId, extraMoved = [] }) {
     for (const streamName of ["events", "transcript"]) {
       const store = streamName === "events" ? eventsStore : transcriptStore;
       await store.restoreGeneration({ fromDir: clearedDir, generationId: oldGenerationId }).catch(() => {});
     }
-    for (const name of [...moved].reverse()) {
-      const source = path.join(clearedDir, name);
-      const target = name === "checkpoints" ? checkpointsDir : path.join(agentDir, name);
+    // journal 自有文件移回（其余由 restoreExtraFiles 交给文件所有者处理）
+    if (moved.includes("session.json")) {
       try {
-        await fs.rename(source, target);
+        await fs.rename(path.join(clearedDir, "session.json"), sessionPath);
       } catch (error) {
         if (error?.code !== "ENOENT") {
-          console.warn(`[journal] 清空回滚：无法把 ${source} 移回 ${target}：${error?.message ?? String(error)}`);
+          console.warn(`[journal] 清空回滚：无法把 session.json 移回：${error?.message ?? String(error)}`);
         }
       }
+    }
+    if (restoreExtraFiles && extraMoved.length > 0) {
+      await restoreExtraFiles(extraMoved, clearedDir).catch((error) => {
+        console.warn(`[journal] 清空回滚：额外文件恢复失败: ${error?.message ?? String(error)}`);
+      });
     }
     await fs.rm(path.join(clearedDir, "clear-manifest.json"), { force: true }).catch(() => {});
   }
@@ -1596,22 +1599,22 @@ export function createAgentJournal({
       //    journal 保持原会话可用——绝不留"events 已轮转成空 generation 而
       //    transcript/会话仍是旧数据"的半清空现场（那会让 append 全部 seq 缺口拒绝）。
       const oldGenerationId = (await readCurrentGenerationId()) ?? eventsStore.manifest?.generation_id ?? null;
-      const moved = [];
+      const journalMoved = [];
+      let extraMoved = [];
       try {
         await eventsStore.startGeneration({ historyDir: clearedDir, reason: "user_clear", oldGenerationId });
         await transcriptStore.startGeneration({ historyDir: clearedDir, reason: "user_clear", oldGenerationId });
-        // 3. 移走旧 session.json / active-context.json / context checkpoints/
-        for (const name of ["session.json", "active-context.json"]) {
-          const source = path.join(agentDir, name);
-          if (await pathExists(source)) {
-            await fs.rename(source, path.join(clearedDir, name));
-            moved.push(name);
-          }
+        // 3. 移走旧 session.json（journal 自有）；checkpoint store 等其它文件所有者
+        //    经 retireExtraFiles 退休自己的文件（active-context.json/checkpoints/）。
+        //    全部移走条目合并进 clear-manifest，供回滚与人工恢复。
+        if (await pathExists(sessionPath)) {
+          await fs.rename(sessionPath, path.join(clearedDir, "session.json"));
+          journalMoved.push("session.json");
         }
-        if (await pathExists(checkpointsDir)) {
-          await fs.rename(checkpointsDir, path.join(clearedDir, "checkpoints"));
-          moved.push("checkpoints");
+        if (retireExtraFiles) {
+          extraMoved = await retireExtraFiles(clearedDir);
         }
+        const moved = [...journalMoved, ...extraMoved];
         // 4. 写 clear-manifest.json（不可逆操作的落盘记录）
         await writeJsonAtomic(path.join(clearedDir, "clear-manifest.json"), {
           schema_version: 1,
@@ -1623,7 +1626,7 @@ export function createAgentJournal({
           cleared_dir: clearedDir
         });
       } catch (error) {
-        await rollbackAfterFailedClear({ moved, clearedDir, oldGenerationId });
+        await rollbackAfterFailedClear({ moved: journalMoved, clearedDir, oldGenerationId, extraMoved });
         throw error;
       }
       // 5. 停止并等待后台索引重建（I2 修复：轮转完成后再中止——inline 模式无后台

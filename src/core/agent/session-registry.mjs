@@ -7,24 +7,10 @@
 //     （归档会话也返回，Task 10 设置页需列出"已归档对话"，由调用方按需过滤）
 //   - 所有写 index.json 的操作经进程内互斥锁串行化（先读后写，避免并发丢数据），
 //     写盘用 writeJsonAtomic（临时文件 + rename），读用 readJson
-//   - last_seq 由调用方经 setLastSeq 同步写入（Task 3 单流迁移、Task 4 runtime 每次
-//     append 后），本模块只保存
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { readJson, writeJsonAtomic } from "../fs-utils.mjs";
-
-// 进程内互斥锁：串行化写 index.json 的读-改-写序列。与 runtime.mjs / journal.mjs
-// 中的 createMutex 同款（各模块独立实现，未做公共导出）。
-function createMutex() {
-  let tail = Promise.resolve();
-  return {
-    run(task) {
-      const result = tail.then(() => task());
-      tail = result.then(() => undefined, () => undefined);
-      return result;
-    }
-  };
-}
+import { createMutex } from "../async-utils.mjs";
 
 // ISO-8601 字符串字典序即时间序；返回 updated_at 倒序的比较器（缺失值垫底）。
 function compareByUpdatedAtDesc(a, b) {
@@ -93,7 +79,7 @@ export function createSessionRegistry({ root }) {
   async function create({ sessionId = randomUUID(), title = "新对话" } = {}) {
     return mutex.run(async () => {
       const store = await load();
-      // 同 id 幂等：既有 meta 原样保留（last_seq/created_at/title/updated_at 都不动），
+      // 同 id 幂等：既有 meta 原样保留（created_at/title/updated_at 都不动），
       // 仅把最近活跃指针指过来并返回既有 meta。覆盖 HTTP 重试 / 惰性创建重复调用。
       const existing = store.sessions.find((s) => s.session_id === sessionId);
       if (existing) {
@@ -108,8 +94,7 @@ export function createSessionRegistry({ root }) {
         title: typeof title === "string" && title.trim() ? title.trim() : "新对话",
         created_at: now,
         updated_at: now,
-        archived_at: null,
-        last_seq: 0
+        archived_at: null
       };
       store.sessions = [meta, ...store.sessions];
       store.last_active_session_id = sessionId;
@@ -178,29 +163,13 @@ export function createSessionRegistry({ root }) {
     return active.sort(compareByUpdatedAtDesc)[0]?.session_id ?? null;
   }
 
-  // runtime 每次 append 事件后调用，刷新 updated_at；随后由其同步 last_seq。
+  // runtime 每次 append 事件后调用，刷新 updated_at（sessions() 排序依据）。
   async function touch(sessionId) {
     return mutex.run(async () => {
       const store = await load();
       const meta = store.sessions.find((s) => s.session_id === sessionId);
       if (!meta) return null;
       meta.updated_at = new Date().toISOString();
-      await save(store);
-      return meta;
-    });
-  }
-
-  // 写入已存在会话的 last_seq（Task 3 单流迁移初始化游标、Task 4 runtime 每次
-  // append 后同步）。与 create/touch 同经互斥锁串行化；值必须是非负整数。
-  async function setLastSeq(sessionId, lastSeq) {
-    return mutex.run(async () => {
-      if (!Number.isInteger(lastSeq) || lastSeq < 0) {
-        throw new Error(`last_seq 必须是非负整数: ${String(lastSeq)}`);
-      }
-      const store = await load();
-      const meta = store.sessions.find((s) => s.session_id === sessionId);
-      if (!meta) throw codedError("session_not_found", `会话不存在: ${sessionId}`);
-      meta.last_seq = lastSeq;
       await save(store);
       return meta;
     });
@@ -217,5 +186,5 @@ export function createSessionRegistry({ root }) {
     });
   }
 
-  return { list, get, create, rename, archive, restore, setLastActive, getLastActive, touch, setLastSeq, removePermanently };
+  return { list, get, create, rename, archive, restore, setLastActive, getLastActive, touch, removePermanently };
 }

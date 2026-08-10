@@ -63,7 +63,7 @@ async function createLegacyAgentDir(projectRoot, { events, trailingHalfLine = nu
   await fs.writeFile(path.join(agentDir, "checkpoints", "cp-1.json"), JSON.stringify({ checkpoint_id: "cp-1" }) + "\n", "utf8");
   await fs.writeFile(
     path.join(agentDir, "migration.json"),
-    `${JSON.stringify({ schema_version: 1, legacy_imported: true, project_agent_imported: false }, null, 2)}\n`,
+    `${JSON.stringify({ schema_version: 1, legacy_imported: true }, null, 2)}\n`,
     "utf8"
   );
   return agentDir;

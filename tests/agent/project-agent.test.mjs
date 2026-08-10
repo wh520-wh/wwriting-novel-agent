@@ -1602,13 +1602,15 @@ test("新项目不创建旧状态文件，Agent 状态只落在应用私有 agen
 test("旧 .wwriting/agent 中间损坏：open() 拒绝迁移但允许新会话（journal 落应用私有目录）", async (t) => {
   const h = await createProjectAgentHarness({ gatewayScript: [{ reply: { text: "好。" } }] });
   t.after(() => h.cleanup());
-  // 构造中间损坏的旧 journal（seq 1、2 合法，第 3 行损坏）
+  // 构造中间损坏的旧 journal（seq 1、2 合法，第 3 行损坏，其后还有合法行——
+  // 末行半行是崩溃痕迹会被容忍，只有中段损坏才触发拒绝）
   const legacyDir = path.join(h.projectRoot, ".wwriting", "agent");
   await fs.mkdir(legacyDir, { recursive: true });
   const legacyEvents = [
     JSON.stringify({ schema_version: 1, seq: 1, event_id: "e1", session_id: "legacy-s", run_id: null, project_root: h.projectRoot, type: "session_created", at: new Date().toISOString(), payload: {} }),
     JSON.stringify({ schema_version: 1, seq: 2, event_id: "e2", session_id: "legacy-s", run_id: null, project_root: h.projectRoot, type: "input_queued", at: new Date().toISOString(), payload: { input_id: "i1", text: "旧" } }),
-    "{broken"
+    "{broken",
+    JSON.stringify({ schema_version: 1, seq: 3, event_id: "e3", session_id: "legacy-s", run_id: null, project_root: h.projectRoot, type: "input_queued", at: new Date().toISOString(), payload: { input_id: "i2", text: "后" } })
   ].join("\n") + "\n";
   await fs.writeFile(path.join(legacyDir, "events.jsonl"), legacyEvents, "utf8");
 

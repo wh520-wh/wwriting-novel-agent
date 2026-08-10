@@ -352,20 +352,20 @@ test("打开旧项目即触发 .wwriting/agent journal 迁移到私有目录，�
   assert.equal(opened.res.status, 200);
   assert.deepEqual(opened.data, { ok: true, projectRoot }, "响应形状契约不变");
 
-  // Task 4 行为变更：open() 只把 .wwriting/agent 的单文件旧数据复制到私有目录根
-  //（workspaceMigrator 的 copy 型迁移）；导入（journal.load 的 migrateLegacy：转
-  // segments + 改名 events.legacy.jsonl）推迟到首次发消息物化会话时。
+  // Task 4 迁移确定性：open() 即完成旧 flat 数据的收养——workspaceMigrator 把
+  // .wwriting/agent 的单文件旧数据复制到私有目录根，随后
+  // adoptLegacyFlatFilesToRegistry 把根上 flat 文件迁入会话 1 并注册；journal.load
+  // 的 migrateLegacy 随即导入 segments 并改名 events.legacy.jsonl（不再推迟到首次
+  // 发消息，旧对话首开即可见）。
   const targetAgentRoot = path.join(stateRoot, "workspaces", workspaceIdForPath(projectRoot), "agent");
-  const copied = await fs.readFile(path.join(targetAgentRoot, "events.jsonl"), "utf8");
-  assert.equal(copied, legacyEvents, "open() 后旧事件应复制进私有目录根（尚未导入/改名）");
+  assert.equal(
+    await pathExists(path.join(targetAgentRoot, "events.jsonl")),
+    false,
+    "open() 后根上不再残留旧 flat 文件（已迁入会话目录）"
+  );
   assert.deepEqual(await fs.readFile(sourceEventsPath), before, "原 .wwriting/agent/events.jsonl 字节必须完全不变");
 
-  // 链路完整：发送第一条消息（物化会话 → 导入旧 flat-file 历史），并回到 idle
-  const sent = await app.post("/api/agent/input", { projectRoot, text: "你好" });
-  assert.equal(sent.res.status, 200);
-  await app.waitForIdle(projectRoot);
-
-  // 首次消息后旧单对话历史完整落入会话 1 的流：segments 导入 + 原文件改名
+  // 会话 1 已注册且旧历史已导入：segments 流头即旧事件、原文件改名保留
   const sessionDirs = (await fs.readdir(path.join(targetAgentRoot, "sessions"))).filter(
     (name) => !name.endsWith(".json")
   );
@@ -376,6 +376,11 @@ test("打开旧项目即触发 .wwriting/agent journal 迁移到私有目录，�
   const segmentEvents = await fs.readFile(path.join(sessionDir, "segments", "events", "00000001.jsonl"), "utf8");
   assert.ok(
     segmentEvents.startsWith(legacyEvents),
-    "旧事件逐条进入会话 segments/events 流头（其后追加新 Run 事件）"
+    "旧事件逐条进入会话 segments/events 流头（open 时已导入）"
   );
+
+  // 链路完整：发送第一条消息（继续同一会话），并回到 idle
+  const sent = await app.post("/api/agent/input", { projectRoot, text: "你好" });
+  assert.equal(sent.res.status, 200);
+  await app.waitForIdle(projectRoot);
 });

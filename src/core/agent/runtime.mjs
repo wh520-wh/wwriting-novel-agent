@@ -31,7 +31,7 @@ import { randomUUID } from "node:crypto";
 
 import { createAgentJournal } from "./journal.mjs";
 import { createSessionRegistry } from "./session-registry.mjs";
-import { migrateSingleSessionToRegistry } from "./journal-session-migration.mjs";
+import { migrateSingleSessionToRegistry, adoptLegacyFlatFilesToRegistry } from "./journal-session-migration.mjs";
 import { createToolRuntime } from "./tools.mjs";
 import { assemblePrompt, estimateTokens } from "./prompt.mjs";
 import {
@@ -49,6 +49,7 @@ import { runLegacyImport } from "./legacy-import.mjs";
 import { migrateProjectAgentStorage } from "../workspaces/migration.mjs";
 import { loadProject } from "../project-store.mjs";
 import { pathExists } from "../fs-utils.mjs";
+import { createMutex } from "../async-utils.mjs";
 import { readProjectMemory } from "../project-memory.mjs";
 import { createRedactor } from "../shell/redaction.mjs";
 import { resolveModelCapabilities } from "../model/capabilities.mjs";
@@ -108,19 +109,15 @@ function fail(code, message) {
   return error;
 }
 
-function createMutex() {
-  let tail = Promise.resolve();
-  return {
-    run(task) {
-      const result = tail.then(() => task());
-      tail = result.then(() => undefined, () => undefined);
-      return result;
-    }
-  };
-}
-
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// 会话是否有非终态活动 Run（串行门 / 删除守卫 / run_status 投影共用同一判定；
+// 新增终态状态只需改 TERMINAL_RUN_STATUSES 一处）。
+function hasNonTerminalRun(session) {
+  const run = session?.active_run ?? null;
+  return run != null && !TERMINAL_RUN_STATUSES.has(run.status);
 }
 
 // 会话标题派生（Task 4）：首条消息摘要——trim 后折叠空白并截取前 20 字符，空则
@@ -132,24 +129,22 @@ export function deriveSessionTitle(text) {
 }
 
 // 注册表同步（Task 4 Global Constraints 的落地口径）：touch 刷新 updated_at
-//（sessions() 排序依据），setLastSeq 刷新 SSE 恢复游标。同步是派生元数据
-//（journal 事件流才是真相源），失败只告警、绝不回滚已成功的 append。
+//（sessions() 排序依据）。同步是派生元数据（journal 事件流才是真相源），失败只
+// 告警、绝不回滚已成功的 append。
 //
 // 与原计划"每会话 journal append 后同步"的微调（按实际代码调整，理由如下）：
 //   - 同步点收窄到「调用方可等待的用户动作」：submit/promote/stop/retry/
-//     retryCompaction/cancelCompaction/clearHistory 与 open() 的 lastSeq 校准。
+//     retryCompaction/cancelCompaction/clearHistory 与 open()。
 //     运行循环内部逐事件 append 不做同步——循环是 fire-and-forget（无人 await），
 //     同步会延长 append 的生命周期到"轮询已观察到 idle 之后"，与外部删除
 //     （测试清理 fs.rm、用户删项目目录）竞态：注册表写盘（临时文件 + rename）
 //     与目录遍历交错会产生孤儿临时文件 / 目录非空（Windows ENOTEMPTY）。
-//   - 由此 last_seq/updated_at 在一次运行期间滞后到最近一次用户动作为止；SSE
-//     恢复游标从略早的 seq 重放（客户端按 seq 去重，正确性不受影响），open() 的
-//     幂等校准保证每次打开会话时游标准确。
+//   - 由此 updated_at 在一次运行期间滞后到最近一次用户动作为止（排序依据的
+//     滞后窗口可接受，会话活跃顺序以用户动作时刻为准）。
 function syncSessionRegistry(state, sessionState) {
   return (async () => {
     try {
       await state.registry.touch(sessionState.sessionId);
-      await state.registry.setLastSeq(sessionState.sessionId, sessionState.journal.lastSeq);
     } catch (error) {
       console.warn(`[agent] 注册表同步失败（尽力而为）: ${error?.message ?? String(error)}`);
     }
@@ -244,6 +239,9 @@ export function createAgentRuntime({
         agentRoot,
         // Task 4：会话注册表（<agentRoot>/sessions/index.json）+ 每会话运行状态
         registry: createSessionRegistry({ root: agentRoot }),
+        // 迁移序列是否已在本进程内跑过（migrateProjectData 一次性短路：迁移幂等、
+        // 判定本身要多次磁盘探测，同一项目反复 open/submit/sessions() 不必重检）
+        migrationDone: false,
         sessions: new Map(), // sessionId -> sessionState（ensureSessionState 惰性物化）
         projectOperations,
         modelGateway: resolveGateway(key),
@@ -284,45 +282,11 @@ export function createAgentRuntime({
     return state;
   }
 
-  // 首次物化会话时，把 agentRoot 根的旧单文件格式遗留（events.jsonl/transcript.jsonl/
-  // session.json/checkpoints/，无 segments/）搬入该会话目录（Task 4 行为变更）：
-  // workspaceMigrator 只把 <projectRoot>/.wwriting/agent 的单文件旧数据复制到
-  // agentRoot 根，而 journal 的 migrateLegacy 只扫描自身 storageRoot
-  //（sessions/<id>/）——不搬进会话目录，旧单对话历史将永远悬空（数据丢失）。
-  // 因此 flat-file 遗留历史改为「首次发消息物化会话时」进入会话 1 的流（不再在
-  // open() 时可见）；segments 形态的旧数据由 migrateSingleSessionToRegistry 处理，
-  // 不走这里（其 isSessionEntry 已含 events.jsonl/transcript.jsonl）。
-  // 只对第一个物化的会话生效：旧单对话数据归属会话 1；目标目录已有 journal 数据
-  //（重试/异常现场）时不倾倒旧文件，避免与既有事件流混入。
-  async function adoptRootLegacyFlatFiles(state, sessionId) {
-    if (state.sessions.size > 0) return; // 只收养给第一个物化的会话
-    const agentRoot = state.agentRoot;
-    const targetDir = path.join(agentRoot, "sessions", sessionId);
-    if (
-      (await pathExists(path.join(targetDir, "segments"))) ||
-      (await pathExists(path.join(targetDir, "journal-manifest.json"))) ||
-      (await pathExists(path.join(targetDir, "session.json")))
-    ) {
-      return;
-    }
-    await fs.mkdir(targetDir, { recursive: true });
-    for (const name of ["events.jsonl", "transcript.jsonl", "session.json", "checkpoints"]) {
-      const source = path.join(agentRoot, name);
-      if (!(await pathExists(source))) continue;
-      const target = path.join(targetDir, name);
-      if (await pathExists(target)) continue;
-      try {
-        await fs.rename(source, target);
-      } catch (error) {
-        // 搬移失败不阻塞会话（数据留在根，可手工找回）；告警暴露，不吞静默
-        console.warn(`[agent] 旧单文件遗留搬移失败（不影响会话）: ${error?.message ?? String(error)}`);
-      }
-    }
-  }
-
   // 物化（或复用）某会话的运行状态：独立 journal/checkpoint/tools/压缩协调器，
   // 存储根 = <agentRoot>/sessions/<id>/。注册表条目由调用方先行保证存在（open/
-  // submit/newSession 已 create 或校验）。
+  // submit/newSession 已 create 或校验）。agentRoot 根的旧 flat 遗留已由
+  // migrateProjectData（adoptLegacyFlatFilesToRegistry）确定性迁入会话 1，这里
+  // 不再承担收养职责（此前是"首次物化时"副作用，依赖物化顺序、首条消息前不可见）。
   //
   // 会话 id 对齐结论（Task 4 前序审查要点 3，调查后决策）：
   //   - 新会话（惰性创建/newSession/open 首开）：journal 首次空载（load() 内部
@@ -336,7 +300,6 @@ export function createAgentRuntime({
   async function ensureSessionState(state, sessionId) {
     let sessionState = state.sessions.get(sessionId);
     if (sessionState) return sessionState;
-    await adoptRootLegacyFlatFiles(state, sessionId);
     const storageRoot = path.join(state.agentRoot, "sessions", sessionId);
     let sessionIdConsumed = false;
     const sessionJournalIdFactory = () => {
@@ -346,15 +309,18 @@ export function createAgentRuntime({
       }
       return idFactory();
     };
+    // Task 8：active context checkpoint 存储（每会话一份，与 journal 同一
+    // storageRoot：active-context.json / compaction-commit-*.json / checkpoints/
+    // 与 segments/ 同根）。先于 journal 创建：clearHistory 的会话目录轮转需要
+    // journal 经 retire/restore 钩子请 checkpoint store 自己退休/恢复其文件。
+    const checkpointStore = createContextCheckpointStore({ agentDir: storageRoot, idFactory });
     const journal = createAgentJournal({
       projectRoot: state.key,
       storageRoot,
-      idFactory: sessionJournalIdFactory
+      idFactory: sessionJournalIdFactory,
+      retireExtraFiles: (clearedDir) => checkpointStore.retireForClear(clearedDir),
+      restoreExtraFiles: (moved, clearedDir) => checkpointStore.restoreFromClear(moved, clearedDir)
     });
-    // Task 8：active context checkpoint 存储 + 压缩协调器（每会话一份，与 journal
-    // 同一 storageRoot：active-context.json / compaction-commit-*.json /
-    // checkpoints/ 与 segments/ 同根）。
-    const checkpointStore = createContextCheckpointStore({ agentDir: storageRoot, idFactory });
     const tools = createToolRuntime({
       projectOperations: state.projectOperations,
       journal,
@@ -412,10 +378,13 @@ export function createAgentRuntime({
     return sessionState;
   }
 
-  // 解析目标会话 id：显式 sessionId → registry.get 校验存在；缺省 → 最近活跃；
+  // 解析目标会话 id：显式 sessionId → 校验存在；缺省 → 最近活跃；
   // 都没有 → null（品牌新项目，不物化任何会话——惰性创建）。
+  // 显式 id 先查内存已物化会话（SSE 轮询热路径：已打开的会话无需每次读盘），
+  // 未物化才回退注册表（注册表条目存在但 journal 未建立的会话依然可解析）。
   async function resolveSessionId(state, sessionId) {
     if (sessionId != null && sessionId !== "") {
+      if (state.sessions.has(sessionId)) return sessionId;
       const meta = await state.registry.get(sessionId);
       if (!meta) throw fail("session_not_found", `会话不存在: ${sessionId}`);
       return sessionId;
@@ -424,7 +393,10 @@ export function createAgentRuntime({
   }
 
   // 解析目标会话状态（不存在 → null，不物化新会话）。
+  // 迁移先行：promote/stop/retry/snapshot 等只读/控制端点不经 open()，但旧数据
+  // 会话必须同样可见——migrationDone 短路后这里只是一次布尔检查。
   async function resolveSessionState(state, sessionId) {
+    await migrateProjectData(state);
     const id = await resolveSessionId(state, sessionId);
     if (id == null) return null;
     return await ensureSessionState(state, id);
@@ -436,10 +408,15 @@ export function createAgentRuntime({
   //   2) workspaceMigrator（copy 型）只在注册表尚不存在时运行（首次打开）：把旧
   //      .wwriting/agent 数据拷入 agentRoot 根，随后在同一 open 内再迁移一次，让旧
   //      对话首开即可见。注册表已存在后绝不复制——workspaceMigrator 的 hasJournalData
-  //      判空会把旧项目内数据重新拷进 agentRoot 根，造成根级孤儿 segments/。
+  //      判空会把旧项目内数据重新拷进 agentRoot 根，造成根级孤儿 segments/；
+  //   3) adoptLegacyFlatFilesToRegistry：无 segments 的纯 flat 遗留（最老一代布局）
+  //      在复制后确定性迁入会话 1——不再依赖"首次物化会话"的时机，首开即可见。
   // 该顺序满足"migrate 先行"，同时堵住"迁移清空根目录后被 workspace 复制回填"的
   // 二次复制漏洞（单看 migrate-first 或 workspace-first 都留洞，门闩是注册表存在性）。
   async function migrateProjectData(state) {
+    // 本进程内已跑过（含无源数据的情况）：迁移判定+执行都是幂等一次性工作，
+    // 后续 open/submit/sessions()/newSession 直接短路，省掉重复磁盘探测。
+    if (state.migrationDone) return;
     const agentRoot = state.agentRoot;
     try {
       await migrateSingleSessionToRegistry({ agentRoot, idFactory });
@@ -460,12 +437,17 @@ export function createAgentRuntime({
       } catch (error) {
         console.warn(`[agent] 会话迁移失败（不影响 open）: ${error?.message ?? String(error)}`);
       }
+      try {
+        await adoptLegacyFlatFilesToRegistry({ agentRoot, idFactory });
+      } catch (error) {
+        console.warn(`[agent] 旧 flat 遗留迁移失败（不影响 open）: ${error?.message ?? String(error)}`);
+      }
     }
+    state.migrationDone = true;
   }
 
   // 会话 load 后的崩溃对账（等价旧 open() 的恢复序列，不含 startLoop——循环启动
-  // 由调用方在串行门通过后决定）：checkpoint 对账 → legacy 导入 → 非终态压缩收敛
-  // → lastSeq 校准（幂等，消解 Task 3 create 与 setLastSeq 之间崩溃的 last_seq=0 窗口）。
+  // 由调用方在串行门通过后决定）：checkpoint 对账 → legacy 导入 → 非终态压缩收敛。
   async function reconcileSessionAfterLoad(state, sessionState) {
     // Task 8：checkpoint 崩溃对账（提交 marker 裁决 + 孤儿清理）必须在检查压缩
     // 投影之前执行——对账可能补写 completed（裁决 2）或 failed（裁决 1），使压缩
@@ -522,9 +504,6 @@ export function createAgentRuntime({
         });
       }
     }
-    // lastSeq 校准由调用方（open/submit 收尾的 syncSessionRegistry）完成，见
-    // syncSessionRegistry 的注释（幂等校准消解 Task 3 create 与 setLastSeq 之间
-    // 崩溃的 last_seq=0 窗口）。
   }
 
   function abortController(state) {
@@ -1232,11 +1211,9 @@ export function createAgentRuntime({
       projectRoot: state.key
     });
     if (built.noop) {
-      await sessionState.journal.append({
-        type: "context_compaction_noop",
-        run_id: runId,
-        payload: { compaction_id: idFactory(), trigger: "manual", reason: built.reason ?? "nothing_to_compact" }
-      });
+      // 无可压缩历史：noop 事件统一由协调器落盘（压缩事件只有一个写作者），
+      // 随后消费该 /compact 输入（不调用模型）。
+      await sessionState.compactionCoordinator.noop({ trigger: "manual", reason: built.reason ?? "nothing_to_compact" });
       await state.mutex.run(async () => {
         const s = await sessionState.journal.getSession();
         const r = s.active_run;
@@ -1961,9 +1938,8 @@ export function createAgentRuntime({
     await sessionState.journal.load();
     // 崩溃对账（checkpoint/legacy/压缩收敛；不在此启动循环——见下）
     await reconcileSessionAfterLoad(state, sessionState);
-    // lastSeq 校准 + updated_at（幂等）：以该会话 journal 的实际 lastSeq 校准注册表，
-    // 消解迁移"create 与 setLastSeq 之间崩溃"留下的 last_seq=0 窗口
-    //（journal-session-migration 文件头；校准失败只告警，派生元数据以事件流为准）。
+    // 注册表 updated_at 同步（幂等）：以用户动作时刻刷新会话活跃排序依据。
+    // 同步失败只告警，派生元数据以事件流为准。
     await syncSessionRegistry(state, sessionState);
     // 恢复：只恢复有效非终态 Run（journal.load 已把 dangling assistant 活动标记
     // 为 interrupted；那些 Run 等待 retry，不自动恢复；legacy 导入的未完成 Run
@@ -2004,23 +1980,18 @@ export function createAgentRuntime({
     const created = await state.mutex.run(async () => {
       // 1) 会话解析：显式 sessionId → 校验存在；缺省 → 最近活跃；都没有 → 惰性
       //    创建新会话（registry.create + journal 首次 load 写 session_created）。
-      let targetId = sessionId;
-      if (targetId != null) {
-        const meta = await state.registry.get(targetId);
-        if (!meta) throw fail("session_not_found", `会话不存在: ${targetId}`);
-      } else {
-        targetId = await state.registry.getLastActive();
-      }
+      let targetId = await resolveSessionId(state, sessionId);
       // 2) 串行门：目标会话之外若有任一会话存在非终态 run → project_busy。
       //    惰性创建路径（targetId == null）下，所有已物化会话都算"其他会话"；
       //    目标会话尚未物化、不可能有 run。门禁在创建/恢复之前执行，被拒的提交
       //    不产生任何会话副作用。同会话运行中走下方 FIFO 队列（行为不变）。
-      for (const [sid, other] of state.sessions) {
-        if (targetId != null && sid === targetId) continue;
-        const otherSession = await other.journal.getSession();
-        if (otherSession.active_run && !TERMINAL_RUN_STATUSES.has(otherSession.active_run.status)) {
-          throw fail("project_busy", "另一个对话正在运行，请稍候。");
-        }
+      const blockers = await Promise.all(
+        [...state.sessions]
+          .filter(([sid]) => targetId == null || sid !== targetId)
+          .map(async ([, other]) => other.journal.getSession())
+      );
+      if (blockers.some(hasNonTerminalRun)) {
+        throw fail("project_busy", "另一个对话正在运行，请稍候。");
       }
       // 3) 惰性创建（缺省且无会话）
       if (targetId == null) {
@@ -2042,6 +2013,7 @@ export function createAgentRuntime({
       }
       // 5) 现有 FIFO / 新 Run 逻辑（作用于目标会话的 journal）
       const inputId = idFactory();
+      let result;
       if (!run || TERMINAL_RUN_STATUSES.has(run.status)) {
         // 空闲：创建新 Run
         const runId = idFactory();
@@ -2057,21 +2029,20 @@ export function createAgentRuntime({
           }
         ]);
         startLoop(state, sessionState, runId);
-        // 注册表同步（调用方可等待的边界；lastSeq 读取当前实际尾部，并发 append 不丢）
-        await syncSessionRegistry(state, sessionState);
-        // 自动命名：显式创建（"新对话"默认标题）的会话按首条消息摘要命名
-        await autoNameSessionIfDefault(state, targetId, text);
-        return { input_id: inputId, run_id: runId, queued: false, session_id: targetId };
+        result = { input_id: inputId, run_id: runId, queued: false, session_id: targetId };
+      } else {
+        // 运行中：FIFO 队列（/compact 不打断当前模型/工具，按普通消息排队）
+        await sessionState.journal.append({
+          type: "input_queued",
+          payload: { input_id: inputId, text, source, ...(kind === undefined ? {} : { kind }) }
+        });
+        result = { input_id: inputId, run_id: run.id, queued: true, session_id: targetId };
       }
-      // 运行中：FIFO 队列（/compact 不打断当前模型/工具，按普通消息排队）
-      await sessionState.journal.append({
-        type: "input_queued",
-        payload: { input_id: inputId, text, source, ...(kind === undefined ? {} : { kind }) }
-      });
+      // 注册表同步（调用方可等待的边界；updated_at 刷新）+ 自动命名：显式创建
+      // （"新对话"默认标题）的会话按首条消息摘要命名
       await syncSessionRegistry(state, sessionState);
-      // 自动命名：显式创建（"新对话"默认标题）的会话按首条消息摘要命名
       await autoNameSessionIfDefault(state, targetId, text);
-      return { input_id: inputId, run_id: run.id, queued: true, session_id: targetId };
+      return result;
     });
     if (!created.queued) {
       // 等待第一个模型轮次开始（或循环已结束）：保证调用方拿到控制权时
@@ -2610,7 +2581,7 @@ export function createAgentRuntime({
       const sessionState = state.sessions.get(sessionId);
       if (sessionState) {
         const session = await sessionState.journal.getSession();
-        if (session.active_run && !TERMINAL_RUN_STATUSES.has(session.active_run.status)) {
+        if (hasNonTerminalRun(session)) {
           throw fail("session_busy", "该会话正在运行，无法删除。");
         }
       }

@@ -54,7 +54,7 @@ export function createAgentApi({
   let controller = null;  // 当前 SSE 连接的 AbortController
   let destroyed = false;
   let currentRoot = null;
-  let currentSessionId = null; // 当前会话（openProject/setSession 设置；null → 请求不带 sessionId）
+  let currentSessionId = null; // 当前会话（openProject 设置；null → 请求不带 sessionId）
   const pendingRequests = new Set(); // 在途请求的 AbortController（destroy 时全部中止）
 
   function root() {
@@ -230,19 +230,9 @@ export function createAgentApi({
     });
   }
 
-  // 当前会话：setSession 显式切换；sessionRoot 供调用方读取会话作用域。
-  // 契约：setSession 仅改变后续请求的作用域（body/query 的 sessionId，以及下次
-  // connectEvents 发起的 SSE URL）；活跃 SSE 连接不会被中止，已建立的连接仍按
-  // 连接建立时捕获的 currentSessionId 继续推送旧会话事件。切换会话必须经
-  // openProject/connectEvents 重建连接（streamEvents 在发起请求时捕获
-  // currentSessionId）——直接 setSession 不切流，调用方不得依赖旧连接自动跟随。
-  function setSession(sessionId) {
-    currentSessionId = sessionId ?? null;
-  }
-
-  function sessionRoot() {
-    return { projectRoot: root(), sessionId: currentSessionId ?? null };
-  }
+  // 当前会话作用域由 openProject 唯一维护：切换会话必须经 openProject/connectEvents
+  // 重建连接（streamEvents 在发起请求时捕获 currentSessionId）——只改指针不切流
+  // 会让活跃 SSE 连接继续推送旧会话事件，调用方不得依赖旧连接自动跟随。
 
   // composer 三控件选项：模型清单（全局）+ 当前项目生效配置（dashboard）。
   // 契约：GET /api/settings/models → { models }（每项带 active 与 capabilities）；
@@ -392,8 +382,6 @@ export function createAgentApi({
     updatePermissions,
     updateReasoningEffort,
     connectEvents,
-    setSession,
-    sessionRoot,
     sessions,
     createSession,
     renameSession,

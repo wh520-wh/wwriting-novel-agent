@@ -2,12 +2,12 @@
 //
 // 覆盖：
 //   - create：显式/缺省 sessionId 与 title（缺省 = randomUUID + "新对话"），空白 title 兜底
-//   - create 同 id 幂等：返回既有 meta，last_seq/created_at/title/updated_at 不被重置
+//   - create 同 id 幂等：返回既有 meta，created_at/title/updated_at 不被重置
 //   - list：返回全部会话，archived_at 为 null（未归档）的在前，组内按 updated_at 倒序
 //   - get / rename / archive / restore；rename 空标题抛错且不改原值
 //   - setLastActive / getLastActive：指针指向未归档直接用；指向已归档/不存在 → 回退
 //     未归档中 updated_at 最新一条；全无则 null
-//   - touch：只更新 updated_at（不动 title/last_seq）
+//   - touch：只更新 updated_at（不动 title）
 //   - removePermanently：从注册表移除并清空 last_active 指向
 //   - 持久化：重建 registry 实例后数据仍在
 //   - 损坏的 index.json（非法 JSON）→ list/get 回退空 store 不抛错
@@ -53,7 +53,6 @@ test("会话注册表：create/list 缺省参数与排序", async (t) => {
   // 全部未归档，按 updated_at 倒序（b 最后创建在最前）
   assert.ok(all.every((s) => s.archived_at == null));
   assert.deepEqual(all.map((s) => s.session_id), [b.session_id, blank.session_id, c.session_id, a.session_id]);
-  assert.equal(all[0].last_seq, 0, "last_seq 由 runtime 后续写入，初始为 0");
 });
 
 test("会话注册表：get/rename/archive/restore/lastActive/touch", async (t) => {
@@ -96,14 +95,13 @@ test("会话注册表：get/rename/archive/restore/lastActive/touch", async (t) 
   await reg.restore(b.session_id);
   assert.equal((await reg.get(b.session_id)).archived_at, null);
 
-  // touch：只更新 updated_at，不动 title/last_seq
+  // touch：只更新 updated_at，不动 title
   const before = await reg.get(a.session_id);
   await delay(5);
   await reg.touch(a.session_id);
   const after = await reg.get(a.session_id);
   assert.ok(after.updated_at > before.updated_at);
   assert.equal(after.title, before.title);
-  assert.equal(after.last_seq, before.last_seq);
 
   // 不存在会话：rename/archive/restore 抛错，touch 返回 null
   const missing = randomUUID();
@@ -148,17 +146,11 @@ test("会话注册表：create 同 id 幂等，不重置既有 meta", async (t) 
   await delay(5);
   await reg.rename("sid-x", "改名后");
   const renamedMeta = await reg.get("sid-x");
-  // 模拟 runtime 写入 last_seq（registry 不导出该写入，直接操作 index.json）
-  const indexPath = path.join(root, "sessions", "index.json");
-  const store = JSON.parse(await fs.readFile(indexPath, "utf8"));
-  store.sessions[0].last_seq = 42;
-  await fs.writeFile(indexPath, JSON.stringify(store, null, 2), "utf8");
 
   // 再次 create 同 id（带不同 title）→ 返回既有 meta，字段不被重置
   const again = await reg.create({ sessionId: "sid-x", title: "试图覆盖" });
   assert.equal(again.session_id, "sid-x");
   assert.equal(again.title, "改名后", "既有 title 不被 create 覆盖");
-  assert.equal(again.last_seq, 42, "last_seq 不被重置");
   assert.equal(again.created_at, first.created_at, "created_at 不被重置");
   assert.equal(again.updated_at, renamedMeta.updated_at, "updated_at 不被重置");
   assert.equal(await reg.getLastActive(), "sid-x", "幂等 create 也刷新最近活跃指针");
