@@ -101,8 +101,9 @@ test("模型错误 → snapshot 显示 failed Run → 修复配置后 retry 恢�
   const { projectRoot, server, port } = await setupServer();
   try {
     // 指向不可达端口的 openai-compatible 模型（连接拒绝 → transport 错误 → run_failed）。
-    // timeout_ms/total_deadline_ms 直接写 project.yaml（设置校验不接收这两个字段，
-    // 但 gateway 会读取 modelConfig 上的它们）——用短期限把失败收敛控制在数秒内。
+    // timeout_ms/total_deadline_ms 直接写 project.yaml（设置校验已接收并透传这两个
+    // 字段——normalizeActiveModel 校验非负整数；这里直接写是便捷注入，旧 project.yaml
+    // 仍作为有效配置的兼容输入被读取）——用短期限把失败收敛控制在数秒内。
     const project = await loadProject(projectRoot);
     project.active_model = {
       provider: "openai-compatible",

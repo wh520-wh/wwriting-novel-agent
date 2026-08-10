@@ -625,6 +625,56 @@ test("流式：帧跨 chunk 边界时正确拼接", async () => {
   assert.equal(result.text, "Hello world");
 });
 
+test("流式：末帧 finish_reason=length 正常终止 → raw.finish_reason 透传", async () => {
+  const tokens = [];
+  const adapter = makeAdapter({
+    fetchImpl: async () =>
+      streamResponse(
+        sseFrames([
+          'data: {"choices":[{"delta":{"content":"半截"}}]}',
+          'data: {"choices":[{"delta":{"content":"正文"}}]}',
+          'data: {"choices":[{"delta":{},"finish_reason":"length"}]}',
+          "data: [DONE]"
+        ])
+      )
+  });
+  const result = await adapter.complete({
+    messages: [{ role: "user", content: "hello" }],
+    modelConfig: { model_name: "writer-model", stream: true },
+    metadata: {
+      onToken(token) {
+        tokens.push(token);
+      }
+    }
+  });
+  assert.equal(result.text, "半截正文", "正文照常归一化");
+  assert.deepEqual(tokens, ["半截", "正文"], "finish_reason 帧不产生增量 token");
+  assert.equal(result.raw.finish_reason, "length", "截断原因透传到 raw.finish_reason");
+});
+
+test("流式：finish_reason=length 之后还有 usage 帧 → raw.finish_reason 仍为 length", async () => {
+  // OpenAI 规范：include_usage 时 usage 帧（choices:[]）跟在 finish_reason 帧之后、
+  // [DONE] 之前。若只取末帧 finish_reason 会被 usage 帧覆盖成 null（Task 4 Issue 1）。
+  const adapter = makeAdapter({
+    fetchImpl: async () =>
+      streamResponse(
+        sseFrames([
+          'data: {"choices":[{"delta":{"content":"半截"}}]}',
+          'data: {"choices":[{"delta":{},"finish_reason":"length"}]}',
+          'data: {"choices":[],"usage":{"prompt_tokens":8,"completion_tokens":2,"total_tokens":10}}',
+          "data: [DONE]"
+        ])
+      )
+  });
+  const result = await adapter.complete({
+    messages: [{ role: "user", content: "hello" }],
+    modelConfig: { model_name: "writer-model", stream: true }
+  });
+  assert.equal(result.text, "半截", "正文照常归一化");
+  assert.equal(result.raw.finish_reason, "length", "usage 帧不得覆盖 finish_reason");
+  assert.equal(result.raw.event_count, 3, "usage 帧计入事件数");
+});
+
 test("流式：流结束没有 DONE 且没有 finish_reason → 截断错误", async () => {
   const adapter = makeAdapter({
     fetchImpl: async () =>

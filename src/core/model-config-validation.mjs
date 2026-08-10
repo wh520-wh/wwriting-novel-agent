@@ -28,7 +28,7 @@ export function validateModelConfig(input) {
   }
   if (input?.stream !== undefined) config.stream = input.stream === true;
   if (input?.cache_mode !== undefined) config.cache_mode = String(input.cache_mode).trim();
-  for (const field of ["max_context_tokens", "max_output_tokens"]) {
+  for (const field of ["max_context_tokens", "max_output_tokens", "timeout_ms", "total_deadline_ms"]) {
     if (input?.[field] !== undefined) {
       const value = Number(input[field]);
       if (Number.isInteger(value) && value > 0) config[field] = value;
@@ -57,7 +57,7 @@ export function validateModelConfig(input) {
   if (input?.pricing !== undefined && input.pricing !== null && !config.pricing) {
     fields.pricing = "价格必须是正数：每百万 token 的输入价和输出价必填，缓存命中价可选。";
   }
-  for (const field of ["max_context_tokens", "max_output_tokens"]) {
+  for (const field of ["max_context_tokens", "max_output_tokens", "timeout_ms", "total_deadline_ms"]) {
     if (input?.[field] !== undefined && config[field] === undefined) {
       fields[field] = "必须是正整数";
     }

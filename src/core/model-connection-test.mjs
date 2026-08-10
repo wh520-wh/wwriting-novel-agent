@@ -11,9 +11,13 @@ import { createModelGateway } from "./model/gateway.mjs";
 import { OpenAICompatibleAdapter } from "./model/openai-compatible.mjs";
 import { parseModelIdentity } from "./model/model-identity.mjs";
 
-const PROBE_TIMEOUT_MS = 10_000;
+// 探测常量（Task 7）：思考型模型（如 deepseek-reasoner）把 token 额度全花在
+// reasoning_content 上、正文 content 为空，且思考期可能 >10s 无首 token——
+// 4 token / 10s 对这类模型必然误判失败。64 token 足够「仅回复 OK」的非思考模型
+// 与思考模型的最小思考段；30s 覆盖常见 thinking 模型的思考期。
+const PROBE_TIMEOUT_MS = 30_000;
 const PROBE_PROMPT = "仅回复 OK";
-const PROBE_MAX_TOKENS = 4;
+const PROBE_MAX_TOKENS = 64;
 const PROBE_MAX_ATTEMPTS = 2;
 const PROBE_RETRY_DELAY_MS = 2000;
 const NETWORK_ERROR_CODES = new Set([
@@ -121,7 +125,7 @@ export async function testModelConnection({
 
 // 最小连接请求：经 ModelGateway 走新 OpenAI-compatible adapter（Task 9）。
 // gateway 只做单次调用（retryMax 0）——探测自身的 runWithRetry 负责重试，
-// 避免双重退避；per-attempt 超时按探测 10s 配置。
+// 避免双重退避；per-attempt 超时按探测 30s 配置。
 export async function completeOpenAICompatibleProbe({
   config,
   apiKey,
@@ -160,11 +164,25 @@ export async function completeOpenAICompatibleProbe({
     },
     { signal },
   );
-  if (!response || typeof response.text !== "string" || !response.text.trim()) {
-    const rawSummary = summarizeResponseForDiagnostics(response?.raw);
+  // Task 7：响应成功判定放宽——正文非空**或** reasoning 非空都算成功。
+  // 思考型模型（deepseek-reasoner 等）在 max_tokens 很小时会把额度全花在
+  // reasoning_content 上、正文 content 为空，旧判定（只看 text）会把这种
+  // 正常响应误判成 response_incompatible（「模型返回的响应无法解析」）。
+  if (!response) {
+    const error = new Error("模型返回了空响应，无法解析。");
+    error.code = "response_incompatible";
+    error.raw = null;
+    throw error;
+  }
+  const hasText = typeof response.text === "string" && response.text.trim().length > 0;
+  const hasReasoning = typeof response.reasoning === "string" && response.reasoning.trim().length > 0;
+  if (!hasText && !hasReasoning) {
+    // 失败诊断（借鉴 Claude Code「明确告知」模式）：给出可操作方向 + raw 摘要，
+    // 让用户知道问题在模型行为还是配置，而不是一句笼统的「无法解析」。
+    const rawSummary = summarizeResponseForDiagnostics(response.raw);
     const message = rawSummary
-      ? `模型返回了 200，但内容为空或无法解析。返回摘要：${rawSummary}`
-      : "Provider returned empty or unparseable response";
+      ? `模型返回了响应，但正文与思考内容均为空，无法解析。可能原因：模型为思考型且思考未落正文、输出额度过小、或代理返回空 body。返回摘要：${rawSummary}`
+      : "模型返回了空响应，无法解析。";
     const error = new Error(message);
     error.code = "response_incompatible";
     error.raw = response?.raw ?? null;
@@ -332,9 +350,11 @@ function buildErrorMessage(error, code) {
     case "network_unreachable":
       return "无法连接到模型服务器，请检查网络或接口地址";
     case "request_timeout":
-      return "模型服务器响应超时（10 秒）";
+      return "模型服务器响应超时（30 秒）";
     case "response_incompatible":
-      return "模型返回的响应无法解析";
+      // 直接保留底层诊断（探测抛出的错误已带可操作方向 + raw 摘要），不再加
+      // 前缀——底层消息已含「无法解析」，叠加会造成措辞重复。
+      return baseRaw || "模型返回的响应无法解析";
     case "provider_error":
     default:
       return `模型服务器返回错误：${baseRaw || "未知错误"}`;

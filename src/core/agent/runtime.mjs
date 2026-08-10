@@ -1677,7 +1677,13 @@ export function createAgentRuntime({
       await journal.append({
         type: "assistant_message_completed",
         run_id: runId,
-        payload: { input_id: inputId, text: safeText }
+        payload: {
+          input_id: inputId,
+          text: safeText,
+          // Task 4：max_tokens 截断透传。流式末帧 finish_reason="length" 时正文是
+          // 半截内容，标记 truncated 让前端展示提示；非截断路径 payload 与旧契约一致。
+          ...(reply?.raw?.finish_reason === "length" ? { truncated: true } : {})
+        }
       });
       // 完成批次（input_consumed + grant 清除）的读-判-写放进项目互斥锁，杜绝与
       // cancelRunForStop 交错产生「同一 input 双终态」（input_cancelled 与

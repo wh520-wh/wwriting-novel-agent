@@ -257,6 +257,64 @@ test("normalizeStageOverrides preserves pricing field", async () => {
   }
 });
 
+test("normalizeSettingsPatch 透传 timeout_ms/total_deadline_ms（active_model 与 stage 覆盖）", () => {
+  const normalized = normalizeSettingsPatch({
+    active_model: {
+      provider: "openai-compatible",
+      model_name: "x",
+      base_url: "https://api.example.com",
+      api_key_env: "K",
+      timeout_ms: 300000,
+      total_deadline_ms: 900000
+    }
+  });
+  assert.equal(normalized.active_model.timeout_ms, 300000);
+  assert.equal(normalized.active_model.total_deadline_ms, 900000);
+
+  // stage_overrides 复用 normalizeActiveModel：drafting 覆盖同样透传
+  const withStage = normalizeSettingsPatch({
+    active_model: {
+      provider: "openai-compatible",
+      model_name: "x",
+      base_url: "https://api.example.com",
+      api_key_env: "K"
+    },
+    stage_overrides: {
+      enabled: true,
+      drafting: {
+        enabled: true,
+        provider: "openai-compatible",
+        model_name: "x",
+        base_url: "https://api.example.com",
+        api_key_env: "K",
+        timeout_ms: 300000,
+        total_deadline_ms: 1800000
+      }
+    }
+  });
+  assert.equal(withStage.stage_overrides.drafting.timeout_ms, 300000);
+  assert.equal(withStage.stage_overrides.drafting.total_deadline_ms, 1800000);
+});
+
+test("normalizeSettingsPatch 拒绝非法 timeout_ms/total_deadline_ms（负数/非整数）", () => {
+  const base = { provider: "openai-compatible", model_name: "x", base_url: "https://api.example.com", api_key_env: "K" };
+  assert.throws(
+    () => normalizeSettingsPatch({ active_model: { ...base, timeout_ms: -5 } }),
+    (error) => error instanceof SettingsValidationError && error.code === "invalid_timeout_ms"
+  );
+  assert.throws(
+    () => normalizeSettingsPatch({ active_model: { ...base, total_deadline_ms: 1.5 } }),
+    (error) => error instanceof SettingsValidationError && error.code === "invalid_total_deadline_ms"
+  );
+  // stage 覆盖路径同样拒绝非法值
+  assert.throws(
+    () => normalizeSettingsPatch({
+      stage_overrides: { enabled: true, drafting: { enabled: true, ...base, timeout_ms: "abc" } }
+    }),
+    (error) => error instanceof SettingsValidationError && error.code === "invalid_timeout_ms"
+  );
+});
+
 test("memory_extraction 接受布尔 enabled，丢弃其它键", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-settings-mem-"));
   const { projectRoot } = await createProject(root, { slug: "mem" });
