@@ -39,8 +39,8 @@ export function createModelGateway({
   retryMax = 5,
   retryBaseDelayMs = 1000,
   retryMaxDelayMs = 16000,
-  timeoutMs = 120000,
-  totalDeadlineMs = 300000,
+  timeoutMs = 300000,
+  totalDeadlineMs = 900000,
   heartbeatMs = 5000,
   onRetry = null,
   onRecovered = null,
@@ -114,6 +114,7 @@ export function createModelGateway({
 
       const timeoutController = new AbortController();
       let timedOut = false;
+      let timedOutReason = null; // "idle"（空闲超时）| "deadline"（总期限硬闸）
       const onTimeout = () => {
         timedOut = true;
       };
@@ -123,7 +124,26 @@ export function createModelGateway({
       if (signal) signals.push(signal);
       const combinedSignal = AbortSignal.any(signals);
 
-      const timer = setTimeout(() => timeoutController.abort(), attemptTimeoutMs);
+      // attempt 级看门狗（单一 interval）：timeoutMs 语义是「空闲超时」（SSE
+      // 事件间最大间隔），不再是总时长硬超时。记录 lastActivityAt，每次
+      // onToken/onReasoningToken 活动刷新；interval 每 tick 检查「距上次活动
+      // >= attemptTimeoutMs」→ 空闲超时 abort；「总耗时 >= totalDeadline」→
+      // 硬闸 abort；都不满足则继续等待。interval 周期 = heartbeatMs > 0 ?
+      // min(heartbeatMs, 1000) : 1000——heartbeatMs=0 时超时检查仍照常运行。
+      let lastActivityAt = Date.now();
+      const watchdogIntervalMs = heartbeatMs > 0 ? Math.min(heartbeatMs, 1000) : 1000;
+      const watchdog = setInterval(() => {
+        const now = Date.now();
+        if (now - lastActivityAt >= attemptTimeoutMs) {
+          timedOutReason = "idle";
+          timeoutController.abort();
+          return;
+        }
+        if (now - startTime >= totalDeadline) {
+          timedOutReason = "deadline";
+          timeoutController.abort();
+        }
+      }, watchdogIntervalMs);
 
       // 非流式 heartbeat：attempt 挂起期间周期性 ping onActivity，让上层看到
       // 请求还活着（0 禁用；null 是无操作）。回调异常不得击穿 attempt——
@@ -140,25 +160,38 @@ export function createModelGateway({
       }
 
       const cleanupAttempt = () => {
-        clearTimeout(timer);
+        clearInterval(watchdog);
         clearInterval(heartbeat);
         timeoutController.signal.removeEventListener("abort", onTimeout);
       };
 
-      // onActivity 经 metadata 传给 adapter：流式 adapter 在解析每个 SSE 帧时
-      // 回调，同时保持长流心跳新鲜。onToken/onReasoningToken 按 attempt 包装：
-      // 一旦本 attempt 已把任一可见流（公开正文或 reasoning）交给上层，就不能
-      // 再透明重试，否则用户会收到重复正文/重复推理。
+      // onActivity 经包装注入 adapter：流式 adapter 在解析每个 SSE 帧时回调它
+      // （含 usage-only/空 delta/tool-call 增量帧），包装内先刷新 lastActivityAt
+      // ——keep-alive 与工具参数增量帧也算活动，避免「连接活着但没有 token」的
+      // 流被空闲超时误杀；再转发原回调（构造参数优先，其次调用方 metadata，
+      // 与既有 spread 优先级一致）。onToken/onReasoningToken 同样先刷新
+      // lastActivityAt；emittedProviderToken 只由 onToken（公开正文）置位——
+      // reasoning-only 流不再阻断透明重试（重试最多重复模型内部推理，不会重复
+      // 公开正文，正文已公开才不可重试）。
+      const injectedOnActivity = onActivity ?? metadata.onActivity;
       let emittedProviderToken = false;
       const metadataForAttempt = {
         ...metadata,
-        ...(onActivity ? { onActivity } : {}),
+        ...(injectedOnActivity
+          ? {
+              onActivity(...args) {
+                lastActivityAt = Date.now();
+                injectedOnActivity(...args);
+              }
+            }
+          : {}),
         onToken(token, event) {
+          lastActivityAt = Date.now();
           if (String(token ?? "")) emittedProviderToken = true;
           metadata.onToken?.(token, event);
         },
         onReasoningToken(token, event) {
-          if (String(token ?? "")) emittedProviderToken = true;
+          lastActivityAt = Date.now();
           metadata.onReasoningToken?.(token, event);
         }
       };
@@ -218,10 +251,16 @@ export function createModelGateway({
           throw error;
         }
 
-        // Timeout：包装为 ProviderTransportError
+        // Timeout：包装为 ProviderTransportError（空闲超时与总期限硬闸共用此
+        // 分支，reason 均为 timeout，仅消息区分 deadline 以保留既有契约）
         if (timedOut) {
-          const timeoutError = new ProviderTransportError("Request timed out.", { reason: "timeout" });
-          if (emittedProviderToken) {
+          const timeoutError = new ProviderTransportError(
+            timedOutReason === "deadline" ? "Request exceeded total deadline." : "Request timed out.",
+            { reason: "timeout" }
+          );
+          // 正文已输出，或总期限硬闸已到：直接失败、不重试——硬闸后再退避只
+          // 会白等一个完整 backoff，且 recordRetry 记一次未发生的重试
+          if (emittedProviderToken || timedOutReason === "deadline") {
             recordFailed(timeoutError, { provider, model, stage, chapter });
             throw timeoutError;
           }

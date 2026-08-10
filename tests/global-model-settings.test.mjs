@@ -162,6 +162,46 @@ test("保存模型带 temperature：持久化到全局清单", async () => {
   assert.equal(saved.temperature, 1.1);
 });
 
+test("模型清单透传 timeout_ms/total_deadline_ms：upsert 后读回，缺失时不含字段", async () => {
+  const root = await tempRoot();
+  await upsertLocalModelProfile(root, {
+    provider: "openai-compatible",
+    model_name: "timeout-model",
+    base_url: "https://api.example.test/v1",
+    api_key_env: "TIMEOUT_KEY",
+    timeout_ms: 300000,
+    total_deadline_ms: 1800000
+  });
+  const saved = (await loadLocalModelProfiles(root)).models.find((m) => m.model_name === "timeout-model");
+  assert.equal(saved.timeout_ms, 300000);
+  assert.equal(saved.total_deadline_ms, 1800000);
+
+  await upsertLocalModelProfile(root, {
+    provider: "openai-compatible",
+    model_name: "plain-model",
+    base_url: "https://api.example.test/v1",
+    api_key_env: "PLAIN_KEY"
+  });
+  const plain = (await loadLocalModelProfiles(root)).models.find((m) => m.model_name === "plain-model");
+  assert.equal(plain.timeout_ms, undefined);
+  assert.equal(plain.total_deadline_ms, undefined);
+});
+
+test("saveGlobalModelProfile 带超时字段持久化到全局清单", async () => {
+  const root = await tempRoot();
+  const { store } = await saveGlobalModelProfile({
+    secretsRoot: root,
+    activeModel: {
+      provider: "openai-compatible", model_name: "deepseek-chat",
+      base_url: "https://api.deepseek.com", api_key_env: "DEEPSEEK_API_KEY",
+      api_key: "sk-test", timeout_ms: 300000, total_deadline_ms: 900000
+    }
+  });
+  const saved = store.models.find((m) => m.model_name === "deepseek-chat");
+  assert.equal(saved.timeout_ms, 300000);
+  assert.equal(saved.total_deadline_ms, 900000);
+});
+
 test("全局删除/选用：找不到模型时抛 model_profile_not_found", async () => {
   const secretsRoot = await tempRoot();
   await assert.rejects(() => removeGlobalModelProfile(secretsRoot, "nope"),

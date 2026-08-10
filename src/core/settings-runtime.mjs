@@ -362,6 +362,8 @@ function normalizeActiveModel(activeModel) {
   copyOptionalString(normalized, activeModel, "cache_mode");
   copyOptionalPositiveInteger(normalized, activeModel, "max_context_tokens");
   copyOptionalPositiveInteger(normalized, activeModel, "max_output_tokens");
+  copyOptionalPositiveInteger(normalized, activeModel, "timeout_ms");
+  copyOptionalPositiveInteger(normalized, activeModel, "total_deadline_ms");
   copyOptionalTemperature(normalized, activeModel, "temperature");
   if (activeModel.stream !== undefined) {
     normalized.stream = activeModel.stream === true;

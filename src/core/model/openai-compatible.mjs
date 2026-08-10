@@ -278,7 +278,10 @@ async function readStream(responseBody, metadata) {
   let reasoningText = "";
   let usage = null;
   let eventCount = 0;
-  let lastEvent = null;
+  // 累计跟踪最近一次非 null 的 finish_reason（Task 4 Issue 1）：include_usage 时
+  // usage 帧（choices:[]）按 OpenAI 规范跟在 finish_reason 帧之后、[DONE] 之前，
+  // 若只取末帧会把 finish_reason 覆盖成 null，导致截断检测静默失效。
+  let lastFinishReason = null;
   const streamToolCalls = [];
   let malformedSseFrameCount = 0;
   let sawDone = false;
@@ -297,8 +300,9 @@ async function readStream(responseBody, metadata) {
       return;
     }
     eventCount += 1;
-    lastEvent = event;
     if (event.usage) usage = event.usage;
+    const finishReason = event?.choices?.[0]?.finish_reason ?? null;
+    if (finishReason) lastFinishReason = finishReason;
     // 流式心跳：每个解析出的事件回调一次（usage-only 帧返回空串也照常回调，
     // 调用方据此判断"有 token 但无正文"；回调本身保持长流心跳新鲜）。
     const token = extractStreamToken(event);
@@ -340,7 +344,6 @@ async function readStream(responseBody, metadata) {
   }
 
   // Truncation detection：malformed 帧或缺失流结束信号都视为可能截断
-  const lastFinishReason = lastEvent?.choices?.[0]?.finish_reason ?? null;
   if (malformedSseFrameCount > 0) {
     if (!sawDone && !lastFinishReason) {
       throw new ProviderTransportError(
@@ -360,7 +363,14 @@ async function readStream(responseBody, metadata) {
     text,
     reasoning: reasoningText,
     toolCalls: finalizeStreamToolCalls(streamToolCalls),
-    raw: { stream: true, event_count: eventCount, malformed_sse_frame_count: malformedSseFrameCount },
+    raw: {
+      stream: true,
+      event_count: eventCount,
+      malformed_sse_frame_count: malformedSseFrameCount,
+      // 末帧 finish_reason（如 "stop" / "length" / "tool_calls"）；无终止帧时为 null。
+      // "length" 表示 max_tokens 截断——调用方据此标记 truncated，不能当作完整输出。
+      finish_reason: lastFinishReason ?? null
+    },
     usage: normalizeOpenAIUsage(usage ?? {}),
     cost: null
   };

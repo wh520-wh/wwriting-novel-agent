@@ -447,6 +447,113 @@ test("OpenAI-compatible SSE 经 Gateway 与 ProjectAgent 实时到达 journal", 
   assert.equal(eventsOfType(events, "assistant_message_completed").at(-1).payload.text, "直连");
 });
 
+test("流式 finish_reason=length → assistant_message_completed.payload.truncated === true", async (t) => {
+  // 端到端桥接链路（Task 4）：adapter 透传 finish_reason → runtime 检测 → 完成事件
+  // 带 truncated。usage 帧按 OpenAI 规范跟在 finish_reason 帧之后、[DONE] 之前，
+  // 覆盖 Issue 1 的回归面（usage 帧不得把 finish_reason 覆盖成 null）。
+  const fixture = await createProjectAgentHarness({
+    project: {
+      active_model: {
+        provider: "openai-compatible",
+        model_name: "integration-model",
+        base_url: "https://provider.test/v1"
+      }
+    }
+  });
+  t.after(() => fixture.cleanup());
+
+  const encoder = new TextEncoder();
+  const { createOpenAICompatibleAdapter } = await import("../../src/core/model/openai-compatible.mjs");
+  const { createModelGateway } = await import("../../src/core/model/gateway.mjs");
+  const { createProjectAgent } = await import("../../src/core/agent/index.mjs");
+  const adapter = createOpenAICompatibleAdapter({
+    apiKey: "test-key",
+    fetchImpl: async (_url, options) => {
+      const body = JSON.parse(options.body);
+      assert.equal(body.stream, true);
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"半截"}}]}\n\n'));
+            controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"正文"}}]}\n\n'));
+            controller.enqueue(encoder.encode('data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'));
+            controller.enqueue(encoder.encode('data: {"choices":[],"usage":{"prompt_tokens":8,"completion_tokens":2,"total_tokens":10}}\n\n'));
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+            controller.close();
+          }
+        }),
+        async text() {
+          throw new Error("流式路径不应读取 response.text()");
+        }
+      };
+    }
+  });
+  const gateway = createModelGateway({ adapter, retryMax: 0 });
+  const agent = createProjectAgent({ modelGateway: gateway });
+  await agent.open({ projectRoot: fixture.projectRoot });
+
+  await agent.submit({ projectRoot: fixture.projectRoot, text: "验证截断透传", source: "chat" });
+  await waitForIdle(agent, fixture.projectRoot);
+  const events = await readEvents(agent, fixture.projectRoot);
+  const completed = eventsOfType(events, "assistant_message_completed").at(-1);
+  assert.equal(completed.payload.text, "半截正文", "截断后的半截正文作为最终回复文本");
+  assert.equal(completed.payload.truncated, true, "finish_reason=length 必须携带 truncated: true");
+});
+
+test("流式 finish_reason=stop → assistant_message_completed 不带 truncated", async (t) => {
+  const fixture = await createProjectAgentHarness({
+    project: {
+      active_model: {
+        provider: "openai-compatible",
+        model_name: "integration-model",
+        base_url: "https://provider.test/v1"
+      }
+    }
+  });
+  t.after(() => fixture.cleanup());
+
+  const encoder = new TextEncoder();
+  const { createOpenAICompatibleAdapter } = await import("../../src/core/model/openai-compatible.mjs");
+  const { createModelGateway } = await import("../../src/core/model/gateway.mjs");
+  const { createProjectAgent } = await import("../../src/core/agent/index.mjs");
+  const adapter = createOpenAICompatibleAdapter({
+    apiKey: "test-key",
+    fetchImpl: async (_url, options) => {
+      const body = JSON.parse(options.body);
+      assert.equal(body.stream, true);
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"完整"}}]}\n\n'));
+            controller.enqueue(encoder.encode('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'));
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+            controller.close();
+          }
+        }),
+        async text() {
+          throw new Error("流式路径不应读取 response.text()");
+        }
+      };
+    }
+  });
+  const gateway = createModelGateway({ adapter, retryMax: 0 });
+  const agent = createProjectAgent({ modelGateway: gateway });
+  await agent.open({ projectRoot: fixture.projectRoot });
+
+  await agent.submit({ projectRoot: fixture.projectRoot, text: "验证正常完成", source: "chat" });
+  await waitForIdle(agent, fixture.projectRoot);
+  const events = await readEvents(agent, fixture.projectRoot);
+  const completed = eventsOfType(events, "assistant_message_completed").at(-1);
+  assert.equal(completed.payload.text, "完整", "正常完成时正文完整");
+  assert.equal("truncated" in completed.payload, false, "finish_reason=stop 不得携带 truncated 字段");
+});
+
 test("高频 token 合并写入 journal，拼接正文保持完整", async (t) => {
   const tokens = Array.from({ length: 200 }, (_, index) => String(index % 10));
   const text = tokens.join("");

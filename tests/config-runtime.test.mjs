@@ -4,10 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  DEFAULT_CONFIG,
   FALLBACK_WORKSPACE_CONFIG,
   isPermissionAllowed,
   loadConfigLayers,
   loadEffectiveWorkspaceConfig,
+  normalizeConfigLayer,
   resolveConfigLayers,
   resolveRuntimeConfig
 } from "../src/core/config-runtime.mjs";
@@ -54,6 +56,28 @@ test("legacy permission fields normalize into tool_permissions", () => {
   assert.equal(isPermissionAllowed(effective, "network_allowed"), true);
   assert.equal(effective.tool_permissions.safe_edit, false);
   assert.equal(effective.budget_config.max_model_calls, 7);
+});
+
+test("Task 8：死配置字段已删除——DEFAULT_CONFIG 与 normalizeConfigLayer 不再透传 chat_max_tool_rounds/auto_resume_on_start", () => {
+  assert.equal(DEFAULT_CONFIG.chat_max_tool_rounds, undefined, "DEFAULT_CONFIG 不得再含 chat_max_tool_rounds");
+  assert.equal(DEFAULT_CONFIG.auto_resume_on_start, undefined, "DEFAULT_CONFIG 不得再含 auto_resume_on_start");
+
+  // normalizeConfigLayer 不再透传这两个遗留字段：旧配置层即使携带也不进入有效配置。
+  const normalized = normalizeConfigLayer({
+    chat_max_tool_rounds: 8,
+    auto_resume_on_start: true
+  });
+  assert.equal(normalized.chat_max_tool_rounds, undefined, "normalizeConfigLayer 不得透传 chat_max_tool_rounds");
+  assert.equal(normalized.auto_resume_on_start, undefined, "normalizeConfigLayer 不得透传 auto_resume_on_start");
+
+  const { effective } = resolveConfigLayers({
+    projectConfig: { chat_max_tool_rounds: 8, auto_resume_on_start: true }
+  });
+  assert.equal(effective.chat_max_tool_rounds, undefined, "有效配置不得含 chat_max_tool_rounds");
+  assert.equal(effective.auto_resume_on_start, undefined, "有效配置不得含 auto_resume_on_start");
+  // 合规字段不受影响（回归守卫）
+  assert.equal(effective.budget_config.max_model_calls, undefined);
+  assert.equal(typeof effective.budget_config, "object", "budget_config 默认结构保留");
 });
 
 test("runtime config option permissions cannot override policy", () => {

@@ -206,6 +206,8 @@ DeepSeek 官方预设会自动填入：
 
 模型配置保存成功后，运行时预算与成本估算也会同步刷新。未填写价格时不显示成本估算。
 
+`timeout_ms`（空闲超时，默认 300 秒）与 `total_deadline_ms`（总期限，默认 900 秒）可在项目配置文件（`config/local_config.json` 或 `project.yaml` 的 `active_model`）中设置；长章节写作建议 `total_deadline_ms: 1800000`（30 分钟）。
+
 ## 7. 使用联网搜索与网页抓取
 
 联网默认关闭。需要使用资料工具时：

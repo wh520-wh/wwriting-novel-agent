@@ -319,3 +319,65 @@ test("provider error message containing the key is redacted", async () => {
   assert.equal(result.message.includes("secret-value"), false);
   assert.match(result.message, /\[REDACTED\]/);
 });
+
+// ---------------------------------------------------------------------------
+// Task 7：探测判定修复——思考型模型只回 reasoning（正文为空）也判成功；
+// 正文与 reasoning 都为空才判 response_incompatible，且错误消息带 raw 摘要
+// 与可操作方向（借鉴 Claude Code「明确告知」模式）。
+// ---------------------------------------------------------------------------
+
+test("思考型模型仅返回 reasoning（正文为空）：探测成功", async () => {
+  // 走真实 probe（默认 complete=completeOpenAICompatibleProbe），用桩 fetch 模拟
+  // deepseek-reasoner 把 token 额度全花在 reasoning_content 上、正文 content 为空。
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    async text() {
+      return JSON.stringify({ choices: [{ message: { content: "", reasoning_content: "思考过程" } }] });
+    }
+  });
+  try {
+    const result = await testModelConnection({
+      config: {
+        provider: "openai-compatible",
+        model_name: "deepseek-reasoner",
+        base_url: "https://api.deepseek.com",
+        api_key_env: "TEST_KEY"
+      },
+      secrets: { TEST_KEY: "k" }
+    });
+    assert.equal(result.ok, true, "正文为空但 reasoning 非空应视为响应成功");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("正文与 reasoning 均为空：探测失败且消息带 raw 摘要与可操作方向", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    async text() {
+      return JSON.stringify({ choices: [{ message: {} }] });
+    }
+  });
+  try {
+    const result = await testModelConnection({
+      config: {
+        provider: "openai-compatible",
+        model_name: "empty-model",
+        base_url: "https://api.example.com/v1",
+        api_key_env: "TEST_KEY"
+      },
+      secrets: { TEST_KEY: "k" }
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, "response_incompatible");
+    // 错误消息给出可操作方向 + raw 摘要（消息最终要能到达用户 UI）。
+    assert.match(result.message, /思考/u, "消息应提示思考型/思考未落正文等可能原因");
+    assert.match(result.message, /choices\[0\]\.message 字段/u, "消息应带 raw 摘要（summarizeResponseForDiagnostics）");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

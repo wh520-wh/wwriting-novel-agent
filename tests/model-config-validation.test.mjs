@@ -104,3 +104,37 @@ test("api_key_env rejects shell expressions", () => {
     /环境变量名/,
   );
 });
+
+test("timeout_ms/total_deadline_ms：合法正整数透传", () => {
+  const config = validateModelConfig({
+    provider: "openai-compatible",
+    model_name: "writer",
+    base_url: "https://api.example.test/v1",
+    api_key_env: "WRITER_KEY",
+    timeout_ms: 300000,
+    total_deadline_ms: 1800000
+  });
+  assert.equal(config.timeout_ms, 300000);
+  assert.equal(config.total_deadline_ms, 1800000);
+});
+
+test("timeout_ms/total_deadline_ms：负数/非整数/零/非数字拒绝并报字段名", () => {
+  for (const [field, value] of [
+    ["timeout_ms", -5],
+    ["timeout_ms", 1.5],
+    ["timeout_ms", "abc"],
+    ["timeout_ms", 0],
+    ["total_deadline_ms", -1],
+    ["total_deadline_ms", "3.5"]
+  ]) {
+    assert.throws(() => validateModelConfig({
+      provider: "openai-compatible", model_name: "x",
+      base_url: "https://api.example.com", api_key_env: "K",
+      [field]: value
+    }), (e) => {
+      assert.equal(typeof e.fields?.[field], "string", `${field} 应在 fields 报错`);
+      assert.match(e.fields[field], /正整数/);
+      return true;
+    });
+  }
+});

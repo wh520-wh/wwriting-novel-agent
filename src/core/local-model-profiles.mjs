@@ -114,6 +114,8 @@ function normalizeModelProfile(value) {
   copyOptional(profile, value, "cache_mode");
   copyOptional(profile, value, "max_context_tokens");
   copyOptional(profile, value, "max_output_tokens");
+  copyOptional(profile, value, "timeout_ms");
+  copyOptional(profile, value, "total_deadline_ms");
   copyOptional(profile, value, "temperature");
   if (value.stream !== undefined) profile.stream = value.stream === true;
   if (value.pricing && typeof value.pricing === "object" && !Array.isArray(value.pricing)) {

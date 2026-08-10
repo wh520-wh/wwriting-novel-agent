@@ -23,8 +23,6 @@ export const DEFAULT_CONFIG = {
   budget_config: {},
   cache_config: {},
   research_config: {},
-  chat_max_tool_rounds: 32,
-  auto_resume_on_start: false,
 };
 
 // 任务 5：普通工作区（无 project.yaml / 无应用私有 settings）的有效配置安全默认。
@@ -156,8 +154,6 @@ export function normalizeConfigLayer(layer = {}, options = {}) {
   copyIfDefined(config, source, "research_config");
   copyIfDefined(config, source, "default_writer_model");
   copyIfDefined(config, source, "default_reviewer_model");
-  copyIfDefined(config, source, "chat_max_tool_rounds");
-  copyIfDefined(config, source, "auto_resume_on_start");
 
   if (source.network_allowed !== undefined) {
     config.tool_permissions ??= {};

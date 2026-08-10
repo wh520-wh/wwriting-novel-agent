@@ -28,6 +28,8 @@ function makeGateway(adapter, overrides = {}) {
   });
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 class HangingAdapter {
   constructor() {
     this.callIndex = 0;
@@ -456,6 +458,99 @@ test("total deadline 到时立即抛错，不重试", async () => {
   assert.equal(calls, 1, "deadline 到期不应再发起新 attempt");
 });
 
+test("流式持续出 token 不触发 attempt 超时（空闲超时语义）", async () => {
+  const tokens = ["a", "b", "c", "d", "e", "f"];
+  const streamingAdapter = {
+    async complete(request) {
+      for (const t of tokens) { request.metadata?.onToken?.(t, {}); await sleep(10); }
+      return { text: tokens.join(""), usage: {} };
+    }
+  };
+  const gateway = makeGateway(streamingAdapter, { retryMax: 0, timeoutMs: 40, heartbeatMs: 0 });
+  const reply = await gateway.complete({ ...BASE_REQUEST, stream: true });
+  assert.equal(reply.text, "abcdef", "持续流式输出不因总时长 > attemptTimeoutMs 被截断");
+});
+
+test("流式 reasoning-only 超时允许重试（不产生重复正文）", async () => {
+  let calls = 0;
+  const flaky = { async complete(request, { signal }) {
+    calls += 1;
+    request.metadata?.onReasoningToken?.("思考", {});
+    if (calls === 1) {
+      return new Promise((_, reject) => {
+        signal.addEventListener("abort", () => reject(new DOMException("abort", "AbortError")), { once: true });
+      });
+    }
+    return { text: "正文", usage: {} };
+  } };
+  const gateway = makeGateway(flaky, { retryMax: 1, timeoutMs: 30, heartbeatMs: 0 });
+  const reply = await gateway.complete(BASE_REQUEST);
+  assert.equal(reply.text, "正文");
+  assert.equal(reply.retried, true, "reasoning-only 超时应可重试");
+});
+
+test("totalDeadline 硬闸约束在途 attempt（不再超期）", async () => {
+  const hanging = { async complete(request, { signal }) {
+    const timer = setInterval(() => request.metadata?.onToken?.("x", {}), 5);
+    return new Promise((_, reject) => {
+      signal.addEventListener("abort", () => { clearInterval(timer); reject(new DOMException("abort", "AbortError")); });
+    });
+  } };
+  const gateway = makeGateway(hanging, { retryMax: 0, timeoutMs: 200, totalDeadlineMs: 60, heartbeatMs: 0 });
+  await assert.rejects(
+    () => gateway.complete({ ...BASE_REQUEST, stream: true }),
+    (err) => err.code === "provider_transport_error" && err.reason === "timeout" && /deadline/u.test(err.message)
+  );
+});
+
+test("流式仅回调 onActivity（无 token）也持续刷新活动，不被空闲超时中止", async () => {
+  const activityLog = [];
+  const adapter = {
+    async complete(request, { signal }) {
+      // 观察 abort：旧逻辑（onActivity 不刷新活动）会在 tick=40ms 空闲超时
+      // abort，本 adapter 随之 reject——否则忽略信号的流式 adapter 无论超时
+      // 与否都会正常返回，测试失去区分度。
+      const aborted = new Promise((_, reject) => {
+        signal.addEventListener("abort", () => reject(new DOMException("abort", "AbortError")), { once: true });
+      });
+      for (let i = 0; i < 6; i += 1) {
+        request.metadata.onActivity("keep-alive", {});
+        await Promise.race([sleep(10), aborted]);
+      }
+      return { text: "ok", usage: {} };
+    }
+  };
+  // heartbeatMs=5：看门狗周期 = min(5, 1000)=5ms，让 tick 落在 60ms 窗口内，
+  // 旧逻辑下 tick=40ms 即触发空闲超时；heartbeatMs=0 时首次 tick 在 1000ms，
+  // 窗口内根本不触发检查，测试无区分度。
+  const gateway = makeGateway(adapter, { retryMax: 0, timeoutMs: 40, heartbeatMs: 5 });
+  const reply = await gateway.complete({
+    ...BASE_REQUEST,
+    metadata: { onActivity: (token) => activityLog.push(token) }
+  });
+  assert.equal(reply.text, "ok", "持续 onActivity 的流不应被空闲超时中止");
+  assert.equal(activityLog.length, 6, "onActivity 回调按帧原样转发");
+});
+
+test("totalDeadline 硬闸直抛：超期在途 attempt 不发起虚假重试、不 recordRetry", async () => {
+  let calls = 0;
+  const hanging = { async complete(request, { signal }) {
+    calls += 1;
+    return new Promise((_, reject) => {
+      signal.addEventListener("abort", () => reject(new DOMException("abort", "AbortError")), { once: true });
+    });
+  } };
+  // 不产生任何 token（lastActivityAt 恒为 attempt 起点），timeoutMs 远大于
+  // totalDeadlineMs → 首个 tick 只有 deadline 条件满足，走硬闸路径。
+  const gateway = makeGateway(hanging, { retryMax: 2, timeoutMs: 5000, totalDeadlineMs: 60, heartbeatMs: 5 });
+  await assert.rejects(
+    () => gateway.complete(BASE_REQUEST),
+    (err) => err.code === "provider_transport_error" && err.reason === "timeout" && /deadline/u.test(err.message)
+  );
+  assert.equal(calls, 1, "deadline 硬闸后不再发起新 attempt");
+  assert.equal(gateway.getSummary().retries, 0, "deadline 硬闸不应 recordRetry（无虚假重试记账）");
+});
+
 // ---------------------------------------------------------------------------
 // heartbeat
 // ---------------------------------------------------------------------------
@@ -855,7 +950,7 @@ test("契约：gateway 透传 reply.reasoning，reasoning 与正文互不兜底"
   assert.deepEqual(reasoningTokens, ["先检查事实，", "再回答。"]);
 });
 
-test("流式 attempt 已输出 reasoning token 后失败时不自动重试，避免重复推理", async () => {
+test("流式 attempt 只输出 reasoning 后失败可透明重试（reasoning 不阻断重试，正文才阻断）", async () => {
   let calls = 0;
   const reasoningTokens = [];
   const adapter = {
@@ -876,8 +971,8 @@ test("流式 attempt 已输出 reasoning token 后失败时不自动重试，避
     (error) => error.code === "provider_transport_error" && error.reason === "network"
   );
 
-  assert.equal(calls, 1, "已公开 reasoning 的 attempt 不能再透明重试");
-  assert.deepEqual(reasoningTokens, ["think"]);
+  assert.equal(calls, 4, "仅输出 reasoning 的 attempt 可透明重试（1 次初始 + 3 次重试）");
+  assert.equal(reasoningTokens.length, 4, "每次 attempt 都重新输出 reasoning");
 });
 
 test("缓存命中：reasoning 一并存取，第二次返回相同 reasoning", async () => {

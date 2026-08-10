@@ -205,6 +205,37 @@ test("无项目也能列出、选用、删除模型", async () => {
   }
 });
 
+test("自定义 OpenAI 兼容模型（非官方 base_url + 明文 key）：保存后进入模型清单", async () => {
+  // Task 7 ③：用户痛点「自定义模型保存后不进已配置」的链路复现核查——先用
+  // 自定义 base_url + 明文 key 保存，再 GET models 断言清单包含该模型。
+  const { server, port } = await setupProjectlessServer();
+  try {
+    const { status, json } = await post(port, "/api/settings/model-profile", {
+      active_model: {
+        provider: "openai-compatible",
+        model_name: "custom-openai-v1",
+        base_url: "https://api.example.com/v1",
+        api_key_env: "CUSTOM_PROVIDER_KEY",
+        api_key: "sk-custom-plaintext"
+      }
+    });
+    assert.equal(status, 200);
+    assert.equal(json.model_profile.model_name, "custom-openai-v1");
+    assert.equal(json.model_profile.api_key_saved, true, "明文 key 应落盘");
+
+    const listed = await fetch(`http://127.0.0.1:${port}/api/settings/models`);
+    const listJson = await listed.json();
+    assert.equal(listed.status, 200);
+    const model = listJson.models.find((m) => m.model_name === "custom-openai-v1");
+    assert.ok(model, "自定义 OpenAI 兼容模型保存后应出现在模型清单（已配置）");
+    assert.equal(model.base_url, "https://api.example.com/v1");
+    assert.equal(model.api_key_saved, true);
+    assert.equal(listJson.default_model.model_name, "custom-openai-v1", "唯一模型保存后成为默认");
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test("选用/删除不存在的模型：400 且带可读原因", async () => {
   const { server, port } = await setupProjectlessServer();
   try {
