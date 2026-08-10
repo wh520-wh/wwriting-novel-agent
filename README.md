@@ -11,7 +11,7 @@
 ### 升级亮点
 
 - **单一后端内核（ProjectAgent）**：聊天循环、写作循环、章节队列、停止恢复全部合并为一个深 `ProjectAgent` 内核。对外只暴露一个公共接口（`src/core/agent/index.mjs`），内部使用统一 journal、PromptAssembler、ToolRuntime 与 WorkflowPolicy。旧的双 Agent 编排、TaskQueue、failure/retry 命令矩阵、事件总线全部删除（净删除约 4.1 万行旧代码）。
-- **单一前端控制面（AgentSurface）**：对话、活动流、Visible Plan、排队队列、`立即`/`停止`、权限确认卡收敛为一个 `AgentSurface`（`src/app-shell/agent/index.js`）。旧的 thread renderer、composer 业务正则、准备写作卡、完成卡、顶部执行状态全部移除。
+- **单一前端控制面（AgentSurface）**：对话、工作组（工具/推理条目）、Visible Plan、排队队列、`立即`/`停止`、权限确认卡收敛为一个 `AgentSurface`（`src/app-shell/agent/index.js`）。旧的 thread renderer、composer 业务正则、准备写作卡、完成卡、顶部执行状态全部移除。
 - **Journal 事件溯源（应用私有）**：Session、Run、队列、计划、决策、授权全部以事件形式记录在**应用私有工作区目录**（`<userData>/workspaces/<workspace-id>/agent/sessions/<session-id>/segments/events/`，每个会话独立事件流、可轮转），不写入创作文件夹；`session.json` 是可重建投影。崩溃重启从断点恢复，`立即` 在同一 Run 内提升消息，`停止` 干净收敛并清除临时授权。
 - **权限与安全不变量全量保留**：只读自动、普通副作用确认、`本条输入允许同类操作`（按输入粒度授权）、YOLO、extreme 精确确认文字、Shell 进程树停止、命令/输出流式脱敏——逐项通过前置验收语料。
 - **自研模型网关（ModelGateway）**：retry、超时、心跳、usage、成本记账与 OpenAI-compatible 原生 function calling 集中在干净的 model 层；provider adapter 不再包含任何写作业务身份或工具表。
@@ -47,7 +47,7 @@ WWriting 不是"你描述、它代写"的生成器。它是一个桌面写作工
 ## 功能亮点
 
 - **打开任意文件夹即可聊天**：空目录、普通资料目录、旧 WWriting 项目和 Git 仓库拥有相同的聊天入口；`project.yaml`、`WWRITING.md`、总纲和章节目录都不是聊天资格条件。
-- **单一聊天对话面**：写作、审核、初始化、提问都在同一个对话里发起；模型的状态（思考中、读取文件、运行命令、等待确认）实时显示在当前这一轮，排队中的输入显示原文 + `排队` + `立即`。
+- **单一聊天对话面**：写作、审核、初始化、提问都在同一个对话里发起；模型的状态（思考中、读取文件、运行命令、等待确认）以工作组条目的形式实时显示在当前这一轮，排队中的输入显示原文 + `排队` + `立即`。
 - **本地项目文件夹持久化**：章节正文写入 Markdown，任何编辑器都能打开；普通文件夹无需任何初始化表单即可开始写作。
 - **项目记忆 `WWRITING.md`**：长期工作区在项目根维护一份可查看、可手工编辑的项目记忆，记录当前有效要求、写作风格与权威文件索引；`/init` 负责创建或谨慎更新它，不生成固定蓝图。
 - **客观字数工具 `count_text`**：用户有明确字数要求时，模型可自主调用工具获取真实字数，再自行判断补写、删减或结束；它不是完成门禁，未调用也不会被拒绝提交。
