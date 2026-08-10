@@ -255,7 +255,10 @@ function applyEventToState(state, event) {
           text: finalText,
           input_id: payload.input_id ?? null,
           seq,
-          event_key: key
+          event_key: key,
+          // Task 4：completed 携带 truncated 标记（核心按 finish_reason=length 判定），
+          // 投影到消息记录供 view 渲染截断提示；缺省视为完整输出。
+          truncated: payload.truncated === true
         });
         bump(state, ["messages"]);
       }

@@ -284,7 +284,7 @@ test("Step 4: 工作组展开默认值与终态耗时文案（每组自带时钟
   assert.equal(group.expanded, true);
   assert.equal(groupStatusText(group), "工作了 18 秒 · 已中断");
 
-  // waiting_user → 保持展开；等待不计时，文案"工作中"
+  // waiting_user → 保持展开；等待不计时，文案"待命"（与 session-sidebar RUN_STATUS_LABELS 口径统一）
   work = reduceAll([
     ev("run_started", { workflow: "general", input_id: "in-1" }, 1, { at: atSec(0) }),
     ev("run_status_changed", { status: "waiting_user" }, 2, { at: atSec(10) })
@@ -294,7 +294,7 @@ test("Step 4: 工作组展开默认值与终态耗时文案（每组自带时钟
   assert.equal(group.expanded, true);
   assert.equal(group.activeMs, 10000, "进入等待前已累计 10s");
   assert.equal(group.activeSince, null, "等待期间不在活动区间");
-  assert.equal(groupStatusText(group), "工作中");
+  assert.equal(groupStatusText(group), "待命");
 });
 
 test("工作时钟镜像 journal transitionWorkClock：waiting_user 不计时，终态冻结自身值", () => {

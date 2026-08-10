@@ -110,9 +110,11 @@ export function reasoningLabel(state) {
 
 export const PLAN_LABEL = "任务计划";
 
-// 工作组状态文案（Task 5 Step 4）：运行中显示"工作中"；终态按组状态给耗时文案。
-// 每组的耗时来自组自身投影的冻结时钟（Task 15 修复）：不再读当前 active run 的
-// active_elapsed_ms —— 第二个 Run 开始后旧组的终态文案不再被新 Run 的时钟覆盖。
+// 工作组状态文案（Task 5 Step 4）：运行中显示"工作中"；waiting_user 显示"待命"
+//（与 session-sidebar.mjs 的 RUN_STATUS_LABELS 口径统一，等待用户决策≠工作中）；
+// 终态按组状态给耗时文案。每组的耗时来自组自身投影的冻结时钟（Task 15 修复）：
+// 不再读当前 active run 的 active_elapsed_ms —— 第二个 Run 开始后旧组的终态文案
+// 不再被新 Run 的时钟覆盖。
 export function formatDuration(ms) {
   if (!Number.isFinite(ms) || ms < 0) return "0 秒";
   const totalSeconds = Math.floor(ms / 1000);
@@ -131,6 +133,7 @@ export function groupStatusText(group) {
     case "failed": return `工作了 ${seconds} · 失败`;
     case "cancelled": return `工作了 ${seconds} · 已停止`;
     case "interrupted": return `工作了 ${seconds} · 已中断`;
+    case "waiting_user": return "待命";
     default: return "工作中";
   }
 }

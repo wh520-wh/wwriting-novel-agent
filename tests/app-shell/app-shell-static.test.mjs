@@ -92,6 +92,21 @@ test("app.js 保留项目/设置/阅读器/抽屉接线", () => {
   assert.doesNotMatch(appSource, /\/api\/chat\/|\/api\/commands\/submit|\/api\/run\/stop|\/api\/queue\//u);
 });
 
+test("Task 5 静态契约：归档/删除共用「移除后切走 + 占位兜底」解析器", () => {
+  // 缺陷 B（归档当前活跃会话后消息写进隐藏归档会话）：归档路径与删除路径共用
+  // createSessionRemovalResolver（依赖注入纯函数，切走 + 新代次重拉落盘 + 占位兜底，
+  // 见 session-sidebar.mjs），app.js 只做依赖接线并经 onArchiveSession 注入侧边栏。
+  assert.match(
+    appSource,
+    /createSessionRemovalResolver/,
+    "app.js 应使用可注入的会话移除解析器（session-sidebar.mjs 导出）"
+  );
+  assert.match(appSource, /resolveActiveAfterSessionRemoval\s*\(sessionId\)/, "删除路径调用共用解析函数");
+  assert.match(appSource, /resolveActiveAfterSessionRemoval\s*\(session\.session_id\)/, "归档路径调用共用解析函数");
+  assert.match(appSource, /onArchiveSession\s*:/, "app.js 应向侧边栏注入归档 handler（切走编排入口）");
+  assert.match(appSource, /refreshSessions:\s*\(\s*\)\s*=>\s*agentSurface\.refreshSessions/, "解析器接线重拉列表（新代次落盘后占位判定才权威）");
+});
+
 test("api-client.js exports 通用 helper 且无旧 chat helper", () => {
   assert.match(apiClientSource, /export\s+function\s+withProjectScope\s*\(/);
   assert.match(apiClientSource, /export\s+async\s+function\s+getJson\s*\(/);

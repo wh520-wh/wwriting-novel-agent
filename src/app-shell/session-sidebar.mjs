@@ -8,7 +8,9 @@
 //   - 懒加载：当前项目会话来自 dashboard seed（不重复拉），展开其他未缓存项目时
 //     懒调 fetchSessions(projectRoot) 并缓存（内存 Map，本次会话内不重复拉）；
 //   - 会话操作委托 surface（switchSession / newSessionPlaceholder / renameSession /
-//     archiveSession / setBusy），draft 占位特判（status === "draft"）；
+//     archiveSession / setBusy），draft 占位过滤（渲染层排除，双保险）；
+//   - 导出 createSessionRemovalResolver（会话移除后「切走 + 占位兜底」编排，依赖
+//     注入纯函数，app.js 接线归档/删除共用）；
 //   - busy 复位（Task 8 契约）：列表刷新时检查当前项目其他会话 run_status，
 //     有 running → setBusy(true)，全部非 running → setBusy(false)；
 //   - 会话级代次守卫（防串场）：镜像 app.js 的 projectScope.capture 机制——
@@ -23,10 +25,13 @@ const COLLAPSED_STORAGE_KEY = "wwriting:projects:collapsed";
 // 订阅），busy=true 时由该定时器兜底重拉会话列表，保证其他会话结束后发送键能复位。
 const BUSY_REFRESH_INTERVAL_MS = 5000;
 
+// 会话状态点 title 文案的权威口径（工作组文案与其对齐，见 work-items.mjs
+// groupStatusText 的 waiting_user 分支）；未知状态兜底「待命」。
 const RUN_STATUS_LABELS = {
   running: "运行中",
   failed: "失败",
-  idle: "待命"
+  idle: "待命",
+  waiting_user: "待命"
 };
 
 export function createSessionSidebar({
@@ -45,6 +50,10 @@ export function createSessionSidebar({
   setIntervalFn = globalThis.setInterval,
   clearIntervalFn = globalThis.clearInterval,
   openProjectAndSession = async () => {},
+  // Task 5：归档动作的切走编排入口（app.js 注入）。归档成功且被归档的是当前活跃
+  // 会话时需切走（否则消息继续写进已隐藏的归档会话）；未注入时保持直连
+  // surface.archiveSession 的旧行为。
+  onArchiveSession = null,
   doc = globalThis.document
 }) {
   const collapsedByRoot = loadCollapsed();
@@ -249,7 +258,8 @@ export function createSessionSidebar({
     const parts = [];
     const entry = sessionCache.get(root);
     if (entry) {
-      const visible = entry.sessions.filter((session) => session.status === "draft" || !session.archived_at);
+      // Task 3 双保险：draft 占位绝不渲染（surface 已不投递，此过滤兜底跨项目 stale 缓存）
+      const visible = entry.sessions.filter((session) => session.status !== "draft" && !session.archived_at);
       for (const session of visible) parts.push(renderSessionRow(session, entry.activeSessionId, root));
       if (visible.length === 0) parts.push(emptyRow("还没有对话"));
     } else if (failedRoots.has(root)) {
@@ -395,6 +405,9 @@ export function createSessionSidebar({
     // 切走 draft 占位：surface 在 switchSession 内部已刷新一次列表（agent/index.js
     // 的切走收尾 prevDraft 分支），这里跳过续作刷新避免双刷；其余切换仍需 app 侧
     // 刷新（Task 8 契约：surface 不自动拉）。活跃指针取自会话缓存（与渲染同源）。
+    // Task 3 后 draft 永不进入缓存（handleSessionsChanged 过滤 draft 项），
+    // leavingDraft 恒为 false——保留该分支作防御（若未来 draft 重新入缓存，切走
+    // 时不双刷）。
     const leavingEntry = sessionCache.get(token.projectRoot);
     const leavingDraft = leavingEntry?.activeSessionId != null &&
       leavingEntry.sessions.some(
@@ -426,7 +439,14 @@ export function createSessionSidebar({
 
   async function archiveSession(session) {
     try {
-      await surface.archiveSession(session.session_id);
+      if (typeof onArchiveSession === "function") {
+        // Task 5：归档动作委托 app.js 的切走编排（归档当前活跃会话 → 切走 +
+        // 占位兜底，见 app.js resolveActiveAfterSessionRemoval），单一权威位置，
+        // 避免 sidebar 与 surface 双插导致双刷。
+        await onArchiveSession(session);
+      } else {
+        await surface.archiveSession(session.session_id);
+      }
       showToast(`已归档对话 ${session.title ?? "新对话"}`, "success");
     } catch (error) {
       showToast(error?.message ?? "归档失败", "error");
@@ -542,5 +562,32 @@ export function createSessionSidebar({
     markSessionsFailed,
     switchSession: commitSessionSwitch,
     getSessions
+  };
+}
+
+// Task 5：会话被移除（归档/删除）后的「切走 + 占位兜底」编排（依赖注入纯函数工厂，
+// app.js 接线：getSessions/switchSession 绑定 session-sidebar 缓存与会话切换，
+// refreshSessions/newSessionPlaceholder 绑定 agentSurface）。独立导出以便行为级测试
+// 直接断言（含占位分支可达性）。
+export function createSessionRemovalResolver({
+  getSessions,
+  switchSession,
+  refreshSessions,
+  newSessionPlaceholder
+}) {
+  return async function resolveActiveAfterSessionRemoval(sessionId) {
+    // 操作对象不再是当前活跃指针（操作方触发的刷新已反映新活跃）→ 无需切走。
+    if (getSessions()?.activeSessionId !== sessionId) return;
+    await switchSession(null);
+    // 切走推进会话代次（surface.switchSession 递增 sessionGeneration）：操作方
+    //（surface.sessionAction）在切走前发起的旧列表刷新已被代次守卫丢弃
+    //（agent/index.js isCurrentProjectScope），此时若直接读缓存仍是操作前快照——
+    // 被移除会话 archived_at 为空、usable 恒 ≥ 1，占位分支不可达（归档/删除最后
+    // 一个可用会话后留空白视图）。必须按切走后的新代次重拉一次列表并等待落盘
+    //（emitSessions → onSessionsChanged → handleSessionsChanged 同步写缓存）再判定。
+    await refreshSessions();
+    const entry = getSessions();
+    const usable = (entry?.sessions ?? []).filter((s) => !s.archived_at);
+    if (usable.length === 0) newSessionPlaceholder();
   };
 }

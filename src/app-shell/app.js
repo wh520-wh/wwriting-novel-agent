@@ -13,7 +13,7 @@ import { icon } from "./icons.js";
 import { createDrawerPanels } from "./drawer-panels.js";
 import { createSettingsModal } from "./settings-modal.js";
 import { createProjectScope } from "./project-scope.mjs";
-import { createSessionSidebar } from "./session-sidebar.mjs";
+import { createSessionSidebar, createSessionRemovalResolver } from "./session-sidebar.mjs";
 import { createAgentSurface } from "./agent/index.js";
 import { loadDefaultTier } from "./permission-defaults.mjs";
 import { getTierById } from "./permission-tiers.mjs";
@@ -100,10 +100,11 @@ const agentSurface = createAgentSurface({
   onOpenChapter: (chapterNo) => openReader(chapterNo),
   onCreateProject: () => openCreateModal(),
   onOpenProjectFolder: () => openFromFolder(),
-  // Task 9：会话列表刷新 → 左侧栏两级树（只重渲当前项目组 + busy 复位）。draft
-  // 占位已由 surface 插入列表头部（{ session_id, title, status: "draft" }），
-  // 侧边栏按 status === "draft" 特判。活跃会话 id 由 sidebar 自持（sessionCache
-  // 的 activeSessionId），app.js 需要时经 sessionSidebar.getSessions() 读取。
+  // Task 9：会话列表刷新 → 左侧栏两级树（只重渲当前项目组 + busy 复位）。Task 3：
+  // draft 占位不进入会话列表（发送首条消息前左侧不显示新项），只经 activeSessionId
+  // 透出活跃指针；侧边栏渲染层按 status === "draft" 过滤兜底（双保险）。活跃会话
+  // id 由 sidebar 自持（sessionCache 的 activeSessionId），app.js 需要时经
+  // sessionSidebar.getSessions() 读取。
   onSessionsChanged: (sessions, activeSessionId) => {
     sessionSidebar.handleSessionsChanged(currentProjectRoot, sessions, activeSessionId);
   },
@@ -129,6 +130,7 @@ const sessionSidebar = createSessionSidebar({
   fetchSessions: async (projectRoot) => getJson(withProjectScope("/api/agent/sessions", projectRoot)),
   renderProjectRow: (project) => renderProjectNav(project),
   surface: agentSurface,
+  onArchiveSession: (session) => archiveSessionAndResolveActive(session),
   showToast,
   openProjectAndSession
 });
@@ -389,20 +391,36 @@ function commitProjectSwitch(projectRoot, activeSessionId = null) {
   });
 }
 
+// 「切走 + 占位兜底」（归档与删除共用）：依赖接线——会话缓存与会话切换绑定
+// sessionSidebar，列表重拉与占位绑定 agentSurface。真实行为：切走推进会话代次，
+// 操作方（surface.sessionAction）在切走前发起的列表刷新被代次守卫丢弃（index.js
+// isCurrentProjectScope），解析器内部按切走后的新代次重拉一次并等待落盘再判定
+// 占位（细节见 session-sidebar.mjs createSessionRemovalResolver）。
+const resolveActiveAfterSessionRemoval = createSessionRemovalResolver({
+  getSessions: () => sessionSidebar.getSessions(currentProjectRoot),
+  switchSession: (sessionId) => sessionSidebar.switchSession(sessionId),
+  refreshSessions: () => agentSurface.refreshSessions(),
+  newSessionPlaceholder: () => agentSurface.newSessionPlaceholder()
+});
+
 // Task 8 契约：删除会话后若删的是当前活跃会话 → 切到该项目的最近活跃会话
 //（surface.switchSession(null) 由后端 last-active 解析），无其他会话则进入占位新对话。
 // Task 9 侧边栏无删除入口（会话操作仅改名/归档）；Task 10 设置页「已归档对话」
 // 删除时调用本函数。
 async function deleteSessionAndResolveActive(sessionId) {
   await agentSurface.deleteSession(sessionId);
-  // 删的是当前活跃会话才需要切走；活跃指针从 sidebar 的会话缓存读取（与
-  // onSessionsChanged 同一数据源，删除后的 refreshSessions 若已落地会自然反映新活跃）。
-  if (sessionSidebar.getSessions(currentProjectRoot)?.activeSessionId !== sessionId) return;
-  await sessionSidebar.switchSession(null);
-  const remaining = sessionSidebar.getSessions(currentProjectRoot);
-  if (!remaining || remaining.sessions.length === 0) {
-    agentSurface.newSessionPlaceholder();
-  }
+  await resolveActiveAfterSessionRemoval(sessionId);
+}
+
+// Task 5 缺陷 B：归档当前活跃会话后 surface 仍指向已归档会话 → 侧边栏无高亮行
+//（被过滤），继续发送会把消息写进隐藏的归档会话。归档成功后若被归档 id 仍是当前
+// 活跃指针 → 切到最近活跃会话（后端 last-active 解析）；无其他可用会话则进入占位。
+// 切走编排与删除共用 resolveActiveAfterSessionRemoval（createSessionRemovalResolver
+// 工厂实例，依赖注入便于行为级测试），经 onArchiveSession 注入侧边栏（单一权威
+// 位置，避免 sidebar 与 surface 双插导致双刷）。
+async function archiveSessionAndResolveActive(session) {
+  await agentSurface.archiveSession(session.session_id);
+  await resolveActiveAfterSessionRemoval(session.session_id);
 }
 
 // R3/B1：项目行不可选中（无 active/aria-current），.proj 主体点击只折叠/展开

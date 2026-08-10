@@ -45,6 +45,10 @@ export function createAgentSurface({
   // 当前代次不一致则丢弃——迟到的快照/事件绝不污染已切换会话的视图。
   let sessionGeneration = 0;
   let streamGeneration = -1;   // 当前 SSE 事件流的代次：connectEvents 时 = sessionGeneration
+  // Task 8：会话列表刷新的请求序号（新鲜度守卫，镜像 app.js dashboardRequestId）。
+  // 代次守卫（isCurrentProjectScope）管切项目/会话；本序号管同代次内的并发刷新——
+  // 慢响应在返回后若发现已有更新发起的刷新，则丢弃，绝不覆盖新状态。
+  let sessionsRequestId = 0;
   let sessionStates = new Map(); // sessionId -> state 实例（已载入会话缓存：切回不重拉全量）
   let activeSessionId = null;  // 当前会话 id（null = 未指定，由后端 last-active 决定）
   let draftSessionId = null;   // 本地未落盘的新对话占位 id（提交后由后端 session_id 替换）
@@ -333,8 +337,9 @@ export function createAgentSurface({
     view.render(state, actions);
   }
 
-  // Task 8：新对话占位（未落盘）。列表出现「新对话」草稿项、composer 可输入；
-  // 提交时先 createSession 落盘（后端返回 session_id）替换占位再投递输入。
+  // Task 8：新对话占位（未落盘）。占位期间右侧空白对话、composer 可输入，列表
+  // 不出现新项（Task 3：占位不进会话列表）；提交时先 createSession 落盘（后端
+  // 返回 session_id）替换占位再投递输入，刷新后列表才出现真实会话。
   function newSessionPlaceholder() {
     if (draftSessionId != null) return draftSessionId; // 已有未提交占位：不重复创建
     draftSessionId = `draft-${Date.now().toString(36)}`;
@@ -365,28 +370,35 @@ export function createAgentSurface({
     return draftSessionId;
   }
 
-  // 拉取会话列表 → onSessionsChanged（draft 占位插入到列表头部）。任务 9 左侧
-  // 栏以此为数据源；列表刷新失败不阻断对话。活跃通知缺口：openProject/switchSession
-  // 不触发 refreshSessions，Task 9 侧边栏须在这些操作后自行调 refreshSessions()
-  // 更新活跃高亮。draft 占位项 shape 特判：{ session_id, title, status: "draft" }，
-  // 与真实会话项（带 archived_at 等注册表字段）不同，侧边栏须按 status ===
-  // "draft" 特判（显示「新对话」、禁用会话操作），勿按真实项处理。
-  function emitSessions(list) {
+  // 拉取会话列表 → onSessionsChanged（Task 3：draft 占位不再插入列表头部——占位是
+  // 本地未落盘状态，发送首条消息（createSession 落盘）前左侧栏不显示任何新项）。
+  // 任务 9 左侧栏以此为数据源；列表刷新失败不阻断对话。活跃通知缺口：
+  // openProject/switchSession 不触发 refreshSessions，Task 9 侧边栏须在这些操作后
+  // 自行调 refreshSessions() 更新活跃高亮。draft 占位只经 activeSessionId 透出
+  //（draft id 不在列表中、无行匹配，侧边栏据此清除旧高亮），永不进入 sessions 列表。
+  // Task 5：活跃指针 = surface 当前 activeSessionId（非 null 时优先），null 时用
+  // 后端 active_session_id 兜底（启动/归档切走等未指定会话的场景，侧边栏据此保持
+  // 正确高亮，避免把当前会话误判为「其他会话」导致 busy 误禁发送键）。
+  function emitSessions(list, fallbackActiveId = null) {
     const sessions = Array.isArray(list) ? list : [];
-    const merged = draftSessionId != null
-      ? [{ session_id: draftSessionId, title: "新对话", status: "draft" }, ...sessions]
-      : sessions;
-    onSessionsChanged(merged, activeSessionId);
+    onSessionsChanged(sessions, activeSessionId ?? fallbackActiveId);
   }
 
   async function refreshSessions() {
     const t = ensureApi();
     if (typeof t.sessions !== "function") return;
     const scope = currentProjectScope();
+    const requestId = ++sessionsRequestId; // 新鲜度守卫：慢响应返回后若已有更新发起则丢弃
     try {
       const data = await t.sessions();
+      if (requestId !== sessionsRequestId) return; // 慢响应不覆盖更新发起的刷新
       if (!isCurrentProjectScope(scope)) return;
-      emitSessions(Array.isArray(data?.sessions) ? data.sessions : []);
+      // 后端契约：GET /api/agent/sessions 返回 { sessions, active_session_id }
+      //（agent-routes.mjs）。active_session_id 是「未指定会话」时的权威活跃指针。
+      emitSessions(
+        Array.isArray(data?.sessions) ? data.sessions : [],
+        data?.active_session_id ?? null
+      );
     } catch {
       // 列表刷新失败不阻断对话
     }

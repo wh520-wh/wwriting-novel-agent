@@ -470,6 +470,15 @@
   color: var(--agent-ink);
 }
 
+/* 截断标记（Task 4）：弱化辅助文字，与正文区隔，不抢正文视觉层级 */
+.agent-message-truncation {
+  margin-top: 6px;
+  padding-left: 2px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 /* 助手正文 Markdown（Task 8 Step 5）：流式与终态共用同一个 .agent-markdown
    容器与完全相同的排版路径——只有内容和 streaming state 变化，不为终态复制
    一套 typography（无 .is-streaming h* / .is-complete h* 重复规则）。 */

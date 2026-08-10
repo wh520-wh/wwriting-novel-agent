@@ -29,6 +29,22 @@ const SETTINGS_SECTIONS = [
   { id: "danger", label: "项目管理", icon: "folder", ready: true }
 ];
 
+// 模型分区表单草稿（Task 7）：关闭设置时把未保存的 model_name/base_url/api_key
+// 写入 localStorage，重开时恢复（草稿存在时优先于已保存模型回填）。key 带供应商
+// tab id（settingsProviderId），草稿按 tab 隔离。api_key 明文存本地是既有惯例
+// （本地个人使用；服务端密钥槽也以明文落盘）。
+const MODEL_DRAFT_STORAGE_PREFIX = "wwriting.settings.model.draft";
+
+// 浏览器默认 localStorage 的取用要 try/catch：sandboxed iframe 里访问
+// globalThis.localStorage 的 getter 可能抛 SecurityError，不能假设访问安全。
+function safeLocalStorage() {
+  try {
+    return typeof globalThis.localStorage !== "undefined" ? globalThis.localStorage : null;
+  } catch {
+    return null;
+  }
+}
+
 // 「已归档对话」归档时间展示格式（Task 10）：模块级单例避免每次渲染新建
 // Intl.DateTimeFormat；hour12:false 显式锁定 24 小时制，避免个别环境 zh-CN 默认
 // 12 小时制。
@@ -93,7 +109,10 @@ export function createSettingsModal(ctx, options = {}) {
         return window.confirm(message);
       }
       return true;
-    }
+    },
+    // 模型表单草稿的存储后端（可注入以便测试；浏览器默认 localStorage）。
+    // node 测试环境无 localStorage 时回退 null → 草稿静默降级为不持久化。
+    storage = safeLocalStorage()
   } = options;
 
   let settingsProviderId = "deepseek";
@@ -115,6 +134,11 @@ export function createSettingsModal(ctx, options = {}) {
   // 打开设置时拉一次，保存/删除/选用后刷新。
   let globalModels = { default_model: null, models: [] };
   const settingsFields = {};
+  // 表单草稿（Task 7）：已恢复草稿的供应商 tab 集合——同一打开会话内每个 tab
+  // 只恢复一次，避免来回切 tab 时用旧草稿覆盖用户正在编辑的新值。
+  const restoredDrafts = new Set();
+  // 保存成功后置位：700ms 后的自动关闭不得把刚保存的值重写回草稿。
+  let draftWriteSuppressed = false;
   // connection-test state machine: "idle" | "testing" | "success" | "failure" | "aborted" | "saving"
   let connectionState = "idle";
   // 保存序号：runSave 的「已保存」关闭定时器带序号，连续保存时旧定时器失效，
@@ -127,8 +151,37 @@ export function createSettingsModal(ctx, options = {}) {
   // 「当前已生效模型」快照（模型切换确认的基线）：打开设置时从项目/全局默认捕获。
   // 模型变更比较只含 model_name 与 base_url——API Key/环境变量变更是凭据修复，
   // 不改变文风语义，不需要确认。
-  const MODEL_SWITCH_CONFIRM_COPY = "切换后将由新模型继续，本章文风可能变化。继续？";
+  const MODEL_SWITCH_CONFIRM_COPY = "保存将把此模型设为默认，切换后将由新模型继续，本章文风可能变化。继续？";
   const savedModelRef = { current: null };
+
+  // 模型表单草稿读写（Task 7）。storage 不可用（node 测试无 localStorage /
+  // 隐私模式）时静默降级：不抛错、不持久化，真实浏览器默认行为不受影响。
+  function modelDraftKey(providerId) {
+    return `${MODEL_DRAFT_STORAGE_PREFIX}.${providerId}`;
+  }
+  function readModelDraft(providerId) {
+    if (!storage) return null;
+    try {
+      const raw = storage.getItem(modelDraftKey(providerId));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+  function writeModelDraft(providerId, values) {
+    if (!storage) return;
+    try {
+      storage.setItem(modelDraftKey(providerId), JSON.stringify(values));
+    } catch { /* storage 不可用（隐私模式配额等）时草稿静默降级 */ }
+  }
+  function clearModelDraft(providerId) {
+    if (!storage) return;
+    try {
+      storage.removeItem(modelDraftKey(providerId));
+    } catch { /* ignore */ }
+  }
 
   async function fetchModelSecret(envName) {
     try {
@@ -170,6 +223,9 @@ export function createSettingsModal(ctx, options = {}) {
   // 非法值回落 model。
   async function openSettingsModal(section = "model") {
     settingsSection = SETTINGS_SECTIONS.some((s) => s.id === section) ? section : "model";
+    // 新一次打开：允许恢复草稿（每个 tab 各一次）、允许关闭时写入草稿。
+    restoredDrafts.clear();
+    draftWriteSuppressed = false;
     // 模型清单来自全局配置，与项目无关：先拉一次，没打开项目时表单也能显示已配好的模型。
     await fetchGlobalModels();
     const dashboard = ctx.getDashboard();
@@ -1288,9 +1344,28 @@ export function createSettingsModal(ctx, options = {}) {
   function closeSettingsModal() {
     // 清空确认层随设置弹窗一起关闭（X/关闭/遮罩/Esc 任一路径都先关嵌套层）。
     closeClearHistoryConfirm();
-    // Closing the modal aborts any in-flight connection test and clears the
-    // temporary key the user typed. Reopening will not prefill the secret.
+    // Closing the modal aborts any in-flight connection test and resets the
+    // connection status state machine. The key the user typed stays in the
+    // field; Task 7 的草稿会在下面持久化它，重开时回填。
     resetConnectionState();
+    // Task 7：关闭时把模型分区当前输入存为本地草稿（按供应商 tab 隔离），
+    // 重开时恢复，避免「退出设置窗口后所有输入要重输」。不设分区守卫：用户在
+    // 模型分区填完表单后切到别的分区再关闭，settingsFields.model 仍持有输入值
+    // （其他分区不重赋值这些字段），必须照样写入。保存成功后的自动关闭不重写
+    // （saveModelSection 成功路径已清除草稿并置位抑制）。
+    if (!draftWriteSuppressed && settingsFields.model?.input) {
+      const draft = {
+        model_name: settingsFields.model.input.value.trim(),
+        base_url: settingsFields.baseUrl?.input?.value?.trim() ?? "",
+        api_key: settingsFields.apiKey?.input?.value?.trim() ?? "",
+      };
+      if (draft.model_name || draft.base_url || draft.api_key) {
+        writeModelDraft(settingsProviderId, draft);
+      } else {
+        // 用户把字段清空后关闭：旧草稿一并清除，避免残留旧值误导。
+        clearModelDraft(settingsProviderId);
+      }
+    }
     ctx.refs.settingsScrim.dataset.closing = "true";
     ctx.refs.settingsScrim.classList.remove("show");
     ctx.refs.settingsScrim.setAttribute("inert", "");
@@ -1311,13 +1386,15 @@ export function createSettingsModal(ctx, options = {}) {
   }
 
   // 私有：左栏清单 = 「已配置」已存模型（可选用/删除）+「新增供应商」模板入口。
+  // Task 7：无已配置模型时也渲染「已配置」分组与「尚未配置模型」空态说明，
+  // 让用户清楚保存未生效时问题出在哪，而不是只见「新增供应商」入口。
   function buildSavedModelSection(models) {
     const frag = document.createDocumentFragment();
+    const heading = document.createElement("div");
+    heading.className = "sp-list-heading";
+    heading.textContent = "已配置";
+    frag.append(heading);
     if (models?.length > 0) {
-      const heading = document.createElement("div");
-      heading.className = "sp-list-heading";
-      heading.textContent = "已配置";
-      frag.append(heading);
       for (const model of models) {
         const row = document.createElement("div");
         row.className = "sp-saved-item";
@@ -1337,11 +1414,16 @@ export function createSettingsModal(ctx, options = {}) {
         row.append(btn, del);
         frag.append(row);
       }
-      const divider = document.createElement("div");
-      divider.className = "sp-list-heading";
-      divider.textContent = "新增供应商";
-      frag.append(divider);
+    } else {
+      const empty = document.createElement("div");
+      empty.className = "sp-saved-empty spd-hint";
+      empty.textContent = "尚未配置模型";
+      frag.append(empty);
     }
+    const divider = document.createElement("div");
+    divider.className = "sp-list-heading";
+    divider.textContent = "新增供应商";
+    frag.append(divider);
     // 原有静态供应商列表（DeepSeek / MiMo / 自定义），现在作为「新增」模板入口
     const q = ctx.refs.settingsSearch.value.trim().toLowerCase();
     const list = SETTINGS_PROVIDERS.filter((p) => p.name.toLowerCase().includes(q));
@@ -1467,6 +1549,22 @@ export function createSettingsModal(ctx, options = {}) {
     settingsFields.apiKeyError = document.createElement("div");
     settingsFields.apiKeyError.className = "spd-field-error";
     settingsFields.apiKeyError.hidden = true;
+
+    // Task 7：表单草稿恢复——**草稿存在时优先于已保存模型回填**。保存成功即清
+    // 草稿，因此草稿存在必然代表「上次有未保存编辑」，用草稿值覆盖已保存回填是
+    // 正确语义（用户改了 key/模型名未保存就关闭 → 重开看到草稿里的新值），这也
+    // 让「写入无条件、恢复有条件」的不对称消失：写进去的草稿总能被消费。同一
+    // 打开会话内每个 tab 只恢复一次（restoredDrafts），避免来回切 tab 时用旧草稿
+    // 覆盖正在编辑的新值；恢复只覆盖草稿里非空的字段。
+    if (!restoredDrafts.has(provider.id)) {
+      const draft = readModelDraft(provider.id);
+      if (draft) {
+        if (typeof draft.model_name === "string" && draft.model_name) settingsFields.model.input.value = draft.model_name;
+        if (typeof draft.base_url === "string" && draft.base_url) settingsFields.baseUrl.input.value = draft.base_url;
+        if (typeof draft.api_key === "string" && draft.api_key) settingsFields.apiKey.input.value = draft.api_key;
+      }
+      restoredDrafts.add(provider.id);
+    }
 
     const keyHint = document.createElement("div");
     keyHint.className = "spd-hint";
@@ -1805,6 +1903,10 @@ export function createSettingsModal(ctx, options = {}) {
       }
       await fetchGlobalModels();
       await ctx.loadDashboard();
+      // Task 7：保存成功 → 清除该 tab 草稿并抑制 700ms 后自动关闭时的重写
+      // （值已落盘，无需再当草稿保留，重开时由已保存模型回填）。
+      clearModelDraft(settingsProviderId);
+      draftWriteSuppressed = true;
     });
   }
 

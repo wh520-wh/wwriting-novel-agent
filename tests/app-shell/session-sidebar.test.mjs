@@ -3,12 +3,12 @@
 // 无 JSDOM：最小 DOM 桩 + 注入假 surface（spy 记录调用），直接驱动
 // createSessionSidebar（app.js 的薄接线层在这里用假依赖替换）。
 // 覆盖：dashboard 会话渲染与活跃高亮、折叠/展开 + localStorage、
-// 点击会话/改名/归档、其他项目懒加载与缓存、draft 占位特判、
+// 点击会话/改名/归档、其他项目懒加载与缓存、draft 占位过滤与切走收尾、
 // busy 复位（run_status 联动）、项目行点击折叠/展开、跨项目会话委托。
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createSessionSidebar } from "../../src/app-shell/session-sidebar.mjs";
+import { createSessionSidebar, createSessionRemovalResolver } from "../../src/app-shell/session-sidebar.mjs";
 
 const COLLAPSED_KEY = "wwriting:projects:collapsed";
 
@@ -216,7 +216,7 @@ function makeTimerRecorder() {
 // 夹具：真实 DOM 元素由桩 document 创建，注入假依赖
 // ---------------------------------------------------------------------------
 
-function makeFixture({ projects = [], selectedProjectRoot = null, currentProjectRoot = null, sessionData = {}, initialStorage = {}, timers = null, fetchSessionsOverride = null, openProjectAndSession = null } = {}) {
+function makeFixture({ projects = [], selectedProjectRoot = null, currentProjectRoot = null, sessionData = {}, initialStorage = {}, timers = null, fetchSessionsOverride = null, openProjectAndSession = null, onArchiveSession = null } = {}) {
   const doc = makeDocument();
   const listEl = doc.createElement("div");
   const countEl = doc.createElement("span");
@@ -258,6 +258,7 @@ function makeFixture({ projects = [], selectedProjectRoot = null, currentProject
     setIntervalFn: timerRecorder.setInterval.bind(timerRecorder),
     clearIntervalFn: timerRecorder.clearInterval.bind(timerRecorder),
     openProjectAndSession: delegated,
+    onArchiveSession,
     doc
   });
   return { sidebar, listEl, countEl, filterEl, scrollEl, storage, surface, fetchCalls, openProjectCalls, doc, timers: timerRecorder };
@@ -445,6 +446,115 @@ test("会话操作：改名走 prompt + renameSession + toast；归档直接 arc
   assert.ok(f.surface.toasts.some(([m]) => m.includes("已归档对话 对话一")), "归档 toast 文案");
 });
 
+test("Task 5：归档委托注入的 onArchiveSession（app.js 归档切走编排入口），不直连 surface", async () => {
+  // 缺陷 B（归档活跃会话后消息写进隐藏归档会话）的修复入口：归档成功后若被归档的是
+  // 当前活跃会话 → 切走（后端 last-active 解析）→ 无其他可用会话则占位。切走编排在
+  // app.js（resolveActiveAfterSessionRemoval，与删除共用），sidebar 只负责把归档动作
+  // 委托给它；未注入时保持直连 surface 的旧行为。
+  const P = "D:/projects/p1";
+  const onArchiveCalls = [];
+  const f = makeFixture({
+    projects: [{ projectRoot: P, title: "小说一" }],
+    selectedProjectRoot: P,
+    currentProjectRoot: P,
+    onArchiveSession: async (session) => { onArchiveCalls.push(session.session_id); }
+  });
+  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.render();
+
+  const row = rowsOf(f.listEl)[0];
+  const ops = menuOf(row).children;
+  ops[1].dispatch("click", {});
+  await flush();
+  assert.deepEqual(onArchiveCalls, ["s1"], "归档走注入的 onArchiveSession（app.js 切走处理入口）");
+  assert.deepEqual(f.surface.calls.archiveSession, [], "注入 handler 时 sidebar 不再直连 surface.archiveSession");
+  assert.ok(f.surface.toasts.some(([m]) => m.includes("已归档对话 对话一")), "归档 toast 文案保留");
+});
+
+// ---------------------------------------------------------------------------
+// Task 5：移除后解析（createSessionRemovalResolver）行为级测试
+// ---------------------------------------------------------------------------
+
+test("Task 5：移除后解析——无其他可用会话进占位（占位分支可达）", async () => {
+  // 评审 Important 2 的行为级测试：直接驱动 app.js 编排层的依赖注入纯函数。关键
+  // 场景 = 归档/删除最后一个未归档会话：切走（last-active 解析）后必须按新代次
+  // 重拉列表并等待落盘（模拟 surface.refreshSessions → handleSessionsChanged 同步
+  // 更新缓存），被移除会话的 archived_at 才会进入缓存 → usable=0 → 占位可达。
+  // 若解析器跳过 await refreshSessions 直接读缓存，仍拿到操作前快照（s1 未归档），
+  // usable 恒 ≥ 1，占位分支不可达、本断言失败。
+  const calls = [];
+  let cache = {
+    sessions: [{ session_id: "s1", title: "对话一", run_status: "idle", archived_at: null }],
+    activeSessionId: "s1"
+  };
+  const resolve = createSessionRemovalResolver({
+    getSessions: () => cache,
+    switchSession: async (id) => { calls.push(["switchSession", id]); },
+    refreshSessions: async () => {
+      calls.push(["refreshSessions"]);
+      // 模拟切走后以新代次重拉的权威列表：s1 已归档 → 无未归档会话、活跃指针 null
+      cache = {
+        sessions: [{ session_id: "s1", title: "对话一", run_status: "idle", archived_at: "2026-08-10" }],
+        activeSessionId: null
+      };
+    },
+    newSessionPlaceholder: () => { calls.push(["newSessionPlaceholder"]); return "draft-x"; }
+  });
+
+  await resolve("s1");
+  assert.deepEqual(calls, [
+    ["switchSession", null],
+    ["refreshSessions"],
+    ["newSessionPlaceholder"]
+  ], "归档/删除最后一个可用会话：切走 → 新代次重拉落盘 → 进占位");
+});
+
+test("Task 5：移除后解析——仍有其他可用会话不进占位；移除非活跃会话不动作", async () => {
+  let cache = {
+    sessions: [
+      { session_id: "s1", title: "对话一", run_status: "idle", archived_at: null },
+      { session_id: "s2", title: "对话二", run_status: "idle", archived_at: null }
+    ],
+    activeSessionId: "s1"
+  };
+  const calls = [];
+  const resolve = createSessionRemovalResolver({
+    getSessions: () => cache,
+    switchSession: async (id) => { calls.push(["switchSession", id]); },
+    refreshSessions: async () => {
+      calls.push(["refreshSessions"]);
+      cache = {
+        sessions: [
+          { session_id: "s1", title: "对话一", run_status: "idle", archived_at: "2026-08-10" },
+          { session_id: "s2", title: "对话二", run_status: "idle", archived_at: null }
+        ],
+        activeSessionId: "s2"
+      };
+    },
+    newSessionPlaceholder: () => { calls.push(["newSessionPlaceholder"]); return "draft-x"; }
+  });
+
+  await resolve("s1");
+  assert.deepEqual(calls, [
+    ["switchSession", null],
+    ["refreshSessions"]
+  ], "仍有其他未归档会话：切走后重拉落盘，不进占位");
+
+  // 移除非活跃会话：无任何动作（不切走、不重拉、不占位）
+  const calls2 = [];
+  const resolve2 = createSessionRemovalResolver({
+    getSessions: () => ({
+      sessions: [{ session_id: "s1", title: "对话一", run_status: "idle", archived_at: null }],
+      activeSessionId: "s1"
+    }),
+    switchSession: async (id) => { calls2.push(["switchSession", id]); },
+    refreshSessions: async () => { calls2.push(["refreshSessions"]); },
+    newSessionPlaceholder: () => { calls2.push(["newSessionPlaceholder"]); }
+  });
+  await resolve2("s2");
+  assert.deepEqual(calls2, [], "移除非活跃会话：切走/刷新/占位均不触发");
+});
+
 // ---------------------------------------------------------------------------
 // 4) 懒加载：展开未缓存项目 → 拉取并缓存
 // ---------------------------------------------------------------------------
@@ -518,10 +628,10 @@ test("busy 复位：其他会话 running → setBusy(true)；全部非 running �
 });
 
 // ---------------------------------------------------------------------------
-// 6) draft 占位特判
+// 6) draft 占位过滤（渲染层排除，双保险）
 // ---------------------------------------------------------------------------
 
-test("draft 占位项：显示「新对话」、禁用会话操作、点击不切会话", async () => {
+test("draft 占位不渲染：缓存中的 draft 项被过滤，列表只含真实会话；仅占位时显示空态", async () => {
   const P = "D:/projects/p1";
   const f = makeFixture({
     projects: [{ projectRoot: P, title: "小说一" }],
@@ -535,17 +645,18 @@ test("draft 占位项：显示「新对话」、禁用会话操作、点击不�
   f.sidebar.render();
 
   const rows = rowsOf(f.listEl);
-  assert.equal(rows.length, 2);
-  assert.equal(rows[0].classList.contains("session-draft"), true);
-  assert.equal(rows[0].children[1].textContent, "新对话", "draft 显示「新对话」");
+  assert.equal(rows.length, 1, "draft 占位不渲染，列表只含真实会话");
+  assert.equal(rows[0].dataset.sessionId, "s1", "真实会话正常渲染");
+  assert.ok(!rows.some((r) => r.dataset.sessionId === "draft-x"), "渲染出的会话行列表不含 draft 行");
 
-  const ops = menuOf(rows[0]).children;
-  assert.equal(ops[0].disabled, true, "draft 禁用改名");
-  assert.equal(ops[1].disabled, true, "draft 禁用归档");
-
-  rows[0].dispatch("click", {});
-  await flush();
-  assert.deepEqual(f.surface.calls.switchSession, [], "点击占位项留在占位视图，不切会话");
+  // 只有占位（新项目点「+」，尚无真实会话）：显示空态而非幽灵项
+  f.sidebar.handleSessionsChanged(P, [
+    { session_id: "draft-x", title: "新对话", status: "draft" }
+  ], "draft-x");
+  f.sidebar.render();
+  const empty = f.listEl.querySelector(".session-empty");
+  assert.ok(empty, "仅占位时显示空态行");
+  assert.match(empty.textContent, /还没有对话/u);
 });
 
 // ---------------------------------------------------------------------------
@@ -809,44 +920,28 @@ test("会话行键盘可达：Enter/Space 触发 switchSession，子按钮 keydo
   assert.equal(f.surface.calls.switchSession.length, before, "操作按钮上的 Enter 不触发会话切换");
 });
 
-test("draft 占位行不可交互：aria-disabled + 移出 Tab 序，Enter 不切会话", async () => {
+// ---------------------------------------------------------------------------
+// 11) draft→真实过渡：draft 不进缓存 → leavingDraft 恒 false → 续作刷新如实发生
+// ---------------------------------------------------------------------------
+
+test("切走 draft 占位：draft 不进缓存，leavingDraft 恒 false，模块续作刷新 1 次（幂等，可接受）", async () => {
   const P = "D:/projects/p1";
   const f = makeFixture({
     projects: [{ projectRoot: P, title: "小说一" }],
     selectedProjectRoot: P,
     currentProjectRoot: P
   });
+  // Task 3 生产形状：占位期间 surface 只透出真实会话列表 + draft id 活跃指针
+  //（draft 永不进缓存 sessions）。故 leavingDraft（按 activeSessionId 匹配缓存中
+  // 的 draft 项）恒为 false，模块续作必然 surface.refreshSessions() 一次——与
+  // agent/index.js 的 prevDraft 收尾（switchSession 内部刷新）构成两次幂等刷新，
+  // 结果一致、无副作用。leavingDraft 分支按任务要求保留作防御，不删除。
   f.sidebar.handleSessionsChanged(P, [
-    { session_id: "draft-x", title: "新对话", status: "draft" },
     { session_id: "s1", title: "对话一", run_status: "idle" }
   ], "draft-x");
   f.sidebar.render();
-  const draftRow = rowsOf(f.listEl)[0];
-  assert.equal(draftRow.getAttribute("aria-disabled"), "true");
-  assert.equal(draftRow.getAttribute("tabindex"), "-1");
-  draftRow.dispatch("keydown", { key: "Enter" });
-  await flush();
-  assert.deepEqual(f.surface.calls.switchSession, [], "draft 占位 Enter 不切会话");
-});
-
-// ---------------------------------------------------------------------------
-// 11) draft→真实过渡：surface 内部已刷新，commitSessionSwitch 续作去重
-// ---------------------------------------------------------------------------
-
-test("切走 draft 占位：surface 内部已刷新，模块续作跳过 refreshSessions（无双刷）", async () => {
-  const P = "D:/projects/p1";
-  const f = makeFixture({
-    projects: [{ projectRoot: P, title: "小说一" }],
-    selectedProjectRoot: P,
-    currentProjectRoot: P
-  });
-  f.sidebar.handleSessionsChanged(P, [
-    { session_id: "draft-x", title: "新对话", status: "draft" },
-    { session_id: "s1", title: "对话一", run_status: "idle" }
-  ], "draft-x");
-  f.sidebar.render();
-  rowsOf(f.listEl)[1].dispatch("click", {}); // 点真实会话 s1
+  rowsOf(f.listEl)[0].dispatch("click", {}); // 点真实会话 s1
   await flush();
   assert.deepEqual(f.surface.calls.switchSession, ["s1"]);
-  assert.equal(f.surface.calls.refreshSessions.length, 0, "draft→真实由 surface 内部刷新，模块不重复刷");
+  assert.equal(f.surface.calls.refreshSessions.length, 1, "draft 不进缓存 → 续作刷新 1 次（如实反映双刷，幂等可接受）");
 });
