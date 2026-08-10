@@ -68,6 +68,10 @@ export function visibleLiveTargets(group, { expanded }) {
 //（用户停止、决策取消、信号中止），不是执行失败，终态标记为 cancelled（"已停止"）。
 const CANCELLED_ERROR_CODES = new Set(["tool_cancelled", "shell_cancelled"]);
 
+// 工具输出保留尾部窗口（与旧 state.js MAX_ACTIVITY_OUTPUT_CHARS 一致：64 KiB）。
+// Task 2：工具项输出累计超出上限时保留尾部并置 truncated=true，供视图提示截断。
+const MAX_TOOL_OUTPUT_CHARS = 64 * 1024;
+
 // 工具基名（沿用旧 view ACTIVITY_LABELS 的短文案；无映射时以"调用 <name>"兜底）。
 const TOOL_BASE_LABELS = {
   read_file: "读取文件",
@@ -248,6 +252,18 @@ function toolItem(work, activityId, runId) {
   return group?.items.get(`tool:${activityId}`) ?? null;
 }
 
+// Task 2：把一段文本追加到工具项输出（镜像旧 state.js appendActivityText）：
+// 超出 MAX_TOOL_OUTPUT_CHARS 时保留尾部窗口并置 truncated=true。调用方负责
+// 过滤非字符串/空串，这里兜底一次非法输入。
+function appendToolOutput(item, text) {
+  if (typeof text !== "string" || text.length === 0) return;
+  item.output += text;
+  if (item.output.length > MAX_TOOL_OUTPUT_CHARS) {
+    item.output = item.output.slice(item.output.length - MAX_TOOL_OUTPUT_CHARS);
+    item.truncated = true;
+  }
+}
+
 // 计划任务按 id 合并（计划 §0.2"绝不重复添加" + Task 5 Step 1"内容仍包含全部任务"）：
 // 同一 task id 更新内容并移动到列表最新位置；不在本次更新中的历史任务保留。
 function mergePlanTasks(stored, incoming, seq) {
@@ -362,7 +378,12 @@ export function reduceWorkEvent(work, event) {
           args: structuredClone(args),
           command: typeof args.command === "string" ? args.command : (payload.action?.command ?? null),
           cwd: typeof args.cwd === "string" ? args.cwd : (payload.action?.cwd ?? null),
-          error: null
+          error: null,
+          // Task 2：工具输出投影（stdout/stderr 文本、截断标记、退出码、耗时）
+          output: "",
+          truncated: false,
+          exit_code: null,
+          duration_ms: null
         });
       } else {
         // 防御性 upsert（journal 不会重复同一 activity_id；纯投影测试可复用 id）
@@ -373,6 +394,13 @@ export function reduceWorkEvent(work, event) {
       group.sortSeq = seq;
       break;
     }
+    case "tool_output_delta": {
+      // Task 2：增量输出追加到工具项（镜像旧 state.js tool_output_delta 的
+      // 累计/截断语义）。未知 activity_id 忽略——不凭空创建工具项。
+      const item = toolItem(work, payload.activity_id, runId);
+      if (item && typeof payload.text === "string") appendToolOutput(item, payload.text);
+      break;
+    }
     case "tool_call_completed": {
       const item = toolItem(work, payload.activity_id, runId);
       if (item) {
@@ -380,6 +408,9 @@ export function reduceWorkEvent(work, event) {
         item.state = "completed";
         item.label = toolLabel(item.tool, "completed");
         item.terminal_seq = seq; // Task 10：终态事件 seq 落位（start 位置不变）
+        // Task 2：退出码与耗时仅当事件携带时写入（镜像旧 state.js；0 是合法值）
+        if (payload.exit_code != null) item.exit_code = payload.exit_code;
+        if (payload.duration_ms != null) item.duration_ms = payload.duration_ms;
       }
       break;
     }
@@ -393,6 +424,12 @@ export function reduceWorkEvent(work, event) {
         item.error = typeof payload.message === "string" && payload.message.length > 0
           ? payload.message
           : typeof payload.error === "string" && payload.error.length > 0 ? payload.error : null;
+        // Task 2：失败时的 stdout/stderr 快照追加进输出（镜像旧 state.js
+        // tool_call_failed：仅非空字符串，走同一累计/截断逻辑）
+        if (typeof payload.stdout === "string" && payload.stdout.length > 0) appendToolOutput(item, payload.stdout);
+        if (typeof payload.stderr === "string" && payload.stderr.length > 0) appendToolOutput(item, payload.stderr);
+        // 耗时同样从失败事件写入（镜像旧 state.js：shell 超时等失败也携带耗时）
+        if (payload.duration_ms != null) item.duration_ms = payload.duration_ms;
       }
       break;
     }
