@@ -130,6 +130,18 @@ const { createSettingsModal } = await import("../../src/app-shell/settings-modal
 // Modal harness
 // ---------------------------------------------------------------------------
 
+// Task 7：内存版 localStorage 桩——草稿持久化按注入的 storage 实现，
+// 每个测试用独立实例避免跨测试污染。
+function createMockStorage() {
+  const map = new Map();
+  return {
+    getItem(key) { return map.has(key) ? map.get(key) : null; },
+    setItem(key, value) { map.set(key, String(value)); },
+    removeItem(key) { map.delete(key); },
+    _keys() { return [...map.keys()]; }
+  };
+}
+
 function createSettingsModalForTest(overrides = {}) {
   domRegistry = [];
   // refs 单独解构：partial refs 只覆盖对应字段，不会被 ...overrides 整体替换 ctx.refs。
@@ -157,7 +169,9 @@ function createSettingsModalForTest(overrides = {}) {
     postJsonImpl: overrides.postJsonImpl ?? (async () => ({ ok: true })),
     deleteJsonImpl: overrides.deleteJsonImpl ?? (async () => ({ ok: true })),
     // 模型切换确认函数：显式注入（默认 window.confirm，node 测试环境不可用）。
-    confirmImpl: overrides.confirmImpl ?? (() => true)
+    confirmImpl: overrides.confirmImpl ?? (() => true),
+    // 表单草稿的 localStorage 注入：默认给独立的内存桩。
+    storage: overrides.storage ?? createMockStorage()
   });
 }
 
@@ -556,6 +570,212 @@ test("连续两次保存：旧关闭定时器失效，不关闭新弹窗", async
 });
 
 // ---------------------------------------------------------------------------
+// 模型表单草稿（Task 7）：关闭设置时写入 localStorage（按供应商 tab 隔离），
+// 重开时在无已保存模型回填时恢复；保存成功后清除草稿，且自动关闭不重写。
+// ---------------------------------------------------------------------------
+
+// 点击左侧供应商 tab（custom/deepseek 等）并等其异步重渲完成。
+// MockElement 不给按钮本身设 textContent（只有子 span 有），所以要找
+// className 为 sp-item 的按钮、按内部 .sp-name 子元素文本识别；domRegistry
+// 会累积多次渲染的元素，取最新一次（最后创建的按钮）。
+async function clickProviderTab(text) {
+  const btn = [...domRegistry].reverse().find((el) =>
+    el.tagName === "BUTTON" &&
+    String(el.className).startsWith("sp-item") &&
+    [...el.children].some((c) => c.className === "sp-name" && c.textContent === text)
+  );
+  assert.ok(btn, `应渲染供应商 tab：${text}`);
+  btn.click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+test("模型表单草稿：填表单后关闭，重开恢复已填字段（自定义模型场景）", async () => {
+  const storage = createMockStorage();
+  const modal = createSettingsModalForTest({
+    storage,
+    getCurrentProjectRoot: () => "",
+  });
+  await modal.openSettingsModal();
+  // 切到「自定义」tab：无项目无已保存模型，表单是空白预设值。
+  await clickProviderTab("OpenAI 兼容 · 自定义");
+  modal.setModelFieldsForTest({
+    model_name: "gpt-4o-mini",
+    base_url: "https://api.example.com/v1",
+    api_key: "sk-custom-draft",
+    api_key_env: "WWRITING_PROVIDER_API_KEY"
+  });
+  modal.closeSettingsModal();
+
+  // 草稿已写入 localStorage，key 带供应商 tab 隔离。
+  const raw = storage.getItem("wwriting.settings.model.draft.custom");
+  assert.ok(raw, "关闭后应写入草稿（key 带 provider id）");
+  assert.deepEqual(JSON.parse(raw), {
+    model_name: "gpt-4o-mini",
+    base_url: "https://api.example.com/v1",
+    api_key: "sk-custom-draft"
+  });
+
+  // 重开：无已保存模型回填 → 恢复草稿字段。
+  await modal.openSettingsModal();
+  assert.equal(modal.getModelFieldValue("model_name"), "gpt-4o-mini");
+  assert.equal(modal.getModelFieldValue("base_url"), "https://api.example.com/v1");
+  assert.equal(modal.getModelFieldValue("api_key"), "sk-custom-draft");
+});
+
+test("模型表单草稿：保存成功后清除，自动关闭不重写", async () => {
+  const storage = createMockStorage();
+  const modal = createSettingsModalForTest({
+    storage,
+    getCurrentProjectRoot: () => "",
+    postJsonImpl: async () => ({ ok: true, model_profile: { display: "t" }, models: [] })
+  });
+  await modal.openSettingsModal();
+  await clickProviderTab("OpenAI 兼容 · 自定义");
+  modal.setModelFieldsForTest({
+    model_name: "gpt-4o-mini",
+    base_url: "https://api.example.com/v1",
+    api_key: "sk-custom-draft",
+    api_key_env: "WWRITING_PROVIDER_API_KEY"
+  });
+  modal.closeSettingsModal();
+  assert.ok(storage.getItem("wwriting.settings.model.draft.custom"), "关闭后草稿应存在");
+
+  await modal.openSettingsModal();
+  assert.equal(modal.getModelFieldValue("model_name"), "gpt-4o-mini", "重开后草稿恢复");
+
+  await modal.saveSettingsForTest();
+  assert.equal(storage.getItem("wwriting.settings.model.draft.custom"), null, "保存成功后草稿应清除");
+
+  // 等过保存成功后的自动关闭定时器（700ms + 余量）：关闭不得重写草稿。
+  await new Promise((resolve) => setTimeout(resolve, 900));
+  assert.equal(storage.getItem("wwriting.settings.model.draft.custom"), null, "保存后自动关闭不得把刚保存的值重写回草稿");
+
+  // 再次重开：草稿已清，无已保存模型时表单回到空白，不恢复旧值。
+  await modal.openSettingsModal();
+  assert.equal(modal.getModelFieldValue("model_name"), "", "草稿清除后重开不恢复旧值");
+});
+
+test("模型表单草稿按供应商 tab 隔离：custom 草稿不串到 deepseek tab", async () => {
+  const storage = createMockStorage();
+  const modal = createSettingsModalForTest({
+    storage,
+    getCurrentProjectRoot: () => "",
+  });
+  await modal.openSettingsModal();
+  await clickProviderTab("OpenAI 兼容 · 自定义");
+  modal.setModelFieldsForTest({
+    model_name: "gpt-4o-mini",
+    base_url: "https://api.example.com/v1",
+    api_key: "sk-custom-draft",
+    api_key_env: "WWRITING_PROVIDER_API_KEY"
+  });
+  modal.closeSettingsModal();
+  assert.ok(storage.getItem("wwriting.settings.model.draft.custom"), "草稿应写入 custom tab 的 key");
+  assert.equal(storage.getItem("wwriting.settings.model.draft.deepseek"), null, "deepseek tab 不得写入 custom 草稿");
+
+  await modal.openSettingsModal();
+  assert.equal(modal.getModelFieldValue("model_name"), "gpt-4o-mini", "custom tab 恢复自己的草稿");
+
+  // 切回 deepseek tab：不出现 custom 草稿，展示 deepseek 预设默认值。
+  await clickProviderTab("DeepSeek · 深度求索");
+  assert.equal(modal.getModelFieldValue("model_name"), "deepseek-v4-pro", "deepseek tab 显示预设默认，不被 custom 草稿污染");
+  assert.equal(modal.getModelFieldValue("base_url"), "https://api.deepseek.com");
+});
+
+test("已保存模型回填的 tab 存在草稿时：重开恢复草稿（草稿优先）", async () => {
+  // Important 1 回归：写入无条件、恢复有条件的不对称导致「改了 key/模型名未保存
+  // 就关闭 → 草稿写了却不生效」。修复后草稿存在即优先（保存成功会清草稿，草稿
+  // 存在必然代表上次有未保存编辑）。
+  const storage = createMockStorage();
+  // 预置：custom tab 有全局默认模型回填（my-custom-v1），同时存在草稿
+  // （用户把模型名改成 my-custom-v2、换了新 key，未保存就关闭）。
+  storage.setItem("wwriting.settings.model.draft.custom", JSON.stringify({
+    model_name: "my-custom-v2",
+    base_url: "https://api.example.com/v1",
+    api_key: "sk-new-key"
+  }));
+  const modal = createSettingsModalForTest({
+    storage,
+    getCurrentProjectRoot: () => "",
+    getJsonImpl: async () => ({
+      ok: true,
+      default_model: {
+        id: "my-custom-v1",
+        provider: "openai-compatible",
+        model_name: "my-custom-v1",
+        base_url: "https://api.example.com/v1",
+        api_key_env: "MY_CUSTOM_KEY",
+        display: "自定义 / my-custom-v1"
+      },
+      models: []
+    })
+  });
+  await modal.openSettingsModal();
+  // 打开落在 custom tab（全局默认是 custom 模型）：草稿应覆盖已保存回填。
+  assert.equal(modal.getModelFieldValue("model_name"), "my-custom-v2", "草稿的模型名应优先于已保存回填");
+  assert.equal(modal.getModelFieldValue("base_url"), "https://api.example.com/v1");
+  assert.equal(modal.getModelFieldValue("api_key"), "sk-new-key", "草稿的 key 应回填（已保存模型不会带明文 key 进表单）");
+});
+
+test("草稿恢复每 tab 每会话只生效一次：切走再切回不重放", async () => {
+  // restoredDrafts 防重：首次进入 custom tab 恢复草稿后，用户编辑、切走再切回，
+  // 不得把旧草稿重放回表单覆盖当前值。
+  const storage = createMockStorage();
+  storage.setItem("wwriting.settings.model.draft.custom", JSON.stringify({
+    model_name: "gpt-4o",
+    base_url: "https://api.example.com/v1",
+    api_key: "sk-draft"
+  }));
+  const modal = createSettingsModalForTest({ storage, getCurrentProjectRoot: () => "" });
+  await modal.openSettingsModal();
+  await clickProviderTab("OpenAI 兼容 · 自定义");
+  assert.equal(modal.getModelFieldValue("model_name"), "gpt-4o", "首次进入 custom tab 应恢复草稿");
+
+  // 用户接着编辑（改模型名），然后切走再切回。
+  modal.setModelFieldsForTest({ model_name: "gpt-5", api_key_env: "WWRITING_PROVIDER_API_KEY" });
+  await clickProviderTab("DeepSeek · 深度求索");
+  await clickProviderTab("OpenAI 兼容 · 自定义");
+  assert.notEqual(modal.getModelFieldValue("model_name"), "gpt-4o", "切回后不得重放旧草稿");
+});
+
+test("切到非模型分区后关闭：模型草稿仍写入（模型输入不丢）", async () => {
+  // Important 2 回归：填完模型表单切到写作参数 tab 再关闭——旧实现只在关闭时
+  // 正处于 model 分区才写草稿，导致输入丢失。修复后不设分区守卫。
+  const storage = createMockStorage();
+  const modal = createSettingsModalForTest({ storage, getCurrentProjectRoot: () => "" });
+  await modal.openSettingsModal();
+  await clickProviderTab("OpenAI 兼容 · 自定义");
+  modal.setModelFieldsForTest({
+    model_name: "gpt-4o-mini",
+    base_url: "https://api.example.com/v1",
+    api_key: "sk-draft",
+    api_key_env: "WWRITING_PROVIDER_API_KEY"
+  });
+  // 切到写作参数分区（无项目时只渲染说明；mock 的 getElementById 恒 null，
+  // 分区导航按钮不可点，按既有测试惯例用 openSettingsModal("writing") 切分区。
+  // settingsFields.model 的输入值在切分区后仍在）。
+  await modal.openSettingsModal("writing");
+
+  modal.closeSettingsModal();
+  const raw = storage.getItem("wwriting.settings.model.draft.custom");
+  assert.ok(raw, "非 model 分区关闭也应写入模型草稿");
+  assert.deepEqual(JSON.parse(raw), {
+    model_name: "gpt-4o-mini",
+    base_url: "https://api.example.com/v1",
+    api_key: "sk-draft"
+  });
+});
+
+test("无已配置模型时左栏显示「尚未配置模型」空态说明", async () => {
+  const modal = createSettingsModalForTest();
+  await modal.openSettingsModal();
+
+  const empty = domRegistry.find((el) => String(el.className).includes("sp-saved-empty"));
+  assert.ok(empty, "无已配置模型时应渲染空态行");
+  assert.ok(empty.textContent.includes("尚未配置模型"), "空态应说明当前没有已配置模型");
+});
+
+// ---------------------------------------------------------------------------
 // 模型切换确认（计划 UI Copy Audit 保留项，Task 11 最终审查修复）：
 // 仅当「模型确有变更」且「任务进行中（active Run 或排队输入）」时弹确认，
 // 取消则不保存；API Key/环境变量变更不算模型变更。
@@ -622,7 +842,7 @@ test("模型变更且任务进行中：保存前弹确认（精确文案），�
   });
   await modal.saveSettingsForTest();
 
-  assert.equal(confirmMessage, "切换后将由新模型继续，本章文风可能变化。继续？");
+  assert.equal(confirmMessage, "保存将把此模型设为默认，切换后将由新模型继续，本章文风可能变化。继续？");
   assert.equal(calls.some((c) => c.url === "/api/settings/model-profile"), true, "确认后应保存模型");
 });
 

@@ -311,6 +311,9 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   const decisionCards = new Map(); // decision_id -> card（diff 更新，保留 extreme 输入）
   const compactionRowNodes = new Map(); // compaction_id -> { wrap, row, label, actions }（Task 11）
   const pendingSubmissions = []; // 仅保留仍在途的即时消息；终态立即移出，避免会话内累积
+  // Task 6：提交失败的气泡（含错误文案）暂存于此，重试或消息确认送达（reconcile）
+  // 时按文本移除，失败气泡不再永久残留。
+  const failedSubmissions = [];
   // ---- 前置分页（Task 10）：滚动到顶加载更早历史，锚点不跳动 ----
   let loadingEarlier = false;      // 与 index.js 双保险的防重复标记
   let earlierAnchor = null;        // { oldHeight, oldTop }：前置插入前记录
@@ -355,6 +358,8 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     compactionRowNodes.clear();
     contextRing.dismiss();
     pendingSubmissions.length = 0;
+    failedSubmissions.length = 0;
+    input.value = ""; // Task 6：未发送草稿（含占位会话里打的字）不得跨会话/项目泄漏
     composerOptions = null;
     controlsSignature = "";
     closeSlashMenu();
@@ -481,7 +486,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   conv.addEventListener("click", handleExternalLinkClick);
 
   // ---- 对话 ----------------------------------------------------------------
-  function createMessageBubble(role, textValue, { markdown = false } = {}) {
+  function createMessageBubble(role, textValue, { markdown = false, truncated = false } = {}) {
     const bubble = doc.createElement("div");
     bubble.className = `agent-message agent-message--${role}`;
     bubble.dataset.testid = `agent-${role}-message`;
@@ -494,6 +499,14 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       text.textContent = String(textValue ?? "");
     }
     bubble.append(text);
+    if (truncated) {
+      // Task 4：max_tokens 截断提示。独立元素追加在文本区域之后，不修改正文本身。
+      const mark = doc.createElement("div");
+      mark.className = "agent-message-truncation";
+      mark.dataset.testid = "truncation-mark";
+      mark.textContent = "ⓘ 输出被截断";
+      bubble.append(mark);
+    }
     return bubble;
   }
 
@@ -503,12 +516,28 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     );
     if (index < 0) {
       index = pendingSubmissions.findIndex((item) =>
-        item.text === String(entry.text ?? "")
+        item.text === String(entry.text ?? "").trim()
       );
     }
+    // Task 6：该 user 消息已由快照/SSE 回放确认送达，同文本失败气泡一并移除。
+    // 失败登记时其 pending 记录已移出，故移除不能依赖 pending 匹配——送达即撤，
+    // 覆盖「客户端 promise 恰好 reject 但后端实际已受理」的回放确认场景。
+    removeFailedBubble(entry.text);
     if (index < 0) return;
     pendingSubmissions[index].node.remove();
     pendingSubmissions.splice(index, 1);
+  }
+
+  // Task 6：移除文本对应的失败气泡（含错误文案）。幂等——节点已脱离时 remove 为空操作。
+  function removeFailedBubble(text) {
+    const needle = String(text ?? "").trim();
+    if (!needle) return;
+    for (let i = failedSubmissions.length - 1; i >= 0; i--) {
+      if (failedSubmissions[i].text === needle) {
+        failedSubmissions[i].node.remove();
+        failedSubmissions.splice(i, 1);
+      }
+    }
   }
 
   // 时间线插入：气泡、活动行与工作组共享 messages 容器，按 (seq, event_key)
@@ -567,7 +596,11 @@ export function createAgentView({ root, document: doc = globalThis.document, req
         insertTimeline(createMessageBubble("user", entry.text), entry.seq, eventKey);
       } else if (typeof entry.text === "string" && entry.text.length > 0) {
         // 助手正文走 Markdown 渲染（与流式气泡同一口径，增量/终态一致）。
-        insertTimeline(createMessageBubble("assistant", entry.text, { markdown: true }), entry.seq, eventKey);
+        insertTimeline(
+          createMessageBubble("assistant", entry.text, { markdown: true, truncated: entry.truncated === true }),
+          entry.seq,
+          eventKey
+        );
       }
     }
     rendered.messages = state.revisions.messages;
@@ -1103,7 +1136,9 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       record.status.textContent = groupStatusText(group);
       record.duration.textContent = "";
     } else {
-      record.status.textContent = "工作中";
+      // 非终态统一走 groupStatusText（单一文案源）：running/interrupting/stopping →
+      // "工作中"；waiting_user → "待命"（与 session-sidebar RUN_STATUS_LABELS 口径一致）。
+      record.status.textContent = groupStatusText(group);
       record.duration.textContent = formatDuration(groupLiveElapsedMs(group));
     }
     ensureGroupClock(record, group);
@@ -1609,6 +1644,9 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       return;
     }
 
+    // Task 6：重试即重发同一文本，旧失败气泡先移除，避免成功后残留。
+    removeFailedBubble(text);
+
     const bubble = createMessageBubble("user", text);
     bubble.dataset.state = "pending";
     messages.append(bubble);
@@ -1620,6 +1658,8 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     Promise.resolve(request).then((result) => {
       if (submissionGeneration !== viewGeneration) return;
       pending.inputId = result?.input_id ?? null;
+      // Task 6：click 提交后焦点从发送按钮回到输入框，便于连续输入。
+      input.focus();
     }).catch((error) => {
       if (submissionGeneration !== viewGeneration) return;
       const pendingIndex = pendingSubmissions.indexOf(pending);
@@ -1630,6 +1670,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       failure.dataset.testid = "agent-submit-error";
       failure.textContent = `发送失败：${String(error?.message ?? "请求失败")}`;
       bubble.append(failure);
+      failedSubmissions.push({ text, node: bubble });
       if (String(input.value ?? "").length === 0) input.value = text;
       afterRender();
     });

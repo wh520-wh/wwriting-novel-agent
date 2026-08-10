@@ -51,6 +51,8 @@ class MockElement {
     this._attrs = {};
     this._listeners = new Map();
     this._value = "";
+    this._focusCount = 0;
+    this._focused = false;
     this.scrollTop = 0;
     this.scrollHeight = 0;
     this.clientHeight = 0;
@@ -156,6 +158,10 @@ class MockElement {
   }
   _fire(type, ...args) {
     for (const fn of this._listeners.get(type) ?? []) fn(...args);
+  }
+  focus() {
+    this._focused = true;
+    this._focusCount += 1;
   }
 
   static _dataKey(name) {
@@ -536,6 +542,94 @@ test("提交失败迟到：切换项目后不得把旧文本恢复进新项目�
   assert.equal(input.value, "", "旧项目失败回调不得改写 B 项目输入框");
   assert.equal(root.querySelectorAll('[data-testid="agent-user-message"]').length, 0, "B 对话不得出现 A 的失败消息");
   assert.equal(root.querySelector('[data-testid="agent-submit-error"]'), null, "B 对话不得出现 A 的错误提示");
+});
+
+// ===========================================================================
+// Task 6：composer 草稿清理 / 失败气泡移除 / 提交后焦点
+// ===========================================================================
+
+test("重置视图清空 composer：未发送草稿不跨会话泄漏", async () => {
+  const { root, surface } = await makeSurface({
+    apiOverrides: {
+      openProject: async () => {},
+      fetchSnapshot: async (options) => {
+        if (options?.sessionId === "sid-2") {
+          return snapshotOf(session({ session_id: "sid-2", last_seq: 1 }), [
+            { ...ev("input_queued", { input_id: "in-2", text: "B 会话消息", source: "chat" }, { session_id: "sid-2" }), seq: 1 }
+          ]);
+        }
+        return null;
+      }
+    }
+  });
+  await surface.openProject("D:\\novel", "sid-1");
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  input.value = "未发送的草稿";
+  await surface.switchSession("sid-2");
+  assert.equal(input.value, "", "切换会话（reset）后未发送草稿不得带进新会话");
+  assert.match(root.textContent, /B 会话消息/u, "新会话内容正常渲染");
+});
+
+test("提交失败气泡：重试成功后移除，不永久残留", async () => {
+  let failFirst = true;
+  const { root, surface } = await makeSurface({
+    apiOverrides: {
+      submit: async (text) => {
+        if (failFirst) {
+          failFirst = false;
+          throw new Error("第一次提交失败");
+        }
+        return { ok: true, input_id: "in-ok", status: "running" };
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  const send = root.querySelector('[data-testid="agent-send"]');
+  input.value = "重试的文本";
+  send._fire("click");
+  await tick();
+  assert.ok(root.querySelector('[data-testid="agent-submit-error"]'), "第一次失败应显示错误提示");
+  assert.equal(input.value, "重试的文本", "失败后文本回填 composer 便于重试");
+
+  // 重试同一文本：成功后失败气泡与错误文案都应消失
+  send._fire("click");
+  await tick();
+  await tick();
+  assert.equal(root.querySelector('[data-testid="agent-submit-error"]'), null, "重试成功后失败气泡消失");
+  assert.equal(root.querySelectorAll('[data-testid="agent-user-message"]').length, 1, "重试成功只保留一条用户消息");
+});
+
+test("提交失败气泡：事件回放确认送达后移除（reconcile 路径）", async () => {
+  const { root, surface } = await makeSurface({
+    apiOverrides: {
+      submit: async () => { throw new Error("网络抖动，实际已受理"); }
+    }
+  });
+  await surface.openProject("D:\\novel");
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  input.value = "送达确认的文本";
+  root.querySelector('[data-testid="agent-send"]')._fire("click");
+  await tick();
+  assert.ok(root.querySelector('[data-testid="agent-submit-error"]'), "submit reject 应先显示失败气泡");
+
+  // 后端实际已受理：同文本 user 消息经事件流回放（input_queued → conversation →
+  // syncMessages → reconcilePendingSubmission），失败气泡应按文本一并移除。
+  surface.applyEvent(ev("input_queued", { input_id: "in-delivered", text: "送达确认的文本", source: "chat" }));
+  await tick();
+  assert.equal(root.querySelector('[data-testid="agent-submit-error"]'), null, "回放确认送达后失败气泡消失");
+  assert.equal(root.querySelectorAll('[data-testid="agent-user-message"]').length, 1, "确认送达后收敛为一条正式记录");
+});
+
+test("click 提交成功后焦点回到 textarea", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  input.value = "发送后聚焦";
+  root.querySelector('[data-testid="agent-send"]')._fire("click");
+  await tick();
+  await tick();
+  assert.equal(input._focusCount, 1, "提交成功后焦点应回到输入框");
 });
 
 test("输入斜杠显示命令补全，可用键盘选择但不会立即提交", async () => {
@@ -1219,6 +1313,33 @@ test("助手正文增量渲染 Markdown：粗体/代码/段落进入 innerHTML",
   assert.match(final.querySelector(".agent-message-text").innerHTML, /<strong>重点<\/strong>/u, "终态消息同样渲染 Markdown");
 });
 
+test("assistant_message_completed 带 truncated → 消息卡渲染截断标记", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("assistant_message_completed", { input_id: "in-1", text: "半截正文", truncated: true }));
+  const assistant = root.querySelector('[data-testid="agent-assistant-message"]');
+  assert.ok(assistant, "Assistant 正文应渲染");
+  assert.match(assistant.querySelector(".agent-message-text").textContent, /半截正文/u, "正文内容原样保留");
+  const mark = root.querySelector('[data-testid="truncation-mark"]');
+  assert.ok(mark, "截断标记元素应渲染");
+  assert.match(mark.textContent, /输出被截断/u, "截断标记展示中文提示文案");
+  assert.doesNotMatch(
+    assistant.querySelector(".agent-message-text").textContent,
+    /输出被截断/u,
+    "标记文案不得混入正文文本区域"
+  );
+});
+
+test("assistant_message_completed 无 truncated → 不渲染截断标记", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("assistant_message_completed", { input_id: "in-1", text: "完整正文" }));
+  assert.ok(root.querySelector('[data-testid="agent-assistant-message"]'), "正文正常渲染");
+  assert.equal(root.querySelector('[data-testid="truncation-mark"]'), null, "无 truncated 时不出现截断标记");
+});
+
 test("状态标记映射：running=• / completed=✓ / failed=✗ / cancelled=已停止", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
@@ -1429,6 +1550,13 @@ test("工作组 duration 运行中由工作组投影时钟驱动，waiting_user 
   // waiting_user：离开 active → activeMs 冻结、activeSince 置空，不再增量
   surface.applyEvent(ev("run_status_changed", { status: "waiting_user" }, { at: new Date(Date.now() - 1000).toISOString() }));
   assert.equal(duration.textContent, "2 秒", "waiting_user 暂停在离开 active 时刻（2s = 3000ms − 1000ms）");
+  // Task 8：waiting_user 工作组文案与侧边栏 RUN_STATUS_LABELS 口径一致（待命），
+  // 不再是误导性的「工作中」
+  assert.equal(
+    root.querySelector(".agent-work-status").textContent,
+    "待命",
+    "waiting_user 工作组状态文案应为「待命」（与 session-sidebar RUN_STATUS_LABELS 统一）"
+  );
 });
 
 test("工具详情行：整行可点击展开/收起，去掉独立「详情」summary", async () => {
@@ -3734,14 +3862,22 @@ test("switchSession：切换会话重拉快照并重置视图；新对话占位�
   assert.equal(snap3[1].afterSeq, 3, "缓存会话切回按已见游标增量补齐");
   assert.match(root.textContent, /会话一消息/u);
 
-  // 新对话占位：本地未落盘，列表出现 draft 项
-  surface.newSessionPlaceholder();
-  await waitUntil(() => sessionsChanged.some(([list]) => list.some((s) => String(s.session_id).startsWith("draft-"))));
-  const draftNotice = sessionsChanged.find(([list]) => list.some((s) => String(s.session_id).startsWith("draft-")));
-  assert.ok(draftNotice, "占位应通知会话列表");
-  const draftEntry = draftNotice[0].find((s) => String(s.session_id).startsWith("draft-"));
-  assert.equal(draftEntry.title, "新对话", "占位标题为新对话");
-  assert.equal(draftNotice[1], draftEntry.session_id, "占位即当前活跃会话");
+  // 新对话占位：本地未落盘，占位期间列表不出现 draft 项（发送首条消息前左侧
+  // 不显示任何新项）；占位 id 仍是活跃会话指针（右侧空白对话 + composer 可输入）。
+  const draftId = surface.newSessionPlaceholder();
+  // 精确等待：最新一次通知的活跃指针为 draft id 且列表不含 draft 项（避免未来前置
+  // 操作引入 emit 时取到旧条目——等待条件按「最新一次」而非「非空」判定）。
+  await waitUntil(() => {
+    const last = sessionsChanged[sessionsChanged.length - 1];
+    return last != null && last[1] === draftId && !last[0].some((s) => String(s.session_id).startsWith("draft-"));
+  });
+  const draftNotice = sessionsChanged.findLast(([, active]) => active === draftId);
+  assert.equal(draftNotice[1], draftId, "占位仍是当前活跃会话指针");
+  assert.ok(
+    !draftNotice[0].some((s) => String(s.session_id).startsWith("draft-")),
+    "占位不进入会话列表（列表不含 draft 项）"
+  );
+  assert.deepEqual(draftNotice[0].map((s) => s.session_id), ["sid-1", "sid-2"], "列表为后端真实会话原样透传");
   assert.ok(
     calls.some((c) => c[0] === "openProject" && c[1] === "D:\\novel" && c[2] === null),
     "占位进入时中止旧 SSE 连接（transport.openProject 清请求作用域）"
@@ -3945,4 +4081,119 @@ test("draft 提交失败（createSession 被中止）：切走后草稿回填 co
   await tick();
 
   assert.equal(input.value, "失败草稿", "切走后 createSession 被中止，草稿仍回填 composer，输入不丢");
+});
+
+// ---------------------------------------------------------------------------
+// Task 5：会话活跃指针透传（启动 busy 误判根因）
+// ---------------------------------------------------------------------------
+
+test("Task 5：启动后 refreshSessions 透传后端 active_session_id（activeSessionId=null 兜底）", async () => {
+  // 启动场景：openProject 未指定会话 → surface.activeSessionId = null（switchSession(null)
+  // 由后端 last-active 决定）。任意一次 refreshSessions 若把活跃指针覆盖成 null，侧边栏
+  // syncBusy 会把当前会话也当「其他会话」——正在展示的会话有 run 在跑时发送键被误禁
+  // （"另一个对话正在运行"）。后端契约：GET /api/agent/sessions 返回
+  // { sessions, active_session_id }（agent-routes.mjs）。
+  const sessions = [
+    { session_id: "S1", title: "会话一", archived_at: null, run_status: "running" },
+    { session_id: "S2", title: "会话二", archived_at: null, run_status: "idle" }
+  ];
+  const sessionsChanged = [];
+  const { surface } = await makeSurface({
+    apiOverrides: {
+      fetchSnapshot: async () => null,
+      sessions: async () => ({ sessions: [...sessions], active_session_id: "S1" })
+    },
+    callbacks: {
+      onSessionsChanged: (list, active) => sessionsChanged.push([list, active])
+    }
+  });
+
+  await surface.openProject("D:\\novel", null); // 启动：未指定会话
+  assert.equal(sessionsChanged.length, 0, "openProject 自身不拉会话列表");
+  surface.refreshSessions();
+  await waitUntil(() => sessionsChanged.length > 0);
+  assert.equal(
+    sessionsChanged[sessionsChanged.length - 1][1],
+    "S1",
+    "启动后首次 refreshSessions 的活跃指针应以后端 active_session_id 为准（否则当前会话被误判为其他会话）"
+  );
+  assert.deepEqual(
+    sessionsChanged[sessionsChanged.length - 1][0].map((s) => s.session_id),
+    ["S1", "S2"],
+    "列表原样透传"
+  );
+});
+
+test("Task 5：surface 显式活跃会话优先于后端 fallback（refreshSessions 不覆盖）", async () => {
+  // 回归守卫：Task 3 契约（onSessionsChanged 第二参 = surface 当前活跃指针）保持不变，
+  // 后端 active_session_id 只在 surface 指针为 null 时兜底。
+  const sessions = [
+    { session_id: "S1", title: "会话一", archived_at: null, run_status: "idle" },
+    { session_id: "S2", title: "会话二", archived_at: null, run_status: "idle" }
+  ];
+  const sessionsChanged = [];
+  const { surface } = await makeSurface({
+    apiOverrides: {
+      fetchSnapshot: async () => null,
+      sessions: async () => ({ sessions: [...sessions], active_session_id: "S2" })
+    },
+    callbacks: {
+      onSessionsChanged: (list, active) => sessionsChanged.push([list, active])
+    }
+  });
+
+  await surface.openProject("D:\\novel", null);
+  await surface.switchSession("S1"); // 显式切到 S1 → surface.activeSessionId = "S1"
+  surface.refreshSessions();
+  await waitUntil(() => sessionsChanged.length > 0);
+  const last = sessionsChanged[sessionsChanged.length - 1];
+  assert.equal(last[1], "S1", "surface 显式活跃会话优先，后端 active_session_id 只作 null 兜底");
+  assert.deepEqual(last[0].map((s) => s.session_id), ["S1", "S2"], "列表原样透传");
+});
+
+test("Task 8：refreshSessions 新鲜度守卫——慢响应不覆盖更新发起的刷新结果", async () => {
+  // 镜像 app.js dashboardRequestId 模式：同代次内并发刷新只允许最新一次生效。
+  // 代次守卫（isCurrentProjectScope）管切项目/会话，本守卫管同代次内响应顺序。
+  let resolveFirst = null;
+  let resolveSecond = null;
+  const firstSlow = new Promise((resolve) => { resolveFirst = resolve; });
+  const secondFast = new Promise((resolve) => { resolveSecond = resolve; });
+  let sessionsCall = 0;
+  const sessionsChanged = [];
+  const { surface } = await makeSurface({
+    apiOverrides: {
+      fetchSnapshot: async () => null,
+      sessions: () => {
+        sessionsCall += 1;
+        return sessionsCall === 1 ? firstSlow : secondFast;
+      }
+    },
+    callbacks: {
+      onSessionsChanged: (list, active) => sessionsChanged.push([list, active])
+    }
+  });
+  await surface.openProject("D:\\novel", null);
+
+  // 并发两次刷新：第一次慢、第二次快。第二次先返回并生效。
+  const p1 = surface.refreshSessions();
+  const p2 = surface.refreshSessions();
+  resolveSecond({ sessions: [{ session_id: "S2" }], active_session_id: null });
+  await p2;
+  await waitUntil(() => sessionsChanged.length === 1);
+  assert.deepEqual(
+    sessionsChanged[0][0].map((s) => s.session_id),
+    ["S2"],
+    "快响应（最新发起）先到并生效"
+  );
+
+  // 第一次（慢）响应迟到：必须被新鲜度守卫丢弃，不得覆盖第二次的结果。
+  resolveFirst({ sessions: [{ session_id: "S1" }], active_session_id: null });
+  await p1;
+  await tick();
+  assert.equal(sessionsChanged.length, 1, "慢响应被丢弃，不产生第二次 emit");
+  assert.deepEqual(
+    sessionsChanged[0][0].map((s) => s.session_id),
+    ["S2"],
+    "onSessionsChanged 结果仍是最新一次刷新的会话列表"
+  );
 });
