@@ -6,16 +6,19 @@
 // 躺在 <agentRoot> 根上，本模块把它搬入第一个会话目录并注册会话 1，使旧对话在新
 // 架构下立即可见、可继续。
 //
-// 迁移判定（幂等）：
-//   - <agentRoot>/segments/events/ 存在（旧单流段数据）且
-//   - <agentRoot>/sessions/index.json 不存在 且
-//   - migration.json 未标记 sessions_migrated: true
-//   → 迁移；否则 { migrated:false, sessionId:null }（不抛错，不产生副作用）。
+// 迁移判定（幂等，两条互补路径）：
+//   A. migrateSingleSessionToRegistry：<agentRoot>/segments/events/ 存在（旧单流段
+//      数据）且 sessions/index.json 不存在 且 migration.json 未标记
+//      sessions_migrated: true → 迁移；
+//   B. adoptLegacyFlatFilesToRegistry：无 segments、仅旧 flat 单体文件
+//      （events.jsonl/transcript.jsonl/session.json/checkpoints，最老一代布局）且
+//      sessions/index.json 不存在 → 迁入会话 1。
+//   两条路径都返回 { migrated:false, sessionId:null } 表示无源（不抛错，无副作用）。
+//   A 的 isSessionEntry 已含 flat 文件（有 segments 的旧布局两者兼有，一次搬走）；
+//   B 只在纯 flat（无 segments）时兜底——两条路径互斥。
 //
 // 迁移动作（内容绝不重写，只搬目录/文件——journal 从新位置读取时布局必须完全一致）：
-//   1. 先读取事件段的最大 seq（用于注册表 meta.last_seq，供 Task 4 SSE 恢复游标；
-//      扫描实际 JSONL 而非依赖 manifest/session.json 派生值，取健康行的真实最大值）；
-//   2. 把 <agentRoot> 顶层属于该 journal 会话的数据搬入 <agentRoot>/sessions/<id>/：
+//   1. 把 <agentRoot> 顶层属于该 journal 会话的数据搬入 <agentRoot>/sessions/<id>/：
 //      segments/ 整目录 + journal-manifest.json + session.json 是核心段数据；
 //      checkpoints/（Task 8 正式 checkpoint）、active-context.json（Task 7 指针）、
 //      compaction-commit-*.json（提交 marker）、cleared-history/（clearHistory 轮转
@@ -24,8 +27,15 @@
 //      Task 8 对账因 checkpoint 文件缺失而误报 checkpoint_corrupt。migration.json
 //      是 journal 级状态，留在旧根只追加 sessions_migrated 标记；sessions/ 与
 //      .staging-*（workspace 迁移残留）不搬；
-//   3. 注册会话 1（idFactory() 生成 id、title "对话 1"），并把 last_seq 写入 meta；
-//   4. 在 <agentRoot>/migration.json 合并写 sessions_migrated: true（不覆盖其他键）。
+//   2. 注册会话 1（idFactory() 生成 id、title "对话 1"）；
+//   3. 在 <agentRoot>/migration.json 合并写 sessions_migrated: true（不覆盖其他键）。
+//
+// adoptLegacyFlatFilesToRegistry 的迁移动作（与 A 同一"先搬后注册+标记"顺序）：
+//   把根上存在的 flat 条目搬入 sessions/<id>/（目标已有则跳过，前次失败残留自愈），
+//   注册会话 1（title "对话 1"），合并写 sessions_migrated 标记。此路径原先是
+//   runtime.ensureSessionState 的副作用（首次物化会话时收养、依赖物化顺序，纯 flat
+//   旧数据在用户发首条消息前不可见）——迁到这里后由 migrateProjectData 在
+//   open/submit/sessions()/newSession 一次性确定性执行，首开即可见。
 //
 // 失败恢复顺序（先搬后注册+标记）的理由：
 //   - segments/ 在所有条目中**最后搬**。若搬迁中途崩溃，segments/events/ 仍在旧根，
@@ -35,11 +45,7 @@
 //     注册表、可手工找回），注册表自始至终只包含数据目录真实存在的会话——绝不出现
 //     "已注册但目录为空"的幽灵会话（那会让新架构把空会话当正常对话列出）；
 //   - 注册后再写标记。注册成功即 sessions/index.json 存在，重试判定已跳过，标记
-//     缺失不破坏幂等；
-//   - create 与 setLastSeq 之间崩溃：注册表已有会话但 last_seq 仍是 create 的初始值
-//     0，重试被 sessions/index.json 短路、不会再校准——SSE 游标会停在 0。消解：
-//     Task 4 在 runtime.open() 打开该会话时以 journal 实际 lastSeq 校准注册表
-//     （校准幂等），此窗口只影响游标起点、不影响会话可用性。
+//     缺失不破坏幂等。
 //
 // 并发迁移（两个进程同时跑）不做处理：本模块由 Task 4 在 runtime.open() 中接入，
 // 打开项目时发现旧单流数据即执行迁移；在接入前模块尚未被任何 src/ 代码调用
@@ -47,14 +53,13 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { ensureDir, pathExists, readJson, writeJsonAtomic } from "../fs-utils.mjs";
+import { ensureDir, pathExists, readJson, renameWithRetry, writeJsonAtomic } from "../fs-utils.mjs";
 import { createSessionRegistry } from "./session-registry.mjs";
+import { SEGMENT_RE } from "./journal-segments.mjs";
+import { COMMIT_MARKER_PREFIX } from "./context-checkpoints.mjs";
 
-// 段文件名（与 journal-segments.mjs 的 SEGMENT_RE 一致；.corrupt 天然被排除）。
-const SEGMENT_FILE_RE = /^\d{8}\.jsonl$/u;
-// compaction 提交 marker（context-checkpoints.mjs 的 COMMIT_MARKER_PREFIX）。
-const COMMIT_MARKER_RE = /^compaction-commit-[\w.-]+\.json$/u;
-// 旧单体文件导入后改名的产物（journal-segments.mjs renameLegacy）。
+// 段文件名与 compaction 提交 marker：直接复用 journal-segments / context-checkpoints
+// 的既有常量/判定（.corrupt 天然被 SEGMENT_RE 排除）。
 const LEGACY_RENAMED_RE = /\.legacy\.jsonl$/u;
 
 // <agentRoot> 顶层不属于会话数据的条目：migration.json（journal 级标记，留在旧根）、
@@ -73,55 +78,12 @@ async function hasLegacySingleStream(agentRoot) {
   }
 }
 
-// 扫描事件段取健康行的最大 seq（迁移流的事实最大值；manifest/session.json 的
-// 派生 last_seq 在崩溃窗口可能落后，不采用）。损坏行（非末尾半行）跳过：迁移流
-// 的游标只覆盖可读事件，Task 4 打开该会话时 journal 会另行做缺口恢复。
-async function readMaxEventSeq(eventsDir) {
-  let names;
-  try {
-    names = await fs.readdir(eventsDir);
-  } catch {
-    return 0;
-  }
-  let maxSeq = 0;
-  for (const name of names.filter((n) => SEGMENT_FILE_RE.test(n)).sort()) {
-    const raw = await fs.readFile(path.join(eventsDir, name), "utf8");
-    for (const line of raw.split("\n")) {
-      if (line.trim() === "") continue;
-      try {
-        const seq = JSON.parse(line)?.seq;
-        if (Number.isInteger(seq) && seq > maxSeq) maxSeq = seq;
-      } catch {
-        // 坏行：跳过，最大 seq 以健康行为准
-      }
-    }
-  }
-  return maxSeq;
-}
-
-// Windows 下杀软/句柄占用可能让 rename 瞬时失败（与 fs-utils.renameWithRetry 同款
-// 重试策略；该函数未导出，这里按同模式内联一份轻量版）。
-async function renameWithRetry(sourcePath, targetPath) {
-  let lastError = null;
-  for (let attempt = 1; attempt <= 4; attempt += 1) {
-    try {
-      await fs.rename(sourcePath, targetPath);
-      return;
-    } catch (error) {
-      lastError = error;
-      if (!["EPERM", "EBUSY", "EACCES"].includes(error.code) || attempt === 4) break;
-      await new Promise((resolve) => setTimeout(resolve, attempt * 35));
-    }
-  }
-  throw lastError;
-}
-
 // 顶层条目是否属于会话数据（排除 SKIP_ENTRIES、.staging-*，只收明确文件或目录）。
 async function isSessionEntry(agentRoot, name) {
   if (SKIP_ENTRIES.has(name) || name.startsWith(".staging-")) return false;
   // compaction 提交 marker 与 *.legacy.jsonl 按前缀/后缀识别，其余按名直接匹配
   return (
-    COMMIT_MARKER_RE.test(name) ||
+    (name.startsWith(COMMIT_MARKER_PREFIX) && name.endsWith(".json")) ||
     LEGACY_RENAMED_RE.test(name) ||
     ["segments", "journal-manifest.json", "session.json", "checkpoints", "active-context.json", "cleared-history", "events.jsonl", "transcript.jsonl"].includes(name)
   );
@@ -156,10 +118,33 @@ async function writeMigrationMarker(agentRoot) {
   await writeJsonAtomic(path.join(agentRoot, "migration.json"), {
     schema_version: 1,
     legacy_imported: false,
-    project_agent_imported: false,
     ...existing,
     sessions_migrated: true
   });
+}
+
+// sessionId 会拼进文件系统路径（sessions/<id>/）：拒绝空串、路径分隔符与 . / ..
+// 等穿越片段，防止异常 idFactory 把搬迁写到 agentRoot 之外。
+function resolveMigrationSessionId(idFactory = randomUUID) {
+  const sessionId = typeof idFactory === "function" ? idFactory() : randomUUID();
+  if (
+    typeof sessionId !== "string" ||
+    sessionId.length === 0 ||
+    sessionId === "." ||
+    sessionId === ".." ||
+    sessionId.includes("/") ||
+    sessionId.includes("\\")
+  ) {
+    throw new TypeError(`idFactory 返回了非法 sessionId: ${String(sessionId)}`);
+  }
+  return sessionId;
+}
+
+// 注册会话 1 + 迁移标记（两条迁移路径共用的收尾；先搬后注册，理由见文件头）。
+async function registerSessionOne(agentRoot, sessionId) {
+  const registry = createSessionRegistry({ root: agentRoot });
+  await registry.create({ sessionId, title: "对话 1" });
+  await writeMigrationMarker(agentRoot);
 }
 
 export async function migrateSingleSessionToRegistry({ agentRoot, idFactory = randomUUID }) {
@@ -178,34 +163,45 @@ export async function migrateSingleSessionToRegistry({ agentRoot, idFactory = ra
     // migration.json 损坏：视为未标记，继续（标记写入路径会修复该文件）
   }
 
-  const sessionId = typeof idFactory === "function" ? idFactory() : randomUUID();
-  // sessionId 会拼进文件系统路径（sessions/<id>/）：拒绝空串、路径分隔符与 . / ..
-  // 等穿越片段，防止异常 idFactory 把搬迁写到 agentRoot 之外。
-  if (
-    typeof sessionId !== "string" ||
-    sessionId.length === 0 ||
-    sessionId === "." ||
-    sessionId === ".." ||
-    sessionId.includes("/") ||
-    sessionId.includes("\\")
-  ) {
-    throw new TypeError(`idFactory 返回了非法 sessionId: ${String(sessionId)}`);
-  }
+  const sessionId = resolveMigrationSessionId(idFactory);
   const targetDir = path.join(root, "sessions", sessionId);
   await ensureDir(targetDir);
 
-  // 1. 最大事件 seq（搬迁前读取，只读）
-  const maxSeq = await readMaxEventSeq(path.join(root, "segments", "events"));
-  // 2. 搬迁（segments/ 最后）
+  // 1. 搬迁（segments/ 最后搬：中途崩溃时旧判定仍成立，重试可继续）
   await moveSessionEntries(root, targetDir);
-  // 3. 注册会话 1 + last_seq（先搬后注册，理由见文件头）。create 与 setLastSeq
-  //    之间崩溃会留下 last_seq=0 的会话且重试被 index.json 短路，由 Task 4
-  //    open() 时以 journal 实际 lastSeq 校准（见文件头）。
-  const registry = createSessionRegistry({ root });
-  await registry.create({ sessionId, title: "对话 1" });
-  await registry.setLastSeq(sessionId, maxSeq);
-  // 4. 迁移标记（合并，不覆盖其他键）
-  await writeMigrationMarker(root);
+  // 2+3. 注册会话 1 + 迁移标记（先搬后注册，理由见文件头）
+  await registerSessionOne(root, sessionId);
+
+  return { migrated: true, sessionId };
+}
+
+// 旧 flat-only 遗留（无 segments/ 的最老一代布局：events.jsonl / transcript.jsonl /
+// session.json / checkpoints 直接躺在根）→ 会话 1。判定：未注册 且 根存在任一 flat
+// 条目。搬移/注册/标记与 migrateSingleSessionToRegistry 同一"先搬后注册"顺序；
+// 由 runtime.migrateProjectData 在 workspace 复制之后调用，纯 flat 数据首开即可见。
+export async function adoptLegacyFlatFilesToRegistry({ agentRoot, idFactory = randomUUID }) {
+  if (typeof agentRoot !== "string" || agentRoot.length === 0) {
+    throw new TypeError("agentRoot 必须是字符串路径");
+  }
+  const root = path.resolve(agentRoot);
+  if (await pathExists(path.join(root, "sessions", "index.json"))) return NO_MIGRATION;
+
+  const FLAT_ENTRIES = ["events.jsonl", "transcript.jsonl", "session.json", "checkpoints"];
+  const present = [];
+  for (const name of FLAT_ENTRIES) {
+    if (await pathExists(path.join(root, name))) present.push(name);
+  }
+  if (present.length === 0) return NO_MIGRATION;
+
+  const sessionId = resolveMigrationSessionId(idFactory);
+  const targetDir = path.join(root, "sessions", sessionId);
+  await ensureDir(targetDir);
+  for (const name of present) {
+    const target = path.join(targetDir, name);
+    if (await pathExists(target)) continue; // 前次失败残留 → 跳过
+    await renameWithRetry(path.join(root, name), target);
+  }
+  await registerSessionOne(root, sessionId);
 
   return { migrated: true, sessionId };
 }

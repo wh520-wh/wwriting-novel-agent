@@ -38,7 +38,7 @@ export const SEGMENT_MAX_BYTES = 16 * 1024 * 1024;
 export const SEGMENT_MAX_RECORDS = 25_000;
 export const INDEX_STRIDE = 256;
 
-const SEGMENT_RE = /^(\d{8})\.jsonl$/u;
+export const SEGMENT_RE = /^(\d{8})\.jsonl$/u;
 
 function segmentName(id) {
   return `${String(id).padStart(8, "0")}.jsonl`;

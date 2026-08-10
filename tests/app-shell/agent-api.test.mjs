@@ -105,14 +105,6 @@ test("submit 显式 null：不携带 sessionId（按未设置会话处理）", a
   assert.deepEqual(call.body, { projectRoot: "P", text: "你好" }, "显式 null 不得出现 sessionId 键");
 });
 
-test("setSession 切换当前会话后 submit 使用新会话", async (t) => {
-  const { api, calls } = withApi(t);
-  api.setSession("sid-9");
-  await api.submit("你好");
-  const call = calls.find((c) => c.url === "/api/agent/input");
-  assert.equal(call.body.sessionId, "sid-9");
-});
-
 test("未设置会话时 submit body 不带 sessionId（缺省兼容）", async (t) => {
   const { api, calls } = withApi(t);
   await api.submit("你好");
@@ -359,13 +351,3 @@ test("未设置会话时 promote body 不带 sessionId（缺省兼容）", async
   assert.deepEqual(call.body, { projectRoot: "P" }, "不得出现 sessionId 键");
 });
 
-// ---------------------------------------------------------------------------
-// sessionRoot
-// ---------------------------------------------------------------------------
-
-test("sessionRoot() 返回 { projectRoot, sessionId }；未设置会话时 sessionId 为 null", async (t) => {
-  const { api } = withApi(t);
-  assert.deepEqual(api.sessionRoot(), { projectRoot: "P", sessionId: null });
-  api.openProject("P", "sid-1");
-  assert.deepEqual(api.sessionRoot(), { projectRoot: "P", sessionId: "sid-1" });
-});

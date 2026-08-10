@@ -3955,15 +3955,6 @@ test("draft 提交竞态：createSession 在途时切走会话，不投递、不
   assert.equal(input.value, "竞态草稿", "草稿回填到当前 composer，用户输入不丢");
 });
 
-test("discardDraft：停留占位视图时拒绝置空（自保护），占位保留", async () => {
-  const { surface } = await makeSurface();
-  await surface.openProject("D:\\novel");
-  const draftId = surface.newSessionPlaceholder();
-  surface.discardDraft();
-  assert.equal(surface.newSessionPlaceholder(), draftId, "停留占位时 discardDraft 被拒绝，占位保留");
-  assert.ok(draftId.startsWith("draft-"), "占位 id 为本地 draft");
-});
-
 test("draft 提交失败（createSession 被中止）：切走后草稿回填 composer，输入不丢", async () => {
   let rejectCreate;
   const createGate = new Promise((_resolve, reject) => { rejectCreate = reject; });

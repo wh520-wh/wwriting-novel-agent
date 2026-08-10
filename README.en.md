@@ -22,7 +22,7 @@ WWriting is not a "describe it, it writes it" generator. It is a desktop writing
 - **Built-in writing-style skills**: three read-only styles — Balanced, Fast-Readable, Psychological-Literary — ship with the app, viewable but not deletable or editable; selected via natural language or inferred by the model from the premise, then recorded in `WWRITING.md`.
 - **Controlled web research**: offline by default; fetched sources are snapshotted and marked as untrusted material, never executed as instructions.
 - **OpenAI-compatible model adapters**: official DeepSeek and Xiaomi MiMo presets; paste an API key and go. Keys are stored locally only.
-- **Verification culture**: 900+ unit/integration tests plus a one-command local acceptance suite (`npm run verify:local`) — even UI regressions ("buttons visible but unclickable") are guarded by a real Electron click-through harness.
+- **Verification culture**: 1500+ unit/integration tests plus a one-command local acceptance suite (`npm run verify:local`) — even UI regressions ("buttons visible but unclickable") are guarded by a real Electron click-through harness.
 
 ## Quick Start
 
@@ -108,7 +108,7 @@ AGENTS.md           # optional: project writing instructions (ordinary authorita
 ## Verification Commands
 
 ```powershell
-npm test                            # 900+ unit/integration tests
+npm test                            # 1500+ unit/integration tests
 npm run verify:local                # full local acceptance (includes packaging; slow)
 npm run verify:app-shell            # GUI, folder open, settings, skills, research tools
 npm run verify:app-clickability     # real Electron window, clicks every critical button

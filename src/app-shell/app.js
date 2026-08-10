@@ -91,7 +91,6 @@ let lastFocused = null;
 let createModalMode = "new";
 let readerChapterNo = null;
 let projectListData = null;
-let lastActiveSessionId = null; // 最近一次 onSessionsChanged 的活跃会话（deleteSession 兜底用）
 
 // ---- AgentSurface：唯一对话 seam ----
 const agentSurface = createAgentSurface({
@@ -103,9 +102,9 @@ const agentSurface = createAgentSurface({
   onOpenProjectFolder: () => openFromFolder(),
   // Task 9：会话列表刷新 → 左侧栏两级树（只重渲当前项目组 + busy 复位）。draft
   // 占位已由 surface 插入列表头部（{ session_id, title, status: "draft" }），
-  // 侧边栏按 status === "draft" 特判。
+  // 侧边栏按 status === "draft" 特判。活跃会话 id 由 sidebar 自持（sessionCache
+  // 的 activeSessionId），app.js 需要时经 sessionSidebar.getSessions() 读取。
   onSessionsChanged: (sessions, activeSessionId) => {
-    lastActiveSessionId = activeSessionId ?? null;
     sessionSidebar.handleSessionsChanged(currentProjectRoot, sessions, activeSessionId);
   },
   // Task 9：SSE run 终态 → 重拉会话列表并复位 busy。app.js 不消费 SSE（surface 是
@@ -395,7 +394,9 @@ function commitProjectSwitch(projectRoot) {
 // 删除时调用本函数。
 async function deleteSessionAndResolveActive(sessionId) {
   await agentSurface.deleteSession(sessionId);
-  if (lastActiveSessionId !== sessionId) return;
+  // 删的是当前活跃会话才需要切走；活跃指针从 sidebar 的会话缓存读取（与
+  // onSessionsChanged 同一数据源，删除后的 refreshSessions 若已落地会自然反映新活跃）。
+  if (sessionSidebar.getSessions(currentProjectRoot)?.activeSessionId !== sessionId) return;
   await sessionSidebar.switchSession(null);
   const remaining = sessionSidebar.getSessions(currentProjectRoot);
   if (!remaining || remaining.sessions.length === 0) {

@@ -540,5 +540,16 @@ export function createCompactionCoordinator({
     return { status: "cancelled", compaction_id: compactionId, cancel_reason: entry.cancelReason };
   }
 
-  return { start, retry, cancel };
+  // 手动 /compact 预检后无可压缩历史：追加 context_compaction_noop（与 start/retry
+  // 的 noop 同一事件形状）。压缩事件统一由本协调器落盘——runtime 只做输入侧预检
+  // 与消费，不再直接写压缩事件。
+  async function noop({ trigger, reason = "nothing_to_compact" } = {}) {
+    await journal.append({
+      type: "context_compaction_noop",
+      payload: { compaction_id: idFactory(), trigger, reason }
+    });
+    return { status: "noop" };
+  }
+
+  return { start, retry, cancel, noop };
 }

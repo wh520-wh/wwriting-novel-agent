@@ -176,7 +176,7 @@ test("load 惰性创建 .wwriting/agent 并在锁内追加 session_created", asy
   assert.equal((await fs.stat(path.join(dir, "segments", "events"))).isDirectory(), true, "segments/events 应为目录");
   assert.equal((await fs.stat(path.join(dir, "segments", "transcript"))).isDirectory(), true, "segments/transcript 应为目录");
   const migration = JSON.parse(await fs.readFile(path.join(dir, "migration.json"), "utf8"));
-  assert.deepEqual(migration, { schema_version: 1, legacy_imported: false, project_agent_imported: false });
+  assert.deepEqual(migration, { schema_version: 1, legacy_imported: false });
   const manifest = JSON.parse(await fs.readFile(path.join(dir, "journal-manifest.json"), "utf8"));
   assert.equal(manifest.schema_version, 1);
   assert.equal(typeof manifest.generation_id, "string");
@@ -243,7 +243,7 @@ test("journal 的 migration 标记经 readMigration/writeMigration 读写应用�
   const journal = createAgentJournal({ projectRoot, storageRoot });
   await journal.load();
   const initial = await journal.readMigration();
-  assert.deepEqual(initial, { schema_version: 1, legacy_imported: false, project_agent_imported: false });
+  assert.deepEqual(initial, { schema_version: 1, legacy_imported: false });
   await journal.writeMigration({ schema_version: 1, legacy_imported: true, imported_at: "2026-08-07T00:00:00.000Z" });
   assert.deepEqual(await journal.readMigration(), {
     schema_version: 1,
