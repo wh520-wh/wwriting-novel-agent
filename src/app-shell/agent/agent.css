@@ -840,6 +840,11 @@
   user-select: none;
 }
 
+.agent-tool-details > summary:hover,
+.agent-tool-details > summary:focus-visible {
+  background: color-mix(in srgb, var(--agent-panel-muted) 72%, transparent);
+}
+
 .agent-tool-details > summary::-webkit-details-marker {
   display: none;
 }

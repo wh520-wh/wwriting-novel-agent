@@ -223,8 +223,9 @@ function ensureGroup(work, runId, seq) {
       activeMs: 0,
       activeSince: null,
       elapsedMs: null,
-      // v1 旧日志/旧测试事件的未闭合 model turn 计数（镜像 journal legacyOpenTurns）：
-      // 只供 hasOpenModelTurn 判断"思考中"，v1 没有 reasoning 内容，不产生工作项。
+      // v1 旧日志/旧测试事件的未闭合 model turn 计数（镜像 journal legacyOpenTurns，
+      // 保持 journal 兼容的投影形状）：v1 事件无 turn_id、没有 reasoning 内容，
+      // 不产生工作项，该计数仅供状态层与 journal 对齐，当前无 UI 消费方。
       legacyOpenTurns: 0
     };
     work.groups.set(runId, group);

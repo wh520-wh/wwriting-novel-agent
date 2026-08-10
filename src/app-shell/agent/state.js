@@ -17,7 +17,7 @@
 //
 // 事件 payload 里出现的私有推理字段（reasoning / chain-of-thought 等）一律不进入
 // 派生状态；view 只拿到 label 与脱敏文本。
-import { createWorkState, orderedWorkItems, reduceWorkEvent } from "./work-items.mjs";
+import { createWorkState, reduceWorkEvent } from "./work-items.mjs";
 
 export const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
@@ -407,8 +407,8 @@ function applyEventToState(state, event) {
       break;
     }
     case "model_turn_started": {
-      // 未闭合 model turn 的判断已由 thinking 计数迁移到 work 投影（Task 5）：
-      // hasOpenModelTurn 派生自 work 组的 reasoning 工作项 / legacy 开放 turn。
+      // 未闭合 model turn 的追踪已由 thinking 计数迁移到 work 投影（Task 5）：
+      // legacy 开放 turn 由 reduceWorkEvent 在 work 组的 legacyOpenTurns 计数。
       state.assistantStream = null;
       if (state.session?.active_run) state.session.active_run.assistant_text = null;
       bump(state, ["run", "messages"]);
@@ -728,16 +728,4 @@ export function compactionBlocksSend(compaction) {
 
 export function isRunActive(run) {
   return Boolean(run) && !TERMINAL_RUN_STATUSES.has(run.status);
-}
-
-// 思考中判断（Task 5 起由 work 投影派生，不再维护独立 thinking 计数）：
-// 活动 Run 的 work 组里存在 running 的 reasoning 工作项，或有未闭合的
-// v1 legacy model turn（无 turn_id 的旧事件，journal 的 legacyOpenTurns 语义）。
-export function hasOpenModelTurn(state) {
-  const run = state.session?.active_run;
-  if (!run || TERMINAL_RUN_STATUSES.has(run.status)) return false;
-  const group = state.work?.groups.get(run.id);
-  if (!group) return false;
-  if (group.legacyOpenTurns > 0) return true;
-  return orderedWorkItems(group).some((item) => item.kind === "reasoning" && item.state === "running");
 }
