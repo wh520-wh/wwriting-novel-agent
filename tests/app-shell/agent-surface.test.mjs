@@ -3,12 +3,12 @@
 // 覆盖（Task 8 Step 6 + 从 chat-activity-view.test.mjs 迁移的全部仍然有效断言）：
 //   - 空闲发送 / 运行中排队发送 / 立即 / 同一 run id / 停止 / 重试 / 项目切换；
 //   - /settings、/model 无 Run 时导航；/init、/review、/write 作为普通文本提交；
-//   - 活动：同 activity_id 合并、20 行保留（只裁最早终态、运行中不删）、
-//     64 KiB 输出尾 + 「输出过长已截断」、details/summary 原生折叠、字段顺序；
-//   - 停止防连点（点击即禁用、失败恢复、终态后不再有第二横幅）；
+//   - 工具：同 activity_id 合并到同一工作项、details/summary 原生折叠、
+//     字段顺序、64 KiB 输出尾 + 「输出过长已截断」；
+//   - 停止防连点（点击即禁用、失败恢复、终态后不再有第二个横幅）；
 //   - 计划：活动展开/终态折叠、无手动编辑入口；
 //   - 确认：普通三选、extreme 精确文字前禁用、终态 decision 锁定；
-//   - reasoning 不进入 Assistant 正文，但进入 reasoning 工作项；思考/活动标签可见；
+//   - reasoning 不进入 Assistant 正文，但进入 reasoning 工作项；思考标签可见；
 //   - 滚动锁：显式 follow 状态（距底部 ≤48px 跟随）、上滚后保持 scrollTop +
 //     「回到最新」按钮、点击恢复 follow；重建后不打断阅读更早内容；
 //   - 模型菜单视口钳制与内容列 CSS 基线（agent.css 断言）。
@@ -367,7 +367,8 @@ test("首次快照以服务端 session 为准，早期事件不能把终态回�
     { ...ev("model_turn_started"), seq: 2 }
   ]));
   assert.equal(root.querySelector('[data-testid="agent-stop"]'), null, "权威终态下不得显示停止按钮");
-  assert.ok(root.textContent.includes("已完成"));
+  assert.equal(root.querySelector('[data-testid="agent-retry"]'), null, "权威终态下不得显示重试按钮");
+  assert.equal(root.querySelector(".agent-work-group"), null, "权威终态下早期 run_started 不渲染工作中工作组");
   assert.equal(authoritative.status, "idle", "reducer 不应修改调用方传入的 projection");
   assert.equal(authoritative.active_run.status, "completed");
 });
@@ -668,7 +669,7 @@ test("同一 run id：promote 与 stop 事件不更换 Run；conversation 保留
   assert.deepEqual(api.calls.filter((c) => c[0] === "stop").map((c) => c[1]), ["run-1"]);
 });
 
-test("停止防连点：点击即禁用，连点只触发一次；终态后按钮消失且只渲染一次状态", async () => {
+test("停止防连点：点击即禁用，连点只触发一次；终态后按钮消失且被停止工具为 cancelled", async () => {
   const { root, api, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
@@ -687,11 +688,11 @@ test("停止防连点：点击即禁用，连点只触发一次；终态后按�
   }));
   surface.applyEvent(ev("run_cancelled", { reason: "user_stop" }));
   assert.equal(root.querySelector('[data-testid="agent-stop"]'), null, "终态后停止按钮应消失");
-  const statuses = root.querySelectorAll('[data-testid="agent-run-status"]');
-  assert.equal(statuses.length, 1, "状态横幅只渲染一次");
-  assert.match(statuses[0].textContent, /已停止/u);
-  assert.equal(root.querySelectorAll('[data-activity-id="a9"]').length, 1);
-  assert.match(root.querySelector('[data-activity-id="a9"]').textContent, /已停止/u, "活动标记 = 已停止");
+  const cancelledTool = [...root.querySelectorAll(".agent-work-item")].find(
+    (el) => el.dataset.kind === "tool" && el.dataset.state === "cancelled"
+  );
+  assert.ok(cancelledTool, "被停止的工具保留为 cancelled 工作项");
+  assert.match(cancelledTool.querySelector(".agent-work-item__icon").textContent, /已停止/u, "工具标记 = 已停止");
 });
 
 test("停止失败（拒绝）时按钮恢复可点", async () => {
@@ -1002,10 +1003,10 @@ test("无计划事件的 Run 不渲染计划子项，也不渲染空工作组", 
 
 
 // ===========================================================================
-// 活动流：合并 / 20 行 / 64 KiB / details / 标记 / reasoning 工作项分离
+// 工具工作项：合并 / details / 64 KiB / 标记 / reasoning 工作项分离
 // ===========================================================================
 
-test("同一 activity_id 合并输出且不重复创建行", () => {
+test("同一 activity_id 合并输出到单个工具工作项，不重复创建行", () => {
   return (async () => {
     const { root, surface } = await makeSurface();
     await surface.openProject("D:\\novel");
@@ -1017,39 +1018,46 @@ test("同一 activity_id 合并输出且不重复创建行", () => {
       tool_call_id: "tc-a1", activity_id: "a1", name: "shell",
       exit_code: 0, duration_ms: 35
     }));
-    assert.equal(root.querySelectorAll('[data-activity-id="a1"]').length, 1, "同 activity_id 只渲染一行");
-    const row = root.querySelector('[data-activity-id="a1"]');
-    assert.match(row.textContent, /one\ntwo/u);
+    const toolRows = [...root.querySelectorAll(".agent-work-item")].filter((el) => el.dataset.kind === "tool");
+    assert.equal(toolRows.length, 1, "同 activity_id 只渲染一个工具工作项");
+    const row = toolRows[0];
+    assert.equal(row.dataset.state, "completed");
+    assert.match(row.textContent, /one\ntwo/u, "增量输出累积在同一工作项内");
     assert.match(row.textContent, /退出码0/u);
-    assert.match(row.querySelector(".agent-activity-mark").textContent, /✓/u);
+    assert.equal(row.querySelector(".agent-work-item__icon").textContent, "✓");
   })();
 });
 
-test("不同 activity_id 分别成行；openProject 后清空全部行", async () => {
+test("不同 activity_id 分别成项；openProject 后清空全部工作项", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
   surface.applyEvent(toolStarted("a1", "shell", { command: "npm test" }));
   surface.applyEvent(toolStarted("a2", "read_file", { path: "chapter.md" }));
-  assert.equal(root.querySelectorAll('[data-activity-id="a1"]').length, 1);
-  assert.equal(root.querySelectorAll('[data-activity-id="a2"]').length, 1);
-  assert.equal(root.querySelectorAll(".agent-activity-item").length, 2);
+  const toolRows = () => [...root.querySelectorAll(".agent-work-item")].filter((el) => el.dataset.kind === "tool");
+  assert.equal(toolRows().length, 2);
   await surface.openProject("D:\\novel");
-  assert.equal(root.querySelectorAll(".agent-activity-item").length, 0, "重新打开项目后活动流清空");
+  assert.equal(toolRows().length, 0, "重新打开项目后工作项清空");
 });
 
-test("活动标签映射：shell→运行命令、read_file→读取文件；reasoning 工作项标记思考中", async () => {
+test("工具工作项标签：shell 正在运行命令→已运行命令、read_file 读取文件；reasoning 思考中→已完成思考", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  const toolLabel = (activityId) => {
+    const row = root.querySelector(`[data-item-id="tool:${activityId}"]`);
+    return row?.querySelector(".agent-work-item__label").textContent;
+  };
   surface.applyEvent(toolStarted("a1", "shell", { command: "npm test" }));
-  assert.match(root.querySelector('[data-activity-id="a1"]').textContent, /运行命令/u);
+  assert.match(toolLabel("a1"), /正在运行命令/u);
+  surface.applyEvent(ev("tool_call_completed", {
+    tool_call_id: "tc-a1", activity_id: "a1", name: "shell", exit_code: 0
+  }));
+  assert.match(toolLabel("a1"), /已运行命令/u);
   surface.applyEvent(toolStarted("a2", "read_file", { path: "chapter.md" }));
-  assert.match(root.querySelector('[data-activity-id="a2"]').textContent, /读取文件/u);
-  // 思考标签：model turn 未闭合 → 状态行显示思考中
-  surface.applyEvent(ev("model_turn_started", { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }));
-  assert.match(root.querySelector('[data-testid="agent-run-status"]').textContent, /思考中/u);
+  assert.match(toolLabel("a2"), /正在读取文件/u);
   // reasoning 工作项：运行中 label 思考中；完成后变为已完成思考
+  surface.applyEvent(ev("model_turn_started", { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }));
   const group = root.querySelector(".agent-work-group");
   assert.ok(group, "有 reasoning 工作项时渲染工作组");
   const reasoningRow = group.querySelector('[data-kind="reasoning"]');
@@ -1057,7 +1065,6 @@ test("活动标签映射：shell→运行命令、read_file→读取文件；rea
   assert.match(reasoningLabel.textContent, /思考中/u);
   surface.applyEvent(ev("reasoning_completed", { turn_id: "turn-1", input_id: "in-1", text: "完成", availability: "available" }));
   surface.applyEvent(ev("model_turn_completed", { turn_id: "turn-1", input_id: "in-1", outcome: "completed" }));
-  assert.doesNotMatch(root.querySelector('[data-testid="agent-run-status"]').textContent, /思考中/u);
   assert.match(reasoningRow.querySelector(".agent-work-item__label").textContent, /已完成思考/u);
   assert.equal(root.querySelector('[data-testid="agent-thinking"]'), null, "旧三点动画反馈已删除");
 });
@@ -1071,8 +1078,7 @@ test("工具活动按 seq 位于 Assistant 正文之前（同一时间线）", a
     tool_call_id: "tc-a1", activity_id: "a1", name: "list_files", exit_code: 0, duration_ms: 12
   }, { seq: 3 }));
   surface.applyEvent(ev("assistant_message_completed", { input_id: "in-1", text: "文件清单如下" }, { seq: 4 }));
-  // 信息读取类工具成功（Task 1）：不渲染独立活动行，时间线条目由工作组工具行承载
-  assert.equal(root.querySelector('[data-activity-id="a1"]'), null, "成功完成的 list_files 不再渲染独立活动行");
+  // 时间线条目由工作组工具行承载（Task 1 后不再有独立活动行）
   const toolRow = root.querySelector(".agent-work-group");
   assert.ok(toolRow, "工作组承载工具标签行");
   const assistant = root.querySelector('[data-testid="agent-assistant-message"]');
@@ -1093,7 +1099,6 @@ test("read_file 成功结果在消息流只渲染一次：工作组工具行保�
     tool_call_id: "tc-r1", activity_id: "r1", name: "read_file", exit_code: 0
   }));
   // 消息流中 read_file 只出现一条：工作组工具标签行（已读取文件 + 相对路径）
-  assert.equal(root.querySelectorAll('[data-activity-id]').length, 0, "成功完成的 read_file 不再渲染独立活动行");
   // MockElement 不支持组合选择器：用单类选择器 + dataset.kind 过滤（与既有用例同款）
   const toolRows = [...root.querySelectorAll(".agent-work-item")].filter((el) => el.dataset.kind === "tool");
   assert.equal(toolRows.length, 1, "工作组保留唯一的工具标签行");
@@ -1217,29 +1222,29 @@ test("状态标记映射：running=• / completed=✓ / failed=✗ / cancelled=
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
-  const markOf = (activityId) => {
-    const row = root.querySelector(`[data-activity-id="${activityId}"]`);
-    return row.querySelector(".agent-activity-mark").textContent;
+  const iconOf = (activityId) => {
+    const row = root.querySelector(`[data-item-id="tool:${activityId}"]`);
+    return row?.querySelector(".agent-work-item__icon").textContent;
   };
   // running → •
   surface.applyEvent(toolStarted("a1", "shell", { command: "cmd" }));
-  assert.equal(markOf("a1"), "•", "运行中标记应为 •");
+  assert.equal(iconOf("a1"), "•", "运行中标记应为 •");
   surface.applyEvent(ev("tool_call_completed", {
     tool_call_id: "tc-a1", activity_id: "a1", name: "shell", exit_code: 0
   }));
-  assert.equal(markOf("a1"), "✓");
+  assert.equal(iconOf("a1"), "✓");
   // failed → ✗
   surface.applyEvent(toolStarted("a2", "shell", { command: "bad" }));
   surface.applyEvent(ev("tool_call_failed", {
     tool_call_id: "tc-a2", activity_id: "a2", name: "shell", error: "boom", message: "失败"
   }));
-  assert.equal(markOf("a2"), "✗");
+  assert.equal(iconOf("a2"), "✗");
   // cancelled（停止收敛）→ 已停止
   surface.applyEvent(toolStarted("a3", "shell", { command: "st" }));
   surface.applyEvent(ev("tool_call_failed", {
     tool_call_id: "tc-a3", activity_id: "a3", name: "shell", error: "tool_cancelled", message: "操作已停止。"
   }));
-  assert.equal(markOf("a3"), "已停止");
+  assert.equal(iconOf("a3"), "已停止");
 });
 
 test("reasoning 不进入 Assistant 正文，但进入 reasoning 工作项", async () => {
@@ -1428,7 +1433,7 @@ test("工作组 duration 使用 active_elapsed_ms + active_since；waiting_user 
   assert.equal(root.querySelector(".agent-work-duration").textContent, "45 秒", "waiting_user 计时暂停");
 });
 
-test("行结构：details/summary 原生可键盘展开，输出是唯一 .agent-activity-output", async () => {
+test("工具详情行结构：details/summary 原生可键盘展开，输出是唯一 .agent-tool-output", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
@@ -1437,42 +1442,43 @@ test("行结构：details/summary 原生可键盘展开，输出是唯一 .agent
     timeout_ms: 120000, purpose: "跑测试"
   }));
   surface.applyEvent(outputDelta("a1", "line1\n"));
-  const row = root.querySelector('[data-activity-id="a1"]');
+  const row = root.querySelector('[data-item-id="tool:a1"]');
+  assert.ok(row, "工具工作项应存在");
   const details = row.querySelector("details");
-  assert.ok(details, "活动行应使用 <details>（原生键盘可展开）");
+  assert.ok(details, "工具详情应使用 <details>（原生键盘可展开）");
   assert.ok(details.querySelector("summary"), "details 内应有 summary");
-  const outputs = row.querySelectorAll(".agent-activity-output");
-  assert.equal(outputs.length, 1, "输出是唯一 .agent-activity-output");
+  const outputs = row.querySelectorAll(".agent-tool-output");
+  assert.equal(outputs.length, 1, "输出是唯一 .agent-tool-output");
   assert.equal(outputs[0].textContent, "line1\n");
   assert.match(row.textContent, /npm test/u);
   assert.match(row.textContent, /D:\\Book/u);
 });
 
-test("详情字段顺序：参数 → 命令 → 目录 → 退出码 → 耗时；失败活动 → 错误 在最后", async () => {
+test("工具详情字段顺序：参数 → 命令 → 目录 → 退出码 → 耗时；失败工具 → 错误 在最后", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
-  // 成功 shell 活动：参数/命令/目录（开始）→ 退出码/耗时（完成）
+  // 成功 shell 工具：参数/命令/目录（开始）→ 退出码/耗时（完成）
   surface.applyEvent(toolStarted("a1", "shell", { command: "npm test", cwd: "D:\\Book" }));
   surface.applyEvent(outputDelta("a1", "out\n"));
   surface.applyEvent(ev("tool_call_completed", {
     tool_call_id: "tc-a1", activity_id: "a1", name: "shell",
     exit_code: 0, duration_ms: 35
   }));
-  // 失败活动：参数/命令/目录 → 耗时 → 错误（退出码不出现，错误排最后）
+  // 失败工具：参数/命令/目录 → 耗时 → 错误（退出码不出现，错误排最后）
   surface.applyEvent(toolStarted("a2", "shell", { command: "bad cmd", cwd: "D:\\Book" }));
   surface.applyEvent(ev("tool_call_failed", {
     tool_call_id: "tc-a2", activity_id: "a2", name: "shell",
     error: "exit_nonzero", message: "命令退出码非 0", duration_ms: 42
   }));
   const namesOf = (activityId) => {
-    const row = root.querySelector(`[data-activity-id="${activityId}"]`);
-    return [...row.querySelectorAll(".agent-activity-field")].map((el) => el.querySelector("strong").textContent);
+    const row = root.querySelector(`[data-item-id="tool:${activityId}"]`);
+    return [...row.querySelectorAll(".agent-tool-field")].map((el) => el.querySelector("strong").textContent);
   };
-  assert.deepEqual(namesOf("a1"), ["参数", "命令", "目录", "退出码", "耗时"], "成功活动字段顺序固定");
-  assert.deepEqual(namesOf("a2"), ["参数", "命令", "目录", "耗时", "错误"], "失败活动错误字段排最后");
-  const row2 = root.querySelector('[data-activity-id="a2"]');
-  assert.match(row2.querySelector(".agent-activity-mark").textContent, /✗/u);
+  assert.deepEqual(namesOf("a1"), ["参数", "命令", "目录", "退出码", "耗时"], "成功工具字段顺序固定");
+  assert.deepEqual(namesOf("a2"), ["参数", "命令", "目录", "耗时", "错误"], "失败工具错误字段排最后");
+  const row2 = root.querySelector('[data-item-id="tool:a2"]');
+  assert.match(row2.querySelector(".agent-work-item__icon").textContent, /✗/u);
   assert.match(row2.textContent, /命令退出码非 0/u);
 });
 
@@ -1483,8 +1489,8 @@ test("I-2 输出上限：超过 64 KiB 截断保留尾部并前置提示，后�
   surface.applyEvent(toolStarted("a1", "shell", { command: "long run" }));
   const big = "y".repeat(70 * 1024) + "TAIL-END-123";
   surface.applyEvent(outputDelta("a1", big));
-  const row = root.querySelector('[data-activity-id="a1"]');
-  const output = row.querySelector(".agent-activity-output");
+  const row = root.querySelector('[data-item-id="tool:a1"]');
+  const output = row.querySelector(".agent-tool-output");
   assert.match(output.textContent, /输出过长已截断/u, "超限后应出现截断提示");
   assert.ok(output.textContent.endsWith("TAIL-END-123"), "截断保留尾部内容");
   assert.ok(output.textContent.length <= 64 * 1024 + 40, "总长不超过上限 + 提示长度");
@@ -1496,69 +1502,12 @@ test("I-2 输出上限：超过 64 KiB 截断保留尾部并前置提示，后�
   assert.ok(output.textContent.endsWith("z"), "保留窗口始终是最新尾部");
 });
 
-test("I-2 行数上限：超限裁剪最早的终态行，运行中的行保留", async () => {
-  const { root, surface } = await makeSurface();
-  await surface.openProject("D:\\novel");
-  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
-  for (let i = 1; i <= 19; i += 1) {
-    surface.applyEvent(toolStarted(`a${i}`, "shell", { command: `c${i}` }));
-    surface.applyEvent(ev("tool_call_completed", {
-      tool_call_id: `tc-a${i}`, activity_id: `a${i}`, name: "shell", exit_code: 0
-    }));
-  }
-  surface.applyEvent(toolStarted("r1", "shell", { command: "cmd1" }));
-  surface.applyEvent(toolStarted("r2", "shell", { command: "cmd2" }));
-  assert.equal(root.querySelectorAll(".agent-activity-item").length, 20, "行数被裁剪到上限 20");
-  assert.equal(root.querySelector('[data-activity-id="a1"]'), null, "最早的终态行被移除");
-  assert.ok(root.querySelector('[data-activity-id="a2"]'), "较新的终态行保留");
-  assert.ok(root.querySelector('[data-activity-id="r1"]'), "运行中的行保留");
-  assert.ok(root.querySelector('[data-activity-id="r2"]'), "运行中的行保留");
-});
-
-test("I-2 行数上限：全部运行中时不裁剪（运行中的行不删）", async () => {
-  const { root, surface } = await makeSurface();
-  await surface.openProject("D:\\novel");
-  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
-  for (let i = 1; i <= 21; i += 1) {
-    surface.applyEvent(toolStarted(`live${i}`, "shell", { command: `c${i}` }));
-  }
-  assert.equal(root.querySelectorAll(".agent-activity-item").length, 21, "运行中的行不删（允许短暂超限）");
-});
-
-test("I-2 长流有界：reducer 封顶（20 终态 + 运行中）后 DOM 行数与输出仍有界", async () => {
-  const { root, surface } = await makeSurface();
-  await surface.openProject("D:\\novel");
-  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
-  // 30 个终态活动，每个带 1 KiB 输出
-  for (let i = 1; i <= 30; i += 1) {
-    surface.applyEvent(toolStarted(`t${i}`, "shell", { command: `c${i}` }));
-    surface.applyEvent(outputDelta(`t${i}`, "x".repeat(1024)));
-    surface.applyEvent(ev("tool_call_completed", {
-      tool_call_id: `tc-t${i}`, activity_id: `t${i}`, name: "shell", exit_code: 0
-    }));
-  }
-  // 2 个运行中活动 + 大量增量
-  surface.applyEvent(toolStarted("r1", "shell", { command: "r1" }));
-  surface.applyEvent(toolStarted("r2", "shell", { command: "r2" }));
-  for (let i = 0; i < 50; i += 1) surface.applyEvent(outputDelta("r1", "y"));
-  // 最早的终态活动被 state 封顶丢弃（t1..t12 均不可见），运行中的行保留且输出完整
-  assert.equal(root.querySelector('[data-activity-id="t1"]'), null, "最早的终态行被丢弃");
-  assert.equal(root.querySelector('[data-activity-id="t12"]'), null, "超出 20 终态窗口的行被丢弃");
-  assert.ok(root.querySelector('[data-activity-id="t13"]'), "最新的终态行保留");
-  const r1row = root.querySelector('[data-activity-id="r1"]');
-  assert.ok(r1row, "运行中的行保留");
-  assert.equal(r1row.querySelector(".agent-activity-output").textContent, "y".repeat(50), "运行中输出完整保留");
-  const r2row = root.querySelector('[data-activity-id="r2"]');
-  assert.ok(r2row, "第二条运行中的行保留");
-  assert.ok(root.querySelectorAll(".agent-activity-item").length <= 20, "DOM 行数不得超过 20");
-});
-
 test("非 Agent 事件类型被忽略（不崩溃、不渲染）", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
   surface.applyEvent({ type: "bogus_event", seq: 1, payload: {} });
   surface.applyEvent(null);
-  assert.equal(root.querySelectorAll(".agent-activity-item").length, 0);
+  assert.equal(root.querySelectorAll(".agent-work-item").length, 0);
 });
 
 // ===========================================================================
@@ -1730,15 +1679,19 @@ test("重试失败（拒绝）时按钮恢复可点", async () => {
   assert.equal(api.calls.filter((c) => c[0] === "retry").length, 1);
 });
 
-test("活动标签处理字符串化 args（parseArgs 兼容旧摘要格式）", async () => {
+test("search_files 工具工作项：query 不进入标签，仅泛化文案；非法 args 不崩溃", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
-  surface.applyEvent(toolStarted("a1", "search_files", JSON.stringify({ query: "雨夜" })));
-  assert.match(root.querySelector('[data-activity-id="a1"]').textContent, /搜索「雨夜」/u);
-  // 非法 JSON 字符串不崩溃，回退到通用标签
+  const toolLabel = () => {
+    const row = [...root.querySelectorAll(".agent-work-item")].find((el) => el.dataset.kind === "tool");
+    return row?.querySelector(".agent-work-item__label").textContent;
+  };
+  surface.applyEvent(toolStarted("a1", "search_files", { query: "雨夜" }));
+  assert.equal(toolLabel(), "正在搜索文件", "query 细节不进入工具标签");
+  // 非对象 args（旧字符串化摘要）由投影归一化为空对象：不崩溃、回退泛化标签
   surface.applyEvent(toolStarted("a2", "search_files", "{broken"));
-  assert.ok(root.querySelector('[data-activity-id="a2"]').textContent.includes("搜索文件"));
+  assert.equal(toolLabel(), "正在搜索文件");
 });
 
 test("对话容器带 aria-live 区域（可访问性）", async () => {
@@ -1766,27 +1719,6 @@ test("input_consumed / input_cancelled 移除排队项；workflow_changed 保持
   // workflow 切换：Run 仍活动，停止按钮保留
   surface.applyEvent(ev("workflow_changed", { workflow: "chapter", reason: "正式写作" }));
   assert.ok(root.querySelector('[data-testid="agent-stop"]'), "workflow 切换后 Run 仍活动");
-});
-
-// ===========================================================================
-// 状态文案：简洁
-// ===========================================================================
-
-test("状态文案简洁：等待确认 / 已停止 / 操作失败 / 已完成", async () => {
-  const { root, surface } = await makeSurface();
-  await surface.openProject("D:\\novel");
-  const cases = [
-    [{ status: "waiting_user" }, /等待确认/u],
-    [{ status: "cancelled" }, /已停止/u],
-    [{ status: "failed" }, /操作失败/u],
-    [{ status: "completed" }, /已完成/u],
-  ];
-  for (const [runOverrides, re] of cases) {
-    surface.applySnapshot(snapshotOf(session({ status: "idle", active_run: activeRun(runOverrides) })));
-    const status = root.querySelector('[data-testid="agent-run-status"]');
-    assert.match(status.textContent, re, `状态 ${runOverrides.status}`);
-    assert.ok(status.textContent.length <= 6, "状态文案应在 2-6 字以内");
-  }
 });
 
 // ===========================================================================
@@ -1951,7 +1883,7 @@ test("agent.css 保留 1040px 内容列、向上菜单与工作组/动效布局"
     /\.agent-message--assistant\s+\.agent-message-text\s*\{[^}]*background:\s*transparent[^}]*border:\s*0/u,
     "Agent 回复应使用安静的无框正文层级"
   );
-  assert.match(css, /\.agent-activities:empty\s*,\s*\.agent-queue:empty\s*\{[^}]*display:\s*none/u, "空活动和空队列不应留下分隔线");
+  assert.match(css, /\.agent-queue:empty\s*\{[^}]*display:\s*none/u, "空队列不应留下分隔线");
   // 旧 Plan 悬浮层与三点思考动画已删除（Step 6）
   assert.doesNotMatch(css, /\.agent-plan-overlay/u, "旧 plan overlay CSS 已删除");
   assert.doesNotMatch(css, /agent-thinking-dot|agent-thinking-blink|agent-plan-mark|agent-plan-restore/u, "旧三点思考/悬浮层控件 CSS 已删除");
@@ -2422,25 +2354,24 @@ test("禁止文案：生产 UI 不含已删除的旧教学/占位文案", async 
 });
 
 // ===========================================================================
-// 步骤2：工具活动行显示文件路径（tool_call_started args.path）
+// 步骤2：工具工作项显示文件路径（tool_call_started args.path）
 // ===========================================================================
 
-test("活动行：read/write/edit 带 path 时标签显示项目相对路径", async () => {
+test("工具工作项：read/write/edit 带 path 时标签与路径分离显示", async () => {
   const { root, surface } = await makeSurface();
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() }), [
     toolStarted("a1", "read_file", { path: "src/core/x.mjs" }),
     toolStarted("a2", "write_file", { path: "chapters/01.md" }),
     toolStarted("a3", "edit_file", { path: "docs/plan.md" })
   ]));
-  const labels = [...root.querySelectorAll(".agent-activity-label")].map((el) => el.textContent);
-  assert.deepEqual(labels, [
-    "读取文件 src/core/x.mjs",
-    "写入文件 chapters/01.md",
-    "修改文件 docs/plan.md"
-  ]);
+  const toolRows = () => [...root.querySelectorAll(".agent-work-item")].filter((el) => el.dataset.kind === "tool");
+  const labels = toolRows().map((el) => el.querySelector(".agent-work-item__label").textContent);
+  assert.deepEqual(labels, ["正在读取文件", "正在写入文件", "正在修改文件"]);
+  const paths = toolRows().map((el) => el.querySelector(".agent-tool-path").textContent);
+  assert.deepEqual(paths, ["src/core/x.mjs", "chapters/01.md", "docs/plan.md"]);
 });
 
-test("活动行：无 path 的工具回退泛化文案，不出现 undefined", async () => {
+test("工具工作项：无 path 的工具回退泛化文案，不出现 undefined", async () => {
   const { root, surface } = await makeSurface();
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() }), [
     toolStarted("a1", "read_file", {}),
@@ -2448,11 +2379,17 @@ test("活动行：无 path 的工具回退泛化文案，不出现 undefined", a
     toolStarted("a3", "shell", { command: "npm test" }),
     toolStarted("a4", "read_file", JSON.stringify({ path: "str-json.md" }))
   ]));
-  const labels = [...root.querySelectorAll(".agent-activity-label")].map((el) => el.textContent);
-  assert.equal(labels[0], "读取文件");
-  assert.equal(labels[1], "修改文件");
-  assert.equal(labels[2], "运行命令");
-  assert.equal(labels[3], "读取文件 str-json.md", "字符串化 JSON 的 args 也应解析出 path");
+  const toolRows = () => [...root.querySelectorAll(".agent-work-item")].filter((el) => el.dataset.kind === "tool");
+  const labels = toolRows().map((el) => el.querySelector(".agent-work-item__label").textContent);
+  assert.equal(labels[0], "正在读取文件");
+  assert.equal(labels[1], "正在修改文件");
+  assert.equal(labels[2], "正在运行命令");
+  assert.equal(labels[3], "正在读取文件");
+  // 无 path 时路径元素隐藏（不渲染空文本）
+  assert.ok(toolRows().every((el) => el.querySelector(".agent-tool-path").hidden), "无 path 的路径元素应隐藏");
+  // 无字段无输出时整个详情区隐藏；有命令字段时显示
+  assert.ok(toolRows()[0].querySelector(".agent-tool-details").hidden, "无字段无输出时详情区隐藏");
+  assert.equal(toolRows()[2].querySelector(".agent-tool-details").hidden, false, "有命令字段时详情区显示");
 });
 
 // ===========================================================================
@@ -2692,8 +2629,7 @@ test("composer：Run 进行中切换模型/权限不报错、不改运行状态"
   });
   await surface.openProject("D:\\novel");
   surface.applyEvent(ev("run_started", { workflow: "general", input_id: "in-1" }));
-  const statusEl = root.querySelector('[data-testid="agent-run-status"]');
-  assert.equal(statusEl.textContent, "运行中");
+  assert.equal(root.querySelector('[data-testid="agent-stop"]') !== null, true, "Run 启动后停止按钮存在");
 
   const modelSel = root.querySelector('[data-testid="agent-model-select"]');
   menuOption(root, "agent-model-option", "mimo-7b")._fire("click", { stopPropagation() {} });
@@ -2702,8 +2638,7 @@ test("composer：Run 进行中切换模型/权限不报错、不改运行状态"
   await tick();
 
   assert.equal(root.querySelector('[data-testid="agent-error"]'), null, "切换不渲染错误卡");
-  assert.equal(root.querySelector('[data-testid="agent-run-status"]').textContent, "运行中", "运行状态不受切换影响");
-  assert.equal(root.querySelector('[data-testid="agent-stop"]') !== null, true, "停止按钮仍在");
+  assert.equal(root.querySelector('[data-testid="agent-stop"]') !== null, true, "切换后停止按钮仍在");
 });
 
 test("composer 选项加载失败：控件保持禁用，不阻断对话", async () => {
@@ -3072,7 +3007,7 @@ test("Task 10 去重：重复同一 seq 的 SSE 与重复前置页不重复生�
   assert.deepEqual(countKeys(), afterFront, "重复前置页不得重复生成消息");
 });
 
-test("Task 10 跨页链：尾页先显示 completed 占位，前置页合并后定位到 started seq 且不倒退为 running", async () => {
+test("Task 10 跨页链：尾页先显示正文，前置页合并后工作项出现且不倒退为 running", async () => {
   const mk = (seq, type, payload, extra = {}) => ({
     seq, event_id: `evt-${seq}`, session_id: "sess-test", run_id: "run-1", type, payload, at: T10_T0, ...extra
   });
@@ -3113,17 +3048,15 @@ test("Task 10 跨页链：尾页先显示 completed 占位，前置页合并后�
   });
   await surface.openProject("D:\\novel");
 
-  // 尾页阶段：completed 占位行已可见（started 尚未加载），正文默认可见
-  const toolRow = root.querySelector('[data-activity-id="act-1"]');
-  assert.ok(toolRow, "尾页应渲染 completed 占位活动行");
-  assert.equal(toolRow.dataset.state, "completed", "占位行保持终态 completed");
+  // 尾页阶段：started 未加载，投影不凭空创建工具工作项；正文默认可见
+  assert.equal(root.querySelector(".agent-work-group"), null, "无 started 的工具不渲染占位工作项");
   assert.match(
     root.querySelector('[data-testid="agent-assistant-message"]')?.textContent ?? "",
     /默认可见的最终答案/u,
     "尾页正文默认可见"
   );
 
-  // 前置页合并后：工具行定位到 started seq（700），保持 completed，不倒退为 running
+  // 前置页合并后：工作组出现，工具项保持 completed，不倒退为 running
   const conv = root.querySelector('[data-testid="agent-conversation"]');
   conv.scrollHeight = 400;
   conv.clientHeight = 200;
@@ -3133,16 +3066,15 @@ test("Task 10 跨页链：尾页先显示 completed 占位，前置页合并后�
   await tick();
 
   assert.deepEqual(apiCalls.at(-1), ["snapshot", { beforeSeq: 801, limit: 200 }]);
-  const rowAfter = root.querySelector('[data-activity-id="act-1"]');
-  assert.ok(rowAfter, "前置页合并后工具行仍存在");
-  assert.equal(rowAfter.dataset.seq, "700", "工具行定位到 started seq");
-  assert.equal(rowAfter.dataset.state, "completed", "终态保持 completed，不得倒退为 running");
-  const assistantAfter = root.querySelector('[data-testid="agent-assistant-message"]');
-  const timelineIndex = (el) => el._parent.children.indexOf(el);
-  assert.ok(timelineIndex(rowAfter) < timelineIndex(assistantAfter), "工具活动行仍位于助手正文之前");
   const group = root.querySelector(".agent-work-group");
   assert.ok(group, "前置页合并后应渲染工作组");
-  assert.equal(group.querySelector('[data-kind="tool"]')?.dataset.state, "completed", "工作组 tool 项保持完成态");
+  assert.equal(group.dataset.seq, "601", "工作组定位到组的 firstSeq（组首事件）");
+  const toolItem = [...root.querySelectorAll(".agent-work-item")].find((el) => el.dataset.kind === "tool");
+  assert.ok(toolItem, "工具工作项存在");
+  assert.equal(toolItem.dataset.state, "completed", "终态保持 completed，不得倒退为 running");
+  const assistantAfter = root.querySelector('[data-testid="agent-assistant-message"]');
+  const timelineIndex = (el) => el._parent.children.indexOf(el);
+  assert.ok(timelineIndex(group) < timelineIndex(assistantAfter), "工作组仍位于助手正文之前");
 });
 
 test("Task 10 SSE 游标：tail 快照推进 lastSeq，connectEvents 从已加载最大 seq 续流；乱序走重建、递增走增量", async () => {
@@ -3429,8 +3361,8 @@ test("Task 11 CSS：popover 过渡、压缩行、主题 token 与 reduced-motion
     /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*\.agent-context-popover[\s\S]*transition:\s*none/u,
     "reduced-motion 下 popover 过渡关闭"
   );
-  // 无框基线：消息/推理/活动容器不得出现表面底色
-  assert.doesNotMatch(css, /\.agent-activity-item\s*\{[^}]*background:\s*var\(--(?:surface|accent)/u);
+  // 无框基线：消息/推理/工具详情/输出容器不得出现表面底色（输出用 --code-bg 而非面板底色）
+  assert.doesNotMatch(css, /\.agent-tool-(?:details|fields|field|output)\s*\{[^}]*background:\s*var\(--(?:surface|accent)/u);
   assert.doesNotMatch(css, /\.agent-reasoning-(?:ticker|detail)\s*\{[^}]*background:\s*var\(--(?:surface|accent)/u);
 });
 

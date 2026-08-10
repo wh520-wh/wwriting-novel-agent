@@ -64,7 +64,8 @@ export function visibleLiveTargets(group, { expanded }) {
 // 文案投影（Task 5 Step 3/Step 4）
 // ---------------------------------------------------------------------------
 
-// 与 state.js ACTIVITY_CANCELLED_ERROR_CODES 一致：这些错误表示活动被停止/作废
+// 取消类工具错误码（本文件私有常量，与 tools.mjs 的 emitToolCancelled 路径
+// tool_cancelled / shell_cancelled 保持一致）：这些错误表示活动被停止/作废
 //（用户停止、决策取消、信号中止），不是执行失败，终态标记为 cancelled（"已停止"）。
 const CANCELLED_ERROR_CODES = new Set(["tool_cancelled", "shell_cancelled"]);
 

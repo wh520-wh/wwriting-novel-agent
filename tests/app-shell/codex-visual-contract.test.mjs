@@ -50,7 +50,6 @@ test("Codex 基线：状态行是紧凑小条（无全宽边框）", () => {
   const header = cssBlock(css, ".agent-run-header");
   assert.match(header, /display:\s*flex/u);
   assert.ok(!/border-(top|bottom)/u.test(header));
-  assert.match(css, /\.agent-run-dot/u, "状态点必须存在");
 });
 
 test("Codex 基线：压缩行为细边框紧凑条", () => {

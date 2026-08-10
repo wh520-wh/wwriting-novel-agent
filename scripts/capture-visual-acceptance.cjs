@@ -592,8 +592,7 @@ const OVERLAP_SELECTORS = {
   chat: [
     ".agent-message",
     ".agent-work-group",
-    ".agent-composer",
-    ".agent-run-status"
+    ".agent-composer"
   ],
   settings: [
     ".sp-section-item",
@@ -749,10 +748,10 @@ const EXTRA_CHECKS = {
       errorCards: document.querySelectorAll('[data-testid="agent-error"]').length,
       userMessages: document.querySelectorAll('[data-testid="agent-user-message"]').length,
       assistantMessages: document.querySelectorAll('[data-testid="agent-assistant-message"]').length,
-      runStatus: document.querySelector(".agent-run-status")?.textContent ?? null,
+      workStatus: document.querySelector(".agent-work-status")?.textContent ?? null,
       composerDisabled: document.querySelector('[data-testid="agent-composer-input"]')?.disabled ?? null
     }))()`);
-    const pass = result.title !== "读取失败" && result.errorCards === 0 && result.userMessages >= 1 && result.assistantMessages >= 1 && result.runStatus === "已完成" && result.composerDisabled === false;
+    const pass = result.title !== "读取失败" && result.errorCards === 0 && result.userMessages >= 1 && result.assistantMessages >= 1 && (result.workStatus ?? "").includes("工作了") && result.composerDisabled === false;
     return [{ name: "plain-folder-first-message", pass, detail: JSON.stringify(result) }];
   }
 };
@@ -934,7 +933,7 @@ async function waitForRunTerminal(win, groupOpen, diag = {}, minGroups = 1) {
         groups: groups.length,
         open: g?.open ?? null,
         status: status.slice(0, 60),
-        runStatus: document.querySelector(".agent-run-status")?.textContent ?? null,
+        workStatus: document.querySelector(".agent-work-status")?.textContent ?? null,
         runHidden: document.querySelector("[data-testid='agent-run']")?.hidden ?? null
       };
     })()`);
@@ -1333,7 +1332,7 @@ async function main() {
       })),
       userMessages: [...document.querySelectorAll('[data-testid="agent-user-message"]')].map((el) => (el.textContent || "").slice(0, 30)),
       assistantCount: document.querySelectorAll('[data-testid="agent-assistant-message"]').length,
-      runStatus: document.querySelector(".agent-run-status")?.textContent ?? null
+      workStatus: document.querySelector(".agent-work-status")?.textContent ?? null
     }))()`);
     console.log(`  [diag] gateway calls=${JSON.stringify(gateway.controller.state.callLog)} dom=${JSON.stringify(diag)}`);
   }

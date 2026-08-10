@@ -1,7 +1,7 @@
 // src/app-shell/agent/state.js —— AgentSurface 状态纯 reducer（Task 8 Step 2）。
 //
 // 只从 ProjectAgent 的 snapshot({ session, events }) 与增量 journal 事件派生 UI 状态：
-// 连续对话（user/assistant 消息）、活动 Run、Visible Plan、队列、活动流、决策与错误。
+// 连续对话（user/assistant 消息）、活动 Run、Visible Plan、队列、工作组、决策与错误。
 // 本模块不读 dashboard 队列，也不写任何独立状态文件（Rule 5：UI 不做业务决策）。
 //
 // 两条输入路径（Task 10 起改为「稳定 event store + 按已加载全集重建」）：
@@ -20,11 +20,6 @@
 import { createWorkState, orderedWorkItems, reduceWorkEvent } from "./work-items.mjs";
 
 export const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
-export const ACTIVITY_TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
-// 取消类工具错误码：这些错误表示活动被停止/作废（用户停止、决策取消、信号中止），
-// 不是执行失败，终态标记为 cancelled（"已停止"）而不是 failed（"✗"）。
-// 与 tools.mjs 的 emitToolCancelled 路径（tool_cancelled / shell_cancelled）保持一致。
-export const ACTIVITY_CANCELLED_ERROR_CODES = new Set(["tool_cancelled", "shell_cancelled"]);
 
 // run_status_changed 的 session.status 镜像（与 journal.mjs RUN_STATUS_TO_SESSION 一致）。
 const RUN_STATUS_TO_SESSION = {
@@ -37,15 +32,6 @@ const RUN_STATUS_TO_SESSION = {
   cancelled: "idle",
   interrupted: "idle"
 };
-
-// 单活动输出保留尾部窗口（与 view 展示上限一致：64 KiB）
-export const MAX_ACTIVITY_OUTPUT_CHARS = 64 * 1024;
-
-// I-2 有界性（reducer 层封顶）：最多保留 20 个终态活动 + 全部运行中活动。
-// 同一 activity 的 delta 必先于其终态事件（seq 严格递增），终态活动被丢弃后
-// 不会再收到该活动的增量，因此可以直接删除而非占位。DOM 层「只裁最早终态、
-// 运行中不删」的 20 行契约保持不变（view 仍有自己的行裁剪兜底）。
-export const MAX_TERMINAL_ACTIVITIES = 20;
 
 // 状态轮廓。所有派生字段只由 reducer 修改，view 只读。
 export function createState() {
@@ -66,12 +52,11 @@ export function createState() {
     compaction: null,
     compactionRows: new Map(), // compaction_id -> { compaction_id, seq, event_key, state, trigger, error_code }
     conversation: [],       // { role, text, input_id, seq, event_key }
-    activities: new Map(),  // activity_id -> activity（含 start_seq/terminal_seq/事件 key）
     work: createWorkState(), // 有序工作项投影（Task 5：reasoning/tool/plan 时间线）
     decisions: new Map(),   // decision_id -> decision
     errors: [],             // run_failed 事实（新 Run 启动时清空）
     assistantStream: null,  // { runId, text } —— 增量正文累积（流式气泡），completed 后清空
-    revisions: { messages: 0, run: 0, queue: 0, activities: 0, decisions: 0, errors: 0, context: 0 }
+    revisions: { messages: 0, run: 0, queue: 0, decisions: 0, errors: 0, context: 0 }
   };
 }
 
@@ -99,7 +84,7 @@ export function resetState(state, { projectRoot = state.projectRoot } = {}) {
 // Snapshot
 // ---------------------------------------------------------------------------
 
-// 返回 true 表示会话/项目已更换，view 需要重建 DOM（重新锚定活动流）。
+// 返回 true 表示会话/项目已更换，view 需要重建 DOM（重新锚定时间线）。
 export function reduceSnapshot(state, snapshot) {
   if (!snapshot || typeof snapshot !== "object") return false;
   const { session, events, gaps, has_more } = snapshot;
@@ -110,7 +95,7 @@ export function reduceSnapshot(state, snapshot) {
     if (state.sessionId !== session.session_id) {
       resetState(state);
       state.sessionId = session.session_id ?? null;
-      // 事件负责重建对话/活动等派生状态；会话 projection 在回放结束后覆盖，
+      // 事件负责重建对话/工作项等派生状态；会话 projection 在回放结束后覆盖，
       // 防止首批历史事件把服务端已完成的 Run 回放成 running。
       state.session = null;
       mergeEventsIntoStore(state, list);
@@ -120,7 +105,7 @@ export function reduceSnapshot(state, snapshot) {
     } else {
       state.session = authoritativeSession;
       // 同会话的新快照（断线补齐等）：投影被整体替换，全部派生视图需要重新同步。
-      bump(state, ["messages", "run", "queue", "activities", "decisions", "errors"]);
+      bump(state, ["messages", "run", "queue", "decisions", "errors"]);
       if (mergeEventsIntoStore(state, list)) rebuildDerivedState(state);
       state.session = authoritativeSession;
     }
@@ -434,103 +419,6 @@ function applyEventToState(state, event) {
       bump(state, ["run"]);
       break;
     }
-    case "tool_call_started": {
-      const activityId = payload.activity_id ?? null;
-      if (activityId == null) break;
-      const action = payload.action ?? null;
-      state.activities.set(activityId, {
-        activity_id: activityId,
-        tool_call_id: payload.tool_call_id ?? null,
-        run_id: event.run_id ?? null,
-        name: payload.name ?? null,
-        args: payload.args ?? null,
-        action,
-        command: action?.command ?? payload.args?.command ?? null,
-        cwd: action?.cwd ?? payload.args?.cwd ?? null,
-        status: "running",
-        text: "",
-        truncated: false,
-        exit_code: null,
-        duration_ms: null,
-        error: null,
-        seq,
-        start_seq: seq,
-        terminal_seq: null,
-        start_event_key: key,
-        terminal_event_key: null
-      });
-      trimActivityState(state);
-      bump(state, ["activities"]);
-      break;
-    }
-    case "tool_output_delta": {
-      const activity = state.activities.get(payload.activity_id ?? null);
-      if (!activity) break;
-      const delta = typeof payload.text === "string" ? payload.text : "";
-      if (delta.length === 0) break;
-      activity.text = activity.text + delta;
-      if (activity.text.length > MAX_ACTIVITY_OUTPUT_CHARS) {
-        activity.text = activity.text.slice(activity.text.length - MAX_ACTIVITY_OUTPUT_CHARS);
-        activity.truncated = true;
-      }
-      trimActivityState(state);
-      bump(state, ["activities"]);
-      break;
-    }
-    case "tool_call_completed": {
-      const activityId = payload.activity_id ?? null;
-      const activity = state.activities.get(activityId);
-      if (activity) {
-        activity.status = "completed";
-        if (payload.exit_code != null) activity.exit_code = payload.exit_code;
-        if (payload.duration_ms != null) activity.duration_ms = payload.duration_ms;
-        activity.terminal_seq = seq;
-        activity.terminal_event_key = key;
-      } else if (activityId != null) {
-        // 尾页/裁剪后缺少 started：先建最小 tombstone（started 到达后由重建
-        // 补全参数并定位到 started seq，终态保持 completed，不倒退为 running）。
-        createActivityTombstone(state, activityId, {
-          event,
-          payload,
-          seq,
-          key,
-          status: "completed",
-          exit_code: payload.exit_code ?? null
-        });
-      }
-      trimActivityState(state);
-      bump(state, ["activities"]);
-      break;
-    }
-    case "tool_call_failed": {
-      const activityId = payload.activity_id ?? null;
-      const activity = state.activities.get(activityId);
-      if (activity) {
-        activity.status = ACTIVITY_CANCELLED_ERROR_CODES.has(payload.error) ? "cancelled" : "failed";
-        activity.error = typeof payload.message === "string" ? payload.message
-          : typeof payload.error === "string" ? payload.error : null;
-        if (payload.duration_ms != null) activity.duration_ms = payload.duration_ms;
-        if (typeof payload.stdout === "string" && payload.stdout.length > 0) appendActivityText(activity, payload.stdout);
-        if (typeof payload.stderr === "string" && payload.stderr.length > 0) appendActivityText(activity, payload.stderr);
-        activity.terminal_seq = seq;
-        activity.terminal_event_key = key;
-      } else if (activityId != null) {
-        const status = ACTIVITY_CANCELLED_ERROR_CODES.has(payload.error) ? "cancelled" : "failed";
-        createActivityTombstone(state, activityId, {
-          event,
-          payload,
-          seq,
-          key,
-          status,
-          exit_code: null,
-          error: typeof payload.message === "string" ? payload.message
-            : typeof payload.error === "string" ? payload.error : null
-        });
-      }
-      trimActivityState(state);
-      bump(state, ["activities"]);
-      break;
-    }
     case "decision_requested": {
       const decisionId = payload.decision_id ?? null;
       if (decisionId == null) break;
@@ -735,45 +623,6 @@ function applyEventToState(state, event) {
   reduceWorkEvent(state.work, event);
 }
 
-// 在已加载事件里查找某活动最早的 started 事件（活动被 trim 或尾页缺失时，仍能
-// 用 started seq 定位占位行；未找到则 start_seq 保持 null，先按 terminal_seq 落位）。
-function findStartedEvent(state, activityId) {
-  for (const event of state.loadedEvents.values()) {
-    if (event.type !== "tool_call_started") continue;
-    const id = event.payload?.activity_id ?? event.payload?.id ?? null;
-    if (id === activityId) return event;
-  }
-  return null;
-}
-
-// 最小终态 tombstone：tool_call_completed/failed 先于 started 到达（前置页未加载、
-// 活动被 trim 丢弃）时占位；后续重建找到 started 后补全参数并定位到 started seq。
-function createActivityTombstone(state, activityId, { event, payload, seq, key, status, exit_code, error }) {
-  const started = findStartedEvent(state, activityId);
-  const startSeq = started != null ? Number(started.seq) : null;
-  state.activities.set(activityId, {
-    activity_id: activityId,
-    tool_call_id: payload.tool_call_id ?? null,
-    run_id: event.run_id ?? null,
-    name: payload.name ?? null,
-    args: payload.args ?? null,
-    action: null,
-    command: typeof payload.command === "string" ? payload.command : (payload.args?.command ?? null),
-    cwd: typeof payload.cwd === "string" ? payload.cwd : (payload.args?.cwd ?? null),
-    status,
-    text: "",
-    truncated: false,
-    exit_code,
-    duration_ms: payload.duration_ms ?? null,
-    error: error ?? null,
-    seq: startSeq ?? seq,
-    start_seq: startSeq,
-    terminal_seq: seq,
-    start_event_key: started != null ? eventKey(started) : null,
-    terminal_event_key: key
-  });
-}
-
 // 压缩状态行的 per-id upsert：首次见到某 compaction_id 时以该事件 seq/key 为
 // 时间线锚点（started 优先；started 缺失时回退首个已见事件），之后只更新
 // state/trigger/error_code。重建（rebuildDerivedState）按 seq 重放时首见事件
@@ -797,7 +646,7 @@ function upsertCompactionRow(state, compactionId, seq, key, stateText, projectio
 }
 
 // 按已加载全集重建派生投影（Task 10 Step 2）：前置页或任何乱序事件到达后，
-// 按 (seq, event_key) 排序 loadedEvents，从空的 conversation/activity/work/
+// 按 (seq, event_key) 排序 loadedEvents，从空的 conversation/work/
 // decisions/errors/assistantStream 重放。一次重建只处理当前已加载页（数百到数千
 // 事件），不读磁盘全量 Journal。lastSeq 只作为 SSE 增量游标，不参与重建。
 function rebuildDerivedState(state) {
@@ -811,7 +660,6 @@ function rebuildDerivedState(state) {
     return String(eventKey(a) ?? "").localeCompare(String(eventKey(b) ?? ""));
   });
   state.conversation = [];
-  state.activities = new Map();
   state.work = createWorkState();
   state.decisions = new Map();
   state.errors = [];
@@ -821,29 +669,7 @@ function rebuildDerivedState(state) {
   state.compaction = null;
   state.compactionRows = new Map();
   for (const event of events) applyEventToState(state, event);
-  bump(state, ["messages", "run", "queue", "activities", "decisions", "errors", "context"]);
-}
-
-function appendActivityText(activity, delta) {
-  activity.text = activity.text + delta;
-  if (activity.text.length > MAX_ACTIVITY_OUTPUT_CHARS) {
-    activity.text = activity.text.slice(activity.text.length - MAX_ACTIVITY_OUTPUT_CHARS);
-    activity.truncated = true;
-  }
-}
-
-// I-2 封顶：活动数超过上限时，按插入顺序移除最早的终态活动（运行中永不丢弃）。
-function trimActivityState(state) {
-  if (state.activities.size <= MAX_TERMINAL_ACTIVITIES) return;
-  const terminalIds = [];
-  for (const [id, activity] of state.activities) {
-    if (activity.status !== "running") terminalIds.push(id);
-  }
-  const excess = state.activities.size - MAX_TERMINAL_ACTIVITIES;
-  if (excess <= 0) return;
-  for (let i = 0; i < excess && i < terminalIds.length; i += 1) {
-    state.activities.delete(terminalIds[i]);
-  }
+  bump(state, ["messages", "run", "queue", "decisions", "errors", "context"]);
 }
 
 // 新 Run（或恢复的 Run）认领活动输入：从队列移除（镜像 journal activateInput）。

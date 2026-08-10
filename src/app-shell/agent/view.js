@@ -1,30 +1,26 @@
 // src/app-shell/agent/view.js —— AgentSurface 单一视图（Task 8 Step 3-4）。
 //
-// 原生 DOM（无框架）渲染：对话、当前 Run（状态行 + Visible Plan + 决策/错误卡）、
-// 单条活动流、排队输入、composer。Plan 与 queue 渲染器是本文件的私有函数，
+// 原生 DOM（无框架）渲染：对话、当前 Run（停止/重试按钮 + Visible Plan +
+// 决策/错误卡）、工作组（reasoning/tool/plan 时间线，工具详情与输出折叠在
+// 工作项内）、排队输入、composer。Plan 与 queue 渲染器是本文件的私有函数，
 // 不创建额外的公共 UI 模块。
 //
-// 活动行为（从 chat-activity-view.js 移植的验收行为）：
-//   - 同一 activity_id 合并到同一行，增量输出只更新文本不重建 DOM；
-//   - 最多 20 行：只移除最早的终态行，运行中的行永不丢弃；
-//   - 单行输出保留最后 64 KiB，截断后前置「（输出过长已截断）」；
-//   - 详情字段顺序固定：参数 → 命令 → 目录 → 退出码 → 耗时 → 错误；
+// 工作组行为：
+//   - 工具项详情字段顺序固定：参数 → 命令 → 目录 → 退出码 → 耗时 → 错误；
+//   - 工具输出保留最后 64 KiB，截断后前置「（输出过长已截断）」；
 //   - 停止按钮点击立即禁用防连点，仅停止失败或终态事件后恢复；
-//   - 终态（complete/failed/cancelled）每活动只渲染一次标记；
-//   - 思考/活动标签可见，私有推理字段永不渲染；
-//   - 自动滚动只在用户接近底部时触发；重建 DOM 后把活动流末端重新锚定，
+//   - 私有推理字段永不渲染；
+//   - 自动滚动只在用户接近底部时触发；重建 DOM 后把时间线末端重新锚定，
 //     但不打断正在阅读更早内容的用户。
 import {
   getActiveRun,
   getPendingDecisions,
   getQueuedInputs,
   isRunActive,
-  hasOpenModelTurn,
   getContextUsage,
   getCompaction,
   getCompactionRows,
   compactionBlocksSend,
-  ACTIVITY_TERMINAL_STATUSES,
   TERMINAL_RUN_STATUSES
 } from "./state.js";
 import { createContextRing } from "./context-ring.js";
@@ -40,39 +36,9 @@ import {
   visibleLiveTargets
 } from "./work-items.mjs";
 
-const MAX_ROWS = 20;
-const OUTPUT_TRUNCATED_MARK = "（输出过长已截断）\n";
+// 工具输出截断提示（work-items.mjs 在输出超 64 KiB 时保留尾部并置 truncated）。
+const WORK_OUTPUT_TRUNCATED_MARK = "（输出过长已截断）\n";
 const SCROLL_THRESHOLD = 48;
-
-// view.js 私有的 11 个工具短活动文案（tool-labels.mjs 在 Task 9 删除，不依赖它）。
-const ACTIVITY_LABELS = {
-  list_files: () => "查看文件列表",
-  search_files: (a) => (a?.query ? `搜索「${a.query}」` : "搜索文件"),
-  // 带 path 的工具优先显示项目相对路径（args 已脱敏）；无 path 回退泛化文案。
-  read_file: (a) => (a?.path ? `读取文件 ${a.path}` : "读取文件"),
-  write_file: (a) => (a?.path ? `写入文件 ${a.path}` : "写入文件"),
-  edit_file: (a) => (a?.path ? `修改文件 ${a.path}` : "修改文件"),
-  shell: () => "运行命令",
-  update_plan: () => "更新任务计划",
-  enter_workflow: () => "切换工作流",
-  append_chapter_segment: () => "写入章节内容",
-  commit_chapter: () => "提交章节",
-  commit_blueprint: () => "提交蓝图"
-};
-
-const RUN_STATUS_TEXT = {
-  waiting_user: "等待确认",
-  interrupting: "正在打断",
-  stopping: "正在停止",
-  cancelled: "已停止",
-  failed: "操作失败",
-  interrupted: "已中断",
-  completed: "已完成"
-};
-
-// 信息读取类工具（Task 1）：成功完成时内容回显只保留在工作组工具标签行
-// （"已读取文件 …"），不再渲染独立活动行，避免消息流重复同一读取结果。
-const SILENT_READ_TOOLS = new Set(["read_file", "read_multiple", "list_files", "read_directory"]);
 
 // Task 11 Step 4：压缩状态行固定文案映射（同一位置单行顶替；完成/失败/取消后
 // 状态行仍留在时间线）。完成文案绝不携带 token/模型/耗时等详细数据。
@@ -101,48 +67,6 @@ const COMPACTION_ROW_BUTTONS = {
 const COMPACTION_ACTIVE_STATES = new Set(["started", "running", "cancelling"]);
 
 const PLAN_MARKS = { completed: "✓", in_progress: "•", pending: "○" };
-
-// 详情字段固定顺序（验收契约）。
-const FIELD_ORDER = ["参数", "命令", "目录", "退出码", "耗时", "错误"];
-
-// 活动 args 可能是对象或字符串化 JSON（旧工具摘要格式）；统一解析为对象。
-function parseArgs(args) {
-  if (args == null) return {};
-  if (typeof args === "object") return args;
-  try {
-    const parsed = JSON.parse(String(args));
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function activityLabel(activity) {
-  const fn = ACTIVITY_LABELS[activity?.name];
-  if (fn) return fn(parseArgs(activity?.args));
-  return activity?.name ? `工具 ${activity.name}` : "调用工具中";
-}
-
-// 静默读取活动判定（Task 1）：成功完成（无错误）的信息读取类工具不再渲染独立
-// 活动行——工具名与 activityLabel() 同源，只取 activity.name（state.js 的
-// tool_call_started 投影：`name: payload.name ?? null`）；若将来改名称来源，
-// 两处需同步。
-function isSilentReadActivity(activity) {
-  if (!activity || activity.status !== "completed") return false;
-  // state 层暂未单独记录 stderr（tool_output_delta 未区分 stream）；读取工具的
-  // 错误输出经 tool_call_failed 落为 failed/cancelled，已被上面的状态检查拦截。
-  // 该守卫为防御性保留：未来引入 stderr 字段时也不吞错误输出。
-  if (activity.stderr) return false;
-  const name = String(activity.name ?? "");
-  return SILENT_READ_TOOLS.has(name);
-}
-
-export function markFor(status) {
-  if (status === "completed") return "✓";
-  if (status === "failed") return "✗";
-  if (status === "cancelled") return "已停止";
-  return "•";
-}
 
 export function createAgentView({ root, document: doc = globalThis.document, requestFrame = null, scheduler = globalThis }) {
   // 增量正文渲染的合帧节流：真实 DOM 用 requestAnimationFrame；无 rAF 环境
@@ -238,17 +162,11 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   errorsSlot.className = "agent-errors";
   runSection.append(runHeader, decisionsSlot, errorsSlot);
 
-  // 旧活动流 host：活动行已改为插入 messages 统一时间线（按 seq 落位）。
-  // host 保留为空容器以兼容既有 CSS（:empty 隐藏）与测试选择器。
-  const activities = doc.createElement("div");
-  activities.className = "agent-activities";
-  activities.dataset.testid = "agent-activities";
-
   const queueSlot = doc.createElement("div");
   queueSlot.className = "agent-queue";
   queueSlot.dataset.testid = "agent-queue";
 
-  conv.append(emptyState, messages, runSection, activities, queueSlot);
+  conv.append(emptyState, messages, runSection, queueSlot);
 
   // 「回到最新」：用户上滚离开底部后浮出的锚点按钮（由 scroll 事件驱动，见自动滚动节）。
   // 初始处于 follow 模式，按钮隐藏；点击后滚到底部并恢复跟随。
@@ -390,8 +308,6 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   const workGroups = new Map();   // runId -> 工作组 DOM 记录
   const timelineSeqs = new Map(); // messages 子节点 -> seq（跨气泡/工作组排序）
   const messageNodes = new Map(); // event_key -> 时间线节点（Task 10：稳定 key，重建/去重）
-  const rows = new Map();      // activity_id -> row（合并同活动）
-  const trimmedIds = new Set(); // 已按 20 行上限裁剪的活动 id（不再重建）
   const decisionCards = new Map(); // decision_id -> card（diff 更新，保留 extreme 输入）
   const compactionRowNodes = new Map(); // compaction_id -> { wrap, row, label, actions }（Task 11）
   const pendingSubmissions = []; // 仅保留仍在途的即时消息；终态立即移出，避免会话内累积
@@ -417,23 +333,18 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     viewGeneration += 1;
     for (const record of workGroups.values()) clearWorkGroupTimers(record);
     workGroups.clear();
-    // 活动行已插入 messages 统一时间线：先移除 rows 中仍挂着的节点，
-    // 再整体清空 messages 与 seq/key 映射，最后清空旧 .agent-activities host。
-    for (const row of rows.values()) row.wrap.remove();
+    // 工作组已插入 messages 统一时间线：整体清空 messages 与 seq/key 映射。
     messages.replaceChildren();
     timelineSeqs.clear();
     messageNodes.clear();
     runHeader.replaceChildren();
     decisionsSlot.replaceChildren();
     errorsSlot.replaceChildren();
-    activities.replaceChildren();
     queueSlot.replaceChildren();
     currentState = null;
     if (streamBubble) { streamBubble.remove(); streamBubble = null; }
     streamRenderPending = false;
     renderedStreamText = null;
-    rows.clear();
-    trimmedIds.clear();
     for (const card of decisionCards.values()) card.remove();
     decisionCards.clear();
     for (const record of compactionRowNodes.values()) {
@@ -705,30 +616,11 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     scheduleStreamRender();
   }
 
-  // ---- 当前 Run：状态行（停止/重试）+ Plan + 决策/错误 ------------------------
-  function runStatusText(run, state) {
-    if (RUN_STATUS_TEXT[run.status]) return RUN_STATUS_TEXT[run.status];
-    if (run.status === "running") return hasOpenModelTurn(state) ? "思考中" : "运行中";
-    // Task 12：状态文本必须来自单一 map，未知状态不得回退为英文 status code。
-    return "处理中";
-  }
-
+  // ---- 当前 Run：停止/重试按钮 + Plan + 决策/错误 --------------------------------
   function renderRunHeader(state) {
     runHeader.replaceChildren();
     const run = getActiveRun(state);
     if (!run) return;
-    const status = doc.createElement("span");
-    status.className = "agent-run-status";
-    status.dataset.testid = "agent-run-status";
-    status.textContent = runStatusText(run, state);
-    // Codex 改版：状态文案与活性状态点包进紧凑 chip（testid 保留）。
-    const chip = doc.createElement("span");
-    chip.className = "agent-run-chip";
-    const dot = doc.createElement("span");
-    dot.className = "agent-run-dot";
-    dot.dataset.live = String(run?.status === "running" || run?.status === "stopping");
-    chip.append(dot, status);
-    runHeader.append(chip);
     if (isRunActive(run)) {
       const stop = doc.createElement("button");
       stop.type = "button";
@@ -805,6 +697,8 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   }
 
   // ---- 工作组（Task 6）：reasoning/tool/plan 有序时间线，插入对话时间流 ----------
+  // 工具详情字段固定顺序（验收契约，沿用旧活动行的顺序）。
+  const FIELD_ORDER = ["参数", "命令", "目录", "退出码", "耗时", "错误"];
   const TOOL_STATE_ICONS = { running: "•", completed: "✓", failed: "✗", cancelled: "已停止", waiting: "•" };
   // 计时只在真实文档内运行：脱离文档（测试 mock / 未挂载）的节点不保留 1s/800ms
   // 重复计时器，避免泄漏；details 挂载后计时正常工作。
@@ -905,6 +799,24 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       meta.className = "agent-work-item__meta";
       wrap.append(meta);
       row.meta = meta;
+      // 工具详情：折叠在原生 details 内（参数/命令/目录/退出码/耗时/错误 +
+      // 输出块）。标签 + path 行始终可见，详情区无内容时整体隐藏。
+      const details = doc.createElement("details");
+      details.className = "agent-tool-details";
+      const summary = doc.createElement("summary");
+      summary.textContent = "详情";
+      const detail = doc.createElement("div");
+      detail.className = "agent-tool-fields";
+      const output = doc.createElement("pre");
+      output.className = "agent-tool-output";
+      details.append(summary, detail, output);
+      wrap.append(details);
+      row.details = details;
+      row.detail = detail;
+      row.fieldEls = new Map();   // 字段名 -> field 容器（内容在 pre 内）
+      row.outputEl = output;
+      row.outputText = null;
+      row.fieldsSignature = null;
     } else if (item.kind === "reasoning") {
       const tickerEl = doc.createElement("div");
       tickerEl.className = "agent-reasoning-ticker";
@@ -981,7 +893,9 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       row.meta.hidden = errorText.length === 0;
     }
 
-    if (row.kind === "reasoning") {
+    if (row.kind === "tool") {
+      updateToolDetails(row, item);
+    } else if (row.kind === "reasoning") {
       if (isRunning) {
         // 运行中摘要走 ticker（≤2 行）；详情永远用持久化完整 reasoning。
         if (!row.ticker) {
@@ -1014,6 +928,60 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     } else if (row.kind === "plan") {
       updatePlanContent(row, item.plan);
     }
+  }
+
+  // 工具详情字段：参数 → 命令 → 目录 → 退出码 → 耗时 → 错误（固定顺序，折叠在
+  // details 内）。输出块在 truncated 时前置截断提示。字段只在签名变化时写入
+  // DOM（避免每次 update 重建）；输出文本直接比对避免重复写。全部字段为空且
+  // 无输出时隐藏整个折叠区（标签 + path 行照常显示）。
+  function updateToolDetails(row, item) {
+    const values = {
+      "参数": item.args != null && typeof item.args === "object" && Object.keys(item.args).length > 0
+        ? JSON.stringify(item.args) : null,
+      "命令": typeof item.command === "string" && item.command.length > 0 ? item.command : null,
+      "目录": typeof item.cwd === "string" && item.cwd.length > 0 ? item.cwd : null,
+      "退出码": item.exit_code != null ? String(item.exit_code) : null,
+      "耗时": item.duration_ms != null ? `${item.duration_ms} ms` : null,
+      "错误": item.error ?? null
+    };
+    const outputText = (item.truncated ? WORK_OUTPUT_TRUNCATED_MARK : "") + String(item.output ?? "");
+    if (row.outputEl.textContent !== outputText) row.outputEl.textContent = outputText;
+    const signature = JSON.stringify(values);
+    if (signature !== row.fieldsSignature) {
+      row.fieldsSignature = signature;
+      for (const name of FIELD_ORDER) {
+        const value = values[name];
+        if (value == null || value === "") {
+          const field = row.fieldEls.get(name);
+          if (field) field.hidden = true;
+          continue;
+        }
+        let field = row.fieldEls.get(name);
+        let content;
+        if (!field) {
+          field = doc.createElement("div");
+          field.className = "agent-tool-field";
+          const key = doc.createElement("strong");
+          key.textContent = name;
+          content = doc.createElement("pre");
+          field.append(key, content);
+          row.detail.append(field);
+          row.fieldEls.set(name, field);
+          // 新字段出现时按固定顺序重排（真实 DOM 中重复 append 会移动节点）。
+          const sorted = FIELD_ORDER.map((n) => row.fieldEls.get(n)).filter(Boolean);
+          row.detail.replaceChildren(...sorted);
+        } else {
+          field.hidden = false;
+          content = field.children[1] ?? null;
+        }
+        if (content && content.textContent !== value) content.textContent = value;
+      }
+    }
+    const hasField = FIELD_ORDER.some((name) => {
+      const value = values[name];
+      return value != null && value !== "";
+    });
+    row.details.hidden = !hasField && String(item.output ?? "").length === 0;
   }
 
   function updatePlanContent(row, plan) {
@@ -1282,163 +1250,6 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       errorsSlot.append(card);
     }
     if (state.errors.length > 0) afterRender();
-  }
-
-  // ---- 活动流（单条流，同 activity_id 合并；20 行保留；64 KiB 输出尾；
-  //      行插入 messages 统一时间线，按事件 seq 落位） ------------------------
-  function buildActivityRow(activity) {
-    const wrap = doc.createElement("div");
-    wrap.className = "agent-activity-item";
-    wrap.dataset.activityId = activity.activity_id;
-    wrap.dataset.state = activity.status;
-    const details = doc.createElement("details");
-    const summary = doc.createElement("summary");
-    const mark = doc.createElement("span");
-    mark.className = "agent-activity-mark";
-    const label = doc.createElement("span");
-    label.className = "agent-activity-label";
-    summary.append(mark, label);
-    const detail = doc.createElement("div");
-    detail.className = "agent-activity-fields";
-    const output = doc.createElement("pre");
-    output.className = "agent-activity-output";
-    details.append(summary, detail, output);
-    wrap.append(details);
-    return {
-      wrap, mark, label, detail, output,
-      fields: new Map(), fieldEls: new Map(), outputText: null
-    };
-  }
-
-  // 详情字段：参数 → 命令 → 目录 → 退出码 → 耗时 → 错误（固定顺序，折叠在 details 内）。
-  function syncActivityFields(row, activity) {
-    const values = {
-      "参数": activity.args == null ? null : JSON.stringify(activity.args),
-      "命令": activity.command,
-      "目录": activity.cwd,
-      "退出码": activity.exit_code != null ? String(activity.exit_code) : null,
-      "耗时": activity.duration_ms != null ? `${activity.duration_ms} ms` : null,
-      "错误": activity.error
-    };
-    let created = false;
-    for (const name of FIELD_ORDER) {
-      const value = values[name];
-      if (value == null || value === "") continue;
-      let content = row.fields.get(name);
-      if (!content) {
-        const field = doc.createElement("div");
-        field.className = "agent-activity-field";
-        const key = doc.createElement("strong");
-        key.textContent = name;
-        content = doc.createElement("pre");
-        field.append(key, content);
-        row.detail.append(field);
-        row.fields.set(name, content);
-        row.fieldEls.set(name, field);
-        created = true;
-      }
-      if (content.textContent !== value) content.textContent = value;
-    }
-    if (created) {
-      // 新字段出现时按固定顺序重排（真实 DOM 中重复 append 会移动节点）。
-      const sorted = FIELD_ORDER.map((name) => row.fieldEls.get(name)).filter(Boolean);
-      row.detail.replaceChildren(...sorted);
-    }
-    return created;
-  }
-
-  function updateActivityRow(row, activity) {
-    let changed = false;
-    const labelText = activityLabel(activity);
-    if (row.label.textContent !== labelText) {
-      row.label.textContent = labelText;
-      changed = true;
-    }
-    const markText = markFor(activity.status);
-    if (row.mark.textContent !== markText) {
-      row.mark.textContent = markText;
-      changed = true;
-    }
-    row.wrap.dataset.state = activity.status;
-    if (activity.text !== row.outputText) {
-      row.output.textContent = (activity.truncated ? OUTPUT_TRUNCATED_MARK : "") + activity.text;
-      row.outputText = activity.text;
-      changed = true;
-    }
-    if (syncActivityFields(row, activity)) changed = true;
-    return changed;
-  }
-
-  function trimRows() {
-    if (rows.size <= MAX_ROWS) return;
-    // 只移除最早的终态行；全部运行中时不裁剪（允许短暂超限）。
-    for (const [id, row] of rows) {
-      if (ACTIVITY_TERMINAL_STATUSES.has(row.wrap.dataset.state)) {
-        row.wrap.remove();
-        timelineSeqs.delete(row.wrap);
-        if (row.eventKey != null) messageNodes.delete(row.eventKey);
-        rows.delete(id);
-        trimmedIds.add(id);
-        return;
-      }
-    }
-  }
-
-  // 活动行的时间线锚点：优先 started seq（终态按开始位置落位），tombstone
-  // 阶段（started 尚未加载）回退 terminal seq，旧事件无 seq 时追加到末端。
-  function activityAnchor(activity) {
-    return activity.start_seq ?? activity.terminal_seq ?? activity.seq ?? null;
-  }
-
-  function syncActivities(state) {
-    if (rendered.activities === state.revisions.activities) return;
-    rendered.activities = state.revisions.activities;
-    // 静默读取活动（Task 1）：活动仍保留在 state（供将来展开详情），但消息流
-    // 不再渲染独立活动行——成功完成的 read_file 等由工作组工具标签行单独呈现。
-    const silentIds = new Set();
-    for (const activity of state.activities.values()) {
-      if (isSilentReadActivity(activity)) silentIds.add(activity.activity_id);
-    }
-    // state 层已按上限丢弃的活动：同步移除对应 DOM 行（不依赖历史扫描）。
-    // 静默读取活动同样在此移除（运行中渲染过的行在完成时消失，只留工具标签行）。
-    for (const [id, row] of rows) {
-      if (!state.activities.has(id) || silentIds.has(id)) {
-        row.wrap.remove();
-        timelineSeqs.delete(row.wrap);
-        if (row.eventKey != null) messageNodes.delete(row.eventKey);
-        rows.delete(id);
-      }
-    }
-    for (const activity of state.activities.values()) {
-      if (trimmedIds.has(activity.activity_id) || silentIds.has(activity.activity_id)) continue;
-      const anchor = activityAnchor(activity);
-      const anchorKey = activity.start_event_key ?? activity.terminal_event_key ?? null;
-      let row = rows.get(activity.activity_id);
-      if (!row) {
-        row = buildActivityRow(activity);
-        rows.set(activity.activity_id, row);
-        row.seq = anchor;
-        row.eventKey = anchorKey;
-        // 活动行插入 messages 同一时间线，按事件 seq 落位（完成态位于
-        // Assistant 正文之前）；旧事件无 seq 时由 insertTimeline 追加到末端。
-        insertTimeline(row.wrap, anchor, anchorKey);
-        trimRows();
-        updateActivityRow(row, activity);
-        afterRender();
-        continue;
-      }
-      // 重建后锚点前移（tombstone → started 就位）：移除并按新锚点重插。
-      if (row.seq !== anchor || row.eventKey !== anchorKey) {
-        if (row.eventKey != null) messageNodes.delete(row.eventKey);
-        row.wrap.remove();
-        timelineSeqs.delete(row.wrap);
-        row.seq = anchor;
-        row.eventKey = anchorKey;
-        insertTimeline(row.wrap, anchor, anchorKey);
-        afterRender();
-      }
-      if (updateActivityRow(row, activity)) afterRender();
-    }
   }
 
   // ---- 排队输入：原文 + 排队 + 立即 --------------------------------------------
@@ -1946,7 +1757,6 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     syncStream(state);
     syncRun(state);
     syncWork(state);
-    syncActivities(state);
     syncDecisions(state);
     syncErrors(state);
     syncGaps(state);
