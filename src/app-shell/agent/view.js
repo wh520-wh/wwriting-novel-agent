@@ -815,7 +815,6 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       row.detail = detail;
       row.fieldEls = new Map();   // 字段名 -> field 容器（内容在 pre 内）
       row.outputEl = output;
-      row.outputText = null;
       row.fieldsSignature = null;
     } else if (item.kind === "reasoning") {
       const tickerEl = doc.createElement("div");
@@ -933,7 +932,8 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   // 工具详情字段：参数 → 命令 → 目录 → 退出码 → 耗时 → 错误（固定顺序，折叠在
   // details 内）。输出块在 truncated 时前置截断提示。字段只在签名变化时写入
   // DOM（避免每次 update 重建）；输出文本直接比对避免重复写。全部字段为空且
-  // 无输出时隐藏整个折叠区（标签 + path 行照常显示）。
+  // 无输出时隐藏整个折叠区（标签 + path 行照常显示）——空判定从已构建的字段
+  // 行派生（隐藏字段不算），输出侧与渲染文本共用 outputText。
   function updateToolDetails(row, item) {
     const values = {
       "参数": item.args != null && typeof item.args === "object" && Object.keys(item.args).length > 0
@@ -977,11 +977,11 @@ export function createAgentView({ root, document: doc = globalThis.document, req
         if (content && content.textContent !== value) content.textContent = value;
       }
     }
-    const hasField = FIELD_ORDER.some((name) => {
-      const value = values[name];
-      return value != null && value !== "";
+    const hasVisibleField = FIELD_ORDER.some((name) => {
+      const field = row.fieldEls.get(name);
+      return field != null && !field.hidden;
     });
-    row.details.hidden = !hasField && String(item.output ?? "").length === 0;
+    row.details.hidden = !hasVisibleField && outputText.length === 0;
   }
 
   function updatePlanContent(row, plan) {
