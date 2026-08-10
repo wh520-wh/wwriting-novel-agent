@@ -264,7 +264,7 @@ async function makeSurface() {
   return { root, surface };
 }
 
-test("Run 完成后只渲染一次终态：无重复状态横幅，活动终态标记单次", async () => {
+test("Run 完成后只渲染一次终态：无重复状态横幅，工具终态标记单次", async () => {
   const { root, surface } = await makeSurface();
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
   surface.applyEvent(ev("tool_call_started", {
@@ -283,11 +283,11 @@ test("Run 完成后只渲染一次终态：无重复状态横幅，活动终态�
   surface.applyEvent(ev("run_completed", {}));
   surface.applySnapshot(snapshotOf(session({ status: "idle", active_run: activeRun({ status: "completed" }) })));
 
-  // 活动行只有一条，且终态标记只出现一次（活动行已插入 messages 时间线）
-  const activityRows = root.querySelectorAll(".agent-activity-item");
-  assert.equal(activityRows.length, 1, "同一活动只渲染一行");
-  assert.equal(activityRows[0].dataset.state, "completed");
-  const completedMarks = activityRows[0].querySelectorAll(".agent-activity-mark");
+  // 工具工作项只有一条，且终态标记只出现一次（工作组已插入 messages 时间线）
+  const toolRows = [...root.querySelectorAll(".agent-work-item")].filter((el) => el.dataset.kind === "tool");
+  assert.equal(toolRows.length, 1, "同一活动只渲染一个工具工作项");
+  assert.equal(toolRows[0].dataset.state, "completed");
+  const completedMarks = toolRows[0].querySelectorAll(".agent-work-item__icon");
   assert.equal(completedMarks.length, 1);
   assert.equal(completedMarks[0].textContent, "✓");
 });
@@ -312,17 +312,17 @@ test("停止不产生第二个已停止横幅：终态只渲染一次", async ()
   // 再次推送同样的终态快照（轮询重放）：不得重复渲染横幅
   surface.applySnapshot(snapshotOf(session({ status: "idle", active_run: activeRun({ status: "cancelled" }) })));
 
-  const activityRows = root.querySelectorAll(".agent-activity-item");
-  assert.equal(activityRows.length, 1, "停止后仍只有一条活动行");
-  assert.equal(activityRows[0].dataset.state, "cancelled");
-  const cancelledMarks = activityRows[0].querySelectorAll(".agent-activity-mark");
+  const toolRows = [...root.querySelectorAll(".agent-work-item")].filter((el) => el.dataset.kind === "tool");
+  assert.equal(toolRows.length, 1, "停止后仍只有一个工具工作项");
+  assert.equal(toolRows[0].dataset.state, "cancelled");
+  const cancelledMarks = toolRows[0].querySelectorAll(".agent-work-item__icon");
   assert.equal(cancelledMarks.length, 1);
   assert.equal(cancelledMarks[0].textContent, "已停止");
   // 终态 Run 头部不再有停止按钮
   assert.equal(root.querySelector("[data-testid='agent-stop']"), null);
 });
 
-test("终态活动折叠在原生 details 内（无手动编辑入口）", async () => {
+test("终态工具工作项折叠在原生 details 内（无手动编辑入口）", async () => {
   const { root, surface } = await makeSurface();
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
   surface.applyEvent(ev("tool_call_started", {
@@ -337,12 +337,12 @@ test("终态活动折叠在原生 details 内（无手动编辑入口）", async
   surface.applyEvent(ev("run_completed", {}));
   surface.applySnapshot(snapshotOf(session({ status: "idle", active_run: activeRun({ status: "completed" }) })));
 
-  const row = root.querySelector(".agent-activity-item");
-  assert.ok(row, "活动行应存在");
+  const row = [...root.querySelectorAll(".agent-work-item")].find((el) => el.dataset.kind === "tool");
+  assert.ok(row, "工具工作项应存在");
   const details = row.querySelector("details");
-  assert.ok(details, "活动行应使用原生 details 折叠");
-  const detailFields = details.querySelector(".agent-activity-fields");
-  assert.ok(detailFields, "详情字段应折叠在 details 内");
+  assert.ok(details, "工具详情应使用原生 details 折叠");
+  assert.ok(details.querySelector(".agent-tool-fields"), "详情字段应折叠在 details 内");
+  assert.ok(details.querySelector("summary"), "details 内应有 summary");
 });
 
 test("重放快照后工作组按时间线落位：最终回复位于 work group 之后", async () => {

@@ -1313,15 +1313,15 @@ test("生产入口回放 tool-before-answer：工具活动节点 DOM 顺序早�
     "助手最终答案正文不得为空，必须保持默认可见"
   );
 
-  // 工具顺序契约：真实 list_files 一类的活动节点必须位于助手正文之前。
-  const toolRow = root.querySelector(".agent-activity-item");
+  // 工具顺序契约：真实 list_files 一类的工具工作项必须位于助手正文之前。
+  const toolItem = [...root.querySelectorAll(".agent-work-item")].find((el) => el.dataset.kind === "tool");
   const assistantBubble = root.querySelector('[data-testid="agent-assistant-message"]');
-  assert.ok(toolRow, "回放应渲染工具活动行");
+  assert.ok(toolItem, "回放应渲染工具工作项");
   assert.ok(assistantBubble, "回放应渲染助手最终答案气泡");
   const timelineIndex = (el) => el._parent.children.indexOf(el);
   assert.ok(
-    timelineIndex(toolRow) < timelineIndex(assistantBubble),
-    "工具活动节点必须位于助手最终答案之前（工具顺序早于正文）"
+    timelineIndex(group) < timelineIndex(assistantBubble),
+    "工具工作项所在工作组必须位于助手最终答案之前（工具顺序早于正文）"
   );
 });
 

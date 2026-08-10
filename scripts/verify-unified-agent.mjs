@@ -1063,12 +1063,12 @@ step("场景 24 · 活动合并与私有推理排除");
       allNodes.push(node);
       for (const child of node.children) walk(child);
     })(root);
-    // 同一 activity_id 只渲染一行，增量输出合并到同一输出节点
-    const activityRows = allNodes.filter((node) => node.dataset?.activityId != null);
-    assert.equal(activityRows.length, 1, "同一 activity_id 必须合并为单行，不得重复渲染");
-    const outputNode = allNodes.find((node) => node.className === "agent-activity-output");
-    assert.ok(outputNode, "应存在活动输出节点");
-    assert.equal(outputNode.textContent, "stub stdout: echo hi", "活动输出应为真实 shell 增量");
+    // 同一 activity_id 只渲染一个工具工作项，增量输出合并到同一输出节点
+    const toolItems = allNodes.filter((node) => node.dataset?.kind === "tool");
+    assert.equal(toolItems.length, 1, "同一 activity_id 必须合并为单个工具工作项，不得重复渲染");
+    const outputNode = allNodes.find((node) => node.className === "agent-tool-output");
+    assert.ok(outputNode, "应存在工具输出节点");
+    assert.equal(outputNode.textContent, "stub stdout: echo hi", "工具输出应为真实 shell 增量");
     // 对话：用户气泡 + 助手气泡（真实最终回复文本上屏，不再依赖伪造事件）
     assert.equal(
       allNodes.filter((n) => n.dataset?.testid === "agent-user-message").length,

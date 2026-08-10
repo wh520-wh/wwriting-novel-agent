@@ -237,7 +237,7 @@ async function main() {
   gateway.setSteps([{ type: "reply", text: "你好，我在这里。普通文件夹也可以直接聊天。" }]);
   await sendComposerText(win, "你好，请确认你能收到消息");
   await waitUntil(win, "[...document.querySelectorAll('[data-testid=\"agent-user-message\"]')].some((el) => el.textContent.includes('你好'))", "user message must render", 10000);
-  await waitUntil(win, "document.querySelector('.agent-run-status')?.textContent === '已完成' || document.querySelectorAll('[data-testid=\"agent-error\"]').length > 0", "agent reply run must complete", 20000);
+  await waitUntil(win, "[...document.querySelectorAll('[data-testid=\"agent-assistant-message\"]')].some((el) => el.textContent.includes('你好，我在这里')) || document.querySelectorAll('[data-testid=\"agent-error\"]').length > 0", "agent reply run must complete", 20000);
   assert.equal(await read(win, "document.querySelectorAll('[data-testid=\"agent-error\"]').length"), 0, "正常聊天不得出现错误卡");
   await waitForComposerEnabled(win);
 
@@ -248,21 +248,21 @@ async function main() {
   clicks.push(await clickAndRead(win, '[data-testid="agent-stop"]', {
     label: "agent-stop",
     settleMs: 2500,
-    expect: () => read(win, "['已停止','已中断'].includes(document.querySelector('.agent-run-status')?.textContent)")
+    expect: () => read(win, "!document.querySelector('[data-testid=\"agent-stop\"]')")
   }));
-  await waitUntil(win, "document.querySelector('.agent-run-status')?.textContent === '已停止' || document.querySelector('.agent-run-status')?.textContent === '已中断'", "run must be cancelled after stop", 15000);
+  await waitUntil(win, "!document.querySelector('[data-testid=\"agent-stop\"]')", "run must be cancelled after stop", 15000);
   await waitForComposerEnabled(win);
 
   // ⑩ 重试：失败（gateway error）后点击重试 → 同一 Run 恢复并完成
   gateway.setSteps([{ type: "error" }, { type: "reply", text: "重试成功，本轮已经完成。" }]);
   await sendComposerText(win, "触发一次可恢复失败，然后重试");
-  await waitUntil(win, "document.querySelector('.agent-run-status')?.textContent === '操作失败' && Boolean(document.querySelector('[data-testid=\"agent-retry\"]'))", "run must fail and show retry button", 15000);
+  await waitUntil(win, "document.querySelectorAll('[data-testid=\"agent-error\"]').length > 0 && Boolean(document.querySelector('[data-testid=\"agent-retry\"]'))", "run must fail and show retry button", 15000);
   clicks.push(await clickAndRead(win, '[data-testid="agent-retry"]', {
     label: "agent-retry",
     settleMs: 2500,
-    expect: () => read(win, "document.querySelector('.agent-run-status')?.textContent === '已完成' || document.querySelector('.agent-run-status')?.textContent === '运行中' || document.querySelector('.agent-run-status')?.textContent === '思考中'")
+    expect: () => read(win, "Boolean(document.querySelector('[data-testid=\"agent-stop\"]')) || [...document.querySelectorAll('[data-testid=\"agent-assistant-message\"]')].some((el) => el.textContent.includes('重试成功'))")
   }));
-  await waitUntil(win, "document.querySelector('.agent-run-status')?.textContent === '已完成'", "retried run must complete", 20000);
+  await waitUntil(win, "[...document.querySelectorAll('[data-testid=\"agent-assistant-message\"]')].some((el) => el.textContent.includes('重试成功')) || document.querySelectorAll('[data-testid=\"agent-error\"]').length > 0", "retried run must complete", 20000);
   assert.equal(await read(win, "document.querySelectorAll('[data-testid=\"agent-error\"]').length"), 0, "重试成功后不得残留错误卡");
 
   // ⑪ 快捷键浮层：? 开 → X 关（keydown 监听挂在 document 上，需在 document 派发）
