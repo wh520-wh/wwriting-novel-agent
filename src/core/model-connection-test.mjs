@@ -226,6 +226,8 @@ async function runWithRetry(fn, { maxAttempts = 1, retryDelayMs = 2000, signal }
       return await fn();
     } catch (error) {
       lastError = error;
+      // 此处的 signal 是合并信号：外部调用方或内部超时任一中止都停止重试（区别于
+      // 外层仅按外部 signal 判断「调用方取消」的语义）。
       if (isCallerAbort(error, signal)) {
         throw error;
       }

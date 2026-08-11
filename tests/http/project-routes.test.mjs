@@ -26,7 +26,7 @@ import { loadProject, saveProject, upsertChapter } from "../../src/core/project-
 import { startHttpServer } from "../helpers/http-test.mjs";
 import { createProjectAgentHarness, readEvents, eventsOfType } from "../helpers/project-agent-harness.mjs";
 
-async function setupServer(t, harnessOptions = {}) {
+async function setupServer(t, harnessOptions = {}, routeOptions = {}) {
   const h = await createProjectAgentHarness(harnessOptions);
   const workspace = h.workspaceRoot;
   const stateRoot = path.join(workspace, ".state");
@@ -51,8 +51,9 @@ async function setupServer(t, harnessOptions = {}) {
     // Task 12：注入临时 root 的 skills service（migration marker 不碰真实用户目录）
     skills: createSkillService({ userHome: path.join(workspace, ".skills-home"), resourcesPath: null }),
     // 注入桩 connectionTester：让 test-connection 走到密钥校验与统一 finally 清理
-    // 路径（不注入时 503 model_probe_unavailable）
-    connectionTester: async () => ({ ok: true, code: null, message: "ok", latency_ms: 5 })
+    // 路径（不注入时 503 model_probe_unavailable）。routeOptions.connectionTester
+    // 允许单测覆盖归一化入参与 504 映射（Task 11 双形态/超时契约）。
+    connectionTester: routeOptions.connectionTester ?? (async () => ({ ok: true, code: null, message: "ok", latency_ms: 5 }))
   });
   const server = await startHttpServer(t, {
     router,
@@ -249,4 +250,52 @@ test("既有契约抽查：projects/list、open、init、research、settings、s
   assert.equal(styles.res.status, 200);
   assert.equal(styles.data.ok, true);
   assert.ok(Array.isArray(styles.data.styles));
+});
+
+test("settings/test-connection 新形态 { provider, model }：归一化候选进入 tester", async (t) => {
+  // Task 11 双形态：新设置页（Task 15）按「供应商+模型」提交，路由须折叠成与旧
+  // { active_model } 一致的 candidate（provider 固定 openai-compatible）再交给
+  // connectionTester；临时 api_key 只进 secrets 不进 config。用注入 tester 捕获
+  // 归一化后的 config，锁 shape→config 映射。
+  const received = [];
+  const s = await setupServer(t, {}, {
+    connectionTester: async ({ config }) => {
+      received.push(config);
+      return { ok: true, code: null, message: "ok", latency_ms: 5 };
+    }
+  });
+  const probe = await s.post("/api/settings/test-connection", {
+    provider: { base_url: "https://api.example.test/v1", api_key_env: "SOME_KEY" },
+    model: { model_name: "test-model" },
+    api_key: "sk-test"
+  });
+  assert.equal(probe.res.status, 200);
+  assert.equal(probe.data.ok, true);
+  assert.equal(received.length, 1, "tester 恰好被调用一次");
+  assert.deepEqual(received[0], {
+    provider: "openai-compatible",
+    model_name: "test-model",
+    base_url: "https://api.example.test/v1",
+    api_key_env: "SOME_KEY"
+  });
+  assert.equal(probe.data.provider, "openai-compatible");
+  assert.equal(probe.data.model_name, "test-model");
+});
+
+test("settings/test-connection 探测超时 → 504 request_timeout", async (t) => {
+  // Task 11/B6：tester 返回 request_timeout（真实 tester 的超时分类）时，路由映射
+  // 504 而不是 499/400；Task 15 设置页据此区分超时与取消。message 不参与断言：
+  // http-error 的 5xx 脱敏把非白名单 code 的 message 收敛为通用文案，用户侧契约
+  // 是 status=504 + code=request_timeout。
+  const s = await setupServer(t, {}, {
+    connectionTester: async () => ({ ok: false, code: "request_timeout", message: "模型服务器响应超时（30 秒）", latency_ms: 30000 })
+  });
+  const probe = await s.post("/api/settings/test-connection", {
+    provider: { base_url: "https://api.example.test/v1", api_key_env: "SOME_KEY" },
+    model: { model_name: "test-model" },
+    api_key: "sk-test"
+  });
+  assert.equal(probe.res.status, 504);
+  assert.equal(probe.data.ok, false);
+  assert.equal(probe.data.code, "request_timeout");
 });
