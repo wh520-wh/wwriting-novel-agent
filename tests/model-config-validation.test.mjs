@@ -138,3 +138,18 @@ test("timeout_ms/total_deadline_ms：负数/非整数/零/非数字拒绝并报�
     });
   }
 });
+
+test("api_format 默认 openai-chat-completions，白名单外拒绝", () => {
+  const config = validateModelConfig({
+    provider: "openai-compatible", model_name: "deepseek-v4-pro",
+    base_url: "https://api.deepseek.com", api_key_env: "DEEPSEEK_API_KEY"
+  });
+  assert.equal(config.api_format, "openai-chat-completions");
+  assert.throws(
+    () => validateModelConfig({
+      provider: "openai-compatible", model_name: "x", base_url: "https://x.test",
+      api_key_env: "X", api_format: "anthropic-messages"
+    }),
+    (error) => error instanceof ModelConfigValidationError && error.fields.api_format === "本轮仅支持 OpenAI Chat Completions 协议"
+  );
+});
