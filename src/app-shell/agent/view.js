@@ -1484,7 +1484,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     }
   }
 
-  function fillMenu(control, options, currentValue, enabled, onSelect) {
+  function fillMenu(control, options, currentValue, enabled, onSelect, fireAlwaysWhen = null) {
     control.menu.replaceChildren();
     control.items = options.map((item) => {
       const option = doc.createElement("button");
@@ -1510,7 +1510,11 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       option.addEventListener("click", (event) => {
         event?.stopPropagation?.();
         closeComposerMenus();
-        if (item.value !== control.trigger.dataset.value) onSelect(item.value);
+        // 占位项（值匹配当前但必须响应点击，如「未配置」开设置页）经
+        // fireAlwaysWhen 判定后照常触发 onSelect。
+        if (item.value !== control.trigger.dataset.value || (fireAlwaysWhen && fireAlwaysWhen(item))) {
+          onSelect(item.value);
+        }
       });
       control.menu.append(option);
       return option;
@@ -1542,21 +1546,32 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     }
     controlsSignature = signature;
 
-    // 模型：未加载或无已导入模型时单项占位并禁用。
+    // 模型：选项为 Task 16 派生的选择器选项（value = `${provider_id}/${model_id}`）。
+    // 未加载（composerOptions null）→ 空占位并禁用；已加载但无任何可用模型 → 「未
+    // 配置」占位可点（点击开新设置页）。清单外字面模型（legacy: 前缀）只读展示。
     const models = Array.isArray(options?.models) ? options.models : [];
     const modelOptions = models.length > 0
       ? models.map((model) => ({
-          value: String(model.id ?? model.model_name ?? ""),
-          label: String(model.display ?? model.model_name ?? model.id ?? ""),
-          title: String(model.display ?? model.model_name ?? "")
+          value: String(model.value ?? ""),
+          label: String(model.label ?? model.value ?? ""),
+          title: String(model.label ?? model.value ?? "")
         }))
-      : [{ value: "", label: "未导入模型" }];
+      : [{ value: "", label: "未配置" }];
     fillMenu(
       modelControl,
       modelOptions,
       String(options?.activeModelId ?? ""),
-      composerEnabled && models.length > 0 && options?.modelSelectionEnabled !== false,
-      (modelId) => actions.switchModel?.(modelId)
+      composerEnabled && options != null && options?.modelSelectionEnabled !== false,
+      (modelId) => {
+        if (modelId === "") {
+          // 「未配置」占位：直接打开新设置页（模型分区）。
+          actions.openModelSettings?.();
+          return;
+        }
+        if (String(modelId).startsWith("legacy:")) return; // 清单外只读条目不可切换
+        actions.switchModel?.(modelId);
+      },
+      (item) => item.value === ""
     );
 
     // 权限模式：固定四档。
@@ -1583,7 +1598,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
 
   function syncControlValues(options, levels) {
     const modelValue = String(options?.activeModelId ?? "");
-    setMenuValue(modelControl, modelValue, "未导入模型");
+    setMenuValue(modelControl, modelValue, "未配置");
     const permissionValue = String(options?.permissionTier ?? "confirm");
     setMenuValue(permissionControl, permissionValue, "确认后修改");
     const effortValue = levels ? String(options?.reasoningEffort ?? "auto") : "auto";

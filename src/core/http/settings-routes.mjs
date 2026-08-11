@@ -40,6 +40,8 @@ import {
   updateProjectSettings
 } from "../settings-runtime.mjs";
 import { resolveModelCapabilities, writingRequiredCapabilitiesOk } from "../model/capabilities.mjs";
+import { loadProviderStore } from "../model-provider-store.mjs";
+import { toRequestConfig } from "../model-reference.mjs";
 import { resolveActiveProjectRoot, resolveReadProjectRoot, resolveWriteProjectRoot } from "./router.mjs";
 
 // ---------------------------------------------------------------------------
@@ -262,6 +264,114 @@ export function createSettingsRoutes({
     return project;
   }
 
+  // Task 16：模型切换（引用形态）——校验 { provider_id, model_id } 在 v2 清单中
+  // 存在且供应商/模型均启用 + 写作能力 C 档，然后写项目引用到应用私有 settings。
+  // 响应为引用契约（active_model = 引用），不再返回旧 available_models/model_profile。
+  async function switchModelByReference({ body, projectRoot }) {
+    const providerId = String(body?.provider_id ?? "").trim();
+    const modelId = String(body?.model_id ?? "").trim();
+    if (!providerId || !modelId) {
+      throw new HttpError(400, "invalid_model_reference", "provider_id 与 model_id 均必填。");
+    }
+    const store = await loadProviderStore(secretsRoot);
+    const provider = store.providers.find((p) => p.id === providerId);
+    const model = provider?.models.find((m) => m.id === modelId);
+    if (!provider || !model) {
+      throw new HttpError(404, "model_profile_not_found", `未找到已配置模型：${providerId}/${modelId}`);
+    }
+    if (provider.status === "disabled") {
+      throw new HttpError(400, "provider_disabled", "该供应商已停用，无法切换。");
+    }
+    if (model.enabled === false) {
+      throw new HttpError(400, "model_disabled", "该模型已停用，无法切换。");
+    }
+    const literal = toRequestConfig(provider, model);
+    if (!writingRequiredCapabilitiesOk(literal)) {
+      throw new HttpError(400, "model_unsupported", "该模型不支持工具调用，无法用于小说写作。");
+    }
+    const reference = { provider_id: provider.id, model_id: model.id };
+    const before = await assertNotArchived(projectRoot);
+    const caps = resolveModelCapabilities(literal);
+    const conflicts = [];
+    if (caps.supportsTemperature === false && before.active_model?.temperature !== undefined) {
+      conflicts.push("该模型不支持温度设置，写作温度不会生效。");
+    }
+    if (hasWorkspaceStore) {
+      // 任务 5 Step 5：统一走 saveWorkspaceSettings——成对携带 active_model（引用）
+      // 与 tool_permissions（保留当前有效权限）；运行时按 modelStoreLoader 解析。
+      await saveWorkspaceSettings(projectRoot, { workspaceStore, activeModel: reference });
+    } else {
+      // 旧组合根（未注入 workspaceStore）：引用形态写不进 project.yaml 的运行时
+      // 归一化（只认字面配置），按清单解析成字面配置写入（预任务 5 行为）。
+      await updateProjectSettings(projectRoot, { active_model: literal });
+    }
+    const effective = hasWorkspaceStore
+      ? await loadEffectiveWorkspaceConfig(projectRoot, {
+          workspaceStore,
+          modelStoreLoader: () => loadProviderStore(secretsRoot)
+        })
+      : (await loadConfigLayers(projectRoot, await loadProject(projectRoot))).effective;
+    return {
+      ok: true,
+      projectRoot,
+      active_model: reference,
+      capabilities: caps,
+      conflicts,
+      project: {
+        project_id: effective.project_id ?? null,
+        active_model: effective.active_model,
+        tool_permissions: effective.tool_permissions ?? {}
+      },
+      effective_config: effective
+    };
+  }
+
+  // 旧形态模型切换（v1 model_id 兼容，cutover 时删除）：按 v1 清单 id 找到模型，
+  // 校验写作能力，写字面配置（应用私有 settings 优先，旧组合根写 project.yaml）。
+  async function switchModelLegacy({ body, projectRoot }) {
+    const modelId = String(body.model_id ?? body.modelId ?? body.model_name ?? "").trim();
+    if (!modelId) {
+      throw new HttpError(400, "invalid_model_id", "model_id is required.");
+    }
+    const profile = await findLocalModelProfile(secretsRoot, modelId);
+    if (!profile) {
+      throw new HttpError(404, "model_profile_not_found", `未找到已配置模型：${modelId}`);
+    }
+    if (!writingRequiredCapabilitiesOk(profile)) {
+      throw new HttpError(400, "model_unsupported", "该模型不支持工具调用，无法用于小说写作。");
+    }
+    const before = await assertNotArchived(projectRoot);
+    const caps = resolveModelCapabilities(profile);
+    const conflicts = [];
+    if (caps.supportsTemperature === false && before.active_model?.temperature !== undefined) {
+      conflicts.push("该模型不支持温度设置，写作温度不会生效。");
+    }
+    const nextModel = modelConfigFromLocalProfile(profile);
+    if (hasWorkspaceStore) {
+      await saveWorkspaceSettings(projectRoot, { workspaceStore, activeModel: nextModel });
+    } else {
+      await updateProjectSettings(projectRoot, { active_model: nextModel });
+    }
+    await upsertLocalModelProfile(secretsRoot, nextModel);
+    const effective = hasWorkspaceStore
+      ? await loadEffectiveWorkspaceConfig(projectRoot, { workspaceStore })
+      : (await loadConfigLayers(projectRoot, await loadProject(projectRoot))).effective;
+    return {
+      ok: true,
+      projectRoot,
+      capabilities: caps,
+      conflicts,
+      project: {
+        project_id: effective.project_id ?? null,
+        active_model: effective.active_model,
+        tool_permissions: effective.tool_permissions ?? {}
+      },
+      effective_config: effective,
+      model_profile: buildModelProfile(effective.active_model, secretsRoot),
+      available_models: await buildAvailableModelProfiles(secretsRoot, effective.active_model)
+    };
+  }
+
   return {
     // 设置更新：非模型字段校验先于落盘（请求原子）；错误带 fields 供逐项标红。
     // 任务 5：写作用域解析不再要求 project.yaml（普通目录同样是合法工作区）；
@@ -419,6 +529,9 @@ export function createSettingsRoutes({
     // 模型切换：写作必需能力缺失的模型在写配置前拦截（C 档）。
     // 任务 5：普通目录（无 project.yaml）同样可以切换模型；切换写入应用私有
     // workspace settings，不再写回 project.yaml（旧文件只读保留为回滚依据）。
+    // Task 16：接受引用形态 { provider_id, model_id }——校验二者在 v2 清单中可用
+    // 且供应商/模型启用，然后写项目引用（应用私有 settings）；旧形态
+    // { model_id: "<v1 id>" } 保持原字面写路径，到 cutover（Task 17）删除。
     "POST /api/settings/model-switch": async ({ body }) => {
       try {
         const projectRoot = await resolveWriteProjectRoot({
@@ -428,50 +541,12 @@ export function createSettingsRoutes({
           workspace: ctx.workspace,
           stateRoot: ctx.stateRoot
         });
-        const modelId = String(body.model_id ?? body.modelId ?? body.model_name ?? "").trim();
-        if (!modelId) {
-          throw new HttpError(400, "invalid_model_id", "model_id is required.");
+        // 引用形态以 provider_id 为标志（旧形态永不携带）；model_id 缺失由
+        // switchModelByReference 内部校验。
+        if (body?.provider_id != null) {
+          return await switchModelByReference({ body, projectRoot });
         }
-        const profile = await findLocalModelProfile(secretsRoot, modelId);
-        if (!profile) {
-          throw new HttpError(404, "model_profile_not_found", `未找到已配置模型：${modelId}`);
-        }
-        if (!writingRequiredCapabilitiesOk(profile)) {
-          throw new HttpError(400, "model_unsupported", "该模型不支持工具调用，无法用于小说写作。");
-        }
-        const before = await assertNotArchived(projectRoot);
-        const caps = resolveModelCapabilities(profile);
-        const conflicts = [];
-        if (caps.supportsTemperature === false && before.active_model?.temperature !== undefined) {
-          conflicts.push("该模型不支持温度设置，写作温度不会生效。");
-        }
-        const nextModel = modelConfigFromLocalProfile(profile);
-        if (hasWorkspaceStore) {
-          // 任务 5 Step 5：模型切换统一走 saveWorkspaceSettings——成对携带
-          // active_model 与 tool_permissions（保留当前有效权限）。
-          await saveWorkspaceSettings(projectRoot, { workspaceStore, activeModel: nextModel });
-        } else {
-          // 旧组合根（未注入 workspaceStore）：写 project.yaml（预任务 5 行为）。
-          await updateProjectSettings(projectRoot, { active_model: nextModel });
-        }
-        await upsertLocalModelProfile(secretsRoot, nextModel);
-        const effective = hasWorkspaceStore
-          ? await loadEffectiveWorkspaceConfig(projectRoot, { workspaceStore })
-          : (await loadConfigLayers(projectRoot, await loadProject(projectRoot))).effective;
-        return {
-          ok: true,
-          projectRoot,
-          capabilities: caps,
-          conflicts,
-          project: {
-            project_id: effective.project_id ?? null,
-            active_model: effective.active_model,
-            tool_permissions: effective.tool_permissions ?? {}
-          },
-          effective_config: effective,
-          model_profile: buildModelProfile(effective.active_model, secretsRoot),
-          available_models: await buildAvailableModelProfiles(secretsRoot, effective.active_model)
-        };
+        return await switchModelLegacy({ body, projectRoot });
       } catch (error) {
         throw error instanceof HttpError ? error : new HttpError(400, "model_switch_failed", error?.message ?? String(error));
       }

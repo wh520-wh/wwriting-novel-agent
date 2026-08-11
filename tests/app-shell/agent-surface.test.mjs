@@ -18,6 +18,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { buildModelPickerOptions, handleDashboardMigrationNotice } from "../../src/app-shell/settings-connection.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -2537,26 +2538,68 @@ test("工具工作项：无 path 的工具回退泛化文案，不出现 undefin
 // 步骤3：composer 三控件（模型 / 权限模式 / 思考强度）
 // ===========================================================================
 
-function modelProfile(id, name, { display = name, baseUrl = "https://x/v1", active = false, capabilities = undefined } = {}) {
-  return { id, model_name: name, display, base_url: baseUrl, active, ...(capabilities ? { capabilities } : {}) };
+// v2 供应商清单里的模型条目（store 形态：id/model_name/enabled）。
+function storeModel(modelId, modelName, { enabled = true } = {}) {
+  return { id: modelId, model_name: modelName, enabled };
 }
 
-function deepseekOptions(overrides = {}) {
+// Task 16：composer 三控件数据源 = 全局供应商清单 store + dashboard 有效配置
+//（activeModel 引用形态 + activeModelCapabilities 服务端能力矩阵）。
+function composerOptionsData(overrides = {}) {
+  const dsId = "p-deepseek";
+  const mimoId = "p-mimo";
   return {
-    models: [
-      modelProfile("ds-r", "deepseek-reasoner", {
-        display: "DeepSeek Reasoner",
-        baseUrl: "https://api.deepseek.com",
-        active: true,
-        capabilities: { reasoningEffortLevels: ["low", "medium", "high"] }
-      }),
-      modelProfile("mimo-7b", "mimo-7b", { display: "MiMo 7B" })
-    ],
-    activeModel: { provider: "deepseek", model_name: "deepseek-reasoner", base_url: "https://api.deepseek.com" },
+    store: {
+      providers: [
+        {
+          id: dsId,
+          name: "DeepSeek 官方",
+          status: "enabled",
+          base_url: "https://api.deepseek.com",
+          models: [
+            storeModel("m-reasoner", "deepseek-reasoner"),
+            storeModel("m-chat", "deepseek-chat", { enabled: false }) // 停用模型不进选择器
+          ]
+        },
+        {
+          id: mimoId,
+          name: "小米 MiMo 官方",
+          status: "enabled",
+          base_url: "https://api.xiaomimimo.com/v1",
+          models: [storeModel("m-mimo", "mimo-7b")]
+        },
+        {
+          id: "p-off",
+          name: "停用供应商",
+          status: "disabled",
+          base_url: "https://off.example.com",
+          models: [storeModel("m-off", "off-model")]
+        }
+      ],
+      default_model: { provider_id: dsId, model_id: "m-reasoner" }
+    },
+    activeModel: {
+      provider: "openai-compatible",
+      provider_id: dsId,
+      model_id: "m-reasoner",
+      model_name: "deepseek-reasoner",
+      base_url: "https://api.deepseek.com"
+    },
+    activeModelCapabilities: { reasoningEffortLevels: ["low", "medium", "high"] },
     toolPermissions: { read_only: false, safe_edit: true, auto_edit: false, yolo: false },
     reasoningEffort: "auto",
     ...overrides
   };
+}
+
+// 空 store：无任何可用模型（未配置场景）。
+function unconfiguredOptions(overrides = {}) {
+  return composerOptionsData({
+    store: { providers: [], default_model: null },
+    activeModel: null,
+    activeModelCapabilities: null,
+    ...overrides
+  });
 }
 
 function menuOption(root, testid, value) {
@@ -2567,7 +2610,7 @@ function menuOption(root, testid, value) {
 test("composer 三控件：openProject 后加载选项并渲染（testid 齐全）", async () => {
   const { root, surface } = await makeSurface({
     apiOverrides: {
-      fetchComposerOptions: async () => deepseekOptions({ reasoningEffort: "high" })
+      fetchComposerOptions: async () => composerOptionsData({ reasoningEffort: "high" })
     }
   });
   // 未打开项目：三控件禁用
@@ -2582,11 +2625,12 @@ test("composer 三控件：openProject 后加载选项并渲染（testid 齐全�
 
   assert.equal(modelSel.disabled, false);
   assert.equal(modelSel.tagName, "button", "不得退回系统原生 select");
-  assert.equal(modelSel.dataset.value, "ds-r");
-  assert.match(modelSel.textContent, /DeepSeek Reasoner/u);
+  assert.equal(modelSel.dataset.value, "p-deepseek/m-reasoner");
+  assert.match(modelSel.textContent, /deepseek-reasoner/u);
+  // Task 16：只列启用供应商的启用模型（停用模型 deepseek-chat 与停用供应商 p-off 不出现）
   assert.deepEqual(
     [...root.querySelectorAll('[data-testid="agent-model-option"]')].map((o) => o.textContent),
-    ["DeepSeek Reasoner", "MiMo 7B"]
+    ["deepseek-reasoner（DeepSeek 官方）", "mimo-7b（小米 MiMo 官方）"]
   );
   assert.equal(permSel.disabled, false);
   assert.equal(root.querySelectorAll('[data-testid="agent-permission-option"]').length, 4, "权限四档：只读/确认后修改/自动修改/YOLO");
@@ -2600,16 +2644,11 @@ test("composer 三控件：openProject 后加载选项并渲染（testid 齐全�
   assert.equal(modelSel.getAttribute("aria-expanded"), "true");
 });
 
-test("composer 思考强度能力来自模型清单，不在前端按供应商或模型名猜测", async () => {
+test("composer 思考强度能力来自服务端能力矩阵（dashboard 模型档案），不在前端猜测", async () => {
   const { root, surface } = await makeSurface({
     apiOverrides: {
-      fetchComposerOptions: async () => ({
-        models: [modelProfile("custom-thinking", "custom-thinking", {
-          active: true,
-          capabilities: { reasoningEffortLevels: ["low", "medium", "high"] }
-        })],
-        activeModel: { provider: "openai-compatible", model_name: "custom-thinking", base_url: "https://x/v1" },
-        toolPermissions: {},
+      fetchComposerOptions: async () => composerOptionsData({
+        activeModelCapabilities: { reasoningEffortLevels: ["low", "medium", "high"] },
         reasoningEffort: "medium"
       })
     }
@@ -2623,61 +2662,59 @@ test("composer 思考强度能力来自模型清单，不在前端按供应商�
   assert.equal(effortSel.dataset.value, "medium");
 });
 
-test("composer 模型清单缺少项目当前模型时，仍显示实际生效模型", async () => {
+test("composer 清单外字面模型（未迁移旧配置）：仍显示实际生效模型，只读不可切", async () => {
   const { root, surface } = await makeSurface({
     apiOverrides: {
-      fetchComposerOptions: async () => ({
-        models: [],
+      fetchComposerOptions: async () => composerOptionsData({
+        store: { providers: [], default_model: null },
         activeModel: { provider: "openai-compatible", model_name: "legacy-model", base_url: "https://legacy.test/v1" },
-        toolPermissions: {},
-        reasoningEffort: "auto"
+        activeModelCapabilities: null
       })
     }
   });
   await surface.openProject("D:\\legacy-novel");
 
   const model = root.querySelector('[data-testid="agent-model-select"]');
-  assert.equal(model.dataset.value, "legacy-model");
+  assert.equal(model.dataset.value, "legacy:legacy-model");
   assert.match(model.textContent, /legacy-model/u);
-  assert.equal(model.disabled, true, "只有未导入的当前模型时只展示事实，不伪装成可切换选项");
+  assert.equal(model.disabled, true, "清单外的生效模型只展示事实，不伪装成可切换选项");
   assert.equal(root.querySelectorAll('[data-testid="agent-model-option"]').length, 1);
 });
 
-test("composer 未配置模型：activeModel 为空时显示未导入模型占位并禁用", async () => {
-  // Task 8：未配置模型 = activeModel null，composer 不显示任何 mock 占位。
-  const { root, surface } = await makeSurface({
+test("composer 未配置模型：无可用模型时「未配置」占位可点（开设置页）", async () => {
+  // Task 16：activeModel 为空且清单无可用模型时，选择器唯一选项是「未配置」占位，
+  // 触发器可点——点击打开新设置页（不再是旧版禁用的「未导入模型」）。
+  const { root, surface, opened } = await makeSurface({
     apiOverrides: {
-      fetchComposerOptions: async () => ({
-        models: [],
-        activeModel: null,
-        toolPermissions: {},
-        reasoningEffort: "auto"
-      })
+      fetchComposerOptions: async () => unconfiguredOptions()
     }
   });
   await surface.openProject("D:\\unconfigured-novel");
 
   const model = root.querySelector('[data-testid="agent-model-select"]');
   assert.equal(model.dataset.value, "");
-  assert.match(model.textContent, /未导入模型/u);
-  assert.equal(model.disabled, true, "未配置模型时模型选择禁用");
+  assert.match(model.textContent, /未配置/u);
+  assert.equal(model.disabled, false, "未配置占位应可点（直达设置页）");
   assert.equal(root.querySelectorAll('[data-testid="agent-model-option"]').length, 1);
+  const placeholder = menuOption(root, "agent-model-option", "");
+  assert.equal(placeholder.textContent, "未配置");
+
+  placeholder._fire("click", { stopPropagation() {} });
+  assert.deepEqual(opened, ["model"], "点击「未配置」占位应打开新设置页（模型分区）");
 });
 
-test("composer 模型选择：change 调 switchModel，响应更新控件与能力", async () => {
+test("composer 模型选择：选中写项目引用，响应更新控件与能力", async () => {
   const switched = [];
   const { root, surface } = await makeSurface({
     apiOverrides: {
-      fetchComposerOptions: async () => deepseekOptions(),
+      fetchComposerOptions: async () => composerOptionsData(),
       switchModel: async (modelId) => {
         switched.push(modelId);
         return {
+          ok: true,
+          active_model: { provider_id: "p-mimo", model_id: "m-mimo" },
           capabilities: {}, // mimo：无 reasoningEffortLevels
-          project: { tool_permissions: { read_only: false, safe_edit: true, auto_edit: true, yolo: false } },
-          available_models: [
-            modelProfile("mimo-7b", "mimo-7b", { display: "MiMo 7B", active: true }),
-            modelProfile("ds-r", "deepseek-reasoner", { display: "DeepSeek Reasoner", baseUrl: "https://api.deepseek.com" })
-          ]
+          project: { tool_permissions: { read_only: false, safe_edit: true, auto_edit: true, yolo: false } }
         };
       }
     }
@@ -2687,11 +2724,11 @@ test("composer 模型选择：change 调 switchModel，响应更新控件与能�
   const effortSel = root.querySelector('[data-testid="agent-effort-select"]');
   assert.equal(effortSel.disabled, false, "切换前 DeepSeek 支持强度");
 
-  menuOption(root, "agent-model-option", "mimo-7b")._fire("click", { stopPropagation() {} });
+  menuOption(root, "agent-model-option", "p-mimo/m-mimo")._fire("click", { stopPropagation() {} });
   await tick();
 
-  assert.deepEqual(switched, ["mimo-7b"], "应调用 switchModel(modelId)");
-  assert.equal(modelSel.dataset.value, "mimo-7b", "切换成功后菜单保持新模型");
+  assert.deepEqual(switched, ["p-mimo/m-mimo"], "应调用 switchModel(引用 value)");
+  assert.equal(modelSel.dataset.value, "p-mimo/m-mimo", "切换成功后菜单保持新模型");
   assert.equal(root.querySelectorAll('[data-testid="agent-effort-option"]').length, 1, "mimo 不支持思考强度，只剩「自动」");
   assert.equal(effortSel.disabled, true);
   assert.equal(effortSel.dataset.value, "auto");
@@ -2705,7 +2742,7 @@ test("composer 权限选择：所有档位直接落盘，YOLO 不弹确认", asy
   try {
     const { root, surface } = await makeSurface({
       apiOverrides: {
-        fetchComposerOptions: async () => deepseekOptions({ models: [] }),
+        fetchComposerOptions: async () => unconfiguredOptions(),
         updatePermissions: async (combo) => {
           updated.push(combo);
           return { ok: true };
@@ -2737,10 +2774,8 @@ test("composer 思考强度：不支持模型仅「自动」且禁用；选择�
   const efforts = [];
   const { root, surface } = await makeSurface({
     apiOverrides: {
-      fetchComposerOptions: async () => ({
-        models: [modelProfile("mimo-7b", "mimo-7b", { active: true })],
-        activeModel: { provider: "mimo", model_name: "mimo-7b", base_url: "https://x/v1" },
-        toolPermissions: {},
+      fetchComposerOptions: async () => composerOptionsData({
+        activeModelCapabilities: null,
         reasoningEffort: "medium"
       }),
       updateReasoningEffort: async (effort) => {
@@ -2758,7 +2793,7 @@ test("composer 思考强度：不支持模型仅「自动」且禁用；选择�
   // 换到支持的模型后恢复四档并落盘
   const { root: root2, surface: surface2 } = await makeSurface({
     apiOverrides: {
-      fetchComposerOptions: async () => deepseekOptions(),
+      fetchComposerOptions: async () => composerOptionsData(),
       updateReasoningEffort: async (effort) => {
         efforts.push(effort);
         return { ok: true };
@@ -2777,14 +2812,12 @@ test("composer 思考强度：不支持模型仅「自动」且禁用；选择�
 test("composer：Run 进行中切换模型/权限不报错、不改运行状态", async () => {
   const { root, surface } = await makeSurface({
     apiOverrides: {
-      fetchComposerOptions: async () => deepseekOptions(),
-      switchModel: async (modelId) => ({
+      fetchComposerOptions: async () => composerOptionsData(),
+      switchModel: async () => ({
+        ok: true,
+        active_model: { provider_id: "p-mimo", model_id: "m-mimo" },
         capabilities: { reasoningEffortLevels: ["low", "medium", "high"] },
-        project: { tool_permissions: { read_only: false, safe_edit: true, auto_edit: true, yolo: false } },
-        available_models: [
-          modelProfile("mimo-7b", "mimo-7b", { display: "MiMo 7B", active: true }),
-          modelProfile("ds-r", "deepseek-reasoner", { display: "DeepSeek Reasoner", baseUrl: "https://api.deepseek.com" })
-        ]
+        project: { tool_permissions: { read_only: false, safe_edit: true, auto_edit: true, yolo: false } }
       }),
       updatePermissions: async () => ({ ok: true })
     }
@@ -2794,7 +2827,7 @@ test("composer：Run 进行中切换模型/权限不报错、不改运行状态"
   assert.equal(root.querySelector('[data-testid="agent-stop"]') !== null, true, "Run 启动后停止按钮存在");
 
   const modelSel = root.querySelector('[data-testid="agent-model-select"]');
-  menuOption(root, "agent-model-option", "mimo-7b")._fire("click", { stopPropagation() {} });
+  menuOption(root, "agent-model-option", "p-mimo/m-mimo")._fire("click", { stopPropagation() {} });
   const permSel = root.querySelector('[data-testid="agent-permission-select"]');
   menuOption(root, "agent-permission-option", "read_only")._fire("click", { stopPropagation() {} });
   await tick();
@@ -2825,29 +2858,28 @@ test("composer 选项加载失败：控件保持禁用，不阻断对话", async
 test("transport: composer 选项读取与切换使用正确端点、作用域与 body", async () => {
     await withFetch((url, options) => {
       if (url.startsWith("/api/project/events")) return { ok: true, status: 200, body: neverStream() };
-      if (url === "/api/settings/models") {
-        return jsonResponse({ ok: true, default_model: null, models: [
-          modelProfile("mimo-7b", "mimo-7b", { display: "MiMo 7B" }),
-          modelProfile("ds-r", "deepseek-reasoner", {
-            display: "DeepSeek Reasoner",
-            baseUrl: "https://api.deepseek.com",
-            active: true,
-            capabilities: { reasoningEffortLevels: ["low", "medium", "high"] }
-          })
+      if (url === "/api/settings/providers") {
+        return jsonResponse({ ok: true, schema_version: 2, default_model: null, providers: [
+          { id: "p-mimo", name: "小米 MiMo 官方", status: "enabled", base_url: "https://api.xiaomimimo.com/v1", models: [{ id: "m-mimo", model_name: "mimo-7b", enabled: true }] },
+          { id: "p-ds", name: "DeepSeek 官方", status: "enabled", base_url: "https://api.deepseek.com", models: [{ id: "m-reasoner", model_name: "deepseek-reasoner", enabled: true }] }
         ] });
       }
       if (url.startsWith("/api/dashboard?")) {
         return jsonResponse({
-          ok: true, hasProject: true, project: {}, config: {
+          ok: true, hasProject: true, project: {}, model_profile: {
+            model_name: "deepseek-reasoner",
+            capabilities: { reasoningEffortLevels: ["low", "medium", "high"] }
+          },
+          config: {
             effective: {
-              active_model: { provider: "deepseek", model_name: "deepseek-reasoner", base_url: "https://api.deepseek.com" },
+              active_model: { provider: "openai-compatible", provider_id: "p-ds", model_id: "m-reasoner", model_name: "deepseek-reasoner", base_url: "https://api.deepseek.com" },
               tool_permissions: { read_only: false, safe_edit: true, auto_edit: false, yolo: false }
             }
           }
         });
       }
       if (url === "/api/settings/model-switch") {
-        return jsonResponse({ ok: true, capabilities: {}, project: { tool_permissions: {} }, available_models: [] });
+        return jsonResponse({ ok: true, active_model: { provider_id: "p-mimo", model_id: "m-mimo" }, capabilities: {}, project: { tool_permissions: {} } });
       }
       if (url === "/api/settings/update") return jsonResponse({ ok: true });
       return snapshotResponse(null);
@@ -2855,17 +2887,17 @@ test("transport: composer 选项读取与切换使用正确端点、作用域与
       const { root, surface } = await makeSurface({ useRealTransport: true });
       await surface.openProject("D:\\novel");
       const urls = calls.map((c) => String(c.url));
-      assert.ok(urls.includes("/api/settings/models"), "应读取全局模型清单");
+      assert.ok(urls.includes("/api/settings/providers"), "应读取全局供应商清单");
       assert.ok(urls.some((u) => u.startsWith("/api/dashboard?projectRoot=")), "应读取带项目作用域的 dashboard");
       const modelSel = root.querySelector('[data-testid="agent-model-select"]');
       const effortSel = root.querySelector('[data-testid="agent-effort-select"]');
       assert.equal(root.querySelectorAll('[data-testid="agent-effort-option"]').length, 4, "初始加载应读取服务端模型能力");
-      assert.equal(modelSel.dataset.value, "ds-r");
+      assert.equal(modelSel.dataset.value, "p-ds/m-reasoner");
 
-      menuOption(root, "agent-model-option", "mimo-7b")._fire("click", { stopPropagation() {} });
+      menuOption(root, "agent-model-option", "p-mimo/m-mimo")._fire("click", { stopPropagation() {} });
       await waitUntil(() => calls.some((c) => String(c.url) === "/api/settings/model-switch"));
       const sw = calls.find((c) => String(c.url) === "/api/settings/model-switch");
-      assert.deepEqual(JSON.parse(sw.options.body), { projectRoot: "D:\\novel", model_id: "mimo-7b" });
+      assert.deepEqual(JSON.parse(sw.options.body), { projectRoot: "D:\\novel", provider_id: "p-mimo", model_id: "m-mimo" });
       await waitUntil(() => root.querySelectorAll('[data-testid="agent-effort-option"]').length === 1, { timeoutMs: 2000 });
       assert.equal(effortSel.disabled, true, "切换后以服务端 capabilities 为准（无强度档）");
 
@@ -2879,6 +2911,43 @@ test("transport: composer 选项读取与切换使用正确端点、作用域与
       });
       surface.destroy();
     });
+});
+
+// ===========================================================================
+// Task 16：选择器选项派生与迁移提示（纯 helper）
+// ===========================================================================
+
+test("选择器过滤停用供应商与停用模型", () => {
+  const options = buildModelPickerOptions({
+    providers: [
+      { id: "a", name: "A", status: "enabled", models: [{ id: "m1", model_name: "a1", enabled: true }, { id: "m2", model_name: "a2", enabled: false }] },
+      { id: "b", name: "B", status: "disabled", models: [{ id: "m3", model_name: "b1", enabled: true }] }
+    ],
+    default_model: { provider_id: "a", model_id: "m1" }
+  });
+  assert.deepEqual(options.map((o) => o.value), ["a/m1"]);
+  assert.equal(options[0].isDefault, true);
+  assert.equal(options[0].label, "a1（A）");
+});
+
+test("无任何可用模型时首项为未配置占位", () => {
+  const options = buildModelPickerOptions({ providers: [], default_model: null });
+  assert.equal(options.length, 1);
+  assert.equal(options[0].value, "");
+  assert.equal(options[0].label, "未配置");
+});
+
+test("migration_notice 触发一次 toast", () => {
+  const toasts = [];
+  handleDashboardMigrationNotice({ migration_notice: true }, (m) => toasts.push(m));
+  handleDashboardMigrationNotice({ migration_notice: true }, (m) => toasts.push(m));
+  assert.deepEqual(toasts, ["旧配置已升级"]);
+});
+
+test("migration_notice 为 false / 无 toast 回调时不触发", () => {
+  const toasts = [];
+  handleDashboardMigrationNotice({ migration_notice: false }, (m) => toasts.push(m));
+  assert.deepEqual(toasts, []);
 });
 
 // ===========================================================================
@@ -3255,7 +3324,7 @@ test("Task 10 SSE 游标：tail 快照推进 lastSeq，connectEvents 从已加�
         has_more: true
       });
     }
-    if (url.startsWith("/api/settings/models")) return jsonResponse({ ok: true, models: [] });
+    if (url.startsWith("/api/settings/providers")) return jsonResponse({ ok: true, providers: [], default_model: null });
     if (url.startsWith("/api/dashboard")) {
       return jsonResponse({ ok: true, hasProject: true, project: {}, config: { effective: {} } });
     }
@@ -3611,14 +3680,17 @@ test("ESC：slash menu 打开 + Run running → textarea 只关闭菜单，全�
 test("ESC：composer 菜单打开 + Run running → 只关闭菜单，不调用 stop", async () => {
   await withFetch((url) => {
     if (url.startsWith("/api/project/events")) return { ok: true, status: 200, body: neverStream() };
-    if (url === "/api/settings/models") {
-      return jsonResponse({ ok: true, models: [modelProfile("m-1", "m-1", { display: "M1", active: true })] });
+    if (url === "/api/settings/providers") {
+      return jsonResponse({ ok: true, providers: [
+        { id: "p-1", name: "P1", status: "enabled", base_url: "https://x/v1", models: [{ id: "m-1", model_name: "m-1", enabled: true }] }
+      ], default_model: null });
     }
     if (url.startsWith("/api/dashboard?")) {
       return jsonResponse({
-        ok: true, hasProject: true, project: {}, config: {
+        ok: true, hasProject: true, project: {}, model_profile: { model_name: "m-1", capabilities: null },
+        config: {
           effective: {
-            active_model: { provider: "x", model_name: "m-1", base_url: "https://x/v1" },
+            active_model: { provider: "openai-compatible", provider_id: "p-1", model_id: "m-1", model_name: "m-1", base_url: "https://x/v1" },
             tool_permissions: {}, reasoning_effort: "auto"
           }
         }
