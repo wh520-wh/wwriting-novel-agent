@@ -58,7 +58,7 @@ export async function loadEffectiveWorkspaceConfig(projectRoot, { workspaceStore
   const privateSettings = await workspaceStore.loadSettings(projectRoot);
   let resolutionNote = null;
   let activeModel = privateSettings.active_model ?? legacyProject.active_model ?? null;
-  if (modelStoreLoader && activeModel) {
+  if (modelStoreLoader) {
     const store = await modelStoreLoader();
     const resolved = resolveActiveModel(activeModel, store);
     activeModel = resolved.model;

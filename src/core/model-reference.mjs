@@ -7,7 +7,9 @@ export function toRequestConfig(provider, model) {
     provider: "openai-compatible",
     provider_id: provider.id,
     model_id: model.id,
-    model_name: stripWindowMarkers(model.model_name),
+    // 保留原始尾标：窗口推导与发送剥离由 runtime 的 parseModelIdentity 统一处理
+    //（model-identity.mjs 是唯一权威），此处重复剥离会丢失 [1m] 窗口信号。
+    model_name: model.model_name,
     base_url: provider.base_url,
     api_format: provider.api_format,
     api_key_env: provider.api_key_env,
@@ -22,9 +24,10 @@ export function toRequestConfig(provider, model) {
   };
 }
 
-// 发送剥离 [1m] 等尾部中括号标记（沿用「统一 Journal 规格」§3.1）。
+// 显示用剥离：剥掉全部连续尾部中括号标记（与 model-identity.mjs 的
+// parseModelIdentity 语义一致——只剥尾部连续 [..]，中间的中括号保留）。
 export function stripWindowMarkers(modelName) {
-  return String(modelName ?? "").replace(/\[[^\]]*\]$/gu, "").trim();
+  return String(modelName ?? "").replace(/(?:\[[^\[\]]*\])+$/u, "").trim();
 }
 
 function usable(provider, model) {
@@ -41,7 +44,13 @@ export function resolveDefaultModel(store) {
 
 // activeModel 可为引用 {provider_id, model_id} 或字面配置。
 export function resolveActiveModel(activeModel, store) {
-  if (!activeModel || typeof activeModel !== "object") return { model: null, note: "未配置模型" };
+  if (activeModel === null || activeModel === undefined) {
+    // 项目未配置模型 → 落到全局默认（新建项目/未选择场景）；无默认才是未配置。
+    const fallback = resolveDefaultModel(store);
+    if (fallback) return { model: toRequestConfig(fallback.provider, fallback.model), note: null };
+    return { model: null, note: "未配置模型" };
+  }
+  if (typeof activeModel !== "object") return { model: null, note: "未配置模型" };
   if (activeModel.provider === "mock") return { model: null, note: "未配置模型" };
   if (typeof activeModel.provider_id === "string" && typeof activeModel.model_id === "string") {
     const provider = store?.providers?.find((p) => p.id === activeModel.provider_id);
@@ -57,6 +66,10 @@ export function resolveActiveModel(activeModel, store) {
         note: `原模型已不存在，已换成默认模型 ${stripWindowMarkers(fallback.model.model_name)}`
       };
     }
+    return { model: null, note: "未配置模型" };
+  }
+  // 半成形引用（只有一半指针字段）按未配置处理，不落入字面透传。
+  if ((activeModel.provider_id === undefined) !== (activeModel.model_id === undefined)) {
     return { model: null, note: "未配置模型" };
   }
   // 字面配置：非 mock 原样通过（未迁移的旧配置兼容）
