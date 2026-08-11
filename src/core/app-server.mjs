@@ -34,7 +34,7 @@ import { CostTracker } from "./cost-tracker.mjs";
 import { isPathInside, safeJoin } from "./fs-utils.mjs";
 import { applyLocalSecretsToEnv, defaultSecretsRoot, loadLocalSecretsSync } from "./local-secrets.mjs";
 import { loadEffectiveWorkspaceConfig } from "./config-runtime.mjs";
-import { getDefaultLocalModelProfile } from "./local-model-profiles.mjs";
+import { loadProviderStore } from "./model-provider-store.mjs";
 import { testModelConnection as runModelConnectionTest } from "./model-connection-test.mjs";
 import { loadDashboardData } from "./app-dashboard.mjs";
 
@@ -207,24 +207,17 @@ export function createAppShellServer({
 // ModelGateway 组装：provider 分发 adapter + per-project gateway/cost tracker
 // ---------------------------------------------------------------------------
 
-// 任务 5 Step 4：有效工作区配置 + 全局默认模型兜底。
-//
-// 普通目录没有 project.yaml 时，不能因为缺旧文件就回落 mock——只要用户确实配置了
-// 全局默认模型（model-profiles.json 的 default_model_id），就走全局默认模型；只有
-// 用户完全没有配置任何模型时才走 mock。全局默认模型的兜底同时注入 Runtime 的
-// workspaceConfigLoader 与 gateway adapter，保证 request.modelConfig 与 adapter 的
-// provider 分发一致（openai-compatible adapter 从 request.modelConfig 取
-// base_url/model_name，二者不一致会导致配置错误）。
+// 任务 5 Step 4：有效工作区配置 + 引用解析。解析收进最底层 loadEffectiveWorkspaceConfig：
+// 引用→完整配置（provider 恒 openai-compatible，与 gateway adapter 分发一致），失败
+// 降级全局默认模型+note（resolution_note 字段供界面提示）；不再在此做
+// getDefaultLocalModelProfile 兜底（旧 model-profiles v1 读路径已由 modelStoreLoader
+// 的 v2 清单取代）。全局默认模型兜底同时注入 Runtime 的 workspaceConfigLoader 与
+// gateway adapter，保证 request.modelConfig 与 adapter 的 provider 分发一致。
 async function effectiveWorkspaceConfigFor(projectRoot, { workspaceStore, secretsRoot }) {
-  const effective = await loadEffectiveWorkspaceConfig(projectRoot, { workspaceStore });
-  if (!effective.active_model || typeof effective.active_model.provider !== "string") {
-    const profile = await getDefaultLocalModelProfile(secretsRoot);
-    if (profile) {
-      const { id: _id, saved_at: _saved, ...fields } = profile;
-      effective.active_model = fields;
-    }
-  }
-  return effective;
+  return loadEffectiveWorkspaceConfig(projectRoot, {
+    workspaceStore,
+    modelStoreLoader: () => loadProviderStore(secretsRoot)
+  });
 }
 
 function createAppModelGateway({ resolveEffectiveConfig }) {
