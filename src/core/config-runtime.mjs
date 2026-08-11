@@ -1,6 +1,7 @@
 import { readJson, safeJoin } from "./fs-utils.mjs";
 import { loadProject } from "./project-store.mjs";
 import { workspaceIdForPath } from "./workspaces/store.mjs";
+import { resolveActiveModel } from "./model-reference.mjs";
 
 export const DEFAULT_CONFIG = {
   active_model: {
@@ -48,14 +49,27 @@ export const FALLBACK_WORKSPACE_CONFIG = Object.freeze({
 // 合并顺序：FALLBACK → 旧 project.yaml（只读兼容输入）→ 应用私有 workspace settings
 // （优先）。active_model 与 tool_permissions 按字段优先；projectRoot/workspace_id
 // 由调用方路径稳定派生。旧 project.yaml 只作兼容输入，绝不在此写入。
-export async function loadEffectiveWorkspaceConfig(projectRoot, { workspaceStore }) {
+//
+// 任务 5 接入引用解析：modelStoreLoader 提供全局供应商→模型两级清单（缺省 null 时
+// 保持旧行为——active_model 原样透传）；提供时 active_model 若为引用则实时解析为
+// 完整配置，悬空/停用降级全局默认模型并附 resolution_note（未解析时为 null）。
+export async function loadEffectiveWorkspaceConfig(projectRoot, { workspaceStore, modelStoreLoader = null } = {}) {
   const legacyProject = await loadProject(projectRoot).catch(() => ({}));
   const privateSettings = await workspaceStore.loadSettings(projectRoot);
+  let resolutionNote = null;
+  let activeModel = privateSettings.active_model ?? legacyProject.active_model ?? null;
+  if (modelStoreLoader && activeModel) {
+    const store = await modelStoreLoader();
+    const resolved = resolveActiveModel(activeModel, store);
+    activeModel = resolved.model;
+    resolutionNote = resolved.note;
+  }
   return {
     ...FALLBACK_WORKSPACE_CONFIG,
     ...legacyProject,
     ...privateSettings,
-    active_model: privateSettings.active_model ?? legacyProject.active_model ?? null,
+    active_model: activeModel,
+    resolution_note: resolutionNote,
     tool_permissions: {
       ...FALLBACK_WORKSPACE_CONFIG.tool_permissions,
       ...(legacyProject.tool_permissions ?? {}),
