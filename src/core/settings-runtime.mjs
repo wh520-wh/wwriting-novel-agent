@@ -14,7 +14,6 @@ import { fillOfficialPricing, normalizePricing } from "./model-pricing.mjs";
 
 const SAFE_NAME = /^[A-Za-z0-9_.-]+$/u;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
-const STAGES = new Set(["planning", "drafting", "reviewing", "revising", "outline"]);
 
 export class SettingsValidationError extends Error {
   constructor(code, message) {
@@ -203,9 +202,6 @@ export function normalizeSettingsPatch(patch = {}) {
       normalized.active_model = { ...activeModel, pricing };
     }
   }
-  if (patch.stage_overrides !== undefined) {
-    normalized.stage_overrides = normalizeStageOverrides(patch.stage_overrides);
-  }
   if (patch.tool_permissions !== undefined) {
     normalized.tool_permissions = normalizeToolPermissions(patch.tool_permissions);
   }
@@ -247,7 +243,6 @@ export function normalizeSettingsPatch(patch = {}) {
 function mergeProjectSettings(project, patch) {
   const next = {
     ...project,
-    ...copyObjectKey(patch, "stage_overrides"),
     tool_permissions: {
       ...(project.tool_permissions ?? {}),
       ...(patch.tool_permissions ?? {})
@@ -367,37 +362,6 @@ function normalizeActiveModel(activeModel) {
   copyOptionalTemperature(normalized, activeModel, "temperature");
   if (activeModel.stream !== undefined) {
     normalized.stream = activeModel.stream === true;
-  }
-  return normalized;
-}
-
-function normalizeStageOverrides(stageOverrides) {
-  if (!stageOverrides || typeof stageOverrides !== "object" || Array.isArray(stageOverrides)) {
-    throw new SettingsValidationError("invalid_stage_overrides", "stage_overrides must be an object.");
-  }
-  const normalized = {
-    enabled: stageOverrides.enabled === true
-  };
-  for (const [stage, config] of Object.entries(stageOverrides)) {
-    if (stage === "enabled") {
-      continue;
-    }
-    if (!STAGES.has(stage)) {
-      throw new SettingsValidationError("invalid_stage_override", `Unsupported stage override: ${stage}`);
-    }
-    normalized[stage] = {
-      ...normalizeActiveModel(config),
-      enabled: config.enabled === true
-    };
-    // normalizeActiveModel does not copy pricing — preserve it explicitly
-    if (config.pricing !== undefined) {
-      if (config.pricing === null) {
-        delete normalized[stage].pricing;
-      } else {
-        const pricing = normalizePricing(config.pricing);
-        if (pricing) normalized[stage].pricing = pricing;
-      }
-    }
   }
   return normalized;
 }
@@ -596,10 +560,6 @@ function copyOptionalTemperature(target, source, key) {
     throw new SettingsValidationError(`invalid_${key}`, `${key} must be a number between 0 and 2.`);
   }
   target[key] = value;
-}
-
-function copyObjectKey(source, key) {
-  return source[key] === undefined ? {} : { [key]: source[key] };
 }
 
 function mergeNullableSection(base = {}, patch = {}) {

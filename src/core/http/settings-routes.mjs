@@ -334,7 +334,6 @@ export function createSettingsRoutes({
           finalProject = {
             project_id: finalEffective.project_id ?? null,
             active_model: finalEffective.active_model,
-            stage_overrides: finalEffective.stage_overrides ?? { enabled: false },
             tool_permissions: finalEffective.tool_permissions ?? {},
             budget_config: finalEffective.budget_config ?? {},
             research_config: finalEffective.research_config ?? {}
@@ -346,7 +345,6 @@ export function createSettingsRoutes({
           finalProject = {
             project_id: mergedProject.project_id,
             active_model: mergedProject.active_model,
-            stage_overrides: mergedProject.stage_overrides,
             tool_permissions: mergedProject.tool_permissions ?? {},
             budget_config: mergedProject.budget_config ?? {},
             research_config: mergedProject.research_config ?? {}

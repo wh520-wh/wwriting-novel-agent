@@ -85,8 +85,8 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
   // 私有 workspace settings，agent runtime 以 loadEffectiveWorkspaceConfig 为权威；
   // dashboard 若只读 config 层（project.yaml + config/*.json），YOLO 等档位重开后
   // 会回落到默认 confirm。注入 workspaceStore 时用同一权威覆盖 effective 字段；
-  // 该权威同样覆盖 project.yaml 里可能领先于 local/policy 层的 stage_overrides /
-  // budget_config / research_config——agent runtime 也不读 config/*.json 层。
+  // 该权威同样覆盖 project.yaml 里可能领先于 local/policy 层的 budget_config /
+  // research_config——agent runtime 也不读 config/*.json 层。
   let effectiveWs = null;
   if (typeof options.workspaceStore?.loadSettings === "function") {
     effectiveWs = await loadEffectiveWorkspaceConfig(projectRoot, {
@@ -143,7 +143,6 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
       target_words_per_chapter: project.target_words_per_chapter,
       run_mode: project.run_mode,
       active_model: config.effective.active_model,
-      stage_overrides: config.effective.stage_overrides,
       // 与 config.effective 同源（drawer-panels 消费 effective.tool_permissions 优先，
       // 再回退 project.tool_permissions）：注入 workspaceStore 时用 workspace 真相源，
       // 保证 DTO 内部一致。

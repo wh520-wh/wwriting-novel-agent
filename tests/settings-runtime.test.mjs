@@ -222,42 +222,7 @@ test("createProject 默认 auto_edit=false yolo=false archived_at=null", async (
   assert.equal(project.archived_at, null);
 });
 
-test("normalizeStageOverrides preserves pricing field", async () => {
-  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-override-pricing-"));
-  try {
-    const { projectRoot } = await createProject(workspace, {
-      title: "override pricing", story_seed: "t", target_chapters: 1, min_words_per_chapter: 300
-    });
-    await updateProjectSettings(projectRoot, {
-      active_model: {
-        provider: "openai-compatible",
-        model_name: "mimo-v2.5-pro",
-        base_url: "https://api.xiaomimimo.com/v1",
-        api_key_env: "XIAOMI_MIMO_API_KEY",
-        pricing: { input_per_million: 1, output_per_million: 4 }
-      },
-      stage_overrides: {
-        enabled: true,
-        outline: {
-          enabled: true,
-          provider: "openai-compatible",
-          model_name: "deepseek-chat",
-          base_url: "https://api.deepseek.com",
-          api_key_env: "DEEPSEEK_API_KEY",
-          pricing: { input_per_million: 2, output_per_million: 8 }
-        }
-      }
-    });
-    const project = await loadProject(projectRoot);
-    assert.deepEqual(project.stage_overrides.outline.pricing, {
-      input_per_million: 2, output_per_million: 8, currency: "CNY"
-    });
-  } finally {
-    await fs.rm(workspace, { recursive: true, force: true });
-  }
-});
-
-test("normalizeSettingsPatch 透传 timeout_ms/total_deadline_ms（active_model 与 stage 覆盖）", () => {
+test("normalizeSettingsPatch 透传 timeout_ms/total_deadline_ms", () => {
   const normalized = normalizeSettingsPatch({
     active_model: {
       provider: "openai-compatible",
@@ -270,30 +235,6 @@ test("normalizeSettingsPatch 透传 timeout_ms/total_deadline_ms（active_model 
   });
   assert.equal(normalized.active_model.timeout_ms, 300000);
   assert.equal(normalized.active_model.total_deadline_ms, 900000);
-
-  // stage_overrides 复用 normalizeActiveModel：drafting 覆盖同样透传
-  const withStage = normalizeSettingsPatch({
-    active_model: {
-      provider: "openai-compatible",
-      model_name: "x",
-      base_url: "https://api.example.com",
-      api_key_env: "K"
-    },
-    stage_overrides: {
-      enabled: true,
-      drafting: {
-        enabled: true,
-        provider: "openai-compatible",
-        model_name: "x",
-        base_url: "https://api.example.com",
-        api_key_env: "K",
-        timeout_ms: 300000,
-        total_deadline_ms: 1800000
-      }
-    }
-  });
-  assert.equal(withStage.stage_overrides.drafting.timeout_ms, 300000);
-  assert.equal(withStage.stage_overrides.drafting.total_deadline_ms, 1800000);
 });
 
 test("normalizeSettingsPatch 拒绝非法 timeout_ms/total_deadline_ms（负数/非整数）", () => {
@@ -305,13 +246,6 @@ test("normalizeSettingsPatch 拒绝非法 timeout_ms/total_deadline_ms（负数/
   assert.throws(
     () => normalizeSettingsPatch({ active_model: { ...base, total_deadline_ms: 1.5 } }),
     (error) => error instanceof SettingsValidationError && error.code === "invalid_total_deadline_ms"
-  );
-  // stage 覆盖路径同样拒绝非法值
-  assert.throws(
-    () => normalizeSettingsPatch({
-      stage_overrides: { enabled: true, drafting: { enabled: true, ...base, timeout_ms: "abc" } }
-    }),
-    (error) => error instanceof SettingsValidationError && error.code === "invalid_timeout_ms"
   );
 });
 

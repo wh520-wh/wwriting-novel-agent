@@ -557,7 +557,6 @@ function buildCheckpoint({ project, chapterNo, checkpointId, artifact }) {
     model_config: {
       // Task 8：未配置模型 = null，不再构造 mock 兜底（调用方按未配置处理）。
       active_model: project.active_model ?? null,
-      stage_overrides_enabled: false,
       writer: project.default_writer_model ?? null,
       reviewer: project.default_reviewer_model ?? null
     },

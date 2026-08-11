@@ -44,7 +44,6 @@ export async function createProjectAt(projectRoot, options = {}) {
     // .wwriting/agent/ 由 ProjectAgent 惰性创建，旧运行态文件不再创建。
     // Task 12：不再默认填充 enabled_skills（技能改为发现即生效，无启停集合）。
     blueprint_status: options.blueprint_status ?? "none",
-    stage_overrides: options.stage_overrides ?? null,
     output_style: options.output_style ?? "creative",
     archived_at: options.archived_at ?? null,
     tool_permissions: {
