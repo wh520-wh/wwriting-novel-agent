@@ -292,3 +292,60 @@ test("模型删除需要二次确认", async () => {
   await page.removeModelWithConfirm("deepseek", "m1");
   assert.deepEqual(calls, []);
 });
+
+test("列表点击切换供应商不丢失 default_model（「默认」角标回归）", async () => {
+  const page = createModelSettingsPage({
+    fetchImpl: async () => ({ ok: true, json: async () => ({ providers, default_model: { provider_id: "deepseek", model_id: "m1" } }) }),
+    documentRef: mockDocument
+  });
+  await page.open();
+  assert.deepEqual(page.getState().default_model, { provider_id: "deepseek", model_id: "m1" });
+
+  const list = new MockElement("div");
+  page.renderList(list);
+  // 点击 deepseek 项（本就选中）：旧实现会用 buildPageState 重建 state 丢掉 default_model
+  const deepseekItem = descendants(list).find((el) => el.getAttribute?.("data-provider-id") === "deepseek");
+  assert.ok(deepseekItem, "列表应渲染 deepseek 项");
+  deepseekItem.click();
+  assert.deepEqual(page.getState().default_model, { provider_id: "deepseek", model_id: "m1" }, "列表点击后 default_model 应保留");
+
+  // 切到 mimo 再切回：default_model 全程保留
+  const mimoItem = descendants(list).find((el) => el.getAttribute?.("data-provider-id") === "mimo");
+  mimoItem.click();
+  assert.equal(page.getState().selected?.id, "mimo");
+  assert.deepEqual(page.getState().default_model, { provider_id: "deepseek", model_id: "m1" });
+
+  // 渲染详情：默认模型行仍带「默认」角标
+  deepseekItem.click();
+  const detail = new MockElement("div");
+  page.renderDetail(detail);
+  const m1Row = descendants(detail).find((el) => el.className === "model-row" && el.getAttribute?.("data-model-id") === "m1");
+  assert.ok(m1Row, "详情应渲染默认模型行");
+  assert.ok(
+    descendants(m1Row).some((el) => el.className === "default-badge"),
+    "默认模型行应渲染「默认」角标"
+  );
+});
+
+test("停用模型的「设为默认」按钮置灰并提示", async () => {
+  const page = createModelSettingsPage({
+    fetchImpl: async () => ({ ok: true, json: async () => ({ providers, default_model: null }) }),
+    documentRef: mockDocument
+  });
+  await page.open();
+  const container = new MockElement("div");
+  page.renderDetail(container);
+
+  // m2 为停用模型：按钮 disabled + title 提示
+  const m2Row = descendants(container).find((el) => el.className === "model-row" && el.getAttribute?.("data-model-id") === "m2");
+  assert.ok(m2Row, "详情应渲染停用模型行");
+  const disabledButton = descendants(m2Row).find((el) => el.className === "model-set-default");
+  assert.ok(disabledButton, "停用模型行应渲染「设为默认」按钮");
+  assert.equal(disabledButton.disabled, true, "停用模型的设为默认按钮应置灰");
+  assert.ok(/已停用/u.test(disabledButton.getAttribute("title") ?? ""), "按钮应有停用提示");
+
+  // m1 为启用模型：按钮保持可点
+  const m1Row = descendants(container).find((el) => el.className === "model-row" && el.getAttribute?.("data-model-id") === "m1");
+  const enabledButton = descendants(m1Row).find((el) => el.className === "model-set-default");
+  assert.equal(enabledButton.disabled, false, "启用模型的设为默认按钮不应置灰");
+});

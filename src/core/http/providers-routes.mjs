@@ -122,6 +122,8 @@ export function createProvidersRoutes({ secretsRoot }) {
       const provider = await providerOf(params.id);
       const model = provider.models.find((m) => m.id === params.modelId);
       if (!model) throw new HttpError(404, "model_not_found", "模型不存在");
+      // 停用即不能用：停用模型不可设为默认（store 层同款拒绝，双端一致）
+      if (model.enabled === false) throw new HttpError(400, "model_disabled", "已停用的模型不能设为默认。");
       assertWritingCapable(provider, model.model_name);
       const { store } = await setDefaultModel(secretsRoot, params.id, params.modelId);
       return { ok: true, store };

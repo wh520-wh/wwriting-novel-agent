@@ -172,6 +172,14 @@ test("setDefaultModel 未知模型被拒绝", async (t) => {
   await assert.rejects(() => setDefaultModel(root, provider.id, "m_0000000000000000"), /model_not_found/u);
 });
 
+test("setDefaultModel 拒绝停用模型", async (t) => {
+  const root = await tempRoot(t);
+  const { provider } = await upsertProvider(root, { name: "S2", base_url: "https://s2.example.com", api_format: "openai-chat-completions", api_key_env: "S2_KEY" });
+  const { model } = await upsertModel(root, provider.id, { model_name: "off-model", enabled: false });
+  await assert.rejects(() => setDefaultModel(root, provider.id, model.id), /model_disabled/u);
+  assert.equal((await getDefaultModel(root)), null, "被拒后默认指针应保持空");
+});
+
 test("落盘文件不包含 api_key 字段", async (t) => {
   const root = await tempRoot(t);
   await upsertProvider(root, { name: "K1", base_url: "https://k1.example.com", api_format: "openai-chat-completions", api_key_env: "K1_SECRET" });

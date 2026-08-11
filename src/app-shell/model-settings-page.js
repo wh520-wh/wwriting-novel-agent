@@ -199,6 +199,7 @@ export function createModelSettingsPage(ctx = {}) {
       if (key === "text") node.textContent = value;
       else if (key === "class") node.className = value;
       else if (key === "value") node.value = value; // value 走 property 而非 setAttribute：保住用户已键入的值
+      else if (key === "disabled") node.disabled = Boolean(value); // 同 value 走 property：真 DOM 与测试 mock 均正确反映禁用态
       else node.setAttribute(key, value);
     }
     for (const child of children) {
@@ -217,7 +218,9 @@ export function createModelSettingsPage(ctx = {}) {
         el("span", { class: `status-dot ${provider.status === "enabled" ? "on" : "off"}` })
       ]);
       item.addEventListener("click", () => {
-        state = buildPageState(state.providers, provider.id);
+        // buildPageState 只返回 { providers, selected }，须显式保留 default_model，
+        // 否则列表点击后「默认」角标即消失（Task 14 回归点）。
+        state = { ...buildPageState(state.providers, provider.id), default_model: state.default_model };
         render();
       });
       container.append(item);
@@ -322,7 +325,13 @@ export function createModelSettingsPage(ctx = {}) {
         saveModelPatch(provider.id, model.id, { enabled: !model.enabled });
       });
       // 设为默认：POST .../default；默认模型行显示「默认」角标。
-      const setDefaultButton = el("button", { type: "button", class: "model-set-default", text: "设为默认" });
+      // 停用即不能用：停用模型按钮置灰并提示（后端同款拒绝，前后端一致）。
+      const setDefaultButton = el("button", {
+        type: "button",
+        class: "model-set-default",
+        text: "设为默认",
+        ...(model.enabled === false ? { disabled: true, title: "已停用的模型不能设为默认" } : {})
+      });
       setDefaultButton.addEventListener("click", () => {
         setDefaultModel(provider.id, model.id);
       });

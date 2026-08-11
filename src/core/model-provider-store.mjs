@@ -213,7 +213,10 @@ export async function removeModel(root, providerId, modelId) {
 export async function setDefaultModel(root, providerId, modelId) {
   return withStoreLock(root, (store) => {
     const provider = store.providers.find((p) => p.id === providerId);
-    if (!provider?.models.some((m) => m.id === modelId)) throw new Error("model_not_found");
+    const model = provider?.models.find((m) => m.id === modelId);
+    if (!model) throw new Error("model_not_found");
+    // 停用即不能用：停用模型不得设为默认（前端「设为默认」按钮同步置灰，双端一致）
+    if (model.enabled === false) throw new Error("model_disabled: 已停用的模型不能设为默认");
     return { store: { ...store, default_model: { provider_id: providerId, model_id: modelId } } };
   });
 }
