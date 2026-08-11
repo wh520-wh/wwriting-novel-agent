@@ -12,7 +12,6 @@ import {
 import { loadLocalSecrets } from "../src/core/local-secrets.mjs";
 import {
   GlobalModelSettingsError,
-  refreshProjectModelFromGlobal,
   removeGlobalModelProfile,
   saveGlobalModelProfile,
   selectGlobalModelProfile
@@ -305,85 +304,6 @@ test("全局删除/选用：找不到模型时抛 model_profile_not_found", asyn
     (e) => e instanceof GlobalModelSettingsError && e.code === "model_profile_not_found");
   await assert.rejects(() => selectGlobalModelProfile(secretsRoot, "nope"),
     (e) => e instanceof GlobalModelSettingsError && e.code === "model_profile_not_found");
-});
-
-function fakeProjectStore(project) {
-  const state = { project, writes: 0 };
-  return {
-    state,
-    readProject: async () => state.project,
-    writeProject: async (_root, next) => { state.project = next; state.writes += 1; }
-  };
-}
-
-test("写回同步：全局换了地址，项目的模型配置跟着变", async () => {
-  const secretsRoot = await tempRoot();
-  await saveGlobalModelProfile({
-    secretsRoot,
-    activeModel: {
-      provider: "openai-compatible",
-      model_name: "deepseek-chat",
-      base_url: "https://api.deepseek.com/v2",
-      api_key_env: "DEEPSEEK_NEW_KEY",
-      api_key: "sk-x"
-    }
-  });
-  const store = fakeProjectStore({
-    project_id: "p1",
-    active_model: {
-      provider: "openai-compatible",
-      model_name: "deepseek-chat",
-      base_url: "https://api.deepseek.com",
-      api_key_env: "DEEPSEEK_API_KEY"
-    }
-  });
-  const result = await refreshProjectModelFromGlobal("D:/fake/project", secretsRoot, store);
-  assert.equal(result.changed, true);
-  assert.equal(result.project.active_model.base_url, "https://api.deepseek.com/v2");
-  assert.equal(result.project.active_model.api_key_env, "DEEPSEEK_NEW_KEY");
-  assert.equal(store.state.writes, 1);
-});
-
-test("写回同步：没有差异时不写盘", async () => {
-  const secretsRoot = await tempRoot();
-  const model = {
-    provider: "openai-compatible",
-    model_name: "deepseek-chat",
-    base_url: "https://api.deepseek.com",
-    api_key_env: "DEEPSEEK_API_KEY"
-  };
-  await saveGlobalModelProfile({ secretsRoot, activeModel: { ...model, api_key: "sk-x" } });
-  const store = fakeProjectStore({ project_id: "p1", active_model: { ...model } });
-  const result = await refreshProjectModelFromGlobal("D:/fake/project", secretsRoot, store);
-  assert.equal(result.changed, false);
-  assert.equal(store.state.writes, 0);
-});
-
-test("写回同步：演示模型不在全局清单里，保持原样不被换掉", async () => {
-  const secretsRoot = await tempRoot();
-  await saveGlobalModelProfile({
-    secretsRoot,
-    activeModel: {
-      provider: "openai-compatible",
-      model_name: "deepseek-chat",
-      base_url: "https://api.deepseek.com",
-      api_key_env: "DEEPSEEK_API_KEY",
-      api_key: "sk-x"
-    }
-  });
-  const store = fakeProjectStore({
-    project_id: "p1",
-    active_model: { provider: "mock", model_name: "mock-writer" }
-  });
-  const result = await refreshProjectModelFromGlobal("D:/fake/project", secretsRoot, store);
-  assert.equal(result.changed, false);
-  assert.equal(store.state.project.active_model.provider, "mock");
-});
-
-test("写回同步：缺参数时安全返回，不抛错", async () => {
-  const secretsRoot = await tempRoot();
-  const result = await refreshProjectModelFromGlobal("", secretsRoot, {});
-  assert.deepEqual(result, { changed: false, project: null });
 });
 
 test("C 档：不支持工具调用的模型保存被阻止", async () => {

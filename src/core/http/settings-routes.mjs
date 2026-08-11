@@ -10,11 +10,11 @@
 // root 注入。能力判定使用 Task 3 新建的 model/capabilities.mjs（Task 9 将删除旧的
 // provider-adapters.mjs，本模块不依赖旧文件）。
 //
-// 导出共享 helper 给 project-routes.mjs（模型档案展示与全局模型同步）。
+// 导出共享 helper 给 project-routes.mjs（模型档案展示）。
 import os from "node:os";
 import path from "node:path";
 import { HttpError } from "../http-error.mjs";
-import { loadProject, saveProject } from "../project-store.mjs";
+import { loadProject } from "../project-store.mjs";
 import { loadConfigLayers, loadEffectiveWorkspaceConfig } from "../config-runtime.mjs";
 import { appendEvent } from "../event-log.mjs";
 import { loadOutputStyles } from "../output-style-loader.mjs";
@@ -27,7 +27,6 @@ import {
 import { loadLocalSecrets, loadLocalSecretsSync } from "../local-secrets.mjs";
 import {
   GlobalModelSettingsError,
-  refreshProjectModelFromGlobal,
   removeGlobalModelProfile,
   saveGlobalModelProfile,
   selectGlobalModelProfile
@@ -180,19 +179,6 @@ function sendGlobalModelError(error) {
     return new HttpError(400, error.code, error.message);
   }
   return new HttpError(500, "global_model_save_failed", error?.message ?? "模型设置保存失败。");
-}
-
-// 读项目前先把全局模型的最新字段刷回 project.yaml。同步失败绝不能挡住界面。
-export async function syncProjectModelFromGlobal(projectRoot, secretsRoot) {
-  if (!projectRoot || !secretsRoot) return;
-  try {
-    await refreshProjectModelFromGlobal(projectRoot, secretsRoot, {
-      readProject: loadProject,
-      writeProject: saveProject
-    });
-  } catch (error) {
-    console.warn("[settings-routes] 同步全局模型配置失败:", error?.message ?? error);
-  }
 }
 
 // 技能目录名（HTTP 层兜底校验：与 seam 的 assertSafeSkillDirName 语义一致，

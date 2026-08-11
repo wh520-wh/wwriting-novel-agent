@@ -9,13 +9,12 @@
 //
 // 本模块不创建 ModelClient、锁或 store；projectLocks 由 composition root 注入。
 //
-// 模块间职责（Task 7 评审记录）：模型档案展示 helper（buildModelProfile 等）与
-// 全局模型同步（syncProjectModelFromGlobal）归属 settings-routes（设置/模型职责），
-// project-routes 跨模块 import 它们——这是有意的单向依赖（settings-routes 不回
-// 引 project-routes，无环）。selectedRef/ctx/assertNotArchived 在 project-routes
-// 与 settings-routes 各自持有同一注入的 selection 引用、重复少量样板：抽公共
-// helper 需要同时改两个模块的工厂签名，收益有限，Task 9 组合根落定时若出现
-// 第三处重复再统一抽取。
+// 模块间职责（Task 7 评审记录）：模型档案展示 helper（buildModelProfile 等）归属
+// settings-routes（设置/模型职责），project-routes 跨模块 import 它们——这是有意的
+// 单向依赖（settings-routes 不回引 project-routes，无环）。selectedRef/ctx/
+// assertNotArchived 在 project-routes 与 settings-routes 各自持有同一注入的
+// selection 引用、重复少量样板：抽公共 helper 需要同时改两个模块的工厂签名，
+// 收益有限，Task 9 组合根落定时若出现第三处重复再统一抽取。
 //
 // Task 9 衔接点：
 //   - diagnostics handler 已按计划形状把 agent.snapshot() 结果传给稳定 diagnostics
@@ -55,8 +54,7 @@ import {
   buildAvailableModelProfiles,
   buildModelProfile,
   modelConfigFromLocalProfile,
-  modelDisplayName,
-  syncProjectModelFromGlobal
+  modelDisplayName
 } from "./settings-routes.mjs";
 
 function normalizePositiveInteger(value, fallback) {
@@ -263,7 +261,6 @@ export function createProjectRoutes({
       const scopedRoot = (requestedRoot || selected())
         ? await resolveReadProjectRoot({ requestedRoot, selected: selected(), workspace, stateRoot })
         : null;
-      await syncProjectModelFromGlobal(scopedRoot, secretsRoot);
       const data = await dashboardLoader(workspace, {
         projectRoot: scopedRoot,
         allowExternalProjectRoot: Boolean(scopedRoot),
