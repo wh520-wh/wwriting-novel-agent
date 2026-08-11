@@ -286,6 +286,13 @@ export function createModelSettingsPage(ctx = {}) {
       showToast("Base URL 需以 http:// 或 https:// 开头", "error");
       return false;
     }
+    // 与 PATCH 路由的 API_KEY_ENV_NAME 同款校验：POST 不校验 env 名（normalizeProvider
+    // 仅要求非空），非法名会越过创建、到 PATCH 落密钥时才 400——创建成功的供应商
+    // 留下无密钥的半成品。这里前置拦截，避免「POST 成功 + PATCH 失败」的中间态。
+    if (!isEnvironmentVariableName(trimmed.envName)) {
+      showToast("API 密钥环境变量名只能包含字母、数字、下划线且不能以数字开头。", "error");
+      return false;
+    }
     try {
       const res = await fetchImpl(`${API_BASE}`, {
         method: "POST",
@@ -374,6 +381,7 @@ export function createModelSettingsPage(ctx = {}) {
       const ok = await addProvider({
         name: nameInput.value,
         base_url: baseUrlInput.value,
+        api_format: formatSelect.value,
         api_key_env: envInput.value,
         api_key: keyInput.value
       });
@@ -562,13 +570,20 @@ export function createModelSettingsPage(ctx = {}) {
   function renderCandidateList(providerId, names) {
     const holder = documentRef.querySelector?.("[data-candidate-list]");
     if (!holder) return;
+    // 拉取是异步的：期间用户可能已切到别的供应商，当前详情容器已属于新供应商。
+    // 过期结果直接丢弃（否则旧供应商候选渲染进新容器，点「添加」会加到旧供应商）。
+    if (state.selected?.id !== providerId) return;
     const list = Array.isArray(names) ? names : [];
     holder.replaceChildren();
+    // 空候选同样展开容器并显示空态提示——否则消息渲染进隐藏容器，空拉取对用户无感知。
+    holder.hidden = false;
+    // 自动展开后同步折叠按钮箭头（否则容器已展开、箭头仍为收起态「▸」，状态脱同步）。
+    const toggle = documentRef.querySelector?.(".candidate-toggle");
+    if (toggle) toggle.textContent = "拉取候选 ▾";
     if (list.length === 0) {
       holder.append(el("p", { class: "candidate-empty", text: "没有拉取到可用模型" }));
       return;
     }
-    holder.hidden = false;
     for (const name of list) {
       const addButton = el("button", { type: "button", class: "candidate-add", text: "添加" });
       addButton.addEventListener("click", () => { addPulledModel(providerId, name); });

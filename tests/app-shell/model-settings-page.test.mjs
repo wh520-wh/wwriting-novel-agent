@@ -74,11 +74,29 @@ class MockElement {
     for (const fn of this._listeners.get(type) ?? []) fn(...args);
   }
   click() { this._fire("click"); }
+  /** 简易选择器匹配：仅支持 [data-x] 与 .class（renderCandidateList 的 querySelector 用）。 */
+  matchesSelector(selector) {
+    if (selector.startsWith("[")) {
+      const attr = selector.slice(1, -1);
+      return this.getAttribute(attr) !== null;
+    }
+    if (selector.startsWith(".")) return this.className.split(/\s+/u).includes(selector.slice(1));
+    return false;
+  }
 }
 
+// 全局元素注册表：documentRef.querySelector 从其中按顺序找首个匹配（renderCandidateList
+// 的容器/箭头查找依赖它）。测试在渲染前 mockElements.length = 0 以隔离历史元素。
+const mockElements = [];
 const mockDocument = {
-  createElement(tag) { return new MockElement(tag); },
-  createTextNode(text) { return { nodeType: 3, textContent: String(text) }; }
+  createElement(tag) { const node = new MockElement(tag); mockElements.push(node); return node; },
+  createTextNode(text) { return { nodeType: 3, textContent: String(text) }; },
+  querySelector(selector) {
+    for (const node of mockElements) {
+      if (node.matchesSelector?.(selector)) return node;
+    }
+    return null;
+  }
 };
 
 function tickAsync() {
@@ -394,6 +412,63 @@ test("拉取候选展开后逐条添加", async () => {
   assert.deepEqual(addCalls, ["/api/settings/providers/deepseek/models"]);
 });
 
+test("拉取候选渲染：成功展开候选行并同步箭头，空结果显示空态", async () => {
+  const addCalls = [];
+  let empty = false;
+  const page = createModelSettingsPage({
+    fetchImpl: async (url, options = {}) => {
+      if (url.endsWith("/pull-models")) {
+        return { ok: true, json: async () => ({ models: empty ? [] : ["candidate-x", "candidate-y"] }) };
+      }
+      if (options?.method === "POST" && url.endsWith("/models")) {
+        addCalls.push(url);
+        return { ok: true, json: async () => ({ ok: true }) };
+      }
+      return { ok: true, json: async () => ({ providers, default_model: null }) };
+    },
+    documentRef: mockDocument
+  });
+  await page.open();
+
+  // 渲染详情：候选容器默认收起、箭头为收起态
+  mockElements.length = 0; // 只保留本次渲染的元素，避免 querySelector 命中旧容器
+  const container = new MockElement("div");
+  page.renderDetail(container);
+  const holder = descendants(container).find((el) => el.getAttribute?.("data-candidate-list") === "true");
+  const toggle = descendants(container).find((el) => el.className === "candidate-toggle");
+  assert.ok(holder, "应渲染候选容器");
+  assert.ok(toggle, "应渲染候选折叠按钮");
+  assert.equal(holder.hidden, true, "初始候选容器应收起");
+  assert.equal(toggle.textContent, "拉取候选 ▸");
+
+  // 拉取成功：容器展开、箭头同步为 ▾（修复箭头/展开态脱同步）、候选行逐条渲染
+  assert.equal(await page._handlers.pullModels("deepseek"), true);
+  assert.equal(holder.hidden, false, "拉取成功后容器应展开");
+  assert.equal(toggle.textContent, "拉取候选 ▾", "自动展开后箭头应同步");
+  const names = descendants(holder)
+    .filter((el) => el.className === "candidate-row")
+    .map((row) => row.getAttribute("data-candidate-name"));
+  assert.deepEqual(names, ["candidate-x", "candidate-y"], "候选行应逐条渲染");
+  // 行内「添加」按钮应接线到 addPulledModel（发 POST .../models）
+  const addButton = descendants(holder).find((el) => el.className === "candidate-add");
+  assert.ok(addButton, "候选行应渲染添加按钮");
+  addButton.click();
+  await tickAsync();
+  assert.deepEqual(addCalls, ["/api/settings/providers/deepseek/models"], "候选「添加」应发创建请求");
+
+  // 空拉取：容器同样展开并显示空态文案（修复「静默空拉取」）
+  empty = true;
+  mockElements.length = 0;
+  const container2 = new MockElement("div");
+  page.renderDetail(container2);
+  const holder2 = descendants(container2).find((el) => el.getAttribute?.("data-candidate-list") === "true");
+  const toggle2 = descendants(container2).find((el) => el.className === "candidate-toggle");
+  await page._handlers.pullModels("deepseek");
+  assert.equal(holder2.hidden, false, "空结果也应展开容器显示空态");
+  assert.equal(toggle2.textContent, "拉取候选 ▾", "空结果展开后箭头同样同步");
+  assert.ok(descendants(holder2).some((el) => el.className === "candidate-empty"), "应渲染空态文案");
+});
+
 test("测试连接：请求体形态、行内结果与缺密钥提示", async () => {
   const bodies = [];
   const toasts = [];
@@ -466,9 +541,11 @@ test("添加供应商：POST 创建 + 有密钥时 PATCH 落盘 + 表单开关",
   });
   await page.open();
 
-  // 必填缺失 / Base URL 非 http(s)：校验不过不发请求
+  // 必填缺失 / Base URL 非 http(s) / 密钥环境变量名非法：校验不过不发请求
   assert.equal(await page._handlers.addProvider({ name: "", base_url: "https://x.test", api_key_env: "K" }), false);
   assert.equal(await page._handlers.addProvider({ name: "X", base_url: "ftp://x.test", api_key_env: "K" }), false);
+  assert.equal(await page._handlers.addProvider({ name: "X", base_url: "https://x.test", api_key_env: "1BAD" }), false);
+  assert.equal(await page._handlers.addProvider({ name: "X", base_url: "https://x.test", api_key_env: "BAD NAME" }), false);
   assert.equal(calls.length, 0, "校验失败不应发请求");
 
   const ok = await page._handlers.addProvider({
