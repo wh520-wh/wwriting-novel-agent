@@ -1,5 +1,7 @@
 import { normalizePricing } from "./model-pricing.mjs";
 
+const ALLOWED_API_FORMATS = new Set(["openai-chat-completions"]);
+
 export class ModelConfigValidationError extends Error {
   constructor(fields) {
     const detail = Object.values(fields || {}).join("; ");
@@ -16,6 +18,7 @@ export function validateModelConfig(input) {
     model_name: String(input?.model_name ?? "").trim(),
     base_url: String(input?.base_url ?? "").trim().replace(/\/+$/, ""),
     api_key_env: String(input?.api_key_env ?? "").trim(),
+    api_format: String(input?.api_format ?? "openai-chat-completions").trim(),
   };
   if (input?.pricing !== undefined && input.pricing !== null) {
     const pricing = normalizePricing(input.pricing);
@@ -58,6 +61,9 @@ export function validateModelConfig(input) {
   }
   if (config.api_key_env && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(config.api_key_env)) {
     fields.api_key_env = "API Key 环境变量名格式无效";
+  }
+  if (!ALLOWED_API_FORMATS.has(config.api_format)) {
+    fields.api_format = "本轮仅支持 OpenAI Chat Completions 协议";
   }
   if (input?.pricing !== undefined && input.pricing !== null && !config.pricing) {
     fields.pricing = "价格必须是正数：每百万 token 的输入价和输出价必填，缓存命中价可选。";
