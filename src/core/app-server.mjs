@@ -28,7 +28,6 @@ import { createProjectAgent } from "./agent/index.mjs";
 import { createWorkspaceStore } from "./workspaces/store.mjs";
 import { createModelGateway } from "./model/gateway.mjs";
 import { OpenAICompatibleAdapter, ProviderConfigurationError } from "./model/openai-compatible.mjs";
-import { createMockAdapter } from "./model/mock.mjs";
 import { runShellCommand } from "./shell/runtime.mjs";
 import { CostTracker } from "./cost-tracker.mjs";
 import { isPathInside, safeJoin } from "./fs-utils.mjs";
@@ -249,9 +248,6 @@ async function effectiveWorkspaceConfigFor(projectRoot, { workspaceStore, secret
 }
 
 function createAppModelGateway({ resolveEffectiveConfig }) {
-  // Task 8：mock adapter 仅保留给测试/内部路径（createMockAdapter 继续导出）；
-  // 生产分发已不再指向它——未配置模型一律抛 ProviderConfigurationError。
-  const mockAdapter = createMockAdapter();
   const entries = new Map(); // projectRoot -> { gateway, costTracker, lastWrittenCalls }
 
   function gatewayFor(projectRoot) {

@@ -343,11 +343,6 @@ export function createSettingsModal(ctx, options = {}) {
     }
   }
 
-  function renderModelSection() {
-    renderSettingsProviders();
-    renderSettingsDetail();
-  }
-
   // Task 8 过渡期：旧弹窗模型区块的只读占位。清空右侧详情与左侧模型清单，
   // 只显示迁移提示（新供应商管理页面由 Task 12 建立并改入口）。
   function renderModelMigrationPlaceholder() {
@@ -1920,7 +1915,8 @@ export function createSettingsModal(ctx, options = {}) {
       // 技能导入/删除/打开目录各自即时生效，不依赖底部保存按钮。
       return;
     }
-    await saveModelSection();
+    // 四个分区均已显式 return，不存在落到 saveModelSection 的分支（模型分区为
+    // 只读占位，模型表单代码保留到 cutover 统一删除）。
   }
 
   async function saveModelSection() {
@@ -2065,6 +2061,9 @@ export function createSettingsModal(ctx, options = {}) {
 
   return {
     openSettingsModal, closeSettingsModal, renderSettingsProviders, renderSettingsDetail, saveSettings, resetToCustom,
+    // 仅供测试 / app.js 搜索守卫：读取当前分区（Task 8 过渡期模型分区为只读占位，
+    // app.js 据此让 #settings-search 的输入在模型分区不重建旧供应商列表）。
+    currentSettingsSection: () => settingsSection,
     // 仅供测试：直接回填模型表单字段（避免测试里模拟 DOM 输入）。
     setModelFieldsForTest(values = {}) {
       if (settingsFields.model) settingsFields.model.input.value = values.model_name ?? "";

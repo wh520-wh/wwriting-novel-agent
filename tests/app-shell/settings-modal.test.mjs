@@ -292,6 +292,19 @@ test("模型分区占位：保存/重置自定义均为 no-op，不发模型请�
   assert.equal(modal.getSavedModelItems().length, 0, "左栏不残留「已配置」/「新增供应商」交互入口");
 });
 
+test("currentSettingsSection 反映当前分区（app.js 的搜索守卫依赖它 no-op 模型分区）", async () => {
+  // app.js 的 #settings-search input 监听在模型分区直接 return，靠
+  // currentSettingsSection() === "model" 判断；这里钉住该 getter 的契约，
+  // 避免分区状态改名/重构后守卫静默失效。
+  const modal = createSettingsModalForTest();
+  await modal.openSettingsModal(); // 缺省分区 = model
+  assert.equal(modal.currentSettingsSection(), "model");
+  await modal.openSettingsModal("skills");
+  assert.equal(modal.currentSettingsSection(), "skills");
+  await modal.openSettingsModal("model");
+  assert.equal(modal.currentSettingsSection(), "model");
+});
+
 
 // ---------------------------------------------------------------------------
 // Task 14：普通文件夹（hasProject:false）下写作参数/项目管理分区只显示说明，

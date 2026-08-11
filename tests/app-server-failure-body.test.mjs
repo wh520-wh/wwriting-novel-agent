@@ -144,6 +144,48 @@ test("模型错误 → snapshot 显示 failed Run → retry 恢复同一 Run", a
   }
 });
 
+test("未配置模型：分发抛 ProviderConfigurationError → run_failed，重试仍同错失败", async () => {
+  // Task 8：默认未配置项目（active_model null、不注入 gateway）不得回落 mock——
+  // dispatchAdapter 抛 ProviderConfigurationError，Run 以 provider_configuration_error
+  // 失败；重试同一 Run 以相同配置错误再次失败（未配置不因重试而改变）。
+  const { projectRoot, server, port } = await setupServer();
+  try {
+    const input = await postJson(port, "/api/agent/input", { projectRoot, text: "写第一章" });
+    assert.equal(input.res.status, 200);
+    assert.equal(input.data.status, "running");
+
+    // 等待 Run 失败（journal run_failed → snapshot failed）
+    const failed = await waitFor(async () => {
+      const { data } = await getJson(port, `/api/agent/snapshot?projectRoot=${encodeURIComponent(projectRoot)}`);
+      return data.session.active_run?.status === "failed" ? data : null;
+    });
+    const runId = failed.session.active_run.id;
+    const failures = failed.events.filter((e) => e.type === "run_failed");
+    assert.ok(failures.length >= 1, "journal 应写入 run_failed");
+    assert.match(failures[failures.length - 1].payload.error, /未配置模型/, "run_failed 应携带未配置文案");
+    assert.equal(failures[failures.length - 1].payload.code, "provider_configuration_error");
+
+    // 重试继续同一 Run，仍以相同配置错误失败（未配置不回落 mock）
+    const retried = await postJson(port, `/api/agent/run/${runId}/retry`, { projectRoot });
+    assert.equal(retried.res.status, 200);
+    assert.equal(retried.data.ok, true);
+    assert.equal(retried.data.run_id, runId, "retry 必须继续同一 Run");
+    assert.equal(retried.data.retried, true);
+
+    const failedAgain = await waitFor(async () => {
+      const { data } = await getJson(port, `/api/agent/snapshot?projectRoot=${encodeURIComponent(projectRoot)}`);
+      return data.session.active_run?.status === "failed" ? data : null;
+    });
+    assert.equal(failedAgain.session.active_run.id, runId);
+    const failuresAfterRetry = failedAgain.events.filter((e) => e.type === "run_failed");
+    assert.ok(failuresAfterRetry.length >= 2, "重试后应有第二条 run_failed");
+    assert.match(failuresAfterRetry[failuresAfterRetry.length - 1].payload.error, /未配置模型/);
+    assert.equal(failuresAfterRetry[failuresAfterRetry.length - 1].payload.code, "provider_configuration_error");
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test("运行中 submit 排队（HTTP 200 + queued），stop 收敛为 cancelled", async () => {
   const { projectRoot, server, port } = await setupServer();
   try {

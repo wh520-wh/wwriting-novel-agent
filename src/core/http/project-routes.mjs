@@ -200,7 +200,7 @@ export function createProjectRoutes({
           title,
           story_seed: storySeed,
           active_model: activeModel,
-          model_label: modelDisplayName(activeModel),
+          model_label: activeModel ? modelDisplayName(activeModel) : "未配置",
           archived_at: archivedAt,
           external: !isPathInside(workspace, root),
           legacy_project: true
@@ -214,7 +214,7 @@ export function createProjectRoutes({
           title: item.title || path.basename(root),
           story_seed: item.story_seed || "",
           active_model: activeModel,
-          model_label: modelDisplayName(activeModel),
+          model_label: activeModel ? modelDisplayName(activeModel) : "未配置",
           archived_at: null,
           external: !isPathInside(workspace, root),
           legacy_project: false
@@ -272,9 +272,8 @@ export function createProjectRoutes({
       });
       if (data?.hasProject) {
         // 任务 6：迁移后 active_model 可为 null（mock 归零/未配置模型）。buildModelProfile
-        // 的缺省参数只覆盖 undefined；归一化 null → {} 避免能力解析在 null 上崩溃
-        //（resolveModelCapabilities 的 matcher 直接读 base_url），展示回退 Mock——与旧
-        // mock 快照的展示一致（用户面清除属 Task 8）。
+        // 的缺省参数只覆盖 undefined；归一化 null → {} 进入未配置分支，展示「未配置」——
+        // 用户面不再出现 mock 兜底。
         data.model_profile = buildModelProfile(data.project?.active_model ?? {}, secretsRoot);
         data.available_models = await buildAvailableModelProfiles(secretsRoot, data.project?.active_model);
       }
