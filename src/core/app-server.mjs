@@ -24,6 +24,7 @@ import { createRouter, resolveReadProjectRoot } from "./http/router.mjs";
 import { createAgentRoutes } from "./http/agent-routes.mjs";
 import { createProjectRoutes } from "./http/project-routes.mjs";
 import { createSettingsRoutes } from "./http/settings-routes.mjs";
+import { createProvidersRoutes } from "./http/providers-routes.mjs";
 import { createProjectAgent } from "./agent/index.mjs";
 import { createWorkspaceStore } from "./workspaces/store.mjs";
 import { createModelGateway } from "./model/gateway.mjs";
@@ -184,7 +185,8 @@ export function createAppShellServer({
       // 计划 Task 4 Step 5：注入同一个 workspaceStore（Task 5 起写应用私有 settings）。
       workspaceStore,
       ...(skills ? { skills } : {})
-    })
+    }),
+    createProvidersRoutes({ secretsRoot: localSecretsRoot })
   ];
   for (const module of routeModules) {
     for (const [pattern, handler] of Object.entries(module)) {
