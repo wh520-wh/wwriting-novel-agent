@@ -2628,7 +2628,7 @@ test("composer 模型清单缺少项目当前模型时，仍显示实际生效�
     apiOverrides: {
       fetchComposerOptions: async () => ({
         models: [],
-        activeModel: { provider: "mock", model_name: "mock-writer", base_url: "" },
+        activeModel: { provider: "openai-compatible", model_name: "legacy-model", base_url: "https://legacy.test/v1" },
         toolPermissions: {},
         reasoningEffort: "auto"
       })
@@ -2637,9 +2637,30 @@ test("composer 模型清单缺少项目当前模型时，仍显示实际生效�
   await surface.openProject("D:\\legacy-novel");
 
   const model = root.querySelector('[data-testid="agent-model-select"]');
-  assert.equal(model.dataset.value, "mock-writer");
-  assert.match(model.textContent, /mock-writer/u);
+  assert.equal(model.dataset.value, "legacy-model");
+  assert.match(model.textContent, /legacy-model/u);
   assert.equal(model.disabled, true, "只有未导入的当前模型时只展示事实，不伪装成可切换选项");
+  assert.equal(root.querySelectorAll('[data-testid="agent-model-option"]').length, 1);
+});
+
+test("composer 未配置模型：activeModel 为空时显示未导入模型占位并禁用", async () => {
+  // Task 8：未配置模型 = activeModel null，composer 不显示任何 mock 占位。
+  const { root, surface } = await makeSurface({
+    apiOverrides: {
+      fetchComposerOptions: async () => ({
+        models: [],
+        activeModel: null,
+        toolPermissions: {},
+        reasoningEffort: "auto"
+      })
+    }
+  });
+  await surface.openProject("D:\\unconfigured-novel");
+
+  const model = root.querySelector('[data-testid="agent-model-select"]');
+  assert.equal(model.dataset.value, "");
+  assert.match(model.textContent, /未导入模型/u);
+  assert.equal(model.disabled, true, "未配置模型时模型选择禁用");
   assert.equal(root.querySelectorAll('[data-testid="agent-model-option"]').length, 1);
 });
 

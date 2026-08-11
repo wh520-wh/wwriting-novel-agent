@@ -136,7 +136,9 @@ export function createDrawerPanels(ctx) {
     const summary = data.summary;
     const profile = data.model_profile ?? {};
     const permissions = data.config?.effective?.tool_permissions ?? data.project.tool_permissions ?? {};
-    const model = dpanel("模型配置", profile.is_mock ? "未配置" : (profile.display ?? "未配置"));
+    // Task 8：未配置模型 = 无 model_name（is_mock 语义已废弃）。
+    const modelUnconfigured = !profile || !profile.model_name;
+    const model = dpanel("模型配置", modelUnconfigured ? "未配置" : (profile.display ?? "未配置"));
     const open = document.createElement("button");
     open.className = "save-btn";
     open.type = "button";
@@ -144,7 +146,7 @@ export function createDrawerPanels(ctx) {
     open.addEventListener("click", () => ctx.openSettingsModal());
     const summaryLine = document.createElement("p");
     summaryLine.className = "spd-hint";
-    summaryLine.textContent = profile.is_mock
+    summaryLine.textContent = modelUnconfigured
       ? "尚未配置模型。点上方按钮选 DeepSeek / MiMo 或自定义供应商，并粘贴 API Key。"
       : `${profile.display}${profile.endpoint ? ` · ${profile.endpoint}` : ""}；${profile.api_key_saved ? "API Key 已保存在本机。" : "尚未保存 API Key。"}`;
     model.body.append(summaryLine, open);

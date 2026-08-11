@@ -250,891 +250,48 @@ test("test connection propagates AbortSignal", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Model save without a project (Task 9: 模型配置与项目解耦)
+// 模型分区（Task 8 过渡期）：模型配置迁往新的供应商管理页面（Task 12 建新页并改
+// 入口）。旧弹窗模型区块改为只读占位——显示迁移提示、禁用保存，不再渲染模型表单 /
+// 已配置清单 / 测试连接，也不向模型 API 发写请求。旧模型表单/草稿/切换确认行为
+// 随旧实现一并撤下（新页面的交互测试由 Task 12-16 建立）。
 // ---------------------------------------------------------------------------
 
-test("没有项目时保存模型：走全局路由，不再提示先新建小说", async () => {
-  const calls = [];
-  const toasts = [];
-  const modal = createSettingsModalForTest({
-    getCurrentProjectRoot: () => "",           // 关键：没有打开任何项目
-    showToast: (message, kind) => toasts.push({ message, kind }),
-    postJsonImpl: async (url, body) => {
-      calls.push({ url, body });
-      return { ok: true, model_profile: { display: "DeepSeek 官方 / deepseek-chat" }, models: [] };
-    }
-  });
-  await modal.openSettingsModal();
-  modal.setModelFieldsForTest({
-    model_name: "deepseek-chat",
-    base_url: "https://api.deepseek.com",
-    api_key: "sk-test-1234",
-    api_key_env: "DEEPSEEK_API_KEY"
-  });
-  await modal.saveSettingsForTest();
-
-  assert.equal(calls.some((c) => c.url === "/api/settings/model-profile"), true);
-  assert.equal(calls.some((c) => c.url === "/api/settings/update"), false);
-  assert.equal(toasts.some((t) => /先新建或打开一部小说/.test(t.message)), false);
-});
-
-test("有项目时保存模型：只更新全局模型，不暗改项目级专家配置", async () => {
-  const calls = [];
-  const modal = createSettingsModalForTest({
-    getCurrentProjectRoot: () => "D:/novels/demo",
-    postJsonImpl: async (url, body) => {
-      calls.push({ url, body });
-      return { ok: true, model_profile: { display: "DeepSeek 官方 / deepseek-chat" }, models: [] };
-    }
-  });
-  await modal.openSettingsModal();
-  modal.setModelFieldsForTest({
-    model_name: "deepseek-chat",
-    base_url: "https://api.deepseek.com",
-    api_key: "sk-test-1234",
-    api_key_env: "DEEPSEEK_API_KEY"
-  });
-  await modal.saveSettingsForTest();
-
-  const urls = calls.map((c) => c.url);
-  assert.equal(urls.includes("/api/settings/model-profile"), true);
-  assert.equal(urls.includes("/api/settings/update"), false);
-});
-
-test("没有项目时表单显示全局默认模型，而不是预设默认值", async () => {
-  const modal = createSettingsModalForTest({
-    getCurrentProjectRoot: () => "",
-    getJsonImpl: async () => ({
-      ok: true,
-      default_model: {
-        id: "deepseek-chat",
-        provider: "openai-compatible",
-        model_name: "deepseek-chat",
-        base_url: "https://api.deepseek.com",
-        api_key_env: "DEEPSEEK_API_KEY",
-        display: "DeepSeek 官方 / deepseek-chat"
-      },
-      models: []
-    })
-  });
-  await modal.openSettingsModal();
-
-  const modelInput = findElementByLabel("模型");
-  assert.equal(modelInput.value, "deepseek-chat");
-  const baseUrlInput = findElementByLabel("API 地址 · 基础 URL");
-  assert.equal(baseUrlInput.value, "https://api.deepseek.com");
-});
-
-test("没有项目时测试连接不再拦截", async () => {
-  const calls = [];
-  const toasts = [];
-  const modal = createSettingsModalForTest({
-    getCurrentProjectRoot: () => "",
-    showToast: (message, kind) => toasts.push({ message, kind }),
-    postJsonImpl: async (url, body) => {
-      calls.push({ url, body });
-      return { ok: true, latency_ms: 42 };
-    }
-  });
-  await modal.openSettingsModal();
-  modal.setModelFieldsForTest({
-    model_name: "deepseek-chat",
-    base_url: "https://api.deepseek.com",
-    api_key: "sk-test-1234",
-    api_key_env: "DEEPSEEK_API_KEY"
-  });
-  const testBtn = domRegistry.find((el) => el.id === "settings-test-connection");
-  assert.ok(testBtn, "设置面板应渲染「测试连接」按钮");
-  testBtn._fire("click");
-  await new Promise((resolve) => setTimeout(resolve, 0));
-
-  assert.equal(calls.some((c) => c.url === "/api/settings/test-connection"), true);
-  assert.equal(toasts.some((t) => /先新建或打开一部小说/.test(t.message)), false);
-});
-
-test("模型字段校验失败时逐项标红，且不发送项目设置请求", async () => {
-  const calls = [];
-  const toasts = [];
-  const modal = createSettingsModalForTest({
-    getCurrentProjectRoot: () => "D:/novels/demo",
-    showToast: (message, kind) => toasts.push({ message, kind }),
-    postJsonImpl: async (url, body) => {
-      calls.push({ url, body });
-      if (url === "/api/settings/model-profile") {
-        // 服务端对 ModelConfigValidationError 回 400 + fields，postJson 抛错携带 error.fields
-        throw Object.assign(new Error("模型信息不完整，请检查标红的字段。"), {
-          fields: { model_name: "请输入模型名称" }
-        });
-      }
-      return { ok: true };
-    }
-  });
-  await modal.openSettingsModal();
-  modal.setModelFieldsForTest({
-    model_name: "",
-    base_url: "https://api.deepseek.com",
-    api_key: "sk-test-1234",
-    api_key_env: "DEEPSEEK_API_KEY"
-  });
-  await modal.saveSettingsForTest();
-
-  // 校验失败：不发项目设置请求
-  assert.equal(calls.some((c) => c.url === "/api/settings/update"), false);
-  // 只有模型名字段标红：错误提示可见且带服务端文案，其余字段隐藏
-  const visibleErrors = domRegistry.filter((el) => el.className === "spd-field-error" && el.hidden === false);
-  assert.deepEqual(visibleErrors.map((el) => el.textContent), ["请输入模型名称"]);
-  // runSave 兜底 toast 展示服务端原文错误
-  assert.equal(toasts.some((t) => t.message === "模型信息不完整，请检查标红的字段。"), true);
-});
-
-test("模型字段校验失败后再保存：成功路径仍正常工作", async () => {
-  const calls = [];
-  let failModelProfile = true;
-  const modal = createSettingsModalForTest({
-    getCurrentProjectRoot: () => "D:/novels/demo",
-    postJsonImpl: async (url, body) => {
-      calls.push({ url, body });
-      if (url === "/api/settings/model-profile" && failModelProfile) {
-        failModelProfile = false;
-        throw Object.assign(new Error("模型信息不完整，请检查标红的字段。"), {
-          fields: { model_name: "请输入模型名称" }
-        });
-      }
-      return { ok: true, model_profile: { display: "DeepSeek 官方 / deepseek-chat" }, models: [] };
-    }
-  });
-  await modal.openSettingsModal();
-  modal.setModelFieldsForTest({
-    model_name: "deepseek-chat",
-    base_url: "https://api.deepseek.com",
-    api_key: "sk-test-1234",
-    api_key_env: "DEEPSEEK_API_KEY"
-  });
-
-  // 第一次：校验失败，只发 model-profile，不发 update
-  await modal.saveSettingsForTest();
-  assert.equal(calls.filter((c) => c.url === "/api/settings/model-profile").length, 1);
-  assert.equal(calls.some((c) => c.url === "/api/settings/update"), false);
-
-  // 第二次：校验通过，只完成模型保存，不产生隐式项目设置写入
-  await modal.saveSettingsForTest();
-  assert.equal(calls.filter((c) => c.url === "/api/settings/model-profile").length, 2);
-  assert.equal(calls.filter((c) => c.url === "/api/settings/update").length, 0);
-});
-
-// ---------------------------------------------------------------------------
-// 已配置模型清单（Task 10: 选用 / 删除已配模型）
-// ---------------------------------------------------------------------------
-
-test("设置里显示已配好的模型，可以点击选用或删除", async () => {
-  const calls = [];
-  // 有状态的桩：选用后全局默认模型随之变化（与服务端行为一致）。
-  let models = [
-    { id: "deepseek-chat", model_name: "deepseek-chat", display: "DeepSeek / deepseek-chat",
-      base_url: "https://api.deepseek.com", api_key_env: "DEEPSEEK_API_KEY" },
-    { id: "mimo-v1", model_name: "mimo-v1", display: "MiMo / mimo-v1",
-      base_url: "https://api.mimo.example", api_key_env: "XIAOMI_MIMO_API_KEY" }
-  ];
-  let defaultModel = { ...models[0] };
-  const modal = createSettingsModalForTest({
-    getCurrentProjectRoot: () => "",
-    // 清单来自 GET /api/settings/models（fetchGlobalModels 走 getJsonImpl）。
-    getJsonImpl: async () => ({ ok: true, default_model: defaultModel, models }),
-    postJsonImpl: async (url, body) => {
-      calls.push({ url, body });
-      if (url === "/api/settings/model-select") {
-        defaultModel = models.find((m) => m.id === body.model_id) ?? null;
-      }
-      if (url === "/api/settings/model-remove") {
-        models = models.filter((m) => m.id !== body.model_id);
-        if (defaultModel?.id === body.model_id) defaultModel = null;
-      }
-      return { ok: true, models: [], default_model: null };
-    }
-  });
-  await modal.openSettingsModal();
-
-  const savedItems = modal.getSavedModelItems();
-  assert.equal(savedItems.length, 2);
-  assert.equal(savedItems.some((item) => item.modelName === "deepseek-chat"), true);
-  assert.equal(savedItems.some((item) => item.modelName === "mimo-v1"), true);
-
-  await modal.clickSavedModel("mimo-v1");
-  assert.equal(calls.some((c) => c.url === "/api/settings/model-select" && c.body.model_id === "mimo-v1"), true);
-  assert.equal(modal.getModelFieldValue("model_name"), "mimo-v1");
-
-  await modal.deleteSavedModel("mimo-v1");
-  assert.equal(calls.some((c) => c.url === "/api/settings/model-remove" && c.body.model_id === "mimo-v1"), true);
-  // 删除当前展示的模型后，右侧表单同步刷新回预设默认值，不残留已删模型的字段。
-  assert.equal(modal.getModelFieldValue("model_name"), "mimo-v2.5-pro");
-});
-
-test("模型设置只显示连接所需字段，不渲染价格、预算和运行参数", async () => {
-  const modal = createSettingsModalForTest();
-  await modal.openSettingsModal();
-
-  for (const label of ["模型", "API 地址 · 基础 URL", "API Key"]) {
-    assert.ok(findElementByLabel(label), `应保留 ${label}`);
-  }
-  for (const label of [
-    "输入价（元/百万 token）",
-    "输出价（元/百万 token）",
-    "缓存命中价（元/百万 token，可选）",
-    "模型调用上限",
-    "成本上限（元，需先配置价格）",
-    "token 总量上限",
-    "写作温度（0–2，可选，留空用厂商默认）",
-    "联网搜索/抓取权限",
-    "密钥环境变量名（不是密钥本身）"
-  ]) {
-    assert.equal(findElementByLabel(label), null, `普通用户界面不应暴露 ${label}`);
-  }
-});
-
-// ---------------------------------------------------------------------------
-// 保存反馈（Task 10：成功不弹 Toast，保存按钮先显示「已保存」再关闭弹窗）
-// ---------------------------------------------------------------------------
-
-test("保存成功后按钮先显示「已保存」，不弹成功 Toast；短暂停留后弹窗关闭", async () => {
-  const calls = [];
-  const toasts = [];
+test("模型分区为只读占位：显示迁移提示，禁用保存，不渲染模型表单", async () => {
   const saveButton = new MockElement("button");
-  const scrim = new MockElement("div");
   const modal = createSettingsModalForTest({
-    refs: { settingsSave: saveButton, settingsScrim: scrim },
-    getCurrentProjectRoot: () => "D:/novels/demo",
-    showToast: (message, kind) => toasts.push({ message, kind }),
-    postJsonImpl: async (url, body) => {
-      calls.push({ url, body });
-      return { ok: true };
-    }
+    refs: { settingsSave: saveButton },
+    getCurrentProjectRoot: () => ""
   });
   await modal.openSettingsModal();
-  modal.setModelFieldsForTest({
-    model_name: "deepseek-chat",
-    base_url: "https://api.deepseek.com",
-    api_key: "sk-test-1234",
-    api_key_env: "DEEPSEEK_API_KEY"
-  });
-  await modal.saveSettingsForTest();
 
-  // 保存完成后、关闭定时器触发前：按钮显示「已保存」，弹窗仍在，且无成功 Toast。
-  assert.equal(saveButton.textContent, "已保存", "保存成功后按钮应显示「已保存」");
-  assert.equal(scrim.classList.contains("show"), true, "「已保存」可见期间弹窗尚未关闭");
-  assert.equal(toasts.some((t) => t.kind === "success"), false, "保存成功不得弹成功 Toast");
-
-  // 等待关闭定时器（700ms + 余量）：弹窗关闭、按钮文案恢复为「保存设置」。
-  await new Promise((resolve) => setTimeout(resolve, 900));
-  assert.equal(scrim.classList.contains("show"), false, "短暂停留后弹窗应关闭");
-  assert.equal(saveButton.textContent, "保存设置", "关闭后按钮文案应恢复为「保存设置」");
+  assert.equal(saveButton.disabled, true, "模型分区保存按钮应禁用");
+  assert.equal(saveButton.textContent, "无需保存");
+  // 迁移提示文本。
+  const hint = modal.getSettingsDetailForTest().children.find((el) => String(el.className ?? "") === "spd-hint");
+  assert.ok(hint, "模型分区应渲染迁移提示");
+  assert.ok(hint.textContent.includes("模型设置已迁移到新的供应商管理页面"), "提示应指向新的供应商管理页面");
+  // 不渲染模型表单字段与测试连接。
+  for (const label of ["模型", "API 地址 · 基础 URL", "API Key", "提供商"]) {
+    assert.equal(findElementByLabel(label), null, `模型分区占位不得渲染 ${label}`);
+  }
+  assert.equal(domRegistry.find((el) => el.id === "settings-test-connection"), undefined, "不得渲染测试连接按钮");
 });
 
-test("连续两次保存：旧关闭定时器失效，不关闭新弹窗", async () => {
-  let failNextSave = false;
-  const saveButton = new MockElement("button");
-  const scrim = new MockElement("div");
-  const modal = createSettingsModalForTest({
-    refs: { settingsSave: saveButton, settingsScrim: scrim },
-    getCurrentProjectRoot: () => "",
-    postJsonImpl: async (url, body) => {
-      if (url === "/api/settings/model-profile" && failNextSave) {
-        throw Object.assign(new Error("模型信息不完整，请检查标红的字段。"), {
-          fields: { model_name: "请输入模型名称" }
-        });
-      }
-      return { ok: true };
-    }
-  });
-  await modal.openSettingsModal();
-  modal.setModelFieldsForTest({
-    model_name: "deepseek-chat",
-    base_url: "https://api.deepseek.com",
-    api_key: "sk-test-1234",
-    api_key_env: "DEEPSEEK_API_KEY"
-  });
-
-  // 第一次保存成功：调度 700ms 后关闭弹窗的定时器（seq=1）。
-  await modal.saveSettingsForTest();
-  assert.equal(saveButton.textContent, "已保存", "第一次保存成功后按钮应显示「已保存」");
-  assert.equal(scrim.classList.contains("show"), true, "「已保存」展示期间弹窗仍在");
-  // 第二次保存立刻失败（seq=2）：前一次的关闭定时器必须失效。
-  failNextSave = true;
-  await modal.saveSettingsForTest();
-  assert.equal(saveButton.textContent, "保存设置", "失败后按钮文案应立即恢复为规范标签");
-  // 等过前一次定时器窗口（700ms + 余量）。按钮文案在此场景无法区分守卫是否存在
-  // （旧定时器恢复的正是同一文案）；唯一可区分的副作用是 closeSettingsModal 移除
-  // scrim 的 show——必须断言它来锁住该回归。
-  await new Promise((resolve) => setTimeout(resolve, 900));
-  assert.equal(saveButton.textContent, "保存设置", "旧关闭定时器不得覆盖按钮文案");
-  assert.equal(scrim.classList.contains("show"), true, "旧关闭定时器不得关闭弹窗（失败后弹窗应保持打开供重试）");
-});
-
-// ---------------------------------------------------------------------------
-// 模型表单草稿（Task 7）：关闭设置时写入 localStorage（按供应商 tab 隔离），
-// 重开时在无已保存模型回填时恢复；保存成功后清除草稿，且自动关闭不重写。
-// ---------------------------------------------------------------------------
-
-// 点击左侧供应商 tab（custom/deepseek 等）并等其异步重渲完成。
-// MockElement 不给按钮本身设 textContent（只有子 span 有），所以要找
-// className 为 sp-item 的按钮、按内部 .sp-name 子元素文本识别；domRegistry
-// 会累积多次渲染的元素，取最新一次（最后创建的按钮）。
-async function clickProviderTab(text) {
-  const btn = [...domRegistry].reverse().find((el) =>
-    el.tagName === "BUTTON" &&
-    String(el.className).startsWith("sp-item") &&
-    [...el.children].some((c) => c.className === "sp-name" && c.textContent === text)
-  );
-  assert.ok(btn, `应渲染供应商 tab：${text}`);
-  btn.click();
-  await new Promise((resolve) => setTimeout(resolve, 0));
-}
-
-// 读取当前选中的左侧供应商 tab 名（class 含 " on" 的 sp-item 按钮的 .sp-name）。
-function activeProviderTabName() {
-  const btn = [...domRegistry].reverse().find((el) =>
-    el.tagName === "BUTTON" &&
-    String(el.className).startsWith("sp-item") &&
-    String(el.className).includes(" on")
-  );
-  if (!btn) return null;
-  const name = [...btn.children].find((c) => c.className === "sp-name");
-  return name?.textContent ?? null;
-}
-
-test("模型表单草稿：填表单后关闭，重开恢复已填字段（自定义模型场景）", async () => {
-  const storage = createMockStorage();
-  const modal = createSettingsModalForTest({
-    storage,
-    getCurrentProjectRoot: () => "",
-  });
-  await modal.openSettingsModal();
-  // 切到「自定义」tab：无项目无已保存模型，表单是空白预设值。
-  await clickProviderTab("OpenAI 兼容 · 自定义");
-  modal.setModelFieldsForTest({
-    model_name: "gpt-4o-mini",
-    base_url: "https://api.example.com/v1",
-    api_key: "sk-custom-draft",
-    api_key_env: "WWRITING_PROVIDER_API_KEY"
-  });
-  modal.closeSettingsModal();
-
-  // 草稿已写入 localStorage，key 带供应商 tab 隔离。
-  const raw = storage.getItem("wwriting.settings.model.draft.custom");
-  assert.ok(raw, "关闭后应写入草稿（key 带 provider id）");
-  assert.deepEqual(JSON.parse(raw), {
-    model_name: "gpt-4o-mini",
-    base_url: "https://api.example.com/v1",
-    api_key: "sk-custom-draft"
-  });
-
-  // 重开：无已保存模型回填 → 恢复草稿字段。
-  await modal.openSettingsModal();
-  assert.equal(modal.getModelFieldValue("model_name"), "gpt-4o-mini");
-  assert.equal(modal.getModelFieldValue("base_url"), "https://api.example.com/v1");
-  assert.equal(modal.getModelFieldValue("api_key"), "sk-custom-draft");
-});
-
-test("模型表单草稿：保存成功后清除，自动关闭不重写", async () => {
-  const storage = createMockStorage();
-  const modal = createSettingsModalForTest({
-    storage,
-    getCurrentProjectRoot: () => "",
-    postJsonImpl: async () => ({ ok: true, model_profile: { display: "t" }, models: [] })
-  });
-  await modal.openSettingsModal();
-  await clickProviderTab("OpenAI 兼容 · 自定义");
-  modal.setModelFieldsForTest({
-    model_name: "gpt-4o-mini",
-    base_url: "https://api.example.com/v1",
-    api_key: "sk-custom-draft",
-    api_key_env: "WWRITING_PROVIDER_API_KEY"
-  });
-  modal.closeSettingsModal();
-  assert.ok(storage.getItem("wwriting.settings.model.draft.custom"), "关闭后草稿应存在");
-
-  await modal.openSettingsModal();
-  assert.equal(modal.getModelFieldValue("model_name"), "gpt-4o-mini", "重开后草稿恢复");
-
-  await modal.saveSettingsForTest();
-  assert.equal(storage.getItem("wwriting.settings.model.draft.custom"), null, "保存成功后草稿应清除");
-
-  // 等过保存成功后的自动关闭定时器（700ms + 余量）：关闭不得重写草稿。
-  await new Promise((resolve) => setTimeout(resolve, 900));
-  assert.equal(storage.getItem("wwriting.settings.model.draft.custom"), null, "保存后自动关闭不得把刚保存的值重写回草稿");
-
-  // 再次重开：草稿已清，无已保存模型时表单回到空白，不恢复旧值。
-  await modal.openSettingsModal();
-  assert.equal(modal.getModelFieldValue("model_name"), "", "草稿清除后重开不恢复旧值");
-});
-
-test("模型表单草稿按供应商 tab 隔离：custom 草稿不串到 deepseek tab", async () => {
-  const storage = createMockStorage();
-  const modal = createSettingsModalForTest({
-    storage,
-    getCurrentProjectRoot: () => "",
-  });
-  await modal.openSettingsModal();
-  await clickProviderTab("OpenAI 兼容 · 自定义");
-  modal.setModelFieldsForTest({
-    model_name: "gpt-4o-mini",
-    base_url: "https://api.example.com/v1",
-    api_key: "sk-custom-draft",
-    api_key_env: "WWRITING_PROVIDER_API_KEY"
-  });
-  modal.closeSettingsModal();
-  assert.ok(storage.getItem("wwriting.settings.model.draft.custom"), "草稿应写入 custom tab 的 key");
-  assert.equal(storage.getItem("wwriting.settings.model.draft.deepseek"), null, "deepseek tab 不得写入 custom 草稿");
-
-  await modal.openSettingsModal();
-  assert.equal(modal.getModelFieldValue("model_name"), "gpt-4o-mini", "custom tab 恢复自己的草稿");
-
-  // 切回 deepseek tab：不出现 custom 草稿，展示 deepseek 预设默认值。
-  await clickProviderTab("DeepSeek · 深度求索");
-  assert.equal(modal.getModelFieldValue("model_name"), "deepseek-v4-pro", "deepseek tab 显示预设默认，不被 custom 草稿污染");
-  assert.equal(modal.getModelFieldValue("base_url"), "https://api.deepseek.com");
-});
-
-test("已保存模型回填的 tab 存在草稿时：重开恢复草稿（草稿优先）", async () => {
-  // Important 1 回归：写入无条件、恢复有条件的不对称导致「改了 key/模型名未保存
-  // 就关闭 → 草稿写了却不生效」。修复后草稿存在即优先（保存成功会清草稿，草稿
-  // 存在必然代表上次有未保存编辑）。
-  const storage = createMockStorage();
-  // 预置：custom tab 有全局默认模型回填（my-custom-v1），同时存在草稿
-  // （用户把模型名改成 my-custom-v2、换了新 key，未保存就关闭）。
-  storage.setItem("wwriting.settings.model.draft.custom", JSON.stringify({
-    model_name: "my-custom-v2",
-    base_url: "https://api.example.com/v1",
-    api_key: "sk-new-key"
-  }));
-  const modal = createSettingsModalForTest({
-    storage,
-    getCurrentProjectRoot: () => "",
-    getJsonImpl: async () => ({
-      ok: true,
-      default_model: {
-        id: "my-custom-v1",
-        provider: "openai-compatible",
-        model_name: "my-custom-v1",
-        base_url: "https://api.example.com/v1",
-        api_key_env: "MY_CUSTOM_KEY",
-        display: "自定义 / my-custom-v1"
-      },
-      models: []
-    })
-  });
-  await modal.openSettingsModal();
-  // 打开落在 custom tab（全局默认是 custom 模型）：草稿应覆盖已保存回填。
-  assert.equal(modal.getModelFieldValue("model_name"), "my-custom-v2", "草稿的模型名应优先于已保存回填");
-  assert.equal(modal.getModelFieldValue("base_url"), "https://api.example.com/v1");
-  assert.equal(modal.getModelFieldValue("api_key"), "sk-new-key", "草稿的 key 应回填（已保存模型不会带明文 key 进表单）");
-});
-
-test("opencode.ai 上挂 deepseek- 名号的已存模型：设置打开落在自定义 tab 并回填（2026-08-11 回归）", async () => {
-  // 回归背景：providerDisplayName / detectProviderPreset 曾凭 model_name 前缀把
-  // 第三方中转的 deepseek-v4-flash 判成官方预设，设置弹窗开在官方 tab、表单回填
-  // 错位，用户在「已配置」里认不出自己的自定义条目，误以为保存未生效。
-  const modal = createSettingsModalForTest({
-    getCurrentProjectRoot: () => "",
-    getJsonImpl: async () => ({
-      ok: true,
-      default_model: {
-        id: "deepseek-v4-flash@https://opencode.ai/zen/go/v1",
-        provider: "openai-compatible",
-        model_name: "deepseek-v4-flash",
-        base_url: "https://opencode.ai/zen/go/v1",
-        api_key_env: "WWRITING_PROVIDER_API_KEY"
-      },
-      models: []
-    })
-  });
-  await modal.openSettingsModal();
-  // 打开应落在「自定义」tab（真实地址非官方端点），表单回填该自定义模型的字段。
-  assert.equal(activeProviderTabName(), "OpenAI 兼容 · 自定义");
-  assert.equal(modal.getModelFieldValue("model_name"), "deepseek-v4-flash");
-  assert.equal(modal.getModelFieldValue("base_url"), "https://opencode.ai/zen/go/v1");
-  assert.equal(modal.getModelFieldValue("api_key_env"), "WWRITING_PROVIDER_API_KEY");
-});
-
-test("官方 api.deepseek.com 的已存模型：设置打开仍落在 DeepSeek 官方 tab（官方路径不回退）", async () => {
-  const modal = createSettingsModalForTest({
-    getCurrentProjectRoot: () => "",
-    getJsonImpl: async () => ({
-      ok: true,
-      default_model: {
-        id: "deepseek-v4-flash@https://api.deepseek.com",
-        provider: "openai-compatible",
-        model_name: "deepseek-v4-flash",
-        base_url: "https://api.deepseek.com",
-        api_key_env: "DEEPSEEK_API_KEY"
-      },
-      models: []
-    })
-  });
-  await modal.openSettingsModal();
-  assert.equal(activeProviderTabName(), "DeepSeek · 深度求索");
-  assert.equal(modal.getModelFieldValue("base_url"), "https://api.deepseek.com");
-  assert.equal(modal.getModelFieldValue("api_key_env"), "DEEPSEEK_API_KEY");
-});
-
-// ---------------------------------------------------------------------------
-// 提供商字段（2026-08-11 新增，借鉴 WHnovel 自由 name 但结构化）：
-// 展示名 = 提供商 + 模型 ID；默认官方预设用官方名、自定义用 base_url 主机，可改。
-// ---------------------------------------------------------------------------
-
-test("模型表单含「提供商」字段：官方预设默认官方名，自定义 tab 默认留空可自填", async () => {
-  const modal = createSettingsModalForTest({ getCurrentProjectRoot: () => "" });
-  await modal.openSettingsModal();
-  // 打开默认在 deepseek 官方 tab：提供商默认官方名。
-  assert.ok(findElementByLabel("提供商"), "表单应渲染「提供商」字段");
-  assert.equal(modal.getModelFieldValue("provider_label"), "DeepSeek 官方");
-  // 切到自定义 tab：无已保存模型 → 提供商为空，用户自定义输入。
-  await clickProviderTab("OpenAI 兼容 · 自定义");
-  assert.equal(modal.getModelFieldValue("provider_label"), "");
-});
-
-test("自定义 tab 展示已存模型时：提供商默认回填 base_url 主机", async () => {
-  const modal = createSettingsModalForTest({
-    getCurrentProjectRoot: () => "",
-    getJsonImpl: async () => ({
-      ok: true,
-      default_model: {
-        id: "deepseek-v4-flash@https://opencode.ai/zen/go/v1",
-        provider: "openai-compatible",
-        model_name: "deepseek-v4-flash",
-        base_url: "https://opencode.ai/zen/go/v1",
-        api_key_env: "WWRITING_PROVIDER_API_KEY"
-      },
-      models: []
-    })
-  });
-  await modal.openSettingsModal();
-  assert.equal(activeProviderTabName(), "OpenAI 兼容 · 自定义");
-  assert.equal(modal.getModelFieldValue("provider_label"), "opencode.ai");
-});
-
-test("已存条目的 provider_label 回填表单：用户声明的厂商名优先于 base_url 主机", async () => {
-  const modal = createSettingsModalForTest({
-    getCurrentProjectRoot: () => "",
-    getJsonImpl: async () => ({
-      ok: true,
-      default_model: {
-        id: "deepseek-v4-flash@https://opencode.ai/zen/go/v1",
-        provider: "openai-compatible",
-        model_name: "deepseek-v4-flash",
-        base_url: "https://opencode.ai/zen/go/v1",
-        api_key_env: "WWRITING_PROVIDER_API_KEY",
-        provider_label: "我的中转"
-      },
-      models: []
-    })
-  });
-  await modal.openSettingsModal();
-  assert.equal(modal.getModelFieldValue("provider_label"), "我的中转");
-});
-
-test("保存模型载荷携带 provider_label", async () => {
+test("模型分区占位：保存/重置自定义均为 no-op，不发模型请求，左栏清单置空", async () => {
   const calls = [];
   const modal = createSettingsModalForTest({
     getCurrentProjectRoot: () => "",
     postJsonImpl: async (url, body) => { calls.push({ url, body }); return { ok: true }; }
   });
   await modal.openSettingsModal();
-  modal.setModelFieldsForTest({
-    model_name: "gpt-4o-mini",
-    provider_label: "我的中转",
-    base_url: "https://api.example.com/v1",
-    api_key: "sk-x",
-    api_key_env: "WWRITING_PROVIDER_API_KEY"
-  });
   await modal.saveSettingsForTest();
-  const saved = calls.find((c) => c.url === "/api/settings/model-profile")?.body.active_model;
-  assert.ok(saved, "应调用 model-profile 保存路由");
-  assert.equal(saved.provider_label, "我的中转");
+  modal.resetToCustom();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(calls.map((c) => c.url), [], "占位期模型分区不得发出 model-profile / update / test-connection 请求");
+  assert.equal(modal.getSavedModelItems().length, 0, "左栏不残留「已配置」/「新增供应商」交互入口");
 });
 
-test("模型表单草稿：provider_label 随草稿保存与恢复", async () => {
-  const storage = createMockStorage();
-  const modal = createSettingsModalForTest({ storage, getCurrentProjectRoot: () => "" });
-  await modal.openSettingsModal();
-  await clickProviderTab("OpenAI 兼容 · 自定义");
-  modal.setModelFieldsForTest({
-    model_name: "gpt-4o-mini",
-    provider_label: "我的中转",
-    base_url: "https://api.example.com/v1",
-    api_key: "sk-draft",
-    api_key_env: "WWRITING_PROVIDER_API_KEY"
-  });
-  modal.closeSettingsModal();
-  const raw = storage.getItem("wwriting.settings.model.draft.custom");
-  assert.ok(raw, "应写入草稿");
-  assert.equal(JSON.parse(raw).provider_label, "我的中转", "草稿应携带 provider_label");
-  // 重开：草稿恢复 provider_label。
-  await modal.openSettingsModal();
-  assert.equal(modal.getModelFieldValue("provider_label"), "我的中转");
-});
-
-test("草稿恢复每 tab 每会话只生效一次：切走再切回不重放", async () => {
-  // restoredDrafts 防重：首次进入 custom tab 恢复草稿后，用户编辑、切走再切回，
-  // 不得把旧草稿重放回表单覆盖当前值。
-  const storage = createMockStorage();
-  storage.setItem("wwriting.settings.model.draft.custom", JSON.stringify({
-    model_name: "gpt-4o",
-    base_url: "https://api.example.com/v1",
-    api_key: "sk-draft"
-  }));
-  const modal = createSettingsModalForTest({ storage, getCurrentProjectRoot: () => "" });
-  await modal.openSettingsModal();
-  await clickProviderTab("OpenAI 兼容 · 自定义");
-  assert.equal(modal.getModelFieldValue("model_name"), "gpt-4o", "首次进入 custom tab 应恢复草稿");
-
-  // 用户接着编辑（改模型名），然后切走再切回。
-  modal.setModelFieldsForTest({ model_name: "gpt-5", api_key_env: "WWRITING_PROVIDER_API_KEY" });
-  await clickProviderTab("DeepSeek · 深度求索");
-  await clickProviderTab("OpenAI 兼容 · 自定义");
-  assert.notEqual(modal.getModelFieldValue("model_name"), "gpt-4o", "切回后不得重放旧草稿");
-});
-
-test("切到非模型分区后关闭：模型草稿仍写入（模型输入不丢）", async () => {
-  // Important 2 回归：填完模型表单切到写作参数 tab 再关闭——旧实现只在关闭时
-  // 正处于 model 分区才写草稿，导致输入丢失。修复后不设分区守卫。
-  const storage = createMockStorage();
-  const modal = createSettingsModalForTest({ storage, getCurrentProjectRoot: () => "" });
-  await modal.openSettingsModal();
-  await clickProviderTab("OpenAI 兼容 · 自定义");
-  modal.setModelFieldsForTest({
-    model_name: "gpt-4o-mini",
-    base_url: "https://api.example.com/v1",
-    api_key: "sk-draft",
-    api_key_env: "WWRITING_PROVIDER_API_KEY"
-  });
-  // 切到写作参数分区（无项目时只渲染说明；mock 的 getElementById 恒 null，
-  // 分区导航按钮不可点，按既有测试惯例用 openSettingsModal("writing") 切分区。
-  // settingsFields.model 的输入值在切分区后仍在）。
-  await modal.openSettingsModal("writing");
-
-  modal.closeSettingsModal();
-  const raw = storage.getItem("wwriting.settings.model.draft.custom");
-  assert.ok(raw, "非 model 分区关闭也应写入模型草稿");
-  assert.deepEqual(JSON.parse(raw), {
-    model_name: "gpt-4o-mini",
-    base_url: "https://api.example.com/v1",
-    api_key: "sk-draft"
-  });
-});
-
-test("无已配置模型时左栏显示「尚未配置模型」空态说明", async () => {
-  const modal = createSettingsModalForTest();
-  await modal.openSettingsModal();
-
-  const empty = domRegistry.find((el) => String(el.className).includes("sp-saved-empty"));
-  assert.ok(empty, "无已配置模型时应渲染空态行");
-  assert.ok(empty.textContent.includes("尚未配置模型"), "空态应说明当前没有已配置模型");
-});
-
-// ---------------------------------------------------------------------------
-// 模型切换确认（计划 UI Copy Audit 保留项，Task 11 最终审查修复）：
-// 仅当「模型确有变更」且「任务进行中（active Run 或排队输入）」时弹确认，
-// 取消则不保存；API Key/环境变量变更不算模型变更。
-// ---------------------------------------------------------------------------
-
-const RUNNING_SNAPSHOT = {
-  ok: true,
-  session: {
-    schema_version: 1,
-    session_id: "s1",
-    status: "running",
-    active_run: { id: "r1", status: "running" },
-    queued_inputs: [],
-    last_seq: 0,
-    updated_at: new Date().toISOString()
-  },
-  events: []
-};
-
-const IDLE_SNAPSHOT = {
-  ok: true,
-  session: {
-    schema_version: 1,
-    session_id: "s1",
-    status: "idle",
-    active_run: { id: "r1", status: "completed" },
-    queued_inputs: [],
-    last_seq: 0,
-    updated_at: new Date().toISOString()
-  },
-  events: []
-};
-
-function snapshotJsonImpl(snapshot) {
-  return async (url) => {
-    if (url.startsWith("/api/agent/snapshot")) return snapshot;
-    return { ok: true, default_model: null, models: [] };
-  };
-}
-
-test("模型变更且任务进行中：保存前弹确认（精确文案），确认后保存", async () => {
-  const calls = [];
-  const toasts = [];
-  let confirmMessage = null;
-  const modal = createSettingsModalForTest({
-    getCurrentProjectRoot: () => "D:/novels/demo",
-    getJsonImpl: snapshotJsonImpl(RUNNING_SNAPSHOT),
-    postJsonImpl: async (url, body) => {
-      calls.push({ url, body });
-      return { ok: true, model_profile: { display: "t" }, models: [] };
-    },
-    showToast: (message, kind) => toasts.push({ message, kind }),
-    confirmImpl: (message) => {
-      confirmMessage = message;
-      return true;
-    }
-  });
-  await modal.openSettingsModal();
-  modal.setModelFieldsForTest({
-    model_name: "deepseek-chat",
-    base_url: "https://api.deepseek.com",
-    api_key: "sk-test-1234",
-    api_key_env: "DEEPSEEK_API_KEY"
-  });
-  await modal.saveSettingsForTest();
-
-  assert.equal(confirmMessage, "保存将把此模型设为默认，切换后将由新模型继续，本章文风可能变化。继续？");
-  assert.equal(calls.some((c) => c.url === "/api/settings/model-profile"), true, "确认后应保存模型");
-});
-
-test("模型变更且任务进行中：取消确认则不保存", async () => {
-  const calls = [];
-  const toasts = [];
-  const modal = createSettingsModalForTest({
-    getCurrentProjectRoot: () => "D:/novels/demo",
-    getJsonImpl: snapshotJsonImpl(RUNNING_SNAPSHOT),
-    postJsonImpl: async (url, body) => {
-      calls.push({ url, body });
-      return { ok: true, model_profile: { display: "t" }, models: [] };
-    },
-    showToast: (message, kind) => toasts.push({ message, kind }),
-    confirmImpl: () => false
-  });
-  await modal.openSettingsModal();
-  modal.setModelFieldsForTest({
-    model_name: "deepseek-chat",
-    base_url: "https://api.deepseek.com",
-    api_key: "sk-test-1234",
-    api_key_env: "DEEPSEEK_API_KEY"
-  });
-  await modal.saveSettingsForTest();
-
-  assert.equal(calls.some((c) => c.url === "/api/settings/model-profile"), false, "取消后不得保存模型");
-  assert.equal(calls.some((c) => c.url === "/api/settings/update"), false, "取消后不得发项目设置");
-  assert.equal(toasts.some((t) => /已取消保存/.test(t.message)), true, "取消应给出提示");
-});
-
-test("模型未变更：任务进行中也不弹确认，直接保存", async () => {
-  const calls = [];
-  let confirmCalls = 0;
-  const modal = createSettingsModalForTest({
-    getDashboard: () => ({
-      project: {
-        active_model: {
-          provider: "openai-compatible",
-          model_name: "deepseek-chat",
-          base_url: "https://api.deepseek.com",
-          api_key_env: "DEEPSEEK_API_KEY"
-        }
-      }
-    }),
-    getCurrentProjectRoot: () => "D:/novels/demo",
-    getJsonImpl: snapshotJsonImpl(RUNNING_SNAPSHOT),
-    postJsonImpl: async (url, body) => {
-      calls.push({ url, body });
-      return { ok: true, model_profile: { display: "t" }, models: [] };
-    },
-    confirmImpl: () => {
-      confirmCalls += 1;
-      return true;
-    }
-  });
-  await modal.openSettingsModal();
-  modal.setModelFieldsForTest({
-    model_name: "deepseek-chat",
-    base_url: "https://api.deepseek.com",
-    api_key: "sk-test-1234",
-    api_key_env: "DEEPSEEK_API_KEY"
-  });
-  await modal.saveSettingsForTest();
-
-  assert.equal(confirmCalls, 0, "模型未变更不得弹确认");
-  assert.equal(calls.some((c) => c.url === "/api/settings/model-profile"), true, "直接保存");
-});
-
-test("任务空闲时模型变更：不弹确认，直接保存", async () => {
-  const calls = [];
-  let confirmCalls = 0;
-  const modal = createSettingsModalForTest({
-    getCurrentProjectRoot: () => "D:/novels/demo",
-    getJsonImpl: snapshotJsonImpl(IDLE_SNAPSHOT),
-    postJsonImpl: async (url, body) => {
-      calls.push({ url, body });
-      return { ok: true, model_profile: { display: "t" }, models: [] };
-    },
-    confirmImpl: () => {
-      confirmCalls += 1;
-      return true;
-    }
-  });
-  await modal.openSettingsModal();
-  modal.setModelFieldsForTest({
-    model_name: "deepseek-chat",
-    base_url: "https://api.deepseek.com",
-    api_key: "sk-test-1234",
-    api_key_env: "DEEPSEEK_API_KEY"
-  });
-  await modal.saveSettingsForTest();
-
-  assert.equal(confirmCalls, 0, "空闲任务不得弹确认");
-  assert.equal(calls.some((c) => c.url === "/api/settings/model-profile"), true, "直接保存");
-});
-
-test("排队输入非空也算任务进行中：模型变更需确认", async () => {
-  const calls = [];
-  let confirmCalls = 0;
-  const queuedSnapshot = {
-    ok: true,
-    session: {
-      schema_version: 1,
-      session_id: "s1",
-      status: "running",
-      active_run: { id: "r1", status: "running" },
-      queued_inputs: [{ id: "q1", text: "排队任务", status: "queued" }],
-      last_seq: 0,
-      updated_at: new Date().toISOString()
-    },
-    events: []
-  };
-  const modal = createSettingsModalForTest({
-    getCurrentProjectRoot: () => "D:/novels/demo",
-    getJsonImpl: snapshotJsonImpl(queuedSnapshot),
-    postJsonImpl: async (url, body) => {
-      calls.push({ url, body });
-      return { ok: true, model_profile: { display: "t" }, models: [] };
-    },
-    confirmImpl: () => {
-      confirmCalls += 1;
-      return true;
-    }
-  });
-  await modal.openSettingsModal();
-  modal.setModelFieldsForTest({
-    model_name: "deepseek-chat",
-    base_url: "https://api.deepseek.com",
-    api_key: "sk-test-1234",
-    api_key_env: "DEEPSEEK_API_KEY"
-  });
-  await modal.saveSettingsForTest();
-
-  assert.equal(confirmCalls, 1, "排队输入存在时应弹确认");
-  assert.equal(calls.some((c) => c.url === "/api/settings/model-profile"), true, "确认后保存");
-});
 
 // ---------------------------------------------------------------------------
 // Task 14：普通文件夹（hasProject:false）下写作参数/项目管理分区只显示说明，
@@ -1559,6 +716,42 @@ function dangerHarness(overrides = {}) {
     getCurrentProjectRoot: () => "D:/novels/demo",
     ...overrides
   });
+}
+
+// 活动 Run 门禁快照（任务空闲判定用）：running 态禁用清空按钮，idle 态放行。
+const RUNNING_SNAPSHOT = {
+  ok: true,
+  session: {
+    schema_version: 1,
+    session_id: "s1",
+    status: "running",
+    active_run: { id: "r1", status: "running" },
+    queued_inputs: [],
+    last_seq: 0,
+    updated_at: new Date().toISOString()
+  },
+  events: []
+};
+
+const IDLE_SNAPSHOT = {
+  ok: true,
+  session: {
+    schema_version: 1,
+    session_id: "s1",
+    status: "idle",
+    active_run: { id: "r1", status: "completed" },
+    queued_inputs: [],
+    last_seq: 0,
+    updated_at: new Date().toISOString()
+  },
+  events: []
+};
+
+function snapshotJsonImpl(snapshot) {
+  return async (url) => {
+    if (url.startsWith("/api/agent/snapshot")) return snapshot;
+    return { ok: true, default_model: null, models: [] };
+  };
 }
 
 test("项目管理分区：有「导出对话历史」和「清空对话历史」按钮", async () => {
@@ -2001,17 +1194,17 @@ test("恢复 in-flight 期间切到其他分区：完成时不重渲当前分区
   findElementById("archived-restore-s1")._fire("click");
   await tickAsync(); // restore 请求 in-flight
 
-  // 用户切到模型分区（可能正在填 API Key）：设置分区状态并渲染模型表单。
+  // 用户切到模型分区（Task 8 过渡期：只读占位，不再渲染模型表单）。
   await modal.openSettingsModal("model");
   resolveRestore({ ok: true });
   await tickAsync();
   await tickAsync();
 
-  // 完成时不得把当前模型分区整体替换成项目管理内容（表单输入不丢）。
-  // 用 detail 直接层 className 区分：model 分区有 spd-test-row，danger 分区有
+  // 完成时不得把当前模型分区整体替换成项目管理内容（占位内容不丢）。
+  // 用 detail 直接层 className 区分：model 分区有迁移提示 spd-hint，danger 分区有
   // spd-archived-list（子元素的 id 在更深层，不适合直接层断言）。
   const detail = modal.getSettingsDetailForTest();
   const classes = detail.children.map((el) => String(el.className ?? ""));
-  assert.ok(classes.includes("spd-test-row"), "模型分区内容应保留");
+  assert.ok(classes.includes("spd-hint"), "模型分区占位内容应保留");
   assert.equal(classes.includes("spd-archived-list"), false, "不得重渲为项目管理分区");
 });

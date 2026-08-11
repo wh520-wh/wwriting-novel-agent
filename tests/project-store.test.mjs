@@ -16,15 +16,17 @@ test("createProject rejects unsafe slug before creating directories", async () =
   await assert.rejects(() => createProject(root, { slug: "bad\\name" }), /Invalid project slug/u);
 });
 
-test("new projects default to one active model and disabled stage overrides", async () => {
+test("new projects default to no active model and null stage overrides", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-model-config-"));
   const { projectRoot } = await createProject(root, {
     slug: "project"
   });
   const project = await loadProject(projectRoot);
-  assert.equal(project.active_model.provider, "mock");
-  assert.equal(project.active_model.model_name, "mock-writer");
-  assert.deepEqual(project.stage_overrides, { enabled: false });
+  // Task 8：未配置模型 = active_model null（用户面不再以 mock 兜底）
+  assert.equal(project.active_model, null);
+  assert.equal(project.default_writer_model, null);
+  assert.equal(project.default_reviewer_model, null);
+  assert.equal(project.stage_overrides, null);
 });
 
 test("createProjectAt initializes an explicitly selected empty directory", async () => {

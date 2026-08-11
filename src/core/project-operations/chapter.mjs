@@ -555,7 +555,8 @@ function buildCheckpoint({ project, chapterNo, checkpointId, artifact }) {
     stage: "completed",
     segment_no: null,
     model_config: {
-      active_model: project.active_model ?? { provider: "mock", model_name: project.default_writer_model ?? "mock-writer" },
+      // Task 8：未配置模型 = null，不再构造 mock 兜底（调用方按未配置处理）。
+      active_model: project.active_model ?? null,
       stage_overrides_enabled: false,
       writer: project.default_writer_model ?? null,
       reviewer: project.default_reviewer_model ?? null

@@ -473,7 +473,7 @@ test("切换模型：C 档模型切换被拒", async () => {
     assert.match(json.message, /不支持工具调用/);
     // 校验发生在写 project.yaml 之前：项目模型没被切过去
     const project = await loadProject(projectRoot);
-    assert.notEqual(project.active_model.model_name, "no-tools");
+    assert.notEqual(project.active_model?.model_name, "no-tools");
   } finally {
     await closeServer(server);
   }

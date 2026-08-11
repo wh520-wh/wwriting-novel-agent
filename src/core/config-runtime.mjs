@@ -4,10 +4,8 @@ import { workspaceIdForPath } from "./workspaces/store.mjs";
 import { resolveActiveModel } from "./model-reference.mjs";
 
 export const DEFAULT_CONFIG = {
-  active_model: {
-    provider: "mock",
-    model_name: "mock-writer"
-  },
+  // 未配置模型 = active_model: null（用户面不再以 mock 作为兜底）
+  active_model: null,
   stage_overrides: {
     enabled: false
     // 各 stage 覆盖示例：
@@ -193,10 +191,6 @@ export function normalizeConfigLayer(layer = {}, options = {}) {
     config.budget_config ??= {};
     copyIfDefined(config.budget_config, source, "max_model_calls");
     copyIfDefined(config.budget_config, source, "max_revision_rounds_per_chapter");
-  }
-  if (source.default_writer_model && !source.active_model) {
-    config.active_model ??= {};
-    config.active_model.model_name = source.default_writer_model;
   }
   if (options.policy) {
     copyIfDefined(config, source, "forbid_network");
