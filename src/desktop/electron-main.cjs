@@ -24,6 +24,22 @@ if (smokeMode) {
   app.commandLine.appendSwitch("disk-cache-size", "1");
 }
 
+// 应用单实例（Task 18）：请求单实例锁。拿不到锁说明已有实例在运行，
+// 本次启动直接退出；拿到锁则监听 second-instance —— 后续再次启动时
+// 恢复并聚焦已有实例的主窗口，然后退出本次启动。
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    const win = BrowserWindow.getAllWindows()[0];
+    if (win) {
+      if (win.isMinimized()) win.restore();
+      win.focus();
+    }
+  });
+}
+
 app.whenReady().then(async () => {
   installLocalizedApplicationMenu();
 
