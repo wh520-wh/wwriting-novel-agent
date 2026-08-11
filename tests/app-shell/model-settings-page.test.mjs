@@ -28,3 +28,17 @@ test("buildPageState 默认选中第一个", () => {
   const second = buildPageState(providers, "mimo");
   assert.equal(second.selected?.id, "mimo");
 });
+
+test("buildPageState 找不到所选 id 时回退到第一个供应商", () => {
+  const state = buildPageState(providers, "ghost");
+  assert.equal(state.selected?.id, "deepseek");
+});
+
+test("visibleModels(null/undefined) 返回空数组", () => {
+  assert.deepEqual(visibleModels(null), []);
+  assert.deepEqual(visibleModels(undefined), []);
+});
+
+test("pickProvider 空列表返回 null", () => {
+  assert.equal(pickProvider([], "x"), null);
+});

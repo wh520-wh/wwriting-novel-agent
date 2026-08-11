@@ -163,6 +163,7 @@ const { openSettingsModal, closeSettingsModal, renderSettingsProviders, renderSe
 // 表单交互（失焦保存/启停/删除/拉取/测试连接）由 Task 13-15 逐个挂到
 // saveProviderPatch/saveModelPatch 与新增 handler 上。
 const modelSettings = createModelSettingsPage({
+  showToast,
   onChanged: () => {
     // 触发对话模型选择器刷新（Task 16 接）。模型选择器「未配置」占位项点击经
     // surface 的 onOpenSettings("model") 进入本页（openSettingsOrModelPage 路由）。
@@ -175,9 +176,17 @@ const modelSettings = createModelSettingsPage({
 async function openSettingsOrModelPage(section) {
   if (!section || section === "model" || section === "settings") {
     if (refs.settingsScrim.classList.contains("show")) closeSettingsModal();
+    // Task 12 修复：从抽屉「模型配置」进入时先关抽屉——本页是更高层级 overlay
+    // （z-index 110 > 抽屉 scrim 40/drawer 50），留着会挡在页面下层还留键盘焦点。
+    // lastFocused 先置空，避免 closeDrawer 动画收尾把焦点抢回抽屉里的按钮
+    // （抽屉随后置 inert，focus() 本就是 no-op，双保险）。
+    if (refs.drawer.classList.contains("show")) {
+      lastFocused = null;
+      closeDrawer();
+    }
     lastFocused = document.activeElement;
     refs.modelSettingsPage.hidden = false;
-    refs.modelSettingsClose.focus?.();
+    refs.modelSettingsClose?.focus();
     await modelSettings.open();
     return;
   }
