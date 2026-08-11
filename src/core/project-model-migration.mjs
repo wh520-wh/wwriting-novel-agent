@@ -33,13 +33,18 @@ export async function loadProviderStoreReadOnly(secretsRoot) {
     const raw = await readJson(path.join(path.resolve(secretsRoot), PROVIDER_STORE_FILE), null);
     if (!raw || typeof raw !== "object" || raw.schema_version !== 2) return { providers: [] };
     return normalizeProviderStore(raw) ?? { providers: [] };
-  } catch {
+  } catch (error) {
+    // 真实 IO 失败（权限拒绝等）要与"尚无 v2 清单"可区分：缺失由 readJson 兜底，
+    // JSON 语法错误按空清单静默；其余错误告警后仍按空清单返回。
+    if (error?.code !== "ENOENT" && !(error instanceof SyntaxError)) {
+      console.warn(`[project-model-migration] 读取 ${PROVIDER_STORE_FILE} 失败，按空清单处理:`, error?.message ?? error);
+    }
     return { providers: [] };
   }
 }
 
 // 快照 → 引用：mock 归零；匹配（provider+base_url+model_name）转引用；其余保持字面。
-export async function migrateProjectActiveModel(activeModel, store) {
+export function migrateProjectActiveModel(activeModel, store) {
   if (!activeModel || typeof activeModel !== "object") return { active_model: activeModel ?? null, changed: false };
   if (activeModel.provider === "mock") return { active_model: null, changed: true };
   if (typeof activeModel.provider_id === "string" && typeof activeModel.model_id === "string") {
@@ -49,7 +54,7 @@ export async function migrateProjectActiveModel(activeModel, store) {
     for (const provider of store?.providers ?? []) {
       if (provider.status === "disabled") continue;
       if (String(provider.base_url).replace(/\/+$/u, "").toLowerCase() !== String(activeModel.base_url).replace(/\/+$/u, "").toLowerCase()) continue;
-      const model = provider.models.find((m) => m.model_name === activeModel.model_name && m.enabled !== false);
+      const model = provider.models?.find((m) => m.model_name === activeModel.model_name && m.enabled !== false);
       if (model) return { active_model: { provider_id: provider.id, model_id: model.id }, changed: true };
     }
   }
@@ -69,6 +74,8 @@ export async function migrateProjectFile(projectRoot, { workspaceStore, secretsR
     const active = await migrateProjectActiveModel(legacy.active_model ?? null, store);
     if (active.changed) {
       const next = { ...legacy, active_model: active.active_model };
+      // stage_overrides 仅在发生 active_model 写入时随写删除；若 active_model 已是
+      // 引用/未匹配，不触发写，stage_overrides 保留至 Task 9 彻底删除。
       if (legacy.stage_overrides) delete next.stage_overrides;
       await writeProject(projectRoot, next);
       changed = true;
