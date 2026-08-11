@@ -54,7 +54,7 @@ export async function ensurePresetProviders(root, { load = loadProviderStore, sa
         model_name: m.model_name,
         enabled: true,
         context_window: /\[1m\]$/iu.test(m.model_name) ? 1000000 : 256000,
-        ...(m.pricing ? { pricing: m.pricing } : {})
+        ...(m.pricing ? { pricing: { ...m.pricing } } : {})
       }))
     })),
     ...store.providers
@@ -64,6 +64,7 @@ export async function ensurePresetProviders(root, { load = loadProviderStore, sa
     seeded_preset_ids: [...new Set([...seededIds, ...missing.map((preset) => preset.id)])],
     providers
   };
+  // 注：种子为启动期一次性操作，未走 withStoreLock；与并发写互斥由调用时机保证（接线启动时如并发场景出现再收敛）
   await save(root, next);
   return { store: next, seeded: missing.length };
 }
