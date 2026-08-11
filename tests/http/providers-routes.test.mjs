@@ -97,6 +97,24 @@ test("非法 api_format 保存被拒", async (t) => {
   assert.equal(res.res.status, 400);
 });
 
+test("default 设默认：停用模型被拒（400 model_disabled）", async (t) => {
+  const { http } = await setup(t);
+  const created = await http.post("/api/settings/providers", {
+    name: "停用模型", base_url: "https://relay.example.com",
+    api_format: "openai-chat-completions", api_key_env: "OFF_KEY"
+  });
+  const providerId = created.data.provider.id;
+  // 直接以 enabled:false 创建停用模型（与前端「先停用再设默认」序列等价）
+  const added = await http.post(`/api/settings/providers/${providerId}/models`, { model_name: "gpt-4o", enabled: false });
+  assert.equal(added.res.status, 200);
+  const modelId = added.data.model.id;
+
+  const def = await http.post(`/api/settings/providers/${providerId}/models/${modelId}/default`);
+  assert.equal(def.res.status, 400);
+  assert.equal(def.data.code, "model_disabled");
+  assert.equal(def.data.ok, false);
+});
+
 test("pull-models 未配密钥时 400 且不发请求", async (t) => {
   const { http } = await setup(t);
   const created = await http.post("/api/settings/providers", {
