@@ -28,6 +28,11 @@ export function validateModelConfig(input) {
   }
   if (input?.stream !== undefined) config.stream = input.stream === true;
   if (input?.cache_mode !== undefined) config.cache_mode = String(input.cache_mode).trim();
+  // 提供商显示名（用户声明的厂商名，2026-08-11 新增）：非空才带，空串视为未填。
+  if (input?.provider_label !== undefined) {
+    const label = String(input.provider_label).trim();
+    if (label) config.provider_label = label;
+  }
   for (const field of ["max_context_tokens", "max_output_tokens", "timeout_ms", "total_deadline_ms"]) {
     if (input?.[field] !== undefined) {
       const value = Number(input[field]);

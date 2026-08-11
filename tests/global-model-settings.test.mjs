@@ -138,6 +138,57 @@ test("回归·同名 ID 不同 base_url 的模型保存后并存，互不覆盖�
   assert.equal(afterLegacy.models.length, 2, "同身份旧 id 条目应被替换，不新增");
 });
 
+test("回归·provider_label 随保存落盘并读回；改名只更新不新增（2026-08-11）", async () => {
+  const root = await tempRoot();
+  await upsertLocalModelProfile(root, {
+    provider: "openai-compatible",
+    model_name: "deepseek-v4-flash",
+    base_url: "https://opencode.ai/zen/go/v1",
+    api_key_env: "WWRITING_PROVIDER_API_KEY",
+    provider_label: "我的中转"
+  });
+  let store = await loadLocalModelProfiles(root);
+  assert.equal(store.models[0].provider_label, "我的中转", "provider_label 应落盘保留");
+  // 改厂商显示名：同一身份 → 原地更新，不产生新条目
+  await upsertLocalModelProfile(root, {
+    provider: "openai-compatible",
+    model_name: "deepseek-v4-flash",
+    base_url: "https://opencode.ai/zen/go/v1",
+    api_key_env: "WWRITING_PROVIDER_API_KEY",
+    provider_label: "改个名字"
+  });
+  store = await loadLocalModelProfiles(root);
+  assert.equal(store.models.length, 1, "改厂商显示名不产生新条目");
+  assert.equal(store.models[0].provider_label, "改个名字");
+  // 未填提供商时不得落空字段（旧行为保持）
+  await upsertLocalModelProfile(root, {
+    provider: "openai-compatible",
+    model_name: "mimo-v2.5",
+    base_url: "https://api.xiaomimimo.com/v1",
+    api_key_env: "XIAOMI_MIMO_API_KEY"
+  });
+  store = await loadLocalModelProfiles(root);
+  assert.equal(store.models.find((m) => m.model_name === "mimo-v2.5").provider_label, undefined, "未填提供商不落空字段");
+});
+
+test("saveGlobalModelProfile 透传 provider_label（校验白名单不丢字段）", async () => {
+  const secretsRoot = await tempRoot();
+  const { activeModel } = await saveGlobalModelProfile({
+    secretsRoot,
+    activeModel: {
+      provider: "openai-compatible",
+      model_name: "deepseek-v4-flash",
+      base_url: "https://opencode.ai/zen/go/v1",
+      api_key_env: "WWRITING_PROVIDER_API_KEY",
+      api_key: "sk-x",
+      provider_label: "我的中转"
+    }
+  });
+  assert.equal(activeModel.provider_label, "我的中转", "validateModelConfig 白名单应保留 provider_label");
+  const store = await loadLocalModelProfiles(secretsRoot);
+  assert.equal(store.models[0].provider_label, "我的中转", "保存后清单应含 provider_label");
+});
+
 test("全局保存模型：api_key 不落进清单文件", async () => {
   const secretsRoot = await tempRoot();
   const { saved, activeModel } = await saveGlobalModelProfile({

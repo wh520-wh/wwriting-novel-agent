@@ -59,6 +59,13 @@ export function providerDisplayName(activeModel = {}) {
   if (provider === "mock") {
     return "Mock";
   }
+  // 用户声明的厂商显示名（provider_label）优先——这是「已配置」列表里模型身份
+  // 的权威来源（2026-08-11 新增，借鉴 WHnovel 自由 name 但结构化：展示名 =
+  // 厂商名 + 模型 ID）。未声明时才回落到按真实地址推断。
+  const declaredLabel = typeof activeModel?.provider_label === "string" ? activeModel.provider_label.trim() : "";
+  if (declaredLabel) {
+    return declaredLabel;
+  }
   // 官方端点判定只看真实地址（包含匹配，兼容 /v1、端口与大小写变体），不凭
   // model_name 前缀猜——第三方中转（如 opencode.ai）上挂 deepseek-/mimo- 名号的
   // 模型不是官方，必须和官方条目在「已配置」列表里区分开（2026-08-11 修复）。

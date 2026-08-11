@@ -776,6 +776,103 @@ test("官方 api.deepseek.com 的已存模型：设置打开仍落在 DeepSeek �
   assert.equal(modal.getModelFieldValue("api_key_env"), "DEEPSEEK_API_KEY");
 });
 
+// ---------------------------------------------------------------------------
+// 提供商字段（2026-08-11 新增，借鉴 WHnovel 自由 name 但结构化）：
+// 展示名 = 提供商 + 模型 ID；默认官方预设用官方名、自定义用 base_url 主机，可改。
+// ---------------------------------------------------------------------------
+
+test("模型表单含「提供商」字段：官方预设默认官方名，自定义 tab 默认留空可自填", async () => {
+  const modal = createSettingsModalForTest({ getCurrentProjectRoot: () => "" });
+  await modal.openSettingsModal();
+  // 打开默认在 deepseek 官方 tab：提供商默认官方名。
+  assert.ok(findElementByLabel("提供商"), "表单应渲染「提供商」字段");
+  assert.equal(modal.getModelFieldValue("provider_label"), "DeepSeek 官方");
+  // 切到自定义 tab：无已保存模型 → 提供商为空，用户自定义输入。
+  await clickProviderTab("OpenAI 兼容 · 自定义");
+  assert.equal(modal.getModelFieldValue("provider_label"), "");
+});
+
+test("自定义 tab 展示已存模型时：提供商默认回填 base_url 主机", async () => {
+  const modal = createSettingsModalForTest({
+    getCurrentProjectRoot: () => "",
+    getJsonImpl: async () => ({
+      ok: true,
+      default_model: {
+        id: "deepseek-v4-flash@https://opencode.ai/zen/go/v1",
+        provider: "openai-compatible",
+        model_name: "deepseek-v4-flash",
+        base_url: "https://opencode.ai/zen/go/v1",
+        api_key_env: "WWRITING_PROVIDER_API_KEY"
+      },
+      models: []
+    })
+  });
+  await modal.openSettingsModal();
+  assert.equal(activeProviderTabName(), "OpenAI 兼容 · 自定义");
+  assert.equal(modal.getModelFieldValue("provider_label"), "opencode.ai");
+});
+
+test("已存条目的 provider_label 回填表单：用户声明的厂商名优先于 base_url 主机", async () => {
+  const modal = createSettingsModalForTest({
+    getCurrentProjectRoot: () => "",
+    getJsonImpl: async () => ({
+      ok: true,
+      default_model: {
+        id: "deepseek-v4-flash@https://opencode.ai/zen/go/v1",
+        provider: "openai-compatible",
+        model_name: "deepseek-v4-flash",
+        base_url: "https://opencode.ai/zen/go/v1",
+        api_key_env: "WWRITING_PROVIDER_API_KEY",
+        provider_label: "我的中转"
+      },
+      models: []
+    })
+  });
+  await modal.openSettingsModal();
+  assert.equal(modal.getModelFieldValue("provider_label"), "我的中转");
+});
+
+test("保存模型载荷携带 provider_label", async () => {
+  const calls = [];
+  const modal = createSettingsModalForTest({
+    getCurrentProjectRoot: () => "",
+    postJsonImpl: async (url, body) => { calls.push({ url, body }); return { ok: true }; }
+  });
+  await modal.openSettingsModal();
+  modal.setModelFieldsForTest({
+    model_name: "gpt-4o-mini",
+    provider_label: "我的中转",
+    base_url: "https://api.example.com/v1",
+    api_key: "sk-x",
+    api_key_env: "WWRITING_PROVIDER_API_KEY"
+  });
+  await modal.saveSettingsForTest();
+  const saved = calls.find((c) => c.url === "/api/settings/model-profile")?.body.active_model;
+  assert.ok(saved, "应调用 model-profile 保存路由");
+  assert.equal(saved.provider_label, "我的中转");
+});
+
+test("模型表单草稿：provider_label 随草稿保存与恢复", async () => {
+  const storage = createMockStorage();
+  const modal = createSettingsModalForTest({ storage, getCurrentProjectRoot: () => "" });
+  await modal.openSettingsModal();
+  await clickProviderTab("OpenAI 兼容 · 自定义");
+  modal.setModelFieldsForTest({
+    model_name: "gpt-4o-mini",
+    provider_label: "我的中转",
+    base_url: "https://api.example.com/v1",
+    api_key: "sk-draft",
+    api_key_env: "WWRITING_PROVIDER_API_KEY"
+  });
+  modal.closeSettingsModal();
+  const raw = storage.getItem("wwriting.settings.model.draft.custom");
+  assert.ok(raw, "应写入草稿");
+  assert.equal(JSON.parse(raw).provider_label, "我的中转", "草稿应携带 provider_label");
+  // 重开：草稿恢复 provider_label。
+  await modal.openSettingsModal();
+  assert.equal(modal.getModelFieldValue("provider_label"), "我的中转");
+});
+
 test("草稿恢复每 tab 每会话只生效一次：切走再切回不重放", async () => {
   // restoredDrafts 防重：首次进入 custom tab 恢复草稿后，用户编辑、切走再切回，
   // 不得把旧草稿重放回表单覆盖当前值。

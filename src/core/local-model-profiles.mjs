@@ -119,6 +119,7 @@ function normalizeModelProfile(value) {
     model_name: modelName
   };
   if (baseUrl) profile.base_url = baseUrl;
+  copyOptional(profile, value, "provider_label");
   copyOptional(profile, value, "api_key_env");
   copyOptional(profile, value, "cache_mode");
   copyOptional(profile, value, "max_context_tokens");

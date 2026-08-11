@@ -48,6 +48,24 @@ test("providerDisplayName 自定义兼容端点显示厂商名 + 主机", () => 
   assert.equal(providerDisplayName({ provider: "mock" }), "Mock");
 });
 
+test("providerDisplayName 用户声明的 provider_label 优先于任何推断（2026-08-11 新增字段）", () => {
+  // 自定义网关 + 用户自起厂商名：显示用户声明的名字，不再按 host 推断。
+  assert.equal(
+    providerDisplayName({ provider: "openai-compatible", base_url: "https://opencode.ai/zen/go/v1", model_name: "deepseek-v4-flash", provider_label: "我的中转" }),
+    "我的中转"
+  );
+  // 官方地址 + 用户声明：以用户声明为准。
+  assert.equal(
+    providerDisplayName({ provider: "openai-compatible", base_url: "https://api.deepseek.com", model_name: "deepseek-chat", provider_label: "DeepSeek 官方" }),
+    "DeepSeek 官方"
+  );
+  // 空白 provider_label 视为未声明，回落推断。
+  assert.equal(
+    providerDisplayName({ provider: "openai-compatible", base_url: "https://opencode.ai/zen/go/v1", model_name: "deepseek-v4-flash", provider_label: "   " }),
+    "OpenAI 兼容 · opencode.ai"
+  );
+});
+
 test("modelDisplayName 拼接标签与模型名（自定义条目与官方条目可区分）", () => {
   assert.equal(
     modelDisplayName({ provider: "openai-compatible", base_url: "https://opencode.ai/zen/go/v1", model_name: "deepseek-v4-flash" }),

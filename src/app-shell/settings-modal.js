@@ -96,6 +96,16 @@ function bindAddMenuDismissal(addWrap, syncAddMenuAria) {
 }
 
 
+// 从 base_url 提取主机名，用于「提供商」字段的默认值（自定义网关默认填主机，
+// 用户可改）。解析失败返回空串。
+function baseUrlHost(baseUrl) {
+  try {
+    return new URL(String(baseUrl ?? "")).host;
+  } catch {
+    return "";
+  }
+}
+
 export function createSettingsModal(ctx, options = {}) {
   // ctx provides: refs, getDashboard, getCurrentProjectRoot, showToast, loadDashboard,
   //   getLastFocused, setLastFocused
@@ -1359,7 +1369,9 @@ export function createSettingsModal(ctx, options = {}) {
         base_url: settingsFields.baseUrl?.input?.value?.trim() ?? "",
         api_key: settingsFields.apiKey?.input?.value?.trim() ?? "",
       };
-      if (draft.model_name || draft.base_url || draft.api_key) {
+      const providerDraft = settingsFields.providerLabel?.input?.value?.trim() ?? "";
+      if (providerDraft) draft.provider_label = providerDraft;
+      if (draft.model_name || draft.base_url || draft.api_key || providerDraft) {
         writeModelDraft(settingsProviderId, draft);
       } else {
         // 用户把字段清空后关闭：旧草稿一并清除，避免残留旧值误导。
@@ -1517,6 +1529,16 @@ export function createSettingsModal(ctx, options = {}) {
     settingsFields.modelError.className = "spd-field-error";
     settingsFields.modelError.hidden = true;
 
+    // 提供商（厂商显示名，2026-08-11 新增）：展示/区分的用户视角身份。默认从
+    // 已存条目回填，否则官方预设用官方名、自定义 tab 用 base_url 主机，均可改。
+    // 借鉴 WHnovel 的自由 name 但结构化：展示名 = 提供商 + 模型 ID。
+    const savedLabel = usingThisPreset && typeof active.provider_label === "string" ? active.provider_label.trim() : "";
+    const inferredLabel = preset.baseUrl ? preset.title : (usingThisPreset ? baseUrlHost(active.base_url ?? "") : "");
+    settingsFields.providerLabel = settingField("提供商", "text", {
+      value: savedLabel || inferredLabel,
+      placeholder: "例如 DeepSeek 官方、小米 MiMo 或你的网关名"
+    });
+
     settingsFields.baseUrl = settingField("API 地址 · 基础 URL", "text", {
       value: usingThisPreset && active.base_url ? active.base_url : preset.baseUrl
     });
@@ -1562,6 +1584,7 @@ export function createSettingsModal(ctx, options = {}) {
         if (typeof draft.model_name === "string" && draft.model_name) settingsFields.model.input.value = draft.model_name;
         if (typeof draft.base_url === "string" && draft.base_url) settingsFields.baseUrl.input.value = draft.base_url;
         if (typeof draft.api_key === "string" && draft.api_key) settingsFields.apiKey.input.value = draft.api_key;
+        if (typeof draft.provider_label === "string" && draft.provider_label) settingsFields.providerLabel.input.value = draft.provider_label;
       }
       restoredDrafts.add(provider.id);
     }
@@ -1595,6 +1618,7 @@ export function createSettingsModal(ctx, options = {}) {
 
     ctx.refs.settingsDetail.append(
       settingsFields.model.field, settingsFields.modelError,
+      settingsFields.providerLabel.field,
       settingsFields.baseUrl.field, settingsFields.baseUrlError, endpointHint,
       settingsFields.apiKey.field, settingsFields.apiKeyError, keyHint,
       testRow, connectionStatus
@@ -1891,6 +1915,7 @@ export function createSettingsModal(ctx, options = {}) {
       try {
         const activeModelPayload = compactObject({
           provider: PROVIDER_PRESETS[provider.preset].provider,
+          provider_label: settingsFields.providerLabel?.input?.value?.trim() ?? "",
           model_name: settingsFields.model.input.value.trim(),
           base_url: settingsFields.baseUrl.input.value.trim(),
           api_key: settingsFields.apiKey.input.value.trim(),
@@ -2010,6 +2035,7 @@ export function createSettingsModal(ctx, options = {}) {
     // 仅供测试：直接回填模型表单字段（避免测试里模拟 DOM 输入）。
     setModelFieldsForTest(values = {}) {
       if (settingsFields.model) settingsFields.model.input.value = values.model_name ?? "";
+      if (settingsFields.providerLabel) settingsFields.providerLabel.input.value = values.provider_label ?? "";
       if (settingsFields.baseUrl) settingsFields.baseUrl.input.value = values.base_url ?? "";
       if (settingsFields.apiKey) settingsFields.apiKey.input.value = values.api_key ?? "";
       if (values.api_key_env) currentApiKeyEnv = values.api_key_env;
@@ -2047,6 +2073,7 @@ export function createSettingsModal(ctx, options = {}) {
     getModelFieldValue(fieldName) {
       const byName = {
         model_name: settingsFields.model,
+        provider_label: settingsFields.providerLabel,
         base_url: settingsFields.baseUrl,
         api_key: settingsFields.apiKey
       };
