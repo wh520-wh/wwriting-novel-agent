@@ -1,12 +1,14 @@
 // tests/http/providers-routes.test.mjs
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRouter } from "../../src/core/http/router.mjs";
-import { startHttpServer } from "../helpers/http-test.mjs";
+import { startHttpServer, listenOnFetchSafePort, closeServer } from "../helpers/http-test.mjs";
 import { createProvidersRoutes } from "../../src/core/http/providers-routes.mjs";
+import { saveLocalSecrets } from "../../src/core/local-secrets.mjs";
 
 async function setup(t) {
   const secretsRoot = await mkdtemp(path.join(tmpdir(), "providers-"));
@@ -97,4 +99,30 @@ test("PATCH 携带 api_key 时落盘 secrets.json", async (t) => {
   assert.equal(secrets.MY_RELAY_KEY, "sk-real-secret");
   // 响应与持久化配置中不出现密钥明文
   assert.equal(JSON.stringify(data).includes("sk-real-secret"), false);
+});
+
+test("pull-models 成功路径：本地 mock /models 返回列表并过滤空 id", async (t) => {
+  const { http, secretsRoot } = await setup(t);
+  // 本地 mock 模型服务（fetch-safe 端口），仅应答 /v1/models
+  const server = createServer((req, res) => {
+    if (req.url === "/v1/models") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ data: [{ id: "a" }, { id: "b" }, { id: "" }] }));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  const port = await listenOnFetchSafePort(server);
+  t.after(() => closeServer(server));
+
+  await saveLocalSecrets(secretsRoot, { MOCK_KEY: "sk-mock" });
+  const created = await http.post("/api/settings/providers", {
+    name: "mock 中转", base_url: `http://127.0.0.1:${port}/v1`,
+    api_format: "openai-chat-completions", api_key_env: "MOCK_KEY"
+  });
+  const providerId = created.data.provider.id;
+  const pulled = await http.post(`/api/settings/providers/${providerId}/pull-models`, {});
+  assert.equal(pulled.res.status, 200);
+  assert.deepEqual(pulled.data.models, ["a", "b"]);
 });
