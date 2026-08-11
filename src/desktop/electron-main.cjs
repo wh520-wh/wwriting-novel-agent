@@ -25,8 +25,9 @@ if (smokeMode) {
 }
 
 // 应用单实例（Task 18）：请求单实例锁。拿不到锁说明已有实例在运行，
-// 本次启动直接退出；拿到锁则监听 second-instance —— 后续再次启动时
-// 恢复并聚焦已有实例的主窗口，然后退出本次启动。
+// 本次启动直接退出，不注册任何启动流程；拿到锁才注册 whenReady 启动
+// 流程并监听 second-instance —— 后续再次启动时恢复并聚焦已有实例的
+// 主窗口，然后退出本次启动。
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();
@@ -38,162 +39,162 @@ if (!gotSingleInstanceLock) {
       win.focus();
     }
   });
-}
 
-app.whenReady().then(async () => {
-  installLocalizedApplicationMenu();
+  app.whenReady().then(async () => {
+    installLocalizedApplicationMenu();
 
-  ipcMain.handle("wwriting:select-project-folder", async () => {
-    const result = await dialog.showOpenDialog({
-      title: "打开本地项目文件夹",
-      properties: ["openDirectory"]
-    });
-    if (result.canceled || result.filePaths.length === 0) {
-      return null;
-    }
-    return result.filePaths[0];
-  });
-
-  ipcMain.handle("wwriting:reveal-path", async (_event, targetPath) => {
-    const resolved = path.resolve(String(targetPath ?? ""));
-    // 安全：只允许打开 rootDir 下的路径
-    if (!resolved.startsWith(rootDir + path.sep) && resolved !== rootDir) {
-      throw new Error("路径不在项目工作区内");
-    }
-    try {
-      fs.mkdirSync(resolved, { recursive: true });
-    } catch (err) {
-      throw new Error(`无法创建目录: ${err.message}`);
-    }
-    const result = await shell.openPath(resolved);
-    if (result) throw new Error(`无法打开路径: ${result}`);
-    return true;
-  });
-
-  // 外部链接（Task 8）：main 进程重新解析 URL，只接受 http:/https: 才交给系统
-  // 默认浏览器；渲染进程侧已对 [data-external-link] preventDefault，这里不依赖
-  // 渲染进程自证，即使被绕过也只放行 http/https。
-  ipcMain.handle("wwriting:open-external-url", async (_event, rawUrl) => {
-    let url;
-    try {
-      url = new URL(String(rawUrl ?? ""));
-    } catch {
-      throw new Error("无效的链接");
-    }
-    if (url.protocol !== "http:" && url.protocol !== "https:") {
-      throw new Error("仅允许 http/https 链接");
-    }
-    await shell.openExternal(url.toString());
-    return true;
-  });
-
-  // 技能管理（Task 13）：选择技能文件夹 / 技能 ZIP 包（对话框只负责选路径，
-  // 校验与导入由服务端 importer 完成）。
-  ipcMain.handle("wwriting:select-skill-folder", async () => {
-    const result = await dialog.showOpenDialog({
-      title: "选择技能文件夹（含 SKILL.md）",
-      properties: ["openDirectory"]
-    });
-    if (result.canceled || result.filePaths.length === 0) {
-      return null;
-    }
-    return result.filePaths[0];
-  });
-
-  ipcMain.handle("wwriting:select-skill-zip", async () => {
-    const result = await dialog.showOpenDialog({
-      title: "选择技能 ZIP 包",
-      properties: ["openFile"],
-      filters: [{ name: "ZIP 档案", extensions: ["zip"] }]
-    });
-    if (result.canceled || result.filePaths.length === 0) {
-      return null;
-    }
-    return result.filePaths[0];
-  });
-
-  // 打开技能目录（Task 13）：main 进程自己计算 canonical 技能根，绝不接受渲染进程
-  // 传入任意 reveal 路径。global → %USERPROFILE%\.wwriting\skills；project →
-  // <校验过的项目根>\skills（项目根必须是真实 WWriting 项目，保留现有项目目录
-  // 安全规则）。scope 只允许 global / project。
-  ipcMain.handle("wwriting:reveal-skill-directory", async (_event, scope, projectRoot) => {
-    let target;
-    if (scope === "global") {
-      target = path.join(os.homedir(), ".wwriting", "skills");
-    } else if (scope === "project") {
-      const { validateProjectRoot } = await import(
-        pathToFileURL(path.join(rootDir, "src", "core", "app-dashboard.mjs")).href
-      );
-      const root = await validateProjectRoot(String(projectRoot ?? ""));
-      target = path.join(root, "skills");
-    } else {
-      throw new Error("无效的技能目录 scope");
-    }
-    try {
-      fs.mkdirSync(target, { recursive: true });
-    } catch (err) {
-      throw new Error(`无法创建目录: ${err.message}`);
-    }
-    const result = await shell.openPath(target);
-    if (result) throw new Error(`无法打开路径: ${result}`);
-    return true;
-  });
-
-  const { createAppShellServer } = await import(pathToFileURL(path.join(rootDir, "src", "core", "app-server.mjs")).href);
-  server = createAppShellServer({
-    workspaceRoot: process.env.WORKSPACE_ROOT || rootDir,
-    selectedProjectRoot: process.env.PROJECT_ROOT || null,
-    staticRoot: path.join(rootDir, "src", "app-shell"),
-    secretsRoot: app.getPath("userData"),
-    port
-  });
-  port = await listenWithFallback(server, port, "127.0.0.1");
-
-  await waitForServer(port);
-  if (smokeMode) {
-    const result = JSON.stringify({
-      ok: true,
-      desktopShell: "electron",
-      loaded: `http://127.0.0.1:${port}`
-    });
-    process.stdout.write(`${result}\n`, () => {
-      if (server) {
-        server.close();
-        server = null;
+    ipcMain.handle("wwriting:select-project-folder", async () => {
+      const result = await dialog.showOpenDialog({
+        title: "打开本地项目文件夹",
+        properties: ["openDirectory"]
+      });
+      if (result.canceled || result.filePaths.length === 0) {
+        return null;
       }
-      app.exit(0);
+      return result.filePaths[0];
     });
-    return;
-  }
 
-  const isDark = nativeTheme.shouldUseDarkColors;
-  const backgroundColor = windowColors(isDark).background;
-  const window = new BrowserWindow({
-    width: 1320,
-    height: 860,
-    minWidth: 980,
-    minHeight: 680,
-    show: true,
-    backgroundColor,
-    autoHideMenuBar: true,
-    ...desktopWindowChrome(process.platform, isDark),
-    webPreferences: {
-      preload: path.join(__dirname, "electron-preload.cjs"),
-      contextIsolation: true,
-      nodeIntegration: false
+    ipcMain.handle("wwriting:reveal-path", async (_event, targetPath) => {
+      const resolved = path.resolve(String(targetPath ?? ""));
+      // 安全：只允许打开 rootDir 下的路径
+      if (!resolved.startsWith(rootDir + path.sep) && resolved !== rootDir) {
+        throw new Error("路径不在项目工作区内");
+      }
+      try {
+        fs.mkdirSync(resolved, { recursive: true });
+      } catch (err) {
+        throw new Error(`无法创建目录: ${err.message}`);
+      }
+      const result = await shell.openPath(resolved);
+      if (result) throw new Error(`无法打开路径: ${result}`);
+      return true;
+    });
+
+    // 外部链接（Task 8）：main 进程重新解析 URL，只接受 http:/https: 才交给系统
+    // 默认浏览器；渲染进程侧已对 [data-external-link] preventDefault，这里不依赖
+    // 渲染进程自证，即使被绕过也只放行 http/https。
+    ipcMain.handle("wwriting:open-external-url", async (_event, rawUrl) => {
+      let url;
+      try {
+        url = new URL(String(rawUrl ?? ""));
+      } catch {
+        throw new Error("无效的链接");
+      }
+      if (url.protocol !== "http:" && url.protocol !== "https:") {
+        throw new Error("仅允许 http/https 链接");
+      }
+      await shell.openExternal(url.toString());
+      return true;
+    });
+
+    // 技能管理（Task 13）：选择技能文件夹 / 技能 ZIP 包（对话框只负责选路径，
+    // 校验与导入由服务端 importer 完成）。
+    ipcMain.handle("wwriting:select-skill-folder", async () => {
+      const result = await dialog.showOpenDialog({
+        title: "选择技能文件夹（含 SKILL.md）",
+        properties: ["openDirectory"]
+      });
+      if (result.canceled || result.filePaths.length === 0) {
+        return null;
+      }
+      return result.filePaths[0];
+    });
+
+    ipcMain.handle("wwriting:select-skill-zip", async () => {
+      const result = await dialog.showOpenDialog({
+        title: "选择技能 ZIP 包",
+        properties: ["openFile"],
+        filters: [{ name: "ZIP 档案", extensions: ["zip"] }]
+      });
+      if (result.canceled || result.filePaths.length === 0) {
+        return null;
+      }
+      return result.filePaths[0];
+    });
+
+    // 打开技能目录（Task 13）：main 进程自己计算 canonical 技能根，绝不接受渲染进程
+    // 传入任意 reveal 路径。global → %USERPROFILE%\.wwriting\skills；project →
+    // <校验过的项目根>\skills（项目根必须是真实 WWriting 项目，保留现有项目目录
+    // 安全规则）。scope 只允许 global / project。
+    ipcMain.handle("wwriting:reveal-skill-directory", async (_event, scope, projectRoot) => {
+      let target;
+      if (scope === "global") {
+        target = path.join(os.homedir(), ".wwriting", "skills");
+      } else if (scope === "project") {
+        const { validateProjectRoot } = await import(
+          pathToFileURL(path.join(rootDir, "src", "core", "app-dashboard.mjs")).href
+        );
+        const root = await validateProjectRoot(String(projectRoot ?? ""));
+        target = path.join(root, "skills");
+      } else {
+        throw new Error("无效的技能目录 scope");
+      }
+      try {
+        fs.mkdirSync(target, { recursive: true });
+      } catch (err) {
+        throw new Error(`无法创建目录: ${err.message}`);
+      }
+      const result = await shell.openPath(target);
+      if (result) throw new Error(`无法打开路径: ${result}`);
+      return true;
+    });
+
+    const { createAppShellServer } = await import(pathToFileURL(path.join(rootDir, "src", "core", "app-server.mjs")).href);
+    server = createAppShellServer({
+      workspaceRoot: process.env.WORKSPACE_ROOT || rootDir,
+      selectedProjectRoot: process.env.PROJECT_ROOT || null,
+      staticRoot: path.join(rootDir, "src", "app-shell"),
+      secretsRoot: app.getPath("userData"),
+      port
+    });
+    port = await listenWithFallback(server, port, "127.0.0.1");
+
+    await waitForServer(port);
+    if (smokeMode) {
+      const result = JSON.stringify({
+        ok: true,
+        desktopShell: "electron",
+        loaded: `http://127.0.0.1:${port}`
+      });
+      process.stdout.write(`${result}\n`, () => {
+        if (server) {
+          server.close();
+          server = null;
+        }
+        app.exit(0);
+      });
+      return;
     }
-  });
 
-  ipcMain.handle("wwriting:set-title-bar-theme", (_event, dark) => {
-    const overlay = desktopWindowChrome(process.platform, dark).titleBarOverlay;
-    if (overlay) {
-      window.setTitleBarOverlay(overlay);
-    }
-    window.setBackgroundColor(windowColors(dark).background);
-  });
+    const isDark = nativeTheme.shouldUseDarkColors;
+    const backgroundColor = windowColors(isDark).background;
+    const window = new BrowserWindow({
+      width: 1320,
+      height: 860,
+      minWidth: 980,
+      minHeight: 680,
+      show: true,
+      backgroundColor,
+      autoHideMenuBar: true,
+      ...desktopWindowChrome(process.platform, isDark),
+      webPreferences: {
+        preload: path.join(__dirname, "electron-preload.cjs"),
+        contextIsolation: true,
+        nodeIntegration: false
+      }
+    });
 
-  await window.loadURL(`http://127.0.0.1:${port}`);
-});
+    ipcMain.handle("wwriting:set-title-bar-theme", (_event, dark) => {
+      const overlay = desktopWindowChrome(process.platform, dark).titleBarOverlay;
+      if (overlay) {
+        window.setTitleBarOverlay(overlay);
+      }
+      window.setBackgroundColor(windowColors(dark).background);
+    });
+
+    await window.loadURL(`http://127.0.0.1:${port}`);
+  });
+}
 
 app.on("window-all-closed", () => {
   app.quit();
