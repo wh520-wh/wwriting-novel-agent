@@ -291,7 +291,7 @@ test("无项目测试连接：字段缺失仍返回逐字段错误", async () =>
   }
 });
 
-test("改全局模型后打开界面：已有项目的模型配置跟着变", async () => {
+test("改全局模型后打开界面：不再写回已有项目的模型快照", async () => {
   const { projectRoot, server, port } = await setupServerWithProject();
   try {
     // 项目先指向旧地址
@@ -320,9 +320,10 @@ test("改全局模型后打开界面：已有项目的模型配置跟着变", as
     assert.equal(dashboard.status, 200);
     await dashboard.text();
 
-    const synced = await loadProject(projectRoot);
-    assert.equal(synced.active_model.base_url, "https://api.deepseek.com");
-    assert.equal(synced.active_model.api_key_env, "DEEPSEEK_API_KEY");
+    // 任务 7：写回同步已删除，项目 active_model 快照不被全局清单改写
+    const unsynced = await loadProject(projectRoot);
+    assert.equal(unsynced.active_model.base_url, "https://old.example.com");
+    assert.equal(unsynced.active_model.api_key_env, "OLD_KEY_ENV");
   } finally {
     await closeServer(server);
   }

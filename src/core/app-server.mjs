@@ -200,10 +200,9 @@ export function createAppShellServer({
   const server = http.createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
     if (url.pathname === "/") {
-      // 打开应用首页即触发一次同步：界面渲染前 project.yaml 已是全局最新配置。
-      // 任务 6：先完成启动自动恢复路径的快照→引用迁移（见 selection 恢复块注释）。
+      // 任务 6：打开应用首页先完成启动自动恢复路径的快照→引用迁移（见 selection
+      // 恢复块注释）。迁移后再渲染首屏。
       if (startupModelMigration) await startupModelMigration();
-      await syncProjectModelFromGlobalSafe(selection.current, localSecretsRoot);
     }
     if (url.pathname.startsWith("/api/")) {
       void router.handle(request, response).catch(() => {});
@@ -319,16 +318,6 @@ async function writeCostReportIfDirty(entry, projectRoot) {
   if (calls === entry.lastWrittenCalls) return;
   await entry.costTracker.writeProjectReport(projectRoot);
   entry.lastWrittenCalls = calls;
-}
-
-async function syncProjectModelFromGlobalSafe(projectRoot, secretsRoot) {
-  if (!projectRoot || !secretsRoot) return;
-  try {
-    const { syncProjectModelFromGlobal } = await import("./http/settings-routes.mjs");
-    await syncProjectModelFromGlobal(projectRoot, secretsRoot);
-  } catch (error) {
-    console.warn("[app-server] 同步全局模型配置失败:", error?.message ?? error);
-  }
 }
 
 // ---------------------------------------------------------------------------
