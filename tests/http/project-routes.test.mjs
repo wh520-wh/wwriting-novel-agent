@@ -10,7 +10,7 @@
 //     保持旧响应契约；
 //   - 既有非 Agent 契约抽查：projects/list、projects/open、projects/init、
 //     research/search（网络未开 → 403 network_not_allowed）、settings/update、
-//     settings/model-secret、skills/catalog、output-styles。
+//     settings/test-connection、skills/catalog、output-styles。
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -223,12 +223,7 @@ test("既有契约抽查：projects/list、open、init、research、settings、s
   assert.equal(badPatch.res.status, 400);
   assert.equal(badPatch.data.code, "invalid_settings_patch");
 
-  // settings/model-secret：无 env 参数回落项目模型（mock 无 key → 空串）
-  const secret = await s.get("/api/settings/model-secret");
-  assert.equal(secret.res.status, 200);
-  assert.equal(secret.data.ok, true);
-  assert.equal(typeof secret.data.value, "string");
-
+  // settings/model-secret 已在 Task 17 cutover 随 v1 弹窗模型区块一并删除（无消费方）
   // settings/test-connection：候选模型有 api_key_env 但 secrets 无 key
   // → 400 configuration_missing（走重构后的统一 finally 清理路径）
   const probe = await s.post("/api/settings/test-connection", {

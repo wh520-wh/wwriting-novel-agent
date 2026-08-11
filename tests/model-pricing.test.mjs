@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildPricingTable, fillOfficialPricing, normalizePricing, resolvePricing } from "../src/core/model-pricing.mjs";
+import { fillOfficialPricing, normalizePricing, resolvePricing } from "../src/core/model-pricing.mjs";
 
 test("normalizePricing 接受正数价格并保留币种", () => {
   const p = normalizePricing({ input_per_million: 2, output_per_million: 8, cache_hit_per_million: 0.5 });
@@ -21,13 +21,6 @@ test("resolvePricing 精确匹配优先，其次最长前缀", () => {
   assert.equal(resolvePricing("deepseek-v4-pro", table).input_per_million, 3);
   assert.equal(resolvePricing("deepseek-v4-pro-max", table).input_per_million, 3);
   assert.equal(resolvePricing("mimo-v2.5", table), null);
-});
-
-test("buildPricingTable 从 active_model 取价", () => {
-  const table = buildPricingTable({
-    active_model: { model_name: "mimo-v2.5-pro", pricing: { input_per_million: 1, output_per_million: 4 } }
-  });
-  assert.ok(table["mimo-v2.5-pro"]);
 });
 
 test("fillOfficialPricing 为 v4-flash 补全官方人民币价（1.00/2.00/0.02）", () => {

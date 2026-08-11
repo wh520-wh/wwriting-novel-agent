@@ -1,8 +1,8 @@
 // 缓存折扣平台模式检测（D1，DeepSeek 专属层 + MiMo 适配——自动检测启用，用户无感知、不加界面标识）。
 //
 // 判据与 isDeepSeekMode 同风格：base_url 包含匹配（大小写不敏感）+ model_name 前缀。
-// settings-modal 的 detectProviderPreset 自 2026-08-11 起同样改用 base_url 包含匹配
-// （官方预设判定只认真实地址，不要求模型名前缀），与 providerDisplayName 口径一致；
+// providerDisplayName（settings-routes.mjs 模型档案展示）自 2026-08-11 起同样改用
+// base_url 包含匹配（官方预设判定只认真实地址，不要求模型名前缀），口径一致；
 // provider 字段恒为 openai-compatible，不可用作信号。
 //
 // isDeepSeekMode：base_url 含 api.deepseek.com + 模型前缀 deepseek-。

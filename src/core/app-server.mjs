@@ -238,10 +238,10 @@ export function createAppShellServer({
 
 // 任务 5 Step 4：有效工作区配置 + 引用解析。解析收进最底层 loadEffectiveWorkspaceConfig：
 // 引用→完整配置（provider 恒 openai-compatible，与 gateway adapter 分发一致），失败
-// 降级全局默认模型+note（resolution_note 字段供界面提示）；不再在此做
-// getDefaultLocalModelProfile 兜底（旧 model-profiles v1 读路径已由 modelStoreLoader
-// 的 v2 清单取代）。全局默认模型兜底同时注入 Runtime 的 workspaceConfigLoader 与
-// gateway adapter，保证 request.modelConfig 与 adapter 的 provider 分发一致。
+// 降级全局默认模型+note（resolution_note 字段供界面提示）。全局默认模型兜底同时
+// 注入 Runtime 的 workspaceConfigLoader 与 gateway adapter，保证 request.modelConfig
+// 与 adapter 的 provider 分发一致（v1 getDefaultLocalModelProfile 已在 Task 17 cutover
+// 删除；projects/init 与运行时兜底都改走 v2 store）。
 async function effectiveWorkspaceConfigFor(projectRoot, { workspaceStore, secretsRoot }) {
   return loadEffectiveWorkspaceConfig(projectRoot, {
     workspaceStore,

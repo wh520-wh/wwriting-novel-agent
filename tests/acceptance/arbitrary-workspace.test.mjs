@@ -212,20 +212,22 @@ test("普通目录模型切换后，模型请求 modelConfig 是所选模型且�
   });
   const opened = await app.post("/api/projects/open", { projectRoot });
   assert.equal(opened.res.status, 200);
-  // 先保存一个全局模型，再把它切给普通工作区
-  const saved = await app.post("/api/settings/model-profile", {
-    active_model: {
-      provider: "openai-compatible",
-      model_name: "deepseek-chat",
-      base_url: "https://api.deepseek.com",
-      api_key_env: "DEEPSEEK_API_KEY",
-      api_key: "sk-test-abc"
-    }
+  // 先保存一个全局模型（v2 providers 端点），再把它切给普通工作区
+  const created = await app.post("/api/settings/providers", {
+    name: "DeepSeek 官方",
+    base_url: "https://api.deepseek.com",
+    api_format: "openai-chat-completions",
+    api_key_env: "DEEPSEEK_API_KEY"
   });
-  assert.equal(saved.res.status, 200);
+  assert.equal(created.res.status, 200);
+  const providerId = created.data.provider.id;
+  const added = await app.post(`/api/settings/providers/${providerId}/models`, { model_name: "deepseek-chat" });
+  assert.equal(added.res.status, 200);
+  const modelId = added.data.model.id;
   const switched = await app.post("/api/settings/model-switch", {
     projectRoot,
-    model_id: "deepseek-chat"
+    provider_id: providerId,
+    model_id: modelId
   });
   assert.equal(switched.res.status, 200);
   const sent = await app.post("/api/agent/input", { projectRoot, text: "你好" });

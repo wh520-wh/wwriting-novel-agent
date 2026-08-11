@@ -16,7 +16,7 @@
 //   PATCH /api/agent/sessions/:sessionId     renameSession/archiveSession/restoreSession
 //   DELETE /api/agent/sessions/:sessionId?projectRoot  deleteSession(sessionId)
 //   GET  /api/project/events?afterSeq        connectEvents()（SSE 轮询流，断线指数退避重连）
-//   GET  /api/settings/models + /api/dashboard  fetchComposerOptions()（composer 三控件选项）
+//   GET  /api/settings/providers + /api/dashboard  fetchComposerOptions()（composer 三控件选项）
 //   POST /api/settings/model-switch            switchModel(modelId)（落盘项目默认模型）
 //   POST /api/settings/update                  updatePermissions(combo) / updateReasoningEffort(effort)
 //
@@ -258,14 +258,11 @@ export function createAgentApi({
   }
 
   // 模型切换即落盘为当前项目默认模型。Task 16：选择器 value 为 `${provider_id}/
-  // ${model_id}` 引用形态，拆分后按引用写项目（服务端校验清单可用+启用）；不含
-  // 斜杠的旧调用形状（v1 model_id）保持原契约，到 cutover 为止。
+  // ${model_id}` 引用形态，拆分后按引用写项目（服务端校验清单可用+启用）。
+  // Task 17 cutover：v1 model_id 旧形态兼容已删除，只接受引用形态。
   async function switchModel(modelId) {
     const raw = String(modelId ?? "");
     const slash = raw.indexOf("/");
-    if (slash <= 0) {
-      return postJson("/api/settings/model-switch", { projectRoot: root(), model_id: raw });
-    }
     return postJson("/api/settings/model-switch", {
       projectRoot: root(),
       provider_id: raw.slice(0, slash),

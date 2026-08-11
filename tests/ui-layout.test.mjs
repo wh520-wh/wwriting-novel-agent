@@ -3,7 +3,8 @@
 // 保留的布局基线：
 //   - 共享 1040px 内容列：AgentSurface 对话与 composer 使用 --content-column（agent.css）；
 //   - composer 菜单从触发器向上浮出，并保留 16px 视口安全区（agent.css）；
-//   - 设置弹窗只暴露普通作者真正需要的模型、写作和项目管理；
+//   - 设置弹窗只暴露普通作者真正需要的写作参数、技能和项目管理（模型配置在
+//     Task 12 起迁往独立的 model-settings-page，Task 17 cutover 后弹窗不再有模型分区）；
 //   - 主列结构：单一对话挂载点、顶部 drawer 入口、设置、阅读器、确定性工具；
 //   - 旧对话/任务卡/准备卡结构与样式不得残留。
 import assert from "node:assert/strict";
@@ -80,9 +81,12 @@ test("app.js 不再维护 Agent 状态与业务正则", () => {
 
 test("设置弹窗不暴露旧架构和专家配置入口", () => {
   const sections = settingsSource.match(/const SETTINGS_SECTIONS = \[([\s\S]*?)\];/u)?.[1] ?? "";
-  assert.match(sections, /id:\s*"model"/u);
   assert.match(sections, /id:\s*"writing"/u);
+  assert.match(sections, /id:\s*"skills"/u);
   assert.match(sections, /id:\s*"danger"/u);
+  // Task 17 cutover：模型分区已从设置弹窗整体删除（迁往 model-settings-page，
+  // 弹窗不得再渲染模型相关 UI / 处理 model section）。
+  assert.doesNotMatch(sections, /id:\s*"model"/u);
   assert.doesNotMatch(sections, /gates|research|permissions|质量门禁|联网搜索|权限与确认/u);
   assert.doesNotMatch(settingsSource, /预算上限|成本上限|token 总量上限|写作温度|联网搜索\/抓取权限/u);
   assert.doesNotMatch(cssSource, /\.spd-radio-(?:group|option|tx|warn)/u, "已删除的权限表单样式不应残留");

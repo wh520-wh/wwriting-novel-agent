@@ -7,9 +7,8 @@
 // 迁移（resolveModelCapabilities / registerProviderCapabilityResolver /
 // writingRequiredCapabilitiesOk），供 openai-compatible.mjs 在请求构造层消费。
 //
-// 旧生产路径（provider-adapters.mjs、global-model-settings.mjs）在 Task 9
-// cutover 前保持原样，本模块不修改它们也不被它们 import；旧路径与新路径各自
-// 持有独立注册表，互不干扰。
+// 旧生产路径（provider-adapters.mjs、v1 全局模型设置模块）已在 Task 9 /
+// Task 17 删除，本模块是唯一能力判定源。
 
 const PROVIDER_CAPABILITY_RESOLVERS = [];
 

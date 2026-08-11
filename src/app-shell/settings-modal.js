@@ -1,49 +1,20 @@
 import { icon } from "./icons.js";
-import { compactObject, resolveModelEndpoint } from "./utils.js";
+import { compactObject } from "./utils.js";
 import { deleteJson, getJson, postJson, withProjectScope } from "./api-client.js";
 import { renderMarkdown } from "./markdown-lite.mjs";
 import { motion } from "./motion-runtime.js";
-import { formatConnectionStatus, submitModelConnectionTest } from "./settings-connection.mjs";
 
 // Re-export so consumers that already `import { ... } from "./settings-modal.js"`
-// continue to work. The pure helpers themselves live in ./settings-connection.mjs
-// so they can be tested without DOM-bound modules.
-export { formatConnectionStatus, submitModelConnectionTest } from "./settings-connection.mjs";
-
-const PROVIDER_PRESETS = {
-  deepseek: { title: "DeepSeek 官方", provider: "openai-compatible", baseUrl: "https://api.deepseek.com", apiKeyEnv: "DEEPSEEK_API_KEY", models: ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat"] },
-  mimo: { title: "小米 MiMo 官方", provider: "openai-compatible", baseUrl: "https://api.xiaomimimo.com/v1", apiKeyEnv: "XIAOMI_MIMO_API_KEY", models: ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro"] },
-  custom: { title: "自定义", provider: "openai-compatible", baseUrl: "", apiKeyEnv: "WWRITING_PROVIDER_API_KEY", models: ["custom-model"] }
-};
-
-const SETTINGS_PROVIDERS = [
-  { id: "deepseek", name: "DeepSeek · 深度求索", short: "DS", color: "#4d6bfe", preset: "deepseek" },
-  { id: "mimo", name: "小米 MiMo 官方", short: "Mi", color: "#ff6a00", preset: "mimo" },
-  { id: "custom", name: "OpenAI 兼容 · 自定义", short: "AI", color: "#10a37f", preset: "custom" }
-];
+// continue to work. The pure helper itself lives in ./settings-connection.mjs
+// so it can be tested without DOM-bound modules. Task 17 cutover：模型区块已整体
+// 删除，模型连接提交 helper 不再 re-export（新设置页自行调用 test-connection）。
+export { formatConnectionStatus } from "./settings-connection.mjs";
 
 const SETTINGS_SECTIONS = [
-  { id: "model", label: "模型与密钥", icon: "settings", ready: true },
   { id: "writing", label: "写作参数", icon: "compose", ready: true },
   { id: "skills", label: "Agent 技能", icon: "skill", ready: true },
   { id: "danger", label: "项目管理", icon: "folder", ready: true }
 ];
-
-// 模型分区表单草稿（Task 7）：关闭设置时把未保存的 model_name/base_url/api_key
-// 写入 localStorage，重开时恢复（草稿存在时优先于已保存模型回填）。key 带供应商
-// tab id（settingsProviderId），草稿按 tab 隔离。api_key 明文存本地是既有惯例
-// （本地个人使用；服务端密钥槽也以明文落盘）。
-const MODEL_DRAFT_STORAGE_PREFIX = "wwriting.settings.model.draft";
-
-// 浏览器默认 localStorage 的取用要 try/catch：sandboxed iframe 里访问
-// globalThis.localStorage 的 getter 可能抛 SecurityError，不能假设访问安全。
-function safeLocalStorage() {
-  try {
-    return typeof globalThis.localStorage !== "undefined" ? globalThis.localStorage : null;
-  } catch {
-    return null;
-  }
-}
 
 // 「已归档对话」归档时间展示格式（Task 10）：模块级单例避免每次渲染新建
 // Intl.DateTimeFormat；hour12:false 显式锁定 24 小时制，避免个别环境 zh-CN 默认
@@ -96,16 +67,6 @@ function bindAddMenuDismissal(addWrap, syncAddMenuAria) {
 }
 
 
-// 从 base_url 提取主机名，用于「提供商」字段的默认值（自定义网关默认填主机，
-// 用户可改）。解析失败返回空串。
-function baseUrlHost(baseUrl) {
-  try {
-    return new URL(String(baseUrl ?? "")).host;
-  } catch {
-    return "";
-  }
-}
-
 export function createSettingsModal(ctx, options = {}) {
   // ctx provides: refs, getDashboard, getCurrentProjectRoot, showToast, loadDashboard,
   //   getLastFocused, setLastFocused
@@ -119,14 +80,13 @@ export function createSettingsModal(ctx, options = {}) {
         return window.confirm(message);
       }
       return true;
-    },
-    // 模型表单草稿的存储后端（可注入以便测试；浏览器默认 localStorage）。
-    // node 测试环境无 localStorage 时回退 null → 草稿静默降级为不持久化。
-    storage = safeLocalStorage()
+    }
   } = options;
 
-  let settingsProviderId = "deepseek";
-  let settingsSection = "model";
+  let settingsSection = "writing";
+  // 保存序号：runSave 的「已保存」关闭定时器带序号，连续保存时旧定时器失效，
+  // 不会关闭新弹窗或覆盖新按钮文案。
+  let saveSequence = 0;
   // 技能管理 scope（Task 13）：segmented control 的当前目录范围。
   let skillsScope = "global";
   // 技能 catalog 快照（settings 的 GET /api/skills/catalog）。
@@ -140,81 +100,7 @@ export function createSettingsModal(ctx, options = {}) {
   // 清空确认层（settings 内最上层）的节点引用与文档级 Esc 监听。
   let clearConfirmRef = { layer: null, ack: null, confirmBtn: null, error: null };
   let removeClearConfirmDismissal = null;
-  // 模型清单来自全局（~/.wwriting/model-profiles.json），与项目无关。
-  // 打开设置时拉一次，保存/删除/选用后刷新。
-  let globalModels = { default_model: null, models: [] };
   const settingsFields = {};
-  // 表单草稿（Task 7）：已恢复草稿的供应商 tab 集合——同一打开会话内每个 tab
-  // 只恢复一次，避免来回切 tab 时用旧草稿覆盖用户正在编辑的新值。
-  const restoredDrafts = new Set();
-  // 保存成功后置位：700ms 后的自动关闭不得把刚保存的值重写回草稿。
-  let draftWriteSuppressed = false;
-  // connection-test state machine: "idle" | "testing" | "success" | "failure" | "aborted" | "saving"
-  let connectionState = "idle";
-  // 保存序号：runSave 的「已保存」关闭定时器带序号，连续保存时旧定时器失效，
-  // 不会关闭新弹窗或覆盖新按钮文案。
-  let saveSequence = 0;
-  // Single in-flight AbortController per modal so closing/switching cancels cleanly.
-  let connectionAbortController = null;
-  // 密钥槽是供应商实现细节，不暴露给普通用户；预设与已保存模型在此保留其槽名。
-  let currentApiKeyEnv = PROVIDER_PRESETS.deepseek.apiKeyEnv;
-  // 「当前已生效模型」快照（模型切换确认的基线）：打开设置时从项目/全局默认捕获。
-  // 模型变更比较只含 model_name 与 base_url——API Key/环境变量变更是凭据修复，
-  // 不改变文风语义，不需要确认。
-  const MODEL_SWITCH_CONFIRM_COPY = "保存将把此模型设为默认，切换后将由新模型继续，本章文风可能变化。继续？";
-  const savedModelRef = { current: null };
-
-  // 模型表单草稿读写（Task 7）。storage 不可用（node 测试无 localStorage /
-  // 隐私模式）时静默降级：不抛错、不持久化，真实浏览器默认行为不受影响。
-  function modelDraftKey(providerId) {
-    return `${MODEL_DRAFT_STORAGE_PREFIX}.${providerId}`;
-  }
-  function readModelDraft(providerId) {
-    if (!storage) return null;
-    try {
-      const raw = storage.getItem(modelDraftKey(providerId));
-      if (!raw) return null;
-      const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === "object" ? parsed : null;
-    } catch {
-      return null;
-    }
-  }
-  function writeModelDraft(providerId, values) {
-    if (!storage) return;
-    try {
-      storage.setItem(modelDraftKey(providerId), JSON.stringify(values));
-    } catch { /* storage 不可用（隐私模式配额等）时草稿静默降级 */ }
-  }
-  function clearModelDraft(providerId) {
-    if (!storage) return;
-    try {
-      storage.removeItem(modelDraftKey(providerId));
-    } catch { /* ignore */ }
-  }
-
-  async function fetchModelSecret(envName) {
-    try {
-      const data = await getJsonImpl(`/api/settings/model-secret?env=${encodeURIComponent(envName ?? "")}`);
-      return data.value ?? "";
-    } catch {
-      return "";
-    }
-  }
-
-  // 拉取全局模型清单（Task 4 的 GET /api/settings/models）。失败时回到空清单，
-  // 表单仍能用预设默认值渲染，不阻塞设置面板打开。
-  async function fetchGlobalModels() {
-    try {
-      const result = await getJsonImpl("/api/settings/models");
-      if (result?.ok) {
-        globalModels = { default_model: result.default_model ?? null, models: result.models ?? [] };
-      }
-    } catch {
-      globalModels = { default_model: null, models: [] };
-    }
-    return globalModels;
-  }
 
   async function fetchOutputStyles() {
     try {
@@ -229,35 +115,16 @@ export function createSettingsModal(ctx, options = {}) {
     }
   }
 
-  // section 可选：快捷 rail / Agent 斜杠命令（/settings、/model）可指定打开的分区；
-  // 非法值回落 model。
-  async function openSettingsModal(section = "model") {
-    settingsSection = SETTINGS_SECTIONS.some((s) => s.id === section) ? section : "model";
-    // 新一次打开：允许恢复草稿（每个 tab 各一次）、允许关闭时写入草稿。
-    restoredDrafts.clear();
-    draftWriteSuppressed = false;
-    // 模型清单来自全局配置，与项目无关：先拉一次，没打开项目时表单也能显示已配好的模型。
-    await fetchGlobalModels();
-    const dashboard = ctx.getDashboard();
-    // 有项目时以项目当前模型为准；没项目时退回全局默认模型。
-    const activeModel = dashboard?.project?.active_model ?? globalModels.default_model;
-    if (activeModel) {
-      settingsProviderId = detectProviderPreset(activeModel);
-    }
-    // 模型切换确认的基线：保存时若 model_name/base_url 与之不同且任务进行中则弹确认。
-    savedModelRef.current = activeModel
-      ? { model_name: activeModel.model_name ?? null, base_url: activeModel.base_url ?? null }
-      : null;
-    // Cancel any in-flight test from a previous session and clear temporary state.
-    resetConnectionState();
-    ctx.refs.settingsSearch.value = "";
+  // section 可选：Agent 斜杠命令可指定打开的分区（模型分区已迁往新设置页，
+  // app.js 的 openSettingsOrModelPage 负责分流）；非法值回落第一个分区。
+  async function openSettingsModal(section = "writing") {
+    settingsSection = SETTINGS_SECTIONS.some((s) => s.id === section) ? section : SETTINGS_SECTIONS[0].id;
     renderSectionNav();
     renderSectionBody();
     ctx.setLastFocused(document.activeElement);
     ctx.refs.settingsScrim.removeAttribute("inert");
     ctx.refs.settingsScrim.classList.add("show");
     motion.openModal(ctx.refs.settingsScrim, document.querySelector("#settings-modal"));
-    if (settingsSection === "model") ctx.refs.settingsSearch.focus();
   }
 
   function setSettingsSection(next) {
@@ -300,16 +167,6 @@ export function createSettingsModal(ctx, options = {}) {
   }
 
   function renderSectionBody() {
-    if (settingsSection === "model") {
-      // Task 8 过渡期：模型配置迁往新的供应商管理页面（Task 12 建新页并改入口）。
-      // 旧弹窗模型区块改为只读占位，不再渲染模型表单 / 已配置清单 / 测试连接，
-      // 保存按钮禁用。detectProviderPreset、saveModelSection、renderSettingsDetail
-      // 等模型区块代码保留到 cutover 统一删除，此处不再被调用。
-      renderModelMigrationPlaceholder();
-      ctx.refs.settingsSave.disabled = true;
-      ctx.refs.settingsSave.textContent = "无需保存";
-      return;
-    }
     if (settingsSection === "writing") {
       if (ctx.getDashboard()?.hasProject === true) {
         void renderWritingSection();
@@ -341,26 +198,6 @@ export function createSettingsModal(ctx, options = {}) {
       ctx.refs.settingsSave.textContent = "无需保存";
       return;
     }
-  }
-
-  // Task 8 过渡期：旧弹窗模型区块的只读占位。清空右侧详情与左侧模型清单，
-  // 只显示迁移提示（新供应商管理页面由 Task 12 建立并改入口）。
-  function renderModelMigrationPlaceholder() {
-    ctx.refs.settingsDetail.replaceChildren();
-    ctx.refs.settingsProviderList.replaceChildren();
-    const head = document.createElement("header");
-    head.className = "spd-head";
-    const ic = document.createElement("span");
-    ic.className = "spd-av lg";
-    ic.append(icon("settings", 16));
-    const h3 = document.createElement("h3");
-    h3.textContent = "模型与密钥";
-    head.append(ic, h3);
-    ctx.refs.settingsDetail.append(head);
-    const note = document.createElement("p");
-    note.className = "spd-hint";
-    note.textContent = "模型设置已迁移到新的供应商管理页面，请点击上方“模型设置”进入";
-    ctx.refs.settingsDetail.append(note);
   }
 
   // 旧版小说项目专属分区（写作参数/项目管理）在普通文件夹（hasProject:false）
@@ -1373,30 +1210,6 @@ export function createSettingsModal(ctx, options = {}) {
   function closeSettingsModal() {
     // 清空确认层随设置弹窗一起关闭（X/关闭/遮罩/Esc 任一路径都先关嵌套层）。
     closeClearHistoryConfirm();
-    // Closing the modal aborts any in-flight connection test and resets the
-    // connection status state machine. The key the user typed stays in the
-    // field; Task 7 的草稿会在下面持久化它，重开时回填。
-    resetConnectionState();
-    // Task 7：关闭时把模型分区当前输入存为本地草稿（按供应商 tab 隔离），
-    // 重开时恢复，避免「退出设置窗口后所有输入要重输」。不设分区守卫：用户在
-    // 模型分区填完表单后切到别的分区再关闭，settingsFields.model 仍持有输入值
-    // （其他分区不重赋值这些字段），必须照样写入。保存成功后的自动关闭不重写
-    // （saveModelSection 成功路径已清除草稿并置位抑制）。
-    if (!draftWriteSuppressed && settingsFields.model?.input) {
-      const draft = {
-        model_name: settingsFields.model.input.value.trim(),
-        base_url: settingsFields.baseUrl?.input?.value?.trim() ?? "",
-        api_key: settingsFields.apiKey?.input?.value?.trim() ?? "",
-      };
-      const providerDraft = settingsFields.providerLabel?.input?.value?.trim() ?? "";
-      if (providerDraft) draft.provider_label = providerDraft;
-      if (draft.model_name || draft.base_url || draft.api_key || providerDraft) {
-        writeModelDraft(settingsProviderId, draft);
-      } else {
-        // 用户把字段清空后关闭：旧草稿一并清除，避免残留旧值误导。
-        clearModelDraft(settingsProviderId);
-      }
-    }
     ctx.refs.settingsScrim.dataset.closing = "true";
     ctx.refs.settingsScrim.classList.remove("show");
     ctx.refs.settingsScrim.setAttribute("inert", "");
@@ -1410,360 +1223,8 @@ export function createSettingsModal(ctx, options = {}) {
     });
   }
 
-  function renderSettingsProviders() {
-    // 已存模型清单——比供应商预设优先展示。
-    const savedSection = buildSavedModelSection(globalModels.models);
-    ctx.refs.settingsProviderList.replaceChildren(savedSection);
-  }
 
-  // 私有：左栏清单 = 「已配置」已存模型（可选用/删除）+「新增供应商」模板入口。
-  // Task 7：无已配置模型时也渲染「已配置」分组与「尚未配置模型」空态说明，
-  // 让用户清楚保存未生效时问题出在哪，而不是只见「新增供应商」入口。
-  function buildSavedModelSection(models) {
-    const frag = document.createDocumentFragment();
-    const heading = document.createElement("div");
-    heading.className = "sp-list-heading";
-    heading.textContent = "已配置";
-    frag.append(heading);
-    if (models?.length > 0) {
-      for (const model of models) {
-        const row = document.createElement("div");
-        row.className = "sp-saved-item";
-        row.dataset.modelId = model.id;
-        row.dataset.modelName = model.model_name;
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "sp-saved-btn";
-        btn.textContent = model.display ?? model.model_name;
-        btn.addEventListener("click", () => { void selectSavedModel(model).catch((error) => ctx.showToast(error.message, "error")); });
-        const del = document.createElement("button");
-        del.type = "button";
-        del.className = "sp-saved-del";
-        del.setAttribute("aria-label", `删除 ${model.display ?? model.model_name}`);
-        del.textContent = "×";
-        del.addEventListener("click", (e) => { e.stopPropagation(); void deleteSavedModel(model.id).catch((error) => ctx.showToast(error.message, "error")); });
-        row.append(btn, del);
-        frag.append(row);
-      }
-    } else {
-      const empty = document.createElement("div");
-      empty.className = "sp-saved-empty spd-hint";
-      empty.textContent = "尚未配置模型";
-      frag.append(empty);
-    }
-    const divider = document.createElement("div");
-    divider.className = "sp-list-heading";
-    divider.textContent = "新增供应商";
-    frag.append(divider);
-    // 原有静态供应商列表（DeepSeek / MiMo / 自定义），现在作为「新增」模板入口
-    const q = ctx.refs.settingsSearch.value.trim().toLowerCase();
-    const list = SETTINGS_PROVIDERS.filter((p) => p.name.toLowerCase().includes(q));
-    for (const provider of list) {
-      const button = document.createElement("button");
-      button.className = `sp-item${provider.id === settingsProviderId ? " on" : ""}`;
-      button.type = "button";
-      const av = document.createElement("span");
-      av.className = "sp-av";
-      av.style.background = provider.color;
-      av.textContent = provider.short;
-      const name = document.createElement("span");
-      name.className = "sp-name";
-      name.textContent = provider.name;
-      button.append(av, name);
-      button.addEventListener("click", async () => {
-        const previousEnv = currentApiKeyEnv;
-        const previousKey = settingsFields.apiKey?.input?.value ?? "";
-        settingsProviderId = provider.id;
-        renderSettingsProviders();
-        await renderSettingsDetail();
-        // Restore the key the user was typing if the env name did not change.
-        // Different env names mean different providers/keys, so we intentionally
-        // leave the field empty there.
-        if (previousEnv && previousKey && currentApiKeyEnv === previousEnv) {
-          if (settingsFields.apiKey?.input && !settingsFields.apiKey.input.value) {
-            settingsFields.apiKey.input.value = previousKey;
-          }
-        }
-      });
-      frag.append(button);
-    }
-    return frag;
-  }
-
-  // 选用已存模型：设为全局默认，并把它的字段回填到右侧表单。
-  // 「选用」是显式单点动作，语义即「立即切换」，不重复弹确认（模型切换确认只
-  // 挂在保存路径；若未来要求一致，在此处加同一守卫即可）。
-  async function selectSavedModel(model) {
-    await postJsonImpl("/api/settings/model-select", { model_id: model.id });
-    await fetchGlobalModels();
-    settingsProviderId = detectProviderPreset(model);
-    // 表单回填为刚选用的模型：保存时以此为基线，避免「选用后立即保存」重复确认。
-    savedModelRef.current = {
-      model_name: model.model_name ?? null,
-      base_url: model.base_url ?? null
-    };
-    renderSettingsProviders();
-    await renderSettingsDetail();
-  }
-
-  // 删除已存模型：从全局清单移除，并同步刷新左栏列表与右侧表单，
-  // 避免删除当前展示/默认模型后表单残留已删模型的字段（保存时把模型「复活」回清单）。
-  async function deleteSavedModel(modelId) {
-    await postJsonImpl("/api/settings/model-remove", { model_id: modelId });
-    await fetchGlobalModels();
-    renderSettingsProviders();
-    await renderSettingsDetail();
-  }
-
-  async function renderSettingsDetail() {
-    const provider = SETTINGS_PROVIDERS.find((p) => p.id === settingsProviderId) ?? SETTINGS_PROVIDERS[0];
-    const preset = PROVIDER_PRESETS[provider.preset];
-    const dashboard = ctx.getDashboard();
-    // 模型字段优先用全局清单里的默认模型：没有项目时也要能显示已配好的模型。
-    const globalDefault = globalModels.default_model;
-    // globalDefault 是 buildModelProfile 的输出（app-server），已含本表单要用的
-    // provider/model_name/base_url/api_key_env，无需再投影一份。
-    const active = dashboard?.project?.active_model ?? globalDefault ?? {};
-    const profile = dashboard?.model_profile ?? globalDefault ?? {};
-    const usingThisPreset = detectProviderPreset(active) === provider.id;
-
-    ctx.refs.settingsDetail.replaceChildren();
-    const head = document.createElement("header");
-    head.className = "spd-head";
-    const av = document.createElement("span");
-    av.className = "sp-av lg";
-    av.style.background = provider.color;
-    av.textContent = provider.short;
-    const h3 = document.createElement("h3");
-    h3.textContent = provider.name;
-    head.append(av, h3);
-    ctx.refs.settingsDetail.append(head);
-
-    settingsFields.model = settingField("模型", "model-id", {
-      options: preset.models.includes(active.model_name) ? preset.models : (usingThisPreset && active.model_name ? [active.model_name, ...preset.models] : preset.models),
-      value: usingThisPreset ? active.model_name : preset.models[0],
-      placeholder: "输入模型 ID，例如 deepseek-chat"
-    });
-    settingsFields.modelError = document.createElement("div");
-    settingsFields.modelError.className = "spd-field-error";
-    settingsFields.modelError.hidden = true;
-
-    // 提供商（厂商显示名，2026-08-11 新增）：展示/区分的用户视角身份。默认从
-    // 已存条目回填，否则官方预设用官方名、自定义 tab 用 base_url 主机，均可改。
-    // 借鉴 WHnovel 的自由 name 但结构化：展示名 = 提供商 + 模型 ID。
-    const savedLabel = usingThisPreset && typeof active.provider_label === "string" ? active.provider_label.trim() : "";
-    const inferredLabel = preset.baseUrl ? preset.title : (usingThisPreset ? baseUrlHost(active.base_url ?? "") : "");
-    settingsFields.providerLabel = settingField("提供商", "text", {
-      value: savedLabel || inferredLabel,
-      placeholder: "例如 DeepSeek 官方、小米 MiMo 或你的网关名"
-    });
-
-    settingsFields.baseUrl = settingField("API 地址 · 基础 URL", "text", {
-      value: usingThisPreset && active.base_url ? active.base_url : preset.baseUrl
-    });
-    settingsFields.baseUrlError = document.createElement("div");
-    settingsFields.baseUrlError.className = "spd-field-error";
-    settingsFields.baseUrlError.hidden = true;
-    const endpointHint = document.createElement("div");
-    endpointHint.className = "spd-hint";
-    settingsFields.endpointHint = endpointHint;
-
-    // 已保存的 key 按「正在编辑的供应商」的 env 回填进输入框：
-    // 打开设置即可看到完整 key，可用眼睛按钮查看、复制按钮复制。
-    // （本地个人使用，不做遮罩隐藏。）
-    const apiKeyEnvValue = usingThisPreset && active.api_key_env ? active.api_key_env : preset.apiKeyEnv;
-    currentApiKeyEnv = apiKeyEnvValue;
-    const savedForEnv = (globalModels.models ?? []).find((model) => model.api_key_env && model.api_key_env === apiKeyEnvValue);
-    const hasSavedKey = savedForEnv?.api_key_saved ?? (usingThisPreset && profile.api_key_saved);
-    settingsFields.apiKey = settingField("API Key", "password", {
-      placeholder: "粘贴官方 API Key",
-      secret: true
-    });
-    if (hasSavedKey && apiKeyEnvValue) {
-      fetchModelSecret(apiKeyEnvValue).then((savedKey) => {
-        // 仅当用户还没有手动输入时回填，避免覆盖正在输入的内容。
-        if (savedKey && settingsFields.apiKey?.input && !settingsFields.apiKey.input.value) {
-          settingsFields.apiKey.input.value = savedKey;
-        }
-      });
-    }
-    settingsFields.apiKeyError = document.createElement("div");
-    settingsFields.apiKeyError.className = "spd-field-error";
-    settingsFields.apiKeyError.hidden = true;
-
-    // Task 7：表单草稿恢复——**草稿存在时优先于已保存模型回填**。保存成功即清
-    // 草稿，因此草稿存在必然代表「上次有未保存编辑」，用草稿值覆盖已保存回填是
-    // 正确语义（用户改了 key/模型名未保存就关闭 → 重开看到草稿里的新值），这也
-    // 让「写入无条件、恢复有条件」的不对称消失：写进去的草稿总能被消费。同一
-    // 打开会话内每个 tab 只恢复一次（restoredDrafts），避免来回切 tab 时用旧草稿
-    // 覆盖正在编辑的新值；恢复只覆盖草稿里非空的字段。
-    if (!restoredDrafts.has(provider.id)) {
-      const draft = readModelDraft(provider.id);
-      if (draft) {
-        if (typeof draft.model_name === "string" && draft.model_name) settingsFields.model.input.value = draft.model_name;
-        if (typeof draft.base_url === "string" && draft.base_url) settingsFields.baseUrl.input.value = draft.base_url;
-        if (typeof draft.api_key === "string" && draft.api_key) settingsFields.apiKey.input.value = draft.api_key;
-        if (typeof draft.provider_label === "string" && draft.provider_label) settingsFields.providerLabel.input.value = draft.provider_label;
-      }
-      restoredDrafts.add(provider.id);
-    }
-
-    const keyHint = document.createElement("div");
-    keyHint.className = "spd-hint";
-    keyHint.textContent = "API Key 仅保存在本机。";
-
-    // 测试连接 状态行：放在密钥字段之后、密码提示之后。
-    const connectionStatus = document.createElement("div");
-    connectionStatus.id = "settings-connection-status";
-    connectionStatus.className = "spd-connection-status";
-    connectionStatus.setAttribute("role", "status");
-    connectionStatus.setAttribute("aria-live", "polite");
-    connectionStatus.dataset.state = connectionState;
-    connectionStatus.textContent = "";
-    settingsFields.connectionStatus = connectionStatus;
-
-    // 测试连接 button lives next to the API Key field. We attach the click
-    // handler below after the field is fully wired.
-    const testRow = document.createElement("div");
-    testRow.className = "spd-test-row";
-    const testBtn = document.createElement("button");
-    testBtn.type = "button";
-    testBtn.id = "settings-test-connection";
-    testBtn.className = "spd-test-connection";
-    testBtn.textContent = "测试连接";
-    testBtn.addEventListener("click", () => { void runConnectionTest(); });
-    testRow.append(testBtn);
-    settingsFields.testConnectionBtn = testBtn;
-
-    ctx.refs.settingsDetail.append(
-      settingsFields.model.field, settingsFields.modelError,
-      settingsFields.providerLabel.field,
-      settingsFields.baseUrl.field, settingsFields.baseUrlError, endpointHint,
-      settingsFields.apiKey.field, settingsFields.apiKeyError, keyHint,
-      testRow, connectionStatus
-    );
-    bindEndpointPreview();
-    updateEndpointPreview();
-    applyConnectionButtonState();
-  }
-
-  function applyConnectionButtonState() {
-    const testBtn = settingsFields.testConnectionBtn;
-    const status = settingsFields.connectionStatus;
-    const saveBtn = ctx.refs.settingsSave;
-    if (!testBtn || !status) return;
-    const busy = connectionState === "testing" || connectionState === "saving";
-    testBtn.disabled = busy;
-    saveBtn.disabled = busy;
-    status.dataset.state = connectionState;
-    if (connectionState === "testing") {
-      testBtn.textContent = "正在连接…";
-      status.textContent = "";
-    } else if (connectionState === "saving") {
-      testBtn.textContent = "测试连接";
-      status.textContent = "";
-    } else {
-      testBtn.textContent = "测试连接";
-    }
-  }
-
-  function setConnectionStatusFromResult(result) {
-    const status = settingsFields.connectionStatus;
-    if (!status) return;
-    status.textContent = formatConnectionStatus(result);
-    status.dataset.state = result?.ok ? "success" : "failure";
-  }
-
-  function clearConnectionStatus() {
-    const status = settingsFields.connectionStatus;
-    if (status) {
-      status.textContent = "";
-      status.dataset.state = "idle";
-    }
-  }
-
-  function applyServerFields(errors) {
-    const map = {
-      model_name: settingsFields.modelError,
-      base_url: settingsFields.baseUrlError,
-      api_key: settingsFields.apiKeyError,
-    };
-    for (const key of Object.keys(map)) {
-      const node = map[key];
-      if (!node) continue;
-      if (errors && typeof errors[key] === "string" && errors[key]) {
-        node.textContent = errors[key];
-        node.hidden = false;
-      } else {
-        node.textContent = "";
-        node.hidden = true;
-      }
-    }
-  }
-
-  function resetConnectionState() {
-    if (connectionAbortController) {
-      try { connectionAbortController.abort(); } catch { /* ignore */ }
-      connectionAbortController = null;
-    }
-    connectionState = "idle";
-    applyConnectionButtonState();
-    clearConnectionStatus();
-  }
-
-  async function runConnectionTest() {
-    if (settingsSection !== "model") return;
-    if (connectionState === "testing" || connectionState === "saving") return;
-    applyServerFields(null);
-    connectionState = "testing";
-    applyConnectionButtonState();
-    const controller = new AbortController();
-    connectionAbortController = controller;
-    const candidate = {
-      provider: PROVIDER_PRESETS[SETTINGS_PROVIDERS.find((p) => p.id === settingsProviderId)?.preset ?? "custom"]?.provider ?? "openai-compatible",
-      model_name: settingsFields.model.input.value.trim(),
-      base_url: settingsFields.baseUrl.input.value.trim(),
-      api_key_env: currentApiKeyEnv,
-    };
-    // Empty key field is intentional: when the user leaves it blank we trust
-    // the server-side stored secret for the same env. The server re-checks
-    // secrets and returns configuration_missing if neither is available.
-    const temporaryKey = settingsFields.apiKey.input.value.trim();
-    try {
-      const result = await submitModelConnectionTest({
-        postJsonImpl,
-        // 没有项目也能测连接（Task 5 起服务端不再要求项目）；有项目时带上用于审计事件。
-        projectRoot: ctx.getCurrentProjectRoot(),
-        active_model: candidate,
-        apiKey: temporaryKey,
-        signal: controller.signal,
-      });
-      // Late-arriving guard: another call may have aborted us. Drop the
-      // success/failure paint so we don't fight the latest user action.
-      if (connectionAbortController !== controller) return;
-      connectionState = "success";
-      setConnectionStatusFromResult(result);
-      applyServerFields(null);
-      applyConnectionButtonState();
-    } catch (error) {
-      if (connectionAbortController !== controller) return;
-      if (error?.name === "AbortError") {
-        connectionState = "aborted";
-        clearConnectionStatus();
-      } else {
-        connectionState = "failure";
-        setConnectionStatusFromResult({ ok: false, message: error?.message ?? "连接失败" });
-        if (error?.fields && typeof error.fields === "object") {
-          applyServerFields(error.fields);
-        }
-      }
-      applyConnectionButtonState();
-    } finally {
-      if (connectionAbortController === controller) connectionAbortController = null;
-    }
-  }
-
-  function settingField(labelText, type, { value = "", placeholder = "", options = null, secret = false, min = null, max = null, step = null } = {}) {
+  function settingField(labelText, type, { value = "", placeholder = "", options = null, min = null, max = null, step = null } = {}) {
     const field = document.createElement("div");
     field.className = "spd-field";
     const label = document.createElement("div");
@@ -1783,21 +1244,6 @@ export function createSettingsModal(ctx, options = {}) {
         return option;
       }));
       input.value = value ?? "";
-    } else if (type === "model-id") {
-      input = document.createElement("input");
-      input.className = "spd-input";
-      input.type = "text";
-      input.value = value ?? "";
-      input.setAttribute("list", "settings-model-suggestions");
-      if (placeholder) input.placeholder = placeholder;
-      const suggestions = document.createElement("datalist");
-      suggestions.id = "settings-model-suggestions";
-      suggestions.replaceChildren(...(options ?? []).map((opt) => {
-        const option = document.createElement("option");
-        option.value = opt;
-        return option;
-      }));
-      field.append(suggestions);
     } else {
       input = document.createElement("input");
       input.className = "spd-input";
@@ -1809,100 +1255,11 @@ export function createSettingsModal(ctx, options = {}) {
       if (step !== null) input.step = step;
     }
     input.setAttribute("aria-label", labelText);
-    if (secret) {
-      input.setAttribute("autocomplete", "off");
-      input.setAttribute("spellcheck", "false");
-      const wrap = document.createElement("div");
-      wrap.className = "spd-input-wrap";
-      wrap.append(input, buildSecretReveal(input), buildSecretCopy(input));
-      field.append(wrap);
-    } else {
-      field.append(input);
-    }
+    field.append(input);
     return { field, input };
   }
 
-  function buildSecretReveal(input) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "spd-affix spd-affix-eye";
-    btn.setAttribute("aria-pressed", "false");
-    btn.setAttribute("aria-label", "显示 API Key");
-    btn.title = "显示 / 隐藏";
-    btn.append(icon("eye", 15));
-    btn.addEventListener("click", () => {
-      const reveal = input.type === "password";
-      input.type = reveal ? "text" : "password";
-      btn.setAttribute("aria-pressed", reveal ? "true" : "false");
-      btn.setAttribute("aria-label", reveal ? "隐藏 API Key" : "显示 API Key");
-      btn.replaceChildren(icon(reveal ? "eyeOff" : "eye", 15));
-    });
-    return btn;
-  }
-
-  function buildSecretCopy(input) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "spd-affix spd-affix-copy";
-    btn.setAttribute("aria-label", "复制 API Key");
-    btn.title = "复制到剪贴板";
-    btn.append(icon("copy", 15));
-    btn.addEventListener("click", async () => {
-      const value = input.value;
-      if (!value) {
-        ctx.showToast("API Key 为空，没有可复制的内容。", "error");
-        return;
-      }
-      try {
-        await navigator.clipboard.writeText(value);
-        btn.classList.add("copied");
-        btn.replaceChildren(icon("check", 15));
-        window.setTimeout(() => {
-          btn.classList.remove("copied");
-          btn.replaceChildren(icon("copy", 15));
-        }, 1300);
-        ctx.showToast("已复制 API Key 到剪贴板。", "success");
-      } catch {
-        ctx.showToast("复制失败：未授权访问剪贴板。", "error");
-      }
-    });
-    return btn;
-  }
-
-  function bindEndpointPreview() {
-    if (settingsFields.baseUrl.input.dataset.boundPreview === "true") return;
-    settingsFields.baseUrl.input.addEventListener("input", updateEndpointPreview);
-    settingsFields.baseUrl.input.dataset.boundPreview = "true";
-  }
-
-  function updateEndpointPreview() {
-    const baseUrl = settingsFields.baseUrl.input.value.trim();
-    settingsFields.endpointHint.hidden = !baseUrl;
-    settingsFields.endpointHint.textContent = baseUrl ? `完整请求地址：${resolveModelEndpoint(baseUrl)}` : "";
-  }
-
-  function detectProviderPreset(activeModel = {}) {
-    const baseUrl = String(activeModel.base_url ?? "").toLowerCase();
-    const envName = activeModel.api_key_env ?? "";
-    // 与 providerDisplayName 同口径：官方预设只看真实地址（包含匹配，兼容 /v1 与
-    // 大小写变体）或官方密钥槽，不凭 model_name 前缀猜。第三方中转上挂 deepseek-/
-    // mimo- 名号的模型应落在「自定义」tab，设置弹窗才能回填它自己的 base_url/密钥槽
-    // （2026-08-11 修复：此前 opencode.ai 的 deepseek-v4-flash 被误判成官方预设，
-    // 弹窗开错 tab、表单回填错位，用户看不出自定义条目已保存）。
-    if (baseUrl.includes("api.deepseek.com") || envName === PROVIDER_PRESETS.deepseek.apiKeyEnv) {
-      return "deepseek";
-    }
-    if (baseUrl.includes("xiaomimimo.com") || envName === PROVIDER_PRESETS.mimo.apiKeyEnv) {
-      return "mimo";
-    }
-    return "custom";
-  }
-
   async function saveSettings() {
-    if (settingsSection === "model") {
-      // Task 8 过渡期：模型区块为只读占位，没有可保存的表单（保存按钮已禁用）。
-      return;
-    }
     if (settingsSection === "writing") {
       await saveWritingSection();
       return;
@@ -1915,72 +1272,13 @@ export function createSettingsModal(ctx, options = {}) {
       // 技能导入/删除/打开目录各自即时生效，不依赖底部保存按钮。
       return;
     }
-    // 四个分区均已显式 return，不存在落到 saveModelSection 的分支（模型分区为
-    // 只读占位，模型表单代码保留到 cutover 统一删除）。
-  }
-
-  async function saveModelSection() {
-    const provider = SETTINGS_PROVIDERS.find((p) => p.id === settingsProviderId) ?? SETTINGS_PROVIDERS[0];
-    // 模型切换确认（计划 UI Copy Audit 保留项）：app-server 每次调用重读
-    // project.yaml——任务进行中保存设置会静默切换写作模型。仅当「模型确有变更」
-    // 且「任务进行中（active Run 或排队输入）」时弹确认；取消则不保存。API Key/
-    // 环境变量变更不算模型变更（凭据修复，不改变文风语义）。选用已存模型路径
-    // 是显式单点动作，不重复确认（见 selectSavedModel）。
-    if (modelSelectionChanged() && await taskInProgress()) {
-      if (!confirmImpl(MODEL_SWITCH_CONFIRM_COPY)) {
-        ctx.showToast("已取消保存：模型保持不变。", "info");
-        return;
-      }
-    }
-    await runSave(async () => {
-      // 第一步：模型配置存全局（~/.wwriting/model-profiles.json），不需要项目。
-      // 服务端对 ModelConfigValidationError 一律回 400 + fields，postJson 会抛错携带 error.fields，
-      // 因此校验失败在这里捕获：逐项标红后继续抛出，由 runSave 兜底 toast 展示服务端原文错误。
-      try {
-        const activeModelPayload = compactObject({
-          provider: PROVIDER_PRESETS[provider.preset].provider,
-          provider_label: settingsFields.providerLabel?.input?.value?.trim() ?? "",
-          model_name: settingsFields.model.input.value.trim(),
-          base_url: settingsFields.baseUrl.input.value.trim(),
-          api_key: settingsFields.apiKey.input.value.trim(),
-          api_key_env: currentApiKeyEnv
-        });
-        await postJsonImpl("/api/settings/model-profile", {
-          active_model: activeModelPayload
-        });
-      } catch (error) {
-        if (error?.fields && typeof error.fields === "object") {
-          applyServerFields(error.fields);
-        }
-        throw error;
-      }
-      await fetchGlobalModels();
-      await ctx.loadDashboard();
-      // Task 7：保存成功 → 清除该 tab 草稿并抑制 700ms 后自动关闭时的重写
-      // （值已落盘，无需再当草稿保留，重开时由已保存模型回填）。
-      clearModelDraft(settingsProviderId);
-      draftWriteSuppressed = true;
-    });
-  }
-
-  // 模型变更判定：表单新值（model_name/base_url）与打开设置时的已生效模型基线
-  // 比较。无基线（无项目且无全局默认）视为变更（防御性）；URL 做尾斜杠归一化，
-  // "https://api.deepseek.com" 与 "https://api.deepseek.com/" 不算变更。
-  function modelSelectionChanged() {
-    const newModelName = settingsFields.model?.input?.value?.trim() ?? "";
-    const newBaseUrl = normalizeModelUrl(settingsFields.baseUrl?.input?.value?.trim() ?? "");
-    const saved = savedModelRef.current;
-    if (!saved) return true;
-    return newModelName !== String(saved.model_name ?? "") || newBaseUrl !== normalizeModelUrl(String(saved.base_url ?? ""));
-  }
-
-  function normalizeModelUrl(url) {
-    return url.replace(/\/+$/u, "").toLowerCase();
+    // 三个分区均已显式 return（模型分区已迁往新设置页，Task 17 cutover 后
+    // 本弹窗不再有 model section）。
   }
 
   // 任务进行中判定：agent snapshot 显示 active Run（非终态）或排队输入非空。
-  // 快照拉取失败（如项目从未打开）按「不在进行中」处理——确认只在能确定有任务时
-  // 才弹，避免网络抖动阻塞保存。
+  // 快照拉取失败（如项目从未打开）按「不在进行中」处理——危险分区清空按钮据此
+  // 门禁（Task 13），只读判定不写任何状态。
   async function taskInProgress() {
     const currentProjectRoot = ctx.getCurrentProjectRoot?.();
     if (!currentProjectRoot) return false;
@@ -2022,9 +1320,6 @@ export function createSettingsModal(ctx, options = {}) {
     ctx.refs.settingsSave.disabled = true;
     const originalText = ctx.refs.settingsSave.textContent;
     ctx.refs.settingsSave.textContent = "保存中...";
-    const previousState = connectionState;
-    connectionState = "saving";
-    applyConnectionButtonState();
     try {
       await fn();
       // 成功不弹 Toast：先显示「已保存」，短暂停留（700ms）后再关闭弹窗，
@@ -2042,74 +1337,16 @@ export function createSettingsModal(ctx, options = {}) {
       ctx.refs.settingsSave.textContent = "保存设置";
     } finally {
       ctx.refs.settingsSave.disabled = false;
-      connectionState = previousState === "testing" ? "testing" : "idle";
-      applyConnectionButtonState();
     }
-  }
-
-  function resetToCustom() {
-    settingsProviderId = "custom";
-    ctx.refs.settingsSearch.value = "";
-    // Task 8 过渡期：模型区块为只读占位，「新增供应商」入口不再渲染模型表单。
-    if (settingsSection === "model") {
-      renderSectionBody();
-      return;
-    }
-    renderSettingsProviders();
-    renderSettingsDetail();
   }
 
   return {
-    openSettingsModal, closeSettingsModal, renderSettingsProviders, renderSettingsDetail, saveSettings, resetToCustom,
-    // 仅供测试 / app.js 搜索守卫：读取当前分区（Task 8 过渡期模型分区为只读占位，
-    // app.js 据此让 #settings-search 的输入在模型分区不重建旧供应商列表）。
+    openSettingsModal, closeSettingsModal, saveSettings,
+    // 仅供测试：读取当前分区。
     currentSettingsSection: () => settingsSection,
-    // 仅供测试：直接回填模型表单字段（避免测试里模拟 DOM 输入）。
-    setModelFieldsForTest(values = {}) {
-      if (settingsFields.model) settingsFields.model.input.value = values.model_name ?? "";
-      if (settingsFields.providerLabel) settingsFields.providerLabel.input.value = values.provider_label ?? "";
-      if (settingsFields.baseUrl) settingsFields.baseUrl.input.value = values.base_url ?? "";
-      if (settingsFields.apiKey) settingsFields.apiKey.input.value = values.api_key ?? "";
-      if (values.api_key_env) currentApiKeyEnv = values.api_key_env;
-    },
     // 仅供测试：直接触发保存（等价于点「保存设置」）。
     saveSettingsForTest() {
       return saveSettings();
-    },
-    // 仅供测试：读取左栏已配置模型清单（每项带 modelName / modelId 与按钮节点）。
-    getSavedModelItems() {
-      return [...ctx.refs.settingsProviderList.children]
-        .filter((el) => el.className === "sp-saved-item")
-        .map((row) => ({
-          modelName: row.dataset.modelName ?? row.dataset.modelId ?? "",
-          modelId: row.dataset.modelId ?? "",
-          btn: [...row.children].find((c) => c.className === "sp-saved-btn") ?? null,
-          del: [...row.children].find((c) => c.className === "sp-saved-del") ?? null
-        }));
-    },
-    // 仅供测试：点击某个已保存模型（等异步选用链完成后返回）。
-    async clickSavedModel(modelName) {
-      const item = this.getSavedModelItems().find((it) => it.modelName === modelName);
-      if (!item?.btn) throw new Error(`未找到已保存模型：${modelName}`);
-      item.btn.click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    },
-    // 仅供测试：点击某个已保存模型的删除按钮（等异步删除链完成后返回）。
-    async deleteSavedModel(modelName) {
-      const item = this.getSavedModelItems().find((it) => it.modelName === modelName);
-      if (!item?.del) throw new Error(`未找到已保存模型的删除按钮：${modelName}`);
-      item.del.click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    },
-    // 仅供测试：读取模型表单字段值（api_key_env 是内部密钥槽，不对应可见输入框）。
-    getModelFieldValue(fieldName) {
-      const byName = {
-        model_name: settingsFields.model,
-        provider_label: settingsFields.providerLabel,
-        base_url: settingsFields.baseUrl,
-        api_key: settingsFields.apiKey
-      };
-      return fieldName === "api_key_env" ? currentApiKeyEnv : (byName[fieldName]?.input?.value ?? "");
     },
     // 仅供测试：当前技能管理 scope（"global" | "project"）。
     getSkillsScope() {

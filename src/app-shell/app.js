@@ -55,9 +55,6 @@ const refs = {
   readerNext: document.querySelector("#reader-next"),
   readerWide: document.querySelector("#reader-wide"),
   settingsScrim: document.querySelector("#settings-scrim"),
-  settingsSearch: document.querySelector("#settings-search"),
-  settingsProviderList: document.querySelector("#settings-provider-list"),
-  settingsAdd: document.querySelector("#settings-add"),
   settingsDetail: document.querySelector("#settings-detail"),
   settingsCancel: document.querySelector("#settings-cancel"),
   settingsSave: document.querySelector("#settings-save"),
@@ -157,7 +154,7 @@ const settingsModal = createSettingsModal({
   restoreSession: (sessionId) => agentSurface.restoreSession(sessionId),
   deleteSession: (sessionId) => deleteSessionAndResolveActive(sessionId),
 });
-const { openSettingsModal, closeSettingsModal, renderSettingsProviders, renderSettingsDetail, saveSettings } = settingsModal;
+const { openSettingsModal, closeSettingsModal, saveSettings } = settingsModal;
 
 // Task 12：新「模型设置」页面（左供应商列表 + 右详情），替代设置弹窗的模型分区
 // （Task 8 已把旧弹窗模型区块置为只读占位）。骨架：加载 + 列表 + 详情只读渲染；
@@ -313,13 +310,6 @@ refs.settingsScrim.addEventListener("click", (event) => {
   if (event.target === refs.settingsScrim) closeSettingsModal();
 });
 refs.settingsSave.addEventListener("click", () => saveSettings());
-refs.settingsSearch.addEventListener("input", () => {
-  // Task 8 过渡期：模型分区为只读占位，搜索输入不得重建旧供应商列表——
-  // 否则「选用」按钮复活，点击会发出真实的 model-select 请求，绕过占位。
-  if (settingsModal.currentSettingsSection() === "model") return;
-  renderSettingsProviders();
-});
-refs.settingsAdd.addEventListener("click", () => settingsModal.resetToCustom());
 if (!refs.createX.title) refs.createX.title = "关闭";
 refs.createX.addEventListener("click", closeCreateModal);
 // 新建弹窗：只通过右上角 X 或 Esc 关闭，避免点击遮罩误触丢失已填内容。

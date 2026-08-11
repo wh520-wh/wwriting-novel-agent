@@ -29,14 +29,3 @@ export function resolvePricing(modelName, table = {}) {
   }
   return best ? table[best] : null;
 }
-
-export function buildPricingTable(project = {}) {
-  const table = {};
-  // Task 9：各阶段模型覆盖已删除（运行时从未接线），价格表只取 active_model。
-  const candidates = [project.active_model];
-  for (const model of candidates) {
-    const pricing = normalizePricing(model?.pricing);
-    if (model?.model_name && pricing) table[model.model_name] = pricing;
-  }
-  return table;
-}

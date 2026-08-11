@@ -49,11 +49,9 @@ import {
   resolveActiveWriteProjectRoot,
   resolveReadProjectRoot
 } from "./router.mjs";
-import { getDefaultLocalModelProfile } from "../local-model-profiles.mjs";
+import { getDefaultModel } from "../model-provider-store.mjs";
 import {
-  buildAvailableModelProfiles,
   buildModelProfile,
-  modelConfigFromLocalProfile,
   modelDisplayName
 } from "./settings-routes.mjs";
 
@@ -275,7 +273,6 @@ export function createProjectRoutes({
         // 的缺省参数只覆盖 undefined；归一化 null → {} 进入未配置分支，展示「未配置」——
         // 用户面不再出现 mock 兜底。
         data.model_profile = buildModelProfile(data.project?.active_model ?? {}, secretsRoot);
-        data.available_models = await buildAvailableModelProfiles(secretsRoot, data.project?.active_model);
       }
       return data;
     },
@@ -365,7 +362,9 @@ export function createProjectRoutes({
         const minWordsPerChapter = normalizePositiveInteger(body.min_words_per_chapter, 3000);
         const targetWordsPerChapter = normalizePositiveInteger(body.target_words_per_chapter, Math.max(minWordsPerChapter, 3300));
         const outputFormat = ["md", "txt"].includes(body.output_format) ? body.output_format : "md";
-        const defaultModel = secretsRoot ? await getDefaultLocalModelProfile(secretsRoot) : null;
+        // 新建项目沿用全局默认模型（v2 store）：写引用形态 { provider_id, model_id }，
+        // 运行时按 modelStoreLoader 解析（与 model-switch 的引用契约一致）。
+        const defaultModel = secretsRoot ? await getDefaultModel(secretsRoot) : null;
         const { project } = await createProjectAt(projectRoot, {
           title,
           story_seed: storySeed,
@@ -373,7 +372,7 @@ export function createProjectRoutes({
           min_words_per_chapter: minWordsPerChapter,
           target_words_per_chapter: targetWordsPerChapter,
           output_format: outputFormat,
-          active_model: defaultModel ? modelConfigFromLocalProfile(defaultModel) : undefined
+          active_model: defaultModel ? { provider_id: defaultModel.provider.id, model_id: defaultModel.model.id } : undefined
         });
         selectedRef.current = projectRoot;
         await rememberProject(projectRoot);

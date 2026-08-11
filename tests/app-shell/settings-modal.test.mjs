@@ -1,5 +1,6 @@
-// Settings modal: pure helpers (formatConnectionStatus + submitModelConnectionTest) +
-// DOM-level behavior of createSettingsModal (model save without a project).
+// Settings modal: pure helper (formatConnectionStatus) + DOM-level behavior of
+// createSettingsModal (writing/skills/danger sections; model section removed in
+// Task 17 cutover — model config lives in the model-settings-page).
 // The exported helpers must work without a DOM so they can be exercised in node:test;
 // the modal tests use a minimal DOM mock (no JSDOM), mirroring activity-strip-render.test.mjs.
 import assert from "node:assert/strict";
@@ -7,7 +8,6 @@ import test from "node:test";
 
 import {
   formatConnectionStatus,
-  submitModelConnectionTest,
 } from "../../src/app-shell/settings-connection.mjs";
 
 // ---------------------------------------------------------------------------
@@ -130,28 +130,14 @@ const { createSettingsModal } = await import("../../src/app-shell/settings-modal
 // Modal harness
 // ---------------------------------------------------------------------------
 
-// Task 7：内存版 localStorage 桩——草稿持久化按注入的 storage 实现，
-// 每个测试用独立实例避免跨测试污染。
-function createMockStorage() {
-  const map = new Map();
-  return {
-    getItem(key) { return map.has(key) ? map.get(key) : null; },
-    setItem(key, value) { map.set(key, String(value)); },
-    removeItem(key) { map.delete(key); },
-    _keys() { return [...map.keys()]; }
-  };
-}
-
 function createSettingsModalForTest(overrides = {}) {
   domRegistry = [];
   // refs 单独解构：partial refs 只覆盖对应字段，不会被 ...overrides 整体替换 ctx.refs。
   const { refs: refsOverride = {}, ...rest } = overrides;
   const refs = {
-    settingsSearch: new MockElement("input"),
     settingsSave: new MockElement("button"),
     settingsScrim: new MockElement("div"),
     settingsDetail: new MockElement("div"),
-    settingsProviderList: new MockElement("div"),
     ...refsOverride
   };
   const ctx = {
@@ -168,10 +154,8 @@ function createSettingsModalForTest(overrides = {}) {
     getJsonImpl: overrides.getJsonImpl ?? (async () => ({ ok: true, default_model: null, models: [] })),
     postJsonImpl: overrides.postJsonImpl ?? (async () => ({ ok: true })),
     deleteJsonImpl: overrides.deleteJsonImpl ?? (async () => ({ ok: true })),
-    // 模型切换确认函数：显式注入（默认 window.confirm，node 测试环境不可用）。
-    confirmImpl: overrides.confirmImpl ?? (() => true),
-    // 表单草稿的 localStorage 注入：默认给独立的内存桩。
-    storage: overrides.storage ?? createMockStorage()
+    // 确认函数：显式注入（默认 window.confirm，node 测试环境不可用）。
+    confirmImpl: overrides.confirmImpl ?? (() => true)
   });
 }
 
@@ -183,37 +167,6 @@ function findElementByLabel(label) {
 // Pure helper tests (existing)
 // ---------------------------------------------------------------------------
 
-test("test connection posts the unsaved MiMo candidate", async () => {
-  const calls = [];
-  const controller = new AbortController();
-  const result = await submitModelConnectionTest({
-    postJsonImpl: async (pathname, body, options) => {
-      calls.push({ pathname, body, signal: options.signal });
-      return {
-        ok: true,
-        provider: "openai-compatible",
-        model_name: "mimo-v2.5-pro",
-        latency_ms: 48,
-      };
-    },
-    projectRoot: "D:\\novels\\demo",
-    active_model: {
-      provider: "openai-compatible",
-      model_name: "mimo-v2.5-pro",
-      base_url: "https://api.xiaomimimo.com/v1",
-      api_key_env: "XIAOMI_MIMO_API_KEY",
-    },
-    apiKey: "temporary-key",
-    signal: controller.signal,
-  });
-
-  assert.equal(calls[0].pathname, "/api/settings/test-connection");
-  assert.equal(calls[0].body.active_model.model_name, "mimo-v2.5-pro");
-  assert.equal(calls[0].body.active_model.api_key, "temporary-key");
-  assert.equal(calls[0].signal, controller.signal);
-  assert.equal(formatConnectionStatus(result), "连接成功 · 48 ms");
-});
-
 test("connection failure keeps the actionable provider message", () => {
   assert.equal(formatConnectionStatus({
     ok: false,
@@ -222,87 +175,28 @@ test("connection failure keeps the actionable provider message", () => {
   }), "API Key 无效或无权限");
 });
 
-test("test connection propagates AbortSignal", async () => {
-  const controller = new AbortController();
-  const pending = submitModelConnectionTest({
-    postJsonImpl: async (pathname, body, { signal }) => {
-      await new Promise((resolve, reject) => {
-        signal.addEventListener(
-          "abort",
-          () => reject(new DOMException("aborted", "AbortError")),
-          { once: true }
-        );
-      });
-    },
-    projectRoot: "D:\\novels\\demo",
-    active_model: {
-      provider: "openai-compatible",
-      model_name: "mimo-v2.5-pro",
-      base_url: "https://api.xiaomimimo.com/v1",
-      api_key_env: "XIAOMI_MIMO_API_KEY",
-    },
-    apiKey: "temporary-key",
-    signal: controller.signal,
-  });
-
-  controller.abort();
-  await assert.rejects(pending, (error) => error.name === "AbortError");
+test("connection success with latency formats the status string", () => {
+  assert.equal(formatConnectionStatus({ ok: true, latency_ms: 48 }), "连接成功 · 48 ms");
+  assert.equal(formatConnectionStatus({ ok: true }), "连接成功");
+  assert.equal(formatConnectionStatus(null), "");
 });
 
 // ---------------------------------------------------------------------------
-// 模型分区（Task 8 过渡期）：模型配置迁往新的供应商管理页面（Task 12 建新页并改
-// 入口）。旧弹窗模型区块改为只读占位——显示迁移提示、禁用保存，不再渲染模型表单 /
-// 已配置清单 / 测试连接，也不向模型 API 发写请求。旧模型表单/草稿/切换确认行为
-// 随旧实现一并撤下（新页面的交互测试由 Task 12-16 建立）。
+// Task 17 cutover：模型分区已从设置弹窗整体删除（模型配置迁往 model-settings-page，
+// 旧弹窗只保留写作参数/技能/项目管理）。缺省打开分区 = 第一个分区（写作参数）。
 // ---------------------------------------------------------------------------
 
-test("模型分区为只读占位：显示迁移提示，禁用保存，不渲染模型表单", async () => {
-  const saveButton = new MockElement("button");
-  const modal = createSettingsModalForTest({
-    refs: { settingsSave: saveButton },
-    getCurrentProjectRoot: () => ""
-  });
-  await modal.openSettingsModal();
-
-  assert.equal(saveButton.disabled, true, "模型分区保存按钮应禁用");
-  assert.equal(saveButton.textContent, "无需保存");
-  // 迁移提示文本。
-  const hint = modal.getSettingsDetailForTest().children.find((el) => String(el.className ?? "") === "spd-hint");
-  assert.ok(hint, "模型分区应渲染迁移提示");
-  assert.ok(hint.textContent.includes("模型设置已迁移到新的供应商管理页面"), "提示应指向新的供应商管理页面");
-  // 不渲染模型表单字段与测试连接。
-  for (const label of ["模型", "API 地址 · 基础 URL", "API Key", "提供商"]) {
-    assert.equal(findElementByLabel(label), null, `模型分区占位不得渲染 ${label}`);
-  }
-  assert.equal(domRegistry.find((el) => el.id === "settings-test-connection"), undefined, "不得渲染测试连接按钮");
-});
-
-test("模型分区占位：保存/重置自定义均为 no-op，不发模型请求，左栏清单置空", async () => {
-  const calls = [];
-  const modal = createSettingsModalForTest({
-    getCurrentProjectRoot: () => "",
-    postJsonImpl: async (url, body) => { calls.push({ url, body }); return { ok: true }; }
-  });
-  await modal.openSettingsModal();
-  await modal.saveSettingsForTest();
-  modal.resetToCustom();
-  await new Promise((resolve) => setTimeout(resolve, 0));
-
-  assert.deepEqual(calls.map((c) => c.url), [], "占位期模型分区不得发出 model-profile / update / test-connection 请求");
-  assert.equal(modal.getSavedModelItems().length, 0, "左栏不残留「已配置」/「新增供应商」交互入口");
-});
-
-test("currentSettingsSection 反映当前分区（app.js 的搜索守卫依赖它 no-op 模型分区）", async () => {
-  // app.js 的 #settings-search input 监听在模型分区直接 return，靠
-  // currentSettingsSection() === "model" 判断；这里钉住该 getter 的契约，
-  // 避免分区状态改名/重构后守卫静默失效。
+test("currentSettingsSection 反映当前分区（缺省为第一个分区）", async () => {
   const modal = createSettingsModalForTest();
-  await modal.openSettingsModal(); // 缺省分区 = model
-  assert.equal(modal.currentSettingsSection(), "model");
+  await modal.openSettingsModal(); // 缺省分区 = 第一个（writing）
+  assert.equal(modal.currentSettingsSection(), "writing");
   await modal.openSettingsModal("skills");
   assert.equal(modal.currentSettingsSection(), "skills");
+  await modal.openSettingsModal("danger");
+  assert.equal(modal.currentSettingsSection(), "danger");
+  // 已删除的 model 分区：非法值回落第一个分区，不再存在模型 UI。
   await modal.openSettingsModal("model");
-  assert.equal(modal.currentSettingsSection(), "model");
+  assert.equal(modal.currentSettingsSection(), "writing");
 });
 
 
@@ -1207,17 +1101,16 @@ test("恢复 in-flight 期间切到其他分区：完成时不重渲当前分区
   findElementById("archived-restore-s1")._fire("click");
   await tickAsync(); // restore 请求 in-flight
 
-  // 用户切到模型分区（Task 8 过渡期：只读占位，不再渲染模型表单）。
-  await modal.openSettingsModal("model");
+  // 用户切到技能分区（Task 13：异步 catalog 渲染，是另一种非模型分区）。
+  await modal.openSettingsModal("skills");
+  await modal.waitForSkillsCatalog();
   resolveRestore({ ok: true });
   await tickAsync();
   await tickAsync();
 
-  // 完成时不得把当前模型分区整体替换成项目管理内容（占位内容不丢）。
-  // 用 detail 直接层 className 区分：model 分区有迁移提示 spd-hint，danger 分区有
-  // spd-archived-list（子元素的 id 在更深层，不适合直接层断言）。
+  // 完成时不得把当前技能分区整体替换成项目管理内容（技能分区内容不丢）。
   const detail = modal.getSettingsDetailForTest();
   const classes = detail.children.map((el) => String(el.className ?? ""));
-  assert.ok(classes.includes("spd-hint"), "模型分区占位内容应保留");
+  assert.ok(classes.includes("spd-head"), "技能分区内容应保留");
   assert.equal(classes.includes("spd-archived-list"), false, "不得重渲为项目管理分区");
 });

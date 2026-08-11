@@ -4,10 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createAppShellServer } from "../src/core/app-server.mjs";
-import { loadLocalSecrets } from "../src/core/local-secrets.mjs";
-import { loadLocalModelProfiles, upsertLocalModelProfile } from "../src/core/local-model-profiles.mjs";
 import { createProject, loadProject, saveProject } from "../src/core/project-store.mjs";
 import { registerProviderCapabilityResolver } from "../src/core/model/capabilities.mjs";
+import { saveProviderStore } from "../src/core/model-provider-store.mjs";
 import { createWorkspaceStore } from "../src/core/workspaces/store.mjs";
 
 async function pathExists(target) {
@@ -86,8 +85,9 @@ async function setupServerWithProject(options = {}) {
   return { root, projectRoot, secretsRoot, server, port };
 }
 
-// 普通文件夹（无 project.yaml）的模型配置工作区：打开即选中，预存一个全局模型
-// 供 model-switch 选用（任务 5 Step 1 测试基建）。
+// 普通文件夹（无 project.yaml）的模型配置工作区：打开即选中，触发预设供应商种子
+//（Task 5 Step 1 测试基建；Task 17 cutover 后模型保存走 v2 providers 端点，
+// 不再预存 v1 全局模型）。
 async function setupPlainWorkspace() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-plain-"));
   const projectRoot = path.join(root, "plain-workspace");
@@ -102,8 +102,8 @@ async function setupPlainWorkspace() {
     port: 0
   });
   const port = await listenOnFetchSafePort(server);
-  // 先保存一个全局模型（deepseek-chat 成为默认），model-switch 才能选中它。
-  await post(port, "/api/settings/model-profile", { active_model: SAMPLE_MODEL });
+  // 触发预设种子（deepseek/mimo 两级清单落盘 v2 store），model-switch 才有可选项。
+  await fetch(`http://127.0.0.1:${port}/api/settings/providers`);
   return { root, projectRoot, stateRoot, secretsRoot, server, port };
 }
 
@@ -114,6 +114,26 @@ async function post(port, pathname, body) {
     body: JSON.stringify(body)
   });
   return { status: response.status, json: await response.json() };
+}
+
+// 从 GET /api/settings/providers 取预设供应商的第 index 个模型（Task 16 同款引用）。
+async function fetchPresetModel(port, providerId = "deepseek", modelIndex = 0) {
+  const res = await fetch(`http://127.0.0.1:${port}/api/settings/providers`);
+  const data = await res.json();
+  const provider = data.providers.find((p) => p.id === providerId);
+  assert.ok(provider?.models?.length > 0, `预设供应商 ${providerId} 应含模型`);
+  const model = provider.models[modelIndex];
+  return { providerId: provider.id, modelId: model.id, modelName: model.model_name };
+}
+
+// 设默认（v2 端点）：POST .../models/:modelId/default。
+async function setDefaultViaEndpoint(port, providerId, modelId) {
+  const res = await post(
+    port,
+    `/api/settings/providers/${encodeURIComponent(providerId)}/models/${encodeURIComponent(modelId)}/default`
+  );
+  assert.equal(res.status, 200, "设默认应成功");
+  return res.json.store.default_model;
 }
 
 // Task 6：轮询 dashboard 直到会话列表满足条件。submit 的注册表写入在提交路径内，
@@ -129,125 +149,15 @@ async function waitForDashboardSessions(port, projectRoot, predicate, { timeout 
   throw new Error("Timed out waiting for dashboard sessions");
 }
 
-const SAMPLE_MODEL = {
-  provider: "openai-compatible",
-  model_name: "deepseek-chat",
-  base_url: "https://api.deepseek.com",
-  api_key_env: "DEEPSEEK_API_KEY",
-  api_key: "sk-test-abcd1234"
-};
-
-test("无项目也能保存模型：不再要求先新建小说", async () => {
-  const { secretsRoot, server, port } = await setupProjectlessServer();
-  try {
-    const { status, json } = await post(port, "/api/settings/model-profile", {
-      active_model: SAMPLE_MODEL
-    });
-    assert.equal(status, 200);
-    assert.equal(json.ok, true);
-    assert.equal(json.model_profile.model_name, "deepseek-chat");
-    // 用户要求：保存后能确认密钥真的存下来了
-    assert.equal(json.model_profile.api_key_saved, true);
-    const secrets = await loadLocalSecrets(secretsRoot);
-    assert.equal(secrets.DEEPSEEK_API_KEY, "sk-test-abcd1234");
-    const store = await loadLocalModelProfiles(secretsRoot);
-    assert.equal(store.default_model_id, "deepseek-chat@https://api.deepseek.com");
-  } finally {
-    await closeServer(server);
-  }
-});
-
-test("无项目保存模型：字段缺失时返回逐字段错误，供界面标红", async () => {
-  const { server, port } = await setupProjectlessServer();
-  try {
-    const { status, json } = await post(port, "/api/settings/model-profile", {
-      active_model: { provider: "openai-compatible", model_name: "", base_url: "", api_key_env: "" }
-    });
-    assert.equal(status, 400);
-    assert.equal(typeof json.fields, "object");
-    assert.equal(typeof json.fields.model_name, "string");
-  } finally {
-    await closeServer(server);
-  }
-});
-
-test("无项目也能列出、选用、删除模型", async () => {
-  const { server, port } = await setupProjectlessServer();
-  try {
-    await post(port, "/api/settings/model-profile", { active_model: SAMPLE_MODEL });
-    await post(port, "/api/settings/model-profile", {
-      active_model: { ...SAMPLE_MODEL, model_name: "mimo-v1", api_key_env: "XIAOMI_MIMO_API_KEY", api_key: "sk-mimo" }
-    });
-
-    const listed = await fetch(`http://127.0.0.1:${port}/api/settings/models`);
-    const listJson = await listed.json();
-    assert.equal(listed.status, 200);
-    assert.equal(listJson.models.length, 2);
-    const deepseek = listJson.models.find((model) => model.model_name === "deepseek-chat");
-    const mimo = listJson.models.find((model) => model.model_name === "mimo-v1");
-    assert.equal(deepseek.capabilities.supportsTools, true);
-    assert.equal(deepseek.capabilities.supportsStreaming, true);
-    assert.equal(deepseek.capabilities.supportsThinking, false);
-    assert.equal(mimo.capabilities.supportsTools, true);
-    assert.equal(mimo.capabilities.supportsThinking, false);
-    assert.deepEqual(listJson.default_model.capabilities, deepseek.capabilities);
-
-    const selected = await post(port, "/api/settings/model-select", { model_id: "deepseek-chat" });
-    assert.equal(selected.status, 200);
-    assert.equal(selected.json.default_model.model_name, "deepseek-chat");
-
-    const removed = await post(port, "/api/settings/model-remove", { model_id: "mimo-v1" });
-    assert.equal(removed.status, 200);
-    assert.equal(removed.json.models.length, 1);
-    assert.equal(removed.json.models[0].model_name, "deepseek-chat");
-  } finally {
-    await closeServer(server);
-  }
-});
-
-test("自定义 OpenAI 兼容模型（非官方 base_url + 明文 key）：保存后进入模型清单", async () => {
-  // Task 7 ③：用户痛点「自定义模型保存后不进已配置」的链路复现核查——先用
-  // 自定义 base_url + 明文 key 保存，再 GET models 断言清单包含该模型。
-  const { server, port } = await setupProjectlessServer();
-  try {
-    const { status, json } = await post(port, "/api/settings/model-profile", {
-      active_model: {
-        provider: "openai-compatible",
-        model_name: "custom-openai-v1",
-        base_url: "https://api.example.com/v1",
-        api_key_env: "CUSTOM_PROVIDER_KEY",
-        api_key: "sk-custom-plaintext"
-      }
-    });
-    assert.equal(status, 200);
-    assert.equal(json.model_profile.model_name, "custom-openai-v1");
-    assert.equal(json.model_profile.api_key_saved, true, "明文 key 应落盘");
-
-    const listed = await fetch(`http://127.0.0.1:${port}/api/settings/models`);
-    const listJson = await listed.json();
-    assert.equal(listed.status, 200);
-    const model = listJson.models.find((m) => m.model_name === "custom-openai-v1");
-    assert.ok(model, "自定义 OpenAI 兼容模型保存后应出现在模型清单（已配置）");
-    assert.equal(model.base_url, "https://api.example.com/v1");
-    assert.equal(model.api_key_saved, true);
-    assert.equal(listJson.default_model.model_name, "custom-openai-v1", "唯一模型保存后成为默认");
-  } finally {
-    await closeServer(server);
-  }
-});
-
-test("选用/删除不存在的模型：400 且带可读原因", async () => {
-  const { server, port } = await setupProjectlessServer();
-  try {
-    const selected = await post(port, "/api/settings/model-select", { model_id: "ghost" });
-    assert.equal(selected.status, 400);
-    assert.match(selected.json.message, /未找到已配置模型/);
-    const removed = await post(port, "/api/settings/model-remove", { model_id: "ghost" });
-    assert.equal(removed.status, 400);
-  } finally {
-    await closeServer(server);
-  }
-});
+// 直写 v2 清单造出「存量模型」：providers 端点已被 C 档校验拦截，只有直写能模拟
+// 历史数据（saveProviderStore 不经 normalize，loadProviderStore 读时归一化）。
+async function writeStoreProvider(secretsRoot, provider) {
+  await saveProviderStore(secretsRoot, {
+    schema_version: 2,
+    default_model: null,
+    providers: [provider]
+  });
+}
 
 test("无项目也能测试连接：不再要求先新建小说", async () => {
   const calls = [];
@@ -259,13 +169,13 @@ test("无项目也能测试连接：不再要求先新建小说", async () => {
     }
   });
   try {
-    await post(port, "/api/settings/model-profile", { active_model: SAMPLE_MODEL });
     const { status, json } = await post(port, "/api/settings/test-connection", {
       active_model: {
         provider: "openai-compatible",
         model_name: "deepseek-chat",
         base_url: "https://api.deepseek.com",
-        api_key_env: "DEEPSEEK_API_KEY"
+        api_key_env: "DEEPSEEK_API_KEY",
+        api_key: "sk-test-abcd1234"
       }
     });
     assert.equal(status, 200);
@@ -291,7 +201,7 @@ test("无项目测试连接：字段缺失仍返回逐字段错误", async () =>
   }
 });
 
-test("改全局模型后打开界面：不再写回已有项目的模型快照", async () => {
+test("改全局供应商配置后：不再写回已有项目的模型快照（v2 providers PATCH）", async () => {
   const { projectRoot, server, port } = await setupServerWithProject();
   try {
     // 项目先指向旧地址
@@ -305,20 +215,21 @@ test("改全局模型后打开界面：不再写回已有项目的模型快照",
         api_key_env: "OLD_KEY_ENV"
       }
     });
-    // 在设置里把同名模型改成新地址 + 新密钥变量名
-    await post(port, "/api/settings/model-profile", {
-      active_model: {
-        provider: "openai-compatible",
-        model_name: "deepseek-chat",
-        base_url: "https://api.deepseek.com",
-        api_key_env: "DEEPSEEK_API_KEY",
-        api_key: "sk-new"
-      }
+    // 在全局清单（v2）里把同一供应商改成新地址 + 新密钥变量名
+    const created = await post(port, "/api/settings/providers", {
+      name: "旧网关",
+      base_url: "https://old.example.com",
+      api_format: "openai-chat-completions",
+      api_key_env: "OLD_KEY_ENV"
     });
-
-    const dashboard = await fetch(`http://127.0.0.1:${port}/`);
-    assert.equal(dashboard.status, 200);
-    await dashboard.text();
+    assert.equal(created.status, 200);
+    const providerId = created.json.provider.id;
+    const res = await fetch(`http://127.0.0.1:${port}/api/settings/providers/${providerId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ base_url: "https://api.deepseek.com", api_key_env: "DEEPSEEK_API_KEY" })
+    });
+    assert.equal(res.status, 200);
 
     // 任务 7：写回同步已删除，项目 active_model 快照不被全局清单改写
     const unsynced = await loadProject(projectRoot);
@@ -329,25 +240,35 @@ test("改全局模型后打开界面：不再写回已有项目的模型快照",
   }
 });
 
-// Task 11（2026-08-03 修订）：建项目不规定模型——projects/init 不带 model_id，
-// 直接用全局默认模型；写作中随时通过 model-switch 换模型（入口是 composer 底部
-// 状态栏模型按钮与 /model 命令，无需新增前端代码）。
+// Task 11（2026-08-03 修订）：建项目不规定模型——projects/init 直接用全局默认模型
+//（v2：写引用形态，运行时按 modelStoreLoader 解析）；写作中随时通过 model-switch
+// 换模型（入口是 composer 底部状态栏模型按钮与 /model 命令，无需新增前端代码）。
 
-test("新建项目不指定模型时沿用全局默认模型", async () => {
+test("新建项目不指定模型时沿用全局默认模型（v2 引用）", async () => {
   const { root, server, port } = await setupProjectlessServer();
   try {
-    // 只配一个模型（deepseek-chat），保存后它就是全局默认
-    await post(port, "/api/settings/model-profile", { active_model: SAMPLE_MODEL });
+    // 设 deepseek 预设为全局默认
+    const ds = await fetchPresetModel(port, "deepseek");
+    const defaultRef = await setDefaultViaEndpoint(port, ds.providerId, ds.modelId);
+    assert.deepEqual(defaultRef, { provider_id: ds.providerId, model_id: ds.modelId });
+
     const target = path.join(root, "novel-default");
-    // 建项目不传 model_id：项目直接用全局默认模型
+    // 建项目不传 model_id：项目直接用全局默认模型（引用形态）
     const { status } = await post(port, "/api/projects/init", {
       projectRoot: target,
       title: "默认模型"
     });
     assert.equal(status, 200);
     const created = await loadProject(target);
-    assert.equal(created.active_model.model_name, "deepseek-chat");
-    assert.equal(created.active_model.base_url, "https://api.deepseek.com");
+    assert.deepEqual(
+      created.active_model,
+      { provider_id: ds.providerId, model_id: ds.modelId },
+      "新项目 active_model 应为全局默认的引用"
+    );
+    // 运行时解析为完整配置
+    const dashboard = await fetch(`http://127.0.0.1:${port}/api/dashboard?projectRoot=${encodeURIComponent(target)}`);
+    const data = await dashboard.json();
+    assert.equal(data.project.active_model.model_name, ds.modelName);
   } finally {
     await closeServer(server);
   }
@@ -356,18 +277,12 @@ test("新建项目不指定模型时沿用全局默认模型", async () => {
 test("建项目后随时换模型：切换后项目用清单里的另一个模型", async () => {
   const { root, server, port } = await setupProjectlessServer();
   try {
-    // 配两个模型：deepseek-chat、mimo-v1；mimo-v1 最后保存，所以是全局默认
-    await post(port, "/api/settings/model-profile", { active_model: SAMPLE_MODEL });
-    await post(port, "/api/settings/model-profile", {
-      active_model: {
-        ...SAMPLE_MODEL,
-        model_name: "mimo-v1",
-        base_url: "https://api.mimo.example",
-        api_key_env: "XIAOMI_MIMO_API_KEY",
-        api_key: "sk-mimo"
-      }
-    });
-    // 建项目不传 model_id：项目先用全局默认模型 mimo-v1
+    // 全局默认 = mimo（后设），deepseek 留作切换目标
+    const ds = await fetchPresetModel(port, "deepseek");
+    const mimo = await fetchPresetModel(port, "mimo");
+    await setDefaultViaEndpoint(port, mimo.providerId, mimo.modelId);
+
+    // 建项目不传 model_id：项目先用全局默认模型（mimo 引用）
     const target = path.join(root, "novel-switch");
     const init = await post(port, "/api/projects/init", {
       projectRoot: target,
@@ -375,23 +290,25 @@ test("建项目后随时换模型：切换后项目用清单里的另一个模�
     });
     assert.equal(init.status, 200);
     const created = await loadProject(target);
-    assert.equal(created.active_model.model_name, "mimo-v1");
+    assert.deepEqual(created.active_model, { provider_id: mimo.providerId, model_id: mimo.modelId });
 
-    // 写作中换模型：切到清单里的 deepseek-chat
+    // 写作中换模型：切到 deepseek（引用形态）
     const switched = await post(port, "/api/settings/model-switch", {
       projectRoot: target,
-      model_id: "deepseek-chat"
+      provider_id: ds.providerId,
+      model_id: ds.modelId
     });
     assert.equal(switched.status, 200);
     // 模型写入应用私有 workspace settings；project.yaml 不再双写（保留原值）
     const store = createWorkspaceStore({ stateRoot: path.join(root, ".state") });
     const settings = await store.loadSettings(target);
-    assert.equal(settings.active_model.model_name, "deepseek-chat");
-    assert.equal(settings.active_model.base_url, "https://api.deepseek.com");
+    assert.deepEqual(settings.active_model, { provider_id: ds.providerId, model_id: ds.modelId });
     const legacy = await loadProject(target);
-    assert.equal(legacy.active_model.model_name, "mimo-v1", "project.yaml 保留为回滚依据，不被改写");
-    // 响应里的清单完整：两个模型都在
-    assert.equal(switched.json.available_models.length, 2);
+    assert.deepEqual(
+      legacy.active_model,
+      { provider_id: mimo.providerId, model_id: mimo.modelId },
+      "project.yaml 保留为回滚依据，不被改写"
+    );
   } finally {
     await closeServer(server);
   }
@@ -399,47 +316,51 @@ test("建项目后随时换模型：切换后项目用清单里的另一个模�
 
 // I-1 缺陷回归（2026-08-03 审查）：normalizeActiveModel 白名单缺 temperature，切模型时
 // 温度同时从 project.yaml 与全局 model-profiles.json 永久消失——用户再打开设置温度框
-// 为空（「保存后像没保存过」）。断言切换后两处都保留温度。
+// 为空（「保存后像没保存过」）。v2 下温度随模型条目落盘，断言切换后解析配置仍保留。
 
-test("切换模型保留温度配置：project.yaml 与全局清单 temperature 都不丢", async () => {
+test("切换模型保留温度配置：v2 清单条目与解析配置 temperature 都不丢", async () => {
   const { root, secretsRoot, server, port } = await setupProjectlessServer();
   try {
-    // 配两个模型：deepseek-chat 带 temperature 0.7；mimo-v1 最后保存是全局默认
-    await post(port, "/api/settings/model-profile", {
-      active_model: { ...SAMPLE_MODEL, temperature: 0.7 }
-    });
-    await post(port, "/api/settings/model-profile", {
-      active_model: {
-        ...SAMPLE_MODEL,
-        model_name: "mimo-v1",
-        base_url: "https://api.mimo.example",
-        api_key_env: "XIAOMI_MIMO_API_KEY",
-        api_key: "sk-mimo"
+    // 配两个模型：deepseek-chat 带 temperature 0.7；mimo 设全局默认
+    const ds = await fetchPresetModel(port, "deepseek");
+    const mimo = await fetchPresetModel(port, "mimo");
+    const patchRes = await fetch(
+      `http://127.0.0.1:${port}/api/settings/providers/${encodeURIComponent(ds.providerId)}/models/${encodeURIComponent(ds.modelId)}`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ temperature: 0.7 })
       }
-    });
+    );
+    assert.equal(patchRes.status, 200);
+    await setDefaultViaEndpoint(port, mimo.providerId, mimo.modelId);
+
     const target = path.join(root, "novel-temp");
     const init = await post(port, "/api/projects/init", {
       projectRoot: target,
       title: "温度保留"
     });
     assert.equal(init.status, 200);
-    // 切换前：全局清单里的 deepseek-chat 带温度
-    const storeBefore = await loadLocalModelProfiles(secretsRoot);
-    assert.equal(storeBefore.models.find((m) => m.model_name === "deepseek-chat").temperature, 0.7);
 
-    // 写作中切到带温度的 deepseek-chat
+    // 写作中切到带温度的 deepseek
     const switched = await post(port, "/api/settings/model-switch", {
       projectRoot: target,
-      model_id: "deepseek-chat"
+      provider_id: ds.providerId,
+      model_id: ds.modelId
     });
     assert.equal(switched.status, 200);
-    // 应用私有 workspace settings：active_model.temperature 保留
+    // 应用私有 workspace settings：active_model 为引用
     const store = createWorkspaceStore({ stateRoot: path.join(root, ".state") });
     const settings = await store.loadSettings(target);
-    assert.equal(settings.active_model.temperature, 0.7);
-    // 全局 model-profiles.json：对应条目 temperature 保留（不被整条替换剥掉）
-    const globalStore = await loadLocalModelProfiles(secretsRoot);
-    assert.equal(globalStore.models.find((m) => m.model_name === "deepseek-chat").temperature, 0.7);
+    assert.deepEqual(settings.active_model, { provider_id: ds.providerId, model_id: ds.modelId });
+    // 运行时解析配置保留温度（I-1：切换不得丢温度）
+    const dashboard = await fetch(`http://127.0.0.1:${port}/api/dashboard?projectRoot=${encodeURIComponent(target)}`);
+    const data = await dashboard.json();
+    assert.equal(data.project.active_model.temperature, 0.7, "切换后解析配置应保留 temperature");
+    // v2 清单条目本身保留温度
+    const storeData = JSON.parse(await fs.readFile(path.join(secretsRoot, "model-profiles.json"), "utf8"));
+    const dsEntry = storeData.providers.find((p) => p.id === ds.providerId).models.find((m) => m.id === ds.modelId);
+    assert.equal(dsEntry.temperature, 0.7, "v2 清单条目应保留 temperature");
   } finally {
     await closeServer(server);
   }
@@ -447,8 +368,7 @@ test("切换模型保留温度配置：project.yaml 与全局清单 temperature 
 
 // Task 3 C 档（2026-08-03）：写作引擎强依赖工具调用与流式，能力缺失（no-tools）的模型
 // 保存/选用/切换直接报错阻止。no-tools resolver 的 matcher 只命中 no-tools.example，
-// 不影响本文件其它用 deepseek/mimo 的用例；注册表无 unregister，沿用既有注入惯例
-// （见 tests/provider-adapters.test.mjs 的 registerProviderCapabilityResolver 用例）。
+// 不影响本文件其它用 deepseek/mimo 的用例；注册表无 unregister，沿用既有注入惯例。
 
 test("切换模型：C 档模型切换被拒", async () => {
   registerProviderCapabilityResolver(
@@ -457,21 +377,22 @@ test("切换模型：C 档模型切换被拒", async () => {
   );
   const { projectRoot, secretsRoot, server, port } = await setupServerWithProject();
   try {
-    // 直写清单造出「存量 no-tools 模型」：保存 API 已被 C 档校验拦截，只有直写能模拟历史数据
-    await upsertLocalModelProfile(secretsRoot, {
-      provider: "openai-compatible",
-      model_name: "no-tools",
-      base_url: "https://no-tools.example",
-      api_key_env: "NO_TOOLS_API_KEY"
+    // 直写 v2 清单造出「存量 no-tools 模型」：保存/设默认 API 已被 C 档校验拦截，
+    // 只有直写能模拟历史数据
+    await writeStoreProvider(secretsRoot, {
+      id: "pv_no_tools", name: "no-tools", type: "custom", status: "enabled",
+      base_url: "https://no-tools.example", api_format: "openai-chat-completions", api_key_env: "NO_TOOLS_API_KEY",
+      models: [{ id: "m_no_tools", model_name: "no-tools", enabled: true }]
     });
     const { status, json } = await post(port, "/api/settings/model-switch", {
       projectRoot,
-      model_id: "no-tools"
+      provider_id: "pv_no_tools",
+      model_id: "m_no_tools"
     });
     assert.equal(status, 400);
     assert.equal(json.code, "model_unsupported");
     assert.match(json.message, /不支持工具调用/);
-    // 校验发生在写 project.yaml 之前：项目模型没被切过去
+    // 校验发生在写 settings 之前：项目模型没被切过去
     const project = await loadProject(projectRoot);
     assert.notEqual(project.active_model?.model_name, "no-tools");
   } finally {
@@ -491,24 +412,22 @@ test("切换模型响应带 capabilities 与 conflicts", async () => {
   );
   const { root, projectRoot, secretsRoot, server, port } = await setupServerWithProject();
   try {
-    // 项目 active_model 原配置 temperature：模拟「项目已配置温度」（Task 1 后温度随
-    // 全局保存 → 项目同步存在于 active_model.temperature）
+    // 项目 active_model 原配置 temperature：模拟「项目已配置温度」
     const project = await loadProject(projectRoot);
     await saveProject(projectRoot, {
       ...project,
       active_model: { ...project.active_model, temperature: 0.7 }
     });
-    // 直写清单造出 no-temp 模型：保存 API 不校验温度能力（B 档只告知不阻止），
-    // 直写与全局保存两条路径造出的 profile 等价
-    await upsertLocalModelProfile(secretsRoot, {
-      provider: "openai-compatible",
-      model_name: "no-temp",
-      base_url: "https://no-temp.example",
-      api_key_env: "NO_TEMP_API_KEY"
+    // 直写 v2 清单造出 no-temp 模型
+    await writeStoreProvider(secretsRoot, {
+      id: "pv_no_temp", name: "no-temp", type: "custom", status: "enabled",
+      base_url: "https://no-temp.example", api_format: "openai-chat-completions", api_key_env: "NO_TEMP_API_KEY",
+      models: [{ id: "m_no_temp", model_name: "no-temp", enabled: true }]
     });
     const { status, json } = await post(port, "/api/settings/model-switch", {
       projectRoot,
-      model_id: "no-temp"
+      provider_id: "pv_no_temp",
+      model_id: "m_no_temp"
     });
     assert.equal(status, 200);
     assert.equal(json.ok, true);
@@ -519,7 +438,7 @@ test("切换模型响应带 capabilities 与 conflicts", async () => {
     // 切换落盘完成：应用私有 workspace settings 已指向 no-temp 模型
     const store = createWorkspaceStore({ stateRoot: path.join(root, ".state") });
     const settings = await store.loadSettings(projectRoot);
-    assert.equal(settings.active_model.model_name, "no-temp");
+    assert.deepEqual(settings.active_model, { provider_id: "pv_no_temp", model_id: "m_no_temp" });
   } finally {
     await closeServer(server);
   }
@@ -532,45 +451,20 @@ test("切换模型：项目未配置温度时 conflicts 为空数组", async () 
   );
   const { projectRoot, secretsRoot, server, port } = await setupServerWithProject();
   try {
-    // 默认项目模型 mock-writer 未配置 temperature：切 no-temp 模型不应报冲突
-    await upsertLocalModelProfile(secretsRoot, {
-      provider: "openai-compatible",
-      model_name: "no-temp",
-      base_url: "https://no-temp.example",
-      api_key_env: "NO_TEMP_API_KEY"
+    // 默认项目模型未配置 temperature：切 no-temp 模型不应报冲突
+    await writeStoreProvider(secretsRoot, {
+      id: "pv_no_temp", name: "no-temp", type: "custom", status: "enabled",
+      base_url: "https://no-temp.example", api_format: "openai-chat-completions", api_key_env: "NO_TEMP_API_KEY",
+      models: [{ id: "m_no_temp", model_name: "no-temp", enabled: true }]
     });
     const { status, json } = await post(port, "/api/settings/model-switch", {
       projectRoot,
-      model_id: "no-temp"
+      provider_id: "pv_no_temp",
+      model_id: "m_no_temp"
     });
     assert.equal(status, 200);
     assert.equal(json.capabilities.supportsTemperature, false);
     assert.deepEqual(json.conflicts, []);
-  } finally {
-    await closeServer(server);
-  }
-});
-
-test("选用模型：C 档模型选用被拒", async () => {
-  registerProviderCapabilityResolver(
-    (c) => String(c.base_url ?? "").includes("no-tools.example"),
-    () => ({ supportsTools: false })
-  );
-  const { secretsRoot, server, port } = await setupProjectlessServer();
-  try {
-    await upsertLocalModelProfile(secretsRoot, {
-      provider: "openai-compatible",
-      model_name: "no-tools",
-      base_url: "https://no-tools.example",
-      api_key_env: "NO_TOOLS_API_KEY"
-    });
-    const { status, json } = await post(port, "/api/settings/model-select", { model_id: "no-tools" });
-    assert.equal(status, 400);
-    assert.equal(json.code, "model_unsupported");
-    assert.match(json.message, /不支持工具调用/);
-    // 清单还在：被拒后没有改默认指针，no-tools 依然可删
-    const store = await loadLocalModelProfiles(secretsRoot);
-    assert.equal(store.models.length, 1);
   } finally {
     await closeServer(server);
   }
@@ -581,13 +475,18 @@ test("选用模型：C 档模型选用被拒", async () => {
 test("普通目录使用应用私有 active_model，不创建 project.yaml", async () => {
   const { root, projectRoot, stateRoot, server, port } = await setupPlainWorkspace();
   try {
+    const ds = await fetchPresetModel(port, "deepseek");
     const switched = await post(port, "/api/settings/model-switch", {
       projectRoot,
-      model_id: "deepseek-chat"
+      provider_id: ds.providerId,
+      model_id: ds.modelId
     });
     assert.equal(switched.status, 200);
     const store = createWorkspaceStore({ stateRoot });
-    assert.equal((await store.loadSettings(projectRoot)).active_model.model_name, "deepseek-chat");
+    assert.deepEqual(
+      (await store.loadSettings(projectRoot)).active_model,
+      { provider_id: ds.providerId, model_id: ds.modelId }
+    );
     assert.equal(await pathExists(path.join(projectRoot, "project.yaml")), false);
   } finally {
     await closeServer(server);
@@ -598,20 +497,20 @@ test("普通目录使用应用私有 active_model，不创建 project.yaml", asy
 test("普通目录模型切换后 project.yaml 不存在，设置只落应用私有 settings", async () => {
   const { root, projectRoot, stateRoot, server, port } = await setupPlainWorkspace();
   try {
+    const ds = await fetchPresetModel(port, "deepseek");
     const switched = await post(port, "/api/settings/model-switch", {
       projectRoot,
-      model_id: "deepseek-chat"
+      provider_id: ds.providerId,
+      model_id: ds.modelId
     });
     assert.equal(switched.status, 200);
-    // 响应中的模型配置来自有效工作区配置（settings 优先）
-    assert.equal(switched.json.model_profile.model_name, "deepseek-chat");
     // 项目目录始终干净：无 project.yaml、无 .wwriting
     assert.equal(await pathExists(path.join(projectRoot, "project.yaml")), false);
     assert.equal(await pathExists(path.join(projectRoot, ".wwriting")), false);
     // settings.json 位于应用私有目录
     const store = createWorkspaceStore({ stateRoot });
     const settings = await store.loadSettings(projectRoot);
-    assert.equal(settings.active_model.model_name, "deepseek-chat");
+    assert.deepEqual(settings.active_model, { provider_id: ds.providerId, model_id: ds.modelId });
   } finally {
     await closeServer(server);
   }
@@ -619,7 +518,7 @@ test("普通目录模型切换后 project.yaml 不存在，设置只落应用私
 
 // Task 16：model-switch 引用形态——{ provider_id, model_id } 校验 v2 清单可用+启用后
 // 写项目引用到应用私有 settings；响应带 active_model（引用）且不再返回旧
-// available_models/model_profile 字段。旧 { model_id } 形态保持原契约（cutover 删除）。
+// available_models/model_profile 字段。
 test("model-switch 引用形态：写项目引用，响应去掉旧清单字段", async () => {
   const { root, projectRoot, stateRoot, server, port } = await setupPlainWorkspace();
   try {
