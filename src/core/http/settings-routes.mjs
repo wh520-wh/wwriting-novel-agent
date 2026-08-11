@@ -531,113 +531,136 @@ export function createSettingsRoutes({
       }
     },
 
-    // 连接测试：候选 active_model + 临时 api_key 完全不入项目/secret 文件；
-    // 只读探测后追加一条不含密钥的审计事件。缺字段/缺密钥映射 configuration_missing。
-    "POST /api/settings/test-connection": async ({ body, request, response }) => {
+    // 连接测试：候选模型（双形态——新设置页「供应商+模型」{ provider, model } 或旧
+    // 表单 { active_model }）+ 临时 api_key 完全不入项目/secret 文件；只读探测后
+    // 追加一条不含密钥的审计事件。缺字段/缺密钥映射 configuration_missing；
+    // 探测超时（Task 11/B6）返回 504 request_timeout，不再被误分类为 499 取消。
+    "POST /api/settings/test-connection": async ({ body }) => {
       if (!connectionTester) {
         throw new HttpError(503, "model_probe_unavailable", "模型连接探测尚未配置。");
       }
+      // B3：不再监听 request close——router 的 readJsonBody 已消费完请求体，close
+      // 早已触发，该检测不可达；客户端断开由 fetch 侧（信号中止）处理。信号仍传给
+      // tester，供未来真正可中止的传输层使用。
       const abortController = new AbortController();
-      const onRequestClose = () => {
-        if (!response.writableEnded) {
-          abortController.abort(new DOMException("client closed request", "AbortError"));
-        }
-      };
-      request.once("close", onRequestClose);
       try {
-        try {
-          let projectRoot = null;
-          if (selectedRef.current) {
-            projectRoot = await resolveActiveProjectRoot(ctx).catch(() => null);
-          }
-          const candidate = body?.active_model && typeof body.active_model === "object"
-            ? { ...body.active_model }
-            : null;
-          if (!candidate) {
-            throw new HttpError(400, "configuration_missing", "active_model is required.");
-          }
-          const project = projectRoot ? await loadProject(projectRoot).catch(() => null) : null;
-          const projectId = project?.project_id ?? null;
-
-          let validated;
-          try {
-            validated = validateModelConfig(candidate);
-          } catch (error) {
-            if (error instanceof ModelConfigValidationError) {
-              throw new HttpError(400, error.code, error.message, { fields: error.fields });
-            }
-            throw error;
-          }
-
-          const stored = await loadLocalSecrets(secretsRoot);
-          const transientApiKey = typeof candidate.api_key === "string" && candidate.api_key.length > 0
-            ? candidate.api_key
-            : null;
-          const secrets = { ...stored };
-          if (transientApiKey) {
-            secrets[validated.api_key_env] = transientApiKey;
-          }
-          if (!secrets[validated.api_key_env]) {
-            throw new HttpError(400, "configuration_missing", "请先在 Windows 环境变量中配置 API Key");
-          }
-
-          const persistedConfig = {
-            provider: validated.provider,
-            model_name: validated.model_name,
-            base_url: validated.base_url,
-            api_key_env: validated.api_key_env
-          };
-
-          const result = await connectionTester({
-            config: persistedConfig,
-            secrets,
-            signal: abortController.signal
-          });
-
-          let baseUrlOrigin = "";
-          try {
-            baseUrlOrigin = new URL(validated.base_url).origin;
-          } catch {
-            baseUrlOrigin = "";
-          }
-
-          if (projectRoot) {
-            await appendEvent(projectRoot, {
-              type: "model_connection_tested",
-              project_id: projectId,
-              stage: "settings",
-              severity: result?.ok ? "info" : "warn",
-              message: result?.ok ? "模型连接成功" : `模型连接失败：${result?.code ?? "unknown"}`,
-              data: {
-                ok: result?.ok === true,
-                provider: persistedConfig.provider,
-                model_name: persistedConfig.model_name,
-                base_url_origin: baseUrlOrigin,
-                code: result?.code ?? null,
-                latency_ms: typeof result?.latency_ms === "number" ? result.latency_ms : null
-              }
-            });
-          }
-
-          return {
-            ok: result?.ok === true,
-            code: result?.code ?? null,
-            message: result?.message ?? null,
-            provider: persistedConfig.provider,
-            model_name: persistedConfig.model_name,
-            latency_ms: typeof result?.latency_ms === "number" ? result.latency_ms : null,
-            projectRoot
-          };
-        } finally {
-          // 无论成功/失败/取消，都清理请求关闭监听（旧实现只在探测成功后清理，
-          // 校验失败路径会遗留监听直到请求关闭——虽无害但不一致）。
-          // 499 client_closed_request 是客户端中途断开的有意映射，见下方 catch。
-          request.removeListener("close", onRequestClose);
+        let projectRoot = null;
+        if (selectedRef.current) {
+          projectRoot = await resolveActiveProjectRoot(ctx).catch(() => null);
         }
+        // Task 11：请求体双形态归一化。新设置页（Task 15）按「供应商+模型」调用：
+        //   { provider: { base_url, api_key_env }, model: { model_name }, api_key? }
+        // 旧表单沿用 { active_model, api_key }（api_key 也支持内嵌在 active_model）。
+        // 归一化到统一 candidate 形状再走既有校验；字段缺失交给 validateModelConfig
+        // 产出逐字段 fields 标红（见下方 catch）。
+        const candidate = body?.provider && body?.model
+          ? {
+              provider: "openai-compatible",
+              base_url: body.provider.base_url,
+              api_key_env: body.provider.api_key_env,
+              model_name: body.model.model_name,
+              api_key: body.api_key
+            }
+          : body?.active_model
+            ? {
+                ...body.active_model,
+                // 顶层 api_key 优先，缺省保留 active_model 内嵌的 api_key（旧放法）
+                ...(typeof body.api_key === "string" ? { api_key: body.api_key } : {})
+              }
+            : null;
+        if (!candidate) {
+          throw new HttpError(400, "configuration_missing", "请填写接口地址和模型名称。");
+        }
+        const project = projectRoot ? await loadProject(projectRoot).catch(() => null) : null;
+        const projectId = project?.project_id ?? null;
+
+        let validated;
+        try {
+          validated = validateModelConfig(candidate);
+        } catch (error) {
+          if (error instanceof ModelConfigValidationError) {
+            throw new HttpError(400, error.code, error.message, { fields: error.fields });
+          }
+          throw error;
+        }
+
+        const stored = await loadLocalSecrets(secretsRoot);
+        const transientApiKey = typeof candidate.api_key === "string" && candidate.api_key.length > 0
+          ? candidate.api_key
+          : null;
+        const secrets = { ...stored };
+        if (transientApiKey) {
+          secrets[validated.api_key_env] = transientApiKey;
+        }
+        if (!secrets[validated.api_key_env]) {
+          throw new HttpError(400, "configuration_missing", "请先在 Windows 环境变量中配置 API Key");
+        }
+
+        const persistedConfig = {
+          provider: validated.provider,
+          model_name: validated.model_name,
+          base_url: validated.base_url,
+          api_key_env: validated.api_key_env
+        };
+
+        const result = await connectionTester({
+          config: persistedConfig,
+          secrets,
+          signal: abortController.signal
+        });
+
+        let baseUrlOrigin = "";
+        try {
+          baseUrlOrigin = new URL(validated.base_url).origin;
+        } catch {
+          baseUrlOrigin = "";
+        }
+
+        if (projectRoot) {
+          await appendEvent(projectRoot, {
+            type: "model_connection_tested",
+            project_id: projectId,
+            stage: "settings",
+            severity: result?.ok ? "info" : "warn",
+            message: result?.ok ? "模型连接成功" : `模型连接失败：${result?.code ?? "unknown"}`,
+            data: {
+              ok: result?.ok === true,
+              provider: persistedConfig.provider,
+              model_name: persistedConfig.model_name,
+              base_url_origin: baseUrlOrigin,
+              code: result?.code ?? null,
+              latency_ms: typeof result?.latency_ms === "number" ? result.latency_ms : null
+            }
+          });
+        }
+
+        // Task 11/B6：探测超时 → 504 request_timeout（旧行为经 AbortError 误分类
+        // 为 499 client_closed_request）。审计事件已在上方落一条 warn，再以明确
+        // 状态码抛给前端（Task 15 设置页据此区分超时与取消）。
+        if (result?.code === "request_timeout") {
+          throw new HttpError(504, "request_timeout", "模型服务器响应超时（30 秒）");
+        }
+
+        return {
+          ok: result?.ok === true,
+          code: result?.code ?? null,
+          message: result?.message ?? null,
+          provider: persistedConfig.provider,
+          model_name: persistedConfig.model_name,
+          latency_ms: typeof result?.latency_ms === "number" ? result.latency_ms : null,
+          projectRoot
+        };
       } catch (error) {
         if (error instanceof HttpError) {
           throw error;
         }
+        // Task 11/B6：注入的 tester 直接抛 ProviderTransportError(reason="timeout")
+        // 时同样映射 504（与 result.code === "request_timeout" 路径一致）。
+        if (error?.reason === "timeout") {
+          throw new HttpError(504, "request_timeout", "模型服务器响应超时（30 秒）");
+        }
+        // 调用方取消保留 499 映射：客户端中途断开由 fetch 侧中止信号、经 tester
+        // 原样上抛 AbortError（B3 移除 close 监听后本路由不再自行检测断开）。
         if (error && (error.name === "AbortError" || error.code === DOMException.ABORT_ERR)) {
           throw new HttpError(499, "client_closed_request", "连接测试已取消");
         }

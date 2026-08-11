@@ -36,6 +36,8 @@ export async function testModelConnection({
   signal,
   now = Date.now,
   complete = completeOpenAICompatibleProbe,
+  // Task 11：探测超时可注入（默认 30s 语义不变），测试用传小值触发内部超时路径。
+  timeoutMs = PROBE_TIMEOUT_MS,
 } = {}) {
   let config;
   try {
@@ -70,9 +72,17 @@ export async function testModelConnection({
   const identity = parseModelIdentity(config.model_name ?? "");
 
   const timeoutController = new AbortController();
+  // Task 11/B6：内部探测超时与调用方取消必须可区分。先置位 timedOut 再 abort——
+  // 合并信号的中止会以 AbortError 形态击穿传输层（网关把「外部信号已中止」转成
+  // AbortError），若 isCallerAbort 按 error.name 判断，超时会被误分类为调用方
+  // 取消（HTTP 层落成 499）。分类只看 timedOut 标志与 timeoutSignal.aborted。
+  let timedOut = false;
   const timeoutHandle = setTimeout(
-    () => timeoutController.abort(new DOMException("probe timeout", "TimeoutError")),
-    PROBE_TIMEOUT_MS,
+    () => {
+      timedOut = true;
+      timeoutController.abort(new DOMException("probe timeout", "TimeoutError"));
+    },
+    timeoutMs,
   );
 
   const combinedSignal = mergeSignals(signal, timeoutController.signal);
@@ -85,7 +95,7 @@ export async function testModelConnection({
         apiKey,
         messages: [{ role: "user", content: PROBE_PROMPT }],
         maxTokens: PROBE_MAX_TOKENS,
-        timeoutMs: PROBE_TIMEOUT_MS,
+        timeoutMs,
         signal: combinedSignal,
       }),
       {
@@ -106,7 +116,7 @@ export async function testModelConnection({
       throw error;
     }
     const latency_ms = Math.max(0, now() - start);
-    const code = classifyError(error, { timeoutSignal: timeoutController.signal });
+    const code = classifyError(error, { timeoutSignal: timeoutController.signal, timedOut });
     return {
       ok: false,
       code,
@@ -125,13 +135,14 @@ export async function testModelConnection({
 
 // 最小连接请求：经 ModelGateway 走新 OpenAI-compatible adapter（Task 9）。
 // gateway 只做单次调用（retryMax 0）——探测自身的 runWithRetry 负责重试，
-// 避免双重退避；per-attempt 超时按探测 30s 配置。
+// 避免双重退避；per-attempt 超时按探测 timeoutMs（默认 30s）配置。
 export async function completeOpenAICompatibleProbe({
   config,
   apiKey,
   messages,
   maxTokens,
   signal,
+  timeoutMs = PROBE_TIMEOUT_MS,
 }) {
   // Task 2：传输边界再剥离一次（幂等）。经 testModelConnection 调用时 config
   // 已是 provider_model_id；直接调用本函数时也保证 gateway 收到基础 ID。
@@ -143,8 +154,8 @@ export async function completeOpenAICompatibleProbe({
       apiKeyEnv: config.api_key_env,
     }),
     retryMax: 0,
-    timeoutMs: PROBE_TIMEOUT_MS,
-    totalDeadlineMs: PROBE_TIMEOUT_MS,
+    timeoutMs,
+    totalDeadlineMs: timeoutMs,
     heartbeatMs: 0,
   });
 
@@ -159,7 +170,7 @@ export async function completeOpenAICompatibleProbe({
         api_key_env: config.api_key_env,
         max_tokens: maxTokens,
         max_output_tokens: maxTokens,
-        timeout_ms: PROBE_TIMEOUT_MS,
+        timeout_ms: timeoutMs,
       },
     },
     { signal },
@@ -280,23 +291,18 @@ function mergeSignals(...signals) {
 }
 
 function isCallerAbort(error, callerSignal) {
-  if (callerSignal?.aborted) return true;
-  if (error && error.name === "AbortError") {
-    return true;
-  }
-  if (
-    error instanceof DOMException &&
-    (error.name === "AbortError" || error.code === DOMException.ABORT_ERR)
-  ) {
-    return true;
-  }
-  return false;
+  // Task 11/B6：只有「外部调用方传入的 signal 已中止」才算调用方取消。内部探测
+  // 超时同样会中止合并信号、让传输层抛 AbortError 形态的错误——若这里按
+  // error.name === "AbortError" 判断，超时会被误判成调用方取消，HTTP 层落成 499
+  // client_closed_request。error 参数保留签名，供未来需要区分具体错误形态时扩展。
+  return callerSignal?.aborted === true;
 }
 
-function classifyError(error, { timeoutSignal }) {
+function classifyError(error, { timeoutSignal, timedOut }) {
   if (!error) return "provider_error";
 
-  if (timeoutSignal?.aborted) {
+  // B6：探测级超时（定时器已中止合并信号）→ request_timeout。
+  if (timedOut || timeoutSignal?.aborted) {
     return "request_timeout";
   }
 
@@ -313,7 +319,14 @@ function classifyError(error, { timeoutSignal }) {
     return "network_unreachable";
   }
 
-  if (error.name === "TimeoutError" || code === "ETIMEDOUT" || code === "UND_ERR_HEADERS_TIMEOUT") {
+  // B6：网关 attempt 看门狗空闲超时抛 ProviderTransportError(reason="timeout")
+  //（探测级定时器未必先到）——reason 命中同样分类为 request_timeout。
+  if (
+    error.name === "TimeoutError" ||
+    error.reason === "timeout" ||
+    code === "ETIMEDOUT" ||
+    code === "UND_ERR_HEADERS_TIMEOUT"
+  ) {
     return "request_timeout";
   }
 

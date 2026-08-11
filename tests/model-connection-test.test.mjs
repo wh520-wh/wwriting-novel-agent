@@ -214,23 +214,80 @@ test("empty response is classified as response_incompatible", async () => {
 });
 
 test("timeout is classified as request_timeout", async () => {
+  // Task 11/B6 回归：内部探测超时（timeoutMs 注入小值触发真实定时器路径）必须
+  // 分类为 request_timeout，而不是被误判成调用方取消（AbortError 逃逸 → HTTP 499）。
+  // 注入的 complete 模拟传输层对信号中止的真实反应（以 AbortError 形态拒绝）——
+  // 探测级定时器中止合并信号后，网关正是这样抛错的。
   const result = await testModelConnection({
     config: {
       provider: "openai-compatible",
       model_name: "mimo-v2.5-pro",
-      base_url: "https://api.xiaomimimo.com/v1",
+      base_url: "https://api.example.test/v1",
       api_key_env: "XIAOMI_MIMO_API_KEY",
     },
     secrets: { XIAOMI_MIMO_API_KEY: "test-key" },
-    complete: async ({ signal }) => {
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new DOMException("probe timeout", "TimeoutError")), 50);
-        signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new DOMException("aborted", "AbortError")); }, { once: true });
-      });
+    timeoutMs: 20,
+    complete: ({ signal }) => new Promise((resolve, reject) => {
+      signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+    }),
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "request_timeout");
+  assert.match(result.message, /超时/u);
+});
+
+test("ProviderTransportError(reason=timeout) 直达也分类为 request_timeout", async () => {
+  // 覆盖网关 attempt 看门狗路径：空闲超时抛 ProviderTransportError(reason="timeout")
+  //（探测级定时器未必先到，timeoutSignal 未中止）——分类必须仍然落到 request_timeout。
+  const result = await testModelConnection({
+    config: {
+      provider: "openai-compatible",
+      model_name: "mimo-v2.5-pro",
+      base_url: "https://api.example.test/v1",
+      api_key_env: "XIAOMI_MIMO_API_KEY",
+    },
+    secrets: { XIAOMI_MIMO_API_KEY: "test-key" },
+    complete: async () => {
+      throw new ProviderTransportError("Request timed out.", { reason: "timeout" });
     },
   });
   assert.equal(result.ok, false);
   assert.equal(result.code, "request_timeout");
+});
+
+test("调用方取消仍抛 AbortError 且不重试", async () => {
+  // 外部 signal 中止 → 原样抛 AbortError（HTTP 层映射 499 client_closed_request），
+  // 且不得触发探测重试（attempts 恒为 1）。
+  const controller = new AbortController();
+  const started = Promise.withResolvers();
+  let attempts = 0;
+  const pending = testModelConnection({
+    config: {
+      provider: "openai-compatible",
+      model_name: "mimo-v2.5-pro",
+      base_url: "https://api.example.test/v1",
+      api_key_env: "XIAOMI_MIMO_API_KEY",
+    },
+    secrets: { XIAOMI_MIMO_API_KEY: "test-key" },
+    signal: controller.signal,
+    timeoutMs: 5000,
+    complete: async ({ signal }) => {
+      attempts += 1;
+      started.resolve();
+      await new Promise((resolve, reject) => {
+        signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("aborted", "AbortError")),
+          { once: true }
+        );
+      });
+    },
+  });
+
+  await started.promise;
+  controller.abort();
+  await assert.rejects(pending, (error) => error.name === "AbortError");
+  assert.equal(attempts, 1, "调用方取消不得触发探测重试");
 });
 
 test("probe 展示保留 configured ID、gateway 收到剥离尾标后的基础 ID", async () => {
