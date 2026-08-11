@@ -108,6 +108,11 @@ export function createProvidersRoutes({ secretsRoot }) {
     }),
 
     "POST /api/settings/providers/:id/models/:modelId/remove": wrap(async ({ params }) => {
+      // Task 11（Task 10 遗留修复）：与 PATCH/default 同款预守卫。store 的
+      // removeModel 对不存在的供应商抛不带冒号前缀的 bare "provider_not_found"，
+      // wrap 的 code 前缀提取（/^[a-z][a-z0-9_]*:/）匹配不到会把错误原样上抛落成
+      // 500；先查供应商让「删除不存在供应商下的模型」返回 404 provider_not_found。
+      await providerOf(params.id);
       const { removed, store } = await removeModel(secretsRoot, params.id, params.modelId);
       if (!removed) throw new HttpError(404, "model_not_found", "模型不存在");
       return { ok: true, store };
