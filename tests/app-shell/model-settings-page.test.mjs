@@ -4,10 +4,11 @@ import test from "node:test";
 import { pickProvider, visibleModels, buildPageState, createModelSettingsPage } from "../../src/app-shell/model-settings-page.js";
 
 const providers = [
-  { id: "deepseek", name: "DeepSeek 官方", status: "enabled", base_url: "https://api.deepseek.com/v1", api_format: "openai-chat-completions", models: [
+  { id: "deepseek", name: "DeepSeek 官方", status: "enabled", base_url: "https://api.deepseek.com/v1", api_format: "openai-chat-completions", api_key_env: "DEEPSEEK_API_KEY", models: [
     { id: "m1", model_name: "deepseek-v4-pro", enabled: true },
     { id: "m2", model_name: "deepseek-v4-flash", enabled: false }
   ]},
+  // mimo 未配置 api_key_env：拉取前置检查「无密钥环境名」分支的测试载体
   { id: "mimo", name: "小米 MiMo 官方", status: "disabled", models: [
     { id: "m3", model_name: "mimo-v2.5", enabled: true }
   ]}
@@ -348,4 +349,151 @@ test("停用模型的「设为默认」按钮置灰并提示", async () => {
   const m1Row = descendants(container).find((el) => el.className === "model-row" && el.getAttribute?.("data-model-id") === "m1");
   const enabledButton = descendants(m1Row).find((el) => el.className === "model-set-default");
   assert.equal(enabledButton.disabled, false, "启用模型的设为默认按钮不应置灰");
+});
+
+// ---------------------------------------------------------------------------
+// Task 15：拉取模型 + 测试连接交互 + 添加供应商表单
+// ---------------------------------------------------------------------------
+
+test("拉取前置检查：无密钥环境名时提示且不发请求", async () => {
+  const calls = [];
+  const toasts = [];
+  const page = createModelSettingsPage({
+    fetchImpl: async (url) => { calls.push(url); return { ok: true, json: async () => ({ providers, default_model: null }) }; },
+    documentRef: mockDocument,
+    showToast: (message) => toasts.push(message)
+  });
+  await page.open();
+  calls.length = 0; // 清掉 open() 的 GET 记录，只看 pullModels 是否发请求
+  // mimo 未配置 api_key_env → 不发请求，仅提示
+  const result = await page._handlers.pullModels("mimo");
+  assert.deepEqual(calls, []);
+  assert.equal(result, false);
+  assert.ok(toasts.some((t) => t.includes("请先填写接口地址和 API 密钥")), "应提示先填写接口地址和 API 密钥");
+});
+
+test("拉取候选展开后逐条添加", async () => {
+  const addCalls = [];
+  const page = createModelSettingsPage({
+    fetchImpl: async (url, options = {}) => {
+      if (url.endsWith("/pull-models")) {
+        return { ok: true, json: async () => ({ models: ["new-model-a", "new-model-b"] }) };
+      }
+      if (options.method === "POST" && url.endsWith("/models")) {
+        addCalls.push(url);
+        return { ok: true, json: async () => ({ ok: true }) };
+      }
+      return { ok: true, json: async () => ({ providers, default_model: null }) };
+    },
+    documentRef: mockDocument
+  });
+  await page.open();
+  const ok = await page._handlers.pullModels("deepseek");
+  assert.equal(ok, true, "拉取成功应返回 true");
+  await page._handlers.addPulledModel("deepseek", "new-model-a");
+  assert.deepEqual(addCalls, ["/api/settings/providers/deepseek/models"]);
+});
+
+test("测试连接：请求体形态、行内结果与缺密钥提示", async () => {
+  const bodies = [];
+  const toasts = [];
+  const page = createModelSettingsPage({
+    fetchImpl: async (url, options = {}) => {
+      if (url.endsWith("/test-connection")) {
+        const body = JSON.parse(options.body);
+        bodies.push(body);
+        if (body.model.model_name === "deepseek-v4-pro") {
+          return { ok: true, json: async () => ({ ok: true, code: null, message: "连接成功", latency_ms: 42 }) };
+        }
+        if (body.model.model_name === "mimo-v2.5") {
+          return { ok: true, json: async () => ({ ok: false, code: "authentication_failed", message: "API Key 无效或无权限" }) };
+        }
+        return { ok: false, status: 400, json: async () => ({ ok: false, code: "configuration_missing", message: "请先在 Windows 环境变量中配置 API Key" }) };
+      }
+      return { ok: true, json: async () => ({ providers, default_model: null }) };
+    },
+    documentRef: mockDocument,
+    showToast: (message, kind) => toasts.push({ message, kind })
+  });
+
+  const slot = new MockElement("div");
+  const pro = await page._handlers.testConnection(providers[0], providers[0].models[0], slot);
+  assert.equal(pro.ok, true);
+  assert.deepEqual(bodies[0], {
+    provider: { base_url: "https://api.deepseek.com/v1", api_key_env: "DEEPSEEK_API_KEY" },
+    model: { model_name: "deepseek-v4-pro" }
+  });
+  let resultEl = descendants(slot)[0];
+  assert.ok(resultEl.className.includes("connection-result ok"), "成功应渲染绿勾结果");
+  assert.ok(resultEl.textContent.includes("连接成功"), "成功结果应含连接成功文案");
+
+  const fail = await page._handlers.testConnection(providers[1], providers[1].models[0], slot);
+  assert.equal(fail.ok, false);
+  resultEl = descendants(slot)[0];
+  assert.ok(resultEl.className.includes("connection-result error"), "失败应渲染红字结果");
+  assert.ok(resultEl.textContent.includes("API Key 无效或无权限"), "失败结果应含后端错误文案");
+
+  const miss = await page._handlers.testConnection(providers[0], { id: "x", model_name: "no-such", enabled: true }, slot);
+  assert.equal(miss.ok, false);
+  assert.ok(toasts.some((t) => t.message.includes("API 密钥")), "缺密钥（configuration_missing）应提示补密钥");
+});
+
+test("添加供应商：POST 创建 + 有密钥时 PATCH 落盘 + 表单开关", async () => {
+  const calls = [];
+  const toasts = [];
+  let providersState = [...providers];
+  const page = createModelSettingsPage({
+    fetchImpl: async (url, options = {}) => {
+      const method = options?.method ?? "GET";
+      const body = options.body ? JSON.parse(options.body) : null;
+      if (method === "POST" && url === "/api/settings/providers") {
+        calls.push({ url, method, body });
+        const provider = {
+          id: "newp", name: body.name, base_url: body.base_url, api_format: body.api_format,
+          api_key_env: body.api_key_env, status: "enabled", models: []
+        };
+        providersState = [provider, ...providersState];
+        return { ok: true, json: async () => ({ ok: true, provider, store: { providers: providersState } }) };
+      }
+      if (method === "PATCH") {
+        calls.push({ url, method, body });
+        return { ok: true, json: async () => ({ ok: true, provider: {}, store: { providers: providersState } }) };
+      }
+      return { ok: true, json: async () => ({ providers: providersState, default_model: null }) };
+    },
+    documentRef: mockDocument,
+    showToast: (message, kind) => toasts.push({ message, kind })
+  });
+  await page.open();
+
+  // 必填缺失 / Base URL 非 http(s)：校验不过不发请求
+  assert.equal(await page._handlers.addProvider({ name: "", base_url: "https://x.test", api_key_env: "K" }), false);
+  assert.equal(await page._handlers.addProvider({ name: "X", base_url: "ftp://x.test", api_key_env: "K" }), false);
+  assert.equal(calls.length, 0, "校验失败不应发请求");
+
+  const ok = await page._handlers.addProvider({
+    name: "新供应商", base_url: "https://new.example.com/v1", api_key_env: "NEW_KEY", api_key: "sk-new"
+  });
+  assert.equal(ok, true);
+  assert.deepEqual(calls[0], {
+    url: "/api/settings/providers", method: "POST",
+    body: { name: "新供应商", base_url: "https://new.example.com/v1", api_format: "openai-chat-completions", api_key_env: "NEW_KEY" }
+  });
+  assert.deepEqual(calls[1], { url: "/api/settings/providers/newp", method: "PATCH", body: { api_key: "sk-new" } });
+  assert.equal(page.getState().providers[0].id, "newp", "refresh 后新供应商应出现在列表首位");
+  assert.ok(toasts.some((t) => t.message === "供应商已添加"), "成功应提示供应商已添加");
+
+  // 表单交互：按钮可用 → 点击展开内联表单 → 取消收起
+  const list = new MockElement("div");
+  page.renderList(list);
+  const addBtn = descendants(list).find((el) => el.className === "add-provider");
+  assert.equal(addBtn.disabled, false, "「+ 添加供应商」按钮应可用");
+  addBtn.click();
+  const form = descendants(list).find((el) => el.getAttribute?.("data-add-provider-form") === "true");
+  assert.ok(form, "列表应渲染内联添加表单");
+  assert.equal(form.hidden, false, "点击后应展开内联表单");
+  const cancel = descendants(list).find((el) => el.className === "provider-form-cancel");
+  assert.ok(cancel, "表单应有取消按钮");
+  cancel.click();
+  assert.equal(form.hidden, true, "取消应收起表单");
 });

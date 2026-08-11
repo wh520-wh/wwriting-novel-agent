@@ -3,6 +3,7 @@
 // DOM 渲染用最小 document.createElement（真实环境用 document，测试用 mock）。
 
 import { isEnvironmentVariableName } from "./utils.js";
+import { formatConnectionStatus } from "./settings-connection.mjs";
 
 export function pickProvider(providers, id) {
   return providers.find((p) => p.id === id) ?? null;
@@ -126,11 +127,10 @@ export function createModelSettingsPage(ctx = {}) {
   }
 
   // 默认模型角标判定：state.default_model 来自 GET 响应顶层字段，为
-  // { provider_id, model_id } 对象（v2 存储形态）或历史字符串 "providerId/modelId"。
+  // { provider_id, model_id } 对象（v2 存储形态）。
   function isDefaultModel(providerId, modelId) {
     const dm = state.default_model;
     if (!dm) return false;
-    if (typeof dm === "string") return dm === `${providerId}/${modelId}`;
     return dm.provider_id === providerId && dm.model_id === modelId;
   }
 
@@ -193,6 +193,126 @@ export function createModelSettingsPage(ctx = {}) {
     }
   }
 
+  // 拉取模型：前置检查（供应商存在且已配置密钥环境变量名）→ POST .../pull-models
+  // 取候选名列表（后端中转外呼厂商 GET /models，不落盘），渲染到模型区顶部的
+  // 可折叠候选容器（默认收起，拉取成功后自动展开），逐条「添加」走 addPulledModel。
+  async function pullModels(providerId) {
+    const provider = state.providers.find((p) => p.id === providerId);
+    if (!provider || !provider.api_key_env) {
+      showToast("请先填写接口地址和 API 密钥");
+      return false;
+    }
+    try {
+      const res = await fetchImpl(`${API_BASE}/${providerId}/pull-models`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}"
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.message ?? `HTTP ${res.status}`);
+      renderCandidateList(providerId, data.models ?? []);
+      return true;
+    } catch (error) {
+      showToast(`拉取失败：${error?.message ?? "未知错误"}`, "error");
+      return false;
+    }
+  }
+
+  // 逐个添加拉取候选：POST .../models（enabled 默认 true），成功 refresh + onChanged。
+  async function addPulledModel(providerId, modelName) {
+    try {
+      const res = await fetchImpl(`${API_BASE}/${providerId}/models`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model_name: modelName, enabled: true })
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.message ?? `HTTP ${res.status}`);
+      await refresh();
+      onChanged();
+      return true;
+    } catch (error) {
+      showToast(`添加模型失败：${error?.message ?? "未知错误"}`, "error");
+      return false;
+    }
+  }
+
+  // 测试连接：POST /api/settings/test-connection（Task 11 双形态契约的「供应商+模型」
+  // 形态），结果行内渲染到模型行（成功绿勾 / 失败红字错误文案）。请求体不带 api_key，
+  // 依赖已落盘的 secrets；密钥缺失（configuration_missing / missing_api_key）时
+  // 额外 toast 引导补密钥。失败结果经 formatConnectionStatus 复用既有文案格式。
+  async function testConnection(provider, model, resultSlot) {
+    let data = null;
+    let ok = false;
+    try {
+      const res = await fetchImpl("/api/settings/test-connection", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          provider: { base_url: provider.base_url, api_key_env: provider.api_key_env },
+          model: { model_name: model.model_name }
+        })
+      });
+      data = await res.json().catch(() => null);
+      ok = res.ok === true && data?.ok !== false;
+    } catch (error) {
+      data = { message: error?.message ?? "未知错误" };
+    }
+    const message = formatConnectionStatus(data) || (ok ? "连接成功" : "连接测试失败");
+    if (resultSlot) {
+      resultSlot.replaceChildren();
+      resultSlot.append(el("span", { class: `connection-result ${ok ? "ok" : "error"}`, text: `${ok ? "✓ " : "✗ "}${message}` }));
+    }
+    if (!ok && (data?.code === "configuration_missing" || data?.code === "missing_api_key")) {
+      showToast("请先配置 API 密钥（在密钥框填写环境变量名或直接粘贴密钥保存），再测试连接。", "error");
+    }
+    return { ok, data };
+  }
+
+  // 添加供应商（Task 15 计划缺口补全）：POST 创建（Task 10 契约：创建忽略 api_key），
+  // 若表单给了明文密钥再 PATCH 落盘（PATCH 才把密钥写入对应 env bucket）。
+  async function addProvider({ name = "", base_url = "", api_format = "openai-chat-completions", api_key_env = "", api_key = "" } = {}) {
+    const trimmed = {
+      name: name.trim(),
+      baseUrl: base_url.trim(),
+      envName: api_key_env.trim(),
+      apiKey: String(api_key).trim()
+    };
+    if (!trimmed.name || !trimmed.baseUrl || !trimmed.envName) {
+      showToast("名称、Base URL 与密钥环境变量名为必填项", "error");
+      return false;
+    }
+    if (!/^https?:\/\/.+/u.test(trimmed.baseUrl)) {
+      showToast("Base URL 需以 http:// 或 https:// 开头", "error");
+      return false;
+    }
+    try {
+      const res = await fetchImpl(`${API_BASE}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: trimmed.name, base_url: trimmed.baseUrl, api_format, api_key_env: trimmed.envName })
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.message ?? `HTTP ${res.status}`);
+      if (trimmed.apiKey) {
+        const keyRes = await fetchImpl(`${API_BASE}/${data.provider.id}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ api_key: trimmed.apiKey })
+        });
+        const keyData = await keyRes.json().catch(() => null);
+        if (!keyRes.ok) throw new Error(keyData?.message ?? `HTTP ${keyRes.status}`);
+      }
+      await refresh();
+      onChanged();
+      showToast("供应商已添加", "success");
+      return true;
+    } catch (error) {
+      showToast(`添加供应商失败：${error?.message ?? "未知错误"}`, "error");
+      return false;
+    }
+  }
+
   function el(tag, props = {}, children = []) {
     const node = documentRef.createElement(tag);
     for (const [key, value] of Object.entries(props)) {
@@ -225,7 +345,58 @@ export function createModelSettingsPage(ctx = {}) {
       });
       container.append(item);
     }
-    container.append(el("button", { class: "add-provider", type: "button", disabled: true, title: "Task 13-15 实现", text: "+ 添加供应商" }));
+    // 「+ 添加供应商」：Task 15 启用，点击在列表底部展开内联表单（默认收起）。
+    const addProviderButton = el("button", { class: "add-provider", type: "button", text: "+ 添加供应商" });
+    const form = el("div", { class: "add-provider-form", "data-add-provider-form": "true" });
+    form.hidden = true;
+    // 表单字段：名称（必填）/ Base URL（必填，http(s)）/ API 接口协议（仅
+    // openai-chat-completions 可选）/ 密钥环境变量名（必填——后端契约：明文密钥
+    // 只能写入已有 env bucket，POST 创建又不落密钥，故 env 名必须随创建提交）/
+    // API 密钥（可选，直接粘贴，创建成功后 PATCH 落盘）。
+    const nameInput = el("input", { class: "provider-form-name", "data-field": "new-name", placeholder: "供应商名称（必填）" });
+    const baseUrlInput = el("input", { class: "provider-form-base-url", "data-field": "new-base_url", placeholder: "https://api.example.com/v1（必填）" });
+    const formatSelect = el("select", { "data-field": "new-api_format" });
+    for (const [value, label, disabled] of [
+      ["openai-chat-completions", "OpenAI Chat Completions", false],
+      ["anthropic-messages", "Anthropic Messages", true],
+      ["openai-responses", "OpenAI Responses API", true],
+      ["gemini-generate-content", "Gemini Native generateContent", true]
+    ]) {
+      const option = el("option", { value, text: label });
+      if (disabled) option.disabled = true;
+      formatSelect.append(option);
+    }
+    formatSelect.value = "openai-chat-completions";
+    const envInput = el("input", { class: "provider-form-env", "data-field": "new-api_key_env", placeholder: "密钥环境变量名，如 MY_API_KEY（必填）" });
+    const keyInput = el("input", { type: "password", class: "provider-form-key", "data-field": "new-api_key", placeholder: "API 密钥（可选，直接粘贴）" });
+    const submitButton = el("button", { type: "button", class: "provider-form-submit", text: "添加" });
+    submitButton.addEventListener("click", async () => {
+      const ok = await addProvider({
+        name: nameInput.value,
+        base_url: baseUrlInput.value,
+        api_key_env: envInput.value,
+        api_key: keyInput.value
+      });
+      if (ok) {
+        form.hidden = true;
+        nameInput.value = "";
+        baseUrlInput.value = "";
+        envInput.value = "";
+        keyInput.value = "";
+      }
+    });
+    const cancelButton = el("button", { type: "button", class: "provider-form-cancel", text: "取消" });
+    cancelButton.addEventListener("click", () => { form.hidden = true; });
+    form.append(
+      el("label", { text: "名称" }), nameInput,
+      el("label", { text: "Base URL" }), baseUrlInput,
+      el("label", { text: "API 接口协议" }), formatSelect,
+      el("label", { text: "密钥环境变量名" }), envInput,
+      el("label", { text: "API 密钥" }), keyInput,
+      submitButton, cancelButton
+    );
+    addProviderButton.addEventListener("click", () => { form.hidden = !form.hidden; });
+    container.append(addProviderButton, form);
   }
 
   function renderDetail(container) {
@@ -309,7 +480,27 @@ export function createModelSettingsPage(ctx = {}) {
       keyInput.type = keyInput.type === "password" ? "text" : "password";
     });
     container.append(keyInput, eye);
+    renderModelRows(container, provider);
+  }
+
+  // 模型区渲染（从 renderDetail 拆出：Task 15 的拉取/测试连接接线落在这里）。
+  // 结构：标题行「模型列表 + 拉取模型」→ 可折叠候选容器（默认收起，pullModels
+  // 成功自动展开，逐条「添加」）→ 各模型行（改名 / 启停 / 测试连接 / 设默认 / 删除）。
+  function renderModelRows(container, provider) {
     container.append(el("h4", { text: "模型列表" }));
+    const pullButton = el("button", { type: "button", class: "pull-models", text: "拉取模型" });
+    pullButton.addEventListener("click", () => { pullModels(provider.id); });
+    container.append(pullButton);
+
+    const candidateHolder = el("div", { class: "candidate-list", "data-candidate-list": "true" });
+    candidateHolder.hidden = true;
+    const candidateToggle = el("button", { type: "button", class: "candidate-toggle", text: "拉取候选 ▸" });
+    candidateToggle.addEventListener("click", () => {
+      candidateHolder.hidden = !candidateHolder.hidden;
+      candidateToggle.textContent = candidateHolder.hidden ? "拉取候选 ▸" : "拉取候选 ▾";
+    });
+    container.append(candidateToggle, candidateHolder);
+
     for (const model of provider.models) {
       const isDefault = isDefaultModel(provider.id, model.id);
       // 模型名：失焦（change）保存，[1m] 标记原样保留（空值守卫在 bindAutosave 内）。
@@ -330,7 +521,7 @@ export function createModelSettingsPage(ctx = {}) {
         type: "button",
         class: "model-set-default",
         text: "设为默认",
-        ...(model.enabled === false ? { disabled: true, title: "已停用的模型不能设为默认" } : {})
+        ...(model.enabled === false ? { disabled: true, title: "已停用的模型不能设为默认。" } : {})
       });
       setDefaultButton.addEventListener("click", () => {
         setDefaultModel(provider.id, model.id);
@@ -340,12 +531,19 @@ export function createModelSettingsPage(ctx = {}) {
       deleteButton.addEventListener("click", () => {
         removeModelWithConfirm(provider.id, model.id);
       });
+      // 测试连接：结果行内渲染到条目旁的 slot（绿勾 / 红字错误文案）。
+      const resultSlot = el("div", { class: "model-connection-result", "data-model-connection-result": model.id });
+      const testButton = el("button", { type: "button", class: "model-test-connection", text: "测试连接" });
+      testButton.addEventListener("click", () => {
+        testConnection(provider, model, resultSlot);
+      });
       container.append(el("div", { class: "model-row", "data-model-id": model.id }, [
         nameInput,
         toggle,
         el("span", { text: model.enabled === false ? "已停用" : "已启用" }),
         ...(isDefault ? [el("span", { class: "default-badge", text: "默认" })] : []),
-        el("button", { type: "button", disabled: true, title: "Task 15 实现", text: "测试连接" }),
+        testButton,
+        resultSlot,
         setDefaultButton,
         deleteButton
       ]));
@@ -356,6 +554,29 @@ export function createModelSettingsPage(ctx = {}) {
       addModel(provider.id);
     });
     container.append(addModelButton);
+  }
+
+  // 拉取候选展开：把候选名渲染进模型区的可折叠容器并展开（行内「添加」按钮逐个
+  // 走 addPulledModel）。容器只在实际渲染过的 DOM 中存在；测试直调时经
+  // querySelector 查不到即跳过（不影响 fetch 路径的断言）。
+  function renderCandidateList(providerId, names) {
+    const holder = documentRef.querySelector?.("[data-candidate-list]");
+    if (!holder) return;
+    const list = Array.isArray(names) ? names : [];
+    holder.replaceChildren();
+    if (list.length === 0) {
+      holder.append(el("p", { class: "candidate-empty", text: "没有拉取到可用模型" }));
+      return;
+    }
+    holder.hidden = false;
+    for (const name of list) {
+      const addButton = el("button", { type: "button", class: "candidate-add", text: "添加" });
+      addButton.addEventListener("click", () => { addPulledModel(providerId, name); });
+      holder.append(el("div", { class: "candidate-row", "data-candidate-name": name }, [
+        el("span", { text: name }),
+        addButton
+      ]));
+    }
   }
 
   function render() {
@@ -378,6 +599,10 @@ export function createModelSettingsPage(ctx = {}) {
     setDefaultModel,
     removeModelWithConfirm,
     addModel,
-    _handlers: { saveProviderPatch, saveModelPatch, refresh, removeProviderWithConfirm, setDefaultModel, removeModelWithConfirm, addModel }
+    pullModels,
+    addPulledModel,
+    testConnection,
+    addProvider,
+    _handlers: { saveProviderPatch, saveModelPatch, refresh, removeProviderWithConfirm, setDefaultModel, removeModelWithConfirm, addModel, pullModels, addPulledModel, testConnection, addProvider }
   };
 }
