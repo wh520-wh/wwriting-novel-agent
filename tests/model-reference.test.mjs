@@ -1,7 +1,7 @@
 // tests/model-reference.test.mjs
 import assert from "node:assert/strict";
 import test from "node:test";
-import { resolveActiveModel, toRequestConfig } from "../src/core/model-reference.mjs";
+import { resolveActiveModel, stripWindowMarkers, toRequestConfig } from "../src/core/model-reference.mjs";
 
 function storeWith(providers, defaultModel = null) {
   return { schema_version: 2, default_model: defaultModel, providers };
@@ -66,4 +66,46 @@ test("toRequestConfig 输出运行时形状", () => {
   assert.equal(config.api_format, "openai-chat-completions");
   assert.equal(config.temperature, 1.0);
   assert.equal(config.context_window, 256000);
+});
+
+test("toRequestConfig 保留原始 model_name 尾标（[1m] 窗口信号不丢）", () => {
+  const tagged = { ...deepseek, models: [{ ...deepseek.models[0], model_name: "deepseek-v4-pro[1m]" }] };
+  const config = toRequestConfig(tagged, tagged.models[0]);
+  assert.equal(config.model_name, "deepseek-v4-pro[1m]", "原始尾标原样保留，由 runtime 的 parseModelIdentity 统一剥离");
+});
+
+test("stripWindowMarkers 剥单个尾部标记", () => {
+  assert.equal(stripWindowMarkers("deepseek-v4-pro[1m]"), "deepseek-v4-pro");
+});
+
+test("stripWindowMarkers 剥全部连续尾部标记", () => {
+  assert.equal(stripWindowMarkers("vendor/model[1m][hot]"), "vendor/model");
+});
+
+test("stripWindowMarkers 保留中间中括号", () => {
+  assert.equal(stripWindowMarkers("mo[del]name"), "mo[del]name");
+});
+
+test("stripWindowMarkers null 安全", () => {
+  assert.equal(stripWindowMarkers(undefined), "");
+  assert.equal(stripWindowMarkers(null), "");
+});
+
+test("resolveActiveModel(null) → 全局默认模型（store 有默认）", () => {
+  const { model, note } = resolveActiveModel(null, store);
+  assert.equal(model.model_name, "deepseek-v4-flash");
+  assert.equal(model.provider, "openai-compatible");
+  assert.equal(note, null);
+});
+
+test("resolveActiveModel(null) → 未配置（store 无默认）", () => {
+  const { model, note } = resolveActiveModel(null, storeWith([deepseek]));
+  assert.equal(model, null);
+  assert.match(note, /未配置/u);
+});
+
+test("半成形引用（只有 provider_id）按未配置处理", () => {
+  const { model, note } = resolveActiveModel({ provider_id: "deepseek" }, store);
+  assert.equal(model, null);
+  assert.match(note, /未配置/u);
 });

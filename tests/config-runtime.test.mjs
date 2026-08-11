@@ -190,3 +190,82 @@ test("无任何配置的普通目录回落安全默认：active_model null", asy
   assert.equal(effective.active_model, null);
   assert.equal(effective.tool_permissions.network_allowed, false);
 });
+
+// ---------------------------------------------------------------------------
+// 模型引用解析（modelStoreLoader）：引用 → 完整配置；null 回落全局默认；
+// mock 字面归零为未配置。
+// ---------------------------------------------------------------------------
+
+function modelStoreFixture() {
+  return {
+    schema_version: 2,
+    default_model: { provider_id: "p2", model_id: "m0" },
+    providers: [
+      {
+        id: "deepseek", name: "DeepSeek", type: "custom", status: "enabled",
+        base_url: "https://api.deepseek.com", api_format: "openai-chat-completions",
+        api_key_env: "DEEPSEEK_API_KEY", created_at: "t", updated_at: "t",
+        models: [{ id: "m1", model_name: "deepseek-v4-pro", enabled: true, context_window: 256000, temperature: 1.0 }]
+      },
+      {
+        id: "p2", name: "Relay", type: "custom", status: "enabled",
+        base_url: "https://relay.test", api_format: "openai-chat-completions",
+        api_key_env: "K", created_at: "t", updated_at: "t",
+        models: [{ id: "m0", model_name: "deepseek-v4-flash", enabled: true, context_window: 256000 }]
+      }
+    ]
+  };
+}
+
+test("modelStoreLoader：引用 active_model 解析为完整配置，resolution_note null", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-eff-ref-"));
+  const projectRoot = path.join(root, "ref");
+  await fs.mkdir(projectRoot, { recursive: true });
+  const store = createWorkspaceStore({ stateRoot: path.join(root, "state") });
+  await store.saveSettings(projectRoot, {
+    active_model: { provider_id: "deepseek", model_id: "m1" }
+  });
+
+  const effective = await loadEffectiveWorkspaceConfig(projectRoot, {
+    workspaceStore: store,
+    modelStoreLoader: async () => modelStoreFixture()
+  });
+  assert.equal(effective.active_model.provider, "openai-compatible");
+  assert.equal(effective.active_model.model_name, "deepseek-v4-pro");
+  assert.equal(effective.active_model.base_url, "https://api.deepseek.com");
+  assert.equal(effective.active_model.api_key_env, "DEEPSEEK_API_KEY");
+  assert.equal(effective.resolution_note, null);
+});
+
+test("modelStoreLoader：无 active_model 时回落全局默认模型", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-eff-null-"));
+  const projectRoot = path.join(root, "null");
+  await fs.mkdir(projectRoot, { recursive: true });
+  const store = createWorkspaceStore({ stateRoot: path.join(root, "state") });
+  // 不保存任何 active_model → resolveActiveModel(null) 落到 store.default_model
+
+  const effective = await loadEffectiveWorkspaceConfig(projectRoot, {
+    workspaceStore: store,
+    modelStoreLoader: async () => modelStoreFixture()
+  });
+  assert.equal(effective.active_model.model_name, "deepseek-v4-flash");
+  assert.equal(effective.active_model.provider, "openai-compatible");
+  assert.equal(effective.resolution_note, null);
+});
+
+test("modelStoreLoader：mock 字面配置归零为未配置", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-eff-mock-"));
+  const projectRoot = path.join(root, "mock");
+  await fs.mkdir(projectRoot, { recursive: true });
+  const store = createWorkspaceStore({ stateRoot: path.join(root, "state") });
+  await store.saveSettings(projectRoot, {
+    active_model: { provider: "mock", model_name: "mock-writer" }
+  });
+
+  const effective = await loadEffectiveWorkspaceConfig(projectRoot, {
+    workspaceStore: store,
+    modelStoreLoader: async () => modelStoreFixture()
+  });
+  assert.equal(effective.active_model, null);
+  assert.equal(effective.resolution_note, "未配置模型");
+});
