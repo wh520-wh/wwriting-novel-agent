@@ -19,6 +19,7 @@ import { createAgentView } from "./view.js";
 import { createAgentApi } from "./api.js";
 import { localSlashSection } from "./slash-commands.mjs";
 import { detectPermissionTier, getTierById } from "../permission-tiers.mjs";
+import { buildModelPickerOptions } from "../settings-connection.mjs";
 
 export function createAgentSurface({
   root,
@@ -56,38 +57,59 @@ export function createAgentSurface({
   let composerOptions = null; // 三控件当前选项（view 侧由 view.reset 清空）
   let escapeLatch = null;     // ESC 去重锁：HTTP 成功只表示请求已接收，终态事件/失败才释放
 
+  // Task 16：选择器数据源改由全局供应商清单（GET /api/settings/providers 扁平
+  // store）经 buildModelPickerOptions 派生——只列启用供应商的启用模型，value 为
+  // `${provider.id}/${model.id}` 引用形态。activeModel 来自 dashboard 有效配置：
+  // 引用形态（迁移后）直接命中；字面配置（未迁移旧项目）按 base_url+model_name
+  // 匹配清单；清单外模型保留为只读展示项（不伪装成可切换选项）。无任何可用模型时
+  // 唯一选项是「未配置」占位（可点，开设置页）。modelSelectionEnabled 跟随「存在
+  // 可切换选项」；capabilities（思考强度档位）由 dashboard 模型档案提供（服务端
+  // 能力矩阵判定，前端不猜测）。
   function normalizeComposerOptions(data) {
-    const importedModels = Array.isArray(data?.models) ? data.models : [];
-    const models = [...importedModels];
+    const store = data?.store ?? {};
+    const options = buildModelPickerOptions(store);
     const activeModel = data?.activeModel ?? null;
-    let activeEntry =
-      models.find((model) => model?.active === true) ??
-      models.find((model) =>
-        activeModel &&
-        model?.model_name === activeModel.model_name &&
-        String(model?.base_url ?? "") === String(activeModel.base_url ?? "")
-      ) ??
-      null;
-    // 旧项目或外部配置可能已有生效模型，但尚未进入全局模型清单。界面必须
-    // 显示运行时事实，不能误报「未导入模型」；只有这一项时保持只读展示。
-    if (!activeEntry && activeModel?.model_name) {
-      activeEntry = {
-        ...activeModel,
-        id: String(activeModel.id ?? activeModel.model_name),
-        display: String(activeModel.display ?? activeModel.model_name),
-        active: true,
-        imported: false
-      };
-      models.unshift(activeEntry);
+    const usable = options.some((option) => option.value !== "");
+    let activeModelId = "";
+    if (typeof activeModel?.provider_id === "string" && typeof activeModel?.model_id === "string") {
+      const candidate = `${activeModel.provider_id}/${activeModel.model_id}`;
+      if (options.some((option) => option.value === candidate)) activeModelId = candidate;
     }
+    if (!activeModelId && activeModel?.model_name) {
+      const baseUrl = String(activeModel.base_url ?? "").replace(/\/+$/u, "").toLowerCase();
+      const modelName = String(activeModel.model_name).trim();
+      for (const provider of Array.isArray(store.providers) ? store.providers : []) {
+        if (provider?.status === "disabled") continue;
+        if (String(provider.base_url ?? "").replace(/\/+$/u, "").toLowerCase() !== baseUrl) continue;
+        const model = (Array.isArray(provider.models) ? provider.models : [])
+          .find((m) => m?.enabled !== false && String(m.model_name) === modelName);
+        if (model) { activeModelId = `${provider.id}/${model.id}`; break; }
+      }
+    }
+    const legacyEntry = !activeModelId && activeModel?.model_name
+      ? { value: `legacy:${activeModel.model_name}`, label: String(activeModel.model_name), isDefault: false }
+      : null;
+    let models;
+    let modelSelectionEnabled;
+    if (usable) {
+      models = legacyEntry ? [legacyEntry, ...options] : options;
+      modelSelectionEnabled = true;
+    } else if (legacyEntry) {
+      models = [legacyEntry];
+      modelSelectionEnabled = false;
+    } else {
+      models = options; // 唯一一项：「未配置」占位 → 点击开设置页
+      modelSelectionEnabled = true;
+    }
+    if (legacyEntry) activeModelId = legacyEntry.value;
     return {
       models,
-      modelSelectionEnabled: importedModels.length > 0,
-      activeModelId: activeEntry ? String(activeEntry.id ?? activeEntry.model_name ?? "") : null,
+      modelSelectionEnabled,
+      activeModelId,
       permissionTier: detectPermissionTier(data?.toolPermissions),
       reasoningEffort: typeof data?.reasoningEffort === "string" ? data.reasoningEffort : "auto",
-      reasoningEffortLevels: Array.isArray(activeEntry?.capabilities?.reasoningEffortLevels)
-        ? activeEntry.capabilities.reasoningEffortLevels
+      reasoningEffortLevels: Array.isArray(data?.activeModelCapabilities?.reasoningEffortLevels)
+        ? data.activeModelCapabilities.reasoningEffortLevels
         : null
     };
   }
@@ -566,7 +588,12 @@ export function createAgentSurface({
     openChapter: (chapterNo) => onOpenChapter(chapterNo),
     createProject: () => onCreateProject(),
     openProjectFolder: () => onOpenProjectFolder(),
+    // Task 16：「未配置」占位点击 → 打开新设置页（模型分区入口与 /model 命令一致）。
+    openModelSettings: () => onOpenSettings("model"),
     // 三控件动作：选择即落盘；当前 Run 不受影响，从下一条输入生效。
+    // Task 16：响应不再带 available_models——全局供应商清单不随项目切换改变，
+    // 选项保持；activeModelId 由选中值（引用形态）直接更新，capabilities 以服务端
+    // 能力矩阵判定为准。
     switchModel: async (modelId) => {
       const t = ensureApi();
       if (typeof t.switchModel !== "function") return;
@@ -574,13 +601,8 @@ export function createAgentSurface({
       try {
         const data = await t.switchModel(modelId);
         if (!isCurrentProjectScope(scope)) return;
-        // 服务端响应即最新事实：capabilities 只由服务端能力矩阵判定。
         composerOptions = {
           ...(composerOptions ?? {}),
-          models: Array.isArray(data?.available_models) ? data.available_models : (composerOptions?.models ?? []),
-          modelSelectionEnabled: Array.isArray(data?.available_models)
-            ? data.available_models.length > 0
-            : composerOptions?.modelSelectionEnabled,
           activeModelId: String(modelId),
           permissionTier: detectPermissionTier(data?.project?.tool_permissions),
           reasoningEffortLevels: Array.isArray(data?.capabilities?.reasoningEffortLevels)
@@ -671,6 +693,9 @@ export function createAgentSurface({
     switchSession,
     newSessionPlaceholder,
     refreshSessions,
+    // Task 16：设置页（模型设置）变更后刷新三控件选项——模型选择器选项来自全局
+    // 供应商清单，新增/停用/删除模型后需重拉（app.js 的 modelSettings.onChanged 接线）。
+    refreshComposerOptions,
     setBusy,
     archiveSession,
     restoreSession,

@@ -13,6 +13,7 @@ import { icon } from "./icons.js";
 import { createDrawerPanels } from "./drawer-panels.js";
 import { createSettingsModal } from "./settings-modal.js";
 import { createModelSettingsPage } from "./model-settings-page.js";
+import { handleDashboardMigrationNotice } from "./settings-connection.mjs";
 import { createProjectScope } from "./project-scope.mjs";
 import { createSessionSidebar, createSessionRemovalResolver } from "./session-sidebar.mjs";
 import { createAgentSurface } from "./agent/index.js";
@@ -165,8 +166,9 @@ const { openSettingsModal, closeSettingsModal, renderSettingsProviders, renderSe
 const modelSettings = createModelSettingsPage({
   showToast,
   onChanged: () => {
-    // 触发对话模型选择器刷新（Task 16 接）。模型选择器「未配置」占位项点击经
-    // surface 的 onOpenSettings("model") 进入本页（openSettingsOrModelPage 路由）。
+    // 触发对话模型选择器刷新（Task 16）：模型选择器选项来自全局供应商清单，
+    // 设置页增删/启停/设默认后重拉，选择器即时反映最新清单。
+    agentSurface.refreshComposerOptions();
   }
 });
 
@@ -408,6 +410,9 @@ async function loadDashboard() {
     }
     if (!data.ok) throw new Error(data.message ?? "仪表盘请求失败");
     renderDashboard(data);
+    // Task 16：迁移提示 toast——本次响应实际发生快照→引用迁移时提示一次（模块级
+    // 一次性标志，页面加载内只弹一次）。
+    handleDashboardMigrationNotice(data, showToast);
   } catch (error) {
     if (requestId !== dashboardRequestId) return;
     if (!projectScope.isCurrent(token)) return;

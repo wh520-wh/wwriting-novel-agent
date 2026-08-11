@@ -617,6 +617,79 @@ test("普通目录模型切换后 project.yaml 不存在，设置只落应用私
   }
 });
 
+// Task 16：model-switch 引用形态——{ provider_id, model_id } 校验 v2 清单可用+启用后
+// 写项目引用到应用私有 settings；响应带 active_model（引用）且不再返回旧
+// available_models/model_profile 字段。旧 { model_id } 形态保持原契约（cutover 删除）。
+test("model-switch 引用形态：写项目引用，响应去掉旧清单字段", async () => {
+  const { root, projectRoot, stateRoot, server, port } = await setupPlainWorkspace();
+  try {
+    // 触发预设种子（deepseek/mimo 两级清单落盘 v2 store）
+    const listRes = await fetch(`http://127.0.0.1:${port}/api/settings/providers`);
+    const listJson = await listRes.json();
+    const deepseek = listJson.providers.find((p) => p.id === "deepseek");
+    assert.ok(deepseek?.models?.length > 0, "预设供应商应含模型");
+    const model = deepseek.models[0];
+
+    const switched = await post(port, "/api/settings/model-switch", {
+      projectRoot,
+      provider_id: deepseek.id,
+      model_id: model.id
+    });
+    assert.equal(switched.status, 200);
+    assert.equal(switched.json.ok, true);
+    assert.deepEqual(switched.json.active_model, { provider_id: deepseek.id, model_id: model.id });
+    assert.equal(switched.json.available_models, undefined, "引用形态响应不再返回旧 available_models");
+    assert.equal(switched.json.model_profile, undefined, "引用形态响应不再返回旧 model_profile");
+    // 项目引用写入应用私有 settings（运行时按 modelStoreLoader 解析为完整配置）
+    const store = createWorkspaceStore({ stateRoot });
+    const settings = await store.loadSettings(projectRoot);
+    assert.deepEqual(settings.active_model, { provider_id: deepseek.id, model_id: model.id }, "项目 active_model 为引用形态");
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("model-switch 引用形态：悬空引用 404、停用模型 400", async () => {
+  const { root, projectRoot, server, port } = await setupPlainWorkspace();
+  try {
+    const listRes = await fetch(`http://127.0.0.1:${port}/api/settings/providers`);
+    const listJson = await listRes.json();
+    const deepseek = listJson.providers.find((p) => p.id === "deepseek");
+    const model = deepseek.models[0];
+
+    // 悬空供应商引用 → 404 model_profile_not_found
+    const ghost = await post(port, "/api/settings/model-switch", {
+      projectRoot,
+      provider_id: "pv_ghost",
+      model_id: model.id
+    });
+    assert.equal(ghost.status, 404);
+    assert.equal(ghost.json.code, "model_profile_not_found");
+
+    // 停用模型 → 400 model_disabled（与「设为默认」的停用门禁一致）。模型 id 可能
+    // 含 URL 保留字符（如 v1 迁移条目 deepseek-chat@https://api.deepseek.com），
+    // 路径参数须 URL 编码。
+    const disable = await fetch(
+      `http://127.0.0.1:${port}/api/settings/providers/${encodeURIComponent(deepseek.id)}/models/${encodeURIComponent(model.id)}`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enabled: false })
+      }
+    );
+    assert.equal(disable.status, 200);
+    const disabled = await post(port, "/api/settings/model-switch", {
+      projectRoot,
+      provider_id: deepseek.id,
+      model_id: model.id
+    });
+    assert.equal(disabled.status, 400);
+    assert.equal(disabled.json.code, "model_disabled");
+  } finally {
+    await closeServer(server);
+  }
+});
+
 // Task 6：/api/dashboard 直接返回当前项目的会话列表（前端左侧栏渲染对话列表，
 // 免去先拉 project list 再逐项目拉 sessions）。品牌新项目 → 空列表；submit 一条后
 // → sessions 长度 1 且 active_session_id 指向该会话。

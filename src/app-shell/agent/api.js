@@ -234,26 +234,43 @@ export function createAgentApi({
   // 重建连接（streamEvents 在发起请求时捕获 currentSessionId）——只改指针不切流
   // 会让活跃 SSE 连接继续推送旧会话事件，调用方不得依赖旧连接自动跟随。
 
-  // composer 三控件选项：模型清单（全局）+ 当前项目生效配置（dashboard）。
-  // 契约：GET /api/settings/models → { models }（每项带 active 与 capabilities）；
-  //       GET /api/dashboard?projectRoot → config.effective.{active_model, tool_permissions, reasoning_effort}。
+  // composer 三控件选项：供应商清单（v2 store）+ 当前项目生效配置（dashboard）。
+  // 契约：GET /api/settings/providers → 扁平 store { providers, default_model }；
+  //       GET /api/dashboard?projectRoot → config.effective.{active_model,
+  //       tool_permissions, reasoning_effort} + model_profile.capabilities
+  //（Task 16：选择器选项改由供应商清单派生；活跃模型能力由 dashboard 模型档案提供）。
   async function fetchComposerOptions() {
-    const [modelsData, dashboard] = await Promise.all([
-      request("/api/settings/models", { cache: "no-store" }),
+    const [store, dashboard] = await Promise.all([
+      request("/api/settings/providers", { cache: "no-store" }),
       request(withProjectScope("/api/dashboard", root()), { cache: "no-store" })
     ]);
     const effective = dashboard?.config?.effective ?? {};
     return {
-      models: Array.isArray(modelsData?.models) ? modelsData.models : [],
+      store: {
+        providers: Array.isArray(store?.providers) ? store.providers : [],
+        default_model: store?.default_model ?? null
+      },
       activeModel: effective.active_model ?? dashboard?.project?.active_model ?? null,
+      activeModelCapabilities: dashboard?.model_profile?.capabilities ?? null,
       toolPermissions: effective.tool_permissions ?? dashboard?.project?.tool_permissions ?? {},
       reasoningEffort: typeof effective.reasoning_effort === "string" ? effective.reasoning_effort : "auto"
     };
   }
 
-  // 模型切换即落盘为当前项目默认模型；响应带 capabilities / available_models / project。
+  // 模型切换即落盘为当前项目默认模型。Task 16：选择器 value 为 `${provider_id}/
+  // ${model_id}` 引用形态，拆分后按引用写项目（服务端校验清单可用+启用）；不含
+  // 斜杠的旧调用形状（v1 model_id）保持原契约，到 cutover 为止。
   async function switchModel(modelId) {
-    return postJson("/api/settings/model-switch", { projectRoot: root(), model_id: modelId });
+    const raw = String(modelId ?? "");
+    const slash = raw.indexOf("/");
+    if (slash <= 0) {
+      return postJson("/api/settings/model-switch", { projectRoot: root(), model_id: raw });
+    }
+    return postJson("/api/settings/model-switch", {
+      projectRoot: root(),
+      provider_id: raw.slice(0, slash),
+      model_id: raw.slice(slash + 1)
+    });
   }
 
   // 权限模式：combo 四布尔整体落盘（与设置页同一契约）。
