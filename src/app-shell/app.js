@@ -12,6 +12,7 @@ import { formatNumber, pathBaseName, pathEquals, translateStage } from "./utils.
 import { icon } from "./icons.js";
 import { createDrawerPanels } from "./drawer-panels.js";
 import { createSettingsModal } from "./settings-modal.js";
+import { createModelSettingsPage } from "./model-settings-page.js";
 import { createProjectScope } from "./project-scope.mjs";
 import { createSessionSidebar, createSessionRemovalResolver } from "./session-sidebar.mjs";
 import { createAgentSurface } from "./agent/index.js";
@@ -60,6 +61,8 @@ const refs = {
   settingsCancel: document.querySelector("#settings-cancel"),
   settingsSave: document.querySelector("#settings-save"),
   settingsX: document.querySelector("#settings-x"),
+  modelSettingsPage: document.querySelector("#model-settings-page"),
+  modelSettingsClose: document.querySelector("#model-settings-close"),
   createScrim: document.querySelector("#create-scrim"),
   createHeading: document.querySelector("#create-heading"),
   createLead: document.querySelector("#create-card .lead"),
@@ -96,7 +99,7 @@ let projectListData = null;
 const agentSurface = createAgentSurface({
   root: refs.agentSurface,
   api: null, // 默认 transport：agent/api.js（复用 api-client 通用 helper）
-  onOpenSettings: (section) => openSettingsModal(section),
+  onOpenSettings: (section) => openSettingsOrModelPage(section),
   onOpenChapter: (chapterNo) => openReader(chapterNo),
   onCreateProject: () => openCreateModal(),
   onOpenProjectFolder: () => openFromFolder(),
@@ -155,13 +158,46 @@ const settingsModal = createSettingsModal({
 });
 const { openSettingsModal, closeSettingsModal, renderSettingsProviders, renderSettingsDetail, saveSettings } = settingsModal;
 
+// Task 12：新「模型设置」页面（左供应商列表 + 右详情），替代设置弹窗的模型分区
+// （Task 8 已把旧弹窗模型区块置为只读占位）。骨架：加载 + 列表 + 详情只读渲染；
+// 表单交互（失焦保存/启停/删除/拉取/测试连接）由 Task 13-15 逐个挂到
+// saveProviderPatch/saveModelPatch 与新增 handler 上。
+const modelSettings = createModelSettingsPage({
+  onChanged: () => {
+    // 触发对话模型选择器刷新（Task 16 接）。模型选择器「未配置」占位项点击经
+    // surface 的 onOpenSettings("model") 进入本页（openSettingsOrModelPage 路由）。
+  }
+});
+
+// Task 12：设置入口分流——模型分区已迁往新页，凡是最终落在模型分区
+// （缺省、显式 model、以及 /settings 落回 model）的入口统一走新页，
+// 其余分区（writing/skills/danger）仍走旧设置弹窗。
+async function openSettingsOrModelPage(section) {
+  if (!section || section === "model" || section === "settings") {
+    if (refs.settingsScrim.classList.contains("show")) closeSettingsModal();
+    lastFocused = document.activeElement;
+    refs.modelSettingsPage.hidden = false;
+    refs.modelSettingsClose.focus?.();
+    await modelSettings.open();
+    return;
+  }
+  await openSettingsModal(section);
+}
+
+function closeModelSettingsPage() {
+  refs.modelSettingsPage.hidden = true;
+  if (lastFocused && lastFocused.isConnected) lastFocused.focus();
+  lastFocused = null;
+}
+
 const { renderDrawerBody } = createDrawerPanels({
   refs,
   getDrawerTab: () => drawerTab,
   getDashboard: () => lastDashboard,
   loadDashboard,
   openReader,
-  openSettingsModal,
+  // Task 12：抽屉「模型配置」面板的打开按钮无分区参数 → 路由到新「模型设置」页。
+  openSettingsModal: (section) => openSettingsOrModelPage(section),
   showToast,
   showActionError,
   closeDrawer,
@@ -228,7 +264,8 @@ function setDrawerTabActive() {
 refs.refresh.addEventListener("click", () => loadAll());
 refs.newNovel.addEventListener("click", () => openCreateModal());
 refs.openFolder.addEventListener("click", () => openFromFolder());
-refs.openSettings.addEventListener("click", () => openSettingsModal());
+// Task 12：设置入口缺省分区为 model → 打开新「模型设置」页（模型分区已迁移）。
+refs.openSettings.addEventListener("click", () => openSettingsOrModelPage());
 refs.projectFilter?.addEventListener("input", () => renderProjectListFiltered());
 if (!refs.drawerClose.title) refs.drawerClose.title = "关闭抽屉";
 refs.drawerClose.addEventListener("click", () => closeDrawer());
@@ -246,6 +283,7 @@ function closeAppTopLayer() {
   if (refs.shortcutsScrim.classList.contains("show")) { closeShortcuts(); return true; }
   if (refs.readerScrim.classList.contains("show")) { closeReader(); return true; }
   if (refs.settingsScrim.classList.contains("show")) { closeSettingsModal(); return true; }
+  if (!refs.modelSettingsPage.hidden) { closeModelSettingsPage(); return true; }
   if (refs.createScrim.classList.contains("show")) { closeCreateModal(); return true; }
   if (refs.drawer.classList.contains("show")) { closeDrawer(); return true; }
   return false;
@@ -259,6 +297,7 @@ refs.readerScrim.addEventListener("click", (event) => {
 if (!refs.settingsX.title) refs.settingsX.title = "关闭设置";
 refs.settingsX.addEventListener("click", closeSettingsModal);
 refs.settingsCancel.addEventListener("click", closeSettingsModal);
+refs.modelSettingsClose?.addEventListener("click", closeModelSettingsPage);
 refs.settingsScrim.addEventListener("click", (event) => {
   if (event.target === refs.settingsScrim) closeSettingsModal();
 });
