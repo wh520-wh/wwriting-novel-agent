@@ -2,14 +2,14 @@
 //（统一 Agent 内核计划 Task 7 Step 3；Task 17 cutover 后仅保留 v2 形态）。
 //
 // 从旧 src/core/app-server.mjs 按职责提取（只读参考，不改旧文件）：settings/update、
-// test-connection、model-switch、output-styles 与 skills enable/disable/import 的
+// test-connection、model-switch、output-styles 与 skills catalog/import/delete 的
 // handler 逻辑迁入本模块，保持既有非 Agent HTTP 契约（响应形状、错误码与 fields
 // 字段级标红语义）。Task 17 cutover 删除 v1 扁平端点（模型保存/选用/删除/清单/
 // 密钥）与 v1 存储写路径——模型保存/选用/删除改由 providers-routes（Task 10）承担。
 //
 // 本模块不创建 ModelClient、锁或 store；secretsRoot/connectionTester 由 composition
-// root 注入。能力判定使用 Task 3 新建的 model/capabilities.mjs（Task 9 将删除旧的
-// provider-adapters.mjs，本模块不依赖旧文件）。
+// root 注入。能力判定使用 Task 3 新建的 model/capabilities.mjs；旧的
+// provider-adapters.mjs 已删除，本模块不依赖旧文件。
 //
 // 导出共享 helper 给 project-routes.mjs（模型档案展示）。
 import os from "node:os";

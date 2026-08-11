@@ -74,7 +74,7 @@ export function createSettingsModal(ctx, options = {}) {
     getJsonImpl = getJson,
     postJsonImpl = postJson,
     deleteJsonImpl = deleteJson,
-    // 模型切换确认的确认函数（可注入以便测试；默认原生 confirm，桌面场景无需新 UI）。
+    // 清除历史/删除/覆盖技能的确认函数（可注入以便测试；默认原生 confirm，桌面场景无需新 UI）。
     confirmImpl = (message) => {
       if (typeof window !== "undefined" && typeof window.confirm === "function") {
         return window.confirm(message);

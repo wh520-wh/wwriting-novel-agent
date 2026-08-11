@@ -9,7 +9,6 @@ import { createProject, loadProject } from "../src/core/project-store.mjs";
 import { createWorkspaceStore } from "../src/core/workspaces/store.mjs";
 import {
   normalizeSettingsPatch,
-  saveModelSettingsTransaction,
   saveWorkspaceSettings,
   SettingsValidationError,
   updateProjectSettings
@@ -321,89 +320,6 @@ test("project_profile 接受 max_words_per_chapter，且 max < min 时自动提�
     () => updateProjectSettings(projectRoot, { project_profile: { max_words_per_chapter: "abc" } }),
     /max_words_per_chapter/u
   );
-});
-
-const validCandidate = {
-  provider: "openai-compatible",
-  model_name: "mimo-v2.5-pro",
-  base_url: "https://api.xiaomimimo.com/v1",
-  api_key_env: "XIAOMI_MIMO_API_KEY",
-  api_key: "temporary-test-key",
-};
-
-test("project write failure leaves secrets and runtime untouched", async () => {
-  const calls = [];
-  await assert.rejects(
-    () => saveModelSettingsTransaction({
-      projectRoot: "project",
-      secretsRoot: "secrets",
-      activeModel: validCandidate,
-      readProject: async () => ({
-        active_model: { provider: "mock", model_name: "old" },
-      }),
-      writeProject: async () => {
-        calls.push("writeProject");
-        throw new Error("project disk full");
-      },
-      readSecrets: async () => ({ OLD_KEY: "old-secret" }),
-      writeSecrets: async () => calls.push("writeSecrets"),
-      applySecrets: () => calls.push("applySecrets"),
-    }),
-    /project disk full/
-  );
-  assert.deepEqual(calls, ["writeProject"]);
-});
-
-test("secret write failure restores the old project snapshot", async () => {
-  const oldProject = {
-    active_model: { provider: "mock", model_name: "old" },
-  };
-  const writes = [];
-  await assert.rejects(
-    () => saveModelSettingsTransaction({
-      projectRoot: "project",
-      secretsRoot: "secrets",
-      activeModel: validCandidate,
-      readProject: async () => oldProject,
-      writeProject: async (root, value) => writes.push(value),
-      readSecrets: async () => ({ OLD_KEY: "old-secret" }),
-      writeSecrets: async () => {
-        throw new Error("secret disk full");
-      },
-      applySecrets: () => assert.fail("must not apply runtime secrets"),
-    }),
-    (error) => error.code === "settings_save_failed"
-  );
-  assert.equal(writes.length, 2);
-  assert.equal(writes[0].active_model.model_name, "mimo-v2.5-pro");
-  assert.deepEqual(writes[1], oldProject);
-});
-
-test("runtime apply failure keeps durable new files and requests restart", async () => {
-  const writes = [];
-  await assert.rejects(
-    () => saveModelSettingsTransaction({
-      projectRoot: "project",
-      secretsRoot: "secrets",
-      activeModel: validCandidate,
-      readProject: async () => ({
-        active_model: { provider: "mock", model_name: "old" },
-      }),
-      writeProject: async (root, value) =>
-        writes.push(["project", value.active_model.model_name]),
-      readSecrets: async () => ({}),
-      writeSecrets: async (root, value) =>
-        writes.push(["secrets", value.XIAOMI_MIMO_API_KEY]),
-      applySecrets: () => {
-        throw new Error("runtime apply failed");
-      },
-    }),
-    (error) => error.code === "settings_runtime_apply_failed"
-  );
-  assert.deepEqual(writes, [
-    ["project", "mimo-v2.5-pro"],
-    ["secrets", "temporary-test-key"],
-  ]);
 });
 
 test("updateProjectSettings 保存时移除旧 project.yaml 的 enabled_skills 字段", async () => {

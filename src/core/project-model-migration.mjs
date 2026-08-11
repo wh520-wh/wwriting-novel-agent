@@ -16,7 +16,7 @@
 // 独占读写（v1 存储模块已在 Task 17 cutover 删除）。
 // loadProviderStore 读到 v1 会自动转换并写回；迁移是读路径，只消费已持久化的 v2
 // 清单（v1/未知格式按空清单处理——mock 归零不依赖清单，引用转换等 v2 落盘后由
-// 幂等重跑自然完成）。内存转换 v1 得出的 provider id未持久化，据此产出引用会
+// 幂等重跑自然完成）。内存转换 v1 得出的 provider id 未持久化，据此产出引用会
 // 悬空，故 v1 下绝不转引用。
 import path from "node:path";
 import { loadProject, saveProject } from "./project-store.mjs";
