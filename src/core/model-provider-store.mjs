@@ -34,7 +34,13 @@ export function normalizeProviderStore(raw) {
     const model = provider?.models.find((m) => m.id === dm.model_id);
     if (provider && model) defaultModel = { provider_id: provider.id, model_id: model.id };
   }
-  return { schema_version: SCHEMA_VERSION, default_model: defaultModel, providers };
+  const result = { schema_version: SCHEMA_VERSION, default_model: defaultModel, providers };
+  // 预设种子追踪字段：跨归一化保留（否则 ensurePresetProviders 无法区分
+  // 「用户删过」与「从未种过」，删除过的预设会复活）。仅接受合法字符串数组。
+  if (Array.isArray(raw.seeded_preset_ids)) {
+    result.seeded_preset_ids = [...new Set(raw.seeded_preset_ids.filter((x) => typeof x === "string" && x.length > 0))];
+  }
+  return result;
 }
 
 function normalizeProvider(value) {
