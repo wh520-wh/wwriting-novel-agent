@@ -114,6 +114,16 @@ test("供应商失焦保存与启停切换调用 PATCH", async () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, "/api/settings/providers/deepseek");
   assert.deepEqual(JSON.parse(calls[0].options.body), { status: "disabled" });
+  assert.equal(await page._handlers.saveProviderPatch("deepseek", { status: "disabled" }), true, "保存成功应返回 true");
+});
+
+test("保存失败：saveProviderPatch 返回 false", async () => {
+  const page = createModelSettingsPage({
+    fetchImpl: async () => ({ ok: false, status: 400, json: async () => ({ message: "服务器错误" }) }),
+    documentRef: mockDocument
+  });
+  assert.equal(await page.saveProviderPatch("deepseek", { name: "x" }), false, "保存失败应返回 false");
+  assert.equal(await page.saveModelPatch("deepseek", "m1", { model_name: "x" }), false, "模型保存失败也应返回 false");
 });
 
 test("删除供应商前需要二次确认（confirm 返回 false 不发请求）", async () => {
@@ -175,6 +185,10 @@ test("renderDetail 交互接线：改名 / Base URL 校验 / 启停 / 协议回�
   nameInput._fire("change");
   await tickAsync();
   assert.deepEqual(lastPatch(), { url: "/api/settings/providers/deepseek", body: { name: "DeepSeek 新名" } });
+  nameInput.value = "   ";
+  nameInput._fire("change");
+  await tickAsync();
+  assert.equal(patches.length, 1, "空供应商名不应发起保存");
 
   // Base URL：非 http(s) 不保存；合法地址失焦保存
   const baseUrlInput = els.find((el) => el.getAttribute?.("data-field") === "base_url");
@@ -218,4 +232,33 @@ test("renderDetail 交互接线：改名 / Base URL 校验 / 启停 / 协议回�
   await tickAsync();
   assert.deepEqual(lastPatch(), { url: "/api/settings/providers/deepseek", body: { api_key_env: "DEEPSEEK_API_KEY" } });
   assert.equal(keyInput.value, "DEEPSEEK_API_KEY", "环境变量名模式保留输入值");
+});
+
+test("明文密钥保存失败：保留输入回显并提示先填环境变量名", async () => {
+  const toasts = [];
+  const page = createModelSettingsPage({
+    fetchImpl: async (url, options = {}) => {
+      const body = options.body ? JSON.parse(options.body) : null;
+      if (options?.method === "PATCH" && body?.api_key) {
+        // 模拟后端对无 api_key_env bucket 的明文密钥 PATCH 返回 400
+        return { ok: false, status: 400, json: async () => ({ message: "请先填写 API 密钥环境变量名。" }) };
+      }
+      return { ok: true, json: async () => ({ providers, default_model: null }) };
+    },
+    documentRef: mockDocument,
+    showToast: (message, kind) => toasts.push({ message, kind })
+  });
+  await page.open();
+  const container = new MockElement("div");
+  page.renderDetail(container);
+  const keyInput = descendants(container).find((el) => el.getAttribute?.("data-field") === "api_key");
+  keyInput.value = "sk-abc123";
+  keyInput._fire("change");
+  await tickAsync();
+  assert.equal(keyInput.value, "sk-abc123", "保存失败不应清空回显，避免丢失已键入的密钥");
+  assert.ok(
+    toasts.some((t) => t.message.includes("先填写 API 密钥环境变量名") && t.kind === "error"),
+    "应给出「先填写环境变量名」的明确引导"
+  );
+  assert.ok(toasts.every((t) => !t.message.startsWith("保存失败：")), "该场景不应再出现通用失败文案");
 });
