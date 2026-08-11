@@ -13,10 +13,20 @@ export function buildPageState(providers, selectedId) {
   return { providers, selected };
 }
 
+// 失焦（change）自动保存：文本类输入统一走这里。base_url 带 http(s) 前缀校验，
+// 不合法直接放弃保存（保持编辑态，不 toast 打断）。
+function bindAutosave(input, field, apply) {
+  input.addEventListener("change", () => {
+    const value = input.value.trim();
+    if (field === "base_url" && !/^https?:\/\/.+/u.test(value)) return;
+    apply({ [field]: value }).catch(() => {});
+  });
+}
+
 const API_BASE = "/api/settings/providers";
 
 export function createModelSettingsPage(ctx = {}) {
-  const { fetchImpl = fetch, documentRef = document, onChanged = () => {}, showToast = () => {} } = ctx;
+  const { fetchImpl = fetch, documentRef = document, onChanged = () => {}, showToast = () => {}, confirmImpl = globalThis.confirm } = ctx;
   let state = { providers: [], selected: null };
 
   // 加载失败路径：保留上一次可用状态，只 toast 不抛错——open() 随之正常 resolve，
@@ -69,6 +79,28 @@ export function createModelSettingsPage(ctx = {}) {
     }
   }
 
+  // 删除供应商：二次确认后才发 POST .../remove（同时删除其下全部模型）。
+  // 成功后 refresh 重拉列表，被删供应商随 buildPageState 从列表移除。
+  async function removeProviderWithConfirm(id) {
+    const ok = (ctx.confirmImpl ?? globalThis.confirm)("删除供应商将同时删除其下全部模型，此操作不可撤销");
+    if (!ok) return false;
+    try {
+      const res = await fetchImpl(`${API_BASE}/${id}/remove`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}"
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.message ?? `HTTP ${res.status}`);
+      await refresh();
+      onChanged();
+      return true;
+    } catch (error) {
+      showToast(`删除失败：${error?.message ?? "未知错误"}`, "error");
+      return false;
+    }
+  }
+
   function el(tag, props = {}, children = []) {
     const node = documentRef.createElement(tag);
     for (const [key, value] of Object.entries(props)) {
@@ -105,9 +137,34 @@ export function createModelSettingsPage(ctx = {}) {
     container.replaceChildren();
     const provider = state.selected;
     if (!provider) { container.append(el("p", { text: "还没有供应商，先添加一个。" })); return; }
-    container.append(el("h2", { text: provider.name }));
+
+    // 供应商名：h2 改为可编辑输入，失焦（change）自动保存。
+    const nameInput = el("input", { value: provider.name, class: "provider-name", "data-field": "name" });
+    bindAutosave(nameInput, "name", (patch) => saveProviderPatch(provider.id, patch));
+    // 状态切换：文案即动作（enabled →「禁用」，disabled →「启用」），
+    // 点击保存相反状态，refresh 重渲染后文案随新状态翻转。
+    const statusToggle = el("button", {
+      type: "button",
+      class: "provider-status-toggle",
+      text: provider.status === "enabled" ? "禁用" : "启用"
+    });
+    statusToggle.addEventListener("click", () => {
+      saveProviderPatch(provider.id, {
+        status: provider.status === "enabled" ? "disabled" : "enabled"
+      });
+    });
+    // 删除（右上角垃圾桶）：二次确认后 POST .../remove。
+    const deleteButton = el("button", { type: "button", class: "provider-delete", title: "删除供应商", text: "🗑" });
+    deleteButton.addEventListener("click", () => {
+      removeProviderWithConfirm(provider.id);
+    });
+    container.append(el("div", { class: "provider-detail-head" }, [nameInput, statusToggle, deleteButton]));
+
     container.append(el("label", { text: "Base URL" }));
-    container.append(el("input", { value: provider.base_url, "data-field": "base_url" }));
+    const baseUrlInput = el("input", { value: provider.base_url, "data-field": "base_url" });
+    bindAutosave(baseUrlInput, "base_url", (patch) => saveProviderPatch(provider.id, patch));
+    container.append(baseUrlInput);
+
     container.append(el("label", { text: "API 接口协议" }));
     const formatSelect = el("select", { "data-field": "api_format" });
     for (const [value, label, disabled] of [
@@ -121,9 +178,30 @@ export function createModelSettingsPage(ctx = {}) {
       formatSelect.append(option);
     }
     formatSelect.value = provider.api_format;
+    // 当前只支持 openai-chat-completions 落盘：值非法时回退到当前值并提示，
+    // 不发无效 PATCH（其余选项渲染为 disabled 占位，此处是第二道防线）。
+    formatSelect.addEventListener("change", () => {
+      if (formatSelect.value !== "openai-chat-completions") {
+        formatSelect.value = provider.api_format;
+        showToast("当前仅支持 OpenAI Chat Completions 协议", "error");
+        return;
+      }
+      saveProviderPatch(provider.id, { api_format: formatSelect.value });
+    });
     container.append(formatSelect);
+
     container.append(el("label", { text: "API 密钥" }));
     const keyInput = el("input", { type: "password", value: "", "data-field": "api_key", placeholder: "粘贴密钥或填环境变量名" });
+    // 双模式：形如环境变量名（字母/数字/下划线且非数字开头，与后端校验一致）→
+    // 保存 api_key_env；否则视为粘贴的明文密钥 → api_key（后端落 secrets.json，
+    // 响应不含明文）。明文保存后清空输入框，避免密钥滞留 DOM。
+    keyInput.addEventListener("change", () => {
+      const value = keyInput.value.trim();
+      if (!value) return;
+      const isEnvName = /^[A-Za-z_][A-Za-z0-9_]*$/u.test(value);
+      saveProviderPatch(provider.id, isEnvName ? { api_key_env: value } : { api_key: value });
+      if (!isEnvName) keyInput.value = "";
+    });
     const eye = el("button", { type: "button", title: "显示/隐藏密钥", text: "👁" });
     eye.addEventListener("click", () => {
       keyInput.type = keyInput.type === "password" ? "text" : "password";
@@ -156,6 +234,7 @@ export function createModelSettingsPage(ctx = {}) {
     renderDetail,
     saveProviderPatch,
     saveModelPatch,
-    _handlers: { saveProviderPatch, saveModelPatch, refresh }
+    removeProviderWithConfirm,
+    _handlers: { saveProviderPatch, saveModelPatch, refresh, removeProviderWithConfirm }
   };
 }
