@@ -262,3 +262,33 @@ test("明文密钥保存失败：保留输入回显并提示先填环境变量�
   );
   assert.ok(toasts.every((t) => !t.message.startsWith("保存失败：")), "该场景不应再出现通用失败文案");
 });
+
+// ---------------------------------------------------------------------------
+// Task 14：模型级交互——启停/设默认走对应端点、删除二次确认
+// ---------------------------------------------------------------------------
+
+test("模型启停与设默认走对应端点", async () => {
+  const calls = [];
+  const page = createModelSettingsPage({
+    fetchImpl: async (url, options = {}) => {
+      if (options?.method === "PATCH" || url.endsWith("/default")) calls.push({ url, options });
+      return { ok: true, json: async () => ({ providers: [], default_model: null }) };
+    },
+    documentRef: mockDocument
+  });
+  await page._handlers.saveModelPatch("deepseek", "m1", { enabled: false });
+  await page.setDefaultModel("deepseek", "m1");
+  assert.equal(calls[0].url, "/api/settings/providers/deepseek/models/m1");
+  assert.equal(calls[1].url, "/api/settings/providers/deepseek/models/m1/default");
+});
+
+test("模型删除需要二次确认", async () => {
+  const calls = [];
+  const page = createModelSettingsPage({
+    fetchImpl: async () => { calls.push("called"); return { ok: true, json: async () => ({ providers: [], default_model: null }) }; },
+    documentRef: mockDocument,
+    confirmImpl: () => false
+  });
+  await page.removeModelWithConfirm("deepseek", "m1");
+  assert.deepEqual(calls, []);
+});

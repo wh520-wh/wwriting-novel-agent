@@ -28,9 +28,18 @@ function bindAutosave(input, field, apply) {
 
 const API_BASE = "/api/settings/providers";
 
+// 模块级纯函数：便于单测（页内 setDefaultModel 包装它做 res.ok 检查 + refresh + toast）。
+export async function setDefaultModelImpl(fetchImpl, providerId, modelId) {
+  return fetchImpl(`${API_BASE}/${providerId}/models/${modelId}/default`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}"
+  });
+}
+
 export function createModelSettingsPage(ctx = {}) {
   const { fetchImpl = fetch, documentRef = document, onChanged = () => {}, showToast = () => {}, confirmImpl = globalThis.confirm } = ctx;
-  let state = { providers: [], selected: null };
+  let state = { providers: [], selected: null, default_model: null };
 
   // 加载失败路径：保留上一次可用状态，只 toast 不抛错——open() 随之正常 resolve，
   // 避免 Task 13-15 挂到本页后遇到未处理拒绝（页面停在旧状态而非空着报错）。
@@ -40,7 +49,9 @@ export function createModelSettingsPage(ctx = {}) {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       if (!Array.isArray(data?.providers)) throw new Error("响应缺少 providers 数组");
-      state = buildPageState(data.providers, state.selected?.id ?? null);
+      // default_model（GET 响应顶层字段，{ provider_id, model_id } 对象或 null）
+      // 一并入 state：renderDetail 据此给默认模型行渲染「默认」角标。
+      state = { ...buildPageState(data.providers, state.selected?.id ?? null), default_model: data.default_model ?? null };
       render();
     } catch (error) {
       showToast(`模型列表加载失败：${error?.message ?? "未知错误"}`, "error");
@@ -110,6 +121,74 @@ export function createModelSettingsPage(ctx = {}) {
       return true;
     } catch (error) {
       showToast(`删除失败：${error?.message ?? "未知错误"}`, "error");
+      return false;
+    }
+  }
+
+  // 默认模型角标判定：state.default_model 来自 GET 响应顶层字段，为
+  // { provider_id, model_id } 对象（v2 存储形态）或历史字符串 "providerId/modelId"。
+  function isDefaultModel(providerId, modelId) {
+    const dm = state.default_model;
+    if (!dm) return false;
+    if (typeof dm === "string") return dm === `${providerId}/${modelId}`;
+    return dm.provider_id === providerId && dm.model_id === modelId;
+  }
+
+  // 设为默认：POST .../default（走模块级 setDefaultModelImpl 便于单测），成功后
+  // refresh 重拉列表（default_model 随之更新，角标重渲染）+ onChanged。
+  async function setDefaultModel(providerId, modelId) {
+    try {
+      const res = await setDefaultModelImpl(fetchImpl, providerId, modelId);
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.message ?? `HTTP ${res.status}`);
+      await refresh();
+      onChanged();
+      return true;
+    } catch (error) {
+      showToast(`设置默认模型失败：${error?.message ?? "未知错误"}`, "error");
+      return false;
+    }
+  }
+
+  // 删除模型：二次确认后才发 POST .../remove（后端会把默认指针转移/清空）。
+  // 成功后 refresh 重拉列表；被删模型随 renderDetail 从列表移除。
+  async function removeModelWithConfirm(providerId, modelId) {
+    const ok = confirmImpl("删除后引用它的项目将自动改用默认模型，此操作不可撤销");
+    if (!ok) return false;
+    try {
+      const res = await fetchImpl(`${API_BASE}/${providerId}/models/${modelId}/remove`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}"
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.message ?? `HTTP ${res.status}`);
+      await refresh();
+      onChanged();
+      return true;
+    } catch (error) {
+      showToast(`删除失败：${error?.message ?? "未知错误"}`, "error");
+      return false;
+    }
+  }
+
+  // 添加模型：POST .../models 建一个可编辑默认名的新模型，创建后 refresh + toast。
+  // 模型名留空/拉取由 Task 15 的行内编辑接手，此处先给最小可改的落点。
+  async function addModel(providerId) {
+    try {
+      const res = await fetchImpl(`${API_BASE}/${providerId}/models`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model_name: "new-model", enabled: true })
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.message ?? `HTTP ${res.status}`);
+      await refresh();
+      onChanged();
+      showToast("已添加模型，可在名称框直接改名后回车保存", "success");
+      return true;
+    } catch (error) {
+      showToast(`添加模型失败：${error?.message ?? "未知错误"}`, "error");
       return false;
     }
   }
@@ -229,13 +308,45 @@ export function createModelSettingsPage(ctx = {}) {
     container.append(keyInput, eye);
     container.append(el("h4", { text: "模型列表" }));
     for (const model of provider.models) {
+      const isDefault = isDefaultModel(provider.id, model.id);
+      // 模型名：失焦（change）保存，[1m] 标记原样保留（空值守卫在 bindAutosave 内）。
+      const nameInput = el("input", { value: model.model_name, "data-field": "model_name" });
+      bindAutosave(nameInput, "model_name", (patch) => saveModelPatch(provider.id, model.id, patch));
+      // 启停开关：文案即动作，点击保存相反状态，refresh 后文案随新状态翻转。
+      const toggle = el("button", {
+        type: "button",
+        class: "model-status-toggle",
+        text: model.enabled === false ? "启用" : "停用"
+      });
+      toggle.addEventListener("click", () => {
+        saveModelPatch(provider.id, model.id, { enabled: !model.enabled });
+      });
+      // 设为默认：POST .../default；默认模型行显示「默认」角标。
+      const setDefaultButton = el("button", { type: "button", class: "model-set-default", text: "设为默认" });
+      setDefaultButton.addEventListener("click", () => {
+        setDefaultModel(provider.id, model.id);
+      });
+      // 删除：二次确认后 POST .../remove。
+      const deleteButton = el("button", { type: "button", class: "model-delete", text: "删除" });
+      deleteButton.addEventListener("click", () => {
+        removeModelWithConfirm(provider.id, model.id);
+      });
       container.append(el("div", { class: "model-row", "data-model-id": model.id }, [
-        el("input", { value: model.model_name, "data-field": "model_name" }),
+        nameInput,
+        toggle,
         el("span", { text: model.enabled === false ? "已停用" : "已启用" }),
-        el("button", { type: "button", disabled: true, title: "Task 13-15 实现", text: "测试连接" }),
-        el("button", { type: "button", disabled: true, title: "Task 13-15 实现", text: "删除" })
+        ...(isDefault ? [el("span", { class: "default-badge", text: "默认" })] : []),
+        el("button", { type: "button", disabled: true, title: "Task 15 实现", text: "测试连接" }),
+        setDefaultButton,
+        deleteButton
       ]));
     }
+    // 「+ 添加模型」：Task 14 启用（Task 15 的拉取/行内编辑接手后仍保留此兜底入口）。
+    const addModelButton = el("button", { type: "button", class: "add-model", text: "+ 添加模型" });
+    addModelButton.addEventListener("click", () => {
+      addModel(provider.id);
+    });
+    container.append(addModelButton);
   }
 
   function render() {
@@ -255,6 +366,9 @@ export function createModelSettingsPage(ctx = {}) {
     saveProviderPatch,
     saveModelPatch,
     removeProviderWithConfirm,
-    _handlers: { saveProviderPatch, saveModelPatch, refresh, removeProviderWithConfirm }
+    setDefaultModel,
+    removeModelWithConfirm,
+    addModel,
+    _handlers: { saveProviderPatch, saveModelPatch, refresh, removeProviderWithConfirm, setDefaultModel, removeModelWithConfirm, addModel }
   };
 }
