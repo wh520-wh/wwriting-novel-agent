@@ -253,7 +253,7 @@ export function legacySettingsImport(project) {
 
 // 旧 active_model 只在其为“确定字段”时携带：引用形态（provider_id + model_id，任务 6
 // 迁移后）直接通过；字面快照要求含非空 model_name。不为 default_writer_model 等派生
-// 字段发明模型配置（provider 缺失时分发回退 mock，与旧行为一致）。
+// 字段发明模型配置（provider 缺失即未配置——分发抛 ProviderConfigurationError，不再回落 mock）。
 function legacyActiveModel(project) {
   const active = project?.active_model;
   if (!active || typeof active !== "object" || Array.isArray(active)) return null;

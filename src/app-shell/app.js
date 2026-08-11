@@ -263,7 +263,12 @@ refs.settingsScrim.addEventListener("click", (event) => {
   if (event.target === refs.settingsScrim) closeSettingsModal();
 });
 refs.settingsSave.addEventListener("click", () => saveSettings());
-refs.settingsSearch.addEventListener("input", () => renderSettingsProviders());
+refs.settingsSearch.addEventListener("input", () => {
+  // Task 8 过渡期：模型分区为只读占位，搜索输入不得重建旧供应商列表——
+  // 否则「选用」按钮复活，点击会发出真实的 model-select 请求，绕过占位。
+  if (settingsModal.currentSettingsSection() === "model") return;
+  renderSettingsProviders();
+});
 refs.settingsAdd.addEventListener("click", () => settingsModal.resetToCustom());
 if (!refs.createX.title) refs.createX.title = "关闭";
 refs.createX.addEventListener("click", closeCreateModal);
