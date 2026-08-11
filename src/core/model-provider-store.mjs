@@ -244,8 +244,10 @@ export async function findModelByConfig(root, config = {}) {
   return null;
 }
 
-// 归一化匹配键：base_url 去尾斜杠 + 小写；命中官方地址用 hostname 匹配
-//（与 deepseek-detection.mjs 口径一致：api.deepseek.com / *.xiaomimimo.com）。
+// 归一化匹配键：base_url 去尾斜杠 + 小写；命中官方地址仅精确匹配官方按量端点
+// hostname（api.deepseek.com / api.xiaomimimo.com）。与 deepseek-detection.mjs 的
+// 子串口径不同（其覆盖 token-plan-*.xiaomimimo.com 订阅端点）；迁移按精确匹配
+// 更安全——避免把订阅端点并入按量预设。
 function hostOf(url) { try { return new URL(url).hostname.toLowerCase(); } catch { return ""; } }
 function isOfficialBaseUrl(url, preset) {
   const host = hostOf(url);
@@ -264,7 +266,6 @@ export function migrateV1Store(raw, presets = []) {
     usedNames.add(name);
     return name;
   };
-  const presetById = new Map(presets.map((p) => [p.id, p]));
   const presetProviders = new Map(); // presetId -> provider
   const standalone = new Map(); // base_url -> provider
 
@@ -291,13 +292,14 @@ export function migrateV1Store(raw, presets = []) {
       const provider = presetProviders.get(preset.id);
       const presetModelDef = preset.models.find((m) => m.model_name === modelName);
       if (!provider.models.some((m) => m.model_name === modelName)) {
+        // v1 旧条目在前、预设未出现模型按种子形态补全在后（顺序为观感，无强契约）
         provider.models.unshift({
           // 旧 v1 约定 id === modelName，保留原 id 让 default_model_id 直接命中；
           // 缺失时才回退到预设种子 id 形态。
           id: stringValue(old.id) || `m_${preset.id}_${modelName}`,
           model_name: modelName,
           enabled: true,
-          context_window: /\[1m\]$/iu.test(modelName) ? 1000000 : 256000,
+          context_window: positiveInt(old.max_context_tokens) ?? (/\[1m\]$/iu.test(modelName) ? 1000000 : 256000),
           ...(presetModelDef?.pricing ? { pricing: { ...presetModelDef.pricing } } : {})
         });
       }
@@ -321,15 +323,17 @@ export function migrateV1Store(raw, presets = []) {
       });
     }
     const provider = standalone.get(key);
-    if (!provider.models.some((m) => m.model_name === modelName)) {
-      provider.models.push({
+    let model = provider.models.find((m) => m.model_name === modelName);
+    if (!model) {
+      model = {
         id: newModelId(),
         model_name: modelName,
         enabled: true,
-        context_window: /\[1m\]$/iu.test(modelName) ? 1000000 : 256000
-      });
-      copyRuntimeFields(provider.models[provider.models.length - 1], old);
+        context_window: positiveInt(old.max_context_tokens) ?? (/\[1m\]$/iu.test(modelName) ? 1000000 : 256000)
+      };
+      provider.models.push(model);
     }
+    copyRuntimeFields(model, old); // 同 base_url + model_name 重复条目也合并，用户参数以最后一次为准（与官方分支一致）
   }
   // 命中的预设补全其余模型（旧 v1 条目置前，未出现的预设模型追加在后），
   // 与 ensurePresetProviders 的种子形态一致。
@@ -348,6 +352,10 @@ export function migrateV1Store(raw, presets = []) {
     }
   }
   store.providers = [...presetProviders.values(), ...standalone.values()];
+  // 迁移即视为已种过全部预设：记录 seeded_preset_ids，用户删除任一预设后
+  // ensurePresetProviders 不再复活（删除不复活契约），也避免迁移后强补
+  // 未出现过的预设（与删除不复活同源：迁移结果就是完整的预设生命周期状态）。
+  store.seeded_preset_ids = presets.map((p) => p.id);
   // 默认指针映射：v1 default_model_id 匹配 model_name（旧 id=modelName 约定）或条目 id
   const defaultId = stringValue(raw?.default_model_id);
   if (defaultId) {
