@@ -58,9 +58,9 @@ test("null 不动", async () => {
 // plain v2 清单避免默认 loader 读磁盘。覆盖 project.yaml 与私有 settings 两条落盘路径。
 // ---------------------------------------------------------------------------
 
-// project.yaml mock 快照 → active_model null + stage_overrides 随写删除；settings 里
-// 能匹配清单的字面快照 → 引用 {provider_id, model_id}。
-test("migrateProjectFile：mock 归零 + stage_overrides 随写删除 + settings 转引用", async (t) => {
+// project.yaml mock 快照 → active_model null；settings 里能匹配清单的字面快照 →
+// 引用 {provider_id, model_id}。
+test("migrateProjectFile：mock 归零 + settings 转引用", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-model-migration-"));
   t.after(async () => { await fs.rm(root, { recursive: true, force: true }); });
   const projectRoot = path.join(root, "project");
@@ -68,8 +68,7 @@ test("migrateProjectFile：mock 归零 + stage_overrides 随写删除 + settings
 
   let project = {
     schema_version: 1,
-    active_model: { provider: "mock", model_name: "mock-writer" },
-    stage_overrides: { enabled: false }
+    active_model: { provider: "mock", model_name: "mock-writer" }
   };
   let writes = 0;
   const readProject = async () => project;
@@ -92,9 +91,8 @@ test("migrateProjectFile：mock 归零 + stage_overrides 随写删除 + settings
   });
 
   assert.equal(result.changed, true);
-  // project.yaml：mock 归零，stage_overrides 随本次写删除
+  // project.yaml：mock 归零
   assert.equal(project.active_model, null);
-  assert.equal("stage_overrides" in project, false);
   assert.equal(writes, 1);
   // settings：匹配的字面快照转引用
   const settings = await workspaceStore.loadSettings(projectRoot);
@@ -110,8 +108,7 @@ test("migrateProjectFile 幂等：第二次调用不再写", async (t) => {
 
   let project = {
     schema_version: 1,
-    active_model: { provider: "mock", model_name: "mock-writer" },
-    stage_overrides: { enabled: false }
+    active_model: { provider: "mock", model_name: "mock-writer" }
   };
   let writes = 0;
   const readProject = async () => project;
@@ -135,9 +132,8 @@ test("migrateProjectFile 幂等：第二次调用不再写", async (t) => {
   assert.equal(settings.active_model, null, "settings 已归零，第二次不再改动");
 });
 
-// 锁文档化行为：active_model 已是引用 + stage_overrides 存在 → 不触发写，因此
-// stage_overrides 仍然保留（剥离是写耦合的，Task 9 才彻底删除该字段）。
-test("migrateProjectFile：引用形态 + stage_overrides → 不写、stage_overrides 保留", async (t) => {
+// 锁文档化行为：active_model 已是引用 → 不触发写（迁移只处理快照形态）。
+test("migrateProjectFile：引用形态不触发写入", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-model-migration-"));
   t.after(async () => { await fs.rm(root, { recursive: true, force: true }); });
   const projectRoot = path.join(root, "project");
@@ -145,8 +141,7 @@ test("migrateProjectFile：引用形态 + stage_overrides → 不写、stage_ove
 
   const project = {
     schema_version: 1,
-    active_model: { provider_id: "deepseek", model_id: "m1" },
-    stage_overrides: { enabled: false }
+    active_model: { provider_id: "deepseek", model_id: "m1" }
   };
   let writes = 0;
   const result = await migrateProjectFile(projectRoot, {
@@ -160,5 +155,4 @@ test("migrateProjectFile：引用形态 + stage_overrides → 不写、stage_ove
   assert.equal(result.changed, false);
   assert.equal(writes, 0, "引用形态不触发写入");
   assert.deepEqual(project.active_model, { provider_id: "deepseek", model_id: "m1" });
-  assert.deepEqual(project.stage_overrides, { enabled: false }, "未写入时 stage_overrides 保留");
 });

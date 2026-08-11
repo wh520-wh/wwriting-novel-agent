@@ -10,8 +10,7 @@
 //
 // migrateProjectActiveModel 是纯函数（快照 + store → 结果），
 // migrateProjectFile 落地：project.yaml 快照与私有 workspace settings 快照都转
-// 引用，且 project.yaml 迁移时顺带丢弃 stage_overrides（该字段整个重构会删除，
-// Task 9 彻底清理，此处先随迁移清一次）。两者都幂等：第二次调用不再写入。
+// 引用。两者都幂等：第二次调用不再写入。
 //
 // 清单读取只读：model-profiles.json 同时被新旧两条清单路径使用——旧的 v1
 // local-model-profiles 仍被 v1 save/remove/select 路径使用（Task 7 仅删除了它的
@@ -62,7 +61,7 @@ export function migrateProjectActiveModel(activeModel, store) {
   return { active_model: activeModel, changed: false };
 }
 
-// 迁移项目文件：project.yaml 快照 与 私有 settings 快照 都转引用；丢弃 stage_overrides。
+// 迁移项目文件：project.yaml 快照 与 私有 settings 快照 都转引用。
 export async function migrateProjectFile(projectRoot, { workspaceStore, secretsRoot, readProject = loadProject, writeProject = saveProject, storeLoader = null } = {}) {
   if (!workspaceStore || !secretsRoot) return { changed: false };
   // 缺省只读加载（见文件头注释）；storeLoader 供测试注入自定义清单。
@@ -75,9 +74,6 @@ export async function migrateProjectFile(projectRoot, { workspaceStore, secretsR
     const active = await migrateProjectActiveModel(legacy.active_model ?? null, store);
     if (active.changed) {
       const next = { ...legacy, active_model: active.active_model };
-      // stage_overrides 仅在发生 active_model 写入时随写删除；若 active_model 已是
-      // 引用/未匹配，不触发写，stage_overrides 保留至 Task 9 彻底删除。
-      if (legacy.stage_overrides) delete next.stage_overrides;
       await writeProject(projectRoot, next);
       changed = true;
     }

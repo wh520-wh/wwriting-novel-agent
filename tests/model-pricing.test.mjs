@@ -23,17 +23,11 @@ test("resolvePricing 精确匹配优先，其次最长前缀", () => {
   assert.equal(resolvePricing("mimo-v2.5", table), null);
 });
 
-test("buildPricingTable 从 active_model 与启用的 stage_overrides 取价", () => {
+test("buildPricingTable 从 active_model 取价", () => {
   const table = buildPricingTable({
-    active_model: { model_name: "mimo-v2.5-pro", pricing: { input_per_million: 1, output_per_million: 4 } },
-    stage_overrides: {
-      outline: { enabled: true, model_name: "deepseek-chat", pricing: { input_per_million: 2, output_per_million: 8 } },
-      reviewing: { enabled: false, model_name: "x", pricing: { input_per_million: 9, output_per_million: 9 } }
-    }
+    active_model: { model_name: "mimo-v2.5-pro", pricing: { input_per_million: 1, output_per_million: 4 } }
   });
   assert.ok(table["mimo-v2.5-pro"]);
-  assert.ok(table["deepseek-chat"]);
-  assert.equal(table["x"], undefined);
 });
 
 test("fillOfficialPricing 为 v4-flash 补全官方人民币价（1.00/2.00/0.02）", () => {

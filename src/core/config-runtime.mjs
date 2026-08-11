@@ -6,12 +6,6 @@ import { resolveActiveModel } from "./model-reference.mjs";
 export const DEFAULT_CONFIG = {
   // 未配置模型 = active_model: null（用户面不再以 mock 作为兜底）
   active_model: null,
-  stage_overrides: {
-    enabled: false
-    // 各 stage 覆盖示例：
-    // drafting:   { enabled: true, model_name: "deepseek-chat", total_deadline_ms: 600000 },
-    // chat:       { enabled: true, model_name: "deepseek-chat", total_deadline_ms: 120000 },
-  },
   tool_permissions: {
     read_only: false,
     safe_edit: true,
@@ -159,7 +153,6 @@ export function normalizeConfigLayer(layer = {}, options = {}) {
   }
 
   copyIfDefined(config, source, "active_model");
-  copyIfDefined(config, source, "stage_overrides");
   copyIfDefined(config, source, "tool_permissions");
   copyIfDefined(config, source, "budget_config");
   copyIfDefined(config, source, "cache_config");
