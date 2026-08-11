@@ -2,6 +2,8 @@
 // 模型设置页面：左列表 + 右详情。纯逻辑导出便于 node:test；
 // DOM 渲染用最小 document.createElement（真实环境用 document，测试用 mock）。
 
+import { isEnvironmentVariableName } from "./utils.js";
+
 export function pickProvider(providers, id) {
   return providers.find((p) => p.id === id) ?? null;
 }
@@ -18,8 +20,9 @@ export function buildPageState(providers, selectedId) {
 function bindAutosave(input, field, apply) {
   input.addEventListener("change", () => {
     const value = input.value.trim();
+    if (!value) return; // 空值不保存（与密钥框守卫一致）
     if (field === "base_url" && !/^https?:\/\/.+/u.test(value)) return;
-    apply({ [field]: value }).catch(() => {});
+    apply({ [field]: value }); // saveProviderPatch 内部 catch 并返回布尔，不会产生未处理拒绝
   });
 }
 
@@ -56,9 +59,17 @@ export function createModelSettingsPage(ctx = {}) {
       if (!res.ok) throw new Error(data?.message ?? `HTTP ${res.status}`);
       await refresh();
       onChanged();
+      return true;
     } catch (error) {
       // 保存失败：保留当前状态并 toast，不刷新（避免用旧数据覆盖新状态）。
-      showToast(`保存失败：${error?.message ?? "未知错误"}`, "error");
+      // 无环境变量名的供应商直接粘贴明文密钥会命中后端 invalid_api_key_env（400）：
+      // 此时给出更明确的引导，其余错误保留通用文案。
+      if (error?.message?.includes("API 密钥环境变量名")) {
+        showToast("请先填写 API 密钥环境变量名（在密钥框输入如 MY_KEY 并回车保存），再粘贴密钥。", "error");
+      } else {
+        showToast(`保存失败：${error?.message ?? "未知错误"}`, "error");
+      }
+      return false;
     }
   }
 
@@ -73,16 +84,18 @@ export function createModelSettingsPage(ctx = {}) {
       if (!res.ok) throw new Error(data?.message ?? `HTTP ${res.status}`);
       await refresh();
       onChanged();
+      return true;
     } catch (error) {
       // 保存失败：保留当前状态并 toast，不刷新（避免用旧数据覆盖新状态）。
       showToast(`保存失败：${error?.message ?? "未知错误"}`, "error");
+      return false;
     }
   }
 
   // 删除供应商：二次确认后才发 POST .../remove（同时删除其下全部模型）。
   // 成功后 refresh 重拉列表，被删供应商随 buildPageState 从列表移除。
   async function removeProviderWithConfirm(id) {
-    const ok = (ctx.confirmImpl ?? globalThis.confirm)("删除供应商将同时删除其下全部模型，此操作不可撤销");
+    const ok = confirmImpl("删除供应商将同时删除其下全部模型，此操作不可撤销");
     if (!ok) return false;
     try {
       const res = await fetchImpl(`${API_BASE}/${id}/remove`, {
@@ -194,13 +207,20 @@ export function createModelSettingsPage(ctx = {}) {
     const keyInput = el("input", { type: "password", value: "", "data-field": "api_key", placeholder: "粘贴密钥或填环境变量名" });
     // 双模式：形如环境变量名（字母/数字/下划线且非数字开头，与后端校验一致）→
     // 保存 api_key_env；否则视为粘贴的明文密钥 → api_key（后端落 secrets.json，
-    // 响应不含明文）。明文保存后清空输入框，避免密钥滞留 DOM。
-    keyInput.addEventListener("change", () => {
+    // 响应不含明文）。
+    keyInput.addEventListener("change", async () => {
       const value = keyInput.value.trim();
       if (!value) return;
-      const isEnvName = /^[A-Za-z_][A-Za-z0-9_]*$/u.test(value);
-      saveProviderPatch(provider.id, isEnvName ? { api_key_env: value } : { api_key: value });
-      if (!isEnvName) keyInput.value = "";
+      // 契约：后端仅把密钥写入已有 api_key_env 对应的 bucket；无环境变量名的供应商
+      // 直接粘贴明文密钥会 400（toast 提示「请先填写 API 密钥环境变量名。」），
+      // 应先保存环境变量名再粘贴密钥。Task 15 的添加供应商表单会把环境变量名作为必填项。
+      const isEnvName = isEnvironmentVariableName(value);
+      if (isEnvName) {
+        saveProviderPatch(provider.id, { api_key_env: value });
+        return; // 环境变量名模式保留输入值
+      }
+      // 明文密钥：保存成功后才清空回显，避免失败时丢失已键入的密钥。
+      if (await saveProviderPatch(provider.id, { api_key: value })) keyInput.value = "";
     });
     const eye = el("button", { type: "button", title: "显示/隐藏密钥", text: "👁" });
     eye.addEventListener("click", () => {
