@@ -98,6 +98,7 @@ function normalizeModel(value) {
 function stringValue(v) { return typeof v === "string" && v.trim() ? v.trim() : ""; }
 function positiveInt(v) { const n = Number(v); return Number.isInteger(n) && n > 0 ? n : null; }
 
+// 写入口：本函数仅落盘、不含互斥。锁契约见 loadProviderStore 注释。
 export async function saveProviderStore(root, store) {
   await ensureDir(path.resolve(root));
   await writeJsonAtomic(storePath(root), store);
@@ -114,6 +115,8 @@ async function withStoreLock(root, fn) {
   });
 }
 
+// 读-改-写必须走带锁写入口（upsertProvider/removeProvider/upsertModel/removeModel/setDefaultModel），
+// 外部直接 load + save 会绕过互斥，并发写方可能互相覆盖。
 export async function loadProviderStore(root) {
   let raw;
   try {
@@ -135,11 +138,20 @@ export async function upsertProvider(root, input) {
     if (!provider) {
       throw new Error("invalid_provider: 供应商配置无效（mock 不允许入清单，api_format 仅支持 openai-chat-completions）");
     }
+    const existing = store.providers.find((p) => p.id === provider.id);
+    if (existing && input?.models === undefined) {
+      // 字段级更新：未显式携带 models 时保留既有模型，避免整包替换把模型清空
+      provider.models = existing.models;
+    }
     const others = store.providers.filter((p) => p.id !== provider.id);
     if (others.some((p) => p.name === provider.name)) {
       throw new Error("duplicate_provider_name: 供应商名称已存在");
     }
-    const next = { ...store, providers: [provider, ...others] };
+    // 已存在则原位替换（保持列表顺序），仅新供应商才放表头
+    const providers = existing
+      ? store.providers.map((p) => (p.id === provider.id ? provider : p))
+      : [provider, ...others];
+    const next = { ...store, providers };
     return { provider, store: next };
   });
 }
@@ -148,6 +160,7 @@ export async function removeProvider(root, providerId) {
   return withStoreLock(root, (store) => {
     const providers = store.providers.filter((p) => p.id !== providerId);
     const removed = providers.length !== store.providers.length;
+    if (!removed) return { removed: false, store: null }; // 无变化不落盘
     const next = { ...store, providers };
     if (next.default_model?.provider_id === providerId) next.default_model = null;
     return { removed, store: next };
@@ -173,10 +186,14 @@ export async function removeModel(root, providerId, modelId) {
     if (!provider) throw new Error("provider_not_found");
     const models = provider.models.filter((m) => m.id !== modelId);
     const removed = models.length !== provider.models.length;
+    if (!removed) return { removed: false, store: null }; // 无变化不落盘
     const nextProvider = { ...provider, models, updated_at: new Date().toISOString() };
     const providers = store.providers.map((p) => (p.id === providerId ? nextProvider : p));
     const next = { ...store, providers };
-    if (next.default_model?.model_id === modelId) next.default_model = null;
+    // model id 是供应商局部的，须同时匹配 provider_id 才清默认指针
+    if (next.default_model?.provider_id === providerId && next.default_model.model_id === modelId) {
+      next.default_model = null;
+    }
     return { removed, store: next };
   });
 }
