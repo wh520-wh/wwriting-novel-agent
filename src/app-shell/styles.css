@@ -1182,6 +1182,96 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 
 /* ============================================================
+   Model settings page（Task 12）：全屏 overlay，替代设置弹窗模型分区。
+   层级：抽屉（scrim 40 / drawer 50）与设置弹窗（100）之下打开即被本页盖住，
+   故从抽屉进入时 app.js 先 closeDrawer()；toast（120）保持最顶可见。
+   ============================================================ */
+.model-settings-page {
+  position: fixed; inset: 0; z-index: 110;
+  background: var(--surface);
+  display: grid; grid-template-rows: auto minmax(0, 1fr);
+  padding: 26px 30px;
+  overflow: auto;
+}
+
+/* hidden 走 display:none，防止 display:grid 覆盖 hidden 默认样式导致首屏可见 */
+.model-settings-page[hidden] { display: none; }
+
+.model-settings-page header {
+  display: flex; align-items: center; gap: 14px;
+  padding-bottom: 14px; margin-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.model-settings-page header h1 { font-size: 17px; font-weight: 680; color: var(--ink); }
+
+.model-settings-page header p { flex: 1; font-size: 12.5px; color: var(--muted); }
+
+.model-settings-body {
+  display: grid; grid-template-columns: 280px minmax(0, 1fr);
+  gap: 20px; min-height: 0; align-items: start;
+}
+
+/* left pane：供应商列表 */
+.model-settings-body aside {
+  display: grid; gap: 4px; align-content: start;
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: var(--r-lg); padding: 12px 10px;
+}
+
+.model-settings-body aside h3 { font-size: 13px; font-weight: 650; color: var(--ink-2); padding: 4px 8px 8px; }
+
+.provider-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 10px; border-radius: var(--r);
+  border: 1px solid transparent; cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+
+.provider-item:hover { background: var(--hover); }
+
+.provider-item.selected { background: var(--surface); border-color: var(--line); box-shadow: var(--shadow-xs); }
+
+.status-dot { width: 8px; height: 8px; border-radius: 99px; background: var(--red); }
+
+.status-dot.on { background: var(--green); }
+
+.add-provider {
+  margin-top: 6px; height: 32px; border-radius: var(--r);
+  border: 1px dashed var(--line); background: transparent;
+  color: var(--ink-2); font-size: 12.5px; font-weight: 600;
+}
+
+.add-provider:hover:not(:disabled) { border-color: var(--accent-line); color: var(--accent); }
+
+/* right pane：供应商详情（骨架，Task 13-15 接管交互） */
+.model-settings-body section { min-width: 0; display: grid; gap: 10px; align-content: start; }
+
+.model-settings-body section h2 { font-size: 15px; font-weight: 680; color: var(--ink); }
+
+.model-settings-body section h4 { font-size: 13px; font-weight: 650; color: var(--ink-2); margin-top: 8px; }
+
+.model-settings-body section label { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+.model-settings-body section input,
+.model-settings-body section select {
+  height: 36px; padding: 0 10px; border: 1px solid var(--line);
+  border-radius: var(--r); background: var(--surface); color: var(--ink); font-size: 13px;
+}
+
+.model-settings-body section button[type="button"] {
+  height: 36px; padding: 0 12px; border-radius: var(--r);
+  border: 1px solid var(--line); background: var(--surface);
+  color: var(--ink-2); font-size: 13px; cursor: pointer;
+}
+
+.model-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px; border: 1px solid var(--line); border-radius: var(--r);
+}
+
+
+/* ============================================================
    Reader overlay
    ============================================================ */
 .reader-scrim {

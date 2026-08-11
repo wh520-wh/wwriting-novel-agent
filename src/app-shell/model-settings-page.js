@@ -16,35 +16,57 @@ export function buildPageState(providers, selectedId) {
 const API_BASE = "/api/settings/providers";
 
 export function createModelSettingsPage(ctx = {}) {
-  const { fetchImpl = fetch, documentRef = document, onChanged = () => {} } = ctx;
+  const { fetchImpl = fetch, documentRef = document, onChanged = () => {}, showToast = () => {} } = ctx;
   let state = { providers: [], selected: null };
 
+  // 加载失败路径：保留上一次可用状态，只 toast 不抛错——open() 随之正常 resolve，
+  // 避免 Task 13-15 挂到本页后遇到未处理拒绝（页面停在旧状态而非空着报错）。
   async function refresh() {
-    const res = await fetchImpl(`${API_BASE}`);
-    const data = await res.json();
-    state = buildPageState(data.providers, state.selected?.id ?? null);
-    render();
+    try {
+      const res = await fetchImpl(`${API_BASE}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (!Array.isArray(data?.providers)) throw new Error("响应缺少 providers 数组");
+      state = buildPageState(data.providers, state.selected?.id ?? null);
+      render();
+    } catch (error) {
+      showToast(`模型列表加载失败：${error?.message ?? "未知错误"}`, "error");
+    }
     return state;
   }
 
   async function saveProviderPatch(id, patch) {
-    await fetchImpl(`${API_BASE}/${id}`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(patch)
-    });
-    await refresh();
-    onChanged();
+    try {
+      const res = await fetchImpl(`${API_BASE}/${id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(patch)
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.message ?? `HTTP ${res.status}`);
+      await refresh();
+      onChanged();
+    } catch (error) {
+      // 保存失败：保留当前状态并 toast，不刷新（避免用旧数据覆盖新状态）。
+      showToast(`保存失败：${error?.message ?? "未知错误"}`, "error");
+    }
   }
 
   async function saveModelPatch(providerId, modelId, patch) {
-    await fetchImpl(`${API_BASE}/${providerId}/models/${modelId}`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(patch)
-    });
-    await refresh();
-    onChanged();
+    try {
+      const res = await fetchImpl(`${API_BASE}/${providerId}/models/${modelId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(patch)
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.message ?? `HTTP ${res.status}`);
+      await refresh();
+      onChanged();
+    } catch (error) {
+      // 保存失败：保留当前状态并 toast，不刷新（避免用旧数据覆盖新状态）。
+      showToast(`保存失败：${error?.message ?? "未知错误"}`, "error");
+    }
   }
 
   function el(tag, props = {}, children = []) {
@@ -52,6 +74,7 @@ export function createModelSettingsPage(ctx = {}) {
     for (const [key, value] of Object.entries(props)) {
       if (key === "text") node.textContent = value;
       else if (key === "class") node.className = value;
+      else if (key === "value") node.value = value; // value 走 property 而非 setAttribute：保住用户已键入的值
       else node.setAttribute(key, value);
     }
     for (const child of children) {
@@ -75,7 +98,7 @@ export function createModelSettingsPage(ctx = {}) {
       });
       container.append(item);
     }
-    container.append(el("button", { class: "add-provider", text: "+ 添加供应商" }));
+    container.append(el("button", { class: "add-provider", type: "button", disabled: true, title: "Task 13-15 实现", text: "+ 添加供应商" }));
   }
 
   function renderDetail(container) {
@@ -101,7 +124,7 @@ export function createModelSettingsPage(ctx = {}) {
     container.append(formatSelect);
     container.append(el("label", { text: "API 密钥" }));
     const keyInput = el("input", { type: "password", value: "", "data-field": "api_key", placeholder: "粘贴密钥或填环境变量名" });
-    const eye = el("button", { text: "👁" });
+    const eye = el("button", { type: "button", title: "显示/隐藏密钥", text: "👁" });
     eye.addEventListener("click", () => {
       keyInput.type = keyInput.type === "password" ? "text" : "password";
     });
@@ -111,8 +134,8 @@ export function createModelSettingsPage(ctx = {}) {
       container.append(el("div", { class: "model-row", "data-model-id": model.id }, [
         el("input", { value: model.model_name, "data-field": "model_name" }),
         el("span", { text: model.enabled === false ? "已停用" : "已启用" }),
-        el("button", { text: "测试连接" }),
-        el("button", { text: "删除" })
+        el("button", { type: "button", disabled: true, title: "Task 13-15 实现", text: "测试连接" }),
+        el("button", { type: "button", disabled: true, title: "Task 13-15 实现", text: "删除" })
       ]));
     }
   }
