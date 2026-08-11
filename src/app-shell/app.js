@@ -509,7 +509,8 @@ function renderDashboard(data) {
   const modelProfile = data.model_profile ?? {};
   refs.title.textContent = project.title ?? "未命名小说";
   const progressCopy = `已写 ${summary.completedChapters}/${summary.targetChapters} 章`;
-  refs.topbarSub.textContent = modelProfile.is_mock
+  // Task 8：未配置模型 = 无 model_name（is_mock 语义已废弃，用户面不再有 mock）。
+  refs.topbarSub.textContent = !modelProfile || !modelProfile.model_name
     ? `模型未配置 · 请在设置里选一个 · ${progressCopy}`
     : progressCopy;
 

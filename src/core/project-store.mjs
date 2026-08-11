@@ -36,19 +36,15 @@ export async function createProjectAt(projectRoot, options = {}) {
     min_words_per_chapter: options.min_words_per_chapter ?? 3000,
     target_words_per_chapter: options.target_words_per_chapter ?? 3300,
     run_mode: options.run_mode ?? "auto",
-    default_writer_model: options.default_writer_model ?? "mock-writer",
-    default_reviewer_model: options.default_reviewer_model ?? "mock-reviewer",
-    active_model: options.active_model ?? {
-      provider: "mock",
-      model_name: "mock-writer"
-    },
+    default_writer_model: options.default_writer_model ?? null,
+    default_reviewer_model: options.default_reviewer_model ?? null,
+    // 未配置模型 = active_model: null（用户面不再以 mock 作为兜底）
+    active_model: options.active_model ?? null,
     // 统一 Agent 内核计划 Rule 9：project.yaml 保存项目身份、配置与 blueprint_status；
     // .wwriting/agent/ 由 ProjectAgent 惰性创建，旧运行态文件不再创建。
     // Task 12：不再默认填充 enabled_skills（技能改为发现即生效，无启停集合）。
     blueprint_status: options.blueprint_status ?? "none",
-    stage_overrides: options.stage_overrides ?? {
-      enabled: false
-    },
+    stage_overrides: options.stage_overrides ?? null,
     output_style: options.output_style ?? "creative",
     archived_at: options.archived_at ?? null,
     tool_permissions: {

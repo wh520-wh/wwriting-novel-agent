@@ -13,6 +13,7 @@ import test from "node:test";
 import { createAppShellServer } from "../src/core/app-server.mjs";
 import { loadProject, saveProject } from "../src/core/project-store.mjs";
 import { createWorkspaceStore } from "../src/core/workspaces/store.mjs";
+import { createMockModelGateway } from "./helpers/project-agent-harness.mjs";
 
 const FETCH_BLOCKED_PORTS = new Set([
   1, 7, 9, 11, 13, 15, 17, 19, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79,
@@ -86,7 +87,9 @@ async function setupServer(options = {}) {
     staticRoot: path.resolve("src", "app-shell"),
     port: 0,
     skills,
-    ...(options.testModelConnection ? { testModelConnection: options.testModelConnection } : {})
+    ...(options.testModelConnection ? { testModelConnection: options.testModelConnection } : {}),
+    // Task 8：Agent 全链路测试注入确定性 gateway（test-only mock，不指向生产分发）。
+    ...(options.testGatewayFactory ? { testGatewayFactory: options.testGatewayFactory } : {})
   });
   const port = await listenOnFetchSafePort(server);
   return { root, projectRoot, server, port };
@@ -446,8 +449,14 @@ test("vendor 白名单：/vendor/marked.esm.js 可访问，node_modules 不整�
 // Agent HTTP 契约
 // ---------------------------------------------------------------------------
 
-test("agent input / queued / promote / snapshot 全链路（mock provider）", async () => {
-  const { projectRoot, server, port } = await setupServer();
+test("agent input / queued / promote / snapshot 全链路（test gateway）", async () => {
+  // Task 8：注入确定性 gateway（test-only mock，不经生产分发）；项目无需真实模型。
+  const { projectRoot, server, port } = await setupServer({
+    testGatewayFactory: () => createMockModelGateway({
+      script: [{ reply: { text: "任务一完成。" } }, { reply: { text: "任务二完成。" } }, { reply: { text: "全部完成。" } }],
+      delayMs: 60
+    })
+  });
   try {
     const first = await postJson(port, "/api/agent/input", { projectRoot, text: "任务一" });
     assert.equal(first.res.status, 200);
@@ -474,7 +483,12 @@ test("agent input / queued / promote / snapshot 全链路（mock provider）", a
 });
 
 test("agent stop 取消当前 Run 与排队输入", async () => {
-  const { projectRoot, server, port } = await setupServer();
+  const { projectRoot, server, port } = await setupServer({
+    testGatewayFactory: () => createMockModelGateway({
+      script: [{ reply: { text: "一" } }, { reply: { text: "二" } }, { reply: { text: "三" } }],
+      delayMs: 60
+    })
+  });
   try {
     const first = await postJson(port, "/api/agent/input", { projectRoot, text: "任务一" });
     await postJson(port, "/api/agent/input", { projectRoot, text: "任务二" });
@@ -554,7 +568,7 @@ test("模型切换写应用私有 settings 并带能力信息", async () => {
     const settings = await store.loadSettings(projectRoot);
     assert.equal(settings.active_model.model_name, "writer-large");
     const project = await loadProject(projectRoot);
-    assert.notEqual(project.active_model.model_name, "writer-large", "project.yaml 保留为回滚依据，不被改写");
+    assert.notEqual(project.active_model?.model_name, "writer-large", "project.yaml 保留为回滚依据，不被改写");
   } finally {
     await closeServer(server);
   }

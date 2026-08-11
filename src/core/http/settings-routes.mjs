@@ -52,12 +52,9 @@ export function modelConfigFromLocalProfile(profile = {}) {
 }
 
 export function providerDisplayName(activeModel = {}) {
-  const provider = activeModel?.provider ?? "mock";
+  const provider = activeModel?.provider ?? "openai-compatible";
   const baseUrl = String(activeModel?.base_url ?? "").toLowerCase();
   const envName = activeModel?.api_key_env ?? "";
-  if (provider === "mock") {
-    return "Mock";
-  }
   // 用户声明的厂商显示名（provider_label）优先——这是「已配置」列表里模型身份
   // 的权威来源（2026-08-11 新增，借鉴 WHnovel 自由 name 但结构化：展示名 =
   // 厂商名 + 模型 ID）。未声明时才回落到按真实地址推断。
@@ -91,7 +88,9 @@ function baseUrlHost(baseUrl) {
 }
 
 export function modelDisplayName(activeModel = {}) {
-  return `${providerDisplayName(activeModel)} / ${activeModel?.model_name ?? "mock-writer"}`;
+  const label = providerDisplayName(activeModel);
+  const modelName = activeModel?.model_name ?? "";
+  return modelName ? `${label} / ${modelName}` : label;
 }
 
 export function modelEndpoint(baseUrl) {
@@ -116,8 +115,37 @@ export function sameModelProfile(left = {}, right = {}) {
 }
 
 export function buildModelProfile(activeModel = {}, secretsRoot, options = {}) {
-  const provider = activeModel?.provider ?? "mock";
-  const modelName = activeModel?.model_name ?? "mock-writer";
+  // Task 8：未配置模型 = active_model null（用户面不再以 mock 兜底）。
+  // 显式 provider/model_name 之外的形状（空对象/null）一律按未配置展示，
+  // 绝不出现 "Mock" 字样。
+  const isConfigured = Boolean(
+    activeModel &&
+    typeof activeModel === "object" &&
+    !Array.isArray(activeModel) &&
+    (activeModel.model_name || activeModel.provider)
+  );
+  if (!isConfigured) {
+    return {
+      provider: null,
+      provider_label: null,
+      model_name: null,
+      base_url: "",
+      endpoint: "",
+      api_key_env: null,
+      api_key_saved: false,
+      api_key_masked: "",
+      is_mock: false,
+      display: "未配置",
+      model_label: "未配置",
+      id: options.id ?? null,
+      saved_to: options.saved_to ?? "project.yaml",
+      capabilities: null,
+      pricing: null,
+      temperature: null
+    };
+  }
+  const provider = activeModel?.provider ?? "openai-compatible";
+  const modelName = activeModel?.model_name ?? null;
   const apiKeyEnv = activeModel?.api_key_env ?? null;
   const secretValue = apiKeyEnv ? loadLocalSecretsSync(secretsRoot)[apiKeyEnv] ?? process.env[apiKeyEnv] ?? "" : "";
   return {
@@ -131,6 +159,7 @@ export function buildModelProfile(activeModel = {}, secretsRoot, options = {}) {
     api_key_masked: secretValue ? `••••${secretValue.slice(-4)}` : "",
     is_mock: provider === "mock",
     display: modelDisplayName(activeModel),
+    model_label: modelDisplayName(activeModel),
     id: options.id ?? modelName,
     saved_to: options.saved_to ?? "project.yaml",
     capabilities: resolveModelCapabilities(activeModel),

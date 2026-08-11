@@ -7,6 +7,7 @@ import { createAppShellServer } from "../src/core/app-server.mjs";
 import { loadProject, saveProject } from "../src/core/project-store.mjs";
 import { workspaceIdForPath } from "../src/core/workspaces/store.mjs";
 import { publicErrorMessage, safePublicErrorCode } from "../src/core/http-error.mjs";
+import { createMockModelGateway } from "./helpers/project-agent-harness.mjs";
 
 // —— 测试服务器小工具(对齐 tests/app-server-probe.test.mjs 的既有范式) ——
 const FETCH_BLOCKED_PORTS = new Set([
@@ -75,7 +76,7 @@ async function readChunkUntil(reader, decoder, predicate) {
   throw new Error("Timed out waiting for SSE condition");
 }
 
-async function setupServer() {
+async function setupServer(options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-body-"));
   const { createProjectAt } = await import("../src/core/project-store.mjs");
   const { projectRoot } = await createProjectAt(path.join(root, "project"), {
@@ -91,30 +92,26 @@ async function setupServer() {
     stateRoot,
     secretsRoot: path.join(root, ".secrets"),
     staticRoot: path.resolve("src", "app-shell"),
-    port: 0
+    port: 0,
+    // Task 8：Agent 链路测试注入确定性 gateway（test-only mock，不经生产分发）。
+    ...(options.testGatewayFactory ? { testGatewayFactory: options.testGatewayFactory } : {})
   });
   const port = await listenOnFetchSafePort(server);
   return { root, projectRoot, server, port, stateRoot };
 }
 
-test("模型错误 → snapshot 显示 failed Run → 修复配置后 retry 恢复同一 Run", async () => {
-  const { projectRoot, server, port } = await setupServer();
+test("模型错误 → snapshot 显示 failed Run → retry 恢复同一 Run", async () => {
+  // Task 8：注入脚本化确定性 gateway（test-only mock）——首次模型轮抛
+  // model_error（Run 失败），重试轮成功。未配置/失败模型不再回落 mock。
+  const modelError = new Error("provider outage");
+  modelError.code = "model_error";
+  const { projectRoot, server, port } = await setupServer({
+    testGatewayFactory: () => createMockModelGateway({
+      script: [{ error: modelError }, { reply: { text: "恢复成功。" } }],
+      delayMs: 60
+    })
+  });
   try {
-    // 指向不可达端口的 openai-compatible 模型（连接拒绝 → transport 错误 → run_failed）。
-    // timeout_ms/total_deadline_ms 直接写 project.yaml（设置校验已接收并透传这两个
-    // 字段——normalizeActiveModel 校验非负整数；这里直接写是便捷注入，旧 project.yaml
-    // 仍作为有效配置的兼容输入被读取）——用短期限把失败收敛控制在数秒内。
-    const project = await loadProject(projectRoot);
-    project.active_model = {
-      provider: "openai-compatible",
-      model_name: "fail-model",
-      base_url: "http://127.0.0.1:1/v1",
-      api_key_env: "FAIL_KEY",
-      timeout_ms: 800,
-      total_deadline_ms: 4000
-    };
-    await saveProject(projectRoot, project);
-
     const input = await postJson(port, "/api/agent/input", { projectRoot, text: "写第一章" });
     assert.equal(input.res.status, 200);
     assert.equal(input.data.status, "running");
@@ -129,10 +126,7 @@ test("模型错误 → snapshot 显示 failed Run → 修复配置后 retry 恢�
     const failedEvent = failed.events.find((e) => e.type === "run_failed");
     assert.ok(typeof failedEvent.payload.error === "string", "run_failed 应携带可读错误信息");
 
-    // 修复配置（换回 mock）后通过新 /api/agent/run/:runId/retry 恢复同一 Run
-    const fixed = await loadProject(projectRoot);
-    fixed.active_model = { provider: "mock", model_name: "mock-writer" };
-    await saveProject(projectRoot, fixed);
+    // 通过 /api/agent/run/:runId/retry 恢复同一 Run（gateway 第二轮成功）
     const retried = await postJson(port, `/api/agent/run/${runId}/retry`, { projectRoot });
     assert.equal(retried.res.status, 200);
     assert.equal(retried.data.ok, true);
@@ -202,7 +196,14 @@ test("运行中 submit 排队（HTTP 200 + queued），stop 收敛为 cancelled"
 // open 兜底吞掉），随后 submit 的 append 对"父路径是文件"抛 ENOTDIR → 错误路径
 // 确定性触发且存储不可重建。
 async function triggerUnreadableWorkspaceRequest() {
-  const { projectRoot, server, port, stateRoot } = await setupServer();
+  // Task 8：注入确定性 gateway（test-only mock）——首条输入必须正常完成，
+  // 才能把 journal 状态缓存进 runtime，随后破坏存储才能触发 fs 错误。
+  const { projectRoot, server, port, stateRoot } = await setupServer({
+    testGatewayFactory: () => createMockModelGateway({
+      script: [{ reply: { text: "你好！" } }, { reply: { text: "再来一条" } }],
+      delayMs: 0
+    })
+  });
   try {
     const first = await postJson(port, "/api/agent/input", { projectRoot, text: "你好" });
     assert.equal(first.res.status, 200);
@@ -233,7 +234,12 @@ test("SSE 错误事件 data 行同样脱敏：不泄露原始 fs 错误与内部
   // `error?.message`/`error?.code` 进 data 行，原始 Node fs 错误（绝对内部路径）
   // 会随 data: 离开服务器。这里把 events segment 替换成同名目录 → journal.read 的
   // segment 读取抛原始 EISDIR（syscall=read），验证 data 行只含脱敏后的 message/code。
-  const { projectRoot, server, port, stateRoot } = await setupServer();
+  const { projectRoot, server, port, stateRoot } = await setupServer({
+    testGatewayFactory: () => createMockModelGateway({
+      script: [{ reply: { text: "你好！" } }],
+      delayMs: 0
+    })
+  });
   const controller = new AbortController();
   try {
     const first = await postJson(port, "/api/agent/input", { projectRoot, text: "你好" });

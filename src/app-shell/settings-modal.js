@@ -301,9 +301,13 @@ export function createSettingsModal(ctx, options = {}) {
 
   function renderSectionBody() {
     if (settingsSection === "model") {
-      renderModelSection();
-      ctx.refs.settingsSave.disabled = false;
-      ctx.refs.settingsSave.textContent = "保存设置";
+      // Task 8 过渡期：模型配置迁往新的供应商管理页面（Task 12 建新页并改入口）。
+      // 旧弹窗模型区块改为只读占位，不再渲染模型表单 / 已配置清单 / 测试连接，
+      // 保存按钮禁用。detectProviderPreset、saveModelSection、renderSettingsDetail
+      // 等模型区块代码保留到 cutover 统一删除，此处不再被调用。
+      renderModelMigrationPlaceholder();
+      ctx.refs.settingsSave.disabled = true;
+      ctx.refs.settingsSave.textContent = "无需保存";
       return;
     }
     if (settingsSection === "writing") {
@@ -342,6 +346,26 @@ export function createSettingsModal(ctx, options = {}) {
   function renderModelSection() {
     renderSettingsProviders();
     renderSettingsDetail();
+  }
+
+  // Task 8 过渡期：旧弹窗模型区块的只读占位。清空右侧详情与左侧模型清单，
+  // 只显示迁移提示（新供应商管理页面由 Task 12 建立并改入口）。
+  function renderModelMigrationPlaceholder() {
+    ctx.refs.settingsDetail.replaceChildren();
+    ctx.refs.settingsProviderList.replaceChildren();
+    const head = document.createElement("header");
+    head.className = "spd-head";
+    const ic = document.createElement("span");
+    ic.className = "spd-av lg";
+    ic.append(icon("settings", 16));
+    const h3 = document.createElement("h3");
+    h3.textContent = "模型与密钥";
+    head.append(ic, h3);
+    ctx.refs.settingsDetail.append(head);
+    const note = document.createElement("p");
+    note.className = "spd-hint";
+    note.textContent = "模型设置已迁移到新的供应商管理页面，请点击上方“模型设置”进入";
+    ctx.refs.settingsDetail.append(note);
   }
 
   // 旧版小说项目专属分区（写作参数/项目管理）在普通文件夹（hasProject:false）
@@ -1880,6 +1904,10 @@ export function createSettingsModal(ctx, options = {}) {
   }
 
   async function saveSettings() {
+    if (settingsSection === "model") {
+      // Task 8 过渡期：模型区块为只读占位，没有可保存的表单（保存按钮已禁用）。
+      return;
+    }
     if (settingsSection === "writing") {
       await saveWritingSection();
       return;
@@ -2026,6 +2054,11 @@ export function createSettingsModal(ctx, options = {}) {
   function resetToCustom() {
     settingsProviderId = "custom";
     ctx.refs.settingsSearch.value = "";
+    // Task 8 过渡期：模型区块为只读占位，「新增供应商」入口不再渲染模型表单。
+    if (settingsSection === "model") {
+      renderSectionBody();
+      return;
+    }
     renderSettingsProviders();
     renderSettingsDetail();
   }

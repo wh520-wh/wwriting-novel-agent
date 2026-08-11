@@ -254,7 +254,7 @@ test("模型从 1M 切到 256k：切换动作不追加压缩事件，下一次 s
   const h = await openHarness(t, {
     project: {
       active_model: {
-        provider: "mock",
+        provider: "openai-compatible",
         model_name: "mock[1m][foo]",
         base_url: "https://api.example.com/v1",
         api_key_env: "DEEPSEEK_API_KEY"
@@ -273,7 +273,7 @@ test("模型从 1M 切到 256k：切换动作不追加压缩事件，下一次 s
   assert.equal(last.model, "mock");
 
   // 切换模型（1M → 256k）：只改 project.yaml，不追加任何 journal 事件
-  h.project.active_model = { provider: "mock", model_name: "mock" };
+  h.project.active_model = { provider: "openai-compatible", model_name: "mock" };
   await fs.writeFile(path.join(h.projectRoot, "project.yaml"), serializeSimpleYaml(h.project), "utf8");
   events = await readEvents(h.agent, h.projectRoot);
   assert.equal(eventsOfType(events, "context_usage_updated").length, 2, "切换动作本身不追加 context 事件");

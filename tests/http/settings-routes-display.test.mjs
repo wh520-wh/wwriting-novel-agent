@@ -7,6 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildModelProfile,
   modelDisplayName,
   providerDisplayName
 } from "../../src/core/http/settings-routes.mjs";
@@ -45,7 +46,10 @@ test("providerDisplayName 自定义兼容端点显示厂商名 + 主机", () => 
   );
   assert.equal(providerDisplayName({ provider: "openai-compatible" }), "openai-compatible");
   assert.equal(providerDisplayName({ provider: "openai-compatible", base_url: "not-a-url" }), "openai-compatible");
-  assert.equal(providerDisplayName({ provider: "mock" }), "Mock");
+  // Task 8：mock 不再有「Mock」展示名（用户面不出现 mock 字样；未配置展示由
+  // buildModelProfile 的未配置分支承担，provider 字面串仅作兜底透传）。
+  assert.equal(providerDisplayName({ provider: "mock" }), "mock");
+  assert.equal(providerDisplayName({ provider: "mock", model_name: "mock-writer" }), "mock");
 });
 
 test("providerDisplayName 用户声明的 provider_label 优先于任何推断（2026-08-11 新增字段）", () => {
@@ -75,4 +79,34 @@ test("modelDisplayName 拼接标签与模型名（自定义条目与官方条目
     modelDisplayName({ provider: "openai-compatible", base_url: "https://api.deepseek.com", model_name: "deepseek-v4-flash" }),
     "DeepSeek 官方 / deepseek-v4-flash"
   );
+});
+
+test("buildModelProfile 未配置（null/空对象）返回未配置形状，不出现 Mock", () => {
+  for (const unconfigured of [null, undefined, {}, { active_model: null }]) {
+    const profile = buildModelProfile(unconfigured, "C:\\fake-secrets", {});
+    assert.equal(profile.is_mock, false, "未配置不得标记 is_mock");
+    assert.equal(profile.provider, null);
+    assert.equal(profile.model_name, null);
+    assert.equal(profile.display, "未配置");
+    assert.equal(profile.model_label, "未配置");
+    assert.equal(profile.base_url, "");
+    assert.equal(profile.endpoint, "");
+    assert.equal(profile.api_key_env, null);
+    assert.equal(profile.api_key_saved, false);
+    assert.equal(profile.capabilities, null);
+  }
+  // 显式 openai-compatible 配置保持完整展示，is_mock 恒为 false。
+  const configured = buildModelProfile(
+    { provider: "openai-compatible", model_name: "deepseek-chat", base_url: "https://api.deepseek.com", api_key_env: "DEEPSEEK_API_KEY" },
+    "C:\\fake-secrets",
+    {}
+  );
+  assert.equal(configured.is_mock, false);
+  assert.equal(configured.model_name, "deepseek-chat");
+  assert.equal(configured.display, "DeepSeek 官方 / deepseek-chat");
+  // 显式 mock provider（仅测试/内部路径）保留 is_mock 标记，但展示名不带 "Mock"。
+  const mockProfile = buildModelProfile({ provider: "mock", model_name: "mock-writer" }, "C:\\fake-secrets", {});
+  assert.equal(mockProfile.is_mock, true);
+  assert.match(mockProfile.display, /^mock/u);
+  assert.doesNotMatch(mockProfile.display, /Mock/u);
 });

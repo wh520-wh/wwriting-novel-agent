@@ -27,7 +27,7 @@ import { createSettingsRoutes } from "./http/settings-routes.mjs";
 import { createProjectAgent } from "./agent/index.mjs";
 import { createWorkspaceStore } from "./workspaces/store.mjs";
 import { createModelGateway } from "./model/gateway.mjs";
-import { OpenAICompatibleAdapter } from "./model/openai-compatible.mjs";
+import { OpenAICompatibleAdapter, ProviderConfigurationError } from "./model/openai-compatible.mjs";
 import { createMockAdapter } from "./model/mock.mjs";
 import { runShellCommand } from "./shell/runtime.mjs";
 import { CostTracker } from "./cost-tracker.mjs";
@@ -249,6 +249,8 @@ async function effectiveWorkspaceConfigFor(projectRoot, { workspaceStore, secret
 }
 
 function createAppModelGateway({ resolveEffectiveConfig }) {
+  // Task 8：mock adapter 仅保留给测试/内部路径（createMockAdapter 继续导出）；
+  // 生产分发已不再指向它——未配置模型一律抛 ProviderConfigurationError。
   const mockAdapter = createMockAdapter();
   const entries = new Map(); // projectRoot -> { gateway, costTracker, lastWrittenCalls }
 
@@ -265,6 +267,9 @@ function createAppModelGateway({ resolveEffectiveConfig }) {
       //（组合根职责，长驻服务器语义）。任务 5：有效配置 = 应用私有 settings 优先
       // + 旧 project.yaml 只读兼容 + 全局默认模型兜底；不再直接读 project.yaml。
       const dispatchAdapter = {
+        // Task 8：未配置模型 = active_model null，绝不自动回落 mock。有效配置读取
+        // 失败同样视为未配置（宁可报配置错误，也不静默走假模型）。mock 分发已删除，
+        // 用户面任何位置都不再出现 mock。
         async complete(request, { signal } = {}) {
           let active = null;
           try {
@@ -273,18 +278,17 @@ function createAppModelGateway({ resolveEffectiveConfig }) {
               ? effective.active_model
               : null;
           } catch {
-            // 有效配置读取失败：回落 mock（与旧 mock 兜底语义一致）
+            // 有效配置读取失败：视为未配置，抛配置错误（不回落 mock）
             active = null;
           }
-          const provider = typeof active?.provider === "string" ? active.provider : "mock";
-          if (provider === "openai-compatible") {
-            const adapter = new OpenAICompatibleAdapter({
-              baseUrl: active.base_url,
-              apiKeyEnv: active.api_key_env
-            });
-            return adapter.complete(request, { signal });
+          if (!active || active.provider !== "openai-compatible") {
+            throw new ProviderConfigurationError("未配置模型：请先在模型设置中选择模型。");
           }
-          return mockAdapter.complete(request, { signal });
+          const adapter = new OpenAICompatibleAdapter({
+            baseUrl: active.base_url,
+            apiKeyEnv: active.api_key_env
+          });
+          return adapter.complete(request, { signal });
         }
       };
       const gateway = createModelGateway({ adapter: dispatchAdapter, costTracker });
