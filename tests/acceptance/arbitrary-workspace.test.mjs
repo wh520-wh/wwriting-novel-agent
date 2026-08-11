@@ -350,7 +350,9 @@ test("打开旧项目即触发 .wwriting/agent journal 迁移到私有目录，�
   });
   const opened = await app.post("/api/projects/open", { projectRoot });
   assert.equal(opened.res.status, 200);
-  assert.deepEqual(opened.data, { ok: true, projectRoot }, "响应形状契约不变");
+  // 任务 6：open 响应新增 migration_notice（本次迁移实际发生才为 true）。此夹具目录
+  // 无 project.yaml/私有 settings 快照 → 恒为 false，形状契约其余字段不变。
+  assert.deepEqual(opened.data, { ok: true, projectRoot, migration_notice: false }, "响应形状契约不变");
 
   // Task 4 迁移确定性：open() 即完成旧 flat 数据的收养——workspaceMigrator 把
   // .wwriting/agent 的单文件旧数据复制到私有目录根，随后

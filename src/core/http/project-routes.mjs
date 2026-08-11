@@ -41,6 +41,7 @@ import { loadConfigLayers } from "../config-runtime.mjs";
 import { createResearchAdapter } from "../research-adapters.mjs";
 import { fetchWebPage, searchWeb } from "../research-tools.mjs";
 import { loadProject, createProjectAt } from "../project-store.mjs";
+import { migrateProjectFile } from "../project-model-migration.mjs";
 import { migrateLegacyProject } from "../workspaces/migration.mjs";
 import { loadProjectDiagnostics } from "../project-diagnostics.mjs";
 import { isPathInside } from "../fs-utils.mjs";
@@ -273,7 +274,11 @@ export function createProjectRoutes({
         workspaceStore
       });
       if (data?.hasProject) {
-        data.model_profile = buildModelProfile(data.project?.active_model, secretsRoot);
+        // 任务 6：迁移后 active_model 可为 null（mock 归零/未配置模型）。buildModelProfile
+        // 的缺省参数只覆盖 undefined；归一化 null → {} 避免能力解析在 null 上崩溃
+        //（resolveModelCapabilities 的 matcher 直接读 base_url），展示回退 Mock——与旧
+        // mock 快照的展示一致（用户面清除属 Task 8）。
+        data.model_profile = buildModelProfile(data.project?.active_model ?? {}, secretsRoot);
         data.available_models = await buildAvailableModelProfiles(secretsRoot, data.project?.active_model);
       }
       return data;
@@ -312,6 +317,11 @@ export function createProjectRoutes({
         selectedRef.current = projectRoot;
         await rememberProject(projectRoot);
         await migrateLegacyProjectOnOpen(projectRoot);
+        // 任务 6：打开即迁移 project.yaml/私有 settings 快照→引用（mock 归零、匹配
+        // 清单转引用；幂等——第二次打开已迁移完 → changed=false）。迁移失败不阻断打开；
+        // migration_notice 仅本次响应透出（前端据此弹「旧配置已升级」toast）。
+        const migrated = await migrateProjectFile(projectRoot, { workspaceStore, secretsRoot })
+          .catch(() => ({ changed: false }));
         // 计划修复（整支审阅）：打开即触发 Agent 侧 open 序列（旧 .wwriting/agent 迁移 →
         // journal.load → legacy 导入 → 崩溃恢复），与 project.yaml 迁移同一时机。幂等
         //（target_not_empty 守卫 / legacy 标记 / startLoop 复用），失败不阻断打开。
@@ -322,7 +332,7 @@ export function createProjectRoutes({
             console.warn("[project-routes] agent open 失败（不影响聊天）:", error?.message ?? String(error));
           }
         }
-        return { ok: true, projectRoot };
+        return { ok: true, projectRoot, migration_notice: migrated.changed };
       } catch (error) {
         throw error instanceof HttpError ? error : new HttpError(400, "project_open_failed", error?.message ?? String(error));
       }

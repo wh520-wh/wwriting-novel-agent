@@ -37,6 +37,7 @@ import { loadEffectiveWorkspaceConfig } from "./config-runtime.mjs";
 import { loadProviderStore } from "./model-provider-store.mjs";
 import { testModelConnection as runModelConnectionTest } from "./model-connection-test.mjs";
 import { loadDashboardData } from "./app-dashboard.mjs";
+import { migrateProjectFile } from "./project-model-migration.mjs";
 
 export function createAppShellServer({
   workspaceRoot = path.resolve("."),
@@ -72,7 +73,10 @@ export function createAppShellServer({
       agent,
       // Task 1：dashboard 读路径与写路径同源——注入应用私有 workspaceStore，
       // loadDashboardData 用 loadEffectiveWorkspaceConfig 覆盖 effective config。
-      workspaceStore
+      workspaceStore,
+      // Task 6（模型迁移）：dashboard 读路径触发快照→引用迁移 + migration_notice
+      // 透出；loadDashboardData 只有注入 secretsRoot 才产生迁移写盘。
+      secretsRoot: localSecretsRoot
     }));
   const connectionTester = testModelConnection ?? runModelConnectionTest ?? null;
   applyLocalSecretsToEnv(loadLocalSecretsSync(localSecretsRoot));
@@ -86,6 +90,21 @@ export function createAppShellServer({
     if (lastProjectRoot && existsSync(lastProjectRoot)) {
       selection.current = lastProjectRoot;
     }
+  }
+
+  // 任务 6：启动自动恢复路径同样迁移 project.yaml/私有 settings 快照→引用（一次性、
+  // 幂等；mock 归零、匹配全局清单转引用、其余保持字面）。createAppShellServer 是
+  // 同步工厂，不能在此 await；也刻意不预先在后台跑——后台写会与项目目录的直接读写
+  //（测试/外部进程）竞态。迁移挂到首屏请求（GET /，Electron 启动必 loadURL）上首次
+  // 触发并等待完成，保证首屏渲染前 project.yaml 已是引用形态。dashboard/open 响应
+  // 路径各自触发迁移（带 migration_notice 透出），重复触发幂等无害。
+  let startupModelMigration = null;
+  if (selection.current) {
+    startupModelMigration = () =>
+      migrateProjectFile(selection.current, {
+        workspaceStore,
+        secretsRoot: localSecretsRoot
+      }).catch(() => {});
   }
 
   // 脱敏密钥清单：本地 secrets 的所有值（命令/输出/事件脱敏用）。
@@ -174,6 +193,8 @@ export function createAppShellServer({
     const url = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
     if (url.pathname === "/") {
       // 打开应用首页即触发一次同步：界面渲染前 project.yaml 已是全局最新配置。
+      // 任务 6：先完成启动自动恢复路径的快照→引用迁移（见 selection 恢复块注释）。
+      if (startupModelMigration) await startupModelMigration();
       await syncProjectModelFromGlobalSafe(selection.current, localSecretsRoot);
     }
     if (url.pathname.startsWith("/api/")) {
