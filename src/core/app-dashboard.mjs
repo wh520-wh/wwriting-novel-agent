@@ -94,7 +94,7 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
       // 任务 6：迁移后 active_model 为引用形态，注入 modelStoreLoader 解析为完整
       // 配置（provider/model_name/base_url），保证 dashboard 展示字段在迁移后不退化。
       // 与组合根运行时同一解析源，但走只读加载——dashboard 是读路径，不触发
-      // model-profiles.json 的 v1→v2 写回（该文件同时被 Task 7 才删除的旧读路径用）。
+      // model-profiles.json 的 v1→v2 写回（该文件仍被 v1 save/remove/select 路径读取）。
       ...(options.secretsRoot
         ? { modelStoreLoader: () => loadProviderStoreReadOnly(options.secretsRoot) }
         : {})
