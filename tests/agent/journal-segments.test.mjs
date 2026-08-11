@@ -594,3 +594,56 @@ test("Task 5 startGeneration 共享 manifest：双流以同一 oldGenerationId �
   await transcriptStore.append(transcriptRecords(1, 1));
   assert.deepEqual((await transcriptStore.readTail({ limit: 10 })).events.map((r) => r.transcript_seq), [1]);
 });
+
+// ---------------------------------------------------------------------------
+// 回归（2026-08-11）：活动段索引滞后于文件尾部（崩溃窗口）且 offsets 有缺口时，
+// load 必须从文件真实尾部校正 count/endSeq（事件 JSONL 是真相、索引是派生数据），
+// append 才能从真实尾部续接。旧公式 (offsets.length-1)*indexStride + records.length
+// 在 offsets 缺项时少算一个 stride 块，load 后 lastSeq 偏小 → append 报
+// 「seq 缺口：应为 <偏小值>，实际 <真实值>」。
+// ---------------------------------------------------------------------------
+test("回归·索引滞后且有 offsets 缺口时 load 校正真实尾部并续接 append", async (t) => {
+  const root = await makeRoot(t);
+  const eventsRoot = path.join(root, "events");
+  const storeOpts = {
+    root: eventsRoot,
+    streamName: "events",
+    maxSegmentRecords: 100000,
+    maxSegmentBytes: 100 * 1024 * 1024,
+    indexStride: 4
+  };
+  const store = createJournalSegmentStore(storeOpts);
+  await store.load();
+  await store.append(events(1, 12)); // 真实尾部 12；offsets 记录在 seq 1/5/9
+
+  // 模拟崩溃窗口：索引只保留首尾两个 offset（制造缺口），end_seq/count/bytes
+  // 回退到只反映前 8 条；manifest 同样滞后。
+  const indexPath = path.join(eventsRoot, "00000001.index.json");
+  const realIndex = JSON.parse(await fs.readFile(indexPath, "utf8"));
+  const staleIndex = {
+    ...realIndex,
+    offsets: [realIndex.offsets[0], realIndex.offsets[2]], // 跳过 seq 5 的 offset
+    end_seq: 8,
+    event_count: 8,
+    bytes: realIndex.offsets[2].byte
+  };
+  await fs.writeFile(indexPath, JSON.stringify(staleIndex, null, 2) + "\n", "utf8");
+  const manifestPath = path.join(root, "journal-manifest.json");
+  const realManifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+  await fs.writeFile(manifestPath, JSON.stringify({ ...realManifest, last_event_seq: 8 }, null, 2) + "\n", "utf8");
+
+  // 新实例：load 必须校正到真实尾部 12 条，append 从 13 续接。
+  const store2 = createJournalSegmentStore(storeOpts);
+  await store2.load();
+  const before = await store2.readTail({ limit: 100 });
+  assert.equal(before.events.length, 12, "load 后应读到全部 12 条（尾部被校正）");
+  await store2.append([
+    { schema_version: 2, seq: 13, event_id: "evt-13", session_id: "sess-1", type: "input_queued" }
+  ]);
+  const after = await store2.readTail({ limit: 100 });
+  assert.deepEqual(
+    after.events.map((e) => e.seq),
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
+    "append 应从真实尾部（seq 13）续接，不报缺口"
+  );
+});

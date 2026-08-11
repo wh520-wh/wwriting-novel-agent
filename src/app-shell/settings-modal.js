@@ -1839,13 +1839,17 @@ export function createSettingsModal(ctx, options = {}) {
   }
 
   function detectProviderPreset(activeModel = {}) {
-    const baseUrl = activeModel.base_url ?? "";
+    const baseUrl = String(activeModel.base_url ?? "").toLowerCase();
     const envName = activeModel.api_key_env ?? "";
-    const modelName = activeModel.model_name ?? "";
-    if (baseUrl === PROVIDER_PRESETS.deepseek.baseUrl || envName === PROVIDER_PRESETS.deepseek.apiKeyEnv || modelName.startsWith("deepseek-")) {
+    // 与 providerDisplayName 同口径：官方预设只看真实地址（包含匹配，兼容 /v1 与
+    // 大小写变体）或官方密钥槽，不凭 model_name 前缀猜。第三方中转上挂 deepseek-/
+    // mimo- 名号的模型应落在「自定义」tab，设置弹窗才能回填它自己的 base_url/密钥槽
+    // （2026-08-11 修复：此前 opencode.ai 的 deepseek-v4-flash 被误判成官方预设，
+    // 弹窗开错 tab、表单回填错位，用户看不出自定义条目已保存）。
+    if (baseUrl.includes("api.deepseek.com") || envName === PROVIDER_PRESETS.deepseek.apiKeyEnv) {
       return "deepseek";
     }
-    if (baseUrl === PROVIDER_PRESETS.mimo.baseUrl || envName === PROVIDER_PRESETS.mimo.apiKeyEnv || modelName.startsWith("mimo-")) {
+    if (baseUrl.includes("xiaomimimo.com") || envName === PROVIDER_PRESETS.mimo.apiKeyEnv) {
       return "mimo";
     }
     return "custom";

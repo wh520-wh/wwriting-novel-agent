@@ -2254,3 +2254,60 @@ test("锚定重放·压缩 cancelled 崩溃窗口：cancelled 已落盘而收敛
   assert.equal(session.compaction.pending_input_id, "in-1");
   assert.equal((await j2.read({})).filter((event) => event.type === "run_interrupted").length, 0);
 });
+
+// ---------------------------------------------------------------------------
+// 回归（2026-08-11）：跨实例重建 journal 后，首个常规 append 不得把外部会话 id
+// 重盖为 event_id（旧实现用「首次调用返回 sessionId」的 idFactory 闭包，journal
+// 实例在进程重启/重新物化后重建时重复盖章，event_id 撞已有事件 → 该会话从此
+// 无法重放，submit 报 INTERNAL_ERROR）。对齐改由 initialSessionId 显式承担，
+// event_id 恒走随机 idFactory。
+// ---------------------------------------------------------------------------
+
+test("回归·initialSessionId 对齐只用于 session_created；跨实例 append 不产生重复 event_id", async (t) => {
+  const root = await makeWorkspace(t);
+  const clock = createClock();
+  const storageRoot = agentDir(root);
+  const sessionId = "sess-abc-1234";
+  // 每实例唯一前缀的确定性 id：模拟生产随机 UUID 跨实例不碰撞（旧实现是魔法
+  // 闭包把每个实例的首个 append 盖成外部 id，与 id 生成器本身无关）。
+  let instanceSeq = 0;
+  const uniqueIds = () => {
+    const prefix = `i${(instanceSeq += 1)}-`;
+    let n = 0;
+    return () => `${prefix}${(n += 1)}`;
+  };
+
+  // 实例 A：空 journal 首次物化 → session_created 的 session_id 对齐外部 id；
+  // 首个常规 append 的 event_id 是生成器值，绝不是外部 id。
+  const jA = createAgentJournal({ projectRoot: root, storageRoot, clock, idFactory: uniqueIds(), initialSessionId: sessionId });
+  await jA.load();
+  const created = (await jA.read({})).find((event) => event.type === "session_created");
+  assert.equal(created.session_id, sessionId, "session_created 的 session_id 必须对齐 initialSessionId");
+  assert.notEqual(created.event_id, sessionId, "session_created 的 event_id 不得等于外部会话 id");
+  await jA.append({ type: "input_queued", payload: { input_id: "in-1", text: "一" } });
+  await jA.append({ type: "run_started", run_id: "run-1", payload: { workflow: "general", input_id: "in-1" } });
+
+  // 实例 B/C：模拟进程重启/重新物化——每次重建 journal 实例后都追加新事件。
+  // 旧实现的魔法闭包会让每个实例的首个 append（含 load 期的 dangling 恢复事件）
+  // 再次拿到 event_id=sessionId，两次之后 journal 重放必撞唯一性校验。
+  for (let i = 0; i < 2; i += 1) {
+    const jNext = createAgentJournal({ projectRoot: root, storageRoot, clock, idFactory: uniqueIds(), initialSessionId: sessionId });
+    await jNext.load();
+    await jNext.append({ type: "input_queued", payload: { input_id: `in-${i + 2}`, text: `二${i}` } });
+    await jNext.append({ type: "run_started", run_id: `run-${i + 2}`, payload: { workflow: "general", input_id: `in-${i + 2}` } });
+  }
+
+  // 实例 D：再次重建并 load——修复前会在此抛「event_id <sessionId> 重复」。
+  const jFinal = createAgentJournal({ projectRoot: root, storageRoot, clock, idFactory: uniqueIds(), initialSessionId: sessionId });
+  await assert.doesNotReject(() => jFinal.load(), "跨实例重建后 load 不得因 event_id 重复失败");
+
+  // 全量审计：没有任何事件的 event_id 等于外部会话 id，且 event_id 全局唯一。
+  const all = await jFinal.read({});
+  const eventIds = new Set();
+  for (const event of all) {
+    assert.notEqual(event.event_id, sessionId, `event_id 不得等于外部会话 id（seq ${event.seq} ${event.type}）`);
+    assert.ok(!eventIds.has(event.event_id), `event_id 必须全局唯一（seq ${event.seq} ${event.type}）`);
+    eventIds.add(event.event_id);
+  }
+  assert.equal(eventIds.size, all.length, "event_id 总数必须等于事件总数");
+});

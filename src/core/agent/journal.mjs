@@ -943,6 +943,15 @@ export function createAgentJournal({
   storageRoot = path.join(path.resolve(projectRoot), ".wwriting", "agent"),
   clock = defaultClock,
   idFactory = defaultIdFactory,
+  // 新会话（空 journal）的首次 session_created 用此 id 作为内部 session_id——
+  // 使 journal 内部 session_id 与注册表 id（外部书签）对齐。缺省为 null：
+  // 由 createFirstSession 用 idFactory() 自造（旧测试契约 id-1/id-2）。
+  // 只对「空 journal 的首次创建」生效；已有事件的 journal 永不消费该值，
+  // 其 session_id 来自事件流本身。不要把 idFactory 包装成「首次调用返回
+  // 外部 id」的闭包——那会在 journal 实例重建（重启/重新物化）后的第一个
+  // 常规 append 上重复盖同一个 event_id=外部 id，造成跨实例 event_id 重复，
+  // 使 journal 无法重放（见 runtime.mjs ensureSessionState）。
+  initialSessionId = null,
   // 会话目录轮转的"额外文件"钩子（Task 9：clearHistory 把整个旧会话收进
   // cleared-history）。journal 是轮转事务的协调者，但只负责自己的文件
   //（segments/session.json/manifest）；checkpoint store 等其它文件的所有者经
@@ -1042,8 +1051,10 @@ export function createAgentJournal({
 
   // 空 journal 的第一次锁定 load：在锁内发明 Session id 并追加 session_created。
   // 新建 generation 必须先写 manifest（store.load 已创建）再写第一条 session_created。
+  // session_id 优先用 initialSessionId（外部注册表 id 对齐契约）；事件自身的
+  // event_id 永远走普通 idFactory——绝不把外部 id 复用为 event_id。
   async function createFirstSession(side) {
-    const sessionId = idFactory(); // 契约：Session id 先于 event_id 生成（旧测试断言 id-1）
+    const sessionId = initialSessionId ?? idFactory(); // 契约：Session id 先于 event_id 生成（旧测试断言 id-1）
     const first = {
       schema_version: 1,
       seq: 1,

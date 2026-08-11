@@ -14,6 +14,8 @@
 // storageRoot 隔离，绝不触碰真实用户目录）。
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { createAgentJournal } from "../../src/core/agent/journal.mjs";
@@ -472,4 +474,51 @@ test("迁移集成：旧单流 agentRoot → open 后 sessions() 含'对话 1'�
     .then(() => true)
     .catch(() => false);
   assert.equal(sessionDirHasSegments, true, "会话数据落在 sessions/<id>/ 下");
+});
+
+// ---------------------------------------------------------------------------
+// 回归（2026-08-11）：跨 agent 实例（进程重启）重建同一会话的 journal 后，
+// 首个常规 append 不得把外部会话 id 重盖为 event_id。旧实现的「首次调用返回
+// sessionId」idFactory 闭包让每个实例重复盖章，event_id 撞已有事件 → 该会话
+// journal 无法重放，open/submit 抛 INTERNAL_ERROR（用户侧表现为「发送失败：
+// 操作未完成，请重试…」且消息从未落盘）。修复后 event_id 恒为随机值。
+// ---------------------------------------------------------------------------
+test("回归·跨 agent 实例重建会话后仍可 open/send（event_id 不得重复盖章）", async (t) => {
+  const { createProjectAgent } = await import("../../src/core/agent/index.mjs");
+  const { createWorkspaceStore } = await import("../../src/core/workspaces/store.mjs");
+  const { createProjectRoot, createMockModelGateway, waitForIdle, readEvents } = await import("../helpers/project-agent-harness.mjs");
+  const workspaceRoot = await fs.mkdtemp(path.join(process.env.TEMP ?? os.tmpdir(), "wwriting-multi-session-regression-"));
+  t.after(() => fs.rm(workspaceRoot, { recursive: true, force: true }));
+  const { projectRoot } = await createProjectRoot(workspaceRoot);
+  const store = createWorkspaceStore({ stateRoot: path.join(workspaceRoot, "user-data") });
+  const storageRoot = store.agentRootFor(projectRoot);
+
+  const makeAgent = (text) =>
+    createProjectAgent({
+      modelGateway: createMockModelGateway({ script: [{ reply: { text: "好。" } }] }),
+      agentStorageRootFor: (root) => store.agentRootFor(root)
+    });
+
+  // 连续三个「进程生命周期」：每次重建 agent（等价应用重启），各完成一轮发送。
+  for (let i = 0; i < 3; i += 1) {
+    const agent = makeAgent();
+    await agent.open({ projectRoot });
+    await agent.submit({ projectRoot, text: `第 ${i + 1} 条消息`, source: "chat" });
+    await waitForIdle(agent, projectRoot);
+  }
+
+  // 第四个实例：open + snapshot 不得因 event_id 重复而失败（修复前的崩溃点）。
+  const finalAgent = makeAgent();
+  await assert.doesNotReject(() => finalAgent.open({ projectRoot }), "跨实例重建后 open 不得抛 event_id 重复");
+  const events = await readEvents(finalAgent, projectRoot, { afterSeq: 0, limit: 100000 });
+  const sessionId = finalAgent.snapshot ? (await finalAgent.snapshot({ projectRoot, afterSeq: 0, limit: 1 })).session.session_id : null;
+  const eventIds = new Set();
+  for (const event of events) {
+    assert.ok(!eventIds.has(event.event_id), `event_id 全局唯一（seq ${event.seq} ${event.type}）`);
+    eventIds.add(event.event_id);
+    if (sessionId) assert.notEqual(event.event_id, sessionId, "event_id 不得等于会话 id");
+  }
+  assert.equal(eventIds.size, events.length);
+  assert.ok(events.length >= 6, `跨实例共追加了事件（实际 ${events.length}）`);
+  assert.ok(sessionId, "快照能读到会话");
 });

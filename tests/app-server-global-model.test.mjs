@@ -151,7 +151,7 @@ test("无项目也能保存模型：不再要求先新建小说", async () => {
     const secrets = await loadLocalSecrets(secretsRoot);
     assert.equal(secrets.DEEPSEEK_API_KEY, "sk-test-abcd1234");
     const store = await loadLocalModelProfiles(secretsRoot);
-    assert.equal(store.default_model_id, "deepseek-chat");
+    assert.equal(store.default_model_id, "deepseek-chat@https://api.deepseek.com");
   } finally {
     await closeServer(server);
   }
@@ -424,7 +424,7 @@ test("切换模型保留温度配置：project.yaml 与全局清单 temperature 
     assert.equal(init.status, 200);
     // 切换前：全局清单里的 deepseek-chat 带温度
     const storeBefore = await loadLocalModelProfiles(secretsRoot);
-    assert.equal(storeBefore.models.find((m) => m.id === "deepseek-chat").temperature, 0.7);
+    assert.equal(storeBefore.models.find((m) => m.model_name === "deepseek-chat").temperature, 0.7);
 
     // 写作中切到带温度的 deepseek-chat
     const switched = await post(port, "/api/settings/model-switch", {
@@ -438,7 +438,7 @@ test("切换模型保留温度配置：project.yaml 与全局清单 temperature 
     assert.equal(settings.active_model.temperature, 0.7);
     // 全局 model-profiles.json：对应条目 temperature 保留（不被整条替换剥掉）
     const globalStore = await loadLocalModelProfiles(secretsRoot);
-    assert.equal(globalStore.models.find((m) => m.id === "deepseek-chat").temperature, 0.7);
+    assert.equal(globalStore.models.find((m) => m.model_name === "deepseek-chat").temperature, 0.7);
   } finally {
     await closeServer(server);
   }

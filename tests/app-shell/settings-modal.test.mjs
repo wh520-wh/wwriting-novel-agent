@@ -589,6 +589,18 @@ async function clickProviderTab(text) {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+// 读取当前选中的左侧供应商 tab 名（class 含 " on" 的 sp-item 按钮的 .sp-name）。
+function activeProviderTabName() {
+  const btn = [...domRegistry].reverse().find((el) =>
+    el.tagName === "BUTTON" &&
+    String(el.className).startsWith("sp-item") &&
+    String(el.className).includes(" on")
+  );
+  if (!btn) return null;
+  const name = [...btn.children].find((c) => c.className === "sp-name");
+  return name?.textContent ?? null;
+}
+
 test("模型表单草稿：填表单后关闭，重开恢复已填字段（自定义模型场景）", async () => {
   const storage = createMockStorage();
   const modal = createSettingsModalForTest({
@@ -715,6 +727,53 @@ test("已保存模型回填的 tab 存在草稿时：重开恢复草稿（草稿
   assert.equal(modal.getModelFieldValue("model_name"), "my-custom-v2", "草稿的模型名应优先于已保存回填");
   assert.equal(modal.getModelFieldValue("base_url"), "https://api.example.com/v1");
   assert.equal(modal.getModelFieldValue("api_key"), "sk-new-key", "草稿的 key 应回填（已保存模型不会带明文 key 进表单）");
+});
+
+test("opencode.ai 上挂 deepseek- 名号的已存模型：设置打开落在自定义 tab 并回填（2026-08-11 回归）", async () => {
+  // 回归背景：providerDisplayName / detectProviderPreset 曾凭 model_name 前缀把
+  // 第三方中转的 deepseek-v4-flash 判成官方预设，设置弹窗开在官方 tab、表单回填
+  // 错位，用户在「已配置」里认不出自己的自定义条目，误以为保存未生效。
+  const modal = createSettingsModalForTest({
+    getCurrentProjectRoot: () => "",
+    getJsonImpl: async () => ({
+      ok: true,
+      default_model: {
+        id: "deepseek-v4-flash@https://opencode.ai/zen/go/v1",
+        provider: "openai-compatible",
+        model_name: "deepseek-v4-flash",
+        base_url: "https://opencode.ai/zen/go/v1",
+        api_key_env: "WWRITING_PROVIDER_API_KEY"
+      },
+      models: []
+    })
+  });
+  await modal.openSettingsModal();
+  // 打开应落在「自定义」tab（真实地址非官方端点），表单回填该自定义模型的字段。
+  assert.equal(activeProviderTabName(), "OpenAI 兼容 · 自定义");
+  assert.equal(modal.getModelFieldValue("model_name"), "deepseek-v4-flash");
+  assert.equal(modal.getModelFieldValue("base_url"), "https://opencode.ai/zen/go/v1");
+  assert.equal(modal.getModelFieldValue("api_key_env"), "WWRITING_PROVIDER_API_KEY");
+});
+
+test("官方 api.deepseek.com 的已存模型：设置打开仍落在 DeepSeek 官方 tab（官方路径不回退）", async () => {
+  const modal = createSettingsModalForTest({
+    getCurrentProjectRoot: () => "",
+    getJsonImpl: async () => ({
+      ok: true,
+      default_model: {
+        id: "deepseek-v4-flash@https://api.deepseek.com",
+        provider: "openai-compatible",
+        model_name: "deepseek-v4-flash",
+        base_url: "https://api.deepseek.com",
+        api_key_env: "DEEPSEEK_API_KEY"
+      },
+      models: []
+    })
+  });
+  await modal.openSettingsModal();
+  assert.equal(activeProviderTabName(), "DeepSeek · 深度求索");
+  assert.equal(modal.getModelFieldValue("base_url"), "https://api.deepseek.com");
+  assert.equal(modal.getModelFieldValue("api_key_env"), "DEEPSEEK_API_KEY");
 });
 
 test("草稿恢复每 tab 每会话只生效一次：切走再切回不重放", async () => {

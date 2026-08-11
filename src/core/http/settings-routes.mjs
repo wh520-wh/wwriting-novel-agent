@@ -54,19 +54,34 @@ export function modelConfigFromLocalProfile(profile = {}) {
 
 export function providerDisplayName(activeModel = {}) {
   const provider = activeModel?.provider ?? "mock";
-  const baseUrl = activeModel?.base_url ?? "";
+  const baseUrl = String(activeModel?.base_url ?? "").toLowerCase();
   const envName = activeModel?.api_key_env ?? "";
-  const modelName = activeModel?.model_name ?? "";
   if (provider === "mock") {
     return "Mock";
   }
-  if (baseUrl === "https://api.deepseek.com" || envName === "DEEPSEEK_API_KEY" || modelName.startsWith("deepseek-")) {
+  // 官方端点判定只看真实地址（包含匹配，兼容 /v1、端口与大小写变体），不凭
+  // model_name 前缀猜——第三方中转（如 opencode.ai）上挂 deepseek-/mimo- 名号的
+  // 模型不是官方，必须和官方条目在「已配置」列表里区分开（2026-08-11 修复）。
+  if (baseUrl.includes("api.deepseek.com") || envName === "DEEPSEEK_API_KEY") {
     return "DeepSeek 官方";
   }
-  if (baseUrl === "https://api.xiaomimimo.com/v1" || envName === "XIAOMI_MIMO_API_KEY" || modelName.startsWith("mimo-")) {
+  if (baseUrl.includes("xiaomimimo.com") || envName === "XIAOMI_MIMO_API_KEY") {
     return "小米 MiMo 官方";
   }
+  // 自定义兼容端点：显示厂商名 + 主机，与官方条目可区分。
+  if (provider === "openai-compatible") {
+    const host = baseUrlHost(baseUrl);
+    return host ? `OpenAI 兼容 · ${host}` : provider;
+  }
   return provider;
+}
+
+function baseUrlHost(baseUrl) {
+  try {
+    return new URL(baseUrl).host;
+  } catch {
+    return "";
+  }
 }
 
 export function modelDisplayName(activeModel = {}) {

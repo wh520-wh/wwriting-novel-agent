@@ -301,23 +301,19 @@ export function createAgentRuntime({
     let sessionState = state.sessions.get(sessionId);
     if (sessionState) return sessionState;
     const storageRoot = path.join(state.agentRoot, "sessions", sessionId);
-    let sessionIdConsumed = false;
-    const sessionJournalIdFactory = () => {
-      if (!sessionIdConsumed) {
-        sessionIdConsumed = true;
-        return sessionId;
-      }
-      return idFactory();
-    };
-    // Task 8：active context checkpoint 存储（每会话一份，与 journal 同一
-    // storageRoot：active-context.json / compaction-commit-*.json / checkpoints/
-    // 与 segments/ 同根）。先于 journal 创建：clearHistory 的会话目录轮转需要
-    // journal 经 retire/restore 钩子请 checkpoint store 自己退休/恢复其文件。
+    // 修复（2026-08-11）：不要把 idFactory 包装成「首次调用返回 sessionId」的闭包
+    // 传给 journal（旧实现）——journal 实例在进程重启/会话重新物化后重建时，首个
+    // 常规 append 会拿到 event_id=sessionId；同一会话跨实例重复盖章产生重复
+    // event_id，journal 重放时唯一性校验失败（event_id <id> 重复），该会话从此
+    // 无法加载，submit 立即报 INTERNAL_ERROR →「操作未完成」。对齐改由
+    // createAgentJournal 的 initialSessionId 显式承担（仅空 journal 的
+    // session_created 消费），event_id 恒走随机 idFactory。
     const checkpointStore = createContextCheckpointStore({ agentDir: storageRoot, idFactory });
     const journal = createAgentJournal({
       projectRoot: state.key,
       storageRoot,
-      idFactory: sessionJournalIdFactory,
+      idFactory,
+      initialSessionId: sessionId,
       retireExtraFiles: (clearedDir) => checkpointStore.retireForClear(clearedDir),
       restoreExtraFiles: (moved, clearedDir) => checkpointStore.restoreFromClear(moved, clearedDir)
     });
