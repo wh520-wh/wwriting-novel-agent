@@ -59,6 +59,36 @@ test("新建供应商 + 加模型 + 设默认 + 删除", async (t) => {
   assert.equal(removed.data.store.providers.some((p) => p.id === providerId), false);
 });
 
+test("providers model-remove：不存在供应商 404、不存在模型 404、存在则删除成功", async (t) => {
+  const { http } = await setup(t);
+  const created = await http.post("/api/settings/providers", {
+    name: "删除测试", base_url: "https://relay.example.com",
+    api_format: "openai-chat-completions", api_key_env: "DEL_KEY"
+  });
+  const providerId = created.data.provider.id;
+  const added = await http.post(`/api/settings/providers/${providerId}/models`, { model_name: "gpt-4o" });
+  const modelId = added.data.model.id;
+
+  // 不存在供应商 → 404 provider_not_found（Task 11 预守卫：store 的 removeModel 对
+  // 不存在供应商抛 bare 错误会被 wrap 原样上抛落 500，预守卫把它锁成 404）。
+  const ghost = await http.post("/api/settings/providers/pv_no_such/models/mv_whatever/remove", {});
+  assert.equal(ghost.res.status, 404);
+  assert.equal(ghost.data.code, "provider_not_found");
+
+  // 供应商存在但模型不存在 → 404 model_not_found
+  const missing = await http.post(`/api/settings/providers/${providerId}/models/mv_no_such/remove`, {});
+  assert.equal(missing.res.status, 404);
+  assert.equal(missing.data.code, "model_not_found");
+
+  // 正常删除 → 200，store 响应中该模型消失
+  const removed = await http.post(`/api/settings/providers/${providerId}/models/${modelId}/remove`, {});
+  assert.equal(removed.res.status, 200);
+  assert.equal(removed.data.ok, true);
+  const providerAfter = removed.data.store.providers.find((p) => p.id === providerId);
+  assert.equal(providerAfter.models.some((m) => m.id === modelId), false);
+  assert.equal(providerAfter.models.length, 0);
+});
+
 test("非法 api_format 保存被拒", async (t) => {
   const { http } = await setup(t);
   const res = await http.post("/api/settings/providers", {

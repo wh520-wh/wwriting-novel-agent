@@ -656,6 +656,8 @@ export function createSettingsRoutes({
         }
         // Task 11/B6：注入的 tester 直接抛 ProviderTransportError(reason="timeout")
         // 时同样映射 504（与 result.code === "request_timeout" 路径一致）。
+        // 下方两个分支对真实 tester 属防御/不可达：testModelConnection 只 return 不
+        // throw，B3 后路由自身 signal 从不中止；保留以兼容注入 tester 与未来可中止传输层。
         if (error?.reason === "timeout") {
           throw new HttpError(504, "request_timeout", "模型服务器响应超时（30 秒）");
         }
