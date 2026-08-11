@@ -165,7 +165,7 @@ test("章节导出操作使用文字按钮，不得复用固定宽度的图标�
   assert.match(stylesSource, /\.export-toolbar\s+\.small-button\s*\{[^}]*white-space:\s*nowrap/u, "导出按钮文字不得被压缩换行");
 });
 
-test("settings-modal.js re-exports the pure connection helpers", () => {
+test("settings-modal.js re-exports the pure connection helper", () => {
   const settingsModalPath = path.join(here, "..", "..", "src", "app-shell", "settings-modal.js");
   return fs.readFile(settingsModalPath, "utf8").then((settingsModalSource) => {
     assert.match(
@@ -173,24 +173,11 @@ test("settings-modal.js re-exports the pure connection helpers", () => {
       /export\s*\{[^}]*formatConnectionStatus[^}]*\}\s*from\s*["']\.\/settings-connection\.mjs["']/,
       "settings-modal.js should re-export formatConnectionStatus from ./settings-connection.mjs"
     );
-    assert.match(
+    assert.doesNotMatch(
       settingsModalSource,
-      /export\s*\{[^}]*submitModelConnectionTest[^}]*\}\s*from\s*["']\.\/settings-connection\.mjs["']/,
-      "settings-modal.js should re-export submitModelConnectionTest from ./settings-connection.mjs"
+      /export\s*\{[^}]*submitModelConnectionTest[^}]*\}\s*from\s*["']\.\/settings-connection\.mjs["']/u,
+      "Task 17 cutover：submitModelConnectionTest 不再 re-export（随模型区块删除）"
     );
-  });
-});
-
-test("settings-modal.js owns the MiMo preset autofill", () => {
-  const settingsModalPath = path.join(here, "..", "..", "src", "app-shell", "settings-modal.js");
-  return fs.readFile(settingsModalPath, "utf8").then((modalSource) => {
-    assert.match(
-      modalSource,
-      /provider:\s*"openai-compatible"[\s\S]{0,200}baseUrl:\s*"https:\/\/api\.xiaomimimo\.com\/v1"[\s\S]{0,200}apiKeyEnv:\s*"XIAOMI_MIMO_API_KEY"/u,
-      "MiMo preset must autofill provider/openai-compatible with exact base_url and api_key_env"
-    );
-    assert.match(modalSource, /XIAOMI_MIMO_API_KEY/);
-    assert.doesNotMatch(modalSource, /mimo-v2-flash/);
   });
 });
 

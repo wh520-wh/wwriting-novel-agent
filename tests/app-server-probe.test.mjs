@@ -507,26 +507,27 @@ test("agent stop 取消当前 Run 与排队输入", async () => {
 // 设置 / 模型路由
 // ---------------------------------------------------------------------------
 
-test("全局模型保存/选用/删除与连接测试注入", async () => {
+test("供应商/模型保存、列出、删除与连接测试注入（v2）", async () => {
   const { server, port } = await setupServer({
     testModelConnection: async () => ({ ok: true, provider: "openai-compatible", model_name: "probe-model", latency_ms: 10 })
   });
   try {
-    const saved = await postJson(port, "/api/settings/model-profile", {
-      active_model: {
-        provider: "openai-compatible",
-        model_name: "probe-model",
-        base_url: "https://api.probe.test/v1",
-        api_key_env: "PROBE_API_KEY",
-        api_key: "sk-probe-key"
-      }
+    const created = await postJson(port, "/api/settings/providers", {
+      name: "探测供应商",
+      base_url: "https://api.probe.test/v1",
+      api_format: "openai-chat-completions",
+      api_key_env: "PROBE_API_KEY"
     });
-    assert.equal(saved.res.status, 200);
-    assert.ok(saved.data.model_profile);
+    assert.equal(created.res.status, 200);
+    const providerId = created.data.provider.id;
 
-    const models = await getJson(port, "/api/settings/models");
-    assert.equal(models.res.status, 200);
-    assert.ok(models.data.models.some((m) => m.model_name === "probe-model"));
+    const added = await postJson(port, `/api/settings/providers/${providerId}/models`, { model_name: "probe-model" });
+    assert.equal(added.res.status, 200);
+    const modelId = added.data.model.id;
+
+    const providers = await getJson(port, "/api/settings/providers");
+    assert.equal(providers.res.status, 200);
+    assert.ok(providers.data.providers.some((p) => p.id === providerId), "新供应商应出现在清单");
 
     const tested = await postJson(port, "/api/settings/test-connection", {
       active_model: {
@@ -540,33 +541,40 @@ test("全局模型保存/选用/删除与连接测试注入", async () => {
     assert.equal(tested.res.status, 200);
     assert.equal(tested.data.ok, true);
 
-    const removed = await postJson(port, "/api/settings/model-remove", { model_id: "probe-model" });
+    const removed = await postJson(port, `/api/settings/providers/${providerId}/models/${modelId}/remove`);
     assert.equal(removed.res.status, 200);
   } finally {
     await closeServer(server);
   }
 });
 
-test("模型切换写应用私有 settings 并带能力信息", async () => {
+test("模型切换写应用私有 settings 并带能力信息（v2 引用）", async () => {
   const { root, projectRoot, server, port } = await setupServer();
   try {
-    await postJson(port, "/api/settings/model-profile", {
-      active_model: {
-        provider: "openai-compatible",
-        model_name: "writer-large",
-        base_url: "https://api.probe.test/v1",
-        api_key_env: "PROBE_API_KEY",
-        api_key: "sk-probe-key"
-      }
+    const created = await postJson(port, "/api/settings/providers", {
+      name: "writer 供应商",
+      base_url: "https://api.probe.test/v1",
+      api_format: "openai-chat-completions",
+      api_key_env: "PROBE_API_KEY"
     });
-    const switched = await postJson(port, "/api/settings/model-switch", { projectRoot, model_id: "writer-large" });
+    assert.equal(created.res.status, 200);
+    const providerId = created.data.provider.id;
+    const added = await postJson(port, `/api/settings/providers/${providerId}/models`, { model_name: "writer-large" });
+    assert.equal(added.res.status, 200);
+    const modelId = added.data.model.id;
+
+    const switched = await postJson(port, "/api/settings/model-switch", {
+      projectRoot,
+      provider_id: providerId,
+      model_id: modelId
+    });
     assert.equal(switched.res.status, 200);
-    assert.equal(switched.data.project.active_model.model_name, "writer-large");
+    assert.equal(switched.data.project.active_model.model_name, "writer-large", "project.active_model 为解析后的完整配置");
     assert.ok(switched.data.capabilities);
     // 任务 5：模型写入应用私有 workspace settings；project.yaml 不再双写（保留为回滚依据）
     const store = createWorkspaceStore({ stateRoot: path.join(root, ".state") });
     const settings = await store.loadSettings(projectRoot);
-    assert.equal(settings.active_model.model_name, "writer-large");
+    assert.deepEqual(settings.active_model, { provider_id: providerId, model_id: modelId });
     const project = await loadProject(projectRoot);
     assert.notEqual(project.active_model?.model_name, "writer-large", "project.yaml 保留为回滚依据，不被改写");
   } finally {

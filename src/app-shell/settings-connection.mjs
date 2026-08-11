@@ -16,29 +16,6 @@ export function formatConnectionStatus(result) {
   return "";
 }
 
-// POST a candidate `active_model` to `/api/settings/test-connection`. Pure: the
-// transport is injected so callers can stub it from tests. Propagates
-// AbortError when the caller cancels via `signal`.
-export async function submitModelConnectionTest({
-  postJsonImpl,
-  projectRoot,
-  active_model,
-  apiKey,
-  signal,
-} = {}) {
-  if (typeof postJsonImpl !== "function") {
-    throw new TypeError("submitModelConnectionTest requires postJsonImpl");
-  }
-  const body = {
-    projectRoot,
-    active_model: {
-      ...active_model,
-      api_key: apiKey ?? "",
-    },
-  };
-  return await postJsonImpl("/api/settings/test-connection", body, { signal });
-}
-
 // 对话模型选择器选项（Task 16）：从全局供应商清单（GET /api/settings/providers 的
 // 扁平 store）派生。只列启用供应商（status !== "disabled"）与其启用模型
 // （enabled !== false）；value = `${provider.id}/${model.id}` 引用形态，

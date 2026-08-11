@@ -42,8 +42,9 @@ test("isDeepSeekMode 缺失配置 → 否（不抛异常）", () => {
   assert.equal(isDeepSeekMode({ base_url: "https://api.deepseek.com" }), false);
 });
 
-test("isDeepSeekMode 深度等同：与 settings-modal detectProviderPreset 官方预设一致（包含匹配兼容带路径端点）", () => {
-  // settings-modal 是等号匹配；core 层按计划口径用包含匹配，官方端点是真子集
+test("isDeepSeekMode 深度等同：与 providerDisplayName 官方预设口径一致（包含匹配兼容带路径端点）", () => {
+  // 模型档案展示（settings-routes providerDisplayName）与缓存判定同口径：官方端点
+  // 判定只认真实地址（包含匹配），不凭 model_name 前缀猜
   assert.equal(isDeepSeekMode({ base_url: "https://api.deepseek.com", model_name: "deepseek-chat" }), true);
 });
 

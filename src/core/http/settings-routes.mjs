@@ -1,10 +1,11 @@
 // src/core/http/settings-routes.mjs —— 设置/模型/技能路由
-//（统一 Agent 内核计划 Task 7 Step 3）。
+//（统一 Agent 内核计划 Task 7 Step 3；Task 17 cutover 后仅保留 v2 形态）。
 //
 // 从旧 src/core/app-server.mjs 按职责提取（只读参考，不改旧文件）：settings/update、
-// test-connection、model-secret/models/model-switch/model-profile/model-select/
-// model-remove、output-styles 与 skills enable/disable/import 的 handler 逻辑迁入
-// 本模块，保持既有非 Agent HTTP 契约（响应形状、错误码与 fields 字段级标红语义）。
+// test-connection、model-switch、output-styles 与 skills enable/disable/import 的
+// handler 逻辑迁入本模块，保持既有非 Agent HTTP 契约（响应形状、错误码与 fields
+// 字段级标红语义）。Task 17 cutover 删除 v1 扁平端点（模型保存/选用/删除/清单/
+// 密钥）与 v1 存储写路径——模型保存/选用/删除改由 providers-routes（Task 10）承担。
 //
 // 本模块不创建 ModelClient、锁或 store；secretsRoot/connectionTester 由 composition
 // root 注入。能力判定使用 Task 3 新建的 model/capabilities.mjs（Task 9 将删除旧的
@@ -12,30 +13,17 @@
 //
 // 导出共享 helper 给 project-routes.mjs（模型档案展示）。
 import os from "node:os";
-import path from "node:path";
 import { HttpError } from "../http-error.mjs";
 import { loadProject } from "../project-store.mjs";
 import { loadConfigLayers, loadEffectiveWorkspaceConfig } from "../config-runtime.mjs";
 import { appendEvent } from "../event-log.mjs";
 import { loadOutputStyles } from "../output-style-loader.mjs";
 import { skillService } from "../skills/index.mjs";
-import {
-  findLocalModelProfile,
-  loadLocalModelProfiles,
-  upsertLocalModelProfile
-} from "../local-model-profiles.mjs";
 import { loadLocalSecrets, loadLocalSecretsSync } from "../local-secrets.mjs";
-import {
-  GlobalModelSettingsError,
-  removeGlobalModelProfile,
-  saveGlobalModelProfile,
-  selectGlobalModelProfile
-} from "../global-model-settings.mjs";
 import { ModelConfigValidationError, validateModelConfig } from "../model-config-validation.mjs";
 import {
   SettingsValidationError,
   normalizeSettingsPatch,
-  saveModelSettingsTransaction,
   saveWorkspaceSettings,
   updateProjectSettings
 } from "../settings-runtime.mjs";
@@ -47,11 +35,6 @@ import { resolveActiveProjectRoot, resolveReadProjectRoot, resolveWriteProjectRo
 // ---------------------------------------------------------------------------
 // 模型档案展示 helper（旧 app-server 语义保留；project-routes 复用）
 // ---------------------------------------------------------------------------
-
-export function modelConfigFromLocalProfile(profile = {}) {
-  const { id, saved_at, ...config } = profile;
-  return config;
-}
 
 export function providerDisplayName(activeModel = {}) {
   const provider = activeModel?.provider ?? "openai-compatible";
@@ -104,16 +87,6 @@ export function modelEndpoint(baseUrl) {
   } catch {
     return "";
   }
-}
-
-export function sameModelProfile(left = {}, right = {}) {
-  if (!left || !right) return false;
-  return (
-    left.provider === right.provider &&
-    left.model_name === right.model_name &&
-    (left.base_url ?? "") === (right.base_url ?? "") &&
-    (left.api_key_env ?? "") === (right.api_key_env ?? "")
-  );
 }
 
 export function buildModelProfile(activeModel = {}, secretsRoot, options = {}) {
@@ -170,46 +143,6 @@ export function buildModelProfile(activeModel = {}, secretsRoot, options = {}) {
     pricing: activeModel?.pricing ?? null,
     temperature: activeModel?.temperature ?? null
   };
-}
-
-export async function buildAvailableModelProfiles(secretsRoot, activeModel = null) {
-  const store = await loadLocalModelProfiles(secretsRoot);
-  const models = [...store.models];
-  if (
-    activeModel?.provider &&
-    activeModel?.provider !== "mock" &&
-    activeModel?.model_name &&
-    !models.some((model) => sameModelProfile(model, activeModel))
-  ) {
-    models.unshift(activeModel);
-  }
-  return models.map((model) => ({
-    ...buildModelProfile(model, secretsRoot, { id: model.id ?? model.model_name, saved_to: "model-profiles.json" }),
-    active: sameModelProfile(model, activeModel)
-  }));
-}
-
-async function globalModelListPayload(secretsRoot) {
-  const store = await loadLocalModelProfiles(secretsRoot);
-  const defaultModel = store.models.find((model) => model.id === store.default_model_id) ?? store.models[0] ?? null;
-  return {
-    default_model: defaultModel
-      ? buildModelProfile(defaultModel, secretsRoot, { id: defaultModel.id, saved_to: "model-profiles.json" })
-      : null,
-    models: await buildAvailableModelProfiles(secretsRoot, defaultModel)
-  };
-}
-
-// 字段级错误必须原样带上 fields，界面要逐个输入框标红。
-function sendGlobalModelError(error) {
-  if (error instanceof HttpError) return error;
-  if (error instanceof ModelConfigValidationError) {
-    return new HttpError(400, error.code, error.message, { fields: error.fields });
-  }
-  if (error instanceof GlobalModelSettingsError) {
-    return new HttpError(400, error.code, error.message);
-  }
-  return new HttpError(500, "global_model_save_failed", error?.message ?? "模型设置保存失败。");
 }
 
 // 技能目录名（HTTP 层兜底校验：与 seam 的 assertSafeSkillDirName 语义一致，
@@ -301,8 +234,9 @@ export function createSettingsRoutes({
       // 与 tool_permissions（保留当前有效权限）；运行时按 modelStoreLoader 解析。
       await saveWorkspaceSettings(projectRoot, { workspaceStore, activeModel: reference });
     } else {
-      // 旧组合根（未注入 workspaceStore）：引用形态写不进 project.yaml 的运行时
-      // 归一化（只认字面配置），按清单解析成字面配置写入（预任务 5 行为）。
+      // 旧组合根（未注入 workspaceStore）没有模型解析链路，无法存裸引用——按清单
+      // 解析成字面配置写入。toRequestConfig 输出含 provider_id/model_id，解析器会把
+      // 它重新解释为引用：行为与直接写引用等价（Task 16 质量审查修正注释）。
       await updateProjectSettings(projectRoot, { active_model: literal });
     }
     const effective = hasWorkspaceStore
@@ -323,52 +257,6 @@ export function createSettingsRoutes({
         tool_permissions: effective.tool_permissions ?? {}
       },
       effective_config: effective
-    };
-  }
-
-  // 旧形态模型切换（v1 model_id 兼容，cutover 时删除）：按 v1 清单 id 找到模型，
-  // 校验写作能力，写字面配置（应用私有 settings 优先，旧组合根写 project.yaml）。
-  async function switchModelLegacy({ body, projectRoot }) {
-    const modelId = String(body.model_id ?? body.modelId ?? body.model_name ?? "").trim();
-    if (!modelId) {
-      throw new HttpError(400, "invalid_model_id", "model_id is required.");
-    }
-    const profile = await findLocalModelProfile(secretsRoot, modelId);
-    if (!profile) {
-      throw new HttpError(404, "model_profile_not_found", `未找到已配置模型：${modelId}`);
-    }
-    if (!writingRequiredCapabilitiesOk(profile)) {
-      throw new HttpError(400, "model_unsupported", "该模型不支持工具调用，无法用于小说写作。");
-    }
-    const before = await assertNotArchived(projectRoot);
-    const caps = resolveModelCapabilities(profile);
-    const conflicts = [];
-    if (caps.supportsTemperature === false && before.active_model?.temperature !== undefined) {
-      conflicts.push("该模型不支持温度设置，写作温度不会生效。");
-    }
-    const nextModel = modelConfigFromLocalProfile(profile);
-    if (hasWorkspaceStore) {
-      await saveWorkspaceSettings(projectRoot, { workspaceStore, activeModel: nextModel });
-    } else {
-      await updateProjectSettings(projectRoot, { active_model: nextModel });
-    }
-    await upsertLocalModelProfile(secretsRoot, nextModel);
-    const effective = hasWorkspaceStore
-      ? await loadEffectiveWorkspaceConfig(projectRoot, { workspaceStore })
-      : (await loadConfigLayers(projectRoot, await loadProject(projectRoot))).effective;
-    return {
-      ok: true,
-      projectRoot,
-      capabilities: caps,
-      conflicts,
-      project: {
-        project_id: effective.project_id ?? null,
-        active_model: effective.active_model,
-        tool_permissions: effective.tool_permissions ?? {}
-      },
-      effective_config: effective,
-      model_profile: buildModelProfile(effective.active_model, secretsRoot),
-      available_models: await buildAvailableModelProfiles(secretsRoot, effective.active_model)
     };
   }
 
@@ -408,14 +296,6 @@ export function createSettingsRoutes({
           throw new HttpError(400, "invalid_settings_patch", "settings update requires a patch.");
         }
 
-        let result = null;
-        // 模型保存（旧契约保留：写 project.yaml + secrets + env，供未注入
-        // workspaceStore 的旧组合根使用；当前前端模型保存走 model-profile /
-        // model-switch，本路径无活跃消费者）。
-        if (activeModel) {
-          result = await saveModelSettingsTransaction({ projectRoot, secretsRoot, activeModel });
-          await upsertLocalModelProfile(secretsRoot, result.project.active_model);
-        }
         if (hasWorkspaceStore) {
           // 任务 5 Step 5：权限保存写应用私有 workspace settings（成对携带模型，
           // 旧 project.yaml 只读保留为回滚依据）。
@@ -466,9 +346,8 @@ export function createSettingsRoutes({
           project: finalProject,
           effective_config: finalEffective,
           model_profile: buildModelProfile(finalEffective.active_model, secretsRoot),
-          available_models: await buildAvailableModelProfiles(secretsRoot, finalEffective.active_model),
-          secret_saved: result?.secret_saved ?? false,
-          secret_env: result?.secret_env ?? null
+          secret_saved: false,
+          secret_env: null
         };
       } catch (error) {
         if (error instanceof ModelConfigValidationError) {
@@ -486,52 +365,12 @@ export function createSettingsRoutes({
       }
     },
 
-    // 模型密钥：请求 env 优先，缺省回落当前项目 active model 的 env。
-    "GET /api/settings/model-secret": async ({ query }) => {
-      try {
-        let envName = query.env ?? null;
-        if (!envName) {
-          const projectRoot = await resolveActiveProjectRoot(ctx);
-          const project = await loadProject(projectRoot);
-          const config = await loadConfigLayers(projectRoot, project);
-          envName = config.effective?.active_model?.api_key_env ?? null;
-        }
-        const value = envName ? loadLocalSecretsSync(secretsRoot)[envName] ?? process.env[envName] ?? "" : "";
-        return { ok: true, env: envName, value };
-      } catch (error) {
-        throw error instanceof HttpError ? error : new HttpError(400, "model_secret_failed", error?.message ?? String(error));
-      }
-    },
-
-    "GET /api/settings/models": async () => {
-      try {
-        let activeModel = null;
-        if (selectedRef.current) {
-          const projectRoot = await resolveActiveProjectRoot(ctx).catch(() => null);
-          if (projectRoot) {
-            const project = await loadProject(projectRoot).catch(() => null);
-            const config = project ? await loadConfigLayers(projectRoot, project).catch(() => null) : null;
-            activeModel = config?.effective?.active_model ?? project?.active_model ?? null;
-          }
-        }
-        const store = await loadLocalModelProfiles(secretsRoot);
-        const defaultModel = store.models.find((model) => model.id === store.default_model_id) ?? store.models[0] ?? null;
-        return {
-          ok: true,
-          default_model: defaultModel ? buildModelProfile(defaultModel, secretsRoot, { id: defaultModel.id, saved_to: "model-profiles.json" }) : null,
-          models: await buildAvailableModelProfiles(secretsRoot, activeModel)
-        };
-      } catch (error) {
-        throw error instanceof HttpError ? error : new HttpError(400, "settings_models_failed", error?.message ?? String(error));
-      }
-    },
-
     // 模型切换：写作必需能力缺失的模型在写配置前拦截（C 档）。
     // 任务 5：普通目录（无 project.yaml）同样可以切换模型；切换写入应用私有
     // workspace settings，不再写回 project.yaml（旧文件只读保留为回滚依据）。
     // Task 16：接受引用形态 { provider_id, model_id }——校验二者在 v2 清单中可用
-    // 且供应商/模型启用，然后写项目引用（应用私有 settings）；旧形态
-    // { model_id: "<v1 id>" } 保持原字面写路径，到 cutover（Task 17）删除。
+    // 且供应商/模型启用，然后写项目引用（应用私有 settings）。Task 17 cutover 后
+    // 只接受引用形态，旧 { model_id } 形态由 400 invalid_model_reference 拒绝。
     "POST /api/settings/model-switch": async ({ body }) => {
       try {
         const projectRoot = await resolveWriteProjectRoot({
@@ -541,68 +380,9 @@ export function createSettingsRoutes({
           workspace: ctx.workspace,
           stateRoot: ctx.stateRoot
         });
-        // 引用形态以 provider_id 为标志（旧形态永不携带）；model_id 缺失由
-        // switchModelByReference 内部校验。
-        if (body?.provider_id != null) {
-          return await switchModelByReference({ body, projectRoot });
-        }
-        return await switchModelLegacy({ body, projectRoot });
+        return await switchModelByReference({ body, projectRoot });
       } catch (error) {
         throw error instanceof HttpError ? error : new HttpError(400, "model_switch_failed", error?.message ?? String(error));
-      }
-    },
-
-    // 保存模型到全局清单：不需要项目。api_key 只落 secrets 与 process.env。
-    "POST /api/settings/model-profile": async ({ body }) => {
-      try {
-        const candidate = body?.active_model && typeof body.active_model === "object" && !Array.isArray(body.active_model)
-          ? body.active_model
-          : null;
-        if (!candidate) {
-          throw new HttpError(400, "invalid_active_model", "请填写模型信息后再保存。");
-        }
-        const { activeModel } = await saveGlobalModelProfile({ secretsRoot, activeModel: candidate });
-        return {
-          ok: true,
-          model_profile: buildModelProfile(activeModel, secretsRoot, {
-            id: activeModel.model_name,
-            saved_to: "model-profiles.json"
-          }),
-          ...(await globalModelListPayload(secretsRoot))
-        };
-      } catch (error) {
-        throw sendGlobalModelError(error);
-      }
-    },
-
-    // 选用 / 删除共用：按 model_id 改全局清单后回最新清单。选用受写作能力门禁。
-    "POST /api/settings/model-select": async ({ body }) => {
-      try {
-        const modelId = String(body?.model_id ?? body?.modelId ?? "").trim();
-        if (!modelId) {
-          throw new HttpError(400, "invalid_model_id", "请先选择一个模型。");
-        }
-        const profile = await findLocalModelProfile(secretsRoot, modelId);
-        if (profile && !writingRequiredCapabilitiesOk(profile)) {
-          throw new HttpError(400, "model_unsupported", "该模型不支持工具调用，无法用于小说写作。");
-        }
-        await selectGlobalModelProfile(secretsRoot, modelId);
-        return { ok: true, ...(await globalModelListPayload(secretsRoot)) };
-      } catch (error) {
-        throw sendGlobalModelError(error);
-      }
-    },
-
-    "POST /api/settings/model-remove": async ({ body }) => {
-      try {
-        const modelId = String(body?.model_id ?? body?.modelId ?? "").trim();
-        if (!modelId) {
-          throw new HttpError(400, "invalid_model_id", "请先选择一个模型。");
-        }
-        await removeGlobalModelProfile(secretsRoot, modelId);
-        return { ok: true, ...(await globalModelListPayload(secretsRoot)) };
-      } catch (error) {
-        throw sendGlobalModelError(error);
       }
     },
 
