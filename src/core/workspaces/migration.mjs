@@ -251,12 +251,14 @@ export function legacySettingsImport(project) {
   return patch;
 }
 
-// 旧 active_model 只在其为“确定字段”（普通对象且含非空 model_name）时携带；
-// 不为 default_writer_model 等派生字段发明模型配置（provider 缺失时分发回退
-// mock，与旧行为一致）。
+// 旧 active_model 只在其为“确定字段”时携带：引用形态（provider_id + model_id，任务 6
+// 迁移后）直接通过；字面快照要求含非空 model_name。不为 default_writer_model 等派生
+// 字段发明模型配置（provider 缺失时分发回退 mock，与旧行为一致）。
 function legacyActiveModel(project) {
   const active = project?.active_model;
   if (!active || typeof active !== "object" || Array.isArray(active)) return null;
+  // 引用形态（provider_id + model_id）：直接通过，不做 model_name 断言
+  if (typeof active.provider_id === "string" && typeof active.model_id === "string") return { ...active };
   if (typeof active.model_name !== "string" || active.model_name.trim() === "") return null;
   return { ...active };
 }
@@ -307,9 +309,13 @@ async function verifySettingsReReadable(projectRoot, { workspaceStore, settingsP
   const reread = await workspaceStore.loadSettings(projectRoot);
   if (settingsPatch.active_model) {
     const model = reread.active_model;
-    if (!model || typeof model !== "object" || model.model_name !== settingsPatch.active_model.model_name) {
-      throw new Error("settings re-read lost active_model");
-    }
+    const patchModel = settingsPatch.active_model;
+    const same =
+      model && typeof model === "object" &&
+      (patchModel.provider_id !== undefined
+        ? model.provider_id === patchModel.provider_id && model.model_id === patchModel.model_id
+        : model.model_name === patchModel.model_name);
+    if (!same) throw new Error("settings re-read lost active_model");
   }
   for (const key of Object.keys(settingsPatch.tool_permissions ?? {})) {
     if (reread.tool_permissions?.[key] !== true) {

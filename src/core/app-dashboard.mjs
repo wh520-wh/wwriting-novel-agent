@@ -4,6 +4,7 @@ import { loadConfigLayers, loadEffectiveWorkspaceConfig } from "./config-runtime
 import { readEvents } from "./event-log.mjs";
 import { isPathInside, pathExists, readJson, safeJoin } from "./fs-utils.mjs";
 import { loadProject } from "./project-store.mjs";
+import { loadProviderStoreReadOnly, migrateProjectFile } from "./project-model-migration.mjs";
 import { inspectChapterArtifact } from "./chapter-artifact.mjs";
 import { skillService } from "./skills/index.mjs";
 
@@ -15,6 +16,10 @@ import { skillService } from "./skills/index.mjs";
 //（发现即生效，无启停集合）。
 // Task 6：可选注入 options.agent，把 agent.sessions(projectRoot) 的会话列表并入
 // 响应（前端左侧栏渲染对话列表）；未注入或调用失败 → 空列表，不阻塞 dashboard。
+// Task 6（模型迁移）：可选注入 options.secretsRoot（与 workspaceStore 成对）时，
+// 读路径触发 project.yaml/私有 settings 快照→引用迁移，并透出 migration_notice
+//（本次请求实际发生迁移才为 true）；注入 secretsRoot 时同时用 modelStoreLoader
+// 把引用解析为完整配置，保证 active_model 展示字段在迁移后不退化。
 export async function loadDashboardData(workspaceRoot, options = {}) {
   const workspace = path.resolve(workspaceRoot);
   const projectRoot = options.projectRoot
@@ -30,8 +35,24 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
       workspaceRoot: workspace,
       project: null,
       sessions: [],
-      active_session_id: null
+      active_session_id: null,
+      // 任务 6：无项目时没有可迁移的配置，恒为 false（字段稳定供前端读取）。
+      migration_notice: false
     };
+  }
+
+  // 任务 6：dashboard 读路径同样触发快照→引用迁移（幂等；mock 归零、匹配清单转引用、
+  // 其余保持字面）。仅在应用组合根注入 workspaceStore + secretsRoot 时生效——
+  // loadDashboardData 是读路径模块，未注入 secretsRoot 的测试/轻量调用不产生任何
+  // 写盘。迁移先行：本响应与后续响应读到的是引用形态，配合下方 modelStoreLoader
+  // 解析为完整配置，active_model 展示字段不退化。结果透出 migration_notice——本次
+  // 请求实际发生迁移才为 true（前端据此弹「旧配置已升级」toast，仅本次响应）。
+  let migrationNotice = false;
+  if (projectRoot && typeof options.workspaceStore?.loadSettings === "function" && options.secretsRoot) {
+    migrationNotice = (await migrateProjectFile(projectRoot, {
+      workspaceStore: options.workspaceStore,
+      secretsRoot: options.secretsRoot
+    }).catch(() => ({ changed: false }))).changed;
   }
 
   // 普通文件夹（无 project.yaml）也是合法工作区（SPEC §2.1）：应用私有 history
@@ -46,7 +67,8 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
       projectRoot,
       project: null,
       sessions: sessionData.sessions,
-      active_session_id: sessionData.active_session_id
+      active_session_id: sessionData.active_session_id,
+      migration_notice: migrationNotice
     };
   }
 
@@ -67,7 +89,16 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
   // budget_config / research_config——agent runtime 也不读 config/*.json 层。
   let effectiveWs = null;
   if (typeof options.workspaceStore?.loadSettings === "function") {
-    effectiveWs = await loadEffectiveWorkspaceConfig(projectRoot, { workspaceStore: options.workspaceStore });
+    effectiveWs = await loadEffectiveWorkspaceConfig(projectRoot, {
+      workspaceStore: options.workspaceStore,
+      // 任务 6：迁移后 active_model 为引用形态，注入 modelStoreLoader 解析为完整
+      // 配置（provider/model_name/base_url），保证 dashboard 展示字段在迁移后不退化。
+      // 与组合根运行时同一解析源，但走只读加载——dashboard 是读路径，不触发
+      // model-profiles.json 的 v1→v2 写回（该文件同时被 Task 7 才删除的旧读路径用）。
+      ...(options.secretsRoot
+        ? { modelStoreLoader: () => loadProviderStoreReadOnly(options.secretsRoot) }
+        : {})
+    });
     // 覆盖 active_model / tool_permissions 等字段（workspace settings 优先，与
     // settings-routes 合并顺序一致）；config.layers 仍由 loadConfigLayers 提供。
     config.effective = { ...config.effective, ...effectiveWs };
@@ -101,6 +132,7 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
     hasProject: true,
     workspaceRoot: workspace,
     projectRoot,
+    migration_notice: migrationNotice,
     project: {
       project_id: project.project_id,
       title: project.title,
