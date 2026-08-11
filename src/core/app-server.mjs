@@ -95,16 +95,24 @@ export function createAppShellServer({
   // 任务 6：启动自动恢复路径同样迁移 project.yaml/私有 settings 快照→引用（一次性、
   // 幂等；mock 归零、匹配全局清单转引用、其余保持字面）。createAppShellServer 是
   // 同步工厂，不能在此 await；也刻意不预先在后台跑——后台写会与项目目录的直接读写
-  //（测试/外部进程）竞态。迁移挂到首屏请求（GET /，Electron 启动必 loadURL）上首次
-  // 触发并等待完成，保证首屏渲染前 project.yaml 已是引用形态。dashboard/open 响应
-  // 路径各自触发迁移（带 migration_notice 透出），重复触发幂等无害。
+  //（测试/外部进程）竞态。迁移挂到首屏请求（GET /，Electron 启动必 loadURL）上，
+  // 首次请求时执行一次并等待完成，保证首屏渲染前 project.yaml 已是引用形态；
+  // 后续请求由下方 once 标记跳过（幂等，省去冗余读盘）。dashboard/open 响应路径
+  // 各自触发迁移（带 migration_notice 透出），重复触发幂等无害。
   let startupModelMigration = null;
+  let startupMigrationRan = false;
   if (selection.current) {
-    startupModelMigration = () =>
-      migrateProjectFile(selection.current, {
+    // once 标记：GET / 每次进来都会调用本闭包，但迁移只应执行一次。check-then-set
+    // 同步完成，并发首屏请求也不会重复执行；失败不重试（dashboard/open 路径随后
+    // 仍会各自触发迁移）。
+    startupModelMigration = () => {
+      if (startupMigrationRan) return Promise.resolve();
+      startupMigrationRan = true;
+      return migrateProjectFile(selection.current, {
         workspaceStore,
         secretsRoot: localSecretsRoot
       }).catch(() => {});
+    };
   }
 
   // 脱敏密钥清单：本地 secrets 的所有值（命令/输出/事件脱敏用）。

@@ -1,7 +1,11 @@
 // tests/model-project-migration.test.mjs
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
-import { migrateProjectActiveModel } from "../src/core/project-model-migration.mjs";
+import { migrateProjectActiveModel, migrateProjectFile } from "../src/core/project-model-migration.mjs";
+import { createWorkspaceStore } from "../src/core/workspaces/store.mjs";
 
 const store = {
   schema_version: 2,
@@ -46,4 +50,115 @@ test("null 不动", async () => {
   const { active_model, changed } = await migrateProjectActiveModel(null, store);
   assert.equal(active_model, null);
   assert.equal(changed, false);
+});
+
+// ---------------------------------------------------------------------------
+// 文件级迁移（任务 6）：注入 readProject/writeProject 计数 seam + 真实 workspaceStore
+//（createWorkspaceStore，settings 走 loadSettings/saveSettings 落盘），storeLoader 注入
+// plain v2 清单避免默认 loader 读磁盘。覆盖 project.yaml 与私有 settings 两条落盘路径。
+// ---------------------------------------------------------------------------
+
+// project.yaml mock 快照 → active_model null + stage_overrides 随写删除；settings 里
+// 能匹配清单的字面快照 → 引用 {provider_id, model_id}。
+test("migrateProjectFile：mock 归零 + stage_overrides 随写删除 + settings 转引用", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-model-migration-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); });
+  const projectRoot = path.join(root, "project");
+  const workspaceStore = createWorkspaceStore({ stateRoot: path.join(root, ".state") });
+
+  let project = {
+    schema_version: 1,
+    active_model: { provider: "mock", model_name: "mock-writer" },
+    stage_overrides: { enabled: false }
+  };
+  let writes = 0;
+  const readProject = async () => project;
+  const writeProject = async (_projectRoot, next) => { writes += 1; project = next; };
+  await workspaceStore.saveSettings(projectRoot, {
+    active_model: {
+      provider: "openai-compatible",
+      model_name: "deepseek-v4-pro",
+      base_url: "https://api.deepseek.com",
+      api_key_env: "DEEPSEEK_API_KEY"
+    }
+  });
+
+  const result = await migrateProjectFile(projectRoot, {
+    workspaceStore,
+    secretsRoot: path.join(root, ".secrets"),
+    readProject,
+    writeProject,
+    storeLoader: async () => store
+  });
+
+  assert.equal(result.changed, true);
+  // project.yaml：mock 归零，stage_overrides 随本次写删除
+  assert.equal(project.active_model, null);
+  assert.equal("stage_overrides" in project, false);
+  assert.equal(writes, 1);
+  // settings：匹配的字面快照转引用
+  const settings = await workspaceStore.loadSettings(projectRoot);
+  assert.deepEqual(settings.active_model, { provider_id: "deepseek", model_id: "m1" });
+});
+
+// 幂等：第二次调用 changed=false，且注入 writeProject 计数不增加（无多余写盘）。
+test("migrateProjectFile 幂等：第二次调用不再写", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-model-migration-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); });
+  const projectRoot = path.join(root, "project");
+  const workspaceStore = createWorkspaceStore({ stateRoot: path.join(root, ".state") });
+
+  let project = {
+    schema_version: 1,
+    active_model: { provider: "mock", model_name: "mock-writer" },
+    stage_overrides: { enabled: false }
+  };
+  let writes = 0;
+  const readProject = async () => project;
+  const writeProject = async (_projectRoot, next) => { writes += 1; project = next; };
+  await workspaceStore.saveSettings(projectRoot, { active_model: { provider: "mock", model_name: "mock-writer" } });
+
+  const options = {
+    workspaceStore,
+    secretsRoot: path.join(root, ".secrets"),
+    readProject,
+    writeProject,
+    storeLoader: async () => store
+  };
+  const first = await migrateProjectFile(projectRoot, options);
+  const second = await migrateProjectFile(projectRoot, options);
+
+  assert.equal(first.changed, true);
+  assert.equal(second.changed, false);
+  assert.equal(writes, 1, "第二次调用不得再写 project.yaml");
+  const settings = await workspaceStore.loadSettings(projectRoot);
+  assert.equal(settings.active_model, null, "settings 已归零，第二次不再改动");
+});
+
+// 锁文档化行为：active_model 已是引用 + stage_overrides 存在 → 不触发写，因此
+// stage_overrides 仍然保留（剥离是写耦合的，Task 9 才彻底删除该字段）。
+test("migrateProjectFile：引用形态 + stage_overrides → 不写、stage_overrides 保留", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-model-migration-"));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); });
+  const projectRoot = path.join(root, "project");
+  const workspaceStore = createWorkspaceStore({ stateRoot: path.join(root, ".state") });
+
+  const project = {
+    schema_version: 1,
+    active_model: { provider_id: "deepseek", model_id: "m1" },
+    stage_overrides: { enabled: false }
+  };
+  let writes = 0;
+  const result = await migrateProjectFile(projectRoot, {
+    workspaceStore,
+    secretsRoot: path.join(root, ".secrets"),
+    readProject: async () => project,
+    writeProject: async () => { writes += 1; },
+    storeLoader: async () => store
+  });
+
+  assert.equal(result.changed, false);
+  assert.equal(writes, 0, "引用形态不触发写入");
+  assert.deepEqual(project.active_model, { provider_id: "deepseek", model_id: "m1" });
+  assert.deepEqual(project.stage_overrides, { enabled: false }, "未写入时 stage_overrides 保留");
 });
