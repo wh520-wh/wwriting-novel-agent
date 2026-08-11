@@ -14,11 +14,12 @@
 // Task 9 彻底清理，此处先随迁移清一次）。两者都幂等：第二次调用不再写入。
 //
 // 清单读取只读：model-profiles.json 同时被新旧两条清单路径使用——旧的 v1
-// local-model-profiles（全局模型写回同步，Task 7 删除）与新的 v2 provider store
-//（重构目标）。loadProviderStore 读到 v1 会自动转换并写回，会破坏仍活着的旧读
-// 路径；迁移是读路径，只消费已持久化的 v2 清单（v1/未知格式按空清单处理——mock
-// 归零不依赖清单，引用转换等 v2 落盘后由幂等重跑自然完成）。内存转换 v1 得出的
-// provider id 未持久化，据此产出引用会悬空，故 v1 下绝不转引用。
+// local-model-profiles 仍被 v1 save/remove/select 路径使用（Task 7 仅删除了它的
+// 写回式同步调用；完整删除在 cutover 任务），与新的 v2 provider store（重构目标）。
+// loadProviderStore 读到 v1 会自动转换并写回，会破坏仍活着的 v1 视图；迁移是读
+// 路径，只消费已持久化的 v2 清单（v1/未知格式按空清单处理——mock 归零不依赖
+// 清单，引用转换等 v2 落盘后由幂等重跑自然完成）。内存转换 v1 得出的 provider id
+// 未持久化，据此产出引用会悬空，故 v1 下绝不转引用。
 import path from "node:path";
 import { loadProject, saveProject } from "./project-store.mjs";
 import { readJson } from "./fs-utils.mjs";
