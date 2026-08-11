@@ -354,7 +354,7 @@ export function createJournalSegmentStore({
       } catch {
         return { corrupt: true };
       }
-      segment.count = (offsets.length - 1) * indexStride + records.length;
+      segment.count = (lastOffset.seq - segment.startSeq) + records.length;
       segment.endSeq = segment.startSeq + segment.count - 1;
       segment.bytes = lastOffset.byte + chunk.length;
       return false;

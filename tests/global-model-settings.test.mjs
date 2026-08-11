@@ -43,22 +43,22 @@ test("删除模型：删掉默认模型时默认顺延到剩下的第一个", as
   await seedTwoModels(root);
   // upsert 后默认是最后写入的 mimo-v1
   const before = await loadLocalModelProfiles(root);
-  assert.equal(before.default_model_id, "mimo-v1");
+  assert.equal(before.default_model_id, "mimo-v1@https://api.mimo.example");
 
   const store = await removeLocalModelProfile(root, "mimo-v1");
   assert.equal(store.models.length, 1);
   assert.equal(store.models[0].model_name, "deepseek-chat");
-  assert.equal(store.default_model_id, "deepseek-chat");
+  assert.equal(store.default_model_id, "deepseek-chat@https://api.deepseek.com");
 
   const persisted = await loadLocalModelProfiles(root);
-  assert.equal(persisted.default_model_id, "deepseek-chat");
+  assert.equal(persisted.default_model_id, "deepseek-chat@https://api.deepseek.com");
 });
 
 test("删除模型：删非默认模型不动默认指针；删不存在的返回 null", async () => {
   const root = await tempRoot();
   await seedTwoModels(root);
   const store = await removeLocalModelProfile(root, "deepseek-chat");
-  assert.equal(store.default_model_id, "mimo-v1");
+  assert.equal(store.default_model_id, "mimo-v1@https://api.mimo.example");
   assert.equal(await removeLocalModelProfile(root, "not-there"), null);
 });
 
@@ -66,7 +66,7 @@ test("设为默认：只挪指针，不改模型字段", async () => {
   const root = await tempRoot();
   await seedTwoModels(root);
   const store = await setDefaultLocalModelProfile(root, "deepseek-chat");
-  assert.equal(store.default_model_id, "deepseek-chat");
+  assert.equal(store.default_model_id, "deepseek-chat@https://api.deepseek.com");
   assert.equal(store.models.length, 2);
   const target = store.models.find((m) => m.model_name === "deepseek-chat");
   assert.equal(target.base_url, "https://api.deepseek.com");
@@ -87,9 +87,55 @@ test("全局保存模型：没有任何项目也能存密钥和清单", async ()
     }
   });
   assert.equal(saved.model_name, "deepseek-chat");
-  assert.equal(store.default_model_id, "deepseek-chat");
+  assert.equal(saved.id, "deepseek-chat@https://api.deepseek.com", "id 派生自 model_name@base_url（同 ID 不同网关可并存）");
+  assert.equal(store.default_model_id, saved.id);
   const secrets = await loadLocalSecrets(secretsRoot);
   assert.equal(secrets.DEEPSEEK_API_KEY, "sk-test-1234");
+});
+
+test("回归·同名 ID 不同 base_url 的模型保存后并存，互不覆盖（2026-08-11）", async () => {
+  const root = await tempRoot();
+  // 官方 v4-flash
+  await upsertLocalModelProfile(root, {
+    provider: "openai-compatible",
+    model_name: "deepseek-v4-flash",
+    base_url: "https://api.deepseek.com/v1",
+    api_key_env: "DEEPSEEK_API_KEY"
+  });
+  // 自定义 v4-flash（同 ID、不同网关）：必须成为新条目，而不是覆盖官方那条
+  const custom = await upsertLocalModelProfile(root, {
+    provider: "openai-compatible",
+    model_name: "deepseek-v4-flash",
+    base_url: "https://opencode.ai/zen/go/v1",
+    api_key_env: "WWRITING_PROVIDER_API_KEY"
+  });
+  const store = await loadLocalModelProfiles(root);
+  assert.equal(store.models.length, 2, "同名 ID 不同 base_url 应并存为两条");
+  const official = store.models.find((m) => m.base_url === "https://api.deepseek.com/v1");
+  const customRow = store.models.find((m) => m.base_url === "https://opencode.ai/zen/go/v1");
+  assert.ok(official, "官方条目不得被覆盖");
+  assert.ok(customRow, "自定义条目应保存成功");
+  assert.notEqual(official.id, customRow.id, "两条目的 id 必须不同");
+  assert.equal(custom.id, customRow.id, "upsert 返回的 id 与清单一致");
+  // 重存同配置 = 更新（不产生第三条）
+  await upsertLocalModelProfile(root, {
+    provider: "openai-compatible",
+    model_name: "deepseek-v4-flash",
+    base_url: "https://api.deepseek.com/v1",
+    api_key_env: "DEEPSEEK_API_KEY"
+  });
+  const after = await loadLocalModelProfiles(root);
+  assert.equal(after.models.length, 2, "重存同配置应原地更新，不新增条目");
+  // 旧 id=modelName 的遗留条目：同身份的新配置保存时应替换而非新增
+  await upsertLocalModelProfile(root, {
+    provider: "openai-compatible",
+    model_name: "deepseek-v4-flash",
+    base_url: "https://opencode.ai/zen/go/v1",
+    api_key_env: "WWRITING_PROVIDER_API_KEY",
+    id: "deepseek-v4-flash"
+  });
+  const afterLegacy = await loadLocalModelProfiles(root);
+  assert.equal(afterLegacy.models.length, 2, "同身份旧 id 条目应被替换，不新增");
 });
 
 test("全局保存模型：api_key 不落进清单文件", async () => {

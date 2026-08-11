@@ -14,7 +14,11 @@ export async function upsertLocalModelProfile(root, activeModel) {
   const profile = normalizeModelProfile(activeModel);
   if (!profile) return null;
   const store = await loadLocalModelProfiles(root);
-  const models = store.models.filter((item) => item.id !== profile.id);
+  // 去重双条件：同 id（新派生 id 下同配置重存）或同身份（旧 id=modelName 的遗留
+  // 条目被同身份的新配置命中时也要替换而不是新增，避免重存产生重复条目）。
+  const models = store.models.filter(
+    (item) => item.id !== profile.id && !sameIdentity(item, profile)
+  );
   const saved = {
     ...profile,
     saved_at: new Date().toISOString()
@@ -104,12 +108,17 @@ function normalizeModelProfile(value) {
   const modelName = stringValue(value.model_name);
   if (!provider || !modelName) return null;
   if (provider === "mock") return null;
+  const baseUrl = optionalString(value.base_url);
   const profile = {
-    id: modelName,
+    // 模型身份 = provider + model_name + base_url：同一模型 ID 在不同厂商/网关下
+    // 是不同配置，必须可并存（修复 2026-08-11：旧实现 id=modelName，同名不同
+    // base_url 的第二次保存会把第一条覆盖掉，用户自定义的同 ID 模型存不进去）。
+    // id 只作清单内唯一键（默认指针/选用/删除），不含用户可见语义。
+    id: profileId(modelName, baseUrl),
     provider,
     model_name: modelName
   };
-  copyOptional(profile, value, "base_url");
+  if (baseUrl) profile.base_url = baseUrl;
   copyOptional(profile, value, "api_key_env");
   copyOptional(profile, value, "cache_mode");
   copyOptional(profile, value, "max_context_tokens");
@@ -125,8 +134,33 @@ function normalizeModelProfile(value) {
   return profile;
 }
 
+// 清单内唯一键：优先 model_name@规范化 base_url（同 ID 不同网关各自成条）；
+// 无 base_url 时退回 model_name（与旧清单条目兼容）。base_url 只做尾斜杠/大小写
+// 归一化用于派生 id——真实请求地址仍用 profile.base_url 原文，不受影响。
+function profileId(modelName, baseUrl) {
+  if (!baseUrl) return modelName;
+  return `${modelName}@${baseUrl.replace(/\/+$/u, "").toLowerCase()}`;
+}
+
+// 条目是否与待保存配置同一身份（provider+model_name+base_url+api_key_env 全同
+// 才算同一模型：重存同配置=更新；改 base_url/密钥变量=新增条目）。
+function sameIdentity(left, right) {
+  return (
+    left.provider === right.provider &&
+    left.model_name === right.model_name &&
+    (left.base_url ?? "") === (right.base_url ?? "") &&
+    (left.api_key_env ?? "") === (right.api_key_env ?? "")
+  );
+}
+
 function stringValue(value) {
   return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+// 与 stringValue 相同但允许空串返回 null（normalizeModelProfile 需要区分
+//「未填 base_url」与「填了空串」——统一视为未填）。
+function optionalString(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function copyOptional(target, source, key) {
