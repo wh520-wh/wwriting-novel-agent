@@ -74,6 +74,14 @@ test("损坏清单当空清单重建", async (t) => {
   assert.deepEqual(store.providers, []);
 });
 
+test("seeded_preset_ids 归一化只保留合法字符串并去重", async (t) => {
+  const root = await tempRoot(t);
+  const { writeFile } = await import("node:fs/promises");
+  await writeFile(path.join(root, "model-profiles.json"), JSON.stringify({ seeded_preset_ids: [1, "deepseek", "", "deepseek"] }), "utf8");
+  const store = await loadProviderStore(root);
+  assert.deepEqual(store.seeded_preset_ids, ["deepseek"]);
+});
+
 test("非法 api_format 拒绝保存", async (t) => {
   const root = await tempRoot(t);
   await assert.rejects(
