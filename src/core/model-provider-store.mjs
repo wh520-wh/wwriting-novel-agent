@@ -3,6 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { ensureDir, readJson, writeJsonAtomic } from "./fs-utils.mjs";
 import { createMutex } from "./async-utils.mjs";
+import { MODEL_PRESETS as PRESET_DEFINITIONS } from "./model-presets.mjs";
 
 const PROVIDERS_FILE = "model-profiles.json";
 export const SCHEMA_VERSION = 2;
@@ -134,6 +135,11 @@ export async function loadProviderStore(root) {
     throw error;
   }
   if (raw === null) return emptyStore();
+  if (raw?.schema_version === 1) {
+    const migrated = migrateV1Store(raw, PRESET_DEFINITIONS);
+    await saveProviderStore(root, migrated);
+    return migrated;
+  }
   const store = normalizeProviderStore(raw);
   return store ?? emptyStore();
 }
@@ -236,4 +242,140 @@ export async function findModelByConfig(root, config = {}) {
     if (model) return { provider, model };
   }
   return null;
+}
+
+// 归一化匹配键：base_url 去尾斜杠 + 小写；命中官方地址用 hostname 匹配
+//（与 deepseek-detection.mjs 口径一致：api.deepseek.com / *.xiaomimimo.com）。
+function hostOf(url) { try { return new URL(url).hostname.toLowerCase(); } catch { return ""; } }
+function isOfficialBaseUrl(url, preset) {
+  const host = hostOf(url);
+  if (!host) return false;
+  return host === hostOf(preset.base_url);
+}
+
+export function migrateV1Store(raw, presets = []) {
+  const store = emptyStore();
+  const oldModels = Array.isArray(raw?.models) ? raw.models : [];
+  const usedNames = new Set();
+  const uniqueName = (base) => {
+    let name = base || "未命名供应商";
+    let n = 2;
+    while (usedNames.has(name)) { name = `${base || "未命名供应商"}（${n}）`; n += 1; }
+    usedNames.add(name);
+    return name;
+  };
+  const presetById = new Map(presets.map((p) => [p.id, p]));
+  const presetProviders = new Map(); // presetId -> provider
+  const standalone = new Map(); // base_url -> provider
+
+  for (const old of oldModels) {
+    const baseUrl = stringValue(old.base_url);
+    const modelName = stringValue(old.model_name);
+    if (!baseUrl || !modelName) continue;
+    const preset = presets.find((p) => isOfficialBaseUrl(baseUrl, p));
+    if (preset) {
+      if (!presetProviders.has(preset.id)) {
+        presetProviders.set(preset.id, {
+          id: preset.id,
+          name: preset.name,
+          type: "custom",
+          status: "enabled",
+          base_url: preset.base_url,
+          api_format: "openai-chat-completions",
+          api_key_env: preset.api_key_env,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          models: []
+        });
+      }
+      const provider = presetProviders.get(preset.id);
+      const presetModelDef = preset.models.find((m) => m.model_name === modelName);
+      if (!provider.models.some((m) => m.model_name === modelName)) {
+        provider.models.unshift({
+          // 旧 v1 约定 id === modelName，保留原 id 让 default_model_id 直接命中；
+          // 缺失时才回退到预设种子 id 形态。
+          id: stringValue(old.id) || `m_${preset.id}_${modelName}`,
+          model_name: modelName,
+          enabled: true,
+          context_window: /\[1m\]$/iu.test(modelName) ? 1000000 : 256000,
+          ...(presetModelDef?.pricing ? { pricing: { ...presetModelDef.pricing } } : {})
+        });
+      }
+      const merged = provider.models.find((m) => m.model_name === modelName);
+      copyRuntimeFields(merged, old); // 用户参数覆盖
+      continue;
+    }
+    const key = baseUrl.toLowerCase();
+    if (!standalone.has(key)) {
+      standalone.set(key, {
+        id: newProviderId(),
+        name: uniqueName(stringValue(old.provider_label) || stringValue(old.provider)),
+        type: "custom",
+        status: "enabled",
+        base_url: baseUrl,
+        api_format: "openai-chat-completions",
+        api_key_env: stringValue(old.api_key_env),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        models: []
+      });
+    }
+    const provider = standalone.get(key);
+    if (!provider.models.some((m) => m.model_name === modelName)) {
+      provider.models.push({
+        id: newModelId(),
+        model_name: modelName,
+        enabled: true,
+        context_window: /\[1m\]$/iu.test(modelName) ? 1000000 : 256000
+      });
+      copyRuntimeFields(provider.models[provider.models.length - 1], old);
+    }
+  }
+  // 命中的预设补全其余模型（旧 v1 条目置前，未出现的预设模型追加在后），
+  // 与 ensurePresetProviders 的种子形态一致。
+  for (const preset of presets) {
+    const provider = presetProviders.get(preset.id);
+    if (!provider) continue;
+    for (const presetModel of preset.models) {
+      if (provider.models.some((m) => m.model_name === presetModel.model_name)) continue;
+      provider.models.push({
+        id: `m_${preset.id}_${presetModel.model_name}`,
+        model_name: presetModel.model_name,
+        enabled: true,
+        context_window: /\[1m\]$/iu.test(presetModel.model_name) ? 1000000 : 256000,
+        ...(presetModel.pricing ? { pricing: { ...presetModel.pricing } } : {})
+      });
+    }
+  }
+  store.providers = [...presetProviders.values(), ...standalone.values()];
+  // 默认指针映射：v1 default_model_id 匹配 model_name（旧 id=modelName 约定）或条目 id
+  const defaultId = stringValue(raw?.default_model_id);
+  if (defaultId) {
+    for (const provider of store.providers) {
+      const hit = provider.models.find((m) => m.id === defaultId || m.model_name === defaultId);
+      if (hit) { store.default_model = { provider_id: provider.id, model_id: hit.id }; break; }
+    }
+  }
+  if (!store.default_model && store.providers.length > 0 && store.providers[0].models.length > 0) {
+    const first = store.providers[0];
+    store.default_model = { provider_id: first.id, model_id: first.models[0].id };
+  }
+  return store;
+}
+
+function copyRuntimeFields(target, old) {
+  for (const key of ["max_output_tokens", "timeout_ms", "total_deadline_ms"]) {
+    const n = positiveInt(old[key]);
+    if (n) target[key] = n;
+  }
+  if (old.temperature !== undefined) {
+    const t = Number(old.temperature);
+    if (Number.isFinite(t) && t >= 0 && t <= 2) target.temperature = t;
+  }
+  if (old.stream !== undefined) target.stream = old.stream === true;
+  const cacheMode = stringValue(old.cache_mode);
+  if (cacheMode) target.cache_mode = cacheMode;
+  if (old.pricing && typeof old.pricing === "object" && !Array.isArray(old.pricing)) {
+    target.pricing = { ...old.pricing };
+  }
 }
