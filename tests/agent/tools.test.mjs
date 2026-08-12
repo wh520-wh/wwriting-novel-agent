@@ -1041,6 +1041,255 @@ test("调用前已 abort：工具直接 tool_cancelled", async (t) => {
   assertClosure(await readEvents(h.journal));
 });
 
+// ---------------------------------------------------------------------------
+// 工具执行期限（Task 2：统一空闲期限与绝对期限）
+// ---------------------------------------------------------------------------
+
+// 假时钟 seam：只有测试主动推进时间，setTimer 回调才会触发（不依赖真实等待）。
+// 同时充当 clock/setTimer/clearTimer 三个注入点的最小实现。
+function createFakeTimers() {
+  let now = 0;
+  let nextId = 1;
+  const scheduled = [];
+  return {
+    clock: () => now,
+    setTimer(fn, ms) {
+      const timer = { id: nextId, at: now + Math.max(0, ms), fn };
+      nextId += 1;
+      scheduled.push(timer);
+      scheduled.sort((a, b) => a.at - b.at);
+      return timer.id;
+    },
+    clearTimer(id) {
+      const index = scheduled.findIndex((timer) => timer.id === id);
+      if (index >= 0) scheduled.splice(index, 1);
+    },
+    advance(ms) {
+      now += Math.max(0, ms);
+      const due = scheduled.filter((timer) => timer.at <= now).sort((a, b) => a.at - b.at);
+      for (const timer of due) {
+        const index = scheduled.indexOf(timer);
+        if (index >= 0) scheduled.splice(index, 1);
+        timer.fn();
+      }
+    }
+  };
+}
+
+// 注册一个只等待 abort 的挂起 probe 工具（read 类别自动放行；run 不自行结束，
+// 期限/停止信号触发后才 settle）。deadline 为工具定义可选的较短期限声明。
+function registerPendingProbe(tools, { deadline, run } = {}) {
+  tools._registerTool("probe", {
+    ...(deadline ? { deadline } : {}),
+    description: "probe",
+    schema: { type: "object", properties: {}, additionalProperties: false },
+    describeAction: () => ({
+      category: "read",
+      scope: "project",
+      targetClass: "project-root",
+      grantKey: "read:project:project-root",
+      title: "probe",
+      description: "probe",
+      targets: []
+    }),
+    async run(args, context) {
+      if (typeof run === "function") return run(args, context);
+      await new Promise((resolve) => context.signal?.addEventListener("abort", () => resolve()));
+      return { done: true };
+    }
+  });
+}
+
+test("静默工具超过空闲期限：结构化 tool_timeout(idle)，不向 Runtime 抛异常", { timeout: 15000 }, async (t) => {
+  const h = await setup(t, {
+    runtime: { toolIdleTimeoutMs: 60, toolAbsoluteTimeoutMs: 2000 },
+    shellRuntime: async ({ signal }) => {
+      await new Promise((resolve) => signal?.addEventListener("abort", () => resolve()));
+      throw Object.assign(new Error("命令已停止。"), { code: "shell_cancelled", durationMs: 0 });
+    }
+  });
+  // 直接 await：若超时以 rejection 逃逸（而不是结构化结果），本测试立即失败
+  const startedAt = Date.now();
+  const result = await h.tools.execute(toolCall("shell", { command: "git status", purpose: "长驻" }), h.context);
+  const elapsed = Date.now() - startedAt;
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "tool_timeout");
+  assert.equal(result.error.kind, "idle");
+  assert.equal(result.message, "工具执行超时。");
+  assert.ok(elapsed < 1000, `60ms 空闲期限应远早于 2000ms 绝对期限触发（实际 ${elapsed}ms）`);
+  const events = await readEvents(h.journal);
+  const failed = eventsOfType(events, "tool_call_failed").find((event) => event.payload.name === "shell");
+  assert.ok(failed, "超时必须有 tool_call_failed（活动闭环）");
+  assert.equal(failed.payload.error, "tool_timeout");
+  assert.deepEqual(failed.payload.technical, { kind: "idle" });
+  assertClosure(events);
+});
+
+test("持续报告 activity 的工具在绝对期限被回收（absolute 不被 activity 重置）", { timeout: 15000 }, async (t) => {
+  const h = await setup(t, {
+    runtime: { toolIdleTimeoutMs: 150, toolAbsoluteTimeoutMs: 400 },
+    shellRuntime: async ({ signal, onOutput }) => {
+      let tick = 0;
+      const interval = setInterval(() => {
+        onOutput?.({ stream: tick % 2 === 0 ? "stdout" : "stderr", text: "." });
+        tick += 1;
+      }, 20);
+      await new Promise((resolve) => signal?.addEventListener("abort", () => resolve()));
+      clearInterval(interval);
+      throw Object.assign(new Error("命令已停止。"), { code: "shell_cancelled", durationMs: 0 });
+    }
+  });
+  const startedAt = Date.now();
+  const result = await h.tools.execute(toolCall("shell", { command: "git status", purpose: "持续输出" }), h.context);
+  const elapsed = Date.now() - startedAt;
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "tool_timeout");
+  assert.equal(result.error.kind, "absolute", "持续 stdout/stderr 刷新空闲期限，必须由绝对期限回收");
+  assert.ok(elapsed >= 350, `持续输出应活过 150ms 空闲期限直到 ~400ms 绝对期限（实际 ${elapsed}ms）`);
+  assertClosure(await readEvents(h.journal));
+});
+
+test("工具定义声明的较短自定义期限被遵守", { timeout: 15000 }, async (t) => {
+  const h = await setup(t, { runtime: { toolIdleTimeoutMs: 5000, toolAbsoluteTimeoutMs: 10000 } });
+  registerPendingProbe(h.tools, { deadline: { idleMs: 40, absoluteMs: 500 } });
+  const startedAt = Date.now();
+  const result = await h.tools.execute(toolCall("probe", {}), h.context);
+  const elapsed = Date.now() - startedAt;
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "tool_timeout");
+  assert.equal(result.error.kind, "idle", "声明的 40ms 空闲期限应早于系统 5000ms 触发");
+  assert.ok(elapsed < 1000, `自定义 40ms 期限应远早于系统 5000ms（实际 ${elapsed}ms）`);
+  assertClosure(await readEvents(h.journal));
+});
+
+test("自定义绝对期限不能抬高系统上限（钳制到系统绝对期限）", { timeout: 15000 }, async (t) => {
+  const h = await setup(t, { runtime: { toolIdleTimeoutMs: 1000, toolAbsoluteTimeoutMs: 2000 } });
+  registerPendingProbe(h.tools, {
+    deadline: { absoluteMs: 99999 }, // 高于系统 2000ms 上限
+    run: async (_args, context) => {
+      const interval = setInterval(() => context.reportActivity(), 10); // 持续 activity
+      await new Promise((resolve) => context.signal?.addEventListener("abort", () => resolve()));
+      clearInterval(interval);
+      return { done: true };
+    }
+  });
+  const startedAt = Date.now();
+  const result = await h.tools.execute(toolCall("probe", {}), h.context);
+  const elapsed = Date.now() - startedAt;
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "tool_timeout");
+  assert.equal(result.error.kind, "absolute", "声明 99999ms 绝对期限必须被钳制到系统 2000ms");
+  assert.ok(elapsed >= 1500, `系统绝对期限 2000ms 附近回收（实际 ${elapsed}ms）`);
+  assertClosure(await readEvents(h.journal));
+});
+
+test("自定义空闲期限不能抬高系统上限（钳制到系统空闲期限）", { timeout: 15000 }, async (t) => {
+  const h = await setup(t, { runtime: { toolIdleTimeoutMs: 500, toolAbsoluteTimeoutMs: 5000 } });
+  registerPendingProbe(h.tools, { deadline: { idleMs: 99999 } }); // 高于系统 500ms
+  const startedAt = Date.now();
+  const result = await h.tools.execute(toolCall("probe", {}), h.context);
+  const elapsed = Date.now() - startedAt;
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "tool_timeout");
+  assert.equal(result.error.kind, "idle", "声明 99999ms 空闲期限必须被钳制到系统 500ms");
+  assert.ok(elapsed >= 400 && elapsed < 4000, `系统空闲期限 500ms 附近回收（实际 ${elapsed}ms）`);
+  assertClosure(await readEvents(h.journal));
+});
+
+test("clock/setTimer/clearTimer seam：假时钟精确驱动空闲期限", { timeout: 15000 }, async (t) => {
+  const fake = createFakeTimers();
+  const h = await setup(t, {
+    runtime: {
+      toolIdleTimeoutMs: 100,
+      toolAbsoluteTimeoutMs: 1000,
+      clock: fake.clock,
+      setTimer: fake.setTimer,
+      clearTimer: fake.clearTimer
+    },
+    shellRuntime: async ({ signal }) => {
+      await new Promise((resolve) => signal?.addEventListener("abort", () => resolve()));
+      throw Object.assign(new Error("命令已停止。"), { code: "shell_cancelled", durationMs: 0 });
+    }
+  });
+  const pending = h.tools.execute(toolCall("shell", { command: "git status", purpose: "假时钟" }), h.context);
+  await sleep(30); // 等待 run 挂起（期限定时器已注册到假时钟）
+  fake.advance(100); // 推进 100ms → 空闲期限回调触发
+  const result = await pending;
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "tool_timeout");
+  assert.equal(result.error.kind, "idle");
+  assert.ok(result.duration_ms >= 100, "duration_ms 应来自假时钟");
+  assertClosure(await readEvents(h.journal));
+});
+
+test("工具 context 注入组合 signal（父停止传导）与 reportActivity", { timeout: 15000 }, async (t) => {
+  const controller = new AbortController();
+  const h = await setup(t, {
+    signal: controller.signal,
+    runtime: { toolIdleTimeoutMs: 10000, toolAbsoluteTimeoutMs: 20000 }
+  });
+  let observed = null;
+  h.tools._registerTool("probe", {
+    description: "probe",
+    schema: { type: "object", properties: {}, additionalProperties: false },
+    describeAction: () => ({
+      category: "read",
+      scope: "project",
+      targetClass: "project-root",
+      grantKey: "read:project:project-root",
+      title: "probe",
+      description: "probe",
+      targets: []
+    }),
+    async run(_args, context) {
+      observed = {
+        signal: context.signal,
+        reportActivity: typeof context.reportActivity,
+        parentAbortSeen: null
+      };
+      await new Promise((resolve) => {
+        context.signal?.addEventListener("abort", () => {
+          observed.parentAbortSeen = true;
+          resolve();
+        });
+      });
+      return { done: true, signalAborted: context.signal.aborted };
+    }
+  });
+  const pending = h.tools.execute(toolCall("probe", {}), h.context);
+  const pollDeadline = Date.now() + 5000;
+  while (!observed && Date.now() < pollDeadline) await sleep(5);
+  assert.ok(observed, "工具 run 应已启动并注入 context");
+  assert.ok(observed.signal instanceof AbortSignal, "工具 context.signal 必须是 AbortSignal");
+  assert.equal(observed.reportActivity, "function", "工具 context 必须有 reportActivity()");
+  assert.equal(observed.parentAbortSeen, null, "父停止前工具 signal 不得中断");
+  controller.abort("用户停止");
+  const result = await pending;
+  assert.equal(observed.parentAbortSeen, true, "父 signal 停止必须传导到工具组合 signal");
+  assert.equal(result.ok, true, "父停止只传导信号，工具自身的收尾结果原样透传");
+  assert.equal(result.result.signalAborted, true);
+  assertClosure(await readEvents(h.journal));
+});
+
+test("write_file 在极短期限内仍原子完成（不产生半写文件）", { timeout: 20000 }, async (t) => {
+  const h = await setup(t, {
+    permissions: { auto_edit: true },
+    runtime: { toolIdleTimeoutMs: 5, toolAbsoluteTimeoutMs: 10000 }
+  });
+  const content = "A".repeat(4 * 1024 * 1024);
+  const target = path.join(h.projectRoot, "big.md");
+  const result = await h.tools.execute(toolCall("write_file", { path: "big.md", content }), h.context);
+  // 无论超时是否与写入竞争：目标文件要么不存在、要么完整（最终 rename 区间不被截断）
+  if (await pathExists(target)) {
+    assert.equal(await fs.readFile(target, "utf8"), content, "文件必须完整写入，不允许半写/截断");
+  }
+  assert.ok(
+    result.ok === true || (result.ok === false && result.error.code === "tool_timeout"),
+    `写工具结果必须是完成或结构化 tool_timeout，实际 ${JSON.stringify(result)}`
+  );
+  assertClosure(await readEvents(h.journal));
+});
+
 test("未知工具返回 工具不可用。 且活动闭环", async (t) => {
   const h = await setup(t);
   const result = await h.tools.execute(toolCall("no_such_tool", {}), h.context);
@@ -1179,7 +1428,7 @@ test("append_chapter_segment / commit_chapter / commit_blueprint 调用注入的
   assert.equal(segmentArgs.chapterNo, 1);
   assert.equal(segmentArgs.segmentNo, 1);
   assert.equal(segmentArgs.content, "正文第一段");
-  assert.equal(segmentArgs.signal, h.context.signal);
+  assert.ok(segmentArgs.signal instanceof AbortSignal, "project operations 必须收到组合 AbortSignal（Task 2 工具期限 signal）");
 
   const commit = await h.tools.execute(
     toolCall("commit_chapter", { project_id: "p1", chapter_no: 1, expected_draft_checksum: "sha256:x" }),
