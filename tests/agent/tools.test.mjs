@@ -2,8 +2,8 @@
 //
 // tests/agent/ 是允许测试内部 seam 的目录：本文件直接导入 tools.mjs 与 journal.mjs，
 // 覆盖计划 Task 4 Step 6–9 要求的全部不变量：
-//   - 恰好 13 个工具的 typed schema（八个 general + 五个 deep，Task 12 加 read_skill、
-//     Task 9 加 count_text）；
+//   - 恰好 12 个工具的 typed schema（八个 general + 四个 deep，Task 7 删除
+//     enter_workflow、Task 12 加 read_skill、Task 9 加 count_text）；
 //     模型不能提供/覆盖 risk/scope/extreme/grant_key
 //   - 系统拥有的风险分类（shell 的 extreme 由运行时判定，模型参数不参与）
 //   - 硬能力拒绝优先（dangerous 封印/归档/read_only/safe_edit=false），extreme 确认
@@ -32,7 +32,7 @@ import { EXTREME_COMMANDS } from "../fixtures/command-risk-corpus.mjs";
 const EXTREME_COMMAND = EXTREME_COMMANDS[0];
 
 const GENERAL_NAMES = ["list_files", "search_files", "read_file", "write_file", "edit_file", "shell", "read_skill", "count_text"];
-const DEEP_NAMES = ["update_plan", "enter_workflow", "append_chapter_segment", "commit_chapter", "commit_blueprint"];
+const DEEP_NAMES = ["update_plan", "append_chapter_segment", "commit_chapter", "commit_blueprint"];
 // 旧编排工具名全部按片段拼接（避免本文件自身成为 Task 11 Step 6 全库 rg 的命中点，
 // 与 dependency-rules.test.mjs 对旧数据文件名的片段约定一致；即使当前 rg 只禁
 // 其中两个名字的字面量，其余名字同样按片段构造保持一致性）。
@@ -85,7 +85,7 @@ async function setup(t, options = {}) {
   const inputId = options.inputId ?? "input-1";
   const runId = options.runId ?? "run-1";
   await journal.appendBatch([
-    { type: "run_started", run_id: runId, payload: { workflow: options.workflow ?? "general", input_id: inputId } }
+    { type: "run_started", run_id: runId, payload: { input_id: inputId } }
   ]);
 
   const opsCalls = [];
@@ -199,11 +199,11 @@ async function nextDecision(journal, count = 1) {
 // Step 4/5：注册表与 typed schema、系统拥有的风险
 // ---------------------------------------------------------------------------
 
-test("恰好注册八个 general 与五个 deep 工具", () => {
+test("恰好注册八个 general 与四个 deep 工具", () => {
   const tools = createToolRuntime({ journal: { append: async () => {} } });
   const names = tools.definitions().map((def) => def.function.name);
   assert.deepEqual(names, [...GENERAL_NAMES, ...DEEP_NAMES]);
-  assert.equal(names.length, 13, "工具总数应为 13（Task 9：count_text 加入 general）");
+  assert.equal(names.length, 12, "工具总数应为 12（Task 7：enter_workflow 已删除）");
   for (const banned of BANNED_NAMES) {
     assert.ok(!names.includes(banned), `不得注册 ${banned}`);
   }
@@ -235,8 +235,7 @@ test("deep 工具 schema 与计划一致", () => {
   assert.deepEqual(plan.parameters.properties.items.items.required, ["id", "step", "status"], "plan 项必须携带稳定 id");
   assert.ok(plan.parameters.properties.items.items.properties.id, "plan 项应有 id 字段");
   assert.ok(plan.parameters.properties.items.items.properties.description, "plan 项应有可选 description");
-  const workflow = byName.get("enter_workflow");
-  assert.deepEqual(workflow.parameters.properties.workflow.enum, ["general", "chapter", "init"], "Task 10：review workflow 必须从 enum 删除");
+  assert.ok(!byName.has("enter_workflow"), "Task 7：enter_workflow 必须从注册表删除");
   assert.deepEqual(
     Object.keys(byName.get("append_chapter_segment").parameters.properties).sort(),
     ["chapter_no", "content", "project_id", "segment_no"]
@@ -832,7 +831,7 @@ test("tool_call_failed 的 message 先脱敏（路径内嵌 token 形片段不�
   assertClosure(await readEvents(h.journal));
 });
 
-test("plan_updated 事件侧脱敏（与 enter_workflow reason 一致）", async (t) => {
+test("plan_updated 事件侧脱敏（事件侧统一脱敏口径）", async (t) => {
   const h = await setup(t);
   const result = await h.tools.execute(
     toolCall("update_plan", {
@@ -1484,18 +1483,16 @@ test("update_plan 校验计划状态并写 plan_updated", async (t) => {
   assertClosure(await readEvents(h.journal));
 });
 
-test("enter_workflow 校验工作流并写 workflow_changed", async (t) => {
+test("enter_workflow 已删除：未知工具，不产生 workflow_changed", async (t) => {
   const h = await setup(t);
+  const names = h.tools.definitions().map((def) => def.function.name);
+  assert.ok(!names.includes("enter_workflow"), "enter_workflow 不得注册");
   const result = await h.tools.execute(toolCall("enter_workflow", { workflow: "chapter", reason: "用户要求正式写作" }), h.context);
-  assert.equal(result.ok, true);
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "unknown_tool");
   const events = await readEvents(h.journal);
-  const changed = eventsOfType(events, "workflow_changed")[0];
-  assert.equal(changed.payload.workflow, "chapter");
-  assert.equal(changed.payload.reason, "用户要求正式写作");
-  const bad = await h.tools.execute(toolCall("enter_workflow", { workflow: "planet", reason: "x" }), h.context);
-  assert.equal(bad.ok, false);
-  assert.equal(bad.error.code, "bad_args");
-  assertClosure(await readEvents(h.journal));
+  assert.equal(eventsOfType(events, "workflow_changed").length, 0, "不再产生 workflow_changed 事件");
+  assertClosure(events);
 });
 
 test("append_chapter_segment / commit_chapter / commit_blueprint 调用注入的 projectOperations", async (t) => {

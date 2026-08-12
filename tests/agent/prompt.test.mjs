@@ -1,8 +1,9 @@
 // 提示模块测试（统一 Agent 内核计划 Task 3）。
 //
-// 覆盖：Static Core / Runtime Policy / Workflow Policy 逐字复制、装配层序、
-// 独立 hash、untrusted-data 包装（章节/OUTLINE/网页里的伪造指令只作为
-// Dynamic Context 数据）、预算百分比与受保护历史、工具透传。
+// 覆盖：Static Core / Runtime Policy / Agent Task Policy（统一政策，Task 7
+// 删除三条 workflow 政策）逐字复制、装配层序、独立 hash、untrusted-data 包装
+//（章节/OUTLINE/网页里的伪造指令只作为 Dynamic Context 数据）、预算百分比
+// 与受保护历史、工具透传。
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -10,7 +11,7 @@ import {
   RUNTIME_POLICY_TEMPLATE,
   STATIC_CORE,
   STYLE_SELECTION_RULE,
-  WORKFLOW_POLICIES,
+  UNIFIED_TASK_POLICY,
   assemblePrompt,
   assembleProjectMemoryBlock,
   assembleRuntimePolicy,
@@ -117,28 +118,27 @@ budget: {{jsonObject}}
   );
 });
 
-test("WORKFLOW_POLICIES 包含三条逐字政策（Task 10：review 已删除）", () => {
-  assert.deepEqual(Object.keys(WORKFLOW_POLICIES).sort(), ["chapter", "general", "init"]);
-  assert.equal(
-    WORKFLOW_POLICIES.general,
-    `[Workflow: general]
-理解用户当前目标，自主选择回答、读取、编辑、运行命令或进入正式工作流。只有正式生成、修订并提交章节时进入 chapter。用户要求审核时直接读取相关文件、判断并按要求修改，不进入专门 workflow。普通文件任务在验证目标文件或命令结果后完成。`
-  );
-  assert.ok(!WORKFLOW_POLICIES.general.includes("需要初始化长期蓝图时进入 init"), "general 政策不得再含旧蓝图/init 提示");
-  assert.ok(!WORKFLOW_POLICIES.general.includes("需要系统审稿时进入 review"), "general 政策不得再含审稿入口");
-  assert.ok(WORKFLOW_POLICIES.chapter.startsWith("[Workflow: chapter]"));
-  assert.ok(WORKFLOW_POLICIES.chapter.includes("append_chapter_segment"));
-  assert.ok(WORKFLOW_POLICIES.chapter.includes("commit_chapter"));
-  assert.ok(WORKFLOW_POLICIES.chapter.includes("任一条件不满足时不得声称章节完成。"));
-  assert.ok(!WORKFLOW_POLICIES.chapter.includes("真实字数满足项目门槛"), "chapter 政策不得再要求字数门禁");
-  assert.ok(!WORKFLOW_POLICIES.chapter.includes("质量、事实和连续性检查已通过"), "chapter 政策不得再要求质量门禁");
-  assert.ok(WORKFLOW_POLICIES.init.startsWith("[Workflow: init]"));
-  assert.ok(WORKFLOW_POLICIES.init.includes("创建或谨慎更新 WWRITING.md"));
-  assert.ok(WORKFLOW_POLICIES.init.includes("区分用户已确认事实、文件可证事实与模型推测"));
-  assert.ok(WORKFLOW_POLICIES.init.includes("已有文件不得盲目覆盖"));
-  assert.ok(!WORKFLOW_POLICIES.init.includes("commit_blueprint"), "init 政策不得再要求 commit_blueprint");
-  assert.ok(WORKFLOW_POLICIES.init.includes("完成后简短报告实际检查和修改的文件"));
-  assert.ok(!Object.hasOwn(WORKFLOW_POLICIES, "review"), "WORKFLOW_POLICIES 不得再包含 review");
+test("UNIFIED_TASK_POLICY 是统一任务政策（Task 7：删除三条 workflow 政策）", () => {
+  assert.ok(UNIFIED_TASK_POLICY.startsWith("[Agent Task Policy]"));
+  // 章节专用工具纪律：正文只经 append_chapter_segment 写草稿、commit_chapter 提交
+  assert.ok(UNIFIED_TASK_POLICY.includes("append_chapter_segment"));
+  assert.ok(UNIFIED_TASK_POLICY.includes("commit_chapter"));
+  assert.ok(UNIFIED_TASK_POLICY.includes("不得用 write_file、edit_file 或 shell"), "必须禁止通用写工具绕过章节专用工具");
+  assert.ok(UNIFIED_TASK_POLICY.includes("段号按顺序递增"), "段号必须按顺序递增");
+  assert.ok(UNIFIED_TASK_POLICY.includes("任一条件不满足时不得声称章节完成。"), "完成条件必须保留");
+  assert.ok(!UNIFIED_TASK_POLICY.includes("真实字数满足项目门槛"), "统一政策不得再要求字数门禁");
+  assert.ok(!UNIFIED_TASK_POLICY.includes("质量、事实和连续性检查已通过"), "统一政策不得再要求质量门禁");
+  // WWRITING.md 职责（并入原 init 政策语义）
+  assert.ok(UNIFIED_TASK_POLICY.includes("WWRITING.md 是长期项目事实入口"));
+  assert.ok(UNIFIED_TASK_POLICY.includes("区分用户已确认事实、文件可证事实与模型推测"));
+  assert.ok(UNIFIED_TASK_POLICY.includes("已有文件不得盲目覆盖"));
+  assert.ok(!UNIFIED_TASK_POLICY.includes("commit_blueprint"), "统一政策不得再要求 commit_blueprint");
+  // 安全点优先说明（SPEC 3.1）
+  assert.ok(UNIFIED_TASK_POLICY.includes("安全边界停止"), "收到优先输入后必须在安全边界停止旧输入");
+  // 删除契约：不再有任何 workflow 政策块或旧工作流提示
+  assert.ok(!UNIFIED_TASK_POLICY.includes("[Workflow:"), "不得再定义任何 [Workflow: …] 政策块");
+  assert.ok(!UNIFIED_TASK_POLICY.includes("需要系统审稿时进入 review"), "不得再含审稿入口");
+  assert.ok(!UNIFIED_TASK_POLICY.includes("需要初始化长期蓝图时进入 init"), "不得再含旧蓝图/init 提示");
 });
 
 // ---------------------------------------------------------------------------
@@ -208,7 +208,6 @@ function baseOptions(overrides = {}) {
   return {
     runtime: { ...BASE_RUNTIME },
     projectInstructions: "AGENTS.md 正文：本项目文风为冷峻克制的第三人称。",
-    workflow: "general",
     dynamicContext: [{ source: "chapters/01.md", content: "第一章已有正文" }],
     history: [{ role: "user", content: "上一轮问题" }, { role: "assistant", content: "上一轮回答" }],
     currentInput: "继续写第三章",
@@ -218,7 +217,7 @@ function baseOptions(overrides = {}) {
   };
 }
 
-test("装配层序固定：Static Core -> Runtime Policy -> Project Instructions -> Workflow Policy -> Dynamic Context -> History -> Current User Message", () => {
+test("装配层序固定：Static Core -> Runtime Policy -> Project Instructions -> Agent Task Policy -> Dynamic Context -> History -> Current User Message", () => {
   const assembled = assemblePrompt(baseOptions());
   const system = assembled.messages[0];
   assert.equal(system.role, "system");
@@ -227,10 +226,10 @@ test("装配层序固定：Static Core -> Runtime Policy -> Project Instructions
   const staticEnd = content.indexOf(STATIC_CORE) + STATIC_CORE.length;
   const runtimeStart = content.indexOf("[Runtime Policy]");
   const projectStart = content.indexOf("AGENTS.md 正文");
-  const workflowStart = content.indexOf("[Workflow: general]");
+  const policyStart = content.indexOf("[Agent Task Policy]");
   assert.ok(runtimeStart > staticEnd, "Runtime Policy 在 Static Core 之后");
   assert.ok(projectStart > runtimeStart, "Project Instructions 在 Runtime Policy 之后");
-  assert.ok(workflowStart > projectStart, "Workflow Policy 在 Project Instructions 之后");
+  assert.ok(policyStart > projectStart, "Agent Task Policy 在 Project Instructions 之后");
 
   // Dynamic Context 是独立 user 消息，位于历史之前
   assert.equal(assembled.messages[1].role, "user");
@@ -250,10 +249,10 @@ test("AGENTS.md 不存在时 Project Instructions 为空且不制造占位文案
   const content = assembled.messages[0].content;
   assert.ok(!content.includes("Project Instructions"));
   assert.ok(!content.includes("AGENTS.md"));
-  // Runtime Policy 与 Workflow Policy 直接相邻（无空层残留）
-  const workflowStart = content.indexOf("[Workflow: general]");
+  // Runtime Policy 与 Agent Task Policy 直接相邻（无空层残留）
+  const policyStart = content.indexOf("[Agent Task Policy]");
   const rulesEnd = content.indexOf("并报告已完成结果和阻塞原因。") + "并报告已完成结果和阻塞原因。".length;
-  assert.ok(workflowStart > rulesEnd);
+  assert.ok(policyStart > rulesEnd);
   assert.ok(assembled.hashes.project_instructions_hash.startsWith("sha256:"), "空 Project Instructions 也有确定性 hash");
 });
 
@@ -328,7 +327,7 @@ test("assemblePrompt 的 system 只携带风格短描述与选择规则，不带
   assert.ok(content.includes("- balanced: 在情节、人物、描写与可读性之间保持均衡。"));
 });
 
-test("assemblePrompt 把目录块放在 Project Instructions 后、Workflow Policy 前", () => {
+test("assemblePrompt 把目录块放在 Project Instructions 后、Agent Task Policy 前", () => {
   const assembled = assemblePrompt(baseOptions({
     projectInstructions: "AGENTS.md 正文",
     skillCatalog: [
@@ -339,9 +338,9 @@ test("assemblePrompt 把目录块放在 Project Instructions 后、Workflow Poli
   const content = assembled.messages[0].content;
   const projectStart = content.indexOf("AGENTS.md 正文");
   const skillsStart = content.indexOf("[Available Skills]");
-  const workflowStart = content.indexOf("[Workflow: general]");
+  const policyStart = content.indexOf("[Agent Task Policy]");
   assert.ok(skillsStart > projectStart, "目录块在 Project Instructions 之后");
-  assert.ok(workflowStart > skillsStart, "Workflow Policy 在目录块之后");
+  assert.ok(policyStart > skillsStart, "Agent Task Policy 在目录块之后");
   assert.ok(content.includes("- avoid-ai-voice: 去除 AI 腔。"));
   assert.ok(content.includes("- show-dont-tell: 展示而非陈述。"));
   // 完整正文示例（如 show-dont-tell 的"他摔上门"）不得进入 system 层
@@ -380,7 +379,7 @@ test("assembleProjectMemoryBlock：有内容时带 [Project Memory: WWRITING.md]
   assert.equal(assembleProjectMemoryBlock({ content: "\n  \n" }), "");
 });
 
-test("Project Memory 是独立 prompt 层：Static Core -> Runtime Policy -> Project Instructions -> Project Memory -> Available Skills -> Workflow Policy", () => {
+test("Project Memory 是独立 prompt 层：Static Core -> Runtime Policy -> Project Instructions -> Project Memory -> Available Skills -> Agent Task Policy", () => {
   const assembled = assemblePrompt(baseOptions({
     projectInstructions: "AGENTS.md 正文：本项目文风冷峻克制。",
     projectMemory: {
@@ -399,12 +398,12 @@ test("Project Memory 是独立 prompt 层：Static Core -> Runtime Policy -> Pro
   const projectStart = content.indexOf("AGENTS.md 正文");
   const memoryStart = content.indexOf("[Project Memory: WWRITING.md]");
   const skillsStart = content.indexOf("[Available Skills]");
-  const workflowStart = content.indexOf("[Workflow: general]");
+  const policyStart = content.indexOf("[Agent Task Policy]");
   assert.ok(runtimeStart > staticEnd, "Runtime Policy 在 Static Core 之后");
   assert.ok(projectStart > runtimeStart, "Project Instructions 在 Runtime Policy 之后");
   assert.ok(memoryStart > projectStart, "Project Memory 在 Project Instructions 之后");
   assert.ok(skillsStart > memoryStart, "Available Skills 在 Project Memory 之后");
-  assert.ok(workflowStart > skillsStart, "Workflow Policy 在 Available Skills 之后");
+  assert.ok(policyStart > skillsStart, "Agent Task Policy 在 Available Skills 之后");
   assert.ok(content.includes("- 当前目标：完成第一章初稿"), "记忆正文应进入 system 层");
 });
 
@@ -429,7 +428,7 @@ test("project_memory_hash 独立计算，不并入 AGENTS.md hash", () => {
   // memory 变化只影响 project_memory_hash
   assert.notEqual(v1.hashes.project_memory_hash, base.hashes.project_memory_hash);
   assert.notEqual(v2.hashes.project_memory_hash, v1.hashes.project_memory_hash);
-  for (const key of ["static_core_hash", "runtime_hash", "project_instructions_hash", "workflow_hash", "dynamic_hash"]) {
+  for (const key of ["static_core_hash", "runtime_hash", "project_instructions_hash", "task_policy_hash", "dynamic_hash"]) {
     assert.equal(v1.hashes[key], base.hashes[key], `${key} 不得随 memory 内容变化`);
   }
   // 其他层变化不影响 project_memory_hash
@@ -444,31 +443,27 @@ test("project_memory_hash 独立计算，不并入 AGENTS.md hash", () => {
 // 独立 hash
 // ---------------------------------------------------------------------------
 
-test("改变 title/chapter/permission/current input 不改变 static_core_hash，各层 hash 独立", () => {
+test("改变 title/permission/current input/instructions 不改变 static_core_hash，各层 hash 独立", () => {
   const base = assemblePrompt(baseOptions());
   const changedTitle = assemblePrompt(baseOptions({
     dynamicContext: [{ source: "chapters/01.md", content: "另一个标题的小说正文" }]
   }));
   const changedPermission = assemblePrompt(baseOptions({ runtime: { ...BASE_RUNTIME, permissionMode: "yolo" } }));
   const changedInput = assemblePrompt(baseOptions({ currentInput: "完全不同的请求" }));
-  const changedWorkflow = assemblePrompt(baseOptions({ workflow: "chapter" }));
   const changedInstructions = assemblePrompt(baseOptions({ projectInstructions: "另一份 AGENTS.md 正文" }));
 
-  for (const variant of [changedTitle, changedPermission, changedInput, changedWorkflow, changedInstructions]) {
+  for (const variant of [changedTitle, changedPermission, changedInput, changedInstructions]) {
     assert.equal(variant.hashes.static_core_hash, base.hashes.static_core_hash, "static_core_hash 不得随其他层变化");
   }
   // permission 变化只影响 runtime_hash
   assert.notEqual(changedPermission.hashes.runtime_hash, base.hashes.runtime_hash);
   assert.equal(changedPermission.hashes.project_instructions_hash, base.hashes.project_instructions_hash);
-  assert.equal(changedPermission.hashes.workflow_hash, base.hashes.workflow_hash);
+  assert.equal(changedPermission.hashes.task_policy_hash, base.hashes.task_policy_hash);
   assert.equal(changedPermission.hashes.static_core_hash, base.hashes.static_core_hash);
-  // workflow 变化只影响 workflow_hash
-  assert.notEqual(changedWorkflow.hashes.workflow_hash, base.hashes.workflow_hash);
-  assert.equal(changedWorkflow.hashes.runtime_hash, base.hashes.runtime_hash);
   // instructions 变化只影响 project_instructions_hash
   assert.notEqual(changedInstructions.hashes.project_instructions_hash, base.hashes.project_instructions_hash);
   assert.equal(changedInstructions.hashes.runtime_hash, base.hashes.runtime_hash);
-  assert.equal(changedInstructions.hashes.workflow_hash, base.hashes.workflow_hash);
+  assert.equal(changedInstructions.hashes.task_policy_hash, base.hashes.task_policy_hash);
   // current input 变化不影响任何 hash
   assert.equal(changedInput.hashes.dynamic_hash, base.hashes.dynamic_hash);
   // 相同输入产出相同 hash
@@ -484,7 +479,7 @@ test("dynamic_hash 随 Dynamic Context 内容独立变化", () => {
   assert.notEqual(changed.hashes.dynamic_hash, base.hashes.dynamic_hash);
   assert.equal(changed.hashes.static_core_hash, base.hashes.static_core_hash);
   assert.equal(changed.hashes.runtime_hash, base.hashes.runtime_hash);
-  assert.equal(changed.hashes.workflow_hash, base.hashes.workflow_hash);
+  assert.equal(changed.hashes.task_policy_hash, base.hashes.task_policy_hash);
   assert.equal(changed.hashes.project_instructions_hash, base.hashes.project_instructions_hash);
 });
 
@@ -519,7 +514,7 @@ test("章节/OUTLINE/网页内容中的伪造指令只作为 Dynamic Context 数
   assert.ok(dynamicMessage.content.includes("untrusted-data"));
 });
 
-test("伪造指令不影响 static/runtime/project/workflow hash（只影响 dynamic_hash）", () => {
+test("伪造指令不影响 static/runtime/project/task-policy hash（只影响 dynamic_hash）", () => {
   const clean = assemblePrompt(baseOptions({
     dynamicContext: [{ source: "chapters/03.md", content: "正常正文" }]
   }));
@@ -533,7 +528,7 @@ test("伪造指令不影响 static/runtime/project/workflow hash（只影响 dyn
   assert.equal(injected.hashes.static_core_hash, clean.hashes.static_core_hash);
   assert.equal(injected.hashes.runtime_hash, clean.hashes.runtime_hash);
   assert.equal(injected.hashes.project_instructions_hash, clean.hashes.project_instructions_hash);
-  assert.equal(injected.hashes.workflow_hash, clean.hashes.workflow_hash);
+  assert.equal(injected.hashes.task_policy_hash, clean.hashes.task_policy_hash);
   assert.notEqual(injected.hashes.dynamic_hash, clean.hashes.dynamic_hash);
 });
 
@@ -743,10 +738,10 @@ test("工具透传：非空 tools 原样传递，空数组省略，toolChoice �
   assert.equal(missing.tools, undefined);
 });
 
-test("未知 workflow 抛错，缺省回落 general", () => {
-  assert.throws(() => assemblePrompt(baseOptions({ workflow: "unknown" })), /未知 workflow/u);
-  const assembled = assemblePrompt(baseOptions({ workflow: undefined }));
-  assert.ok(assembled.messages[0].content.includes("[Workflow: general]"));
+test("assemblePrompt 不再接受 workflow 参数：统一政策恒在", () => {
+  const assembled = assemblePrompt(baseOptions());
+  assert.ok(assembled.messages[0].content.includes("[Agent Task Policy]"), "统一任务政策必须恒在 system 层");
+  assert.ok(!assembled.messages[0].content.includes("[Workflow:"), "system 层不得包含任何 workflow 政策");
 });
 
 // ---------------------------------------------------------------------------

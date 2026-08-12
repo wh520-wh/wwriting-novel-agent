@@ -8,7 +8,7 @@
 //   - 同一项目一次只执行一个 AgentRun（一个模型/工具循环）；不同项目互不共享锁，
 //     可以并行运行。
 //   - 模型循环：消费活动输入 → assemblePrompt（runtime policy / AGENTS.md /
-//     Available Skills 目录摘要 / workflow policy / dynamic context / history /
+//     Available Skills 目录摘要 / agent task policy / dynamic context / history /
 //     currentInput）→ gateway.complete →
 //     工具调用逐个 tools.execute（权限/确认/decision 流程）→ 结果入 transcript →
 //     循环直到模型无工具调用且队列清空，Run 终结。
@@ -44,7 +44,6 @@ import {
 import { createContextCheckpointStore } from "./context-checkpoints.mjs";
 import { createCompactionCoordinator, COMPACTION_BLOCKED_STATES, COMPACTION_NON_TERMINAL_STATES } from "./compaction.mjs";
 import { COMPACTION_PROMPT, selectProtectedRecentTurns } from "./compaction-prompt.mjs";
-import { canEnterWorkflow, workflowPolicy } from "./workflows.mjs";
 import { runLegacyImport } from "./legacy-import.mjs";
 import { migrateProjectAgentStorage } from "../workspaces/migration.mjs";
 import { loadProject } from "../project-store.mjs";
@@ -72,8 +71,9 @@ const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "inte
 // 只有真实领域失败才把未启动的后续调用闭合为 tool_skipped_after_failure。
 const TOOL_RESULT_CANCELLATION_CODES = new Set(["tool_cancelled", "shell_cancelled"]);
 
-// 通用工具恒可用于所有 workflow（Task 12：read_skill 让所有工作流都能按需读技能；
-// Task 9：count_text 是只读客观字数工具，同样对所有工作流可见）。
+// 统一工具目录（Task 7）：不再按工作流切换——每一轮都提供相同的生产工具集：
+// 八个通用工具 + 三个深工具恒可用。commit_blueprint 按 KEEP-for-legacy 保留注册，
+// 但不进入统一目录（运行层 allowed_tool_names 同样拒绝）。
 const GENERAL_TOOL_NAMES = new Set([
   "list_files",
   "search_files",
@@ -84,6 +84,10 @@ const GENERAL_TOOL_NAMES = new Set([
   "read_skill",
   "count_text"
 ]);
+
+const DEEP_TOOL_NAMES = Object.freeze(["update_plan", "append_chapter_segment", "commit_chapter"]);
+
+const PRODUCTION_TOOL_NAMES = Object.freeze([...GENERAL_TOOL_NAMES, ...DEEP_TOOL_NAMES]);
 
 const SOURCES = new Set(["chat", "maintenance"]);
 
@@ -352,22 +356,6 @@ export function createAgentRuntime({
           projectRoot: params.projectRoot ?? state.key
         }),
       idFactory
-    });
-    // 嵌套 workflow 拒绝：enter_workflow 是改变工作流的唯一入口，由 BeforeToolUse
-    // hook 在工具执行（写 workflow_changed）之前校验转移是否合法（绑定本会话 journal）。
-    tools.registerHook("BeforeToolUse", async ({ tool, args }) => {
-      if (tool !== "enter_workflow") return undefined;
-      const session = await journal.getSession();
-      const run = session.active_run;
-      if (!run) return undefined;
-      const target = String(args?.workflow ?? "");
-      if (!canEnterWorkflow(run.workflow, target)) {
-        return {
-          allow: false,
-          reason: `不能从 ${run.workflow} 直接进入 ${target}；请先回到 general。`
-        };
-      }
-      return undefined;
     });
     sessionState = {
       sessionId,
@@ -988,15 +976,12 @@ export function createAgentRuntime({
     return persisted;
   }
 
-  // 按工作流政策过滤深工具（general 六工具恒可用）。
-  function allowedDefinitions(tools, policy) {
-    const allowedDeep = new Set(policy.allowedDeepTools ?? []);
+  // 按统一工具目录过滤定义（Task 7：通用工具 + 固定三个深工具，每轮相同）。
+  function allowedDefinitions(tools) {
+    const allowed = new Set(PRODUCTION_TOOL_NAMES);
     return tools
       .definitions()
-      .filter((definition) => {
-        const name = definition?.function?.name;
-        return GENERAL_TOOL_NAMES.has(name) || allowedDeep.has(name);
-      });
+      .filter((definition) => allowed.has(definition?.function?.name));
   }
 
   // 追加用户消息到 transcript（retry 去重：同一 input 只出现一次）。
@@ -1344,7 +1329,6 @@ export function createAgentRuntime({
 
       // ---- 装配模型请求 ----
       const project = await resolveWorkspaceConfig(state.key);
-      const policy = workflowPolicy(run.workflow);
       const modelConfig = modelConfigOf(project);
       // Task 6：每个模型轮重新读取 WWRITING.md（新对话、上下文压缩后的下一轮、
       // 模型切换、retry 和应用重启都会重新读取）。readProjectMemory 容错：缺失
@@ -1367,14 +1351,10 @@ export function createAgentRuntime({
         },
         projectInstructions: await readProjectInstructions(state.key),
         projectMemory,
-        workflow: run.workflow,
         skillCatalog: await state.readSkillCatalog(),
-        dynamicContext: await policy.contextSelector({
-          projectRoot: state.key,
-          session,
-          project,
-          inputText
-        }).catch(() => []),
+        // Task 7：无工作流切换，不再注入工作流选择的动态上下文（统一政策文本
+        // 已承载章节纪律与记忆职责；模型按需自主读取项目文件）
+        dynamicContext: [],
         history: await buildHistory({
           journal,
           checkpointStore: sessionState.checkpointStore,
@@ -1383,7 +1363,7 @@ export function createAgentRuntime({
           volatileRecords: volatileToolRecords
         }),
         currentInput: inputText,
-        tools: allowedDefinitions(tools, policy),
+        tools: allowedDefinitions(tools),
         modelConfig
       });
       // gateway 契约（src/core/model/gateway.mjs）：request 必须是装配完成的模型
@@ -1672,7 +1652,6 @@ export function createAgentRuntime({
             resetController(state);
             return "interrupted";
           }
-          const activeToolPolicy = workflowPolicy(runBeforeTool.workflow);
           // R5-5：截断工具参数拒绝。模型在 max_tokens 截断/流异常结束时产生的
           // tool call 参数不完整（adapter 在 finalizeStreamToolCalls 标记
           // arguments_complete=false）——不进入 ToolRuntime 执行，以
@@ -1709,7 +1688,8 @@ export function createAgentRuntime({
             project,
             run_id: runId,
             active_input_id: inputId,
-            allowed_tool_names: [...GENERAL_TOOL_NAMES, ...(activeToolPolicy.allowedDeepTools ?? [])],
+            // Task 7：统一工具目录（每轮同一工具集），执行层独立强制授权
+            allowed_tool_names: [...PRODUCTION_TOOL_NAMES],
             signal: state.controller?.signal
           });
           const toolRecord = {
@@ -2106,7 +2086,7 @@ export function createAgentRuntime({
           {
             type: "run_started",
             run_id: runId,
-            payload: { workflow: "general", input_id: inputId }
+            payload: { input_id: inputId }
           }
         ]);
         startLoop(state, sessionState, runId);
@@ -2334,7 +2314,7 @@ export function createAgentRuntime({
       await sessionState.journal.append({
         type: "run_started",
         run_id: runId,
-        payload: { workflow: run.workflow, input_id: inputId }
+        payload: { input_id: inputId }
       });
       await syncSessionRegistry(state, sessionState);
       startLoop(state, sessionState, runId);

@@ -1106,9 +1106,6 @@ test("章节提交同时更新正式文件、索引、记忆与 checkpoint", asy
     project: { min_words_per_chapter: 50, target_words_per_chapter: 80 },
     gatewayScript: [
       async () => ({
-        toolCalls: [tool("enter_workflow", { workflow: "chapter", reason: "用户要求正式写作第一章" })]
-      }),
-      async () => ({
         toolCalls: [
           tool("append_chapter_segment", {
             project_id: h.project.project_id ?? null,
@@ -1164,17 +1161,59 @@ test("章节提交同时更新正式文件、索引、记忆与 checkpoint", asy
   assert.ok(runLog.trim().length > 0, "章节提交应在 run_log 记录领域事实");
 });
 
-test("自然语言审核：模型用 read_file/edit_file 直接修正，工作流保持 general，无 reviewProject", async (t) => {
-  // Task 10：程序化审稿已删除。用户用自然语言提出审核要求，模型在普通工作区
-  // 用通用读取/编辑工具完成，journal workflow 全程 general，绝不出现 reviewProject。
+test("先写章节再问普通问题：同一 Run 完成写作与回答，不切换工作流", async (t) => {
+  // Task 7 行为验收：写章节不需要进入 chapter 工作流；提交后同一 Run 继续消费
+  // 普通问题并直接回答，全程无 workflow_changed。
+  const h = await openHarness(t, {
+    project: { min_words_per_chapter: 50, target_words_per_chapter: 80 },
+    gatewayScript: [
+      async () => ({
+        toolCalls: [
+          tool("append_chapter_segment", {
+            project_id: h.project.project_id ?? null,
+            chapter_no: 1,
+            segment_no: 1,
+            content: "雨夜，林深推开门。他低声说：\"信上说，老宅的钟会在午夜敲十三下。\"\n"
+          })
+        ]
+      }),
+      async () => ({
+        toolCalls: [tool("commit_chapter", { project_id: h.project.project_id ?? null, chapter_no: 1 })]
+      }),
+      async () => ({ text: "第一章已提交。" }),
+      async () => ({ text: "我是一个本地小说写作助手。" })
+    ]
+  });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "正式写第一章", source: "chat" });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "你是做什么的？", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  assert.equal(eventsOfType(events, "run_started").length, 1, "写作与普通问题共用同一 Run");
+  assert.equal(eventsOfType(events, "workflow_changed").length, 0, "统一模式不再切换工作流");
+  assert.ok(
+    eventsOfType(events, "tool_call_completed").some((event) => event.payload.name === "commit_chapter"),
+    "章节应提交"
+  );
+  assert.equal(await pathExists(path.join(h.projectRoot, "chapters", "001.md")), true, "正式章节文件应落盘");
+  assert.ok(
+    eventsOfType(events, "assistant_message_completed").some((event) => (event.payload?.text ?? "").includes("本地小说写作助手")),
+    "普通问题应得到文本回答"
+  );
+  assertActivityClosure(events);
+});
+
+test("自然语言审核：模型用 read_file/edit_file 直接修正，无 workflow 切换，无 reviewProject", async (t) => {
+  // Task 10：程序化审稿已删除。Task 7：统一任务政策不再有 workflow。用户用自然
+  // 语言提出审核要求，模型在统一模式下用通用读取/编辑工具完成，绝不出现
+  // reviewProject 或任何 workflow 切换。
   const ORIGINAL = "雨夜，林深推开门。他低声说：\"信上说，老宅的钟会在午夜敲十三下。\"\n";
   const h = await openPlainFolderHarness({
     gatewayScript: [
       async (request) => {
         const system = (request.messages ?? []).find((m) => m.role === "system")?.content ?? "";
         assert.ok(
-          system.includes("用户要求审核时直接读取相关文件、判断并按要求修改，不进入专门 workflow"),
-          "general 政策应写明自然语言审核路径"
+          system.includes("用户要求审核时直接读取相关文件、判断并按用户要求修改"),
+          "统一任务政策应写明自然语言审核路径"
         );
         return { toolCalls: [tool("read_file", { path: "正文/第001章.md" })] };
       },
@@ -1191,7 +1230,7 @@ test("自然语言审核：模型用 read_file/edit_file 直接修正，工作�
   await h.agent.submit({ projectRoot: h.projectRoot, text: "检查第 1 章人物前后是否一致并直接修正", source: "chat" });
   await waitForIdle(h.agent, h.projectRoot);
   const events = await readEvents(h.agent, h.projectRoot);
-  // workflow 全程 general：没有任何 workflow_changed 事件
+  // 统一模式没有工作流切换：没有任何 workflow_changed 事件
   assert.equal(eventsOfType(events, "workflow_changed").length, 0, "自然语言审核不得切换工作流");
   // 模型通过普通工具完成：read_file 读取、edit_file 直接修正
   assert.ok(
@@ -1202,10 +1241,10 @@ test("自然语言审核：模型用 read_file/edit_file 直接修正，工作�
     eventsOfType(events, "tool_call_completed").some((event) => event.payload.name === "edit_file"),
     "模型应调用 edit_file 直接修正"
   );
-  // 删除契约：任何事件都不得引用 reviewProject / review workflow
+  // 删除契约：任何事件都不得引用 reviewProject / workflow_changed
   const serialized = JSON.stringify(events);
   assert.ok(!serialized.includes("reviewProject"), "不得出现 reviewProject 工具调用");
-  assert.ok(!serialized.includes("workflow_changed"), "不得写入 review workflow 切换事件");
+  assert.ok(!serialized.includes("workflow_changed"), "不得写入 workflow_changed 事件");
   const content = await fs.readFile(path.join(h.projectRoot, "正文", "第001章.md"), "utf8");
   assert.ok(content.includes("他猛地抬头，低声说"), "直接修正应落盘");
   assert.equal(eventsOfType(events, "run_completed").length, 1, "普通 Agent 一轮完成审核");

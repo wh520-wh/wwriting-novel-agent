@@ -11,12 +11,14 @@
 //
 // 设计不变量（来自计划 Task 4 Step 3–8）：
 //   - 恰好注册八个 general 工具（list_files/search_files/read_file/write_file/edit_file/shell/
-//     read_skill/count_text）与五个 deep 工具（update_plan/enter_workflow/append_chapter_segment/
+//     read_skill/count_text）与四个 deep 工具（update_plan/append_chapter_segment/
 //     commit_chapter/commit_blueprint）；不注册旧编排工具（start_ 前缀启停、queue_ 前缀排队、
 //     resolve_failure、export_book 等）或逐文件便利工具。read_skill（Task 12）是只读
 //     工具：只能按 active catalog name 解析，realpath containment/1MiB 上限/二进制
 //     asset 由 skills service（src/core/skills/index.mjs）执行。count_text（Task 9）是
 //     只读客观字数工具：工作区内 .md/.txt，minimum/target 只计算差额不判定通过或失败。
+//     Task 7：enter_workflow 已删除；commit_blueprint 按 KEEP-for-legacy 保留注册，
+//     但 runtime 统一工具目录不暴露它。
 //   - 每个工具 schema 必须产生系统构建的归一化 ToolAction 后才进入权限评估；模型只能提供
 //     purpose，不能提供或覆盖 risk/scope/extreme/grant_key/confirmation 类型（schema 不暴露
 //     这些字段，additionalProperties: false）。
@@ -64,7 +66,6 @@ const MAX_SEARCH_MATCHES = 50; // search_files 命中上限
 const MAX_SEARCH_DEPTH = 12; // search_files 递归深度上限
 const SEARCH_SKIP_DIRS = new Set([".wwriting", "node_modules", ".git", "checkpoints"]);
 
-const WORKFLOWS = Object.freeze(["general", "chapter", "init"]);
 const PLAN_STATUSES = Object.freeze(["pending", "in_progress", "completed"]);
 
 const HOOK_PHASES = Object.freeze(["BeforeToolUse", "AfterToolUse"]);
@@ -1166,7 +1167,7 @@ export function createToolRuntime({
   });
 
   // ---- general: count_text (Task 9) --------------------------------------
-  // 通用只读工具：所有 workflow 可见；权限 action 与 read_file 同口径
+  // 通用只读工具：所有轮次可见（Task 7 统一目录）；权限 action 与 read_file 同口径
   //（category=read、scope 按目标路径判定、grantKey read:*），schema description
   // 逐字来自 brief Step 3（minimum/target 只计算差额，不判定通过或失败）。
 
@@ -1273,7 +1274,7 @@ export function createToolRuntime({
         throw toolError("bad_args", "参数无效：最多一个 in_progress 计划项。", { rule: "bad_args", fields: ["items"] });
       }
       const explanation = typeof args.explanation === "string" ? args.explanation : null;
-      // 事件侧统一脱敏（与 enter_workflow 的 reason 一致）：plan 文本可能内嵌密钥；
+      // 事件侧统一脱敏：plan 文本可能内嵌密钥；
       // 返回给模型的 items 保持原样（模型看得到自己写的计划）
       await appendEvent({
         type: "plan_updated",
@@ -1288,40 +1289,6 @@ export function createToolRuntime({
         }
       });
       return { updated: true, items: normalized };
-    }
-  });
-
-  // ---- deep: enter_workflow ------------------------------------------------
-
-  register("enter_workflow", {
-    interruptible: false,
-    description: "切换当前 Run 的工作流（general/chapter/init）。只改变工作流策略，不启动第二个 Agent。",
-    schema: {
-      type: "object",
-      properties: {
-        workflow: { type: "string", enum: [...WORKFLOWS], description: "general | chapter | init" },
-        reason: { type: "string", minLength: 1, description: "切换原因（给用户看的简短说明）" }
-      },
-      required: ["workflow", "reason"],
-      additionalProperties: false
-    },
-    describeAction(args) {
-      const action = deepAction({ title: "切换工作流", description: redactor.redact(String(args.reason ?? "")) });
-      action.safe_edit_target = false;
-      return action;
-    },
-    async run(args, context) {
-      const workflow = String(args.workflow ?? "");
-      if (!WORKFLOWS.includes(workflow)) {
-        throw toolError("bad_args", `参数无效：workflow 只允许 ${WORKFLOWS.join("/")}。`, { rule: "bad_args", fields: ["workflow"] });
-      }
-      requireStringArg(args, "reason", "reason");
-      await appendEvent({
-        type: "workflow_changed",
-        run_id: context.run_id,
-        payload: { workflow, reason: redactor.redact(String(args.reason)) }
-      });
-      return { workflow_changed: true, workflow };
     }
   });
 
@@ -1418,10 +1385,9 @@ export function createToolRuntime({
   });
 
   // ---- deep: commit_blueprint ----------------------------------------------
-  // Task 7：/init 不再暴露/要求 commit_blueprint（init.allowedDeepTools 只剩
-  // update_plan/enter_workflow，运行层 allowed_tool_names 同样拒绝）。本工具按
-  // KEEP-for-legacy 分支保留注册（旧显式 chapter/legacy 流程兼容、blueprint.mjs
-  // 仍有生产引用），但不再由任何工作流默认工具集暴露。
+  // Task 7：统一工具目录不再暴露/要求 commit_blueprint（runtime 固定目录与运行层
+  // allowed_tool_names 同样拒绝）。本工具按 KEEP-for-legacy 分支保留注册（旧显式
+  // chapter/legacy 流程兼容、blueprint.mjs 仍有生产引用），但不再由任何轮次暴露。
 
   register("commit_blueprint", {
     interruptible: false, // 蓝图三文件一致提交是原子事务
@@ -1617,10 +1583,10 @@ export function createToolRuntime({
         activity_id: activityId,
         name,
         error: "tool_not_allowed",
-        message: "当前工作流不允许使用此工具。",
+        message: "当前任务不允许使用此工具。",
         technical: { rule: "tool_not_allowed", name }
       }, runId);
-      return toolFailureResult({ tool_call_id: toolCallId, name, code: "tool_not_allowed", message: "当前工作流不允许使用此工具。" });
+      return toolFailureResult({ tool_call_id: toolCallId, name, code: "tool_not_allowed", message: "当前任务不允许使用此工具。" });
     }
 
     // 系统构建归一化动作（模型不可提供/覆盖 risk/scope/extreme/grant_key/确认类型）
