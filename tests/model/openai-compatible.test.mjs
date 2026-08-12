@@ -875,6 +875,119 @@ test("流式：多次 tool_call delta 按 index 分别累积", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// R5-3 TextDecoder flush 与 R5-5 截断工具参数完整性标记
+// ---------------------------------------------------------------------------
+
+test("R5-3：末 chunk 以不完整 UTF-8 序列结尾 → 流结束冲刷后 U+FFFD 出现在 malformed 帧（不静默丢字节）", async () => {
+  // "你" = E4 BD A0：流的最后一个 chunk 只携带前两个字节（E4 BD），随后流被截断。
+  // TextDecoder 的 stream 模式会把不完整序列挂在内部；若不冲刷，这些字节被静默
+  // 丢弃（malformed 帧只有截断前的文本）；无参 decode() 冲刷后按 UTF-8 规范以
+  // U+FFFD 呈现（SPEC R5-3 接受行为）。
+  const prefix = 'data: {"choices":[{"delta":{"content":"';
+  const seen = [];
+  const prefixBytes = new TextEncoder().encode(prefix);
+  const partial = Uint8Array.from([0xE4, 0xBD]);
+  const chunk = new Uint8Array(prefixBytes.length + partial.length);
+  chunk.set(prefixBytes, 0);
+  chunk.set(partial, prefixBytes.length);
+  const adapter = makeAdapter({
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      text: async () => {
+        throw new Error("streaming path should not call response.text()");
+      },
+      body: {
+        getReader() {
+          let delivered = false;
+          return {
+            read() {
+              if (delivered) return Promise.resolve({ done: true, value: undefined });
+              delivered = true;
+              return Promise.resolve({ done: false, value: chunk });
+            }
+          };
+        }
+      }
+    })
+  });
+  await assert.rejects(
+    () =>
+      adapter.complete({
+        messages: [{ role: "user", content: "hi" }],
+        modelConfig: { model_name: "m", stream: true },
+        metadata: {
+          onMalformedSseFrame(info) {
+            seen.push(info);
+          }
+        }
+      }),
+    (error) => {
+      assert.ok(error instanceof ProviderTransportError, "无终止信号的截断流应抛 transport 错误");
+      assert.equal(seen.length, 1, "尾部不完整帧应触发 onMalformedSseFrame");
+      assert.ok(seen[0].data.endsWith("\uFFFD"), "不完整尾字节冲刷后以 U+FFFD 呈现，不得静默丢弃");
+      return true;
+    }
+  );
+});
+
+test("R5-5：finish_reason=length + 半截 JSON 工具参数 → arguments_complete=false", async () => {
+  const adapter = makeAdapter({
+    fetchImpl: async () =>
+      streamResponse(
+        sseFrames([
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"list_files","arguments":"{\\"path\\":"}}]}}]}',
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"chap"}}]}}]}',
+          'data: {"choices":[{"delta":{},"finish_reason":"length"}]}',
+          "data: [DONE]"
+        ])
+      )
+  });
+  const result = await adapter.complete({ messages: [{ role: "user", content: "hi" }], modelConfig: { model_name: "m", stream: true } });
+  assert.equal(result.toolCalls.length, 1);
+  assert.equal(result.raw.finish_reason, "length");
+  assert.equal(result.toolCalls[0].arguments_complete, false, "max_tokens 截断 + 不可解析参数应标记不完整");
+  assert.equal(result.toolCalls[0].input, null, "半截 JSON 解析失败，input 为 null");
+});
+
+test("R5-5：完整 JSON 工具参数 + finish_reason=tool_calls + [DONE] → arguments_complete=true", async () => {
+  const adapter = makeAdapter({
+    fetchImpl: async () =>
+      streamResponse(
+        sseFrames([
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"list_files","arguments":"{\\"path\\":"}}]}}]}',
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"chapters\\"}"}}]}}]}',
+          'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+          "data: [DONE]"
+        ])
+      )
+  });
+  const result = await adapter.complete({ messages: [{ role: "user", content: "hi" }], modelConfig: { model_name: "m", stream: true } });
+  assert.equal(result.toolCalls.length, 1);
+  assert.equal(result.toolCalls[0].arguments_complete, true, "完整参数 + 正常终止应标记完整");
+  assert.deepEqual(result.toolCalls[0].input, { path: "chapters" });
+});
+
+test("R5-5：参数可解析但 finish_reason=length → 仍视为不完整（length 表示可能截断，保守拒绝）", async () => {
+  // 与上一条的唯一差别是 finish_reason=length：即使累积 arguments 恰好可解析，
+  // 模型输出已被 max_tokens 截断，调用完整性不可信，保守标记不完整。
+  const adapter = makeAdapter({
+    fetchImpl: async () =>
+      streamResponse(
+        sseFrames([
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"list_files","arguments":"{\\"path\\":"}}]}}]}',
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"chapters\\"}"}}]}}]}',
+          'data: {"choices":[{"delta":{},"finish_reason":"length"}]}',
+          "data: [DONE]"
+        ])
+      )
+  });
+  const result = await adapter.complete({ messages: [{ role: "user", content: "hi" }], modelConfig: { model_name: "m", stream: true } });
+  assert.equal(result.toolCalls[0].arguments_complete, false);
+  assert.deepEqual(result.toolCalls[0].input, { path: "chapters" }, "参数本身解析成功，但截断仍标记不完整");
+});
+
+// ---------------------------------------------------------------------------
 // 额外契约
 // ---------------------------------------------------------------------------
 

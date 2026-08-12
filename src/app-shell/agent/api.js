@@ -356,6 +356,17 @@ export function createAgentApi({
         dispatchBlock(block);
       }
     }
+    // R5-3：流结束冲刷——无参 decode() 处理最后一个 chunk 里不完整的 UTF-8
+    // 尾字节序列（不静默丢字节，不完整序列按 UTF-8 规范产出 U+FFFD）；随后把
+    // 残留缓冲（未以 \n\n 结尾的最后一帧）照常分发，避免尾事件静默丢失。
+    buffer += decoder.decode();
+    let index;
+    while ((index = buffer.indexOf("\n\n")) >= 0) {
+      const block = buffer.slice(0, index);
+      buffer = buffer.slice(index + 2);
+      dispatchBlock(block);
+    }
+    if (buffer.trim()) dispatchBlock(buffer);
   }
 
   function dispatchBlock(block) {
