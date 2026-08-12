@@ -62,7 +62,6 @@ import {
   commitChapterMemory,
   inspectChapterContext
 } from "../project-operations/chapter.mjs";
-import { commitBlueprint, inspectBlueprintContext } from "../project-operations/blueprint.mjs";
 
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
@@ -72,8 +71,8 @@ const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "inte
 const TOOL_RESULT_CANCELLATION_CODES = new Set(["tool_cancelled", "shell_cancelled"]);
 
 // 统一工具目录（Task 7）：不再按工作流切换——每一轮都提供相同的生产工具集：
-// 八个通用工具 + 三个深工具恒可用。commit_blueprint 按 KEEP-for-legacy 保留注册，
-// 但不进入统一目录（运行层 allowed_tool_names 同样拒绝）。
+// 八个通用工具 + 三个深工具恒可用（Task 8：commit_blueprint 已整体删除，不再有
+// 注册表残留）。
 const GENERAL_TOOL_NAMES = new Set([
   "list_files",
   "search_files",
@@ -243,9 +242,7 @@ export function createAgentRuntime({
         // Task 10：commitChapter 只保留存储安全约束，不再消费技能注入（确定性
         // 技能钩子已删除）；直接透传原函数，保持写探针 options 兼容。
         commitChapter,
-        commitChapterMemory,
-        inspectBlueprintContext,
-        commitBlueprint
+        commitChapterMemory
       };
       state = {
         key,

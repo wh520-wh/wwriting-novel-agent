@@ -3,7 +3,7 @@
 // 对 Agent 提供唯一工具入口：
 //
 //   const tools = createToolRuntime({ projectOperations, journal, permissionPolicy, shellRuntime, secrets });
-//   tools.definitions(context);            // -> OpenAI 原生 function definitions（恰好 13 个工具）
+//   tools.definitions(context);            // -> OpenAI 原生 function definitions（恰好 11 个工具）
 //   await tools.execute(toolCall, context); // 单次工具调用的 schema→权限→审计→执行→事件闭环
 //
 // 内部实现隐藏：schema 注册、权限判定（含硬能力拒绝与输入级临时授权）、journal 审计事件、
@@ -11,14 +11,14 @@
 //
 // 设计不变量（来自计划 Task 4 Step 3–8）：
 //   - 恰好注册八个 general 工具（list_files/search_files/read_file/write_file/edit_file/shell/
-//     read_skill/count_text）与四个 deep 工具（update_plan/append_chapter_segment/
-//     commit_chapter/commit_blueprint）；不注册旧编排工具（start_ 前缀启停、queue_ 前缀排队、
+//     read_skill/count_text）与三个 deep 工具（update_plan/append_chapter_segment/
+//     commit_chapter）；不注册旧编排工具（start_ 前缀启停、queue_ 前缀排队、
 //     resolve_failure、export_book 等）或逐文件便利工具。read_skill（Task 12）是只读
 //     工具：只能按 active catalog name 解析，realpath containment/1MiB 上限/二进制
 //     asset 由 skills service（src/core/skills/index.mjs）执行。count_text（Task 9）是
 //     只读客观字数工具：工作区内 .md/.txt，minimum/target 只计算差额不判定通过或失败。
-//     Task 7：enter_workflow 已删除；commit_blueprint 按 KEEP-for-legacy 保留注册，
-//     但 runtime 统一工具目录不暴露它。
+//     Task 7：enter_workflow 已删除；Task 8：commit_blueprint 注册连同 blueprint.mjs
+//     一并删除。
 //   - 每个工具 schema 必须产生系统构建的归一化 ToolAction 后才进入权限评估；模型只能提供
 //     purpose，不能提供或覆盖 risk/scope/extreme/grant_key/confirmation 类型（schema 不暴露
 //     这些字段，additionalProperties: false）。
@@ -775,7 +775,7 @@ export function createToolRuntime({
   }
 
   // -------------------------------------------------------------------------
-  // 工具注册表与六个 general + 五个 deep 工具
+  // 工具注册表与八个 general + 三个 deep 工具
   // -------------------------------------------------------------------------
 
   const TOOLS = new Map();
@@ -1381,54 +1381,6 @@ export function createToolRuntime({
         }
       });
       return { ...(result ?? {}), chapter_no: chapterNo };
-    }
-  });
-
-  // ---- deep: commit_blueprint ----------------------------------------------
-  // Task 7：统一工具目录不再暴露/要求 commit_blueprint（runtime 固定目录与运行层
-  // allowed_tool_names 同样拒绝）。本工具按 KEEP-for-legacy 分支保留注册（旧显式
-  // chapter/legacy 流程兼容、blueprint.mjs 仍有生产引用），但不再由任何轮次暴露。
-
-  register("commit_blueprint", {
-    interruptible: false, // 蓝图三文件一致提交是原子事务
-    description: "一致提交 OUTLINE.md、SETTING.md 与 project.yaml 的 blueprint_status（旧显式蓝图流程兼容保留，不再由工作流暴露）。",
-    schema: {
-      type: "object",
-      properties: {
-        project_id: { type: "string", description: "项目 id" },
-        outline: { type: "string", description: "OUTLINE.md 完整内容" },
-        setting: { type: "string", description: "SETTING.md 完整内容" },
-        evidence_paths: { type: "array", description: "建立蓝图所依据的项目文件路径", items: { type: "string" } }
-      },
-      required: ["project_id", "outline", "setting", "evidence_paths"],
-      additionalProperties: false
-    },
-    describeAction() {
-      const action = deepAction({ title: "提交蓝图", description: "OUTLINE / SETTING / blueprint_status 一致提交" });
-      action.category = "write";
-      action.grant_key = "write:project:project-root";
-      action.safe_edit_target = true;
-      return action;
-    },
-    async run(args, context) {
-      const projectId = requireStringArg(args, "project_id", "project_id");
-      requireStringArg(args, "outline", "outline");
-      requireStringArg(args, "setting", "setting");
-      if (!Array.isArray(args.evidence_paths)) {
-        throw toolError("bad_args", "参数无效：evidence_paths 必须是数组。", { rule: "bad_args", fields: ["evidence_paths"] });
-      }
-      const op = projectOperations?.commitBlueprint;
-      if (typeof op !== "function") {
-        throw toolError("not_wired", "工具不可用。", { rule: "not_wired", tool: "commit_blueprint" });
-      }
-      const result = await op({
-        projectRoot: context.projectRoot,
-        projectId,
-        outline: args.outline,
-        setting: args.setting,
-        evidencePaths: args.evidence_paths.map(String)
-      });
-      return result ?? {};
     }
   });
 

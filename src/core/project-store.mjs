@@ -40,10 +40,11 @@ export async function createProjectAt(projectRoot, options = {}) {
     default_reviewer_model: options.default_reviewer_model ?? null,
     // 未配置模型 = active_model: null（用户面不再以 mock 作为兜底）
     active_model: options.active_model ?? null,
-    // 统一 Agent 内核计划 Rule 9：project.yaml 保存项目身份、配置与 blueprint_status；
+    // 统一 Agent 内核计划 Rule 9：project.yaml 保存项目身份与配置；
     // .wwriting/agent/ 由 ProjectAgent 惰性创建，旧运行态文件不再创建。
     // Task 12：不再默认填充 enabled_skills（技能改为发现即生效，无启停集合）。
-    blueprint_status: options.blueprint_status ?? "none",
+    // Task 8：blueprint_status 从新项目默认值与运行时领域模型删除（旧项目已存在
+    // 的字段由保存器自然保留，但生产代码不读取、不驱动行为）。
     output_style: options.output_style ?? "creative",
     archived_at: options.archived_at ?? null,
     tool_permissions: {

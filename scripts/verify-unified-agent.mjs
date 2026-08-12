@@ -8,7 +8,7 @@
 // 场景清单（Task 11 Step 2 本地矩阵的 25 个场景，Task 9 Step 6 版 22 场景补全后）：
 //   简单回答无计划 / 复杂任务真实里程碑更新计划 / 同项目 FIFO 队列 /
 //   立即保持同一 run id / 停止取消当前 Run 与排队输入 / 重试恢复同一可恢复 Run /
-//   跨项目并行 / 通用读取编辑 Shell / 章节事务 / init 蓝图门禁移除 / 只读审查 /
+//   跨项目并行 / 通用读取编辑 Shell / 章节事务 / blueprint_status 退役负向断言 / 只读审查 /
 //   重启 journal 恢复 / legacy 导入幂等 + blueprint_status 迁移 /
 //   legacy 旧状态一次性导入且永不再次写入 / 新项目无旧状态文件 /
 //   无撕裂原子写入 / 确定性导出无模型调用 / 自主 /init 读取目录并创建 WWRITING.md /
@@ -37,7 +37,7 @@ import {
   waitForIdle
 } from "../tests/helpers/project-agent-harness.mjs";
 import { exportBook } from "../src/core/book-export.mjs";
-import { parseSimpleYaml } from "../src/core/simple-yaml.mjs";
+import { parseSimpleYaml, serializeSimpleYaml } from "../src/core/simple-yaml.mjs";
 
 const SECRET = "ww-secret-token-9f3a";
 const results = [];
@@ -326,7 +326,6 @@ step("场景 9 · 章节事务");
   const script = [];
   const h = await createProjectAgentHarness({ project: { min_words_per_chapter: 10, target_words_per_chapter: 20 }, gatewayScript: script });
   script.push(
-    { reply: { toolCalls: [tool("enter_workflow", { workflow: "chapter", reason: "写第一章" })] } },
     { reply: { toolCalls: [tool("append_chapter_segment", { project_id: h.project.project_id, chapter_no: 1, segment_no: 1, content: GATE_PASSING_CHAPTER })] } },
     { reply: { toolCalls: [tool("commit_chapter", { project_id: h.project.project_id, chapter_no: 1 })] } },
     { reply: { text: "第一章已完成。" } }
@@ -352,38 +351,49 @@ step("场景 9 · 章节事务");
 }
 
 // ---------------------------------------------------------------------------
-// 场景 10：init 不再暴露蓝图提交（commit_blueprint 被运行层拒绝，无固定蓝图门禁）
+// 场景 10：blueprint_status 退役负向断言——统一工具目录无 commit_blueprint、
+// 新项目无 blueprint_status、带旧字段的 YAML 打开后流程不变、OUTLINE.md/
+// SETTING.md 由通用文件工具按用户意图维护
 // ---------------------------------------------------------------------------
-step("场景 10 · init 蓝图门禁移除");
+step("场景 10 · blueprint_status 退役负向断言");
 {
-  const script = [];
-  const h = await createProjectAgentHarness({ gatewayScript: script });
-  script.push(
-    { reply: { toolCalls: [tool("enter_workflow", { workflow: "init", reason: "/init 项目理解" })] } },
-    // 模型即使尝试旧蓝图提交，init 工作流也不再暴露 commit_blueprint：
-    // 运行层 allowed_tool_names 强制拒绝，不写 OUTLINE/SETTING/project.yaml
-    { reply: { toolCalls: [tool("commit_blueprint", { project_id: h.project.project_id, outline: "# OUTLINE.md\n\n第一章 雨夜来信\n", setting: "# SETTING.md\n\n现代都市。\n", evidence_paths: [] })] } },
-    { reply: { text: "/init 完成，已维护项目记忆。" } }
-  );
+  const seenTools = [];
+  const h = await createProjectAgentHarness({
+    project: { tool_permissions: { auto_edit: true } },
+    gatewayScript: [
+      // 捕获模型侧工具目录：统一目录必须不含 commit_blueprint（生产符号负向断言）
+      async (request) => {
+        seenTools.push(...(request.tools ?? []).map((def) => def?.function?.name).filter(Boolean));
+        return { toolCalls: [tool("write_file", { path: "OUTLINE.md", content: "# OUTLINE.md\n\n第一章 雨夜来信\n" })] };
+      },
+      { reply: { toolCalls: [tool("write_file", { path: "SETTING.md", content: "# SETTING.md\n\n现代都市。\n" })] } },
+      { reply: { text: "已按用户意图维护总纲与设定。" } }
+    ]
+  });
   try {
+    // 旧字段残留：手工把 blueprint_status 写回 project.yaml，模拟旧项目。该字段
+    // 不参与任何决策（确定性迁移忽略它）；保存器可自然保留，但生产代码不读取。
+    const yamlPath = path.join(h.projectRoot, "project.yaml");
+    const legacy = parseSimpleYaml(await fs.readFile(yamlPath, "utf8"));
+    legacy.blueprint_status = "complete";
+    await fs.writeFile(yamlPath, serializeSimpleYaml(legacy), "utf8");
+
     await h.agent.open({ projectRoot: h.projectRoot });
-    await h.agent.submit({ projectRoot: h.projectRoot, text: "/init 都市职场小说，程序员主角" });
+    await h.agent.submit({ projectRoot: h.projectRoot, text: "打开项目并维护 OUTLINE/SETTING" });
     await waitForIdle(h.agent, h.projectRoot);
     const events = await readEvents(h.agent, h.projectRoot);
-    const failed = eventsOfType(events, "tool_call_failed").filter((event) => event.payload.name === "commit_blueprint");
-    assert.equal(failed.length, 1, "init 工作流调用 commit_blueprint 必须失败");
-    assert.equal(failed[0].payload.error, "tool_not_allowed", "拒绝原因必须是运行层工具白名单");
+    assert.ok(!seenTools.includes("commit_blueprint"), "模型侧工具目录不得包含 commit_blueprint");
     assert.equal(
-      eventsOfType(events, "tool_call_completed").filter((event) => event.payload.name === "commit_blueprint").length,
+      eventsOfType(events, "tool_call_failed").filter((event) => event.payload.name === "commit_blueprint").length,
       0,
-      "commit_blueprint 不得完成"
+      "不得出现 commit_blueprint 调用"
     );
     const outline = await fs.readFile(path.join(h.projectRoot, "OUTLINE.md"), "utf8");
-    assert.ok(outline.includes("> 蓝图未生成，请运行 /init"), "init 不得改写 OUTLINE.md");
-    const project = parseSimpleYaml(await fs.readFile(path.join(h.projectRoot, "project.yaml"), "utf8"));
-    assert.equal(project.blueprint_status, "none", "init 不得写入 blueprint_status=complete");
-    assert.equal(eventsOfType(events, "run_completed").length, 1, "拒绝后 Run 正常完成，不阻塞普通写作");
-    record("init：蓝图提交被运行层拒绝，不生成固定蓝图", true, "tool_not_allowed");
+    assert.ok(outline.includes("第一章 雨夜来信"), "write_file 应能按用户意图维护 OUTLINE.md");
+    const setting = await fs.readFile(path.join(h.projectRoot, "SETTING.md"), "utf8");
+    assert.ok(setting.includes("现代都市。"), "write_file 应能按用户意图维护 SETTING.md");
+    assert.equal(eventsOfType(events, "run_completed").length, 1, "带旧字段的 YAML 打开后流程不变，Run 正常完成");
+    record("blueprint_status 退役：目录无 commit_blueprint + 旧字段不驱动行为 + 通用工具维护 OUTLINE/SETTING", true, `tools=${seenTools.join(",")}`);
   } finally {
     await h.cleanup();
   }
@@ -396,7 +406,6 @@ step("场景 11 · 只读审查");
 {
   const h = await createProjectAgentHarness({
     gatewayScript: [
-      { reply: { toolCalls: [tool("enter_workflow", { workflow: "review", reason: "审稿" })] } },
       { reply: { toolCalls: [tool("read_file", { path: "OUTLINE.md" })] } },
       { reply: { text: "审查完成：未发现严重冲突。" } }
     ]
@@ -502,8 +511,8 @@ step("场景 14 · 新项目无旧状态文件");
       assert.equal(await pathExists(path.join(projectRoot, name)), false, `新项目不得创建 ${name}`);
     }
     const project = parseSimpleYaml(await fs.readFile(path.join(projectRoot, "project.yaml"), "utf8"));
-    assert.equal(project.blueprint_status, "none");
-    record("新项目：project.yaml 含 blueprint_status=none，无旧状态文件", true, "");
+    assert.equal(project.blueprint_status, undefined, "Task 8：新项目 project.yaml 不得包含 blueprint_status");
+    record("新项目：project.yaml 无 blueprint_status，无旧状态文件", true, "");
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
   }
@@ -517,7 +526,6 @@ step("场景 15 · 确定性导出");
   const script = [];
   const h = await createProjectAgentHarness({ project: { min_words_per_chapter: 10, target_words_per_chapter: 20 }, gatewayScript: script });
   script.push(
-    { reply: { toolCalls: [tool("enter_workflow", { workflow: "chapter", reason: "写第一章" })] } },
     { reply: { toolCalls: [tool("append_chapter_segment", { project_id: h.project.project_id, chapter_no: 1, segment_no: 1, content: GATE_PASSING_CHAPTER })] } },
     { reply: { toolCalls: [tool("commit_chapter", { project_id: h.project.project_id, chapter_no: 1 })] } },
     { reply: { text: "完成" } }

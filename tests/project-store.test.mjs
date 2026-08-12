@@ -39,15 +39,15 @@ test("createProjectAt initializes an explicitly selected empty directory", async
   });
   assert.equal(result.projectRoot, projectRoot);
   assert.equal(await pathExists(path.join(projectRoot, "project.yaml")), true);
-  // 统一 Agent 内核计划 Rule 9：新项目不创建旧运行态文件，blueprint_status
-  // 是 project.yaml 的持久字段（文件名按片段构造，遵守依赖规则 H）。
+  // 统一 Agent 内核计划 Rule 9：新项目不创建旧运行态文件（文件名按片段构造，
+  // 遵守依赖规则 H）；Task 8：blueprint_status 已从新项目默认值删除。
   assert.equal(await pathExists(path.join(projectRoot, "agent_state" + ".json")), false);
   assert.equal(await pathExists(path.join(projectRoot, "memory", "chapter_index.json")), true);
   const project = await loadProject(projectRoot);
   assert.equal(project.title, "Picked Folder Novel");
   assert.equal(project.target_chapters, 12);
   assert.equal(project.root_path, projectRoot);
-  assert.equal(project.blueprint_status, "none", "新项目 project.yaml 应含 blueprint_status=none");
+  assert.equal(project.blueprint_status, undefined, "Task 8：新项目 project.yaml 不得包含 blueprint_status");
 });
 
 // ---------------------------------------------------------------------------
@@ -67,14 +67,16 @@ test("createProject 不再默认填充 enabled_skills，也不生成 skills/*/sk
 test("saveProject 保存时移除旧 project.yaml 的 enabled_skills 字段", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-save-strip-"));
   const { projectRoot } = await createProject(root, { slug: "project" });
-  // 模拟旧版本 project.yaml 残留 enabled_skills
-  const legacy = { ...(await loadProject(projectRoot)), enabled_skills: ["suspense-chapter-end"] };
+  // 模拟旧版本 project.yaml 残留 enabled_skills 与 blueprint_status：保存器只剥离
+  // enabled_skills，blueprint_status 这类未知字段自然保留（Task 8：保留可以，
+  // 但任何生产代码不得读取它）。
+  const legacy = { ...(await loadProject(projectRoot)), enabled_skills: ["suspense-chapter-end"], blueprint_status: "complete" };
   await saveProject(projectRoot, legacy);
   const after = await loadProject(projectRoot);
   assert.equal(after.enabled_skills, undefined, "保存后 enabled_skills 必须被移除");
   const source = await fs.readFile(path.join(projectRoot, "project.yaml"), "utf8");
   assert.ok(!source.includes("enabled_skills"), "project.yaml 文本不得再出现 enabled_skills");
-  // 其它字段原样保留
+  // 其它字段原样保留（含旧项目遗留的 blueprint_status：自然保留、不驱动行为）
   assert.equal(after.title, legacy.title);
-  assert.equal(after.blueprint_status, "none");
+  assert.equal(after.blueprint_status, "complete");
 });

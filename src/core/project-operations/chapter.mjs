@@ -172,9 +172,7 @@ export async function readChapterDraft(projectRoot, project, chapterNo) {
 const KNOWN_TOOL_NAME_PATTERNS = [
   { name: "append_chapter_segment", re: /\bappend_chapter_segment\b/u },
   { name: "commit_chapter", re: /\bcommit_chapter\b/u },
-  { name: "commit_blueprint", re: /\bcommit_blueprint\b/u },
   { name: "update_plan", re: /\bupdate_plan\b/u },
-  { name: "enter_workflow", re: /\benter_workflow\b/u },
   { name: "list_files", re: /\blist_files\b/u },
   { name: "search_files", re: /\bsearch_files\b/u },
   { name: "read_file", re: /\bread_file\b/u },

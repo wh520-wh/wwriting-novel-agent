@@ -84,8 +84,7 @@ const TOOL_BASE_LABELS = {
   update_plan: "更新任务计划",
   enter_workflow: "切换工作流",
   append_chapter_segment: "写入章节内容",
-  commit_chapter: "提交章节",
-  commit_blueprint: "提交蓝图"
+  commit_chapter: "提交章节"
 };
 
 // 工具标签按状态生成（Task 5 Step 3 冻结文案）：
