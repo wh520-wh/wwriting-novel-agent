@@ -1255,8 +1255,8 @@ test("append 无需显式 load（自初始化）", async (t) => {
   assert.equal(events[1].seq, 2);
 });
 
-test("FIXED_EVENT_TYPES 包含计划固定的 40 个事件类型（含 reasoning、journal_recovery_boundary、context_usage_updated 与 7 个压缩类型）", () => {
-  assert.equal(FIXED_EVENT_TYPES.length, 40);
+test("FIXED_EVENT_TYPES 包含计划固定的 45 个事件类型（Task 6 新增 5 类输入事件）", () => {
+  assert.equal(FIXED_EVENT_TYPES.length, 45);
   assert.deepEqual(
     [...FIXED_EVENT_TYPES].sort(),
     [
@@ -1275,9 +1275,13 @@ test("FIXED_EVENT_TYPES 包含计划固定的 40 个事件类型（含 reasoning
       "decision_resolved",
       "history_compacted",
       "input_cancelled",
+      "input_completed",
       "input_consumed",
+      "input_interrupted",
       "input_promoted",
       "input_queued",
+      "input_started",
+      "input_withdrawn",
       "interrupt_requested",
       "interrupt_safe_point_reached",
       "journal_recovery_boundary",
@@ -1286,6 +1290,7 @@ test("FIXED_EVENT_TYPES 包含计划固定的 40 个事件类型（含 reasoning
       "permission_grant_cleared",
       "permission_grant_created",
       "plan_updated",
+      "priority_input_requested",
       "reasoning_completed",
       "reasoning_delta",
       "run_cancelled",
@@ -2310,4 +2315,475 @@ test("回归·initialSessionId 对齐只用于 session_created；跨实例 appen
     eventIds.add(event.event_id);
   }
   assert.equal(eventIds.size, all.length, "event_id 总数必须等于事件总数");
+});
+
+// ---------------------------------------------------------------------------
+// Task 6：重写输入生命周期（SPEC 3.2）——新 reducer 契约与崩溃恢复
+// ---------------------------------------------------------------------------
+
+test("Task 6 输入生命周期：queued→started→completed 反映在投影", async (t) => {
+  const root = await makeWorkspace(t);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  await journal.load();
+  await journal.append({ type: "input_queued", payload: { input_id: "in-1", text: "任务一" } });
+  await journal.append({ type: "run_started", run_id: "run-1", payload: {} });
+
+  let session = await journal.getSession();
+  assert.equal(session.active_run.active_input_id, null, "新生命周期下 run_started 不认领输入");
+  assert.deepEqual(session.queued_inputs.map((item) => item.id), ["in-1"]);
+  assert.equal(session.priority_input_id, null, "初始 priority_input_id 为 null");
+
+  // started：输入离开队列成为活动输入
+  await journal.append({ type: "input_started", run_id: "run-1", payload: { input_id: "in-1" } });
+  session = await journal.getSession();
+  assert.equal(session.active_run.active_input_id, "in-1");
+  assert.deepEqual(session.queued_inputs, []);
+
+  // completed：活动输入闭合
+  await journal.append({ type: "input_completed", run_id: "run-1", payload: { input_id: "in-1" } });
+  session = await journal.getSession();
+  assert.equal(session.active_run.active_input_id, null);
+  assert.equal(session.status, "running", "Run 本身仍活动，等待 run_completed");
+
+  await journal.append({ type: "run_completed", run_id: "run-1", payload: {} });
+  session = await journal.getSession();
+  assert.equal(session.active_run.status, "completed");
+  assert.equal(session.status, "idle");
+});
+
+test("Task 6 输入生命周期：queued→started→interrupted 后可启动下一条", async (t) => {
+  const root = await makeWorkspace(t);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  await journal.load();
+  await journal.append({ type: "input_queued", payload: { input_id: "in-1", text: "被打断" } });
+  await journal.append({ type: "input_queued", payload: { input_id: "in-2", text: "续跑" } });
+  await journal.append({ type: "run_started", run_id: "run-1", payload: {} });
+  await journal.append({ type: "input_started", run_id: "run-1", payload: { input_id: "in-1" } });
+
+  // 优先/停止切换：活动输入被 interrupted（已完成副作用保留，不自动重跑）
+  await journal.append({ type: "input_interrupted", run_id: "run-1", payload: { input_id: "in-1", reason: "priority" } });
+  let session = await journal.getSession();
+  assert.equal(session.active_run.active_input_id, null);
+
+  // 下一条正常 started→completed
+  await journal.append({ type: "input_started", run_id: "run-1", payload: { input_id: "in-2" } });
+  await journal.append({ type: "input_completed", run_id: "run-1", payload: { input_id: "in-2" } });
+  await journal.append({ type: "run_completed", run_id: "run-1", payload: {} });
+  session = await journal.getSession();
+  assert.equal(session.active_run.status, "completed");
+  assert.equal(session.active_run.active_input_id, null);
+});
+
+test("Task 6 输入生命周期：queued→withdrawn 不进入活动输入", async (t) => {
+  const root = await makeWorkspace(t);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  await journal.load();
+  await journal.append({ type: "input_queued", payload: { input_id: "in-1", text: "撤回我" } });
+  await journal.append({ type: "input_queued", payload: { input_id: "in-2", text: "留下" } });
+  await journal.append({ type: "run_started", run_id: "run-1", payload: {} });
+
+  await journal.append({ type: "input_withdrawn", payload: { input_id: "in-1" } });
+  let session = await journal.getSession();
+  assert.equal(session.active_run.active_input_id, null);
+  assert.deepEqual(session.queued_inputs.map((item) => item.id), ["in-2"], "仅撤回项离开队列，其余顺序不变");
+
+  await journal.append({ type: "input_started", run_id: "run-1", payload: { input_id: "in-2" } });
+  await journal.append({ type: "input_completed", run_id: "run-1", payload: { input_id: "in-2" } });
+  await journal.append({ type: "run_completed", run_id: "run-1", payload: {} });
+  assert.equal((await journal.getSession()).active_run.status, "completed");
+});
+
+test("Task 6 priority_input_id：requested 只设置标记，匹配的 input_started 清空", async (t) => {
+  const root = await makeWorkspace(t);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  await journal.load();
+  await journal.append({ type: "input_queued", payload: { input_id: "in-1", text: "A" } });
+  await journal.append({ type: "input_queued", payload: { input_id: "in-2", text: "D" } });
+  await journal.append({ type: "run_started", run_id: "run-1", payload: {} });
+  await journal.append({ type: "input_started", run_id: "run-1", payload: { input_id: "in-1" } });
+
+  // 请求优先：只设置 priority_input_id，不改写 active_input_id
+  await journal.append({ type: "priority_input_requested", payload: { input_id: "in-2" } });
+  let session = await journal.getSession();
+  assert.equal(session.priority_input_id, "in-2");
+  assert.equal(session.active_run.active_input_id, "in-1", "priority 不立即改写活动输入");
+  assert.deepEqual(session.queued_inputs.map((item) => item.id), ["in-2"]);
+
+  // 旧输入自然完成（不伪造中断），随后优先输入 started → 清空 priority
+  await journal.append({ type: "input_completed", run_id: "run-1", payload: { input_id: "in-1" } });
+  await journal.append({ type: "input_started", run_id: "run-1", payload: { input_id: "in-2" } });
+  session = await journal.getSession();
+  assert.equal(session.priority_input_id, null, "匹配 priority 的 input_started 必须清空标记");
+  assert.equal(session.active_run.active_input_id, "in-2");
+
+  // 非匹配 input_started 不清空（此处无 priority，仅验证无回归）
+  await journal.append({ type: "input_completed", run_id: "run-1", payload: { input_id: "in-2" } });
+  assert.equal((await journal.getSession()).priority_input_id, null);
+});
+
+test("Task 6 转移表：第二终态、终态回退、withdraw active、start 非 queued、第二个 priority 一律在 appendBatch dry-run 拒绝且不污染 journal", async (t) => {
+  const root = await makeWorkspace(t);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  await journal.load();
+  await journal.append({ type: "input_queued", payload: { input_id: "in-1", text: "一" } });
+  await journal.append({ type: "input_queued", payload: { input_id: "in-2", text: "二" } });
+  await journal.append({ type: "run_started", run_id: "run-1", payload: {} });
+  await journal.append({ type: "input_started", run_id: "run-1", payload: { input_id: "in-1" } });
+  await journal.append({ type: "input_completed", run_id: "run-1", payload: { input_id: "in-1" } });
+
+  // 第二终态：completed 后不得再 completed/interrupted
+  await assert.rejects(
+    () => journal.append({ type: "input_completed", run_id: "run-1", payload: { input_id: "in-1" } }),
+    /引用非活动 input/,
+    "completed 后再次 completed 必须拒绝（第二终态）"
+  );
+  await assert.rejects(
+    () => journal.append({ type: "input_interrupted", run_id: "run-1", payload: { input_id: "in-1" } }),
+    /引用非活动 input/,
+    "completed 后 interrupted 必须拒绝（第二终态）"
+  );
+
+  // 从终态回退：已终结输入不得重新排队/再次 started/withdrawn
+  await assert.rejects(
+    () => journal.append({ type: "input_queued", payload: { input_id: "in-1", text: "重排" } }),
+    /已终结/,
+    "已终结输入不得重新排队"
+  );
+  await assert.rejects(
+    () => journal.append({ type: "input_started", run_id: "run-1", payload: { input_id: "in-1" } }),
+    /引用非排队 input/,
+    "已终结输入不得再次 started"
+  );
+  await assert.rejects(
+    () => journal.append({ type: "input_withdrawn", payload: { input_id: "in-1" } }),
+    /引用非排队 input/,
+    "已终结输入不得 withdrawn"
+  );
+
+  // 正常推进到 in-2 活动；withdraw active 拒绝
+  await journal.append({ type: "input_started", run_id: "run-1", payload: { input_id: "in-2" } });
+  await assert.rejects(
+    () => journal.append({ type: "input_withdrawn", payload: { input_id: "in-2" } }),
+    /引用非排队 input/,
+    "活动输入不能 withdraw（必须先 completed/interrupted）"
+  );
+  // 活动输入未收敛时 start 下一条拒绝（生命周期不变量）
+  await assert.rejects(
+    () => journal.append({ type: "input_started", run_id: "run-1", payload: { input_id: "ghost" } }),
+    /尚未收敛/,
+    "活动输入未收敛时不得切换下一条"
+  );
+
+  // interrupted 后同样不得再次 completed（第二终态）
+  await journal.append({ type: "input_interrupted", run_id: "run-1", payload: { input_id: "in-2", reason: "test" } });
+  await assert.rejects(
+    () => journal.append({ type: "input_completed", run_id: "run-1", payload: { input_id: "in-2" } }),
+    /引用非活动 input/,
+    "interrupted 后 completed 必须拒绝（第二终态）"
+  );
+
+  // start 非 queued（活动已闭合）：ghost 不在队列
+  await assert.rejects(
+    () => journal.append({ type: "input_started", run_id: "run-1", payload: { input_id: "ghost" } }),
+    /引用非排队 input/,
+    "start 未知输入必须拒绝"
+  );
+
+  // 第二个 priority：pending 时重复请求拒绝；引用非排队输入拒绝
+  await journal.append({ type: "input_queued", payload: { input_id: "in-3", text: "三" } });
+  await journal.append({ type: "input_queued", payload: { input_id: "in-4", text: "四" } });
+  await journal.append({ type: "priority_input_requested", payload: { input_id: "in-3" } });
+  assert.equal((await journal.getSession()).priority_input_id, "in-3");
+  await assert.rejects(
+    () => journal.append({ type: "priority_input_requested", payload: { input_id: "in-4" } }),
+    /已有优先输入/,
+    "第二个 priority_input_requested 必须拒绝"
+  );
+  await assert.rejects(
+    () => journal.append({ type: "priority_input_requested", payload: { input_id: "ghost" } }),
+    /引用非排队 input/,
+    "priority 引用非排队输入必须拒绝"
+  );
+
+  // 匹配 priority 的 started 清空标记；随后活动未收敛时 start in-4 拒绝
+  await journal.append({ type: "input_started", run_id: "run-1", payload: { input_id: "in-3" } });
+  let session = await journal.getSession();
+  assert.equal(session.priority_input_id, null);
+  assert.equal(session.active_run.active_input_id, "in-3");
+  assert.deepEqual(session.queued_inputs.map((item) => item.id), ["in-4"]);
+  await assert.rejects(
+    () => journal.append({ type: "input_started", run_id: "run-1", payload: { input_id: "in-4" } }),
+    /尚未收敛/,
+    "活动输入未收敛时不得启动 in-4"
+  );
+
+  // 所有拒绝都发生在 appendBatch dry-run：journal 未被污染（seq 连续、投影一致）
+  const all = await journal.read({});
+  assert.deepEqual(all.map((event) => event.seq), Array.from({ length: all.length }, (_, i) => i + 1), "被拒绝的事件不得落盘（seq 连续）");
+  assert.equal(all.length, 12, "仅 11 条合法事件 + session_created");
+  session = await journal.getSession();
+  assert.equal(session.active_run.active_input_id, "in-3");
+  assert.equal(session.priority_input_id, null);
+  assert.deepEqual(session.queued_inputs.map((item) => item.id), ["in-4"]);
+});
+
+test("Task 6 契约：run_started.payload 不要求 workflow（缺省 general 兼容）", async (t) => {
+  const root = await makeWorkspace(t);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  await journal.load();
+  await journal.append({ type: "input_queued", payload: { input_id: "in-1", text: "一" } });
+  // 新事件 schema 不再携带 workflow
+  await journal.append({ type: "run_started", run_id: "run-1", payload: {} });
+  await journal.append({ type: "input_started", run_id: "run-1", payload: { input_id: "in-1" } });
+  await journal.append({ type: "input_completed", run_id: "run-1", payload: { input_id: "in-1" } });
+  await journal.append({ type: "run_completed", run_id: "run-1", payload: {} });
+  const session = await journal.getSession();
+  assert.equal(session.active_run.status, "completed");
+  assert.equal(session.active_run.workflow, "general", "legacy 兼容：缺省 workflow 仍落 general（Task 7 删除）");
+});
+
+// ---------------------------------------------------------------------------
+// Task 6：崩溃恢复——priority pending 收敛（SPEC 3.3 rule 10）
+// ---------------------------------------------------------------------------
+
+test("Task 6 崩溃恢复·priority pending 无飞行操作：一个 batch 收敛为 input_interrupted + input_started，队列相对顺序不变", async (t) => {
+  const root = await makeWorkspace(t);
+  const events = [
+    makeEvent(1, { root, type: "session_created" }),
+    makeEvent(2, { root, type: "input_queued", payload: { input_id: "in-1", text: "旧任务" } }),
+    makeEvent(3, { root, type: "run_started", runId: "run-1", payload: {} }),
+    makeEvent(4, { root, type: "input_started", runId: "run-1", schemaVersion: 2, payload: { input_id: "in-1" } }),
+    makeEvent(5, { root, type: "input_queued", payload: { input_id: "in-2", text: "排队任务" } }),
+    makeEvent(6, { root, type: "input_queued", payload: { input_id: "in-3", text: "优先任务" } }),
+    makeEvent(7, { root, type: "priority_input_requested", payload: { input_id: "in-3" } })
+  ];
+  await writeCrashJournal(root, events);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  const session = await journal.load();
+  assert.equal(session.active_run.id, "run-1");
+  assert.equal(session.active_run.status, "running", "优先恢复不中断 Run");
+  assert.equal(session.active_run.active_input_id, "in-3", "优先输入成为活动输入");
+  assert.equal(session.priority_input_id, null, "匹配 priority 的 input_started 清空标记");
+  assert.deepEqual(session.queued_inputs.map((item) => item.id), ["in-2"], "队列相对顺序不变（in-2 原位保留）");
+
+  const all = await journal.read({});
+  assert.deepEqual(all.map((event) => event.seq), [1, 2, 3, 4, 5, 6, 7, 8, 9], "恢复批次 seq 连续");
+  const interrupted = all.filter((event) => event.type === "input_interrupted");
+  assert.equal(interrupted.length, 1);
+  assert.equal(interrupted[0].payload.input_id, "in-1");
+  assert.equal(interrupted[0].payload.reason, "recovered_priority");
+  const started = all.filter((event) => event.type === "input_started");
+  assert.equal(started.length, 2, "原 in-1 started + 恢复 in-3 started");
+  assert.equal(started.at(-1).payload.input_id, "in-3");
+
+  // 幂等：再次 load 不重复收敛
+  await journal.load();
+  assert.equal((await journal.read({})).filter((event) => event.type === "input_interrupted").length, 1);
+});
+
+test("Task 6 崩溃恢复·priority pending 且孤儿 model/tool：先闭合为恢复错误，再收敛优先输入，不重复已完成副作用", async (t) => {
+  const root = await makeWorkspace(t);
+  const events = [
+    makeEvent(1, { root, type: "session_created" }),
+    makeEvent(2, { root, type: "input_queued", payload: { input_id: "in-1", text: "旧任务" } }),
+    makeEvent(3, { root, type: "run_started", runId: "run-1", payload: {} }),
+    makeEvent(4, { root, type: "input_started", runId: "run-1", schemaVersion: 2, payload: { input_id: "in-1" } }),
+    makeEvent(5, {
+      root,
+      type: "model_turn_started",
+      runId: "run-1",
+      schemaVersion: 2,
+      payload: { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }
+    }),
+    makeEvent(6, { root, type: "tool_call_started", runId: "run-1", schemaVersion: 2, payload: { tool_call_id: "tc-1", name: "shell" } }),
+    makeEvent(7, { root, type: "input_queued", payload: { input_id: "in-2", text: "优先任务" } }),
+    makeEvent(8, { root, type: "priority_input_requested", payload: { input_id: "in-2" } })
+  ];
+  await writeCrashJournal(root, events);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  const session = await journal.load();
+  assert.equal(session.active_run.id, "run-1");
+  assert.equal(session.active_run.status, "running", "孤儿闭合为恢复错误而非整 Run 中断");
+  assert.equal(session.active_run.active_input_id, "in-2");
+  assert.equal(session.priority_input_id, null);
+  assert.deepEqual(session.queued_inputs, []);
+
+  const all = await journal.read({});
+  const toolFailed = all.filter((event) => event.type === "tool_call_failed");
+  assert.equal(toolFailed.length, 1, "孤儿 tool call 必须闭合为失败");
+  assert.equal(toolFailed[0].payload.tool_call_id, "tc-1");
+  assert.equal(toolFailed[0].payload.error.code, "recovered_priority_orphan");
+  const turnClosed = all.filter((event) => event.type === "model_turn_completed");
+  assert.equal(turnClosed.length, 1, "孤儿 model turn 必须闭合");
+  assert.equal(turnClosed[0].payload.turn_id, "turn-1");
+  assert.equal(turnClosed[0].payload.outcome, "failed");
+  assert.equal(turnClosed[0].payload.input_id, "in-1");
+  const interrupted = all.filter((event) => event.type === "input_interrupted");
+  assert.equal(interrupted.length, 1);
+  assert.equal(interrupted[0].payload.input_id, "in-1");
+  // 不重复已完成副作用：turn/tool 各只开始一次，input 只 started 一次
+  assert.equal(all.filter((event) => event.type === "model_turn_started").length, 1, "turn 不重复开始");
+  assert.equal(all.filter((event) => event.type === "tool_call_started").length, 1, "tool 不重复开始");
+  assert.equal(all.filter((event) => event.type === "input_started").length, 2, "仅原 in-1 + 恢复 in-2");
+  assert.equal(all.filter((event) => event.type === "permission_grant_cleared").length, 0);
+
+  // 幂等：再次 load 不重复闭合/收敛
+  await journal.load();
+  const again = await journal.read({});
+  assert.equal(again.filter((event) => event.type === "tool_call_failed").length, 1);
+  assert.equal(again.filter((event) => event.type === "input_interrupted").length, 1);
+  assert.equal(again.filter((event) => event.type === "input_started").length, 2);
+});
+
+test("Task 6 崩溃恢复·priority pending 但无活动输入：只补 input_started，单批收敛", async (t) => {
+  const root = await makeWorkspace(t);
+  const events = [
+    makeEvent(1, { root, type: "session_created" }),
+    makeEvent(2, { root, type: "input_queued", payload: { input_id: "in-1", text: "旧任务" } }),
+    makeEvent(3, { root, type: "run_started", runId: "run-1", payload: {} }),
+    makeEvent(4, { root, type: "input_started", runId: "run-1", schemaVersion: 2, payload: { input_id: "in-1" } }),
+    makeEvent(5, { root, type: "input_completed", runId: "run-1", schemaVersion: 2, payload: { input_id: "in-1" } }),
+    makeEvent(6, { root, type: "input_queued", payload: { input_id: "in-2", text: "优先任务" } }),
+    makeEvent(7, { root, type: "priority_input_requested", payload: { input_id: "in-2" } })
+  ];
+  await writeCrashJournal(root, events);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  const session = await journal.load();
+  assert.equal(session.active_run.status, "running");
+  assert.equal(session.active_run.active_input_id, "in-2", "旧输入已自然完成，无 input_interrupted，只启动优先输入");
+  assert.equal(session.priority_input_id, null);
+  const all = await journal.read({});
+  assert.equal(all.filter((event) => event.type === "input_interrupted").length, 0, "旧输入已 completed，不得伪造中断");
+  assert.equal(all.at(-1).type, "input_started");
+  assert.equal(all.at(-1).payload.input_id, "in-2");
+});
+
+// ---------------------------------------------------------------------------
+// Task 6 代码审查回归（2026-08-12）：三个已证实的边界缺陷
+// ---------------------------------------------------------------------------
+
+test("Task 6 回归：撤回优先输入必须清空 priority_input_id，后续 priority 请求可用", async (t) => {
+  const root = await makeWorkspace(t);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  await journal.load();
+  await journal.append({ type: "input_queued", payload: { input_id: "A", text: "A" } });
+  await journal.append({ type: "input_queued", payload: { input_id: "B", text: "B" } });
+  await journal.append({ type: "run_started", run_id: "run-1", payload: {} });
+
+  // requestPriority(B) → 撤回 B：标记必须清空，否则该会话永远无法再请求优先
+  await journal.append({ type: "priority_input_requested", payload: { input_id: "B" } });
+  assert.equal((await journal.getSession()).priority_input_id, "B");
+  await journal.append({ type: "input_withdrawn", payload: { input_id: "B" } });
+  let session = await journal.getSession();
+  assert.equal(session.priority_input_id, null, "撤回优先输入必须清空 priority_input_id");
+  assert.deepEqual(session.queued_inputs.map((item) => item.id), ["A"], "仅撤回项离开队列");
+
+  // 后续 requestPriority(A) 必须成功（不被陈旧的“已有优先输入”卡死）
+  await journal.append({ type: "priority_input_requested", payload: { input_id: "A" } });
+  session = await journal.getSession();
+  assert.equal(session.priority_input_id, "A");
+});
+
+test("Task 6 回归：priority pending 且输入已撤回 + 孤儿 turn → 恢复 interrupted，priority 清空", async (t) => {
+  // 全量重放（session.json 缺失）：priority_input_id 指向已撤回输入（恢复批次为空）
+  // 且孤儿 model turn 打开——Run 必须被恢复为 interrupted，绝不留在 running。
+  const root = await makeWorkspace(t);
+  const events = [
+    makeEvent(1, { root, type: "session_created" }),
+    makeEvent(2, { root, type: "input_queued", payload: { input_id: "in-1", text: "A" } }),
+    makeEvent(3, { root, type: "input_queued", payload: { input_id: "in-2", text: "B" } }),
+    makeEvent(4, { root, type: "run_started", runId: "run-1", payload: {} }),
+    makeEvent(5, { root, type: "input_started", runId: "run-1", schemaVersion: 2, payload: { input_id: "in-1" } }),
+    makeEvent(6, { root, type: "priority_input_requested", payload: { input_id: "in-2" } }),
+    makeEvent(7, { root, type: "input_withdrawn", payload: { input_id: "in-2" } }),
+    makeEvent(8, {
+      root,
+      type: "model_turn_started",
+      runId: "run-1",
+      schemaVersion: 2,
+      payload: { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }
+    })
+  ];
+  await writeCrashJournal(root, events);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  const session = await journal.load();
+  assert.equal(session.active_run.status, "interrupted", "空 priority 批次不得短路 dangling 恢复");
+  assert.equal(session.priority_input_id, null, "撤回的优先输入标记必须被清空");
+  assert.equal((await journal.read({})).filter((event) => event.type === "run_interrupted").length, 1);
+  // 幂等：再次 load 不重复恢复
+  await journal.load();
+  assert.equal((await journal.read({})).filter((event) => event.type === "run_interrupted").length, 1);
+});
+
+test("Task 6 回归：priority 已活动（legacy run_started 认领）时空批次不得短路 dangling 恢复", async (t) => {
+  // 旧 runtime 语义：run_started 直接认领输入且不清空 priority 标记 → 恢复批次为空
+  //（active === priority）。孤儿 turn 仍必须被收敛为 run_interrupted，绝不留在 running。
+  const root = await makeWorkspace(t);
+  const events = [
+    makeEvent(1, { root, type: "session_created" }),
+    makeEvent(2, { root, type: "input_queued", payload: { input_id: "in-1", text: "B" } }),
+    makeEvent(3, { root, type: "priority_input_requested", payload: { input_id: "in-1" } }),
+    makeEvent(4, { root, type: "run_started", runId: "run-1", payload: { input_id: "in-1" } }),
+    makeEvent(5, {
+      root,
+      type: "model_turn_started",
+      runId: "run-1",
+      schemaVersion: 2,
+      payload: { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }
+    })
+  ];
+  await writeCrashJournal(root, events);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  const session = await journal.load();
+  assert.equal(session.active_run.status, "interrupted", "priority 批次为空时必须回落 dangling 恢复");
+  assert.equal((await journal.read({})).filter((event) => event.type === "run_interrupted").length, 1);
+  // 幂等：再次 load 不重复恢复
+  await journal.load();
+  assert.equal((await journal.read({})).filter((event) => event.type === "run_interrupted").length, 1);
+});
+
+test("Task 6 回归：dry-run 克隆深拷贝 openModelTurns/inputMeta 值对象，被拒批次不污染后续合法事件", async (t) => {
+  const root = await makeWorkspace(t);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  await journal.load();
+  await journal.append({ type: "input_queued", payload: { input_id: "in-1", text: "一" } });
+  await journal.append({ type: "run_started", run_id: "run-1", payload: {} });
+  await journal.append({ type: "input_started", run_id: "run-1", payload: { input_id: "in-1" } });
+  await journal.append({
+    type: "model_turn_started",
+    run_id: "run-1",
+    payload: { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }
+  });
+
+  // 同一批次：合法 reasoning_completed(turn-1) + 失败事件 → 整批拒绝。
+  // reasoning_completed 在 dry-run 克隆上原地改写 meta.reasoningCompleted；若值对象
+  // 被共享，mutation 泄漏到真实状态，后续合法 reasoning_completed 会被误拒。
+  await assert.rejects(
+    () =>
+      journal.appendBatch([
+        {
+          type: "reasoning_completed",
+          run_id: "run-1",
+          payload: { turn_id: "turn-1", input_id: "in-1", text: "推理", availability: "available" }
+        },
+        { type: "input_withdrawn", payload: { input_id: "ghost" } }
+      ]),
+    /引用非排队 input/,
+    "含失败事件的批次必须整体拒绝"
+  );
+
+  // 后续合法 reasoning_completed(turn-1) 必须成功（turn 保持打开，未被污染）
+  await journal.append({
+    type: "reasoning_completed",
+    run_id: "run-1",
+    payload: { turn_id: "turn-1", input_id: "in-1", text: "推理", availability: "available" }
+  });
+  const session = await journal.getSession();
+  assert.equal(session.last_seq, 6, "被拒批次不落盘（created+queued+run_started+started+turn_started+reasoning_completed）");
+
+  // 正常闭环，证明 turn 未被污染
+  await journal.append({ type: "model_turn_completed", run_id: "run-1", payload: { turn_id: "turn-1", input_id: "in-1", outcome: "completed" } });
+  await journal.append({ type: "input_completed", run_id: "run-1", payload: { input_id: "in-1" } });
+  await journal.append({ type: "run_completed", run_id: "run-1", payload: {} });
+  assert.equal((await journal.getSession()).active_run.status, "completed");
 });

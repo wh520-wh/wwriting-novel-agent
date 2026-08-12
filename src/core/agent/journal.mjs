@@ -53,12 +53,21 @@ import { ensureDir, pathExists, readJson, writeJsonAtomic } from "../fs-utils.mj
 import { createMutex } from "../async-utils.mjs";
 import { createJournalSegmentStore } from "./journal-segments.mjs";
 
-// 计划固定的 33 个 journal 事件类型；未知类型一律拒绝。
+// 计划固定的 45 个 journal 事件类型；未知类型一律拒绝。
+// Task 6：新输入生命周期只产生六类事件（input_queued/input_started/input_completed/
+// input_interrupted/input_withdrawn/priority_input_requested）；旧的 input_promoted/
+// input_consumed/input_cancelled 在 runtime 迁移前仍可能被追加（reducer 保留 legacy
+// 分支），故类型清单继续接纳它们。
 export const FIXED_EVENT_TYPES = Object.freeze([
   "session_created",
   "run_started",
   "run_status_changed",
   "input_queued",
+  "input_started",
+  "input_completed",
+  "input_interrupted",
+  "input_withdrawn",
+  "priority_input_requested",
   "input_promoted",
   "input_consumed",
   "input_cancelled",
@@ -207,6 +216,9 @@ function createEmptySession({ sessionId, projectRoot, at }) {
     status: "idle",
     active_run: null,
     queued_inputs: [],
+    // Task 6：优先输入投影。null 表示无优先请求；priority_input_requested 设置、
+    // 匹配的 input_started 清空。只指向排队中的输入，不立即改写 active_input_id。
+    priority_input_id: null,
     // Task 6：上下文用量投影。null 表示尚无任何 context_usage_updated 事件
     //（旧 session 重放/项目刚打开），UI 显示"计算中/待校准"，绝不用假 0 冒充
     // 真实占用。revisions.context 只随 context_usage_updated 递增，供 UI 增量订阅。
@@ -407,6 +419,90 @@ function reduceEvent(session, event, side) {
       break;
     }
 
+    // -----------------------------------------------------------------------
+    // Task 6：新输入生命周期（SPEC 3.2）。仅允许
+    //   queued -> started -> completed | interrupted
+    //   queued -> withdrawn
+    // 每条输入恰好一个终态；input_started 是唯一把用户文本写入 transcript 的边界。
+    // 旧 input_consumed/input_cancelled/input_promoted 分支保留为 legacy 兼容
+    //（runtime 迁移前仍可能追加），新 generation 不再产生它们。
+    // -----------------------------------------------------------------------
+
+    case "input_started": {
+      const inputId = requireString(payload.input_id, "input_id");
+      const activeRun = requireActiveRun("input_started");
+      // 生命周期不变量：前一条活动输入必须先收敛（completed/interrupted），否则
+      // 它会停留在 started 且没有终态事件。优先级切换批次先写 input_interrupted
+      // 再写 input_started，因此本校验不阻碍合法收敛。
+      if (activeRun.active_input_id != null) {
+        fail(`input_started 时活动输入 ${activeRun.active_input_id} 尚未收敛，拒绝切换`);
+      }
+      const index = session.queued_inputs.findIndex((item) => item.id === inputId);
+      if (index === -1) fail(`input_started 引用非排队 input ${inputId}`);
+      session.queued_inputs.splice(index, 1);
+      activeRun.active_input_id = inputId;
+      // 匹配 priority 的 input_started 清除优先标记（SPEC 3.3：真正开始后恢复优先）
+      if (session.priority_input_id === inputId) session.priority_input_id = null;
+      const startedMeta = side.inputMeta.get(inputId);
+      if (startedMeta) startedMeta.status = "started";
+      break;
+    }
+
+    case "input_completed": {
+      const inputId = requireString(payload.input_id, "input_id");
+      const activeRun = requireActiveRun("input_completed");
+      if (activeRun.active_input_id !== inputId) {
+        fail(`input_completed 引用非活动 input ${inputId}`);
+      }
+      activeRun.active_input_id = null;
+      const completedMeta = side.inputMeta.get(inputId);
+      if (completedMeta) completedMeta.status = "completed";
+      side.terminalInputs.add(inputId);
+      break;
+    }
+
+    case "input_interrupted": {
+      const inputId = requireString(payload.input_id, "input_id");
+      const activeRun = requireActiveRun("input_interrupted");
+      if (activeRun.active_input_id !== inputId) {
+        fail(`input_interrupted 引用非活动 input ${inputId}`);
+      }
+      activeRun.active_input_id = null;
+      const interruptedMeta = side.inputMeta.get(inputId);
+      if (interruptedMeta) interruptedMeta.status = "interrupted";
+      side.terminalInputs.add(inputId);
+      break;
+    }
+
+    case "input_withdrawn": {
+      // 仅可撤回排队输入；活动输入只能 completed/interrupted（不产生"撤销"语义）
+      const inputId = requireString(payload.input_id, "input_id");
+      const index = session.queued_inputs.findIndex((item) => item.id === inputId);
+      if (index === -1) fail(`input_withdrawn 引用非排队 input ${inputId}`);
+      session.queued_inputs.splice(index, 1);
+      // 撤回的正是优先输入时清空标记：input_started（唯一清空路径）对已撤回输入
+      // 永远不会触发，若不清空则后续 priority_input_requested 全部被"已有优先输入"
+      // 拒绝，用户再也无法使用"立即"（SPEC 3.3 rule 10：优先队列不得卡死）。
+      if (session.priority_input_id === inputId) session.priority_input_id = null;
+      const withdrawnMeta = side.inputMeta.get(inputId);
+      if (withdrawnMeta) withdrawnMeta.status = "withdrawn";
+      side.terminalInputs.add(inputId);
+      break;
+    }
+
+    case "priority_input_requested": {
+      // 只设置 priority_input_id，不立即改写 active_input_id（SPEC 3.3）。
+      const inputId = requireString(payload.input_id, "input_id");
+      if (!session.queued_inputs.some((item) => item.id === inputId)) {
+        fail(`priority_input_requested 引用非排队 input ${inputId}`);
+      }
+      if (session.priority_input_id != null) {
+        fail(`已有优先输入 ${session.priority_input_id}，拒绝第二个 priority_input_requested`);
+      }
+      session.priority_input_id = inputId;
+      break;
+    }
+
     case "input_consumed": {
       const inputId = requireString(payload.input_id, "input_id");
       const activeRun = requireActiveRun("input_consumed");
@@ -449,6 +545,9 @@ function reduceEvent(session, event, side) {
         }
         session.queued_inputs.splice(index, 1);
       }
+      // legacy 取消同样清空匹配的 priority 标记（缺口/保守恢复批次用 input_cancelled
+      // 取消排队输入，取消优先输入后不得留下卡死 priority 指针）
+      if (session.priority_input_id === inputId) session.priority_input_id = null;
       side.terminalInputs.add(inputId);
       break;
     }
@@ -1070,13 +1169,20 @@ export function createAgentJournal({
     return reduceEvent(null, first, side);
   }
 
+  // 旧 session.json 锚点（Task 6 之前生成）缺少 Task 6 新增的投影字段：
+  // 归一化默认值，保证任何重放路径产出的 projection 都携带完整契约形状。
+  function normalizeSessionDefaults(session) {
+    if (session && session.priority_input_id === undefined) session.priority_input_id = null;
+    return session;
+  }
+
   // 常规恢复：锚点有效时只重放 last_seq 之后的事件（避免百万事件全量重放）；
   // 否则流式全量重放（单次只保留当前行与 reducer state，不整日志读入内存）。
   async function buildState(anchor) {
     if (anchor && (await isAnchorValid(anchor))) {
       try {
         const { events } = await eventsStore.readAfter({ afterSeq: anchor.last_seq, limit: null });
-        const session = structuredClone(anchor.projection);
+        const session = normalizeSessionDefaults(structuredClone(anchor.projection));
         const side = createSideState();
         for (const event of events) {
           session = reduceEvent(session, event, side);
@@ -1096,7 +1202,7 @@ export function createAgentJournal({
     if (session === null) {
       session = await createFirstSession(side);
     }
-    return { state: { session, ...side }, anchored: false };
+    return { state: { session: normalizeSessionDefaults(session), ...side }, anchored: false };
   }
 
   // 中间坏段（gap）恢复：不能全量重放（reducer 不能猜测跳过缺口）。
@@ -1113,7 +1219,7 @@ export function createAgentJournal({
       reason: gap?.reason ?? null
     }));
     if (anchor && !anchor.projection.needs_history_clear && (await isAnchorValid(anchor))) {
-      const session = structuredClone(anchor.projection);
+      const session = normalizeSessionDefaults(structuredClone(anchor.projection));
       session.history_degraded = true;
       session.history_gaps = gapRecords;
       try {
@@ -1205,6 +1311,63 @@ export function createAgentJournal({
     return recoveryBatch;
   }
 
+  // Task 6：优先输入恢复批次（SPEC 3.3 rule 10）。priority_input_id pending 且
+  // 全量重放（side 状态完整、无真实飞行操作）时用一个 appendBatch 收敛：
+  //   1. 先闭合孤儿 model turn / tool call 为恢复错误（tool_call_failed /
+  //      model_turn_completed(failed)），不重放已完成副作用；
+  //   2. 清除不可恢复 grant、闭合遗留 decision（与 dangling 恢复一致）；
+  //   3. 若旧输入仍活动，追加 input_interrupted(reason:"recovered_priority")；
+  //   4. 追加 input_started(priorityId)（匹配 priority 时 reducer 自动清空
+  //      priority_input_id）。
+  // 队列相对顺序不变：只移除被 started 的优先输入，其余排队项原位保留。
+  // 返回空数组表示无需恢复（无 Run/已终结/priority 已落地/优先输入已活动等）。
+  function buildPriorityRecoveryBatch() {
+    const run = state.session.active_run;
+    if (!run || TERMINAL_RUN_STATUSES.has(run.status)) return [];
+    const priorityId = state.session.priority_input_id;
+    if (priorityId == null) return [];
+    if (run.active_input_id === priorityId) return []; // 已是活动输入，无需收敛
+    if (!state.session.queued_inputs.some((item) => item.id === priorityId)) return [];
+    const batch = [];
+    for (const toolCallId of state.openToolCalls.keys()) {
+      batch.push({
+        type: "tool_call_failed",
+        run_id: run.id,
+        payload: { tool_call_id: toolCallId, name: "unknown", error: { code: "recovered_priority_orphan" } }
+      });
+    }
+    for (const [turnId] of state.openModelTurns) {
+      batch.push({
+        type: "model_turn_completed",
+        run_id: run.id,
+        payload: { turn_id: turnId, input_id: run.active_input_id ?? priorityId, outcome: "failed" }
+      });
+    }
+    for (const grant of run.active_grants ?? []) {
+      batch.push({
+        type: "permission_grant_cleared",
+        run_id: run.id,
+        payload: { input_id: grant.input_id, grant_key: grant.grant_key, grant_id: grant.id }
+      });
+    }
+    for (const decisionId of state.openDecisions.keys()) {
+      batch.push({
+        type: "decision_resolved",
+        run_id: run.id,
+        payload: { decision_id: decisionId, choice: "cancelled", reason: "recovery_dangling_decision" }
+      });
+    }
+    if (run.active_input_id != null) {
+      batch.push({
+        type: "input_interrupted",
+        run_id: run.id,
+        payload: { input_id: run.active_input_id, reason: "recovered_priority" }
+      });
+    }
+    batch.push({ type: "input_started", run_id: run.id, payload: { input_id: priorityId } });
+    return batch;
+  }
+
   // 必须在 mutex 内调用。首次 load：创建存储布局 → 迁移旧单体格式 → 按恢复策略
   // 建立 projection → 追加恢复事件 → 写出第一份 session.json。
   async function initialize() {
@@ -1246,7 +1409,22 @@ export function createAgentJournal({
       state = built.state;
       const anchored = built.anchored;
       const dangling = detectDangling(state);
-      if (anchored && state.session.active_run && !TERMINAL_RUN_STATUSES.has(state.session.active_run.status)) {
+      // Task 6：优先输入恢复优先于普通 dangling 收敛。仅在全量重放路径（side 状态
+      // 完整、可验证无真实飞行操作）收敛；锚定重放无法重建锚点前的开放活动，
+      // 保守中断仍由下面分支负责。压缩恢复尚未完成的 Run 不在此收敛（由 runtime
+      // 的 open() 按收敛矩阵处理）。
+      // 空批次（优先输入已撤回/已活动等）绝不短路恢复链：继续回落 dangling/保守
+      // 恢复——否则孤儿 model turn / tool call 的 Run 会被留在 running，违反
+      // "dangling assistant 活动的 Run 不能恢复执行"的崩溃模型不变量。
+      const priorityBatch =
+        state.session.priority_input_id != null &&
+        !anchored &&
+        !hasPendingCompactionRecovery(state.session)
+          ? buildPriorityRecoveryBatch()
+          : [];
+      if (priorityBatch.length > 0) {
+        await appendBatchLocked(priorityBatch);
+      } else if (anchored && state.session.active_run && !TERMINAL_RUN_STATUSES.has(state.session.active_run.status)) {
         // 锚定重放无法重建锚点前的 side 状态（open tool/turn/decision 未知）：
         // 保守地把非终结 Run 标记 interrupted——绝不能把无法验证的 dangling
         // assistant 状态交给 provider（干净关闭中途的 Run 同样走此恢复）。
@@ -1288,11 +1466,16 @@ export function createAgentJournal({
     return {
       eventIds: new Set(side.eventIds),
       openToolCalls: new Map(side.openToolCalls),
-      openModelTurns: new Map(side.openModelTurns),
+      // Task 6 回归：值对象必须深拷贝。dry-run 克隆上 reasoning_completed 会原地
+      // 改写 meta.reasoningCompleted；若共享引用，被拒批次的 mutation 会泄漏到真实
+      // 状态，导致后续合法 reasoning_completed 被误拒（"journal 不被污染"保证）。
+      openModelTurns: new Map([...side.openModelTurns].map(([turnId, meta]) => [turnId, { ...meta }])),
       legacyOpenTurns: [...side.legacyOpenTurns],
       openDecisions: new Map(side.openDecisions),
       terminalInputs: new Set(side.terminalInputs),
-      inputMeta: new Map(side.inputMeta)
+      // 同上：inputMeta 的 item 对象独立拷贝，消除同类泄漏（reducer 会改写
+      // meta.status 等字段）
+      inputMeta: new Map([...side.inputMeta].map(([inputId, item]) => [inputId, { ...item }]))
     };
   }
 
