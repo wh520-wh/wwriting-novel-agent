@@ -20,6 +20,7 @@
 // 确认类场景用 write_file 表达。
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -30,6 +31,7 @@ import {
   VALID_MEMORY,
   createMockModelGateway,
   createProjectAgentHarness,
+  createProjectRoot,
   eventsOfType,
   openPlainFolderHarness,
   pathExists,
@@ -1865,6 +1867,155 @@ test("retry 时 prompt 历史不含畸形消息（tool_calls 链完整闭合）"
     assertWellFormedHistory(call.request.messages ?? []);
   }
   assert.equal(eventsOfType(await readEvents(h.agent, h.projectRoot), "run_completed").length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Task 3：工具错误不杀死 Run；未执行调用唯一闭合；timeout 回给模型；Journal 写失败致命
+// ---------------------------------------------------------------------------
+
+test("executor throw → Run 继续；同一响应后续调用以 tool_skipped_after_failure 唯一闭合", async (t) => {
+  const h = await openHarness(t, {
+    gatewayScript: [
+      {
+        reply: {
+          toolCalls: [
+            tool("read_file", { path: "missing.md" }),
+            tool("read_file", { path: "OUTLINE.md" }),
+            tool("list_files", { path: "." })
+          ]
+        }
+      },
+      { reply: { text: "已处理工具失败。" } }
+    ]
+  });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "读文件", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+
+  const events = await readEvents(h.agent, h.projectRoot);
+  assert.equal(eventsOfType(events, "run_failed").length, 0, "工具失败不得杀死 Run");
+  assert.equal(eventsOfType(events, "run_completed").length, 1, "Run 必须正常完成");
+  assert.ok(h.gateway.calls.length >= 2, "工具失败后必须继续下一轮模型调用");
+  assertActivityClosure(events);
+
+  // 每个持久化 assistant tool call 恰好一个 tool result（唯一闭合）；第二个与
+  // 第三个调用从未启动，以 tool_skipped_after_failure 闭合而非真实执行
+  const sessionId = (await readSession(h.agent, h.projectRoot)).session_id;
+  const transcript = await readTranscriptFile(path.join(h.agentRoot, "sessions", sessionId));
+  const resultCounts = new Map(); // tool_call_id -> tool result 数量
+  let failedFirst = null;
+  let skippedCount = 0;
+  for (const record of transcript) {
+    if (record?.role === "assistant") {
+      for (const tc of record.tool_calls ?? []) resultCounts.set(tc?.id, 0);
+      continue;
+    }
+    if (record?.role === "tool") {
+      resultCounts.set(record.tool_call_id, (resultCounts.get(record.tool_call_id) ?? 0) + 1);
+      const parsed = JSON.parse(record.content ?? "{}");
+      if (parsed.error?.code === "file_not_found") failedFirst = parsed;
+      if (parsed.error?.code === "tool_skipped_after_failure") skippedCount += 1;
+    }
+  }
+  assert.deepEqual([...resultCounts.values()], [1, 1, 1], "3 个调用各恰好 1 个 tool result（不得重复/悬空）");
+  assert.ok(failedFirst, "第一个调用应以真实失败结果闭合");
+  assert.ok(
+    /文件不存在：.+missing\.md/u.test(failedFirst.error.message),
+    `失败消息应含解析后的目标路径：${failedFirst.error.message}`
+  );
+  assert.equal(failedFirst.tool_call_id, [...resultCounts.keys()][0], "失败结果应回传原 tool_call_id");
+  assert.equal(skippedCount, 2, "后续两个未启动调用以 tool_skipped_after_failure 闭合");
+  assertNoDanglingToolCalls(transcript);
+});
+
+test("tool_timeout 结果回给模型后继续下一轮（Run 不被杀死）", async (t) => {
+  // 直接经公共 seam 构造 agent：注入毫秒级工具期限，让真实 agent 循环内产生
+  // ToolRuntime 的 tool_timeout（harness 固定 5 分钟默认期限，无法在测试内触发）
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-timeout-run-"));
+  t.after(async () => {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  });
+  const { projectRoot } = await createProjectRoot(workspaceRoot, {
+    tool_permissions: { yolo: true }
+  });
+  const { createWorkspaceStore } = await import("../../src/core/workspaces/store.mjs");
+  const { createSkillService } = await import("../../src/core/skills/index.mjs");
+  const store = createWorkspaceStore({ stateRoot: path.join(workspaceRoot, "user-data") });
+  const skills = createSkillService({
+    userHome: path.join(projectRoot, ".test-skill-home"),
+    resourcesPath: null
+  });
+  const gateway = createMockModelGateway({
+    script: [
+      { reply: { toolCalls: [tool("shell", { command: "hang", timeout_ms: 1000, purpose: "慢命令" })] } },
+      { reply: { text: "超时已处理。" } }
+    ],
+    delayMs: 0
+  });
+  // 挂起桩：期限 abort 传导后立即收尾（抛 shell_cancelled，executeWithDeadline 按
+  // timeout 结论收口）；无 abort 时 3s 兜底收尾，避免实现缺失时测试悬挂
+  const shell = async ({ signal } = {}) => {
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 3000);
+      signal?.addEventListener("abort", () => {
+        clearTimeout(timer);
+        resolve();
+      }, { once: true });
+    });
+    throw Object.assign(new Error("命令已停止。"), { code: "shell_cancelled", durationMs: 0 });
+  };
+  const { createProjectAgent } = await import("../../src/core/agent/index.mjs");
+  const agent = createProjectAgent({
+    modelGateway: gateway,
+    shell,
+    skills,
+    agentStorageRootFor: (root) => store.agentRootFor(root),
+    toolIdleTimeoutMs: 60,
+    toolAbsoluteTimeoutMs: 5000
+  });
+  await agent.open({ projectRoot });
+  await agent.submit({ projectRoot, text: "执行慢命令", source: "chat" });
+  await waitForIdle(agent, projectRoot);
+
+  assert.ok(gateway.calls.length >= 2, "tool_timeout 后必须继续下一轮模型调用");
+  assert.ok(
+    JSON.stringify(gateway.calls[1].request).includes("tool_timeout"),
+    "timeout 结果必须回给模型（下一轮请求历史含 tool_timeout）"
+  );
+  const events = await readEvents(agent, projectRoot);
+  assert.equal(eventsOfType(events, "run_failed").length, 0, "tool_timeout 不得杀死 Run");
+  assert.equal(eventsOfType(events, "run_completed").length, 1, "Run 必须正常完成");
+  const failed = eventsOfType(events, "tool_call_failed")[0];
+  assert.equal(failed.payload.error, "tool_timeout");
+  assert.equal(failed.payload.technical.kind, "idle");
+  assertActivityClosure(events);
+});
+
+test("appendTranscript 失败进入 failRun（Journal 写失败保持致命，不被吞掉）", async (t) => {
+  const h = await openHarness(t, { gatewayScript: [{ reply: { text: "第一次。" } }] });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "第一次", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+
+  // 让 transcript segment 存储不可写：目录换成同名文件 → 后续 appendTranscript 必然
+  // 失败（ENOTDIR/ENOENT）；events 存储保持可用 → failRun 的 run_failed 仍能落盘
+  const session = await readSession(h.agent, h.projectRoot);
+  const transcriptRoot = path.join(h.agentRoot, "sessions", session.session_id, "segments", "transcript");
+  await fs.rm(transcriptRoot, { recursive: true, force: true });
+  await fs.writeFile(transcriptRoot, "broken", "utf8");
+
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "第二次", source: "chat" });
+  await waitFor(
+    h.agent,
+    h.projectRoot,
+    (_session, snap) => eventsOfType(snap.events, "run_failed").length >= 1,
+    { describe: "appendTranscript 失败后 Run 收敛到 run_failed" }
+  );
+  const events = await readEvents(h.agent, h.projectRoot);
+  const failed = eventsOfType(events, "run_failed").at(-1);
+  assert.equal(failed.payload.code, "runtime_error", "appendTranscript 失败必须以 runtime_error 收敛到 failRun");
+  assert.equal(failed.payload.input_id, eventsOfType(events, "input_queued").at(-1).payload.input_id);
+  const sessionAfter = await readSession(h.agent, h.projectRoot);
+  assert.equal(sessionAfter.active_run.status, "failed", "Run 必须进入 failed 终态（session.status 对所有终态统一为 idle）");
+  assert.equal(sessionAfter.status, "idle");
 });
 
 test("并发 submit 不滞留输入：Run 终结后队列恒为空且全部输入收敛", async (t) => {

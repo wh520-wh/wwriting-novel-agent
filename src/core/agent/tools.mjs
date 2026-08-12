@@ -133,6 +133,21 @@ function sanitizeToolFailure(error) {
   return { message: error?.message ?? "工具执行失败。", technical: error?.technical ?? null };
 }
 
+// 统一失败结果形状（Task 3）：业务异常为 {ok:false, error:{code,message,retryable?}}，
+// 顶层保留 tool_call_id/name/message/duration_ms 等既有字段（向后兼容）。
+// 注意：journal 事件侧（appendFailed 的 payload.error）保持字符串 code，
+// 与事件契约一致；结构化 error 对象只出现在 execute 的返回值/transcript。
+function toolFailureResult({ tool_call_id, name, code, message, retryable = null, kind = null, duration_ms = null, stdout = null, stderr = null }) {
+  const error = { code, message };
+  if (kind !== null) error.kind = kind;
+  if (retryable !== null) error.retryable = retryable;
+  const result = { ok: false, tool_call_id, name, error, message };
+  if (duration_ms !== null) result.duration_ms = duration_ms;
+  if (stdout !== null) result.stdout = stdout;
+  if (stderr !== null) result.stderr = stderr;
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // 脱敏辅助
 // ---------------------------------------------------------------------------
@@ -1560,14 +1575,14 @@ export function createToolRuntime({
     const activityId = idFactory();
     const runId = context.run_id ?? null;
     if (!toolCallId || typeof name !== "string" || name.length === 0) {
-      return { ok: false, tool_call_id: toolCallId, name, error: "bad_tool_call", message: "工具调用缺少 id 或名称。" };
+      return toolFailureResult({ tool_call_id: toolCallId, name, code: "bad_tool_call", message: "工具调用缺少 id 或名称。" });
     }
 
     let args;
     try {
       args = parseToolArguments(toolCall.arguments);
     } catch (error) {
-      return { ok: false, tool_call_id: toolCallId, name, error: error.code ?? "bad_args", message: error.message };
+      return toolFailureResult({ tool_call_id: toolCallId, name, code: error.code ?? "bad_args", message: error.message });
     }
 
     // 在动作分类、受保护路径检查和实际执行前统一解析真实路径，避免 junction/
@@ -1584,7 +1599,7 @@ export function createToolRuntime({
     // 活动 Run 是工具事件的载体；没有 Run 时工具不可用（Task 6 编排保证不会发生）
     const session = await currentSession().catch(() => null);
     if (!session?.active_run) {
-      return { ok: false, tool_call_id: toolCallId, name, error: "no_active_run", message: "工具不可用。" };
+      return toolFailureResult({ tool_call_id: toolCallId, name, code: "no_active_run", message: "工具不可用。" });
     }
     const inputId = context.active_input_id ?? session.active_run.active_input_id ?? null;
 
@@ -1605,13 +1620,7 @@ export function createToolRuntime({
         message: "当前工作流不允许使用此工具。",
         technical: { rule: "tool_not_allowed", name }
       }, runId);
-      return {
-        ok: false,
-        tool_call_id: toolCallId,
-        name,
-        error: "tool_not_allowed",
-        message: "当前工作流不允许使用此工具。"
-      };
+      return toolFailureResult({ tool_call_id: toolCallId, name, code: "tool_not_allowed", message: "当前工作流不允许使用此工具。" });
     }
 
     // 系统构建归一化动作（模型不可提供/覆盖 risk/scope/extreme/grant_key/确认类型）
@@ -1630,7 +1639,7 @@ export function createToolRuntime({
           message: failedMessage,
           technical: error.technical ?? null
         }, runId);
-        return { ok: false, tool_call_id: toolCallId, name, error: error.code ?? "bad_args", message: failedMessage };
+        return toolFailureResult({ tool_call_id: toolCallId, name, code: error.code ?? "bad_args", message: failedMessage });
       }
     }
 
@@ -1652,7 +1661,7 @@ export function createToolRuntime({
         message: "工具不可用。",
         technical: { rule: "unknown_tool", name }
       }, runId);
-      return { ok: false, tool_call_id: toolCallId, name, error: "unknown_tool", message: "工具不可用。" };
+      return toolFailureResult({ tool_call_id: toolCallId, name, code: "unknown_tool", message: "工具不可用。" });
     }
 
     if (context.signal?.aborted) {
@@ -1663,7 +1672,7 @@ export function createToolRuntime({
         error: "tool_cancelled",
         message: "操作已停止。"
       }, runId);
-      return { ok: false, tool_call_id: toolCallId, name, error: "tool_cancelled", message: "操作已停止。" };
+      return toolFailureResult({ tool_call_id: toolCallId, name, code: "tool_cancelled", message: "操作已停止。" });
     }
 
     // 受保护路径（Step 7）：写工具先于权限评估拒绝
@@ -1682,13 +1691,7 @@ export function createToolRuntime({
         message: "当前权限不允许修改文件。",
         technical: { rule: protectedDenial.rule ?? "protected_path", path: protectedDenial.path ?? null }
       }, runId);
-      return {
-        ok: false,
-        tool_call_id: toolCallId,
-        name,
-        error: "permission_denied",
-        message: "当前权限不允许修改文件。"
-      };
+      return toolFailureResult({ tool_call_id: toolCallId, name, code: "permission_denied", message: "当前权限不允许修改文件。" });
     }
 
     // 权限：策略（硬拒绝/extreme/YOLO/只读自动/auto_edit）→ grant 匹配 → 普通确认
@@ -1704,7 +1707,7 @@ export function createToolRuntime({
         message: "当前权限不允许修改文件。",
         technical: { rule: "policy_error" }
       }, runId);
-      return { ok: false, tool_call_id: toolCallId, name, error: "permission_error", message: "当前权限不允许修改文件。" };
+      return toolFailureResult({ tool_call_id: toolCallId, name, code: "permission_error", message: "当前权限不允许修改文件。" });
     }
     if (policyResult.decision === "deny") {
       await appendFailed({
@@ -1715,13 +1718,7 @@ export function createToolRuntime({
         message: policyResult.message ?? "当前权限不允许修改文件。",
         technical: policyResult.technical ?? null
       }, runId);
-      return {
-        ok: false,
-        tool_call_id: toolCallId,
-        name,
-        error: "permission_denied",
-        message: policyResult.message ?? "当前权限不允许修改文件。"
-      };
+      return toolFailureResult({ tool_call_id: toolCallId, name, code: "permission_denied", message: policyResult.message ?? "当前权限不允许修改文件。" });
     }
 
     if (policyResult.decision === "confirm") {
@@ -1746,7 +1743,7 @@ export function createToolRuntime({
           message: "操作已拒绝。",
           technical: { rule: "decision_deny" }
         }, runId);
-        return { ok: false, tool_call_id: toolCallId, name, error: "permission_denied", message: "操作已拒绝。" };
+        return toolFailureResult({ tool_call_id: toolCallId, name, code: "permission_denied", message: "操作已拒绝。" });
       }
       if (outcome.granted === "cancelled") {
         await appendFailed({
@@ -1757,7 +1754,7 @@ export function createToolRuntime({
           message: "操作已停止。",
           technical: { rule: "decision_cancelled" }
         }, runId);
-        return { ok: false, tool_call_id: toolCallId, name, error: "tool_cancelled", message: "操作已停止。" };
+        return toolFailureResult({ tool_call_id: toolCallId, name, code: "tool_cancelled", message: "操作已停止。" });
       }
     }
 
@@ -1832,14 +1829,15 @@ export function createToolRuntime({
           durationMs: timeoutDurationMs
         }).catch(() => {});
       }
-      return {
-        ok: false,
+      return toolFailureResult({
         tool_call_id: toolCallId,
         name,
-        error: { code: "tool_timeout", kind: timeoutKind },
+        code: "tool_timeout",
         message: "工具执行超时。",
+        kind: timeoutKind,
+        retryable: true,
         duration_ms: timeoutDurationMs
-      };
+      });
     }
 
     if (error) {
@@ -1872,14 +1870,15 @@ export function createToolRuntime({
           durationMs: failedPayload.duration_ms ?? null
         }).catch(() => {});
       }
-      return {
-        ok: false,
+      return toolFailureResult({
         tool_call_id: toolCallId,
         name,
-        error: error.code ?? "tool_failed",
+        code: error.code ?? "tool_failed",
         message: failedMessage,
-        duration_ms: failedPayload.duration_ms ?? null
-      };
+        duration_ms: failedPayload.duration_ms ?? null,
+        stdout: failedPayload.stdout ?? null,
+        stderr: failedPayload.stderr ?? null
+      });
     }
 
     await appendEvent({

@@ -67,6 +67,11 @@ import { commitBlueprint, inspectBlueprintContext } from "../project-operations/
 
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
+// Task 3：取消/停止语义的工具失败不触发「跳过同一响应后续调用」——这些结果由
+// 停止/中断路径以 tool_cancelled 统一闭合（promote×stop 竞态测试依赖该顺序），
+// 只有真实领域失败才把未启动的后续调用闭合为 tool_skipped_after_failure。
+const TOOL_RESULT_CANCELLATION_CODES = new Set(["tool_cancelled", "shell_cancelled"]);
+
 // 通用工具恒可用于所有 workflow（Task 12：read_skill 让所有工作流都能按需读技能；
 // Task 9：count_text 是只读客观字数工具，同样对所有工作流可见）。
 const GENERAL_TOOL_NAMES = new Set([
@@ -197,6 +202,10 @@ export function createAgentRuntime({
   // 单例；测试注入临时 root 的 service，避免迁移 marker 写进真实用户目录。
   skills = null,
   idFactory = randomUUID,
+  // Task 3：工具期限透传（默认与 ToolRuntime 系统上限一致；测试可注入毫秒级
+  // 期限，在真实 agent 循环内产生 tool_timeout 回归面）
+  toolIdleTimeoutMs = 300000,
+  toolAbsoluteTimeoutMs = 3600000,
   // Task 3：journal 落盘位置（生产组合根必须显式传应用私有 storageRoot；默认
   // 项目内 .wwriting/agent 只保留给低层兼容测试）与旧 journal 只读迁移器。
   agentStorageRootFor = (projectRoot) => path.join(projectRoot, ".wwriting", "agent"),
@@ -324,7 +333,9 @@ export function createAgentRuntime({
       projectLocks,
       secrets,
       skills: state.skills,
-      idFactory
+      idFactory,
+      toolIdleTimeoutMs,
+      toolAbsoluteTimeoutMs
     });
     const compactionCoordinator = createCompactionCoordinator({
       journal,
@@ -1033,11 +1044,40 @@ export function createAgentRuntime({
           ok: false,
           tool_call_id: id,
           name: toolCall?.name ?? null,
-          error: "tool_cancelled",
+          error: { code: "tool_cancelled", message: "操作已停止。" },
           message: "操作已停止。"
         })
       });
     }
+  }
+
+  // Task 3：同一响应中前一个工具失败后，未启动的后续调用以
+  // tool_skipped_after_failure 闭合 transcript——每个持久化 assistant tool call
+  // 恰好一个 tool result（不执行、不产生 journal 活动，只补 transcript 结果）。
+  // 返回追加的记录副本，调用方放入 volatileToolRecords，保证下一轮历史装配的
+  // 瞬态去重一致（assistant 记录的 tool_calls 与对应 tool 记录同源同集）。
+  async function closeSkippedToolCalls(sessionState, skippedCalls) {
+    const records = [];
+    if (!Array.isArray(skippedCalls) || skippedCalls.length === 0) return records;
+    for (const toolCall of skippedCalls) {
+      const id = toolCall?.id ?? toolCall?.tool_call_id ?? null;
+      const name = toolCall?.name ?? null;
+      const skippedResult = {
+        ok: false,
+        tool_call_id: id,
+        name,
+        error: {
+          code: "tool_skipped_after_failure",
+          message: "由于同一响应中的前一个工具调用失败，本次调用未执行。",
+          retryable: true
+        },
+        message: "由于同一响应中的前一个工具调用失败，本次调用未执行。"
+      };
+      const record = { role: "tool", tool_call_id: id, name, content: JSON.stringify(skippedResult) };
+      records.push(record);
+      await appendSafeTranscript(sessionState.journal, record);
+    }
+    return records;
   }
 
   // 停止收敛：为每个未消费输入（活动 + 排队）追加 input_cancelled，清除全部
@@ -1654,6 +1694,14 @@ export function createAgentRuntime({
           });
           // Task 8：工具结果刚闭合——下一次预检若触发压缩，先追加安全点标记
           closedToolResult = true;
+          // Task 3：前一个工具失败（真实领域失败）后，同一响应剩余未启动的调用
+          // 不再执行，以 tool_skipped_after_failure 唯一闭合 transcript；取消/
+          // 停止语义仍交给停止/中断路径闭合（closeDroppedToolCalls）
+          if (toolResult?.ok === false && !TOOL_RESULT_CANCELLATION_CODES.has(toolResult.error?.code)) {
+            const skippedRecords = await closeSkippedToolCalls(sessionState, toolCalls.slice(index + 1));
+            for (const record of skippedRecords) volatileToolRecords.push(record);
+            break;
+          }
         }
         continue; // 工具结果已入 transcript，继续下一模型轮次
       }
