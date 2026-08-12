@@ -64,21 +64,43 @@ export function runShellCommand({ command, cwd, timeoutMs = 120000, signal, onOu
       resolveChildClosed = resolve;
     });
 
+    // 幂等的终止序列 Promise：首次调用时建立，并发 abort/timeout/error 事件复用同一
+    // 等待链，杜绝二次 taskkill / 二次 settle。顺序固定：终止进程树 -> 原 child close
+    // -> stdio close，全部完成后外层 Promise 才 reject（见 finishError）。
+    let terminateTreePromise = null;
+    const terminateTree = () => {
+      if (!terminateTreePromise) {
+        terminateTreePromise = (async () => {
+          if (child.pid && child.exitCode === null) {
+            if (process.platform === "win32") {
+              await terminateWindowsTree(child);
+            } else {
+              terminatePosixTree(child);
+            }
+          }
+          await waitForChildClose(childClosed, child);
+        })();
+      }
+      return terminateTreePromise;
+    };
+
     const finishError = async (code, message) => {
       if (settled) return; // settled 后双 settle：清理已做过，直接忽略后续超时/abort/error 事件
-      settled = true;
+      settled = true; // 守卫标志必须在等待前设置：并发 abort+timeout 不会二次终止/二次 settle
       if (timer) clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
       // durationMs 在终止进程树之前记录，超时路径的耗时不应包含 taskkill 等待
       const durationMs = Date.now() - startedAt;
-      await terminateProcessTree(child);
-      await waitForChildClose(childClosed, child);
-      const error = new Error(message);
-      error.code = code;
-      error.stdout = stdout;
-      error.stderr = stderr;
-      error.durationMs = durationMs;
-      reject(error);
+      try {
+        await terminateTree();
+      } finally {
+        const error = new Error(message);
+        error.code = code;
+        error.stdout = stdout;
+        error.stderr = stderr;
+        error.durationMs = durationMs;
+        reject(error);
+      }
     };
     const onAbort = () => void finishError("shell_cancelled", "命令已停止。").catch(reject);
     child.on("close", (exitCode, closeSignal) => {
@@ -130,38 +152,37 @@ async function waitForChildClose(childClosed, child, timeoutMs = 2000) {
   if (timer) clearTimeout(timer);
 }
 
-async function terminateProcessTree(child) {
-  if (!child.pid || child.exitCode !== null) return;
-  if (process.platform === "win32") {
-    // taskkill /T /F：Windows 下递归终止整棵进程树，/F 强制结束。
-    // 等待 taskkill 的 close 事件确认结果；非零退出或 error（如受限环境拒绝访问）
-    // 不吞掉——回退到直接 kill 子进程，由 waitForChildClose 以 2 秒兜底收尾。
-    // taskkill 的退出码/输出仅供诊断，绝不回传给最终用户（错误字段契约见 finishError）。
-    await new Promise((resolve) => {
-      const killer = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true });
-      killer.on("error", () => {
+// Windows 专用：taskkill /PID <pid> /T /F 递归强制终止整棵进程树，等待 taskkill 的
+// close 事件确认结果。仅当 taskkill error 或非零退出（如受限环境拒绝访问）时回退到
+// 直接 kill 子进程，由 waitForChildClose 以 2 秒兜底收尾。taskkill 的退出码/输出仅供
+// 诊断，绝不回传给最终用户（错误字段契约见 finishError）。
+async function terminateWindowsTree(child) {
+  await new Promise((resolve) => {
+    const killer = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true });
+    killer.on("error", () => {
+      try {
+        child.kill();
+      } catch {
+        // 子进程已经退出时忽略
+      }
+      resolve();
+    });
+    killer.on("close", (exitCode) => {
+      if (exitCode !== 0) {
         try {
           child.kill();
         } catch {
           // 子进程已经退出时忽略
         }
-        resolve();
-      });
-      killer.on("close", (exitCode) => {
-        if (exitCode !== 0) {
-          try {
-            child.kill();
-          } catch {
-            // 子进程已经退出时忽略
-          }
-        }
-        resolve();
-      });
+      }
+      resolve();
     });
-    return;
-  }
-  // POSIX：detached 使 sh 成为进程组组长，向负 pid 发信号即终止整组；
-  // 仅 kill sh 会让 sh -c 启动的子进程（如 node）成孤儿继续运行。
+  });
+}
+
+// POSIX 专用：detached 使 sh 成为进程组组长，向负 pid 发信号即终止整组；
+// 仅 kill sh 会让 sh -c 启动的子进程（如 node）成孤儿继续运行。
+function terminatePosixTree(child) {
   try {
     process.kill(-child.pid, "SIGTERM");
   } catch {

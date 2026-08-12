@@ -82,6 +82,20 @@ test("shell 取消返回后 cwd 可立即删除", { skip: process.platform !== "
   );
 });
 
+test("shell 超时返回后 cwd 可立即删除", { skip: process.platform !== "win32" }, async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "ww-shell-release-timeout-"));
+  const command = `"${process.execPath}" -e "setTimeout(()=>{},30000)"`;
+  await assert.rejects(
+    () => runShellCommand({ command, cwd, timeoutMs: 200 }),
+    (error) => error.code === "shell_timeout"
+  );
+  // 与取消路径同一断言：超时返回后不得仍有进程占用工作目录（Windows handle 锁）
+  await assert.doesNotReject(
+    () => fs.rm(cwd, { recursive: true, force: true }),
+    "超时完成后不得仍有进程占用工作目录"
+  );
+});
+
 test("shell 调用前已 abort 直接 reject 且不 spawn", async () => {
   const controller = new AbortController();
   controller.abort();
