@@ -326,7 +326,7 @@ test("read_skill 未知技能名返回 skill_not_found", async (t) => {
   const h = await setup(t, { runtime: { skills: await tempSkillService(t) } });
   const result = await h.tools.execute(toolCall("read_skill", { name: "no-such-skill" }), h.context);
   assert.equal(result.ok, false);
-  assert.equal(result.error, "skill_not_found");
+  assert.equal(result.error.code, "skill_not_found");
 });
 
 test("read_skill 拒绝穿越技能目录的资源路径", async (t) => {
@@ -344,7 +344,7 @@ test("read_skill 拒绝穿越技能目录的资源路径", async (t) => {
     h.context
   );
   assert.equal(result.ok, false);
-  assert.equal(result.error, "skill_resource_unsafe");
+  assert.equal(result.error.code, "skill_resource_unsafe");
 });
 
 test("read_skill 二进制 asset 返回元数据+绝对路径，不把二进制塞进模型上下文", async (t) => {
@@ -381,7 +381,7 @@ test("read_skill 未注入 skills service 时返回 工具不可用。", async (
   const h = await setup(t, { runtime: { skills: {} } });
   const result = await h.tools.execute(toolCall("read_skill", { name: "suspense-chapter-end" }), h.context);
   assert.equal(result.ok, false);
-  assert.equal(result.error, "not_wired");
+  assert.equal(result.error.code, "not_wired");
   assert.equal(result.message, "工具不可用。");
 });
 
@@ -522,7 +522,7 @@ test("deny 决策不落盘，返回 操作已拒绝。", async (t) => {
   await h.tools.resolveDecision({ decisionId: decision.payload.decision_id, choice: "deny" });
   const result = await pending;
   assert.equal(result.ok, false);
-  assert.equal(result.error, "permission_denied");
+  assert.equal(result.error.code, "permission_denied");
   assert.equal(result.message, "操作已拒绝。");
   assert.equal(await pathExists(path.join(h.projectRoot, "denied.txt")), false);
   const events = await readEvents(h.journal);
@@ -824,7 +824,7 @@ test("tool_call_failed 的 message 先脱敏（路径内嵌 token 形片段不�
   const tokenPath = "sk-abcdefghijklmnop/notes.txt";
   const result = await h.tools.execute(toolCall("read_file", { path: tokenPath }), h.context);
   assert.equal(result.ok, false);
-  assert.equal(result.error, "file_not_found");
+  assert.equal(result.error.code, "file_not_found");
   assert.ok(!result.message.includes("sk-abcdefghijklmnop"), "返回 message 不得含 token 明文");
   const failed = eventsOfType(await readEvents(h.journal), "tool_call_failed")[0];
   assert.ok(!failed.payload.message.includes("sk-abcdefghijklmnop"), "事件 message 不得含 token 明文");
@@ -1003,7 +1003,7 @@ test("停止（abort）中止 shell、作废待决决策且不泄漏未脱敏输
   controller.abort("用户停止");
   const result = await pending;
   assert.equal(result.ok, false);
-  assert.equal(result.error, "shell_cancelled");
+  assert.equal(result.error.code, "shell_cancelled");
   const events = await readEvents(h.journal);
   const failed = eventsOfType(events, "tool_call_failed").find((event) => event.payload.name === "shell");
   assert.ok(failed, "停止后应有 tool_call_failed");
@@ -1022,7 +1022,7 @@ test("决策等待期间停止：decision 以 cancelled 作废并闭环", async 
   controller.abort("用户停止");
   const result = await pending;
   assert.equal(result.ok, false);
-  assert.equal(result.error, "tool_cancelled");
+  assert.equal(result.error.code, "tool_cancelled");
   const events = await readEvents(h.journal);
   const resolved = eventsOfType(events, "decision_resolved");
   assert.equal(resolved.length, 1);
@@ -1037,7 +1037,7 @@ test("调用前已 abort：工具直接 tool_cancelled", async (t) => {
   const h = await setup(t, { signal: controller.signal });
   const result = await h.tools.execute(toolCall("read_file", { path: "notes.md" }), h.context);
   assert.equal(result.ok, false);
-  assert.equal(result.error, "tool_cancelled");
+  assert.equal(result.error.code, "tool_cancelled");
   assertClosure(await readEvents(h.journal));
 });
 
@@ -1222,6 +1222,90 @@ test("clock/setTimer/clearTimer seam：假时钟精确驱动空闲期限", { tim
   assertClosure(await readEvents(h.journal));
 });
 
+// ---------------------------------------------------------------------------
+// Task 3：工具错误转结构化结果 {ok:false,error:{code,message,retryable?}}，
+// 不向 Runtime 抛异常（异常杀死 Run 的回归面）
+// ---------------------------------------------------------------------------
+
+test("executor throw → 结构化 {ok:false,error:{code,message}}，不向 Runtime 抛异常", async (t) => {
+  const h = await setup(t);
+  const unregister = h.tools._registerTool("explode", {
+    description: "explode",
+    schema: { type: "object", properties: {}, additionalProperties: false },
+    describeAction: () => ({
+      category: "read",
+      scope: "project",
+      targetClass: "project-root",
+      grantKey: "read:project:project-root",
+      title: "explode",
+      description: "explode",
+      targets: []
+    }),
+    async run() {
+      const error = new Error("领域错误：磁盘已满。");
+      error.code = "disk_full";
+      throw error;
+    }
+  });
+  // 直接 await：若 executor 异常以 rejection 逃逸（杀死 Run），本测试立即失败
+  const result = await h.tools.execute(toolCall("explode", {}), h.context);
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "disk_full");
+  assert.equal(result.error.message, "领域错误：磁盘已满。");
+  assert.equal(result.message, "领域错误：磁盘已满。");
+  assert.ok(result.tool_call_id, "结果应回传原 tool_call_id");
+  const events = await readEvents(h.journal);
+  const failed = eventsOfType(events, "tool_call_failed")[0];
+  assert.equal(failed.payload.error, "disk_full", "journal 事件 payload.error 保持字符串 code");
+  assert.equal(failed.payload.message, "领域错误：磁盘已满。");
+  assertClosure(events);
+  unregister();
+});
+
+test("executor 裸异常（无 code）→ error.code 回落 tool_failed", async (t) => {
+  const h = await setup(t);
+  const unregister = h.tools._registerTool("blow", {
+    description: "blow",
+    schema: { type: "object", properties: {}, additionalProperties: false },
+    describeAction: () => ({
+      category: "read",
+      scope: "project",
+      targetClass: "project-root",
+      grantKey: "read:project:project-root",
+      title: "blow",
+      description: "blow",
+      targets: []
+    }),
+    async run() {
+      throw new Error("裸异常文本。");
+    }
+  });
+  const result = await h.tools.execute(toolCall("blow", {}), h.context);
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "tool_failed");
+  assert.equal(result.error.message, "裸异常文本。");
+  assertClosure(await readEvents(h.journal));
+  unregister();
+});
+
+test("tool_timeout 结构化结果携带 error.code/kind/message/retryable（回给模型的完整形状）", { timeout: 15000 }, async (t) => {
+  const h = await setup(t, {
+    runtime: { toolIdleTimeoutMs: 60, toolAbsoluteTimeoutMs: 2000 },
+    shellRuntime: async ({ signal }) => {
+      await new Promise((resolve) => signal?.addEventListener("abort", () => resolve()));
+      throw Object.assign(new Error("命令已停止。"), { code: "shell_cancelled", durationMs: 0 });
+    }
+  });
+  const result = await h.tools.execute(toolCall("shell", { command: "git status", purpose: "长驻" }), h.context);
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "tool_timeout");
+  assert.equal(result.error.kind, "idle");
+  assert.equal(result.error.message, "工具执行超时。");
+  assert.equal(result.error.retryable, true, "超时是瞬态条件，应标记可重试");
+  assert.equal(result.message, "工具执行超时。");
+  assertClosure(await readEvents(h.journal));
+});
+
 test("工具 context 注入组合 signal（父停止传导）与 reportActivity", { timeout: 15000 }, async (t) => {
   const controller = new AbortController();
   const h = await setup(t, {
@@ -1294,7 +1378,7 @@ test("未知工具返回 工具不可用。 且活动闭环", async (t) => {
   const h = await setup(t);
   const result = await h.tools.execute(toolCall("no_such_tool", {}), h.context);
   assert.equal(result.ok, false);
-  assert.equal(result.error, "unknown_tool");
+  assert.equal(result.error.code, "unknown_tool");
   assert.equal(result.message, "工具不可用。");
   const events = await readEvents(h.journal);
   const failed = eventsOfType(events, "tool_call_failed")[0];
@@ -1346,7 +1430,7 @@ test("单个 AfterToolUse 抛错不影响主流程", async (t) => {
   const result = await h.tools.execute(toolCall("read_file", { path: "x.md" }), h.context);
   // read_file 目标不存在 → tool_failed，但 hook 抛错不得阻断结果返回
   assert.equal(result.ok, false);
-  assert.equal(result.error, "file_not_found");
+  assert.equal(result.error.code, "file_not_found");
 });
 
 // ---------------------------------------------------------------------------
@@ -1377,7 +1461,7 @@ test("update_plan 校验计划状态并写 plan_updated", async (t) => {
     h.context
   );
   assert.equal(bad.ok, false);
-  assert.equal(bad.error, "bad_args");
+  assert.equal(bad.error.code, "bad_args");
   const badStatus = await h.tools.execute(toolCall("update_plan", { items: [{ id: "a", step: "a", status: "done" }] }), h.context);
   assert.equal(badStatus.ok, false);
   const empty = await h.tools.execute(toolCall("update_plan", { items: [] }), h.context);
@@ -1385,7 +1469,7 @@ test("update_plan 校验计划状态并写 plan_updated", async (t) => {
   // 缺 id / 重复 id 拒绝
   const noId = await h.tools.execute(toolCall("update_plan", { items: [{ step: "a", status: "pending" }] }), h.context);
   assert.equal(noId.ok, false, "新事件缺 id 应被工具 schema 拒绝");
-  assert.equal(noId.error, "bad_args");
+  assert.equal(noId.error.code, "bad_args");
   const dupId = await h.tools.execute(
     toolCall("update_plan", {
       items: [
@@ -1396,7 +1480,7 @@ test("update_plan 校验计划状态并写 plan_updated", async (t) => {
     h.context
   );
   assert.equal(dupId.ok, false, "重复 id 应被拒绝");
-  assert.equal(dupId.error, "bad_args");
+  assert.equal(dupId.error.code, "bad_args");
   assertClosure(await readEvents(h.journal));
 });
 
@@ -1410,7 +1494,7 @@ test("enter_workflow 校验工作流并写 workflow_changed", async (t) => {
   assert.equal(changed.payload.reason, "用户要求正式写作");
   const bad = await h.tools.execute(toolCall("enter_workflow", { workflow: "planet", reason: "x" }), h.context);
   assert.equal(bad.ok, false);
-  assert.equal(bad.error, "bad_args");
+  assert.equal(bad.error.code, "bad_args");
   assertClosure(await readEvents(h.journal));
 });
 
@@ -1458,7 +1542,7 @@ test("深工具参数校验：bad_args 不调用 project operations", async (t) 
     h.context
   );
   assert.equal(bad.ok, false);
-  assert.equal(bad.error, "bad_args");
+  assert.equal(bad.error.code, "bad_args");
   const bad2 = await h.tools.execute(
     toolCall("commit_chapter", { project_id: "p1", chapter_no: 1.5 }),
     h.context
@@ -1479,7 +1563,7 @@ test("projectOperations 未接线（Task 5 之前）时深工具返回 工具不
     h.context
   );
   assert.equal(segment.ok, false);
-  assert.equal(segment.error, "not_wired");
+  assert.equal(segment.error.code, "not_wired");
   assert.equal(segment.message, "工具不可用。");
   const commit = await h.tools.execute(toolCall("commit_chapter", { project_id: "p1", chapter_no: 1 }), h.context);
   assert.equal(commit.ok, false);
@@ -1527,7 +1611,7 @@ test("list_files / search_files / edit_file 基本行为", async (t) => {
   await fs.writeFile(path.join(h.projectRoot, "multi.txt"), "abc abc", "utf8");
   const notUnique = await h.tools.execute(toolCall("edit_file", { path: "multi.txt", find: "abc", replace: "xyz" }), h.context);
   assert.equal(notUnique.ok, false);
-  assert.equal(notUnique.error, "find_not_unique");
+  assert.equal(notUnique.error.code, "find_not_unique");
   const occurrence = await h.tools.execute(
     toolCall("edit_file", { path: "multi.txt", find: "abc", replace: "xyz", occurrence: 2 }),
     h.context
@@ -1540,7 +1624,7 @@ test("list_files / search_files / edit_file 基本行为", async (t) => {
     h.context
   );
   assert.equal(badOccurrence.ok, false);
-  assert.equal(badOccurrence.error, "bad_args");
+  assert.equal(badOccurrence.error.code, "bad_args");
   assertClosure(await readEvents(h.journal));
 });
 

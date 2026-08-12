@@ -229,7 +229,7 @@ test("count_text 非 .md/.txt 扩展名返回 unsupported_text_file", async (t) 
   await fs.writeFile(path.join(h.projectRoot, "data.json"), "{}", "utf8");
   const result = await h.tools.execute(toolCall("count_text", { path: "data.json" }), h.context);
   assert.equal(result.ok, false);
-  assert.equal(result.error, "unsupported_text_file");
+  assert.equal(result.error.code, "unsupported_text_file");
   assert.equal(result.message, "只支持 Markdown 或纯文本文件。");
   assertClosure(await readEvents(h.journal));
 });
@@ -241,10 +241,10 @@ test("count_text 工作区外路径返回 path_outside_workspace（相对穿越�
   await fs.writeFile(outside, "外部内容", "utf8");
   const relativeTraversal = await h.tools.execute(toolCall("count_text", { path: path.relative(h.projectRoot, outside) }), h.context);
   assert.equal(relativeTraversal.ok, false);
-  assert.equal(relativeTraversal.error, "path_outside_workspace");
+  assert.equal(relativeTraversal.error.code, "path_outside_workspace");
   const absolute = await h.tools.execute(toolCall("count_text", { path: outside }), h.context);
   assert.equal(absolute.ok, false);
-  assert.equal(absolute.error, "path_outside_workspace");
+  assert.equal(absolute.error.code, "path_outside_workspace");
   const events = await readEvents(h.journal);
   assert.ok(!JSON.stringify(events).includes("外部内容"), "工作区外文件内容不得被统计或泄露");
   assertClosure(events);
@@ -280,7 +280,7 @@ test("count_text 缺少 path 返回 bad_args", async (t) => {
   const h = await setup(t);
   const result = await h.tools.execute(toolCall("count_text", {}), h.context);
   assert.equal(result.ok, false);
-  assert.equal(result.error, "bad_args");
+  assert.equal(result.error.code, "bad_args");
   assert.equal(result.message, "参数无效：path 必须是字符串。");
   assertClosure(await readEvents(h.journal));
 });
