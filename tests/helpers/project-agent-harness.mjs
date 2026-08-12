@@ -55,10 +55,8 @@
 //            shell { command, cwd?, timeout_ms?, purpose? }
 //   deep:    update_plan { explanation?, items: [{id,step,status,description?}] }（status ∈
 //            pending|in_progress|completed，最多一个 in_progress）/
-//            enter_workflow { workflow: "general"|"chapter"|"init", reason }（Task 10：review 已删除）/
 //            append_chapter_segment { project_id, chapter_no, segment_no, content } /
-//            commit_chapter { project_id, chapter_no, expected_draft_checksum? }（Task 10：无门禁例外）/
-//            commit_blueprint { project_id, outline, setting, evidence_paths }
+//            commit_chapter { project_id, chapter_no, expected_draft_checksum? }（Task 10：无门禁例外）
 //
 // ## 事件与投影契约
 //   - 事件类型必须来自计划固定的 28 个类型清单（见 acceptance 测试 FIXED_EVENT_TYPES）。
@@ -138,8 +136,7 @@ export async function createProjectRoot(workspaceRoot, options = {}) {
       yolo: false,
       dangerous: false,
       ...(options.tool_permissions ?? {})
-    },
-    blueprint_status: "none"
+    }
   };
   await fs.writeFile(path.join(projectRoot, "project.yaml"), serializeSimpleYaml(project), "utf8");
   await writeJson(path.join(projectRoot, "memory", "chapter_index.json"), {

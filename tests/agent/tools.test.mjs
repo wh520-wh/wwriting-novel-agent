@@ -2,8 +2,9 @@
 //
 // tests/agent/ 是允许测试内部 seam 的目录：本文件直接导入 tools.mjs 与 journal.mjs，
 // 覆盖计划 Task 4 Step 6–9 要求的全部不变量：
-//   - 恰好 12 个工具的 typed schema（八个 general + 四个 deep，Task 7 删除
-//     enter_workflow、Task 12 加 read_skill、Task 9 加 count_text）；
+//   - 恰好 11 个工具的 typed schema（八个 general + 三个 deep，Task 7 删除
+//     enter_workflow、Task 8 删除 commit_blueprint、Task 12 加 read_skill、
+//     Task 9 加 count_text）；
 //     模型不能提供/覆盖 risk/scope/extreme/grant_key
 //   - 系统拥有的风险分类（shell 的 extreme 由运行时判定，模型参数不参与）
 //   - 硬能力拒绝优先（dangerous 封印/归档/read_only/safe_edit=false），extreme 确认
@@ -32,7 +33,7 @@ import { EXTREME_COMMANDS } from "../fixtures/command-risk-corpus.mjs";
 const EXTREME_COMMAND = EXTREME_COMMANDS[0];
 
 const GENERAL_NAMES = ["list_files", "search_files", "read_file", "write_file", "edit_file", "shell", "read_skill", "count_text"];
-const DEEP_NAMES = ["update_plan", "append_chapter_segment", "commit_chapter", "commit_blueprint"];
+const DEEP_NAMES = ["update_plan", "append_chapter_segment", "commit_chapter"];
 // 旧编排工具名全部按片段拼接（避免本文件自身成为 Task 11 Step 6 全库 rg 的命中点，
 // 与 dependency-rules.test.mjs 对旧数据文件名的片段约定一致；即使当前 rg 只禁
 // 其中两个名字的字面量，其余名字同样按片段构造保持一致性）。
@@ -97,10 +98,6 @@ async function setup(t, options = {}) {
     commitChapter: async (args) => {
       opsCalls.push(["commitChapter", args]);
       return { ok: true, checkpoint_id: "cp-1" };
-    },
-    commitBlueprint: async (args) => {
-      opsCalls.push(["commitBlueprint", args]);
-      return { ok: true };
     }
   };
 
@@ -199,11 +196,11 @@ async function nextDecision(journal, count = 1) {
 // Step 4/5：注册表与 typed schema、系统拥有的风险
 // ---------------------------------------------------------------------------
 
-test("恰好注册八个 general 与四个 deep 工具", () => {
+test("恰好注册八个 general 与三个 deep 工具", () => {
   const tools = createToolRuntime({ journal: { append: async () => {} } });
   const names = tools.definitions().map((def) => def.function.name);
   assert.deepEqual(names, [...GENERAL_NAMES, ...DEEP_NAMES]);
-  assert.equal(names.length, 12, "工具总数应为 12（Task 7：enter_workflow 已删除）");
+  assert.equal(names.length, 11, "工具总数应为 11（Task 7 删除 enter_workflow、Task 8 删除 commit_blueprint）");
   for (const banned of BANNED_NAMES) {
     assert.ok(!names.includes(banned), `不得注册 ${banned}`);
   }
@@ -236,6 +233,7 @@ test("deep 工具 schema 与计划一致", () => {
   assert.ok(plan.parameters.properties.items.items.properties.id, "plan 项应有 id 字段");
   assert.ok(plan.parameters.properties.items.items.properties.description, "plan 项应有可选 description");
   assert.ok(!byName.has("enter_workflow"), "Task 7：enter_workflow 必须从注册表删除");
+  assert.ok(!byName.has("commit_blueprint"), "Task 8：commit_blueprint 必须从注册表删除");
   assert.deepEqual(
     Object.keys(byName.get("append_chapter_segment").parameters.properties).sort(),
     ["chapter_no", "content", "project_id", "segment_no"]
@@ -244,10 +242,6 @@ test("deep 工具 schema 与计划一致", () => {
     Object.keys(byName.get("commit_chapter").parameters.properties).sort(),
     ["chapter_no", "expected_draft_checksum", "project_id"],
     "Task 10：commit_chapter 不得再暴露 exception_decisions"
-  );
-  assert.deepEqual(
-    Object.keys(byName.get("commit_blueprint").parameters.properties).sort(),
-    ["evidence_paths", "outline", "project_id", "setting"]
   );
 });
 
@@ -1495,7 +1489,25 @@ test("enter_workflow 已删除：未知工具，不产生 workflow_changed", asy
   assertClosure(events);
 });
 
-test("append_chapter_segment / commit_chapter / commit_blueprint 调用注入的 projectOperations", async (t) => {
+test("commit_blueprint 已删除：不在注册表，调用返回未知工具", async (t) => {
+  const h = await setup(t);
+  const names = h.tools.definitions().map((def) => def.function.name);
+  assert.ok(!names.includes("commit_blueprint"), "commit_blueprint 不得注册");
+  const result = await h.tools.execute(
+    toolCall("commit_blueprint", { project_id: "p1", outline: "# OUTLINE", setting: "# SETTING", evidence_paths: [] }),
+    h.context
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "unknown_tool", "已删除工具按未知工具处理");
+  const events = await readEvents(h.journal);
+  const failed = eventsOfType(events, "tool_call_failed").filter((event) => event.payload.name === "commit_blueprint");
+  assert.equal(failed.length, 1, "调用必须记录为失败");
+  assert.equal(failed[0].payload.error, "unknown_tool");
+  assert.equal(h.opsCalls.length, 0, "不得调用任何 project operations");
+  assertClosure(events);
+});
+
+test("append_chapter_segment / commit_chapter 调用注入的 projectOperations", async (t) => {
   const h = await setup(t);
   const segment = await h.tools.execute(
     toolCall("append_chapter_segment", { project_id: "p1", chapter_no: 1, segment_no: 1, content: "正文第一段" }),
@@ -1521,14 +1533,6 @@ test("append_chapter_segment / commit_chapter / commit_blueprint 调用注入的
   assert.equal("exceptionDecisions" in h.opsCalls[1][1], false, "Task 10：commit_chapter 不再传递 exceptionDecisions");
   const events = await readEvents(h.journal);
   assert.ok(eventsOfType(events, "checkpoint_linked").some((event) => event.payload.chapter_no === 1), "提交必须链接 checkpoint");
-
-  const blueprint = await h.tools.execute(
-    toolCall("commit_blueprint", { project_id: "p1", outline: "# OUTLINE", setting: "# SETTING", evidence_paths: ["chapters/001.md"] }),
-    h.context
-  );
-  assert.equal(blueprint.ok, true);
-  assert.deepEqual(h.opsCalls[2][0], "commitBlueprint");
-  assert.deepEqual(h.opsCalls[2][1].evidencePaths, ["chapters/001.md"]);
   assertClosure(await readEvents(h.journal));
 });
 
@@ -1545,11 +1549,6 @@ test("深工具参数校验：bad_args 不调用 project operations", async (t) 
     h.context
   );
   assert.equal(bad2.ok, false);
-  const bad3 = await h.tools.execute(
-    toolCall("commit_blueprint", { project_id: "p1", outline: "", setting: "s", evidence_paths: "not-array" }),
-    h.context
-  );
-  assert.equal(bad3.ok, false);
   assert.equal(h.opsCalls.length, 0, "参数无效时不得调用 project operations");
 });
 
@@ -1565,12 +1564,6 @@ test("projectOperations 未接线（Task 5 之前）时深工具返回 工具不
   const commit = await h.tools.execute(toolCall("commit_chapter", { project_id: "p1", chapter_no: 1 }), h.context);
   assert.equal(commit.ok, false);
   assert.equal(commit.message, "工具不可用。");
-  const blueprint = await h.tools.execute(
-    toolCall("commit_blueprint", { project_id: "p1", outline: "o", setting: "s", evidence_paths: [] }),
-    h.context
-  );
-  assert.equal(blueprint.ok, false);
-  assert.equal(blueprint.message, "工具不可用。");
   assertClosure(await readEvents(h.journal));
 });
 
