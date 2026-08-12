@@ -54,6 +54,93 @@ class HangingAdapter {
   }
 }
 
+// Task 4 假时钟 seam（与 src/core/agent/tools.mjs 的 clock/setTimer/clearTimer
+// 约定一致）：advance() 按到期顺序触发已注册的 interval 回调，interval 语义由
+// 触发后自动续期实现（fn 内 clearTimer 即停止续期）。
+function createFakeClock(startMs = 0) {
+  let now = startMs;
+  let nextId = 1;
+  const timers = new Map();
+  const clock = () => now;
+  const setTimer = (fn, ms) => {
+    const id = nextId;
+    nextId += 1;
+    timers.set(id, { fn, ms, nextFire: now + ms });
+    return id;
+  };
+  const clearTimer = (id) => {
+    timers.delete(id);
+  };
+  function advance(ms) {
+    const target = now + ms;
+    let guard = 0;
+    while (guard < 1_000_000) {
+      guard += 1;
+      let dueId = null;
+      let dueAt = Infinity;
+      for (const [id, timer] of timers) {
+        if (timer.nextFire <= target && timer.nextFire < dueAt) {
+          dueAt = timer.nextFire;
+          dueId = id;
+        }
+      }
+      if (dueId === null) break;
+      const timer = timers.get(dueId);
+      now = dueAt;
+      timer.nextFire = dueAt + timer.ms; // interval：先推进再触发
+      timer.fn();
+    }
+    now = target;
+  }
+  return { clock, setTimer, clearTimer, advance };
+}
+
+// Task 4 集成用流式响应：每 chunkDelayMs 交付一帧；in-flight 等待期间 signal
+// 中止则拒绝（与生产 fetch 一致：gateway 的空闲/总期限 abort 必须能到达 adapter，
+// 否则超时对流的感知失效，测试无区分度）。
+function abortableStreamResponse(frames, { chunkDelayMs = 10 } = {}) {
+  return async (url, init) => {
+    const signal = init?.signal;
+    const chunks = frames.map((frame) => `${frame}\n\n`);
+    let index = 0;
+    const waitForNext = () =>
+      new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+          reject(new DOMException("The operation was aborted.", "AbortError"));
+          return;
+        }
+        const onAbort = () => {
+          clearTimeout(timer);
+          reject(new DOMException("The operation was aborted.", "AbortError"));
+        };
+        const timer = setTimeout(() => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve();
+        }, chunkDelayMs);
+        signal?.addEventListener("abort", onAbort, { once: true });
+      });
+    return {
+      ok: true,
+      status: 200,
+      text: async () => {
+        throw new Error("streaming path should not call response.text()");
+      },
+      body: {
+        getReader() {
+          return {
+            read() {
+              return waitForNext().then(() => {
+                if (index >= chunks.length) return { done: true, value: undefined };
+                return { done: false, value: new TextEncoder().encode(chunks[index++]) };
+              });
+            }
+          };
+        }
+      }
+    };
+  };
+}
+
 // ---------------------------------------------------------------------------
 // retry
 // ---------------------------------------------------------------------------
@@ -594,6 +681,215 @@ test("流式 adapter 经 metadata.onActivity 收到心跳（gateway 透传）", 
   const gateway = makeGateway(adapter, { heartbeatMs: 0, onActivity: (token) => seenActivity.push(token) });
   await gateway.complete(BASE_REQUEST);
   assert.deepEqual(seenActivity, ["token-1", ""]);
+});
+
+// ---------------------------------------------------------------------------
+// Task 4：活动感知期限（每个已解析 SSE 帧刷新内部 idle；总期限不被活动重置）
+// ---------------------------------------------------------------------------
+
+test("gateway 无条件注入内部 onActivity 包装（无外部回调也刷新活动）", async () => {
+  let injected = null;
+  const adapter = {
+    async complete(request) {
+      injected = request.metadata.onActivity;
+      return { text: "ok", usage: {} };
+    }
+  };
+  const gateway = makeGateway(adapter);
+  const result = await gateway.complete(BASE_REQUEST);
+  assert.equal(result.text, "ok");
+  assert.equal(typeof injected, "function", "无外部 onActivity 时 Gateway 也必须注入内部活动包装");
+});
+
+test("tool-call-only SSE 帧刷新 idle：无外部 onActivity 时也不空闲超时", async () => {
+  const frames = [
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"list_files","arguments":""}}]}}]}',
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"path\\":"}}]}}]}',
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"chapters\\"}"}}]}}]}',
+    'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+    "data: [DONE]"
+  ];
+  const adapter = createOpenAICompatibleAdapter({
+    baseUrl: "https://api.example.test/v1",
+    fetchImpl: abortableStreamResponse(frames, { chunkDelayMs: 30 })
+  });
+  // 不注册任何外部 onActivity（构造与 metadata 均无）：活动刷新必须由内部
+  // 无条件包装兜底，否则仅 tool-call 增量（无正文 token）的长流会被空闲超时误杀。
+  const gateway = makeGateway(adapter, { retryMax: 0, timeoutMs: 100, heartbeatMs: 5 });
+  const result = await gateway.complete({ ...BASE_REQUEST, stream: true });
+  assert.equal(result.text, "");
+  assert.equal(result.toolCalls.length, 1, "tool-call-only 流不应被空闲超时误杀");
+  assert.equal(result.toolCalls[0].name, "list_files");
+  assert.deepEqual(result.toolCalls[0].arguments, { path: "chapters" });
+  assert.equal(result.retried, false);
+});
+
+test("空 delta SSE 帧刷新 idle：无外部 onActivity 时也不空闲超时", async () => {
+  const frames = [
+    'data: {"choices":[{"delta":{}}]}',
+    'data: {"choices":[{"delta":{}}]}',
+    'data: {"choices":[{"delta":{}}]}',
+    'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+    "data: [DONE]"
+  ];
+  const adapter = createOpenAICompatibleAdapter({
+    baseUrl: "https://api.example.test/v1",
+    fetchImpl: abortableStreamResponse(frames, { chunkDelayMs: 30 })
+  });
+  const gateway = makeGateway(adapter, { retryMax: 0, timeoutMs: 100, heartbeatMs: 5 });
+  const result = await gateway.complete({ ...BASE_REQUEST, stream: true });
+  assert.equal(result.text, "");
+  assert.equal(result.retried, false, "空 delta 帧也刷新活动，不应空闲超时");
+});
+
+test("usage-only SSE 帧刷新 idle：无外部 onActivity 时也不空闲超时", async () => {
+  const frames = [
+    'data: {"choices":[],"usage":{"prompt_tokens":8,"completion_tokens":2,"total_tokens":10}}',
+    'data: {"choices":[],"usage":{"prompt_tokens":8,"completion_tokens":2,"total_tokens":10}}',
+    'data: {"choices":[],"usage":{"prompt_tokens":8,"completion_tokens":2,"total_tokens":10}}',
+    "data: [DONE]"
+  ];
+  const adapter = createOpenAICompatibleAdapter({
+    baseUrl: "https://api.example.test/v1",
+    fetchImpl: abortableStreamResponse(frames, { chunkDelayMs: 30 })
+  });
+  const gateway = makeGateway(adapter, { retryMax: 0, timeoutMs: 100, heartbeatMs: 5 });
+  const result = await gateway.complete({ ...BASE_REQUEST, stream: true });
+  assert.equal(result.text, "");
+  assert.equal(result.usageReport.outputTokens, 2, "usage-only 帧照常归一化 usage");
+  assert.equal(result.retried, false, "usage-only 帧也刷新活动，不应空闲超时");
+});
+
+test("持续活动仍命中总期限：活动刷新 idle 但不重置 total deadline", async () => {
+  const fake = createFakeClock();
+  let emitActivity;
+  const adapter = {
+    async complete(request, { signal }) {
+      emitActivity = () => request.metadata.onActivity?.("x", {});
+      return new Promise((_, reject) => {
+        signal?.addEventListener("abort", () => reject(new DOMException("abort", "AbortError")), { once: true });
+      });
+    }
+  };
+  // 空闲阈值 5s 远大于总期限 100ms：持续活动可一直刷新 idle，但总期限硬闸不受影响
+  const gateway = makeGateway(adapter, {
+    retryMax: 0, timeoutMs: 5000, totalDeadlineMs: 100, heartbeatMs: 5, ...fake
+  });
+  const pending = gateway.complete({ ...BASE_REQUEST, stream: true });
+  for (let i = 0; i < 9; i += 1) {
+    emitActivity(); // 每 10ms 一帧活动
+    fake.advance(10);
+  }
+  emitActivity(); // t=90
+  fake.advance(20); // 越过总期限 t=100：活动可刷新 idle，但总期限不被重置
+  await assert.rejects(pending, (err) => {
+    assert.equal(err.code, "provider_transport_error");
+    assert.equal(err.reason, "timeout");
+    assert.match(err.message, /deadline/u);
+    return true;
+  });
+});
+
+test("watchdog 同一 tick 空闲与总期限双命中：总期限优先（不重试、不 recordRetry、不 onRetry）", async () => {
+  const fake = createFakeClock();
+  let calls = 0;
+  let emitActivity;
+  const onRetryLog = [];
+  const adapter = {
+    async complete(request, { signal }) {
+      calls += 1;
+      emitActivity = () => request.metadata.onActivity?.("keep-alive", {});
+      return new Promise((_, reject) => {
+        signal?.addEventListener("abort", () => reject(new DOMException("abort", "AbortError")), { once: true });
+      });
+    }
+  };
+  // 空闲 80ms / 总期限 100ms：最后一帧活动落在 t=20（距空闲阈值恰 80ms、距总
+  // 期限恰 100ms），t=100 的 watchdog tick 两者同时命中。若空闲分支误优先会走
+  // 重试路径——退避走真实定时器，故意设 5s 长退避，误路径会表现为 5s 挂起 +
+  // onRetry + recordRetry（可被下方断言观测）。
+  const gateway = makeGateway(adapter, {
+    retryMax: 3,
+    timeoutMs: 80,
+    totalDeadlineMs: 100,
+    heartbeatMs: 5,
+    retryBaseDelayMs: 5000,
+    retryMaxDelayMs: 5000,
+    onRetry(info) {
+      onRetryLog.push(info);
+    },
+    ...fake
+  });
+  const pending = gateway.complete({ ...BASE_REQUEST, stream: true });
+  fake.advance(20);
+  emitActivity(); // t=20：最后一次活动
+  fake.advance(80); // t=100：空闲（100-20=80）与总期限（100-0=100）同一 tick 双命中
+  await assert.rejects(pending, (err) => {
+    assert.equal(err.code, "provider_transport_error");
+    assert.equal(err.reason, "timeout");
+    assert.match(err.message, /total deadline/u);
+    return true;
+  });
+  assert.equal(calls, 1, "总期限硬闸后不得发起新 attempt");
+  assert.equal(onRetryLog.length, 0, "总期限命中不得触发 onRetry（不得走重试路径）");
+  assert.equal(gateway.getSummary().retries, 0, "总期限命中不得 recordRetry");
+});
+
+test("modelConfig.total_deadline_ms 覆盖 6 小时默认总期限", async () => {
+  const okAdapter = { async complete() { return { text: "ok", usage: {} }; } };
+  const gateway = makeGateway(okAdapter);
+  assert.equal(gateway.totalDeadlineMs, 21_600_000, "默认单次 complete 总期限应为 6 小时");
+
+  const fake = createFakeClock();
+  const adapter = {
+    async complete(request, { signal }) {
+      return new Promise((_, reject) => {
+        signal?.addEventListener("abort", () => reject(new DOMException("abort", "AbortError")), { once: true });
+      });
+    }
+  };
+  const overridden = makeGateway(adapter, {
+    retryMax: 0, timeoutMs: 5000, heartbeatMs: 5, ...fake
+  });
+  const pending = overridden.complete({
+    ...BASE_REQUEST,
+    modelConfig: { ...BASE_REQUEST.modelConfig, total_deadline_ms: 80 }
+  });
+  fake.advance(200); // 假时钟推进：80ms 硬闸（覆盖 6h 默认）立即生效
+  await assert.rejects(pending, (err) => {
+    assert.equal(err.code, "provider_transport_error");
+    assert.equal(err.reason, "timeout");
+    assert.match(err.message, /deadline/u);
+    return true;
+  });
+});
+
+test("用户中止优先：空闲/总期限触发前取消当前模型请求", async () => {
+  const fake = createFakeClock();
+  let calls = 0;
+  const controller = new AbortController();
+  const adapter = {
+    async complete(request, { signal }) {
+      calls += 1;
+      return new Promise((_, reject) => {
+        signal?.addEventListener("abort", () => reject(new DOMException("abort", "AbortError")), { once: true });
+      });
+    }
+  };
+  const gateway = makeGateway(adapter, {
+    retryMax: 2, timeoutMs: 100, totalDeadlineMs: 5000, heartbeatMs: 5, ...fake
+  });
+  const pending = gateway.complete(BASE_REQUEST, { signal: controller.signal });
+  fake.advance(90); // 接近空闲超时（100ms）但尚未触发
+  controller.abort(); // 用户手动停止：优先于即将到来的 idle/总期限
+  fake.advance(200); // 之后即使越过 idle 与 deadline 也不应改变结果
+  await assert.rejects(pending, (err) => {
+    assert.ok(err instanceof DOMException);
+    assert.equal(err.name, "AbortError");
+    return true;
+  });
+  assert.equal(calls, 1, "外部取消不得发起新 attempt");
+  assert.equal(gateway.getSummary().failedCalls, 0, "外部取消不记账");
 });
 
 // ---------------------------------------------------------------------------

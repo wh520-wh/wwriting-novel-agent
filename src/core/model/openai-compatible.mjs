@@ -303,8 +303,11 @@ async function readStream(responseBody, metadata) {
     if (event.usage) usage = event.usage;
     const finishReason = event?.choices?.[0]?.finish_reason ?? null;
     if (finishReason) lastFinishReason = finishReason;
-    // 流式心跳：每个解析出的事件回调一次（usage-only 帧返回空串也照常回调，
-    // 调用方据此判断"有 token 但无正文"；回调本身保持长流心跳新鲜）。
+    // 活动上报（Task 4 契约）：每个成功解析的 data: 帧都回调一次，不以 token
+    // 非空为条件——tool-call-only 增量帧、空 delta、usage-only 帧（token=""）
+    // 一律算活动；gateway 据此刷新内部空闲时钟，避免「连接活着但没有 token」
+    // 的流被空闲超时误杀。回调携带 token（可能为空串）便于调用方判断「有 token
+    // 但无正文」。[DONE] 与 malformed 帧不计入（不是成功解析的事件）。
     const token = extractStreamToken(event);
     const reasoningToken = extractReasoningStreamToken(event);
     metadata.onActivity?.(token || reasoningToken);
