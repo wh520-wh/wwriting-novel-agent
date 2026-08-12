@@ -40,13 +40,21 @@ export function createModelGateway({
   retryBaseDelayMs = 1000,
   retryMaxDelayMs = 16000,
   timeoutMs = 300000,
-  totalDeadlineMs = 900000,
+  // 单次 gateway.complete 默认总期限 6 小时（空闲超时以外的硬闸）；modelConfig.
+  // total_deadline_ms 可逐请求覆盖。持续活动只刷新空闲时钟，不重置总期限。
+  totalDeadlineMs = 21_600_000,
   heartbeatMs = 5000,
   onRetry = null,
   onRecovered = null,
   onActivity = null,
   costTracker = new CostTracker(),
-  responseCacheSize = DEFAULT_RESPONSE_CACHE_SIZE
+  responseCacheSize = DEFAULT_RESPONSE_CACHE_SIZE,
+  // 时间 seam（Task 2 同款约定：clock/setTimer/clearTimer）：测试注入假时钟与
+  // 假定时器，期限行为不依赖真实等待。watchdog 与 heartbeat 都是周期性定时器，
+  // 默认实现基于 setInterval/clearInterval。
+  clock = Date.now,
+  setTimer = (fn, ms) => setInterval(fn, ms),
+  clearTimer = (id) => clearInterval(id)
 } = {}) {
   if (!adapter || typeof adapter.complete !== "function") {
     throw new TypeError("createModelGateway 需要提供带 complete(request, { signal }) 的 adapter");
@@ -100,13 +108,13 @@ export function createModelGateway({
     const attemptTimeoutMs = modelConfig.timeout_ms ?? timeoutMs;
     const totalDeadline = modelConfig.total_deadline_ms ?? totalDeadlineMs;
 
-    const startTime = Date.now();
+    const startTime = clock();
     // 网络恢复标志：本方法作用域内发生过 ≥1 次重试且最终成功时，成功 return 前
     // 通知上层发「连接已恢复」。
     let retried = false;
 
     for (let attempt = 0; attempt <= requestRetryMax; attempt += 1) {
-      const elapsed = Date.now() - startTime;
+      const elapsed = clock() - startTime;
       if (elapsed >= totalDeadline) {
         // 总期限已过：立即抛错，不重试（重试只会多等一次退避后必然超时）
         throw new ProviderTransportError("Request exceeded total deadline.", { reason: "timeout" });
@@ -130,17 +138,21 @@ export function createModelGateway({
       // >= attemptTimeoutMs」→ 空闲超时 abort；「总耗时 >= totalDeadline」→
       // 硬闸 abort；都不满足则继续等待。interval 周期 = heartbeatMs > 0 ?
       // min(heartbeatMs, 1000) : 1000——heartbeatMs=0 时超时检查仍照常运行。
-      let lastActivityAt = Date.now();
+      let lastActivityAt = clock();
       const watchdogIntervalMs = heartbeatMs > 0 ? Math.min(heartbeatMs, 1000) : 1000;
-      const watchdog = setInterval(() => {
-        const now = Date.now();
-        if (now - lastActivityAt >= attemptTimeoutMs) {
-          timedOutReason = "idle";
+      const watchdog = setTimer(() => {
+        const now = clock();
+        // 总期限硬闸优先于空闲超时：同一 tick 双命中时（最后一帧活动恰好落在
+        // 距期限一个 attemptTimeoutMs 内）必须按 deadline 处理——否则空闲分支会
+        // 走重试路径（全量退避 + onRetry + recordRetry）后才在循环顶抛错，白等
+        // 一个 backoff 且记一次未发生的重试（与 catch 的 deadline 直抛分支一致）。
+        if (now - startTime >= totalDeadline) {
+          timedOutReason = "deadline";
           timeoutController.abort();
           return;
         }
-        if (now - startTime >= totalDeadline) {
-          timedOutReason = "deadline";
+        if (now - lastActivityAt >= attemptTimeoutMs) {
+          timedOutReason = "idle";
           timeoutController.abort();
         }
       }, watchdogIntervalMs);
@@ -148,50 +160,51 @@ export function createModelGateway({
       // 非流式 heartbeat：attempt 挂起期间周期性 ping onActivity，让上层看到
       // 请求还活着（0 禁用；null 是无操作）。回调异常不得击穿 attempt——
       // 未捕获的定时器异常会终止进程，捕获后停止本 attempt 的心跳。
+      // 注意：heartbeat 直接调用构造级 onActivity，不经过内部 markActivity——
+      // 心跳只是"连接还挂着"的通知，不能宣称 provider 真有进展（不刷新
+      // lastActivityAt，与已解析 SSE 帧的活动区分开）。
       let heartbeat = null;
       if (onActivity && heartbeatMs > 0) {
-        heartbeat = setInterval(() => {
+        heartbeat = setTimer(() => {
           try {
             onActivity?.();
           } catch {
-            if (heartbeat) clearInterval(heartbeat);
+            if (heartbeat) clearTimer(heartbeat);
           }
         }, heartbeatMs);
       }
 
       const cleanupAttempt = () => {
-        clearInterval(watchdog);
-        clearInterval(heartbeat);
+        clearTimer(watchdog);
+        clearTimer(heartbeat);
         timeoutController.signal.removeEventListener("abort", onTimeout);
       };
 
-      // onActivity 经包装注入 adapter：流式 adapter 在解析每个 SSE 帧时回调它
-      // （含 usage-only/空 delta/tool-call 增量帧），包装内先刷新 lastActivityAt
-      // ——keep-alive 与工具参数增量帧也算活动，避免「连接活着但没有 token」的
-      // 流被空闲超时误杀；再转发原回调（构造参数优先，其次调用方 metadata，
-      // 与既有 spread 优先级一致）。onToken/onReasoningToken 同样先刷新
-      // lastActivityAt；emittedProviderToken 只由 onToken（公开正文）置位——
-      // reasoning-only 流不再阻断透明重试（重试最多重复模型内部推理，不会重复
-      // 公开正文，正文已公开才不可重试）。
+      // markActivity：先刷新内部 lastActivityAt，再转发外部通知（onActivity
+      // 仅为通知，缺省为空）。onActivity 包装无条件注入 adapter——活动刷新不依赖
+      // Runtime 额外注册空回调，Gateway 自己兜底：流式 adapter 对每个成功解析的
+      // SSE 帧（含 usage-only/空 delta/tool-call 增量帧）回调 metadata.onActivity，
+      // 全部经此刷新 lastActivityAt，避免「连接活着但没有 token」的流被空闲超时
+      // 误杀。onToken/onReasoningToken 同样先刷新 lastActivityAt；
+      // emittedProviderToken 只由 onToken（公开正文）置位——reasoning-only 流
+      // 不再阻断透明重试（重试最多重复模型内部推理，不会重复公开正文，正文已
+      // 公开才不可重试）。
       const injectedOnActivity = onActivity ?? metadata.onActivity;
+      const markActivity = (...args) => {
+        lastActivityAt = clock();
+        injectedOnActivity?.(...args);
+      };
       let emittedProviderToken = false;
       const metadataForAttempt = {
         ...metadata,
-        ...(injectedOnActivity
-          ? {
-              onActivity(...args) {
-                lastActivityAt = Date.now();
-                injectedOnActivity(...args);
-              }
-            }
-          : {}),
+        onActivity: markActivity,
         onToken(token, event) {
-          lastActivityAt = Date.now();
+          lastActivityAt = clock();
           if (String(token ?? "")) emittedProviderToken = true;
           metadata.onToken?.(token, event);
         },
         onReasoningToken(token, event) {
-          lastActivityAt = Date.now();
+          lastActivityAt = clock();
           metadata.onReasoningToken?.(token, event);
         }
       };

@@ -828,6 +828,35 @@ test("流式：tool_calls delta 增量累积并解析 arguments", async () => {
   assert.deepEqual(result.toolCalls[0].input, { path: "chapters" });
 });
 
+test("流式：每个成功解析的 data: 帧都回调 onActivity（tool-call-only/空 delta/usage-only 均计数，不以 token 非空为条件）", async () => {
+  const activity = [];
+  const adapter = makeAdapter({
+    fetchImpl: async () =>
+      streamResponse(
+        sseFrames([
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"list_files","arguments":"{}"}}]}}]}',
+          'data: {"choices":[{"delta":{}}]}',
+          'data: {"choices":[],"usage":{"prompt_tokens":8,"completion_tokens":2,"total_tokens":10}}',
+          'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+          "data: [DONE]"
+        ])
+      )
+  });
+  const result = await adapter.complete({
+    messages: [{ role: "user", content: "hi" }],
+    modelConfig: { model_name: "m", stream: true },
+    metadata: {
+      onActivity(token) {
+        activity.push(token);
+      }
+    }
+  });
+  assert.equal(activity.length, 4, "[DONE] 不计入，其余每个成功解析的帧都回调一次");
+  assert.deepEqual(activity, ["", "", "", ""], "无正文 token 的帧（tool-call-only/空 delta/usage-only/finish_reason）也照常回调");
+  assert.equal(result.toolCalls.length, 1);
+  assert.equal(result.usage.completion_tokens, 2);
+});
+
 test("流式：多次 tool_call delta 按 index 分别累积", async () => {
   const adapter = makeAdapter({
     fetchImpl: async () =>
