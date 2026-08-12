@@ -7,15 +7,16 @@
 //     文件不得包含该身份文本。
 //   - RUNTIME_POLICY_TEMPLATE / assembleRuntimePolicy：运行时政策层。提示文本
 //     只陈述运行时提供的真实能力，绝不扩大权限。
-//   - WORKFLOW_POLICIES：三条工作流政策（general/chapter/init，Task 10 已删除 review）。
+//   - UNIFIED_TASK_POLICY：统一 Agent 任务政策（Task 7 删除三条 workflow 政策
+//     general/chapter/init，原 WORKFLOW_POLICIES 不再存在）。
 //   - assemblePrompt：按固定层序装配 messages、执行预算裁剪、独立 hash。
 //
 // 装配顺序（固定，计划原文 + Task 6 记忆层）：
 //   Static Core -> Runtime Policy -> Project Instructions -> Project Memory
-//   -> Available Skills -> Workflow Policy -> Dynamic Context -> History
+//   -> Available Skills -> Agent Task Policy -> Dynamic Context -> History
 //   -> Current User Message
 // Task 12：Available Skills 目录摘要块（只含 name/description）插入在
-// Project Instructions 后、Workflow Policy 前；完整正文只经 read_skill 读取。
+// Project Instructions 后、Agent Task Policy 前；完整正文只经 read_skill 读取。
 // Task 6：Project Memory 层承载 WWRITING.md 正文（独立 project_memory_hash），
 // 位于 Project Instructions 之后、Available Skills 之前；缺失时跳过不占位。
 //
@@ -28,8 +29,8 @@
 //   - History 不再静默丢最旧轮次（Task 6 删除 compressHistory 压缩路径）：超限
 //     只在上报 overflowTokens，是否压缩由 context-window.mjs 的发送前门禁决定；
 //     受保护最近 12 轮与结构化摘要由 Task 7 selectProtectedRecentTurns 处理；
-//   - hash：static_core/runtime/project_instructions/project_memory/workflow/dynamic
-//     独立计算。
+//   - hash：static_core/runtime/project_instructions/project_memory/task_policy/
+//     dynamic 独立计算。
 //
 // 本模块不包含状态机、不读取文件、不调用模型；AGENTS.md 的读取是 runtime
 // 的职责，本模块只负责把读到的正文放进 Project Instructions 层（AGENTS.md
@@ -138,20 +139,23 @@ export function assembleRuntimePolicy(runtime = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// Workflow Policies（三条，逐字复制）
+// Agent Task Policy（统一，Task 7 删除三条 workflow 政策）
 // ---------------------------------------------------------------------------
-export const WORKFLOW_POLICIES = Object.freeze({
-  general: `[Workflow: general]
-理解用户当前目标，自主选择回答、读取、编辑、运行命令或进入正式工作流。只有正式生成、修订并提交章节时进入 chapter。用户要求审核时直接读取相关文件、判断并按要求修改，不进入专门 workflow。普通文件任务在验证目标文件或命令结果后完成。`,
 
-  chapter: `[Workflow: chapter]
-目标是完成用户指定的正式章节写作或修订，并维护项目可恢复性。开始前核对当前章节、已有正文、相关大纲、设定和最近连续性事实。正文只能通过 append_chapter_segment 写入草稿；正式完成只能通过 commit_chapter 提交。不得直接编辑章节索引、正式章节文件、checkpoint 或完成状态绕过深工具。
+// 统一 Agent 任务政策：SPEC 3.1 删除隐藏任务工作流后，每一轮都使用同一份政策
+// 文本与同一工具目录。当前请求决定当前任务；章节专用工具纪律（正文只经
+// append_chapter_segment/commit_chapter，禁止通用写工具绕过）；WWRITING.md
+// 长期记忆职责；优先输入的安全点停止规则；章节完成条件。
+export const UNIFIED_TASK_POLICY = `[Agent Task Policy]
+当前用户请求决定当前任务，不继承任何隐藏任务模式：普通问题可以直接回答，文件任务按需读取和修改；每一轮都使用同一工具目录，不需要进入专门工作流。
 
-完成条件：目标章节正文已落盘；章节索引、正式文件、chapter memory、全书摘要与 checkpoint 已由 commit_chapter 一致更新。commit_chapter 只执行存储安全约束（草稿存在、项目身份、校验和、原子写入与回滚），字数、标题格式或技能检查不阻止提交。任一条件不满足时不得声称章节完成。`,
+正式章节正文只能通过 append_chapter_segment 写入草稿，正式完成只能通过 commit_chapter 提交。不得用 write_file、edit_file 或 shell 直接写章节索引、正式章节文件、checkpoint、完成状态或草稿目录，绕过章节专用工具。段号按顺序递增，禁止先写后段再补前段；完成前自查已写段落是否连续。
 
-  init: `[Workflow: init]
-目标是理解当前文件夹并创建或谨慎更新 WWRITING.md。先检查现有记忆和真实文件，区分用户已确认事实、文件可证事实与模型推测；只把前两类写入长期记忆。WWRITING.md 是权威文件索引和当前有效要求的入口，不复制完整总纲。已有文件不得盲目覆盖；只有用户目标确实需要时才创建总纲、设定、人物档案或正文。确定小说主风格时记录稳定技能 ID，并在已有总纲中维护写作风格说明。完成后简短报告实际检查和修改的文件。`
-});
+WWRITING.md 是长期项目事实入口。先检查现有记忆和真实文件，区分用户已确认事实、文件可证事实与模型推测；只有用户已确认或文件可证的长期事实才能写入长期记忆，已有文件不得盲目覆盖。
+
+收到优先输入时，在当前模型请求或当前工具结束的安全边界停止处理旧输入，不启动新动作，随后读取最新用户消息。
+
+完成条件：目标章节正文已落盘，且章节索引、正式文件、章节记忆、全书摘要与 checkpoint 已由 commit_chapter 一致更新。任一条件不满足时不得声称章节完成。用户要求审核时直接读取相关文件、判断并按用户要求修改，不进入专门审稿流程。`;
 
 // ---------------------------------------------------------------------------
 // Available Skills：紧凑目录摘要（Task 12 Step 1）
@@ -396,7 +400,6 @@ export function assemblePrompt({
   runtime,
   projectInstructions,
   projectMemory,
-  workflow,
   dynamicContext,
   history,
   currentInput,
@@ -405,17 +408,13 @@ export function assemblePrompt({
   skillCatalog
 } = {}) {
   // 层 1-6：Static Core / Runtime Policy / Project Instructions / Project Memory
-  //         / Available Skills / Workflow Policy
-  const workflowName = workflow == null || workflow === "" ? "general" : workflow;
-  if (!Object.hasOwn(WORKFLOW_POLICIES, workflowName)) {
-    throw new Error(`未知 workflow: ${String(workflowName)}`);
-  }
+  //         / Available Skills / Agent Task Policy
   const staticCoreText = STATIC_CORE;
   const runtimePolicyText = assembleRuntimePolicy(runtime);
   const projectInstructionsText = String(projectInstructions ?? "");
   const projectMemoryText = assembleProjectMemoryBlock(projectMemory);
   const skillCatalogText = assembleSkillCatalogBlock(skillCatalog);
-  const workflowPolicyText = WORKFLOW_POLICIES[workflowName];
+  const taskPolicyText = UNIFIED_TASK_POLICY;
   // AGENTS.md 不存在时 Project Instructions 为空、WWRITING.md 缺失时 Project
   // Memory 为空、无技能时目录块为空：不制造占位文案（直接跳过空层）
   const systemContent = [
@@ -424,7 +423,7 @@ export function assemblePrompt({
     projectInstructionsText,
     projectMemoryText,
     skillCatalogText,
-    workflowPolicyText
+    taskPolicyText
   ]
     .filter((text) => text.length > 0)
     .join("\n\n");
@@ -439,7 +438,7 @@ export function assemblePrompt({
     runtime_hash: sha256(runtimePolicyText),
     project_instructions_hash: sha256(projectInstructionsText),
     project_memory_hash: sha256(projectMemoryText),
-    workflow_hash: sha256(workflowPolicyText),
+    task_policy_hash: sha256(taskPolicyText),
     dynamic_hash: sha256(dynamicFullText)
   };
 

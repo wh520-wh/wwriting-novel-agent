@@ -1485,9 +1485,6 @@ test("章节提交一致更新正式文件、索引、记忆与 checkpoint", asy
     project: { min_words_per_chapter: 50, target_words_per_chapter: 80 },
     gatewayScript: [
       async () => ({
-        toolCalls: [tool("enter_workflow", { workflow: "chapter", reason: "用户要求正式写作第一章" })]
-      }),
-      async () => ({
         toolCalls: [
           tool("append_chapter_segment", {
             project_id: h.project.project_id ?? null,
@@ -1533,9 +1530,6 @@ test("短章节首次提交即成功：字数/标题/技能 checker 不再拒绝
     project: { min_words_per_chapter: 100, target_words_per_chapter: 120 },
     gatewayScript: [
       async () => ({
-        toolCalls: [tool("enter_workflow", { workflow: "chapter", reason: "正式写作" })]
-      }),
-      async () => ({
         toolCalls: [
           tool("append_chapter_segment", {
             project_id: h.project.project_id ?? null,
@@ -1567,6 +1561,62 @@ test("短章节首次提交即成功：字数/标题/技能 checker 不再拒绝
   const entry = index.chapters.find((chapter) => chapter.chapter_no === 1);
   assert.deepEqual(entry.quality_gate_results, [], "索引不得记录任何门禁结果");
   assert.equal(eventsOfType(events, "run_completed").length, 1, "一轮完成，无修订重试");
+  assertActivityClosure(events);
+});
+
+// ---------------------------------------------------------------------------
+// 统一工具目录（Task 7）：先写章节再问普通问题，同一 Run 同一工具集
+// ---------------------------------------------------------------------------
+
+test("先写章节再问普通问题：同一 Run 完成写作与回答，不切换工作流", async (t) => {
+  // Task 7 行为验收：章节写作不再需要进入 chapter 工作流；写完章节后同一条
+  // Run 直接消费普通问题，工具目录与写作轮完全相同（无 enter_workflow）。
+  const h = await openHarness(t, {
+    project: { min_words_per_chapter: 50, target_words_per_chapter: 80 },
+    gatewayScript: [
+      async () => ({
+        toolCalls: [
+          tool("append_chapter_segment", {
+            project_id: h.project.project_id ?? null,
+            chapter_no: 1,
+            segment_no: 1,
+            content: CHAPTER_CONTENT
+          })
+        ]
+      }),
+      async () => ({
+        toolCalls: [tool("commit_chapter", { project_id: h.project.project_id ?? null, chapter_no: 1 })]
+      }),
+      async () => ({ text: "第一章已提交。" }),
+      async (request) => {
+        // 普通问题轮：工具目录与写作轮完全相同（统一目录，无工作流切换）
+        const names = (request.tools ?? []).map((def) => def?.function?.name).filter(Boolean);
+        for (const deep of ["update_plan", "append_chapter_segment", "commit_chapter"]) {
+          assert.ok(names.includes(deep), `普通问题轮也必须暴露 ${deep}`);
+        }
+        assert.ok(!names.includes("enter_workflow"), "统一目录不得包含 enter_workflow");
+        assert.ok(!names.includes("commit_blueprint"), "统一目录不得包含 commit_blueprint");
+        return { text: "我是一个本地小说写作助手。" };
+      }
+    ]
+  });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "正式写第一章", source: "chat" });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "你是做什么的？", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  assert.equal(eventsOfType(events, "run_started").length, 1, "写作与普通问题必须共用同一 Run");
+  assert.equal(eventsOfType(events, "workflow_changed").length, 0, "统一模式不再产生 workflow_changed");
+  assert.ok(
+    eventsOfType(events, "tool_call_completed").some((event) => event.payload.name === "commit_chapter"),
+    "章节应已提交"
+  );
+  assert.equal(await pathExists(path.join(h.projectRoot, "chapters", "001.md")), true, "正式章节文件应落盘");
+  assert.ok(
+    eventsOfType(events, "assistant_message_completed").some((event) => (event.payload?.text ?? "").includes("本地小说写作助手")),
+    "普通问题应得到文本回答"
+  );
+  const session = await readSession(h.agent, h.projectRoot);
+  assert.equal(session.active_run.status, "completed");
   assertActivityClosure(events);
 });
 
