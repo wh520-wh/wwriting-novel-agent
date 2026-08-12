@@ -988,18 +988,29 @@ export function createAgentRuntime({
     await appendSafeTranscript(journal, { role: "user", content: inputText, input_id: inputId });
   }
 
-  // Task 2 冻结语义：每条 input 恰好一个 input_consumed/input_cancelled 终态事件。
-  //   - 队列输入由 input_consumed「切换激活」，该事件同时就是它的终态事件；
-  //   - 活动输入由 run_started/input_promoted 激活，完成时才需要 input_consumed 收敛。
-  // 返回当前输入完成时是否需要追加 input_consumed。
-  // 上限语义同 findInputText：只扫描最近 100k 条事件，超出视为需要收敛（保守方向）。
-  async function needsCompletionConsumed(journal, runId, inputId) {
+  // Task 2/9 冻结语义：每条 input 恰好一个终态事件。
+  //   - 新生命周期（Task 9 起 submit/withdraw 路径）：input_queued → input_started →
+  //     input_completed | input_interrupted（终态），input_queued → input_withdrawn
+  //     （终态）；input_started 只激活、不终结，完成时才需要追加 input_completed。
+  //   - legacy 兼容：旧 input_consumed「切换激活」同时就是该输入的终态事件，完成时
+  //     不再追加；input_promoted/run_started（retry）激活的输入完成时需要收敛。
+  // 返回当前输入完成时是否需要追加 input_completed。上限语义同 findInputText：
+  // 只扫描最近 100k 条事件，超出视为需要收敛（保守方向）。
+  async function needsCompletionTerminal(journal, runId, inputId) {
     const events = await journal.read({ afterSeq: 0, limit: 100000 });
     for (let i = events.length - 1; i >= 0; i -= 1) {
       const event = events[i];
       if (event.run_id !== runId || event.payload?.input_id !== inputId) continue;
-      if (event.type === "input_consumed") return false; // 该输入已被「切换激活」消费过
-      if (event.type === "input_promoted" || event.type === "run_started") return true;
+      if (
+        event.type === "input_consumed" ||
+        event.type === "input_cancelled" ||
+        event.type === "input_completed" ||
+        event.type === "input_interrupted" ||
+        event.type === "input_withdrawn"
+      ) {
+        return false; // 该输入已有终态事件（legacy consumed 或任意新终态）
+      }
+      if (event.type === "input_promoted" || event.type === "run_started" || event.type === "input_started") return true;
     }
     return true;
   }
@@ -1130,8 +1141,16 @@ export function createAgentRuntime({
   // 该 Run 是否为 /compact 输入而创建（空闲发起）还是运行中排队（in-run）。
   // 决定手动压缩失败/取消后的收敛：in-run 恢复 resume_run_status("running")，
   // 空闲发起则 run_cancelled → idle。
+  // Task 9：新生命周期下 run_started 不再携带 input_id，改为以该 Run 的第一条
+  // input_started 判定（空闲发起 = Run 首个被激活输入就是 compact item）；legacy
+  // 日志（retry 的 run_started 仍带 input_id）保留原判定分支。
   async function isCompactRunIdleInitiated(state, sessionState, runId, compactInputId) {
     const events = await sessionState.journal.read({ afterSeq: 0, limit: 100000 });
+    for (const event of events) {
+      if (event.type === "input_started" && event.run_id === runId) {
+        return event.payload?.input_id === compactInputId;
+      }
+    }
     for (const event of events) {
       if (event.type !== "run_started" || event.run_id !== runId) continue;
       return event.payload?.input_id === compactInputId;
@@ -1304,8 +1323,10 @@ export function createAgentRuntime({
   async function processInput(state, sessionState, runId, inputId, inputText) {
     const { journal, tools } = sessionState;
     const volatileToolRecords = [];
-    // Task 8：ensureUserMessageInTranscript 移到首次自动压缩门禁之后——压缩成功才
-    // 写入 transcript；cancelled/failed 时输入保持 draft/可重试，不调用普通模型。
+    // Task 8/9：用户 transcript append 只在「输入开始处理且即将调用模型」的唯一路径
+    // 发生（下方 model turn 前的 ensureUserMessageInTranscript）——压缩成功只 continue，
+    // 由下一轮预检通过后在同一路径写入。cancelled/failed 时输入保持 draft/可重试，
+    // 不写入 transcript（queued/withdrawn 输入永不进入 transcript，Task 9 边界）。
     let compactionAttemptedForInput = false;
     let closedToolResult = false;
 
@@ -1425,9 +1446,8 @@ export function createAgentRuntime({
         });
         compactionAttemptedForInput = true;
         if (compaction.status === "completed" || compaction.status === "noop") {
-          // 压缩成功（或无可压缩历史）：把输入写入 transcript，使用新 active
-          // context 继续——重新预检（低于硬窗口直接发送）。
-          await ensureUserMessageInTranscript(journal, inputId, inputText);
+          // 压缩成功（或无可压缩历史）：使用新 active context 继续——重新预检
+          //（低于硬窗口直接发送）。transcript 写入仍发生在下方唯一发送路径。
           continue;
         }
         if (compaction.status === "failed") {
@@ -1471,7 +1491,9 @@ export function createAgentRuntime({
         }
         // 低于硬窗口：继续发送（不重复压缩）
       }
-      // 未达到阈值（或已压缩且低于硬窗口）：把输入写入 transcript 并调用模型
+      // 未达到阈值（或已压缩且低于硬窗口）：该输入已开始（input_started 已落盘），
+      // 在调用模型前的唯一路径把用户文本写入 transcript（Task 9：queued/withdrawn
+      // 永不写 transcript；retry 去重由 ensureUserMessageInTranscript 保证）。
       await ensureUserMessageInTranscript(journal, inputId, inputText);
       // 每个 Provider 轮次拥有稳定 turn id（v2 事件契约 §2.3）与独立 writer 对：
       // onToken 只接收公开正文、onReasoningToken 只接收 reasoning，两者不得互相
@@ -1737,26 +1759,29 @@ export function createAgentRuntime({
           ...(reply?.raw?.finish_reason === "length" ? { truncated: true } : {})
         }
       });
-      // 完成批次（input_consumed + grant 清除）的读-判-写放进项目互斥锁，杜绝与
+      // 完成批次（input_completed + grant 清除）的读-判-写放进项目互斥锁，杜绝与
       // cancelRunForStop 交错产生「同一 input 双终态」（input_cancelled 与
-      // input_consumed 并存，违反 Task 2 冻结语义）：无论谁先拿到锁，后到者看到的
+      // input_completed 并存，违反 Task 2/9 冻结语义）：无论谁先拿到锁，后到者看到的
       // 投影都是终态——Run 已取消/停止时跳过完成批次（停止路径负责取消输入与
-      // 清除 grant）；返回 "done" 后由 advanceOrComplete 读到终态收敛。
+      // 清除 grant）；promote 竞态把输入放回队列（active_input_id 已切换）时同样
+      // 跳过——该输入的终态由下一次激活的完成负责。返回 "done" 后由
+      // advanceOrComplete 读到终态收敛。
       await state.mutex.run(async () => {
         const sessionNow = await journal.getSession();
         const runNow = sessionNow.active_run;
         if (!runNow || TERMINAL_RUN_STATUSES.has(runNow.status)) return false;
+        if (runNow.active_input_id !== inputId) return false;
         const grantsOfInput =
           runNow.active_grants?.filter((grant) => grant.input_id === inputId) ?? [];
         const completionBatch = [];
-        if (await needsCompletionConsumed(journal, runId, inputId)) {
-          completionBatch.push({ type: "input_consumed", run_id: runId, payload: { input_id: inputId } });
+        if (await needsCompletionTerminal(journal, runId, inputId)) {
+          completionBatch.push({ type: "input_completed", run_id: runId, payload: { input_id: inputId } });
         }
         for (const grant of grantsOfInput) {
           completionBatch.push({
             type: "permission_grant_cleared",
             run_id: runId,
-            payload: { grant_id: grant.id, input_id: grant.input_id, grant_key: grant.grant_key, reason: "input_consumed" }
+            payload: { grant_id: grant.id, input_id: grant.input_id, grant_key: grant.grant_key, reason: "input_completed" }
           });
         }
         if (completionBatch.length > 0) await journal.appendBatch(completionBatch);
@@ -1790,8 +1815,10 @@ export function createAgentRuntime({
           });
           return "compact";
         }
+        // Task 9 新生命周期：激活下一个排队输入（input_started 只激活不终结；
+        // 该输入的终态由 processInput 完成路径追加 input_completed）。
         await sessionState.journal.append({
-          type: "input_consumed",
+          type: "input_started",
           run_id: runId,
           payload: { input_id: session.queued_inputs[0].id }
         });
@@ -2073,15 +2100,22 @@ export function createAgentRuntime({
       const inputId = idFactory();
       let result;
       if (!run || TERMINAL_RUN_STATUSES.has(run.status)) {
-        // 空闲：创建新 Run
+        // 空闲：创建新 Run。同一批次原子写入 run_started + input_queued +
+        // input_started（Task 9 新生命周期：run_started 不再携带 input_id，由
+        // input_started 激活；三者同批保证「每条输入一个终态」与队列/活动投影一致）。
         const runId = idFactory();
         await sessionState.journal.appendBatch([
+          {
+            type: "run_started",
+            run_id: runId,
+            payload: {}
+          },
           {
             type: "input_queued",
             payload: { input_id: inputId, text, source, ...(kind === undefined ? {} : { kind }) }
           },
           {
-            type: "run_started",
+            type: "input_started",
             run_id: runId,
             payload: { input_id: inputId }
           }
@@ -2174,6 +2208,80 @@ export function createAgentRuntime({
     return { run_id: runId, input_id: inputId, promoted: true };
   }
 
+  // 请求优先（Task 9，SPEC 3.3 rule 10）：同一 session 项目互斥锁内做
+  // getSession -> validate -> appendBatch。只接受排队输入且当前无优先请求：
+  //   - 非排队输入 → input_not_queued（reducer 还有第二道守卫）；
+  //   - 已有优先输入在途 → priority_pending（在途输入撤回或开始后才可再请求）。
+  // 本任务只追加 priority_input_requested（priority_input_id 投影 + 前端按钮态）；
+  // 安全点切换逻辑（打断活动输入、优先消费）由 Task 10 实现。
+  async function requestPriority({ projectRoot, inputId, sessionId = null }) {
+    if (typeof inputId !== "string" || inputId.length === 0) {
+      throw fail("invalid_input_id", "inputId 必须是非空字符串。");
+    }
+    const state = ensureProject(projectRoot);
+    const sessionState = await resolveSessionState(state, sessionId);
+    if (!sessionState) throw fail("input_not_queued", "该输入不在排队队列中。");
+    await sessionState.journal.load();
+    return state.mutex.run(async () => {
+      const session = await sessionState.journal.getSession();
+      const run = session.active_run;
+      if (!session.queued_inputs.some((item) => item.id === inputId)) {
+        throw fail("input_not_queued", "该输入不在排队队列中。");
+      }
+      if (session.priority_input_id != null) {
+        throw fail("priority_pending", "已有优先输入在途，请等待当前优先输入开始或撤回。");
+      }
+      await sessionState.journal.append({
+        type: "priority_input_requested",
+        run_id: run?.id ?? null,
+        payload: { input_id: inputId }
+      });
+      await syncSessionRegistry(state, sessionState);
+      return {
+        session_id: sessionState.sessionId,
+        run_id: run?.id ?? null,
+        input_id: inputId,
+        priority_pending: true
+      };
+    });
+  }
+
+  // 撤回排队输入（Task 9，SPEC 3.2）：同一 session 项目互斥锁内读-判-写。只接受
+  // 排队输入——活动输入只能 completed/interrupted（不产生"撤销"语义）；input_started
+  // 已落盘的输入同样拒绝（撤回先于开始才生效）。追加 input_withdrawn（invisible
+  // journal 事件：投影移除排队项、清空匹配的 priority_input_id），返回事件中的
+  // 原始文本（draft_text）供 UI 恢复输入框。
+  async function withdrawInput({ projectRoot, inputId, sessionId = null }) {
+    if (typeof inputId !== "string" || inputId.length === 0) {
+      throw fail("invalid_input_id", "inputId 必须是非空字符串。");
+    }
+    const state = ensureProject(projectRoot);
+    const sessionState = await resolveSessionState(state, sessionId);
+    if (!sessionState) throw fail("input_not_queued", "该输入不在排队队列中。");
+    await sessionState.journal.load();
+    return state.mutex.run(async () => {
+      const session = await sessionState.journal.getSession();
+      const run = session.active_run;
+      const item = session.queued_inputs.find((queued) => queued.id === inputId);
+      if (!item) {
+        throw fail("input_not_queued", "该输入不在排队队列中。");
+      }
+      await sessionState.journal.append({
+        type: "input_withdrawn",
+        run_id: run?.id ?? null,
+        payload: { input_id: inputId }
+      });
+      await syncSessionRegistry(state, sessionState);
+      return {
+        session_id: sessionState.sessionId,
+        run_id: run?.id ?? null,
+        input_id: inputId,
+        withdrawn: true,
+        draft_text: typeof item.text === "string" ? item.text : ""
+      };
+    });
+  }
+
   async function decide({ projectRoot, decisionId, choice, sessionId = null }) {
     if (typeof decisionId !== "string" || decisionId.length === 0) {
       throw fail("invalid_decision_id", "decisionId 必须是非空字符串。");
@@ -2188,7 +2296,14 @@ export function createAgentRuntime({
     return sessionState.tools.resolveDecision({ decisionId, choice, confirmationText: choice });
   }
 
-  async function stop({ projectRoot, reason = "user_stop", sessionId = null }) {
+  // 停止（Task 9）：runId 可选。显式 runId 时在项目互斥锁内重读并精确匹配活动
+  // Run（不匹配/无活动 Run → run_not_found，HTTP 层不再用快照预校验——消除 B15
+  // TOCTOU：调用顺序由持久事件顺序唯一决定）；缺省 runId 保留旧语义（停止当前
+  // 会话的活动 Run，无 Run 时安全无操作）。
+  async function stop({ projectRoot, runId = null, reason = "user_stop", sessionId = null }) {
+    if (runId != null && (typeof runId !== "string" || runId.length === 0)) {
+      throw fail("invalid_run_id", "runId 必须是非空字符串。");
+    }
     const state = ensureProject(projectRoot);
     // 会话解析 + 读-判-写放进项目互斥锁，与 promote 的临界区串行化：调用顺序
     // 决定胜负——stop 先调用时其 stopping 落盘必然先于 promote 的读-判-写，
@@ -2197,13 +2312,19 @@ export function createAgentRuntime({
     const outcome = await state.mutex.run(async () => {
       const sessionState = await resolveSessionState(state, sessionId);
       if (!sessionState) {
-        return { run_id: null, cancelled: false, sessionState: null }; // 没有会话：无操作
+        // 没有会话：显式 runId 必须报 not_found；缺省 = 旧语义安全无操作
+        if (runId != null) throw fail("run_not_found", `Run ${runId} 不是当前会话的活动 Run。`);
+        return { run_id: null, cancelled: false, sessionState: null };
       }
       await sessionState.journal.load();
       const session = await sessionState.journal.getSession();
       const run = session.active_run;
       if (!run || TERMINAL_RUN_STATUSES.has(run.status)) {
+        if (runId != null) throw fail("run_not_found", `Run ${runId} 不是当前会话的活动 Run。`);
         return { run_id: null, cancelled: false, sessionState }; // 没有可停止的 Run：无操作
+      }
+      if (runId != null && run.id !== runId) {
+        throw fail("run_not_found", `Run ${runId} 不是当前会话的活动 Run。`);
       }
       if (run.status === "stopping") {
         return { run_id: run.id, cancelled: true, sessionState, alreadyStopping: true };
@@ -2219,6 +2340,7 @@ export function createAgentRuntime({
         // run_status_changed）；真实 journal 错误由外层 .catch abort + 上抛。
         const message = error?.message ?? "";
         if (message.includes("需要活动 Run") || message.includes("必须携带 retry") || message.includes("不能再次进入")) {
+          if (runId != null) throw fail("run_not_found", `Run ${runId} 不是当前会话的活动 Run。`);
           return { run_id: run.id, cancelled: false, sessionState };
         }
         throw error;
@@ -2233,17 +2355,17 @@ export function createAgentRuntime({
     // 锁外：abort + 等待收敛（循环的安全点路径 cancelRunForStop 需要取同一把锁，
     // 锁内等待会死锁）
     if (!outcome.cancelled) {
-      return { run_id: outcome.run_id ?? null, cancelled: false };
+      return { session_id: outcome.sessionState?.sessionId ?? null, run_id: outcome.run_id ?? null, cancelled: false };
     }
     const { sessionState } = outcome;
     if (outcome.alreadyStopping) {
       await waitForIdle(state, sessionState);
-      return { run_id: outcome.run_id, cancelled: true };
+      return { session_id: sessionState.sessionId, run_id: outcome.run_id, cancelled: true };
     }
     abortController(state);
     await waitForIdle(state, sessionState);
     await syncSessionRegistry(state, sessionState);
-    return { run_id: outcome.run_id, cancelled: true };
+    return { session_id: sessionState.sessionId, run_id: outcome.run_id, cancelled: true };
   }
 
   // 从 journal 事件找回可恢复 Run 的未终结输入（run_failed 记录了 input_id；
@@ -2262,14 +2384,27 @@ export function createAgentRuntime({
       if (event.type === "input_promoted" && typeof event.payload?.input_id === "string") {
         return event.payload.input_id;
       }
+      if (event.type === "input_started" && typeof event.payload?.input_id === "string") {
+        return event.payload.input_id;
+      }
       if (event.type === "run_started" && typeof event.payload?.input_id === "string") {
         return event.payload.input_id;
       }
     }
-    // 兜底：崩溃现场尚未终结的 input（事件里存在 input_queued 且无终态事件）
+    // 兜底：崩溃现场尚未终结的 input（事件里存在 input_queued 且无终态事件）。
+    // Task 9：终态集合同时接纳新生命周期事件（input_completed/input_interrupted/
+    // input_withdrawn）与 legacy（input_consumed/input_cancelled）。
     const terminal = new Set(
       runEvents
-        .filter((event) => event.type === "input_consumed" || event.type === "input_cancelled")
+        .filter((event) =>
+          [
+            "input_consumed",
+            "input_cancelled",
+            "input_completed",
+            "input_interrupted",
+            "input_withdrawn"
+          ].includes(event.type)
+        )
         .map((event) => event.payload?.input_id)
     );
     const openInputs = runEvents
@@ -2481,14 +2616,34 @@ export function createAgentRuntime({
   // 历史导出（NDJSON 异步流）：只读动作，不追加 Journal 事件；由 journal 层顺序
   // 迭代 events/transcript 两个 segment store，每行 { stream, record }；对每条
   // record 应用 runtime 的 redactor（API key/模型密钥/provider header 脱敏）。
-  async function* exportHistory({ projectRoot, sessionId = null } = {}) {
+  //
+  // Task 9：input_withdrawn 是 invisible journal 事件——普通导出（缺省）过滤被
+  // 撤回输入的全部事件（input_queued/input_withdrawn 及其引用），UI/模型历史/
+  // 普通导出都不暴露；audit:true 的原始诊断导出保留这些事件并显式标
+  // audit_only:true（撤回不丢审计线索，只对普通消费者隐藏）。
+  async function* exportHistory({ projectRoot, sessionId = null, audit = false } = {}) {
     if (typeof projectRoot !== "string" || projectRoot.length === 0) {
       throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
     }
     const state = ensureProject(projectRoot);
     const sessionState = await resolveSessionState(state, sessionId);
     if (!sessionState) return; // 无会话：空流
-    yield* sessionState.journal.exportHistory({
+    // 先扫描事件流找出全部 withdrawn input id（撤回输入已从投影移除，事件是唯一
+    // 线索；导出是显式用户动作，全量扫描成本可接受）。
+    const withdrawnInputs = new Set();
+    const rawEvents = await sessionState.journal.read({ afterSeq: 0 });
+    for (const event of rawEvents) {
+      if (event.type === "input_withdrawn" && typeof event.payload?.input_id === "string") {
+        withdrawnInputs.add(event.payload.input_id);
+      }
+    }
+    const referencesWithdrawn = (record) => {
+      if (withdrawnInputs.size === 0 || record == null) return false;
+      if (typeof record.input_id === "string" && withdrawnInputs.has(record.input_id)) return true;
+      const payloadId = record.payload?.input_id;
+      return typeof payloadId === "string" && withdrawnInputs.has(payloadId);
+    };
+    for await (const line of sessionState.journal.exportHistory({
       redact: (record) => {
         try {
           return JSON.parse(redactor.redact(JSON.stringify(record)));
@@ -2496,7 +2651,14 @@ export function createAgentRuntime({
           return { role: record?.role ?? "note", content: "[REDACTED]" };
         }
       }
-    });
+    })) {
+      if ((line.stream === "event" || line.stream === "transcript") && referencesWithdrawn(line.record)) {
+        // 普通导出过滤；audit 导出保留并显式标注
+        if (audit) yield { ...line, record: { ...line.record, audit_only: true } };
+        continue;
+      }
+      yield line;
+    }
   }
 
   // 不可逆清空：只允许 session idle 且 confirmIrreversible === true（守卫在
@@ -2655,6 +2817,8 @@ export function createAgentRuntime({
     open,
     submit,
     promote,
+    requestPriority,
+    withdrawInput,
     decide,
     stop,
     retry,

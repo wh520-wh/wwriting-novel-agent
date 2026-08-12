@@ -10,8 +10,10 @@
 //   await agent.open({ projectRoot });
 //   await agent.submit({ projectRoot, text, source });   // source ∈ {"chat","maintenance"}
 //   await agent.promote({ projectRoot, inputId });
+//   await agent.requestPriority({ projectRoot, inputId });  // Task 9：请求优先（priority_input_requested）
+//   await agent.withdrawInput({ projectRoot, inputId });    // Task 9：撤回排队输入（input_withdrawn）
 //   await agent.decide({ projectRoot, decisionId, choice });
-//   await agent.stop({ projectRoot, reason: "user_stop" });
+//   await agent.stop({ projectRoot, runId?, reason: "user_stop" }); // Task 9：runId 可选，显式时精确匹配活动 Run
 //   await agent.retry({ projectRoot, runId });
 //   // Task 8：压缩重试/取消（ESC、按钮与 HTTP 都调用同一取消方法）
 //   await agent.retryCompaction({ projectRoot, compactionId });
@@ -27,8 +29,9 @@
 //   await agent.archiveSession({ projectRoot, sessionId });
 //   await agent.restoreSession({ projectRoot, sessionId });
 //   await agent.deleteSession({ projectRoot, sessionId });    // 永久删除（元数据 + 数据目录）
-//   // 其余方法（open/submit/promote/decide/stop/retry/retryCompaction/
-//   // cancelCompaction/snapshot/exportHistory/clearHistory）均可选传 sessionId。
+//   // 其余方法（open/submit/promote/requestPriority/withdrawInput/decide/stop/retry/
+//   // retryCompaction/cancelCompaction/snapshot/exportHistory/clearHistory）均可选传
+//   // sessionId。
 import { createAgentRuntime } from "./runtime.mjs";
 
 export function createProjectAgent(dependencies = {}) {
@@ -37,6 +40,8 @@ export function createProjectAgent(dependencies = {}) {
     open: (params) => runtime.open(params),
     submit: (params) => runtime.submit(params),
     promote: (params) => runtime.promote(params),
+    requestPriority: (params) => runtime.requestPriority(params),
+    withdrawInput: (params) => runtime.withdrawInput(params),
     decide: (params) => runtime.decide(params),
     stop: (params) => runtime.stop(params),
     retry: (params) => runtime.retry(params),

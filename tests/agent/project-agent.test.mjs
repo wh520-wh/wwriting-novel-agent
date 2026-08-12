@@ -53,6 +53,8 @@ async function openHarness(t, options) {
 }
 
 // 活动闭环不变量：每个 input/tool/decision 都必须收敛到终态。
+// Task 9：input 终态集合同时接纳新生命周期事件（input_completed/input_interrupted/
+// input_withdrawn）与 legacy（input_consumed/input_cancelled）。
 function assertActivityClosure(events) {
   const openInputs = new Set();
   const openTools = new Set();
@@ -60,7 +62,13 @@ function assertActivityClosure(events) {
   for (const event of events) {
     if (event.type === "input_queued") {
       openInputs.add(event.payload.input_id);
-    } else if (event.type === "input_consumed" || event.type === "input_cancelled") {
+    } else if (
+      event.type === "input_consumed" ||
+      event.type === "input_cancelled" ||
+      event.type === "input_completed" ||
+      event.type === "input_interrupted" ||
+      event.type === "input_withdrawn"
+    ) {
       assert.ok(openInputs.has(event.payload.input_id), `input 终态必须对应已排队 input: ${event.payload.input_id}`);
       openInputs.delete(event.payload.input_id);
     } else if (event.type === "tool_call_started") {
@@ -107,7 +115,7 @@ test("idle submit 创建且只创建一个 Run；submit 落盘即返回", async 
   const events = await readEvents(h.agent, h.projectRoot);
   assert.equal(eventsOfType(events, "run_started").length, 1);
   assert.equal(eventsOfType(events, "run_completed").length, 1);
-  assert.equal(eventsOfType(events, "input_consumed").length, 1);
+  assert.equal(eventsOfType(events, "input_completed").length, 1, "空闲提交的输入以 input_completed 终结");
   assertActivityClosure(events);
 });
 
@@ -693,13 +701,13 @@ test("运行中 submit 进入 FIFO 队列，不创建第二个 Run", async (t) =
   await waitForIdle(h.agent, h.projectRoot);
   const events = await readEvents(h.agent, h.projectRoot);
   const queued = eventsOfType(events, "input_queued");
-  const consumed = eventsOfType(events, "input_consumed");
-  assert.equal(consumed.length, 3);
-  // 第一条输入由完成消费收敛；后两条由「切换激活」消费（Task 2 语义：每条 input
-  // 恰好一个终态事件，顺序与 queued 一致）
-  assert.equal(consumed[0].payload.input_id, queued[0].payload.input_id);
-  assert.equal(consumed[1].payload.input_id, queued[1].payload.input_id);
-  assert.equal(consumed[2].payload.input_id, queued[2].payload.input_id);
+  const completed = eventsOfType(events, "input_completed");
+  assert.equal(completed.length, 3);
+  // 每条输入恰好一个终态事件（Task 9：input_started 激活 + input_completed 收敛，
+  // 顺序与 queued 一致）
+  assert.equal(completed[0].payload.input_id, queued[0].payload.input_id);
+  assert.equal(completed[1].payload.input_id, queued[1].payload.input_id);
+  assert.equal(completed[2].payload.input_id, queued[2].payload.input_id);
   assert.equal(eventsOfType(events, "run_started").length, 1, "全程只有一个 Run");
   assertActivityClosure(events);
 });
@@ -2146,10 +2154,16 @@ test("并发 submit 不滞留输入：Run 终结后队列恒为空且全部输�
   assert.deepEqual(session.queued_inputs, [], "Run 终结后不得滞留排队输入");
   const events = await readEvents(h.agent, h.projectRoot);
   const queued = eventsOfType(events, "input_queued");
-  const consumed = eventsOfType(events, "input_consumed");
+  const completed = eventsOfType(events, "input_completed");
   const cancelled = eventsOfType(events, "input_cancelled");
+  const withdrawn = eventsOfType(events, "input_withdrawn");
+  const interrupted = eventsOfType(events, "input_interrupted");
   assert.equal(queued.length, 13);
-  assert.equal(consumed.length + cancelled.length, queued.length, "每条输入都必须收敛");
+  assert.equal(
+    completed.length + cancelled.length + withdrawn.length + interrupted.length,
+    queued.length,
+    "每条输入都必须收敛到恰好一个终态"
+  );
   assertActivityClosure(events);
 });
 
@@ -2358,7 +2372,7 @@ test("C1：transcript 超过无 checkpoint 尾部页（高轮次/低 token）→
   assert.equal(completed.payload.error_code, null);
   // 压缩成功后原输入继续并完成，active checkpoint 建立
   assert.equal(eventsOfType(events, "run_completed").length, 1, "首压后输入继续并完成");
-  assert.equal(eventsOfType(events, "input_consumed").length, 1);
+  assert.equal(eventsOfType(events, "input_completed").length, 1);
   const session = await readSession(h.agent, h.projectRoot);
   assert.equal(session.active_context_checkpoint_id, completed.payload.checkpoint_id, "压缩后 active checkpoint 必须建立");
   const checkpointFile = path.join(h.agentRoot, "sessions", seeded.session_id, "checkpoints", `context-${completed.payload.checkpoint_id}.json`);
@@ -2392,10 +2406,10 @@ test("自动压缩：达到阈值先压缩（started→running→completed），
   assert.equal(compactionCall.request.stream, false);
   assert.equal(compactionCall.request.tools, undefined);
   assert.equal(compactionCall.request.metadata.cacheable, false);
-  // 压缩成功后输入继续：普通模型调用 + input_consumed + run_completed
+  // 压缩成功后输入继续：普通模型调用 + input_completed + run_completed
   const normalCalls = h.gateway.calls.filter((call) => call.request.metadata?.stage !== "context_compaction");
   assert.equal(normalCalls.length, 14, "13 轮播种 + 1 轮压缩后继续");
-  assert.equal(eventsOfType(events, "input_consumed").length, 14);
+  assert.equal(eventsOfType(events, "input_completed").length, 14);
   assert.equal(eventsOfType(events, "run_completed").length, 14);
   // active context 指针切换 + checkpoint 文件落盘 + 投影
   const session = await readSession(h.agent, h.projectRoot);
@@ -2431,7 +2445,7 @@ test("I5：压缩已完成后的 cancel 同 id 不得误报取消（输入继续
   assert.equal(eventsOfType(events, "run_cancelled").length, 0, "已完成的压缩不得收敛出 run_cancelled");
   assert.equal(eventsOfType(events, "input_cancelled").length, 0, "已完成的压缩不得收敛出 input_cancelled");
   assert.equal(eventsOfType(events, "run_completed").length, 14, "原输入照常继续并完成");
-  assert.equal(eventsOfType(events, "input_consumed").length, 14);
+  assert.equal(eventsOfType(events, "input_completed").length, 14);
 });
 
 test("自动压缩失败：Run 进入 waiting_user（不悬挂/不自动重启），重试成功后只继续原输入一次，cancel 后输入终态回 draft", async (t) => {
@@ -2474,7 +2488,7 @@ test("自动压缩失败：Run 进入 waiting_user（不悬挂/不自动重启�
   assert.equal(retryStarted.payload.attempt, 2, "手动重试是新 attempt");
   assert.equal(retryStarted.payload.compaction_id, failedEvent.payload.compaction_id, "重试继续同一 compaction");
   assert.equal(afterRetry.filter((event) => event.type === "context_compaction_completed").length, 1);
-  assert.equal(eventsOfType(afterRetry, "input_consumed").length, 14, "原输入只继续一次并完成");
+  assert.equal(eventsOfType(afterRetry, "input_completed").length, 14, "原输入只继续一次并完成");
   assert.equal(eventsOfType(afterRetry, "run_completed").length, 14);
 });
 
@@ -2604,10 +2618,12 @@ test("手动 /compact：有可压缩历史时启动手动压缩（trigger manual
   const session = await readSession(h.agent, h.projectRoot);
   assert.equal(session.active_context_checkpoint_id, completed.payload.checkpoint_id);
   assert.equal(session.status, "idle");
-  // compact item 被消费
+  // compact item 被消费（processCompact 的 legacy input_consumed）；13 轮播种走
+  // 新生命周期 input_completed
   const compactQueued = eventsOfType(events, "input_queued").at(-1);
   assert.equal(compactQueued.payload.kind, "compact");
-  assert.equal(eventsOfType(events, "input_consumed").length, 14, "13 轮播种 + compact item");
+  assert.equal(eventsOfType(events, "input_completed").length, 13, "13 轮播种完成");
+  assert.equal(eventsOfType(events, "input_consumed").length, 1, "compact item 消费");
 });
 
 test("运行中 /compact 排队不打断当前模型/工具；重复 compact item 在安全点取消（duplicate_compact）", async (t) => {
@@ -2669,7 +2685,7 @@ test("手动 /compact 失败：compact item 无终态，Run waiting_user 保存 
   assert.equal(failed.payload.trigger, "manual");
   assert.equal(failed.payload.attempt, 1);
   const compactItemId = eventsOfType(events, "input_queued").at(-1).payload.input_id;
-  assert.equal(eventsOfType(events, "input_consumed").length, 13, "compact item 未被消费");
+  assert.equal(eventsOfType(events, "input_completed").length, 13, "13 轮播种完成，compact item 未被消费");
   assert.equal(
     eventsOfType(events, "input_cancelled").filter((event) => event.payload.input_id === compactItemId).length,
     0,
@@ -2764,6 +2780,6 @@ test("运行中手动 /compact 取消：input_cancelled(compaction_cancelled) + 
   assert.equal(cancelled[0].payload.input_id, compact.input_id);
   assert.equal(eventsOfType(events, "run_cancelled").length, 0, "in-run 取消不得取消整个 Run");
   assert.equal(eventsOfType(events, "run_completed").length, 14, "Run 恢复 running 后继续完成");
-  assert.equal(eventsOfType(events, "input_consumed").length, 14);
+  assert.equal(eventsOfType(events, "input_completed").length, 14, "13 轮播种 + 继续输入完成");
   assert.equal(first.run_id, compact.run_id, "/compact 排队不创建第二个 Run");
 });

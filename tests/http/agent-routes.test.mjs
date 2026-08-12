@@ -75,7 +75,7 @@ test("POST /api/agent/input 运行中排队：HTTP 200 + queued + 同一 run_id"
   await waitForIdle(s.h.agent, s.h.projectRoot);
   const events = await readEvents(s.h.agent, s.h.projectRoot);
   assert.equal(eventsOfType(events, "run_started").length, 1, "排队不创建新 Run");
-  assert.equal(eventsOfType(events, "input_consumed").length, 2, "两条输入都被消费");
+  assert.equal(eventsOfType(events, "input_completed").length, 2, "两条输入都以 input_completed 终结");
 });
 
 test("POST /api/agent/input/:inputId/promote 同一 Run 内提升", async (t) => {
@@ -826,4 +826,164 @@ test("Task 9 GET /api/agent/snapshot?tail=1 返回最新尾页", async (t) => {
   assert.deepEqual(res.data.events.map((e) => e.seq), [498, 499, 500]);
   assert.equal(res.data.has_more, true, "尾页之前还有更旧事件");
   assert.equal(res.data.session.last_seq, 500);
+});
+
+// ---------------------------------------------------------------------------
+// Task 9：priority / withdraw / stop(runId) 路由（校验全部委托 runtime session
+// mutex，HTTP 层不做快照预校验——消除 B15 TOCTOU）
+// ---------------------------------------------------------------------------
+
+test("Task 9 POST /api/agent/input/:inputId/priority 排队输入 → 200 + priority_pending", async (t) => {
+  const s = await setupServer(t, {
+    gatewayScript: [
+      async () => {
+        await sleep(600);
+        return { text: "第一轮答复" };
+      },
+      { reply: { text: "第二轮答复" } }
+    ],
+    gatewayDelayMs: 0
+  });
+  const first = await s.post("/api/agent/input", { projectRoot: s.h.projectRoot, text: "任务一" });
+  const second = await s.post("/api/agent/input", { projectRoot: s.h.projectRoot, text: "任务二" });
+  const pri = await s.post(`/api/agent/input/${second.data.input_id}/priority`, {
+    projectRoot: s.h.projectRoot
+  });
+  assert.equal(pri.res.status, 200);
+  assert.equal(pri.data.ok, true);
+  assert.equal(pri.data.priority_pending, true);
+  assert.equal(pri.data.input_id, second.data.input_id);
+  assert.equal(pri.data.run_id, first.data.run_id);
+  const session = (await s.h.agent.snapshot({ projectRoot: s.h.projectRoot, afterSeq: 0, limit: 100 })).session;
+  assert.equal(session.priority_input_id, second.data.input_id, "投影 priority_input_id 生效");
+  await waitForIdle(s.h.agent, s.h.projectRoot);
+});
+
+test("Task 9 POST /api/agent/input/:inputId/priority 已优先 → 409 priority_pending；活动输入 → 409 input_not_queued", async (t) => {
+  const s = await setupServer(t, {
+    gatewayScript: [
+      async () => {
+        await sleep(600);
+        return { text: "第一轮答复" };
+      },
+      { reply: { text: "第二轮答复" } },
+      { reply: { text: "第三轮答复" } }
+    ],
+    gatewayDelayMs: 0
+  });
+  const first = await s.post("/api/agent/input", { projectRoot: s.h.projectRoot, text: "任务一" });
+  await s.post("/api/agent/input", { projectRoot: s.h.projectRoot, text: "任务二" });
+  const third = await s.post("/api/agent/input", { projectRoot: s.h.projectRoot, text: "任务三" });
+  await s.post(`/api/agent/input/${third.data.input_id}/priority`, { projectRoot: s.h.projectRoot });
+  const dup = await s.post(`/api/agent/input/${third.data.input_id}/priority`, {
+    projectRoot: s.h.projectRoot
+  });
+  assert.equal(dup.res.status, 409);
+  assert.equal(dup.data.ok, false);
+  assert.equal(dup.data.code, "priority_pending", "第二个优先请求 → 409 priority_pending");
+  const active = await s.post(`/api/agent/input/${first.data.input_id}/priority`, {
+    projectRoot: s.h.projectRoot
+  });
+  assert.equal(active.res.status, 409);
+  assert.equal(active.data.code, "input_not_queued", "活动输入不可请求优先");
+  await waitForIdle(s.h.agent, s.h.projectRoot);
+});
+
+test("Task 9 POST /api/agent/input/:inputId/withdraw 排队输入 → 200 + draft_text，投影移除", async (t) => {
+  const s = await setupServer(t, {
+    gatewayScript: [
+      async () => {
+        await sleep(600);
+        return { text: "第一轮答复" };
+      },
+      { reply: { text: "第二轮答复" } }
+    ],
+    gatewayDelayMs: 0
+  });
+  const first = await s.post("/api/agent/input", { projectRoot: s.h.projectRoot, text: "任务一" });
+  const second = await s.post("/api/agent/input", { projectRoot: s.h.projectRoot, text: "任务二" });
+  const wd = await s.post(`/api/agent/input/${second.data.input_id}/withdraw`, {
+    projectRoot: s.h.projectRoot
+  });
+  assert.equal(wd.res.status, 200);
+  assert.equal(wd.data.ok, true);
+  assert.equal(wd.data.withdrawn, true);
+  assert.equal(wd.data.draft_text, "任务二");
+  assert.equal(wd.data.input_id, second.data.input_id);
+  assert.equal(wd.data.run_id, first.data.run_id);
+  const session = (await s.h.agent.snapshot({ projectRoot: s.h.projectRoot, afterSeq: 0, limit: 100 })).session;
+  assert.ok(!session.queued_inputs.some((item) => item.id === second.data.input_id), "撤回后输入不在队列");
+  await waitForIdle(s.h.agent, s.h.projectRoot);
+  const events = await readEvents(s.h.agent, s.h.projectRoot);
+  assert.equal(eventsOfType(events, "input_withdrawn").length, 1);
+  assert.equal(eventsOfType(events, "input_completed").length, 1, "只剩活动输入完成");
+});
+
+test("Task 9 POST /api/agent/input/:inputId/withdraw 活动输入/未知输入 → 409 input_not_queued", async (t) => {
+  const s = await setupServer(t, {
+    gatewayScript: [
+      async () => {
+        await sleep(600);
+        return { text: "第一轮答复" };
+      },
+      { reply: { text: "第二轮答复" } }
+    ],
+    gatewayDelayMs: 0
+  });
+  const first = await s.post("/api/agent/input", { projectRoot: s.h.projectRoot, text: "任务一" });
+  await s.post("/api/agent/input", { projectRoot: s.h.projectRoot, text: "任务二" });
+  const active = await s.post(`/api/agent/input/${first.data.input_id}/withdraw`, {
+    projectRoot: s.h.projectRoot
+  });
+  assert.equal(active.res.status, 409);
+  assert.equal(active.data.code, "input_not_queued", "活动输入不可撤回");
+  const ghost = await s.post("/api/agent/input/ghost-input/withdraw", { projectRoot: s.h.projectRoot });
+  assert.equal(ghost.res.status, 409);
+  assert.equal(ghost.data.code, "input_not_queued", "未知输入撤回 → 409");
+  await waitForIdle(s.h.agent, s.h.projectRoot);
+});
+
+test("Task 9 POST /api/agent/run/:runId/stop 错误 runId → 404 run_not_found（runtime 校验，活动 Run 不受影响）", async (t) => {
+  const s = await setupServer(t, {
+    gatewayScript: [
+      async () => {
+        await sleep(600);
+        return { text: "第一轮答复" };
+      },
+      { reply: { text: "第二轮答复" } }
+    ],
+    gatewayDelayMs: 0
+  });
+  const first = await s.post("/api/agent/input", { projectRoot: s.h.projectRoot, text: "任务一" });
+  const wrong = await s.post("/api/agent/run/wrong-run/stop", { projectRoot: s.h.projectRoot });
+  assert.equal(wrong.res.status, 404);
+  assert.equal(wrong.data.ok, false);
+  assert.equal(wrong.data.code, "run_not_found", "错误 runId → 404");
+  const mid = (await s.h.agent.snapshot({ projectRoot: s.h.projectRoot, afterSeq: 0, limit: 100 })).session;
+  assert.equal(mid.active_run.id, first.data.run_id, "活动 Run 不受错误 runId stop 影响");
+  assert.equal(mid.active_run.status, "running");
+  await waitForIdle(s.h.agent, s.h.projectRoot);
+});
+
+test("Task 9 POST /api/agent/run/:runId/stop 正确 runId 返回 session_id/run_id/cancelled", async (t) => {
+  const s = await setupServer(t, {
+    gatewayScript: [
+      async () => {
+        await sleep(600);
+        return { text: "第一轮答复" };
+      },
+      { reply: { text: "第二轮答复" } }
+    ],
+    gatewayDelayMs: 0
+  });
+  const first = await s.post("/api/agent/input", { projectRoot: s.h.projectRoot, text: "任务一" });
+  const stopped = await s.post(`/api/agent/run/${first.data.run_id}/stop`, { projectRoot: s.h.projectRoot });
+  assert.equal(stopped.res.status, 200);
+  assert.equal(stopped.data.ok, true);
+  assert.equal(stopped.data.run_id, first.data.run_id);
+  assert.equal(stopped.data.cancelled, true);
+  assert.equal(stopped.data.session_id, first.data.session_id);
+  await waitForIdle(s.h.agent, s.h.projectRoot);
+  const session = (await s.h.agent.snapshot({ projectRoot: s.h.projectRoot, afterSeq: 0, limit: 100 })).session;
+  assert.equal(session.active_run.status, "cancelled");
 });
