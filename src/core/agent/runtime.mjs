@@ -1673,6 +1673,37 @@ export function createAgentRuntime({
             return "interrupted";
           }
           const activeToolPolicy = workflowPolicy(runBeforeTool.workflow);
+          // R5-5：截断工具参数拒绝。模型在 max_tokens 截断/流异常结束时产生的
+          // tool call 参数不完整（adapter 在 finalizeStreamToolCalls 标记
+          // arguments_complete=false）——不进入 ToolRuntime 执行，以
+          // truncated_args_rejected 唯一闭合 transcript 结果（与 Task 3 的
+          // closeSkippedToolCalls 同构：不产生 journal 活动，只补 transcript），
+          // 同一响应剩余未启动调用按 skipped 闭合；Run 继续下一模型轮次，让模型
+          // 看到结构化错误后重新规划。
+          if (toolCall?.arguments_complete === false) {
+            const truncatedResult = {
+              ok: false,
+              tool_call_id: toolCall?.id ?? toolCall?.tool_call_id ?? null,
+              name: toolCall?.name ?? null,
+              error: {
+                code: "truncated_args_rejected",
+                message: "模型输出的工具参数不完整（可能因输出截断），本次调用未执行。",
+                retryable: true
+              },
+              message: "模型输出的工具参数不完整（可能因输出截断），本次调用未执行。"
+            };
+            const truncatedRecord = {
+              role: "tool",
+              tool_call_id: toolCall?.id ?? toolCall?.tool_call_id ?? null,
+              name: toolCall?.name ?? null,
+              content: JSON.stringify(truncatedResult)
+            };
+            volatileToolRecords.push(truncatedRecord);
+            await appendSafeTranscript(journal, truncatedRecord);
+            const skippedRecords = await closeSkippedToolCalls(sessionState, toolCalls.slice(index + 1));
+            for (const record of skippedRecords) volatileToolRecords.push(record);
+            break;
+          }
           const toolResult = await tools.execute(toolCall, {
             projectRoot: state.key,
             project,

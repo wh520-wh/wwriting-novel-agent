@@ -337,6 +337,11 @@ async function readStream(responseBody, metadata) {
     }
   }
 
+  // R5-3：流结束冲刷——无参 decode() 把流式解码器内部不完整的尾字节序列解码
+  //（不静默丢字节；不完整序列按 UTF-8 规范产出 U+FFFD）。冲刷结果并入 buffer，
+  // 由下方「剩余缓冲」处理兜底。
+  buffer += decoder.decode();
+
   // Handle remaining buffer（流结束前的最后一个不完整帧）
   if (buffer.trim()) {
     for (const line of buffer.split(/\r?\n/)) {
@@ -365,7 +370,7 @@ async function readStream(responseBody, metadata) {
   return {
     text,
     reasoning: reasoningText,
-    toolCalls: finalizeStreamToolCalls(streamToolCalls),
+    toolCalls: finalizeStreamToolCalls(streamToolCalls, { sawDone, finishReason: lastFinishReason }),
     raw: {
       stream: true,
       event_count: eventCount,
@@ -396,15 +401,25 @@ function applyStreamToolCallDeltas(streamToolCalls, event) {
   }
 }
 
-function finalizeStreamToolCalls(streamToolCalls) {
+// R5-5：finalizeStreamToolCalls 依据流终止信号与参数 JSON 完整性给每个 tool call
+// 标记 arguments_complete。判定来源：流是否收到 [DONE]（sawDone）、末帧
+// finish_reason（"length" 表示 max_tokens 截断——输出可能不完整）、以及累积的
+// arguments 是否可解析。三者任一不满足都视为不完整，调用方（Runtime）据此
+// 拒绝执行（truncated_args_rejected），而不是把半截参数喂给工具。
+function finalizeStreamToolCalls(streamToolCalls, { sawDone, finishReason } = {}) {
   return streamToolCalls
     .filter((slot) => slot && slot.name)
-    .map((slot) => ({
-      type: "tool_call",
-      id: slot.id ?? null,
-      tool: slot.name,
-      input: parseToolCallArguments(slot.arguments)
-    }));
+    .map((slot) => {
+      const input = parseToolCallArguments(slot.arguments);
+      const argumentsComplete = sawDone === true && finishReason !== "length" && input != null;
+      return {
+        type: "tool_call",
+        id: slot.id ?? null,
+        tool: slot.name,
+        input,
+        arguments_complete: argumentsComplete
+      };
+    });
 }
 
 function extractStreamToken(event) {

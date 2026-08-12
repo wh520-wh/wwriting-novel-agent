@@ -260,6 +260,48 @@ test("openProject 切换会中止在途的普通请求（非 SSE）", async (t) 
 });
 
 // ---------------------------------------------------------------------------
+// streamEvents：流结束冲刷 TextDecoder 并分发残留尾块（R5-3）
+// ---------------------------------------------------------------------------
+
+test("streamEvents 流结束：无参 decode() 冲刷并把残留尾块分发（含 truncated:true 事件透出）", async (t) => {
+  const events = [];
+  // 第二个块没有尾部空行分隔——旧实现把它留在 buffer 里静默丢弃；流结束冲刷
+  //（decoder.decode()）后应作为最后一帧照常分发。事件负载原样透出，截断正文
+  // 事件的 truncated:true 不得丢失。
+  const payloads = [
+    'data: {"type":"assistant_message_completed","payload":{"text":"半截正文","truncated":true}}\n\n',
+    'data: {"type":"tail","payload":2}'
+  ];
+  const fetchImpl = async (url, options = {}) => ({
+    ok: true,
+    status: 200,
+    text: async () => {
+      throw new Error("SSE path should not call response.text()");
+    },
+    body: {
+      getReader() {
+        let index = 0;
+        return {
+          read() {
+            if (index >= payloads.length) return Promise.resolve({ done: true, value: undefined });
+            return Promise.resolve({ done: false, value: new TextEncoder().encode(payloads[index++]) });
+          }
+        };
+      }
+    }
+  });
+  const api = createAgentApi({ getProjectRoot: () => "P", fetchImpl, onEvent: (event) => events.push(event) });
+  t.after(() => api.destroy());
+  api.connectEvents();
+  const deadline = Date.now() + 2000;
+  while (events.length < 2 && Date.now() < deadline) await tick();
+  assert.deepEqual(events, [
+    { type: "assistant_message_completed", payload: { text: "半截正文", truncated: true } },
+    { type: "tail", payload: 2 }
+  ], "首块与无分隔尾块都应分发，truncated:true 原样透出");
+});
+
+// ---------------------------------------------------------------------------
 // 会话管理端点：sessions / createSession / renameSession / archiveSession /
 // restoreSession / deleteSession
 // ---------------------------------------------------------------------------

@@ -1394,6 +1394,65 @@ test("活动 id 在成功、失败、拒绝、抢占与停止时闭环", async (
 });
 
 // ---------------------------------------------------------------------------
+// R5-5：截断工具参数拒绝 / 普通截断正文保留展示
+// ---------------------------------------------------------------------------
+
+test("R5-5：arguments_complete=false 的工具调用不执行，以 truncated_args_rejected 唯一闭合，Run 继续", async (t) => {
+  const h = await openHarness(t, {
+    gatewayScript: [
+      {
+        reply: {
+          toolCalls: [
+            {
+              id: "call_truncated_1",
+              name: "write_file",
+              arguments: { path: "truncated.txt", content: "不应出现" },
+              arguments_complete: false
+            }
+          ]
+        }
+      },
+      { reply: { text: "好的，参数不完整，我重新规划。" } }
+    ]
+  });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "截断场景", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  // 未进入 ToolRuntime：不产生 tool_call_started，目标文件不得落盘
+  assert.equal(eventsOfType(events, "tool_call_started").length, 0, "不完整参数的工具调用不得启动");
+  assert.equal(await pathExists(path.join(h.projectRoot, "truncated.txt")), false, "被拒绝的工具不得执行");
+  assertActivityClosure(events);
+  // Run 继续：下一模型轮次产出最终正文
+  const completed = eventsOfType(events, "assistant_message_completed");
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0].payload.text, "好的，参数不完整，我重新规划。");
+  // transcript：持久化 assistant tool call 恰好一个对应结果（truncated_args_rejected）
+  const session = await readSession(h.agent, h.projectRoot);
+  const records = await readTranscriptFile(path.join(h.agentRoot, "sessions", session.session_id));
+  const results = records.filter((record) => record.role === "tool" && record.tool_call_id === "call_truncated_1");
+  assert.equal(results.length, 1, "每个持久化 assistant tool call 必须恰好一个 tool 结果");
+  const result = JSON.parse(results[0].content);
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "truncated_args_rejected");
+  assertNoDanglingToolCalls(records);
+});
+
+test("R5-5：max_tokens 截断的普通正文保留 truncated:true 照常展示（不进入拒绝路径）", async (t) => {
+  const h = await openHarness(t, {
+    gatewayScript: [{ reply: { text: "半截正文", raw: { finish_reason: "length" } } }]
+  });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "写长文", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  const completed = eventsOfType(events, "assistant_message_completed");
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0].payload.text, "半截正文", "截断正文仍照常展示");
+  assert.equal(completed[0].payload.truncated, true, "正文截断透传 truncated:true");
+  assert.equal(eventsOfType(events, "tool_call_started").length, 0, "正文截断不涉及工具调用拒绝");
+  assertActivityClosure(events);
+});
+
+// ---------------------------------------------------------------------------
 // 章节提交
 // ---------------------------------------------------------------------------
 

@@ -453,6 +453,9 @@ export function createModelGateway({
 // 归一化 toolCalls 为 runtime 消费的规范形状 { id, name, arguments }（与
 // harness 冻结的 tool() 形状一致）。adapter 可能返回 { id, tool, input }
 //（openai-compatible）或 { id, name, arguments }（mock/脚本），这里统一。
+// R5-5：arguments_complete 截断完整性标记必须透传（openai-compatible 流式
+// adapter 在 finalizeStreamToolCalls 里判定），runtime 据此在 ToolRuntime 前
+// 拒绝不完整参数；非流式/未标记路径为 null，runtime 只认 === false。
 function normalizeToolCalls(calls) {
   if (!Array.isArray(calls)) return [];
   return calls
@@ -461,7 +464,8 @@ function normalizeToolCalls(calls) {
       return {
         id: tc.id ?? null,
         name: tc.name ?? tc.tool ?? null,
-        arguments: tc.arguments ?? tc.input ?? null
+        arguments: tc.arguments ?? tc.input ?? null,
+        arguments_complete: tc.arguments_complete ?? null
       };
     })
     .filter((tc) => tc !== null && tc.name != null);
