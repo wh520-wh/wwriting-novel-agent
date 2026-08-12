@@ -31,6 +31,9 @@
 //     resolved/rejected/cancelled 的 decision 是终态，旧 HTTP 响应不能解锁或执行。
 //   - 停止通过 context.signal 中止可中断的 Shell 工作、作废待决 decision（decision_resolved
 //     choice=cancelled，保证活动闭环）、绝不在事件里泄漏未脱敏输出。
+//   - 统一工具期限（Task 2）：默认空闲 5 分钟 / 绝对 60 分钟；工具定义可声明更短
+//     期限但不得抬高系统上限；超时返回结构化 tool_timeout 结果（不向 Runtime 抛
+//     异常）；shell 输出与受控进程事件刷新空闲期限；原子写进入最终 rename 后完整收尾。
 //   - 通用写工具（write_file/edit_file）与 shell 必须拒绝直接写受保护路径（Agent journal、
 //     session projection、transcript、项目 checkpoints、章节索引、进行中的正式章节目标文件、
 //     草稿目录 drafts/）；win32 下路径比较大小写不敏感，大小写变体不能绕过。
@@ -409,7 +412,14 @@ export function createToolRuntime({
   projectLocks = null,
   secrets = [],
   skills = skillService,
-  idFactory = randomUUID
+  idFactory = randomUUID,
+  // Task 2：统一工具期限（默认空闲 5 分钟 / 绝对 60 分钟）。测试可注入毫秒级
+  // 期限与假时钟 seam（clock/setTimer/clearTimer），不依赖真实等待。
+  toolIdleTimeoutMs = 300000,
+  toolAbsoluteTimeoutMs = 3600000,
+  clock = Date.now,
+  setTimer = (fn, ms) => setTimeout(fn, ms),
+  clearTimer = (id) => clearTimeout(id)
 } = {}) {
   if (!journal || typeof journal.append !== "function") {
     throw new Error("createToolRuntime 需要注入 journal（src/core/agent/journal.mjs）");
@@ -1069,13 +1079,21 @@ export function createToolRuntime({
         Math.max(Number(args.timeout_ms) || SHELL_TIMEOUT_DEFAULT_MS, SHELL_TIMEOUT_MIN_MS),
         SHELL_TIMEOUT_MAX_MS
       );
+      // shell 的 stdout/stderr 输出与受控进程事件（spawn/输出）都刷新工具空闲
+      // 期限：onOutput 与 onActivity 都报告 activity（onActivity 覆盖真实
+      // runShellCommand 的进程活动，onOutput 兜底增量输出路径与测试桩）。
+      const reportShellActivity = () => context.reportActivity?.();
       const result = await shellRuntime({
         command: String(args.command),
         cwd: resolvedCwd,
         timeoutMs,
         purpose: String(args.purpose ?? ""),
         signal: context.signal,
-        onOutput: ({ stream, text }) => call.emitDelta({ stream, text })
+        onOutput: ({ stream, text }) => {
+          call.emitDelta({ stream, text });
+          reportShellActivity();
+        },
+        onActivity: reportShellActivity
       });
       // 返回侧脱敏口径：shell 输出对模型侧同样脱敏（前置计划已验收行为）——命令输出
       // 可能回显密钥（如 cat 含密钥的配置），stdout/stderr 在返回前先过脱敏；这与
@@ -1434,6 +1452,105 @@ export function createToolRuntime({
   });
 
   // -------------------------------------------------------------------------
+  // Task 2：统一工具期限。空闲期限（idleMs）被 reportActivity 重置；绝对期限
+  // （absoluteMs）不被重置。任一期限触发后 abort 组合 signal 并等待工具 settle，
+  // 再以结构化结果返回（不向 Runtime 抛异常）。父 signal（用户停止/立即）只
+  // 传导信号：工具自身的收尾结果（shell_cancelled 等）原样透传，不转 timeout。
+  // 组合 signal：工具 context.signal 由父 signal 与期限 signal 共同驱动，内部
+  // 长操作（shell 进程树、project operations 安全点）按既有约定响应。
+  // -------------------------------------------------------------------------
+
+  // 工具定义可声明更短的期限（deadline: { idleMs?, absoluteMs? }）；系统上限
+  //（toolIdleTimeoutMs / toolAbsoluteTimeoutMs）不能被抬高——声明值超限一律钳制。
+  function resolveToolDeadline(definition) {
+    const declared = definition?.deadline ?? null;
+    return {
+      idleMs: declared?.idleMs != null ? Math.min(declared.idleMs, toolIdleTimeoutMs) : toolIdleTimeoutMs,
+      absoluteMs: declared?.absoluteMs != null ? Math.min(declared.absoluteMs, toolAbsoluteTimeoutMs) : toolAbsoluteTimeoutMs
+    };
+  }
+
+  function executeWithDeadline({ execute, context, idleMs, absoluteMs, parentSignal }) {
+    return new Promise((resolve, reject) => {
+      const controller = new AbortController();
+      const startedAt = clock();
+      let supervisorDone = false;
+      let idleTimer = null;
+      let absoluteTimer = null;
+      let runPromise;
+
+      const clearTimers = () => {
+        if (idleTimer !== null) {
+          clearTimer(idleTimer);
+          idleTimer = null;
+        }
+        if (absoluteTimer !== null) {
+          clearTimer(absoluteTimer);
+          absoluteTimer = null;
+        }
+      };
+
+      // reportActivity 只重置空闲期限（绝对期限不重置）
+      const resetIdle = () => {
+        if (supervisorDone) return;
+        if (idleTimer !== null) clearTimer(idleTimer);
+        idleTimer = setTimer(onIdle, idleMs);
+      };
+
+      const onIdle = () => finishTimeout("idle");
+      const onAbsolute = () => finishTimeout("absolute");
+
+      const runContext = {
+        ...context,
+        signal: controller.signal,
+        reportActivity: resetIdle
+      };
+
+      const onParentAbort = () => {
+        if (!controller.signal.aborted) controller.abort();
+      };
+
+      const settle = (outcome) => {
+        if (supervisorDone) return;
+        supervisorDone = true;
+        clearTimers();
+        parentSignal?.removeEventListener("abort", onParentAbort);
+        if (outcome.kind === "error") reject(outcome.error);
+        else resolve(outcome);
+      };
+
+      const finishTimeout = (kind) => {
+        if (supervisorDone) return;
+        supervisorDone = true;
+        if (!controller.signal.aborted) controller.abort();
+        clearTimers();
+        parentSignal?.removeEventListener("abort", onParentAbort);
+        const durationMs = Math.max(0, clock() - startedAt);
+        // 必须等工具 settle（abort 后的收尾结果/错误原样丢弃）：不能放弃一个仍在
+        // 写盘/终止进程树的工具就返回，原子写与进程树回收都要完整收尾
+        runPromise.then(
+          () => resolve({ kind: "timeout", timeoutKind: kind, durationMs }),
+          () => resolve({ kind: "timeout", timeoutKind: kind, durationMs })
+        );
+      };
+
+      if (parentSignal) parentSignal.addEventListener("abort", onParentAbort, { once: true });
+      // 竞态守卫：supervisor 创建前父 signal 已 aborted（execute 预检查之后才发生）
+      if (parentSignal?.aborted) controller.abort();
+
+      idleTimer = setTimer(onIdle, idleMs);
+      absoluteTimer = setTimer(onAbsolute, absoluteMs);
+
+      runPromise = Promise.resolve()
+        .then(() => execute(runContext))
+        .then(
+          (value) => settle({ kind: "result", value }),
+          (error) => settle({ kind: "error", error })
+        );
+    });
+  }
+
+  // -------------------------------------------------------------------------
   // execute：单次工具调用闭环
   // -------------------------------------------------------------------------
 
@@ -1644,11 +1761,16 @@ export function createToolRuntime({
       }
     }
 
-    // 执行（含 hook 与增量输出脱敏）
+    // 执行（含 hook 与增量输出脱敏）。工具 run 由统一期限监督器
+    // executeWithDeadline 包裹：context 获得组合 signal（父 signal + 期限
+    // signal）与 reportActivity()（只重置空闲期限）；超时返回结构化
+    // tool_timeout 结果，不向 Runtime 抛异常。
     const delta = createDeltaEmitter({ toolCallId, activityId, name, runId });
     let result;
     let error = null;
     let vetoed = false;
+    let timeoutKind = null;
+    let timeoutDurationMs = null;
     try {
       const hookResult = await runBeforeToolUse({
         tool: name,
@@ -1661,14 +1783,64 @@ export function createToolRuntime({
         vetoed = true; // BeforeToolUse 否决：工具从未执行，AfterToolUse 审计不触发
         throw toolError("before_tool_use_denied", hookResult.reason ?? "工具被拒绝执行。", { rule: "before_tool_use" });
       }
-      const runTool = () => definition.run(args, context, { emitDelta: (event) => delta.emit(event) });
-      result = projectLocks && action.category !== "read"
-        ? await projectLocks.runExclusive(context.projectRoot, runTool)
-        : await runTool();
+      const { idleMs: toolIdleMs, absoluteMs: toolAbsoluteMs } = resolveToolDeadline(definition);
+      const runTool = (runContext) => definition.run(args, runContext, { emitDelta: (event) => delta.emit(event) });
+      const runWithDeadline = () =>
+        executeWithDeadline({
+          execute: runTool,
+          context,
+          idleMs: toolIdleMs,
+          absoluteMs: toolAbsoluteMs,
+          parentSignal: context.signal
+        });
+      const outcome = projectLocks && action.category !== "read"
+        ? await projectLocks.runExclusive(context.projectRoot, runWithDeadline)
+        : await runWithDeadline();
+      if (outcome.kind === "timeout") {
+        timeoutKind = outcome.timeoutKind;
+        timeoutDurationMs = Number.isFinite(outcome.durationMs) ? outcome.durationMs : null;
+      } else {
+        result = outcome.value;
+      }
     } catch (caught) {
       error = caught;
     }
     await delta.flush().catch(() => {});
+
+    if (timeoutKind !== null) {
+      // 结构化超时结果（Task 2）：{ok:false, error:{code:"tool_timeout", kind}}，
+      // 不抛异常——Task 3 据此闭合工具而不杀死 Run
+      const failedPayload = {
+        tool_call_id: toolCallId,
+        activity_id: activityId,
+        name,
+        error: "tool_timeout",
+        message: "工具执行超时。",
+        technical: { kind: timeoutKind },
+        duration_ms: timeoutDurationMs
+      };
+      await appendFailed(failedPayload, runId);
+      if (!vetoed) {
+        await runAfterToolUse({
+          tool: name,
+          args,
+          action,
+          projectRoot: context.projectRoot,
+          project: context.project ?? null,
+          ok: false,
+          error: Object.assign(new Error("工具执行超时。"), { code: "tool_timeout", kind: timeoutKind }),
+          durationMs: timeoutDurationMs
+        }).catch(() => {});
+      }
+      return {
+        ok: false,
+        tool_call_id: toolCallId,
+        name,
+        error: { code: "tool_timeout", kind: timeoutKind },
+        message: "工具执行超时。",
+        duration_ms: timeoutDurationMs
+      };
+    }
 
     if (error) {
       // Node 文件错误先映射为简短工具错误（计划 Task 4 Step 6）；随后错误 message
@@ -1870,6 +2042,11 @@ export function createToolRuntime({
       return TOOLS.get(name)?.interruptible === true;
     },
     // 内部 seam（tests/agent 可测）：待决（非终态）决策数量
-    _pendingDecisionCount: () => [...decisions.values()].filter((record) => !record.terminal).length
+    _pendingDecisionCount: () => [...decisions.values()].filter((record) => !record.terminal).length,
+    // 内部 seam（tests/agent 可测）：注册自定义工具（Task 2 期限测试注入 deadline）
+    _registerTool(name, definition) {
+      register(name, definition);
+      return () => TOOLS.delete(name);
+    }
   };
 }

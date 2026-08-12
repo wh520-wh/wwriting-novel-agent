@@ -52,6 +52,30 @@ test("shell 返回 cwd、增量输出和退出码", async () => {
   }
 });
 
+test("onActivity 在 spawn 与 stdout/stderr 输出时回调（Task 2 可选活动钩子）", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "ww-shell-act-"));
+  try {
+    const streams = [];
+    const activity = [];
+    const command = `"${process.execPath}" -e "console.log('out-line'); console.error('err-line')"`;
+    const out = await runShellCommand({
+      command,
+      cwd,
+      timeoutMs: 5000,
+      onOutput: (event) => streams.push(event.stream),
+      onActivity: () => activity.push("act")
+    });
+    assert.equal(out.exitCode, 0);
+    assert.ok(streams.includes("stdout"), "应有 stdout 输出");
+    assert.ok(streams.includes("stderr"), "应有 stderr 输出");
+    // spawn + 每次输出 = 至少 3 次活动回调；stdout/stderr 都驱动活动（空闲期限刷新口径）
+    assert.ok(activity.length >= 3, `spawn+stdout+stderr 至少三次活动回调，实际 ${activity.length}`);
+    assert.ok(activity.length >= streams.length + 1, `每次输出都对应活动回调（外加 spawn），实际 ${activity.length}`);
+  } finally {
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("shell 超时会终止进程树", async () => {
   const command = `"${process.execPath}" -e "setInterval(() => {}, 1000)"`;
   await assert.rejects(

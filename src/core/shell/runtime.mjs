@@ -13,12 +13,14 @@
 //   - Windows 用 `taskkill /T /F` 递归终止进程树；POSIX 用 detached 进程组，
 //     SIGTERM 后 500ms SIGKILL 兜底；
 //   - 调用前已 abort 直接 reject（code=shell_cancelled）且不 spawn；
+//   - 可选 onActivity 钩子（Task 2）：spawn 与每次 stdout/stderr 输出时回调，
+//     用于刷新调用方（工具空闲期限）的活动计数；缺省不回调，保持原签名向后兼容；
 //   - spawn 失败 reject（透传 error.code，兜底 shell_spawn_failed），不挂起。
 import { spawn } from "node:child_process";
 
 const MAX_CAPTURE_CHARS = 1024 * 1024;
 
-export function runShellCommand({ command, cwd, timeoutMs = 120000, signal, onOutput = () => {} }) {
+export function runShellCommand({ command, cwd, timeoutMs = 120000, signal, onOutput = () => {}, onActivity = () => {} }) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       const error = new Error("命令已停止。");
@@ -40,6 +42,8 @@ export function runShellCommand({ command, cwd, timeoutMs = 120000, signal, onOu
       // 进程树终止由 taskkill /T 负责，taskkill 对 detached 与否一视同仁。
       detached: process.platform !== "win32"
     });
+    // Task 2：受控进程事件（spawn）计入工具活动（刷新调用方的空闲期限）
+    onActivity();
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -56,6 +60,7 @@ export function runShellCommand({ command, cwd, timeoutMs = 120000, signal, onOu
         if (stderr.length > MAX_CAPTURE_CHARS) stderr = stderr.slice(-MAX_CAPTURE_CHARS);
       }
       onOutput({ stream, text });
+      onActivity();
     };
     child.stdout?.on("data", (chunk) => capture("stdout", chunk));
     child.stderr?.on("data", (chunk) => capture("stderr", chunk));
