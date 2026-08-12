@@ -7,7 +7,9 @@
 // 可选透传 sessionId，缺省 = 最近活跃会话，Task 4 runtime 语义）：
 //   POST /api/agent/input                 { projectRoot, text, sessionId? } -> { ok, input_id, run_id, session_id, status }
 //   POST /api/agent/input/:inputId/promote { projectRoot, sessionId? }       -> { ok, run_id, input_id, promoted }
-//   POST /api/agent/run/:runId/stop       { projectRoot, sessionId? }        -> { ok, run_id, cancelled }
+//   POST /api/agent/input/:inputId/priority { projectRoot, sessionId? }      -> { ok, session_id, run_id, input_id, priority_pending }
+//   POST /api/agent/input/:inputId/withdraw { projectRoot, sessionId? }      -> { ok, session_id, run_id, input_id, withdrawn, draft_text }
+//   POST /api/agent/run/:runId/stop       { projectRoot, sessionId? }        -> { ok, session_id, run_id, cancelled }
 //   POST /api/agent/run/:runId/retry      { projectRoot, sessionId? }        -> { ok, run_id, input_id, retried }
 //   POST /api/agent/compaction/:compactionId/cancel { projectRoot, sessionId? } -> { ok, compaction_id, cancelling }
 //   POST /api/agent/compaction/:compactionId/retry  { projectRoot, sessionId? } -> { ok, compaction_id, retried }
@@ -146,17 +148,63 @@ export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPoll
       };
     },
 
-    // 停止：只作用于当前会话的活动 Run；路径 runId 必须与活动 Run 一致，否则 404。
+    // 请求优先（Task 9）：排队输入标记 priority_input_requested（安全点切换由
+    // Task 10 落地，本路由只写优先标记 + 返回 priority_pending）。校验全部委托
+    // runtime（同一 session 项目互斥锁内读-判-写）：非排队输入 → 409
+    // input_not_queued；已有优先在途 → 409 priority_pending（本模块显式映射，
+    // router 的 STATUS_409 表未收录该新 code）。
+    "POST /api/agent/input/:inputId/priority": async ({ params, body }) => {
+      const projectRoot = await resolveScope(body);
+      const sessionId = optionalSessionId(body);
+      const result = await (async () => {
+        try {
+          return await agent.requestPriority({ projectRoot, inputId: params.inputId, sessionId });
+        } catch (error) {
+          if (error?.code === "priority_pending") {
+            throw new HttpError(409, "priority_pending", "已有优先输入在途，请等待当前优先输入开始或撤回。");
+          }
+          throw error;
+        }
+      })();
+      return {
+        ok: true,
+        session_id: result.session_id,
+        run_id: result.run_id,
+        input_id: result.input_id,
+        priority_pending: result.priority_pending === true
+      };
+    },
+
+    // 撤回排队输入（Task 9）：只接受 queued（活动输入/已开始输入 → 409
+    // input_not_queued），写 input_withdrawn 后返回原始文本 draft_text 供 UI
+    // 恢复输入框。校验委托 runtime 的 session mutex，HTTP 层不做快照预校验。
+    "POST /api/agent/input/:inputId/withdraw": async ({ params, body }) => {
+      const projectRoot = await resolveScope(body);
+      const sessionId = optionalSessionId(body);
+      const result = await agent.withdrawInput({ projectRoot, inputId: params.inputId, sessionId });
+      return {
+        ok: true,
+        session_id: result.session_id,
+        run_id: result.run_id,
+        input_id: result.input_id,
+        withdrawn: result.withdrawn === true,
+        draft_text: result.draft_text
+      };
+    },
+
+    // 停止（Task 9）：runId 校验全部委托 runtime——在 session 项目互斥锁内重读并
+    // 精确匹配活动 Run（不匹配/无活动 Run → 404 run_not_found）。HTTP 层删除快照
+    // 预校验（消除 B15 TOCTOU：预校验读到的快照与 stop 落盘之间的窗口不再存在）。
     "POST /api/agent/run/:runId/stop": async ({ params, body }) => {
       const projectRoot = await resolveScope(body);
       const sessionId = optionalSessionId(body);
-      const { session } = await agent.snapshot({ projectRoot, sessionId, afterSeq: 0, limit: 1 });
-      const run = session?.active_run;
-      if (!run || run.id !== params.runId) {
-        throw new HttpError(404, "run_not_found", `Run ${params.runId} 不是当前会话的活动 Run。`);
-      }
-      const result = await agent.stop({ projectRoot, reason: "user_stop", sessionId });
-      return { ok: true, run_id: result.run_id, cancelled: result.cancelled === true };
+      const result = await agent.stop({ projectRoot, runId: params.runId, reason: "user_stop", sessionId });
+      return {
+        ok: true,
+        session_id: result.session_id ?? null,
+        run_id: result.run_id,
+        cancelled: result.cancelled === true
+      };
     },
 
     // 重试：继续同一可恢复 Run（failed/interrupted）。

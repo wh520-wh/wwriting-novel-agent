@@ -522,3 +522,419 @@ test("回归·跨 agent 实例重建会话后仍可 open/send（event_id 不得�
   assert.ok(events.length >= 6, `跨实例共追加了事件（实际 ${events.length}）`);
   assert.ok(sessionId, "快照能读到会话");
 });
+
+// ---------------------------------------------------------------------------
+// Task 9：session mutex 下的 submit/withdraw/stop/priority（新输入生命周期）
+// ---------------------------------------------------------------------------
+//
+// 每个操作（submit/requestPriority/withdrawInput/stop）都在同一 session 项目互斥
+// 锁内执行 getSession -> validate -> appendBatch；后到者必须看到先到者的持久
+// 终态。竞态断言以持久事件顺序为真相（不依赖内存时序）：每条输入恰好一个终态
+// 事件（input_completed/input_interrupted/input_withdrawn/input_cancelled），
+// 撤回只接受 queued，stop(runId) 精确匹配活动 Run。
+
+test("Task 9 requestPriority：排队输入写 priority_input_requested；重复/非排队请求被拒；撤回优先输入清空标记", async (t) => {
+  const h = await createProjectAgentHarness({
+    gatewayScript: [
+      async () => {
+        await sleep(600);
+        return { text: "A 完成。" };
+      },
+      { reply: { text: "B 完成。" } },
+      { reply: { text: "C 完成。" } }
+    ],
+    gatewayDelayMs: 0
+  });
+  t.after(() => h.cleanup());
+  const a = await h.agent.submit({ projectRoot: h.projectRoot, text: "A 任务", source: "chat" });
+  const b = await h.agent.submit({ projectRoot: h.projectRoot, text: "B 任务", source: "chat" });
+  assert.equal(b.queued, true);
+  const c = await h.agent.submit({ projectRoot: h.projectRoot, text: "C 任务", source: "chat" });
+
+  const pri = await h.agent.requestPriority({ projectRoot: h.projectRoot, inputId: b.input_id });
+  assert.equal(pri.priority_pending, true);
+  assert.equal(pri.input_id, b.input_id);
+  assert.equal(pri.run_id, a.run_id, "priority 返回活动 Run id");
+  assert.equal(pri.session_id, a.session_id);
+
+  const session = (await h.agent.snapshot({ projectRoot: h.projectRoot, afterSeq: 0, limit: 100000 })).session;
+  assert.equal(session.priority_input_id, b.input_id, "投影 priority_input_id 指向被优先输入");
+
+  // 已有优先在途 → 第二个请求被拒（priority_pending）
+  await assert.rejects(
+    () => h.agent.requestPriority({ projectRoot: h.projectRoot, inputId: c.input_id }),
+    (error) => error?.code === "priority_pending"
+  );
+  // 非排队输入（活动输入 A）→ input_not_queued
+  await assert.rejects(
+    () => h.agent.requestPriority({ projectRoot: h.projectRoot, inputId: a.input_id }),
+    (error) => error?.code === "input_not_queued"
+  );
+  // 撤回优先输入 → 标记清空（否则该会话再也无法请求优先，SPEC 3.3 rule 10）
+  const wd = await h.agent.withdrawInput({ projectRoot: h.projectRoot, inputId: b.input_id });
+  assert.equal(wd.withdrawn, true);
+  assert.equal(wd.draft_text, "B 任务");
+  const after = (await h.agent.snapshot({ projectRoot: h.projectRoot, afterSeq: 0, limit: 100000 })).session;
+  assert.equal(after.priority_input_id, null, "撤回优先输入后 priority_input_id 清空");
+  // 随后可再次请求优先（C）
+  const pri2 = await h.agent.requestPriority({ projectRoot: h.projectRoot, inputId: c.input_id });
+  assert.equal(pri2.priority_pending, true);
+  await waitForIdle(h.agent, h.projectRoot);
+});
+
+test("Task 9 withdrawInput：只接受 queued 并返回 draft_text；撤回后 priority/withdraw 一律拒绝（后到者看到持久终态）", async (t) => {
+  const h = await createProjectAgentHarness({
+    gatewayScript: [
+      async () => {
+        await sleep(600);
+        return { text: "A 完成。" };
+      },
+      { reply: { text: "B 完成。" } }
+    ],
+    gatewayDelayMs: 0
+  });
+  t.after(() => h.cleanup());
+  const a = await h.agent.submit({ projectRoot: h.projectRoot, text: "A 任务", source: "chat" });
+  const b = await h.agent.submit({ projectRoot: h.projectRoot, text: "B 任务", source: "chat" });
+
+  const wd = await h.agent.withdrawInput({ projectRoot: h.projectRoot, inputId: b.input_id });
+  assert.equal(wd.withdrawn, true);
+  assert.equal(wd.draft_text, "B 任务");
+  assert.equal(wd.session_id, a.session_id);
+  assert.equal(wd.run_id, a.run_id);
+
+  // 后到操作必须看到先到者的持久终态：撤回后再 withdraw/priority 一律拒绝
+  await assert.rejects(
+    () => h.agent.withdrawInput({ projectRoot: h.projectRoot, inputId: b.input_id }),
+    (error) => error?.code === "input_not_queued"
+  );
+  await assert.rejects(
+    () => h.agent.requestPriority({ projectRoot: h.projectRoot, inputId: b.input_id }),
+    (error) => error?.code === "input_not_queued"
+  );
+  // 活动输入不可撤回（只接受 queued）
+  await assert.rejects(
+    () => h.agent.withdrawInput({ projectRoot: h.projectRoot, inputId: a.input_id }),
+    (error) => error?.code === "input_not_queued"
+  );
+  // 投影移除排队项
+  const session = (await h.agent.snapshot({ projectRoot: h.projectRoot, afterSeq: 0, limit: 100000 })).session;
+  assert.ok(!session.queued_inputs.some((item) => item.id === b.input_id), "撤回后输入不在队列");
+
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = (await h.agent.snapshot({ projectRoot: h.projectRoot, afterSeq: 0, limit: 100000 })).events;
+  // B 恰好一个终态（input_withdrawn），A 正常完成
+  const bTerminals = events.filter(
+    (event) =>
+      event.payload?.input_id === b.input_id &&
+      ["input_completed", "input_interrupted", "input_withdrawn", "input_cancelled"].includes(event.type)
+  );
+  assert.equal(bTerminals.length, 1, "B 恰好一个终态");
+  assert.equal(bTerminals[0].type, "input_withdrawn");
+  assert.equal(
+    eventsOfType(events, "input_completed").filter((event) => event.payload?.input_id === a.input_id).length,
+    1,
+    "A 正常完成"
+  );
+});
+
+test("Task 9 撤回输入不进入 transcript；普通导出过滤、audit 导出标注 audit_only", async (t) => {
+  const h = await createProjectAgentHarness({
+    gatewayScript: [
+      async () => {
+        await sleep(600);
+        return { text: "A 完成。" };
+      },
+      { reply: { text: "B 完成。" } }
+    ],
+    gatewayDelayMs: 0
+  });
+  t.after(() => h.cleanup());
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "A 任务", source: "chat" });
+  const b = await h.agent.submit({ projectRoot: h.projectRoot, text: "WITHDRAWN_MARKER_x7q", source: "chat" });
+  const wd = await h.agent.withdrawInput({ projectRoot: h.projectRoot, inputId: b.input_id });
+  assert.equal(wd.withdrawn, true);
+  await waitForIdle(h.agent, h.projectRoot);
+
+  // 普通导出：完全不含被撤回输入的文本，也没有其事件
+  const normal = [];
+  for await (const line of h.agent.exportHistory({ projectRoot: h.projectRoot })) normal.push(line);
+  assert.ok(normal.length > 0, "导出非空");
+  assert.ok(
+    normal.every((line) => !JSON.stringify(line).includes("WITHDRAWN_MARKER_x7q")),
+    "普通导出不得包含被撤回输入的文本"
+  );
+  assert.equal(
+    normal.filter((line) => line.stream === "event" && line.record.type === "input_withdrawn").length,
+    0,
+    "普通导出过滤 input_withdrawn 事件"
+  );
+  assert.equal(
+    normal.filter(
+      (line) => line.stream === "event" && line.record.type === "input_queued" && line.record.payload?.input_id === b.input_id
+    ).length,
+    0,
+    "普通导出过滤被撤回输入的 input_queued 事件"
+  );
+  assert.equal(
+    normal.filter((line) => line.stream === "transcript" && line.record?.input_id === b.input_id).length,
+    0,
+    "transcript 不含被撤回输入（撤回输入永不写 transcript）"
+  );
+
+  // audit 原始诊断导出：保留事件并显式标注 audit_only:true
+  const auditLines = [];
+  for await (const line of h.agent.exportHistory({ projectRoot: h.projectRoot, audit: true })) auditLines.push(line);
+  const markedWithdrawn = auditLines.filter(
+    (line) => line.stream === "event" && line.record.type === "input_withdrawn" && line.record.payload?.input_id === b.input_id
+  );
+  assert.equal(markedWithdrawn.length, 1, "audit 导出保留 input_withdrawn 事件");
+  assert.equal(markedWithdrawn[0].record.audit_only, true, "audit 导出显式标注 audit_only");
+  const markedQueued = auditLines.filter(
+    (line) => line.stream === "event" && line.record.type === "input_queued" && line.record.payload?.input_id === b.input_id
+  );
+  assert.equal(markedQueued.length, 1, "audit 导出保留被撤回输入的 input_queued 事件");
+  assert.equal(markedQueued[0].record.audit_only, true, "audit 导出标注 audit_only");
+});
+
+test("Task 9 stop(runId)：错误 runId 拒绝且不影响活动 Run；正确 runId 取消 Run；终态 Run 再 stop 拒绝", async (t) => {
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const h = await createProjectAgentHarness({
+    gatewayScript: [
+      async () => {
+        await gate;
+        return { text: "A 完成。" };
+      }
+    ],
+    gatewayDelayMs: 0
+  });
+  t.after(() => h.cleanup());
+  const a = await h.agent.submit({ projectRoot: h.projectRoot, text: "A 任务", source: "chat" });
+  await waitFor(h.agent, h.projectRoot, (_session, snap) => eventsOfType(snap.events, "model_turn_started").length >= 1);
+
+  // 错误 runId → run_not_found，活动 Run 不受影响
+  await assert.rejects(
+    () => h.agent.stop({ projectRoot: h.projectRoot, runId: "ghost-run", reason: "user_stop" }),
+    (error) => error?.code === "run_not_found"
+  );
+  const mid = (await h.agent.snapshot({ projectRoot: h.projectRoot, afterSeq: 0, limit: 1 })).session;
+  assert.equal(mid.active_run.id, a.run_id);
+  assert.equal(mid.active_run.status, "running", "错误 runId 的 stop 不得影响活动 Run");
+
+  // 正确 runId → 取消。循环阻塞在被 gate 挡住的模型调用上，必须等 stopping 落盘
+  // 后再放行（否则 stop 的 waitForIdle 会一直等循环收敛而超时）。
+  const stopPromise = h.agent.stop({ projectRoot: h.projectRoot, runId: a.run_id, reason: "user_stop" });
+  await waitFor(
+    h.agent,
+    h.projectRoot,
+    (session) => session.status === "stopping" || session.status === "idle",
+    { describe: "Run 进入 stopping" }
+  );
+  release();
+  const stopped = await stopPromise;
+  assert.equal(stopped.cancelled, true);
+  assert.equal(stopped.run_id, a.run_id);
+  assert.equal(stopped.session_id, a.session_id);
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = (await h.agent.snapshot({ projectRoot: h.projectRoot, afterSeq: 0, limit: 100000 })).events;
+  assert.equal(eventsOfType(events, "run_cancelled").length, 1);
+
+  // 已终结 Run 再 stop(runId) → run_not_found
+  await assert.rejects(
+    () => h.agent.stop({ projectRoot: h.projectRoot, runId: a.run_id, reason: "user_stop" }),
+    (error) => error?.code === "run_not_found"
+  );
+});
+
+test("Task 9 submit×stop 竞态：胜者由持久事件顺序决定，输入不滞留、每条一个终态", async (t) => {
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const h = await createProjectAgentHarness({
+    gatewayScript: [
+      async () => {
+        await gate;
+        return { text: "A 完成。" };
+      },
+      { reply: { text: "B 完成。" } }
+    ],
+    gatewayDelayMs: 0
+  });
+  t.after(() => h.cleanup());
+  const a = await h.agent.submit({ projectRoot: h.projectRoot, text: "A 任务", source: "chat" });
+  await waitFor(h.agent, h.projectRoot, (_session, snap) => eventsOfType(snap.events, "model_turn_started").length >= 1);
+
+  // stop 与 submit(B) 并发：两条链在 session 项目互斥锁上争用，谁先落盘谁赢
+  const stopPromise = h.agent
+    .stop({ projectRoot: h.projectRoot, runId: a.run_id, reason: "user_stop" })
+    .then((value) => value, (error) => ({ stopError: error }));
+  const subPromise = h.agent
+    .submit({ projectRoot: h.projectRoot, text: "B 任务", source: "chat" })
+    .then((value) => value, (error) => ({ subError: error }));
+  release(); // 让循环收敛，stop 的 waitForIdle 才能完成
+  const [stopResult, subResult] = await Promise.all([stopPromise, subPromise]);
+  await waitForIdle(h.agent, h.projectRoot);
+
+  const snap = await h.agent.snapshot({ projectRoot: h.projectRoot, afterSeq: 0, limit: 100000 });
+  const events = snap.events;
+  const runStarts = eventsOfType(events, "run_started");
+  const runCancelled = eventsOfType(events, "run_cancelled");
+  const queuedB = eventsOfType(events, "input_queued").find((event) => event.payload?.text === "B 任务");
+  assert.ok(queuedB, "B 必须已落盘 input_queued");
+  const bId = queuedB.payload.input_id;
+
+  // B 恰好一个终态；终态类型与持久事件顺序一致
+  const bTerminals = events.filter(
+    (event) =>
+      event.payload?.input_id === bId &&
+      ["input_completed", "input_interrupted", "input_withdrawn", "input_cancelled"].includes(event.type)
+  );
+  assert.equal(bTerminals.length, 1, "B 恰好一个终态");
+  if (bTerminals[0].type === "input_cancelled") {
+    // B 在 stop 收敛前排队 → 被取消；stop 必须生效
+    assert.equal(runCancelled.length, 1, "stop 必须生效");
+    assert.ok(queuedB.seq < runCancelled[0].seq, "B 的排队必须先于取消收敛");
+    assert.equal(runStarts.length, 1, "B 未创建新 Run");
+    assert.equal(subResult.queued, true, "B 排队到被停止的 Run");
+  } else {
+    // B 在 stop 收敛后提交 → 创建新 Run 并正常完成
+    assert.equal(bTerminals[0].type, "input_completed");
+    assert.equal(runStarts.length, 2, "B 在 stop 收敛后创建了新 Run");
+    assert.ok(runCancelled.length === 0 || queuedB.seq > runCancelled[0].seq, "B 在新 Run 中完成");
+    assert.equal(subResult.queued, false);
+  }
+  // 队列不滞留输入
+  assert.deepEqual(snap.session.queued_inputs, [], "队列不滞留输入");
+  if (stopResult.stopError == null) {
+    assert.equal(stopResult.cancelled, true);
+  } else {
+    assert.equal(stopResult.stopError.code, "run_not_found", "stop 只可能成功或 run_not_found");
+  }
+});
+
+test("Task 9 withdraw×priority 竞态：撤回与优先争用同一 mutex，优先标记必清空", async (t) => {
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const h = await createProjectAgentHarness({
+    gatewayScript: [
+      async () => {
+        await gate;
+        return { text: "A 完成。" };
+      }
+    ],
+    gatewayDelayMs: 0
+  });
+  t.after(() => h.cleanup());
+  const a = await h.agent.submit({ projectRoot: h.projectRoot, text: "A 任务", source: "chat" });
+  const b = await h.agent.submit({ projectRoot: h.projectRoot, text: "B 任务", source: "chat" });
+  assert.equal(b.queued, true);
+
+  // withdraw 与 requestPriority 并发争用同一把 session mutex（解析会话的异步
+  // I/O 让两条链的先后不再由调用顺序唯一决定）
+  const wdPromise = h.agent
+    .withdrawInput({ projectRoot: h.projectRoot, inputId: b.input_id })
+    .then((value) => value, (error) => ({ rejected: error }));
+  const priPromise = h.agent
+    .requestPriority({ projectRoot: h.projectRoot, inputId: b.input_id })
+    .then((value) => value, (error) => ({ rejected: error }));
+  const [wd, pri] = await Promise.all([wdPromise, priPromise]);
+  release();
+  await waitForIdle(h.agent, h.projectRoot);
+
+  const snap = await h.agent.snapshot({ projectRoot: h.projectRoot, afterSeq: 0, limit: 100000 });
+  const events = snap.events;
+  const priEvents = eventsOfType(events, "priority_input_requested").filter((event) => event.payload?.input_id === b.input_id);
+  const wdEvents = eventsOfType(events, "input_withdrawn").filter((event) => event.payload?.input_id === b.input_id);
+  assert.equal(wdEvents.length, 1, "撤回恰好一次");
+  assert.equal(snap.session.priority_input_id, null, "优先标记必须清空（撤回输入已终态）");
+  if (priEvents.length === 1) {
+    // 优先先落盘 → 撤回仍成功，标记被 input_withdrawn 清空
+    assert.ok(priEvents[0].seq < wdEvents[0].seq, "priority 先于 withdraw");
+    assert.ok(!pri.rejected, "requestPriority 成功");
+    assert.equal(pri.priority_pending, true);
+    assert.ok(!wd.rejected, "withdraw 成功");
+  } else {
+    // 撤回先落盘 → requestPriority 必须被拒（后到者看到持久终态）
+    assert.equal(priEvents.length, 0, "撤回先落盘 → 无 priority_input_requested");
+    assert.ok(pri.rejected, "requestPriority 必须被拒");
+    assert.equal(pri.rejected.code, "input_not_queued");
+    assert.ok(!wd.rejected, "withdraw 成功");
+    assert.equal(wd.withdrawn, true);
+  }
+});
+
+test("Task 9 withdraw×start：input_started 落盘后撤回被拒；撤回先落盘则输入从未开始", async (t) => {
+  // 场景 A：start 先落盘（B 已开始、模型轮阻塞）→ 撤回被拒，B 正常完成
+  let releaseB;
+  const gateB = new Promise((resolve) => {
+    releaseB = resolve;
+  });
+  const h1 = await createProjectAgentHarness({
+    gatewayScript: [
+      { reply: { text: "A 完成。" } },
+      async () => {
+        await gateB;
+        return { text: "B 完成。" };
+      }
+    ],
+    gatewayDelayMs: 0
+  });
+  t.after(() => h1.cleanup());
+  await h1.agent.submit({ projectRoot: h1.projectRoot, text: "A 任务", source: "chat" });
+  const b1 = await h1.agent.submit({ projectRoot: h1.projectRoot, text: "B 任务", source: "chat" });
+  await waitFor(
+    h1.agent,
+    h1.projectRoot,
+    (session, snap) =>
+      session.active_run?.active_input_id === b1.input_id ||
+      eventsOfType(snap.events, "input_started").some((event) => event.payload?.input_id === b1.input_id),
+    { describe: "B 已开始（input_started 落盘）" }
+  );
+  await assert.rejects(
+    () => h1.agent.withdrawInput({ projectRoot: h1.projectRoot, inputId: b1.input_id }),
+    (error) => error?.code === "input_not_queued"
+  );
+  releaseB();
+  await waitForIdle(h1.agent, h1.projectRoot);
+  const events1 = (await h1.agent.snapshot({ projectRoot: h1.projectRoot, afterSeq: 0, limit: 100000 })).events;
+  assert.equal(
+    eventsOfType(events1, "input_completed").filter((event) => event.payload?.input_id === b1.input_id).length,
+    1,
+    "B 正常完成"
+  );
+
+  // 场景 B：撤回先落盘 → B 从未开始（无 input_started）
+  const h2 = await createProjectAgentHarness({
+    gatewayScript: [
+      async () => {
+        await sleep(600);
+        return { text: "A 完成。" };
+      },
+      { reply: { text: "B 完成。" } }
+    ],
+    gatewayDelayMs: 0
+  });
+  t.after(() => h2.cleanup());
+  await h2.agent.submit({ projectRoot: h2.projectRoot, text: "A 任务", source: "chat" });
+  const b2 = await h2.agent.submit({ projectRoot: h2.projectRoot, text: "B 任务", source: "chat" });
+  const wd = await h2.agent.withdrawInput({ projectRoot: h2.projectRoot, inputId: b2.input_id });
+  assert.equal(wd.withdrawn, true);
+  await waitForIdle(h2.agent, h2.projectRoot);
+  const events2 = (await h2.agent.snapshot({ projectRoot: h2.projectRoot, afterSeq: 0, limit: 100000 })).events;
+  assert.equal(
+    eventsOfType(events2, "input_started").filter((event) => event.payload?.input_id === b2.input_id).length,
+    0,
+    "撤回先落盘 → B 从未开始"
+  );
+  assert.equal(
+    eventsOfType(events2, "input_withdrawn").filter((event) => event.payload?.input_id === b2.input_id).length,
+    1,
+    "B 以 input_withdrawn 终结"
+  );
+});
