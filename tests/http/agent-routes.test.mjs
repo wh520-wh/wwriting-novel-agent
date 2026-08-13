@@ -889,6 +889,53 @@ test("Task 9 POST /api/agent/input/:inputId/priority 已优先 → 409 priority_
   await waitForIdle(s.h.agent, s.h.projectRoot);
 });
 
+test("Task 10 POST priority 全链路：A 完成后 D 作为下一条开始（input_started 顺序 A→D→B），A 不回队", async (t) => {
+  const s = await setupServer(t, {
+    gatewayScript: [
+      async () => {
+        await sleep(400);
+        return { text: "A 完成。" };
+      },
+      { reply: { text: "D 完成。" } },
+      { reply: { text: "B 完成。" } }
+    ],
+    gatewayDelayMs: 0
+  });
+  const a = await s.post("/api/agent/input", { projectRoot: s.h.projectRoot, text: "A 任务" });
+  const b = await s.post("/api/agent/input", { projectRoot: s.h.projectRoot, text: "B 任务" });
+  const d = await s.post("/api/agent/input", { projectRoot: s.h.projectRoot, text: "D 任务" });
+  await waitFor(s.h.agent, s.h.projectRoot, (_session, snap) =>
+    eventsOfType(snap.events, "model_turn_started").length >= 1
+  );
+  const pri = await s.post(`/api/agent/input/${d.data.input_id}/priority`, {
+    projectRoot: s.h.projectRoot
+  });
+  assert.equal(pri.res.status, 200);
+  assert.equal(pri.data.priority_pending, true);
+  // 优先在途时第二个「立即」→ 409 priority_pending（并发防御）
+  const dup = await s.post(`/api/agent/input/${b.data.input_id}/priority`, {
+    projectRoot: s.h.projectRoot
+  });
+  assert.equal(dup.res.status, 409);
+  assert.equal(dup.data.code, "priority_pending");
+  await waitForIdle(s.h.agent, s.h.projectRoot);
+
+  const events = await readEvents(s.h.agent, s.h.projectRoot);
+  const started = eventsOfType(events, "input_started").map((event) => event.payload.input_id);
+  assert.deepEqual(started, [a.data.input_id, d.data.input_id, b.data.input_id], "A 完成后 D 优先于 B 开始");
+  assert.equal(
+    eventsOfType(events, "input_started").filter((event) => event.payload.input_id === a.data.input_id).length,
+    1,
+    "A 不回队、不重跑"
+  );
+  assert.equal(
+    eventsOfType(events, "input_completed").filter((event) => event.payload.input_id === a.data.input_id).length,
+    1,
+    "A 以 input_completed 终结（自然完成不得显示 interrupted）"
+  );
+  assert.equal(eventsOfType(events, "run_completed").length, 1, "全程同一 Run");
+});
+
 test("Task 9 POST /api/agent/input/:inputId/withdraw 排队输入 → 200 + draft_text，投影移除", async (t) => {
   const s = await setupServer(t, {
     gatewayScript: [

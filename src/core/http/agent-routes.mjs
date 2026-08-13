@@ -148,11 +148,12 @@ export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPoll
       };
     },
 
-    // 请求优先（Task 9）：排队输入标记 priority_input_requested（安全点切换由
-    // Task 10 落地，本路由只写优先标记 + 返回 priority_pending）。校验全部委托
-    // runtime（同一 session 项目互斥锁内读-判-写）：非排队输入 → 409
-    // input_not_queued；已有优先在途 → 409 priority_pending（本模块显式映射，
-    // router 的 STATUS_409 表未收录该新 code）。
+    // 请求优先（Task 9/10）：排队输入标记 priority_input_requested；安全点在模型
+    // 响应后、每个工具前后、下一次模型请求前切换（旧输入收敛 + 优先输入开始），
+    // 本路由只写优先标记 + 返回 priority_pending。校验全部委托 runtime（同一
+    // session 项目互斥锁内读-判-写）：非排队输入 → 409 input_not_queued；已有
+    // 优先在途 → 409 priority_pending（本模块显式映射，router 的 STATUS_409 表
+    // 未收录该新 code）。
     "POST /api/agent/input/:inputId/priority": async ({ params, body }) => {
       const projectRoot = await resolveScope(body);
       const sessionId = optionalSessionId(body);

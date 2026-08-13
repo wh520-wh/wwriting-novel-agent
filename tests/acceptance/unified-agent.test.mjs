@@ -45,12 +45,19 @@ import {
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(here, "..", "..");
 
-// 计划固定的 journal 事件类型（32 个；Task 6 加入 context_usage_updated）。
+// 计划固定的 journal 事件类型（Task 6/9 新输入生命周期事件并入；legacy 事件
+// input_promoted/input_consumed/input_cancelled 仍由旧路径（promote/停止/恢复）
+// 产生，保留在清单内）。
 const FIXED_EVENT_TYPES = [
   "session_created",
   "run_started",
   "run_status_changed",
   "input_queued",
+  "input_started",
+  "input_completed",
+  "input_interrupted",
+  "input_withdrawn",
+  "priority_input_requested",
   "input_promoted",
   "input_consumed",
   "input_cancelled",
@@ -341,7 +348,9 @@ function assertPlanItems(items) {
   }
 }
 
-// 活动闭环不变量：每个 input/tool/decision 都必须收敛到终态。
+// 活动闭环不变量：每个 input/tool/decision 都必须收敛到终态。input 终态集合
+//（Task 9 新生命周期 + legacy）：input_completed/input_interrupted/input_withdrawn/
+// input_consumed/input_cancelled。
 function assertActivityClosure(events) {
   const openInputs = new Map();
   const openTools = new Map();
@@ -349,7 +358,13 @@ function assertActivityClosure(events) {
   for (const event of events) {
     if (event.type === "input_queued") {
       openInputs.set(event.payload.input_id, event);
-    } else if (event.type === "input_consumed" || event.type === "input_cancelled") {
+    } else if (
+      event.type === "input_consumed" ||
+      event.type === "input_cancelled" ||
+      event.type === "input_completed" ||
+      event.type === "input_interrupted" ||
+      event.type === "input_withdrawn"
+    ) {
       assert.ok(openInputs.has(event.payload.input_id), `input 终态必须对应已排队 input: ${event.payload.input_id}`);
       openInputs.delete(event.payload.input_id);
     } else if (event.type === "tool_call_started") {
@@ -368,7 +383,7 @@ function assertActivityClosure(events) {
   assert.deepEqual(
     [...openInputs.keys()],
     [],
-    "每个 input 都必须收敛（consumed 或 cancelled）"
+    "每个 input 都必须收敛（completed/interrupted/withdrawn/cancelled）"
   );
   assert.deepEqual(
     [...openTools.keys()],
@@ -458,7 +473,7 @@ test("空闲提交创建且只创建一个 Run", async (t) => {
   assert.equal(started.length, 1, "必须且只能创建一个 Run");
   assert.equal(completed.length, 1);
   assert.equal(started[0].run_id, completed[0].run_id, "同一 Run 必须保持同一 id");
-  assert.equal(eventsOfType(events, "input_consumed").length, 1);
+  assert.equal(eventsOfType(events, "input_completed").length, 1, "空闲提交的输入以 input_completed 终结");
   assertActivityClosure(events);
 });
 
@@ -489,10 +504,10 @@ test("运行中提交进入 FIFO 队列", async (t) => {
   assert.equal(session.active_run.active_input_id, queuedEvents[0].payload.input_id);
 
   await waitForIdle(h.agent, h.projectRoot);
-  const consumed = eventsOfType(await readEvents(h.agent, h.projectRoot), "input_consumed");
-  assert.equal(consumed.length, 2);
-  assert.equal(consumed[0].payload.input_id, queuedEvents[0].payload.input_id);
-  assert.equal(consumed[1].payload.input_id, queuedEvents[1].payload.input_id);
+  const activated = eventsOfType(await readEvents(h.agent, h.projectRoot), "input_started");
+  assert.equal(activated.length, 2, "两条输入都应以 input_started 激活");
+  assert.equal(activated[0].payload.input_id, queuedEvents[0].payload.input_id);
+  assert.equal(activated[1].payload.input_id, queuedEvents[1].payload.input_id);
   const texts = h.gateway.calls.map((call) => JSON.stringify(call.request));
   assert.ok(texts[0].includes("第一条"), "首个模型轮次应包含第一条输入");
   assert.ok(texts.some((text, i) => i > 0 && text.includes("第二条")), "后续轮次应包含第二条输入");
@@ -516,13 +531,13 @@ test("FIFO 按发送顺序消费输入", async (t) => {
   await waitForIdle(h.agent, h.projectRoot);
   const events = await readEvents(h.agent, h.projectRoot);
   const queued = eventsOfType(events, "input_queued");
-  const consumed = eventsOfType(events, "input_consumed");
+  const activated = eventsOfType(events, "input_started");
   assert.equal(queued.length, 3);
-  assert.equal(consumed.length, 3);
+  assert.equal(activated.length, 3);
   assert.deepEqual(
-    consumed.map((event) => event.payload.input_id),
+    activated.map((event) => event.payload.input_id),
     queued.map((event) => event.payload.input_id),
-    "input_consumed 顺序必须与 input_queued 顺序一致（FIFO）"
+    "input_started 顺序必须与 input_queued 顺序一致（FIFO）"
   );
   const texts = h.gateway.calls.map((call) => JSON.stringify(call.request));
   const positions = MARKERS.map((text) => texts.findIndex((serialized) => serialized.includes(text)));
@@ -571,6 +586,97 @@ test("立即（promote）保持同一 Run id", async (t) => {
   const lastA = texts.map((serialized) => serialized.includes("第一条")).lastIndexOf(true);
   assert.ok(firstB >= 0 && lastA >= 0 && firstB < lastA, "被提升的输入应先于被打断的输入被处理");
   assertActivityClosure(done);
+});
+
+test("Task 10 验收：A 运行时 B/C/D 排队，D 点「立即」后 D 下一条开始、B/C 顺序不变（spec 6.2）", async (t) => {
+  // 子场景一：模型在途点「立即」→ 当前模型请求完整返回；普通最终文本 →
+  // A input_completed（不得错误显示 interrupted），随后立即开始 D
+  {
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const h = await openHarness(t, {
+      gatewayScript: [
+        async () => {
+          await gate;
+          return { text: "A 完整答复。" };
+        },
+        { reply: { text: "D 答复。" } },
+        { reply: { text: "B 答复。" } },
+        { reply: { text: "C 答复。" } }
+      ],
+      gatewayDelayMs: 0
+    });
+    const a = await h.agent.submit({ projectRoot: h.projectRoot, text: "A 任务", source: "chat" });
+    const b = await h.agent.submit({ projectRoot: h.projectRoot, text: "B 任务", source: "chat" });
+    const c = await h.agent.submit({ projectRoot: h.projectRoot, text: "C 任务", source: "chat" });
+    const d = await h.agent.submit({ projectRoot: h.projectRoot, text: "D 任务", source: "chat" });
+    await waitFor(h.agent, h.projectRoot, (_session, snap) => eventsOfType(snap.events, "model_turn_started").length >= 1);
+    const pri = await h.agent.requestPriority({ projectRoot: h.projectRoot, inputId: d.input_id });
+    assert.equal(pri.priority_pending, true);
+    release();
+    await waitForIdle(h.agent, h.projectRoot);
+    const events = await readEvents(h.agent, h.projectRoot);
+    const started = eventsOfType(events, "input_started").map((event) => event.payload.input_id);
+    assert.deepEqual(started, [a.input_id, d.input_id, b.input_id, c.input_id], "D 下一条开始，B/C 顺序不变");
+    assert.equal(
+      eventsOfType(events, "input_completed").filter((event) => event.payload.input_id === a.input_id).length,
+      1,
+      "A 以 input_completed 终结"
+    );
+    assert.equal(eventsOfType(events, "input_interrupted").length, 0, "A 自然完成不得错误显示 interrupted");
+    assert.equal(
+      eventsOfType(events, "input_started").filter((event) => event.payload.input_id === a.input_id).length,
+      1,
+      "A 不回队、不自动重跑"
+    );
+    assert.equal(eventsOfType(events, "run_completed").length, 1, "全程同一 Run");
+    assertActivityClosure(events);
+  }
+
+  // 子场景二：模型返回 tool calls 时点「立即」→ 未开始工具全部不执行，
+  // 实际被截断的 A 终态为 input_interrupted，D 下一条开始
+  {
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const h = await openHarness(t, {
+      gatewayScript: [
+        async () => {
+          await gate;
+          return {
+            toolCalls: [
+              tool("read_file", { path: "OUTLINE.md" }),
+              tool("list_files", { path: "." })
+            ]
+          };
+        },
+        { reply: { text: "D 答复。" } },
+        { reply: { text: "B 答复。" } }
+      ],
+      gatewayDelayMs: 0
+    });
+    const a = await h.agent.submit({ projectRoot: h.projectRoot, text: "A 任务", source: "chat" });
+    const b = await h.agent.submit({ projectRoot: h.projectRoot, text: "B 任务", source: "chat" });
+    const d = await h.agent.submit({ projectRoot: h.projectRoot, text: "D 任务", source: "chat" });
+    await waitFor(h.agent, h.projectRoot, (_session, snap) => eventsOfType(snap.events, "model_turn_started").length >= 1);
+    await h.agent.requestPriority({ projectRoot: h.projectRoot, inputId: d.input_id });
+    release();
+    await waitForIdle(h.agent, h.projectRoot);
+    const events = await readEvents(h.agent, h.projectRoot);
+    assert.equal(eventsOfType(events, "tool_call_started").length, 0, "未开始工具不执行");
+    assert.equal(
+      eventsOfType(events, "input_interrupted").filter((event) => event.payload.input_id === a.input_id).length,
+      1,
+      "实际被截断的 A 终态为 input_interrupted"
+    );
+    const started = eventsOfType(events, "input_started").map((event) => event.payload.input_id);
+    assert.deepEqual(started, [a.input_id, d.input_id, b.input_id], "D 下一条开始，B 顺序不变");
+    assert.equal(eventsOfType(events, "run_completed").length, 1);
+    assertActivityClosure(events);
+  }
 });
 
 test("停止取消当前 Run 并取消排队输入", async (t) => {
@@ -1539,7 +1645,7 @@ test("1M 窗口端到端：model[1M] 基础 ID 剥离 → 预检推到压缩点 
     JSON.stringify(lastNormal.request.messages).includes("汉".repeat(64)),
     "原输入必须在压缩完成后发送给 provider"
   );
-  assert.equal(eventsOfType(events, "input_consumed").length, SEEDS + 1, "原输入必须被消费");
+  assert.equal(eventsOfType(events, "input_started").length, SEEDS + 1, "原输入必须被消费");
 
   // 8) 原始旧消息仍可向上分页查看（beforeSeq 分页回到最早的播种轮）
   let beforeSeq = events.at(-1).seq;

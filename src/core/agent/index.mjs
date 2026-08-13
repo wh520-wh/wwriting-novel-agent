@@ -10,7 +10,7 @@
 //   await agent.open({ projectRoot });
 //   await agent.submit({ projectRoot, text, source });   // source ∈ {"chat","maintenance"}
 //   await agent.promote({ projectRoot, inputId });
-//   await agent.requestPriority({ projectRoot, inputId });  // Task 9：请求优先（priority_input_requested）
+//   await agent.requestPriority({ projectRoot, inputId });  // Task 9/10：请求优先（priority_input_requested，安全点切换）
 //   await agent.withdrawInput({ projectRoot, inputId });    // Task 9：撤回排队输入（input_withdrawn）
 //   await agent.decide({ projectRoot, decisionId, choice });
 //   await agent.stop({ projectRoot, runId?, reason: "user_stop" }); // Task 9：runId 可选，显式时精确匹配活动 Run
