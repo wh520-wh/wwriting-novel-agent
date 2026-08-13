@@ -12,16 +12,19 @@
 // migrateProjectFile 落地：project.yaml 快照与私有 workspace settings 快照都转
 // 引用。两者都幂等：第二次调用不再写入。
 //
-// 清单读取只读：model-profiles.json 由 v2 provider store（model-provider-store.mjs）
+// 清单读取：model-profiles.json 由 v2 provider store（model-provider-store.mjs）
 // 独占读写（v1 存储模块已在 Task 17 cutover 删除）。
-// loadProviderStore 读到 v1 会自动转换并写回；迁移是读路径，只消费已持久化的 v2
-// 清单（v1/未知格式按空清单处理——mock 归零不依赖清单，引用转换等 v2 落盘后由
-// 幂等重跑自然完成）。内存转换 v1 得出的 provider id 未持久化，据此产出引用会
-// 悬空，故 v1 下绝不转引用。
+// Task 19（spec 4.3 #12）：v1→v2 迁移在 store 级单一 mutex 内完成、ID 从规范化
+// identity 确定性派生——loadProviderStore 读 v1 会迁移并写回且迁移结果唯一
+// （并发/多次迁移字节等价）。因此迁移项目快照可直接消费 loadProviderStore：
+// v1 清单也能立即转引用，不会因「内存迁移 ID 未持久化」产生悬空引用
+// （迁移写回的就是同一批确定性 ID）。
+// loadProviderStoreReadOnly 仅供纯读路径（app-dashboard 展示）使用：只认已
+// 持久化的 v2 清单，v1/未知/缺失按空清单处理，不触发任何写盘。
 import path from "node:path";
 import { loadProject, saveProject } from "./project-store.mjs";
 import { readJson } from "./fs-utils.mjs";
-import { normalizeProviderStore } from "./model-provider-store.mjs";
+import { loadProviderStore, normalizeProviderStore } from "./model-provider-store.mjs";
 
 const PROVIDER_STORE_FILE = "model-profiles.json";
 
@@ -63,8 +66,10 @@ export function migrateProjectActiveModel(activeModel, store) {
 // 迁移项目文件：project.yaml 快照 与 私有 settings 快照 都转引用。
 export async function migrateProjectFile(projectRoot, { workspaceStore, secretsRoot, readProject = loadProject, writeProject = saveProject, storeLoader = null } = {}) {
   if (!workspaceStore || !secretsRoot) return { changed: false };
-  // 缺省只读加载（见文件头注释）；storeLoader 供测试注入自定义清单。
-  const loadStore = storeLoader ?? (() => loadProviderStoreReadOnly(secretsRoot));
+  // 缺省走 store 级互斥的 loadProviderStore（Task 19）：v1 清单就地迁移落盘，
+  // 迁移 ID 确定性派生，转出的引用与持久化 store 严格一致；storeLoader 供测试
+  // 注入自定义清单。
+  const loadStore = storeLoader ?? (() => loadProviderStore(secretsRoot));
   const store = await loadStore();
   let changed = false;
   let legacy = null;
