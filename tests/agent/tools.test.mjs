@@ -971,6 +971,112 @@ test("tool_output_delta 按单次工具累计 1 MiB 截断", async (t) => {
   assertClosure(events);
 });
 
+// ---------------------------------------------------------------------------
+// R5-10：write_file/edit_file 的 content/replace 运行时类型校验
+// ---------------------------------------------------------------------------
+
+test("write_file/edit_file：非字符串 content/replace/find 返回 bad_args（R5-10）", async (t) => {
+  const h = await setup(t, { permissions: { yolo: true } });
+
+  // content 传对象：不得静默写成 "[object Object]"
+  const objContent = await h.tools.execute(
+    toolCall("write_file", { path: "obj.txt", content: { evil: true } }),
+    h.context
+  );
+  assert.equal(objContent.ok, false);
+  assert.equal(objContent.error.code, "bad_args");
+  assert.equal(await pathExists(path.join(h.projectRoot, "obj.txt")), false, "非字符串 content 不得落盘");
+
+  // 数组 content 同样拒绝
+  const arrContent = await h.tools.execute(
+    toolCall("write_file", { path: "arr.txt", content: ["a", "b"] }),
+    h.context
+  );
+  assert.equal(arrContent.ok, false);
+  assert.equal(arrContent.error.code, "bad_args");
+  assert.equal(await pathExists(path.join(h.projectRoot, "arr.txt")), false);
+
+  // edit_file：replace 传对象拒绝，且文件不得被改写
+  await h.tools.execute(toolCall("write_file", { path: "edit.md", content: "原文" }), h.context);
+  const badReplace = await h.tools.execute(
+    toolCall("edit_file", { path: "edit.md", find: "原文", replace: { nested: 1 } }),
+    h.context
+  );
+  assert.equal(badReplace.ok, false);
+  assert.equal(badReplace.error.code, "bad_args");
+  assert.equal(await fs.readFile(path.join(h.projectRoot, "edit.md"), "utf8"), "原文", "非字符串 replace 不得改写文件");
+
+  // find 传非字符串同样拒绝
+  const badFind = await h.tools.execute(
+    toolCall("edit_file", { path: "edit.md", find: ["原文"], replace: "新" }),
+    h.context
+  );
+  assert.equal(badFind.ok, false);
+  assert.equal(badFind.error.code, "bad_args");
+  assert.equal(await fs.readFile(path.join(h.projectRoot, "edit.md"), "utf8"), "原文");
+  assertClosure(await readEvents(h.journal));
+});
+
+// ---------------------------------------------------------------------------
+// R5-15：shell 输出截断对称——delta 与终态统一携带 content_length/truncated
+// ---------------------------------------------------------------------------
+
+test("shell 大输出：delta 与 final 统一携带 content_length 与 truncated（R5-15）", async (t) => {
+  const chunk = "y".repeat(256 * 1024);
+  const h = await setup(t, {
+    shellRuntime: async ({ signal, onOutput }) => {
+      if (signal?.aborted) throw Object.assign(new Error("命令已停止。"), { code: "shell_cancelled", durationMs: 0 });
+      for (let i = 0; i < 5; i += 1) onOutput?.({ stream: "stdout", text: chunk });
+      return { exitCode: 0, cwd: null, signal: null, durationMs: 1, stdout: chunk.repeat(5), stderr: "" };
+    }
+  });
+  const result = await h.tools.execute(toolCall("shell", { command: "git status", purpose: "大输出" }), h.context);
+  assert.equal(result.ok, true);
+  // final（终态工具结果）携带与 delta 相同的截断字段
+  assert.equal(typeof result.result.content_length, "number", "final 必须携带 content_length");
+  assert.equal(typeof result.result.truncated, "boolean", "final 必须携带 truncated");
+  assert.equal(result.result.truncated, true, "超过 1 MiB 的输出必须标记 truncated");
+  assert.equal(result.result.content_length, chunk.length * 5, "content_length 为最终捕获长度");
+
+  const events = await readEvents(h.journal);
+  const deltas = eventsOfType(events, "tool_output_delta").filter((event) => event.payload.name === "shell");
+  assert.ok(deltas.length > 0, "必须产生增量事件");
+  for (const delta of deltas) {
+    assert.equal(delta.payload.content_length, delta.payload.text.length, "每个 delta 的 content_length 与 text 长度一致");
+    assert.equal(typeof delta.payload.truncated, "boolean", "每个 delta 必须携带 truncated");
+  }
+  const total = deltas.reduce((sum, delta) => sum + (delta.payload.text ?? "").length, 0);
+  assert.ok(total <= 1024 * 1024, `增量累计不得超过 1 MiB（实际 ${total}）`);
+  assert.ok(deltas.some((delta) => delta.payload.truncated === true), "预算耗尽处必须有 delta 标记 truncated");
+
+  // 审计终态事件同样携带
+  const completed = eventsOfType(events, "tool_call_completed").find((event) => event.payload.name === "shell");
+  assert.ok(completed, "必须产生 tool_call_completed");
+  assert.equal(typeof completed.payload.content_length, "number", "tool_call_completed 必须携带 content_length");
+  assert.equal(typeof completed.payload.truncated, "boolean", "tool_call_completed 必须携带 truncated");
+  assert.equal(completed.payload.truncated, true);
+  assertClosure(events);
+});
+
+test("shell 小输出：delta 与 final 的截断字段为未截断口径（R5-15）", async (t) => {
+  const h = await setup(t); // 默认桩输出 "out:<command>"
+  const result = await h.tools.execute(toolCall("shell", { command: "git status", purpose: "小输出" }), h.context);
+  assert.equal(result.ok, true);
+  assert.equal(typeof result.result.content_length, "number", "final 必须携带 content_length");
+  assert.equal(result.result.truncated, false, "小输出不得标记截断");
+
+  const events = await readEvents(h.journal);
+  const deltas = eventsOfType(events, "tool_output_delta").filter((event) => event.payload.name === "shell");
+  assert.ok(deltas.length > 0, "必须产生增量事件");
+  for (const delta of deltas) {
+    assert.equal(delta.payload.content_length, delta.payload.text.length, "每个 delta 的 content_length 与 text 长度一致");
+    assert.equal(delta.payload.truncated, false, "小输出的 delta 不得标记截断");
+  }
+  const completed = eventsOfType(events, "tool_call_completed").find((event) => event.payload.name === "shell");
+  assert.equal(completed.payload.truncated, false, "小输出的终态不得标记截断");
+  assertClosure(events);
+});
+
 test("停止（abort）中止 shell、作废待决决策且不泄漏未脱敏输出", async (t) => {
   const controller = new AbortController();
   const h = await setup(t, {

@@ -10,7 +10,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathExists } from "../fs-utils.mjs";
-import { readSkillFile } from "./skill-file.mjs";
+import { readSkillFile, skillNamesEqual } from "./skill-file.mjs";
 
 // 四层来源优先级（冻结契约 §2.5，verbatim）。
 export const SKILL_SOURCE_PRIORITY = Object.freeze({ builtin: 0, bundled: 1, global: 2, project: 3 });
@@ -72,8 +72,8 @@ export async function discoverSkills({ projectRoot, userHome, resourcesPath, bui
       }
       // Task 8 Step 3：保留名称的 shadowing 规则——非 builtin 层的同名技能永远
       // shadowed（reserved_builtin），既不覆盖内置版本，也不进入 active（保留名称
-      // 不可由项目/全局/随应用分发层激活）。
-      if (source !== "builtin" && PROTECTED_BUILTIN_SKILLS.has(skill.name)) {
+      // 不可由项目/全局/随应用分发层激活）。R5-11：Windows 下大小写变体同样 shadowed。
+      if (source !== "builtin" && [...PROTECTED_BUILTIN_SKILLS].some((reserved) => skillNamesEqual(reserved, skill.name))) {
         shadowed.push(Object.freeze({ ...skill, shadow_reason: "reserved_builtin" }));
         continue;
       }

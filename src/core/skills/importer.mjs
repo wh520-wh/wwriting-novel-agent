@@ -99,6 +99,21 @@ function isZipSymlinkEntry(entry) {
   return mode === 0o120000;
 }
 
+// ZIP 白名单单元数据项（R5-2）：__MACOSX 顶层镜像子树、顶层 .DS_Store 单文件、
+// 顶层 README（README / README.md / README.txt，大小写不敏感）——macOS
+// Finder/归档工具生成的技能包常见产物，不是技能内容。布局按剔除白名单后的真实
+// 顶层根判定，展开时一律忽略这些条目。取舍：根布局技能若自带顶层 README.md，
+// 该文件会随白名单一并丢弃（白名单语义，接受）；其余任何顶层条目（含第二个
+// 真实技能根）都按真实内容处理。
+function isIgnoredZipEntry(entryName) {
+  const first = entryName.split(/[\\/]/u)[0];
+  const isTopLevelFile = !/[\\/]/u.test(entryName) && !entryName.endsWith("/");
+  if (first === "__MACOSX") return true; // 顶层镜像子树整体忽略
+  if (isTopLevelFile && first === ".DS_Store") return true; // 顶层 .DS_Store 单文件
+  if (!isTopLevelFile) return false;
+  return /^README(?:\.(?:md|txt))?$/iu.test(first);
+}
+
 async function stageZipImport({ sourceZip, targetRoot }) {
   let zipfile;
   try {
@@ -160,14 +175,28 @@ async function stageZipImport({ sourceZip, targetRoot }) {
     throw error;
   }
 
-  // 布局：所有 entry 共享唯一顶层目录 → 剥离该前缀（zip 里是一个技能文件夹）；
-  // 否则技能内容直接在 zip 根。剥离后必须在根出现 SKILL.md。
-  const topLevels = new Set(
-    entries
-      .map(({ name }) => name.split(/[\\/]/u)[0])
-      .filter((first) => first.length > 0)
-  );
-  const stripPrefix = topLevels.size === 1 && !topLevels.has("SKILL.md") ? [...topLevels][0] : null;
+  // 布局（R5-2）：按结构化 entry 分类而非字符串猜根——白名单单元数据项
+  // （__MACOSX/.DS_Store/顶层 README）先剔除；剩余真实顶层根恰好一个 → 剥离该
+  // 前缀（zip 里是一个技能文件夹）；SKILL.md 在 zip 根 → 技能内容直接在 zip 根；
+  // 多个真实技能根 → 整体拒绝（误导性的「缺少 SKILL.md」不再出现）。
+  const realTopLevels = new Set();
+  for (const { name } of entries) {
+    if (isIgnoredZipEntry(name)) continue;
+    const first = name.split(/[\\/]/u)[0];
+    if (first.length > 0) realTopLevels.add(first);
+  }
+  let stripPrefix = null;
+  if (!realTopLevels.has("SKILL.md")) {
+    if (realTopLevels.size === 1) {
+      stripPrefix = [...realTopLevels][0];
+    } else if (realTopLevels.size > 1) {
+      zipfile.close();
+      throw skillError(
+        "skill_zip_invalid",
+        `ZIP 包含多个技能根: ${[...realTopLevels].sort().join(", ")}`
+      );
+    }
+  }
 
   const stagingRoot = await makeStagingRoot(targetRoot);
   const staging = path.join(stagingRoot, "skill");
@@ -178,6 +207,7 @@ async function stageZipImport({ sourceZip, targetRoot }) {
     // 让 HTTP 层返回结构化错误而不是裸 fs 异常。
     try {
       for (const { entry } of entries) {
+        if (isIgnoredZipEntry(entry.fileName)) continue; // R5-2：白名单单元数据项不展开
         let rel = entry.fileName.replace(/\\/gu, "/");
         if (stripPrefix) {
           if (rel === stripPrefix || rel.startsWith(`${stripPrefix}/`)) {

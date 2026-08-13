@@ -8,6 +8,9 @@
 // 旧 manifest 移入 <userHome>/.wwriting/migrations/skills-v2-backup/<scope>/<name>/，
 // marker 位于 <backupRoot>/<scope>/migration-marker.json，至少包含
 // schema_version: 2、completed_at、migrated[]、failed[]。
+// R5-13：project scope 的 backup/marker 额外按 canonical projectRoot 的稳定 hash
+// 隔离（<backupRoot>/<projectKey>/project/...），两个项目互不覆盖、失败项互不串扰；
+// global scope 路径不变。
 //
 // 单个技能迁移失败不阻止其他技能：失败写入 failed[]（含 scope/name/manifest/error），
 // UI 据此显示失败项。live 目录中已存在合法 SKILL.md 的技能只备份旧 manifest，
@@ -18,8 +21,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import { ensureDir, pathExists, writeFileAtomic } from "../fs-utils.mjs";
-import { readSkillFile, skillError } from "./skill-file.mjs";
+import { ensureDir, pathExists, sha256, writeFileAtomic } from "../fs-utils.mjs";
+import { readSkillFile, skillError, skillNamesEqual } from "./skill-file.mjs";
 
 // migration marker 的 schema 版本（与 SKILL.md 的 schema_version 无关，见 memory 文档）。
 export const MIGRATION_SCHEMA_VERSION = 2;
@@ -33,22 +36,40 @@ const BACKUP_ROOT_NAME = "skills-v2-backup";
 const globalMigrationPromises = new Map();
 const projectMigrationPromises = new Map();
 
+// R5-13：project scope 的 backup/marker 目录按 canonical projectRoot 的稳定 hash
+// 隔离（<backupRoot>/<projectKey>/<scope>/...），两个项目的同名技能互不覆盖、
+// 失败项互不串扰。hash 只取前 12 位十六进制（目录名长度受限，碰撞概率可忽略）。
+export async function migrationProjectKey(projectRoot) {
+  const canonical = await canonicalPath(projectRoot);
+  return hashProjectKey(canonical);
+}
+
+function hashProjectKey(canonicalRoot) {
+  return sha256(canonicalRoot).replace(/^sha256:/u, "").slice(0, 12);
+}
+
 // 完整迁移入口：迁移传入的所有 scope（有 userHome 则迁移 global，有 projectRoot
 // 则迁移 project）。service seam 通过 ensureMigrated 按 scope 分别缓存调用。
 export async function migrateLegacySkills({ projectRoot, userHome, clock } = {}) {
   const scopes = [];
-  if (userHome) scopes.push({ scope: "global", skillRoot: path.join(userHome, ".wwriting", "skills") });
-  if (projectRoot) scopes.push({ scope: "project", skillRoot: path.join(projectRoot, "skills") });
+  if (userHome) scopes.push({ scope: "global", skillRoot: path.join(userHome, ".wwriting", "skills"), projectKey: null });
+  if (projectRoot) {
+    scopes.push({
+      scope: "project",
+      skillRoot: path.join(projectRoot, "skills"),
+      projectKey: await migrationProjectKey(projectRoot)
+    });
+  }
   const backupRoot = userHome ? path.join(userHome, ".wwriting", "migrations", BACKUP_ROOT_NAME) : null;
 
   const migrated = [];
   const failed = [];
-  for (const { scope, skillRoot } of scopes) {
+  for (const { scope, skillRoot, projectKey } of scopes) {
     if (!backupRoot) {
       failed.push({ scope, name: null, manifest: "backup-root", error: "缺少 userHome，无法定位 migration backup 目录" });
       continue;
     }
-    const result = await migrateScope(scope, skillRoot, backupRoot, clock);
+    const result = await migrateScope(scope, skillRoot, backupRoot, clock, projectKey);
     migrated.push(...result.migrated);
     failed.push(...result.failed);
   }
@@ -65,7 +86,7 @@ export async function ensureMigrated({ projectRoot, userHome, clock } = {}) {
     const key = await canonicalPath(userHome);
     let promise = globalMigrationPromises.get(key);
     if (!promise) {
-      promise = migrateScope("global", path.join(userHome, ".wwriting", "skills"), backupRoot, clock);
+      promise = migrateScope("global", path.join(userHome, ".wwriting", "skills"), backupRoot, clock, null);
       globalMigrationPromises.set(key, promise);
     }
     jobs.push(promise);
@@ -74,7 +95,7 @@ export async function ensureMigrated({ projectRoot, userHome, clock } = {}) {
     const key = await canonicalPath(projectRoot);
     let promise = projectMigrationPromises.get(key);
     if (!promise) {
-      promise = migrateScope("project", path.join(projectRoot, "skills"), backupRoot, clock);
+      promise = migrateScope("project", path.join(projectRoot, "skills"), backupRoot, clock, hashProjectKey(key));
       projectMigrationPromises.set(key, promise);
     }
     jobs.push(promise);
@@ -90,8 +111,9 @@ export async function ensureMigrated({ projectRoot, userHome, clock } = {}) {
 // 单 scope 迁移管线（1-6 步）
 // ---------------------------------------------------------------------------
 
-async function migrateScope(scope, skillRoot, backupRoot, clock) {
-  const scopeBackup = path.join(backupRoot, scope);
+async function migrateScope(scope, skillRoot, backupRoot, clock, projectKey = null) {
+  // R5-13：project scope 落在 <backupRoot>/<projectKey>/<scope>/，global 不变。
+  const scopeBackup = projectKey ? path.join(backupRoot, projectKey, scope) : path.join(backupRoot, scope);
   const markerPath = path.join(scopeBackup, "migration-marker.json");
   const candidates = await scanLegacyManifests(skillRoot);
   const migrated = [];
@@ -178,7 +200,8 @@ async function migrateOneSkill(candidate, scope, scopeBackup) {
   } else {
     // 2. 解析为统一中间对象。
     const manifest = await parseLegacyManifest(primary);
-    if (typeof manifest?.name !== "string" || manifest.name !== name) {
+    // R5-11：Windows 下目录名与 manifest name 仅大小写不同视为同一技能。
+    if (typeof manifest?.name !== "string" || !skillNamesEqual(manifest.name, name)) {
       throw skillError("skill_name_mismatch", `旧 manifest name（${manifest?.name ?? "缺失"}）与目录名 ${name} 不一致`);
     }
     // 3. 原子写 SKILL.md。
@@ -323,11 +346,17 @@ async function canonicalPath(targetPath) {
 // 重新读取 migration marker（Task 13 carry-forward：settings 的 catalog 路由用它
 // 展示「新鲜」的失败项——进程内 Promise 缓存可能陈旧，上次会话的失败重启后 UI
 // 仍要能看到）。返回解析后的 marker 对象；不存在/不可读返回 null。
-export async function readMigrationMarker({ scope, userHome }) {
+// R5-13：project scope 必须携带 projectRoot，按 canonical projectRoot 的稳定 hash
+// 定位各自项目的 marker；未提供 projectRoot 时回退共享路径（旧布局兼容）。
+export async function readMigrationMarker({ scope, userHome, projectRoot }) {
   const backupRoot = userHome ? path.join(userHome, ".wwriting", "migrations", BACKUP_ROOT_NAME) : null;
   if (!backupRoot || (scope !== "global" && scope !== "project")) return null;
   try {
-    const markerPath = path.join(backupRoot, scope, "migration-marker.json");
+    const base =
+      scope === "project" && projectRoot
+        ? path.join(backupRoot, await migrationProjectKey(projectRoot))
+        : backupRoot;
+    const markerPath = path.join(base, scope, "migration-marker.json");
     return JSON.parse(await fs.readFile(markerPath, "utf8"));
   } catch {
     return null;

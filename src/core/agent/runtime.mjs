@@ -35,7 +35,7 @@ import { randomUUID } from "node:crypto";
 
 import { createAgentJournal } from "./journal.mjs";
 import { createSessionRegistry } from "./session-registry.mjs";
-import { createToolRuntime } from "./tools.mjs";
+import { createToolRuntime, truncateOutput, MAX_TOOL_OUTPUT_CHARS } from "./tools.mjs";
 import { assemblePrompt, estimateTokens } from "./prompt.mjs";
 import {
   estimateRequestUsage,
@@ -964,6 +964,17 @@ export function createAgentRuntime({
       // 二进制 asset 结果没有 content，原样保留元数据 + 绝对路径。
       persisted.result.content_length = persisted.result.content.length;
       delete persisted.result.content;
+    }
+    if (persisted?.ok && persisted.result && name === "shell") {
+      // R5-15：终态与 tool_output_delta 共用同一截断口径（工具侧已带元数据，
+      // 这里按同一 helper 重算，保证持久 transcript 与 audit 事件一致）。
+      // content_length 与 truncated 都基于同一拼接串，避免边界 off-by-one。
+      const stdout = String(persisted.result.stdout ?? "");
+      const stderr = String(persisted.result.stderr ?? "");
+      const combined = `${stdout}${stderr}`;
+      const { truncated } = truncateOutput(combined, MAX_TOOL_OUTPUT_CHARS);
+      persisted.result.content_length = combined.length;
+      persisted.result.truncated = truncated;
     }
     if (persisted?.ok && persisted.result && name === "search_files" && Array.isArray(persisted.result.matches)) {
       persisted.result.matches = persisted.result.matches.map(({ excerpt: _excerpt, ...match }) => match);

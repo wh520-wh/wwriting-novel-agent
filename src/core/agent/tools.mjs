@@ -60,7 +60,23 @@ import { analyzeTextCount } from "../word-count.mjs";
 // 常量
 // ---------------------------------------------------------------------------
 
-const MAX_TOOL_OUTPUT_CHARS = 1024 * 1024; // 单次工具 tool_output_delta 累计上限
+export const MAX_TOOL_OUTPUT_CHARS = 1024 * 1024; // 单次工具 tool_output_delta 累计上限
+
+// ---------------------------------------------------------------------------
+// 统一输出截断（R5-15）：tool_output_delta 与终态工具结果共用同一口径。
+// 预算内原样返回；超出取预算内前缀并标记截断。delta 侧取 slice 落事件，
+// 终态侧用 truncated 标记（结果本身保留完整捕获文本）。
+// ---------------------------------------------------------------------------
+
+export function truncateOutput(text, budget, emitted = 0) {
+  const remaining = Math.max(0, budget - emitted);
+  const slice = text.length > remaining ? text.slice(0, remaining) : text;
+  return {
+    slice,
+    content_length: slice.length,
+    truncated: text.length > remaining
+  };
+}
 const MAX_READ_CHARS = 1024 * 1024; // read_file 单次读取上限（截断）
 const MAX_SEARCH_MATCHES = 50; // search_files 命中上限
 const MAX_SEARCH_DEPTH = 12; // search_files 递归深度上限
@@ -351,7 +367,21 @@ function deepAction({ title, description }) {
 // ---------------------------------------------------------------------------
 
 function requireStringArg(args, name, label = name) {
-  if (typeof args[name] !== "string" || args[name].trim() === "") {
+  if (typeof args[name] !== "string") {
+    throw toolError("bad_args", `参数无效：${label} 必须是字符串。`, { rule: "bad_args", fields: [name] });
+  }
+  // 类型与空值分开报错：字符串却为空（含纯空白）不是「必须是字符串」。
+  if (args[name].trim() === "") {
+    throw toolError("bad_args", `参数无效：${label} 不能为空。`, { rule: "bad_args", fields: [name] });
+  }
+  return args[name];
+}
+
+// 可空字符串参数（R5-10）：缺省视为 ""；显式传入非字符串同样报 bad_args
+//（edit_file 的 replace 可为空串，但对象/数组不得静默 toString）。
+function optionalStringArg(args, name, label = name) {
+  if (args[name] === undefined || args[name] === null) return "";
+  if (typeof args[name] !== "string") {
     throw toolError("bad_args", `参数无效：${label} 必须是字符串。`, { rule: "bad_args", fields: [name] });
   }
   return args[name];
@@ -724,12 +754,21 @@ export function createToolRuntime({
     let emittedChars = 0;
     let truncated = false;
     let chain = Promise.resolve();
-    const appendDelta = (text, stream) => {
+    // R5-15：delta 与终态统一携带 content_length + truncated 元数据。
+    const appendDelta = (text, stream, contentLength, truncatedFlag) => {
       chain = chain.then(() =>
         journal.append({
           type: "tool_output_delta",
           run_id: runId,
-          payload: { tool_call_id: toolCallId, activity_id: activityId, name, stream, text }
+          payload: {
+            tool_call_id: toolCallId,
+            activity_id: activityId,
+            name,
+            stream,
+            text,
+            content_length: contentLength,
+            truncated: truncatedFlag
+          }
         })
       );
     };
@@ -741,15 +780,11 @@ export function createToolRuntime({
         if (truncated) return;
         const tail = streaming.flush();
         if (tail.length > 0) {
-          const budget = MAX_TOOL_OUTPUT_CHARS - emittedChars;
-          if (tail.length > budget) {
-            appendDelta(tail.slice(0, budget), "stdout");
-            emittedChars += budget;
-            truncated = true;
-          } else {
-            appendDelta(tail, "stdout");
-            emittedChars += tail.length;
-          }
+          const { slice, content_length, truncated: clipped } = truncateOutput(tail, MAX_TOOL_OUTPUT_CHARS, emittedChars);
+          const capped = clipped || emittedChars + slice.length >= MAX_TOOL_OUTPUT_CHARS;
+          appendDelta(slice, "stdout", content_length, capped);
+          emittedChars += slice.length;
+          if (capped) truncated = true;
         }
         await chain.catch(() => {});
       },
@@ -757,11 +792,11 @@ export function createToolRuntime({
         if (truncated) return;
         const safe = streaming.push(text);
         if (safe.length === 0) return;
-        const budget = MAX_TOOL_OUTPUT_CHARS - emittedChars;
-        const slice = safe.length > budget ? safe.slice(0, budget) : safe;
-        appendDelta(slice, stream);
+        const { slice, content_length, truncated: clipped } = truncateOutput(safe, MAX_TOOL_OUTPUT_CHARS, emittedChars);
+        const capped = clipped || emittedChars + slice.length >= MAX_TOOL_OUTPUT_CHARS;
+        appendDelta(slice, stream, content_length, capped);
         emittedChars += slice.length;
-        if (emittedChars >= MAX_TOOL_OUTPUT_CHARS) truncated = true;
+        if (capped) truncated = true;
       }
     };
   }
@@ -971,7 +1006,8 @@ export function createToolRuntime({
     protectedCheck: fileProtectedCheck,
     async run(args, context) {
       const target = path.resolve(context.projectRoot, args.path);
-      const content = String(args.content ?? "");
+      // R5-10：content 必须是字符串——对象/数组参数不得静默写成 "[object Object]"。
+      const content = requireStringArg(args, "content", "content");
       const written = await writeFileAtomic(target, content);
       return { path: target, bytes_written: written.bytes_written, checksum: written.checksum };
     }
@@ -1010,9 +1046,9 @@ export function createToolRuntime({
     protectedCheck: fileProtectedCheck,
     async run(args, context) {
       const target = path.resolve(context.projectRoot, args.path);
-      const find = String(args.find ?? "");
-      const replace = String(args.replace ?? "");
-      if (find === "") throw toolError("bad_args", "参数无效：find 不能为空。", { rule: "bad_args", fields: ["find"] });
+      // R5-10：find/replace 必须是字符串——对象/数组参数不得静默 toString 后改写文件。
+      const find = requireStringArg(args, "find", "find");
+      const replace = optionalStringArg(args, "replace", "replace"); // replace 可为空串，但必须显式为字符串
       // schema 声明 integer；运行时复核，避免 Number(...) 静默截断小数
       if (args.occurrence !== undefined && args.occurrence !== null) {
         if (!Number.isInteger(Number(args.occurrence)) || Number(args.occurrence) <= 0) {
@@ -1115,14 +1151,22 @@ export function createToolRuntime({
       // 可能回显密钥（如 cat 含密钥的配置），stdout/stderr 在返回前先过脱敏；这与
       // read_file 原样返回文件内容不同（模型需要真实文件内容工作，见 read_file 注释），
       // 有意不对称：shell 输出是进程产生的不受控文本，文件内容是模型自己点名读取的。
+      const stdout = redactor.redact(result.stdout);
+      const stderr = redactor.redact(result.stderr);
+      // R5-15：终态与 tool_output_delta 共用同一截断口径——content_length 与
+      // truncated 都基于同一拼接串（stdout + stderr）计算，避免边界 off-by-one。
+      const combined = `${stdout}${stderr}`;
+      const { truncated } = truncateOutput(combined, MAX_TOOL_OUTPUT_CHARS);
       return {
         command: redactor.redact(result.command),
         cwd: redactor.redact(result.cwd),
         exit_code: result.exitCode,
         signal: result.signal ?? null,
         duration_ms: result.durationMs,
-        stdout: redactor.redact(result.stdout),
-        stderr: redactor.redact(result.stderr)
+        stdout,
+        stderr,
+        content_length: combined.length,
+        truncated
       };
     }
   });
