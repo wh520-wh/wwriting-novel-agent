@@ -3180,6 +3180,102 @@ test("transport: composer 选项读取与切换使用正确端点、作用域与
 });
 
 // ===========================================================================
+// Task 21（spec 4.3 #10）：三控件保存失败反馈——中文 error toast +
+// 控件恢复最近 snapshot 的权威值；不静默回退、不残留错误乐观值。
+// 每个 setter 都按「保存返回非 2xx」路径断言：toast 可见、中文文案、
+// 控件值回到最近 snapshot 的权威值（而不是用户刚选的乐观值）。
+// ===========================================================================
+
+test("composer 模型切换失败（非 2xx）：中文 error toast，控件恢复最近 snapshot 权威值", async () => {
+  const { root, api, surface } = await makeSurface({
+    apiOverrides: {
+      fetchComposerOptions: async () => composerOptionsData(),
+      switchModel: async (modelId) => {
+        api.calls.push(["switchModel", modelId]);
+        const error = new Error("模型切换被拒绝");
+        error.code = "model_switch_failed";
+        error.status = 500;
+        throw error;
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+  const modelSel = root.querySelector('[data-testid="agent-model-select"]');
+  assert.equal(modelSel.dataset.value, "p-deepseek/m-reasoner", "初始值 = 最近 snapshot 权威值");
+
+  menuOption(root, "agent-model-option", "p-mimo/m-mimo")._fire("click", { stopPropagation() {} });
+  await tick();
+  await tick();
+
+  assert.deepEqual(api.calls.filter((c) => c[0] === "switchModel").map((c) => c[1]), ["p-mimo/m-mimo"]);
+  const toast = root.querySelector('[data-testid="agent-toast"]');
+  assert.ok(toast, "切换失败应显示 toast，不得静默回退");
+  assert.match(toast.textContent, /模型切换失败/u);
+  assert.equal(modelSel.dataset.value, "p-deepseek/m-reasoner", "控件恢复最近 snapshot 的权威值，不残留错误乐观值");
+  surface.destroy(); // toast 3s 计时器随 destroy 清理，不泄漏
+});
+
+test("composer 权限保存失败（非 2xx）：中文 error toast，控件恢复最近 snapshot 权威值", async () => {
+  const { root, api, surface } = await makeSurface({
+    apiOverrides: {
+      fetchComposerOptions: async () => composerOptionsData(),
+      updatePermissions: async (combo) => {
+        api.calls.push(["updatePermissions", combo]);
+        const error = new Error("权限保存被拒绝");
+        error.code = "permission_save_failed";
+        error.status = 400;
+        throw error;
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+  const permSel = root.querySelector('[data-testid="agent-permission-select"]');
+  assert.equal(permSel.dataset.value, "confirm", "初始值 = 最近 snapshot 权威值");
+
+  menuOption(root, "agent-permission-option", "yolo")._fire("click", { stopPropagation() {} });
+  await tick();
+  await tick();
+
+  assert.deepEqual(api.calls.filter((c) => c[0] === "updatePermissions").map((c) => c[1]), [
+    { read_only: false, safe_edit: true, auto_edit: true, yolo: true }
+  ]);
+  const toast = root.querySelector('[data-testid="agent-toast"]');
+  assert.ok(toast, "保存失败应显示 toast，不得静默回退");
+  assert.match(toast.textContent, /权限保存失败/u);
+  assert.equal(permSel.dataset.value, "confirm", "控件恢复最近 snapshot 的权威值，不残留错误乐观值");
+  surface.destroy();
+});
+
+test("composer 思考强度保存失败（非 2xx）：中文 error toast，控件恢复最近 snapshot 权威值", async () => {
+  const { root, api, surface } = await makeSurface({
+    apiOverrides: {
+      fetchComposerOptions: async () => composerOptionsData(),
+      updateReasoningEffort: async (effort) => {
+        api.calls.push(["updateReasoningEffort", effort]);
+        const error = new Error("思考强度保存被拒绝");
+        error.code = "effort_save_failed";
+        error.status = 422;
+        throw error;
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+  const effortSel = root.querySelector('[data-testid="agent-effort-select"]');
+  assert.equal(effortSel.dataset.value, "auto", "初始值 = 最近 snapshot 权威值");
+
+  menuOption(root, "agent-effort-option", "high")._fire("click", { stopPropagation() {} });
+  await tick();
+  await tick();
+
+  assert.deepEqual(api.calls.filter((c) => c[0] === "updateReasoningEffort").map((c) => c[1]), ["high"]);
+  const toast = root.querySelector('[data-testid="agent-toast"]');
+  assert.ok(toast, "保存失败应显示 toast，不得静默回退");
+  assert.match(toast.textContent, /思考强度保存失败/u);
+  assert.equal(effortSel.dataset.value, "auto", "控件恢复最近 snapshot 的权威值，不残留错误乐观值");
+  surface.destroy();
+});
+
+// ===========================================================================
 // Task 16：选择器选项派生与迁移提示（纯 helper）
 // ===========================================================================
 
