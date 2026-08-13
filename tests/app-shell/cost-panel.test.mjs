@@ -1,6 +1,6 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { renderCostPanel } from '../../src/app-shell/components/cost-panel.js';
+import { renderCostPanel, formatYuan } from '../../src/app-shell/components/cost-panel.js';
 
 // ---------------------------------------------------------------------------
 // Minimal DOM mock (no JSDOM) — same shape as activity-strip-render.test.mjs
@@ -717,5 +717,93 @@ describe('renderCostPanel — DeepSeek 低命中率诊断提示（D2）', () => 
     });
     const text = flat(root);
     assert.equal(/缓存命中率偏低/.test(text), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 21（spec 4.3 #4）：成本统一人民币「元」，保留两位小数（N.NN 元）。
+// 覆盖总成本 / 章节成本 / 缓存节省 / 0 值；不得出现 $ / ¥ / 缺两位小数。
+// ---------------------------------------------------------------------------
+
+describe('renderCostPanel — 成本格式（Task 21：人民币「元」两位小数）', () => {
+
+  function overviewOf(root) {
+    return findAll(root, (n) => n.dataset?.costSection === '总览')[0];
+  }
+
+  function cacheSectionOf(root) {
+    return findAll(root, (n) => n.dataset?.costSection === '缓存健康')[0];
+  }
+
+  it('A1. 总成本 1.2 → "1.20 元"，整面板无 $ / ¥', () => {
+    const root = renderCostPanel({
+      cost: makeCost({ costAvailable: true, estimatedCost: 1.2 }),
+      summary: makeSummary({ costAvailable: true, estimatedCost: 1.2 }),
+      events: []
+    });
+    assert.match(flat(overviewOf(root)), /1\.20\s*元/);
+    assert.doesNotMatch(flat(root), /\$|¥|￥/u, '任何成本显示不得出现外币符号');
+  });
+
+  it('A2. 总成本 0 值 → "0.00 元"（两位小数不缺位）', () => {
+    const root = renderCostPanel({
+      cost: makeCost({ costAvailable: true, estimatedCost: 0 }),
+      summary: makeSummary({ costAvailable: true, estimatedCost: 0 }),
+      events: []
+    });
+    assert.match(flat(overviewOf(root)), /0\.00\s*元/);
+    assert.doesNotMatch(flat(overviewOf(root)), /\d\.\d\s*元/u, '两位小数不得缺位（如 1.2 元 / 0.0 元）');
+  });
+
+  it('A3. 章节成本 1.2 → "1.20 元"', () => {
+    const root = renderCostPanel({
+      cost: makeCost({
+        costAvailable: true,
+        byChapter: { 3: { calls: 4, estimatedCost: 1.2 } }
+      }),
+      summary: makeSummary({ costAvailable: true }),
+      events: []
+    });
+    const chapterRow = findByClass(root, 'cost-chapter-row')[0];
+    assert.ok(chapterRow, '应有章节成本行');
+    assert.match(flat(chapterRow), /1\.20\s*元/);
+    assert.doesNotMatch(flat(chapterRow), /\$|¥|￥/u);
+  });
+
+  it('A4. 章节 0 调用 → "0.00 元"（0 值统一两位小数）', () => {
+    const root = renderCostPanel({
+      cost: makeCost({
+        costAvailable: true,
+        byChapter: { 1: { calls: 0, estimatedCost: 0 } }
+      }),
+      summary: makeSummary({ costAvailable: true }),
+      events: []
+    });
+    const chapterRow = findByClass(root, 'cost-chapter-row')[0];
+    assert.ok(chapterRow, '应有章节成本行');
+    assert.match(flat(chapterRow), /0\.00\s*元/);
+  });
+
+  it('A5. 缓存节省 1.2 → "1.20 元"', () => {
+    const root = renderCostPanel({
+      cost: makeCost({ cacheSavedCost: 1.2, costAvailable: true }),
+      summary: makeSummary({ costAvailable: true }),
+      events: []
+    });
+    assert.match(flat(cacheSectionOf(root)), /缓存节省/);
+    assert.match(flat(cacheSectionOf(root)), /1\.20\s*元/);
+  });
+
+  it('A6. formatYuan 单一出口：两位小数 + 元；NaN/Infinity 兜底 0.00 元；负数保留符号', () => {
+    assert.equal(formatYuan(1.2), '1.20 元');
+    assert.equal(formatYuan(0), '0.00 元');
+    assert.equal(formatYuan('3.456'), '3.46 元');
+    assert.equal(formatYuan(undefined), '0.00 元');
+    assert.equal(formatYuan(null), '0.00 元');
+    assert.equal(formatYuan(NaN), '0.00 元', 'NaN 不得泄漏为 NaN 元');
+    assert.equal(formatYuan(Infinity), '0.00 元', 'Infinity 不得泄漏');
+    assert.equal(formatYuan(-1.2), '-1.20 元', '负数保留符号展示，便于发现数据异常');
+    assert.equal(formatYuan(1.2).includes('$'), false);
+    assert.equal(formatYuan(1.2).includes('¥'), false);
   });
 });

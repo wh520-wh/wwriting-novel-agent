@@ -1999,6 +1999,9 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     showHistoryLoadError,
     clearHistoryLoadError,
     setLoadingEarlier,
-    dismissTopLayer
+    dismissTopLayer,
+    // Task 21（spec 4.3 #10）：三控件保存失败的 error toast 由 index.js 经此
+    // 出口触发（与撤回失败/优先冲突共用同一个 surface 自持 agent-toast）。
+    showToast
   };
 }

@@ -416,3 +416,60 @@ test("未设置会话时 requestPriority/withdrawInput body 不带 sessionId（�
   assert.deepEqual(withdrawCall.body, { projectRoot: "P" }, "不得出现 sessionId 键");
 });
 
+// ---------------------------------------------------------------------------
+// composer 三控件保存（Task 21）：模型切换 / 权限 / 思考强度端点契约 + 非 2xx
+// 一律 reject（前端据此显示 error toast，绝不静默接受失败响应）。
+// ---------------------------------------------------------------------------
+
+test("switchModel：POST /api/settings/model-switch，引用形态拆分为 provider_id/model_id", async (t) => {
+  const { api, calls } = withApi(t);
+  await api.switchModel("p-deepseek/m-reasoner");
+  const call = calls.find((c) => c.url === "/api/settings/model-switch");
+  assert.equal(call.method, "POST");
+  assert.deepEqual(call.body, { projectRoot: "P", provider_id: "p-deepseek", model_id: "m-reasoner" });
+});
+
+test("updatePermissions：POST /api/settings/update，body 携带 tool_permissions", async (t) => {
+  const { api, calls } = withApi(t);
+  await api.updatePermissions({ read_only: false, safe_edit: true, auto_edit: true, yolo: true });
+  const call = calls.find((c) => c.url === "/api/settings/update");
+  assert.equal(call.method, "POST");
+  assert.deepEqual(call.body, { projectRoot: "P", tool_permissions: { read_only: false, safe_edit: true, auto_edit: true, yolo: true } });
+});
+
+test("updateReasoningEffort：POST /api/settings/update，body 携带 reasoning_effort", async (t) => {
+  const { api, calls } = withApi(t);
+  await api.updateReasoningEffort("high");
+  const call = calls.find((c) => c.url === "/api/settings/update");
+  assert.equal(call.method, "POST");
+  assert.deepEqual(call.body, { projectRoot: "P", reasoning_effort: "high" });
+});
+
+test("三控件保存返回非 2xx：reject 并携带 status/code，不把失败当成功返回", async (t) => {
+  const fetchImpl = async (url, options = {}) => {
+    if (String(url).includes("/api/project/events")) return sseResponse();
+    if (String(url) === "/api/settings/model-switch" || String(url) === "/api/settings/update") {
+      return {
+        ok: false,
+        status: 500,
+        text: async () => JSON.stringify({ ok: false, message: "保存失败", code: "save_failed" })
+      };
+    }
+    return jsonResponse({ ok: true });
+  };
+  const api = createAgentApi({ getProjectRoot: () => "P", fetchImpl });
+  t.after(() => api.destroy());
+  await assert.rejects(
+    api.switchModel("p-ds/m-r"),
+    (error) => error.status === 500 && error.code === "save_failed" && /保存失败/u.test(error.message)
+  );
+  await assert.rejects(
+    api.updatePermissions({ read_only: true }),
+    (error) => error.status === 500 && error.code === "save_failed"
+  );
+  await assert.rejects(
+    api.updateReasoningEffort("low"),
+    (error) => error.status === 500 && error.code === "save_failed"
+  );
+});
+

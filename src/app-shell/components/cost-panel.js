@@ -69,15 +69,26 @@ function row(label, value, valueClass = "") {
   );
 }
 
+// Task 21（spec 4.3 #4）：成本统一人民币「元」、两位小数的唯一出口（N.NN 元）。
+// 总成本/章节成本/缓存节省全部经此格式化，任何路径不得再直接拼 $ / ¥ /
+// 或缺两位小数。非有限值（NaN / ±Infinity，上游脏数据）按 0.00 元兜底，
+// 不把 "NaN 元" 泄漏给用户；负数保留符号原样展示（成本语义上不应为负，
+// 保留符号便于发现数据异常，不做静默取绝对值）。
+export function formatYuan(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "0.00 元";
+  return `${n.toFixed(2)} 元`;
+}
+
 function formatCost(value, costAvailable) {
   if (!costAvailable) return "未配置价格";
-  return `${Number(value ?? 0).toFixed(2)} 元`;
+  return formatYuan(value);
 }
 
 function chapterCostText(estimatedCost, calls, costAvailable) {
   if (!costAvailable) return "未配置价格";
-  if (!calls || calls === 0) return "0.00 元";
-  return `${Number(estimatedCost ?? 0).toFixed(2)} 元`;
+  if (!calls || calls === 0) return formatYuan(0);
+  return formatYuan(estimatedCost);
 }
 
 function meanHitRate(recentHitRates) {
@@ -178,7 +189,7 @@ function buildCacheHealth(cost, opts = {}) {
     buildSparkline(rates)
   ];
   if (costAvailable && saved > 0) {
-    children.splice(1, 0, row("缓存节省", `${saved.toFixed(2)} 元`, "mono"));
+    children.splice(1, 0, row("缓存节省", formatYuan(saved), "mono"));
   }
   const hint = lowHitRateHint({ cost, modelConfig: opts.modelConfig, cacheSummary: opts.cacheSummary });
   if (hint) {

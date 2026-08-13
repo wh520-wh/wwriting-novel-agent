@@ -552,6 +552,33 @@ export function createAgentSurface({
     return Boolean(decision) && decision.status === "pending";
   }
 
+  // Task 21（spec 4.3 #10）：三控件（模型/权限/思考强度）保存失败的共用流程：
+  // 保存 -> 检查响应（transport 对非 2xx / ok:false 一律抛错）-> 成功后以服务端
+  // 响应刷新权威 composerOptions -> 失败时显示中文 error toast 并恢复最近
+  // snapshot 的权威值（重推最近一次服务端响应驱动的 options），不静默回退、
+  // 不残留错误乐观值。label 用于 toast 文案（`${label}失败，请重试。`）；
+  // methodName 做 transport 方法存在性守卫（缺失时静默跳过，与旧行为一致）；
+  // call 执行保存请求；apply(data, ...args) 以响应更新 composerOptions。
+  // 成功与失败都按 Task 8 代次守卫：切项目/切会话后迟到的结果一律丢弃，
+  // 不得污染新视图。
+  function saveComposerSetting(label, methodName, call, apply) {
+    return async (...args) => {
+      const t = ensureApi();
+      if (typeof t[methodName] !== "function") return;
+      const scope = currentProjectScope();
+      try {
+        const data = await call(t, ...args);
+        if (!isCurrentProjectScope(scope)) return;
+        apply(data, ...args);
+        pushComposerOptions();
+      } catch {
+        if (!isCurrentProjectScope(scope)) return;
+        view.showToast(`${label}失败，请重试。`);
+        pushComposerOptions(); // 恢复最近 snapshot 的权威值
+      }
+    };
+  }
+
   const actions = {
     submit,
     // 前置分页（Task 10 Step 4）：view 滚动到顶（≤240px）且有更早历史时调用。
@@ -605,53 +632,22 @@ export function createAgentSurface({
     // Task 16：响应不再带 available_models——全局供应商清单不随项目切换改变，
     // 选项保持；activeModelId 由选中值（引用形态）直接更新，capabilities 以服务端
     // 能力矩阵判定为准。
-    switchModel: async (modelId) => {
-      const t = ensureApi();
-      if (typeof t.switchModel !== "function") return;
-      const scope = currentProjectScope();
-      try {
-        const data = await t.switchModel(modelId);
-        if (!isCurrentProjectScope(scope)) return;
-        composerOptions = {
-          ...(composerOptions ?? {}),
-          activeModelId: String(modelId),
-          permissionTier: detectPermissionTier(data?.project?.tool_permissions),
-          reasoningEffortLevels: Array.isArray(data?.capabilities?.reasoningEffortLevels)
-            ? data.capabilities.reasoningEffortLevels
-            : null
-        };
-      } catch {
-        // 切换失败：重推旧选项，还原下拉显示。
-      }
-      pushComposerOptions();
-    },
-    setPermissionTier: async (tierId) => {
-      const t = ensureApi();
-      if (typeof t.updatePermissions !== "function") return;
-      const tier = getTierById(tierId);
-      const scope = currentProjectScope();
-      try {
-        await t.updatePermissions(tier.combo);
-        if (!isCurrentProjectScope(scope)) return;
-        composerOptions = { ...(composerOptions ?? {}), permissionTier: tier.id };
-      } catch {
-        // 保存失败：重推旧选项。
-      }
-      pushComposerOptions();
-    },
-    setReasoningEffort: async (effort) => {
-      const t = ensureApi();
-      if (typeof t.updateReasoningEffort !== "function") return;
-      const scope = currentProjectScope();
-      try {
-        await t.updateReasoningEffort(effort);
-        if (!isCurrentProjectScope(scope)) return;
-        composerOptions = { ...(composerOptions ?? {}), reasoningEffort: String(effort) };
-      } catch {
-        // 保存失败：重推旧选项。
-      }
-      pushComposerOptions();
-    }
+    switchModel: saveComposerSetting("模型切换", "switchModel", (t, modelId) => t.switchModel(modelId), (data, modelId) => {
+      composerOptions = {
+        ...(composerOptions ?? {}),
+        activeModelId: String(modelId),
+        permissionTier: detectPermissionTier(data?.project?.tool_permissions),
+        reasoningEffortLevels: Array.isArray(data?.capabilities?.reasoningEffortLevels)
+          ? data.capabilities.reasoningEffortLevels
+          : null
+      };
+    }),
+    setPermissionTier: saveComposerSetting("权限保存", "updatePermissions", (t, tierId) => t.updatePermissions(getTierById(tierId).combo), (data, tierId) => {
+      composerOptions = { ...(composerOptions ?? {}), permissionTier: getTierById(tierId).id };
+    }),
+    setReasoningEffort: saveComposerSetting("思考强度保存", "updateReasoningEffort", (t, effort) => t.updateReasoningEffort(effort), (data, effort) => {
+      composerOptions = { ...(composerOptions ?? {}), reasoningEffort: String(effort) };
+    })
   };
 
   // 初始空状态渲染：未打开项目时 composer 立即处于禁用态。
