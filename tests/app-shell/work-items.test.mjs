@@ -420,16 +420,19 @@ test("openWorkItemIds 只列 running 项；plan 静态子项永不 live", () => 
   assert.deepEqual(visibleLiveTargets(group, { expanded: false }), ["group:run-1"]);
 });
 
-test("Task 3: formatDuration 按秒/分/小时自动进位（向下取整，无 60 秒/60 分）", () => {
+test("Task 24: formatDuration 统一工作计时格式（尾零不省略；负数/NaN 归零；毫秒向下取整）", () => {
   assert.equal(formatDuration(0), "0 秒");
   assert.equal(formatDuration(59_999), "59 秒");
-  assert.equal(formatDuration(60_000), "1 分");
-  assert.equal(formatDuration(3_599_999), "59 分");
-  assert.equal(formatDuration(3_600_000), "1 小时");
+  assert.equal(formatDuration(60_000), "1 分 0 秒");
+  assert.equal(formatDuration(3_599_999), "59 分 59 秒");
+  assert.equal(formatDuration(3_600_000), "1 小时 0 分 0 秒");
+  assert.equal(formatDuration(3_661_000), "1 小时 1 分 1 秒");
   assert.equal(formatDuration(-1), "0 秒");
   assert.equal(formatDuration(Number.NaN), "0 秒");
+  assert.equal(formatDuration(Number.POSITIVE_INFINITY), "0 秒");
   // 非整秒向下取整：59.6 秒不得显示成不存在的 60 秒
   assert.equal(formatDuration(59_600), "59 秒");
+  assert.equal(formatDuration(60_600), "1 分 0 秒");
 });
 
 test("Task 2: tool_output_delta 跨多次增量累计输出；未知 activity_id 忽略", () => {
