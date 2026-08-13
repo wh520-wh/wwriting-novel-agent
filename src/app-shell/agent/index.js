@@ -14,7 +14,7 @@
 // Agent 输入；其余任何斜杠前缀字符串（含 /init、/review、/write）都是普通输入。
 // 旧 decision id（已终结/已 supersede）不能应用到更新的待决动作：decide 动作
 // 只放行 reducer 中仍为 pending 的 decision_id。
-import { createState, reduceSnapshot, reduceEvent, resetState, TERMINAL_RUN_STATUSES } from "./state.js";
+import { createState, reduceSnapshot, reduceEvent, resetState, getNeedsHistoryClear, TERMINAL_RUN_STATUSES } from "./state.js";
 import { createAgentView } from "./view.js";
 import { createAgentApi } from "./api.js";
 import { localSlashSection } from "./slash-commands.mjs";
@@ -456,6 +456,14 @@ export function createAgentSurface({
   function submit(text) {
     const trimmed = String(text ?? "").trim();
     if (!trimmed) return;
+    // Task 16（R5-7）：对话历史损坏（needs_history_clear）时 surface 层同样拒绝
+    // 提交——view 的 canSubmit 门禁是第一道，这里是第二道（防御绕过视图的
+    // 直接调用路径；后端 submit 另有拒绝契约）。
+    if (getNeedsHistoryClear(state)) {
+      const error = new Error("此对话已损坏，无法发送。");
+      error.code = "history_clear_required";
+      return Promise.reject(error);
+    }
     const localSection = localSlashSection(trimmed);
     if (localSection) {
       // 精确导航快捷方式：只打开设置对应分区，不创建 Run、不 POST Agent 输入。

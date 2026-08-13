@@ -349,3 +349,12 @@ test("B7: app.js 在 openReader 中实现 await 后 scope/no 校验（静态契�
   assert.match(appSource, /projectScope\.isCurrent\s*\(\s*token\s*\)/u, "await 后必须校验项目 scope");
   assert.match(appSource, /readerChapterNo\s*!==\s*chapterNo/u, "await 后必须比对 readerChapterNo（慢旧章节不覆盖新章）");
 });
+
+test("R5-12：app.js 终态钩子统一刷新 dashboard 与会话列表；后台刷新失败只 toast（静态契约）", async () => {
+  const appSource = await fs.readFile(appJsPath, "utf8");
+  assert.match(appSource, /onRunTerminal\s*:\s*\(\s*\)\s*=>\s*\{/u, "app.js 应实现 onRunTerminal 钩子");
+  assert.match(appSource, /agentSurface\.refreshSessions\s*\(\s*\)/u, "终态后刷新会话列表（busy 复位）");
+  assert.match(appSource, /loadDashboard\s*\(\s*\{\s*background\s*:\s*true\s*\}\s*\)/u, "终态后以后台模式重拉 dashboard（顶栏进度/章节抽屉/成本面板）");
+  assert.match(appSource, /options\?\.background\s*===\s*true/u, "loadDashboard 支持后台失败模式");
+  assert.match(appSource, /showToast\(error/u, "后台刷新失败只 toast，不渲染错误页");
+});

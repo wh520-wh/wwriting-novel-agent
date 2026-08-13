@@ -21,6 +21,7 @@ import {
   getCompaction,
   getCompactionRows,
   compactionBlocksSend,
+  getNeedsHistoryClear,
   TERMINAL_RUN_STATUSES
 } from "./state.js";
 import { createContextRing } from "./context-ring.js";
@@ -202,6 +203,19 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   const composerShell = doc.createElement("div");
   composerShell.className = "agent-composer-shell";
   composerShell.dataset.testid = "agent-composer-shell";
+  // Task 16（R5-7）：对话历史损坏（needs_history_clear）提示——独立一行显示
+  // 「此对话已损坏」并禁发（canSubmit 门禁与发送按钮一致）；不占用输入占位符。
+  const historyClearHint = doc.createElement("div");
+  historyClearHint.className = "agent-history-clear-hint";
+  historyClearHint.dataset.testid = "agent-history-clear-hint";
+  historyClearHint.textContent = "此对话已损坏";
+  historyClearHint.hidden = true;
+  Object.assign(historyClearHint.style, {
+    fontSize: "12px",
+    lineHeight: "1.5",
+    color: "var(--text-muted)",
+    padding: "6px 2px 0"
+  });
   const composerToolbar = doc.createElement("div");
   composerToolbar.className = "agent-composer-toolbar";
   const send = doc.createElement("button");
@@ -283,7 +297,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   const contextRing = createContextRing({ document: doc });
   composerToolbar.append(controls, contextRing.element, send);
   composerShell.append(input, composerToolbar);
-  composer.append(slashMenu, composerShell);
+  composer.append(historyClearHint, slashMenu, composerShell);
 
   surface.append(conv, latestButton, composer);
   root.append(surface);
@@ -1700,20 +1714,31 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     setMenuValue(effortControl, effortValue, "自动");
   }
 
+  // Task 16（R5-7/R5-9）：composer 发送门禁的集中判定——发送按钮与 Enter 共用同一
+  // canSubmit。项目未打开 / busy（其他会话运行中）/ 压缩阻塞（在途或失败）/
+  // 对话历史损坏（needs_history_clear）任一即禁发；composerEnabled/composerBusy/
+  // currentState 由最近一次 render 写入。
+  function canSubmit() {
+    if (!composerEnabled) return false;
+    if (composerBusy) return false;
+    if (!currentState) return false;
+    if (compactionBlocksSend(getCompaction(currentState))) return false;
+    if (getNeedsHistoryClear(currentState)) return false;
+    return true;
+  }
+
   function syncComposer(state) {
     const enabled = Boolean(state.projectRoot);
-    // Task 11：压缩阻塞状态（started/running/cancelling/failed）禁用发送；
-    // completed/cancelled/noop 恢复。输入框保持可编辑——取消完成时 draft 留在
-    // textarea，发送恢复后原样可发。
-    const compactionBlocked = compactionBlocksSend(getCompaction(state));
-    // Task 8：项目级串行门——其他会话运行中（project_busy / setBusy）禁用发送键，
-    // placeholder 提示，输入框不锁（草稿可继续编辑、busy 解除后原样可发）。
+    // Task 16：先置 composerEnabled 再计算发送门禁（canSubmit 依赖它），
+    // 按钮与 Enter 的判定收敛到同一函数。
+    composerEnabled = enabled;
+    const historyClearBlocked = getNeedsHistoryClear(state);
     input.disabled = !enabled;
-    send.disabled = !enabled || compactionBlocked || composerBusy;
+    send.disabled = !canSubmit();
     input.placeholder = composerBusy ? "另一个对话正在运行" : "输入消息";
     composer.hidden = !enabled;
+    historyClearHint.hidden = !historyClearBlocked;
     surface.classList.toggle("agent-surface--empty", !enabled);
-    composerEnabled = enabled;
     syncComposerControls();
     // 有项目时隐藏产品起点；项目内的空会话保持干净，不显示欢迎词。
     emptyState.hidden = enabled;
@@ -1809,8 +1834,9 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      // Task 8：项目其他会话运行中（busy）发送键/回车一律不提交，输入保留。
-      if (composerBusy) return;
+      // Task 16（R5-9）：与发送按钮共用同一 canSubmit 判定——busy/压缩阻塞/
+      // 对话损坏任一即禁发，输入保留。
+      if (!canSubmit()) return;
       submitFromComposer();
     }
   });

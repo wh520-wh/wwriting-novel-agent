@@ -115,7 +115,12 @@ const agentSurface = createAgentSurface({
   // 全部非 running → false）。终态事件按当前会话流到达；跨会话运行结束的复位缺口
   // 见 session-sidebar.mjs 的 syncBusy 注释（openProject/switchSession 刷新兜底）。
   onRunTerminal: () => {
+    // Task 16（R5-12）：Run 终态统一刷新——会话列表（busy 复位）与 dashboard
+    //（顶栏进度/章节抽屉/成本面板）。Agent snapshot 权威刷新在 surface 内部
+    //（maybeRefreshAfterTerminal 补拉快照）；后台刷新失败只 toast，旧 scope 数据
+    // 由 loadDashboard 的 requestId/projectScope 守卫丢弃，绝不灌入新项目。
     agentSurface.refreshSessions();
+    void loadDashboard({ background: true });
   }
 });
 
@@ -384,7 +389,7 @@ function renderProjectListFiltered() {
   sessionSidebar.render();
 }
 
-async function loadDashboard() {
+async function loadDashboard(options = {}) {
   const requestId = ++dashboardRequestId;
   const activeProjectRoot = currentProjectRoot;
   let token = projectScope.capture(activeProjectRoot);
@@ -406,6 +411,12 @@ async function loadDashboard() {
   } catch (error) {
     if (requestId !== dashboardRequestId) return;
     if (!projectScope.isCurrent(token)) return;
+    // Task 16（R5-12）：后台刷新（Run 终态）失败只 toast——不渲染错误页，避免
+    // 终态刷新把顶栏/抽屉替换成「读取失败」；旧 scope 数据由上面的守卫丢弃。
+    if (options?.background === true) {
+      showToast(error?.message ?? "刷新失败。", "error");
+      return;
+    }
     // Task 9：dashboard 失败时当前项目会话组降级为可重试失败行
     //（否则「加载中…」永不消失）。
     sessionSidebar.markSessionsFailed(activeProjectRoot);
@@ -585,6 +596,9 @@ async function forgetProject(projectRoot) {
   try {
     const result = await postJson("/api/projects/forget", { projectRoot });
     showToast("已从列表移除。", "success");
+    // Task 16（B13）：移除项目后清理 sidebar 的缓存/DOM 引用/折叠记录，并封存
+    // 该项目（迟到的 seed/会话变更不再重建缓存）。
+    sessionSidebar.removeProject(projectRoot);
     const nextRoot = result.selectedProjectRoot ?? null;
     commitProjectSwitch(nextRoot);
     await loadAll();
