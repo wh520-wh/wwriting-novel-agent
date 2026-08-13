@@ -6,7 +6,7 @@
 //
 // 公共接口（固定）：
 //   const agent = createProjectAgent(dependencies);  // { modelGateway, shell?, secrets?,
-//                                                     //   skills?, agentStorageRootFor?, workspaceMigrator? }
+//                                                     //   skills?, agentStorageRootFor? }
 //   await agent.open({ projectRoot });
 //   await agent.submit({ projectRoot, text, source });   // source ∈ {"chat","maintenance"}
 //   await agent.promote({ projectRoot, inputId });

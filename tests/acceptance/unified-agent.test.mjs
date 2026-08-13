@@ -11,17 +11,15 @@
 //   - agent.decide 的 choice 词汇："allow" | "allow_input" | "deny" | 精确 confirmation_text
 //   - 事件类型必须来自 FIXED_EVENT_TYPES（计划固定的事件类型清单）
 //
-// 当前状态（Task 6 完成、规格审查裁决后）：19/21 场景通过。剩余 2 个红场景按
-// 任务归属，不是本任务缺陷：
-//   - "AgentSurface 保留 900px 内容基线与模型菜单视口钳制"：Task 8 实现
-//     src/app-shell/agent/（index.js + agent.css）后转绿；
-//   - "旧项目把 blueprint_status 迁入 project.yaml 且不再写旧状态文件"：Task 7
-//     legacy-import 范围（migration.json 脚手架已在 journal.mjs；旧状态一次性
-//     只读导入与 migration.legacy_imported 置位在 Task 7 实现）。
+// 当前状态：本文件场景已全部转绿（Task 8 实现 AgentSurface、Task 12/13 以负向
+// 断言关闭旧持久字段与旧聊天迁移场景）；后续改动必须保持全绿。
 // Task 9 cutover 后本文件必须全部通过。
 // Task 12：旧事件类型 workflow_changed 已随工作流概念删除（不再产生、不再投影），
 // FIXED_EVENT_TYPES 清单同步删除；旧持久字段的迁移断言改为负向断言（旧项目导入
 // 后 project.yaml 也不得写入该字段）。
+// Task 13：旧聊天迁移路径（runLegacyImport 等）已整体删除——旧项目的聊天数据
+// 不再导入任何接口，migration.json 的 legacy_imported 标记恒为 false；下方旧项目
+// 场景改为"不导入"负向断言（旧文件只读、旧文本不进入 snapshot/导出/模型请求）。
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -1378,42 +1376,53 @@ test("新项目不创建旧状态文件", async (t) => {
   }
 });
 
-test("旧项目一次性导入后不再写旧状态文件，且不迁移旧持久字段", async (t) => {
+test("旧项目聊天数据不再导入：旧文件只读、旧文本不进入任何接口、标记保持未导入", async (t) => {
   const h = await createProjectAgentHarness({ legacy: true });
   t.after(() => h.cleanup());
   const statePath = path.join(h.projectRoot, LEGACY_STATE_FILE);
+  const historyPath = path.join(h.projectRoot, LEGACY_CHAT_HISTORY_FILE);
   const stateBefore = await fs.readFile(statePath, "utf8");
+  const historyBefore = await fs.readFile(historyPath, "utf8");
   assert.ok(stateBefore.length > 0, "旧项目夹具应存在旧状态文件");
 
-  // Task 4 惰性创建：open() 不物化会话，flat-file 导入推迟到首次发消息
+  // Task 13：旧聊天迁移路径已整体删除——open/submit 都不再导入，不产生会话条目
   await h.agent.open({ projectRoot: h.projectRoot });
-  const yamlBefore = await fs.readFile(path.join(h.projectRoot, "project.yaml"), "utf8");
-  assert.doesNotMatch(yamlBefore, /blueprint_status:\s*["']?complete["']?/u, "open() 后迁移尚未发生（惰性）");
+  const { sessions } = await h.agent.sessions({ projectRoot: h.projectRoot });
+  assert.equal(sessions.length, 0, "旧聊天数据不得产生会话条目（不再导入）");
 
-  // 首次 submit 物化会话 → 导入完成
+  // 首次 submit 物化全新会话（旧数据零影响）
   await h.agent.submit({ projectRoot: h.projectRoot, text: "继续写作", source: "chat" });
   await waitForIdle(h.agent, h.projectRoot);
-  // Task 12：旧持久字段概念已删除——即便旧状态里显式存在该字段，导入也绝不
-  // 把它写入 project.yaml（生产代码零读取/零写入；负向断言字面量允许）
+  // Task 12：旧持久字段概念已删除——旧状态里显式存在该字段也不得写入 project.yaml
   const yaml = await fs.readFile(path.join(h.projectRoot, "project.yaml"), "utf8");
   assert.doesNotMatch(yaml, /blueprint_status:\s*["']?complete["']?/u, "旧状态字段不得迁入 project.yaml");
 
-  // 迁移标记落在会话目录（多会话布局：sessions/<id>/migration.json）
+  // 旧聊天文本不进入用户接口（snapshot 投影与事件流）与模型请求
+  const snapshot = await h.agent.snapshot({ projectRoot: h.projectRoot, afterSeq: 0, limit: 100000 });
+  assert.ok(!JSON.stringify(snapshot).includes("旧对话第一条"), "旧聊天文本不得出现在 snapshot");
+  for (const call of h.gateway.calls) {
+    assert.ok(!JSON.stringify(call.request).includes("旧对话第一条"), "旧聊天文本不得进入模型请求");
+  }
+  const exported = [];
+  for await (const line of h.agent.exportHistory({ projectRoot: h.projectRoot })) exported.push(line);
+  assert.ok(!JSON.stringify(exported).includes("旧对话第一条"), "旧聊天文本不得出现在历史导出");
+
+  // 迁移标记保持未导入：migration.json 仍由 journal 维护，legacy_imported 恒为 false
   const { active_session_id } = await h.agent.sessions({ projectRoot: h.projectRoot });
   const migrationPath = path.join(h.agentRoot, "sessions", active_session_id, "migration.json");
-  assert.equal(await pathExists(migrationPath), true, "迁移完成后应写入 migration.json");
+  assert.equal(await pathExists(migrationPath), true, "新会话仍维护 journal 级 migration.json");
   const migration = JSON.parse(await fs.readFile(migrationPath, "utf8"));
-  assert.equal(migration.legacy_imported, true, "migration.json 应标记 legacy_imported");
+  assert.equal(migration.legacy_imported, false, "legacy_imported 必须保持 false（聊天迁移已删除）");
 
   // 第二次 open 幂等：不产生重复 session_created
   await h.agent.open({ projectRoot: h.projectRoot });
   const events = await readEvents(h.agent, h.projectRoot);
   assert.equal(eventsOfType(events, "session_created").length, 1, "第二次 open 不得重复创建 session");
 
-  // 完整跑一轮后旧状态文件不得再被写入
-  const stateAfter = await fs.readFile(statePath, "utf8");
-  assert.equal(stateAfter, stateBefore, "legacy 导入后不得再写入旧状态文件");
-  assertActivityClosure(await readEvents(h.agent, h.projectRoot));
+  // 旧文件完全只读：字节不变（不删除/不重命名/不覆盖）
+  assert.equal(await fs.readFile(statePath, "utf8"), stateBefore, "旧状态文件不得被改写");
+  assert.equal(await fs.readFile(historyPath, "utf8"), historyBefore, "旧聊天文件不得被改写");
+  assertActivityClosure(events);
 });
 
 // ---------------------------------------------------------------------------

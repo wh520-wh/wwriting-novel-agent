@@ -981,8 +981,15 @@ import {
 // 停在最后一条事件）：compactionState ∈ started/running/cancelling/failed/
 // cancelled。failed/cancelled 表示"终态事件已落盘而 Run/input 收敛未落盘"的
 // 崩溃窗口。seedTranscript 为 retry 播种 >12 轮历史（保证 retry 非 noop）。
+// Task 13：新 generation 只有 sessions/<id>/ 布局——先在注册表建会话，再在会话
+// 目录构造崩溃现场 journal（open 重启恢复读取同一位置；根级 journal 不再被收养）。
 async function buildCrashWindowJournal(h, { compactionState, inputText = "压缩后继续的输入", seedTranscript = false } = {}) {
-  const journal = createAgentJournal({ projectRoot: h.projectRoot, storageRoot: h.agentRoot });
+  const meta = await h.agent.newSession({ projectRoot: h.projectRoot, title: "崩溃窗口" });
+  const journal = createAgentJournal({
+    projectRoot: h.projectRoot,
+    storageRoot: path.join(h.agentRoot, "sessions", meta.session_id),
+    initialSessionId: meta.session_id
+  });
   await journal.load();
   if (seedTranscript) {
     for (let i = 0; i < 14; i += 1) {

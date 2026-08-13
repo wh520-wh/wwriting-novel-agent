@@ -384,15 +384,18 @@ test("原始 Node 文件错误不回传响应正文（统一错误脱敏契约�
 // 直接向 segment store 写合法事件（session_created + history_compacted），快速
 // 构造 500+ 事件的 journal——避免逐 Run 推进模型循环（history_compacted 在
 // reducer 中无副作用，不累积 queued inputs，也不会产生活动 Run）。
-async function seedJournalEvents(agentRoot, projectRoot, { count = 500, sessionId = "seed-session" } = {}) {
-  const eventsDir = path.join(agentRoot, "segments", "events");
+// Task 13：新 generation 只有 sessions/<id>/ 布局——先经公共 seam newSession
+// 注册会话，再直接向会话目录写事件流（根级 segments 不再被收养）。
+async function seedJournalEvents(agent, agentRoot, projectRoot, { count = 500, title = "种子会话" } = {}) {
+  const meta = await agent.newSession({ projectRoot, title });
+  const eventsDir = path.join(agentRoot, "sessions", meta.session_id, "segments", "events");
   await fs.mkdir(eventsDir, { recursive: true });
   const at = "2026-01-01T00:00:00.000Z";
   const record = (seq) => ({
     schema_version: 2,
     seq,
     event_id: `seed-${seq}`,
-    session_id: sessionId,
+    session_id: meta.session_id,
     run_id: null,
     project_root: projectRoot,
     at,
@@ -401,18 +404,20 @@ async function seedJournalEvents(agentRoot, projectRoot, { count = 500, sessionI
   });
   const lines = Array.from({ length: count }, (_, i) => JSON.stringify(record(i + 1)));
   await fs.writeFile(path.join(eventsDir, "00000001.jsonl"), `${lines.join("\n")}\n`, "utf8");
+  return meta.session_id;
 }
 
 // 构造带中间坏段的 journal：seg1=[1..4]、seg2=[5..8]+非法行（坏段）、seg3=[9..12]。
-async function seedCorruptJournal(agentRoot, projectRoot) {
-  const eventsDir = path.join(agentRoot, "segments", "events");
+async function seedCorruptJournal(agent, agentRoot, projectRoot) {
+  const meta = await agent.newSession({ projectRoot, title: "坏段会话" });
+  const eventsDir = path.join(agentRoot, "sessions", meta.session_id, "segments", "events");
   await fs.mkdir(eventsDir, { recursive: true });
   const at = "2026-01-01T00:00:00.000Z";
   const record = (seq) => ({
     schema_version: 2,
     seq,
     event_id: `gap-${seq}`,
-    session_id: "gap-session",
+    session_id: meta.session_id,
     run_id: null,
     project_root: projectRoot,
     at,
@@ -426,11 +431,12 @@ async function seedCorruptJournal(agentRoot, projectRoot) {
   await fs.writeFile(path.join(eventsDir, "00000001.jsonl"), segment(1, 1, 4), "utf8");
   await fs.writeFile(path.join(eventsDir, "00000002.jsonl"), segment(2, 5, 8, "{broken json"), "utf8");
   await fs.writeFile(path.join(eventsDir, "00000003.jsonl"), segment(3, 9, 12), "utf8");
+  return meta.session_id;
 }
 
 test("Task 5 snapshot beforeSeq 分页：返回最近旧页（401–500、has_more、gaps）", async (t) => {
   const s = await setupServer(t);
-  await seedJournalEvents(s.h.agentRoot, s.h.projectRoot, { count: 500 });
+  const seededId = await seedJournalEvents(s.h.agent, s.h.agentRoot, s.h.projectRoot, { count: 500 });
   await s.h.agent.open({ projectRoot: s.h.projectRoot });
 
   const page = await s.h.agent.snapshot({ projectRoot: s.h.projectRoot, beforeSeq: 501, limit: 100 });
@@ -439,7 +445,7 @@ test("Task 5 snapshot beforeSeq 分页：返回最近旧页（401–500、has_mo
   assert.equal(page.events.at(-1).seq, 500);
   assert.equal(page.has_more, true);
   assert.deepEqual(page.gaps, []);
-  assert.equal(page.session.session_id, "seed-session");
+  assert.equal(page.session.session_id, seededId);
   assert.equal(page.session.status, "idle");
   assert.equal(page.session.last_seq, 500);
 
@@ -464,7 +470,7 @@ test("Task 5 snapshot beforeSeq 分页：返回最近旧页（401–500、has_mo
   assert.equal(res.data.events.at(-1).seq, 500);
   assert.equal(res.data.has_more, true);
   assert.deepEqual(res.data.gaps, []);
-  assert.equal(res.data.session.session_id, "seed-session");
+  assert.equal(res.data.session.session_id, seededId);
 });
 
 test("Task 5 clearHistory 守卫：活动 Run → history_busy；空闲未确认 → confirmation_required", async (t) => {
@@ -477,7 +483,7 @@ test("Task 5 clearHistory 守卫：活动 Run → history_busy；空闲未确认
     ],
     gatewayDelayMs: 0
   });
-  await seedJournalEvents(s.h.agentRoot, s.h.projectRoot, { count: 500 });
+  await seedJournalEvents(s.h.agent, s.h.agentRoot, s.h.projectRoot, { count: 500 });
   await s.h.agent.open({ projectRoot: s.h.projectRoot });
 
   // 空闲且未确认 → 区别于 history_busy 的 code
@@ -501,16 +507,23 @@ test("Task 5 clearHistory 守卫：活动 Run → history_busy；空闲未确认
   await waitForIdle(s.h.agent, s.h.projectRoot);
 });
 
-test("Task 5 clearHistory 成功后同一实例立即可用：新 session_id、seq 从 1、旧消息不回写", async (t) => {
+test("Task 5 clearHistory 成功后同一实例立即可用：同一会话切换 generation、seq 从 1、旧消息不回写", async (t) => {
   const s = await setupServer(t, { gatewayScript: [{ reply: { text: "新会话答复" }, repeat: true }] });
-  await seedJournalEvents(s.h.agentRoot, s.h.projectRoot, { count: 500 });
+  await seedJournalEvents(s.h.agent, s.h.agentRoot, s.h.projectRoot, { count: 500 });
   await s.h.agent.open({ projectRoot: s.h.projectRoot });
   const old = await s.h.agent.snapshot({ projectRoot: s.h.projectRoot, tail: true, limit: 5 });
   assert.equal(old.session.last_seq, 500);
+  // Task 13：注册表 id 与 journal 内部 session id 已对齐（迁移路径删除后不再有
+  // 外部随机 id ≠ 事件流旧 id 的错位）——clearHistory 是同一会话内的 generation
+  // 切换，session_id 保持不变，断言改为 generation_id 变化。
+  const oldManifest = JSON.parse(
+    await fs.readFile(path.join(s.h.agentRoot, "sessions", old.session.session_id, "journal-manifest.json"), "utf8")
+  );
 
   const result = await s.h.agent.clearHistory({ projectRoot: s.h.projectRoot, confirmIrreversible: true });
   assert.equal(typeof result.session_id, "string");
-  assert.notEqual(result.session_id, old.session.session_id, "清空后必须产生新 session_id");
+  assert.equal(result.session_id, old.session.session_id, "清空保持同一会话（只切换 generation）");
+  assert.notEqual(result.generation_id, oldManifest.generation_id, "清空后必须产生新 generation_id");
 
   // 同一 ProjectAgent 实例立即 snapshot：seq 从新 generation 的 1 开始、旧消息不回写
   const fresh = await s.h.agent.snapshot({ projectRoot: s.h.projectRoot, afterSeq: 0, limit: 1000 });
@@ -561,7 +574,7 @@ test("Task 5 HTTP：POST /api/agent/history/export 返回 NDJSON 下载且不含
     gatewayScript: [{ reply: { text: "关键信息：超级机密" } }],
     secrets: ["超级机密"]
   });
-  await seedJournalEvents(s.h.agentRoot, s.h.projectRoot, { count: 60 });
+  await seedJournalEvents(s.h.agent, s.h.agentRoot, s.h.projectRoot, { count: 60 });
   await s.h.agent.open({ projectRoot: s.h.projectRoot });
   await s.h.agent.submit({ projectRoot: s.h.projectRoot, text: "你好" });
   await waitForIdle(s.h.agent, s.h.projectRoot);
@@ -586,7 +599,7 @@ test("Task 5 HTTP：POST /api/agent/history/export 返回 NDJSON 下载且不含
 
 test("Task 5 HTTP：export 的 gap 行保留损坏范围且不含隔离文件原文；退化 journal 可清空", async (t) => {
   const s = await setupServer(t);
-  await seedCorruptJournal(s.h.agentRoot, s.h.projectRoot);
+  await seedCorruptJournal(s.h.agent, s.h.agentRoot, s.h.projectRoot);
   await s.h.agent.open({ projectRoot: s.h.projectRoot });
 
   const res = await fetch(`${s.base}/api/agent/history/export`, {
@@ -627,7 +640,7 @@ test("Task 5 HTTP：POST /api/agent/history/clear 缺确认 400、活动 Run 409
     ],
     gatewayDelayMs: 0
   });
-  await seedJournalEvents(s.h.agentRoot, s.h.projectRoot, { count: 120 });
+  await seedJournalEvents(s.h.agent, s.h.agentRoot, s.h.projectRoot, { count: 120 });
   await s.h.agent.open({ projectRoot: s.h.projectRoot });
 
   // 缺少 confirm_irreversible:true → 400 confirmation_required
@@ -816,7 +829,7 @@ test("Task 9 运行中提交 /compact 返回 queued 而不是新 Run", async (t)
 
 test("Task 9 GET /api/agent/snapshot?tail=1 返回最新尾页", async (t) => {
   const s = await setupServer(t);
-  await seedJournalEvents(s.h.agentRoot, s.h.projectRoot, { count: 500 });
+  await seedJournalEvents(s.h.agent, s.h.agentRoot, s.h.projectRoot, { count: 500 });
   await s.h.agent.open({ projectRoot: s.h.projectRoot });
   const res = await s.get(
     `/api/agent/snapshot?projectRoot=${encodeURIComponent(s.h.projectRoot)}&tail=1&limit=3`

@@ -1825,11 +1825,11 @@ test("新项目不创建旧状态文件，Agent 状态只落在应用私有 agen
   assert.equal(await pathExists(path.join(h.agentRoot, "transcript.jsonl")), false, "新项目不得创建单体 transcript.jsonl");
 });
 
-test("旧 .wwriting/agent 中间损坏：open() 拒绝迁移但允许新会话（journal 落应用私有目录）", async (t) => {
+test("旧 .wwriting/agent 损坏数据被忽略：无会话条目、新会话正常（journal 落应用私有目录）", async (t) => {
   const h = await createProjectAgentHarness({ gatewayScript: [{ reply: { text: "好。" } }] });
   t.after(() => h.cleanup());
   // 构造中间损坏的旧 journal（seq 1、2 合法，第 3 行损坏，其后还有合法行——
-  // 末行半行是崩溃痕迹会被容忍，只有中段损坏才触发拒绝）
+  // 末行半行是崩溃痕迹会被容忍；Task 13 起旧数据根本不被读取，损坏与否无关）
   const legacyDir = path.join(h.projectRoot, ".wwriting", "agent");
   await fs.mkdir(legacyDir, { recursive: true });
   const legacyEvents = [
@@ -1841,10 +1841,10 @@ test("旧 .wwriting/agent 中间损坏：open() 拒绝迁移但允许新会话�
   await fs.writeFile(path.join(legacyDir, "events.jsonl"), legacyEvents, "utf8");
 
   await h.agent.open({ projectRoot: h.projectRoot });
-  // 惰性创建：open() 不物化会话（损坏的旧数据不被迁移、不产生会话条目）
+  // 惰性创建：open() 不物化会话（旧数据不被导入、不产生会话条目）
   const { sessions } = await h.agent.sessions({ projectRoot: h.projectRoot });
-  assert.equal(sessions.length, 0, "损坏旧数据不产生会话条目");
-  // 首条消息物化新会话：私有目录 sessions/<id>/ 从零创建（迁移被拒、目标目录保持干净）
+  assert.equal(sessions.length, 0, "旧数据不产生会话条目");
+  // 首条消息物化新会话：私有目录 sessions/<id>/ 从零创建（目标目录保持干净）
   const result = await h.agent.submit({ projectRoot: h.projectRoot, text: "你好", source: "chat" });
   await waitForIdle(h.agent, h.projectRoot);
   const sessionDir = path.join(h.agentRoot, "sessions", result.session_id);
@@ -1853,6 +1853,163 @@ test("旧 .wwriting/agent 中间损坏：open() 拒绝迁移但允许新会话�
   const events = await readEvents(h.agent, h.projectRoot);
   assert.equal(eventsOfType(events, "session_created").length, 1, "新会话以私有目录为准");
   assert.equal(await fs.readFile(path.join(legacyDir, "events.jsonl"), "utf8"), legacyEvents, "旧 journal 必须保持字节不变");
+});
+
+// ---------------------------------------------------------------------------
+// Task 13：旧聊天迁移路径整体删除——三种旧存储一律不再导入（不进入列表、
+// snapshot、SSE、导出或模型上下文），项目正文/WWRITING/设置/技能保留。
+// ---------------------------------------------------------------------------
+
+// 旧 flat 布局（最老一代）：events.jsonl / transcript.jsonl / session.json /
+// checkpoints 直接躺在应用私有 agentRoot 根（adoptLegacyFlatFilesToRegistry 的
+// 源）。创建后 open/submit：不得注册会话、不得搬移、旧文本不得出现在任何接口。
+test("旧 flat events.jsonl/transcript.jsonl（agentRoot 根）不被导入：新会话为空、旧文本不出现", async (t) => {
+  const h = await createProjectAgentHarness({ gatewayScript: [{ reply: { text: "好。" } }] });
+  t.after(() => h.cleanup());
+  const OLD_TEXT = "旧flat对话";
+  await fs.mkdir(path.join(h.agentRoot, "checkpoints"), { recursive: true });
+  const flatEvents = [
+    JSON.stringify({ schema_version: 1, seq: 1, event_id: "e1", session_id: "flat-s", run_id: null, project_root: h.projectRoot, type: "session_created", at: new Date().toISOString(), payload: {} }),
+    JSON.stringify({ schema_version: 1, seq: 2, event_id: "e2", session_id: "flat-s", run_id: null, project_root: h.projectRoot, type: "input_queued", at: new Date().toISOString(), payload: { input_id: "i1", text: OLD_TEXT } })
+  ].join("\n") + "\n";
+  await fs.writeFile(path.join(h.agentRoot, "events.jsonl"), flatEvents, "utf8");
+  await fs.writeFile(path.join(h.agentRoot, "transcript.jsonl"), `${JSON.stringify({ role: "user", content: OLD_TEXT })}\n`, "utf8");
+  await fs.writeFile(path.join(h.agentRoot, "session.json"), JSON.stringify({ schema_version: 1, session_id: "flat-s", last_seq: 2 }, null, 2) + "\n", "utf8");
+  await fs.writeFile(path.join(h.agentRoot, "checkpoints", "cp-1.json"), "{}", "utf8");
+  // 项目正文/WWRITING/设置/技能：生成切换只影响 Agent 对话存储，其余必须保留
+  await fs.writeFile(path.join(h.projectRoot, "WWRITING.md"), "# WWriting 项目记忆\n\n- 项目：验收测试小说\n", "utf8");
+  await h.store.saveSettings(h.projectRoot, { active_model: { provider: "mock", model_name: "mock-writer" } });
+  const skillsBefore = JSON.stringify(await h.skills.catalog({ projectRoot: h.projectRoot }));
+
+  await h.agent.open({ projectRoot: h.projectRoot });
+  const { sessions } = await h.agent.sessions({ projectRoot: h.projectRoot });
+  assert.equal(sessions.length, 0, "旧 flat 数据不得产生会话条目");
+
+  const result = await h.agent.submit({ projectRoot: h.projectRoot, text: "你好", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+
+  // snapshot（投影 + 事件流）不含旧文本
+  const snapshot = await h.agent.snapshot({ projectRoot: h.projectRoot, afterSeq: 0, limit: 100000 });
+  assert.ok(!JSON.stringify(snapshot).includes(OLD_TEXT), "snapshot 不得包含旧 flat 对话");
+  // 历史导出不含旧文本
+  const exported = [];
+  for await (const line of h.agent.exportHistory({ projectRoot: h.projectRoot })) exported.push(line);
+  assert.ok(!JSON.stringify(exported).includes(OLD_TEXT), "历史导出不得包含旧 flat 对话");
+  // 模型请求不含旧文本
+  for (const call of h.gateway.calls) {
+    assert.ok(!JSON.stringify(call.request).includes(OLD_TEXT), "模型请求不得包含旧 flat 对话");
+  }
+  // 旧文件只读：原样保留（不搬移、不改名、不删除）
+  assert.equal(await fs.readFile(path.join(h.agentRoot, "events.jsonl"), "utf8"), flatEvents, "旧 events.jsonl 必须保持字节不变");
+  // 新会话落在 sessions/<id>/（新分段格式），旧单体文件不得被搬进新会话
+  const sessionDir = path.join(h.agentRoot, "sessions", result.session_id);
+  assert.equal(await pathExists(path.join(sessionDir, "segments", "events")), true, "新 journal 落 sessions/<id>/segments");
+  assert.equal(await pathExists(path.join(sessionDir, "events.jsonl")), false, "旧单体文件不得搬进新会话目录");
+  // 项目正文/WWRITING/设置/技能仍存在
+  assert.equal(await fs.readFile(path.join(h.projectRoot, "WWRITING.md"), "utf8"), "# WWriting 项目记忆\n\n- 项目：验收测试小说\n", "WWRITING.md 不得被改写");
+  assert.equal(await pathExists(path.join(h.projectRoot, "OUTLINE.md")), true, "项目正文/总纲文件必须保留");
+  assert.equal(await pathExists(path.join(h.projectRoot, "SETTING.md")), true, "设定文件必须保留");
+  assert.equal((await h.store.loadSettings(h.projectRoot)).active_model?.model_name, "mock-writer", "私有设置不得被改写");
+  assert.equal(JSON.stringify(await h.skills.catalog({ projectRoot: h.projectRoot })), skillsBefore, "技能目录不受影响");
+});
+
+// 项目内 .wwriting/agent（migrateProjectAgentStorage 的源，合法数据）：
+// open/submit 后旧对话绝不复制/迁入应用私有目录，新会话从零开始。
+test("项目内 .wwriting/agent 旧对话不被导入：新会话为空、旧文本不出现、源目录只读", async (t) => {
+  const h = await createProjectAgentHarness({ gatewayScript: [{ reply: { text: "好。" } }] });
+  t.after(() => h.cleanup());
+  const OLD_TEXT = "旧项目内对话";
+  const legacyDir = path.join(h.projectRoot, ".wwriting", "agent");
+  await fs.mkdir(path.join(legacyDir, "checkpoints"), { recursive: true });
+  const legacyEvents = [
+    JSON.stringify({ schema_version: 1, seq: 1, event_id: "e1", session_id: "legacy-s", run_id: null, project_root: h.projectRoot, type: "session_created", at: new Date().toISOString(), payload: {} }),
+    JSON.stringify({ schema_version: 1, seq: 2, event_id: "e2", session_id: "legacy-s", run_id: null, project_root: h.projectRoot, type: "input_queued", at: new Date().toISOString(), payload: { input_id: "i1", text: OLD_TEXT } })
+  ].join("\n") + "\n";
+  await fs.writeFile(path.join(legacyDir, "events.jsonl"), legacyEvents, "utf8");
+  await fs.writeFile(path.join(legacyDir, "transcript.jsonl"), `${JSON.stringify({ role: "user", content: OLD_TEXT })}\n`, "utf8");
+  await fs.writeFile(path.join(legacyDir, "session.json"), JSON.stringify({ schema_version: 1, session_id: "legacy-s", last_seq: 2 }, null, 2) + "\n", "utf8");
+  await fs.writeFile(path.join(legacyDir, "checkpoints", "cp-1.json"), "{}", "utf8");
+  await fs.writeFile(path.join(h.projectRoot, "WWRITING.md"), "# WWriting 项目记忆\n\n- 项目：验收测试小说\n", "utf8");
+  await h.store.saveSettings(h.projectRoot, { active_model: { provider: "mock", model_name: "mock-writer" } });
+  const skillsBefore = JSON.stringify(await h.skills.catalog({ projectRoot: h.projectRoot }));
+
+  await h.agent.open({ projectRoot: h.projectRoot });
+  const { sessions } = await h.agent.sessions({ projectRoot: h.projectRoot });
+  assert.equal(sessions.length, 0, "项目内旧对话不得产生会话条目");
+
+  const result = await h.agent.submit({ projectRoot: h.projectRoot, text: "你好", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+
+  const snapshot = await h.agent.snapshot({ projectRoot: h.projectRoot, afterSeq: 0, limit: 100000 });
+  assert.ok(!JSON.stringify(snapshot).includes(OLD_TEXT), "snapshot 不得包含项目内旧对话");
+  const exported = [];
+  for await (const line of h.agent.exportHistory({ projectRoot: h.projectRoot })) exported.push(line);
+  assert.ok(!JSON.stringify(exported).includes(OLD_TEXT), "历史导出不得包含项目内旧对话");
+  for (const call of h.gateway.calls) {
+    assert.ok(!JSON.stringify(call.request).includes(OLD_TEXT), "模型请求不得包含项目内旧对话");
+  }
+  // 源目录只读；应用私有目录不得出现旧数据副本
+  assert.equal(await fs.readFile(path.join(legacyDir, "events.jsonl"), "utf8"), legacyEvents, "旧 .wwriting/agent 必须保持字节不变");
+  assert.equal(await pathExists(path.join(h.agentRoot, "events.jsonl")), false, "旧数据不得复制到应用私有 agentRoot 根");
+  assert.equal(await pathExists(path.join(h.agentRoot, "segments")), false, "旧数据不得复制为应用私有根级 segments");
+  // 新会话从零开始（新分段格式）
+  const sessionDir = path.join(h.agentRoot, "sessions", result.session_id);
+  assert.equal(await pathExists(path.join(sessionDir, "segments", "events")), true, "新 journal 落 sessions/<id>/segments");
+  // 项目正文/WWRITING/设置/技能仍存在
+  assert.equal(await fs.readFile(path.join(h.projectRoot, "WWRITING.md"), "utf8"), "# WWriting 项目记忆\n\n- 项目：验收测试小说\n", "WWRITING.md 不得被改写");
+  assert.equal(await pathExists(path.join(h.projectRoot, "OUTLINE.md")), true, "项目正文/总纲文件必须保留");
+  assert.equal((await h.store.loadSettings(h.projectRoot)).active_model?.model_name, "mock-writer", "私有设置不得被改写");
+  assert.equal(JSON.stringify(await h.skills.catalog({ projectRoot: h.projectRoot })), skillsBefore, "技能目录不受影响");
+});
+
+// 旧单体 Journal（Task 4 前一代布局）：segments/ + journal-manifest.json +
+// session.json 直接躺在 agentRoot 根（migrateSingleSessionToRegistry 的源）。
+test("旧单体 Journal（agentRoot 根 segments/）不被导入：新会话为空、旧文本不出现", async (t) => {
+  const h = await createProjectAgentHarness({ gatewayScript: [{ reply: { text: "好。" } }] });
+  t.after(() => h.cleanup());
+  const OLD_TEXT = "旧单体对话";
+  const eventsDir = path.join(h.agentRoot, "segments", "events");
+  await fs.mkdir(eventsDir, { recursive: true });
+  const monoEvents = [
+    JSON.stringify({ schema_version: 2, seq: 1, event_id: "e1", session_id: "mono-s", run_id: null, project_root: h.projectRoot, type: "session_created", at: new Date().toISOString(), payload: {} }),
+    JSON.stringify({ schema_version: 2, seq: 2, event_id: "e2", session_id: "mono-s", run_id: null, project_root: h.projectRoot, type: "input_queued", at: new Date().toISOString(), payload: { input_id: "i1", text: OLD_TEXT } })
+  ].join("\n") + "\n";
+  await fs.writeFile(path.join(eventsDir, "00000001.jsonl"), monoEvents, "utf8");
+  await fs.writeFile(
+    path.join(h.agentRoot, "journal-manifest.json"),
+    JSON.stringify({ schema_version: 1, generation_id: "gen-1", events_root: "segments/events", transcript_root: "segments/transcript", last_event_seq: 2, last_transcript_seq: 0, gaps: [] }, null, 2) + "\n",
+    "utf8"
+  );
+  await fs.writeFile(path.join(h.agentRoot, "session.json"), JSON.stringify({ schema_version: 1, session_id: "mono-s", last_seq: 2 }, null, 2) + "\n", "utf8");
+  await fs.writeFile(path.join(h.projectRoot, "WWRITING.md"), "# WWriting 项目记忆\n\n- 项目：验收测试小说\n", "utf8");
+  await h.store.saveSettings(h.projectRoot, { active_model: { provider: "mock", model_name: "mock-writer" } });
+  const skillsBefore = JSON.stringify(await h.skills.catalog({ projectRoot: h.projectRoot }));
+
+  await h.agent.open({ projectRoot: h.projectRoot });
+  const { sessions } = await h.agent.sessions({ projectRoot: h.projectRoot });
+  assert.equal(sessions.length, 0, "旧单体 Journal 不得产生会话条目");
+
+  const result = await h.agent.submit({ projectRoot: h.projectRoot, text: "你好", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+
+  const snapshot = await h.agent.snapshot({ projectRoot: h.projectRoot, afterSeq: 0, limit: 100000 });
+  assert.ok(!JSON.stringify(snapshot).includes(OLD_TEXT), "snapshot 不得包含旧单体对话");
+  const exported = [];
+  for await (const line of h.agent.exportHistory({ projectRoot: h.projectRoot })) exported.push(line);
+  assert.ok(!JSON.stringify(exported).includes(OLD_TEXT), "历史导出不得包含旧单体对话");
+  for (const call of h.gateway.calls) {
+    assert.ok(!JSON.stringify(call.request).includes(OLD_TEXT), "模型请求不得包含旧单体对话");
+  }
+  // 旧单体数据只读：原地保留（不搬进 sessions/、不删除）
+  assert.equal(await fs.readFile(path.join(eventsDir, "00000001.jsonl"), "utf8"), monoEvents, "旧单体 segments 必须保持字节不变");
+  assert.equal(await pathExists(path.join(h.agentRoot, "segments")), true, "旧单体数据必须原地保留");
+  const sessionDir = path.join(h.agentRoot, "sessions", result.session_id);
+  assert.equal(await pathExists(path.join(sessionDir, "segments", "events")), true, "新 journal 落 sessions/<id>/segments");
+  // 项目正文/WWRITING/设置/技能仍存在
+  assert.equal(await fs.readFile(path.join(h.projectRoot, "WWRITING.md"), "utf8"), "# WWriting 项目记忆\n\n- 项目：验收测试小说\n", "WWRITING.md 不得被改写");
+  assert.equal(await pathExists(path.join(h.projectRoot, "OUTLINE.md")), true, "项目正文/总纲文件必须保留");
+  assert.equal((await h.store.loadSettings(h.projectRoot)).active_model?.model_name, "mock-writer", "私有设置不得被改写");
+  assert.equal(JSON.stringify(await h.skills.catalog({ projectRoot: h.projectRoot })), skillsBefore, "技能目录不受影响");
 });
 
 // ---------------------------------------------------------------------------

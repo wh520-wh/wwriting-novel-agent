@@ -8,7 +8,7 @@
 //   - 缺省 = 最近活跃会话：旧调用方不加 sessionId 时行为与现状一致（回归铁律）
 //   - 显式会话：会话事件流各自独立（seq 各自从 1 单调递增）
 //   - newSession/renameSession/archiveSession/restoreSession/deleteSession 委托注册表
-//   - 迁移集成：旧单流 agentRoot → open 后 sessions() 含"对话 1"、事件可快照
+//   - 迁移退役（Task 13）：旧单流 agentRoot 数据不进入会话列表/快照，旧文件原地只读保留
 //
 // 本文件复用 project-agent-harness（createProjectAgentHarness 已注入临时
 // storageRoot 隔离，绝不触碰真实用户目录）。
@@ -479,42 +479,41 @@ test("open() 品牌新项目返回空项目状态且不建会话（惰性）", a
 });
 
 // ---------------------------------------------------------------------------
-// 迁移集成：旧单流 agentRoot → 会话 1
+// 迁移退役（Task 13）：旧单流 agentRoot 数据不再进入会话列表/快照，原地只读保留
 // ---------------------------------------------------------------------------
 
-test("迁移集成：旧单流 agentRoot → open 后 sessions() 含'对话 1'、事件可快照", async (t) => {
+test("迁移退役：旧单流 agentRoot 数据不进入会话列表/快照，旧文件原地保留", async (t) => {
   const h = await createProjectAgentHarness({ gatewayScript: [{ reply: { text: "好。" } }] });
   t.after(() => h.cleanup());
-  // 直接在应用私有 agentRoot 顶层构造旧单流 journal（Task 3 迁移源）
+  // 在应用私有 agentRoot 顶层构造旧单流 journal（Task 13 已删除的迁移源布局）
   const legacyJournal = createAgentJournal({ projectRoot: h.projectRoot, storageRoot: h.agentRoot });
   await legacyJournal.load();
   await legacyJournal.append({ type: "input_queued", payload: { input_id: "old-1", text: "旧消息", source: "chat" } });
 
   const opened = await h.agent.open({ projectRoot: h.projectRoot });
-  assert.ok(opened.session_id, "open 解析出迁移的会话");
-  const { sessions, active_session_id } = await h.agent.sessions({ projectRoot: h.projectRoot });
-  assert.equal(sessions.length, 1);
-  assert.equal(sessions[0].title, "对话 1");
-  assert.equal(active_session_id, sessions[0].session_id);
+  assert.equal(opened.session_id, null, "旧单流数据不得产生会话");
+  const { sessions } = await h.agent.sessions({ projectRoot: h.projectRoot });
+  assert.equal(sessions.length, 0, "旧单流数据不得进入会话列表");
 
-  // 迁移会话的事件可快照（缺省 = 最近活跃 = 迁移会话）
+  // 旧数据不进入快照（无会话 → 空快照）
   const snap = await h.agent.snapshot({ projectRoot: h.projectRoot, afterSeq: 0, limit: 100000 });
-  assert.ok(snap.session, "迁移会话可快照");
-  assert.equal(eventsOfType(snap.events, "session_created").length, 1, "迁移流只含原有的一条 session_created");
-  assert.equal(eventsOfType(snap.events, "input_queued").length, 1);
-  assert.equal(eventsOfType(snap.events, "input_queued")[0].payload.text, "旧消息");
+  assert.equal(snap.session, null);
+  assert.deepEqual(snap.events, []);
+  assert.ok(!JSON.stringify(snap).includes("旧消息"), "旧消息不得出现在快照");
 
-  // 迁移后旧数据已搬入 sessions/<id>/（根不再有孤儿 segments）
+  // 旧数据原地保留：根级 segments 未搬移、未删除；不产生会话注册表
   const rootHasSegments = await fs
     .stat(`${h.agentRoot}/segments`)
     .then(() => true)
     .catch(() => false);
-  assert.equal(rootHasSegments, false, "迁移后 agentRoot 根不得残留孤儿 segments/");
-  const sessionDirHasSegments = await fs
-    .stat(`${h.agentRoot}/sessions/${sessions[0].session_id}/segments`)
+  assert.equal(rootHasSegments, true, "旧单流数据必须原地保留（不搬移）");
+  const hasSessionsDir = await fs
+    .stat(`${h.agentRoot}/sessions`)
     .then(() => true)
     .catch(() => false);
-  assert.equal(sessionDirHasSegments, true, "会话数据落在 sessions/<id>/ 下");
+  assert.equal(hasSessionsDir, false, "旧数据不得产生会话注册表/会话目录");
+  const rootEvents = await fs.readFile(path.join(h.agentRoot, "segments", "events", "00000001.jsonl"), "utf8");
+  assert.ok(rootEvents.includes("旧消息"), "旧事件流必须字节保留");
 });
 
 // ---------------------------------------------------------------------------

@@ -16,22 +16,17 @@
 //      blueprint-init、failure-actions、retry-candidates、event-bus、run-events-bus。
 //   G. 生产文件不得写入旧状态文件（四个旧状态文件名清单见 LEGACY_WRITE_TARGETS，
 //      按"写入调用 + 参数中出现文件名"判定）。
-//   H. 旧数据文件名只允许出现在两个只读白名单文件里：
-//      src/core/agent/legacy-import.mjs 与 tests/agent/legacy-import.test.mjs；
-//      白名单文件本身也不得写入这些文件（broad rg 例外不够，必须按文件精确判定）。
+//   H. 旧数据文件名 0 提及（Task 7 的只读白名单文件已随聊天迁移整体删除——
+//      Task 13 起不再有任何文件允许出现旧状态文件名，旧聊天导入路径已退役）。
 //
 // G 与 H 是两层防御，互相兜底：
 //   - G 直接命中"写入调用参数内出现旧文件名"（如 writeFile(p, 旧状态文件名)）；
 //   - 间接写入（文件名先存入常量/变量再传入写入调用，如
 //     fs.appendFile(safeJoin(p, HISTORY_FILE), ...) 且 HISTORY_FILE 指向旧文件）
-//     在 G 的参数扫描中漏报，但被 H 的"提及层"兜住：任何生产文件只要文本中出现
-//     旧文件名，就必须是白名单文件，否则违规；而白名单文件（一次性只读导入器）
-//     本身再经 G+H 的写入检查验证只读。唯一残余盲区：白名单文件内部用变量间接
-//     写入旧文件名——该间接性与 Task 9 的 rg 全库证明口径一致，超出本测试威胁模型。
-//
-// 说明：旧数据文件名在本文件源码中按片段拼接构造（见 LEGACY_FILES），
-// 避免本测试自身成为规则 H 的"第三个匹配"；该约定同时保证 Task 9 的
-// 全库 rg 证明（rg "agent_state\\.json" src tests scripts）只命中两个白名单文件。
+//     在 G 的参数扫描中漏报，但被 H 的"提及层"兜住：任何文件只要文本中出现
+//     旧文件名即为违规（Task 7 曾存在两个只读白名单文件，Task 13 已删除，
+//     白名单清空）。测试基建按片段拼接构造旧文件名（见 harness 的 LEGACY_*
+//     常量），避免本测试与 Task 9 的全库 rg 证明被字面量误伤。
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -86,11 +81,10 @@ const A_SCAN_SET = (rel) =>
   rel.startsWith("tests/http/") ||
   rel.startsWith("tests/helpers/");
 
-// 规则 H 的白名单（恰好两个文件，均为只读）。
-const LEGACY_ALLOWLIST = new Set([
-  "src/core/agent/legacy-import.mjs",
-  "tests/agent/legacy-import.test.mjs"
-]);
+// 规则 H 的白名单：Task 7 曾授权两个只读文件（src/core/agent/legacy-import.mjs 与
+// tests/agent/legacy-import.test.mjs）提及旧数据文件名；Task 13 已整体删除聊天迁移
+// 路径，白名单清空——旧数据文件名现在 0 提及（含注释）。
+const LEGACY_ALLOWLIST = new Set([]);
 
 // 扫描根守卫（防目录改名/缺失导致规则静默空过）：
 //   REQUIRED_SCAN_ROOTS —— 必须存在，缺失即失败；
@@ -493,7 +487,7 @@ test("生产文件不得写入旧状态文件", () => {
 // 规则 H：旧数据文件名只允许出现在两个只读白名单文件里
 // ---------------------------------------------------------------------------
 
-test("旧数据文件名只允许出现在两个只读白名单文件里", () => {
+test("旧数据文件名 0 提及（聊天迁移已删除，白名单清空）", () => {
   const violations = [];
   const matchingFiles = [];
   for (const rel of analyzed.keys()) {
@@ -504,7 +498,7 @@ test("旧数据文件名只允许出现在两个只读白名单文件里", () =>
       violations.push(`${rel} 引用旧数据文件名：${mentions.join(", ")}`);
     }
   }
-  // 白名单之外的任何第三个匹配都不允许。
+  // 白名单已清空：任何匹配都是违规（测试基建用片段拼接，见 harness LEGACY_*）。
   assert.equal(
     violations.length,
     0,
@@ -513,19 +507,6 @@ test("旧数据文件名只允许出现在两个只读白名单文件里", () =>
       `当前匹配文件：${formatList(matchingFiles) || "（无）"}`
     ])
   );
-  // 白名单文件即使存在，也只能读，不能写旧数据文件。
-  for (const allowlisted of [...LEGACY_ALLOWLIST].sort()) {
-    const file = analyzed.get(allowlisted);
-    if (!file) continue; // 尚未创建（Task 7 才落地），先不约束
-    for (const [literal, hits] of file.writeHits) {
-      if (LEGACY_FILES.includes(literal)) {
-        for (const hit of hits) {
-          violations.push(`${allowlisted} 不得写入 ${literal}：${hit}`);
-        }
-      }
-    }
-  }
-  assert.equal(violations.length, 0, formatList(violations));
 });
 
 // ---------------------------------------------------------------------------
@@ -533,12 +514,12 @@ test("旧数据文件名只允许出现在两个只读白名单文件里", () =>
 // 验证脚本中 0 命中；旧持久字段在生产源码中 0 命中（读取/写入/默认值全退役）
 // ---------------------------------------------------------------------------
 
-// 旧架构符号（Task 12 Step 1 清单 + 代码审查补强）：一旦出现在 src/ 或
-// scripts/，说明旧概念（工作流切换、workflow 政策、旧 blueprint 事务工具、
-// run_started 的 workflow 载荷、WORKFLOWS 常量）仍残留在生产代码或生产验证
-// 脚本中。tests/ 目录不受此约束：允许负向字面量断言（如"不得出现
-// workflow_changed 事件"）与旧用户 YAML fixture，也允许为兼容性重放旧形状
-// 事件（旧 run_started.payload.workflow 等）。
+// 旧架构符号（Task 12 Step 1 清单 + Task 13 聊天迁移退役清单 + 代码审查补强）：
+// 一旦出现在 src/ 或 scripts/，说明旧概念（工作流切换、workflow 政策、旧
+// blueprint 事务工具、run_started 的 workflow 载荷、WORKFLOWS 常量、旧聊天迁移
+// 入口）仍残留在生产代码或生产验证脚本中。tests/ 目录不受此约束：允许负向
+// 字面量断言（如"不得出现 workflow_changed 事件"）与旧用户 YAML fixture，也
+// 允许为兼容性重放旧形状事件（旧 run_started.payload.workflow 等）。
 const RETIRED_SYMBOLS = [
   "enter_workflow",
   "workflow_changed",
@@ -550,10 +531,17 @@ const RETIRED_SYMBOLS = [
   // 不再存储 workflow，WORKFLOWS 常量退役（代码审查 I1 补强）
   "WORKFLOWS",
   "payload.workflow",
-  "workflow: \"general\""
+  "workflow: \"general\"",
+  // Task 13（spec §3.7 / §6.1）：旧聊天迁移入口整体退役——生产代码与验证脚本
+  // 不得再引用 runLegacyImport / migrateProjectAgentStorage / 两个旧模块路径
+  //（模块文件已删除，任何残留引用都说明接线或死代码仍在）。
+  "runLegacyImport",
+  "migrateProjectAgentStorage",
+  "legacy-import",
+  "journal-session-migration"
 ];
 
-test("旧架构符号在生产源码与验证脚本中 0 命中（Task 12 负向门禁）", () => {
+test("旧架构符号在生产源码与验证脚本中 0 命中（Task 12/13 负向门禁）", () => {
   const violations = [];
   for (const [rel, file] of analyzed) {
     if (!rel.startsWith("src/") && !rel.startsWith("scripts/")) continue;

@@ -67,14 +67,14 @@ async function readSessionFile(root) {
 }
 
 async function readRawEvents(root) {
-  const raw = await fs.readFile(path.join(agentDir(root), "events.jsonl"), "utf8");
+  const raw = await fs.readFile(path.join(agentDir(root), "segments", "events", "00000001.jsonl"), "utf8");
   return raw
     .split("\n")
     .filter((line) => line.trim() !== "")
     .map((line) => JSON.parse(line));
 }
 
-// 手工构造一条事件（用于模拟崩溃现场的 events.jsonl）。
+// 手工构造一条事件（用于模拟崩溃现场的事件日志）。
 function makeEvent(seq, { root, type, sessionId = "sess-1", runId = null, payload = {}, schemaVersion = 1 }) {
   return {
     schema_version: schemaVersion,
@@ -89,10 +89,12 @@ function makeEvent(seq, { root, type, sessionId = "sess-1", runId = null, payloa
   };
 }
 
+// 崩溃现场夹具（Task 13 起只写新分段格式）：把事件写入
+// segments/events/00000001.jsonl（旧单体 events.jsonl 已不再被 journal 读取）。
 async function writeCrashJournal(root, events) {
-  await fs.mkdir(agentDir(root), { recursive: true });
+  await fs.mkdir(path.join(agentDir(root), "segments", "events"), { recursive: true });
   await fs.writeFile(
-    path.join(agentDir(root), "events.jsonl"),
+    path.join(agentDir(root), "segments", "events", "00000001.jsonl"),
     events.map((event) => JSON.stringify(event)).join("\n") + "\n",
     "utf8"
   );
@@ -914,7 +916,7 @@ test("stale session.json 在 load 时被重放修复", async (t) => {
   });
   const eventsBefore = await j1.read({});
 
-  // 模拟崩溃：session.json 落后于 events.jsonl（陈旧内容）
+  // 模拟崩溃：session.json 落后于事件日志（陈旧内容）
   await fs.writeFile(
     path.join(agentDir(root), "session.json"),
     JSON.stringify({ stale: true, session_id: "stale-session", last_seq: 0 }),
@@ -946,7 +948,7 @@ test("损坏的 session.json（非法 JSON）在 load 时同样被修复", async
   assert.deepEqual(session.queued_inputs, [{ id: "in-1", text: "你好", status: "queued", queued_at: session.queued_inputs[0].queued_at }]);
 });
 
-test("session.json 写入失败是尽力而为：不阻断 append，错误可观察，events.jsonl 是真相源", async (t) => {
+test("session.json 写入失败是尽力而为：不阻断 append，错误可观察，事件日志是真相源", async (t) => {
   const root = await makeWorkspace(t);
   const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
   await journal.load();
@@ -981,26 +983,23 @@ test("load 容忍缺失尾部（不完整最后一行）并截断修复", async 
     makeEvent(4, { root, type: "model_turn_started", runId: "run-1" }),
     makeEvent(5, { root, type: "model_turn_completed", runId: "run-1" })
   ];
-  await fs.mkdir(agentDir(root), { recursive: true });
-  // 旧单体格式（legacy）：5 条完整事件 + 尾部半行 → legacy 迁移丢弃半行
+  // 新分段格式（Task 13）：最后一个 segment 末尾 5 条完整事件 + 尾部半行
+  await fs.mkdir(path.join(agentDir(root), "segments", "events"), { recursive: true });
   await fs.writeFile(
-    path.join(agentDir(root), "events.jsonl"),
+    path.join(agentDir(root), "segments", "events", "00000001.jsonl"),
     events.map((event) => JSON.stringify(event)).join("\n") + "\n" + '{"partial',
     "utf8"
   );
 
   const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
   const session = await journal.load();
-  assert.equal(session.last_seq, 5, "缺失尾部应被容忍（迁移时丢弃半行）");
+  assert.equal(session.last_seq, 5, "缺失尾部应被容忍（截断半行）");
   assert.equal(session.active_run.status, "running");
 
-  // 旧文件已迁移改名为 events.legacy.jsonl；segments 只含 5 条完整事件
-  assert.equal(await pathExists(path.join(agentDir(root), "events.jsonl")), false, "events.jsonl 迁移后应被改名");
-  assert.equal(await pathExists(path.join(agentDir(root), "events.legacy.jsonl")), true, "旧文件应保留为 events.legacy.jsonl");
   const segment = path.join(agentDir(root), "segments", "events", "00000001.jsonl");
   const raw = await fs.readFile(segment, "utf8");
   const lines = raw.split("\n").filter((line) => line.trim() !== "");
-  assert.equal(lines.length, 5, "segments 只含完整事件，半行不进 segment");
+  assert.equal(lines.length, 5, "segments 只含完整事件，半行被截断");
   // 后续 append 正常衔接
   await journal.append({ type: "input_queued", payload: { input_id: "in-2", text: "二" } });
   const last = (await journal.read({})).at(-1);
@@ -1014,15 +1013,16 @@ test("load 容忍断在多字节 UTF-8 字符中间的缺失尾部（基于 Buff
     makeEvent(2, { root, type: "input_queued", payload: { input_id: "in-1", text: "你好" } }),
     makeEvent(3, { root, type: "input_queued", payload: { input_id: "in-2", text: "世界" } })
   ];
-  await fs.mkdir(agentDir(root), { recursive: true });
-  // 最后一行是 '{"broken": "' + "中"（E4 B8 AD）的前两个字节 E4 B8：
+  // 新分段格式（Task 13）：segment 末尾最后一行是 '{"broken": "' + "中"
+  // （E4 B8 AD）的前两个字节 E4 B8：
   // 解码后是 U+FFFD，字节数（6）与原文（2）不一致——偏移必须按 Buffer 计算
+  await fs.mkdir(path.join(agentDir(root), "segments", "events"), { recursive: true });
   const content = Buffer.concat([
     Buffer.from(events.map((event) => JSON.stringify(event)).join("\n") + "\n", "utf8"),
     Buffer.from('{"broken": "', "utf8"),
     Buffer.from([0xe4, 0xb8])
   ]);
-  await fs.writeFile(path.join(agentDir(root), "events.jsonl"), content);
+  await fs.writeFile(path.join(agentDir(root), "segments", "events", "00000001.jsonl"), content);
 
   const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
   const session = await journal.load();
@@ -1037,17 +1037,10 @@ test("load 容忍断在多字节 UTF-8 字符中间的缺失尾部（基于 Buff
   assert.deepEqual(session2.queued_inputs.map((item) => item.id), ["in-1", "in-2", "in-3"]);
 });
 
-test("load 拒绝中间 seq 缺口（不静默跳过）", async (t) => {
-  const root = await makeWorkspace(t);
-  const events = [
-    makeEvent(1, { root, type: "session_created" }),
-    makeEvent(2, { root, type: "input_queued", payload: { input_id: "in-1", text: "一" } }),
-    makeEvent(4, { root, type: "input_queued", payload: { input_id: "in-2", text: "二" } })
-  ];
-  await writeCrashJournal(root, events);
-  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
-  await assert.rejects(() => journal.load(), /seq 缺口/);
-});
+// Task 13：旧 flat 导入路径（importLegacy 的 seq 连续性校验）已从 journal 删除，
+// "load 拒绝中间 seq 缺口" 的旧用例随之退役——新 generation 的连续性保证在
+// store 层：append 拒绝 seq 缺口（journal-segments.mjs）、flat 导入的缺口拒绝与
+// 坏段隔离分别由 tests/agent/journal-segments.test.mjs 的 importLegacy/缺口用例覆盖。
 
 test("dangling assistant tool call 恢复为 run_interrupted 并清除 grant", async (t) => {
   const root = await makeWorkspace(t);
@@ -1866,14 +1859,14 @@ test("retry 恢复同一 Run 时重置 assistant_text", async (t) => {
   assert.equal(session.active_run.assistant_text, "新尝试正文");
 });
 
-test("assistant_message_delta 崩溃恢复：events.jsonl 重放重建同一投影", async (t) => {
+test("assistant_message_delta 崩溃恢复：事件日志重放重建同一投影", async (t) => {
   const root = await makeWorkspace(t);
   const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
   await journal.load();
   await journal.append({ type: "run_started", run_id: "run-1", payload: { workflow: "general" } });
   await journal.append({ type: "assistant_message_delta", run_id: "run-1", payload: { text: "增量一" } });
   await journal.append({ type: "assistant_message_delta", run_id: "run-1", payload: { text: "增量二" } });
-  // 模拟崩溃：session.json 落后于 events.jsonl，load() 重放修复
+  // 模拟崩溃：session.json 落后于事件日志，load() 重放修复
   await fs.writeFile(path.join(agentDir(root), "session.json"), JSON.stringify({ stale: true }));
   const recovered = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
   await recovered.load();
