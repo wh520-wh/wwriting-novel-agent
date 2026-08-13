@@ -264,8 +264,14 @@ export function createSettingsRoutes({
     // 设置更新：非模型字段校验先于落盘（请求原子）；错误带 fields 供逐项标红。
     // 任务 5：写作用域解析不再要求 project.yaml（普通目录同样是合法工作区）；
     // tool_permissions 写入应用私有 workspace settings，其余字段继续走 project.yaml。
+    // Task 19（spec 4.3 #13）：active_model 是旧字段，本路由不再接受后静默丢弃——
+    // 任何保存/解析之前直接拒绝并指向模型引用 API（POST /api/settings/model-switch
+    // 与 providers 两级 CRUD 是唯一模型写入口），不保留双写入口。
     "POST /api/settings/update": async ({ body }) => {
       try {
+        if (body && body.active_model !== undefined) {
+          throw new HttpError(400, "active_model_use_reference_api", "active_model 已废弃，模型切换请使用模型引用 API（POST /api/settings/model-switch，或供应商/模型 CRUD）。");
+        }
         const projectRoot = await resolveWriteProjectRoot({
           requestedRoot: body?.projectRoot ?? undefined,
           expectedProjectRoot: body?.expectedProjectRoot ?? undefined,
@@ -274,11 +280,7 @@ export function createSettingsRoutes({
           stateRoot: ctx.stateRoot
         });
         await assertNotArchived(projectRoot);
-        const activeModel = body?.active_model && typeof body.active_model === "object"
-          ? { ...body.active_model }
-          : null;
         const nonModelPatch = { ...body };
-        delete nonModelPatch.active_model;
         delete nonModelPatch.projectRoot;
         delete nonModelPatch.expectedProjectRoot;
         let normalizedNonModelPatch = null;
@@ -292,7 +294,7 @@ export function createSettingsRoutes({
             throw settingsError;
           }
         }
-        if (!activeModel && !normalizedNonModelPatch) {
+        if (!normalizedNonModelPatch) {
           throw new HttpError(400, "invalid_settings_patch", "settings update requires a patch.");
         }
 

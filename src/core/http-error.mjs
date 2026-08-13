@@ -44,6 +44,10 @@ export const SAFE_PUBLIC_ERROR_CODES = new Set([
   "model_unsupported",
   "model_disabled",
   "model_profile_not_found",
+  // Task 19（spec 4.3 #13）：settings/update 拒绝旧 active_model 字段——固定文案
+  // 指向模型引用 API（POST /api/settings/model-switch 与 providers CRUD），
+  // 前端只展示 data.message 不做 code 分支，必须透传才能让用户看到迁移指引。
+  "active_model_use_reference_api",
   "invalid_compaction_id",
   "compaction_not_found",
   "compaction_not_retryable",

@@ -216,3 +216,31 @@ test("removeModel 删除不存在的模型不落盘", async (t) => {
   assert.equal(removed, false);
   assert.equal(store, null);
 });
+
+// Task 19（spec 4.3 #12）：v1→v2 首次并发迁移必须产生字节等价 store——无重复
+// provider、default_model 不悬空、落盘文件与两个并发结果一致。
+test("并发 load/migrate：字节等价 store、无重复 provider、无悬空 default_model", async (t) => {
+  const root = await tempRoot(t);
+  const { writeFile } = await import("node:fs/promises");
+  const v1 = {
+    schema_version: 1,
+    default_model_id: "deepseek-v4-pro",
+    models: [
+      { id: "deepseek-v4-pro", provider: "openai-compatible", provider_label: "DeepSeek 官方", model_name: "deepseek-v4-pro", base_url: "https://api.deepseek.com", api_key_env: "DEEPSEEK_API_KEY" },
+      { id: "r1", provider: "openai-compatible", provider_label: "我的中转", model_name: "relay-a", base_url: "https://relay.example.com", api_key_env: "K" },
+      { id: "r2", provider: "openai-compatible", provider_label: "我的中转", model_name: "relay-b", base_url: "https://relay.example.com", api_key_env: "K" }
+    ]
+  };
+  await writeFile(path.join(root, "model-profiles.json"), JSON.stringify(v1), "utf8");
+  const [a, b] = await Promise.all([loadProviderStore(root), loadProviderStore(root)]);
+  assert.equal(JSON.stringify(a), JSON.stringify(b), "两个并发迁移返回字节等价 store");
+  const ids = a.providers.map((p) => p.id);
+  assert.equal(new Set(ids).size, ids.length, "无重复 provider id");
+  assert.ok(a.default_model, "迁移必须产出 default_model");
+  const dmProvider = a.providers.find((p) => p.id === a.default_model.provider_id);
+  assert.ok(dmProvider, "default_model 指向存在的 provider");
+  assert.ok(dmProvider.models.some((m) => m.id === a.default_model.model_id), "default_model 指向存在的 model");
+  const onDisk = JSON.parse(await readFile(path.join(root, "model-profiles.json"), "utf8"));
+  assert.equal(JSON.stringify(onDisk), JSON.stringify(a), "落盘文件与迁移结果字节等价");
+  assert.equal(onDisk.schema_version, 2);
+});

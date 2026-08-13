@@ -1,6 +1,6 @@
 // src/core/model-provider-store.mjs
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { ensureDir, readJson, writeJsonAtomic } from "./fs-utils.mjs";
 import { createMutex } from "./async-utils.mjs";
 import { MODEL_PRESETS as PRESET_DEFINITIONS } from "./model-presets.mjs";
@@ -10,10 +10,33 @@ export const SCHEMA_VERSION = 2;
 export const ALLOWED_API_FORMATS = new Set(["openai-chat-completions"]);
 const DEFAULT_CONTEXT_WINDOW = 256000;
 
+// Task 19（spec 4.3 #12）：store 级单一 mutex 串行化「读-判-迁移-写」整条路径。
+// loadProviderStore 的 v1→v2 迁移也走同一把锁（见 loadProviderStoreUnlocked），
+// 两个并发 load/migrate 不会各自迁移出不同 ID 互相覆盖——后到者读到已落盘的
+// v2，迁移只发生一次。
 const mutex = createMutex();
 
 export function newProviderId() { return `pv_${randomUUID().replace(/-/gu, "").slice(0, 16)}`; }
 export function newModelId() { return `m_${randomUUID().replace(/-/gu, "").slice(0, 16)}`; }
+
+// Task 19：迁移专用确定性 ID。v1→v2 迁移产出的 provider/model id 从规范化
+// identity 派生（provider: 去尾斜杠 + 小写的 base_url；model: 同一 base_url +
+// model_name），相同 v1 输入跨运行/跨进程生成相同 IDs——并发迁移与项目引用
+//（project-model-migration.mjs）都不再产生悬空引用。用户运行期新建的
+// provider/model（upsert* 路径）仍用随机 ID（newProviderId/newModelId）。
+function stableId(prefix, identity) {
+  return `${prefix}${createHash("sha256").update(identity, "utf8").digest("hex").slice(0, 16)}`;
+}
+function normalizedBaseUrlKey(url) {
+  return String(url).replace(/\/+$/u, "").toLowerCase();
+}
+function providerStableId(baseUrl) {
+  return stableId("pv_", normalizedBaseUrlKey(baseUrl));
+}
+function modelStableId(baseUrl, modelName) {
+  // \u0000 分隔防 base_url/model_name 拼接歧义（如 "a"+"b" 与 "ab"+""）
+  return stableId("m_", `${normalizedBaseUrlKey(baseUrl)}\u0000${modelName}`);
+}
 
 function storePath(root) { return path.join(path.resolve(root), PROVIDERS_FILE); }
 function emptyStore() { return { schema_version: SCHEMA_VERSION, default_model: null, providers: [] }; }
@@ -113,18 +136,23 @@ export async function saveProviderStore(root, store) {
 }
 
 // 单一写入口：串行化读-改-写。fn(store) 必须返回 { store, ...rest }。
-async function withStoreLock(root, fn) {
+// 落盘契约：仅当 result.store 存在 且 result.changed !== false 时写盘——
+// fn 返回 changed: false 表示「无变化不落盘」（如 ensurePresetProviders 的无缺种
+// 分支，只读路径不能退化为写路径）。既有调用方（upsertProvider 等）不设
+// changed → 默认按 changed 落盘，行为不变。
+// 内部读用 loadProviderStoreUnlocked（不重复加锁），把「读-判-迁移-写」的
+// 迁移路径与普通读-改-写统一收在同一把 mutex 下。导出供外部模块（如
+// model-presets.mjs 的 ensurePresetProviders 种子路径）复用同一把锁。
+export async function withStoreLock(root, fn) {
   return mutex.run(async () => {
-    const store = await loadProviderStore(root);
+    const store = await loadProviderStoreUnlocked(root);
     const result = await fn(store);
-    if (result.store) await saveProviderStore(root, result.store);
+    if (result.store && result.changed !== false) await saveProviderStore(root, result.store);
     return result;
   });
 }
 
-// 读-改-写必须走带锁写入口（upsertProvider/removeProvider/upsertModel/removeModel/setDefaultModel），
-// 外部直接 load + save 会绕过互斥，并发写方可能互相覆盖。
-export async function loadProviderStore(root) {
+async function readRawStore(root) {
   let raw;
   try {
     raw = await readJson(storePath(root), null);
@@ -134,14 +162,28 @@ export async function loadProviderStore(root) {
     if (error instanceof SyntaxError) return emptyStore();
     throw error;
   }
-  if (raw === null) return emptyStore();
+  return raw ?? emptyStore();
+}
+
+// 不加锁的读-判-迁移-写（调用方必须已持有 mutex）。v1 命中时迁移并写回：
+// 先规范化再落盘，落盘文件与内存返回同形状（字节等价），重读路径返回一致
+// ——两个并发 load/migrate 的返回与最终文件三者在字节层面相同（Task 19 并发契约）。
+async function loadProviderStoreUnlocked(root) {
+  const raw = await readRawStore(root);
   if (raw?.schema_version === 1) {
-    const migrated = migrateV1Store(raw, PRESET_DEFINITIONS);
+    const migrated = normalizeProviderStore(migrateV1Store(raw, PRESET_DEFINITIONS)) ?? emptyStore();
     await saveProviderStore(root, migrated);
     return migrated;
   }
-  const store = normalizeProviderStore(raw);
-  return store ?? emptyStore();
+  return normalizeProviderStore(raw) ?? emptyStore();
+}
+
+// 读-改-写必须走带锁写入口（upsertProvider/removeProvider/upsertModel/removeModel/
+// setDefaultModel/loadProviderStore），外部直接 load + save 会绕过互斥，并发写方
+// 可能互相覆盖。loadProviderStore 整个「读-判-迁移-写」也在 mutex 内（Task 19）：
+// v1→v2 首次迁移只发生一次，迁移 ID 确定性派生，并发 load/migrate 字节等价。
+export async function loadProviderStore(root) {
+  return mutex.run(() => loadProviderStoreUnlocked(root));
 }
 
 export async function upsertProvider(root, input) {
@@ -258,6 +300,10 @@ function isOfficialBaseUrl(url, preset) {
   return host === hostOf(preset.base_url);
 }
 
+// v1 → v2 纯函数迁移。Task 19 确定性契约：相同输入必然产出相同输出（独立
+// 分支 provider/model ID 从规范化 identity 派生，见 providerStableId/
+// modelStableId；不依赖随机源）。配合 loadProviderStore 的 store 级 mutex，
+// 并发/多次迁移结果字节等价，项目引用永不悬空。
 export function migrateV1Store(raw, presets = []) {
   const store = emptyStore();
   const oldModels = Array.isArray(raw?.models) ? raw.models : [];
@@ -310,10 +356,15 @@ export function migrateV1Store(raw, presets = []) {
       copyRuntimeFields(merged, old); // 用户参数覆盖
       continue;
     }
-    const key = baseUrl.toLowerCase();
+    // Minor 3（Task 19 审查）：合并键与 ID 派生键同源（normalizedBaseUrlKey）——
+    // 旧实现用 baseUrl.toLowerCase()（保留尾斜杠），仅差尾斜杠的条目派生相同
+    // provider ID 却落不同合并桶，随后被 normalizeProviderStore 的 seenIds 去重
+    // 静默丢弃（连同其 models）。统一后尾斜杠变体在迁移期即合并，模型完整保留。
+    const key = normalizedBaseUrlKey(baseUrl);
     if (!standalone.has(key)) {
       standalone.set(key, {
-        id: newProviderId(),
+        // Task 19：ID 从规范化 base_url 派生（确定性，跨运行/跨进程稳定）
+        id: providerStableId(baseUrl),
         name: uniqueName(stringValue(old.provider_label) || stringValue(old.provider)),
         type: "custom",
         status: "enabled",
@@ -329,7 +380,8 @@ export function migrateV1Store(raw, presets = []) {
     let model = provider.models.find((m) => m.model_name === modelName);
     if (!model) {
       model = {
-        id: newModelId(),
+        // Task 19：ID 从 base_url + model_name 派生（确定性）
+        id: modelStableId(baseUrl, modelName),
         model_name: modelName,
         enabled: true,
         context_window: positiveInt(old.max_context_tokens) ?? (/\[1m\]$/iu.test(modelName) ? 1000000 : 256000)

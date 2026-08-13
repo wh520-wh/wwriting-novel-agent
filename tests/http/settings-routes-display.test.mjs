@@ -6,11 +6,19 @@
 // 自定义兼容端点显示「OpenAI 兼容 · 主机名」。
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {
   buildModelProfile,
   modelDisplayName,
-  providerDisplayName
+  providerDisplayName,
+  createSettingsRoutes
 } from "../../src/core/http/settings-routes.mjs";
+import { createRouter } from "../../src/core/http/router.mjs";
+import { createWorkspaceStore } from "../../src/core/workspaces/store.mjs";
+import { ensurePresetProviders } from "../../src/core/model-presets.mjs";
+import { startHttpServer } from "../helpers/http-test.mjs";
 
 test("providerDisplayName 官方 DeepSeek 端点判定为 DeepSeek 官方（含 /v1、尾斜杠、大小写变体）", () => {
   assert.equal(providerDisplayName({ provider: "openai-compatible", base_url: "https://api.deepseek.com", model_name: "deepseek-chat" }), "DeepSeek 官方");
@@ -109,4 +117,98 @@ test("buildModelProfile 未配置（null/空对象）返回未配置形状，不
   assert.equal(mockProfile.is_mock, true);
   assert.match(mockProfile.display, /^mock/u);
   assert.doesNotMatch(mockProfile.display, /Mock/u);
+});
+
+// ---------------------------------------------------------------------------
+// Task 19（spec 4.3 #13）：settings/update 是唯一写入口且不接受旧 active_model 字段。
+// 真实 HTTP server：router + settings-routes（注入 workspaceStore 与 seed 预设）。
+// 模型切换唯一合法路径是引用 API（model-switch / providers CRUD）。
+// ---------------------------------------------------------------------------
+
+async function setupSettingsServer(t) {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "settings-routes-display-"));
+  t.after(() => fs.rm(workspace, { recursive: true, force: true }));
+  const stateRoot = path.join(workspace, ".state");
+  const secretsRoot = path.join(workspace, ".secrets");
+  await fs.mkdir(secretsRoot, { recursive: true });
+  const selection = { current: null };
+  const workspaceStore = createWorkspaceStore({ stateRoot });
+  await ensurePresetProviders(secretsRoot);
+  const router = createRouter();
+  const settingsRoutes = createSettingsRoutes({
+    workspace,
+    stateRoot,
+    secretsRoot,
+    selection,
+    workspaceStore
+  });
+  const http = await startHttpServer(t, { router, routeModules: [settingsRoutes] });
+  return { http, workspace, secretsRoot, workspaceStore, selection };
+}
+
+test("settings/update 含 active_model → 400 active_model_use_reference_api（保存前拒绝）", async (t) => {
+  const { http, workspace, workspaceStore, selection } = await setupSettingsServer(t);
+  const projectRoot = path.join(workspace, "novel");
+  await fs.mkdir(projectRoot, { recursive: true });
+  selection.current = projectRoot;
+
+  // 仅 active_model：拒绝，且不产生任何写盘
+  const only = await http.post("/api/settings/update", {
+    projectRoot,
+    active_model: { provider: "openai-compatible", model_name: "deepseek-v4-pro", base_url: "https://api.deepseek.com" }
+  });
+  assert.equal(only.res.status, 400);
+  assert.equal(only.data.ok, false);
+  assert.equal(only.data.code, "active_model_use_reference_api");
+  // Task 19 审查：code 在 SAFE_PUBLIC_ERROR_CODES 白名单内，message 必须透传
+  // 「指向引用 API」指引（前端只展示 data.message，不透传则用户看不到迁移路径）
+  assert.match(only.data.message, /模型引用 API/u);
+  assert.match(only.data.message, /model-switch/u);
+  assert.equal((await workspaceStore.loadSettings(projectRoot)).active_model, null, "拒绝后 settings 不写入模型");
+
+  // active_model: null 同样拒绝（旧字段只要出现即整体拒绝，不接受后 delete）
+  const nullModel = await http.post("/api/settings/update", {
+    projectRoot,
+    active_model: null
+  });
+  assert.equal(nullModel.res.status, 400);
+  assert.equal(nullModel.data.code, "active_model_use_reference_api");
+  assert.match(nullModel.data.message, /模型引用 API/u);
+
+  // 混合补丁：active_model + 其他字段同样整体拒绝（不接受后 delete）
+  const mixed = await http.post("/api/settings/update", {
+    projectRoot,
+    active_model: { provider_id: "deepseek", model_id: "deepseek-v4-pro" },
+    tool_permissions: { auto_edit: true }
+  });
+  assert.equal(mixed.res.status, 400);
+  assert.equal(mixed.data.code, "active_model_use_reference_api");
+  const settings = await workspaceStore.loadSettings(projectRoot);
+  assert.deepEqual(
+    settings.tool_permissions,
+    { read_only: false, auto_edit: false, network_allowed: false, yolo: false },
+    "混合补丁中的其余字段也不得落盘"
+  );
+  assert.equal(settings.active_model, null);
+});
+
+test("模型切换只走 model-switch 引用路由（写引用并生效）", async (t) => {
+  const { http, workspace, workspaceStore, selection } = await setupSettingsServer(t);
+  const projectRoot = path.join(workspace, "novel-2");
+  await fs.mkdir(projectRoot, { recursive: true });
+  selection.current = projectRoot;
+
+  const { res, data } = await http.post("/api/settings/model-switch", {
+    projectRoot,
+    provider_id: "deepseek",
+    model_id: "m_deepseek_deepseek-v4-pro"
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(data.active_model, { provider_id: "deepseek", model_id: "m_deepseek_deepseek-v4-pro" }, "响应为引用契约");
+  const settings = await workspaceStore.loadSettings(projectRoot);
+  assert.deepEqual(
+    settings.active_model,
+    { provider_id: "deepseek", model_id: "m_deepseek_deepseek-v4-pro" },
+    "settings.json 写入引用"
+  );
 });
