@@ -1889,7 +1889,7 @@ test("对话容器带 aria-live 区域（可访问性）", async () => {
   assert.equal(conv.getAttribute("aria-live"), "polite");
 });
 
-test("input_withdrawn 移除排队项；撤回输入在 UI 不可见；workflow_changed 保持 Run 活动", async () => {
+test("input_withdrawn 移除排队项；撤回输入在 UI 不可见", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
@@ -1905,9 +1905,8 @@ test("input_withdrawn 移除排队项；撤回输入在 UI 不可见；workflow_
   surface.applyEvent(ev("input_withdrawn", { input_id: "in-3" }));
   assert.equal(root.querySelectorAll('[data-testid="agent-queue-item"]').length, 0);
   assert.equal(root.querySelector('[data-testid="agent-queue"]').textContent, "", "空队列不留占位文本");
-  // workflow 切换：Run 仍活动，停止按钮保留
-  surface.applyEvent(ev("workflow_changed", { workflow: "chapter", reason: "正式写作" }));
-  assert.ok(root.querySelector('[data-testid="agent-stop"]'), "workflow 切换后 Run 仍活动");
+  // 撤回不改动活动 Run：停止按钮保留
+  assert.ok(root.querySelector('[data-testid="agent-stop"]'), "撤回排队输入后 Run 仍活动");
 });
 
 test("queued 只出现在「接下来」：input_queued 不生成正式对话气泡，input_started 才生成用户气泡", async () => {

@@ -9,7 +9,7 @@
 //   - agent.snapshot({ projectRoot, afterSeq, limit }) -> { session, events }
 //   - agent.submit 在输入落盘后 resolve，Run 异步推进；观测用 waitFor/waitForIdle 轮询 snapshot
 //   - agent.decide 的 choice 词汇："allow" | "allow_input" | "deny" | 精确 confirmation_text
-//   - 事件类型必须来自 FIXED_EVENT_TYPES（计划固定的 28 个类型）
+//   - 事件类型必须来自 FIXED_EVENT_TYPES（计划固定的事件类型清单）
 //
 // 当前状态（Task 6 完成、规格审查裁决后）：19/21 场景通过。剩余 2 个红场景按
 // 任务归属，不是本任务缺陷：
@@ -19,6 +19,9 @@
 //     legacy-import 范围（migration.json 脚手架已在 journal.mjs；旧状态一次性
 //     只读导入与 migration.legacy_imported 置位在 Task 7 实现）。
 // Task 9 cutover 后本文件必须全部通过。
+// Task 12：旧事件类型 workflow_changed 已随工作流概念删除（不再产生、不再投影），
+// FIXED_EVENT_TYPES 清单同步删除；旧持久字段的迁移断言改为负向断言（旧项目导入
+// 后 project.yaml 也不得写入该字段）。
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -73,7 +76,6 @@ const FIXED_EVENT_TYPES = [
   "decision_resolved",
   "permission_grant_created",
   "permission_grant_cleared",
-  "workflow_changed",
   "plan_updated",
   "reasoning_completed",
   "reasoning_delta",
@@ -99,7 +101,6 @@ const RUN_STATUSES = [
   "cancelled",
   "interrupted"
 ];
-const WORKFLOWS = ["general", "chapter", "init"];
 const PLAN_STATUSES = ["pending", "in_progress", "completed"];
 
 const EXTREME_COMMANDS =
@@ -328,7 +329,7 @@ function assertSessionShape(session) {
   if (session.active_run !== null) {
     assert.ok(typeof session.active_run.id === "string" && session.active_run.id.length > 0);
     assert.ok(RUN_STATUSES.includes(session.active_run.status), `未知 run status: ${session.active_run.status}`);
-    assert.ok(WORKFLOWS.includes(session.active_run.workflow), `未知 workflow: ${session.active_run.workflow}`);
+    assert.equal(session.active_run.workflow, undefined, "Task 12：Run projection 不再存储 workflow");
     assert.ok(!Number.isNaN(Date.parse(session.active_run.started_at)), "started_at 应为 ISO-8601");
     assert.ok(Array.isArray(session.active_run.active_grants));
     for (const grant of session.active_run.active_grants) {
@@ -421,7 +422,7 @@ test("session 投影与 journal 事件符合冻结契约", async (t) => {
   const running = await readSession(h.agent, h.projectRoot);
   assertSessionShape(running);
   assert.equal(running.status, "running");
-  assert.equal(running.active_run.workflow, "general");
+  assert.equal(running.active_run.workflow, undefined, "Task 12：Run projection 不再存储 workflow");
 
   await waitForIdle(h.agent, h.projectRoot);
   const events = await readEvents(h.agent, h.projectRoot);
@@ -461,7 +462,7 @@ test("空闲提交创建且只创建一个 Run", async (t) => {
   const running = await readSession(h.agent, h.projectRoot);
   assert.equal(running.status, "running");
   assert.ok(running.active_run, "空闲提交应立即有 active run");
-  assert.equal(running.active_run.workflow, "general");
+  assert.equal(running.active_run.workflow, undefined, "Task 12：Run projection 不再存储 workflow");
   const queuedInputs = eventsOfType(await readEvents(h.agent, h.projectRoot), "input_queued");
   assert.equal(queuedInputs.length, 1);
   assert.equal(running.active_run.active_input_id, queuedInputs[0].payload.input_id);
@@ -1377,7 +1378,7 @@ test("新项目不创建旧状态文件", async (t) => {
   }
 });
 
-test("旧项目把 blueprint_status 迁入 project.yaml 且不再写旧状态文件", async (t) => {
+test("旧项目一次性导入后不再写旧状态文件，且不迁移旧持久字段", async (t) => {
   const h = await createProjectAgentHarness({ legacy: true });
   t.after(() => h.cleanup());
   const statePath = path.join(h.projectRoot, LEGACY_STATE_FILE);
@@ -1392,8 +1393,10 @@ test("旧项目把 blueprint_status 迁入 project.yaml 且不再写旧状态文
   // 首次 submit 物化会话 → 导入完成
   await h.agent.submit({ projectRoot: h.projectRoot, text: "继续写作", source: "chat" });
   await waitForIdle(h.agent, h.projectRoot);
+  // Task 12：旧持久字段概念已删除——即便旧状态里显式存在该字段，导入也绝不
+  // 把它写入 project.yaml（生产代码零读取/零写入；负向断言字面量允许）
   const yaml = await fs.readFile(path.join(h.projectRoot, "project.yaml"), "utf8");
-  assert.match(yaml, /blueprint_status:\s*["']?complete["']?/u, "blueprint_status 应迁入 project.yaml");
+  assert.doesNotMatch(yaml, /blueprint_status:\s*["']?complete["']?/u, "旧状态字段不得迁入 project.yaml");
 
   // 迁移标记落在会话目录（多会话布局：sessions/<id>/migration.json）
   const { active_session_id } = await h.agent.sessions({ projectRoot: h.projectRoot });

@@ -6,14 +6,15 @@
 //（createAgentJournal / runLegacyImport）。
 //
 // 覆盖：
-//   - blueprint_status 三种迁移分支：显式值（complete/partial）优先；缺失时按章节
-//     产物判 legacy / none；
 //   - 可见历史导入 transcript（chat_history 优先、chat_transcript 兜底、内容去重）；
 //   - 未解决错误事实（无 resolution 的 failures + 未清除 pending action）导入；
 //   - 至多导入一个未完成 Run（running 状态 + 多任务队列 → 恰好一个 run_started）；
 //   - 幂等：第二次导入不产生重复事件/消息，project.yaml 字节不变；
 //   - 只读：导入前后旧文件字节不变（绝不双写/重命名/删除）；
-//   - 完整链路：open() 触发导入后，提交一轮 Agent 运行也不写旧状态文件。
+//   - 完整链路：open() 触发导入后，提交一轮 Agent 运行也不写旧状态文件；
+//   - Task 12 负向：旧状态里的持久字段（blueprint_status 等）绝不迁入 project.yaml
+//     ——生产代码对旧字段零读取/零迁移/零写入，旧项目 YAML 中若残留由保存器自然
+//     保留但不驱动行为（本文件是依赖规则测试白名单，允许出现旧字段字面量）。
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -60,10 +61,10 @@ function makeWorkspace() {
   return fs.mkdtemp(path.join(os.tmpdir(), "wwriting-legacy-"));
 }
 
-test("显式 complete：blueprint_status 迁入 project.yaml，历史入 transcript，migration 置位", async (t) => {
+test("旧状态显式 complete：不迁入 project.yaml，历史入 transcript，migration 置位", async (t) => {
   const workspace = await makeWorkspace();
   t.after(() => fs.rm(workspace, { recursive: true, force: true }));
-  const { projectRoot } = await createLegacyProjectRoot(workspace); // 默认 blueprint_status: complete
+  const { projectRoot } = await createLegacyProjectRoot(workspace); // 默认旧状态 blueprint_status: complete
   const before = await snapshotFiles(projectRoot);
 
   const journal = createAgentJournal({ projectRoot });
@@ -71,11 +72,20 @@ test("显式 complete：blueprint_status 迁入 project.yaml，历史入 transcr
   const result = await runLegacyImport({ projectRoot, journal });
 
   assert.equal(result.imported, true);
-  assert.equal(result.blueprint_status, "complete");
-  assert.match(await readText(path.join(projectRoot, "project.yaml")), /blueprint_status:\s*["']?complete["']?/u);
+  // Task 12：旧持久字段概念已删除——显式存在的旧字段也绝不写入 project.yaml
+  assert.equal(
+    result.blueprint_status,
+    undefined,
+    "返回对象不再携带旧持久字段（概念删除）"
+  );
+  assert.doesNotMatch(
+    await readText(path.join(projectRoot, "project.yaml")),
+    /blueprint_status:\s*["']?complete["']?/u,
+    "旧状态字段不得迁入 project.yaml"
+  );
 
   const migration = JSON.parse(await readText(path.join(projectRoot, ".wwriting", "agent", "migration.json")));
-  assert.equal(migration.legacy_imported, true, "journal 与 project.yaml 写成功后才置位");
+  assert.equal(migration.legacy_imported, true, "journal 写成功后才置位");
 
   const transcript = await journal.readTranscript();
   const messages = transcript.filter((record) => record.role === "user" || record.role === "assistant");
@@ -108,47 +118,27 @@ test("幂等：第二次导入不产生重复事件/消息，project.yaml 字节
   assert.equal(await readText(path.join(projectRoot, "project.yaml")), yamlBefore, "第二次导入不得改写 project.yaml");
 });
 
-test("blueprint_status 缺失 + 章节产物存在 → legacy", async (t) => {
+test("旧状态字段缺失/章节产物有无都不触发迁移，project.yaml 字节不变", async (t) => {
   const workspace = await makeWorkspace();
   t.after(() => fs.rm(workspace, { recursive: true, force: true }));
   const { projectRoot } = await createLegacyProjectRoot(workspace, { legacyBlueprintStatus: null });
-  // 移除显式字段（模拟更旧的项目）
+  // 移除显式字段（模拟更旧的项目），并制造章节产物
   const state = JSON.parse(await readText(path.join(projectRoot, STATE_FILE)));
   delete state.blueprint_status;
   await writeJson(path.join(projectRoot, STATE_FILE), state);
   await fs.writeFile(path.join(projectRoot, "chapters", "001.md"), "# 第一章\n\n正文。", "utf8");
+  const yamlBefore = await readText(path.join(projectRoot, "project.yaml"));
 
   const journal = createAgentJournal({ projectRoot });
   await journal.load();
   const result = await runLegacyImport({ projectRoot, journal });
-  assert.equal(result.blueprint_status, "legacy");
-  assert.match(await readText(path.join(projectRoot, "project.yaml")), /blueprint_status:\s*["']?legacy["']?/u);
-});
-
-test("blueprint_status 缺失 + 无章节产物 → none", async (t) => {
-  const workspace = await makeWorkspace();
-  t.after(() => fs.rm(workspace, { recursive: true, force: true }));
-  const { projectRoot } = await createLegacyProjectRoot(workspace, { legacyBlueprintStatus: null });
-  const state = JSON.parse(await readText(path.join(projectRoot, STATE_FILE)));
-  delete state.blueprint_status;
-  await writeJson(path.join(projectRoot, STATE_FILE), state);
-
-  const journal = createAgentJournal({ projectRoot });
-  await journal.load();
-  const result = await runLegacyImport({ projectRoot, journal });
-  assert.equal(result.blueprint_status, "none");
-  assert.match(await readText(path.join(projectRoot, "project.yaml")), /blueprint_status:\s*["']?none["']?/u);
-});
-
-test("显式 partial 优先于章节产物判定", async (t) => {
-  const workspace = await makeWorkspace();
-  t.after(() => fs.rm(workspace, { recursive: true, force: true }));
-  const { projectRoot } = await createLegacyProjectRoot(workspace, { legacyBlueprintStatus: "partial" });
-  await fs.writeFile(path.join(projectRoot, "chapters", "001.md"), "# 第一章\n\n正文。", "utf8");
-  const journal = createAgentJournal({ projectRoot });
-  await journal.load();
-  const result = await runLegacyImport({ projectRoot, journal });
-  assert.equal(result.blueprint_status, "partial", "显式 partial 优先，即使有章节产物");
+  assert.equal(result.imported, true, "章节产物不影响导入");
+  assert.equal(result.blueprint_status, undefined, "返回对象不再携带旧持久字段");
+  assert.equal(
+    await readText(path.join(projectRoot, "project.yaml")),
+    yamlBefore,
+    "导入后 project.yaml 字节不变（旧字段不迁移、不判定）"
+  );
 });
 
 test("未完成状态导入至多一个 Run，输入取最近任务指令", async (t) => {
@@ -256,8 +246,12 @@ test("损坏旧文件不阻塞导入（0 字节 state / 坏 JSON 队列 / 坏 pe
   await journal.load();
   const result = await runLegacyImport({ projectRoot, journal });
   assert.equal(result.imported, true, "损坏旧文件应容错，导入必须成功");
-  // 显式 blueprint 缺失 + 无章节产物 → none（blueprint 迁移兜底仍工作）
-  assert.equal(result.blueprint_status, "none");
+  // Task 12：损坏状态不触发任何旧字段迁移——project.yaml 保持原样
+  assert.doesNotMatch(
+    await readText(path.join(projectRoot, "project.yaml")),
+    /blueprint_status:/u,
+    "损坏旧状态不得触发旧字段迁移"
+  );
   const migration = JSON.parse(await readText(path.join(projectRoot, ".wwriting", "agent", "migration.json")));
   assert.equal(migration.legacy_imported, true);
   // 历史仍正常导入（chat_history 未损坏）
@@ -307,11 +301,11 @@ test("完整链路：首次 submit 触发导入后，一轮 Agent 运行也不�
   const yamlBefore = await readText(path.join(h.projectRoot, "project.yaml"));
   assert.doesNotMatch(yamlBefore, /blueprint_status:\s*["']?complete["']?/u, "open() 后导入尚未发生（惰性）");
 
-  // 首次 submit 物化会话 → 导入完成（blueprint_status 迁入 project.yaml 等）
+  // 首次 submit 物化会话 → 导入完成（Task 12：旧持久字段绝不迁入 project.yaml）
   await h.agent.submit({ projectRoot: h.projectRoot, text: "继续写作", source: "chat" });
   await waitForIdle(h.agent, h.projectRoot);
   const yaml = await readText(path.join(h.projectRoot, "project.yaml"));
-  assert.match(yaml, /blueprint_status:\s*["']?complete["']?/u, "首次 submit 后 blueprint_status 应迁入 project.yaml");
+  assert.doesNotMatch(yaml, /blueprint_status:\s*["']?complete["']?/u, "旧状态字段不得迁入 project.yaml");
 
   const after = await snapshotFiles(h.projectRoot);
   for (const name of Object.keys(before)) {
@@ -330,7 +324,7 @@ test("完整链路：首次 submit 触发导入后，一轮 Agent 运行也不�
   assert.ok(importedUserTexts.includes("旧对话第一条"), "旧 chat_history 完整落入会话 transcript 流");
 });
 
-test("缺少 project.yaml：跳过 blueprint 字段迁移但仍可导入对话", async (t) => {
+test("缺少 project.yaml：仍可导入对话，不创建 project.yaml", async (t) => {
   const workspace = await makeWorkspace();
   t.after(() => fs.rm(workspace, { recursive: true, force: true }));
   // 普通文件夹：只有旧聊天文件，没有 project.yaml
@@ -345,7 +339,7 @@ test("缺少 project.yaml：跳过 blueprint 字段迁移但仍可导入对话",
   await journal.load();
   const result = await runLegacyImport({ projectRoot, journal });
   assert.equal(result.imported, true, "缺少 project.yaml 仍应导入对话");
-  assert.equal(result.blueprint_status, null, "缺少 project.yaml 时跳过 blueprint 字段迁移");
+  assert.equal(result.blueprint_status, undefined, "无 project.yaml 时返回对象同样不携带旧字段");
   const messages = (await journal.readTranscript()).filter((r) => r.role === "user" || r.role === "assistant");
   assert.deepEqual(messages.map((record) => record.content), ["旧对话"], "对话仍应导入");
   assert.equal(await pathExists(path.join(projectRoot, "project.yaml")), false, "不得创建 project.yaml");
@@ -357,16 +351,16 @@ test("缺少 project.yaml：跳过 blueprint 字段迁移但仍可导入对话",
 // 计划修复（整支审阅）：submit 内的惰性 open 兜底——未先调用 open() 直接 submit，
 // 第一条消息前也必须完成旧 .wwriting/agent journal 迁移与 legacy 导入（启动恢复的
 // 选中工作区不走 /open 路由也能接续）。
-test("计划修复：submit 未先 open 也完成 legacy 导入与 blueprint_status 迁移", async (t) => {
+test("计划修复：submit 未先 open 也完成 legacy 导入（旧字段不迁移）", async (t) => {
   const h = await createProjectAgentHarness({ legacy: true, gatewayScript: [{ reply: { text: "好。" } }] });
   t.after(() => h.cleanup());
   // 直接 submit（不经 open()）：惰性 open 序列应先执行 legacy 导入
   await h.agent.submit({ projectRoot: h.projectRoot, text: "继续写作", source: "chat" });
   await waitForIdle(h.agent, h.projectRoot);
 
-  // legacy 导入已生效：blueprint_status 迁入 project.yaml（旧项目夹具缺失该字段）
+  // Task 12 负向：legacy 导入生效但绝不迁移旧持久字段（旧项目夹具状态含显式字段）
   const yaml = await readText(path.join(h.projectRoot, "project.yaml"));
-  assert.match(yaml, /blueprint_status:\s*["']?complete["']?/u, "submit 触发的 open 应完成 blueprint_status 迁移");
+  assert.doesNotMatch(yaml, /blueprint_status:\s*["']?complete["']?/u, "submit 触发的 open 不得迁移旧持久字段");
   // 一轮对话正常完成，会话回到 idle（惰性 open 不打断 submit 主流程）
   const snapshot = await h.agent.snapshot({ projectRoot: h.projectRoot, afterSeq: 0, limit: 100000 });
   assert.equal(snapshot.session.status, "idle", "一轮对话后会话回到 idle");

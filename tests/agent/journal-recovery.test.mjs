@@ -304,13 +304,11 @@ test("append 分配连续 seq、盖章事件字段并原子重写 session.json",
   assert.equal(runStarted.schema_version, 2, "新追加事件盖章 v2 schema");
   assert.equal(runStarted.session_id, events[0].session_id);
   assert.equal(new Date(runStarted.at).getTime(), BASE_TIME + 2000);
-  assert.equal(runStarted.payload.workflow, "general");
 
   const session = await journal.getSession();
   assert.equal(session.status, "idle");
   assert.equal(session.active_run.id, "run-1");
   assert.equal(session.active_run.status, "completed");
-  assert.equal(session.active_run.workflow, "general");
   assert.equal(session.active_run.active_input_id, null);
   assert.equal(session.active_run.started_at, runStarted.at);
   assert.deepEqual(session.queued_inputs, []);
@@ -578,7 +576,7 @@ test("无 Run 时 permission_grant_cleared 容错不抛错", async (t) => {
   assert.equal(session.active_run, null);
 });
 
-test("workflow_changed 与 plan_updated 反映在 projection", async (t) => {
+test("plan_updated 反映在 projection（旧 workflow 事件类型已删除）", async (t) => {
   const root = await makeWorkspace(t);
   const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
   await journal.load();
@@ -588,7 +586,6 @@ test("workflow_changed 与 plan_updated 反映在 projection", async (t) => {
     run_id: "run-1",
     payload: { workflow: "general", input_id: "in-1" }
   });
-  await journal.append({ type: "workflow_changed", run_id: "run-1", payload: { workflow: "chapter" } });
   await journal.append({
     type: "plan_updated",
     run_id: "run-1",
@@ -603,7 +600,6 @@ test("workflow_changed 与 plan_updated 反映在 projection", async (t) => {
   });
 
   const session = await journal.getSession();
-  assert.equal(session.active_run.workflow, "chapter");
   assert.deepEqual(session.active_run.visible_plan, {
     explanation: "先核对已完成章节",
     items: [
@@ -694,7 +690,6 @@ test("reducer 允许 run_started 恢复同一可恢复 Run（retry 语义）", a
   const session = await journal.getSession();
   assert.equal(session.active_run.id, "run-1");
   assert.equal(session.active_run.status, "running");
-  assert.equal(session.active_run.workflow, "general");
 });
 
 test("reducer 拒绝未知/重复的 input 消费与取消", async (t) => {
@@ -1255,8 +1250,8 @@ test("append 无需显式 load（自初始化）", async (t) => {
   assert.equal(events[1].seq, 2);
 });
 
-test("FIXED_EVENT_TYPES 包含计划固定的 45 个事件类型（Task 6 新增 5 类输入事件）", () => {
-  assert.equal(FIXED_EVENT_TYPES.length, 45);
+test("FIXED_EVENT_TYPES 包含计划固定的 44 个事件类型（Task 12 删除旧工作流事件）", () => {
+  assert.equal(FIXED_EVENT_TYPES.length, 44);
   assert.deepEqual(
     [...FIXED_EVENT_TYPES].sort(),
     [
@@ -1303,8 +1298,7 @@ test("FIXED_EVENT_TYPES 包含计划固定的 45 个事件类型（Task 6 新增
       "tool_call_completed",
       "tool_call_failed",
       "tool_call_started",
-      "tool_output_delta",
-      "workflow_changed"
+      "tool_output_delta"
     ].sort()
   );
 });
@@ -2527,7 +2521,7 @@ test("Task 6 转移表：第二终态、终态回退、withdraw active、start �
   assert.deepEqual(session.queued_inputs.map((item) => item.id), ["in-4"]);
 });
 
-test("Task 6 契约：run_started.payload 不要求 workflow（缺省 general 兼容）", async (t) => {
+test("Task 12 契约：run_started.payload 不要求 workflow，projection 不再存储 workflow", async (t) => {
   const root = await makeWorkspace(t);
   const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
   await journal.load();
@@ -2539,7 +2533,7 @@ test("Task 6 契约：run_started.payload 不要求 workflow（缺省 general �
   await journal.append({ type: "run_completed", run_id: "run-1", payload: {} });
   const session = await journal.getSession();
   assert.equal(session.active_run.status, "completed");
-  assert.equal(session.active_run.workflow, "general", "legacy 兼容：缺省 workflow 仍落 general（Task 7 删除）");
+  assert.equal(session.active_run.workflow, undefined, "Task 12：Run projection 不再存储 workflow");
 });
 
 // ---------------------------------------------------------------------------
