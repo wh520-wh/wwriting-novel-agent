@@ -3,8 +3,9 @@
 // 无 JSDOM：最小 DOM 桩 + 注入假 surface（spy 记录调用），直接驱动
 // createSessionSidebar（app.js 的薄接线层在这里用假依赖替换）。
 // 覆盖：dashboard 会话渲染与活跃高亮、折叠/展开 + localStorage、
-// 点击会话/改名/归档、其他项目懒加载与缓存、draft 占位过滤与切走收尾、
-// busy 复位（run_status 联动）、项目行点击折叠/展开、跨项目会话委托。
+// 点击会话/归档、行内改名编辑（Task 23：预填/focus/Enter 提交/Escape 与失焦
+// 取消/空白阻止/失败保留草稿）、其他项目懒加载与缓存、draft 占位过滤与切走
+// 收尾、busy 复位（run_status 联动）、项目行点击折叠/展开、跨项目会话委托。
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -73,6 +74,18 @@ class MockElement {
     this.children = [];
     this.append(...nodes);
   }
+  replaceWith(...nodes) {
+    // 行内改名编辑（Task 23）用 replaceWith 在 session row 内替换标题区域。
+    const parent = this.parentNode;
+    if (!parent) return;
+    const index = parent.children.indexOf(this);
+    if (index < 0) return;
+    this.parentNode = null;
+    const before = parent.children.slice(0, index);
+    const after = parent.children.slice(index + 1);
+    parent.children = [];
+    parent.append(...before, ...nodes, ...after);
+  }
   setAttribute(key, value) {
     this._attrs[key] = String(value);
   }
@@ -124,6 +137,13 @@ class MockElement {
       node = node.parentNode;
     }
     return ev;
+  }
+  focus() {
+    this._focused = true;
+    this._focusCount = (this._focusCount ?? 0) + 1;
+  }
+  select() {
+    this._selected = true;
   }
 }
 
@@ -253,7 +273,6 @@ function makeFixture({ projects = [], selectedProjectRoot = null, currentProject
     },
     surface,
     showToast: (message, type) => surface.toasts.push([message, type]),
-    promptDialog: () => "新标题",
     storage,
     setIntervalFn: timerRecorder.setInterval.bind(timerRecorder),
     clearIntervalFn: timerRecorder.clearInterval.bind(timerRecorder),
@@ -422,7 +441,7 @@ test("点击其他项目的会话行 → 委托 openProjectAndSession(ownerRoot,
   assert.deepEqual(f.openProjectCalls, [[P2, "s2"]], "跨项目会话切换走 openProjectAndSession");
 });
 
-test("会话操作：改名走 prompt + renameSession + toast；归档直接 archiveSession + toast", async () => {
+test("会话操作：归档 → surface.archiveSession + toast", async () => {
   const P = "D:/projects/p1";
   const f = makeFixture({
     projects: [{ projectRoot: P, title: "小说一" }],
@@ -435,15 +454,294 @@ test("会话操作：改名走 prompt + renameSession + toast；归档直接 arc
   const row = rowsOf(f.listEl)[0];
   const ops = menuOf(row).children;
   assert.equal(ops.length, 2, "hover 操作：改名 + 归档");
-  ops[0].dispatch("click", {});
-  await flush();
-  assert.deepEqual(f.surface.calls.renameSession, [["s1", "新标题"]], "改名 → renameSession(id, prompt 结果)");
-  assert.ok(f.surface.toasts.some(([m]) => m.includes("新标题")), "改名后 toast");
-
   ops[1].dispatch("click", {});
   await flush();
   assert.deepEqual(f.surface.calls.archiveSession, ["s1"], "归档 → archiveSession(id)");
   assert.ok(f.surface.toasts.some(([m]) => m.includes("已归档对话 对话一")), "归档 toast 文案");
+});
+
+// ---------------------------------------------------------------------------
+// Task 23：行内改名编辑（替换 window.prompt，规格 4.3 #6 / §6.5）
+// ---------------------------------------------------------------------------
+
+test("Task 23：点击重命名 → 标题区域替换为预填 input 并 focus/select；重复点击只重新聚焦", () => {
+  const P = "D:/projects/p1";
+  const f = makeFixture({
+    projects: [{ projectRoot: P, title: "小说一" }],
+    selectedProjectRoot: P,
+    currentProjectRoot: P
+  });
+  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.render();
+
+  const row = rowsOf(f.listEl)[0];
+  const title = row.children[1];
+  assert.equal(title.className, "session-title", "初始为标题 span");
+  const ops = menuOf(row).children;
+  ops[0].dispatch("click", {});
+
+  const editor = row.children[1];
+  assert.equal(editor.tagName, "INPUT", "标题区域临时替换为 input（行内编辑，不创建 card/modal）");
+  assert.ok(editor.classList.contains("session-rename-editor"), "编辑器使用 .session-rename-editor");
+  assert.equal(editor.getAttribute("aria-label"), "重命名对话", "屏幕阅读器名称（规格 6.5）");
+  assert.equal(editor.value, "对话一", "input 预填当前标题");
+  assert.equal(editor._focused, true, "input 获得焦点");
+  assert.equal(editor._selected, true, "input 文本全选");
+  assert.equal(title.parentNode, null, "原标题 span 暂离 DOM（Escape/失焦时恢复）");
+  assert.equal(rowsOf(f.listEl).length, 1, "仍在 session row 内，无新增嵌套结构");
+
+  // 点击输入框不触发行点击的会话切换（stopPropagation）
+  editor.dispatch("click", {});
+  assert.deepEqual(f.surface.calls.switchSession, [], "点击输入框不触发会话切换");
+
+  // 重复点击「重命名」→ 不重建编辑器，仅重新聚焦（mock 的 focus() 递增
+  // _focusCount：初始打开 1 次 + 重复点击 1 次 = 2，证明走 existing 分支）
+  ops[0].dispatch("click", {});
+  const editor2 = row.children[1];
+  assert.equal(editor2, editor, "重复点击不重建编辑器");
+  assert.equal(editor2._focusCount, 2, "重复点击重新聚焦已有编辑器");
+});
+
+test("Task 23：IME 组合输入守卫——组合期间 Enter/Escape（isComposing/keyCode 229）不触发提交或取消", async () => {
+  const P = "D:/projects/p1";
+  const f = makeFixture({
+    projects: [{ projectRoot: P, title: "小说一" }],
+    selectedProjectRoot: P,
+    currentProjectRoot: P
+  });
+  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.render();
+
+  const row = rowsOf(f.listEl)[0];
+  menuOf(row).children[0].dispatch("click", {});
+  const editor = row.children[1];
+  editor.value = "半成品";
+  // 中文输入法确认候选词的 Enter：isComposing 标记（部分输入法只带 keyCode 229）
+  editor.dispatch("keydown", { key: "Enter", isComposing: true });
+  editor.dispatch("keydown", { key: "Enter", keyCode: 229 });
+  // 组合期间的 Escape（撤销候选词）同样不得销毁编辑器
+  editor.dispatch("keydown", { key: "Escape", isComposing: true });
+  await flush();
+  assert.deepEqual(f.surface.calls.renameSession, [], "组合期间的 Enter 不触发提交");
+  const rowAfter = rowsOf(f.listEl)[0];
+  assert.ok(rowAfter.children[1].classList.contains("session-rename-editor"), "组合期间 Escape 不销毁编辑器");
+  assert.equal(rowAfter.children[1].value, "半成品", "组合输入不触碰用户文字");
+});
+
+test("Task 23：Enter trim 后调用一次 renameSession（在途重复 Enter 忽略）；成功刷新后编辑器销毁、标题更新", async () => {
+  const P = "D:/projects/p1";
+  const f = makeFixture({
+    projects: [{ projectRoot: P, title: "小说一" }],
+    selectedProjectRoot: P,
+    currentProjectRoot: P
+  });
+  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.render();
+
+  const row = rowsOf(f.listEl)[0];
+  menuOf(row).children[0].dispatch("click", {});
+  const editor = row.children[1];
+  editor.value = "  新标题  ";
+  editor.dispatch("keydown", { key: "Enter" });
+  editor.dispatch("keydown", { key: "Enter" }); // 提交在途重复 Enter → 忽略
+  await flush();
+  assert.deepEqual(f.surface.calls.renameSession, [["s1", "新标题"]], "Enter → trim 后仅调用一次 renameSession");
+  assert.ok(f.surface.toasts.some(([m]) => m.includes("新标题")), "成功 toast");
+  assert.deepEqual(f.surface.calls.switchSession, [], "编辑器内 Enter 不触发会话切换");
+
+  // 提交成功后 surface 刷新列表（sessionAction → refreshSessions → onSessionsChanged
+  // → handleSessionsChanged → rerenderGroup 整组重渲）：编辑器销毁、标题更新
+  f.sidebar.handleSessionsChanged(P, [{ session_id: "s1", title: "新标题", run_status: "idle" }], "s1");
+  const rowAfter = rowsOf(f.listEl)[0];
+  assert.equal(rowAfter.children[1].textContent, "新标题", "刷新后标题更新");
+  assert.ok(
+    !allDescendants(f.listEl).some((c) => c.classList.contains("session-rename-editor")),
+    "刷新后编辑器随整组重渲销毁"
+  );
+});
+
+test("Task 23：Escape 取消编辑并恢复原标题，不调用 renameSession", async () => {
+  const P = "D:/projects/p1";
+  const f = makeFixture({
+    projects: [{ projectRoot: P, title: "小说一" }],
+    selectedProjectRoot: P,
+    currentProjectRoot: P
+  });
+  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.render();
+
+  const row = rowsOf(f.listEl)[0];
+  menuOf(row).children[0].dispatch("click", {});
+  const editor = row.children[1];
+  editor.value = "半成品";
+  editor.dispatch("keydown", { key: "Escape" });
+  await flush();
+  const rowAfter = rowsOf(f.listEl)[0];
+  assert.equal(rowAfter.children[1].className, "session-title", "编辑结束回到标题 span");
+  assert.equal(rowAfter.children[1].textContent, "对话一", "Escape 恢复原标题");
+  assert.deepEqual(f.surface.calls.renameSession, [], "Escape 不调用 renameSession");
+});
+
+test("Task 23：空白标题阻止提交并显示错误 toast，编辑态与用户文字保留", async () => {
+  const P = "D:/projects/p1";
+  const f = makeFixture({
+    projects: [{ projectRoot: P, title: "小说一" }],
+    selectedProjectRoot: P,
+    currentProjectRoot: P
+  });
+  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.render();
+
+  const row = rowsOf(f.listEl)[0];
+  menuOf(row).children[0].dispatch("click", {});
+  const editor = row.children[1];
+  editor.value = "   ";
+  editor.dispatch("keydown", { key: "Enter" });
+  await flush();
+  assert.deepEqual(f.surface.calls.renameSession, [], "空白标题不调用 renameSession");
+  assert.ok(f.surface.toasts.some(([, type]) => type === "error"), "空白标题显示错误 toast");
+  const rowAfter = rowsOf(f.listEl)[0];
+  assert.ok(rowAfter.children[1].classList.contains("session-rename-editor"), "编辑态保留（input 仍在）");
+  assert.equal(rowAfter.children[1].value, "   ", "用户输入文字保留");
+});
+
+test("Task 23：renameSession 失败 → 错误 toast，编辑态与用户文字保留（不销毁草稿）", async () => {
+  const P = "D:/projects/p1";
+  const f = makeFixture({
+    projects: [{ projectRoot: P, title: "小说一" }],
+    selectedProjectRoot: P,
+    currentProjectRoot: P
+  });
+  f.surface.renameSession = async (id, title) => {
+    f.surface.calls.renameSession.push([id, title]); // 记录调用后失败（替换实现仍记账）
+    throw new Error("重命名失败");
+  };
+  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.render();
+
+  const row = rowsOf(f.listEl)[0];
+  menuOf(row).children[0].dispatch("click", {});
+  const editor = row.children[1];
+  editor.value = "新名字";
+  editor.dispatch("keydown", { key: "Enter" });
+  await flush();
+  assert.deepEqual(f.surface.calls.renameSession, [["s1", "新名字"]], "Enter → 调用一次 renameSession");
+  assert.ok(
+    f.surface.toasts.some(([m, type]) => type === "error" && m.includes("重命名失败")),
+    "失败错误 toast"
+  );
+  const rowAfter = rowsOf(f.listEl)[0];
+  assert.ok(rowAfter.children[1].classList.contains("session-rename-editor"), "失败后编辑态保留");
+  assert.equal(rowAfter.children[1].value, "新名字", "失败后用户文字保留");
+});
+
+test("Task 23：失焦按明确规则取消编辑（恢复原标题、不提交）", async () => {
+  const P = "D:/projects/p1";
+  const f = makeFixture({
+    projects: [{ projectRoot: P, title: "小说一" }],
+    selectedProjectRoot: P,
+    currentProjectRoot: P
+  });
+  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.render();
+
+  const row = rowsOf(f.listEl)[0];
+  menuOf(row).children[0].dispatch("click", {});
+  const editor = row.children[1];
+  editor.value = "写了一半";
+  editor.dispatch("blur", {});
+  const rowAfter = rowsOf(f.listEl)[0];
+  assert.equal(rowAfter.children[1].className, "session-title", "失焦取消编辑回到标题 span");
+  assert.equal(rowAfter.children[1].textContent, "对话一", "失焦恢复原标题");
+  assert.deepEqual(f.surface.calls.renameSession, [], "失焦不提交");
+});
+
+test("Task 23：提交在途时 Escape/失焦不动作——生命周期由提交结果接管", async () => {
+  const P = "D:/projects/p1";
+  const f = makeFixture({
+    projects: [{ projectRoot: P, title: "小说一" }],
+    selectedProjectRoot: P,
+    currentProjectRoot: P
+  });
+  let releaseRename;
+  const renameCalls = [];
+  f.surface.renameSession = async (id, title) => {
+    renameCalls.push([id, title]);
+    return new Promise((resolve) => {
+      releaseRename = resolve;
+    });
+  };
+  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.render();
+
+  const row = rowsOf(f.listEl)[0];
+  menuOf(row).children[0].dispatch("click", {});
+  const editor = row.children[1];
+  editor.value = "新标题";
+  editor.dispatch("keydown", { key: "Enter" });
+  await flush();
+  assert.deepEqual(renameCalls, [["s1", "新标题"]], "Enter 提交，rename 在途");
+
+  // 在途派发 Escape / blur：submitted 守卫吞掉，不恢复标题、不销毁编辑器
+  editor.dispatch("keydown", { key: "Escape" });
+  editor.dispatch("blur", {});
+  const rowMid = rowsOf(f.listEl)[0];
+  assert.ok(rowMid.children[1].classList.contains("session-rename-editor"), "在途 Escape/blur 不销毁编辑器");
+  assert.equal(rowMid.children[1].value, "新标题", "在途事件不触碰用户文字");
+
+  // 提交成功 → surface 刷新重渲 → 编辑器销毁、标题更新
+  releaseRename({ session_id: "s1", title: "新标题" });
+  await flush();
+  f.sidebar.handleSessionsChanged(P, [{ session_id: "s1", title: "新标题", run_status: "idle" }], "s1");
+  const rowAfter = rowsOf(f.listEl)[0];
+  assert.equal(rowAfter.children[1].textContent, "新标题", "成功刷新后标题更新");
+  assert.ok(
+    !allDescendants(f.listEl).some((c) => c.classList.contains("session-rename-editor")),
+    "编辑器随整组重渲销毁"
+  );
+  assert.deepEqual(renameCalls, [["s1", "新标题"]], "在途事件不触发第二次提交");
+});
+
+test("Task 23：失败后重试成功——失败保留编辑态，二次 Enter 重新提交（提交失败不销毁草稿）", async () => {
+  const P = "D:/projects/p1";
+  const f = makeFixture({
+    projects: [{ projectRoot: P, title: "小说一" }],
+    selectedProjectRoot: P,
+    currentProjectRoot: P
+  });
+  let shouldFail = true;
+  f.surface.renameSession = async (id, title) => {
+    f.surface.calls.renameSession.push([id, title]);
+    if (shouldFail) throw new Error("重命名失败");
+    return { session_id: id, title };
+  };
+  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.render();
+
+  const row = rowsOf(f.listEl)[0];
+  menuOf(row).children[0].dispatch("click", {});
+  const editor = row.children[1];
+  editor.value = "新名字";
+  editor.dispatch("keydown", { key: "Enter" });
+  await flush();
+  assert.deepEqual(f.surface.calls.renameSession, [["s1", "新名字"]], "首次提交失败");
+  assert.ok(f.surface.toasts.some(([, type]) => type === "error"), "失败错误 toast");
+  assert.ok(row.children[1].classList.contains("session-rename-editor"), "失败后编辑态保留");
+  assert.equal(row.children[1].value, "新名字", "失败后用户文字保留");
+
+  // 重试：再次 Enter → 重新提交成功（submitted 已复位）
+  shouldFail = false;
+  editor.dispatch("keydown", { key: "Enter" });
+  await flush();
+  assert.deepEqual(f.surface.calls.renameSession, [["s1", "新名字"], ["s1", "新名字"]], "重试再次提交");
+  assert.ok(f.surface.toasts.some(([m]) => m.includes("新名字")), "成功 toast");
+  f.sidebar.handleSessionsChanged(P, [{ session_id: "s1", title: "新名字", run_status: "idle" }], "s1");
+  const rowAfter = rowsOf(f.listEl)[0];
+  assert.equal(rowAfter.children[1].textContent, "新名字", "刷新后标题更新");
+  assert.ok(
+    !allDescendants(f.listEl).some((c) => c.classList.contains("session-rename-editor")),
+    "成功后编辑器随整组重渲销毁"
+  );
 });
 
 test("Task 5：归档委托注入的 onArchiveSession（app.js 归档切走编排入口），不直连 surface", async () => {

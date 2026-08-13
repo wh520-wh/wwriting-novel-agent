@@ -9,6 +9,9 @@
 //     懒调 fetchSessions(projectRoot) 并缓存（内存 Map，本次会话内不重复拉）；
 //   - 会话操作委托 surface（switchSession / newSessionPlaceholder / renameSession /
 //     archiveSession / setBusy），draft 占位过滤（渲染层排除，双保险）；
+//   - 行内改名编辑（Task 23，规格 4.3 #6 / §6.5）：重命名在会话行内临时替换标题
+//     区域为 input（Enter 提交 / Escape 取消 / 失焦取消，失败保留草稿），不再依赖
+//     浏览器原生 prompt 对话框；
 //   - 导出 createSessionRemovalResolver（会话移除后「切走 + 占位兜底」编排，依赖
 //     注入纯函数，app.js 接线归档/删除共用）；
 //   - busy 复位（Task 8 契约）：列表刷新时检查当前项目其他会话 run_status，
@@ -45,7 +48,6 @@ export function createSessionSidebar({
   renderProjectRow,
   surface,
   showToast = () => {},
-  promptDialog = globalThis.prompt,
   storage = globalThis.localStorage,
   setIntervalFn = globalThis.setInterval,
   clearIntervalFn = globalThis.clearInterval,
@@ -364,7 +366,7 @@ export function createSessionSidebar({
 
     const menu = doc.createElement("div");
     menu.className = "session-menu";
-    menu.append(sessionOp("compose", "重命名", () => renameSession(session), isDraft));
+    menu.append(sessionOp("compose", "重命名", (btn) => openRenameEditor(row, session, btn), isDraft));
     menu.append(sessionOp("trash", "归档", () => archiveSession(session), isDraft));
 
     row.append(dot, title, menu);
@@ -398,7 +400,7 @@ export function createSessionSidebar({
     btn.addEventListener("click", (event) => {
       event.stopPropagation();
       if (btn.disabled) return;
-      action();
+      action(btn); // 传入按钮：行内改名编辑取消时把焦点还给触发按钮
     });
     return btn;
   }
@@ -433,17 +435,92 @@ export function createSessionSidebar({
     });
   }
 
-  async function renameSession(session) {
-    if (typeof promptDialog !== "function") return;
-    const title = promptDialog("重命名对话", session.title ?? "");
-    if (title == null) return; // 用户取消
-    const trimmed = String(title).trim();
-    if (!trimmed) return; // 空标题忽略（registry 拒绝空标题）
-    try {
-      await surface.renameSession(session.session_id, trimmed);
-      showToast(`已重命名为「${trimmed}」`, "success");
-    } catch (error) {
-      showToast(error?.message ?? "重命名失败", "error");
+  // ---- 行内改名编辑（Task 23，替换浏览器原生 prompt；规格 4.3 #6 / §6.5） ----
+  // 打开编辑器：在会话行内临时替换标题区域（不创建嵌套 card/modal）。已在编辑中
+  //（重复点击「重命名」）只重新聚焦，不重建编辑器。焦点规则：
+  //   Enter → trim 后提交一次（提交在途重复 Enter 忽略）；Escape → 取消并恢复
+  //   原标题（焦点回到重命名按钮）；失焦 → 按明确规则取消（未提交时移开焦点即
+  //   放弃，恢复原标题）——与 Enter 提交不冲突：提交在途时失焦/Escape 不动作，
+  //   生命周期由提交结果接管（成功刷新销毁编辑器 / 失败保留编辑态与用户文字）。
+  function openRenameEditor(row, session, triggerBtn) {
+    // 编辑器已存在（重复点击「重命名」，或失败后焦点被收回再点）→ 不重建，仅重新
+    // 聚焦/全选（此时标题 span 已被替换、不在 DOM，必须先查编辑器再查标题）。
+    const existing = row.querySelector(".session-rename-editor");
+    if (existing) {
+      existing.focus();
+      existing.select();
+      return;
+    }
+    const titleEl = row.querySelector(".session-title");
+    if (!titleEl) return;
+    const input = doc.createElement("input");
+    input.type = "text";
+    input.className = "session-rename-editor";
+    input.value = session.title ?? ""; // 预填当前标题
+    input.setAttribute("aria-label", "重命名对话"); // 屏幕阅读器名称（规格 §6.5）
+    titleEl.replaceWith(input);
+    input.focus();
+    input.select();
+
+    // 提交在途标记：Enter 提交后到结果落地前（成功 → surface 刷新整组重渲销毁
+    // 编辑器；失败 → 复位标记保留编辑态），重复 Enter / Escape / 失焦一律不动作。
+    let submitted = false;
+
+    // 恢复标题区域；Escape 取消时焦点还给重命名按钮（键盘连续操作），失焦取消
+    // 不抢焦点（焦点已自然移往用户点击处）。
+    const restoreTitle = (refocus) => {
+      if (input.parentNode == null) return; // 编辑器已被重渲销毁
+      input.replaceWith(titleEl);
+      if (refocus) triggerBtn?.focus();
+    };
+
+    input.addEventListener("keydown", (event) => {
+      // IME 组合输入守卫（同 agent/view.js composer 先例）：中文输入法下 Enter 是
+      // 确认候选词、Escape 可撤销组合——组合期间派发的事件（isComposing 或
+      // keyCode 229）必须原样放行给输入法，不得触发提交/取消，且不得
+      // preventDefault/stopPropagation（否则打断组合）。
+      if (event.isComposing || event.keyCode === 229) return;
+      if (event.key === "Enter") {
+        event.preventDefault(); // 防表单/行级默认动作
+        event.stopPropagation(); // 不冒泡触发行级 Enter → 会话切换
+        if (submitted) return;
+        commitRename();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (submitted) return; // 提交在途：生命周期由提交结果接管
+        restoreTitle(true);
+      }
+    });
+    // 失焦取消（明确规则）：编辑未提交时移开焦点即放弃，恢复原标题。
+    input.addEventListener("blur", () => {
+      if (submitted) return;
+      restoreTitle(false);
+    });
+    // 点击输入框（移动光标等）不触发行级点击 → 会话切换。
+    input.addEventListener("click", (event) => event.stopPropagation());
+
+    function commitRename() {
+      const trimmed = String(input.value).trim();
+      if (!trimmed) {
+        showToast("标题不能为空", "error");
+        return; // 空白阻止提交：编辑态与用户文字保留
+      }
+      submitted = true;
+      Promise.resolve(surface.renameSession(session.session_id, trimmed))
+        .then(() => {
+          // 成功：surface.sessionAction 已刷新列表（refreshSessions →
+          // onSessionsChanged → handleSessionsChanged → rerenderGroup 整组重渲），
+          // 编辑器随重渲销毁，无需手动还原标题。
+          showToast(`已重命名为「${trimmed}」`, "success");
+        })
+        .catch((error) => {
+          submitted = false; // 失败：保留编辑态与用户文字（不销毁草稿），可重试
+          // 提交在途时 blur 可能已被守卫吞掉（焦点已移走）——失败后把焦点还给
+          // 编辑器，与「可重试」语义一致，避免无焦点悬挂的孤儿编辑器。
+          input.focus();
+          showToast(error?.message ?? "重命名失败", "error");
+        });
     }
   }
 
