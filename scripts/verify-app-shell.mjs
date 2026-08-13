@@ -116,6 +116,13 @@ try {
   assert.match(js, /createAgentSurface\s*\(/, "app.js 应创建 AgentSurface");
   assert.doesNotMatch(js, /thread-renderer|composer\.js|agent-truth|run-presentation|write-readiness|command-registry/u, "app.js 不得引用已删除的旧对话模块");
   assert.ok(agentIndexJs.includes("export function createAgentSurface"), "agent/index.js 应导出 createAgentSurface");
+  // Task 23（规格 4.3 #6 / §6.5）：会话重命名不再依赖 window.prompt——生产前端
+  // session-sidebar.mjs 不得出现 window.prompt 字面量，也不得回退到 globalThis.prompt
+  //（旧实现来源，双形式防回归）。
+  const sessionSidebarJs = await fetchText(`http://127.0.0.1:${port}/session-sidebar.mjs`);
+  assert.doesNotMatch(sessionSidebarJs, /window\.prompt/u, "session-sidebar 不得使用 window.prompt（行内编辑器替换）");
+  assert.doesNotMatch(sessionSidebarJs, /globalThis\.prompt/u, "session-sidebar 不得回退 globalThis.prompt（旧 seam 已删除）");
+  assert.ok(sessionSidebarJs.includes('aria-label", "重命名对话"'), "行内改名 input 应带屏幕阅读器名称（规格 6.5）");
   // api-client：通用 helper 保留，旧 chat helper 删除
   assert.match(apiClientJs, /export async function getJson/);
   assert.match(apiClientJs, /export async function postJson/);

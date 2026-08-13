@@ -1594,6 +1594,28 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   text-overflow: ellipsis;
 }
 
+/* Task 23：行内改名编辑器（替换浏览器原生 prompt，规格 4.3 #6）——input 临时顶替
+   标题 span 占据 .session-row 网格第二列（minmax(0, 1fr)），与标题行高/字号对齐 */
+.session-rename-editor {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  height: 26px;
+  padding: 2px 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  outline: none;
+}
+
+.session-rename-editor:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
 .session-menu {
   position: absolute;
   inset-inline-end: 4px;
