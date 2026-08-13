@@ -289,7 +289,37 @@ try {
       node._parent = null;
     }
     remove() { if (this._parent) this._parent.removeChild(this); }
-    addEventListener() { /* 无交互，仅记录 */ }
+    addEventListener(type, handler) {
+      if (!this._listeners.has(type)) this._listeners.set(type, []);
+      this._listeners.get(type).push(handler);
+    }
+    // Task 25：模型设置页场景需要选择器匹配 + 事件派发（matchesSelector 支持
+    // [attr] / [attr="value"] / .class，与 tests/app-shell/model-settings-page.test.mjs
+    // 的 mock 同款近似；click 用于驱动按钮处理器）。
+    matchesSelector(selector) {
+      if (selector.startsWith("[")) {
+        const match = /^\[([A-Za-z0-9_-]+)(?:="([^"]*)")?\]$/u.exec(selector);
+        if (!match) return false;
+        const attr = match[1];
+        const expected = match[2];
+        return expected === undefined ? this.getAttribute(attr) !== null : this.getAttribute(attr) === expected;
+      }
+      if (selector.startsWith(".")) return this.className.split(/\s+/u).includes(selector.slice(1));
+      return false;
+    }
+    querySelector(selector) {
+      const stack = [...this.children];
+      while (stack.length > 0) {
+        const node = stack.shift();
+        if (node.matchesSelector?.(selector)) return node;
+        stack.push(...node.children);
+      }
+      return null;
+    }
+    _fire(type, ...args) {
+      for (const fn of this._listeners.get(type) ?? []) fn(...args);
+    }
+    click() { this._fire("click"); }
     get value() { return this._value; }
     set value(v) { this._value = String(v ?? ""); }
   }
@@ -363,6 +393,311 @@ try {
     "被覆盖的内置版本应出现在 shadowed"
   );
 
+  // =========================================================================
+  // Task 25 Step 1：可重复视觉场景（规格 §6.5 / 4.3）
+  //   长 provider/model 名 · 密钥已配置（无明文）· 连接错误状态 ·
+  //   queue B/C/D + priority pending · context popover · rename editor 契约 ·
+  //   成本统一人民币元（drawer-panels 三处 + cost-panel，无 $ / ¥）
+  // =========================================================================
+  const task25 = {
+    modelSettings: false,
+    queuePriority: false,
+    errorState: false,
+    contextPopover: false,
+    renameEditor: false,
+    costFormat: false
+  };
+
+  // ---- 场景 A：模型设置页——长名完整渲染 + 密钥已配置 + 连接错误（无明文） ----
+  {
+    const { createModelSettingsPage } = await import("../src/app-shell/model-settings-page.js");
+    // 测试数据：长名称 + 假密钥（sk-round7- 前缀即测试哨兵，不得出现在 DOM）。
+    const FAKE_KEY_MARK = "sk-round7-visual-fake-key-0001-not-real";
+    const LONG_PROVIDER_NAME = "深度智能云算力平台-华东二区-超长供应商名称-abcdefghijklmnopqrstuvwxyz0123456789";
+    const LONG_MODEL_NAME = "deepseek-chat-v4-ultra-flash-preview-20260813-long-extra-descriptor-name-abcdefghijklmnopqrstuvwxyz";
+    const mspElements = [];
+    const mspDoc = {
+      createElement(tag) { const node = new MockElement(tag); mspElements.push(node); return node; },
+      createTextNode(text) { return { nodeType: 3, textContent: String(text) }; },
+      querySelector(selector) {
+        // 返回最后匹配（≈ 当前挂载；与 model-settings-page.test.mjs 同款近似）
+        let hit = null;
+        for (const node of mspElements) {
+          if (node.matchesSelector?.(selector)) hit = node;
+        }
+        return hit;
+      }
+    };
+    const mspList = mspDoc.createElement("div");
+    mspList.setAttribute("data-provider-list", "");
+    const mspDetail = mspDoc.createElement("div");
+    mspDetail.setAttribute("data-provider-detail", "");
+    const mspProviders = [
+      {
+        id: "longcloud",
+        name: LONG_PROVIDER_NAME,
+        type: "custom",
+        status: "enabled",
+        base_url: "http://127.0.0.1:1/v1",
+        api_format: "openai-chat-completions",
+        api_key_env: "WWRITING_ROUND7_FAKE_KEY",
+        api_key_saved: true,
+        models: [{ id: "m1", model_name: LONG_MODEL_NAME, enabled: true }]
+      }
+    ];
+    const mspPage = createModelSettingsPage({
+      fetchImpl: async (url, options = {}) => {
+        if (String(url).endsWith("/test-connection")) {
+          return { ok: false, status: 400, json: async () => ({ ok: false, message: "连接超时，请检查网络或 API Key" }) };
+        }
+        return { ok: true, json: async () => ({ providers: mspProviders, default_model: null }) };
+      },
+      documentRef: mspDoc,
+      showToast: () => {}
+    });
+    await mspPage.open();
+    const mspAll = [];
+    (function walk(node) {
+      mspAll.push(node);
+      for (const child of node.children) walk(child);
+    })(mspList);
+    (function walk(node) {
+      mspAll.push(node);
+      for (const child of node.children) walk(child);
+    })(mspDetail);
+    // 长 provider 名完整渲染在列表（不得截断/省略）
+    assert.ok(
+      mspList.textContent.includes(LONG_PROVIDER_NAME),
+      "供应商列表应完整渲染超长供应商名（长名视觉场景）"
+    );
+    // 长 model 名完整保留在名称输入框 value（行内编辑不丢字）
+    const modelNameInput = mspAll.find((el) => el.getAttribute?.("data-field") === "model_name");
+    assert.ok(modelNameInput, "模型行应渲染模型名称输入框");
+    assert.equal(modelNameInput.value, LONG_MODEL_NAME, "模型名称输入框应完整保留超长模型名");
+    // 密钥已配置状态：只显示「已配置（env 名）」，绝不回显密钥明文（规格 4.3 #4）
+    const keyStatus = mspAll.find((el) => el.getAttribute?.("data-api-key-status") === "true");
+    assert.equal(
+      keyStatus?.textContent,
+      "已配置（WWRITING_ROUND7_FAKE_KEY）",
+      "密钥状态应只显示 已配置 + 环境变量名，不得回显密钥"
+    );
+    assert.ok(
+      !mspAll.some((el) => (el.textContent ?? "").includes("sk-round7")),
+      "明文密钥不得出现在模型设置页 DOM"
+    );
+    // 连接错误状态：test-connection 失败渲染 ✗ 错误行（connection-result error）
+    const connResult = await mspPage.testConnection(mspProviders[0], mspProviders[0].models[0], null);
+    assert.equal(connResult.ok, false, "测试连接应失败并返回 ok:false");
+    const errSlot = mspAll.find((el) => el.getAttribute?.("data-model-connection-result") === "m1");
+    assert.ok(errSlot, "连接结果 slot 应存在");
+    assert.ok(errSlot.textContent.includes("✗"), "连接失败应渲染 ✗ 错误文案");
+    assert.ok(errSlot.textContent.includes("连接超时"), "连接错误文案应保留后端中文消息");
+    task25.modelSettings = true;
+  }
+
+  // ---- 场景 B：agent surface——queue B/C/D + priority pending + 错误卡 + context popover ----
+  {
+    const root2 = new MockElement("div");
+    const doc2 = {
+      createElement: (tag) => new MockElement(tag),
+      createElementNS: (_namespace, tag) => new MockElement(tag)
+    };
+    const { createAgentSurface } = await import("../src/app-shell/agent/index.js");
+    const surface2 = createAgentSurface({ root: root2, api: null, document: doc2 });
+    const sessionProjection = {
+      session_id: "s1",
+      status: "idle",
+      queued_inputs: [],
+      priority_input_id: null,
+      active_run: null
+    };
+    surface2.applySnapshot({
+      session: sessionProjection,
+      events: [{ type: "session_created", session_id: "s1", seq: 1, at: "2026-08-13T00:00:00.000Z" }]
+    });
+    const QUEUE_INPUTS = [
+      { id: "in-b", text: "队列任务 B：续写第三章雨夜冲突" },
+      { id: "in-c", text: "队列任务 C：整理人物小传" },
+      { id: "in-d", text: "队列任务 D：核对伏笔设定" }
+    ];
+    let seq = 10;
+    for (const item of QUEUE_INPUTS) {
+      surface2.applyEvent({ type: "input_queued", session_id: "s1", input_id: item.id, seq: seq++, at: "2026-08-13T00:01:00.000Z", payload: { input_id: item.id, text: item.text } });
+    }
+    // 「立即」（priority_input_requested）→ B 标为下一条，其余「立即」禁用（pending）
+    surface2.applyEvent({ type: "priority_input_requested", session_id: "s1", input_id: "in-b", seq: seq++, at: "2026-08-13T00:01:01.000Z", payload: { input_id: "in-b" } });
+    // context popover：usage 装配完成即渲染内容
+    surface2.applyEvent({
+      type: "context_usage_updated",
+      session_id: "s1",
+      seq: seq++,
+      at: "2026-08-13T00:01:02.000Z",
+      payload: {
+        usage: { status: "ready", used_tokens: 12345, effective_context_window: 200000, approximate: true, window_source: "default_256k" }
+      }
+    });
+    // 错误状态：run_failed → 错误卡（操作失败 + 消息）
+    surface2.applyEvent({
+      type: "run_failed",
+      run_id: "r1",
+      session_id: "s1",
+      seq: seq++,
+      at: "2026-08-13T00:01:03.000Z",
+      payload: { error: "模型调用失败（可恢复）", code: "model_error" }
+    });
+    const nodes2 = [];
+    (function walk(node) {
+      nodes2.push(node);
+      for (const child of node.children) walk(child);
+    })(root2);
+    const byClass = (cls) => nodes2.filter((node) => node.className.split(/\s+/u).includes(cls));
+    // queue B/C/D：三行排队输入，文本完整
+    const queueRows = byClass("agent-queue-item");
+    assert.equal(queueRows.length, 3, "应渲染 3 行排队输入（B/C/D）");
+    assert.deepEqual(
+      queueRows.map((row) => row.textContent),
+      [
+        "队列任务 B：续写第三章雨夜冲突下一条立即取消",
+        "队列任务 C：整理人物小传排队立即取消",
+        "队列任务 D：核对伏笔设定排队立即取消"
+      ],
+      "队列行应包含原文 + 状态徽标 + 立即/取消按钮"
+    );
+    // priority pending：B 行带 --next 且徽标为「下一条」；其余为「排队」
+    assert.ok(queueRows[0].classList.contains("agent-queue-item--next"), "优先输入行应标记为下一条");
+    assert.equal(byClass("agent-queue-state")[0].textContent, "下一条", "B 徽标应为 下一条");
+    assert.equal(byClass("agent-queue-state")[1].textContent, "排队", "C 徽标应为 排队");
+    assert.equal(byClass("agent-queue-state")[2].textContent, "排队", "D 徽标应为 排队");
+    // 已有优先在途 → 全部「立即」禁用（不产生乐观第二请求）
+    const promoteButtons = byClass("agent-promote");
+    assert.equal(promoteButtons.length, 3, "每行应有 立即 按钮");
+    assert.ok(promoteButtons.every((btn) => btn.disabled === true), "优先在途时全部 立即 按钮应禁用");
+    // 错误卡：标题 操作失败 + 消息
+    const errorCards = byClass("agent-error");
+    assert.equal(errorCards.length, 1, "run_failed 应渲染一张错误卡");
+    assert.ok(errorCards[0].textContent.includes("操作失败"), "错误卡标题应为 操作失败");
+    assert.ok(errorCards[0].textContent.includes("模型调用失败（可恢复）"), "错误卡应显示失败消息");
+    // context popover：role=region + aria-label；内容行 = 用量/窗口/来源
+    const popover = byClass("agent-context-popover")[0];
+    assert.ok(popover, "context popover 应存在");
+    assert.equal(popover.getAttribute("role"), "region");
+    assert.equal(popover.getAttribute("aria-label"), "上下文用量");
+    assert.ok(popover.textContent.includes("上下文用量"), "popover 应含标题");
+    assert.ok(popover.textContent.includes("约 12,345 / 200,000 tokens"), "popover 应显示约量用量");
+    assert.ok(popover.textContent.includes("6% · 256k 默认窗口"), "popover 应显示百分比与窗口来源");
+    const ringButton = byClass("agent-context-ring")[0];
+    assert.equal(
+      ringButton.getAttribute("aria-label"),
+      "上下文用量：6%（约 12,345 / 200,000 tokens）",
+      "context ring 按钮 aria-label 应携带百分比与约量（规格 §6.5 屏幕阅读器名称）"
+    );
+    task25.queuePriority = true;
+    task25.errorState = true;
+    task25.contextPopover = true;
+  }
+
+  // ---- 场景 C：rename editor（行内改名编辑器契约，规格 4.3 #6 / §6.5）----
+  {
+    const stylesCss = await fetchText(`http://127.0.0.1:${port}/styles.css`);
+    assert.ok(sessionSidebarJs.includes('className = "session-rename-editor"'), "行内改名编辑器应使用 session-rename-editor 类");
+    assert.match(sessionSidebarJs, /event\.key === "Enter"/u, "改名编辑器应支持 Enter 提交");
+    assert.match(sessionSidebarJs, /event\.key === "Escape"/u, "改名编辑器应支持 Escape 取消");
+    assert.match(sessionSidebarJs, /addEventListener\("blur"/u, "改名编辑器失焦应按明确规则取消");
+    assert.ok(sessionSidebarJs.includes('input.setAttribute("aria-label", "重命名对话")'), "改名输入框应带屏幕阅读器名称");
+    assert.match(stylesCss, /\.session-rename-editor\s*\{/u, "styles.css 应定义 .session-rename-editor 样式（含焦点态）");
+    task25.renameEditor = true;
+  }
+
+  // ---- 场景 D：成本统一人民币元——drawer-panels 三处 + cost-panel 渲染无 $ / ¥ ----
+  {
+    const servedDrawer = await fetchText(`http://127.0.0.1:${port}/drawer-panels.js`);
+    const servedUtils = await fetchText(`http://127.0.0.1:${port}/utils.js`);
+    const servedCostPanel = await fetchText(`http://127.0.0.1:${port}/components/cost-panel.js`);
+    assert.doesNotMatch(servedDrawer, /formatMoney/u, "drawer-panels 不得引用 formatMoney（$ 格式已删除）");
+    assert.match(servedDrawer, /formatYuan/u, "drawer-panels 应使用 formatYuan");
+    assert.equal((servedDrawer.match(/formatYuan\(/gu) ?? []).length, 3, "drawer-panels 三处成本展示（章节 meta / 估算成本 / 成本 pill）应全走 formatYuan");
+    assert.match(servedUtils, /export function formatYuan\(/u, "utils.js 应导出 formatYuan 单一出口");
+    assert.doesNotMatch(servedUtils, /formatMoney/u, "utils.js 不得保留 formatMoney");
+    assert.doesNotMatch(servedCostPanel, /formatMoney/u, "cost-panel 不得引用 formatMoney");
+    // DOM 渲染级断言：drawer-panels 渲染成本分区 → 成本文本为 N.NN 元，无 $ / ¥
+    const realDocument = globalThis.document;
+    const realWindow = globalThis.window;
+    globalThis.document = {
+      createElement: (tag) => new MockElement(tag),
+      createElementNS: (_namespace, tag) => new MockElement(tag),
+      createTextNode: (text) => ({ nodeType: 3, textContent: String(text) })
+    };
+    globalThis.window = globalThis.window ?? { wwritingDesktop: undefined };
+    try {
+      const { createDrawerPanels } = await import("../src/app-shell/drawer-panels.js");
+      const dashboard = {
+        hasProject: true,
+        project: { tool_permissions: {} },
+        model_profile: { model_name: "deepseek-v4-pro", display: "deepseek-v4-pro", api_key_saved: true, endpoint: "https://api.deepseek.com" },
+        config: { effective: { tool_permissions: {} } },
+        summary: {
+          costAvailable: true,
+          estimatedCost: 1.2,
+          modelCalls: 3,
+          maxModelCalls: 10,
+          completedChapters: 1,
+          targetChapters: 3
+        },
+        chapters: [{ chapter_no: 1, title: "第一章 雨夜来信", status: "completed", actual_words: 1200 }],
+        cost: { costAvailable: true, estimatedCost: 1.2, byChapter: { "1": { estimatedCost: 0.8, calls: 4 } } },
+        sources: { latest: [] }
+      };
+      const bodyEl = new MockElement("div");
+      const panels = createDrawerPanels({
+        refs: { drawerBody: bodyEl },
+        getDrawerTab: () => "cost",
+        setDrawerTab: () => {},
+        getDashboard: () => dashboard,
+        loadDashboard: async () => {},
+        openReader: () => {},
+        openSettingsModal: () => {},
+        showToast: () => {},
+        showActionError: () => {},
+        closeDrawer: () => {}
+      });
+      panels.renderDrawerBody();
+      const costText = bodyEl.textContent;
+      assert.ok(costText.includes("1.20 元"), "成本抽屉应显示两位小数 + 元（1.20 元）");
+      assert.ok(costText.includes("0.80 元"), "章节成本应显示 0.80 元");
+      assert.ok(!costText.includes("$") && !costText.includes("¥"), "成本抽屉不得出现 $ / ¥");
+      assert.ok(!/\.\d{6}\b/u.test(costText), "成本不得残留六位小数格式");
+      // 章节分区 meta「…字 · N.NN 元」与模型分区「估算成本 N.NN 元」同款断言
+      const chapterMeta = [];
+      for (const tab of ["chapters", "model"]) {
+        const tabPanels = createDrawerPanels({
+          refs: { drawerBody: bodyEl },
+          getDrawerTab: () => tab,
+          setDrawerTab: () => {},
+          getDashboard: () => dashboard,
+          loadDashboard: async () => {},
+          openReader: () => {},
+          openSettingsModal: () => {},
+          showToast: () => {},
+          showActionError: () => {},
+          closeDrawer: () => {}
+        });
+        tabPanels.renderDrawerBody();
+        const tabText = bodyEl.textContent;
+        assert.ok(!tabText.includes("$") && !tabText.includes("¥"), `${tab} 分区不得出现 $ / ¥`);
+        assert.ok(tabText.includes("元"), `${tab} 分区成本应带 元 单位`);
+        if (tab === "chapters") chapterMeta.push(tabText);
+      }
+      assert.ok(
+        chapterMeta[0].includes("1,200 字 · 0.80 元"),
+        "章节列表 meta 应为 字数 · 0.80 元（formatYuan 两位小数 + 元）"
+      );
+    } finally {
+      globalThis.document = realDocument;
+      globalThis.window = realWindow;
+    }
+    task25.costFormat = true;
+  }
+
   console.log(
     JSON.stringify(
       {
@@ -370,7 +705,8 @@ try {
         url: `http://127.0.0.1:${port}`,
         projectRoot,
         hasProject: dashboard.hasProject,
-        checks: { gfm: true, workGroup: true, skillsCatalog: true, plainFolderJournal: journalFound }
+        checks: { gfm: true, workGroup: true, skillsCatalog: true, plainFolderJournal: journalFound },
+        task25
       },
       null,
       2

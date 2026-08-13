@@ -11,8 +11,13 @@
 // on the caller's element, but we do clear it first to ensure idempotence
 // across re-renders (drawer body re-mounts on every tab switch).
 
-import { formatNumber } from "../utils.js";
+import { formatNumber, formatYuan } from "../utils.js";
 import { isCacheDiscountedMode } from "../../shared/deepseek-detection.mjs";
+
+// Task 25：formatYuan 已上移为 utils.js 的单一出口（drawer-panels 三处成本展示
+// 与本节共用），这里仅保留 re-export 兼容既有导入路径（tests/app-shell/
+// cost-panel.test.mjs 从本模块导入 formatYuan）。
+export { formatYuan } from "../utils.js";
 
 const SPARKLINE_LENGTH = 20;
 const SPARK_GAP = 1; // px
@@ -67,17 +72,6 @@ function row(label, value, valueClass = "") {
     el("span", { className: "cost-row-label", text: label }),
     el("span", { className: `cost-row-value ${valueClass}`.trim(), text: value })
   );
-}
-
-// Task 21（spec 4.3 #4）：成本统一人民币「元」、两位小数的唯一出口（N.NN 元）。
-// 总成本/章节成本/缓存节省全部经此格式化，任何路径不得再直接拼 $ / ¥ /
-// 或缺两位小数。非有限值（NaN / ±Infinity，上游脏数据）按 0.00 元兜底，
-// 不把 "NaN 元" 泄漏给用户；负数保留符号原样展示（成本语义上不应为负，
-// 保留符号便于发现数据异常，不做静默取绝对值）。
-export function formatYuan(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return "0.00 元";
-  return `${n.toFixed(2)} 元`;
 }
 
 function formatCost(value, costAvailable) {

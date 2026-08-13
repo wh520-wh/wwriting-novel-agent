@@ -1,5 +1,5 @@
 import { icon } from "./icons.js";
-import { formatNumber, formatMoney, formatTime, translateStage, translateSourceKind, translateEventType } from "./utils.js";
+import { formatNumber, formatYuan, formatTime, translateStage, translateSourceKind, translateEventType } from "./utils.js";
 import { postJson } from "./api-client.js";
 import { renderCostPanel as renderCostPanelComponent } from "./components/cost-panel.js";
 
@@ -117,7 +117,7 @@ export function createDrawerPanels(ctx) {
       const meta = document.createElement("span");
       meta.className = "ch-meta mono";
       if (costAvailable && costRow) {
-        meta.textContent = `${formatNumber(chapter.actual_words)} 字 · ${formatMoney(costRow.estimatedCost)}`;
+        meta.textContent = `${formatNumber(chapter.actual_words)} 字 · ${formatYuan(costRow.estimatedCost)}`;
       } else {
         meta.textContent = `${formatNumber(chapter.actual_words)} 字`;
       }
@@ -155,7 +155,7 @@ export function createDrawerPanels(ctx) {
     const kv = document.createElement("dl");
     kv.className = "kv";
     appendKv(kv, "模型调用", `${formatNumber(summary.modelCalls)} / ${summary.maxModelCalls ?? "∞"}`);
-    appendKv(kv, "估算成本", summary.costAvailable ? formatMoney(summary.estimatedCost) : "未配置价格");
+    appendKv(kv, "估算成本", summary.costAvailable ? formatYuan(summary.estimatedCost) : "未配置价格");
     appendKv(kv, "缓存", cacheSummaryText(data));
     appendKv(kv, "联网权限", permissions.network_allowed ? "已开启" : "关闭", permissions.network_allowed ? "accent" : "");
     budget.body.append(kv);
@@ -224,7 +224,7 @@ export function createDrawerPanels(ctx) {
     if (summary.costAvailable) {
       const pill = document.createElement("span");
       pill.className = "pill mono";
-      pill.textContent = formatMoney(summary.estimatedCost);
+      pill.textContent = formatYuan(summary.estimatedCost);
       panel.querySelector(".dpanel-head").append(pill);
     } else {
       const pill = document.createElement("span");
