@@ -616,6 +616,68 @@ test("commitChapter 第 1 次写失败：回滚干净且无误导性 ENOENT 警�
 });
 
 // ---------------------------------------------------------------------------
+// Task 14：commitChapter 与派生记忆（book_summary/continuity）的事务边界。
+// 正式章节与索引是权威提交事实；全书摘要、continuity 与 WWRITING.md 均不是
+// commit 的写入目标，派生提取独立可失败/重试。
+// ---------------------------------------------------------------------------
+
+test("commitChapter 确定性事务不触碰全书摘要、连续性与 WWRITING.md", async () => {
+  const { workspace, projectRoot, project } = await makeProject();
+  try {
+    const wwritingPath = path.join(projectRoot, "WWRITING.md");
+    const wwritingBefore = "# WWriting 项目记忆\n\n- 项目：验收测试小说\n- 阶段：第一章\n";
+    await fs.writeFile(wwritingPath, wwritingBefore, "utf8");
+    await appendChapterSegment({ projectRoot, projectId: project.project_id, chapterNo: 1, segmentNo: 1, content: LONG_PROSE });
+    const summaryBefore = await fs.readFile(path.join(projectRoot, "memory", "book_summary.md"), "utf8");
+
+    const result = await commitChapter({ projectRoot, projectId: project.project_id, chapterNo: 1 });
+    assert.equal(result.ok, true);
+    assert.equal("memory_update" in result, false, "memory_update 标记是 runtime 触发层的职责，commitChapter 不得内联派生提取");
+
+    // 派生数据不被 commit 改写
+    assert.equal(await fs.readFile(path.join(projectRoot, "memory", "book_summary.md"), "utf8"), summaryBefore, "commit 不得改写全书摘要");
+    assert.equal((await loadContinuity(projectRoot)).facts.length, 0, "commit 不得写入 continuity 事实");
+    assert.equal((await loadContinuityState(projectRoot)).extracted_chapters.length, 0, "commit 不得推进记忆水位");
+    // WWRITING.md 不被章节摘要自动污染
+    assert.equal(await fs.readFile(wwritingPath, "utf8"), wwritingBefore, "WWRITING.md 不得被 commit 改写");
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("commitChapter 成功后派生记忆失败不影响已提交正文与索引：独立重试可重建", async () => {
+  const { workspace, projectRoot, project } = await makeProject();
+  try {
+    await appendChapterSegment({ projectRoot, projectId: project.project_id, chapterNo: 1, segmentNo: 1, content: LONG_PROSE });
+    const committed = await commitChapter({ projectRoot, projectId: project.project_id, chapterNo: 1 });
+    const finalPath = path.join(projectRoot, "chapters", "001.md");
+    const finalBefore = await fs.readFile(finalPath, "utf8");
+    const indexBefore = await fs.readFile(path.join(projectRoot, "memory", "chapter_index.json"), "utf8");
+
+    // 独立记忆合并失败（校验和漂移）只拒绝派生落盘，正文与索引保持提交状态
+    await assert.rejects(
+      () => commitChapterMemory({ projectRoot, chapterNo: 1, expectedChapterChecksum: "sha256:wrong", extraction: extractionFixture() }),
+      (error) => error instanceof ProjectOperationError && error.code === "chapter_checksum_mismatch"
+    );
+    assert.equal(await fs.readFile(finalPath, "utf8"), finalBefore, "正文不得因记忆失败回滚");
+    assert.equal(await fs.readFile(path.join(projectRoot, "memory", "chapter_index.json"), "utf8"), indexBefore, "索引不得因记忆失败回滚");
+
+    // 维护重试（正确校验和 + 提取数据）可重建派生记忆
+    const retried = await commitChapterMemory({
+      projectRoot,
+      chapterNo: 1,
+      expectedChapterChecksum: committed.checksum,
+      extraction: extractionFixture()
+    });
+    assert.equal(retried.ok, true);
+    assert.equal(retried.facts_added, 1);
+    assert.match(await fs.readFile(path.join(projectRoot, "memory", "book_summary.md"), "utf8"), /雨夜收到警告/u);
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // commitChapterMemory：合并提取、水位、pending 恢复、校验和、timeline 门禁
 // ---------------------------------------------------------------------------
 

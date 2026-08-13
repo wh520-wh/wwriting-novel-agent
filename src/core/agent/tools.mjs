@@ -1340,7 +1340,7 @@ export function createToolRuntime({
 
   register("commit_chapter", {
     interruptible: false, // 正式章节事务是原子提交，不可中断
-    description: "正式提交一章：真实字数记录、正式文件、章节索引、章节记忆与 checkpoint 一致更新（只保留存储安全约束，不做字数/标题/技能内容门禁）。",
+    description: "正式提交一章：真实字数记录、正式文件、章节索引、章节记忆与 checkpoint 一致更新（只保留存储安全约束，不做字数/标题/技能内容门禁）。结果中的 memory_update 字段报告提交后独立派生记忆提取的状态（ok/skipped/failed；failed 表示可重试，不影响已提交正文与索引）。",
     schema: {
       type: "object",
       properties: {

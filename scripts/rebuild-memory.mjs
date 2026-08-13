@@ -1,9 +1,10 @@
-// scripts/rebuild-memory.mjs —— 重建指定章节记忆（统一 Agent 内核计划 Task 9）。
+// scripts/rebuild-memory.mjs —— 重建已完成章节的派生记忆（统一 Agent 内核计划
+// Task 9，Task 14 校准职责）。
 //
-// 改为创建 ProjectAgent（src/core/agent/index.mjs 公共 seam），以
-// source: "maintenance" 提交「重建指定章节记忆」的结构化输入并等待该 Run 终结；
+// 以 source: "maintenance" 提交「重建指定章节记忆」的结构化输入并等待该 Run 终结；
 // 不得直调 ModelGateway、memory extractor 或 Agent internal。模型在统一运行时里
-// 读取章节正文并调用 commitChapterMemory 深工具完成确定性记忆落盘。
+// 读取章节正文，按章节内容更新全书摘要与连续性档案（派生数据；正文、章节索引
+// 与 WWRITING.md 不属于本脚本的写入目标）。
 import path from "node:path";
 import { loadProject, loadChapterIndex } from "../src/core/project-store.mjs";
 import { createProjectAgent } from "../src/core/agent/index.mjs";
@@ -14,9 +15,25 @@ import { runShellCommand } from "../src/core/shell/runtime.mjs";
 import { CostTracker } from "../src/core/cost-tracker.mjs";
 import { readJson, safeJoin } from "../src/core/fs-utils.mjs";
 
+const USAGE = `usage: node scripts/rebuild-memory.mjs <projectRoot> [--from N] [--chapter N] [--dry-run]
+
+重建已完成章节的派生记忆（全书摘要与连续性档案，不修改正式章节、章节索引与 WWRITING.md）。
+  <projectRoot>  项目根目录（必须配置真实模型，mock provider 会拒绝执行）
+  --from N       只处理 chapter_no >= N 的已完成章节（默认 1）
+  --chapter N    只处理指定章节（优先级高于 --from）
+  --dry-run      只列出目标章节与估算模型调用数，不启动维护 Run
+  --help, -h     显示本帮助
+
+派生数据（memory/book_summary.md、memory/continuity.json、memory/continuity.md）
+可随时重建；正式章节文件、章节索引与 WWRITING.md 是权威事实，本脚本不触碰。`;
+
 const args = process.argv.slice(2);
+if (args.includes("--help") || args.includes("-h")) {
+  console.log(USAGE);
+  process.exit(0);
+}
 const rootArg = args.find((a) => !a.startsWith("--"));
-if (!rootArg) throw new Error("usage: node scripts/rebuild-memory.mjs <projectRoot> [--from N] [--chapter N] [--dry-run]");
+if (!rootArg) throw new Error(`usage: node scripts/rebuild-memory.mjs <projectRoot> [--from N] [--chapter N] [--dry-run]（--help 查看完整说明）`);
 const projectRoot = path.resolve(rootArg);
 const dryRun = args.includes("--dry-run");
 const fromArg = args.indexOf("--from");
@@ -67,7 +84,7 @@ for (const chapter of targets) {
   console.log(`rebuilding memory for chapter ${chapter.chapter_no}...`);
   await agent.submit({
     projectRoot,
-    text: `重建第 ${chapter.chapter_no} 章的记忆：读取该章正文（read_file），按章节内容更新章节记忆、连续性与全书摘要（commitChapterMemory 已就绪时使用它；如该工具不可用请直接说明已读取的内容）。`,
+    text: `重建第 ${chapter.chapter_no} 章的记忆：读取该章正文（read_file），按章节内容更新全书摘要与连续性档案（memory/book_summary.md、memory/continuity.json、memory/continuity.md）。摘要是派生数据，可覆盖为覆盖到本章的最新版本；不要改动正式章节文件、章节索引或 WWRITING.md。`,
     source: "maintenance"
   });
 }
