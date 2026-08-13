@@ -58,3 +58,21 @@ test("project lock allows different projects to run independently", async () => 
 
   assert.ok(events.indexOf("b:start") < events.indexOf("a:end"));
 });
+
+test("project lock removes tail entries once tasks settle (registry 完成后无尾条目)", async () => {
+  // B10：registry 必须按"派生 tail Promise 本身"删除尾条目（比较 current 永远不
+  // 相等，旧实现因此泄漏）。通过构造函数注入的观察者 seam 观测删除事件，不向
+  // registry 的公开面暴露任何生产诊断 API。
+  const removals = [];
+  const locks = createProjectLockRegistry({ onTailRemoved: (key) => removals.push(key) });
+  const projectRoot = path.join(os.tmpdir(), "wwriting-lock-tails");
+
+  await locks.runExclusive(projectRoot, async () => {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  });
+  await locks.runExclusive(projectRoot, async () => "done");
+
+  assert.equal(removals.length, 2, "每个 settle 的任务都应移除自己的尾条目");
+  assert.equal(removals[0], removals[1], "同一项目的 key 归一化一致");
+});
+

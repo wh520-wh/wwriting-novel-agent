@@ -1,10 +1,24 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { writeFileAtomic } from "./fs-utils.mjs";
 import { workspaceIdForPath } from "./workspaces/store.mjs";
 
 const STATE_FILE = "app-state.json";
 const MAX_RECENTS = 12;
+
+// B9：app-state 写路径全部串行化（module mutex）。recordRecentProject /
+// forgetRecentProject 是 read-modify-write，并发交错执行时后写的全量覆写会
+// 吞掉先写方刚加入的条目（两个 recent RMW 不覆盖）。串行化保证每个 RMW 原子
+// 完成后才开始下一个；saveAppState 用 writeFileAtomic 落盘（先写临时文件再
+// rename，读方永远看不到半截文件）。
+let stateWriteChain = Promise.resolve();
+
+function serializedStateWrite(task) {
+  const run = stateWriteChain.then(task, task);
+  stateWriteChain = run.then(() => undefined, () => undefined);
+  return run;
+}
 
 function stateFile(stateRoot) {
   return path.join(path.resolve(stateRoot), STATE_FILE);
@@ -55,11 +69,15 @@ export async function saveAppState(stateRoot, state) {
   const root = path.resolve(stateRoot);
   await fsp.mkdir(root, { recursive: true });
   const normalized = normalizeState(state);
-  await fsp.writeFile(stateFile(root), `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+  await writeFileAtomic(stateFile(root), `${JSON.stringify(normalized, null, 2)}\n`);
   return normalized;
 }
 
-export async function recordRecentProject(stateRoot, project) {
+export function recordRecentProject(stateRoot, project) {
+  return serializedStateWrite(() => recordRecentProjectUnsafe(stateRoot, project));
+}
+
+async function recordRecentProjectUnsafe(stateRoot, project) {
   if (!project || typeof project.projectRoot !== "string" || project.projectRoot.trim().length === 0) {
     return loadAppState(stateRoot);
   }
@@ -85,7 +103,11 @@ export async function recordRecentProject(stateRoot, project) {
   return saveAppState(stateRoot, { lastProjectRoot: resolvedRoot, recentProjects });
 }
 
-export async function forgetRecentProject(stateRoot, projectRoot) {
+export function forgetRecentProject(stateRoot, projectRoot) {
+  return serializedStateWrite(() => forgetRecentProjectUnsafe(stateRoot, projectRoot));
+}
+
+async function forgetRecentProjectUnsafe(stateRoot, projectRoot) {
   const resolvedRoot = path.resolve(projectRoot);
   const state = await loadAppState(stateRoot);
   const recentProjects = state.recentProjects.filter((item) => !samePath(item.projectRoot, resolvedRoot));

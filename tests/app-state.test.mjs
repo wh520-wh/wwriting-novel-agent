@@ -135,6 +135,41 @@ test("旧 app-state.json 无 workspace_id 时加载补齐且不丢 recent 顺序
   assert.equal(state.recentProjects[1].workspace_id, workspaceIdForPath("/novels/a"));
 });
 
+test("两个并发 recordRecentProject 不互相覆盖（串行化 + 原子写）", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-appstate-race-"));
+  await Promise.all([
+    recordRecentProject(root, { projectRoot: "/novels/a", title: "A" }),
+    recordRecentProject(root, { projectRoot: "/novels/b", title: "B" })
+  ]);
+  const state = await loadAppState(root);
+  assert.equal(state.recentProjects.length, 2, "并发 read-modify-write 不得互相覆盖");
+  const roots = state.recentProjects.map((p) => p.projectRoot).sort();
+  assert.deepEqual(roots, [path.resolve("/novels/a"), path.resolve("/novels/b")].sort());
+  assert.equal(state.lastProjectRoot, path.resolve("/novels/b"));
+  // 原子写不留临时文件
+  const entries = await fs.readdir(root);
+  assert.deepEqual(entries, ["app-state.json"]);
+});
+
+test("serializedStateWrite 保链：首个写失败不阻塞后续任务", async () => {
+  const blocker = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-appstate-chain-"));
+  const blockFile = path.join(blocker, "blocker");
+  await fs.writeFile(blockFile, "file", "utf8");
+  // 父路径是文件：mkdir/write 必然失败（跨平台确定性，不依赖只读属性）。
+  const badRoot = path.join(blockFile, "nested");
+
+  await assert.rejects(
+    () => recordRecentProject(badRoot, { projectRoot: "/novels/x", title: "X" }),
+    (error) => error != null
+  );
+
+  // 链上第一个任务拒绝后，module mutex 必须保链：后续任务照常执行。
+  const goodRoot = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-appstate-chain-good-"));
+  const state = await recordRecentProject(goodRoot, { projectRoot: "/novels/y", title: "Y" });
+  assert.equal(state.recentProjects.length, 1);
+  assert.equal(state.recentProjects[0].projectRoot, path.resolve("/novels/y"));
+});
+
 test("recordRecentProject 条目包含稳定 workspace_id，重开不挪动 recent 位置", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-appstate-wsid-"));
   await recordRecentProject(root, { projectRoot: "/novels/a", title: "A" });

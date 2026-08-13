@@ -6,10 +6,16 @@
 // extracted from app.js) with a controllable fetch stub and a minimal DOM that
 // mirrors the elements app.js touches on a switch.
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { createProjectScope } from "../../src/app-shell/project-scope.mjs";
 import { withProjectScope } from "../../src/app-shell/api-client.js";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const appJsPath = path.join(here, "..", "..", "src", "app-shell", "app.js");
 
 // ---- minimal DOM mirroring the elements app.js touches on a switch ----
 class MockElement {
@@ -257,4 +263,89 @@ test("integration: two quick switches — the second wins, neither stale respons
   assert.equal(chapterEl.textContent.includes("B 内容"), true);
   assert.equal(chapterEl.textContent.includes("A 内容"), false);
   assert.equal(chapterEl.textContent.includes("C 内容"), false);
+});
+
+// ---- reader gate（B7）：openReader 的守卫形状——捕获 {projectScope, chapterNo}，
+// await 后校验项目 scope 与 readerChapterNo；慢旧章节响应不覆盖新章。app.js 是页面
+// 组合根（不可直接 import），此处用可控 fetch 模拟守卫契约（与 dashboard gate 同款
+// 测试策略），并另以静态断言确认生产 app.js 实现同款守卫。
+function createReaderGate({ projectScope, fetchImpl, getChapterNo, onFresh, onError }) {
+  return {
+    async openReader(chapterNo) {
+      const token = projectScope.capture();
+      try {
+        const data = await fetchImpl(chapterNo);
+        if (!projectScope.isCurrent(token)) return { status: "stale", token };
+        if (getChapterNo() !== chapterNo) return { status: "stale", token };
+        if (typeof onFresh === "function") onFresh(data, chapterNo);
+        return { status: "fresh", token, data };
+      } catch (error) {
+        if (!projectScope.isCurrent(token)) return { status: "stale", token, error };
+        if (getChapterNo() !== chapterNo) return { status: "stale", token, error };
+        if (typeof onError === "function") onError(error, chapterNo);
+        return { status: "fresh", token, error };
+      }
+    },
+  };
+}
+
+function makeReaderFetch() {
+  const pending = new Map();
+  return {
+    queue(chapterNo, payload, { delay = 0 } = {}) {
+      pending.set(chapterNo, { payload, delay, settled: false });
+    },
+    async fetch(chapterNo) {
+      const entry = pending.get(chapterNo);
+      if (!entry) throw new Error(`no stub for chapter ${chapterNo}`);
+      if (entry.delay) await new Promise((r) => setTimeout(r, entry.delay));
+      return entry.payload;
+    },
+  };
+}
+
+test("B7: 慢旧章节响应不覆盖新章（reader 守卫契约模拟）", async () => {
+  const projectScope = createProjectScope();
+  projectScope.activate("D:\\projects\\a");
+  const fetchStub = makeReaderFetch();
+  const rendered = [];
+  let readerChapterNo = null;
+
+  const gate = createReaderGate({
+    projectScope,
+    getChapterNo: () => readerChapterNo,
+    fetchImpl: (c) => fetchStub.fetch(c),
+    onFresh: (data, chapterNo) => { rendered.push(chapterNo); }
+  });
+
+  // 第 1 章响应很慢：请求发出后用户切到第 2 章
+  fetchStub.queue(1, { title: "第 1 章", content: "旧正文" }, { delay: 60 });
+  const slowPromise = gate.openReader(1);
+  readerChapterNo = 2;
+  fetchStub.queue(2, { title: "第 2 章", content: "新正文" }, { delay: 0 });
+  const fastResult = await gate.openReader(2);
+  assert.equal(fastResult.status, "fresh");
+  assert.deepEqual(rendered, [2], "第 2 章应立即渲染");
+
+  const slowResult = await slowPromise;
+  assert.equal(slowResult.status, "stale", "旧章节响应必须被标记 stale");
+  assert.deepEqual(rendered, [2], "慢旧章节响应不得覆盖新章");
+
+  // 项目切换同样使在途 reader 响应失效（scope 校验）
+  fetchStub.queue(3, { title: "第 3 章", content: "旧项目正文" }, { delay: 30 });
+  const pendingPromise = gate.openReader(3);
+  projectScope.activate("D:\\projects\\b");
+  readerChapterNo = null; // clearTransientState 语义
+  const pendingResult = await pendingPromise;
+  assert.equal(pendingResult.status, "stale", "切项目后旧响应的 scope 失效");
+  assert.deepEqual(rendered, [2], "切项目后旧响应不得渲染");
+});
+
+test("B7: app.js 在 openReader 中实现 await 后 scope/no 校验（静态契约）", async () => {
+  const appSource = await fs.readFile(appJsPath, "utf8");
+  // 无参 capture：openReader 捕获当前项目 scope token（loadDashboard 使用带参
+  // capture(activeProjectRoot)，无参形式是本守卫的 reader 专属形状）。
+  assert.match(appSource, /const\s+token\s*=\s*projectScope\.capture\s*\(\s*\)/u, "openReader 应捕获项目 scope token");
+  assert.match(appSource, /projectScope\.isCurrent\s*\(\s*token\s*\)/u, "await 后必须校验项目 scope");
+  assert.match(appSource, /readerChapterNo\s*!==\s*chapterNo/u, "await 后必须比对 readerChapterNo（慢旧章节不覆盖新章）");
 });

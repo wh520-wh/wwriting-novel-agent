@@ -3,7 +3,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
-const { listenWithFallback } = require("./server-start.cjs");
+const { listenWithFallback, closeServerGracefully } = require("./server-start.cjs");
 const { desktopWindowChrome } = require("./window-chrome.cjs");
 const { windowColors } = require("./window-colors.cjs");
 
@@ -55,11 +55,13 @@ if (!gotSingleInstanceLock) {
     });
 
     ipcMain.handle("wwriting:reveal-path", async (_event, targetPath) => {
-      const resolved = path.resolve(String(targetPath ?? ""));
-      // 安全：只允许打开 rootDir 下的路径
-      if (!resolved.startsWith(rootDir + path.sep) && resolved !== rootDir) {
-        throw new Error("路径不在项目工作区内");
-      }
+      // B1：reveal 类 IPC 统一走 validateProjectRoot 白名单（resolveRevealTarget）。
+      // 只接受验证后的项目根/从根派生的目录，任意路径一律拒绝——不信任渲染进程
+      // 传入的路径，也不再用应用安装目录做前缀判断（项目可能在工作区之外）。
+      const { resolveRevealTarget } = await import(
+        pathToFileURL(path.join(rootDir, "src", "core", "app-dashboard.mjs")).href
+      );
+      const resolved = await resolveRevealTarget(targetPath ?? "");
       try {
         fs.mkdirSync(resolved, { recursive: true });
       } catch (err) {
@@ -216,7 +218,9 @@ app.on("before-quit", async (event) => {
     } catch {
       // 超时或 server 已不可达 — 忽略，直接 close
     }
-    await new Promise((resolve) => server.close(resolve));
+    // B17：server.close 无超时会因残留 keep-alive 连接拖死退出流程——
+    // closeServerGracefully 在超时后调用 closeAllConnections 并 resolve。
+    await closeServerGracefully(server, { timeoutMs: 5000 });
     server = null;
   }
   app.quit();
