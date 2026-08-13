@@ -15,7 +15,8 @@ import path from "node:path";
 import test from "node:test";
 import {
   ensureMigrated,
-  migrateLegacySkills
+  migrateLegacySkills,
+  readMigrationMarker
 } from "../../src/core/skills/legacy-migration.mjs";
 import { createSkillService } from "../../src/core/skills/index.mjs";
 import { readSkillFile } from "../../src/core/skills/skill-file.mjs";
@@ -105,6 +106,52 @@ function readMarker(userHome, scope) {
   return JSON.parse(fs.readFileSync(path.join(backupRootFor(userHome), scope, "migration-marker.json"), "utf8"));
 }
 
+// 递归收集 backupRoot 下 parent 目录名为 scope 的 migration-marker.json（R5-13：
+// project 层 marker 位于 <backupRoot>/<projectKey>/project/，global 层不变）。
+function findMarkers(userHome, scope) {
+  const found = [];
+  const walk = (dir) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile() && entry.name === "migration-marker.json" && path.basename(path.dirname(full)) === scope) {
+        found.push(full);
+      }
+    }
+  };
+  walk(backupRootFor(userHome));
+  return found.sort();
+}
+
+// 递归收集 backupRoot 下所有备份的 <skillName>/skill.*（旧 manifest 文件，跨项目
+// 隔离目录）。
+function findBackupManifests(userHome, skillName) {
+  const found = [];
+  const walk = (dir) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile() && entry.name.startsWith("skill.") && path.basename(path.dirname(full)) === skillName) {
+        found.push(full);
+      }
+    }
+  };
+  walk(backupRootFor(userHome));
+  return found.sort();
+}
+
 test("全局 scope 的 JSON manifest 迁移为 SKILL.md，旧文件入 backup，marker 完整", async (t) => {
   const userHome = makeTemp();
   const skillRoot = path.join(userHome, ".wwriting", "skills");
@@ -183,7 +230,10 @@ test("项目 scope 的 YAML manifest（块标量）迁移并保留多行内容",
     { scope: "project", name: "chapter-opening-hook", manifest: "skill.yaml", status: "migrated" }
   ]);
   assert.deepEqual(result.failed, []);
-  assert.equal(fs.existsSync(path.join(backupRootFor(userHome), "project", "chapter-opening-hook", "skill.yaml")), true);
+  // R5-13：project scope 的 backup 按 canonical projectRoot hash 隔离。
+  const yamlBackups = findBackupManifests(userHome, "chapter-opening-hook");
+  assert.equal(yamlBackups.length, 1, "backup 必须存在于项目隔离目录");
+  assert.equal(path.basename(yamlBackups[0]), "skill.yaml");
 
   const skill = await readSkillFile(dir, { source: "project" });
   assert.equal(skill.metadata.wwriting.priority, 40);
@@ -309,17 +359,21 @@ test("迁移重复运行不改写已验证的 SKILL.md，且无 manifest 时完�
 
   const first = await migrateLegacySkills({ projectRoot, userHome, clock: FIXED_CLOCK });
   const skillMd = fs.readFileSync(path.join(skillRoot, "stable", "SKILL.md"), "utf8");
-  const marker = readMarker(userHome, "project");
-  const markerRaw = fs.readFileSync(path.join(backupRootFor(userHome), "project", "migration-marker.json"), "utf8");
-  const backupListing = listAllFiles(path.join(backupRootFor(userHome), "project"));
+  // R5-13：project scope 的 marker/backup 按 canonical projectRoot hash 隔离，
+  // 不再位于共享的 <backupRoot>/project/ 路径。
+  const [markerPath] = findMarkers(userHome, "project");
+  assert.ok(markerPath, "project marker 必须存在（R5-13 项目隔离目录）");
+  const marker = JSON.parse(fs.readFileSync(markerPath, "utf8"));
+  const markerRaw = fs.readFileSync(markerPath, "utf8");
+  const backupListing = listAllFiles(path.dirname(markerPath));
 
   const second = await migrateLegacySkills({ projectRoot, userHome, clock: FIXED_CLOCK });
 
   assert.deepEqual(second.migrated, [], "重复运行不再迁移任何技能");
   assert.deepEqual(second.failed, []);
   assert.equal(fs.readFileSync(path.join(skillRoot, "stable", "SKILL.md"), "utf8"), skillMd, "SKILL.md 逐字不变");
-  assert.equal(fs.readFileSync(path.join(backupRootFor(userHome), "project", "migration-marker.json"), "utf8"), markerRaw, "marker 不重写");
-  assert.deepEqual(listAllFiles(path.join(backupRootFor(userHome), "project")), backupListing, "backup 目录不变");
+  assert.equal(fs.readFileSync(markerPath, "utf8"), markerRaw, "marker 不重写");
+  assert.deepEqual(listAllFiles(path.dirname(markerPath)), backupListing, "backup 目录不变");
   assert.equal(marker.schema_version, 2);
 });
 
@@ -524,3 +578,98 @@ function listAllFiles(dir) {
   walk(dir);
   return out.sort();
 }
+
+// ---------------------------------------------------------------------------
+// R5-11：Windows 下技能名比较统一大小写归一——目录名与 manifest name 仅大小写
+// 不同视为同一技能（不误报 skill_name_mismatch）。
+// ---------------------------------------------------------------------------
+
+test("Windows：manifest name 与目录名仅大小写不同视为同一技能，迁移成功（R5-11）", async (t) => {
+  if (process.platform !== "win32") {
+    t.skip("大小写不敏感的名称比较仅适用于 Windows 文件系统");
+    return;
+  }
+  const projectRoot = makeTemp();
+  const userHome = makeTemp();
+  // 目录名是 manifest name 的大小写变体：Windows 下是同一个技能的同一目录。
+  writeLegacyManifest(path.join(projectRoot, "skills"), "Suspense-Chapter-End", LEGACY_MANIFEST, "json");
+  t.after(() => {
+    rmSync(projectRoot, { recursive: true, force: true });
+    rmSync(userHome, { recursive: true, force: true });
+  });
+
+  const result = await migrateLegacySkills({ projectRoot, userHome, clock: FIXED_CLOCK });
+
+  assert.deepEqual(result.failed, [], "大小写变体不得误报 skill_name_mismatch");
+  assert.equal(result.migrated.length, 1);
+  assert.equal(result.migrated[0].name, "Suspense-Chapter-End");
+  // 迁移产物通过 readSkillFile 验证（Windows 下目录名与 name 大小写一致视为相同）。
+  const skill = await readSkillFile(path.join(projectRoot, "skills", "Suspense-Chapter-End"), { source: "project" });
+  assert.equal(skill.name, "suspense-chapter-end");
+});
+
+// ---------------------------------------------------------------------------
+// R5-13：project 迁移 backup/marker 按 canonical projectRoot 隔离——两个项目
+// 的同名技能互不覆盖，失败项不串扰。
+// ---------------------------------------------------------------------------
+
+test("project 迁移 backup/marker 按 canonical projectRoot 隔离：两个项目同名技能互不覆盖（R5-13）", async (t) => {
+  const userHome = makeTemp();
+  const projectRoot = makeTemp();
+  const projectRoot2 = makeTemp();
+  const name = "shared-skill";
+  // 两个项目都有同名技能；manifest 内容可区分（description 不同），项目一额外有
+  // 一个损坏的 manifest（失败项只属于项目一）。
+  writeLegacyManifest(
+    path.join(projectRoot, "skills"),
+    name,
+    { ...LEGACY_MANIFEST, name, description: "项目一的同名技能" },
+    "json"
+  );
+  const badDir = path.join(projectRoot, "skills", "broken-skill");
+  fs.mkdirSync(badDir, { recursive: true });
+  fs.writeFileSync(path.join(badDir, "skill.json"), "{ broken", "utf8");
+  writeLegacyManifest(
+    path.join(projectRoot2, "skills"),
+    name,
+    { ...LEGACY_MANIFEST, name, description: "项目二的同名技能" },
+    "json"
+  );
+  t.after(() => {
+    rmSync(userHome, { recursive: true, force: true });
+    rmSync(projectRoot, { recursive: true, force: true });
+    rmSync(projectRoot2, { recursive: true, force: true });
+  });
+
+  const first = await migrateLegacySkills({ projectRoot, userHome, clock: FIXED_CLOCK });
+  const second = await migrateLegacySkills({ projectRoot: projectRoot2, userHome, clock: FIXED_CLOCK });
+  assert.equal(first.failed.length, 1, "项目一的损坏 manifest 记入 failed");
+  assert.equal(first.failed[0].name, "broken-skill");
+  assert.deepEqual(second.failed, [], "项目二没有失败项");
+
+  // 同名技能的旧 manifest 备份按项目隔离：两个项目各有一份，后迁移不覆盖前一个。
+  const backups = findBackupManifests(userHome, name);
+  assert.equal(backups.length, 2, "同名技能在两个项目下必须各有独立 backup");
+  const backupContents = backups.map((backup) => fs.readFileSync(backup, "utf8"));
+  assert.ok(backupContents.some((content) => content.includes("项目一的同名技能")), "项目一的 backup 必须保留");
+  assert.ok(backupContents.some((content) => content.includes("项目二的同名技能")), "项目二的 backup 必须保留");
+
+  // marker 同样按项目隔离：两个项目各有独立 marker。
+  const markers = findMarkers(userHome, "project");
+  assert.equal(markers.length, 2, "两个项目必须各有独立 migration marker");
+  for (const markerPath of markers) {
+    const marker = JSON.parse(fs.readFileSync(markerPath, "utf8"));
+    assert.equal(marker.scope, "project");
+    assert.equal(marker.migrated.length, 1);
+    assert.equal(marker.migrated[0].name, name);
+  }
+
+  // 读侧同口径：readMigrationMarker 按 projectRoot 解析到各自的 marker，
+  // 后迁移项目不得看到前一个项目的失败项。
+  const marker1 = await readMigrationMarker({ scope: "project", userHome, projectRoot });
+  const marker2 = await readMigrationMarker({ scope: "project", userHome, projectRoot: projectRoot2 });
+  assert.ok(marker1 && marker2, "两个项目都必须能读到自己的 marker");
+  assert.equal(marker1.failed.length, 1, "项目一保留自己的失败项");
+  assert.equal(marker1.failed[0].name, "broken-skill");
+  assert.deepEqual(marker2.failed, [], "项目二不得携带项目一的失败项");
+});

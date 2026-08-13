@@ -253,6 +253,69 @@ test("ZIP 导入：SKILL.md 在 zip 根（无顶层目录）也可导入", async
 });
 
 // ---------------------------------------------------------------------------
+// R5-2：白名单单元数据项（__MACOSX / .DS_Store / 顶层 README）随单真实根导入；
+// 多个真实技能根仍拒绝。
+// ---------------------------------------------------------------------------
+
+test("ZIP 导入：单真实根 + __MACOSX/.DS_Store/顶层 README 成功，单元数据项不进入技能目录（R5-2）", async () => {
+  const { dir, zipPath } = await writeZip(
+    buildZip([
+      { name: "mac-skill/SKILL.md", content: SKILL_MD("mac-skill") },
+      { name: "mac-skill/scripts/run.mjs", content: "export default 1;\n" },
+      { name: "mac-skill/", content: "" },
+      // macOS Finder/归档工具产物：__MACOSX 镜像、.DS_Store、顶层 README
+      { name: "__MACOSX/mac-skill/", content: "" },
+      { name: "__MACOSX/mac-skill/SKILL.md", content: "AppleDouble junk" },
+      { name: "__MACOSX/._SKILL.md", content: "AppleDouble junk" },
+      { name: ".DS_Store", content: "junk" },
+      { name: "README.md", content: "readme junk" },
+      { name: "README.txt", content: "more junk" }
+    ])
+  );
+  const targetRoot = await makeTemp("wwr-target-");
+  try {
+    const staged = await stageSkillSource({ source: zipPath, targetRoot });
+    try {
+      assert.equal(staged.name, "mac-skill", "白名单单元数据项不得影响单真实根的识别");
+      assert.deepEqual(
+        await listAllFiles(staged.dir),
+        ["SKILL.md", "scripts/run.mjs"],
+        "白名单单元数据项不得进入技能目录"
+      );
+    } finally {
+      await cleanup(staged.stagingRoot);
+    }
+  } finally {
+    await cleanup(dir, targetRoot);
+  }
+});
+
+test("ZIP 导入：多个真实技能根拒绝（R5-2）", async () => {
+  await assertZipRejected(
+    [
+      { name: "alpha-skill/SKILL.md", content: SKILL_MD("alpha-skill") },
+      { name: "beta-skill/SKILL.md", content: SKILL_MD("beta-skill") }
+    ],
+    "skill_zip_invalid",
+    "多个真实技能根必须拒绝"
+  );
+});
+
+test("ZIP 导入：白名单单元数据项不掩盖两个真实技能根的拒绝（R5-2）", async () => {
+  await assertZipRejected(
+    [
+      { name: "alpha-skill/SKILL.md", content: SKILL_MD("alpha-skill") },
+      { name: "beta-skill/SKILL.md", content: SKILL_MD("beta-skill") },
+      { name: "__MACOSX/alpha-skill/", content: "" },
+      { name: ".DS_Store", content: "junk" },
+      { name: "README.md", content: "junk" }
+    ],
+    "skill_zip_invalid",
+    "白名单项不计入真实根，两个真实根仍必须拒绝"
+  );
+});
+
+// ---------------------------------------------------------------------------
 // ZIP entry 拒绝规则
 // ---------------------------------------------------------------------------
 
@@ -561,5 +624,52 @@ test("seam：保留名称不可删除——removeSkill 拒绝 skill_reserved 且
     assert.equal(existsSync(path.join(fakeDir, "SKILL.md")), true, "同名目录内容不得被改动");
   } finally {
     await cleanup(projectRoot, userHome);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// R5-11：Windows 下技能名大小写归一——受保护内置名的大小写变体同样拒绝
+// ---------------------------------------------------------------------------
+
+test("Windows：受保护内置名的大小写变体导入/删除拒绝（R5-11）", async (t) => {
+  if (process.platform !== "win32") {
+    t.skip("大小写不敏感的保留名判定仅适用于 Windows 文件系统");
+    return;
+  }
+  const projectRoot = await makeTemp("wwr-proj-");
+  const userHome = await makeTemp("wwr-home-");
+  const sourceRoot = await makeTemp("wwr-src-");
+  try {
+    const service = createSkillService({ userHome, resourcesPath: await makeTemp(), builtinRoot: await makeTemp() });
+    for (const variant of ["Balanced", "FAST-READABLE", "Psychological-Literary"]) {
+      const sourceDir = path.join(sourceRoot, variant);
+      await fs.mkdir(sourceDir, { recursive: true });
+      await fs.writeFile(path.join(sourceDir, "SKILL.md"), SKILL_MD(variant), "utf8");
+
+      await assert.rejects(
+        service.importSkill({ projectRoot, source: sourceDir, scope: "project" }),
+        (error) => error.code === "skill_reserved",
+        `大小写变体 ${variant} 的导入必须拒绝`
+      );
+      await assert.rejects(
+        service.importSkill({ projectRoot, source: sourceDir, scope: "project", replace: true }),
+        (error) => error.code === "skill_reserved",
+        `大小写变体 ${variant} 的 replace 导入也必须拒绝`
+      );
+      // 拒绝发生在写盘前：变体目录不得落盘。
+      assert.equal(existsSync(path.join(projectRoot, "skills", variant)), false, `${variant} 不得落盘到项目技能根`);
+    }
+    // 大小写变体的删除同样拒绝（Windows 下与保留名同身份）。
+    const fakeDir = path.join(projectRoot, "skills", "Balanced");
+    await fs.mkdir(fakeDir, { recursive: true });
+    await fs.writeFile(path.join(fakeDir, "SKILL.md"), SKILL_MD("Balanced"), "utf8");
+    await assert.rejects(
+      service.removeSkill({ projectRoot, name: "Balanced", scope: "project" }),
+      (error) => error.code === "skill_reserved",
+      "大小写变体的 removeSkill 必须拒绝"
+    );
+    assert.equal(existsSync(fakeDir), true, "拒绝后变体目录必须原样保留");
+  } finally {
+    await cleanup(projectRoot, userHome, sourceRoot);
   }
 });

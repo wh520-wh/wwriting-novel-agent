@@ -173,3 +173,77 @@ test("fetchWebPage rejects non-http protocols", async () => {
     /Only http and https/u
   );
 });
+
+// ---------------------------------------------------------------------------
+// R5-8：缺失 sources.md / source_summaries.md 的项目（旧项目、手工打开的目录）
+// 首次搜索/抓取自动创建父目录与文件，不抛 ENOENT。
+// ---------------------------------------------------------------------------
+
+test("缺失 sources.md 的项目首次搜索自动创建文件（R5-8）", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-web-missing-sources-"));
+  try {
+    const { projectRoot } = await createProject(root, {
+      slug: "project",
+      network_allowed: true
+    });
+    // 模拟旧项目/手工打开的目录：research 产物文件不存在。
+    await fs.rm(path.join(projectRoot, "sources.md"), { force: true });
+    await fs.rm(path.join(projectRoot, "source_summaries.md"), { force: true });
+    const project = await loadProject(projectRoot);
+
+    const result = await searchWeb(
+      projectRoot,
+      project,
+      { query: "missing sources" },
+      {
+        adapter: {
+          async search() {
+            return [{ title: "T", url: "https://example.test/t", snippet: "s" }];
+          }
+        }
+      }
+    );
+    assert.equal(result.ok, true);
+    const sources = await fs.readFile(path.join(projectRoot, "sources.md"), "utf8");
+    assert.ok(sources.startsWith("# Sources"), "缺失的 sources.md 必须创建并带头部");
+    assert.ok(sources.includes("missing sources"));
+    // 快照父目录照常创建。
+    assert.equal((await fs.readdir(path.join(projectRoot, "sources"))).length, 1);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("缺失 source_summaries.md 的项目首次抓取自动创建文件（R5-8）", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-web-missing-summaries-"));
+  try {
+    const { projectRoot } = await createProject(root, {
+      slug: "project",
+      network_allowed: true
+    });
+    await fs.rm(path.join(projectRoot, "sources.md"), { force: true });
+    await fs.rm(path.join(projectRoot, "source_summaries.md"), { force: true });
+    const project = await loadProject(projectRoot);
+
+    const result = await fetchWebPage(
+      projectRoot,
+      project,
+      { url: "https://example.test/research" },
+      {
+        adapter: {
+          async fetch() {
+            return { title: "Note", html: "<p>Useful paragraph.</p>" };
+          }
+        }
+      }
+    );
+    assert.equal(result.ok, true);
+    const sources = await fs.readFile(path.join(projectRoot, "sources.md"), "utf8");
+    assert.ok(sources.startsWith("# Sources"), "缺失的 sources.md 必须创建并带头部");
+    const summaries = await fs.readFile(path.join(projectRoot, "source_summaries.md"), "utf8");
+    assert.ok(summaries.startsWith("# Source Summaries"), "缺失的 source_summaries.md 必须创建并带头部");
+    assert.ok(summaries.includes("Useful paragraph."));
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});

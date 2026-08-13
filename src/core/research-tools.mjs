@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
+import path from "node:path";
 import { isPermissionAllowed, resolveRuntimeConfig } from "./config-runtime.mjs";
 import { appendEvent } from "./event-log.mjs";
-import { safeJoin, sha256, writeJsonAtomic } from "./fs-utils.mjs";
+import { ensureDir, pathExists, safeJoin, sha256, writeJsonAtomic } from "./fs-utils.mjs";
 
 export class NetworkPermissionError extends Error {
   constructor(message = "Network tools are disabled for this project.") {
@@ -198,9 +199,21 @@ async function writeSourceSnapshot(projectRoot, payload) {
   };
 }
 
+// 追加行到项目的 research 产物文件（R5-8）：旧项目/手工打开的目录可能没有
+// sources.md / source_summaries.md——先确保父目录存在并创建缺失的文件（带头部，
+// 与 createProject 的初始化一致），再追加，绝不让首次调用抛 ENOENT。
+async function appendSourceFile(projectRoot, relativePath, header, line) {
+  const target = safeJoin(projectRoot, relativePath);
+  await ensureDir(path.dirname(target));
+  if (!(await pathExists(target))) {
+    await fs.writeFile(target, `${header}\n\n`, "utf8");
+  }
+  await fs.appendFile(target, line, "utf8");
+}
+
 async function appendSourceIndex(projectRoot, entry) {
   const line = `- [${entry.kind}] ${entry.title}${entry.url ? ` <${entry.url}>` : ""} -> ${entry.snapshot_path} (${entry.checksum})\n`;
-  await fs.appendFile(safeJoin(projectRoot, "sources.md"), line, "utf8");
+  await appendSourceFile(projectRoot, "sources.md", "# Sources", line);
 }
 
 async function appendSourceSummary(projectRoot, entry) {
@@ -220,7 +233,7 @@ async function appendSourceSummary(projectRoot, entry) {
   ]
     .filter((item) => item !== "")
     .join("\n");
-  await fs.appendFile(safeJoin(projectRoot, "source_summaries.md"), `${section}\n`, "utf8");
+  await appendSourceFile(projectRoot, "source_summaries.md", "# Source Summaries", `${section}\n`);
 }
 
 function validateSearchInput(input) {

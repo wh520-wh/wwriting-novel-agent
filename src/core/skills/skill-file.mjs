@@ -126,12 +126,21 @@ function splitFrontmatter(raw) {
   };
 }
 
-// name 必须存在且与目录名一致（冻结契约 §2.5）。
+// 技能名比较（R5-11）：Windows 文件系统大小写不敏感，名称比较统一大小写归一
+// （大小写变体视为同一技能——冲突检测与一致性校验同口径）；POSIX 保持大小写敏感。
+export function skillNamesEqual(a, b) {
+  if (process.platform === "win32") {
+    return String(a).toLowerCase() === String(b).toLowerCase();
+  }
+  return a === b;
+}
+
+// name 必须存在且与目录名一致（冻结契约 §2.5；Windows 下大小写归一后比较）。
 function validateSkillName(name, dirName) {
   if (typeof name !== "string" || name.length === 0) {
     throw skillError("skill_missing_name", `SKILL.md 缺少 name 字段（目录: ${dirName}）`);
   }
-  if (name !== dirName) {
+  if (!skillNamesEqual(name, dirName)) {
     throw skillError("skill_name_mismatch", `目录名 ${dirName} 与 frontmatter name ${name} 不同`);
   }
 }

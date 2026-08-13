@@ -22,7 +22,7 @@ import { pathExists } from "../fs-utils.mjs";
 import { discoverSkills, PROTECTED_BUILTIN_SKILLS } from "./catalog.mjs";
 import { stageSkillSource } from "./importer.mjs";
 import { ensureMigrated, readMigrationMarker } from "./legacy-migration.mjs";
-import { assertSafeSkillDirName, readSkillFile, readSkillResource, skillError } from "./skill-file.mjs";
+import { assertSafeSkillDirName, readSkillFile, readSkillResource, skillError, skillNamesEqual } from "./skill-file.mjs";
 
 // 内置技能根目录 src/skills（Task 10 落地五个内置 SKILL.md；当前允许缺失）。
 const DEFAULT_BUILTIN_ROOT = path.resolve(import.meta.dirname, "..", "..", "skills");
@@ -88,10 +88,12 @@ export function createSkillService({ userHome = os.homedir(), resourcesPath = pr
     },
     // 迁移失败项（Task 13 carry-forward）：不依赖进程内缓存的首次迁移结果，
     // 直接重读 migration marker，settings 的 catalog 路由据此展示「新鲜」失败项。
+    // R5-13：project scope 的 marker 按 canonical projectRoot 隔离，这里必须带上
+    // projectRoot，否则会读到别的项目的共享 marker。
     async migrationErrors({ projectRoot }) {
       const [globalMarker, projectMarker] = await Promise.all([
         readMigrationMarker({ scope: "global", userHome }),
-        projectRoot ? readMigrationMarker({ scope: "project", userHome }) : Promise.resolve(null)
+        projectRoot ? readMigrationMarker({ scope: "project", userHome, projectRoot }) : Promise.resolve(null)
       ]);
       return Object.freeze([
         ...(globalMarker?.failed ?? []),
@@ -113,8 +115,10 @@ function assertValidScope(scope) {
 
 // Task 8 Step 4：保留名称不可修改（brief verbatim）。importSkill 在 staged 名解析后、
 // 删除/替换目标前调用；removeSkill 在拼目标路径前调用。
+// R5-11：Windows 下名称比较大小写归一——受保护内置名的大小写变体同样拒绝。
 function assertMutableSkillName(name) {
-  if (PROTECTED_BUILTIN_SKILLS.has(name)) {
+  const reserved = [...PROTECTED_BUILTIN_SKILLS].some((reservedName) => skillNamesEqual(reservedName, name));
+  if (reserved) {
     throw skillError("skill_reserved", `内置技能不可修改: ${name}`);
   }
 }
