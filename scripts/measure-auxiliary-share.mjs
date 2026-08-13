@@ -39,8 +39,7 @@ async function main() {
       { reply: { toolCalls: [tool("read_file", { path: "OUTLINE.md" })] }, usage: USAGE },
       // 辅助 2：任务计划
       { reply: { toolCalls: [tool("update_plan", { explanation: "先读设定再写第一章", items: [{ step: "读取设定", status: "in_progress" }] })] }, usage: USAGE },
-      // 主 1：进入章节工作流 + 写入草稿
-      { reply: { toolCalls: [tool("enter_workflow", { workflow: "chapter", reason: "写第一章" })] }, usage: USAGE },
+      // 主 1：写入草稿（章节深工具直接可用，无需切换工作流）
       { reply: { toolCalls: [tool("append_chapter_segment", { project_id: project.project_id, chapter_no: 1, segment_no: 1, content: "雨夜，一封没有署名的信落在门缝里，主角决定追查寄信人。" })] }, usage: USAGE },
       // 主 2：正式提交
       { reply: { toolCalls: [tool("commit_chapter", { project_id: project.project_id, chapter_no: 1 })] }, usage: USAGE },

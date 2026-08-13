@@ -53,11 +53,12 @@ import { ensureDir, pathExists, readJson, writeJsonAtomic } from "../fs-utils.mj
 import { createMutex } from "../async-utils.mjs";
 import { createJournalSegmentStore } from "./journal-segments.mjs";
 
-// 计划固定的 45 个 journal 事件类型；未知类型一律拒绝。
+// 计划固定的 44 个 journal 事件类型；未知类型一律拒绝。
 // Task 6：新输入生命周期只产生六类事件（input_queued/input_started/input_completed/
 // input_interrupted/input_withdrawn/priority_input_requested）；旧的 input_promoted/
 // input_consumed/input_cancelled 在 runtime 迁移前仍可能被追加（reducer 保留 legacy
-// 分支），故类型清单继续接纳它们。
+// 分支），故类型清单继续接纳它们。Task 12：旧工作流事件类型已随工作流概念
+// 整体删除（不再产生、不再投影、reducer 拒绝）。
 export const FIXED_EVENT_TYPES = Object.freeze([
   "session_created",
   "run_started",
@@ -83,7 +84,6 @@ export const FIXED_EVENT_TYPES = Object.freeze([
   "decision_resolved",
   "permission_grant_created",
   "permission_grant_cleared",
-  "workflow_changed",
   "plan_updated",
   "reasoning_completed",
   "reasoning_delta",
@@ -126,7 +126,6 @@ export const RUN_STATUSES = Object.freeze([
   "interrupted"
 ]);
 
-export const WORKFLOWS = Object.freeze(["general", "chapter", "init"]);
 export const PLAN_STATUSES = Object.freeze(["pending", "in_progress", "completed"]);
 
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
@@ -238,11 +237,10 @@ function createEmptySession({ sessionId, projectRoot, at }) {
   };
 }
 
-function createRun(event, { workflow, inputId }) {
+function createRun(event, { inputId }) {
   return {
     id: event.run_id,
     status: "running",
-    workflow,
     active_input_id: inputId,
     visible_plan: null,
     // 正文增量累积（assistant_message_delta 追加；assistant_message_completed
@@ -346,8 +344,6 @@ function reduceEvent(session, event, side) {
     }
 
     case "run_started": {
-      const workflow = payload.workflow ?? "general";
-      if (!WORKFLOWS.includes(workflow)) fail(`未知 workflow: ${workflow}`);
       const inputId = payload.input_id ?? null;
       if (inputId !== null) requireString(inputId, "input_id");
       if (event.run_id == null) fail("run_started 必须携带 run_id");
@@ -356,7 +352,7 @@ function reduceEvent(session, event, side) {
           fail(`两个 active Run：Run ${run.id} 尚在 ${run.status}，拒绝启动 ${event.run_id}`);
         }
         if (run.id === event.run_id) {
-          // retry：恢复同一可恢复 Run（保留 workflow/started_at/visible_plan/累计
+          // retry：恢复同一可恢复 Run（保留 started_at/visible_plan/累计
           // 有效耗时）；正文增量按尝试重置（新尝试的 delta 从空开始累积）。
           // 工作时钟：保留 active_elapsed_ms 并重新设置 active_since。
           transitionWorkClock(run, "running", event.at);
@@ -364,11 +360,11 @@ function reduceEvent(session, event, side) {
           session.status = "running";
           run.assistant_text = null;
         } else {
-          session.active_run = createRun(event, { workflow, inputId });
+          session.active_run = createRun(event, { inputId });
           session.status = "running";
         }
       } else {
-        session.active_run = createRun(event, { workflow, inputId });
+        session.active_run = createRun(event, { inputId });
         session.status = "running";
       }
       // 新 Run（或恢复的 Run）认领活动输入：从队列移除，避免 consumed input 残留队列
@@ -748,14 +744,6 @@ function reduceEvent(session, event, side) {
           (grantKey == null || grant.grant_key === grantKey);
         return !(byId || byInput);
       });
-      break;
-    }
-
-    case "workflow_changed": {
-      const activeRun = requireActiveRun("workflow_changed");
-      const workflow = requireString(payload.workflow, "workflow");
-      if (!WORKFLOWS.includes(workflow)) fail(`未知 workflow: ${workflow}`);
-      activeRun.workflow = workflow;
       break;
     }
 

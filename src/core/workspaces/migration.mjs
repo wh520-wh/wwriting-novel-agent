@@ -167,7 +167,7 @@ export async function migrateProjectAgentStorage({ projectRoot, targetAgentRoot,
 //     把模型选择与 4-bool 权限默认值写入应用私有 settings.json；
 //   - 原 project.yaml 不删除、不覆盖、不改写（字节不变，保留回滚依据）；
 //   - 新工作区（无 project.yaml）不创建 project.yaml，迁移返回 missing；
-//   - blueprint_status、临时授权、运行阶段、失败状态、派生索引不写入长期记忆；
+//   - 旧世界持久字段、临时授权、运行阶段、失败状态、派生索引不写入长期记忆；
 //     字数字段只写成“参考/目标”散文，绝不变成门禁；
 //   - 迁移标记 legacy_project_imported **最后**写入：读取旧配置 → 写/合并
 //     WWRITING.md → 写私有 settings → 验证可重读 → 标记 true。任一步失败保持

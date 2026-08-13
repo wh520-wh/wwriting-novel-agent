@@ -17,8 +17,8 @@
 //     工具：只能按 active catalog name 解析，realpath containment/1MiB 上限/二进制
 //     asset 由 skills service（src/core/skills/index.mjs）执行。count_text（Task 9）是
 //     只读客观字数工具：工作区内 .md/.txt，minimum/target 只计算差额不判定通过或失败。
-//     Task 7：enter_workflow 已删除；Task 8：commit_blueprint 注册连同 blueprint.mjs
-//     一并删除。
+//     Task 7：工作流切换工具已删除；Task 8：旧 blueprint 事务工具注册连同
+//     blueprint.mjs 一并删除。
 //   - 每个工具 schema 必须产生系统构建的归一化 ToolAction 后才进入权限评估；模型只能提供
 //     purpose，不能提供或覆盖 risk/scope/extreme/grant_key/confirmation 类型（schema 不暴露
 //     这些字段，additionalProperties: false）。

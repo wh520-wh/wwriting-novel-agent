@@ -16,21 +16,18 @@
 //      队列存在 active 任务时）：input_queued + run_started（run_started 带
 //      payload.legacy: true 标记幂等）→ journal Run 状态；open() 按既有恢复语义
 //      接续执行。
-//   5. 把 durable blueprint_status 写入 project.yaml，顺序固定：旧状态显式
-//      complete/none/partial → 用之；否则章节产物存在 → "legacy"；否则 "none"。
-//      幂等：值相同不重写。project.yaml 缺失/损坏时跳过该字段迁移，但仍可导入
-//      对话（普通文件夹没有 project.yaml 也能聊天，SPEC §0.1）。
-//   6. 原子性：journal 写入与 project.yaml 更新全部成功后才把
-//      migration.legacy_imported 置 true（经 journal.readMigration()/writeMigration()
-//      读写应用私有 migration.json，绝不自行拼项目内迁移路径）；中途失败保持
-//      false，下次 open() 重试——legacy_id / legacy 标记幂等保证重试不产生重复
-//      事件或消息。
+//   5. 原子性：journal 写入全部成功后才把 migration.legacy_imported 置 true
+//      （经 journal.readMigration()/writeMigration() 读写应用私有 migration.json，
+//      绝不自行拼项目内迁移路径）；中途失败保持 false，下次 open() 重试——
+//      legacy_id / legacy 标记幂等保证重试不产生重复事件或消息。
+//
+// Task 12：旧世界的持久字段迁移已随概念整体删除（旧字段不再被读取、迁移或
+// 写入；旧项目 YAML 中若残留该字段由保存器自然保留，不驱动行为）。
 //
 // 本模块不依赖 agent 内部其他模块（无循环依赖）；由 runtime.mjs 的 open() 调用。
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { loadProject, saveProject, hasChapterArtifacts } from "../project-store.mjs";
 import { pathExists, readJson } from "../fs-utils.mjs";
 
 // 旧数据文件名（本文件是依赖规则白名单，允许出现字面量）。
@@ -40,9 +37,6 @@ const LEGACY_CHAT_TRANSCRIPT_FILE = "chat_transcript.jsonl";
 const LEGACY_PENDING_ACTION_FILE = "chat_pending_action.json";
 const LEGACY_TASK_QUEUE_FILE = "task_queue.json";
 const LEGACY_FAILURES_FILE = "failures.jsonl";
-
-// blueprint_status 的显式合法值（旧世界持久字段）；其余值视为缺失。
-const EXPLICIT_BLUEPRINT_STATUSES = new Set(["complete", "none", "partial"]);
 
 // 旧项目状态中表示"未完成工作"的 project_status；任务队列 active 状态同样触发。
 const UNFINISHED_STATE_STATUSES = new Set(["running", "blocked", "interrupted", "paused"]);
@@ -160,34 +154,6 @@ async function buildErrorFactRecords(projectRoot) {
   }
   return records;
 }
-// blueprint_status 迁移（幂等：project.yaml 已是目标值时绝不重写）。缺少
-// project.yaml（普通文件夹没有旧配置文件也能聊天）或读取失败时跳过该字段
-// 迁移，返回 { status: null, changed: false }，对话导入不受影响。
-async function migrateBlueprintStatus(projectRoot, legacyState) {
-  let status = legacyState?.blueprint_status;
-  if (typeof status !== "string" || !EXPLICIT_BLUEPRINT_STATUSES.has(status)) {
-    let artifacts = false;
-    try {
-      artifacts = await hasChapterArtifacts(projectRoot);
-    } catch {
-      // 章节证据读取失败（如损坏的章节索引）按"无产物"处理，不阻塞导入
-      artifacts = false;
-    }
-    status = artifacts ? "legacy" : "none";
-  }
-  let project;
-  try {
-    project = await loadProject(projectRoot);
-  } catch {
-    // project.yaml 缺失/损坏：跳过 blueprint 字段迁移，但仍可导入对话
-    return { status: null, changed: false };
-  }
-  if (project?.blueprint_status === status) {
-    return { status, changed: false };
-  }
-  await saveProject(projectRoot, { ...project, blueprint_status: status });
-  return { status, changed: true };
-}
 
 // 未完成判定：旧状态 project_status 命中未完成集合，或任务队列存在 active 任务。
 function detectUnfinishedWork(legacyState, taskQueue) {
@@ -244,14 +210,14 @@ async function importUnfinishedRun({ projectRoot, journal, legacyState, taskQueu
     {
       type: "run_started",
       run_id: runId,
-      payload: { workflow: "general", input_id: inputId, legacy: true }
+      payload: { input_id: inputId, legacy: true }
     }
   ]);
   return { run_id: runId, input_id: inputId, text };
 }
 
 // 主入口。journal 必须已 load()（migration.json 等存储已就绪）。
-// 返回 { imported, blueprint_status, run, skipped? }。
+// 返回 { imported, run, skipped? }。
 // 任何失败向上抛出；调用方（runtime.open）吞错后下次 open() 重试——幂等保证
 // 重试不产生重复事件/消息。
 export async function runLegacyImport({
@@ -265,7 +231,7 @@ export async function runLegacyImport({
   }
   const migration = await journal.readMigration();
   if (migration?.legacy_imported === true) {
-    return { imported: false, blueprint_status: null, run: null };
+    return { imported: false, run: null };
   }
 
   const [legacyState, taskQueue] = await Promise.all([
@@ -273,10 +239,7 @@ export async function runLegacyImport({
     readJsonTolerant(path.join(projectRoot, LEGACY_TASK_QUEUE_FILE))
   ]);
 
-  // 1) 项目元数据：blueprint_status 迁移（幂等；project.yaml 缺失时跳过）。
-  const blueprint = await migrateBlueprintStatus(projectRoot, legacyState);
-
-  // 2) transcript：可见历史 + 未解决错误事实（按 legacy_id 幂等去重）。
+  // 1) transcript：可见历史 + 未解决错误事实（按 legacy_id 幂等去重）。
   const [historyRecords, errorFactRecords] = await Promise.all([
     buildHistoryRecords(projectRoot),
     buildErrorFactRecords(projectRoot)
@@ -290,7 +253,7 @@ export async function runLegacyImport({
     await journal.appendTranscript(record);
   }
 
-  // 3) journal：至多一个未完成 Run（幂等）。
+  // 2) journal：至多一个未完成 Run（幂等）。
   const run = await importUnfinishedRun({
     projectRoot,
     journal,
@@ -299,8 +262,8 @@ export async function runLegacyImport({
     idFactory
   });
 
-  // 4) journal 与 project.yaml 全部成功后，最后原子置位迁移标记（应用私有
-  // migration.json，由 journal 管理；绝不覆盖项目内旧标记）。
+  // 3) journal 写入全部成功后，最后原子置位迁移标记（应用私有 migration.json，
+  // 由 journal 管理；绝不覆盖项目内旧标记）。
   await journal.writeMigration({
     schema_version: 1,
     legacy_imported: true,
@@ -309,8 +272,6 @@ export async function runLegacyImport({
 
   return {
     imported: true,
-    blueprint_status: blueprint.status,
-    blueprint_changed: blueprint.changed,
     run
   };
 }

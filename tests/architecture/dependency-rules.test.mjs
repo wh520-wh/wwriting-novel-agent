@@ -527,3 +527,55 @@ test("旧数据文件名只允许出现在两个只读白名单文件里", () =>
   }
   assert.equal(violations.length, 0, formatList(violations));
 });
+
+// ---------------------------------------------------------------------------
+// 规则 J（Task 12）：统一 Agent 架构负向门禁——旧概念符号在生产源码与生产
+// 验证脚本中 0 命中；旧持久字段在生产源码中 0 命中（读取/写入/默认值全退役）
+// ---------------------------------------------------------------------------
+
+// 旧架构符号（Task 12 Step 1 清单 + 代码审查补强）：一旦出现在 src/ 或
+// scripts/，说明旧概念（工作流切换、workflow 政策、旧 blueprint 事务工具、
+// run_started 的 workflow 载荷、WORKFLOWS 常量）仍残留在生产代码或生产验证
+// 脚本中。tests/ 目录不受此约束：允许负向字面量断言（如"不得出现
+// workflow_changed 事件"）与旧用户 YAML fixture，也允许为兼容性重放旧形状
+// 事件（旧 run_started.payload.workflow 等）。
+const RETIRED_SYMBOLS = [
+  "enter_workflow",
+  "workflow_changed",
+  "WORKFLOW_POLICIES",
+  "WORKFLOW_POLICY_RECORDS",
+  "allowedDeepTools",
+  "commit_blueprint",
+  // spec §3.1 目标 4 / §6.1：run_started 不再携带 workflow，Run projection
+  // 不再存储 workflow，WORKFLOWS 常量退役（代码审查 I1 补强）
+  "WORKFLOWS",
+  "payload.workflow",
+  "workflow: \"general\""
+];
+
+test("旧架构符号在生产源码与验证脚本中 0 命中（Task 12 负向门禁）", () => {
+  const violations = [];
+  for (const [rel, file] of analyzed) {
+    if (!rel.startsWith("src/") && !rel.startsWith("scripts/")) continue;
+    for (const symbol of RETIRED_SYMBOLS) {
+      if (file.text.includes(symbol)) {
+        violations.push(`${rel} 命中已退役符号：${symbol}`);
+      }
+    }
+  }
+  assert.equal(violations.length, 0, formatList(violations));
+});
+
+test("旧持久字段在生产源码中 0 命中（无读取/写入/默认值）", () => {
+  // src/ 下任何文件（含注释与迁移代码）都不得提及该字段：概念已整体删除，
+  // 生产代码不得读取、迁移或写入它。scripts/ 允许负向断言字面量（如验证脚本
+  // 断言新项目不含该字段），tests/ 允许负向字面量与旧用户 YAML fixture。
+  const violations = [];
+  for (const [rel, file] of analyzed) {
+    if (!rel.startsWith("src/")) continue;
+    if (file.text.includes("blueprint_status")) {
+      violations.push(`${rel} 命中已退役持久字段：blueprint_status`);
+    }
+  }
+  assert.equal(violations.length, 0, formatList(violations));
+});

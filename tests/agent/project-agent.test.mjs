@@ -109,7 +109,7 @@ test("idle submit 创建且只创建一个 Run；submit 落盘即返回", async 
   assert.equal(session.status, "running");
   assert.equal(session.active_run.id, result.run_id);
   assert.equal(session.active_run.active_input_id, result.input_id);
-  assert.equal(session.active_run.workflow, "general");
+  assert.equal(session.active_run.workflow, undefined, "Task 12：Run projection 不再存储 workflow");
 
   await waitForIdle(h.agent, h.projectRoot);
   const events = await readEvents(h.agent, h.projectRoot);

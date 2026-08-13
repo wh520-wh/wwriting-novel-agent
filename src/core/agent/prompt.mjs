@@ -8,7 +8,8 @@
 //   - RUNTIME_POLICY_TEMPLATE / assembleRuntimePolicy：运行时政策层。提示文本
 //     只陈述运行时提供的真实能力，绝不扩大权限。
 //   - UNIFIED_TASK_POLICY：统一 Agent 任务政策（Task 7 删除三条 workflow 政策
-//     general/chapter/init，原 WORKFLOW_POLICIES 不再存在）。
+//     general/chapter/init，任务政策不再按工作流拆分；Task 12 随工作流概念
+//     一并退役）。
 //   - assemblePrompt：按固定层序装配 messages、执行预算裁剪、独立 hash。
 //
 // 装配顺序（固定，计划原文 + Task 6 记忆层）：

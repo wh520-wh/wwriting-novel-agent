@@ -154,8 +154,8 @@ test("次级操作融入背景，消息层级不依赖成排胶囊按钮", () =>
   );
   assert.match(
     agentCssSource,
-    /\.agent-stop-btn,[\s\S]*?\.agent-promote\s*\{[^}]*background:\s*transparent;/u,
-    "停止、重试和立即应是无常驻外框的行内操作"
+    /\.agent-stop-btn,[\s\S]*?\.agent-retry-btn,[\s\S]*?\.agent-promote,[\s\S]*?\.agent-withdraw\s*\{[^}]*background:\s*transparent;/u,
+    "停止、重试、立即和撤回应是无常驻外框的行内操作（Task 11 加入撤回后选择器列表扩展）"
   );
   assert.match(
     agentCssSource,

@@ -43,8 +43,8 @@ export async function createProjectAt(projectRoot, options = {}) {
     // 统一 Agent 内核计划 Rule 9：project.yaml 保存项目身份与配置；
     // .wwriting/agent/ 由 ProjectAgent 惰性创建，旧运行态文件不再创建。
     // Task 12：不再默认填充 enabled_skills（技能改为发现即生效，无启停集合）。
-    // Task 8：blueprint_status 从新项目默认值与运行时领域模型删除（旧项目已存在
-    // 的字段由保存器自然保留，但生产代码不读取、不驱动行为）。
+    // Task 12：旧世界的持久字段从新项目默认值与运行时领域模型删除（旧项目已
+    // 存在的字段由保存器自然保留，但生产代码不读取、不驱动行为）。
     output_style: options.output_style ?? "creative",
     archived_at: options.archived_at ?? null,
     tool_permissions: {
@@ -106,24 +106,6 @@ function stripDeprecatedProjectFields(project) {
   if (!Object.hasOwn(project, "enabled_skills")) return project;
   const { enabled_skills: _ignored, ...rest } = project;
   return rest;
-}
-
-// 章节产物证据（统一 Agent 内核计划 Task 7 legacy 语义）：chapters/ 目录有章节
-// 文件（.md/.txt，过滤系统杂项如 Thumbs.db/desktop.ini/子目录），或
-// chapter_index.json 有索引。仅由一次性只读导入器 agent/legacy-import.mjs 使用，
-// 用于在旧状态缺失 blueprint_status 时按章节证据判定 "legacy"/"none"。
-export async function hasChapterArtifacts(projectRoot) {
-  const chaptersDir = safeJoin(projectRoot, "chapters");
-  if (await pathExists(chaptersDir)) {
-    try {
-      const entries = await fs.readdir(chaptersDir);
-      if (entries.some((name) => /\.(md|txt)$/i.test(name))) return true;
-    } catch {
-      // 目录不可读时继续看索引
-    }
-  }
-  const index = await readJson(safeJoin(projectRoot, "memory", "chapter_index.json"), { chapters: [] });
-  return Array.isArray(index?.chapters) && index.chapters.length > 0;
 }
 
 export async function loadChapterIndex(projectRoot) {

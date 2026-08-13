@@ -352,14 +352,13 @@ function applyEventToState(state, event) {
       }
       const existing = state.session.active_run;
       if (existing && existing.id === event.run_id) {
-        // retry：恢复同一可恢复 Run（保留 workflow/visible_plan）
+        // retry：恢复同一可恢复 Run（保留 started_at/visible_plan）
         existing.status = "running";
         state.session.status = "running";
       } else {
         state.session.active_run = {
           id: event.run_id ?? null,
           status: "running",
-          workflow: payload.workflow ?? "general",
           active_input_id: payload.input_id ?? null,
           visible_plan: null,
           active_grants: [],
@@ -398,14 +397,6 @@ function applyEventToState(state, event) {
       if (run && run.status === "interrupting") {
         run.status = "running";
         state.session.status = "running";
-        bump(state, ["run"]);
-      }
-      break;
-    }
-    case "workflow_changed": {
-      const run = state.session?.active_run;
-      if (run) {
-        run.workflow = payload.workflow ?? run.workflow;
         bump(state, ["run"]);
       }
       break;

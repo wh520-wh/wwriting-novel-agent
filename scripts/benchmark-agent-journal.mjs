@@ -45,7 +45,7 @@ function buildCycle(seqOffset, { outputSize = 32 } = {}) {
   const output = "汉".repeat(outputSize);
   return [
     { type: "input_queued", run_id: runId, payload: { input_id: inputId, text: `第 ${cycle} 轮基准输入` } },
-    { type: "run_started", run_id: runId, payload: { workflow: "general", input_id: inputId } },
+    { type: "run_started", run_id: runId, payload: { input_id: inputId } },
     { type: "tool_call_started", run_id: runId, payload: { tool_call_id: toolCallId, name: "read_file", arguments: { path: "OUTLINE.md" } } },
     { type: "tool_call_completed", run_id: runId, payload: { tool_call_id: toolCallId, name: "read_file", arguments: { path: "OUTLINE.md" }, output, result_summary: "基准工具摘要", duration_ms: 12 } },
     { type: "input_consumed", run_id: runId, payload: { input_id: inputId } },

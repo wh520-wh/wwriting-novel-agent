@@ -5,29 +5,31 @@
 // 被合并的 fault/longrun/mvp/chat-online 有价值场景。真实模型场景在配置
 // DEEPSEEK_API_KEY 时额外执行（可跳过）。
 //
-// 场景清单（Task 11 Step 2 本地矩阵的 25 个场景，Task 9 Step 6 版 22 场景补全后）：
+// 场景清单（Task 11 Step 2 本地矩阵的 25 个场景，Task 9 Step 6 版 22 场景补全后；
+// Task 12 批 2 删除旧 blueprint 场景并追加统一 Agent 行为验收）：
 //   简单回答无计划 / 复杂任务真实里程碑更新计划 / 同项目 FIFO 队列 /
 //   立即保持同一 run id / 停止取消当前 Run 与排队输入 / 重试恢复同一可恢复 Run /
-//   跨项目并行 / 通用读取编辑 Shell / 章节事务 / blueprint_status 退役负向断言 / 只读审查 /
-//   重启 journal 恢复 / legacy 导入幂等 + blueprint_status 迁移 /
-//   legacy 旧状态一次性导入且永不再次写入 / 新项目无旧状态文件 /
+//   跨项目并行 / 通用读取编辑 Shell / 章节事务 / 只读审查 /
+//   重启 journal 恢复 / 新项目无旧状态文件 /
 //   无撕裂原子写入 / 确定性导出无模型调用 / 自主 /init 读取目录并创建 WWRITING.md /
 //   普通写入暂停确认 / 同类授权仅限当前输入（grant 随输入清除）/ YOLO 跳过普通
 //   确认但不跳过 extreme / fresh 精确文字确认不可复用且不可模型提供 /
 //   Shell cwd/超时/增量输出/进程树停止与 1 MiB 流尾（runtime.test.mjs 承载）/
 //   命令、参数、分块流式密钥、最终输出与 journal 详情全量脱敏 /
 //   同一活动合并而不重复渲染；私有推理永不渲染 / 1040px 共享内容列与统一
-//   Composer 菜单视口钳制在 cutover 后保留 / 停止中止命令并清除授权
+//   Composer 菜单视口钳制在 cutover 后保留 / 停止中止命令并清除授权 /
+//   章节工具后普通问答（无模式切换、无 tool_not_allowed、受保护正文路径仍拒绝）/
+//   queued 撤回对模型不可见（draft_text 权威回填、正式历史与模型 transcript 无痕）/
+//   A/B/C/D 优先调度与 input_interrupted/completed 终态 /
+//   第二 priority 409（priority_pending）/ 崩溃重放不重复执行已完成工具
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
   createProjectAgentHarness,
-  createLegacyProjectRoot,
   createProjectRoot,
   createMockModelGateway,
   eventsOfType,
-  LEGACY_STATE_FILE,
   openPlainFolderHarness,
   readEvents,
   readSession,
@@ -37,7 +39,7 @@ import {
   waitForIdle
 } from "../tests/helpers/project-agent-harness.mjs";
 import { exportBook } from "../src/core/book-export.mjs";
-import { parseSimpleYaml, serializeSimpleYaml } from "../src/core/simple-yaml.mjs";
+import { parseSimpleYaml } from "../src/core/simple-yaml.mjs";
 
 const SECRET = "ww-secret-token-9f3a";
 const results = [];
@@ -152,7 +154,7 @@ step("场景 3 · 同项目 FIFO 队列");
     await waitForIdle(h.agent, h.projectRoot);
     const events = await readEvents(h.agent, h.projectRoot);
     assert.equal(eventsOfType(events, "run_started").length, 1, "排队不创建新 Run");
-    assert.equal(eventsOfType(events, "input_consumed").length, 2, "两条输入都被消费");
+    assert.equal(eventsOfType(events, "input_started").length, 2, "两条输入都被消费（新生命周期 input_started）");
     record("FIFO：运行中排队、同 run id、顺序消费", true, `run=${first.run_id}`);
   } finally {
     await h.cleanup();
@@ -351,55 +353,6 @@ step("场景 9 · 章节事务");
 }
 
 // ---------------------------------------------------------------------------
-// 场景 10：blueprint_status 退役负向断言——统一工具目录无 commit_blueprint、
-// 新项目无 blueprint_status、带旧字段的 YAML 打开后流程不变、OUTLINE.md/
-// SETTING.md 由通用文件工具按用户意图维护
-// ---------------------------------------------------------------------------
-step("场景 10 · blueprint_status 退役负向断言");
-{
-  const seenTools = [];
-  const h = await createProjectAgentHarness({
-    project: { tool_permissions: { auto_edit: true } },
-    gatewayScript: [
-      // 捕获模型侧工具目录：统一目录必须不含 commit_blueprint（生产符号负向断言）
-      async (request) => {
-        seenTools.push(...(request.tools ?? []).map((def) => def?.function?.name).filter(Boolean));
-        return { toolCalls: [tool("write_file", { path: "OUTLINE.md", content: "# OUTLINE.md\n\n第一章 雨夜来信\n" })] };
-      },
-      { reply: { toolCalls: [tool("write_file", { path: "SETTING.md", content: "# SETTING.md\n\n现代都市。\n" })] } },
-      { reply: { text: "已按用户意图维护总纲与设定。" } }
-    ]
-  });
-  try {
-    // 旧字段残留：手工把 blueprint_status 写回 project.yaml，模拟旧项目。该字段
-    // 不参与任何决策（确定性迁移忽略它）；保存器可自然保留，但生产代码不读取。
-    const yamlPath = path.join(h.projectRoot, "project.yaml");
-    const legacy = parseSimpleYaml(await fs.readFile(yamlPath, "utf8"));
-    legacy.blueprint_status = "complete";
-    await fs.writeFile(yamlPath, serializeSimpleYaml(legacy), "utf8");
-
-    await h.agent.open({ projectRoot: h.projectRoot });
-    await h.agent.submit({ projectRoot: h.projectRoot, text: "打开项目并维护 OUTLINE/SETTING" });
-    await waitForIdle(h.agent, h.projectRoot);
-    const events = await readEvents(h.agent, h.projectRoot);
-    assert.ok(!seenTools.includes("commit_blueprint"), "模型侧工具目录不得包含 commit_blueprint");
-    assert.equal(
-      eventsOfType(events, "tool_call_failed").filter((event) => event.payload.name === "commit_blueprint").length,
-      0,
-      "不得出现 commit_blueprint 调用"
-    );
-    const outline = await fs.readFile(path.join(h.projectRoot, "OUTLINE.md"), "utf8");
-    assert.ok(outline.includes("第一章 雨夜来信"), "write_file 应能按用户意图维护 OUTLINE.md");
-    const setting = await fs.readFile(path.join(h.projectRoot, "SETTING.md"), "utf8");
-    assert.ok(setting.includes("现代都市。"), "write_file 应能按用户意图维护 SETTING.md");
-    assert.equal(eventsOfType(events, "run_completed").length, 1, "带旧字段的 YAML 打开后流程不变，Run 正常完成");
-    record("blueprint_status 退役：目录无 commit_blueprint + 旧字段不驱动行为 + 通用工具维护 OUTLINE/SETTING", true, `tools=${seenTools.join(",")}`);
-  } finally {
-    await h.cleanup();
-  }
-}
-
-// ---------------------------------------------------------------------------
 // 场景 11：只读审查（review workflow 不修改项目文件）
 // ---------------------------------------------------------------------------
 step("场景 11 · 只读审查");
@@ -455,50 +408,6 @@ step("场景 12 · 重启 journal 恢复");
 }
 
 // ---------------------------------------------------------------------------
-// 场景 13：legacy 导入幂等 + blueprint_status 迁移（多会话惰性创建语义）
-// ---------------------------------------------------------------------------
-step("场景 13 · legacy 导入幂等");
-{
-  const h = await createProjectAgentHarness({ legacy: true, gatewayScript: [{ reply: { text: "继续写。" } }] });
-  try {
-    // 多会话 Task 4 惰性创建：open() 不物化会话、不产生事件；旧断言「open 后即
-    // session_created」是单流旧世界的急切创建语义，已随惰性创建变更——legacy
-    // 导入与 blueprint_status 迁移延迟到会话物化（首次 submit 时的 session load，
-    // 见 runtime.reconcileSessionAfterLoad → runLegacyImport）。
-    await h.agent.open({ projectRoot: h.projectRoot });
-    const sessionsAfterOpen = await h.agent.sessions({ projectRoot: h.projectRoot });
-    assert.equal(sessionsAfterOpen.sessions.length, 0, "open 后惰性：未发消息不产生会话条目");
-    const eventsAfterFirst = await readEvents(h.agent, h.projectRoot);
-    assert.equal(eventsAfterFirst.length, 0, "open 后惰性：不产生事件");
-    // 第二次 open：幂等，不创建会话
-    await h.agent.open({ projectRoot: h.projectRoot });
-    const sessionsAfterSecond = await h.agent.sessions({ projectRoot: h.projectRoot });
-    assert.equal(sessionsAfterSecond.sessions.length, 0, "第二次 open 不得创建会话");
-    // 旧状态文件保留（只读导入），且完整跑一轮后不再被写入
-    const legacyStatePath = path.join(h.projectRoot, LEGACY_STATE_FILE);
-    assert.equal(await pathExists(legacyStatePath), true, "旧文件保留不删除（只读导入）");
-    const stateBefore = await fs.readFile(legacyStatePath, "utf8");
-    // 首次提交：惰性物化会话（session_created）+ legacy 导入（blueprint_status 迁移）
-    const result = await h.agent.submit({ projectRoot: h.projectRoot, text: "导入后继续写作" });
-    assert.ok(result.session_id, "首次提交应返回 session_id");
-    await waitForIdle(h.agent, h.projectRoot);
-    const project = parseSimpleYaml(await fs.readFile(path.join(h.projectRoot, "project.yaml"), "utf8"));
-    assert.ok(["complete", "none", "partial", "legacy"].includes(project.blueprint_status), "blueprint_status 应迁移到 project.yaml");
-    const eventsAfterRun = await readEvents(h.agent, h.projectRoot);
-    assert.ok(eventsOfType(eventsAfterRun, "session_created").length >= 1, "首次提交物化会话应产生 session_created");
-    const stateAfter = await fs.readFile(legacyStatePath, "utf8");
-    assert.equal(stateAfter, stateBefore, "legacy 导入后完整跑一轮也不得再写入旧状态文件");
-    // 提交后重复 open：仍幂等，不产生新事件
-    await h.agent.open({ projectRoot: h.projectRoot });
-    const eventsAfterFinalOpen = await readEvents(h.agent, h.projectRoot);
-    assert.equal(eventsAfterFinalOpen.length, eventsAfterRun.length, "提交后的 open 不得产生新事件");
-    record("legacy 导入：惰性会话创建 + blueprint_status 迁移 + 旧文件只读保留", true, `blueprint_status=${project.blueprint_status}`);
-  } finally {
-    await h.cleanup();
-  }
-}
-
-// ---------------------------------------------------------------------------
 // 场景 14：新项目不创建旧状态文件
 // ---------------------------------------------------------------------------
 step("场景 14 · 新项目无旧状态文件");
@@ -511,7 +420,7 @@ step("场景 14 · 新项目无旧状态文件");
       assert.equal(await pathExists(path.join(projectRoot, name)), false, `新项目不得创建 ${name}`);
     }
     const project = parseSimpleYaml(await fs.readFile(path.join(projectRoot, "project.yaml"), "utf8"));
-    assert.equal(project.blueprint_status, undefined, "Task 8：新项目 project.yaml 不得包含 blueprint_status");
+    assert.equal(project.blueprint_status, undefined, "Task 12：新项目 project.yaml 不得包含 blueprint_status");
     record("新项目：project.yaml 无 blueprint_status，无旧状态文件", true, "");
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
@@ -1190,6 +1099,546 @@ step("场景 26 · reasoning 原文持久化且正文无泄漏");
       "公开正文应正常持久化到 assistant_message_completed"
     );
     record("reasoning：原文逐 token 持久化 + 正文零泄漏", true, `deltas=${deltas.length}`);
+  } finally {
+    await h.cleanup();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 场景 27：章节工具后普通问答（spec §6.2 #1/#2）——同一会话先正式写章节、
+// 再问普通问题：无模式切换工具、无 tool_not_allowed、两者都完成；普通请求
+// 直接使用通用工具、章节请求直接使用章节专用工具（深工具无需任何切换）
+// ---------------------------------------------------------------------------
+step("场景 27 · 章节工具后普通问答");
+{
+  // 统一工具目录（生产注册的完整集合；执行流里出现集合外工具即视为模式切换残留）
+  const UNIFIED_TOOL_NAMES = new Set([
+    "list_files",
+    "search_files",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "shell",
+    "read_skill",
+    "count_text",
+    "update_plan",
+    "append_chapter_segment",
+    "commit_chapter"
+  ]);
+  const script = [];
+  const h = await createProjectAgentHarness({
+    project: { min_words_per_chapter: 10, target_words_per_chapter: 20 },
+    gatewayScript: script
+  });
+  script.push(
+    { reply: { toolCalls: [tool("append_chapter_segment", { project_id: h.project.project_id, chapter_no: 1, segment_no: 1, content: GATE_PASSING_CHAPTER })] } },
+    { reply: { toolCalls: [tool("commit_chapter", { project_id: h.project.project_id, chapter_no: 1 })] } },
+    { reply: { text: "第一章已提交。" } },
+    // 普通问题：模型直接使用通用工具 + 文本回答
+    { reply: { toolCalls: [tool("read_file", { path: "OUTLINE.md" })] } },
+    { reply: { text: "这是一个普通问题的回答。" } }
+  );
+  try {
+    await h.agent.open({ projectRoot: h.projectRoot });
+    await h.agent.submit({ projectRoot: h.projectRoot, text: "正式写第一章" });
+    await h.agent.submit({ projectRoot: h.projectRoot, text: "你们能做什么？" });
+    await waitForIdle(h.agent, h.projectRoot);
+    const events = await readEvents(h.agent, h.projectRoot);
+    const started = eventsOfType(events, "tool_call_started").map((event) => event.payload.name);
+    assert.ok(started.includes("append_chapter_segment"), "章节请求直接使用章节专用工具（草稿）");
+    assert.ok(started.includes("commit_chapter"), "章节请求直接使用章节专用工具（提交）");
+    assert.ok(started.includes("read_file"), "普通请求直接使用通用工具");
+    for (const name of started) {
+      assert.ok(UNIFIED_TOOL_NAMES.has(name), `执行了统一目录外的工具 ${name}（模式切换残留）`);
+    }
+    assert.equal(
+      eventsOfType(events, "tool_call_failed").filter((event) => event.payload?.error === "tool_not_allowed").length,
+      0,
+      "全程无 tool_not_allowed"
+    );
+    assert.equal(eventsOfType(events, "run_started").length, 1, "写作与普通问题共用同一 Run");
+    assert.equal(await pathExists(path.join(h.projectRoot, "chapters", "001.md")), true, "正式章节文件应落盘");
+    assert.ok(
+      eventsOfType(events, "assistant_message_completed").some((event) => (event.payload?.text ?? "").includes("普通问题的回答")),
+      "普通问题应得到文本回答"
+    );
+    record("章节工具后普通问答：无模式切换、无 tool_not_allowed、章节/通用工具各就其位", true, `tools=${started.join(",")}`);
+  } finally {
+    await h.cleanup();
+  }
+}
+
+// 子场景：write_file/edit_file 仍不能写受保护正文路径（spec §6.2 #3）
+step("场景 27b · 受保护正文路径拒绝");
+{
+  const h = await createProjectAgentHarness({
+    project: { tool_permissions: { auto_edit: true } },
+    gatewayScript: [
+      { reply: { toolCalls: [tool("write_file", { path: "chapters/001.md", content: "绕过章节事务直接写正文" })] } },
+      { reply: { text: "写不进去也没关系。" } }
+    ]
+  });
+  try {
+    await h.agent.open({ projectRoot: h.projectRoot });
+    await h.agent.submit({ projectRoot: h.projectRoot, text: "把正文写进章节文件" });
+    await waitForIdle(h.agent, h.projectRoot);
+    const events = await readEvents(h.agent, h.projectRoot);
+    const denials = eventsOfType(events, "tool_call_failed").filter((event) => event.payload?.name === "write_file");
+    assert.ok(denials.length >= 1, "write_file 直写正文应被拒绝");
+    for (const event of denials) {
+      assert.equal(event.payload.error, "permission_denied", "受保护路径以 permission_denied 拒绝");
+      assert.equal(event.payload.technical?.rule, "chapter_file", "拒绝规则应为 chapter_file");
+    }
+    assert.equal(await pathExists(path.join(h.projectRoot, "chapters", "001.md")), false, "正文文件不得被通用写工具创建");
+    record("受保护正文路径：write_file 直写 chapters/ 被拒", true, `denials=${denials.length}`);
+  } finally {
+    await h.cleanup();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 场景 28：queued 撤回对模型不可见（spec §6.2 #9）——撤回排队消息后「接下来」
+// 消失、正式历史与模型 transcript 从未包含它；withdrawInput 返回权威
+// draft_text（composer 追加且不覆盖草稿的输入，视图行为由 agent-surface 测试承载）
+// ---------------------------------------------------------------------------
+step("场景 28 · queued 撤回对模型不可见");
+{
+  const WITHDRAWN_TEXT = "这条消息将被撤回（排队期间）";
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const h = await createProjectAgentHarness({
+    gatewayScript: [
+      async () => {
+        await gate;
+        return { text: "A 完成答复。" };
+      },
+      { reply: { text: "后续输入答复。" } }
+    ],
+    gatewayDelayMs: 0
+  });
+  try {
+    await h.agent.open({ projectRoot: h.projectRoot });
+    const a = await h.agent.submit({ projectRoot: h.projectRoot, text: "A 任务" });
+    const b = await h.agent.submit({ projectRoot: h.projectRoot, text: WITHDRAWN_TEXT });
+    assert.equal(b.queued, true, "运行中提交应排队");
+    // A 的模型请求在途时撤回排队输入
+    await waitFor(h.agent, h.projectRoot, (_session, snap) => eventsOfType(snap.events, "model_turn_started").length >= 1);
+    const withdrawn = await h.agent.withdrawInput({ projectRoot: h.projectRoot, inputId: b.input_id });
+    assert.equal(withdrawn.withdrawn, true);
+    assert.equal(withdrawn.draft_text, WITHDRAWN_TEXT, "draft_text 是权威原始文本（composer 追加语义的输入）");
+    // 「接下来」区域消失：会话队列不再含该项
+    const mid = await readSession(h.agent, h.projectRoot);
+    assert.ok(!mid.queued_inputs.some((item) => item.id === b.input_id), "撤回后队列不再包含该项");
+    release();
+    await waitForIdle(h.agent, h.projectRoot);
+    const events = await readEvents(h.agent, h.projectRoot);
+    assert.equal(eventsOfType(events, "input_withdrawn").length, 1, "应写入 input_withdrawn");
+    // 正式历史（exportHistory 全量导出）从未包含撤回文本
+    const exported = [];
+    for await (const line of h.agent.exportHistory({ projectRoot: h.projectRoot })) exported.push(line);
+    assert.ok(!JSON.stringify(exported).includes(WITHDRAWN_TEXT), "正式历史不得包含撤回输入");
+    // 模型 transcript 从未包含：任何模型请求载荷都不携带撤回文本
+    for (const call of h.gateway.calls) {
+      assert.ok(!JSON.stringify(call.request).includes(WITHDRAWN_TEXT), "模型请求不得包含撤回文本");
+    }
+    // 只有 A 被执行；Run 正常完成
+    assert.equal(eventsOfType(events, "input_started").length, 1, "只有 A 开始执行");
+    assert.equal(eventsOfType(events, "run_completed").length, 1);
+    record("queued 撤回：draft_text 权威回填 + 队列移除 + 正式历史/模型 transcript 无痕", true, `input=${b.input_id}`);
+  } finally {
+    await h.cleanup();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 场景 29：A/B/C/D 优先调度（spec §6.2 #4-#7）
+// ---------------------------------------------------------------------------
+
+// 子场景一：模型在途点「立即」→ 当前模型请求完整返回；A 以 input_completed
+// 自然终结（不得误显 interrupted）；D 下一条开始；B/C 顺序不变；A 不回队不重跑
+step("场景 29a · 模型在途点立即");
+{
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const h = await createProjectAgentHarness({
+    gatewayScript: [
+      async () => {
+        await gate;
+        return { text: "A 完整答复。" };
+      },
+      { reply: { text: "D 答复。" } },
+      { reply: { text: "B 答复。" } },
+      { reply: { text: "C 答复。" } }
+    ],
+    gatewayDelayMs: 0
+  });
+  try {
+    await h.agent.open({ projectRoot: h.projectRoot });
+    const a = await h.agent.submit({ projectRoot: h.projectRoot, text: "A 任务" });
+    const b = await h.agent.submit({ projectRoot: h.projectRoot, text: "B 任务" });
+    const c = await h.agent.submit({ projectRoot: h.projectRoot, text: "C 任务" });
+    const d = await h.agent.submit({ projectRoot: h.projectRoot, text: "D 任务" });
+    await waitFor(h.agent, h.projectRoot, (_session, snap) => eventsOfType(snap.events, "model_turn_started").length >= 1);
+    const pri = await h.agent.requestPriority({ projectRoot: h.projectRoot, inputId: d.input_id });
+    assert.equal(pri.priority_pending, true);
+    release();
+    await waitForIdle(h.agent, h.projectRoot);
+    const events = await readEvents(h.agent, h.projectRoot);
+    const started = eventsOfType(events, "input_started").map((event) => event.payload.input_id);
+    assert.deepEqual(started, [a.input_id, d.input_id, b.input_id, c.input_id], "D 下一条开始，B/C 顺序不变");
+    assert.equal(eventsOfType(events, "input_interrupted").length, 0, "A 自然完成不得误显 interrupted");
+    assert.equal(
+      eventsOfType(events, "input_completed").filter((event) => event.payload.input_id === a.input_id).length,
+      1,
+      "A 以 input_completed 终结"
+    );
+    assert.equal(
+      eventsOfType(events, "input_started").filter((event) => event.payload.input_id === a.input_id).length,
+      1,
+      "A 不回队、不自动重跑"
+    );
+    assert.equal(eventsOfType(events, "run_started").length, 1, "全程同一 Run");
+    assert.equal(eventsOfType(events, "run_completed").length, 1);
+    record("优先调度·模型在途：当前请求完整返回、A completed、D 下一条、B/C 顺序不变", true, `started=${started.join(">")}`);
+  } finally {
+    await h.cleanup();
+  }
+}
+
+// 子场景二：模型返回 tool calls 时点「立即」→ 未开始工具全部不启动；被截断的
+// A 终态为 input_interrupted（不回队、不自动重跑）；D 下一条开始；B/C 顺序不变
+step("场景 29b · 工具未开始点立即");
+{
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const h = await createProjectAgentHarness({
+    gatewayScript: [
+      async () => {
+        await gate;
+        return {
+          toolCalls: [
+            tool("read_file", { path: "OUTLINE.md" }),
+            tool("list_files", { path: "." })
+          ]
+        };
+      },
+      { reply: { text: "D 答复。" } },
+      { reply: { text: "B 答复。" } }
+    ],
+    gatewayDelayMs: 0
+  });
+  try {
+    await h.agent.open({ projectRoot: h.projectRoot });
+    const a = await h.agent.submit({ projectRoot: h.projectRoot, text: "A 任务" });
+    const b = await h.agent.submit({ projectRoot: h.projectRoot, text: "B 任务" });
+    const d = await h.agent.submit({ projectRoot: h.projectRoot, text: "D 任务" });
+    await waitFor(h.agent, h.projectRoot, (_session, snap) => eventsOfType(snap.events, "model_turn_started").length >= 1);
+    await h.agent.requestPriority({ projectRoot: h.projectRoot, inputId: d.input_id });
+    release();
+    await waitForIdle(h.agent, h.projectRoot);
+    const events = await readEvents(h.agent, h.projectRoot);
+    assert.equal(eventsOfType(events, "tool_call_started").length, 0, "未开始工具不启动");
+    assert.equal(
+      eventsOfType(events, "input_interrupted").filter((event) => event.payload.input_id === a.input_id).length,
+      1,
+      "被截断的 A 终态为 input_interrupted"
+    );
+    assert.equal(
+      eventsOfType(events, "input_started").filter((event) => event.payload.input_id === a.input_id).length,
+      1,
+      "A 不回队、不自动重跑"
+    );
+    const started = eventsOfType(events, "input_started").map((event) => event.payload.input_id);
+    assert.deepEqual(started, [a.input_id, d.input_id, b.input_id], "D 下一条开始，B 顺序不变");
+    assert.equal(eventsOfType(events, "run_completed").length, 1);
+    record("优先调度·工具未开始：全部跳过、A interrupted、D 下一条", true, `started=${started.join(">")}`);
+  } finally {
+    await h.cleanup();
+  }
+}
+
+// 子场景三：工具执行中点「立即」→ 当前工具完成（不 abort），剩余工具不启动，
+// 随后开始优先输入（spec §6.2 #5）
+step("场景 29c · 工具在途点立即");
+{
+  const workspace = await fs.mkdtemp(path.join(process.env.TEMP ?? "/tmp", "wwriting-priority-tool-"));
+  try {
+    const { projectRoot } = await createProjectRoot(workspace, { tool_permissions: { yolo: true } });
+    const { createWorkspaceStore } = await import("../src/core/workspaces/store.mjs");
+    const store = createWorkspaceStore({ stateRoot: path.join(workspace, "user-data") });
+    let releaseTool;
+    const toolGate = new Promise((resolve) => {
+      releaseTool = resolve;
+    });
+    const gateway = createMockModelGateway({
+      script: [
+        {
+          reply: {
+            toolCalls: [
+              tool("shell", { command: "slow", timeout_ms: 30000, purpose: "慢命令" }),
+              tool("read_file", { path: "OUTLINE.md" }),
+              tool("list_files", { path: "." })
+            ]
+          }
+        },
+        { reply: { text: "D 完成。" } },
+        { reply: { text: "B 完成。" } },
+        { reply: { text: "C 完成。" } }
+      ],
+      delayMs: 0
+    });
+    // 可控挂起 shell：releaseTool 前不返回；priority 不 abort（signal 不得触发）
+    let toolAborted = false;
+    const shell = async ({ signal } = {}) => {
+      signal?.addEventListener("abort", () => {
+        toolAborted = true;
+      }, { once: true });
+      await toolGate;
+      return { exitCode: 0, cwd: projectRoot, signal: null, durationMs: 100, stdout: "慢命令输出", stderr: "" };
+    };
+    const { createProjectAgent } = await import("../src/core/agent/index.mjs");
+    const agent = createProjectAgent({
+      modelGateway: gateway,
+      shell,
+      agentStorageRootFor: (root) => store.agentRootFor(root)
+    });
+    await agent.open({ projectRoot });
+    const a = await agent.submit({ projectRoot, text: "A 任务", source: "chat" });
+    const b = await agent.submit({ projectRoot, text: "B 任务", source: "chat" });
+    const c = await agent.submit({ projectRoot, text: "C 任务", source: "chat" });
+    const d = await agent.submit({ projectRoot, text: "D 任务", source: "chat" });
+    // 工具在途（shell 被 gate 挂起）时点 D 的「立即」
+    await waitFor(agent, projectRoot, (_session, snap) =>
+      eventsOfType(snap.events, "tool_call_started").some((event) => event.payload.name === "shell")
+    );
+    const pri = await agent.requestPriority({ projectRoot, inputId: d.input_id });
+    assert.equal(pri.priority_pending, true);
+    assert.equal(toolAborted, false, "点「立即」不得 abort 在途工具（等待当前工具完成）");
+    releaseTool();
+    await waitForIdle(agent, projectRoot);
+    const events = await readEvents(agent, projectRoot);
+    // 当前工具完成入历史；剩余工具（read_file/list_files）不启动
+    assert.equal(
+      eventsOfType(events, "tool_call_completed").filter((event) => event.payload.name === "shell").length,
+      1,
+      "当前工具完成"
+    );
+    const startedTools = eventsOfType(events, "tool_call_started").map((event) => event.payload.name);
+    assert.ok(!startedTools.includes("read_file") && !startedTools.includes("list_files"), "剩余工具不启动");
+    // 随后开始优先输入；B/C 顺序不变
+    const started = eventsOfType(events, "input_started").map((event) => event.payload.input_id);
+    assert.deepEqual(started, [a.input_id, d.input_id, b.input_id, c.input_id], "D 下一条开始，B/C 顺序不变");
+    assert.equal(
+      eventsOfType(events, "input_interrupted").filter((event) => event.payload.input_id === a.input_id).length,
+      1,
+      "A 被截断为 input_interrupted"
+    );
+    assert.equal(eventsOfType(events, "run_completed").length, 1);
+    record("优先调度·工具在途：当前工具完成、剩余工具不启动、D 下一条", true, `tools=${startedTools.join(",")}`);
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 场景 30：第二 priority 409（spec §6.2 #8）——优先请求 pending 时第二次
+// 「立即」后端拒绝（priority_pending 409）
+// ---------------------------------------------------------------------------
+step("场景 30 · 第二 priority 409");
+{
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const h = await createProjectAgentHarness({
+    gatewayScript: [
+      async () => {
+        await gate;
+        return { text: "A 完成答复。" };
+      },
+      { reply: { text: "B 完成答复。" } },
+      { reply: { text: "C 完成答复。" } }
+    ],
+    gatewayDelayMs: 0
+  });
+  try {
+    await h.agent.open({ projectRoot: h.projectRoot });
+    await h.agent.submit({ projectRoot: h.projectRoot, text: "A 任务" });
+    const b = await h.agent.submit({ projectRoot: h.projectRoot, text: "B 任务" });
+    const c = await h.agent.submit({ projectRoot: h.projectRoot, text: "C 任务" });
+    await waitFor(h.agent, h.projectRoot, (_session, snap) => eventsOfType(snap.events, "model_turn_started").length >= 1);
+    const first = await h.agent.requestPriority({ projectRoot: h.projectRoot, inputId: b.input_id });
+    assert.equal(first.priority_pending, true);
+    // 已有优先在途 → 第二次「立即」后端 409（priority_pending）
+    await assert.rejects(
+      () => h.agent.requestPriority({ projectRoot: h.projectRoot, inputId: c.input_id }),
+      (error) => error?.code === "priority_pending",
+      "优先请求在途时第二次「立即」必须返回 409"
+    );
+    release();
+    await waitForIdle(h.agent, h.projectRoot);
+    const events = await readEvents(h.agent, h.projectRoot);
+    assert.equal(eventsOfType(events, "priority_input_requested").length, 1, "只有一个 priority_input_requested 落盘");
+    record("第二 priority 409：priority_pending 拒绝，仅一个优先请求落盘", true, "code=priority_pending");
+  } finally {
+    await h.cleanup();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 场景 31：崩溃重放后 priority_input_id、队列和活动输入一致，不重复执行
+// 已完成工具（spec §6.2 #10）
+// ---------------------------------------------------------------------------
+
+// 子场景一：崩溃时 priority 在途（A 的模型请求挂起、D 已请求优先）→ 重放后
+// priority_input_id 保持 D、队列 [B,C,D] 原位、活动输入清空（Run 保守中断）；
+// 新提交仍兑现该优先：D 先于 B/C 被执行，孤儿轮次闭合而非重放
+step("场景 31a · 崩溃重放·priority 在途");
+{
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const h = await createProjectAgentHarness({
+    gatewayScript: [
+      async () => {
+        await gate;
+        return { toolCalls: [tool("read_file", { path: "OUTLINE.md" })] };
+      },
+      { reply: { text: "D 恢复答复。" } },
+      { reply: { text: "B 答复。" } },
+      { reply: { text: "C 答复。" } }
+    ],
+    gatewayDelayMs: 0
+  });
+  try {
+    await h.agent.open({ projectRoot: h.projectRoot });
+    const a = await h.agent.submit({ projectRoot: h.projectRoot, text: "A 任务" });
+    const b = await h.agent.submit({ projectRoot: h.projectRoot, text: "B 任务" });
+    const c = await h.agent.submit({ projectRoot: h.projectRoot, text: "C 任务" });
+    const d = await h.agent.submit({ projectRoot: h.projectRoot, text: "D 任务" });
+    await waitFor(h.agent, h.projectRoot, (_session, snap) => eventsOfType(snap.events, "model_turn_started").length >= 1);
+    const pri = await h.agent.requestPriority({ projectRoot: h.projectRoot, inputId: d.input_id });
+    assert.equal(pri.priority_pending, true);
+    // —— 崩溃：A 的模型请求在途、priority 未消费，旧实例被丢弃（gate 永不释放）——
+    const { createProjectAgent } = await import("../src/core/agent/index.mjs");
+    const revived = createProjectAgent({
+      modelGateway: h.gateway,
+      agentStorageRootFor: (root) => h.store.agentRootFor(root)
+    });
+    await revived.open({ projectRoot: h.projectRoot });
+    // 重放后一致性：Run 保守中断、priority_input_id 保持 D、队列 [B,C,D] 原位
+    const recovered = await readSession(revived, h.projectRoot);
+    assert.equal(recovered.status, "idle", "崩溃 Run 恢复后会话收敛为 idle");
+    assert.equal(recovered.active_run.status, "interrupted", "dangling 模型轮次保守中断");
+    assert.equal(recovered.active_run.active_input_id, null, "活动输入一致：中断后清空");
+    assert.equal(recovered.priority_input_id, d.input_id, "priority_input_id 一致：在途优先保留");
+    assert.deepEqual(
+      recovered.queued_inputs.map((item) => item.id),
+      [b.input_id, c.input_id, d.input_id],
+      "队列一致：B/C/D 原位保留、顺序不变"
+    );
+    // 新提交：pending 的 priority 在重放后仍被兑现——D 先于 B/C 被执行
+    const e = await revived.submit({ projectRoot: h.projectRoot, text: "E 任务" });
+    await waitForIdle(revived, h.projectRoot);
+    const events = await readEvents(revived, h.projectRoot);
+    // 崩溃在途轮次的工具调用不得执行（孤儿轮次被闭合而非重放）
+    assert.equal(eventsOfType(events, "tool_call_started").length, 0, "未开始工具不得在恢复后执行");
+    const started = eventsOfType(events, "input_started").map((event) => event.payload.input_id);
+    assert.deepEqual(
+      started,
+      [a.input_id, e.input_id, d.input_id, b.input_id, c.input_id],
+      "重放后 D 先于 B/C（priority 兑现），B/C 顺序不变"
+    );
+    // 终态：E 被在途优先打断；D/B/C 完成；优先输入不回队
+    assert.equal(
+      eventsOfType(events, "input_interrupted").filter((event) => event.payload.input_id === e.input_id).length,
+      1,
+      "新输入被在途优先打断"
+    );
+    for (const inputId of [d.input_id, b.input_id, c.input_id]) {
+      assert.equal(
+        eventsOfType(events, "input_completed").filter((event) => event.payload.input_id === inputId).length,
+        1,
+        `优先/排队输入 ${inputId} 完成`
+      );
+    }
+    assert.equal(eventsOfType(events, "run_started").length, 2, "恢复后新提交创建第二个 Run");
+    assert.equal(eventsOfType(events, "run_completed").length, 1, "只有第二个 Run 完成（崩溃 Run 以 interrupted 终结）");
+    record("崩溃重放·priority 在途：priority/队列/活动输入一致，重放后 priority 兑现、无重复工具", true, `started=${started.join(">")}`);
+  } finally {
+    await h.cleanup();
+  }
+}
+
+// 子场景二：崩溃时已完成工具（read_file）落盘、下一模型轮次在途 → 重放后
+// Run 保守中断、活动输入清空；随后新提交正常运行，已完成工具绝不重复执行
+step("场景 31b · 崩溃重放·不重复工具");
+{
+  let releaseB1;
+  const gateB1 = new Promise((resolve) => {
+    releaseB1 = resolve;
+  });
+  let releaseB2;
+  const gateB2 = new Promise((resolve) => {
+    releaseB2 = resolve;
+  });
+  const h = await createProjectAgentHarness({
+    gatewayScript: [
+      async () => {
+        await gateB1;
+        return { toolCalls: [tool("read_file", { path: "OUTLINE.md" })] };
+      },
+      async () => {
+        await gateB2;
+        return { text: "崩溃前在途，绝不返回" };
+      },
+      { reply: { text: "恢复后新任务答复。" } }
+    ],
+    gatewayDelayMs: 0
+  });
+  try {
+    await h.agent.open({ projectRoot: h.projectRoot });
+    await h.agent.submit({ projectRoot: h.projectRoot, text: "A 任务" });
+    await waitFor(h.agent, h.projectRoot, (_session, snap) => eventsOfType(snap.events, "model_turn_started").length >= 1);
+    releaseB1();
+    // 等 read_file 完成落盘（已完成工具 = 不重复执行的对象）
+    await waitFor(h.agent, h.projectRoot, (_session, snap) =>
+      eventsOfType(snap.events, "tool_call_completed").some((event) => event.payload?.name === "read_file")
+    );
+    // A 的下一轮模型请求在途（崩溃现场；gateB2 永不释放）
+    await waitFor(h.agent, h.projectRoot, (_session, snap) => eventsOfType(snap.events, "model_turn_started").length >= 2);
+    // —— 崩溃：丢弃旧实例，模拟进程重启 ——
+    const { createProjectAgent } = await import("../src/core/agent/index.mjs");
+    const revived = createProjectAgent({
+      modelGateway: h.gateway,
+      agentStorageRootFor: (root) => h.store.agentRootFor(root)
+    });
+    await revived.open({ projectRoot: h.projectRoot });
+    const recovered = await readSession(revived, h.projectRoot);
+    assert.equal(recovered.status, "idle", "崩溃 Run 恢复后会话收敛为 idle");
+    assert.equal(recovered.active_run.status, "interrupted", "dangling 模型轮次保守中断");
+    assert.equal(recovered.active_run.active_input_id, null, "活动输入一致：中断后清空");
+    assert.equal(recovered.priority_input_id, null, "priority_input_id 一致：无在途优先");
+    assert.deepEqual(recovered.queued_inputs, [], "队列一致：无滞留排队输入");
+    // 新提交正常开始新 Run
+    await revived.submit({ projectRoot: h.projectRoot, text: "恢复后新任务" });
+    await waitForIdle(revived, h.projectRoot);
+    const events = await readEvents(revived, h.projectRoot);
+    assert.equal(
+      eventsOfType(events, "tool_call_started").filter((event) => event.payload?.name === "read_file").length,
+      1,
+      "已完成工具不得在重放/恢复后重复执行"
+    );
+    assert.equal(eventsOfType(events, "run_started").length, 2, "恢复后新提交创建第二个 Run");
+    assert.equal(eventsOfType(events, "run_completed").length, 1, "只有第二个 Run 完成（崩溃 Run 以 interrupted 终结）");
+    record("崩溃重放·不重复工具：已完成工具仅执行一次、队列/活动输入一致", true, "read_file=1");
   } finally {
     await h.cleanup();
   }
