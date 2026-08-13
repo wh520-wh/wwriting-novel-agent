@@ -307,16 +307,15 @@ test("旧项目 project.yaml 损坏：迁移失败仍可完成第一条消息，
 // 计划修复（整支审阅）：POST /api/projects/open 即触发 Agent 侧 open 序列
 // ---------------------------------------------------------------------------
 
-// 旧 .wwriting/agent journal 迁移必须经真实 HTTP 表面（POST /api/projects/open）
-// 触发：eager open 单独完成迁移（私有 events.jsonl 含旧事件、原文件字节不变），
-// 迁移后的会话可直接收发消息（链路完整）。
-test("打开旧项目即触发 .wwriting/agent journal 迁移到私有目录，原文件字节不变", async (t) => {
+// Task 13：旧 .wwriting/agent 聊天迁移路径已整体删除——POST /api/projects/open
+// 不再复制/迁入旧聊天数据（不注册会话、不复制单体文件、不产生根级 segments），
+// 旧文件字节不变；后续第一条消息从零创建全新会话，旧文本不进入任何接口。
+test("打开旧项目不再迁移 .wwriting/agent 聊天数据：无会话条目、旧文件字节不变", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-open-migrate-"));
   const projectRoot = path.join(root, "旧项目");
   const stateRoot = path.join(root, "user-data");
   await fs.mkdir(path.join(projectRoot, ".wwriting", "agent"), { recursive: true });
-  // 合法旧 journal：seq 从 1 连续（journal.load() 重放所需的最小形状，与
-  // workspace-migration 夹具一致——session_created 首事件 + input_queued）
+  // 合法旧 journal 形状（旧世界真实存在的布局；Task 13 后不被读取）
   const legacyEvents = [
     JSON.stringify({
       schema_version: 1,
@@ -352,39 +351,25 @@ test("打开旧项目即触发 .wwriting/agent journal 迁移到私有目录，�
   });
   const opened = await app.post("/api/projects/open", { projectRoot });
   assert.equal(opened.res.status, 200);
-  // 任务 6：open 响应新增 migration_notice（本次迁移实际发生才为 true）。此夹具目录
-  // 无 project.yaml/私有 settings 快照 → 恒为 false，形状契约其余字段不变。
+  // 任务 6：open 响应含 migration_notice（本项目资料迁移实际发生才为 true）。此
+  // 夹具目录无 project.yaml/私有 settings 快照 → 恒为 false，形状契约其余字段不变。
   assert.deepEqual(opened.data, { ok: true, projectRoot, migration_notice: false }, "响应形状契约不变");
 
-  // Task 4 迁移确定性：open() 即完成旧 flat 数据的收养——workspaceMigrator 把
-  // .wwriting/agent 的单文件旧数据复制到私有目录根，随后
-  // adoptLegacyFlatFilesToRegistry 把根上 flat 文件迁入会话 1 并注册；journal.load
-  // 的 migrateLegacy 随即导入 segments 并改名 events.legacy.jsonl（不再推迟到首次
-  // 发消息，旧对话首开即可见）。
+  // Task 13 负向断言：旧聊天数据不进入应用私有目录——无会话注册、无复制产物
   const targetAgentRoot = path.join(stateRoot, "workspaces", workspaceIdForPath(projectRoot), "agent");
-  assert.equal(
-    await pathExists(path.join(targetAgentRoot, "events.jsonl")),
-    false,
-    "open() 后根上不再残留旧 flat 文件（已迁入会话目录）"
-  );
+  assert.equal(await pathExists(path.join(targetAgentRoot, "events.jsonl")), false, "旧 flat 文件不得复制到私有目录");
+  assert.equal(await pathExists(path.join(targetAgentRoot, "segments")), false, "旧数据不得复制为私有目录根级 segments");
+  assert.equal(await pathExists(path.join(targetAgentRoot, "sessions", "index.json")), false, "旧数据不得产生会话注册表");
+  const sessions = await app.get(`/api/agent/sessions?projectRoot=${encodeURIComponent(projectRoot)}`);
+  assert.equal(sessions.data.sessions.length, 0, "旧聊天数据不得产生会话条目");
+  // 原 .wwriting/agent/events.jsonl 字节必须完全不变（源只读）
   assert.deepEqual(await fs.readFile(sourceEventsPath), before, "原 .wwriting/agent/events.jsonl 字节必须完全不变");
 
-  // 会话 1 已注册且旧历史已导入：segments 流头即旧事件、原文件改名保留
-  const sessionDirs = (await fs.readdir(path.join(targetAgentRoot, "sessions"))).filter(
-    (name) => !name.endsWith(".json")
-  );
-  assert.equal(sessionDirs.length, 1, "恰好一个会话目录");
-  const sessionDir = path.join(targetAgentRoot, "sessions", sessionDirs[0]);
-  const migrated = await fs.readFile(path.join(sessionDir, "events.legacy.jsonl"), "utf8");
-  assert.equal(migrated, legacyEvents, "旧事件应完整迁移进会话目录（events.legacy.jsonl 字节级一致）");
-  const segmentEvents = await fs.readFile(path.join(sessionDir, "segments", "events", "00000001.jsonl"), "utf8");
-  assert.ok(
-    segmentEvents.startsWith(legacyEvents),
-    "旧事件逐条进入会话 segments/events 流头（open 时已导入）"
-  );
-
-  // 链路完整：发送第一条消息（继续同一会话），并回到 idle
+  // 链路完整：发送第一条消息从零创建全新会话，旧文本不进入任何接口
   const sent = await app.post("/api/agent/input", { projectRoot, text: "你好" });
   assert.equal(sent.res.status, 200);
   await app.waitForIdle(projectRoot);
+  const snapshot = await app.get(`/api/agent/snapshot?projectRoot=${encodeURIComponent(projectRoot)}`);
+  assert.equal(snapshot.data.session.status, "idle");
+  assert.ok(!JSON.stringify(snapshot.data).includes("旧消息"), "旧聊天文本不得出现在 snapshot");
 });

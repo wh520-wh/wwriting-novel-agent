@@ -31,7 +31,6 @@ import { randomUUID } from "node:crypto";
 
 import { createAgentJournal } from "./journal.mjs";
 import { createSessionRegistry } from "./session-registry.mjs";
-import { migrateSingleSessionToRegistry, adoptLegacyFlatFilesToRegistry } from "./journal-session-migration.mjs";
 import { createToolRuntime } from "./tools.mjs";
 import { assemblePrompt, estimateTokens } from "./prompt.mjs";
 import {
@@ -44,8 +43,6 @@ import {
 import { createContextCheckpointStore } from "./context-checkpoints.mjs";
 import { createCompactionCoordinator, COMPACTION_BLOCKED_STATES, COMPACTION_NON_TERMINAL_STATES } from "./compaction.mjs";
 import { COMPACTION_PROMPT, selectProtectedRecentTurns } from "./compaction-prompt.mjs";
-import { runLegacyImport } from "./legacy-import.mjs";
-import { migrateProjectAgentStorage } from "../workspaces/migration.mjs";
 import { loadProject } from "../project-store.mjs";
 import { pathExists } from "../fs-utils.mjs";
 import { createMutex } from "../async-utils.mjs";
@@ -210,9 +207,8 @@ export function createAgentRuntime({
   toolIdleTimeoutMs = 300000,
   toolAbsoluteTimeoutMs = 3600000,
   // Task 3：journal 落盘位置（生产组合根必须显式传应用私有 storageRoot；默认
-  // 项目内 .wwriting/agent 只保留给低层兼容测试）与旧 journal 只读迁移器。
+  // 项目内 .wwriting/agent 只保留给低层兼容测试）。
   agentStorageRootFor = (projectRoot) => path.join(projectRoot, ".wwriting", "agent"),
-  workspaceMigrator = migrateProjectAgentStorage,
   // Task 5：每模型轮读取有效工作区配置的加载器（组合根注入 loadEffectiveWorkspaceConfig
   // + 全局默认模型兜底）。缺省读 project.yaml（与旧 loadProjectSafe 语义一致），供低层
   // 测试与无注入调用方使用。每轮调用、不在 Runtime 缓存整份配置——模型/权限切换在下一
@@ -249,9 +245,6 @@ export function createAgentRuntime({
         agentRoot,
         // Task 4：会话注册表（<agentRoot>/sessions/index.json）+ 每会话运行状态
         registry: createSessionRegistry({ root: agentRoot }),
-        // 迁移序列是否已在本进程内跑过（migrateProjectData 一次性短路：迁移幂等、
-        // 判定本身要多次磁盘探测，同一项目反复 open/submit/sessions() 不必重检）
-        migrationDone: false,
         sessions: new Map(), // sessionId -> sessionState（ensureSessionState 惰性物化）
         projectOperations,
         modelGateway: resolveGateway(key),
@@ -294,19 +287,15 @@ export function createAgentRuntime({
 
   // 物化（或复用）某会话的运行状态：独立 journal/checkpoint/tools/压缩协调器，
   // 存储根 = <agentRoot>/sessions/<id>/。注册表条目由调用方先行保证存在（open/
-  // submit/newSession 已 create 或校验）。agentRoot 根的旧 flat 遗留已由
-  // migrateProjectData（adoptLegacyFlatFilesToRegistry）确定性迁入会话 1，这里
-  // 不再承担收养职责（此前是"首次物化时"副作用，依赖物化顺序、首条消息前不可见）。
+  // submit/newSession 已 create 或校验）。
   //
   // 会话 id 对齐结论（Task 4 前序审查要点 3，调查后决策）：
   //   - 新会话（惰性创建/newSession/open 首开）：journal 首次空载（load() 内部
   //     createFirstSession）用一次性 idFactory 产出「注册表 id」作为其内部
-  //     session_id——两者相等，事件的 session_id 与外部书签一致；
-  //   - 迁移会话：journal 内部沿用其 session.json/事件流里的旧 id，注册表 id 仅作
-  //     外部书签，两者不需要相等。理由：journal.append 的事件由 stampEvent 统一盖
-  //     session_id（取 journal 自身投影的 session_id，见 journal.mjs），reducer 的
-  //     "事件 session_id 必须一致"校验只约束同一日志流内部，与注册表/外部 id 无关；
-  //     运行时只要把 sessionId → journal 实例的映射维护正确即可。
+  //     session_id——两者相等，事件的 session_id 与外部书签一致。
+  //   Task 13：迁移会话路径已删除，所有会话都经 createAgentJournal 的
+  //   initialSessionId 与注册表 id 对齐（见下方修复说明），不再有「注册表 id 仅作
+  //   外部书签、内部沿用旧 id」的错位形态。
   async function ensureSessionState(state, sessionId) {
     let sessionState = state.sessions.get(sessionId);
     if (sessionState) return sessionState;
@@ -385,75 +374,19 @@ export function createAgentRuntime({
   }
 
   // 解析目标会话状态（不存在 → null，不物化新会话）。
-  // 迁移先行：promote/stop/retry/snapshot 等只读/控制端点不经 open()，但旧数据
-  // 会话必须同样可见——migrationDone 短路后这里只是一次布尔检查。
   async function resolveSessionState(state, sessionId) {
-    await migrateProjectData(state);
     const id = await resolveSessionId(state, sessionId);
     if (id == null) return null;
     return await ensureSessionState(state, id);
   }
 
-  // 项目级迁移序列（Task 4 前序审查要点 1，按实际代码调整后的固定顺序）：
-  //   1) 先跑 migrateSingleSessionToRegistry（幂等）：把 agentRoot 根已存在的旧单流
-  //      数据搬入 sessions/<id>/ 并注册会话 1；
-  //   2) workspaceMigrator（copy 型）只在注册表尚不存在时运行（首次打开）：把旧
-  //      .wwriting/agent 数据拷入 agentRoot 根，随后在同一 open 内再迁移一次，让旧
-  //      对话首开即可见。注册表已存在后绝不复制——workspaceMigrator 的 hasJournalData
-  //      判空会把旧项目内数据重新拷进 agentRoot 根，造成根级孤儿 segments/；
-  //   3) adoptLegacyFlatFilesToRegistry：无 segments 的纯 flat 遗留（最老一代布局）
-  //      在复制后确定性迁入会话 1——不再依赖"首次物化会话"的时机，首开即可见。
-  // 该顺序满足"migrate 先行"，同时堵住"迁移清空根目录后被 workspace 复制回填"的
-  // 二次复制漏洞（单看 migrate-first 或 workspace-first 都留洞，门闩是注册表存在性）。
-  async function migrateProjectData(state) {
-    // 本进程内已跑过（含无源数据的情况）：迁移判定+执行都是幂等一次性工作，
-    // 后续 open/submit/sessions()/newSession 直接短路，省掉重复磁盘探测。
-    if (state.migrationDone) return;
-    const agentRoot = state.agentRoot;
-    try {
-      await migrateSingleSessionToRegistry({ agentRoot, idFactory });
-    } catch (error) {
-      console.warn(`[agent] 会话迁移失败（不影响 open）: ${error?.message ?? String(error)}`);
-    }
-    if (!(await pathExists(path.join(agentRoot, "sessions", "index.json")))) {
-      try {
-        await workspaceMigrator({
-          projectRoot: state.key,
-          targetAgentRoot: agentRoot
-        });
-      } catch (error) {
-        console.warn(`[agent] legacy journal 迁移失败（不影响 open）: ${error?.message ?? String(error)}`);
-      }
-      try {
-        await migrateSingleSessionToRegistry({ agentRoot, idFactory });
-      } catch (error) {
-        console.warn(`[agent] 会话迁移失败（不影响 open）: ${error?.message ?? String(error)}`);
-      }
-      try {
-        await adoptLegacyFlatFilesToRegistry({ agentRoot, idFactory });
-      } catch (error) {
-        console.warn(`[agent] 旧 flat 遗留迁移失败（不影响 open）: ${error?.message ?? String(error)}`);
-      }
-    }
-    state.migrationDone = true;
-  }
-
   // 会话 load 后的崩溃对账（等价旧 open() 的恢复序列，不含 startLoop——循环启动
-  // 由调用方在串行门通过后决定）：checkpoint 对账 → legacy 导入 → 非终态压缩收敛。
-  async function reconcileSessionAfterLoad(state, sessionState) {
+  // 由调用方在串行门通过后决定）：checkpoint 对账 → 非终态压缩收敛。
+  async function reconcileSessionAfterLoad(sessionState) {
     // Task 8：checkpoint 崩溃对账（提交 marker 裁决 + 孤儿清理）必须在检查压缩
     // 投影之前执行——对账可能补写 completed（裁决 2）或 failed（裁决 1），使压缩
     // 变为终态。storage 损坏（checkpoint_corrupt）暴露可诊断错误，不猜测回滚。
     await sessionState.checkpointStore.reconcileAfterCrash({ journal: sessionState.journal });
-    // Task 7：首次 open 对旧项目执行一次性只读 legacy 导入（幂等）。导入失败不
-    // 阻塞 open：journal 已恢复、应用可继续工作；migration.legacy_imported 保持
-    // false，下次 open() 重试（legacy-import 的 legacy_id / legacy 标记保证重试
-    // 不产生重复事件或消息）。
-    try {
-      await runLegacyImport({ projectRoot: state.key, journal: sessionState.journal, idFactory });
-    } catch (error) {
-      console.warn(`[agent] legacy 导入失败（下次 open 重试）: ${error?.message ?? String(error)}`);
-    }
     // Task 8：非终态压缩对账（brief Step 3 结尾）。先通过 commit marker 对账
     //（上面 reconcileAfterCrash），未完成 attempt 统一追加
     // context_compaction_cancelled(reason:"process_restarted")，然后按收敛矩阵
@@ -2124,28 +2057,23 @@ export function createAgentRuntime({
       throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
     }
     const state = ensureProject(projectRoot);
-    // Task 4 迁移序列（幂等）：migrate 先行 + workspace 复制按注册表存在性门控
-    //（顺序理由见 migrateProjectData）。迁移失败/无源数据不阻塞 open。
-    await migrateProjectData(state);
-    // 解析目标会话：显式 sessionId → registry.get 校验存在；缺省 → 最近活跃
-    //（迁移出的会话 1 即"对话 1"）；品牌新项目（无任何会话）→ 空项目状态，
-    // 不建 journal、不建会话（惰性创建）。
+    // 解析目标会话：显式 sessionId → registry.get 校验存在；缺省 → 最近活跃；
+    // 品牌新项目（无任何会话）→ 空项目状态，不建 journal、不建会话（惰性创建）。
     const targetId = await resolveSessionId(state, sessionId);
     if (targetId == null) {
       return { session_id: null, status: "idle" };
     }
     const sessionState = await ensureSessionState(state, targetId);
     await sessionState.journal.load();
-    // 崩溃对账（checkpoint/legacy/压缩收敛；不在此启动循环——见下）
-    await reconcileSessionAfterLoad(state, sessionState);
+    // 崩溃对账（checkpoint/压缩收敛；不在此启动循环——见下）
+    await reconcileSessionAfterLoad(sessionState);
     // 注册表 updated_at 同步（幂等）：以用户动作时刻刷新会话活跃排序依据。
     // 同步失败只告警，派生元数据以事件流为准。
     await syncSessionRegistry(state, sessionState);
     // 恢复：只恢复有效非终态 Run（journal.load 已把 dangling assistant 活动标记
-    // 为 interrupted；那些 Run 等待 retry，不自动恢复；legacy 导入的未完成 Run
-    // 是合法非终态，按同一语义接续执行）。压缩处于阻塞状态（started/running/
-    // cancelling/failed/cancelled）时绝不自动启动循环——绝不让旧 processInput
-    // 自动再次执行。
+    // 为 interrupted；那些 Run 等待 retry，不自动恢复）。压缩处于阻塞状态
+    //（started/running/cancelling/failed/cancelled）时绝不自动启动循环——绝不让
+    // 旧 processInput 自动再次执行。
     const session = await sessionState.journal.getSession();
     const run = session.active_run;
     const compactionBlocked =
@@ -2167,10 +2095,7 @@ export function createAgentRuntime({
     if (!SOURCES.has(source)) {
       throw fail("invalid_source", `source 只允许 ${[...SOURCES].join("/")}，仅用于审计来源。`);
     }
-    // Task 4：迁移序列（幂等）兜住不经 /open 路由的直连提交（启动恢复的选中
-    // 工作区第一条消息前完成旧 journal 迁移）。
     const state = ensureProject(projectRoot);
-    await migrateProjectData(state);
     // Task 8：只把精确的 text === "/compact" 识别为 kind:"compact"；"/compact now"
     // 等其余文本都是普通输入。
     const kind = text === "/compact" ? "compact" : undefined;
@@ -2200,7 +2125,7 @@ export function createAgentRuntime({
       }
       const sessionState = await ensureSessionState(state, targetId);
       await sessionState.journal.load();
-      await reconcileSessionAfterLoad(state, sessionState);
+      await reconcileSessionAfterLoad(sessionState);
       // 4) 恢复可恢复 Run（等价旧 submit → open() 的启动恢复）：非终态且未被压缩
       //    阻塞 → 接续执行（新输入在下方 FIFO 排队在其后）。串行门已保证没有
       //    其他会话的飞行循环，此处启动是安全的。
@@ -2825,7 +2750,7 @@ export function createAgentRuntime({
   // Task 4：多会话管理 API（全部委托 session-registry）
   // -------------------------------------------------------------------------
 
-  // 会话列表 + 最近活跃（dashboard 数据源；先跑迁移序列，旧项目首开即含"对话 1"）。
+  // 会话列表 + 最近活跃（dashboard 数据源）。
   // Task 9：为每个会话附加 run_status 投影（左侧栏状态点 + busy 复位数据源）——
   // 只对已物化会话读取其 journal 的 active_run：非终态（running/waiting_user 等）
   // → "running"；failed → "failed"；其余（无 run / completed/cancelled/interrupted）
@@ -2840,7 +2765,6 @@ export function createAgentRuntime({
       throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
     }
     const state = ensureProject(projectRoot);
-    await migrateProjectData(state);
     const list = await state.registry.list();
     const active = await state.registry.getLastActive();
     const withRunStatus = await Promise.all(list.map(async (meta) => {
@@ -2870,7 +2794,6 @@ export function createAgentRuntime({
       throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
     }
     const state = ensureProject(projectRoot);
-    await migrateProjectData(state);
     return state.registry.create({ title });
   }
 

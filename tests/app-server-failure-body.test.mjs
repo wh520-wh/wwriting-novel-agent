@@ -232,7 +232,7 @@ test("运行中 submit 排队（HTTP 200 + queued），stop 收敛为 cancelled"
 // .wwriting/agent），第二次输入 append 因存储不可写抛出原始错误 —— 统一错误
 // 脱敏后响应正文不得泄露 ENOENT/绝对路径/堆栈（SPEC §11）。
 //
-// 计划修复（整支审阅）：submit 前的惰性 open 会经 runLegacyImport 的
+// 计划修复（整支审阅）：submit 前的惰性 open 会经 journal 的
 // writeMigration 重建被整体删除的私有目录（writeJsonAtomic → ensureDir），纯删除
 // 不再触发 ENOENT。改用同名文件占位：open 的 ensureDir 对已存在文件抛 EEXIST（被
 // open 兜底吞掉），随后 submit 的 append 对"父路径是文件"抛 ENOTDIR → 错误路径

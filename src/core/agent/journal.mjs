@@ -5,7 +5,8 @@
 // journal 是 Agent 状态的唯一真相源（计划 Rule 9）：事件日志记录 Session/Run/
 // queue/plan/decision/grant/activity 的全部事件；session.json 是可重建的 Session/Run
 // projection；transcript 只保存合法模型消息链与历史摘要，不承担产品状态；
-// migration.json 标记一次性 legacy 导入（Task 7 使用）；checkpoints/ 为预留目录。
+// migration.json 为 journal 级迁移状态文件（Task 13 起聊天迁移已删除，
+// legacy_imported 恒为 false，仅作布局兼容保留）；checkpoints/ 为预留目录。
 //
 // 存储布局（agentDir = storageRoot，默认 <projectRoot>/.wwriting/agent/ 仅供低层
 // 兼容测试；生产组合根必须显式传应用私有 storageRoot）：
@@ -16,11 +17,11 @@
 //   migration.json                 —— { schema_version: 1, legacy_imported: false }
 //   checkpoints/                   —— 预留目录
 //
-// 物理 I/O（追加/读取/轮转/索引/legacy 迁移）全部委托给 journal-segments.mjs 的
+// 物理 I/O（追加/读取/轮转/索引）全部委托给 journal-segments.mjs 的
 // segment store；本模块只保留 reducer、事件盖章、投影与恢复编排。事件 JSONL 是
-// 真相；manifest 与 .index.json 都是可删除重建的派生数据。旧单体 events.jsonl /
-// transcript.jsonl 只在一次性 legacy 迁移时出现（导入后改名为 *.legacy.jsonl）；
-// runtime 不得再依赖这两个路径判断当前存储。
+// 真相；manifest 与 .index.json 都是可删除重建的派生数据。Task 13：旧单体
+// events.jsonl/transcript.jsonl 到 segments 的自动聊天迁移已整体删除，新
+// generation 只读取新格式（segments/）。
 //
 // 崩溃模型：appendBatch 先分配连续 seq、对克隆状态严格校验（dry-run，违规在落盘前
 // 拒绝），再追加完整 JSON 行到 segment store，最后原子重写 session.json（临时文件 +
@@ -1055,9 +1056,6 @@ export function createAgentJournal({
   const sessionPath = path.join(agentDir, "session.json");
   const migrationPath = path.join(agentDir, "migration.json");
   const checkpointsDir = path.join(agentDir, "checkpoints");
-  // 旧单体格式文件只用于一次性 legacy 迁移（导入后改名为 *.legacy.jsonl）
-  const legacyEventsPath = path.join(agentDir, "events.jsonl");
-  const legacyTranscriptPath = path.join(agentDir, "transcript.jsonl");
   // 物理 I/O 全部委托给 segment store（Task 4）；manifest 为两个 stream 共享
   const manifestPath = path.join(agentDir, "journal-manifest.json");
   const eventsStore = createJournalSegmentStore({
@@ -1083,28 +1081,13 @@ export function createAgentJournal({
   let projectionWriteError = null; // 最近一次 session.json 写入失败（尽力而为语义）
 
   // load() 必须惰性创建 agentDir（storageRoot）、checkpoints/ 与 migration.json。
-  // 新格式 journal 不再创建单体 events.jsonl/transcript.jsonl（旧文件只出现在
-  // legacy 迁移场景，由 migrateLegacy 处理）。
+  // 新格式 journal 从不创建单体 events.jsonl/transcript.jsonl（Task 13：旧单体
+  // 到 segments 的自动聊天迁移已删除，新 generation 只读新格式）。
   async function ensureStorage() {
     await ensureDir(agentDir);
     await ensureDir(checkpointsDir);
     if (!(await pathExists(migrationPath))) {
       await writeJsonAtomic(migrationPath, { schema_version: 1, legacy_imported: false });
-    }
-  }
-
-  // 旧单体格式一次性迁移：events.jsonl/transcript.jsonl → segments，原文件改名
-  // *.legacy.jsonl。只在检测到旧文件时执行；幂等由 store.importLegacy 保证。
-  async function migrateLegacy() {
-    const [hasEvents, hasTranscript] = await Promise.all([
-      pathExists(legacyEventsPath),
-      pathExists(legacyTranscriptPath)
-    ]);
-    if (hasEvents) {
-      await eventsStore.importLegacy({ filePath: legacyEventsPath, kind: "events" });
-    }
-    if (hasTranscript) {
-      await transcriptStore.importLegacy({ filePath: legacyTranscriptPath, kind: "transcript" });
     }
   }
 
@@ -1356,15 +1339,14 @@ export function createAgentJournal({
     return batch;
   }
 
-  // 必须在 mutex 内调用。首次 load：创建存储布局 → 迁移旧单体格式 → 按恢复策略
-  // 建立 projection → 追加恢复事件 → 写出第一份 session.json。
+  // 必须在 mutex 内调用。首次 load：创建存储布局 → 按恢复策略建立 projection →
+  // 追加恢复事件 → 写出第一份 session.json。
   async function initialize() {
     if (loaded) return;
     await ensureStorage();
     const eventsInfo = await eventsStore.load({ signal: loadSignal.signal });
     const transcriptInfo = await transcriptStore.load({ signal: loadSignal.signal });
     backgroundRebuild = eventsInfo.rebuilding ?? transcriptInfo.rebuilding ?? null;
-    await migrateLegacy();
     const gaps = eventsStore.gaps;
     const anchor = await readSessionAnchor();
     if (gaps.length > 0) {
@@ -1534,9 +1516,9 @@ export function createAgentJournal({
     });
   }
 
-  // migration 标记：一次性迁移状态（migration.json 位于应用私有 agentDir，绝不
-  // 落在项目目录）。由更老的 legacy flat-file 导入（legacy-import.mjs）读写；
-  // 本模块不自行决定标记值，只提供读写通道。
+  // migration 标记：journal 级一次性迁移状态（migration.json 位于应用私有
+  // agentDir，绝不落在项目目录）。Task 13 起旧聊天迁移已删除，legacy_imported
+  // 恒为 false（标记文件保留：既有的低层测试与旧布局兼容性依赖其存在）。
   async function readMigration() {
     await initialize();
     return readJson(migrationPath, { schema_version: 1, legacy_imported: false });
