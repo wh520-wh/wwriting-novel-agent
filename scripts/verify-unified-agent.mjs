@@ -353,7 +353,7 @@ step("场景 9 · 章节事务");
 }
 
 // ---------------------------------------------------------------------------
-// 场景 11：只读审查（review workflow 不修改项目文件）
+// 场景 11：只读审查（只读完成，不修改项目文件）
 // ---------------------------------------------------------------------------
 step("场景 11 · 只读审查");
 {
@@ -372,7 +372,7 @@ step("场景 11 · 只读审查");
     assert.equal(after, before, "审查不得修改项目文件");
     const events = await readEvents(h.agent, h.projectRoot);
     assert.equal(eventsOfType(events, "run_completed").length, 1);
-    record("只读审查：review workflow 只读完成", true, "文件未被修改");
+    record("只读审查：只读完成不修改项目文件", true, "文件未被修改");
   } finally {
     await h.cleanup();
   }
