@@ -82,7 +82,6 @@ const TOOL_BASE_LABELS = {
   list_files: "查看文件列表",
   search_files: "搜索文件",
   update_plan: "更新任务计划",
-  enter_workflow: "切换工作流",
   append_chapter_segment: "写入章节内容",
   commit_chapter: "提交章节"
 };
@@ -131,7 +130,9 @@ export function groupStatusText(group) {
     case "completed": return `工作了 ${seconds}`;
     case "failed": return `工作了 ${seconds} · 失败`;
     case "cancelled": return `工作了 ${seconds} · 已停止`;
-    case "interrupted": return `工作了 ${seconds} · 已中断`;
+    // Task 11：实际被截断的执行组显示英文固定文案（与工具跳过错误同文案，
+    // SPEC 3.3 rule 8）；不伪装耗时叙事。
+    case "interrupted": return "Interrupted by the user";
     case "waiting_user": return "待命";
     default: return "工作中";
   }

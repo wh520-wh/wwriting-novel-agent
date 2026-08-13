@@ -274,7 +274,8 @@ test("Step 4: 工作组展开默认值与终态耗时文案（每组自带时钟
   assert.equal(group.expanded, true);
   assert.equal(groupStatusText(group), "工作了 18 秒 · 已停止");
 
-  // interrupted → 保持展开，工作了 18 秒 · 已中断
+  // interrupted → 保持展开，终态文案为英文固定文案（Task 11：实际被截断的
+  // 执行组显示 Interrupted by the user，不伪装耗时叙事）
   work = reduceAll([
     ev("run_started", { workflow: "general", input_id: "in-1" }, 1, { at: atSec(0) }),
     ev("run_interrupted", { reason: "recovery_dangling" }, 2, { at: atSec(18) })
@@ -282,7 +283,7 @@ test("Step 4: 工作组展开默认值与终态耗时文案（每组自带时钟
   group = groupOf(work);
   assert.equal(group.status, "interrupted");
   assert.equal(group.expanded, true);
-  assert.equal(groupStatusText(group), "工作了 18 秒 · 已中断");
+  assert.equal(groupStatusText(group), "Interrupted by the user");
 
   // waiting_user → 保持展开；等待不计时，文案"待命"（与 session-sidebar RUN_STATUS_LABELS 口径统一）
   work = reduceAll([
@@ -356,6 +357,42 @@ test("v1 兼容：无 turn_id 的 model_turn 事件只计数开放 turn，不产
   const group = groupOf(work);
   assert.equal(group.legacyOpenTurns, 0, "成对开放/关闭后归零");
   assert.equal(orderedWorkItems(group).length, 0, "v1 无 reasoning 内容，不产生工作项");
+});
+
+test("Task 11: input_interrupted 只结束活动输入，不终结 Run 工作组；已完整返回的 reasoning 保持正常完成", () => {
+  // 优先切换批次 = input_interrupted(A) + input_started(D)（同一 run id）。
+  // 工作组持续运行（D 继续消费），不得显示 interrupted 终态；已 completed 的
+  // reasoning 不伪装成被中断。
+  const work = reduceAll([
+    ev("run_started", { workflow: "general", input_id: "in-1" }, 1),
+    ev("model_turn_started", { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }, 2),
+    ev("reasoning_completed", { turn_id: "turn-1", input_id: "in-1", text: "完整思考内容", availability: "available" }, 3),
+    ev("tool_call_started", { tool_call_id: "tc-a", activity_id: "a1", name: "read_file", args: { path: "x.md" } }, 4),
+    ev("input_interrupted", { input_id: "in-1" }, 5),
+    ev("input_started", { input_id: "in-2" }, 6)
+  ]);
+  const group = groupOf(work);
+  assert.equal(group.status, "running", "优先切换不终结 Run，工作组保持运行中");
+  const reasoning = group.items.get("reasoning:turn-1");
+  assert.equal(reasoning.state, "completed", "已完整返回的 reasoning 保持正常完成");
+  assert.equal(reasoning.label, "已完成思考");
+  assert.equal(reasoning.text, "完整思考内容");
+  const tool = group.items.get("tool:a1");
+  assert.equal(tool.state, "running", "切换发生时未收敛的工具仍如实 running（不伪造 interrupted）");
+  assert.equal(groupStatusText(group), "工作中");
+});
+
+test("Task 11: input_withdrawn 不影响工作组；撤回的输入不产生任何工作项", () => {
+  const work = reduceAll([
+    ev("run_started", { workflow: "general", input_id: "in-1" }, 1),
+    ev("model_turn_started", { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }, 2),
+    ev("input_queued", { input_id: "in-2", text: "将被撤回" }, 3),
+    ev("input_withdrawn", { input_id: "in-2" }, 4)
+  ]);
+  const group = groupOf(work);
+  assert.equal(group.status, "running");
+  assert.equal(orderedWorkItems(group).length, 1, "撤回的排队输入不产生工作项");
+  assert.equal(group.items.get("reasoning:turn-1").state, "running");
 });
 
 test("stopping 状态同样压制 live item（停止始终静态，Task 6 Step 7 rule 5）", () => {
