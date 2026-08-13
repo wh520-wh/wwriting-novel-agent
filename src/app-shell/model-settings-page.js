@@ -74,20 +74,39 @@ function clearFieldError(refs, fieldKey) {
 // 保留编辑态（输入值不动）并行内显示中文错误；合法值才提交保存。
 // commit 返回 { ok, error }（commitProviderPatch/commitModelPatch 形状），
 // 失败时行内回显错误（toast 由 commit 内部弹）。
-function bindAutosave(input, { refs, fieldKey, validate = null, commit }) {
-  input.addEventListener("change", async () => {
+// Task 22（#11）：onEnter 开启时绑定 Enter——与失焦保存同一提交路径，使
+//「名称框回车保存」提示文案与真实行为一致（校验/行内错误行为完全相同）。
+// Task 22 审查（Important 1）：run() 内记 lastCommitted（提交前乐观置位，失败
+// 复位）——真实 DOM 在输入框被移除时派发挂起的 change（Enter 保存成功后
+// refresh 重建详情，被替换的输入框仍是焦点元素且带挂起 change），同值二次
+// 触发 run() 会重复 PATCH；同值跳过（含在途竞态与 Enter 连按）不丢新改动
+//（值变化后仍正常提交，失败后同值可重试）。
+function bindAutosave(input, { refs, fieldKey, validate = null, commit, onEnter = false }) {
+  let lastCommitted = null;
+  const run = async () => {
     const value = input.value.trim();
+    if (value === lastCommitted) return;
     const error = validate ? validate(value) : null;
     if (error) {
       showFieldError(refs, fieldKey, error);
       return;
     }
+    lastCommitted = value;
     clearFieldError(refs, fieldKey);
     const result = await commit(value);
     if (result?.ok === false) {
+      lastCommitted = null; // 失败复位：同一值可重试
       showFieldError(refs, fieldKey, result.error ?? "保存失败，请重试");
     }
-  });
+  };
+  input.addEventListener("change", run);
+  if (onEnter) {
+    input.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      void run();
+    });
+  }
 }
 
 const API_BASE = "/api/settings/providers";
@@ -614,8 +633,9 @@ export function createModelSettingsPage(ctx = {}) {
         status: provider.status === "enabled" ? "disabled" : "enabled"
       });
     });
-    // 删除（右上角垃圾桶）：二次确认后 POST .../remove。
-    const deleteButton = el("button", { type: "button", class: "provider-delete", title: "删除供应商", text: "🗑" });
+    // 删除（右上角垃圾桶）：二次确认后 POST .../remove。Task 22（#2）：图标
+    // 按钮补 aria-label 提供 accessible name（title 只作悬停提示）。
+    const deleteButton = el("button", { type: "button", class: "provider-delete", title: "删除供应商", "aria-label": "删除供应商", text: "🗑" });
     deleteButton.addEventListener("click", () => {
       removeProviderWithConfirm(provider.id);
     });
@@ -700,7 +720,7 @@ export function createModelSettingsPage(ctx = {}) {
       }
       keyInput.value = "";
     });
-    const eye = el("button", { type: "button", title: "显示/隐藏密钥", text: "👁" });
+    const eye = el("button", { type: "button", class: "api-key-eye", title: "显示/隐藏密钥", "aria-label": "显示/隐藏密钥", text: "👁" });
     eye.addEventListener("click", () => {
       keyInput.type = keyInput.type === "password" ? "text" : "password";
     });
@@ -739,7 +759,10 @@ export function createModelSettingsPage(ctx = {}) {
         refs: activeDraftRefs,
         fieldKey: `model_name:${model.id}`,
         validate: (value) => (value ? null : "模型名称不能为空"),
-        commit: (value) => commitModelPatch(provider.id, model.id, { model_name: value })
+        commit: (value) => commitModelPatch(provider.id, model.id, { model_name: value }),
+        // Task 22（#11）：添加模型的提示文案承诺「名称框改名后回车保存」，
+        // 绑定 Enter 与失焦保存同一提交路径。
+        onEnter: true
       });
       const nameError = el("span", { class: "field-error", "data-field-error": `model_name:${model.id}` });
       activeDraftRefs.errorRefs.set(`model_name:${model.id}`, nameError);
