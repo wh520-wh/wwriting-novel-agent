@@ -114,12 +114,15 @@ export const PLAN_LABEL = "任务计划";
 // 不再读当前 active run 的 active_elapsed_ms —— 第二个 Run 开始后旧组的终态文案
 // 不再被新 Run 的时钟覆盖。
 export function formatDuration(ms) {
+  // Task 24 统一工作计时格式：负数/NaN 归零，毫秒向下取整，尾零不省略。
+  // 运行态（view.js 每秒 setInterval）与终态（groupStatusText）都走本函数。
   if (!Number.isFinite(ms) || ms < 0) return "0 秒";
   const totalSeconds = Math.floor(ms / 1000);
   if (totalSeconds < 60) return `${totalSeconds} 秒`;
   const totalMinutes = Math.floor(totalSeconds / 60);
-  if (totalMinutes < 60) return `${totalMinutes} 分`;
-  return `${Math.floor(totalMinutes / 60)} 小时`;
+  if (totalMinutes < 60) return `${totalMinutes} 分 ${totalSeconds % 60} 秒`;
+  const hours = Math.floor(totalMinutes / 60);
+  return `${hours} 小时 ${totalMinutes % 60} 分 ${totalSeconds % 60} 秒`;
 }
 
 export function groupStatusText(group) {
