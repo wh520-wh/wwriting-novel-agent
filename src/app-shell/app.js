@@ -798,6 +798,9 @@ function openAdjacentChapter(delta) {
 }
 
 async function openReader(chapterNo) {
+  // B7：捕获 {projectScope, chapterNo}，await 后校验——慢旧章节响应不得覆盖
+  // 新章（readerChapterNo 已推进）或新项目（scope 已切换）。
+  const token = projectScope.capture();
   readerChapterNo = chapterNo;
   refs.readerTitle.textContent = `第 ${chapterNo} 章`;
   refs.readerMeta.textContent = "正在读取本章正文...";
@@ -807,6 +810,8 @@ async function openReader(chapterNo) {
   updateReaderNav();
   try {
     const data = await getJson(`/api/chapters/read?chapter=${encodeURIComponent(chapterNo)}`);
+    if (!projectScope.isCurrent(token)) return;
+    if (readerChapterNo !== chapterNo) return;
     refs.readerTitle.textContent = data.title ?? `第 ${chapterNo} 章`;
     refs.readerMeta.textContent = `${data.is_draft ? "草稿" : "正式章节"} · ${translateStage(data.status)} · ${formatNumber(data.actual_words)} 字`;
     const paragraphs = String(data.content ?? "").split(/\n{2,}/u).map((block) => block.trim()).filter(Boolean);
@@ -821,6 +826,8 @@ async function openReader(chapterNo) {
     }));
     refs.readerBody.scrollTop = 0;
   } catch (error) {
+    if (!projectScope.isCurrent(token)) return;
+    if (readerChapterNo !== chapterNo) return;
     refs.readerBody.replaceChildren(readerEmpty(error.message));
     refs.readerMeta.textContent = "读取失败";
   }

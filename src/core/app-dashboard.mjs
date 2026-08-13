@@ -324,6 +324,33 @@ export async function validateProjectRoot(projectRoot) {
   return target;
 }
 
+// B1 reveal-path 白名单（桌面 IPC 安全边界）：只接受「验证后的项目根」或
+// 「从项目根派生的目录」（= 根自身或其任意后代）。从目标路径向上逐层尝试
+// validateProjectRoot，第一个通过验证的祖先即为项目根，目标必须是该根或其
+// 下路径；任意非项目路径、空串与非字符串一律拒绝。由代码保证存储不变量
+// （SPEC §2.1-8），不依赖渲染进程自证。
+export async function resolveRevealTarget(targetPath) {
+  if (typeof targetPath !== "string" || targetPath.trim().length === 0) {
+    throw new Error("路径不在已验证的 WWriting 项目内");
+  }
+  const resolved = path.resolve(targetPath);
+  let candidate = resolved;
+  for (;;) {
+    try {
+      await validateProjectRoot(candidate);
+      return resolved;
+    } catch {
+      // 当前层不是项目根，继续向上找最近的项目根祖先。
+    }
+    const parent = path.dirname(candidate);
+    if (parent === candidate) {
+      break;
+    }
+    candidate = parent;
+  }
+  throw new Error("路径不在已验证的 WWriting 项目内");
+}
+
 export async function canInitializeProjectRoot(projectRoot) {
   if (typeof projectRoot !== "string" || projectRoot.trim().length === 0) {
     throw new Error("请输入要初始化的文件夹路径。");
