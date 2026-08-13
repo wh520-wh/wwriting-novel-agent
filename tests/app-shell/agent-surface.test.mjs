@@ -325,7 +325,11 @@ function makeFakeApi(overrides = {}) {
     calls,
     openProject: async (root) => { calls.push(["openProject", root]); },
     submit: async (text) => { calls.push(["submit", text]); return { ok: true, status: "running" }; },
-    promote: async (inputId) => { calls.push(["promote", inputId]); return { ok: true }; },
+    requestPriority: async (inputId) => { calls.push(["requestPriority", inputId]); return { ok: true, priority_pending: true }; },
+    withdrawInput: async (inputId) => {
+      calls.push(["withdrawInput", inputId]);
+      return { ok: true, withdrawn: true, draft_text: `撤回的 ${inputId}` };
+    },
     stop: async (runId) => { calls.push(["stop", runId]); return { ok: true }; },
     retry: async (runId) => { calls.push(["retry", runId]); return { ok: true }; },
     decide: async (decisionId, choice) => { calls.push(["decide", decisionId, choice]); return { ok: true }; },
@@ -385,7 +389,7 @@ test("首次打开：openProject 以 tail 语义拉取尾部 200 条并渲染，
   const opts = [];
   const finalSession = session({
     status: "idle",
-    last_seq: 3,
+    last_seq: 4,
     active_run: activeRun({ status: "completed", active_input_id: null })
   });
   const { root, surface } = await makeSurface({
@@ -394,9 +398,10 @@ test("首次打开：openProject 以 tail 语义拉取尾部 200 条并渲染，
         opts.push(options);
         if (options.tail) {
           return snapshotOf(finalSession, [
-            { ...ev("input_queued", { input_id: "in-1", text: "长会话消息", source: "chat" }), seq: 1 },
-            { ...ev("run_started", { workflow: "general", input_id: "in-1" }), seq: 2 },
-            { ...ev("run_completed", {}), seq: 3 }
+            { ...ev("run_started", { workflow: "general", input_id: "in-1" }), seq: 1 },
+            { ...ev("input_queued", { input_id: "in-1", text: "长会话消息", source: "chat" }), seq: 2 },
+            { ...ev("input_started", { input_id: "in-1" }), seq: 3 },
+            { ...ev("run_completed", {}), seq: 4 }
           ]);
         }
         return snapshotOf(finalSession, []);
@@ -442,7 +447,7 @@ test("提交失败：保留用户消息、恢复输入并显示可见错误", as
   assert.match(root.querySelector('[data-testid="agent-submit-error"]')?.textContent ?? "", /项目状态目录不可写/u);
 });
 
-test("提交成功：主动补快照并把即时消息收敛为单条正式记录", async () => {
+test("提交成功：主动补快照并把即时消息收敛为「接下来」排队行（queued 不生成正式气泡）", async () => {
   let snapshotCalls = 0;
   const { root, api, surface } = await makeSurface({
     apiOverrides: {
@@ -454,7 +459,10 @@ test("提交成功：主动补快照并把即时消息收敛为单条正式记�
         snapshotCalls += 1;
         api.calls.push(["fetchSnapshot", afterSeq]);
         if (snapshotCalls === 1) return null;
-        return snapshotOf(session({ last_seq: 1 }), [
+        return snapshotOf(session({
+          last_seq: 1,
+          queued_inputs: [{ id: "in-refresh", text: "继续写第一章", status: "queued", queued_at: "2026-08-06T00:00:00.000Z" }]
+        }), [
           { ...ev("input_queued", { input_id: "in-refresh", text: "继续写第一章", source: "chat" }), seq: 1 }
         ]);
       }
@@ -466,10 +474,13 @@ test("提交成功：主动补快照并把即时消息收敛为单条正式记�
   root.querySelector('[data-testid="agent-send"]')._fire("click");
 
   await waitUntil(() => snapshotCalls === 2);
-  const messages = root.querySelectorAll('[data-testid="agent-user-message"]');
-  assert.equal(messages.length, 1, "即时消息与 journal 消息应合并，不能重复");
-  assert.equal(messages[0].dataset.state ?? "", "", "正式记录不再带 pending 状态");
+  // queued 只出现在「接下来」区域：即时气泡收敛为排队行，不生成正式对话气泡
+  assert.equal(root.querySelectorAll('[data-testid="agent-user-message"]').length, 0, "queued 不生成正式对话气泡");
   assert.equal(root.querySelector('[data-testid="agent-submit-error"]'), null);
+  const items = root.querySelectorAll('[data-testid="agent-queue-item"]');
+  assert.equal(items.length, 1, "确认送达后收敛为「接下来」排队行");
+  assert.match(items[0].textContent, /继续写第一章/u);
+  assert.equal(root.querySelector('[data-testid="agent-queue-item"]').dataset.state, undefined, "排队行不带 pending 状态");
 });
 
 test("提交补快照迟到：切换项目后不得用旧项目会话覆盖新项目", async () => {
@@ -488,9 +499,10 @@ test("提交补快照迟到：切换项目后不得用旧项目会话覆盖新�
         if (snapshotCalls === 1) return null;
         if (snapshotCalls === 2) return oldSnapshot;
         return snapshotOf(session({
-          session_id: "sess-b", project_root: "D:\\novel-b", last_seq: 1
+          session_id: "sess-b", project_root: "D:\\novel-b", last_seq: 2
         }), [
-          { ...ev("input_queued", { input_id: "in-b", text: "B 项目消息", source: "chat" }, { session_id: "sess-b" }), seq: 1 }
+          { ...ev("input_queued", { input_id: "in-b", text: "B 项目消息", source: "chat" }, { session_id: "sess-b" }), seq: 1 },
+          { ...ev("input_started", { input_id: "in-b" }, { session_id: "sess-b" }), seq: 2 }
         ]);
       }
     }
@@ -506,9 +518,10 @@ test("提交补快照迟到：切换项目后不得用旧项目会话覆盖新�
   assert.match(root.textContent, /B 项目消息/u, "切换完成后应显示 B 项目会话");
 
   resolveOldSnapshot(snapshotOf(session({
-    session_id: "sess-a", project_root: "D:\\novel-a", last_seq: 1
+    session_id: "sess-a", project_root: "D:\\novel-a", last_seq: 2
   }), [
-    { ...ev("input_queued", { input_id: "in-a", text: "A 项目消息", source: "chat" }, { session_id: "sess-a" }), seq: 1 }
+    { ...ev("input_queued", { input_id: "in-a", text: "A 项目消息", source: "chat" }, { session_id: "sess-a" }), seq: 1 },
+    { ...ev("input_started", { input_id: "in-a" }, { session_id: "sess-a" }), seq: 2 }
   ]));
   await tick();
   await tick();
@@ -555,8 +568,9 @@ test("重置视图清空 composer：未发送草稿不跨会话泄漏", async ()
       openProject: async () => {},
       fetchSnapshot: async (options) => {
         if (options?.sessionId === "sid-2") {
-          return snapshotOf(session({ session_id: "sid-2", last_seq: 1 }), [
-            { ...ev("input_queued", { input_id: "in-2", text: "B 会话消息", source: "chat" }, { session_id: "sid-2" }), seq: 1 }
+          return snapshotOf(session({ session_id: "sid-2", last_seq: 2 }), [
+            { ...ev("input_queued", { input_id: "in-2", text: "B 会话消息", source: "chat" }, { session_id: "sid-2" }), seq: 1 },
+            { ...ev("input_started", { input_id: "in-2" }, { session_id: "sid-2" }), seq: 2 }
           ]);
         }
         return null;
@@ -601,25 +615,27 @@ test("提交失败气泡：重试成功后移除，不永久残留", async () =>
   assert.equal(root.querySelectorAll('[data-testid="agent-user-message"]').length, 1, "重试成功只保留一条用户消息");
 });
 
-test("提交失败气泡：事件回放确认送达后移除（reconcile 路径）", async () => {
+test("提交失败气泡：排队行回放确认送达后移除（reconcile 路径）", async () => {
   const { root, surface } = await makeSurface({
     apiOverrides: {
       submit: async () => { throw new Error("网络抖动，实际已受理"); }
     }
   });
   await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
   const input = root.querySelector('[data-testid="agent-composer-input"]');
   input.value = "送达确认的文本";
   root.querySelector('[data-testid="agent-send"]')._fire("click");
   await tick();
   assert.ok(root.querySelector('[data-testid="agent-submit-error"]'), "submit reject 应先显示失败气泡");
 
-  // 后端实际已受理：同文本 user 消息经事件流回放（input_queued → conversation →
-  // syncMessages → reconcilePendingSubmission），失败气泡应按文本一并移除。
+  // 后端实际已受理：同文本输入经事件流回放（input_queued → 「接下来」排队行 →
+  // syncQueue reconcile），失败气泡应按文本一并移除。
   surface.applyEvent(ev("input_queued", { input_id: "in-delivered", text: "送达确认的文本", source: "chat" }));
   await tick();
-  assert.equal(root.querySelector('[data-testid="agent-submit-error"]'), null, "回放确认送达后失败气泡消失");
-  assert.equal(root.querySelectorAll('[data-testid="agent-user-message"]').length, 1, "确认送达后收敛为一条正式记录");
+  assert.equal(root.querySelector('[data-testid="agent-submit-error"]'), null, "排队行确认送达后失败气泡消失");
+  assert.equal(root.querySelectorAll('[data-testid="agent-queue-item"]').length, 1, "确认送达后显示为排队行");
+  assert.ok(root.querySelector('[data-input-id="in-delivered"]').textContent.includes("送达确认的文本"), "排队行保留原文");
 });
 
 test("click 提交成功后焦点回到 textarea", async () => {
@@ -732,7 +748,7 @@ test("Enter 键发送（不带 Shift）", async () => {
   assert.equal(input.value, "");
 });
 
-test("运行中发送进入队列：显示原文 + 排队 + 立即；点击立即触发 promote", async () => {
+test("运行中发送进入队列：显示原文 + 排队 + 立即/取消；点击立即触发 requestPriority", async () => {
   const { root, api, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
@@ -743,20 +759,30 @@ test("运行中发送进入队列：显示原文 + 排队 + 立即；点击立�
   assert.ok(items[0].textContent.includes("排队"), "排队项应含「排队」");
   const promote = items[0].querySelector('[data-testid="agent-promote"]');
   assert.ok(promote, "排队项应有「立即」按钮");
+  assert.equal(promote.disabled, false, "无优先在途时「立即」可点");
+  const withdraw = items[0].querySelector('[data-testid="agent-withdraw"]');
+  assert.ok(withdraw, "排队项应有「取消」（撤回）按钮");
+  assert.equal(withdraw.textContent, "取消");
   promote._fire("click");
-  assert.deepEqual(api.calls.filter((c) => c[0] === "promote").map((c) => c[1]), ["in-2"]);
+  assert.deepEqual(api.calls.filter((c) => c[0] === "requestPriority").map((c) => c[1]), ["in-2"]);
+  assert.equal(api.calls.filter((c) => c[0] === "promote").length, 0, "旧 promote 不得再被调用");
 });
 
-test("同一 run id：promote 与 stop 事件不更换 Run；conversation 保留", async () => {
+test("同一 run id：优先切换批次（input_interrupted + input_started）不更换 Run；conversation 保留", async () => {
   const { root, api, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  // A 在跑，B 排队 → 用户点 B「立即」→ priority_input_requested →
+  // 安全点批次 input_interrupted(A) + input_started(B)（同一 run id）
+  surface.applyEvent(ev("input_queued", { input_id: "in-1", text: "第一条消息", source: "chat" }));
+  surface.applyEvent(ev("input_started", { input_id: "in-1" }));
   surface.applyEvent(ev("input_queued", { input_id: "in-2", text: "先改第三章", source: "chat" }));
-  surface.applyEvent(ev("interrupt_requested", {}));
-  surface.applyEvent(ev("input_promoted", { input_id: "in-2" }));
-  surface.applyEvent(ev("interrupt_safe_point_reached", {}));
-  // 用户气泡：两次输入都在对话里（同一会话连续对话）
-  assert.equal(root.querySelectorAll('[data-testid="agent-user-message"]').length, 1);
+  surface.applyEvent(ev("priority_input_requested", { input_id: "in-2" }));
+  surface.applyEvent(ev("input_interrupted", { input_id: "in-1" }));
+  surface.applyEvent(ev("input_started", { input_id: "in-2" }));
+  // 用户气泡：A、B 各一条（input_started 是用户文本进入对话的唯一边界）
+  assert.equal(root.querySelectorAll('[data-testid="agent-user-message"]').length, 2);
+  assert.equal(root.querySelectorAll('[data-testid="agent-queue-item"]').length, 0, "优先输入开始后队列清空");
   // 停止动作应针对当前 run id
   const stop = root.querySelector('[data-testid="agent-stop"]');
   assert.ok(stop, "活动 Run 应有停止按钮");
@@ -852,6 +878,7 @@ test("项目切换：重新 openProject 重置对话与队列，transport 作用
   await surface.openProject("D:\\novel");
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
   surface.applyEvent(ev("input_queued", { input_id: "in-2", text: "旧项目消息", source: "chat" }));
+  surface.applyEvent(ev("input_started", { input_id: "in-2" }));
   assert.equal(root.querySelectorAll('[data-testid="agent-user-message"]').length, 1);
   await surface.openProject("D:\\novel-b");
   assert.ok(api.calls.some((c) => c[0] === "openProject" && c[1] === "D:\\novel-b"));
@@ -1488,6 +1515,28 @@ test("waiting_user 与 Run 终态时无任何动效 class", async () => {
   assert.equal(root.querySelectorAll(".agent-live-text").length, 0, "Run 终态全部静态");
 });
 
+test("interrupted 工作组显示英文终态文案 Interrupted by the user（Task 11）", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("run_started", { workflow: "general", input_id: "in-1" }));
+  surface.applyEvent(ev("model_turn_started", { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }));
+  surface.applyEvent(ev("reasoning_completed", { turn_id: "turn-1", input_id: "in-1", text: "已完成的分析", availability: "available" }));
+  surface.applyEvent(ev("run_interrupted", { reason: "recovery_dangling" }));
+  const group = root.querySelector(".agent-work-group");
+  assert.ok(group, "有 reasoning 工作项时渲染工作组");
+  assert.equal(
+    group.querySelector(".agent-work-status").textContent,
+    "Interrupted by the user",
+    "被截断的执行组显示英文固定文案"
+  );
+  assert.match(
+    group.querySelector(".agent-reasoning-detail").textContent,
+    /已完成的分析/u,
+    "已完整返回的 reasoning 保持正常完成，不伪装中断"
+  );
+});
+
 test("tool 失败：失败 icon 与「失败」短状态词独立着色，不落在整行", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
@@ -1840,23 +1889,226 @@ test("对话容器带 aria-live 区域（可访问性）", async () => {
   assert.equal(conv.getAttribute("aria-live"), "polite");
 });
 
-test("input_consumed / input_cancelled 移除排队项；workflow_changed 保持 Run 活动", async () => {
+test("input_withdrawn 移除排队项；撤回输入在 UI 不可见；workflow_changed 保持 Run 活动", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
   surface.applyEvent(ev("input_queued", { input_id: "in-2", text: "排队A", source: "chat" }));
   surface.applyEvent(ev("input_queued", { input_id: "in-3", text: "排队B", source: "chat" }));
   assert.equal(root.querySelectorAll('[data-testid="agent-queue-item"]').length, 2);
-  // 排队输入被消费（切换活动输入）
-  surface.applyEvent(ev("input_consumed", { input_id: "in-2" }));
+  assert.equal(root.querySelectorAll('[data-testid="agent-user-message"]').length, 0, "queued 不生成正式对话气泡");
+  // 撤回排队输入：从「接下来」区域移除，不产生对话气泡、不进入历史
+  surface.applyEvent(ev("input_withdrawn", { input_id: "in-2" }));
   assert.equal(root.querySelectorAll('[data-testid="agent-queue-item"]').length, 1);
   assert.ok(root.querySelector('[data-input-id="in-3"]').textContent.includes("排队B"));
-  // 排队输入被取消（停止路径收敛）
-  surface.applyEvent(ev("input_cancelled", { input_id: "in-3" }));
+  assert.equal(root.querySelectorAll('[data-testid="agent-user-message"]').length, 0, "撤回输入在 UI 不可见");
+  surface.applyEvent(ev("input_withdrawn", { input_id: "in-3" }));
   assert.equal(root.querySelectorAll('[data-testid="agent-queue-item"]').length, 0);
+  assert.equal(root.querySelector('[data-testid="agent-queue"]').textContent, "", "空队列不留占位文本");
   // workflow 切换：Run 仍活动，停止按钮保留
   surface.applyEvent(ev("workflow_changed", { workflow: "chapter", reason: "正式写作" }));
   assert.ok(root.querySelector('[data-testid="agent-stop"]'), "workflow 切换后 Run 仍活动");
+});
+
+test("queued 只出现在「接下来」：input_queued 不生成正式对话气泡，input_started 才生成用户气泡", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("input_queued", { input_id: "in-2", text: "排队消息", source: "chat" }));
+  assert.equal(root.querySelectorAll('[data-testid="agent-user-message"]').length, 0, "queued 不提前渲染为正式对话气泡");
+  assert.equal(root.querySelectorAll('[data-testid="agent-queue-item"]').length, 1, "queued 只出现在「接下来」");
+  assert.match(root.querySelector('[data-testid="agent-queue-item"]').textContent, /排队消息/u);
+  surface.applyEvent(ev("input_started", { input_id: "in-2" }));
+  assert.equal(root.querySelectorAll('[data-testid="agent-user-message"]').length, 1, "input_started 是用户文本进入对话的唯一边界");
+  assert.match(root.querySelector('[data-testid="agent-user-message"]').textContent, /排队消息/u);
+  assert.equal(root.querySelectorAll('[data-testid="agent-queue-item"]').length, 0, "开始后离开「接下来」");
+});
+
+test("priority pending 时所有「立即」禁用，目标项标为下一条；input_started 后恢复", async () => {
+  const { root, api, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("input_queued", { input_id: "in-2", text: "排队A", source: "chat" }));
+  surface.applyEvent(ev("input_queued", { input_id: "in-3", text: "排队B", source: "chat" }));
+  const promoteOf = (inputId) =>
+    root.querySelector(`[data-input-id="${inputId}"]`).querySelector('[data-testid="agent-promote"]');
+  assert.equal(promoteOf("in-2").disabled, false);
+  assert.equal(promoteOf("in-3").disabled, false);
+  // 第一次「立即」被接受 → priority_input_requested（以事件为准，不做乐观第二请求）
+  surface.applyEvent(ev("priority_input_requested", { input_id: "in-2" }));
+  assert.equal(promoteOf("in-2").disabled, true, "目标项「立即」禁用（已在途）");
+  assert.equal(promoteOf("in-3").disabled, true, "其余「立即」全部禁用");
+  const row2 = root.querySelector('[data-input-id="in-2"]');
+  assert.ok(row2.classList.contains("agent-queue-item--next"), "目标项标为下一条");
+  assert.match(row2.textContent, /下一条/u);
+  assert.doesNotMatch(root.querySelector('[data-input-id="in-3"]').textContent, /下一条/u);
+  // 禁用期间点击不得发出第二请求
+  promoteOf("in-2")._fire("click");
+  assert.equal(api.calls.filter((c) => c[0] === "requestPriority").length, 0, "禁用期间点击不得发起请求");
+  // priority 真正开始 → 恢复
+  surface.applyEvent(ev("input_started", { input_id: "in-2" }));
+  assert.equal(root.querySelectorAll('[data-testid="agent-queue-item"]').length, 1);
+  assert.equal(promoteOf("in-3").disabled, false, "优先输入开始后其余「立即」恢复");
+  assert.equal(root.querySelectorAll('[data-testid="agent-queue-item"]')[0].textContent.includes("排队B"), true);
+});
+
+test("快照投影 priority_input_id 同样驱动「立即」禁用（以 snapshot/event 为准）", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({
+    status: "running",
+    active_run: activeRun(),
+    priority_input_id: "in-2",
+    queued_inputs: [
+      { id: "in-2", text: "目标", status: "queued", queued_at: "2026-08-06T00:00:00.000Z" },
+      { id: "in-3", text: "其他", status: "queued", queued_at: "2026-08-06T00:00:00.000Z" }
+    ]
+  })));
+  const buttons = [...root.querySelectorAll('[data-testid="agent-promote"]')];
+  assert.equal(buttons.length, 2);
+  assert.ok(buttons.every((b) => b.disabled === true), "快照 priority pending 时全部「立即」禁用");
+  const nextRow = root.querySelector('[data-input-id="in-2"]');
+  assert.ok(nextRow.classList.contains("agent-queue-item--next"), "快照同样标出目标项为下一条");
+});
+
+test("撤回成功：composer 为空时撤回文本直接填入", async () => {
+  const { root, api, surface } = await makeSurface({
+    apiOverrides: {
+      withdrawInput: async (inputId) => {
+        api.calls.push(["withdrawInput", inputId]);
+        return { ok: true, withdrawn: true, draft_text: "被撤回的文本" };
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("input_queued", { input_id: "in-2", text: "被撤回的文本", source: "chat" }));
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  assert.equal(input.value, "", "初始为空");
+  root.querySelector('[data-testid="agent-withdraw"]')._fire("click");
+  await tick();
+  assert.deepEqual(api.calls.filter((c) => c[0] === "withdrawInput").map((c) => c[1]), ["in-2"]);
+  assert.equal(input.value, "被撤回的文本", "composer 为空：撤回文本直接填入");
+});
+
+test("撤回成功：已有 draft 时以 draft + 换行 + 撤回文本追加，绝不覆盖", async () => {
+  const { root, api, surface } = await makeSurface({
+    apiOverrides: {
+      withdrawInput: async (inputId) => {
+        api.calls.push(["withdrawInput", inputId]);
+        return { ok: true, withdrawn: true, draft_text: "被撤回的文本" };
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("input_queued", { input_id: "in-2", text: "被撤回的文本", source: "chat" }));
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  input.value = "已有草稿";
+  root.querySelector('[data-testid="agent-withdraw"]')._fire("click");
+  await tick();
+  assert.equal(input.value, "已有草稿\n被撤回的文本", "已有草稿时按换行追加，不得覆盖");
+});
+
+test("撤回失败：composer 草稿与排队 UI 保持原状，显示 toast", async () => {
+  const { root, api, surface } = await makeSurface({
+    apiOverrides: {
+      withdrawInput: async (inputId) => {
+        api.calls.push(["withdrawInput", inputId]);
+        throw new Error("网络错误");
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("input_queued", { input_id: "in-2", text: "排队消息", source: "chat" }));
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  input.value = "我的草稿";
+  root.querySelector('[data-testid="agent-withdraw"]')._fire("click");
+  await tick();
+  assert.equal(input.value, "我的草稿", "撤回失败草稿保持原状");
+  assert.equal(root.querySelectorAll('[data-testid="agent-queue-item"]').length, 1, "撤回失败排队项保持（以事件为准）");
+  const toast = root.querySelector('[data-testid="agent-toast"]');
+  assert.ok(toast, "撤回失败应显示 toast");
+  assert.match(toast.textContent, /撤回失败/u);
+  surface.destroy(); // toast 3s 计时器随 destroy 清理，不泄漏
+});
+
+test("requestPriority 失败（409 priority_pending）：显示 toast，无 unhandled rejection", async () => {
+  const { root, api, surface } = await makeSurface({
+    apiOverrides: {
+      requestPriority: async (inputId) => {
+        api.calls.push(["requestPriority", inputId]);
+        const error = new Error("已有优先输入在途，请等待当前优先输入开始或撤回。");
+        error.code = "priority_pending";
+        error.status = 409;
+        throw error;
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("input_queued", { input_id: "in-2", text: "排队消息", source: "chat" }));
+  root.querySelector('[data-testid="agent-promote"]')._fire("click");
+  await tick();
+  assert.deepEqual(api.calls.filter((c) => c[0] === "requestPriority").map((c) => c[1]), ["in-2"]);
+  const toast = root.querySelector('[data-testid="agent-toast"]');
+  assert.ok(toast, "优先请求失败应显示 toast（双击/双窗口竞态也有可见反馈）");
+  assert.match(toast.textContent, /已在优先处理中/u);
+  assert.equal(root.querySelectorAll('[data-testid="agent-queue-item"]').length, 1, "失败后排队项保持（以事件为准）");
+  surface.destroy(); // toast 3s 计时器随 destroy 清理，不泄漏
+});
+
+test("撤回在途切走会话：迟到的撤回文本不得写入新项目 composer（viewGeneration 守卫）", async () => {
+  let releaseWithdraw;
+  const gate = new Promise((resolve) => { releaseWithdraw = resolve; });
+  const { root, api, surface } = await makeSurface({
+    apiOverrides: {
+      withdrawInput: async () => {
+        api.calls.push(["withdrawInput"]);
+        return gate;
+      }
+    }
+  });
+  await surface.openProject("D:\\novel-a");
+  surface.applySnapshot(snapshotOf(session({ session_id: "sess-a", status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("input_queued", { input_id: "in-2", text: "排队消息", source: "chat" }));
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  root.querySelector('[data-testid="agent-withdraw"]')._fire("click");
+  await tick();
+  // 撤回在途：切换到新会话（view.reset 递增 viewGeneration）
+  await surface.switchSession("sess-b");
+  assert.equal(input.value, "", "切走后输入框已重置");
+  releaseWithdraw({ ok: true, withdrawn: true, draft_text: "旧项目的撤回文本" });
+  await tick();
+  await tick();
+  assert.equal(input.value, "", "旧项目的撤回文本不得写入新项目 composer");
+  assert.equal(root.querySelector('[data-testid="agent-toast"]'), null, "旧项目迟到成功不得弹 toast");
+  surface.destroy();
+});
+
+test("撤回在途切走会话：迟到的失败不在新视图弹 toast（viewGeneration 守卫）", async () => {
+  let rejectWithdraw;
+  const gate = new Promise((_resolve, reject) => { rejectWithdraw = reject; });
+  const { root, api, surface } = await makeSurface({
+    apiOverrides: {
+      withdrawInput: async () => {
+        api.calls.push(["withdrawInput"]);
+        return gate;
+      }
+    }
+  });
+  await surface.openProject("D:\\novel-a");
+  surface.applySnapshot(snapshotOf(session({ session_id: "sess-a", status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("input_queued", { input_id: "in-2", text: "排队消息", source: "chat" }));
+  root.querySelector('[data-testid="agent-withdraw"]')._fire("click");
+  await tick();
+  await surface.switchSession("sess-b");
+  rejectWithdraw(new Error("网络错误"));
+  await tick();
+  await tick();
+  assert.equal(root.querySelector('[data-testid="agent-toast"]'), null, "旧项目的迟到失败不得在新视图弹 toast");
+  surface.destroy();
 });
 
 // ===========================================================================
@@ -1995,11 +2247,11 @@ test("agent.css 保留 1040px 内容列、向上菜单与工作组/动效布局"
     "composer 菜单应向上浮出并保留视口安全区"
   );
   assert.match(css, /overflow-wrap:\s*anywhere/u, "模型名称应允许任意位置换行");
-  // 排队文本换行不遮「立即」：grid 稳定轨道（minmax(0,1fr) + auto 按钮列）
+  // 排队文本换行不遮「立即/取消」：grid 稳定轨道（minmax(0,1fr) + 三个 auto 列）
   assert.match(
     css,
-    /\.agent-queue-item\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto\s+auto/u,
-    "排队行应为稳定 grid 轨道"
+    /\.agent-queue-item\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto\s+auto\s+auto/u,
+    "排队行应为稳定 grid 轨道（状态 + 立即 + 取消 三列）"
   );
   // plan 行稳定轨道（标记列固定 18px，状态变化不推动文本列）
   assert.match(
@@ -2007,8 +2259,8 @@ test("agent.css 保留 1040px 内容列、向上菜单与工作组/动效布局"
     /\.agent-plan-item\s*\{[^}]*grid-template-columns:\s*18px\s+minmax\(0,\s*1fr\)/u,
     "plan 行应为稳定 grid 轨道"
   );
-  // 按钮尺寸不随状态抖动
-  assert.match(css, /\.agent-stop-btn\s*,\s*\.agent-retry-btn\s*,\s*\.agent-promote[\s\S]*min-width/u, "控制按钮应有固定最小宽度");
+  // 按钮尺寸不随状态抖动（立即/撤回共用固定最小宽度）
+  assert.match(css, /\.agent-stop-btn\s*,\s*\.agent-retry-btn\s*,\s*\.agent-promote[\s\S]*\.agent-withdraw[\s\S]*min-width/u, "控制按钮应有固定最小宽度");
   // 窄视口无重叠
   assert.match(css, /@media\s*\(max-width:\s*560px\)[\s\S]*\.agent-queue-item\s*\{/u, "窄视口应调整排队布局避免重叠");
   assert.match(
@@ -2216,7 +2468,7 @@ function snapshotResponse(sess) {
   return jsonResponse({ ok: true, session: sess, events: [] });
 }
 
-test("transport: submit/promote/stop/retry/decide 使用正确端点、作用域与 body", async () => {
+test("transport: submit/requestPriority/withdrawInput/stop/retry/decide 使用正确端点、作用域与 body", async () => {
   await withFetch((url) => {
     if (url.startsWith("/api/project/events")) return { ok: true, status: 200, body: neverStream() };
     if (url.startsWith("/api/agent/snapshot")) {
@@ -2230,9 +2482,13 @@ test("transport: submit/promote/stop/retry/decide 使用正确端点、作用域
     const input = root.querySelector('[data-testid="agent-composer-input"]');
     input.value = "继续写";
     root.querySelector('[data-testid="agent-send"]')._fire("click");
-    // promote（运行中排队 → 立即）
+    // requestPriority（运行中排队 → 立即）
     surface.applyEvent(ev("input_queued", { input_id: "in-2", text: "排队消息", source: "chat" }));
     root.querySelector('[data-testid="agent-promote"]')._fire("click");
+    // withdrawInput（撤回排队输入）
+    surface.applyEvent(ev("input_queued", { input_id: "in-3", text: "撤回消息", source: "chat" }));
+    const row3 = root.querySelector('[data-input-id="in-3"]');
+    row3.querySelector('[data-testid="agent-withdraw"]')._fire("click");
     // stop
     root.querySelector('[data-testid="agent-stop"]')._fire("click");
     // decide（Run 仍活动）
@@ -2252,14 +2508,17 @@ test("transport: submit/promote/stop/retry/decide 使用正确端点、作用域
     assert.deepEqual(JSON.parse(byUrl("/api/agent/input")[0].options.body), {
       projectRoot: "D:\\novel", text: "继续写"
     });
-    assert.equal(byUrl("/api/agent/input/in-2/promote").length, 1);
-    assert.deepEqual(JSON.parse(byUrl("/api/agent/input/in-2/promote")[0].options.body), { projectRoot: "D:\\novel" });
+    assert.equal(byUrl("/api/agent/input/in-2/priority").length, 1);
+    assert.deepEqual(JSON.parse(byUrl("/api/agent/input/in-2/priority")[0].options.body), { projectRoot: "D:\\novel" });
+    assert.equal(byUrl("/api/agent/input/in-3/withdraw").length, 1);
+    assert.deepEqual(JSON.parse(byUrl("/api/agent/input/in-3/withdraw")[0].options.body), { projectRoot: "D:\\novel" });
     assert.equal(byUrl("/api/agent/run/run-1/stop").length, 1);
     assert.equal(byUrl("/api/agent/run/run-1/retry").length, 1);
     assert.equal(byUrl("/api/agent/decision/dec-1").length, 1);
     assert.deepEqual(JSON.parse(byUrl("/api/agent/decision/dec-1")[0].options.body), {
       projectRoot: "D:\\novel", choice: "allow"
     });
+    assert.ok(!calls.some((c) => c.url.includes("/promote")), "旧 promote 端点不得被调用");
     surface.destroy();
   });
 });
@@ -2322,7 +2581,8 @@ test("transport: SSE 流按块解析 data 事件并渲染到视图", async () =>
         body: streamThenHang([
           ': connected\n\n',
           'data: {"seq":1,"type":"run_started","payload":{"workflow":"general","input_id":"in-1"},"run_id":"run-1"}\n\n',
-          'data: {"seq":2,"type":"input_queued","payload":{"input_id":"in-1","text":"SSE 消息"},"run_id":"run-1"}\n\n'
+          'data: {"seq":2,"type":"input_queued","payload":{"input_id":"in-1","text":"SSE 消息"},"run_id":"run-1"}\n\n',
+          'data: {"seq":3,"type":"input_started","payload":{"input_id":"in-1"},"run_id":"run-1"}\n\n'
         ])
       };
     }
@@ -2347,7 +2607,8 @@ test("transport: SSE 断线按指数退避重连，事件最终送达视图", as
         ok: true,
         status: 200,
         body: streamThenHang([
-          'data: {"seq":1,"type":"input_queued","payload":{"input_id":"in-1","text":"重连后到达"},"run_id":"run-1"}\n\n'
+          'data: {"seq":1,"type":"input_queued","payload":{"input_id":"in-1","text":"重连后到达"},"run_id":"run-1"}\n\n',
+          'data: {"seq":2,"type":"input_started","payload":{"input_id":"in-1"},"run_id":"run-1"}\n\n'
         ])
       };
     }
@@ -2370,33 +2631,37 @@ test("transport: SSE 断线补齐（onReconnect 快照）后事件连续无缺�
     if (url.startsWith("/api/project/events")) {
       eventsFetches += 1;
       if (eventsFetches === 1) {
-        // 第一次连接：收到 seq1 后服务端断开
+        // 第一次连接：收到 seq1-2 后服务端断开
         return {
           ok: true,
           status: 200,
           body: streamCloseAfter([
-            'data: {"seq":1,"type":"input_queued","payload":{"input_id":"in-1","text":"第一条"},"run_id":"run-1"}\n\n'
+            'data: {"seq":1,"type":"input_queued","payload":{"input_id":"in-1","text":"第一条"},"run_id":"run-1"}\n\n',
+            'data: {"seq":2,"type":"input_started","payload":{"input_id":"in-1"},"run_id":"run-1"}\n\n'
           ])
         };
       }
-      // 重连流：补齐后的新事件（seq4）
+      // 重连流：补齐后的新事件（seq7-8）
       return {
         ok: true,
         status: 200,
         body: streamThenHang([
-          'data: {"seq":4,"type":"input_queued","payload":{"input_id":"in-4","text":"第四条"},"run_id":"run-1"}\n\n'
+          'data: {"seq":7,"type":"input_queued","payload":{"input_id":"in-4","text":"第四条"},"run_id":"run-1"}\n\n',
+          'data: {"seq":8,"type":"input_started","payload":{"input_id":"in-4"},"run_id":"run-1"}\n\n'
         ])
       };
     }
     if (url.startsWith("/api/agent/snapshot")) {
-      // 初始快照（tail 尾页）为空；断线补齐（afterSeq=1）返回 seq2-3
+      // 初始快照（tail 尾页）为空；断线补齐（afterSeq=2）返回 seq3-6
       if (url.includes("tail=1")) return snapshotResponse(null);
       return jsonResponse({
         ok: true,
         session: null,
         events: [
-          { seq: 2, event_id: "e2", session_id: "sess-test", run_id: "run-1", type: "input_queued", payload: { input_id: "in-2", text: "第二条" }, at: "x" },
-          { seq: 3, event_id: "e3", session_id: "sess-test", run_id: "run-1", type: "input_queued", payload: { input_id: "in-3", text: "第三条" }, at: "x" }
+          { seq: 3, event_id: "e3", session_id: "sess-test", run_id: "run-1", type: "input_queued", payload: { input_id: "in-2", text: "第二条" }, at: "x" },
+          { seq: 4, event_id: "e4", session_id: "sess-test", run_id: "run-1", type: "input_started", payload: { input_id: "in-2" }, at: "x" },
+          { seq: 5, event_id: "e5", session_id: "sess-test", run_id: "run-1", type: "input_queued", payload: { input_id: "in-3", text: "第三条" }, at: "x" },
+          { seq: 6, event_id: "e6", session_id: "sess-test", run_id: "run-1", type: "input_started", payload: { input_id: "in-3" }, at: "x" }
         ]
       });
     }
@@ -3008,6 +3273,7 @@ test("surface: clearHistory 成功后重置投影并重开当前项目（clear-r
     }
   });
   await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
   surface.applyEvent(ev("input_queued", { input_id: "in-1", text: "旧会话消息", source: "chat" }));
   assert.ok(root.textContent.includes("旧会话消息"));
 
@@ -3034,6 +3300,7 @@ test("surface: clearHistory 失败（409 history_busy）保留状态并向调用
     }
   });
   await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
   surface.applyEvent(ev("input_queued", { input_id: "in-1", text: "保留消息", source: "chat" }));
   await assert.rejects(
     surface.clearHistory({ confirm_irreversible: true }),
@@ -3340,31 +3607,29 @@ test("Task 10 SSE 游标：tail 快照推进 lastSeq，connectEvents 从已加�
       "SSE 应从已加载最大 seq 续流（lastSeq 已由 tail 快照推进），不得 afterSeq=0 重放全量"
     );
 
-    // 严格递增事件：增量 fast path，正常渲染
-    const countBefore = root.querySelectorAll("[data-event-key]").length;
+    // 严格递增事件：增量 fast path，正常渲染（queued → 「接下来」排队行）
     surface.applyEvent({
       seq: 251, event_id: "e251", session_id: "sess-test", run_id: "run-1",
       type: "input_queued", payload: { input_id: "in-new", text: "递增消息" }, at: T10_T0
     });
     assert.ok(
-      root.querySelectorAll("[data-event-key]").length > countBefore,
-      "严格递增事件应进入增量路径并渲染"
+      root.querySelector('[data-input-id="in-new"]'),
+      "严格递增事件应进入增量路径并渲染排队行"
     );
 
-    // 乱序新事件（seq < lastSeq）：全集重建，消息按 seq 前置、不重复、不丢旧消息
+    // 乱序新事件（seq < lastSeq）：全集重建，排队行按 seq 重放、不重复、不丢旧行
     surface.applyEvent({
       seq: 30, event_id: "e30", session_id: "sess-test", run_id: "run-1",
       type: "input_queued", payload: { input_id: "in-old", text: "乱序旧消息" }, at: T10_T0
     });
     const keys = [...root.querySelectorAll("[data-event-key]")].map((el) => el.dataset.eventKey);
     assert.equal(keys.length, new Set(keys).size, "重建后 event key 仍无重复");
-    const oldBubble = [...root.querySelectorAll('[data-testid="agent-user-message"]')]
-      .find((el) => el.textContent.includes("乱序旧消息"));
-    const incrBubble = [...root.querySelectorAll('[data-testid="agent-user-message"]')]
-      .find((el) => el.textContent.includes("递增消息"));
-    assert.ok(oldBubble && incrBubble, "乱序与递增事件都渲染且互不丢失");
-    const timelineIndex = (el) => el._parent.children.indexOf(el);
-    assert.ok(timelineIndex(oldBubble) < timelineIndex(incrBubble), "乱序旧消息按 seq 位于递增新消息之前");
+    const oldRow = root.querySelector('[data-input-id="in-old"]');
+    const incrRow = root.querySelector('[data-input-id="in-new"]');
+    assert.ok(oldRow && incrRow, "乱序与递增事件都渲染且互不丢失");
+    const queueTexts = [...root.querySelectorAll('[data-testid="agent-queue-item"]')].map((el) => el.textContent);
+    assert.ok(queueTexts.indexOf(oldRow.textContent) < queueTexts.indexOf(incrRow.textContent),
+      "乱序旧排队行按 seq 位于递增新排队行之前");
     surface.destroy();
   });
 });
@@ -3904,13 +4169,15 @@ test("switchSession：切换会话重拉快照并重置视图；新对话占位�
     { session_id: "sid-1", title: "会话一", archived_at: null },
     { session_id: "sid-2", title: "会话二", archived_at: null }
   ];
-  const sid1Snapshot = snapshotOf(session({ session_id: "sid-1", last_seq: 3 }), [
+  const sid1Snapshot = snapshotOf(session({ session_id: "sid-1", last_seq: 4 }), [
     { ...ev("input_queued", { input_id: "in-1", text: "会话一消息", source: "chat" }, { session_id: "sid-1" }), seq: 1 },
-    { ...ev("run_started", { workflow: "general", input_id: "in-1" }, { session_id: "sid-1" }), seq: 2 },
-    { ...ev("run_completed", {}), seq: 3 }
+    { ...ev("input_started", { input_id: "in-1" }, { session_id: "sid-1" }), seq: 2 },
+    { ...ev("run_started", { workflow: "general", input_id: "in-1" }, { session_id: "sid-1" }), seq: 3 },
+    { ...ev("run_completed", {}), seq: 4 }
   ]);
-  const sid2Snapshot = snapshotOf(session({ session_id: "sid-2", last_seq: 1 }), [
-    { ...ev("input_queued", { input_id: "in-2", text: "会话二消息", source: "chat" }, { session_id: "sid-2" }), seq: 1 }
+  const sid2Snapshot = snapshotOf(session({ session_id: "sid-2", last_seq: 2 }), [
+    { ...ev("input_queued", { input_id: "in-2", text: "会话二消息", source: "chat" }, { session_id: "sid-2" }), seq: 1 },
+    { ...ev("input_started", { input_id: "in-2" }, { session_id: "sid-2" }), seq: 2 }
   ]);
   const sessionsChanged = [];
   const { root, surface } = await makeSurface({
@@ -3952,7 +4219,7 @@ test("switchSession：切换会话重拉快照并重置视图；新对话占位�
   await surface.switchSession("sid-1");
   const snap3 = calls.findLast((c) => c[0] === "fetchSnapshot");
   assert.equal(snap3[1].sessionId, "sid-1");
-  assert.equal(snap3[1].afterSeq, 3, "缓存会话切回按已见游标增量补齐");
+  assert.equal(snap3[1].afterSeq, 4, "缓存会话切回按已见游标增量补齐");
   assert.match(root.textContent, /会话一消息/u);
 
   // 新对话占位：本地未落盘，占位期间列表不出现 draft 项（发送首条消息前左侧
@@ -4029,8 +4296,9 @@ test("迟到的会话快照不污染新会话：switchSession 后旧代次响应
           return oldSnapshot;
         }
         if (options?.sessionId === "sid-2") {
-          return snapshotOf(session({ session_id: "sid-2", last_seq: 1 }), [
-            { ...ev("input_queued", { input_id: "in-2", text: "B 会话消息", source: "chat" }, { session_id: "sid-2" }), seq: 1 }
+          return snapshotOf(session({ session_id: "sid-2", last_seq: 2 }), [
+            { ...ev("input_queued", { input_id: "in-2", text: "B 会话消息", source: "chat" }, { session_id: "sid-2" }), seq: 1 },
+            { ...ev("input_started", { input_id: "in-2" }, { session_id: "sid-2" }), seq: 2 }
           ]);
         }
         return null;
@@ -4045,7 +4313,8 @@ test("迟到的会话快照不污染新会话：switchSession 后旧代次响应
   assert.match(root.textContent, /B 会话消息/u);
 
   resolveOld(snapshotOf(session({ session_id: "sid-1", last_seq: 2 }), [
-    { ...ev("input_queued", { input_id: "in-1", text: "A 会话消息", source: "chat" }, { session_id: "sid-1" }), seq: 1 }
+    { ...ev("input_queued", { input_id: "in-1", text: "A 会话消息", source: "chat" }, { session_id: "sid-1" }), seq: 1 },
+    { ...ev("input_started", { input_id: "in-1" }, { session_id: "sid-1" }), seq: 2 }
   ]));
   await p0;
   await tick();
@@ -4089,8 +4358,9 @@ test("draft 提交竞态：createSession 在途时切走会话，不投递、不
   let createCalled = false;
   const submitCalls = [];
   const sessions = [{ session_id: "sid-1", title: "会话一", archived_at: null }];
-  const sid1Snapshot = snapshotOf(session({ session_id: "sid-1", last_seq: 1 }), [
-    { ...ev("input_queued", { input_id: "in-1", text: "会话一消息", source: "chat" }, { session_id: "sid-1" }), seq: 1 }
+  const sid1Snapshot = snapshotOf(session({ session_id: "sid-1", last_seq: 2 }), [
+    { ...ev("input_queued", { input_id: "in-1", text: "会话一消息", source: "chat" }, { session_id: "sid-1" }), seq: 1 },
+    { ...ev("input_started", { input_id: "in-1" }, { session_id: "sid-1" }), seq: 2 }
   ]);
   const { root, surface } = await makeSurface({
     apiOverrides: {

@@ -573,7 +573,10 @@ export function createAgentSurface({
         loadingEarlier = false;
       }
     },
-    promote: (inputId) => ensureApi().promote(inputId),
+    // Task 11：旧 promote 概念已删除——「立即」= requestPriority（安全点优先调度，
+    // 不再是 abort 式提升）；「取消」= withdrawInput（撤回排队输入）。
+    requestPriority: (inputId) => ensureApi().requestPriority(inputId),
+    withdrawInput: (inputId) => ensureApi().withdrawInput(inputId),
     stop: (runId) => ensureApi().stop(runId),
     retry: (runId) => ensureApi().retry(runId),
     // Task 11：压缩状态行动作按钮——重试同一 compaction_id 的新 attempt /

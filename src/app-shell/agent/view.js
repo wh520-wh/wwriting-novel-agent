@@ -300,6 +300,37 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   let slashActiveIndex = 0;
   let followLatest = true;     // 显式 follow 状态：仅用户接近底部时跟随（滚动锁，Task 7）
   let currentState = null;     // 最近一次 render 的 state（供异步帧回调读取）
+  // ---- Task 11：surface 自持的短暂 toast（撤回失败等；不依赖 app.js 接线） ----
+  let toastTimer = null;
+
+  function showToast(message) {
+    if (toastTimer != null) {
+      scheduler.clearTimeout(toastTimer);
+      toastTimer = null;
+    }
+    let node = surface.querySelector('[data-testid="agent-toast"]');
+    if (!node) {
+      node = doc.createElement("div");
+      node.className = "agent-toast";
+      node.dataset.testid = "agent-toast";
+      node.setAttribute("role", "status");
+      surface.append(node);
+    }
+    node.textContent = message;
+    toastTimer = scheduler.setTimeout(() => {
+      node.remove();
+      toastTimer = null;
+    }, 3000);
+  }
+
+  function clearToast() {
+    if (toastTimer != null) {
+      scheduler.clearTimeout(toastTimer);
+      toastTimer = null;
+    }
+    const node = surface.querySelector('[data-testid="agent-toast"]');
+    if (node) node.remove();
+  }
   // ---- 增量正文流（Task 步骤7）：累积文本 → Markdown，rAF 合帧节流 ----
   let streamBubble = null;         // 流式 assistant 气泡（delta 期间的临时节点）
   let streamRenderPending = false; // 已有未决帧渲染
@@ -334,6 +365,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
 
   function reset() {
     viewGeneration += 1;
+    clearToast();
     for (const record of workGroups.values()) clearWorkGroupTimers(record);
     workGroups.clear();
     // 工作组已插入 messages 统一时间线：整体清空 messages 与 seq/key 映射。
@@ -377,6 +409,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   function destroy() {
     doc.removeEventListener?.("pointerdown", handleComposerOutsidePointer, true);
     doc.removeEventListener?.("focusin", handleComposerOutsideFocus, true);
+    clearToast();
     for (const record of workGroups.values()) clearWorkGroupTimers(record);
     workGroups.clear();
     timelineSeqs.clear();
@@ -1324,12 +1357,19 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     if (state.errors.length > 0) afterRender();
   }
 
-  // ---- 排队输入：原文 + 排队 + 立即 --------------------------------------------
+  // ---- 排队输入（Task 11）：原文 + 排队/下一条 + 立即 + 取消（撤回） ------------
+  // 「立即」语义（SPEC 3.3 rule 8）：第一次请求被接受（priority_input_requested
+  // 事件或快照 priority_input_id）后全部「立即」禁用，目标项标为下一条；优先输入
+  // 真正开始（input_started）后恢复。以 snapshot/event 为准，不做乐观第二请求。
   function syncQueue(state) {
     if (rendered.queue === state.revisions.queue) return;
     rendered.queue = state.revisions.queue;
     queueSlot.replaceChildren();
+    const priorityId = state.session?.priority_input_id ?? null;
+    const promoteDisabled = priorityId != null;
     for (const item of getQueuedInputs(state)) {
+      // 排队行确认送达：即时（pending/失败）气泡收敛为「接下来」排队行
+      reconcilePendingSubmission({ input_id: item.id, text: item.text });
       const row = doc.createElement("div");
       row.className = "agent-queue-item";
       row.dataset.testid = "agent-queue-item";
@@ -1339,17 +1379,72 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       text.textContent = String(item.text ?? "");
       const badge = doc.createElement("span");
       badge.className = "agent-queue-state";
-      badge.textContent = "排队";
+      const isNext = priorityId != null && String(item.id) === String(priorityId);
+      if (isNext) {
+        row.classList.add("agent-queue-item--next");
+        badge.textContent = "下一条";
+      } else {
+        badge.textContent = "排队";
+      }
       const promote = doc.createElement("button");
       promote.type = "button";
       promote.className = "agent-promote";
       promote.dataset.testid = "agent-promote";
       promote.textContent = "立即";
-      promote.addEventListener("click", () => actions.promote?.(item.id));
-      row.append(text, badge, promote);
+      promote.disabled = promoteDisabled;
+      promote.addEventListener("click", () => {
+        // 优先在途（快照/事件为准）时按钮 disabled；真实 DOM 不派发 click，
+        // 这里再加一道防御，保证不做乐观第二请求。
+        if (promote.disabled) return;
+        const generation = viewGeneration;
+        // 后端在已有优先在途时返回 409 priority_pending（双击/双窗口竞态）：
+        // 失败必须给出可见反馈并吞掉 rejection，不得产生 unhandled rejection；
+        // 迟到的失败（已切走项目/会话）不在新视图弹 toast。
+        Promise.resolve(actions.requestPriority?.(item.id)).catch((error) => {
+          if (generation !== viewGeneration) return;
+          showToast(
+            error?.code === "priority_pending"
+              ? "已在优先处理中"
+              : `请求失败：${String(error?.message ?? "请求失败")}`
+          );
+        });
+      });
+      const withdraw = doc.createElement("button");
+      withdraw.type = "button";
+      withdraw.className = "agent-withdraw";
+      withdraw.dataset.testid = "agent-withdraw";
+      withdraw.textContent = "取消";
+      withdraw.addEventListener("click", () => withdrawQueuedInput(item.id));
+      row.append(text, badge, promote, withdraw);
       queueSlot.append(row);
     }
     afterRender();
+  }
+
+  // 撤回排队输入：成功后以接口返回的权威 draft_text 回填 composer——composer 为
+  // 空时直接填入，已有草稿则以换行追加，绝不覆盖（SPEC 3.2 rule 5）；失败保持
+  // 原 UI/草稿并 toast（队列行是否移除以 input_withdrawn 事件为准）。
+  // 请求在途时切换项目/会话：reset() 递增 viewGeneration，迟到的 resolve/reject
+  // 一律丢弃——旧项目的撤回文本不得写进新项目 composer，旧项目的失败也不得在
+  // 新视图弹 toast（与 submitFromComposer 的 submissionGeneration 守卫一致）。
+  function withdrawQueuedInput(inputId) {
+    const generation = viewGeneration;
+    Promise.resolve(actions.withdrawInput?.(inputId)).then((result) => {
+      if (generation !== viewGeneration) return;
+      const draftText = result?.draft_text;
+      if (typeof draftText === "string" && draftText.length > 0) {
+        appendWithdrawnDraft(draftText);
+      }
+    }).catch((error) => {
+      if (generation !== viewGeneration) return;
+      showToast(`撤回失败：${String(error?.message ?? "请求失败")}`);
+    });
+  }
+
+  function appendWithdrawnDraft(text) {
+    const current = String(input.value ?? "");
+    input.value = current.length > 0 ? `${current}\n${text}` : text;
+    input.focus?.();
   }
 
   // ---- composer：项目打开即可用（运行中保持可用，普通发送进入队列） ------------

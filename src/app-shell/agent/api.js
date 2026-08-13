@@ -2,7 +2,8 @@
 //
 // /api/agent/* 传输层：
 //   POST /api/agent/input                    submit(text, sessionId?)
-//   POST /api/agent/input/:inputId/promote   promote(inputId)
+//   POST /api/agent/input/:inputId/priority  requestPriority(inputId)
+//   POST /api/agent/input/:inputId/withdraw  withdrawInput(inputId)
 //   POST /api/agent/run/:runId/stop          stop(runId)
 //   POST /api/agent/run/:runId/retry         retry(runId)
 //   POST /api/agent/compaction/:id/cancel    cancelCompaction(id)
@@ -111,10 +112,18 @@ export function createAgentApi({
     return postJson("/api/agent/input", body);
   }
 
-  async function promote(inputId) {
-    // 会话作用域（Task 8 硬衔接）：promote 的 target 由 body.sessionId 决定，
-    // 缺 sessionId 会命中其他会话的 last-active 队列，跨会话误打断。
-    return postJson(`/api/agent/input/${encodeURIComponent(inputId)}/promote`, scopedBody());
+  async function requestPriority(inputId) {
+    // 会话作用域（Task 8 硬衔接，与旧 promote 一致）：priority 的 target 由
+    // body.sessionId 决定，缺 sessionId 会命中其他会话的 last-active 队列。
+    // 后端在已有优先在途时返回 409 priority_pending（前端以 snapshot/event 为准
+    // 禁用按钮，不做乐观第二请求；这里原样透出错误）。
+    return postJson(`/api/agent/input/${encodeURIComponent(inputId)}/priority`, scopedBody());
+  }
+
+  async function withdrawInput(inputId) {
+    // 撤回排队输入：返回 { withdrawn, draft_text }，draft_text 是权威原始文本，
+    // composer 已有文字时按换行追加，绝不覆盖现有草稿。
+    return postJson(`/api/agent/input/${encodeURIComponent(inputId)}/withdraw`, scopedBody());
   }
 
   async function stop(runId) {
@@ -393,7 +402,8 @@ export function createAgentApi({
   return {
     openProject,
     submit,
-    promote,
+    requestPriority,
+    withdrawInput,
     stop,
     retry,
     decide,

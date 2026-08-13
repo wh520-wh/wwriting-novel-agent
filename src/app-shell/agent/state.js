@@ -52,6 +52,11 @@ export function createState() {
     compaction: null,
     compactionRows: new Map(), // compaction_id -> { compaction_id, seq, event_key, state, trigger, error_code }
     conversation: [],       // { role, text, input_id, seq, event_key }
+    // Task 11：排队输入文本索引 input_id -> text。queued 不进入对话历史
+    //（input_queued 只出现在「接下来」区域），input_started 是用户文本进入
+    // transcript/对话的唯一边界——开始事件只携带 input_id，文本从本索引取回；
+    // input_withdrawn/input_started 后移除。重建（rebuild）时随事件重放重建。
+    queuedTexts: new Map(),
     work: createWorkState(), // 有序工作项投影（Task 5：reasoning/tool/plan 时间线）
     decisions: new Map(),   // decision_id -> decision
     errors: [],             // run_failed 事实（新 Run 启动时清空）
@@ -209,22 +214,89 @@ function applyEventToState(state, event) {
       break;
     }
     case "input_queued": {
+      // Task 11：queued 只出现在「接下来」区域，不提前渲染为正式对话气泡；
+      // input_started 才是用户文本进入对话/transcript 的唯一边界。
       const inputId = payload.input_id ?? null;
-      state.conversation.push({
-        role: "user",
-        text: String(payload.text ?? ""),
-        input_id: inputId,
-        seq,
-        event_key: key
-      });
+      const text = String(payload.text ?? "");
+      if (inputId != null) state.queuedTexts.set(inputId, text);
       if (state.session && inputId != null) {
         if (!Array.isArray(state.session.queued_inputs)) state.session.queued_inputs = [];
         const queue = state.session.queued_inputs;
         if (!queue.some((item) => item.id === inputId)) {
-          queue.push({ id: inputId, text: String(payload.text ?? ""), status: "queued", queued_at: event.at ?? null });
+          const item = { id: inputId, text, status: "queued", queued_at: payload.queued_at ?? event.at ?? null };
+          if (payload.kind === "compact") item.kind = "compact";
+          queue.push(item);
         }
       }
+      bump(state, ["queue"]);
+      break;
+    }
+    case "input_started": {
+      // 输入离开队列成为活动输入：此时才进入用户可见对话历史（文本取自
+      // input_queued 建立的 queuedTexts 索引；重建回放时同样由它取回）。
+      // 设计局限：正文只从已加载窗口（loadedEvents）的 input_queued 取回；若
+      // 该 input_queued 落在窗口之外（前置分页尚未加载的更早历史），started
+      // 事件到达时取不到文本，本分支不产生空气泡（text.length > 0 守卫）——
+      // 与「queued 只在窗口内可见」的投影口径一致，真实窗口内成对事件不受影响。
+      const inputId = payload.input_id ?? null;
+      const text = inputId != null ? (state.queuedTexts.get(inputId) ?? "") : "";
+      if (state.session && inputId != null) {
+        if (Array.isArray(state.session.queued_inputs)) {
+          state.session.queued_inputs = state.session.queued_inputs.filter((item) => item.id !== inputId);
+        }
+        // 匹配 priority 的 input_started 清除优先标记（SPEC 3.3：真正开始后恢复优先）
+        if (state.session.priority_input_id === inputId) state.session.priority_input_id = null;
+        const run = state.session.active_run;
+        if (run) run.active_input_id = inputId;
+      }
+      if (inputId != null) state.queuedTexts.delete(inputId);
+      if (text.length > 0) {
+        state.conversation.push({
+          role: "user",
+          text,
+          input_id: inputId,
+          seq,
+          event_key: key
+        });
+      }
       bump(state, ["messages", "queue"]);
+      break;
+    }
+    case "input_completed":
+    case "input_interrupted": {
+      // 活动输入的终态：只清空 active_input_id（Run 继续；queue 由 input_started
+      // 已移除）。input_interrupted 是被优先输入截断，不等同于 Run 终结。
+      const run = state.session?.active_run;
+      const inputId = payload.input_id ?? null;
+      if (run && inputId != null && run.active_input_id === inputId) {
+        run.active_input_id = null;
+      }
+      bump(state, ["run"]);
+      break;
+    }
+    case "input_withdrawn": {
+      // 撤回的输入在 UI/模型历史/普通导出中不可见：只从「接下来」移除。
+      // 撤回的正是优先输入时清空标记（否则后续 priority_input_requested 全部
+      // 被「已有优先输入」拒绝，优先队列卡死——镜像 journal reducer）。
+      const inputId = payload.input_id ?? null;
+      if (state.session && inputId != null) {
+        if (Array.isArray(state.session.queued_inputs)) {
+          state.session.queued_inputs = state.session.queued_inputs.filter((item) => item.id !== inputId);
+        }
+        if (state.session.priority_input_id === inputId) state.session.priority_input_id = null;
+      }
+      if (inputId != null) state.queuedTexts.delete(inputId);
+      bump(state, ["queue"]);
+      break;
+    }
+    case "priority_input_requested": {
+      // 「立即」被接受：只设置 priority_input_id（不立即改写 active_input_id，
+      // 切换由安全点批次完成）。前端据此禁用其余「立即」并标出下一条目标。
+      const inputId = payload.input_id ?? null;
+      if (state.session && inputId != null) {
+        state.session.priority_input_id = inputId;
+      }
+      bump(state, ["queue"]);
       break;
     }
     case "assistant_message_delta": {
@@ -310,57 +382,6 @@ function applyEventToState(state, event) {
       state.session.status = RUN_STATUS_TO_SESSION[run.status] ?? "running";
       if (TERMINAL_RUN_STATUSES.has(run.status)) run.active_input_id = null;
       bump(state, ["run"]);
-      break;
-    }
-    case "input_consumed": {
-      const run = state.session?.active_run;
-      if (!state.session) break;
-      if (!Array.isArray(state.session.queued_inputs)) state.session.queued_inputs = [];
-      const inputId = payload.input_id ?? null;
-      if (run && run.active_input_id === inputId) {
-        run.active_input_id = null;
-      } else {
-        const index = state.session.queued_inputs.findIndex((item) => item.id === inputId);
-        if (index >= 0) state.session.queued_inputs.splice(index, 1);
-        if (run) run.active_input_id = inputId;
-      }
-      bump(state, ["run", "queue"]);
-      break;
-    }
-    case "input_cancelled": {
-      if (!state.session) break;
-      if (!Array.isArray(state.session.queued_inputs)) state.session.queued_inputs = [];
-      const inputId = payload.input_id ?? null;
-      if (state.session.active_run?.active_input_id === inputId) {
-        state.session.active_run.active_input_id = null;
-      } else {
-        const index = state.session.queued_inputs.findIndex((item) => item.id === inputId);
-        if (index >= 0) state.session.queued_inputs.splice(index, 1);
-      }
-      bump(state, ["queue"]);
-      break;
-    }
-    case "input_promoted": {
-      const run = state.session?.active_run;
-      if (!state.session || !run) break;
-      if (!Array.isArray(state.session.queued_inputs)) state.session.queued_inputs = [];
-      const inputId = payload.input_id ?? null;
-      const index = state.session.queued_inputs.findIndex((item) => item.id === inputId);
-      if (index >= 0) state.session.queued_inputs.splice(index, 1);
-      const previousId = run.active_input_id;
-      if (previousId != null && previousId !== inputId) {
-        const meta = state.conversation.find((m) => m.role === "user" && m.input_id === previousId);
-        if (meta) {
-          state.session.queued_inputs.unshift({
-            id: previousId,
-            text: meta.text,
-            status: "queued",
-            queued_at: null
-          });
-        }
-      }
-      run.active_input_id = inputId;
-      bump(state, ["run", "queue"]);
       break;
     }
     case "interrupt_requested": {
@@ -662,7 +683,24 @@ function rebuildDerivedState(state) {
     if (aFinite && as !== bs) return as - bs;
     return String(eventKey(a) ?? "").localeCompare(String(eventKey(b) ?? ""));
   });
+  // Task 11：队列镜像重建。镜像承载在 session.queued_inputs 上，但乱序事件触发
+  // 的全集重建必须以事件重放为准（顺序确定）：先保留「窗口外」的排队项（快照
+  // 权威、尚未见到其 input_queued 事件），再让 input_queued 按 seq 顺序补入。
+  // priority_input_id 不在此重置——窗口内事件的重放会按序覆盖/清除，窗口外
+  //（快照权威）的值保留，避免重建后「立即」按钮态倒退。
+  if (state.session) {
+    const queuedIdsInEvents = new Set();
+    for (const event of events) {
+      if (event.type === "input_queued" && event.payload?.input_id != null) {
+        queuedIdsInEvents.add(String(event.payload.input_id));
+      }
+    }
+    const baseQueue = Array.isArray(state.session.queued_inputs) ? state.session.queued_inputs : [];
+    state.session.queued_inputs = baseQueue.filter((item) => !queuedIdsInEvents.has(String(item.id)));
+  }
   state.conversation = [];
+  // Task 11：排队文本索引同样由事件重放重建（input_started 的正文依赖它）。
+  state.queuedTexts = new Map();
   state.work = createWorkState();
   state.decisions = new Map();
   state.errors = [];

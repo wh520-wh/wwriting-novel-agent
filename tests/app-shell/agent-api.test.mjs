@@ -170,7 +170,7 @@ test("未设置会话时 fetchSnapshot URL 不带 sessionId", async (t) => {
 // 其余请求携带 sessionId（按端点现有形态：URL query 或 body）
 // ---------------------------------------------------------------------------
 
-test("带会话时 stop/retry/decide/cancelCompaction/retryCompaction/clearHistory/exportHistory body 携带 sessionId", async (t) => {
+test("带会话时 stop/retry/decide/cancelCompaction/retryCompaction/clearHistory/exportHistory/requestPriority/withdrawInput body 携带 sessionId", async (t) => {
   const { api, calls } = withApi(t);
   api.openProject("P", "sid-1");
   await api.stop("run-1");
@@ -180,8 +180,10 @@ test("带会话时 stop/retry/decide/cancelCompaction/retryCompaction/clearHisto
   await api.retryCompaction("cmp-1");
   await api.clearHistory({ confirm_irreversible: true });
   await api.exportHistory();
+  await api.requestPriority("in-2");
+  await api.withdrawInput("in-3");
   const withSession = calls.filter((c) => c.body && c.body.sessionId === "sid-1");
-  assert.equal(withSession.length, 7, "全部 7 个 POST body 都应带 sessionId");
+  assert.equal(withSession.length, 9, "全部 9 个 POST body 都应带 sessionId");
   for (const call of calls) {
     assert.equal(call.body.projectRoot, "P", `${call.url} 仍带 projectRoot`);
   }
@@ -373,23 +375,44 @@ test("deleteSession：DELETE /api/agent/sessions/:id?projectRoot=", async (t) =>
 });
 
 // ---------------------------------------------------------------------------
-// promote：会话作用域（Task 8 硬衔接——缺 sessionId 会跨会话误打断，见
-// Task 7 审查；后端 promote 的 target 由 body.sessionId 决定）
+// requestPriority / withdrawInput（Task 11）：会话作用域——target 由 body.sessionId
+// 决定，缺 sessionId 会命中其他会话的 last-active 队列，跨会话误打断/误撤回。
+// 旧 promote/cancel 概念已从前端移除，不再有 /promote 调用。
 // ---------------------------------------------------------------------------
 
-test("promote body 带当前会话 sessionId（多会话下不得跨会话误打断）", async (t) => {
+test("requestPriority：POST /api/agent/input/:id/priority，body 带当前会话 sessionId", async (t) => {
   const { api, calls } = withApi(t);
   api.openProject("P", "sid-1");
-  await api.promote("in-2");
-  const call = calls.find((c) => c.url === "/api/agent/input/in-2/promote");
+  await api.requestPriority("in-2");
+  const call = calls.find((c) => c.url === "/api/agent/input/in-2/priority");
   assert.equal(call.method, "POST");
   assert.deepEqual(call.body, { projectRoot: "P", sessionId: "sid-1" });
+  assert.ok(!calls.some((c) => c.url.includes("/promote")), "旧 promote 端点不得再被调用");
 });
 
-test("未设置会话时 promote body 不带 sessionId（缺省兼容）", async (t) => {
+test("withdrawInput：POST /api/agent/input/:id/withdraw，body 带当前会话 sessionId，透传 draft_text", async (t) => {
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url: String(url), method: options.method ?? "GET", body: options.body ? JSON.parse(options.body) : null });
+    return jsonResponse({ ok: true, withdrawn: true, draft_text: "被撤回的文本" });
+  };
+  const api = createAgentApi({ getProjectRoot: () => "P", fetchImpl });
+  t.after(() => api.destroy());
+  api.openProject("P", "sid-1");
+  const result = await api.withdrawInput("in-3");
+  const call = calls.find((c) => c.url === "/api/agent/input/in-3/withdraw");
+  assert.equal(call.method, "POST");
+  assert.deepEqual(call.body, { projectRoot: "P", sessionId: "sid-1" });
+  assert.equal(result.draft_text, "被撤回的文本", "撤回接口返回权威 draft_text 供 composer 回填");
+});
+
+test("未设置会话时 requestPriority/withdrawInput body 不带 sessionId（缺省兼容）", async (t) => {
   const { api, calls } = withApi(t);
-  await api.promote("in-2");
-  const call = calls.find((c) => c.url === "/api/agent/input/in-2/promote");
-  assert.deepEqual(call.body, { projectRoot: "P" }, "不得出现 sessionId 键");
+  await api.requestPriority("in-2");
+  await api.withdrawInput("in-3");
+  const priorityCall = calls.find((c) => c.url === "/api/agent/input/in-2/priority");
+  const withdrawCall = calls.find((c) => c.url === "/api/agent/input/in-3/withdraw");
+  assert.deepEqual(priorityCall.body, { projectRoot: "P" }, "不得出现 sessionId 键");
+  assert.deepEqual(withdrawCall.body, { projectRoot: "P" }, "不得出现 sessionId 键");
 });
 
