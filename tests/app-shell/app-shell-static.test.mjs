@@ -150,6 +150,27 @@ test("drawer-panels.js 直接调用确定性导出 route，无旧业务入口", 
   assert.ok(drawerPanelsSource.includes("function renderCostPanel"));
 });
 
+// Task 21/25（spec 4.3 #4）：成本统一人民币元——drawer-panels 三处成本展示
+//（章节列表 meta / 概览估算成本 kv / 成本抽屉头部 pill）必须全部走 formatYuan，
+// 不得再 import 或调用已删除的 formatMoney（$ 六位小数格式）。
+test("drawer-panels 成本展示统一走 formatYuan，无 formatMoney", async () => {
+  const utilsPath = path.join(here, "..", "..", "src", "app-shell", "utils.js");
+  const utilsSource = await fs.readFile(utilsPath, "utf8");
+  const costPanelPath = path.join(here, "..", "..", "src", "app-shell", "components", "cost-panel.js");
+  const costPanelSource = await fs.readFile(costPanelPath, "utf8");
+  // 单一出口在 utils.js：formatMoney 已删除，formatYuan 存在。
+  assert.match(utilsSource, /export function formatYuan\(/u, "formatYuan 应是 utils.js 的单一出口");
+  assert.doesNotMatch(utilsSource, /formatMoney/u, "utils.js 不得再保留 formatMoney");
+  // drawer-panels 三处成本展示全部使用 formatYuan。
+  assert.match(drawerPanelsSource, /formatYuan\(costRow\.estimatedCost\)/u, "章节列表 meta 成本应走 formatYuan");
+  assert.match(drawerPanelsSource, /formatYuan\(summary\.estimatedCost\)/u, "概览/成本抽屉成本应走 formatYuan");
+  assert.equal((drawerPanelsSource.match(/formatYuan\(/gu) ?? []).length, 3, "drawer-panels 应有且只有三处 formatYuan 成本展示");
+  assert.doesNotMatch(drawerPanelsSource, /formatMoney/u, "drawer-panels 不得残留 formatMoney");
+  // cost-panel 组件同样无本地 formatMoney 残留，formatYuan 从 utils.js 导入。
+  assert.doesNotMatch(costPanelSource, /formatMoney/u, "cost-panel 不得引用 formatMoney");
+  assert.match(costPanelSource, /import\s*\{[^}]*formatYuan[^}]*\}\s*from\s*["']\.\.\/utils\.js["']/u, "cost-panel 应从 utils.js 导入 formatYuan");
+});
+
 test("章节导出操作使用文字按钮，不得复用固定宽度的图标按钮", () => {
   assert.match(
     drawerPanelsSource,

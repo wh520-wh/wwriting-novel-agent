@@ -82,12 +82,46 @@ async function main() {
   const projectRoot = path.join(demoRoot, "普通文件夹");
   fs.mkdirSync(projectRoot, { recursive: true });
   fs.writeFileSync(path.join(projectRoot, "notes.txt"), "普通资料：写作参考笔记。\n", "utf8");
+  // Task 25：供应商夹具（长名 + 假密钥哨兵）——「密钥明文不在 DOM」检查载体。
+  // sk-round7- 前缀为测试哨兵，断言其绝不回显到模型设置页 DOM。
+  const secretsRoot = path.join(demoRoot, ".secrets");
+  fs.mkdirSync(secretsRoot, { recursive: true });
+  fs.writeFileSync(
+    path.join(secretsRoot, "model-profiles.json"),
+    JSON.stringify({
+      seeded_preset_ids: ["deepseek", "mimo"],
+      default_model: null,
+      providers: [
+        {
+          id: "deepseek",
+          name: "DeepSeek 官方",
+          type: "custom",
+          status: "enabled",
+          base_url: "https://api.deepseek.com",
+          api_format: "openai-chat-completions",
+          api_key_env: "WWRITING_ROUND7_FAKE_KEY",
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          models: [
+            { id: "m_deepseek_deepseek-v4-pro", model_name: "deepseek-v4-pro", enabled: true, context_window: 256000 },
+            { id: "m_deepseek_deepseek-v4-flash", model_name: "deepseek-v4-flash", enabled: true, context_window: 256000 }
+          ]
+        }
+      ]
+    }, null, 2),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(secretsRoot, "secrets.json"),
+    JSON.stringify({ WWRITING_ROUND7_FAKE_KEY: "sk-round7-visual-fake-key-0001-not-real" }, null, 2),
+    "utf8"
+  );
 
   server = createAppShellServer({
     workspaceRoot: demoRoot,
     selectedProjectRoot: projectRoot,
     stateRoot: path.join(demoRoot, ".state"),
-    secretsRoot: path.join(demoRoot, ".secrets"),
+    secretsRoot,
     staticRoot: path.join(rootDir, "src", "app-shell"),
     port: 0,
     testGatewayFactory: factory
@@ -114,12 +148,20 @@ async function main() {
 
   await win.loadURL(`http://127.0.0.1:${boundPort}`);
   await waitUntil(win, "Boolean(window.__wwritingMotionReady)", "motion runtime must initialize", 10000);
-  // 普通文件夹出现在项目列表（basename 即标题），点击后经真实 UI 流程打开
+  // 普通文件夹出现在项目列表（basename 即标题）。Task 25（R3/B1 契约）：.proj 主体
+  // 点击只折叠/展开，切换项目唯一入口 = 点击会话行或项目行「+ 新建对话」
+  //（openProjectAndSession，无会话项目即由此打开）。这里按当前 UI 流程点击
+  // 「+」按钮打开普通文件夹。
   await waitUntil(win, "document.querySelector('#project-list')?.children.length > 0", "project list must render the plain folder", 10000);
   const rowClicked = await win.webContents.executeJavaScript(`(() => {
     const row = [...document.querySelectorAll('.proj-row')].find((el) => el.textContent.includes('普通文件夹'));
     if (!row) return false;
-    const btn = row.querySelector('button');
+    // R4：项目行「+ 新建对话」在 hover/:focus-within 才可见（opacity:0 +
+    // pointer-events:none）——聚焦行触发 :focus-within 并放开指针事件。
+    row.focus?.();
+    const menu = row.querySelector('.proj-menu');
+    if (menu) { menu.style.opacity = '1'; menu.style.pointerEvents = 'auto'; }
+    const btn = row.querySelector('.proj-add');
     const rect = btn.getBoundingClientRect();
     const center = { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
     const hit = document.elementFromPoint(center.x, center.y);
@@ -160,43 +202,34 @@ async function main() {
     expect: async () => !(await read(win, "document.getElementById('drawer').classList.contains('show')"))
   }));
 
-  // ⑤ 设置弹窗：打开 → Agent 技能分区 → 内置风格详情（只读、可展开正文）→ 关闭
+  // ⑤ 设置页（Task 12 设置入口分流）：#open-settings 直达模型设置页——供应商/
+  // 模型行可操作、密钥已配置状态不泄漏明文（规格 4.3 #4，假密钥 sk-round7- 哨兵）、
+  // 测试连接按钮可点、关闭。
   clicks.push(await clickAndRead(win, "#open-settings", {
     label: "open-settings",
-    settleMs: 300,
-    expect: () => overlayVisible(win, "settings-scrim")
-  }));
-  const sectionCount = await read(win, "document.querySelectorAll('.sp-section-item').length");
-  assert.ok(sectionCount >= 3, `settings sections should render, got ${sectionCount}`);
-  clicks.push(await clickAndRead(win, '.sp-section-item[data-section="skills"]', {
-    label: "settings-skills-section",
-    settleMs: 300,
-    expect: () => read(win, "document.querySelector('.sp-section-item[data-section=\"skills\"]').classList.contains('on')")
-  }));
-  // 内置写作风格只读行（Task 8：无 toggle/delete/edit 的行）存在且可点击
-  await waitUntil(win, "document.querySelectorAll('.spd-skill-row--readonly').length >= 3", "builtin style rows must render", 8000);
-  const readonlyHasNoControls = await read(win, `(() => {
-    const rows = [...document.querySelectorAll('.spd-skill-row--readonly')];
-    return {
-      noToggle: rows.every((row) => !row.querySelector('.spd-skill-toggle, .spd-skill-del, .spd-skill-edit')),
-      names: rows.map((row) => row.dataset.skillName)
-    };
-  })()`);
-  assert.equal(readonlyHasNoControls.noToggle, true, `内置风格行不得有启用/删除/编辑控件: ${JSON.stringify(readonlyHasNoControls)}`);
-  clicks.push(await clickAndRead(win, '.spd-skill-row--readonly', {
-    label: "settings-builtin-style-detail",
-    settleMs: 600,
-    expect: () => read(win, "Boolean(document.querySelector('#skills-detail-back')) && (document.querySelector('.spd-skill-detail-body')?.textContent || '').length > 0")
-  }));
-  clicks.push(await clickAndRead(win, "#skills-detail-back", {
-    label: "skills-detail-back",
     settleMs: 400,
-    expect: () => read(win, "Boolean(document.querySelector('#skills-list')) || Boolean(document.querySelector('.spd-skill-heading'))")
+    expect: () => read(win, "document.getElementById('model-settings-page').hidden === false")
   }));
-  clicks.push(await clickAndRead(win, "#settings-x", {
-    label: "settings-close",
+  await waitUntil(win, "document.querySelectorAll('.provider-item').length >= 1", "provider list must render in model settings", 8000);
+  await waitUntil(win, "document.querySelectorAll('.model-row').length >= 1", "model rows must render in model settings", 8000);
+  const settingsOperable = await read(win, `(() => ({
+    providers: [...document.querySelectorAll('.provider-item')].map((el) => el.textContent.trim()),
+    modelRows: document.querySelectorAll('.model-row').length,
+    modelNameInput: document.querySelector('[data-field="model_name"]')?.value ?? null,
+    keyStatus: document.querySelector('[data-api-key-status]')?.textContent ?? null,
+    testButton: Boolean(document.querySelector('.model-test-connection')),
+    bodyHasFakeKey: (document.body.textContent || '').includes('sk-round7')
+  }))()`);
+  assert.ok(settingsOperable.providers.length >= 1, `供应商列表应渲染: ${JSON.stringify(settingsOperable)}`);
+  assert.ok(settingsOperable.modelRows >= 1, "模型行应渲染");
+  assert.equal(settingsOperable.modelNameInput, "deepseek-v4-pro", "模型名称输入框应渲染完整模型名");
+  assert.equal(settingsOperable.keyStatus, "已配置（WWRITING_ROUND7_FAKE_KEY）", `密钥状态应只显示 已配置 + env 名: ${JSON.stringify(settingsOperable)}`);
+  assert.equal(settingsOperable.bodyHasFakeKey, false, "密钥明文不得出现在模型设置页 DOM");
+  assert.equal(settingsOperable.testButton, true, "测试连接按钮应存在（设置页可操作）");
+  clicks.push(await clickAndRead(win, "#model-settings-close", {
+    label: "model-settings-close",
     settleMs: 300,
-    expect: async () => !(await overlayVisible(win, "settings-scrim"))
+    expect: () => read(win, "document.getElementById('model-settings-page').hidden === true")
   }));
 
   // ⑥ 新建弹窗：打开 → 关闭（普通文件夹场景仍可创建新项目）
