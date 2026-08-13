@@ -74,6 +74,25 @@ function extractDecls(block) {
   return out;
 }
 
+// 顶层 @media 块列表（allRules 的 regex 跳过 media 嵌套，这里单独拆块）。
+function mediaBlocks(source) {
+  const out = [];
+  const re = /@media\s*[^{]*\{/gu;
+  let m;
+  while ((m = re.exec(source)) !== null) {
+    const open = source.indexOf("{", m.index);
+    let depth = 1;
+    let i = open + 1;
+    while (i < source.length && depth > 0) {
+      if (source[i] === "{") depth += 1;
+      else if (source[i] === "}") depth -= 1;
+      i += 1;
+    }
+    out.push(source.slice(m.index, i));
+  }
+  return out;
+}
+
 // 浅色 :root 的 token 表（唯一来源）。
 const rootBlock = extractBlock(stylesSource, ":root");
 const rootTokens = extractDecls(rootBlock);
@@ -373,6 +392,44 @@ test("streaming/terminal 命中同一 .agent-markdown typography；无 .is-strea
   for (const rule of headingRules) {
     assert.match(rule.selector, /\.agent-markdown/u, `标题字级只能由 .agent-markdown 路径定义：${rule.selector}`);
   }
+});
+
+// ===========================================================================
+// 10) 模型设置布局契约（Task 22）：模型行响应式 grid/minmax + min-width:0，
+//     长输入截断不扩父容器；窄窗 media query 折叠单列；技能添加菜单 popover
+//     有视口边界（max-inline-size）。
+// ===========================================================================
+test("模型设置布局：model-row 响应式 grid/minmax + min-width:0，窄窗折叠，popover 有边界", () => {
+  // .model-settings-body 双列 grid 的详情列必须可收缩（minmax(0,1fr)）。
+  const body = extractDecls(extractBlock(stylesSource, ".model-settings-body"));
+  assert.match(body["grid-template-columns"] ?? "", /minmax\(0,\s*1fr\)/u, ".model-settings-body 详情列应为 minmax(0,1fr)");
+
+  // 详情 section 的隐式列必须显式可收缩：否则单列 auto 轨道按 max-content 撑宽。
+  const section = extractDecls(extractBlock(stylesSource, ".model-settings-body section"));
+  assert.match(section["grid-template-columns"] ?? "", /minmax\(0,\s*1fr\)/u, ".model-settings-body section 应为可收缩单列");
+
+  // .model-row：grid + 首列 minmax(0,1fr) + min-width:0（长模型名截断不撑破父容器）。
+  const row = extractDecls(extractBlock(stylesSource, ".model-row"));
+  assert.equal(row["display"], "grid", ".model-row 应为 grid 布局");
+  assert.match(row["grid-template-columns"] ?? "", /minmax\(0,\s*1fr\)/u, ".model-row 首列应可收缩（minmax(0,1fr)）");
+  assert.equal(row["min-width"], "0", ".model-row 应有 min-width:0");
+
+  // 行内输入框可收缩：长文本截断（内部滚动）而非撑破父容器。
+  const rowInput = extractDecls(extractBlock(stylesSource, ".model-row input"));
+  assert.equal(rowInput["min-width"], "0", ".model-row input 应有 min-width:0");
+
+  // 窄窗 media query：模型设置页折叠为单列（280px 侧栏 + 详情双列放不下）。
+  const narrow = mediaBlocks(stripComments(stylesSource)).find((b) => /\.model-settings-body/u.test(b));
+  assert.ok(narrow, "窄窗 media query 应包含 .model-settings-body 规则");
+  assert.match(narrow, /grid-template-columns:\s*(?:minmax\(0,\s*1fr\)|1fr)/u, "窄窗下 .model-settings-body 应折叠单列");
+
+  // popover（技能添加菜单）有边界：max-inline-size 不超过视口宽度。
+  const menu = extractDecls(extractBlock(stylesSource, ".spd-addmenu-pop"));
+  assert.match(
+    menu["max-inline-size"] ?? "",
+    /min\([^)]*,\s*calc\(100vw/u,
+    ".spd-addmenu-pop 应有视口边界（max-inline-size）"
+  );
 });
 
 // ===========================================================================

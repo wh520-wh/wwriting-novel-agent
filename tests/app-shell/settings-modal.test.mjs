@@ -73,7 +73,18 @@ class MockElement {
     // 让带 e.stopPropagation() 的处理器在 mock 里也能跑。
     const evt = { target: this, stopPropagation() {}, preventDefault() {} };
     const pass = args.length ? args : [evt];
-    for (const fn of this._listeners.get(type) ?? []) fn(...pass);
+    // 与真实 DOM 一致：监听器注册期间派发的事件不再回调本次派发的监听器
+    //（快照迭代），且 stopImmediatePropagation 终止同节点其余监听器。
+    const first = pass[0];
+    let immediateStopped = false;
+    if (first && typeof first === "object") {
+      const original = first.stopImmediatePropagation ?? (() => {});
+      first.stopImmediatePropagation = () => { immediateStopped = true; original(); };
+    }
+    for (const fn of [...(this._listeners.get(type) ?? [])]) {
+      fn(...pass);
+      if (immediateStopped) break;
+    }
   }
 
   /** 与真实 DOM 的 HTMLElement.click() 一致：派发 click 事件。 */
@@ -116,14 +127,26 @@ function installDomMock() {
       if (index >= 0) list.splice(index, 1);
     },
     _fire(type, ...args) {
-      for (const fn of docListeners.get(type) ?? []) fn(...args);
+      // 与 MockElement._fire 同语义：快照迭代 + stopImmediatePropagation 终止。
+      const first = args[0];
+      let immediateStopped = false;
+      if (first && typeof first === "object") {
+        const original = first.stopImmediatePropagation ?? (() => {});
+        first.stopImmediatePropagation = () => { immediateStopped = true; original(); };
+      }
+      for (const fn of [...(docListeners.get(type) ?? [])]) {
+        fn(...args);
+        if (immediateStopped) break;
+      }
     }
   };
 }
 installDomMock();
 
-// settings-modal.js pulls in motion-runtime (and vendor/gsap), so import it
-// dynamically after the browser-ish globals are in place.
+// settings-modal.js pulls in motion-runtime (and vendor/gsap). 测试环境不调用
+// setupMotion()（那是 app.js 的初始化职责），motion-runtime 的 _gsapLoaded 恒为
+// false → closeModal 走同步分支直接回调 onComplete——「关闭恢复原焦点」等行为可
+// 确定性断言，无需等待真实 gsap 时间线。
 const { createSettingsModal } = await import("../../src/app-shell/settings-modal.js");
 
 // ---------------------------------------------------------------------------
@@ -279,8 +302,14 @@ function catalogJsonImpl(data) {
   };
 }
 
+// 返回最后匹配：domRegistry 累积历史元素（replaceChildren 不清注册表），
+// 后创建的元素 ≈ 当前仍挂载（与 model-settings-page.test.mjs 的 mock 约定一致）。
 function findElementById(id) {
-  return domRegistry.find((el) => el.id === id) ?? null;
+  let hit = null;
+  for (const el of domRegistry) {
+    if (el.id === id) hit = el;
+  }
+  return hit;
 }
 
 test("「Agent 技能」分区：segmented control、技能列表与来源标签，无启停控件", async () => {
@@ -1207,4 +1236,199 @@ test("B18：连续两次保存——旧 save 的迟到失败不得恢复按钮/�
   assert.equal(saveButton.textContent, "已保存", "新 save 成功反馈不被旧 save 干扰");
   await p1;
   await p2;
+});
+
+// ---------------------------------------------------------------------------
+// Task 22：可访问性（焦点管理 + popover ARIA）与关闭保护（dirty 先确认）
+// ---------------------------------------------------------------------------
+
+test("打开设置弹窗：焦点移入弹窗内首个可聚焦元素（§6.5 键盘焦点顺序）", async () => {
+  const scrim = new MockElement("div");
+  const firstFocusable = new MockElement("button");
+  let focusCalls = 0;
+  firstFocusable.focus = () => { focusCalls += 1; };
+  scrim.querySelectorAll = () => [firstFocusable];
+  const modal = createSettingsModalForTest({ refs: { settingsScrim: scrim } });
+  await modal.openSettingsModal("writing");
+  assert.equal(focusCalls, 1, "打开后应聚焦弹窗内首个可聚焦元素（否则焦点停留在触发按钮，Tab 可逃出弹窗）");
+});
+
+test("打开设置弹窗：隐藏/禁用的首元素不接收焦点（Minor 4：窄窗 .sp-side 隐藏场景）", async () => {
+  const scrim = new MockElement("div");
+  const hiddenFirst = new MockElement("button");
+  hiddenFirst.offsetParent = null; // 隐藏元素（真实 DOM offsetParent === null）
+  const disabledSecond = new MockElement("button");
+  disabledSecond.disabled = true;
+  const visibleThird = new MockElement("button");
+  let focusCalls = 0;
+  visibleThird.focus = () => { focusCalls += 1; };
+  scrim.querySelectorAll = () => [hiddenFirst, disabledSecond, visibleThird];
+  const modal = createSettingsModalForTest({ refs: { settingsScrim: scrim } });
+  await modal.openSettingsModal("writing");
+  assert.equal(focusCalls, 1, "焦点应落在第一个可见且可用的元素（跳过隐藏/禁用）");
+});
+
+test("Tab 在设置弹窗内循环：首末元素回绕（focus trap）", async () => {
+  const scrim = new MockElement("div");
+  scrim.classList.add("show");
+  const first = new MockElement("button");
+  const last = new MockElement("button");
+  let firstFocused = 0;
+  let lastFocused = 0;
+  first.focus = () => { firstFocused += 1; };
+  last.focus = () => { lastFocused += 1; };
+  scrim.querySelectorAll = () => [first, last];
+  createSettingsModalForTest({ refs: { settingsScrim: scrim } });
+
+  // 正向：焦点在最后一个元素 → Tab 回绕到第一个
+  globalThis.document.activeElement = last;
+  let prevented = 0;
+  scrim._fire("keydown", { key: "Tab", shiftKey: false, preventDefault: () => { prevented += 1; } });
+  assert.equal(prevented, 1, "末元素正向 Tab 应被拦截");
+  assert.equal(firstFocused, 1, "焦点应回绕到第一个元素");
+
+  // 反向：焦点在第一个元素 → Shift+Tab 回绕到最后一个
+  globalThis.document.activeElement = first;
+  scrim._fire("keydown", { key: "Tab", shiftKey: true, preventDefault: () => { prevented += 1; } });
+  assert.equal(prevented, 2, "首元素反向 Tab 应被拦截");
+  assert.equal(lastFocused, 1, "焦点应回绕到最后一个元素");
+
+  // 弹窗关闭（非 show）时不拦截
+  scrim.classList.remove("show");
+  scrim._fire("keydown", { key: "Tab", shiftKey: false, preventDefault: () => { prevented += 1; } });
+  assert.equal(prevented, 2, "弹窗未打开时 Tab 不应被拦截");
+});
+
+test("写作参数有未保存修改：关闭先确认（现有确认控件，不调用 window.confirm）", async () => {
+  const scrim = new MockElement("div");
+  const confirms = [];
+  const modal = createSettingsModalForTest({
+    refs: { settingsScrim: scrim },
+    getDashboard: () => ({ hasProject: true, project: { target_chapters: 5 } }),
+    getCurrentProjectRoot: () => "D:/novels/demo",
+    confirmImpl: (message) => { confirms.push(message); return true; }
+  });
+  await modal.openSettingsModal("writing");
+  await tickAsync();
+
+  // 修改目标章节数字段的值（不触发 change，模拟「编辑了但未保存」）。
+  const detail = modal.getSettingsDetailForTest();
+  const targetField = detail.children.find((el) => String(el.className).includes("spd-field"));
+  const targetInput = targetField.children.find((c) => c.tagName === "INPUT");
+  targetInput.value = "99";
+
+  modal.closeSettingsModal();
+  assert.equal(scrim.classList.contains("show"), true, "有未保存修改时关闭不应直接生效");
+  const layer = findElementById("close-dirty-confirm");
+  assert.ok(layer, "应出现「放弃未保存修改」确认层");
+  assert.equal(layer.hidden, false, "确认层应可见");
+  assert.deepEqual(confirms, [], "关闭确认不得使用 window.confirm（confirmImpl 不被调用）");
+  const copy = domRegistry.find((el) => String(el.className).includes("spd-confirm-copy"));
+  assert.match(copy.textContent, /未保存的修改/u, "确认文案应说明未保存修改会丢失");
+
+  // 取消：确认层关闭，弹窗保持打开
+  findElementById("close-dirty-cancel")._fire("click");
+  assert.equal(findElementById("close-dirty-confirm").hidden, true, "取消后确认层关闭");
+  assert.equal(scrim.classList.contains("show"), true, "取消后弹窗保持打开");
+
+  // 再次关闭：确认放弃后真正关闭
+  modal.closeSettingsModal();
+  assert.equal(findElementById("close-dirty-confirm").hidden, false, "仍有未保存修改时再次弹出确认");
+  findElementById("close-dirty-confirm-btn")._fire("click");
+  assert.equal(scrim.classList.contains("show"), false, "确认放弃后弹窗关闭");
+});
+
+test("Escape 对 dirty 状态先确认：先弹确认层，二次 Esc 只关确认层", async () => {
+  const scrim = new MockElement("div");
+  const modal = createSettingsModalForTest({
+    refs: { settingsScrim: scrim },
+    getDashboard: () => ({ hasProject: true, project: { target_chapters: 5 } }),
+    getCurrentProjectRoot: () => "D:/novels/demo"
+  });
+  await modal.openSettingsModal("writing");
+  await tickAsync();
+  const targetField = modal.getSettingsDetailForTest().children.find((el) => String(el.className).includes("spd-field"));
+  const targetInput = targetField.children.find((c) => c.tagName === "INPUT");
+  targetInput.value = "99";
+
+  let prevented = 0;
+  scrim._fire("keydown", { key: "Escape", stopPropagation: () => {}, preventDefault: () => { prevented += 1; } });
+  assert.equal(prevented, 1, "弹窗级 Esc 应被设置弹窗消费（阻断全局路由）");
+  assert.equal(findElementById("close-dirty-confirm").hidden, false, "Esc 应先弹出确认层");
+  assert.equal(scrim.classList.contains("show"), true, "确认前弹窗不关闭");
+
+  // 二次 Esc：确认层是当前最上层 → 只关确认层，不关弹窗
+  let stopped = 0;
+  document._fire("keydown", {
+    key: "Escape",
+    stopImmediatePropagation: () => { stopped += 1; },
+    preventDefault: () => {}
+  });
+  assert.equal(stopped, 1, "确认层的 Esc 应被嵌套层消费");
+  assert.equal(findElementById("close-dirty-confirm").hidden, true, "二次 Esc 关闭确认层");
+  assert.equal(scrim.classList.contains("show"), true, "弹窗保持打开");
+});
+
+test("无未保存修改时 Esc 直接关闭弹窗并恢复原焦点", async () => {
+  const scrim = new MockElement("div");
+  const restoreSpy = new MockElement("button");
+  let restoreCalls = 0;
+  restoreSpy.focus = () => { restoreCalls += 1; };
+  restoreSpy.isConnected = true;
+  let captured = null;
+  const modal = createSettingsModalForTest({
+    refs: { settingsScrim: scrim },
+    getLastFocused: () => captured,
+    setLastFocused: (el) => { captured = el; }
+  });
+  // 模拟打开前焦点在触发按钮上：打开时应记录为原焦点。
+  globalThis.document.activeElement = restoreSpy;
+  await modal.openSettingsModal("writing");
+  assert.equal(captured, restoreSpy, "打开时应记录原焦点（setLastFocused(document.activeElement)）");
+  assert.equal(findElementById("close-dirty-confirm"), null, "无修改时不应出现确认层");
+
+  scrim._fire("keydown", { key: "Escape", stopPropagation: () => {}, preventDefault: () => {} });
+  assert.equal(scrim.classList.contains("show"), false, "clean 状态 Esc 直接关闭弹窗");
+  assert.equal(scrim.getAttribute("inert"), "", "关闭后弹窗应置 inert");
+  assert.equal(restoreCalls, 1, "关闭动画完成后应恢复原焦点");
+  assert.equal(captured, null, "恢复焦点后应清空记录");
+});
+
+test("添加技能菜单：role=menu/menuitem、aria-expanded 同步，Esc 只关菜单（popover 键盘/ARIA）", async () => {
+  const scrim = new MockElement("div");
+  const modal = createSettingsModalForTest({
+    refs: { settingsScrim: scrim },
+    getCurrentProjectRoot: () => "D:/novels/demo",
+    getJsonImpl: catalogJsonImpl(SKILLS_CATALOG)
+  });
+  await modal.openSettingsModal("skills");
+  await modal.waitForSkillsCatalog();
+
+  const addBtn = findElementById("skills-add");
+  const menuEl = domRegistry.find((el) => el.className === "spd-addmenu-pop");
+  assert.ok(addBtn, "应有「添加技能」触发按钮");
+  assert.ok(menuEl, "应有添加菜单 popover");
+  assert.equal(addBtn.getAttribute("aria-haspopup"), "menu", "触发按钮应声明菜单 popover");
+  assert.equal(addBtn.getAttribute("aria-expanded"), "false", "菜单收起时 aria-expanded=false");
+  assert.equal(menuEl.getAttribute("role"), "menu", "popover 应有 role=menu");
+  for (const item of menuEl.children) {
+    assert.equal(item.getAttribute("role"), "menuitem", "菜单项应有 role=menuitem");
+  }
+
+  // 点击展开：aria-expanded 同步
+  addBtn._fire("click");
+  assert.equal(addBtn.getAttribute("aria-expanded"), "true", "展开后 aria-expanded=true");
+  const addWrap = domRegistry.find((el) => el.className === "spd-addmenu");
+  assert.equal(addWrap.classList.contains("open"), true, "点击后菜单应展开");
+
+  // Esc 只关菜单，不关弹窗（popover 键盘关闭）
+  let stopped = 0;
+  document._fire("keydown", {
+    key: "Escape",
+    stopImmediatePropagation: () => { stopped += 1; },
+    preventDefault: () => {}
+  });
+  assert.equal(stopped, 1, "菜单的 Esc 应被消费（阻断弹窗级关闭）");
+  assert.equal(addBtn.getAttribute("aria-expanded"), "false", "Esc 关闭菜单后 aria-expanded=false");
+  assert.equal(scrim.classList.contains("show"), true, "Esc 不得关闭设置弹窗");
 });

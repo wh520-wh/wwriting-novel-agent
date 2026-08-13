@@ -16,6 +16,17 @@ const SETTINGS_SECTIONS = [
   { id: "danger", label: "项目管理", icon: "folder", ready: true }
 ];
 
+// 写作参数分区字段注册表（Task 22 审查 Minor 2）：renderWritingSection 渲染、
+// saveWritingSection 的 project_profile 提交、settingsDirty 的关闭保护三处共用
+// ——新增字段只改这一处。输出风格（outputStyle）形态不同（select + 独立提交键
+// + 默认值），不并入本表，三处按各自既有逻辑单独处理。
+const WRITING_FIELDS = [
+  { key: "targetChapters", projectKey: "target_chapters", label: "目标章节数（提高它可以继续已完成的小说）", type: "number" },
+  { key: "minWords", projectKey: "min_words_per_chapter", label: "每章最低字数", type: "number" },
+  { key: "targetWords", projectKey: "target_words_per_chapter", label: "每章目标字数", type: "number" },
+  { key: "maxWords", projectKey: "max_words_per_chapter", label: "每章字数上限（留空 = 不限，按 target × 1.5 估算）", type: "number" }
+];
+
 // 「已归档对话」归档时间展示格式（Task 10）：模块级单例避免每次渲染新建
 // Intl.DateTimeFormat；hour12:false 显式锁定 24 小时制，避免个别环境 zh-CN 默认
 // 12 小时制。
@@ -104,6 +115,9 @@ export function createSettingsModal(ctx, options = {}) {
   // 清空确认层（settings 内最上层）的节点引用与文档级 Esc 监听。
   let clearConfirmRef = { layer: null, ack: null, confirmBtn: null, error: null };
   let removeClearConfirmDismissal = null;
+  // 放弃未保存修改确认层（Task 22 关闭保护）的节点引用与文档级 Esc 监听。
+  let dirtyConfirmRef = { layer: null };
+  let removeDirtyConfirmDismissal = null;
   const settingsFields = {};
 
   async function fetchOutputStyles() {
@@ -129,7 +143,72 @@ export function createSettingsModal(ctx, options = {}) {
     ctx.refs.settingsScrim.removeAttribute("inert");
     ctx.refs.settingsScrim.classList.add("show");
     motion.openModal(ctx.refs.settingsScrim, document.querySelector("#settings-modal"));
+    // Task 22（§6.5 键盘焦点顺序）：打开后焦点移入弹窗内首个可聚焦元素——
+    // 否则焦点停留在触发按钮（scrim 外），Tab 可逃出弹窗，focus trap 失效。
+    focusFirstInModal();
   }
+
+  // 弹窗内可聚焦元素选择器（Task 22 审查 Minor 4）：focusFirstInModal 与
+  // bindModalTabTrap 共用同一选择器与过滤规则，避免两处口径分叉。
+  const MODAL_FOCUSABLE = "button, [href], input, select, textarea, [tabindex]:not([tabindex=\"-1\"])";
+
+  // 弹窗内首个可聚焦元素（nav 分区按钮优先，任意顺序即第一个命中）。
+  // 与 bindModalTabTrap 同款过滤：隐藏（offsetParent null）/禁用元素不得接收焦点
+  // ——否则窄窗（@media ≤720px 隐藏 .sp-side）下首命中是隐藏 nav 按钮，
+  // focus() 静默无效，焦点停留在触发按钮（trap 失效场景）。
+  function focusFirstInModal() {
+    const first = [...(ctx.refs.settingsScrim.querySelectorAll?.(MODAL_FOCUSABLE) ?? [])]
+      .find((el) => !el.disabled && el.offsetParent !== null);
+    first?.focus?.();
+  }
+
+  // Task 22 focus trap：Tab 在弹窗内循环（首末元素回绕）。挂在 scrim 的 bubble
+  // 阶段——嵌套层（添加菜单/清空确认/放弃确认）的 document capture 监听先于
+  // 本监听执行并 stopImmediatePropagation，故嵌套层打开时 Tab 不受弹窗级回绕
+  // 干扰；弹窗关闭（非 show）时不拦截，不触碰 AgentSurface 的键盘路由。
+  function bindModalTabTrap() {
+    if (typeof ctx.refs.settingsScrim?.addEventListener !== "function") return null;
+    const onKeydown = (event) => {
+      if (event?.key !== "Tab") return;
+      if (!ctx.refs.settingsScrim.classList.contains("show")) return;
+      const focusables = [...(ctx.refs.settingsScrim.querySelectorAll?.(MODAL_FOCUSABLE) ?? [])]
+        .filter((el) => !el.disabled && el.offsetParent !== null);
+      if (focusables.length === 0) { event.preventDefault?.(); return; }
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault?.();
+        event.stopPropagation?.();
+        last.focus?.();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault?.();
+        event.stopPropagation?.();
+        first.focus?.();
+      }
+    };
+    ctx.refs.settingsScrim.addEventListener("keydown", onKeydown);
+    return () => ctx.refs.settingsScrim.removeEventListener?.("keydown", onKeydown);
+  }
+  bindModalTabTrap();
+
+  // Task 22 弹窗级 Escape：挂在 scrim 的 bubble 阶段。嵌套层的 document capture
+  // 监听先于本监听执行（capture 先于 bubble）且 stopImmediatePropagation，故 Esc
+  // 仍只作用于最上层（先关添加菜单/确认层）；本监听处理「弹窗自身」的 Esc——
+  // dirty 时先走确认层（closeSettingsModal 内守卫），clean 时直接关闭，并阻断
+  // 全局路由（app.js）与 AgentSurface 的 Run 停止。
+  function bindModalScrimDismissal() {
+    if (typeof ctx.refs.settingsScrim?.addEventListener !== "function") return null;
+    const onKeydown = (event) => {
+      if (event?.key !== "Escape") return;
+      if (!ctx.refs.settingsScrim.classList.contains("show")) return;
+      closeSettingsModal();
+      event.stopPropagation?.();
+      event.preventDefault?.();
+    };
+    ctx.refs.settingsScrim.addEventListener("keydown", onKeydown);
+    return () => ctx.refs.settingsScrim.removeEventListener?.("keydown", onKeydown);
+  }
+  bindModalScrimDismissal();
 
   function setSettingsSection(next) {
     if (!SETTINGS_SECTIONS.some((s) => s.id === next)) return;
@@ -248,14 +327,11 @@ export function createSettingsModal(ctx, options = {}) {
     intro.textContent = "控制每章的篇幅、目标章节数和输出风格。";
     ctx.refs.settingsDetail.append(intro);
 
-    settingsFields.targetChapters = settingField("目标章节数（提高它可以继续已完成的小说）", "number", {
-      value: project.target_chapters ?? ""
-    });
-    settingsFields.minWords = settingField("每章最低字数", "number", { value: project.min_words_per_chapter ?? "" });
-    settingsFields.targetWords = settingField("每章目标字数", "number", { value: project.target_words_per_chapter ?? "" });
-    settingsFields.maxWords = settingField("每章字数上限（留空 = 不限，按 target × 1.5 估算）", "number", {
-      value: project.max_words_per_chapter ?? ""
-    });
+    for (const field of WRITING_FIELDS) {
+      settingsFields[field.key] = settingField(field.label, field.type, {
+        value: project[field.projectKey] ?? ""
+      });
+    }
 
     // 输出风格下拉（从模型区平移）
     const currentOutputStyle = project.output_style ?? "creative";
@@ -891,9 +967,13 @@ export function createSettingsModal(ctx, options = {}) {
     });
     const addMenu = document.createElement("div");
     addMenu.className = "spd-addmenu-pop";
+    // Task 22（#2）：popover 声明 menu 角色，选项声明 menuitem——触发按钮已有
+    // aria-haspopup/aria-expanded，组合成完整的菜单语义。
+    addMenu.setAttribute("role", "menu");
     const folderOpt = document.createElement("button");
     folderOpt.type = "button";
     folderOpt.id = "skills-add-folder";
+    folderOpt.setAttribute("role", "menuitem");
     folderOpt.textContent = "从文件夹导入…";
     folderOpt.addEventListener("click", () => {
       addWrap.classList.remove("open");
@@ -903,6 +983,7 @@ export function createSettingsModal(ctx, options = {}) {
     const zipOpt = document.createElement("button");
     zipOpt.type = "button";
     zipOpt.id = "skills-add-zip";
+    zipOpt.setAttribute("role", "menuitem");
     zipOpt.textContent = "从 ZIP 包导入…";
     zipOpt.addEventListener("click", () => {
       addWrap.classList.remove("open");
@@ -1246,8 +1327,21 @@ export function createSettingsModal(ctx, options = {}) {
   }
 
   function closeSettingsModal() {
+    // Task 22（#9）：关闭保护——写作参数有未保存修改时先弹确认层，绝不静默丢失。
+    // 关闭路径统一经此守卫（app.js 的 X/取消/遮罩/Esc 与保存成功后的自动关闭
+    // 都调用本函数）；保存成功时 dashboard 已刷新，dirty 判定自然为 false。
+    if (settingsDirty() && !dirtyConfirmRef.layer && ctx.refs.settingsScrim.classList.contains("show")) {
+      openDirtyCloseConfirm();
+      return;
+    }
+    performCloseSettingsModal();
+  }
+
+  // 真正关闭（确认放弃/无未保存修改时）：清空确认层 + 关闭动画 + 恢复原焦点。
+  function performCloseSettingsModal() {
     // 清空确认层随设置弹窗一起关闭（X/关闭/遮罩/Esc 任一路径都先关嵌套层）。
     closeClearHistoryConfirm();
+    closeDirtyCloseConfirm();
     ctx.refs.settingsScrim.dataset.closing = "true";
     ctx.refs.settingsScrim.classList.remove("show");
     ctx.refs.settingsScrim.setAttribute("inert", "");
@@ -1259,6 +1353,106 @@ export function createSettingsModal(ctx, options = {}) {
         ctx.setLastFocused(null);
       }
     });
+  }
+
+  // Task 22：写作参数分区是否有未保存修改。只有写作分区有可挂起的表单值
+  //（其余分区动作即时生效）；分区切换会重建表单（旧编辑随 replaceChildren
+  // 丢弃），故只在当前分区为 writing 且项目存在（hasProject 才渲染可编辑字段）
+  // 时判定 dirty——切走后的旧引用与无字段的说明分区一律不算。
+  function settingsDirty() {
+    if (settingsSection !== "writing") return false;
+    const dashboard = ctx.getDashboard();
+    if (dashboard?.hasProject !== true) return false;
+    const project = dashboard.project ?? {};
+    for (const field of WRITING_FIELDS) {
+      const input = settingsFields[field.key]?.input;
+      if (!input) continue;
+      if (String(input.value ?? "").trim() !== String(project[field.projectKey] ?? "").trim()) return true;
+    }
+    const styleInput = settingsFields.outputStyle?.input;
+    if (styleInput && String(styleInput.value ?? "") !== String(project.output_style ?? "creative")) return true;
+    return false;
+  }
+
+  // 放弃未保存修改确认层（Task 22）：复用 spd-confirm-layer/spd-confirm-card
+  // 确认控件结构（与清空历史确认层同款），不调用 browser confirm。
+  function openDirtyCloseConfirm() {
+    if (dirtyConfirmRef.layer) return;
+    removeAddMenuDismissal?.();
+
+    const layer = document.createElement("div");
+    layer.className = "spd-confirm-layer";
+    layer.id = "close-dirty-confirm";
+    layer.hidden = false;
+    Object.assign(layer.style, {
+      position: "absolute",
+      inset: "0",
+      zIndex: "21",
+      background: "rgba(20, 18, 14, 0.45)",
+      display: "grid",
+      placeItems: "center",
+      padding: "28px"
+    });
+
+    const card = document.createElement("div");
+    card.className = "spd-confirm-card";
+    Object.assign(card.style, {
+      width: "min(430px, 100%)",
+      background: "var(--surface)",
+      border: "1px solid var(--line)",
+      borderRadius: "var(--r-xl)",
+      boxShadow: "var(--shadow-pop)",
+      padding: "22px 24px",
+      display: "grid",
+      gap: "14px"
+    });
+
+    const title = document.createElement("h4");
+    title.className = "spd-section";
+    title.style.margin = "0";
+    title.textContent = "放弃未保存的修改？";
+
+    const copy = document.createElement("p");
+    copy.className = "spd-confirm-copy spd-hint";
+    copy.style.margin = "0";
+    copy.textContent = "写作参数有未保存的修改，关闭后将丢失。";
+
+    const actions = document.createElement("div");
+    actions.style.display = "flex";
+    actions.style.justifyContent = "flex-end";
+    actions.style.gap = "10px";
+    const cancelBtn = actionButton("取消", () => closeDirtyCloseConfirm());
+    cancelBtn.id = "close-dirty-cancel";
+    const confirmBtn = actionButton("不保存并关闭", () => {
+      closeDirtyCloseConfirm();
+      performCloseSettingsModal();
+    });
+    confirmBtn.id = "close-dirty-confirm-btn";
+    actions.append(cancelBtn, confirmBtn);
+
+    card.append(title, copy, actions);
+    layer.append(card);
+    ctx.refs.settingsScrim.append(layer);
+
+    dirtyConfirmRef.layer = layer;
+    removeDirtyConfirmDismissal = bindNestedLayerDismissal({
+      isOpen: () => dirtyConfirmRef.layer !== null && ctx.refs.settingsScrim.classList.contains("show"),
+      close: closeDirtyCloseConfirm
+    });
+    // 点击确认层背景（卡片外部）关闭本层，不触碰弹窗级处理器。
+    layer.addEventListener("click", (event) => {
+      if (event?.target === layer) closeDirtyCloseConfirm();
+    });
+    cancelBtn.focus();
+  }
+
+  function closeDirtyCloseConfirm() {
+    removeDirtyConfirmDismissal?.();
+    removeDirtyConfirmDismissal = null;
+    if (!dirtyConfirmRef.layer) return;
+    dirtyConfirmRef.layer.replaceChildren();
+    dirtyConfirmRef.layer.hidden = true;
+    dirtyConfirmRef.layer = null;
   }
 
 
@@ -1340,13 +1534,12 @@ export function createSettingsModal(ctx, options = {}) {
       return;
     }
     await runSave(async () => {
+      const projectProfile = {};
+      for (const field of WRITING_FIELDS) {
+        projectProfile[field.projectKey] = settingsFields[field.key]?.input.value;
+      }
       await postJsonImpl("/api/settings/update", {
-        project_profile: compactObject({
-          target_chapters: settingsFields.targetChapters.input.value,
-          min_words_per_chapter: settingsFields.minWords.input.value,
-          target_words_per_chapter: settingsFields.targetWords.input.value,
-          max_words_per_chapter: settingsFields.maxWords.input.value
-        }),
+        project_profile: compactObject(projectProfile),
         output_style: settingsFields.outputStyle?.input?.value ?? "creative"
       });
       await ctx.loadDashboard();

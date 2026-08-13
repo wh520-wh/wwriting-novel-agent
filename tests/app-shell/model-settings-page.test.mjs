@@ -379,6 +379,133 @@ test("模型删除需要二次确认", async () => {
   assert.deepEqual(calls, []);
 });
 
+// ---------------------------------------------------------------------------
+// Task 22：#11 模型名称框「回车保存」——UI 文案承诺「改名后回车保存」，
+// 真实行为必须一致；#2 图标按钮必须有 accessible name。
+// ---------------------------------------------------------------------------
+
+test("模型名称框回车保存（#11：提示文案与真实行为一致）", async () => {
+  const patches = [];
+  const page = createModelSettingsPage({
+    fetchImpl: async (url, options = {}) => {
+      if (options?.method === "PATCH") patches.push({ url, body: JSON.parse(options.body) });
+      return { ok: true, json: async () => ({ providers, default_model: null }) };
+    },
+    documentRef: mockDocument
+  });
+  await page.open();
+  const container = new MockElement("div");
+  page.renderDetail(container);
+  const els = descendants(container);
+  const m1Row = els.find((el) => el.className === "model-row" && el.getAttribute?.("data-model-id") === "m1");
+  const modelNameInput = descendants(m1Row).find((el) => el.getAttribute?.("data-field") === "model_name");
+
+  modelNameInput.value = "deepseek-v4-pro-enter";
+  modelNameInput._fire("keydown", { key: "Enter", preventDefault() {} });
+  await tickAsync();
+  assert.deepEqual(
+    patches[patches.length - 1],
+    { url: "/api/settings/providers/deepseek/models/m1", body: { model_name: "deepseek-v4-pro-enter" } },
+    "模型名称框回车应保存（与失焦保存同一提交路径）"
+  );
+
+  // 空模型名回车：行内中文错误，不发请求（与失焦行为一致）。
+  const patchesBefore = patches.length;
+  modelNameInput.value = "   ";
+  modelNameInput._fire("keydown", { key: "Enter", preventDefault() {} });
+  await tickAsync();
+  assert.equal(patches.length, patchesBefore, "空模型名回车不得保存");
+  const modelNameErrorEl = descendants(m1Row).find((el) => el.getAttribute?.("data-field-error") === "model_name:m1");
+  assert.equal(modelNameErrorEl.textContent, "模型名称不能为空", "空模型名回车应行内报错");
+});
+
+test("回车保存后输入框移除派发的挂起 change 不再重复 PATCH（Important 1 回归）", async () => {
+  const patches = [];
+  const page = createModelSettingsPage({
+    fetchImpl: async (url, options = {}) => {
+      if (options?.method === "PATCH") patches.push({ url, body: JSON.parse(options.body) });
+      return { ok: true, json: async () => ({ providers, default_model: null }) };
+    },
+    documentRef: mockDocument
+  });
+  await page.open();
+  const container = new MockElement("div");
+  page.renderDetail(container);
+  const els = descendants(container);
+  const m1Row = els.find((el) => el.className === "model-row" && el.getAttribute?.("data-model-id") === "m1");
+  const modelNameInput = descendants(m1Row).find((el) => el.getAttribute?.("data-field") === "model_name");
+
+  // 真实 DOM 时序：Enter 提交在途时 refresh 重建详情，被替换的输入框（仍是焦点
+  // 元素、带挂起 change）在移除时派发 change——同一值再触发一轮 run()。
+  modelNameInput.value = "deepseek-v4-pro-enter";
+  modelNameInput._fire("keydown", { key: "Enter", preventDefault() {} });
+  // 提交在途（第一个 PATCH 已同步入列）立即模拟移除派发：同值 change 必须被跳过。
+  modelNameInput._fire("change");
+  await tickAsync();
+  await tickAsync();
+  assert.equal(patches.length, 1, "移除派发的同值 change 不得重复 PATCH");
+
+  // 值变化后仍正常提交（去重不得吞掉新改动）。
+  modelNameInput.value = "deepseek-v4-pro-next";
+  modelNameInput._fire("change");
+  await tickAsync();
+  assert.equal(patches.length, 2, "值变化后的 change 应正常保存");
+  assert.deepEqual(
+    patches[patches.length - 1],
+    { url: "/api/settings/providers/deepseek/models/m1", body: { model_name: "deepseek-v4-pro-next" } }
+  );
+
+  // 失败后同值可重试（lastCommitted 失败复位）。
+  let fail = true;
+  const page2 = createModelSettingsPage({
+    fetchImpl: async (url, options = {}) => {
+      if (options?.method === "PATCH") {
+        if (fail) {
+          fail = false;
+          return { ok: false, status: 500, json: async () => ({ message: "HTTP 500" }) };
+        }
+        patches.push({ url, body: JSON.parse(options.body) });
+      }
+      return { ok: true, json: async () => ({ providers, default_model: null }) };
+    },
+    documentRef: mockDocument,
+    showToast: () => {}
+  });
+  await page2.open();
+  const container2 = new MockElement("div");
+  page2.renderDetail(container2);
+  const m1Row2 = descendants(container2).find((el) => el.className === "model-row" && el.getAttribute?.("data-model-id") === "m1");
+  const nameInput2 = descendants(m1Row2).find((el) => el.getAttribute?.("data-field") === "model_name");
+  nameInput2.value = "deepseek-v4-pro-retry";
+  nameInput2._fire("keydown", { key: "Enter", preventDefault() {} });
+  await tickAsync();
+  await tickAsync();
+  assert.equal(patches.length, 2, "第一次保存失败不发成功记录");
+  nameInput2._fire("keydown", { key: "Enter", preventDefault() {} });
+  await tickAsync();
+  await tickAsync();
+  assert.equal(patches.length, 3, "失败后同值重试应正常保存");
+});
+
+test("图标按钮有 accessible name：删除供应商/显示隐藏密钥按钮带 aria-label（#2）", async () => {
+  const page = createModelSettingsPage({
+    fetchImpl: async () => ({ ok: true, json: async () => ({ providers, default_model: null }) }),
+    documentRef: mockDocument
+  });
+  await page.open();
+  const container = new MockElement("div");
+  page.renderDetail(container);
+  const els = descendants(container);
+
+  const deleteBtn = els.find((el) => el.className === "provider-delete");
+  assert.ok(deleteBtn, "应渲染删除供应商按钮");
+  assert.equal(deleteBtn.getAttribute("aria-label"), "删除供应商", "删除按钮应有 accessible name（aria-label）");
+
+  const eyeBtn = els.find((el) => el.className === "api-key-eye");
+  assert.ok(eyeBtn, "应渲染显示/隐藏密钥按钮");
+  assert.equal(eyeBtn.getAttribute("aria-label"), "显示/隐藏密钥", "密钥切换按钮应有 accessible name（aria-label）");
+});
+
 test("列表点击切换供应商不丢失 default_model（「默认」角标回归）", async () => {
   const page = createModelSettingsPage({
     fetchImpl: async () => ({ ok: true, json: async () => ({ providers, default_model: { provider_id: "deepseek", model_id: "m1" } }) }),

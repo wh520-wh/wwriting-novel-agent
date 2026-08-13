@@ -1218,8 +1218,10 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .add-provider:hover:not(:disabled) { border-color: var(--accent-line); color: var(--accent); }
 
-/* right pane：供应商详情（骨架，Task 13-15 接管交互） */
-.model-settings-body section { min-width: 0; display: grid; gap: 10px; align-content: start; }
+/* right pane：供应商详情（骨架，Task 13-15 接管交互）。
+   Task 22：隐式列显式化为 minmax(0,1fr)——单列 auto 轨道按 max-content 撑宽
+   是模型行横向溢出的根源之一；显式可收缩轨道 + 子项 min-width:0 才能截断长输入。 */
+.model-settings-body section { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; align-content: start; }
 
 .model-settings-body section h2 { font-size: 15px; font-weight: 680; color: var(--ink); }
 
@@ -1239,9 +1241,28 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   color: var(--ink-2); font-size: 13px; cursor: pointer;
 }
 
+/* Task 22：模型行响应式 grid——首列 minmax(0,1fr) 可收缩（长模型名截断为输入框
+   内部滚动，不撑破父容器）；grid-auto-flow:column 保持单行条带视觉；
+   min-width:0 让行作为 grid item 可收缩（否则 auto 轨道按内容 max-content 撑宽）。 */
 .model-row {
-  display: flex; align-items: center; gap: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-auto-flow: column;
+  align-items: center;
+  gap: 8px;
   padding: 8px; border: 1px solid var(--line); border-radius: var(--r);
+  min-width: 0;
+}
+
+/* 行内输入框可收缩：长文本截断（内部滚动）而非撑破父容器。 */
+.model-row input { min-width: 0; }
+
+/* 测试连接结果槽：文本可换行且不把行撑宽（auto 轨道按 max-content 计宽）。 */
+.model-row .model-connection-result { min-width: 0; max-width: 240px; overflow-wrap: anywhere; }
+
+/* Task 22：窄窗模型设置页折叠单列（280px 侧栏 + 详情双列放不下）。 */
+@media (max-width: 880px) {
+  .model-settings-body { grid-template-columns: minmax(0, 1fr); }
 }
 
 
@@ -1869,6 +1890,8 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   min-width: 168px; display: none; flex-direction: column; gap: 2px;
   padding: 4px; background: var(--surface); border: 1px solid var(--line);
   border-radius: var(--r-sm); box-shadow: var(--shadow-pop);
+  /* Task 22：popover 有视口边界——窄窗下不溢出屏幕（max-inline-size 逻辑属性）。 */
+  max-inline-size: min(320px, calc(100vw - 32px));
 }
 .spd-addmenu.open .spd-addmenu-pop { display: flex; }
 .spd-addmenu-pop button {
