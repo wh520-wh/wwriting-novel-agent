@@ -26,6 +26,7 @@ import test from "node:test";
 
 import { EXTREME_COMMANDS } from "../fixtures/command-risk-corpus.mjs";
 import { serializeSimpleYaml } from "../../src/core/simple-yaml.mjs";
+import { ProjectOperationError } from "../../src/core/project-operations/chapter.mjs";
 import {
   LEGACY_STATE_FILE,
   VALID_MEMORY,
@@ -1528,6 +1529,192 @@ test("章节提交一致更新正式文件、索引、记忆与 checkpoint", asy
   assert.ok(memory.chapters.some((chapter) => chapter.chapter_no === 1));
   const checkpoints = await fs.readdir(path.join(h.projectRoot, "checkpoints"));
   assert.ok(checkpoints.some((name) => name.endsWith(".json")));
+  assertActivityClosure(events);
+});
+
+// ---------------------------------------------------------------------------
+// Task 14：章节提交与派生记忆解耦（memory_update 标记）
+//   §6.4：commit_chapter 成功不依赖摘要提取成功；提取失败后正文与索引保持成功、
+//   维护任务可重建；WWRITING.md 不被普通章节摘要自动污染。
+// ---------------------------------------------------------------------------
+
+test("commit 后派生记忆提取失败：正文与索引成功，结果标记 memory_update:{status:'failed',retryable:true}", async (t) => {
+  const WWRITING_BEFORE = "# WWriting 项目记忆\n\n- 项目：验收测试小说\n- 阶段：第一章写作中\n";
+  const h = await openHarness(t, {
+    project: { min_words_per_chapter: 50, target_words_per_chapter: 80 },
+    memoryExtractor: async () => {
+      // 带 code 的非领域错误不得污染错误码空间：一律归一为 memory_extract_failed
+      const error = new Error("injected memory extractor failure");
+      error.code = "provider_boom";
+      throw error;
+    },
+    gatewayScript: [
+      async () => ({
+        toolCalls: [
+          tool("append_chapter_segment", {
+            project_id: h.project.project_id ?? null,
+            chapter_no: 1,
+            segment_no: 1,
+            content: CHAPTER_CONTENT
+          })
+        ]
+      }),
+      async () => ({
+        toolCalls: [tool("commit_chapter", { project_id: h.project.project_id ?? null, chapter_no: 1 })]
+      }),
+      { reply: { text: "第一章已提交；记忆提取失败不影响提交。" } }
+    ]
+  });
+  await fs.writeFile(path.join(h.projectRoot, "WWRITING.md"), WWRITING_BEFORE, "utf8");
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "正式写第一章", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+
+  // 1. 正式章节与索引提交成功（正文未回滚）
+  const finalPath = path.join(h.projectRoot, "chapters", "001.md");
+  assert.equal(await pathExists(finalPath), true, "正式章节文件必须存在");
+  assert.ok((await fs.readFile(finalPath, "utf8")).includes("雨夜来信"), "正文内容完整，不得因提取失败回滚");
+  const index = JSON.parse(await fs.readFile(path.join(h.projectRoot, "memory", "chapter_index.json"), "utf8"));
+  assert.equal(index.chapters.find((chapter) => chapter.chapter_no === 1)?.status, "completed", "章节索引必须 completed");
+
+  // 2. commit_chapter 工具结果标记 memory_update:{status:"failed",retryable:true}
+  const commitEvent = eventsOfType(events, "tool_call_completed").find((event) => event.payload.name === "commit_chapter");
+  assert.ok(commitEvent, "commit_chapter 应成功完成（提取失败不改变工具成败）");
+  assert.equal(commitEvent.payload.ok, true);
+  assert.deepEqual(commitEvent.payload.memory_update, {
+    status: "failed",
+    retryable: true,
+    error: { code: "memory_extract_failed", message: "injected memory extractor failure" }
+  });
+
+  // 3. WWRITING.md 不被章节摘要自动污染
+  assert.equal(await fs.readFile(path.join(h.projectRoot, "WWRITING.md"), "utf8"), WWRITING_BEFORE, "WWRITING.md 不得被 commit/提取改写");
+
+  // 4. 提取失败不杀死 Run（结构化维护错误，可重试）
+  const session = await readSession(h.agent, h.projectRoot);
+  assert.equal(session.active_run.status, "completed", "Run 必须正常终结");
+  assert.equal(eventsOfType(events, "run_failed").length, 0, "提取失败不得让 Run 失败");
+  assertActivityClosure(events);
+});
+
+test("派生记忆提取抛 ProjectOperationError：领域错误码透传，正文与索引仍成功", async (t) => {
+  // 错误码空间规则：仅 ProjectOperationError 的 code 透传进 memory_update，
+  // 其余抛错一律归一为 memory_extract_failed（见上一个测试）。
+  const h = await openHarness(t, {
+    project: { min_words_per_chapter: 50, target_words_per_chapter: 80 },
+    memoryExtractor: async () => {
+      throw new ProjectOperationError("chapter_checksum_mismatch", "校验和不匹配（注入）", { expected: "sha256:x" });
+    },
+    gatewayScript: [
+      async () => ({
+        toolCalls: [
+          tool("append_chapter_segment", {
+            project_id: h.project.project_id ?? null,
+            chapter_no: 1,
+            segment_no: 1,
+            content: CHAPTER_CONTENT
+          })
+        ]
+      }),
+      async () => ({
+        toolCalls: [tool("commit_chapter", { project_id: h.project.project_id ?? null, chapter_no: 1 })]
+      }),
+      { reply: { text: "第一章已提交。" } }
+    ]
+  });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "正式写第一章", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  const commitEvent = eventsOfType(events, "tool_call_completed").find((event) => event.payload.name === "commit_chapter");
+  assert.ok(commitEvent, "commit_chapter 应完成");
+  assert.equal(commitEvent.payload.ok, true);
+  assert.deepEqual(commitEvent.payload.memory_update, {
+    status: "failed",
+    retryable: true,
+    error: { code: "chapter_checksum_mismatch", message: "校验和不匹配（注入）" }
+  });
+  assert.equal(await pathExists(path.join(h.projectRoot, "chapters", "001.md")), true, "正文仍提交成功");
+  const index = JSON.parse(await fs.readFile(path.join(h.projectRoot, "memory", "chapter_index.json"), "utf8"));
+  assert.equal(index.chapters.find((chapter) => chapter.chapter_no === 1)?.status, "completed");
+  assertActivityClosure(events);
+});
+
+test("commit 后派生记忆提取成功：结果标记 memory_update ok，book_summary 与 continuity 更新", async (t) => {
+  const h = await openHarness(t, {
+    project: { min_words_per_chapter: 50, target_words_per_chapter: 80 },
+    memoryExtractor: async ({ chapterNo, checksum }) => {
+      assert.equal(chapterNo, 1);
+      assert.ok(typeof checksum === "string" && checksum.length > 0, "extractor 应收到已提交正文的校验和");
+      return {
+        summary: "第一章：主角在雨夜收到警告。",
+        facts: [{ entity: "主角", attribute: "身份", value: "退伍军人", chapter_no: 1, quote: "雨夜" }],
+        timeline: [{ chapter_no: 1, story_time: "雨夜", events: ["收到警告"], time: { kind: "scene", elapsed: null, anchor: null, confidence: "low" } }],
+        characters: [{ name: "主角", traits: ["谨慎"], status: "存活", chapter_no: 1 }]
+      };
+    },
+    gatewayScript: [
+      async () => ({
+        toolCalls: [
+          tool("append_chapter_segment", {
+            project_id: h.project.project_id ?? null,
+            chapter_no: 1,
+            segment_no: 1,
+            content: CHAPTER_CONTENT
+          })
+        ]
+      }),
+      async () => ({
+        toolCalls: [tool("commit_chapter", { project_id: h.project.project_id ?? null, chapter_no: 1 })]
+      }),
+      { reply: { text: "第一章已完成提交。" } }
+    ]
+  });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "正式写第一章", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+
+  const commitEvent = eventsOfType(events, "tool_call_completed").find((event) => event.payload.name === "commit_chapter");
+  assert.ok(commitEvent, "commit_chapter 应完成");
+  assert.equal(commitEvent.payload.ok, true);
+  assert.equal(commitEvent.payload.memory_update.status, "ok");
+  assert.equal(commitEvent.payload.memory_update.facts_added, 1);
+
+  // 派生数据已落盘，正文与索引保持成功
+  const summary = await fs.readFile(path.join(h.projectRoot, "memory", "book_summary.md"), "utf8");
+  assert.match(summary, /雨夜收到警告/u, "提取成功后 book_summary 应更新");
+  assert.equal(await pathExists(path.join(h.projectRoot, "chapters", "001.md")), true);
+  assert.equal(eventsOfType(events, "run_failed").length, 0);
+  assertActivityClosure(events);
+});
+
+test("未注入 memory extractor 时提交结果标记 memory_update:{status:'skipped'}（派生记忆由维护任务重建）", async (t) => {
+  const h = await openHarness(t, {
+    project: { min_words_per_chapter: 50, target_words_per_chapter: 80 },
+    gatewayScript: [
+      async () => ({
+        toolCalls: [
+          tool("append_chapter_segment", {
+            project_id: h.project.project_id ?? null,
+            chapter_no: 1,
+            segment_no: 1,
+            content: CHAPTER_CONTENT
+          })
+        ]
+      }),
+      async () => ({
+        toolCalls: [tool("commit_chapter", { project_id: h.project.project_id ?? null, chapter_no: 1 })]
+      }),
+      { reply: { text: "第一章已完成提交。" } }
+    ]
+  });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "正式写第一章", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  const commitEvent = eventsOfType(events, "tool_call_completed").find((event) => event.payload.name === "commit_chapter");
+  assert.ok(commitEvent, "commit_chapter 应完成");
+  assert.equal(commitEvent.payload.ok, true);
+  assert.deepEqual(commitEvent.payload.memory_update, { status: "skipped", reason: "no_extractor" }, "无 extractor 时如实标记 skipped 并说明原因");
+  assert.equal(await pathExists(path.join(h.projectRoot, "chapters", "001.md")), true);
   assertActivityClosure(events);
 });
 

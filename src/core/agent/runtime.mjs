@@ -19,6 +19,10 @@
 //     未消费输入追加 input_cancelled、清除全部 grant 并 run_cancelled。
 //   - retry：继续同一 failed/interrupted Run（transcript 作历史、checkpoint 由
 //     project operations 守护），journal 以同 id 的 run_started 恢复。
+//   - 章节提交与派生记忆解耦（Task 14）：commit_chapter 的确定性事务（正文/索引/
+//     checkpoint）成功后，由 Runtime 单独触发注入的 memoryExtractor 派生提取；
+//     提取失败只标记结构化维护错误 memory_update:{status:"failed",retryable:true}，
+//     不回滚正文、不杀死 Run，派生数据可由维护脚本重建。
 //   - 模型调用失败路径必须闭合 model turn（补 model_turn_completed），绝不留下
 //     dangling assistant 活动（journal 恢复会把它们标记为 interrupted）。
 //
@@ -57,7 +61,8 @@ import {
   appendChapterSegment,
   commitChapter,
   commitChapterMemory,
-  inspectChapterContext
+  inspectChapterContext,
+  ProjectOperationError
 } from "../project-operations/chapter.mjs";
 
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
@@ -116,6 +121,57 @@ function fail(code, message) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Task 14：commitChapter 确定性事务与派生记忆（book_summary/continuity）解耦。
+//   1. 先执行确定性提交（可能抛 ProjectOperationError，由工具层转结构化失败）；
+//   2. 提交成功后才单独触发派生提取，{status:"skipped"} 有两种语义：
+//        - memoryExtractor 未注入 → {status:"skipped", reason:"no_extractor"}
+//          （本部署不接提取器，派生数据由维护脚本 rebuild-memory 重建，§6.4 验收 2）；
+//        - extractor 返回 null → 保持 {status:"skipped"}（无 reason：有提取器但
+//          该章无可提取内容，同样可后续重建）；
+//   3. memoryExtractor 抛错或 commitChapterMemory 落盘失败 → 结构化维护错误
+//      memory_update:{status:"failed",retryable:true,error:{code,message}}——
+//      绝不抛出、绝不回滚正文、绝不杀死 Run（§6.4 验收 1/3）。
+//      error.code 只在 error 是 ProjectOperationError（commitChapterMemory 的领域
+//      错误码）时透传；其余抛错（extractor 自身异常等）一律归一为
+//      memory_extract_failed，避免任意 error.code 污染领域错误空间。
+// memoryExtractor 契约：async ({ projectRoot, chapterNo, checksum }) ->
+// 提取数据（parseMemoryExtraction ok 形状，供 commitChapterMemory 确定性落盘）| null。
+async function commitChapterWithDerivedMemory(memoryExtractor, params, options) {
+  const result = await commitChapter(params, options);
+  let memoryUpdate = { status: "skipped", reason: "no_extractor" };
+  if (typeof memoryExtractor === "function") {
+    try {
+      const extraction = await memoryExtractor({
+        projectRoot: params.projectRoot,
+        chapterNo: params.chapterNo,
+        checksum: result?.checksum ?? null
+      });
+      if (extraction != null) {
+        const persisted = await commitChapterMemory({
+          projectRoot: params.projectRoot,
+          chapterNo: params.chapterNo,
+          expectedChapterChecksum: result?.checksum ?? null,
+          extraction
+        });
+        memoryUpdate = { status: "ok", ...persisted };
+      }
+    } catch (error) {
+      memoryUpdate = {
+        status: "failed",
+        retryable: true,
+        error: {
+          code:
+            error instanceof ProjectOperationError && typeof error.code === "string"
+              ? error.code
+              : "memory_extract_failed",
+          message: String(error?.message ?? "记忆提取失败。")
+        }
+      };
+    }
+  }
+  return { ...result, memory_update: memoryUpdate };
 }
 
 // 会话是否有非终态活动 Run（串行门 / 删除守卫 / run_status 投影共用同一判定；
@@ -201,6 +257,13 @@ export function createAgentRuntime({
   // Task 12：skills service seam（src/core/skills/index.mjs）。生产缺省用全局
   // 单例；测试注入临时 root 的 service，避免迁移 marker 写进真实用户目录。
   skills = null,
+  // Task 14：派生记忆提取 seam（commit 与记忆解耦）。commit_chapter 确定性事务
+  // 成功后由本 Runtime 单独触发 memoryExtractor({ projectRoot, chapterNo, checksum })
+  // -> Promise<提取数据|null>；抛错 = 结构化维护错误（结果标记
+  // memory_update:{status:"failed",retryable:true}），不回滚正文、不杀死 Run。
+  // 缺省 null = 提交不触发提取（标记 {status:"skipped",reason:"no_extractor"}），
+  // 全书摘要/continuity 由维护脚本 rebuild-memory.mjs 重建。
+  memoryExtractor = null,
   idFactory = randomUUID,
   // Task 3：工具期限透传（默认与 ToolRuntime 系统上限一致；测试可注入毫秒级
   // 期限，在真实 agent 循环内产生 tool_timeout 回归面）
@@ -236,8 +299,10 @@ export function createAgentRuntime({
         inspectChapterContext,
         appendChapterSegment,
         // Task 10：commitChapter 只保留存储安全约束，不再消费技能注入（确定性
-        // 技能钩子已删除）；直接透传原函数，保持写探针 options 兼容。
-        commitChapter,
+        // 技能钩子已删除）。Task 14：commit 与派生记忆解耦——确定性事务由
+        // 原函数承担，包装层在工具成功后单独触发派生提取（可失败/可重试，
+        // 见 commitChapterWithDerivedMemory）；写探针 options 继续透传。
+        commitChapter: (params, options) => commitChapterWithDerivedMemory(memoryExtractor, params, options),
         commitChapterMemory
       };
       state = {

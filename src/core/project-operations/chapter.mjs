@@ -3,6 +3,13 @@
 // 职责（Rule 6 深模块）：章节草稿、正式提交、章节索引、章节记忆、摘要与 checkpoint
 // 一致性。Agent runtime 只编排；本模块是唯一的章节领域事实读写方。
 //
+// Task 14 边界（与派生记忆解耦）：commitChapter 只承担确定性提交事务（项目身份、
+// 校验和、正式文件、章节索引、章节记忆摘录、checkpoint、run_log，原子写/回滚）；
+// 全书摘要（book_summary.md）与 continuity 是派生数据，由独立的
+// commitChapterMemory(...) 接收已解析的提取数据后确定性落盘——可失败/可重试，
+// 失败绝不回滚已提交正文。触发派生提取（memory extractor）是 Agent runtime 的
+// 编排职责，不在本模块内联模型调用。
+//
 // 边界：
 //   - 本模块不接收 ModelGateway、不调用模型。模型类检查（fact-check、记忆提取）
 //     由 ProjectAgent runtime 完成，结果经调用参数（extraction）传入本模块做
