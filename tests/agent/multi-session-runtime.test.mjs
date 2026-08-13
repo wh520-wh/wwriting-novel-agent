@@ -21,9 +21,14 @@ import test from "node:test";
 import { createAgentJournal } from "../../src/core/agent/journal.mjs";
 import { deriveSessionTitle } from "../../src/core/agent/runtime.mjs";
 import {
+  createMockModelGateway,
   createProjectAgentHarness,
+  createProjectRoot,
   eventsOfType,
+  readEvents,
+  readSession,
   sleep,
+  tool,
   waitFor,
   waitForIdle
 } from "../helpers/project-agent-harness.mjs";
@@ -36,6 +41,42 @@ function assertSeqMonotonic(events) {
     prev = event.seq;
   }
   if (events.length > 0) assert.equal(events[0].seq, 1, "每个会话的事件流都从 seq 1 开始");
+}
+
+// 活动闭环不变量（与 project-agent.test.mjs 同构）：每个 input/tool/decision
+// 都必须收敛到终态；Task 10 优先切换不得留下悬空活动。
+function assertActivityClosure(events) {
+  const openInputs = new Set();
+  const openTools = new Set();
+  const openDecisions = new Set();
+  for (const event of events) {
+    if (event.type === "input_queued") {
+      openInputs.add(event.payload.input_id);
+    } else if (
+      event.type === "input_consumed" ||
+      event.type === "input_cancelled" ||
+      event.type === "input_completed" ||
+      event.type === "input_interrupted" ||
+      event.type === "input_withdrawn"
+    ) {
+      assert.ok(openInputs.has(event.payload.input_id), `input 终态必须对应已排队 input: ${event.payload.input_id}`);
+      openInputs.delete(event.payload.input_id);
+    } else if (event.type === "tool_call_started") {
+      openTools.add(event.payload.tool_call_id ?? event.payload.id);
+    } else if (event.type === "tool_call_completed" || event.type === "tool_call_failed") {
+      const id = event.payload.tool_call_id ?? event.payload.id;
+      assert.ok(openTools.has(id), `tool 终态必须对应已开始 tool call: ${id}`);
+      openTools.delete(id);
+    } else if (event.type === "decision_requested") {
+      openDecisions.add(event.payload.decision_id);
+    } else if (event.type === "decision_resolved") {
+      assert.ok(openDecisions.has(event.payload.decision_id), `decision 终态必须对应已请求 decision`);
+      openDecisions.delete(event.payload.decision_id);
+    }
+  }
+  assert.deepEqual([...openInputs], [], "每个 input 都必须收敛");
+  assert.deepEqual([...openTools], [], "每个 tool call 都必须收敛");
+  assert.deepEqual([...openDecisions], [], "每个 decision 都必须收敛");
 }
 
 // ---------------------------------------------------------------------------
@@ -937,4 +978,270 @@ test("Task 9 withdraw×start：input_started 落盘后撤回被拒；撤回先�
     1,
     "B 以 input_withdrawn 终结"
   );
+});
+
+// ---------------------------------------------------------------------------
+// Task 10：安全点优先调度（SPEC 3.3）。A 在执行，B/C/D 排队，用户点 D 的
+// 「立即」：不 abort 在途模型请求；普通最终文本 → A completed 随后立即 D；
+// 未开始工具全部跳过（tool_skipped_for_priority_input 闭合 provider history）；
+// 工具在途只等待当前工具完成；A 不回队、不重跑；B/C 相对顺序不变；第二次
+// 「立即」priority_pending 409。
+// ---------------------------------------------------------------------------
+
+test("Task 10 模型在途点立即：不 abort、完整返回；普通最终文本 → A completed，D 下一条开始，B/C 顺序不变，A 不回队", async (t) => {
+  let release;
+  let capturedSignal = null;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const h = await createProjectAgentHarness({
+    gatewayScript: [
+      async (_request, { signal }) => {
+        capturedSignal = signal;
+        await gate;
+        return { text: "A 完整答复。" };
+      },
+      { reply: { text: "D 完成。" } },
+      { reply: { text: "B 完成。" } },
+      { reply: { text: "C 完成。" } }
+    ],
+    gatewayDelayMs: 0
+  });
+  t.after(() => h.cleanup());
+  const a = await h.agent.submit({ projectRoot: h.projectRoot, text: "A 任务", source: "chat" });
+  const b = await h.agent.submit({ projectRoot: h.projectRoot, text: "B 任务", source: "chat" });
+  assert.equal(b.queued, true);
+  const c = await h.agent.submit({ projectRoot: h.projectRoot, text: "C 任务", source: "chat" });
+  const d = await h.agent.submit({ projectRoot: h.projectRoot, text: "D 任务", source: "chat" });
+  // 等 A 的模型轮次真正在途（脚本入口已捕获 signal）
+  const deadline = Date.now() + 10000;
+  while (capturedSignal === null && Date.now() < deadline) await sleep(10);
+  assert.ok(capturedSignal, "A 的模型请求已在途（signal 已捕获）");
+
+  // 模型在途点击 D 的「立即」：请求被接受，但不 abort 当前模型请求
+  const pri = await h.agent.requestPriority({ projectRoot: h.projectRoot, inputId: d.input_id });
+  assert.equal(pri.priority_pending, true);
+  assert.equal(pri.run_id, a.run_id, "priority 返回活动 Run id");
+  const mid = (await readSession(h.agent, h.projectRoot));
+  assert.equal(mid.priority_input_id, d.input_id, "priority_input_id 指向 D");
+  assert.equal(mid.active_run.active_input_id, a.input_id, "priority 只设置标记，不立即改写 active_input_id");
+  assert.equal(capturedSignal.aborted, false, "点「立即」不得 abort 在途模型请求");
+  // 已有优先在途 → 第二个「立即」被拒（priority_pending 409）
+  await assert.rejects(
+    () => h.agent.requestPriority({ projectRoot: h.projectRoot, inputId: b.input_id }),
+    (error) => error?.code === "priority_pending"
+  );
+
+  release();
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  // A 以普通最终文本自然完成（input_completed），不得错误显示 interrupted
+  assert.equal(eventsOfType(events, "input_interrupted").length, 0, "A 自然完成：无任何 interrupted");
+  assert.equal(
+    eventsOfType(events, "input_completed").filter((event) => event.payload.input_id === a.input_id).length,
+    1,
+    "A input_completed"
+  );
+  // 激活顺序 A → D → B → C（D 优先，B/C 相对顺序不变）
+  const started = eventsOfType(events, "input_started").map((event) => event.payload.input_id);
+  assert.deepEqual(started, [a.input_id, d.input_id, b.input_id, c.input_id], "D 下一条开始，B/C 顺序不变");
+  assert.equal(
+    eventsOfType(events, "input_started").filter((event) => event.payload.input_id === a.input_id).length,
+    1,
+    "A 不回队、不重跑（input_started 只出现一次）"
+  );
+  // 每条输入恰好一个终态；同一 Run 完成；A/D/B/C 各一次模型调用
+  const terminals = events.filter((event) =>
+    ["input_completed", "input_interrupted", "input_withdrawn", "input_cancelled"].includes(event.type)
+  );
+  assert.equal(terminals.length, 4, "四条输入各恰好一个终态");
+  assert.equal(eventsOfType(events, "run_completed").length, 1, "同一 Run 完成");
+  assert.equal(h.gateway.calls.length, 4, "A/D/B/C 各一次模型调用（A 完整返回未被截断）");
+  const after = await readSession(h.agent, h.projectRoot);
+  assert.equal(after.priority_input_id, null, "D 开始后 priority_input_id 清空");
+  assert.deepEqual(after.queued_inputs, [], "队列不滞留输入");
+  assertActivityClosure(events);
+});
+
+test("Task 10 模型返回 tool calls 时点立即：未开始工具全部跳过（provider history 闭合），A input_interrupted，D 开始", async (t) => {
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const h = await createProjectAgentHarness({
+    gatewayScript: [
+      async () => {
+        await gate;
+        return {
+          toolCalls: [
+            tool("read_file", { path: "OUTLINE.md" }),
+            tool("list_files", { path: "." }),
+            tool("read_file", { path: "SETTING.md" })
+          ]
+        };
+      },
+      { reply: { text: "D 完成。" } },
+      { reply: { text: "B 完成。" } },
+      { reply: { text: "C 完成。" } }
+    ],
+    gatewayDelayMs: 0
+  });
+  t.after(() => h.cleanup());
+  const a = await h.agent.submit({ projectRoot: h.projectRoot, text: "A 任务", source: "chat" });
+  const b = await h.agent.submit({ projectRoot: h.projectRoot, text: "B 任务", source: "chat" });
+  const c = await h.agent.submit({ projectRoot: h.projectRoot, text: "C 任务", source: "chat" });
+  const d = await h.agent.submit({ projectRoot: h.projectRoot, text: "D 任务", source: "chat" });
+  await waitFor(h.agent, h.projectRoot, (_session, snap) => eventsOfType(snap.events, "model_turn_started").length >= 1);
+  const pri = await h.agent.requestPriority({ projectRoot: h.projectRoot, inputId: d.input_id });
+  assert.equal(pri.priority_pending, true);
+  release();
+  await waitForIdle(h.agent, h.projectRoot);
+
+  const events = await readEvents(h.agent, h.projectRoot);
+  // 全部未开始工具跳过（不启动）；A 被截断为 input_interrupted
+  assert.equal(eventsOfType(events, "tool_call_started").length, 0, "未开始工具全部跳过，不启动");
+  const aInterrupted = eventsOfType(events, "input_interrupted").filter((event) => event.payload.input_id === a.input_id);
+  assert.equal(aInterrupted.length, 1, "A input_interrupted");
+  const started = eventsOfType(events, "input_started").map((event) => event.payload.input_id);
+  assert.deepEqual(started, [a.input_id, d.input_id, b.input_id, c.input_id], "D 下一条开始，B/C 顺序不变");
+  // 原子切换：input_interrupted(A) 与 input_started(D) 连续（同一批次）
+  const dStarted = eventsOfType(events, "input_started").find((event) => event.payload.input_id === d.input_id);
+  assert.ok(aInterrupted[0].seq < dStarted.seq, "input_interrupted(A) 先于 input_started(D)（同批原子）");
+  // A 不再发下一次模型请求；每条输入恰好一个终态
+  assert.equal(
+    eventsOfType(events, "model_turn_started").filter((event) => event.payload.input_id === a.input_id).length,
+    1,
+    "A 仅一次模型轮次（下一模型请求前切换）"
+  );
+  const terminals = events.filter((event) =>
+    ["input_completed", "input_interrupted", "input_withdrawn", "input_cancelled"].includes(event.type)
+  );
+  assert.equal(terminals.length, 4, "四条输入各恰好一个终态");
+  assert.equal(eventsOfType(events, "run_completed").length, 1);
+  assertActivityClosure(events);
+
+  // provider history 闭合（Step 2）：assistant tool_calls 先持久化，每个未开始
+  // 调用追加同 id 的 tool result（tool_skipped_for_priority_input / Interrupted
+  // by the user）——D 的模型请求历史结构完整、无悬空 tool_calls
+  const dRequest = h.gateway.calls[1].request;
+  const messages = dRequest.messages;
+  let assistantIndex = -1;
+  for (let i = 0; i < messages.length; i += 1) {
+    if (messages[i].role === "assistant" && Array.isArray(messages[i].tool_calls) && messages[i].tool_calls.length === 3) {
+      assistantIndex = i;
+      break;
+    }
+  }
+  assert.ok(assistantIndex >= 0, "D 的请求历史含 A 的 assistant tool_calls（先持久化）");
+  const resultMessages = messages.slice(assistantIndex + 1).filter((message) => message.role === "tool");
+  assert.equal(resultMessages.length, 3, "每个未开始调用各恰好一个 tool result（无悬空）");
+  for (const message of resultMessages) {
+    const parsed = JSON.parse(message.content ?? "{}");
+    assert.equal(parsed.error?.code, "tool_skipped_for_priority_input", "跳过结果错误码");
+    assert.equal(parsed.error?.message, "Interrupted by the user", "跳过结果消息");
+  }
+});
+
+test("Task 10 工具在途点立即：只等待当前工具完成（结果入历史），剩余工具跳过，A 不再发下一次模型请求，D 开始", async (t) => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-priority-tool-"));
+  t.after(async () => {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  });
+  const { projectRoot } = await createProjectRoot(workspaceRoot, {
+    tool_permissions: { yolo: true }
+  });
+  const { createWorkspaceStore } = await import("../../src/core/workspaces/store.mjs");
+  const { createSkillService } = await import("../../src/core/skills/index.mjs");
+  const store = createWorkspaceStore({ stateRoot: path.join(workspaceRoot, "user-data") });
+  const skills = createSkillService({
+    userHome: path.join(projectRoot, ".test-skill-home"),
+    resourcesPath: null
+  });
+  let releaseTool;
+  const toolGate = new Promise((resolve) => {
+    releaseTool = resolve;
+  });
+  const gateway = createMockModelGateway({
+    script: [
+      {
+        reply: {
+          toolCalls: [
+            tool("shell", { command: "slow", timeout_ms: 30000, purpose: "慢命令" }),
+            tool("read_file", { path: "OUTLINE.md" }),
+            tool("list_files", { path: "." })
+          ]
+        }
+      },
+      { reply: { text: "D 完成。" } },
+      { reply: { text: "B 完成。" } },
+      { reply: { text: "C 完成。" } }
+    ],
+    delayMs: 0
+  });
+  // 可控挂起 shell：releaseTool 前不返回（模拟长时间工具）；priority 不 abort，
+  // signal 不得触发
+  let toolAborted = false;
+  const shell = async ({ signal } = {}) => {
+    signal?.addEventListener("abort", () => {
+      toolAborted = true;
+    }, { once: true });
+    await toolGate;
+    return { exitCode: 0, cwd: projectRoot, signal: null, durationMs: 100, stdout: "慢命令输出", stderr: "" };
+  };
+  const { createProjectAgent } = await import("../../src/core/agent/index.mjs");
+  const agent = createProjectAgent({
+    modelGateway: gateway,
+    shell,
+    skills,
+    agentStorageRootFor: (root) => store.agentRootFor(root)
+  });
+  await agent.open({ projectRoot });
+  const a = await agent.submit({ projectRoot, text: "A 任务", source: "chat" });
+  const b = await agent.submit({ projectRoot, text: "B 任务", source: "chat" });
+  const c = await agent.submit({ projectRoot, text: "C 任务", source: "chat" });
+  const d = await agent.submit({ projectRoot, text: "D 任务", source: "chat" });
+  // 工具在途（shell 被 gate 挂起）时点 D 的「立即」
+  await waitFor(agent, projectRoot, (_session, snap) =>
+    eventsOfType(snap.events, "tool_call_started").some((event) => event.payload.name === "shell")
+  );
+  const pri = await agent.requestPriority({ projectRoot, inputId: d.input_id });
+  assert.equal(pri.priority_pending, true);
+  assert.equal(toolAborted, false, "点「立即」不得 abort 在途工具");
+  releaseTool(); // 当前工具完成
+  await waitForIdle(agent, projectRoot);
+
+  const events = await readEvents(agent, projectRoot);
+  // 当前工具等待完成（结果入历史），同一轮剩余工具未启动
+  assert.equal(eventsOfType(events, "tool_call_started").length, 1, "只有当前工具启动");
+  assert.equal(
+    eventsOfType(events, "tool_call_completed").filter((event) => event.payload.name === "shell").length,
+    1,
+    "当前工具完整完成"
+  );
+  assert.equal(
+    eventsOfType(events, "input_interrupted").filter((event) => event.payload.input_id === a.input_id).length,
+    1,
+    "A input_interrupted"
+  );
+  assert.equal(
+    eventsOfType(events, "model_turn_started").filter((event) => event.payload.input_id === a.input_id).length,
+    1,
+    "工具结果完成后不再发 A 的下一次模型请求（下一模型请求前切换）"
+  );
+  const started = eventsOfType(events, "input_started").map((event) => event.payload.input_id);
+  assert.deepEqual(started, [a.input_id, d.input_id, b.input_id, c.input_id], "D 下一条开始，B/C 顺序不变");
+  assert.equal(eventsOfType(events, "run_completed").length, 1);
+  assertActivityClosure(events);
+
+  // 已完成工具结果与跳过结果一起进入 D 的上下文（provider history 完整闭合）
+  const dRequest = gateway.calls[1].request;
+  const toolMessages = dRequest.messages.filter((message) => message.role === "tool");
+  assert.equal(toolMessages.length, 3, "shell 完成结果 + 2 个跳过结果进入 D 的上下文");
+  const doneShell = toolMessages.find((message) => JSON.parse(message.content ?? "{}").ok === true);
+  assert.ok(doneShell, "当前工具的完成结果进入 D 的上下文");
+  const skipped = toolMessages.filter((message) => {
+    const parsed = JSON.parse(message.content ?? "{}");
+    return parsed.error?.code === "tool_skipped_for_priority_input";
+  });
+  assert.equal(skipped.length, 2, "同一轮剩余未启动调用以 tool_skipped_for_priority_input 闭合");
 });

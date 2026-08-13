@@ -1044,6 +1044,29 @@ export function createAgentRuntime({
     }
   }
 
+  // Task 10：优先切换时跳过的工具调用以 tool_skipped_for_priority_input 闭合
+  // transcript（与 closeDroppedToolCalls 同构：只补 transcript，不产生 journal
+  // 活动、不启动工具）。assistant tool_calls 记录已先持久化，每个未开始的调用
+  // 追加同 id 的 result，保证 provider history 结构完整（SPEC 3.3 rule 4）。
+  async function closePrioritySkippedToolCalls(state, sessionState, skippedCalls) {
+    if (!Array.isArray(skippedCalls) || skippedCalls.length === 0) return;
+    for (const toolCall of skippedCalls) {
+      const id = toolCall?.id ?? toolCall?.tool_call_id ?? null;
+      await appendSafeTranscript(sessionState.journal, {
+        role: "tool",
+        tool_call_id: id,
+        name: toolCall?.name ?? null,
+        content: JSON.stringify({
+          ok: false,
+          tool_call_id: id,
+          name: toolCall?.name ?? null,
+          error: { code: "tool_skipped_for_priority_input", message: "Interrupted by the user" },
+          message: "Interrupted by the user"
+        })
+      });
+    }
+  }
+
   // Task 3：同一响应中前一个工具失败后，未启动的后续调用以
   // tool_skipped_after_failure 闭合 transcript——每个持久化 assistant tool call
   // 恰好一个 tool result（不执行、不产生 journal 活动，只补 transcript 结果）。
@@ -1071,6 +1094,54 @@ export function createAgentRuntime({
       await appendSafeTranscript(sessionState.journal, record);
     }
     return records;
+  }
+
+  // Task 10：优先安全点切换（SPEC 3.3）。在 session 项目互斥锁内重读 Journal 投影
+  // 做读-判-写（与 submit/requestPriority/withdraw/stop 同一把锁，并发胜者由持久
+  // 事件顺序决定）：
+  //   - 无 priority_input_id / 优先输入已不在队列 / Run 已终结 → 不切换（false）；
+  //   - stopping/interrupting 优先收敛（停止是硬逃生口，promote 的中断先于优先）；
+  //   - 旧输入未自然完成 → 原子追加 input_interrupted(A) + input_started(D)，同时
+  //     清除 A 的 grant（grant 绑定 active_input_id，不清理会泄漏给后续输入）；
+  //   - 旧输入已自然完成（如文本回复路径已写 input_completed，active_input_id 为
+  //     null）→ 只追加 input_started(D)，不伪造中断；
+  // 同一 appendBatch 内 input_interrupted 先清空 active_input_id，input_started
+  // 通过 reducer 的「活动输入必须已收敛」校验并清空 priority_input_id。不调用
+  // abortController()——当前模型请求使用原 signal 完成（SPEC 3.3 rule 2）。
+  // 返回 true 表示已切换到优先输入，调用方应停止当前输入的处理（回到 runLoop
+  // 重新读取状态与优先输入）。
+  async function switchToPriorityAtSafePoint(state, sessionState, runId, inputId) {
+    return state.mutex.run(async () => {
+      const session = await sessionState.journal.getSession();
+      const priorityId = session.priority_input_id;
+      if (priorityId == null) return false;
+      if (!session.queued_inputs.some((item) => item.id === priorityId)) return false;
+      const run = session.active_run;
+      if (!run || run.id !== runId || TERMINAL_RUN_STATUSES.has(run.status)) return false;
+      if (run.status === "stopping" || run.status === "interrupting") return false;
+      const batch = [];
+      // 旧输入 grant 清除（与 promote/完成路径同构：grant 绑定 active_input_id，
+      // 输入被优先打断后必须清除，否则后续输入沿用旧 grant 绕过确认）。
+      const grantsOfActive = run.active_grants.filter((grant) => grant.input_id === run.active_input_id);
+      for (const grant of grantsOfActive) {
+        batch.push({
+          type: "permission_grant_cleared",
+          run_id: runId,
+          payload: {
+            grant_id: grant.id,
+            input_id: grant.input_id,
+            grant_key: grant.grant_key,
+            reason: "input_interrupted"
+          }
+        });
+      }
+      if (run.active_input_id != null) {
+        batch.push({ type: "input_interrupted", run_id: runId, payload: { input_id: run.active_input_id } });
+      }
+      batch.push({ type: "input_started", run_id: runId, payload: { input_id: priorityId } });
+      await sessionState.journal.appendBatch(batch);
+      return true;
+    });
   }
 
   // 停止收敛：为每个未消费输入（活动 + 排队）追加 input_cancelled，清除全部
@@ -1342,6 +1413,13 @@ export function createAgentRuntime({
       if (run.status === "interrupting" || state.controller?.signal.aborted) {
         await journal.append({ type: "interrupt_safe_point_reached", run_id: runId, payload: {} });
         resetController(state);
+        return "interrupted";
+      }
+
+      // Task 10：优先安全点（下一次模型请求前）。点击「立即」发生在工具结果已
+      // 完成、下一次模型请求尚未发出之间时，不再发当前输入的下一次模型请求，
+      // 直接切换：旧输入 input_interrupted + 优先输入 input_started（同一批次）。
+      if (await switchToPriorityAtSafePoint(state, sessionState, runId, inputId)) {
         return "interrupted";
       }
 
@@ -1649,6 +1727,16 @@ export function createAgentRuntime({
         return "interrupted";
       }
 
+      // Task 10：优先安全点（模型响应完成后）。仅当本响应携带尚未开始的工具
+      // 调用时切换——全部跳过（tool_skipped_for_priority_input 闭合 transcript），
+      // 旧输入 input_interrupted + 优先输入 input_started（同一批次）；纯文本响应
+      // 不在此切换：A 以 input_completed 自然完成，由 advanceOrComplete 优先激活
+      // D（不伪造中断，SPEC 3.3 rule 6）。
+      if (toolCalls && (await switchToPriorityAtSafePoint(state, sessionState, runId, inputId))) {
+        await closePrioritySkippedToolCalls(state, sessionState, toolCalls);
+        return "interrupted";
+      }
+
       if (toolCalls) {
         for (let index = 0; index < toolCalls.length; index += 1) {
           const toolCall = toolCalls[index];
@@ -1669,6 +1757,12 @@ export function createAgentRuntime({
             await closeDroppedToolCalls(state, sessionState, toolCalls.slice(index));
             await journal.append({ type: "interrupt_safe_point_reached", run_id: runId, payload: {} });
             resetController(state);
+            return "interrupted";
+          }
+          // Task 10：优先安全点（每个工具开始前）。尚未启动的调用（含当前）全部
+          // 以 tool_skipped_for_priority_input 闭合 transcript 后切换到优先输入。
+          if (await switchToPriorityAtSafePoint(state, sessionState, runId, inputId)) {
+            await closePrioritySkippedToolCalls(state, sessionState, toolCalls.slice(index));
             return "interrupted";
           }
           // R5-5：截断工具参数拒绝。模型在 max_tokens 截断/流异常结束时产生的
@@ -1724,6 +1818,13 @@ export function createAgentRuntime({
           });
           // Task 8：工具结果刚闭合——下一次预检若触发压缩，先追加安全点标记
           closedToolResult = true;
+          // Task 10：优先安全点（每个工具结束后）。点击「立即」时已有工具正在
+          // 执行：只等待当前工具完成（结果已完整入历史，D 的模型请求可见），
+          // 同一轮剩余未启动调用跳过，随后切换——不 abort 在途工具。
+          if (await switchToPriorityAtSafePoint(state, sessionState, runId, inputId)) {
+            await closePrioritySkippedToolCalls(state, sessionState, toolCalls.slice(index + 1));
+            return "interrupted";
+          }
           // Task 3：前一个工具失败（真实领域失败）后，同一响应剩余未启动的调用
           // 不再执行，以 tool_skipped_after_failure 唯一闭合 transcript；取消/
           // 停止语义仍交给停止/中断路径闭合（closeDroppedToolCalls）
@@ -1803,6 +1904,20 @@ export function createAgentRuntime({
       if (TERMINAL_RUN_STATUSES.has(run.status)) return "terminal";
       if (run.status === "stopping") return "stopping";
       if (run.status === "interrupting" || state.controller?.signal.aborted) return "interrupting";
+      // Task 10：优先输入在途时优先激活（A 已以普通文本自然完成 → input_completed
+      // 已落盘、active_input_id 为 null，这里只追加 input_started(D)；D 从队列移除
+      // 后 B 补位，B/C 相对顺序不变；不伪造中断）。
+      if (
+        session.priority_input_id != null &&
+        session.queued_inputs.some((item) => item.id === session.priority_input_id)
+      ) {
+        await sessionState.journal.append({
+          type: "input_started",
+          run_id: runId,
+          payload: { input_id: session.priority_input_id }
+        });
+        return "advance";
+      }
       if (session.queued_inputs.length > 0) {
         const head = session.queued_inputs[0];
         if (head.kind === "compact") {

@@ -2783,3 +2783,166 @@ test("运行中手动 /compact 取消：input_cancelled(compaction_cancelled) + 
   assert.equal(eventsOfType(events, "input_completed").length, 14, "13 轮播种 + 继续输入完成");
   assert.equal(first.run_id, compact.run_id, "/compact 排队不创建第二个 Run");
 });
+
+// ---------------------------------------------------------------------------
+// Task 10：安全点优先调度（SPEC 3.3/6.2）。工具在途超时 + 优先输入收敛；
+// 优先切换必须清空旧输入 grant（不得泄漏给后续输入）。
+// ---------------------------------------------------------------------------
+
+test("Task 10 工具在途超时 + 优先输入：tool_timeout 结果入历史后切换到优先输入（A input_interrupted，D 开始）", async (t) => {
+  // 直接经公共 seam 构造 agent：注入毫秒级工具期限，让真实 agent 循环内产生
+  // tool_timeout（harness 固定 5 分钟默认期限，无法在测试内触发）
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-priority-timeout-"));
+  t.after(async () => {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  });
+  const { projectRoot } = await createProjectRoot(workspaceRoot, {
+    tool_permissions: { yolo: true }
+  });
+  const { createWorkspaceStore } = await import("../../src/core/workspaces/store.mjs");
+  const { createSkillService } = await import("../../src/core/skills/index.mjs");
+  const store = createWorkspaceStore({ stateRoot: path.join(workspaceRoot, "user-data") });
+  const skills = createSkillService({
+    userHome: path.join(projectRoot, ".test-skill-home"),
+    resourcesPath: null
+  });
+  const gateway = createMockModelGateway({
+    script: [
+      {
+        reply: {
+          toolCalls: [
+            tool("shell", { command: "hang", timeout_ms: 1000, purpose: "慢命令" }),
+            tool("read_file", { path: "OUTLINE.md" })
+          ]
+        }
+      },
+      { reply: { text: "D 完成。" } },
+      { reply: { text: "B 完成。" } }
+    ],
+    delayMs: 0
+  });
+  // 挂起桩：期限 abort 传导后立即收尾（抛 shell_cancelled，executeWithDeadline 按
+  // timeout 结论收口）；无 abort 时 3s 兜底收尾，避免实现缺失时测试悬挂
+  const shell = async ({ signal } = {}) => {
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 3000);
+      signal?.addEventListener("abort", () => {
+        clearTimeout(timer);
+        resolve();
+      }, { once: true });
+    });
+    throw Object.assign(new Error("命令已停止。"), { code: "shell_cancelled", durationMs: 0 });
+  };
+  const { createProjectAgent } = await import("../../src/core/agent/index.mjs");
+  const agent = createProjectAgent({
+    modelGateway: gateway,
+    shell,
+    skills,
+    agentStorageRootFor: (root) => store.agentRootFor(root),
+    toolIdleTimeoutMs: 150,
+    toolAbsoluteTimeoutMs: 5000
+  });
+  await agent.open({ projectRoot });
+  const a = await agent.submit({ projectRoot, text: "A 任务", source: "chat" });
+  const b = await agent.submit({ projectRoot, text: "B 任务", source: "chat" });
+  const d = await agent.submit({ projectRoot, text: "D 任务", source: "chat" });
+  // 工具在途（shell 挂起）时点 D 的「立即」：只等待当前工具超时，不 abort
+  await waitFor(agent, projectRoot, (_session, snap) =>
+    eventsOfType(snap.events, "tool_call_started").some((event) => event.payload.name === "shell")
+  );
+  const pri = await agent.requestPriority({ projectRoot, inputId: d.input_id });
+  assert.equal(pri.priority_pending, true);
+  await waitForIdle(agent, projectRoot);
+
+  const events = await readEvents(agent, projectRoot);
+  const failed = eventsOfType(events, "tool_call_failed").find((event) => event.payload.name === "shell");
+  assert.equal(failed.payload.error, "tool_timeout", "当前工具以 tool_timeout 收敛（等待超时，不 abort）");
+  assert.equal(
+    eventsOfType(events, "tool_call_started").length,
+    1,
+    "同一轮剩余未开始工具不启动（read_file 从未开始）"
+  );
+  assert.equal(
+    eventsOfType(events, "input_interrupted").filter((event) => event.payload.input_id === a.input_id).length,
+    1,
+    "A input_interrupted（有优先输入时不把超时结果交回模型，直接收敛）"
+  );
+  const started = eventsOfType(events, "input_started").map((event) => event.payload.input_id);
+  assert.deepEqual(started, [a.input_id, d.input_id, b.input_id], "优先输入 D 随后开始，B 顺序不变");
+  assert.equal(eventsOfType(events, "run_completed").length, 1);
+  assertActivityClosure(events);
+});
+
+test("Task 10 优先切换清空旧输入 grant：D 的同类写文件必须重新确认（grant 不跨输入泄漏）", async (t) => {
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const h = await openHarness(t, {
+    gatewayScript: [
+      // A call 1：write_file a.txt → 决策 allow_input → grant 绑定 A
+      { reply: { toolCalls: [tool("write_file", { path: "a.txt", content: "A 内容" })] } },
+      // A call 2（在途）：返回 write_file c.txt → 被优先切换跳过
+      async () => {
+        await gate;
+        return { toolCalls: [tool("write_file", { path: "c.txt", content: "C 内容" })] };
+      },
+      // D call 1：write_file d.txt → 必须重新请求决策（grant 已清空）
+      { reply: { toolCalls: [tool("write_file", { path: "d.txt", content: "D 内容" })] } },
+      { reply: { text: "D 完成。" } },
+      { reply: { text: "B 完成。" } }
+    ],
+    gatewayDelayMs: 0
+  });
+  const a = await h.agent.submit({ projectRoot: h.projectRoot, text: "A 任务", source: "chat" });
+  const b = await h.agent.submit({ projectRoot: h.projectRoot, text: "B 任务", source: "chat" });
+  const d = await h.agent.submit({ projectRoot: h.projectRoot, text: "D 任务", source: "chat" });
+  // A 的写文件请求确认 → allow_input 创建 grant → a.txt 落盘 → A call 2 在途
+  const decision1 = await waitForDecision(h.agent, h.projectRoot, 1);
+  await h.agent.decide({
+    projectRoot: h.projectRoot,
+    decisionId: decision1.payload.decision_id,
+    choice: "allow_input"
+  });
+  await waitFor(
+    h.agent,
+    h.projectRoot,
+    (_session, snap) => eventsOfType(snap.events, "tool_call_completed").length >= 1,
+    { describe: "A 的 a.txt 写入完成" }
+  );
+  // A call 2 在途时点 D 的「立即」
+  const pri = await h.agent.requestPriority({ projectRoot: h.projectRoot, inputId: d.input_id });
+  assert.equal(pri.priority_pending, true);
+  release();
+  // D 的写文件：grant 必须已被优先切换清空 → 触发新的决策确认
+  const decision2 = await waitForDecision(h.agent, h.projectRoot, 2);
+  await h.agent.decide({
+    projectRoot: h.projectRoot,
+    decisionId: decision2.payload.decision_id,
+    choice: "allow"
+  });
+  await waitForIdle(h.agent, h.projectRoot);
+
+  const events = await readEvents(h.agent, h.projectRoot);
+  // 优先切换原子收敛：A input_interrupted，D 下一条开始，B 顺序不变
+  assert.equal(
+    eventsOfType(events, "input_interrupted").filter((event) => event.payload.input_id === a.input_id).length,
+    1,
+    "A input_interrupted"
+  );
+  const started = eventsOfType(events, "input_started").map((event) => event.payload.input_id);
+  assert.deepEqual(started, [a.input_id, d.input_id, b.input_id], "D 下一条开始，B 顺序不变");
+  assert.equal(eventsOfType(events, "input_completed").filter((event) => event.payload.input_id === d.input_id).length, 1);
+  // A 的 grant 在切换批次被清除（reason: input_interrupted）
+  const grantCleared = eventsOfType(events, "permission_grant_cleared").filter(
+    (event) => event.payload.input_id === a.input_id
+  );
+  assert.ok(grantCleared.length >= 1, "优先切换必须清除旧输入 grant");
+  // D 的写文件需要新的决策（未复用 A 的 grant）
+  assert.equal(eventsOfType(events, "decision_requested").length, 2, "A 与 D 各自请求决策（grant 不跨输入）");
+  // 副作用：a.txt/d.txt 落盘，被跳过的 c.txt 从未执行
+  assert.equal(await pathExists(path.join(h.projectRoot, "a.txt")), true, "A 已完成的写文件副作用保留");
+  assert.equal(await pathExists(path.join(h.projectRoot, "d.txt")), true, "D 的写文件完成");
+  assert.equal(await pathExists(path.join(h.projectRoot, "c.txt")), false, "被优先切换跳过的工具不得执行");
+  assertActivityClosure(events);
+});
