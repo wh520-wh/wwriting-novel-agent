@@ -945,3 +945,86 @@ test("切走 draft 占位：draft 不进缓存，leavingDraft 恒 false，模块
   assert.deepEqual(f.surface.calls.switchSession, ["s1"]);
   assert.equal(f.surface.calls.refreshSessions.length, 1, "draft 不进缓存 → 续作刷新 1 次（如实反映双刷，幂等可接受）");
 });
+
+// ---------------------------------------------------------------------------
+// Task 16（B13）：移除项目清理——缓存/DOM 引用/折叠记录清空 + removed 守卫
+// ---------------------------------------------------------------------------
+
+test("Task 16 B13：移除项目后清空缓存/DOM 引用/折叠记录；迟到 seed/变更不再响应；重新出现可恢复", async () => {
+  const P1 = "D:/projects/p1";
+  const P2 = "D:/projects/p2";
+  const projects = [
+    { projectRoot: P1, title: "小说一" },
+    { projectRoot: P2, title: "小说二" }
+  ];
+  const f = makeFixture({
+    projects,
+    selectedProjectRoot: P1,
+    currentProjectRoot: P1,
+    sessionData: { [P2]: { sessions: [{ session_id: "x1", title: "另一对话", run_status: "idle" }], active_session_id: "x1" } },
+    initialStorage: { [COLLAPSED_KEY]: JSON.stringify({ [P2]: true }) }
+  });
+  f.sidebar.seedSessions(P1, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.render();
+
+  // 展开 P2 → 懒拉缓存 + DOM 组引用
+  chevronOf(f.listEl.children[2]).dispatch("click", {});
+  await flush();
+  assert.equal(f.sidebar.getSessions(P2)?.sessions?.length, 1, "P2 懒拉已缓存");
+  assert.deepEqual(
+    f.sidebar.getProjectStateForTest(P2),
+    { cached: true, pending: false, failed: false, groupHeld: true, collapsed: false, removed: false },
+    "移除前 P2 持有缓存与组引用"
+  );
+  // 折叠 P2 产生折叠记录（collapsed 清理断言对象）
+  chevronOf(f.listEl.children[2]).dispatch("click", {});
+  assert.equal(JSON.parse(f.storage.getItem(COLLAPSED_KEY))[P2], true, "折叠状态已持久化");
+
+  // 模拟 forgetProject：列表移除 P2 → removeProject + 整表重渲
+  projects.splice(0, projects.length, { projectRoot: P1, title: "小说一" });
+  f.sidebar.removeProject(P2);
+  f.sidebar.render();
+
+  assert.deepEqual(
+    f.sidebar.getProjectStateForTest(P2),
+    { cached: false, pending: false, failed: false, groupHeld: false, collapsed: false, removed: true },
+    "移除后内部状态全部清空（缓存/引用/折叠/移除标记）"
+  );
+  assert.equal(f.sidebar.getSessions(P2), null, "移除后会话缓存不可读");
+  assert.equal(JSON.parse(f.storage.getItem(COLLAPSED_KEY))[P2], undefined, "折叠记录同步清除");
+  assert.equal(groupsOf(f.listEl).some((g) => g.dataset.projectRoot === P2), false, "P2 组不再挂载");
+
+  // 迟到的 seed / 会话变更不再响应（removed 守卫）：不重建缓存
+  f.sidebar.seedSessions(P2, [{ session_id: "x1", title: "另一对话", run_status: "idle" }], "x1");
+  f.sidebar.handleSessionsChanged(P2, [{ session_id: "x1", title: "另一对话", run_status: "idle" }], "x1");
+  assert.equal(f.sidebar.getSessions(P2), null, "移除后迟到事件不重建缓存");
+
+  // 项目重新出现在列表（重新打开同一文件夹）：render 解除移除标记，缓存恢复可用
+  projects.splice(0, projects.length,
+    { projectRoot: P1, title: "小说一" },
+    { projectRoot: P2, title: "小说二" }
+  );
+  f.sidebar.render();
+  assert.equal(f.sidebar.getProjectStateForTest(P2).removed, false, "重新出现后移除标记解除");
+  f.sidebar.seedSessions(P2, [{ session_id: "x1", title: "另一对话", run_status: "idle" }], "x1");
+  assert.ok(f.sidebar.getSessions(P2), "重新出现后可再次缓存");
+});
+
+test("Task 16 B13：移除当前项目停止 busy 周期刷新并复位发送键", async () => {
+  const P1 = "D:/projects/p1";
+  const f = makeFixture({
+    projects: [{ projectRoot: P1, title: "小说一" }],
+    selectedProjectRoot: P1,
+    currentProjectRoot: P1
+  });
+  f.sidebar.seedSessions(P1, [
+    { session_id: "s1", title: "对话一", run_status: "idle" },
+    { session_id: "s2", title: "对话二", run_status: "running" }
+  ], "s1");
+  assert.deepEqual(f.surface.calls.setBusy, [true], "其他会话运行中 → busy(true)");
+  assert.equal(f.timers.activeIds().length, 1, "busy 周期刷新定时器运行中");
+
+  f.sidebar.removeProject(P1);
+  assert.deepEqual(f.surface.calls.setBusy, [true, false], "移除当前项目后 busy 复位");
+  assert.equal(f.timers.activeIds().length, 0, "周期刷新定时器停止（listener 清理）");
+});

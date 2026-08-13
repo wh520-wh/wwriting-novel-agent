@@ -761,3 +761,10 @@ export function compactionBlocksSend(compaction) {
 export function isRunActive(run) {
   return Boolean(run) && !TERMINAL_RUN_STATUSES.has(run.status);
 }
+
+// Task 16（R5-7）：会话 projection 的 needs_history_clear（journal 退化投影标记，
+// 后端 snapshot 原样透出）——前端据此显示「此对话已损坏」并禁发（view 的
+// canSubmit 门禁读取本 getter）。
+export function getNeedsHistoryClear(state) {
+  return state.session?.needs_history_clear === true;
+}

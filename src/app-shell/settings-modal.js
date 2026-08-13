@@ -87,6 +87,10 @@ export function createSettingsModal(ctx, options = {}) {
   // 保存序号：runSave 的「已保存」关闭定时器带序号，连续保存时旧定时器失效，
   // 不会关闭新弹窗或覆盖新按钮文案。
   let saveSequence = 0;
+  // 分区渲染代次（Task 16 B12）：每次分区渲染开始都会推进；异步续作
+  //（fetchOutputStyles / 技能 catalog / 任务门禁 / 技能详情）在 await 后校验代次，
+  // 慢分区（A）的续作不得覆写已切换到的新分区（B）内容。
+  let sectionGeneration = 0;
   // 技能管理 scope（Task 13）：segmented control 的当前目录范围。
   let skillsScope = "global";
   // 技能 catalog 快照（settings 的 GET /api/skills/catalog）。
@@ -167,6 +171,8 @@ export function createSettingsModal(ctx, options = {}) {
   }
 
   function renderSectionBody() {
+    // Task 16 B12：分区切换/重渲推进代次——在途的旧分区异步续作一律丢弃。
+    sectionGeneration += 1;
     if (settingsSection === "writing") {
       if (ctx.getDashboard()?.hasProject === true) {
         void renderWritingSection();
@@ -221,6 +227,8 @@ export function createSettingsModal(ctx, options = {}) {
   }
 
   async function renderWritingSection() {
+    // Task 16 B12：捕获发起时的分区代次；await 后校验，慢响应不得覆写新分区。
+    const generation = sectionGeneration;
     const dashboard = ctx.getDashboard();
     const project = dashboard?.project ?? {};
     ctx.refs.settingsDetail.replaceChildren();
@@ -252,6 +260,9 @@ export function createSettingsModal(ctx, options = {}) {
     // 输出风格下拉（从模型区平移）
     const currentOutputStyle = project.output_style ?? "creative";
     const outputStyles = await fetchOutputStyles();
+    // Task 16 B12：等待期间用户已切到其他分区（或本分区已重渲）→ 丢弃慢响应，
+    // 不得把写作参数字段追加进新分区内容。
+    if (generation !== sectionGeneration) return;
     const outputStyleField = document.createElement("div");
     outputStyleField.className = "spd-field";
     const outputStyleLabel = document.createElement("div");
@@ -283,6 +294,9 @@ export function createSettingsModal(ctx, options = {}) {
   }
 
   function renderDangerSection() {
+    // Task 16 B12：refreshArchivedSessions 会直接重渲本分区（不经 renderSectionBody），
+    // 这里同样推进代次，在途的旧分区异步续作一律丢弃。
+    sectionGeneration += 1;
     const dashboard = ctx.getDashboard();
     const project = dashboard?.project ?? {};
     const projectRoot = ctx.getCurrentProjectRoot();
@@ -573,7 +587,11 @@ export function createSettingsModal(ctx, options = {}) {
 
   // 活动 Run / 排队输入进行中：清空按钮禁用并显示「先停止任务」提示。
   async function refreshHistoryRunGate() {
+    // Task 16 B12：await 后校验分区代次——慢快照返回时若已切到其他分区/重渲，
+    // 不把旧结果写进新渲染的按钮（historyRefs 已指向新节点）。
+    const generation = sectionGeneration;
     const busy = await taskInProgress();
+    if (generation !== sectionGeneration) return;
     if (!historyRefs.clearBtn) return;
     historyRefs.clearBtn.disabled = busy;
     if (historyRefs.hint) historyRefs.hint.hidden = !busy;
@@ -759,8 +777,12 @@ export function createSettingsModal(ctx, options = {}) {
 
   async function fetchSkillsCatalog() {
     const url = withProjectScope("/api/skills/catalog", ctx.getCurrentProjectRoot());
+    // Task 16：捕获分区代次——慢请求在途期间用户切走/重渲，迟到响应不得弹
+    // 「技能清单加载失败」误导 toast，也不得覆写 skillsCatalog 快照。
+    const generation = sectionGeneration;
     try {
       const data = await getJsonImpl(url);
+      if (generation !== sectionGeneration) return skillsCatalog;
       if (data?.ok) {
         skillsCatalog = {
           active: Array.isArray(data.active) ? data.active : [],
@@ -769,6 +791,7 @@ export function createSettingsModal(ctx, options = {}) {
         };
       }
     } catch (error) {
+      if (generation !== sectionGeneration) return skillsCatalog;
       ctx.showToast(error?.message ?? "技能清单加载失败。", "error");
       skillsCatalog = { active: [], shadowed: [], migration_errors: [] };
     }
@@ -776,6 +799,9 @@ export function createSettingsModal(ctx, options = {}) {
   }
 
   async function renderSkillsSection() {
+    // Task 16 B12：技能详情「返回列表」按钮直接重渲本分区（不经 renderSectionBody），
+    // 这里同样推进代次，在途的旧分区异步续作一律丢弃。
+    sectionGeneration += 1;
     const detail = ctx.refs.settingsDetail;
     detail.replaceChildren();
 
@@ -908,7 +934,11 @@ export function createSettingsModal(ctx, options = {}) {
 
   // 拉取最新 catalog 并重渲列表区（scope 切换 / 导入删除后刷新）。
   async function renderSkillsCatalogBody() {
+    // Task 16 B12：await 后校验分区代次——慢 catalog 响应不得把旧列表灌进
+    // 已切换/重渲的分区。
+    const generation = sectionGeneration;
     const catalog = await fetchSkillsCatalog();
+    if (generation !== sectionGeneration) return;
     renderSkillsList(catalog);
   }
 
@@ -1067,17 +1097,25 @@ export function createSettingsModal(ctx, options = {}) {
   // Task 8 Step 5/6：只读详情——GET /api/skills/:name（带项目作用域），在同一
   // settings detail 区渲染完整正文。无删除/编辑/覆盖控件。
   async function openReadonlySkillDetail(name) {
+    // Task 16 B12：await 后校验分区代次——慢详情响应不得把技能详情正文覆盖到
+    // 已切换的其他分区。
+    const generation = sectionGeneration;
     try {
       const url = withProjectScope(`/api/skills/${encodeURIComponent(name)}`, ctx.getCurrentProjectRoot());
       const data = await getJsonImpl(url);
+      if (generation !== sectionGeneration) return;
       if (!data?.ok) throw new Error(data?.message ?? "技能详情加载失败。");
       renderReadonlySkillDetail(name, data.content);
     } catch (error) {
+      if (generation !== sectionGeneration) return;
       ctx.showToast(error?.message ?? "技能详情加载失败。", "error");
     }
   }
 
   function renderReadonlySkillDetail(name, content) {
+    // Task 16 B12：详情视图整体替换分区内容，同样推进代次——在途的技能列表
+    // catalog 续作不再渲染进已替换的详情视图。
+    sectionGeneration += 1;
     const detail = ctx.refs.settingsDetail;
     detail.replaceChildren();
 
@@ -1324,6 +1362,7 @@ export function createSettingsModal(ctx, options = {}) {
       await fn();
       // 成功不弹 Toast：先显示「已保存」，短暂停留（700ms）后再关闭弹窗，
       // 保证用户能看到保存反馈。关闭定时器带保存序号，连续保存时旧定时器直接失效。
+      if (seq !== saveSequence) return; // Task 16 B18：旧 save 不得接管按钮（新 save 在途）
       ctx.refs.settingsSave.textContent = "已保存";
       window.setTimeout(() => {
         if (seq !== saveSequence) return;
@@ -1331,12 +1370,17 @@ export function createSettingsModal(ctx, options = {}) {
         ctx.refs.settingsSave.textContent = originalText;
       }, 700);
     } catch (error) {
+      // Task 16 B18：只有仍是最新 save 才收尾——旧 save 的迟到失败不弹 toast、
+      // 不覆盖新 save 的「保存中.../已保存」文案。
+      if (seq !== saveSequence) return;
       ctx.showToast(error.message, "error");
       // 恢复为规范标签而非 originalText：上一次保存的「已保存」可能尚未到恢复定时器，
       // 失败后不得沿用「已保存」误导用户。
       ctx.refs.settingsSave.textContent = "保存设置";
     } finally {
-      ctx.refs.settingsSave.disabled = false;
+      // Task 16 B18：条件化收尾——只有仍是最新 save 才恢复按钮；旧 finally 不得
+      // 在更新 save 仍在途时重新启用按钮（覆盖新 save 的禁用态）。
+      if (seq === saveSequence) ctx.refs.settingsSave.disabled = false;
     }
   }
 

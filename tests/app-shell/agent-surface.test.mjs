@@ -358,7 +358,9 @@ async function makeSurface({ apiOverrides = {}, callbacks = {}, useRealTransport
     onOpenChapter: (chapterNo) => chapters.push(chapterNo),
     onCreateProject: callbacks.onCreateProject ?? (() => projectActions.push("create")),
     onOpenProjectFolder: callbacks.onOpenProjectFolder ?? (() => projectActions.push("open")),
-    onSessionsChanged: callbacks.onSessionsChanged ?? (() => {})
+    onSessionsChanged: callbacks.onSessionsChanged ?? (() => {}),
+    // Task 16（R5-12）：Run 终态回调透出（app.js 据此刷新 dashboard/会话列表）。
+    onRunTerminal: callbacks.onRunTerminal ?? (() => {})
   });
   return { root, api, surface, opened, chapters, projectActions };
 }
@@ -4558,4 +4560,86 @@ test("Task 8：refreshSessions 新鲜度守卫——慢响应不覆盖更新发�
     ["S2"],
     "onSessionsChanged 结果仍是最新一次刷新的会话列表"
   );
+});
+
+// ---------------------------------------------------------------------------
+// Task 16（R5-7/R5-9/R5-12）：canSubmit 集中门禁（needs_history_clear 禁发 +
+// Enter 与按钮共用同一判定）+ Run 终态刷新入口
+// ---------------------------------------------------------------------------
+
+test("R5-9：Enter 与按钮共用 canSubmit——压缩进行中/失败时回车不得提交，取消完成后恢复", async () => {
+  const { root, api, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-1", trigger: "automatic" }));
+  surface.applyEvent(ev("context_compaction_running", { compaction_id: "c-1" }));
+  assert.equal(root.querySelector('[data-testid="agent-send"]').disabled, true, "压缩进行中发送键禁用");
+  input.value = "压缩期间的回车";
+  const before = api.calls.filter((c) => c[0] === "submit").length;
+  input._fire("keydown", { key: "Enter", shiftKey: false, isComposing: false, preventDefault: () => {} });
+  assert.equal(api.calls.filter((c) => c[0] === "submit").length, before, "压缩进行中回车不提交");
+  assert.equal(input.value, "压缩期间的回车", "回车被拦截时输入保留");
+
+  // 压缩失败态同样阻塞（等待用户 重试/取消）
+  surface.applyEvent(ev("context_compaction_failed", { compaction_id: "c-1", error_code: "model_error" }));
+  input.value = "压缩失败后的回车";
+  const before2 = api.calls.filter((c) => c[0] === "submit").length;
+  input._fire("keydown", { key: "Enter", shiftKey: false, isComposing: false, preventDefault: () => {} });
+  assert.equal(api.calls.filter((c) => c[0] === "submit").length, before2, "压缩失败态回车不提交");
+
+  // 取消完成恢复：回车与按钮同时恢复提交
+  surface.applyEvent(ev("context_compaction_cancelled", { compaction_id: "c-1", cancel_reason: "user" }));
+  assert.equal(root.querySelector('[data-testid="agent-send"]').disabled, false, "取消完成后发送键恢复");
+  input.value = "恢复后的回车";
+  input._fire("keydown", { key: "Enter", shiftKey: false, isComposing: false, preventDefault: () => {} });
+  assert.equal(api.calls.filter((c) => c[0] === "submit").length, before2 + 1, "取消完成后回车恢复提交");
+});
+
+test("R5-7：needs_history_clear 显示「此对话已损坏」，发送键与回车均不提交；快照更新后恢复", async () => {
+  const { root, api, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  const send = root.querySelector('[data-testid="agent-send"]');
+  // 后端退化投影：session 快照携带 needs_history_clear:true
+  surface.applySnapshot(snapshotOf(session({ needs_history_clear: true }), []));
+
+  const hint = root.querySelector('[data-testid="agent-history-clear-hint"]');
+  assert.ok(hint, "应渲染「此对话已损坏」提示");
+  assert.equal(hint.hidden, false, "损坏提示可见");
+  assert.equal(hint.textContent, "此对话已损坏");
+  assert.equal(send.disabled, true, "损坏对话发送键禁用");
+
+  input.value = "损坏后的输入";
+  const before = api.calls.filter((c) => c[0] === "submit").length;
+  input._fire("keydown", { key: "Enter", shiftKey: false, isComposing: false, preventDefault: () => {} });
+  assert.equal(api.calls.filter((c) => c[0] === "submit").length, before, "损坏对话回车不提交");
+  assert.equal(input.value, "损坏后的输入", "输入保留");
+
+  // 清空历史后（快照不再标记 needs_history_clear）发送恢复
+  surface.applySnapshot(snapshotOf(session({}), []));
+  assert.equal(root.querySelector('[data-testid="agent-send"]').disabled, false, "快照更新后发送恢复");
+  assert.equal(root.querySelector('[data-testid="agent-history-clear-hint"]').hidden, true, "提示隐藏");
+});
+
+test("R5-12：Run 终态触发 onRunTerminal 并补拉权威快照（终态刷新入口）", async () => {
+  const terminalTypes = [];
+  let snapshotCalls = 0;
+  const { root, surface } = await makeSurface({
+    callbacks: { onRunTerminal: (event) => terminalTypes.push(event?.type) },
+    apiOverrides: {
+      fetchSnapshot: async () => { snapshotCalls += 1; return null; }
+    }
+  });
+  await surface.openProject("D:\novel");
+  const before = snapshotCalls; // openProject 自身会拉一次快照
+  const terminal = ev("run_completed", {});
+  surface.applyEvent(terminal);
+  await tick();
+  assert.deepEqual(terminalTypes, ["run_completed"], "终态事件应经 onRunTerminal 回调透出（app.js 刷新 dashboard/列表）");
+  assert.equal(snapshotCalls, before + 1, "终态后补拉一次权威快照（journal 冻结字段）");
+  // 同一终态重复送达（同 seq）：不重复回调、不重复补快照
+  surface.applyEvent(terminal);
+  await tick();
+  assert.deepEqual(terminalTypes, ["run_completed"], "同 seq 终态不重复回调");
+  assert.equal(snapshotCalls, before + 1, "同 seq 终态不重复补快照");
 });

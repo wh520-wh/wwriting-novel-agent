@@ -61,6 +61,9 @@ export function createSessionSidebar({
   const pendingFetches = new Map(); // projectRoot -> Promise（并发展开去重）
   const failedRoots = new Set(); // 懒拉取/dashboard seed 失败的项目（显示失败行，可重试）
   const groupEls = new Map(); // projectRoot -> .session-group 元素（定向重渲）
+  // Task 16（B13）：已从列表移除的项目——迟到的 seed/会话变更/懒拉不再重建缓存；
+  // 项目重新出现在列表（render 的 knownRoots 剪枝）时解除标记。
+  const removedRoots = new Set();
   let archivedExpanded = false;
   let sessionSwitchGeneration = 0;
   let busyRefreshTimer = null; // busy=true 时的周期刷新定时器（见 startBusyRefresh）
@@ -149,6 +152,12 @@ export function createSessionSidebar({
     if (!data) {
       listEl.replaceChildren();
       return;
+    }
+    // Task 16（B13）：项目重新出现在列表（重新打开同一文件夹/刷新列表）时解除
+    // 移除标记，缓存能力恢复。
+    const knownRoots = new Set((data.projects ?? []).map((p) => p.projectRoot));
+    for (const root of [...removedRoots]) {
+      if (knownRoots.has(root)) removedRoots.delete(root);
     }
     const query = String(filterEl?.value ?? "").trim().toLowerCase();
     const filtered = query
@@ -282,6 +291,7 @@ export function createSessionSidebar({
   // 懒拉取 + 完成后定向重渲（成功清除失败标记 / 失败打标）。fetch 在途时
   // ensureSessions 返回同一 promise，重入安全（pendingFetches 去重）。
   function loadSessions(root) {
+    if (removedRoots.has(root)) return; // Task 16（B13）：已移除项目不发起懒拉
     void ensureSessions(root).then(() => {
       failedRoots.delete(root);
       rerenderGroup(root);
@@ -455,11 +465,15 @@ export function createSessionSidebar({
 
   // ---- 懒加载（内存缓存，本次会话内不重复拉） ----
   function ensureSessions(projectRoot) {
+    if (removedRoots.has(projectRoot)) return Promise.resolve(null); // Task 16（B13）
     const cached = sessionCache.get(projectRoot);
     if (cached) return Promise.resolve(cached);
     const pending = pendingFetches.get(projectRoot);
     if (pending) return pending;
     const promise = Promise.resolve(fetchSessions(projectRoot)).then((data) => {
+      // Task 16（B13）：fetch 在途期间项目被移除（forgetProject）→ 迟到响应
+      // 不得重建已移除项目的缓存。
+      if (removedRoots.has(projectRoot)) return null;
       const entry = {
         sessions: Array.isArray(data?.sessions) ? data.sessions : [],
         activeSessionId: data?.active_session_id ?? null
@@ -479,6 +493,7 @@ export function createSessionSidebar({
   //（无会话时绝不残留上一项目的旧会话 id——syncBusy 的"其他会话"判定依赖它）。
   function seedSessions(projectRoot, sessions, activeSessionId) {
     if (!projectRoot) return;
+    if (removedRoots.has(projectRoot)) return; // Task 16（B13）：已移除项目不重建缓存
     sessionCache.set(projectRoot, {
       sessions: Array.isArray(sessions) ? sessions : [],
       activeSessionId: activeSessionId ?? null
@@ -491,6 +506,7 @@ export function createSessionSidebar({
   // surface.onSessionsChanged → app.js 转发：只重渲当前项目组（保滚动）+ busy 复位。
   function handleSessionsChanged(projectRoot, sessions, activeSessionId) {
     if (!projectRoot) return;
+    if (removedRoots.has(projectRoot)) return; // Task 16（B13）：已移除项目不重建缓存
     sessionCache.set(projectRoot, {
       sessions: Array.isArray(sessions) ? sessions : [],
       activeSessionId: activeSessionId ?? null
@@ -531,6 +547,29 @@ export function createSessionSidebar({
     return sessionCache.get(projectRoot) ?? null;
   }
 
+  // Task 16（B13）：项目从列表移除（app.js forgetProject）后的清理——缓存 Map、
+  // 懒拉 pending、失败标记、DOM 组引用与折叠记录全部清除，并把该项目封存
+  //（removedRoots：迟到的 seed/会话变更不再重建缓存；项目重新出现时由 render 剪枝
+  // 解除）。移除的是当前项目时同步复位 busy 并停掉周期刷新定时器（无缓存可推导）。
+  function removeProject(projectRoot) {
+    if (!projectRoot) return;
+    const group = groupEls.get(projectRoot);
+    sessionCache.delete(projectRoot);
+    pendingFetches.delete(projectRoot);
+    failedRoots.delete(projectRoot);
+    groupEls.delete(projectRoot);
+    removedRoots.add(projectRoot);
+    delete collapsedByRoot[projectRoot];
+    persistCollapsed();
+    // 组元素若仍挂在列表 DOM（尚未整表重渲）：立即摘除，不留 DOM 引用。
+    if (group && typeof group.remove === "function") group.remove();
+    else if (group?.parentNode?.removeChild) group.parentNode.removeChild(group);
+    if (pathEquals(projectRoot, getCurrentProjectRoot())) {
+      stopBusyRefresh();
+      surface.setBusy?.(false);
+    }
+  }
+
   function emptyRow(text) {
     const row = doc.createElement("div");
     row.className = "session-empty";
@@ -559,9 +598,22 @@ export function createSessionSidebar({
     handleSessionsChanged,
     syncBusy,
     invalidateProject,
+    removeProject,
     markSessionsFailed,
     switchSession: commitSessionSwitch,
-    getSessions
+    getSessions,
+    // Task 16（B13）：实例 seam（仅供测试）——观测项目移除后的内部清理
+    //（缓存/pending/失败标记/DOM 组引用/折叠记录/移除标记）。
+    getProjectStateForTest(projectRoot) {
+      return {
+        cached: sessionCache.has(projectRoot),
+        pending: pendingFetches.has(projectRoot),
+        failed: failedRoots.has(projectRoot),
+        groupHeld: groupEls.has(projectRoot),
+        collapsed: collapsedByRoot[projectRoot] === true,
+        removed: removedRoots.has(projectRoot)
+      };
+    }
   };
 }
 
