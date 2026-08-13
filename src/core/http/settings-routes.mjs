@@ -348,8 +348,9 @@ export function createSettingsRoutes({
           project: finalProject,
           effective_config: finalEffective,
           model_profile: buildModelProfile(finalEffective.active_model, secretsRoot),
-          secret_saved: false,
-          secret_env: null
+          // Task 20 契约：响应只携带 api_key_saved: boolean——settings/update 不落
+          // 密钥，恒为 false；不再返回旧 secret_saved / secret_env 字段。
+          api_key_saved: false
         };
       } catch (error) {
         if (error instanceof ModelConfigValidationError) {

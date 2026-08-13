@@ -1,7 +1,7 @@
 // tests/app-shell/model-settings-page.test.mjs
 import assert from "node:assert/strict";
 import test from "node:test";
-import { pickProvider, visibleModels, buildPageState, createModelSettingsPage } from "../../src/app-shell/model-settings-page.js";
+import { pickProvider, visibleModels, buildPageState, createModelSettingsPage, translateTechnicalError } from "../../src/app-shell/model-settings-page.js";
 
 const providers = [
   { id: "deepseek", name: "DeepSeek 官方", status: "enabled", base_url: "https://api.deepseek.com/v1", api_format: "openai-chat-completions", api_key_env: "DEEPSEEK_API_KEY", models: [
@@ -74,28 +74,36 @@ class MockElement {
     for (const fn of this._listeners.get(type) ?? []) fn(...args);
   }
   click() { this._fire("click"); }
-  /** 简易选择器匹配：仅支持 [data-x] 与 .class（renderCandidateList 的 querySelector 用）。 */
+  /** 简易选择器匹配：支持 [data-x] / [data-x="value"] 与 .class（querySelector 用）。 */
   matchesSelector(selector) {
     if (selector.startsWith("[")) {
-      const attr = selector.slice(1, -1);
-      return this.getAttribute(attr) !== null;
+      const match = /^\[([A-Za-z0-9_-]+)(?:="([^"]*)")?\]$/u.exec(selector);
+      if (!match) return false;
+      const attr = match[1];
+      const expected = match[2];
+      return expected === undefined ? this.getAttribute(attr) !== null : this.getAttribute(attr) === expected;
     }
     if (selector.startsWith(".")) return this.className.split(/\s+/u).includes(selector.slice(1));
     return false;
   }
 }
 
-// 全局元素注册表：documentRef.querySelector 从其中按顺序找首个匹配（renderCandidateList
-// 的容器/箭头查找依赖它）。测试在渲染前 mockElements.length = 0 以隔离历史元素。
+// 全局元素注册表：documentRef.querySelector 从其中找匹配元素（renderCandidateList
+// 的容器/箭头查找与 testConnection 的 resultSlot 重查询依赖它）。测试在渲染前
+// mockElements.length = 0 以隔离历史元素。
 const mockElements = [];
 const mockDocument = {
   createElement(tag) { const node = new MockElement(tag); mockElements.push(node); return node; },
   createTextNode(text) { return { nodeType: 3, textContent: String(text) }; },
   querySelector(selector) {
+    // 返回最后匹配：renderDetail 重建容器时新元素后创建，最后匹配 ≈ 当前仍挂载
+    // 的元素（真实 document 的 querySelector 只见已挂载节点）——testConnection
+    // 在 commit 重渲染后重查询 resultSlot 的回归路径依赖这一近似。
+    let hit = null;
     for (const node of mockElements) {
-      if (node.matchesSelector?.(selector)) return node;
+      if (node.matchesSelector?.(selector)) hit = node;
     }
-    return null;
+    return hit;
   }
 };
 
@@ -208,17 +216,32 @@ test("renderDetail 交互接线：改名 / Base URL 校验 / 启停 / 协议回�
   nameInput._fire("change");
   await tickAsync();
   assert.equal(patches.length, 1, "空供应商名不应发起保存");
+  // Task 20 #5：空值不得静默丢弃——保留编辑态并显示中文错误
+  const nameErrorEl = els.find((el) => el.getAttribute?.("data-field-error") === "name");
+  assert.ok(nameErrorEl, "应渲染供应商名错误行");
+  assert.equal(nameErrorEl.textContent, "供应商名称不能为空", "空供应商名应显示中文错误");
+  assert.equal(nameInput.value, "   ", "空供应商名保留编辑态（不回填旧值）");
 
-  // Base URL：非 http(s) 不保存；合法地址失焦保存
+  // Base URL：空值/非 http(s) 不发保存，行内中文错误；合法地址失焦保存
   const baseUrlInput = els.find((el) => el.getAttribute?.("data-field") === "base_url");
+  const baseUrlErrorEl = els.find((el) => el.getAttribute?.("data-field-error") === "base_url");
+  assert.ok(baseUrlErrorEl, "应渲染 Base URL 错误行");
+  baseUrlInput.value = "";
+  baseUrlInput._fire("change");
+  await tickAsync();
+  assert.equal(patches.length, 1, "空 Base URL 不应发起保存");
+  assert.equal(baseUrlErrorEl.textContent, "Base URL 不能为空", "空 Base URL 应显示中文错误");
+  assert.equal(baseUrlInput.value, "", "空 Base URL 保留编辑态");
   baseUrlInput.value = "not-a-url";
   baseUrlInput._fire("change");
   await tickAsync();
   assert.equal(patches.length, 1, "非法 Base URL 不应发起保存");
+  assert.equal(baseUrlErrorEl.textContent, "Base URL 需以 http:// 或 https:// 开头", "非法 Base URL 应显示中文错误");
   baseUrlInput.value = "https://api.deepseek.com/v2";
   baseUrlInput._fire("change");
   await tickAsync();
   assert.deepEqual(lastPatch(), { url: "/api/settings/providers/deepseek", body: { base_url: "https://api.deepseek.com/v2" } });
+  assert.equal(baseUrlErrorEl.textContent, "", "合法 Base URL 保存成功后错误应清空");
 
   // 状态切换：enabled 供应商按钮文案「禁用」，点击保存相反状态
   const statusToggle = els.find((el) => el.className === "provider-status-toggle");
@@ -239,18 +262,59 @@ test("renderDetail 交互接线：改名 / Base URL 校验 / 启停 / 协议回�
   await tickAsync();
   assert.deepEqual(lastPatch(), { url: "/api/settings/providers/deepseek", body: { api_format: "openai-chat-completions" } });
 
-  // 密钥双模式：明文 → api_key 且清空回显；环境变量名 → api_key_env
+  // 密钥（Task 20 #14）：默认关闭「使用环境变量名」→ 一律按明文密钥提交，
+  // 不猜字符串形状；打开开关后才按环境变量名提交
   const keyInput = els.find((el) => el.getAttribute?.("data-field") === "api_key");
+  const envToggle = els.find((el) => el.getAttribute?.("data-field") === "api_key_env_toggle");
+  const keyErrorEl = els.find((el) => el.getAttribute?.("data-field-error") === "api_key");
+  const keyStatusEl = els.find((el) => el.getAttribute?.("data-api-key-status") === "true");
+  assert.ok(envToggle, "应渲染「使用环境变量名」开关");
+  assert.equal(envToggle.checked, false, "开关默认关闭（关闭时一律按明文）");
+  assert.ok(keyStatusEl, "应渲染密钥状态标签");
+  assert.ok(keyStatusEl.textContent.includes("已填环境变量名"), "已填环境变量名但未存密钥应显示中间状态");
+
   keyInput.value = "sk-abc123";
   keyInput._fire("change");
   await tickAsync();
   assert.deepEqual(lastPatch(), { url: "/api/settings/providers/deepseek", body: { api_key: "sk-abc123" } });
-  assert.equal(keyInput.value, "", "明文密钥保存后应清空回显");
-  keyInput.value = "DEEPSEEK_API_KEY";
+  assert.equal(keyInput.value, "", "明文密钥保存成功后应清空回显");
+
+  // 形如环境变量名的明文：开关关闭仍按明文提交（后端不猜字符串形状）
+  keyInput.value = "MY_API_KEY";
   keyInput._fire("change");
   await tickAsync();
-  assert.deepEqual(lastPatch(), { url: "/api/settings/providers/deepseek", body: { api_key_env: "DEEPSEEK_API_KEY" } });
-  assert.equal(keyInput.value, "DEEPSEEK_API_KEY", "环境变量名模式保留输入值");
+  assert.deepEqual(lastPatch(), { url: "/api/settings/providers/deepseek", body: { api_key: "MY_API_KEY" } });
+
+  // 打开开关后才按环境变量名提交
+  envToggle.checked = true;
+  envToggle._fire("change");
+  keyInput.value = "MY_API_KEY";
+  keyInput._fire("change");
+  await tickAsync();
+  assert.deepEqual(lastPatch(), { url: "/api/settings/providers/deepseek", body: { api_key_env: "MY_API_KEY" } });
+  assert.equal(keyInput.value, "", "环境变量名保存成功后同样清空回显");
+
+  // 开关打开 + 非法环境变量名：行内中文错误，不发请求，保留编辑态
+  const patchesBeforeInvalidEnv = patches.length;
+  keyInput.value = "1BAD";
+  keyInput._fire("change");
+  await tickAsync();
+  assert.equal(patches.length, patchesBeforeInvalidEnv, "非法环境变量名不应发起保存");
+  assert.equal(keyErrorEl.textContent, "API 密钥环境变量名只能包含字母、数字、下划线且不能以数字开头。", "非法环境变量名应显示中文错误");
+  assert.equal(keyInput.value, "1BAD", "非法输入保留编辑态");
+
+  // 模型名空值：不发请求 + 行内中文错误 + 保留编辑态（Task 20 #5）
+  const m1Row = els.find((el) => el.className === "model-row" && el.getAttribute?.("data-model-id") === "m1");
+  const modelNameInput = descendants(m1Row).find((el) => el.getAttribute?.("data-field") === "model_name");
+  const modelNameErrorEl = descendants(m1Row).find((el) => el.getAttribute?.("data-field-error") === "model_name:m1");
+  assert.ok(modelNameErrorEl, "模型行应渲染模型名错误行");
+  const patchesBeforeEmptyModel = patches.length;
+  modelNameInput.value = "   ";
+  modelNameInput._fire("change");
+  await tickAsync();
+  assert.equal(patches.length, patchesBeforeEmptyModel, "空模型名不应发起保存");
+  assert.equal(modelNameErrorEl.textContent, "模型名称不能为空", "空模型名应显示中文错误");
+  assert.equal(modelNameInput.value, "   ", "空模型名保留编辑态");
 });
 
 test("明文密钥保存失败：保留输入回显并提示先填环境变量名", async () => {
@@ -270,11 +334,14 @@ test("明文密钥保存失败：保留输入回显并提示先填环境变量�
   await page.open();
   const container = new MockElement("div");
   page.renderDetail(container);
-  const keyInput = descendants(container).find((el) => el.getAttribute?.("data-field") === "api_key");
+  const els = descendants(container);
+  const keyInput = els.find((el) => el.getAttribute?.("data-field") === "api_key");
+  const keyErrorEl = els.find((el) => el.getAttribute?.("data-field-error") === "api_key");
   keyInput.value = "sk-abc123";
   keyInput._fire("change");
   await tickAsync();
   assert.equal(keyInput.value, "sk-abc123", "保存失败不应清空回显，避免丢失已键入的密钥");
+  assert.equal(keyErrorEl.textContent, "请先填写 API 密钥环境变量名。", "失败原因应行内回显中文错误");
   assert.ok(
     toasts.some((t) => t.message.includes("先填写 API 密钥环境变量名") && t.kind === "error"),
     "应给出「先填写环境变量名」的明确引导"
@@ -491,6 +558,9 @@ test("测试连接：请求体形态、行内结果与缺密钥提示", async ()
     showToast: (message, kind) => toasts.push({ message, kind })
   });
 
+  // 直调路径（详情未渲染）：清空 mockElements 后 resultSlot 重查询查不到（回退到
+  // 传入的 slot），断言结果仍写入传入 slot——覆盖「未重渲染回退」分支。
+  mockElements.length = 0;
   const slot = new MockElement("div");
   const pro = await page._handlers.testConnection(providers[0], providers[0].models[0], slot);
   assert.equal(pro.ok, true);
@@ -498,13 +568,14 @@ test("测试连接：请求体形态、行内结果与缺密钥提示", async ()
     provider: { base_url: "https://api.deepseek.com/v1", api_key_env: "DEEPSEEK_API_KEY" },
     model: { model_name: "deepseek-v4-pro" }
   });
-  let resultEl = descendants(slot)[0];
+  let resultEl = descendants(slot).find((el) => String(el.className).includes("connection-result"));
+  assert.ok(resultEl, "结果应写入传入的 result slot（直调回退路径）");
   assert.ok(resultEl.className.includes("connection-result ok"), "成功应渲染绿勾结果");
   assert.ok(resultEl.textContent.includes("连接成功"), "成功结果应含连接成功文案");
 
   const fail = await page._handlers.testConnection(providers[1], providers[1].models[0], slot);
   assert.equal(fail.ok, false);
-  resultEl = descendants(slot)[0];
+  resultEl = descendants(slot).find((el) => String(el.className).includes("connection-result"));
   assert.ok(resultEl.className.includes("connection-result error"), "失败应渲染红字结果");
   assert.ok(resultEl.textContent.includes("API Key 无效或无权限"), "失败结果应含后端错误文案");
 
@@ -573,4 +644,245 @@ test("添加供应商：POST 创建 + 有密钥时 PATCH 落盘 + 表单开关",
   assert.ok(cancel, "表单应有取消按钮");
   cancel.click();
   assert.equal(form.hidden, true, "取消应收起表单");
+});
+
+// ---------------------------------------------------------------------------
+// Task 20：密钥开关契约（#14）、draft-first 表单（#5/#8）、已配置状态（#3）、
+// 技术错误中文映射（#15）、切换失败 toast（#10）
+// ---------------------------------------------------------------------------
+
+test("translateTechnicalError：英文技术错误映射中文，中文消息原样保留（#15）", () => {
+  assert.equal(translateTechnicalError({ message: "fetch failed" }), "网络请求失败，请检查网络连接后重试");
+  assert.equal(translateTechnicalError({ message: "Failed to fetch" }), "网络请求失败，请检查网络连接后重试");
+  assert.equal(translateTechnicalError({ message: "HTTP 500" }), "服务器响应异常，请稍后重试");
+  assert.equal(translateTechnicalError({ message: "The operation timed out" }), "请求超时，请稍后重试");
+  assert.equal(translateTechnicalError({ message: "TypeError: Cannot read properties of undefined (reading 'x')" }), "请求格式错误，请刷新页面后重试");
+  assert.equal(translateTechnicalError({ message: "" }), "未知错误，请稍后重试");
+  assert.equal(translateTechnicalError({ message: "供应商名称已存在" }), "供应商名称已存在", "中文后端消息不得被改写");
+});
+
+test("密钥状态：已配置只显示状态不回显密钥（#3）", async () => {
+  const withSaved = [
+    { ...providers[0], api_key_saved: true },
+    { ...providers[1], api_key_saved: false }
+  ];
+  const page = createModelSettingsPage({
+    fetchImpl: async () => ({ ok: true, json: async () => ({ providers: withSaved, default_model: null }) }),
+    documentRef: mockDocument,
+    showToast: () => {}
+  });
+  await page.open();
+  const container = new MockElement("div");
+  page.renderDetail(container);
+  const els = descendants(container);
+  const statusEl = els.find((el) => el.getAttribute?.("data-api-key-status") === "true");
+  const keyInput = els.find((el) => el.getAttribute?.("data-field") === "api_key");
+  assert.ok(statusEl.textContent.includes("已配置"), "已保存密钥的供应商应显示「已配置」状态");
+  assert.ok(!statusEl.textContent.includes("sk-"), "状态文本不得包含密钥明文");
+  assert.equal(keyInput.value, "", "密钥输入框不回显密钥");
+
+  // 未配置状态
+  const unconfigured = [{ id: "custom", name: "自建", status: "enabled", base_url: "https://x.test", api_format: "openai-chat-completions", api_key_env: "", models: [] }];
+  const page2 = createModelSettingsPage({
+    fetchImpl: async () => ({ ok: true, json: async () => ({ providers: unconfigured, default_model: null }) }),
+    documentRef: mockDocument,
+    showToast: () => {}
+  });
+  await page2.open();
+  const container2 = new MockElement("div");
+  page2.renderDetail(container2);
+  const status2 = descendants(container2).find((el) => el.getAttribute?.("data-api-key-status") === "true");
+  assert.ok(status2.textContent.includes("未配置"), "未配置密钥的供应商应显示「未配置」");
+});
+
+test("test/pull 先提交并验证当前表单值（#8）：未失焦输入也会先保存", async () => {
+  const patches = [];
+  const testBodies = [];
+  let pullCalls = 0;
+  let current = JSON.parse(JSON.stringify(providers));
+  const fetchImpl = async (url, options = {}) => {
+    const method = options?.method ?? "GET";
+    if (method === "PATCH") {
+      const body = JSON.parse(options.body);
+      patches.push({ url, body });
+      const parts = url.split("/");
+      const provider = current.find((p) => p.id === parts[4]);
+      if (parts.length > 6) {
+        const model = provider.models.find((m) => m.id === parts[6]);
+        Object.assign(model, body);
+        return { ok: true, json: async () => ({ ok: true, model, provider, store: { providers: current } }) };
+      }
+      Object.assign(provider, body);
+      return { ok: true, json: async () => ({ ok: true, provider, store: { providers: current } }) };
+    }
+    if (url.endsWith("/test-connection")) {
+      testBodies.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ({ ok: true, message: "连接成功", latency_ms: 5 }) };
+    }
+    if (url.endsWith("/pull-models")) {
+      pullCalls += 1;
+      return { ok: true, json: async () => ({ models: [] }) };
+    }
+    return { ok: true, json: async () => ({ providers: current, default_model: null }) };
+  };
+  const page = createModelSettingsPage({ fetchImpl, documentRef: mockDocument, showToast: () => {} });
+  await page.open();
+  const container = new MockElement("div");
+  page.renderDetail(container);
+  const els = descendants(container);
+
+  // 改 Base URL 与模型名但不失焦（不触发 change）：点「测试连接」应先保存草稿再测试
+  const baseUrlInput = els.find((el) => el.getAttribute?.("data-field") === "base_url");
+  baseUrlInput.value = "https://new.example.com/v2";
+  const m1Row = els.find((el) => el.className === "model-row" && el.getAttribute?.("data-model-id") === "m1");
+  const modelNameInput = descendants(m1Row).find((el) => el.getAttribute?.("data-field") === "model_name");
+  modelNameInput.value = "deepseek-v4-pro-new";
+  const testButton = descendants(m1Row).find((el) => el.className === "model-test-connection");
+  testButton.click();
+  await tickAsync();
+
+  assert.deepEqual(patches.map((p) => p.body), [
+    { base_url: "https://new.example.com/v2" },
+    { model_name: "deepseek-v4-pro-new" }
+  ], "test 前应依次提交未保存的 provider 与 model 草稿");
+  assert.deepEqual(testBodies[0], {
+    provider: { base_url: "https://new.example.com/v2", api_key_env: "DEEPSEEK_API_KEY" },
+    model: { model_name: "deepseek-v4-pro-new" }
+  }, "测试请求必须使用提交后的权威值而非陈旧保存值");
+
+  // 拉取模型：同样先提交未失焦草稿再请求
+  const pullButton = els.find((el) => el.className === "pull-models");
+  baseUrlInput.value = "https://pull.example.com/v1";
+  pullButton.click();
+  await tickAsync();
+  assert.deepEqual(patches[patches.length - 1].body, { base_url: "https://pull.example.com/v1" }, "pull 前应先提交 Base URL 草稿");
+  assert.equal(pullCalls, 1);
+});
+
+test("test/pull 被非法表单值阻断（#8）：不发请求且行内报错", async () => {
+  let testCalls = 0;
+  let pullCalls = 0;
+  const page = createModelSettingsPage({
+    fetchImpl: async (url, options = {}) => {
+      if (options?.method === "PATCH") return { ok: true, json: async () => ({ ok: true }) };
+      if (url.endsWith("/test-connection")) { testCalls += 1; return { ok: true, json: async () => ({ ok: true }) }; }
+      if (url.endsWith("/pull-models")) { pullCalls += 1; return { ok: true, json: async () => ({ models: [] }) }; }
+      return { ok: true, json: async () => ({ providers, default_model: null }) };
+    },
+    documentRef: mockDocument,
+    showToast: () => {}
+  });
+  await page.open();
+  const container = new MockElement("div");
+  page.renderDetail(container);
+  const els = descendants(container);
+  const baseUrlInput = els.find((el) => el.getAttribute?.("data-field") === "base_url");
+  baseUrlInput.value = ""; // 清空但不失焦：commitCurrentDraft 必须拦住
+  const m1Row = els.find((el) => el.className === "model-row" && el.getAttribute?.("data-model-id") === "m1");
+  const testButton = descendants(m1Row).find((el) => el.className === "model-test-connection");
+  const resultSlot = descendants(container).find((el) => el.getAttribute?.("data-model-connection-result") === "m1");
+  testButton.click();
+  await tickAsync();
+  assert.equal(testCalls, 0, "空 Base URL 不得发起测试请求");
+  const baseUrlErrorEl = els.find((el) => el.getAttribute?.("data-field-error") === "base_url");
+  assert.equal(baseUrlErrorEl.textContent, "Base URL 不能为空", "应行内回显中文错误");
+  const resultEl = descendants(resultSlot).find((el) => String(el.className).includes("connection-result"));
+  assert.ok(resultEl, "结果槽应显示错误结果");
+  assert.ok(resultEl.className.includes("connection-result error"), "结果槽应显示错误");
+  assert.ok(resultEl.textContent.includes("Base URL 不能为空"), "结果槽错误文案应为中文");
+
+  // 拉取同样被空 Base URL 阻断
+  const pullButton = els.find((el) => el.className === "pull-models");
+  pullButton.click();
+  await tickAsync();
+  assert.equal(pullCalls, 0, "空 Base URL 不得发起拉取请求");
+});
+
+test("启停切换失败：toast 提示且不回退旧 UI（#10）", async () => {
+  const toasts = [];
+  const page = createModelSettingsPage({
+    fetchImpl: async (url, options = {}) => {
+      if (options?.method === "PATCH") return { ok: false, status: 500, json: async () => ({ message: "HTTP 500" }) };
+      return { ok: true, json: async () => ({ providers, default_model: null }) };
+    },
+    documentRef: mockDocument,
+    showToast: (message, kind) => toasts.push({ message, kind })
+  });
+  await page.open();
+  const container = new MockElement("div");
+  page.renderDetail(container);
+  const els = descendants(container);
+
+  // 供应商启停失败：toast + 按钮文案保持原状（不回退旧 UI）
+  const statusToggle = els.find((el) => el.className === "provider-status-toggle");
+  statusToggle.click();
+  await tickAsync();
+  assert.ok(toasts.some((t) => t.kind === "error" && t.message.startsWith("保存失败")), "供应商启停失败应弹 toast");
+  assert.ok(toasts.some((t) => t.kind === "error" && t.message.includes("服务器响应异常")), "英文技术错误应映射为中文");
+  assert.equal(statusToggle.textContent, "禁用", "失败后按钮文案保持原状");
+
+  // 模型启停失败：toast + 文案不回退
+  const m1Row = els.find((el) => el.className === "model-row" && el.getAttribute?.("data-model-id") === "m1");
+  const modelToggle = descendants(m1Row).find((el) => el.className === "model-status-toggle");
+  modelToggle.click();
+  await tickAsync();
+  assert.equal(modelToggle.textContent, "停用", "模型启停失败后文案不回退");
+  assert.ok(toasts.filter((t) => t.kind === "error").length >= 2, "模型启停失败也应弹 toast");
+});
+
+test("测试连接：commit 重渲染后结果写入新渲染的 resultSlot（Critical 修复回归）", async () => {
+  const patches = [];
+  const testBodies = [];
+  let current = JSON.parse(JSON.stringify(providers));
+  const fetchImpl = async (url, options = {}) => {
+    const method = options?.method ?? "GET";
+    if (method === "PATCH") {
+      const body = JSON.parse(options.body);
+      patches.push({ url, body });
+      const parts = url.split("/");
+      const provider = current.find((p) => p.id === parts[4]);
+      Object.assign(provider, body);
+      return { ok: true, json: async () => ({ ok: true, provider, store: { providers: current } }) };
+    }
+    if (url.endsWith("/test-connection")) {
+      testBodies.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ({ ok: true, message: "连接成功", latency_ms: 5 }) };
+    }
+    return { ok: true, json: async () => ({ providers: current, default_model: null }) };
+  };
+  const page = createModelSettingsPage({ fetchImpl, documentRef: mockDocument, showToast: () => {} });
+  mockElements.length = 0;
+  await page.open();
+
+  // 详情容器注册进 mockElements 的 [data-provider-detail]：commit 触发 refresh
+  // → render() 会重渲染该容器——旧 resultSlot 脱离 DOM 的真实路径。
+  mockElements.length = 0;
+  const detailContainer = new MockElement("div");
+  detailContainer.setAttribute("data-provider-detail", "true");
+  mockElements.push(detailContainer);
+  page.renderDetail(detailContainer);
+
+  const els = descendants(detailContainer);
+  const m1Row = els.find((el) => el.className === "model-row" && el.getAttribute?.("data-model-id") === "m1");
+  const testButton = descendants(m1Row).find((el) => el.className === "model-test-connection");
+  const oldSlot = descendants(m1Row).find((el) => el.getAttribute?.("data-model-connection-result") === "m1");
+  const baseUrlInput = els.find((el) => el.getAttribute?.("data-field") === "base_url");
+  baseUrlInput.value = "https://new.example.com/v2"; // 脏字段：未失焦改动
+
+  testButton.click();
+  await tickAsync();
+
+  assert.deepEqual(patches.map((p) => p.body), [{ base_url: "https://new.example.com/v2" }], "test 前应先提交草稿");
+  assert.deepEqual(testBodies[0], {
+    provider: { base_url: "https://new.example.com/v2", api_key_env: "DEEPSEEK_API_KEY" },
+    model: { model_name: "deepseek-v4-pro" }
+  }, "测试请求应使用提交后的权威值");
+  // commit 触发 refresh 重渲染：结果必须写入新渲染的 slot（用户可见），旧 slot 不接收
+  const freshSlot = descendants(detailContainer).find((el) => el.getAttribute?.("data-model-connection-result") === "m1");
+  assert.notEqual(freshSlot, oldSlot, "重渲染后详情容器内应有新的 result slot");
+  const resultEl = descendants(freshSlot).find((el) => String(el.className).includes("connection-result"));
+  assert.ok(resultEl, "测试结果应写入新渲染的 result slot（用户可见）");
+  assert.ok(resultEl.className.includes("connection-result ok"), "成功结果应渲染绿勾");
+  assert.ok(resultEl.textContent.includes("连接成功"), "结果文案应可见");
+  assert.equal(descendants(oldSlot).length, 0, "已脱离的旧 slot 不应收到结果");
 });

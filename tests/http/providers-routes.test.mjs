@@ -141,7 +141,7 @@ test("PATCH 携带 api_key 时落盘 secrets.json", async (t) => {
   });
   const data = await res.json();
   assert.equal(res.status, 200);
-  assert.equal(data.secret_saved, true);
+  assert.equal(data.api_key_saved, true, "密钥保存响应只携带 api_key_saved: true");
   const { readFile } = await import("node:fs/promises");
   const secrets = JSON.parse(await readFile(path.join(secretsRoot, "secrets.json"), "utf8"));
   assert.equal(secrets.MY_RELAY_KEY, "sk-real-secret");
@@ -173,4 +173,85 @@ test("pull-models 成功路径：本地 mock /models 返回列表并过滤空 id
   const pulled = await http.post(`/api/settings/providers/${providerId}/pull-models`, {});
   assert.equal(pulled.res.status, 200);
   assert.deepEqual(pulled.data.models, ["a", "b"]);
+});
+
+test("GET providers 携带每供应商 api_key_saved 状态（Task 20 #3 已配置状态）", async (t) => {
+  const { http, secretsRoot } = await setup(t);
+  // 预设未保存密钥 → false
+  const initial = await http.get("/api/settings/providers");
+  const deepseek = initial.data.providers.find((p) => p.id === "deepseek");
+  assert.equal(deepseek.api_key_saved, false, "未保存密钥的供应商 api_key_saved 应为 false");
+  assert.equal("api_key" in deepseek, false, "供应商对象不得携带明文密钥字段");
+  // 保存密钥后 → true（状态只反映本地 secrets，不回显明文）
+  await saveLocalSecrets(secretsRoot, { DEEPSEEK_API_KEY: "sk-deep" });
+  const after = await http.get("/api/settings/providers");
+  const configured = after.data.providers.find((p) => p.id === "deepseek");
+  assert.equal(configured.api_key_saved, true, "保存密钥后 api_key_saved 应为 true");
+  assert.equal(JSON.stringify(after.data).includes("sk-deep"), false, "响应不得回显密钥明文");
+});
+
+test("PATCH 密钥契约：api_key 一律按明文、api_key_env 只存名称、不猜形状（Task 20 #14）", async (t) => {
+  const { http, secretsRoot } = await setup(t);
+  const created = await http.post("/api/settings/providers", {
+    name: "开关测试", base_url: "https://relay.example.com",
+    api_format: "openai-chat-completions", api_key_env: "SWITCH_KEY"
+  });
+  const providerId = created.data.provider.id;
+
+  // 1) api_key_env 更新：只写供应商字段、不写 secrets、响应 api_key_saved: false
+  const envRes = await fetch(`${http.base}/api/settings/providers/${providerId}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ api_key_env: "RENAMED_KEY" })
+  });
+  const envData = await envRes.json();
+  assert.equal(envRes.status, 200);
+  assert.equal(envData.api_key_saved, false, "仅更新环境变量名不应标记密钥已保存");
+  assert.equal(envData.provider.api_key_env, "RENAMED_KEY");
+  const { readFile } = await import("node:fs/promises");
+  let secrets;
+  try {
+    secrets = JSON.parse(await readFile(path.join(secretsRoot, "secrets.json"), "utf8"));
+  } catch {
+    secrets = {};
+  }
+  assert.equal(secrets.RENAMED_KEY, undefined, "环境变量名更新不得写入密钥 bucket");
+
+  // 2) 形如环境变量名的 api_key 仍按明文写入（后端不猜字符串形状）
+  const keyRes = await fetch(`${http.base}/api/settings/providers/${providerId}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ api_key: "MY_API_KEY" })
+  });
+  const keyData = await keyRes.json();
+  assert.equal(keyRes.status, 200);
+  assert.equal(keyData.api_key_saved, true, "明文密钥写入应标记 api_key_saved: true");
+  secrets = JSON.parse(await readFile(path.join(secretsRoot, "secrets.json"), "utf8"));
+  assert.equal(secrets.RENAMED_KEY, "MY_API_KEY", "MY_API_KEY 应作为明文密钥存进现有 bucket");
+  assert.equal(JSON.stringify(keyData).includes("MY_API_KEY"), false, "响应不得回显密钥");
+
+  // 3) 非法 api_key_env 形状 → 400 invalid_api_key_env（写前校验，避免静默不落盘）
+  const bad = await fetch(`${http.base}/api/settings/providers/${providerId}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ api_key_env: "1BAD" })
+  });
+  const badData = await bad.json();
+  assert.equal(bad.status, 400);
+  assert.equal(badData.code, "invalid_api_key_env");
+
+  // 4) 无环境变量名的供应商直接粘贴明文密钥 → 400 invalid_api_key_env
+  const noEnv = await http.post("/api/settings/providers", {
+    name: "无环境名", base_url: "https://noenv.example.com",
+    api_format: "openai-chat-completions"
+  });
+  const rejected = await fetch(`${http.base}/api/settings/providers/${noEnv.data.provider.id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ api_key: "sk-x" })
+  });
+  const rejectedData = await rejected.json();
+  assert.equal(rejected.status, 400);
+  assert.equal(rejectedData.code, "invalid_api_key_env");
+  assert.equal(rejectedData.message, "请先填写 API 密钥环境变量名。");
 });
