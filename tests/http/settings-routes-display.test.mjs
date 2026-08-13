@@ -212,3 +212,21 @@ test("模型切换只走 model-switch 引用路由（写引用并生效）", asy
     "settings.json 写入引用"
   );
 });
+
+test("settings/update 响应只携带 api_key_saved（Task 20 契约，不再返回 secret_saved/secret_env）", async (t) => {
+  const { http, workspace, selection } = await setupSettingsServer(t);
+  const projectRoot = path.join(workspace, "novel-3");
+  await fs.mkdir(projectRoot, { recursive: true });
+  selection.current = projectRoot;
+
+  const { res, data } = await http.post("/api/settings/update", {
+    projectRoot,
+    tool_permissions: { auto_edit: true }
+  });
+  assert.equal(res.status, 200);
+  assert.equal(data.ok, true);
+  assert.equal(data.api_key_saved, false, "settings/update 不落密钥，api_key_saved 恒为 false");
+  assert.equal("secret_env" in data, false, "响应不得再返回 secret_env");
+  assert.equal("secret_saved" in data, false, "响应不得再返回 secret_saved");
+  assert.equal("api_key" in data, false, "响应不得包含密钥明文");
+});

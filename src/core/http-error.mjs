@@ -44,6 +44,11 @@ export const SAFE_PUBLIC_ERROR_CODES = new Set([
   "model_unsupported",
   "model_disabled",
   "model_profile_not_found",
+  // Task 20：invalid_api_key_env 两个文案均为程序写死、不拼底层异常（同
+  // model_disabled 标准）。设置页密钥保存被拒时用户必须看到具体原因——「请先填写
+  // API 密钥环境变量名。」是粘贴明文密钥时的唯一可读引导（前端据此弹指引 toast，
+  // 否则会被收敛为通用脱敏文案，指引在真实后端永远不可达）。
+  "invalid_api_key_env",
   // Task 19（spec 4.3 #13）：settings/update 拒绝旧 active_model 字段——固定文案
   // 指向模型引用 API（POST /api/settings/model-switch 与 providers CRUD），
   // 前端只展示 data.message 不做 code 分支，必须透传才能让用户看到迁移指引。

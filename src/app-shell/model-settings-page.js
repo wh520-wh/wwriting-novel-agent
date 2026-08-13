@@ -16,14 +16,77 @@ export function buildPageState(providers, selectedId) {
   return { providers, selected };
 }
 
-// 失焦（change）自动保存：文本类输入统一走这里。base_url 带 http(s) 前缀校验，
-// 不合法直接放弃保存（保持编辑态，不 toast 打断）。
-function bindAutosave(input, field, apply) {
-  input.addEventListener("change", () => {
+// 技术错误 → 中文（Task 20 #15）：后端领域错误消息本身已是中文（data.message
+// 透传），只有本地/技术性异常（网络、超时、HTTP 状态、未知类型）才会落到这里
+// 兜底翻译。中文消息一律原样保留，绝不改写。
+export function translateTechnicalError(error) {
+  const raw = String(error?.message ?? "").trim();
+  if (!raw) return "未知错误，请稍后重试";
+  const compact = raw.replace(/\s+/gu, " ");
+  if (/^(failed to fetch|fetch failed|networkerror|network error|network request failed|load failed|typeerror: fetch failed)/iu.test(compact)) {
+    return "网络请求失败，请检查网络连接后重试";
+  }
+  if (/^http \d{3}/iu.test(compact)) {
+    return "服务器响应异常，请稍后重试";
+  }
+  if (/(timeout|timed out|timedout)/iu.test(compact)) {
+    return "请求超时，请稍后重试";
+  }
+  if (/^typeerror/iu.test(compact)) {
+    return "请求格式错误，请刷新页面后重试";
+  }
+  return raw;
+}
+
+// 密钥状态文案（Task 20 #3）：只显示「已配置」状态，绝不回显密钥明文；
+// 环境变量名不是密钥，可随状态展示帮助识别。
+function keyStatusText(provider) {
+  if (provider.api_key_saved) {
+    return provider.api_key_env ? `已配置（${provider.api_key_env}）` : "已配置";
+  }
+  return provider.api_key_env ? `已填环境变量名（${provider.api_key_env}）` : "未配置";
+}
+
+// 单次渲染的草稿引用：test/pull 的 commitCurrentDraft 从这里读当前表单值
+//（含未失焦的输入），保证「先提交并验证当前表单值」而不读陈旧保存值。
+function freshDraftRefs() {
+  return {
+    providerId: null,
+    nameInput: null,
+    baseUrlInput: null,
+    keyInput: null,
+    envToggle: null,
+    modelInputs: new Map(), // modelId → name input
+    errorRefs: new Map() // fieldKey → 错误行 span
+  };
+}
+
+function showFieldError(refs, fieldKey, message) {
+  const span = refs?.errorRefs?.get(fieldKey);
+  if (span) span.textContent = message;
+}
+
+function clearFieldError(refs, fieldKey) {
+  showFieldError(refs, fieldKey, "");
+}
+
+// 失焦（change）自动保存（Task 20 draft-first）：空值/非法值不再静默丢弃——
+// 保留编辑态（输入值不动）并行内显示中文错误；合法值才提交保存。
+// commit 返回 { ok, error }（commitProviderPatch/commitModelPatch 形状），
+// 失败时行内回显错误（toast 由 commit 内部弹）。
+function bindAutosave(input, { refs, fieldKey, validate = null, commit }) {
+  input.addEventListener("change", async () => {
     const value = input.value.trim();
-    if (!value) return; // 空值不保存（与密钥框守卫一致）
-    if (field === "base_url" && !/^https?:\/\/.+/u.test(value)) return;
-    apply({ [field]: value }); // saveProviderPatch 内部 catch 并返回布尔，不会产生未处理拒绝
+    const error = validate ? validate(value) : null;
+    if (error) {
+      showFieldError(refs, fieldKey, error);
+      return;
+    }
+    clearFieldError(refs, fieldKey);
+    const result = await commit(value);
+    if (result?.ok === false) {
+      showFieldError(refs, fieldKey, result.error ?? "保存失败，请重试");
+    }
   });
 }
 
@@ -41,6 +104,8 @@ export async function setDefaultModelImpl(fetchImpl, providerId, modelId) {
 export function createModelSettingsPage(ctx = {}) {
   const { fetchImpl = fetch, documentRef = document, onChanged = () => {}, showToast = () => {}, confirmImpl = globalThis.confirm } = ctx;
   let state = { providers: [], selected: null, default_model: null };
+  // 当前渲染详情的草稿引用（renderDetail 每次重建；commitCurrentDraft 读取）。
+  let activeDraftRefs = freshDraftRefs();
 
   // 加载失败路径：保留上一次可用状态，只 toast 不抛错——open() 随之正常 resolve，
   // 避免 Task 13-15 挂到本页后遇到未处理拒绝（页面停在旧状态而非空着报错）。
@@ -55,12 +120,14 @@ export function createModelSettingsPage(ctx = {}) {
       state = { ...buildPageState(data.providers, state.selected?.id ?? null), default_model: data.default_model ?? null };
       render();
     } catch (error) {
-      showToast(`模型列表加载失败：${error?.message ?? "未知错误"}`, "error");
+      showToast(`模型列表加载失败：${translateTechnicalError(error)}`, "error");
     }
     return state;
   }
 
-  async function saveProviderPatch(id, patch) {
+  // 供应商字段保存（Task 20）：返回 { ok, error, provider }。失败路径保留当前
+  // 状态并 toast（不刷新，避免用旧数据覆盖新状态），英文技术错误映射中文。
+  async function commitProviderPatch(id, patch) {
     try {
       const res = await fetchImpl(`${API_BASE}/${id}`, {
         method: "PATCH",
@@ -71,21 +138,26 @@ export function createModelSettingsPage(ctx = {}) {
       if (!res.ok) throw new Error(data?.message ?? `HTTP ${res.status}`);
       await refresh();
       onChanged();
-      return true;
+      return { ok: true, error: null, provider: data?.provider ?? null };
     } catch (error) {
-      // 保存失败：保留当前状态并 toast，不刷新（避免用旧数据覆盖新状态）。
+      const message = translateTechnicalError(error);
       // 无环境变量名的供应商直接粘贴明文密钥会命中后端 invalid_api_key_env（400）：
       // 此时给出更明确的引导，其余错误保留通用文案。
-      if (error?.message?.includes("API 密钥环境变量名")) {
-        showToast("请先填写 API 密钥环境变量名（在密钥框输入如 MY_KEY 并回车保存），再粘贴密钥。", "error");
+      if (error?.message?.includes("请先填写 API 密钥环境变量名")) {
+        showToast("请先填写 API 密钥环境变量名（开启「使用环境变量名」后填写如 MY_KEY 并保存），再粘贴密钥。", "error");
       } else {
-        showToast(`保存失败：${error?.message ?? "未知错误"}`, "error");
+        showToast(`保存失败：${message}`, "error");
       }
-      return false;
+      return { ok: false, error: message, provider: null };
     }
   }
 
-  async function saveModelPatch(providerId, modelId, patch) {
+  // 布尔形态（既有调用方/测试契约）：成功 true / 失败 false。
+  async function saveProviderPatch(id, patch) {
+    return (await commitProviderPatch(id, patch)).ok;
+  }
+
+  async function commitModelPatch(providerId, modelId, patch) {
     try {
       const res = await fetchImpl(`${API_BASE}/${providerId}/models/${modelId}`, {
         method: "PATCH",
@@ -96,12 +168,16 @@ export function createModelSettingsPage(ctx = {}) {
       if (!res.ok) throw new Error(data?.message ?? `HTTP ${res.status}`);
       await refresh();
       onChanged();
-      return true;
+      return { ok: true, error: null, model: data?.model ?? null, provider: data?.provider ?? null };
     } catch (error) {
-      // 保存失败：保留当前状态并 toast，不刷新（避免用旧数据覆盖新状态）。
-      showToast(`保存失败：${error?.message ?? "未知错误"}`, "error");
-      return false;
+      const message = translateTechnicalError(error);
+      showToast(`保存失败：${message}`, "error");
+      return { ok: false, error: message, model: null, provider: null };
     }
+  }
+
+  async function saveModelPatch(providerId, modelId, patch) {
+    return (await commitModelPatch(providerId, modelId, patch)).ok;
   }
 
   // 删除供应商：二次确认后才发 POST .../remove（同时删除其下全部模型）。
@@ -121,7 +197,7 @@ export function createModelSettingsPage(ctx = {}) {
       onChanged();
       return true;
     } catch (error) {
-      showToast(`删除失败：${error?.message ?? "未知错误"}`, "error");
+      showToast(`删除失败：${translateTechnicalError(error)}`, "error");
       return false;
     }
   }
@@ -145,7 +221,7 @@ export function createModelSettingsPage(ctx = {}) {
       onChanged();
       return true;
     } catch (error) {
-      showToast(`设置默认模型失败：${error?.message ?? "未知错误"}`, "error");
+      showToast(`设置默认模型失败：${translateTechnicalError(error)}`, "error");
       return false;
     }
   }
@@ -167,7 +243,7 @@ export function createModelSettingsPage(ctx = {}) {
       onChanged();
       return true;
     } catch (error) {
-      showToast(`删除失败：${error?.message ?? "未知错误"}`, "error");
+      showToast(`删除失败：${translateTechnicalError(error)}`, "error");
       return false;
     }
   }
@@ -188,16 +264,23 @@ export function createModelSettingsPage(ctx = {}) {
       showToast("已添加模型，可在名称框直接改名后回车保存", "success");
       return true;
     } catch (error) {
-      showToast(`添加模型失败：${error?.message ?? "未知错误"}`, "error");
+      showToast(`添加模型失败：${translateTechnicalError(error)}`, "error");
       return false;
     }
   }
 
-  // 拉取模型：前置检查（供应商存在且已配置密钥环境变量名）→ POST .../pull-models
+  // 拉取模型（Task 20 #8）：先提交并验证当前表单值（同一 commitCurrentDraft），
+  // 成功后使用返回的权威 provider 做前置检查与请求——绝不读取陈旧保存值。
+  // 前置检查（供应商存在且已配置密钥环境变量名）→ POST .../pull-models
   // 取候选名列表（后端中转外呼厂商 GET /models，不落盘），渲染到模型区顶部的
   // 可折叠候选容器（默认收起，拉取成功后自动展开），逐条「添加」走 addPulledModel。
   async function pullModels(providerId) {
-    const provider = state.providers.find((p) => p.id === providerId);
+    const committed = await commitCurrentDraft({
+      providerId,
+      provider: state.providers.find((p) => p.id === providerId) ?? state.selected ?? null
+    });
+    if (!committed.ok) return false;
+    const provider = committed.provider;
     if (!provider || !provider.api_key_env) {
       showToast("请先填写接口地址和 API 密钥");
       return false;
@@ -213,7 +296,7 @@ export function createModelSettingsPage(ctx = {}) {
       renderCandidateList(providerId, data.models ?? []);
       return true;
     } catch (error) {
-      showToast(`拉取失败：${error?.message ?? "未知错误"}`, "error");
+      showToast(`拉取失败：${translateTechnicalError(error)}`, "error");
       return false;
     }
   }
@@ -232,16 +315,43 @@ export function createModelSettingsPage(ctx = {}) {
       onChanged();
       return true;
     } catch (error) {
-      showToast(`添加模型失败：${error?.message ?? "未知错误"}`, "error");
+      showToast(`添加模型失败：${translateTechnicalError(error)}`, "error");
       return false;
     }
   }
 
-  // 测试连接：POST /api/settings/test-connection（Task 11 双形态契约的「供应商+模型」
-  // 形态），结果行内渲染到模型行（成功绿勾 / 失败红字错误文案）。请求体不带 api_key，
-  // 依赖已落盘的 secrets；密钥缺失（configuration_missing / missing_api_key）时
-  // 额外 toast 引导补密钥。失败结果经 formatConnectionStatus 复用既有文案格式。
+  // 测试连接（Task 20 #8）：先提交并验证当前表单值（同一 commitCurrentDraft），
+  // 成功后使用返回的权威 provider/model——绝不读取陈旧保存值。
+  // POST /api/settings/test-connection（Task 11 双形态契约的「供应商+模型」
+  // 形态），结果行内渲染到模型行（成功绿勾 / 失败红字错误文案）。请求体不带
+  // api_key，依赖已落盘的 secrets；密钥缺失（configuration_missing /
+  // missing_api_key）时额外 toast 引导补密钥。失败结果经 formatConnectionStatus
+  // 复用既有文案格式。
   async function testConnection(provider, model, resultSlot) {
+    const committed = await commitCurrentDraft({
+      providerId: provider.id,
+      modelId: model?.id ?? null,
+      provider,
+      model
+    });
+    // Critical 修复（Task 20 审查）：commit 成功会 refresh → renderDetail 重建整个
+    // 详情容器，click 时捕获的 resultSlot 已脱离 DOM——结果写进去用户不可见。
+    // 仿照 renderCandidateList 重新查询当前渲染的 slot（新元素后创建，最后匹配
+    // ≈ 当前挂载）；找不到（直调/未重渲染）才回退传入节点。
+    const slot = model?.id
+      ? (documentRef.querySelector?.(`[data-model-connection-result="${model.id}"]`) ?? null)
+      : null;
+    const targetSlot = slot ?? resultSlot ?? null;
+    if (!committed.ok || !committed.provider || !committed.model) {
+      const message = committed.error ?? "请先修正表单错误";
+      if (targetSlot) {
+        targetSlot.replaceChildren();
+        targetSlot.append(el("span", { class: "connection-result error", text: `✗ ${message}` }));
+      }
+      return { ok: false, data: { message } };
+    }
+    const targetProvider = committed.provider;
+    const targetModel = committed.model;
     let data = null;
     let ok = false;
     try {
@@ -249,22 +359,22 @@ export function createModelSettingsPage(ctx = {}) {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          provider: { base_url: provider.base_url, api_key_env: provider.api_key_env },
-          model: { model_name: model.model_name }
+          provider: { base_url: targetProvider.base_url, api_key_env: targetProvider.api_key_env },
+          model: { model_name: targetModel.model_name }
         })
       });
       data = await res.json().catch(() => null);
       ok = res.ok === true && data?.ok !== false;
     } catch (error) {
-      data = { message: error?.message ?? "未知错误" };
+      data = { message: translateTechnicalError(error) };
     }
     const message = formatConnectionStatus(data) || (ok ? "连接成功" : "连接测试失败");
-    if (resultSlot) {
-      resultSlot.replaceChildren();
-      resultSlot.append(el("span", { class: `connection-result ${ok ? "ok" : "error"}`, text: `${ok ? "✓ " : "✗ "}${message}` }));
+    if (targetSlot) {
+      targetSlot.replaceChildren();
+      targetSlot.append(el("span", { class: `connection-result ${ok ? "ok" : "error"}`, text: `${ok ? "✓ " : "✗ "}${message}` }));
     }
     if (!ok && (data?.code === "configuration_missing" || data?.code === "missing_api_key")) {
-      showToast("请先配置 API 密钥（在密钥框填写环境变量名或直接粘贴密钥保存），再测试连接。", "error");
+      showToast("请先配置 API 密钥（开启「使用环境变量名」填写环境变量名，或直接粘贴明文密钥保存），再测试连接。", "error");
     }
     return { ok, data };
   }
@@ -315,9 +425,75 @@ export function createModelSettingsPage(ctx = {}) {
       showToast("供应商已添加", "success");
       return true;
     } catch (error) {
-      showToast(`添加供应商失败：${error?.message ?? "未知错误"}`, "error");
+      showToast(`添加供应商失败：${translateTechnicalError(error)}`, "error");
       return false;
     }
+  }
+
+  // Task 20 #8：test/pull 共用的「先提交并验证当前表单值」入口。读取当前渲染
+  // 表单的草稿值（含未失焦的输入），逐字段校验（中文错误行内回显、保留编辑态），
+  // 脏字段先保存，成功后返回权威 provider/model——绝不读取陈旧保存值。
+  // 表单未渲染（无详情行，如直调/页面刚加载）时无草稿可提交，直接返回权威值。
+  async function commitCurrentDraft({ providerId, modelId = null, provider: fallbackProvider = null, model: fallbackModel = null } = {}) {
+    const refs = activeDraftRefs.providerId === providerId ? activeDraftRefs : null;
+    const baseProvider = fallbackProvider ?? state.providers.find((p) => p.id === providerId) ?? state.selected ?? null;
+    if (!refs) {
+      const model = fallbackModel ?? baseProvider?.models.find((m) => m.id === modelId) ?? null;
+      return { ok: true, provider: baseProvider, model };
+    }
+
+    // 1) 校验全部表单值（不通过即中止，错误行内回显）
+    const name = refs.nameInput.value.trim();
+    if (!name) return fieldError(refs, "name", "供应商名称不能为空");
+    const baseUrl = refs.baseUrlInput.value.trim();
+    if (!baseUrl) return fieldError(refs, "base_url", "Base URL 不能为空");
+    if (!/^https?:\/\/.+/u.test(baseUrl)) return fieldError(refs, "base_url", "Base URL 需以 http:// 或 https:// 开头");
+    const keyValue = refs.keyInput.value.trim();
+    const envMode = refs.envToggle.checked === true;
+    if (envMode && keyValue && !isEnvironmentVariableName(keyValue)) {
+      return fieldError(refs, "api_key", "API 密钥环境变量名只能包含字母、数字、下划线且不能以数字开头。");
+    }
+    for (const [mid, input] of refs.modelInputs) {
+      if (!input.value.trim()) return fieldError(refs, `model_name:${mid}`, "模型名称不能为空");
+    }
+
+    // 2) 提交脏字段：provider 字段合并为一次 PATCH；模型逐个提交。
+    // 与权威值逐字段比较，仅保存实际变化（避免无谓 PATCH）。
+    // 密钥/环境变量名与直连 change 处理器同语义：非空即提交（密钥不可读无法
+    // 比较）、成功后清空输入——不设「未变化跳过」分支，避免两入口行为分叉。
+    let provider = baseProvider ?? {};
+    let model = fallbackModel ?? baseProvider?.models.find((m) => m.id === modelId) ?? null;
+    const providerPatch = {};
+    if (name !== String(provider.name ?? "").trim()) providerPatch.name = name;
+    if (baseUrl !== String(provider.base_url ?? "").trim()) providerPatch.base_url = baseUrl;
+    if (keyValue) providerPatch[envMode ? "api_key_env" : "api_key"] = keyValue;
+    if (Object.keys(providerPatch).length > 0) {
+      const result = await commitProviderPatch(providerId, providerPatch);
+      if (result?.ok === false) return { ok: false, error: result.error ?? "保存失败，请重试" };
+      provider = result.provider ?? { ...provider, name, base_url: baseUrl, ...(envMode && keyValue ? { api_key_env: keyValue } : {}) };
+      if (keyValue) refs.keyInput.value = ""; // 密钥/环境变量名不回显
+    }
+    for (const [mid, input] of refs.modelInputs) {
+      const value = input.value.trim();
+      const currentModel = (provider.models ?? []).find((m) => m.id === mid) ?? { model_name: "" };
+      if (value === String(currentModel.model_name ?? "").trim()) continue;
+      const result = await commitModelPatch(providerId, mid, { model_name: value });
+      if (result?.ok === false) return { ok: false, error: result.error ?? "保存失败，请重试" };
+      const next = result.provider ?? { ...provider, models: (provider.models ?? []).map((m) => (m.id === mid ? { ...m, model_name: value } : m)) };
+      provider = next;
+      if (mid === modelId) model = (next.models ?? []).find((m) => m.id === mid) ?? { ...(model ?? {}), model_name: value };
+    }
+    if (!model && modelId) model = (provider.models ?? []).find((m) => m.id === modelId) ?? null;
+
+    // 3) 提交成功：清空行内错误（重渲染会重建，直调路径显式清）
+    for (const [, span] of refs.errorRefs) span.textContent = "";
+    return { ok: true, provider, model };
+  }
+
+  // 校验失败出口：行内回显中文错误并保留编辑态，返回 { ok: false } 中止后续动作。
+  function fieldError(refs, fieldKey, message) {
+    showFieldError(refs, fieldKey, message);
+    return { ok: false, error: message };
   }
 
   function el(tag, props = {}, children = []) {
@@ -410,11 +586,22 @@ export function createModelSettingsPage(ctx = {}) {
   function renderDetail(container) {
     container.replaceChildren();
     const provider = state.selected;
+    // Task 20：本次渲染的草稿引用（commitCurrentDraft 从这读当前表单值）。
+    activeDraftRefs = freshDraftRefs();
     if (!provider) { container.append(el("p", { text: "还没有供应商，先添加一个。" })); return; }
+    activeDraftRefs.providerId = provider.id;
 
-    // 供应商名：h2 改为可编辑输入，失焦（change）自动保存。
+    // 供应商名：可编辑输入，失焦（change）自动保存；空值行内中文错误不静默丢弃。
     const nameInput = el("input", { value: provider.name, class: "provider-name", "data-field": "name" });
-    bindAutosave(nameInput, "name", (patch) => saveProviderPatch(provider.id, patch));
+    activeDraftRefs.nameInput = nameInput;
+    bindAutosave(nameInput, {
+      refs: activeDraftRefs,
+      fieldKey: "name",
+      validate: (value) => (value ? null : "供应商名称不能为空"),
+      commit: (value) => commitProviderPatch(provider.id, { name: value })
+    });
+    const nameError = el("span", { class: "field-error", "data-field-error": "name" });
+    activeDraftRefs.errorRefs.set("name", nameError);
     // 状态切换：文案即动作（enabled →「禁用」，disabled →「启用」），
     // 点击保存相反状态，refresh 重渲染后文案随新状态翻转。
     const statusToggle = el("button", {
@@ -432,12 +619,24 @@ export function createModelSettingsPage(ctx = {}) {
     deleteButton.addEventListener("click", () => {
       removeProviderWithConfirm(provider.id);
     });
-    container.append(el("div", { class: "provider-detail-head" }, [nameInput, statusToggle, deleteButton]));
+    container.append(el("div", { class: "provider-detail-head" }, [nameInput, nameError, statusToggle, deleteButton]));
 
     container.append(el("label", { text: "Base URL" }));
     const baseUrlInput = el("input", { value: provider.base_url, "data-field": "base_url" });
-    bindAutosave(baseUrlInput, "base_url", (patch) => saveProviderPatch(provider.id, patch));
-    container.append(baseUrlInput);
+    activeDraftRefs.baseUrlInput = baseUrlInput;
+    bindAutosave(baseUrlInput, {
+      refs: activeDraftRefs,
+      fieldKey: "base_url",
+      validate: (value) => {
+        if (!value) return "Base URL 不能为空";
+        if (!/^https?:\/\/.+/u.test(value)) return "Base URL 需以 http:// 或 https:// 开头";
+        return null;
+      },
+      commit: (value) => commitProviderPatch(provider.id, { base_url: value })
+    });
+    const baseUrlError = el("span", { class: "field-error", "data-field-error": "base_url" });
+    activeDraftRefs.errorRefs.set("base_url", baseUrlError);
+    container.append(baseUrlInput, baseUrlError);
 
     container.append(el("label", { text: "API 接口协议" }));
     const formatSelect = el("select", { "data-field": "api_format" });
@@ -465,29 +664,51 @@ export function createModelSettingsPage(ctx = {}) {
     container.append(formatSelect);
 
     container.append(el("label", { text: "API 密钥" }));
-    const keyInput = el("input", { type: "password", value: "", "data-field": "api_key", placeholder: "粘贴密钥或填环境变量名" });
-    // 双模式：形如环境变量名（字母/数字/下划线且非数字开头，与后端校验一致）→
-    // 保存 api_key_env；否则视为粘贴的明文密钥 → api_key（后端落 secrets.json，
-    // 响应不含明文）。
+    // Task 20 #3/#14：输入框不回显密钥；「使用环境变量名」checkbox 默认关闭，
+    // 关闭时一律按明文密钥提交 { api_key: value }（即使形如 MY_API_KEY），
+    // 打开后才按环境变量名提交 { api_key_env: value }——语义由开关决定，不猜形状。
+    const keyInput = el("input", { type: "password", value: "", "data-field": "api_key", placeholder: "粘贴 API 密钥（默认按明文保存）" });
+    activeDraftRefs.keyInput = keyInput;
+    const envToggle = el("input", { type: "checkbox", class: "api-key-env-toggle", "data-field": "api_key_env_toggle" });
+    envToggle.checked = false;
+    activeDraftRefs.envToggle = envToggle;
+    envToggle.addEventListener("change", () => {
+      clearFieldError(activeDraftRefs, "api_key");
+      keyInput.placeholder = envToggle.checked ? "环境变量名，如 MY_API_KEY" : "粘贴 API 密钥（默认按明文保存）";
+    });
     keyInput.addEventListener("change", async () => {
       const value = keyInput.value.trim();
-      if (!value) return;
-      // 契约：后端仅把密钥写入已有 api_key_env 对应的 bucket；无环境变量名的供应商
-      // 直接粘贴明文密钥会 400（toast 提示「请先填写 API 密钥环境变量名。」），
-      // 应先保存环境变量名再粘贴密钥。Task 15 的添加供应商表单会把环境变量名作为必填项。
-      const isEnvName = isEnvironmentVariableName(value);
-      if (isEnvName) {
-        saveProviderPatch(provider.id, { api_key_env: value });
-        return; // 环境变量名模式保留输入值
+      if (!value) { clearFieldError(activeDraftRefs, "api_key"); return; }
+      if (envToggle.checked) {
+        if (!isEnvironmentVariableName(value)) {
+          showFieldError(activeDraftRefs, "api_key", "API 密钥环境变量名只能包含字母、数字、下划线且不能以数字开头。");
+          return;
+        }
+        const result = await commitProviderPatch(provider.id, { api_key_env: value });
+        if (result?.ok === false) {
+          showFieldError(activeDraftRefs, "api_key", result.error ?? "保存失败，请重试");
+          return;
+        }
+        keyInput.value = ""; // 不回显密钥/环境变量名，状态由「已配置」标签呈现
+        return;
       }
-      // 明文密钥：保存成功后才清空回显，避免失败时丢失已键入的密钥。
-      if (await saveProviderPatch(provider.id, { api_key: value })) keyInput.value = "";
+      // 明文密钥：保存成功后才清空回显，失败保留已键入值。
+      const result = await commitProviderPatch(provider.id, { api_key: value });
+      if (result?.ok === false) {
+        showFieldError(activeDraftRefs, "api_key", result.error ?? "保存失败，请重试");
+        return;
+      }
+      keyInput.value = "";
     });
     const eye = el("button", { type: "button", title: "显示/隐藏密钥", text: "👁" });
     eye.addEventListener("click", () => {
       keyInput.type = keyInput.type === "password" ? "text" : "password";
     });
-    container.append(keyInput, eye);
+    const envLabel = el("label", { class: "api-key-env-label" }, [envToggle, el("span", { text: "使用环境变量名" })]);
+    const keyStatus = el("span", { class: "api-key-status", "data-api-key-status": "true", text: keyStatusText(provider) });
+    const keyError = el("span", { class: "field-error", "data-field-error": "api_key" });
+    activeDraftRefs.errorRefs.set("api_key", keyError);
+    container.append(keyInput, eye, envLabel, keyStatus, keyError);
     renderModelRows(container, provider);
   }
 
@@ -511,9 +732,17 @@ export function createModelSettingsPage(ctx = {}) {
 
     for (const model of provider.models) {
       const isDefault = isDefaultModel(provider.id, model.id);
-      // 模型名：失焦（change）保存，[1m] 标记原样保留（空值守卫在 bindAutosave 内）。
+      // 模型名：失焦（change）保存；空值行内中文错误不静默丢弃（Task 20 #5）。
       const nameInput = el("input", { value: model.model_name, "data-field": "model_name" });
-      bindAutosave(nameInput, "model_name", (patch) => saveModelPatch(provider.id, model.id, patch));
+      activeDraftRefs.modelInputs.set(model.id, nameInput);
+      bindAutosave(nameInput, {
+        refs: activeDraftRefs,
+        fieldKey: `model_name:${model.id}`,
+        validate: (value) => (value ? null : "模型名称不能为空"),
+        commit: (value) => commitModelPatch(provider.id, model.id, { model_name: value })
+      });
+      const nameError = el("span", { class: "field-error", "data-field-error": `model_name:${model.id}` });
+      activeDraftRefs.errorRefs.set(`model_name:${model.id}`, nameError);
       // 启停开关：文案即动作，点击保存相反状态，refresh 后文案随新状态翻转。
       const toggle = el("button", {
         type: "button",
@@ -547,6 +776,7 @@ export function createModelSettingsPage(ctx = {}) {
       });
       container.append(el("div", { class: "model-row", "data-model-id": model.id }, [
         nameInput,
+        nameError,
         toggle,
         el("span", { text: model.enabled === false ? "已停用" : "已启用" }),
         ...(isDefault ? [el("span", { class: "default-badge", text: "默认" })] : []),
@@ -618,6 +848,7 @@ export function createModelSettingsPage(ctx = {}) {
     addPulledModel,
     testConnection,
     addProvider,
-    _handlers: { saveProviderPatch, saveModelPatch, refresh, removeProviderWithConfirm, setDefaultModel, removeModelWithConfirm, addModel, pullModels, addPulledModel, testConnection, addProvider }
+    commitCurrentDraft,
+    _handlers: { saveProviderPatch, saveModelPatch, refresh, removeProviderWithConfirm, setDefaultModel, removeModelWithConfirm, addModel, pullModels, addPulledModel, testConnection, addProvider, commitCurrentDraft }
   };
 }

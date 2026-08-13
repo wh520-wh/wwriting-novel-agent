@@ -52,7 +52,21 @@ export function createProvidersRoutes({ secretsRoot }) {
   return {
     // 前端契约：GET 返回扁平 store（providers / default_model 顶层字段），
     // 突变端点（POST/PATCH/remove）返回嵌套 store 字段。
-    "GET /api/settings/providers": wrap(async () => ({ ok: true, ...(await storeList()) })),
+    // Task 20 #3：每个 provider 附带 api_key_saved（本地 secrets 是否已存密钥），
+    // 设置页密钥框据此显示「已配置」状态；绝不回显密钥明文。
+    // 口径说明（有意差异）：api_key_saved 只查本地 secrets、不查 process.env——
+    // 页面密钥框写入的就是本地 secrets，状态反映「本应用已保存」；buildModelProfile
+    // 与 pull-models 的 process.env 回退是「外部注入密钥」的运行时读取路径，与
+    // 页面保存状态不是同一概念，不做合并以免状态失真。
+    "GET /api/settings/providers": wrap(async () => {
+      const store = await storeList();
+      const secrets = await loadLocalSecrets(secretsRoot);
+      const providers = store.providers.map((p) => ({
+        ...p,
+        api_key_saved: Boolean(p.api_key_env && secrets[p.api_key_env])
+      }));
+      return { ok: true, ...store, providers };
+    }),
 
     // 创建 body 中的 api_key 有意忽略（前端契约：创建不带密钥，创建后 PATCH 设置）。
     "POST /api/settings/providers": wrap(async ({ body }) => {
@@ -63,13 +77,25 @@ export function createProvidersRoutes({ secretsRoot }) {
     // 写序契约：secrets 先写、upsert 后写。若 upsert 失败（如重名），secrets.json
     // 留有一个惰性孤儿值，无损坏（反向顺序更糟：upsert 先落盘后密钥写入失败，
     // 会留下一个指向缺失密钥的供应商）。
+    // Task 20 #14 密钥契约：字段名即语义，后端不猜字符串形状——
+    //   { api_key: value } 一律按明文密钥写入 api_key_env 对应 bucket；
+    //   { api_key_env: value } 只更新环境变量名，不写 secrets。
+    // 响应只携带 api_key_saved: boolean（密钥保存状态），绝不回显明文。
     "PATCH /api/settings/providers/:id": wrap(async ({ params, body }) => {
       const current = await providerOf(params.id);
       const payload = { ...(body ?? {}) };
       const transientKey = typeof payload.api_key === "string" ? payload.api_key.trim() : "";
       delete payload.api_key;
+      // api_key_env 字段更新：写前校验名称形状（saveLocalSecrets 会静默丢弃非法
+      // 环境变量名，这里先拦截，避免「看似成功实则未落盘」）。
+      const envNamePatch = typeof payload.api_key_env === "string" ? payload.api_key_env.trim() : null;
+      if (envNamePatch !== null && !API_KEY_ENV_NAME.test(envNamePatch)) {
+        throw new HttpError(400, "invalid_api_key_env", "API 密钥环境变量名只能包含字母、数字、下划线且不能以数字开头。");
+      }
+      // 校验与合并同一口径：trim 后的值落盘（避免校验过了、原始值带空白落盘）。
+      if (envNamePatch !== null) payload.api_key_env = envNamePatch;
       if (transientKey) {
-        const envName = String(payload.api_key_env ?? current.api_key_env ?? "").trim();
+        const envName = envNamePatch ?? String(current.api_key_env ?? "").trim();
         if (!envName) throw new HttpError(400, "invalid_api_key_env", "请先填写 API 密钥环境变量名。");
         if (!API_KEY_ENV_NAME.test(envName)) throw new HttpError(400, "invalid_api_key_env", "API 密钥环境变量名只能包含字母、数字、下划线且不能以数字开头。");
         const secrets = await loadLocalSecrets(secretsRoot);
@@ -77,7 +103,7 @@ export function createProvidersRoutes({ secretsRoot }) {
       }
       const merged = { ...current, ...payload, id: current.id };
       const { provider, store } = await upsertProvider(secretsRoot, merged);
-      return { ok: true, provider, store, secret_saved: Boolean(transientKey) };
+      return { ok: true, provider, store, api_key_saved: Boolean(transientKey) };
     }),
 
     "POST /api/settings/providers/:id/remove": wrap(async ({ params }) => {
