@@ -1198,7 +1198,8 @@ step("场景 27 · 章节工具后普通问答");
     "count_text",
     "update_plan",
     "append_chapter_segment",
-    "commit_chapter"
+    "commit_chapter",
+    "finalize_revision"
   ]);
   const script = [];
   const h = await createProjectAgentHarness({

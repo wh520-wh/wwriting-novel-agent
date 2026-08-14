@@ -21,8 +21,10 @@ import { sha256 } from "../../src/core/fs-utils.mjs";
 import { countEffectiveWords } from "../../src/core/word-count.mjs";
 import {
   appendChapterSegment,
+  chapterFinalPath,
   commitChapter as rawCommitChapter,
   commitChapterMemory,
+  finalizeChapter,
   inspectChapterContext,
   ProjectOperationError
 } from "../../src/core/project-operations/chapter.mjs";
@@ -610,6 +612,117 @@ test("commitChapter 第 1 次写失败：回滚干净且无误导性 ENOENT 警�
     assert.equal(await fs.readFile(path.join(projectRoot, "memory", "chapter_index.json"), "utf8"), indexBefore);
     assert.equal(await fs.readFile(path.join(projectRoot, "run_log.jsonl"), "utf8"), runLogBefore);
     assert.equal((await checkpointFiles(projectRoot)).length, 0);
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// finalizeChapter：编辑后重新入账，账本与文件一致；未提交章节拒绝（Task C3）
+// ---------------------------------------------------------------------------
+
+test("finalizeChapter：编辑后重新入账，账本与文件一致；未提交章节拒绝", async () => {
+  const { workspace, projectRoot, project } = await makeProject();
+  try {
+    await appendChapterSegment({ projectRoot, projectId: project.project_id, chapterNo: 1, segmentNo: 1, content: LONG_PROSE });
+    const commit = await commitChapter({ projectRoot, projectId: project.project_id, chapterNo: 1 });
+    assert.equal(commit.ok, true);
+
+    const finalPath = chapterFinalPath(projectRoot, 1, project.output_format);
+    await fs.writeFile(finalPath, "修订后的正文：主角在雨夜出发。", "utf8");
+    const result = await finalizeChapter({ projectRoot, projectId: project.project_id, chapterNo: 1 });
+    assert.equal(result.ok, true);
+    assert.equal(result.actual_words, countEffectiveWords("修订后的正文：主角在雨夜出发。"));
+    assert.ok(result.checksum.startsWith("sha256:"));
+    assert.ok(typeof result.checkpoint_id === "string" && result.checkpoint_id.length > 0);
+    const index = await loadChapterIndex(projectRoot);
+    const entry = index.chapters.find((c) => Number(c.chapter_no) === 1);
+    assert.equal(entry.checksum, result.checksum, "索引校验和必须与文件一致");
+    assert.equal(entry.actual_words, result.actual_words);
+    // run_log 记录 chapter_revised 领域事件
+    assert.match(await readRunLog(projectRoot), /chapter_revised/u);
+
+    // 未提交章节拒绝
+    await assert.rejects(
+      () => finalizeChapter({ projectRoot, projectId: project.project_id, chapterNo: 2 }),
+      (error) => error instanceof ProjectOperationError && error.code === "chapter_not_committed"
+    );
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("finalizeChapter：expected_checksum 过期拒绝；非散文内容拒绝", async () => {
+  const { workspace, projectRoot, project } = await makeProject();
+  try {
+    await appendChapterSegment({ projectRoot, projectId: project.project_id, chapterNo: 1, segmentNo: 1, content: LONG_PROSE });
+    await commitChapter({ projectRoot, projectId: project.project_id, chapterNo: 1 });
+    const finalPath = chapterFinalPath(projectRoot, 1, project.output_format);
+    const before = await fs.readFile(finalPath, "utf8");
+    await fs.writeFile(finalPath, "v2 正文", "utf8");
+    await assert.rejects(
+      () =>
+        finalizeChapter({
+          projectRoot,
+          projectId: project.project_id,
+          chapterNo: 1,
+          expectedChecksum: sha256(before)
+        }),
+      (error) => error instanceof ProjectOperationError && error.code === "stale_checksum"
+    );
+    await fs.writeFile(finalPath, "正文里混入了 read_file 工具名", "utf8");
+    await assert.rejects(
+      () =>
+        finalizeChapter({
+          projectRoot,
+          projectId: project.project_id,
+          chapterNo: 1
+        }),
+      (error) => error instanceof ProjectOperationError && error.code === "non_prose_content"
+    );
+    // 拒绝入账不落盘 checkpoint
+    assert.equal((await checkpointFiles(projectRoot)).length, 1, "拒绝入账不得新增 checkpoint");
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("finalizeChapter：写入中途失败按事务回滚（探针），不留下半写状态", async () => {
+  const { workspace, projectRoot, project } = await makeProject();
+  try {
+    await appendChapterSegment({ projectRoot, projectId: project.project_id, chapterNo: 1, segmentNo: 1, content: LONG_PROSE });
+    await commitChapter({ projectRoot, projectId: project.project_id, chapterNo: 1 });
+    const finalPath = chapterFinalPath(projectRoot, 1, project.output_format);
+    const indexBefore = await fs.readFile(path.join(projectRoot, "memory", "chapter_index.json"), "utf8");
+    const memoryBefore = await fs.readFile(path.join(projectRoot, "memory", "chapter_memory.json"), "utf8");
+    const runLogBefore = await readRunLog(projectRoot);
+    await fs.writeFile(finalPath, "修订正文 v2", "utf8");
+    // 探针：在 checkpoint 写入前抛错，模拟该次写入失败 → 全部已写文件回滚
+    let fired = false;
+    await assert.rejects(
+      () =>
+        finalizeChapter(
+          { projectRoot, projectId: project.project_id, chapterNo: 1 },
+          {
+            hooks: {
+              beforeWrite: ({ kind }) => {
+                if (kind === "checkpoint" && !fired) {
+                  fired = true;
+                  throw new Error("injected write failure");
+                }
+              }
+            }
+          }
+        ),
+      (error) => error.message === "injected write failure"
+    );
+    assert.equal(await fs.readFile(path.join(projectRoot, "memory", "chapter_index.json"), "utf8"), indexBefore, "索引必须回滚到原状");
+    assert.equal(await fs.readFile(path.join(projectRoot, "memory", "chapter_memory.json"), "utf8"), memoryBefore, "章节记忆必须回滚到原状");
+    assert.equal(await readRunLog(projectRoot), runLogBefore, "run_log 必须回滚到原状");
+    assert.equal((await checkpointFiles(projectRoot)).length, 1, "失败入账不得新增 checkpoint");
+    const index = await loadChapterIndex(projectRoot);
+    const entry = index.chapters.find((c) => Number(c.chapter_no) === 1);
+    assert.notEqual(entry.checksum, sha256("修订正文 v2"), "索引不得记录未完成入账的校验和");
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
   }

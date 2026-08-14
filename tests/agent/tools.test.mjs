@@ -2,7 +2,7 @@
 //
 // tests/agent/ 是允许测试内部 seam 的目录：本文件直接导入 tools.mjs 与 journal.mjs，
 // 覆盖计划 Task 4 Step 6–9 要求的全部不变量：
-//   - 恰好 11 个工具的 typed schema（八个 general + 三个 deep，Task 7 删除
+//   - 恰好 12 个工具的 typed schema（八个 general + 四个 deep，Task 7 删除
 //     enter_workflow、Task 8 删除 commit_blueprint、Task 12 加 read_skill、
 //     Task 9 加 count_text）；
 //     模型不能提供/覆盖 risk/scope/extreme/grant_key
@@ -34,7 +34,7 @@ import { EXTREME_COMMANDS } from "../fixtures/command-risk-corpus.mjs";
 const EXTREME_COMMAND = EXTREME_COMMANDS[0];
 
 const GENERAL_NAMES = ["list_files", "search_files", "read_file", "write_file", "edit_file", "shell", "read_skill", "count_text"];
-const DEEP_NAMES = ["update_plan", "append_chapter_segment", "commit_chapter"];
+const DEEP_NAMES = ["update_plan", "append_chapter_segment", "commit_chapter", "finalize_revision"];
 // 旧编排工具名全部按片段拼接（避免本文件自身成为 Task 11 Step 6 全库 rg 的命中点，
 // 与 dependency-rules.test.mjs 对旧数据文件名的片段约定一致；即使当前 rg 只禁
 // 其中两个名字的字面量，其余名字同样按片段构造保持一致性）。
@@ -99,6 +99,10 @@ async function setup(t, options = {}) {
     commitChapter: async (args) => {
       opsCalls.push(["commitChapter", args]);
       return { ok: true, checkpoint_id: "cp-1" };
+    },
+    finalizeChapter: async (args) => {
+      opsCalls.push(["finalizeChapter", args]);
+      return { ok: true, chapter_no: args.chapterNo, actual_words: 1, checksum: "sha256:final", checkpoint_id: "cp-final" };
     }
   };
 
@@ -197,11 +201,11 @@ async function nextDecision(journal, count = 1) {
 // Step 4/5：注册表与 typed schema、系统拥有的风险
 // ---------------------------------------------------------------------------
 
-test("恰好注册八个 general 与三个 deep 工具", () => {
+test("恰好注册八个 general 与四个 deep 工具", () => {
   const tools = createToolRuntime({ journal: { append: async () => {} } });
   const names = tools.definitions().map((def) => def.function.name);
   assert.deepEqual(names, [...GENERAL_NAMES, ...DEEP_NAMES]);
-  assert.equal(names.length, 11, "工具总数应为 11（Task 7 删除 enter_workflow、Task 8 删除 commit_blueprint）");
+  assert.equal(names.length, 12, "工具总数应为 12（八个 general + 四个 deep，含 finalize_revision）");
   for (const banned of BANNED_NAMES) {
     assert.ok(!names.includes(banned), `不得注册 ${banned}`);
   }
@@ -1702,6 +1706,21 @@ test("append_chapter_segment / commit_chapter 调用注入的 projectOperations"
   assert.equal("exceptionDecisions" in h.opsCalls[1][1], false, "Task 10：commit_chapter 不再传递 exceptionDecisions");
   const events = await readEvents(h.journal);
   assert.ok(eventsOfType(events, "checkpoint_linked").some((event) => event.payload.chapter_no === 1), "提交必须链接 checkpoint");
+  assertClosure(await readEvents(h.journal));
+});
+
+test("finalize_revision 调用注入的 projectOperations，参数透传", async (t) => {
+  const h = await setup(t);
+  const result = await h.tools.execute(
+    toolCall("finalize_revision", { project_id: "p1", chapter_no: 3, expected_checksum: "sha256:x" }),
+    h.context
+  );
+  assert.equal(result.ok, true);
+  assert.deepEqual(h.opsCalls[0][0], "finalizeChapter");
+  assert.equal(h.opsCalls[0][1].chapterNo, 3);
+  assert.equal(h.opsCalls[0][1].expectedChecksum, "sha256:x");
+  const events = await readEvents(h.journal);
+  assert.ok(eventsOfType(events, "checkpoint_linked").some((event) => event.payload.chapter_no === 3), "确认修订必须链接 checkpoint");
   assertClosure(await readEvents(h.journal));
 });
 
