@@ -139,6 +139,19 @@ const sessionSidebar = createSessionSidebar({
   openProjectAndSession
 });
 
+// Task 12：新「模型设置」页面（左供应商列表 + 右详情），在弹窗内作为「模型设置」
+// 分区注入渲染（A3：modelSettings.attach({ list, detail }) 的渲染目标由
+// settings-modal 的 renderSectionBody 构建）。声明上移至 createSettingsModal 之前，
+// 作为其只读依赖；onChanged 保留（模型变更后刷新对话模型选择器）。
+const modelSettings = createModelSettingsPage({
+  showToast,
+  onChanged: () => {
+    // 触发对话模型选择器刷新（Task 16）：模型选择器选项来自全局供应商清单，
+    // 设置页增删/启停/设默认后重拉，选择器即时反映最新清单。
+    agentSurface.refreshComposerOptions();
+  }
+});
+
 const settingsModal = createSettingsModal({
   refs,
   getDashboard: () => lastDashboard,
@@ -147,6 +160,8 @@ const settingsModal = createSettingsModal({
   loadDashboard,
   getLastFocused: () => lastFocused,
   setLastFocused: (el) => { lastFocused = el; },
+  // Task A3：model 分区渲染依赖（注入渲染目标 + open 拉取列表）。
+  modelSettings,
   // Task 13：对话导出/清空即时动作。clearHistory 必须转发 options
   // （confirm_irreversible:true），surface 内部负责清空后的重置与重开当前项目。
   exportAgentHistory: () => agentSurface.exportHistory(),
@@ -158,19 +173,6 @@ const settingsModal = createSettingsModal({
   deleteSession: (sessionId) => deleteSessionAndResolveActive(sessionId),
 });
 const { openSettingsModal, closeSettingsModal, saveSettings } = settingsModal;
-
-// Task 12：新「模型设置」页面（左供应商列表 + 右详情），替代设置弹窗的模型分区
-// （Task 8 已把旧弹窗模型区块置为只读占位）。骨架：加载 + 列表 + 详情只读渲染；
-// 表单交互（失焦保存/启停/删除/拉取/测试连接）由 Task 13-15 逐个挂到
-// saveProviderPatch/saveModelPatch 与新增 handler 上。
-const modelSettings = createModelSettingsPage({
-  showToast,
-  onChanged: () => {
-    // 触发对话模型选择器刷新（Task 16）：模型选择器选项来自全局供应商清单，
-    // 设置页增删/启停/设默认后重拉，选择器即时反映最新清单。
-    agentSurface.refreshComposerOptions();
-  }
-});
 
 // Task A1：统一设置入口——所有设置入口（齿轮/抽屉模型配置/斜杠命令）统一打开设置
 // 弹窗；model/settings/缺省 → 「模型设置」分区（A3 起生效，此前回落第一个分区），

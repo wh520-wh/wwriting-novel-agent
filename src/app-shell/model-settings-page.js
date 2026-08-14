@@ -125,6 +125,17 @@ export function createModelSettingsPage(ctx = {}) {
   let state = { providers: [], selected: null, default_model: null };
   // 当前渲染详情的草稿引用（renderDetail 每次重建；commitCurrentDraft 读取）。
   let activeDraftRefs = freshDraftRefs();
+  // v4 决策：渲染目标注入（attach）——弃用全局 documentRef.querySelector 双路径。
+  // render/refresh 只写 attach 进来的目标；未 attach 时安全跳过（弹窗关闭期间 commit
+  // 完成时目标已脱离文档，渲染为无害 no-op）。
+  let attachedTargets = null; // { list, detail } | null
+  // 当前渲染详情的容器引用（renderDetail 记录；renderCandidateList/testConnection 的
+  // 挂载节点查找改经此容器，规避 commit 重渲染后旧节点脱 DOM）。
+  let currentDetail = null;
+
+  function attach(targets) {
+    attachedTargets = targets ?? null; // 传入 null 即解除
+  }
 
   // 加载失败路径：保留上一次可用状态，只 toast 不抛错——open() 随之正常 resolve，
   // 避免 Task 13-15 挂到本页后遇到未处理拒绝（页面停在旧状态而非空着报错）。
@@ -355,10 +366,10 @@ export function createModelSettingsPage(ctx = {}) {
     });
     // Critical 修复（Task 20 审查）：commit 成功会 refresh → renderDetail 重建整个
     // 详情容器，click 时捕获的 resultSlot 已脱离 DOM——结果写进去用户不可见。
-    // 仿照 renderCandidateList 重新查询当前渲染的 slot（新元素后创建，最后匹配
-    // ≈ 当前挂载）；找不到（直调/未重渲染）才回退传入节点。
+    // 仿照 renderCandidateList 从当前详情容器（currentDetail，attach 的 detail 目标）
+    // 重查最新渲染的 slot；找不到（直调/未重渲染）才回退传入节点。
     const slot = model?.id
-      ? (documentRef.querySelector?.(`[data-model-connection-result="${model.id}"]`) ?? null)
+      ? (currentDetail?.querySelector?.(`[data-model-connection-result="${model.id}"]`) ?? null)
       : null;
     const targetSlot = slot ?? resultSlot ?? null;
     if (!committed.ok || !committed.provider || !committed.model) {
@@ -603,6 +614,7 @@ export function createModelSettingsPage(ctx = {}) {
   }
 
   function renderDetail(container) {
+    currentDetail = container; // 记录当前详情容器，供挂载节点查找（renderCandidateList/testConnection）
     container.replaceChildren();
     const provider = state.selected;
     // Task 20：本次渲染的草稿引用（commitCurrentDraft 从这读当前表单值）。
@@ -818,10 +830,10 @@ export function createModelSettingsPage(ctx = {}) {
   }
 
   // 拉取候选展开：把候选名渲染进模型区的可折叠容器并展开（行内「添加」按钮逐个
-  // 走 addPulledModel）。容器只在实际渲染过的 DOM 中存在；测试直调时经
-  // querySelector 查不到即跳过（不影响 fetch 路径的断言）。
+  // 走 addPulledModel）。容器只在实际渲染过的 attach detail 目标中存在；直调/未渲染
+  // 时经 currentDetail 查不到即跳过（不影响 fetch 路径的断言）。
   function renderCandidateList(providerId, names) {
-    const holder = documentRef.querySelector?.("[data-candidate-list]");
+    const holder = currentDetail?.querySelector?.("[data-candidate-list]");
     if (!holder) return;
     // 拉取是异步的：期间用户可能已切到别的供应商，当前详情容器已属于新供应商。
     // 过期结果直接丢弃（否则旧供应商候选渲染进新容器，点「添加」会加到旧供应商）。
@@ -831,7 +843,7 @@ export function createModelSettingsPage(ctx = {}) {
     // 空候选同样展开容器并显示空态提示——否则消息渲染进隐藏容器，空拉取对用户无感知。
     holder.hidden = false;
     // 自动展开后同步折叠按钮箭头（否则容器已展开、箭头仍为收起态「▸」，状态脱同步）。
-    const toggle = documentRef.querySelector?.(".candidate-toggle");
+    const toggle = currentDetail?.querySelector?.(".candidate-toggle");
     if (toggle) toggle.textContent = "拉取候选 ▾";
     if (list.length === 0) {
       holder.append(el("p", { class: "candidate-empty", text: "没有拉取到可用模型" }));
@@ -848,16 +860,17 @@ export function createModelSettingsPage(ctx = {}) {
   }
 
   function render() {
-    const list = documentRef.querySelector?.("[data-provider-list]");
-    const detail = documentRef.querySelector?.("[data-provider-detail]");
-    if (list) renderList(list);
-    if (detail) renderDetail(detail);
+    // v4：只写 attach 进来的目标；未 attach 时安全跳过（no-op）。
+    if (!attachedTargets) return;
+    if (attachedTargets.list) renderList(attachedTargets.list);
+    if (attachedTargets.detail) renderDetail(attachedTargets.detail);
   }
 
   return {
     async open() { await refresh(); },
     close() {},
     refresh,
+    attach,
     getState: () => state,
     renderList,
     renderDetail,

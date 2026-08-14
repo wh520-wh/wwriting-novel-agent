@@ -81,12 +81,12 @@ test("app.js 不再维护 Agent 状态与业务正则", () => {
 
 test("设置弹窗不暴露旧架构和专家配置入口", () => {
   const sections = settingsSource.match(/const SETTINGS_SECTIONS = \[([\s\S]*?)\];/u)?.[1] ?? "";
+  // Task A3：model 分区作为设置弹窗首位分区（注入 model-settings-page 渲染目标）。
+  assert.match(sections, /id:\s*"model"/u);
   assert.match(sections, /id:\s*"writing"/u);
   assert.match(sections, /id:\s*"skills"/u);
   assert.match(sections, /id:\s*"danger"/u);
-  // Task 17 cutover：模型分区已从设置弹窗整体删除（迁往 model-settings-page，
-  // 弹窗不得再渲染模型相关 UI / 处理 model section）。
-  assert.doesNotMatch(sections, /id:\s*"model"/u);
+  // 「专家配置」类入口（质量门禁/联网搜索/权限等）不得暴露。
   assert.doesNotMatch(sections, /gates|research|permissions|质量门禁|联网搜索|权限与确认/u);
   assert.doesNotMatch(settingsSource, /预算上限|成本上限|token 总量上限|写作温度|联网搜索\/抓取权限/u);
   assert.doesNotMatch(cssSource, /\.spd-radio-(?:group|option|tx|warn)/u, "已删除的权限表单样式不应残留");
