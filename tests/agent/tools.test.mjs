@@ -2,7 +2,7 @@
 //
 // tests/agent/ 是允许测试内部 seam 的目录：本文件直接导入 tools.mjs 与 journal.mjs，
 // 覆盖计划 Task 4 Step 6–9 要求的全部不变量：
-//   - 恰好 12 个工具的 typed schema（八个 general + 四个 deep，Task 7 删除
+//   - 恰好 13 个工具的 typed schema（八个 general + 五个 deep，Task 7 删除
 //     enter_workflow、Task 8 删除 commit_blueprint、Task 12 加 read_skill、
 //     Task 9 加 count_text）；
 //     模型不能提供/覆盖 risk/scope/extreme/grant_key
@@ -34,7 +34,7 @@ import { EXTREME_COMMANDS } from "../fixtures/command-risk-corpus.mjs";
 const EXTREME_COMMAND = EXTREME_COMMANDS[0];
 
 const GENERAL_NAMES = ["list_files", "search_files", "read_file", "write_file", "edit_file", "shell", "read_skill", "count_text"];
-const DEEP_NAMES = ["update_plan", "append_chapter_segment", "commit_chapter", "finalize_revision"];
+const DEEP_NAMES = ["update_plan", "append_chapter_segment", "commit_chapter", "finalize_revision", "rollback_chapter"];
 // 旧编排工具名全部按片段拼接（避免本文件自身成为 Task 11 Step 6 全库 rg 的命中点，
 // 与 dependency-rules.test.mjs 对旧数据文件名的片段约定一致；即使当前 rg 只禁
 // 其中两个名字的字面量，其余名字同样按片段构造保持一致性）。
@@ -103,6 +103,10 @@ async function setup(t, options = {}) {
     finalizeChapter: async (args) => {
       opsCalls.push(["finalizeChapter", args]);
       return { ok: true, chapter_no: args.chapterNo, actual_words: 1, checksum: "sha256:final", checkpoint_id: "cp-final" };
+    },
+    rollbackChapter: async (args) => {
+      opsCalls.push(["rollbackChapter", args]);
+      return { ok: true, chapter_no: args.chapterNo, actual_words: 1, checksum: "sha256:rollback", checkpoint_id: "cp-rollback" };
     }
   };
 
@@ -201,11 +205,11 @@ async function nextDecision(journal, count = 1) {
 // Step 4/5：注册表与 typed schema、系统拥有的风险
 // ---------------------------------------------------------------------------
 
-test("恰好注册八个 general 与四个 deep 工具", () => {
+test("恰好注册八个 general 与五个 deep 工具", () => {
   const tools = createToolRuntime({ journal: { append: async () => {} } });
   const names = tools.definitions().map((def) => def.function.name);
   assert.deepEqual(names, [...GENERAL_NAMES, ...DEEP_NAMES]);
-  assert.equal(names.length, 12, "工具总数应为 12（八个 general + 四个 deep，含 finalize_revision）");
+  assert.equal(names.length, 13, "工具总数应为 13（八个 general + 五个 deep，含 finalize_revision 与 rollback_chapter）");
   for (const banned of BANNED_NAMES) {
     assert.ok(!names.includes(banned), `不得注册 ${banned}`);
   }
@@ -1722,6 +1726,27 @@ test("finalize_revision 调用注入的 projectOperations，参数透传", async
   assert.equal(h.opsCalls[0][1].expectedChecksum, "sha256:x");
   const events = await readEvents(h.journal);
   assert.ok(eventsOfType(events, "checkpoint_linked").some((event) => event.payload.chapter_no === 3), "确认修订必须链接 checkpoint");
+  assertClosure(await readEvents(h.journal));
+});
+
+test("rollback_chapter 调用注入的 projectOperations，version 缺省透传 null", async (t) => {
+  const h = await setup(t);
+  const explicit = await h.tools.execute(
+    toolCall("rollback_chapter", { project_id: "p1", chapter_no: 2, version: 1 }),
+    h.context
+  );
+  assert.equal(explicit.ok, true);
+  assert.deepEqual(h.opsCalls[0][0], "rollbackChapter");
+  assert.equal(h.opsCalls[0][1].chapterNo, 2);
+  assert.equal(h.opsCalls[0][1].version, 1);
+  const omitted = await h.tools.execute(
+    toolCall("rollback_chapter", { project_id: "p1", chapter_no: 2 }),
+    h.context
+  );
+  assert.equal(omitted.ok, true);
+  assert.equal(h.opsCalls[1][1].version, null, "缺省 version 以 null 透传，语义由领域层决定");
+  const events = await readEvents(h.journal);
+  assert.ok(eventsOfType(events, "checkpoint_linked").some((event) => event.payload.chapter_no === 2), "回滚必须链接 checkpoint");
   assertClosure(await readEvents(h.journal));
 });
 

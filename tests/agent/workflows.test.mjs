@@ -5,7 +5,8 @@
 //   - prompt 只含统一 Agent 任务政策：章节专用工具纪律、WWRITING.md 职责、
 //     安全点优先说明，不含任何 workflow 政策（[Workflow: …] 块）
 //   - 每轮工具目录相同：深工具恒为 update_plan / append_chapter_segment /
-//     commit_chapter / finalize_revision（统一目录由 runtime 固定提供，不随请求变化）
+//     commit_chapter / finalize_revision / rollback_chapter（统一目录由 runtime
+//     固定提供，不随请求变化）
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -13,8 +14,8 @@ import { UNIFIED_TASK_POLICY, assemblePrompt } from "../../src/core/agent/prompt
 import { createToolRuntime } from "../../src/core/agent/tools.mjs";
 import { createProjectAgentHarness, eventsOfType, waitForIdle } from "../helpers/project-agent-harness.mjs";
 
-// 统一深工具目录（固定四件套，Task 7 契约 + Task C3 finalize_revision）
-const UNIFIED_DEEP_NAMES = ["append_chapter_segment", "commit_chapter", "update_plan", "finalize_revision"];
+// 统一深工具目录（固定五件套，Task 7 契约 + Task C3 finalize_revision + C5 rollback_chapter）
+const UNIFIED_DEEP_NAMES = ["append_chapter_segment", "commit_chapter", "update_plan", "finalize_revision", "rollback_chapter"];
 
 // ---------------------------------------------------------------------------
 // 删除契约：workflows.mjs 的概念不在任何模块导出
@@ -84,10 +85,10 @@ test("assemblePrompt 的 system 层只含统一任务政策，无 workflow 政�
 });
 
 // ---------------------------------------------------------------------------
-// 统一目录：每轮同一工具集，深工具恒为四件套
+// 统一目录：每轮同一工具集，深工具恒为五件套
 // ---------------------------------------------------------------------------
 
-test("每轮工具目录相同：深工具恒为 update_plan/append_chapter_segment/commit_chapter/finalize_revision", async (t) => {
+test("每轮工具目录相同：深工具恒为 update_plan/append_chapter_segment/commit_chapter/finalize_revision/rollback_chapter", async (t) => {
   const h = await createProjectAgentHarness({
     gatewayScript: [
       async (request) => {
@@ -96,7 +97,7 @@ test("每轮工具目录相同：深工具恒为 update_plan/append_chapter_segm
         assert.deepEqual(
           deepNames.sort(),
           [...UNIFIED_DEEP_NAMES].sort(),
-          "深工具目录必须恒为 update_plan/append_chapter_segment/commit_chapter/finalize_revision"
+          "深工具目录必须恒为 update_plan/append_chapter_segment/commit_chapter/finalize_revision/rollback_chapter"
         );
         assert.ok(!names.includes("enter_workflow"), "统一目录不得包含 enter_workflow");
         assert.ok(!names.includes("commit_blueprint"), "统一目录不得包含 commit_blueprint");
