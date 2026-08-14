@@ -461,9 +461,9 @@ grep 核实（`request.once("close")` / `local-model-profiles` / `global-model-s
 - **R5-18（非法 SKILL.md 遮蔽旧 manifest）**：现行「绝不改写已存在的 SKILL.md」原则不自动覆盖用户文件；修复需先确定是否允许自动修复损坏用户文件（规格 §4.4）。
 - **M3/M4（成本定价展示链）**：保持现状，本轮不扩大到成本产品功能（规格 §4.4）。M3 预设种子侧已在模型配置重构中部分改善（第 6 轮已记录 `OFFICIAL_PRICING` 首个消费者），成本面板展示链（CostTracker pricing 注入、前端读取）仍维持「未配置价格」的诚实展示。
 
-### 已核实但未修复的已知项（Task 26 最终审查发现，非本轮引入）
+### 已核实但未修复的已知项（Task 26 最终审查发现，非本轮引入；其中设置弹窗入口项已由 Task A 模块修复）
 
-- **旧设置弹窗（writing/skills/danger 分区）当前无任何可达入口**：所有生产入口均路由到新「模型设置」页——齿轮按钮（app.js:281 无参）、抽屉「模型配置」（drawer-panels.js:146 → app.js:213 分流）、斜杠命令 `/model`/`/settings` 均落新页；`openSettingsOrModelPage(section)` 虽有 writing/skills/danger 分支但无任何调用方传这些分区。引入时间：第 6 轮 7061361（模型设置页骨架与入口接线）。影响面：写作参数（每章最低/目标/上限字数、目标章节数）创建项目后 UI 不可调（仅创建对话框可设）；技能导入/删除/打开目录无其他入口；项目归档/解除归档、归档会话恢复/永久删除不可达（导出/清空历史在新设置页仍有入口，不受影响）。建议单独立任务处理（恢复旧弹窗入口或在新的设置页补齐写作参数/技能管理/项目归档能力）。
+- **旧设置弹窗（writing/skills/danger 分区）写参数与技能管理入口恢复（已修复，Task A1-A5，`5f4df38`/`885f79c`/`62c2f5e`/`631a3dc`）**：任务 A1-A5 把全部设置入口统一回设置弹窗——齿轮按钮（app.js:260 无参）、抽屉「模型配置」（drawer-panels.js:146 → app.js:192 分流）、斜杠命令 `/model`/`/settings`（slash-commands.mjs:7-8，localSection 模型/设置）均走 `openSettingsOrModelPage(section)`（app.js:180-182，`!section || "model" || "settings"` 统一归到「模型设置」分区），再统一 `openSettingsModal(section)`。弹窗重挂四个分区（`SETTINGS_SECTIONS`：model/writing/skills/danger，settings-modal.js:14-17），model 居首为缺省分区，写作参数/技能管理/项目归档在设置弹窗一次可达。整页「模型设置」overlay 已退役（885f79c 移除 index.html overlay 结构，5f4df38 移除页面接线）——不再有独立的模型设置页。原影响面中「写作参数/技能导入删除/项目归档于创建项目后 UI 不可调」已随之消除；导出/清空历史入口不变。另：**model 分区 dirty 关闭保护已实现（v4 决策，`631a3dc`）**——此前为已知缺口，现关闭设置弹窗时若模型分区有未保存草稿会先弹确认层（settings-modal.js:1366/1396-1397/1416 `settingsDirty()`/`dirtyConfirmRef` 守卫），避免误丢弃用户输入。
 
 ### 已执行（批 4：设置页、UI 与计时，Task 19-25）
 
