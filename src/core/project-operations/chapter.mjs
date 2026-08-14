@@ -179,6 +179,8 @@ export async function readChapterDraft(projectRoot, project, chapterNo) {
 const KNOWN_TOOL_NAME_PATTERNS = [
   { name: "append_chapter_segment", re: /\bappend_chapter_segment\b/u },
   { name: "commit_chapter", re: /\bcommit_chapter\b/u },
+  { name: "finalize_revision", re: /\bfinalize_revision\b/u },
+  { name: "rollback_chapter", re: /\brollback_chapter\b/u },
   { name: "update_plan", re: /\bupdate_plan\b/u },
   { name: "list_files", re: /\blist_files\b/u },
   { name: "search_files", re: /\bsearch_files\b/u },
@@ -538,6 +540,170 @@ export async function commitChapter({ projectRoot, projectId, chapterNo, expecte
     ok: true,
     duplicate: false,
     repairing: usedFinal,
+    chapter_no: chapterNo,
+    path: finalPath,
+    actual_words: actualWords,
+    checksum,
+    checkpoint_id: path.basename(checkpointPath, ".json"),
+    quality_gate_results: []
+  };
+}
+
+// ---------------------------------------------------------------------------
+// finalizeChapter —— 编辑后重新入账（确认修订，Task C3）：
+// 正式章节文件（C1 起可直接编辑）被 write_file/edit_file 直接改过后，账本
+// （章节索引校验和/字数、章节记忆、checkpoint、run_log 领域事实）仍停留在旧
+// 版本。本操作用事务一致性把「已编辑的正式文件」重新入账到账本。
+//
+// 前置条件：章节已提交（索引 completed 且正式文件存在）；expected_checksum
+// 提供时校验与当前文件一致（防止入账漂移后的内容）；non_prose 检测拒绝把
+// 工具名/模型自我对话混入正文的修订入账。
+// 写入顺序：章节记忆 → 章节索引 → checkpoint → run_log 事件（chapter_revised）。
+// 任一写失败：恢复被覆盖文件的先前字节，run_log 截断/删除，不留下半写状态。
+// ---------------------------------------------------------------------------
+
+export async function finalizeChapter({ projectRoot, projectId, chapterNo, expectedChecksum = null }, options = {}) {
+  assertProjectRoot(projectRoot);
+  assertChapterNo(chapterNo);
+  const project = await loadProjectForOperation(projectRoot, projectId);
+  const finalPath = chapterFinalPath(projectRoot, chapterNo, project.output_format);
+  const index = await loadChapterIndexSafe(projectRoot);
+  const existing = (index.chapters ?? []).find((chapter) => Number(chapter.chapter_no) === chapterNo) ?? null;
+  if (existing?.status !== "completed" || !(await pathExists(finalPath))) {
+    throw new ProjectOperationError(
+      "chapter_not_committed",
+      `第 ${chapterNo} 章尚未提交，不能确认修订。`
+    );
+  }
+
+  let content;
+  try {
+    content = await fs.readFile(finalPath, "utf8");
+  } catch (error) {
+    throw new ProjectOperationError("chapter_read_failed", `无法读取章节正式文件：${error.message}`, {
+      path: finalPath
+    });
+  }
+  if (expectedChecksum !== null && expectedChecksum !== sha256(content)) {
+    throw new ProjectOperationError("stale_checksum", "章节文件已被其他修改更新，请重新读取后再确认修订。", {
+      expected: expectedChecksum
+    });
+  }
+  const nonProse = detectNonProseContent(content);
+  if (nonProse.isNonProse) {
+    throw new ProjectOperationError(
+      "non_prose_content",
+      `章节内容非正文（${nonProse.reason}），拒绝入账。`,
+      { reason: nonProse.reason }
+    );
+  }
+
+  const actualWords = countEffectiveWords(content);
+  const checksum = sha256(content);
+
+  // ---- 事务写入（同 commitChapter 模式）----
+  const chapterMemoryPath = safeJoin(projectRoot, "memory", "chapter_memory.json");
+  const chapterIndexPath = safeJoin(projectRoot, "memory", "chapter_index.json");
+  const runLogPath = safeJoin(projectRoot, "run_log.jsonl");
+  const checkpointId = randomUUID();
+  const checkpointPath = safeJoin(projectRoot, "checkpoints", `${checkpointId}.json`);
+  const probe = createWriteProbe(options);
+  const backups = [];
+  const track = async (filePath) => {
+    const existed = await pathExists(filePath);
+    backups.push({ path: filePath, bytes: existed ? await fs.readFile(filePath, "utf8") : null });
+  };
+  await track(chapterMemoryPath);
+  await track(chapterIndexPath);
+  const runLogExisted = await pathExists(runLogPath);
+  const runLogSize = runLogExisted ? (await fs.stat(runLogPath)).size : 0;
+
+  try {
+    // 章节记忆（摘要与摘录，确定性；用修订后内容重建该章记忆）
+    await probe({ path: chapterMemoryPath, kind: "chapter_memory" });
+    await recordChapterMemory(projectRoot, {
+      chapterNo,
+      title: `第${String(chapterNo).padStart(3, "0")}章`,
+      actualWords,
+      checksum,
+      content
+    });
+    // 章节索引：正式文件、真实字数、新校验和；门禁结果固定为空数组
+    await probe({ path: chapterIndexPath, kind: "chapter_index" });
+    await upsertChapter(projectRoot, {
+      chapter_no: chapterNo,
+      status: "completed",
+      draft_path: chapterDraftPath(projectRoot, chapterNo, project.output_format),
+      final_path: finalPath,
+      actual_words: actualWords,
+      checksum,
+      quality_gate_results: []
+    });
+    // checkpoint：与 checkpoints/{id}.json 格式兼容（本地写 checkpoint 文件本体）
+    await probe({ path: checkpointPath, kind: "checkpoint" });
+    await writeJsonAtomic(checkpointPath, buildCheckpoint({
+      project,
+      chapterNo,
+      checkpointId,
+      artifact: { chapter_no: chapterNo, final_path: finalPath, checksum, duplicate: false }
+    }));
+    // run_log 领域事实（追加在事务内：失败时连同已写文件一起回滚）
+    await probe({ path: runLogPath, kind: "run_log" });
+    await appendEvent(projectRoot, {
+      type: "chapter_revised",
+      project_id: project.project_id,
+      chapter_no: chapterNo,
+      stage: "revised",
+      message: `第 ${chapterNo} 章已确认修订`,
+      data: {
+        path: finalPath,
+        actual_words: actualWords,
+        checksum,
+        checkpoint_id: checkpointId
+      }
+    });
+  } catch (error) {
+    const rollbackWarnings = [];
+    for (const backup of backups) {
+      try {
+        if (backup.bytes === null) {
+          await fs.unlink(backup.path);
+        } else {
+          await writeFileAtomic(backup.path, backup.bytes);
+        }
+      } catch (rollbackError) {
+        // 未创建文件的 unlink ENOENT 不算回滚失败（与 run_log 回滚一致）
+        if (!(rollbackError.code === "ENOENT" && backup.bytes === null)) {
+          rollbackWarnings.push(`恢复 ${backup.path} 失败：${rollbackError.message}`);
+        }
+      }
+    }
+    try {
+      await fs.unlink(checkpointPath);
+    } catch (rollbackError) {
+      if (rollbackError.code !== "ENOENT") {
+        rollbackWarnings.push(`删除 ${checkpointPath} 失败：${rollbackError.message}`);
+      }
+    }
+    try {
+      if (runLogExisted) {
+        await fs.truncate(runLogPath, runLogSize);
+      } else {
+        await fs.unlink(runLogPath);
+      }
+    } catch (rollbackError) {
+      if (rollbackError.code !== "ENOENT") {
+        rollbackWarnings.push(`run_log 回滚失败：${rollbackError.message}`);
+      }
+    }
+    if (rollbackWarnings.length > 0) {
+      error.rollbackWarnings = rollbackWarnings;
+    }
+    throw error;
+  }
+
+  return {
+    ok: true,
     chapter_no: chapterNo,
     path: finalPath,
     actual_words: actualWords,

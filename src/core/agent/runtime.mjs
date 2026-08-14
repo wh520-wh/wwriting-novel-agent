@@ -64,6 +64,7 @@ import {
   appendChapterSegment,
   commitChapter,
   commitChapterMemory,
+  finalizeChapter,
   inspectChapterContext,
   ProjectOperationError
 } from "../project-operations/chapter.mjs";
@@ -76,7 +77,7 @@ const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "inte
 const TOOL_RESULT_CANCELLATION_CODES = new Set(["tool_cancelled", "shell_cancelled"]);
 
 // 统一工具目录（Task 7）：不再按工作流切换——每一轮都提供相同的生产工具集：
-// 八个通用工具 + 三个深工具恒可用（Task 8：旧 blueprint 事务工具已整体删除，
+// 八个通用工具 + 四个深工具恒可用（Task 8：旧 blueprint 事务工具已整体删除，
 // 不再有注册表残留）。
 const GENERAL_TOOL_NAMES = new Set([
   "list_files",
@@ -89,7 +90,7 @@ const GENERAL_TOOL_NAMES = new Set([
   "count_text"
 ]);
 
-const DEEP_TOOL_NAMES = Object.freeze(["update_plan", "append_chapter_segment", "commit_chapter"]);
+const DEEP_TOOL_NAMES = Object.freeze(["update_plan", "append_chapter_segment", "commit_chapter", "finalize_revision"]);
 
 const PRODUCTION_TOOL_NAMES = Object.freeze([...GENERAL_TOOL_NAMES, ...DEEP_TOOL_NAMES]);
 
@@ -143,6 +144,44 @@ function sleep(ms) {
 // 提取数据（parseMemoryExtraction ok 形状，供 commitChapterMemory 确定性落盘）| null。
 async function commitChapterWithDerivedMemory(memoryExtractor, params, options) {
   const result = await commitChapter(params, options);
+  let memoryUpdate = { status: "skipped", reason: "no_extractor" };
+  if (typeof memoryExtractor === "function") {
+    try {
+      const extraction = await memoryExtractor({
+        projectRoot: params.projectRoot,
+        chapterNo: params.chapterNo,
+        checksum: result?.checksum ?? null
+      });
+      if (extraction != null) {
+        const persisted = await commitChapterMemory({
+          projectRoot: params.projectRoot,
+          chapterNo: params.chapterNo,
+          expectedChapterChecksum: result?.checksum ?? null,
+          extraction
+        });
+        memoryUpdate = { status: "ok", ...persisted };
+      }
+    } catch (error) {
+      memoryUpdate = {
+        status: "failed",
+        retryable: true,
+        error: {
+          code:
+            error instanceof ProjectOperationError && typeof error.code === "string"
+              ? error.code
+              : "memory_extract_failed",
+          message: String(error?.message ?? "记忆提取失败。")
+        }
+      };
+    }
+  }
+  return { ...result, memory_update: memoryUpdate };
+}
+
+// finalizeChapter 的派生记忆编排（与 commitChapterWithDerivedMemory 同构）：
+// 确认修订成功后单独触发派生提取（可失败/可重试，绝不回滚已入账正文与索引）。
+async function finalizeChapterWithDerivedMemory(memoryExtractor, params, options) {
+  const result = await finalizeChapter(params, options);
   let memoryUpdate = { status: "skipped", reason: "no_extractor" };
   if (typeof memoryExtractor === "function") {
     try {
@@ -306,6 +345,7 @@ export function createAgentRuntime({
         // 原函数承担，包装层在工具成功后单独触发派生提取（可失败/可重试，
         // 见 commitChapterWithDerivedMemory）；写探针 options 继续透传。
         commitChapter: (params, options) => commitChapterWithDerivedMemory(memoryExtractor, params, options),
+        finalizeChapter: (params, options) => finalizeChapterWithDerivedMemory(memoryExtractor, params, options),
         commitChapterMemory
       };
       state = {

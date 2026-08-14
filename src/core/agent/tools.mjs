@@ -3,7 +3,7 @@
 // 对 Agent 提供唯一工具入口：
 //
 //   const tools = createToolRuntime({ projectOperations, journal, permissionPolicy, shellRuntime, secrets });
-//   tools.definitions(context);            // -> OpenAI 原生 function definitions（恰好 11 个工具）
+//   tools.definitions(context);            // -> OpenAI 原生 function definitions（恰好 12 个工具）
 //   await tools.execute(toolCall, context); // 单次工具调用的 schema→权限→审计→执行→事件闭环
 //
 // 内部实现隐藏：schema 注册、权限判定（含硬能力拒绝与输入级临时授权）、journal 审计事件、
@@ -11,8 +11,8 @@
 //
 // 设计不变量（来自计划 Task 4 Step 3–8）：
 //   - 恰好注册八个 general 工具（list_files/search_files/read_file/write_file/edit_file/shell/
-//     read_skill/count_text）与三个 deep 工具（update_plan/append_chapter_segment/
-//     commit_chapter）；不注册旧编排工具（start_ 前缀启停、queue_ 前缀排队、
+//     read_skill/count_text）与四个 deep 工具（update_plan/append_chapter_segment/
+//     commit_chapter/finalize_revision）；不注册旧编排工具（start_ 前缀启停、queue_ 前缀排队、
 //     resolve_failure、export_book 等）或逐文件便利工具。read_skill（Task 12）是只读
 //     工具：只能按 active catalog name 解析，realpath containment/1MiB 上限/二进制
 //     asset 由 skills service（src/core/skills/index.mjs）执行。count_text（Task 9）是
@@ -1434,6 +1434,56 @@ export function createToolRuntime({
         expectedDraftChecksum: typeof args.expected_draft_checksum === "string" ? args.expected_draft_checksum : null
       });
       // 正式提交链接项目 checkpoint：journal 只记录引用
+      await appendEvent({
+        type: "checkpoint_linked",
+        run_id: context.run_id,
+        payload: {
+          chapter_no: chapterNo,
+          checkpoint_id: result?.checkpoint_id ?? null
+        }
+      });
+      return { ...(result ?? {}), chapter_no: chapterNo };
+    }
+  });
+
+  // ---- deep: finalize_revision ---------------------------------------------
+
+  register("finalize_revision", {
+    interruptible: false, // 确认修订是原子入账事务，不可中断
+    description:
+      "把已编辑的正式章节文件重新入账：章节索引校验和/字数、章节记忆、checkpoint 与 run_log 一致更新（正式章节文件自 C1 起可用 write_file/edit_file 直接编辑；编辑后必须调用本工具确认入账，账本才会与修订后的文件一致）。结果中的 checkpoint_id 是该章修订后的 checkpoint。",
+    schema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string", description: "项目 id" },
+        chapter_no: { type: "integer", minimum: 1, description: "章节号（从 1 开始）" },
+        expected_checksum: { type: "string", description: "可选：期望正式文件校验和（防止入账漂移后的内容）" }
+      },
+      required: ["project_id", "chapter_no"],
+      additionalProperties: false
+    },
+    describeAction(args) {
+      const action = deepAction({ title: "确认修订章节", description: `第 ${args.chapter_no} 章` });
+      action.category = "write";
+      action.grant_key = "write:project:project-root";
+      action.safe_edit_target = true;
+      return action;
+    },
+    async run(args, context) {
+      const projectId = requireStringArg(args, "project_id", "project_id");
+      const chapterNo = requirePositiveIntArg(args, "chapter_no", "chapter_no");
+      const expectedChecksum = typeof args.expected_checksum === "string" ? args.expected_checksum : null;
+      const op = projectOperations?.finalizeChapter;
+      if (typeof op !== "function") {
+        throw toolError("not_wired", "工具不可用。", { rule: "not_wired", tool: "finalize_revision" });
+      }
+      const result = await op({
+        projectRoot: context.projectRoot,
+        projectId,
+        chapterNo,
+        expectedChecksum
+      });
+      // 确认修订链接项目 checkpoint：journal 只记录引用
       await appendEvent({
         type: "checkpoint_linked",
         run_id: context.run_id,
