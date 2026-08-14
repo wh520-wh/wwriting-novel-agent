@@ -43,6 +43,7 @@ test("Codex 基线：工作组无框直出", () => {
   assert.match(group, /border:\s*0/u);
   assert.match(group, /border-radius:\s*0/u);
   assert.match(group, /background:\s*transparent/u);
+  assert.match(group, /box-shadow:\s*none/u);
 });
 
 test("Codex 基线：状态行是紧凑小条（无全宽边框）", () => {
