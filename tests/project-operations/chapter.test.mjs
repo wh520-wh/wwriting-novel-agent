@@ -15,7 +15,7 @@ import test from "node:test";
 import { createProjectRoot, LEGACY_STATE_FILE } from "../helpers/project-agent-harness.mjs";
 import { loadChapterIndex, loadProject, upsertChapter } from "../../src/core/project-store.mjs";
 import { loadChapterMemory } from "../../src/core/chapter-memory.mjs";
-import { loadContinuity, loadContinuityState, saveContinuity } from "../../src/core/continuity-store.mjs";
+import { loadContinuity, saveContinuity } from "../../src/core/continuity-store.mjs";
 import { parseSimpleYaml, serializeSimpleYaml } from "../../src/core/simple-yaml.mjs";
 import { sha256 } from "../../src/core/fs-utils.mjs";
 import { countEffectiveWords } from "../../src/core/word-count.mjs";
@@ -23,7 +23,7 @@ import {
   appendChapterSegment,
   chapterFinalPath,
   commitChapter as rawCommitChapter,
-  commitChapterMemory,
+  updateMemoryFromExtraction,
   finalizeChapter,
   inspectChapterContext,
   rollbackChapter,
@@ -752,7 +752,6 @@ test("commitChapter 确定性事务不触碰全书摘要、连续性与 WWRITING
     // 派生数据不被 commit 改写
     assert.equal(await fs.readFile(path.join(projectRoot, "book_summary.md"), "utf8"), summaryBefore, "commit 不得改写全书摘要");
     assert.equal((await loadContinuity(projectRoot)).facts.length, 0, "commit 不得写入 continuity 事实");
-    assert.equal((await loadContinuityState(projectRoot)).extracted_chapters.length, 0, "commit 不得推进记忆水位");
     // WWRITING.md 不被章节摘要自动污染
     assert.equal(await fs.readFile(wwritingPath, "utf8"), wwritingBefore, "WWRITING.md 不得被 commit 改写");
   } finally {
@@ -769,31 +768,29 @@ test("commitChapter 成功后派生记忆失败不影响已提交正文与索引
     const finalBefore = await fs.readFile(finalPath, "utf8");
     const indexBefore = await fs.readFile(path.join(projectRoot, "memory", "chapter_index.json"), "utf8");
 
-    // 独立记忆合并失败（校验和漂移）只拒绝派生落盘，正文与索引保持提交状态
+    // 独立记忆合并失败（章节不存在于索引且文件不在磁盘）只拒绝落盘，正文与索引保持提交状态
     await assert.rejects(
-      () => commitChapterMemory({ projectRoot, chapterNo: 1, expectedChapterChecksum: "sha256:wrong", extraction: extractionFixture() }),
-      (error) => error instanceof ProjectOperationError && error.code === "chapter_checksum_mismatch"
+      () => updateMemoryFromExtraction({ projectRoot, chapterNo: 99, extraction: extractionFixture() }),
+      (error) => error instanceof ProjectOperationError && error.code === "chapter_not_found"
     );
     assert.equal(await fs.readFile(finalPath, "utf8"), finalBefore, "正文不得因记忆失败回滚");
     assert.equal(await fs.readFile(path.join(projectRoot, "memory", "chapter_index.json"), "utf8"), indexBefore, "索引不得因记忆失败回滚");
 
-    // 维护重试（正确校验和 + 提取数据）可重建派生记忆
-    const retried = await commitChapterMemory({
+    // 维护重试（正确章号 + 提取数据）可重建派生记忆
+    const retried = await updateMemoryFromExtraction({
       projectRoot,
       chapterNo: 1,
-      expectedChapterChecksum: committed.checksum,
       extraction: extractionFixture()
     });
     assert.equal(retried.ok, true);
     assert.equal(retried.facts_added, 1);
-    assert.match(await fs.readFile(path.join(projectRoot, "book_summary.md"), "utf8"), /雨夜收到警告/u);
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
   }
 });
 
 // ---------------------------------------------------------------------------
-// commitChapterMemory：合并提取、水位、pending 恢复、校验和、timeline 门禁
+// updateMemoryFromExtraction：合并提取、timeline 门禁
 // ---------------------------------------------------------------------------
 
 function extractionFixture() {
@@ -805,36 +802,37 @@ function extractionFixture() {
   };
 }
 
-test("commitChapterMemory 原子更新 continuity、全书摘要与水位，不改写章节正文", async () => {
+test("updateMemoryFromExtraction 原子更新 continuity，不写全书摘要，不改写章节正文", async () => {
   const { workspace, projectRoot, project } = await makeProject();
   try {
     await appendChapterSegment({ projectRoot, projectId: project.project_id, chapterNo: 1, segmentNo: 1, content: LONG_PROSE });
-    const committed = await commitChapter({ projectRoot, projectId: project.project_id, chapterNo: 1 });
+    await commitChapter({ projectRoot, projectId: project.project_id, chapterNo: 1 });
     const finalPath = path.join(projectRoot, "chapters", "001.md");
     const finalBefore = await fs.readFile(finalPath, "utf8");
 
-    const result = await commitChapterMemory({
+    const result = await updateMemoryFromExtraction({
       projectRoot,
       chapterNo: 1,
-      expectedChapterChecksum: committed.checksum,
       extraction: extractionFixture()
     });
     assert.equal(result.ok, true);
     assert.equal(result.facts_added, 1);
-    assert.equal(result.summary_updated, true);
+    assert.equal("summary_updated" in result, false, "新函数不写全书摘要");
 
     const continuity = await loadContinuity(projectRoot);
     assert.equal(continuity.facts[0].value, "退伍军人");
-    const summary = await fs.readFile(path.join(projectRoot, "book_summary.md"), "utf8");
-    assert.match(summary, /雨夜收到警告/u);
-    const state = await loadContinuityState(projectRoot);
-    assert.equal(state.last_extracted_chapter, 1);
-    assert.deepEqual(state.extracted_chapters, [1]);
+    // 全书摘要不被新函数写入（根目录无 book_summary.md 或保持不变）
+    const summaryPath = path.join(projectRoot, "book_summary.md");
+    const summaryExists = await fs.access(summaryPath).then(() => true).catch(() => false);
+    if (summaryExists) {
+      const summary = await fs.readFile(summaryPath, "utf8");
+      assert.doesNotMatch(summary, /雨夜收到警告/u, "updateMemoryFromExtraction 不得写入全书摘要");
+    }
     // 章节正文原样
     assert.equal(await fs.readFile(finalPath, "utf8"), finalBefore);
 
     // 幂等：重复合并不新增重复事实
-    const second = await commitChapterMemory({ projectRoot, chapterNo: 1, expectedChapterChecksum: committed.checksum, extraction: extractionFixture() });
+    const second = await updateMemoryFromExtraction({ projectRoot, chapterNo: 1, extraction: extractionFixture() });
     assert.equal(second.facts_added, 0);
     assert.equal((await loadContinuity(projectRoot)).facts.length, 1);
   } finally {
@@ -842,17 +840,30 @@ test("commitChapterMemory 原子更新 continuity、全书摘要与水位，不�
   }
 });
 
-test("commitChapterMemory 校验和漂移拒绝合并且不落盘", async () => {
+test("updateMemoryFromExtraction 章号不存在（索引无记录且文件不存在）时报 chapter_not_found", async () => {
   const { workspace, projectRoot, project } = await makeProject();
   try {
-    await appendChapterSegment({ projectRoot, projectId: project.project_id, chapterNo: 1, segmentNo: 1, content: LONG_PROSE });
-    await commitChapter({ projectRoot, projectId: project.project_id, chapterNo: 1 });
     await assert.rejects(
-      () => commitChapterMemory({ projectRoot, chapterNo: 1, expectedChapterChecksum: "sha256:wrong", extraction: extractionFixture() }),
-      (error) => error instanceof ProjectOperationError && error.code === "chapter_checksum_mismatch"
+      () => updateMemoryFromExtraction({ projectRoot, chapterNo: 1, extraction: extractionFixture() }),
+      (error) => error instanceof ProjectOperationError && error.code === "chapter_not_found"
     );
     assert.equal((await loadContinuity(projectRoot)).facts.length, 0);
-    assert.equal((await loadContinuityState(projectRoot)).last_extracted_chapter, 0);
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("updateMemoryFromExtraction 文件存在但未入索引时通过门禁（不要求索引记录）", async () => {
+  const { workspace, projectRoot, project } = await makeProject();
+  try {
+    // 手动创建章节文件（无索引记录）
+    const chaptersDir = path.join(projectRoot, "chapters");
+    await fs.mkdir(chaptersDir, { recursive: true });
+    await fs.writeFile(path.join(chaptersDir, "001.md"), LONG_PROSE, "utf8");
+    // 文件存在但索引无记录 → 通过（旧门禁只要求章号在索引或文件存在）
+    const result = await updateMemoryFromExtraction({ projectRoot, chapterNo: 1, extraction: extractionFixture() });
+    assert.equal(result.ok, true);
+    assert.equal(result.facts_added, 1);
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
   }
@@ -870,11 +881,11 @@ test("commitChapter 无草稿且无正式文件时报 draft_not_found", async ()
   }
 });
 
-test("commitChapterMemory 无提取数据且无 pending 文件时报 extraction_missing", async () => {
+test("updateMemoryFromExtraction 无提取数据时报 extraction_missing", async () => {
   const { workspace, projectRoot } = await makeProject();
   try {
     await assert.rejects(
-      () => commitChapterMemory({ projectRoot, chapterNo: 1 }),
+      () => updateMemoryFromExtraction({ projectRoot, chapterNo: 1 }),
       (error) => error instanceof ProjectOperationError && error.code === "extraction_missing"
     );
   } finally {
@@ -882,12 +893,12 @@ test("commitChapterMemory 无提取数据且无 pending 文件时报 extraction_
   }
 });
 
-test("commitChapterMemory 源章节文件缺失时报 chapter_not_found 且不落盘", async () => {
+test("updateMemoryFromExtraction 源章节不存在（索引无记录且文件缺失）时报 chapter_not_found 且不落盘", async () => {
   const { workspace, projectRoot, project } = await makeProject();
   try {
-    // 无章节文件（索引为空）时核对校验和必须报 chapter_not_found
+    // 无章节文件（索引为空）时必须报 chapter_not_found
     await assert.rejects(
-      () => commitChapterMemory({ projectRoot, chapterNo: 1, expectedChapterChecksum: "sha256:whatever", extraction: extractionFixture() }),
+      () => updateMemoryFromExtraction({ projectRoot, chapterNo: 1, extraction: extractionFixture() }),
       (error) => error instanceof ProjectOperationError && error.code === "chapter_not_found"
     );
     assert.equal((await loadContinuity(projectRoot)).facts.length, 0);
@@ -896,55 +907,32 @@ test("commitChapterMemory 源章节文件缺失时报 chapter_not_found 且不�
   }
 });
 
-test("commitChapterMemory 无 extraction 时使用 pending 文件并清理（中断恢复）", async () => {
+test("updateMemoryFromExtraction 写入期失败回滚：continuity 还原", async () => {
   const { workspace, projectRoot, project } = await makeProject();
   try {
+    // 需要章节存在以通过门禁
     await appendChapterSegment({ projectRoot, projectId: project.project_id, chapterNo: 1, segmentNo: 1, content: LONG_PROSE });
     await commitChapter({ projectRoot, projectId: project.project_id, chapterNo: 1 });
-    const pendingPath = path.join(projectRoot, "memory", ".pending-extraction-1.json");
-    await fs.writeFile(pendingPath, JSON.stringify({ ok: true, ...extractionFixture() }), "utf8");
 
-    const result = await commitChapterMemory({ projectRoot, chapterNo: 1 });
-    assert.equal(result.facts_added, 1);
-    assert.equal((await loadContinuity(projectRoot)).facts[0].value, "退伍军人");
-    const summary = await fs.readFile(path.join(projectRoot, "book_summary.md"), "utf8");
-    assert.match(summary, /雨夜收到警告/u);
-    assert.equal(await fs.access(pendingPath).then(() => true).catch(() => false), false, "pending 文件应在成功后删除");
-  } finally {
-    await fs.rm(workspace, { recursive: true, force: true });
-  }
-});
-
-test("commitChapterMemory 写入期失败回滚：continuity 与摘要全部还原，pending 保留", async () => {
-  const { workspace, projectRoot, project } = await makeProject();
-  try {
-    // 预置 pending 提取文件（模拟模型调用已完成、落盘被中断）
-    const pendingPath = path.join(projectRoot, "memory", ".pending-extraction-1.json");
-    await fs.writeFile(pendingPath, JSON.stringify({ ok: true, ...extractionFixture() }), "utf8");
-    const summaryBefore = await fs.readFile(path.join(projectRoot, "book_summary.md"), "utf8");
-
-    // 事务写入顺序：continuity.json(1) → continuity.md(2) → book_summary(3) → continuity_state(4)
+    // 事务写入顺序：continuity.json(probe1) → writeJson(continuity.json) → continuity.md(probe2) → failOnWrite(2) 触发回滚
     await assert.rejects(
       () =>
-        commitChapterMemory(
-          { projectRoot, chapterNo: 1 },
+        updateMemoryFromExtraction(
+          { projectRoot, chapterNo: 1, extraction: extractionFixture() },
           { hooks: { beforeWrite: failOnWrite(2) } }
         ),
       /注入写入失败/u
     );
 
-    // continuity.json 已写后被还原删除、其余文件保持先前状态、pending 保留供恢复
+    // continuity.json 已写后被还原删除、continuity.md 未创建
     await assert.rejects(() => fs.stat(path.join(projectRoot, "memory", "continuity.json")), (error) => error.code === "ENOENT");
     await assert.rejects(() => fs.stat(path.join(projectRoot, "memory", "continuity.md")), (error) => error.code === "ENOENT");
-    await assert.rejects(() => fs.stat(path.join(projectRoot, "memory", "continuity_state.json")), (error) => error.code === "ENOENT");
-    assert.equal(await fs.readFile(path.join(projectRoot, "book_summary.md"), "utf8"), summaryBefore);
-    assert.equal(await fs.access(pendingPath).then(() => true).catch(() => false), true, "pending 文件必须保留供下次恢复");
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
   }
 });
 
-test("commitChapterMemory 确定性连续性门禁只报较晚一方=本章的 timeline 矛盾", async () => {
+test("updateMemoryFromExtraction 确定性连续性门禁只报较晚一方=本章的 timeline 矛盾", async () => {
   const { workspace, projectRoot, project } = await makeProject();
   try {
     // 预置第 3 章 scene（2021年3月10日）
@@ -961,6 +949,9 @@ test("commitChapterMemory 确定性连续性门禁只报较晚一方=本章的 t
       ],
       characters: []
     });
+    // 需要第 5 章存在以通过轻量门禁
+    await appendChapterSegment({ projectRoot, projectId: project.project_id, chapterNo: 5, segmentNo: 1, content: LONG_PROSE });
+    await commitChapter({ projectRoot, projectId: project.project_id, chapterNo: 5 });
     // 第 5 章 scene 早于第 3 章
     const extraction = {
       summary: "第五章",
@@ -975,7 +966,7 @@ test("commitChapterMemory 确定性连续性门禁只报较晚一方=本章的 t
       ],
       characters: []
     };
-    const result = await commitChapterMemory({ projectRoot, chapterNo: 5, extraction });
+    const result = await updateMemoryFromExtraction({ projectRoot, chapterNo: 5, extraction });
     assert.equal(result.timeline_violations.length, 1);
     assert.equal(result.timeline_violations[0].chapter_no, 5);
     assert.equal(result.timeline_violations[0].type, "time_reversal");

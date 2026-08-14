@@ -108,32 +108,3 @@ export function renderContinuityMarkdown(data) {
   lines.push("");
   return lines.join("\n");
 }
-
-export async function loadContinuityState(projectRoot) {
-  const state = await readJson(safeJoin(projectRoot, "memory", "continuity_state.json"), {
-    schema_version: CONTINUITY_SCHEMA_VERSION, last_extracted_chapter: 0, extracted_chapters: [], updated_at: null
-  });
-  const extracted = Array.isArray(state.extracted_chapters)
-    ? state.extracted_chapters.map((n) => Number(n)).filter((n) => Number.isInteger(n))
-    : [];
-  return {
-    ...state,
-    last_extracted_chapter: Number(state.last_extracted_chapter) || 0,
-    extracted_chapters: extracted
-  };
-}
-
-export async function saveContinuityState(projectRoot, patch) {
-  const current = await loadContinuityState(projectRoot);
-  const next = {
-    ...current,
-    ...patch,
-    schema_version: CONTINUITY_SCHEMA_VERSION,
-    updated_at: new Date().toISOString()
-  };
-  if (Array.isArray(next.extracted_chapters)) {
-    next.extracted_chapters = [...new Set(next.extracted_chapters.map((n) => Number(n)).filter((n) => Number.isInteger(n)))].sort((a, b) => a - b);
-  }
-  await writeJsonAtomic(safeJoin(projectRoot, "memory", "continuity_state.json"), next);
-  return next;
-}
