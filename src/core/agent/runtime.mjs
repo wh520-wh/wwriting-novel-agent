@@ -97,7 +97,7 @@ const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "inte
 const TOOL_RESULT_CANCELLATION_CODES = new Set(["tool_cancelled", "shell_cancelled"]);
 
 // 统一工具目录（Task 7）：不再按工作流切换——每一轮都提供相同的生产工具集：
-// 八个通用工具 + 五个深工具恒可用（Task 8：旧 blueprint 事务工具已整体删除，
+// 八个通用工具 + 六个深工具恒可用（Task 8：旧 blueprint 事务工具已整体删除，
 // 不再有注册表残留）。
 const GENERAL_TOOL_NAMES = new Set([
   "list_files",
@@ -113,6 +113,11 @@ const GENERAL_TOOL_NAMES = new Set([
 const DEEP_TOOL_NAMES = Object.freeze(["update_plan", "append_chapter_segment", "commit_chapter", "finalize_revision", "rollback_chapter", "update_memory"]);
 
 const PRODUCTION_TOOL_NAMES = Object.freeze([...GENERAL_TOOL_NAMES, ...DEEP_TOOL_NAMES]);
+
+// 第九轮：派生记忆提取器退役。commit/finalize/rollback 结果附加固定记忆维护
+// 提醒（memory_checklist），记忆由模型自调用 update_memory 工具维护。
+const MEMORY_CHECKLIST = "记忆维护：请依次 update_memory → 更新 book_summary.md → 更新 WORKLOG.md";
+const withMemoryChecklist = (result) => ({ ...(result ?? {}), memory_checklist: MEMORY_CHECKLIST });
 
 const SOURCES = new Set(["chat", "maintenance"]);
 
@@ -261,10 +266,6 @@ export function createAgentRuntime({
       // Task 4：agentRoot 即应用的私有 agent storage root；每会话的 journal/
       // checkpoint 落在 <agentRoot>/sessions/<id>/ 下（ensureSessionState）。
       const agentRoot = agentStorageRootFor(key);
-      // 第九轮：派生记忆提取器退役。commit/finalize/rollback 结果附加固定记忆维护
-      // 提醒（memory_checklist），记忆由模型自调用 update_memory 工具维护。
-      const MEMORY_CHECKLIST = "记忆维护：请依次 update_memory → 更新 book_summary.md → 更新 WORKLOG.md";
-      const withMemoryChecklist = (result) => ({ ...(result ?? {}), memory_checklist: MEMORY_CHECKLIST });
       const projectOperations = {
         inspectChapterContext,
         appendChapterSegment,
