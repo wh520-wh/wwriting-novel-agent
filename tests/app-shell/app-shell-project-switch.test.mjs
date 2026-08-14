@@ -358,3 +358,95 @@ test("R5-12：app.js 终态钩子统一刷新 dashboard 与会话列表；后台
   assert.match(appSource, /options\?\.background\s*===\s*true/u, "loadDashboard 支持后台失败模式");
   assert.match(appSource, /showToast\(error/u, "后台刷新失败只 toast，不渲染错误页");
 });
+
+// ---- Task A1：设置入口统一（齿轮点击 / 抽屉模型配置 / 斜杠命令 → 弹窗）----
+// openSettingsOrModelPage 与 closeAppTopLayer 是 app.js 组合根的产物（不可直接
+// import）。沿用本文件 reader gate 的既有策略：先把简化契约抽成可注入工厂
+// （createSettingsRouting），行为测试只针对该契约（齿轮点击 → settingsScrim 含
+// "show"；弹窗打开时 closeAppTopLayer 返回 true 且调用 closeSettingsModal；
+// model/settings/缺省回落 "model"），再用静态断言确认生产 app.js 提供等价接线
+// （不再含整页 modelSettingsPage/closeModelSettingsPage 路径）。
+function createSettingsRouting({ refs, openSettings, closeSettings }) {
+  return {
+    // 镜像 app.js 简化后的 openSettingsOrModelPage：model/settings/缺省 → "model"，
+    // 其余分区原样透传；统一 await openSettingsModal(section)。
+    async openSettingsOrModelPage(section) {
+      if (!section || section === "model" || section === "settings") section = "model";
+      await openSettings(section);
+    },
+    // 镜像 app.js closeAppTopLayer 的设置弹窗分支：弹窗开着 → 关闭并返回 true。
+    closeAppTopLayer() {
+      if (refs.settingsScrim.classList.contains("show")) { closeSettings(); return true; }
+      return false;
+    }
+  };
+}
+
+// 设置弹窗的行为魔板：openSettings 添加 show（等价 createSettingsModal 的
+// openSettingsModal 成功路径），closeSettings 移除 show。齿轮点击即
+// openSettingsOrModelPage() 默认无参 → 弹窗打开后 settingsScrim 应含 "show"。
+function makeSettingsHarness() {
+  const refs = { settingsScrim: new MockElement("div") };
+  const opened = [];
+  const closed = [];
+  const routing = createSettingsRouting({
+    refs,
+    openSettings: async (section) => {
+      opened.push(section);
+      refs.settingsScrim.classList.add("show");
+    },
+    closeSettings: () => {
+      closed.push(true);
+      refs.settingsScrim.classList.remove("show");
+    }
+  });
+  return { refs, opened, closed, routing };
+}
+
+test("A1: 齿轮点击（缺省）→ 设置弹窗打开（scrim 含 show），弹窗打开时 closeAppTopLayer 返回 true 且调用 closeSettingsModal", async () => {
+  const { refs, opened, closed, routing } = makeSettingsHarness();
+  // 齿轮监听 = refs.openSettings.click → openSettingsOrModelPage()（无分区参数）。
+  await routing.openSettingsOrModelPage();
+  assert.ok(refs.settingsScrim.classList.contains("show"), "settingsScrim 应含 show（弹窗打开）");
+  assert.deepEqual(opened, ["model"], "缺省入口应路由到 model 分区（A3 起生效，此前回落第一个分区）");
+  // 弹窗打开时 ESC 顶层关闭：closeAppTopLayer 返回 true 且调用了 closeSettingsModal。
+  assert.equal(routing.closeAppTopLayer(), true, "弹窗打开时 closeAppTopLayer 应返回 true");
+  assert.equal(closed.length, 1, "closeAppTopLayer 应调用 closeSettingsModal");
+  assert.ok(!refs.settingsScrim.classList.contains("show"), "关闭后 scrim 不应再含 show");
+});
+
+test("A1: 弹窗未打开时 closeAppTopLayer 返回 false 且不调用 closeSettingsModal", async () => {
+  const { refs, closed, routing } = makeSettingsHarness();
+  assert.equal(routing.closeAppTopLayer(), false, "弹窗未打开时 closeAppTopLayer 应返回 false");
+  assert.equal(closed.length, 0, "不得在弹窗未打开时调用 closeSettingsModal");
+});
+
+test("A1: model/settings/缺省统一回落 model 分区，writing/skills/danger 原样透传", async () => {
+  const { opened, routing } = makeSettingsHarness();
+  for (const input of [undefined, null, "model", "settings"]) {
+    await routing.openSettingsOrModelPage(input);
+  }
+  assert.deepEqual(opened, ["model", "model", "model", "model"], "model/settings/缺省均应路由到 model 分区");
+  opened.length = 0;
+  await routing.openSettingsOrModelPage("writing");
+  await routing.openSettingsOrModelPage("skills");
+  await routing.openSettingsOrModelPage("danger");
+  assert.deepEqual(opened, ["writing", "skills", "danger"], "writing/skills/danger 应原样透传到弹窗分区");
+});
+
+test("A1: app.js 已退役整页模型页接线（无 modelSettingsPage/closeModelSettingsPage，入口统一 await openSettingsModal）", async () => {
+  const appSource = await fs.readFile(appJsPath, "utf8");
+  assert.doesNotMatch(
+    appSource,
+    /modelSettingsPage|closeModelSettingsPage|modelSettingsClose/u,
+    "app.js 不得再引用整页模型页的标识符/refs 收集/监听"
+  );
+  assert.match(
+    appSource,
+    /function\s+openSettingsOrModelPage\s*\(\s*section\s*\)\s*\{/u,
+    "openSettingsOrModelPage 应保留且接受 section 参数"
+  );
+  assert.match(appSource, /section\s*=\s*"model"/u, "model/settings/缺省分支只做 section = model");
+  assert.match(appSource, /await\s+openSettingsModal\s*\(\s*section\s*\)/u, "开放入口统一 await openSettingsModal(section)");
+  assert.doesNotMatch(appSource, /closeModelSettingsPage\s*\(/u, "不得含 closeModelSettingsPage 定义或调用");
+});
