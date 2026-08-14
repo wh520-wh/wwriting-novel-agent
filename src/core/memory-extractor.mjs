@@ -1,90 +1,5 @@
-// 记忆提取的消息构造与输出解析。纯函数，无文件 IO，便于单测与回放。
-import { registerSchema, parseStructuredOutput, STRUCTURED_OUTPUT_ERRORS } from "./structured-output.mjs";
-
-export const MEMORY_SUMMARY_MAX_CHARS = 2000;
-
-// 注册 memory_extraction@v1 schema（模块加载时执行一次，registerSchema 幂等）
-registerSchema("memory_extraction", "v1", {
-  normalize: (data) => {
-    const summary = typeof data?.summary === "string" ? data.summary.trim().slice(0, MEMORY_SUMMARY_MAX_CHARS) : "";
-    return {
-      summary,
-      facts: normalizeArray(data?.facts, (item) => ({
-        entity: requiredString(item.entity),
-        attribute: requiredString(item.attribute),
-        value: requiredString(item.value),
-        chapter_no: Number(item.chapter_no) || null,
-        quote: String(item.quote ?? "").slice(0, 80)
-      }), (f) => f.entity && f.attribute && f.value),
-      timeline: normalizeArray(data?.timeline, (item) => ({
-        chapter_no: Number(item.chapter_no) || null,
-        story_time_raw: String(item.story_time_raw ?? item.story_time ?? "").slice(0, 120),
-        events: Array.isArray(item.events) ? item.events.map((e) => String(e)).slice(0, 10) : [],
-        time: normalizeTimeField(item.time)
-      }), (t) => t.chapter_no !== null),
-      characters: normalizeArray(data?.characters, (item) => ({
-        name: requiredString(item.name),
-        traits: Array.isArray(item.traits) ? item.traits.map((t) => String(t)).slice(0, 10) : [],
-        status: String(item.status ?? ""),
-        chapter_no: Number(item.chapter_no) || null
-      }), (c) => Boolean(c.name))
-    };
-  },
-  validate: (n) => {
-    if (!n.summary) return { ok: false, code: STRUCTURED_OUTPUT_ERRORS.missing_field, field: "summary" };
-    return { ok: true };
-  }
-});
-
-const SYSTEM_PROMPT = [
-  "你是小说项目的记忆管理员。读完本章后更新全书记忆。",
-  "只输出一个 JSON 对象（可用 ```json 围栏），不要输出其他内容。结构：",
-  '{"summary":"全书滚动摘要(中文,<=2000字,覆盖到本章为止的主线、关键事实与未回收伏笔)",',
-  '"facts":[{"entity":"实体名","attribute":"属性","value":"值","chapter_no":本章号,"quote":"原文短引(<=40字)"}],',
-  '"timeline":[{"chapter_no":本章号,"story_time_raw":"故事内时间的原话","events":["事件"],',
-  '"time":{"kind":"scene|flashback|parallel|dream","elapsed":"相对上一幕过了多久","anchor":{"type":"date|age|named","raw":"原文","subject":"谁(age 时填,否则 null)"}或 null,"confidence":"high|low"}}],',
-  '"characters":[{"name":"角色名","traits":["标志性特征"],"status":"状态","chapter_no":本章号}]}',
-  "facts 只收新增或被修正的客观设定（地点、数字、时间、生死、关系），不收主观评价。",
-  "time.kind：推进当前主线=scene；回忆/闪回=flashback；同时/另一视角=parallel；梦境/虚构=dream。",
-  'time.elapsed：相对上一个 scene 过了多久，规范成 "+0"(同时/当日) 或 "+数字h/d/w/mo/y"(如 "+3d"、"+12h")；说不清填 null。',
-  "time.anchor：原文给了绝对时间才填（绝对日期/角色年龄/具名时点），age 必须在 subject 写明是谁；否则 anchor 填 null，不要把相对时间塞进 anchor。",
-  "time.confidence：对该幕时间判断有把握=high，模糊/拿不准=low。回忆请用 kind=flashback，不要用负的 elapsed。",
-  "若本章与既有记忆冲突，照实提取本章版本，不要擅自调和。"
-].join("\n");
-
-export function buildMemoryExtractionMessages({ chapterNo, chapterContent, bookSummary, continuityMarkdown }) {
-  const user = [
-    `# 第 ${chapterNo} 章正文`,
-    String(chapterContent ?? ""),
-    "",
-    "# 既有全书摘要",
-    String(bookSummary ?? "(空)"),
-    "",
-    "# 既有设定档案",
-    String(continuityMarkdown ?? "(空)"),
-    "",
-    `请基于第 ${chapterNo} 章更新记忆，输出 JSON。`
-  ].join("\n");
-  return [
-    { role: "system", content: SYSTEM_PROMPT },
-    { role: "user", content: user }
-  ];
-}
-
-// parseMemoryExtraction 委托 structured-output，error 保持字符串 + error_code/error_field（向后兼容）
-export function parseMemoryExtraction(rawText) {
-  const result = parseStructuredOutput("memory_extraction", "v1", rawText);
-  if (!result.ok) {
-    return {
-      ok: false,
-      error: result.error.message ?? result.error.code,   // 字符串，agent-engine.mjs:655 的 ${parsed.error} 不破
-      error_code: result.error.code,
-      error_field: result.error.field ?? null
-    };
-  }
-  return { ok: true, ...result.data };
-}
-
+// src/core/memory-extractor.mjs —— 第九轮重塑：后台记忆提取器退役，本文件只保留
+// update_memory 工具的参数归一化纯函数（无 IO、无消息构造、无 schema 注册）。
 const TIME_KINDS = new Set(["scene", "flashback", "parallel", "dream"]);
 const ANCHOR_TYPES = new Set(["date", "age", "named"]);
 
@@ -122,4 +37,30 @@ function normalizeArray(value, mapFn, filterFn) {
 function requiredString(value) {
   const s = String(value ?? "").trim();
   return s || null;
+}
+
+// 工具参数归一化：条目级 chapter_no 缺省继承顶层 chapter_no；
+// 各阈值与旧 schema 一致（quote≤80、events≤10、traits≤10、每数组≤50）。
+export function normalizeMemoryUpdateArgs(args) {
+  const topChapterNo = Number(args?.chapter_no) || null;
+  const facts = normalizeArray(args?.facts, (item) => ({
+    entity: requiredString(item?.entity),
+    attribute: requiredString(item?.attribute),
+    value: requiredString(item?.value),
+    chapter_no: Number(item?.chapter_no) || topChapterNo,
+    quote: String(item?.quote ?? "").slice(0, 80)
+  }), (f) => f.entity && f.attribute && f.value);
+  const timeline = normalizeArray(args?.timeline, (item) => ({
+    chapter_no: Number(item?.chapter_no) || topChapterNo,
+    story_time_raw: String(item?.story_time_raw ?? item?.story_time ?? "").slice(0, 120),
+    events: Array.isArray(item?.events) ? item.events.map((e) => String(e)).slice(0, 10) : [],
+    time: normalizeTimeField(item?.time)
+  }), (t) => t.chapter_no !== null);
+  const characters = normalizeArray(args?.characters, (item) => ({
+    name: requiredString(item?.name),
+    traits: Array.isArray(item?.traits) ? item.traits.map((t) => String(t)).slice(0, 10) : [],
+    status: String(item?.status ?? ""),
+    chapter_no: Number(item?.chapter_no) || topChapterNo
+  }), (c) => Boolean(c.name));
+  return { chapter_no: topChapterNo, facts, timeline, characters };
 }
