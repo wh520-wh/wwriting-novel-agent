@@ -2178,8 +2178,15 @@ async function runRound7({ mainRepo, roundDir, theme }) {
       label: "settings-close",
       expect: () => read(win, "!document.getElementById('settings-scrim').classList.contains('show')")
     });
-    // 注意：openSettingsOrModelPage 打开模型设置页时已自动 closeDrawer()
-    //（Task 12 修复），此处无需再点 #drawer-close，对话视图已恢复无遮挡。
+    // 关闭设置弹窗后显式关抽屉——抽屉在打开设置时不会自动关闭（drawer-panels
+    // 的设置按钮直接调 openSettingsModal，未调 closeDrawer），不关则遮挡
+    // context-ring-pin 等对话区元素。
+    if (await read(win, "document.querySelector('.drawer.show') !== null")) {
+      await clickAndReadRetry(win, "#drawer-close", {
+        label: "drawer-close-after-settings",
+        expect: () => read(win, "!document.querySelector('.drawer').classList.contains('show')")
+      });
+    }
 
     // ---- 状态 2：对话区（context popover 固定 + queue B/C/D + priority pending）----
     await clickAndReadRetry(win, '[data-testid="agent-context-ring"]', {
