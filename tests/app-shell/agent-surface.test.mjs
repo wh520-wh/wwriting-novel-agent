@@ -3672,6 +3672,55 @@ test("Task 10 跨页链：尾页先显示正文，前置页合并后工作项出
   assert.ok(timelineIndex(group) < timelineIndex(assistantAfter), "工作组仍位于助手正文之前");
 });
 
+test("pending 用户气泡在场时，带 seq 的工作组插在气泡之后，不得压到消息上方（B1 时间线修复）", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  // 先有已落定的 Assistant 正文（有 seq 节点），为「工作组夹在有 seq 节点与
+  // 无 seq pending 气泡之间」提供场景。
+  surface.applyEvent(ev("assistant_message_completed", { input_id: "in-0", text: "先前的回答" }, { seq: 2 }));
+
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  input.value = "继续第十章";
+  root.querySelector('[data-testid="agent-send"]')._fire("click");
+  const pending = root.querySelectorAll('[data-testid="agent-user-message"]')
+    .find((el) => el.dataset.state === "pending");
+  assert.ok(pending, "提交后应出现 pending 用户气泡");
+
+  // 工作组事件（run_started → 带 reasoning 的 model_turn_started），firstSeq=3
+  surface.applyEvent(ev("run_started", {}, { seq: 3 }));
+  surface.applyEvent(ev("model_turn_started", { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }, { seq: 4 }));
+  const group = root.querySelector(".agent-work-group");
+  assert.ok(group, "应用工作组事件后应渲染工作组");
+  assert.equal(group.dataset.seq, "3", "工作组 data-seq 保持 group.firstSeq（回归）");
+
+  const timelineIndex = (el) => el._parent.children.indexOf(el);
+  assert.ok(
+    timelineIndex(pending) < timelineIndex(group),
+    "pending 用户气泡必须位于工作组之前（工作组不得压到 pending 消息上方）"
+  );
+
+  // 正式用户消息（seq 更小）确认送达 → pending 移除，正式消息在工作组之前
+  surface.applyEvent(ev("input_queued", { input_id: "in-1", text: "继续第十章" }, { seq: 1 }));
+  surface.applyEvent(ev("input_started", { input_id: "in-1" }, { seq: 1 }));
+  assert.equal(
+    root.querySelectorAll('[data-testid="agent-user-message"]').find((el) => el.dataset.state === "pending"),
+    undefined,
+    "确认送达后 pending 气泡应移除"
+  );
+  const formal = root.querySelectorAll('[data-testid="agent-user-message"]')
+    .find((el) => el.dataset.state !== "pending" && /继续第十章/u.test(el.textContent));
+  assert.ok(formal, "正式用户消息应渲染");
+  const groupAfter = root.querySelector(".agent-work-group");
+  assert.ok(timelineIndex(formal) < timelineIndex(groupAfter), "正式用户消息应位于工作组之前");
+
+  // 回归：工具活动仍按 seq 位于 Assistant 正文之前；工作组仍在已定正文之前
+  const assistant = root.querySelectorAll('[data-testid="agent-assistant-message"]')
+    .find((el) => /先前的回答/u.test(el.textContent));
+  assert.ok(assistant, "Assistant 正文仍在");
+  assert.ok(timelineIndex(formal) < timelineIndex(assistant), "正式用户消息位于早先正文之后（seq 递增）");
+});
+
 test("Task 10 SSE 游标：tail 快照推进 lastSeq，connectEvents 从已加载最大 seq 续流；乱序走重建、递增走增量", async () => {
   // 真实 transport（withFetch stub）：断言 openProject 后事件流 URL 的 afterSeq
   // 等于已加载尾页最大 seq（而非 0 从头重放全量）。
