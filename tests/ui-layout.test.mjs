@@ -170,12 +170,16 @@ test("次级操作融入背景，消息层级不依赖成排胶囊按钮", () =>
 
 test("冻结布局约束：390/768/1280 无横向溢出（百分比优先 + 固定上限）", () => {
   // 四档视口宽度推演（对话内容宽 = min(视口, 1040px) - 左右各 gutter 内边距）：
-  //   390px  → 内容约 358px：用户 ≤min(800px,100%-32px)=326px、助手 ≤min(100%,800px)=358px、工作组 358px；
+  //   390px  → 内容约 358px：用户 ≤min(800px,100%-32px)=326px、助手 ≤min(100%,720px)=358px、工作组 358px；
   //   768px  → 内容约 728px：用户 ≤696px、助手 ≤728px、工作组 728px；
-  //   1280px → 内容约 1040px（列封顶 1040px）：用户 ≤800px、助手 ≤800px、工作组 1040px。
+  //   1280px → 内容约 1040px（列封顶 1040px）：用户 ≤800px、助手 ≤720px、工作组 1040px。
   // 百分比项 ≤ 容器自身宽度，固定上限只在容器足够宽时封顶，因此各档都不会撑出横向滚动。
   assert.match(agentCssSource, /max-width:\s*min\(800px,\s*calc\(100% - 32px\)\)/u, "用户消息：封顶 800px，留 32px 边距");
-  assert.match(agentCssSource, /width:\s*min\(100%,\s*800px\)/u, "助手 Markdown：100% 优先，封顶 800px");
+  assert.match(
+    agentCssSource,
+    /\.agent-message-text\.agent-markdown\s*\{[^}]*width:\s*min\(100%,\s*720px\)/u,
+    "助手 Markdown 正文：100% 优先，封顶 720px（作用域限定在正文规则，避免经由 max-width 误匹配）"
+  );
   assert.match(agentCssSource, /width:\s*min\(100%,\s*1040px\)/u, "工作组：100% 优先，封顶 1040px");
   // 长内容（URL/代码/长单词）原地换行，不撑破消息容器。
   assert.match(agentCssSource, /\.agent-message-text\s*\{[^}]*overflow-wrap:\s*anywhere/u, "消息文本应任意位置换行");
