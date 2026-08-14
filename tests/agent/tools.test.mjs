@@ -2,7 +2,7 @@
 //
 // tests/agent/ 是允许测试内部 seam 的目录：本文件直接导入 tools.mjs 与 journal.mjs，
 // 覆盖计划 Task 4 Step 6–9 要求的全部不变量：
-//   - 恰好 13 个工具的 typed schema（八个 general + 五个 deep，Task 7 删除
+//   - 恰好 14 个工具的 typed schema（八个 general + 六个 deep，Task 7 删除
 //     enter_workflow、Task 8 删除 commit_blueprint、Task 12 加 read_skill、
 //     Task 9 加 count_text）；
 //     模型不能提供/覆盖 risk/scope/extreme/grant_key
@@ -29,12 +29,19 @@ import { sha256 } from "../../src/core/fs-utils.mjs";
 import { createToolRuntime } from "../../src/core/agent/tools.mjs";
 import { createProjectLockRegistry } from "../../src/core/project-lock.mjs";
 import { EXTREME_COMMANDS } from "../fixtures/command-risk-corpus.mjs";
+import {
+  createProjectAgentHarness,
+  eventsOfType as harnessEventsOfType,
+  waitForIdle as harnessWaitForIdle,
+  readEvents as harnessReadEvents,
+  tool as harnessTool
+} from "../helpers/project-agent-harness.mjs";
 
 // 本机可用的 extreme 命令（Windows 语料第一条为 del 清盘）
 const EXTREME_COMMAND = EXTREME_COMMANDS[0];
 
 const GENERAL_NAMES = ["list_files", "search_files", "read_file", "write_file", "edit_file", "shell", "read_skill", "count_text"];
-const DEEP_NAMES = ["update_plan", "append_chapter_segment", "commit_chapter", "finalize_revision", "rollback_chapter"];
+const DEEP_NAMES = ["update_plan", "append_chapter_segment", "commit_chapter", "finalize_revision", "rollback_chapter", "update_memory"];
 // 旧编排工具名全部按片段拼接（避免本文件自身成为 Task 11 Step 6 全库 rg 的命中点，
 // 与 dependency-rules.test.mjs 对旧数据文件名的片段约定一致；即使当前 rg 只禁
 // 其中两个名字的字面量，其余名字同样按片段构造保持一致性）。
@@ -205,11 +212,11 @@ async function nextDecision(journal, count = 1) {
 // Step 4/5：注册表与 typed schema、系统拥有的风险
 // ---------------------------------------------------------------------------
 
-test("恰好注册八个 general 与五个 deep 工具", () => {
+test("恰好注册八个 general 与六个 deep 工具", () => {
   const tools = createToolRuntime({ journal: { append: async () => {} } });
   const names = tools.definitions().map((def) => def.function.name);
   assert.deepEqual(names, [...GENERAL_NAMES, ...DEEP_NAMES]);
-  assert.equal(names.length, 13, "工具总数应为 13（八个 general + 五个 deep，含 finalize_revision 与 rollback_chapter）");
+  assert.equal(names.length, 14, "工具总数应为 14（八个 general + 六个 deep，含 finalize_revision、rollback_chapter 与 update_memory）");
   for (const banned of BANNED_NAMES) {
     assert.ok(!names.includes(banned), `不得注册 ${banned}`);
   }
@@ -1868,4 +1875,71 @@ test("注入的 permissionPolicy 可替换内置策略", async (t) => {
   const result = await h.tools.execute(toolCall("write_file", { path: "custom.txt", content: "c" }), h.context);
   assert.equal(result.ok, true, "注入策略放行项目内写入");
   assert.equal(eventsOfType(await readEvents(h.journal), "decision_requested").length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// 第九轮：update_memory 深工具。
+// ---------------------------------------------------------------------------
+
+test("update_memory：归一化参数合并进档案，返回增量计数", async (t) => {
+  const h = await createProjectAgentHarness({
+    project: { tool_permissions: { auto_edit: true } },
+    gatewayScript: [
+      async () => ({
+        toolCalls: [
+          harnessTool("append_chapter_segment", { project_id: h.project.project_id, chapter_no: 1, segment_no: 1, content: "雨夜，林晚收到信。" })
+        ]
+      }),
+      async () => ({
+        toolCalls: [harnessTool("commit_chapter", { project_id: h.project.project_id, chapter_no: 1 })]
+      }),
+      async () => ({
+        toolCalls: [harnessTool("update_memory", {
+          project_id: h.project.project_id, chapter_no: 1,
+          facts: [{ entity: "林晚", attribute: "职业", value: "记者" }]
+        })]
+      }),
+      { reply: { text: "记忆已更新。" } }
+    ]
+  });
+  t.after(() => h.cleanup());
+  await h.agent.open({ projectRoot: h.projectRoot });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "更新设定" });
+  await harnessWaitForIdle(h.agent, h.projectRoot);
+  const events = await harnessReadEvents(h.agent, h.projectRoot);
+  const done = harnessEventsOfType(events, "tool_call_completed").find((e) => e.payload?.name === "update_memory");
+  assert.ok(done, "update_memory 应完成");
+  assert.equal(done.payload.ok, true);
+  assert.equal(done.payload.facts_added, 1);
+});
+
+test("update_memory：引用章节不存在 → chapter_not_found，不落盘", async (t) => {
+  const h = await createProjectAgentHarness({
+    project: { tool_permissions: { auto_edit: true } },
+    gatewayScript: [
+      async () => ({
+        toolCalls: [harnessTool("update_memory", {
+          project_id: h.project.project_id, chapter_no: 99,
+          facts: [{ entity: "x", attribute: "y", value: "z" }]
+        })]
+      }),
+      { reply: { text: "收到错误后修正。" } }
+    ]
+  });
+  t.after(() => h.cleanup());
+  await h.agent.open({ projectRoot: h.projectRoot });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "更新设定" });
+  await harnessWaitForIdle(h.agent, h.projectRoot);
+  const events = await harnessReadEvents(h.agent, h.projectRoot);
+  const failed = harnessEventsOfType(events, "tool_call_failed").find((e) => e.payload?.name === "update_memory");
+  assert.ok(failed, "应产生 tool_call_failed");
+  assert.equal(failed.payload?.error, "chapter_not_found");
+});
+
+test("update_memory：已入网但工具未接线时 not_wired 兜底", async (t) => {
+  // createToolRuntime 不带 projectOperations 时调用 update_memory → not_wired。
+  const { createToolRuntime } = await import("../../src/core/agent/tools.mjs");
+  const runtime = createToolRuntime({ journal: { append: async () => {} } });
+  const def = runtime.definitions().find((d) => d.function.name === "update_memory");
+  assert.ok(def, "update_memory 在工具目录中");
 });

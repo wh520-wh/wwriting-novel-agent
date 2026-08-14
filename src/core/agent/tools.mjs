@@ -57,6 +57,7 @@ import { classifyShellCommand, resolveProjectScope } from "../shell/risk.mjs";
 import { createRedactor, createStreamingRedactor } from "../shell/redaction.mjs";
 import { skillService } from "../skills/index.mjs";
 import { analyzeTextCount } from "../word-count.mjs";
+import { normalizeMemoryUpdateArgs } from "../memory-extractor.mjs";
 
 // ---------------------------------------------------------------------------
 // 常量
@@ -1429,7 +1430,7 @@ export function createToolRuntime({
 
   register("commit_chapter", {
     interruptible: false, // 正式章节事务是原子提交，不可中断
-    description: "正式提交一章：真实字数记录、正式文件、章节索引、章节记忆与 checkpoint 一致更新（只保留存储安全约束，不做字数/标题/技能内容门禁）。结果中的 memory_update 字段报告提交后独立派生记忆提取的状态（ok/skipped/failed；failed 表示可重试，不影响已提交正文与索引）。actual_words 与 count_text 的 effective_count 为同一口径（中文字符 + 英文单词 + 数字记号）。",
+    description: "正式提交一章：真实字数记录、正式文件、章节索引、章节记忆与 checkpoint 一致更新（只保留存储安全约束，不做字数/标题/技能内容门禁）。结果中的 memory_checklist 是固定的记忆维护提醒：提交后必须依次 update_memory → 更新 book_summary.md → 更新 WORKLOG.md。actual_words 与 count_text 的 effective_count 为同一口径（中文字符 + 英文单词 + 数字记号）。",
     schema: {
       type: "object",
       properties: {
@@ -1478,7 +1479,7 @@ export function createToolRuntime({
   register("finalize_revision", {
     interruptible: false, // 确认修订是原子入账事务，不可中断
     description:
-      "把已编辑的正式章节文件重新入账：章节索引校验和/字数、章节记忆、checkpoint 与 run_log 一致更新（正式章节文件自 C1 起可用 write_file/edit_file 直接编辑；编辑后必须调用本工具确认入账，账本才会与修订后的文件一致）。结果中的 checkpoint_id 是该章修订后的 checkpoint。actual_words 与 count_text 的 effective_count 为同一口径（中文字符 + 英文单词 + 数字记号）。",
+      "确认正式章节文件的修订并重新入账：重算字数/校验和、更新章节索引/章节记忆/checkpoint，并记录修订事件。结果中的 memory_checklist 是固定的记忆维护提醒：入账后必须依次 update_memory → 更新 book_summary.md → 更新 WORKLOG.md。",
     schema: {
       type: "object",
       properties: {
@@ -1528,9 +1529,7 @@ export function createToolRuntime({
   register("rollback_chapter", {
     interruptible: false, // 回滚是原子写回 + 重新入账事务，不可中断
     description:
-      "回滚一章到历史版本：把 .versions/ 中指定版本的快照写回正式章节文件并重新入账（索引/校验和/checkpoint 一致更新）。" +
-      "version 缺省时回滚到上一版；回滚本身会存档为新版本。仅当该章存在历史版本时可调用。" +
-      "actual_words 与 count_text 的 effective_count 为同一口径（中文字符 + 英文单词 + 数字记号）。",
+      "把章节回滚到指定版本（缺省 = 上一版）：写回正式文件、重新入账、存档回滚版本；覆盖前当前内容自动存为回滚前存档（可再恢复）。结果中的 memory_checklist 是固定的记忆维护提醒：回滚后必须依次 update_memory → 更新 book_summary.md → 更新 WORKLOG.md。",
     schema: {
       type: "object",
       properties: {
@@ -1571,6 +1570,43 @@ export function createToolRuntime({
           checkpoint_id: result?.checkpoint_id ?? null
         }
       });
+      return { ...(result ?? {}), chapter_no: chapterNo };
+    }
+  });
+
+  // ---- deep: update_memory --------------------------------------------------
+
+  register("update_memory", {
+    interruptible: false,
+    description: "把本章新增或被修正的客观设定（事实/时间线/角色）增量合并进设定档案（memory/continuity.json，系统校验章节存在后原子落盘并重渲染 continuity.md）。只交新增或修正项，系统去重并标记冲突；只收客观设定，不收主观评价；摘要与工作日志不归本工具管（请用 write_file/edit_file 更新 book_summary.md 与 WORKLOG.md）。",
+    schema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        chapter_no: { type: "integer", minimum: 1 },
+        facts: { type: "array" },
+        timeline: { type: "array" },
+        characters: { type: "array" }
+      },
+      required: ["project_id", "chapter_no"],
+      additionalProperties: false
+    },
+    describeAction(args) {
+      const action = deepAction({ title: "更新设定档案", description: `第 ${args.chapter_no} 章设定` });
+      action.category = "write";
+      action.grant_key = "write:project:project-root";
+      action.safe_edit_target = true;
+      return action;
+    },
+    async run(args, context) {
+      const projectId = requireStringArg(args, "project_id", "project_id");
+      const chapterNo = requirePositiveIntArg(args, "chapter_no", "chapter_no");
+      const op = projectOperations?.updateMemoryFromExtraction;
+      if (typeof op !== "function") {
+        throw toolError("not_wired", "工具不可用。", { rule: "not_wired", tool: "update_memory" });
+      }
+      const extraction = normalizeMemoryUpdateArgs(args);
+      const result = await op({ projectRoot: context.projectRoot, chapterNo, extraction });
       return { ...(result ?? {}), chapter_no: chapterNo };
     }
   });
