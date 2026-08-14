@@ -1025,7 +1025,7 @@ export function createAgentRuntime({
     return persisted;
   }
 
-  // 按统一工具目录过滤定义（Task 7：通用工具 + 固定三个深工具，每轮相同）。
+  // 按统一工具目录过滤定义（Task 7：通用工具 + 固定四个深工具，每轮相同）。
   function allowedDefinitions(tools) {
     const allowed = new Set(PRODUCTION_TOOL_NAMES);
     return tools
