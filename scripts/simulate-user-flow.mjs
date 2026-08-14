@@ -7,7 +7,9 @@
 //   4. 用户要求快节奏网文，模型读 fast-readable 技能并更新项目记忆；
 //   5. 写一个短章节，调用 count_text 后自主结束（客观工具，非完成门禁）；
 //   6. 重开同路径恢复历史；
-//   7. 验证项目根无 project.yaml 与 .wwriting/agent。
+//   7. 验证项目根无 project.yaml 与 .wwriting/agent；
+//   8. 修订入账：正式章节可直接编辑，编辑后调用 finalize_revision 入账
+//      （断言 tool_call_completed 与 checkpoint_linked 事件；正式章可编辑语义自 C1 生效）。
 //
 // 每个阶段输出 PASS/FAIL 与实际证据路径；不输出 token、密钥或内部存储细节。
 // 确定性模型脚本驱动（与测试 harness 同形），无需真实模型与 API key。
@@ -20,6 +22,8 @@ import { randomUUID } from "node:crypto";
 import { createProjectAgent } from "../src/core/agent/index.mjs";
 import { createWorkspaceStore } from "../src/core/workspaces/store.mjs";
 import { createSkillService } from "../src/core/skills/index.mjs";
+import { commitChapter } from "../src/core/project-operations/chapter.mjs";
+import { parseSimpleYaml, serializeSimpleYaml } from "../src/core/simple-yaml.mjs";
 
 // ---------------------------------------------------------------------------
 // 确定性模型 gateway（与 tests/helpers 的 mock 同形）：按脚本依次消费
@@ -132,6 +136,56 @@ const CHAPTER_CONTENT = [
   "窗外雨声渐密。林晚抓起钥匙，冲进雨里。"
 ].join("\n");
 
+// 修订入账阶段用的常规合格正文（与 tests 同形；正式章可直编，须 finalize_revision 入账）。
+const LONG_PROSE = `# 第一章 雨夜来信
+
+雨夜，雨声突然变大。林深猛地推开门，冲进老宅的客厅。他浑身湿透，抹了一把脸，低声道：“信上说，老宅的钟会在午夜敲十三下。”烛光下，墙上的照片里竟是多年不见的父亲。他正要细看，门外却传来一阵急促的敲门声。`;
+const LONG_PROSE_REVISED = `${LONG_PROSE}
+
+修订：第二日清晨，林深回到老宅，在钟座后面摸到一封信。信封没有署名，字迹却与母亲一模一样。`;
+
+// 构造一个仿既有项目形状的正式项目（含 project.yaml + memory/ 索引 + 空 run_log，
+// 无 .versions/）：供修订入账阶段以真实项目形式驱动 finalize_revision。
+async function buildProperProject(workspaceRoot) {
+  const projectRoot = path.join(workspaceRoot, "novel");
+  for (const dir of ["chapters", "drafts", "memory", "skills", "checkpoints", "prompts", "sources"]) {
+    await fs.mkdir(path.join(projectRoot, dir), { recursive: true });
+  }
+  const project = {
+    schema_version: 1,
+    project_id: randomUUID(),
+    title: "修订入账演练项目",
+    story_seed: "一封信在一夜雨声中改写命运。",
+    root_path: projectRoot,
+    output_format: "md",
+    target_chapters: 1,
+    min_words_per_chapter: 40,
+    target_words_per_chapter: 80,
+    run_mode: "auto",
+    default_writer_model: "mock-writer",
+    default_reviewer_model: "mock-reviewer",
+    active_model: { provider: "mock", model_name: "mock-writer" },
+    output_style: "creative",
+    archived_at: null,
+    tool_permissions: {
+      network_allowed: false,
+      safe_edit: true,
+      read_only: false,
+      // auto_edit 放行项目内写工具（write_file / finalize_revision 均安全目标）
+      auto_edit: true,
+      yolo: false,
+      dangerous: false
+    }
+  };
+  await fs.writeFile(path.join(projectRoot, "project.yaml"), serializeSimpleYaml(project), "utf8");
+  await fs.writeFile(path.join(projectRoot, "memory", "chapter_index.json"), JSON.stringify({ schema_version: 1, chapters: [] }), "utf8");
+  await fs.writeFile(path.join(projectRoot, "memory", "chapter_memory.json"), JSON.stringify({ schema_version: 1, chapters: [] }), "utf8");
+  await fs.writeFile(path.join(projectRoot, "memory", "book_summary.md"), "# 全书摘要\n\n", "utf8");
+  await fs.writeFile(path.join(projectRoot, "run_log.jsonl"), "", "utf8");
+  const yaml = await fs.readFile(path.join(projectRoot, "project.yaml"), "utf8");
+  return { projectRoot, project: parseSimpleYaml(yaml) };
+}
+
 const tAll = Date.now();
 const demoRoot = path.join(process.cwd(), ".demo_runs", `user-flow-${Date.now()}`);
 const evidenceRoot = demoRoot;
@@ -218,13 +272,13 @@ try {
   await agent.submit({ projectRoot, text: "你好", source: "chat" });
   await waitForIdle(agent, projectRoot);
   const afterHello = await agent.snapshot({ projectRoot, afterSeq: 0, limit: 100000 });
-  const journalPath = path.join(store.agentRootFor(projectRoot), "journal-manifest.json");
+  const helloSessionId = afterHello.session.session_id;
+  const journalPath = path.join(store.agentRootFor(projectRoot), "sessions", helloSessionId, "journal-manifest.json");
   const helloOk = afterHello.events.some((e) => e.type === "assistant_message_completed");
   record("第一条消息完成（你好）", helloOk, "普通文件夹无需 project.yaml 即可聊天", [
     journalPath,
     path.join(projectRoot, "notes.txt")
   ]);
-  const helloSessionId = afterHello.session.session_id;
 
   // ---- 阶段3：调用 /init 创建 WWRITING.md ----
   console.log("【阶段3】/init 创建 WWRITING.md");
@@ -290,6 +344,65 @@ try {
   record("无 project.yaml", !pyExists, pyExists ? "存在（BAD）" : "不存在（GOOD）", [path.join(projectRoot, "project.yaml")]);
   record("无 .wwriting/agent", !wwAgentExists, wwAgentExists ? "存在（BAD）" : "不存在（GOOD）", [path.join(projectRoot, ".wwriting", "agent")]);
   record("应用私有历史在 stateRoot", stateJournalOk, stateJournalOk ? "journal-manifest.json 在应用私有目录" : "journal-manifest.json 缺失", [journalPath]);
+
+  // ---- 阶段8：修订入账（正式章节可直接编辑，编辑后 finalize_revision 入账）----
+  console.log("【阶段8】修订入账（finalize_revision）");
+  const { projectRoot: revRoot, project: revProject } = await buildProperProject(path.join(demoRoot, "proper-project"));
+  // 预置：先提交一版正式章节（status=completed、索引/校验和已写），无 .versions/
+  await fs.writeFile(path.join(revRoot, "drafts", "001.draft.md"), LONG_PROSE, "utf8");
+  await commitChapter({ projectRoot: revRoot, projectId: revProject.project_id, chapterNo: 1 });
+  const revFinalPath = path.join(revRoot, "chapters", "001.md");
+  const seededOk = await pathExists(revFinalPath);
+  record("正式项目已就绪（含已提交章节、无 .versions/）", seededOk,
+    seededOk ? "001 已 commit，正式文件与索引已写" : "章节未提交",
+    [revFinalPath, path.join(revRoot, "memory", "chapter_index.json")]);
+  if (!seededOk) throw new Error("修订入账阶段准备失败：无法提交章节。");
+
+  // 修订入账 mock：模型直接写正式章文件 + finalize_revision 入账 → 自主结束
+  const revGateway = createMockGateway([
+    { reply: { toolCalls: [tool("write_file", { path: "chapters/001.md", content: LONG_PROSE_REVISED })] } },
+    // 编辑正式章后必须 finalize_revision 重新入账（C1 新语义：正文可直编 + 入账）
+    { reply: { toolCalls: [tool("finalize_revision", { project_id: revProject.project_id, chapter_no: 1 })] } },
+    { reply: { text: "已直接编辑第 1 章正文并通过 finalize_revision 确认修订入账。" } }
+  ]);
+  const revSkills = createSkillService({ userHome: path.join(demoRoot, "skills-home-proper"), resourcesPath: null });
+  const revAgent = createProjectAgent({
+    modelGateway: revGateway,
+    shell: async ({ command, cwd, timeoutMs, purpose, signal, onOutput } = {}) => {
+      if (signal?.aborted) {
+        const error = new Error("shell cancelled");
+        error.code = "shell_cancelled";
+        throw error;
+      }
+      const stdout = `stub stdout: ${command}`;
+      if (onOutput) onOutput({ stream: "stdout", text: stdout });
+      return { exitCode: 0, cwd, signal: null, durationMs: 0, stdout, stderr: "" };
+    },
+    skills: revSkills,
+    agentStorageRootFor: (root) => store.agentRootFor(root)
+    // 不覆盖 workspaceConfigLoader：默认按 project.yaml（auto_edit=true）解析权限
+  });
+  await revAgent.open({ projectRoot: revRoot });
+  await revAgent.submit({ projectRoot: revRoot, text: "请直接编辑第 1 章，改完用 finalize_revision 确认修订", source: "chat" });
+  await waitForIdle(revAgent, revRoot);
+  const revEvents = (await revAgent.snapshot({ projectRoot: revRoot, afterSeq: 0, limit: 100000 })).events;
+  const revToolCalls = revEvents.filter((e) => e.type === "tool_call_completed").map((e) => e.payload?.name);
+  const finalizeOk = revToolCalls.includes("finalize_revision");
+  const finalizeEvent = revEvents.find((e) => e.type === "tool_call_completed" && e.payload?.name === "finalize_revision");
+  const linkedOk = revToolCalls.includes("write_file")
+    && revEvents.some((e) => e.type === "checkpoint_linked");
+  const checkpointId = revEvents.find((e) => e.type === "checkpoint_linked")?.payload?.checkpoint_id ?? null;
+  const revisedContent = await fs.readFile(revFinalPath, "utf8");
+  const contentOk = revisedContent.includes("修订：第二日清晨");
+  record("finalize_revision 调用成功（tool_call_completed）", finalizeOk,
+    finalizeOk ? `工具序列=${revToolCalls.join("→")}` : `未调用 finalize_revision（实际=${revToolCalls.join("→")}）`,
+    [path.join(revRoot, "run_log.jsonl"), path.join(store.agentRootFor(revRoot), "sessions")]);
+  record("编辑正式章已入账（checkpoint_linked 事件）", linkedOk,
+    linkedOk ? `已链接 checkpoint_id=${checkpointId}` : "缺少 checkpoint_linked 事件",
+    [path.join(revRoot, "memory", "chapter_index.json")]);
+  record("修订正文已落盘且索引/校验和一致", contentOk && finalizeEvent?.payload?.ok === true,
+    contentOk ? `正文含修订内容，finalize_revision 返回=${JSON.stringify(finalizeEvent?.payload ?? null)}` : "正文未含修订内容",
+    [revFinalPath]);
 
   // ---- 汇总 ----
   const failed = results.filter((r) => !r.ok);
