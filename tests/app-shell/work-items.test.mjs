@@ -532,3 +532,66 @@ test("Task 2: tool_call_failed 追加 stdout/stderr；终态仍按 CANCELLED_ERR
   ]);
   assert.equal(groupOf(workNoOut).items.get("tool:a3").output, "");
 });
+
+// ===========================================================================
+// 第九轮：组锚点迁移（run_started → 首个 input_started），根因修复的投影层契约
+// ===========================================================================
+
+test("第九轮：真实 journal 顺序下组 firstSeq 迁移到首个 input_started 的 seq", () => {
+  const work = reduceAll([
+    ev("run_started", { workflow: "general" }, 1),
+    ev("input_queued", { input_id: "in-1", text: "帮我写第一章", source: "chat" }, 2),
+    ev("input_started", { input_id: "in-1" }, 3),
+    ev("model_turn_started", { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }, 4),
+    ev("tool_call_started", { tool_call_id: "tc-1", activity_id: "a1", name: "read_file", args: { path: "x.md" } }, 5)
+  ]);
+  const group = groupOf(work);
+  assert.equal(group.runStartedSeq, 1, "记录 run_started 锚点");
+  assert.equal(group.firstSeq, 3, "firstSeq 迁移到首个 input_started 的 seq——与用户消息同 seq，字典序保证消息在前");
+});
+
+test("第九轮：firstSeq 只迁移一次（priority/多消息的后续 input_started 不再移动组）", () => {
+  const work = reduceAll([
+    ev("run_started", { workflow: "general" }, 1),
+    ev("input_queued", { input_id: "in-1", text: "第一条", source: "chat" }, 2),
+    ev("input_started", { input_id: "in-1" }, 3),
+    ev("input_interrupted", { input_id: "in-1" }, 4),
+    ev("input_started", { input_id: "in-2" }, 5) // priority 切换：第二个 input_started
+  ]);
+  assert.equal(groupOf(work).firstSeq, 3, "第二个 input_started 不得再次迁移组锚点");
+});
+
+test("第九轮：retry 后 run_started 再现与后续 input_started 不移动已迁移的锚点", () => {
+  const work = reduceAll([
+    ev("run_started", { workflow: "general" }, 1),
+    ev("input_queued", { input_id: "in-1", text: "消息", source: "chat" }, 2),
+    ev("input_started", { input_id: "in-1" }, 3),
+    ev("run_failed", {}, 4),
+    ev("run_started", { workflow: "general" }, 5), // retry：同 runId 恢复
+    ev("input_started", { input_id: "in-2" }, 6)
+  ]);
+  const group = groupOf(work);
+  assert.equal(group.firstSeq, 3, "retry 不移动已迁移锚点");
+  assert.equal(group.runStartedSeq, 5, "runStartedSeq 跟随最新 run_started（供防御性判定）");
+});
+
+test("第九轮：无 input_started（v1 日志/纯 run 标记）时组锚点保持 run_started", () => {
+  const work = reduceAll([
+    ev("run_started", { workflow: "general" }, 1),
+    ev("model_turn_started", { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }, 2)
+  ]);
+  assert.equal(groupOf(work).firstSeq, 1, "无 input_started 不迁移");
+});
+
+test("第九轮：重放幂等——同一事件集重建后 firstSeq 稳定", () => {
+  const events = [
+    ev("run_started", { workflow: "general" }, 1),
+    ev("input_queued", { input_id: "in-1", text: "消息", source: "chat" }, 2),
+    ev("input_started", { input_id: "in-1" }, 3),
+    ev("model_turn_started", { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }, 4)
+  ];
+  const first = reduceAll(events);
+  const rebuilt = reduceAll(events); // 模拟 rebuildDerivedState 按 seq 升序重放
+  assert.equal(rebuilt.groups.get("run-1").firstSeq, first.groups.get("run-1").firstSeq);
+  assert.equal(rebuilt.groups.get("run-1").firstSeq, 3, "重放后锚点仍是首个 input_started 的 seq");
+});

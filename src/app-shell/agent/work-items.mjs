@@ -232,7 +232,10 @@ function ensureGroup(work, runId, seq) {
       // v1 旧日志/旧测试事件的未闭合 model turn 计数（镜像 journal legacyOpenTurns，
       // 保持 journal 兼容的投影形状）：v1 事件无 turn_id、没有 reasoning 内容，
       // 不产生工作项，该计数仅供状态层与 journal 对齐，当前无 UI 消费方。
-      legacyOpenTurns: 0
+      legacyOpenTurns: 0,
+      // 第九轮：首个 run_started 的 seq（组 firstSeq 锚点迁移的依据；无 run_started
+      // 的组为 null，不迁移）。
+      runStartedSeq: null
     };
     work.groups.set(runId, group);
   }
@@ -441,6 +444,21 @@ export function reduceWorkEvent(work, event) {
       }
       break;
     }
+    case "input_started": {
+      // 第九轮：组锚点迁移（根本性修复）。用户消息气泡（state.js）锚定
+      // input_started 的 seq，而组最初锚定 run_started 的 seq；真实 journal
+      // 中前者恒大于后者，按 (seq, eventKey) 排序时组会排到用户消息前面。
+      // 组 firstSeq 迁移到「所属 Run 的首个 input_started」的 seq 后，与用户
+      // 消息同 seq，insertTimeline 同 seq 按 eventKey 字典序（session:… <
+      // work:…）保证消息在前、组紧跟其后。仅迁移一次：firstSeq 已不等于
+      // runStartedSeq 时不再动（priority 的第二个 input_started、retry 后的
+      // 新 input_started 都不再移动组）。
+      const group = ensureGroup(work, runId, seq);
+      if (seq != null && group.runStartedSeq != null && group.firstSeq === group.runStartedSeq) {
+        group.firstSeq = seq;
+      }
+      break;
+    }
     case "plan_updated": {
       if (!Array.isArray(payload.items)) break;
       const group = ensureGroup(work, runId, seq);
@@ -469,6 +487,12 @@ export function reduceWorkEvent(work, event) {
     }
     case "run_started": {
       const group = ensureGroup(work, runId, seq);
+      // 第九轮：记录 run_started 锚点。真实 journal 同批顺序 run_started →
+      // input_queued → input_started（runtime.mjs submit 空闲路径），故
+      // input_started.seq 恒大于 run_started.seq；组 firstSeq 需在首个
+      // input_started 到达时迁移（见 input_started 分支），否则按 seq 排序
+      // 时组会排在其用户消息之前。
+      group.runStartedSeq = seq;
       // 新 Run：记录 startedAt 并清零累计；retry（同 runId 已终态）：保留累计
       // 耗时，由 transitionGroupClock 在进入 running 时重新置 activeSince。
       if (group.startedAt === null) {
