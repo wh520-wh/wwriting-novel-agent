@@ -453,7 +453,7 @@
 
 .agent-message--assistant {
   align-self: flex-start;
-  max-width: min(100%, 800px);
+  max-width: min(100%, 720px); /* 助手气泡：正文由内层 Markdown 封顶 720px，此处上限同步为 720px（旧 800px 因正文更窄已不可达） */
 }
 
 .agent-message-text {
@@ -493,7 +493,7 @@
    一套 typography（无 .is-streaming h* / .is-complete h* 重复规则）。 */
 .agent-message-text.agent-markdown {
   white-space: normal;
-  width: min(100%, 720px); /* Assistant 正文阅读宽度：中文每行 ≈ 40 字（打磨 B-2） */
+  width: min(100%, 720px); /* 助手正文阅读宽度：中文每行 ≈ 40 字（打磨 B-2） */
 }
 
 /* §2.6 标题/正文层级：H1/H2 靠字号、字重、间距和 H2 的细分隔线建立层级，
@@ -596,8 +596,8 @@
   margin: 0 0 8px;
 }
 .agent-markdown-table-scroll table {
-  width: min(720px, 100%);
-  min-width: min(720px, 100%);
+  width: 720px;
+  min-width: 720px; /* 窄屏保持 720px 列宽，溢出交给包装层横向滚动，不把各列压成逐字换行 */
   table-layout: fixed;
   border-collapse: collapse;
   margin: 0;

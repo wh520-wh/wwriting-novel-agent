@@ -2355,7 +2355,7 @@ test("agent.css 保留 1040px 内容列、向上菜单与工作组/动效布局"
   );
   assert.match(
     css,
-    /\.agent-markdown-table-scroll table\s*\{[^}]*width:\s*min\(720px,\s*100%\)[^}]*min-width:\s*min\(720px,\s*100%\)[^}]*table-layout:\s*fixed/u,
+    /\.agent-markdown-table-scroll table\s*\{[^}]*width:\s*720px[^}]*min-width:\s*720px[^}]*table-layout:\s*fixed/u,
     "表格应保持 720px 正文列，窄屏仅滚动包装层不压缩列"
   );
   assert.doesNotMatch(css, /\.agent-scroll-latest\s*\{[^}]*position:\s*sticky/u, "回到最新不得覆盖会话内容");
