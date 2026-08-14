@@ -14,7 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { runShellCommand } from "../../src/core/shell/runtime.mjs";
+import { createOutputDecoder, runShellCommand } from "../../src/core/shell/runtime.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const IN_SUBPROCESS = process.env.WW_RUNTIME_SUBPROCESS_TEST === "1";
@@ -206,4 +206,35 @@ test("本文件作为子进程运行 node --test 在最终 TAP 结果后 5 秒�
   const tail = output.slice(-600);
   assert.notEqual(code, "TIMEOUT", `子进程在最终 TAP 结果后 5 秒内未退出。输出尾部：\n${tail}`);
   assert.equal(code, 0, `子进程应退出 0。输出尾部：\n${tail}`);
+});
+
+// ---- Task C9：shell 输出 GBK 解码（Windows）----
+
+test("createOutputDecoder：GBK 跨 chunk 分块字节正确解码；UTF-8 跨 chunk 不误切 GBK", () => {
+  // "第一章" 的 GBK 字节 B5 DA D2 BB D5 C2，拆成三块喂入
+  const gbk = createOutputDecoder();
+  const parts = [Buffer.from([0xB5, 0xDA]), Buffer.from([0xD2, 0xBB]), Buffer.from([0xD5, 0xC2])];
+  const out = parts.map((p) => gbk.decode(p)).join("") + gbk.flush();
+  assert.equal(out, "第一章", "GBK 跨块字节必须完整解码");
+  // UTF-8 跨块（"正" = E6 AD A3 拆两块）不得误切
+  const utf8 = createOutputDecoder();
+  const utf8Out = utf8.decode(Buffer.from([0xE6, 0xAD])) + utf8.decode(Buffer.from([0xA3])) + utf8.flush();
+  assert.equal(utf8Out, "正");
+  // 干净 UTF-8 输出不回退
+  const clean = createOutputDecoder();
+  assert.equal(clean.decode(Buffer.from("hello")), "hello");
+});
+
+test("createOutputDecoder：同一命令内先 UTF-8 后 GBK 也能各自正确（stream 状态不泄漏到下一命令）", () => {
+  const a = createOutputDecoder();
+  assert.equal(a.decode(Buffer.from("ok ")), "ok ");
+  const b = createOutputDecoder();
+  assert.equal(b.decode(Buffer.from([0xB5, 0xDA, 0xD2, 0xBB, 0xD5, 0xC2])), "第一章", "上一命令的状态不得泄漏");
+});
+
+test("GBK 字节流输出被正确解码（Windows cmd 场景）：UTF-8 输出不受影响", { skip: process.platform !== "win32" }, async (t) => {
+  const command = 'node -e "process.stdout.write(Buffer.from([0xB5,0xDA,0xD2,0xBB,0xD5,0xC2]))"';
+  const out = await runShellCommand({ command, cwd: os.tmpdir(), timeoutMs: 10000 });
+  assert.match(out.stdout, /第一章/u, "GBK 字节应解码为中文");
+  assert.ok(!out.stdout.includes("\uFFFD"), "不得出现替换符");
 });
