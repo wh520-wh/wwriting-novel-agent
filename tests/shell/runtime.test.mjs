@@ -220,17 +220,49 @@ test("createOutputDecoder：GBK 跨 chunk 分块字节正确解码；UTF-8 跨 c
   const utf8 = createOutputDecoder();
   const utf8Out = utf8.decode(Buffer.from([0xE6, 0xAD])) + utf8.decode(Buffer.from([0xA3])) + utf8.flush();
   assert.equal(utf8Out, "正");
-  // 干净 UTF-8 输出不回退
+  // 干净 UTF-8 输出不误切 GBK（嗅探窗口在 flush 时提交；没有换行因此 decode 先缓冲）
   const clean = createOutputDecoder();
-  assert.equal(clean.decode(Buffer.from("hello")), "hello");
+  assert.equal(clean.decode(Buffer.from("hello")) + clean.flush(), "hello");
 });
 
 test("createOutputDecoder：同一命令内先 UTF-8 后 GBK 也能各自正确（stream 状态不泄漏到下一命令）", () => {
   const a = createOutputDecoder();
-  assert.equal(a.decode(Buffer.from("ok ")), "ok ");
+  // UTF-8 ASCII（无换行，嗅探窗口在 flush 提交；ASCII 在 UTF-8/GBK 下解码一致）
+  assert.equal(a.decode(Buffer.from("ok ")) + a.flush(), "ok ");
   const b = createOutputDecoder();
-  assert.equal(b.decode(Buffer.from([0xB5, 0xDA, 0xD2, 0xBB, 0xD5, 0xC2])), "第一章", "上一命令的状态不得泄漏");
+  assert.equal(b.decode(Buffer.from([0xB5, 0xDA, 0xD2, 0xBB, 0xD5, 0xC2])) + b.flush(), "第一章", "上一命令的状态不得泄漏");
 });
+
+// 嗅探窗口设计新增用例（修复质量审查发现的两类失效）：
+//   - 字节级分块：GBK 首字节不再被 UTF-8 流式解码器暂存吞掉；
+//   - GBK/UTF-8 碰撞：D2 BB 是合法 UTF-8（`һ` U+04BB），但在窗口内整体 decode 失败
+//     时应整窗回退为 GBK，`一` 不得被错误解码。
+
+test("createOutputDecoder：GBK 字节按单字节分块（6 次 decode + flush）仍完整解码为「第一章」", () => {
+  const gbk = createOutputDecoder();
+  const bytes = [0xB5, 0xDA, 0xD2, 0xBB, 0xD5, 0xC2]; // "第一章" 的 GBK 编码
+  const out = bytes.map((b) => gbk.decode(Buffer.from([b]))).join("") + gbk.flush();
+  assert.equal(out, "第一章", "单字节分块不得因 UTF-8 首字节暂存而乱码或丢字节");
+  assert.ok(!out.includes("\uFFFD"), "不得出现替换符");
+});
+
+test("createOutputDecoder：GBK/UTF-8 碰撞——单个合法 UTF-8 的 GBK 对（D2 BB）须在整窗回退时正确解码为 GBK", () => {
+  // D2 BB 作为 UTF-8 是合法的 `һ`；但 B5 DA 非法 UTF-8，整窗 decode 失败应整体回退 GBK。
+  const decoder = createOutputDecoder();
+  // OK，先喂 D2 BB（本可当 UTF-8 吐出 `һ`，但在嗅探窗口内必须被缓冲、不可提交）
+  const first = decoder.decode(Buffer.from([0xD2, 0xBB]));
+  assert.equal(first, "", "未决策前不得提前吐出可能碰撞的文本");
+  // 再喂非法 UTF-8 的 B5 DA，触发整窗 utf8 失败 → 回退 GBK
+  const second = decoder.decode(Buffer.from([0xB5, 0xDA]));
+  const tail = decoder.flush();
+  const out = first + second + tail;
+  // GBK：D2 BB = 一，B5 DA = 第。核心断言是 `一` 不得被误解码为 `һ`（整窗回退生效）。
+  assert.equal(out, "一第", "整窗回退为 GBK：D2 BB = 一（不得为 `һ`），B5 DA = 第");
+});
+
+// 文档化边界（不当作通过用例）：同一流内先 UTF-8 后 GBK 无法自动识别。首个窗口
+// 一旦含换行且为合法 UTF-8 即锁定 utf8，其后 GBK 字节会按 UTF-8 误解码。真实
+// Windows cmd 输出整体统一为 GBK，属本实现覆盖的目标场景；混合编码流需调用方自行处理。
 
 test("GBK 字节流输出被正确解码（Windows cmd 场景）：UTF-8 输出不受影响", { skip: process.platform !== "win32" }, async (t) => {
   const command = 'node -e "process.stdout.write(Buffer.from([0xB5,0xDA,0xD2,0xBB,0xD5,0xC2]))"';

@@ -20,31 +20,91 @@ import { spawn } from "node:child_process";
 
 const MAX_CAPTURE_CHARS = 1024 * 1024;
 
-// 输出解码：UTF-8 流式优先，遇到非法字节序列切 GBK 流式（Windows cmd 场景）。
+// 输出解码：UTF-8/GBK 嗅探窗口设计（Windows cmd 场景）。
+//
+// 不再按 chunk 逐个做 UTF-8 流式解码并在出错时临时切 GBK。旧实现有两个已核实的
+// 失败模式：(1) 字节级分块时 UTF-8 流式解码器会把 GBK 首字节暂存，次字节到达时
+// 已不构成非法序列，从而永不触发切换，首字节被吞掉，英文/中文混排输出乱码；
+// (2) GBK 双字节对其二字节恰落在 0x80~0xBF 时可能是合法 UTF-8（如 `一`=D2 BB
+// 会按 `һ` U+04BB 解码），在出错的字节之前到达就会以错误编码吐出且不可恢复。
+//
+// 本实现先缓冲一个"嗅探窗口"再决定模式：
+//   - mode ∈ { "sniff", "utf8", "gbk" }；sniff 阶段把到达的 chunk 累进 buffer。
+//   - 决定模式的时机：(a) buffer 出现换行（\n 或 \r\n，取到含换行为止）；
+//     (b) buffer 达到上限（64 KiB，取整个 buffer）；(c) flush() 被调用（取整个 buffer）。
+//   - 决定方式：用非流式 `TextDecoder("utf-8", { fatal: true })` 解码窗口；不抛错则
+//     mode=utf8，返回窗口文本，其后 chunk 用 UTF-8 流式；抛错则 mode=gbk，把整个
+//     窗口用 GBK 解码器整体解码（非流式即可），其后 chunk 用 GBK 流式。
+//   - 锁定后 decode(chunk) 走对应 `TextDecoder(label, { stream: true })` 流式。
+//   - flush()：仍在 sniff 则对整个 buffer 做一次窗口决定并输出；已锁定则调用锁定
+//     解码器的 flush()（UTF-8 丢弃尾部不完整多字节；GBK 排空残余）。
+//
+// 已知边界（文档化）：同一个流内先输出 UTF-8 后来又输出 GBK 时无法自动识别——
+// 首个窗口一旦被判定为 UTF-8 便锁定，其后 GBK 字节会按 UTF-8 误解码。真实 Windows
+// cmd 输出整体统一为 GBK，是本实现覆盖的目标场景，此边界可接受。
+//
 // 每个 runShellCommand 调用为 stdout/stderr 各建一个实例——模块级单例会把
 // 跨命令/跨流的解码状态互相污染（对抗审查结论），禁止使用。
+const SNIFF_CAP_BYTES = 64 * 1024;
+
 export function createOutputDecoder() {
-  const utf8 = new TextDecoder("utf-8", { fatal: true });
-  let gbk = null;
+  let mode = "sniff";
+  let buffer = Buffer.alloc(0);
+  let utf8 = null; // 仅在 mode=utf8 时非空（流式解码器）
+  let gbk = null; // 仅在 mode=gbk 时非空（流式解码器）
+
+  // 用非流式方式对窗口字节决定模式，返回窗口解码后的文本并锁定 mode。
+  function decideWindow(windowBytes) {
+    try {
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(windowBytes);
+      mode = "utf8";
+      utf8 = new TextDecoder("utf-8", { fatal: true });
+      return text;
+    } catch {
+      mode = "gbk";
+      gbk = new TextDecoder("gbk");
+      return gbk.decode(windowBytes);
+    }
+  }
+
   return {
     decode(chunk) {
-      if (!gbk) {
-        try {
-          return utf8.decode(chunk, { stream: true });
-        } catch {
-          gbk = new TextDecoder("gbk");
-          return gbk.decode(chunk, { stream: true });
-        }
+      const bytes = Buffer.from(chunk);
+      if (mode === "utf8") return utf8.decode(bytes, { stream: true });
+      if (mode === "gbk") return gbk.decode(bytes, { stream: true });
+
+      // sniff：累入 buffer，待换行 / 达到上限之一才决定模式
+      buffer = Buffer.concat([buffer, bytes]);
+      const nl = buffer.indexOf(0x0a);
+      if (nl === -1 && buffer.length < SNIFF_CAP_BYTES) return "";
+
+      const end = nl === -1 ? buffer.length : nl + 1; // 换行存在则窗口取到含换行为止
+      const windowBytes = buffer.subarray(0, end);
+      const remainder = buffer.subarray(end);
+      buffer = Buffer.alloc(0);
+
+      let out = decideWindow(windowBytes);
+      if (remainder.length) {
+        const locked = mode === "utf8" ? utf8 : gbk;
+        out += locked.decode(remainder, { stream: true });
       }
-      return gbk.decode(chunk, { stream: true });
+      return out;
     },
     flush() {
-      if (gbk) return gbk.decode();
-      try {
-        return utf8.decode();
-      } catch {
-        return "";
+      if (mode === "sniff") {
+        if (buffer.length === 0) return "";
+        const out = decideWindow(buffer);
+        buffer = Buffer.alloc(0);
+        return out;
       }
+      if (mode === "utf8") {
+        try {
+          return utf8.decode();
+        } catch {
+          return ""; // 丢弃未完成的尾随多字节
+        }
+      }
+      return gbk.decode(); // GBK 排空残余
     }
   };
 }
