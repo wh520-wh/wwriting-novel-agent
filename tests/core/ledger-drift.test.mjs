@@ -45,6 +45,12 @@ test("detectLedgerDrift：文件被改未入账 → checksum_mismatch；文件�
   assert.deepEqual(await detectLedgerDrift({ projectRoot }), []);
 });
 
+test("detectLedgerDrift：索引损坏（非法 JSON）→ 抛出", async (t) => {
+  const { projectRoot } = await setup(t);
+  await fs.writeFile(path.join(projectRoot, "memory", "chapter_index.json"), "{ not json", "utf8");
+  await assert.rejects(detectLedgerDrift({ projectRoot }));
+});
+
 test("buildLedgerDriftNote：无漂移返回空串；有漂移渲染可行动提示", () => {
   assert.equal(buildLedgerDriftNote([]), "");
   const note = buildLedgerDriftNote([{ chapter_no: 3, issue: "checksum_mismatch" }, { chapter_no: 5, issue: "file_missing" }]);
