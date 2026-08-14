@@ -1590,7 +1590,7 @@ test("commit 后派生记忆提取成功：结果标记 memory_update ok，book_
   assert.equal(commitEvent.payload.memory_update.facts_added, 1);
 
   // 派生数据已落盘，正文与索引保持成功
-  const summary = await fs.readFile(path.join(h.projectRoot, "memory", "book_summary.md"), "utf8");
+  const summary = await fs.readFile(path.join(h.projectRoot, "book_summary.md"), "utf8");
   assert.match(summary, /雨夜收到警告/u, "提取成功后 book_summary 应更新");
   assert.equal(await pathExists(path.join(h.projectRoot, "chapters", "001.md")), true);
   assert.equal(eventsOfType(events, "run_failed").length, 0);

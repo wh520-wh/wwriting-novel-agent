@@ -24,7 +24,7 @@ const USAGE = `usage: node scripts/rebuild-memory.mjs <projectRoot> [--from N] [
   --dry-run      只列出目标章节与估算模型调用数，不启动维护 Run
   --help, -h     显示本帮助
 
-派生数据（memory/book_summary.md、memory/continuity.json、memory/continuity.md）
+派生数据（book_summary.md、memory/continuity.json、memory/continuity.md）
 可随时重建；正式章节文件、章节索引与 WWRITING.md 是权威事实，本脚本不触碰。`;
 
 const args = process.argv.slice(2);
@@ -84,7 +84,7 @@ for (const chapter of targets) {
   console.log(`rebuilding memory for chapter ${chapter.chapter_no}...`);
   await agent.submit({
     projectRoot,
-    text: `重建第 ${chapter.chapter_no} 章的记忆：读取该章正文（read_file），按章节内容更新全书摘要与连续性档案（memory/book_summary.md、memory/continuity.json、memory/continuity.md）。摘要是派生数据，可覆盖为覆盖到本章的最新版本；不要改动正式章节文件、章节索引或 WWRITING.md。`,
+    text: `重建第 ${chapter.chapter_no} 章的记忆：读取该章正文（read_file），按章节内容更新全书摘要与连续性档案（book_summary.md、memory/continuity.json、memory/continuity.md）。摘要是派生数据，可覆盖为覆盖到本章的最新版本；不要改动正式章节文件、章节索引或 WWRITING.md。`,
     source: "maintenance"
   });
 }

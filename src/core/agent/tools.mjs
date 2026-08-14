@@ -120,7 +120,7 @@ const PROTECTED_DENIAL_MESSAGES = Object.freeze({
   chapter_index: "章节索引为系统文件，只读。",
   draft_files: "草稿只能经 append_chapter_segment 写入。",
   version_files: "版本档案为系统文件，只读。",
-  memory_files: "记忆档案为系统文件，只读。",
+  memory_files: "记忆档案为系统文件，只读；设定档案请用 update_memory 工具更新。",
   project_config: "项目配置文件为系统文件，只读。"
 });
 // 大小写不敏感路径相等（win32 文件系统大小写不敏感；POSIX 保持敏感）

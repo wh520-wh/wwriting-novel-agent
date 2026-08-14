@@ -147,7 +147,8 @@ export async function createProjectRoot(workspaceRoot, options = {}) {
     schema_version: 1,
     chapters: []
   });
-  await fs.writeFile(path.join(projectRoot, "memory", "book_summary.md"), "# 全书摘要\n\n", "utf8");
+  await fs.writeFile(path.join(projectRoot, "book_summary.md"), "# 全书摘要\n\n", "utf8");
+  await fs.writeFile(path.join(projectRoot, "WORKLOG.md"), "# WORKLOG\n", "utf8");
   await fs.writeFile(path.join(projectRoot, "sources.md"), "# Sources\n\n", "utf8");
   await fs.writeFile(path.join(projectRoot, "source_summaries.md"), "# Source Summaries\n\n", "utf8");
   await fs.writeFile(path.join(projectRoot, "OUTLINE.md"), "# OUTLINE.md\n\n> 蓝图未生成，请运行 /init\n", "utf8");
