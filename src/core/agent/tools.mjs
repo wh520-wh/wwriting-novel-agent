@@ -1511,7 +1511,7 @@ export function createToolRuntime({
     schema: {
       type: "object",
       properties: {
-        project_id: { type: "string", minLength: 1, description: "项目 ID" },
+        project_id: { type: "string", description: "项目 id" },
         chapter_no: { type: "integer", minimum: 1, description: "章节号（从 1 开始）" },
         version: { type: "integer", minimum: 1, description: "可选：要恢复到的版本号（缺省 = 上一版）" }
       },
@@ -1520,6 +1520,8 @@ export function createToolRuntime({
     },
     describeAction(args) {
       const action = deepAction({ title: "回滚章节", description: `第 ${args.chapter_no} 章${args.version ? ` 到版本 ${args.version}` : " 到上一版"}` });
+      action.category = "write";
+      action.grant_key = "write:project:project-root";
       action.safe_edit_target = true;
       return action;
     },
