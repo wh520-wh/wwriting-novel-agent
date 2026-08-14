@@ -12,9 +12,12 @@
 //     currentInput）→ gateway.complete →
 //     工具调用逐个 tools.execute（权限/确认/decision 流程）→ 结果入 transcript →
 //     循环直到模型无工具调用且队列清空，Run 终结。
-//   - 立即（promote）：同一 journal 批次原子写入 interrupt_requested + input_promoted
-//     （+ 旧活动输入的 grant 清除），abort 活动模型请求或可中断工具，等待原子操作
-//     到达安全点，然后同一 Run 继续消费被提升的输入；剩余输入保持顺序。
+//   - 立即（requestPriority，Task 9/10）：priority_input_requested 只标记
+//     priority_input_id，不 abort 在途模型请求/工具（SPEC 3.3 rule 2）；在安全点
+//     （模型响应后、每个工具前后、下次模型调用前）原子切换（input_interrupted +
+//     input_started，旧活动输入 grant 清除），同一 Run 继续消费优先输入；被打断
+//     输入不回队、不重跑；剩余输入保持顺序。旧 promote（interrupt_requested +
+//     input_promoted 立即打断）已退役（Task 26）。
 //   - 停止（stop）：写入 stopping 状态、abort 信号、等待当前原子操作，之后为每个
 //     未消费输入追加 input_cancelled、清除全部 grant 并 run_cancelled。
 //   - retry：继续同一 failed/interrupted Run（transcript 作历史、checkpoint 由
@@ -68,8 +71,8 @@ import {
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
 // Task 3：取消/停止语义的工具失败不触发「跳过同一响应后续调用」——这些结果由
-// 停止/中断路径以 tool_cancelled 统一闭合（promote×stop 竞态测试依赖该顺序），
-// 只有真实领域失败才把未启动的后续调用闭合为 tool_skipped_after_failure。
+// 停止/中断路径以 tool_cancelled 统一闭合（stop 与 requestPriority 并发测试钉住
+// 该顺序），只有真实领域失败才把未启动的后续调用闭合为 tool_skipped_after_failure。
 const TOOL_RESULT_CANCELLATION_CODES = new Set(["tool_cancelled", "shell_cancelled"]);
 
 // 统一工具目录（Task 7）：不再按工作流切换——每一轮都提供相同的生产工具集：
@@ -92,10 +95,10 @@ const PRODUCTION_TOOL_NAMES = Object.freeze([...GENERAL_TOOL_NAMES, ...DEEP_TOOL
 
 const SOURCES = new Set(["chat", "maintenance"]);
 
-// 停止/提升等待上限。语义说明（Task 6 规格审查 Minor）：stop 在 abort 信号发出后
+// 停止等待上限。语义说明（Task 6 规格审查 Minor）：stop 在 abort 信号发出后
 // 等待循环收敛（可中断工具被杀、循环追加终态批次），正常只需毫秒级；60s 上限只
 // 防御循环异常悬挂。长原子操作（不可中断提交）不受 abort 影响也会在毫秒级完成，
-// 不会接近该上限。
+// 不会接近该上限。（旧 promote 的 waitForRunResolved 已随 promote 删除，Task 26。）
 const IDLE_WAIT_TIMEOUT_MS = 60000;
 const ASSISTANT_DELTA_FLUSH_MS = 24;
 const ASSISTANT_DELTA_MAX_PENDING_CHARS = 2048;
@@ -194,7 +197,7 @@ export function deriveSessionTitle(text) {
 // 告警、绝不回滚已成功的 append。
 //
 // 与原计划"每会话 journal append 后同步"的微调（按实际代码调整，理由如下）：
-//   - 同步点收窄到「调用方可等待的用户动作」：submit/promote/stop/retry/
+//   - 同步点收窄到「调用方可等待的用户动作」：submit/requestPriority/stop/retry/
 //     retryCompaction/cancelCompaction/clearHistory 与 open()。
 //     运行循环内部逐事件 append 不做同步——循环是 fire-and-forget（无人 await），
 //     同步会延长 append 的生命周期到"轮询已观察到 idle 之后"，与外部删除
@@ -1001,8 +1004,10 @@ export function createAgentRuntime({
   //   - 新生命周期（Task 9 起 submit/withdraw 路径）：input_queued → input_started →
   //     input_completed | input_interrupted（终态），input_queued → input_withdrawn
   //     （终态）；input_started 只激活、不终结，完成时才需要追加 input_completed。
-  //   - legacy 兼容：旧 input_consumed「切换激活」同时就是该输入的终态事件，完成时
-  //     不再追加；input_promoted/run_started（retry）激活的输入完成时需要收敛。
+  //   - legacy 兼容（Task 26 起仅回放旧日志时生效）：旧 input_consumed「切换激活」
+  //     同时就是该输入的终态事件，完成时不再追加；input_promoted/run_started
+  //     （retry）激活的输入完成时需要收敛。新 generation 不再产生这些旧事件，
+  //     本分支只服务历史 journal 重放。
   // 返回当前输入完成时是否需要追加 input_completed。上限语义同 findInputText：
   // 只扫描最近 100k 条事件，超出视为需要收敛（保守方向）。
   async function needsCompletionTerminal(journal, runId, inputId) {
@@ -1109,7 +1114,9 @@ export function createAgentRuntime({
   // 做读-判-写（与 submit/requestPriority/withdraw/stop 同一把锁，并发胜者由持久
   // 事件顺序决定）：
   //   - 无 priority_input_id / 优先输入已不在队列 / Run 已终结 → 不切换（false）；
-  //   - stopping/interrupting 优先收敛（停止是硬逃生口，promote 的中断先于优先）；
+  //   - stopping/interrupting 优先收敛（停止是硬逃生口，其收敛先于优先切换；
+  //     interrupting 中间态旧日志重放可到达，新 generation 不产生
+  //     interrupt_requested——Task 26 起旧 promote 已退役）；
   //   - 旧输入未自然完成 → 原子追加 input_interrupted(A) + input_started(D)，同时
   //     清除 A 的 grant（grant 绑定 active_input_id，不清理会泄漏给后续输入）；
   //   - 旧输入已自然完成（如文本回复路径已写 input_completed，active_input_id 为
@@ -1129,8 +1136,8 @@ export function createAgentRuntime({
       if (!run || run.id !== runId || TERMINAL_RUN_STATUSES.has(run.status)) return false;
       if (run.status === "stopping" || run.status === "interrupting") return false;
       const batch = [];
-      // 旧输入 grant 清除（与 promote/完成路径同构：grant 绑定 active_input_id，
-      // 输入被优先打断后必须清除，否则后续输入沿用旧 grant 绕过确认）。
+      // 旧输入 grant 清除（与完成路径同构：grant 绑定 active_input_id，输入被
+      // 优先打断后必须清除，否则后续输入沿用旧 grant 绕过确认）。
       const grantsOfActive = run.active_grants.filter((grant) => grant.input_id === run.active_input_id);
       for (const grant of grantsOfActive) {
         batch.push({
@@ -1157,6 +1164,10 @@ export function createAgentRuntime({
   // grant，再 run_cancelled。幂等：Run 已终结时直接返回。在项目互斥锁内执行
   // 读-判-写：并发 submit 要么先落盘（本批次把它一并取消），要么后落盘（属于
   // 下一个 Run），杜绝输入滞留。
+  // 为什么保留 input_cancelled（Task 26 语义收窄）：新生命周期三种终态均不覆盖
+  //「输入因硬停止被丢弃」——input_interrupted 要求安全边界（模型/工具在途硬停止
+  // 不满足，且 reducer 只接受活动输入、排队输入无法用它终结）、input_withdrawn
+  // 仅限用户主动撤回；规格 3.3.9 保留停止为硬逃生口，verify 场景 5 钉住此契约。
   async function cancelRunForStop(state, sessionState, reason) {
     return state.mutex.run(async () => {
       const session = await sessionState.journal.getSession();
@@ -1244,6 +1255,10 @@ export function createAgentRuntime({
   //   - 手动 in-run：input_cancelled(compaction_cancelled) + 恢复 running；
   //   - 手动空闲：input_cancelled(compaction_cancelled) + run_cancelled → idle。
   // 返回 "converged" | "already_terminal" | "input_settled"。
+  // 为什么保留 input_cancelled（Task 26 语义收窄，同 stop 路径）：压缩取消是
+  // 运行级丢弃（活动 compact item + 排队输入一并终结），input_interrupted 需
+  // 安全边界且只接受活动输入、input_withdrawn 仅限主动撤回；UI 契约按
+  // input_cancelled(compaction_cancelled) 渲染「已取消」。
   async function convergeCompactionCancelled(state, sessionState, compaction) {
     return state.mutex.run(async () => {
       const session = await sessionState.journal.getSession();
@@ -1300,7 +1315,8 @@ export function createAgentRuntime({
     const modelConfig = modelConfigOf(project);
     const idleInitiated = await isCompactRunIdleInitiated(state, sessionState, runId, inputId);
     // 相同队列中后续重复 /compact：输入安全点取消（duplicate_compact），避免
-    // 连续无意义压缩（spec §5.5）。
+    // 连续无意义压缩（spec §5.5）。系统级丢弃排队项用 input_cancelled（Task 26
+    // 语义收窄：无对应新生命周期事件，同 stop/压缩取消路径的保留理由）。
     await state.mutex.run(async () => {
       const s = await sessionState.journal.getSession();
       const r = s.active_run;
@@ -1329,14 +1345,19 @@ export function createAgentRuntime({
     });
     if (built.noop) {
       // 无可压缩历史：noop 事件统一由协调器落盘（压缩事件只有一个写作者），
-      // 随后消费该 /compact 输入（不调用模型）。
+      // 随后收敛该 /compact 输入（不调用模型）。Task 26：/compact 服从同一输入
+      // 生命周期（规格 3.2），成功收敛用 input_completed（旧 input_consumed 退役）。
       await sessionState.compactionCoordinator.noop({ trigger: "manual", reason: built.reason ?? "nothing_to_compact" });
       await state.mutex.run(async () => {
         const s = await sessionState.journal.getSession();
         const r = s.active_run;
         if (!r || r.id !== runId || TERMINAL_RUN_STATUSES.has(r.status)) return;
+        // input_completed reducer 只接受活动输入：压缩期间无任何路径能切换活动
+        // 输入（stop 已按终态跳过），此守卫是防止异常竞态把 reducer 校验打成
+        // 致命错误的防御层。
+        if (r.active_input_id !== inputId) return;
         await sessionState.journal.append({
-          type: "input_consumed",
+          type: "input_completed",
           run_id: runId,
           payload: { input_id: inputId }
         });
@@ -1356,7 +1377,10 @@ export function createAgentRuntime({
         const s = await sessionState.journal.getSession();
         const r = s.active_run;
         if (!r || r.id !== runId || TERMINAL_RUN_STATUSES.has(r.status)) return;
-        await sessionState.journal.append({ type: "input_consumed", run_id: runId, payload: { input_id: inputId } });
+        // 守卫同 noop 分支（input_completed reducer 只接受活动输入；压缩期间无
+        // 路径能切换活动输入，此守卫是防御异常竞态的兜底层）。
+        if (r.active_input_id !== inputId) return;
+        await sessionState.journal.append({ type: "input_completed", run_id: runId, payload: { input_id: inputId } });
       });
       return "compacted";
     }
@@ -1873,9 +1897,9 @@ export function createAgentRuntime({
       // cancelRunForStop 交错产生「同一 input 双终态」（input_cancelled 与
       // input_completed 并存，违反 Task 2/9 冻结语义）：无论谁先拿到锁，后到者看到的
       // 投影都是终态——Run 已取消/停止时跳过完成批次（停止路径负责取消输入与
-      // 清除 grant）；promote 竞态把输入放回队列（active_input_id 已切换）时同样
-      // 跳过——该输入的终态由下一次激活的完成负责。返回 "done" 后由
-      // advanceOrComplete 读到终态收敛。
+      // 清除 grant）；优先安全点切换已把该输入中断（input_interrupted 落盘、
+      // active_input_id 已切换）时同样跳过——该输入的终态由切换批次负责。返回
+      // "done" 后由 advanceOrComplete 读到终态收敛。
       await state.mutex.run(async () => {
         const sessionNow = await journal.getSession();
         const runNow = sessionNow.active_run;
@@ -1932,8 +1956,13 @@ export function createAgentRuntime({
         if (head.kind === "compact") {
           // Task 8：/compact 在安全点被"消费"——激活但不给终态事件（失败时
           // compact item 必须保持无终态可重试/可取消），由 processCompact 收尾。
+          // Task 26：/compact 队列项服从同一输入生命周期（规格 3.2），激活用
+          // input_started（到达此处时活动输入已收敛，active_input_id 为 null）；
+          // reason 作为附加信息保留（reducer 不校验额外 payload 字段）。此激活
+          // 路径与 isCompactRunIdleInitiated 的「Run 首个 input_started 判定」互为
+          // 依据：空闲发起的 /compact 其首条 input_started 就是 compact item。
           await sessionState.journal.append({
-            type: "input_promoted",
+            type: "input_started",
             run_id: runId,
             payload: { input_id: head.id, reason: "compact_safe_point" }
           });
@@ -1982,8 +2011,11 @@ export function createAgentRuntime({
 
       const inputMeta = await findInputMeta(sessionState.journal, inputId);
       if (inputMeta.text === null) {
-        // 恢复的日志中找不到该输入（陈旧记录）：消费跳过，避免卡死
-        await sessionState.journal.append({ type: "input_consumed", run_id: runId, payload: { input_id: inputId } });
+        // 恢复的日志中找不到该输入（陈旧记录）：消费跳过，避免卡死。Task 26：
+        // 用 input_interrupted 闭合（活动输入未完成即丢弃；它是新生命周期唯一
+        // 可终结活动输入的非完成事件，reducer 校验 active_input_id === inputId
+        // 恰好在当前分支成立），旧 input_consumed 退役。
+        await sessionState.journal.append({ type: "input_interrupted", run_id: runId, payload: { input_id: inputId } });
         continue;
       }
 
@@ -2097,22 +2129,8 @@ export function createAgentRuntime({
   }
 
   // -------------------------------------------------------------------------
-  // 等待辅助（promote/stop 与运行中循环的安全点衔接）
+  // 等待辅助（stop 与运行中循环的安全点衔接）
   // -------------------------------------------------------------------------
-
-  // 等待 Run 离开中间态：回到 running（安全点已到）或终结。
-  async function waitForRunResolved(state, sessionState, runId, { timeoutMs = IDLE_WAIT_TIMEOUT_MS } = {}) {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const session = await sessionState.journal.getSession();
-      const run = session.active_run;
-      if (!run || run.id !== runId) return "gone";
-      if (TERMINAL_RUN_STATUSES.has(run.status)) return "terminal";
-      if (run.status === "running") return "running";
-      await sleep(10);
-    }
-    return "timeout";
-  }
 
   async function waitForIdle(state, sessionState, { timeoutMs = IDLE_WAIT_TIMEOUT_MS } = {}) {
     const deadline = Date.now() + timeoutMs;
@@ -2260,76 +2278,15 @@ export function createAgentRuntime({
     return created;
   }
 
-  async function promote({ projectRoot, inputId, sessionId = null }) {
-    if (typeof inputId !== "string" || inputId.length === 0) {
-      throw fail("invalid_input_id", "inputId 必须是非空字符串。");
-    }
-    const state = ensureProject(projectRoot);
-    const sessionState = await resolveSessionState(state, sessionId);
-    if (!sessionState) throw fail("no_active_run", "当前没有可打断的活动 Run。");
-    await sessionState.journal.load();
-    // 预检查 + 批次落盘在项目互斥锁内原子完成：并发双 promote 不会同时通过
-    // 预检查；stop/submit 与 promote 的读-判-写互斥。
-    const runId = await state.mutex.run(async () => {
-      const session = await sessionState.journal.getSession();
-      const run = session.active_run;
-      if (!run || TERMINAL_RUN_STATUSES.has(run.status)) {
-        throw fail("no_active_run", "当前没有可打断的活动 Run。");
-      }
-      // 停止优先于「立即」（Task 6 规格审查）：stopping 状态上拒绝提升（reducer
-      // 侧还有第二道守卫）；已有中断在途时拒绝并发第二个提升。
-      if (run.status === "stopping") {
-        throw fail("run_stopping", "Run 正在停止，无法提升输入。");
-      }
-      if (run.status === "interrupting") {
-        throw fail("interrupt_pending", "已有中断在途，请等待当前中断完成后再提升。");
-      }
-      if (!session.queued_inputs.some((item) => item.id === inputId)) {
-        throw fail("input_not_queued", "该输入不在排队队列中。");
-      }
-      // 同一批次原子写入：interrupt_requested + input_promoted + 旧活动输入 grant 清除
-      const grantsOfActive = run.active_grants.filter((grant) => grant.input_id === run.active_input_id);
-      const batch = [
-        { type: "interrupt_requested", run_id: run.id, payload: {} },
-        { type: "input_promoted", run_id: run.id, payload: { input_id: inputId } }
-      ];
-      for (const grant of grantsOfActive) {
-        batch.push({
-          type: "permission_grant_cleared",
-          run_id: run.id,
-          payload: { grant_id: grant.id, input_id: grant.input_id, grant_key: grant.grant_key, reason: "input_promoted" }
-        });
-      }
-      try {
-        await sessionState.journal.appendBatch(batch);
-      } catch (error) {
-        if (error?.message?.includes("需要活动 Run") || error?.message?.includes("非排队") || error?.message?.includes("正在停止")) {
-          throw fail("promote_failed", "无法提升该输入：Run 已终结、正在停止或输入已被消费。");
-        }
-        throw error;
-      }
-      await syncSessionRegistry(state, sessionState);
-      return run.id;
-    });
-    // abort 活动模型请求或可中断工具，等待原子操作到达安全点
-    abortController(state);
-    const outcome = await waitForRunResolved(state, sessionState, runId);
-    if (outcome === "timeout") {
-      throw fail("promote_timeout", "等待中断安全点超时。");
-    }
-    if (outcome !== "running") {
-      // 提升期间 Run 被 stop/自然终结：不误报成功（输入可能已被取消）
-      return { run_id: runId, input_id: inputId, promoted: false, reason: outcome };
-    }
-    return { run_id: runId, input_id: inputId, promoted: true };
-  }
-
   // 请求优先（Task 9，SPEC 3.3 rule 10）：同一 session 项目互斥锁内做
   // getSession -> validate -> appendBatch。只接受排队输入且当前无优先请求：
   //   - 非排队输入 → input_not_queued（reducer 还有第二道守卫）；
   //   - 已有优先输入在途 → priority_pending（在途输入撤回或开始后才可再请求）。
   // 本任务只追加 priority_input_requested（priority_input_id 投影 + 前端按钮态）；
   // 安全点切换逻辑（打断活动输入、优先消费）由 Task 10 实现。
+  // Task 26：旧 promote 方法（interrupt_requested + input_promoted 立即打断、被打断
+  // 输入回队重跑）已整体退役——前端「立即」= requestPriority，规格 3.3 明确「不取消
+  // 当前模型请求、A 不回队不重跑」，一条用户动作一条权威路径。
   async function requestPriority({ projectRoot, inputId, sessionId = null }) {
     if (typeof inputId !== "string" || inputId.length === 0) {
       throw fail("invalid_input_id", "inputId 必须是非空字符串。");
@@ -2421,10 +2378,11 @@ export function createAgentRuntime({
       throw fail("invalid_run_id", "runId 必须是非空字符串。");
     }
     const state = ensureProject(projectRoot);
-    // 会话解析 + 读-判-写放进项目互斥锁，与 promote 的临界区串行化：调用顺序
-    // 决定胜负——stop 先调用时其 stopping 落盘必然先于 promote 的读-判-写，
-    // 杜绝「promote 在 stop 落盘前读到 running 而误提升成功」的竞态（Task 4 的
-    // 注册表解析 I/O 让两条链的先后不再由调用顺序唯一决定）。
+    // 会话解析 + 读-判-写放进项目互斥锁，与 requestPriority 的临界区串行化：调用
+    // 顺序决定胜负——stop 先落盘时其 input_cancelled 把优先输入移出队列，后到的
+    // requestPriority 以 input_not_queued 拒绝（新测试「stop 与 requestPriority
+    // 并发」钉住同一竞态）；requestPriority 先落盘时 stop 的取消批次清空匹配的
+    // priority_input_id（reducer 的 input_cancelled 分支），不留卡死指针。
     const outcome = await state.mutex.run(async () => {
       const sessionState = await resolveSessionState(state, sessionId);
       if (!sessionState) {
@@ -2604,7 +2562,7 @@ export function createAgentRuntime({
     });
     if (outcome.status === "completed" || outcome.status === "noop") {
       // 恢复 Run 为 running 并重启循环。手动 /compact 的 retry 成功后 compact
-      // item 已达成目的（input_consumed 收敛，绝不重复启动第二次压缩）；自动压缩
+      // item 已达成目的（input_completed 收敛，绝不重复启动第二次压缩）；自动压缩
       // 的 retry 成功后原 pending input 由 processInput 继续（压缩成功后预检低于
       // 硬窗口直接发送；仍超阈值因已尝试不再重复压缩）。retry 重建源后无可压缩
       // 历史（noop）视为等价成功——输入照常继续，由 processInput 重新预检。
@@ -2622,8 +2580,11 @@ export function createAgentRuntime({
           const s2 = await sessionState.journal.getSession();
           const r2 = s2.active_run;
           if (r2 && r2.id === run.id && !TERMINAL_RUN_STATUSES.has(r2.status)) {
+            // compact item 是活动输入（失败后保持 active、无终态）；Task 26 以
+            // input_completed 收敛（旧 input_consumed 退役），守卫同 processCompact。
+            if (r2.active_input_id !== compaction.pending_input_id) return;
             await sessionState.journal.append({
-              type: "input_consumed",
+              type: "input_completed",
               run_id: run.id,
               payload: { input_id: compaction.pending_input_id }
             });
@@ -2930,7 +2891,6 @@ export function createAgentRuntime({
   return {
     open,
     submit,
-    promote,
     requestPriority,
     withdrawInput,
     decide,

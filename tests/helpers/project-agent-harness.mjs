@@ -15,7 +15,7 @@
 //   await agent.submit({ projectRoot, text, source }); // source ∈ {"chat","maintenance"}，
 //                                               // 仅审计来源，不改变权限/工作流/工具；
 //                                               // 输入落盘即 resolve，Run 异步推进
-//   await agent.promote({ projectRoot, inputId });     // 立即：同一 Run 内打断并提升排队输入
+//   await agent.requestPriority({ projectRoot, inputId }); // Task 26 起「立即」唯一权威路径（旧 promote 已退役）
 //   await agent.decide({ projectRoot, decisionId, choice }); // choice 见下
 //   await agent.stop({ projectRoot, reason });  // reason: "user_stop"
 //   await agent.retry({ projectRoot, runId });  // 恢复同一可恢复 Run

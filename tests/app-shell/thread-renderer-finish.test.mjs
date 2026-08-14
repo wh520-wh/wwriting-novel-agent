@@ -248,7 +248,6 @@ function makeFakeApi() {
   return {
     openProject: async () => {},
     submit: async () => ({ ok: true }),
-    promote: async () => ({ ok: true }),
     stop: async () => ({ ok: true }),
     retry: async () => ({ ok: true }),
     decide: async () => ({ ok: true }),
@@ -388,7 +387,6 @@ function makeFixtureApi(fixture) {
   return {
     openProject: async () => {},
     submit: async () => ({ ok: true }),
-    promote: async () => ({ ok: true }),
     stop: async () => ({ ok: true }),
     retry: async () => ({ ok: true }),
     decide: async () => ({ ok: true }),

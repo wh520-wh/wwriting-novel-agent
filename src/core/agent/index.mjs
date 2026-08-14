@@ -9,8 +9,7 @@
 //                                                     //   skills?, agentStorageRootFor? }
 //   await agent.open({ projectRoot });
 //   await agent.submit({ projectRoot, text, source });   // source ∈ {"chat","maintenance"}
-//   await agent.promote({ projectRoot, inputId });
-//   await agent.requestPriority({ projectRoot, inputId });  // Task 9/10：请求优先（priority_input_requested，安全点切换）
+//   await agent.requestPriority({ projectRoot, inputId });  // Task 9/10：请求优先（priority_input_requested，安全点切换）；Task 26 起「立即」唯一权威路径（旧 promote 已退役）
 //   await agent.withdrawInput({ projectRoot, inputId });    // Task 9：撤回排队输入（input_withdrawn）
 //   await agent.decide({ projectRoot, decisionId, choice });
 //   await agent.stop({ projectRoot, runId?, reason: "user_stop" }); // Task 9：runId 可选，显式时精确匹配活动 Run
@@ -29,7 +28,7 @@
 //   await agent.archiveSession({ projectRoot, sessionId });
 //   await agent.restoreSession({ projectRoot, sessionId });
 //   await agent.deleteSession({ projectRoot, sessionId });    // 永久删除（元数据 + 数据目录）
-//   // 其余方法（open/submit/promote/requestPriority/withdrawInput/decide/stop/retry/
+//   // 其余方法（open/submit/requestPriority/withdrawInput/decide/stop/retry/
 //   // retryCompaction/cancelCompaction/snapshot/exportHistory/clearHistory）均可选传
 //   // sessionId。
 import { createAgentRuntime } from "./runtime.mjs";
@@ -39,7 +38,6 @@ export function createProjectAgent(dependencies = {}) {
   return {
     open: (params) => runtime.open(params),
     submit: (params) => runtime.submit(params),
-    promote: (params) => runtime.promote(params),
     requestPriority: (params) => runtime.requestPriority(params),
     withdrawInput: (params) => runtime.withdrawInput(params),
     decide: (params) => runtime.decide(params),

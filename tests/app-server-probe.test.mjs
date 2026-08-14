@@ -2,7 +2,7 @@
 //
 // 覆盖新组合根的全部存活契约：dashboard（领域事实，无运行推断）、项目 list/open/
 // init/forget、设置/模型/技能、章节读取、诊断（注入 agent snapshot）、确定性导出、
-// Agent HTTP（input/queued/snapshot/promote/stop/retry）、静态资源，以及旧路由全部
+// Agent HTTP（input/queued/snapshot/priority/stop/retry）、静态资源，以及旧路由全部
 // 404。SSE 契约在 app-server-events-stream.test.mjs 覆盖。
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -449,8 +449,9 @@ test("vendor 白名单：/vendor/marked.esm.js 可访问，node_modules 不整�
 // Agent HTTP 契约
 // ---------------------------------------------------------------------------
 
-test("agent input / queued / promote / snapshot 全链路（test gateway）", async () => {
+test("agent input / queued / priority / snapshot 全链路（test gateway）", async () => {
   // Task 8：注入确定性 gateway（test-only mock，不经生产分发）；项目无需真实模型。
+  // Task 26：旧 promote 端点已删除，「立即」唯一 HTTP 路径是 /priority。
   const { projectRoot, server, port } = await setupServer({
     testGatewayFactory: () => createMockModelGateway({
       script: [{ reply: { text: "任务一完成。" } }, { reply: { text: "任务二完成。" } }, { reply: { text: "全部完成。" } }],
@@ -465,10 +466,10 @@ test("agent input / queued / promote / snapshot 全链路（test gateway）", as
     assert.equal(second.data.status, "queued");
     assert.equal(second.data.run_id, first.data.run_id);
 
-    const promoted = await postJson(port, `/api/agent/input/${second.data.input_id}/promote`, { projectRoot });
-    assert.equal(promoted.res.status, 200);
-    assert.equal(promoted.data.run_id, first.data.run_id);
-    assert.equal(promoted.data.promoted, true);
+    const prioritized = await postJson(port, `/api/agent/input/${second.data.input_id}/priority`, { projectRoot });
+    assert.equal(prioritized.res.status, 200);
+    assert.equal(prioritized.data.run_id, first.data.run_id);
+    assert.equal(prioritized.data.priority_pending, true);
 
     const completed = await waitFor(async () => {
       const { data } = await getJson(port, `/api/agent/snapshot?projectRoot=${encodeURIComponent(projectRoot)}`);
@@ -476,7 +477,8 @@ test("agent input / queued / promote / snapshot 全链路（test gateway）", as
     });
     assert.equal(completed.session.status, "idle");
     assert.equal(completed.session.active_run.id, first.data.run_id);
-    assert.ok(completed.events.some((e) => e.type === "input_promoted"));
+    assert.ok(completed.events.some((e) => e.type === "priority_input_requested"));
+    assert.ok(completed.events.some((e) => e.type === "input_started"));
   } finally {
     await closeServer(server);
   }

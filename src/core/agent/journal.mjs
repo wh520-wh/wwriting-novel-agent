@@ -57,9 +57,10 @@ import { createJournalSegmentStore } from "./journal-segments.mjs";
 // 计划固定的 44 个 journal 事件类型；未知类型一律拒绝。
 // Task 6：新输入生命周期只产生六类事件（input_queued/input_started/input_completed/
 // input_interrupted/input_withdrawn/priority_input_requested）；旧的 input_promoted/
-// input_consumed/input_cancelled 在 runtime 迁移前仍可能被追加（reducer 保留 legacy
-// 分支），故类型清单继续接纳它们。Task 12：旧工作流事件类型已随工作流概念
-// 整体删除（不再产生、不再投影、reducer 拒绝）。
+// input_consumed/input_cancelled 已由新 generation 停止产生（Task 26 收口），类型
+// 清单与 reducer legacy 分支只服务旧日志追加式重放（reducer 契约外事件，回放旧
+// journal 仍可接受）。Task 12：旧工作流事件类型已随工作流概念整体删除（不再产生、
+// 不再投影、reducer 拒绝）。
 export const FIXED_EVENT_TYPES = Object.freeze([
   "session_created",
   "run_started",
@@ -422,7 +423,10 @@ function reduceEvent(session, event, side) {
     //   queued -> withdrawn
     // 每条输入恰好一个终态；input_started 是唯一把用户文本写入 transcript 的边界。
     // 旧 input_consumed/input_cancelled/input_promoted 分支保留为 legacy 兼容
-    //（runtime 迁移前仍可能追加），新 generation 不再产生它们。
+    //（Task 26 起新 generation 不再产生，仅回放旧日志时生效；input_cancelled 仍由
+    // 硬停止/压缩取消/历史缺口恢复路径产生——语义收窄的保留理由见
+    // runtime.mjs cancelRunForStop / convergeCompactionCancelled 与
+    // journal.mjs appendGapRecovery 的注释）。
     // -----------------------------------------------------------------------
 
     case "input_started": {
@@ -532,6 +536,9 @@ function reduceEvent(session, event, side) {
       //「每条 input 恰好一个终态事件」的字面不变量冲突。冻结验收/agent 场景均不
       // 覆盖此链路（promote 后该输入立即重新被处理，stop 不会落在未消费的活动输入
       // 上）；如需严格化，应在 reducer 侧校验或由 runtime 的 stop 收敛跳过已终结输入。
+      // Task 26：新 generation 不再产生 input_consumed/input_promoted，此链路仅旧
+      // 日志追加式重放可触发；input_cancelled 本身仍由硬停止/运行级丢弃路径产生
+      //（语义收窄，见 runtime.cancelRunForStop / convergeCompactionCancelled）。
       const inputId = requireString(payload.input_id, "input_id");
       if (session.active_run?.active_input_id === inputId) {
         session.active_run.active_input_id = null;
@@ -575,8 +582,10 @@ function reduceEvent(session, event, side) {
     case "interrupt_requested": {
       const activeRun = requireActiveRun("interrupt_requested");
       // 停止优先于中断（Task 6 规格审查）：Run 已进入 stopping 后拒绝再写入
-      // interrupt_requested，防止「立即」击穿「停止」（promote 的预检查只是
-      // 第一道防线，reducer 是 journal 锁内的唯一串行化兜底）。
+      // interrupt_requested，防止「立即」击穿「停止」。Task 26：旧 promote 已退役，
+      // 新 generation 不再产生 interrupt_requested（「立即」= requestPriority 只写
+      // priority_input_requested），本分支与守卫仅服务旧日志重放——reducer 仍是
+      // journal 锁内的唯一串行化兜底。
       if (activeRun.status === "stopping") {
         fail(`Run ${run.id} 正在停止，不能写入 interrupt_requested`);
       }
@@ -1230,6 +1239,10 @@ export function createAgentJournal({
   // gap 恢复事件：先取消活动输入与排队输入（活动输入必须在 run_interrupted 之前
   // 收敛），再标记旧 Run interrupted，最后追加 journal_recovery_boundary
   //（携带 gap 范围与 resume_allowed:false）。
+  // 为什么保留 input_cancelled（Task 26 语义收窄）：历史缺口强制恢复是运行级丢弃
+  //（旧 Run 的飞行中输入无法继续），input_interrupted 需安全边界且只接受活动输入
+  //（排队输入无法用它终结）、input_withdrawn 仅限用户主动撤回；与 stop/压缩取消
+  // 路径同理由（见 runtime.cancelRunForStop / convergeCompactionCancelled）。
   async function appendGapRecovery(gaps) {    const batch = [];
     const run = state.session.active_run;
     if (run?.active_input_id != null) {
@@ -1538,8 +1551,8 @@ export function createAgentJournal({
     });
   }
 
-  // 追加一批事件：分配连续 seq，同一批次原子生效（如 interrupt_requested +
-  // input_promoted 的"立即"操作）。返回 projection 的独立副本。
+  // 追加一批事件：分配连续 seq，同一批次原子生效（如优先安全点切换的
+  // input_interrupted + input_started 原子批次）。返回 projection 的独立副本。
   async function appendBatch(events) {
     return mutex.run(async () => {
       await initialize();
