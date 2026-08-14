@@ -1388,11 +1388,14 @@ export function createSettingsModal(ctx, options = {}) {
     });
   }
 
-  // Task 22：写作参数分区是否有未保存修改。只有写作分区有可挂起的表单值
-  //（其余分区动作即时生效）；分区切换会重建表单（旧编辑随 replaceChildren
-  // 丢弃），故只在当前分区为 writing 且项目存在（hasProject 才渲染可编辑字段）
-  // 时判定 dirty——切走后的旧引用与无字段的说明分区一律不算。
+  // Task 22：分区是否有未保存修改。写作分区认表单值；模型分区（v4/A4）委派给
+  // modelSettings.isDirty 判定「未失焦草稿 + 保存在途/失败」——两分区都只在各自
+  // 仍为当前分区且弹窗开着时判定（分区切换 replaceChildren 会重建/丢弃草稿）。
+  // 其余分区动作即时生效，无可挂起表单值，不判 dirty。
   function settingsDirty() {
+    if (settingsSection === "model") {
+      return typeof ctx.modelSettings?.isDirty === "function" && ctx.modelSettings.isDirty();
+    }
     if (settingsSection !== "writing") return false;
     const dashboard = ctx.getDashboard();
     if (dashboard?.hasProject !== true) return false;
