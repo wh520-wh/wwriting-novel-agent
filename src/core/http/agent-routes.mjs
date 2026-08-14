@@ -6,13 +6,14 @@
 // 路由清单（响应只含 ids 与结构化状态，不含解释性成功文案；全部既有 Agent 端点
 // 可选透传 sessionId，缺省 = 最近活跃会话，Task 4 runtime 语义）：
 //   POST /api/agent/input                 { projectRoot, text, sessionId? } -> { ok, input_id, run_id, session_id, status }
-//   POST /api/agent/input/:inputId/promote { projectRoot, sessionId? }       -> { ok, run_id, input_id, promoted }
 //   POST /api/agent/input/:inputId/priority { projectRoot, sessionId? }      -> { ok, session_id, run_id, input_id, priority_pending }
 //   POST /api/agent/input/:inputId/withdraw { projectRoot, sessionId? }      -> { ok, session_id, run_id, input_id, withdrawn, draft_text }
 //   POST /api/agent/run/:runId/stop       { projectRoot, sessionId? }        -> { ok, session_id, run_id, cancelled }
 //   POST /api/agent/run/:runId/retry      { projectRoot, sessionId? }        -> { ok, run_id, input_id, retried }
 //   POST /api/agent/compaction/:compactionId/cancel { projectRoot, sessionId? } -> { ok, compaction_id, cancelling }
 //   POST /api/agent/compaction/:compactionId/retry  { projectRoot, sessionId? } -> { ok, compaction_id, retried }
+//   旧 POST /api/agent/input/:inputId/promote 已删除（Task 26：「立即」唯一权威路径
+//   是 /priority，旧路由返回 404）。
 //   POST /api/agent/decision/:decisionId  { projectRoot, choice, sessionId? } -> { ok, decision_id, granted }
 //   GET  /api/agent/snapshot?projectRoot&sessionId&afterSeq&beforeSeq&tail&limit -> { ok, session, events, gaps, has_more }
 //   POST /api/agent/history/export       { projectRoot, sessionId? } -> NDJSON 下载（application/x-ndjson + attachment）
@@ -135,25 +136,12 @@ export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPoll
       };
     },
 
-    // 立即：同一 Run 内打断并提升排队输入，返回同一 run_id。
-    "POST /api/agent/input/:inputId/promote": async ({ params, body }) => {
-      const projectRoot = await resolveScope(body);
-      const sessionId = optionalSessionId(body);
-      const result = await agent.promote({ projectRoot, inputId: params.inputId, sessionId });
-      return {
-        ok: true,
-        run_id: result.run_id,
-        input_id: result.input_id,
-        promoted: result.promoted === true
-      };
-    },
-
     // 请求优先（Task 9/10）：排队输入标记 priority_input_requested；安全点在模型
     // 响应后、每个工具前后、下一次模型请求前切换（旧输入收敛 + 优先输入开始），
     // 本路由只写优先标记 + 返回 priority_pending。校验全部委托 runtime（同一
     // session 项目互斥锁内读-判-写）：非排队输入 → 409 input_not_queued；已有
     // 优先在途 → 409 priority_pending（本模块显式映射，router 的 STATUS_409 表
-    // 未收录该新 code）。
+    // 未收录该新 code）。Task 26：旧 promote 路由已删除，「立即」唯一权威路径。
     "POST /api/agent/input/:inputId/priority": async ({ params, body }) => {
       const projectRoot = await resolveScope(body);
       const sessionId = optionalSessionId(body);

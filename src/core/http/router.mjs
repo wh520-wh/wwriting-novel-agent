@@ -1,7 +1,7 @@
 // src/core/http/router.mjs —— 路由表与统一错误适配（统一 Agent 内核计划 Task 7）。
 //
 // 本模块是 HTTP 层的基础设施，职责固定为：
-//   - pathname/method 匹配（支持 `:param` 路径段，如 /api/agent/input/:inputId/promote）；
+//   - pathname/method 匹配（支持 `:param` 路径段，如 /api/agent/input/:inputId/priority）；
 //   - JSON body 解析（坏 JSON / 超大 body → 简短用户错误）；
 //   - 统一错误适配（ProjectAgent / 领域模块抛出的带 code 错误 → HTTP 状态码）；
 //   - 共享的项目作用域解析（read/write 项目根解析，旧 app-server 语义保留）。
@@ -41,7 +41,6 @@ const STATUS_400_CODES = new Set([
   "invalid_run_id",
   "bad_args",
   "confirmation_mismatch",
-  "promote_failed",
   // Task 5 会话 CRUD：sessionId/title 校验
   "invalid_session_id",
   "invalid_session_title",
@@ -81,7 +80,7 @@ const STATUS_409_CODES = new Set([
 ]);
 
 const STATUS_503_CODES = new Set(["model_probe_unavailable"]);
-const STATUS_504_CODES = new Set(["promote_timeout", "stop_timeout"]);
+const STATUS_504_CODES = new Set(["stop_timeout"]);
 
 export function errorToHttp(error) {
   if (error instanceof HttpError) return error;
@@ -223,7 +222,7 @@ function matchSegments(patternSegments, pathSegments) {
 export function createRouter() {
   const routes = [];
   return {
-    // add("POST", "/api/agent/input/:inputId/promote", handler)
+    // add("POST", "/api/agent/input/:inputId/priority", handler)
     add(method, pattern, handler) {
       routes.push({
         method,

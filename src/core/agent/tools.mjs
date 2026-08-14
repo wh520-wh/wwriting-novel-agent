@@ -600,9 +600,10 @@ export function createToolRuntime({
       resolveOutcome = resolve;
     });
     // decision_requested 落盘后才放行取消收敛：abort 可能在 requestDecision 写入
-    // decision_requested 之前到达（如 promote/stop 恰在工具确认窗口内触发），若
-    // decision_resolved 先落盘，reducer 以「引用未知 decision」拒绝（静默 catch），
-    // 决策永久悬空（活动闭环断裂）。cancel 等待 request 落盘后再追加 resolved。
+    // decision_requested 之前到达（如 stop 恰在工具确认窗口内触发；Task 26 起旧
+    // promote 已退役，requestPriority 不 abort），若 decision_resolved 先落盘，
+    // reducer 以「引用未知 decision」拒绝（静默 catch），决策永久悬空（活动闭环
+    // 断裂）。cancel 等待 request 落盘后再追加 resolved。
     let markRequested;
     record.requested = new Promise((resolve) => {
       markRequested = resolve;

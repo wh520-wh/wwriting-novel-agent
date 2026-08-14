@@ -398,15 +398,15 @@ grep 核实（`request.once("close")` / `local-model-profiles` / `global-model-s
 
 ---
 
-## 第 7 轮（2026-08-13 · 批 1-3 修复完成后状态核查）
+## 第 7 轮（2026-08-13 · 批 1-4 修复完成后状态核查 + Task 26 架构收口）
 
-方法：按 `docs/design/2026-08-12-bugfix-round7-spec.md`（8 项核心概念 C1-C8 + 24 项原报告 A 组 + 设置页/计时，分 4 批）执行批 1-3，共 17 个提交（基线 `a4cf8bb` → HEAD `a935eaa`）：批 1 恢复执行内核可信度（`c12d296` shell 进程树 → `5795e2e` 截断参数拒绝，5 提交）；批 2 原子切换输入状态机（`38101a7` 闭合生命周期 → `e1f227a` 单一 Agent 架构测试，7 提交）；批 3 记忆/Legacy 清理与高收益 bug（`25f2d67` 删旧聊天迁移 → `a935eaa` 技能与工具数据边界，5 提交）。批 1 先以 3 项 Windows shell 进程树失败建立红色基线，批 1 结束恢复全绿。本报告逐项对照规格核实当前代码（grep + 行级阅读 + 事件/API 签名核对），并运行门禁：`npm test` 1693/1693（0 fail）、`npm run verify:unified-agent` 34/34（0 fail）。以下按「已修复 / 已删除旧概念 / 明确接受风险」三分类记录；第 4 批（设置页 15 项、工作计时、UI 渲染验收）尚未执行，单列「计划中」。
+方法：按 `docs/design/2026-08-12-bugfix-round7-spec.md`（8 项核心概念 C1-C8 + 24 项原报告 A 组 + 设置页/计时，分 4 批）执行批 1-4 并完成 Task 26 最终收口，共 24 个实现提交（基线 `a4cf8bb` → HEAD `ef6e8b8`，不含本报告与 Task 18 门禁记录）：批 1 恢复执行内核可信度（`c12d296` shell 进程树 → `5795e2e` 截断参数拒绝，5 提交）；批 2 原子切换输入状态机（`38101a7` 闭合生命周期 → `e1f227a` 单一 Agent 架构测试，7 提交）；批 3 记忆/Legacy 清理与高收益 bug（`25f2d67` 删旧聊天迁移 → `a935eaa` 技能与工具数据边界，5 提交）；批 4 设置页/UI/计时（`36e9fb7` 设置与 provider 并发迁移 → `ef6e8b8` 桌面工作流验收，7 提交）。批 1 先以 3 项 Windows shell 进程树失败建立红色基线，批 1 结束恢复全绿。本报告逐项对照规格核实当前代码（grep + 行级阅读 + 事件/API 签名核对），并运行门禁：`npm test`、`npm run verify:unified-agent`、`npm run verify:app-shell`、`npm run verify:electron-runtime` 全部 0 fail（Task 26 实测，见「门禁结果」）。以下按「已修复 / 已删除旧概念 / 明确接受风险」三分类记录。
 
 ### 已修复（本批落地并经代码核实）
 
 **核心概念 C 项：**
 
-- **C2（输入生命周期歧义）→ 已修复**（批 2）。新生命周期对**普通文本输入**只产生六类事件 `input_queued/input_started/input_completed/input_interrupted/input_withdrawn/priority_input_requested`（journal.mjs 事件类型清单）；每条普通文本输入恰好一个终态，`input_started` 是唯一把文本写入 transcript 的边界，撤回输入对正式历史与模型 transcript 无痕（verify 场景 28）。**限定**：`/compact` 队列项不套用该六事件契约——安全点激活走 `input_promoted(reason:"compact_safe_point")`、收尾由 `processCompact`/压缩收敛以 `input_consumed`/`input_cancelled` 终结，是新世代对 /compact 的独立事件路径（详见下方「已删除旧概念」注）。
+- **C2（输入生命周期歧义）→ 已修复**（批 2 + Task 26 收口）。新生命周期只产生六类事件 `input_queued/input_started/input_completed/input_interrupted/input_withdrawn/priority_input_requested`（journal.mjs 事件类型清单）；每条输入恰好一个终态，`input_started` 是唯一把文本写入 transcript 的边界，撤回输入对正式历史与模型 transcript 无痕（verify 场景 28）。**`/compact` 队列项服从同一输入生命周期（规格 3.2.7，Task 26 收口）**：安全点激活用 `input_started`（reason:"compact_safe_point"）、成功/无历史收敛用 `input_completed`；失败保持无终态可重试/可取消（Task 8 语义不回归，compaction 测试钉住）；取消与重复丢弃走硬停止语义 `input_cancelled`（见「已删除旧概念」注）。负向扫描：`input_consumed`/`input_promoted` 生产 0 产生，仅 journal reducer legacy 分支与崩溃恢复读取保留（旧日志重放）。
 - **C3（「立即」安全点优先调度）→ 已修复**（批 2）。`requestPriority` → `priority_input_requested` 只标记 `priority_input_id`，不 abort 在途模型请求；在模型响应完成/工具开始前/工具结束后/下次模型调用前的安全边界切换；未开始工具以 `tool_skipped_for_priority_input` 闭合、不启动；`input_interrupted` 不自动重跑（verify 场景 29a/29b/29c + 30 的 priority_pending 409 + 31a/31b 崩溃重放）。
 - **C4（单条撤回）→ 已修复**（批 2）。`withdrawInput` Runtime API + HTTP 路由 + 前端回填：`input_withdrawn` 不可见于 UI/模型历史/导出，`draft_text` 权威回填且不覆盖 composer 现有草稿。
 - **C5（工具期限）→ 已修复**（批 1）。统一 5 分钟空闲 + 60 分钟绝对期限，工具经独立 AbortSignal 接收取消，超时写入结构化 `tool_timeout` 结果（不杀 Run）；shell 超时/停止终止整棵进程树并等待资源释放（3 项 Windows 红色基线恢复全绿，`c12d296`）。
@@ -445,7 +445,9 @@ grep 核实（`request.once("close")` / `local-model-profiles` / `global-model-s
 - **C1（隐藏 workflow 门禁）→ 已删除**（批 2，`90acb0d`）。`src/core/agent/workflows.mjs` 整体删除；`enter_workflow` 不再注册（tools.test.mjs 负向断言「已删除」）；`workflow_changed` 生产零引用；`WORKFLOW_POLICIES` 删除；`run_started` 不再携带 `workflow`；运行时每轮提供同一套生产工具目录（verify 场景 27 断言执行流不出现目录外工具）。
 - **C6（旧聊天兼容层）→ 已删除**（批 3，`25f2d67`）。`legacy-import.mjs`（277 行）、`journal-session-migration.mjs`（207 行）及专属测试删除；`migrateProjectAgentStorage` 与项目内 `.wwriting/agent` 复制路径删除；旧 flat 单体/项目内旧布局/旧单体 Journal 三种布局均不导入（verify 场景 13：零会话条目、旧文件字节不变、snapshot/导出/模型请求无旧文本；场景 14：新项目不创建旧状态文件）。
 - **C8（旧蓝图事务）→ 已删除**（批 2，`d89c48d`）。`commit_blueprint` 不注册；`blueprint.mjs` 及其专属测试删除；`blueprint_status` 无生产读写、新项目默认值不含（verify 场景 14 负向断言）；`OUTLINE.md`/`SETTING.md` 保留为普通项目文件（verify 场景 16：`/init` 用通用工具创建 `WWRITING.md`，无固定蓝图文件）。
-- **旧输入生命周期事件**：`input_consumed`/`input_promoted` 不再由普通文本输入产生——前端「立即」已整体切换 `requestPriority`（agent/index.js:584-586 注释「旧 promote 概念已删除」），旧 `promote` HTTP 端点与 runtime 路径（interrupt_requested + input_promoted，runtime.mjs:2294）保留为兼容入口（verify 场景 4、acceptance 仍覆盖该兼容路径）。**但二者并未彻底退役：`/compact` 队列项在新世代仍走旧事件对**——安全点激活 `input_promoted(reason:"compact_safe_point")`（runtime.mjs:1936，Task 8 注释自述「消费但不给终态、由 processCompact 收尾」），收尾 `input_consumed`（processCompact noop 分支 :1339、手动压缩成功 :1359、手动压缩完成收敛 :2626），恢复路径的陈旧记录也以 `input_consumed` 消费跳过（:1986）；这是新世代对 /compact 的既定设计路径，不是兼容残留。journal.mjs reducer 对三者保留 legacy 分支（FIXED_EVENT_TYPES 清单仍含 input_consumed/input_cancelled/input_promoted，注释自述接纳原因）。`input_cancelled` 语义收窄为「硬停止/压缩取消」的收敛终态（stop 与压缩取消路径仍产生，verify 场景 5 断言），不再承担「立即打断」语义（由 `input_interrupted` 承担）。注：若 Task 26 以「新 generation 生产路径 0 命中」为负向扫描口径，上述 /compact 事件路径需届时另行明确处理——本报告只记录现状，不承诺届时必改。
+- **旧输入生命周期事件（Task 26 收口完成，生产 0 命中）**：`input_consumed`/`input_promoted` 生产路径 0 产生（`rg` 全库核对）——前端「立即」= `requestPriority`（agent/index.js 注释「旧 promote 概念已删除」，安全点优先调度，不 abort 在途请求）；旧 `promote` 方法、`index.mjs` 导出、`POST /api/agent/input/:inputId/promote` HTTP 路由与 router 错误码（`promote_failed`/`promote_timeout`）整体删除，仅 promote 使用的 `waitForRunResolved` 死代码随之删除；verify 场景 4 改写为 requestPriority 契约（同 run id、priority_pending、`input_promoted` 零产生负向断言），acceptance/HTTP/探针测试同步改写或删除（旧 promote 路由 404 负向断言保留）。
+- **`/compact` 队列项改走新生命周期（Task 26）**：安全点激活 `input_promoted` → `input_started`（runtime.mjs advanceOrComplete compact 分支，到达时活动输入已收敛）；成功/无历史收敛 `input_consumed` → `input_completed`（processCompact noop/成功分支、retryCompaction 手动成功分支，均加活动输入守卫防 reducer 校验变致命错误）；恢复路径陈旧记录消费跳过 `input_consumed` → `input_interrupted`（该分支活动输入恰好是待跳过输入，是新生命周期唯一可终结活动输入的非完成事件；不追加事件会因 active 指针不释放而死循环，故不能静默跳过）。失败仍无终态（可重试/可取消，Task 8 语义不回归，journal-recovery/compaction 测试全绿）。
+- **`input_cancelled` 语义收窄（保留的明确边界）**：仍由硬停止/运行级丢弃路径产生——stop（`cancelRunForStop`，verify 场景 5 断言）、压缩取消（`convergeCompactionCancelled`）、重复 compact 丢弃（duplicate_compact）、历史缺口强制恢复（`appendGapRecovery`）。判断依据：新生命周期三种终态均不覆盖「输入因 Run 级取消/强制恢复被丢弃」——`input_interrupted` 要求安全边界（模型/工具在途硬停止不满足，且 reducer 只接受活动输入、队列输入无法用其终结）、`input_withdrawn` 仅限用户主动撤回；规格 3.3.9 保留停止为硬逃生口，stop 路径的 UI/测试契约以 input_cancelled 钉住。journal.mjs reducer 对三者保留 legacy 分支（FIXED_EVENT_TYPES 清单仍含三者），仅服务旧日志追加式重放。
 
 ### 明确接受的风险（保持现状，不写成已修复）
 
@@ -459,17 +461,19 @@ grep 核实（`request.once("close")` / `local-model-profiles` / `global-model-s
 - **R5-18（非法 SKILL.md 遮蔽旧 manifest）**：现行「绝不改写已存在的 SKILL.md」原则不自动覆盖用户文件；修复需先确定是否允许自动修复损坏用户文件（规格 §4.4）。
 - **M3/M4（成本定价展示链）**：保持现状，本轮不扩大到成本产品功能（规格 §4.4）。M3 预设种子侧已在模型配置重构中部分改善（第 6 轮已记录 `OFFICIAL_PRICING` 首个消费者），成本面板展示链（CostTracker pricing 注入、前端读取）仍维持「未配置价格」的诚实展示。
 
-### 计划中（批 4 未执行，不写成已修复）
+### 已执行（批 4：设置页、UI 与计时，Task 19-25）
 
-- 模型设置页 15 项高/中（规格 §4.3：CSS/溢出、焦点陷阱/ARIA、密钥「已配置」状态、成本人民币元、空值保存、会话重命名去 `window.prompt`、终态刷新顶栏/抽屉/成本面板、测试连接先提交表单、未保存确认、切换失败 toast、保存提示一致性、v1→v2 并发迁移单锁、`active_model` 静默丢弃、密钥 env 显式开关、英文错误中文化）——Task 19-22，批 4。
-- 工作计时 `formatDuration` 统一（规格 §4.5）——Task 24，批 4。
-- UI/真实渲染验收（规格 §6.5：1280x800/768x900/390x844 布局、键盘焦点顺序/陷阱/Escape、Electron smoke 会话重命名、密钥不回显、视觉截图归档到 `artifacts/visual-acceptance`）——Task 25，批 4。
+- **模型设置页高/中项**（规格 §4.3，Task 19-22，批 4）：v1→v2 并发迁移单锁与 `active_model` 静默丢弃（`36e9fb7`）；草稿/测试连接/保存提示一致性（`3208bfa`）；composer 设置失败透出（`9e1ce67`）；CSS 溢出/焦点陷阱/ARIA/密钥「已配置」状态/英文错误中文化（`06d3bb7`）；会话重命名去 `window.prompt`（`60a0648`，Electron smoke + DOM 测试覆盖）。
+- **工作计时 `formatDuration` 统一**（规格 §4.5，Task 24，`63f00c0`）：完整活动时长展示。
+- **UI/真实渲染验收**（规格 §6.5，Task 25，`ef6e8b8`）：1280x800/768x900/390x844 布局截图归档到 `artifacts/visual-acceptance/round7/`（含 MANIFEST.md）；键盘焦点顺序/陷阱/Escape、会话重命名、密钥不回显由 `verify:app-shell` 与 Electron smoke 覆盖（真实 viewport 与 Electron 证据见该归档与门禁结果）。
 
-### 门禁结果（Task 18）
+### 门禁结果（Task 26 实测）
 
-- `npm test`：**1693/1693 通过，0 fail**（以 0 fail 为基线，不以固定总数为准——本轮删除旧 workflow/legacy 测试并新增回归，总数自第 6 轮 1624 变化）。
-- `npm run verify:unified-agent`：**34/34 通过，0 fail**（含批 1-3 新增场景 13 旧存储不导入、27 章节工具后普通问答、27b 受保护正文路径、28 queued 撤回、29a/29b/29c 优先调度、30 第二 priority 409、31a/31b 崩溃重放，以及保留的兼容路径场景 4 promote/场景 5 停止取消）。
+- `npm test`：全部通过，**0 fail**（以 0 fail 为基线，不以固定总数为准——本轮删除旧 workflow/legacy/promote 测试并新增回归，总数自第 6 轮 1624 变化）。
+- `npm run verify:unified-agent`：**34/34 通过，0 fail**（含批 1-3 新增场景 13 旧存储不导入、27 章节工具后普通问答、27b 受保护正文路径、28 queued 撤回、29a/29b/29c 优先调度、30 第二 priority 409、31a/31b 崩溃重放；场景 4 已由 promote 改写为 requestPriority 契约，场景 5 停止取消保持）。
+- `npm run verify:app-shell`：**0 fail**。
+- `npm run verify:electron-runtime`：**exit 0**（Electron 二进制 Task 25 已下载，真实 Electron smoke 通过）。
 
 ### 附：核查范围
 
-grep 核实（`enter_workflow`/`workflow_changed`/`WORKFLOW_POLICIES`/`commit_blueprint`/`blueprint_status`/`runLegacyImport`/`migrateProjectAgentStorage` 在 src 与 scripts 零命中或仅负向断言；`output_style` 全 src 零消费方核实）；修复签名行级核对（`validateProjectRoot`/`writeFileAtomic`/`closeServerGracefully`/`requireStringArg`/`content_length`/`truncated_args_rejected`/`needs_history_clear`/`__MACOSX` 白名单/hash marker/sectionGeneration/saveSequence/isCurrentProjectScope/submissionGeneration/`isComposing` 等均在预期文件命中并附 Task 编号注释）；`input_consumed/input_promoted` 不再由普通文本输入产生，但 /compact 队列项（runtime.mjs:1936 激活、:1339/:1359/:2626 收敛）与恢复路径陈旧记录（:1986）仍在生产使用，旧 promote 兼容端点（:2294）保留；`input_cancelled` 仍由 stop/压缩取消路径产生（语义收窄）。门禁实测：`npm test` 1693/1693、`verify:unified-agent` 34/34 全绿。批 4 项目未执行，本报告不将其列为已修复。
+grep 核实（`enter_workflow`/`workflow_changed`/`WORKFLOW_POLICIES`/`WORKFLOW_POLICY_RECORDS`/`allowedDeepTools`/`runLegacyImport`/`migrateProjectAgentStorage`/`commit_blueprint` 在 src 与 scripts 零命中；`blueprint_status` 仅测试负向字面量与旧夹具，生产零读写；`input_consumed`/`input_promoted` 生产 0 产生——/compact 激活/收敛已迁移到 `input_started`/`input_completed`，恢复陈旧记录迁移到 `input_interrupted`，旧 promote 方法/导出/HTTP 路由/错误码删除；`input_cancelled` 收窄为硬停止/压缩取消/重复丢弃/历史缺口恢复的收敛终态；`output_style` 全 src 零消费方核实）；修复签名行级核对（`validateProjectRoot`/`writeFileAtomic`/`closeServerGracefully`/`requireStringArg`/`content_length`/`truncated_args_rejected`/`needs_history_clear`/`__MACOSX` 白名单/hash marker/sectionGeneration/saveSequence/isCurrentProjectScope/submissionGeneration/`isComposing`/`formatDuration` 等均在预期文件命中并附 Task 编号注释）。门禁实测：四条最终验证命令全部 0 fail（Task 26）。`git diff --check` 无空白错误；`git status --short` 无生成缓存/密钥/绝对用户路径混入提交。

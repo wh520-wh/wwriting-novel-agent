@@ -17,9 +17,9 @@
 //     校验它不是工作区根、磁盘根或用户目录；已存在 Journal 数据的目录拒绝覆盖。
 //   - 生成数据使用流式 append（分批 appendBatch，单批最多 ~64 MiB），不在内存构造
 //     百万元素数组；默认 1,000,000 个事件，事件为真实可回放的最小 Run 周期
-//     （input_queued → run_started → tool_call_started → tool_call_completed →
-//     input_consumed → run_completed），--bytes 时把 tool_call_completed 的摘要载荷
-//     放大到目标总字节数。
+//     （input_queued → run_started → input_started → tool_call_started →
+//     tool_call_completed → input_completed → run_completed），--bytes 时把
+//     tool_call_completed 的摘要载荷放大到目标总字节数。
 //   - 测量在独立子进程进行（冷启动 = 真实应用重启场景；同一进程内 journal 已加载，
 //     再测 open 无意义；同一 projectRoot 单实例契约也不允许）。
 //   - 输出 JSON 字段固定：events / bytes / open_tail_ms / read_previous_page_ms /
@@ -35,20 +35,21 @@ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "..");
 const EVENTS_STREAM = path.join(".wwriting", "agent", "segments", "events");
 
-// 事件周期：一个可回放的最小 Run（6 条事件）。tool_call_completed 的 output 是
-// 主要载荷（--bytes 放大它）。
+// 事件周期：一个可回放的最小 Run（7 条事件，新输入生命周期）。tool_call_completed
+// 的 output 是主要载荷（--bytes 放大它）。
 function buildCycle(seqOffset, { outputSize = 32 } = {}) {
-  const cycle = Math.floor(seqOffset / 6);
+  const cycle = Math.floor(seqOffset / 7);
   const inputId = `bench-in-${cycle}`;
   const runId = `bench-run-${cycle}`;
   const toolCallId = `bench-tool-${cycle}`;
   const output = "汉".repeat(outputSize);
   return [
     { type: "input_queued", run_id: runId, payload: { input_id: inputId, text: `第 ${cycle} 轮基准输入` } },
-    { type: "run_started", run_id: runId, payload: { input_id: inputId } },
+    { type: "run_started", run_id: runId, payload: {} },
+    { type: "input_started", run_id: runId, payload: { input_id: inputId } },
     { type: "tool_call_started", run_id: runId, payload: { tool_call_id: toolCallId, name: "read_file", arguments: { path: "OUTLINE.md" } } },
     { type: "tool_call_completed", run_id: runId, payload: { tool_call_id: toolCallId, name: "read_file", arguments: { path: "OUTLINE.md" }, output, result_summary: "基准工具摘要", duration_ms: 12 } },
-    { type: "input_consumed", run_id: runId, payload: { input_id: inputId } },
+    { type: "input_completed", run_id: runId, payload: { input_id: inputId } },
     { type: "run_completed", run_id: runId, payload: {} }
   ];
 }
@@ -74,7 +75,7 @@ function fail(message) {
 // 目标字节时每个 tool 摘要的尺寸：总字节 ≈ 每事件 ~180B 固定开销 + 摘要载荷。
 function outputSizeFor(events, targetBytes) {
   const fixedPerEvent = 180;
-  const cycles = Math.max(1, Math.floor(events / 6));
+  const cycles = Math.max(1, Math.floor(events / 7));
   const overhead = events * fixedPerEvent;
   const perCycle = (targetBytes - overhead) / cycles;
   if (perCycle <= 0) fail(`--bytes ${targetBytes} 小于固定开销 ${overhead}，无法达成`);
@@ -162,8 +163,8 @@ async function generate({ projectRoot, events, bytes }) {
   const journal = createAgentJournal({ projectRoot });
   await journal.load();
   const outputSize = bytes ? outputSizeFor(events, bytes) : 32;
-  // 近似平均事件字节：固定 180B/事件 + 摘要贡献
-  const avgBytesPerEvent = 180 + (outputSize * 3) / 6;
+  // 近似平均事件字节：固定 180B/事件 + 摘要贡献（每周期 1 条摘要载荷）
+  const avgBytesPerEvent = 180 + (outputSize * 3) / 7;
   const batchSize = batchSizeFor(events, avgBytesPerEvent);
   const started = Date.now();
   let appended = 0;
@@ -176,16 +177,16 @@ async function generate({ projectRoot, events, bytes }) {
     const percent = Math.floor((appended / events) * 100);
     process.stderr.write(`\r生成事件 ${appended}/${events}（${percent}%）`);
   };
-  const cycles = Math.floor(events / 6);
+  const cycles = Math.floor(events / 7);
   for (let cycle = 0; cycle < cycles; cycle += 1) {
-    const eventsInCycle = buildCycle(cycle * 6, { outputSize });
+    const eventsInCycle = buildCycle(cycle * 7, { outputSize });
     for (const event of eventsInCycle) {
       batch.push(event);
       if (batch.length >= batchSize) await flush();
     }
   }
-  // 余数（events 非 6 的倍数）：用不依赖 Run 的 history_compacted 补足，总数精确
-  const remainder = events % 6;
+  // 余数（events 非 7 的倍数）：用不依赖 Run 的 history_compacted 补足，总数精确
+  const remainder = events % 7;
   for (let i = 0; i < remainder; i += 1) {
     batch.push({ type: "history_compacted", payload: { summary: "基准补足事件" } });
   }

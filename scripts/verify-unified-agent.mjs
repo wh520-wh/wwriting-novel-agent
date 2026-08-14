@@ -162,14 +162,16 @@ step("场景 3 · 同项目 FIFO 队列");
 }
 
 // ---------------------------------------------------------------------------
-// 场景 4：立即（promote）保持同一 Run id 并打断当前输入
+// 场景 4：立即（requestPriority）保持同一 Run id、不 abort 在途模型请求
 // ---------------------------------------------------------------------------
+// Task 26：旧 promote（立即打断 + input_promoted）已退役，「立即」唯一权威路径
+// 是 requestPriority（priority_input_requested，安全点切换，spec 3.3）。
 step("场景 4 · 立即保持同一 Run id");
 {
   const h = await createProjectAgentHarness({
     gatewayScript: [
-      async () => { await sleep(400); return { text: "被打断的答复" }; },
-      { reply: { text: "提升后答复" } }
+      async () => { await sleep(400); return { text: "第一轮答复" }; },
+      { reply: { text: "第二轮答复" } }
     ],
     gatewayDelayMs: 0
   });
@@ -177,14 +179,16 @@ step("场景 4 · 立即保持同一 Run id");
     await h.agent.open({ projectRoot: h.projectRoot });
     const first = await h.agent.submit({ projectRoot: h.projectRoot, text: "任务一" });
     const second = await h.agent.submit({ projectRoot: h.projectRoot, text: "任务二" });
-    const promoted = await h.agent.promote({ projectRoot: h.projectRoot, inputId: second.input_id });
-    assert.equal(promoted.run_id, first.run_id, "立即保持同一 run id");
-    assert.equal(promoted.promoted, true);
+    const prioritized = await h.agent.requestPriority({ projectRoot: h.projectRoot, inputId: second.input_id });
+    assert.equal(prioritized.run_id, first.run_id, "立即保持同一 run id");
+    assert.equal(prioritized.priority_pending, true);
     await waitForIdle(h.agent, h.projectRoot);
     const events = await readEvents(h.agent, h.projectRoot);
-    assert.ok(eventsOfType(events, "input_promoted").length >= 1, "应写入 input_promoted");
     assert.equal(eventsOfType(events, "run_started").length, 1, "立即不创建新 Run");
-    record("立即：同 run id 打断并提升", true, `run=${first.run_id}`);
+    assert.equal(eventsOfType(events, "input_started").length, 2, "两条输入都以 input_started 激活");
+    assert.equal(eventsOfType(events, "priority_input_requested").length, 1, "写入 priority_input_requested");
+    assert.equal(eventsOfType(events, "input_promoted").length, 0, "旧 input_promoted 不再产生");
+    record("立即：同 run id、安全点优先、旧事件零产生", true, `run=${first.run_id}`);
   } finally {
     await h.cleanup();
   }

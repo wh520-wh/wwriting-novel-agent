@@ -374,7 +374,7 @@ test("append 拒绝重复 event_id", async (t) => {
   );
 });
 
-test("appendBatch 连续 seq，interrupt/promote 批次原子生效", async (t) => {
+test("appendBatch 连续 seq，优先安全点切换批次原子生效", async (t) => {
   const root = await makeWorkspace(t);
   const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
   await journal.load();
@@ -382,32 +382,30 @@ test("appendBatch 连续 seq，interrupt/promote 批次原子生效", async (t) 
   await journal.append({
     type: "run_started",
     run_id: "run-1",
-    payload: { workflow: "general", input_id: "in-1" }
+    payload: { input_id: "in-1" }
   });
   await journal.append({ type: "input_queued", payload: { input_id: "in-2", text: "第二条" } });
 
-  // 一次"立即"必须在同一批次中按顺序写入 interrupt_requested 与 input_promoted
+  // 一次优先安全点切换必须在同一批次中原子写入 input_interrupted(A) 与
+  // input_started(D)（Task 10 切换批次；旧 promote 批次已随 promote 退役）
   await journal.appendBatch([
-    { type: "interrupt_requested", run_id: "run-1", payload: {} },
-    { type: "input_promoted", run_id: "run-1", payload: { input_id: "in-2" } }
+    { type: "input_interrupted", run_id: "run-1", payload: { input_id: "in-1" } },
+    { type: "input_started", run_id: "run-1", payload: { input_id: "in-2" } }
   ]);
 
   const events = await journal.read({});
   assert.deepEqual(events.map((event) => event.seq), [1, 2, 3, 4, 5, 6], "appendBatch 内 seq 连续");
   const batch = events.slice(-2);
-  assert.equal(batch[0].type, "interrupt_requested");
-  assert.equal(batch[1].type, "input_promoted");
+  assert.equal(batch[0].type, "input_interrupted");
+  assert.equal(batch[1].type, "input_started");
   assert.equal(batch[1].payload.input_id, "in-2");
 
   const session = await journal.getSession();
-  assert.equal(session.active_run.id, "run-1", "promote 不创建新 Run");
-  assert.equal(session.active_run.status, "interrupting");
-  assert.equal(session.status, "interrupting");
+  assert.equal(session.active_run.id, "run-1", "切换不创建新 Run");
   assert.equal(session.active_run.active_input_id, "in-2");
-  // 被打断的活动输入放回队首，剩余输入保持顺序
-  assert.deepEqual(session.queued_inputs.map((item) => item.id), ["in-1"]);
-  assert.equal(session.queued_inputs[0].text, "先改第三章");
-  assert.equal(session.queued_inputs[0].status, "queued");
+  // 被打断的输入以 interrupted 终结（不回队、不重跑，规格 3.3），队列只余 in-2
+  // 已被激活，因此队列为空
+  assert.deepEqual(session.queued_inputs.map((item) => item.id), []);
 });
 
 test("read 支持 afterSeq/limit 分页", async (t) => {
@@ -1119,7 +1117,10 @@ test("无 dangling 活动时 load 不标记 interrupted（Run 保持 running 可
   assert.equal((await journal.read({})).filter((event) => event.type === "run_interrupted").length, 0);
 });
 
-test("reducer 拒绝在 stopping 状态上写入 interrupt_requested（promote 不能击穿 stop）", async (t) => {
+test("reducer 拒绝在 stopping 状态上写入 interrupt_requested（停止优先于中断的 legacy 守卫）", async (t) => {
+  // Task 26：新 generation 不再产生 interrupt_requested（旧 promote 已退役），本
+  // 测试钉住 reducer 的 legacy 分支契约——旧日志重放时「立即击穿停止」仍被拒绝，
+  // 且被拒后 journal 不被污染、停止收敛照常完成。
   const root = await makeWorkspace(t);
   const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
   await journal.load();

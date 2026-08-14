@@ -4,13 +4,14 @@
 // src/core/agent/index.mjs 构造；本文件不 import 任何 agent 内部文件）。覆盖：
 //   - Session/Run 生命周期：idle submit 创建 Run、active submit FIFO 排队、
 //     open() 幂等、同项目单循环
-//   - 立即（promote）：同一 Run、输入切换、顺序保持、等待原子操作
+//   - 立即（requestPriority）：priority_input_requested 标记、安全点切换（Task 10）、
+//     Task 26 起唯一权威路径（旧 promote 退役）
 //   - 停止（stop）：run_cancelled + input_cancelled + grant 清除
 //   - retry：同一 failed Run 用 transcript 继续
 //   - 不同项目可并行（单一 agent 实例）
 //   - Visible Plan：update_plan 事件与 projection
 //   - 权限：普通写确认、grant 不跨输入、YOLO 不绕过 extreme、extreme 精确文字、
-//     停止清除 grant、陈旧决策拒绝、promote 抢占待决决策
+//     停止清除 grant、陈旧决策拒绝
 //   - 活动闭环（成功/失败/拒绝/抢占/停止）
 //   - 章节提交一致性、质量门禁失败修订路径、新项目不创建旧状态文件、
 //     maintenance 审计来源
@@ -752,61 +753,21 @@ test("open() 恢复运行中的 Run：运行中重复 open 不产生第二个模
 });
 
 // ---------------------------------------------------------------------------
-// 立即（promote）
+// 立即（requestPriority，Task 26 起唯一权威路径；旧 promote 已退役）
 // ---------------------------------------------------------------------------
 
-test("promote 保持同一 Run id，立即优先处理被提升输入且剩余输入保持顺序", async (t) => {
-  const h = await openHarness(t, {
-    project: { tool_permissions: { yolo: true } },
-    gatewayScript: [
-      { reply: { toolCalls: [tool("shell", { command: "stub", timeout_ms: 30000, purpose: "忙碌" })] } },
-      { reply: { text: "优先处理第二条。" } },
-      { reply: { text: "继续处理第一条。" } }
-    ],
-    gatewayDelayMs: 40
-  });
-  await h.agent.submit({ projectRoot: h.projectRoot, text: "第一条", source: "chat" });
-  await h.agent.submit({ projectRoot: h.projectRoot, text: "第二条", source: "chat" });
-  const before = await readSession(h.agent, h.projectRoot);
-  const runId = before.active_run.id;
-  const queued = before.queued_inputs[0];
-  assert.ok(queued, "第二条应排队");
-
-  await h.agent.promote({ projectRoot: h.projectRoot, inputId: queued.id });
-  const after = await readSession(h.agent, h.projectRoot);
-  assert.equal(after.active_run.id, runId, "promote 不得创建新 Run");
-  assert.equal(after.active_run.active_input_id, queued.id, "活动输入应切换为被提升输入");
-
-  await waitForIdle(h.agent, h.projectRoot);
-  const events = await readEvents(h.agent, h.projectRoot);
-  const interrupts = eventsOfType(events, "interrupt_requested");
-  const promoted = eventsOfType(events, "input_promoted");
-  assert.equal(promoted.length, 1);
-  const interruptIndex = events.findIndex((event) => event.type === "interrupt_requested");
-  const promotedIndex = events.findIndex((event) => event.type === "input_promoted");
-  assert.ok(interrupts.length >= 1 && interruptIndex < promotedIndex, "interrupt_requested 先于 input_promoted（同批次原子）");
-  assert.ok(eventsOfType(events, "interrupt_safe_point_reached").length >= 1, "必须到达中断安全点");
-  assert.equal(eventsOfType(events, "run_completed").length, 1);
-  assert.equal(eventsOfType(events, "run_completed")[0].run_id, runId);
-  const texts = h.gateway.calls.map((call) => JSON.stringify(call.request));
-  const firstB = texts.findIndex((text) => text.includes("第二条"));
-  const lastA = texts.map((text) => text.includes("第一条")).lastIndexOf(true);
-  assert.ok(firstB >= 0 && lastA >= 0 && firstB < lastA, "被提升输入应先于被打断输入被处理");
-  assertActivityClosure(events);
-});
-
-test("promote 校验排队输入：非排队/未知输入一律拒绝", async (t) => {
+test("requestPriority 校验排队输入：非排队/未知输入一律拒绝", async (t) => {
   const h = await openHarness(t, { gatewayScript: [{ reply: { text: "好。" } }] });
   await h.agent.submit({ projectRoot: h.projectRoot, text: "A", source: "chat" });
   await assert.rejects(
-    () => h.agent.promote({ projectRoot: h.projectRoot, inputId: "ghost-input" }),
-    /不在排队队列中/
+    () => h.agent.requestPriority({ projectRoot: h.projectRoot, inputId: "ghost-input" }),
+    /不在排队队列中|非排队/
   );
   await waitForIdle(h.agent, h.projectRoot);
-  // 空闲（无活动 Run）时 promote 拒绝
+  // 空闲（无活动 Run）时 requestPriority 拒绝（无队列项可标记）
   await assert.rejects(
-    () => h.agent.promote({ projectRoot: h.projectRoot, inputId: "ghost-input" }),
-    /没有可打断的活动 Run/
+    () => h.agent.requestPriority({ projectRoot: h.projectRoot, inputId: "ghost-input" }),
+    /不在排队队列中/
   );
 });
 
@@ -1273,44 +1234,11 @@ test("extreme 确认必须使用当前决策的精确生成文字；历史文字
   assertActivityClosure(events);
 });
 
-test("promote 抢占待决决策：决策作废（cancelled）且被提升输入继续执行", async (t) => {
-  const h = await openHarness(t, {
-    gatewayScript: [
-      async () => ({
-        toolCalls: [tool("write_file", { path: path.join(h.projectRoot, "a.txt"), content: "A 内容" })]
-      }),
-      { reply: { text: "第二条完成。" } },
-      async () => ({
-        toolCalls: [tool("write_file", { path: path.join(h.projectRoot, "a.txt"), content: "A 内容修订" })]
-      }),
-      { reply: { text: "第一条完成。" } }
-    ]
-  });
-  await h.agent.submit({ projectRoot: h.projectRoot, text: "写入 A", source: "chat" });
-  await h.agent.submit({ projectRoot: h.projectRoot, text: "第二条", source: "chat" });
-  const decision1 = await waitForDecision(h.agent, h.projectRoot, 1);
-  const waiting = await readSession(h.agent, h.projectRoot);
-  assert.equal(waiting.status, "waiting_user");
-  const queued = waiting.queued_inputs[0];
-
-  await h.agent.promote({ projectRoot: h.projectRoot, inputId: queued.id });
-  // 被抢占决策已终态：旧 decide 一律拒绝
-  await assert.rejects(
-    () => h.agent.decide({ projectRoot: h.projectRoot, decisionId: decision1.payload.decision_id, choice: "allow" }),
-    /已终结|不存在|过期/
-  );
-  const decision2 = await waitForDecision(h.agent, h.projectRoot, 2);
-  assert.equal(decision2.payload.input_id, decision1.payload.input_id, "重新处理被打断输入时应重新请求确认");
-  await h.agent.decide({ projectRoot: h.projectRoot, decisionId: decision2.payload.decision_id, choice: "allow" });
-  await waitForIdle(h.agent, h.projectRoot);
-  assert.equal(await pathExists(path.join(h.projectRoot, "a.txt")), true);
-  const events = await readEvents(h.agent, h.projectRoot);
-  const resolved = eventsOfType(events, "decision_resolved");
-  assert.equal(resolved.length, 2);
-  assert.ok(resolved.some((event) => event.payload.choice === "cancelled"), "被抢占决策应收敛为 cancelled");
-  assert.equal(eventsOfType(events, "run_completed").length, 1);
-  assertActivityClosure(events);
-});
+// Task 26：旧 promote（立即打断 + 被打断输入回队重跑）已整体退役，规格 3.3 明确
+// 「不取消当前模型请求、A 不回队不重跑」。原 promote 专属测试（抢占待决决策作废、
+// stopping 拒绝 promote、promote×stop 竞态、promote 后 transcript 闭合）钉的是被
+// 规格替换的旧行为，随 promote 删除；新行为由 Task 10 安全点优先测试与 verify
+// 场景 29a/29b/29c/30/31a/31b 覆盖。
 
 // ---------------------------------------------------------------------------
 // 活动闭环（成功/失败/拒绝/抢占/停止）
@@ -1359,24 +1287,6 @@ test("活动 id 在成功、失败、拒绝、抢占与停止时闭环", async (
     const decision = await waitForDecision(h.agent, h.projectRoot, 1);
     await h.agent.decide({ projectRoot: h.projectRoot, decisionId: decision.payload.decision_id, choice: "deny" });
     await waitForIdle(h.agent, h.projectRoot);
-    assertActivityClosure(await readEvents(h.agent, h.projectRoot));
-  }
-  // 抢占：promote
-  {
-    const h = await openHarness(t, {
-      project: { tool_permissions: { yolo: true } },
-      gatewayScript: [
-        { reply: { toolCalls: [tool("shell", { command: "stub", timeout_ms: 30000, purpose: "忙碌" })] } },
-        { reply: { text: "处理第二条。" } },
-        { reply: { text: "处理第一条。" } }
-      ]
-    });
-    await h.agent.submit({ projectRoot: h.projectRoot, text: "第一条", source: "chat" });
-    await h.agent.submit({ projectRoot: h.projectRoot, text: "第二条", source: "chat" });
-    const session = await readSession(h.agent, h.projectRoot);
-    await h.agent.promote({ projectRoot: h.projectRoot, inputId: session.queued_inputs[0].id });
-    await waitForIdle(h.agent, h.projectRoot);
-    assert.equal(eventsOfType(await readEvents(h.agent, h.projectRoot), "input_promoted").length, 1);
     assertActivityClosure(await readEvents(h.agent, h.projectRoot));
   }
   // 停止
@@ -2200,7 +2110,8 @@ test("旧单体 Journal（agentRoot 根 segments/）不被导入：新会话为�
 });
 
 // ---------------------------------------------------------------------------
-// 规格审查修复验证：promote×stop、transcript 闭合、滞留输入、终态结果
+// 规格审查修复验证：stop×priority 收敛、滞留输入、终态结果（Task 26 起「立即」
+// 唯一权威路径为 requestPriority，旧 promote 专属场景已随 promote 删除）
 // ---------------------------------------------------------------------------
 
 // 读取 transcript 全部记录（新分段格式：segments/transcript/ 下的所有 segment）。
@@ -2246,7 +2157,7 @@ function assertWellFormedHistory(messages) {
   }
 }
 
-test("stop 后 promote 被拒：stopping 状态上的提升无效且不写入 input_promoted", async (t) => {
+test("stop 与 requestPriority 并发：stop 生效、优先标记随输入取消清空、不滞留", async (t) => {
   const h = await openHarness(t, {
     project: { tool_permissions: { yolo: true } },
     gatewayScript: [
@@ -2260,49 +2171,19 @@ test("stop 后 promote 被拒：stopping 状态上的提升无效且不写入 in
     eventsOfType(snap.events, "tool_call_started").length >= 1
   );
   const queued = (await readSession(h.agent, h.projectRoot)).queued_inputs[0];
-  // stop 在途中（stub shell 窗口内 Run 处于 stopping）：promote 必须被拒
-  const stopPromise = h.agent.stop({ projectRoot: h.projectRoot, reason: "user_stop" });
-  await assert.rejects(
-    () => h.agent.promote({ projectRoot: h.projectRoot, inputId: queued.id }),
-    /停止|stopping|没有可打断/
-  );
-  await stopPromise;
+  // 先落优先标记（确定性顺序），再 stop：stop 取消活动与排队输入时 reducer 清空
+  // 匹配的 priority_input_id（不得留下卡死指针，规格 3.3 rule 10）。
+  const pri = await h.agent.requestPriority({ projectRoot: h.projectRoot, inputId: queued.id });
+  assert.equal(pri.priority_pending, true);
+  const stopped = await h.agent.stop({ projectRoot: h.projectRoot, reason: "user_stop" });
+  assert.equal(stopped.cancelled, true);
   await waitForIdle(h.agent, h.projectRoot);
   const events = await readEvents(h.agent, h.projectRoot);
-  assert.equal(eventsOfType(events, "run_cancelled").length, 1, "停止仍应取消 Run");
-  assert.equal(eventsOfType(events, "input_promoted").length, 0, "promote 被拒后不得写入 input_promoted");
-  assertActivityClosure(events);
-});
-
-test("promote 中断后 transcript 无悬空 tool_calls（未执行工具补 cancelled 记录）", async (t) => {
-  const h = await openHarness(t, {
-    gatewayScript: [
-      async () => ({
-        toolCalls: [
-          tool("write_file", { path: path.join(h.projectRoot, "a.txt"), content: "A" }),
-          tool("write_file", { path: path.join(h.projectRoot, "b.txt"), content: "B" })
-        ]
-      }),
-      { reply: { text: "第二条完成。" } },
-      { reply: { text: "第一条完成。" } }
-    ]
-  });
-  await h.agent.submit({ projectRoot: h.projectRoot, text: "写入 A 和 B", source: "chat" });
-  await h.agent.submit({ projectRoot: h.projectRoot, text: "第二条", source: "chat" });
-  const decision1 = await waitForDecision(h.agent, h.projectRoot, 1);
-  const queued = (await readSession(h.agent, h.projectRoot)).queued_inputs[0];
-  await h.agent.promote({ projectRoot: h.projectRoot, inputId: queued.id });
-  // 被抢占的决策已终态：旧 decide 一律拒绝
-  await assert.rejects(
-    () => h.agent.decide({ projectRoot: h.projectRoot, decisionId: decision1.payload.decision_id, choice: "allow" }),
-    /已终结|不存在|过期/
-  );
-  await waitForIdle(h.agent, h.projectRoot);
-  // 被中断的工具调用链必须完整闭合（工具 1 已执行失败、工具 2 补 cancelled 记录）
-  const transcript = await readTranscriptFile(h.agentRoot);
-  assertNoDanglingToolCalls(transcript);
-  const events = await readEvents(h.agent, h.projectRoot);
-  assert.equal(eventsOfType(events, "run_completed").length, 1);
+  assert.equal(eventsOfType(events, "run_cancelled").length, 1, "stop 仍应取消 Run");
+  assert.equal(eventsOfType(events, "priority_input_requested").length, 1, "优先请求已落盘");
+  assert.ok(eventsOfType(events, "input_cancelled").length >= 2, "活动与排队输入都取消");
+  const session = await readSession(h.agent, h.projectRoot);
+  assert.equal(session.priority_input_id, null, "停止后不得滞留 priority_input_id");
   assertActivityClosure(events);
 });
 
@@ -2511,42 +2392,9 @@ test("并发 submit 不滞留输入：Run 终结后队列恒为空且全部输�
   assertActivityClosure(events);
 });
 
-test("promote 与 stop 竞态：终态时不误报成功（promoted: false 或明确拒绝）", async (t) => {
-  const h = await openHarness(t, {
-    project: { tool_permissions: { yolo: true } },
-    gatewayScript: [
-      { reply: { toolCalls: [tool("shell", { command: "stub", timeout_ms: 30000, purpose: "忙碌" })] } },
-      { reply: { text: "完成。" } }
-    ]
-  });
-  await h.agent.submit({ projectRoot: h.projectRoot, text: "任务一", source: "chat" });
-  await h.agent.submit({ projectRoot: h.projectRoot, text: "任务二", source: "chat" });
-  await waitFor(h.agent, h.projectRoot, (session, snap) =>
-    eventsOfType(snap.events, "tool_call_started").length >= 1
-  );
-  const queued = (await readSession(h.agent, h.projectRoot)).queued_inputs[0];
-  // 立即挂 rejection 处理器（避免竞态窗口内的 unhandled rejection）：promote 与
-  // stop 并发，任一方先落盘都是合法结果——test 下方同时容忍拒绝与 promoted:false。
-  const promotePromise = h.agent.promote({ projectRoot: h.projectRoot, inputId: queued.id }).then(
-    (value) => value,
-    (error) => ({ rejected: error })
-  );
-  const stopResult = await h.agent.stop({ projectRoot: h.projectRoot, reason: "user_stop" });
-  assert.equal(stopResult.cancelled, true);
-  const promoteResult = await promotePromise;
-  if (promoteResult.rejected) {
-    assert.match(promoteResult.rejected.message, /停止|没有可打断/, "stopping 预检查或终态拒绝");
-  } else {
-    assert.equal(typeof promoteResult.promoted, "boolean");
-    if (promoteResult.promoted === false) {
-      assert.ok(["terminal", "gone"].includes(promoteResult.reason), "promoted:false 必须带终态原因");
-    }
-  }
-  await waitForIdle(h.agent, h.projectRoot);
-  const events = await readEvents(h.agent, h.projectRoot);
-  assert.equal(eventsOfType(events, "run_cancelled").length, 1, "stop 必须生效");
-  assertActivityClosure(events);
-});
+// Task 26：旧「promote×stop 竞态：终态时不误报成功」随 promote 退役删除——并发
+// 收敛正确性由共享项目互斥锁保证（规格 3.3 rule 11），替代覆盖见上方
+// 「stop 与 requestPriority 并发」测试与 multi-session-runtime 互斥矩阵。
 
 // ---------------------------------------------------------------------------
 // 其他公共接口校验
@@ -2565,17 +2413,17 @@ test("snapshot 支持 afterSeq/limit 分页", async (t) => {
   assert.equal(empty.events.length, 0);
 });
 
-test("promote/stop 在 Run 终结后的竞态不悬挂（幂等拒绝或安全返回）", async (t) => {
+test("requestPriority/stop 在 Run 终结后的竞态不悬挂（幂等拒绝或安全返回）", async (t) => {
   const h = await openHarness(t, { gatewayScript: [{ reply: { text: "好。" } }] });
   await h.agent.submit({ projectRoot: h.projectRoot, text: "任务", source: "chat" });
   await waitForIdle(h.agent, h.projectRoot);
   // 空闲时 stop 安全无操作
   const stopped = await h.agent.stop({ projectRoot: h.projectRoot, reason: "user_stop" });
   assert.equal(stopped.cancelled, false);
-  // 空闲时 promote 拒绝
+  // 空闲时 requestPriority 拒绝（输入已不在队列）
   await assert.rejects(
-    () => h.agent.promote({ projectRoot: h.projectRoot, inputId: "ghost" }),
-    /没有可打断的活动 Run/
+    () => h.agent.requestPriority({ projectRoot: h.projectRoot, inputId: "ghost" }),
+    /不在排队队列中/
   );
 });
 
@@ -2962,12 +2810,12 @@ test("手动 /compact：有可压缩历史时启动手动压缩（trigger manual
   const session = await readSession(h.agent, h.projectRoot);
   assert.equal(session.active_context_checkpoint_id, completed.payload.checkpoint_id);
   assert.equal(session.status, "idle");
-  // compact item 被消费（processCompact 的 legacy input_consumed）；13 轮播种走
-  // 新生命周期 input_completed
+  // compact item 以 input_started 激活（Task 26：/compact 服从同一输入生命周期）
+  // 并以 input_completed 收敛（旧 input_consumed 退役）；13 轮播种走同一生命周期
   const compactQueued = eventsOfType(events, "input_queued").at(-1);
   assert.equal(compactQueued.payload.kind, "compact");
-  assert.equal(eventsOfType(events, "input_completed").length, 13, "13 轮播种完成");
-  assert.equal(eventsOfType(events, "input_consumed").length, 1, "compact item 消费");
+  assert.equal(eventsOfType(events, "input_completed").length, 14, "13 轮播种 + compact item 完成");
+  assert.equal(eventsOfType(events, "input_consumed").length, 0, "旧 input_consumed 不再产生");
 });
 
 test("运行中 /compact 排队不打断当前模型/工具；重复 compact item 在安全点取消（duplicate_compact）", async (t) => {

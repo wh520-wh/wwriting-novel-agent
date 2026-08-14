@@ -47,8 +47,9 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(here, "..", "..");
 
 // 计划固定的 journal 事件类型（Task 6/9 新输入生命周期事件并入；legacy 事件
-// input_promoted/input_consumed/input_cancelled 仍由旧路径（promote/停止/恢复）
-// 产生，保留在清单内）。
+// input_promoted/input_consumed/input_cancelled 保留在清单内——Task 26 起新
+// generation 不再产生，仅旧日志回放与硬停止/压缩取消路径（input_cancelled）
+// 仍会出现在 journal 中）。
 const FIXED_EVENT_TYPES = [
   "session_created",
   "run_started",
@@ -545,47 +546,10 @@ test("FIFO 按发送顺序消费输入", async (t) => {
   assertActivityClosure(events);
 });
 
-test("立即（promote）保持同一 Run id", async (t) => {
-  const h = await openHarness(t, {
-    gatewayScript: [
-      { reply: { toolCalls: [tool("shell", { command: "stub", timeout_ms: 30000 })] } },
-      { reply: { text: "优先处理第二条。" } },
-      { reply: { text: "继续处理第一条。" } }
-    ],
-    gatewayDelayMs: 60
-  });
-  await h.agent.submit({ projectRoot: h.projectRoot, text: "第一条", source: "chat" });
-  await h.agent.submit({ projectRoot: h.projectRoot, text: "第二条", source: "chat" });
-  const before = await readSession(h.agent, h.projectRoot);
-  const runId = before.active_run.id;
-  const queuedInput = before.queued_inputs[0];
-  assert.ok(queuedInput, "第二条应处于排队状态");
-
-  await h.agent.promote({ projectRoot: h.projectRoot, inputId: queuedInput.id });
-  const after = await readSession(h.agent, h.projectRoot);
-  assert.equal(after.active_run.id, runId, "promote 不得创建新 Run");
-  assert.equal(after.active_run.active_input_id, queuedInput.id, "promote 后活动输入应切换为被提升的输入");
-
-  const events = await readEvents(h.agent, h.projectRoot);
-  const interrupts = eventsOfType(events, "interrupt_requested");
-  const promoted = eventsOfType(events, "input_promoted");
-  assert.equal(promoted.length, 1);
-  assert.equal(promoted[0].payload.input_id, queuedInput.id);
-  const interruptIndex = events.findIndex((event) => event.type === "interrupt_requested");
-  const promotedIndex = events.findIndex((event) => event.type === "input_promoted");
-  assert.ok(interrupts.length >= 1 && interruptIndex < promotedIndex, "interrupt_requested 应先于 input_promoted");
-
-  await waitForIdle(h.agent, h.projectRoot);
-  const done = await readEvents(h.agent, h.projectRoot);
-  const completed = eventsOfType(done, "run_completed");
-  assert.equal(completed.length, 1);
-  assert.equal(completed[0].run_id, runId, "Run 完成后仍保持同一 id");
-  const texts = h.gateway.calls.map((call) => JSON.stringify(call.request));
-  const firstB = texts.findIndex((serialized) => serialized.includes("第二条"));
-  const lastA = texts.map((serialized) => serialized.includes("第一条")).lastIndexOf(true);
-  assert.ok(firstB >= 0 && lastA >= 0 && firstB < lastA, "被提升的输入应先于被打断的输入被处理");
-  assertActivityClosure(done);
-});
+// Task 26：旧「立即（promote）」acceptance 测试随 promote 退役删除——它钉的是被
+// 规格 3.3 替换的旧行为（interrupt_requested + input_promoted 立即打断、被打断
+// 输入回队重跑）。新「立即」= requestPriority 安全点优先，由紧随其后的
+// 「Task 10 验收」测试与 verify 场景 29a/29b/29c/30/31a/31b 覆盖。
 
 test("Task 10 验收：A 运行时 B/C/D 排队，D 点「立即」后 D 下一条开始、B/C 顺序不变（spec 6.2）", async (t) => {
   // 子场景一：模型在途点「立即」→ 当前模型请求完整返回；普通最终文本 →
@@ -1087,7 +1051,7 @@ test("Shell 增量输出、cwd/退出码/耗时、进程树停止与 secret 脱�
 // 活动闭环
 // ---------------------------------------------------------------------------
 
-test("活动 id 在成功、失败、拒绝、抢占与停止时闭环", async (t) => {
+test("活动 id 在成功、失败、拒绝与停止时闭环", async (t) => {
   // 1) 成功：read_file 完成
   {
     const h = await openHarness(t, {
@@ -1140,24 +1104,8 @@ test("活动 id 在成功、失败、拒绝、抢占与停止时闭环", async (
     assertActivityClosure(events);
   }
 
-  // 4) 抢占：promote 打断当前输入
-  {
-    const h = await openHarness(t, {
-      gatewayScript: [
-        { reply: { toolCalls: [tool("shell", { command: "stub", timeout_ms: 30000 })] } },
-        { reply: { text: "处理第二条。" } },
-        { reply: { text: "处理第一条。" } }
-      ]
-    });
-    await h.agent.submit({ projectRoot: h.projectRoot, text: "第一条", source: "chat" });
-    await h.agent.submit({ projectRoot: h.projectRoot, text: "第二条", source: "chat" });
-    const session = await readSession(h.agent, h.projectRoot);
-    await h.agent.promote({ projectRoot: h.projectRoot, inputId: session.queued_inputs[0].id });
-    await waitForIdle(h.agent, h.projectRoot);
-    const events = await readEvents(h.agent, h.projectRoot);
-    assert.ok(eventsOfType(events, "input_promoted").length === 1);
-    assertActivityClosure(events);
-  }
+  // 4) 抢占：requestPriority（Task 26 起「立即」唯一权威路径；活动闭环在下方
+  //    Task 10 优先测试与 verify 场景 29a/29b/29c 中另有专项覆盖）
 
   // 5) 停止：run_cancelled + 活动全部收敛
   {
@@ -1435,7 +1383,6 @@ function makeFixtureApi(fixture) {
   return {
     openProject: async () => {},
     submit: async () => ({ ok: true }),
-    promote: async () => ({ ok: true }),
     stop: async () => ({ ok: true }),
     retry: async () => ({ ok: true }),
     decide: async () => ({ ok: true }),

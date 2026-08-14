@@ -78,37 +78,6 @@ test("POST /api/agent/input 运行中排队：HTTP 200 + queued + 同一 run_id"
   assert.equal(eventsOfType(events, "input_completed").length, 2, "两条输入都以 input_completed 终结");
 });
 
-test("POST /api/agent/input/:inputId/promote 同一 Run 内提升", async (t) => {
-  const s = await setupServer(t, {
-    gatewayScript: [
-      async () => {
-        await sleep(600);
-        return { text: "第一轮答复" };
-      },
-      { reply: { text: "提升后答复" } }
-    ],
-    gatewayDelayMs: 0
-  });
-  const first = await s.post("/api/agent/input", { projectRoot: s.h.projectRoot, text: "任务一" });
-  const second = await s.post("/api/agent/input", { projectRoot: s.h.projectRoot, text: "任务二" });
-  const promoted = await s.post(`/api/agent/input/${second.data.input_id}/promote`, {
-    projectRoot: s.h.projectRoot
-  });
-  assert.equal(promoted.res.status, 200);
-  assert.equal(promoted.data.ok, true);
-  assert.equal(promoted.data.run_id, first.data.run_id, "promote 返回同一 run id");
-  assert.equal(promoted.data.input_id, second.data.input_id);
-  assert.equal(promoted.data.promoted, true);
-
-  await waitForIdle(s.h.agent, s.h.projectRoot);
-  const events = await readEvents(s.h.agent, s.h.projectRoot);
-  assert.equal(eventsOfType(events, "run_started").length, 1, "promote 不创建新 Run");
-  assert.ok(eventsOfType(events, "input_promoted").length >= 1, "应写入 input_promoted 事件");
-  const session = (await s.h.agent.snapshot({ projectRoot: s.h.projectRoot, afterSeq: 0, limit: 100 })).session;
-  assert.equal(session.status, "idle");
-  assert.equal(session.active_run.status, "completed");
-});
-
 test("POST /api/agent/run/:runId/stop 取消当前 Run 与排队输入", async (t) => {
   const s = await setupServer(t, {
     gatewayScript: [
@@ -297,7 +266,7 @@ test("错误映射：坏 JSON → 400 BAD_REQUEST", async (t) => {
   assert.equal(data.code, "BAD_REQUEST");
 });
 
-test("错误映射：未知路由 → 404 NOT_FOUND；promote 非排队输入 → 409", async (t) => {
+test("错误映射：未知路由 → 404 NOT_FOUND；旧 promote 路由已删除 → 404；priority 非排队输入 → 409", async (t) => {
   const s = await setupServer(t, {
     gatewayScript: [
       async () => {
@@ -313,7 +282,10 @@ test("错误映射：未知路由 → 404 NOT_FOUND；promote 非排队输入 �
   assert.equal(missing.data.code, "NOT_FOUND");
 
   await s.post("/api/agent/input", { projectRoot: s.h.projectRoot, text: "任务一" });
-  const conflict = await s.post("/api/agent/input/not-queued/promote", { projectRoot: s.h.projectRoot });
+  // Task 26：promote 端点整体删除（「立即」唯一路径是 /priority）
+  const gone = await s.post("/api/agent/input/not-queued/promote", { projectRoot: s.h.projectRoot });
+  assert.equal(gone.res.status, 404, "旧 promote 路由必须 404");
+  const conflict = await s.post("/api/agent/input/not-queued/priority", { projectRoot: s.h.projectRoot });
   assert.equal(conflict.res.status, 409);
   assert.equal(conflict.data.code, "input_not_queued");
   await waitForIdle(s.h.agent, s.h.projectRoot);
