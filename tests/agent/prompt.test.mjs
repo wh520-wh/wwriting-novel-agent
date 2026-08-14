@@ -123,7 +123,7 @@ test("UNIFIED_TASK_POLICY 是统一任务政策（Task 7：删除三条 workflow
   // 章节专用工具纪律：正文只经 append_chapter_segment 写草稿、commit_chapter 提交
   assert.ok(UNIFIED_TASK_POLICY.includes("append_chapter_segment"));
   assert.ok(UNIFIED_TASK_POLICY.includes("commit_chapter"));
-  assert.ok(UNIFIED_TASK_POLICY.includes("不得用 write_file、edit_file 或 shell"), "必须禁止通用写工具绕过章节专用工具");
+  assert.ok(UNIFIED_TASK_POLICY.includes("禁止用 write_file、edit_file 或 shell"), "草稿行必须禁止通用写工具绕过章节专用工具");
   assert.ok(UNIFIED_TASK_POLICY.includes("段号按顺序递增"), "段号必须按顺序递增");
   assert.ok(UNIFIED_TASK_POLICY.includes("任一条件不满足时不得声称章节完成。"), "完成条件必须保留");
   assert.ok(!UNIFIED_TASK_POLICY.includes("真实字数满足项目门槛"), "统一政策不得再要求字数门禁");
@@ -139,6 +139,17 @@ test("UNIFIED_TASK_POLICY 是统一任务政策（Task 7：删除三条 workflow
   assert.ok(!UNIFIED_TASK_POLICY.includes("[Workflow:"), "不得再定义任何 [Workflow: …] 政策块");
   assert.ok(!UNIFIED_TASK_POLICY.includes("需要系统审稿时进入 review"), "不得再含审稿入口");
   assert.ok(!UNIFIED_TASK_POLICY.includes("需要初始化长期蓝图时进入 init"), "不得再含旧蓝图/init 提示");
+});
+
+test("UNIFIED_TASK_POLICY 可写性矩阵：正式章可编辑且必须入账；草稿仍只能经专用工具；系统文件只读；段号纪律保留", () => {
+  assert.ok(UNIFIED_TASK_POLICY.includes("正式章节文件"), "必须声明正式章节文件可编辑");
+  assert.ok(UNIFIED_TASK_POLICY.includes("finalize_revision"), "必须声明编辑后调用 finalize_revision 入账");
+  assert.ok(UNIFIED_TASK_POLICY.includes("drafts/"), "必须声明草稿目录");
+  assert.ok(UNIFIED_TASK_POLICY.includes("append_chapter_segment"), "必须保留草稿专用工具纪律");
+  assert.ok(UNIFIED_TASK_POLICY.includes("段号按顺序递增"), "段号顺序纪律必须保留（既有 :127 断言依赖）");
+  assert.ok(UNIFIED_TASK_POLICY.includes("project.yaml"), "矩阵必须声明 project.yaml 只读（设计 D5）");
+  assert.ok(UNIFIED_TASK_POLICY.includes("memory/"), "矩阵必须声明 memory/ 记忆档案只读（设计 D5）");
+  assert.ok(!UNIFIED_TASK_POLICY.includes("不得用 write_file、edit_file 或 shell"), "旧『禁止编辑正式章节』文案必须消失（drafts 行改用『禁止用…』）");
 });
 
 // ---------------------------------------------------------------------------

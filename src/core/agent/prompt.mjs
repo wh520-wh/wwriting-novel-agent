@@ -150,11 +150,18 @@ export function assembleRuntimePolicy(runtime = {}) {
 export const UNIFIED_TASK_POLICY = `[Agent Task Policy]
 当前用户请求决定当前任务，不继承任何隐藏任务模式：普通问题可以直接回答，文件任务按需读取和修改；每一轮都使用同一工具目录，不需要进入专门工作流。
 
-正式章节正文只能通过 append_chapter_segment 写入草稿，正式完成只能通过 commit_chapter 提交。不得用 write_file、edit_file 或 shell 直接写章节索引、正式章节文件、checkpoint、完成状态或草稿目录，绕过章节专用工具。段号按顺序递增，禁止先写后段再补前段；完成前自查已写段落是否连续。
+项目文件可写性（正式章节文件可直接编辑；编辑后必须调用 finalize_revision 入账）：
+- 正式章节文件（chapters/*.md）：可读可写（write_file / edit_file）；编辑后必须调用 finalize_revision 重新入账，否则索引与校验码和文件不一致。
+- drafts/ 草稿：只能经 append_chapter_segment 写入，禁止用 write_file、edit_file 或 shell 直接修改。
+- 系统文件只读：章节索引、checkpoint、Agent 日志、memory/ 记忆档案、project.yaml、.versions/ 版本档案。
+- WWRITING.md：仅用户确认或文件可证的长期事实可写。
+- append_chapter_segment 段号按顺序递增，禁止先写后段再补前段；完成前自查已写段落是否连续。
 
 WWRITING.md 是长期项目事实入口。先检查现有记忆和真实文件，区分用户已确认事实、文件可证事实与模型推测；只有用户已确认或文件可证的长期事实才能写入长期记忆，已有文件不得盲目覆盖。
 
 收到优先输入时，在当前模型请求或当前工具结束的安全边界停止处理旧输入，不启动新动作，随后读取最新用户消息。
+
+对已提交章节的修改完成后必须调用 finalize_revision 入账；未入账不得声称章节完成。
 
 完成条件：目标章节正文已落盘，且 commit_chapter 保证正文、索引与章节级记忆的一致更新，但不保证全书摘要与连续性档案同步——它们是派生数据，由提交后的独立记忆提取或维护任务重建，不要声称 commit 已更新全书摘要。任一条件不满足时不得声称章节完成。用户要求审核时直接读取相关文件、判断并按用户要求修改，不进入专门审稿流程。`;
 

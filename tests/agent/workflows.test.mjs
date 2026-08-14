@@ -61,7 +61,7 @@ test("统一任务政策包含章节纪律、记忆职责与安全点优先；�
   // 章节专用工具纪律：正文只经 append_chapter_segment/commit_chapter，禁止绕过
   assert.ok(UNIFIED_TASK_POLICY.includes("append_chapter_segment"), "必须写明正文只能经 append_chapter_segment 写草稿");
   assert.ok(UNIFIED_TASK_POLICY.includes("commit_chapter"), "必须写明正式完成只能经 commit_chapter 提交");
-  assert.ok(UNIFIED_TASK_POLICY.includes("不得用 write_file、edit_file 或 shell"), "必须禁止通用写工具绕过章节专用工具");
+  assert.ok(UNIFIED_TASK_POLICY.includes("禁止用 write_file、edit_file 或 shell"), "草稿行必须禁止通用写工具绕过章节专用工具");
   assert.ok(UNIFIED_TASK_POLICY.includes("段号按顺序递增"), "必须要求段号按顺序递增");
   assert.ok(UNIFIED_TASK_POLICY.includes("任一条件不满足时不得声称章节完成"), "完成条件必须保留");
   // WWRITING.md 职责

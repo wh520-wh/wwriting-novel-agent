@@ -738,13 +738,23 @@ test("通用写工具拒绝直接写受保护路径", async (t) => {
     ["chapter index", "memory/chapter_index.json"],
     ["draft file", "drafts/001.draft.md"],
     ["draft 中间点文件名", "drafts/2.修订.draft.txt"],
-    ["version archive", ".versions/chapters/001/v1.md"]
+    ["version archive", ".versions/chapters/001/v1.md"],
+    ["memory archive", "memory/chapter_memory.json"],
+    ["project config", "project.yaml"]
   ];
   for (const [label, rel] of protectedTargets) {
     const result = await h.tools.execute(toolCall("write_file", { path: rel, content: MARKER }), h.context);
     assert.equal(result.ok, false, `write_file 应拒绝 ${label}`);
-    assert.equal(result.message, "当前权限不允许修改文件。");
+    assert.ok(typeof result.message === "string" && result.message.length > 0, "拒绝消息必须有内容");
   }
+  // memory/ 与 project.yaml 拒绝消息按 rule 提供明确指引（非泛化『当前权限不允许修改文件』）
+  for (const label of ["memory archive", "project config"]) {
+    const [entryLabel, rel] = protectedTargets.find(([l]) => l === label);
+    const result = await h.tools.execute(toolCall("write_file", { path: rel, content: MARKER }), h.context);
+    assert.ok(result.message.includes("系统文件，只读"), `${entryLabel} 拒绝消息必须声明系统文件只读`);
+  }
+  const draftResult = await h.tools.execute(toolCall("write_file", { path: "drafts/001.draft.md", content: MARKER }), h.context);
+  assert.ok(draftResult.message.includes("append_chapter_segment"), "草稿拒绝消息必须提示合法通道 append_chapter_segment");
   // events 落在 segments/events；拒绝写入不得产生脏行（每行仍是合法 JSON）
   const eventsSegment = path.join(agentDir, "segments", "events", "00000001.jsonl");
   const eventsFile = await fs.readFile(eventsSegment, "utf8");
@@ -782,7 +792,7 @@ test("受保护路径大小写变体不能绕过（win32 文件系统大小写�
   for (const rel of variants) {
     const result = await h.tools.execute(toolCall("write_file", { path: rel, content: "x" }), h.context);
     assert.equal(result.ok, false, `大小写变体 ${rel} 必须被拒绝`);
-    assert.equal(result.message, "当前权限不允许修改文件。");
+    assert.ok(typeof result.message === "string" && result.message.length > 0, "拒绝消息必须有内容");
   }
   // 对照组：大小写正确的普通文件在 auto_edit 下自动放行
   const ok = await h.tools.execute(toolCall("write_file", { path: "notes.md", content: "n" }), h.context);
@@ -796,7 +806,7 @@ test("drafts/ 只能经 append_chapter_segment 写入：auto_edit 与 yolo 下�
     for (const rel of ["drafts/001.draft.md", "drafts/001.draft.txt"]) {
       const result = await h.tools.execute(toolCall("write_file", { path: rel, content: "正文" }), h.context);
       assert.equal(result.ok, false, `${JSON.stringify(permissions)} 下直写草稿 ${rel} 必须被拒`);
-      assert.equal(result.message, "当前权限不允许修改文件。");
+      assert.ok(result.message.includes("append_chapter_segment"), `${rel} 拒绝消息必须提示合法通道 append_chapter_segment`);
       assert.equal(await pathExists(path.join(h.projectRoot, rel)), false);
     }
     const edit = await h.tools.execute(
@@ -940,7 +950,7 @@ test("shell 拒绝在 journal / checkpoints 目录内运行", async (t) => {
     h.context
   );
   assert.equal(cwdResult.ok, false);
-  assert.equal(cwdResult.message, "当前权限不允许修改文件。");
+  assert.ok(cwdResult.message.includes("系统文件，只读"), "journal 目录内 shell 必须给出只读指引");
   const cpResult = await h.tools.execute(
     toolCall("shell", { command: "echo hi", cwd: path.join(h.projectRoot, "checkpoints"), purpose: "查看" }),
     h.context
