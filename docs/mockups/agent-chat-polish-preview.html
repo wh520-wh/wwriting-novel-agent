@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>对话界面打磨 · 视觉预览（现状 vs 新样式）</title>
+<style>
+  /* ============ 令牌（与 styles.css :root light 一致） ============ */
+  :root {
+    color-scheme: light;
+    --bg: #fafbfc;
+    --rail: #f4f5f7;
+    --surface: #ffffff;
+    --surface-2: #f7f8f9;
+    --surface-3: #edf0f2;
+    --ink: #202522;
+    --ink-2: #3f4742;
+    --muted: #69716c;
+    --faint: #8b938e;
+    --line: #e4e7ea;
+    --line-2: #d9dde1;
+    --line-3: #edf0f2;
+    --line-hover: #cdd4da;
+    --hover: #e6e9ec;
+    --accent: #3f6b4f;
+    --btn: #252b27;
+    --btn-ink: #ffffff;
+    --text-primary: var(--ink);
+    --text-secondary: var(--ink-2);
+    --text-muted: var(--muted);
+    --text-link: var(--accent);
+    --shadow-xs: 0 1px 2px rgb(16 24 40 / .04);
+    --r: 8px;
+    --r-xl: 12px;
+    --weight-regular: 400;
+    --weight-medium: 550;
+    --weight-semibold: 650;
+    --weight-bold: 700;
+    --agent-work-title-fg: var(--text-secondary);
+    --agent-work-meta-fg: var(--text-muted);
+    --content-column: 1040px;
+    --content-gutter: clamp(14px, 2.2vw, 24px);
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI",
+      "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei",
+      "Source Han Sans SC", "Noto Sans CJK SC", system-ui, sans-serif;
+    --serif: "Source Han Serif SC", "Noto Serif SC", "Songti SC", "STSong",
+      "SimSun", Georgia, "Times New Roman", serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", "Cascadia Code",
+      "JetBrains Mono", Menlo, Consolas, "PingFang SC", "Microsoft YaHei UI", monospace;
+    font-size: 14px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+  }
+
+  /* ============ 顶部说明与控制条 ============ */
+  .preview-bar {
+    position: sticky; top: 0; z-index: 50;
+    background: color-mix(in srgb, var(--bg) 86%, transparent);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--line);
+    padding: 12px var(--content-gutter);
+  }
+  .preview-bar-inner {
+    max-width: var(--content-column);
+    margin: 0 auto;
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  }
+  .preview-bar h1 { font-size: 15px; font-weight: var(--weight-semibold); }
+  .preview-bar .hint { font-size: 12px; color: var(--muted); flex: 1 1 100%; }
+  .seg {
+    display: inline-flex; background: var(--surface-3);
+    border: 1px solid var(--line); border-radius: 999px; padding: 2px;
+  }
+  .seg button {
+    border: 0; background: transparent; cursor: pointer;
+    font: 550 12.5px var(--sans); color: var(--muted);
+    padding: 5px 14px; border-radius: 999px;
+  }
+  .seg button.on { background: var(--btn); color: var(--btn-ink); }
+
+  .notes {
+    max-width: var(--content-column); margin: 14px auto 0;
+    padding: 0 var(--content-gutter);
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px;
+  }
+  .note {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--r-xl); padding: 10px 12px; font-size: 12px;
+    line-height: 1.6; color: var(--ink-2);
+  }
+  .note b { color: var(--ink); font-weight: var(--weight-semibold); }
+  .note .num { display: inline-grid; place-items: center; width: 16px; height: 16px;
+    border-radius: 99px; background: var(--accent); color: #fff;
+    font-size: 10.5px; font-weight: var(--weight-bold); margin-right: 6px; }
+  .note .badge-bug {
+    display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 99px;
+    background: var(--accent); color: #fff; font-size: 10.5px; font-weight: var(--weight-bold);
+  }
+
+  /* ============ 对话区（模拟真实应用画布） ============ */
+  .app-canvas {
+    max-width: var(--content-column);
+    margin: 0 auto;
+    padding: 28px var(--content-gutter) 140px;
+  }
+
+  .messages { display: flex; flex-direction: column; gap: 18px; }
+
+  /* ---- 用户气泡（真实样式） ---- */
+  .user-msg { align-self: flex-end; max-width: min(800px, calc(100% - 32px)); }
+  .user-msg .text {
+    background: var(--rail);
+    border: 1px solid var(--line-3);
+    color: var(--btn);
+    box-shadow: var(--shadow-xs);
+    padding: 7px 14px; border-radius: 8px;
+    font-size: 14px; line-height: 1.68;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+
+  /* ---- 工作组卡（真实样式） ---- */
+  .work-group {
+    width: min(100%, 1040px);
+    border: 1px solid var(--line);
+    border-radius: var(--r-xl);
+    background: var(--surface);
+    box-shadow: var(--shadow-xs);
+    overflow: hidden;
+  }
+  .work-group summary {
+    cursor: pointer; list-style: none; user-select: none;
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px;
+  }
+  .work-group summary::-webkit-details-marker { display: none; }
+  .work-group summary::after {
+    content: ""; margin-left: auto; flex: 0 0 auto;
+    width: 7px; height: 7px;
+    border-right: 1.5px solid var(--muted);
+    border-bottom: 1.5px solid var(--muted);
+    transform: rotate(45deg);
+  }
+  .work-group[open] summary { border-bottom: 1px solid var(--line-3); }
+  .work-group[open] summary::after { transform: rotate(225deg); }
+  .work-status {
+    color: var(--agent-work-title-fg);
+    font-weight: var(--weight-semibold); font-size: 13px; line-height: 1.4;
+  }
+  .work-duration {
+    color: var(--agent-work-meta-fg); font-weight: var(--weight-regular);
+    font-size: 12px; font-variant-numeric: tabular-nums;
+  }
+  .work-items {
+    display: flex; flex-direction: column; gap: 7px;
+    padding: 4px 8px 8px;
+  }
+  .work-item {
+    position: relative; padding: 5px 0 5px 24px;
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px;
+    font-size: 12.5px; line-height: 1.5;
+  }
+  .work-item .state { width: 14px; color: var(--muted); font-size: 12px; position: absolute; left: 4px; }
+  .work-item .label { color: var(--ink-2); font-weight: var(--weight-medium); }
+  .work-item .meta { color: var(--muted); font-size: 12px; }
+  .work-item .ok { color: var(--accent); font-weight: var(--weight-semibold); }
+
+  /* ---- Agent 正文（真实样式：衬线 15px 行高 2.0，无框直出） ---- */
+  .assistant-msg { align-self: flex-start; width: 100%; }
+  .assistant-msg .text {
+    width: min(100%, 800px);   /* 现状基线 */
+    color: var(--text-primary);
+    font-family: var(--serif);
+    font-size: 15px; line-height: 2.0; font-weight: var(--weight-regular);
+    padding: 3px 2px;
+  }
+  .assistant-msg .text h2 {
+    color: var(--text-primary); font-size: 17px; line-height: 1.4;
+    font-weight: var(--weight-bold); margin: 14px 0 6px;
+    padding-bottom: 6px; border-bottom: 1px solid var(--line);
+  }
+  .assistant-msg .text h2:first-child { margin-top: 0; }
+  .assistant-msg .text p { margin: 0 0 8px; }
+  .assistant-msg .text p:last-child { margin-bottom: 0; }
+  .assistant-msg .text ul { margin: 0 0 8px; padding-left: 20px; }
+  .assistant-msg .text li { margin: 2px 0; }
+  .assistant-msg .text blockquote {
+    color: var(--muted); font-size: 13px; line-height: 1.6;
+    margin: 0 0 8px; padding-left: 12px; border-left: 3px solid var(--line-hover);
+  }
+  .assistant-msg .text strong { font-weight: var(--weight-bold); }
+
+  /* 长文示例（展开看宽度差异） */
+  .long-demo {
+    margin-top: 24px;
+    border: 1px dashed var(--line-2);
+    border-radius: var(--r-xl);
+    background: var(--surface-2);
+    overflow: hidden;
+  }
+  .long-demo > summary {
+    cursor: pointer; list-style: none; user-select: none;
+    padding: 8px 12px; font-size: 12.5px; color: var(--muted);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .long-demo > summary::-webkit-details-marker { display: none; }
+  .long-demo > summary::after {
+    content: "▸"; margin-left: auto; transition: transform 140ms ease;
+  }
+  .long-demo[open] > summary::after { transform: rotate(90deg); }
+  .long-demo .long-body {
+    border-top: 1px solid var(--line-3);
+    padding: 12px 14px;
+    display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap;
+  }
+  .long-demo .col { flex: 1 1 340px; min-width: 0; }
+  .long-demo .col-title { font-size: 11.5px; color: var(--faint); margin-bottom: 6px; font-family: var(--mono); }
+  .long-demo .col .text {
+    color: var(--text-primary);
+    font-family: var(--serif);
+    font-size: 15px; line-height: 2.0; font-weight: var(--weight-regular);
+  }
+  .long-demo .col .text p { margin: 0 0 8px; }
+  .long-demo .col .text p:last-child { margin-bottom: 0; }
+  .long-demo .col-now { width: min(100%, 800px); }
+  .long-demo .col-new { width: min(100%, 720px); }
+
+  /* ---- composer 示意 ---- */
+  .composer-demo {
+    position: fixed; left: 50%; transform: translateX(-50%); bottom: 16px;
+    width: min(1040px, calc(100% - 32px));
+    background: color-mix(in srgb, var(--surface) 88%, transparent);
+    backdrop-filter: blur(10px);
+    border: 1px solid var(--line); border-radius: 12px;
+    box-shadow: 0 16px 38px -24px rgb(24 32 27 / .3);
+    padding: 12px 14px;
+    display: flex; align-items: flex-end; gap: 10px;
+  }
+  .composer-demo .fake-input {
+    flex: 1; min-height: 42px;
+    border: 0; outline: 0;
+    font: 400 14px/1.7 var(--sans);
+    display: flex; align-items: center; color: var(--faint);
+  }
+  .composer-demo .fake-send {
+    width: 34px; height: 34px; border-radius: 50%;
+    background: var(--btn); color: var(--btn-ink);
+    display: grid; place-items: center; font-size: 15px;
+  }
+
+  /* ============================================================
+     现状（baseline）模式：复现真实 bug + 原样式
+     - 活动轮工作组卡压在刚发送的用户消息上方（order 重排复现）
+     - 正文 800px；统一 18px 间距；工作组 summary 常规样式
+     ============================================================ */
+  body.baseline .messages > *:nth-child(1) { order: 10; }  /* 用户消息 1 */
+  body.baseline .messages > *:nth-child(2) { order: 20; }  /* 工作组 1（终态） */
+  body.baseline .messages > *:nth-child(3) { order: 30; }  /* 正文 1 */
+  body.baseline .messages > *:nth-child(4) { order: 40; }  /* 用户消息 2 */
+  body.baseline .messages > *:nth-child(5) { order: 35; }  /* 工作组 2（活动）→ 压在消息 2 上方 */
+  body.baseline .messages > *:nth-child(6) { order: 50; }  /* 正文 2 */
+
+  /* ============================================================
+     新样式（polished）模式：修复 + 打磨
+     - 工作组回到消息下方（order 恢复 DOM 序）
+     - 正文 720px；轮内 12px / 轮间 28px；工作组 summary 弱化
+     ============================================================ */
+  body.polished .messages { gap: 12px; }
+  body.polished .messages > .assistant-msg + .user-msg,
+  body.polished .messages > .work-group + .user-msg { margin-top: 28px; }
+  body.polished .assistant-msg .text { width: min(100%, 720px); }
+  body.polished .work-group summary { padding: 6px 10px; }
+  body.polished .work-status {
+    color: var(--muted);
+    font-weight: var(--weight-medium); font-size: 12.5px;
+  }
+  /* 第五项：工作组卡去外框、去圆角包裹、透明背景——步骤列表无框直出 */
+  body.polished .work-group {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  body.polished .work-group > summary { padding: 4px 2px; }
+  body.polished .work-group[open] > summary { border-bottom: 0; }
+  body.polished .work-items { padding: 0 2px 8px; }
+</style>
+</head>
+<body class="polished">
+
+  <div class="preview-bar">
+    <div class="preview-bar-inner">
+      <h1>对话界面打磨 · 视觉预览</h1>
+      <div class="seg" id="seg">
+        <button type="button" data-mode="polished" class="on">新样式（打磨后）</button>
+        <button type="button" data-mode="baseline">现状（含 bug）</button>
+      </div>
+      <div class="hint">两轮对话静态示例 · 工作组卡可点击展开/折叠 · 内容为演示文字 · 底部有长文示例可展开对比宽度</div>    </div>
+  </div>
+
+  <div class="notes">
+    <div class="note"><span class="num">1</span><b>工作组位置</b><span class="badge-bug">本次 bug</span><br>现状：活动工作组压在刚发送的消息<b>上方</b> → 新样式：回到消息<b>下方</b>（时间流顺序）</div>
+    <div class="note"><span class="num">2</span><b>正文宽度</b><br>800px（每行 ≈ 44 字）→ 720px（每行 ≈ 40 字），长文差异展开底部「长文示例」看</div>
+    <div class="note"><span class="num">3</span><b>垂直节奏</b><br>统一 18px → 轮内 12px / 轮间 28px，回合边界一眼可见</div>
+    <div class="note"><span class="num">4</span><b>工作组弱化</b><br>summary 常规字色 13px 加粗 → muted 12.5px 常规字重，内边距收紧</div>
+    <div class="note"><span class="num">5</span><b>去卡片外框</b><br>工作组卡移除描边/圆角/底色，步骤列表无框直出在页面背景上</div>
+  </div>
+
+  <div class="app-canvas">
+    <div class="messages">
+
+      <!-- ===== 第 1 轮：用户消息 → 工作组（终态折叠）→ 正文（真实形态：完成+总结） ===== -->
+      <div class="user-msg"><div class="text">继续写第 3 章</div></div>
+
+      <details class="work-group">
+        <summary>
+          <span class="work-status">工作了 42 秒</span>
+          <span class="work-duration"></span>
+        </summary>
+        <div class="work-items">
+          <div class="work-item"><span class="state">✓</span><span class="label">读取文件</span><span class="meta">chapter-02.md</span></div>
+          <div class="work-item"><span class="state">✓</span><span class="label">读取文件</span><span class="meta">blueprint.md</span></div>
+          <div class="work-item"><span class="state">✓</span><span class="label">已完成思考</span><span class="meta">展开查看</span></div>
+          <div class="work-item"><span class="state">✓</span><span class="label">写入章节内容</span><span class="meta">chapter-03.md</span></div>
+          <div class="work-item"><span class="state">✓</span><span class="label">提交章节</span><span class="meta">chapter-03.md</span></div>
+        </div>
+      </details>
+
+      <div class="assistant-msg">
+        <div class="text">
+          <h2>第三章已完成</h2>
+          <p>《第三章 · 午夜钟声》写完了，约 3200 字，已保存到 <strong>chapter-03.md</strong>。</p>
+          <ul>
+            <li>座钟停摆的悬念按蓝图落地，灰帽客人的伏笔埋进打烊场景</li>
+            <li>文风与第二章保持一致，钟表匠的视角贯穿全章</li>
+          </ul>
+          <p>下一步可以继续写第 4 章，或者让我先审一遍第三章。</p>
+        </div>
+      </div>
+
+      <!-- ===== 第 2 轮：用户消息 → 工作组（运行中，活动）→ 正文 ===== -->
+      <div class="user-msg"><div class="text">检查人物设定一致性</div></div>
+
+      <details class="work-group" open>
+        <summary>
+          <span class="work-status">工作中</span>
+          <span class="work-duration">12 秒</span>
+        </summary>
+        <div class="work-items">
+          <div class="work-item"><span class="state">•</span><span class="label">思考中</span><span class="meta">交叉核对总纲与本章</span></div>
+          <div class="work-item"><span class="state">✓</span><span class="label">读取文件</span><span class="meta">blueprint.md</span></div>
+          <div class="work-item"><span class="state">✓</span><span class="label">搜索「钟楼」</span><span class="meta">chapter-01.md · chapter-02.md</span></div>
+          <div class="work-item"><span class="state">•</span><span class="label">运行命令</span><span class="meta">wwriting skill check</span></div>
+        </div>
+      </details>
+
+      <div class="assistant-msg">
+        <div class="text">
+          <h2>设定一致性检查结果</h2>
+          <p>对《第三章 · 午夜钟声》与总纲交叉核对，发现 <strong>2 处冲突、1 处存疑</strong>：</p>
+          <ul>
+            <li><strong>钟楼方向</strong>：本章写「街对面的钟楼」，总纲设定钟楼位于巷尾东侧——建议改为「巷尾的钟楼」。</li>
+            <li><strong>灰帽客人</strong>：本章出场未登记，人物清单里没有该形象，请确认是否引入。</li>
+            <li><strong>存疑 · 时间规则</strong>：本章暗示「倒流代价 = 他人记忆」，与设定「代价 = 施术者记忆」冲突，需你拍板。</li>
+          </ul>
+          <p>未发现其他冲突，人物口吻与第二章衔接良好。</p>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- 长文示例：展开对比 800px 与 720px 的行长差异 -->
+    <details class="long-demo">
+      <summary>长文示例（展开：800px vs 720px 行长对比）</summary>
+      <div class="long-body">
+        <div class="col col-now">
+          <div class="col-title">现状 800px（每行 ≈ 44 字）</div>
+          <div class="text">
+            <p>清晨六点，柜台后的座钟停了。老钟表匠许安放下手中的放大镜，先检查发条，再查看擒纵轮。这口钟是他祖父传下来的，一百二十年来从未失准，如今却像被谁按住了指针。他抬起头，街对面的钟楼刚刚敲过六下——而他的座钟，停在午夜。</p>
+            <p>店里弥漫着机油与旧木的气味。许安掀开钟罩，忽然发现指针的阴影有些不对：明明是清晨，那根细长的分针却拖向北方，像是执意要回到某个时刻。他想起昨夜打烊前，那个戴灰帽的客人留下的话：「时间不是往前走的。它只是绕着同一件事打转，直到有人愿意付出代价。」</p>
+          </div>
+        </div>
+        <div class="col col-new">
+          <div class="col-title">新样式 720px（每行 ≈ 40 字）</div>
+          <div class="text">
+            <p>清晨六点，柜台后的座钟停了。老钟表匠许安放下手中的放大镜，先检查发条，再查看擒纵轮。这口钟是他祖父传下来的，一百二十年来从未失准，如今却像被谁按住了指针。他抬起头，街对面的钟楼刚刚敲过六下——而他的座钟，停在午夜。</p>
+            <p>店里弥漫着机油与旧木的气味。许安掀开钟罩，忽然发现指针的阴影有些不对：明明是清晨，那根细长的分针却拖向北方，像是执意要回到某个时刻。他想起昨夜打烊前，那个戴灰帽的客人留下的话：「时间不是往前走的。它只是绕着同一件事打转，直到有人愿意付出代价。」</p>
+          </div>
+        </div>
+      </div>
+    </details>
+  </div>
+
+  <div class="composer-demo">
+    <div class="fake-input">输入消息（示意，不可输入）</div>
+    <div class="fake-send">↑</div>
+  </div>
+
+<script>
+  const seg = document.getElementById("seg");
+  seg.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-mode]");
+    if (!btn) return;
+    document.body.className = btn.dataset.mode;
+    for (const b of seg.querySelectorAll("button")) b.classList.toggle("on", b === btn);
+  });
+</script>
+</body>
+</html>
