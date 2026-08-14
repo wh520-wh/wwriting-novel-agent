@@ -16,7 +16,7 @@
 //   - extreme 每次动作生成全新 confirmation_text，只有精确匹配可执行
 //   - 停止（abort）中止可中断 Shell 工作、作废待决 decision（活动闭环）
 //   - tool_output_delta 脱敏后按单次工具累计 1 MiB 截断；跨 chunk 密钥仍被脱敏
-//   - 受保护路径拒绝（journal/checkpoints/章节索引/正式章节文件）
+//   - 受保护路径拒绝（journal/checkpoints/章节索引/草稿）；正式章节文件可直编
 //   - 深工具 schema/权限/审计完整；projectOperations 注入的调用形状
 // 本文件不 import src/core/chat/*（Step 9 要求）。
 import assert from "node:assert/strict";
