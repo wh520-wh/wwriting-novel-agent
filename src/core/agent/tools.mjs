@@ -40,8 +40,9 @@
 //     session projection、transcript、项目 checkpoints、章节索引、草稿目录 drafts/）；
 //     正式章节文件可直接编辑（模块 C），草稿/索引/checkpoint/日志仍受保护；
 //     win32 下路径比较大小写不敏感，大小写变体不能绕过。
-//   - 权限错误只使用简短文案：当前为只读模式。/当前权限不允许修改文件。/项目已归档，无法修改。/
-//     工具不可用。；字段名与规则 id 只放 technical 细节。
+//   - 权限错误使用简短文案：当前为只读模式。/当前权限不允许修改文件。/项目已归档，无法修改。/
+//     工具不可用。；受保护路径拒绝额外带合法通道指引（一句话，八个规则都有映射）；
+//     字段名与规则 id 只放 technical 细节。
 //   - journal 事件：tool_call_started / tool_output_delta（脱敏后，按单次工具累计 1 MiB 截断）/
 //     tool_call_completed / tool_call_failed / decision_requested / decision_resolved /
 //     permission_grant_created / permission_grant_cleared / run_status_changed（确认等待期间）。
@@ -108,7 +109,19 @@ const PROTECTED_RULES = Object.freeze({
   project_checkpoints: "project_checkpoints", // <projectRoot>/checkpoints/
   chapter_index: "chapter_index", // memory/chapter_index.json
   draft_files: "draft_files", // 草稿目录 drafts/（正文只能经 append_chapter_segment 写入）
-  version_files: "version_files" // .versions/ 版本快照库（commit/finalize/rollback 维护）
+  version_files: "version_files", // .versions/ 版本快照库（commit/finalize/rollback 维护）
+  memory_files: "memory_files", // memory/ 记忆档案（章节记忆/索引/摘要/连续性，系统维护）
+  project_config: "project_config" // project.yaml 项目配置（设置面板维护）
+});
+// 受保护路径拒绝的合法通道指引（第八轮模块 C）：message 一句话、rule 进 technical
+const PROTECTED_DENIAL_MESSAGES = Object.freeze({
+  agent_journal: "Agent 日志为系统文件，只读。",
+  project_checkpoints: "checkpoint 为系统文件，只读。",
+  chapter_index: "章节索引为系统文件，只读。",
+  draft_files: "草稿只能经 append_chapter_segment 写入。",
+  version_files: "版本档案为系统文件，只读。",
+  memory_files: "记忆档案为系统文件，只读。",
+  project_config: "项目配置文件为系统文件，只读。"
 });
 // 大小写不敏感路径相等（win32 文件系统大小写不敏感；POSIX 保持敏感）
 function samePath(a, b) {
@@ -283,6 +296,13 @@ function isProtectedWritePath(projectRoot, targetPath) {
   // 版本快照库 .versions/：系统归档，只读（由版本工具维护）
   if (isPathInside(path.join(root, VERSIONS_DIR_REL), target)) {
     return { rule: PROTECTED_RULES.version_files, path: target };
+  }
+  // memory/ 记忆档案与 project.yaml：设计 D5 矩阵声明只读，工具层强制执行
+  if (isPathInside(path.join(root, "memory"), target)) {
+    return { rule: PROTECTED_RULES.memory_files, path: target };
+  }
+  if (samePath(target, path.join(root, "project.yaml"))) {
+    return { rule: PROTECTED_RULES.project_config, path: target };
   }
   return null;
 }
@@ -1769,15 +1789,16 @@ export function createToolRuntime({
       protectedDenial = { rule: "protected_path", path: args.path ?? null };
     }
     if (protectedDenial) {
+      const message = PROTECTED_DENIAL_MESSAGES[protectedDenial.rule] ?? "当前权限不允许修改文件。";
       await appendFailed({
         tool_call_id: toolCallId,
         activity_id: activityId,
         name,
         error: "permission_denied",
-        message: "当前权限不允许修改文件。",
+        message,
         technical: { rule: protectedDenial.rule ?? "protected_path", path: protectedDenial.path ?? null }
       }, runId);
-      return toolFailureResult({ tool_call_id: toolCallId, name, code: "permission_denied", message: "当前权限不允许修改文件。" });
+      return toolFailureResult({ tool_call_id: toolCallId, name, code: "permission_denied", message });
     }
 
     // 权限：策略（硬拒绝/extreme/YOLO/只读自动/auto_edit）→ grant 匹配 → 普通确认
