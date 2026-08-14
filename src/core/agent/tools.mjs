@@ -37,8 +37,9 @@
 //     期限但不得抬高系统上限；超时返回结构化 tool_timeout 结果（不向 Runtime 抛
 //     异常）；shell 输出与受控进程事件刷新空闲期限；原子写进入最终 rename 后完整收尾。
 //   - 通用写工具（write_file/edit_file）与 shell 必须拒绝直接写受保护路径（Agent journal、
-//     session projection、transcript、项目 checkpoints、章节索引、进行中的正式章节目标文件、
-//     草稿目录 drafts/）；win32 下路径比较大小写不敏感，大小写变体不能绕过。
+//     session projection、transcript、项目 checkpoints、章节索引、草稿目录 drafts/）；
+//     正式章节文件可直接编辑（模块 C），草稿/索引/checkpoint/日志仍受保护；
+//     win32 下路径比较大小写不敏感，大小写变体不能绕过。
 //   - 权限错误只使用简短文案：当前为只读模式。/当前权限不允许修改文件。/项目已归档，无法修改。/
 //     工具不可用。；字段名与规则 id 只放 technical 细节。
 //   - journal 事件：tool_call_started / tool_output_delta（脱敏后，按单次工具累计 1 MiB 截断）/
@@ -105,7 +106,6 @@ const PROTECTED_RULES = Object.freeze({
   agent_journal: "agent_journal", // <projectRoot>/.wwriting/agent/ 全部（segments/、journal-manifest.json、session.json、migration.json、checkpoints/）
   project_checkpoints: "project_checkpoints", // <projectRoot>/checkpoints/
   chapter_index: "chapter_index", // memory/chapter_index.json
-  chapter_file: "chapter_file", // 进行中的正式章节文件（chapters/NNN.ext）
   draft_files: "draft_files" // 草稿目录 drafts/（正文只能经 append_chapter_segment 写入）
 });
 
@@ -273,11 +273,6 @@ function isProtectedWritePath(projectRoot, targetPath) {
   }
   if (samePath(target, path.join(root, CHAPTER_INDEX_REL))) {
     return { rule: PROTECTED_RULES.chapter_index, path: target };
-  }
-  // 进行中的正式章节文件：chapters/NNN.ext（正式提交目标路径，前置计划的
-  // chapterFileName 约定为 3 位数字章节号；进行中的草稿只能经 append_chapter_segment 写入）
-  if (isPathInside(path.join(root, CHAPTERS_DIR_REL), target) && /^\d{3,}\.[A-Za-z0-9]{1,8}$/u.test(path.basename(target))) {
-    return { rule: PROTECTED_RULES.chapter_file, path: target };
   }
   // 草稿目录 drafts/：正文草稿只能经 append_chapter_segment（project operations 原子写）
   // 按 segment 顺序与安全点写入；write_file/edit_file 直写会绕过段落顺序与草稿校验。
