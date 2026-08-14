@@ -1937,9 +1937,14 @@ test("update_memory：引用章节不存在 → chapter_not_found，不落盘", 
 });
 
 test("update_memory：已入网但工具未接线时 not_wired 兜底", async (t) => {
-  // createToolRuntime 不带 projectOperations 时调用 update_memory → not_wired。
-  const { createToolRuntime } = await import("../../src/core/agent/tools.mjs");
-  const runtime = createToolRuntime({ journal: { append: async () => {} } });
-  const def = runtime.definitions().find((d) => d.function.name === "update_memory");
-  assert.ok(def, "update_memory 在工具目录中");
+  // projectOperations 未接线时调用 update_memory → not_wired（与其它深工具同口径）
+  const h = await setup(t, { projectOperations: {} });
+  const result = await h.tools.execute(
+    toolCall("update_memory", { project_id: "p1", chapter_no: 1, facts: [] }),
+    h.context
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "not_wired");
+  assert.equal(result.message, "工具不可用。");
+  assertClosure(await readEvents(h.journal));
 });
