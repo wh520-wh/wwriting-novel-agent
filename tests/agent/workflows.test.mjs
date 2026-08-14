@@ -73,6 +73,15 @@ test("统一任务政策包含章节纪律、记忆职责与安全点优先；�
   assert.ok(!UNIFIED_TASK_POLICY.includes("[Workflow:"), "不得包含任何 [Workflow: …] 政策块");
   assert.ok(!UNIFIED_TASK_POLICY.includes("enter_workflow"), "不得再提及 enter_workflow");
   assert.ok(!UNIFIED_TASK_POLICY.includes("workflow_changed"), "不得再提及 workflow_changed 事件");
+  // 三件套记忆纪律（§2.3）
+  assert.ok(UNIFIED_TASK_POLICY.includes("update_memory"), "任务政策必须包含 update_memory 工具");
+  assert.ok(UNIFIED_TASK_POLICY.includes("更新 book_summary.md"), "任务政策必须包含摘要维护");
+  assert.ok(UNIFIED_TASK_POLICY.includes("更新 WORKLOG.md"), "任务政策必须包含工作日志维护");
+  // 断点恢复纪律（§4.2）
+  assert.ok(UNIFIED_TASK_POLICY.includes("先读 WORKLOG"), "任务政策必须包含断点恢复纪律");
+  // 旧派生提取措辞必须删除
+  assert.ok(!UNIFIED_TASK_POLICY.includes("独立记忆提取"), "旧派生提取措辞必须删除");
+  assert.ok(!UNIFIED_TASK_POLICY.includes("维护任务重建"), "旧派生提取措辞必须删除");
 });
 
 // 装配后的 system 层同样不含 workflow 政策、含统一政策

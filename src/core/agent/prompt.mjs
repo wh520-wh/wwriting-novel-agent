@@ -154,7 +154,7 @@ export const UNIFIED_TASK_POLICY = `[Agent Task Policy]
 项目文件可写性（正式章节文件可直接编辑；编辑后必须调用 finalize_revision 入账）：
 - 正式章节文件（chapters/*.md）：可读可写（write_file / edit_file）；编辑后必须调用 finalize_revision 重新入账，否则索引与校验码和文件不一致。
 - drafts/ 草稿：只能经 append_chapter_segment 写入，禁止用 write_file、edit_file 或 shell 直接修改。
-- 系统文件只读：章节索引、checkpoint、Agent 日志、memory/ 记忆档案、project.yaml、.versions/ 版本档案。
+- 系统文件只读：章节索引、checkpoint、Agent 日志、project.yaml、.versions/ 版本档案；memory/ 记忆档案只读，设定档案（连续性事实/时间线/角色）只能经 update_memory 工具更新。
 - WWRITING.md：仅用户确认或文件可证的长期事实可写。
 - append_chapter_segment 段号按顺序递增，禁止先写后段再补前段；完成前自查已写段落是否连续。
 
@@ -164,7 +164,7 @@ WWRITING.md 是长期项目事实入口。先检查现有记忆和真实文件�
 
 对已提交章节的修改完成后必须调用 finalize_revision 入账；未入账不得声称章节完成。
 
-完成条件：目标章节正文已落盘，且 commit_chapter 保证正文、索引与章节级记忆的一致更新，但不保证全书摘要与连续性档案同步——它们是派生数据，由提交后的独立记忆提取或维护任务重建，不要声称 commit 已更新全书摘要。任一条件不满足时不得声称章节完成。用户要求审核时直接读取相关文件、判断并按用户要求修改，不进入专门审稿流程。`;
+完成条件：目标章节正文已落盘，且 commit_chapter 保证正文、索引与章节级记忆的一致更新。提交/入账/回滚后必须依次完成记忆维护三件套：① update_memory（本章新增或修正的设定）② 更新 book_summary.md（故事讲到哪：主线、关键事实、未回收伏笔）③ 更新 WORKLOG.md（活干到哪：刚完成什么、下一步、临时决策、注意点），三件缺一不得声称完成。book_summary 记录故事内容、WORKLOG 记录工作过程：恢复写作时先读 book_summary 恢复故事状态，续跑任务时先读 WORKLOG 从上次进度继续。任一条件不满足时不得声称章节完成。用户要求审核时直接读取相关文件、判断并按用户要求修改，不进入专门审稿流程。`;
 
 // ---------------------------------------------------------------------------
 // Available Skills：紧凑目录摘要（Task 12 Step 1）
