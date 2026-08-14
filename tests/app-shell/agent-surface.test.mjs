@@ -4805,3 +4805,49 @@ test("R5-12：Run 终态触发 onRunTerminal 并补拉权威快照（终态刷�
   assert.deepEqual(terminalTypes, ["run_completed"], "同 seq 终态不重复回调");
   assert.equal(snapshotCalls, before + 1, "同 seq 终态不重复补快照");
 });
+
+// ===========================================================================
+// 第九轮：工作组时间线排序根本性修复（真实 journal 顺序回归）
+// ===========================================================================
+
+test("第九轮：真实 journal 顺序（run_started → input_queued → input_started）下用户消息必须排在工作组之前", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  // 与 runtime.mjs submit 空闲路径 appendBatch 完全一致的事件顺序与 seq
+  surface.applyEvent({ ...ev("run_started", { workflow: "general" }), seq: 1 });
+  surface.applyEvent({ ...ev("input_queued", { input_id: "in-1", text: "帮我写第一章", source: "chat" }), seq: 2 });
+  surface.applyEvent({ ...ev("input_started", { input_id: "in-1" }), seq: 3 });
+  surface.applyEvent({ ...ev("model_turn_started", { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }), seq: 4 });
+  surface.applyEvent({ ...toolStarted("a1", "read_file", { path: "D:\\novel\\WWRITING.md" }), seq: 5 });
+  const messages = root.querySelector(".agent-messages");
+  const userBubble = [...messages.children].findIndex((c) => c.className.includes("agent-message--user"));
+  const workGroup = [...messages.children].findIndex((c) => c.className.includes("agent-work-group"));
+  assert.ok(userBubble >= 0, "用户消息气泡应渲染");
+  assert.ok(workGroup >= 0, "工作组应渲染");
+  assert.ok(
+    userBubble < workGroup,
+    `用户消息（idx=${userBubble}）必须排在工作组（idx=${workGroup}）之前——先发消息，后显示工作过程`
+  );
+});
+
+test("第九轮：composer 发送后 pending 气泡被正式消息替换，用户消息仍排在工作组之前", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  input.value = "帮我写第一章";
+  root.querySelector('[data-testid="agent-send"]')._fire("click");
+  await tick(); // 让 submit promise 落定，pending 记录就位
+  surface.applyEvent({ ...ev("run_started", { workflow: "general" }), seq: 1 });
+  surface.applyEvent({ ...ev("input_queued", { input_id: "in-1", text: "帮我写第一章", source: "chat" }), seq: 2 });
+  surface.applyEvent({ ...ev("input_started", { input_id: "in-1" }), seq: 3 });
+  surface.applyEvent({ ...ev("model_turn_started", { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }), seq: 4 });
+  const messages = root.querySelector(".agent-messages");
+  const userBubble = [...messages.children].findIndex((c) => c.className.includes("agent-message--user"));
+  const workGroup = [...messages.children].findIndex((c) => c.className.includes("agent-work-group"));
+  assert.ok(userBubble >= 0, "正式用户消息应渲染（pending 气泡已被替换）");
+  assert.ok(workGroup >= 0, "工作组应渲染");
+  assert.ok(
+    userBubble < workGroup,
+    `pending 替换后用户消息（idx=${userBubble}）仍须排在工作组（idx=${workGroup}）之前`
+  );
+});
