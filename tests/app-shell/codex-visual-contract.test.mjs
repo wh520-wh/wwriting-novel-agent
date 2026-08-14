@@ -73,3 +73,15 @@ test("Codex 基线：顶栏发丝下边框、项目行圆角", () => {
   assert.match(cssBlock(css, ".topbar"), /border-bottom:\s*1px solid var\(--line-3\)/u);
   assert.match(cssBlock(css, ".proj"), /border-radius:\s*var\(--r\)/u);
 });
+
+// 第九轮：抽屉滚轮修复契约——.dpanel 必须防 grid/flex 压缩。
+// 根因：.dpanel 的 overflow:hidden 使子项 min-height:auto 解析为 0，
+// 内容超高时被 .drawer-body（grid 单行）压到容器高度 → 无溢出 → 滚轮无效。
+// 修复：min-height: min-content 恢复内容高度，让溢出回到 .drawer-body 滚动。
+test("第九轮契约：.dpanel 必须含 min-height: min-content（抽屉滚轮修复）", () => {
+  assert.match(
+    read("src/app-shell/styles.css"),
+    /\.dpanel\s*\{[^}]*min-height:\s*min-content/u,
+    ".dpanel 必须含 min-height: min-content（第九轮抽屉滚轮修复契约）"
+  );
+});

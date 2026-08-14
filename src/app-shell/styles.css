@@ -635,7 +635,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .drawer-body { min-height: 0; overflow: auto; padding: 16px; display: grid; gap: 14px; align-content: start; }
 
 
-.dpanel { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); overflow: hidden; }
+.dpanel { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); overflow: hidden; min-height: min-content; }
 
 .dpanel-head { padding: 11px 14px; border-bottom: 1px solid var(--line-2); background: var(--surface-2); display: flex; align-items: center; gap: 8px; }
 
