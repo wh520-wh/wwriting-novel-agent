@@ -20,6 +20,35 @@ import { spawn } from "node:child_process";
 
 const MAX_CAPTURE_CHARS = 1024 * 1024;
 
+// 输出解码：UTF-8 流式优先，遇到非法字节序列切 GBK 流式（Windows cmd 场景）。
+// 每个 runShellCommand 调用为 stdout/stderr 各建一个实例——模块级单例会把
+// 跨命令/跨流的解码状态互相污染（对抗审查结论），禁止使用。
+export function createOutputDecoder() {
+  const utf8 = new TextDecoder("utf-8", { fatal: true });
+  let gbk = null;
+  return {
+    decode(chunk) {
+      if (!gbk) {
+        try {
+          return utf8.decode(chunk, { stream: true });
+        } catch {
+          gbk = new TextDecoder("gbk");
+          return gbk.decode(chunk, { stream: true });
+        }
+      }
+      return gbk.decode(chunk, { stream: true });
+    },
+    flush() {
+      if (gbk) return gbk.decode();
+      try {
+        return utf8.decode();
+      } catch {
+        return "";
+      }
+    }
+  };
+}
+
 export function runShellCommand({ command, cwd, timeoutMs = 120000, signal, onOutput = () => {}, onActivity = () => {} }) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -49,9 +78,13 @@ export function runShellCommand({ command, cwd, timeoutMs = 120000, signal, onOu
     let settled = false;
     let timer = null;
 
+    // Task C9：stdout/stderr 各自持有独立解码器（UTF-8 优先，非法字节切 GBK）。
+    // 每个 runShellCommand 调用新建，绝不复用模块级单例，避免跨命令/跨流状态污染。
+    const stdoutDecoder = createOutputDecoder();
+    const stderrDecoder = createOutputDecoder();
     const capture = (stream, chunk) => {
       if (settled) return; // kill 生效前 data 事件仍会到达，settle 后不再捕获/回调
-      const text = chunk.toString("utf8");
+      const text = stream === "stdout" ? stdoutDecoder.decode(chunk) : stderrDecoder.decode(chunk);
       if (stream === "stdout") {
         stdout += text;
         if (stdout.length > MAX_CAPTURE_CHARS) stdout = stdout.slice(-MAX_CAPTURE_CHARS);
@@ -114,6 +147,10 @@ export function runShellCommand({ command, cwd, timeoutMs = 120000, signal, onOu
       settled = true;
       if (timer) clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
+      // Task C9：收尾解码器残余缓冲（UTF-8 尾部不完整多字节会被丢弃；若已切 GBK 则
+      // 解码残余并计入捕获），保持与旧实现相同的 stdout/stderr 返回形状。
+      stdout += stdoutDecoder.flush();
+      stderr += stderrDecoder.flush();
       resolve({
         command: String(command),
         cwd,
