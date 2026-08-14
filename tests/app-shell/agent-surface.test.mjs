@@ -2355,8 +2355,8 @@ test("agent.css 保留 1040px 内容列、向上菜单与工作组/动效布局"
   );
   assert.match(
     css,
-    /\.agent-markdown-table-scroll table\s*\{[^}]*width:\s*800px[^}]*min-width:\s*800px[^}]*table-layout:\s*fixed/u,
-    "表格应保持 800px 列宽，窄屏不压缩列"
+    /\.agent-markdown-table-scroll table\s*\{[^}]*width:\s*min\(720px,\s*100%\)[^}]*min-width:\s*min\(720px,\s*100%\)[^}]*table-layout:\s*fixed/u,
+    "表格应保持 720px 正文列，窄屏仅滚动包装层不压缩列"
   );
   assert.doesNotMatch(css, /\.agent-scroll-latest\s*\{[^}]*position:\s*sticky/u, "回到最新不得覆盖会话内容");
   // styles.css：2.6 semantic text / weight / agent component token 已声明（不重定义 primitive）
@@ -2371,11 +2371,11 @@ test("agent.css 保留 1040px 内容列、向上菜单与工作组/动效布局"
 // 冻结布局约束（Task 7 Step 3）：固定宽度 + 响应式无横向溢出
 // ===========================================================================
 
-test("冻结布局约束：助手正文 800px / 工作组 1040px / 用户消息 min(800px,100%-32px) 靠右 / ticker 2lh / 详情 320px", async () => {
+test("冻结布局约束：助手正文 720px / 工作组 1040px / 用户消息 min(800px,100%-32px) 靠右 / ticker 2lh / 详情 320px", async () => {
   const css = await fs.readFile(path.join(here, "..", "..", "src", "app-shell", "agent", "agent.css"), "utf8");
   assert.match(css, /\.agent-message--user\s*\{[^}]*align-self:\s*flex-end/u, "用户消息靠右");
   assert.match(css, /max-width:\s*min\(800px,\s*calc\(100% - 32px\)\)/u, "用户消息 max-width: min(800px, calc(100% - 32px))");
-  assert.match(css, /width:\s*min\(100%,\s*800px\)/u, "助手 Markdown width: min(100%, 800px)");
+  assert.match(css, /width:\s*min\(100%,\s*720px\)/u, "助手 Markdown width: min(100%, 720px)");
   assert.match(css, /width:\s*min\(100%,\s*1040px\)/u, "工作组 width: min(100%, 1040px)");
   assert.match(
     css,
