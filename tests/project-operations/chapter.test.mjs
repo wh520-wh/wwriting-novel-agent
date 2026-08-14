@@ -743,14 +743,14 @@ test("commitChapter 确定性事务不触碰全书摘要、连续性与 WWRITING
     const wwritingBefore = "# WWriting 项目记忆\n\n- 项目：验收测试小说\n- 阶段：第一章\n";
     await fs.writeFile(wwritingPath, wwritingBefore, "utf8");
     await appendChapterSegment({ projectRoot, projectId: project.project_id, chapterNo: 1, segmentNo: 1, content: LONG_PROSE });
-    const summaryBefore = await fs.readFile(path.join(projectRoot, "memory", "book_summary.md"), "utf8");
+    const summaryBefore = await fs.readFile(path.join(projectRoot, "book_summary.md"), "utf8");
 
     const result = await commitChapter({ projectRoot, projectId: project.project_id, chapterNo: 1 });
     assert.equal(result.ok, true);
     assert.equal("memory_update" in result, false, "memory_update 标记是 runtime 触发层的职责，commitChapter 不得内联派生提取");
 
     // 派生数据不被 commit 改写
-    assert.equal(await fs.readFile(path.join(projectRoot, "memory", "book_summary.md"), "utf8"), summaryBefore, "commit 不得改写全书摘要");
+    assert.equal(await fs.readFile(path.join(projectRoot, "book_summary.md"), "utf8"), summaryBefore, "commit 不得改写全书摘要");
     assert.equal((await loadContinuity(projectRoot)).facts.length, 0, "commit 不得写入 continuity 事实");
     assert.equal((await loadContinuityState(projectRoot)).extracted_chapters.length, 0, "commit 不得推进记忆水位");
     // WWRITING.md 不被章节摘要自动污染
@@ -786,7 +786,7 @@ test("commitChapter 成功后派生记忆失败不影响已提交正文与索引
     });
     assert.equal(retried.ok, true);
     assert.equal(retried.facts_added, 1);
-    assert.match(await fs.readFile(path.join(projectRoot, "memory", "book_summary.md"), "utf8"), /雨夜收到警告/u);
+    assert.match(await fs.readFile(path.join(projectRoot, "book_summary.md"), "utf8"), /雨夜收到警告/u);
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
   }
@@ -825,7 +825,7 @@ test("commitChapterMemory 原子更新 continuity、全书摘要与水位，不�
 
     const continuity = await loadContinuity(projectRoot);
     assert.equal(continuity.facts[0].value, "退伍军人");
-    const summary = await fs.readFile(path.join(projectRoot, "memory", "book_summary.md"), "utf8");
+    const summary = await fs.readFile(path.join(projectRoot, "book_summary.md"), "utf8");
     assert.match(summary, /雨夜收到警告/u);
     const state = await loadContinuityState(projectRoot);
     assert.equal(state.last_extracted_chapter, 1);
@@ -907,7 +907,7 @@ test("commitChapterMemory 无 extraction 时使用 pending 文件并清理（中
     const result = await commitChapterMemory({ projectRoot, chapterNo: 1 });
     assert.equal(result.facts_added, 1);
     assert.equal((await loadContinuity(projectRoot)).facts[0].value, "退伍军人");
-    const summary = await fs.readFile(path.join(projectRoot, "memory", "book_summary.md"), "utf8");
+    const summary = await fs.readFile(path.join(projectRoot, "book_summary.md"), "utf8");
     assert.match(summary, /雨夜收到警告/u);
     assert.equal(await fs.access(pendingPath).then(() => true).catch(() => false), false, "pending 文件应在成功后删除");
   } finally {
@@ -921,7 +921,7 @@ test("commitChapterMemory 写入期失败回滚：continuity 与摘要全部还�
     // 预置 pending 提取文件（模拟模型调用已完成、落盘被中断）
     const pendingPath = path.join(projectRoot, "memory", ".pending-extraction-1.json");
     await fs.writeFile(pendingPath, JSON.stringify({ ok: true, ...extractionFixture() }), "utf8");
-    const summaryBefore = await fs.readFile(path.join(projectRoot, "memory", "book_summary.md"), "utf8");
+    const summaryBefore = await fs.readFile(path.join(projectRoot, "book_summary.md"), "utf8");
 
     // 事务写入顺序：continuity.json(1) → continuity.md(2) → book_summary(3) → continuity_state(4)
     await assert.rejects(
@@ -937,7 +937,7 @@ test("commitChapterMemory 写入期失败回滚：continuity 与摘要全部还�
     await assert.rejects(() => fs.stat(path.join(projectRoot, "memory", "continuity.json")), (error) => error.code === "ENOENT");
     await assert.rejects(() => fs.stat(path.join(projectRoot, "memory", "continuity.md")), (error) => error.code === "ENOENT");
     await assert.rejects(() => fs.stat(path.join(projectRoot, "memory", "continuity_state.json")), (error) => error.code === "ENOENT");
-    assert.equal(await fs.readFile(path.join(projectRoot, "memory", "book_summary.md"), "utf8"), summaryBefore);
+    assert.equal(await fs.readFile(path.join(projectRoot, "book_summary.md"), "utf8"), summaryBefore);
     assert.equal(await fs.access(pendingPath).then(() => true).catch(() => false), true, "pending 文件必须保留供下次恢复");
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });

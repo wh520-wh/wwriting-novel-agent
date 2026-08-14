@@ -944,7 +944,7 @@ export async function commitChapterMemory({ projectRoot, chapterNo, expectedChap
   // ---- 原子写入 + 回滚 ----
   const continuityPath = safeJoin(projectRoot, "memory", "continuity.json");
   const continuityMdPath = safeJoin(projectRoot, "memory", "continuity.md");
-  const summaryPath = safeJoin(projectRoot, "memory", "book_summary.md");
+  const summaryPath = safeJoin(projectRoot, "book_summary.md");
   const statePath = safeJoin(projectRoot, "memory", "continuity_state.json");
   const probe = createWriteProbe(options);
   const tracked = [continuityPath, continuityMdPath, summaryPath, statePath];

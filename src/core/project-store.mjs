@@ -5,6 +5,7 @@ import { appendEvent } from "./event-log.mjs";
 import { assertSafeSlug, ensureDir, pathExists, readJson, safeJoin, sha256, writeFileAtomic, writeJsonAtomic } from "./fs-utils.mjs";
 import { CHAPTER_MEMORY_SCHEMA_VERSION } from "./chapter-memory.mjs";
 import { parseSimpleYaml, serializeSimpleYaml } from "./simple-yaml.mjs";
+import { ensureMemoryFilesForProject, WORKLOG_PLACEHOLDER } from "./project-operations/memory-files.mjs";
 
 export const SCHEMA_VERSION = 1;
 
@@ -71,7 +72,8 @@ export async function createProjectAt(projectRoot, options = {}) {
     schema_version: CHAPTER_MEMORY_SCHEMA_VERSION,
     chapters: []
   });
-  await writeFileAtomic(safeJoin(target, "memory", "book_summary.md"), "# 全书摘要\n\n");
+  await writeFileAtomic(safeJoin(target, "book_summary.md"), "# 全书摘要\n\n");
+  await writeFileAtomic(safeJoin(target, "WORKLOG.md"), WORKLOG_PLACEHOLDER);
   await writeFileAtomic(safeJoin(target, "sources.md"), "# Sources\n\n");
   await writeFileAtomic(safeJoin(target, "source_summaries.md"), "# Source Summaries\n\n");
   await writeFileAtomic(safeJoin(target, "OUTLINE.md"), "# OUTLINE.md\n\n> 蓝图未生成，请运行 /init\n");
@@ -89,6 +91,8 @@ export async function createProjectAt(projectRoot, options = {}) {
 }
 
 export async function loadProject(projectRoot) {
+  // 第九轮：老项目记忆文件迁移（幂等；失败不阻断项目读取）。
+  try { await ensureMemoryFilesForProject(projectRoot); } catch { /* 只读兜底 */ }
   const source = await fs.readFile(safeJoin(projectRoot, "project.yaml"), "utf8");
   return parseSimpleYaml(source);
 }

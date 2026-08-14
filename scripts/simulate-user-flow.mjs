@@ -180,7 +180,8 @@ async function buildProperProject(workspaceRoot) {
   await fs.writeFile(path.join(projectRoot, "project.yaml"), serializeSimpleYaml(project), "utf8");
   await fs.writeFile(path.join(projectRoot, "memory", "chapter_index.json"), JSON.stringify({ schema_version: 1, chapters: [] }), "utf8");
   await fs.writeFile(path.join(projectRoot, "memory", "chapter_memory.json"), JSON.stringify({ schema_version: 1, chapters: [] }), "utf8");
-  await fs.writeFile(path.join(projectRoot, "memory", "book_summary.md"), "# 全书摘要\n\n", "utf8");
+  await fs.writeFile(path.join(projectRoot, "book_summary.md"), "# 全书摘要\n\n", "utf8");
+  await fs.writeFile(path.join(projectRoot, "WORKLOG.md"), "# WORKLOG\n", "utf8");
   await fs.writeFile(path.join(projectRoot, "run_log.jsonl"), "", "utf8");
   const yaml = await fs.readFile(path.join(projectRoot, "project.yaml"), "utf8");
   return { projectRoot, project: parseSimpleYaml(yaml) };
