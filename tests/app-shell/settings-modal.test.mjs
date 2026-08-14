@@ -113,7 +113,12 @@ function installDomMock() {
     },
     createElementNS(_ns, tag) { return globalThis.document.createElement(tag); },
     createDocumentFragment() { return new MockElement("document-fragment"); },
-    getElementById() { return null; },
+    // 与真实 document 一致：按 id 找挂载节点（renderSectionNav 用 #settings-section-nav）。
+    getElementById(id) {
+      let hit = null;
+      for (const el of domRegistry) { if (el.id === id) hit = el; }
+      return hit;
+    },
     querySelector() { return null; },
     activeElement: null,
     // Task 13：嵌套层（添加菜单 / 清空确认）的文档级 Esc/click 监听需要可注册与触发。
@@ -171,6 +176,8 @@ function createSettingsModalForTest(overrides = {}) {
     showToast: () => {},
     getLastFocused: () => null,
     setLastFocused: () => {},
+    // Task A3：model 分区渲染依赖注入（attach/open）。测试可经 overrides 覆盖成 spy。
+    modelSettings: modelSettingsFake(),
     ...rest
   };
   return createSettingsModal(ctx, {
@@ -205,22 +212,222 @@ test("connection success with latency formats the status string", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Task 17 cutover：模型分区已从设置弹窗整体删除（模型配置迁往 model-settings-page，
-// 旧弹窗只保留写作参数/技能/项目管理）。缺省打开分区 = 第一个分区（写作参数）。
+// Task A3：model 分区集成——model 为 SETTINGS_SECTIONS 首位，openSettingsModal()
+// 缺省打开模型设置；writing/skills/danger 保留。模型 DOM 随 replaceChildren 丢弃，
+// 无整页宿主、无 restore 逻辑。
 // ---------------------------------------------------------------------------
 
-test("currentSettingsSection 反映当前分区（缺省为第一个分区）", async () => {
-  const modal = createSettingsModalForTest();
-  await modal.openSettingsModal(); // 缺省分区 = 第一个（writing）
+// modelSettings fake：记录 attach/open 调用（inject 供 modal 渲染 model 分区时调用）。
+function modelSettingsFake() {
+  const calls = { attach: [], open: 0 };
+  return {
+    calls,
+    attach: (targets) => { calls.attach.push(targets); },
+    open: () => { calls.open += 1; }
+  };
+}
+
+// 创建 #settings-section-nav 挂载节点（renderSectionNav 用它渲染分区按钮）。
+// 真实 index.html 静态包含该元素；测试经 document.createElement 注册进 domRegistry。
+function installSectionNav() {
+  const nav = document.createElement("nav");
+  nav.id = "settings-section-nav";
+  return nav;
+}
+
+test("currentSettingsSection 反映当前分区（缺省为第一个 = model）", async () => {
+  const modal = createSettingsModalForTest({ modelSettings: modelSettingsFake() });
+  await modal.openSettingsModal(); // 缺省分区 = 第一个（model）
+  assert.equal(modal.currentSettingsSection(), "model");
+  await modal.openSettingsModal("writing");
   assert.equal(modal.currentSettingsSection(), "writing");
   await modal.openSettingsModal("skills");
   assert.equal(modal.currentSettingsSection(), "skills");
   await modal.openSettingsModal("danger");
   assert.equal(modal.currentSettingsSection(), "danger");
-  // 已删除的 model 分区：非法值回落第一个分区，不再存在模型 UI。
-  await modal.openSettingsModal("model");
-  assert.equal(modal.currentSettingsSection(), "writing");
+  // 非法值回落第一个分区（model）。
+  await modal.openSettingsModal("bogus");
+  assert.equal(modal.currentSettingsSection(), "model");
 });
+
+// ---------------------------------------------------------------------------
+// Task A3：openSettingsModal() 缺省打开 model 分区——nav 高亮、settingsDetail 含
+// .model-section 结构、保存按钮「无需保存」disabled，modelSettings attach/open 被调用。
+// ---------------------------------------------------------------------------
+
+test("openSettingsModal()（无参）缺省打开 model 分区并注入渲染目标", async () => {
+  const saveButton = new MockElement("button");
+  const fake = modelSettingsFake();
+  const modal = createSettingsModalForTest({
+    refs: { settingsSave: saveButton },
+    modelSettings: fake
+  });
+  installSectionNav();
+  await modal.openSettingsModal(); // 缺省 = model
+
+  assert.equal(modal.currentSettingsSection(), "model", "无参缺省应为 model");
+
+  // nav：模型设置项 aria-current=true
+  const navItems = domRegistry.filter((el) => String(el.className ?? "").split(/\s+/u).includes("sp-section-item"));
+  const modelNav = navItems.find((b) => b.dataset.section === "model");
+  assert.ok(modelNav, "nav 应渲染模型设置项");
+  assert.equal(modelNav.className.includes("on"), true, "模型设置项应高亮");
+  assert.equal(modelNav.getAttribute("aria-current"), "true", "模型设置项 aria-current=true");
+
+  // SETTINGS_SECTIONS 首位 = model（nav 顺序：模型设置/写作参数/Agent 技能/项目管理）
+  assert.equal(navItems[0].dataset.section, "model", "nav 第一个分区应为 model");
+  assert.deepEqual(navItems.map((b) => b.dataset.section), ["model", "writing", "skills", "danger"], "四分区 nav 顺序");
+
+  // settingsDetail 内含 .model-section（h2/lead）与供应商列表/详情容器
+  const detail = modal.getSettingsDetailForTest();
+  const section = detail.children.find((el) => el.className === "model-section");
+  assert.ok(section, "settingsDetail 应包含 .model-section");
+  assert.ok(
+    descendants(section).some((el) => el.tagName === "H2" && el.textContent === "模型设置"),
+    ".model-section 应含「模型设置」h2"
+  );
+  assert.ok(
+    descendants(section).some((el) => el.className === "model-section-lead"),
+    ".model-section 应含 lead 说明"
+  );
+  assert.ok(
+    descendants(section).some((el) => el.getAttribute?.("data-provider-list") !== null),
+    "应渲染 [data-provider-list]"
+  );
+  assert.ok(
+    descendants(section).some((el) => el.getAttribute?.("data-provider-detail") !== null),
+    "应渲染 [data-provider-detail]"
+  );
+
+  // 保存按钮：model 分区动作即时生效 → 禁用「无需保存」
+  assert.equal(saveButton.disabled, true, "model 分区保存按钮应禁用");
+  assert.equal(saveButton.textContent, "无需保存");
+
+  // modelSettings.attach 收到注入的 list/detail 目标
+  assert.equal(fake.calls.attach.length, 1, "modelSettings.attach 应被调用一次");
+  const targets = fake.calls.attach[0];
+  assert.ok(targets.list, "attach 应收到 list 目标");
+  assert.ok(targets.detail, "attach 应收到 detail 目标");
+  assert.equal(targets.list.getAttribute("data-provider-list"), "", "attach 的 list 应为 [data-provider-list] 容器");
+  assert.equal(targets.detail.getAttribute("data-provider-detail"), "", "attach 的 detail 应为 [data-provider-detail] 容器");
+  assert.equal(fake.calls.open, 1, "modelSettings.open 应被调用一次");
+});
+
+test("model 分区切到 writing：detail 内容替换（无模型容器），modelSettings 不重复 attach", async () => {
+  const saveButton = new MockElement("button");
+  const fake = modelSettingsFake();
+  const modal = createSettingsModalForTest({
+    refs: { settingsSave: saveButton },
+    modelSettings: fake,
+    getDashboard: () => ({ hasProject: true, project: { target_chapters: 5 } }),
+    getCurrentProjectRoot: () => "D:/novels/demo"
+  });
+  await modal.openSettingsModal("model");
+  await tickAsync();
+  assert.equal(fake.calls.attach.length, 1, "打开 model 后 attach 一次");
+
+  // 切到 writing：detail 内容被替换，不再含 [data-provider-list]，保存按钮恢复
+  await modal.openSettingsModal("writing");
+  await tickAsync();
+  const detail = modal.getSettingsDetailForTest();
+  assert.equal(
+    descendants(detail).some((el) => el.getAttribute?.("data-provider-list") !== null),
+    false,
+    "切到 writing 后 detail 不应再含模型容器"
+  );
+  assert.ok(
+    descendants(detail).some((el) => el.className === "spd-field"),
+    "writing 分区应正常渲染字段"
+  );
+  assert.equal(saveButton.disabled, false, "writing 分区保存按钮应恢复");
+  assert.equal(fake.calls.attach.length, 1, "切到 writing 不应重复 attach modelSettings");
+});
+
+test("writing 切回 model：再次 attach + open；模型容器重建", async () => {
+  const fake = modelSettingsFake();
+  const modal = createSettingsModalForTest({
+    modelSettings: fake,
+    getDashboard: () => ({ hasProject: true, project: { target_chapters: 5 } }),
+    getCurrentProjectRoot: () => "D:/novels/demo"
+  });
+  await modal.openSettingsModal("writing");
+  await tickAsync();
+  assert.equal(fake.calls.attach.length, 0, "writing 不 attach");
+
+  await modal.openSettingsModal("model");
+  await tickAsync();
+  assert.equal(fake.calls.attach.length, 1, "切回 model 再次 attach");
+  assert.equal(fake.calls.open, 1, "切回 model 再次 open");
+  const detail = modal.getSettingsDetailForTest();
+  assert.ok(
+    descendants(detail).some((el) => el.getAttribute?.("data-provider-list") !== null),
+    "切回 model 后应重建模型容器"
+  );
+});
+
+test("openSettingsModal('writing') 显式打开 writing 分区不受影响", async () => {
+  const fake = modelSettingsFake();
+  const modal = createSettingsModalForTest({
+    modelSettings: fake,
+    getDashboard: () => ({ hasProject: true, project: { target_chapters: 5 } }),
+    getCurrentProjectRoot: () => "D:/novels/demo"
+  });
+  await modal.openSettingsModal("writing");
+  await tickAsync();
+  assert.equal(modal.currentSettingsSection(), "writing");
+  assert.equal(fake.calls.attach.length, 0, "显式 writing 不触达 modelSettings");
+  assert.ok(
+    descendants(modal.getSettingsDetailForTest()).some((el) => el.className === "spd-field"),
+    "writing 分区正常渲染"
+  );
+});
+
+test("closeSettingsModal 后无 restore 行为：模型 DOM 随 replaceChildren 丢弃，下次进入重建", async () => {
+  const scrim = new MockElement("div");
+  const fake = modelSettingsFake();
+  const modal = createSettingsModalForTest({
+    refs: { settingsScrim: scrim },
+    modelSettings: fake
+  });
+  await modal.openSettingsModal("model");
+  assert.equal(fake.calls.attach.length, 1);
+
+  // 关闭（clean：model 分区无可挂起表单）应直接关闭，无 restore 钩子。
+  const detailAfterClose = modal.getSettingsDetailForTest();
+  modal.closeSettingsModal();
+  assert.equal(scrim.classList.contains("show"), false, "model 分区 clean 关闭应直接生效");
+
+  // 再次进入 model：attach 重建（无已脱离目标残留 restore）。
+  await modal.openSettingsModal("model");
+  assert.equal(fake.calls.attach.length, 2, "再次进入 model 应重新 attach");
+  assert.equal(fake.calls.open, 2, "再次进入 model 应重新 open");
+});
+
+test("幂等性：连续两次 openSettingsModal('model') 不产生重复挂载", async () => {
+  const fake = modelSettingsFake();
+  const modal = createSettingsModalForTest({ modelSettings: fake });
+  await modal.openSettingsModal("model");
+  await modal.openSettingsModal("model");
+  const detail = modal.getSettingsDetailForTest();
+  const lists = descendants(detail).filter((el) => el.getAttribute?.("data-provider-list") !== null);
+  assert.equal(lists.length, 1, "model 分区只应挂载一个 [data-provider-list]");
+  const sections = detail.children.filter((el) => el.className === "model-section");
+  assert.equal(sections.length, 1, "model 分区只应有一个 .model-section");
+  assert.equal(fake.calls.attach.length, 2, "每次进入 model 各 attach 一次（无重复 DOM 挂载）");
+});
+
+// 辅助：root 下递归收集（model 分区断言用，替代 domRegistry 的累积语义）。
+function descendants(root) {
+  const out = [];
+  const walk = (nodes) => {
+    for (const node of nodes) {
+      out.push(node);
+      if (node.children?.length) walk(node.children);
+    }
+  };
+  walk(root.children);
+  return out;
+}
 
 
 // ---------------------------------------------------------------------------

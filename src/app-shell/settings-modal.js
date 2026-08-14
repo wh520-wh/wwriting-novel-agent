@@ -11,6 +11,7 @@ import { motion } from "./motion-runtime.js";
 export { formatConnectionStatus } from "./settings-connection.mjs";
 
 const SETTINGS_SECTIONS = [
+  { id: "model", label: "模型设置", icon: "settings", ready: true },
   { id: "writing", label: "写作参数", icon: "compose", ready: true },
   { id: "skills", label: "Agent 技能", icon: "skill", ready: true },
   { id: "danger", label: "项目管理", icon: "folder", ready: true }
@@ -94,7 +95,7 @@ export function createSettingsModal(ctx, options = {}) {
     }
   } = options;
 
-  let settingsSection = "writing";
+  let settingsSection = "model";
   // 保存序号：runSave 的「已保存」关闭定时器带序号，连续保存时旧定时器失效，
   // 不会关闭新弹窗或覆盖新按钮文案。
   let saveSequence = 0;
@@ -133,9 +134,8 @@ export function createSettingsModal(ctx, options = {}) {
     }
   }
 
-  // section 可选：Agent 斜杠命令可指定打开的分区（模型分区已迁往新设置页，
-  // app.js 的 openSettingsOrModelPage 负责分流）；非法值回落第一个分区。
-  async function openSettingsModal(section = "writing") {
+  // section 可选：Agent 斜杠命令可指定打开的分区；缺省打开「模型设置」（model 为首位）。
+  async function openSettingsModal(section = "model") {
     settingsSection = SETTINGS_SECTIONS.some((s) => s.id === section) ? section : SETTINGS_SECTIONS[0].id;
     renderSectionNav();
     renderSectionBody();
@@ -252,6 +252,39 @@ export function createSettingsModal(ctx, options = {}) {
   function renderSectionBody() {
     // Task 16 B12：分区切换/重渲推进代次——在途的旧分区异步续作一律丢弃。
     sectionGeneration += 1;
+    if (settingsSection === "model") {
+      // 模型分区：与 writing/skills/danger 同形态——renderSectionBody 构建本分区 DOM，
+      // 把供应商列表/详情容器被注入的 modelSettings（model-settings-page）作为渲染目标。
+      // 无整页宿主、无 restore 钩子：更换分区时 replaceChildren 直接覆盖模型 DOM，
+      // 下次进入 model 分区重建（模型页不持有弹窗内外任何剩余引用）。
+      const detail = ctx.refs.settingsDetail;
+      detail.replaceChildren();
+      const section = document.createElement("div");
+      section.className = "model-section";
+      const h2 = document.createElement("h2");
+      h2.textContent = "模型设置";
+      const lead = document.createElement("p");
+      lead.className = "model-section-lead";
+      lead.textContent = "管理自定义模型供应商，配置后可在聊天时选择使用。";
+      const body = document.createElement("div");
+      body.className = "model-settings-body";
+      const list = document.createElement("aside");
+      list.setAttribute("data-provider-list", "");
+      const det = document.createElement("section");
+      det.setAttribute("data-provider-detail", "");
+      body.append(list, det);
+      section.append(h2, lead, body);
+      detail.append(section);
+      if (typeof ctx.modelSettings?.attach === "function") {
+        ctx.modelSettings.attach({ list, detail: det });
+      }
+      ctx.refs.settingsSave.disabled = true;
+      ctx.refs.settingsSave.textContent = "无需保存";
+      if (typeof ctx.modelSettings?.open === "function") {
+        void ctx.modelSettings.open();
+      }
+      return;
+    }
     if (settingsSection === "writing") {
       if (ctx.getDashboard()?.hasProject === true) {
         void renderWritingSection();
@@ -1492,6 +1525,10 @@ export function createSettingsModal(ctx, options = {}) {
   }
 
   async function saveSettings() {
+    if (settingsSection === "model") {
+      // 模型动作各自即时生效，不依赖底部保存按钮（保存按钮已置「无需保存」disabled）。
+      return;
+    }
     if (settingsSection === "writing") {
       await saveWritingSection();
       return;
@@ -1504,8 +1541,6 @@ export function createSettingsModal(ctx, options = {}) {
       // 技能导入/删除/打开目录各自即时生效，不依赖底部保存按钮。
       return;
     }
-    // 三个分区均已显式 return（模型分区已迁往新设置页，Task 17 cutover 后
-    // 本弹窗不再有 model section）。
   }
 
   // 任务进行中判定：agent snapshot 显示 active Run（非终态）或排队输入非空。

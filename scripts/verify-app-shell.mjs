@@ -455,6 +455,9 @@ try {
       documentRef: mspDoc,
       showToast: () => {}
     });
+    // v4 任务 A3：渲染目标注入——attach({ list, detail }) 后 render/refresh 写入注入目标
+    //（弃用 documentRef.querySelector 的全局 registry 双路径）。
+    mspPage.attach({ list: mspList, detail: mspDetail });
     await mspPage.open();
     const mspAll = [];
     (function walk(node) {

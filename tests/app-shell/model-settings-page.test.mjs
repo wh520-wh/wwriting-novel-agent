@@ -1,4 +1,8 @@
 // tests/app-shell/model-settings-page.test.mjs
+// Task A3：渲染目标注入（attach）——render/refresh 只写 attach 进来的 { list, detail }
+// 目标，不再依赖 document 全局 registry（querySelector 双路径已弃用）。mock 为
+// 轻量 MockElement：createElement/createTextNode 只用于 el() 建 DOM；attach 目标可
+// 在子树内 querySelector（renderCandidateList/testConnection 的挂载节点查找）。
 import assert from "node:assert/strict";
 import test from "node:test";
 import { pickProvider, visibleModels, buildPageState, createModelSettingsPage, translateTechnicalError } from "../../src/app-shell/model-settings-page.js";
@@ -45,7 +49,9 @@ test("pickProvider 空列表返回 null", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 最小 DOM mock（仿 settings-modal.test.mjs 的 MockElement；此处经 documentRef 注入）
+// 最小 DOM mock（仿 settings-modal.test.mjs 的 MockElement；无全局 registry）。
+// createElement/createTextNode 只服务 el()；attach 目标（list/detail）是普通
+// MockElement，render 通过子树 querySelector 做挂载节点查找。
 // ---------------------------------------------------------------------------
 
 class MockElement {
@@ -59,6 +65,7 @@ class MockElement {
     this.type = "";
     this.disabled = false;
     this.textContent = "";
+    this.hidden = false;
   }
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   getAttribute(name) { return this.attributes.has(name) ? this.attributes.get(name) : null; }
@@ -74,6 +81,18 @@ class MockElement {
     for (const fn of this._listeners.get(type) ?? []) fn(...args);
   }
   click() { this._fire("click"); }
+  /** 简易属性/类查找：返回子树内第一个匹配（renderCandidateList 等在 attach 目标内查找）。 */
+  querySelector(selector) {
+    const walk = (node) => {
+      for (const child of node.children) {
+        if (child.matchesSelector?.(selector)) return child;
+        const hit = walk(child);
+        if (hit) return hit;
+      }
+      return null;
+    };
+    return walk(this);
+  }
   /** 简易选择器匹配：支持 [data-x] / [data-x="value"] 与 .class（querySelector 用）。 */
   matchesSelector(selector) {
     if (selector.startsWith("[")) {
@@ -88,23 +107,10 @@ class MockElement {
   }
 }
 
-// 全局元素注册表：documentRef.querySelector 从其中找匹配元素（renderCandidateList
-// 的容器/箭头查找与 testConnection 的 resultSlot 重查询依赖它）。测试在渲染前
-// mockElements.length = 0 以隔离历史元素。
-const mockElements = [];
+// 仅提供元素工厂（el() 用）。无全局 registry、无 querySelector——渲染目标经 attach 注入。
 const mockDocument = {
-  createElement(tag) { const node = new MockElement(tag); mockElements.push(node); return node; },
-  createTextNode(text) { return { nodeType: 3, textContent: String(text) }; },
-  querySelector(selector) {
-    // 返回最后匹配：renderDetail 重建容器时新元素后创建，最后匹配 ≈ 当前仍挂载
-    // 的元素（真实 document 的 querySelector 只见已挂载节点）——testConnection
-    // 在 commit 重渲染后重查询 resultSlot 的回归路径依赖这一近似。
-    let hit = null;
-    for (const node of mockElements) {
-      if (node.matchesSelector?.(selector)) hit = node;
-    }
-    return hit;
-  }
+  createElement(tag) { return new MockElement(tag); },
+  createTextNode(text) { return { nodeType: 3, textContent: String(text) }; }
 };
 
 function tickAsync() {
@@ -124,18 +130,114 @@ function descendants(root) {
   return out;
 }
 
+/** 构造页面：注入 showToast/onChanged/documentRef。默认 attach 一个空 target。 */
+function makePage(overrides = {}) {
+  const page = createModelSettingsPage({
+    documentRef: mockDocument,
+    showToast: () => {},
+    onChanged: () => {},
+    ...overrides
+  });
+  return page;
+}
+
+function attachTargets(page) {
+  const list = new MockElement("div");
+  const detail = new MockElement("div");
+  page.attach({ list, detail });
+  return { list, detail };
+}
+
+// ---------------------------------------------------------------------------
+// Task A3：attach 目标注入——render/refresh 只写注入目标，未 attach 安全跳过，
+// 目标可切换；不再依赖 document 全局 registry。
+// ---------------------------------------------------------------------------
+
+test("attach({ list, detail }) 后 open()/render() 渲染到注入目标", async () => {
+  const page = makePage({
+    fetchImpl: async () => ({ ok: true, json: async () => ({ providers, default_model: null }) })
+  });
+  const { list, detail } = attachTargets(page);
+  await page.open(); // refresh → render() → 写入 attach 目标
+  assert.ok(
+    descendants(list).some((el) => el.getAttribute?.("data-provider-id") === "deepseek"),
+    "列表目标应渲染 deepseek 供应商条目"
+  );
+  assert.ok(
+    descendants(detail).some((el) => el.getAttribute?.("data-model-id") === "m1"),
+    "详情目标应渲染 deepseek 的模型行"
+  );
+  assert.ok(
+    descendants(list).some((el) => el.className.includes("provider-item")),
+    "列表目标应渲染供应商条目"
+  );
+});
+
+test("未 attach 时 open()/render() 安全跳过：不抛错、不渲染", async () => {
+  const page = makePage({
+    fetchImpl: async () => ({ ok: true, json: async () => ({ providers, default_model: null }) })
+  });
+  // 不 attach：refresh/render 不应抛错
+  await page.open();
+  assert.ok(Array.isArray(page.getState().providers), "refresh 仍写 state（渲染跳过不影响数据加载）");
+  // 再次 refresh（无目标）不应抛错（render 对未 attach 目标安全跳过）
+  await page.refresh();
+});
+
+test("attach(null) / 重新 attach 新目标：渲染切换到新目标", async () => {
+  const page = makePage({
+    fetchImpl: async () => ({ ok: true, json: async () => ({ providers, default_model: null }) })
+  });
+  const { list: oldList, detail: oldDetail } = attachTargets(page);
+  await page.open();
+  assert.ok(descendants(oldDetail).length > 0, "旧目标应先渲染出内容");
+
+  const newList = new MockElement("div");
+  const newDetail = new MockElement("div");
+  page.attach({ list: newList, detail: newDetail });
+  await page.refresh(); // refresh → render() 重新渲染到新目标
+  assert.ok(descendants(newDetail).length > 0, "新详情目标应渲染出内容");
+  assert.ok(
+    descendants(oldDetail).every((el) => el.getAttribute?.("data-provider-id") !== "deepseek"),
+    "旧目标内容应被 replaceChildren 丢弃"
+  );
+
+  page.attach(null); // 解除
+  await page.refresh(); // 解除后 refresh → render() 应为无害 no-op
+  assert.ok(page.attach, "attach 应仍是页面公开 API");
+});
+
+test("attach 目标可由外部传入（settings-modal 用它构建 model 分区）：list/detail 是渲染容器", async () => {
+  const page = makePage({
+    fetchImpl: async () => ({ ok: true, json: async () => ({ providers, default_model: null }) })
+  });
+  const list = new MockElement("aside");
+  const detail = new MockElement("section");
+  list.setAttribute("data-provider-list", "");
+  detail.setAttribute("data-provider-detail", "");
+  page.attach({ list, detail });
+  await page.refresh(); // refresh → render() 渲染到 attach 目标
+  assert.ok(
+    descendants(list).some((el) => el.className.includes("provider-item")),
+    "供应商列表应渲染进注入的 aside"
+  );
+  assert.ok(
+    descendants(detail).some((el) => el.className.includes("provider-detail-head")),
+    "详情应渲染进注入的 section"
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Task 13：供应商级交互——失焦保存 / 启停 / 删除二次确认 / 连接信息自动保存
 // ---------------------------------------------------------------------------
 
 test("供应商失焦保存与启停切换调用 PATCH", async () => {
   const calls = [];
-  const page = createModelSettingsPage({
+  const page = makePage({
     fetchImpl: async (url, options = {}) => {
       if (options?.method === "PATCH") calls.push({ url, options });
       return { ok: true, json: async () => ({ providers: [], default_model: null }) };
-    },
-    documentRef: mockDocument
+    }
   });
   await page._handlers.saveProviderPatch("deepseek", { status: "disabled" });
   assert.equal(calls.length, 1);
@@ -145,9 +247,8 @@ test("供应商失焦保存与启停切换调用 PATCH", async () => {
 });
 
 test("保存失败：saveProviderPatch 返回 false", async () => {
-  const page = createModelSettingsPage({
-    fetchImpl: async () => ({ ok: false, status: 400, json: async () => ({ message: "服务器错误" }) }),
-    documentRef: mockDocument
+  const page = makePage({
+    fetchImpl: async () => ({ ok: false, status: 400, json: async () => ({ message: "服务器错误" }) })
   });
   assert.equal(await page.saveProviderPatch("deepseek", { name: "x" }), false, "保存失败应返回 false");
   assert.equal(await page.saveModelPatch("deepseek", "m1", { model_name: "x" }), false, "模型保存失败也应返回 false");
@@ -155,9 +256,8 @@ test("保存失败：saveProviderPatch 返回 false", async () => {
 
 test("删除供应商前需要二次确认（confirm 返回 false 不发请求）", async () => {
   const calls = [];
-  const page = createModelSettingsPage({
+  const page = makePage({
     fetchImpl: async () => { calls.push("called"); return { ok: true, json: async () => ({ providers: [], default_model: null }) }; },
-    documentRef: mockDocument,
     confirmImpl: () => false
   });
   await page.removeProviderWithConfirm("deepseek");
@@ -167,7 +267,7 @@ test("删除供应商前需要二次确认（confirm 返回 false 不发请求�
 test("确认删除后 POST /remove 并刷新列表、触发 onChanged", async () => {
   let removed = false;
   let changed = 0;
-  const page = createModelSettingsPage({
+  const page = makePage({
     fetchImpl: async (url, options = {}) => {
       if (url.endsWith("/remove")) {
         removed = true;
@@ -175,7 +275,6 @@ test("确认删除后 POST /remove 并刷新列表、触发 onChanged", async ()
       }
       return { ok: true, json: async () => ({ providers: removed ? [] : providers, default_model: null }) };
     },
-    documentRef: mockDocument,
     confirmImpl: () => true,
     onChanged: () => { changed += 1; }
   });
@@ -194,9 +293,8 @@ test("renderDetail 交互接线：改名 / Base URL 校验 / 启停 / 协议回�
     if (options?.method === "PATCH") patches.push({ url, body: JSON.parse(options.body) });
     return { ok: true, json: async () => ({ providers, default_model: null }) };
   };
-  const page = createModelSettingsPage({
+  const page = makePage({
     fetchImpl,
-    documentRef: mockDocument,
     showToast: (message, kind) => toasts.push({ message, kind })
   });
   await page.open();
@@ -319,7 +417,7 @@ test("renderDetail 交互接线：改名 / Base URL 校验 / 启停 / 协议回�
 
 test("明文密钥保存失败：保留输入回显并提示先填环境变量名", async () => {
   const toasts = [];
-  const page = createModelSettingsPage({
+  const page = makePage({
     fetchImpl: async (url, options = {}) => {
       const body = options.body ? JSON.parse(options.body) : null;
       if (options?.method === "PATCH" && body?.api_key) {
@@ -328,7 +426,6 @@ test("明文密钥保存失败：保留输入回显并提示先填环境变量�
       }
       return { ok: true, json: async () => ({ providers, default_model: null }) };
     },
-    documentRef: mockDocument,
     showToast: (message, kind) => toasts.push({ message, kind })
   });
   await page.open();
@@ -355,12 +452,11 @@ test("明文密钥保存失败：保留输入回显并提示先填环境变量�
 
 test("模型启停与设默认走对应端点", async () => {
   const calls = [];
-  const page = createModelSettingsPage({
+  const page = makePage({
     fetchImpl: async (url, options = {}) => {
       if (options?.method === "PATCH" || url.endsWith("/default")) calls.push({ url, options });
       return { ok: true, json: async () => ({ providers: [], default_model: null }) };
-    },
-    documentRef: mockDocument
+    }
   });
   await page._handlers.saveModelPatch("deepseek", "m1", { enabled: false });
   await page.setDefaultModel("deepseek", "m1");
@@ -370,9 +466,8 @@ test("模型启停与设默认走对应端点", async () => {
 
 test("模型删除需要二次确认", async () => {
   const calls = [];
-  const page = createModelSettingsPage({
+  const page = makePage({
     fetchImpl: async () => { calls.push("called"); return { ok: true, json: async () => ({ providers: [], default_model: null }) }; },
-    documentRef: mockDocument,
     confirmImpl: () => false
   });
   await page.removeModelWithConfirm("deepseek", "m1");
@@ -386,12 +481,11 @@ test("模型删除需要二次确认", async () => {
 
 test("模型名称框回车保存（#11：提示文案与真实行为一致）", async () => {
   const patches = [];
-  const page = createModelSettingsPage({
+  const page = makePage({
     fetchImpl: async (url, options = {}) => {
       if (options?.method === "PATCH") patches.push({ url, body: JSON.parse(options.body) });
       return { ok: true, json: async () => ({ providers, default_model: null }) };
-    },
-    documentRef: mockDocument
+    }
   });
   await page.open();
   const container = new MockElement("div");
@@ -421,12 +515,11 @@ test("模型名称框回车保存（#11：提示文案与真实行为一致）",
 
 test("回车保存后输入框移除派发的挂起 change 不再重复 PATCH（Important 1 回归）", async () => {
   const patches = [];
-  const page = createModelSettingsPage({
+  const page = makePage({
     fetchImpl: async (url, options = {}) => {
       if (options?.method === "PATCH") patches.push({ url, body: JSON.parse(options.body) });
       return { ok: true, json: async () => ({ providers, default_model: null }) };
-    },
-    documentRef: mockDocument
+    }
   });
   await page.open();
   const container = new MockElement("div");
@@ -457,7 +550,7 @@ test("回车保存后输入框移除派发的挂起 change 不再重复 PATCH（
 
   // 失败后同值可重试（lastCommitted 失败复位）。
   let fail = true;
-  const page2 = createModelSettingsPage({
+  const page2 = makePage({
     fetchImpl: async (url, options = {}) => {
       if (options?.method === "PATCH") {
         if (fail) {
@@ -468,7 +561,6 @@ test("回车保存后输入框移除派发的挂起 change 不再重复 PATCH（
       }
       return { ok: true, json: async () => ({ providers, default_model: null }) };
     },
-    documentRef: mockDocument,
     showToast: () => {}
   });
   await page2.open();
@@ -488,9 +580,8 @@ test("回车保存后输入框移除派发的挂起 change 不再重复 PATCH（
 });
 
 test("图标按钮有 accessible name：删除供应商/显示隐藏密钥按钮带 aria-label（#2）", async () => {
-  const page = createModelSettingsPage({
-    fetchImpl: async () => ({ ok: true, json: async () => ({ providers, default_model: null }) }),
-    documentRef: mockDocument
+  const page = makePage({
+    fetchImpl: async () => ({ ok: true, json: async () => ({ providers, default_model: null }) })
   });
   await page.open();
   const container = new MockElement("div");
@@ -507,9 +598,8 @@ test("图标按钮有 accessible name：删除供应商/显示隐藏密钥按钮
 });
 
 test("列表点击切换供应商不丢失 default_model（「默认」角标回归）", async () => {
-  const page = createModelSettingsPage({
-    fetchImpl: async () => ({ ok: true, json: async () => ({ providers, default_model: { provider_id: "deepseek", model_id: "m1" } }) }),
-    documentRef: mockDocument
+  const page = makePage({
+    fetchImpl: async () => ({ ok: true, json: async () => ({ providers, default_model: { provider_id: "deepseek", model_id: "m1" } }) })
   });
   await page.open();
   assert.deepEqual(page.getState().default_model, { provider_id: "deepseek", model_id: "m1" });
@@ -541,9 +631,8 @@ test("列表点击切换供应商不丢失 default_model（「默认」角标回
 });
 
 test("停用模型的「设为默认」按钮置灰并提示", async () => {
-  const page = createModelSettingsPage({
-    fetchImpl: async () => ({ ok: true, json: async () => ({ providers, default_model: null }) }),
-    documentRef: mockDocument
+  const page = makePage({
+    fetchImpl: async () => ({ ok: true, json: async () => ({ providers, default_model: null }) })
   });
   await page.open();
   const container = new MockElement("div");
@@ -570,9 +659,8 @@ test("停用模型的「设为默认」按钮置灰并提示", async () => {
 test("拉取前置检查：无密钥环境名时提示且不发请求", async () => {
   const calls = [];
   const toasts = [];
-  const page = createModelSettingsPage({
+  const page = makePage({
     fetchImpl: async (url) => { calls.push(url); return { ok: true, json: async () => ({ providers, default_model: null }) }; },
-    documentRef: mockDocument,
     showToast: (message) => toasts.push(message)
   });
   await page.open();
@@ -586,7 +674,7 @@ test("拉取前置检查：无密钥环境名时提示且不发请求", async ()
 
 test("拉取候选展开后逐条添加", async () => {
   const addCalls = [];
-  const page = createModelSettingsPage({
+  const page = makePage({
     fetchImpl: async (url, options = {}) => {
       if (url.endsWith("/pull-models")) {
         return { ok: true, json: async () => ({ models: ["new-model-a", "new-model-b"] }) };
@@ -596,8 +684,7 @@ test("拉取候选展开后逐条添加", async () => {
         return { ok: true, json: async () => ({ ok: true }) };
       }
       return { ok: true, json: async () => ({ providers, default_model: null }) };
-    },
-    documentRef: mockDocument
+    }
   });
   await page.open();
   const ok = await page._handlers.pullModels("deepseek");
@@ -609,7 +696,7 @@ test("拉取候选展开后逐条添加", async () => {
 test("拉取候选渲染：成功展开候选行并同步箭头，空结果显示空态", async () => {
   const addCalls = [];
   let empty = false;
-  const page = createModelSettingsPage({
+  const page = makePage({
     fetchImpl: async (url, options = {}) => {
       if (url.endsWith("/pull-models")) {
         return { ok: true, json: async () => ({ models: empty ? [] : ["candidate-x", "candidate-y"] }) };
@@ -619,13 +706,12 @@ test("拉取候选渲染：成功展开候选行并同步箭头，空结果显�
         return { ok: true, json: async () => ({ ok: true }) };
       }
       return { ok: true, json: async () => ({ providers, default_model: null }) };
-    },
-    documentRef: mockDocument
+    }
   });
   await page.open();
 
-  // 渲染详情：候选容器默认收起、箭头为收起态
-  mockElements.length = 0; // 只保留本次渲染的元素，避免 querySelector 命中旧容器
+  // 渲染详情：候选容器默认收起、箭头为收起态（渲染进 attach 目标，renderCandidateList
+  // 经 detail 目标内 querySelector 查找，不再依赖全局 registry）
   const container = new MockElement("div");
   page.renderDetail(container);
   const holder = descendants(container).find((el) => el.getAttribute?.("data-candidate-list") === "true");
@@ -652,7 +738,6 @@ test("拉取候选渲染：成功展开候选行并同步箭头，空结果显�
 
   // 空拉取：容器同样展开并显示空态文案（修复「静默空拉取」）
   empty = true;
-  mockElements.length = 0;
   const container2 = new MockElement("div");
   page.renderDetail(container2);
   const holder2 = descendants(container2).find((el) => el.getAttribute?.("data-candidate-list") === "true");
@@ -666,7 +751,7 @@ test("拉取候选渲染：成功展开候选行并同步箭头，空结果显�
 test("测试连接：请求体形态、行内结果与缺密钥提示", async () => {
   const bodies = [];
   const toasts = [];
-  const page = createModelSettingsPage({
+  const page = makePage({
     fetchImpl: async (url, options = {}) => {
       if (url.endsWith("/test-connection")) {
         const body = JSON.parse(options.body);
@@ -681,13 +766,11 @@ test("测试连接：请求体形态、行内结果与缺密钥提示", async ()
       }
       return { ok: true, json: async () => ({ providers, default_model: null }) };
     },
-    documentRef: mockDocument,
     showToast: (message, kind) => toasts.push({ message, kind })
   });
 
-  // 直调路径（详情未渲染）：清空 mockElements 后 resultSlot 重查询查不到（回退到
+  // 直调路径（详情未渲染）：currentDetail 为 null → resultSlot 重查询查不到（回退到
   // 传入的 slot），断言结果仍写入传入 slot——覆盖「未重渲染回退」分支。
-  mockElements.length = 0;
   const slot = new MockElement("div");
   const pro = await page._handlers.testConnection(providers[0], providers[0].models[0], slot);
   assert.equal(pro.ok, true);
@@ -715,7 +798,7 @@ test("添加供应商：POST 创建 + 有密钥时 PATCH 落盘 + 表单开关",
   const calls = [];
   const toasts = [];
   let providersState = [...providers];
-  const page = createModelSettingsPage({
+  const page = makePage({
     fetchImpl: async (url, options = {}) => {
       const method = options?.method ?? "GET";
       const body = options.body ? JSON.parse(options.body) : null;
@@ -734,7 +817,6 @@ test("添加供应商：POST 创建 + 有密钥时 PATCH 落盘 + 表单开关",
       }
       return { ok: true, json: async () => ({ providers: providersState, default_model: null }) };
     },
-    documentRef: mockDocument,
     showToast: (message, kind) => toasts.push({ message, kind })
   });
   await page.open();
@@ -793,9 +875,8 @@ test("密钥状态：已配置只显示状态不回显密钥（#3）", async () 
     { ...providers[0], api_key_saved: true },
     { ...providers[1], api_key_saved: false }
   ];
-  const page = createModelSettingsPage({
+  const page = makePage({
     fetchImpl: async () => ({ ok: true, json: async () => ({ providers: withSaved, default_model: null }) }),
-    documentRef: mockDocument,
     showToast: () => {}
   });
   await page.open();
@@ -810,9 +891,8 @@ test("密钥状态：已配置只显示状态不回显密钥（#3）", async () 
 
   // 未配置状态
   const unconfigured = [{ id: "custom", name: "自建", status: "enabled", base_url: "https://x.test", api_format: "openai-chat-completions", api_key_env: "", models: [] }];
-  const page2 = createModelSettingsPage({
+  const page2 = makePage({
     fetchImpl: async () => ({ ok: true, json: async () => ({ providers: unconfigured, default_model: null }) }),
-    documentRef: mockDocument,
     showToast: () => {}
   });
   await page2.open();
@@ -852,7 +932,7 @@ test("test/pull 先提交并验证当前表单值（#8）：未失焦输入也�
     }
     return { ok: true, json: async () => ({ providers: current, default_model: null }) };
   };
-  const page = createModelSettingsPage({ fetchImpl, documentRef: mockDocument, showToast: () => {} });
+  const page = makePage({ fetchImpl, showToast: () => {} });
   await page.open();
   const container = new MockElement("div");
   page.renderDetail(container);
@@ -889,14 +969,13 @@ test("test/pull 先提交并验证当前表单值（#8）：未失焦输入也�
 test("test/pull 被非法表单值阻断（#8）：不发请求且行内报错", async () => {
   let testCalls = 0;
   let pullCalls = 0;
-  const page = createModelSettingsPage({
+  const page = makePage({
     fetchImpl: async (url, options = {}) => {
       if (options?.method === "PATCH") return { ok: true, json: async () => ({ ok: true }) };
       if (url.endsWith("/test-connection")) { testCalls += 1; return { ok: true, json: async () => ({ ok: true }) }; }
       if (url.endsWith("/pull-models")) { pullCalls += 1; return { ok: true, json: async () => ({ models: [] }) }; }
       return { ok: true, json: async () => ({ providers, default_model: null }) };
     },
-    documentRef: mockDocument,
     showToast: () => {}
   });
   await page.open();
@@ -927,12 +1006,11 @@ test("test/pull 被非法表单值阻断（#8）：不发请求且行内报错",
 
 test("启停切换失败：toast 提示且不回退旧 UI（#10）", async () => {
   const toasts = [];
-  const page = createModelSettingsPage({
+  const page = makePage({
     fetchImpl: async (url, options = {}) => {
       if (options?.method === "PATCH") return { ok: false, status: 500, json: async () => ({ message: "HTTP 500" }) };
       return { ok: true, json: async () => ({ providers, default_model: null }) };
     },
-    documentRef: mockDocument,
     showToast: (message, kind) => toasts.push({ message, kind })
   });
   await page.open();
@@ -977,17 +1055,12 @@ test("测试连接：commit 重渲染后结果写入新渲染的 resultSlot（Cr
     }
     return { ok: true, json: async () => ({ providers: current, default_model: null }) };
   };
-  const page = createModelSettingsPage({ fetchImpl, documentRef: mockDocument, showToast: () => {} });
-  mockElements.length = 0;
-  await page.open();
+  const page = makePage({ fetchImpl, showToast: () => {} });
 
-  // 详情容器注册进 mockElements 的 [data-provider-detail]：commit 触发 refresh
-  // → render() 会重渲染该容器——旧 resultSlot 脱离 DOM 的真实路径。
-  mockElements.length = 0;
-  const detailContainer = new MockElement("div");
-  detailContainer.setAttribute("data-provider-detail", "true");
-  mockElements.push(detailContainer);
-  page.renderDetail(detailContainer);
+  // 注入渲染目标：commit 触发 refresh → render() 重渲染 attach 的 detail 目标——
+  // 旧 resultSlot 脱离 DOM 的真实路径（不再依赖全局 registry 命中）。
+  const { detail: detailContainer } = attachTargets(page);
+  await page.open(); // refresh → render() → 写入 attach 目标
 
   const els = descendants(detailContainer);
   const m1Row = els.find((el) => el.className === "model-row" && el.getAttribute?.("data-model-id") === "m1");
@@ -1006,7 +1079,7 @@ test("测试连接：commit 重渲染后结果写入新渲染的 resultSlot（Cr
   }, "测试请求应使用提交后的权威值");
   // commit 触发 refresh 重渲染：结果必须写入新渲染的 slot（用户可见），旧 slot 不接收
   const freshSlot = descendants(detailContainer).find((el) => el.getAttribute?.("data-model-connection-result") === "m1");
-  assert.notEqual(freshSlot, oldSlot, "重渲染后详情容器内应有新的 result slot");
+  assert.notEqual(freshSlot, oldSlot, "重渲染后 attach 目标内应有新的 result slot");
   const resultEl = descendants(freshSlot).find((el) => String(el.className).includes("connection-result"));
   assert.ok(resultEl, "测试结果应写入新渲染的 result slot（用户可见）");
   assert.ok(resultEl.className.includes("connection-result ok"), "成功结果应渲染绿勾");
