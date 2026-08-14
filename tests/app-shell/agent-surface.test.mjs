@@ -2283,8 +2283,14 @@ test("agent.css 保留 1040px 内容列、向上菜单与工作组/动效布局"
   // Codex 改版 B-5/B-5b：无框直出，保留 1040px 内容轴、内容对齐 720px。
   assert.match(
     css,
-    /\.agent-work-group\s*\{[^}]*width:\s*min\(100%,\s*1040px\)[^}]*border:\s*0[^}]*background:\s*transparent/u,
+    /\.agent-work-group\s*\{[^}]*width:\s*min\(100%,\s*1040px\)[^}]*border:\s*0[^}]*background:\s*transparent[^}]*box-shadow:\s*none/u,
     "工作组无框直出，保留 1040px 内容轴"
+  );
+  // B-5：展开态 summary 无框（无下边框）
+  assert.match(
+    css,
+    /\.agent-work-group\[open\]\s*>\s*summary\s*\{[^}]*border-bottom:\s*0/u,
+    "展开态 summary 不显示下边框（无框）"
   );
   // B-5b：summary 与明细内容轴与正文 720px 对齐（容器仍全宽 1040px）
   assert.match(
