@@ -41,7 +41,7 @@
 //     正式章节文件可直接编辑（模块 C），草稿/索引/checkpoint/日志仍受保护；
 //     win32 下路径比较大小写不敏感，大小写变体不能绕过。
 //   - 权限错误使用简短文案：当前为只读模式。/当前权限不允许修改文件。/项目已归档，无法修改。/
-//     工具不可用。；受保护路径拒绝额外带合法通道指引（一句话，八个规则都有映射）；
+//     工具不可用。；受保护路径拒绝额外带合法通道指引（一句话，七个规则都有映射）；
 //     字段名与规则 id 只放 technical 细节。
 //   - journal 事件：tool_call_started / tool_output_delta（脱敏后，按单次工具累计 1 MiB 截断）/
 //     tool_call_completed / tool_call_failed / decision_requested / decision_resolved /
