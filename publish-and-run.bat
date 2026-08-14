@@ -51,10 +51,18 @@ if exist "%REPO%dist-desktop" (
 )
 
 echo [3/5] Install dependencies if needed...
-if not exist "%REPO%node_modules" (
+rem Check for the real install artifact (electron-builder executable) instead of the
+rem node_modules folder itself: an empty/stale node_modules used to pass the old check
+rem and then fail with "electron-builder is not recognized as an internal or external command".
+if not exist "%REPO%node_modules\.bin\electron-builder.cmd" (
   call npm ci
   if errorlevel 1 (
     echo ERROR: npm ci failed.
+    pause
+    exit /b 1
+  )
+  if not exist "%REPO%node_modules\.bin\electron-builder.cmd" (
+    echo ERROR: electron-builder still missing after npm ci.
     pause
     exit /b 1
   )
