@@ -727,7 +727,6 @@ test("通用写工具拒绝直接写受保护路径", async (t) => {
     ["agent checkpoints", ".wwriting/agent/checkpoints/x.json"],
     ["project checkpoints", "checkpoints/cp.json"],
     ["chapter index", "memory/chapter_index.json"],
-    ["formal chapter", "chapters/001.md"],
     ["draft file", "drafts/001.draft.md"],
     ["draft 中间点文件名", "drafts/2.修订.draft.txt"]
   ];
@@ -751,14 +750,6 @@ test("通用写工具拒绝直接写受保护路径", async (t) => {
   assert.equal(await pathExists(path.join(h.projectRoot, "memory", "chapter_index.json")), false);
   assert.equal(await pathExists(path.join(h.projectRoot, "chapters", "001.md")), false);
   assert.equal(await pathExists(path.join(h.projectRoot, "drafts", "001.draft.md")), false);
-  // edit_file 同样拒绝
-  await fs.writeFile(path.join(h.projectRoot, "chapters", "001.md"), "正文", "utf8");
-  const editResult = await h.tools.execute(
-    toolCall("edit_file", { path: "chapters/001.md", find: "正文", replace: "改" }),
-    h.context
-  );
-  assert.equal(editResult.ok, false);
-  assert.equal(await fs.readFile(path.join(h.projectRoot, "chapters", "001.md"), "utf8"), "正文");
   // 普通项目文件不受影响（仍受普通确认约束）
   const pendingOk = h.tools.execute(toolCall("write_file", { path: "notes.md", content: "n" }), h.context);
   const okDecision = await nextDecision(h.journal);
@@ -776,8 +767,6 @@ test("受保护路径大小写变体不能绕过（win32 文件系统大小写�
     ".wwriting/Agent/session.json",
     "Checkpoints/cp.json",
     "memory/Chapter_Index.json",
-    "Chapters/001.md",
-    "Chapters/001.TXT",
     "DRAFTS/001.draft.md"
   ];
   for (const rel of variants) {
@@ -808,6 +797,33 @@ test("drafts/ 只能经 append_chapter_segment 写入：auto_edit 与 yolo 下�
     // 常规项目文件在 auto_edit/yolo 下仍可写
     const ok = await h.tools.execute(toolCall("write_file", { path: "notes.md", content: "n" }), h.context);
     assert.equal(ok.ok, true);
+    assertClosure(await readEvents(h.journal));
+  }
+});
+
+test("正式章节文件可直接编辑：auto_edit/yolo 下 write_file/edit_file 放行，系统文件仍拒", async (t) => {
+  for (const permissions of [{ auto_edit: true }, { yolo: true }]) {
+    const h = await setup(t, { permissions });
+    const rel = "chapters/001.md";
+    await fs.mkdir(path.join(h.projectRoot, "chapters"), { recursive: true });
+    await fs.writeFile(path.join(h.projectRoot, rel), "第一章 原始正文", "utf8");
+    const edit = await h.tools.execute(
+      toolCall("edit_file", { path: rel, find: "原始", replace: "修订后" }),
+      h.context
+    );
+    assert.equal(edit.ok, true, `${JSON.stringify(permissions)} 下 edit_file 编辑正式章节应放行`);
+    assert.match(await fs.readFile(path.join(h.projectRoot, rel), "utf8"), /修订后/u);
+    const write = await h.tools.execute(
+      toolCall("write_file", { path: rel, content: "整章重写" }),
+      h.context
+    );
+    assert.equal(write.ok, true, "write_file 整章重写应放行");
+    assert.equal(await fs.readFile(path.join(h.projectRoot, rel), "utf8"), "整章重写");
+    // 草稿与索引仍受保护
+    const draft = await h.tools.execute(toolCall("write_file", { path: "drafts/001.draft.md", content: "x" }), h.context);
+    assert.equal(draft.ok, false, "草稿仍必须经 append_chapter_segment 写入");
+    const index = await h.tools.execute(toolCall("write_file", { path: "memory/chapter_index.json", content: "{}" }), h.context);
+    assert.equal(index.ok, false, "章节索引仍只读");
     assertClosure(await readEvents(h.journal));
   }
 });
