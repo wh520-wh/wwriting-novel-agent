@@ -25,6 +25,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createAgentJournal } from "../../src/core/agent/journal.mjs";
+import { sha256 } from "../../src/core/fs-utils.mjs";
 import { createToolRuntime } from "../../src/core/agent/tools.mjs";
 import { createProjectLockRegistry } from "../../src/core/project-lock.mjs";
 import { EXTREME_COMMANDS } from "../fixtures/command-risk-corpus.mjs";
@@ -826,6 +827,40 @@ test("正式章节文件可直接编辑：auto_edit/yolo 下 write_file/edit_fil
     assert.equal(index.ok, false, "章节索引仍只读");
     assertClosure(await readEvents(h.journal));
   }
+});
+
+test("edit_file/write_file expected_checksum 防覆盖：匹配放行、过期拒绝、缺省不检查", async (t) => {
+  const h = await setup(t, { permissions: { auto_edit: true } });
+  const rel = "chapters/001.md";
+  await fs.mkdir(path.join(h.projectRoot, "chapters"), { recursive: true });
+  await fs.writeFile(path.join(h.projectRoot, rel), "v1 正文", "utf8");
+  const stale = sha256("v1 正文");
+  // 匹配：通过
+  const ok = await h.tools.execute(
+    toolCall("edit_file", { path: rel, find: "v1", replace: "v2", expected_checksum: stale }),
+    h.context
+  );
+  assert.equal(ok.ok, true, "expected_checksum 匹配应放行");
+  // 过期：拒绝（文件已被改为 v2，旧校验和 stale）
+  const staleEdit = await h.tools.execute(
+    toolCall("edit_file", { path: rel, find: "v2", replace: "v3", expected_checksum: stale }),
+    h.context
+  );
+  assert.equal(staleEdit.ok, false);
+  assert.equal(staleEdit.error.code, "stale_checksum");
+  assert.equal(await fs.readFile(path.join(h.projectRoot, rel), "utf8"), "v2 正文", "过期编辑不得落盘");
+  // write_file 同样拒绝过期覆盖
+  const staleWrite = await h.tools.execute(
+    toolCall("write_file", { path: rel, content: "v9", expected_checksum: stale }),
+    h.context
+  );
+  assert.equal(staleWrite.ok, false);
+  assert.equal(staleWrite.error.code, "stale_checksum");
+  // 缺省：不检查（向后兼容）
+  const none = await h.tools.execute(toolCall("edit_file", { path: rel, find: "v2", replace: "v4" }), h.context);
+  assert.equal(none.ok, true);
+  assert.equal(await fs.readFile(path.join(h.projectRoot, rel), "utf8"), "v4 正文");
+  assertClosure(await readEvents(h.journal));
 });
 
 test("tool_call_failed 的 message 先脱敏（路径内嵌 token 形片段不泄漏）", async (t) => {

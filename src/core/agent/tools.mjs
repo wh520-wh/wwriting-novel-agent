@@ -51,7 +51,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { isPathInside, pathExists, resolveFilesystemPath, writeFileAtomic } from "../fs-utils.mjs";
+import { isPathInside, pathExists, resolveFilesystemPath, sha256, writeFileAtomic } from "../fs-utils.mjs";
 import { classifyShellCommand, resolveProjectScope } from "../shell/risk.mjs";
 import { createRedactor, createStreamingRedactor } from "../shell/redaction.mjs";
 import { skillService } from "../skills/index.mjs";
@@ -980,7 +980,8 @@ export function createToolRuntime({
       type: "object",
       properties: {
         path: { type: "string", minLength: 1, description: "目标文件路径（相对项目根或绝对路径）" },
-        content: { type: "string", description: "要写入的完整内容" }
+        content: { type: "string", description: "要写入的完整内容" },
+        expected_checksum: { type: "string", description: "可选：写入前文件的 SHA-256 校验和（read_file 返回的 checksum）；不匹配时拒绝（stale_checksum），防止覆盖他人已改动的版本" }
       },
       required: ["path", "content"],
       additionalProperties: false
@@ -1004,6 +1005,15 @@ export function createToolRuntime({
       const target = path.resolve(context.projectRoot, args.path);
       // R5-10：content 必须是字符串——对象/数组参数不得静默写成 "[object Object]"。
       const content = requireStringArg(args, "content", "content");
+      if (args.expected_checksum !== undefined && args.expected_checksum !== null) {
+        if (!(await pathExists(target))) {
+          throw toolError("file_not_found", `文件不存在：${args.path}`);
+        }
+        const current = await fs.readFile(target, "utf8");
+        if (sha256(current) !== args.expected_checksum) {
+          throw toolError("stale_checksum", "文件已被其他修改更新，请重新读取后再编辑。", { rule: "stale_checksum" });
+        }
+      }
       const written = await writeFileAtomic(target, content);
       return { path: target, bytes_written: written.bytes_written, checksum: written.checksum };
     }
@@ -1020,7 +1030,8 @@ export function createToolRuntime({
         path: { type: "string", minLength: 1, description: "目标文件路径（相对项目根或绝对路径）" },
         find: { type: "string", minLength: 1, description: "要查找的原文片段（必须精确匹配）" },
         replace: { type: "string", description: "替换后的文本（可为空串）" },
-        occurrence: { type: "integer", minimum: 1, description: "可选：替换第几处匹配（缺省要求全文唯一）" }
+        occurrence: { type: "integer", minimum: 1, description: "可选：替换第几处匹配（缺省要求全文唯一）" },
+        expected_checksum: { type: "string", description: "可选：写入前文件的 SHA-256 校验和（read_file 返回的 checksum）；不匹配时拒绝（stale_checksum），防止覆盖他人已改动的版本" }
       },
       required: ["path", "find"],
       additionalProperties: false
@@ -1053,6 +1064,11 @@ export function createToolRuntime({
       }
       if (!(await pathExists(target))) throw toolError("file_not_found", `文件不存在：${args.path}`);
       const content = await fs.readFile(target, "utf8");
+      if (args.expected_checksum !== undefined && args.expected_checksum !== null) {
+        if (sha256(content) !== args.expected_checksum) {
+          throw toolError("stale_checksum", "文件已被其他修改更新，请重新读取后再编辑。", { rule: "stale_checksum" });
+        }
+      }
       const occurrence = Number(args.occurrence) || 0;
       let index = content.indexOf(find);
       if (index === -1) throw toolError("find_not_found", "未找到要替换的文本。");
