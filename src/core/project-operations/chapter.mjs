@@ -56,7 +56,7 @@ import {
 } from "../fs-utils.mjs";
 import { loadChapterIndex, loadProject, upsertChapter } from "../project-store.mjs";
 import { countEffectiveWords } from "../word-count.mjs";
-import { ensureBaselineVersion, snapshotChapter } from "./versions.mjs";
+import { ensureBaselineVersion, listChapterVersions, readChapterVersion, snapshotChapter } from "./versions.mjs";
 import { recordChapterMemory } from "../chapter-memory.mjs";
 import {
   CONTINUITY_SCHEMA_VERSION,
@@ -724,15 +724,19 @@ export async function finalizeChapter({ projectRoot, projectId, chapterNo, expec
   // 版本快照（模块 C，设计 D3 迁移最小单元）：先确保基线（老项目首次修订前的
   // 状态存为 v1 baseline），再存档当前修订版。失败不抛、只标记（派生归档，
   // 不得阻塞/回滚已入账的修订）。
+  // options.skipVersionSnapshot：rollbackChapter 复用本函数的重新入账事务时传
+  // true，跳过这里的修订快照（回滚由自身存档单个 "rollback" 版本，避免重复）。
   let snapshot = null;
-  try {
-    await ensureBaselineVersion({ projectRoot, chapterNo, content });
-    snapshot = await snapshotChapter({ projectRoot, chapterNo, content, source: "revision" });
-  } catch (snapshotError) {
-    snapshot = {
-      status: "failed",
-      error: { code: snapshotError.code ?? "snapshot_failed", message: snapshotError.message }
-    };
+  if (options?.skipVersionSnapshot !== true) {
+    try {
+      await ensureBaselineVersion({ projectRoot, chapterNo, content });
+      snapshot = await snapshotChapter({ projectRoot, chapterNo, content, source: "revision" });
+    } catch (snapshotError) {
+      snapshot = {
+        status: "failed",
+        error: { code: snapshotError.code ?? "snapshot_failed", message: snapshotError.message }
+      };
+    }
   }
 
   return {
@@ -745,6 +749,94 @@ export async function finalizeChapter({ projectRoot, projectId, chapterNo, expec
     quality_gate_results: [],
     ...(snapshot ? { version: snapshot } : {})
   };
+}
+
+// ---------------------------------------------------------------------------
+// rollbackChapter —— 模型侧回滚（第八轮模块 C）：把 .versions/ 中指定版本的快照
+// 写回正式章节文件，重新入账（复用 finalizeChapter），并把回滚本身存档为新版本
+// （append-only）。
+//
+// 语义：
+//   - version 缺省（null/undefined）= 恢复到「上一版」（当前最新版的前一版）；
+//   - 显式 version 等于当前最新版，或缺省"上一版"时当前只有 v1（无更早可回滚）
+//     → already_current；
+//   - 目标版本不存在 → version_not_found；该章无任何版本 → no_versions；
+//   - 覆盖前若当前正式文件与最新版本校验和不一致（用户/外部未入账手动改动），
+//     先 snapshotChapter 存 pre_rollback 档，保证覆盖后可恢复（不丢内容）；
+//   - 写回后调用 finalizeChapter 重新入账（索引校验和/字数/章节记忆/checkpoint/
+//     run_log 一致更新；传 skipVersionSnapshot 避免 finalize 内部的修订快照，
+//     因为回滚自身存档唯一的 "rollback" 版本）；再 snapshotChapter source
+//     "rollback" 存档为新版本。
+// ---------------------------------------------------------------------------
+
+export async function rollbackChapter({ projectRoot, projectId, chapterNo, version = null }, options = {}) {
+  assertProjectRoot(projectRoot);
+  assertChapterNo(chapterNo);
+  const project = await loadProjectForOperation(projectRoot, projectId);
+
+  const finalPath = chapterFinalPath(projectRoot, chapterNo, project.output_format);
+  const versions = await listChapterVersions({ projectRoot, chapterNo });
+  if (versions.length === 0) {
+    throw new ProjectOperationError("no_versions", `第 ${chapterNo} 章没有任何历史版本，无法回滚。`);
+  }
+  const currentVersion = versions.at(-1).version;
+  const targetVersion = version === null || version === undefined ? currentVersion - 1 : Number(version);
+  if (targetVersion === currentVersion || targetVersion < 1) {
+    // 显式回滚到当前版，或缺省"上一版"但当前只有 v1（baseline 锚点）
+    throw new ProjectOperationError(
+      "already_current",
+      targetVersion < 1
+        ? `第 ${chapterNo} 章只有版本 1，没有更早版本可回滚。`
+        : `第 ${chapterNo} 章当前就是版本 ${currentVersion}，无需回滚。`
+    );
+  }
+  if (!versions.some((v) => v.version === targetVersion)) {
+    throw new ProjectOperationError("version_not_found", `第 ${chapterNo} 章不存在版本 ${targetVersion}。`);
+  }
+  const { content } = await readChapterVersion({ projectRoot, chapterNo, version: targetVersion });
+
+  // 防覆盖保护：写回前若当前正式文件内容与最新版本不一致（用户手动改过/未入账
+  // 改动），先把当前内容存档为 pre_rollback，保证覆盖后可恢复（对抗审查：回滚
+  // 不得丢用户内容）。pre_rollback 失败即抛（宁可不覆盖也不丢内容）。
+  const latestChecksum = versions.at(-1).checksum;
+  const currentContent = await fs.readFile(finalPath, "utf8");
+  if (sha256(currentContent) !== latestChecksum) {
+    await snapshotChapter({ projectRoot, chapterNo, content: currentContent, source: "pre_rollback" });
+  }
+
+  await writeFileAtomic(finalPath, content);
+  // 重新入账（含非散文校验、索引/checkpoint/run_log 更新）；失败不吞，写回的文件
+  // 保持现状（下一次 finalize_revision 仍可修正账本）。skipVersionSnapshot 让
+  // 回滚存档唯一新版本（source "rollback"），避免 finalize 重复存 revision 版。
+  const finalized = await finalizeChapter(
+    { projectRoot, projectId, chapterNo },
+    { ...options, skipVersionSnapshot: true }
+  );
+  await appendEvent(projectRoot, {
+    type: "chapter_rolled_back",
+    project_id: project.project_id,
+    chapter_no: chapterNo,
+    stage: "rolled_back",
+    message: `第 ${chapterNo} 章已回滚到版本 ${targetVersion}`,
+    data: { path: finalPath, from_version: currentVersion, to_version: targetVersion }
+  });
+
+  // 回滚存档为新版本（append-only）。失败不抛、只并入返回的 version 字段把
+  // 状态标为 failed（派生归档不得阻塞已回滚并入账的正文）。
+  const versionField = { from: currentVersion, to: targetVersion };
+  let snapshot = null;
+  try {
+    snapshot = await snapshotChapter({ projectRoot, chapterNo, content, source: "rollback" });
+  } catch (snapshotError) {
+    snapshot = {
+      status: "failed",
+      error: { code: snapshotError.code ?? "snapshot_failed", message: snapshotError.message }
+    };
+  }
+  if (snapshot?.status === "failed") {
+    versionField.snapshot = snapshot;
+  }
+  return { ...finalized, version: versionField };
 }
 
 function buildCheckpoint({ project, chapterNo, checkpointId, artifact }) {

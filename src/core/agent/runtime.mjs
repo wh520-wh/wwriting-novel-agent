@@ -66,6 +66,7 @@ import {
   commitChapterMemory,
   finalizeChapter,
   inspectChapterContext,
+  rollbackChapter,
   ProjectOperationError
 } from "../project-operations/chapter.mjs";
 import { migrateBaselineVersions } from "../project-operations/versions.mjs";
@@ -78,7 +79,7 @@ const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "inte
 const TOOL_RESULT_CANCELLATION_CODES = new Set(["tool_cancelled", "shell_cancelled"]);
 
 // 统一工具目录（Task 7）：不再按工作流切换——每一轮都提供相同的生产工具集：
-// 八个通用工具 + 四个深工具恒可用（Task 8：旧 blueprint 事务工具已整体删除，
+// 八个通用工具 + 五个深工具恒可用（Task 8：旧 blueprint 事务工具已整体删除，
 // 不再有注册表残留）。
 const GENERAL_TOOL_NAMES = new Set([
   "list_files",
@@ -91,7 +92,7 @@ const GENERAL_TOOL_NAMES = new Set([
   "count_text"
 ]);
 
-const DEEP_TOOL_NAMES = Object.freeze(["update_plan", "append_chapter_segment", "commit_chapter", "finalize_revision"]);
+const DEEP_TOOL_NAMES = Object.freeze(["update_plan", "append_chapter_segment", "commit_chapter", "finalize_revision", "rollback_chapter"]);
 
 const PRODUCTION_TOOL_NAMES = Object.freeze([...GENERAL_TOOL_NAMES, ...DEEP_TOOL_NAMES]);
 
@@ -347,6 +348,7 @@ export function createAgentRuntime({
         // 见 commitChapterWithDerivedMemory）；写探针 options 继续透传。
         commitChapter: (params, options) => commitChapterWithDerivedMemory(memoryExtractor, params, options),
         finalizeChapter: (params, options) => finalizeChapterWithDerivedMemory(memoryExtractor, params, options),
+        rollbackChapter,
         commitChapterMemory
       };
       state = {
@@ -1026,7 +1028,7 @@ export function createAgentRuntime({
     return persisted;
   }
 
-  // 按统一工具目录过滤定义（Task 7：通用工具 + 固定四个深工具，每轮相同）。
+  // 按统一工具目录过滤定义（Task 7：通用工具 + 固定五个深工具，每轮相同）。
   function allowedDefinitions(tools) {
     const allowed = new Set(PRODUCTION_TOOL_NAMES);
     return tools

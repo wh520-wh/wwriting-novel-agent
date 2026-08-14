@@ -26,9 +26,10 @@ import {
   commitChapterMemory,
   finalizeChapter,
   inspectChapterContext,
+  rollbackChapter,
   ProjectOperationError
 } from "../../src/core/project-operations/chapter.mjs";
-import { migrateBaselineVersions } from "../../src/core/project-operations/versions.mjs";
+import { listChapterVersions, migrateBaselineVersions, readChapterVersion } from "../../src/core/project-operations/versions.mjs";
 
 // Task 10：commitChapter 不再消费技能注入（确定性技能钩子已删除），直接使用原函数。
 // 写探针 options（hooks.beforeWrite）仍由调用点显式传入。
@@ -1081,4 +1082,80 @@ test("老项目形状（既有 completed 章节、无任何版本）：finalize 
   assert.equal(manifest.versions[0].source, "baseline", "首次修订前状态必须是 baseline");
   assert.equal(manifest.versions[1].source, "revision");
   assert.equal(manifest.versions[0].checksum, sha256("升级前就已存在的原稿正文"));
+});
+
+// ---------------------------------------------------------------------------
+// C5：rollbackChapter —— 模型侧回滚：把 .versions/ 指定版本快照写回正式文件，
+// 重新入账（复用 finalizeChapter）+ 存档为新版本（append-only）。
+// 语义：version 缺省 = 恢复上一版；等于当前最新版拒绝；无历史版本拒绝；
+// 覆盖前若文件含未入账手动改动则先存 pre_rollback 档（不丢内容）。
+// ---------------------------------------------------------------------------
+
+test("rollbackChapter：恢复指定版本、重新入账、存档为新版本；缺省回上一版", async (t) => {
+  const h = await setupWithAutoCleanup(t);
+  const finalPath = chapterFinalPath(h.projectRoot, 1, h.project.output_format);
+  await appendChapterSegment({ projectRoot: h.projectRoot, projectId: h.project.project_id, chapterNo: 1, segmentNo: 1, content: LONG_PROSE });
+  await commitChapter({ projectRoot: h.projectRoot, projectId: h.project.project_id, chapterNo: 1 });
+  const manifestPath = path.join(h.projectRoot, ".versions", "chapters", "001", "manifest.json");
+  // 红测一律从 .versions/ 实际快照读取内容断言，不硬编码与 commit fixture 可能不一致的占位字符串。
+  const v1Content = JSON.parse(await fs.readFile(manifestPath, "utf8")).versions[0].checksum
+    ? await fs.readFile(path.join(h.projectRoot, ".versions", "chapters", "001", "v1.md"), "utf8")
+    : null;
+  await fs.writeFile(finalPath, "v2 修订正文", "utf8");
+  await finalizeChapter({ projectRoot: h.projectRoot, projectId: h.project.project_id, chapterNo: 1 });
+  // 现在 v1=原始提交、v2=修订；回滚到 v1（以 v1 快照实际内容为准，不硬编码占位符）
+  const result = await rollbackChapter({ projectRoot: h.projectRoot, projectId: h.project.project_id, chapterNo: 1, version: 1 });
+  assert.equal(result.ok, true);
+  assert.equal(await fs.readFile(finalPath, "utf8"), v1Content, "文件应恢复为 v1 内容");
+  assert.equal(result.checksum, sha256(v1Content));
+  const index = await loadChapterIndex(h.projectRoot);
+  const entry = index.chapters.find((c) => Number(c.chapter_no) === 1);
+  assert.equal(entry.checksum, result.checksum, "回滚后索引校验和必须一致");
+  // 回滚本身存档为新版本 v3
+  const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+  assert.equal(manifest.versions.length, 3);
+  assert.equal(manifest.versions[2].source, "rollback");
+  // 缺省 version = 上一版（v3 的最新版是 v3，上一版是 v2）
+  const back = await rollbackChapter({ projectRoot: h.projectRoot, projectId: h.project.project_id, chapterNo: 1 });
+  assert.equal(await fs.readFile(finalPath, "utf8"), "v2 修订正文");
+});
+
+test("rollbackChapter：当前文件有未入账/手动改动时，先存 pre_rollback 档再写回（不丢内容）", async (t) => {
+  const h = await setupWithAutoCleanup(t);
+  const finalPath = chapterFinalPath(h.projectRoot, 1, h.project.output_format);
+  await appendChapterSegment({ projectRoot: h.projectRoot, projectId: h.project.project_id, chapterNo: 1, segmentNo: 1, content: LONG_PROSE });
+  await commitChapter({ projectRoot: h.projectRoot, projectId: h.project.project_id, chapterNo: 1 });
+  const v1Content = await fs.readFile(path.join(h.projectRoot, ".versions", "chapters", "001", "v1.md"), "utf8");
+  await fs.writeFile(finalPath, "v2 修订正文", "utf8");
+  await finalizeChapter({ projectRoot: h.projectRoot, projectId: h.project.project_id, chapterNo: 1 });
+  // 用户/外部在编辑器里手动改了当前文件（未入账）
+  await fs.writeFile(finalPath, "用户手动改的最新内容", "utf8");
+  const result = await rollbackChapter({ projectRoot: h.projectRoot, projectId: h.project.project_id, chapterNo: 1, version: 1 });
+  assert.equal(result.ok, true);
+  assert.equal(await fs.readFile(finalPath, "utf8"), v1Content, "文件恢复为 v1");
+  const manifest = JSON.parse(await fs.readFile(path.join(h.projectRoot, ".versions", "chapters", "001", "manifest.json"), "utf8"));
+  // pre_rollback 档必须存在（覆盖前存档），手动内容可恢复
+  const preRollback = manifest.versions.find((v) => v.source === "pre_rollback");
+  assert.ok(preRollback, "覆盖前必须存档 pre_rollback");
+  assert.equal(preRollback.checksum, sha256("用户手动改的最新内容"));
+  assert.equal(manifest.versions.at(-1).source, "rollback", "回滚本身仍存档为新版本");
+});
+
+test("rollbackChapter：无历史版本/版本不存在/回滚到当前版 拒绝", async (t) => {
+  const h = await setupWithAutoCleanup(t);
+  await appendChapterSegment({ projectRoot: h.projectRoot, projectId: h.project.project_id, chapterNo: 1, segmentNo: 1, content: LONG_PROSE });
+  await commitChapter({ projectRoot: h.projectRoot, projectId: h.project.project_id, chapterNo: 1 });
+  // 只有 v1，回滚到 v1 等于当前版
+  await assert.rejects(
+    rollbackChapter({ projectRoot: h.projectRoot, projectId: h.project.project_id, chapterNo: 1 }),
+    (error) => error.code === "already_current"
+  );
+  await assert.rejects(
+    rollbackChapter({ projectRoot: h.projectRoot, projectId: h.project.project_id, chapterNo: 1, version: 99 }),
+    (error) => error.code === "version_not_found"
+  );
+  await assert.rejects(
+    rollbackChapter({ projectRoot: h.projectRoot, projectId: h.project.project_id, chapterNo: 2 }),
+    (error) => error.code === "no_versions"
+  );
 });
