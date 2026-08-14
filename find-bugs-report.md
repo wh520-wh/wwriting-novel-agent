@@ -481,3 +481,19 @@ grep 核实（`request.once("close")` / `local-model-profiles` / `global-model-s
 ### 附：核查范围
 
 grep 核实（`enter_workflow`/`workflow_changed`/`WORKFLOW_POLICIES`/`WORKFLOW_POLICY_RECORDS`/`allowedDeepTools`/`runLegacyImport`/`migrateProjectAgentStorage`/`commit_blueprint` 在 src 与 scripts 零命中；`blueprint_status` 仅测试负向字面量与旧夹具，生产零读写；`input_consumed`/`input_promoted` 生产 0 产生——/compact 激活/收敛已迁移到 `input_started`/`input_completed`，恢复陈旧记录迁移到 `input_interrupted`，旧 promote 方法/导出/HTTP 路由/错误码删除；`input_cancelled` 收窄为硬停止/压缩取消/重复丢弃/历史缺口恢复的收敛终态；`output_style` 全 src 零消费方核实）；修复签名行级核对（`validateProjectRoot`/`writeFileAtomic`/`closeServerGracefully`/`requireStringArg`/`content_length`/`truncated_args_rejected`/`needs_history_clear`/`__MACOSX` 白名单/hash marker/sectionGeneration/saveSequence/isCurrentProjectScope/submissionGeneration/`isComposing`/`formatDuration` 等均在预期文件命中并附 Task 编号注释）。门禁实测：四条最终验证命令全部 0 fail（Task 26）。`git diff --check` 无空白错误；`git status --short` 无生成缓存/密钥/绝对用户路径混入提交。
+
+---
+
+## 第 8 轮（2026-08-14 · 设置分区入口恢复 + 对话界面打磨）
+
+### 已修复（模块 B：对话界面打磨）
+
+- **工作组时间线排序 bug（「工作中」面板压在刚发送的用户消息上方）→ 已修复（B1，`ecf2510`）**。用户发送 → pending 用户气泡（`messages.append`，**无 seq**）→ 新 Run 开始 → 工作组 `insertTimeline(details, group.firstSeq)` → 排序循环对无 seq 节点 `continue`（跳过且不更新插入位置）→ 工作组插到最后一个有 seq 节点之后、**pending 气泡之前** →「工作中」面板压在刚发送的消息上方（回放确认到达后由 `reconcilePendingSubmission` 移除自愈，自愈前窗口内错位可见，网络慢/断线重连时持续）。修复（`src/app-shell/agent/view.js`）：`insertTimeline` 无 seq 子节点视为 +∞，插入位置不越过它们——定位最后一个有 seq 节点后，插入点限制在其后、无 seq 节点区之前，有 seq 节点（工作组）绝不越过无 seq 节点插入；既有有 seq 节点之间仍按 `(seq, eventKey)` 稳定排序，`seq == null` 节点仍 append 末尾。测试：`tests/app-shell/agent-surface.test.mjs` 新增——pending 用户气泡在场时应用带 seq 工作事件，工作组必须插在 pending 气泡之后；随后正式用户消息到达 → 正式消息在工作组之前、pending 气泡被移除；回归（工具活动按 seq 位于正文前、工作组 data-seq=firstSeq）保持通过。
+
+### 门禁结果（本 sandbox 实测）
+
+- `npm test` / 直接跑测试文件：**102 个测试文件逐文件 `node` 直跑 → 100 通过 / 2 环境失败**。关键受影响用例全部通过——`agent-surface.test.mjs` 162/162、`codex-visual-contract.test.mjs` 8/8、`text-style-contract.test.mjs` 11/11（B1-B3 直接涉及的契约测试）。2 项失败均为沙箱边界：`shell/runtime.test.mjs`（`spawn EPERM`）与 `acceptance/unified-agent.test.mjs`（shell 工具 piped stdio 捕获增量输出被 EPERM 阻断），皆与 B1-B3（仅改 app-shell view.js/agent.css）无关；`npm test` 的 `node --test` runner 本 sandbox 因子进程 spawn EPERM 无法整体运行，故改逐文件直跑。
+- `npm run verify:app-shell`：**exit 0**（gfm/workGroup/skillsCatalog/plainFolderJournal 全 true，task25 六项全 true）。
+- `npm run verify:unified-agent`：**环境受限未跑完**——场景 21（Shell 增量输出）前 20 场景全绿，场景 21 用真实 `node` 命令 + piped stdio 捕获 shell 增量输出，本 sandbox 对子进程输出经管道捕获的路径直接 EPERM，`tool_output_delta` 未产生而断言失败（`scripts/verify-unified-agent.mjs:770`）。属沙箱边界非代码回归（B1-B3 仅改 app-shell view.js/agent.css，不涉 shell 运行时）。
+- `npm run verify:electron-runtime` / `npm run verify:app-clickability`：**环境受限**——需启动真实 Electron，触发 `FATAL:mojo platform_channel 拒绝访问` 与 `EPERM mkdir .demo_runs`（沙箱不允许 Electron 平台通道与 demo 目录写入），无法本 sandbox 验证。
+- 截图矩阵（`node scripts/capture-visual-acceptance.cjs --output artifacts/visual-acceptance/2026-08-14-polish --mode round7`）：**环境受限且需人工过目**——脚本启动 Electron/Chromium 即 FATAL（platform_channel 拒绝访问），且截图须人工过目（工作组无框、正文 720px、轮间 28px 可见、summary hover 条落在 720 轴内，与 `docs/mockups/agent-chat-polish-preview.html` 对照）——两项本 sandbox 均无法完成。
