@@ -2280,11 +2280,22 @@ test("agent.css 保留 1040px 内容列、向上菜单与工作组/动效布局"
   assert.doesNotMatch(css, /agent-thinking-dot|agent-thinking-blink|agent-plan-mark|agent-plan-restore/u, "旧三点思考/悬浮层控件 CSS 已删除");
   assert.doesNotMatch(css, /@media\s*\(max-width:\s*720px\)/u, "旧窄窗口悬浮层降级规则已删除");
   // 工作组（Step 3/12）：details 容器 + 稳定选择器（不靠 nth-child/文案/内联 style）；
-  // Codex 改版后为细边框圆角卡片，保留 1040px 内容轴。
+  // Codex 改版 B-5/B-5b：无框直出，保留 1040px 内容轴、内容对齐 720px。
   assert.match(
     css,
-    /\.agent-work-group\s*\{[^}]*width:\s*min\(100%,\s*1040px\)[^}]*border:\s*1px\s+solid\s+var\(--agent-line\)[^}]*border-radius:\s*var\(--r-card\)[^}]*box-shadow:\s*var\(--shadow-xs\)/u,
-    "工作组是细边框圆角卡片，保留 1040px 内容轴"
+    /\.agent-work-group\s*\{[^}]*width:\s*min\(100%,\s*1040px\)[^}]*border:\s*0[^}]*background:\s*transparent/u,
+    "工作组无框直出，保留 1040px 内容轴"
+  );
+  // B-5b：summary 与明细内容轴与正文 720px 对齐（容器仍全宽 1040px）
+  assert.match(
+    css,
+    /\.agent-work-group\s*>\s*summary\s*\{[^}]*max-width:\s*720px/u,
+    "工作组 summary 内容轴与正文 720px 对齐"
+  );
+  assert.match(
+    css,
+    /\.agent-work-items\s*\{[^}]*max-width:\s*720px/u,
+    "工作组明细内容轴与正文 720px 对齐"
   );
   assert.match(
     css,
@@ -2294,8 +2305,8 @@ test("agent.css 保留 1040px 内容列、向上菜单与工作组/动效布局"
   assert.doesNotMatch(css, /\.agent-work-item::before/u, "Codex 改版后工作项不得有左侧竖线");
   assert.match(
     css,
-    /\.agent-work-status\s*\{[^}]*color:\s*var\(--agent-work-title-fg\)[^}]*font-weight:\s*var\(--weight-semibold\)/u,
-    "工作组状态使用 title 色 + semibold"
+    /\.agent-work-status\s*\{[^}]*color:\s*var\(--muted\)[^}]*font-weight:\s*var\(--weight-medium\)/u,
+    "工作组状态使用 muted 色 + medium 字重"
   );
   assert.match(css, /\.agent-work-item__label\s*\{[^}]*color:\s*var\(--agent-work-label-fg\)/u, "子项 label 使用 label 色");
   assert.match(css, /\.agent-reasoning-ticker\s*\{[^}]*color:\s*var\(--text-muted\)/u, "ticker 使用 muted 色");

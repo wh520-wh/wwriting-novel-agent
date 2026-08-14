@@ -5,7 +5,7 @@
 //     :root 与 [data-theme="dark"] 两个 primitive 块；
 //   - 对话与 composer 共享 --content-column: 1040px；
 //   - Task 2+：运行区无横杠、工作项无左侧竖线、--r-card: 12px；
-//   - Task 3+：工作组为细边框圆角卡片；Task 4+：状态小条与压缩条；
+//   - Task 3+：工作组无框直出；Task 4+：状态小条与压缩条；
 //   - Task 5+：composer 卡片化、顶栏发丝下边框、项目行圆角。
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -37,12 +37,12 @@ test("Codex 基线：styles.css 提供 --r-card 12px", () => {
   assert.match(read("src/app-shell/styles.css"), /--r-card:\s*12px/u);
 });
 
-test("Codex 基线：工作组为细边框圆角卡片", () => {
+test("Codex 基线：工作组无框直出", () => {
   const css = read("src/app-shell/agent/agent.css");
   const group = cssBlock(css, ".agent-work-group");
-  assert.match(group, /border:\s*1px solid var\(--agent-line\)/u);
-  assert.match(group, /border-radius:\s*var\(--r-card\)/u);
-  assert.match(group, /box-shadow:\s*var\(--shadow-xs\)/u);
+  assert.match(group, /border:\s*0/u);
+  assert.match(group, /border-radius:\s*0/u);
+  assert.match(group, /background:\s*transparent/u);
 });
 
 test("Codex 基线：状态行是紧凑小条（无全宽边框）", () => {

@@ -702,14 +702,14 @@
 }
 
 /* ---- 工作组（Task 6/12）：reasoning/tool/plan 有序时间线，插入对话时间流。
-   Codex 改版：细边框圆角折叠卡片——收起一行状态+耗时，展开为明细；
-   层级由卡片承载，不再依赖左侧细时间线。 */
+   Codex 改版 B-5/B-5b：无框直出折叠行——收起一行状态+耗时，展开为明细；
+   内容轴与正文 720px 对齐，hover 提供可点击暗示。 */
 .agent-work-group {
   width: min(100%, 1040px); /* 保留：与对话共用 1040px 主内容轴 */
-  border: 1px solid var(--agent-line);
-  border-radius: var(--r-card);
-  background: var(--agent-panel-solid);
-  box-shadow: var(--shadow-xs);
+  border: 0;                 /* 打磨 B-5：去描边/圆角/底色/阴影，无框直出 */
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
   overflow: hidden;
 }
 
@@ -719,8 +719,14 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
+  max-width: 720px;          /* 打磨 B-5b：内容轴与正文 720px 对齐（容器仍全宽） */
+  padding: 4px 2px;          /* 打磨 B-5：无框后收紧 */
+  border-radius: var(--r);   /* hover 反馈的圆角（仅 hover 时可见背景） */
   user-select: none;
+}
+
+.agent-work-group > summary:hover {
+  background: var(--hover);  /* 打磨 B-5：可点击暗示；背景落在 720px 内容轴内 */
 }
 
 .agent-work-group > summary::-webkit-details-marker {
@@ -728,7 +734,7 @@
 }
 
 .agent-work-group[open] > summary {
-  border-bottom: 1px solid var(--agent-line-3);
+  border-bottom: 0;          /* 打磨 B-5：无框 */
 }
 
 .agent-work-group > summary::after {
@@ -748,9 +754,9 @@
 }
 
 .agent-work-status {
-  color: var(--agent-work-title-fg);
-  font-weight: var(--weight-semibold);
-  font-size: 13px;
+  color: var(--muted);       /* 打磨 B-4：muted 常规字重 12.5px */
+  font-weight: var(--weight-medium);
+  font-size: 12.5px;
   line-height: 1.4;
 }
 
@@ -765,7 +771,8 @@
   display: flex;
   flex-direction: column;
   gap: 7px;
-  padding: 4px 8px 8px; /* 原 border-top 由 summary 下边框承担，移除 */
+  max-width: 720px;          /* 打磨 B-5b：内容轴与正文对齐 */
+  padding: 0 2px 8px;        /* 打磨 B-5：无框后收紧 */
 }
 
 /* 统一子项行：label / icon / path / meta 一行内换行排列，detail 与计划独占一行。
