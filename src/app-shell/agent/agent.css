@@ -302,7 +302,16 @@
 .agent-messages {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 12px; /* 轮内（用户气泡→工作组→正文）紧凑节奏（打磨 B-3） */
+}
+
+/* 轮间宽松节奏：上一轮正文 → 下一轮用户气泡（或工作组 → 下一轮用户气泡）
+   在 gap 12px 之上补 16px，合计 28px。回合边界一眼可见。
+   注（v4）：本规则依赖 B1 修复后的时间线顺序——工作组紧跟其轮的用户消息、
+   正文之后是下一轮用户气泡；B1 未完成前此间距语义不成立。 */
+.agent-messages > .agent-message--assistant + .agent-message--user,
+.agent-messages > .agent-work-group + .agent-message--user {
+  margin-top: 16px;
 }
 
 /* 未选择项目：Codex 式产品起点，安静地融入内容画布。 */
@@ -484,7 +493,7 @@
    一套 typography（无 .is-streaming h* / .is-complete h* 重复规则）。 */
 .agent-message-text.agent-markdown {
   white-space: normal;
-  width: min(100%, 800px); /* 助手正文：100% 优先，封顶 800px，与用户气泡上限一致 */
+  width: min(100%, 720px); /* Assistant 正文阅读宽度：中文每行 ≈ 40 字（打磨 B-2） */
 }
 
 /* §2.6 标题/正文层级：H1/H2 靠字号、字重、间距和 H2 的细分隔线建立层级，
@@ -580,15 +589,15 @@
   margin: 10px 0;
 }
 
-/* 表格保持 800px 正文列，窄屏仅滚动包装层，不把各列压成逐字换行。 */
+/* 表格保持 720px 正文列，窄屏仅滚动包装层，不把各列压成逐字换行。 */
 .agent-markdown-table-scroll {
   max-width: 100%;
   overflow-x: auto;
   margin: 0 0 8px;
 }
 .agent-markdown-table-scroll table {
-  width: 800px;
-  min-width: 800px;
+  width: min(720px, 100%);
+  min-width: min(720px, 100%);
   table-layout: fixed;
   border-collapse: collapse;
   margin: 0;
