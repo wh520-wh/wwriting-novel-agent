@@ -863,6 +863,18 @@ test("edit_file/write_file expected_checksum 防覆盖：匹配放行、过期�
   assertClosure(await readEvents(h.journal));
 });
 
+test("write_file expected_checksum + 目标不存在：拒绝 file_not_found", async (t) => {
+  const h = await setup(t, { permissions: { auto_edit: true } });
+  await fs.mkdir(path.join(h.projectRoot, "chapters"), { recursive: true });
+  const missing = await h.tools.execute(
+    toolCall("write_file", { path: "chapters/002.md", content: "x", expected_checksum: "sha256:x" }),
+    h.context
+  );
+  assert.equal(missing.ok, false);
+  assert.equal(missing.error.code, "file_not_found");
+  assertClosure(await readEvents(h.journal));
+});
+
 test("tool_call_failed 的 message 先脱敏（路径内嵌 token 形片段不泄漏）", async (t) => {
   const h = await setup(t);
   const tokenPath = "sk-abcdefghijklmnop/notes.txt";

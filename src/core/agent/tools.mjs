@@ -981,7 +981,7 @@ export function createToolRuntime({
       properties: {
         path: { type: "string", minLength: 1, description: "目标文件路径（相对项目根或绝对路径）" },
         content: { type: "string", description: "要写入的完整内容" },
-        expected_checksum: { type: "string", description: "可选：写入前文件的 SHA-256 校验和（read_file 返回的 checksum）；不匹配时拒绝（stale_checksum），防止覆盖他人已改动的版本" }
+        expected_checksum: { type: "string", description: "可选：写入前文件的 SHA-256 校验和（取自上一次 write_file/edit_file 返回的 checksum）；不匹配时拒绝（stale_checksum），防止覆盖他人已改动的版本" }
       },
       required: ["path", "content"],
       additionalProperties: false
@@ -1005,6 +1005,9 @@ export function createToolRuntime({
       const target = path.resolve(context.projectRoot, args.path);
       // R5-10：content 必须是字符串——对象/数组参数不得静默写成 "[object Object]"。
       const content = requireStringArg(args, "content", "content");
+      if (args.expected_checksum !== undefined && args.expected_checksum !== null && typeof args.expected_checksum !== "string") {
+        throw toolError("bad_args", "参数无效：expected_checksum 必须是字符串。", { rule: "bad_args", fields: ["expected_checksum"] });
+      }
       if (args.expected_checksum !== undefined && args.expected_checksum !== null) {
         if (!(await pathExists(target))) {
           throw toolError("file_not_found", `文件不存在：${args.path}`);
@@ -1031,7 +1034,7 @@ export function createToolRuntime({
         find: { type: "string", minLength: 1, description: "要查找的原文片段（必须精确匹配）" },
         replace: { type: "string", description: "替换后的文本（可为空串）" },
         occurrence: { type: "integer", minimum: 1, description: "可选：替换第几处匹配（缺省要求全文唯一）" },
-        expected_checksum: { type: "string", description: "可选：写入前文件的 SHA-256 校验和（read_file 返回的 checksum）；不匹配时拒绝（stale_checksum），防止覆盖他人已改动的版本" }
+        expected_checksum: { type: "string", description: "可选：写入前文件的 SHA-256 校验和（取自上一次 write_file/edit_file 返回的 checksum）；不匹配时拒绝（stale_checksum），防止覆盖他人已改动的版本" }
       },
       required: ["path", "find"],
       additionalProperties: false
@@ -1061,6 +1064,9 @@ export function createToolRuntime({
         if (!Number.isInteger(Number(args.occurrence)) || Number(args.occurrence) <= 0) {
           throw toolError("bad_args", "参数无效：occurrence 必须是正整数。", { rule: "bad_args", fields: ["occurrence"] });
         }
+      }
+      if (args.expected_checksum !== undefined && args.expected_checksum !== null && typeof args.expected_checksum !== "string") {
+        throw toolError("bad_args", "参数无效：expected_checksum 必须是字符串。", { rule: "bad_args", fields: ["expected_checksum"] });
       }
       if (!(await pathExists(target))) throw toolError("file_not_found", `文件不存在：${args.path}`);
       const content = await fs.readFile(target, "utf8");
