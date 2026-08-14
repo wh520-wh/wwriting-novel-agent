@@ -5,14 +5,13 @@
 //
 // Task 14 边界（与派生记忆解耦）：commitChapter 只承担确定性提交事务（项目身份、
 // 校验和、正式文件、章节索引、章节记忆摘录、checkpoint、run_log，原子写/回滚）；
-// 全书摘要（book_summary.md）与 continuity 是派生数据，由独立的
-// commitChapterMemory(...) 接收已解析的提取数据后确定性落盘——可失败/可重试，
-// 失败绝不回滚已提交正文。触发派生提取（memory extractor）是 Agent runtime 的
-// 编排职责，不在本模块内联模型调用。
+// continuity 由独立的 updateMemoryFromExtraction(...) 接收已解析的提取数据后
+// 确定性落盘——可失败/可重试，失败绝不回滚已提交正文。触发派生提取（memory
+// extractor）是 Agent runtime 的编排职责，不在本模块内联模型调用。
 //
 // 边界：
 //   - 本模块不接收 ModelGateway、不调用模型。模型类检查（fact-check、记忆提取）
-//     由 ProjectAgent runtime 完成，结果经调用参数（extraction）传入本模块做
+//     由 Agent runtime 完成，结果经调用参数（extraction）传入本模块做
 //     确定性落盘。
 //   - 本模块不读写旧 agent_state 状态文件；章节位置与完成事实只由章节文件 +
 //     memory/chapter_index.json 推导（Rule 9）。
@@ -48,7 +47,6 @@ import { appendEvent } from "../event-log.mjs";
 import {
   ensureDir,
   pathExists,
-  readJson,
   safeJoin,
   sha256,
   writeFileAtomic,
@@ -59,9 +57,7 @@ import { countEffectiveWords } from "../word-count.mjs";
 import { ensureBaselineVersion, listChapterVersions, readChapterVersion, snapshotChapter } from "./versions.mjs";
 import { recordChapterMemory } from "../chapter-memory.mjs";
 import {
-  CONTINUITY_SCHEMA_VERSION,
   loadContinuity,
-  loadContinuityState,
   mergeExtraction,
   renderContinuityMarkdown
 } from "../continuity-store.mjs";
@@ -876,48 +872,29 @@ function buildCheckpoint({ project, chapterNo, checkpointId, artifact }) {
 }
 
 // ---------------------------------------------------------------------------
-// commitChapterMemory —— 接收已解析的提取数据（runtime 已完成模型提取），
-// 校验源章节校验和，原子更新 continuity / 全书摘要 / 水位，不改写章节正文。
-// 幂等：mergeExtraction 天然去重；重复调用（重建记忆维护 Run）安全。
-// 崩溃恢复：memory/.pending-extraction-N.json 存在时优先使用（旧 §3.6 行为），
-// 成功后删除；失败保留供下次恢复（pending 删除不在事务写入之列）。
+// updateMemoryFromExtraction —— 第九轮：update_memory 工具的系统侧落盘函数。
+// 接收已归一化的提取数据（facts/timeline/characters），轻量门禁校验章节存在后，
+// 幂等合并（mergeExtraction 去重/冲突标记）并原子更新 continuity 两文件。
+// 不再写全书摘要、水位、pending（旧架构移除），不做正文指纹比对。
 // ---------------------------------------------------------------------------
 
-export async function commitChapterMemory({ projectRoot, chapterNo, expectedChapterChecksum = null, extraction = null }, options = {}) {
+export async function updateMemoryFromExtraction({ projectRoot, chapterNo, extraction = null }, options = {}) {
   assertProjectRoot(projectRoot);
   assertChapterNo(chapterNo);
-
-  const pendingPath = safeJoin(projectRoot, "memory", `.pending-extraction-${chapterNo}.json`);
-  let data = extraction;
-  if (data === null || data === undefined) {
-    const pending = await readJson(pendingPath, null);
-    if (pending && typeof pending === "object" && pending.ok === true) {
-      data = pending;
-    }
-  }
-  if (!data || typeof data !== "object") {
-    throw new ProjectOperationError("extraction_missing", "缺少记忆提取数据（extraction 或 pending 文件）。");
+  if (!extraction || typeof extraction !== "object") {
+    throw new ProjectOperationError("extraction_missing", "缺少记忆更新数据（extraction）。");
   }
 
-  // 校验源章节校验和：防把提取数据合并到已漂移的章节正文上。
+  // 轻量门禁：引用章节必须存在（chapter_index 有记录 或 正式章节文件存在于磁盘）。
   const index = await loadChapterIndexSafe(projectRoot);
   const entry = (index.chapters ?? []).find((chapter) => Number(chapter.chapter_no) === chapterNo) ?? null;
   const chapterPath = entry?.final_path ?? entry?.draft_path ?? null;
-  let chapterContent = null;
-  if (chapterPath !== null && (await pathExists(chapterPath))) {
-    chapterContent = await fs.readFile(chapterPath, "utf8");
-  }
-  if (expectedChapterChecksum !== null && expectedChapterChecksum !== undefined) {
-    if (chapterContent === null) {
-      throw new ProjectOperationError("chapter_not_found", `第 ${chapterNo} 章文件不存在，无法核对校验和。`);
-    }
-    if (sha256(chapterContent) !== expectedChapterChecksum) {
-      throw new ProjectOperationError(
-        "chapter_checksum_mismatch",
-        `第 ${chapterNo} 章校验和与预期不符，拒绝合并记忆。`,
-        { expected: expectedChapterChecksum }
-      );
-    }
+  const fallbackPath = safeJoin(projectRoot, "chapters", `${String(chapterNo).padStart(3, "0")}.md`);
+  const chapterExists = entry !== null
+    || (chapterPath !== null && (await pathExists(chapterPath)))
+    || (await pathExists(fallbackPath));
+  if (!chapterExists) {
+    throw new ProjectOperationError("chapter_not_found", `第 ${chapterNo} 章文件不存在，无法更新设定档案。`);
   }
 
   // ---- 计算全部目标状态（写入前完成，失败不落盘）----
@@ -925,45 +902,22 @@ export async function commitChapterMemory({ projectRoot, chapterNo, expectedChap
   const baseFacts = continuity.facts.length;
   const baseTimeline = continuity.timeline.length;
   const baseCharacterNames = new Set(continuity.characters.map((c) => c.name));
-  const merged = mergeExtraction(continuity, data);
-  const summaryText = `# 全书摘要\n\n${String(data.summary ?? "").trim()}\n`;
-  const state = await loadContinuityState(projectRoot);
-  const extractedChapters = [...new Set(
-    [...(Array.isArray(state.extracted_chapters) ? state.extracted_chapters : []), chapterNo]
-      .map((n) => Number(n))
-      .filter((n) => Number.isInteger(n))
-  )].sort((a, b) => a - b);
-  const nextState = {
-    ...state,
-    schema_version: CONTINUITY_SCHEMA_VERSION,
-    last_extracted_chapter: chapterNo,
-    extracted_chapters: extractedChapters,
-    updated_at: new Date().toISOString()
-  };
+  const merged = mergeExtraction(continuity, extraction);
 
-  // ---- 原子写入 + 回滚 ----
+  // ---- 原子写入两文件 + 回滚（沿用既有备份/恢复机制）----
   const continuityPath = safeJoin(projectRoot, "memory", "continuity.json");
   const continuityMdPath = safeJoin(projectRoot, "memory", "continuity.md");
-  const summaryPath = safeJoin(projectRoot, "book_summary.md");
-  const statePath = safeJoin(projectRoot, "memory", "continuity_state.json");
   const probe = createWriteProbe(options);
-  const tracked = [continuityPath, continuityMdPath, summaryPath, statePath];
   const backups = [];
-  for (const filePath of tracked) {
+  for (const filePath of [continuityPath, continuityMdPath]) {
     const existed = await pathExists(filePath);
     backups.push({ path: filePath, bytes: existed ? await fs.readFile(filePath, "utf8") : null });
   }
-
   try {
     await probe({ path: continuityPath, kind: "continuity_json" });
     await writeJsonAtomic(continuityPath, merged);
     await probe({ path: continuityMdPath, kind: "continuity_md" });
     await writeFileAtomic(continuityMdPath, renderContinuityMarkdown(merged));
-    await probe({ path: summaryPath, kind: "book_summary" });
-    await writeFileAtomic(summaryPath, summaryText);
-    await probe({ path: statePath, kind: "continuity_state" });
-    await writeJsonAtomic(statePath, nextState);
-    await fs.unlink(pendingPath).catch(() => {});
   } catch (error) {
     const rollbackWarnings = [];
     for (const backup of backups) {
@@ -974,7 +928,6 @@ export async function commitChapterMemory({ projectRoot, chapterNo, expectedChap
           await writeFileAtomic(backup.path, backup.bytes);
         }
       } catch (rollbackError) {
-        // 未创建文件的 unlink ENOENT 不算回滚失败（与 run_log 回滚一致）
         if (!(rollbackError.code === "ENOENT" && backup.bytes === null)) {
           rollbackWarnings.push(`恢复 ${backup.path} 失败：${rollbackError.message}`);
         }
@@ -996,7 +949,6 @@ export async function commitChapterMemory({ projectRoot, chapterNo, expectedChap
     facts_added: merged.facts.length - baseFacts,
     timeline_added: merged.timeline.length - baseTimeline,
     characters_added: merged.characters.filter((c) => !baseCharacterNames.has(c.name)).length,
-    summary_updated: true,
     timeline_violations: timelineViolations
   };
 }

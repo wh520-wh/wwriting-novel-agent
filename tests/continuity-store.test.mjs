@@ -4,8 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
-  loadContinuity, mergeExtraction, saveContinuity, renderContinuityMarkdown,
-  loadContinuityState, saveContinuityState
+  loadContinuity, mergeExtraction, saveContinuity, renderContinuityMarkdown
 } from "../src/core/continuity-store.mjs";
 
 async function tmpProject() {
@@ -83,13 +82,6 @@ test("renderContinuityMarkdown 含冲突标记", () => {
     { entity: "刘康", attribute: "坠楼楼层", value: "十二楼", chapter_no: 2, quote: "", conflict_with: "第1章: 六楼" }
   ], timeline: [], characters: [] });
   assert.match(md, /⚠.*冲突.*第1章: 六楼/u);
-});
-
-test("水位读写", async () => {
-  const root = await tmpProject();
-  assert.equal((await loadContinuityState(root)).last_extracted_chapter, 0);
-  await saveContinuityState(root, { last_extracted_chapter: 9 });
-  assert.equal((await loadContinuityState(root)).last_extracted_chapter, 9);
 });
 
 test("mergeExtraction: 写入 v2 timeline（raw + time）", () => {
