@@ -865,6 +865,26 @@
   transform: rotate(225deg);
 }
 
+/* ---- 思考工作项：终态整行点击展开（第九轮，与工具行 R1 对齐） --------------- */
+.agent-work-item[data-kind="reasoning"][data-state="completed"] {
+  cursor: pointer;
+}
+
+.agent-reasoning-caret {
+  margin-left: auto;
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid var(--agent-muted);
+  border-bottom: 1.5px solid var(--agent-muted);
+  transform: rotate(45deg); /* 折叠：指向右 ▸ */
+  transition: transform 140ms ease;
+}
+
+.agent-work-item.agent-reasoning-detail--open .agent-reasoning-caret {
+  transform: rotate(225deg); /* 展开：指向下 ▾ */
+}
+
 .agent-tool-details {
   flex-basis: 100%; /* 独占一行：标签/path/meta 在上，详情在下 */
   border-top: 1px solid var(--agent-line);
