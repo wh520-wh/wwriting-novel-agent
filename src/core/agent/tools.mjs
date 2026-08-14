@@ -81,7 +81,7 @@ export function truncateOutput(text, budget, emitted = 0) {
 const MAX_READ_CHARS = 1024 * 1024; // read_file 单次读取上限（截断）
 const MAX_SEARCH_MATCHES = 50; // search_files 命中上限
 const MAX_SEARCH_DEPTH = 12; // search_files 递归深度上限
-const SEARCH_SKIP_DIRS = new Set([".wwriting", "node_modules", ".git", "checkpoints"]);
+const SEARCH_SKIP_DIRS = new Set([".wwriting", "node_modules", ".git", "checkpoints", ".versions"]);
 
 const PLAN_STATUSES = Object.freeze(["pending", "in_progress", "completed"]);
 
@@ -96,6 +96,7 @@ const CHECKPOINTS_DIR_REL = path.join("checkpoints");
 const CHAPTERS_DIR_REL = path.join("chapters"); // 已无单独路径保护引用（正式章节文件自 C1 起可直接编辑），保留以对齐 spec 中章节目录的命名/安全编辑语义
 const DRAFTS_DIR_REL = path.join("drafts");
 const CHAPTER_INDEX_REL = path.join("memory", "chapter_index.json");
+const VERSIONS_DIR_REL = path.join(".versions"); // 版本快照库（commit/finalize/rollback 维护）
 
 // safe_edit=false 拒绝的「正文/设定」内容路径（沿用前置计划 SAFE_EDIT_TOOLS 语义：
 // 正文、设定、连续性记忆；shell 未知写目标不在此列）
@@ -106,9 +107,9 @@ const PROTECTED_RULES = Object.freeze({
   agent_journal: "agent_journal", // <projectRoot>/.wwriting/agent/ 全部（segments/、journal-manifest.json、session.json、migration.json、checkpoints/）
   project_checkpoints: "project_checkpoints", // <projectRoot>/checkpoints/
   chapter_index: "chapter_index", // memory/chapter_index.json
-  draft_files: "draft_files" // 草稿目录 drafts/（正文只能经 append_chapter_segment 写入）
+  draft_files: "draft_files", // 草稿目录 drafts/（正文只能经 append_chapter_segment 写入）
+  version_files: "version_files" // .versions/ 版本快照库（commit/finalize/rollback 维护）
 });
-
 // 大小写不敏感路径相等（win32 文件系统大小写不敏感；POSIX 保持敏感）
 function samePath(a, b) {
   const x = path.resolve(a);
@@ -278,6 +279,10 @@ function isProtectedWritePath(projectRoot, targetPath) {
   // 按 segment 顺序与安全点写入；write_file/edit_file 直写会绕过段落顺序与草稿校验。
   if (isPathInside(path.join(root, DRAFTS_DIR_REL), target)) {
     return { rule: PROTECTED_RULES.draft_files, path: target };
+  }
+  // 版本快照库 .versions/：系统归档，只读（由版本工具维护）
+  if (isPathInside(path.join(root, VERSIONS_DIR_REL), target)) {
+    return { rule: PROTECTED_RULES.version_files, path: target };
   }
   return null;
 }

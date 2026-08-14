@@ -13,7 +13,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { createProjectRoot, LEGACY_STATE_FILE } from "../helpers/project-agent-harness.mjs";
-import { loadChapterIndex, loadProject } from "../../src/core/project-store.mjs";
+import { loadChapterIndex, loadProject, upsertChapter } from "../../src/core/project-store.mjs";
 import { loadChapterMemory } from "../../src/core/chapter-memory.mjs";
 import { loadContinuity, loadContinuityState, saveContinuity } from "../../src/core/continuity-store.mjs";
 import { parseSimpleYaml, serializeSimpleYaml } from "../../src/core/simple-yaml.mjs";
@@ -28,6 +28,7 @@ import {
   inspectChapterContext,
   ProjectOperationError
 } from "../../src/core/project-operations/chapter.mjs";
+import { migrateBaselineVersions } from "../../src/core/project-operations/versions.mjs";
 
 // Task 10：commitChapter 不再消费技能注入（确定性技能钩子已删除），直接使用原函数。
 // 写探针 options（hooks.beforeWrite）仍由调用点显式传入。
@@ -1021,4 +1022,63 @@ test("inspectChapterContext 从章节索引推导位置且不受 agent_state 影
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// 模块 C：commit/finalize 自动存档版本快照（.versions/），幂等重复提交不新增
+// ---------------------------------------------------------------------------
+
+// 独立 setup（自动清理）：老项目形状测试需要手动预置正式文件后再 upsert 索引。
+async function setupWithAutoCleanup(t) {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-ops-chapter-versions-"));
+  const { projectRoot, project } = await createProjectRoot(workspace);
+  t.after(async () => {
+    await fs.rm(workspace, { recursive: true, force: true });
+  });
+  return { workspace, projectRoot, project };
+}
+
+test("commit/finalize 后自动存档版本快照；幂等重复提交不新增版本", async (t) => {
+  const h = await setupWithAutoCleanup(t);
+  await appendChapterSegment({ projectRoot: h.projectRoot, projectId: h.project.project_id, chapterNo: 1, segmentNo: 1, content: LONG_PROSE });
+  await commitChapter({ projectRoot: h.projectRoot, projectId: h.project.project_id, chapterNo: 1 });
+  const manifestPath = path.join(h.projectRoot, ".versions", "chapters", "001", "manifest.json");
+  const afterCommit = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+  assert.equal(afterCommit.versions.length, 1);
+  assert.equal(afterCommit.versions[0].source, "commit");
+  // 幂等重复提交：duplicate 分支不新增版本
+  await commitChapter({ projectRoot: h.projectRoot, projectId: h.project.project_id, chapterNo: 1 });
+  const afterDup = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+  assert.equal(afterDup.versions.length, 1);
+  // 修订入账新增版本
+  const finalPath = chapterFinalPath(h.projectRoot, 1, h.project.output_format);
+  await fs.writeFile(finalPath, "修订正文", "utf8");
+  await finalizeChapter({ projectRoot: h.projectRoot, projectId: h.project.project_id, chapterNo: 1 });
+  const afterFinalize = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+  assert.equal(afterFinalize.versions.length, 2);
+  assert.equal(afterFinalize.versions[1].source, "revision");
+});
+
+test("老项目形状（既有 completed 章节、无任何版本）：finalize 自动种 baseline 再存修订版", async (t) => {
+  // 模拟升级前的既有项目：索引已有 completed 条目 + 正式文件，.versions/ 尚不存在。
+  // 基线由设计 D3 的迁移先种（runtime 每轮全量迁移，见 runtime.mjs），随后模型的
+  // 直编只触发修订快照；finalize 内的 ensureBaselineVersion 对已种基线幂等跳过。
+  const h = await setupWithAutoCleanup(t);
+  const finalPath = chapterFinalPath(h.projectRoot, 1, h.project.output_format);
+  await fs.mkdir(path.dirname(finalPath), { recursive: true });
+  await fs.writeFile(finalPath, "升级前就已存在的原稿正文", "utf8");
+  await upsertChapter(h.projectRoot, {
+    chapter_no: 1, status: "completed", final_path: finalPath,
+    actual_words: countEffectiveWords("升级前就已存在的原稿正文"),
+    checksum: sha256("升级前就已存在的原稿正文"), quality_gate_results: []
+  });
+  // D3 迁移：对 completed 章节种 baseline（此时文件还是升级前的原稿）
+  await migrateBaselineVersions({ projectRoot: h.projectRoot, chapters: (await loadChapterIndex(h.projectRoot)).chapters });
+  await fs.writeFile(finalPath, "模型直编后的修订正文", "utf8");
+  await finalizeChapter({ projectRoot: h.projectRoot, projectId: h.project.project_id, chapterNo: 1 });
+  const manifest = JSON.parse(await fs.readFile(path.join(h.projectRoot, ".versions", "chapters", "001", "manifest.json"), "utf8"));
+  assert.equal(manifest.versions.length, 2);
+  assert.equal(manifest.versions[0].source, "baseline", "首次修订前状态必须是 baseline");
+  assert.equal(manifest.versions[1].source, "revision");
+  assert.equal(manifest.versions[0].checksum, sha256("升级前就已存在的原稿正文"));
 });
