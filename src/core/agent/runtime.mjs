@@ -70,7 +70,7 @@ import {
   ProjectOperationError
 } from "../project-operations/chapter.mjs";
 import { migrateBaselineVersions } from "../project-operations/versions.mjs";
-import { buildLedgerDriftNote, detectLedgerDrift } from "../ledger-drift.mjs";
+import { detectLedgerDrift } from "../ledger-drift.mjs";
 
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
 

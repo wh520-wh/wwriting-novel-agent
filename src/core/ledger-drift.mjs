@@ -11,6 +11,7 @@ export async function detectLedgerDrift({ projectRoot }) {
   for (const chapter of index.chapters ?? []) {
     if (chapter.status !== "completed" || !chapter.final_path) continue;
     const chapterNo = Number(chapter.chapter_no);
+    if (!Number.isInteger(chapterNo) || chapterNo < 1) continue;
     const finalPath = safeJoin(projectRoot, chapter.final_path);
     if (!(await pathExists(finalPath))) {
       drifts.push({ chapter_no: chapterNo, issue: "file_missing" });
