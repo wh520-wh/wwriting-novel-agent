@@ -172,6 +172,15 @@ export function createContextRing({
       meta.className = "agent-context-popover-meta";
       meta.textContent = `${Math.round(ratio * 100)}% · ${windowSourceLabel(usage)}`;
       content.append(line, meta);
+      // 第九轮：缓存命中率常驻显示（会话累计 token 加权口径；数据未就绪不显示）。
+      const cacheRate = Number(usage.cache_hit_rate);
+      if (Number.isFinite(cacheRate)) {
+        const cacheLine = doc.createElement("div");
+        cacheLine.className = "agent-context-popover-meta";
+        cacheLine.dataset.testid = "agent-context-popover-cache-rate";
+        cacheLine.textContent = `缓存命中率：${Math.round(cacheRate * 100)}%`;
+        content.append(cacheLine);
+      }
     } else {
       const line = doc.createElement("div");
       line.className = "agent-context-popover-line";

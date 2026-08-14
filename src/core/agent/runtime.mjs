@@ -72,6 +72,25 @@ import {
 import { migrateBaselineVersions } from "../project-operations/versions.mjs";
 import { detectLedgerDrift } from "../ledger-drift.mjs";
 
+// 第九轮：会话级缓存命中率累计（token 加权）。命中 token 不超过输入 token
+//（与 cost-tracker.mjs 的 clamp 一致）；非法/缺失 usage 不改变累计。
+export function accumulateCacheStats(stats, usageReport) {
+  if (!stats || typeof stats !== "object") return stats;
+  const hit = Number(usageReport?.cacheHitTokens);
+  const input = Number(usageReport?.inputTokens);
+  if (!Number.isFinite(hit) || !Number.isFinite(input) || input <= 0) return stats;
+  stats.hitTokens += Math.min(hit, input);
+  stats.inputTokens += input;
+  return stats;
+}
+
+export function cacheHitRateOf(stats) {
+  if (!stats || typeof stats !== "object") return null;
+  return Number.isFinite(Number(stats.inputTokens)) && Number(stats.inputTokens) > 0
+    ? Number(stats.hitTokens) / Number(stats.inputTokens)
+    : null;
+}
+
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
 // Task 3：取消/停止语义的工具失败不触发「跳过同一响应后续调用」——这些结果由
@@ -465,7 +484,9 @@ export function createAgentRuntime({
       // 当前 session 的上下文估算校准倍率（provider usage 的 EMA 比例，夹在
       // 0.5..2.0，只属于本会话；clearHistory 时一并复位）。null 表示尚无 provider
       // 观测，估算用默认倍率 1 并保持 approximate。
-      contextCalibration: null
+      contextCalibration: null,
+      // 第九轮：会话级缓存命中率累计（token 加权，进程内；重启用例下归零 → 前端不显示）。
+      cacheStats: { hitTokens: 0, inputTokens: 0 }
     };
     state.sessions.set(sessionId, sessionState);
     return sessionState;
@@ -1585,7 +1606,7 @@ export function createAgentRuntime({
         type: "context_usage_updated",
         run_id: runId,
         payload: {
-          usage: { ...contextEstimate, model: modelConfig.model_name }
+          usage: { ...contextEstimate, model: modelConfig.model_name, cache_hit_rate: cacheHitRateOf(sessionState.cacheStats) }
         }
       });
       // Task 8：首次自动压缩门禁（brief Step 4/5）。同一待发送输入最多触发一次
@@ -1767,11 +1788,13 @@ export function createAgentRuntime({
           calibration: sessionState.contextCalibration ?? 1
         });
         calibratedEstimate.approximate = calibration.approximate;
+        // 第九轮：调用完成后累加会话级缓存统计，随 context_usage_updated 送达前端。
+        accumulateCacheStats(sessionState.cacheStats, reply?.usageReport);
         await journal.append({
           type: "context_usage_updated",
           run_id: runId,
           payload: {
-            usage: { ...calibratedEstimate, model: modelConfig.model_name }
+            usage: { ...calibratedEstimate, model: modelConfig.model_name, cache_hit_rate: cacheHitRateOf(sessionState.cacheStats) }
           }
         });
       } catch (error) {

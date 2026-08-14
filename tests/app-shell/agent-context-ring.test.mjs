@@ -401,3 +401,32 @@ test("destroy 后移除 doc 级监听，外部点击不再关闭（已无监听�
   doc._fire("pointerdown", { target: root });
   assert.equal(popover.dataset.open, "true", "destroy 后外部点击不再触发关闭");
 });
+
+// ===========================================================================
+// 第九轮：缓存命中率常驻显示
+// ===========================================================================
+
+test("第九轮：popover 在 cache_hit_rate 可读时常驻显示「缓存命中率：X%」", () => {
+  const { root, ring } = makeRing();
+  ring.setUsage({
+    status: "ready",
+    used_tokens: 5000,
+    effective_context_window: 100000,
+    window_source: "default_256k",
+    cache_hit_rate: 0.87
+  });
+  const button = root.querySelector('[data-testid="agent-context-ring"]');
+  button._fire("mouseenter");
+  const popover = root.querySelector('[data-testid="agent-context-popover"]');
+  assert.match(popover.textContent, /缓存命中率：87%/u, "格式：缓存命中率：<整数>%（中文冒号）");
+  assert.match(popover.textContent, /上下文用量/u, "原有用量信息保留");
+});
+
+test("第九轮：cache_hit_rate 缺失/不可读时不显示该行（不出现假 0）", () => {
+  const { root, ring } = makeRing();
+  ring.setUsage({ status: "ready", used_tokens: 5000, effective_context_window: 100000, window_source: "default_256k" });
+  const button = root.querySelector('[data-testid="agent-context-ring"]');
+  button._fire("mouseenter");
+  const popover = root.querySelector('[data-testid="agent-context-popover"]');
+  assert.doesNotMatch(popover.textContent, /缓存命中率/u, "无数据不显示");
+});
