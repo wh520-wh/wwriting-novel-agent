@@ -202,13 +202,14 @@ async function main() {
     expect: async () => !(await read(win, "document.getElementById('drawer').classList.contains('show')"))
   }));
 
-  // ⑤ 设置页（Task 12 设置入口分流）：#open-settings 直达模型设置页——供应商/
+  // ⑤ 设置弹窗（Task A5）：#open-settings 打开设置弹窗且默认落在「模型设置」分区——
+  // #settings-scrim 带 show、#settings-detail 注入 [data-provider-list]；供应商/
   // 模型行可操作、密钥已配置状态不泄漏明文（规格 4.3 #4，假密钥 sk-round7- 哨兵）、
-  // 测试连接按钮可点、关闭。
+  // 测试连接按钮可点、关闭（A3 起模型设置不再有整页 #model-settings-page）。
   clicks.push(await clickAndRead(win, "#open-settings", {
     label: "open-settings",
     settleMs: 400,
-    expect: () => read(win, "document.getElementById('model-settings-page').hidden === false")
+    expect: () => read(win, "document.getElementById('settings-scrim').classList.contains('show') && Boolean(document.querySelector('#settings-detail [data-provider-list]'))")
   }));
   await waitUntil(win, "document.querySelectorAll('.provider-item').length >= 1", "provider list must render in model settings", 8000);
   await waitUntil(win, "document.querySelectorAll('.model-row').length >= 1", "model rows must render in model settings", 8000);
@@ -226,10 +227,12 @@ async function main() {
   assert.equal(settingsOperable.keyStatus, "已配置（WWRITING_ROUND7_FAKE_KEY）", `密钥状态应只显示 已配置 + env 名: ${JSON.stringify(settingsOperable)}`);
   assert.equal(settingsOperable.bodyHasFakeKey, false, "密钥明文不得出现在模型设置页 DOM");
   assert.equal(settingsOperable.testButton, true, "测试连接按钮应存在（设置页可操作）");
-  clicks.push(await clickAndRead(win, "#model-settings-close", {
-    label: "model-settings-close",
+  // A3/A5：模型设置已并入设置弹窗，关闭走弹窗 X（#settings-x）；关闭后 scrim 无 show
+  //（#settings-detail 内模型 DOM 在关闭时保留，重开时 renderSectionBody 会 replaceChildren）。
+  clicks.push(await clickAndRead(win, "#settings-x", {
+    label: "settings-close",
     settleMs: 300,
-    expect: () => read(win, "document.getElementById('model-settings-page').hidden === true")
+    expect: () => read(win, "!document.getElementById('settings-scrim').classList.contains('show')")
   }));
 
   // ⑥ 新建弹窗：打开 → 关闭（普通文件夹场景仍可创建新项目）
