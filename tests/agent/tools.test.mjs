@@ -733,7 +733,8 @@ test("通用写工具拒绝直接写受保护路径", async (t) => {
     ["project checkpoints", "checkpoints/cp.json"],
     ["chapter index", "memory/chapter_index.json"],
     ["draft file", "drafts/001.draft.md"],
-    ["draft 中间点文件名", "drafts/2.修订.draft.txt"]
+    ["draft 中间点文件名", "drafts/2.修订.draft.txt"],
+    ["version archive", ".versions/chapters/001/v1.md"]
   ];
   for (const [label, rel] of protectedTargets) {
     const result = await h.tools.execute(toolCall("write_file", { path: rel, content: MARKER }), h.context);

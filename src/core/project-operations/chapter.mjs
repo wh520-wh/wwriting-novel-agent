@@ -56,6 +56,7 @@ import {
 } from "../fs-utils.mjs";
 import { loadChapterIndex, loadProject, upsertChapter } from "../project-store.mjs";
 import { countEffectiveWords } from "../word-count.mjs";
+import { ensureBaselineVersion, snapshotChapter } from "./versions.mjs";
 import { recordChapterMemory } from "../chapter-memory.mjs";
 import {
   CONTINUITY_SCHEMA_VERSION,
@@ -536,6 +537,23 @@ export async function commitChapter({ projectRoot, projectId, chapterNo, expecte
     throw error;
   }
 
+  // 快照触发（模块 C）：成功生效的提交存档当前正式内容。失败不抛、只标记
+  // 为 version 状态（版本库是派生归档，不得阻塞/回滚已提交的正文）。
+  let snapshot = null;
+  try {
+    snapshot = await snapshotChapter({
+      projectRoot,
+      chapterNo,
+      content: commitContent,
+      source: usedFinal ? "revision" : "commit"
+    });
+  } catch (snapshotError) {
+    snapshot = {
+      status: "failed",
+      error: { code: snapshotError.code ?? "snapshot_failed", message: snapshotError.message }
+    };
+  }
+
   return {
     ok: true,
     duplicate: false,
@@ -545,7 +563,8 @@ export async function commitChapter({ projectRoot, projectId, chapterNo, expecte
     actual_words: actualWords,
     checksum,
     checkpoint_id: path.basename(checkpointPath, ".json"),
-    quality_gate_results: []
+    quality_gate_results: [],
+    ...(snapshot ? { version: snapshot } : {})
   };
 }
 
@@ -702,6 +721,20 @@ export async function finalizeChapter({ projectRoot, projectId, chapterNo, expec
     throw error;
   }
 
+  // 版本快照（模块 C，设计 D3 迁移最小单元）：先确保基线（老项目首次修订前的
+  // 状态存为 v1 baseline），再存档当前修订版。失败不抛、只标记（派生归档，
+  // 不得阻塞/回滚已入账的修订）。
+  let snapshot = null;
+  try {
+    await ensureBaselineVersion({ projectRoot, chapterNo, content });
+    snapshot = await snapshotChapter({ projectRoot, chapterNo, content, source: "revision" });
+  } catch (snapshotError) {
+    snapshot = {
+      status: "failed",
+      error: { code: snapshotError.code ?? "snapshot_failed", message: snapshotError.message }
+    };
+  }
+
   return {
     ok: true,
     chapter_no: chapterNo,
@@ -709,7 +742,8 @@ export async function finalizeChapter({ projectRoot, projectId, chapterNo, expec
     actual_words: actualWords,
     checksum,
     checkpoint_id: path.basename(checkpointPath, ".json"),
-    quality_gate_results: []
+    quality_gate_results: [],
+    ...(snapshot ? { version: snapshot } : {})
   };
 }
 

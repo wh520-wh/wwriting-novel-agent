@@ -50,7 +50,7 @@ import {
 import { createContextCheckpointStore } from "./context-checkpoints.mjs";
 import { createCompactionCoordinator, COMPACTION_BLOCKED_STATES, COMPACTION_NON_TERMINAL_STATES } from "./compaction.mjs";
 import { COMPACTION_PROMPT, selectProtectedRecentTurns } from "./compaction-prompt.mjs";
-import { loadProject } from "../project-store.mjs";
+import { loadProject, loadChapterIndex } from "../project-store.mjs";
 import { pathExists } from "../fs-utils.mjs";
 import { createMutex } from "../async-utils.mjs";
 import { readProjectMemory } from "../project-memory.mjs";
@@ -68,6 +68,7 @@ import {
   inspectChapterContext,
   ProjectOperationError
 } from "../project-operations/chapter.mjs";
+import { migrateBaselineVersions } from "../project-operations/versions.mjs";
 
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
@@ -1499,6 +1500,17 @@ export function createAgentRuntime({
       // ---- 装配模型请求 ----
       const project = await resolveWorkspaceConfig(state.key);
       const modelConfig = modelConfigOf(project);
+      // 设计 D3 版本库基线迁移（模块 C）：每轮模型请求装配前，对索引 completed 且
+      // 正式文件存在的章节幂等种 baseline（只写 .versions/）。失败只记录维护级
+      // 警告（如索引损坏），绝不阻塞本轮 run，也绝不触碰正文/索引/校验和。
+      try {
+        const index = await loadChapterIndex(state.key);
+        await migrateBaselineVersions({ projectRoot: state.key, chapters: index.chapters ?? [] });
+      } catch (migrationError) {
+        console.warn(
+          `[agent] 章节版本基线迁移失败（尽力而为）: ${migrationError?.message ?? String(migrationError)}`
+        );
+      }
       // Task 6：每个模型轮重新读取 WWRITING.md（新对话、上下文压缩后的下一轮、
       // 模型切换、retry 和应用重启都会重新读取）。readProjectMemory 容错：缺失
       // 返回空、不可读返回 unreadable 标记，绝不阻止 prompt、不把全文永久缓存到
