@@ -950,6 +950,41 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       detailEl.className = "agent-reasoning-detail";
       wrap.append(detailEl);
       row.detailEl = detailEl;
+      // 第九轮：与工具行（R1）一致的整行折叠交互——终态「已完成思考」默认
+      // 折叠为一行（label + caret），整行点击展开全文；运行中（ticker 实时
+      // 摘要）不进入折叠态、点击不响应。
+      const reasoningCaret = doc.createElement("span");
+      reasoningCaret.className = "agent-reasoning-caret";
+      reasoningCaret.setAttribute("aria-hidden", "true");
+      wrap.append(reasoningCaret);
+      row.caret = reasoningCaret;
+      wrap.setAttribute("role", "button");
+      wrap.setAttribute("tabindex", "0");
+      wrap.setAttribute("aria-expanded", "false");
+      row.reasoningOpen = false;
+      const setReasoningOpen = (open) => {
+        row.reasoningOpen = open;
+        wrap.setAttribute("aria-expanded", open ? "true" : "false");
+        wrap.classList.toggle("agent-reasoning-detail--open", open);
+        row.detailEl.hidden = !open;
+      };
+      wrap.addEventListener("click", (event) => {
+        // 仅终态可展开/折叠（dataset.state 由 updateWorkItemRow 同步）
+        if (row.wrap.dataset.state === "running") return;
+        const target = event?.target ?? wrap;
+        if (target.closest?.(".agent-reasoning-detail")) return; // 内容区点击不切换
+        setReasoningOpen(!row.reasoningOpen);
+      });
+      wrap.addEventListener("keydown", (event) => {
+        // 真实 DOM 聚焦行自身时 target===wrap；MockElement._fire 不透传 target，
+        // 缺省视为行自身（否则测试桩下 Enter/Space 永不触发）。
+        if ((event?.target ?? wrap) !== wrap) return;
+        if (row.wrap.dataset.state === "running") return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault(); // 防 Space 滚动
+          setReasoningOpen(!row.reasoningOpen);
+        }
+      });
     } else if (item.kind === "plan") {
       label.classList.add("agent-plan__title");
       const countEl = doc.createElement("span");
@@ -1036,8 +1071,10 @@ export function createAgentView({ root, document: doc = globalThis.document, req
           row.lastPushedLen = text.length;
         }
         row.tickerEl.hidden = false;
+        // 第九轮：运行中强制折叠态（ticker 摘要为唯一展示；caret 隐藏、不可点）
         row.detailEl.hidden = true;
         row.detailEl.textContent = "";
+        if (row.caret) row.caret.hidden = true;
       } else {
         row.tickerEl.hidden = true;
         if (wasRunning) {
@@ -1045,9 +1082,12 @@ export function createAgentView({ root, document: doc = globalThis.document, req
           row.ticker = null;
           row.lastPushedLen = (item.text ?? "").length;
         }
-        row.detailEl.hidden = false;
+        // 第九轮：终态默认折叠——详情内容照填（diff 后立即可展开），可见性
+        // 由用户展开态（reasoningOpen）控制，不再直接平铺。
         const detailText = reasoningDetailText(item);
         if (row.detailEl.textContent !== detailText) row.detailEl.textContent = detailText;
+        row.detailEl.hidden = !row.reasoningOpen;
+        if (row.caret) row.caret.hidden = false;
       }
     } else if (row.kind === "plan") {
       updatePlanContent(row, item.plan);

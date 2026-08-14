@@ -1572,7 +1572,7 @@ test("tool 成功：完成 icon 单独承载成功标记，label 恢复静态", 
   assert.equal(row.querySelector(".agent-work-item__label").classList.contains("agent-live-text"), false);
 });
 
-test("reasoning 详情兜底：available 全文 / unsupported / empty 文案", async () => {
+test("reasoning 详情兜底：available 全文 / unsupported / empty 文案（终态默认折叠，展开后可见）", async () => {
   const runScenario = async (availability, deltaText, finalText) => {
     const { root, surface } = await makeSurface();
     await surface.openProject("D:\\novel");
@@ -1581,7 +1581,9 @@ test("reasoning 详情兜底：available 全文 / unsupported / empty 文案", a
     if (deltaText) surface.applyEvent(ev("reasoning_delta", { turn_id: `turn-${availability}`, input_id: "in-1", text: deltaText }));
     surface.applyEvent(ev("reasoning_completed", { turn_id: `turn-${availability}`, input_id: "in-1", text: finalText ?? "", availability }));
     const detail = root.querySelector(".agent-reasoning-detail");
-    assert.equal(detail.hidden, false, "完成后详情可见");
+    assert.equal(detail.hidden, true, "完成后默认折叠（全文不直接铺开）");
+    detail.parentElement._fire("click"); // 展开后读取文案
+    assert.equal(detail.hidden, false, "整行点击后详情展开");
     return detail.textContent;
   };
   assert.match(await runScenario("available", "完整思考内容。", "完整思考内容。"), /完整思考内容。/u);
@@ -4850,4 +4852,42 @@ test("第九轮：composer 发送后 pending 气泡被正式消息替换，用�
     userBubble < workGroup,
     `pending 替换后用户消息（idx=${userBubble}）仍须排在工作组（idx=${workGroup}）之前`
   );
+});
+
+test("第九轮：已完成思考项默认折叠为一行，整行点击展开全文、再次点击收起", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("model_turn_started", { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }));
+  surface.applyEvent(ev("reasoning_completed", { turn_id: "turn-1", input_id: "in-1", text: "先检查事实，再动笔。", availability: "available" }));
+  const group = root.querySelector(".agent-work-group");
+  const wrap = group.querySelector('[data-kind="reasoning"]');
+  assert.ok(wrap, "思考行存在");
+  assert.equal(wrap.getAttribute("role"), "button", "与工具行一致：整行 role=button");
+  assert.equal(wrap.getAttribute("aria-expanded"), "false", "终态默认折叠");
+  const detail = wrap.querySelector(".agent-reasoning-detail");
+  assert.equal(detail.hidden, true, "默认折叠：思考全文不直接铺开");
+  assert.ok(wrap.querySelector(".agent-reasoning-caret"), "有折叠指示箭头");
+  wrap._fire("click");
+  assert.equal(detail.hidden, false, "整行点击展开全文");
+  assert.equal(wrap.getAttribute("aria-expanded"), "true", "aria-expanded 同步展开态");
+  wrap._fire("click");
+  assert.equal(detail.hidden, true, "再次点击收起");
+  assert.equal(wrap.getAttribute("aria-expanded"), "false");
+});
+
+test("第九轮：思考中（运行中）保持 ticker 实时摘要，点击不进入展开态", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("model_turn_started", { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }));
+  surface.applyEvent(ev("reasoning_delta", { turn_id: "turn-1", input_id: "in-1", text: "先检查事实。" }));
+  const group = root.querySelector(".agent-work-group");
+  const wrap = group.querySelector('[data-kind="reasoning"]');
+  const ticker = wrap.querySelector(".agent-reasoning-ticker");
+  const detail = wrap.querySelector(".agent-reasoning-detail");
+  assert.equal(ticker.hidden, false, "运行中 ticker 摘要可见");
+  assert.equal(detail.hidden, true, "运行中详情不显示");
+  wrap._fire("click"); // 运行中点击不响应
+  assert.equal(detail.hidden, true, "运行中不可展开（折叠交互只属于终态）");
 });
