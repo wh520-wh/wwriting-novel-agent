@@ -59,8 +59,6 @@ const refs = {
   settingsCancel: document.querySelector("#settings-cancel"),
   settingsSave: document.querySelector("#settings-save"),
   settingsX: document.querySelector("#settings-x"),
-  modelSettingsPage: document.querySelector("#model-settings-page"),
-  modelSettingsClose: document.querySelector("#model-settings-close"),
   createScrim: document.querySelector("#create-scrim"),
   createHeading: document.querySelector("#create-heading"),
   createLead: document.querySelector("#create-card .lead"),
@@ -174,33 +172,12 @@ const modelSettings = createModelSettingsPage({
   }
 });
 
-// Task 12：设置入口分流——模型分区已迁往新页，凡是最终落在模型分区
-// （缺省、显式 model、以及 /settings 落回 model）的入口统一走新页，
-// 其余分区（writing/skills/danger）仍走旧设置弹窗。
+// Task A1：统一设置入口——所有设置入口（齿轮/抽屉模型配置/斜杠命令）统一打开设置
+// 弹窗；model/settings/缺省 → 「模型设置」分区（A3 起生效，此前回落第一个分区），
+// writing/skills/danger → 对应分区。
 async function openSettingsOrModelPage(section) {
-  if (!section || section === "model" || section === "settings") {
-    if (refs.settingsScrim.classList.contains("show")) closeSettingsModal();
-    // Task 12 修复：从抽屉「模型配置」进入时先关抽屉——本页是更高层级 overlay
-    // （z-index 110 > 抽屉 scrim 40/drawer 50），留着会挡在页面下层还留键盘焦点。
-    // lastFocused 先置空，避免 closeDrawer 动画收尾把焦点抢回抽屉里的按钮
-    // （抽屉随后置 inert，focus() 本就是 no-op，双保险）。
-    if (refs.drawer.classList.contains("show")) {
-      lastFocused = null;
-      closeDrawer();
-    }
-    lastFocused = document.activeElement;
-    refs.modelSettingsPage.hidden = false;
-    refs.modelSettingsClose?.focus();
-    await modelSettings.open();
-    return;
-  }
+  if (!section || section === "model" || section === "settings") section = "model";
   await openSettingsModal(section);
-}
-
-function closeModelSettingsPage() {
-  refs.modelSettingsPage.hidden = true;
-  if (lastFocused && lastFocused.isConnected) lastFocused.focus();
-  lastFocused = null;
 }
 
 const { renderDrawerBody } = createDrawerPanels({
@@ -296,7 +273,6 @@ function closeAppTopLayer() {
   if (refs.shortcutsScrim.classList.contains("show")) { closeShortcuts(); return true; }
   if (refs.readerScrim.classList.contains("show")) { closeReader(); return true; }
   if (refs.settingsScrim.classList.contains("show")) { closeSettingsModal(); return true; }
-  if (!refs.modelSettingsPage.hidden) { closeModelSettingsPage(); return true; }
   if (refs.createScrim.classList.contains("show")) { closeCreateModal(); return true; }
   if (refs.drawer.classList.contains("show")) { closeDrawer(); return true; }
   return false;
@@ -310,7 +286,6 @@ refs.readerScrim.addEventListener("click", (event) => {
 if (!refs.settingsX.title) refs.settingsX.title = "关闭设置";
 refs.settingsX.addEventListener("click", closeSettingsModal);
 refs.settingsCancel.addEventListener("click", closeSettingsModal);
-refs.modelSettingsClose?.addEventListener("click", closeModelSettingsPage);
 refs.settingsScrim.addEventListener("click", (event) => {
   if (event.target === refs.settingsScrim) closeSettingsModal();
 });
