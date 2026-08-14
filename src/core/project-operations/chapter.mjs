@@ -55,6 +55,7 @@ import {
 import { loadChapterIndex, loadProject, upsertChapter } from "../project-store.mjs";
 import { countEffectiveWords } from "../word-count.mjs";
 import { ensureBaselineVersion, listChapterVersions, readChapterVersion, snapshotChapter } from "./versions.mjs";
+import { snapshotMemoryFile } from "./memory-versions.mjs";
 import { recordChapterMemory } from "../chapter-memory.mjs";
 import {
   loadContinuity,
@@ -550,6 +551,16 @@ export async function commitChapter({ projectRoot, projectId, chapterNo, expecte
     };
   }
 
+  // 第九轮：记忆文件快照（派生归档，失败不抛，与章节快照同语义）。
+  try {
+    for (const [file, name] of [["worklog", "WORKLOG.md"], ["book_summary", "book_summary.md"]]) {
+      const memoryPath = safeJoin(projectRoot, name);
+      if (await pathExists(memoryPath)) {
+        await snapshotMemoryFile({ projectRoot, file, content: await fs.readFile(memoryPath, "utf8"), source: "commit" });
+      }
+    }
+  } catch { /* 派生归档失败不阻塞 */ }
+
   return {
     ok: true,
     duplicate: false,
@@ -735,6 +746,16 @@ export async function finalizeChapter({ projectRoot, projectId, chapterNo, expec
     }
   }
 
+  // 第九轮：记忆文件快照（派生归档，失败不抛，与章节快照同语义）。
+  try {
+    for (const [file, name] of [["worklog", "WORKLOG.md"], ["book_summary", "book_summary.md"]]) {
+      const memoryPath = safeJoin(projectRoot, name);
+      if (await pathExists(memoryPath)) {
+        await snapshotMemoryFile({ projectRoot, file, content: await fs.readFile(memoryPath, "utf8"), source: "revision" });
+      }
+    }
+  } catch { /* 派生归档失败不阻塞 */ }
+
   return {
     ok: true,
     chapter_no: chapterNo,
@@ -832,6 +853,17 @@ export async function rollbackChapter({ projectRoot, projectId, chapterNo, versi
   if (snapshot?.status === "failed") {
     versionField.snapshot = snapshot;
   }
+
+  // 第九轮：记忆文件快照（派生归档，失败不抛，与章节快照同语义）。
+  try {
+    for (const [file, name] of [["worklog", "WORKLOG.md"], ["book_summary", "book_summary.md"]]) {
+      const memoryPath = safeJoin(projectRoot, name);
+      if (await pathExists(memoryPath)) {
+        await snapshotMemoryFile({ projectRoot, file, content: await fs.readFile(memoryPath, "utf8"), source: "rollback" });
+      }
+    }
+  } catch { /* 派生归档失败不阻塞 */ }
+
   return { ...finalized, version: versionField };
 }
 
