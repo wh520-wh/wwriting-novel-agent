@@ -1260,7 +1260,9 @@ export function createToolRuntime({
 
   register("count_text", {
     interruptible: false,
-    description: "统计工作区内 Markdown 或纯文本文件的客观字数；minimum/target 只计算差额，不判定通过或失败。",
+    description:
+      "统计工作区内 Markdown 或纯文本文件的客观字数；minimum/target 只计算差额，不判定通过或失败。" +
+      "返回的 effective_count（中文字符 + 英文单词 + 数字记号）与 commit_chapter/finalize_revision 记录的 actual_words 为同一口径。",
     schema: {
       type: "object",
       properties: {
@@ -1427,7 +1429,7 @@ export function createToolRuntime({
 
   register("commit_chapter", {
     interruptible: false, // 正式章节事务是原子提交，不可中断
-    description: "正式提交一章：真实字数记录、正式文件、章节索引、章节记忆与 checkpoint 一致更新（只保留存储安全约束，不做字数/标题/技能内容门禁）。结果中的 memory_update 字段报告提交后独立派生记忆提取的状态（ok/skipped/failed；failed 表示可重试，不影响已提交正文与索引）。",
+    description: "正式提交一章：真实字数记录、正式文件、章节索引、章节记忆与 checkpoint 一致更新（只保留存储安全约束，不做字数/标题/技能内容门禁）。结果中的 memory_update 字段报告提交后独立派生记忆提取的状态（ok/skipped/failed；failed 表示可重试，不影响已提交正文与索引）。actual_words 与 count_text 的 effective_count 为同一口径（中文字符 + 英文单词 + 数字记号）。",
     schema: {
       type: "object",
       properties: {
@@ -1476,7 +1478,7 @@ export function createToolRuntime({
   register("finalize_revision", {
     interruptible: false, // 确认修订是原子入账事务，不可中断
     description:
-      "把已编辑的正式章节文件重新入账：章节索引校验和/字数、章节记忆、checkpoint 与 run_log 一致更新（正式章节文件自 C1 起可用 write_file/edit_file 直接编辑；编辑后必须调用本工具确认入账，账本才会与修订后的文件一致）。结果中的 checkpoint_id 是该章修订后的 checkpoint。",
+      "把已编辑的正式章节文件重新入账：章节索引校验和/字数、章节记忆、checkpoint 与 run_log 一致更新（正式章节文件自 C1 起可用 write_file/edit_file 直接编辑；编辑后必须调用本工具确认入账，账本才会与修订后的文件一致）。结果中的 checkpoint_id 是该章修订后的 checkpoint。actual_words 与 count_text 的 effective_count 为同一口径（中文字符 + 英文单词 + 数字记号）。",
     schema: {
       type: "object",
       properties: {
@@ -1527,7 +1529,8 @@ export function createToolRuntime({
     interruptible: false, // 回滚是原子写回 + 重新入账事务，不可中断
     description:
       "回滚一章到历史版本：把 .versions/ 中指定版本的快照写回正式章节文件并重新入账（索引/校验和/checkpoint 一致更新）。" +
-      "version 缺省时回滚到上一版；回滚本身会存档为新版本。仅当该章存在历史版本时可调用。",
+      "version 缺省时回滚到上一版；回滚本身会存档为新版本。仅当该章存在历史版本时可调用。" +
+      "actual_words 与 count_text 的 effective_count 为同一口径（中文字符 + 英文单词 + 数字记号）。",
     schema: {
       type: "object",
       properties: {
