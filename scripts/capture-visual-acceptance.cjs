@@ -2078,9 +2078,11 @@ async function runRound7({ mainRepo, roundDir, theme }) {
     await setViewport(win, vp.width, vp.height);
     const result = { width: vp.width, height: vp.height, horizontalOverflow: false, overlaps: [], imageNonBlank: true, notes: [] };
 
-    // ---- 状态 1：模型设置页（长名 / 密钥已配置 / 连接错误）----
+    // ---- 状态 1：模型设置（弹窗内模型分区，A3/A5：长名 / 密钥已配置 / 连接错误）----
     // 窄视口（≤880px）左侧 rail 按设计隐藏，设置入口走抽屉「模型配置」→「打开
-    // 模型设置」（三视口统一路径，避免依赖 rail 可见性）。
+    // 模型设置」（三视口统一路径，避免依赖 rail 可见性）。A3 起该入口打开设置弹窗
+    //（#settings-scrim show）并默认落在「模型设置」分区——#settings-detail 内
+    // 注入 [data-provider-list]，无整页 #model-settings-page。
     await clickAndReadRetry(win, "#open-drawer", {
       label: "open-drawer-for-settings",
       expect: () => read(win, "document.getElementById('drawer').classList.contains('show')")
@@ -2092,7 +2094,7 @@ async function runRound7({ mainRepo, roundDir, theme }) {
     await clickAndReadRetry(win, "#drawer-body .save-btn", {
       label: "open-model-settings",
       settleMs: 300,
-      expect: () => read(win, "document.getElementById('model-settings-page').hidden === false")
+      expect: () => read(win, "document.getElementById('settings-scrim').classList.contains('show') && Boolean(document.querySelector('#settings-detail [data-provider-list]'))")
     });
     await waitUntil(win, "document.querySelectorAll('.model-row').length > 0", "model rows must render", 10000);
     await waitUntil(win, "Boolean(document.querySelector('[data-api-key-status]'))", "key status must render", 8000);
@@ -2125,9 +2127,56 @@ async function runRound7({ mainRepo, roundDir, theme }) {
     assert.ok(String(connErrText).includes("✗"), `连接错误行应带 ✗: ${connErrText}`);
     await sleep(200);
     await captureRound7Png(win, roundDir, `model-settings-${vp.width}x${vp.height}.png`, [vp.width, vp.height]);
-    await clickAndReadRetry(win, "#model-settings-close", {
-      label: "model-settings-close",
-      expect: () => read(win, "document.getElementById('model-settings-page').hidden === true")
+
+    // ---- 布局检查点（Task A5）：弹窗内模型分区的响应式验收 ----
+    // 在已捕获 PNG 的同一渲染状态测量模型分区几何。既有
+    // horizontalOverflow:false + overlaps:[] 已覆盖「无横向溢出、无重叠」；
+    // 这里按视口宽度追加宽度/折叠/可用性断言。width>=1100 → 双列 + 详情列
+    // ≥360px；<=880 → 单列折叠（列表与详情垂直排列、无裁切）；<=720 → .sp-side
+    // 隐藏后模型分区仍可用（settings-modal focusFirstInModal 已处理隐藏 nav 焦点）。
+    const modelLayout = await read(win, `(() => {
+      const list = document.querySelector('#settings-detail [data-provider-list]');
+      const detail = document.querySelector('#settings-detail [data-provider-detail]');
+      const side = document.querySelector('.sp-side');
+      const rl = list ? list.getBoundingClientRect() : null;
+      const rd = detail ? detail.getBoundingClientRect() : null;
+      const focusable = [...document.querySelectorAll('#settings-scrim button, #settings-scrim [href], #settings-scrim input, #settings-scrim select, #settings-scrim textarea, #settings-scrim [tabindex]:not([tabindex="-1"])')]
+        .filter((el) => !el.disabled && el.offsetParent !== null);
+      return {
+        hasList: Boolean(list),
+        hasDetail: Boolean(detail),
+        listWidth: rl ? Math.round(rl.width) : -1,
+        detailWidth: rd ? Math.round(rd.width) : -1,
+        listLeft: rl ? Math.round(rl.left) : -1,
+        detailLeft: rd ? Math.round(rd.left) : -1,
+        detailTop: rd ? Math.round(rd.top) : -1,
+        listTop: rl ? Math.round(rl.top) : -1,
+        sideDisplay: side ? getComputedStyle(side).display : null,
+        focusableCount: focusable.length
+      };
+    })()`);
+    assert.ok(modelLayout.hasList && modelLayout.hasDetail, `model section missing in modal: ${JSON.stringify(modelLayout)}`);
+    if (vp.width >= 1100) {
+      // 检查点 1（1280）：详情列宽度 ≥360px（双列 280px 侧栏 + 可收缩详情列）
+      assert.ok(modelLayout.detailWidth >= 360, `checkpoint1 fail: detail column ${modelLayout.detailWidth}px < 360px at ${vp.width} width`);
+      result.notes.push(`checkpoint1 detailColumn>=360px PASS width=${modelLayout.detailWidth}`);
+    } else if (vp.width <= 880) {
+      // 检查点 2（768/390）：单列折叠——列表与详情共享同一左列、详情在列表下方
+      //（垂直排列），即无裁切的双列拆分。
+      const stacked = Math.abs(modelLayout.listLeft - modelLayout.detailLeft) <= 1 && modelLayout.detailTop >= modelLayout.listTop;
+      assert.ok(stacked, `checkpoint2 fail: single-column collapse at ${vp.width} width not in effect: ${JSON.stringify(modelLayout)}`);
+      result.notes.push(`checkpoint2 single-column collapse PASS (listL=${modelLayout.listLeft} detailL=${modelLayout.detailLeft} detailT=${modelLayout.detailTop} listT=${modelLayout.listTop})`);
+      // 检查点 3（390，≤720）：.sp-side 隐藏后模型分区仍可用（仍有可聚焦元素）
+      if (vp.width <= 720) {
+        assert.equal(modelLayout.sideDisplay, "none", `checkpoint3 fail: .sp-side should be hidden at ${vp.width} width`);
+        assert.ok(modelLayout.focusableCount >= 1, `checkpoint3 fail: model section not usable (focusable=${modelLayout.focusableCount}) at ${vp.width} width`);
+        result.notes.push(`checkpoint3 sp-side hidden + usable PASS focusable=${modelLayout.focusableCount}`);
+      }
+    }
+
+    await clickAndReadRetry(win, "#settings-x", {
+      label: "settings-close",
+      expect: () => read(win, "!document.getElementById('settings-scrim').classList.contains('show')")
     });
     // 注意：openSettingsOrModelPage 打开模型设置页时已自动 closeDrawer()
     //（Task 12 修复），此处无需再点 #drawer-close，对话视图已恢复无遮挡。
@@ -2252,10 +2301,12 @@ async function runRound7({ mainRepo, roundDir, theme }) {
     generatedAt: new Date().toISOString(),
     projectRoot,
     notes: [
-      "round7 机器断言：三个 viewport 各自覆盖 模型设置页(长名/密钥已配置/连接错误) + 对话区(queue B/C/D + priority pending + context popover + rename editor) + 成本抽屉(人民币元无 $/¥)。",
+      "round7 机器断言：三个 viewport 各自覆盖 设置弹窗-模型分区(A3/A5：长名/密钥已配置/连接错误) + 对话区(queue B/C/D + priority pending + context popover + rename editor) + 成本抽屉(人民币元无 $/¥)。",
+      "模型设置已在设置弹窗内（#settings-detail 注入 [data-provider-list]），无整页 #model-settings-page。",
+      "布局检查点（model-settings 状态）：1280 视口 模型分区无横向溢出/重叠 + 详情列 ≥360px；≤880 视口 .model-settings-body 单列折叠（列表与详情垂直排列、无裁切）；≤720 视口 .sp-side 隐藏后模型分区仍可用。",
       "isInsideScrollableRegion / assertNoUnexpectedOverlaps 为脚本内置辅助函数（计划原文语义）；固定 header 与其子节点不纳入同一 selector 集合。",
       "计划模板 .agent-queued-input 在本仓库为 .agent-queue-item（view.js syncQueue 渲染的真实类名）。",
-      "测试数据不含真实密钥：sk-round7- 前缀为测试哨兵，模型设置页 DOM 断言其绝不出现。",
+      "测试数据不含真实密钥：sk-round7- 前缀为测试哨兵，模型设置 DOM 断言其绝不出现。",
       "截图经 nativeImage.createFromPath 校验：非空、尺寸等于 viewport、抽样 bitmap ≥2 种 RGB。"
     ],
     viewports: viewportResults
@@ -2275,12 +2326,12 @@ async function runRound7({ mainRepo, roundDir, theme }) {
       "|---|---|---|---|",
       ...viewportResults.map((r) => `| ${r.width}x${r.height} | ${r.horizontalOverflow ? "FAIL" : "PASS"} | ${r.overlaps.length === 0 ? "PASS" : `FAIL ${JSON.stringify(r.overlaps)}`} | ${r.imageNonBlank ? "PASS" : "FAIL"} |`),
       "",
-      "PNG 清单（每视口：对话区 / 模型设置页 / 成本抽屉；rename editor 仅 rail 可见的桌面视口落盘）：",
+      "PNG 清单（每视口：对话区 / 设置弹窗-模型分区 / 成本抽屉；rename editor 仅 rail 可见的桌面视口落盘）：",
       "",
       ...ROUND7_VIEWPORTS.flatMap((vp) => [
         `- \`round7-${vp.width}x${vp.height}.png\`（对话区：queue B/C/D + priority pending + context popover）`,
         ...(vp.width > 880 ? [`- \`rename-editor-${vp.width}x${vp.height}.png\`（会话行内改名编辑器：aria-label 重命名对话；≤880px rail 隐藏故无此图）`] : []),
-        `- \`model-settings-${vp.width}x${vp.height}.png\`（超长 provider/model 名 + 密钥已配置 + 连接错误红字）`,
+        `- \`model-settings-${vp.width}x${vp.height}.png\`（弹窗内模型分区：超长 provider/model 名 + 密钥已配置 + 连接错误红字）`,
         `- \`cost-panel-${vp.width}x${vp.height}.png\`（成本统一人民币元，无 $ / ¥）`
       ]),
       "",
