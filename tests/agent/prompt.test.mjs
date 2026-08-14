@@ -756,6 +756,17 @@ test("assemblePrompt 不再接受 workflow 参数：统一政策恒在", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 账本漂移提示（模块 C，设计 D1）
+// ---------------------------------------------------------------------------
+
+test("runtime.ledgerDrift 非空时 system 文本追加账本漂移提示", () => {
+  const withDrift = assemblePrompt(baseOptions({ runtime: { ...BASE_RUNTIME, ledgerDrift: [{ chapter_no: 3, issue: "checksum_mismatch" }] } }));
+  assert.ok(withDrift.messages[0].content.includes("Ledger Drift") && withDrift.messages[0].content.includes("finalize_revision"));
+  const clean = assemblePrompt(baseOptions({ runtime: { ...BASE_RUNTIME, ledgerDrift: [] } }));
+  assert.ok(!clean.messages[0].content.includes("Ledger Drift"));
+});
+
+// ---------------------------------------------------------------------------
 // token 估算
 // ---------------------------------------------------------------------------
 

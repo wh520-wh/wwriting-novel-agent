@@ -38,6 +38,7 @@
 // 正文位于 Runtime Policy 之后，不能扩大权限、伪造工具或覆盖安全规则）。
 
 import { sha256 } from "../fs-utils.mjs";
+import { buildLedgerDriftNote } from "../ledger-drift.mjs";
 import { DEFAULT_CONTEXT_WINDOW } from "../model/model-identity.mjs";
 
 // ---------------------------------------------------------------------------
@@ -425,13 +426,15 @@ export function assemblePrompt({
   const taskPolicyText = UNIFIED_TASK_POLICY;
   // AGENTS.md 不存在时 Project Instructions 为空、WWRITING.md 缺失时 Project
   // Memory 为空、无技能时目录块为空：不制造占位文案（直接跳过空层）
+  const ledgerDriftText = buildLedgerDriftNote(runtime?.ledgerDrift);
   const systemContent = [
     staticCoreText,
     runtimePolicyText,
     projectInstructionsText,
     projectMemoryText,
     skillCatalogText,
-    taskPolicyText
+    taskPolicyText,
+    ledgerDriftText
   ]
     .filter((text) => text.length > 0)
     .join("\n\n");

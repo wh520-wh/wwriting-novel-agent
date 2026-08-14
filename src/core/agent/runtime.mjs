@@ -70,6 +70,7 @@ import {
   ProjectOperationError
 } from "../project-operations/chapter.mjs";
 import { migrateBaselineVersions } from "../project-operations/versions.mjs";
+import { buildLedgerDriftNote, detectLedgerDrift } from "../ledger-drift.mjs";
 
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
@@ -1513,6 +1514,18 @@ export function createAgentRuntime({
           `[agent] 章节版本基线迁移失败（尽力而为）: ${migrationError?.message ?? String(migrationError)}`
         );
       }
+      // 账本一致性检测（模块 C，设计 D1）：每轮 prompt 装配前检测"正式文件与索引
+      // 校验和/存在性不一致"。漏调 finalize_revision 时，这里在后续轮次发现并注入
+      // 提示，让模型对相应章节调用 finalize_revision 入账（不依赖 prompt 自觉）。
+      // 索引损坏等异常只记录维护级警告（与迁移挂接同口径），绝不阻塞本轮 run。
+      let ledgerDrift = [];
+      try {
+        ledgerDrift = await detectLedgerDrift({ projectRoot: state.key });
+      } catch (driftError) {
+        console.warn(
+          `[agent] 账本漂移检测失败（尽力而为）: ${driftError?.message ?? String(driftError)}`
+        );
+      }
       // Task 6：每个模型轮重新读取 WWRITING.md（新对话、上下文压缩后的下一轮、
       // 模型切换、retry 和应用重启都会重新读取）。readProjectMemory 容错：缺失
       // 返回空、不可读返回 unreadable 标记，绝不阻止 prompt、不把全文永久缓存到
@@ -1530,7 +1543,8 @@ export function createAgentRuntime({
           runId,
           status: run.status,
           interruptRequested: run.status === "interrupting",
-          budget: {}
+          budget: {},
+          ledgerDrift
         },
         projectInstructions: await readProjectInstructions(state.key),
         projectMemory,
