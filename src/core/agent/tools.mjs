@@ -93,7 +93,7 @@ const SHELL_TIMEOUT_MAX_MS = 1800000;
 
 const AGENT_DIR_REL = path.join(".wwriting", "agent");
 const CHECKPOINTS_DIR_REL = path.join("checkpoints");
-const CHAPTERS_DIR_REL = path.join("chapters");
+const CHAPTERS_DIR_REL = path.join("chapters"); // 已无单独路径保护引用（正式章节文件自 C1 起可直接编辑），保留以对齐 spec 中章节目录的命名/安全编辑语义
 const DRAFTS_DIR_REL = path.join("drafts");
 const CHAPTER_INDEX_REL = path.join("memory", "chapter_index.json");
 
