@@ -125,10 +125,9 @@ function toolCall(name, args) {
 test("count_text schema：path 必填，minimum/target 可选非负整数，不暴露风险字段", () => {
   const tools = createToolRuntime({ journal: { append: async () => {} } });
   const tool = tools.definitions().find((def) => def.function.name === "count_text").function;
-  assert.equal(
-    tool.description,
-    "统计工作区内 Markdown 或纯文本文件的客观字数；minimum/target 只计算差额，不判定通过或失败。"
-  );
+  assert.match(tool.description, /统计工作区内 Markdown 或纯文本文件的客观字数/u, "描述必须保留客观字数语义");
+  assert.match(tool.description, /minimum\/target 只计算差额/u, "描述必须保留差额语义");
+  assert.match(tool.description, /不判定通过或失败/u, "描述必须保留非门禁语义");
   assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["minimum", "path", "target"]);
   assert.deepEqual(tool.parameters.required, ["path"]);
   assert.equal(tool.parameters.additionalProperties, false);
@@ -142,6 +141,13 @@ test("count_text schema：path 必填，minimum/target 可选非负整数，不�
     assert.ok(!Object.keys(tool.parameters.properties).includes(forbidden), `schema 不得暴露 ${forbidden}`);
   }
   assert.ok(tools.definitions().some((def) => def.function.name === "count_text"), "count_text 必须注册进通用工具集");
+});
+
+test("count_text 描述声明口径等价：effective_count 与 commit 记账 actual_words 同一口径", () => {
+  const tools = createToolRuntime({ journal: { append: async () => {} } });
+  const tool = tools.definitions().find((def) => def.function.name === "count_text").function;
+  assert.match(tool.description, /effective_count/u, "描述必须提到 effective_count");
+  assert.match(tool.description, /actual_words/u, "描述必须声明与 actual_words 同一口径");
 });
 
 // ---------------------------------------------------------------------------
