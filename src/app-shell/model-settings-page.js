@@ -526,6 +526,43 @@ export function createModelSettingsPage(ctx = {}) {
     return { ok: false, error: message };
   }
 
+  // ---------------------------------------------------------------------------
+  // v4（A4 实测记录）：模型分区 dirty 关闭保护——未失焦草稿 vs 保存态判定。
+  //
+  // 实测（代码级分析；本沙盒无法启动打包 Electron 应用，sandbox 内
+  // child-process spawn EPERM 阻断真实浏览器 GUI）：模型表单为 draft-first
+  // autosave（input 的 change 即 PATCH）。点 ✗/遮罩/切分区时，鼠标移动先触发
+  // input 失焦（blur）→ 派发 change → 大概率已保存；**Esc 关闭是主要裸奔路径**
+  // ——焦点停留在输入框内，closeSettingsModal 的 Esc 处理器直接 remove 弹窗 DOM，
+  // 被移除输入框是否派发挂起的 change 因浏览器而异（真实 Chromium 移除 DOM 时不
+  // 保证补发 change）。本函数即为该「输入未失焦」窗口（以及保存请求在途/失败、
+  // 行内校验错误但值未落盘）作兜底：任一草稿字段 ≠ 最近一次保存/拉取快照即判脏，
+  // settings-modal 据此在关闭前弹「放弃未保存修改」确认层。dirty 判定保留不看浏览
+  // 器是否补发 change——guard 恒作为 belt-and-braces 兜底。
+  //
+  // 保存态语义：state 为 refresh() 拉取/PATCH 成功后的最近快照（= state.selected 供
+  // 应商对象及其 models）。字段清单对齐 freshDraftRefs()（providerId / nameInput /
+  // baseUrlInput / keyInput / envToggle / modelInputs / errorRefs）。
+  // 密钥键（keyInput）特殊：渲染时恒为 ""、保存成功后清空为 ""，从不回显保存值
+  // （placeholder 提示+「已配置」状态标签）；其「已保存」在输入框内的表征即空串，
+  // 故判脏 = 存在未失焦的非空已键入值（envToggle 单独拨动不落盘、不构成脏）。
+  function isDirty() {
+    if (!activeDraftRefs) return false;
+    const refs = activeDraftRefs;
+    const provider = state.selected;
+    const savedKey = (s) => String(s ?? "").trim();
+    if (refs.nameInput && savedKey(refs.nameInput.value) !== savedKey(provider?.name)) return true;
+    if (refs.baseUrlInput && savedKey(refs.baseUrlInput.value) !== savedKey(provider?.base_url)) return true;
+    if (refs.keyInput && refs.keyInput.value.trim() !== "") return true; // 密钥不回显，非空即未失焦草稿
+    if (refs.modelInputs) {
+      for (const [mid, input] of refs.modelInputs) {
+        const model = (provider?.models ?? []).find((m) => m.id === mid);
+        if (savedKey(input.value) !== savedKey(model?.model_name)) return true;
+      }
+    }
+    return false;
+  }
+
   function el(tag, props = {}, children = []) {
     const node = documentRef.createElement(tag);
     for (const [key, value] of Object.entries(props)) {
@@ -885,6 +922,7 @@ export function createModelSettingsPage(ctx = {}) {
     testConnection,
     addProvider,
     commitCurrentDraft,
-    _handlers: { saveProviderPatch, saveModelPatch, refresh, removeProviderWithConfirm, setDefaultModel, removeModelWithConfirm, addModel, pullModels, addPulledModel, testConnection, addProvider, commitCurrentDraft }
+    isDirty,
+    _handlers: { saveProviderPatch, saveModelPatch, refresh, removeProviderWithConfirm, setDefaultModel, removeModelWithConfirm, addModel, pullModels, addPulledModel, testConnection, addProvider, commitCurrentDraft, isDirty }
   };
 }

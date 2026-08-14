@@ -1086,3 +1086,91 @@ test("测试连接：commit 重渲染后结果写入新渲染的 resultSlot（Cr
   assert.ok(resultEl.textContent.includes("连接成功"), "结果文案应可见");
   assert.equal(descendants(oldSlot).length, 0, "已脱离的旧 slot 不应收到结果");
 });
+
+// ---------------------------------------------------------------------------
+// Task A4（v4）：模型分区 dirty 关闭保护——isDirty() 判定「未失焦草稿 vs 保存态」。
+// 表单 draft-first autosave（change 即 PATCH），此函数覆盖「输入未失焦」窗口
+//（Esc 关闭裸奔路径）与「保存请求在途/失败」。字段清单对齐 freshDraftRefs。
+// ---------------------------------------------------------------------------
+
+test("isDirty：供应商名/Base URL/模型名与保存态不一致即 true，一致/未渲染为 false", async () => {
+  // 保存态 = refresh 后的 state.selected（deepseek：name/ base_url / m1 model_name）。
+  const page = makePage({
+    fetchImpl: async () => ({ ok: true, json: async () => ({ providers, default_model: null }) })
+  });
+  await page.open();
+
+  // attach 目标并渲染详情：isDirty 初始应为 false（草稿==保存态）。
+  const { detail } = attachTargets(page);
+  await page.refresh(); // render() 写入 attach 目标，activeDraftRefs 重建
+  assert.equal(page.isDirty(), false, "attach 渲染后草稿与保存态一致 → isDirty() false");
+
+  const els = descendants(detail);
+  const nameInput = els.find((el) => el.getAttribute?.("data-field") === "name");
+  const baseUrlInput = els.find((el) => el.getAttribute?.("data-field") === "base_url");
+  const m1Row = els.find((el) => el.className === "model-row" && el.getAttribute?.("data-model-id") === "m1");
+  const modelNameInput = descendants(m1Row).find((el) => el.getAttribute?.("data-field") === "model_name");
+  assert.ok(nameInput && baseUrlInput && modelNameInput, "详情应渲染 name/base_url/model_name 输入框");
+
+  // 供应商名未失焦改动 → dirty
+  nameInput.value = "DeepSeek 改名"; // 不触发 change（焦点仍在框内，Esc 裸奔场景）
+  assert.equal(page.isDirty(), true, "未失焦改动的供应商名应判脏");
+  nameInput.value = "DeepSeek 官方"; // 还原
+  assert.equal(page.isDirty(), false, "还原为保存态后不应判脏");
+
+  // Base URL 未失焦改动 → dirty
+  baseUrlInput.value = "https://new.example.com/v2";
+  assert.equal(page.isDirty(), true, "未失焦改动的 Base URL 应判脏");
+  baseUrlInput.value = "https://api.deepseek.com/v1";
+  assert.equal(page.isDirty(), false, "还原为保存态后不应判脏");
+
+  // 模型名未失焦改动 → dirty
+  modelNameInput.value = "deepseek-v4-pro-x";
+  assert.equal(page.isDirty(), true, "未失焦改动的模型名应判脏");
+  modelNameInput.value = "deepseek-v4-pro";
+  assert.equal(page.isDirty(), false, "还原为保存态后不应判脏");
+
+  // 供应商名清空为空白（与保存态不一致）→ dirty
+  nameInput.value = "   ";
+  assert.equal(page.isDirty(), true, "供应商名被清空应判脏（行内校验错误但值未落盘）");
+});
+
+test("isDirty：密钥输入框非空（未失焦打码/明文密钥）判脏；已保存密钥时输入恒空不是脏", async () => {
+  // deepseek 未存密钥（api_key_saved 缺失）→ 输入框的值纯用户键入。
+  const page = makePage({
+    fetchImpl: async () => ({ ok: true, json: async () => ({ providers, default_model: null }) })
+  });
+  await page.open();
+  const { detail } = attachTargets(page);
+  await page.refresh();
+  const els = descendants(detail);
+  const keyInput = els.find((el) => el.getAttribute?.("data-field") === "api_key");
+  assert.ok(keyInput, "详情应渲染密钥输入框");
+  assert.equal(keyInput.value, "", "密钥输入框初始不回显");
+  assert.equal(page.isDirty(), false, "密钥框为空不应判脏");
+
+  keyInput.value = "sk-abc123"; // 未触发 change（焦点仍在框内）
+  assert.equal(page.isDirty(), true, "密钥框有未失焦键入值应判脏");
+  keyInput.value = "";
+  assert.equal(page.isDirty(), false, "清空密钥框后不应判脏");
+
+  // 已保存密钥（api_key_saved: true）：输入框仍恒空（不回显），不是脏。
+  const withSaved = [...providers].map((p) => (p.id === "deepseek" ? { ...p, api_key_saved: true } : p));
+  const page2 = makePage({
+    fetchImpl: async () => ({ ok: true, json: async () => ({ providers: withSaved, default_model: null }) })
+  });
+  await page2.open();
+  const { detail: detail2 } = attachTargets(page2);
+  await page2.refresh();
+  const key2 = descendants(detail2).find((el) => el.getAttribute?.("data-field") === "api_key");
+  assert.equal(key2.value, "", "已保存密钥的供应商密钥框仍不回显");
+  assert.equal(page2.isDirty(), false, "已保存密钥但输入框恒空 → 不判脏（不是误报）");
+});
+
+test("isDirty：未渲染详情（无 activeDraftRefs）安全返回 false", async () => {
+  const page = makePage({
+    fetchImpl: async () => ({ ok: true, json: async () => ({ providers, default_model: null }) })
+  });
+  await page.open(); // refresh → 未 attach，render 跳过，activeDraftRefs 保持 freshDraftRefs
+  assert.equal(page.isDirty(), false, "无渲染目标/无 activeDraftRefs 时 isDirty() 应为 false");
+});

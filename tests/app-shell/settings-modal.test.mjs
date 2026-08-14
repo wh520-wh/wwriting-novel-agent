@@ -218,12 +218,14 @@ test("connection success with latency formats the status string", () => {
 // ---------------------------------------------------------------------------
 
 // modelSettings fake：记录 attach/open 调用（inject 供 modal 渲染 model 分区时调用）。
-function modelSettingsFake() {
-  const calls = { attach: [], open: 0 };
+// isDirty 默认返回 false（clean），测试可覆写为固定值或断言调用。
+function modelSettingsFake({ isDirty = () => false } = {}) {
+  const calls = { attach: [], open: 0, isDirty: 0 };
   return {
     calls,
     attach: (targets) => { calls.attach.push(targets); },
-    open: () => { calls.open += 1; }
+    open: () => { calls.open += 1; },
+    isDirty: () => { calls.isDirty += 1; return isDirty(); }
   };
 }
 
@@ -401,6 +403,68 @@ test("closeSettingsModal 后无 restore 行为：模型 DOM 随 replaceChildren 
   await modal.openSettingsModal("model");
   assert.equal(fake.calls.attach.length, 2, "再次进入 model 应重新 attach");
   assert.equal(fake.calls.open, 2, "再次进入 model 应重新 open");
+});
+
+test("model 分区 dirty：isDirty 为 true 时关闭先弹确认层（复用 openDirtyCloseConfirm）", async () => {
+  const scrim = new MockElement("div");
+  const fake = modelSettingsFake({ isDirty: () => true });
+  const modal = createSettingsModalForTest({
+    refs: { settingsScrim: scrim },
+    modelSettings: fake
+  });
+  await modal.openSettingsModal("model"); // 缺省分区 = model，open() 被调用
+
+  modal.closeSettingsModal();
+  assert.equal(fake.calls.isDirty >= 1, true, "model 分区关闭时应调用 modelSettings.isDirty()");
+  assert.equal(scrim.classList.contains("show"), true, "model 分区 dirty 时关闭不应直接生效");
+  const layer = findElementById("close-dirty-confirm");
+  assert.ok(layer, "应出现「放弃未保存修改」确认层");
+  assert.equal(layer.hidden, false, "确认层应可见");
+  const copy = domRegistry.find((el) => String(el.className).includes("spd-confirm-copy"));
+  assert.match(copy.textContent, /未保存的修改/u, "确认文案应说明未保存修改会丢失");
+
+  // 取消：确认层关闭，弹窗保持打开
+  findElementById("close-dirty-cancel")._fire("click");
+  assert.equal(findElementById("close-dirty-confirm").hidden, true, "取消后确认层关闭");
+  assert.equal(scrim.classList.contains("show"), true, "取消后弹窗保持打开");
+
+  // 再次关闭：确认放弃后真正关闭
+  modal.closeSettingsModal();
+  findElementById("close-dirty-confirm-btn")._fire("click");
+  assert.equal(scrim.classList.contains("show"), false, "模型 dirty 确认放弃后弹窗关闭");
+});
+
+test("model 分区 clean：isDirty 为 false 时关闭直接生效，不弹确认层", async () => {
+  const scrim = new MockElement("div");
+  const fake = modelSettingsFake({ isDirty: () => false });
+  const modal = createSettingsModalForTest({
+    refs: { settingsScrim: scrim },
+    modelSettings: fake
+  });
+  await modal.openSettingsModal("model");
+
+  modal.closeSettingsModal();
+  assert.equal(fake.calls.isDirty >= 1, true, "model 分区关闭时应调用 modelSettings.isDirty()");
+  assert.equal(findElementById("close-dirty-confirm"), null, "clean 关闭不应出现确认层");
+  assert.equal(scrim.classList.contains("show"), false, "model 分区 clean 关闭应直接生效");
+});
+
+test("modelSettings 无 isDirty 时 model 分区关闭直接生效（回退 clean）", async () => {
+  const scrim = new MockElement("div");
+  // 显式不提供 isDirty（旧版注入形态）：
+  const fake = {
+    calls: { attach: [], open: 0 },
+    attach: () => {},
+    open: () => {}
+  };
+  const modal = createSettingsModalForTest({
+    refs: { settingsScrim: scrim },
+    modelSettings: fake
+  });
+  await modal.openSettingsModal("model");
+  modal.closeSettingsModal();
+  assert.equal(findElementById("close-dirty-confirm"), null, "无 isDirty 时不判脏");
+  assert.equal(scrim.classList.contains("show"), false, "model 分区关闭应直接生效");
 });
 
 test("幂等性：连续两次 openSettingsModal('model') 不产生重复挂载", async () => {
