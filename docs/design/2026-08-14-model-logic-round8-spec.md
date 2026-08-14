@@ -65,7 +65,7 @@
 
 **义务**：编辑后必须调用 D2 的 `finalize_revision` 入账，否则账本不一致；系统在后续运行中可检测"正式文件 checksum 与索引不符"并提示模型入账。
 
-**交互流程**：read_file 读正式章（返回含 checksum）→ 模型编辑 → finalize_revision（带 expected_checksum）→ 入账 + 存档。
+**交互流程**：read_file 读正式章 → 模型编辑（以 write_file/edit_file 返回的 checksum 作为 expected_checksum）→ finalize_revision → 入账 + 存档。
 
 ### D2 确认修订工具 `finalize_revision`
 
