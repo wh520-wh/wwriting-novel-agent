@@ -603,10 +603,16 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       return;
     }
     const children = messages.children;
-    let index = children.length;
+    // 无 seq 节点（pending 用户气泡、流式气泡等）固定靠后：先定位最后一个有 seq
+    // 节点的位置。有 seq 节点之间仍按 (seq, eventKey) 稳定排序（Task 10）。
+    let lastSeqIndex = -1;
     for (let i = children.length - 1; i >= 0; i -= 1) {
+      if (timelineSeqs.get(children[i]) != null) { lastSeqIndex = i; break; }
+    }
+    let index = lastSeqIndex + 1; // 默认：最后一个有 seq 节点之后
+    for (let i = lastSeqIndex; i >= 0; i -= 1) {
       const childSeq = timelineSeqs.get(children[i]);
-      if (childSeq == null) continue; // 无 seq 节点（流式气泡等）固定靠后
+      if (childSeq == null) continue; // 理论不可达（lastSeqIndex 之后全无 seq）
       if (childSeq < seq) {
         index = i + 1;
         break;
@@ -619,6 +625,12 @@ export function createAgentView({ root, document: doc = globalThis.document, req
         }
       }
       index = i;
+    }
+    // B1 修复：若新 seq 节点排到有 seq 区的末尾（index === lastSeqIndex+1），其
+    // 后还有无 seq 节点（pending 用户气泡 = 用户刚发的消息），则追加到末尾——
+    // 工作组不得压到 pending 用户气泡上方（工作组必须跟在 pending 气泡之后）。
+    if (index === lastSeqIndex + 1 && lastSeqIndex < children.length - 1) {
+      index = children.length; // append：落在无 seq 尾区之后
     }
     if (index >= children.length) {
       messages.append(node);
