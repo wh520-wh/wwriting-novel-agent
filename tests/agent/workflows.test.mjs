@@ -15,7 +15,7 @@ import { createToolRuntime } from "../../src/core/agent/tools.mjs";
 import { createProjectAgentHarness, eventsOfType, waitForIdle } from "../helpers/project-agent-harness.mjs";
 
 // 统一深工具目录（固定五件套，Task 7 契约 + Task C3 finalize_revision + C5 rollback_chapter）
-const UNIFIED_DEEP_NAMES = ["append_chapter_segment", "commit_chapter", "update_plan", "finalize_revision", "rollback_chapter"];
+const UNIFIED_DEEP_NAMES = ["append_chapter_segment", "commit_chapter", "update_plan", "finalize_revision", "rollback_chapter", "update_memory"];
 
 // ---------------------------------------------------------------------------
 // 删除契约：workflows.mjs 的概念不在任何模块导出

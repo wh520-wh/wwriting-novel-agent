@@ -276,8 +276,6 @@ export async function catalogSkillsFor(projectRoot) {
 //   secrets —— 需要从 shell 命令/输出与 journal 中脱敏的字符串数组
 //   project —— createProjectRoot 选项（tool_permissions 等）
 //   legacy —— true 时创建旧世界项目夹具
-//   memoryExtractor —— 注入到 createProjectAgent 的派生记忆提取 seam（Task 14：
-//     commit_chapter 成功后由 runtime 单独触发；测试可注入抛错函数验证失败标记）
 //
 // 资源保证：所有动态依赖（agent seam、realShell 的 shell runtime）在创建临时
 // 工作区之前解析——seam 尚不存在（Task 6 前红阶段）时立刻失败，不产生任何
@@ -289,8 +287,7 @@ export async function createProjectAgentHarness(options = {}) {
     realShell = false,
     secrets = [],
     project: projectOptions = {},
-    legacy = false,
-    memoryExtractor = null
+    legacy = false
   } = options;
   const gateway = createMockModelGateway({ script: gatewayScript, delayMs: gatewayDelayMs });
   let shell;
@@ -326,8 +323,7 @@ export async function createProjectAgentHarness(options = {}) {
       shell,
       secrets,
       skills,
-      agentStorageRootFor: (root) => store.agentRootFor(root),
-      memoryExtractor
+      agentStorageRootFor: (root) => store.agentRootFor(root)
     });
     return {
       agent,
