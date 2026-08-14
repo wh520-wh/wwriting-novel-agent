@@ -1243,29 +1243,44 @@ step("场景 27 · 章节工具后普通问答");
   }
 }
 
-// 子场景：write_file/edit_file 仍不能写受保护正文路径（spec §6.2 #3）
-step("场景 27b · 受保护正文路径拒绝");
+// 子场景：正式章节文件可直接编辑（模块 C），草稿/索引/checkpoint/日志仍受保护（spec §6.2 #3）
+step("场景 27b · 正式章节文件可直接编辑、受保护路径仍拒绝");
 {
   const h = await createProjectAgentHarness({
     project: { tool_permissions: { auto_edit: true } },
     gatewayScript: [
-      { reply: { toolCalls: [tool("write_file", { path: "chapters/001.md", content: "绕过章节事务直接写正文" })] } },
-      { reply: { text: "写不进去也没关系。" } }
+      // 正式章节文件（C1 起）：write_file 可直接编辑，auto_edit 下无需确认即落盘
+      { reply: { toolCalls: [tool("write_file", { path: "chapters/001.md", content: "直接编辑正式章节正文" })] } },
+      // 草稿目录 drafts/：仍受保护，只能经 append_chapter_segment 原子写入
+      { reply: { toolCalls: [tool("write_file", { path: "drafts/001.md", content: "绕过段落顺序直接写草稿" })] } },
+      { reply: { text: "完成。" } }
     ]
   });
   try {
     await h.agent.open({ projectRoot: h.projectRoot });
-    await h.agent.submit({ projectRoot: h.projectRoot, text: "把正文写进章节文件" });
+    await h.agent.submit({ projectRoot: h.projectRoot, text: "把正文写进章节文件并尝试写草稿" });
     await waitForIdle(h.agent, h.projectRoot);
     const events = await readEvents(h.agent, h.projectRoot);
-    const denials = eventsOfType(events, "tool_call_failed").filter((event) => event.payload?.name === "write_file");
-    assert.ok(denials.length >= 1, "write_file 直写正文应被拒绝");
-    for (const event of denials) {
+    // 正式章节文件可直接编辑：chapters/001.md 应已落盘，且 write_file 无失败事件
+    assert.equal(await pathExists(path.join(h.projectRoot, "chapters", "001.md")), true, "正式章节文件应被通用写工具创建");
+    // tool_call_failed 载荷不含 args（受保护路径拒绝的 technical 才带目标 path，且为绝对路径）。
+    // 章节写入已成功（上面 pathExists=true）且不会命中任何保护规则，故不应存在任何「草稿以外」
+    // 的 write_file 失败事件；这里以 rule 区分：无 draft_files 失败即证明章节写入无拒绝线索。
+    const chapterDenials = eventsOfType(events, "tool_call_failed").filter(
+      (event) => event.payload?.name === "write_file" && event.payload.technical?.rule !== "draft_files"
+    );
+    assert.equal(chapterDenials.length, 0, "write_file 直写正式章节文件应成功（无失败事件）");
+    // 草稿目录 drafts/ 仍受保护：仅能被 append_chapter_segment 写入
+    const draftDenials = eventsOfType(events, "tool_call_failed").filter(
+      (event) => event.payload?.name === "write_file" && event.payload.technical?.rule === "draft_files"
+    );
+    assert.ok(draftDenials.length >= 1, "write_file 直写草稿仍应被拒绝");
+    for (const event of draftDenials) {
       assert.equal(event.payload.error, "permission_denied", "受保护路径以 permission_denied 拒绝");
-      assert.equal(event.payload.technical?.rule, "chapter_file", "拒绝规则应为 chapter_file");
+      assert.equal(event.payload.technical?.rule, "draft_files", "拒绝规则应为 draft_files");
     }
-    assert.equal(await pathExists(path.join(h.projectRoot, "chapters", "001.md")), false, "正文文件不得被通用写工具创建");
-    record("受保护正文路径：write_file 直写 chapters/ 被拒", true, `denials=${denials.length}`);
+    assert.equal(await pathExists(path.join(h.projectRoot, "drafts", "001.md")), false, "草稿文件不得被通用写工具创建");
+    record("正式章节可直接编辑；草稿目录仍受保护", true, `chapterDenials=${chapterDenials.length}, draftDenials=${draftDenials.length}`);
   } finally {
     await h.cleanup();
   }
