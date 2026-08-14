@@ -1,0 +1,49 @@
+{
+  "mode": "round7",
+  "generatedAt": "2026-08-14T19:41:00.367Z",
+  "projectRoot": "D:\\WWriting\\.demo_runs\\visual-round7-1786736440968\\novel",
+  "notes": [
+    "round7 机器断言：三个 viewport 各自覆盖 设置弹窗-模型分区(A3/A5：长名/密钥已配置/连接错误) + 对话区(queue B/C/D + priority pending + context popover + rename editor) + 成本抽屉(人民币元无 $/¥)。",
+    "模型设置已在设置弹窗内（#settings-detail 注入 [data-provider-list]），无整页 #model-settings-page。",
+    "布局检查点（model-settings 状态）：1280 视口 模型分区无横向溢出/重叠 + 详情列 ≥360px；≤880 视口 .model-settings-body 单列折叠（列表与详情垂直排列、无裁切）；≤720 视口 .sp-side 隐藏后模型分区仍可用。",
+    "isInsideScrollableRegion / assertNoUnexpectedOverlaps 为脚本内置辅助函数（计划原文语义）；固定 header 与其子节点不纳入同一 selector 集合。",
+    "计划模板 .agent-queued-input 在本仓库为 .agent-queue-item（view.js syncQueue 渲染的真实类名）。",
+    "测试数据不含真实密钥：sk-round7- 前缀为测试哨兵，模型设置 DOM 断言其绝不出现。",
+    "截图经 nativeImage.createFromPath 校验：非空、尺寸等于 viewport、抽样 bitmap ≥2 种 RGB。"
+  ],
+  "viewports": [
+    {
+      "width": 1280,
+      "height": 800,
+      "horizontalOverflow": false,
+      "overlaps": [],
+      "imageNonBlank": true,
+      "notes": [
+        "checkpoint1 detailColumn>=360px PASS width=626"
+      ]
+    },
+    {
+      "width": 768,
+      "height": 900,
+      "horizontalOverflow": false,
+      "overlaps": [],
+      "imageNonBlank": true,
+      "notes": [
+        "checkpoint2 single-column collapse PASS (listL=375 detailL=375 detailT=45 listT=-151)",
+        "renameEditor skipped: rail hidden below 880px by responsive design"
+      ]
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "horizontalOverflow": false,
+      "overlaps": [],
+      "imageNonBlank": true,
+      "notes": [
+        "checkpoint2 single-column collapse PASS (listL=63 detailL=63 detailT=-29 listT=-225)",
+        "checkpoint3 sp-side hidden + usable PASS focusable=19",
+        "renameEditor skipped: rail hidden below 880px by responsive design"
+      ]
+    }
+  ]
+}

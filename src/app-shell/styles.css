@@ -1166,6 +1166,10 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .model-section h2 { font-size: 15px; font-weight: 680; color: var(--ink); }
 
+/* 弹窗作用域：模型分区强制单列（供应商列表在上、详情在下），
+   解决 1280 视口下详情列 326px < 360px 的检查点失败。 */
+.model-section .model-settings-body { grid-template-columns: minmax(0, 1fr); }
+
 .model-section-lead { font-size: 12.5px; color: var(--muted); margin: 0 0 4px; }
 
 .model-settings-body {
