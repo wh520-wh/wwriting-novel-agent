@@ -403,6 +403,9 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     compactionRowNodes.clear();
     contextRing.dismiss();
     pendingSubmissions.length = 0;
+    // AICSS composer：切换项目时清掉在途 busy（陈旧 promise 的守卫会跳过清理）
+    delete send.dataset.busy;
+    delete composerShell.dataset.busy;
     failedSubmissions.length = 0;
     input.value = ""; // Task 6：未发送草稿（含占位会话里打的字）不得跨会话/项目泄漏
     composerOptions = null;
