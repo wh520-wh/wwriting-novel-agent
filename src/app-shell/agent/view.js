@@ -366,7 +366,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   let historyGapErrorSeq = null;
   const rendered = {
     messages: -1, run: -1, queue: -1, decisions: -1, errors: -1,
-    runId: null, runStatus: null, context: -1
+    runId: null, runStatus: null, context: -1, notices: -1
   };
 
   function clearWorkGroupTimers(record) {
@@ -2016,6 +2016,25 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     contextRing.setActive(active);
   }
 
+  // ---- 第九轮：系统通知行（chapter_rolled_back / memory_file_restored） ------
+  // 通知行插入对话时间线，按 seq 排序；重渲染先移除旧行再追加（去重）。
+  function syncNotices(state) {
+    if (rendered.notices === state.revisions.notices) return;
+    rendered.notices = state.revisions.notices;
+    // 去重：移除此前渲染的通知行。
+    messages.querySelectorAll("[data-notice-type]").forEach((n) => n.remove());
+    for (const notice of state.systemNotices ?? []) {
+      const row = doc.createElement("div");
+      row.className = "system-notice";
+      row.dataset.noticeType = notice.type;
+      row.textContent = notice.type === "chapter_rolled_back"
+        ? `已恢复第 ${notice.payload?.chapter_no} 章${notice.payload?.to_version ? `到版本 ${notice.payload.to_version}` : ""}`
+        : `已恢复${notice.payload?.file === "worklog" ? "工作日志" : "故事摘要"}到版本 ${notice.payload?.to_version ?? ""}`;
+      insertTimeline(row, notice.seq);
+    }
+    if ((state.systemNotices ?? []).length > 0) afterRender();
+  }
+
   function render(state, actionBag = {}) {
     actions = actionBag;
     currentState = state;
@@ -2023,6 +2042,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     syncStream(state);
     syncRun(state);
     syncWork(state);
+    syncNotices(state);
     syncDecisions(state);
     syncErrors(state);
     syncGaps(state);

@@ -61,7 +61,9 @@ export function createState() {
     decisions: new Map(),   // decision_id -> decision
     errors: [],             // run_failed 事实（新 Run 启动时清空）
     assistantStream: null,  // { runId, text } —— 增量正文累积（流式气泡），completed 后清空
-    revisions: { messages: 0, run: 0, queue: 0, decisions: 0, errors: 0, context: 0 }
+    // 第九轮：系统通知行投影（chapter_rolled_back / memory_file_restored → timeline）。
+    systemNotices: [],      // [{ seq, type, payload }]
+    revisions: { messages: 0, run: 0, queue: 0, decisions: 0, errors: 0, context: 0, notices: 0 }
   };
 }
 
@@ -630,6 +632,14 @@ function applyEventToState(state, event) {
       break;
     }
     // 不进入派生 UI 状态的事件（许可/审计/领域类）
+    // 第九轮：系统通知行（chapter_rolled_back / memory_file_restored → timeline）。
+    case "chapter_rolled_back":
+    case "memory_file_restored": {
+      if (!Array.isArray(state.systemNotices)) state.systemNotices = [];
+      state.systemNotices.push({ seq, type, payload: structuredClone(payload) });
+      bump(state, ["notices"]);
+      break;
+    }
     default:
       break;
   }
@@ -700,8 +710,10 @@ function rebuildDerivedState(state) {
   state.contextUsage = null;
   state.compaction = null;
   state.compactionRows = new Map();
+  // 第九轮：系统通知行同样由事件重放重建。
+  state.systemNotices = [];
   for (const event of events) applyEventToState(state, event);
-  bump(state, ["messages", "run", "queue", "decisions", "errors", "context"]);
+  bump(state, ["messages", "run", "queue", "decisions", "errors", "context", "notices"]);
 }
 
 // 新 Run（或恢复的 Run）认领活动输入：从队列移除（镜像 journal activateInput）。

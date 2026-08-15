@@ -1745,3 +1745,11 @@
   background: var(--agent-accent-soft);
   color: var(--agent-accent);
 }
+
+/* ---- 第九轮：系统通知行（chapter_rolled_back / memory_file_restored）------- */
+.system-notice {
+  font-size: 12.5px;
+  color: var(--muted);
+  padding: 6px 8px;
+  border-left: 2px solid var(--line-2);
+}
