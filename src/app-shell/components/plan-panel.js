@@ -122,7 +122,13 @@ export function createPlanPanel({ doc = document }) {
       if (open && !(event.target && (event.target === chip || chip.contains?.(event.target)))) setOpen(false);
     },
     handleKeydown(event) {
-      if (event.key === "Escape" && open) setOpen(false);
+      // Round10：Escape 关闭并把焦点还给 chip；preventDefault 让全局路由
+      //（检查 event.defaultPrevented）跳过本键，不再关闭其它层。
+      if (event.key === "Escape" && open) {
+        setOpen(false);
+        chip.focus();
+        event.preventDefault();
+      }
     }
   };
   return panel;

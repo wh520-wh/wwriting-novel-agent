@@ -28,8 +28,10 @@ function makeFakeDoc() {
       textContent: "",
       hidden: false,
       disabled: false,
+      focused: false,
       listeners: {},
       append(...kids) { for (const k of kids) this.children.push(k); },
+      focus() { this.focused = true; },
       addEventListener(type, fn, options = {}) {
         (this.listeners[type] ??= []).push({ fn, once: options.once });
       },
@@ -115,8 +117,20 @@ test("点击 chip 展开；再点收起；外点与 Escape 收起", () => {
   panel.handleOutsideClick({ target: { closest: () => null } });
   assert.equal(panel.dropdown.hidden, true);
   panel.chip.fire("click");
-  panel.handleKeydown({ key: "Escape" });
+  panel.handleKeydown({ key: "Escape", preventDefault() {} });
   assert.equal(panel.dropdown.hidden, true);
+});
+
+test("Escape 关闭计划并把焦点还给 chip", () => {
+  const { doc } = makeFakeDoc();
+  const panel = createPlanPanel({ doc });
+  panel.sync(ITEMS);
+  panel.chip.fire("click");
+  let prevented = false;
+  panel.handleKeydown({ key: "Escape", preventDefault() { prevented = true; } });
+  assert.equal(panel.dropdown.hidden, true);
+  assert.equal(panel.chip.focused, true);
+  assert.equal(prevented, true, "preventDefault 让全局路由（defaultPrevented）跳过本键");
 });
 
 test("条目状态类：completed 删除线、in_progress 高亮、pending 默认", () => {
