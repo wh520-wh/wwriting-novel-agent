@@ -103,3 +103,11 @@ test("AICSS 基线：live shimmer 用 aicss 三档渐变与 2.25s 曲线", () =>
   assert.match(live, /color-mix\(in srgb, var\(--muted\) 45%, transparent\)/u, live);
   assert.match(css, /@keyframes agent-label-shine/u);
 });
+
+test("AICSS 基线：composer 扫描边框只绑提交在途，选项圆角 7px", () => {
+  const css = read("src/app-shell/agent/agent.css");
+  assert.match(cssBlock(css, ".agent-composer-shell[data-busy]::after"), /conic-gradient/u);
+  assert.match(css, /@keyframes agent-pi-border-spin/u);
+  assert.ok(!css.includes(".agent-composer-shell:focus-within::after"), "扫描边框不得绑 focus-within");
+  assert.match(cssBlock(css, ".agent-composer-option"), /border-radius:\s*7px/u);
+});

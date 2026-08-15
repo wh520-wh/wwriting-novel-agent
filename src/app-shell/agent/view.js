@@ -1909,6 +1909,9 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     const text = String(input.value ?? "").trim();
     if (!text) return;
     const submissionGeneration = viewGeneration;
+    // AICSS composer：在途 busy 态（外壳扫描边框 + 按钮图标慢旋；落定/失败后移除）
+    send.dataset.busy = "true";
+    composerShell.dataset.busy = "true";
     let request;
     try {
       request = actions.submit?.(text);
@@ -1934,11 +1937,15 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     afterRender();
     Promise.resolve(request).then((result) => {
       if (submissionGeneration !== viewGeneration) return;
+      delete send.dataset.busy;
+      delete composerShell.dataset.busy;
       pending.inputId = result?.input_id ?? null;
       // Task 6：click 提交后焦点从发送按钮回到输入框，便于连续输入。
       input.focus();
     }).catch((error) => {
       if (submissionGeneration !== viewGeneration) return;
+      delete send.dataset.busy;
+      delete composerShell.dataset.busy;
       const pendingIndex = pendingSubmissions.indexOf(pending);
       if (pendingIndex >= 0) pendingSubmissions.splice(pendingIndex, 1);
       bubble.dataset.state = "failed";

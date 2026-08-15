@@ -4989,3 +4989,21 @@ test("AICSS 动效共存与清零：光标+思考 shimmer+搜索 shimmer 并存�
   assert.equal(root.querySelectorAll(".agent-live-text").length, 0, "shimmer 清零");
   assert.equal(root.querySelector(".agent-search-list").dataset.state, "done", "搜索终态勾选");
 });
+
+// AICSS composer：提交在途外壳+发送按钮进入 busy 态，落定后移除。
+test("AICSS composer：提交在途 busy 态（外壳+按钮），落定后移除", async () => {
+  const { root, surface } = await makeSurface({
+    apiOverrides: { submit: async (text) => { await tick(); return { ok: true, status: "running" }; } }
+  });
+  await surface.openProject("D:\\novel");
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  input.value = "写第 1 章";
+  const send = root.querySelector('[data-testid="agent-send"]');
+  const shell = root.querySelector('[data-testid="agent-composer-shell"]');
+  send._fire("click");
+  assert.equal(send.dataset.busy, "true", "在途发送按钮应有 busy 标记");
+  assert.equal(shell.dataset.busy, "true", "在途外壳应有 busy 标记（扫描边框绑定点）");
+  await tick();
+  assert.equal(send.dataset.busy, undefined, "落定后按钮 busy 移除");
+  assert.equal(shell.dataset.busy, undefined, "落定后外壳 busy 移除");
+});
