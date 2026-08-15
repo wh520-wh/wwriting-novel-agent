@@ -488,6 +488,18 @@
   line-height: 1.4;
 }
 
+/* ---- AICSS streaming-text：流式实心光标（无动画；定稿随气泡移除）----------- */
+.agent-stream-caret {
+  display: inline-block;
+  width: 8px;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--agent-ink);
+  animation: none;   /* 实心态：永不闪烁（有意为之） */
+  opacity: 1;
+}
+
 /* 助手正文 Markdown（Task 8 Step 5）：流式与终态共用同一个 .agent-markdown
    容器与完全相同的排版路径——只有内容和 streaming state 变化，不为终态复制
    一套 typography（无 .is-streaming h* / .is-complete h* 重复规则）。 */

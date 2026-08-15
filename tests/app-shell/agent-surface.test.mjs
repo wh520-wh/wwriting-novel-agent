@@ -4891,3 +4891,20 @@ test("第九轮：思考中（运行中）保持 ticker 实时摘要，点击不
   wrap._fire("click"); // 运行中点击不响应
   assert.equal(detail.hidden, true, "运行中不可展开（折叠交互只属于终态）");
 });
+
+// AICSS streaming-text：流式实心光标——delta 期间存在，completed 定稿后随气泡移除。
+test("流式光标：delta 渲染实心光标于正文末尾，completed 定稿后无残留", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("assistant_message_delta", { text: "第一段。" }));
+  await tick();
+  const bubble = root.querySelector('[data-streaming]');
+  assert.ok(bubble, "流式气泡应存在");
+  const caret = bubble.querySelector(".agent-stream-caret");
+  assert.ok(caret, "流式期间正文末尾应有实心光标");
+  surface.applyEvent(ev("assistant_message_completed", { input_id: "in-1", text: "第一段。" }));
+  await tick();
+  assert.equal(root.querySelector('[data-streaming]'), null, "定稿后流式气泡移除");
+  assert.equal(root.querySelector(".agent-stream-caret"), null, "定稿后无光标残留");
+});

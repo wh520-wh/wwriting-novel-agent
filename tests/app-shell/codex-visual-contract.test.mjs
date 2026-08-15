@@ -85,3 +85,12 @@ test("第九轮契约：.dpanel 必须含 min-height: min-content（抽屉滚轮
     ".dpanel 必须含 min-height: min-content（第九轮抽屉滚轮修复契约）"
   );
 });
+
+test("AICSS 基线：流式光标实心态、令牌取色、无闪烁动画", () => {
+  const css = read("src/app-shell/agent/agent.css");
+  const caret = cssBlock(css, ".agent-stream-caret");
+  assert.match(caret, /width:\s*8px/u);
+  assert.match(caret, /height:\s*1\.05em/u);
+  assert.match(caret, /background:\s*var\(--agent-ink\)/u);
+  assert.match(caret, /animation:\s*none/u);
+});
