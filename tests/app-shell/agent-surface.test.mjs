@@ -907,6 +907,84 @@ test("失败 Run：显示错误卡与重试按钮；重试点击调用 api.retry
   assert.equal(root.querySelectorAll('[data-testid="agent-error"]').length, 0, "新 Run 启动后错误卡清空");
 });
 
+test("round10 decision: one recommended action, one secondary action and a separated deny action", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("decision_requested", { decision_id: "d1", title: "允许写入？" }));
+  const card = root.querySelector('[data-testid="agent-decision-card"]');
+  assert.ok(card.querySelector(".agent-decision-primary"));
+  assert.ok(card.querySelector(".agent-decision-secondary"));
+  assert.ok(card.querySelector(".agent-decision-deny"));
+});
+
+test("round10 error: user fact stays visible and technical details remain copyable", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("run_failed", { error: "未配置模型", code: "provider_configuration_error" }));
+  const card = root.querySelector('[data-testid="agent-error"]');
+  assert.equal(card.getAttribute("role"), "alert");
+  assert.ok(card.querySelector(".agent-error-details"));
+  assert.ok(card.querySelector('[data-testid="agent-error-settings"]'));
+  assert.ok(card.querySelector('[data-testid="agent-error-copy"]'));
+});
+
+test("round10 error copy: clipboard 缺失 → 复制失败 toast，无未处理 rejection", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("run_failed", { error: "模型超时", code: "model_timeout" }));
+  const copy = root.querySelector('[data-testid="agent-error-copy"]');
+  // 测试环境 navigator 存在但无 clipboard（Node）→ 走缺失分支
+  copy._fire("click");
+  await tick();
+  const toast = root.querySelector('[data-testid="agent-toast"]');
+  assert.ok(toast, "clipboard 缺失 → 复制失败 toast");
+  assert.match(toast.textContent, /复制失败/u);
+});
+
+test("round10 error copy: writeText rejection → 复制失败 toast，无未处理 rejection", async () => {
+  const prev = Object.getOwnPropertyDescriptor(globalThis.navigator, "clipboard");
+  globalThis.navigator.clipboard = {
+    writeText: async () => {
+      throw new Error("denied");
+    }
+  };
+  try {
+    const { root, surface } = await makeSurface();
+    await surface.openProject("D:\\novel");
+    surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+    surface.applyEvent(ev("run_failed", { error: "模型超时", code: "model_timeout" }));
+    const copy = root.querySelector('[data-testid="agent-error-copy"]');
+    copy._fire("click");
+    await tick();
+    const toast = root.querySelector('[data-testid="agent-toast"]');
+    assert.ok(toast, "writeText rejection → 复制失败 toast");
+    assert.match(toast.textContent, /复制失败/u);
+  } finally {
+    if (prev) Object.defineProperty(globalThis.navigator, "clipboard", prev);
+    else delete globalThis.navigator.clipboard;
+  }
+});
+
+test("round10 composer: 模型未配置 → 模型触发器 amber warning；已配置 → 无 warning", async () => {
+  const unconf = await makeSurface({
+    apiOverrides: { fetchComposerOptions: async () => unconfiguredOptions() }
+  });
+  await unconf.surface.openProject("D:\\novel");
+  const modelSel = unconf.root.querySelector('[data-testid="agent-model-select"]');
+  assert.ok(modelSel.classList.contains("is-warning"), "模型未配置 → 触发器 amber warning");
+  assert.match(modelSel.textContent, /未配置/u);
+
+  const conf = await makeSurface({
+    apiOverrides: { fetchComposerOptions: async () => composerOptionsData() }
+  });
+  await conf.surface.openProject("D:\\novel");
+  const modelSel2 = conf.root.querySelector('[data-testid="agent-model-select"]');
+  assert.ok(!modelSel2.classList.contains("is-warning"), "模型已配置 → 无 warning");
+});
+
 test("项目切换：重新 openProject 重置对话与队列，transport 作用域更新", async () => {
   const { root, api, surface } = await makeSurface();
   await surface.openProject("D:\\novel");

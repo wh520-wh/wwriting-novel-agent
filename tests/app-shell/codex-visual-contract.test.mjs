@@ -20,6 +20,24 @@ export function cssBlock(css, selector) {
   const end = css.indexOf("}", start);
   return css.slice(start, end + 1);
 }
+// 顶层 @media 块（逐块提取，避免正则跨块误匹配）。
+function mediaBlocks(source) {
+  const out = [];
+  const re = /@media\s*[^{]*\{/gu;
+  let m;
+  while ((m = re.exec(source)) !== null) {
+    const open = source.indexOf("{", m.index);
+    let depth = 1;
+    let i = open + 1;
+    while (i < source.length && depth > 0) {
+      if (source[i] === "{") depth += 1;
+      else if (source[i] === "}") depth -= 1;
+      i += 1;
+    }
+    out.push(source.slice(m.index, i));
+  }
+  return out;
+}
 
 test("基线保留：agent.css 无 raw hex、内容列/阅读列走全局 token", () => {
   const css = read("src/app-shell/agent/agent.css");
@@ -113,4 +131,24 @@ test("AICSS 基线：composer 扫描边框只绑提交在途，选项圆角 7px"
   assert.match(css, /@keyframes agent-pi-border-spin/u);
   assert.ok(!css.includes(".agent-composer-shell:focus-within::after"), "扫描边框不得绑 focus-within");
   assert.match(cssBlock(css, ".agent-composer-option"), /border-radius:\s*7px/u);
+});
+
+test("Round10 契约：Composer 稳定三行、send 固定 34px、历史损坏提示样式在 CSS", () => {
+  const css = read("src/app-shell/agent/agent.css");
+  // 三行 shell 全宽度保持（含窄屏不折叠成单行变体）
+  assert.match(cssBlock(css, ".agent-composer-shell"), /grid-template-rows:\s*minmax\(74px,\s*auto\)\s+42px/u, "composer 稳定三行");
+  // 任何响应式块都不得重置 .agent-composer-shell 的行结构（逐块解析，防跨块误匹配）
+  for (const block of mediaBlocks(css)) {
+    assert.doesNotMatch(
+      block,
+      /\.agent-composer-shell\s*\{[^}]*grid-template-rows/u,
+      "响应式块不得折叠 composer 行高"
+    );
+  }
+  // send 固定 34px（尺寸声明在第二个块；第一个块是通用 flex 基线）
+  assert.match(css, /\.agent-send\s*\{[^}]*\}\s*\.agent-send\s*\{[^}]*width:\s*34px[^}]*height:\s*34px[^}]*border-radius:\s*7px/u, "send 固定 34px");
+  // 历史损坏提示不再用 JS 内联样式
+  assert.match(cssBlock(css, ".agent-history-clear-hint"), /font-size:\s*12px/u, "history 提示样式在 CSS");
+  const view = read("src/app-shell/agent/view.js");
+  assert.doesNotMatch(view, /Object\.assign\(historyClearHint\.style/u, "不得用 JS 内联样式写 history 提示");
 });
