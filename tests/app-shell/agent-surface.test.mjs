@@ -4908,3 +4908,19 @@ test("流式光标：delta 渲染实心光标于正文末尾，completed 定稿�
   assert.equal(root.querySelector('[data-streaming]'), null, "定稿后流式气泡移除");
   assert.equal(root.querySelector(".agent-stream-caret"), null, "定稿后无光标残留");
 });
+
+// AICSS thinking-reasoning：片段滚动替换——新片段显示时重启替换动效 class。
+test("AICSS 思考片段：ticker 显示新片段时挂 agent-ticker-swap 动效类", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("model_turn_started", { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }));
+  surface.applyEvent(ev("reasoning_delta", { turn_id: "turn-1", input_id: "in-1", text: "先检查事实。" }));
+  await tick();
+  const ticker = root.querySelector(".agent-reasoning-ticker");
+  assert.equal(ticker.textContent, "先检查事实。");
+  surface.applyEvent(ev("reasoning_delta", { turn_id: "turn-1", input_id: "in-1", text: "再核对设定。" }));
+  await tick();
+  assert.equal(ticker.textContent, "再核对设定。");
+  assert.ok(ticker.classList.contains("agent-ticker-swap"), "新片段应挂替换动效类");
+});
