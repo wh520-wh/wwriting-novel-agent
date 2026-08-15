@@ -1737,6 +1737,107 @@ step("场景 31b · 崩溃重放·不重复工具");
 }
 
 // ---------------------------------------------------------------------------
+// 场景 32：任务级断点恢复——写章入账后崩溃，重试续跑不重复入账、首动作读 WORKLOG
+//（与 31b 区分：31b 覆盖"在途工具不重放"（会话级）；本场景覆盖"已入账成果
+//  不二次入账 + 续跑入口纪律"（任务级）。）
+// ---------------------------------------------------------------------------
+step("场景 32 · 写章入账后崩溃 → 续跑不重复入账");
+{
+  let releaseGate;
+  const gate = new Promise((resolve) => { releaseGate = resolve; });
+  const h = await createProjectAgentHarness({
+    gatewayScript: [
+      async () => ({ toolCalls: [tool("append_chapter_segment", { project_id: h.project.project_id, chapter_no: 1, segment_no: 1, content: "雨夜，林晚收到一封没有署名的信。" })] }),
+      async () => ({ toolCalls: [tool("commit_chapter", { project_id: h.project.project_id, chapter_no: 1 })] }),
+      async () => { await gate; return { text: "崩溃前在途，绝不返回" }; },
+      async () => ({ toolCalls: [tool("read_file", { path: "WORKLOG.md" })] }),
+      { reply: { text: "已从断点继续：先读工作日志确认上次进度。" } }
+    ],
+    project: { min_words_per_chapter: 10, target_words_per_chapter: 20 },
+    gatewayDelayMs: 0
+  });
+  try {
+    await h.agent.open({ projectRoot: h.projectRoot });
+    await h.agent.submit({ projectRoot: h.projectRoot, text: "写第 1 章并提交" });
+    await waitFor(h.agent, h.projectRoot, (_session, snap) =>
+      eventsOfType(snap.events, "tool_call_completed").some((e) => e.payload?.name === "commit_chapter"),
+      { describe: "第 1 章已提交入账" });
+    // 崩溃前：下一模型轮在途（gate 永不释放）
+    await waitFor(h.agent, h.projectRoot, (_session, snap) =>
+      eventsOfType(snap.events, "model_turn_started").length >= 3);
+    // —— 崩溃：丢弃旧实例，模拟进程重启 ——
+    const { createProjectAgent } = await import("../src/core/agent/index.mjs");
+    const revived = createProjectAgent({
+      modelGateway: h.gateway,
+      agentStorageRootFor: (root) => h.store.agentRootFor(root)
+    });
+    await revived.open({ projectRoot: h.projectRoot });
+    const recovered = await readSession(revived, h.projectRoot);
+    assert.equal(recovered.active_run.status, "interrupted", "崩溃 Run 保守中断");
+    // 用户重试续写（同一 gateway 继续消费脚本：首动作 = read WORKLOG）
+    await revived.submit({ projectRoot: h.projectRoot, text: "继续" });
+    await waitForIdle(revived, h.projectRoot);
+    const events = await readEvents(revived, h.projectRoot);
+    const completed = eventsOfType(events, "tool_call_completed");
+    assert.equal(completed.filter((e) => e.payload?.name === "commit_chapter").length, 1, "已入账章节不得二次提交");
+    assert.equal(completed.filter((e) => e.payload?.name === "append_chapter_segment").length, 1, "已写段不得重复");
+    assert.equal(eventsOfType(events, "run_completed").length, 1, "只有重试 Run 完成");
+    assert.ok(completed.some((e) => e.payload?.name === "read_file"), "重试后应执行 read_file（断点纪律入口）");
+    // 账本唯一性：索引一条、快照 commit 一版
+    const indexPath = path.join(h.projectRoot, "memory", "chapter_index.json");
+    const index = JSON.parse(await fs.readFile(indexPath, "utf8"));
+    assert.equal((index.chapters ?? []).filter((c) => Number(c.chapter_no) === 1).length, 1, "索引不得重复入账");
+    const manifestPath = path.join(h.projectRoot, ".versions", "chapters", "001", "manifest.json");
+    const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+    assert.equal(manifest.versions.filter((v) => v.source === "commit").length, 1, "提交快照不得因重试重复");
+    record("断点续跑：已入账不重复 + 首动作读 WORKLOG", true, "commit=1, segment=1");
+  } finally {
+    await h.cleanup();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 场景 33：提交后记忆维护三件套（update_memory → book_summary → WORKLOG）
+// ---------------------------------------------------------------------------
+step("场景 33 · 提交后记忆维护三件套");
+{
+  const h = await createProjectAgentHarness({
+    gatewayScript: [
+      async () => ({ toolCalls: [tool("append_chapter_segment", { project_id: h.project.project_id, chapter_no: 1, segment_no: 1, content: "雨夜，林晚收到一封没有署名的信。" })] }),
+      async () => ({ toolCalls: [tool("commit_chapter", { project_id: h.project.project_id, chapter_no: 1 })] }),
+      async () => ({ toolCalls: [tool("update_memory", { project_id: h.project.project_id, chapter_no: 1, facts: [{ entity: "林晚", attribute: "事件", value: "收到匿名信" }] })] }),
+      async () => ({ toolCalls: [tool("write_file", { path: "book_summary.md", content: "# 全书摘要\n\n雨夜收到警告。\n" })] }),
+      async () => ({ toolCalls: [tool("write_file", { path: "WORKLOG.md", content: "# WORKLOG\n\n刚提交第 1 章。\n" })] }),
+      { reply: { text: "第 1 章提交完成，记忆已维护。" } }
+    ],
+    project: { min_words_per_chapter: 10, target_words_per_chapter: 20 }
+  });
+  try {
+    await h.agent.open({ projectRoot: h.projectRoot });
+    await h.agent.submit({ projectRoot: h.projectRoot, text: "写第 1 章并维护记忆" });
+    // driveToIdle 代替 waitForIdle：write_file 写 book_summary/WORKLOG 需确认（auto_edit=false），
+    // driveToIdle 自动 allow 所有 decision_requested，保证三件套不悬挂。
+    await driveToIdle(h.agent, h.projectRoot);
+    const events = await readEvents(h.agent, h.projectRoot);
+    const completed = eventsOfType(events, "tool_call_completed");
+    const names = completed.map((e) => e.payload?.name);
+    assert.ok(names.includes("update_memory"), "三件套必须含 update_memory");
+    assert.equal(names.filter((n) => n === "write_file").length, 2, "摘要与日志各一次 write_file");
+    const commit = completed.find((e) => e.payload?.name === "commit_chapter");
+    assert.equal(commit.payload.memory_checklist, "记忆维护：请依次 update_memory → 更新 book_summary.md → 更新 WORKLOG.md");
+    const continuity = JSON.parse(await fs.readFile(path.join(h.projectRoot, "memory", "continuity.json"), "utf8"));
+    assert.ok(continuity.facts.some((f) => f.entity === "林晚" && f.attribute === "事件"));
+    assert.ok((await fs.readFile(path.join(h.projectRoot, "book_summary.md"), "utf8")).includes("雨夜收到警告"));
+    assert.ok((await fs.readFile(path.join(h.projectRoot, "WORKLOG.md"), "utf8")).includes("刚提交第 1 章"));
+    const journalText = events.map((e) => JSON.stringify(e)).join("\n");
+    assert.equal(journalText.includes("memory_update"), false, "旧 memory_update 字段不得残留");
+    record("记忆三件套：工具序列 + 档案/摘要/日志落盘", true, `tools=${names.join("→")}`);
+  } finally {
+    await h.cleanup();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 可选：真实模型短流程（verify-chat-online 有价值场景并入；未配置时跳过）
 // ---------------------------------------------------------------------------
 step("可选 · 真实模型短流程（DEEPSEEK_API_KEY 已配置）");
