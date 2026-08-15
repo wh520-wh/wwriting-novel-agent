@@ -92,7 +92,11 @@ test("chip：显示 任务计划 1/3；无计划时隐藏", () => {
   const { doc } = makeFakeDoc();
   const panel = createPlanPanel({ doc });
   panel.sync(ITEMS);
-  assert.match(panel.chip.querySelector(".plan-chip-label").textContent, /任务计划\s*1\/3/u);
+  assert.equal(panel.chip.querySelector(".plan-chip-label").textContent, "任务计划 ");
+  assert.equal(
+    panel.chip.querySelector(".plan-chip-count").children.map((c) => c.textContent).join(""),
+    "1/3"
+  );
   assert.equal(panel.chip.hidden, false);
   panel.sync([]);
   assert.equal(panel.chip.hidden, true);
@@ -152,5 +156,46 @@ test("sync(UPDATED) while open：保持展开 + 内容更新", () => {
   // 仍然展开
   assert.equal(panel.dropdown.hidden, false, "sync 后面板应保持展开");
   // chip 文字已更新为 2/3
-  assert.match(panel.chip.querySelector(".plan-chip-label").textContent, /任务计划\s*2\/3/u, "chip 应反映新进度 2/3");
+  assert.equal(
+    panel.chip.querySelector(".plan-chip-count").children.map((c) => c.textContent).join(""),
+    "2/3",
+    "chip 应反映新进度 2/3"
+  );
+});
+
+test("AICSS 计划：chip 图标三态——进行中 pie、全部完成实心勾、未开始列表图标", () => {
+  const { doc } = makeFakeDoc();
+  const panel = createPlanPanel({ doc });
+  panel.sync([
+    { id: "a", step: "一", status: "completed" },
+    { id: "b", step: "二", status: "in_progress" },
+    { id: "c", step: "三", status: "pending" }
+  ]);
+  assert.match(panel.chip.querySelector(".plan-chip-icon").innerHTML, /plan-chip-pie/, "进行中应显示 pie");
+  panel.sync([
+    { id: "a", step: "一", status: "completed" },
+    { id: "b", step: "二", status: "completed" }
+  ]);
+  assert.match(panel.chip.querySelector(".plan-chip-icon").innerHTML, /plan-chip-check/, "全部完成应显示实心勾");
+  panel.sync([{ id: "a", step: "一", status: "pending" }]);
+  assert.match(panel.chip.querySelector(".plan-chip-icon").innerHTML, /plan-chip-list/, "未开始应显示列表图标");
+});
+
+test("AICSS 计划：条目图标为三态 SVG；计数变化触发滚动动画类", () => {
+  const { doc } = makeFakeDoc();
+  const panel = createPlanPanel({ doc });
+  panel.sync([
+    { id: "a", step: "一", status: "in_progress" },
+    { id: "b", step: "二", status: "pending" }
+  ]);
+  const firstIcon = panel.dropdown.querySelector(".plan-item-icon");
+  assert.match(firstIcon.innerHTML, /svg/, "条目图标应为 SVG");
+  panel.sync([
+    { id: "a", step: "一", status: "completed" },
+    { id: "b", step: "二", status: "pending" }
+  ]);
+  assert.ok(
+    panel.chip.querySelector(".plan-chip-count").classList.contains("plan-chip-count--roll"),
+    "计数变化应触发滚动动画类"
+  );
 });

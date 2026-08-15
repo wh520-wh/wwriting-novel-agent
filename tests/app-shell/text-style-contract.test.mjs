@@ -251,9 +251,9 @@ test(".agent-markdown h1/h2 使用 heading primary；H1–H6 字号/行高/字�
 });
 
 // ===========================================================================
-// 3) 计划：title 与唯一 in_progress semibold；pending/completed regular；无删除线
+// 3) 计划：title 与唯一 in_progress semibold；completed 删除线（AICSS task-list）
 // ===========================================================================
-test("任务计划标题与唯一 in_progress 项 semibold，pending/completed regular，completed 无删除线", () => {
+test("任务计划标题与唯一 in_progress 项 semibold，completed regular + 步骤删除线", () => {
   const title = extractDecls(extractBlock(agentCssSource, ".agent-plan__title"));
   assert.equal(title["font-weight"], "var(--weight-semibold)");
   assert.equal(title["font-size"], "13px");
@@ -270,15 +270,10 @@ test("任务计划标题与唯一 in_progress 项 semibold，pending/completed r
   const completed = extractDecls(extractBlock(agentCssSource, '.agent-plan-item[data-status="completed"]'));
   assert.equal(completed["font-weight"], "var(--weight-regular)", "completed 为 regular");
   assert.equal(completed.color, "var(--agent-plan-complete-fg)");
-  assert.equal(completed["text-decoration"], "none", "completed 不得有删除线");
 
-  // DOM fixture：唯一 in_progress；completed 不生成删除线元素
-  const list = planFixture();
-  const inProgressItems = list.queryAll("agent-plan-item").filter((el) => el.dataset.status === "in_progress");
-  assert.equal(inProgressItems.length, 1, "fixture 中只能有一个 in_progress 项");
-  const completedItem = list.queryAll("agent-plan-item").find((el) => el.dataset.status === "completed");
-  assert.ok(completedItem, "fixture 应含 completed 项");
-  assert.equal(completedItem.children.some((c) => /^(del|strike|s)$/u.test(c.className)), false, "completed 不得带删除线元素");
+  // AICSS task-list：完成项步骤文本带删除线（仅步骤文本，不落整行）
+  const completedStep = extractDecls(extractBlock(agentCssSource, '.agent-plan-item[data-status="completed"] .agent-plan-item__step'));
+  assert.equal(completedStep["text-decoration"], "line-through", "完成项步骤必须有删除线");
 });
 
 // ===========================================================================
