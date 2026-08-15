@@ -61,9 +61,10 @@ export function createState() {
     decisions: new Map(),   // decision_id -> decision
     errors: [],             // run_failed 事实（新 Run 启动时清空）
     assistantStream: null,  // { runId, text } —— 增量正文累积（流式气泡），completed 后清空
+    plan: null,             // 第九轮：顶层计划投影（plan_updated → { explanation, items }），供 plan-panel chip 消费
     // 第九轮：系统通知行投影（chapter_rolled_back / memory_file_restored → timeline）。
     systemNotices: [],      // [{ seq, type, payload }]
-    revisions: { messages: 0, run: 0, queue: 0, decisions: 0, errors: 0, context: 0, notices: 0 }
+    revisions: { messages: 0, run: 0, queue: 0, decisions: 0, errors: 0, context: 0, notices: 0, plan: 0 }
   };
 }
 
@@ -417,9 +418,12 @@ function applyEventToState(state, event) {
             return entry;
           })
         };
-        // 计划自身的 revision 计数已删除：计划的时序由 work 投影的 plan 工作项
-        // sortSeq 承担（Task 5 Step 6），旧 view 的 overlay 靠 syncPlan 的
-        // 内容签名驱动渲染。
+        // 第九轮：顶层 plan 投影供 plan-panel chip 消费（与 visible_plan 并存）。
+        const planItems = Array.isArray(payload.items) ? structuredClone(payload.items) : [];
+        state.plan = planItems.length === 0
+          ? null
+          : { explanation: typeof payload.explanation === "string" ? payload.explanation : null, items: planItems };
+        bump(state, ["plan"]);
       }
       break;
     }
@@ -706,6 +710,8 @@ function rebuildDerivedState(state) {
   state.decisions = new Map();
   state.errors = [];
   state.assistantStream = null;
+  // 第九轮：顶层计划投影同样由事件重放重建。
+  state.plan = null;
   // Task 11：上下文用量/压缩投影同样由事件重放重建（确定性与增量路径一致）。
   state.contextUsage = null;
   state.compaction = null;
@@ -713,7 +719,7 @@ function rebuildDerivedState(state) {
   // 第九轮：系统通知行同样由事件重放重建。
   state.systemNotices = [];
   for (const event of events) applyEventToState(state, event);
-  bump(state, ["messages", "run", "queue", "decisions", "errors", "context", "notices"]);
+  bump(state, ["messages", "run", "queue", "decisions", "errors", "context", "notices", "plan"]);
 }
 
 // 新 Run（或恢复的 Run）认领活动输入：从队列移除（镜像 journal activateInput）。

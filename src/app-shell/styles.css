@@ -2047,3 +2047,43 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .main-agent { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
 .main-agent > .agent-surface { width: 100%; }
+
+/* ============================================================
+   第九轮 · 任务计划面板（顶栏 chip + 折叠下拉）
+   ============================================================ */
+.plan-chip {
+  display: inline-flex; align-items: center; gap: 4px; height: 30px;
+  padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--surface-2); color: var(--muted); font-size: 12.5px;
+  cursor: pointer; max-width: 200px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; position: relative;
+}
+
+.plan-dropdown {
+  position: absolute; top: calc(100% + 6px); right: 0;
+  min-width: 220px; max-width: min(360px, calc(100vw - 32px));
+  max-height: 40vh; overflow: auto; background: var(--surface);
+  border: 1px solid var(--line); border-radius: var(--r);
+  box-shadow: var(--shadow-pop); padding: 6px; z-index: 85;
+}
+
+.plan-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; font-size: 13px; color: var(--ink-2);
+}
+
+.plan-item.done .plan-item-step { text-decoration: line-through; color: var(--muted); }
+
+.plan-item.active { color: var(--ink); background: var(--surface-2); border-radius: var(--r-sm); }
+
+.plan-item-icon { width: 14px; text-align: center; color: var(--muted); }
+
+.plan-item.active .plan-item-icon { color: var(--accent); animation: plan-pulse 1.2s ease-in-out infinite; }
+
+.plan-item-status { margin-left: auto; font-size: 11.5px; color: var(--muted); }
+
+@keyframes plan-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .plan-item.active .plan-item-icon { animation: none; }
+}

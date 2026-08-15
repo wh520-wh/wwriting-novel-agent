@@ -20,6 +20,7 @@ import { createAgentSurface } from "./agent/index.js";
 import { loadDefaultTier } from "./permission-defaults.mjs";
 import { getTierById } from "./permission-tiers.mjs";
 import { createVersionPanel } from "./components/version-panel.js";
+import { createPlanPanel } from "./components/plan-panel.js";
 
 const refs = {
   app: document.querySelector("#app"),
@@ -92,6 +93,9 @@ let createModalMode = "new";
 let readerChapterNo = null;
 let projectListData = null;
 
+// 第九轮：任务计划面板——常驻顶栏 chip，绝对定位折叠下拉。
+const planPanel = createPlanPanel({ doc: document });
+
 // ---- AgentSurface：唯一对话 seam ----
 const agentSurface = createAgentSurface({
   root: refs.agentSurface,
@@ -113,6 +117,9 @@ const agentSurface = createAgentSurface({
   // onSessionsChanged → handleSessionsChanged 内的检查承担（有 running → true，
   // 全部非 running → false）。终态事件按当前会话流到达；跨会话运行结束的复位缺口
   // 见 session-sidebar.mjs 的 syncBusy 注释（openProject/switchSession 刷新兜底）。
+  onPlanUpdated: (plan) => {
+    planPanel.sync(plan?.items ?? []);
+  },
   onRunTerminal: () => {
     // Task 16（R5-12）：Run 终态统一刷新——会话列表（busy 复位）与 dashboard
     //（顶栏进度/章节抽屉/成本面板）。Agent snapshot 权威刷新在 surface 内部
@@ -122,6 +129,12 @@ const agentSurface = createAgentSurface({
     void loadDashboard({ background: true });
   }
 });
+
+// 第九轮：任务计划面板挂载——chip 插入顶栏 context-ring 之前。
+const topbarEl = document.querySelector(".topbar");
+topbarEl?.insertBefore(planPanel.chip, document.getElementById("agent-context-ring") ?? null);
+document.addEventListener("click", (event) => planPanel.handleOutsideClick(event));
+document.addEventListener("keydown", (event) => planPanel.handleKeydown(event));
 
 // Task 9：左侧栏两级树（项目折叠组 → 对话列表）。渲染、折叠状态、懒加载缓存与
 // 会话操作都在 session-sidebar.mjs；app.js 只提供数据源与 surface 接线。

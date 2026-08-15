@@ -32,6 +32,8 @@ export function createAgentSurface({
   // Task 9：Run 终态事件（run_completed/failed/cancelled/interrupted）通知回调。
   // SSE 是 surface 的唯一消费者，app.js 需经此钩子在终态后重拉会话列表并复位 busy。
   onRunTerminal = () => {},
+  // 第九轮：plan_updated 事件通知回调（plan-panel chip 消费）。
+  onPlanUpdated = () => {},
   document: doc = globalThis.document,
   requestFrame = null
 }) {
@@ -181,6 +183,8 @@ export function createAgentSurface({
     const rebuild = reduceSnapshot(state, snapshot);
     if (rebuild) view.reset();
     view.render(state, actions);
+    // 第九轮：快照回放可能包含 plan_updated 事件，通知 plan-panel 同步。
+    if (state.plan) onPlanUpdated(state.plan);
     // I4：ESC 去重锁的释放必须覆盖快照路径。SSE 断线后重连补齐按合并后的 max seq
     // 增量拉快照，若取消请求与 context_compaction_cancelled/run_cancelled 之间的
     // 连接恰好断开，终态事件永远不会经 applyEvent 送达（被快照吞掉）——这里对
@@ -192,6 +196,7 @@ export function createAgentSurface({
     if (!event || typeof event !== "object") return;
     reduceEvent(state, event);
     view.render(state, actions);
+    if (event.type === "plan_updated") onPlanUpdated(state.plan);
     maybeRefreshAfterTerminal(event);
     clearEscapeLatch(event);
   }
