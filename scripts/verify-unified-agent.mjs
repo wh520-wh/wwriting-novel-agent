@@ -997,6 +997,39 @@ step("场景 24 · 活动合并与私有推理排除");
       node._parent = null;
     }
     remove() { if (this._parent) this._parent.removeChild(this); }
+    // matchesSelector / querySelector / querySelectorAll —— ported from
+    // verify-app-shell.mjs MockElement（Task 19 / Task 25）；view.js syncNotices
+    // 调用 messages.querySelectorAll("[data-notice-type]")，需要选择器支持。
+    matchesSelector(selector) {
+      if (selector.startsWith("[")) {
+        const match = /^\[([A-Za-z0-9_-]+)(?:="([^"]*)")?\]$/u.exec(selector);
+        if (!match) return false;
+        const attr = match[1];
+        const expected = match[2];
+        return expected === undefined ? this.getAttribute(attr) !== null : this.getAttribute(attr) === expected;
+      }
+      if (selector.startsWith(".")) return this.className.split(/\s+/u).includes(selector.slice(1));
+      return false;
+    }
+    querySelector(selector) {
+      const stack = [...this.children];
+      while (stack.length > 0) {
+        const node = stack.shift();
+        if (node.matchesSelector?.(selector)) return node;
+        stack.push(...node.children);
+      }
+      return null;
+    }
+    querySelectorAll(selector) {
+      const results = [];
+      const stack = [...this.children];
+      while (stack.length > 0) {
+        const node = stack.shift();
+        if (node.matchesSelector?.(selector)) results.push(node);
+        stack.push(...node.children);
+      }
+      return results;
+    }
     addEventListener() { /* 无交互，仅记录 */ }
     get value() { return this._value; }
     set value(v) { this._value = String(v ?? ""); }
