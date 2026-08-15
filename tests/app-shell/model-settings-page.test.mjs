@@ -84,7 +84,7 @@ class MockElement {
   /** 简易属性/类查找：返回子树内第一个匹配（renderCandidateList 等在 attach 目标内查找）。 */
   querySelector(selector) {
     const walk = (node) => {
-      for (const child of node.children) {
+      for (const child of node.children ?? []) {
         if (child.matchesSelector?.(selector)) return child;
         const hit = walk(child);
         if (hit) return hit;
@@ -110,6 +110,7 @@ class MockElement {
 // 仅提供元素工厂（el() 用）。无全局 registry、无 querySelector——渲染目标经 attach 注入。
 const mockDocument = {
   createElement(tag) { return new MockElement(tag); },
+  createElementNS(_ns, tag) { return new MockElement(tag); },
   createTextNode(text) { return { nodeType: 3, textContent: String(text) }; }
 };
 
@@ -655,6 +656,18 @@ test("停用模型的「设为默认」按钮置灰并提示", async () => {
 // ---------------------------------------------------------------------------
 // Task 15：拉取模型 + 测试连接交互 + 添加供应商表单
 // ---------------------------------------------------------------------------
+
+test("round10 model row: actions and connection result use separate stable rows", async () => {
+  const page = makePage({
+    fetchImpl: async () => ({ ok: true, json: async () => ({ providers, default_model: null }) })
+  });
+  const { detail } = attachTargets(page);
+  await page.open();
+  const row = descendants(detail).find((el) => el.className === "model-row");
+  assert.ok(descendants(row).some((el) => el.className === "model-row-main"));
+  assert.ok(descendants(row).some((el) => el.className === "model-row-actions"));
+  assert.ok(descendants(row).some((el) => el.className === "model-connection-result"));
+});
 
 test("拉取前置检查：无密钥环境名时提示且不发请求", async () => {
   const calls = [];

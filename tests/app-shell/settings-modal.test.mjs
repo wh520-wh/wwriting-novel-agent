@@ -164,6 +164,7 @@ function createSettingsModalForTest(overrides = {}) {
   const { refs: refsOverride = {}, ...rest } = overrides;
   const refs = {
     settingsSave: new MockElement("button"),
+    settingsSaveStatus: new MockElement("p"),
     settingsScrim: new MockElement("div"),
     settingsDetail: new MockElement("div"),
     ...refsOverride
@@ -259,9 +260,10 @@ test("currentSettingsSection 反映当前分区（缺省为第一个 = model）"
 
 test("openSettingsModal()（无参）缺省打开 model 分区并注入渲染目标", async () => {
   const saveButton = new MockElement("button");
+  const saveStatus = new MockElement("p");
   const fake = modelSettingsFake();
   const modal = createSettingsModalForTest({
-    refs: { settingsSave: saveButton },
+    refs: { settingsSave: saveButton, settingsSaveStatus: saveStatus },
     modelSettings: fake
   });
   installSectionNav();
@@ -301,9 +303,10 @@ test("openSettingsModal()（无参）缺省打开 model 分区并注入渲染目
     "应渲染 [data-provider-detail]"
   );
 
-  // 保存按钮：model 分区动作即时生效 → 禁用「无需保存」
-  assert.equal(saveButton.disabled, true, "model 分区保存按钮应禁用");
-  assert.equal(saveButton.textContent, "无需保存");
+  // Round10：model 分区动作即时生效 → footer 显示状态文字，保存按钮隐藏
+  assert.equal(saveButton.hidden, true, "model 分区保存按钮应隐藏");
+  assert.equal(saveStatus.hidden, false, "状态槽应可见");
+  assert.equal(saveStatus.textContent, "更改即时生效");
 
   // modelSettings.attach 收到注入的 list/detail 目标
   assert.equal(fake.calls.attach.length, 1, "modelSettings.attach 应被调用一次");
@@ -313,6 +316,47 @@ test("openSettingsModal()（无参）缺省打开 model 分区并注入渲染目
   assert.equal(targets.list.getAttribute("data-provider-list"), "", "attach 的 list 应为 [data-provider-list] 容器");
   assert.equal(targets.detail.getAttribute("data-provider-detail"), "", "attach 的 detail 应为 [data-provider-detail] 容器");
   assert.equal(fake.calls.open, 1, "modelSettings.open 应被调用一次");
+});
+
+test("round10 footer: immediate sections show status text instead of a disabled primary button", async () => {
+  installSectionNav();
+  const settingsSave = new MockElement("button");
+  const settingsSaveStatus = new MockElement("p");
+  const modal = createSettingsModalForTest({
+    refs: { settingsSave, settingsSaveStatus }
+  });
+  await modal.openSettingsModal("model");
+  assert.equal(settingsSave.hidden, true);
+  assert.equal(settingsSaveStatus.hidden, false);
+  assert.equal(settingsSaveStatus.textContent, "更改即时生效");
+});
+
+test("round10 footer: 保存在途切分区再回来，按钮保持禁用与「保存中...」", async () => {
+  const saveButton = new MockElement("button");
+  const saveStatus = new MockElement("p");
+  let releaseSave;
+  const gate = new Promise((resolve) => { releaseSave = resolve; });
+  const modal = createSettingsModalForTest({
+    refs: { settingsSave: saveButton, settingsSaveStatus: saveStatus },
+    getDashboard: () => ({ hasProject: true, project: { target_chapters: 5 } }),
+    getCurrentProjectRoot: () => "D:/novels/demo",
+    postJsonImpl: async () => gate
+  });
+  await modal.openSettingsModal("writing");
+  const p = modal.saveSettingsForTest();
+  await tickAsync();
+  // 保存在途 → 切到 model 再切回 writing：setFooterMode 不得把在途按钮重新启用
+  await modal.openSettingsModal("model");
+  await modal.openSettingsModal("writing");
+  assert.equal(saveButton.hidden, false, "writing 分区保存按钮可见");
+  assert.equal(saveButton.disabled, true, "保存在途切回后按钮仍禁用");
+  assert.equal(saveButton.textContent, "保存中...", "在途文案保留");
+  // 保存完成 → 恢复可用
+  releaseSave({ ok: true });
+  await tickAsync();
+  await tickAsync();
+  assert.equal(saveButton.disabled, false, "保存完成后按钮恢复");
+  await p;
 });
 
 test("model 分区切到 writing：detail 内容替换（无模型容器），modelSettings 不重复 attach", async () => {
@@ -501,9 +545,10 @@ function descendants(root) {
 
 test("普通文件夹下写作参数分区显示说明且保存按钮禁用", async () => {
   const saveButton = new MockElement("button");
+  const saveStatus = new MockElement("p");
   const postCalls = [];
   const modal = createSettingsModalForTest({
-    refs: { settingsSave: saveButton },
+    refs: { settingsSave: saveButton, settingsSaveStatus: saveStatus },
     getDashboard: () => ({ hasProject: false, project: null, projectRoot: "D:/plain/folder" }),
     getCurrentProjectRoot: () => "D:/plain/folder",
     postJsonImpl: async (url, body) => {
@@ -518,8 +563,8 @@ test("普通文件夹下写作参数分区显示说明且保存按钮禁用", as
     hints.some((h) => h.textContent.includes("仅旧版小说项目可用")),
     "普通文件夹应显示旧版小说项目专属说明"
   );
-  assert.equal(saveButton.disabled, true, "普通文件夹下保存按钮应禁用");
-  assert.equal(saveButton.textContent, "无需保存");
+  assert.equal(saveButton.hidden, true, "普通文件夹下保存按钮应隐藏");
+  assert.equal(saveStatus.textContent, "此分区无需保存", "footer 状态槽显示无需保存");
   assert.equal(domRegistry.some((el) => el.id === "settings-output-style"), false, "不应渲染输出风格下拉");
 
   await modal.saveSettingsForTest();
@@ -528,8 +573,9 @@ test("普通文件夹下写作参数分区显示说明且保存按钮禁用", as
 
 test("普通文件夹下项目管理分区显示说明且无归档按钮", async () => {
   const saveButton = new MockElement("button");
+  const saveStatus = new MockElement("p");
   const modal = createSettingsModalForTest({
-    refs: { settingsSave: saveButton },
+    refs: { settingsSave: saveButton, settingsSaveStatus: saveStatus },
     getDashboard: () => ({ hasProject: false, project: null, projectRoot: "D:/plain/folder" }),
     getCurrentProjectRoot: () => "D:/plain/folder"
   });
@@ -542,7 +588,8 @@ test("普通文件夹下项目管理分区显示说明且无归档按钮", async
   );
   assert.equal(domRegistry.some((el) => el.id === "settings-archive-trigger"), false, "不应渲染归档按钮");
   assert.equal(domRegistry.some((el) => el.id === "settings-unarchive-trigger"), false, "不应渲染解除归档按钮");
-  assert.equal(saveButton.disabled, true, "保存按钮保持禁用");
+  assert.equal(saveButton.hidden, true, "保存按钮保持隐藏");
+  assert.equal(saveStatus.textContent, "此分区无需保存");
 });
 
 // ---------------------------------------------------------------------------
