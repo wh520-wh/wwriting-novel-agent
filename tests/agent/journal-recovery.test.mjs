@@ -1244,14 +1244,15 @@ test("append 无需显式 load（自初始化）", async (t) => {
   assert.equal(events[1].seq, 2);
 });
 
-test("FIXED_EVENT_TYPES 包含计划固定的 44 个事件类型（Task 12 删除旧工作流事件）", () => {
-  assert.equal(FIXED_EVENT_TYPES.length, 44);
+test("FIXED_EVENT_TYPES 包含计划固定的 46 个事件类型（Task 12 删旧工作流事件，第九轮 +chapter_rolled_back/memory_file_restored）", () => {
+  assert.equal(FIXED_EVENT_TYPES.length, 46);
   assert.deepEqual(
     [...FIXED_EVENT_TYPES].sort(),
     [
       "assistant_message_delta",
       "assistant_message_completed",
       "checkpoint_linked",
+      "chapter_rolled_back",
       "context_usage_updated",
       "context_compaction_cancelled",
       "context_compaction_cancel_requested",
@@ -1274,6 +1275,7 @@ test("FIXED_EVENT_TYPES 包含计划固定的 44 个事件类型（Task 12 删�
       "interrupt_requested",
       "interrupt_safe_point_reached",
       "journal_recovery_boundary",
+      "memory_file_restored",
       "model_turn_completed",
       "model_turn_started",
       "permission_grant_cleared",
