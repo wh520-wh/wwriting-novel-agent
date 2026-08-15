@@ -209,12 +209,6 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   historyClearHint.dataset.testid = "agent-history-clear-hint";
   historyClearHint.textContent = "此对话已损坏";
   historyClearHint.hidden = true;
-  Object.assign(historyClearHint.style, {
-    fontSize: "12px",
-    lineHeight: "1.5",
-    color: "var(--text-muted)",
-    padding: "6px 2px 0"
-  });
   const composerToolbar = doc.createElement("div");
   composerToolbar.className = "agent-composer-toolbar";
   const send = doc.createElement("button");
@@ -1499,6 +1493,13 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       for (const [choice, label] of choices) {
         const button = doc.createElement("button");
         button.type = "button";
+        // Round10：普通决策明确主次——allow 推荐主操作、allow_input 次操作、
+        // deny 空间分离的红色拒绝（extreme 的精确文字确认契约不受影响）。
+        button.className = choice === "allow"
+          ? "agent-decision-primary"
+          : choice === "allow_input"
+            ? "agent-decision-secondary"
+            : "agent-decision-deny";
         button.dataset.choice = choice;
         button.dataset.testid = "agent-decision-choice";
         button.textContent = label;
@@ -1541,7 +1542,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     if (appended) afterRender();
   }
 
-  // ---- 错误卡（简洁事实） ------------------------------------------------------
+  // ---- 错误卡（Round10：用户主层 + 可展开/复制技术详情） -------------------------
   function syncErrors(state) {
     if (rendered.errors === state.revisions.errors) return;
     rendered.errors = state.revisions.errors;
@@ -1550,13 +1551,59 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       const card = doc.createElement("div");
       card.className = "agent-error";
       card.dataset.testid = "agent-error";
+      card.setAttribute("role", "alert");
       const title = doc.createElement("strong");
       title.className = "agent-error-title";
       title.textContent = "操作失败";
       const message = doc.createElement("p");
       message.className = "agent-error-message";
-      message.textContent = String(error.message ?? "");
+      // 主文案 = 用户事实；provider_configuration_error 有固定恢复文案。
+      message.textContent = error.code === "provider_configuration_error"
+        ? "模型尚未配置，当前任务无法继续。"
+        : String(error.message ?? "操作失败。");
       card.append(title, message);
+      const actionsRow = doc.createElement("div");
+      actionsRow.className = "agent-error-actions";
+      if (error.code === "provider_configuration_error") {
+        // 主恢复动作 = 打开模型设置；重试仍只保留在 failed run header，不建第二条路径。
+        const openSettings = doc.createElement("button");
+        openSettings.type = "button";
+        openSettings.className = "agent-error-action agent-error-action--primary";
+        openSettings.dataset.testid = "agent-error-settings";
+        openSettings.textContent = "打开模型设置";
+        openSettings.addEventListener("click", () => actions.openModelSettings?.());
+        actionsRow.append(openSettings);
+      }
+      const copy = doc.createElement("button");
+      copy.type = "button";
+      copy.className = "agent-error-copy";
+      copy.dataset.testid = "agent-error-copy";
+      copy.textContent = "复制";
+      // 复制技术详情；clipboard 缺失/同步异常/rejection 都显示「复制失败」，
+      // 不产生未处理 rejection。writeText 必须带 clipboard receiver 调用
+      //（拆出方法引用会抛 Illegal invocation）。
+      copy.addEventListener("click", () => {
+        const clipboard = globalThis.navigator?.clipboard;
+        if (typeof clipboard?.writeText !== "function") {
+          showToast("复制失败");
+          return;
+        }
+        Promise.resolve()
+          .then(() => clipboard.writeText(technical.textContent))
+          .catch(() => {
+            showToast("复制失败");
+          });
+      });
+      actionsRow.append(copy);
+      card.append(actionsRow);
+      const details = doc.createElement("details");
+      details.className = "agent-error-details";
+      const summary = doc.createElement("summary");
+      summary.textContent = "技术详情";
+      const technical = doc.createElement("pre");
+      technical.textContent = `${error.code ?? "model_error"}\n${error.message ?? "操作失败。"}`;
+      details.append(summary, technical);
+      card.append(details);
       errorsSlot.append(card);
     }
     if (state.errors.length > 0) afterRender();
@@ -1777,6 +1824,8 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     const selected = control.items.find((item) => item.dataset.value === currentValue);
     control.trigger.dataset.value = currentValue;
     control.value.textContent = selected?.dataset.label ?? fallbackLabel;
+    // Round10：模型未配置（空值）→ 触发按钮 amber warning 态（不修改选择逻辑）。
+    control.trigger.classList.toggle("is-warning", control.kind === "model" && currentValue === "");
     for (const item of control.items) {
       const active = item.dataset.value === currentValue;
       item.dataset.selected = active ? "true" : "false";
