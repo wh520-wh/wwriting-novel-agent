@@ -362,7 +362,11 @@ const SURFACE_SEAM_TESTS = new Set([
   "tests/app-shell/work-items.test.mjs",
   "tests/app-shell/reasoning-ticker.test.mjs",
   "tests/app-shell/agent-context-ring.test.mjs",
-  "tests/app-shell/agent-api.test.mjs"
+  "tests/app-shell/agent-api.test.mjs",
+  // state-notices.test.mjs 直接测 agent/state.js 的 systemNotices 投影（纯 state
+  // reducer，与 work-items 等投影测试同属 seam 意图——绕 index.js 触达内部投影
+  // 逻辑，测试 agent-surface.test.mjs 经 fake api 覆盖不到的 reducer 细节）。
+  "tests/app-shell/state-notices.test.mjs"
 ]);
 
 test("AgentSurface 只能通过 src/app-shell/agent/index.js 对外暴露", () => {
