@@ -128,3 +128,32 @@ test("agentRunning=true：恢复按钮禁用并提示", async () => {
   assert.ok(elements.some((e) => e.dataset.restoreButton && e.disabled === true));
   assert.ok(elements.map((e) => e.textContent).join("|").includes("写作进行中"));
 });
+
+test("open() 空版本列表 → 显示「暂无历史版本。」", async () => {
+  const { doc, elements } = makeFakeDoc();
+  const panel = createVersionPanel({ doc });
+  await panel.open({ title: "第 5 章", kind: "chapter", chapterNo: 5, getVersions: async () => ({ versions: [] }), getContent: async () => ({}), onRestore: async () => {} });
+  assert.ok(panel.hidden === false, "面板应可见");
+  assert.ok(elements.some((e) => e.textContent?.includes("暂无历史版本。")), "应显示暂无历史版本提示");
+});
+
+test("open() getVersions 失败 → 显示错误信息", async () => {
+  const { doc, elements } = makeFakeDoc();
+  const panel = createVersionPanel({ doc });
+  await panel.open({
+    title: "第 3 章", kind: "chapter", chapterNo: 3,
+    getVersions: async () => { throw new Error("网络超时"); },
+    getContent: async () => ({}), onRestore: async () => {}
+  });
+  assert.ok(panel.hidden === false, "面板应可见");
+  assert.ok(elements.some((e) => e.textContent?.includes("网络超时")), "应显示错误消息");
+});
+
+test("close() → host.hidden 为 true", async () => {
+  const { doc } = makeFakeDoc();
+  const panel = createVersionPanel({ doc });
+  await panel.open({ title: "第 1 章", kind: "chapter", chapterNo: 1, getVersions: async () => ({ versions: VERSIONS }), getContent: async () => ({ content: "x" }), onRestore: async () => {} });
+  assert.equal(panel.hidden, false, "open 后面板应可见");
+  panel.close();
+  assert.equal(panel.hidden, true, "close 后面板应隐藏");
+});
