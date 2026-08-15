@@ -317,12 +317,14 @@ refs.readerWide.addEventListener("click", () => {
 const readerHistory = document.getElementById("reader-history");
 if (readerHistory && !readerHistory.__bound) {
   readerHistory.__bound = true;
+  let versionPanel = null; // 单例：只创建一次，复用 panel.open()
   readerHistory.addEventListener("click", async () => {
-    const panel = createVersionPanel({ doc: document, ctx: window.appCtx ?? null });
-    const reader = document.getElementById("reader");
-    reader?.append(panel);
+    if (!versionPanel) {
+      versionPanel = createVersionPanel({ doc: document, ctx: window.appCtx ?? null });
+      document.getElementById("reader")?.append(versionPanel);
+    }
     const chapterNo = readerChapterNo;
-    panel.open({
+    versionPanel.open({
       title: `第 ${chapterNo} 章`,
       kind: "chapter",
       chapterNo,
@@ -331,7 +333,7 @@ if (readerHistory && !readerHistory.__bound) {
       onRestore: async (version) => {
         const result = await postJson("/api/chapters/rollback", { chapter_no: chapterNo, version });
         if (result?.ok) {
-          panel.close();
+          versionPanel.close();
           await openReader(chapterNo); // 恢复后刷新到最新内容
         }
       }

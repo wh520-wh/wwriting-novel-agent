@@ -1,5 +1,6 @@
 // src/app-shell/components/version-panel.js —— 第九轮：版本时间线面板
 //（阅读器/抽屉章节/记忆分区三处共用；纯 DOM 工厂，doc 可注入便于单测）。
+// ctx: 预留参数，供后续入口（如 api-client 注入）使用，当前未消费。
 export function createVersionPanel({ doc = document, ctx = null }) {
   const host = doc.createElement("div");
   host.className = "version-panel";
