@@ -46,8 +46,6 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  width: min(100%, 1040px); /* Task 12：主内容轴 1040px，布局流内居中 */
-  max-width: var(--content-column);
   margin-inline: auto;
   padding: 28px var(--content-gutter, 20px) 24px;
   display: flex;
@@ -90,17 +88,23 @@
 .agent-composer {
   position: relative;
   flex: 0 0 auto;
-  width: min(100%, 1040px); /* Task 12：与对话共用 1040px 主内容轴 */
-  max-width: var(--content-column);
   margin-inline: auto;
   padding: 12px var(--content-gutter, 20px) 18px;
   box-sizing: border-box;
 }
 
-/* 主内容轴上限的字面量契约（Task 12 brief Step 1）：对话与 composer 统一 1040px。 */
+/* 内容轴/阅读轴只经全局 token 对齐（styles.css 独占声明，本文件不写字面量）。 */
 .agent-conversation,
 .agent-composer {
-  max-width: 1040px;
+  width: min(100%, var(--content-column));
+  max-width: var(--content-column);
+}
+
+.agent-message--assistant,
+.agent-message-text.agent-markdown,
+.agent-work-group > summary,
+.agent-work-items {
+  max-width: var(--reading-column);
 }
 
 .agent-surface--empty .agent-conversation {
@@ -327,8 +331,8 @@
 }
 
 .agent-empty-mark {
-  width: 44px;
-  height: 44px;
+  width: 64px;               /* Round10：64px 同源品牌标记（book 图标保持现有视觉） */
+  height: 64px;
   margin: 0 auto 22px;
   display: grid;
   place-items: center;
@@ -451,7 +455,7 @@
 
 .agent-message--assistant {
   align-self: flex-start;
-  max-width: min(100%, 720px); /* 助手气泡：正文由内层 Markdown 封顶 720px，此处上限同步为 720px（旧 800px 因正文更窄已不可达） */
+  max-width: min(100%, var(--reading-column)); /* 助手正文：阅读轴 720 token（防窄容器溢出） */
 }
 
 .agent-message-text {
@@ -503,7 +507,7 @@
    一套 typography（无 .is-streaming h* / .is-complete h* 重复规则）。 */
 .agent-message-text.agent-markdown {
   white-space: normal;
-  width: min(100%, 720px); /* 助手正文阅读宽度：中文每行 ≈ 40 字（打磨 B-2） */
+  width: min(100%, var(--reading-column)); /* 助手正文阅读宽度：中文每行 ≈ 40 字（打磨 B-2） */
 }
 
 /* §2.6 标题/正文层级：H1/H2 靠字号、字重、间距和 H2 的细分隔线建立层级，
@@ -515,7 +519,8 @@
   color: var(--agent-answer-fg);
   font-family: var(--serif);
   font-size: var(--font-md);
-  line-height: 2.0; /* 正文神圣：行高 ≥2.0（round10 spec §5.5） */
+  /* 正文神圣：行高 ≥2.0（round10 spec §5.5） */
+  line-height: 2.0;
   font-weight: var(--weight-regular);
 }
 .agent-markdown h1 { color: var(--agent-heading-fg); font-size: var(--font-2xl); line-height: 1.35; font-weight: var(--weight-bold); }
@@ -601,15 +606,15 @@
   margin: 10px 0;
 }
 
-/* 表格保持 720px 正文列，窄屏仅滚动包装层，不把各列压成逐字换行。 */
+/* 表格保持阅读轴列宽，窄屏仅滚动包装层，不把各列压成逐字换行。 */
 .agent-markdown-table-scroll {
   max-width: 100%;
   overflow-x: auto;
   margin: 0 0 8px;
 }
 .agent-markdown-table-scroll table {
-  width: 720px;
-  min-width: 720px; /* 窄屏保持 720px 列宽，溢出交给包装层横向滚动，不把各列压成逐字换行 */
+  width: var(--reading-column);
+  min-width: var(--reading-column); /* 窄屏保持列宽，溢出交给包装层横向滚动，不把各列压成逐字换行 */
   table-layout: fixed;
   border-collapse: collapse;
   margin: 0;
@@ -662,6 +667,8 @@
   justify-content: flex-end;
   gap: 12px;
   padding: 4px 2px;
+  max-width: var(--reading-column); /* Round10：停止/重试与状态摘要同处 720 阅读轴，不漂到 1040 右缘 */
+  margin-inline: auto;
 }
 
 .agent-stop-btn,
@@ -689,7 +696,40 @@
   transition: background 100ms ease, border-color 100ms ease, opacity 100ms ease, transform 80ms ease;
 }
 
-.agent-stop-btn,
+.agent-stop-btn {
+  height: 32px;              /* Round10：固定 32px 紧凑次按钮 */
+  min-width: 64px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid var(--agent-line-strong);
+  background: var(--agent-panel-solid);
+  color: var(--agent-ink);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 600;
+  transition: background 100ms ease, border-color 100ms ease, color 100ms ease, opacity 100ms ease, transform 80ms ease;
+}
+
+.agent-stop-btn svg {
+  display: block;
+  flex: 0 0 auto;
+}
+
+/* Round10：停止按钮位于工作组 summary 时靠右贴齐状态行（与状态/耗时同行）。
+   注意：flex 会把空隙平分给多个 auto margin——箭头在停止按钮在场时必须改用
+   固定间距跟随，否则停止按钮会浮在行中而不是贴右。 */
+.agent-work-group > summary .agent-stop-btn {
+  margin-left: auto;
+}
+
+.agent-work-group > summary:has(.agent-stop-btn)::after {
+  margin-left: 6px;
+}
+
 .agent-retry-btn {
   min-width: 64px;
   height: 30px;
@@ -698,7 +738,7 @@
 
 .agent-stop-btn:hover:not(:disabled) {
   background: var(--red-soft);
-  border-color: transparent;
+  border-color: var(--red-line);
   color: var(--text-danger);
 }
 
@@ -717,7 +757,7 @@
    Codex 改版 B-5/B-5b：无框直出折叠行——收起一行状态+耗时，展开为明细；
    内容轴与正文 720px 对齐，hover 提供可点击暗示。 */
 .agent-work-group {
-  width: min(100%, 1040px); /* 保留：与对话共用 1040px 主内容轴 */
+  width: min(100%, var(--content-column)); /* Round10：外轴 token（summary/items 走阅读轴） */
   border: 0;                 /* 打磨 B-5：去描边/圆角/底色/阴影，无框直出 */
   border-radius: 0;
   background: transparent;
@@ -731,7 +771,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  max-width: 720px;          /* 打磨 B-5b：内容轴与正文 720px 对齐（容器仍全宽） */
+  max-width: var(--reading-column); /* Round10：阅读轴 token（容器仍全宽） */
   padding: 4px 2px;          /* 打磨 B-5：无框后收紧 */
   border-radius: var(--r);   /* hover 反馈的圆角（仅 hover 时可见背景） */
   user-select: none;
@@ -766,9 +806,9 @@
 }
 
 .agent-work-status {
-  color: var(--muted);       /* 打磨 B-4：muted 常规字重 12.5px */
-  font-weight: var(--weight-medium);
-  font-size: 12.5px;
+  color: var(--muted);
+  font-weight: var(--weight-semibold); /* Round10：状态标题 13px/650 */
+  font-size: var(--font-sm);
   line-height: 1.4;
 }
 
@@ -783,7 +823,7 @@
   display: flex;
   flex-direction: column;
   gap: 7px;
-  max-width: 720px;          /* 打磨 B-5b：内容轴与正文对齐 */
+  max-width: var(--reading-column); /* Round10：阅读轴 token（容器仍全宽） */
   padding: 0 2px 8px;        /* 打磨 B-5：无框后收紧 */
 }
 
@@ -1704,7 +1744,7 @@
 
 /* 历史 gap（Task 10）：不可读段落的占位标记，不伪造消息内容 */
 .agent-history-gap {
-  max-width: min(100%, 1040px);
+  max-width: min(100%, var(--content-column));
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1857,7 +1897,7 @@
 
 /* ---- 压缩状态行（Task 11 Step 4）：单行顶替，细边框紧凑条 ------------------ */
 .agent-compaction {
-  max-width: min(100%, 1040px);
+  max-width: min(100%, var(--content-column));
   display: flex;
   align-items: center;
   justify-content: space-between;

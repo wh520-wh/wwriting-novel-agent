@@ -143,6 +143,9 @@ class MockElement {
   get parentElement() {
     return this._parent;
   }
+  get parentNode() {
+    return this._parent;
+  }
   contains(node) {
     if (node === this) return true;
     return this.children.some((child) => child instanceof MockElement && child.contains(node));
@@ -791,6 +794,35 @@ test("同一 run id：优先切换批次（input_interrupted + input_started）�
   stop._fire("click");
   await tick();
   assert.deepEqual(api.calls.filter((c) => c[0] === "stop").map((c) => c[1]), ["run-1"]);
+});
+
+test("round10 run header: stop is a labeled control next to current run status", async () => {
+  const { root, api, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  const stop = root.querySelector('[data-testid="agent-stop"]');
+  assert.equal(stop.textContent.includes("停止"), true);
+  assert.equal(stop.getAttribute("aria-label"), "停止当前任务");
+  stop._fire("click");
+  assert.equal(api.calls.filter((call) => call[0] === "stop").length, 1);
+});
+
+test("round10 stop placement: hugs the active work group summary, terminal removes it", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  // 无工作组 → run header 兜底；图标 + 文字（spec §7.3）
+  let stop = root.querySelector('[data-testid="agent-stop"]');
+  assert.equal(stop.parentElement.className, "agent-run-header", "无工作组时停止按钮在 run header");
+  assert.ok(stop.querySelector("svg"), "停止按钮为图标 + 文字");
+  // 工作组出现 → 移入 summary 紧贴状态行，且任意时刻只有一个停止按钮
+  surface.applyEvent(toolStarted("a9", "shell", { command: "npm test" }));
+  stop = root.querySelector('[data-testid="agent-stop"]');
+  assert.equal(String(stop.parentElement.tagName).toLowerCase(), "summary", "工作组出现后停止紧贴状态行");
+  assert.equal(root.querySelectorAll('[data-testid="agent-stop"]').length, 1, "任意时刻只有一个停止按钮");
+  // 终态 → 消失（含从 summary 摘除）
+  surface.applyEvent(ev("run_cancelled", { reason: "user_stop" }));
+  assert.equal(root.querySelector('[data-testid="agent-stop"]'), null, "终态后停止按钮消失");
 });
 
 test("停止防连点：点击即禁用，连点只触发一次；终态后按钮消失且被停止工具为 cancelled", async () => {
@@ -2238,12 +2270,16 @@ test("reasoning ticker：增量替换复用同一元素，高度锁定固定两�
 // 布局基线：agent.css 保留 1040px 内容列与模型菜单视口钳制
 // ===========================================================================
 
-test("agent.css 保留 1040px 内容列、向上菜单与工作组/动效布局", async () => {
+test("agent.css 保留内容列 token、向上菜单与工作组/动效布局", async () => {
   const css = await fs.readFile(path.join(here, "..", "..", "src", "app-shell", "agent", "agent.css"), "utf8");
   const styles = await fs.readFile(path.join(here, "..", "..", "src", "app-shell", "styles.css"), "utf8");
-  assert.match(css, /--content-column:\s*1040px/u, "根变量应定义 1040px 内容列");
-  assert.match(css, /\.agent-conversation[\s\S]*max-width:\s*var\(--content-column\)/u, "对话共享内容列");
-  assert.match(css, /\.agent-composer[\s\S]*max-width:\s*var\(--content-column\)/u, "composer 共享内容列");
+  assert.match(styles, /--content-column:\s*1040px/u, "styles.css :root 独占声明 1040px 内容列（Round10 单一所有权）");
+  assert.doesNotMatch(css, /--content-column\s*:/u, "agent.css 不得重新声明内容列");
+  assert.match(
+    css,
+    /\.agent-conversation,\s*\.agent-composer\s*\{[^}]*width:\s*min\(100%,\s*var\(--content-column\)\)[^}]*max-width:\s*var\(--content-column\)/u,
+    "对话与 composer 共享内容列 token"
+  );
   assert.match(
     css,
     /\.agent-composer-popover\s*\{[^}]*bottom:\s*calc\(100% \+ 7px\)[^}]*max-width:\s*min\(360px,\s*calc\(100vw - 32px\)\)/u,
@@ -2282,11 +2318,11 @@ test("agent.css 保留 1040px 内容列、向上菜单与工作组/动效布局"
   assert.doesNotMatch(css, /agent-thinking-dot|agent-thinking-blink|agent-plan-mark|agent-plan-restore/u, "旧三点思考/悬浮层控件 CSS 已删除");
   assert.doesNotMatch(css, /@media\s*\(max-width:\s*720px\)/u, "旧窄窗口悬浮层降级规则已删除");
   // 工作组（Step 3/12）：details 容器 + 稳定选择器（不靠 nth-child/文案/内联 style）；
-  // Codex 改版 B-5/B-5b：无框直出，保留 1040px 内容轴、内容对齐 720px。
+  // Codex 改版 B-5/B-5b：无框直出，外轴走内容列 token、内容对齐阅读列 token。
   assert.match(
     css,
-    /\.agent-work-group\s*\{[^}]*width:\s*min\(100%,\s*1040px\)[^}]*border:\s*0[^}]*background:\s*transparent[^}]*box-shadow:\s*none/u,
-    "工作组无框直出，保留 1040px 内容轴"
+    /\.agent-work-group\s*\{[^}]*width:\s*min\(100%,\s*var\(--content-column\)\)[^}]*border:\s*0[^}]*background:\s*transparent[^}]*box-shadow:\s*none/u,
+    "工作组无框直出，外轴走内容列 token"
   );
   // B-5：展开态 summary 无框（无下边框）
   assert.match(
@@ -2294,16 +2330,16 @@ test("agent.css 保留 1040px 内容列、向上菜单与工作组/动效布局"
     /\.agent-work-group\[open\]\s*>\s*summary\s*\{[^}]*border-bottom:\s*0/u,
     "展开态 summary 不显示下边框（无框）"
   );
-  // B-5b：summary 与明细内容轴与正文 720px 对齐（容器仍全宽 1040px）
+  // B-5b：summary 与明细内容轴与正文阅读列 token 对齐（容器仍全宽）
   assert.match(
     css,
-    /\.agent-work-group\s*>\s*summary\s*\{[^}]*max-width:\s*720px/u,
-    "工作组 summary 内容轴与正文 720px 对齐"
+    /\.agent-work-group\s*>\s*summary\s*\{[^}]*max-width:\s*var\(--reading-column\)/u,
+    "工作组 summary 内容轴与正文阅读列对齐"
   );
   assert.match(
     css,
-    /\.agent-work-items\s*\{[^}]*max-width:\s*720px/u,
-    "工作组明细内容轴与正文 720px 对齐"
+    /\.agent-work-items\s*\{[^}]*max-width:\s*var\(--reading-column\)/u,
+    "工作组明细内容轴与正文阅读列对齐"
   );
   assert.match(
     css,
@@ -2313,8 +2349,8 @@ test("agent.css 保留 1040px 内容列、向上菜单与工作组/动效布局"
   assert.doesNotMatch(css, /\.agent-work-item::before/u, "Codex 改版后工作项不得有左侧竖线");
   assert.match(
     css,
-    /\.agent-work-status\s*\{[^}]*color:\s*var\(--muted\)[^}]*font-weight:\s*var\(--weight-medium\)/u,
-    "工作组状态使用 muted 色 + medium 字重"
+    /\.agent-work-status\s*\{[^}]*color:\s*var\(--muted\)[^}]*font-weight:\s*var\(--weight-semibold\)/u,
+    "工作组状态使用 muted 色 + semibold 字重（Round10 13px/650）"
   );
   assert.match(css, /\.agent-work-item__label\s*\{[^}]*color:\s*var\(--agent-work-label-fg\)/u, "子项 label 使用 label 色");
   assert.match(css, /\.agent-reasoning-ticker\s*\{[^}]*color:\s*var\(--text-muted\)/u, "ticker 使用 muted 色");
@@ -2374,8 +2410,8 @@ test("agent.css 保留 1040px 内容列、向上菜单与工作组/动效布局"
   );
   assert.match(
     css,
-    /\.agent-markdown-table-scroll table\s*\{[^}]*width:\s*720px[^}]*min-width:\s*720px[^}]*table-layout:\s*fixed/u,
-    "表格应保持 720px 正文列，窄屏仅滚动包装层不压缩列"
+    /\.agent-markdown-table-scroll table\s*\{[^}]*width:\s*var\(--reading-column\)[^}]*min-width:\s*var\(--reading-column\)[^}]*table-layout:\s*fixed/u,
+    "表格应保持阅读列宽，窄屏仅滚动包装层不压缩列"
   );
   assert.doesNotMatch(css, /\.agent-scroll-latest\s*\{[^}]*position:\s*sticky/u, "回到最新不得覆盖会话内容");
   // styles.css：2.6 semantic text / weight / agent component token 已声明（不重定义 primitive）
@@ -2390,12 +2426,12 @@ test("agent.css 保留 1040px 内容列、向上菜单与工作组/动效布局"
 // 冻结布局约束（Task 7 Step 3）：固定宽度 + 响应式无横向溢出
 // ===========================================================================
 
-test("冻结布局约束：助手正文 720px / 工作组 1040px / 用户消息 min(800px,100%-32px) 靠右 / ticker 2lh / 详情 320px", async () => {
+test("冻结布局约束：助手正文/工作组走轴 token / 用户消息 min(800px,100%-32px) 靠右 / ticker 2lh / 详情 320px", async () => {
   const css = await fs.readFile(path.join(here, "..", "..", "src", "app-shell", "agent", "agent.css"), "utf8");
   assert.match(css, /\.agent-message--user\s*\{[^}]*align-self:\s*flex-end/u, "用户消息靠右");
   assert.match(css, /max-width:\s*min\(800px,\s*calc\(100% - 32px\)\)/u, "用户消息 max-width: min(800px, calc(100% - 32px))");
-  assert.match(css, /width:\s*min\(100%,\s*720px\)/u, "助手 Markdown width: min(100%, 720px)");
-  assert.match(css, /width:\s*min\(100%,\s*1040px\)/u, "工作组 width: min(100%, 1040px)");
+  assert.match(css, /width:\s*min\(100%,\s*var\(--reading-column\)\)/u, "助手 Markdown width 走阅读列 token");
+  assert.match(css, /width:\s*min\(100%,\s*var\(--content-column\)\)/u, "工作组 width 走内容列 token");
   assert.match(
     css,
     /\.agent-reasoning-ticker\s*\{[^}]*min-height:\s*2lh[^}]*max-height:\s*2lh[^}]*line-clamp:\s*2/u,
