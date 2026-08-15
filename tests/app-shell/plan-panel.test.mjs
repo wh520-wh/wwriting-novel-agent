@@ -92,7 +92,7 @@ test("chip：显示 任务计划 1/3；无计划时隐藏", () => {
   const { doc } = makeFakeDoc();
   const panel = createPlanPanel({ doc });
   panel.sync(ITEMS);
-  assert.match(panel.chip.textContent, /任务计划\s*1\/3/u);
+  assert.match(panel.chip.querySelector(".plan-chip-label").textContent, /任务计划\s*1\/3/u);
   assert.equal(panel.chip.hidden, false);
   panel.sync([]);
   assert.equal(panel.chip.hidden, true);
@@ -152,5 +152,5 @@ test("sync(UPDATED) while open：保持展开 + 内容更新", () => {
   // 仍然展开
   assert.equal(panel.dropdown.hidden, false, "sync 后面板应保持展开");
   // chip 文字已更新为 2/3
-  assert.match(panel.chip.textContent, /任务计划\s*2\/3/u, "chip 应反映新进度 2/3");
+  assert.match(panel.chip.querySelector(".plan-chip-label").textContent, /任务计划\s*2\/3/u, "chip 应反映新进度 2/3");
 });

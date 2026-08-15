@@ -24,8 +24,12 @@ export function createPlanPanel({ doc = document }) {
   function render(items) {
     chip.replaceChildren();
     const done = items.filter((i) => i.status === "completed").length;
-    chip.textContent = `任务计划 ${done}/${items.length}`;
-    chip.append(dropdown);
+    // 文本放进独立 span 承担 ellipsis 截断；chip 自身 overflow: visible，
+    // 避免裁剪挂在 chip 内部的绝对定位下拉（dropdown 展开后被 overflow:hidden 整个裁没）。
+    const label = doc.createElement("span");
+    label.className = "plan-chip-label";
+    label.textContent = `任务计划 ${done}/${items.length}`;
+    chip.append(label, dropdown);
 
     dropdown.replaceChildren();
     for (const item of items) {

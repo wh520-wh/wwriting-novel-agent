@@ -2055,8 +2055,13 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   display: inline-flex; align-items: center; gap: 4px; height: 30px;
   padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-sm);
   background: var(--surface-2); color: var(--muted); font-size: 12.5px;
-  cursor: pointer; max-width: 200px; overflow: hidden; text-overflow: ellipsis;
-  white-space: nowrap; position: relative;
+  cursor: pointer; max-width: 200px; overflow: visible; position: relative;
+}
+
+/* 文字 span 承担 ellipsis 截断（chip 自身 overflow 必须可见，否则绝对定位的
+   下拉会被裁剪）：flex item 需要 min-width:0 才能收缩触发省略号。 */
+.plan-chip-label {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
 .plan-dropdown {

@@ -1635,7 +1635,30 @@ async function main() {
     if (!chipHidden) {
       await clickAndReadRetry(win, "[data-plan-chip]", {
         label: "plan-chip-vp",
-        expect: () => read(win, "!document.querySelector('[data-plan-dropdown]').hidden")
+        // 展开后必须真实可见（hidden=false + 有尺寸 + 不被 overflow 祖先裁剪 + 在视口内），
+        // 否则截图拍不到下拉却仍算通过（回归防线：见 2026-08-16 plan-panel 修复）。
+        expect: () => read(win, `(() => {
+          const el = document.querySelector('[data-plan-dropdown]');
+          if (!el || el.hidden) return false;
+          const r = el.getBoundingClientRect();
+          if (!(r.width > 0 && r.height > 0)) return false;
+          let L = r.left, T = r.top, R = r.right, B = r.bottom;
+          for (let cur = el.parentElement; cur && cur !== document.documentElement; cur = cur.parentElement) {
+            const cs = getComputedStyle(cur);
+            const ox = cs.overflowX, oy = cs.overflowY;
+            const clipped = (ox === "hidden" || ox === "clip" || ox === "scroll" || ox === "auto") || (oy === "hidden" || oy === "clip" || oy === "scroll" || oy === "auto");
+            if (clipped) {
+              const ar = cur.getBoundingClientRect();
+              L = Math.max(L, ar.left + (parseFloat(cs.paddingLeft) || 0));
+              T = Math.max(T, ar.top + (parseFloat(cs.paddingTop) || 0));
+              R = Math.min(R, ar.right - (parseFloat(cs.paddingRight) || 0));
+              B = Math.min(B, ar.bottom - (parseFloat(cs.paddingBottom) || 0));
+              if (R <= L || B <= T) return false;
+            }
+            if (cur === document.body) break;
+          }
+          return R > 0 && B > 0 && L < innerWidth && T < innerHeight;
+        })()`)
       });
       await auditAndCapture(win, context, {
         file: "plan-panel-open-1280x800.png",
