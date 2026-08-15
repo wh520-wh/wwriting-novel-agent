@@ -76,6 +76,7 @@
 | consolidated fixes | `f250ad0` | chore: 第九轮 review 遗留小修（断点断言/HTTP 覆盖/死代码/测试补全） |
 | regression fix | `58fa015` | fix: verify-unified-agent mock DOM 补 querySelectorAll，恢复 36 场景（第九轮回归） |
 | gate sync | `b37d25e` | test: 同步第九轮门禁回归（state-notices seam 例外登记、事件类型计数 46） |
+| real-mode fix | `3b3730b` | fix(sim): 真实模式注入 active_model 与自动放行决策，阶段断言收敛 mock、冒烟断言承接（第九轮真实 API 验收） |
 
 ---
 
@@ -88,7 +89,8 @@
 | `npm run verify:app-shell` | **exit 0** | gfm/workGroup/skillsCatalog/plainFolderJournal 全 true，task25 六项全 true |
 | `npm run verify:desktop-shell` | **exit 0** | electronPackageInstalled/packageDirScript/packageInstallerScript 全 true |
 | `npm run verify:app-clickability` | **exit 0** | 20/20 按钮 expectationPassed，含阅读器/抽屉记忆标签/时间线历史入口/任务计划面板路径 |
-| `node scripts/simulate-user-flow.mjs` | **20/20 通过（mock）** | 记忆三件套 + cache_hit_rate 断言全通过；真实模式未执行（本环境无 DEEPSEEK_API_KEY） |
+| `node scripts/simulate-user-flow.mjs` | **20/20 通过（mock）** | 记忆三件套 + cache_hit_rate 断言全通过 |
+| `npm run sim:user-flow`（真实模式） | **12/12 通过（477.6s）** | 2026-08-15 用户配置 key 后执行：真实 API 往返、/init 蓝图约束、重开恢复历史、存储边界、finalize_revision 入账、90 个 context_usage_updated 事件全部含 cache_hit_rate、WWRITING.md 已创建。前置修复（`3b3730b`）：普通文件夹注入 active_model（provider openai-compatible / deepseek-v4-flash，MODEL_NAME 可覆盖）解决 provider_configuration_error；waitForIdle 真实模式自动放行模型探索触发的外部范围确认请求（与 verify-unified-agent driveToIdle 同语义）；阶段级固定断言收敛 mock 门内、真实模式由冒烟断言（run_completed ≥2 + WWRITING.md 存在）承接 |
 
 ---
 
@@ -99,9 +101,9 @@
 - 多模态视觉验收未执行/PASS 与否（由用户另行安排，审图手册路径：artifacts/visual-acceptance/2026-08-15-round9/round-01/multimodal-review-prompt.md）
 - capture-visual-acceptance 本环境于既有场景 08 超时中断（新场景已产出 4/5 PNG；version-panel-confirm 因 fixture 无已入账章节版本未能产出；完整运行需用户环境重跑）
 - retry 且首个 input_started 缺失的组不迁移锚点（Task 2 设计内行为，防御性判定，正常 journal 不出现）
-- MODEL_NAME 覆盖为 runtime modelConfig 层职责（适配器构造器不接收模型名；sim 真实模式默认 deepseek-v4-flash 由项目设置决定）
+- MODEL_NAME 覆盖已接线：sim 真实模式经 workspaceConfig 注入 active_model（provider openai-compatible / model_name = MODEL_NAME ?? deepseek-v4-flash），适配器构造器不接收模型名（模型名在 runtime modelConfig 层解析，`3b3730b`）
 - 记忆迁移 .bak rename 对 EEXIST/EPERM 的兜底依赖 pathExists 检查（逻辑正确，未来可显式处理）
-- sim 真实模式主 agent 仍走 mock、仅 revAgent 走真实 API，故 `run_completed >= 1` 口径正确（真实模式下主 agent 的 gatewayScript 由 mock 驱动，revAgent 的工具调用走真实 DeepSeek API）
+- sim 真实模式主 agent 走真实 API（实测 4 个 run_completed）、revAgent 恒走 mock 剧本，故阶段 8 真实模式断言 `run_completed >= 1` 口径正确
 
 ---
 
@@ -110,4 +112,4 @@
 - **开发模式**：subagent-driven development，每任务实现 + 规格审查 + 质量审查
 - **基线**：master `715ffde`（第八轮欠账收尾已完成）
 - **分支**：`round9/2026-08-15-full-execution`（未合并 master）
-- **HEAD**：`33789ec`（26 个提交，含 review/regression/gate-sync 修复与文档交付）
+- **HEAD**：`3b3730b`（28 个提交，含 review/regression/gate-sync/real-mode 修复与文档交付）

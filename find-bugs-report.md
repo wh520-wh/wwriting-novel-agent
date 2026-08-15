@@ -519,7 +519,7 @@ grep 核实（`enter_workflow`/`workflow_changed`/`WORKFLOW_POLICIES`/`WORKFLOW_
 - 多模态视觉验收未执行/PASS 与否（由用户另行安排，审图手册路径：artifacts/visual-acceptance/2026-08-15-round9/round-01/multimodal-review-prompt.md）
 - capture-visual-acceptance 本环境于既有场景 08 超时中断（新场景已产出 4/5 PNG；version-panel-confirm 因 fixture 无已入账章节版本未能产出；完整运行需用户环境重跑）
 - retry 且首个 input_started 缺失的组不迁移锚点（Task 2 设计内行为，防御性判定，正常 journal 不出现）
-- MODEL_NAME 覆盖为 runtime modelConfig 层职责（适配器构造器不接收模型名；sim 真实模式默认 deepseek-v4-flash 由项目设置决定）
+- MODEL_NAME 覆盖已接线：sim 真实模式经 workspaceConfig 注入 `active_model`（provider openai-compatible / model_name = MODEL_NAME ?? deepseek-v4-flash）——适配器构造器本身不接收模型名，模型名在 runtime modelConfig 层解析（`3b3730b`）
 - 记忆迁移 .bak rename 对 EEXIST/EPERM 的兜底依赖 pathExists 检查（逻辑正确，未来可显式处理）
 
 ### 门禁结果（本 sandbox 实测）
@@ -528,4 +528,4 @@ grep 核实（`enter_workflow`/`workflow_changed`/`WORKFLOW_POLICIES`/`WORKFLOW_
 - `npm run verify:app-shell`：**exit 0**（gfm/workGroup/skillsCatalog/plainFolderJournal 全 true，task25 六项全 true）
 - `npm run verify:desktop-shell`：**exit 0**（electronPackageInstalled/packageDirScript/packageInstallerScript 全 true）
 - `npm run verify:app-clickability`：**exit 0**（20/20 按钮 expectationPassed，含阅读器/抽屉记忆标签/时间线历史入口/任务计划面板路径）
-- `node scripts/simulate-user-flow.mjs`：**20/20 通过**（mock 模式，记忆三件套 + cache_hit_rate 断言全通过；真实模式未执行——本环境无 DEEPSEEK_API_KEY，待用户另行配置后执行）
+- `node scripts/simulate-user-flow.mjs`：**20/20 通过**（mock 模式，记忆三件套 + cache_hit_rate 断言全通过）；**真实模式验收通过**（2026-08-15，用户配置 DEEPSEEK_API_KEY 后由脚本修复轮执行：注入 active_model 修复 provider_configuration_error、waitForIdle 自动放行模型探索触发的确认请求、阶段级固定断言收敛 mock、真实模式冒烟断言承接——12/12 通过，耗时 477.6s，run_completed=4、WWRITING.md 已创建、90 个 context_usage_updated 事件全部携带 cache_hit_rate）
