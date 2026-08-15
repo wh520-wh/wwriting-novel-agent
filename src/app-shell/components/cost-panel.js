@@ -1,15 +1,8 @@
 // Cost panel component — three sections: 总览 / 缓存健康 / 章节成本.
 //
-// Renders directly into a container element. Returns the root element so the
-// caller (drawer-panels.js) can decide where to mount it. Uses the same DOM
-// building style as components/activity-strip.js so the existing CSS
-// (dpanel / dpanel-head / dpanel-body / kv / dpanel-empty) applies without
-// new stylesheets.
-//
-// The container is the *body* of a dpanel (created by the caller), not a fresh
-// root — so we build child elements and append. We DO NOT call replaceChildren
-// on the caller's element, but we do clear it first to ensure idempotence
-// across re-renders (drawer body re-mounts on every tab switch).
+// renderCostPanel 创建并返回自己的 .cost-panel-root 根元素，由调用方
+// （drawer-panels.js renderCostPanel）挂载到 dpanel body；不接收外部容器，
+// 也不替调用方清空/替换内容。使用与 dpanel 一致的 token 与 .cost-* 类。
 
 import { formatNumber, formatYuan } from "../utils.js";
 import { isCacheDiscountedMode } from "../../shared/deepseek-detection.mjs";
@@ -126,8 +119,9 @@ function buildSparkline(recentHitRates) {
 function buildOverview(cost, summary) {
   const estimatedCost = cost?.estimatedCost ?? summary?.estimatedCost ?? 0;
   const costAvailable = cost?.costAvailable ?? summary?.costAvailable ?? false;
+  // Round10：主金额 = .cost-total（20px/650/tabular），「已计费」是次级 label。
   return section("总览",
-    row("已计费", formatCost(estimatedCost, costAvailable), costAvailable ? "mono" : "muted")
+    row("已计费", formatCost(estimatedCost, costAvailable), costAvailable ? "cost-total" : "cost-total muted")
   );
 }
 
@@ -227,7 +221,8 @@ function buildChapterCost(cost, summary, warning) {
         const badge = el("span", {
           className: "cost-warning",
           dataset: { costWarn: "1", chapterNo },
-          text: "⚠ 成本预警"
+          // Round10：结构标记用纯文本 !，不再用 ⚠ emoji（role/文案保留）。
+          text: "! 成本预警"
         });
         if (warning.message) badge.title = warning.message;
         rowEl.appendChild(badge);
@@ -251,7 +246,7 @@ function buildWarningBanner(warning) {
     attrs: { role: "status" },
     dataset: { costWarningBanner: "1", chapterNo: String(chapterNo ?? "") }
   },
-    el("span", { className: "cost-warning-icon", text: "⚠" }),
+    el("span", { className: "cost-warning-icon", text: "!" }),
     el("span", { className: "cost-warning-text", text: `${chapterText} 成本预警：${warning.message ?? "token 消耗异常"}` })
   );
 }
@@ -267,7 +262,7 @@ function resolveLastEvent(events, lastEvent) {
 }
 
 /**
- * Render the 3-section cost panel into `container`.
+ * 渲染三段式成本面板，返回新建的 .cost-panel-root 根元素（调用方挂载）。
  *
  * @param {object} args
  * @param {object|null} args.cost - the cost.json summary object
@@ -276,7 +271,7 @@ function resolveLastEvent(events, lastEvent) {
  * @param {object} [args.lastEvent] - optional override for the warning event
  * @param {object|null} [args.modelConfig] - the active_model config ({base_url, model_name}); D2 判定 DeepSeek 模式用
  * @param {object|null} [args.cacheSummary] - dashboard cacheSummary; stableChangedReason 驱动 D2 归因
- * @returns {HTMLElement} the container (for chaining)
+ * @returns {HTMLElement} the cost panel root
  */
 export function renderCostPanel({ cost = null, summary = null, events = [], lastEvent = null, modelConfig = null, cacheSummary = null } = {}) {
   const container = el("div", { className: "cost-panel-root" });

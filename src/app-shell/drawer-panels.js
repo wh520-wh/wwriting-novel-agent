@@ -1,8 +1,9 @@
 import { icon } from "./icons.js";
-import { formatNumber, formatYuan, formatTime, translateStage, translateSourceKind, translateEventType } from "./utils.js";
+import { formatNumber, formatYuan, translateStage, translateSourceKind } from "./utils.js";
 import { postJson, getJson } from "./api-client.js";
 import { renderCostPanel as renderCostPanelComponent } from "./components/cost-panel.js";
 import { createVersionPanel } from "./components/version-panel.js";
+import { renderMarkdown, bindExternalLinks } from "./markdown-lite.mjs";
 
 // 抽屉面板（统一 Agent 内核计划 Task 9）：只保留项目领域事实（章节/模型/资料/
 // 成本）。删除运行面板与审查面板——运行事实只在 Agent 对话当前轮展示；“导出成书”
@@ -11,6 +12,10 @@ import { createVersionPanel } from "./components/version-panel.js";
 export function createDrawerPanels(ctx) {
   // ctx provides: refs, getDrawerTab, setDrawerTab, getDashboard, loadDashboard,
   //   openReader, openSettingsModal, showToast, showActionError, closeDrawer
+
+  // Round10：记忆 Markdown 链接与 agent 对话同一外部链接语义——委托到 drawerBody，
+  // 点击交给系统默认浏览器，不在应用窗口内导航。
+  bindExternalLinks(ctx.refs.drawerBody);
 
   async function renderDrawerBody() {
     const dashboard = ctx.getDashboard();
@@ -116,6 +121,11 @@ export function createDrawerPanels(ctx) {
     name.textContent = chapter.title || (done ? "已定稿章节" : translateStage(chapter.status ?? "queued"));
     row.append(n, name);
     if (done) {
+      // Round10：完成状态 = 短 badge（与待生成对称），不挤压标题。
+      const state = document.createElement("span");
+      state.className = "ch-state completed";
+      state.textContent = "已完成";
+      row.append(state);
       const meta = document.createElement("span");
       meta.className = "ch-meta mono";
       if (costAvailable && costRow) {
@@ -200,6 +210,15 @@ export function createDrawerPanels(ctx) {
     dl.append(dt, dd);
   }
 
+  // Round10：资料表单两行——每行 = 输入 + 按钮（grid minmax(0,1fr) auto），
+  // 按钮不挤压路径输入，长输入可收缩。
+  function researchRow(input, button) {
+    const row = document.createElement("div");
+    row.className = "research-row";
+    row.append(input, button);
+    return row;
+  }
+
   function renderResearchPanel(data) {
     const sources = data.sources?.latest ?? [];
     const research = dpanel("资料来源", formatNumber(data.sources?.count ?? 0));
@@ -215,7 +234,7 @@ export function createDrawerPanels(ctx) {
     const fBtn = document.createElement("button");
     fBtn.type = "button"; fBtn.className = "small-button"; fBtn.textContent = "抓取";
     fBtn.addEventListener("click", () => runResearch("fetch", { url: u.value.trim() }, fBtn));
-    form.append(q, sBtn, u, fBtn);
+    form.append(researchRow(q, sBtn), researchRow(u, fBtn));
     research.body.append(form);
     if (sources.length === 0) {
       research.body.append(drawerEmpty("暂无来源快照。"));
@@ -230,7 +249,8 @@ export function createDrawerPanels(ctx) {
         em.className = "em peek";
         em.textContent = source.title ?? source.file;
         const ex = document.createElement("span");
-        ex.className = "ex";
+        // Round10：untrusted 来源 = amber badge + 文本（不只靠颜色）。
+        ex.className = source.untrusted ? "ex source-badge source-untrusted" : "ex source-badge";
         ex.textContent = source.untrusted ? "不可信" : "资料";
         row.append(et, em, ex);
         research.body.append(row);
@@ -242,20 +262,8 @@ export function createDrawerPanels(ctx) {
   function renderCostPanel(data) {
     const summary = data.summary;
     const events = data.events ?? [];
+    // Round10：主金额只在 cost-panel.js「总览」显示一次，dpanel 标题不再重复金额 pill。
     const { panel, body } = dpanel("成本视图");
-    // Pill shows the high-level "has-cost / no-cost" state, mirroring the
-    // honest 未配置价格 display from the overview section below.
-    if (summary.costAvailable) {
-      const pill = document.createElement("span");
-      pill.className = "pill mono";
-      pill.textContent = formatYuan(summary.estimatedCost);
-      panel.querySelector(".dpanel-head").append(pill);
-    } else {
-      const pill = document.createElement("span");
-      pill.className = "pill mono muted";
-      pill.textContent = "未配置价格";
-      panel.querySelector(".dpanel-head").append(pill);
-    }
     body.style.padding = "0";
     const tree = renderCostPanelComponent({
       cost: data.cost ?? null,
@@ -269,13 +277,15 @@ export function createDrawerPanels(ctx) {
   }
 
   // 第九轮：「记忆」分区面板（故事摘要 + 工作日志 + 设定档案只读）。
+  // Round10：记忆区是独立文档块（memory-card 非 dpanel），正文用现有安全
+  // Markdown 渲染器（.agent-markdown 子集），不创建第二个 parser、不执行原始 HTML。
   async function renderMemoryPanel(data) {
     const blocks = [
       { file: "book_summary", title: "故事摘要" },
       { file: "worklog", title: "工作日志" }
     ];
     const body = document.createElement("div");
-    body.className = "dpanel-body memory-body";
+    body.className = "memory-body";
     for (const block of blocks) {
       const card = document.createElement("div");
       card.className = "memory-card";
@@ -307,9 +317,9 @@ export function createDrawerPanels(ctx) {
       head.append(history);
       card.append(head);
       const content = document.createElement("div");
-      content.className = "memory-card-content prose";
+      content.className = "memory-card-content agent-markdown";
       const data2 = await getJson(`/api/memory/files/content?file=${block.file}`);
-      content.textContent = data2?.content ?? "";
+      content.innerHTML = renderMarkdown(data2?.content ?? "");
       card.append(content);
       body.append(card);
     }
@@ -322,9 +332,9 @@ export function createDrawerPanels(ctx) {
     cHead.append(cTitle);
     continuityCard.append(cHead);
     const cContent = document.createElement("div");
-    cContent.className = "memory-card-content prose";
+    cContent.className = "memory-card-content agent-markdown";
     const cData = await getJson("/api/memory/files/content?file=continuity");
-    cContent.textContent = cData?.content ?? "";
+    cContent.innerHTML = renderMarkdown(cData?.content ?? "");
     continuityCard.append(cContent);
     body.append(continuityCard);
     ctx.refs.drawerBody.replaceChildren(body);
@@ -360,22 +370,6 @@ export function createDrawerPanels(ctx) {
     } finally {
       btn.disabled = false;
     }
-  }
-
-  function buildEventRow(event) {
-    const row = document.createElement("div");
-    row.className = `evt ${event.severity === "error" ? "err" : event.severity === "warning" ? "warn" : ""}`;
-    const et = document.createElement("span");
-    et.className = "et";
-    et.textContent = formatTime(event.timestamp);
-    const em = document.createElement("span");
-    em.className = "em peek";
-    em.textContent = `${translateEventType(event.type ?? "event")} · ${event.message ?? translateStage(event.stage ?? "-")}`;
-    const ex = document.createElement("span");
-    ex.className = "ex";
-    ex.textContent = translateStage(event.stage ?? "-");
-    row.append(et, em, ex);
-    return row;
   }
 
   return { renderDrawerBody };

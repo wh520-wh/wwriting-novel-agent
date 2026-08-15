@@ -73,3 +73,10 @@ test("round10 shell: narrow rail has an entry and drawer switches modal semantic
 test("round10 html: layout styles are not embedded in markup", () => {
   assert.doesNotMatch(html(), /\sstyle="/u);
 });
+
+test("round10 drawer: research uses stable rows and memory uses rendered markdown", () => {
+  const source = read("src/app-shell/drawer-panels.js");
+  assert.match(source, /className = "research-row"/u);
+  assert.match(source, /renderMarkdown\(data2\?\.content \?\? ""\)/u);
+  assert.doesNotMatch(source, /content\.textContent = data2\?\.content/u);
+});

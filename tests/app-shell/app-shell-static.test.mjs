@@ -118,7 +118,7 @@ test("api-client.js exports 通用 helper 且无旧 chat helper", () => {
   assert.match(apiClientSource, /error\.action\s*=/);
 });
 
-test("Task 12 静态契约：quick rail 删除、无框时间线、1040px 主轴、/review 下线", () => {
+test("Task 12 静态契约：quick rail 删除、无框时间线、1040px 主轴（token）、/review 下线", () => {
   // brief Step 1 verbatim 断言：
   assert.doesNotMatch(indexHtmlSource, /id="quick-rail"|id="qr-collapsed"/u, "quick rail 与折叠按钮应整体删除");
   assert.doesNotMatch(appSource, /renderQuickRail|bindQuickRailKeys/u, "app.js 不得引用 quick rail 渲染/键盘绑定");
@@ -128,7 +128,10 @@ test("Task 12 静态契约：quick rail 删除、无框时间线、1040px 主轴
     /\.agent-(?:work|reasoning|tool|plan)[^{]*\{[^}]*background:\s*var\(--(?:surface|accent|green|red)/su,
     "时间线容器不得使用 surface/accent/green/red 底色"
   );
-  assert.match(agentCssSource, /max-width:\s*1040px/u, "主内容轴应为 1040px");
+  // Round10：主内容轴 token 由 styles.css :root 独占声明，agent.css 只引用。
+  assert.match(stylesSource, /--content-column:\s*1040px/u, "styles.css :root 应声明 1040px 内容列 token");
+  assert.match(agentCssSource, /var\(--content-column\)/u, "agent.css 应引用内容列 token");
+  assert.doesNotMatch(agentCssSource, /--content-column\s*:/u, "agent.css 不得重新声明内容列");
 });
 
 test("quick rail 删除后：顶部按钮打开 drawer，drawer 分区保持可点击", () => {
@@ -150,9 +153,9 @@ test("drawer-panels.js 直接调用确定性导出 route，无旧业务入口", 
   assert.ok(drawerPanelsSource.includes("function renderCostPanel"));
 });
 
-// Task 21/25（spec 4.3 #4）：成本统一人民币元——drawer-panels 三处成本展示
-//（章节列表 meta / 概览估算成本 kv / 成本抽屉头部 pill）必须全部走 formatYuan，
-// 不得再 import 或调用已删除的 formatMoney（$ 六位小数格式）。
+// Task 21/25（spec 4.3 #4）+ Round10：成本统一人民币元——drawer-panels 两处成本展示
+//（章节列表 meta / 模型面板估算成本 kv）必须走 formatYuan；成本抽屉头部金额 pill
+// 已按 Round10 移除（主金额只在 cost-panel.js「总览」显示一次，cost-panel 自有测试覆盖）。
 test("drawer-panels 成本展示统一走 formatYuan，无 formatMoney", async () => {
   const utilsPath = path.join(here, "..", "..", "src", "app-shell", "utils.js");
   const utilsSource = await fs.readFile(utilsPath, "utf8");
@@ -161,10 +164,10 @@ test("drawer-panels 成本展示统一走 formatYuan，无 formatMoney", async (
   // 单一出口在 utils.js：formatMoney 已删除，formatYuan 存在。
   assert.match(utilsSource, /export function formatYuan\(/u, "formatYuan 应是 utils.js 的单一出口");
   assert.doesNotMatch(utilsSource, /formatMoney/u, "utils.js 不得再保留 formatMoney");
-  // drawer-panels 三处成本展示全部使用 formatYuan。
+  // drawer-panels 两处成本展示全部使用 formatYuan。
   assert.match(drawerPanelsSource, /formatYuan\(costRow\.estimatedCost\)/u, "章节列表 meta 成本应走 formatYuan");
-  assert.match(drawerPanelsSource, /formatYuan\(summary\.estimatedCost\)/u, "概览/成本抽屉成本应走 formatYuan");
-  assert.equal((drawerPanelsSource.match(/formatYuan\(/gu) ?? []).length, 3, "drawer-panels 应有且只有三处 formatYuan 成本展示");
+  assert.match(drawerPanelsSource, /formatYuan\(summary\.estimatedCost\)/u, "模型面板估算成本应走 formatYuan");
+  assert.equal((drawerPanelsSource.match(/formatYuan\(/gu) ?? []).length, 2, "drawer-panels 应有且只有两处 formatYuan 成本展示");
   assert.doesNotMatch(drawerPanelsSource, /formatMoney/u, "drawer-panels 不得残留 formatMoney");
   // cost-panel 组件同样无本地 formatMoney 残留，formatYuan 从 utils.js 导入。
   assert.doesNotMatch(costPanelSource, /formatMoney/u, "cost-panel 不得引用 formatMoney");
