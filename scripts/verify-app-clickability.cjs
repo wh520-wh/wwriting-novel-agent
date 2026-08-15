@@ -202,6 +202,54 @@ async function main() {
     expect: async () => !(await read(win, "document.getElementById('drawer').classList.contains('show')"))
   }));
 
+  // ④b 第九轮：阅读器「历史」路径 + 任务计划 chip
+  clicks.push(await clickAndReadStable(win, "#open-drawer", {
+    label: "open-drawer-history",
+    settleMs: 300,
+    expect: () => read(win, "document.getElementById('drawer').classList.contains('show')")
+  }));
+  clicks.push(await clickAndReadStable(win, '.dtab[data-dtab="chapters"]', {
+    label: "drawer-chapters-tab",
+    settleMs: 300,
+    expect: () => read(win, "document.querySelector('.dtab[data-dtab=\"chapters\"]').classList.contains('on')")
+  }));
+  const chapterRow = await read(win, "Boolean(document.querySelector('.chrow.completed'))");
+  if (chapterRow) {
+    clicks.push(await clickAndReadStable(win, ".chrow.completed", {
+      label: "open-reader-from-chapter",
+      settleMs: 400,
+      expect: () => read(win, "document.getElementById('reader-scrim').classList.contains('show')")
+    }));
+    clicks.push(await clickAndReadStable(win, "#reader-history", {
+      label: "reader-history",
+      settleMs: 300,
+      expect: () => read(win, "Boolean(document.querySelector('[data-version-panel]')) && !document.querySelector('[data-version-panel]').hidden")
+    }));
+    clicks.push(await clickAndReadStable(win, "#reader-close", {
+      label: "reader-close-after-history",
+      settleMs: 300,
+      expect: () => read(win, "!document.getElementById('reader-scrim').classList.contains('show')")
+    }));
+  }
+  // 任务计划 chip：fixture 无 plan 时隐藏（元素存在但 hidden=true）；有 plan 时展开
+  const planChipVisible = await read(win, "Boolean(document.querySelector('[data-plan-chip]') && !document.querySelector('[data-plan-chip]').hidden)");
+  if (planChipVisible) {
+    clicks.push(await clickAndReadStable(win, "[data-plan-chip]", {
+      label: "plan-chip-expand",
+      settleMs: 300,
+      expect: () => read(win, "!document.querySelector('[data-plan-dropdown]').hidden")
+    }));
+  }
+  // 关闭抽屉（第九轮新路径后恢复到关闭态）
+  const drawerStillOpen = await read(win, "document.getElementById('drawer').classList.contains('show')");
+  if (drawerStillOpen) {
+    clicks.push(await clickAndReadStable(win, "#drawer-close", {
+      label: "drawer-close-history",
+      settleMs: 300,
+      expect: async () => !(await read(win, "document.getElementById('drawer').classList.contains('show')"))
+    }));
+  }
+
   // ⑤ 设置弹窗（Task A5）：#open-settings 打开设置弹窗且默认落在「模型设置」分区——
   // #settings-scrim 带 show、#settings-detail 注入 [data-provider-list]；供应商/
   // 模型行可操作、密钥已配置状态不泄漏明文（规格 4.3 #4，假密钥 sk-round7- 哨兵）、

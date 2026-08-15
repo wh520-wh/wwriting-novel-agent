@@ -2,9 +2,10 @@
 //
 // 职责：为独立多模态验收模型生成完整、自洽、可核对的视觉证据目录：
 //   MANIFEST.md / live-indicator-audit.json / multimodal-review-prompt.md +
-//   17 张指定命名的 PNG（conversation-completed ×4 视口、reasoning-running 三帧、
+//   22 张指定命名的 PNG（conversation-completed ×4 视口、reasoning-running 三帧、
 //   tool-after-reasoning 三帧、markdown-fixture ×2、settings-builtin-styles ×2、
-//   settings-style-detail、drawer、plain-folder-first-message）。
+//   settings-style-detail、drawer、plain-folder-first-message、
+//   version-panel、version-panel-confirm、memory-tab、plan-panel-open、plan-panel-collapsed）。
 // 每轮一个目录（--output 指定），禁止覆盖上一轮。
 //
 // 驱动路径（全部经真实 UI / API / journal SSE）：
@@ -895,7 +896,10 @@ const DATA_SOURCE = {
   settings: "真实 UI 点击打开设置 + 真实 /api/skills/catalog",
   settingsDetail: "真实 UI 点击内置风格行 + 真实 /api/skills/:name 只读详情",
   drawer: "真实 UI 点击顶部面板按钮（章节分区）",
-  plainFolder: "真实 /api/projects/open 普通文件夹 + 真实 UI 打开流程 + composer 发送第一条消息"
+  plainFolder: "真实 /api/projects/open 普通文件夹 + 真实 UI 打开流程 + composer 发送第一条消息",
+  versionPanel: "真实 UI 点击抽屉章节行历史按钮 + version-panel 组件（暂无历史版本或含版本列表）",
+  memoryTab: "真实 UI 点击抽屉记忆分区 tab（data-dtab=memory）",
+  planPanel: "真实 UI 点击顶栏任务计划 chip + plan-panel 组件展开/收起"
 };
 
 // ---------------------------------------------------------------------------
@@ -1542,6 +1546,150 @@ async function main() {
     expect: async () => !(await read(win, "document.getElementById('drawer').classList.contains('show')"))
   });
 
+  // ---- 16: version-panel（1280x800，时间线展开 + 确认恢复态）----
+  console.log("[scenario] 16-version-panel");
+  await setViewport(win, 1280, 800);
+  await clickAndReadRetry(win, "#open-drawer", {
+    label: "open-drawer-vp",
+    expect: () => read(win, "document.getElementById('drawer').classList.contains('show')")
+  });
+  await clickAndReadRetry(win, '.dtab[data-dtab="chapters"]', {
+    label: "chapters-tab-vp",
+    expect: () => read(win, "document.querySelector('.dtab[data-dtab=\"chapters\"]').classList.contains('on')")
+  });
+  // 点击章节历史按钮（chrow-history）打开版本面板
+  const chrowHistoryExists = await read(win, "Boolean(document.querySelector('.chrow-history'))");
+  if (chrowHistoryExists) {
+    await clickAndReadRetry(win, ".chrow-history", {
+      label: "chapter-history-vp",
+      expect: () => read(win, "Boolean(document.querySelector('[data-version-panel]'))")
+    });
+    await auditAndCapture(win, context, {
+      file: "version-panel-1280x800.png",
+      viewport: [1280, 800],
+      scenario: "version-panel",
+      state: "版本时间线展开（含恢复按钮）",
+      dataSource: DATA_SOURCE.versionPanel,
+      expected: "版本行显示 vN/时间/来源，无校验和；恢复按钮行内二次确认；fixture 无版本时显示「暂无历史版本」",
+      spec: "第九轮 §3.2",
+      overlapSelectors: OVERLAP_SELECTORS.drawer
+    });
+    // 点击恢复按钮触发确认态（若有版本行）
+    const restoreButtonExists = await read(win, "Boolean(document.querySelector('[data-restore-button]'))");
+    if (restoreButtonExists) {
+      await clickAndReadRetry(win, "[data-restore-button]", {
+        label: "restore-confirm-state-vp",
+        expect: () => read(win, "Boolean(document.querySelector('[data-restore-confirm]'))")
+      });
+      await auditAndCapture(win, context, {
+        file: "version-panel-confirm-1280x800.png",
+        viewport: [1280, 800],
+        scenario: "version-panel-confirm",
+        state: "恢复按钮确认态（确认恢复？）",
+        dataSource: DATA_SOURCE.versionPanel,
+        expected: "行内二次确认，不弹窗",
+        spec: "第九轮 §3.2",
+        overlapSelectors: OVERLAP_SELECTORS.drawer
+      });
+    }
+  } else {
+    // 无 chrow-history（fixture 无已完成章节）：直接捕获空状态
+    await sleep(300);
+    await auditAndCapture(win, context, {
+      file: "version-panel-1280x800.png",
+      viewport: [1280, 800],
+      scenario: "version-panel",
+      state: "版本时间线入口（无已完成章节，仅抽屉章节分区）",
+      dataSource: DATA_SOURCE.versionPanel,
+      expected: "抽屉章节分区可见，无已完成章节行的历史按钮",
+      spec: "第九轮 §3.2",
+      overlapSelectors: OVERLAP_SELECTORS.drawer
+    });
+  }
+  // ---- 16b: memory-tab（1280x800，抽屉记忆分区）----
+  console.log("[scenario] 16b-memory-tab");
+  await clickAndReadRetry(win, '.dtab[data-dtab="memory"]', {
+    label: "memory-tab-vp",
+    expect: () => read(win, "document.querySelector('.dtab[data-dtab=\"memory\"]').classList.contains('on')")
+  });
+  await auditAndCapture(win, context, {
+    file: "memory-tab-1280x800.png",
+    viewport: [1280, 800],
+    scenario: "memory-tab",
+    state: "抽屉记忆分区（摘要/日志/设定档案三块）",
+    dataSource: DATA_SOURCE.memoryTab,
+    expected: "三块卡片：故事摘要、工作日志（各带历史按钮）、设定档案只读",
+    spec: "第九轮 §3.3",
+    overlapSelectors: OVERLAP_SELECTORS.drawer
+  });
+  // ---- 17: plan-panel（1280x800，chip 收起 + 展开）----
+  console.log("[scenario] 17-plan-panel");
+  await clickAndReadRetry(win, "#drawer-close", {
+    label: "drawer-close-vp",
+    expect: () => read(win, "!document.getElementById('drawer').classList.contains('show')")
+  });
+  // chip 存在且可见时测试展开/收起；隐藏时仍捕获收起态
+  const planChipEl = await read(win, "Boolean(document.querySelector('[data-plan-chip]'))");
+  if (planChipEl) {
+    const chipHidden = await read(win, "document.querySelector('[data-plan-chip]').hidden");
+    if (!chipHidden) {
+      await clickAndReadRetry(win, "[data-plan-chip]", {
+        label: "plan-chip-vp",
+        expect: () => read(win, "!document.querySelector('[data-plan-dropdown]').hidden")
+      });
+      await auditAndCapture(win, context, {
+        file: "plan-panel-open-1280x800.png",
+        viewport: [1280, 800],
+        scenario: "plan-panel-open",
+        state: "任务计划面板展开态",
+        dataSource: DATA_SOURCE.planPanel,
+        expected: "chip 进度 N/M + 条目状态图标/删除线/进行中高亮",
+        spec: "第九轮 §3.6",
+        overlapSelectors: []
+      });
+      await clickAndReadRetry(win, "[data-plan-chip]", {
+        label: "plan-chip-collapse-vp",
+        expect: () => read(win, "document.querySelector('[data-plan-dropdown]').hidden")
+      });
+      await auditAndCapture(win, context, {
+        file: "plan-panel-collapsed-1280x800.png",
+        viewport: [1280, 800],
+        scenario: "plan-panel-collapsed",
+        state: "任务计划面板收起态（仅 chip）",
+        dataSource: DATA_SOURCE.planPanel,
+        expected: "仅顶栏 chip，无遮挡",
+        spec: "第九轮 §3.6",
+        overlapSelectors: []
+      });
+    } else {
+      // chip 存在但 hidden（fixture 无 plan 事件）：捕获顶栏无 chip 遮挡的截图
+      await sleep(200);
+      await auditAndCapture(win, context, {
+        file: "plan-panel-collapsed-1280x800.png",
+        viewport: [1280, 800],
+        scenario: "plan-panel-collapsed",
+        state: "任务计划面板收起态（fixture 无 plan，chip 隐藏）",
+        dataSource: DATA_SOURCE.planPanel,
+        expected: "chip 隐藏（fixture 无计划事件），顶栏无遮挡",
+        spec: "第九轮 §3.6",
+        overlapSelectors: []
+      });
+    }
+  } else {
+    // chip 元素不存在（理论上不应发生）：捕获顶栏状态
+    await sleep(200);
+    await auditAndCapture(win, context, {
+      file: "plan-panel-collapsed-1280x800.png",
+      viewport: [1280, 800],
+      scenario: "plan-panel-collapsed",
+      state: "任务计划面板（chip 元素不存在）",
+      dataSource: DATA_SOURCE.planPanel,
+      expected: "顶栏无计划 chip（组件未挂载）",
+      spec: "第九轮 §3.6",
+      overlapSelectors: []
+    });
+  }
+
   // ---- 08: plain-folder-first-message（1280x800，普通文件夹第一条消息）----
   console.log("[scenario] 08-plain-folder-first-message");
   // 注册普通文件夹（应用私有 stateRoot 记录 workspace id；不创建 project.yaml）
@@ -1604,7 +1752,7 @@ async function main() {
   // live-indicator-audit.json：每张图开放 activity ID + live class 数量
   const auditJsonPath = path.join(roundDir, "live-indicator-audit.json");
   const auditRecords = Object.values(context.auditRecords).sort((a, b) => a.file.localeCompare(b.file));
-  assert.ok(auditRecords.length >= 17, `live-indicator-audit 应覆盖全部 ${context.manifest.length} 张图，实际 ${auditRecords.length}`);
+  assert.ok(auditRecords.length >= 22, `live-indicator-audit 应覆盖全部 ${context.manifest.length} 张图，实际 ${auditRecords.length}`);
   fs.writeFileSync(
     auditJsonPath,
     JSON.stringify(
@@ -1648,7 +1796,12 @@ async function main() {
     "settings-builtin-styles-1280x800.png",
     "settings-style-detail-1280x800.png",
     "drawer-1280x800.png",
-    "plain-folder-first-message-1280x800.png"
+    "plain-folder-first-message-1280x800.png",
+    "version-panel-1280x800.png",
+    "version-panel-confirm-1280x800.png",
+    "memory-tab-1280x800.png",
+    "plan-panel-open-1280x800.png",
+    "plan-panel-collapsed-1280x800.png"
   ];
   const pngNames = expectedFiles.filter((name) => name.endsWith(".png"));
   const declaredInManifest = new Set(context.manifest.map((entry) => entry.file));
@@ -2435,6 +2588,9 @@ function renderManifest(context, { startedAt, projectRoot, plainFolder }) {
     "- settings-builtin-styles / settings-style-detail 覆盖设置页「Agent 技能」分区：三个内置写作风格只读行（均衡/快节奏易读/心理文学），点击行展开只读详情（完整 SKILL.md 正文，无启用开关、无编辑/删除控件、无卡片套卡片）。",
     "- drawer 覆盖顶部「面板」按钮打开的章节分区（含导出成书工具条）；右侧常驻竖轨已删除，入口收敛到顶部按钮。",
     "- plain-folder-first-message 覆盖普通文件夹（仅 notes.txt，无 project.yaml）打开后第一条“你好”：真实 /api/projects/open + 真实 UI 打开流程 + composer 发送。",
+    "- version-panel 覆盖第九轮版本时间线面板：点击章节历史按钮打开版本面板（fixture 无版本时显示「暂无历史版本」），有版本时可点击恢复按钮触发行内二次确认（确认恢复？）。",
+    "- memory-tab 覆盖第九轮抽屉记忆分区：点击记忆 tab 展示三块卡片（故事摘要、工作日志、设定档案）。",
+    "- plan-panel 覆盖第九轮任务计划面板：顶栏 chip 展示进度（任务计划 N/M ▾），点击展开条目列表，再次点击收起；fixture 无 plan 事件时 chip 隐藏。",
     "",
     "## 环境说明",
     "",
@@ -2466,6 +2622,11 @@ function renderReviewPrompt(roundDir) {
     "10. 检查状态色边界：完成/失败只给 icon 或短状态词使用 green/red，工具名、路径、说明和整段回答不得一起染色；等待/停止为中性静态状态。标题、正文和 plan row 出现大面积 accent/green/red，判 FAIL。",
     "11. plain-folder-first-message：顶部不得出现“读取失败”或错误卡；第一条“你好”必须已交换；composer 可用；不得看到 ENOENT、绝对内部路径或 Node.js 原始异常。",
     "12. 色彩、字号、字重、间距、分隔线、圆角、图标和交互层级是否跨对话、设置、drawer 一致；muted 辅助文字仍须清晰可读，不能淡到需要费力辨认。",
+    "13. 版本时间线（version-panel）：版本行应显示 vN / 时间 / 来源，无校验和字段；点击恢复按钮后确认态文案 2–6 字（如「确认恢复？」），行内确认不弹窗。",
+    "14. 记忆分区（memory-tab）：抽屉记忆 tab 须呈现三块卡片——故事摘要、工作日志（各带历史按钮）、设定档案只读；三块卡片布局完整、无横向溢出。",
+    "15. 任务计划面板（plan-panel）：chip 收起时仅顶栏显示进度文字（如「任务计划 2/3 ▾」），不遮挡对话区内容；展开时条目状态图标（✓/●/○）与文字对齐。",
+    "16. 版本面板无校验和：version-panel 任意帧中不得出现「校验和」「checksum」「hash」等技术字段，面向用户的版本行仅含版本号、时间、来源标签。",
+    "17. 确认恢复文案长度：版本面板确认恢复态的按钮文案须在 2–6 个汉字范围内（如「确认恢复？」），不得出现英文或超长提示。",
     "",
     "不要仅凭单张静态图判断动画，必须交叉比较同场景 t000/t400/t900 三帧与 live-indicator-audit.json。JSON 只能证明 class 数量，图片负责证明视觉上确实只有相应文字在动；两者冲突时判 FAIL。",
     "",
@@ -2478,7 +2639,7 @@ function renderReviewPrompt(roundDir) {
     "按 P0/P1/P2/P3 从高到低列出。每条必须包含：严重级别、图片文件名、具体区域、观察到的问题、违反的验收项、建议修改。没有问题时写“无”。",
     "",
     "## Motion Uniqueness",
-    "分别报告 reasoning-running、tool-after-reasoning、conversation-completed、markdown-fixture、settings-builtin-styles、settings-style-detail、drawer、plain-folder-first-message 的可见动效数量，并说明图片帧与 audit JSON 是否一致。",
+    "分别报告 reasoning-running、tool-after-reasoning、conversation-completed、markdown-fixture、settings-builtin-styles、settings-style-detail、drawer、plain-folder-first-message、version-panel、memory-tab、plan-panel-open、plan-panel-collapsed 的可见动效数量，并说明图片帧与 audit JSON 是否一致。",
     "",
     "## Viewport Coverage",
     "逐个报告 390x844、768x900、1280x800、1440x900：PASS/FAIL/BLOCKED。",

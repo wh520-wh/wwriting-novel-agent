@@ -63,7 +63,7 @@ try {
   const opened = await postJson(`http://127.0.0.1:${port}/api/projects/open`, { projectRoot });
   assert.equal(opened.ok, true);
 
-  const [html, js, apiClientJs, drawerPanelsJs, agentIndexJs, agentCss, settingsModalJs, viewJs, dashboard] = await Promise.all([
+  const [html, js, apiClientJs, drawerPanelsJs, agentIndexJs, agentCss, settingsModalJs, viewJs, stylesCss, dashboard] = await Promise.all([
     fetchText(`http://127.0.0.1:${port}/`),
     fetchText(`http://127.0.0.1:${port}/app.js`),
     fetchText(`http://127.0.0.1:${port}/api-client.js`),
@@ -72,6 +72,7 @@ try {
     fetchText(`http://127.0.0.1:${port}/agent/agent.css`),
     fetchText(`http://127.0.0.1:${port}/settings-modal.js`),
     fetchText(`http://127.0.0.1:${port}/agent/view.js`),
+    fetchText(`http://127.0.0.1:${port}/styles.css`),
     fetchJson(`http://127.0.0.1:${port}/api/dashboard`)
   ]);
 
@@ -97,6 +98,13 @@ try {
   assert.ok(html.includes("settings-modal"));
   assert.ok(html.includes("reader-scrim"));
   assert.ok(html.includes("toast-stack"));
+
+  // 第九轮：版本时间线/记忆分区/任务计划面板入口
+  assert.ok(html.includes('id="reader-history"'), "阅读器必须含历史版本按钮");
+  assert.ok(html.includes('data-dtab="memory"'), "抽屉必须含记忆标签");
+  assert.ok(js.includes("createPlanPanel"), "任务计划面板模块必须被引用");
+  assert.ok(stylesCss.includes(".plan-chip"), "任务计划面板样式必须存在");
+  assert.ok(agentCss.includes(".system-notice"), "系统通知行样式必须存在");
 
   // 设置页技能分区 + 内置风格只读详情（Task 13：设置内置风格详情契约）
   assert.match(settingsModalJs, /id:\s*"skills"/u, "settings-modal 应声明 Agent 技能 tab");
@@ -315,6 +323,16 @@ try {
         stack.push(...node.children);
       }
       return null;
+    }
+    querySelectorAll(selector) {
+      const results = [];
+      const stack = [...this.children];
+      while (stack.length > 0) {
+        const node = stack.shift();
+        if (node.matchesSelector?.(selector)) results.push(node);
+        stack.push(...node.children);
+      }
+      return results;
     }
     _fire(type, ...args) {
       for (const fn of this._listeners.get(type) ?? []) fn(...args);
