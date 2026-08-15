@@ -61,7 +61,10 @@ const STATUS_404_CODES = new Set([
   "file_not_found",
   "model_profile_not_found",
   // Task 5 会话 CRUD：显式 sessionId 指向不存在的会话
-  "session_not_found"
+  "session_not_found",
+  // 第九轮：版本查询无版本 / 版本不存在
+  "no_versions",
+  "version_not_found"
 ]);
 
 const STATUS_409_CODES = new Set([
@@ -76,7 +79,10 @@ const STATUS_409_CODES = new Set([
   // Task 5 多会话串行门：其他会话运行中（project_busy，前端禁用发送键）/
   // 该会话自身运行中（session_busy，前端提示删除冲突；运行中检查仅 deleteSession 有）
   "project_busy",
-  "session_busy"
+  "session_busy",
+  // 第九轮：版本恢复互斥 / 已是当前版本
+  "already_current",
+  "agent_running"
 ]);
 
 const STATUS_503_CODES = new Set(["model_probe_unavailable"]);

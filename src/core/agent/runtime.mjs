@@ -2882,6 +2882,20 @@ export function createAgentRuntime({
     });
   }
 
+  // 第九轮：系统事件注入（UI 侧恢复操作在对话流中的可见性；run_id=null）。
+  // best-effort：项目无会话或 append 失败不抛错（调用方 catch 已包裹）。
+  async function appendSystemEvent({ projectRoot, type, payload }) {
+    if (typeof projectRoot !== "string" || projectRoot.length === 0) {
+      throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
+    }
+    const state = ensureProject(projectRoot);
+    const sessionState = await resolveSessionState(state, null);
+    if (!sessionState) return { seq: null };
+    await sessionState.journal.load();
+    await sessionState.journal.append({ type, run_id: null, payload: payload ?? {} });
+    return { seq: null };
+  }
+
   return {
     open,
     submit,
@@ -2900,6 +2914,7 @@ export function createAgentRuntime({
     renameSession,
     archiveSession,
     restoreSession,
-    deleteSession
+    deleteSession,
+    appendSystemEvent
   };
 }

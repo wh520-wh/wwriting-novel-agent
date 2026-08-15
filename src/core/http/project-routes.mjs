@@ -23,6 +23,7 @@
 //     本 handler 的传参形状与 Task 9 的 loader 签名一致，无需再改。
 //   - /api/dashboard 只返回领域事实 + 模型档案：旧 handler 的批处理/队列/重试/
 //     recovery 字段随 Task 9 的 app-dashboard 重写删除，不再进入新路由。
+import fs from "node:fs/promises";
 import path from "node:path";
 import { existsSync } from "node:fs";
 import { HttpError } from "../http-error.mjs";
@@ -43,7 +44,7 @@ import { loadProject, createProjectAt } from "../project-store.mjs";
 import { migrateProjectFile } from "../project-model-migration.mjs";
 import { migrateLegacyProject } from "../workspaces/migration.mjs";
 import { loadProjectDiagnostics } from "../project-diagnostics.mjs";
-import { isPathInside } from "../fs-utils.mjs";
+import { isPathInside, safeJoin, writeFileAtomic } from "../fs-utils.mjs";
 import {
   resolveActiveProjectRoot,
   resolveActiveWriteProjectRoot,
@@ -54,6 +55,9 @@ import {
   buildModelProfile,
   modelDisplayName
 } from "./settings-routes.mjs";
+import { listChapterVersions, readChapterVersion } from "../project-operations/versions.mjs";
+import { rollbackChapter } from "../project-operations/chapter.mjs";
+import { listMemoryVersions, readMemoryVersion } from "../project-operations/memory-versions.mjs";
 
 function normalizePositiveInteger(value, fallback) {
   const number = Number(value);
@@ -418,6 +422,103 @@ export function createProjectRoutes({
       // book-export 的 words 是 countEffectiveWords 的有效字数（中文按字符计），
       // 对外契约字段名为 characters。
       return { ok: true, path: result.path, chapters: result.chapters, characters: result.words };
+    },
+
+    // ---- 第九轮：章节版本时间线与恢复（UI 侧）----
+    "GET /api/chapters/versions": async ({ query }) => {
+      const projectRoot = await resolveReadProjectRoot({ requestedRoot: query.projectRoot, selected: selected(), workspace, stateRoot });
+      const chapterNo = normalizePositiveInteger(query.chapter_no, null);
+      if (chapterNo === null) throw new HttpError(400, "bad_args", "chapter_no 必须是正整数。");
+      const versions = await listChapterVersions({ projectRoot, chapterNo });
+      if (versions.length === 0) throw new HttpError(404, "no_versions", `第 ${chapterNo} 章没有任何历史版本。`);
+      return { ok: true, chapter_no: chapterNo, versions };
+    },
+
+    "GET /api/chapters/versions/content": async ({ query }) => {
+      const projectRoot = await resolveReadProjectRoot({ requestedRoot: query.projectRoot, selected: selected(), workspace, stateRoot });
+      const chapterNo = normalizePositiveInteger(query.chapter_no, null);
+      const version = normalizePositiveInteger(query.version, null);
+      if (chapterNo === null || version === null) throw new HttpError(400, "bad_args", "chapter_no 与 version 必须是正整数。");
+      const data = await readChapterVersion({ projectRoot, chapterNo, version });
+      return { ok: true, chapter_no: chapterNo, ...data };
+    },
+
+    "POST /api/chapters/rollback": async (handlerCtx) => {
+      const projectRoot = await resolveActiveWriteProjectRoot(ctx, handlerCtx.body ?? {});
+      await assertNotArchived(projectRoot);
+      const chapterNo = normalizePositiveInteger(handlerCtx.body?.chapter_no, null);
+      if (chapterNo === null) throw new HttpError(400, "bad_args", "chapter_no 必须是正整数。");
+      const { session } = await agent.snapshot({ projectRoot });
+      if (session?.active_run?.status === "running") {
+        throw new HttpError(409, "agent_running", "写作进行中，暂停后恢复。");
+      }
+      const project = await loadProject(projectRoot);
+      const version = handlerCtx.body?.version == null ? null : normalizePositiveInteger(handlerCtx.body.version, null);
+      if (handlerCtx.body?.version != null && version === null) throw new HttpError(400, "bad_args", "version 必须是正整数。");
+      const result = await withProjectLock(projectRoot, () =>
+        rollbackChapter({ projectRoot, projectId: project.project_id, chapterNo, version }));
+      try {
+        await agent.appendSystemEvent({
+          projectRoot,
+          type: "chapter_rolled_back",
+          payload: { chapter_no: chapterNo, from_version: result.version?.from ?? null, to_version: result.version?.to ?? null }
+        });
+      } catch { /* 事件注入失败不阻塞恢复结果 */ }
+      return { ok: true, chapter_no: chapterNo, ...result };
+    },
+
+    // ---- 第九轮：记忆文件版本与恢复 ----
+    "GET /api/memory/versions": async ({ query }) => {
+      const projectRoot = await resolveReadProjectRoot({ requestedRoot: query.projectRoot, selected: selected(), workspace, stateRoot });
+      const file = query.file;
+      if (file !== "worklog" && file !== "book_summary") throw new HttpError(400, "bad_args", "file 只允许 worklog|book_summary。");
+      return { ok: true, ...(await listMemoryVersions({ projectRoot, file })) };
+    },
+
+    "GET /api/memory/versions/content": async ({ query }) => {
+      const projectRoot = await resolveReadProjectRoot({ requestedRoot: query.projectRoot, selected: selected(), workspace, stateRoot });
+      const file = query.file;
+      const version = normalizePositiveInteger(query.version, null);
+      if (file !== "worklog" && file !== "book_summary") throw new HttpError(400, "bad_args", "file 只允许 worklog|book_summary。");
+      if (version === null) throw new HttpError(400, "bad_args", "version 必须是正整数。");
+      return { ok: true, ...(await readMemoryVersion({ projectRoot, file, version })) };
+    },
+
+    "GET /api/memory/files/content": async ({ query }) => {
+      const projectRoot = await resolveReadProjectRoot({ requestedRoot: query.projectRoot, selected: selected(), workspace, stateRoot });
+      const file = query.file;
+      const allowed = {
+        worklog: safeJoin(projectRoot, "WORKLOG.md"),
+        book_summary: safeJoin(projectRoot, "book_summary.md"),
+        continuity: safeJoin(projectRoot, "memory", "continuity.md")
+      };
+      if (!allowed[file]) throw new HttpError(400, "bad_args", "file 只允许 worklog|book_summary|continuity。");
+      const content = await fs.readFile(allowed[file], "utf8").catch(() => "");
+      return { ok: true, file, content };
+    },
+
+    "POST /api/memory/versions/restore": async (handlerCtx) => {
+      const projectRoot = await resolveActiveWriteProjectRoot(ctx, handlerCtx.body ?? {});
+      await assertNotArchived(projectRoot);
+      const file = handlerCtx.body?.file;
+      const version = normalizePositiveInteger(handlerCtx.body?.version, null);
+      if (file !== "worklog" && file !== "book_summary") throw new HttpError(400, "bad_args", "file 只允许 worklog|book_summary。");
+      if (version === null) throw new HttpError(400, "bad_args", "version 必须是正整数。");
+      const { session } = await agent.snapshot({ projectRoot });
+      if (session?.active_run?.status === "running") {
+        throw new HttpError(409, "agent_running", "写作进行中，暂停后恢复。");
+      }
+      const { content } = await readMemoryVersion({ projectRoot, file, version });
+      const target = file === "worklog" ? safeJoin(projectRoot, "WORKLOG.md") : safeJoin(projectRoot, "book_summary.md");
+      await withProjectLock(projectRoot, () => writeFileAtomic(target, content));
+      try {
+        await agent.appendSystemEvent({
+          projectRoot,
+          type: "memory_file_restored",
+          payload: { file, to_version: version }
+        });
+      } catch { /* 事件注入失败不阻塞恢复结果 */ }
+      return { ok: true, file, version, restored: true };
     }
   };
 }
