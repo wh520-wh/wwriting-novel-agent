@@ -83,7 +83,8 @@ const TOOL_BASE_LABELS = {
   search_files: "搜索文件",
   update_plan: "更新任务计划",
   append_chapter_segment: "写入章节内容",
-  commit_chapter: "提交章节"
+  commit_chapter: "提交章节",
+  web_search: "搜索"
 };
 
 // 工具标签按状态生成（Task 5 Step 3 冻结文案）：
@@ -410,7 +411,9 @@ export function reduceWorkEvent(work, event) {
           output: "",
           truncated: false,
           exit_code: null,
-          duration_ms: null
+          duration_ms: null,
+          // AICSS web-search：来源列表投影（tool_call_completed.payload.sources）
+          sources: null
         });
       } else {
         // 防御性 upsert（journal 不会重复同一 activity_id；纯投影测试可复用 id）
@@ -438,6 +441,8 @@ export function reduceWorkEvent(work, event) {
         // Task 2：退出码与耗时仅当事件携带时写入（镜像旧 state.js；0 是合法值）
         if (payload.exit_code != null) item.exit_code = payload.exit_code;
         if (payload.duration_ms != null) item.duration_ms = payload.duration_ms;
+        // AICSS web-search：来源数据后接（未来搜索工具在 completed 携带 sources）
+        if (Array.isArray(payload.sources)) item.sources = structuredClone(payload.sources);
       }
       break;
     }

@@ -922,6 +922,22 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       row.fieldsSignature = null;
       row.hasContent = false;
       row.toolOpen = false;
+      // AICSS web-search：query 非空的 web_search 工具行附带搜索状态渲染
+      // （查询 shimmer 头 + 来源列表；无 sources 时列表隐藏，头仍显示）。
+      // ponytail: web_search 是唯一的工具行特化（硬编码单例）——第二个特化工具
+      // 出现时，抽 TOOL_ROW_SPECIALIZATIONS = { web_search: { build, update } } 注册表。
+      if (item.tool === "web_search" && typeof item.args?.query === "string" && item.args.query.length > 0) {
+        const query = doc.createElement("span");
+        query.className = "agent-search-query";
+        wrap.append(query);
+        row.searchQuery = query;
+        const list = doc.createElement("ul");
+        list.className = "agent-search-list";
+        list.dataset.state = "pending";
+        wrap.append(list);
+        row.searchList = list;
+        row.searchSignature = null;
+      }
       // 整行切换（a11y：role=button + Enter/Space；点击内容区不触发收起）
       wrap.setAttribute("role", "button");
       wrap.setAttribute("tabindex", "0");
@@ -1062,6 +1078,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
 
     if (row.kind === "tool") {
       updateToolDetails(row, item);
+      if (row.searchQuery) updateSearchContent(row, item);
     } else if (row.kind === "reasoning") {
       if (isRunning) {
         // 运行中摘要走 ticker（≤2 行）；详情永远用持久化完整 reasoning。
@@ -1168,6 +1185,64 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     // 输出块与详情区同步可见（真实 DOM 中父级 hidden 级联即可；测试桩不级联，
     // 需显式设置，对真实 DOM 是幂等冗余）。
     row.outputEl.hidden = !row.hasContent || !row.toolOpen;
+  }
+
+  // AICSS web-search 特化渲染：查询 shimmer 头 + 来源列表（globe 旋转 → 逐项勾选）。
+  // 来源数据由未来搜索工具在 tool_call_completed.payload.sources 提供；
+  // 无 sources 时列表隐藏，行仍以「正在搜索/已搜索」标签呈现。
+  const SEARCH_GLOBE_VALUES = [
+    "M6.057 11.565 C2.081 11.565 0.371 8.159 0.371 5.964 C0.371 3.642 2.152 0.329 6.05 0.329",
+    "M6.012 11.55 C4.575 10.496 3.333 8.116 3.321 5.964 C3.307 3.399 4.974 0.977 6.012 0.329",
+    "M6.012 11.55 C7.211 10.781 8.715 8.287 8.715 5.964 C8.715 3.399 7.24 1.233 6.012 0.329",
+    "M6.012 11.55 C9.677 11.55 11.65 8.487 11.65 5.964 C11.65 3.499 9.748 0.329 6.012 0.329",
+    "M6.057 11.565 C2.081 11.565 0.371 8.159 0.371 5.964 C0.371 3.642 2.152 0.329 6.05 0.329"
+  ].join(";");
+  const SEARCH_GLOBE_BEGINS = ["0s", "-1.2s", "-2.4s", "-3.6s", "-4.8s", "-6s"];
+  const SEARCH_GLOBE_SVG = (() => {
+    const first = SEARCH_GLOBE_VALUES.split(";")[0];
+    const paths = SEARCH_GLOBE_BEGINS.map((begin) =>
+      `<path d="${first}" opacity="0"><animate attributeName="d" dur="7.2s" begin="${begin}" repeatCount="indefinite" calcMode="spline" keyTimes="0;0.25;0.5;0.75;1" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" values="${SEARCH_GLOBE_VALUES}"/><animate attributeName="opacity" dur="7.2s" begin="${begin}" repeatCount="indefinite" calcMode="linear" keyTimes="0;0.05;0.7;0.75;1" values="0;0.9;0.9;0;0"/></path>`
+    ).join("");
+    return `<svg class="agent-search-globe" viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" stroke-width="0.85" stroke-linecap="round" style="overflow: visible" aria-hidden="true"><circle cx="6" cy="6" r="5.7" opacity="0.9"/><line x1="0.3" y1="6" x2="11.7" y2="6" opacity="0.9"/>${paths}</svg>`;
+  })();
+  const SEARCH_BULLET_DOTS = `<svg class="agent-search-dots" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke-width="1.8" stroke-dasharray="1.8 3.6" stroke-linecap="round"/></svg>`;
+  const SEARCH_BULLET_CHECK = `<svg class="agent-search-check" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></svg>`;
+
+  function updateSearchContent(row, item) {
+    const query = String(item.args?.query ?? "");
+    const queryText = query.length > 0 ? `搜索 “${query}”` : "搜索中";
+    if (row.searchQuery.textContent !== queryText) row.searchQuery.textContent = queryText;
+    // 查询头 shimmer 复用唯一 shimmer 定义（Task 2 的 .agent-live-text），不新增渐变 CSS
+    row.searchQuery.classList.toggle("agent-live-text", item.state === "running");
+    const sources = Array.isArray(item.sources) ? item.sources : null;
+    row.searchList.hidden = sources == null;
+    if (sources == null) return;
+    const signature = JSON.stringify(sources.map((s) => `${s?.title ?? ""}|${s?.url ?? ""}`));
+    if (signature !== row.searchSignature) {
+      row.searchSignature = signature;
+      row.searchList.replaceChildren();
+      sources.forEach((source, index) => {
+        const li = doc.createElement("li");
+        li.className = "agent-search-site";
+        li.style.setProperty?.("--i", String(index)); // 真实 DOM 写 stagger 变量；mock 空转
+        const bullet = doc.createElement("span");
+        bullet.className = "agent-search-bullet";
+        bullet.innerHTML = SEARCH_BULLET_DOTS + SEARCH_GLOBE_SVG + SEARCH_BULLET_CHECK;
+        const title = doc.createElement("span");
+        title.className = "agent-search-site-title";
+        title.textContent = String(source?.title ?? "");
+        const sep = doc.createElement("span");
+        sep.className = "agent-search-sep";
+        sep.textContent = "·";
+        const url = doc.createElement("span");
+        url.className = "agent-search-site-url";
+        url.textContent = String(source?.url ?? "");
+        li.append(bullet, title, sep, url);
+        row.searchList.append(li);
+      });
+    }
+    // 运行中 globe 旋转；completed → 逐项转圈变勾（stagger 由 CSS --i 驱动）
+    row.searchList.dataset.state = item.state === "completed" ? "done" : "pending";
   }
 
   function updatePlanContent(row, plan) {

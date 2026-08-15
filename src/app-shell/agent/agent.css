@@ -954,6 +954,73 @@
   color: var(--text-secondary);
 }
 
+/* ---- AICSS web-search：搜索状态特化渲染（web_search 专属，无 query 不激活）。
+   查询头 shimmer 复用 .agent-live-text（Task 2 唯一定义），此处不重复渐变。---- */
+.agent-search-query {
+  flex-basis: 100%;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.agent-search-query[hidden] { display: none; }
+
+.agent-search-list {
+  flex-basis: 100%;
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0 0 0 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-search-list[hidden] { display: none; }
+
+.agent-search-site {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.agent-search-bullet {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  color: var(--text-muted);
+  position: relative;
+}
+
+.agent-search-dots { position: absolute; inset: 0; }
+.agent-search-globe { position: absolute; inset: 0; }
+
+.agent-search-check {
+  position: absolute;
+  inset: 0;
+  color: var(--text-success);
+  opacity: 0;
+  transform: scale(0.6);
+  transition: opacity 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition-delay: calc(var(--i, 0) * 240ms);
+}
+
+/* 完成：globe 退场、逐项勾选（stagger）；运行中 dots+globe 并存 */
+.agent-search-list[data-state="done"] .agent-search-globe,
+.agent-search-list[data-state="done"] .agent-search-dots { opacity: 0; }
+
+.agent-search-list[data-state="done"] .agent-search-check {
+  opacity: 1;
+  transform: scale(1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-search-check { transition: none; }
+}
+
 .agent-reasoning-ticker {
   width: 100%;
   min-height: 2lh; /* 固定两行：文本替换不改变工作项高度 */

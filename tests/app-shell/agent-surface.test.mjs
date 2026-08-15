@@ -4924,3 +4924,68 @@ test("AICSS 思考片段：ticker 显示新片段时挂 agent-ticker-swap 动效
   assert.equal(ticker.textContent, "再核对设定。");
   assert.ok(ticker.classList.contains("agent-ticker-swap"), "新片段应挂替换动效类");
 });
+
+// ===========================================================================
+// AICSS web-search（Task 6）：activity 行特化渲染
+// ===========================================================================
+
+// AICSS web-search：活动行特化渲染——查询 shimmer 头 + 来源逐个转圈变勾。
+test("AICSS 搜索：web_search 工具行特化渲染，完成后逐来源勾选", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(toolStarted("s1", "web_search", { query: "JWT 安全" }));
+  await tick();
+  const query = root.querySelector(".agent-search-query");
+  assert.ok(query, "特化查询头应存在");
+  assert.equal(query.textContent, "搜索 “JWT 安全”");
+  assert.ok(query.classList.contains("agent-live-text"), "运行中查询头 shimmer（复用唯一 shimmer 定义）");
+  surface.applyEvent(ev("tool_call_completed", {
+    tool_call_id: "tc-s1",
+    activity_id: "s1",
+    name: "web_search",
+    sources: [
+      { title: "JWT 最佳实践", url: "https://auth0.com/blog/jwt" },
+      { title: "OWASP Node 指南", url: "https://owasp.org/nodejs-goat" }
+    ]
+  }));
+  await tick();
+  assert.equal(root.querySelectorAll(".agent-search-site").length, 2, "两个来源");
+  assert.ok(!query.classList.contains("agent-live-text"), "完成后 shimmer 停");
+  assert.equal(root.querySelector(".agent-search-list").dataset.state, "done");
+});
+
+test("AICSS 搜索：web_search 无 query 时回退通用工具行", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(toolStarted("s2", "web_search", {}));
+  surface.applyEvent(ev("tool_call_completed", { tool_call_id: "tc-s2", activity_id: "s2", name: "web_search" }));
+  await tick();
+  assert.equal(root.querySelector(".agent-search-query"), null, "无 query 不出现特化元素");
+  assert.equal(root.querySelector(".agent-search-list"), null);
+});
+
+// AICSS 动效唯一性（规格书 §5.1 修订）：真实活动源可并存、终态清零。
+test("AICSS 动效共存与清零：光标+思考 shimmer+搜索 shimmer 并存，终态全部清零", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("model_turn_started", { turn_id: "t1", input_id: "in-1", reasoning_capability: "supported" }));
+  surface.applyEvent(ev("assistant_message_delta", { text: "写作中。" }));
+  surface.applyEvent(toolStarted("s1", "web_search", { query: "资料" }));
+  await tick();
+  assert.ok(root.querySelector(".agent-stream-caret"), "实心光标存在");
+  const reasoningLabel = root.querySelector(".agent-work-item__label");
+  assert.ok(reasoningLabel.classList.contains("agent-live-text"), "思考标签 shimmer");
+  assert.ok(root.querySelector(".agent-search-query").classList.contains("agent-live-text"), "查询头 shimmer");
+  // 终态：全部清零
+  surface.applyEvent(ev("reasoning_completed", { turn_id: "t1", input_id: "in-1", text: "完成", availability: "available" }));
+  surface.applyEvent(ev("tool_call_completed", { tool_call_id: "tc-s1", activity_id: "s1", name: "web_search", sources: [{ title: "来源", url: "https://a.example/x" }] }));
+  surface.applyEvent(ev("assistant_message_completed", { input_id: "in-1", text: "写作中。" }));
+  surface.applyEvent(ev("run_completed", {}));
+  await tick();
+  assert.equal(root.querySelector(".agent-stream-caret"), null, "光标清零");
+  assert.equal(root.querySelectorAll(".agent-live-text").length, 0, "shimmer 清零");
+  assert.equal(root.querySelector(".agent-search-list").dataset.state, "done", "搜索终态勾选");
+});
