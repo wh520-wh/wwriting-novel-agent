@@ -102,8 +102,16 @@ export function toolLabel(tool, state) {
 
 // reasoning 标签默认值（运行中/终态；Task 6 负责 ticker 与 detail 文案，
 // 这里只把 item 形状和默认 label 备好）。
-export function reasoningLabel(state) {
-  return state === "completed" ? "已完成思考" : "思考中";
+// AICSS thinking-reasoning：完成标签「思考 N 秒」——N 取该 turn 真实耗时
+//（model_turn_started → reasoning_completed 事件时间戳差，秒四舍五入、最小 1）；
+// 无时间戳可算（或时钟倒挂）时回退「已完成思考」。
+export function reasoningLabel(item) {
+  if (!item || item.state !== "completed") return "思考中";
+  // thinking_ms 为 null（未算出/无时间戳）视为无效 → 回退；显式 0 是合法真实耗时 → 显示最小 1 秒
+  if (item?.thinking_ms == null) return "已完成思考";
+  const ms = Number(item?.thinking_ms);
+  if (!Number.isFinite(ms) || ms < 0) return "已完成思考";
+  return `思考 ${Math.max(1, Math.round(ms / 1000))} 秒`;
 }
 
 export const PLAN_LABEL = "任务计划";
@@ -322,11 +330,14 @@ export function reduceWorkEvent(work, event) {
             start_seq: seq, // Task 10：start 位置（与 firstSeq 一致，重建后仍稳定）
             terminal_seq: null,
             state: "running",
-            label: reasoningLabel("running"),
+            label: reasoningLabel({ state: "running" }),
             detail: null,
             turn_id: turnId,
             text: "",
-            availability: null
+            availability: null,
+            // AICSS：思考耗时口径（started_at 为事件时间戳；thinking_ms 完成时计算）
+            started_at: event.at ?? null,
+            thinking_ms: null
           });
         }
         group.sortSeq = seq;
@@ -347,7 +358,12 @@ export function reduceWorkEvent(work, event) {
       if (item) {
         // reasoning_completed 到达 → 立即 running → completed（不移动位置）
         item.state = "completed";
-        item.label = reasoningLabel("completed");
+        // AICSS：思考耗时 = 完成事件与开始事件的时间戳差（负值/NaN 丢弃 → 回退文案）
+        if (typeof item.started_at === "string" && typeof event.at === "string") {
+          const ms = Date.parse(event.at) - Date.parse(item.started_at);
+          if (Number.isFinite(ms) && ms >= 0) item.thinking_ms = ms;
+        }
+        item.label = reasoningLabel(item);
         item.terminal_seq = seq; // Task 10：终态事件 seq 落位（start 位置不变）
         if (typeof payload.text === "string") item.text = payload.text;
         if (typeof payload.availability === "string") item.availability = payload.availability;

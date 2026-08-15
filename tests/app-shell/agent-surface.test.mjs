@@ -1190,7 +1190,7 @@ test("工具工作项标签：shell 正在运行命令→已运行命令、read_
   assert.match(reasoningLabel.textContent, /思考中/u);
   surface.applyEvent(ev("reasoning_completed", { turn_id: "turn-1", input_id: "in-1", text: "完成", availability: "available" }));
   surface.applyEvent(ev("model_turn_completed", { turn_id: "turn-1", input_id: "in-1", outcome: "completed" }));
-  assert.match(reasoningRow.querySelector(".agent-work-item__label").textContent, /已完成思考/u);
+  assert.match(reasoningRow.querySelector(".agent-work-item__label").textContent, /思考 1 秒/u);
   assert.equal(root.querySelector('[data-testid="agent-thinking"]'), null, "旧三点动画反馈已删除");
 });
 

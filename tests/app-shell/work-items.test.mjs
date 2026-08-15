@@ -193,7 +193,7 @@ test("Step 3/4: reasoning 与 tool 立即终结，waiting_user 压制不伪造",
   ]);
   const reasonItem = groupOf(workReason).items.get("reasoning:turn-1");
   assert.equal(reasonItem.state, "completed");
-  assert.equal(reasonItem.label, "已完成思考");
+  assert.equal(reasonItem.label, "思考 1 秒");
   assert.equal(reasonItem.text, "先检查事实，再回答。", "detail 保留权威全文");
   assert.equal(reasonItem.availability, "available");
   assert.deepEqual(openWorkItemIds(groupOf(workReason)), []);
@@ -375,7 +375,7 @@ test("Task 11: input_interrupted 只结束活动输入，不终结 Run 工作组
   assert.equal(group.status, "running", "优先切换不终结 Run，工作组保持运行中");
   const reasoning = group.items.get("reasoning:turn-1");
   assert.equal(reasoning.state, "completed", "已完整返回的 reasoning 保持正常完成");
-  assert.equal(reasoning.label, "已完成思考");
+  assert.equal(reasoning.label, "思考 1 秒");
   assert.equal(reasoning.text, "完整思考内容");
   const tool = group.items.get("tool:a1");
   assert.equal(tool.state, "running", "切换发生时未收敛的工具仍如实 running（不伪造 interrupted）");
@@ -594,4 +594,31 @@ test("第九轮：重放幂等——同一事件集重建后 firstSeq 稳定", (
   const rebuilt = reduceAll(events); // 模拟 rebuildDerivedState 按 seq 升序重放
   assert.equal(rebuilt.groups.get("run-1").firstSeq, first.groups.get("run-1").firstSeq);
   assert.equal(rebuilt.groups.get("run-1").firstSeq, 3, "重放后锚点仍是首个 input_started 的 seq");
+});
+
+test("AICSS 思考 N 秒：完成标签取 turn 真实耗时，四舍五入最小 1；无时间戳回退已完成思考", () => {
+  const work = reduceAll([
+    ev("run_started", {}, 1),
+    ev("model_turn_started", { turn_id: "t1" }, 2, { at: "2026-08-06T00:00:00.000Z" }),
+    ev("reasoning_completed", { turn_id: "t1", text: "a", availability: "available" }, 3, { at: "2026-08-06T00:00:07.600Z" })
+  ]);
+  const item = groupOf(work).items.get("reasoning:t1");
+  assert.equal(item.label, "思考 8 秒");
+  assert.equal(item.thinking_ms, 7600);
+
+  const work2 = reduceAll([
+    ev("run_started", {}, 1),
+    ev("model_turn_started", { turn_id: "t2" }, 2),
+    ev("reasoning_completed", { turn_id: "t2", text: "a", availability: "available" }, 3, { at: "2026-08-06T00:00:00.000Z" })
+  ]);
+  // 0ms（同 at）→ 最小 1 秒
+  assert.equal(work2.groups.get("run-1").items.get("reasoning:t2").label, "思考 1 秒");
+
+  const work3 = reduceAll([
+    ev("run_started", {}, 1),
+    ev("model_turn_started", { turn_id: "t3" }, 2),
+    // reasoning_completed 不带 at → 无法计算 → 回退
+    ev("reasoning_completed", { turn_id: "t3", text: "a", availability: "available" }, 3, { at: null })
+  ]);
+  assert.equal(work3.groups.get("run-1").items.get("reasoning:t3").label, "已完成思考");
 });
