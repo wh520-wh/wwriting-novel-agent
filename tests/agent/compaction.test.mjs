@@ -277,6 +277,69 @@ test("selectProtectedRecentTurns：已闭合大型工具输出只保留名称/�
   assert.equal(turns[0].tool_activities[0].output.length, 50_000);
 });
 
+test("selectProtectedRecentTurns：无 result_summary 的大型闭合输出也本地截断（不再保留全文）", () => {
+  // 回归：transcript 重建的轮次永远没有 result_summary（runtime 注释明确
+  // 「transcript 不存 result_summary」）——旧代码因此把大输出原文保留在保护窗，
+  // 「12 轮中的每一个步骤都保留了」；修复后本地截断生成摘要 + Journal 引用。
+  const turns = [
+    makeTurn(1, {
+      tool_activities: [
+        {
+          tool_call_id: "tc-1",
+          name: "shell",
+          status: "closed",
+          arguments: {},
+          output: "乙".repeat(50_000),
+          result_summary: null,
+          journal_ref: "seq 30"
+        }
+      ]
+    })
+  ];
+  const result = selectProtectedRecentTurns({ turns, targetTokens: 100_000, toolOutputThreshold: 1000 });
+  const activity = result.protected_turns[0].tool_activities[0];
+  assert.equal(activity.output, null, "大输出必须被替换（不得保留原文）");
+  assert.equal(activity.summarized_output, true);
+  assert.ok(activity.result_summary.includes("本地截断"), "无 result_summary 时生成本地截断摘要");
+  assert.ok(activity.result_summary.includes("seq 30"), "摘要必须带 Journal 引用");
+  assert.ok(activity.result_summary.length < 2000, `本地截断摘要必须远小于原文（实际 ${activity.result_summary.length} 字符）`);
+  assert.ok(activity.result_summary.includes("乙".repeat(10)), "摘要保留输出头部片段供模型参考");
+});
+
+test("selectProtectedRecentTurns：预算优先——摘要化后占用达标时不驱逐（轮数少但大输出多）", () => {
+  // 用户场景：8 轮（<12 轮保护窗），每轮含 20k 字符大输出。旧代码按原文 token
+  // 驱逐 → 即便大输出截断后只占几十 token，也会把早期轮次驱逐进摘要（或 summarized
+  // 为空直接 noop）；修复后驱逐判定基于摘要化后的真实占用 → 全部保留原文轮次。
+  const turns = Array.from({ length: 8 }, (_, i) =>
+    makeTurn(i + 1, {
+      token_estimate: null, // 走内容估算（默认 10 会掩盖驱逐判定）
+      tool_activities: [
+        {
+          tool_call_id: `tc-${i + 1}`,
+          name: "shell",
+          status: "closed",
+          arguments: {},
+          output: "丙".repeat(20_000),
+          result_summary: null,
+          journal_ref: `seq ${(i + 1) * 4}`
+        }
+      ]
+    })
+  );
+  const result = selectProtectedRecentTurns({ turns, targetTokens: 64_000, toolOutputThreshold: 2000 });
+  assert.equal(result.summarized_turns.length, 0, "摘要化后占用低于预算 → 不驱逐（8 轮全部保留）");
+  assert.equal(result.protected_turns.length, 8);
+  assert.equal(result.stats.overshoot, false);
+  assert.ok(
+    result.protected_turns.every((turn) => turn.tool_activities[0].summarized_output === true),
+    "大输出全部被本地截断"
+  );
+  assert.ok(
+    result.stats.protected_tokens < 10_000,
+    `摘要化后被保护占用必须远小于预算（实际 ${result.stats.protected_tokens}；原文 ≈160k+）`
+  );
+});
+
 test("selectProtectedRecentTurns：未闭合 tool-call 链完整保留且不得被驱逐", () => {
   const turns = Array.from({ length: 15 }, (_, i) => makeTurn(i + 1));
   // turn-6 位于最近 12 轮窗口内（turns 4..15），token 巨大逼迫驱逐，但未闭合链轮次不可驱逐

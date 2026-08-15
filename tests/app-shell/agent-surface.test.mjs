@@ -3899,7 +3899,7 @@ test("压缩失败：状态行「压缩失败」+ 重试/取消按钮，发送�
   assert.equal(send.disabled, true, "失败后发送保持禁用（等待用户 重试/取消）");
 });
 
-test("压缩取消完成：发送恢复，draft 留在 textarea；无需压缩时发送正常", async () => {
+test("压缩取消完成：发送恢复，draft 留在 textarea；消息不足时发送正常", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\novel");
   const input = root.querySelector('[data-testid="agent-composer-input"]');
@@ -3916,7 +3916,7 @@ test("压缩取消完成：发送恢复，draft 留在 textarea；无需压缩�
   surface.applyEvent(ev("context_compaction_noop", { compaction_id: "c-4", trigger: "automatic" }));
   const noopRow = [...root.querySelectorAll('[data-testid="agent-compaction-row"]')]
     .find((el) => el.parentElement.dataset.compactionId === "c-4");
-  assert.equal(noopRow.textContent, "无需压缩");
+  assert.equal(noopRow.textContent, "Not enough messages to compact");
   assert.equal(root.querySelector('[data-testid="agent-send"]').disabled, false, "noop 不阻塞发送");
 });
 
