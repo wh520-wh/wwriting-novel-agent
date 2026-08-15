@@ -24,6 +24,9 @@ import { createPlanPanel } from "./components/plan-panel.js";
 
 const refs = {
   app: document.querySelector("#app"),
+  rail: document.querySelector(".rail"),
+  railToggle: document.querySelector("#rail-toggle"),
+  railScrim: document.querySelector("#rail-scrim"),
   refresh: document.querySelector("#refresh"),
   newNovel: document.querySelector("#new-novel"),
   projectCount: document.querySelector("#project-count"),
@@ -40,6 +43,8 @@ const refs = {
   themeToggle: document.querySelector("#theme-toggle"),
   themeLabel: document.querySelector("#theme-label"),
   openDrawer: document.querySelector("#open-drawer"),
+  topbarMore: document.querySelector("#topbar-more"),
+  topbarSecondary: document.querySelector("#topbar-secondary"),
   agentSurface: document.querySelector("#agent-surface"),
   drawerScrim: document.querySelector("#drawer-scrim"),
   drawer: document.querySelector("#drawer"),
@@ -130,9 +135,9 @@ const agentSurface = createAgentSurface({
   }
 });
 
-// 第九轮：任务计划面板挂载——chip 插入顶栏 context-ring 之前。
-const topbarEl = document.querySelector(".topbar");
-topbarEl?.insertBefore(planPanel.chip, document.getElementById("agent-context-ring") ?? null);
+// 第九轮：任务计划面板挂载——chip 插入顶栏 actions，位于 drawer trigger 之前。
+const topbarActions = document.querySelector(".topbar-actions");
+topbarActions?.insertBefore(planPanel.chip, document.getElementById("open-drawer") ?? null);
 document.addEventListener("click", (event) => planPanel.handleOutsideClick(event));
 document.addEventListener("keydown", (event) => planPanel.handleKeydown(event));
 
@@ -209,15 +214,68 @@ const { renderDrawerBody } = createDrawerPanels({
   closeDrawer,
 });
 
+// ---- Round10：rail 覆盖态与 drawer 模态语义归 app shell 所有 ----
+const railMedia = window.matchMedia("(max-width: 1279px)");
+const drawerModalMedia = window.matchMedia("(max-width: 1279px)");
+
+function openRail() {
+  if (!railMedia.matches) return;
+  refs.rail.classList.add("show");
+  refs.railScrim.hidden = false;
+  refs.railToggle.setAttribute("aria-expanded", "true");
+}
+
+function closeRail({ restoreFocus = true } = {}) {
+  refs.rail.classList.remove("show");
+  refs.railScrim.hidden = true;
+  refs.railToggle.setAttribute("aria-expanded", "false");
+  if (restoreFocus) refs.railToggle.focus();
+}
+
+function isDrawerModal() {
+  return drawerModalMedia.matches;
+}
+
+function syncDrawerMode() {
+  const modal = isDrawerModal();
+  refs.drawer.setAttribute("role", modal ? "dialog" : "complementary");
+  if (modal) refs.drawer.setAttribute("aria-modal", "true");
+  else refs.drawer.removeAttribute("aria-modal");
+  refs.drawerScrim.hidden = !modal || !refs.drawer.classList.contains("show");
+}
+
+const onViewportModeChange = () => {
+  // 已打开的 drawer 因窗口变窄升级为模态：焦点移入抽屉，避免停留在背景。
+  // media change 事件到达时 .matches 已是新值，旧态从 drawer 当前语义（role）判断。
+  const openWide = refs.drawer.classList.contains("show") &&
+    refs.drawer.getAttribute("role") === "complementary";
+  syncDrawerMode();
+  if (openWide && isDrawerModal()) refs.drawerClose.focus();
+  // 窄屏 → 宽屏：收起 rail 覆盖态；drawer 不强制关闭（宽屏非模态可继续停留）。
+  if (!railMedia.matches && refs.rail.classList.contains("show")) closeRail({ restoreFocus: false });
+};
+railMedia.addEventListener?.("change", onViewportModeChange);
+drawerModalMedia.addEventListener?.("change", onViewportModeChange);
+syncDrawerMode();
+
 function openDrawer(tab) {
   if (tab) drawerTab = tab;
   setDrawerTabActive();
-  lastFocused = document.activeElement;
   refs.drawer.removeAttribute("inert");
   refs.drawer.classList.add("show");
   refs.drawer.setAttribute("aria-hidden", "false");
-  refs.drawerScrim.classList.add("show");
-  refs.drawerClose.focus();
+  // 在 .show 之后同步模态语义：scrim 的 hidden 依据当前显示态计算
+  //（先于 .show 调用会把模态 scrim 留在 hidden，[hidden] 会压过 .scrim.show）。
+  syncDrawerMode();
+  lastFocused = document.activeElement; // 记录触发焦点（宽屏不移动焦点，仅记录）
+  if (isDrawerModal()) {
+    // 模态：显示 scrim、焦点移入抽屉关闭按钮。
+    refs.drawerScrim.classList.add("show");
+    refs.drawerClose.focus();
+  } else {
+    // 宽屏非模态：scrim 保持隐藏，不抢正在输入 Composer 的焦点。
+    refs.drawerScrim.classList.remove("show");
+  }
   renderDrawerBody();
   motion.openDrawer(refs.drawer, refs.drawerScrim, {
     body: refs.drawerBody,
@@ -236,13 +294,23 @@ function openDrawerTab(tab) {
 }
 
 function closeDrawer() {
+  // 只有焦点当前位于 drawer 内，或模态打开时，才把焦点还给触发器。
+  const restoreFocus = isDrawerModal() || refs.drawer.contains(document.activeElement);
   refs.drawer.dataset.closing = "true";
   refs.drawerScrim.dataset.closing = "true";
   motion.closeDrawer(refs.drawer, refs.drawerScrim, {
     onComplete: () => {
       delete refs.drawer.dataset.closing;
       delete refs.drawerScrim.dataset.closing;
-      if (lastFocused && lastFocused.isConnected) lastFocused.focus();
+      if (restoreFocus) {
+        // lastFocused 是共享槽：drawer 内再开 settings/reader 会覆盖它。
+        // 兜底：指向 drawer 内部或已断开时，退回 drawer 触发器。
+        // ponytail: 多浮层焦点栈改造超出本任务范围；兜底保证焦点不丢失。
+        const target = lastFocused && lastFocused.isConnected && !refs.drawer.contains(lastFocused)
+          ? lastFocused
+          : refs.openDrawer;
+        if (target) target.focus();
+      }
       lastFocused = null;
     }
   });
@@ -263,8 +331,26 @@ function setDrawerTabActive() {
     const on = button.dataset.dtab === drawerTab;
     button.classList.toggle("on", on);
     button.setAttribute("aria-selected", on ? "true" : "false");
+    button.tabIndex = on ? 0 : -1;
   }
 }
+
+// Round10：drawer Tab 完整键盘语义——ArrowLeft/Right/Home/End 在五个分区间轮换，
+// 只切换现有 tab，不改变数据加载接口。
+refs.drawerTabs.addEventListener("keydown", (event) => {
+  const tabs = [...refs.drawerTabs.querySelectorAll(".dtab")];
+  const index = tabs.indexOf(document.activeElement);
+  if (index < 0) return;
+  let next = -1;
+  if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
+  else if (event.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
+  else if (event.key === "Home") next = 0;
+  else if (event.key === "End") next = tabs.length - 1;
+  if (next < 0) return;
+  event.preventDefault();
+  setDrawerTab(tabs[next].dataset.dtab);
+  tabs[next].focus();
+});
 
 // ---------- 事件绑定 ----------
 refs.refresh.addEventListener("click", () => loadAll());
@@ -283,6 +369,41 @@ refs.drawerTabs.addEventListener("click", (event) => {
 // Task 12：右侧 quick rail 已删除，章节/资料/成本入口统一经顶部「面板」按钮进入 drawer。
 refs.openDrawer?.addEventListener("click", () => openDrawerTab("chapters"));
 
+// Round10：rail 覆盖态入口（窄屏 rail 不再 display:none）。
+refs.railToggle?.addEventListener("click", () => {
+  if (refs.rail.classList.contains("show")) closeRail();
+  else openRail();
+});
+refs.railScrim?.addEventListener("click", () => closeRail());
+
+// Round10：topbar 更多菜单——点击只切换 .show；outside click 关闭但不抢焦点；
+// Escape 关闭（全局 keydown 处理）并把焦点还给 more。
+refs.topbarMore?.addEventListener("click", () => {
+  const show = refs.topbarSecondary.classList.toggle("show");
+  refs.topbarMore.setAttribute("aria-expanded", show ? "true" : "false");
+});
+document.addEventListener("click", (event) => {
+  if (!refs.topbarSecondary?.classList.contains("show")) return;
+  if (refs.topbarSecondary.contains(event.target) || refs.topbarMore.contains(event.target)) return;
+  refs.topbarSecondary.classList.remove("show");
+  refs.topbarMore.setAttribute("aria-expanded", "false");
+});
+// Round10：菜单语义配套键盘——menuitem 聚焦时 ArrowDown/ArrowUp/Home/End 轮换。
+// 桌面行内常驻时同样生效（两枚按钮，行为无害且语义一致）。
+refs.topbarSecondary?.addEventListener("keydown", (event) => {
+  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+  const items = [...refs.topbarSecondary.querySelectorAll('[role="menuitem"]')];
+  const index = items.indexOf(document.activeElement);
+  if (index < 0) return;
+  event.preventDefault();
+  let next = -1;
+  if (event.key === "ArrowDown") next = (index + 1) % items.length;
+  else if (event.key === "ArrowUp") next = (index - 1 + items.length) % items.length;
+  else if (event.key === "Home") next = 0;
+  else if (event.key === "End") next = items.length - 1;
+  items[next].focus();
+});
+
 // Task 12 Step 3：app 顶层（快捷键/阅读器/设置/新建/抽屉）的 ESC 关闭保持原有
 // 优先级，返回是否已关闭某层；未关闭的 ESC 再交给 AgentSurface（压缩取消/停止）。
 function closeAppTopLayer() {
@@ -291,6 +412,8 @@ function closeAppTopLayer() {
   if (refs.settingsScrim.classList.contains("show")) { closeSettingsModal(); return true; }
   if (refs.createScrim.classList.contains("show")) { closeCreateModal(); return true; }
   if (refs.drawer.classList.contains("show")) { closeDrawer(); return true; }
+  // rail 覆盖态优先级最低：顶层 modal/drawer 都未处理时才关闭。
+  if (refs.rail.classList.contains("show")) { closeRail(); return true; }
   return false;
 }
 
@@ -367,6 +490,14 @@ document.addEventListener("keydown", (event) => {
     // Task 12：内层（textarea 关闭 slash menu、composer 菜单 ESC 等）已消费的
     // ESC 不得再进入全局路由，保证一次键只执行第一项。
     if (event.defaultPrevented) return;
+    // Round10：topbar 更多菜单优先于顶层 overlay 关闭；关闭后焦点还给 more。
+    if (refs.topbarSecondary.classList.contains("show")) {
+      refs.topbarSecondary.classList.remove("show");
+      refs.topbarMore.setAttribute("aria-expanded", "false");
+      refs.topbarMore.focus();
+      event.preventDefault();
+      return;
+    }
     if (closeAppTopLayer()) { event.preventDefault(); return; }
     const handled = agentSurface.handleEscape();
     if (handled) event.preventDefault();
@@ -379,7 +510,7 @@ document.addEventListener("keydown", (event) => {
   else if (refs.readerScrim.classList.contains("show")) trapTab(refs.readerScrim, event);
   else if (refs.settingsScrim.classList.contains("show")) trapTab(refs.settingsScrim, event);
   else if (refs.createScrim.classList.contains("show")) trapTab(refs.createScrim, event);
-  else if (refs.drawer.classList.contains("show")) trapTab(refs.drawer, event);
+  else if (refs.drawer.classList.contains("show") && isDrawerModal()) trapTab(refs.drawer, event);
 });
 window.addEventListener("blur", () => { refs.app.dataset.away = "true"; });
 window.addEventListener("focus", () => { refs.app.dataset.away = "false"; });

@@ -9,6 +9,7 @@ const read = (file) => readFileSync(path.join(root, file), "utf8").replace(/\r\n
 const styles = () => read("src/app-shell/styles.css");
 const agentCss = () => read("src/app-shell/agent/agent.css");
 const html = () => read("src/app-shell/index.html");
+const appJs = () => read("src/app-shell/app.js");
 
 test("round10 tokens: shared axes, integer type scale and control dimensions have one owner", () => {
   const css = styles();
@@ -47,4 +48,28 @@ test("round10 tokens: shared axes, integer type scale and control dimensions hav
     assert.equal((css.match(re) ?? []).length, 1, `--${name} 不得在 styles.css 重复声明`);
     assert.doesNotMatch(agentCss(), re, `--${name} 不得在 agent.css 声明`);
   }
+});
+
+test("round10 shell: narrow rail has an entry and drawer switches modal semantics", () => {
+  const source = html();
+  assert.match(source, /id="rail-toggle"/u);
+  assert.match(source, /id="rail-scrim"/u);
+  assert.match(source, /id="topbar-more"/u);
+  assert.match(source, /id="topbar-secondary"/u);
+  assert.match(source, /id="drawer"[^>]*aria-hidden="true"/u);
+  assert.doesNotMatch(source, /id="drawer"[^>]*aria-modal="true"/u);
+  assert.match(styles(), /@media\s*\(min-width:\s*1280px\)[\s\S]*\.drawer/u);
+  assert.match(styles(), /@media\s*\(max-width:\s*480px\)[\s\S]*\.drawer[\s\S]*width:\s*100%/u);
+  // 动态模态语义接线：app shell 拥有 syncDrawerMode/isDrawerModal/rail 覆盖态，
+  // Tab trap 只对模态 drawer 生效（删除接线会让这些断言失败）。
+  const app = appJs();
+  assert.match(app, /function syncDrawerMode\(\)/u);
+  assert.match(app, /function isDrawerModal\(\)/u);
+  assert.match(app, /function openRail\(\)/u);
+  assert.match(app, /function closeRail\(/u);
+  assert.match(app, /isDrawerModal\(\)\)\s+trapTab/u);
+});
+
+test("round10 html: layout styles are not embedded in markup", () => {
+  assert.doesNotMatch(html(), /\sstyle="/u);
 });

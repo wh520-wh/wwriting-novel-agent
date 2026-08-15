@@ -452,6 +452,16 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   color: var(--text-muted); white-space: nowrap;
 }
 
+/* Round10：rail 内项目打开状态行（原内联 display 控制移入 class，JS 仍写 style.display） */
+.project-open-status {
+  display: none;
+  padding: 10px 8px 6px;
+  font-size: 11px;
+  line-height: 1.4;
+  font-weight: 550;
+  color: var(--text-muted);
+}
+
 .rail-group-label > span:first-child { overflow: hidden; text-overflow: ellipsis; }
 
 .rail-group-label .count {
@@ -597,6 +607,18 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: 0 1 auto; flex-wrap: nowrap; justify-content: flex-end; min-width: 0; }
 
+/* Round10：窄屏 rail 入口与 topbar 更多菜单——桌面隐藏 rail-toggle/topbar-more，
+   secondary 行内常驻；<=480px 时 secondary 变为锚定 topbar-more 的 popover。 */
+.rail-toggle { display: none; }
+
+.topbar-more { display: none; }
+
+.topbar-secondary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 
 .tbtn {
   width: 32px; height: 32px;
@@ -623,6 +645,14 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 /* ============================================================
    Right drawer
    ============================================================ */
+/* Round10：rail 覆盖态遮罩（窄屏 rail 为 fixed overlay；hidden 属性控制显隐） */
+.rail-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(28, 26, 22, 0.16);
+  z-index: 60;
+}
+
 .scrim {
   position: absolute; inset: 0; background: rgba(28,26,22,0.16);
   backdrop-filter: blur(1px); opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 40;
@@ -631,7 +661,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .scrim.show { opacity: 1; pointer-events: auto; }
 
 .drawer {
-  position: absolute; top: 0; right: 0; bottom: 0; width: 400px; max-width: 92vw;
+  position: absolute; top: 0; right: 0; bottom: 0; width: var(--drawer-width); max-width: 92vw;
   background: var(--surface); border-left: 1px solid var(--line);
   box-shadow: -24px 0 60px -30px rgba(28,26,22,0.4);
   transform: translateX(101%);
@@ -1304,6 +1334,8 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .reader-head { display: flex; align-items: flex-start; gap: 12px; padding: 18px 20px 14px; border-bottom: 1px solid var(--line); }
 
+.reader-title-block { min-width: 0; flex: 1; }
+
 .reader-head .path { font-family: var(--mono); font-size: 11.5px; color: var(--text-muted); }
 
 .reader-head h2 { font-size: 19px; letter-spacing: 0; margin-top: 3px; }
@@ -1352,6 +1384,11 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .create-card .dfield textarea { resize: vertical; line-height: 1.5; min-height: 64px; }
 
 .create-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+/* Round10：新建小说路径行——原内联 flex 布局移入 class，按钮不挤压路径输入 */
+.path-row { display: flex; gap: 8px; }
+
+.path-row .path-input { flex: 1 1 auto; min-width: 0; width: auto; }
 
 
 /* animations */
@@ -1402,12 +1439,57 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .toast.leaving { opacity: 0; transform: translateY(7px); }
 
 .toast svg { color: var(--green); }
-@media (max-width: 880px) {
-  /* .rail display:none 后仍是两列网格的话，唯一在流的 .main 会被自动放进 0px
-     轨道（整页空白）。窄屏只保留一列，让主列占满宽度。 */
+/* Round10：三档壳层响应——宽屏 drawer 非模态推开、窄屏 rail/drawer 覆盖。
+   >=1280：rail 常驻 + drawer 非模态侧栏；<=1279：rail/drawer 覆盖；
+   <=480：drawer 全宽 + topbar 更多菜单 popover。 */
+@media (min-width: 1280px) {
+  .drawer {
+    position: relative;
+    inset: auto;
+    width: var(--drawer-width);
+    max-width: var(--drawer-width);
+    flex: 0 0 var(--drawer-width);
+    box-shadow: none;
+    transform: none;
+  }
+  /* 宽屏关闭态不占布局轨道（避免 translateX 留在 380px 空槽） */
+  .drawer:not(.show) { display: none; }
+  .scrim { display: none; }
+}
+
+@media (max-width: 1279px) {
   .app { grid-template-columns: minmax(0, 1fr); }
 
-  .rail { display: none; }
+  .rail {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: min(280px, calc(100vw - 48px));
+    z-index: 70;
+    transform: translateX(-101%);
+    visibility: hidden; /* 关闭态不可聚焦：键盘不会摸到屏外控件 */
+    transition: transform var(--motion-layer) ease, visibility var(--motion-layer) ease;
+  }
+  .rail.show { transform: translateX(0); visibility: visible; }
+  .rail-toggle { display: grid; }
+  .drawer { position: absolute; width: var(--drawer-width); max-width: min(100%, var(--drawer-width)); }
+}
+
+@media (max-width: 480px) {
+  .drawer { width: 100%; max-width: 100%; }
+  .topbar-secondary {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 12px;
+    z-index: 60;
+    display: none;
+    padding: 4px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    background: var(--surface);
+    box-shadow: var(--shadow-pop);
+  }
+  .topbar-secondary.show { display: grid; }
+  .topbar-more { display: grid; }
 }
 
 
@@ -1577,9 +1659,19 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   background: var(--rail-2);
 }
 
+/* Round10：选中态 = 浅背景 + 加粗 + 3px 墨绿竖条（非纯色填充） */
+.session-row.active::before {
+  content: "";
+  position: absolute;
+  inset: 6px auto 6px 0;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
 .session-row.active .session-title {
   color: var(--ink);
-  font-weight: 600;
+  font-weight: 650;
 }
 
 .session-row.session-draft {
@@ -1638,7 +1730,9 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   top: 50%;
   transform: translateY(-50%);
   display: flex;
+  justify-content: flex-end;
   gap: 2px;
+  width: 52px; /* 固定宽度：两个 24px 操作位，不挤压 .session-title */
   opacity: 0;
   pointer-events: none;
   transition: opacity 150ms ease;
@@ -1654,6 +1748,11 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 }
 
 .session-draft .session-menu {
+  display: none;
+}
+
+/* Round10：改名编辑态——编辑器占满标题轨道，hover 操作菜单隐藏 */
+.session-row:has(.session-rename-editor) .session-menu {
   display: none;
 }
 
@@ -1677,6 +1776,12 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   color: var(--ink);
   background: var(--surface);
   border-color: var(--line);
+}
+
+/* Round10：删除/归档操作 hover 使用 danger token */
+.session-op-trash:hover,
+.session-op-trash:focus-visible {
+  color: var(--red);
 }
 
 .session-op:disabled {
