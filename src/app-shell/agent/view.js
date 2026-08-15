@@ -687,9 +687,17 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       streamBubble = createMessageBubble("assistant", text, { markdown: true });
       streamBubble.dataset.streaming = "true";
       messages.append(streamBubble);
-    } else {
-      const textEl = streamBubble.querySelector(".agent-message-text");
-      if (textEl) textEl.innerHTML = renderMarkdown(text);
+    }
+    const textEl = streamBubble.querySelector(".agent-message-text");
+    if (textEl) {
+      textEl.innerHTML = renderMarkdown(text);
+      // AICSS streaming-text：流式实心光标（8px×1.05em，见 agent.css）。定稿
+      // （assistant_message_completed）后流式气泡被 syncStream 移除，光标随之
+      // 消失——无闪烁态：WWriting 没有"播完未折叠"的中间态（有意为之）。
+      const caret = doc.createElement("span");
+      caret.className = "agent-stream-caret";
+      caret.setAttribute("aria-hidden", "true");
+      textEl.append(caret);
     }
     renderedStreamText = text;
     afterRender();
