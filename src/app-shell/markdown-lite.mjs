@@ -156,8 +156,11 @@ export function renderMarkdown(source, { refs = null } = {}) {
     const safe = safeHttpUrl(ref?.url);
     if (!safe || n === "") return acc;
     const label = escapeHtml(String(ref?.title ?? ref?.host ?? ""));
-    const needle = `<sup class="agent-cite-mark" data-cite-n="${n}">${n}</sup>`;
-    const linked = `<sup class="agent-cite-mark" data-cite-n="${n}"><a href="${escapeAttr(safe)}" data-external-link title="${escapeAttr(label)}">${n}</a></sup>`;
+    // needle/linked 均对 n 转义：渲染器输出侧 data-cite-n 来自 tokenizer 的 \d+
+    // 捕获恒为数字，escapeHtml 对数字无影响，故匹配不受影响；非数字 n 的 needle
+    // 不会命中任何上标（期望的防御行为），且 n 无法注入 HTML。
+    const needle = `<sup class="agent-cite-mark" data-cite-n="${escapeHtml(n)}">${escapeHtml(n)}</sup>`;
+    const linked = `<sup class="agent-cite-mark" data-cite-n="${escapeHtml(n)}"><a href="${escapeAttr(safe)}" data-external-link title="${escapeAttr(label)}">${escapeHtml(n)}</a></sup>`;
     return acc.split(needle).join(linked);
   }, wrapped);
   const rows = list
@@ -166,7 +169,9 @@ export function renderMarkdown(source, { refs = null } = {}) {
       const safe = safeHttpUrl(ref?.url);
       if (!safe || n === "") return "";
       const host = /^https?:\/\/([^/?#]+)/u.exec(String(ref?.url ?? ""))?.[1] ?? "";
-      return `<a class="agent-cite-ref" href="${escapeAttr(safe)}" data-external-link><span class="agent-cite-n">${n}</span><span class="agent-cite-ref-label">${escapeHtml(String(ref?.title ?? ""))}</span><span class="agent-cite-sep">·</span><span class="agent-cite-ref-host">${escapeHtml(host)}</span></a>`;
+      // n 来自来源数据（外部信任边界），与同行的 title/host 一致走 escapeHtml，
+      // 防 `n` 注入闭合 span 的 HTML 注入。
+      return `<a class="agent-cite-ref" href="${escapeAttr(safe)}" data-external-link><span class="agent-cite-n">${escapeHtml(n)}</span><span class="agent-cite-ref-label">${escapeHtml(String(ref?.title ?? ""))}</span><span class="agent-cite-sep">·</span><span class="agent-cite-ref-host">${escapeHtml(host)}</span></a>`;
     })
     .filter(Boolean)
     .join("");

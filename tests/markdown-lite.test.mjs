@@ -255,3 +255,17 @@ test("AICSS 引用：提供 refs 时上标可点、footer 呈现标题/域名；
   assert.ok(html.includes("arxiv.org"), html);
   assert.ok(!html.includes("javascript:"), html);
 });
+
+test("AICSS 引用：来源条 refs.n 转义，防 HTML 注入（结尾闭合 span 的攻击载荷）", () => {
+  const html = renderMarkdown("文本[^1]。", {
+    refs: [{ n: "</span><img src=x onerror=alert(1)>", title: "T", url: "https://a.example/x" }]
+  });
+  // `<` 被转义，任何注入标签都无法成形：源码里的 `<img` 不出现、`</span><img`
+  // 拼接不出现；载荷退化为 `&lt;img ...&gt;` 的惰性文本，onerror 只是普通文字，
+  // 不再是事件属性（escapeHtml 只转义五种字符，不剥离 onerror 文本）。
+  assert.ok(!html.includes("<img"), html);
+  assert.ok(!html.includes("</span><img"), html);
+  assert.ok(html.includes("&lt;/span&gt;"), html);
+  assert.ok(html.includes("&lt;img"), html);
+});
+
