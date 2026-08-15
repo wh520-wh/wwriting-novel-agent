@@ -19,6 +19,7 @@ import { createSessionSidebar, createSessionRemovalResolver } from "./session-si
 import { createAgentSurface } from "./agent/index.js";
 import { loadDefaultTier } from "./permission-defaults.mjs";
 import { getTierById } from "./permission-tiers.mjs";
+import { createVersionPanel } from "./components/version-panel.js";
 
 const refs = {
   app: document.querySelector("#app"),
@@ -313,6 +314,30 @@ refs.readerWide.addEventListener("click", () => {
   document.querySelector("#reader").classList.toggle("reader--wide", on);
   refs.readerWide.setAttribute("aria-pressed", on ? "true" : "false");
 });
+const readerHistory = document.getElementById("reader-history");
+if (readerHistory && !readerHistory.__bound) {
+  readerHistory.__bound = true;
+  readerHistory.addEventListener("click", async () => {
+    const panel = createVersionPanel({ doc: document, ctx: window.appCtx ?? null });
+    const reader = document.getElementById("reader");
+    reader?.append(panel);
+    const chapterNo = readerChapterNo;
+    panel.open({
+      title: `第 ${chapterNo} 章`,
+      kind: "chapter",
+      chapterNo,
+      getVersions: async () => getJson(`/api/chapters/versions?chapter_no=${chapterNo}`),
+      getContent: async (version) => getJson(`/api/chapters/versions/content?chapter_no=${chapterNo}&version=${version}`),
+      onRestore: async (version) => {
+        const result = await postJson("/api/chapters/rollback", { chapter_no: chapterNo, version });
+        if (result?.ok) {
+          panel.close();
+          await openReader(chapterNo); // 恢复后刷新到最新内容
+        }
+      }
+    });
+  });
+}
 
 document.addEventListener("keydown", (event) => {
   if ((event.ctrlKey || event.metaKey) && event.key === ".") {
