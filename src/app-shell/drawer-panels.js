@@ -1,7 +1,8 @@
 import { icon } from "./icons.js";
 import { formatNumber, formatYuan, formatTime, translateStage, translateSourceKind, translateEventType } from "./utils.js";
-import { postJson } from "./api-client.js";
+import { postJson, getJson } from "./api-client.js";
 import { renderCostPanel as renderCostPanelComponent } from "./components/cost-panel.js";
+import { createVersionPanel } from "./components/version-panel.js";
 
 // 抽屉面板（统一 Agent 内核计划 Task 9）：只保留项目领域事实（章节/模型/资料/
 // 成本）。删除运行面板与审查面板——运行事实只在 Agent 对话当前轮展示；“导出成书”
@@ -11,7 +12,7 @@ export function createDrawerPanels(ctx) {
   // ctx provides: refs, getDrawerTab, setDrawerTab, getDashboard, loadDashboard,
   //   openReader, openSettingsModal, showToast, showActionError, closeDrawer
 
-  function renderDrawerBody() {
+  async function renderDrawerBody() {
     const dashboard = ctx.getDashboard();
     const drawerTab = ctx.getDrawerTab();
     if (!dashboard || !dashboard.hasProject) {
@@ -21,6 +22,7 @@ export function createDrawerPanels(ctx) {
     if (drawerTab === "chapters") renderChapterPanel(dashboard);
     else if (drawerTab === "model") renderModelPanel(dashboard);
     else if (drawerTab === "research") renderResearchPanel(dashboard);
+    else if (drawerTab === "memory") await renderMemoryPanel(dashboard);
     else renderCostPanel(dashboard);
   }
 
@@ -122,6 +124,28 @@ export function createDrawerPanels(ctx) {
         meta.textContent = `${formatNumber(chapter.actual_words)} 字`;
       }
       row.append(meta, icon("chevR", 14, "ch-go"));
+      // 第九轮：章节行「历史」按钮（抽屉 §3.3）。
+      const historyBtn = document.createElement("button");
+      historyBtn.type = "button";
+      historyBtn.className = "chrow-history";
+      historyBtn.textContent = "历史";
+      historyBtn.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        const panel = createVersionPanel({ doc: document });
+        row.after(panel);
+        panel.open({
+          title: `第 ${chapter.chapter_no} 章`,
+          kind: "chapter",
+          chapterNo: chapter.chapter_no,
+          getVersions: async () => getJson(`/api/chapters/versions?chapter_no=${chapter.chapter_no}`),
+          getContent: async (version) => getJson(`/api/chapters/versions/content?chapter_no=${chapter.chapter_no}&version=${version}`),
+          onRestore: async (version) => {
+            const result = await postJson("/api/chapters/rollback", { chapter_no: chapter.chapter_no, version });
+            if (result?.ok) { panel.close(); await ctx.loadDashboard?.(); }
+          }
+        });
+      });
+      row.append(historyBtn);
       row.addEventListener("click", () => ctx.openReader(chapter.chapter_no));
     } else {
       const state = document.createElement("span");
@@ -242,6 +266,68 @@ export function createDrawerPanels(ctx) {
     });
     body.append(tree);
     ctx.refs.drawerBody.replaceChildren(panel);
+  }
+
+  // 第九轮：「记忆」分区面板（故事摘要 + 工作日志 + 设定档案只读）。
+  async function renderMemoryPanel(data) {
+    const blocks = [
+      { file: "book_summary", title: "故事摘要", icon: "书" },
+      { file: "worklog", title: "工作日志", icon: "记" }
+    ];
+    const body = document.createElement("div");
+    body.className = "dpanel-body memory-body";
+    for (const block of blocks) {
+      const card = document.createElement("div");
+      card.className = "memory-card";
+      const head = document.createElement("div");
+      head.className = "memory-card-head";
+      const title = document.createElement("span");
+      title.textContent = block.title;
+      head.append(title);
+      const history = document.createElement("button");
+      history.type = "button";
+      history.className = "chrow-history";
+      history.textContent = "历史";
+      history.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        const panel = createVersionPanel({ doc: document });
+        card.after(panel);
+        panel.open({
+          title: block.title,
+          kind: "memory",
+          file: block.file,
+          getVersions: async () => getJson(`/api/memory/versions?file=${block.file}`),
+          getContent: async (version) => getJson(`/api/memory/versions/content?file=${block.file}&version=${version}`),
+          onRestore: async (version) => {
+            const result = await postJson("/api/memory/versions/restore", { file: block.file, version });
+            if (result?.ok) { panel.close(); renderMemoryPanel(data); }
+          }
+        });
+      });
+      head.append(history);
+      card.append(head);
+      const content = document.createElement("div");
+      content.className = "memory-card-content prose";
+      const data2 = await getJson(`/api/memory/files/content?file=${block.file}`);
+      content.textContent = data2?.content ?? "";
+      card.append(content);
+      body.append(card);
+    }
+    const continuityCard = document.createElement("div");
+    continuityCard.className = "memory-card";
+    const cHead = document.createElement("div");
+    cHead.className = "memory-card-head";
+    const cTitle = document.createElement("span");
+    cTitle.textContent = "设定档案（只读）";
+    cHead.append(cTitle);
+    continuityCard.append(cHead);
+    const cContent = document.createElement("div");
+    cContent.className = "memory-card-content prose";
+    const cData = await getJson("/api/memory/files/content?file=continuity");
+    cContent.textContent = cData?.content ?? "";
+    continuityCard.append(cContent);
+    body.append(continuityCard);
+    ctx.refs.drawerBody.replaceChildren(body);
   }
 
   // 确定性导出：直接调用书导出 route（不创建 Agent Run、不追加模型 transcript）。
