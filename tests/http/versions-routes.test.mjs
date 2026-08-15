@@ -314,3 +314,57 @@ test("POST /api/memory/versions/restore：不存在版本 → 404 version_not_fo
   assert.equal(res.status, 404);
   assert.equal((await res.json()).code, "version_not_found");
 });
+
+// ---------------------------------------------------------------------------
+// 第九轮 Task 15 review I-1/I-2/M-2：补覆盖
+// ---------------------------------------------------------------------------
+
+test("POST /api/chapters/rollback：只有一个版本且回滚到当前版 → 409 already_current", async (t) => {
+  const s = await setupServer(t);
+  const { h } = s;
+  await h.agent.newSession({ projectRoot: h.projectRoot, title: "rollback-already" });
+  await h.agent.open({ projectRoot: h.projectRoot });
+  // 只提交一个版本
+  await snapshotChapter({ projectRoot: h.projectRoot, chapterNo: 1, content: "唯一版本", source: "test" });
+  // 创建正式文件 + 索引标记（rollbackChapter 需要）
+  const finalDir = path.join(h.projectRoot, "chapters");
+  await fs.mkdir(finalDir, { recursive: true });
+  await fs.writeFile(path.join(finalDir, "001.md"), "唯一版本", "utf8");
+  const indexPath = path.join(h.projectRoot, "memory", "chapter_index.json");
+  const index = JSON.parse(await fs.readFile(indexPath, "utf8"));
+  index.chapters = [{ chapter_no: 1, status: "completed", final_path: "chapters/001.md" }];
+  await fs.writeFile(indexPath, JSON.stringify(index, null, 2), "utf8");
+
+  // 回滚到 version 1（当前版本）→ 409 already_current
+  const res = await fetch(`${s.base}/api/chapters/rollback`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ projectRoot: h.projectRoot, chapter_no: 1, version: 1 })
+  });
+  assert.equal(res.status, 409);
+  assert.equal((await res.json()).code, "already_current");
+});
+
+test("POST /api/memory/versions/restore：file=continuity → 400 bad_args", async (t) => {
+  const s = await setupServer(t);
+  const { h } = s;
+  const res = await fetch(`${s.base}/api/memory/versions/restore`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ projectRoot: h.projectRoot, file: "continuity", version: 1 })
+  });
+  assert.equal(res.status, 400);
+  assert.equal((await res.json()).code, "bad_args");
+});
+
+test("POST /api/chapters/rollback：version=abc → 400 bad_args", async (t) => {
+  const s = await setupServer(t);
+  const { h } = s;
+  const res = await fetch(`${s.base}/api/chapters/rollback`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ projectRoot: h.projectRoot, chapter_no: 1, version: "abc" })
+  });
+  assert.equal(res.status, 400);
+  assert.equal((await res.json()).code, "bad_args");
+});

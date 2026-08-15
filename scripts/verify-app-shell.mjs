@@ -619,7 +619,6 @@ try {
 
   // ---- 场景 C：rename editor（行内改名编辑器契约，规格 4.3 #6 / §6.5）----
   {
-    const stylesCss = await fetchText(`http://127.0.0.1:${port}/styles.css`);
     assert.ok(sessionSidebarJs.includes('className = "session-rename-editor"'), "行内改名编辑器应使用 session-rename-editor 类");
     assert.match(sessionSidebarJs, /event\.key === "Enter"/u, "改名编辑器应支持 Enter 提交");
     assert.match(sessionSidebarJs, /event\.key === "Escape"/u, "改名编辑器应支持 Escape 取消");

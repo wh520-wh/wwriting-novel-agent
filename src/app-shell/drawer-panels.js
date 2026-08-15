@@ -271,8 +271,8 @@ export function createDrawerPanels(ctx) {
   // 第九轮：「记忆」分区面板（故事摘要 + 工作日志 + 设定档案只读）。
   async function renderMemoryPanel(data) {
     const blocks = [
-      { file: "book_summary", title: "故事摘要", icon: "书" },
-      { file: "worklog", title: "工作日志", icon: "记" }
+      { file: "book_summary", title: "故事摘要" },
+      { file: "worklog", title: "工作日志" }
     ];
     const body = document.createElement("div");
     body.className = "dpanel-body memory-body";

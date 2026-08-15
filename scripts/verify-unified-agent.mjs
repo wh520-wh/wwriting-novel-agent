@@ -1743,7 +1743,7 @@ step("场景 31b · 崩溃重放·不重复工具");
 // ---------------------------------------------------------------------------
 step("场景 32 · 写章入账后崩溃 → 续跑不重复入账");
 {
-  let releaseGate;
+  let releaseGate; // releaseGate 故意不使用——第三轮 gateway 条目永不返回，模拟崩溃
   const gate = new Promise((resolve) => { releaseGate = resolve; });
   const h = await createProjectAgentHarness({
     gatewayScript: [
@@ -1762,7 +1762,7 @@ step("场景 32 · 写章入账后崩溃 → 续跑不重复入账");
     await waitFor(h.agent, h.projectRoot, (_session, snap) =>
       eventsOfType(snap.events, "tool_call_completed").some((e) => e.payload?.name === "commit_chapter"),
       { describe: "第 1 章已提交入账" });
-    // 崩溃前：下一模型轮在途（gate 永不释放）
+    // 崩溃前：第 3 轮模型调用已发出，gateway 因 gate 永不返回，agent 阻塞在等待响应处
     await waitFor(h.agent, h.projectRoot, (_session, snap) =>
       eventsOfType(snap.events, "model_turn_started").length >= 3);
     // —— 崩溃：丢弃旧实例，模拟进程重启 ——
@@ -1773,6 +1773,7 @@ step("场景 32 · 写章入账后崩溃 → 续跑不重复入账");
     });
     await revived.open({ projectRoot: h.projectRoot });
     const recovered = await readSession(revived, h.projectRoot);
+    assert.equal(recovered.status, "idle", "崩溃后会话收敛为 idle");
     assert.equal(recovered.active_run.status, "interrupted", "崩溃 Run 保守中断");
     // 用户重试续写（同一 gateway 继续消费脚本：首动作 = read WORKLOG）
     await revived.submit({ projectRoot: h.projectRoot, text: "继续" });

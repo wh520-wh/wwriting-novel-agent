@@ -134,3 +134,23 @@ test("aria-expanded 同步", () => {
   panel.chip.fire("click");
   assert.equal(panel.chip.getAttribute("aria-expanded"), "true");
 });
+
+test("sync(UPDATED) while open：保持展开 + 内容更新", () => {
+  const { doc } = makeFakeDoc();
+  const panel = createPlanPanel({ doc });
+  panel.sync(ITEMS);
+  // 展开
+  panel.chip.fire("click");
+  assert.equal(panel.dropdown.hidden, false);
+  // 更新计划（第 2 步也完成，进度 2/3）
+  const UPDATED_ITEMS = [
+    { id: "p1", step: "写第 1 章", status: "completed" },
+    { id: "p2", step: "写第 2 章（修订）", status: "completed" },
+    { id: "p3", step: "写第 3 章", status: "in_progress" }
+  ];
+  panel.sync(UPDATED_ITEMS);
+  // 仍然展开
+  assert.equal(panel.dropdown.hidden, false, "sync 后面板应保持展开");
+  // chip 文字已更新为 2/3
+  assert.match(panel.chip.textContent, /任务计划\s*2\/3/u, "chip 应反映新进度 2/3");
+});
