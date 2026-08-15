@@ -210,7 +210,7 @@ try {
   assert.ok(unsafeHtml.includes("alert(1)"), "危险内容应以纯文本保留可读");
 
   // ---- 工作组：真实 journal 事件经公共 seam（createAgentSurface）渲染为
-  // details.agent-work-group，完成态自动折叠、思考项为 已完成思考 ----
+  // details.agent-work-group，完成态自动折叠、思考项为 思考 N 秒 ----
   //（不 import agent 内部文件——依赖规则 B 只允许经 agent/index.js 对外暴露；
   // 投影行为本身由 tests/app-shell/work-items.test.mjs 单测覆盖。）
   class MockElement {
@@ -361,15 +361,16 @@ try {
     assert.ok(groupEl.textContent.includes("工作了"), "工作组 summary 应显示有效工作耗时文案");
     const reasoningRows = allNodes.filter((node) => node.dataset?.kind === "reasoning");
     assert.ok(reasoningRows.length >= 1, "每个模型轮次应产生一个思考项");
-    assert.ok(reasoningRows.every((row) => row.textContent.includes("已完成思考")), "思考项完成态标签应为 已完成思考");
+    assert.ok(reasoningRows.every((row) => /思考 \d+ 秒/u.test(row.textContent)), "思考项完成态标签应为 思考 N 秒");
   }
   // 工作组静态契约：served view.js 渲染 details.agent-work-group 与两种空内容文案；
-  // served work-items.mjs 投影 已完成思考 终态标签与 工作中 组状态文案
+  // served work-items.mjs 投影 思考 N 秒 终态标签（回退 已完成思考）与 工作中 组状态文案
   const workItemsJs = await fetchText(`http://127.0.0.1:${port}/agent/work-items.mjs`);
   assert.ok(viewJs.includes("agent-work-group"), "view.js 应渲染 details.agent-work-group");
   assert.ok(viewJs.includes("当前模型不支持查看"), "view.js 应输出 unsupported 空内容文案");
   assert.ok(viewJs.includes("本次没有可查看的思考内容"), "view.js 应输出 empty 空内容文案");
-  assert.ok(workItemsJs.includes("已完成思考"), "work-items.mjs 应输出 已完成思考 终态标签");
+  assert.ok(/思考 \$\{[^}]+\} 秒/u.test(workItemsJs) || workItemsJs.includes("思考 1 秒"), "work-items.mjs 应输出 思考 N 秒 终态标签模板");
+  assert.ok(workItemsJs.includes("已完成思考"), "work-items.mjs 应保留 已完成思考 回退文案");
   assert.ok(workItemsJs.includes("工作中"), "work-items.mjs 应输出工作组运行状态文案");
 
   // ---- 技能 catalog API：内置发现 + 普通文件夹项目同名覆盖（项目 > 内置）----
