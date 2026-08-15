@@ -53,6 +53,7 @@ export function createProjectAgent(dependencies = {}) {
     renameSession: (params) => runtime.renameSession(params),
     archiveSession: (params) => runtime.archiveSession(params),
     restoreSession: (params) => runtime.restoreSession(params),
-    deleteSession: (params) => runtime.deleteSession(params)
+    deleteSession: (params) => runtime.deleteSession(params),
+    appendSystemEvent: (params) => runtime.appendSystemEvent(params)
   };
 }

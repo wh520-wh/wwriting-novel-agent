@@ -105,7 +105,10 @@ export const FIXED_EVENT_TYPES = Object.freeze([
   "run_failed",
   "run_cancelled",
   "run_interrupted",
-  "journal_recovery_boundary"
+  "journal_recovery_boundary",
+  // 第九轮：系统事件注入（UI 侧恢复操作在对话流中的可见性）
+  "chapter_rolled_back",
+  "memory_file_restored"
 ]);
 
 export const SESSION_STATUSES = Object.freeze([
@@ -986,6 +989,12 @@ function reduceEvent(session, event, side) {
       session.status = "idle";
       break;
     }
+
+    // 第九轮：系统事件注入（UI 侧恢复操作在对话流中的可见性）。pass-through：
+    // 只存储不投影（不影响 Session/Run 状态），让前端通过事件流感知恢复操作。
+    case "chapter_rolled_back":
+    case "memory_file_restored":
+      break;
 
     case "run_completed": {
       const activeRun = requireActiveRun("run_completed");
