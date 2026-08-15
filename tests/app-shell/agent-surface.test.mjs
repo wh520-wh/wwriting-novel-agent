@@ -2359,7 +2359,7 @@ test("agent.css 保留 1040px 内容列、向上菜单与工作组/动效布局"
   assert.doesNotMatch(css, /\.agent-work-item\s*\{[^}]*--text-(success|danger)/u, "整行容器不得承载成功/失败色");
   // 统一 Text Shimmer（Step 7）：动效 class 与 reduced-motion 降级
   assert.match(css, /\.agent-live-text\s*\{[^}]*background-clip:\s*text/u, "统一 Text Shimmer 使用 background-clip: text");
-  assert.match(css, /@keyframes\s+agent-text-shimmer/u, "shimmer 动画存在");
+  assert.match(css, /@keyframes\s+agent-label-shine/u, "shimmer 动画存在");
   assert.match(
     css,
     /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*\.agent-live-text\s*\{[^}]*color:\s*var\(--muted\)[^}]*animation:\s*none/u,
