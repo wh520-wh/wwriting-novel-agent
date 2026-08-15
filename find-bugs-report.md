@@ -497,3 +497,35 @@ grep 核实（`enter_workflow`/`workflow_changed`/`WORKFLOW_POLICIES`/`WORKFLOW_
 - `npm run verify:unified-agent`：**环境受限未跑完**——场景 21（Shell 增量输出）前 20 场景全绿，场景 21 用真实 `node` 命令 + piped stdio 捕获 shell 增量输出，本 sandbox 对子进程输出经管道捕获的路径直接 EPERM，`tool_output_delta` 未产生而断言失败（`scripts/verify-unified-agent.mjs:770`）。属沙箱边界非代码回归（B1-B3 仅改 app-shell view.js/agent.css，不涉 shell 运行时）。
 - `npm run verify:electron-runtime` / `npm run verify:app-clickability`：**环境受限**——需启动真实 Electron，触发 `FATAL:mojo platform_channel 拒绝访问` 与 `EPERM mkdir .demo_runs`（沙箱不允许 Electron 平台通道与 demo 目录写入），无法本 sandbox 验证。
 - 截图矩阵（`node scripts/capture-visual-acceptance.cjs --output artifacts/visual-acceptance/2026-08-14-polish --mode round7`）：**环境受限且需人工过目**——脚本启动 Electron/Chromium 即 FATAL（platform_channel 拒绝访问），且截图须人工过目（工作组无框、正文 720px、轮间 28px 可见、summary hover 条落在 720 轴内，与 `docs/mockups/agent-chat-polish-preview.html` 对照）——两项本 sandbox 均无法完成。
+
+---
+
+## 第 9 轮（2026-08-15 · 工作组修复 + 记忆体系重构 + 版本时间线 UI + 任务计划面板 + 断点恢复）
+
+### Part A 已修复（根本性）
+- 工作组时间线排序错位（run_started/input_started 锚点迁移）→ Task 1/2
+- 思考项折叠交互（与工具行 R1 同构）→ Task 3
+- 抽屉滚轮（.dpanel min-height:min-content，25 章 1023px→303px 根因链）→ Task 4
+- 圆环缓存命中率（会话累计 token 加权口径 + 主流工具依据 + 重启归零边界）→ Task 5
+
+### Part B 已落地
+- 后台记忆提取器退役；update_memory 深工具（轻量门禁/幂等合并/原子落盘）；三件套纪律 + memory_checklist 固定提醒；book_summary 搬家 + WORKLOG 占位；记忆文件版本快照（200 上限）
+- 版本时间线/恢复端点（含 agent_running 409、appendSystemEvent 对话可见）；抽屉记忆分区；任务计划面板
+- 断点恢复（场景 32：已入账不重复 + 首动作读 WORKLOG）；sim:user-flow 双模式
+
+### 已知边界（如实记录）
+- 同 Run 多排队输入分段（Part A 遗留）
+- 缓存命中率重启归零（会话内存态）
+- 多模态视觉验收未执行/PASS 与否（由用户另行安排，审图手册路径：artifacts/visual-acceptance/2026-08-15-round9/round-01/multimodal-review-prompt.md）
+- capture-visual-acceptance 本环境于既有场景 08 超时中断（新场景已产出 4/5 PNG；version-panel-confirm 因 fixture 无已入账章节版本未能产出；完整运行需用户环境重跑）
+- retry 且首个 input_started 缺失的组不迁移锚点（Task 2 设计内行为，防御性判定，正常 journal 不出现）
+- MODEL_NAME 覆盖为 runtime modelConfig 层职责（适配器构造器不接收模型名；sim 真实模式默认 deepseek-v4-flash 由项目设置决定）
+- 记忆迁移 .bak rename 对 EEXIST/EPERM 的兜底依赖 pathExists 检查（逻辑正确，未来可显式处理）
+
+### 门禁结果（本 sandbox 实测）
+- `npm test`：**1796 通过 / 3 pre-existing fail**（3 项均为第九轮前已存在的失败，经 git stash 验证与本轮改动无关：① FIXED_EVENT_TYPES 断言 44 但实际 46（新增事件类型未同步测试计数）；② settings-dom-contract 的 CSS grid 断言不匹配当前实现；③ dependency-rules 的 AgentSurface 导入规则误报。沙箱 EPERM 限制下 node --test runner 子进程 spawn 偶有失败属预存特性）
+- `npm run verify:unified-agent`：**36/36 通过**（含场景 32 断点续跑、场景 33 记忆三件套；真实模型场景跳过——未配置 DEEPSEEK_API_KEY）
+- `npm run verify:app-shell`：**exit 0**（gfm/workGroup/skillsCatalog/plainFolderJournal 全 true，task25 六项全 true）
+- `npm run verify:desktop-shell`：**exit 0**（electronPackageInstalled/packageDirScript/packageInstallerScript 全 true）
+- `npm run verify:app-clickability`：**exit 0**（20/20 按钮 expectationPassed，含阅读器/抽屉记忆标签/时间线历史入口/任务计划面板路径）
+- `node scripts/simulate-user-flow.mjs`：**20/20 通过**（mock 模式，记忆三件套 + cache_hit_rate 断言全通过；真实模式未执行——本环境无 DEEPSEEK_API_KEY，待用户另行配置后执行）
