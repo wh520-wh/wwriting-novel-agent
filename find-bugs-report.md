@@ -523,7 +523,7 @@ grep 核实（`enter_workflow`/`workflow_changed`/`WORKFLOW_POLICIES`/`WORKFLOW_
 - 记忆迁移 .bak rename 对 EEXIST/EPERM 的兜底依赖 pathExists 检查（逻辑正确，未来可显式处理）
 
 ### 门禁结果（本 sandbox 实测）
-- `npm test`：**1796 通过 / 3 pre-existing fail**（3 项均为第九轮前已存在的失败，经 git stash 验证与本轮改动无关：① FIXED_EVENT_TYPES 断言 44 但实际 46（新增事件类型未同步测试计数）；② settings-dom-contract 的 CSS grid 断言不匹配当前实现；③ dependency-rules 的 AgentSurface 导入规则误报。沙箱 EPERM 限制下 node --test runner 子进程 spawn 偶有失败属预存特性）
+- `npm test`：**1838 通过 / 1 fail**（最终修复后实测；唯一失败为 `settings-dom-contract.test.mjs` 的 `.model-settings-body` 280px 两列 grid 断言——经基线 worktree（715ffde）实测确认属第九轮前已存在的预存失败，与本轮无关。第九轮全量门禁首跑时另有两个失败为**本轮引入并已修复**：① FIXED_EVENT_TYPES 计数断言 44→46 未随 Task 15 新增 `chapter_rolled_back`/`memory_file_restored` 同步（`tests/agent/journal-recovery.test.mjs`，已由 `b37d25e` 修正为 46）；② `tests/app-shell/state-notices.test.mjs` 直连 `agent/state.js` 触发 dependency-rules 规则 B（已由 `b37d25e` 登记为内部 seam 单测例外，与 work-items/reasoning-ticker/context-ring 同意图））
 - `npm run verify:unified-agent`：**36/36 通过**（含场景 32 断点续跑、场景 33 记忆三件套；真实模型场景跳过——未配置 DEEPSEEK_API_KEY）
 - `npm run verify:app-shell`：**exit 0**（gfm/workGroup/skillsCatalog/plainFolderJournal 全 true，task25 六项全 true）
 - `npm run verify:desktop-shell`：**exit 0**（electronPackageInstalled/packageDirScript/packageInstallerScript 全 true）
