@@ -5007,3 +5007,24 @@ test("AICSS composer：提交在途 busy 态（外壳+按钮），落定后移�
   assert.equal(send.dataset.busy, undefined, "落定后按钮 busy 移除");
   assert.equal(shell.dataset.busy, undefined, "落定后外壳 busy 移除");
 });
+
+// AICSS composer：提交在途切换项目（reset 递增 viewGeneration）时，陈旧 promise
+// 因守卫跳过清理必然导致 busy 残留——reset() 必须同步清掉在途 busy。
+test("AICSS composer：提交在途切换项目（reset）清掉 busy，不留扫描边框", async () => {
+  const { root, surface } = await makeSurface({
+    apiOverrides: { submit: () => new Promise(() => {}) } // 永不落定，保持 busy
+  });
+  await surface.openProject("D:\\novel");
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  input.value = "写第 1 章";
+  const send = root.querySelector('[data-testid="agent-send"]');
+  const shell = root.querySelector('[data-testid="agent-composer-shell"]');
+  send._fire("click");
+  assert.equal(send.dataset.busy, "true", "在途发送按钮应有 busy 标记");
+  assert.equal(shell.dataset.busy, "true", "在途外壳应有 busy 标记");
+  // 切换项目：openProject 走 reset() 递增 viewGeneration，陈旧 submit promise 命中守卫跳过清理。
+  await surface.openProject("D:\\novel-b");
+  await tick();
+  assert.equal(send.dataset.busy, undefined, "切项目后按钮 busy 必须被清除（否则扫描边框永久旋转）");
+  assert.equal(shell.dataset.busy, undefined, "切项目后外壳 busy 必须被清除");
+});
