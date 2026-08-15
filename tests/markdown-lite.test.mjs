@@ -227,3 +227,31 @@ test("链接内的图片同样不产生 <img>", () => {
   assert.ok(!html.includes("<img"), html);
   assert.ok(html.includes('<a href="https://ok.example" data-external-link>图</a>'), html);
 });
+
+// ===========================================================================
+// AICSS inline-citations：[^n] 脚注式引用协议
+// ===========================================================================
+test("AICSS 引用：正文 [^1] 渲染为行内上标；无 refs 时不生成 footer", () => {
+  const html = renderMarkdown("文本[^1]与[^2]。");
+  assert.ok(html.includes('<sup class="agent-cite-mark" data-cite-n="1">1</sup>'), html);
+  assert.ok(html.includes('data-cite-n="2"'), html);
+  assert.ok(!html.includes("agent-cite-footer"), html);
+});
+
+test("AICSS 引用：代码与围栏内的 [^1] 不渲染为上标", () => {
+  const html = renderMarkdown("`[^1]` 与\n\n```\n[^1]\n```");
+  assert.ok(!html.includes("agent-cite-mark"), html);
+});
+
+test("AICSS 引用：提供 refs 时上标可点、footer 呈现标题/域名；非 http(s) 来源不生成链接", () => {
+  const html = renderMarkdown("文[^1]与[^2]。", {
+    refs: [
+      { n: 1, title: "Attention Is All You Need", host: "arxiv.org", url: "https://arxiv.org/abs/1706.03762" },
+      { n: 2, title: "坏链接", url: "javascript:alert(1)" }
+    ]
+  });
+  assert.ok(html.includes('href="https://arxiv.org/abs/1706.03762" data-external-link'), html);
+  assert.ok(html.includes("agent-cite-footer"), html);
+  assert.ok(html.includes("arxiv.org"), html);
+  assert.ok(!html.includes("javascript:"), html);
+});
