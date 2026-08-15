@@ -248,19 +248,6 @@ test("normalizeSettingsPatch 拒绝非法 timeout_ms/total_deadline_ms（负数/
   );
 });
 
-test("memory_extraction 接受布尔 enabled，丢弃其它键", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-settings-mem-"));
-  const { projectRoot } = await createProject(root, { slug: "mem" });
-
-  await updateProjectSettings(projectRoot, { memory_extraction: { enabled: false } });
-  const project = await loadProject(projectRoot);
-  assert.equal(project.memory_extraction.enabled, false);
-
-  await updateProjectSettings(projectRoot, { memory_extraction: { enabled: true } });
-  const project2 = await loadProject(projectRoot);
-  assert.equal(project2.memory_extraction.enabled, true);
-});
-
 test("fact_check 接受布尔 enabled/hard，丢弃其它键", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-settings-fc-"));
   const { projectRoot } = await createProject(root, { slug: "fc" });
@@ -279,11 +266,7 @@ test("fact_check 接受布尔 enabled/hard，丢弃其它键", async () => {
   assert.equal(project2.fact_check.enabled, true, "previous enabled must persist");
 });
 
-test("memory_extraction/fact_check 拒绝非对象", () => {
-  assert.throws(
-    () => normalizeSettingsPatch({ memory_extraction: "no" }),
-    (error) => error instanceof SettingsValidationError && error.code === "invalid_memory_extraction"
-  );
+test("fact_check 拒绝非对象", () => {
   assert.throws(
     () => normalizeSettingsPatch({ fact_check: [true] }),
     (error) => error instanceof SettingsValidationError && error.code === "invalid_fact_check"
