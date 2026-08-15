@@ -50,7 +50,7 @@ const COMPACTION_ROW_LABELS = {
   completed: "已压缩完成",
   failed: "压缩失败",
   cancelled: "已取消",
-  noop: "无需压缩"
+  noop: "Not enough messages to compact"
 };
 
 // 各状态的动作按钮：failed → 重试+取消；running → 取消；其余无按钮。

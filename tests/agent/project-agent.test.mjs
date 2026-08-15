@@ -2385,6 +2385,99 @@ async function seedTranscriptRecords(h, count, content = "一", sessionId) {
   await store.append(records);
 }
 
+// 用户场景回归（2026-08-15）：预置「少量轮次 + 超大工具输出」transcript——8 轮
+// 各带 30k 字符的已闭合工具输出，总量 ≈240k tokens 撑满 90% 上下文。压缩前这类
+// 会话因为轮数 < 12 全部进入保护窗、summarized 为空 → 旧代码直接 noop（或
+// sourceMaterial 携带保护轮全文导致 source_exceeds_window），上下文永远降不下来。
+// 修复后：大输出本地截断 + 保护轮不再进压缩请求 + checkpoint 消息链摘要化。
+async function seedToolHeavyRecords(h, count, sessionId) {
+  const { createJournalSegmentStore } = await import("../../src/core/agent/journal-segments.mjs");
+  const sessionDir = path.join(h.agentRoot, "sessions", sessionId);
+  const root = path.join(sessionDir, "segments", "transcript");
+  const store = createJournalSegmentStore({
+    root,
+    streamName: "transcript",
+    manifestPath: path.join(sessionDir, "journal-manifest.json")
+  });
+  await store.load();
+  const BIG_OUTPUT = "甲".repeat(30_000); // 每轮 ≈30k+ tokens 的工具输出
+  const records = [];
+  let seq = 1;
+  for (let i = 1; i <= count; i += 1) {
+    records.push({ transcript_seq: seq++, role: "user", content: `第 ${i} 轮输入` });
+    records.push({
+      transcript_seq: seq++,
+      role: "assistant",
+      content: `第 ${i} 轮回复`,
+      tool_calls: [{ id: `tc-${i}`, name: "shell", arguments: { command: `echo ${i}` } }]
+    });
+    records.push({
+      transcript_seq: seq++,
+      role: "tool",
+      tool_call_id: `tc-${i}`,
+      name: "shell",
+      content: JSON.stringify({ ok: true, result: { stdout: BIG_OUTPUT, stderr: "" } })
+    });
+  }
+  await store.append(records);
+}
+
+// U1 用户场景回归：8 轮大工具输出占满上下文 → 必须真正压缩（不得 noop /
+// source_exceeds_window），压缩请求瘦身，checkpoint 近期原文不含大输出全文。
+test("U1：8 轮大工具输出占满上下文 → 压缩成功、请求瘦身、checkpoint 摘要化", async (t) => {
+  const h = await createProjectAgentHarness({
+    gatewayScript: compactionSummaryScript({ count: 20 }),
+    gatewayDelayMs: 0
+  });
+  t.after(() => h.cleanup());
+  const seeded = await h.agent.newSession({ projectRoot: h.projectRoot, title: "播种" });
+  await seedToolHeavyRecords(h, 8, seeded.session_id);
+  await h.agent.open({ projectRoot: h.projectRoot, sessionId: seeded.session_id });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "你好", source: "chat", sessionId: seeded.session_id });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  const compactionEvents = events.filter((event) => event.type.startsWith("context_compaction"));
+  assert.deepEqual(
+    compactionEvents.map((event) => event.type),
+    ["context_compaction_started", "context_compaction_running", "context_compaction_completed"],
+    "8 轮大输出必须完成一次真正压缩（不得 noop，也不得 source_exceeds_window）"
+  );
+  const completed = compactionEvents.at(-1);
+  assert.equal(completed.payload.error_code, null, "压缩必须成功（error_code 为 null）");
+  // 压缩请求瘦身：sourceMaterial 不得携带大工具输出全文
+  const compactionCall = h.gateway.calls.find((call) => call.request.metadata?.stage === "context_compaction");
+  assert.ok(compactionCall, "必须有一次压缩模型调用");
+  const sourceMaterial = String(compactionCall.request.messages[1].content ?? "");
+  assert.ok(
+    !sourceMaterial.includes("甲".repeat(1000)),
+    "sourceMaterial 不得携带大工具输出全文（截断摘要头部最多 500 字符，1000 连字不可能出现）"
+  );
+  assert.ok(
+    sourceMaterial.length < 60_000,
+    `sourceMaterial 必须瘦身（实际 ${sourceMaterial.length} 字符；未瘦身 ≈240k+ 字符）`
+  );
+  // checkpoint 近期原文：tool 消息被摘要占位替换，不含大输出全文；估算显著下降
+  const checkpointFile = path.join(h.agentRoot, "sessions", seeded.session_id, "checkpoints", `context-${completed.payload.checkpoint_id}.json`);
+  assert.equal(await pathExists(checkpointFile), true, "checkpoint 正式文件必须落盘");
+  const checkpoint = JSON.parse(await fs.readFile(checkpointFile, "utf8"));
+  const toolMessages = checkpoint.recent_messages.filter((message) => message?.role === "tool");
+  assert.ok(toolMessages.length === 8, "checkpoint 保留 tool 消息链（摘要化占位）");
+  assert.ok(
+    toolMessages.every((message) => !String(message.content).includes("甲".repeat(1000))),
+    "checkpoint 的 tool 消息不得包含大输出全文"
+  );
+  assert.ok(
+    toolMessages.some((message) => String(message.content).includes("[工具输出已摘要]")),
+    "大工具输出必须被摘要占位替换"
+  );
+  assert.ok(
+    checkpoint.estimated_tokens < 40_000,
+    `压缩后 active context 估算应显著下降（实际 ${checkpoint.estimated_tokens}；压缩前 ≈240k+）`
+  );
+  const session = await readSession(h.agent, h.projectRoot);
+  assert.equal(session.active_context_checkpoint_id, completed.payload.checkpoint_id, "压缩后 active checkpoint 必须建立");
+});
+
 // I1 修复：超大 transcript 首次压缩的 sourceMaterial 必须按窗口预算封顶——压缩
 // 请求自身能装进窗口，绝不被 provider 拒绝（那会让 Run 永久卡在 waiting_user）。
 test("I1：超大 transcript 首压 sourceMaterial 按窗口预算封顶（压缩请求可装进窗口）", async (t) => {
@@ -2676,6 +2769,63 @@ test("submit 只把精确 text === '/compact' 识别为压缩指令；'/compact 
   const queuedNow = eventsOfType(events, "input_queued").at(-1);
   assert.equal(queuedNow.payload.kind, undefined, "/compact now 不是压缩指令");
   assert.equal(h.gateway.calls.length, 1, "/compact now 走普通模型调用");
+});
+
+test("手动 /compact：少于自动保留窗口但有可摘要历史时仍实际压缩", async (t) => {
+  const h = await openHarness(t, { gatewayScript: compactionSummaryScript(), gatewayDelayMs: 0 });
+  await seedTurns(h, 3);
+
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "/compact", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+
+  const events = await readEvents(h.agent, h.projectRoot);
+  const compactionEvents = events.filter((event) => event.type.startsWith("context_compaction"));
+  assert.deepEqual(
+    compactionEvents.map((event) => event.type),
+    ["context_compaction_started", "context_compaction_running", "context_compaction_completed"],
+    "手动命令必须把可摘要的早期轮次提交给压缩，而非错误提示无需压缩"
+  );
+  assert.equal(compactionEvents.at(-1).payload.trigger, "manual");
+  assert.equal(h.gateway.calls.filter((call) => call.request.metadata?.stage === "context_compaction").length, 1);
+});
+
+test("手动 /compact：仅剩最低保留的两轮时正确提示消息不足", async (t) => {
+  const h = await openHarness(t, { gatewayScript: compactionSummaryScript(), gatewayDelayMs: 0 });
+  await seedTurns(h, 2);
+
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "/compact", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+
+  const events = await readEvents(h.agent, h.projectRoot);
+  const compactionEvents = events.filter((event) => event.type.startsWith("context_compaction"));
+  assert.deepEqual(
+    compactionEvents.map((event) => event.type),
+    ["context_compaction_noop"],
+    "没有可摘要轮次时应返回消息不足"
+  );
+  assert.equal(compactionEvents[0].payload.reason, "nothing_to_compact");
+  assert.equal(h.gateway.calls.filter((call) => call.request.metadata?.stage === "context_compaction").length, 0);
+});
+
+test("手动 /compact：刚完成压缩且没有新消息时不重复调用模型", async (t) => {
+  const h = await openHarness(t, { gatewayScript: compactionSummaryScript(), gatewayDelayMs: 0 });
+  await seedTurns(h, 3);
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "/compact", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const callsAfterFirstCompaction = h.gateway.calls.filter((call) => call.request.metadata?.stage === "context_compaction").length;
+
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "/compact", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+
+  const events = await readEvents(h.agent, h.projectRoot);
+  const compactionEvents = events.filter((event) => event.type.startsWith("context_compaction"));
+  assert.equal(compactionEvents.at(-1).type, "context_compaction_noop");
+  assert.equal(compactionEvents.at(-1).payload.reason, "nothing_to_compact");
+  assert.equal(
+    h.gateway.calls.filter((call) => call.request.metadata?.stage === "context_compaction").length,
+    callsAfterFirstCompaction,
+    "刚压缩后没有新消息时不得重复调用压缩模型"
+  );
 });
 
 test("手动 /compact：有可压缩历史时启动手动压缩（trigger manual），成功后 Run 完成", async (t) => {

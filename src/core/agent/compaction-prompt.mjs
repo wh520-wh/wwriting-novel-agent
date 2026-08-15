@@ -205,13 +205,36 @@ export function validateCompactionSummary(summary, sourceState = {}) {
 export const DEFAULT_MAX_PROTECTED_TURNS = 12;
 export const DEFAULT_MIN_PROTECTED_TURNS = 2;
 export const DEFAULT_TOOL_OUTPUT_THRESHOLD = 2000;
+// 本地截断摘要的预算：大工具输出不进压缩请求/checkpoint 原文，只留头尾片段 +
+// 长度与 Journal 引用。字符预算按 CJK 感知估算反推（1 CJK 字符 ≈ 1 token），
+// 摘要整体应远小于 DEFAULT_TOOL_OUTPUT_THRESHOLD。
+export const TOOL_SUMMARY_HEAD_CHARS = 500;
+export const TOOL_SUMMARY_TAIL_CHARS = 200;
+
+// 为大型闭合工具输出生成本地截断摘要（不调用模型、不猜测语义）：
+// 保留头部 500 字符 + 尾部 200 字符，中间用省略行，并注明原文长度与 Journal
+// 引用。模型需要细节时按引用重新读取，符合规格「不要复制大段工具原文」。
+export function buildToolOutputSummary(output, { journalRef = null, headChars = TOOL_SUMMARY_HEAD_CHARS, tailChars = TOOL_SUMMARY_TAIL_CHARS } = {}) {
+  const text = typeof output === "string" ? output : JSON.stringify(output ?? "");
+  if (text.length <= headChars + tailChars + 24) {
+    return text.length > 0 ? text : "(空输出)";
+  }
+  const head = text.slice(0, headChars);
+  const tail = text.slice(-tailChars);
+  const ref = journalRef != null ? `（完整内容见 Journal ${journalRef}）` : "（完整内容见 Journal）";
+  return `[工具输出已本地截断：原文 ${text.length} 字符${ref}]\n${head}\n…（中间省略 ${Math.max(0, text.length - headChars - tailChars)} 字符）…\n${tail}`;
+}
 
 function turnTokens(turn) {
   if (turn == null) return 0;
   if (typeof turn.token_estimate === "number" && Number.isFinite(turn.token_estimate)) {
     return Math.max(0, turn.token_estimate);
   }
-  const text = [turn.user_text, turn.assistant_text, ...(turn.tool_activities ?? []).map((a) => a?.output ?? "")]
+  const text = [
+    turn.user_text,
+    turn.assistant_text,
+    ...(turn.tool_activities ?? []).map((a) => a?.output ?? a?.result_summary ?? "")
+  ]
     .filter((part) => part != null)
     .join("\n");
   return estimateTokens(text);
@@ -222,7 +245,9 @@ function hasOpenToolCalls(turn) {
 }
 
 // 被保护轮内：大型已闭合工具输出只保留 { name, result_summary, journal_ref }；
-// 未闭合链与小型输出完整保留；无 result_summary 时不猜测、保留原文。
+// 未闭合链与小型输出完整保留；无 result_summary 时本地截断生成摘要（不再保留
+// 原文——transcript 重建的轮次永远没有 result_summary，保留原文会让 12 轮保护
+// 窗被大工具输出撑爆，压缩后 active context 依然接近满窗）。
 function summarizeClosedToolOutputs(turn, toolOutputThreshold) {
   if (turn == null || !Array.isArray(turn.tool_activities)) return turn;
   let changed = false;
@@ -232,7 +257,10 @@ function summarizeClosedToolOutputs(turn, toolOutputThreshold) {
       typeof activity.output === "string" ? activity.output : JSON.stringify(activity.output ?? "")
     );
     if (outputTokens <= toolOutputThreshold) return activity;
-    if (typeof activity.result_summary !== "string" || activity.result_summary.length === 0) return activity;
+    const summary =
+      typeof activity.result_summary === "string" && activity.result_summary.length > 0
+        ? activity.result_summary
+        : buildToolOutputSummary(activity.output, { journalRef: activity.journal_ref ?? null });
     changed = true;
     return {
       tool_call_id: activity.tool_call_id ?? null,
@@ -240,7 +268,7 @@ function summarizeClosedToolOutputs(turn, toolOutputThreshold) {
       status: "closed",
       arguments: activity.arguments ?? null,
       output: null,
-      result_summary: activity.result_summary,
+      result_summary: summary,
       journal_ref: activity.journal_ref ?? null,
       summarized_output: true
     };
@@ -250,8 +278,10 @@ function summarizeClosedToolOutputs(turn, toolOutputThreshold) {
 
 // 选择受保护近期轮次。turns 按时间顺序（旧→新）传入；返回：
 //   protected_turns   —— 保留原文的轮次（最新 maxProtectedTurns 轮，含驱逐后下限
-//                        minProtectedTurns 轮；未闭合工具链轮次不可驱逐）
-//   summarized_turns  —— 进入结构化摘要的轮次（更早历史 + 预算超限时被移出的轮次）
+//                        minProtectedTurns 轮；未闭合工具链轮次不可驱逐；大型已闭合
+//                        工具输出一律本地截断摘要，绝不带全文）
+//   summarized_turns  —— 进入结构化摘要的轮次（更早历史 + 预算超限时被移出的轮次，
+//                        同样只带截断后的工具摘要）
 //   stats             —— total/protected/summarized 计数、token 预算与超限标记
 export function selectProtectedRecentTurns({
   turns = [],
@@ -263,31 +293,35 @@ export function selectProtectedRecentTurns({
   const all = Array.isArray(turns) ? turns : [];
   const summarizedTurns = [];
   const protectedCount = Math.min(maxProtectedTurns, all.length);
-  const protectedTurns = all.slice(-protectedCount);
+  // 预算优先：候选轮先做工具输出摘要化（大输出 → 本地截断摘要），再按摘要化后
+  // 的真实占用做预算驱逐。驱逐判定不得使用原文 token——大工具输出若保留原文，
+  // 12 轮内仅 2-3 个大输出轮就会触发驱逐，而摘要化后它们实际只占几十 token。
+  const candidateTurns = all.slice(-protectedCount).map((turn) => summarizeClosedToolOutputs(turn, toolOutputThreshold));
   if (protectedCount < all.length) {
-    summarizedTurns.push(...all.slice(0, all.length - protectedCount));
+    summarizedTurns.push(
+      ...all.slice(0, all.length - protectedCount).map((turn) => summarizeClosedToolOutputs(turn, toolOutputThreshold))
+    );
   }
 
-  // 预算驱逐：12 轮自身超过 targetTokens 时，从最早的被保护轮开始移入摘要；
-  // 未闭合工具链轮次完整保留（不可驱逐）；最新 minProtectedTurns 轮原文绝不删除。
-  let tokens = protectedTurns.reduce((sum, turn) => sum + turnTokens(turn), 0);
-  while (tokens > targetTokens && protectedTurns.length > minProtectedTurns) {
-    const evictable = protectedTurns.slice(0, protectedTurns.length - minProtectedTurns);
+  // 预算驱逐：摘要化后的保护轮超过 targetTokens 时，从最早的被保护轮开始移入
+  // 摘要；未闭合工具链轮次完整保留（不可驱逐）；最新 minProtectedTurns 轮原文
+  // 绝不删除。摘要化后仍超预算（例如最新 2 轮正文本身巨大）时允许 overshoot。
+  let tokens = candidateTurns.reduce((sum, turn) => sum + turnTokens(turn), 0);
+  while (tokens > targetTokens && candidateTurns.length > minProtectedTurns) {
+    const evictable = candidateTurns.slice(0, candidateTurns.length - minProtectedTurns);
     const index = evictable.findIndex((turn) => !hasOpenToolCalls(turn));
     if (index === -1) break; // 剩余被保护轮全部含未闭合链 → 完整保留
-    const [evicted] = protectedTurns.splice(index, 1);
+    const [evicted] = candidateTurns.splice(index, 1);
     summarizedTurns.push(evicted);
     tokens -= turnTokens(evicted);
   }
 
-  const normalized = protectedTurns.map((turn) => summarizeClosedToolOutputs(turn, toolOutputThreshold));
-
   return {
-    protected_turns: normalized,
+    protected_turns: candidateTurns,
     summarized_turns: summarizedTurns,
     stats: {
       total_turns: all.length,
-      protected_count: normalized.length,
+      protected_count: candidateTurns.length,
       summarized_count: summarizedTurns.length,
       protected_tokens: tokens,
       target_tokens: Number.isFinite(targetTokens) ? targetTokens : null,

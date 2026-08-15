@@ -47,8 +47,13 @@ import {
 } from "./context-window.mjs";
 import { createContextCheckpointStore } from "./context-checkpoints.mjs";
 import { createCompactionCoordinator, COMPACTION_BLOCKED_STATES, COMPACTION_NON_TERMINAL_STATES } from "./compaction.mjs";
-import { COMPACTION_PROMPT, selectProtectedRecentTurns } from "./compaction-prompt.mjs";
-import { loadProject, loadChapterIndex } from "../project-store.mjs";
+import {
+  COMPACTION_PROMPT,
+  DEFAULT_MIN_PROTECTED_TURNS,
+  DEFAULT_TOOL_OUTPUT_THRESHOLD,
+  buildToolOutputSummary,
+  selectProtectedRecentTurns
+} from "./compaction-prompt.mjs";import { loadProject, loadChapterIndex } from "../project-store.mjs";
 import { pathExists } from "../fs-utils.mjs";
 import { createMutex } from "../async-utils.mjs";
 import { readProjectMemory } from "../project-memory.mjs";
@@ -756,6 +761,25 @@ export function createAgentRuntime({
     return open.length > 0 ? open : Array.isArray(inherited) ? inherited : [];
   }
 
+  // 防御性截断：旧 checkpoint 的 recent_messages 可能由修复前的代码生成（大工具
+  // 输出全文进消息链）。压缩请求只带截断摘要 + Journal 引用，超大 tool 消息不进
+  // sourceMaterial（否则二次压缩的请求会被旧数据撑爆，重蹈 source_exceeds_window）。
+  function summarizeLargeToolMessages(messages) {
+    if (!Array.isArray(messages)) return messages;
+    let changed = false;
+    const out = messages.map((message) => {
+      if (message?.role !== "tool") return message;
+      const content = String(message.content ?? "");
+      if (estimateTokens(content) <= DEFAULT_TOOL_OUTPUT_THRESHOLD) return message;
+      changed = true;
+      return {
+        ...message,
+        content: buildToolOutputSummary(content, { journalRef: null })
+      };
+    });
+    return changed ? out : messages;
+  }
+
   // Task 8：压缩源材料（coordinator 经 buildInput 注入调用）。读取 active
   // checkpoint（若有）→ 重建 delta 轮次 → selectProtectedRecentTurns → 生成
   // sourceMaterial / recent_messages / sourceState。无 checkpoint 且没有早于
@@ -797,9 +821,25 @@ export function createAgentRuntime({
         ? effectiveModelConfig.effective_context_window
         : 256_000;
     const targetTokens = Math.round(window * 0.25);
-    const { protected_turns, summarized_turns: allSummarizedTurns } = selectProtectedRecentTurns({ turns, targetTokens });
-    // 无可压缩历史：无 checkpoint 且没有早于受保护窗口的轮次 → noop
-    if (oldCheckpoint == null && allSummarizedTurns.length === 0) {
+    let { protected_turns, summarized_turns: allSummarizedTurns } = selectProtectedRecentTurns({ turns, targetTokens });
+    // 手动 /compact 是作者显式请求释放上下文。自动压缩仍保留最近 12 轮，
+    // 但手动命令不能因会话尚未达到 12 轮就永远 no-op：保留最低 2 轮，其余
+    // 已完成轮次交给同一摘要/checkpoint 链路。没有超过最低保留量时继续 noop。
+    if (trigger === "manual" && allSummarizedTurns.length === 0 && protected_turns.length > DEFAULT_MIN_PROTECTED_TURNS) {
+      ({ protected_turns, summarized_turns: allSummarizedTurns } = selectProtectedRecentTurns({
+        turns,
+        targetTokens,
+        maxProtectedTurns: DEFAULT_MIN_PROTECTED_TURNS
+      }));
+    }
+    // 没有任何旧轮次可纳入摘要时，默认 noop（刚完成压缩而没有新消息时，不得为
+    // 同一内容重复调用模型）。例外：被保护轮内存在已截断的大工具输出时仍要压缩——
+    // 上下文 90% 可能是「少数轮次 + 超大工具输出」撑起来的（轮数 ≤12 不触发驱逐，
+    // 但 recent_messages 摘要化能释放大量占用），不压缩会让下一次发送再次触发
+    // 同一 noop 判定，永久无法压缩。
+    const hasSummarizedToolOutput = (turns) =>
+      (turns ?? []).some((turn) => (turn?.tool_activities ?? []).some((activity) => activity?.summarized_output === true));
+    if (allSummarizedTurns.length === 0 && !hasSummarizedToolOutput(protected_turns)) {
       return { noop: true, reason: "nothing_to_compact" };
     }
     // I1：预算封顶。summarized_history 是最早的轮次、逐字进入压缩请求——100k+ 轮次
@@ -826,31 +866,67 @@ export function createAgentRuntime({
       }
       summarized_turns = kept.reverse();
     }
+    // 压缩请求瘦身：模型只需要总结「早期历史」（summarized_history + 旧摘要），
+    // 不需要被保护轮全文——它们压缩后原样保留在 checkpoint.recent_messages 中，
+    // 模型下一轮自然可见。protected_recent_turns 只带轻量线索（轮次序号/用户输入
+    // 开头/工具活动名），避免 12 轮大正文 + 大工具输出把压缩请求本身撑爆窗口
+    // （source_exceeds_window → 无法压缩）。
+    const PROTECTED_PREVIEW_CHARS = 200;
     const sourceMaterial = JSON.stringify(
       {
         old_summary: oldCheckpoint?.summary ?? null,
-        old_recent_messages: oldCheckpoint?.recent_messages ?? [],
+        old_recent_messages: summarizeLargeToolMessages(oldCheckpoint?.recent_messages ?? []),
         summarized_history: summarized_turns.map((turn) => ({
           user: turn.user_text,
           assistant: turn.assistant_text,
           tool_activities: turn.tool_activities ?? []
         })),
         protected_recent_turns: protected_turns.map((turn) => ({
-          user: turn.user_text,
-          assistant: turn.assistant_text,
-          tool_activities: turn.tool_activities ?? []
+          seq_start: Number.isInteger(turn.transcript_seq_start) ? turn.transcript_seq_start : null,
+          seq_end: Number.isInteger(turn.transcript_seq_end) ? turn.transcript_seq_end : null,
+          user: String(turn.user_text ?? "").slice(0, PROTECTED_PREVIEW_CHARS),
+          assistant: String(turn.assistant_text ?? "").slice(0, PROTECTED_PREVIEW_CHARS),
+          tool_activities: (turn.tool_activities ?? []).map((activity) => ({
+            name: activity?.name ?? null,
+            status: activity?.status ?? null,
+            summarized_output: activity?.summarized_output ?? false,
+            result_summary: activity?.summarized_output === true ? (activity?.result_summary ?? null) : null
+          }))
         }))
       },
       null,
       2
     );
+    // 受保护轮内被摘要化（大输出 → 截断摘要）的活动索引：checkpoint 的
+    // recent_messages 必须用摘要化后的消息链重建，否则压缩后 active context 仍
+    // 保留大工具输出全文，「压缩完还是 90%」的根因。
+    const summarizedByCallId = new Map();
+    for (const turn of protected_turns) {
+      for (const activity of turn?.tool_activities ?? []) {
+        if (activity?.summarized_output === true && activity.tool_call_id != null) {
+          summarizedByCallId.set(activity.tool_call_id, activity);
+        }
+      }
+    }
     // checkpoint 近期原文 = 受保护轮次范围内的原始消息链（复用线上消息转换，
     // 保证 assistant tool_calls 以 { id, type, function } 形状进入后续请求）。
+    // 被摘要化的大输出替换为 { name, result_summary, journal_ref } 占位文本。
     const minProtectedSeq = Math.min(
       ...protected_turns.map((turn) => (Number.isInteger(turn.transcript_seq_start) ? turn.transcript_seq_start : Infinity))
     );
     const recentMessages = transcriptToMessages(
-      delta.filter((record) => record.transcript_seq == null || record.transcript_seq >= minProtectedSeq)
+      delta
+        .filter((record) => record.transcript_seq == null || record.transcript_seq >= minProtectedSeq)
+        .map((record) => {
+          if (record?.role !== "tool") return record;
+          const activity = summarizedByCallId.get(record.tool_call_id ?? null);
+          if (activity == null) return record;
+          const ref = activity.journal_ref != null ? `（完整内容见 Journal ${activity.journal_ref}）` : "";
+          return {
+            ...record,
+            content: `[工具输出已摘要] ${activity.name ?? "tool"}：${activity.result_summary ?? ""}${ref}`
+          };
+        })
     );
     const openToolCalls = collectOpenToolCalls(protected_turns, oldCheckpoint?.open_tool_calls ?? []);
     const sourceState = {
