@@ -64,8 +64,33 @@ renderer.link = function ({ href, title, tokens }) {
   return safeHref ? `<a href="${escapeAttr(safeHref)}" data-external-link>${label}</a>` : label;
 };
 renderer.image = ({ text }) => escapeHtml(text);
+// ---------------------------------------------------------------------------
+// AICSS inline-citations：正文 [^1] 脚注式引用 → 行内上标（数据后接搜索工具）。
+// 以 marked 内联扩展注册：集成进 inline lexer 走查，代码围栏/行内代码由核心
+// token 先消费，代码里的 [^1] 永远不会变成上标。
+// ---------------------------------------------------------------------------
+const citeRefExtension = {
+  name: "citeRef",
+  level: "inline",
+  start(src) {
+    return src.indexOf("[^");
+  },
+  tokenizer(src) {
+    const match = /^\[\^(\d+)\]/u.exec(src);
+    if (!match) return undefined;
+    return { type: "citeRef", raw: match[0], text: match[1] };
+  },
+  renderer(token) {
+    return `<sup class="agent-cite-mark" data-cite-n="${token.text}">${token.text}</sup>`;
+  }
+};
+marked.use({ extensions: [citeRefExtension] });
 // 保留旧渲染器的 pre.md-fence 结构（CSS 只认这个 class，fence 内容已转义）。
 renderer.code = ({ text }) => `<pre class="md-fence"><code>${escapeHtml(text)}</code></pre>`;
+// marked 18：`marked.parse` 里传 `extensions` 键会整体替换 `marked.use` 注册的扩展
+// （连带内联 citeRef 一起清掉，[^1] 退化为纯文本），因此稿围栏的 block 扩展也必须
+// 在 global `use` 里与 citeRef 同处注册，parse 不再传 `extensions`。
+marked.use({ extensions: [{ name: "manuscriptFence", level: "block", start(src) { return src.indexOf("```"); }, tokenizer(src) { return manuscriptFenceToken(src); }, renderer: manuscriptFenceRender }] });
 
 // ---------------------------------------------------------------------------
 // 稿/prose fenced block（marked block extension，单解析器路径）
@@ -113,19 +138,38 @@ function manuscriptFenceRender(token) {
   return `<div class="manuscript-block peek">${paras}<span class="manuscript-words">${countProseWords(token.body)} 字</span></div>`;
 }
 
-export function renderMarkdown(source) {
+export function renderMarkdown(source, { refs = null } = {}) {
   // trimEnd：marked 输出末尾的换行会污染 textContent/innerHTML 的等值断言
   // （旧渲染器无尾随换行），真实 DOM 中尾随空白也不可见。
   const html = marked.parse(String(source ?? ""), {
     gfm: true,
     breaks: true,
-    renderer,
-    extensions: {
-      block: [manuscriptFenceToken],
-      renderers: { manuscriptFence: manuscriptFenceRender }
-    }
+    renderer
   });
-  // marked 直接输出 <table>，因此由渲染边界补上滚动层。表格本身保持语义结构，
-  // 由 CSS 固定为正文列宽，窄视口只滚动该区域而不压缩单元格。
-  return html.replace(/<table>([\s\S]*?)<\/table>/gu, '<div class="agent-markdown-table-scroll"><table>$1</table></div>').trimEnd();
+  const wrapped = html.replace(/<table>([\s\S]*?)<\/table>/gu, '<div class="agent-markdown-table-scroll"><table>$1</table></div>');
+  const list = Array.isArray(refs) ? refs : [];
+  if (list.length === 0) return wrapped.trimEnd();
+  // AICSS：有来源数据时——上标升级为可点链接（沿用安全规则与 data-external-link
+  // 委托），消息末尾追加紧凑来源条；非法来源（无 http/https 或无编号）跳过。
+  const withLinks = list.reduce((acc, ref) => {
+    const n = String(ref?.n ?? "");
+    const safe = safeHttpUrl(ref?.url);
+    if (!safe || n === "") return acc;
+    const label = escapeHtml(String(ref?.title ?? ref?.host ?? ""));
+    const needle = `<sup class="agent-cite-mark" data-cite-n="${n}">${n}</sup>`;
+    const linked = `<sup class="agent-cite-mark" data-cite-n="${n}"><a href="${escapeAttr(safe)}" data-external-link title="${escapeAttr(label)}">${n}</a></sup>`;
+    return acc.split(needle).join(linked);
+  }, wrapped);
+  const rows = list
+    .map((ref) => {
+      const n = String(ref?.n ?? "");
+      const safe = safeHttpUrl(ref?.url);
+      if (!safe || n === "") return "";
+      const host = /^https?:\/\/([^/?#]+)/u.exec(String(ref?.url ?? ""))?.[1] ?? "";
+      return `<a class="agent-cite-ref" href="${escapeAttr(safe)}" data-external-link><span class="agent-cite-n">${n}</span><span class="agent-cite-ref-label">${escapeHtml(String(ref?.title ?? ""))}</span><span class="agent-cite-sep">·</span><span class="agent-cite-ref-host">${escapeHtml(host)}</span></a>`;
+    })
+    .filter(Boolean)
+    .join("");
+  const footer = rows === "" ? "" : `<div class="agent-cite-footer">${rows}</div>`;
+  return `${withLinks}${footer}`.trimEnd();
 }
