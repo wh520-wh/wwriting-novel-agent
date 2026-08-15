@@ -913,16 +913,21 @@ function setCreateStatus(text, kind) {
 }
 
 // 阅读器字号四档（行高随档位），持久化 localStorage。
+// Round10：默认档 = 17px/1.95（正文神圣基线），全档整数像素（去掉 15.5px 非整档）。
 const READER_FONT_STEPS = [
   { size: 14, lh: 1.9 },
-  { size: 15.5, lh: 1.95 },
-  { size: 17, lh: 2.0 },
-  { size: 19, lh: 2.0 }
+  { size: 17, lh: 1.95 },
+  { size: 19, lh: 2.0 },
+  { size: 21, lh: 2.0 }
 ];
 let readerFontIndex = 1;
 try {
-  const stored = Number(window.localStorage.getItem("ww:reader:fontsize"));
-  if (Number.isInteger(stored) && stored >= 0 && stored < READER_FONT_STEPS.length) readerFontIndex = stored;
+  const stored = window.localStorage.getItem("ww:reader:fontsize");
+  // 首次使用无存储值（null）：保持默认档，不能 Number(null)→0 落到最小档。
+  if (stored != null) {
+    const value = Number(stored);
+    if (Number.isInteger(value) && value >= 0 && value < READER_FONT_STEPS.length) readerFontIndex = value;
+  }
 } catch { /* localStorage 不可用则用默认档 */ }
 
 function applyReaderFont() {
