@@ -75,6 +75,7 @@
 | 20 | `7858aa7` | feat: sim:user-flow 双模式与记忆三件套断言（第九轮） |
 | consolidated fixes | `f250ad0` | chore: 第九轮 review 遗留小修（断点断言/HTTP 覆盖/死代码/测试补全） |
 | regression fix | `58fa015` | fix: verify-unified-agent mock DOM 补 querySelectorAll，恢复 36 场景（第九轮回归） |
+| gate sync | `b37d25e` | test: 同步第九轮门禁回归（state-notices seam 例外登记、事件类型计数 46） |
 
 ---
 
@@ -82,7 +83,7 @@
 
 | 门禁 | 结果 | 说明 |
 |---|---|---|
-| `npm test` | **1796 通过 / 3 pre-existing fail** | 3 项均为第九轮前已存在（经 git stash 验证）：① FIXED_EVENT_TYPES 断言 44 实际 46；② settings-dom-contract CSS grid 断言不匹配；③ dependency-rules AgentSurface 导入规则误报 |
+| `npm test` | **1838 通过 / 1 fail** | 唯一失败为 `settings-dom-contract.test.mjs`（`.model-settings-body` 280px grid 断言）——基线 worktree（715ffde）实测确认属第九轮前已存在的预存失败。首跑时的另两个失败为本轮引入并已修复（`b37d25e`）：FIXED_EVENT_TYPES 计数 44→46 同步；state-notices seam 例外登记 |
 | `npm run verify:unified-agent` | **36/36 通过** | 含场景 32 断点续跑、场景 33 记忆三件套；真实模型场景跳过（未配置 DEEPSEEK_API_KEY） |
 | `npm run verify:app-shell` | **exit 0** | gfm/workGroup/skillsCatalog/plainFolderJournal 全 true，task25 六项全 true |
 | `npm run verify:desktop-shell` | **exit 0** | electronPackageInstalled/packageDirScript/packageInstallerScript 全 true |
