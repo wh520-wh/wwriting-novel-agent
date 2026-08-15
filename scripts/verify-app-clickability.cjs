@@ -382,7 +382,17 @@ async function main() {
   // ⑨ 停止：运行中（gateway hold）点击停止 → Run 取消
   gateway.setSteps([{ type: "hold" }]);
   await sendComposerText(win, "开始一个长时间任务，稍后我会停止你");
-  await waitUntil(win, "Boolean(document.querySelector('[data-testid=\"agent-stop\"]')) && !document.querySelector('[data-testid=\"agent-stop\"]').disabled", "stop button must appear while run is active", 10000);
+  // 同步点（消除 SSE 500ms 轮询竞态）：点击停止前必须确认视图已稳定进入新 Run——
+  // 上一 Run 的终态事件可能尚未到达渲染端，旧停止按钮仍在 DOM 且闭包旧 run id。
+  // 判据：停止按钮元素在完整 SSE 轮询周期（≥600ms）内保持同一引用且可用；每次
+  // run 状态渲染都会重建按钮，旧 Run 剩余事件（input_completed/run_completed）
+  // 到达会重建/移除它 → 计时归零重新等，直到视图稳定在新 Run 状态。
+  await win.webContents.executeJavaScript(`window.__wwStopSync = { el: document.querySelector('[data-testid="agent-stop"]') ?? null, since: performance.now() }; true`);
+  await waitUntil(win, `(() => {
+    const el = document.querySelector('[data-testid="agent-stop"]') ?? null;
+    if (el !== window.__wwStopSync.el) { window.__wwStopSync = { el, since: performance.now() }; return false; }
+    return performance.now() - window.__wwStopSync.since >= 600 && Boolean(el) && !el.disabled;
+  })()`, "stop button must stay stable across a full SSE poll cycle for the new run", 15000);
   clicks.push(await clickAndRead(win, '[data-testid="agent-stop"]', {
     label: "agent-stop",
     settleMs: 2500,

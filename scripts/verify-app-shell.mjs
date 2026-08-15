@@ -139,9 +139,11 @@ try {
   // drawer-panels：直接调用导出 route，无运行/审查面板
   assert.match(drawerPanelsJs, /\/api\/projects\/export-book/u, "drawer-panels 应直接调用导出 route");
   assert.doesNotMatch(drawerPanelsJs, /sendChatMessageWithUX|renderRunPanel|renderReviewerPanel/u, "drawer-panels 不得引用旧聊天导出与运行/审查面板");
-  // agent.css 布局基线（Task 12：1040px 主内容轴）
-  assert.match(agentCss, /--content-column:\s*1040px/u, "agent.css 应保留 1040px 主内容轴");
-  assert.match(agentCss, /max-width:\s*1040px/u, "agent.css 应保留 1040px 字面量契约");
+  // agent.css 布局基线（Round10：1040px 主内容轴 token 所有权在 styles.css，agent.css 只引用）
+  assert.match(stylesCss, /--content-column:\s*1040px/u, "styles.css 应定义 1040px 主内容轴变量");
+  assert.match(agentCss, /var\(--content-column\)/u, "agent.css 应引用全局内容列 token");
+  assert.doesNotMatch(agentCss, /--content-column:\s*1040px/u, "agent.css 不得重声明内容列变量");
+  assert.doesNotMatch(agentCss, /max-width:\s*1040px/u, "agent.css 不得保留 1040px 字面量（token 所有权在 styles.css）");
   assert.match(
     agentCss,
     /\.agent-composer-menu--model \.agent-composer-popover\s*\{[^}]*width:\s*min\(320px,\s*calc\(100vw - 32px\)\)/u,
@@ -344,7 +346,8 @@ try {
   {
     const doc = {
       createElement: (tag) => new MockElement(tag),
-      createElementNS: (_namespace, tag) => new MockElement(tag)
+      createElementNS: (_namespace, tag) => new MockElement(tag),
+      createTextNode: (text) => ({ nodeType: 3, textContent: String(text), children: [] })
     };
     const root = new MockElement("div");
     const { createAgentSurface } = await import("../src/app-shell/agent/index.js");
@@ -437,7 +440,8 @@ try {
     const mspElements = [];
     const mspDoc = {
       createElement(tag) { const node = new MockElement(tag); mspElements.push(node); return node; },
-      createTextNode(text) { return { nodeType: 3, textContent: String(text) }; },
+      createElementNS(_ns, tag) { return new MockElement(tag); },
+      createTextNode(text) { return { nodeType: 3, textContent: String(text), children: [] }; },
       querySelector(selector) {
         // 返回最后匹配（≈ 当前挂载；与 model-settings-page.test.mjs 同款近似）
         let hit = null;
@@ -636,7 +640,8 @@ try {
     const servedCostPanel = await fetchText(`http://127.0.0.1:${port}/components/cost-panel.js`);
     assert.doesNotMatch(servedDrawer, /formatMoney/u, "drawer-panels 不得引用 formatMoney（$ 格式已删除）");
     assert.match(servedDrawer, /formatYuan/u, "drawer-panels 应使用 formatYuan");
-    assert.equal((servedDrawer.match(/formatYuan\(/gu) ?? []).length, 3, "drawer-panels 三处成本展示（章节 meta / 估算成本 / 成本 pill）应全走 formatYuan");
+    assert.equal((servedDrawer.match(/formatYuan\(/gu) ?? []).length, 2, "drawer-panels 两处成本展示（章节 meta / 估算成本）应全走 formatYuan；主金额 pill 已归 cost-panel 总览");
+    assert.match(servedCostPanel, /formatYuan\(/u, "cost-panel 应负责主金额（总览/缓存节省）的 formatYuan 渲染");
     assert.match(servedUtils, /export function formatYuan\(/u, "utils.js 应导出 formatYuan 单一出口");
     assert.doesNotMatch(servedUtils, /formatMoney/u, "utils.js 不得保留 formatMoney");
     assert.doesNotMatch(servedCostPanel, /formatMoney/u, "cost-panel 不得引用 formatMoney");
@@ -646,7 +651,7 @@ try {
     globalThis.document = {
       createElement: (tag) => new MockElement(tag),
       createElementNS: (_namespace, tag) => new MockElement(tag),
-      createTextNode: (text) => ({ nodeType: 3, textContent: String(text) })
+      createTextNode: (text) => ({ nodeType: 3, textContent: String(text), children: [] })
     };
     globalThis.window = globalThis.window ?? { wwritingDesktop: undefined };
     try {
