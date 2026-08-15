@@ -444,6 +444,10 @@ test("圆角不超过 12px：radius token 全部 ≤12px，无 13–98px 圆角"
 test("Codex 基线：Assistant 正文 regular；对话画布非纯白冷调，卡片白底允许", () => {
   const markdown = extractDecls(extractBlock(agentCssSource, ".agent-markdown"));
   assert.equal(markdown["font-weight"], "var(--weight-regular)", "Assistant 正文应为 regular");
+  // Round10：正文引用全局整数字阶 token，行高 ≥2.0（正文神圣，spec §5.5）
+  assert.equal(markdown["font-size"], "var(--font-md)", "正文字号应引用全局 token");
+  assert.equal(resolveVar("--font-md"), "15px", "正文 15px 整数档");
+  assert.ok(parseFloat(markdown["line-height"]) >= 2, "正文行高不得低于 2.0");
 
   // 对话画布（--agent-canvas → --bg）不得纯白且为冷调/中性（蓝 ≥ 红，排除泛黄纸色）；
   // 卡片白底（--surface=#ffffff）允许；rail 仍不得纯白。

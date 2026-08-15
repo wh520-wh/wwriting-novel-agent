@@ -101,7 +101,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   emptyMark.className = "agent-empty-mark";
   emptyMark.setAttribute("aria-hidden", "true");
   const viewIcon = (name, size, className) => icon(name, size, className, doc);
-  emptyMark.append(viewIcon("book", 27));
+  emptyMark.append(viewIcon("book", 36)); // Round10：64px 同源品牌标记（容器见 CSS）
   const emptyTitle = doc.createElement("h1");
   emptyTitle.id = "agent-empty-title";
   emptyTitle.className = "agent-empty-title";
@@ -719,8 +719,38 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   }
 
   // ---- 当前 Run：停止/重试按钮 + Plan + 决策/错误 --------------------------------
+  // Round10：停止按钮位置——运行中紧贴当前 Run 工作组的状态行（同一 720px 行内，
+  // spec §7.3「停止必须紧贴状态行并清楚可见」）；工作组尚未出现（如无事件快照）
+  // 时退回 run header 兜底。ponytail: summary 内嵌交互控件是 a11y 权衡（HTML 建议
+  // 性约束「summary 不应含交互内容」），以 stopPropagation 防误触 details 折叠；
+  // 未来若规范收紧可改回独立行。
+  function placeRunControls(state) {
+    // 停止按钮可能在 run header 或某工作组 summary 中（移动后 querySelector 需双向查找）。
+    let stop = runHeader.querySelector('[data-testid="agent-stop"]');
+    if (!stop) {
+      for (const record of workGroups.values()) {
+        stop = record.summary.querySelector('[data-testid="agent-stop"]');
+        if (stop) break;
+      }
+    }
+    if (!stop) return;
+    const run = getActiveRun(state);
+    const record = run ? workGroups.get(run.id) : null;
+    const target = record && isRunActive(run) ? record.summary : runHeader;
+    if (stop.parentNode !== target) {
+      // 显式 remove 再 append：真实 DOM 中 append 即移动，测试 mock 不搬移旧父节点。
+      stop.remove();
+      target.append(stop);
+    }
+  }
+
   function renderRunHeader(state) {
     runHeader.replaceChildren();
+    // Round10：停止按钮可能位于工作组 summary（紧贴状态行）——重渲前先摘除旧按钮。
+    for (const record of workGroups.values()) {
+      const stale = record.summary.querySelector('[data-testid="agent-stop"]');
+      if (stale) stale.remove();
+    }
     const run = getActiveRun(state);
     if (!run) return;
     if (isRunActive(run)) {
@@ -728,9 +758,13 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       stop.type = "button";
       stop.className = "agent-stop-btn";
       stop.dataset.testid = "agent-stop";
-      stop.textContent = "停止";
+      // Round10：停止 = 「图标 + 文字」紧凑次按钮；可访问名明确为「停止当前任务」。
+      stop.setAttribute("aria-label", "停止当前任务");
+      stop.append(viewIcon("stop", 13), doc.createTextNode("停止"));
       stop.disabled = stopPending;
-      stop.addEventListener("click", () => {
+      stop.addEventListener("click", (event) => {
+        // summary 内放置时防止误触 details 折叠（事件对象可缺省：测试桩不透传）。
+        event?.stopPropagation?.();
         if (stop.disabled) return;
         stop.disabled = true;
         stopPending = true;
@@ -745,6 +779,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
         }
       });
       runHeader.append(stop);
+      placeRunControls(state);
     } else if (run.status === "failed" || run.status === "interrupted") {
       const retry = doc.createElement("button");
       retry.type = "button";
@@ -849,6 +884,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     const record = {
       groupId: group.id,
       details,
+      summary,
       status,
       duration,
       itemsEl,
@@ -871,6 +907,9 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     };
     summary.addEventListener("click", markUserToggled);
     summary.addEventListener("keydown", (event) => {
+      // 只认 summary 自身的键盘激活：停止按钮（summary 内）的 Enter/Space 冒泡
+      // 到这里不得标记 userToggled，否则键盘停止会阻止终态自动折叠。
+      if (event.target !== summary) return;
       if (event.key === "Enter" || event.key === " ") markUserToggled();
     });
     workGroups.set(group.id, record);
@@ -1385,6 +1424,12 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     }
     for (const [id, record] of workGroups) {
       if (!seen.has(id)) {
+        // Round10：工作组消失时把其中的停止按钮移回 run header（防丢失逃生入口）。
+        const orphan = record.summary.querySelector('[data-testid="agent-stop"]');
+        if (orphan && orphan.parentNode === record.summary) {
+          orphan.remove();
+          runHeader.append(orphan);
+        }
         clearWorkGroupTimers(record);
         record.details.remove();
         if (record.groupKey != null) messageNodes.delete(record.groupKey);
@@ -1392,6 +1437,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
         workGroups.delete(id);
       }
     }
+    placeRunControls(state); // 工作组出现/消失后重新放置停止按钮
     if (changed) afterRender();
   }
 
