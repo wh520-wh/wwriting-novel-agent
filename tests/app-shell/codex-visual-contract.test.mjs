@@ -21,10 +21,13 @@ export function cssBlock(css, selector) {
   return css.slice(start, end + 1);
 }
 
-test("基线保留：agent.css 无 raw hex、内容列 1040px", () => {
+test("基线保留：agent.css 无 raw hex、内容列/阅读列走全局 token", () => {
   const css = read("src/app-shell/agent/agent.css");
   assert.ok(!/#[0-9a-fA-F]{3,8}\b/u.test(css.replace(/var\([^)]*\)/gu, "")));
   assert.match(css, /var\(--content-column\)/u);
+  // Round10：全局轴 token 由 styles.css 独占声明，选择器只引用 token 名称
+  assert.match(read("src/app-shell/styles.css"), /--content-column:\s*1040px/u);
+  assert.match(read("src/app-shell/styles.css"), /--reading-column:\s*720px/u);
 });
 
 test("Codex 基线：运行区无横杠、工作项无左侧竖线", () => {

@@ -5,7 +5,7 @@
 //      完整存在；agent component selector 不含 raw hex；dark theme 只覆盖 primitive，
 //      不覆盖 component alias。
 //   2. .agent-markdown h1/h2 使用 heading primary（不是 accent/status）；H1–H6 的
-//      字号、行高、字重与 §2.6 完全一致。
+//      字号、行高、字重与 round10 spec §5.5 一致，字号引用全局整数字阶 token。
 //   3. .agent-plan__title 与唯一 [data-status="in_progress"] 为 semibold；
 //      pending/completed 为 regular；completed 步骤删除线。
 //   4. success/danger 颜色只作用于 icon/短状态 selector，不命中 .agent-plan-item、
@@ -212,11 +212,13 @@ test("agent component selector 不含 raw hex；dark theme 不覆盖 component a
 // ===========================================================================
 // 2) .agent-markdown 标题层级：primary 非 accent；H1–H6 与 §2.6 完全一致
 // ===========================================================================
-test(".agent-markdown h1/h2 使用 heading primary；H1–H6 字号/行高/字重与 §2.6 一致", () => {
+test(".agent-markdown h1/h2 使用 heading primary；H1–H6 字号/行高/字重与 spec §5.5 一致", () => {
   const h1 = extractDecls(extractBlock(agentCssSource, ".agent-markdown h1"));
   const h2 = extractDecls(extractBlock(agentCssSource, ".agent-markdown h2"));
   const h3 = extractDecls(extractBlock(agentCssSource, ".agent-markdown h3"));
-  const h456 = extractDecls(extractBlock(agentCssSource, ".agent-markdown :is(h4, h5, h6)"));
+  const h4 = extractDecls(extractBlock(agentCssSource, ".agent-markdown h4"));
+  const h5 = extractDecls(extractBlock(agentCssSource, ".agent-markdown h5"));
+  const h6 = extractDecls(extractBlock(agentCssSource, ".agent-markdown h6"));
 
   assert.equal(h1.color, "var(--agent-heading-fg)");
   assert.equal(h2.color, "var(--agent-heading-fg)");
@@ -224,17 +226,23 @@ test(".agent-markdown h1/h2 使用 heading primary；H1–H6 字号/行高/字�
   assert.notEqual(resolveVar("--agent-heading-fg"), "#3f6b4f", "标题不得染 accent");
   assert.equal(resolveVar("--agent-subheading-fg"), "#3f4742", "H3–H6 应为 secondary");
 
+  // Round10：H1–H6 引用全局整数字阶 token（22/18/16/15/14/13px），
+  // 行高/字重与 round10 spec §5.5 一致；不写死 20/17/15/14px 字面量。
   const expect = [
-    [h1, "20px", "1.35", "700"],
-    [h2, "17px", "1.4", "700"],
-    [h3, "15px", "1.45", "650"],
-    [h456, "14px", "1.5", "650"],
+    [h1, "--font-2xl", "22px", "1.35", "700"],
+    [h2, "--font-xl", "18px", "1.4", "700"],
+    [h3, "--font-lg", "16px", "1.45", "650"],
+    [h4, "--font-md", "15px", "1.5", "650"],
+    [h5, "--font-base", "14px", "1.55", "650"],
+    [h6, "--font-sm", "13px", "1.55", "650"],
   ];
-  for (const [decls, size, lh, weight] of expect) {
-    assert.equal(decls["font-size"], size, "字号应与 §2.6 一致");
-    assert.equal(decls["line-height"], lh, "行高应与 §2.6 一致");
-    const weightToken = decls["font-weight"].match(/^var\(--([a-z0-9-]+)\)$/u)?.[1];
-    assert.equal(resolveVar(`--${weightToken}`), weight, "字重应与 §2.6 一致");
+  for (const [decls, token, size, lh, weight] of expect) {
+    const sizeToken = decls["font-size"].match(/^var\((--[a-z0-9-]+)\)$/u)?.[1];
+    assert.equal(sizeToken, token, "字号应引用全局整数字阶 token");
+    assert.equal(resolveVar(sizeToken), size, "字号 token 值应为整数档");
+    assert.equal(decls["line-height"], lh, "行高应与 spec §5.5 一致");
+    const weightToken = decls["font-weight"].match(/^var\((--[a-z0-9-]+)\)$/u)?.[1];
+    assert.equal(resolveVar(weightToken), weight, "字重应与 spec §5.5 一致");
   }
 });
 
