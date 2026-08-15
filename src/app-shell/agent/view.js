@@ -1919,6 +1919,9 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       request = Promise.reject(error);
     }
     if (request?.localOnly === true) {
+      // AICSS composer：localOnly 即时落定（/settings、/model 等导航命令）也要清 busy
+      delete send.dataset.busy;
+      delete composerShell.dataset.busy;
       input.value = "";
       closeSlashMenu();
       return;
