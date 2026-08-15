@@ -1173,6 +1173,8 @@ function showToast(message, type = "info") {
   if (!message || !refs.toastStack) return;
   const toast = document.createElement("div");
   toast.className = `toast ${type}`;
+  // Round10：error 是 alert（打断性），其余 status（stack 本身 aria-live=polite）。
+  toast.setAttribute("role", type === "error" ? "alert" : "status");
   toast.append(icon(type === "error" ? "help" : "check", 15));
   toast.append(document.createTextNode(message));
   refs.toastStack.append(toast);

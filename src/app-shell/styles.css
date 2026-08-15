@@ -196,10 +196,6 @@
 }
 
 
-/* 深色模式下硬编码亮色背景的收尾 */
-:root[data-theme="dark"] .create-card,
-:root[data-theme="dark"] .shortcuts-card { background: linear-gradient(180deg, var(--surface), var(--surface-2)); }
-
 :root[data-theme="dark"] .pill.blocked { border-color: var(--red-line); background: var(--red-soft); color: var(--red); }
 
 :root[data-theme="dark"] ::selection { background: rgba(143, 176, 143, 0.3); }
@@ -1619,12 +1615,11 @@ input.spd-input[type="number"] { max-width: 160px; }
 
 .create-card {
   width: min(560px, 100%); border: 1px solid var(--line); border-radius: var(--r-xl);
-  background: linear-gradient(180deg, var(--surface), var(--surface-2)); padding: 30px 32px 28px;
+  /* Round10：实色 surface，去掉背景渐变与顶部装饰渐变（保留细边界 + 单层浮层阴影） */
+  background: var(--surface); padding: 30px 32px 28px;
   box-shadow: var(--shadow); display: grid; gap: 13px; position: relative; overflow: hidden;
   opacity: 0; transition: opacity .2s;
 }
-
-.create-card::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 3px; background: linear-gradient(90deg, var(--accent), var(--green)); opacity: .85; }
 
 .create-card .eyebrow { font-size: 11px; font-weight: 750; letter-spacing: 0; text-transform: uppercase; color: var(--accent); }
 
@@ -1640,6 +1635,10 @@ input.spd-input[type="number"] { max-width: 160px; }
 .create-card .dfield textarea { resize: vertical; line-height: 1.5; min-height: 64px; }
 
 .create-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+@media (max-width: 480px) {
+  .create-grid { grid-template-columns: 1fr; }
+}
 
 /* Round10：新建小说路径行——原内联 flex 布局移入 class，按钮不挤压路径输入 */
 .path-row { display: flex; gap: 8px; }
@@ -1677,9 +1676,9 @@ input.spd-input[type="number"] { max-width: 160px; }
 }
 
 
-/* toast */
+/* toast —— Round10：移到顶栏下方右上角，不再遮挡 Composer */
 .toast-stack {
-  position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+  position: fixed; top: 56px; right: 20px; left: auto; bottom: auto; transform: none;
   display: grid; gap: 8px; z-index: 120;
   pointer-events: none;
 }
@@ -1690,11 +1689,18 @@ input.spd-input[type="number"] { max-width: 160px; }
   display: flex; align-items: center; gap: 8px; animation: rise .24s ease both;
   transition: opacity .22s ease, transform .22s ease;
   pointer-events: none;
+  width: max-content;
+  max-width: min(360px, calc(100vw - 32px));
 }
 
 .toast.leaving { opacity: 0; transform: translateY(7px); }
 
 .toast svg { color: var(--green); }
+
+@media (max-width: 768px) {
+  .toast-stack { left: 16px; right: 16px; top: 52px; }
+  .toast { width: auto; }
+}
 /* Round10：三档壳层响应——宽屏 drawer 非模态推开、窄屏 rail/drawer 覆盖。
    >=1280：rail 常驻 + drawer 非模态侧栏；<=1279：rail/drawer 覆盖；
    <=480：drawer 全宽 + topbar 更多菜单 popover。 */
@@ -2248,29 +2254,11 @@ input.spd-input[type="number"] { max-width: 160px; }
   .drawer,
   .settings-modal,
   .create-card,
-  .shortcuts-card {
+  .shortcuts-card,
+  .plan-dropdown,
+  .version-panel {
     background: var(--surface);
     backdrop-filter: none;
-  }
-}
-
-@media (prefers-contrast: more) {
-  .rail,
-  .topbar,
-  .rail-foot {
-    border-color: var(--ink);
-  }
-
-  :where(button, [role="button"], input, textarea, select, summary):focus-visible {
-    outline-color: var(--ink);
-  }
-
-  .drawer,
-  .settings-modal,
-  .create-card,
-  .shortcuts-card {
-    border: 1px solid var(--ink);
-    box-shadow: none;
   }
 }
 .proj-empty { padding: 14px 12px; font-size: 12.5px; color: var(--muted); line-height: 1.6; }
@@ -2456,7 +2444,8 @@ input.spd-input[type="number"] { max-width: 160px; }
 .shortcuts-card {
   position: relative; width: min(420px, 100%);
   border: 1px solid var(--line); border-radius: var(--r-xl);
-  background: linear-gradient(180deg, var(--surface), var(--surface-2));
+  /* Round10：实色 surface（去掉背景渐变） */
+  background: var(--surface);
   padding: 26px 28px 24px; box-shadow: var(--shadow-pop);
 }
 .shortcuts-card h2 { font-size: 17px; margin-bottom: 14px; }
@@ -2465,6 +2454,7 @@ input.spd-input[type="number"] { max-width: 160px; }
   font-family: var(--mono); font-size: 12px; color: var(--ink-2);
   background: var(--surface-3); border: 1px solid var(--line-2); border-radius: 6px;
   padding: 2px 8px; justify-self: start;
+  white-space: nowrap; /* Round10：键位组合不换行，长说明在 dd 换行 */
 }
 .shortcuts-list dd { margin: 0; font-size: 13px; color: var(--muted); align-self: center; }
 
@@ -2584,4 +2574,144 @@ input.spd-input[type="number"] { max-width: 160px; }
 
 @media (prefers-reduced-motion: reduce) {
   .plan-chip-count--roll .plan-chip-digit { animation: none; }
+}
+
+/* Round10：浮层入场动效——150-200ms、只动画 opacity/transform（plan 下拉） */
+.plan-dropdown {
+  animation: plan-dropdown-in 160ms cubic-bezier(.2, .75, .25, 1) both;
+  transform-origin: top right;
+}
+
+@keyframes plan-dropdown-in {
+  from { opacity: 0; transform: translateY(-4px) scale(.985); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ============================================================
+   Round10 · 版本时间线面板（与 plan dropdown 同一 token 语言）
+   ============================================================ */
+.version-panel {
+  margin-top: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+  padding: 10px 12px;
+  animation: plan-dropdown-in 160ms cubic-bezier(.2, .75, .25, 1) both;
+  transform-origin: top center;
+}
+
+.version-panel-head {
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--ink-2);
+  margin-bottom: 6px;
+}
+
+.version-panel-notice {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 4px 0;
+}
+
+.version-list {
+  display: grid;
+  gap: 2px;
+}
+
+.version-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.version-row:hover {
+  background: var(--hover);
+}
+
+.version-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.version-row-head {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.version-restore {
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 100ms ease, border-color 100ms ease, color 100ms ease;
+}
+
+.version-restore:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: var(--line-hover);
+  color: var(--ink);
+}
+
+.version-restore:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.version-preview {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-top: 1px dashed var(--line-2);
+  font-family: var(--serif);
+  font-size: 14px;
+  line-height: 1.75;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 浮层入场动效的 reduced-motion 覆盖必须位于动画声明之后（同特异度，后者生效） */
+@media (prefers-reduced-motion: reduce) {
+  .plan-dropdown,
+  .version-panel {
+    animation: none;
+  }
+}
+
+/* prefers-contrast: more 覆盖必须位于组件基础声明之后（同特异度，后者生效） */
+@media (prefers-contrast: more) {
+  .rail,
+  .topbar,
+  .rail-foot {
+    border-color: var(--ink);
+  }
+
+  :where(button, [role="button"], input, textarea, select, summary):focus-visible {
+    outline-color: var(--ink);
+  }
+
+  .drawer,
+  .settings-modal,
+  .create-card,
+  .shortcuts-card,
+  .plan-dropdown,
+  .version-panel {
+    border: 1px solid var(--ink);
+    box-shadow: none;
+  }
 }

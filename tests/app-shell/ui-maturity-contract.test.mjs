@@ -110,3 +110,17 @@ test("round10 settings: footer status slot and model rows are three-layer", () =
   assert.match(pageSource, /icon\("eye"/u);
   assert.doesNotMatch(pageSource, /🗑|👁/u, "结构图标走 icon 体系，不用 emoji");
 });
+
+test("round10 overlays: toast clears the composer and cards are solid", () => {
+  const css = styles();
+  // Toast 移到顶栏下方右上角，不遮挡 Composer；<=768px 两侧自适应
+  assert.match(css, /\.toast-stack\s*\{[^}]*top:\s*56px[^}]*right:\s*20px[^}]*left:\s*auto[^}]*bottom:\s*auto/u);
+  assert.match(css, /@media\s*\(max-width:\s*768px\)[\s\S]*\.toast-stack\s*\{[^}]*left:\s*16px[^}]*right:\s*16px[^}]*top:\s*52px/u);
+  // 新建/快捷键卡片实色 surface，无顶部装饰渐变
+  assert.match(css, /\.create-card\s*\{[^}]*background:\s*var\(--surface\)/u);
+  assert.doesNotMatch(css, /\.create-card::before/u, "新建小说卡片去掉顶部装饰渐变");
+  assert.match(css, /\.shortcuts-card\s*\{[^}]*background:\s*var\(--surface\)/u);
+  // showToast：error → role=alert，其余 role=status
+  const app = read("src/app-shell/app.js");
+  assert.match(app, /toast\.setAttribute\("role", type === "error" \? "alert" : "status"\)/u);
+});
