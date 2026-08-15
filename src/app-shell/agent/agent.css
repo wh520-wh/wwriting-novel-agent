@@ -1058,18 +1058,27 @@
   margin: 0 0 4px;
 }
 
-/* ---- 统一 Text Shimmer（Step 7）：动效 class 只由 visibleLiveTargets 切换 ------- */
+/* ---- 统一 Text Shimmer → AICSS thinking-state：三档 label-shine（2.25s）。
+   动效 class 仍只由 visibleLiveTargets 切换（view.js applyLiveTargets，行为不变）。
+   本规则是全项目唯一 shimmer 定义——Task 6 的搜索查询头直接复用本 class。 */
 .agent-live-text {
   color: transparent;
-  background: linear-gradient(90deg, var(--muted) 0 34%, var(--ink) 48%, var(--muted) 62% 100%);
-  background-size: 220% 100%;
+  background: linear-gradient(
+    90deg,
+    var(--muted) 0% 30%,
+    color-mix(in srgb, var(--muted) 45%, transparent) 45% 55%,
+    var(--muted) 70% 100%
+  );
+  background-size: 300% 100%;
   background-clip: text;
+  -webkit-background-clip: text;
   font-weight: var(--weight-semibold);
-  animation: agent-text-shimmer 1.45s linear infinite;
+  animation: agent-label-shine 2.25s cubic-bezier(0.25, 0.1, 0.25, 1) infinite;
 }
 
-@keyframes agent-text-shimmer {
-  to { background-position: -220% 0; }
+@keyframes agent-label-shine {
+  0%, 18% { background-position: 100% 0; }
+  82%, 100% { background-position: 0% 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
