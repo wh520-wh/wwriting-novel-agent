@@ -124,3 +124,37 @@ test("round10 overlays: toast clears the composer and cards are solid", () => {
   const app = read("src/app-shell/app.js");
   assert.match(app, /toast\.setAttribute\("role", type === "error" \? "alert" : "status"\)/u);
 });
+
+test("round10 responsive: four product breakpoints and user preference fallbacks exist", () => {
+  const css = `${styles()}\n${agentCss()}`;
+  for (const query of [
+    "@media (min-width: 1280px)",
+    "@media (max-width: 1279px)",
+    "@media (max-width: 768px)",
+    "@media (max-width: 480px)",
+    "@media (prefers-reduced-motion: reduce)",
+    "@media (prefers-reduced-transparency: reduce)",
+    "@media (prefers-contrast: more)"
+  ]) assert.ok(css.includes(query), `missing ${query}`);
+  // <=480px：drawer 与 settings 都全宽。注意：该正则不做花括号配对，仅对
+  // 「.drawer 是第一规则、.settings-modal 是第二规则」的当前结构有效——
+  // 插入中间规则块会使断言失效（位置相关，改 480px 块时保持两规则相邻）。
+  assert.match(styles(), /@media\s*\(max-width:\s*480px\)\s*\{[^}]*\}[^}]*\.settings-modal\s*\{[^}]*width:\s*100vw/u);
+  // Round10：长标题省略号截断（阅读器标题 / 计划步骤）
+  assert.match(styles(), /\.reader-head h2\s*\{[^}]*text-overflow:\s*ellipsis/u);
+  assert.match(styles(), /\.plan-item-step\s*\{[^}]*text-overflow:\s*ellipsis/u);
+});
+
+test("round10 a11y: dialogs, live regions and icon buttons retain names", () => {
+  const source = html();
+  assert.match(source, /id="settings-modal"[^>]*role="dialog"[^>]*aria-modal="true"/u);
+  assert.match(source, /id="reader"[^>]*role="dialog"[^>]*aria-modal="true"/u);
+  assert.match(source, /id="toast-stack"[^>]*aria-live="polite"/u);
+  assert.doesNotMatch(source, /<button(?![^>]*(?:aria-label|>[^<]+<|title=))[^>]*>\s*<svg/gu);
+  // 关键图标按钮显式命名（计划 verbatim 正则只按格式兜底，这里逐按钮核对名字）
+  for (const id of ["rail-toggle", "refresh", "drawer-close", "reader-close", "settings-x", "create-x", "shortcuts-x", "topbar-more", "open-drawer"]) {
+    const tag = source.match(new RegExp(`<button[^>]*id="${id}"[^>]*>`, "u"))?.[0] ?? "";
+    assert.ok(tag, `#${id} 按钮应存在`);
+    assert.match(tag, /aria-label=|title=/u, `#${id} 应有 aria-label 或 title`);
+  }
+});
