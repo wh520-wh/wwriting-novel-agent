@@ -7,7 +7,7 @@
 //   2. .agent-markdown h1/h2 使用 heading primary（不是 accent/status）；H1–H6 的
 //      字号、行高、字重与 §2.6 完全一致。
 //   3. .agent-plan__title 与唯一 [data-status="in_progress"] 为 semibold；
-//      pending/completed 为 regular；completed 无删除线。
+//      pending/completed 为 regular；completed 步骤删除线。
 //   4. success/danger 颜色只作用于 icon/短状态 selector，不命中 .agent-plan-item、
 //      .agent-work-item、.agent-markdown 整体。
 //   5. 必要 helper、duration、reasoning ticker、路径至少使用 --text-muted，
@@ -142,18 +142,6 @@ class FixtureEl {
   }
   append(...els) { this.children.push(...els); return this; }
   queryAll(cls) { return this.children.filter((el) => el.classList.contains(cls)); }
-}
-
-function planFixture() {
-  const list = new FixtureEl("agent-plan-list");
-  const statuses = ["completed", "in_progress", "pending"];
-  for (const status of statuses) {
-    const li = new FixtureEl("agent-plan-item");
-    li.dataset.status = status;
-    li.append(new FixtureEl("agent-plan-item__icon"), new FixtureEl("agent-plan-item__step"));
-    list.append(li);
-  }
-  return list;
 }
 
 function markdownFixture() {
