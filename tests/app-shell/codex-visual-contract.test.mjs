@@ -94,3 +94,12 @@ test("AICSS 基线：流式光标实心态、令牌取色、无闪烁动画", ()
   assert.match(caret, /background:\s*var\(--agent-ink\)/u);
   assert.match(caret, /animation:\s*none/u);
 });
+
+test("AICSS 基线：live shimmer 用 aicss 三档渐变与 2.25s 曲线", () => {
+  const css = read("src/app-shell/agent/agent.css");
+  const live = cssBlock(css, ".agent-live-text");
+  assert.match(live, /background-size:\s*300%\s*100%/u, live);
+  assert.match(live, /2\.25s cubic-bezier\(0\.25,\s*0\.1,\s*0\.25,\s*1\)/u, live);
+  assert.match(live, /color-mix\(in srgb, var\(--muted\) 45%, transparent\)/u, live);
+  assert.match(css, /@keyframes agent-label-shine/u);
+});
