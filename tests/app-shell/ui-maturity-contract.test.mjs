@@ -96,3 +96,17 @@ test("round10 reader: prose width and toolbar labels stay stable", () => {
     /@media\s*\(max-width:\s*768px\)[\s\S]*\.reader-head\s*\{[^}]*flex-wrap:\s*wrap[\s\S]*\.reader-tools\s*\{[^}]*flex:\s*1\s+1\s+100%[\s\S]*#reader-close\s*\{[^}]*order:\s*-1/u
   );
 });
+
+test("round10 settings: footer status slot and model rows are three-layer", () => {
+  const source = html();
+  assert.match(source, /id="settings-save-status"[^>]*role="status"/u);
+  const modalSource = read("src/app-shell/settings-modal.js");
+  assert.match(modalSource, /function setFooterMode/u);
+  assert.doesNotMatch(modalSource, /settingsSave\.textContent = "无需保存"/u, "不得再把状态伪装成禁用主按钮");
+  const pageSource = read("src/app-shell/model-settings-page.js");
+  assert.match(pageSource, /class: "model-row-main"/u);
+  assert.match(pageSource, /class: "model-row-actions"/u);
+  assert.match(pageSource, /icon\("trash"/u);
+  assert.match(pageSource, /icon\("eye"/u);
+  assert.doesNotMatch(pageSource, /🗑|👁/u, "结构图标走 icon 体系，不用 emoji");
+});

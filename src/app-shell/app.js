@@ -65,6 +65,7 @@ const refs = {
   settingsDetail: document.querySelector("#settings-detail"),
   settingsCancel: document.querySelector("#settings-cancel"),
   settingsSave: document.querySelector("#settings-save"),
+  settingsSaveStatus: document.querySelector("#settings-save-status"),
   settingsX: document.querySelector("#settings-x"),
   createScrim: document.querySelector("#create-scrim"),
   createHeading: document.querySelector("#create-heading"),

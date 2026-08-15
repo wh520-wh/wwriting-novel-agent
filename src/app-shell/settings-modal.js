@@ -249,6 +249,18 @@ export function createSettingsModal(ctx, options = {}) {
     if (side) side.dataset.section = settingsSection;
   }
 
+  // Round10：footer 状态槽——即时生效分区显示状态文字，不再把「无需保存」伪装成
+  // 禁用主按钮；真实保存动作（runSave）仍只管理 settingsSave 按钮的 disabled/文案。
+  // saveInFlight 标记：保存在途时切分区再回来，不得把「保存中...」按钮重新启用。
+  let saveInFlight = false;
+
+  function setFooterMode({ save = false, status = "" } = {}) {
+    ctx.refs.settingsSave.hidden = !save;
+    ctx.refs.settingsSave.disabled = !save || saveInFlight;
+    ctx.refs.settingsSaveStatus.hidden = save || status === "";
+    ctx.refs.settingsSaveStatus.textContent = save ? "" : status;
+  }
+
   function renderSectionBody() {
     // Task 16 B12：分区切换/重渲推进代次——在途的旧分区异步续作一律丢弃。
     sectionGeneration += 1;
@@ -278,8 +290,7 @@ export function createSettingsModal(ctx, options = {}) {
       if (typeof ctx.modelSettings?.attach === "function") {
         ctx.modelSettings.attach({ list, detail: det });
       }
-      ctx.refs.settingsSave.disabled = true;
-      ctx.refs.settingsSave.textContent = "无需保存";
+      setFooterMode({ status: "更改即时生效" });
       if (typeof ctx.modelSettings?.open === "function") {
         void ctx.modelSettings.open();
       }
@@ -288,39 +299,37 @@ export function createSettingsModal(ctx, options = {}) {
     if (settingsSection === "writing") {
       if (ctx.getDashboard()?.hasProject === true) {
         void renderWritingSection();
-        ctx.refs.settingsSave.disabled = false;
-        ctx.refs.settingsSave.textContent = "保存设置";
+        setFooterMode({ save: true });
       } else {
         // 普通文件夹没有 project.yaml，写作参数无可读写对象：只显示说明，
-        // 禁用底部保存，避免出现无法生效的保存按钮（旧版小说项目专属分区）。
+        // footer 显示「此分区无需保存」，避免出现无法生效的保存按钮。
         renderLegacyOnlySection("compose", "写作参数", "写作参数仅旧版小说项目可用。");
-        ctx.refs.settingsSave.disabled = true;
-        ctx.refs.settingsSave.textContent = "无需保存";
+        setFooterMode({ status: "此分区无需保存" });
       }
       return;
     }
     if (settingsSection === "skills") {
       // 技能动作各自即时生效，不依赖底部保存按钮。
       void renderSkillsSection();
-      ctx.refs.settingsSave.disabled = true;
-      ctx.refs.settingsSave.textContent = "无需保存";
+      setFooterMode({ status: "更改即时生效" });
       return;
     }
     if (settingsSection === "danger") {
       if (ctx.getDashboard()?.hasProject === true) {
         renderDangerSection();
+        setFooterMode({ status: "更改即时生效" });
       } else {
         renderLegacyOnlySection("bolt", "项目管理", "项目管理仅旧版小说项目可用。");
+        setFooterMode({ status: "此分区无需保存" });
       }
-      ctx.refs.settingsSave.disabled = true;
-      ctx.refs.settingsSave.textContent = "无需保存";
       return;
     }
   }
 
   // 旧版小说项目专属分区（写作参数/项目管理）在普通文件夹（hasProject:false）
-  // 下无可操作内容：渲染头部 + 简短 muted 说明。与 renderSectionBody 的保存按钮
-  // 禁用逻辑配合，确保不会出现「点了保存却落空」的死角入口。
+  // 下无可操作内容：渲染头部 + 简短 muted 说明。与 renderSectionBody 的
+  // setFooterMode({ status: "此分区无需保存" }) 配合，确保不会出现「点了保存却
+  // 落空」的死角入口。
   function renderLegacyOnlySection(iconName, title, note) {
     ctx.refs.settingsDetail.replaceChildren();
     const head = document.createElement("header");
@@ -1529,7 +1538,7 @@ export function createSettingsModal(ctx, options = {}) {
 
   async function saveSettings() {
     if (settingsSection === "model") {
-      // 模型动作各自即时生效，不依赖底部保存按钮（保存按钮已置「无需保存」disabled）。
+      // 模型动作各自即时生效，不依赖底部保存按钮（footer 显示「更改即时生效」状态槽）。
       return;
     }
     if (settingsSection === "writing") {
@@ -1586,6 +1595,7 @@ export function createSettingsModal(ctx, options = {}) {
 
   async function runSave(fn) {
     const seq = ++saveSequence;
+    saveInFlight = true;
     ctx.refs.settingsSave.disabled = true;
     const originalText = ctx.refs.settingsSave.textContent;
     ctx.refs.settingsSave.textContent = "保存中...";
@@ -1611,7 +1621,10 @@ export function createSettingsModal(ctx, options = {}) {
     } finally {
       // Task 16 B18：条件化收尾——只有仍是最新 save 才恢复按钮；旧 finally 不得
       // 在更新 save 仍在途时重新启用按钮（覆盖新 save 的禁用态）。
-      if (seq === saveSequence) ctx.refs.settingsSave.disabled = false;
+      if (seq === saveSequence) {
+        ctx.refs.settingsSave.disabled = false;
+        saveInFlight = false;
+      }
     }
   }
 

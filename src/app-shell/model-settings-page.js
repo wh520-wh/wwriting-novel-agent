@@ -4,6 +4,7 @@
 
 import { isEnvironmentVariableName } from "./utils.js";
 import { formatConnectionStatus } from "./settings-connection.mjs";
+import { icon } from "./icons.js";
 
 export function pickProvider(providers, id) {
   return providers.find((p) => p.id === id) ?? null;
@@ -683,8 +684,9 @@ export function createModelSettingsPage(ctx = {}) {
       });
     });
     // 删除（右上角垃圾桶）：二次确认后 POST .../remove。Task 22（#2）：图标
-    // 按钮补 aria-label 提供 accessible name（title 只作悬停提示）。
-    const deleteButton = el("button", { type: "button", class: "provider-delete", title: "删除供应商", "aria-label": "删除供应商", text: "🗑" });
+    // 按钮补 aria-label 提供 accessible name；Round10：图标走现有 icon 体系。
+    const deleteButton = el("button", { type: "button", class: "provider-delete", title: "删除供应商", "aria-label": "删除供应商" });
+    deleteButton.replaceChildren(icon("trash", 14, null, documentRef));
     deleteButton.addEventListener("click", () => {
       removeProviderWithConfirm(provider.id);
     });
@@ -769,15 +771,22 @@ export function createModelSettingsPage(ctx = {}) {
       }
       keyInput.value = "";
     });
-    const eye = el("button", { type: "button", class: "api-key-eye", title: "显示/隐藏密钥", "aria-label": "显示/隐藏密钥", text: "👁" });
+    // Round10：eye 用现有图标体系（eye/eyeOff 切换），按钮固定贴在输入框右侧热区。
+    const eye = el("button", { type: "button", class: "api-key-eye", title: "显示/隐藏密钥", "aria-label": "显示/隐藏密钥" });
+    eye.setAttribute("aria-pressed", "false");
+    eye.replaceChildren(icon("eye", 16, null, documentRef));
     eye.addEventListener("click", () => {
-      keyInput.type = keyInput.type === "password" ? "text" : "password";
+      const showing = keyInput.type !== "password";
+      keyInput.type = showing ? "password" : "text";
+      eye.replaceChildren(icon(showing ? "eye" : "eyeOff", 16, null, documentRef));
+      eye.setAttribute("aria-pressed", showing ? "false" : "true");
     });
+    const keyField = el("div", { class: "api-key-field" }, [keyInput, eye]);
     const envLabel = el("label", { class: "api-key-env-label" }, [envToggle, el("span", { text: "使用环境变量名" })]);
     const keyStatus = el("span", { class: "api-key-status", "data-api-key-status": "true", text: keyStatusText(provider) });
     const keyError = el("span", { class: "field-error", "data-field-error": "api_key" });
     activeDraftRefs.errorRefs.set("api_key", keyError);
-    container.append(keyInput, eye, envLabel, keyStatus, keyError);
+    container.append(keyField, envLabel, keyStatus, keyError);
     renderModelRows(container, provider);
   }
 
@@ -835,27 +844,38 @@ export function createModelSettingsPage(ctx = {}) {
       setDefaultButton.addEventListener("click", () => {
         setDefaultModel(provider.id, model.id);
       });
-      // 删除：二次确认后 POST .../remove。
+      // 删除：二次确认后 POST .../remove；Round10：图标 + 文字，走现有 icon 体系。
       const deleteButton = el("button", { type: "button", class: "model-delete", text: "删除" });
+      deleteButton.replaceChildren(icon("trash", 14, null, documentRef), documentRef.createTextNode("删除"));
       deleteButton.addEventListener("click", () => {
         removeModelWithConfirm(provider.id, model.id);
       });
-      // 测试连接：结果行内渲染到条目旁的 slot（绿勾 / 红字错误文案）。
+      // 测试连接：结果通栏渲染到条目下方（绿勾 / 红字错误文案）。
       const resultSlot = el("div", { class: "model-connection-result", "data-model-connection-result": model.id });
+      resultSlot.setAttribute("role", "status");
       const testButton = el("button", { type: "button", class: "model-test-connection", text: "测试连接" });
       testButton.addEventListener("click", () => {
         testConnection(provider, model, resultSlot);
       });
+      // Round10：每行三层稳定结构——主行（名称 + 状态）、操作行（可换行）、
+      // 通栏结果行（role=status，长错误 anywhere 换行）。主行恒为两个 grid 子项：
+      // 名称组（输入 + 行内错误）与状态组（已启用/停用 + 可选「默认」角标），
+      // 与两列 grid 一一对应，空错误不把状态推到新行。handler 全部保留。
       container.append(el("div", { class: "model-row", "data-model-id": model.id }, [
-        nameInput,
-        nameError,
-        toggle,
-        el("span", { text: model.enabled === false ? "已停用" : "已启用" }),
-        ...(isDefault ? [el("span", { class: "default-badge", text: "默认" })] : []),
-        testButton,
-        resultSlot,
-        setDefaultButton,
-        deleteButton
+        el("div", { class: "model-row-main" }, [
+          el("div", { class: "model-row-name" }, [nameInput, nameError]),
+          el("span", { class: "model-row-state" }, [
+            model.enabled === false ? "已停用" : "已启用",
+            ...(isDefault ? [el("span", { class: "default-badge", text: "默认" })] : [])
+          ])
+        ]),
+        el("div", { class: "model-row-actions" }, [
+          testButton,
+          toggle,
+          setDefaultButton,
+          deleteButton
+        ]),
+        resultSlot
       ]));
     }
     // 「+ 添加模型」：Task 14 启用（Task 15 的拉取/行内编辑接手后仍保留此兜底入口）。
