@@ -685,7 +685,13 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .dtab:hover { color: var(--ink); }
 
-.dtab.on { background: var(--ink); color: var(--btn-ink); }
+/* Round10：选中态 = 浅背景 + 字重 + accent 下边标记（深色下不再是纯白胶囊） */
+.dtab.on {
+  background: var(--surface-2);
+  color: var(--ink);
+  font-weight: var(--weight-semibold);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
 
 .drawer-body { min-height: 0; overflow: auto; padding: 16px; display: grid; gap: 14px; align-content: start; }
 
@@ -707,6 +713,42 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 }
 
 .dpanel-body { padding: 13px 14px; }
+
+/* Round10：记忆区——独立文档块（memory-card 不套 dpanel），正文走 .agent-markdown 子集 */
+.memory-body {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+}
+
+.memory-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: hidden;
+  min-width: 0;
+}
+
+.memory-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid var(--line-3);
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--ink-2);
+}
+
+.memory-card-head .chrow-history {
+  margin-left: auto;
+}
+
+.memory-card-content.agent-markdown {
+  padding: 10px 12px 12px;
+  font-size: 14px;
+  line-height: 1.75;
+}
 
 .export-toolbar {
   display: flex;
@@ -753,6 +795,54 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .cost-row-value.muted { color: var(--muted); font-style: italic; }
 
+/* Round10：成本主金额——总览中唯一的大字号金额（20px/650/tabular） */
+.cost-row-value.cost-total {
+  font-size: 20px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25;
+}
+
+/* Round10：缓存与调用详情 = 分隔线 + summary 折叠（不做嵌套卡片） */
+.cost-advanced {
+  border-top: 1px solid var(--line-2);
+  padding: 12px 14px 0;
+}
+
+.cost-advanced > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 550;
+  color: var(--muted);
+  margin: 0 0 8px;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.cost-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+.cost-advanced > summary::after {
+  content: "";
+  margin-left: auto;
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: rotate(45deg);
+  transition: transform 140ms ease;
+}
+
+.cost-advanced[open] > summary::after {
+  transform: rotate(-135deg);
+}
+
 .cost-sparkline { display: flex; align-items: flex-end; height: 16px; gap: 0; padding-top: 4px; }
 
 .cost-spark { display: inline-block; height: 100%; width: 4px; background: var(--accent); border-radius: 1px; }
@@ -787,11 +877,11 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 }
 
 
-.kv { display: grid; grid-template-columns: auto 1fr; gap: 9px 14px; font-size: 12.5px; }
+.kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 9px 14px; font-size: 13px; }
 
 .kv dt { color: var(--muted); }
 
-.kv dd { margin: 0; text-align: right; font-family: var(--mono); font-weight: 550; color: var(--ink); }
+.kv dd { margin: 0; text-align: right; font-family: var(--mono); font-weight: 550; color: var(--ink); min-width: 0; overflow-wrap: anywhere; }
 
 .kv dd.green { color: var(--green); }
 
@@ -803,7 +893,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .chrow {
   width: 100%; text-align: left;
-  display: grid; grid-template-columns: 30px minmax(0,1fr) auto auto; gap: 11px; align-items: center;
+  display: grid; grid-template-columns: 30px minmax(0,1fr) auto auto auto auto; gap: 11px; align-items: center;
   padding: 9px 10px; border-radius: var(--r); border: 1px solid transparent;
   border-left: 2px solid var(--ghost);
   transition: background .12s, border-color .12s;
@@ -834,11 +924,35 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .ch-meta { font-size: 11px; color: var(--muted); white-space: nowrap; }
 
-.ch-state { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; white-space: nowrap; }
+/* Round10：待生成/完成状态 = 短 badge（不挤压标题成单字列）；历史按钮固定宽度不收缩 */
+.ch-state { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; white-space: nowrap; padding: 1px 8px; border: 1px solid var(--line); border-radius: 99px; background: var(--surface-2); color: var(--text-muted); font-weight: 600; }
 
 .ch-state.run { color: var(--accent); font-weight: 600; }
 
-.ch-state.todo { color: var(--ghost); }
+.ch-state.todo { color: var(--text-muted); }
+
+.ch-state.completed { color: var(--green); border-color: var(--green-line); background: var(--green-soft); }
+
+.chrow-history {
+  flex: 0 0 auto;
+  min-width: 44px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background 100ms ease, border-color 100ms ease, color 100ms ease;
+}
+
+.chrow-history:hover {
+  background: var(--hover);
+  border-color: var(--line-hover);
+  color: var(--ink);
+}
 
 .ch-go { color: var(--muted); }
 
@@ -1939,11 +2053,39 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 
 
-.research-form { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px; }
+.research-form { display: grid; gap: 6px; padding: 8px 10px; }
 
-.research-form .research-input { flex: 1 1 120px; min-width: 0; font: inherit; font-size: 12.5px; padding: 6px 9px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); color: var(--ink); }
+/* Round10：资料表单两行——输入可收缩 + 按钮固定 36px 高 */
+.research-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  width: 100%;
+}
 
-.research-form .small-button { flex: 0 0 auto; }
+.research-form .research-input { min-width: 0; font: inherit; font-size: 12.5px; padding: 6px 9px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); color: var(--ink); }
+
+.research-form .small-button { flex: 0 0 auto; height: 36px; }
+
+/* Round10：来源状态短 badge；untrusted = amber（不只靠颜色） */
+.source-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.source-untrusted {
+  border-color: var(--amber-line);
+  background: var(--amber-soft);
+  color: var(--amber);
+}
 
 
 .evt .et { overflow-wrap: anywhere; }

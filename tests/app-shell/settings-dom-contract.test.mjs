@@ -77,7 +77,8 @@ test("styles.css：整页规则退役，.model-section 与弹窗复用规则保�
   assert.match(sectionRule, /align-content\s*:\s*start/u, ".model-section 应顶部对齐");
 
   // 3. ".model-settings-body" 的两列 grid 规则保留（弹窗内复用）
-  const bodyRule = /\.model-settings-body\s*\{[^}]*\}/u.exec(css)?.[0] ?? "";
+  // 行首锚定：前面还有 .model-section 作用域的单列覆盖规则，非锚定首匹配会抓错块。
+  const bodyRule = /^\.model-settings-body\s*\{[^}]*\}/mu.exec(css)?.[0] ?? "";
   assert.ok(bodyRule, "styles.css 应仍含 .model-settings-body 规则");
   assert.match(bodyRule, /grid-template-columns\s*:\s*280px\s+minmax\(0,\s*1fr\)/u, ".model-settings-body 应保留两列 grid（280px + 1fr）");
 
