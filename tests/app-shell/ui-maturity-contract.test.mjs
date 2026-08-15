@@ -80,3 +80,19 @@ test("round10 drawer: research uses stable rows and memory uses rendered markdow
   assert.match(source, /renderMarkdown\(data2\?\.content \?\? ""\)/u);
   assert.doesNotMatch(source, /content\.textContent = data2\?\.content/u);
 });
+
+test("round10 reader: prose width and toolbar labels stay stable", () => {
+  const source = html();
+  assert.match(source, /class="reader-font-stepper"/u);
+  assert.match(styles(), /\.reader-body\s*\{[^}]*font-size:\s*17px[^}]*line-height:\s*1\.95/us);
+  assert.match(styles(), /\.reader-body\s*>\s*\*\s*\{[^}]*max-width:\s*var\(--reader-column\)/us);
+  assert.match(styles(), /\.reader-tool-text\s*\{[^}]*white-space:\s*nowrap/u);
+  // 级联细节：段落不得压掉居中（margin-inline:auto）；text 按钮 52px 最小宽度在
+  // .reader-tools 作用域内生效；<=768px 工具条换行到第二行、close 提前到标题行。
+  assert.match(styles(), /\.reader-body\s+p\s*\{[^}]*margin:\s*0\s+auto\s+1\.1em/u);
+  assert.match(styles(), /\.reader-tools\s+\.reader-tool-text\s*\{[^}]*min-width:\s*52px/u);
+  assert.match(
+    styles(),
+    /@media\s*\(max-width:\s*768px\)[\s\S]*\.reader-head\s*\{[^}]*flex-wrap:\s*wrap[\s\S]*\.reader-tools\s*\{[^}]*flex:\s*1\s+1\s+100%[\s\S]*#reader-close\s*\{[^}]*order:\s*-1/u
+  );
+});
