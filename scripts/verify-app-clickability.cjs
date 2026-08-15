@@ -64,6 +64,15 @@ function createClickGatewayFactory() {
           error.code = "model_error";
           throw error;
         }
+        case "plan": {
+          // 返回 update_plan 深工具调用 → 内核执行 → plan_updated 事件 → 顶栏 chip。
+          // 工具轮之后内核还会再调一次 complete（下一 steps 项给最终回复）。
+          // 契约：toolCalls 项必须带 id（缺 id 会被 tools.execute 以 bad_tool_call 拒绝）。
+          return {
+            text: step.text ?? "已更新任务计划。",
+            toolCalls: [{ id: "plan-call-1", name: "update_plan", arguments: step.arguments ?? { items: [] } }]
+          };
+        }
         default:
           return { text: String(step.text ?? "（点击验证默认答复）") };
       }
@@ -231,15 +240,10 @@ async function main() {
       expect: () => read(win, "!document.getElementById('reader-scrim').classList.contains('show')")
     }));
   }
-  // 任务计划 chip：fixture 无 plan 时隐藏（元素存在但 hidden=true）；有 plan 时展开
-  const planChipVisible = await read(win, "Boolean(document.querySelector('[data-plan-chip]') && !document.querySelector('[data-plan-chip]').hidden)");
-  if (planChipVisible) {
-    clicks.push(await clickAndReadStable(win, "[data-plan-chip]", {
-      label: "plan-chip-expand",
-      settleMs: 300,
-      expect: () => read(win, "!document.querySelector('[data-plan-dropdown]').hidden")
-    }));
-  }
+  // 任务计划 chip：fixture 无 plan 时先经真实对话注入 update_plan 事件（此前
+  // fixture 从不产生 plan，chip 路径从未被真正点击验证——2026-08-16 补齐）。
+  // 注入必须发生在抽屉关闭之后（drawer scrim 会挡住 composer 发送按钮）。
+  const planChipInitiallyVisible = await read(win, "Boolean(document.querySelector('[data-plan-chip]') && !document.querySelector('[data-plan-chip]').hidden)");
   // 关闭抽屉（第九轮新路径后恢复到关闭态）
   const drawerStillOpen = await read(win, "document.getElementById('drawer').classList.contains('show')");
   if (drawerStillOpen) {
@@ -247,6 +251,56 @@ async function main() {
       label: "drawer-close-history",
       settleMs: 300,
       expect: async () => !(await read(win, "document.getElementById('drawer').classList.contains('show')"))
+    }));
+  }
+  let planChipVisible = planChipInitiallyVisible;
+  if (!planChipVisible) {
+    gateway.setSteps([
+      {
+        type: "plan",
+        arguments: {
+          items: [
+            { id: "c1", step: "读取设定", status: "completed" },
+            { id: "c2", step: "写第 1 章", status: "in_progress" },
+            { id: "c3", step: "收尾提交", status: "pending" }
+          ]
+        }
+      },
+      { type: "reply", text: "任务计划已更新，继续写作。" }
+    ]);
+    await sendComposerText(win, "给我一个三步任务计划");
+    await waitUntil(win, "Boolean(document.querySelector('[data-plan-chip]') && !document.querySelector('[data-plan-chip]').hidden)", "plan chip must appear after update_plan tool", 15000);
+    planChipVisible = true;
+  }
+  if (planChipVisible) {
+    clicks.push(await clickAndReadStable(win, "[data-plan-chip]", {
+      label: "plan-chip-expand",
+      settleMs: 300,
+      // 必须真实可见：hidden=false + 有尺寸 + 不被 overflow 祖先裁剪 + 在视口内。
+      // （回归防线：chip overflow:hidden 曾把挂在其内部的绝对定位下拉整个裁没，
+      // 而 hidden 属性检查抓不到——见 2026-08-16 plan-panel 修复。）
+      expect: () => read(win, `(() => {
+        const el = document.querySelector('[data-plan-dropdown]');
+        if (!el || el.hidden) return false;
+        const r = el.getBoundingClientRect();
+        if (!(r.width > 0 && r.height > 0)) return false;
+        let L = r.left, T = r.top, R = r.right, B = r.bottom;
+        for (let cur = el.parentElement; cur && cur !== document.documentElement; cur = cur.parentElement) {
+          const cs = getComputedStyle(cur);
+          const ox = cs.overflowX, oy = cs.overflowY;
+          const clipped = (ox === "hidden" || ox === "clip" || ox === "scroll" || ox === "auto") || (oy === "hidden" || oy === "clip" || oy === "scroll" || oy === "auto");
+          if (clipped) {
+            const ar = cur.getBoundingClientRect();
+            L = Math.max(L, ar.left + (parseFloat(cs.paddingLeft) || 0));
+            T = Math.max(T, ar.top + (parseFloat(cs.paddingTop) || 0));
+            R = Math.min(R, ar.right - (parseFloat(cs.paddingRight) || 0));
+            B = Math.min(B, ar.bottom - (parseFloat(cs.paddingBottom) || 0));
+            if (R <= L || B <= T) return false;
+          }
+          if (cur === document.body) break;
+        }
+        return R > 0 && B > 0 && L < innerWidth && T < innerHeight;
+      })()`)
     }));
   }
 
