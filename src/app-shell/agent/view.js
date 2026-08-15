@@ -1068,7 +1068,15 @@ export function createAgentView({ root, document: doc = globalThis.document, req
         if (!row.ticker) {
           row.ticker = createReasoningTicker({
             onDisplay: (text) => {
-              if (row.tickerEl.textContent !== text) row.tickerEl.textContent = text;
+              if (row.tickerEl.textContent !== text) {
+                row.tickerEl.textContent = text;
+                // AICSS thinking-reasoning：片段滚动替换动效——重挂 class 重启
+                // CSS 动画（旧片段滚出、新片段滚入；真实 DOM 强制 reflow，
+                // 测试 mock 无 offsetWidth 时空转不报错）。
+                row.tickerEl.classList.remove("agent-ticker-swap");
+                void row.tickerEl.offsetWidth;
+                row.tickerEl.classList.add("agent-ticker-swap");
+              }
             },
             scheduler: tickerSchedulerFor(record)
           });
