@@ -2,18 +2,16 @@
  * Task 12：主内容轴 1040px、用户气泡 800px、时间线无框化）。
  *
  * 布局基线（前置计划 Task 11/12 验收）：
- *   - 对话与 composer 共享 --content-column: 1040px（与工作台/旧线程同一列）；
+ *   - 对话与 composer 共享全局内容列 1040px（token 所有权在 styles.css :root）；
  *   - 排队文本任意位置换行，不遮住「立即」；
  *   - plan 行使用稳定 grid 轨道（状态标记列固定宽，状态变化不推动文本列）；
  *   - 按钮/图标尺寸不随状态变化抖动；
  *   - 窄视口无重叠；
  *   - composer 菜单锚定触发按钮向上展开，受视口安全区约束；
- * 变量（--surface/--ink/--red 等）沿用 styles.css 的 :root 定义。
+ * 变量（--surface/--ink/--red 等）沿用 styles.css 的 :root 定义；
+ * 全局布局轴（--content-column/--reading-column 等）所有权在 styles.css，
+ * 本文件只引用，不重新声明。
  */
-
-:root {
-  --content-column: 1040px;
-}
 
 /* ---- 表面骨架：对话滚动区 + 底部 composer -------------------------------- */
 /* Task 14：组件级 surface token 只引用全局 primitive/semantic，不硬编码色值；
@@ -516,14 +514,16 @@
 .agent-markdown {
   color: var(--agent-answer-fg);
   font-family: var(--serif);
-  font-size: 15px;
-  line-height: 2.0;
+  font-size: var(--font-md);
+  line-height: 2.0; /* 正文神圣：行高 ≥2.0（round10 spec §5.5） */
   font-weight: var(--weight-regular);
 }
-.agent-markdown h1 { color: var(--agent-heading-fg); font-size: 20px; line-height: 1.35; font-weight: var(--weight-bold); }
-.agent-markdown h2 { color: var(--agent-heading-fg); font-size: 17px; line-height: 1.4; font-weight: var(--weight-bold); }
-.agent-markdown h3 { color: var(--agent-subheading-fg); font-size: 15px; line-height: 1.45; font-weight: var(--weight-semibold); }
-.agent-markdown :is(h4, h5, h6) { color: var(--agent-subheading-fg); font-size: 14px; line-height: 1.5; font-weight: var(--weight-semibold); }
+.agent-markdown h1 { color: var(--agent-heading-fg); font-size: var(--font-2xl); line-height: 1.35; font-weight: var(--weight-bold); }
+.agent-markdown h2 { color: var(--agent-heading-fg); font-size: var(--font-xl); line-height: 1.4; font-weight: var(--weight-bold); }
+.agent-markdown h3 { color: var(--agent-subheading-fg); font-size: var(--font-lg); line-height: 1.45; font-weight: var(--weight-semibold); }
+.agent-markdown h4 { color: var(--agent-subheading-fg); font-size: var(--font-md); line-height: 1.5; font-weight: var(--weight-semibold); }
+.agent-markdown h5 { color: var(--agent-subheading-fg); font-size: var(--font-base); line-height: 1.55; font-weight: var(--weight-semibold); }
+.agent-markdown h6 { color: var(--agent-subheading-fg); font-size: var(--font-sm); line-height: 1.55; font-weight: var(--weight-semibold); }
 .agent-markdown a { color: var(--text-link); font-weight: var(--weight-medium); text-decoration: underline; }
 .agent-markdown blockquote { color: var(--text-muted); font-size: 13px; line-height: 1.6; }
 .agent-markdown :not(pre) > code { color: var(--text-secondary); font-size: 12.5px; line-height: 1.55; }

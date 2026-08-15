@@ -84,6 +84,30 @@
   --weight-semibold: 650;
   --weight-bold: 700;
 
+  /* 共享布局轴 — 全应用唯一所有权（Task 11/12 内容列 + Round10 阅读/抽屉轴） */
+  --content-column: 1040px;
+  --content-gutter: clamp(14px, 2.2vw, 24px);
+  --reading-column: 720px;
+  --reader-column: 800px;
+  --drawer-width: 380px;
+
+  /* Round10：整数字阶 / 控件尺寸 / 动效 token，后续任务只引用这些名称 */
+  --font-2xl: 22px;
+  --font-xl: 18px;
+  --font-lg: 16px;
+  --font-md: 15px;
+  --font-base: 14px;
+  --font-sm: 13px;
+  --font-xs: 12px;
+
+  --control-compact: 32px;
+  --control-default: 36px;
+  --target-critical: 40px;
+
+  --motion-press: 80ms;
+  --motion-hover: 140ms;
+  --motion-layer: 200ms;
+
   /* Agent component tokens */
   --agent-answer-fg: var(--text-primary);
   --agent-heading-fg: var(--text-primary);
@@ -95,10 +119,6 @@
   --agent-plan-current-fg: var(--text-primary);
   --agent-plan-rest-fg: var(--text-secondary);
   --agent-plan-complete-fg: var(--text-muted);
-
-  /* Task 11/12：共享内容列 — 工作台 / 准备卡 / 线程 / composer 统一宽度与居中（1040px） */
-  --content-column: 1040px;
-  --content-gutter: clamp(14px, 2.2vw, 24px);
 
   --sans:
     -apple-system, BlinkMacSystemFont,
@@ -230,7 +250,7 @@ button { font: inherit; color: inherit; cursor: pointer; background: none; borde
 
 :where(button, [role="button"]):active {
   transform: scale(0.98);
-  transition-duration: 80ms;
+  transition-duration: var(--motion-press);
 }
 
 input, textarea, select { font: inherit; color: inherit; }
@@ -256,7 +276,12 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 :where(button, [role="button"], a, input, textarea, select, summary):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
+}
+
+:where(button, input, textarea, select):disabled,
+[aria-disabled="true"] {
+  cursor: default;
 }
 
 .spd-input:focus-visible, input.spd-input:focus, select.spd-input:focus { outline: none; }
