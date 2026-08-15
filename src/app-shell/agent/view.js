@@ -29,6 +29,7 @@ import { matchSlashCommands } from "./slash-commands.mjs";
 import { renderMarkdown } from "../markdown-lite.mjs";
 import { PERMISSION_TIERS } from "../permission-tiers.mjs";
 import { icon } from "../icons.js";
+import { taskIcon } from "../components/task-icons.mjs";
 import { createReasoningTicker } from "./reasoning-ticker.mjs";
 import {
   formatDuration,
@@ -66,8 +67,6 @@ const COMPACTION_ROW_BUTTONS = {
 
 // 压缩在途/失败都算「真实活动」：圆环给出轻微活性反馈。
 const COMPACTION_ACTIVE_STATES = new Set(["started", "running", "cancelling"]);
-
-const PLAN_MARKS = { completed: "✓", in_progress: "•", pending: "○" };
 
 export function createAgentView({ root, document: doc = globalThis.document, requestFrame = null, scheduler = globalThis }) {
   // 增量正文渲染的合帧节流：真实 DOM 用 requestAnimationFrame；无 rAF 环境
@@ -1267,7 +1266,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       const iconEl = doc.createElement("span");
       iconEl.className = "agent-plan-item__icon";
       iconEl.setAttribute("aria-hidden", "true");
-      iconEl.textContent = PLAN_MARKS[task?.status] ?? "○";
+      iconEl.innerHTML = taskIcon(task?.status, 15);
       const step = doc.createElement("span");
       step.className = "agent-plan-item__step";
       step.textContent = String(task?.step ?? "");

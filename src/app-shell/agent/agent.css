@@ -1139,6 +1139,14 @@
   margin: 0 0 4px;
 }
 
+/* ---- AICSS task-list：工作组计划项图标/完成删除线 ---------------------------- */
+.agent-plan-item__icon svg { display: block; }
+
+.agent-plan-item[data-status="completed"] .agent-plan-item__step {
+  text-decoration: line-through;
+  text-decoration-color: var(--agent-plan-complete-fg);
+}
+
 /* ---- 统一 Text Shimmer → AICSS thinking-state：三档 label-shine（2.25s）。
    动效 class 仍只由 visibleLiveTargets 切换（view.js applyLiveTargets，行为不变）。
    本规则是全项目唯一 shimmer 定义——Task 6 的搜索查询头直接复用本 class。 */
