@@ -1347,6 +1347,7 @@ input.spd-input[type="number"] { max-width: 160px; }
     border-bottom: 1px solid var(--line);
     grid-template-rows: auto;
   }
+  
 
   .sp-section-nav {
     display: flex;
@@ -1761,6 +1762,14 @@ input.spd-input[type="number"] { max-width: 160px; }
     border-radius: 0;
     border-left: 0;
     border-right: 0;
+  }
+  /* Round10：全屏 sheet 无留白（scrim padding 归零，modal 100vw 贴边） */
+  .settings-scrim {
+    padding: 0;
+  }
+  /* win32 Electron：全屏 sheet 让出 34px 窗口控制区，否则 100vh 超出内容区产生外层滚动 */
+  :root[data-desktop-shell="electron"][data-desktop-platform="win32"] .settings-modal {
+    height: calc(100vh - 34px);
   }
   /* Round10 窄窗紧凑：竖直空间与水平留白收紧，计划 chip 释放标题宽度仍保留进度 */
   .topbar { gap: 8px; padding-left: 10px; }

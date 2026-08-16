@@ -822,9 +822,29 @@ const EXTRA_CHECKS = {
         const r = row.getBoundingClientRect();
         return r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth;
       });
-      const close = document.getElementById("settings-x")?.getBoundingClientRect();
+      const closeEl = document.getElementById("settings-x");
+      const close = closeEl?.getBoundingClientRect();
       const closeInside = Boolean(close && close.left >= 0 && close.top >= 0 && close.right <= innerWidth && close.bottom <= innerHeight);
-      return { pass: rows.length === 3 && visible.length === 3 && closeInside, rows: rows.length, visible: visible.length, closeInside };
+      const modal = document.querySelector(".settings-modal")?.getBoundingClientRect();
+      const scrim = document.querySelector(".settings-scrim")?.getBoundingClientRect();
+      const detail = {
+        pass: rows.length === 3 && visible.length === 3 && closeInside,
+        rows: rows.length, visible: visible.length, closeInside,
+        close: close ? { l: Math.round(close.left), t: Math.round(close.top), r: Math.round(close.right), b: Math.round(close.bottom), w: Math.round(close.width), h: Math.round(close.height) } : null,
+        modal: modal ? { l: Math.round(modal.left), t: Math.round(modal.top), r: Math.round(modal.right), b: Math.round(modal.bottom) } : null,
+        scrim: scrim ? { l: Math.round(scrim.left), t: Math.round(scrim.top), r: Math.round(scrim.right), b: Math.round(scrim.bottom) } : null,
+        scrollY: Math.round(document.scrollingElement?.scrollTop ?? 0),
+        bodyScrollY: Math.round(document.body?.scrollTop ?? 0),
+        inner: [innerWidth, innerHeight], dpr: devicePixelRatio,
+        detailScroll: (() => { const d = document.querySelector(".sp-detail"); if (!d) return null; return { top: Math.round(d.scrollTop), h: d.scrollHeight, client: d.clientHeight }; })(),
+(),
+        scrimPos: getComputedStyle(document.querySelector(".settings-scrim")).position,
+        docScrollH: document.documentElement.scrollHeight, docClientH: document.documentElement.clientHeight,
+        bodyScrollH: document.body?.scrollHeight ?? null, bodyClientH: document.body?.clientHeight ?? null,
+        scrimParent: (() => { const s = document.querySelector(".settings-scrim"); if (!s) return null; return { tag: s.offsetParent?.tagName ?? null, cls: s.offsetParent?.className ?? null }; })(),
+        scrollables: (() => { const out = []; for (const el of document.querySelectorAll("*")) { if (el.scrollHeight > el.clientHeight + 1) { out.push({ sel: el.id ? "#" + el.id : el.className?.toString?.().slice(0, 40) || el.tagName, sh: el.scrollHeight, ch: el.clientHeight }); } } return out.slice(0, 12); })()
+      };
+      return detail;
     })()`);
     return [{ name: "settings-builtin-visible", pass: result.pass, detail: JSON.stringify(result) }];
   },
