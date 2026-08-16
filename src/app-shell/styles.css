@@ -543,6 +543,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 /* header */
 .topbar {
   position: relative;
+  z-index: 20; /* Round10：壳层高于后绘制的主内容，计划下拉可浮于正文之上 */
   display: flex; align-items: center; gap: 14px;
   --window-control-space: 0px;
   padding: 10px calc(20px + var(--window-control-space)) 10px 20px;
@@ -2563,7 +2564,9 @@ input.spd-input[type="number"] { max-width: 160px; }
   white-space: nowrap;
 }
 
-.plan-item.done .plan-item-step { text-decoration: line-through; color: var(--muted); }
+.plan-item.done .plan-item-step { color: var(--muted); }
+.plan-item.done .plan-item-icon { color: var(--text-success); }
+.plan-item.active .plan-item-step { font-weight: var(--weight-semibold); }
 
 .plan-item.active { color: var(--ink); background: var(--surface-2); border-radius: var(--r-sm); }
 

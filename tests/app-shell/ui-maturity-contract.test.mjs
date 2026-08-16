@@ -179,3 +179,20 @@ test("round10 narrow topbar: plan chip keeps progress but releases title width",
   assert.match(app, /insertBefore\(planPanel\.chip,\s*refs\.topbarMore/u);
   assert.match(app, /function closeTopbarSecondary/u);
 });
+
+test("round10 plan overlay: topbar owns stacking and completed rows stay neutral", () => {
+  const css = styles();
+  assert.match(css, /\.topbar\s*\{[^}]*z-index:\s*20/u);
+  assert.doesNotMatch(
+    css,
+    /\.plan-item\.done\s+\.plan-item-step\s*\{[^}]*text-decoration:\s*line-through/u
+  );
+  assert.match(
+    css,
+    /\.plan-item\.done\s+\.plan-item-icon\s*\{[^}]*color:\s*var\(--text-success\)/u
+  );
+  assert.match(
+    css,
+    /\.plan-item\.active\s+\.plan-item-step\s*\{[^}]*font-weight:\s*var\(--weight-semibold\)/u
+  );
+});
