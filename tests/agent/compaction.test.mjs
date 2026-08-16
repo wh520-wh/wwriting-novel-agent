@@ -1193,6 +1193,30 @@ test("重启恢复：failed 崩溃窗口 cancel 可用 → input_cancelled(compa
   assert.equal((await readSession(h.agent, h.projectRoot)).status, "idle");
 });
 
+test("重启恢复：首屏只读 snapshot 也完成压缩对账，cancelled 后提交会继续执行", async (t) => {
+  const h = await createProjectAgentHarness({ gatewayScript: crashWindowGatewayScript(), gatewayDelayMs: 0 });
+  t.after(() => h.cleanup());
+  const { compactionId } = await buildCrashWindowJournal(h, { compactionState: "started" });
+
+  const snapshot = await h.agent.snapshot({ projectRoot: h.projectRoot, tail: true, limit: 200 });
+  assert.equal(snapshot.session.compaction.state, "cancelled", "首屏快照必须先完成崩溃对账");
+  assert.equal(snapshot.session.active_run.status, "waiting_user");
+  assert.equal(
+    snapshot.events.filter(
+      (event) => event.type === "context_compaction_cancelled" && event.payload.compaction_id === compactionId
+    ).length,
+    1,
+    "首屏快照应包含 process_restarted 取消终态"
+  );
+
+  const submitted = await h.agent.submit({ projectRoot: h.projectRoot, text: "继续执行", source: "chat" });
+  assert.equal(submitted.queued, true, "恢复中的 Run 继续消费原输入，新输入进入同一 FIFO");
+  await waitFor(h.agent, h.projectRoot, () => h.gateway.calls.length > 0, {
+    timeoutMs: 1000,
+    describe: "cancelled 压缩态后的提交启动 Run 循环"
+  });
+});
+
 test("自动门禁：大输入 + 极小历史 → noop（不调用模型）→ 仍超硬窗口 → failRun(context_window_exceeded)", async (t) => {
   const h = await createProjectAgentHarness({ gatewayScript: [], gatewayDelayMs: 0 });
   t.after(() => h.cleanup());

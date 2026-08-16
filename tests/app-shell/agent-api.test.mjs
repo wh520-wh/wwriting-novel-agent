@@ -303,6 +303,51 @@ test("streamEvents 流结束：无参 decode() 冲刷并把残留尾块分发（
   ], "首块与无分隔尾块都应分发，truncated:true 原样透出");
 });
 
+test("SSE error 帧可见上报并停止静默重连", async (t) => {
+  let fetchCount = 0;
+  const errors = [];
+  const fetchImpl = async () => {
+    fetchCount += 1;
+    return {
+      ok: true,
+      status: 200,
+      body: {
+        getReader() {
+          let done = false;
+          return {
+            read() {
+              if (done) return Promise.resolve({ done: true, value: undefined });
+              done = true;
+              return Promise.resolve({
+                done: false,
+                value: new TextEncoder().encode(
+                  'event: error\ndata: {"ok":false,"code":"journal_read_failed","message":"事件流读取失败"}\n\n'
+                )
+              });
+            }
+          };
+        }
+      }
+    };
+  };
+  const api = createAgentApi({
+    getProjectRoot: () => "P",
+    fetchImpl,
+    baseDelayMs: 1,
+    maxDelayMs: 1,
+    onStreamError: (error) => errors.push(error)
+  });
+  t.after(() => api.destroy());
+
+  api.connectEvents();
+  const deadline = Date.now() + 1000;
+  while (errors.length === 0 && Date.now() < deadline) await tick();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.deepEqual(errors, [{ code: "journal_read_failed", message: "事件流读取失败" }]);
+  assert.equal(fetchCount, 1, "服务端显式错误是持久故障，不得继续静默重连");
+});
+
 // ---------------------------------------------------------------------------
 // 会话管理端点：sessions / createSession / renameSession / archiveSession /
 // restoreSession / deleteSession
@@ -472,4 +517,3 @@ test("三控件保存返回非 2xx：reject 并携带 status/code，不把失败
     (error) => error.status === 500 && error.code === "save_failed"
   );
 });
-

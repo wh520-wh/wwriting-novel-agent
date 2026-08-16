@@ -43,12 +43,18 @@ export const COMPACTION_EVENT_TYPES = Object.freeze([
 // 非终态压缩状态（load() 对账时用于判断"未完成 attempt"）。
 export const COMPACTION_NON_TERMINAL_STATES = Object.freeze(["started", "running", "cancelling"]);
 
-// 阻塞普通发送/自动恢复的压缩状态（open() 不得对这些状态自动启动 Run 循环）。
-export const COMPACTION_BLOCKED_STATES = Object.freeze([
+// 普通发送只在压缩仍需用户处理时阻塞；cancelled 是已收敛终态，用户再次提交可恢复 Run。
+export const COMPACTION_SEND_BLOCKED_STATES = Object.freeze([
   "started",
   "running",
   "cancelling",
-  "failed",
+  "failed"
+]);
+
+// 自动恢复比用户提交更保守：cancelled 后必须等一次明确用户动作，不能在 open() 时
+// 自动复活崩溃前的输入。
+export const COMPACTION_RESUME_BLOCKED_STATES = Object.freeze([
+  ...COMPACTION_SEND_BLOCKED_STATES,
   "cancelled"
 ]);
 

@@ -51,7 +51,7 @@ const COMPACTION_ROW_LABELS = {
   completed: "已压缩完成",
   failed: "压缩失败",
   cancelled: "已取消",
-  noop: "Not enough messages to compact"
+  noop: "无需压缩"
 };
 
 // 各状态的动作按钮：failed → 重试+取消；running → 取消；其余无按钮。
@@ -2112,10 +2112,14 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     const label = doc.createElement("span");
     label.className = "agent-compaction-label";
     row.append(label);
+    const detail = doc.createElement("div");
+    detail.className = "agent-compaction-detail";
+    detail.dataset.testid = "agent-compaction-detail";
+    detail.hidden = true;
     const actions = doc.createElement("div");
     actions.className = "agent-compaction-actions";
-    wrap.append(row, actions);
-    return { wrap, row, label, actions, seq: null, eventKey: null, buttonsSignature: "" };
+    wrap.append(row, detail, actions);
+    return { wrap, row, label, detail, actions, seq: null, eventKey: null, buttonsSignature: "" };
   }
 
   function updateCompactionRow(record, entry) {
@@ -2123,8 +2127,13 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     const labelText = COMPACTION_ROW_LABELS[entry.state] ?? "处理中";
     if (record.label.textContent !== labelText) record.label.textContent = labelText;
     record.wrap.dataset.state = entry.state;
+    const sourceTooLarge = entry.state === "failed" && entry.error_code === "compaction_source_exceeds_window";
+    record.detail.hidden = !sourceTooLarge;
+    record.detail.textContent = sourceTooLarge
+      ? "compaction_source_exceeds_window：源材料超过上下文窗口，请清空对话历史后重试。"
+      : "";
     // 按钮只按状态签名重建：失败 → 重试+取消；running → 取消；其余无按钮。
-    const buttons = COMPACTION_ROW_BUTTONS[entry.state] ?? [];
+    const buttons = sourceTooLarge ? [] : (COMPACTION_ROW_BUTTONS[entry.state] ?? []);
     const signature = buttons.join(",");
     if (signature === record.buttonsSignature) return;
     record.buttonsSignature = signature;
@@ -2135,7 +2144,11 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       retry.className = "agent-compaction-btn";
       retry.dataset.testid = "agent-compaction-retry";
       retry.textContent = "重试";
-      retry.addEventListener("click", () => actions.retryCompaction?.(entry.compaction_id));
+      retry.addEventListener("click", () => runCompactionAction(
+        retry,
+        "重试压缩",
+        () => actions.retryCompaction?.(entry.compaction_id)
+      ));
       record.actions.append(retry);
     }
     if (buttons.includes("cancel")) {
@@ -2144,9 +2157,32 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       cancel.className = "agent-compaction-btn";
       cancel.dataset.testid = "agent-compaction-cancel";
       cancel.textContent = "取消";
-      cancel.addEventListener("click", () => actions.cancelCompaction?.(entry.compaction_id));
+      cancel.addEventListener("click", () => runCompactionAction(
+        cancel,
+        "取消压缩",
+        () => actions.cancelCompaction?.(entry.compaction_id)
+      ));
       record.actions.append(cancel);
     }
+  }
+
+  function runCompactionAction(button, label, action) {
+    if (button.disabled) return;
+    button.disabled = true;
+    const generation = viewGeneration;
+    const fail = (error) => {
+      if (generation !== viewGeneration) return;
+      button.disabled = false;
+      showToast(`${label}失败：${String(error?.message ?? "请求失败")}`);
+    };
+    let request;
+    try {
+      request = action();
+    } catch (error) {
+      fail(error);
+      return;
+    }
+    Promise.resolve(request).catch(fail);
   }
 
   function syncCompactionRows(state) {

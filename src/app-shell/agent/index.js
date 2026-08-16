@@ -159,6 +159,10 @@ export function createAgentSurface({
           if (streamGeneration !== sessionGeneration) return;
           applyEvent(event);
         },
+        onStreamError: (error) => {
+          if (destroyed || streamGeneration !== sessionGeneration) return;
+          applyEvent({ type: "connection_error", payload: error });
+        },
         onReconnect: async () => {
           // SSE 断线补齐：按最新 seq 增量拉快照（与 onEvent 一致受 destroyed 守卫）。
           // 旧事件流（代次不符）的重连回调直接丢弃，避免用旧会话游标拉错快照。

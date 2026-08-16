@@ -2091,6 +2091,14 @@
   color: var(--text-danger);
 }
 
+.agent-compaction-detail {
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .agent-compaction-actions {
   flex: 0 0 auto;
   display: flex;

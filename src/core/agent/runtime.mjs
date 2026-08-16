@@ -46,7 +46,12 @@ import {
   OUTPUT_SAFETY_RESERVE
 } from "./context-window.mjs";
 import { createContextCheckpointStore } from "./context-checkpoints.mjs";
-import { createCompactionCoordinator, COMPACTION_BLOCKED_STATES, COMPACTION_NON_TERMINAL_STATES } from "./compaction.mjs";
+import {
+  createCompactionCoordinator,
+  COMPACTION_NON_TERMINAL_STATES,
+  COMPACTION_RESUME_BLOCKED_STATES,
+  COMPACTION_SEND_BLOCKED_STATES
+} from "./compaction.mjs";
 import {
   COMPACTION_PROMPT,
   DEFAULT_MIN_PROTECTED_TURNS,
@@ -337,7 +342,10 @@ export function createAgentRuntime({
   //   外部书签、内部沿用旧 id」的错位形态。
   async function ensureSessionState(state, sessionId) {
     let sessionState = state.sessions.get(sessionId);
-    if (sessionState) return sessionState;
+    if (sessionState) {
+      await sessionState.ready;
+      return sessionState;
+    }
     const storageRoot = path.join(state.agentRoot, "sessions", sessionId);
     // 修复（2026-08-11）：不要把 idFactory 包装成「首次调用返回 sessionId」的闭包
     // 传给 journal（旧实现）——journal 实例在进程重启/会话重新物化后重建时，首个
@@ -397,7 +405,17 @@ export function createAgentRuntime({
       cacheStats: { hitTokens: 0, inputTokens: 0 }
     };
     state.sessions.set(sessionId, sessionState);
-    return sessionState;
+    sessionState.ready = (async () => {
+      await journal.load();
+      await reconcileSessionAfterLoad(sessionState);
+    })();
+    try {
+      await sessionState.ready;
+      return sessionState;
+    } catch (error) {
+      if (state.sessions.get(sessionId) === sessionState) state.sessions.delete(sessionId);
+      throw error;
+    }
   }
 
   // 解析目标会话 id：显式 sessionId → 校验存在；缺省 → 最近活跃；
@@ -435,7 +453,7 @@ export function createAgentRuntime({
     // 不自动模型调用）。active_context_checkpoint_id 保持旧值（cancelled 不切换）。
     const loadedSession = await sessionState.journal.getSession();
     const loadedCompaction = loadedSession.compaction;
-    if (loadedCompaction && COMPACTION_BLOCKED_STATES.includes(loadedCompaction.state)) {
+    if (loadedCompaction && COMPACTION_RESUME_BLOCKED_STATES.includes(loadedCompaction.state)) {
       if (COMPACTION_NON_TERMINAL_STATES.includes(loadedCompaction.state)) {
         await sessionState.journal.append({
           type: "context_compaction_cancelled",
@@ -2228,20 +2246,17 @@ export function createAgentRuntime({
       return { session_id: null, status: "idle" };
     }
     const sessionState = await ensureSessionState(state, targetId);
-    await sessionState.journal.load();
-    // 崩溃对账（checkpoint/压缩收敛；不在此启动循环——见下）
-    await reconcileSessionAfterLoad(sessionState);
     // 注册表 updated_at 同步（幂等）：以用户动作时刻刷新会话活跃排序依据。
     // 同步失败只告警，派生元数据以事件流为准。
     await syncSessionRegistry(state, sessionState);
     // 恢复：只恢复有效非终态 Run（journal.load 已把 dangling assistant 活动标记
     // 为 interrupted；那些 Run 等待 retry，不自动恢复）。压缩处于阻塞状态
-    //（started/running/cancelling/failed/cancelled）时绝不自动启动循环——绝不让
+    //（started/running/cancelling/failed）时绝不自动启动循环——绝不让
     // 旧 processInput 自动再次执行。
     const session = await sessionState.journal.getSession();
     const run = session.active_run;
     const compactionBlocked =
-      session.compaction != null && COMPACTION_BLOCKED_STATES.includes(session.compaction.state);
+      session.compaction != null && COMPACTION_RESUME_BLOCKED_STATES.includes(session.compaction.state);
     if (run && !TERMINAL_RUN_STATUSES.has(run.status) && !compactionBlocked) {
       startLoop(state, sessionState, run.id);
     }
@@ -2288,15 +2303,13 @@ export function createAgentRuntime({
         targetId = meta.session_id;
       }
       const sessionState = await ensureSessionState(state, targetId);
-      await sessionState.journal.load();
-      await reconcileSessionAfterLoad(sessionState);
       // 4) 恢复可恢复 Run（等价旧 submit → open() 的启动恢复）：非终态且未被压缩
       //    阻塞 → 接续执行（新输入在下方 FIFO 排队在其后）。串行门已保证没有
       //    其他会话的飞行循环，此处启动是安全的。
       const session = await sessionState.journal.getSession();
       const run = session.active_run;
       const compactionBlocked =
-        session.compaction != null && COMPACTION_BLOCKED_STATES.includes(session.compaction.state);
+        session.compaction != null && COMPACTION_SEND_BLOCKED_STATES.includes(session.compaction.state);
       if (run && !TERMINAL_RUN_STATUSES.has(run.status) && !compactionBlocked) {
         startLoop(state, sessionState, run.id);
       }
@@ -2610,7 +2623,6 @@ export function createAgentRuntime({
     const state = ensureProject(projectRoot);
     const sessionState = await resolveSessionState(state, sessionId);
     if (!sessionState) throw fail("compaction_not_found", `compaction ${compactionId} 不存在。`);
-    await sessionState.journal.load();
     const session = await sessionState.journal.getSession();
     const compaction = session.compaction;
     if (!compaction || compaction.id !== compactionId) {

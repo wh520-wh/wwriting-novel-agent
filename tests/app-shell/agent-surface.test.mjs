@@ -2023,6 +2023,21 @@ test("input_withdrawn 移除排队项；撤回输入在 UI 不可见", async () 
   assert.ok(root.querySelector('[data-testid="agent-stop"]'), "撤回排队输入后 Run 仍活动");
 });
 
+test("input_cancelled 移除排队项和失效动作，不留下幽灵队列", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("input_queued", { input_id: "in-2", text: "将被取消", source: "chat" }));
+  surface.applyEvent(ev("priority_input_requested", { input_id: "in-2" }));
+  assert.equal(root.querySelectorAll('[data-testid="agent-queue-item"]').length, 1);
+
+  surface.applyEvent(ev("input_cancelled", { input_id: "in-2", reason: "compaction_cancelled" }));
+
+  assert.equal(root.querySelectorAll('[data-testid="agent-queue-item"]').length, 0);
+  assert.equal(root.querySelector('[data-testid="agent-promote"]'), null, "取消后不再保留失效的立即按钮");
+  assert.equal(root.querySelector('[data-testid="agent-withdraw"]'), null, "取消后不再保留失效的撤回按钮");
+});
+
 test("queued 只出现在「接下来」：input_queued 不生成正式对话气泡，input_started 才生成用户气泡", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
@@ -4030,7 +4045,7 @@ test("压缩取消完成：发送恢复，draft 留在 textarea；消息不足�
   surface.applyEvent(ev("context_compaction_noop", { compaction_id: "c-4", trigger: "automatic" }));
   const noopRow = [...root.querySelectorAll('[data-testid="agent-compaction-row"]')]
     .find((el) => el.parentElement.dataset.compactionId === "c-4");
-  assert.equal(noopRow.textContent, "Not enough messages to compact");
+  assert.equal(noopRow.textContent, "无需压缩");
   assert.equal(root.querySelector('[data-testid="agent-send"]').disabled, false, "noop 不阻塞发送");
 });
 
@@ -4045,6 +4060,59 @@ test("压缩行动作按钮调用 retryCompaction / cancelCompaction", async () 
   row.parentElement.querySelector('[data-testid="agent-compaction-cancel"]')._fire("click");
   const calls = api.calls.filter((c) => c[0] === "retryCompaction" || c[0] === "cancelCompaction");
   assert.deepEqual(calls, [["retryCompaction", "c-5"], ["cancelCompaction", "c-5"]]);
+});
+
+test("压缩行动作失败显示 toast，按钮在请求期间防止重复点击", async () => {
+  let retryCalls = 0;
+  const { root, surface } = await makeSurface({
+    apiOverrides: {
+      retryCompaction: async () => {
+        retryCalls += 1;
+        throw new Error("压缩已不在可重试状态");
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+  surface.applyEvent(ev("context_compaction_failed", { compaction_id: "c-error", error_code: "model_error" }));
+  const retry = root.querySelector('[data-testid="agent-compaction-retry"]');
+  retry._fire("click");
+  retry._fire("click");
+  await tick();
+
+  assert.equal(retryCalls, 1, "在途时重复点击不得发出第二个请求");
+  assert.equal(retry.disabled, false, "失败后恢复按钮供用户重试");
+  assert.match(root.querySelector('[data-testid="agent-toast"]')?.textContent ?? "", /重试压缩失败/u);
+  surface.destroy();
+});
+
+test("压缩源超窗显示真正逃生指引，不渲染必败重试和无效取消", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applyEvent(ev("context_compaction_failed", {
+    compaction_id: "c-too-large",
+    error_code: "compaction_source_exceeds_window"
+  }));
+
+  const row = root.querySelector('[data-testid="agent-compaction-row"]');
+  assert.equal(row.textContent, "压缩失败");
+  assert.match(root.querySelector('[data-testid="agent-compaction-detail"]')?.textContent ?? "", /清空对话历史后重试/u);
+  assert.match(root.querySelector('[data-testid="agent-compaction-detail"]')?.textContent ?? "", /compaction_source_exceeds_window/u);
+  assert.equal(root.querySelector('[data-testid="agent-compaction-retry"]'), null);
+  assert.equal(root.querySelector('[data-testid="agent-compaction-cancel"]'), null);
+});
+
+test("连接错误进入既有错误卡，不把活动 Run 伪装成失败", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+
+  surface.applyEvent({
+    type: "connection_error",
+    payload: { code: "journal_read_failed", message: "事件流读取失败" }
+  });
+
+  assert.match(root.querySelector('[data-testid="agent-error"]')?.textContent ?? "", /事件流读取失败/u);
+  assert.ok(root.querySelector('[data-testid="agent-stop"]'), "连接错误不得擅自把服务端 Run 投影改成失败");
 });
 
 test("不同 compaction_id 各行独立渲染，终态行保留在时间线", async () => {
