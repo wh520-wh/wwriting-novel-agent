@@ -1748,6 +1748,11 @@ input.spd-input[type="number"] { max-width: 160px; }
     border-left: 0;
     border-right: 0;
   }
+  /* Round10 窄窗紧凑：竖直空间与水平留白收紧，计划 chip 释放标题宽度仍保留进度 */
+  .topbar { gap: 8px; padding-left: 10px; }
+  .topbar-actions { gap: 4px; }
+  .plan-chip { max-width: 58px; padding-inline: 7px; }
+  .plan-chip-title { display: none; }
   .topbar-secondary {
     position: absolute;
     top: calc(100% + 6px);
@@ -2524,10 +2529,17 @@ input.spd-input[type="number"] { max-width: 160px; }
   cursor: pointer; max-width: 200px; overflow: visible; position: relative;
 }
 
-/* 文字 span 承担 ellipsis 截断（chip 自身 overflow 必须可见，否则绝对定位的
-   下拉会被裁剪）：flex item 需要 min-width:0 才能收缩触发省略号。 */
+/* Round10 窄窗紧凑：标题与计数作为 flex 容器并排（gap 分隔），文字 span 承担
+   ellipsis 截断（chip 自身 overflow 必须可见，否则绝对定位的下拉会被裁剪）：
+   flex item 需要 min-width:0 才能收缩触发省略号。 */
 .plan-chip-label {
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .plan-dropdown {

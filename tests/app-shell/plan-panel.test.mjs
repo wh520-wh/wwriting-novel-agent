@@ -94,7 +94,7 @@ test("chip：显示 任务计划 1/3；无计划时隐藏", () => {
   const { doc } = makeFakeDoc();
   const panel = createPlanPanel({ doc });
   panel.sync(ITEMS);
-  assert.equal(panel.chip.querySelector(".plan-chip-label").textContent, "任务计划 ");
+  assert.equal(panel.chip.querySelector(".plan-chip-title").textContent, "任务计划");
   assert.equal(
     panel.chip.querySelector(".plan-chip-count").children.map((c) => c.textContent).join(""),
     "1/3"
@@ -102,6 +102,19 @@ test("chip：显示 任务计划 1/3；无计划时隐藏", () => {
   assert.equal(panel.chip.hidden, false);
   panel.sync([]);
   assert.equal(panel.chip.hidden, true);
+});
+
+test("chip：标题前缀与计数分离，aria-label 携带真实进度", () => {
+  const { doc } = makeFakeDoc();
+  const panel = createPlanPanel({ doc });
+  panel.sync(ITEMS);
+
+  assert.equal(panel.chip.querySelector(".plan-chip-title").textContent, "任务计划");
+  assert.equal(
+    panel.chip.querySelector(".plan-chip-count").children.map((c) => c.textContent).join(""),
+    "1/3"
+  );
+  assert.equal(panel.chip.getAttribute("aria-label"), "任务计划 1/3");
 });
 
 test("点击 chip 展开；再点收起；外点与 Escape 收起", () => {
