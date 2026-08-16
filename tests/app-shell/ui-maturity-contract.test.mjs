@@ -196,3 +196,15 @@ test("round10 plan overlay: topbar owns stacking and completed rows stay neutral
     /\.plan-item\.active\s+\.plan-item-step\s*\{[^}]*font-weight:\s*var\(--weight-semibold\)/u
   );
 });
+
+test("round10 narrow settings: scrolling tabs reserve the close-button zone", () => {
+  const css = styles();
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*768px\)[\s\S]*\.sp-section-nav\s*\{[^}]*padding:\s*8px 52px 8px 10px/u
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*768px\)[\s\S]*\.settings-x\s*\{[^}]*top:\s*8px[^}]*right:\s*8px[^}]*background:\s*var\(--surface-2\)/u
+  );
+});
