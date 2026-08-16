@@ -747,7 +747,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   line-height: 1.75;
 }
 
-.memory-card-content--empty {
+.memory-card-content.agent-markdown.memory-card-content--empty {
   color: var(--text-muted);
   font-family: var(--sans);
   font-size: 12.5px;
