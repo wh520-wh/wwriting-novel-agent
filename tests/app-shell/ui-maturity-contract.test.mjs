@@ -158,3 +158,24 @@ test("round10 a11y: dialogs, live regions and icon buttons retain names", () => 
     assert.match(tag, /aria-label=|title=/u, `#${id} 应有 aria-label 或 title`);
   }
 });
+
+test("round10 narrow topbar: plan chip keeps progress but releases title width", () => {
+  const css = styles();
+  const source = html();
+  const app = appJs();
+  assert.match(css, /\.plan-chip-label\s*\{[^}]*display:\s*inline-flex[^}]*gap:\s*4px/u);
+  assert.match(
+    source,
+    /id="topbar-secondary"[\s\S]*id="open-drawer"[^>]*role="menuitem"[\s\S]*id="privacy-toggle"/u
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*480px\)[\s\S]*\.plan-chip-title\s*\{[^}]*display:\s*none/u
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*480px\)[\s\S]*\.topbar\s*\{[^}]*gap:\s*8px[^}]*padding-left:\s*10px/u
+  );
+  assert.match(app, /insertBefore\(planPanel\.chip,\s*refs\.topbarMore/u);
+  assert.match(app, /function closeTopbarSecondary/u);
+});
