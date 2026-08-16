@@ -77,7 +77,11 @@ test("round10 html: layout styles are not embedded in markup", () => {
 test("round10 drawer: research uses stable rows and memory uses rendered markdown", () => {
   const source = read("src/app-shell/drawer-panels.js");
   assert.match(source, /className = "research-row"/u);
-  assert.match(source, /renderMarkdown\(data2\?\.content \?\? ""\)/u);
+  // Round10 memory：记忆卡正文统一走 renderMemoryContent（剥离重复 H1/空态），
+  // 内部仍用安全 renderMarkdown 渲染，绝不 textContent 直显原始 Markdown。
+  assert.match(source, /renderMemoryContent\(/u);
+  assert.match(source, /function renderMemoryContent/u);
+  assert.match(source, /renderMarkdown\(body\)/u);
   assert.doesNotMatch(source, /content\.textContent = data2\?\.content/u);
 });
 
