@@ -10,6 +10,16 @@ const styles = () => read("src/app-shell/styles.css");
 const agentCss = () => read("src/app-shell/agent/agent.css");
 const html = () => read("src/app-shell/index.html");
 const appJs = () => read("src/app-shell/app.js");
+const captureScript = () => read("scripts/capture-visual-acceptance.cjs");
+
+test("round10 visual evidence: waits for exact target states before capture", () => {
+  const source = captureScript();
+  assert.match(source, /BUILTIN_STYLE_NAMES/u);
+  assert.match(source, /focusBuiltinStylesForCapture/u);
+  assert.match(source, /narrowTopbarTitle/u);
+  assert.match(source, /planDropdownTopmost/u);
+  assert.match(source, /memoryCardsReady/u);
+});
 
 test("round10 tokens: shared axes, integer type scale and control dimensions have one owner", () => {
   const css = styles();
