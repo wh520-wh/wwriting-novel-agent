@@ -73,9 +73,14 @@ const SCRIPT_DIR = __dirname;
 // read_skill 的注入延迟：给 tool-after-reasoning 三帧（t000/t400/t900 + 捕获开销）
 // 留足窗口；5s 覆盖约 3.5s 的最坏捕获序列仍有 1.5s 余量。
 const SKILL_READ_DELAY_MS = 5000;
-// agent-text-shimmer 动画周期 1450ms（plan-verbatim，不修改 CSS）。选 680/920/1160ms
-// 使扫光带清晰位于左/中/右（评审 P1-1 的确定性相位方案）。
+// 扫光动画相位：以 1450ms 周期为基准选 680/920/1160ms（左/中/右清晰相位），
+// seek 时按实际动画 duration 等比换算（Round10 起产品动画为 agent-label-shine
+// 2250ms；OS reduced-motion 命中时注入的归一化样式为 agent-text-shimmer 1450ms）。
 const SHIMMER_PHASES_MS = [680, 920, 1160];
+const SHIMMER_BASE_PERIOD_MS = 1450;
+// 三个受保护的内置写作风格（PROTECTED_BUILTIN_SKILLS，src/core/skills/catalog.mjs）。
+// 设置页「Agent 技能」分区把它们渲染为 readonly 行，data-skill-name = 技能名 slug。
+const BUILTIN_STYLE_NAMES = ["balanced", "fast-readable", "psychological-literary"];
 const VIEWPORT_DEFAULT = { width: 1280, height: 800 };
 const VIEWPORT_NARROW = { width: 390, height: 844 };
 const VIEWPORT_MEDIUM = { width: 768, height: 900 };
@@ -799,6 +804,51 @@ const EXTRA_CHECKS = {
     }))()`);
     const pass = result.title !== "读取失败" && result.errorCards === 0 && result.userMessages >= 1 && result.assistantMessages >= 1 && (result.workStatus ?? "").includes("工作了") && result.composerDisabled === false;
     return [{ name: "plain-folder-first-message", pass, detail: JSON.stringify(result) }];
+  },
+  // Round10 视觉证据：390 顶栏项目标题必须有可识别宽度（plan chip 释放标题空间后）。
+  narrowTopbarTitle: async (win) => {
+    const result = await read(win, `(() => {
+      const title = document.getElementById("project-title");
+      const rect = title?.getBoundingClientRect();
+      return { pass: Boolean(rect && rect.width >= 72), width: rect?.width ?? 0 };
+    })()`);
+    return [{ name: "narrow-topbar-title", pass: result.pass, detail: `width=${result.width}` }];
+  },
+  // 设置页内置风格三行全部真实可见（bbox 与视口相交），且关闭按钮不被遮挡。
+  settingsBuiltinRowsVisible: async (win) => {
+    const result = await read(win, `(() => {
+      const rows = [...document.querySelectorAll(".spd-skill-row--readonly")];
+      const visible = rows.filter((row) => {
+        const r = row.getBoundingClientRect();
+        return r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth;
+      });
+      const close = document.getElementById("settings-x")?.getBoundingClientRect();
+      const closeInside = Boolean(close && close.left >= 0 && close.top >= 0 && close.right <= innerWidth && close.bottom <= innerHeight);
+      return { pass: rows.length === 3 && visible.length === 3 && closeInside, rows: rows.length, visible: visible.length, closeInside };
+    })()`);
+    return [{ name: "settings-builtin-visible", pass: result.pass, detail: JSON.stringify(result) }];
+  },
+  // 记忆三卡正文均已渲染（故事摘要/工作日志内容非空；设定档案至少渲染出空态文案）。
+  memoryCardsReady: async (win) => {
+    const result = await read(win, `(() => {
+      const cards = [...document.querySelectorAll(".memory-card")];
+      const contents = cards.map((card) => card.querySelector(".memory-card-content")?.textContent.trim() ?? "");
+      return { pass: cards.length === 3 && contents.every(Boolean), cards: cards.length, contents };
+    })()`);
+    return [{ name: "memory-cards-ready", pass: result.pass, detail: JSON.stringify(result) }];
+  },
+  // 计划下拉在命中测试的最上层（elementFromPoint 命中自身或后代）。
+  planDropdownTopmost: async (win) => {
+    const result = await read(win, `(() => {
+      const dropdown = document.querySelector("[data-plan-dropdown]");
+      const rect = dropdown?.getBoundingClientRect();
+      if (!dropdown || !rect || dropdown.hidden) return { pass: false, detail: "dropdown hidden" };
+      const x = Math.min(rect.right - 8, Math.max(rect.left + 8, rect.left + rect.width / 2));
+      const y = Math.min(rect.bottom - 8, Math.max(rect.top + 8, rect.top + rect.height / 2));
+      const hit = document.elementFromPoint(x, y);
+      return { pass: Boolean(hit && (hit === dropdown || dropdown.contains(hit))), hit: hit?.className ?? hit?.tagName ?? null };
+    })()`);
+    return [{ name: "plan-dropdown-topmost", pass: result.pass, detail: JSON.stringify(result) }];
   }
 };
 
@@ -1009,10 +1059,24 @@ async function waitForRunTerminal(win, groupOpen, diag = {}, minGroups = 1) {
 async function waitForSkillsList(win) {
   await waitUntil(
     win,
-    `document.querySelector("#skills-list")?.children.length > 0 || document.querySelector(".spd-skill-row--readonly") !== null`,
-    "设置页技能列表渲染",
-    8000
+    `(() => {
+      const expected = ${JSON.stringify(BUILTIN_STYLE_NAMES)};
+      const rows = [...document.querySelectorAll(".spd-skill-row--readonly")];
+      const names = new Set(rows.map((row) => row.dataset.skillName));
+      return rows.length === 3 && expected.every((name) => names.has(name));
+    })()`,
+    "三个内置写作风格只读行渲染",
+    12000
   );
+}
+
+async function focusBuiltinStylesForCapture(win) {
+  await win.webContents.executeJavaScript(`(() => {
+    const first = document.querySelector(".spd-skill-row--readonly");
+    first?.scrollIntoView({ block: "start" });
+    return Boolean(first);
+  })()`);
+  await sleep(200);
 }
 
 async function scrollConversationToBottom(win) {
@@ -1024,35 +1088,46 @@ async function scrollConversationToBottom(win) {
   await sleep(250);
 }
 
-// 用 Web Animations API 把 agent-text-shimmer 暂停并 seek 到指定相位，使扫光带
-// 确定性地位于标签左/中/右。找不到动画（reduced-motion 等）时返回 0，由调用方
-// 回退时间捕获并记录警告。
+// 用 Web Animations API 把 live 标签的扫光动画暂停并 seek 到指定相位，使扫光带
+// 确定性地位于标签左/中/右。动画名动态匹配（Round10 起为 agent-label-shine；
+// OS reduced-motion 归一化注入时为 agent-text-shimmer），相位按实际 duration
+// 等比换算（SHIMMER_BASE_PERIOD_MS 基准）。找不到动画时返回 0，由调用方回退
+// 时间捕获并记录警告。
 async function seekShimmerPhase(win, ctx, phaseMs) {
   const paused = await win.webContents.executeJavaScript(`(() => {
     let count = 0;
     for (const el of document.querySelectorAll(".agent-work-item__label.agent-live-text")) {
-      if (getComputedStyle(el).animationName !== "agent-text-shimmer") continue;
+      const name = getComputedStyle(el).animationName;
+      if (name === "none") continue;
       for (const anim of el.getAnimations()) {
-        if (anim.animationName === "agent-text-shimmer") {
-          anim.pause();
-          anim.currentTime = ${phaseMs};
-          count += 1;
-        }
+        if (anim.animationName !== name) continue;
+        const timing = anim.effect?.getTiming?.();
+        const duration = Number(timing?.duration);
+        const t = Number.isFinite(duration) && duration > 0
+          ? (${phaseMs} / ${SHIMMER_BASE_PERIOD_MS}) * duration
+          : ${phaseMs};
+        anim.pause();
+        anim.currentTime = t;
+        count += 1;
       }
     }
     return count;
   })()`);
   if (paused === 0) {
-    ctx.environmentNotes.push(`[warn] seekShimmerPhase(${phaseMs}ms) 未找到 agent-text-shimmer 动画，回退时间捕获`);
+    ctx.environmentNotes.push(`[warn] seekShimmerPhase(${phaseMs}ms) 未找到 live 标签动画，回退时间捕获`);
   }
   win.webContents.invalidate();
   await sleep(150); // 等合成器应用 seeking 后的帧
   return paused;
 }
 
-// 对同一场景的三帧 PNG，在 label bbox 内找扫光带列：浅色下扫光 ink 带比 muted 文本
-// 更暗（取最暗列）；深色下扫光亮带（muted→ink 浅色渐变）比周围更亮（取最亮列）。
-// 断言跟踪列 x 严格递增（t000 < t400 < t900），给出扫光从左向右的机器证据。
+// 对同一场景的三帧 PNG，在 label bbox 内跟踪扫光带：Round10 的 label-shine 是
+// muted↔透明渐变（background-clip:text），没有旧版 agent-text-shimmer 的 ink 暗带，
+// 因此按「字形列」判据——浅色下字形列 = 列内最暗像素 < 128（muted 字形暗、透明带
+// 字形露出底色亮、空隙列无暗像素）；深色下字形列 = 列内最亮像素 > 128（muted 字形
+// 亮、透明带字形露出暗底色、空隙列无亮像素）。跟踪字形列集合的质心 x：扫光带移动
+// 时字形列集合边界随之变化。断言三帧质心互不相同且跨度 ≥2px，给出扫光随相位移动
+// 的机器证据（方向由 label-shine 关键帧决定，不预设左→右）。
 async function checkSweepDirection(ctx, scenario, frames) {
   const isDark = ctx.theme === "dark";
   const positions = [];
@@ -1061,29 +1136,32 @@ async function checkSweepDirection(ctx, scenario, frames) {
     const { width: w, height: h } = img.getSize();
     const bmp = img.toBitmap();
     const [left, top, width, height] = frame.bbox;
-    let trackCol = -1;
-    let trackVal = isDark ? -1 : 256;
+    const glyphCols = [];
     for (let x = left; x < left + width && x < w; x += 1) {
-      let colVal = isDark ? 0 : 256;
+      let colMin = 256;
+      let colMax = -1;
       for (let y = top; y < top + height && y < h; y += 1) {
         const i = (y * w + x) * 4;
         const lum = 0.3 * bmp[i] + 0.59 * bmp[i + 1] + 0.11 * bmp[i + 2];
-        if (isDark ? lum > colVal : lum < colVal) colVal = lum;
+        if (lum < colMin) colMin = lum;
+        if (lum > colMax) colMax = lum;
       }
-      if (isDark ? colVal > trackVal : colVal < trackVal) {
-        trackVal = colVal;
-        trackCol = x;
-      }
+      const isGlyphCol = isDark ? colMax > 128 : colMin < 128;
+      if (isGlyphCol) glyphCols.push(x);
     }
-    positions.push({ file: frame.file, darkestCol: trackCol, darkestVal: Math.round(trackVal) });
+    const centroid = glyphCols.length > 0
+      ? Math.round(glyphCols.reduce((sum, x) => sum + x, 0) / glyphCols.length)
+      : -1;
+    positions.push({ file: frame.file, centroid, glyphCols: glyphCols.length });
   }
   const [a, b, c] = positions;
-  const ok = a.darkestCol >= 0 && b.darkestCol >= 0 && c.darkestCol >= 0 &&
-    a.darkestCol < b.darkestCol && b.darkestCol < c.darkestCol && (c.darkestCol - a.darkestCol) >= 2;
-  const summary = positions.map((p) => `${p.file.split("-")[0]}=x${p.darkestCol}(lum${p.darkestVal})`).join(" ");
+  const span = Math.abs(c.centroid - a.centroid);
+  const ok = a.centroid >= 0 && b.centroid >= 0 && c.centroid >= 0 &&
+    a.centroid !== b.centroid && b.centroid !== c.centroid && span >= 2;
+  const summary = positions.map((p) => `${p.file.split("-")[0]}=x${p.centroid}(cols${p.glyphCols})`).join(" ");
   console.log(`  [客观检查] sweep-direction(${scenario}, ${ctx.theme}) ${ok ? "PASS" : "FAIL"} — ${summary}`);
   if (!ok) {
-    throw new Error(`sweep-direction 检查失败（${scenario}, ${ctx.theme}）：跟踪列未严格递增 — ${JSON.stringify(positions)}`);
+    throw new Error(`sweep-direction 检查失败（${scenario}, ${ctx.theme}）：字形列质心未随扫光相位移动 — ${JSON.stringify(positions)}`);
   }
   return { ok, positions };
 }
@@ -1168,6 +1246,64 @@ async function main() {
   const plainFolder = path.join(demoRoot, "普通文件夹");
   fs.mkdirSync(plainFolder, { recursive: true });
   fs.writeFileSync(path.join(plainFolder, "notes.txt"), "普通资料：写作参考笔记。\n", "utf8");
+
+  // 预置「已完成章节 + baseline 版本快照」：让版本时间线场景拍到真实版本行
+  //（含恢复按钮与行内确认态）。格式与真实提交产物一致：正式文件 正文/第001章.md、
+  // memory/chapter_index.json 的 completed 条目（checksum=sha256(正文)）、
+  // .versions/chapters/001/{v1.md,manifest.json}（snapshotChapter 产物）。
+  const FIXTURE_CHAPTER_TEXT = "# 第一章 雨夜来信\n\n雨夜，雨声突然变大。林深猛地推开门，冲进老宅的客厅。他浑身湿透，抹了一把脸，低声道：“信上说，老宅的钟会在午夜敲十三下。”烛光下，墙上的照片里竟是多年不见的父亲。他正要细看，门外却传来一阵急促的敲门声。\n";
+  {
+    const fixtureChapterNo = 1;
+    const fixtureChecksum = crypto.createHash("sha256").update(FIXTURE_CHAPTER_TEXT, "utf8").digest("hex");
+    const fixtureFinalRel = path.posix.join("正文", `第${String(fixtureChapterNo).padStart(3, "0")}章.md`);
+    const fixtureFinalAbs = path.join(projectRoot, "正文", `第${String(fixtureChapterNo).padStart(3, "0")}章.md`);
+    fs.mkdirSync(path.dirname(fixtureFinalAbs), { recursive: true });
+    fs.writeFileSync(fixtureFinalAbs, FIXTURE_CHAPTER_TEXT, "utf8");
+    const indexPath = path.join(projectRoot, "memory", "chapter_index.json");
+    const index = JSON.parse(fs.readFileSync(indexPath, "utf8"));
+    index.chapters.push({
+      chapter_no: fixtureChapterNo,
+      status: "completed",
+      draft_path: path.posix.join("草稿", `第${String(fixtureChapterNo).padStart(3, "0")}章.md`),
+      final_path: fixtureFinalRel,
+      actual_words: FIXTURE_CHAPTER_TEXT.replace(/\s+/gu, "").length,
+      checksum: fixtureChecksum,
+      quality_gate_results: []
+    });
+    fs.writeFileSync(indexPath, JSON.stringify(index, null, 2), "utf8");
+    const versionsDir = path.join(projectRoot, ".versions", "chapters", String(fixtureChapterNo).padStart(3, "0"));
+    fs.mkdirSync(versionsDir, { recursive: true });
+    fs.writeFileSync(path.join(versionsDir, "v1.md"), FIXTURE_CHAPTER_TEXT, "utf8");
+    fs.writeFileSync(
+      path.join(versionsDir, "manifest.json"),
+      JSON.stringify(
+        {
+          chapter_no: fixtureChapterNo,
+          versions: [
+            { version: 1, timestamp: new Date().toISOString(), source: "baseline", checksum: fixtureChecksum }
+          ]
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+    context.environmentNotes.push("fixture 预置第 1 章已完成 + baseline v1 版本（版本时间线场景数据源）");
+  }
+
+  // 写入代表性记忆内容（仅临时 fixture，不改项目模板/真实用户文件）：让抽屉
+  // 「记忆」分区的故事摘要与工作日志卡渲染真实内容（memoryCardsReady/Step7 依赖）。
+  // 必须在 server 启动/页面加载前写入，否则记忆卡读取时读不到。
+  fs.writeFileSync(
+    path.join(projectRoot, "book_summary.md"),
+    "# 全书摘要\n\n雨夜来信已完成，林深在老宅发现了与父亲有关的照片。\n",
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(projectRoot, "WORKLOG.md"),
+    "# WORKLOG\n\n- 已完成：第 1 章\n- 下一步：确认来信来源并推进第 2 章\n",
+    "utf8"
+  );
 
   // ---- server：testGatewayFactory + 延迟 skills service 注入 ----
   const { createAppShellServer } = await import(pathToFileURL(path.join(SCRIPT_DIR, "..", "src", "core", "app-server.mjs")).href);
@@ -1367,7 +1503,8 @@ async function main() {
       dataSource: DATA_SOURCE.gatewayUi,
       expected: `${vp.width}x${vp.height} 会话完成态：无横向溢出、无遮挡、composer 不遮最后一条消息`,
       spec: "Task 13 Step 4 / SPEC §10.3 四视口响应式验收",
-      overlapSelectors: OVERLAP_SELECTORS.chat
+      overlapSelectors: OVERLAP_SELECTORS.chat,
+      extraChecks: vp === VIEWPORT_NARROW ? EXTRA_CHECKS.narrowTopbarTitle : undefined
     });
   }
   await setViewport(win, VIEWPORT_DEFAULT.width, VIEWPORT_DEFAULT.height);
@@ -1472,6 +1609,7 @@ async function main() {
     expect: () => waitForSettingsSection(win, "skills")
   });
   await waitForSkillsList(win);
+  await focusBuiltinStylesForCapture(win);
   await auditAndCapture(win, context, {
     file: "settings-builtin-styles-1280x800.png",
     viewport: [1280, 800],
@@ -1480,9 +1618,13 @@ async function main() {
     dataSource: DATA_SOURCE.settings,
     expected: "设置页「Agent 技能」分区：内置写作风格分区展示三个只读行，无卡片套卡片、无启用开关",
     spec: "Task 13 Step 4 / SPEC §6.1 内置风格只读展示",
-    overlapSelectors: OVERLAP_SELECTORS.settings
+    overlapSelectors: OVERLAP_SELECTORS.settings,
+    extraChecks: EXTRA_CHECKS.settingsBuiltinRowsVisible
   });
   await setViewport(win, VIEWPORT_NARROW.width, VIEWPORT_NARROW.height);
+  // 390 视口尺寸可能触发响应式重排，重排后须再次等待并聚焦目标行（否则滚动位置漂移）。
+  await waitForSkillsList(win);
+  await focusBuiltinStylesForCapture(win);
   await auditAndCapture(win, context, {
     file: "settings-builtin-styles-390x844.png",
     viewport: [390, 844],
@@ -1491,7 +1633,8 @@ async function main() {
     dataSource: DATA_SOURCE.settings,
     expected: "390x844 窄视口设置技能分区：布局完整、无横向溢出、无遮挡",
     spec: "Task 13 Step 4 / SPEC §10.3 响应式验收",
-    overlapSelectors: OVERLAP_SELECTORS.settings
+    overlapSelectors: OVERLAP_SELECTORS.settings,
+    extraChecks: EXTRA_CHECKS.settingsBuiltinRowsVisible
   });
 
   // ---- 06: settings-style-detail（1280x800，点击内置风格行展开只读详情）----
@@ -1612,6 +1755,15 @@ async function main() {
     label: "memory-tab-vp",
     expect: () => read(win, "document.querySelector('.dtab[data-dtab=\"memory\"]').classList.contains('on')")
   });
+  await waitUntil(
+    win,
+    `(() => {
+      const cards = [...document.querySelectorAll(".memory-card")];
+      return cards.length === 3 && cards.every((card) => (card.querySelector(".memory-card-content")?.textContent.trim() ?? "") !== "");
+    })()`,
+    "记忆三卡正文渲染",
+    10000
+  );
   await auditAndCapture(win, context, {
     file: "memory-tab-1280x800.png",
     viewport: [1280, 800],
@@ -1620,7 +1772,8 @@ async function main() {
     dataSource: DATA_SOURCE.memoryTab,
     expected: "三块卡片：故事摘要、工作日志（各带历史按钮）、设定档案只读",
     spec: "第九轮 §3.3",
-    overlapSelectors: OVERLAP_SELECTORS.drawer
+    overlapSelectors: OVERLAP_SELECTORS.drawer,
+    extraChecks: EXTRA_CHECKS.memoryCardsReady
   });
   // ---- 17: plan-panel（1280x800，chip 收起 + 展开）----
   console.log("[scenario] 17-plan-panel");
@@ -1668,7 +1821,8 @@ async function main() {
         dataSource: DATA_SOURCE.planPanel,
         expected: "chip 进度 N/M + 条目状态图标/删除线/进行中高亮",
         spec: "第九轮 §3.6",
-        overlapSelectors: []
+        overlapSelectors: [],
+        extraChecks: EXTRA_CHECKS.planDropdownTopmost
       });
       await clickAndReadRetry(win, "[data-plan-chip]", {
         label: "plan-chip-collapse-vp",
@@ -1728,7 +1882,13 @@ async function main() {
   const rowOpened = await win.webContents.executeJavaScript(`(() => {
     const row = [...document.querySelectorAll('.proj-row')].find((el) => el.textContent.includes('普通文件夹'));
     if (!row) return { ok: false, reason: "row missing" };
-    const btn = row.querySelector('button');
+    // R4（第十轮）：项目行「+ 新建对话」在 hover/:focus-within 才可见——
+    // 聚焦行触发 :focus-within 并放开指针事件，再点 .proj-add 打开（.proj 只折叠）。
+    row.focus?.();
+    const menu = row.querySelector('.proj-menu');
+    if (menu) { menu.style.opacity = '1'; menu.style.pointerEvents = 'auto'; }
+    const btn = row.querySelector('.proj-add');
+    if (!btn) return { ok: false, reason: "proj-add missing" };
     const rect = btn.getBoundingClientRect();
     const center = { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
     const hit = document.elementFromPoint(center.x, center.y);
@@ -1775,7 +1935,7 @@ async function main() {
   // live-indicator-audit.json：每张图开放 activity ID + live class 数量
   const auditJsonPath = path.join(roundDir, "live-indicator-audit.json");
   const auditRecords = Object.values(context.auditRecords).sort((a, b) => a.file.localeCompare(b.file));
-  assert.ok(auditRecords.length >= 22, `live-indicator-audit 应覆盖全部 ${context.manifest.length} 张图，实际 ${auditRecords.length}`);
+  assert.ok(auditRecords.length >= context.manifest.length, `live-indicator-audit 应覆盖全部 ${context.manifest.length} 张图，实际 ${auditRecords.length}`);
   fs.writeFileSync(
     auditJsonPath,
     JSON.stringify(
@@ -2581,7 +2741,7 @@ function renderManifest(context, { startedAt, projectRoot, plainFolder }) {
     checkRows,
     "",
     "场景客观检查说明：",
-    "- `sweep-direction`（reasoning-running / tool-after-reasoning）：三帧 PNG 中 label bbox 内的最暗列（扫光 ink 带）x 坐标严格递增（t000 < t400 < t900），机器证明扫光从左向右；相位由 Web Animations API pause+seek 固定（680/920/1160ms，1450ms 周期）。",
+    "- `sweep-direction`（reasoning-running / tool-after-reasoning）：三帧 PNG 中 label bbox 内的字形列质心 x（浅色 = 列内最暗 <128，深色 = 列内最亮 >128）三帧互不相同且跨度 ≥2px，机器证明扫光带随相位移动；相位由 Web Animations API pause+seek 固定（680/920/1160ms 按实际动画周期等比换算）。Round10 起产品动画为 agent-label-shine（muted↔透明渐变，无旧版 ink 暗带），方向由关键帧决定，不预设左→右。",
     "- `markdown-table-scroll`（markdown-fixture）：Markdown 表格由独立容器承载（`overflow-x: auto`），表格保持 760px 宽；390px 视口必须出现真实容器内溢出（页面级不溢出）。",
     "- `task-list-states`（markdown-fixture）：任务列表同时渲染 checked 与未勾选 checkbox（[x]/[ ] 两态）。",
     "- `builtin-style-detail`（settings-style-detail）：只读详情正文非空，且无启用/删除/编辑控件。",
@@ -2638,7 +2798,7 @@ function renderReviewPrompt(roundDir) {
     "3. Markdown 表格、任务列表、代码块、引用、链接是否排版完整，没有撑破 760px 正文列；窄视口表格在容器内滚动，页面不横向溢出。",
     "4. 390x844、768x900、1280x800、1440x900 下是否有遮挡、截字、横向溢出、控件碰撞或不合理留白（conversation-completed 四视口必须逐张检查）。",
     "5. 设置页 Agent 技能分区：内置写作风格（均衡/快节奏易读/心理文学）是否无框只读展示，不存在项目启用开关、删除/编辑按钮和卡片套卡片；详情正文是否完整可读。",
-    "6. 对比 reasoning-running 三帧和 tool-after-reasoning 三帧：文字扫光是否从左向右、文字不位移、容器不跳动。",
+    "6. 对比 reasoning-running 三帧和 tool-after-reasoning 三帧：扫光带是否随相位移动（label-shine 渐变，无旧版 ink 亮带）、文字不位移、容器不跳动。",
     "7. 着重检查动效唯一性：顺序场景中任何一帧不得同时看到“思考中”和工具文字都在扫光；展开工作组时外层“工作中”不得同时扫光；terminal 场景（conversation-completed / markdown-fixture / settings / drawer / plain-folder）不得残留任何扫光。只有 MANIFEST 明确 parallel_runtime_supported: true 且 audit 同时列出两个开放 activity_id 时，两个工具文字同时动才允许。",
     "8. 逐项检查文字层级：Assistant 正文是否为 regular；H1/H2 是否以深色、字号和字重建立层级而没有滥用 accent/green；H3–H6 是否克制且明显低于 H1/H2；链接、引用、inline code 是否分别具有颜色之外的下划线、左边线、等宽字体信号。",
     "9. 检查任务计划（若可见）：只有“任务计划”标题和唯一当前项加粗；已完成文字不加删除线且没有整行变绿，只有勾选 icon 为绿色。",
