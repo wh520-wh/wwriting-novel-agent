@@ -277,10 +277,9 @@ function applyEventToState(state, event) {
       bump(state, ["run"]);
       break;
     }
-    case "input_withdrawn": {
-      // 撤回的输入在 UI/模型历史/普通导出中不可见：只从「接下来」移除。
-      // 撤回的正是优先输入时清空标记（否则后续 priority_input_requested 全部
-      // 被「已有优先输入」拒绝，优先队列卡死——镜像 journal reducer）。
+    case "input_withdrawn":
+    case "input_cancelled": {
+      // 撤回或由 Run 级取消终结的输入都从「接下来」移除，并清理优先标记。
       const inputId = payload.input_id ?? null;
       if (state.session && inputId != null) {
         if (Array.isArray(state.session.queued_inputs)) {
@@ -482,6 +481,16 @@ function applyEventToState(state, event) {
         state.session.status = "idle";
       }
       bump(state, ["run", "errors"]);
+      break;
+    }
+    case "connection_error": {
+      state.errors.push({
+        seq,
+        run_id: null,
+        message: typeof payload.message === "string" ? payload.message : "事件流连接失败。",
+        code: payload.code ?? "event_stream_error"
+      });
+      bump(state, ["errors"]);
       break;
     }
     case "run_completed": {
@@ -767,7 +776,7 @@ export function getCompactionRows(state) {
   return state.compactionRows;
 }
 
-// 压缩阻塞普通发送的状态（镜像核心 COMPACTION_BLOCKED_STATES 的视图口径）：
+// 压缩阻塞普通发送的状态（镜像核心 COMPACTION_SEND_BLOCKED_STATES 的视图口径）：
 // 在途（started/running/cancelling）与失败（等待用户 重试/取消 决策）禁用发送；
 // completed/cancelled/noop 均恢复正常发送（取消完成把文本留在 draft，send 恢复）。
 export const COMPACTION_BLOCKED_STATES = new Set(["started", "running", "cancelling", "failed"]);

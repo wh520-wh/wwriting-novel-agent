@@ -47,6 +47,7 @@ export function createAgentApi({
   getProjectRoot = () => null,
   getAfterSeq = () => 0,
   onEvent = () => {},
+  onStreamError = () => {},
   onReconnect = async () => {},
   fetchImpl = (url, options) => fetch(url, options),
   baseDelayMs = DEFAULT_BASE_DELAY_MS,
@@ -313,11 +314,12 @@ export function createAgentApi({
         const projectRoot = root();
         if (!projectRoot) return;
         try {
-          await streamEvents({
+          const shouldReconnect = await streamEvents({
             projectRoot,
             afterSeq: getAfterSeq(),
             signal: myController.signal
           });
+          if (!shouldReconnect) return;
           // 流被服务端关闭（重启/网络中断）→ 视作断线，退避重连
           attempt += 1;
           await sleep(backoff(), myController.signal);
@@ -362,7 +364,7 @@ export function createAgentApi({
       while ((index = buffer.indexOf("\n\n")) >= 0) {
         const block = buffer.slice(0, index);
         buffer = buffer.slice(index + 2);
-        dispatchBlock(block);
+        if (!dispatchBlock(block)) return false;
       }
     }
     // R5-3：流结束冲刷——无参 decode() 处理最后一个 chunk 里不完整的 UTF-8
@@ -373,23 +375,38 @@ export function createAgentApi({
     while ((index = buffer.indexOf("\n\n")) >= 0) {
       const block = buffer.slice(0, index);
       buffer = buffer.slice(index + 2);
-      dispatchBlock(block);
+      if (!dispatchBlock(block)) return false;
     }
-    if (buffer.trim()) dispatchBlock(buffer);
+    if (buffer.trim() && !dispatchBlock(buffer)) return false;
+    return true;
   }
 
   function dispatchBlock(block) {
+    let eventName = "message";
     for (const line of block.split("\n")) {
-      if (!line.startsWith("data:")) continue; // 忽略注释行与 event: 类型行
+      if (line.startsWith("event:")) {
+        eventName = line.slice(6).trim() || "message";
+        continue;
+      }
+      if (!line.startsWith("data:")) continue;
       const raw = line.slice(5).trim();
       if (!raw) continue;
       try {
         const event = JSON.parse(raw);
-        if (event && typeof event === "object") onEvent(event);
+        if (!event || typeof event !== "object") continue;
+        if (eventName === "error" || event.ok === false) {
+          onStreamError({
+            code: typeof event.code === "string" ? event.code : "event_stream_error",
+            message: typeof event.message === "string" ? event.message : "事件流连接失败。"
+          });
+          return false;
+        }
+        onEvent(event);
       } catch {
         // 坏行忽略
       }
     }
+    return true;
   }
 
   function destroy() {
