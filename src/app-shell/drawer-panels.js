@@ -108,11 +108,15 @@ export function createDrawerPanels(ctx) {
   // 章节状态只显示文件事实：已完成（可打开阅读）或待生成。
   function buildChapterRow(chapter, costRow, costAvailable) {
     const done = chapter.status === "completed";
-    const row = document.createElement("button");
+    const row = document.createElement("div");
     row.className = `chrow ${done ? "completed" : "todo"}`;
-    row.type = "button";
-    row.disabled = !done;
     row.title = chapter.title || (done ? "已定稿章节" : "待生成");
+    if (done) {
+      row.setAttribute("role", "button");
+      row.tabIndex = 0;
+    } else {
+      row.setAttribute("aria-disabled", "true");
+    }
     const n = document.createElement("span");
     n.className = "ch-n mono";
     n.textContent = String(chapter.chapter_no).padStart(2, "0");
@@ -139,24 +143,38 @@ export function createDrawerPanels(ctx) {
       historyBtn.type = "button";
       historyBtn.className = "chrow-history";
       historyBtn.textContent = "历史";
+      let versionPanel = null;
+      let versionPanelOpening = null;
       historyBtn.addEventListener("click", async (event) => {
         event.stopPropagation();
-        const panel = createVersionPanel({ doc: document });
-        row.after(panel);
-        panel.open({
+        if (!versionPanel) {
+          versionPanel = createVersionPanel({ doc: document });
+          row.after(versionPanel);
+        }
+        if (versionPanelOpening) return;
+        versionPanelOpening = versionPanel.open({
           title: `第 ${chapter.chapter_no} 章`,
-          kind: "chapter",
-          chapterNo: chapter.chapter_no,
           getVersions: async () => getJson(`/api/chapters/versions?chapter_no=${chapter.chapter_no}`),
           getContent: async (version) => getJson(`/api/chapters/versions/content?chapter_no=${chapter.chapter_no}&version=${version}`),
           onRestore: async (version) => {
             const result = await postJson("/api/chapters/rollback", { chapter_no: chapter.chapter_no, version });
-            if (result?.ok) { panel.close(); await ctx.loadDashboard?.(); }
+            if (result?.ok) { versionPanel.close(); await ctx.loadDashboard?.(); }
           }
         });
+        try {
+          await versionPanelOpening;
+        } finally {
+          versionPanelOpening = null;
+        }
       });
       row.append(historyBtn);
       row.addEventListener("click", () => ctx.openReader(chapter.chapter_no));
+      row.addEventListener("keydown", (event) => {
+        if (event.target !== row) return;
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        ctx.openReader(chapter.chapter_no);
+      });
     } else {
       const state = document.createElement("span");
       state.className = "ch-state todo";
@@ -197,8 +215,10 @@ export function createDrawerPanels(ctx) {
   }
 
   function cacheSummaryText(data) {
-    if (!data.cacheSummary) return "缓存待生成";
-    return data.cacheSummary.explanation ?? "缓存待生成";
+    const inputTokens = Number(data.cost?.hitRateInputTokens ?? 0);
+    if (!(inputTokens > 0)) return "暂无数据";
+    const hitTokens = Number(data.cost?.cacheHitTokens ?? 0);
+    return `命中 ${Math.round((hitTokens / inputTokens) * 100)}%`;
   }
 
   function appendKv(dl, key, value, valueClass) {
@@ -269,8 +289,7 @@ export function createDrawerPanels(ctx) {
       cost: data.cost ?? null,
       summary,
       events,
-      modelConfig: data.config?.effective?.active_model ?? null,
-      cacheSummary: data.cacheSummary ?? null
+      modelConfig: data.config?.effective?.active_model ?? null
     });
     body.append(tree);
     ctx.refs.drawerBody.replaceChildren(panel);
@@ -298,21 +317,29 @@ export function createDrawerPanels(ctx) {
       history.type = "button";
       history.className = "chrow-history";
       history.textContent = "历史";
+      let versionPanel = null;
+      let versionPanelOpening = null;
       history.addEventListener("click", async (event) => {
         event.stopPropagation();
-        const panel = createVersionPanel({ doc: document });
-        card.after(panel);
-        panel.open({
+        if (!versionPanel) {
+          versionPanel = createVersionPanel({ doc: document });
+          card.after(versionPanel);
+        }
+        if (versionPanelOpening) return;
+        versionPanelOpening = versionPanel.open({
           title: block.title,
-          kind: "memory",
-          file: block.file,
           getVersions: async () => getJson(`/api/memory/versions?file=${block.file}`),
           getContent: async (version) => getJson(`/api/memory/versions/content?file=${block.file}&version=${version}`),
           onRestore: async (version) => {
             const result = await postJson("/api/memory/versions/restore", { file: block.file, version });
-            if (result?.ok) { panel.close(); renderMemoryPanel(data); }
+            if (result?.ok) { versionPanel.close(); renderMemoryPanel(data); }
           }
         });
+        try {
+          await versionPanelOpening;
+        } finally {
+          versionPanelOpening = null;
+        }
       });
       head.append(history);
       card.append(head);

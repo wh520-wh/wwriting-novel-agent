@@ -350,7 +350,7 @@ step("场景 9 · 章节事务");
     assert.ok(Array.isArray(memory.chapters), "章节记忆应存在");
     const events = await readEvents(h.agent, h.projectRoot);
     assert.ok(eventsOfType(events, "checkpoint_linked").length >= 1, "提交应记录 checkpoint 引用");
-    record("章节事务：草稿/门禁/正式文件/索引/记忆/checkpoint 一致", true, `words=${chapter.actual_words}`);
+    record("章节事务：草稿/正式文件/索引/记忆/checkpoint 一致", true, `words=${chapter.actual_words}`);
   } finally {
     await h.cleanup();
   }
@@ -1076,7 +1076,8 @@ step("场景 24 · 活动合并与私有推理排除");
 
     const doc = {
       createElement: (tag) => new MockElement(tag),
-      createElementNS: (_namespace, tag) => new MockElement(tag)
+      createElementNS: (_namespace, tag) => new MockElement(tag),
+      createTextNode: (text) => ({ nodeType: 3, textContent: String(text), children: [] })
     };
     const root = new MockElement("div");
     const { createAgentSurface } = await import("../src/app-shell/agent/index.js");
@@ -1139,7 +1140,8 @@ step("场景 25 · 1040px 内容列与统一菜单视口钳制");
   const agentCss = await fs.readFile(agentCssUrl, "utf8");
   const stylesCss = await fs.readFile(stylesCssUrl, "utf8");
   assert.ok(stylesCss.includes("--content-column: 1040px"), "styles.css 应定义 1040px 内容列变量");
-  assert.ok(agentCss.includes("--content-column: 1040px"), "agent.css 应定义 1040px 内容列变量");
+  assert.ok(agentCss.includes("var(--content-column)"), "agent.css 应引用全局内容列变量");
+  assert.ok(!agentCss.includes("--content-column: 1040px"), "agent.css 不得重复定义内容列变量");
   assert.ok(
     /\.agent-conversation[\s\S]*max-width:\s*var\(--content-column\)/u.test(agentCss),
     "对话应共享 max-width: var(--content-column)"

@@ -144,22 +144,31 @@ test("shell spawn 失败时 reject 且不挂起", async () => {
 
 test("停止后整棵进程树被终止（子进程不得继续写文件）", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "ww-shell-tree-"));
-  // 相对 marker 名：避免绝对路径反斜杠在 cmd 引号解析中被打断（与验收场景一致）
   const markerName = "stop-marker.txt";
   const marker = path.join(cwd, markerName);
   try {
     const controller = new AbortController();
     const command =
-      `"${process.execPath}" -e "setTimeout(function(){` +
-      `require('fs').writeFileSync('${markerName}','x')},1000);` +
-      `setInterval(function(){},500)"`;
+      `"${process.execPath}" -e "setInterval(function(){` +
+      `require('fs').appendFileSync('${markerName}','x')},50)"`;
     const pending = runShellCommand({ command, cwd, timeoutMs: 30000, signal: controller.signal });
-    await sleep(300);
+
+    const startedDeadline = Date.now() + 2000;
+    while (Date.now() < startedDeadline) {
+      try {
+        await fs.access(marker);
+        break;
+      } catch {
+        await sleep(20);
+      }
+    }
+    await fs.access(marker);
+
     controller.abort("用户停止");
     await assert.rejects(pending, (error) => error.code === "shell_cancelled");
-    // 给子进程足够时间完成 1s 延迟写入；若进程树未被终止则 marker 会出现
-    await sleep(1500);
-    await assert.rejects(() => fs.access(marker), "stop 后子进程不得再写 marker");
+    const contentAtStop = await fs.readFile(marker, "utf8");
+    await sleep(500);
+    assert.equal(await fs.readFile(marker, "utf8"), contentAtStop, "stop 返回后子进程不得继续写 marker");
   } finally {
     await fs.rm(cwd, { recursive: true, force: true });
   }
