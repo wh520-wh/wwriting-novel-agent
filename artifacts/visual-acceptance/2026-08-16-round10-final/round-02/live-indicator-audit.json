@@ -1,0 +1,272 @@
+{
+  "parallel_runtime_supported": false,
+  "notes": "每条记录对应 MANIFEST 中的一张 PNG；openActivityIds 为捕获时开放的 activity id（运行中工作项），visibleAnimatedCount 为 live class 动效文字数量。sequential 场景 ≤1、terminal 场景 =0，违反即采集失败。图片与 JSON 冲突时视觉验收判 FAIL。",
+  "records": [
+    {
+      "file": "conversation-completed-1280x800.png",
+      "scenario": "conversation-completed",
+      "viewport": "1280x800",
+      "mode": "terminal",
+      "openActivityIds": [],
+      "visibleAnimatedLabels": [],
+      "visibleAnimatedCount": 0,
+      "groupHeaderAnimated": false,
+      "parallel_runtime_supported": false
+    },
+    {
+      "file": "conversation-completed-1440x900.png",
+      "scenario": "conversation-completed",
+      "viewport": "1440x900",
+      "mode": "terminal",
+      "openActivityIds": [],
+      "visibleAnimatedLabels": [],
+      "visibleAnimatedCount": 0,
+      "groupHeaderAnimated": false,
+      "parallel_runtime_supported": false
+    },
+    {
+      "file": "conversation-completed-390x844.png",
+      "scenario": "conversation-completed",
+      "viewport": "390x844",
+      "mode": "terminal",
+      "openActivityIds": [],
+      "visibleAnimatedLabels": [],
+      "visibleAnimatedCount": 0,
+      "groupHeaderAnimated": false,
+      "parallel_runtime_supported": false
+    },
+    {
+      "file": "conversation-completed-768x900.png",
+      "scenario": "conversation-completed",
+      "viewport": "768x900",
+      "mode": "terminal",
+      "openActivityIds": [],
+      "visibleAnimatedLabels": [],
+      "visibleAnimatedCount": 0,
+      "groupHeaderAnimated": false,
+      "parallel_runtime_supported": false
+    },
+    {
+      "file": "drawer-1280x800.png",
+      "scenario": "drawer",
+      "viewport": "1280x800",
+      "mode": "terminal",
+      "openActivityIds": [],
+      "visibleAnimatedLabels": [],
+      "visibleAnimatedCount": 0,
+      "groupHeaderAnimated": false,
+      "parallel_runtime_supported": false
+    },
+    {
+      "file": "markdown-fixture-1280x800.png",
+      "scenario": "markdown-fixture",
+      "viewport": "1280x800",
+      "mode": "terminal",
+      "openActivityIds": [],
+      "visibleAnimatedLabels": [],
+      "visibleAnimatedCount": 0,
+      "groupHeaderAnimated": false,
+      "parallel_runtime_supported": false
+    },
+    {
+      "file": "markdown-fixture-390x844.png",
+      "scenario": "markdown-fixture",
+      "viewport": "390x844",
+      "mode": "terminal",
+      "openActivityIds": [],
+      "visibleAnimatedLabels": [],
+      "visibleAnimatedCount": 0,
+      "groupHeaderAnimated": false,
+      "parallel_runtime_supported": false
+    },
+    {
+      "file": "memory-tab-1280x800.png",
+      "scenario": "memory-tab",
+      "viewport": "1280x800",
+      "mode": "terminal",
+      "openActivityIds": [],
+      "visibleAnimatedLabels": [],
+      "visibleAnimatedCount": 0,
+      "groupHeaderAnimated": false,
+      "parallel_runtime_supported": false
+    },
+    {
+      "file": "plain-folder-first-message-1280x800.png",
+      "scenario": "plain-folder-first-message",
+      "viewport": "1280x800",
+      "mode": "terminal",
+      "openActivityIds": [],
+      "visibleAnimatedLabels": [],
+      "visibleAnimatedCount": 0,
+      "groupHeaderAnimated": false,
+      "parallel_runtime_supported": false
+    },
+    {
+      "file": "plan-panel-collapsed-1280x800.png",
+      "scenario": "plan-panel-collapsed",
+      "viewport": "1280x800",
+      "mode": "terminal",
+      "openActivityIds": [],
+      "visibleAnimatedLabels": [],
+      "visibleAnimatedCount": 0,
+      "groupHeaderAnimated": false,
+      "parallel_runtime_supported": false
+    },
+    {
+      "file": "plan-panel-open-1280x800.png",
+      "scenario": "plan-panel-open",
+      "viewport": "1280x800",
+      "mode": "terminal",
+      "openActivityIds": [],
+      "visibleAnimatedLabels": [],
+      "visibleAnimatedCount": 0,
+      "groupHeaderAnimated": false,
+      "parallel_runtime_supported": false
+    },
+    {
+      "file": "reasoning-running-t000-1280x800.png",
+      "scenario": "reasoning-running",
+      "viewport": "1280x800",
+      "mode": "sequential",
+      "openActivityIds": [
+        "reasoning:2c5276cb-efd3-4026-a8c6-affe6a1a8395"
+      ],
+      "visibleAnimatedLabels": [
+        "思考中"
+      ],
+      "visibleAnimatedCount": 1,
+      "groupHeaderAnimated": false,
+      "parallel_runtime_supported": false
+    },
+    {
+      "file": "reasoning-running-t400-1280x800.png",
+      "scenario": "reasoning-running",
+      "viewport": "1280x800",
+      "mode": "sequential",
+      "openActivityIds": [
+        "reasoning:2c5276cb-efd3-4026-a8c6-affe6a1a8395"
+      ],
+      "visibleAnimatedLabels": [
+        "思考中"
+      ],
+      "visibleAnimatedCount": 1,
+      "groupHeaderAnimated": false,
+      "parallel_runtime_supported": false
+    },
+    {
+      "file": "reasoning-running-t900-1280x800.png",
+      "scenario": "reasoning-running",
+      "viewport": "1280x800",
+      "mode": "sequential",
+      "openActivityIds": [
+        "reasoning:2c5276cb-efd3-4026-a8c6-affe6a1a8395"
+      ],
+      "visibleAnimatedLabels": [
+        "思考中"
+      ],
+      "visibleAnimatedCount": 1,
+      "groupHeaderAnimated": false,
+      "parallel_runtime_supported": false
+    },
+    {
+      "file": "settings-builtin-styles-1280x800.png",
+      "scenario": "settings-builtin-styles",
+      "viewport": "1280x800",
+      "mode": "terminal",
+      "openActivityIds": [],
+      "visibleAnimatedLabels": [],
+      "visibleAnimatedCount": 0,
+      "groupHeaderAnimated": false,
+      "parallel_runtime_supported": false
+    },
+    {
+      "file": "settings-builtin-styles-390x844.png",
+      "scenario": "settings-builtin-styles",
+      "viewport": "390x844",
+      "mode": "terminal",
+      "openActivityIds": [],
+      "visibleAnimatedLabels": [],
+      "visibleAnimatedCount": 0,
+      "groupHeaderAnimated": false,
+      "parallel_runtime_supported": false
+    },
+    {
+      "file": "settings-style-detail-1280x800.png",
+      "scenario": "settings-style-detail",
+      "viewport": "1280x800",
+      "mode": "terminal",
+      "openActivityIds": [],
+      "visibleAnimatedLabels": [],
+      "visibleAnimatedCount": 0,
+      "groupHeaderAnimated": false,
+      "parallel_runtime_supported": false
+    },
+    {
+      "file": "tool-after-reasoning-t000-1280x800.png",
+      "scenario": "tool-after-reasoning",
+      "viewport": "1280x800",
+      "mode": "sequential",
+      "openActivityIds": [
+        "tool:3273b876-bbf9-447b-bd24-b9df84782ccf"
+      ],
+      "visibleAnimatedLabels": [
+        "正在调用 read_skill"
+      ],
+      "visibleAnimatedCount": 1,
+      "groupHeaderAnimated": false,
+      "parallel_runtime_supported": false
+    },
+    {
+      "file": "tool-after-reasoning-t400-1280x800.png",
+      "scenario": "tool-after-reasoning",
+      "viewport": "1280x800",
+      "mode": "sequential",
+      "openActivityIds": [
+        "tool:3273b876-bbf9-447b-bd24-b9df84782ccf"
+      ],
+      "visibleAnimatedLabels": [
+        "正在调用 read_skill"
+      ],
+      "visibleAnimatedCount": 1,
+      "groupHeaderAnimated": false,
+      "parallel_runtime_supported": false
+    },
+    {
+      "file": "tool-after-reasoning-t900-1280x800.png",
+      "scenario": "tool-after-reasoning",
+      "viewport": "1280x800",
+      "mode": "sequential",
+      "openActivityIds": [
+        "tool:3273b876-bbf9-447b-bd24-b9df84782ccf"
+      ],
+      "visibleAnimatedLabels": [
+        "正在调用 read_skill"
+      ],
+      "visibleAnimatedCount": 1,
+      "groupHeaderAnimated": false,
+      "parallel_runtime_supported": false
+    },
+    {
+      "file": "version-panel-1280x800.png",
+      "scenario": "version-panel",
+      "viewport": "1280x800",
+      "mode": "terminal",
+      "openActivityIds": [],
+      "visibleAnimatedLabels": [],
+      "visibleAnimatedCount": 0,
+      "groupHeaderAnimated": false,
+      "parallel_runtime_supported": false
+    },
+    {
+      "file": "version-panel-confirm-1280x800.png",
+      "scenario": "version-panel-confirm",
+      "viewport": "1280x800",
+      "mode": "terminal",
+      "openActivityIds": [],
+      "visibleAnimatedLabels": [],
+      "visibleAnimatedCount": 0,
+      "groupHeaderAnimated": false,
+      "parallel_runtime_supported": false
+    }
+  ]
+}

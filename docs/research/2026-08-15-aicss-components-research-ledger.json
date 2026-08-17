@@ -1,0 +1,265 @@
+{
+  "research_date": "2026-08-15",
+  "evidence": [
+    {
+      "id": "E1",
+      "competitor": "aicss.dev",
+      "claim": "aicss.dev 首页列出 14 个 AI Agent 聊天界面组件(ai-agent-input、code-block、comparison-table、data-table、file-diff、image-generation、inline-citations、orbs、streaming-text、task-list、text-response、thinking-reasoning、thinking-state、web-search),全部为复制即用组件。",
+      "source_url": "https://www.aicss.dev/",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-15",
+      "evidence_locator": "首页组件导航(14 个 /components/* 链接)",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E2",
+      "competitor": "aicss.dev",
+      "claim": "streaming-text 组件页面提供 React/Vue/Svelte 三版本源码:打字机逻辑为 setInterval 9ms 每次追加 2 字符,text.slice(0,i) 更新;光标状态机为流式中 caret-steady 实心、播完才 caret-blink 闪烁;含 prefers-reduced-motion 与暗色模式适配。",
+      "source_url": "https://www.aicss.dev/components/streaming-text",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-15",
+      "evidence_locator": "页面内嵌 raw 源码(StreamingText.tsx / .module.css / .vue / .svelte)",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E3",
+      "competitor": "aicss.dev",
+      "claim": "thinking-state 组件为最小 shimmer 标签(React 版 tsx 仅 5 行、约 144 字节 + CSS 24 行、约 868 字节),用于信号 agent 处理中状态。",
+      "source_url": "https://www.aicss.dev/components/thinking-state",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-15",
+      "evidence_locator": "页面内嵌 raw 源码(ThinkingState.tsx / .module.css)",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E4",
+      "competitor": "aicss.dev",
+      "claim": "thinking-reasoning 组件为可折叠思考块:shimmer 标签展开后流式展示推理句子,折叠为 Thought for Ns 时间摘要(React 版约 5KB tsx + 3.4KB CSS)。",
+      "source_url": "https://www.aicss.dev/components/thinking-reasoning",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-15",
+      "evidence_locator": "页面内嵌 raw 源码(ThinkingReasoning.tsx / .module.css)",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E5",
+      "competitor": "aicss.dev",
+      "claim": "task-list 组件为 Cursor 风格 to-do 列表:可折叠头部、done/in-progress/pending 三态、pie 进度环、滚动数字计数动画(React 版约 6.7KB tsx + 5.3KB CSS)。",
+      "source_url": "https://www.aicss.dev/components/task-list",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-15",
+      "evidence_locator": "页面内嵌 raw 源码(TodoList.tsx / .module.css)",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E6",
+      "competitor": "aicss.dev",
+      "claim": "web-search 组件为搜索状态展示:查询 shimmer 头部 + 来源站点逐个 resolve(globe 旋转 SVG 动画 morph 为 check),React 版约 5.8KB tsx + 5.6KB CSS。",
+      "source_url": "https://www.aicss.dev/components/web-search",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-15",
+      "evidence_locator": "页面内嵌 raw 源码(WebSearch.tsx / .module.css)",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E7",
+      "competitor": "aicss.dev",
+      "claim": "inline-citations 组件为上标引用标记(悬浮提示)+ 紧凑来源 footer(标题/域名/箭头),React 版约 2.3KB tsx + 2.5KB CSS。",
+      "source_url": "https://www.aicss.dev/components/inline-citations",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-15",
+      "evidence_locator": "页面内嵌 raw 源码(InlineCitations.tsx / .module.css)",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E8",
+      "competitor": "aicss.dev",
+      "claim": "code-block 组件为代码块展示:语言标签 + 一键复制按钮 + 行号(React 版约 1.9KB tsx + 1.7KB CSS)。",
+      "source_url": "https://www.aicss.dev/components/code-block",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-15",
+      "evidence_locator": "页面内嵌 raw 源码(CodeBlock.tsx / .module.css)",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E9",
+      "competitor": "aicss.dev",
+      "claim": "text-response 组件为干净正文样式(prose + inline code,14px/19px),React 版仅 6 行 tsx(约 218 字节)+ 8 行 CSS(约 398 字节)。",
+      "source_url": "https://www.aicss.dev/components/text-response",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-15",
+      "evidence_locator": "页面内嵌 raw 源码(TextResponse.tsx / .module.css)",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E10",
+      "competitor": "aicss.dev",
+      "claim": "ai-agent-input 组件为完整 composer:attach + 模型切换菜单 + enhance prompt 四态(idle/filled/enhancing/enhanced)+ 斜杠菜单 + 技能 pill,React 版约 34KB tsx + 16KB CSS。",
+      "source_url": "https://www.aicss.dev/components/ai-agent-input",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-15",
+      "evidence_locator": "页面内嵌 raw 源码(PromptInput.tsx / .module.css)",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E11",
+      "competitor": "aicss.dev",
+      "claim": "file-diff 组件为行内 diff 卡片:文件头 + 增删行配色 + +/- 统计(React 版约 1.9KB tsx + 3.2KB CSS)。",
+      "source_url": "https://www.aicss.dev/components/file-diff",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-15",
+      "evidence_locator": "页面内嵌 raw 源码(FileDiff.tsx / .module.css)",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E12",
+      "competitor": "aicss.dev",
+      "claim": "orbs 组件为 6 种活动指示器变体(lattice/lens/ring/helix/morph/globe),纯 DOM+CSS/SVG 动画,体积大(React 版约 20KB tsx + 23KB CSS)。",
+      "source_url": "https://www.aicss.dev/components/orbs",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-15",
+      "evidence_locator": "页面内嵌 raw 源码(Orb.tsx / .module.css)",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E13",
+      "competitor": "aicss.dev",
+      "claim": "comparison-table 组件为 feature-by-plan 勾选对比矩阵(React 版约 1.3KB tsx + 1.4KB CSS)。",
+      "source_url": "https://www.aicss.dev/components/comparison-table",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-15",
+      "evidence_locator": "页面内嵌 raw 源码(ComparisonTable.tsx / .module.css)",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E14",
+      "competitor": "aicss.dev",
+      "claim": "data-table 组件为结构化数据表(模型对比示例,带图标,React 版约 4.7KB tsx + 1.6KB CSS)。",
+      "source_url": "https://www.aicss.dev/components/data-table",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-15",
+      "evidence_locator": "页面内嵌 raw 源码(DataTable.tsx / .module.css)",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E15",
+      "competitor": "aicss.dev",
+      "claim": "image-generation 组件为图像生成占位:shimmer 画布 + 点阵 + 光晕动画 + 提示词 meta(React 版约 0.7KB tsx + 3.7KB CSS)。",
+      "source_url": "https://www.aicss.dev/components/image-generation",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-15",
+      "evidence_locator": "页面内嵌 raw 源码(ImageGeneration.tsx / .module.css)",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E16",
+      "competitor": "aicss.dev",
+      "claim": "所有组件为演示态组件:演示数据以常量写死(如 WebSearch 的 QUERY/SITES、PromptInput 的 MODELS/SKILLS),需接真实事件流才能用于生产;Vue 版 streaming-text 未清理 interval(无 onUnmounted)。此为对页面源码审读得出的 inference(推断):页面未声明组件接真实数据的方式,且 Vue 版缺少卸载清理是代码中的可见缺陷。",
+      "source_url": "https://www.aicss.dev/components/web-search",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-15",
+      "evidence_locator": "WebSearch.tsx QUERY/SITES 常量;StreamingText.vue onMounted 无清理",
+      "classification": "inference",
+      "confidence": "high"
+    },
+    {
+      "id": "E17",
+      "competitor": "Magic UI",
+      "claim": "Magic UI 是开源复制粘贴动画组件库(Animated components and effects you can copy and paste),面向设计工程师,免费开源。",
+      "source_url": "https://github.com/magicuidesign/magicui",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-15",
+      "evidence_locator": "GitHub README 仓库描述",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E18",
+      "competitor": "assistant-ui",
+      "claim": "assistant-ui 是 React AI 聊天 UI 库,提供 headless chat primitives 与完整聊天组件(官方文档架构页描述)。",
+      "source_url": "https://www.assistant-ui.com/docs/architecture.mdx",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-15",
+      "evidence_locator": "architecture 文档页",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E19",
+      "competitor": "Aceternity UI",
+      "claim": "Aceternity UI 提供复制粘贴组件与 blocks,支持 CLI 安装(官方文档 CLI 页)。",
+      "source_url": "https://ui.aceternity.com/docs/cli",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-15",
+      "evidence_locator": "docs/cli 页面",
+      "classification": "fact",
+      "confidence": "medium"
+    }
+  ],
+  "recommendations": [
+    {
+      "id": "R1",
+      "priority": "P0",
+      "statement": "移植 streaming-text 打字机与光标状态机到 WWriting 流式正文(9ms×2字符 + 流式中实心光标/播完闪烁 + reduced-motion 适配),正文样式改为继承规格书(衬线 15px、行高≥2.0),播完光标消失符合折叠态即终态。",
+      "evidence_ids": ["E2", "E9"],
+      "acceptance_signal": "npm run sim:user-flow 真实模型端到端跑通;流式期间光标实心、播完折叠后无光标残留;对照《写作Agent对话样式规格书》逐条核对通过。"
+    },
+    {
+      "id": "R2",
+      "priority": "P0",
+      "statement": "采用 thinking-state 的 shimmer 标签作为思考中/处理中状态,替换现有静态提示。",
+      "evidence_ids": ["E3"],
+      "acceptance_signal": "发起写作后 0.5s 内思考标签以 shimmer 动画呈现;npm run verify:app-clickability 全绿。"
+    },
+    {
+      "id": "R3",
+      "priority": "P0",
+      "statement": "按 thinking-reasoning 三段式(shimmer 标签 → 展开流式推理 → 折叠时间摘要)增强思考块,时间统计接真实 elapsed。",
+      "evidence_ids": ["E4"],
+      "acceptance_signal": "一轮结束思考块折叠为「思考 N 秒」完成卡片,耗时与真实一致(±1s);五场景高保真原型规格核对通过。"
+    },
+    {
+      "id": "R4",
+      "priority": "P1",
+      "statement": "移植 task-list 的 Cursor 风格任务列表(可折叠头、三态、pie 进度、滚动计数),数据源改接 agent 任务计划事件。",
+      "evidence_ids": ["E5"],
+      "acceptance_signal": "写作过程中任务项实时流转 done/in-progress/pending 三态;折叠后仅剩标题+完成数;verify:app-clickability 全绿。"
+    },
+    {
+      "id": "R5",
+      "priority": "P1",
+      "statement": "移植 inline-citations(上标+来源 footer)与 web-search(查询 shimmer+来源逐个 resolve)作为 web 搜索工具的结果 UI,数据接真实工具输出。",
+      "evidence_ids": ["E6", "E7"],
+      "acceptance_signal": "chat 工具调用 web 搜索后正文出现上标引用且 footer 显示来源列表;无搜索时该 UI 不出现。"
+    },
+    {
+      "id": "R6",
+      "priority": "P1",
+      "statement": "移植 code-block(语言标签+一键复制)用于正文内代码块展示,补 ARIA label,样式对齐明暗主题。",
+      "evidence_ids": ["E8"],
+      "acceptance_signal": "正文含代码块时正确渲染语言标签且复制按钮可用(clipboard 权限验证通过)。"
+    },
+    {
+      "id": "R7",
+      "priority": "P2",
+      "statement": "参考 ai-agent-input 的 enhance 四态、file-diff 行内配色、data-table 密度、orbs 的 ring 变体作后续优化素材,不整体移植。",
+      "evidence_ids": ["E10", "E11", "E12", "E13", "E14"],
+      "acceptance_signal": "任一项落地进 UI 且规格书核对通过;未落地项在后续 sprint 评审中明确记录跳过原因。"
+    }
+  ]
+}
