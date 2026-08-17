@@ -410,6 +410,20 @@ test("项目内 read 自动执行，不产生决策", async (t) => {
   assertClosure(events);
 });
 
+test("read_file 结果按上下文安全上限截断（100k 字符，防单次读取撞爆窗口）", async (t) => {
+  const h = await setup(t);
+  await fs.writeFile(path.join(h.projectRoot, "big.md"), "雨".repeat(150_000), "utf8");
+  const result = await h.tools.execute(toolCall("read_file", { path: "big.md" }), h.context);
+  assert.equal(result.ok, true);
+  assert.equal(result.result.truncated, true, "超限读取必须标记 truncated");
+  assert.equal(result.result.content.length, 100_000, "结果内容必须截断到上下文安全上限");
+  await fs.writeFile(path.join(h.projectRoot, "small.md"), "短文", "utf8");
+  const small = await h.tools.execute(toolCall("read_file", { path: "small.md" }), h.context);
+  assert.equal(small.result.truncated, false);
+  assert.equal(small.result.content, "短文");
+  assertClosure(await readEvents(h.journal));
+});
+
 test("普通写入暂停等待确认；允许后落盘并写全事件链", async (t) => {
   const h = await setup(t);
   const pending = h.tools.execute(toolCall("write_file", { path: "notes.md", content: "第一条笔记" }), h.context);

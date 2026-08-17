@@ -512,6 +512,23 @@ try {
     const wwExists = await pathExists(wwMemoryPath);
     record("真实 API 冒烟：主链路 run_completed >= 2", runCompleted >= 2, `run_completed 数=${runCompleted}`, [journalPath]);
     record("真实 API 冒烟：WWRITING.md 已创建", wwExists, wwExists ? "项目记忆已落盘" : "WWRITING.md 缺失", wwExists ? [wwMemoryPath] : [projectRoot]);
+    // 交付断言：run 完成不等于交付完成（2026-08-18 真实链路曾整轮只反问不写稿，
+    // 冒烟只数 run_completed 导致假绿）。正文落盘 + count_text 客观核对才算交付。
+    // 目录兼容两种惯例：mock 流程写 正文/，真实模型可能按项目惯例建 chapters/。
+    let chapterFiles = [];
+    for (const dirName of ["正文", "chapters"]) {
+      try {
+        chapterFiles.push(...(await fs.readdir(path.join(projectRoot, dirName))).map((n) => `${dirName}/${n}`));
+      } catch {}
+    }
+    record(
+      "真实 API 冒烟：章节已交付（正文/ 或 chapters/）",
+      chapterFiles.length > 0,
+      chapterFiles.length > 0 ? `交付文件：${chapterFiles.join(", ")}` : "无章节文件（反问/空谈不算交付）",
+      [projectRoot]
+    );
+    const countTextCalled = mainSnapshot.events.some((e) => e.type === "tool_call_completed" && e.payload?.name === "count_text");
+    record("真实 API 冒烟：count_text 已调用", countTextCalled, countTextCalled ? "客观字数核对发生" : "模型未调用 count_text 核对字数", [journalPath]);
   }
 
   // ---- 汇总 ----

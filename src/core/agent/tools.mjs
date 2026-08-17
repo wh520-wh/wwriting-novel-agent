@@ -80,7 +80,13 @@ export function truncateOutput(text, budget, emitted = 0) {
     truncated: text.length > remaining
   };
 }
-const MAX_READ_CHARS = 1024 * 1024; // read_file 单次读取上限（截断）
+// 工具结果进入下一轮模型请求的上下文安全上限（字符）。按最小窗口 256k token 的
+// 最坏口径（CJK 约 1 字符 = 1 token）取 100k：单次工具结果 + 32k 输出安全余量 +
+// 常规会话历史仍低于 204_800 压缩阈值，一次工具调用不可能独自撞爆硬窗口。
+// ponytail: 定值不随 provider 窗口推导；若未来接入 <256k 窗口的 provider，应改在
+// 历史装配层（transcriptToMessages）按窗口统一截断工具结果。
+const MAX_TOOL_RESULT_CHARS = 100_000;
+const MAX_SEARCH_FILE_BYTES = 1024 * 1024; // search_files 内容搜索跳过的文件大小上限（字节）
 const MAX_SEARCH_MATCHES = 50; // search_files 命中上限
 const MAX_SEARCH_DEPTH = 12; // search_files 递归深度上限
 const SEARCH_SKIP_DIRS = new Set([".wwriting", "node_modules", ".git", "checkpoints", ".versions"]);
@@ -891,7 +897,7 @@ export function createToolRuntime({
             }
             try {
               const stats = await fs.stat(full);
-              if (stats.size > MAX_READ_CHARS) continue;
+              if (stats.size > MAX_SEARCH_FILE_BYTES) continue;
               const text = await fs.readFile(full, "utf8");
               const lines = text.split("\n");
               for (let i = 0; i < lines.length && matches.length < MAX_SEARCH_MATCHES; i += 1) {
@@ -921,7 +927,7 @@ export function createToolRuntime({
 
   register("read_file", {
     interruptible: false,
-    description: "读取文件内容（UTF-8，超过 1 MiB 截断并标注 truncated）。",
+    description: "读取文件内容（UTF-8，超过 100_000 字符截断并标注 truncated）。",
     schema: {
       type: "object",
       properties: {
@@ -948,14 +954,14 @@ export function createToolRuntime({
       const stats = await fs.stat(target);
       if (stats.isDirectory()) throw toolError("not_a_file", `路径是目录：${args.path}`);
       const raw = await fs.readFile(target, "utf8");
-      const truncated = raw.length > MAX_READ_CHARS;
+      const truncated = raw.length > MAX_TOOL_RESULT_CHARS;
       // 返回侧脱敏口径：文件内容按原样返回给模型（模型需要真实内容工作，且读取是
       // 模型点名发起的）；journal 事件侧（tool_call_started/completed 的 args/result）
       // 由 execute 统一脱敏，保证任何事件离开 ToolRuntime 前不含明文密钥。
       return {
         path: target,
         truncated,
-        content: truncated ? raw.slice(0, MAX_READ_CHARS) : raw
+        content: truncated ? raw.slice(0, MAX_TOOL_RESULT_CHARS) : raw
       };
     }
   });
@@ -1164,16 +1170,20 @@ export function createToolRuntime({
       // truncated 都基于同一拼接串（stdout + stderr）计算，避免边界 off-by-one。
       const combined = `${stdout}${stderr}`;
       const { truncated } = truncateOutput(combined, MAX_TOOL_OUTPUT_CHARS);
+      // 结果内容按 MAX_TOOL_RESULT_CHARS 合并预算截断（stdout 优先、stderr 吃余量），
+      // 防止单次 shell 输出独自撞爆上下文硬窗口；content_length 仍报真实长度。
+      const stdoutKept = stdout.slice(0, MAX_TOOL_RESULT_CHARS);
+      const stderrKept = stderr.slice(0, Math.max(0, MAX_TOOL_RESULT_CHARS - stdoutKept.length));
       return {
         command: redactor.redact(result.command),
         cwd: redactor.redact(result.cwd),
         exit_code: result.exitCode,
         signal: result.signal ?? null,
         duration_ms: result.durationMs,
-        stdout,
-        stderr,
+        stdout: stdoutKept,
+        stderr: stderrKept,
         content_length: combined.length,
-        truncated
+        truncated: truncated || combined.length > MAX_TOOL_RESULT_CHARS
       };
     }
   });
