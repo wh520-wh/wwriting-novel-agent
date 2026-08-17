@@ -295,13 +295,30 @@ export function createDrawerPanels(ctx) {
     ctx.refs.drawerBody.replaceChildren(panel);
   }
 
+  // 记忆卡正文渲染：只展示、不改磁盘内容；去除文档第一个 H1（与卡头重复），
+  // 剥离后为空则显示紧凑空态文案。
+  function renderMemoryContent(target, content, emptyText) {
+    const lines = String(content ?? "").replace(/^\uFEFF/u, "").split(/\r?\n/u);
+    if (/^#\s+\S/u.test(lines[0] ?? "")) lines.shift();
+    const body = lines.join("\n").trim();
+
+    if (body === "") {
+      target.classList.add("memory-card-content--empty");
+      target.textContent = emptyText;
+      return;
+    }
+
+    target.classList.remove("memory-card-content--empty");
+    target.innerHTML = renderMarkdown(body);
+  }
+
   // 第九轮：「记忆」分区面板（故事摘要 + 工作日志 + 设定档案只读）。
   // Round10：记忆区是独立文档块（memory-card 非 dpanel），正文用现有安全
   // Markdown 渲染器（.agent-markdown 子集），不创建第二个 parser、不执行原始 HTML。
   async function renderMemoryPanel(data) {
     const blocks = [
-      { file: "book_summary", title: "故事摘要" },
-      { file: "worklog", title: "工作日志" }
+      { file: "book_summary", title: "故事摘要", emptyText: "暂无故事摘要" },
+      { file: "worklog", title: "工作日志", emptyText: "暂无工作日志" }
     ];
     const body = document.createElement("div");
     body.className = "memory-body";
@@ -346,7 +363,7 @@ export function createDrawerPanels(ctx) {
       const content = document.createElement("div");
       content.className = "memory-card-content agent-markdown";
       const data2 = await getJson(`/api/memory/files/content?file=${block.file}`);
-      content.innerHTML = renderMarkdown(data2?.content ?? "");
+      renderMemoryContent(content, data2?.content, block.emptyText);
       card.append(content);
       body.append(card);
     }
@@ -361,7 +378,7 @@ export function createDrawerPanels(ctx) {
     const cContent = document.createElement("div");
     cContent.className = "memory-card-content agent-markdown";
     const cData = await getJson("/api/memory/files/content?file=continuity");
-    cContent.innerHTML = renderMarkdown(cData?.content ?? "");
+    renderMemoryContent(cContent, cData?.content, "暂无设定档案");
     continuityCard.append(cContent);
     body.append(continuityCard);
     ctx.refs.drawerBody.replaceChildren(body);

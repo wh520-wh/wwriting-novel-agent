@@ -134,9 +134,9 @@ const agentSurface = createAgentSurface({
   }
 });
 
-// 第九轮：任务计划面板挂载——chip 插入顶栏 actions，位于 drawer trigger 之前。
+// 第九轮：任务计划面板挂载——chip 插入顶栏 actions，位于更多按钮之前。
 const topbarActions = document.querySelector(".topbar-actions");
-topbarActions?.insertBefore(planPanel.chip, document.getElementById("open-drawer") ?? null);
+topbarActions?.insertBefore(planPanel.chip, refs.topbarMore ?? topbarActions.firstChild);
 document.addEventListener("click", (event) => planPanel.handleOutsideClick(event));
 document.addEventListener("keydown", (event) => planPanel.handleKeydown(event));
 
@@ -366,7 +366,11 @@ refs.drawerTabs.addEventListener("click", (event) => {
   if (tab) setDrawerTab(tab.dataset.dtab);
 });
 // Task 12：右侧 quick rail 已删除，章节/资料/成本入口统一经顶部「面板」按钮进入 drawer。
-refs.openDrawer?.addEventListener("click", () => openDrawerTab("chapters"));
+// Round10：面板已是抽屉 menuitem，点它顺手收起更多二级菜单，避免两个浮层并存。
+refs.openDrawer?.addEventListener("click", () => {
+  closeTopbarSecondary();
+  openDrawerTab("chapters");
+});
 
 // Round10：rail 覆盖态入口（窄屏 rail 不再 display:none）。
 refs.railToggle?.addEventListener("click", () => {
@@ -376,7 +380,14 @@ refs.railToggle?.addEventListener("click", () => {
 refs.railScrim?.addEventListener("click", () => closeRail());
 
 // Round10：topbar 更多菜单——点击只切换 .show；outside click 关闭但不抢焦点；
-// Escape 关闭（全局 keydown 处理）并把焦点还给 more。
+// Escape 关闭（全局 keydown 处理）并把焦点还给 more。统一关闭走 closeTopbarSecondary
+//（drawer menuitem / 外点 / Escape 三处复用，避免手写两份 class+aria 更新漂移）。
+function closeTopbarSecondary({ restoreFocus = false } = {}) {
+  if (!refs.topbarSecondary?.classList.contains("show")) return;
+  refs.topbarSecondary.classList.remove("show");
+  refs.topbarMore?.setAttribute("aria-expanded", "false");
+  if (restoreFocus) refs.topbarMore?.focus();
+}
 refs.topbarMore?.addEventListener("click", () => {
   const show = refs.topbarSecondary.classList.toggle("show");
   refs.topbarMore.setAttribute("aria-expanded", show ? "true" : "false");
@@ -384,8 +395,7 @@ refs.topbarMore?.addEventListener("click", () => {
 document.addEventListener("click", (event) => {
   if (!refs.topbarSecondary?.classList.contains("show")) return;
   if (refs.topbarSecondary.contains(event.target) || refs.topbarMore.contains(event.target)) return;
-  refs.topbarSecondary.classList.remove("show");
-  refs.topbarMore.setAttribute("aria-expanded", "false");
+  closeTopbarSecondary();
 });
 // Round10：菜单语义配套键盘——menuitem 聚焦时 ArrowDown/ArrowUp/Home/End 轮换。
 // 桌面行内常驻时同样生效（两枚按钮，行为无害且语义一致）。
@@ -489,9 +499,7 @@ document.addEventListener("keydown", (event) => {
     if (event.defaultPrevented) return;
     // Round10：topbar 更多菜单优先于顶层 overlay 关闭；关闭后焦点还给 more。
     if (refs.topbarSecondary.classList.contains("show")) {
-      refs.topbarSecondary.classList.remove("show");
-      refs.topbarMore.setAttribute("aria-expanded", "false");
-      refs.topbarMore.focus();
+      closeTopbarSecondary({ restoreFocus: true });
       event.preventDefault();
       return;
     }
