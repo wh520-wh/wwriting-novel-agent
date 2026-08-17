@@ -35,8 +35,7 @@
 // Task 10 存储安全契约：commit_chapter 只保留草稿存在、路径边界、项目身份、校验和、
 // 原子写入、回滚与索引一致性约束；字数、标题格式或技能 checker 一律不是门禁，不能
 // 阻止写入、提交或 Agent 结束。actual_words 只作客观记录（索引/历史兼容），不决定
-// 能否提交。post-process 技能钩子与内容质量门禁已全部删除；索引固定写
-// quality_gate_results: []（仅新提交生效，旧索引已有 gate 结果不批量改写）。
+// 能否提交。post-process 技能钩子与内容质量门禁已全部删除。
 
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -351,8 +350,7 @@ export async function appendChapterSegment({ projectRoot, projectId, chapterNo, 
 // ---------------------------------------------------------------------------
 // commitChapter —— 原子正式提交：
 //   Task 10：只保留存储安全约束（草稿存在、项目身份、expected 校验和、原子写入
-//   与回滚）。内容质量（字数/标题格式/技能 checker）一律不是门禁；索引固定写
-//   quality_gate_results: []，仅新提交生效，旧索引已有 gate 结果不批量改写。
+//   与回滚）。内容质量（字数/标题格式/技能 checker）一律不是门禁。
 //   写入顺序：正式文件 → 章节记忆 → 章节索引 → checkpoint → run_log 领域事件。
 // 任一写失败：恢复被覆盖文件的先前字节，run_log 截断/删除，不留下半写状态。
 // ---------------------------------------------------------------------------
@@ -381,8 +379,7 @@ export async function commitChapter({ projectRoot, projectId, chapterNo, expecte
       path: finalPath,
       actual_words: countEffectiveWords(content),
       checksum: sha256(content),
-      checkpoint_id: null,
-      quality_gate_results: []
+      checkpoint_id: null
     };
   }
 
@@ -457,7 +454,7 @@ export async function commitChapter({ projectRoot, projectId, chapterNo, expecte
       checksum,
       content: commitContent
     });
-    // 章节索引：正式文件、真实字数、校验和；Task 10 起门禁结果固定为空数组
+    // 章节索引：正式文件、真实字数、校验和。
     await probe({ path: chapterIndexPath, kind: "chapter_index" });
     await upsertChapter(projectRoot, {
       chapter_no: chapterNo,
@@ -465,11 +462,9 @@ export async function commitChapter({ projectRoot, projectId, chapterNo, expecte
       draft_path: draftPath,
       final_path: finalPath,
       actual_words: actualWords,
-      checksum,
-      quality_gate_results: []
+      checksum
     });
-    // checkpoint：与旧 checkpoints/{id}.json 格式兼容（project-store.writeCheckpoint
-    // 会写旧 agent_state 状态文件，本模块不得触碰，故本地写 checkpoint 文件本体）
+    // checkpoint：与旧 checkpoints/{id}.json 格式兼容，本地只写文件本体。
     await probe({ path: checkpointPath, kind: "checkpoint" });
     await writeJsonAtomic(checkpointPath, buildCheckpoint({
       project,
@@ -570,7 +565,6 @@ export async function commitChapter({ projectRoot, projectId, chapterNo, expecte
     actual_words: actualWords,
     checksum,
     checkpoint_id: path.basename(checkpointPath, ".json"),
-    quality_gate_results: [],
     ...(snapshot ? { version: snapshot } : {})
   };
 }
@@ -654,7 +648,7 @@ export async function finalizeChapter({ projectRoot, projectId, chapterNo, expec
       checksum,
       content
     });
-    // 章节索引：正式文件、真实字数、新校验和；门禁结果固定为空数组
+    // 章节索引：正式文件、真实字数、新校验和。
     await probe({ path: chapterIndexPath, kind: "chapter_index" });
     await upsertChapter(projectRoot, {
       chapter_no: chapterNo,
@@ -662,8 +656,7 @@ export async function finalizeChapter({ projectRoot, projectId, chapterNo, expec
       draft_path: chapterDraftPath(projectRoot, chapterNo, project.output_format),
       final_path: finalPath,
       actual_words: actualWords,
-      checksum,
-      quality_gate_results: []
+      checksum
     });
     // checkpoint：与 checkpoints/{id}.json 格式兼容（本地写 checkpoint 文件本体）
     await probe({ path: checkpointPath, kind: "checkpoint" });
@@ -763,7 +756,6 @@ export async function finalizeChapter({ projectRoot, projectId, chapterNo, expec
     actual_words: actualWords,
     checksum,
     checkpoint_id: path.basename(checkpointPath, ".json"),
-    quality_gate_results: [],
     ...(snapshot ? { version: snapshot } : {})
   };
 }
@@ -886,19 +878,15 @@ function buildCheckpoint({ project, chapterNo, checkpointId, artifact }) {
       reviewer: project.default_reviewer_model ?? null
     },
     prompt_template_versions: project.prompt_template_versions ?? {},
-    prompt_block_hashes: {},
     model_calls: [],
     usage_reports: [],
     cost_summary: null,
-    cache_report: null,
-    cache_key: null,
     context_package_hash: null,
     transcript: null,
     tool_calls: [],
     tool_results: [],
     state_before: null,
     state_after: null,
-    quality_gate_results: [],
     error: null
   };
 }

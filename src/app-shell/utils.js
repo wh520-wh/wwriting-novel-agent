@@ -22,10 +22,6 @@ export function formatTime(value) {
   return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(value));
 }
 
-export function statusClass(value) {
-  return String(value ?? "idle").replace(/[^a-z0-9_-]/giu, "-");
-}
-
 export function pathEquals(a, b) {
   return String(a ?? "").toLowerCase() === String(b ?? "").toLowerCase();
 }
@@ -34,25 +30,12 @@ export function pathBaseName(value) {
   return String(value ?? "").replace(/[\\/]+$/u, "").split(/[\\/]/u).pop();
 }
 
-export function resolveModelEndpoint(baseUrl) {
-  try {
-    return new URL("chat/completions", ensureTrailingSlash(baseUrl)).toString();
-  } catch {
-    return `${baseUrl.replace(/\/+$/u, "")}/chat/completions`;
-  }
-}
-
 export function ensureTrailingSlash(value) {
   return String(value).endsWith("/") ? String(value) : `${value}/`;
 }
 
 export function isEnvironmentVariableName(value) {
   return /^[A-Za-z_][A-Za-z0-9_]*$/u.test(value);
-}
-
-export function cssEscape(value) {
-  if (window.CSS?.escape) return window.CSS.escape(value);
-  return String(value).replace(/[^a-zA-Z0-9_-]/gu, (char) => `\\${char.codePointAt(0).toString(16)} `);
 }
 
 export function translateStage(stage) {
@@ -76,14 +59,6 @@ export function translateStage(stage) {
   }[stage] ?? stage;
 }
 
-export function translateReviewStatus(status) {
-  return { passed: "通过", failed: "失败" }[status] ?? status ?? "未运行";
-}
-
-export function translateSkillType(type) {
-  return { style: "风格", "flow-control": "流程", "quality-gate": "质检", "post-process": "后处理" }[type] ?? type;
-}
-
 export function translateSourceKind(kind) {
   return { search: "搜索", fetch: "抓取", page: "网页", source: "资料" }[kind] ?? "资料";
 }
@@ -102,12 +77,10 @@ export function translateEventType(type) {
     model_call_started: "模型调用开始",
     model_call_completed: "模型调用完成",
     model_usage_recorded: "用量记录",
-    cache_report_updated: "缓存更新",
     chapter_queued: "章节排队",
     stage_started: "阶段开始",
     chapter_finalized: "章节定稿",
     chapter_completed: "章节完成",
-    quality_gate_failed: "质检失败",
     tool_call_rejected: "工具调用拒绝",
     skill_configuration_changed: "技能配置",
     project_settings_updated: "设置更新",

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { appendEvent } from "./event-log.mjs";
-import { assertSafeSlug, ensureDir, pathExists, readJson, safeJoin, sha256, writeFileAtomic, writeJsonAtomic } from "./fs-utils.mjs";
+import { assertSafeSlug, ensureDir, pathExists, readJson, safeJoin, writeFileAtomic, writeJsonAtomic } from "./fs-utils.mjs";
 import { CHAPTER_MEMORY_SCHEMA_VERSION } from "./chapter-memory.mjs";
 import { parseSimpleYaml, serializeSimpleYaml } from "./simple-yaml.mjs";
 import { ensureMemoryFilesForProject, WORKLOG_PLACEHOLDER } from "./project-operations/memory-files.mjs";
@@ -137,7 +137,6 @@ export async function upsertChapter(projectRoot, patch) {
       final_path: null,
       actual_words: 0,
       checksum: null,
-      quality_gate_results: [],
       created_at: now,
       updated_at: now,
       ...patch
@@ -146,51 +145,4 @@ export async function upsertChapter(projectRoot, patch) {
   index.chapters.sort((a, b) => a.chapter_no - b.chapter_no);
   await saveChapterIndex(projectRoot, index);
   return index.chapters.find((chapter) => chapter.chapter_no === patch.chapter_no);
-}
-
-// checkpoint 文件本体写入（统一 Agent 内核计划 Rule 9：正式章节 checkpoint 继续
-// 保存在项目 checkpoints/，journal 只记录引用；本函数不再同步任何 agent_state
-// 状态文件——运行态与 last_checkpoint_id 归属 journal 与章节索引）。
-export async function writeCheckpoint(projectRoot, payload) {
-  const checkpoint_id = payload.checkpoint_id ?? randomUUID();
-  const checkpoint = {
-    schema_version: SCHEMA_VERSION,
-    checkpoint_id,
-    timestamp: new Date().toISOString(),
-    task_id: payload.task_id ?? null,
-    task_contract: payload.task_contract ?? null,
-    committed_model_calls: payload.committed_model_calls ?? [],
-    artifact_commit: payload.artifact_commit ?? null,
-    chapter_no: payload.chapter_no ?? null,
-    stage: payload.stage ?? null,
-    segment_no: payload.segment_no ?? null,
-    model_config: payload.model_config ?? {},
-    prompt_template_versions: payload.prompt_template_versions ?? {},
-    context_package_hash: payload.context_package_hash ?? sha256(JSON.stringify(payload.context_package ?? {})),
-    prompt_block_hashes: payload.prompt_block_hashes ?? {},
-    model_calls: payload.model_calls ?? [],
-    usage_reports: payload.usage_reports ?? [],
-    cost_summary: payload.cost_summary ?? null,
-    cache_report: payload.cache_report ?? null,
-    cache_key: payload.cache_key ?? null,
-    skill_hooks: payload.skill_hooks ?? [],
-    skill_gate_results: payload.skill_gate_results ?? [],
-    transcript: payload.transcript ?? null,
-    tool_calls: payload.tool_calls ?? [],
-    tool_results: payload.tool_results ?? [],
-    state_before: payload.state_before ?? null,
-    state_after: payload.state_after ?? null,
-    error: payload.error ?? null
-  };
-  const targetPath = safeJoin(projectRoot, "checkpoints", `${checkpoint_id}.json`);
-  await writeJsonAtomic(targetPath, checkpoint);
-  await appendEvent(projectRoot, {
-    type: "checkpoint_written",
-    project_id: payload.project_id,
-    chapter_no: checkpoint.chapter_no,
-    stage: checkpoint.stage,
-    message: "checkpoint 已写入",
-    data: { checkpoint_id }
-  });
-  return checkpoint;
 }

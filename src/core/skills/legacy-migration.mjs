@@ -48,34 +48,6 @@ function hashProjectKey(canonicalRoot) {
   return sha256(canonicalRoot).replace(/^sha256:/u, "").slice(0, 12);
 }
 
-// 完整迁移入口：迁移传入的所有 scope（有 userHome 则迁移 global，有 projectRoot
-// 则迁移 project）。service seam 通过 ensureMigrated 按 scope 分别缓存调用。
-export async function migrateLegacySkills({ projectRoot, userHome, clock } = {}) {
-  const scopes = [];
-  if (userHome) scopes.push({ scope: "global", skillRoot: path.join(userHome, ".wwriting", "skills"), projectKey: null });
-  if (projectRoot) {
-    scopes.push({
-      scope: "project",
-      skillRoot: path.join(projectRoot, "skills"),
-      projectKey: await migrationProjectKey(projectRoot)
-    });
-  }
-  const backupRoot = userHome ? path.join(userHome, ".wwriting", "migrations", BACKUP_ROOT_NAME) : null;
-
-  const migrated = [];
-  const failed = [];
-  for (const { scope, skillRoot, projectKey } of scopes) {
-    if (!backupRoot) {
-      failed.push({ scope, name: null, manifest: "backup-root", error: "缺少 userHome，无法定位 migration backup 目录" });
-      continue;
-    }
-    const result = await migrateScope(scope, skillRoot, backupRoot, clock, projectKey);
-    migrated.push(...result.migrated);
-    failed.push(...result.failed);
-  }
-  return { migrated, failed };
-}
-
 // service seam 入口：全局迁移 Promise 每进程每 userHome 只创建一次，项目迁移
 // Promise 按 canonical projectRoot 缓存。catalog/read/importSkill/removeSkill
 // 在工作前统一调用本函数。

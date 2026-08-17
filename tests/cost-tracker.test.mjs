@@ -225,26 +225,6 @@ test("CostTracker 维护最近 20 次命中率滚动窗口", () => {
   assert.equal(s.recentHitRates.at(-1), 0.24);
 });
 
-test("recordRefill 只在 revision_shortfall 时计入，revision_quality_gate 不计入", () => {
-  const tracker = new CostTracker();
-  // 模拟引擎的判断逻辑：只有 kind === revision_shortfall 才 recordRefill
-  const revisionShortfallKind = "revision_shortfall";
-  const revisionQualityGateKind = "revision_quality_gate";
-
-  if (revisionShortfallKind === "revision_shortfall") tracker.recordRefill();
-  assert.equal(tracker.getSummary().refillCalls, 1, "revision_shortfall should increment refillCalls");
-
-  if (revisionQualityGateKind === "revision_shortfall") tracker.recordRefill();
-  assert.equal(tracker.getSummary().refillCalls, 1, "revision_quality_gate should NOT increment refillCalls");
-});
-
-test("CostTracker.recordRefill 累计补写轮次", () => {
-  const tracker = new CostTracker();
-  tracker.recordRefill();
-  tracker.recordRefill();
-  assert.equal(tracker.getSummary().refillCalls, 2);
-});
-
 test("CostTracker 配置缓存命中价时累计 cacheSavedCost", () => {
   const tracker = new CostTracker({
     pricing: { m: { input_per_million: 2, output_per_million: 8, cache_hit_per_million: 0.5, currency: "CNY" } }

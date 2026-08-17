@@ -1549,7 +1549,7 @@ test("短章节首次提交即成功：字数/标题/技能 checker 不再拒绝
   assert.equal(await pathExists(finalPath), true, "正式文件应落盘");
   const index = JSON.parse(await fs.readFile(path.join(h.projectRoot, "memory", "chapter_index.json"), "utf8"));
   const entry = index.chapters.find((chapter) => chapter.chapter_no === 1);
-  assert.deepEqual(entry.quality_gate_results, [], "索引不得记录任何门禁结果");
+  assert.equal(entry.quality_gate_results, undefined, "索引不得记录已删除的门禁结果字段");
   assert.equal(eventsOfType(events, "run_completed").length, 1, "一轮完成，无修订重试");
   assertActivityClosure(events);
 });

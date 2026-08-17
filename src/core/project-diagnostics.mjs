@@ -1,6 +1,6 @@
 // src/core/project-diagnostics.mjs —— 项目诊断（统一 Agent 内核计划 Task 9 重写）。
 //
-// 稳定领域 loader：只消费项目领域审计（run_log.jsonl）、成本/缓存文件，以及注入的
+// 稳定领域 loader：只消费项目领域审计（run_log.jsonl）、成本文件，以及注入的
 // ProjectAgent.snapshot() 结果（{ session, events }）。不 import 任何 agent 内部
 // 模块或旧状态读写（loadState 一类入口已随 Task 9 删除）；运行状态一律来自
 // snapshot（计划 Rule 9：dashboard/diagnostics 需要运行状态时只消费
@@ -14,11 +14,10 @@ export async function loadProjectDiagnostics(projectRoot, { agentSnapshot = null
   const session = agentSnapshot?.session ?? null;
   const run = session?.active_run ?? null;
 
-  const [events, chapterIndex, costSummary, cacheReport] = await Promise.all([
+  const [events, chapterIndex, costSummary] = await Promise.all([
     readEvents(projectRoot, { limit: 20 }),
     loadChapterIndex(projectRoot).catch(() => ({ chapters: [] })),
-    readJsonOrNull(path.join(projectRoot, "cost.json")),
-    readJsonOrNull(path.join(projectRoot, "cache_report.json"))
+    readJsonOrNull(path.join(projectRoot, "cost.json"))
   ]);
 
   return {
@@ -42,9 +41,7 @@ export async function loadProjectDiagnostics(projectRoot, { agentSnapshot = null
       unpricedCalls: costSummary?.unpricedCalls ?? 0,
       costAvailable: costSummary?.costAvailable ?? false,
       estimatedCost: costSummary?.estimatedCost ?? 0,
-      maxCacheVersion: maxCacheVersion(cacheReport),
-      lastCacheHitRate: cacheReport?.last_call?.cacheHitRate ?? null,
-      lastStableChanged: cacheReport?.last_call?.stableChanged ?? null
+      lastCacheHitRate: Array.isArray(costSummary?.recentHitRates) ? costSummary.recentHitRates.at(-1) ?? null : null
     },
     recoveryHint: buildRecoveryHint(session, run)
   };
@@ -97,13 +94,6 @@ function buildRecoveryHint(session, run) {
     return { action: "wait-or-stop", message: "项目正在运行。等待完成，或先停止当前任务。" };
   }
   return { action: "none", message: "当前没有需要处理的恢复动作。" };
-}
-
-function maxCacheVersion(cacheReport) {
-  const versions = Object.values(cacheReport?.entries ?? {})
-    .map((entry) => entry?.cacheVersion)
-    .filter((v) => Number.isFinite(v));
-  return versions.length ? Math.max(...versions) : null;
 }
 
 async function readJsonOrNull(file) {

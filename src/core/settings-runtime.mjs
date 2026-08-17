@@ -40,12 +40,13 @@ export async function updateProjectSettings(projectRoot, patch = {}) {
 export async function saveWorkspaceSettings(projectRoot, {
   workspaceStore = null,
   activeModel = null,
-  toolPermissions = null
+  toolPermissions = null,
+  effectiveConfig = null
 } = {}) {
   if (!workspaceStore || typeof workspaceStore.saveSettings !== "function") {
     throw new SettingsValidationError("invalid_workspace_store", "workspaceStore is required.");
   }
-  const before = await loadEffectiveWorkspaceConfig(projectRoot, { workspaceStore });
+  const before = effectiveConfig ?? await loadEffectiveWorkspaceConfig(projectRoot, { workspaceStore });
   return workspaceStore.saveSettings(projectRoot, {
     active_model: activeModel ?? before.active_model,
     tool_permissions: toolPermissions ?? before.tool_permissions

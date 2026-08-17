@@ -1,6 +1,7 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { renderCostPanel, formatYuan } from '../../src/app-shell/components/cost-panel.js';
+import { renderCostPanel } from '../../src/app-shell/components/cost-panel.js';
+import { formatYuan } from '../../src/app-shell/utils.js';
 
 // ---------------------------------------------------------------------------
 // Minimal DOM mock (no JSDOM) — same shape as activity-strip-render.test.mjs
@@ -158,7 +159,6 @@ function makeCost(overrides = {}) {
       3: { calls: 3, estimatedCost: 0 }
     },
     recentHitRates: [],
-    refillCalls: 0,
     cacheSavedCost: 0,
     ...overrides
   };
@@ -295,15 +295,14 @@ describe('renderCostPanel — 3-section layout', () => {
     assert.match(text, /0\.18\s*元/);
   });
 
-  it('9. shows "补写轮次" with refillCalls', () => {
+  it('9. 不展示已无生产写入口的补写轮次', () => {
     const root = renderCostPanel({
       cost: makeCost({ refillCalls: 4 }),
       summary: makeSummary(),
       events: []
     });
     const text = flat(root);
-    assert.match(text, /补写轮次/);
-    assert.match(text, /4/);
+    assert.doesNotMatch(text, /补写轮次/);
   });
 
   it('10. renders 20 sparkline blocks', () => {
@@ -494,7 +493,7 @@ describe('renderCostPanel — defensive defaults', () => {
 
   it('20. handles missing byChapter gracefully', () => {
     const root = renderCostPanel({
-      cost: { calls: 0, totalTokens: 0, recentHitRates: [], cacheSavedCost: 0, refillCalls: 0, costAvailable: false },
+      cost: { calls: 0, totalTokens: 0, recentHitRates: [], cacheSavedCost: 0, costAvailable: false },
       summary: null,
       events: []
     });
@@ -642,21 +641,20 @@ describe('renderCostPanel — DeepSeek 低命中率诊断提示（D2）', () => 
     assert.equal(/缓存命中率偏低/.test(text), false, '无数据不应把 0 当真实命中率误报');
   });
 
-  it('32. stableChangedReason == "stable_hash_changed" 时附具体归因，基础文案不变', () => {
+  it('32. 低命中率只报告可观测现象，不依赖已删除的缓存键报告归因', () => {
     const root = renderCostPanel({
       cost: lowHitCost(),
       summary: makeSummary(),
       events: [],
-      modelConfig: DEEPSEEK_MODEL,
-      cacheSummary: { stableChangedReason: "stable_hash_changed" }
+      modelConfig: DEEPSEEK_MODEL
     });
     const text = flat(root);
     assert.match(text, HINT_COPY, '基础文案应保持计划原文');
-    assert.match(text, /（检测到规则\/风格\/技能配置有改动）/);
+    assert.doesNotMatch(text, /检测到规则\/风格\/技能配置有改动/);
     assert.equal(findByClass(root, 'cost-hint').length, 1, '归因仍是一行小字');
   });
 
-  it('33. stableChangedReason 非 stable_hash_changed 时不附归因', () => {
+  it('33. 额外旧参数不会改变低命中率提示', () => {
     const root = renderCostPanel({
       cost: lowHitCost(),
       summary: makeSummary(),
@@ -695,7 +693,7 @@ describe('renderCostPanel — DeepSeek 低命中率诊断提示（D2）', () => 
     assert.match(flat(root), HINT_COPY);
   });
 
-  it('36. MiMo 模式 + stableChangedReason 归因照常工作', () => {
+  it('36. MiMo 模式同样不依赖缓存键报告归因', () => {
     const root = renderCostPanel({
       cost: lowHitCost(),
       summary: makeSummary(),
@@ -705,7 +703,7 @@ describe('renderCostPanel — DeepSeek 低命中率诊断提示（D2）', () => 
     });
     const text = flat(root);
     assert.match(text, HINT_COPY);
-    assert.match(text, /（检测到规则\/风格\/技能配置有改动）/);
+    assert.doesNotMatch(text, /检测到规则\/风格\/技能配置有改动/);
   });
 
   it('37. MiMo 模型走第三方端点（非官方）不显示提示（保守口径与 DeepSeek 一致）', () => {

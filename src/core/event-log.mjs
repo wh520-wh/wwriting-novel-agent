@@ -101,7 +101,3 @@ export async function readEvents(projectRoot, options = {}) {
     await handle.close();
   }
 }
-
-export async function tailEvents(projectRoot, n) {
-  return readEvents(projectRoot, { limit: n });
-}

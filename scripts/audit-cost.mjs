@@ -29,7 +29,6 @@ const events = logText
     }
   });
 const costSummary = await readJsonOrNull(path.join(projectRoot, "cost.json"));
-const cacheReport = await readJsonOrNull(path.join(projectRoot, "cache_report.json"));
 
-const report = analyzeCost({ events, costSummary, cacheReport });
+const report = analyzeCost({ events, costSummary });
 console.log(JSON.stringify(report, null, 2));
