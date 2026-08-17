@@ -74,9 +74,13 @@ const SCRIPT_DIR = __dirname;
 // 留足窗口；5s 覆盖约 3.5s 的最坏捕获序列仍有 1.5s 余量。
 const SKILL_READ_DELAY_MS = 5000;
 // 扫光动画相位：以 1450ms 周期为基准选 680/920/1160ms（左/中/右清晰相位），
-// seek 时按实际动画 duration 等比换算（Round10 起产品动画为 agent-label-shine 2250ms）。
+// seek 时按实际动画 duration 等比换算（Round10 起产品动画为 agent-label-shine
+// 2250ms；OS reduced-motion 命中时注入的归一化样式为 agent-text-shimmer 1450ms）。
 const SHIMMER_PHASES_MS = [680, 920, 1160];
 const SHIMMER_BASE_PERIOD_MS = 1450;
+// 三个受保护的内置写作风格（PROTECTED_BUILTIN_SKILLS，src/core/skills/catalog.mjs）。
+// 设置页「Agent 技能」分区把它们渲染为 readonly 行，data-skill-name = 技能名 slug。
+const BUILTIN_STYLE_NAMES = ["balanced", "fast-readable", "psychological-literary"];
 const VIEWPORT_DEFAULT = { width: 1280, height: 800 };
 const VIEWPORT_NARROW = { width: 390, height: 844 };
 const VIEWPORT_MEDIUM = { width: 768, height: 900 };
@@ -800,6 +804,71 @@ const EXTRA_CHECKS = {
     }))()`);
     const pass = result.title !== "读取失败" && result.errorCards === 0 && result.userMessages >= 1 && result.assistantMessages >= 1 && (result.workStatus ?? "").includes("工作了") && result.composerDisabled === false;
     return [{ name: "plain-folder-first-message", pass, detail: JSON.stringify(result) }];
+  },
+  // Round10 视觉证据：390 顶栏项目标题必须有可识别宽度（plan chip 释放标题空间后）。
+  narrowTopbarTitle: async (win) => {
+    const result = await read(win, `(() => {
+      const title = document.getElementById("project-title");
+      const rect = title?.getBoundingClientRect();
+      return { pass: Boolean(rect && rect.width >= 72), width: rect?.width ?? 0 };
+    })()`);
+    return [{ name: "narrow-topbar-title", pass: result.pass, detail: `width=${result.width}` }];
+  },
+  // 设置页内置风格三行全部真实可见（bbox 与视口相交），且关闭按钮不被遮挡。
+  settingsBuiltinRowsVisible: async (win) => {
+    const result = await read(win, `(() => {
+      const rows = [...document.querySelectorAll(".spd-skill-row--readonly")];
+      const visible = rows.filter((row) => {
+        const r = row.getBoundingClientRect();
+        return r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth;
+      });
+      const closeEl = document.getElementById("settings-x");
+      const close = closeEl?.getBoundingClientRect();
+      const closeInside = Boolean(close && close.left >= 0 && close.top >= 0 && close.right <= innerWidth && close.bottom <= innerHeight);
+      const modal = document.querySelector(".settings-modal")?.getBoundingClientRect();
+      const scrim = document.querySelector(".settings-scrim")?.getBoundingClientRect();
+      const detail = {
+        pass: rows.length === 3 && visible.length === 3 && closeInside,
+        rows: rows.length, visible: visible.length, closeInside,
+        close: close ? { l: Math.round(close.left), t: Math.round(close.top), r: Math.round(close.right), b: Math.round(close.bottom), w: Math.round(close.width), h: Math.round(close.height) } : null,
+        modal: modal ? { l: Math.round(modal.left), t: Math.round(modal.top), r: Math.round(modal.right), b: Math.round(modal.bottom) } : null,
+        scrim: scrim ? { l: Math.round(scrim.left), t: Math.round(scrim.top), r: Math.round(scrim.right), b: Math.round(scrim.bottom) } : null,
+        scrollY: Math.round(document.scrollingElement?.scrollTop ?? 0),
+        bodyScrollY: Math.round(document.body?.scrollTop ?? 0),
+        inner: [innerWidth, innerHeight], dpr: devicePixelRatio,
+        detailScroll: (() => { const d = document.querySelector(".sp-detail"); if (!d) return null; return { top: Math.round(d.scrollTop), h: d.scrollHeight, client: d.clientHeight }; })(),
+(),
+        scrimPos: getComputedStyle(document.querySelector(".settings-scrim")).position,
+        docScrollH: document.documentElement.scrollHeight, docClientH: document.documentElement.clientHeight,
+        bodyScrollH: document.body?.scrollHeight ?? null, bodyClientH: document.body?.clientHeight ?? null,
+        scrimParent: (() => { const s = document.querySelector(".settings-scrim"); if (!s) return null; return { tag: s.offsetParent?.tagName ?? null, cls: s.offsetParent?.className ?? null }; })(),
+        scrollables: (() => { const out = []; for (const el of document.querySelectorAll("*")) { if (el.scrollHeight > el.clientHeight + 1) { out.push({ sel: el.id ? "#" + el.id : el.className?.toString?.().slice(0, 40) || el.tagName, sh: el.scrollHeight, ch: el.clientHeight }); } } return out.slice(0, 12); })()
+      };
+      return detail;
+    })()`);
+    return [{ name: "settings-builtin-visible", pass: result.pass, detail: JSON.stringify(result) }];
+  },
+  // 记忆三卡正文均已渲染（故事摘要/工作日志内容非空；设定档案至少渲染出空态文案）。
+  memoryCardsReady: async (win) => {
+    const result = await read(win, `(() => {
+      const cards = [...document.querySelectorAll(".memory-card")];
+      const contents = cards.map((card) => card.querySelector(".memory-card-content")?.textContent.trim() ?? "");
+      return { pass: cards.length === 3 && contents.every(Boolean), cards: cards.length, contents };
+    })()`);
+    return [{ name: "memory-cards-ready", pass: result.pass, detail: JSON.stringify(result) }];
+  },
+  // 计划下拉在命中测试的最上层（elementFromPoint 命中自身或后代）。
+  planDropdownTopmost: async (win) => {
+    const result = await read(win, `(() => {
+      const dropdown = document.querySelector("[data-plan-dropdown]");
+      const rect = dropdown?.getBoundingClientRect();
+      if (!dropdown || !rect || dropdown.hidden) return { pass: false, detail: "dropdown hidden" };
+      const x = Math.min(rect.right - 8, Math.max(rect.left + 8, rect.left + rect.width / 2));
+      const y = Math.min(rect.bottom - 8, Math.max(rect.top + 8, rect.top + rect.height / 2));
+      const hit = document.elementFromPoint(x, y);
+      return { pass: Boolean(hit && (hit === dropdown || dropdown.contains(hit))), hit: hit?.className ?? hit?.tagName ?? null };
+    })()`);
+    return [{ name: "plan-dropdown-topmost", pass: result.pass, detail: JSON.stringify(result) }];
   }
 };
 
@@ -1010,10 +1079,24 @@ async function waitForRunTerminal(win, groupOpen, diag = {}, minGroups = 1) {
 async function waitForSkillsList(win) {
   await waitUntil(
     win,
-    `document.querySelector("#skills-list")?.children.length > 0 || document.querySelector(".spd-skill-row--readonly") !== null`,
-    "设置页技能列表渲染",
-    8000
+    `(() => {
+      const expected = ${JSON.stringify(BUILTIN_STYLE_NAMES)};
+      const rows = [...document.querySelectorAll(".spd-skill-row--readonly")];
+      const names = new Set(rows.map((row) => row.dataset.skillName));
+      return rows.length === 3 && expected.every((name) => names.has(name));
+    })()`,
+    "三个内置写作风格只读行渲染",
+    12000
   );
+}
+
+async function focusBuiltinStylesForCapture(win) {
+  await win.webContents.executeJavaScript(`(() => {
+    const first = document.querySelector(".spd-skill-row--readonly");
+    first?.scrollIntoView({ block: "start" });
+    return Boolean(first);
+  })()`);
+  await sleep(200);
 }
 
 async function scrollConversationToBottom(win) {
@@ -1026,8 +1109,9 @@ async function scrollConversationToBottom(win) {
 }
 
 // 用 Web Animations API 把 live 标签的扫光动画暂停并 seek 到指定相位，使扫光带
-// 确定性地位于标签左/中/右。动画名动态匹配，相位按实际 duration 等比换算
-//（SHIMMER_BASE_PERIOD_MS 基准）。找不到动画时返回 0，由调用方回退
+// 确定性地位于标签左/中/右。动画名动态匹配（Round10 起为 agent-label-shine；
+// OS reduced-motion 归一化注入时为 agent-text-shimmer），相位按实际 duration
+// 等比换算（SHIMMER_BASE_PERIOD_MS 基准）。找不到动画时返回 0，由调用方回退
 // 时间捕获并记录警告。
 async function seekShimmerPhase(win, ctx, phaseMs) {
   const paused = await win.webContents.executeJavaScript(`(() => {
@@ -1058,7 +1142,7 @@ async function seekShimmerPhase(win, ctx, phaseMs) {
 }
 
 // 对同一场景的三帧 PNG，在 label bbox 内跟踪扫光带：Round10 的 label-shine 是
-// muted↔透明渐变（background-clip:text），没有 ink 暗带，
+// muted↔透明渐变（background-clip:text），没有旧版 agent-text-shimmer 的 ink 暗带，
 // 因此按「字形列」判据——浅色下字形列 = 列内最暗像素 < 128（muted 字形暗、透明带
 // 字形露出底色亮、空隙列无暗像素）；深色下字形列 = 列内最亮像素 > 128（muted 字形
 // 亮、透明带字形露出暗底色、空隙列无亮像素）。跟踪字形列集合的质心 x：扫光带移动
@@ -1208,6 +1292,19 @@ async function main() {
     context.environmentNotes.push("fixture 通过生产 helper 预置第 1 章已完成 + commit v1 版本");
   }
 
+  // 写入代表性记忆内容（仅临时 fixture，不改项目模板/真实用户文件）：让抽屉
+  // 「记忆」分区的故事摘要与工作日志卡渲染真实内容（memoryCardsReady/Step7 依赖）。
+  // 必须在 server 启动/页面加载前写入，否则记忆卡读取时读不到。
+  fs.writeFileSync(
+    path.join(projectRoot, "book_summary.md"),
+    "# 全书摘要\n\n雨夜来信已完成，林深在老宅发现了与父亲有关的照片。\n",
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(projectRoot, "WORKLOG.md"),
+    "# WORKLOG\n\n- 已完成：第 1 章\n- 下一步：确认来信来源并推进第 2 章\n",
+    "utf8"
+  );
   // ---- server：testGatewayFactory + 延迟 skills service 注入 ----
   const { createAppShellServer } = await import(pathToFileURL(path.join(SCRIPT_DIR, "..", "src", "core", "app-server.mjs")).href);
   const gateway = createTestGatewayFactory();
@@ -1391,7 +1488,8 @@ async function main() {
       dataSource: DATA_SOURCE.gatewayUi,
       expected: `${vp.width}x${vp.height} 会话完成态：无横向溢出、无遮挡、composer 不遮最后一条消息`,
       spec: "Task 13 Step 4 / SPEC §10.3 四视口响应式验收",
-      overlapSelectors: OVERLAP_SELECTORS.chat
+      overlapSelectors: OVERLAP_SELECTORS.chat,
+      extraChecks: vp === VIEWPORT_NARROW ? EXTRA_CHECKS.narrowTopbarTitle : undefined
     });
   }
   await setViewport(win, VIEWPORT_DEFAULT.width, VIEWPORT_DEFAULT.height);
@@ -1496,6 +1594,7 @@ async function main() {
     expect: () => waitForSettingsSection(win, "skills")
   });
   await waitForSkillsList(win);
+  await focusBuiltinStylesForCapture(win);
   await auditAndCapture(win, context, {
     file: "settings-builtin-styles-1280x800.png",
     viewport: [1280, 800],
@@ -1504,9 +1603,13 @@ async function main() {
     dataSource: DATA_SOURCE.settings,
     expected: "设置页「Agent 技能」分区：内置写作风格分区展示三个只读行，无卡片套卡片、无启用开关",
     spec: "Task 13 Step 4 / SPEC §6.1 内置风格只读展示",
-    overlapSelectors: OVERLAP_SELECTORS.settings
+    overlapSelectors: OVERLAP_SELECTORS.settings,
+    extraChecks: EXTRA_CHECKS.settingsBuiltinRowsVisible
   });
   await setViewport(win, VIEWPORT_NARROW.width, VIEWPORT_NARROW.height);
+  // 390 视口尺寸可能触发响应式重排，重排后须再次等待并聚焦目标行（否则滚动位置漂移）。
+  await waitForSkillsList(win);
+  await focusBuiltinStylesForCapture(win);
   await auditAndCapture(win, context, {
     file: "settings-builtin-styles-390x844.png",
     viewport: [390, 844],
@@ -1515,7 +1618,8 @@ async function main() {
     dataSource: DATA_SOURCE.settings,
     expected: "390x844 窄视口设置技能分区：布局完整、无横向溢出、无遮挡",
     spec: "Task 13 Step 4 / SPEC §10.3 响应式验收",
-    overlapSelectors: OVERLAP_SELECTORS.settings
+    overlapSelectors: OVERLAP_SELECTORS.settings,
+    extraChecks: EXTRA_CHECKS.settingsBuiltinRowsVisible
   });
 
   // ---- 06: settings-style-detail（1280x800，点击内置风格行展开只读详情）----
@@ -1636,6 +1740,15 @@ async function main() {
     label: "memory-tab-vp",
     expect: () => read(win, "document.querySelector('.dtab[data-dtab=\"memory\"]').classList.contains('on')")
   });
+  await waitUntil(
+    win,
+    `(() => {
+      const cards = [...document.querySelectorAll(".memory-card")];
+      return cards.length === 3 && cards.every((card) => (card.querySelector(".memory-card-content")?.textContent.trim() ?? "") !== "");
+    })()`,
+    "记忆三卡正文渲染",
+    10000
+  );
   await auditAndCapture(win, context, {
     file: "memory-tab-1280x800.png",
     viewport: [1280, 800],
@@ -1644,7 +1757,8 @@ async function main() {
     dataSource: DATA_SOURCE.memoryTab,
     expected: "三块卡片：故事摘要、工作日志（各带历史按钮）、设定档案只读",
     spec: "第九轮 §3.3",
-    overlapSelectors: OVERLAP_SELECTORS.drawer
+    overlapSelectors: OVERLAP_SELECTORS.drawer,
+    extraChecks: EXTRA_CHECKS.memoryCardsReady
   });
   // ---- 17: plan-panel（1280x800，chip 收起 + 展开）----
   console.log("[scenario] 17-plan-panel");
@@ -1692,7 +1806,8 @@ async function main() {
         dataSource: DATA_SOURCE.planPanel,
         expected: "chip 进度 N/M + 条目状态图标/删除线/进行中高亮",
         spec: "第九轮 §3.6",
-        overlapSelectors: []
+        overlapSelectors: [],
+        extraChecks: EXTRA_CHECKS.planDropdownTopmost
       });
       await clickAndReadRetry(win, "[data-plan-chip]", {
         label: "plan-chip-collapse-vp",

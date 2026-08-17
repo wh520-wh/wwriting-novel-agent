@@ -50,11 +50,15 @@ export function createPlanPanel({ doc = document }) {
     iconEl.className = "plan-chip-icon";
     iconEl.setAttribute("aria-hidden", "true");
     iconEl.innerHTML = chipIconHtml(items);
+    // Round10 窄窗紧凑：标题与计数分离成独立 span（.plan-chip-label 为 flex 容器，
+    // 窄屏可单独隐藏标题仍保留进度计数；可访问名仍携带真实进度，不丢失）。
     const label = doc.createElement("span");
     label.className = "plan-chip-label";
-    label.textContent = "任务计划 ";
+    const title = doc.createElement("span");
+    title.className = "plan-chip-title";
+    title.textContent = "任务计划";
     // AICSS task-list：滚动计数（按字符拆 span，CSS 380ms 滚动动画；
-    // 文本拼装 = 前缀 + 逐字符，测试按 children 拼接断言）。
+    // 文本拼装 = 标题 + 逐字符计数，测试按 children 拼接断言）。
     const count = doc.createElement("span");
     count.className = "plan-chip-count";
     for (const char of `${done}/${items.length}`) {
@@ -67,7 +71,8 @@ export function createPlanPanel({ doc = document }) {
       count.classList.add("plan-chip-count--roll");
     }
     lastCountText = `${done}/${items.length}`;
-    label.append(count);
+    label.append(title, count);
+    chip.setAttribute("aria-label", `任务计划 ${done}/${items.length}`);
     chip.append(iconEl, label, dropdown);
 
     dropdown.replaceChildren();

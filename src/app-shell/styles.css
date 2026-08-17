@@ -543,6 +543,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 /* header */
 .topbar {
   position: relative;
+  z-index: 20; /* Round10：壳层高于后绘制的主内容，计划下拉可浮于正文之上 */
   display: flex; align-items: center; gap: 14px;
   --window-control-space: 0px;
   padding: 10px calc(20px + var(--window-control-space)) 10px 20px;
@@ -744,6 +745,13 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   padding: 10px 12px 12px;
   font-size: 14px;
   line-height: 1.75;
+}
+
+.memory-card-content.agent-markdown.memory-card-content--empty {
+  color: var(--text-muted);
+  font-family: var(--sans);
+  font-size: 12.5px;
+  line-height: 1.6;
 }
 
 .export-toolbar {
@@ -1339,13 +1347,20 @@ input.spd-input[type="number"] { max-width: 160px; }
     border-bottom: 1px solid var(--line);
     grid-template-rows: auto;
   }
+  
 
   .sp-section-nav {
     display: flex;
     gap: 4px;
-    padding: 8px 10px;
+    padding: 8px 52px 8px 10px;
     overflow-x: auto;
     border-bottom: 0;
+  }
+
+  .settings-x {
+    top: 8px;
+    right: 8px;
+    background: var(--surface-2);
   }
 
   .sp-section-item {
@@ -1748,6 +1763,19 @@ input.spd-input[type="number"] { max-width: 160px; }
     border-left: 0;
     border-right: 0;
   }
+  /* Round10：全屏 sheet 无留白（scrim padding 归零，modal 100vw 贴边） */
+  .settings-scrim {
+    padding: 0;
+  }
+  /* win32 Electron：全屏 sheet 让出 34px 窗口控制区，否则 100vh 超出内容区产生外层滚动 */
+  :root[data-desktop-shell="electron"][data-desktop-platform="win32"] .settings-modal {
+    height: calc(100vh - 34px);
+  }
+  /* Round10 窄窗紧凑：竖直空间与水平留白收紧，计划 chip 释放标题宽度仍保留进度 */
+  .topbar { gap: 8px; padding-left: 10px; }
+  .topbar-actions { gap: 4px; }
+  .plan-chip { max-width: 58px; padding-inline: 7px; }
+  .plan-chip-title { display: none; }
   .topbar-secondary {
     position: absolute;
     top: calc(100% + 6px);
@@ -2524,10 +2552,17 @@ input.spd-input[type="number"] { max-width: 160px; }
   cursor: pointer; max-width: 200px; overflow: visible; position: relative;
 }
 
-/* 文字 span 承担 ellipsis 截断（chip 自身 overflow 必须可见，否则绝对定位的
-   下拉会被裁剪）：flex item 需要 min-width:0 才能收缩触发省略号。 */
+/* Round10 窄窗紧凑：标题与计数作为 flex 容器并排（gap 分隔），文字 span 承担
+   ellipsis 截断（chip 自身 overflow 必须可见，否则绝对定位的下拉会被裁剪）：
+   flex item 需要 min-width:0 才能收缩触发省略号。 */
 .plan-chip-label {
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .plan-dropdown {
@@ -2551,7 +2586,9 @@ input.spd-input[type="number"] { max-width: 160px; }
   white-space: nowrap;
 }
 
-.plan-item.done .plan-item-step { text-decoration: line-through; color: var(--muted); }
+.plan-item.done .plan-item-step { color: var(--muted); }
+.plan-item.done .plan-item-icon { color: var(--text-success); }
+.plan-item.active .plan-item-step { font-weight: var(--weight-semibold); }
 
 .plan-item.active { color: var(--ink); background: var(--surface-2); border-radius: var(--r-sm); }
 

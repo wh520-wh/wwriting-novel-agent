@@ -10,6 +10,16 @@ const styles = () => read("src/app-shell/styles.css");
 const agentCss = () => read("src/app-shell/agent/agent.css");
 const html = () => read("src/app-shell/index.html");
 const appJs = () => read("src/app-shell/app.js");
+const captureScript = () => read("scripts/capture-visual-acceptance.cjs");
+
+test("round10 visual evidence: waits for exact target states before capture", () => {
+  const source = captureScript();
+  assert.match(source, /BUILTIN_STYLE_NAMES/u);
+  assert.match(source, /focusBuiltinStylesForCapture/u);
+  assert.match(source, /narrowTopbarTitle/u);
+  assert.match(source, /planDropdownTopmost/u);
+  assert.match(source, /memoryCardsReady/u);
+});
 
 test("round10 tokens: shared axes, integer type scale and control dimensions have one owner", () => {
   const css = styles();
@@ -77,7 +87,11 @@ test("round10 html: layout styles are not embedded in markup", () => {
 test("round10 drawer: research uses stable rows and memory uses rendered markdown", () => {
   const source = read("src/app-shell/drawer-panels.js");
   assert.match(source, /className = "research-row"/u);
-  assert.match(source, /renderMarkdown\(data2\?\.content \?\? ""\)/u);
+  // Round10 memory：记忆卡正文统一走 renderMemoryContent（剥离重复 H1/空态），
+  // 内部仍用安全 renderMarkdown 渲染，绝不 textContent 直显原始 Markdown。
+  assert.match(source, /renderMemoryContent\(/u);
+  assert.match(source, /function renderMemoryContent/u);
+  assert.match(source, /renderMarkdown\(body\)/u);
   assert.doesNotMatch(source, /content\.textContent = data2\?\.content/u);
 });
 
@@ -157,4 +171,54 @@ test("round10 a11y: dialogs, live regions and icon buttons retain names", () => 
     assert.ok(tag, `#${id} 按钮应存在`);
     assert.match(tag, /aria-label=|title=/u, `#${id} 应有 aria-label 或 title`);
   }
+});
+
+test("round10 narrow topbar: plan chip keeps progress but releases title width", () => {
+  const css = styles();
+  const source = html();
+  const app = appJs();
+  assert.match(css, /\.plan-chip-label\s*\{[^}]*display:\s*inline-flex[^}]*gap:\s*4px/u);
+  assert.match(
+    source,
+    /id="topbar-secondary"[\s\S]*id="open-drawer"[^>]*role="menuitem"[\s\S]*id="privacy-toggle"/u
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*480px\)[\s\S]*\.plan-chip-title\s*\{[^}]*display:\s*none/u
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*480px\)[\s\S]*\.topbar\s*\{[^}]*gap:\s*8px[^}]*padding-left:\s*10px/u
+  );
+  assert.match(app, /insertBefore\(planPanel\.chip,\s*refs\.topbarMore/u);
+  assert.match(app, /function closeTopbarSecondary/u);
+});
+
+test("round10 plan overlay: topbar owns stacking and completed rows stay neutral", () => {
+  const css = styles();
+  assert.match(css, /\.topbar\s*\{[^}]*z-index:\s*20/u);
+  assert.doesNotMatch(
+    css,
+    /\.plan-item\.done\s+\.plan-item-step\s*\{[^}]*text-decoration:\s*line-through/u
+  );
+  assert.match(
+    css,
+    /\.plan-item\.done\s+\.plan-item-icon\s*\{[^}]*color:\s*var\(--text-success\)/u
+  );
+  assert.match(
+    css,
+    /\.plan-item\.active\s+\.plan-item-step\s*\{[^}]*font-weight:\s*var\(--weight-semibold\)/u
+  );
+});
+
+test("round10 narrow settings: scrolling tabs reserve the close-button zone", () => {
+  const css = styles();
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*768px\)[\s\S]*\.sp-section-nav\s*\{[^}]*padding:\s*8px 52px 8px 10px/u
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*768px\)[\s\S]*\.settings-x\s*\{[^}]*top:\s*8px[^}]*right:\s*8px[^}]*background:\s*var\(--surface-2\)/u
+  );
 });

@@ -319,3 +319,53 @@ test("章节历史按钮连续点击只创建一个面板并复用同一次加�
     else globalThis.window = previousWindow;
   }
 });
+
+test("round10 drawer memory：占位 H1 不重复显示，空正文使用明确空态", async () => {
+  const h = makeHarness({
+    data: dashboard(),
+    memoryContent: {
+      book_summary: "# 全书摘要\n\n",
+      worklog: "# WORKLOG\n",
+      continuity: "# 设定档案\n\n"
+    }
+  });
+  try {
+    h.ctx.getDrawerTab = () => "memory";
+    await h.panels.renderDrawerBody();
+    const contents = h.drawerBody.querySelectorAll(".memory-card-content");
+
+    assert.deepEqual(
+      contents.map((el) => el.textContent),
+      ["暂无故事摘要", "暂无工作日志", "暂无设定档案"]
+    );
+    assert.ok(contents.every((el) => el.className.includes("memory-card-content--empty")));
+    assert.ok(contents.every((el) => !el.innerHTML.includes("<h1")));
+  } finally {
+    globalThis.document = realDoc;
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("round10 drawer memory：去掉重复 H1 后继续安全渲染正文", async () => {
+  const h = makeHarness({
+    data: dashboard(),
+    memoryContent: {
+      book_summary: "# 全书摘要\n\n雨夜来信已经完成。",
+      worklog: "# WORKLOG\n\n- 已完成：第一章",
+      continuity: "# 设定档案\n\n林深害怕钟声。"
+    }
+  });
+  try {
+    h.ctx.getDrawerTab = () => "memory";
+    await h.panels.renderDrawerBody();
+    const contents = h.drawerBody.querySelectorAll(".memory-card-content");
+
+    assert.ok(contents[0].innerHTML.includes("雨夜来信已经完成"));
+    assert.ok(contents[1].innerHTML.includes("已完成：第一章"));
+    assert.ok(contents[2].innerHTML.includes("林深害怕钟声"));
+    assert.ok(contents.every((el) => !el.innerHTML.includes("<h1")));
+  } finally {
+    globalThis.document = realDoc;
+    globalThis.fetch = realFetch;
+  }
+});
