@@ -73,9 +73,10 @@ const SCRIPT_DIR = __dirname;
 // read_skill 的注入延迟：给 tool-after-reasoning 三帧（t000/t400/t900 + 捕获开销）
 // 留足窗口；5s 覆盖约 3.5s 的最坏捕获序列仍有 1.5s 余量。
 const SKILL_READ_DELAY_MS = 5000;
-// agent-text-shimmer 动画周期 1450ms（plan-verbatim，不修改 CSS）。选 680/920/1160ms
-// 使扫光带清晰位于左/中/右（评审 P1-1 的确定性相位方案）。
+// 扫光动画相位：以 1450ms 周期为基准选 680/920/1160ms（左/中/右清晰相位），
+// seek 时按实际动画 duration 等比换算（Round10 起产品动画为 agent-label-shine 2250ms）。
 const SHIMMER_PHASES_MS = [680, 920, 1160];
+const SHIMMER_BASE_PERIOD_MS = 1450;
 const VIEWPORT_DEFAULT = { width: 1280, height: 800 };
 const VIEWPORT_NARROW = { width: 390, height: 844 };
 const VIEWPORT_MEDIUM = { width: 768, height: 900 };
@@ -94,8 +95,8 @@ app.commandLine.appendSwitch("no-sandbox");
 app.commandLine.appendSwitch("disable-http-cache");
 // 确定性视口：强制 devicePixelRatio=1，offscreen capturePage 精确等于内容尺寸。
 app.commandLine.appendSwitch("force-device-scale-factor", "1");
-// 注意：不加 force-prefers-reduced-motion（采集需要 agent-text-shimmer 真实动画）。
-// OS 级 reduced-motion 命中时在页面侧做等价的样式归一化（见 main 中的处理）。
+// 视觉验收固定为 no-preference，始终验证产品自己的动画 CSS。
+app.commandLine.appendSwitch("force-prefers-reduced-motion", "no-preference");
 
 app.whenReady().then(() =>
   main()
@@ -1024,35 +1025,45 @@ async function scrollConversationToBottom(win) {
   await sleep(250);
 }
 
-// 用 Web Animations API 把 agent-text-shimmer 暂停并 seek 到指定相位，使扫光带
-// 确定性地位于标签左/中/右。找不到动画（reduced-motion 等）时返回 0，由调用方
-// 回退时间捕获并记录警告。
+// 用 Web Animations API 把 live 标签的扫光动画暂停并 seek 到指定相位，使扫光带
+// 确定性地位于标签左/中/右。动画名动态匹配，相位按实际 duration 等比换算
+//（SHIMMER_BASE_PERIOD_MS 基准）。找不到动画时返回 0，由调用方回退
+// 时间捕获并记录警告。
 async function seekShimmerPhase(win, ctx, phaseMs) {
   const paused = await win.webContents.executeJavaScript(`(() => {
     let count = 0;
     for (const el of document.querySelectorAll(".agent-work-item__label.agent-live-text")) {
-      if (getComputedStyle(el).animationName !== "agent-text-shimmer") continue;
+      const name = getComputedStyle(el).animationName;
+      if (name === "none") continue;
       for (const anim of el.getAnimations()) {
-        if (anim.animationName === "agent-text-shimmer") {
-          anim.pause();
-          anim.currentTime = ${phaseMs};
-          count += 1;
-        }
+        if (anim.animationName !== name) continue;
+        const timing = anim.effect?.getTiming?.();
+        const duration = Number(timing?.duration);
+        const t = Number.isFinite(duration) && duration > 0
+          ? (${phaseMs} / ${SHIMMER_BASE_PERIOD_MS}) * duration
+          : ${phaseMs};
+        anim.pause();
+        anim.currentTime = t;
+        count += 1;
       }
     }
     return count;
   })()`);
   if (paused === 0) {
-    ctx.environmentNotes.push(`[warn] seekShimmerPhase(${phaseMs}ms) 未找到 agent-text-shimmer 动画，回退时间捕获`);
+    ctx.environmentNotes.push(`[warn] seekShimmerPhase(${phaseMs}ms) 未找到 live 标签动画，回退时间捕获`);
   }
   win.webContents.invalidate();
   await sleep(150); // 等合成器应用 seeking 后的帧
   return paused;
 }
 
-// 对同一场景的三帧 PNG，在 label bbox 内找扫光带列：浅色下扫光 ink 带比 muted 文本
-// 更暗（取最暗列）；深色下扫光亮带（muted→ink 浅色渐变）比周围更亮（取最亮列）。
-// 断言跟踪列 x 严格递增（t000 < t400 < t900），给出扫光从左向右的机器证据。
+// 对同一场景的三帧 PNG，在 label bbox 内跟踪扫光带：Round10 的 label-shine 是
+// muted↔透明渐变（background-clip:text），没有 ink 暗带，
+// 因此按「字形列」判据——浅色下字形列 = 列内最暗像素 < 128（muted 字形暗、透明带
+// 字形露出底色亮、空隙列无暗像素）；深色下字形列 = 列内最亮像素 > 128（muted 字形
+// 亮、透明带字形露出暗底色、空隙列无亮像素）。跟踪字形列集合的质心 x：扫光带移动
+// 时字形列集合边界随之变化。断言三帧质心互不相同且跨度 ≥2px，给出扫光随相位移动
+// 的机器证据（方向由 label-shine 关键帧决定，不预设左→右）。
 async function checkSweepDirection(ctx, scenario, frames) {
   const isDark = ctx.theme === "dark";
   const positions = [];
@@ -1061,29 +1072,32 @@ async function checkSweepDirection(ctx, scenario, frames) {
     const { width: w, height: h } = img.getSize();
     const bmp = img.toBitmap();
     const [left, top, width, height] = frame.bbox;
-    let trackCol = -1;
-    let trackVal = isDark ? -1 : 256;
+    const glyphCols = [];
     for (let x = left; x < left + width && x < w; x += 1) {
-      let colVal = isDark ? 0 : 256;
+      let colMin = 256;
+      let colMax = -1;
       for (let y = top; y < top + height && y < h; y += 1) {
         const i = (y * w + x) * 4;
         const lum = 0.3 * bmp[i] + 0.59 * bmp[i + 1] + 0.11 * bmp[i + 2];
-        if (isDark ? lum > colVal : lum < colVal) colVal = lum;
+        if (lum < colMin) colMin = lum;
+        if (lum > colMax) colMax = lum;
       }
-      if (isDark ? colVal > trackVal : colVal < trackVal) {
-        trackVal = colVal;
-        trackCol = x;
-      }
+      const isGlyphCol = isDark ? colMax > 128 : colMin < 128;
+      if (isGlyphCol) glyphCols.push(x);
     }
-    positions.push({ file: frame.file, darkestCol: trackCol, darkestVal: Math.round(trackVal) });
+    const centroid = glyphCols.length > 0
+      ? Math.round(glyphCols.reduce((sum, x) => sum + x, 0) / glyphCols.length)
+      : -1;
+    positions.push({ file: frame.file, centroid, glyphCols: glyphCols.length });
   }
   const [a, b, c] = positions;
-  const ok = a.darkestCol >= 0 && b.darkestCol >= 0 && c.darkestCol >= 0 &&
-    a.darkestCol < b.darkestCol && b.darkestCol < c.darkestCol && (c.darkestCol - a.darkestCol) >= 2;
-  const summary = positions.map((p) => `${p.file.split("-")[0]}=x${p.darkestCol}(lum${p.darkestVal})`).join(" ");
+  const span = Math.abs(c.centroid - a.centroid);
+  const ok = a.centroid >= 0 && b.centroid >= 0 && c.centroid >= 0 &&
+    a.centroid !== b.centroid && b.centroid !== c.centroid && span >= 2;
+  const summary = positions.map((p) => `${p.file.split("-")[0]}=x${p.centroid}(cols${p.glyphCols})`).join(" ");
   console.log(`  [客观检查] sweep-direction(${scenario}, ${ctx.theme}) ${ok ? "PASS" : "FAIL"} — ${summary}`);
   if (!ok) {
-    throw new Error(`sweep-direction 检查失败（${scenario}, ${ctx.theme}）：跟踪列未严格递增 — ${JSON.stringify(positions)}`);
+    throw new Error(`sweep-direction 检查失败（${scenario}, ${ctx.theme}）：字形列质心未随扫光相位移动 — ${JSON.stringify(positions)}`);
   }
   return { ok, positions };
 }
@@ -1155,7 +1169,11 @@ async function main() {
   demoRoot = path.join(SCRIPT_DIR, "..", ".demo_runs", `visual-acceptance-${Date.now()}`);
   const skillsHome = path.join(demoRoot, "skills-home");
   fs.mkdirSync(skillsHome, { recursive: true });
-  const { createProjectAt } = await import(pathToFileURL(path.join(SCRIPT_DIR, "..", "src", "core", "project-store.mjs")).href);
+  const { createProjectAt, upsertChapter } = await import(pathToFileURL(path.join(SCRIPT_DIR, "..", "src", "core", "project-store.mjs")).href);
+  const { chapterFinalPath } = await import(pathToFileURL(path.join(SCRIPT_DIR, "..", "src", "core", "project-operations", "chapter.mjs")).href);
+  const { snapshotChapter } = await import(pathToFileURL(path.join(SCRIPT_DIR, "..", "src", "core", "project-operations", "versions.mjs")).href);
+  const { countEffectiveWords } = await import(pathToFileURL(path.join(SCRIPT_DIR, "..", "src", "core", "word-count.mjs")).href);
+  const { sha256 } = await import(pathToFileURL(path.join(SCRIPT_DIR, "..", "src", "core", "fs-utils.mjs")).href);
   const { projectRoot } = await createProjectAt(path.join(demoRoot, "novel"), {
     title: "视觉验收样例小说",
     story_seed: "一个用于视觉验收的示例项目，覆盖工作组、任务计划与 Markdown 渲染。",
@@ -1168,6 +1186,27 @@ async function main() {
   const plainFolder = path.join(demoRoot, "普通文件夹");
   fs.mkdirSync(plainFolder, { recursive: true });
   fs.writeFileSync(path.join(plainFolder, "notes.txt"), "普通资料：写作参考笔记。\n", "utf8");
+
+  // 预置「已完成章节 + 版本快照」：复用生产路径、字数、索引和快照 helper，
+  // 让版本时间线场景覆盖真实存储形状。
+  const FIXTURE_CHAPTER_TEXT = "# 第一章 雨夜来信\n\n雨夜，雨声突然变大。林深猛地推开门，冲进老宅的客厅。他浑身湿透，抹了一把脸，低声道：“信上说，老宅的钟会在午夜敲十三下。”烛光下，墙上的照片里竟是多年不见的父亲。他正要细看，门外却传来一阵急促的敲门声。\n";
+  {
+    const fixtureChapterNo = 1;
+    const fixtureFinalAbs = chapterFinalPath(projectRoot, fixtureChapterNo, "md");
+    const fixtureFinalRel = path.relative(projectRoot, fixtureFinalAbs);
+    fs.mkdirSync(path.dirname(fixtureFinalAbs), { recursive: true });
+    fs.writeFileSync(fixtureFinalAbs, FIXTURE_CHAPTER_TEXT, "utf8");
+    await upsertChapter(projectRoot, {
+      chapter_no: fixtureChapterNo,
+      status: "completed",
+      draft_path: null,
+      final_path: fixtureFinalRel,
+      actual_words: countEffectiveWords(FIXTURE_CHAPTER_TEXT),
+      checksum: sha256(FIXTURE_CHAPTER_TEXT)
+    });
+    await snapshotChapter({ projectRoot, chapterNo: fixtureChapterNo, content: FIXTURE_CHAPTER_TEXT, source: "commit" });
+    context.environmentNotes.push("fixture 通过生产 helper 预置第 1 章已完成 + commit v1 版本");
+  }
 
   // ---- server：testGatewayFactory + 延迟 skills service 注入 ----
   const { createAppShellServer } = await import(pathToFileURL(path.join(SCRIPT_DIR, "..", "src", "core", "app-server.mjs")).href);
@@ -1216,21 +1255,6 @@ async function main() {
     await waitUntil(win, "document.querySelector('#project-title')?.textContent.includes('" + titleText + "')", "dashboard 加载项目", 10000);
     await waitUntil(win, "document.querySelector('[data-testid=\"agent-composer-input\"]') !== null", "AgentSurface composer 挂载", 10000);
     await waitUntil(win, "Boolean(document.querySelector('[data-testid=\"agent-conversation\"]'))", "对话容器挂载", 8000);
-    // OS 级 reduced-motion 归一化（仅在命中时注入等价动效样式；不改产品 CSS/HTML）。
-    const reduceMotion = await read(win, "window.matchMedia('(prefers-reduced-motion: reduce)').matches");
-    if (reduceMotion) {
-      await win.webContents.executeJavaScript(`
-        (() => {
-          const style = document.createElement("style");
-          style.id = "vac-motion-normalization";
-          style.textContent = '@media (prefers-reduced-motion: reduce){ .agent-live-text { color: transparent; background: linear-gradient(90deg, var(--muted) 0 34%, var(--ink) 48%, var(--muted) 62% 100%); background-size: 220% 100%; background-clip: text; -webkit-background-clip: text; animation: agent-text-shimmer 1.45s linear infinite !important; } }';
-          document.head.append(style);
-          return true;
-        })()
-      `);
-      context.environmentNotes.push("OS prefers-reduced-motion 命中：注入 agent.css 等价动效样式（仅测试环境归一化，用于让扫光动画按产品设计运行）");
-      console.log("  [note] OS prefers-reduced-motion=reduce：已注入等效动效样式");
-    }
   }
 
   await bootToProject("视觉验收样例小说");
@@ -1728,7 +1752,16 @@ async function main() {
   const rowOpened = await win.webContents.executeJavaScript(`(() => {
     const row = [...document.querySelectorAll('.proj-row')].find((el) => el.textContent.includes('普通文件夹'));
     if (!row) return { ok: false, reason: "row missing" };
-    const btn = row.querySelector('button');
+    // R4（第十轮）：项目行「+ 新建对话」在 hover/:focus-within 才可见——
+    // 聚焦真实按钮触发 :focus-within，再验证菜单确实可见、可命中。
+    const menu = row.querySelector('.proj-menu');
+    const btn = row.querySelector('.proj-add');
+    if (!btn) return { ok: false, reason: "proj-add missing" };
+    btn.focus();
+    const menuStyle = menu ? getComputedStyle(menu) : null;
+    if (!menuStyle || Number(menuStyle.opacity) < 0.99 || menuStyle.pointerEvents === 'none') {
+      return { ok: false, reason: "proj-menu not visible after focus" };
+    }
     const rect = btn.getBoundingClientRect();
     const center = { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
     const hit = document.elementFromPoint(center.x, center.y);
@@ -1775,7 +1808,7 @@ async function main() {
   // live-indicator-audit.json：每张图开放 activity ID + live class 数量
   const auditJsonPath = path.join(roundDir, "live-indicator-audit.json");
   const auditRecords = Object.values(context.auditRecords).sort((a, b) => a.file.localeCompare(b.file));
-  assert.ok(auditRecords.length >= 22, `live-indicator-audit 应覆盖全部 ${context.manifest.length} 张图，实际 ${auditRecords.length}`);
+  assert.ok(auditRecords.length >= context.manifest.length, `live-indicator-audit 应覆盖全部 ${context.manifest.length} 张图，实际 ${auditRecords.length}`);
   fs.writeFileSync(
     auditJsonPath,
     JSON.stringify(
@@ -2383,16 +2416,20 @@ async function runRound7({ mainRepo, roundDir, theme }) {
     let renameAudit = null; // 仅 railVisible 视口运行；窄视口保持 null（result 汇总时短路跳过）
     if (railVisible) {
       await waitUntil(win, "Boolean(document.querySelector('.session-op-compose'))", "rename button must exist", 10000);
-      // 会话行改名按钮在 hover/:focus-within 才可见（opacity:0 + pointer-events:none），
-      // 聚焦行触发 :focus-within 并显式放开指针事件，合成 click 才能命中。
-      await win.webContents.executeJavaScript(`(() => {
+      // 聚焦真实按钮触发 :focus-within，并验证产品 CSS 已让菜单可见可点。
+      const renameMenuReady = await win.webContents.executeJavaScript(`(() => {
         const row = document.querySelector('.session-row:not(.session-draft)');
-        row?.focus?.();
         const menu = row?.querySelector('.session-menu');
-        if (menu) menu.style.opacity = '1';
-        if (menu) menu.style.pointerEvents = 'auto';
-        return Boolean(row);
+        const button = row?.querySelector('.session-op-compose');
+        button?.focus();
+        const style = menu ? getComputedStyle(menu) : null;
+        return {
+          ok: Boolean(button && style && Number(style.opacity) >= 0.99 && style.pointerEvents !== 'none'),
+          opacity: style?.opacity ?? null,
+          pointerEvents: style?.pointerEvents ?? null
+        };
       })()`);
+      assert.equal(renameMenuReady.ok, true, `session menu focus visibility: ${JSON.stringify(renameMenuReady)}`);
       await sleep(120);
       await clickAndReadRetry(win, ".session-op-compose", {
         label: "rename-editor",
@@ -2581,7 +2618,7 @@ function renderManifest(context, { startedAt, projectRoot, plainFolder }) {
     checkRows,
     "",
     "场景客观检查说明：",
-    "- `sweep-direction`（reasoning-running / tool-after-reasoning）：三帧 PNG 中 label bbox 内的最暗列（扫光 ink 带）x 坐标严格递增（t000 < t400 < t900），机器证明扫光从左向右；相位由 Web Animations API pause+seek 固定（680/920/1160ms，1450ms 周期）。",
+    "- `sweep-direction`（reasoning-running / tool-after-reasoning）：三帧 PNG 中 label bbox 内的字形列质心 x（浅色 = 列内最暗 <128，深色 = 列内最亮 >128）三帧互不相同且跨度 ≥2px，机器证明扫光带随相位移动；相位由 Web Animations API pause+seek 固定（680/920/1160ms 按实际动画周期等比换算）。Round10 起产品动画为 agent-label-shine（muted↔透明渐变，无旧版 ink 暗带），方向由关键帧决定，不预设左→右。",
     "- `markdown-table-scroll`（markdown-fixture）：Markdown 表格由独立容器承载（`overflow-x: auto`），表格保持 760px 宽；390px 视口必须出现真实容器内溢出（页面级不溢出）。",
     "- `task-list-states`（markdown-fixture）：任务列表同时渲染 checked 与未勾选 checkbox（[x]/[ ] 两态）。",
     "- `builtin-style-detail`（settings-style-detail）：只读详情正文非空，且无启用/删除/编辑控件。",
@@ -2638,7 +2675,7 @@ function renderReviewPrompt(roundDir) {
     "3. Markdown 表格、任务列表、代码块、引用、链接是否排版完整，没有撑破 760px 正文列；窄视口表格在容器内滚动，页面不横向溢出。",
     "4. 390x844、768x900、1280x800、1440x900 下是否有遮挡、截字、横向溢出、控件碰撞或不合理留白（conversation-completed 四视口必须逐张检查）。",
     "5. 设置页 Agent 技能分区：内置写作风格（均衡/快节奏易读/心理文学）是否无框只读展示，不存在项目启用开关、删除/编辑按钮和卡片套卡片；详情正文是否完整可读。",
-    "6. 对比 reasoning-running 三帧和 tool-after-reasoning 三帧：文字扫光是否从左向右、文字不位移、容器不跳动。",
+    "6. 对比 reasoning-running 三帧和 tool-after-reasoning 三帧：扫光带是否随相位移动（label-shine 渐变，无旧版 ink 亮带）、文字不位移、容器不跳动。",
     "7. 着重检查动效唯一性：顺序场景中任何一帧不得同时看到“思考中”和工具文字都在扫光；展开工作组时外层“工作中”不得同时扫光；terminal 场景（conversation-completed / markdown-fixture / settings / drawer / plain-folder）不得残留任何扫光。只有 MANIFEST 明确 parallel_runtime_supported: true 且 audit 同时列出两个开放 activity_id 时，两个工具文字同时动才允许。",
     "8. 逐项检查文字层级：Assistant 正文是否为 regular；H1/H2 是否以深色、字号和字重建立层级而没有滥用 accent/green；H3–H6 是否克制且明显低于 H1/H2；链接、引用、inline code 是否分别具有颜色之外的下划线、左边线、等宽字体信号。",
     "9. 检查任务计划（若可见）：只有“任务计划”标题和唯一当前项加粗；已完成文字不加删除线且没有整行变绿，只有勾选 icon 为绿色。",
