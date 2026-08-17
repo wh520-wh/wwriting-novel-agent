@@ -1,6 +1,5 @@
 // src/core/word-count.mjs —— 客观字数统计（Task 9 结构化计数口径）。
 //
-// stripMarkdown()（旧口径）保留给既有调用方（skills/hooks 等文本清洗）；
 // count_text 工具与 countEffectiveWords() 使用 stripMarkdownForCount() +
 // analyzeTextCount()（brief Step 2 逐字）：
 //   - 只剔除 Markdown 标记（frontmatter/代码块/内联代码/注释/图片/HTML/标题
@@ -40,15 +39,4 @@ export function analyzeTextCount(source) {
 
 export function countEffectiveWords(source) {
   return analyzeTextCount(source).effective_count;
-}
-
-export function stripMarkdown(source) {
-  return String(source ?? "")
-    .replace(/^---[\s\S]*?---\s*/u, "")
-    .replace(/```[\s\S]*?```/gu, "")
-    .replace(/<!--[\s\S]*?-->/gu, "")
-    .replace(/^\s{0,3}#{1,6}\s+.*$/gmu, "")
-    .replace(/!\[[^\]]*\]\([^)]*\)/gu, "")
-    .replace(/\[[^\]]*\]\([^)]*\)/gu, "")
-    .replace(/[*_`>#|[\](){}~-]/gu, " ");
 }

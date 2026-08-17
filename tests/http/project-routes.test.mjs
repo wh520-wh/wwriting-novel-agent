@@ -21,6 +21,7 @@ import { createProjectRoutes } from "../../src/core/http/project-routes.mjs";
 import { createSettingsRoutes } from "../../src/core/http/settings-routes.mjs";
 import { createProjectLockRegistry } from "../../src/core/project-lock.mjs";
 import { createSkillService } from "../../src/core/skills/index.mjs";
+import { createWorkspaceStore } from "../../src/core/workspaces/store.mjs";
 import { recordRecentProject } from "../../src/core/app-state.mjs";
 import { loadProject, saveProject, upsertChapter } from "../../src/core/project-store.mjs";
 import { startHttpServer } from "../helpers/http-test.mjs";
@@ -48,6 +49,7 @@ async function setupServer(t, harnessOptions = {}, routeOptions = {}) {
     stateRoot,
     secretsRoot,
     selection,
+    workspaceStore: createWorkspaceStore({ stateRoot }),
     // Task 12：注入临时 root 的 skills service（migration marker 不碰真实用户目录）
     skills: createSkillService({ userHome: path.join(workspace, ".skills-home"), resourcesPath: null }),
     // 注入桩 connectionTester：让 test-connection 走到密钥校验与统一 finally 清理

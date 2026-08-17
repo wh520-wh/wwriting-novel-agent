@@ -17,8 +17,6 @@ import { handleDashboardMigrationNotice } from "./settings-connection.mjs";
 import { createProjectScope } from "./project-scope.mjs";
 import { createSessionSidebar, createSessionRemovalResolver } from "./session-sidebar.mjs";
 import { createAgentSurface } from "./agent/index.js";
-import { loadDefaultTier } from "./permission-defaults.mjs";
-import { getTierById } from "./permission-tiers.mjs";
 import { createVersionPanel } from "./components/version-panel.js";
 import { createPlanPanel } from "./components/plan-panel.js";
 
@@ -457,14 +455,12 @@ if (readerHistory && !readerHistory.__bound) {
   let versionPanel = null; // 单例：只创建一次，复用 panel.open()
   readerHistory.addEventListener("click", async () => {
     if (!versionPanel) {
-      versionPanel = createVersionPanel({ doc: document, ctx: window.appCtx ?? null });
+      versionPanel = createVersionPanel({ doc: document });
       document.getElementById("reader")?.append(versionPanel);
     }
     const chapterNo = readerChapterNo;
     versionPanel.open({
       title: `第 ${chapterNo} 章`,
-      kind: "chapter",
-      chapterNo,
       getVersions: async () => getJson(`/api/chapters/versions?chapter_no=${chapterNo}`),
       getContent: async (version) => getJson(`/api/chapters/versions/content?chapter_no=${chapterNo}&version=${version}`),
       onRestore: async (version) => {
@@ -882,29 +878,12 @@ async function initProject(rawPath) {
     closeCreateModal();
     resetCreateForm();
     showToast("小说已创建并打开。", "success");
-    await applyDefaultTierForNewProject(projectRoot);
     await loadAll();
   } catch (error) {
     setCreateStatus(error.message, "error");
     showToast(error.message, "error");
   } finally {
     setCreateSubmitLoading(false);
-  }
-}
-
-// 新建项目后套用全局记住的权限档位；默认档（confirm）无需套用。
-async function applyDefaultTierForNewProject(projectRoot) {
-  const tierId = loadDefaultTier();
-  if (!tierId || tierId === "confirm") return;
-  const tier = getTierById(tierId);
-  if (!tier) return;
-  try {
-    await postJson("/api/settings/update", {
-      projectRoot,
-      tool_permissions: tier.combo
-    });
-  } catch {
-    // 套用失败不阻塞
   }
 }
 

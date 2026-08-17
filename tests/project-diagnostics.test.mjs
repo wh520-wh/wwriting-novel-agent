@@ -54,7 +54,7 @@ test("diagnostics 暴露 costHealth 且不读全量日志", async () => {
   await fs.writeFile(path.join(projectRoot, "cost.json"), JSON.stringify({
     calls: 10, retries: 3, unpricedCalls: 10, costAvailable: false,
     inputTokens: 1, outputTokens: 1, totalTokens: 2, cachedTokens: 0, estimatedCost: 0,
-    byProvider: {}, byModel: {}, byStage: {}, byChapter: {}
+    byProvider: {}, byModel: {}, byStage: {}, byChapter: {}, recentHitRates: [0.31]
   }));
   await fs.writeFile(path.join(projectRoot, "cache_report.json"), JSON.stringify({
     entries: { "p:drafting.v1": { cacheVersion: 8 } },
@@ -65,8 +65,9 @@ test("diagnostics 暴露 costHealth 且不读全量日志", async () => {
 
   assert.equal(diagnostics.costHealth.retries, 3);
   assert.equal(diagnostics.costHealth.costAvailable, false);
-  assert.equal(diagnostics.costHealth.maxCacheVersion, 8);
-  assert.equal(diagnostics.costHealth.lastCacheHitRate, 0.14);
+  assert.equal(diagnostics.costHealth.lastCacheHitRate, 0.31);
+  assert.equal(diagnostics.costHealth.maxCacheVersion, undefined);
+  assert.equal(diagnostics.costHealth.lastStableChanged, undefined);
   // Task 4 惰性创建：无会话（agentSnapshot 为 null / 空项目）时 status 回落 'idle'
   //（旧契约快照恒有 idle 会话；空项目 dashboard 显示不变）
   assert.equal(diagnostics.project.status, "idle", "无 snapshot 时 status 为 idle");

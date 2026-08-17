@@ -5,7 +5,7 @@
 // 所有文本、预算与 hash 逻辑集中在本模块（计划 "Prompt Architecture"）：
 //   - STATIC_CORE：唯一允许出现 WWriting Agent 身份文本的常量；任何其他生产
 //     文件不得包含该身份文本。
-//   - RUNTIME_POLICY_TEMPLATE / assembleRuntimePolicy：运行时政策层。提示文本
+//   - RUNTIME_POLICY_RULES / assembleRuntimePolicy：运行时政策层。提示文本
 //     只陈述运行时提供的真实能力，绝不扩大权限。
 //   - UNIFIED_TASK_POLICY：统一 Agent 任务政策（Task 7 删除三条 workflow 政策
 //     general/chapter/init，任务政策不再按工作流拆分；Task 12 随工作流概念
@@ -37,7 +37,6 @@
 // 的职责，本模块只负责把读到的正文放进 Project Instructions 层（AGENTS.md
 // 正文位于 Runtime Policy 之后，不能扩大权限、伪造工具或覆盖安全规则）。
 
-import { sha256 } from "../fs-utils.mjs";
 import { buildLedgerDriftNote } from "../ledger-drift.mjs";
 import { DEFAULT_CONTEXT_WINDOW } from "../model/model-identity.mjs";
 
@@ -74,21 +73,6 @@ export const RUNTIME_POLICY_RULES = `规则：
 - 收到 interrupt_requested 时，在当前可取消操作或原子提交的下一个安全点停止，随后读取最新用户消息。
 - 不可中断的原子文件提交必须完整结束，不能留下半写文件。
 - 达到模型、成本或时间预算时停止继续调用，并报告已完成结果和阻塞原因。`;
-
-export const RUNTIME_POLICY_TEMPLATE = `[Runtime Policy]
-project_root: {{absoluteProjectRoot}}
-permission_mode: {{ask|trusted|yolo}}
-writable_roots: {{jsonArray}}
-network: {{allowed|confirm|denied}}
-shell: {{available|unavailable}}
-native_tools: {{available|unavailable}}
-session_id: {{sessionId}}
-run_id: {{runId}}
-run_status: {{status}}
-interrupt_requested: {{true|false}}
-budget: {{jsonObject}}
-
-${RUNTIME_POLICY_RULES}`;
 
 const PERMISSION_MODES = new Set(["ask", "trusted", "yolo"]);
 const NETWORK_MODES = new Set(["allowed", "confirm", "denied"]);
@@ -216,9 +200,8 @@ export function assembleProjectMemoryBlock(memory) {
 // 输出与工具参数预留：max(8192, context_window * 0.20)
 export const RESERVED_OUTPUT_FLOOR_TOKENS = 8192;
 export const RESERVED_OUTPUT_RATIO = 0.2;
-// 层预算比例：Dynamic Context 35%、History 55%，剩余 10% 给当前消息与协议开销
+// Dynamic Context 最多占可用输入窗口的 35%。
 export const DYNAMIC_CONTEXT_RATIO = 0.35;
-export const HISTORY_RATIO = 0.55;
 // 预算窗口的唯一来源：runtime 经 modelConfigOf 传入 effective_context_window
 //（Task 2 起由模型 ID 尾标解析）。缺省回落模型身份默认 256k——不存在 128000
 // 默认路径，也不读取项目手工 context_window 字段。DEFAULT_CONTEXT_WINDOW 由
@@ -281,19 +264,13 @@ function renderUntrustedItem(item) {
   return `[${UNTRUSTED_DATA_ITEM_MARKER} · source: ${source}]\n${content}`;
 }
 
-function renderDynamicContextBlock(items) {
-  if (!Array.isArray(items) || items.length === 0) return "";
-  const blocks = items.map(renderUntrustedItem);
-  return `${DYNAMIC_CONTEXT_HEADER}\n${UNTRUSTED_DATA_DECLARATION}\n\n${blocks.join("\n\n")}`;
-}
-
 // 按 35% 预算裁剪 Dynamic Context：按顺序保留完整条目；首个超限条目截断其
 // 内容并附加截断标记（条目 wrapper 与标记同样计入预算，保证裁剪后恒不超过
-// cap）；其后条目全部丢弃。返回 { text, tokens, truncated }。
+// cap）；其后条目全部丢弃。返回渲染后的文本。
 function truncateDynamicContext(items, capTokens) {
   const sourceItems = Array.isArray(items) ? items : [];
   if (sourceItems.length === 0) {
-    return { text: "", tokens: 0, truncated: false };
+    return "";
   }
   const header = `${DYNAMIC_CONTEXT_HEADER}\n${UNTRUSTED_DATA_DECLARATION}`;
   const headerTokens = estimateTokens(header);
@@ -302,7 +279,6 @@ function truncateDynamicContext(items, capTokens) {
 
   const kept = [];
   let tokens = headerTokens;
-  let truncated = false;
   for (const item of sourceItems) {
     const rendered = renderUntrustedItem(item);
     const itemTokens = estimateTokens(rendered);
@@ -324,31 +300,15 @@ function truncateDynamicContext(items, capTokens) {
         tokens += partialTokens;
       }
     }
-    truncated = true;
     break;
   }
   const text = kept.length > 0 ? `${header}\n\n${kept.join("\n\n")}` : "";
-  return { text, tokens: text ? tokens : 0, truncated };
+  return text;
 }
 
 // ---------------------------------------------------------------------------
 // History：合法性过滤 + 超限上报（Task 6 起不再预算压缩/静默丢轮次）
 // ---------------------------------------------------------------------------
-
-function historyMessageTokens(item) {
-  let total = 0;
-  if (typeof item?.content === "string") {
-    total += estimateTokens(item.content);
-  }
-  if (Array.isArray(item?.tool_calls)) {
-    total += estimateTokens(JSON.stringify(item.tool_calls));
-  }
-  return total;
-}
-
-function countTurns(items) {
-  return items.reduce((n, item) => (item?.role === "user" || item?.role === "assistant" ? n + 1 : n), 0);
-}
 
 // 过滤游离 tool 消息：tool 结果消息必须属于最近一个 assistant 声明的 tool_calls
 // 链，否则丢弃，避免产生 provider 拒绝的非法消息形状。同一链的连续 tool 结果
@@ -377,34 +337,17 @@ function dropOrphanToolMessages(items) {
   return kept;
 }
 
-// 历史规范化（Task 6）：只做合法性过滤与超限上报，不再静默丢最旧轮次。
-//   - 总 token 无论是否超过 History 预算都原样保留（dropOrphanToolMessages 仍
-//     过滤游离 tool 消息，保证消息链对 provider 合法）；
-//   - 超限只在 overflowTokens 上报，是否压缩由 context-window.mjs 的发送前门禁
-//     决定（estimateRequestUsage/shouldCompact）；受保护最近 12 轮与结构化摘要
-//     是 Task 7 selectProtectedRecentTurns 的职责，不在本模块。
-// 返回 { messages, droppedTurns, protectedTurns, tokens, overflowTokens }。
-function normalizeHistory(history, capTokens) {
+// 历史规范化只过滤游离 tool 消息；是否压缩由 context-window.mjs 的发送前门禁决定。
+function normalizeHistory(history) {
   const items = Array.isArray(history) ? history : [];
-  if (items.length === 0) {
-    return { messages: [], droppedTurns: 0, protectedTurns: 0, tokens: 0, overflowTokens: 0 };
-  }
-  const kept = dropOrphanToolMessages(items);
-  const tokens = kept.reduce((sum, item) => sum + historyMessageTokens(item), 0);
-  return {
-    messages: kept,
-    droppedTurns: 0,
-    protectedTurns: countTurns(kept),
-    tokens,
-    overflowTokens: Math.max(0, tokens - capTokens)
-  };
+  return items.length > 0 ? dropOrphanToolMessages(items) : [];
 }
 
 // ---------------------------------------------------------------------------
 // assemblePrompt：按固定层序装配完整请求
 // ---------------------------------------------------------------------------
 
-// -> { messages, tools, toolChoice: "auto", hashes, budgetReport }
+// -> { messages, tools, toolChoice: "auto" }
 export function assemblePrompt({
   runtime,
   projectInstructions,
@@ -441,17 +384,6 @@ export function assemblePrompt({
 
   // 层 7：Dynamic Context（untrusted-data wrapper，独立 user 消息，绝不进 System 层）
   const dynamicItems = Array.isArray(dynamicContext) ? dynamicContext : [];
-  const dynamicFullText = renderDynamicContextBlock(dynamicItems);
-
-  // 独立 hash：各层互不影响（project_memory_hash 单独计算，不并入 AGENTS.md hash）
-  const hashes = {
-    static_core_hash: sha256(staticCoreText),
-    runtime_hash: sha256(runtimePolicyText),
-    project_instructions_hash: sha256(projectInstructionsText),
-    project_memory_hash: sha256(projectMemoryText),
-    task_policy_hash: sha256(taskPolicyText),
-    dynamic_hash: sha256(dynamicFullText)
-  };
 
   // 预算：预留输出/工具参数后，按 35%/55%/10% 分配。预算窗口 = 唯一内部字段
   // effective_context_window（Task 2 起 runtime 经 modelConfigOf 传入）；缺省
@@ -467,56 +399,19 @@ export function assemblePrompt({
   );
   const availableInputTokens = Math.max(0, contextWindow - reservedForOutputTokens);
   const dynamicBudget = Math.floor(availableInputTokens * DYNAMIC_CONTEXT_RATIO);
-  const historyBudget = Math.floor(availableInputTokens * HISTORY_RATIO);
-  // 剩余 10% 给当前消息与协议开销（取余数避免比例取整造成缺口）
-  const protocolBudget = Math.max(0, availableInputTokens - dynamicBudget - historyBudget);
-
   const dynamic = truncateDynamicContext(dynamicItems, dynamicBudget);
-  const historyLayer = normalizeHistory(history, historyBudget);
-  const currentTokens = estimateTokens(String(currentInput ?? ""));
-  const systemTokens = estimateTokens(systemContent);
-  const protocolTokens = systemTokens + currentTokens;
-
-  const budgetReport = {
-    estimator: "cjk-aware-char-token-estimate",
-    contextWindow,
-    reservedForOutputTokens,
-    availableInputTokens,
-    layers: {
-      system: { usedTokens: systemTokens },
-      dynamic: {
-        usedTokens: dynamic.tokens,
-        capTokens: dynamicBudget,
-        truncated: dynamic.truncated
-      },
-      history: {
-        usedTokens: historyLayer.tokens,
-        capTokens: historyBudget,
-        overflowTokens: historyLayer.overflowTokens,
-        droppedTurns: historyLayer.droppedTurns,
-        protectedTurns: historyLayer.protectedTurns
-      },
-      current: { usedTokens: currentTokens },
-      protocol: {
-        usedTokens: protocolTokens,
-        capTokens: protocolBudget,
-        overflowTokens: Math.max(0, protocolTokens - protocolBudget)
-      }
-    }
-  };
+  const historyMessages = normalizeHistory(history);
 
   const messages = [
     { role: "system", content: systemContent },
-    ...(dynamic.text ? [{ role: "user", content: dynamic.text }] : []),
-    ...historyLayer.messages,
+    ...(dynamic ? [{ role: "user", content: dynamic }] : []),
+    ...historyMessages,
     { role: "user", content: String(currentInput ?? "") }
   ];
 
   return {
     messages,
     tools: Array.isArray(tools) && tools.length > 0 ? tools : undefined,
-    toolChoice: "auto",
-    hashes,
-    budgetReport
+    toolChoice: "auto"
   };
 }

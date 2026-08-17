@@ -44,7 +44,6 @@ const SUMMARY_DEFAULTS = {
   byStage: {},
   byChapter: {},
   recentHitRates: [],
-  refillCalls: 0,
   cacheSavedCost: 0
 };
 
@@ -55,7 +54,6 @@ export class CostTracker {
     this.summary.byModel ??= {};
     this.summary.byChapter ??= {};
     this.summary.recentHitRates ??= [];
-    this.summary.refillCalls ??= 0;
     this.summary.cacheSavedCost ??= 0;
     this.summary.cacheHitTokens ??= 0;
     this.summary.hitRateInputTokens ??= 0;
@@ -123,11 +121,6 @@ export class CostTracker {
   recordRetry() {
     this.summary.retries += 1;
     return this.summary.retries;
-  }
-
-  recordRefill() {
-    this.summary.refillCalls += 1;
-    return this.summary.refillCalls;
   }
 
   getSummary() {

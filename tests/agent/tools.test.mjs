@@ -1576,52 +1576,6 @@ test("未知工具返回 工具不可用。 且活动闭环", async (t) => {
 });
 
 // ---------------------------------------------------------------------------
-// hook 执行（隐藏在本接口内部）
-// ---------------------------------------------------------------------------
-
-test("BeforeToolUse 否决短路执行；AfterToolUse 记录成功与失败", async (t) => {
-  const h = await setup(t);
-  const order = [];
-  const unregister = h.tools.registerHook("BeforeToolUse", async () => {
-    order.push("before-1");
-    return { allow: false, reason: "nope" };
-  });
-  h.tools.registerHook("AfterToolUse", async () => {
-    order.push("after");
-  });
-  // 权限确认在前、hook 否决在后：先允许，再让 BeforeToolUse 否决执行
-  const vetoPending = h.tools.execute(toolCall("write_file", { path: "a.txt", content: "A" }), h.context);
-  const decision1 = await nextDecision(h.journal);
-  await h.tools.resolveDecision({ decisionId: decision1.payload.decision_id, choice: "allow" });
-  const vetoed = await vetoPending;
-  assert.equal(vetoed.ok, false);
-  assert.equal(vetoed.message, "nope");
-  assert.deepEqual(order, ["before-1"], "否决后不得继续执行");
-  assertClosure(await readEvents(h.journal));
-
-  // 移除否决 hook 后正常执行且 AfterToolUse 收到 ok
-  unregister();
-  const okPending = h.tools.execute(toolCall("write_file", { path: "b.txt", content: "B" }), h.context);
-  const decision2 = await nextDecision(h.journal, 2);
-  await h.tools.resolveDecision({ decisionId: decision2.payload.decision_id, choice: "allow" });
-  const ok = await okPending;
-  assert.equal(ok.ok, true);
-  assert.ok(order.includes("after"), "AfterToolUse 应在成功后执行");
-  assertClosure(await readEvents(h.journal));
-});
-
-test("单个 AfterToolUse 抛错不影响主流程", async (t) => {
-  const h = await setup(t);
-  h.tools.registerHook("AfterToolUse", async () => {
-    throw new Error("boom");
-  });
-  const result = await h.tools.execute(toolCall("read_file", { path: "x.md" }), h.context);
-  // read_file 目标不存在 → tool_failed，但 hook 抛错不得阻断结果返回
-  assert.equal(result.ok, false);
-  assert.equal(result.error.code, "file_not_found");
-});
-
-// ---------------------------------------------------------------------------
 // 深工具：schema/权限/审计/执行体接线
 // ---------------------------------------------------------------------------
 

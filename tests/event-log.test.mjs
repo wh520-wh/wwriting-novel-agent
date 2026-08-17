@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test, { afterEach } from "node:test";
-import { appendEvent, readEvents, tailEvents } from "../src/core/event-log.mjs";
+import { appendEvent, readEvents } from "../src/core/event-log.mjs";
 
 let tmpDir;
 
@@ -67,19 +67,6 @@ test("limit larger than total events returns all events", async () => {
   const events = await readEvents(root, { limit: 100 });
   assert.equal(events.length, 1);
   assert.equal(events[0].message, "one");
-});
-
-test("tailEvents is a convenience wrapper for readEvents with limit", async () => {
-  const root = await makeProject();
-  const inserted = [];
-  for (let i = 0; i < 20; i++) {
-    const ev = await appendEvent(root, { type: "e", message: `v-${i}` });
-    inserted.push(ev);
-  }
-  const tail = await tailEvents(root, 3);
-  assert.equal(tail.length, 3);
-  assert.equal(tail[0].event_id, inserted[17].event_id);
-  assert.equal(tail[2].event_id, inserted[19].event_id);
 });
 
 test("tail read with limit=1 returns only the last event", async () => {

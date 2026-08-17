@@ -266,26 +266,6 @@ test("loadDashboardData 对普通文件夹（无 project.yaml）返回 hasProjec
   assert.equal(projectYamlCreated, false, "普通文件夹不得创建 project.yaml");
 });
 
-test("loadDashboardData returns cacheSummary when cache report is missing", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-dashboard-cache-empty-"));
-  const { projectRoot } = await createWritingProject(root, { slug: "project" });
-
-  const data = await loadDashboard(root, projectRoot);
-
-  assert.deepEqual(data.cacheSummary, {
-    available: false,
-    providerMetricsAvailable: false,
-    cacheKey: null,
-    cacheVersion: null,
-    stableChanged: false,
-    stableChangedReason: null,
-    lastTemplateVersion: null,
-    hitRate: null,
-    cachedTokens: 0,
-    explanation: "缓存待生成"
-  });
-});
-
 // Task 6 评审（代码审查 Changes Needed）：会话列表降级必须真实生效——不传 agent
 // 或 agent.sessions 抛错都返回空列表且不抛错。若 readSessions 的守卫（typeof
 // agent?.sessions !== "function"）或 catch 被删，这两个断言必挂。
@@ -313,7 +293,7 @@ test("loadDashboardData 会话列表降级：无 agent 或 sessions 抛错 → �
   assert.equal(degraded.active_session_id, null);
 });
 
-test("loadDashboardData explains stable cache key without provider metrics", async () => {
+test("loadDashboardData 不再暴露已停止生成的 cache_report DTO", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-dashboard-cache-summary-"));
   const { projectRoot } = await createWritingProject(root, { slug: "project" });
   await fs.writeFile(
@@ -348,9 +328,10 @@ test("loadDashboardData explains stable cache key without provider metrics", asy
 
   const data = await loadDashboard(root, projectRoot);
 
-  assert.equal(data.cacheSummary.available, true);
-  assert.equal(data.cacheSummary.providerMetricsAvailable, false);
-  assert.equal(data.cacheSummary.explanation, "缓存键稳定；供应商未返回命中指标");
+  assert.equal(data.cache, undefined);
+  assert.equal(data.cacheSummary, undefined);
+  assert.equal(data.summary.cacheMetricsAvailable, undefined);
+  assert.equal(data.summary.cacheHitRate, undefined);
 });
 
 test("dashboard does not count an indexed chapter whose file is missing", async () => {

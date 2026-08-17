@@ -41,35 +41,27 @@ test("analyzeCost 按章聚合 token 与调用次数", () => {
   assert.equal(report.byChapter["2"].calls, 1);
 });
 
-test("analyzeCost 统计重试与未完成调用；门禁补写恒为零", () => {
+test("analyzeCost 统计重试与未完成调用，不保留已删除的门禁补写字段", () => {
   const report = analyzeCost({ events });
   assert.equal(report.calls.started, 4);
   assert.equal(report.calls.completed, 3);
   assert.equal(report.calls.abandoned, 1);
   assert.equal(report.retries.count, 1);
   assert.equal(report.retries.byReason.timeout, 1);
-  // Task 10：内容质量门禁已删除，gate-failure 补写统计恒为零
-  assert.equal(report.refills.gateFailures, 0);
-  assert.deepEqual(report.refills.byChapter, {});
+  assert.equal(report.refills, undefined);
 });
 
-test("analyzeCost 汇总缓存命中率与版本变化", () => {
-  const report = analyzeCost({
-    events,
-    cacheReport: {
-      entries: { "p:drafting.v1": { cacheVersion: 8 } },
-      last_call: { cacheHitRate: 0.083, stableChanged: true }
-    }
-  });
+test("analyzeCost 只从调用事件汇总缓存命中率", () => {
+  const report = analyzeCost({ events });
   assert.equal(report.cache.samples.length, 3);
   assert.ok(Math.abs(report.cache.averageHitRate - (0.4 + 0.083 + 0) / 3) < 1e-9);
-  assert.equal(report.cache.maxCacheVersion, 8);
-  assert.equal(report.cache.lastStableChanged, true);
+  assert.equal(report.cache.maxCacheVersion, undefined);
+  assert.equal(report.cache.lastStableChanged, undefined);
 });
 
 test("analyzeCost 容忍缺失输入", () => {
   const report = analyzeCost({});
   assert.equal(report.calls.started, 0);
   assert.deepEqual(report.byChapter, {});
-  assert.equal(report.cache.maxCacheVersion, null);
+  assert.deepEqual(report.cache.samples, []);
 });

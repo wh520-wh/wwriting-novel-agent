@@ -311,10 +311,10 @@ test("commitChapter 不以字数、标题或技能 checker 拒绝提交", async 
     const finalContent = await fs.readFile(path.join(projectRoot, "chapters", "001.md"), "utf8");
     assert.equal(result.actual_words, countEffectiveWords(finalContent));
     assert.ok(result.actual_words >= 4, "短章节也客观记录真实字数");
-    assert.deepEqual(result.quality_gate_results, []);
+    assert.equal(result.quality_gate_results, undefined);
     // 索引同样只记录空门禁结果，正式文件与记忆正常落盘
     const entry = (await loadChapterIndex(projectRoot)).chapters.find((c) => c.chapter_no === 1);
-    assert.deepEqual(entry.quality_gate_results, []);
+    assert.equal(entry.quality_gate_results, undefined);
     assert.ok((await loadChapterMemory(projectRoot)).chapters.some((c) => c.chapter_no === 1));
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
@@ -385,7 +385,7 @@ test("commitChapter 短章节直接提交：字数不足不拒绝，无半写状
     await appendChapterSegment({ projectRoot, projectId: project.project_id, chapterNo: 1, segmentNo: 1, content: "短。" });
     const result = await commitChapter({ projectRoot, projectId: project.project_id, chapterNo: 1 });
     assert.equal(result.ok, true);
-    assert.deepEqual(result.quality_gate_results, []);
+    assert.equal(result.quality_gate_results, undefined);
     // 正式文件落盘、索引 completed、记忆与 checkpoint 齐备、run_log 记录领域事实
     assert.ok((await fs.readFile(path.join(projectRoot, "chapters", "001.md"), "utf8")).includes("短。"));
     assert.equal((await loadChapterIndex(projectRoot)).chapters[0].status, "completed");
@@ -407,7 +407,7 @@ test("commitChapter 标题格式不同不拒绝：串章标题同样提交", asy
     assert.equal(result.actual_words >= 50, true);
     const entry = (await loadChapterIndex(projectRoot)).chapters.find((c) => c.chapter_no === 1);
     assert.equal(entry.status, "completed");
-    assert.deepEqual(entry.quality_gate_results, []);
+    assert.equal(entry.quality_gate_results, undefined);
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
   }
@@ -425,7 +425,7 @@ test("commitChapter 技能 checker 不再生效：平缓结尾正文直接提交
     assert.equal(result.ok, true);
     const entry = (await loadChapterIndex(projectRoot)).chapters.find((c) => c.chapter_no === 1);
     assert.equal(entry.status, "completed");
-    assert.deepEqual(entry.quality_gate_results, []);
+    assert.equal(entry.quality_gate_results, undefined);
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
   }
@@ -535,7 +535,7 @@ test("commitChapter 不再执行 post-process 技能钩子：hooks 元数据保�
     const checkpoints = await checkpointFiles(projectRoot);
     const checkpoint = JSON.parse(await fs.readFile(path.join(projectRoot, "checkpoints", checkpoints[0]), "utf8"));
     assert.equal(checkpoint.skill_hooks, undefined, "checkpoint 不再记录技能钩子");
-    assert.deepEqual(checkpoint.quality_gate_results, []);
+    assert.equal(checkpoint.quality_gate_results, undefined);
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
   }

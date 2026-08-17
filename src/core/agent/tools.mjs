@@ -7,7 +7,7 @@
 //   await tools.execute(toolCall, context); // 单次工具调用的 schema→权限→审计→执行→事件闭环
 //
 // 内部实现隐藏：schema 注册、权限判定（含硬能力拒绝与输入级临时授权）、journal 审计事件、
-// BeforeToolUse/AfterToolUse hook 执行、可中断/原子工具分类、脱敏与受保护路径。
+// 可中断/原子工具分类、脱敏与受保护路径。
 //
 // 设计不变量（来自计划 Task 4 Step 3–8）：
 //   - 恰好注册八个 general 工具（list_files/search_files/read_file/write_file/edit_file/shell/
@@ -86,8 +86,6 @@ const MAX_SEARCH_DEPTH = 12; // search_files 递归深度上限
 const SEARCH_SKIP_DIRS = new Set([".wwriting", "node_modules", ".git", "checkpoints", ".versions"]);
 
 const PLAN_STATUSES = Object.freeze(["pending", "in_progress", "completed"]);
-
-const HOOK_PHASES = Object.freeze(["BeforeToolUse", "AfterToolUse"]);
 
 const SHELL_TIMEOUT_DEFAULT_MS = 120000;
 const SHELL_TIMEOUT_MIN_MS = 1000;
@@ -495,7 +493,6 @@ export function createToolRuntime({
   const evaluatePolicy = typeof permissionPolicy === "function" ? permissionPolicy : defaultPermissionPolicy;
 
   const decisions = new Map(); // decision_id -> 待决决策记录
-  const hooks = { BeforeToolUse: [], AfterToolUse: [] };
   let confirmationCounter = 0; // extreme 确认文字递增计数（保证同进程内不重复）
 
   // -------------------------------------------------------------------------
@@ -556,40 +553,6 @@ export function createToolRuntime({
       }
     }
     return matched.length;
-  }
-
-  // -------------------------------------------------------------------------
-  // tool hooks（执行隐藏在本接口内部；单个 AfterToolUse 失败不阻断主流程）
-  // -------------------------------------------------------------------------
-
-  function registerHook(phase, fn) {
-    if (!HOOK_PHASES.includes(phase)) throw new Error(`Unknown tool hook phase: ${phase}`);
-    if (typeof fn !== "function") throw new Error("tool hook must be a function");
-    hooks[phase].push(fn);
-    return () => {
-      const index = hooks[phase].indexOf(fn);
-      if (index >= 0) hooks[phase].splice(index, 1);
-    };
-  }
-
-  async function runBeforeToolUse(ctx) {
-    for (const hook of hooks.BeforeToolUse) {
-      const result = await hook(ctx);
-      if (result && result.allow === false) {
-        return { allow: false, reason: result.reason ?? "blocked by BeforeToolUse hook" };
-      }
-    }
-    return { allow: true };
-  }
-
-  async function runAfterToolUse(ctx) {
-    for (const hook of hooks.AfterToolUse) {
-      try {
-        await hook(ctx);
-      } catch {
-        // 审计类 hook 失败不阻断工具结果
-      }
-    }
   }
 
   // -------------------------------------------------------------------------
@@ -1904,28 +1867,16 @@ export function createToolRuntime({
       }
     }
 
-    // 执行（含 hook 与增量输出脱敏）。工具 run 由统一期限监督器
+    // 执行（含增量输出脱敏）。工具 run 由统一期限监督器
     // executeWithDeadline 包裹：context 获得组合 signal（父 signal + 期限
     // signal）与 reportActivity()（只重置空闲期限）；超时返回结构化
     // tool_timeout 结果，不向 Runtime 抛异常。
     const delta = createDeltaEmitter({ toolCallId, activityId, name, runId });
     let result;
     let error = null;
-    let vetoed = false;
     let timeoutKind = null;
     let timeoutDurationMs = null;
     try {
-      const hookResult = await runBeforeToolUse({
-        tool: name,
-        args,
-        action,
-        projectRoot: context.projectRoot,
-        project: context.project ?? null
-      });
-      if (!hookResult.allow) {
-        vetoed = true; // BeforeToolUse 否决：工具从未执行，AfterToolUse 审计不触发
-        throw toolError("before_tool_use_denied", hookResult.reason ?? "工具被拒绝执行。", { rule: "before_tool_use" });
-      }
       const { idleMs: toolIdleMs, absoluteMs: toolAbsoluteMs } = resolveToolDeadline(definition);
       const runTool = (runContext) => definition.run(args, runContext, { emitDelta: (event) => delta.emit(event) });
       const runWithDeadline = () =>
@@ -1963,18 +1914,6 @@ export function createToolRuntime({
         duration_ms: timeoutDurationMs
       };
       await appendFailed(failedPayload, runId);
-      if (!vetoed) {
-        await runAfterToolUse({
-          tool: name,
-          args,
-          action,
-          projectRoot: context.projectRoot,
-          project: context.project ?? null,
-          ok: false,
-          error: Object.assign(new Error("工具执行超时。"), { code: "tool_timeout", kind: timeoutKind }),
-          durationMs: timeoutDurationMs
-        }).catch(() => {});
-      }
       return toolFailureResult({
         tool_call_id: toolCallId,
         name,
@@ -2004,18 +1943,6 @@ export function createToolRuntime({
       if (typeof error.stdout === "string") failedPayload.stdout = redactor.redact(error.stdout);
       if (typeof error.stderr === "string") failedPayload.stderr = redactor.redact(error.stderr);
       await appendFailed(failedPayload, runId);
-      if (!vetoed) {
-        await runAfterToolUse({
-          tool: name,
-          args,
-          action,
-          projectRoot: context.projectRoot,
-          project: context.project ?? null,
-          ok: false,
-          error,
-          durationMs: failedPayload.duration_ms ?? null
-        }).catch(() => {});
-      }
       return toolFailureResult({
         tool_call_id: toolCallId,
         name,
@@ -2039,16 +1966,6 @@ export function createToolRuntime({
         name
       }
     });
-    await runAfterToolUse({
-      tool: name,
-      args,
-      action,
-      projectRoot: context.projectRoot,
-      project: context.project ?? null,
-      ok: true,
-      result,
-      durationMs: typeof result?.duration_ms === "number" ? result.duration_ms : null
-    }).catch(() => {});
     return { ok: true, tool_call_id: toolCallId, name, result };
   }
 
@@ -2182,7 +2099,6 @@ export function createToolRuntime({
     execute,
     resolveDecision,
     clearGrants,
-    registerHook,
     isInterruptible(name) {
       return TOOLS.get(name)?.interruptible === true;
     },

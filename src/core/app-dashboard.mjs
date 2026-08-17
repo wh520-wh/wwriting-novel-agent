@@ -72,12 +72,11 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
     };
   }
 
-  const [project, chapterIndex, events, cost, cache, sessionData] = await Promise.all([
+  const [project, chapterIndex, events, cost, sessionData] = await Promise.all([
     loadProject(projectRoot),
     readJson(safeJoin(projectRoot, "memory", "chapter_index.json"), { chapters: [] }),
     readEvents(projectRoot, { limit: 80 }),
     readJson(safeJoin(projectRoot, "cost.json"), null),
-    readJson(safeJoin(projectRoot, "cache_report.json"), null),
     readSessions(projectRoot, options.agent)
   ]);
   const config = await loadConfigLayers(projectRoot, project);
@@ -159,15 +158,11 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
       totalWords,
       totalTokens: cost?.totalTokens ?? 0,
       estimatedCost: cost?.estimatedCost ?? 0,
-      costAvailable: cost?.costAvailable ?? false,
-      cacheMetricsAvailable: cache?.last_call?.cacheMetricsAvailable ?? false,
-      cacheHitRate: cache?.last_call?.cacheHitRate ?? null
+      costAvailable: cost?.costAvailable ?? false
     },
     chapters,
     events,
     cost,
-    cache,
-    cacheSummary: buildCacheSummary(cache),
     config: {
       effective: config.effective,
       layers: config.layers
@@ -198,44 +193,6 @@ async function readSessions(projectRoot, agent) {
     console.warn(`[app-dashboard] 会话列表加载失败，降级为空列表（${projectRoot}）: ${error?.message ?? String(error)}`);
     return { sessions: [], active_session_id: null };
   }
-}
-
-function buildCacheSummary(cache) {
-  const last = cache?.last_call ?? null;
-  if (!last) {
-    return {
-      available: false,
-      providerMetricsAvailable: false,
-      cacheKey: null,
-      cacheVersion: null,
-      stableChanged: false,
-      stableChangedReason: null,
-      lastTemplateVersion: null,
-      hitRate: null,
-      cachedTokens: 0,
-      explanation: "缓存待生成"
-    };
-  }
-  const providerMetricsAvailable = last.cacheMetricsAvailable === true;
-  const stableChanged = last.stableChanged === true;
-  let explanation = "缓存键稳定；供应商未返回命中指标";
-  if (providerMetricsAvailable && Number.isFinite(last.cacheHitRate)) {
-    explanation = `缓存命中 ${Math.round(last.cacheHitRate * 100)}%`;
-  } else if (stableChanged) {
-    explanation = `缓存已刷新 v${last.cacheVersion}`;
-  }
-  return {
-    available: true,
-    providerMetricsAvailable,
-    cacheKey: last.cacheKey ?? null,
-    cacheVersion: last.cacheVersion ?? null,
-    stableChanged,
-    stableChangedReason: last.stableChangedReason ?? null,
-    lastTemplateVersion: last.templateVersion ?? null,
-    hitRate: Number.isFinite(last.cacheHitRate) ? last.cacheHitRate : null,
-    cachedTokens: Number(last.cachedTokens ?? 0),
-    explanation
-  };
 }
 
 export async function readChapterContent(projectRoot, chapterNo) {

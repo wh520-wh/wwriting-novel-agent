@@ -1,10 +1,7 @@
-export function analyzeCost({ events = [], costSummary = null, cacheReport = null } = {}) {
+export function analyzeCost({ events = [], costSummary = null } = {}) {
   const calls = { started: 0, completed: 0, abandoned: 0 };
   const retries = { count: 0, byReason: {} };
   const byChapter = {};
-  // Task 10：内容质量门禁已删除，不再统计 gate-failure 补写（保持输出形状，
-  // 恒为零，避免改动 audit-cost 脚本的输出契约）。
-  const refills = { gateFailures: 0, byChapter: {} };
   const samples = [];
 
   for (const event of events) {
@@ -29,19 +26,13 @@ export function analyzeCost({ events = [], costSummary = null, cacheReport = nul
   }
   calls.abandoned = Math.max(0, calls.started - calls.completed);
 
-  const versions = Object.values(cacheReport?.entries ?? {})
-    .map((entry) => entry.cacheVersion)
-    .filter((v) => Number.isFinite(v));
   return {
     calls,
     retries,
     byChapter,
-    refills,
     cache: {
       samples,
-      averageHitRate: samples.length ? samples.reduce((a, b) => a + b, 0) / samples.length : null,
-      maxCacheVersion: versions.length ? Math.max(...versions) : null,
-      lastStableChanged: cacheReport?.last_call?.stableChanged ?? null
+      averageHitRate: samples.length ? samples.reduce((a, b) => a + b, 0) / samples.length : null
     },
     costSummary
   };

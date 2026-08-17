@@ -7,11 +7,6 @@
 import { formatNumber, formatYuan } from "../utils.js";
 import { isCacheDiscountedMode } from "../../shared/deepseek-detection.mjs";
 
-// Task 25：formatYuan 已上移为 utils.js 的单一出口（drawer-panels 三处成本展示
-// 与本节共用），这里仅保留 re-export 兼容既有导入路径（tests/app-shell/
-// cost-panel.test.mjs 从本模块导入 formatYuan）。
-export { formatYuan } from "../utils.js";
-
 const SPARKLINE_LENGTH = 20;
 const SPARK_GAP = 1; // px
 const SPARK_WIDTH = 4; // px
@@ -20,9 +15,6 @@ const SPARK_WIDTH = 4; // px
 // 仅缓存折扣平台模式显示（MiMo 价差 120 倍，与 DeepSeek 同享提示）。
 // 文案为计划原文（验收核对一字不差）：同时覆盖冷缓存（改配置）与 TTL 掉命中（间隔过久），不做错误归因。
 const LOW_HIT_RATE_HINT = "缓存命中率偏低，可能近期改动了规则/风格/技能配置，或章节间间隔过久";
-// stableChangedReason == "stable_hash_changed"（cache_report.json 既有字段，D4 确认可归因）时
-// 在原文后附具体归因，仍保持一行小字。
-const LOW_HIT_RATE_HINT_STABLE_CHANGED = `${LOW_HIT_RATE_HINT}（检测到规则/风格/技能配置有改动）`;
 const LOW_HIT_RATE_THRESHOLD = 0.3; // 累计命中率 <30% 触发
 const MIN_WRITING_PATH_CALLS = 10; // 写作路径调用数门限，避免冷启动/样本过少误报
 
@@ -125,16 +117,14 @@ function buildOverview(cost, summary) {
   );
 }
 
-// 调用统计（总调用 / 累计 token / 补写轮次）面向进阶用户，折进「缓存与调用详情」折叠区。
+// 调用统计（总调用 / 累计 token）面向进阶用户，折进「缓存与调用详情」折叠区。
 // 普通作者打开成本面板只看「已计费」和「章节成本」即可，不被 token / 缓存命中率吓到。
 function buildCallStats(cost, summary) {
   const totalCalls = cost?.calls ?? summary?.modelCalls ?? 0;
   const totalTokens = cost?.totalTokens ?? summary?.totalTokens ?? 0;
-  const refillCalls = cost?.refillCalls ?? 0;
   return section("调用统计",
     row("总调用", `${formatNumber(totalCalls)} 次`),
-    row("累计 token", formatNumber(totalTokens)),
-    row("补写轮次", `${formatNumber(refillCalls)}`)
+    row("累计 token", formatNumber(totalTokens))
   );
 }
 
@@ -150,18 +140,13 @@ function cumulativeHitRateText(cost) {
 // D2：缓存折扣平台模式（DeepSeek / MiMo）+ 写作路径调用数 ≥10 + 累计命中率 <30% 时返回一行小字提示，否则 null。
 // 统计口径沿用 L2：hitRateInputTokens / cacheHitTokens 已排除 chat（cost-tracker 按 stage==="chat" 剔除）；
 // 写作路径调用数 = 总调用 - chat 调用（byStage.chat.calls），同样排除 chat。
-function lowHitRateHint({ cost = {}, modelConfig = null, cacheSummary = null } = {}) {
+function lowHitRateHint({ cost = {}, modelConfig = null } = {}) {
   if (!isCacheDiscountedMode(modelConfig)) return null;
   const base = Number(cost.hitRateInputTokens ?? 0);
   if (!(base > 0)) return null; // 无命中率数据不提示（与累计命中率「暂无数据」占位一致，不把 0 当真实命中率）
   if (Number(cost.cacheHitTokens ?? 0) / base >= LOW_HIT_RATE_THRESHOLD) return null;
   const writingPathCalls = Number(cost.calls ?? 0) - Number(cost.byStage?.chat?.calls ?? 0);
   if (writingPathCalls < MIN_WRITING_PATH_CALLS) return null;
-  // cache_report.json 的 stableChangedReason == "stable_hash_changed"：最近一次调用稳定区已变更，
-  // 归因到「改配置导致的打断」（D4 既有字段，成本为零）。
-  if (cacheSummary?.stableChangedReason === "stable_hash_changed") {
-    return LOW_HIT_RATE_HINT_STABLE_CHANGED;
-  }
   return LOW_HIT_RATE_HINT;
 }
 
@@ -179,7 +164,7 @@ function buildCacheHealth(cost, opts = {}) {
   if (costAvailable && saved > 0) {
     children.splice(1, 0, row("缓存节省", formatYuan(saved), "mono"));
   }
-  const hint = lowHitRateHint({ cost, modelConfig: opts.modelConfig, cacheSummary: opts.cacheSummary });
+  const hint = lowHitRateHint({ cost, modelConfig: opts.modelConfig });
   if (hint) {
     children.push(el("div", {
       className: "cost-hint",
@@ -270,10 +255,9 @@ function resolveLastEvent(events, lastEvent) {
  * @param {Array} [args.events=[]] - the events stream (oldest-first); the last chapter_cost_warning is used for the badge
  * @param {object} [args.lastEvent] - optional override for the warning event
  * @param {object|null} [args.modelConfig] - the active_model config ({base_url, model_name}); D2 判定 DeepSeek 模式用
- * @param {object|null} [args.cacheSummary] - dashboard cacheSummary; stableChangedReason 驱动 D2 归因
  * @returns {HTMLElement} the cost panel root
  */
-export function renderCostPanel({ cost = null, summary = null, events = [], lastEvent = null, modelConfig = null, cacheSummary = null } = {}) {
+export function renderCostPanel({ cost = null, summary = null, events = [], lastEvent = null, modelConfig = null } = {}) {
   const container = el("div", { className: "cost-panel-root" });
 
   const safeCost = cost ?? {};
@@ -287,7 +271,7 @@ export function renderCostPanel({ cost = null, summary = null, events = [], last
   const advanced = el("details", { className: "cost-advanced" },
     el("summary", { text: "缓存与调用详情" }),
     buildCallStats(safeCost, safeSummary),
-    buildCacheHealth(safeCost, { modelConfig, cacheSummary })
+    buildCacheHealth(safeCost, { modelConfig })
   );
   container.appendChild(advanced);
   container.appendChild(buildChapterCost(safeCost, safeSummary, warning));
