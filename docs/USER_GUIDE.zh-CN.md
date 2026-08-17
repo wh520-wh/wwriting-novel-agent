@@ -404,7 +404,7 @@ npm run package:dir
 
 ## 15. 开发注意事项
 
-- 不要把 `node_modules/`、`.demo_runs/`、`dist-desktop/` 提交到仓库。
+- 不要把 `node_modules/`、`dist-desktop/` 提交到仓库（均已在 `.gitignore`）。
 - 不要把真实 API key 写入项目文件。
 - 不要绕过 `safeJoin` 直接拼接项目内部路径。
 - 不要让网页内容进入系统提示层。

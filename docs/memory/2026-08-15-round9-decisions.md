@@ -98,7 +98,7 @@
 
 - 同 Run 多排队输入分段（Part A 遗留）
 - 缓存命中率重启归零（会话内存态）
-- 多模态视觉验收未执行/PASS 与否（由用户另行安排，审图手册路径：artifacts/visual-acceptance/2026-08-15-round9/round-01/multimodal-review-prompt.md）
+- 多模态视觉验收未执行/PASS 与否（由用户另行安排；审图手册模板随各轮 visual-acceptance 目录产出，最新证据见 `artifacts/visual-acceptance/2026-08-16-*` 系列）
 - capture-visual-acceptance 本环境于既有场景 08 超时中断（新场景已产出 4/5 PNG；version-panel-confirm 因 fixture 无已入账章节版本未能产出；完整运行需用户环境重跑）
 - retry 且首个 input_started 缺失的组不迁移锚点（Task 2 设计内行为，防御性判定，正常 journal 不出现）
 - MODEL_NAME 覆盖已接线：sim 真实模式经 workspaceConfig 注入 active_model（provider openai-compatible / model_name = MODEL_NAME ?? deepseek-v4-flash），适配器构造器不接收模型名（模型名在 runtime modelConfig 层解析，`3b3730b`）

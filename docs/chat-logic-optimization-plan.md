@@ -1,10 +1,6 @@
 # WWriting 对话逻辑与健壮性优化计划 v2
 
-> **【已废弃】本计划描述的是旧对话架构（agent-engine/task-queue/chat-agent 控制面、
-> 对话三套并行记录与卡片 UI）。统一 Agent 内核计划
-> （docs/superpowers/plans/2026-08-05-unified-agent-runtime-and-prompt-architecture.md）
-> 已整体替换该架构并删除对应源码，本文件仅作历史留档（Task 11 最终审查确认保留，
-> 不在删除范围内）。引用其中内容前请先核对当前实现。
+> **【已废弃·历史留档】本计划描述的旧对话架构（agent-engine/task-queue/chat-agent 控制面、对话三套并行记录与卡片 UI）已被统一 Agent 内核整体替换，对应源码已删除（README 记载净删约 4.1 万行）。本文件仅作历史留档，描述的文件路径、行号与机制均已不存在，不可作为当前实现的依据。引用前请先对照现行 `src/core/agent/` 与 `src/app-shell/agent/`。**
 
 > 执行对象：本计划交给另一个编码模型执行。所有"现状"均标注了 `文件:行号`，行号可能随改动漂移，以符号名为准。
 > 项目根目录：`D:/WWriting`。技术栈：Electron + Node（ESM，`src/core` 后端，`src/app-shell` 前端），无构建步骤，前端是原生 JS 模块。
