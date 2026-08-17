@@ -1,12 +1,11 @@
 // src/app-shell/components/version-panel.js —— 第九轮：版本时间线面板
 //（阅读器/抽屉章节/记忆分区三处共用；纯 DOM 工厂，doc 可注入便于单测）。
-// ctx: 预留参数，供后续入口（如 api-client 注入）使用，当前未消费。
-export function createVersionPanel({ doc = document, ctx = null }) {
+export function createVersionPanel({ doc = document } = {}) {
   const host = doc.createElement("div");
   host.className = "version-panel";
   host.dataset.versionPanel = "";
   host.hidden = true;
-  let state = null;
+  let generation = 0;
 
   function notice(text) {
     const p = doc.createElement("div");
@@ -18,16 +17,24 @@ export function createVersionPanel({ doc = document, ctx = null }) {
   function renderRows(versions, callbacks) {
     const list = doc.createElement("div");
     list.className = "version-list";
+    let previewGeneration = 0;
     for (const v of versions) {
-      const row = doc.createElement("button");
-      row.type = "button";
+      // Round10：行 = div[role=button]（行内含真实恢复 button，不能嵌套 button）；
+      // 预览经 openPreview() 单一路径，click 与 Enter/Space 共用。
+      const row = doc.createElement("div");
       row.className = "version-row";
       row.dataset.versionRow = String(v.version);
+      row.setAttribute("role", "button");
+      row.setAttribute("tabindex", "0");
+      // Round10：行可访问名明确为预览动作（恢复按钮有自己的名字，两者互不混淆）。
+      row.setAttribute("aria-label", `版本 v${v.version}，点击预览`);
       const head = doc.createElement("span");
       head.className = "version-row-head";
       head.textContent = `v${v.version} · ${sourceLabel(v.source)} · ${new Date(v.timestamp).toLocaleString("zh-CN")}`;
       row.append(head);
-      const restore = doc.createElement("span");
+      // Round10：恢复 = 真实 button；agentRunning 时真正 disabled。
+      const restore = doc.createElement("button");
+      restore.type = "button";
       restore.className = "version-restore";
       restore.dataset.restoreButton = String(v.version);
       restore.textContent = "恢复此版";
@@ -37,28 +44,50 @@ export function createVersionPanel({ doc = document, ctx = null }) {
       } else {
         restore.addEventListener("click", (event) => {
           event.stopPropagation();
+          // 第一次进入确认态，第二次调用原 onRestore（业务契约不变）。
+          // Round10：恢复请求失败 → 按钮复位 + 面板 notice，不留未处理 rejection。
+          if (restore.dataset.restoreConfirm === String(v.version)) {
+            restore.disabled = true;
+            Promise.resolve().then(() => callbacks.onRestore(v.version)).catch((error) => {
+              if (!callbacks.isCurrent()) return;
+              restore.disabled = false;
+              restore.textContent = "恢复此版";
+              delete restore.dataset.restoreConfirm;
+              host.append(notice(error?.message ?? "恢复失败。"));
+            });
+            return;
+          }
           restore.textContent = "确认恢复？";
           restore.dataset.restoreConfirm = String(v.version);
-          restore.addEventListener("click", (event2) => {
-            event2.stopPropagation();
-            callbacks.onRestore(v.version);
-          }, { once: true });
         });
       }
       row.append(restore);
-      row.addEventListener("click", async () => {
-        if (callbacks.previewBusy) return;
-        callbacks.previewBusy = true;
-        const { content } = await callbacks.getContent(v.version);
-        let preview = host.querySelector("[data-version-preview]");
-        if (!preview) {
-          preview = doc.createElement("div");
-          preview.className = "version-preview prose";
-          host.append(preview);
+      const preview = async () => {
+        const currentPreview = ++previewGeneration;
+        try {
+          const { content } = await callbacks.getContent(v.version);
+          if (!callbacks.isCurrent() || currentPreview !== previewGeneration) return;
+          let preview = host.querySelector("[data-version-preview]");
+          if (!preview) {
+            preview = doc.createElement("div");
+            preview.className = "version-preview prose";
+            host.append(preview);
+          }
+          preview.dataset.versionPreview = String(v.version);
+          preview.textContent = content;
+        } catch (error) {
+          if (!callbacks.isCurrent() || currentPreview !== previewGeneration) return;
+          // Round10：预览失败进面板 notice。
+          host.append(notice(error?.message ?? "加载版本失败。"));
         }
-        preview.dataset.versionPreview = String(v.version);
-        preview.textContent = content;
-        callbacks.previewBusy = false;
+      };
+      row.addEventListener("click", () => void preview());
+      row.addEventListener("keydown", (event) => {
+        if (event.target !== row) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          void preview();
+        }
       });
       list.append(row);
     }
@@ -69,8 +98,9 @@ export function createVersionPanel({ doc = document, ctx = null }) {
     return ({ baseline: "基线", commit: "提交", revision: "入账", rollback: "回滚", pre_rollback: "回滚前存档" })[source] ?? source ?? "未知";
   }
 
-  host.open = async function open({ title, kind, chapterNo = null, file = null, getVersions, getContent, onRestore, agentRunning = false }) {
-    state = { title, kind, chapterNo, file };
+  host.open = async function open({ title, getVersions, getContent, onRestore, agentRunning = false }) {
+    const currentGeneration = ++generation;
+    const isCurrent = () => currentGeneration === generation && !host.hidden;
     host.hidden = false;
     host.replaceChildren();
     const head = doc.createElement("div");
@@ -80,18 +110,20 @@ export function createVersionPanel({ doc = document, ctx = null }) {
     if (agentRunning) host.append(notice("写作进行中，暂停后恢复。"));
     try {
       const { versions } = await getVersions();
+      if (!isCurrent()) return;
       if (!Array.isArray(versions) || versions.length === 0) {
         host.append(notice("暂无历史版本。"));
         return;
       }
-      host.append(renderRows(versions, { getContent, onRestore, agentRunning }));
+      host.append(renderRows(versions, { getContent, onRestore, agentRunning, isCurrent }));
     } catch (error) {
+      if (!isCurrent()) return;
       host.append(notice(error?.message ?? "加载版本失败。"));
     }
   };
   host.close = function close() {
+    generation += 1;
     host.hidden = true;
-    state = null;
   };
   return host;
 }

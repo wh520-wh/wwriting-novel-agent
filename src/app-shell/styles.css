@@ -895,7 +895,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   transition: background .12s, border-color .12s;
 }
 
-.chrow:not(:disabled):hover { background: var(--hover); }
+.chrow.completed:hover { background: var(--hover); }
 
 .chrow.completed { border-left-color: var(--green); }
 

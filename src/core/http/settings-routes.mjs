@@ -15,7 +15,7 @@
 import os from "node:os";
 import { HttpError } from "../http-error.mjs";
 import { loadProject } from "../project-store.mjs";
-import { loadConfigLayers, loadEffectiveWorkspaceConfig } from "../config-runtime.mjs";
+import { loadEffectiveWorkspaceConfig } from "../config-runtime.mjs";
 import { appendEvent } from "../event-log.mjs";
 import { loadOutputStyles } from "../output-style-loader.mjs";
 import { skillService } from "../skills/index.mjs";
@@ -162,9 +162,8 @@ export function createSettingsRoutes({
   selection = null,
   // 计划 Task 4 Step 5：组合根注入同一个 workspaceStore（应用私有 settings 真相源）。
   // 任务 5：模型切换与权限保存写入 <stateRoot>/workspaces/<id>/settings.json，不再
-  // 写回 project.yaml（旧文件只读保留为回滚依据）。未注入时回退预任务 5 的
-  // project.yaml 写路径（旧组合根兼容，见 tests/http/project-routes.test.mjs）。
-  workspaceStore = null,
+  // 写回 project.yaml（旧文件只读保留为回滚依据）。生产组合根恒注入 workspaceStore。
+  workspaceStore,
   // Task 12：skills service seam（src/core/skills/index.mjs）。生产缺省用全局
   // 单例；测试注入临时 root 的 service，避免迁移 marker 写进真实用户目录。
   skills = null
@@ -172,7 +171,9 @@ export function createSettingsRoutes({
   if (!secretsRoot) {
     throw new TypeError("createSettingsRoutes 需要注入 secretsRoot");
   }
-  const hasWorkspaceStore = Boolean(workspaceStore && typeof workspaceStore.saveSettings === "function");
+  if (typeof workspaceStore?.loadSettings !== "function" || typeof workspaceStore?.saveSettings !== "function") {
+    throw new TypeError("createSettingsRoutes 需要注入 workspaceStore");
+  }
   const skillServiceRef = skills ?? skillService;
   // 共享的项目选择状态（composition root 注入同一个可变引用，project-routes 共用）。
   const selectedRef = selection ?? { current: null };
@@ -188,9 +189,7 @@ export function createSettingsRoutes({
   // 归档只来自旧 project.yaml（有效配置合并后 archived_at 反映旧文件），普通目录
   // 恒为未归档。返回读取到的有效配置/项目对象供调用方复用。
   async function assertNotArchived(projectRoot) {
-    const project = hasWorkspaceStore
-      ? await loadEffectiveWorkspaceConfig(projectRoot, { workspaceStore })
-      : await loadProject(projectRoot);
+    const project = await loadEffectiveWorkspaceConfig(projectRoot, { workspaceStore });
     if (project.archived_at) {
       throw new HttpError(400, "PROJECT_ARCHIVED", "项目已归档（只读）。请先解除归档再执行此操作。");
     }
@@ -229,22 +228,13 @@ export function createSettingsRoutes({
     if (caps.supportsTemperature === false && before.active_model?.temperature !== undefined) {
       conflicts.push("该模型不支持温度设置，写作温度不会生效。");
     }
-    if (hasWorkspaceStore) {
-      // 任务 5 Step 5：统一走 saveWorkspaceSettings——成对携带 active_model（引用）
-      // 与 tool_permissions（保留当前有效权限）；运行时按 modelStoreLoader 解析。
-      await saveWorkspaceSettings(projectRoot, { workspaceStore, activeModel: reference });
-    } else {
-      // 旧组合根（未注入 workspaceStore）没有模型解析链路，无法存裸引用——按清单
-      // 解析成字面配置写入。toRequestConfig 输出含 provider_id/model_id，解析器会把
-      // 它重新解释为引用：行为与直接写引用等价（Task 16 质量审查修正注释）。
-      await updateProjectSettings(projectRoot, { active_model: literal });
-    }
-    const effective = hasWorkspaceStore
-      ? await loadEffectiveWorkspaceConfig(projectRoot, {
-          workspaceStore,
-          modelStoreLoader: () => loadProviderStore(secretsRoot)
-        })
-      : (await loadConfigLayers(projectRoot, await loadProject(projectRoot))).effective;
+    // 任务 5 Step 5：统一走 saveWorkspaceSettings——成对携带 active_model（引用）
+    // 与 tool_permissions（保留当前有效权限）；运行时按 modelStoreLoader 解析。
+    await saveWorkspaceSettings(projectRoot, { workspaceStore, activeModel: reference, effectiveConfig: before });
+    const effective = await loadEffectiveWorkspaceConfig(projectRoot, {
+      workspaceStore,
+      modelStoreLoader: () => store
+    });
     return {
       ok: true,
       projectRoot,
@@ -279,7 +269,7 @@ export function createSettingsRoutes({
           workspace: ctx.workspace,
           stateRoot: ctx.stateRoot
         });
-        await assertNotArchived(projectRoot);
+        const before = await assertNotArchived(projectRoot);
         const nonModelPatch = { ...body };
         delete nonModelPatch.projectRoot;
         delete nonModelPatch.expectedProjectRoot;
@@ -298,50 +288,30 @@ export function createSettingsRoutes({
           throw new HttpError(400, "invalid_settings_patch", "settings update requires a patch.");
         }
 
-        if (hasWorkspaceStore) {
-          // 任务 5 Step 5：权限保存写应用私有 workspace settings（成对携带模型，
-          // 旧 project.yaml 只读保留为回滚依据）。
-          if (normalizedNonModelPatch?.tool_permissions) {
-            const before = await loadEffectiveWorkspaceConfig(projectRoot, { workspaceStore });
-            await saveWorkspaceSettings(projectRoot, {
-              workspaceStore,
-              toolPermissions: { ...before.tool_permissions, ...normalizedNonModelPatch.tool_permissions }
-            });
-          }
-          // 其余非模型、非权限字段仍走旧 project.yaml 路径（旧项目兼容）。
-          const legacyPatch = { ...(normalizedNonModelPatch ?? {}) };
-          delete legacyPatch.tool_permissions;
-          if (Object.keys(legacyPatch).length > 0) {
-            await updateProjectSettings(projectRoot, legacyPatch);
-          }
-        } else if (normalizedNonModelPatch && Object.keys(normalizedNonModelPatch).length > 0) {
-          // 旧组合根（未注入 workspaceStore）：整包继续写 project.yaml（预任务 5 行为）。
-          await updateProjectSettings(projectRoot, normalizedNonModelPatch);
+        // 任务 5 Step 5：权限保存写应用私有 workspace settings（成对携带模型，
+        // 旧 project.yaml 只读保留为回滚依据）。
+        if (normalizedNonModelPatch?.tool_permissions) {
+          await saveWorkspaceSettings(projectRoot, {
+            workspaceStore,
+            toolPermissions: { ...before.tool_permissions, ...normalizedNonModelPatch.tool_permissions },
+            effectiveConfig: before
+          });
+        }
+        // 其余非模型、非权限字段仍走旧 project.yaml 路径（旧项目兼容）。
+        const legacyPatch = { ...(normalizedNonModelPatch ?? {}) };
+        delete legacyPatch.tool_permissions;
+        if (Object.keys(legacyPatch).length > 0) {
+          await updateProjectSettings(projectRoot, legacyPatch);
         }
 
-        let finalProject;
-        let finalEffective;
-        if (hasWorkspaceStore) {
-          finalEffective = await loadEffectiveWorkspaceConfig(projectRoot, { workspaceStore });
-          finalProject = {
-            project_id: finalEffective.project_id ?? null,
-            active_model: finalEffective.active_model,
-            tool_permissions: finalEffective.tool_permissions ?? {},
-            budget_config: finalEffective.budget_config ?? {},
-            research_config: finalEffective.research_config ?? {}
-          };
-        } else {
-          const mergedProject = await loadProject(projectRoot);
-          const config = await loadConfigLayers(projectRoot, mergedProject);
-          finalEffective = config.effective;
-          finalProject = {
-            project_id: mergedProject.project_id,
-            active_model: mergedProject.active_model,
-            tool_permissions: mergedProject.tool_permissions ?? {},
-            budget_config: mergedProject.budget_config ?? {},
-            research_config: mergedProject.research_config ?? {}
-          };
-        }
+        const finalEffective = await loadEffectiveWorkspaceConfig(projectRoot, { workspaceStore });
+        const finalProject = {
+          project_id: finalEffective.project_id ?? null,
+          active_model: finalEffective.active_model,
+          tool_permissions: finalEffective.tool_permissions ?? {},
+          budget_config: finalEffective.budget_config ?? {},
+          research_config: finalEffective.research_config ?? {}
+        };
         return {
           ok: true,
           projectRoot,

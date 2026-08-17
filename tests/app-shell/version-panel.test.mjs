@@ -84,6 +84,16 @@ const VERSIONS = [
   { version: 1, timestamp: "2026-08-15T08:00:00Z", source: "baseline", checksum: "c".repeat(64) }
 ];
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 test("渲染版本行：版本号/来源/时间，不渲染校验和", async () => {
   const { doc, elements } = makeFakeDoc();
   const panel = createVersionPanel({ doc });
@@ -118,7 +128,8 @@ test("行内二次确认：restore → confirm 才调用 onRestore", async () =>
   assert.equal(requests.length, 0, "第一次点击只进入确认态");
   const confirmBtn = elements.find((e) => e.dataset.restoreConfirm === "3");
   assert.ok(confirmBtn, "按钮应变为确认态");
-  confirmBtn.fire("click");
+  await confirmBtn.fire("click");
+  await new Promise((resolve) => setTimeout(resolve, 0));
   assert.deepEqual(requests, [3]);
 });
 
@@ -144,7 +155,7 @@ test("版本行 Enter/Space 触发预览（与点击同一路径）", async () =
   assert.deepEqual(calls, [1, 1]);
 });
 
-test("预览失败 → 面板 notice；previewBusy 复位后重试可成功", async () => {
+test("预览失败 → 面板 notice；后续重试可成功", async () => {
   const { doc, elements } = makeFakeDoc();
   const panel = createVersionPanel({ doc });
   let calls = 0;
@@ -163,7 +174,7 @@ test("预览失败 → 面板 notice；previewBusy 复位后重试可成功", as
   await row.fire("click");
   assert.ok(
     elements.some((e) => e.dataset.versionPreview === "2" && e.textContent.includes("成功内容")),
-    "previewBusy 复位后重试可成功"
+    "失败后重试可成功"
   );
 });
 
@@ -186,6 +197,96 @@ test("恢复失败 → 按钮复位 + notice，无未处理 rejection", async ()
   assert.equal(restoreBtn.disabled, false, "失败后按钮复位可用");
   assert.equal(restoreBtn.textContent, "恢复此版", "失败后文案复位");
   assert.ok(elements.some((e) => e.textContent?.includes("回滚失败")), "失败显示 notice");
+});
+
+test("恢复回调同步抛错 → 按钮复位 + notice", async () => {
+  const { doc, elements } = makeFakeDoc();
+  const panel = createVersionPanel({ doc });
+  await panel.open({
+    title: "第 1 章",
+    getVersions: async () => ({ versions: VERSIONS }),
+    getContent: async () => ({ content: "x" }),
+    onRestore: () => { throw new Error("同步回滚失败"); }
+  });
+  const restoreBtn = elements.find((e) => e.dataset.restoreButton === "3");
+  await restoreBtn.fire("click");
+  await restoreBtn.fire("click");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(restoreBtn.disabled, false);
+  assert.equal(restoreBtn.textContent, "恢复此版");
+  assert.ok(elements.some((e) => e.textContent?.includes("同步回滚失败")));
+});
+
+test("较早 open() 的版本列表晚返回时不得覆盖当前面板", async () => {
+  const { doc, elements } = makeFakeDoc();
+  const panel = createVersionPanel({ doc });
+  const first = deferred();
+  const firstOpen = panel.open({
+    title: "旧章节",
+    getVersions: () => first.promise,
+    getContent: async () => ({ content: "旧" }),
+    onRestore: async () => {}
+  });
+  await panel.open({
+    title: "新章节",
+    getVersions: async () => ({ versions: [VERSIONS[0]] }),
+    getContent: async () => ({ content: "新" }),
+    onRestore: async () => {}
+  });
+  first.resolve({ versions: VERSIONS });
+  await firstOpen;
+  assert.equal(panel.children[0].textContent, "新章节 · 历史版本");
+  assert.equal(elements.filter((e) => e.dataset.versionRow !== undefined).length, 1);
+});
+
+test("旧面板的预览晚返回时不得写入新面板", async () => {
+  const { doc, elements } = makeFakeDoc();
+  const panel = createVersionPanel({ doc });
+  const oldPreview = deferred();
+  await panel.open({
+    title: "旧章节",
+    getVersions: async () => ({ versions: [VERSIONS[0]] }),
+    getContent: () => oldPreview.promise,
+    onRestore: async () => {}
+  });
+  const oldRow = elements.find((e) => e.dataset.versionRow === "3");
+  const previewRequest = oldRow.fire("click");
+  await panel.open({
+    title: "新章节",
+    getVersions: async () => ({ versions: [VERSIONS[1]] }),
+    getContent: async () => ({ content: "新正文" }),
+    onRestore: async () => {}
+  });
+  oldPreview.resolve({ content: "不应出现的旧正文" });
+  await previewRequest;
+  assert.equal(elements.some((e) => e.textContent === "不应出现的旧正文"), false);
+});
+
+test("同一列表快速切换预览时最后一次点击获胜", async () => {
+  const { doc, elements } = makeFakeDoc();
+  const panel = createVersionPanel({ doc });
+  const v3 = deferred();
+  const v2 = deferred();
+  const calls = [];
+  await panel.open({
+    title: "第 1 章",
+    getVersions: async () => ({ versions: VERSIONS }),
+    getContent: (version) => {
+      calls.push(version);
+      return version === 3 ? v3.promise : v2.promise;
+    },
+    onRestore: async () => {}
+  });
+  const v3Request = elements.find((e) => e.dataset.versionRow === "3").fire("click");
+  const v2Request = elements.find((e) => e.dataset.versionRow === "2").fire("click");
+  v2.resolve({ content: "v2 正文" });
+  await v2Request;
+  v3.resolve({ content: "v3 旧请求" });
+  await v3Request;
+  assert.deepEqual(calls, [3, 2]);
+  const preview = elements.find((e) => e.dataset.versionPreview === "2");
+  assert.equal(preview?.textContent, "v2 正文");
+  assert.equal(elements.some((e) => e.textContent === "v3 旧请求"), false);
 });
 
 test("agentRunning=true：恢复按钮禁用并提示", async () => {

@@ -72,6 +72,15 @@ class MockElement {
     this.append(node);
     return node;
   }
+  after(...nodes) {
+    const siblings = this.parentNode?.children;
+    if (!siblings) return;
+    const index = siblings.indexOf(this);
+    for (const node of nodes) {
+      if (node && typeof node === "object") node.parentNode = this.parentNode;
+    }
+    siblings.splice(index + 1, 0, ...nodes);
+  }
   replaceChildren(...nodes) {
     for (const child of this.children) child.parentNode = null;
     this.children = [];
@@ -101,11 +110,13 @@ class MockElement {
       type,
       target: this,
       preventDefault() { this._prevented = true; },
+      stopPropagation() { this._stopped = true; },
       ...event
     };
     let node = this;
     while (node) {
       for (const fn of node._listeners.get(type) ?? []) fn(ev);
+      if (ev._stopped) break;
       node = node.parentNode;
     }
     return ev;
@@ -271,5 +282,40 @@ test("round10 drawer memory：外部链接点击交给 openExternalUrl，不默�
     globalThis.fetch = realFetch;
     if (prevDesktop === undefined) delete globalThis.wwritingDesktop;
     else globalThis.wwritingDesktop = prevDesktop;
+  }
+});
+
+test("章节历史按钮连续点击只创建一个面板并复用同一次加载", async () => {
+  const h = makeHarness({
+    data: dashboard({
+      chapters: [{ chapter_no: 1, status: "completed", actual_words: 120 }],
+      cost: null
+    })
+  });
+  let requests = 0;
+  let resolveResponse;
+  const previousWindow = globalThis.window;
+  globalThis.window = globalThis;
+  globalThis.fetch = async () => {
+    requests += 1;
+    return new Promise((resolve) => { resolveResponse = resolve; });
+  };
+  try {
+    await h.panels.renderDrawerBody();
+    const row = h.drawerBody.querySelector(".chrow");
+    const history = h.drawerBody.querySelector(".chrow-history");
+    assert.equal(row.tagName, "div", "章节行不得嵌套交互按钮");
+    assert.equal(row.getAttribute("role"), "button");
+    history.dispatch("click");
+    history.dispatch("click");
+    assert.equal(h.drawerBody.querySelectorAll(".version-panel").length, 1);
+    assert.equal(requests, 1);
+    resolveResponse({ ok: true, text: async () => JSON.stringify({ versions: [] }) });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  } finally {
+    globalThis.document = realDoc;
+    globalThis.fetch = realFetch;
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
   }
 });
