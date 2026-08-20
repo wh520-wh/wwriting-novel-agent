@@ -798,6 +798,25 @@ export function createAgentRuntime({
     return changed ? out : messages;
   }
 
+  // 第十一轮（压缩审计发现 1）：volatile 大工具输出是压缩的盲区。压缩源材料
+  // 只重建持久 transcript（大输出已被 persistentToolResult 剥离），本轮运行的
+  // 新鲜大输出只存在于内存 volatileToolRecords--门禁看到超窗、压缩却 noop，
+  // 最终 failRun(context_window_exceeded)，下一条输入 volatile 过期自愈（用户
+  // 看到「报错、重发又好了」）。本 helper 在「已压缩仍超硬窗口」的最后关头把
+  // 超过 transcript 同一阈值的 volatile 输出降级为本地截断摘要：有窗口余量时
+  // 保留全文（先读后写），只在否则必失败时降级。
+  function degradeVolatileToolRecords(records) {
+    let degraded = 0;
+    for (const record of records ?? []) {
+      if (record?.role !== "tool") continue;
+      const content = String(record.content ?? "");
+      if (estimateTokens(content) <= DEFAULT_TOOL_OUTPUT_THRESHOLD) continue;
+      record.content = buildToolOutputSummary(content, { journalRef: null });
+      degraded += 1;
+    }
+    return degraded;
+  }
+
   // Task 8：压缩源材料（coordinator 经 buildInput 注入调用）。读取 active
   // checkpoint（若有）→ 重建 delta 轮次 → selectProtectedRecentTurns → 生成
   // sourceMaterial / recent_messages / sourceState。无 checkpoint 且没有早于
@@ -1494,6 +1513,7 @@ export function createAgentRuntime({
     // 由下一轮预检通过后在同一路径写入。cancelled/failed 时输入保持 draft/可重试，
     // 不写入 transcript（queued/withdrawn 输入永不进入 transcript，Task 9 边界）。
     let compactionAttemptedForInput = false;
+    let volatileDegradedForInput = false; // 第十一轮：volatile 降级每输入至多一次（防装配循环）
     let closedToolResult = false;
 
     while (true) {
@@ -1678,8 +1698,20 @@ export function createAgentRuntime({
         return "compaction_blocked";
       }
       if (preflightCompact && alreadyAttempted) {
-        // 已为本输入压缩过：仍高于软阈值不再次压缩；仍超硬窗口 → failRun。
+        // 已为本输入压缩过：仍高于软阈值不再次压缩；仍超硬窗口 -> 先降级
+        // volatile 大工具输出（压缩盲区的最后出路，见 degradeVolatileToolRecords）
+        // 再重新装配预检；降级后仍超硬窗口才 failRun。
         if (exceedsHardWindow({ estimatedInput: contextEstimate.used_tokens, window: modelConfig.effective_context_window })) {
+          const degradedCount = volatileDegradedForInput ? 0 : degradeVolatileToolRecords(volatileToolRecords);
+          if (degradedCount > 0) {
+            volatileDegradedForInput = true;
+            await journal.append({
+              type: "context_volatile_degraded",
+              run_id: runId,
+              payload: { degraded_count: degradedCount }
+            });
+            continue; // 重新装配（volatile 已摘要化）后再预检
+          }
           await failRun(state, sessionState, runId, {
             error: Object.assign(new Error("上下文仍超过硬窗口上限，无法发送。"), { code: "context_window_exceeded" }),
             inputId
