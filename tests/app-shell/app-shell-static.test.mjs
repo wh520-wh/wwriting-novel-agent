@@ -253,3 +253,11 @@ test("Task 12：生产 bundle 文本不含 Worked for / નિર્ણ（运行
     "状态文本不得回退为英文 status code（必须来自单一中文 map）"
   );
 });
+
+test("第十一轮 A：app.js 接线 onDashboardRefresh -> loadDashboard（composer 保存后同屏一致）", () => {
+  assert.match(
+    appSource,
+    /onDashboardRefresh:\s*\(\)\s*=>\s*\{\s*void loadDashboard\(\{ background: true \}\);/u,
+    "createAgentSurface 必须把 onDashboardRefresh 接到后台 loadDashboard"
+  );
+});

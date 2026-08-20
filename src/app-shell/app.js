@@ -124,6 +124,11 @@ const agentSurface = createAgentSurface({
   onPlanUpdated: (plan) => {
     planPanel.sync(plan?.items ?? []);
   },
+  // 第十一轮（审计 A）：composer 三控件保存成功 -> 后台刷新 dashboard（抽屉模型
+  // 面板/顶栏/项目列表与 composer 同屏一致；background 模式失败只 toast 不打断）。
+  onDashboardRefresh: () => {
+    void loadDashboard({ background: true });
+  },
   onRunTerminal: () => {
     // Task 16（R5-12）：Run 终态统一刷新——会话列表（busy 复位）与 dashboard
     //（顶栏进度/章节抽屉/成本面板）。Agent snapshot 权威刷新在 surface 内部
