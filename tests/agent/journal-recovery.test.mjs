@@ -1244,8 +1244,9 @@ test("append 无需显式 load（自初始化）", async (t) => {
   assert.equal(events[1].seq, 2);
 });
 
-test("FIXED_EVENT_TYPES 包含计划固定的 46 个事件类型（Task 12 删旧工作流事件，第九轮 +chapter_rolled_back/memory_file_restored）", () => {
-  assert.equal(FIXED_EVENT_TYPES.length, 46);
+test("FIXED_EVENT_TYPES 包含计划固定的 47 个事件类型（Task 12 删旧工作流事件，第九轮 +chapter_rolled_back/memory_file_restored，第十一轮 +context_volatile_degraded）", () => {
+  // 第十一轮（Task 7 压缩盲区）：新增 volatile 降级遥测事件，固定计数 46 -> 47。
+  assert.equal(FIXED_EVENT_TYPES.length, 47);
   assert.deepEqual(
     [...FIXED_EVENT_TYPES].sort(),
     [
@@ -1261,6 +1262,7 @@ test("FIXED_EVENT_TYPES 包含计划固定的 46 个事件类型（Task 12 删�
       "context_compaction_noop",
       "context_compaction_running",
       "context_compaction_started",
+      "context_volatile_degraded",
       "decision_requested",
       "decision_resolved",
       "history_compacted",
