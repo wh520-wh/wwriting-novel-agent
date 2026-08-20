@@ -363,7 +363,9 @@ async function makeSurface({ apiOverrides = {}, callbacks = {}, useRealTransport
     onOpenProjectFolder: callbacks.onOpenProjectFolder ?? (() => projectActions.push("open")),
     onSessionsChanged: callbacks.onSessionsChanged ?? (() => {}),
     // Task 16（R5-12）：Run 终态回调透出（app.js 据此刷新 dashboard/会话列表）。
-    onRunTerminal: callbacks.onRunTerminal ?? (() => {})
+    onRunTerminal: callbacks.onRunTerminal ?? (() => {}),
+    // 第十一轮（审计 B）：plan 通知透出（app.js 接 planPanel.sync）。
+    onPlanUpdated: callbacks.onPlanUpdated ?? (() => {})
   });
   return { root, api, surface, opened, chapters, projectActions };
 }
@@ -5209,4 +5211,17 @@ test("AICSS composer：提交在途切换项目（reset）清掉 busy，不留�
   await tick();
   assert.equal(send.dataset.busy, undefined, "切项目后按钮 busy 必须被清除（否则扫描边框永久旋转）");
   assert.equal(shell.dataset.busy, undefined, "切项目后外壳 busy 必须被清除");
+});
+
+test("第十一轮 B：切到无 plan 的会话，applySnapshot 以 null 通知 onPlanUpdated（chip 清空）", async () => {
+  const planCalls = [];
+  const { surface } = await makeSurface({ callbacks: { onPlanUpdated: (plan) => planCalls.push(plan) } });
+  surface.applySnapshot(snapshotOf(session({ session_id: "sess-plan", last_seq: 2, active_run: activeRun({ status: "completed", active_input_id: null }) }), [
+    { ...ev("run_started", { input_id: "in-1" }), seq: 1 },
+    { ...ev("plan_updated", { explanation: "写书计划", items: [{ step: "第一章", status: "done" }] }), seq: 2 }
+  ]));
+  assert.equal(planCalls.at(-1)?.items?.length, 1, "有 plan 的快照必须通知 plan");
+
+  surface.applySnapshot(snapshotOf(session({ session_id: "sess-noplan", last_seq: 3, active_run: activeRun({ status: "completed", active_input_id: null }) }), []));
+  assert.equal(planCalls.at(-1), null, "无 plan 会话的快照必须以 null 通知（顶栏 chip 清空，不残留）");
 });

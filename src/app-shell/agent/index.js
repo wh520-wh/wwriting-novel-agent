@@ -188,7 +188,9 @@ export function createAgentSurface({
     if (rebuild) view.reset();
     view.render(state, actions);
     // 第九轮：快照回放可能包含 plan_updated 事件，通知 plan-panel 同步。
-    if (state.plan) onPlanUpdated(state.plan);
+    // 第十一轮（审计 B）：无 plan 也是状态--null 必须同样通知，否则切到无 plan
+    // 的会话/项目后，常驻顶栏 chip 残留上一会话的「任务计划 N/M」。
+    onPlanUpdated(state.plan ?? null);
     // I4：ESC 去重锁的释放必须覆盖快照路径。SSE 断线后重连补齐按合并后的 max seq
     // 增量拉快照，若取消请求与 context_compaction_cancelled/run_cancelled 之间的
     // 连接恰好断开，终态事件永远不会经 applyEvent 送达（被快照吞掉）——这里对
