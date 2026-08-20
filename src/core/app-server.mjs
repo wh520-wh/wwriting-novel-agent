@@ -220,6 +220,7 @@ export function createAppShellServer({
   });
 
   async function flushAllCostReports() {
+    // key 在 win32 已小写归一（见 gatewayFor）：大小写不敏感 FS 上仍写同一路径。
     for (const [projectRoot, entry] of modelGateway.entriesMap) {
       try {
         await writeCostReportIfDirty(entry, projectRoot);
@@ -249,11 +250,15 @@ async function effectiveWorkspaceConfigFor(projectRoot, { workspaceStore, secret
   });
 }
 
-function createAppModelGateway({ resolveEffectiveConfig }) {
+export function createAppModelGateway({ resolveEffectiveConfig }) {
   const entries = new Map(); // projectRoot -> { gateway, costTracker, lastWrittenCalls }
 
   function gatewayFor(projectRoot) {
-    const key = path.resolve(projectRoot);
+    // 第十一轮（审计 F）：Windows 文件系统大小写不敏感，同一项目以不同大小写
+    // 路径打开时原样 resolve 做 key 会分裂出两个 entry / 两条 CostTracker，
+    // per-project 成本累计被拆分。POSIX 大小写敏感，不得归一。
+    const resolved = path.resolve(projectRoot);
+    const key = process.platform === "win32" ? resolved.toLowerCase() : resolved;
     let entry = entries.get(key);
     if (!entry) {
       // 首用时从项目 cost.json 恢复跨 Run 累计值。
