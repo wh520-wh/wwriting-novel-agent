@@ -283,6 +283,10 @@ function openDrawer(tab) {
     refs.drawerScrim.classList.remove("show");
   }
   renderDrawerBody();
+  // 第十一轮（审计 D 简化）：抽屉打开即后台刷新一次 dashboard（lastDashboard 是
+  // 快照缓存，Run 中的章节/成本/模型数据在打开时可能已旧）。失败只 toast；
+  // 到达后经 renderDashboard -> refreshDrawerIfOpen 重渲抽屉。
+  void loadDashboard({ background: true });
   motion.openDrawer(refs.drawer, refs.drawerScrim, {
     body: refs.drawerBody,
     tabs: refs.drawerTabs

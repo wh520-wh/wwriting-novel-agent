@@ -268,3 +268,11 @@ test("第十一轮 C：version-panel 三处调用接线 agentRunning（阅读器
   const wired = [...drawerPanelsSource.matchAll(/agentRunning:\s*ctx\.isAgentRunning\?\.\(\)\s*\?\?\s*false/gu)].length;
   assert.equal(wired, 2, "drawer-panels 章节/记忆两处 versionPanel.open 必须传 agentRunning");
 });
+
+test("第十一轮 D-简化：openDrawer 后台刷新 dashboard（抽屉打开时数据不再陈旧）", () => {
+  assert.match(
+    appSource,
+    /function openDrawer\(tab\) \{[\s\S]*?renderDrawerBody\(\);[\s\S]*?void loadDashboard\(\{ background: true \}\);/u,
+    "openDrawer 必须在渲染后触发一次后台 dashboard 刷新"
+  );
+});
