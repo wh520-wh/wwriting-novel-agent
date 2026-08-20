@@ -369,3 +369,33 @@ test("round10 drawer memory：去掉重复 H1 后继续安全渲染正文", asyn
     globalThis.fetch = realFetch;
   }
 });
+
+test("第十一轮 M1：模型面板渲染 resolution_note（模型被静默替换时有可见提示）", async () => {
+  const profile = { model_name: "deepseek-chat", display: "DeepSeek · deepseek-chat", endpoint: "https://api.example.com/v1", api_key_saved: true };
+  const h = makeHarness({
+    data: dashboard({
+      model_profile: profile,
+      config: { effective: { tool_permissions: {}, resolution_note: "原模型已不存在，已换成默认模型 deepseek-chat" } }
+    })
+  });
+  try {
+    h.ctx.getDrawerTab = () => "model";
+    await h.panels.renderDrawerBody();
+    assert.ok(h.drawerBody.textContent.includes("模型提示：原模型已不存在"), "降级说明必须可见");
+    assert.ok(h.drawerBody.textContent.includes("deepseek-chat"), "说明包含兜底模型名");
+  } finally {
+    globalThis.document = realDoc;
+    globalThis.fetch = realFetch;
+  }
+  const h2 = makeHarness({
+    data: dashboard({ model_profile: profile, config: { effective: { tool_permissions: {} } } })
+  });
+  try {
+    h2.ctx.getDrawerTab = () => "model";
+    await h2.panels.renderDrawerBody();
+    assert.ok(!h2.drawerBody.textContent.includes("模型提示"), "无 note 时不渲染提示行");
+  } finally {
+    globalThis.document = realDoc;
+    globalThis.fetch = realFetch;
+  }
+});
