@@ -53,3 +53,9 @@
 
 - 逃生舱判定：`runtime.mjs:853-862`；volatile 装配：`runtime.mjs:648-676`；transcript 剥离：`runtime.mjs:1020-1048`。
 - 相关测试：`tests/agent/compaction.test.mjs`（含 summarize_output 断言 271/302/334）、`tests/agent/context-checkpoints.test.mjs`、`tests/agent/context-window.test.mjs`。
+
+## 2026-08-20 第十一轮修复记录（发现 1 已修）
+
+- 发现 1（volatile 盲区）已修：预检在「压缩已尝试且仍超硬窗口」时，把超过 transcript 同一阈值（2000 token）的 volatile 工具输出降级为 `buildToolOutputSummary` 本地截断摘要，journal 事件 `context_volatile_degraded`（payload.degraded_count），降级一次后重新装配预检，仍超才 failRun。每输入至多一次。回归测试：`tests/agent/project-agent.test.mjs` 「volatile 盲区」用例（持久 transcript 微小 + 3 次 100k read_file → 压缩 noop → 降级 → 不再 run_failed）。
+- dogfood 识别特征更新：旧指纹「run_failed + compaction_noop + 自愈」不再出现；新指纹为 `context_volatile_degraded` 事件后请求继续。
+- 发现 2（256k 一刀切）仍未修，前置条件不变：接入任何新 provider 前必须按模型查表。
