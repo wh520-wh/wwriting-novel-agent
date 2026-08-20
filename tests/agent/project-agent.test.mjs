@@ -2363,6 +2363,26 @@ function compactionSummaryScript({ count = 40, compactionReply = validCompaction
   return Array.from({ length: count }, () => compactionAwareEntry(compactionReply, normalReply));
 }
 
+// 第十一轮（压缩审计发现 1）：volatile 盲区脚本——前 3 次普通调用各发一次
+// 满额 read_file（volatile 全文进内存），第 4 次回正文；压缩请求返回合法摘要
+// （本场景下压缩实际 noop，该分支仅作防回归保险）。read_file 输出被工具运行时
+// 截断到 MAX_TOOL_RESULT_CHARS≈100k，3 次累计 ≈300k volatile token。
+function volatileBlindSpotScript() {
+  const script = (request) => {
+    if (request?.metadata?.stage === "context_compaction") {
+      return { text: JSON.stringify({ summary: "早期摘要", key_points: [], recent_messages: [], restructured: [] }) };
+    }
+    if (script.reads < 3) {
+      script.reads += 1;
+      return { toolCalls: [tool("read_file", { path: "BIG.txt" })] };
+    }
+    return { text: "正文。" };
+  };
+  script.reads = 0;
+  script.repeat = true;
+  return [script];
+}
+
 // C1 修复：预置 transcript（在 session journal 首次 load 之前直接写入
 // sessions/<id>/segments/transcript，避免逐轮 submit 的成本）。写入极短轮次记录——
 // 8005 条估算约 111k tokens，远低于 204_800 软阈值：估算门禁永远不触发，只有
@@ -2744,6 +2764,40 @@ test("自动压缩后仍超硬窗口：failRun(context_window_exceeded)，不重
     session.active_context_checkpoint_id,
     events.find((event) => event.type === "context_compaction_completed").payload.checkpoint_id
   );
+});
+
+// 第十一轮（压缩审计发现 1）：volatile 大工具输出盲区回归。持久 transcript 保持
+// 微小（read_file 只持久化 content_length），压缩稳定 noop；连续 3 次满额
+// read_file（各 100k CJK 字符，volatile 全文进内存）在 noop 后仍撞破硬窗口
+// -> 修复后降级为本地截断摘要继续发送，Run 正常完成（旧代码此处 run_failed
+// context_window_exceeded）。
+test("volatile 盲区：压缩 noop 后仍超硬窗口 -> volatile 大输出降级摘要继续发送，不 failRun", async (t) => {
+  const h = await createProjectAgentHarness({
+    gatewayScript: volatileBlindSpotScript(),
+    gatewayDelayMs: 0
+  });
+  t.after(() => h.cleanup());
+  const bigFile = path.join(h.projectRoot, "BIG.txt");
+  await fs.writeFile(bigFile, "甲".repeat(110_000), "utf8");
+  const seeded = await h.agent.newSession({ projectRoot: h.projectRoot, title: "volatile 盲区" });
+  await h.agent.open({ projectRoot: h.projectRoot, sessionId: seeded.session_id });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "读取大文件.txt", source: "chat", sessionId: seeded.session_id });
+  await waitForIdle(h.agent, h.projectRoot);
+
+  const events = await readEvents(h.agent, h.projectRoot);
+  assert.equal(eventsOfType(events, "run_failed").length, 0, "不得再 run_failed（旧代码在此 context_window_exceeded）");
+  assert.ok(eventsOfType(events, "run_completed").length >= 1, "Run 必须完成");
+  assert.ok(eventsOfType(events, "context_compaction_noop").length >= 1, "前置：盲区场景下压缩确实 noop（持久 transcript 无可压缩历史）");
+  const degraded = eventsOfType(events, "context_volatile_degraded");
+  assert.equal(degraded.length, 1, "必须恰好降级一次");
+  assert.equal(degraded[0].payload.degraded_count, 3, "3 次满额 read_file 全部降级");
+  const lastCall = h.gateway.calls.at(-1);
+  assert.ok(lastCall, "降级后必须重新发起模型请求");
+  const toolContents = lastCall.request.messages
+    .filter((message) => message.role === "tool")
+    .map((message) => String(message.content ?? ""));
+  assert.ok(toolContents.some((content) => content.includes("工具输出已本地截断")), "工具消息必须是本地截断摘要");
+  assert.ok(toolContents.length <= 3 && toolContents.every((content) => content.length < 2000), "降级后工具消息必须是摘要量级（<2000 字符），不得携带全文");
 });
 
 test("submit 只把精确 text === '/compact' 识别为压缩指令；'/compact now' 是普通输入", async (t) => {
