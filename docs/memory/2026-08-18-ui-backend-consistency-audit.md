@@ -61,3 +61,15 @@
 - 刷新接线：`agent/index.js:123-135/191/644-653`、`app.js:92/127-134/723-738`、`settings-modal.js:294-296`
 - 状态折叠：`runtime.mjs:2873-2905`、`session-sidebar.mjs:62/544-565`
 - 元发现复现方法：对 `model-settings-page.js` 第 163 行做码点转储（`[...line].map(c=>c.codePointAt(0))`），对照 Read/sed 渲染输出差异；运行时求值实验见本轮会话记录。
+
+## 2026-08-20 第十一轮修复记录
+
+已在 `round11-consistency-fixes` 分支修复（详见 `docs/superpowers/plans/2026-08-20-第十一轮一致性修复.md`）：
+
+- A：composer 三控件保存成功后经 `onDashboardRefresh` 后台刷新 dashboard（钩子挂在共享的 saveComposerSetting 成功路径）。
+- B：applySnapshot 对无 plan 会话以 null 通知 `onPlanUpdated`，顶栏 chip 清空。
+- C：AgentSurface 新增 `isAgentRunning()`（与后端 rollback 409 判定同口径），阅读器/抽屉章节/抽屉记忆三处 version-panel 恢复按钮接线门禁。
+- M1/M2：`resolveActiveModel` 未配置兜底分支补 note；抽屉「模型配置」面板渲染 `config.effective.resolution_note`。
+- D（简化版）：openDrawer 后台刷新一次 dashboard。全量事件驱动刷新（D/E）仍缓。
+- F（路径分裂）：app-server gatewayFor 的 entry key 在 win32 小写归一。
+- 未修复维持记录：D 全量、E、G、H、M3、M4、M5（低于本轮门槛，触发条件见上文风险排序）。
