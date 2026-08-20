@@ -95,7 +95,7 @@ test("resolveActiveModel(null) → 全局默认模型（store 有默认）", () 
   const { model, note } = resolveActiveModel(null, store);
   assert.equal(model.model_name, "deepseek-v4-flash");
   assert.equal(model.provider, "openai-compatible");
-  assert.equal(note, null);
+  assert.match(note, /工作区未选择模型/u);
 });
 
 test("resolveActiveModel(null) → 未配置（store 无默认）", () => {
@@ -108,4 +108,17 @@ test("半成形引用（只有 provider_id）按未配置处理", () => {
   const { model, note } = resolveActiveModel({ provider_id: "deepseek" }, store);
   assert.equal(model, null);
   assert.match(note, /未配置/u);
+});
+
+test("第十一轮 M2：未配置模型但存在全局默认 -> 兜底必须附 note（不再静默）", () => {
+  const storeWithDefault = {
+    default_model: { provider_id: "deepseek", model_id: "m1" },
+    providers: [{ id: "deepseek", status: "enabled", models: [{ id: "m1", enabled: true, model_name: "deepseek-chat" }] }]
+  };
+  const { model, note } = resolveActiveModel(null, storeWithDefault);
+  assert.ok(model, "兜底到全局默认模型");
+  assert.equal(model.provider_id, "deepseek");
+  assert.equal(model.model_name, "deepseek-chat");
+  assert.match(note, /工作区未选择模型/u);
+  assert.match(note, /deepseek-chat/u);
 });

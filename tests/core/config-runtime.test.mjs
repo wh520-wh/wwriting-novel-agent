@@ -250,7 +250,7 @@ test("modelStoreLoader：无 active_model 时回落全局默认模型", async ()
   });
   assert.equal(effective.active_model.model_name, "deepseek-v4-flash");
   assert.equal(effective.active_model.provider, "openai-compatible");
-  assert.equal(effective.resolution_note, null);
+  assert.match(effective.resolution_note, /工作区未选择模型/u);
 });
 
 test("modelStoreLoader：mock 字面配置归零为未配置", async () => {

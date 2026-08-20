@@ -46,8 +46,15 @@ export function resolveDefaultModel(store) {
 export function resolveActiveModel(activeModel, store) {
   if (activeModel === null || activeModel === undefined) {
     // 项目未配置模型 → 落到全局默认（新建项目/未选择场景）；无默认才是未配置。
+    // 第十一轮（审计 M2）：兜底也必须附 note--静默用默认而 UI 无提示，与
+    // 悬空/停用降级同为「UI 显示与后端实际不一致」的形状。
     const fallback = resolveDefaultModel(store);
-    if (fallback) return { model: toRequestConfig(fallback.provider, fallback.model), note: null };
+    if (fallback) {
+      return {
+        model: toRequestConfig(fallback.provider, fallback.model),
+        note: `工作区未选择模型，正在使用全局默认 ${stripWindowMarkers(fallback.model.model_name)}`
+      };
+    }
     return { model: null, note: "未配置模型" };
   }
   if (typeof activeModel !== "object") return { model: null, note: "未配置模型" };

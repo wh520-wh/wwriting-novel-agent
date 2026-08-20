@@ -190,6 +190,12 @@ export function createDrawerPanels(ctx) {
     const summary = data.summary;
     const profile = data.model_profile ?? {};
     const permissions = data.config?.effective?.tool_permissions ?? data.project.tool_permissions ?? {};
+    // 第十一轮（审计 M1）：后端在 effective config 附带 resolution_note（悬空/停用
+    // 降级、未配置兜底全局默认），此前 UI 零消费--模型被静默替换时作者无感知。
+    const resolutionNote =
+      typeof data.config?.effective?.resolution_note === "string" && data.config.effective.resolution_note.length > 0
+        ? data.config.effective.resolution_note
+        : null;
     // Task 8：未配置模型 = 无 model_name（is_mock 语义已废弃）。
     const modelUnconfigured = !profile || !profile.model_name;
     const model = dpanel("模型配置", modelUnconfigured ? "未配置" : (profile.display ?? "未配置"));
@@ -203,7 +209,14 @@ export function createDrawerPanels(ctx) {
     summaryLine.textContent = modelUnconfigured
       ? "尚未配置模型。点上方按钮选 DeepSeek / MiMo 或自定义供应商，并粘贴 API Key。"
       : `${profile.display}${profile.endpoint ? ` · ${profile.endpoint}` : ""}；${profile.api_key_saved ? "API Key 已保存在本机。" : "尚未保存 API Key。"}`;
-    model.body.append(summaryLine, open);
+    if (resolutionNote != null) {
+      const noteLine = document.createElement("p");
+      noteLine.className = "spd-hint";
+      noteLine.textContent = `模型提示：${resolutionNote}`;
+      model.body.append(summaryLine, noteLine, open);
+    } else {
+      model.body.append(summaryLine, open);
+    }
 
     const budget = dpanel("预算与权限");
     const kv = document.createElement("dl");
