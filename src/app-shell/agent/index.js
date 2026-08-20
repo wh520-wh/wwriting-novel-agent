@@ -596,6 +596,13 @@ export function createAgentSurface({
     };
   }
 
+  // 第十一轮（审计 C）：当前会话是否有进行中的 Run--version-panel「恢复此版」
+  // 按钮的门禁依据，与后端 POST /api/chapters/rollback 的 409 判定
+  // （session.active_run.status === "running"）同口径。
+  function isAgentRunning() {
+    return state.session?.active_run?.status === "running";
+  }
+
   const actions = {
     submit,
     // 前置分页（Task 10 Step 4）：view 滚动到顶（≤240px）且有更早历史时调用。
@@ -720,6 +727,7 @@ export function createAgentSurface({
     // Task 16：设置页（模型设置）变更后刷新三控件选项——模型选择器选项来自全局
     // 供应商清单，新增/停用/删除模型后需重拉（app.js 的 modelSettings.onChanged 接线）。
     refreshComposerOptions,
+    isAgentRunning,
     setBusy,
     archiveSession,
     restoreSession,

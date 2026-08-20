@@ -261,3 +261,10 @@ test("第十一轮 A：app.js 接线 onDashboardRefresh -> loadDashboard（compo
     "createAgentSurface 必须把 onDashboardRefresh 接到后台 loadDashboard"
   );
 });
+
+test("第十一轮 C：version-panel 三处调用接线 agentRunning（阅读器直传 + 抽屉经 ctx）", () => {
+  assert.match(appSource, /agentRunning:\s*agentSurface\.isAgentRunning\(\)/u, "阅读器调用点必须直传 agentRunning");
+  assert.match(appSource, /isAgentRunning:\s*\(\)\s*=>\s*agentSurface\.isAgentRunning\(\)/u, "createDrawerPanels ctx 必须注入 isAgentRunning");
+  const wired = [...drawerPanelsSource.matchAll(/agentRunning:\s*ctx\.isAgentRunning\?\.\(\)\s*\?\?\s*false/gu)].length;
+  assert.equal(wired, 2, "drawer-panels 章节/记忆两处 versionPanel.open 必须传 agentRunning");
+});

@@ -5261,3 +5261,13 @@ test("第十一轮 A：composer 设置保存成功后通知 onDashboardRefresh�
   await tick();
   assert.equal(refreshes.length, 1, "保存失败不得触发刷新（dashboard 仍反映服务端真相）");
 });
+
+test("第十一轮 C：isAgentRunning 与后端 409 门禁同口径（仅 active_run running 为真）", async () => {
+  const { surface } = await makeSurface();
+  surface.applySnapshot(snapshotOf(session({ session_id: "sess-c", status: "running", last_seq: 1, active_run: activeRun({ status: "running" }) }), []));
+  assert.equal(surface.isAgentRunning(), true, "running 必须为 true");
+  surface.applySnapshot(snapshotOf(session({ session_id: "sess-c", status: "idle", last_seq: 2, active_run: activeRun({ status: "completed", active_input_id: null }) }), []));
+  assert.equal(surface.isAgentRunning(), false, "completed 必须为 false");
+  surface.applySnapshot(snapshotOf(session({ session_id: "sess-c", status: "waiting_user", last_seq: 3, active_run: activeRun({ status: "waiting_user" }) }), []));
+  assert.equal(surface.isAgentRunning(), false, "waiting_user 不算运行中（后端 409 只判 running）");
+});

@@ -216,6 +216,8 @@ const { renderDrawerBody } = createDrawerPanels({
   showToast,
   showActionError,
   closeDrawer,
+  // 第十一轮（审计 C）：抽屉章节/记忆分区版本面板的恢复门禁（与后端 409 同口径）。
+  isAgentRunning: () => agentSurface.isAgentRunning()
 });
 
 // ---- Round10：rail 覆盖态与 drawer 模态语义归 app shell 所有 ----
@@ -484,7 +486,9 @@ if (readerHistory && !readerHistory.__bound) {
           versionPanel.close();
           await openReader(chapterNo); // 恢复后刷新到最新内容
         }
-      }
+      },
+      // 第十一轮（审计 C）：Run 进行中禁用恢复（与后端 409 agent_running 同口径）。
+      agentRunning: agentSurface.isAgentRunning()
     });
   });
 }
