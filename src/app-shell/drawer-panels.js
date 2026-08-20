@@ -159,7 +159,9 @@ export function createDrawerPanels(ctx) {
           onRestore: async (version) => {
             const result = await postJson("/api/chapters/rollback", { chapter_no: chapter.chapter_no, version });
             if (result?.ok) { versionPanel.close(); await ctx.loadDashboard?.(); }
-          }
+          },
+          // 第十一轮（审计 C）：Run 进行中禁用恢复（与后端 409 同口径）。
+          agentRunning: ctx.isAgentRunning?.() ?? false
         });
         try {
           await versionPanelOpening;
@@ -350,7 +352,9 @@ export function createDrawerPanels(ctx) {
           onRestore: async (version) => {
             const result = await postJson("/api/memory/versions/restore", { file: block.file, version });
             if (result?.ok) { versionPanel.close(); renderMemoryPanel(data); }
-          }
+          },
+          // 第十一轮（审计 C）：Run 进行中禁用恢复（与后端 409 同口径）。
+          agentRunning: ctx.isAgentRunning?.() ?? false
         });
         try {
           await versionPanelOpening;
