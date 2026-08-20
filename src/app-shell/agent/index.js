@@ -34,6 +34,10 @@ export function createAgentSurface({
   onRunTerminal = () => {},
   // 第九轮：plan_updated 事件通知回调（plan-panel chip 消费）。
   onPlanUpdated = () => {},
+  // 第十一轮（审计 A）：composer 三控件（模型/权限/思考强度）保存成功后通知--
+  // app.js 据此后台刷新 dashboard，抽屉「模型配置」面板/顶栏提示/项目列表与
+  // composer 不再同屏显示两个不同的「当前模型」。
+  onDashboardRefresh = () => {},
   document: doc = globalThis.document,
   requestFrame = null
 }) {
@@ -582,6 +586,8 @@ export function createAgentSurface({
         if (!isCurrentProjectScope(scope)) return;
         apply(data, ...args);
         pushComposerOptions();
+        // 第十一轮（审计 A）：写盘已成功--通知 app.js 刷新 dashboard 各投影面。
+        onDashboardRefresh();
       } catch {
         if (!isCurrentProjectScope(scope)) return;
         view.showToast(`${label}失败，请重试。`);

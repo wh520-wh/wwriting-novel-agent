@@ -365,7 +365,9 @@ async function makeSurface({ apiOverrides = {}, callbacks = {}, useRealTransport
     // Task 16（R5-12）：Run 终态回调透出（app.js 据此刷新 dashboard/会话列表）。
     onRunTerminal: callbacks.onRunTerminal ?? (() => {}),
     // 第十一轮（审计 B）：plan 通知透出（app.js 接 planPanel.sync）。
-    onPlanUpdated: callbacks.onPlanUpdated ?? (() => {})
+    onPlanUpdated: callbacks.onPlanUpdated ?? (() => {}),
+    // 第十一轮（审计 A）：composer 设置保存成功通知透出（app.js 接后台刷新）。
+    onDashboardRefresh: callbacks.onDashboardRefresh ?? (() => {})
   });
   return { root, api, surface, opened, chapters, projectActions };
 }
@@ -5224,4 +5226,38 @@ test("第十一轮 B：切到无 plan 的会话，applySnapshot 以 null 通知 
 
   surface.applySnapshot(snapshotOf(session({ session_id: "sess-noplan", last_seq: 3, active_run: activeRun({ status: "completed", active_input_id: null }) }), []));
   assert.equal(planCalls.at(-1), null, "无 plan 会话的快照必须以 null 通知（顶栏 chip 清空，不残留）");
+});
+
+test("第十一轮 A：composer 设置保存成功后通知 onDashboardRefresh（失败不通知）", async () => {
+  const refreshes = [];
+  const ok = await makeSurface({
+    apiOverrides: {
+      fetchComposerOptions: async () => composerOptionsData(),
+      switchModel: async () => ({
+        ok: true,
+        active_model: { provider_id: "p-mimo", model_id: "m-mimo" },
+        capabilities: {},
+        project: { tool_permissions: { read_only: false, safe_edit: true, auto_edit: true, yolo: false } }
+      })
+    },
+    callbacks: { onDashboardRefresh: () => refreshes.push(1) }
+  });
+  await ok.surface.openProject("D:\\novel");
+  menuOption(ok.root, "agent-model-option", "p-mimo/m-mimo")._fire("click", { stopPropagation() {} });
+  await tick();
+  assert.equal(refreshes.length, 1, "switchModel 保存成功后必须通知一次 dashboard 刷新");
+
+  const failed = await makeSurface({
+    apiOverrides: {
+      fetchComposerOptions: async () => composerOptionsData(),
+      switchModel: async () => {
+        throw new Error("保存失败");
+      }
+    },
+    callbacks: { onDashboardRefresh: () => refreshes.push(1) }
+  });
+  await failed.surface.openProject("D:\\novel");
+  menuOption(failed.root, "agent-model-option", "p-mimo/m-mimo")._fire("click", { stopPropagation() {} });
+  await tick();
+  assert.equal(refreshes.length, 1, "保存失败不得触发刷新（dashboard 仍反映服务端真相）");
 });
