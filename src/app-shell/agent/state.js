@@ -204,6 +204,28 @@ export function reduceEvent(state, event) {
   applyEventToState(state, event);
 }
 
+// 第十二轮 F1：Run 终态/waiting_user 时把未定稿的流式正文收敛为正式消息
+// （interrupted 标记，区别于 assistant_message_completed 的正常定稿）。
+// 只在事件路径调用；重建重放同一算法，确定性一致。
+function finalizeAssistantStream(state, seq) {
+  const stream = state.assistantStream;
+  if (!stream || stream.text.length === 0) return;
+  state.conversation.push({
+    role: "assistant",
+    text: stream.text,
+    input_id: null,
+    seq,
+    // 审核修订（P1-8）：event_key 用稳定键 `finalize:${seq}`——syncMessages 以
+    // event_key 去重（view.js:631），null-key 消息会在每次 messages 重建
+    // （rebuildDerivedState / 任何 messages revision 变化）时重复插入气泡。
+    event_key: `finalize:${seq}`,
+    truncated: false,
+    interrupted: true
+  });
+  state.assistantStream = null;
+  bump(state, ["messages"]);
+}
+
 // 单条事件的派生应用：增量 fast path 与 rebuildDerivedState 共用同一实现。
 function applyEventToState(state, event) {
   const type = event.type;
@@ -370,8 +392,9 @@ function applyEventToState(state, event) {
       }
       activateInput(state, payload.input_id ?? null);
       state.errors = [];
-      // 新 Run（或重试恢复）从零累积正文增量，旧流式气泡立即退出。
-      state.assistantStream = null;
+      // 新 Run（或重试恢复）从零累积正文增量：先定稿上一轮残留的流式正文
+      // （retry 不再静默删除半截输出）。
+      finalizeAssistantStream(state, seq);
       bump(state, ["run", "queue", "decisions", "errors"]);
       break;
     }
@@ -382,6 +405,8 @@ function applyEventToState(state, event) {
       // 与 journal 的 RUN_STATUS_TO_SESSION 一致：终态镜像为 idle，中间态原样。
       state.session.status = RUN_STATUS_TO_SESSION[run.status] ?? "running";
       if (TERMINAL_RUN_STATUSES.has(run.status)) run.active_input_id = null;
+      // F1：等待用户决策时正文已停——定稿残留流式文本（等待期不再挂流式气泡）。
+      if (run.status === "waiting_user") finalizeAssistantStream(state, seq);
       bump(state, ["run"]);
       break;
     }
@@ -474,6 +499,8 @@ function applyEventToState(state, event) {
         message: typeof payload.error === "string" ? payload.error : "操作失败。",
         code: payload.code ?? "model_error"
       });
+      // F1：失败也是终态——先把流式正文定稿为 interrupted 气泡，再清空流槽。
+      finalizeAssistantStream(state, seq);
       const run = state.session?.active_run;
       if (run) {
         run.status = "failed";
@@ -494,6 +521,8 @@ function applyEventToState(state, event) {
       break;
     }
     case "run_completed": {
+      // F1：终态定稿——即使没收到 assistant_message_completed，流式正文也不残留。
+      finalizeAssistantStream(state, seq);
       const run = state.session?.active_run;
       if (run) {
         run.status = "completed";
@@ -504,6 +533,8 @@ function applyEventToState(state, event) {
       break;
     }
     case "run_cancelled": {
+      // F1：取消同样定稿残留正文（interrupted 标记，非静默删除）。
+      finalizeAssistantStream(state, seq);
       const run = state.session?.active_run;
       if (run) {
         run.status = "cancelled";
@@ -514,6 +545,8 @@ function applyEventToState(state, event) {
       break;
     }
     case "run_interrupted": {
+      // F1：中断即终态——把半截正文定稿为 interrupted 气泡。
+      finalizeAssistantStream(state, seq);
       const run = state.session?.active_run;
       if (run) {
         run.status = "interrupted";

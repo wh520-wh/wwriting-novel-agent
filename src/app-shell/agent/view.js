@@ -512,7 +512,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   bindExternalLinks(conv);
 
   // ---- 对话 ----------------------------------------------------------------
-  function createMessageBubble(role, textValue, { markdown = false, truncated = false } = {}) {
+  function createMessageBubble(role, textValue, { markdown = false, truncated = false, interrupted = false } = {}) {
     const bubble = doc.createElement("div");
     bubble.className = `agent-message agent-message--${role}`;
     bubble.dataset.testid = `agent-${role}-message`;
@@ -531,6 +531,14 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       mark.className = "agent-message-truncation";
       mark.dataset.testid = "truncation-mark";
       mark.textContent = "ⓘ 输出被截断";
+      bubble.append(mark);
+    }
+    if (interrupted) {
+      // 第十二轮 F1：Run 终态定稿的半截正文带中断标记（区别于正常定稿气泡）。
+      const mark = doc.createElement("div");
+      mark.className = "agent-message-truncation agent-message-interrupted";
+      mark.dataset.testid = "interrupted-mark";
+      mark.textContent = "ⓘ 已中断";
       bubble.append(mark);
     }
     return bubble;
@@ -635,7 +643,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       } else if (typeof entry.text === "string" && entry.text.length > 0) {
         // 助手正文走 Markdown 渲染（与流式气泡同一口径，增量/终态一致）。
         insertTimeline(
-          createMessageBubble("assistant", entry.text, { markdown: true, truncated: entry.truncated === true }),
+          createMessageBubble("assistant", entry.text, { markdown: true, truncated: entry.truncated === true, interrupted: entry.interrupted === true }),
           entry.seq,
           eventKey
         );
