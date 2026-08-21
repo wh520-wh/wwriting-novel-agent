@@ -536,7 +536,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     if (interrupted) {
       // 第十二轮 F1：Run 终态定稿的半截正文带中断标记（区别于正常定稿气泡）。
       const mark = doc.createElement("div");
-      mark.className = "agent-message-truncation agent-message-interrupted";
+      mark.className = "agent-message-truncation";
       mark.dataset.testid = "interrupted-mark";
       mark.textContent = "ⓘ 已中断";
       bubble.append(mark);
