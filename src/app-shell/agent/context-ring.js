@@ -50,13 +50,20 @@ function isUsageReady(usage) {
   );
 }
 
-// 窗口来源：1M 档来自模型 id 标注（model_id_1m），其余默认 256k。
+// 窗口来源：default_256k = 未配置时的产品缺省；configured = 高级项配置的窗口。
+// 紧凑档位（1M / 192k）与「256k 默认窗口」同风格；精确 token 数已由 popover
+// 主行呈现（「… / 1,000,000 tokens」），来源行不重复——注意不能直接用
+// formatTokens（"1,000,000 窗口"既冗长又无法命中既有 /1M/u 断言）。
+function compactWindowTokens(n) {
+  if (n % 1_000_000 === 0) return `${n / 1_000_000}M`;
+  if (n % 1_000 === 0) return `${n / 1_000}k`;
+  return formatTokens(n);
+}
 function windowSourceLabel(usage) {
   const windowTokens = Number(usage.effective_context_window);
   const source = String(usage.window_source ?? "");
-  if (windowTokens === 1_000_000 || source === "model_id_1m") return "1M 模型窗口";
   if (source === "default_256k") return "256k 默认窗口";
-  return windowTokens > 0 ? `${formatTokens(windowTokens)} 窗口` : "窗口未知";
+  return windowTokens > 0 ? `${compactWindowTokens(windowTokens)} 窗口` : "窗口未知";
 }
 
 export function createContextRing({

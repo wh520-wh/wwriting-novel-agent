@@ -11,8 +11,8 @@
 //   - estimateRequestUsage：本地确定性估算（CJK 感知，复用 prompt.mjs 的
 //     estimateTokens）。可选 calibration 倍率（当前 session 的 EMA 比例，见
 //     observeProviderUsage）在 1.08 安全系数上缩放。
-//   - shouldCompact / exceedsHardWindow：发送前预检门禁。256k 档产品压缩点
-//     204_800（窗口 80%），1M 档 967_000（Claude Code Sonnet 5 当前默认）；
+//   - shouldCompact / exceedsHardWindow：发送前预检门禁。压缩点 = 窗口八成
+//     （256k 档 204_800 不变，1M 档 800_000）；
 //     任一命中（达阈值 或 估算 + 32_000 输出安全余量撞硬窗口）即需要压缩。
 //     阈值是产品默认值，不暴露设置；圆环分母仍是完整 effective_context_window。
 //   - observeProviderUsage：provider 返回 input usage 后校准当前 session 的 EMA
@@ -23,6 +23,7 @@
 // ID）由 runtime 负责。
 
 import { estimateTokens } from "./prompt.mjs";
+import { DEFAULT_CONTEXT_WINDOW, compactionThresholdOf } from "../model/model-identity.mjs";
 
 // 输出与工具参数安全余量：计划 §4 固定 32_000 tokens（预检命中任一条件即压缩）
 export const OUTPUT_SAFETY_RESERVE = 32_000;
@@ -30,11 +31,8 @@ export const OUTPUT_SAFETY_RESERVE = 32_000;
 // EMA 平滑系数：校准比例只做轻量平滑，避免单次 provider 噪音大起大落。
 export const CALIBRATION_EMA_ALPHA = 0.3;
 
-// 压缩阈值只按窗口档位推导（与 model-identity 的 204_800/967_000 同值），
-// 不读取设置；1M 档阈值是调研可核验的 Claude Code Sonnet 5 默认值。
-function compactionThresholdOf(window) {
-  return window === 1_000_000 ? 967_000 : 204_800;
-}
+// 压缩阈值 = 窗口八成（第十三轮 D2）：由 model-identity.mjs 的
+// compactionThresholdOf 统一推导（与 resolveModelLimits 同一实现），不再两档硬编码。
 
 function calibrationFactor(calibration) {
   return Number.isFinite(calibration) && calibration > 0 ? calibration : 1;
@@ -42,7 +40,7 @@ function calibrationFactor(calibration) {
 
 // 估算唯一输入：已装配完成的最终 request messages/tools + 有效窗口 + 可选
 // 校准倍率。返回 ContextUsage（计划 §4 固定 typedef 字段，另含 raw_tokens）。
-export function estimateRequestUsage({ messages = [], tools = [], effectiveContextWindow, calibration = 1 } = {}) {
+export function estimateRequestUsage({ messages = [], tools = [], effectiveContextWindow, calibration = 1, windowSource = null } = {}) {
   const raw =
     estimateTokens(JSON.stringify(messages)) +
     estimateTokens(JSON.stringify(tools)) +
@@ -56,7 +54,7 @@ export function estimateRequestUsage({ messages = [], tools = [], effectiveConte
     effective_context_window: effectiveContextWindow,
     compaction_threshold: threshold,
     ratio: used / effectiveContextWindow,
-    window_source: effectiveContextWindow === 1_000_000 ? "model_id_1m" : "default_256k",
+    window_source: windowSource ?? (effectiveContextWindow === DEFAULT_CONTEXT_WINDOW ? "default_256k" : "configured"),
     estimator: "local",
     approximate: true,
     updated_at: new Date().toISOString()
@@ -64,7 +62,7 @@ export function estimateRequestUsage({ messages = [], tools = [], effectiveConte
 }
 
 // 发送前压缩门禁：达到产品压缩点，或估算 + 输出安全余量撞硬窗口，即需要压缩。
-// threshold 缺省按窗口档位推导（256k→204_800，1M→967_000）。
+// threshold 缺省按窗口八成推导（256k→204_800，1M→800_000）。
 export function shouldCompact({ estimatedInput, outputReserve = OUTPUT_SAFETY_RESERVE, window, threshold } = {}) {
   const effectiveThreshold = threshold ?? compactionThresholdOf(window);
   return estimatedInput >= effectiveThreshold || estimatedInput + outputReserve >= window;

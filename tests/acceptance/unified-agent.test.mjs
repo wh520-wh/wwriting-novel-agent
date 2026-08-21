@@ -1511,18 +1511,18 @@ async function seedTask14Turns(agent, projectRoot, count) {
 
 // ---------------------------------------------------------------------------
 // 完整链（brief Step 3 主链）：
-//   配置 model[1M][foo] → provider 捕获基础 ID model → context ring 分母 1,000,000
-//   → 待发送输入把估算推到 967,000 → 先出现压缩事件，不调用普通 turn
+//   配置 context_window 1M（字段化，ADR 0004）→ ring 分母 1,000,000
+//   → 待发送输入把估算推到 800,000 → 先出现压缩事件，不调用普通 turn
 //   → 压缩候选成功、active checkpoint 切换 → 原输入再发送 → 原始旧消息仍可向上分页查看
 // ---------------------------------------------------------------------------
-test("1M 窗口端到端：model[1M] 基础 ID 剥离 → 预检推到压缩点 → 压缩先于普通轮 → checkpoint 切换 → 原输入发送 → 旧历史可上翻", async (t) => {
-  const PROJECT_OPTIONS = { active_model: { provider: "mock", model_name: "model[1M][foo]" } };
+test("1M 窗口端到端：字段化窗口 → 预检推到压缩点 → 压缩先于普通轮 → checkpoint 切换 → 原输入发送 → 旧历史可上翻", async (t) => {
+  const PROJECT_OPTIONS = { active_model: { provider: "mock", model_name: "model", context_window: 1_000_000 } };
   const SEEDS = 13; // 12 轮受保护窗口之外至少 1 轮进入摘要 → 压缩非 noop
 
   // ---- 探测项目：同配置、同历史深度，捕获一次普通请求做自校准 ----
   // 预检估算 = runtime 的 context_usage_updated（同一装配完成的请求估算一次）。
   // 历史与系统层开销在同一仓库同一夹具下确定，用探测请求实测，再反推让大输入
-  // 落在 [967,000, 968,000) 的长度（避免硬编码受技能目录/系统提示词漂移影响）。
+  // 落在 [800,000, 801,000) 的长度（避免硬编码受技能目录/系统提示词漂移影响）。
   let probeCaptured = null;
   const probe = await createProjectAgentHarness({
     project: PROJECT_OPTIONS,
@@ -1545,8 +1545,8 @@ test("1M 窗口端到端：model[1M] 基础 ID 剥离 → 预检推到压缩点 
   //（公共 seam 可观测；依赖规则只允许 acceptance 从 src/core/agent/index.mjs 导入）。
   const probeUsageEvents = eventsOfType(await readEvents(probe.agent, probe.projectRoot), "context_usage_updated");
   const usedProbe = probeUsageEvents.at(-1).payload.usage.used_tokens;
-  // 大输入估算 ≈ usedProbe + 1.08 × (N − 1)；目标 967,400（[967,000, 967,999] 中段）
-  const N = Math.max(1, Math.ceil((967_400 - usedProbe) / 1.08) + 2);
+  // 大输入估算 ≈ usedProbe + 1.08 × (N − 1)；目标 800,400（[800,000, 800,999] 中段）
+  const N = Math.max(1, Math.ceil((800_400 - usedProbe) / 1.08) + 2);
   const bigInput = "汉".repeat(N);
 
   // ---- 主项目：同一配置与历史深度，跑完整链 ----
@@ -1589,24 +1589,24 @@ test("1M 窗口端到端：model[1M] 基础 ID 剥离 → 预检推到压缩点 
   const firstNormalTurn = eventsOfType(events, "model_turn_started")[SEEDS];
   assert.ok(firstNormalTurn && firstNormalTurn.seq > compactions.at(-1).seq, "普通轮必须在压缩完成之后");
 
-  // 3) provider 捕获基础 ID model（configured_model_id 保留原文）
+  // 3) 模型名原样透传（configured_model_id 与模型名同源）
   const compactionCall = h.gateway.calls.find((call) => call.request.metadata?.stage === "context_compaction");
   assert.ok(compactionCall, "必须有一次压缩模型调用");
-  assert.equal(compactionCall.request.modelConfig.model_name, "model", "压缩调用携带剥离尾标后的基础 ID");
-  assert.equal(compactionCall.request.modelConfig.configured_model_id, "model[1M][foo]", "configured_model_id 保留原文");
+  assert.equal(compactionCall.request.modelConfig.model_name, "model", "压缩调用携带原样透传的模型名");
+  assert.equal(compactionCall.request.modelConfig.configured_model_id, "model", "configured_model_id 与模型名同源");
   assert.equal(compactionCall.request.modelConfig.effective_context_window, 1_000_000);
   assert.equal(compactionCall.request.stream, false, "压缩调用是非流式");
 
-  // 4) context ring 分母 1,000,000 + 预检估算到达 967,000（且低于硬窗口）
+  // 4) context ring 分母 1,000,000 + 预检估算到达 800,000（且低于硬窗口）
   const bigUsage = eventsOfType(events, "context_usage_updated").filter(
-    (event) => event.payload.usage?.used_tokens >= 900_000
+    (event) => event.payload.usage?.used_tokens >= 700_000
   );
-  assert.ok(bigUsage.length >= 1, "大输入应产生超过 90 万估算的预检事件");
+  assert.ok(bigUsage.length >= 1, "大输入应产生超过 70 万估算的预检事件");
   const preflight = bigUsage[0].payload.usage;
   assert.equal(preflight.effective_context_window, 1_000_000, "圆环分母必须为 effective_context_window=1M");
-  assert.equal(preflight.window_source, "model_id_1m");
+  assert.equal(preflight.window_source, "configured");
   assert.equal(preflight.model, "model", "预检 payload 携带模型基础 ID");
-  assert.ok(preflight.used_tokens >= 967_000, `预检估算应达到 1M 档压缩点，实际 ${preflight.used_tokens}`);
+  assert.ok(preflight.used_tokens >= 800_000, `预检估算应达到 1M 档压缩点，实际 ${preflight.used_tokens}`);
   assert.ok(preflight.used_tokens + 32_000 < 1_000_000, `预检估算应低于硬窗口，实际 ${preflight.used_tokens}`);
   assert.equal(session.context_usage.effective_context_window, 1_000_000, "session 投影 ring 分母为 1M");
 
@@ -1625,7 +1625,7 @@ test("1M 窗口端到端：model[1M] 基础 ID 剥离 → 预检推到压缩点 
 
   // 7) 原输入再发送：最后一次普通调用携带大输入原文
   const lastNormal = normalCalls.at(-1);
-  assert.equal(lastNormal.request.modelConfig.model_name, "model", "普通轮同样携带基础 ID");
+  assert.equal(lastNormal.request.modelConfig.model_name, "model", "普通轮同样原样透传模型名");
   assert.ok(
     JSON.stringify(lastNormal.request.messages).includes("汉".repeat(64)),
     "原输入必须在压缩完成后发送给 provider"

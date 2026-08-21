@@ -99,15 +99,30 @@ function normalizeProvider(value) {
 
 function normalizeModel(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const modelName = stringValue(value.model_name);
-  if (!modelName) return null;
-  const hasOneM = /\[1m\]$/iu.test(modelName);
+  const rawName = stringValue(value.model_name);
+  if (!rawName) return null;
+  // 第十三轮（ADR 0004）：[1m] 尾标机制淘汰。规范化一次性迁移：先按原始名判
+  // 尾标（仅在未显式配置 context_window 时推导 1M），再剥全部尾部连续 [..]。
+  // 顺序不可反（先剥就丢信号）；剥后名字与此前后端实际发出的基础 ID 逐字节
+  // 一致，发送行为零变化（loadProviderStore 每次加载必经本函数，天然幂等）。
+  // 存储改稀疏：未配窗口 = 运行时缺省 256k，不再回填。
+  let name = rawName;
+  const tags = [];
+  for (;;) {
+    const match = name.match(/\[([^\[\]]*)\]$/u);
+    if (!match) break;
+    tags.unshift(match[1]);
+    name = name.slice(0, -match[0].length);
+  }
+  const million = tags.some((tag) => tag === "1m" || tag === "1M");
+  const explicitWindow = positiveInt(value.context_window);
   const model = {
     id: stringValue(value.id) || newModelId(),
-    model_name: modelName,
-    enabled: value.enabled !== false,
-    context_window: positiveInt(value.context_window) ?? (hasOneM ? 1000000 : DEFAULT_CONTEXT_WINDOW)
+    model_name: name,
+    enabled: value.enabled !== false
   };
+  if (explicitWindow) model.context_window = explicitWindow;
+  else if (million) model.context_window = 1_000_000;
   for (const key of ["max_output_tokens", "timeout_ms", "total_deadline_ms"]) {
     const n = positiveInt(value[key]);
     if (n) model[key] = n;

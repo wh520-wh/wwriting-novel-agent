@@ -155,15 +155,15 @@ test("模型请求携带 modelConfig（provider/model_name/base_url/api_key_env 
 });
 
 test("模型 ID 尾标解析：active_model 原样持久化，modelConfig 携带基础 ID 与有效上下文窗口", async (t) => {
-  // Task 2 契约：设置/项目对象中的原始 model_name（含 [1m][foo] 尾标）保持不变；
-  // gateway 只收到剥离尾标后的基础 ID；有效上下文窗口/压缩阈值由尾标解析。
+  // 第十三轮（ADR 0004）契约：窗口读字段，名字原样透传。
   const h = await openHarness(t, {
     project: {
       active_model: {
         provider: "openai-compatible",
-        model_name: "model[1m][foo]",
+        model_name: "model[foo]",
         base_url: "https://api.example.com/v1",
-        api_key_env: "DEEPSEEK_API_KEY"
+        api_key_env: "DEEPSEEK_API_KEY",
+        context_window: 1_000_000
       }
     },
     gatewayScript: [{ reply: { text: "好。" } }]
@@ -174,18 +174,18 @@ test("模型 ID 尾标解析：active_model 原样持久化，modelConfig 携带
   const request = h.gateway.calls[0].request;
   assert.ok(request.modelConfig && typeof request.modelConfig === "object", "request 必须携带 modelConfig");
   assert.equal(request.modelConfig.provider, "openai-compatible");
-  assert.equal(request.modelConfig.configured_model_id, "model[1m][foo]");
-  assert.equal(request.modelConfig.model_name, "model", "gateway 收到剥离尾标后的基础 ID");
+  assert.equal(request.modelConfig.model_name, "model[foo]");            // 标识符原样透传
+  assert.equal(request.modelConfig.configured_model_id, "model[foo]");
   assert.equal(request.modelConfig.effective_context_window, 1_000_000);
-  assert.equal(request.modelConfig.compaction_threshold, 967_000);
-  assert.equal(request.modelConfig.window_source, "model_id_1m");
+  assert.equal(request.modelConfig.compaction_threshold, 800_000);
+  assert.equal(request.modelConfig.window_source, "configured");
   assert.equal(request.modelConfig.base_url, "https://api.example.com/v1");
   assert.equal(request.modelConfig.api_key_env, "DEEPSEEK_API_KEY");
   // 持久配置不被改写（plan invariant 9）：内存项目对象与磁盘 project.yaml 的
-  // 原始 model_name 都必须仍是 model[1m][foo]。
-  assert.equal(h.project.active_model.model_name, "model[1m][foo]");
+  // 原始 model_name 都必须仍是 model[foo]。
+  assert.equal(h.project.active_model.model_name, "model[foo]");          // 持久配置不写回
   const persisted = await fs.readFile(path.join(h.projectRoot, "project.yaml"), "utf8");
-  assert.match(persisted, /model\[1m\]\[foo\]/u, "project.yaml 中的原始 model_name 保持不变");
+  assert.match(persisted, /model\[foo\]/u, "project.yaml 中的原始 model_name 保持不变");
 });
 
 // ---------------------------------------------------------------------------
@@ -266,22 +266,23 @@ test("模型从 1M 切到 256k：切换动作不追加压缩事件，下一次 s
     project: {
       active_model: {
         provider: "openai-compatible",
-        model_name: "mock[1m][foo]",
+        model_name: "mock[foo]",
         base_url: "https://api.example.com/v1",
-        api_key_env: "DEEPSEEK_API_KEY"
+        api_key_env: "DEEPSEEK_API_KEY",
+        context_window: 1_000_000
       }
     },
     gatewayScript: [{ reply: { text: "第一轮" } }, { reply: { text: "第二轮" } }]
   });
   await h.agent.submit({ projectRoot: h.projectRoot, text: "第一次", source: "chat" });
   await waitForIdle(h.agent, h.projectRoot);
-  // 切换前：1M 档窗口
+  // 切换前：1M 档窗口（字段化）
   let events = await readEvents(h.agent, h.projectRoot);
   let last = eventsOfType(events, "context_usage_updated").at(-1).payload.usage;
   assert.equal(last.effective_context_window, 1_000_000);
-  assert.equal(last.compaction_threshold, 967_000);
-  assert.equal(last.window_source, "model_id_1m");
-  assert.equal(last.model, "mock");
+  assert.equal(last.compaction_threshold, 800_000);
+  assert.equal(last.window_source, "configured");
+  assert.equal(last.model, "mock[foo]");
 
   // 切换模型（1M → 256k）：只改 project.yaml，不追加任何 journal 事件
   h.project.active_model = { provider: "openai-compatible", model_name: "mock" };

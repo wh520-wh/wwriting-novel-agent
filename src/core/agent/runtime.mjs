@@ -64,7 +64,7 @@ import { createMutex } from "../async-utils.mjs";
 import { readProjectMemory } from "../project-memory.mjs";
 import { createRedactor } from "../shell/redaction.mjs";
 import { resolveModelCapabilities } from "../model/capabilities.mjs";
-import { parseModelIdentity } from "../model/model-identity.mjs";
+import { resolveModelLimits } from "../model/model-identity.mjs";
 import { createJournalDeltaWriter, reasoningAvailability } from "./stream-writer.mjs";
 import { skillService } from "../skills/index.mjs";
 
@@ -565,18 +565,19 @@ export function createAgentRuntime({
 
   function modelConfigOf(project) {
     const active = project?.active_model ?? {};
-    // Task 2：有效上下文窗口由模型 ID 尾标解析（[1m]/[1M] → 1M，缺省 256k），
-    // 不再读取 project.context_window。持久配置保持原样：只覆盖运行时副本
-    // （model_name 为剥离尾标后的 provider 基础 ID），绝不写回 active_model。
-    const identity = parseModelIdentity(active.model_name ?? "");
+    // 第十三轮（ADR 0004）：有效窗口/最大输出唯一来自 context_window /
+    // max_output_tokens 字段（缺省 256k / 64k，resolveModelLimits 统一解析），
+    // 模型名原样透传不再剥尾标。持久配置绝不写回：只覆盖运行时副本。
+    const limits = resolveModelLimits(active);
     return {
       ...active,
       provider: typeof active.provider === "string" ? active.provider : "unknown",
-      configured_model_id: identity.configured_model_id,
-      model_name: identity.provider_model_id,
-      effective_context_window: identity.effective_context_window,
-      compaction_threshold: identity.compaction_threshold,
-      window_source: identity.window_source,
+      configured_model_id: active.model_name ?? "",
+      model_name: active.model_name ?? "",
+      effective_context_window: limits.effective_context_window,
+      max_output_tokens: limits.effective_max_output_tokens,
+      compaction_threshold: limits.compaction_threshold,
+      window_source: limits.window_source,
       // 项目级思考强度（project.yaml.reasoning_effort）：仅透传，是否真正发送
       // 由 adapter 按模型 capability（reasoningEffortLevels）决定，auto/缺省不发。
       ...(typeof project?.reasoning_effort === "string" ? { reasoning_effort: project.reasoning_effort } : {})
@@ -1614,7 +1615,8 @@ export function createAgentRuntime({
         messages: request.messages,
         tools: request.tools ?? [],
         effectiveContextWindow: modelConfig.effective_context_window,
-        calibration: sessionState.contextCalibration ?? 1
+        calibration: sessionState.contextCalibration ?? 1,
+        windowSource: modelConfig.window_source,
       });
       await journal.append({
         type: "context_usage_updated",
@@ -1824,7 +1826,8 @@ export function createAgentRuntime({
           messages: request.messages,
           tools: request.tools ?? [],
           effectiveContextWindow: modelConfig.effective_context_window,
-          calibration: sessionState.contextCalibration ?? 1
+          calibration: sessionState.contextCalibration ?? 1,
+          windowSource: modelConfig.window_source,
         });
         calibratedEstimate.approximate = calibration.approximate;
         // 第九轮：调用完成后累加会话级缓存统计，随 context_usage_updated 送达前端。
