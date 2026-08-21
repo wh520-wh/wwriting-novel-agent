@@ -235,6 +235,13 @@ function applyEventToState(state, event) {
   const rawSeq = Number(event.seq);
   const seq = Number.isFinite(rawSeq) ? rawSeq : null;
   const key = eventKey(event);
+  // 审核修订（F5）：任何非连接类事件到达即代表流已恢复（SSE 事件只从流来），
+  // 撤掉连接类错误卡。rebuildDerivedState 重放共用同一函数，天然幂等。
+  if (type !== "connection_error") {
+    state.errors = state.errors.filter(
+      (e) => e.code !== "event_stream_error" && e.code !== "event_stream_fatal"
+    );
+  }
   switch (type) {
     case "session_created": {
       state.sessionId = event.session_id ?? state.sessionId;
@@ -520,12 +527,18 @@ function applyEventToState(state, event) {
       break;
     }
     case "connection_error": {
-      state.errors.push({
+      // 连续 error 帧不再叠加多张卡，同 code 只留一张可更新的卡（F5 清卡语义的
+      // 一半：去重；另一半=非连接事件到达即清，见入口过滤）。
+      const code = payload.code ?? "event_stream_error";
+      const err = {
         seq,
         run_id: null,
         message: typeof payload.message === "string" ? payload.message : "事件流连接失败。",
-        code: payload.code ?? "event_stream_error"
-      });
+        code
+      };
+      const idx = state.errors.findIndex((e) => e.code === code);
+      if (idx >= 0) state.errors[idx] = err;
+      else state.errors.push(err);
       bump(state, ["errors"]);
       break;
     }

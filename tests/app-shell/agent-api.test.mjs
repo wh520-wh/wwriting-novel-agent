@@ -303,7 +303,7 @@ test("streamEvents 流结束：无参 decode() 冲刷并把残留尾块分发（
   ], "首块与无分隔尾块都应分发，truncated:true 原样透出");
 });
 
-test("SSE error 帧可见上报并停止静默重连", async (t) => {
+test("SSE error 帧可见上报并退避重连（连续 5 次服务端错误后停止）", async (t) => {
   let fetchCount = 0;
   const errors = [];
   const fetchImpl = async () => {
@@ -340,12 +340,62 @@ test("SSE error 帧可见上报并停止静默重连", async (t) => {
   t.after(() => api.destroy());
 
   api.connectEvents();
-  const deadline = Date.now() + 1000;
-  while (errors.length === 0 && Date.now() < deadline) await tick();
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  // 等待 5 次连接收尾（baseDelayMs=1 退避很快；第 5 次封顶后 fetchCount 不再增长）
+  const deadline = Date.now() + 3000;
+  while (fetchCount < 5 && Date.now() < deadline) await tick();
+  await new Promise((resolve) => setTimeout(resolve, 20));
 
-  assert.deepEqual(errors, [{ code: "journal_read_failed", message: "事件流读取失败" }]);
-  assert.equal(fetchCount, 1, "服务端显式错误是持久故障，不得继续静默重连");
+  assert.equal(fetchCount, 5, "连续 5 次服务端错误后停止重连");
+  assert.equal(errors.length, 5, "每次连接上报一次服务端错误");
+  assert.deepEqual(errors[0], { code: "journal_read_failed", message: "事件流读取失败" });
+});
+
+test("F5: 服务端 error 退避重连，onReconnect 在每次重连前被调，第 5 次后停止", async (t) => {
+  const errors = [];
+  let reconnects = 0;
+  let connects = 0;
+  const fetchImpl = async () => {
+    connects += 1;
+    return {
+      ok: true,
+      status: 200,
+      body: {
+        getReader() {
+          let pushed = false;
+          return {
+            read() {
+              if (pushed) return Promise.resolve({ done: true, value: undefined });
+              pushed = true;
+              return Promise.resolve({
+                done: false,
+                value: new TextEncoder().encode(
+                  'event: error\ndata: {"ok":false,"code":"event_stream_error","message":"事件流连接失败。"}\n\n'
+                )
+              });
+            }
+          };
+        }
+      }
+    };
+  };
+  const api = createAgentApi({
+    getProjectRoot: () => "P",
+    fetchImpl,
+    baseDelayMs: 0,
+    maxDelayMs: 0,
+    onStreamError: (error) => errors.push(error),
+    onReconnect: async () => { reconnects += 1; }
+  });
+  t.after(() => api.destroy());
+  api.connectEvents();
+  // 等循环自然收尾（5 次连接；baseDelayMs=0 无退避等待）
+  const deadline = Date.now() + 1000;
+  while (connects < 5 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(connects, 5, "连续 5 次服务端错误后停止重连");
+  assert.equal(reconnects, 4, "第 2~5 次连接前各调一次 onReconnect");
+  assert.equal(errors.length, 5, "每次 error 帧上报一次");
+  assert.equal(errors[0].code, "event_stream_error");
 });
 
 // ---------------------------------------------------------------------------
