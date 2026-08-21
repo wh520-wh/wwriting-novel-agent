@@ -5265,14 +5265,14 @@ test("第十一轮 A：composer 设置保存成功后通知 onDashboardRefresh�
   assert.equal(refreshes.length, 1, "保存失败不得触发刷新（dashboard 仍反映服务端真相）");
 });
 
-test("第十一轮 C：isAgentRunning 与后端 409 门禁同口径（仅 active_run running 为真）", async () => {
+test("第十一轮 C（第十二轮 F9 起）：isAgentRunning 与后端 409 门禁同口径（非终态集）", async () => {
   const { surface } = await makeSurface();
   surface.applySnapshot(snapshotOf(session({ session_id: "sess-c", status: "running", last_seq: 1, active_run: activeRun({ status: "running" }) }), []));
   assert.equal(surface.isAgentRunning(), true, "running 必须为 true");
   surface.applySnapshot(snapshotOf(session({ session_id: "sess-c", status: "idle", last_seq: 2, active_run: activeRun({ status: "completed", active_input_id: null }) }), []));
   assert.equal(surface.isAgentRunning(), false, "completed 必须为 false");
   surface.applySnapshot(snapshotOf(session({ session_id: "sess-c", status: "waiting_user", last_seq: 3, active_run: activeRun({ status: "waiting_user" }) }), []));
-  assert.equal(surface.isAgentRunning(), false, "waiting_user 不算运行中（后端 409 只判 running）");
+  assert.equal(surface.isAgentRunning(), true, "waiting_user 计入忙（F9 起口径扩为非终态集，11C 旧断言被取代）");
 });
 
 // ===========================================================================
@@ -5290,4 +5290,20 @@ test("第十二轮 E：run_status_changed 触发 onRunStatusChanged（事件驱�
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
   surface.applyEvent(ev("run_status_changed", { status: "waiting_user" }));
   assert.deepEqual(statuses, ["waiting_user"], "非终态状态变化即通知（E 刷新钩子）");
+});
+
+// ===========================================================================
+// 第十二轮 F9：恢复类操作门禁口径扩为非终态集（isAgentRunning 与后端 rollback
+// 409、串行门 hasNonTerminalRun 同口径——waiting_user/stopping 期间不放行恢复）。
+// ===========================================================================
+
+test("第十二轮 F9：isAgentRunning 用非终态集——waiting_user 禁、终态解禁", async () => {
+  const { root, surface } = await makeSurface();
+  surface.applySnapshot(snapshotOf(
+    session({ status: "waiting_user", active_run: activeRun({ status: "waiting_user" }) }),
+    []
+  ));
+  assert.equal(surface.isAgentRunning(), true, "waiting_user 视为忙（非终态集）");
+  surface.applyEvent(ev("run_completed", {}));
+  assert.equal(surface.isAgentRunning(), false, "终态解禁");
 });

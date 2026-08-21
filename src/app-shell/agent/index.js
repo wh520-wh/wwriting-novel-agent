@@ -604,11 +604,15 @@ export function createAgentSurface({
     };
   }
 
-  // 第十一轮（审计 C）：当前会话是否有进行中的 Run--version-panel「恢复此版」
-  // 按钮的门禁依据，与后端 POST /api/chapters/rollback 的 409 判定
-  // （session.active_run.status === "running"）同口径。
+  // 第十一轮（审计 C）：当前会话是否有进行中的 Run——version-panel「恢复此版」
+  // 按钮的门禁依据。第十二轮 F9：口径从 running 扩为非终态集，与后端 rollback
+  // 409、串行门 hasNonTerminalRun 同口径（waiting_user/stopping 期间不再放行并发写）。
+  // 维护义务：新增/删改运行状态时需同步本集合与其余副本（runtime hasNonTerminalRun
+  // 为终态补集机制自动覆盖，settings-modal.js、project-diagnostics.mjs、
+  // project-routes RUN_BUSY_STATUSES、session-sidebar BUSY_RUN_STATUSES）。
+  const AGENT_BUSY_STATUSES = new Set(["running", "waiting_user", "interrupting", "stopping"]);
   function isAgentRunning() {
-    return state.session?.active_run?.status === "running";
+    return AGENT_BUSY_STATUSES.has(state.session?.active_run?.status ?? "idle");
   }
 
   const actions = {
