@@ -177,3 +177,10 @@ test("F5: 连接错误同 code 去重，非连接事件到达即清卡", () => {
   reduceEvent(state, ev("run_status_changed", { status: "running" }, 3));
   assert.equal(state.errors.length, 0, "非连接事件到达（流恢复）即清卡（F5）");
 });
+
+test("第十二轮 F11：无 active_run 时 plan_updated 也投影顶层 plan", () => {
+  const state = createState();
+  reduceEvent(state, ev("plan_updated", { explanation: "计划", items: [{ step: "1", status: "pending" }] }, 1));
+  assert.ok(state.plan && Array.isArray(state.plan.items) && state.plan.items.length === 1,
+    "顶层 plan 投影不依赖 active_run 在场（F11 尾页窗口口径）");
+});
