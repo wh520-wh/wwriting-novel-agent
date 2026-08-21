@@ -67,6 +67,14 @@ function normalizePositiveInteger(value, fallback) {
   return number;
 }
 
+// 第十二轮 F9：恢复类操作（rollback / memory restore）的 409 门禁从 running 扩
+// 为非终态集（与串行门 hasNonTerminalRun 同口径——waiting_user/stopping 期间不再
+// 放行并发写）。维护义务：新增/删改运行状态时需同步本集合与其余副本（runtime
+// hasNonTerminalRun 为终态补集机制自动覆盖，settings-modal.js、
+// project-diagnostics.mjs、session-sidebar BUSY_RUN_STATUSES、
+// 前端 index.js AGENT_BUSY_STATUSES）。
+const RUN_BUSY_STATUSES = new Set(["running", "waiting_user", "interrupting", "stopping"]);
+
 export function createProjectRoutes({
   workspace,
   stateRoot,
@@ -449,7 +457,7 @@ export function createProjectRoutes({
       const chapterNo = normalizePositiveInteger(handlerCtx.body?.chapter_no, null);
       if (chapterNo === null) throw new HttpError(400, "bad_args", "chapter_no 必须是正整数。");
       const { session } = await agent.snapshot({ projectRoot });
-      if (session?.active_run?.status === "running") {
+      if (RUN_BUSY_STATUSES.has(session?.active_run?.status ?? "idle")) {
         throw new HttpError(409, "agent_running", "写作进行中，暂停后恢复。");
       }
       const project = await loadProject(projectRoot);
@@ -505,7 +513,7 @@ export function createProjectRoutes({
       if (file !== "worklog" && file !== "book_summary") throw new HttpError(400, "bad_args", "file 只允许 worklog|book_summary。");
       if (version === null) throw new HttpError(400, "bad_args", "version 必须是正整数。");
       const { session } = await agent.snapshot({ projectRoot });
-      if (session?.active_run?.status === "running") {
+      if (RUN_BUSY_STATUSES.has(session?.active_run?.status ?? "idle")) {
         throw new HttpError(409, "agent_running", "写作进行中，暂停后恢复。");
       }
       const { content } = await readMemoryVersion({ projectRoot, file, version });

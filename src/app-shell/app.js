@@ -491,6 +491,12 @@ if (readerHistory && !readerHistory.__bound) {
       getVersions: async () => getJson(`/api/chapters/versions?chapter_no=${chapterNo}`),
       getContent: async (version) => getJson(`/api/chapters/versions/content?chapter_no=${chapterNo}&version=${version}`),
       onRestore: async (version) => {
+        // 第十二轮 F9：点击时按最新 Run 状态复查（面板存续期间旧求值会过期）。
+        // 行为门禁与后端 409 同口径（非终态集），被拦时 toast 提示且不执行。
+        if (agentSurface.isAgentRunning()) {
+          showToast("写作进行中，暂停后恢复。");
+          return;
+        }
         const result = await postJson("/api/chapters/rollback", { chapter_no: chapterNo, version });
         if (result?.ok) {
           versionPanel.close();
