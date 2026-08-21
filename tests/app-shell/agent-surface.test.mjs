@@ -3097,7 +3097,7 @@ function composerOptionsData(overrides = {}) {
     activeModelCapabilities: { reasoningEffortLevels: ["low", "medium", "high"] },
     toolPermissions: { read_only: false, safe_edit: true, auto_edit: false, yolo: false },
     reasoningEffort: "auto",
-    activeModelDisplay: "DeepSeek 官方 / deepseek-reasoner", // 模拟 dashboard model_profile.display
+    activeModelDisplay: "我的 DeepSeek 中转 / deepseek-reasoner", // 模拟 dashboard model_profile.display（用户自命厂商名，与清单派生标签不同）
     ...overrides
   };
 }
@@ -3138,11 +3138,12 @@ test("composer 三控件：openProject 后加载选项并渲染（testid 齐全�
   assert.equal(modelSel.tagName, "button", "不得退回系统原生 select");
   assert.equal(modelSel.dataset.value, "p-deepseek/m-reasoner");
   assert.match(modelSel.textContent, /deepseek-reasoner/u);
-  assert.match(modelSel.textContent, /DeepSeek 官方 \/ deepseek-reasoner/u, "当前选中显示消费档案 display 单源（ADR 0005）");
-  // Task 16：只列启用供应商的启用模型（停用模型 deepseek-chat 与停用供应商 p-off 不出现）
+  assert.match(modelSel.textContent, /我的 DeepSeek 中转 \/ deepseek-reasoner/u, "当前选中显示消费档案 display 单源（ADR 0005）");
+  // Task 16：只列启用供应商的启用模型（停用模型 deepseek-chat 与停用供应商 p-off 不出现）；
+  // 当前选中项（首项）标签被消费档案 display 覆盖（ADR 0005 单源），mimo 等非活跃项保持清单派生。
   assert.deepEqual(
     [...root.querySelectorAll('[data-testid="agent-model-option"]')].map((o) => o.textContent),
-    ["DeepSeek 官方 / deepseek-reasoner", "小米 MiMo 官方 / mimo-7b"]
+    ["我的 DeepSeek 中转 / deepseek-reasoner", "小米 MiMo 官方 / mimo-7b"]
   );
   assert.equal(permSel.disabled, false);
   assert.equal(root.querySelectorAll('[data-testid="agent-permission-option"]').length, 4, "权限四档：只读/确认后修改/自动修改/YOLO");

@@ -411,6 +411,12 @@ test("第十三轮 F6：抽屉模型面板显示「上下文 · 最大输出」�
     h.ctx.getDrawerTab = () => "model";
     await h.panels.renderDrawerBody();
     assert.ok(h.drawerBody.textContent.includes("上下文 256k · 最大输出 64k"), "参数行与运行时缺省口径同源");
+    const hMissing = makeHarness({
+      data: dashboard({ model_profile: { model_name: "plain", display: "Plain / plain", api_key_saved: false }, config: { effective: { tool_permissions: {} } } })
+    });
+    hMissing.ctx.getDrawerTab = () => "model";
+    await hMissing.panels.renderDrawerBody();
+    assert.ok(!hMissing.drawerBody.textContent.includes("上下文"), "缺窗口字段的档案不渲染参数行");
   } finally {
     globalThis.document = realDoc;
     globalThis.fetch = realFetch;
