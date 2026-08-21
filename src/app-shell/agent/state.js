@@ -237,6 +237,9 @@ function finalizeAssistantStream(state, seq) {
 // run/errors，若无此 bump 则 syncMessages 早退，已渲染气泡的淡化类要到下次
 // 消息变更/重建才应用，与「终态时打 narration 类」（spec N2）的即时语义不符
 //（终态时恰是作者阅读交付、回看叙述的窗口）。
+// ponytail: 非最终一条=叙述 是启发式近似——若真实交付正文写在 waiting_user
+// 暂停之前、恢复后仅补短收尾，正文气泡会被误标淡化（天花板）；升级路径：按
+// reasoning/tool 里程碑或段落权重判交付。
 function markRunNarration(state) {
   const start = state.runConversationStart;
   if (start == null) return;
@@ -459,6 +462,10 @@ function applyEventToState(state, event) {
       if (run.status === "waiting_user" || TERMINAL_RUN_STATUSES.has(run.status)) {
         finalizeAssistantStream(state, seq);
       }
+      // N2 对称：run_status_changed 终态兜底路径也标 narration（与 F1 定稿对称；
+      // waiting_user 非终态必须跳过——不要在这里对 waiting_user 调
+      // markRunNarration，等待用户不是 Run 结束）。
+      if (TERMINAL_RUN_STATUSES.has(run.status)) markRunNarration(state);
       bump(state, ["run"]);
       break;
     }

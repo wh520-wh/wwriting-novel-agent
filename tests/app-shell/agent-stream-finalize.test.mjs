@@ -106,7 +106,66 @@ test("N2: Run 终态后非最终 assistant 消息标记 narration，最终一条
   const texts = state.conversation.filter((m) => m.role === "assistant");
   assert.equal(texts.length, 2);
   assert.equal(texts[0].narration, true, "先说的那句是叙述");
-  assert.notEqual(texts[1].narration, true, "最终交付不是叙述");
+  assert.equal(texts[1].narration, undefined, "最终交付不是叙述（未标记字段不写）");
+});
+
+test("N2: 窗口缺 run_started（F11 尾页）时无 narration 标记", () => {
+  // 规格 F11 同场景：尾页加载，Run 起点落在已加载窗口之外，没有 run_started。
+  // runConversationStart 为 null——宁可不标不可误标。
+  const state = createState();
+  reduceEvent(state, ev("assistant_message_completed", { input_id: "in-1", text: "先读一下大纲" }, 1));
+  reduceEvent(state, ev("assistant_message_completed", { input_id: "in-1", text: "写完了，本章交付" }, 2));
+  reduceEvent(state, ev("run_completed", {}, 3));
+  const texts = state.conversation.filter((m) => m.role === "assistant");
+  assert.equal(texts.length, 2);
+  assert.equal(texts[0].narration, undefined, "无 run_started（窗口起点未知）第一条不标");
+  assert.equal(texts[1].narration, undefined, "无 run_started（窗口起点未知）最终一条不标");
+});
+
+test("N2: waiting_user 暂停→resume→终态仍标暂停前叙述（整 Run 窗口语义）", () => {
+  // 钉住「Run 窗口 = run_started 到最终终态」：resume 不发 run_started，暂停期间
+  // runConversationStart 不得被清掉或重设，否则暂停前叙述会在最终终态漏标。
+  const state = createState();
+  reduceEvent(state, ev("run_started", { input_id: "in-1" }, 1));
+  reduceEvent(state, ev("assistant_message_completed", { input_id: "in-1", text: "先读一下大纲" }, 2));
+  reduceEvent(state, ev("run_status_changed", { status: "waiting_user" }, 3));
+  reduceEvent(state, ev("run_status_changed", { status: "running" }, 4));
+  reduceEvent(state, ev("assistant_message_completed", { input_id: "in-1", text: "写完交付" }, 5));
+  reduceEvent(state, ev("run_completed", {}, 6));
+  const texts = state.conversation.filter((m) => m.role === "assistant");
+  assert.equal(texts.length, 2);
+  assert.equal(texts[0].narration, true, "暂停前的叙述在最终终态仍标 narration");
+  assert.equal(texts[1].narration, undefined, "恢复后的交付是最终一条，不标");
+});
+
+test("N2: 重建确定性——乱序重放后 narration 标记与增量路径一致", () => {
+  const events = [
+    ev("run_started", { input_id: "in-1" }, 1),
+    ev("assistant_message_completed", { input_id: "in-1", text: "先读一下大纲" }, 2),
+    ev("assistant_message_completed", { input_id: "in-1", text: "写完了，本章交付" }, 3),
+    ev("run_completed", {}, 4)
+  ];
+  // 增量基准：按序送达。
+  const control = createState();
+  for (const event of events) reduceEvent(control, event);
+  // 乱序送达（SSE 重排）：run_completed 先到、两条 completed 后到——seq 2/3 <
+  // lastSeq 4 触发 rebuildDerivedState 按 (seq, event_key) 全量重放，narration
+  // 由重放中的 run_completed 统一施加，与增量路径一致。
+  const state = createState();
+  reduceEvent(state, events[0]);
+  reduceEvent(state, events[3]);
+  reduceEvent(state, events[1]);
+  reduceEvent(state, events[2]);
+  assert.deepEqual(state.conversation, control.conversation, "重建与增量路径的 conversation（含 narration）必须逐字段一致");
+  const texts = state.conversation.filter((m) => m.role === "assistant");
+  assert.equal(texts.length, 2);
+  assert.equal(texts[0].narration, true, "重建后第一条仍标 narration");
+  assert.equal(texts[1].narration, undefined, "重建后最终一条不标");
+  // 再触发一次重建（seq 1.5 < lastSeq 4）：narration 标记不漂移。
+  reduceEvent(state, ev("input_withdrawn", { input_id: "in-x" }, 1.5));
+  const rebuilt = state.conversation.filter((m) => m.role === "assistant");
+  assert.equal(rebuilt[0].narration, true, "重复重建后 narration 不漂移");
+  assert.equal(rebuilt[1].narration, undefined);
 });
 
 test("F5: 连接错误同 code 去重，非连接事件到达即清卡", () => {
