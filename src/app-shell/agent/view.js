@@ -1551,6 +1551,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       const title = doc.createElement("strong");
       title.className = "agent-error-title";
       // 第十二轮 F5：连接类错误标「连接中断」，与 Run 失败（操作失败）区分。
+      // 与 state.js 入口清卡处的连接类 code 集合同步，新增连接类 code 需两处同改。
       const isConnectionError = error.code === "event_stream_error" || error.code === "event_stream_fatal";
       title.textContent = isConnectionError ? "连接中断" : "操作失败";
       const message = doc.createElement("p");

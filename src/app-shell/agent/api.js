@@ -330,6 +330,8 @@ export function createAgentApi({
           } else {
             serverErrors = 0;
           }
+          // F5 起 dispatchBlock 不再返回 false（error 帧走 "server-error"），
+          // 本分支为协议层未来 hard-stop 返回值的防御性预留，勿删。
           if (outcome === false) return;
           attempt += 1;
           await sleep(backoff(), myController.signal);
