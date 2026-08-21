@@ -1266,6 +1266,11 @@ function createFakeTimers() {
       const index = scheduled.findIndex((timer) => timer.id === id);
       if (index >= 0) scheduled.splice(index, 1);
     },
+    // 已注册未触发的定时器数：测试轮询它来确认期限定时器已挂上，
+    // 替代定长真实 sleep（并行负载下会输给调度竞态）。
+    pendingTimers() {
+      return scheduled.length;
+    },
     advance(ms) {
       now += Math.max(0, ms);
       const due = scheduled.filter((timer) => timer.at <= now).sort((a, b) => a.at - b.at);
@@ -1414,7 +1419,14 @@ test("clock/setTimer/clearTimer seam：假时钟精确驱动空闲期限", { tim
     }
   });
   const pending = h.tools.execute(toolCall("shell", { command: "git status", purpose: "假时钟" }), h.context);
-  await sleep(30); // 等待 run 挂起（期限定时器已注册到假时钟）
+  // 等期限定时器注册到假时钟（空闲+绝对两个在 supervisor 内同步注册）。
+  // 原来是定长 sleep(30)：并行负载下注册可能还没完成，advance 先跑会让
+  // 定时器永不到期、用例挂到超时（第十一轮验收报告记录的偶发 flake）。
+  const registerDeadline = Date.now() + 10_000;
+  while (fake.pendingTimers() < 2 && Date.now() < registerDeadline) {
+    await sleep(10);
+  }
+  assert.equal(fake.pendingTimers(), 2, "空闲+绝对两个期限定时器应已注册到假时钟");
   fake.advance(100); // 推进 100ms → 空闲期限回调触发
   const result = await pending;
   assert.equal(result.ok, false);

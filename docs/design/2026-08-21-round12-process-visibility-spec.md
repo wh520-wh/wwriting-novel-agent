@@ -1,6 +1,6 @@
 # 第十二轮规格：过程可见性与过程美化（2026-08-21）
 
-- 状态：待实现（grilling 已收口，用户已确认范围授权）
+- 状态：已实现并收口（2026-08-21，F1-F16/E/§4.3/N1-N3 全部落地，全量回归 178/178；修复记录见 [[2026-08-21-process-visibility-audit]] 末节）
 - 输入：[[2026-08-20-agent-progress-narration-terminology]]（术语深潜）、[[2026-08-20-competitive-research]]（竞品决策报告）、[[2026-08-21-process-visibility-audit]]（聚焦审计，F 编号出处）、[[2026-08-18-ui-backend-consistency-audit]]（E 项母账）
 - 一句话：把作者从「看条目机械跳动」变为「听 Agent 说为什么」，同时把状态谎言与渲染残缺一次清干净。
 

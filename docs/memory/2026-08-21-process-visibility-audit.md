@@ -103,3 +103,25 @@ F1/F2/F3/F4/F5/F7 六条由本人读源码逐条坐实（文件:行号与断言�
 `journal-segments.mjs` 原在 `load()` 末尾 eager open 一个活动段写句柄常驻 `activeSegment.fd`；会话加载后若再无 append，该打开句柄随 store 被 GC 时被回收，Node v25 报 `A FileHandle object was closed during garbage collection`（未显式 close）。最小根因修复：load 不再常驻打开，句柄生命周期完全惰性（append 写入前按需重开、rotate 在 fd 为 null 时以 `r+` 重开做 fsync），无任何读取路径依赖预开句柄——行为不变、消除 GC 泄漏。`journal-recovery` + `project-agent` 两文件级 fail 消失（178/178 通过）。
 
 - 已知环境 flake：tests/agent/compaction.test.mjs 全量并行时偶发 ENOTEMPTY rmdir（teardown 竞态，单跑稳定，下轮可考虑 h.cleanup 容错）。
+
+## 2026-08-22 补测：N1 真实 API 上下文成本基线（收口遗留项闭环）
+
+第十二轮收口时 mock 基线 ≈113 tokens/轮（events5 内 20 个事件），真实模式留待补测。本日经 opencode zen 网关（deepseek-v4-flash，`MODEL_BASE_URL` 环境变量接入，sim 脚本新增支持）跑两遍真实用户流程（`npm run sim:user-flow`），口径与 mock 完全一致：全量快照内 `context_usage_updated` 的 `used_tokens` 首末差 / 事件数。
+
+| 样本 | 耗时 | 结果 | 事件数 | used_tokens | 基线 |
+|---|---|---|---|---|---|
+| 一 | 184s | 13/14（章节写到根级 prologue_draft.md，交付断言字面失败） | 116 | 6071 -> 17633 | ≈99.7 tokens/轮 |
+| 二 | 595s | 14/14（chapters/第一章.md 交付 + 记忆三件套维护） | 66 | 6071 -> 70796 | ≈980.7 tokens/轮 |
+
+- **结论**：真实两样本相差一个数量级，每轮增长的主要驱动是**工具结果体量**（样本二写了整章，正文随 write_file/回读进入上下文），叙述政策本身（STATIC_CORE 固定政策文案 + 模型叙述输出）不是主导项。下一轮「收紧对照」应在**同流程**下对比（mock 定脚本，或真实运行控制章节长度），不能拿两次独立真实运行的原始值直接比。mock 基线 113 与样本一（短篇流程）同量级。
+- **叙述行为两样本均成立**：写正文/初始化前存在里程碑叙述正文经 assistant 通道流出（「收到 /init，我先检查工作区里有没有已存在的项目配置…」「我先创建好项目基础目录，再写章节…」），seq 均先于对应 write_file 完工事件。
+- 顺带观察：真实模型行为方差大（样本一 54 次工具调用、大量 list_files 探索、自创根级路径；样本二 49 次调用、大量 search_files、标准 chapters/ 惯例）；校准链路正常（`approximate` true/false 混合，provider usage 的 EMA 校准生效）；网关 cache_hit_rate 样本一 0.92 / 样本二 0.61。两样本均无 run_failed / blocked，主链路 4 个 run 全部完成。
+- 测量脚本沉淀：`scripts/measure-context-baseline.mjs`（journal events 目录 -> 基线 / 分轮增长 / 叙述行为提取），下一轮对照直接复用。
+- sim 脚本适配（两处）：`MODEL_BASE_URL` 支持任意 OpenAI 兼容网关；「章节已交付」断言兼容根级 .md 交付（排除 WWRITING.md / book_summary.md / WORKLOG.md 非章节文件），「反问/空谈不算交付」判定不变（成文 + count_text 客观核对组合）。
+
+## 2026-08-22 环境收尾：两个已知 flake 修复 + 状态回写
+
+- **compaction.test.mjs ENOTEMPTY（上节已知 flake）已修**：teardown 的 recursive rm 改走 `rmTree`（`fs.rm` 的 `maxRetries: 10, retryDelay: 100` 线性退避--Windows 句柄延迟释放竞态的标准库容错，默认 maxRetries=0 不重试）。harness 两个 cleanup 与 compaction 测试的直连 teardown 统一走它（`makeTmpDir` 内注册 `t.after`）。3 连跑 38/38 稳定。其余测试文件的直连 `fs.rm` 未动（无观察到 flake，`rmTree` 可后续渐进采用）。
+- **tools.test.mjs 假时钟用例偶发超时已修**（第十一轮验收报告记录项）：定长 `sleep(30)` 等定时器注册在并行负载下会输给调度竞态（advance 先于注册 -> 定时器永不到期 -> 挂到 15s 超时）。改为轮询 `fake.pendingTimers()` 直到空闲+绝对两个期限定时器注册完成（tools.mjs supervisor 内同步连续注册，计数精确为 2）再 advance。3 连跑 68/68 稳定。
+- **文档状态回写**：WWRITING.md「当前进度」补第十一、十二轮；第十二轮规格状态行「待实现」->「已实现并收口」。
+- **全量回归**：`npm test` 1914/1914 通过（0 失败，71s）。

@@ -97,6 +97,12 @@ export async function pathExists(target) {
   }
 }
 
+// Windows 并行负载下句柄延迟释放会让 recursive rm 偶发 ENOTEMPTY/EBUSY；
+// fs.rm 自带对这两类错误的 maxRetries 线性退避（默认 0 即不重试），这里统一启用。
+export function rmTree(target) {
+  return fs.rm(target, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+}
+
 async function writeJson(target, value) {
   await fs.writeFile(target, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
@@ -336,11 +342,11 @@ export async function createProjectAgentHarness(options = {}) {
       store,
       agentRoot: store.agentRootFor(projectRoot),
       async cleanup() {
-        await fs.rm(workspaceRoot, { recursive: true, force: true });
+        await rmTree(workspaceRoot);
       }
     };
   } catch (error) {
-    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await rmTree(workspaceRoot);
     throw error;
   }
 }
@@ -427,11 +433,11 @@ export async function openPlainFolderHarness(options = {}) {
       store,
       agentRoot: store.agentRootFor(projectRoot),
       async cleanup() {
-        await fs.rm(workspaceRoot, { recursive: true, force: true });
+        await rmTree(workspaceRoot);
       }
     };
   } catch (error) {
-    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await rmTree(workspaceRoot);
     throw error;
   }
 }

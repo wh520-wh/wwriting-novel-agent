@@ -39,3 +39,7 @@ writing_style_skill: fast-readable
 - 第九轮完成（2026-08-15）：记忆体系重构 / 版本时间线与恢复 UI / 任务计划面板 / 断点恢复
 - 详见：docs/memory/2026-08-15-round9-decisions.md
 - 第十轮 UI 修补已并入主干（2026-08-16）：窄顶栏保留项目标题 / 计划浮层置顶 / 窄窗口设置关闭按钮 / 紧凑内存空态 / 视觉验收脚本加固（7 个提交，经 merge --no-ff 合入 master，1857 测试全绿）
+- 第十一轮完成（2026-08-20）：前后端一致性修复（两份 08-18 审计的 A/B/C/M1/M2/D 简化/F + 压缩发现 1），7/7 落地
+- 详见：docs/superpowers/reports/2026-08-20-第十一轮一致性修复-acceptance-report.md
+- 第十二轮完成（2026-08-21）：过程可见性与过程美化（N1 里程碑叙述 / N2 排版收尾 / N3 美化 / N4 状态真实化 / F1-F16 修复包），全量回归 178/178，收口根治 Node v25 FileHandle GC 文件级失败
+- 详见：docs/memory/2026-08-21-process-visibility-audit.md（含修复记录，未修项：无）

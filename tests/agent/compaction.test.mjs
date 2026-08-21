@@ -885,8 +885,10 @@ test("coordinator.retry：进程重启后可凭 journal 事件重建 entry（无
 // Task 8：journal reducer 压缩投影（真实 journal）
 // ---------------------------------------------------------------------------
 
-function makeTmpDir(t) {
-  return fs.mkdtemp(path.join(os.tmpdir(), "ww-compaction-journal-"));
+async function makeTmpDir(t) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ww-compaction-journal-"));
+  t.after(() => rmTree(root));
+  return root;
 }
 
 function createRealJournal(t, root) {
@@ -909,7 +911,6 @@ test("FIXED_EVENT_TYPES 包含 7 个压缩事件类型", () => {
 
 test("journal reducer：session 初始含 compaction 相关投影字段", async (t) => {
   const root = await makeTmpDir(t);
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
   const journal = createRealJournal(t, root);
   const session = await journal.load();
   assert.equal(session.active_context_checkpoint_id, null);
@@ -920,7 +921,6 @@ test("journal reducer：session 初始含 compaction 相关投影字段", async 
 
 test("journal reducer：压缩事件只更新 compaction projection，不改变 active_input_id；completed 才切换 active 指针", async (t) => {
   const root = await makeTmpDir(t);
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
   const journal = createRealJournal(t, root);
   await journal.append({ type: "input_queued", payload: { input_id: "in-1", text: "一" } });
   await journal.append({ type: "run_started", run_id: "run-1", payload: { workflow: "general", input_id: "in-1" } });
@@ -966,7 +966,6 @@ test("journal reducer：压缩事件只更新 compaction projection，不改变 
 
 test("journal reducer：completed 切换 active_context_checkpoint_id；failed 保持旧值并记录 error_code", async (t) => {
   const root = await makeTmpDir(t);
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
   const journal = createRealJournal(t, root);
   // 压缩 1 完成 → active 指针切换到 ck-1
   await journal.append({
@@ -998,7 +997,6 @@ test("journal reducer：completed 切换 active_context_checkpoint_id；failed �
 
 test("journal reducer：noop 事件把 compaction 投影置为 noop", async (t) => {
   const root = await makeTmpDir(t);
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
   const journal = createRealJournal(t, root);
   await journal.append({
     type: "context_compaction_noop",
@@ -1013,7 +1011,6 @@ test("journal reducer：noop 事件把 compaction 投影置为 noop", async (t) 
 
 test("journal reducer：压缩事件与当前 compaction_id 不一致时拒绝", async (t) => {
   const root = await makeTmpDir(t);
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
   const journal = createRealJournal(t, root);
   await journal.append({
     type: "context_compaction_started",
@@ -1036,6 +1033,7 @@ import {
   eventsOfType,
   readEvents,
   readSession,
+  rmTree,
   waitFor,
   waitForIdle
 } from "../helpers/project-agent-harness.mjs";
