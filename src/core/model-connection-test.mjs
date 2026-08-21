@@ -66,8 +66,6 @@ export async function testModelConnection({
     };
   }
 
-  // 模型名原样发送（ADR 0004）。
-
   const timeoutController = new AbortController();
   // Task 11/B6：内部探测超时与调用方取消必须可区分。先置位 timedOut 再 abort——
   // 合并信号的中止会以 AbortError 形态击穿传输层（网关把「外部信号已中止」转成
@@ -88,7 +86,7 @@ export async function testModelConnection({
   try {
     await runWithRetry(
       () => complete({
-        config: { ...config },
+        config,
         apiKey,
         messages: [{ role: "user", content: PROBE_PROMPT }],
         maxTokens: PROBE_MAX_TOKENS,
