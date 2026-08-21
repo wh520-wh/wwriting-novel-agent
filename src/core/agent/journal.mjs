@@ -1341,8 +1341,13 @@ export function createAgentJournal({
       // 的 input_id 是 requireString（见上），active_input_id 为 null（理论退化——
       // 现代 producer 下开放 turn 必有归属输入，仅 input_interrupted 后崩溃的
       // 遗留日志可构造）时不能填 null/undefined（dry-run 拒绝、整个 load 抛错）；
-      // 跳过闭合让 run_interrupted 收敛即可，残余 open turn 由
-      // journal_recovery_boundary / 下一轮 load 清扫。
+      // 跳过闭合让 run_interrupted 收敛即可。残余 open turn 的归宿分路径：锚定
+      // 路径被清扫（下次 load 以锚点投影 + 空 side 开始，残余不复存在）；全量
+      // 重放路径残余会被完整重建，但 run 已遭终结（interrupted），detectDangling
+      // 对终态 Run 短路，恢复链不再触发——无害。
+      // 与 priority 侧策略互通（review Minor-3，改一侧必须知会另一侧）：那边给
+      // input_id 回退（active_input_id ?? priorityId，见 buildPriorityRecoveryBatch）
+      // 故补闭合而非跳过——两侧都只为防 requireString 抛错，一侧留残余、一侧给回退。
       if (run.active_input_id == null) continue;
       recoveryBatch.push({
         type: "model_turn_completed",
@@ -1406,6 +1411,9 @@ export function createAgentJournal({
       });
     }
     for (const [turnId] of state.openModelTurns) {
+      // 与 buildDanglingRecoveryBatch 的「跳过闭合」互通（review Minor-3）：本侧
+      // 总有 input_id 回退（active_input_id ?? priorityId）故补闭合而非跳过；两者
+      // 都是防 reducer requireString 抛错，改一侧必须知会另一侧。
       batch.push({
         type: "model_turn_completed",
         run_id: run.id,
@@ -1505,10 +1513,12 @@ export function createAgentJournal({
         }
       } else if (dangling && !hasPendingCompactionRecovery(state.session)) {
         // 第十二轮 F3：与上面锚定分支同口径——压缩恢复尚未完成的 Run 不在此
-        // 收敛（全量重放路径同样由 runtime 的 open() 按收敛矩阵处理）。崩溃窗口
-        // 内（run 仍 running）闭合孤儿 tool/turn 会让 run 先于 open() 收敛被
-        // 中断，F3 重放用例断言「窗口内不闭合孤儿」即此口径；open() 把 run 收敛
-        // 为 waiting_user 后恢复链重开，下一次 load 正常闭合。
+        // 收敛（全量重放路径同样由 runtime 的 open() 按收敛矩阵处理）。防御口径：
+        // 现代 producer 的 failed/cancelled 窗口只可能处于发送前预检安全点，不存在
+        // 未闭合 model turn/tool call（断言见 hasPendingCompactionRecovery :142-147）；
+        // 本守卫仅为手搓/遗留日志兜底——若窗口内真的残留孤儿，闭合会让 run 先于
+        // open() 收敛被中断（F3 重放用例断言「窗口内不闭合孤儿」即此口径）。open()
+        // 把 run 收敛为 waiting_user 后恢复链重开，下一次 load 正常闭合。
         await appendBatchLocked(buildDanglingRecoveryBatch());
       }
     }

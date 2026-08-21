@@ -2920,3 +2920,85 @@ test("第十二轮 F3：压缩 failed 崩溃窗口——run 未收敛时短路�
   assert.equal(again.filter((e) => e.type === "tool_call_failed").length, 1);
   assert.equal(again.filter((e) => e.type === "input_started").length, 1);
 });
+
+test("第十二轮 F3：stopping/interrupting 崩溃现场经 open() 收敛矩阵 append run_interrupted，重启重放合法入库且幂等", async (t) => {
+  // F3 招牌路径的集成测试：矩阵测试只断言纯函数形状，这里让收敛事件真正穿过
+  // journal.append → reducer → 落盘 → 新实例 load 重放（进程重启语义）。
+  for (const status of ["stopping", "interrupting"]) {
+    const root = await makeWorkspace(t);
+    const events = [
+      makeEvent(1, { root, type: "session_created" }),
+      makeEvent(2, { root, type: "input_queued", payload: { input_id: "in-1", text: "旧任务" } }),
+      makeEvent(3, { root, type: "run_started", runId: "run-1", payload: { input_id: "in-1" } }),
+      makeEvent(4, { root, type: "run_status_changed", runId: "run-1", schemaVersion: 2, payload: { status } })
+    ];
+    await writeCrashJournal(root, events);
+    // 无 dangling 活动：load 只如实重放，不得自行收敛（run 留在 stopping/interrupting，
+    // 收敛是 runtime open() 的职责——F3 收敛矩阵）
+    const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+    let session = await journal.load();
+    assert.equal(session.active_run.status, status, `${status} 崩溃现场必须如实重放`);
+    assert.equal((await journal.read({})).filter((e) => e.type === "run_interrupted").length, 0, "load 不得自行收敛非 dangling Run");
+
+    // runtime open() 调用收敛矩阵：stopping/interrupting -> run_interrupted
+    const batch = buildProcessRestartedConvergence(session.active_run);
+    assert.equal(batch.length, 1);
+    assert.equal(batch[0].type, "run_interrupted");
+    assert.equal(batch[0].payload.reason, "process_restarted");
+    await journal.append(batch[0]);
+    session = await journal.getSession();
+    assert.equal(session.active_run.status, "interrupted", `${status} 收敛事件 append 后 Run 必须转为 interrupted`);
+    assert.equal(session.status, "idle");
+    assert.equal(session.active_run.active_input_id, null);
+
+    // 进程重启：新实例 load 重放——收敛事件合法入库（run_interrupted 契约
+    // reason:"process_restarted"）且幂等（终态 Run 不再触发恢复）
+    const restart = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+    const session2 = await restart.load();
+    assert.equal(session2.active_run.status, "interrupted");
+    const all = await restart.read({});
+    const interrupted = all.filter((e) => e.type === "run_interrupted");
+    assert.equal(interrupted.length, 1, "run_interrupted 必须合法入库且仅一条");
+    assert.equal(interrupted[0].run_id, "run-1");
+    assert.equal(interrupted[0].payload.reason, "process_restarted");
+  }
+});
+
+test("第十二轮 F3：地雷防御——active_input_id 为 null 但 openModelTurns 有残留时 load 不抛错、turn 不闭合、run_interrupted 收敛", async (t) => {
+  // buildDanglingRecoveryBatch 的 model_turn_completed 闭合对 input_id 是
+  // requireString（journal.mjs:1346-1347 的 `active_input_id == null` 跳过是防
+  // 「整个 load 抛错、工作区打不开」的唯一闸门，review Important-2）。真实事件
+  // 序列构造现场：model_turn_started 打开 turn 后 input_interrupted 落盘（reducer
+  // 清空 active_input_id），随后崩溃——turn 未闭合、active_input_id 为 null。
+  const root = await makeWorkspace(t);
+  const events = [
+    makeEvent(1, { root, type: "session_created" }),
+    makeEvent(2, { root, type: "input_queued", payload: { input_id: "in-1", text: "旧任务" } }),
+    makeEvent(3, { root, type: "run_started", runId: "run-1", payload: {} }),
+    makeEvent(4, { root, type: "input_started", runId: "run-1", schemaVersion: 2, payload: { input_id: "in-1" } }),
+    makeEvent(5, {
+      root,
+      type: "model_turn_started",
+      runId: "run-1",
+      schemaVersion: 2,
+      payload: { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }
+    }),
+    // input_interrupted 清空 active_run.active_input_id（reducer），turn 留在
+    // openModelTurns；此刻崩溃 → 重放后 run 活动但 active_input_id == null
+    makeEvent(6, { root, type: "input_interrupted", runId: "run-1", schemaVersion: 2, payload: { input_id: "in-1", reason: "priority" } })
+  ];
+  await writeCrashJournal(root, events);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  const session = await journal.load(); // 地雷路径：必须不抛错
+  assert.equal(session.active_run.status, "interrupted", "残留 turn 的 Run 仍须经 dangling 恢复收敛");
+  assert.equal(session.status, "idle");
+
+  const all = await journal.read({});
+  assert.equal(all.filter((e) => e.type === "model_turn_completed").length, 0, "active_input_id 为 null 时孤儿 turn 不得被闭合（跳过守卫）");
+  const interrupted = all.filter((e) => e.type === "run_interrupted");
+  assert.equal(interrupted.length, 1, "run_interrupted 正常收敛");
+  assert.equal(interrupted[0].payload.reason, "recovery_dangling_assistant_activity");
+  // 幂等：再次 load 不重复收敛（run 已终态，detectDangling 短路）
+  await journal.load();
+  assert.equal((await journal.read({})).filter((e) => e.type === "run_interrupted").length, 1);
+});
