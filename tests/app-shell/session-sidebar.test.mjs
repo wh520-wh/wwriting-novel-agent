@@ -1351,3 +1351,27 @@ test("第十二轮 E：waiting_user 会话显示「待命」且计入 busy", () 
   assert.equal(dot2.dataset.status, "waiting_user", "状态点如实报 waiting_user（不折叠为 running）");
   assert.equal(dot2.title, "待命", "状态点 title 走 RUN_STATUS_LABELS（dot.title 渲染点）");
 });
+
+// 第十二轮 F9（质量审查 Minor 5）：interrupting/stopping 同为非终态——状态点
+// title「停止中」且计入 busy（RUN_STATUS_LABELS 紧凑口径，spec E 只要求补键）。
+test("第十二轮 F9：interrupting/stopping 会话显示「停止中」且计入 busy", () => {
+  const P = "D:/projects/p1";
+  const f = makeFixture({
+    projects: [{ projectRoot: P, title: "小说一" }],
+    selectedProjectRoot: P,
+    currentProjectRoot: P
+  });
+  f.sidebar.seedSessions(P, [
+    { session_id: "s1", title: "对话一", run_status: "interrupting" },
+    { session_id: "s2", title: "对话二", run_status: "stopping" }
+  ], "s1");
+  assert.deepEqual(f.surface.calls.setBusy, [true], "interrupting/stopping 计入 busy（非终态集）");
+  f.sidebar.render();
+  const rows = rowsOf(f.listEl);
+  const dot1 = rows[0].children[0];
+  assert.equal(dot1.dataset.status, "interrupting", "状态点如实报 interrupting");
+  assert.equal(dot1.title, "停止中", "interrupting 状态点 title = 停止中");
+  const dot2 = rows[1].children[0];
+  assert.equal(dot2.dataset.status, "stopping", "状态点如实报 stopping");
+  assert.equal(dot2.title, "停止中", "stopping 状态点 title = 停止中");
+});
