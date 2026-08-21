@@ -398,6 +398,76 @@ test("F5: 服务端 error 退避重连，onReconnect 在每次重连前被调，
   assert.equal(errors[0].code, "event_stream_error");
 });
 
+test("F5: 混合序列——服务端 error 成功后清零、网络错误共享 5 次封顶（2 服务端 → 1 成功 → 5 网络错误 = 8 次即停）", async (t) => {
+  // 一次锁死两个语义（api.js:330-332 成功清零 / api.js:341-342 网络错误共享封顶）：
+  // 前两次返回 server-error 帧，第三次正常流（成功路径 serverErrors 清零），
+  // 之后 5 次 fetch 直接抛错（catch 路径同样计数、同 5 次封顶）。
+  // onReconnect 在成功路径也会调用，只锁 connects（fetch 次数），不与重连次数混锁。
+  let connects = 0;
+  const errors = [];
+  const errorFrame = () => ({
+    ok: true,
+    status: 200,
+    body: {
+      getReader() {
+        let pushed = false;
+        return {
+          read() {
+            if (pushed) return Promise.resolve({ done: true, value: undefined });
+            pushed = true;
+            return Promise.resolve({
+              done: false,
+              value: new TextEncoder().encode(
+                'event: error\ndata: {"ok":false,"code":"event_stream_error","message":"事件流连接失败。"}\n\n'
+              )
+            });
+          }
+        };
+      }
+    }
+  });
+  const okStream = () => ({
+    ok: true,
+    status: 200,
+    body: {
+      getReader() {
+        let pushed = false;
+        return {
+          read() {
+            if (pushed) return Promise.resolve({ done: true, value: undefined });
+            pushed = true;
+            return Promise.resolve({
+              done: false,
+              value: new TextEncoder().encode('data: {"type":"tail","payload":2}\n\n')
+            });
+          }
+        };
+      }
+    }
+  });
+  const fetchImpl = async () => {
+    connects += 1;
+    if (connects <= 2) return errorFrame();
+    if (connects === 3) return okStream();
+    throw new Error("network down");
+  };
+  const api = createAgentApi({
+    getProjectRoot: () => "P",
+    fetchImpl,
+    baseDelayMs: 0,
+    maxDelayMs: 0,
+    onStreamError: (error) => errors.push(error)
+  });
+  t.after(() => api.destroy());
+  api.connectEvents();
+  // 等循环自然收尾（2 服务端 + 1 成功 + 5 网络错误 = 8 次；baseDelayMs=0 无退避等待）
+  const deadline = Date.now() + 1000;
+  while (connects < 8 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(connects, 8, "服务端 error 成功后清零，再加 5 次网络错误共享封顶，共 8 次即停");
+  assert.equal(errors.length, 2, "只有前两次服务端 error 帧上报；网络抛错不走上报路径");
+});
+
 // ---------------------------------------------------------------------------
 // 会话管理端点：sessions / createSession / renameSession / archiveSession /
 // restoreSession / deleteSession

@@ -237,10 +237,20 @@ function applyEventToState(state, event) {
   const key = eventKey(event);
   // 审核修订（F5）：任何非连接类事件到达即代表流已恢复（SSE 事件只从流来），
   // 撤掉连接类错误卡。rebuildDerivedState 重放共用同一函数，天然幂等。
+  // 审核修订（Task 7）：清卡实际移除才 bump errors——view.syncErrors 以
+  // rendered.errors === revisions.errors 早退门控（view.js:1543），只清数据不
+  // bump 会让瞬时故障自愈后旧「连接中断」卡无限期残留 DOM；length 比较只对
+  // 连接类卡生效（filter 不碰 run_failed 等操作失败卡，不受其长度干扰）；
+  // rebuildDerivedState 重放时 errors 恒空（重建前重置），filter 空跑不 bump，
+  // :786 兜底不变；无性能放大。
+  // 连接类 code 集合与 view.js isConnectionError 处同步，新增连接类 code 需两处
+  // 同改；event_stream_fatal 当前无产出点，纯前瞻预留。
   if (type !== "connection_error") {
+    const before = state.errors.length;
     state.errors = state.errors.filter(
       (e) => e.code !== "event_stream_error" && e.code !== "event_stream_fatal"
     );
+    if (state.errors.length < before) bump(state, ["errors"]);
   }
   switch (type) {
     case "session_created": {
