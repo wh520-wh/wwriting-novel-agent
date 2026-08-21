@@ -66,6 +66,7 @@ test("toRequestConfig 输出运行时形状", () => {
   assert.equal(config.api_format, "openai-chat-completions");
   assert.equal(config.temperature, 1.0);
   assert.equal(config.context_window, 256000);
+  assert.equal(config.provider_label, deepseek.name, "厂商显示名单源贯通（ADR 0005）");
 });
 
 test("toRequestConfig 原样透传 model_name（含中括号，标识符只是标识符）", () => {

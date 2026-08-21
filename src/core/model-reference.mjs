@@ -10,6 +10,9 @@ export function toRequestConfig(provider, model) {
     // model_name 原样透传（ADR 0004：标识符只是标识符，窗口由 context_window 字段决定）。
     model_name: model.model_name,
     base_url: provider.base_url,
+    // 厂商显示名单源（ADR 0005）：store 供应商名贯通 buildModelProfile（其
+    // providerDisplayName 对 provider_label 优先）与选择器标签，两个显示面同串。
+    provider_label: provider.name,
     api_format: provider.api_format,
     api_key_env: provider.api_key_env,
     ...(model.context_window ? { context_window: model.context_window } : {}),

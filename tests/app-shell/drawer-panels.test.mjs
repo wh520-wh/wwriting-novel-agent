@@ -399,3 +399,20 @@ test("第十一轮 M1：模型面板渲染 resolution_note（模型被静默替�
     globalThis.fetch = realFetch;
   }
 });
+
+test("第十三轮 F6：抽屉模型面板显示「上下文 · 最大输出」参数行（同源缺省口径）", async () => {
+  const profile = {
+    model_name: "deepseek-chat", display: "DeepSeek 官方 / deepseek-chat",
+    endpoint: "https://api.example.com/v1", api_key_saved: true,
+    context_window: 256_000, max_output_tokens: 64_000
+  };
+  const h = makeHarness({ data: dashboard({ model_profile: profile, config: { effective: { tool_permissions: {} } } }) });
+  try {
+    h.ctx.getDrawerTab = () => "model";
+    await h.panels.renderDrawerBody();
+    assert.ok(h.drawerBody.textContent.includes("上下文 256k · 最大输出 64k"), "参数行与运行时缺省口径同源");
+  } finally {
+    globalThis.document = realDoc;
+    globalThis.fetch = realFetch;
+  }
+});

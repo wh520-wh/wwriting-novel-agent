@@ -262,6 +262,11 @@ export function createAgentApi({
       },
       activeModel: effective.active_model ?? dashboard?.project?.active_model ?? null,
       activeModelCapabilities: dashboard?.model_profile?.capabilities ?? null,
+      // ADR 0005：composer 当前选中显示单源——直接透传档案 display，不再由前端
+      // 从供应商清单另推显示串（选项标签仍清单派生，但同格式）。
+      activeModelDisplay: typeof dashboard?.model_profile?.display === "string" && dashboard.model_profile.display !== "未配置"
+        ? dashboard.model_profile.display
+        : null,
       toolPermissions: effective.tool_permissions ?? dashboard?.project?.tool_permissions ?? {},
       reasoningEffort: typeof effective.reasoning_effort === "string" ? effective.reasoning_effort : "auto"
     };

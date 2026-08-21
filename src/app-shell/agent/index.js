@@ -76,6 +76,7 @@ export function createAgentSurface({
   // 能力矩阵判定，前端不猜测）。
   function normalizeComposerOptions(data) {
     const store = data?.store ?? {};
+    const activeDisplay = typeof data?.activeModelDisplay === "string" && data.activeModelDisplay.length > 0 ? data.activeModelDisplay : null;
     const options = buildModelPickerOptions(store);
     const activeModel = data?.activeModel ?? null;
     const usable = options.some((option) => option.value !== "");
@@ -111,6 +112,12 @@ export function createAgentSurface({
       modelSelectionEnabled = true;
     }
     if (legacyEntry) activeModelId = legacyEntry.value;
+    // ADR 0005：当前选中项标签改吃档案 display（与抽屉同一串同一来源）；
+    // 只在确有活跃模型（activeModelId 非空）时覆盖，「未配置」占位不受影响。
+    if (activeDisplay && activeModelId) {
+      const active = models.find((option) => option.value === activeModelId);
+      if (active) active.label = activeDisplay;
+    }
     return {
       models,
       modelSelectionEnabled,
