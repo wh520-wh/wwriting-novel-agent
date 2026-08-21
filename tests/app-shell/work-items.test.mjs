@@ -665,3 +665,12 @@ test("§4.3: run_status_changed 也清除 retryHint（状态变化清除提示�
   reduceWorkEvent(work, ev("run_status_changed", { status: "waiting_user" }, 3));
   assert.equal(work.groups.get("run-1").retryHint, null);
 });
+
+test("§4.3: 终态 run_completed 清除 retryHint（不留残留后缀）", () => {
+  const work = createWorkState();
+  reduceWorkEvent(work, ev("run_started", {}, 1));
+  reduceWorkEvent(work, ev("provider_retry", { attempt: 1, max_attempts: 2 }, 2));
+  assert.deepEqual(work.groups.get("run-1").retryHint, { attempt: 1, max: 2 });
+  reduceWorkEvent(work, ev("run_completed", {}, 3));
+  assert.equal(work.groups.get("run-1").retryHint, null, "Run 终态即消失，防下一 Run 复用组时残留重试提示");
+});

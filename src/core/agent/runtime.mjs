@@ -1796,7 +1796,10 @@ export function createAgentRuntime({
               type: "provider_retry",
               run_id: runId,
               payload: { attempt: info.attempt ?? null, max_attempts: info.maxAttempts ?? null }
-            }).catch(() => {});
+            }).catch(() => {
+              // 故意 best-effort：瞬态遥测事件，写失败走 journal 既有投影错误
+              // 通道，不阻塞重试。
+            });
           }
         });
         const finalRawText = String(reply?.text ?? "");
