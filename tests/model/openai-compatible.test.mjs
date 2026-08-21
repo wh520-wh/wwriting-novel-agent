@@ -88,7 +88,7 @@ test("发送 chat completion 请求并提取 usage（含 prompt_tokens_details.c
   assert.equal(result.toolCalls.length, 0);
 });
 
-test("请求体 model 使用 modelConfig.model_name（runtime 传入剥离尾标后的基础 ID，adapter 透传不剥离）", async () => {
+test("请求体 model 使用 modelConfig.model_name（名字原样透传，adapter 不剥离）", async () => {
   let captured = null;
   const adapter = makeAdapter({
     fetchImpl: async (url, init) => {
@@ -96,7 +96,7 @@ test("请求体 model 使用 modelConfig.model_name（runtime 传入剥离尾标
       return jsonResponse({ choices: [{ message: { content: "ok" } }] });
     }
   });
-  // modelConfigOf 已把 model[1m][foo] 解析为基础 ID "model"；adapter 原样发送。
+  // modelConfig 原样携带 model_name（尾标机制已淘汰）；adapter 原样发送。
   await adapter.complete({
     messages: [{ role: "user", content: "hi" }],
     modelConfig: { model_name: "model" }

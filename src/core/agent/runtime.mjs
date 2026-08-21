@@ -831,7 +831,7 @@ export function createAgentRuntime({
   } = {}) {
     // 进程重启后的压缩 retry：协调器 entry 无内存 modelConfig——按 projectRoot
     // 解析当前有效配置（modelConfigOf(resolveWorkspaceConfig)），保证候选校验的
-    // configured_model_id/provider_model_id 与压缩请求的 modelConfig 始终可用。
+    // configured_model_id/model_name 与压缩请求的 modelConfig 始终可用。
     let effectiveModelConfig = modelConfig;
     if (effectiveModelConfig == null && typeof projectRoot === "string" && projectRoot.length > 0) {
       try {
