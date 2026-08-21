@@ -501,8 +501,11 @@ function applyEventToState(state, event) {
             return entry;
           })
         };
-        // 第九轮：顶层 plan 投影供 plan-panel chip 消费（与 visible_plan 并存）。
-        const planItems = Array.isArray(payload.items) ? structuredClone(payload.items) : [];
+      }
+      // 第十二轮 F11：顶层 plan 投影不再依赖 active_run 在场（尾页窗口 run_started
+      // 不在加载窗口时，chip 与组内 plan 三面口径一致）。
+      if (Array.isArray(payload.items)) {
+        const planItems = structuredClone(payload.items);
         state.plan = planItems.length === 0
           ? null
           : { explanation: typeof payload.explanation === "string" ? payload.explanation : null, items: planItems };

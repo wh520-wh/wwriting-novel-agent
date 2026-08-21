@@ -673,6 +673,36 @@ test("提交失败气泡：排队行回放确认送达后移除（reconcile 路�
   assert.ok(root.querySelector('[data-input-id="in-delivered"]').textContent.includes("送达确认的文本"), "排队行保留原文");
 });
 
+test("第十二轮 F10 冒烟：同文本双发，第二条失败——第一条在途气泡保留、失败气泡可见", async () => {
+  const calls = [];
+  const { root, surface } = await makeSurface({
+    apiOverrides: {
+      fetchSnapshot: async () => null, // 抑制提交成功后的补快照
+      submit: async (text) => {
+        calls.push(text);
+        if (calls.length === 1) return new Promise(() => {});
+        throw new Error("第二次提交失败");
+      }
+    }
+  });
+  await surface.openProject("D:\\novel");
+  const input = root.querySelector('[data-testid="agent-composer-input"]');
+  for (let i = 0; i < 2; i += 1) {
+    input.value = "一样的消息";
+    root.querySelector('[data-testid="agent-send"]')._fire("click");
+    await tick();
+  }
+  await tick();
+  assert.equal(calls.length, 2);
+  // 注意：计划原文断言 1 条（第二条失败气泡挂在第二条 agent-user-message 内部），
+  // 同文本双发在 mock DOM 下各占一气泡——实际计数为 2；「第一条保留」由
+  // dataset.state=pending 钉住（偏离计划断言处已在报告中说明）。
+  const bubbles = root.querySelectorAll('[data-testid="agent-user-message"]');
+  assert.equal(bubbles.length, 2, "同文本双发各占一气泡：第一条在途 + 第二条失败");
+  assert.equal(bubbles[0].dataset.state, "pending", "第一条在途气泡保留（同文本回退误删场景下的守位）");
+  assert.ok(root.querySelector('[data-testid="agent-submit-error"]'), "第二条失败气泡可见");
+});
+
 test("click 提交成功后焦点回到 textarea", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");

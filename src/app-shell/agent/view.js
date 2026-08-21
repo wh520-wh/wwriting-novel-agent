@@ -554,10 +554,10 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     let index = pendingSubmissions.findIndex((item) =>
       item.inputId != null && item.inputId === entry.input_id
     );
+    // 第十二轮 F10：弃用同文本回退（同文本双发会误删在途气泡）；POST 尚未
+    // resolve 时按 FIFO 归属最旧的未回填气泡——事件到达序与提交序一致。
     if (index < 0) {
-      index = pendingSubmissions.findIndex((item) =>
-        item.text === String(entry.text ?? "").trim()
-      );
+      index = pendingSubmissions.findIndex((item) => item.inputId == null);
     }
     // Task 6：该 user 消息已由快照/SSE 回放确认送达，同文本失败气泡一并移除。
     // 失败登记时其 pending 记录已移出，故移除不能依赖 pending 匹配——送达即撤，

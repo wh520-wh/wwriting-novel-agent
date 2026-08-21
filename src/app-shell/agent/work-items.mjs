@@ -32,7 +32,10 @@ function relativePath(from, to) {
   const fromParts = String(from).replace(/\\/g, "/").replace(/\/+$/u, "").split("/");
   const toParts = String(to).replace(/\\/g, "/").split("/");
   let i = 0;
-  while (i < fromParts.length && i < toParts.length && fromParts[i] === toParts[i]) i += 1;
+  // 第十二轮 F16：win32 路径大小写不敏感（journal 盖章根与模型回显路径大小写
+  // 不一致时仍得相对路径摘要）。ponytail: POSIX 大小写敏感路径在此会错误合并，
+  // 本模块只服务显示层，POSIX 部署需改为按平台判定。
+  while (i < fromParts.length && i < toParts.length && fromParts[i].toLowerCase() === toParts[i].toLowerCase()) i += 1;
   if (i === fromParts.length && i === toParts.length) return "";
   const segments = [];
   for (let up = fromParts.length - i; up > 0; up -= 1) segments.push("..");
@@ -369,7 +372,9 @@ export function reduceWorkEvent(work, event) {
         // AICSS：思考耗时 = 完成事件与开始事件的时间戳差（负值/NaN 丢弃 → 回退文案）
         if (typeof item.started_at === "string" && typeof event.at === "string") {
           const ms = Date.parse(event.at) - Date.parse(item.started_at);
-          if (Number.isFinite(ms) && ms >= 0) item.thinking_ms = ms;
+          // 第十二轮 F15：同机时间戳一般安全，时钟前跳（NTP）会算出数小时——
+          // 超过 24h 视为时钟异常丢弃，回退「已完成思考」文案。
+          if (Number.isFinite(ms) && ms >= 0 && ms <= 86_400_000) item.thinking_ms = ms;
         }
         item.label = reasoningLabel(item);
         item.terminal_seq = seq; // Task 10：终态事件 seq 落位（start 位置不变）

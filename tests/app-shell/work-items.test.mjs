@@ -17,6 +17,7 @@ import {
   openWorkItemIds,
   orderedWorkItems,
   reduceWorkEvent,
+  relativeProjectPath,
   toolLabel,
   visibleLiveTargets
 } from "../../src/app-shell/agent/work-items.mjs";
@@ -718,4 +719,20 @@ test("F13: waiting_user 后直接终态（run_interrupted）——waiting 工具
   assert.equal(item.state, "cancelled", "waiting 项纳入终态清扫，就地终结为 cancelled");
   assert.equal(item.label, toolLabel("write_file", "cancelled"), "终态 label 同步为已停止文案");
   assert.deepEqual(openWorkItemIds(work.groups.get("run-1")), [], "终态组不得有 live 目标");
+});
+
+// ===========================================================================
+// 第十二轮 F15/F16：思考耗时钳制 + win32 路径大小写归一（显示投影）
+// ===========================================================================
+
+test("F16: win32 大小写不一致仍得相对路径", () => {
+  // 既有相对路径测试同款口径（relativeProjectPath(target, projectRoot)）
+  assert.equal(relativeProjectPath("D:\\Proj\\sub\\x.txt", "D:\\proj"), "sub/x.txt");
+});
+
+test("F15: thinking_ms 超 24h 时钟前跳被丢弃", () => {
+  const work = createWorkState();
+  reduceWorkEvent(work, ev("model_turn_started", { turn_id: "t" }, 1, { at: "2026-08-21T00:00:00Z" }));
+  reduceWorkEvent(work, ev("reasoning_completed", { turn_id: "t", text: "x" }, 2, { at: "2026-08-28T00:00:01Z" }));
+  assert.equal(work.groups.get("run-1").items.get("reasoning:t").thinking_ms, null);
 });
