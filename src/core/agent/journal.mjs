@@ -678,7 +678,15 @@ function reduceEvent(session, event, side) {
       requireActiveRun("tool_call_started");
       const id = toolCallIdOf(payload);
       if (side.openToolCalls.has(id)) fail(`tool call ${id} 重复开始`);
-      side.openToolCalls.set(id, event.seq);
+      // 第十二轮 F2：值形态从 seq 改为 { seq, activity_id, name }——恢复批次
+      // 补字段的前置（否则闭合孤儿时无从查得 activity_id，前端 work-items
+      // 按 payload.activity_id 匹配，事件会被静默丢弃）。旧日志重放后
+      // activity_id/name 为 null，恢复批次兜底 unknown/空。
+      side.openToolCalls.set(id, {
+        seq: event.seq,
+        activity_id: payload.activity_id ?? null,
+        name: typeof payload.name === "string" ? payload.name : null
+      });
       break;
     }
 
@@ -1288,6 +1296,29 @@ export function createAgentJournal({
     const run = state.session.active_run;
     if (!run) return [];
     const recoveryBatch = [];
+    // 第十二轮 F2：恢复批次必须闭合孤儿活动，否则前端项永久 running、
+    // detectDangling 永真（每次 load 重复追补）。与 buildPriorityRecoveryBatch
+    // 同形状（state.openToolCalls 值是 { seq, activity_id, name }）。
+    for (const [toolCallId, meta] of state.openToolCalls) {
+      recoveryBatch.push({
+        type: "tool_call_failed",
+        run_id: run.id,
+        payload: {
+          tool_call_id: toolCallId,
+          activity_id: meta.activity_id ?? null,           // 规格 F2：前端按此匹配工具行
+          name: meta.name ?? "unknown",                    // 规格 F2：前端 label 依据
+          message: "进程崩溃恢复：该工具调用未完成（已按失败闭合）", // 规格 F2：可见文案
+          error: { code: "recovered_dangling_orphan" }
+        }
+      });
+    }
+    for (const [turnId] of state.openModelTurns) {
+      recoveryBatch.push({
+        type: "model_turn_completed",
+        run_id: run.id,
+        payload: { turn_id: turnId, input_id: run.active_input_id ?? null, outcome: "failed" }
+      });
+    }
     for (const grant of run.active_grants ?? []) {
       recoveryBatch.push({
         type: "permission_grant_cleared",
@@ -1328,11 +1359,19 @@ export function createAgentJournal({
     if (run.active_input_id === priorityId) return []; // 已是活动输入，无需收敛
     if (!state.session.queued_inputs.some((item) => item.id === priorityId)) return [];
     const batch = [];
-    for (const toolCallId of state.openToolCalls.keys()) {
+    // 第十二轮 F2：与 buildDanglingRecoveryBatch 同形补 activity_id/name/message
+    //（state.openToolCalls 值是 { seq, activity_id, name }）。
+    for (const [toolCallId, meta] of state.openToolCalls) {
       batch.push({
         type: "tool_call_failed",
         run_id: run.id,
-        payload: { tool_call_id: toolCallId, name: "unknown", error: { code: "recovered_priority_orphan" } }
+        payload: {
+          tool_call_id: toolCallId,
+          activity_id: meta.activity_id ?? null,
+          name: meta.name ?? "unknown",
+          message: "进程崩溃恢复：该工具调用未完成（已按失败闭合）",
+          error: { code: "recovered_priority_orphan" }
+        }
       });
     }
     for (const [turnId] of state.openModelTurns) {
