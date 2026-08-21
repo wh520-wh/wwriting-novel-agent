@@ -487,13 +487,21 @@ export function createJournalSegmentStore({
         }
       }
     }
-    // 4. 打开活动段句柄（轮转/fsync 用）
+    // 4. 设置活动段（不在此常驻打开句柄）。
+    //
+    // Node v25 修复：原来 load() 在这里 eager open 一个写句柄放在 activeSegment.fd
+    // 上，只要下一个 append 不来就一直敞开——会话加载后开发者/测试若直接丢弃本
+    // store（如临时目录清理），该 FileHandle 会带着打开状态被 GC 回收，Node v25
+    // 视其为错误（"A FileHandle object was closed during garbage collection"）。
+    // 实际上没有任何读取路径依赖这个预开句柄：append 在写入前按需重开（见 append
+    // 内 `activeSegment.fd == null` 分支），rotate 在 fd 为 null 时以 "r+" 重开做
+    // fsync。故此处只登记活动段、fd 留 null，句柄生命周期完全惰性——消除 GC 泄漏、
+    // 行为不变。
     for (const segment of segments) {
       segment.fd = null;
     }
     if (segments.length > 0) {
       activeSegment = segments.at(-1);
-      activeSegment.fd = await fs.open(activeSegment.path, "a");
     } else {
       activeSegment = null;
     }
