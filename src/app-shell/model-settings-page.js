@@ -126,6 +126,9 @@ export function createModelSettingsPage(ctx = {}) {
   let state = { providers: [], selected: null, default_model: null };
   // 当前渲染详情的草稿引用（renderDetail 每次重建；commitCurrentDraft 读取）。
   let activeDraftRefs = freshDraftRefs();
+  // 第十三轮（F1）：高级面板展开态按模型 id 记在闭包里——保存触发 refresh()
+  // 整块重渲会重建 DOM，展开态若只活在 DOM 上，用户选完上下文就被迫重开一次。
+  const advancedOpenModels = new Set();
   // v4 决策：渲染目标注入（attach）——弃用全局 documentRef.querySelector 双路径。
   // render/refresh 只写 attach 进来的目标；未 attach 时安全跳过（弹窗关闭期间 commit
   // 完成时目标已脱离文档，渲染为无害 no-op）。
@@ -857,6 +860,46 @@ export function createModelSettingsPage(ctx = {}) {
       testButton.addEventListener("click", () => {
         testConnection(provider, model, resultSlot);
       });
+      // -- 第十三轮（F1）：高级折叠项--上下文/最大输出两个预设下拉，change 即存。 --
+      const CONTEXT_PRESETS_K = [128, 256, 400, 512, 1000];
+      const OUTPUT_PRESETS_K = [128, 64, 32, 16, 8];
+      const advancedOpen = advancedOpenModels.has(model.id);
+      const advancedHolder = el("div", { class: "model-advanced", "data-model-advanced": model.id });
+      advancedHolder.hidden = !advancedOpen;
+      const advancedToggle = el("button", { type: "button", class: "model-advanced-toggle", text: advancedOpen ? "高级 ▾" : "高级 ▸" });
+      advancedToggle.addEventListener("click", () => {
+        const opening = advancedHolder.hidden;
+        advancedHolder.hidden = !opening;
+        advancedToggle.textContent = opening ? "高级 ▾" : "高级 ▸";
+        if (opening) advancedOpenModels.add(model.id);
+        else advancedOpenModels.delete(model.id);
+      });
+      const presetSelect = ({ field, presetsK, value, defaultK, onChange }) => {
+        const currentK = Number.isInteger(value) && value > 0 ? Math.round(value / 1000) : null;
+        const optionKs = currentK != null && !presetsK.includes(currentK)
+          ? [...presetsK, currentK] // 存量非预设值：追加「当前」项，不静默改写
+          : presetsK;
+        const select = el("select", { "data-field": field }, optionKs.map((k) => {
+          const option = el("option", { value: String(k) });
+          option.textContent = presetsK.includes(k) ? `${k}k` : `当前 ${k}k`;
+          return option;
+        }));
+        select.value = String(currentK ?? defaultK);
+        select.addEventListener("change", () => {
+          onChange(Number(select.value) * 1000);
+        });
+        return el("label", { class: "model-advanced-field" }, [`${field === "context_window" ? "上下文" : "最大输出"}：`, select]);
+      };
+      advancedHolder.append(
+        presetSelect({
+          field: "context_window", presetsK: CONTEXT_PRESETS_K, value: model.context_window, defaultK: 256,
+          onChange: (tokens) => { saveModelPatch(provider.id, model.id, { context_window: tokens }); }
+        }),
+        presetSelect({
+          field: "max_output_tokens", presetsK: OUTPUT_PRESETS_K, value: model.max_output_tokens, defaultK: 64,
+          onChange: (tokens) => { saveModelPatch(provider.id, model.id, { max_output_tokens: tokens }); }
+        })
+      );
       // Round10：每行三层稳定结构——主行（名称 + 状态）、操作行（可换行）、
       // 通栏结果行（role=status，长错误 anywhere 换行）。主行恒为两个 grid 子项：
       // 名称组（输入 + 行内错误）与状态组（已启用/停用 + 可选「默认」角标），
@@ -873,8 +916,10 @@ export function createModelSettingsPage(ctx = {}) {
           testButton,
           toggle,
           setDefaultButton,
-          deleteButton
+          deleteButton,
+          advancedToggle
         ]),
+        advancedHolder,
         resultSlot
       ]));
     }
