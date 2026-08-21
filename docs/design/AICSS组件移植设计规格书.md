@@ -47,7 +47,7 @@
 
 - **运行中内容**:思考项内容区只显示**最近 1–2 行推理片段**,随 `reasoning_delta` 增量拼接、滚动替换(新片段滚入、旧片段滚出);高度 2 行封顶(参照 aicss 行高 20px×2 + gap 4px),不推动对话滚动;滚动过渡参照 aicss stream `transform 560ms`。
 - **完成标签**:`reasoning_completed` → 「思考 N 秒」;N = 该 turn 从 `model_turn_started` 到 `reasoning_completed` 的事件时间戳差,秒,四舍五入,最小 1;**无时间戳可算时回退「已完成思考」**。
-- **展开详情**:保留基座 §4.9 三态——`available` → 显示思考全文 / `unsupported` → `当前模型不支持查看` / `empty` → `本次没有可查看的思考内容`。
+- **展开详情**:保留基座 §4.9 三态——`available` → 显示思考全文 / `unsupported` → `当前模型不支持查看` / `empty` → `没有可查看的思考内容（本次无输出或该模型不支持）`。
 - **工作组 summary「工作了 X 秒」不变**(`active_elapsed_ms` 口径)。
 - **验收**:思考中内容区最多 2 行片段滚动替换;完成标签耗时与真实 ±1s;三态文案不变;工作组 summary 不变。
 
