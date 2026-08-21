@@ -804,10 +804,11 @@ export function createModelSettingsPage(ctx = {}) {
 
     const candidateHolder = el("div", { class: "candidate-list", "data-candidate-list": "true" });
     candidateHolder.hidden = true;
-    const candidateToggle = el("button", { type: "button", class: "candidate-toggle", text: "拉取候选 ▸" });
+    const candidateToggle = el("button", { type: "button", class: "candidate-toggle", text: "拉取候选 ▸", "aria-expanded": "false" });
     candidateToggle.addEventListener("click", () => {
       candidateHolder.hidden = !candidateHolder.hidden;
       candidateToggle.textContent = candidateHolder.hidden ? "拉取候选 ▸" : "拉取候选 ▾";
+      candidateToggle.setAttribute("aria-expanded", String(!candidateHolder.hidden));
     });
     container.append(candidateToggle, candidateHolder);
 
@@ -863,16 +864,23 @@ export function createModelSettingsPage(ctx = {}) {
       // -- 第十三轮（F1）：高级折叠项--上下文/最大输出两个预设下拉，change 即存。 --
       const CONTEXT_PRESETS_K = [128, 256, 400, 512, 1000];
       const OUTPUT_PRESETS_K = [128, 64, 32, 16, 8];
-      const advancedOpen = advancedOpenModels.has(model.id);
+      // Task 5：展开态 Set 改复合键——model id 是供应商局部的（model-provider-store.mjs
+      // 契约），两供应商可有同 id 模型；跨供应商引用必须 `${provider.id}/${model.id}`，
+      // 否则 A 展开后切到 B，B 的同 id 模型会「继承」展开态。
+      const advancedKey = `${provider.id}/${model.id}`;
+      const advancedOpen = advancedOpenModels.has(advancedKey);
+      // data-model-advanced 保持 model.id（DOM 定位用，非状态键）。
       const advancedHolder = el("div", { class: "model-advanced", "data-model-advanced": model.id });
       advancedHolder.hidden = !advancedOpen;
-      const advancedToggle = el("button", { type: "button", class: "model-advanced-toggle", text: advancedOpen ? "高级 ▾" : "高级 ▸" });
+      // aria-expanded：初始随展开态；点击切换时同步（与折叠箭头同源）。
+      const advancedToggle = el("button", { type: "button", class: "model-advanced-toggle", text: advancedOpen ? "高级 ▾" : "高级 ▸", "aria-expanded": String(advancedOpen) });
       advancedToggle.addEventListener("click", () => {
         const opening = advancedHolder.hidden;
         advancedHolder.hidden = !opening;
         advancedToggle.textContent = opening ? "高级 ▾" : "高级 ▸";
-        if (opening) advancedOpenModels.add(model.id);
-        else advancedOpenModels.delete(model.id);
+        advancedToggle.setAttribute("aria-expanded", String(!opening));
+        if (opening) advancedOpenModels.add(advancedKey);
+        else advancedOpenModels.delete(advancedKey);
       });
       const presetSelect = ({ field, presetsK, value, defaultK, onChange }) => {
         const currentK = Number.isInteger(value) && value > 0 ? Math.round(value / 1000) : null;
@@ -886,6 +894,8 @@ export function createModelSettingsPage(ctx = {}) {
         }));
         select.value = String(currentK ?? defaultK);
         select.addEventListener("change", () => {
+          // ponytail: 若 defaultK 被移出选项列表，真实 DOM 的 select.value 会回落 ""
+          // 导致存 0 token；当前 6 条路径均保证 value ∈ optionKs，无实际触发面。
           onChange(Number(select.value) * 1000);
         });
         return el("label", { class: "model-advanced-field" }, [`${field === "context_window" ? "上下文" : "最大输出"}：`, select]);
