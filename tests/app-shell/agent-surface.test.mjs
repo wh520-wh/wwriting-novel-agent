@@ -5297,13 +5297,15 @@ test("第十二轮 E：run_status_changed 触发 onRunStatusChanged（事件驱�
 // 409、串行门 hasNonTerminalRun 同口径——waiting_user/stopping 期间不放行恢复）。
 // ===========================================================================
 
-test("第十二轮 F9：isAgentRunning 用非终态集——waiting_user 禁、终态解禁", async () => {
-  const { root, surface } = await makeSurface();
-  surface.applySnapshot(snapshotOf(
-    session({ status: "waiting_user", active_run: activeRun({ status: "waiting_user" }) }),
-    []
-  ));
-  assert.equal(surface.isAgentRunning(), true, "waiting_user 视为忙（非终态集）");
+test("第十二轮 F9：isAgentRunning 用非终态集——waiting_user/interrupting/stopping 禁、终态解禁", async () => {
+  const { surface } = await makeSurface();
+  for (const status of ["waiting_user", "interrupting", "stopping"]) {
+    surface.applySnapshot(snapshotOf(
+      session({ status, active_run: activeRun({ status }) }),
+      []
+    ));
+    assert.equal(surface.isAgentRunning(), true, `${status} 视为忙（非终态集）`);
+  }
   surface.applyEvent(ev("run_completed", {}));
   assert.equal(surface.isAgentRunning(), false, "终态解禁");
 });
