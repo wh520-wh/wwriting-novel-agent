@@ -50,7 +50,7 @@ export function orderedWorkItems(group) {
 export function openWorkItemIds(group) {
   // 停止始终静态（计划 Task 6 Step 7 rule 5）：waiting_user 与终态之外的 stopping
   // 也压制 live item——停止窗口内 running 标签不得继续闪烁。
-  if (["waiting_user", "completed", "failed", "cancelled", "interrupted", "stopping"].includes(group.status)) return [];
+  if (["waiting_user", "completed", "failed", "cancelled", "interrupted", "stopping", "interrupting"].includes(group.status)) return [];
   return orderedWorkItems(group).filter((item) => item.state === "running").map((item) => item.id);
 }
 
@@ -146,6 +146,11 @@ export function groupStatusText(group) {
     // SPEC 3.3 rule 8）；不伪装耗时叙事。
     case "interrupted": return "Interrupted by the user";
     case "waiting_user": return "待命";
+    // 第十二轮 F12：停止/中断在途文案（规格明文两种——stopping「正在停止」、
+    // interrupting「正在中断」；侧边栏紧凑口径统一「停止中」是 Task 4 的事，
+    // 此处是工作组文案）。
+    case "stopping": return "正在停止";
+    case "interrupting": return "正在中断";
     default: return "工作中";
   }
 }
@@ -528,11 +533,22 @@ export function reduceWorkEvent(work, event) {
     }
     case "run_status_changed": {
       const group = ensureGroup(work, runId, seq);
-      // §4.3：状态变化即清除瞬时重试提示。
-      if (group) group.retryHint = null;
       if (typeof payload.status === "string" && payload.status.length > 0) {
         setGroupStatus(group, payload.status, seq, event.at);
       }
+      // 第十二轮 F13：决策等待（waiting_user）时最新 running 工具项转 waiting，
+      // 决策解决后恢复的 running 事件会把它转回（工具自身事件照常终结它）。
+      if (group.status === "waiting_user") {
+        const items = orderedWorkItems(group).filter((item) => item.kind === "tool" && item.state === "running");
+        const last = items[items.length - 1];
+        if (last) last.state = "waiting";
+      } else if (payload.status === "running") {
+        for (const item of group.items.values()) {
+          if (item.kind === "tool" && item.state === "waiting") item.state = "running";
+        }
+      }
+      // §4.3：状态变化即清除瞬时重试提示。
+      group.retryHint = null;
       break;
     }
     case "interrupt_requested": {

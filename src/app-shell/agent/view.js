@@ -54,14 +54,16 @@ const COMPACTION_ROW_LABELS = {
   noop: "无需压缩"
 };
 
-// 各状态的动作按钮：failed → 重试+取消；running → 取消；其余无按钮。
+// 各状态的动作按钮：failed → 重试+取消；running → 取消；cancelled → 重试
+//（第十二轮 F4：压缩取消后可重试——后端 retryCompaction 已支持 cancelled；
+// Run 已终态时的点击由后端 compaction_no_run 守卫兜底报错，前端不做禁用）。
 const COMPACTION_ROW_BUTTONS = {
   started: [],
   running: ["cancel"],
   cancelling: [],
   completed: [],
   failed: ["retry", "cancel"],
-  cancelled: [],
+  cancelled: ["retry"],
   noop: []
 };
 
@@ -763,6 +765,14 @@ export function createAgentView({ root, document: doc = globalThis.document, req
           stopPending = false;
         }
       });
+      // 第十二轮 F4：waiting_user 状态行提示——等待你的指令：发送消息继续。
+      if (run.status === "waiting_user") {
+        const hint = doc.createElement("span");
+        hint.className = "agent-run-hint";
+        hint.dataset.testid = "agent-run-hint";
+        hint.textContent = "等待你的指令：发送消息继续";
+        runHeader.append(hint);
+      }
       runHeader.append(stop);
       placeRunControls(state);
     } else if (run.status === "failed" || run.status === "interrupted") {

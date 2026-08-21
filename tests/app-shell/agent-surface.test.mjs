@@ -5309,3 +5309,29 @@ test("第十二轮 F9：isAgentRunning 用非终态集——waiting_user/interru
   surface.applyEvent(ev("run_completed", {}));
   assert.equal(surface.isAgentRunning(), false, "终态解禁");
 });
+
+// ===========================================================================
+// 第十二轮 F4：cancelled 压缩行恢复重试入口 + waiting_user Run 等待指令提示
+// ===========================================================================
+
+test("第十二轮 F4：cancelled 压缩行显示重试按钮并调用 retryCompaction", async () => {
+  const { root, api, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applyEvent(ev("context_compaction_started", { compaction_id: "c-r1", trigger: "automatic" }));
+  surface.applyEvent(ev("context_compaction_cancelled", { compaction_id: "c-r1", cancel_reason: "user" }));
+  const row = root.querySelector('[data-testid="agent-compaction-row"]');
+  const retry = row.parentElement.querySelector('[data-testid="agent-compaction-retry"]');
+  assert.ok(retry, "cancelled 压缩行显示重试按钮（F4）");
+  retry._fire("click");
+  const calls = api.calls.filter((c) => c[0] === "retryCompaction");
+  assert.deepEqual(calls, [["retryCompaction", "c-r1"]]);
+});
+
+test("第十二轮 F4：waiting_user Run 状态区显示等待指令提示", async () => {
+  const { root, surface } = await makeSurface();
+  surface.applySnapshot(snapshotOf(
+    session({ status: "waiting_user", active_run: activeRun({ status: "waiting_user" }) }),
+    []
+  ));
+  assert.ok(root.querySelector('[data-testid="agent-run-hint"]'), "waiting_user 提示渲染（F4）");
+});
