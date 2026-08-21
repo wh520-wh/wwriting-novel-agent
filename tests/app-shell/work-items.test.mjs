@@ -622,3 +622,24 @@ test("AICSS 思考 N 秒：完成标签取 turn 真实耗时，四舍五入最�
   ]);
   assert.equal(work3.groups.get("run-1").items.get("reasoning:t3").label, "已完成思考");
 });
+
+// ===========================================================================
+// 第十二轮 F2：Run 终态清扫未闭合的 running 项（崩溃恢复路径）
+// ===========================================================================
+
+test("第十二轮 F2：Run 终态清扫未闭合的 running 项（崩溃恢复路径）", () => {
+  const work = createWorkState();
+  reduceWorkEvent(work, ev("run_started", {}, 1));
+  reduceWorkEvent(work, ev("model_turn_started", { turn_id: "turn-1" }, 2));
+  reduceWorkEvent(work, ev("reasoning_delta", { turn_id: "turn-1", text: "部分思考" }, 3));
+  reduceWorkEvent(work, ev("tool_call_started", { activity_id: "act-1", name: "read_file", args: {} }, 4));
+  reduceWorkEvent(work, ev("run_interrupted", { reason: "recovery_dangling_assistant_activity" }, 5));
+  const group = work.groups.get("run-1");
+  const reasoning = group.items.get("reasoning:turn-1");
+  const tool = group.items.get("tool:act-1");
+  assert.equal(reasoning.state, "cancelled", "思考项必须终结，不得永久 running");
+  assert.equal(reasoning.label, "思考已停止", "思考项终态文案（F2 验收口径）");
+  assert.equal(tool.state, "cancelled", "工具项必须终结");
+  assert.equal(tool.label, toolLabel("read_file", "cancelled"));
+  assert.deepEqual(openWorkItemIds(group), [], "终态组不得有 live 目标");
+});

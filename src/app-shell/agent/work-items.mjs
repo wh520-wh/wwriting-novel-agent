@@ -547,6 +547,23 @@ export function reduceWorkEvent(work, event) {
       const terminal = { run_completed: "completed", run_failed: "failed", run_cancelled: "cancelled", run_interrupted: "interrupted" };
       setGroupStatus(group, terminal[event.type], seq, event.at);
       group.legacyOpenTurns = 0;
+      // §4.3（Task 6 引入的字段；审核修订 P1-11）：Run 终态即消失——数据级清理，
+      // 防下一 Run 复用组时残留「重试 n/m」后缀（视图终态分支本就不渲染）。
+      group.retryHint = null;
+      // 第十二轮 F2：终态清扫——崩溃恢复批次不闭合的 item 就地终结为 cancelled
+      //（重放/重连同算法，确定性收敛）。工具 label 走 toolLabel 的 cancelled
+      // 分支（「已停止读取文件」类）；reasoning 不能走 reasoningLabel——它对
+      // 非 completed 一律返回「思考中」，这里明文置「思考已停止」（F2 验收口径）。
+      // 审核修订（P0-3）：①工具项也要更新 label（否则显示「正在读取文件」且
+      // Step 2.1 断言 toolLabel 必败）；②清扫必须纳入 waiting 项（F13 决策等待
+      // 置的态）——否则直接终态时「等待确认」工具项永久残留。
+      for (const item of group.items.values()) {
+        if (item.state !== "running" && item.state !== "waiting") continue;
+        item.state = "cancelled";
+        if (item.terminal_seq == null) item.terminal_seq = seq;
+        if (item.kind === "reasoning") item.label = "思考已停止";
+        else if (item.kind === "tool") item.label = toolLabel(item.tool, "cancelled");
+      }
       break;
     }
     default:

@@ -1066,13 +1066,18 @@ test("dangling assistant tool call 恢复为 run_interrupted 并清除 grant", a
   assert.equal(session.active_run.id, "run-1");
   assert.equal(session.active_run.status, "interrupted", "dangling tool call 的 Run 必须标记 interrupted");
   assert.deepEqual(session.active_run.active_grants, [], "进程重启后的不可恢复 grant 必须清除");
-  assert.equal(session.last_seq, 9);
+  assert.equal(session.last_seq, 10, "7 条崩溃事件 + 恢复批次（tool 闭合 + grant 清理 + run_interrupted）");
 
   const all = await journal.read({});
   const interrupted = all.filter((event) => event.type === "run_interrupted");
   assert.equal(interrupted.length, 1);
   assert.equal(interrupted[0].run_id, "run-1");
-  assert.equal(interrupted[0].seq, 9);
+  assert.equal(interrupted[0].seq, 10);
+  // 第十二轮 F2：孤儿 tool call 必须在恢复批次内闭合（不只标记 interrupted）
+  const toolFailed = all.filter((event) => event.type === "tool_call_failed");
+  assert.equal(toolFailed.length, 1, "孤儿 tool call 必须闭合为失败");
+  assert.equal(toolFailed[0].payload.tool_call_id, "tc-1");
+  assert.equal(toolFailed[0].payload.error.code, "recovered_dangling_orphan");
   const cleared = all.filter((event) => event.type === "permission_grant_cleared");
   assert.equal(cleared.length, 1);
   assert.equal(cleared[0].payload.grant_id, "g-1");
@@ -1712,9 +1717,14 @@ test("崩溃恢复：未闭合 reasoning turn 仍触发既有 interrupted 恢复
   const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
   const session = await journal.load();
   assert.equal(session.active_run.status, "interrupted", "未闭合 reasoning turn 的 Run 必须标记 interrupted");
-  assert.equal(session.last_seq, 6, "5 条崩溃事件 + 1 条恢复 run_interrupted");
+  assert.equal(session.last_seq, 7, "5 条崩溃事件 + 2 条恢复（孤儿 turn 闭合 + run_interrupted）");
   const all = await journal.read({});
   assert.equal(all.filter((event) => event.type === "run_interrupted").length, 1);
+  // 第十二轮 F2：孤儿 model turn 必须在恢复批次内闭合为 failed（不只标记 interrupted）
+  const turnClosed = all.filter((event) => event.type === "model_turn_completed");
+  assert.equal(turnClosed.length, 1, "孤儿 model turn 必须闭合");
+  assert.equal(turnClosed[0].payload.turn_id, "turn-1");
+  assert.equal(turnClosed[0].payload.outcome, "failed");
   // 幂等：再次 load 不重复标记
   await journal.load();
   assert.equal((await journal.read({})).filter((event) => event.type === "run_interrupted").length, 1);
@@ -2778,4 +2788,46 @@ test("Task 6 回归：dry-run 克隆深拷贝 openModelTurns/inputMeta 值对象
   await journal.append({ type: "input_completed", run_id: "run-1", payload: { input_id: "in-1" } });
   await journal.append({ type: "run_completed", run_id: "run-1", payload: {} });
   assert.equal((await journal.getSession()).active_run.status, "completed");
+});
+
+// ---------------------------------------------------------------------------
+// 第十二轮 F2：dangling 恢复闭合孤儿 tool call 与 model turn，幂等不重复
+// ---------------------------------------------------------------------------
+
+test("第十二轮 F2：dangling 恢复闭合孤儿 tool call 与 model turn，幂等不重复", async (t) => {
+  const root = await makeWorkspace(t);
+  const events = [
+    makeEvent(1, { root, type: "session_created" }),
+    makeEvent(2, { root, type: "input_queued", payload: { input_id: "in-1", text: "旧任务" } }),
+    makeEvent(3, { root, type: "run_started", runId: "run-1", payload: { input_id: "in-1" } }),
+    makeEvent(4, { root, type: "model_turn_started", runId: "run-1", schemaVersion: 2, payload: { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" } }),
+    makeEvent(5, { root, type: "reasoning_delta", runId: "run-1", schemaVersion: 2, payload: { turn_id: "turn-1", input_id: "in-1", text: "部分思考" } }),
+    makeEvent(6, { root, type: "tool_call_started", runId: "run-1", schemaVersion: 2, payload: { tool_call_id: "tc-1", activity_id: "act-1", name: "read_file" } })
+  ];
+  await writeCrashJournal(root, events);
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: createIds() });
+  const session = await journal.load();
+  assert.equal(session.active_run.status, "interrupted", "dangling 恢复以 run_interrupted 收敛");
+
+  const all = await journal.read({});
+  const toolFailed = all.filter((event) => event.type === "tool_call_failed");
+  assert.equal(toolFailed.length, 1, "孤儿 tool call 必须闭合");
+  assert.equal(toolFailed[0].payload.tool_call_id, "tc-1");
+  assert.equal(toolFailed[0].payload.error.code, "recovered_dangling_orphan");
+  assert.equal(toolFailed[0].payload.activity_id, "act-1", "恢复批次补 activity_id（规格 F2，审核修订）");
+  assert.equal(typeof toolFailed[0].payload.message, "string", "恢复批次补 message 文案（规格 F2）");
+  const turnClosed = all.filter((event) => event.type === "model_turn_completed");
+  assert.equal(turnClosed.length, 1, "孤儿 model turn 必须闭合");
+  assert.equal(turnClosed[0].payload.turn_id, "turn-1");
+  assert.equal(turnClosed[0].payload.outcome, "failed");
+  const interrupted = all.filter((event) => event.type === "run_interrupted");
+  assert.equal(interrupted.length, 1);
+  assert.equal(interrupted[0].payload.reason, "recovery_dangling_assistant_activity");
+
+  // 幂等：再次 load 不重复闭合
+  await journal.load();
+  const again = await journal.read({});
+  assert.equal(again.filter((event) => event.type === "tool_call_failed").length, 1);
+  assert.equal(again.filter((event) => event.type === "model_turn_completed").length, 1);
+  assert.equal(again.filter((event) => event.type === "run_interrupted").length, 1);
 });
