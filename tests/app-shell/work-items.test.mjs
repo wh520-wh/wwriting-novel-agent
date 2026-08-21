@@ -225,7 +225,9 @@ test("Step 3/4: reasoning 与 tool 立即终结，waiting_user 压制不伪造",
   ]);
   const waitGroup = groupOf(workWait);
   assert.deepEqual(openWorkItemIds(waitGroup), [], "waiting_user 压制 live item");
-  assert.equal(waitGroup.items.get("tool:a3").state, "running", "不伪造 completed");
+  // 第十二轮 F13：waiting_user 时最新 running 工具项转 waiting（等待确认），
+  // 不伪造 completed；恢复 running 后转回重新 live。
+  assert.equal(waitGroup.items.get("tool:a3").state, "waiting", "决策等待时工具项转等待确认（F13）");
   reduceWorkEvent(workWait, ev("run_status_changed", { status: "running" }, 4));
   assert.deepEqual(openWorkItemIds(waitGroup), ["tool:a3"], "恢复 running 后未闭合 item 重新成为 live");
 });
@@ -673,4 +675,28 @@ test("§4.3: 终态 run_completed 清除 retryHint（不留残留后缀）", () 
   assert.deepEqual(work.groups.get("run-1").retryHint, { attempt: 1, max: 2 });
   reduceWorkEvent(work, ev("run_completed", {}, 3));
   assert.equal(work.groups.get("run-1").retryHint, null, "Run 终态即消失，防下一 Run 复用组时残留重试提示");
+});
+
+// ===========================================================================
+// 第十二轮 F12/F13：停止/中断工作组文案 + 决策等待接线（waiting_user 时最新
+// running 工具项转 waiting，恢复 running 转回；工具自身事件照常终结它）。
+// ===========================================================================
+
+test("F12: stopping/interrupting 组文案为「正在停止/正在中断」", () => {
+  const work = createWorkState();
+  reduceWorkEvent(work, ev("run_started", {}, 1));
+  reduceWorkEvent(work, ev("run_status_changed", { status: "stopping" }, 2));
+  assert.equal(groupStatusText(work.groups.get("run-1")), "正在停止");
+  reduceWorkEvent(work, ev("run_status_changed", { status: "interrupting" }, 3));
+  assert.equal(groupStatusText(work.groups.get("run-1")), "正在中断");
+});
+
+test("F13: waiting_user 时最新 running 工具项转等待确认，恢复 running 转回", () => {
+  const work = createWorkState();
+  reduceWorkEvent(work, ev("run_started", {}, 1));
+  reduceWorkEvent(work, ev("tool_call_started", { activity_id: "act-1", name: "write_file", args: {} }, 2));
+  reduceWorkEvent(work, ev("run_status_changed", { status: "waiting_user" }, 3));
+  assert.equal(work.groups.get("run-1").items.get("tool:act-1").state, "waiting");
+  reduceWorkEvent(work, ev("run_status_changed", { status: "running" }, 4));
+  assert.equal(work.groups.get("run-1").items.get("tool:act-1").state, "running");
 });
