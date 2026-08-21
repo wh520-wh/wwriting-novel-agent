@@ -183,4 +183,7 @@ test("第十二轮 F11：无 active_run 时 plan_updated 也投影顶层 plan", 
   reduceEvent(state, ev("plan_updated", { explanation: "计划", items: [{ step: "1", status: "pending" }] }, 1));
   assert.ok(state.plan && Array.isArray(state.plan.items) && state.plan.items.length === 1,
     "顶层 plan 投影不依赖 active_run 在场（F11 尾页窗口口径）");
+  // 空 items：计划清空 → 顶层投影收敛为 null（chip 隐藏口径一致）。
+  reduceEvent(state, ev("plan_updated", { explanation: "", items: [] }, 2));
+  assert.equal(state.plan, null, "空 items 后顶层 plan 收敛为 null");
 });

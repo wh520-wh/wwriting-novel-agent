@@ -556,6 +556,10 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     );
     // 第十二轮 F10：弃用同文本回退（同文本双发会误删在途气泡）；POST 尚未
     // resolve 时按 FIFO 归属最旧的未回填气泡——事件到达序与提交序一致。
+    // ponytail: FIFO 依赖服务器按提交序处理+传输有序；快速连发且 POST 未
+    // resolve 时 input_queued 确认可能错配到更旧的在途气泡（自愈：input_started
+    // 到达后按事件重放重新插回用户气泡；极端窗口内旧 POST 失败则失败气泡挂在
+    // detached 节点不可见）——同文本双发误删比此 corner 更常见，FIFO 是更稳默认。
     if (index < 0) {
       index = pendingSubmissions.findIndex((item) => item.inputId == null);
     }
