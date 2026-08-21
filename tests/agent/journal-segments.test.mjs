@@ -159,6 +159,52 @@ test("跨批次轮转：fd 已随上一批次关闭时 rotate 重开可写句柄
   assert.equal(sealed.sealed, true, "轮转段 sealed 索引必须落盘");
 });
 
+// Task 14 收尾：惰性句柄不变量钉子。
+// 44507ce 删去 load() 末尾的 eager open 常驻句柄（activeSegment.fd = await fs.open(...)），
+// 句柄改为「append 批次后显式 close、下次按需重开」。store 的 activeSegment 是闭包变量、
+// 未从 createJournalSegmentStore 返回的 API 暴露（只有 manifest/gaps/lastSeq/loaded 读取器），
+// 无法直接断言 fd == null，故采用行为级断言：活动段句柄处于关闭态时，含段目录的整目录
+// rename 不被 EPERM 阻塞——这正是该修复的动机（Windows rename 兼容，Task 3 会话迁移 /
+// clear-history 轮转依赖）。若有人把 eager open 加回 load()（load 后 fd 常驻），或 append
+// 批次后不再 close，本测试在 Windows 上即失败（本机实测 EPERM）；POSIX 对打开文件的目录
+// rename 宽容、不在此捕获，由 Node v25 GC 错误兜底。
+test("惰性句柄不变量：load() 后与 append 批次后活动段 fd 均关闭（含段目录 rename 不被阻塞）", async (t) => {
+  const root = await makeRoot(t, "lazy-handle");
+  const eventsRoot = path.join(root, "events");
+  const movedRoot = path.join(root, "events-moved");
+  const store = createJournalSegmentStore({
+    root: eventsRoot,
+    streamName: "events",
+    maxSegmentRecords: 2,
+    indexStride: 1
+  });
+  // 整目录 rename 往返：任一打开句柄常驻（eager open 回归）都会是 Windows EPERM 的根因。
+  const renameRoundTrip = async () => {
+    await fs.rename(eventsRoot, movedRoot);
+    await fs.rename(movedRoot, eventsRoot);
+  };
+
+  // 先写一批，让磁盘上有活动段；此时 load() 才是 eager open 回归真正会开句柄的地方。
+  await store.append(events(1, 2));
+  assert.equal((await segmentFiles(eventsRoot)).length, 1, "写批后产生 1 个 segment");
+
+  // 1) load() 之后：活动段句柄应为干净关闭态（eager open 回归 → Windows EPERM）
+  await store.load();
+  await renameRoundTrip();
+  // load 幂等：再次 load 仍不占有/泄漏句柄
+  await store.load();
+  await renameRoundTrip();
+
+  // 2) append 一批次后：fd 回到关闭态（批次结束 close 的不变量；跨段轮转同样重开+关闭）
+  await store.append(events(3, 4));
+  await renameRoundTrip();
+  await store.append(events(5, 6));
+  await renameRoundTrip();
+
+  // 数据完整、段文件仍在原目录（rename 往返已回到原路径）
+  assert.deepEqual((await store.readTail({ limit: 10 })).events.map((e) => e.seq), [1, 2, 3, 4, 5, 6]);
+});
+
 // ---------------------------------------------------------------------------
 // Step 2：恢复与迁移
 // ---------------------------------------------------------------------------
