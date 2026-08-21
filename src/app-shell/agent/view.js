@@ -1363,6 +1363,10 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   }
 
   function updateWorkGroup(record, group) {
+    // N3：状态语义色——组状态行 dataset.status 驱动 per-state 颜色（同色同义，
+    // 与状态点 .session-status / 条目图标共用 --agent-state-*）。组对象每次投影
+    // 都会重建，故在此随 group.status 同步，不能只在 createWorkGroup 设一次。
+    record.status.dataset.status = group.status;
     // 展开默认值只在用户未手动切换时应用；完成后投影 expanded=false → 自动折叠。
     if (!record.userToggled && record.details.open !== group.expanded) {
       record.details.open = group.expanded;

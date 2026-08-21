@@ -832,6 +832,17 @@
   line-height: 1.4;
 }
 
+/* 第十二轮 N3：组状态行 per-state 语义色（同色同义，与状态点/条目图标共用 --agent-state-*）。
+   未知状态保留上方的 var(--muted) 兜底。仅改颜色，不影响布局。 */
+.agent-work-status[data-status="running"] { color: var(--agent-state-running); }
+.agent-work-status[data-status="waiting_user"] { color: var(--agent-state-waiting); }
+.agent-work-status[data-status="completed"] { color: var(--agent-state-done); }
+.agent-work-status[data-status="failed"] { color: var(--agent-state-failed); }
+.agent-work-status[data-status="cancelled"],
+.agent-work-status[data-status="interrupted"],
+.agent-work-status[data-status="stopping"],
+.agent-work-status[data-status="interrupting"] { color: var(--agent-state-stopped); }
+
 .agent-work-duration {
   color: var(--agent-work-meta-fg);
   font-weight: var(--weight-regular);
