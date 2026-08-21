@@ -413,6 +413,9 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     rendered.messages = rendered.run = rendered.queue = -1;
     rendered.decisions = rendered.errors = -1;
     rendered.context = -1;
+    // F8：跨会话切换时 rendered.notices 复用会导致 revision 恰相等的死区
+    //（A/B 各 1 条通知时 gate 相等、不重渲染）——reset 必须强制重渲染。
+    rendered.notices = -1;
     rendered.runId = null;
     rendered.runStatus = null;
     stopPending = false;
@@ -1398,6 +1401,21 @@ export function createAgentView({ root, document: doc = globalThis.document, req
         row.wrap.remove();
         record.rows.delete(itemId);
         changed = true;
+      }
+    }
+    // 第十二轮 F6：行序对齐投影序（orderedWorkItems）。仅在有增删（changed）时
+    // 执行，避免每帧搬移 DOM；insertBefore 已在位时不产生搬移。
+    if (changed) {
+      let ref = null;
+      for (let i = ordered.length - 1; i >= 0; i -= 1) {
+        const row = record.rows.get(ordered[i].id);
+        if (!row) continue;
+        if (ref == null) {
+          if (record.itemsEl.lastElementChild !== row.wrap) record.itemsEl.append(row.wrap);
+        } else if (row.wrap.nextSibling !== ref) {
+          record.itemsEl.insertBefore(row.wrap, ref);
+        }
+        ref = row.wrap;
       }
     }
     applyLiveTargets(record, group);
