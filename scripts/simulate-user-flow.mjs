@@ -18,6 +18,7 @@
 //   node scripts/simulate-user-flow.mjs                       # mock 模式（确定性，必绿）
 //   DEEPSEEK_API_KEY=sk-xxx node scripts/simulate-user-flow.mjs  # 真实 API 模式
 //   MODEL_NAME=deepseek-v4-flash DEEPSEEK_API_KEY=sk-xxx node scripts/simulate-user-flow.mjs
+//   MODEL_BASE_URL=https://opencode.ai/zen/go/v1 DEEPSEEK_API_KEY=sk-xxx ...  # 任意 OpenAI 兼容网关
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -249,7 +250,8 @@ const MOCK_SCRIPT = [
 const gateway = USE_REAL_API
   ? createModelGateway({
       adapter: createOpenAICompatibleAdapter({
-        baseUrl: "https://api.deepseek.com",
+        // MODEL_BASE_URL：任意 OpenAI 兼容网关（如 opencode zen）；缺省官方 DeepSeek
+        baseUrl: process.env.MODEL_BASE_URL ?? "https://api.deepseek.com",
         apiKeyEnv: "DEEPSEEK_API_KEY"
       }),
       retryMax: 2,
@@ -542,13 +544,20 @@ try {
     record("真实 API 冒烟：WWRITING.md 已创建", wwExists, wwExists ? "项目记忆已落盘" : "WWRITING.md 缺失", wwExists ? [wwMemoryPath] : [projectRoot]);
     // 交付断言：run 完成不等于交付完成（2026-08-18 真实链路曾整轮只反问不写稿，
     // 冒烟只数 run_completed 导致假绿）。正文落盘 + count_text 客观核对才算交付。
-    // 目录兼容两种惯例：mock 流程写 正文/，真实模型可能按项目惯例建 chapters/。
+    // 目录兼容多种惯例：mock 流程写 正文/，真实模型可能按项目惯例建 chapters/，
+    // 也可能自创根级文件（实测 deepseek-v4-flash 写 prologue_draft.md 到根目录）。
+    // 「反问/空谈不算交付」的判定靠「存在成文 .md + count_text 客观核对」组合。
     let chapterFiles = [];
     for (const dirName of ["正文", "chapters"]) {
       try {
         chapterFiles.push(...(await fs.readdir(path.join(projectRoot, dirName))).map((n) => `${dirName}/${n}`));
       } catch {}
     }
+    try {
+      // 根级 .md 视为交付候选，但排除已知非章节文件（项目记忆/摘要/工作日志）
+      const nonChapter = new Set(["WWRITING.md", "book_summary.md", "WORKLOG.md"]);
+      chapterFiles.push(...(await fs.readdir(projectRoot)).filter((n) => n.endsWith(".md") && !nonChapter.has(n)));
+    } catch {}
     record(
       "真实 API 冒烟：章节已交付（正文/ 或 chapters/）",
       chapterFiles.length > 0,
