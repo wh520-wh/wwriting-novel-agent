@@ -1187,3 +1187,75 @@ test("isDirty：未渲染详情（无 activeDraftRefs）安全返回 false", asy
   await page.open(); // refresh → 未 attach，render 跳过，activeDraftRefs 保持 freshDraftRefs
   assert.equal(page.isDirty(), false, "无渲染目标/无 activeDraftRefs 时 isDirty() 应为 false");
 });
+
+// ---------------------------------------------------------------------------
+// 第十三轮（F1）：模型行高级折叠项——上下文/最大输出两个预设下拉，change 即存，
+// 保存（commitModelPatch → refresh 整块重渲）后保持展开且回读落库值。
+// ---------------------------------------------------------------------------
+
+test("高级展开项：预设下拉展开可见，change 即存，保存后保持展开且回读落库值", async () => {
+  // 深拷贝避免污染共享夹具；PATCH 把落库值写回夹具，模拟真实端点
+  //（保存后 refresh 重拉清单应返回新值，下拉回读才是用户看到的）。
+  const providersData = { providers: JSON.parse(JSON.stringify(providers)), default_model: null };
+  const patches = [];
+  const fetchImpl = async (url, options = {}) => {
+    if (options?.method === "PATCH") {
+      const body = JSON.parse(options.body);
+      patches.push({ url, body });
+      Object.assign(providersData.providers[0].models.find((m) => m.id === "m1"), body);
+    }
+    return { ok: true, json: async () => providersData };
+  };
+  const page = makePage({ fetchImpl });
+  const { detail } = attachTargets(page);
+  await page.open();
+  const findToggle = () => descendants(detail).find((el) => el.className === "model-advanced-toggle");
+  const findHolder = () => descendants(detail).find((el) => el.getAttribute?.("data-model-advanced") === "m1");
+  const selectsOf = () => descendants(findHolder()).filter((el) => el.tagName === "SELECT");
+
+  // 高级折叠：默认收起，点击展开
+  assert.ok(findToggle(), "模型行应有「高级」折叠按钮");
+  assert.equal(findHolder().hidden, true);
+  findToggle()._fire("click");
+  assert.equal(findHolder().hidden, false);
+
+  // 两个预设下拉：缺省选中 256k / 64k
+  assert.equal(selectsOf().length, 2, "上下文 + 最大输出两个下拉");
+  const [contextSelect0, outputSelect0] = selectsOf();
+  assert.equal(contextSelect0.value, "256");
+  assert.equal(outputSelect0.value, "64");
+
+  // change 即存（PATCH /models/:id，token 绝对值落库）
+  contextSelect0.value = "128";
+  contextSelect0._fire("change");
+  await tickAsync();
+  assert.deepEqual(patches.at(-1), { url: "/api/settings/providers/deepseek/models/m1", body: { context_window: 128000 } });
+
+  // 保存触发 refresh 整块重渲：高级面板必须保持展开（用户接着还要选最大输出，
+  // 收起就得再点一次），下拉回读落库值
+  assert.equal(findHolder().hidden, false, "保存重渲后高级面板保持展开");
+  const [contextSelect1, outputSelect1] = selectsOf();
+  assert.equal(contextSelect1.value, "128", "重渲后下拉回读落库值");
+  outputSelect1.value = "8";
+  outputSelect1._fire("change");
+  await tickAsync();
+  assert.deepEqual(patches.at(-1), { url: "/api/settings/providers/deepseek/models/m1", body: { max_output_tokens: 8000 } });
+});
+
+test("高级展开项：存量非预设值显示为「当前」项，不静默改写", async () => {
+  const oddProviders = [{
+    ...providers[0],
+    models: [{ id: "m1", model_name: "deepseek-v4-pro", enabled: true, context_window: 192000 }]
+  }];
+  const page = makePage({
+    fetchImpl: async () => ({ ok: true, json: async () => ({ providers: oddProviders, default_model: null }) })
+  });
+  await page.open();
+  const container = new MockElement("div");
+  page.renderDetail(container);
+  const holder = descendants(container).find((el) => el.getAttribute?.("data-model-advanced") === "m1");
+  const contextSelect = descendants(holder).filter((el) => el.tagName === "SELECT")[0];
+  assert.equal(contextSelect.value, "192");
+  const optionTexts = descendants(contextSelect).filter((el) => el.tagName === "OPTION").map((el) => el.textContent);
+  assert.ok(optionTexts.includes("当前 192k"), "非预设值以「当前」项呈现");
+});

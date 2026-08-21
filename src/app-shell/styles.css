@@ -1533,6 +1533,11 @@ input.spd-input[type="number"] { max-width: 160px; }
   overflow-wrap: anywhere;
 }
 
+/* 第十三轮（F1）：模型行高级折叠项——上下文/最大输出预设下拉区。 */
+.model-advanced { display: grid; gap: 6px; padding: 6px 0 2px; }
+.model-advanced[hidden] { display: none; }
+.model-advanced-field { display: inline-flex; align-items: center; gap: 6px; }
+
 @media (max-width: 768px) {
   .model-row-main { grid-template-columns: minmax(0, 1fr); }
   .model-row-actions { justify-content: flex-start; }
