@@ -957,6 +957,7 @@ export function createModelSettingsPage(ctx = {}) {
     // 自动展开后同步折叠按钮箭头（否则容器已展开、箭头仍为收起态「▸」，状态脱同步）。
     const toggle = currentDetail?.querySelector?.(".candidate-toggle");
     if (toggle) toggle.textContent = "拉取候选 ▾";
+    if (toggle) toggle.setAttribute("aria-expanded", "true");
     if (list.length === 0) {
       holder.append(el("p", { class: "candidate-empty", text: "没有拉取到可用模型" }));
       return;
