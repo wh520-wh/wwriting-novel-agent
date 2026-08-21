@@ -230,7 +230,17 @@ const MOCK_SCRIPT = [
   { reply: { toolCalls: [tool("write_file", { path: "WWRITING.md", content: WWRITING_CONTENT })] } },
   { reply: { text: "已读取快节奏易读风格技能，并把风格 ID 写入项目记忆。" } },
   // 阶段5：写短章节 → 调用 count_text 客观核对 → 自主结束
-  { reply: { toolCalls: [tool("write_file", { path: "正文/第001章.md", content: CHAPTER_CONTENT })] } },
+  // 第十二轮 N1：里程碑叙述——写正文章节前先说明这一步（叙述正文走 assistant 通道）。
+  // mock 用流式函数形式：onToken 让叙述正文以 assistant_message_delta 流出（灰度前向），
+  // 再与 write_file 同轮返回（runtime 对纯文本无 toolCalls 的回复视为输入完成，
+  // 叙述必须与工具调用同轮才能先于工具完工存在）。
+  async (request) => {
+    request.metadata?.onToken?.("先把第一章的骨架拆解出来，随后用字数工具核对实际字数。");
+    return {
+      text: "先把第一章的骨架拆解出来，随后用字数工具核对实际字数。",
+      toolCalls: [tool("write_file", { path: "正文/第001章.md", content: CHAPTER_CONTENT })]
+    };
+  },
   { reply: { toolCalls: [tool("count_text", { path: "正文/第001章.md" })] } },
   { reply: { text: "短章节已完成。已调用字数工具核对实际字数，内容满足快节奏易读的节奏要求。" } },
   // 阶段6：重开后的确认消息（可选；重开本身在阶段6单独验证）
@@ -373,6 +383,24 @@ try {
     record("count_text 调用后自主结束", countOk, countOk
       ? `count_text 已调用，客观指标=${JSON.stringify(countMetrics)}（无门禁判定字段）`
       : "未调用 count_text", [journalPath]);
+    // 第十二轮 N1：叙述管线——写正文章节的工具完成之前存在非空叙述正文
+    //（对正文关键词匹配而不是「最早」：events5 是全量快照，阶段2 的问候语也是
+    //  assistant 正文，不能用「首个工具前」口径；完成事件 path 容错 path ?? args.path。
+    //  事件类型注意：runtime 对工具轮内的叙述只发 assistant_message_delta（终态才发
+    //  assistant_message_completed）——见 runtime.mjs:2003-2016 纯文本才 completed、
+    //  :1732 工具轮叙述走 delta。故断言兼容两种类型，一律要求 seq < write_file 完工。）
+    const writeDone = events5.findIndex((x) =>
+      x.type === "tool_call_completed"
+      && x.payload?.name === "write_file"
+      && String(x.payload?.path ?? x.payload?.args?.path ?? "").includes("第001章")
+    );
+    const narrationBeforeWrite = writeDone >= 0 && events5.some((e) =>
+      (e.type === "assistant_message_delta" || e.type === "assistant_message_completed")
+      && typeof e.payload?.text === "string" && e.payload.text.includes("骨架")
+      && e.seq < events5[writeDone].seq
+    );
+    record("里程碑叙述出现在写章节工具完成前", narrationBeforeWrite,
+      narrationBeforeWrite ? "叙述正文经 assistant 通道流出（delta/completed）" : "未检出叙述正文", [journalPath]);
   }
   // ---- 阶段6：重开同路径恢复历史 ----
   console.log("【阶段6】重开同路径恢复历史");
