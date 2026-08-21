@@ -34,7 +34,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
-import { createAgentJournal } from "./journal.mjs";
+import { buildProcessRestartedConvergence, createAgentJournal } from "./journal.mjs";
 import { createSessionRegistry } from "./session-registry.mjs";
 import { createToolRuntime, truncateOutput, MAX_TOOL_OUTPUT_CHARS } from "./tools.mjs";
 import { assemblePrompt, estimateTokens } from "./prompt.mjs";
@@ -478,14 +478,11 @@ export function createAgentRuntime({
         });
       }
       // 收敛 Run/input：残留 running（崩溃窗口）收敛为 waiting_user；
-      // 已是 waiting_user 保持原状。输入保持 pending（无终态），等待用户 retry/cancel。
+      // 已是 waiting_user 保持原状。stopping/interrupting 残留（停止+压缩在途
+      // 崩溃窗口）收敛为 interrupted——此前永久卡死 stopping、不可删不可停（F3）。
       const recoveryRun = (await sessionState.journal.getSession()).active_run;
-      if (recoveryRun && !TERMINAL_RUN_STATUSES.has(recoveryRun.status) && recoveryRun.status === "running") {
-        await sessionState.journal.append({
-          type: "run_status_changed",
-          run_id: recoveryRun.id,
-          payload: { status: "waiting_user", reason: "process_restarted", resume_run_status: null }
-        });
+      for (const recoveryEvent of buildProcessRestartedConvergence(recoveryRun)) {
+        await sessionState.journal.append(recoveryEvent);
       }
     }
   }

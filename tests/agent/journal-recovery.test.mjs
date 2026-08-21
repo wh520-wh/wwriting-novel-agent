@@ -22,7 +22,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { FIXED_EVENT_TYPES, createAgentJournal } from "../../src/core/agent/journal.mjs";
+import { FIXED_EVENT_TYPES, buildProcessRestartedConvergence, createAgentJournal } from "../../src/core/agent/journal.mjs";
 
 const BASE_TIME = Date.parse("2026-08-06T00:00:00.000Z");
 
@@ -2830,4 +2830,93 @@ test("第十二轮 F2：dangling 恢复闭合孤儿 tool call 与 model turn，�
   assert.equal(again.filter((event) => event.type === "tool_call_failed").length, 1);
   assert.equal(again.filter((event) => event.type === "model_turn_completed").length, 1);
   assert.equal(again.filter((event) => event.type === "run_interrupted").length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// 第十二轮 F3：process_restarted 收敛矩阵 + 压缩 failed 崩溃窗口重放
+// ---------------------------------------------------------------------------
+
+test("第十二轮 F3：process_restarted 收敛矩阵覆盖非终态全集", () => {
+  const running = { id: "r1", status: "running" };
+  const stopping = { id: "r2", status: "stopping" };
+  const interrupting = { id: "r3", status: "interrupting" };
+  const done = { id: "r4", status: "completed" };
+  const waiting = { id: "r5", status: "waiting_user" };
+
+  assert.deepEqual(buildProcessRestartedConvergence(running), [{
+    type: "run_status_changed", run_id: "r1",
+    payload: { status: "waiting_user", reason: "process_restarted", resume_run_status: null }
+  }], "running 保持既有收敛：waiting_user");
+  for (const run of [stopping, interrupting]) {
+    const batch = buildProcessRestartedConvergence(run);
+    assert.equal(batch.length, 1);
+    assert.equal(batch[0].type, "run_interrupted");
+    assert.equal(batch[0].payload.reason, "process_restarted");
+  }
+  assert.deepEqual(buildProcessRestartedConvergence(done), [], "终态不收敛");
+  assert.deepEqual(buildProcessRestartedConvergence(waiting), [], "waiting_user 保持原状");
+  assert.deepEqual(buildProcessRestartedConvergence(null), []);
+});
+
+test("第十二轮 F3：压缩 failed 崩溃窗口——run 未收敛时短路、open() 收敛后恢复链重开、幂等", async (t) => {
+  const root = await makeWorkspace(t);
+  const events = [
+    makeEvent(1, { root, type: "session_created" }),
+    makeEvent(2, { root, type: "input_queued", payload: { input_id: "in-1", text: "旧任务" } }),
+    makeEvent(3, { root, type: "run_started", runId: "run-1", payload: { input_id: "in-1" } }),
+    makeEvent(4, { root, type: "tool_call_started", runId: "run-1", schemaVersion: 2, payload: { tool_call_id: "tc-1", activity_id: "act-1", name: "read_file" } }),
+    // 压缩在途 → failed（pending_input_id 残留）：崩溃窗口
+    makeEvent(5, { root, type: "context_compaction_started", payload: { compaction_id: "c-1", trigger: "automatic", pending_input_id: "in-1" } }),
+    makeEvent(6, { root, type: "context_compaction_failed", payload: { compaction_id: "c-1", error_code: "model_error" } }),
+    makeEvent(7, { root, type: "input_queued", payload: { input_id: "in-2", text: "优先任务" } }),
+    makeEvent(8, { root, type: "priority_input_requested", payload: { input_id: "in-2" } })
+  ];
+  await writeCrashJournal(root, events);
+  // 跨实例确定性 id：每实例唯一前缀（同 initialSessionId 回归测试口径），模拟生产
+  // 随机 UUID 跨实例不碰撞——否则第二个实例的恢复批次 event_id 会撞第一个实例。
+  let instanceSeq = 0;
+  const uniqueIds = () => {
+    const prefix = `i${(instanceSeq += 1)}-`;
+    let n = 0;
+    return () => `${prefix}${(n += 1)}`;
+  };
+  const journal = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: uniqueIds() });
+
+  // ① 崩溃窗口（run 仍 running）：压缩恢复未完成 → priority 恢复短路，孤儿 tool 不闭合
+  await journal.load();
+  let all = await journal.read({});
+  assert.equal(all.filter((e) => e.type === "tool_call_failed").length, 0, "窗口内不闭合孤儿（压缩恢复未完成）");
+  assert.equal(all.filter((e) => e.type === "input_started").length, 0, "窗口内不推进 priority 输入");
+  assert.equal((await journal.getSession()).active_run.status, "running");
+
+  // ② 模拟 open() 收敛矩阵（running → waiting_user，reason process_restarted）
+  await journal.append({
+    type: "run_status_changed",
+    run_id: "run-1",
+    payload: { status: "waiting_user", reason: "process_restarted", resume_run_status: null }
+  });
+
+  // ③ 下一个进程重启：新 journal 实例重放（session.json 是可重建派生缓存，崩溃
+  // 可能丢失——删除以走全量重放路径，side 状态完整可闭孤儿）→ 收敛后恢复链重开：
+  // 孤儿 tool 闭合 + priority 输入推进（修复前：永真短路→空）
+  // （load 在同一实例上是幂等一次性动作，无法重跑恢复——进程重启语义必须新实例）
+  await fs.rm(path.join(agentDir(root), "session.json"));
+  const journal2 = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: uniqueIds() });
+  await journal2.load();
+  all = await journal2.read({});
+  const toolFailed = all.filter((e) => e.type === "tool_call_failed");
+  assert.equal(toolFailed.length, 1, "收敛后孤儿 tool call 必须闭合（永真锚定已消除）");
+  assert.equal(toolFailed[0].payload.activity_id, "act-1", "恢复批次补 activity_id");
+  assert.equal(toolFailed[0].payload.error.code, "recovered_priority_orphan");
+  const started = all.filter((e) => e.type === "input_started");
+  assert.equal(started.length, 1, "优先级输入被推进");
+  assert.equal(started[0].payload.input_id, "in-2");
+
+  // ④ 幂等：再次重启重放不重复闭合
+  await fs.rm(path.join(agentDir(root), "session.json"));
+  const journal3 = createAgentJournal({ projectRoot: root, clock: createClock(), idFactory: uniqueIds() });
+  await journal3.load();
+  const again = await journal3.read({});
+  assert.equal(again.filter((e) => e.type === "tool_call_failed").length, 1);
+  assert.equal(again.filter((e) => e.type === "input_started").length, 1);
 });

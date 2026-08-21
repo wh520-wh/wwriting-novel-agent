@@ -150,7 +150,11 @@ function hasPendingCompactionRecovery(session) {
   if (compaction == null) return false;
   if (COMPACTION_NON_TERMINAL_STATES.has(compaction.state)) return true;
   if ((compaction.state === "failed" || compaction.state === "cancelled") && compaction.pending_input_id != null) {
-    return true;
+    // 第十二轮 F3（审核修订 P1-2）：崩溃窗口 = failed/cancelled 已落盘而 Run/input
+    // 收敛未落盘，窗口未收敛的判据是 run 仍 running。open() 把 run 收敛为
+    // waiting_user / interrupted 后，恢复链必须重新可用——否则每个 load 重放都跳过
+    // 锚定保守中断与 priority 恢复（永真锚定：前端项永久 running，detectDangling 永真）。
+    if (session.active_run?.status === "running") return true;
   }
   return false;
 }
@@ -292,7 +296,7 @@ function activateInput(session, inputId) {
 function createSideState() {
   return {
     eventIds: new Set(), // 全量 event_id（reducer 去重校验，含重放路径）
-    openToolCalls: new Map(), // tool_call_id -> 开始事件的 seq
+    openToolCalls: new Map(), // tool_call_id -> { seq, activity_id, name }（值形态见 tool_call_started 分支）
     openModelTurns: new Map(), // v2 turn_id -> { seq, reasoningCompleted }（供崩溃恢复检测）
     legacyOpenTurns: [], // v1 旧日志重放时的未闭合 turn 栈（legacy-<event_id>）
     openDecisions: new Map(), // decision_id -> seq
@@ -1058,6 +1062,26 @@ function reduceEvent(session, event, side) {
 // 进程重启（跨进程）恢复通过新实例 load() 完成——旧实例已退出，不存在并发写。
 // ---------------------------------------------------------------------------
 
+// 第十二轮 F3：进程重启后的 Run 收敛矩阵（纯函数，runtime open() 消费）。
+//   running       -> waiting_user（既有语义：等待用户，绝不自动模型调用）
+//   waiting_user  -> 不收敛（审核修订 P0-1：TERMINAL_RUN_STATUSES 不含
+//                    waiting_user，必须先于兜底分支排除——否则等待中的会话
+//                    会被误中断；Step 3.1 断言 [] 即此口径）
+//   stopping/interrupting -> run_interrupted（停止意图已表达，interrupted 可 retry）
+//   终态/null -> 不收敛
+export function buildProcessRestartedConvergence(run) {
+  if (!run || TERMINAL_RUN_STATUSES.has(run.status)) return [];
+  if (run.status === "waiting_user") return [];
+  if (run.status === "running") {
+    return [{
+      type: "run_status_changed",
+      run_id: run.id,
+      payload: { status: "waiting_user", reason: "process_restarted", resume_run_status: null }
+    }];
+  }
+  return [{ type: "run_interrupted", run_id: run.id, payload: { reason: "process_restarted" } }];
+}
+
 export function createAgentJournal({
   projectRoot,
   storageRoot = path.join(path.resolve(projectRoot), ".wwriting", "agent"),
@@ -1313,10 +1337,17 @@ export function createAgentJournal({
       });
     }
     for (const [turnId] of state.openModelTurns) {
+      // 地雷防御（第十二轮顺手修补，review 遗留）：reducer 对 model_turn_completed
+      // 的 input_id 是 requireString（见上），active_input_id 为 null（理论退化——
+      // 现代 producer 下开放 turn 必有归属输入，仅 input_interrupted 后崩溃的
+      // 遗留日志可构造）时不能填 null/undefined（dry-run 拒绝、整个 load 抛错）；
+      // 跳过闭合让 run_interrupted 收敛即可，残余 open turn 由
+      // journal_recovery_boundary / 下一轮 load 清扫。
+      if (run.active_input_id == null) continue;
       recoveryBatch.push({
         type: "model_turn_completed",
         run_id: run.id,
-        payload: { turn_id: turnId, input_id: run.active_input_id ?? null, outcome: "failed" }
+        payload: { turn_id: turnId, input_id: run.active_input_id, outcome: "failed" }
       });
     }
     for (const grant of run.active_grants ?? []) {
@@ -1472,7 +1503,12 @@ export function createAgentJournal({
         if (!hasPendingCompactionRecovery(state.session)) {
           await appendBatchLocked(buildDanglingRecoveryBatch());
         }
-      } else if (dangling) {
+      } else if (dangling && !hasPendingCompactionRecovery(state.session)) {
+        // 第十二轮 F3：与上面锚定分支同口径——压缩恢复尚未完成的 Run 不在此
+        // 收敛（全量重放路径同样由 runtime 的 open() 按收敛矩阵处理）。崩溃窗口
+        // 内（run 仍 running）闭合孤儿 tool/turn 会让 run 先于 open() 收敛被
+        // 中断，F3 重放用例断言「窗口内不闭合孤儿」即此口径；open() 把 run 收敛
+        // 为 waiting_user 后恢复链重开，下一次 load 正常闭合。
         await appendBatchLocked(buildDanglingRecoveryBatch());
       }
     }
@@ -1502,6 +1538,10 @@ export function createAgentJournal({
   function cloneSide(side) {
     return {
       eventIds: new Set(side.eventIds),
+      // 浅拷贝安全性（与下方 openModelTurns 深拷贝对称）：openToolCalls 的值对象
+      // { seq, activity_id, name } 当前没有 mutation 路径——reducer 只整体替换
+      //（set/delete），dry-run 克隆上不会被原地改写；若未来恢复批次改写 meta
+      //（如补 activity_id）必须改为深拷贝，避免被拒批次的 mutation 泄漏。
       openToolCalls: new Map(side.openToolCalls),
       // Task 6 回归：值对象必须深拷贝。dry-run 克隆上 reasoning_completed 会原地
       // 改写 meta.reasoningCompleted；若共享引用，被拒批次的 mutation 会泄漏到真实
