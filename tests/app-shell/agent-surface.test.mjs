@@ -1809,6 +1809,13 @@ test("工作组 duration 运行中由工作组投影时钟驱动，waiting_user 
     "待命",
     "waiting_user 工作组状态文案应为「待命」（与 session-sidebar RUN_STATUS_LABELS 统一）"
   );
+  // N3：组状态行 dataset.status 随投影状态同步（驱动 per-state 语义色，
+  // 与状态点/条目图标同色同义）。此组由 startAt=run_started 建组 → 早期是 running，随后转 waiting_user。
+  assert.equal(
+    root.querySelector(".agent-work-status").dataset.status,
+    "waiting_user",
+    "组状态行 dataset.status 应随投影 status 更新为 waiting_user"
+  );
 });
 
 test("工具详情行：整行可点击展开/收起，去掉独立「详情」summary", async () => {
