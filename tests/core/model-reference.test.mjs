@@ -1,7 +1,7 @@
 // tests/model-reference.test.mjs
 import assert from "node:assert/strict";
 import test from "node:test";
-import { resolveActiveModel, stripWindowMarkers, toRequestConfig } from "../../src/core/model-reference.mjs";
+import { resolveActiveModel, toRequestConfig } from "../../src/core/model-reference.mjs";
 
 function storeWith(providers, defaultModel = null) {
   return { schema_version: 2, default_model: defaultModel, providers };
@@ -68,27 +68,10 @@ test("toRequestConfig 输出运行时形状", () => {
   assert.equal(config.context_window, 256000);
 });
 
-test("toRequestConfig 保留原始 model_name 尾标（[1m] 窗口信号不丢）", () => {
-  const tagged = { ...deepseek, models: [{ ...deepseek.models[0], model_name: "deepseek-v4-pro[1m]" }] };
-  const config = toRequestConfig(tagged, tagged.models[0]);
-  assert.equal(config.model_name, "deepseek-v4-pro[1m]", "原始尾标原样保留，由 runtime 的 parseModelIdentity 统一剥离");
-});
-
-test("stripWindowMarkers 剥单个尾部标记", () => {
-  assert.equal(stripWindowMarkers("deepseek-v4-pro[1m]"), "deepseek-v4-pro");
-});
-
-test("stripWindowMarkers 剥全部连续尾部标记", () => {
-  assert.equal(stripWindowMarkers("vendor/model[1m][hot]"), "vendor/model");
-});
-
-test("stripWindowMarkers 保留中间中括号", () => {
-  assert.equal(stripWindowMarkers("mo[del]name"), "mo[del]name");
-});
-
-test("stripWindowMarkers null 安全", () => {
-  assert.equal(stripWindowMarkers(undefined), "");
-  assert.equal(stripWindowMarkers(null), "");
+test("toRequestConfig 原样透传 model_name（含中括号，标识符只是标识符）", () => {
+  const relay = { ...deepseek, models: [{ ...deepseek.models[0], model_name: "deepseek-v4-pro[foo]" }] };
+  const config = toRequestConfig(relay, relay.models[0]);
+  assert.equal(config.model_name, "deepseek-v4-pro[foo]");
 });
 
 test("resolveActiveModel(null) → 全局默认模型（store 有默认）", () => {
