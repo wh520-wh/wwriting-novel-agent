@@ -319,6 +319,8 @@ export function reduceWorkEvent(work, event) {
       const turnId = payload.turn_id;
       if (typeof turnId === "string" && turnId.length > 0) {
         const group = ensureGroup(work, runId, seq);
+        // §4.3：新一轮模型轮次开始即清除瞬时重试提示。
+        if (group) group.retryHint = null;
         work.turnToRun.set(turnId, runId);
         const id = `reasoning:${turnId}`;
         if (!group.items.has(id)) {
@@ -526,6 +528,8 @@ export function reduceWorkEvent(work, event) {
     }
     case "run_status_changed": {
       const group = ensureGroup(work, runId, seq);
+      // §4.3：状态变化即清除瞬时重试提示。
+      if (group) group.retryHint = null;
       if (typeof payload.status === "string" && payload.status.length > 0) {
         setGroupStatus(group, payload.status, seq, event.at);
       }
@@ -537,6 +541,15 @@ export function reduceWorkEvent(work, event) {
     }
     case "interrupt_safe_point_reached": {
       setGroupStatus(ensureGroup(work, runId, seq), "running", seq, event.at);
+      break;
+    }
+    case "provider_retry": {
+      // §4.3：瞬态重试提示；下一次 model_turn_started / 状态变化即清除。
+      const group = ensureGroup(work, runId, seq);
+      group.retryHint = {
+        attempt: typeof payload.attempt === "number" ? payload.attempt : null,
+        max: typeof payload.max_attempts === "number" ? payload.max_attempts : null
+      };
       break;
     }
     case "run_completed":
