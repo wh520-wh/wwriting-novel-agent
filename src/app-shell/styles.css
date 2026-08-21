@@ -78,6 +78,14 @@
   --text-warning: var(--amber);
   --text-danger: var(--red);
 
+  /* 第十二轮 N3：状态语义色单一来源（工作组条目/组状态行/侧边栏状态点三处引用）。
+     只用 --ink/--red 两个原语（light/dark 双主题均定义，color-mix 自动跟随）。 */
+  --agent-state-running: color-mix(in srgb, var(--ink) 60%, transparent);
+  --agent-state-done: color-mix(in srgb, var(--ink) 46%, transparent);
+  --agent-state-failed: var(--red);
+  --agent-state-stopped: color-mix(in srgb, var(--ink) 40%, transparent);
+  --agent-state-waiting: color-mix(in srgb, var(--ink) 70%, transparent);
+
   /* Typography weights */
   --weight-regular: 400;
   --weight-medium: 550;
@@ -1985,12 +1993,24 @@ input.spd-input[type="number"] { max-width: 160px; }
   background: var(--muted);
 }
 
+/* 第十二轮 N3：状态点同色同义（与工作组条目/组状态行共用 --agent-state-*）。
+   未知状态回退上方的 var(--muted)。 */
 .session-status[data-status="running"] {
-  background: var(--accent);
+  background: var(--agent-state-running);
 }
 
 .session-status[data-status="failed"] {
-  background: var(--red);
+  background: var(--agent-state-failed);
+}
+
+.session-status[data-status="waiting_user"] {
+  background: var(--agent-state-waiting);
+}
+
+.session-status[data-status="interrupting"],
+.session-status[data-status="stopping"],
+.session-status[data-status="cancelled"] {
+  background: var(--agent-state-stopped);
 }
 
 .session-title {
