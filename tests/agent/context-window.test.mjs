@@ -56,8 +56,8 @@ test("estimateRequestUsage：1M 档窗口源与阈值", () => {
     tools: [],
     effectiveContextWindow: 1_000_000
   });
-  assert.equal(usage.compaction_threshold, 967_000);
-  assert.equal(usage.window_source, "model_id_1m");
+  assert.equal(usage.compaction_threshold, 800_000);
+  assert.equal(usage.window_source, "configured"); // 非缺省窗口自动归为 configured
   assert.ok(usage.used_tokens >= usage.raw_tokens);
 });
 
@@ -114,9 +114,9 @@ test("shouldCompact：阈值或输出安全余量任一命中即压缩", () => {
   assert.equal(shouldCompact({ estimatedInput: 220_000, window: 256_000 }), true);
   // 输出余量撞硬窗口（223_999 + 32_000 >= 256_000）
   assert.equal(shouldCompact({ estimatedInput: 223_999, window: 256_000 }), true);
-  // 显式 threshold 覆盖窗口推导
-  assert.equal(shouldCompact({ estimatedInput: 900_000, window: 1_000_000, threshold: 967_000 }), false);
-  assert.equal(shouldCompact({ estimatedInput: 967_000, window: 1_000_000, threshold: 967_000 }), true);
+  // 八成口径：阈值按窗口推导（1M 档 800_000），显式 threshold 覆盖不再需要
+  assert.equal(shouldCompact({ estimatedInput: 799_999, window: 1_000_000 }), false);
+  assert.equal(shouldCompact({ estimatedInput: 800_000, window: 1_000_000 }), true);
 });
 
 test("exceedsHardWindow：estimatedInput + 输出安全余量 >= 窗口", () => {
@@ -171,4 +171,21 @@ test("observeProviderUsage：EMA 只在校准比例上平滑，结果仍落在 0
   // 观测 0.5 → EMA = 2.0 + 0.3 * (0.5 - 2.0) = 1.55
   assert.equal(third.calibration, 1.55);
   assert.ok(third.calibration >= 0.5 && third.calibration <= 2.0);
+});
+
+// ---------------------------------------------------------------------------
+// 第十三轮（ADR 0004）：window_source 双值口径 + 小窗口余量优先
+// ---------------------------------------------------------------------------
+
+test("estimateRequestUsage 的 windowSource 参数优先于按窗口值推导", () => {
+  const usage = estimateRequestUsage({ messages: [], tools: [], effectiveContextWindow: 1_000_000, windowSource: "configured" });
+  assert.equal(usage.window_source, "configured");
+  const fallback = estimateRequestUsage({ messages: [], tools: [], effectiveContextWindow: 256_000 });
+  assert.equal(fallback.window_source, "default_256k");
+});
+
+test("shouldCompact：小窗口（≤160k）时 32k 输出余量先于八成阈值触发", () => {
+  // 128k 窗口：八成阈值 102,400；但 96,000 + 32,000 已撞窗口 → 余量规则先命中
+  assert.equal(shouldCompact({ estimatedInput: 95_999, window: 128_000 }), false);
+  assert.equal(shouldCompact({ estimatedInput: 96_000, window: 128_000 }), true);
 });

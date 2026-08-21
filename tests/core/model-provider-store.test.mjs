@@ -48,12 +48,14 @@ test("模型 CRUD 与默认指针", async (t) => {
   const { provider } = await upsertProvider(root, { name: "D", base_url: "https://api.deepseek.com", api_format: "openai-chat-completions", api_key_env: "DEEPSEEK_API_KEY" });
   const { model } = await upsertModel(root, provider.id, { model_name: "deepseek-v4-pro[1m]", enabled: true });
   assert.match(model.id, /^m_[0-9a-f]{16}$/u);
-  assert.equal(model.context_window, 1000000); // [1m] 标记推导
+  // 第十三轮（ADR 0004）：尾标在规范化时剥除；[1m] 且未显式配窗口 -> 1M
+  assert.equal(model.model_name, "deepseek-v4-pro");
+  assert.equal(model.context_window, 1000000);
   await setDefaultModel(root, provider.id, model.id);
   const def = await getDefaultModel(root);
   assert.equal(def.model.provider_id ?? def.provider.id, provider.id);
   const found = await findModelById(root, provider.id, model.id);
-  assert.equal(found.model.model_name, "deepseek-v4-pro[1m]");
+  assert.equal(found.model.model_name, "deepseek-v4-pro");
   await removeModel(root, provider.id, model.id);
   assert.equal((await getDefaultModel(root)), null); // 默认模型被删 → 指针清空
 });
@@ -159,11 +161,11 @@ test("findModelByConfig 匹配 base_url+model_name 并跳过禁用项", async (t
   assert.equal(await findModelByConfig(root, { base_url: "https://f2.example.com", model_name: "good" }), null); // 禁用供应商跳过
 });
 
-test("无 [1m] 标记的模型默认 context_window 为 256000", async (t) => {
+test("未配窗口的模型不再回填（稀疏存储，缺省由运行时 resolveModelLimits 解析）", async (t) => {
   const root = await tempRoot(t);
   const { provider } = await upsertProvider(root, { name: "W1", base_url: "https://w1.example.com", api_format: "openai-chat-completions", api_key_env: "W1_KEY" });
-  const { model } = await upsertModel(root, provider.id, { model_name: "plain-model" });
-  assert.equal(model.context_window, 256000);
+  const { model } = await upsertModel(root, provider.id, { model_name: "plain-model", enabled: true });
+  assert.equal(model.context_window, undefined);
 });
 
 test("setDefaultModel 未知模型被拒绝", async (t) => {
@@ -243,4 +245,34 @@ test("并发 load/migrate：字节等价 store、无重复 provider、无悬空 
   const onDisk = JSON.parse(await readFile(path.join(root, "model-profiles.json"), "utf8"));
   assert.equal(JSON.stringify(onDisk), JSON.stringify(a), "落盘文件与迁移结果字节等价");
   assert.equal(onDisk.schema_version, 2);
+});
+
+// -- 第十三轮（ADR 0004）：尾标迁移在规范化时一次性完成（load 必经 normalizeModel） --
+test("尾标迁移幂等：二次加载名字与窗口不再变化", async (t) => {
+  const root = await tempRoot(t);
+  const { provider } = await upsertProvider(root, { name: "ID", base_url: "https://id.example.com", api_format: "openai-chat-completions", api_key_env: "ID_KEY" });
+  // upsert "m[1m][foo]" -> 首次 load 剥为 "m" + 1M；再次 load deepEqual 不变
+  await upsertModel(root, provider.id, { model_name: "m[1m][foo]", enabled: true });
+  const first = await loadProviderStore(root);
+  const second = await loadProviderStore(root);
+  const modelsOf = (store) => store.providers.find((p) => p.id === provider.id).models;
+  assert.deepEqual(modelsOf(second), modelsOf(first));
+  assert.equal(modelsOf(second)[0].model_name, "m");
+  assert.equal(modelsOf(second)[0].context_window, 1000000);
+});
+
+test("名字中间的中括号不剥：mo[del]name 原样保留且无窗口", async (t) => {
+  const root = await tempRoot(t);
+  const { provider } = await upsertProvider(root, { name: "MD", base_url: "https://md.example.com", api_format: "openai-chat-completions", api_key_env: "MD_KEY" });
+  const { model } = await upsertModel(root, provider.id, { model_name: "mo[del]name", enabled: true });
+  assert.equal(model.model_name, "mo[del]name");
+  assert.equal(model.context_window, undefined);
+});
+
+test("[1m] 迁移尊重显式窗口：显式 context_window 优先于尾标推导", async (t) => {
+  const root = await tempRoot(t);
+  const { provider } = await upsertProvider(root, { name: "EX", base_url: "https://ex.example.com", api_format: "openai-chat-completions", api_key_env: "EX_KEY" });
+  const { model } = await upsertModel(root, provider.id, { model_name: "x[1m]", enabled: true, context_window: 512000 });
+  assert.equal(model.model_name, "x");
+  assert.equal(model.context_window, 512000);
 });

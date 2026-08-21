@@ -263,9 +263,9 @@ test("usage 就绪后：dasharray 按 ratio 映射，popover 含 tokens/窗口/�
   assert.match(popover.textContent, /256k|1M/u, "应显示窗口来源");
 });
 
-test("1M 窗口来源显示为模型标注，不显示为 256k", () => {
+test("1M 已配置窗口按实际大小显示", () => {
   const { root, ring } = makeRing();
-  ring.setUsage({ ...READY_USAGE, effective_context_window: 1000000, window_source: "model_id_1m", ratio: 0.3 });
+  ring.setUsage({ ...READY_USAGE, effective_context_window: 1000000, window_source: "configured", ratio: 0.3 });
   const button = root.querySelector('[data-testid="agent-context-ring"]');
   button._fire("click");
   const popover = root.querySelector('[data-testid="agent-context-popover"]');
