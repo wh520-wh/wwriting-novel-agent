@@ -1405,6 +1405,8 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     }
     // 第十二轮 F6：行序对齐投影序（orderedWorkItems）。仅在有增删（changed）时
     // 执行，避免每帧搬移 DOM；insertBefore 已在位时不产生搬移。
+    // ponytail: 门控只认成员增删——plan_updated 改既有行 sortSeq 不触发重排，
+    // 该角落下 DOM 序与投影序短暂不一致，下次增删行自愈（transient 接受）。
     if (changed) {
       let ref = null;
       for (let i = ordered.length - 1; i >= 0; i -= 1) {
