@@ -209,7 +209,9 @@ export function reduceEvent(state, event) {
 // 只在事件路径调用；重建重放同一算法，确定性一致。
 function finalizeAssistantStream(state, seq) {
   const stream = state.assistantStream;
-  if (!stream || stream.text.length === 0) return;
+  // null-seq 退化事件不定稿：event_key 会退化为 `finalize:null`，去重失效，
+  // 每次重建都重复插入气泡；正常路径（实录日志/恢复重放）seq 恒有值。
+  if (seq == null || !stream || stream.text.length === 0) return;
   state.conversation.push({
     role: "assistant",
     text: stream.text,
@@ -405,8 +407,12 @@ function applyEventToState(state, event) {
       // 与 journal 的 RUN_STATUS_TO_SESSION 一致：终态镜像为 idle，中间态原样。
       state.session.status = RUN_STATUS_TO_SESSION[run.status] ?? "running";
       if (TERMINAL_RUN_STATUSES.has(run.status)) run.active_input_id = null;
-      // F1：等待用户决策时正文已停——定稿残留流式文本（等待期不再挂流式气泡）。
-      if (run.status === "waiting_user") finalizeAssistantStream(state, seq);
+      // F1：等待用户决策或终态时正文已停——定稿残留流式文本（终态防御：
+      // targetTerminal 分支允许 run_status_changed 携带终态 status，历史日志/
+      // 恢复重放若走此路径同样收敛，不违反「终态无残留流式」不变量）。
+      if (run.status === "waiting_user" || TERMINAL_RUN_STATUSES.has(run.status)) {
+        finalizeAssistantStream(state, seq);
+      }
       bump(state, ["run"]);
       break;
     }
@@ -454,6 +460,9 @@ function applyEventToState(state, event) {
     case "model_turn_started": {
       // 未闭合 model turn 的追踪已由 thinking 计数迁移到 work 投影（Task 5）：
       // legacy 开放 turn 由 reduceWorkEvent 在 work 组的 legacyOpenTurns 计数。
+      // 此处仅清槽、不定稿：turn 边界即新回合开始，残留 delta（若有）属于上一
+      // 回合，已由上一回合的终态/waiting_user 定稿或随后的 run_started 处理；
+      // 正常序列里本事件之前不会有未闭合 delta，故清空即可，不重复定稿。
       state.assistantStream = null;
       if (state.session?.active_run) state.session.active_run.assistant_text = null;
       bump(state, ["run", "messages"]);
