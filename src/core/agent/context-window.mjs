@@ -40,6 +40,8 @@ function calibrationFactor(calibration) {
 
 // 估算唯一输入：已装配完成的最终 request messages/tools + 有效窗口 + 可选
 // 校准倍率。返回 ContextUsage（计划 §4 固定 typedef 字段，另含 raw_tokens）。
+// 可选 windowSource（生产由 runtime 传 modelConfig.window_source；fallback 按窗口
+// 值等于 DEFAULT_CONTEXT_WINDOW 反推「default_256k」，仅为直接调用方兜底）。
 export function estimateRequestUsage({ messages = [], tools = [], effectiveContextWindow, calibration = 1, windowSource = null } = {}) {
   const raw =
     estimateTokens(JSON.stringify(messages)) +

@@ -8,7 +8,6 @@ import { MODEL_PRESETS as PRESET_DEFINITIONS } from "./model-presets.mjs";
 const PROVIDERS_FILE = "model-profiles.json";
 export const SCHEMA_VERSION = 2;
 export const ALLOWED_API_FORMATS = new Set(["openai-chat-completions"]);
-const DEFAULT_CONTEXT_WINDOW = 256000;
 
 // Task 19（spec 4.3 #12）：store 级单一 mutex 串行化「读-判-迁移-写」整条路径。
 // loadProviderStore 的 v1→v2 迁移也走同一把锁（见 loadProviderStoreUnlocked），
@@ -104,7 +103,8 @@ function normalizeModel(value) {
   // 第十三轮（ADR 0004）：[1m] 尾标机制淘汰。规范化一次性迁移：先按原始名判
   // 尾标（仅在未显式配置 context_window 时推导 1M），再剥全部尾部连续 [..]。
   // 顺序不可反（先剥就丢信号）；剥后名字与此前后端实际发出的基础 ID 逐字节
-  // 一致，发送行为零变化（loadProviderStore 每次加载必经本函数，天然幂等）。
+  // 一致，发送行为零变化（loadProviderStore 每次加载必经本函数，天然幂等；
+  // 保存新模型名同样经本函数剥标）。
   // 存储改稀疏：未配窗口 = 运行时缺省 256k，不再回填。
   let name = rawName;
   const tags = [];
@@ -115,6 +115,7 @@ function normalizeModel(value) {
     name = name.slice(0, -match[0].length);
   }
   const million = tags.some((tag) => tag === "1m" || tag === "1M");
+  if (!name) name = rawName; // 全标名（如 "[1m]"）剥空时保留原文，防空名模型落库
   const explicitWindow = positiveInt(value.context_window);
   const model = {
     id: stringValue(value.id) || newModelId(),

@@ -179,6 +179,7 @@ test("模型 ID 尾标解析：active_model 原样持久化，modelConfig 携带
   assert.equal(request.modelConfig.effective_context_window, 1_000_000);
   assert.equal(request.modelConfig.compaction_threshold, 800_000);
   assert.equal(request.modelConfig.window_source, "configured");
+  assert.equal(request.modelConfig.max_output_tokens, 64_000, "未配置最大输出时 modelConfig 恒填缺省 64k（F5 集成锚点）");
   assert.equal(request.modelConfig.base_url, "https://api.example.com/v1");
   assert.equal(request.modelConfig.api_key_env, "DEEPSEEK_API_KEY");
   // 持久配置不被改写（plan invariant 9）：内存项目对象与磁盘 project.yaml 的
