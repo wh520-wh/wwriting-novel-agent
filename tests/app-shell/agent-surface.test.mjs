@@ -3097,6 +3097,7 @@ function composerOptionsData(overrides = {}) {
     activeModelCapabilities: { reasoningEffortLevels: ["low", "medium", "high"] },
     toolPermissions: { read_only: false, safe_edit: true, auto_edit: false, yolo: false },
     reasoningEffort: "auto",
+    activeModelDisplay: "DeepSeek 官方 / deepseek-reasoner", // 模拟 dashboard model_profile.display
     ...overrides
   };
 }
@@ -3107,6 +3108,7 @@ function unconfiguredOptions(overrides = {}) {
     store: { providers: [], default_model: null },
     activeModel: null,
     activeModelCapabilities: null,
+    activeModelDisplay: null, // 未配置无档案显示串；「未配置」占位标签不得被覆盖
     ...overrides
   });
 }
@@ -3136,10 +3138,11 @@ test("composer 三控件：openProject 后加载选项并渲染（testid 齐全�
   assert.equal(modelSel.tagName, "button", "不得退回系统原生 select");
   assert.equal(modelSel.dataset.value, "p-deepseek/m-reasoner");
   assert.match(modelSel.textContent, /deepseek-reasoner/u);
+  assert.match(modelSel.textContent, /DeepSeek 官方 \/ deepseek-reasoner/u, "当前选中显示消费档案 display 单源（ADR 0005）");
   // Task 16：只列启用供应商的启用模型（停用模型 deepseek-chat 与停用供应商 p-off 不出现）
   assert.deepEqual(
     [...root.querySelectorAll('[data-testid="agent-model-option"]')].map((o) => o.textContent),
-    ["deepseek-reasoner（DeepSeek 官方）", "mimo-7b（小米 MiMo 官方）"]
+    ["DeepSeek 官方 / deepseek-reasoner", "小米 MiMo 官方 / mimo-7b"]
   );
   assert.equal(permSel.disabled, false);
   assert.equal(root.querySelectorAll('[data-testid="agent-permission-option"]').length, 4, "权限四档：只读/确认后修改/自动修改/YOLO");
@@ -3177,7 +3180,8 @@ test("composer 清单外字面模型（未迁移旧配置）：仍显示实际�
       fetchComposerOptions: async () => composerOptionsData({
         store: { providers: [], default_model: null },
         activeModel: { provider: "openai-compatible", model_name: "legacy-model", base_url: "https://legacy.test/v1" },
-        activeModelCapabilities: null
+        activeModelCapabilities: null,
+        activeModelDisplay: "OpenAI 兼容 · legacy.test / legacy-model" // 字面模型档案按端点推断显示名
       })
     }
   });
@@ -3185,7 +3189,7 @@ test("composer 清单外字面模型（未迁移旧配置）：仍显示实际�
 
   const model = root.querySelector('[data-testid="agent-model-select"]');
   assert.equal(model.dataset.value, "legacy:legacy-model");
-  assert.match(model.textContent, /legacy-model/u);
+  assert.match(model.textContent, /OpenAI 兼容 · legacy\.test \/ legacy-model/u);
   assert.equal(model.disabled, true, "清单外的生效模型只展示事实，不伪装成可切换选项");
   assert.equal(root.querySelectorAll('[data-testid="agent-model-option"]').length, 1);
 });
@@ -3532,7 +3536,7 @@ test("选择器过滤停用供应商与停用模型", () => {
   });
   assert.deepEqual(options.map((o) => o.value), ["a/m1"]);
   assert.equal(options[0].isDefault, true);
-  assert.equal(options[0].label, "a1（A）");
+  assert.equal(options[0].label, "A / a1");
 });
 
 test("无任何可用模型时首项为未配置占位", () => {

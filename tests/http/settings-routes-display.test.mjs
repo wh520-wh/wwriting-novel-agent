@@ -112,11 +112,24 @@ test("buildModelProfile 未配置（null/空对象）返回未配置形状，不
   assert.equal(configured.is_mock, false);
   assert.equal(configured.model_name, "deepseek-chat");
   assert.equal(configured.display, "DeepSeek 官方 / deepseek-chat");
+  assert.equal(configured.context_window, 256_000, "缺省窗口与运行时同源");
+  assert.equal(configured.max_output_tokens, 64_000, "缺省最大输出与运行时同源");
   // 显式 mock provider（仅测试/内部路径）保留 is_mock 标记，但展示名不带 "Mock"。
   const mockProfile = buildModelProfile({ provider: "mock", model_name: "mock-writer" }, "C:\\fake-secrets", {});
   assert.equal(mockProfile.is_mock, true);
   assert.match(mockProfile.display, /^mock/u);
   assert.doesNotMatch(mockProfile.display, /Mock/u);
+});
+
+test("厂商显示名单源：provider_label（= store 供应商名）优先于端点推断", () => {
+  const relayProfile = buildModelProfile(
+    { provider: "openai-compatible", provider_label: "我的中转", model_name: "gpt-x", base_url: "https://relay.example.com" },
+    "C:\\fake-secrets",
+    {}
+  );
+  assert.equal(relayProfile.display, "我的中转 / gpt-x");
+  assert.equal(relayProfile.context_window, 256_000);
+  assert.equal(relayProfile.max_output_tokens, 64_000);
 });
 
 // ---------------------------------------------------------------------------

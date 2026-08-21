@@ -209,14 +209,23 @@ export function createDrawerPanels(ctx) {
     summaryLine.textContent = modelUnconfigured
       ? "尚未配置模型。点上方按钮选 DeepSeek / MiMo 或自定义供应商，并粘贴 API Key。"
       : `${profile.display}${profile.endpoint ? ` · ${profile.endpoint}` : ""}；${profile.api_key_saved ? "API Key 已保存在本机。" : "尚未保存 API Key。"}`;
+    // 第十三轮（F6）：高级项参数可见（buildModelProfile 已带同源缺省口径）。
+    const fmtK = (tokens) => `${Math.round(Number(tokens) / 1000)}k`;
+    const nodes = [summaryLine];
+    if (!modelUnconfigured && Number(profile.context_window) > 0) {
+      const paramsLine = document.createElement("p");
+      paramsLine.className = "spd-hint";
+      paramsLine.textContent = `上下文 ${fmtK(profile.context_window)} · 最大输出 ${fmtK(profile.max_output_tokens)}`;
+      nodes.push(paramsLine);
+    }
     if (resolutionNote != null) {
       const noteLine = document.createElement("p");
       noteLine.className = "spd-hint";
       noteLine.textContent = `模型提示：${resolutionNote}`;
-      model.body.append(summaryLine, noteLine, open);
-    } else {
-      model.body.append(summaryLine, open);
+      nodes.push(noteLine);
     }
+    nodes.push(open);
+    model.body.append(...nodes);
 
     const budget = dpanel("预算与权限");
     const kv = document.createElement("dl");

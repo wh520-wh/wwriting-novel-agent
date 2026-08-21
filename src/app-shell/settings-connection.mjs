@@ -19,7 +19,7 @@ export function formatConnectionStatus(result) {
 // 对话模型选择器选项（Task 16）：从全局供应商清单（GET /api/settings/providers 的
 // 扁平 store）派生。只列启用供应商（status !== "disabled"）与其启用模型
 // （enabled !== false）；value = `${provider.id}/${model.id}` 引用形态，
-// label = `${model.model_name}（${provider.name}）`，命中 store.default_model 的项
+// label = `${provider.name} / ${model.model_name}`，命中 store.default_model 的项
 // 标 isDefault。无任何可用模型时返回单个「未配置」占位（value ""）——选择器据此
 // 给出可点击入口直达模型设置页。
 export function buildModelPickerOptions(store = {}) {
@@ -31,7 +31,7 @@ export function buildModelPickerOptions(store = {}) {
       if (!model || model.enabled === false) continue;
       options.push({
         value: `${provider.id}/${model.id}`,
-        label: `${model.model_name}（${provider.name}）`,
+        label: `${provider.name} / ${model.model_name}`,
         isDefault: Boolean(
           defaultModel &&
           defaultModel.provider_id === provider.id &&

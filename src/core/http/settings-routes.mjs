@@ -28,6 +28,7 @@ import {
   updateProjectSettings
 } from "../settings-runtime.mjs";
 import { resolveModelCapabilities, writingRequiredCapabilitiesOk } from "../model/capabilities.mjs";
+import { resolveModelLimits } from "../model/model-identity.mjs";
 import { loadProviderStore } from "../model-provider-store.mjs";
 import { toRequestConfig } from "../model-reference.mjs";
 import { resolveActiveProjectRoot, resolveReadProjectRoot, resolveWriteProjectRoot } from "./router.mjs";
@@ -116,13 +117,16 @@ export function buildModelProfile(activeModel = {}, secretsRoot, options = {}) {
       saved_to: options.saved_to ?? "project.yaml",
       capabilities: null,
       pricing: null,
-      temperature: null
+      temperature: null,
+      context_window: null,
+      max_output_tokens: null
     };
   }
   const provider = activeModel?.provider ?? "openai-compatible";
   const modelName = activeModel?.model_name ?? null;
   const apiKeyEnv = activeModel?.api_key_env ?? null;
   const secretValue = apiKeyEnv ? loadLocalSecretsSync(secretsRoot)[apiKeyEnv] ?? process.env[apiKeyEnv] ?? "" : "";
+  const limits = resolveModelLimits(activeModel);
   return {
     provider,
     provider_label: providerDisplayName(activeModel),
@@ -141,7 +145,10 @@ export function buildModelProfile(activeModel = {}, secretsRoot, options = {}) {
     // 价格与温度一并带回：设置面板无项目时用全局默认模型渲染表单，
     // 缺这两个字段会显示成空白（价格已保存却看不见）。
     pricing: activeModel?.pricing ?? null,
-    temperature: activeModel?.temperature ?? null
+    temperature: activeModel?.temperature ?? null,
+    // 第十三轮（F6）：高级项参数可见，缺省口径与运行时同一解析函数。
+    context_window: limits.effective_context_window,
+    max_output_tokens: limits.effective_max_output_tokens
   };
 }
 
