@@ -115,14 +115,37 @@ class MockElement {
 
   append(...nodes) {
     for (const node of nodes) {
-      if (node instanceof MockElement) node._parent = this;
+      // 第十二轮 F6：真实 DOM 语义——append 已挂载节点是「移动」而非复制。
+      if (node instanceof MockElement) node.remove();
+      node._parent = this;
       this.children.push(node);
     }
   }
   appendChild(node) {
-    if (node instanceof MockElement) node._parent = this;
+    if (node instanceof MockElement) node.remove();
+    node._parent = this;
     this.children.push(node);
     return node;
+  }
+  insertBefore(node, refNode) {
+    // 第十二轮 F6：真实 DOM 语义——已在树的节点先移除再插入（移动）；
+    // refNode 为 null 时等效 append。
+    if (node instanceof MockElement) node.remove();
+    let index = refNode == null ? this.children.length : this.children.indexOf(refNode);
+    if (index < 0) index = this.children.length;
+    this.children.splice(index, 0, node);
+    node._parent = this;
+    return node;
+  }
+  get lastElementChild() {
+    return this.children.length > 0 ? this.children[this.children.length - 1] : null;
+  }
+  get nextSibling() {
+    if (!this._parent) return null;
+    const index = this._parent.children.indexOf(this);
+    return index >= 0 && index + 1 < this._parent.children.length
+      ? this._parent.children[index + 1]
+      : null;
   }
   replaceChildren(...nodes) {
     for (const child of this.children) {
@@ -3718,6 +3741,19 @@ test("Task 10 首屏：openProject 以 tail 拉取最后 200 条；滚动到顶�
     topBefore + (conv.scrollHeight - heightBefore),
     "前置插入后按 oldHeight→newHeight 差恢复 scrollTop，原消息锚点不跳动"
   );
+
+  // 第十二轮 F6：前置页（601-800）带来更早 tool 行后，行序对齐投影序——
+  // 全部 tool 行的 act 编号必须严格递增（前置页 act-<N 较小> 在 tail act-<N 较大>
+  // 之前；.agent-work-item 行的 dataset.itemId 见 view.js 渲染处）。
+  const toolIds = [...root.querySelectorAll(".agent-work-item")]
+    .map((row) => row.dataset.itemId)
+    .filter((id) => id.startsWith("tool:"));
+  const nums = toolIds.map((id) => Number(id.slice("tool:act-".length)));
+  assert.ok(nums.length > 2, "前置页+tail 至少两批 tool 行");
+  assert.ok(
+    nums.every((n, i) => i === 0 || nums[i - 1] < n),
+    "tool 行 DOM 序 = act 编号升序（前置页行在前，F6）"
+  );
 });
 
 test("Task 10 去重：重复同一 seq 的 SSE 与重复前置页不重复生成消息", async () => {
@@ -5348,4 +5384,55 @@ test("第十二轮 F4：waiting_user Run 状态区显示等待指令提示", asy
     []
   ));
   assert.ok(root.querySelector('[data-testid="agent-run-hint"]'), "waiting_user 提示渲染（F4）");
+});
+
+// ===========================================================================
+// 第十二轮 F7/F8：plan chip 全路径清空 + notices 跨会话同通知数重置
+// ===========================================================================
+
+test("第十二轮 F7(a)：newSessionPlaceholder 通知 onPlanUpdated(null)，不残留上一会话计划", async () => {
+  const plans = [];
+  const { surface } = await makeSurface({ callbacks: { onPlanUpdated: (plan) => plans.push(plan) } });
+  // 与既有「第十一轮 B」同款：run_started 先行，快照重放（session 重建）时
+  // plan_updated 才有 active_run 可挂 plan（否则 plan 投影被跳过，首断言无法建立）。
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun({ status: "running" }) }), [
+    ev("run_started", { workflow: "general", input_id: "in-1" }),
+    ev("plan_updated", { explanation: "计划", items: [{ step: "1", status: "pending" }] })
+  ]));
+  assert.equal(plans.at(-1)?.items?.length, 1, "有计划的会话先通知非 null");
+  surface.newSessionPlaceholder();
+  assert.equal(plans.at(-1), null, "占位路径必须清空 plan chip（F7）");
+});
+
+test("第十二轮 F7(b)：switchSession 快照失败路径通知 onPlanUpdated(null)", async () => {
+  const plans = [];
+  const { surface } = await makeSurface({
+    callbacks: { onPlanUpdated: (plan) => plans.push(plan) },
+    apiOverrides: {
+      fetchSnapshot: async () => { throw new Error("boom"); }
+    }
+  });
+  await surface.openProject("D:\\novel"); // fetchSnapshot 抛错 → 首屏无快照，不执行 applySnapshot
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun({ status: "running" }) }), [
+    ev("run_started", { workflow: "general", input_id: "in-1" }),
+    ev("plan_updated", { explanation: "计划", items: [{ step: "1", status: "pending" }] })
+  ]));
+  assert.equal(plans.at(-1)?.items?.length, 1);
+  await surface.switchSession("sess-2"); // 再次 fetchSnapshot 抛错 → 走 catch
+  assert.equal(plans.at(-1), null, "快照失败路径必须通知 onPlanUpdated(null)（F7）");
+});
+
+test("第十二轮 F8：跨会话同通知数切换，B 的通知行必须渲染", async () => {
+  const { root, surface } = await makeSurface();
+  // A 会话：1 条通知
+  surface.applySnapshot(snapshotOf(session({}), [
+    ev("chapter_rolled_back", { chapter_no: 2, from_version: 4, to_version: 1 })
+  ]));
+  assert.ok(root.querySelector('[data-notice-type="chapter_rolled_back"]'), "A 会话通知渲染");
+  // B 会话：也是 1 条通知（数目相同是关键——revision 恰相等的死区，
+  // 只有 reset 把 rendered.notices 置 -1 才能重渲染）
+  surface.applySnapshot(snapshotOf(session({ session_id: "sess-b" }), [
+    ev("memory_file_restored", { file: "book_summary", to_version: 3 }, { session_id: "sess-b" })
+  ]));
+  assert.ok(root.querySelector('[data-notice-type="memory_file_restored"]'), "B 会话通知行必须渲染（F8）");
 });

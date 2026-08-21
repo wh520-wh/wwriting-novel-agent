@@ -369,7 +369,9 @@ export function createAgentSurface({
         else fetchOpts.tail = true;
         snapshot = await t.fetchSnapshot(fetchOpts);
       } catch {
-        // 载入失败：保留空会话，SSE 重连补齐
+        // 载入失败：保留空会话，SSE 重连补齐；plan chip 同步清空（F7：快照失败
+        // 路径此前不通知，残留上一会话的任务计划）。
+        onPlanUpdated(null);
       }
     }
     if (!isCurrentProjectScope(scope)) return;
@@ -398,6 +400,8 @@ export function createAgentSurface({
     activeSessionId = draftSessionId;
     state = resetState(createState(), { projectRoot: scope.projectRoot });
     view.reset();
+    // 第十二轮 F7：占位会话无 plan，立即清空 plan chip（否则残留上一会话计划）。
+    onPlanUpdated(null);
     escapeLatch = null;
     terminalRefreshSeq = -1;
     // 中止旧 SSE 僵尸连接（占位没有事件流）：transport.openProject 同步 abort 旧

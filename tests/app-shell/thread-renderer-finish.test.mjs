@@ -100,14 +100,37 @@ class MockElement {
 
   append(...nodes) {
     for (const node of nodes) {
-      if (node instanceof MockElement) node._parent = this;
+      // 第十二轮 F6：真实 DOM 语义——append 已挂载节点是「移动」而非复制。
+      if (node instanceof MockElement) node.remove();
+      node._parent = this;
       this.children.push(node);
     }
   }
   appendChild(node) {
-    if (node instanceof MockElement) node._parent = this;
+    if (node instanceof MockElement) node.remove();
+    node._parent = this;
     this.children.push(node);
     return node;
+  }
+  insertBefore(node, refNode) {
+    // 第十二轮 F6：真实 DOM 语义——已在树的节点先移除再插入（移动）；
+    // refNode 为 null 时等效 append。
+    if (node instanceof MockElement) node.remove();
+    let index = refNode == null ? this.children.length : this.children.indexOf(refNode);
+    if (index < 0) index = this.children.length;
+    this.children.splice(index, 0, node);
+    node._parent = this;
+    return node;
+  }
+  get lastElementChild() {
+    return this.children.length > 0 ? this.children[this.children.length - 1] : null;
+  }
+  get nextSibling() {
+    if (!this._parent) return null;
+    const index = this._parent.children.indexOf(this);
+    return index >= 0 && index + 1 < this._parent.children.length
+      ? this._parent.children[index + 1]
+      : null;
   }
   replaceChildren(...nodes) {
     for (const child of this.children) {
