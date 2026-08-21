@@ -371,7 +371,7 @@ try {
   const workItemsJs = await fetchText(`http://127.0.0.1:${port}/agent/work-items.mjs`);
   assert.ok(viewJs.includes("agent-work-group"), "view.js 应渲染 details.agent-work-group");
   assert.ok(viewJs.includes("当前模型不支持查看"), "view.js 应输出 unsupported 空内容文案");
-  assert.ok(viewJs.includes("本次没有可查看的思考内容"), "view.js 应输出 empty 空内容文案");
+  assert.ok(viewJs.includes("没有可查看的思考内容（本次无输出或该模型不支持）"), "view.js 应输出 empty 空内容文案");
   assert.ok(/思考 \$\{[^}]+\} 秒/u.test(workItemsJs) || workItemsJs.includes("思考 1 秒"), "work-items.mjs 应输出 思考 N 秒 终态标签模板");
   assert.ok(workItemsJs.includes("已完成思考"), "work-items.mjs 应保留 已完成思考 回退文案");
   assert.ok(workItemsJs.includes("工作中"), "work-items.mjs 应输出工作组运行状态文案");
