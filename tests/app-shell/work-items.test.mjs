@@ -696,7 +696,26 @@ test("F13: waiting_user 时最新 running 工具项转等待确认，恢复 runn
   reduceWorkEvent(work, ev("run_started", {}, 1));
   reduceWorkEvent(work, ev("tool_call_started", { activity_id: "act-1", name: "write_file", args: {} }, 2));
   reduceWorkEvent(work, ev("run_status_changed", { status: "waiting_user" }, 3));
-  assert.equal(work.groups.get("run-1").items.get("tool:act-1").state, "waiting");
+  const item = work.groups.get("run-1").items.get("tool:act-1");
+  assert.equal(item.state, "waiting");
+  // 审查修补：状态↔标签不变量——翻转必须同步更新存储 label（行渲染读它，
+  // 漏更新则工具栏仍显示「正在写入文件」）。
+  assert.equal(item.label, toolLabel("write_file", "waiting"), "翻转后 label 同步为等待确认文案");
   reduceWorkEvent(work, ev("run_status_changed", { status: "running" }, 4));
-  assert.equal(work.groups.get("run-1").items.get("tool:act-1").state, "running");
+  assert.equal(item.state, "running");
+  assert.equal(item.label, toolLabel("write_file", "running"), "恢复 running 后 label 同步转回正在写入");
+});
+
+test("F13: waiting_user 后直接终态（run_interrupted）——waiting 工具项由 F2 终态清扫兜底为 cancelled", () => {
+  const work = createWorkState();
+  reduceWorkEvent(work, ev("run_started", {}, 1));
+  reduceWorkEvent(work, ev("tool_call_started", { activity_id: "act-1", name: "write_file", args: {} }, 2));
+  reduceWorkEvent(work, ev("run_status_changed", { status: "waiting_user" }, 3));
+  assert.equal(work.groups.get("run-1").items.get("tool:act-1").state, "waiting");
+  // 决策等待未解决就中止：waiting 项不得永久残留「等待确认」
+  reduceWorkEvent(work, ev("run_interrupted", { reason: "user_abort" }, 4));
+  const item = work.groups.get("run-1").items.get("tool:act-1");
+  assert.equal(item.state, "cancelled", "waiting 项纳入终态清扫，就地终结为 cancelled");
+  assert.equal(item.label, toolLabel("write_file", "cancelled"), "终态 label 同步为已停止文案");
+  assert.deepEqual(openWorkItemIds(work.groups.get("run-1")), [], "终态组不得有 live 目标");
 });

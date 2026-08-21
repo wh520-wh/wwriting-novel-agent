@@ -538,13 +538,22 @@ export function reduceWorkEvent(work, event) {
       }
       // 第十二轮 F13：决策等待（waiting_user）时最新 running 工具项转 waiting，
       // 决策解决后恢复的 running 事件会把它转回（工具自身事件照常终结它）。
-      if (group.status === "waiting_user") {
+      // 审核修补：翻转条件统一读 payload.status（与恢复分支对称）——非法 status
+      // 的垃圾事件不再对既有 waiting_user 组重复执行翻转；同时补上状态↔标签
+      // 不变量（行渲染读存储 label，漏更新则工具栏仍显示「正在写入文件」）。
+      if (payload.status === "waiting_user") {
         const items = orderedWorkItems(group).filter((item) => item.kind === "tool" && item.state === "running");
         const last = items[items.length - 1];
-        if (last) last.state = "waiting";
+        if (last) {
+          last.state = "waiting";
+          last.label = toolLabel(last.tool, "waiting"); // 必修：状态↔标签不变量
+        }
       } else if (payload.status === "running") {
         for (const item of group.items.values()) {
-          if (item.kind === "tool" && item.state === "waiting") item.state = "running";
+          if (item.kind === "tool" && item.state === "waiting") {
+            item.state = "running";
+            item.label = toolLabel(item.tool, "running"); // 对称赋值（恢复路径 label 本就是「正在X」，等价）
+          }
         }
       }
       // §4.3：状态变化即清除瞬时重试提示。
@@ -557,6 +566,9 @@ export function reduceWorkEvent(work, event) {
     }
     case "interrupt_safe_point_reached": {
       setGroupStatus(ensureGroup(work, runId, seq), "running", seq, event.at);
+      // F13：waiting 项恢复只挂在 run_status_changed(running)；interrupting 路径
+      // （interrupt_requested/interrupt_safe_point_reached）下 waiting 项滞留，由
+      // 工具自身事件或 F2 终态清扫兜底（当前 generation 不产生 interrupt_requested，现实不可达）。
       break;
     }
     case "provider_retry": {
