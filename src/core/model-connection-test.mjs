@@ -9,7 +9,6 @@ import {
 } from "./model-config-validation.mjs";
 import { createModelGateway } from "./model/gateway.mjs";
 import { OpenAICompatibleAdapter } from "./model/openai-compatible.mjs";
-import { parseModelIdentity } from "./model/model-identity.mjs";
 
 // 探测常量（Task 7）：思考型模型（如 deepseek-reasoner）把 token 额度全花在
 // reasoning_content 上、正文 content 为空，且思考期可能 >10s 无首 token——
@@ -67,9 +66,7 @@ export async function testModelConnection({
     };
   }
 
-  // Task 2：模型 ID 尾标（如 model[1m][foo]）只在传输边界剥离——传给 gateway 的
-  // model_name 用 provider_model_id；响应展示与配置对象保留 configured ID。
-  const identity = parseModelIdentity(config.model_name ?? "");
+  // 模型名原样发送（ADR 0004）。
 
   const timeoutController = new AbortController();
   // Task 11/B6：内部探测超时与调用方取消必须可区分。先置位 timedOut 再 abort——
@@ -91,7 +88,7 @@ export async function testModelConnection({
   try {
     await runWithRetry(
       () => complete({
-        config: { ...config, model_name: identity.provider_model_id },
+        config: { ...config },
         apiKey,
         messages: [{ role: "user", content: PROBE_PROMPT }],
         maxTokens: PROBE_MAX_TOKENS,
@@ -144,9 +141,7 @@ export async function completeOpenAICompatibleProbe({
   signal,
   timeoutMs = PROBE_TIMEOUT_MS,
 }) {
-  // Task 2：传输边界再剥离一次（幂等）。经 testModelConnection 调用时 config
-  // 已是 provider_model_id；直接调用本函数时也保证 gateway 收到基础 ID。
-  const identity = parseModelIdentity(config.model_name ?? "");
+  // 名字原样发送（ADR 0004：尾标机制已淘汰，无需剥离）。
   const gateway = createModelGateway({
     adapter: new OpenAICompatibleAdapter({
       baseUrl: config.base_url,
@@ -164,7 +159,7 @@ export async function completeOpenAICompatibleProbe({
       messages,
       stream: false,
       modelConfig: {
-        model_name: identity.provider_model_id,
+        model_name: config.model_name,
         base_url: config.base_url,
         api_key: apiKey,
         api_key_env: config.api_key_env,

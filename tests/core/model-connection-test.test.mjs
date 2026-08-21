@@ -290,9 +290,10 @@ test("调用方取消仍抛 AbortError 且不重试", async () => {
   assert.equal(attempts, 1, "调用方取消不得触发探测重试");
 });
 
-test("probe 展示保留 configured ID、gateway 收到剥离尾标后的基础 ID", async () => {
-  // 走真实 probe（默认 complete=completeOpenAICompatibleProbe），用桩 fetch
-  // 捕获发给 gateway 的请求体：model[1m][foo] 尾标只在传输边界剥离。
+test("probe 名字原样发送与展示（尾标机制已淘汰）", async () => {
+  // 捕获发给 gateway 的请求体：名字原样发送（第十三轮 ADR 0004，尾标机制已淘汰）。
+  // 沿用原用例的 gateway 捕获结构（桩 fetch 捕获的是 adapter 发出的请求体
+  // JSON，字段是 `model` 而非 modelConfig）。
   const originalFetch = globalThis.fetch;
   let captured = null;
   globalThis.fetch = async (_url, init) => {
@@ -316,8 +317,8 @@ test("probe 展示保留 configured ID、gateway 收到剥离尾标后的基础 
       secrets: { TEST_KEY: "k" },
     });
     assert.equal(result.ok, true);
-    assert.equal(result.model_name, "model[1m][foo]", "响应展示保留 configured model id");
-    assert.equal(captured.model, "model", "gateway 发送剥离尾标后的基础 ID");
+    assert.equal(captured.model, "model[1m][foo]", "名字原样发送，不再剥离");
+    assert.equal(result.model_name, "model[1m][foo]", "响应展示保留原名");
   } finally {
     globalThis.fetch = originalFetch;
   }

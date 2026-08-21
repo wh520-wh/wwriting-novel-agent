@@ -7,8 +7,7 @@ export function toRequestConfig(provider, model) {
     provider: "openai-compatible",
     provider_id: provider.id,
     model_id: model.id,
-    // 保留原始尾标：窗口推导与发送剥离由 runtime 的 parseModelIdentity 统一处理
-    //（model-identity.mjs 是唯一权威），此处重复剥离会丢失 [1m] 窗口信号。
+    // model_name 原样透传（ADR 0004：标识符只是标识符，窗口由 context_window 字段决定）。
     model_name: model.model_name,
     base_url: provider.base_url,
     api_format: provider.api_format,
@@ -22,12 +21,6 @@ export function toRequestConfig(provider, model) {
     ...(model.cache_mode ? { cache_mode: model.cache_mode } : {}),
     ...(model.pricing ? { pricing: model.pricing } : {})
   };
-}
-
-// 显示用剥离：剥掉全部连续尾部中括号标记（与 model-identity.mjs 的
-// parseModelIdentity 语义一致——只剥尾部连续 [..]，中间的中括号保留）。
-export function stripWindowMarkers(modelName) {
-  return String(modelName ?? "").replace(/(?:\[[^\[\]]*\])+$/u, "").trim();
 }
 
 function usable(provider, model) {
@@ -52,7 +45,7 @@ export function resolveActiveModel(activeModel, store) {
     if (fallback) {
       return {
         model: toRequestConfig(fallback.provider, fallback.model),
-        note: `工作区未选择模型，正在使用全局默认 ${stripWindowMarkers(fallback.model.model_name)}`
+        note: `工作区未选择模型，正在使用全局默认 ${fallback.model.model_name}`
       };
     }
     return { model: null, note: "未配置模型" };
@@ -70,7 +63,7 @@ export function resolveActiveModel(activeModel, store) {
     if (fallback) {
       return {
         model: toRequestConfig(fallback.provider, fallback.model),
-        note: `原模型已不存在，已换成默认模型 ${stripWindowMarkers(fallback.model.model_name)}`
+        note: `原模型已不存在，已换成默认模型 ${fallback.model.model_name}`
       };
     }
     return { model: null, note: "未配置模型" };
