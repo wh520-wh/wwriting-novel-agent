@@ -208,7 +208,7 @@ export const RESERVED_OUTPUT_RATIO = 0.2;
 // Dynamic Context 最多占可用输入窗口的 35%。
 export const DYNAMIC_CONTEXT_RATIO = 0.35;
 // 预算窗口的唯一来源：runtime 经 modelConfigOf 传入 effective_context_window
-//（Task 2 起由模型 ID 尾标解析）。缺省回落模型身份默认 256k——不存在 128000
+//（Task 2 起由窗口解析；第十三轮 ADR 0004 起改由 context_window 字段）。缺省回落模型身份默认 256k——不存在 128000
 // 默认路径，也不读取项目手工 context_window 字段。DEFAULT_CONTEXT_WINDOW 由
 // ../model/model-identity.mjs 导入（单一真相源）。
 
