@@ -430,3 +430,14 @@ test("第九轮：cache_hit_rate 缺失/不可读时不显示该行（不出现�
   const popover = root.querySelector('[data-testid="agent-context-popover"]');
   assert.doesNotMatch(popover.textContent, /缓存命中率/u, "无数据不显示");
 });
+
+test("窗口来源：非整 M 的整 k 档与非常规值走紧凑与兜底文案", () => {
+  const { root, ring } = makeRing();
+  ring.setUsage({ ...READY_USAGE, effective_context_window: 192000, window_source: "configured", ratio: 0.1 });
+  const button = root.querySelector('[data-testid="agent-context-ring"]');
+  button._fire("click");
+  const popover = root.querySelector('[data-testid="agent-context-popover"]');
+  assert.match(popover.textContent, /192k 窗口/u);
+  ring.setUsage({ ...READY_USAGE, effective_context_window: 123456, window_source: "configured", ratio: 0.1 });
+  assert.match(popover.textContent, /123,456 窗口/u, "非常规 token 数回退 formatTokens 千分位");
+});
