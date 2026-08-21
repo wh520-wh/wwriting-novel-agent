@@ -256,7 +256,6 @@ function activeRun(overrides = {}) {
     status: "running",
     workflow: "general",
     active_input_id: "in-1",
-    visible_plan: null,
     active_grants: [],
     started_at: "2026-08-06T00:00:00.000Z",
     ...overrides

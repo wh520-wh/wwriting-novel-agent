@@ -301,7 +301,6 @@ function activeRun(overrides = {}) {
     status: "running",
     workflow: "general",
     active_input_id: "in-1",
-    visible_plan: null,
     active_grants: [],
     started_at: "2026-08-06T00:00:00.000Z",
     ...overrides
@@ -686,6 +685,9 @@ test("第十二轮 F10 冒烟：同文本双发，第二条失败——第一条
     }
   });
   await surface.openProject("D:\\novel");
+  // 需要 session 在场：input_queued 确认事件才进 queued_inputs，驱动 syncQueue
+  // → reconcilePendingSubmission（与「提交失败气泡：排队行回放确认」测试同款）。
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
   const input = root.querySelector('[data-testid="agent-composer-input"]');
   for (let i = 0; i < 2; i += 1) {
     input.value = "一样的消息";
@@ -701,6 +703,18 @@ test("第十二轮 F10 冒烟：同文本双发，第二条失败——第一条
   assert.equal(bubbles.length, 2, "同文本双发各占一气泡：第一条在途 + 第二条失败");
   assert.equal(bubbles[0].dataset.state, "pending", "第一条在途气泡保留（同文本回退误删场景下的守位）");
   assert.ok(root.querySelector('[data-testid="agent-submit-error"]'), "第二条失败气泡可见");
+
+  // 补确认事件驱动回填（原测试无确认，reconcilePendingSubmission 从未被调用，
+  // view.js:559-561 的 FIFO 分支零覆盖）：POST 未 resolve（inputId 仍为 null）
+  // 时精确匹配失败，命中 FIFO 兜底——在途第一条气泡按 FIFO 归属移除；同文本
+  // 失败气泡（failedSubmissions 同 text 匹配）一并撤除，原文回填「接下来」排队行。
+  surface.applyEvent(ev("input_queued", { input_id: "in-1", text: "一样的消息" }));
+  await tick();
+  assert.equal(root.querySelectorAll('[data-testid="agent-user-message"]').length, 0,
+    "FIFO 兜底命中：在途第一条气泡随确认移除");
+  assert.equal(root.querySelector('[data-testid="agent-submit-error"]'), null, "同文本失败气泡随确认一并移除");
+  const queuedRow = root.querySelector('[data-input-id="in-1"]');
+  assert.ok(queuedRow && queuedRow.textContent.includes("一样的消息"), "确认送达后原文进入「接下来」排队行");
 });
 
 test("click 提交成功后焦点回到 textarea", async () => {
@@ -5423,8 +5437,9 @@ test("第十二轮 F4：waiting_user Run 状态区显示等待指令提示", asy
 test("第十二轮 F7(a)：newSessionPlaceholder 通知 onPlanUpdated(null)，不残留上一会话计划", async () => {
   const plans = [];
   const { surface } = await makeSurface({ callbacks: { onPlanUpdated: (plan) => plans.push(plan) } });
-  // 与既有「第十一轮 B」同款：run_started 先行，快照重放（session 重建）时
-  // plan_updated 才有 active_run 可挂 plan（否则 plan 投影被跳过，首断言无法建立）。
+  // 与既有「第十一轮 B」同款：run_started 先行再 plan_updated，还原真实窗口的
+  // 事件序列。第十二轮 F11 后 plan 投影不再依赖 active_run 在场，run_started
+  // 仅为保持既有测试形态（还原事件流，不产生行为依赖）。
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun({ status: "running" }) }), [
     ev("run_started", { workflow: "general", input_id: "in-1" }),
     ev("plan_updated", { explanation: "计划", items: [{ step: "1", status: "pending" }] })

@@ -427,7 +427,7 @@ function applyEventToState(state, event) {
       }
       const existing = state.session.active_run;
       if (existing && existing.id === event.run_id) {
-        // retry：恢复同一可恢复 Run（保留 started_at/visible_plan）
+        // retry：恢复同一可恢复 Run（保留 started_at）
         existing.status = "running";
         state.session.status = "running";
       } else {
@@ -435,7 +435,6 @@ function applyEventToState(state, event) {
           id: event.run_id ?? null,
           status: "running",
           active_input_id: payload.input_id ?? null,
-          visible_plan: null,
           active_grants: [],
           started_at: event.at ?? null
         };
@@ -488,22 +487,10 @@ function applyEventToState(state, event) {
       break;
     }
     case "plan_updated": {
-      const run = state.session?.active_run;
-      if (run && Array.isArray(payload.items)) {
-        run.visible_plan = {
-          explanation: typeof payload.explanation === "string" ? payload.explanation : null,
-          items: payload.items.map((item) => {
-            // 步骤6：保留稳定 id 与可选 description（旧事件无这些字段则省略，
-            // 前端显示用 step 兜底）。
-            const entry = { step: item.step, status: item.status };
-            if (item.id !== undefined) entry.id = item.id;
-            if (item.description !== undefined) entry.description = item.description;
-            return entry;
-          })
-        };
-      }
-      // 第十二轮 F11：顶层 plan 投影不再依赖 active_run 在场（尾页窗口 run_started
-      // 不在加载窗口时，chip 与组内 plan 三面口径一致）。
+      // 第十二轮 F11：顶层 plan 投影（唯一源）不再依赖 active_run 在场（尾页窗口
+      // run_started 不在加载窗口时，chip 与组内 plan 三面口径一致）。旧的
+      // run.visible_plan 白名单镜像轨无渲染消费已删除（getVisiblePlan 无消费点，
+      // F11 审查收敛单轨；同源形状仍见核心 journal.mjs）。
       if (Array.isArray(payload.items)) {
         const planItems = structuredClone(payload.items);
         state.plan = planItems.length === 0
@@ -860,10 +847,6 @@ export function getActiveRun(state) {
 
 export function getQueuedInputs(state) {
   return state.session?.queued_inputs ?? [];
-}
-
-export function getVisiblePlan(state) {
-  return state.session?.active_run?.visible_plan ?? null;
 }
 
 export function getPendingDecisions(state) {
