@@ -1326,3 +1326,28 @@ test("Task 16 B13：移除当前项目停止 busy 周期刷新并复位发送键
   assert.deepEqual(f.surface.calls.setBusy, [true, false], "移除当前项目后 busy 复位");
   assert.equal(f.timers.activeIds().length, 0, "周期刷新定时器停止（listener 清理）");
 });
+
+// ---------------------------------------------------------------------------
+// 第十二轮 E：sessions() 报真实状态 + 侧边栏标签/busy 口径（非终态集）
+// ---------------------------------------------------------------------------
+
+test("第十二轮 E：waiting_user 会话显示「待命」且计入 busy", () => {
+  const P = "D:/projects/p1";
+  const f = makeFixture({
+    projects: [{ projectRoot: P, title: "小说一" }],
+    selectedProjectRoot: P,
+    currentProjectRoot: P
+  });
+  // 其他会话 waiting_user：busy 口径已是非终态集 → true（seedSessions 内部触发 syncBusy）
+  f.sidebar.seedSessions(P, [
+    { session_id: "s1", title: "对话一", run_status: "idle" },
+    { session_id: "s2", title: "对话二", run_status: "waiting_user" }
+  ], "s1");
+  assert.deepEqual(f.surface.calls.setBusy, [true], "waiting_user 计入 busy（非终态集）");
+
+  f.sidebar.render();
+  const rows = rowsOf(f.listEl);
+  const dot2 = rows[1].children[0];
+  assert.equal(dot2.dataset.status, "waiting_user", "状态点如实报 waiting_user（不折叠为 running）");
+  assert.equal(dot2.title, "待命", "状态点 title 走 RUN_STATUS_LABELS（dot.title 渲染点）");
+});

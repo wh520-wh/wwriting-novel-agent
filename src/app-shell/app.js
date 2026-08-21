@@ -118,9 +118,10 @@ const agentSurface = createAgentSurface({
   },
   // Task 9：SSE run 终态 → 重拉会话列表并复位 busy。app.js 不消费 SSE（surface 是
   // 唯一消费者），这里经 surface 的 onRunTerminal 钩子转发；busy 复位由
-  // onSessionsChanged → handleSessionsChanged 内的检查承担（有 running → true，
-  // 全部非 running → false）。终态事件按当前会话流到达；跨会话运行结束的复位缺口
-  // 见 session-sidebar.mjs 的 syncBusy 注释（openProject/switchSession 刷新兜底）。
+  // onSessionsChanged → handleSessionsChanged 内的检查承担（有非终态 → true，
+  // 全部非终态集外 → false，第十二轮 E 起按 BUSY_RUN_STATUSES）。终态事件按当前
+  // 会话流到达；跨会话运行结束的复位缺口见 session-sidebar.mjs 的 syncBusy 注释
+  //（openProject/switchSession 刷新兜底）。
   onPlanUpdated: (plan) => {
     planPanel.sync(plan?.items ?? []);
   },
@@ -128,6 +129,11 @@ const agentSurface = createAgentSurface({
   // 面板/顶栏/项目列表与 composer 同屏一致；background 模式失败只 toast 不打断）。
   onDashboardRefresh: () => {
     void loadDashboard({ background: true });
+  },
+  // 第十二轮 E：run 状态变化（含 waiting_user 等非终态）事件驱动侧边栏
+  // 轻量刷新（读时失效模式，重拉会话列表 + 状态点更新；不重渲面板）。
+  onRunStatusChanged: () => {
+    agentSurface.refreshSessions();
   },
   onRunTerminal: () => {
     // Task 16（R5-12）：Run 终态统一刷新——会话列表（busy 复位）与 dashboard
