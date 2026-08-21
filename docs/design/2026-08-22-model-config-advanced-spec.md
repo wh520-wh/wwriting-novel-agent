@@ -1,6 +1,6 @@
 # 模型高级配置与模型信息统一规格（2026-08-22）
 
-- 状态：已实现并收口（2026-08-22，F1-F6 全部落地，全量回归 1921/1921；执行记录见 docs/superpowers/plans/2026-08-22-model-config-advanced.md 勾选与提交历史）
+- 状态：已实现并收口（2026-08-22，F1-F6 全部落地，全量回归 1921/1921；执行记录见提交历史 f2696d4..8237bdd，计划见 docs/superpowers/plans/2026-08-22-十三轮model-config-advanced.md）
 - 输入：[[2026-08-22-model-config-advanced-decisions]]（决策 D1-D5）、[[模型配置供应商两级重构规格草案]]（store schema 出处，高级配置项当年明列延期）、[[统一 Journal、上下文窗口与自动压缩规格草案]]（[1m] 尾标机制与压缩门禁出处）、[[2026-08-18-ui-backend-consistency-audit]]（M5 母账）、ADR [[0004-model-window-comes-from-config-field]]、ADR [[0005-current-model-display-single-source]]
 - 一句话：把「模型能装多少、最多吐多少」从模型名尾巴的黑话升级为明面上的预设配置字段，并让所有「当前模型」显示同源同格式。
 
@@ -43,7 +43,7 @@
 
 ## F2 上下文/最大输出成为运行时唯一权威
 
-- `model-identity.mjs` 重塑为唯一解析点：删除 `parseModelIdentity` 尾标剥离与窗口推导，导出 `resolveModelLimits({ context_window, max_output_tokens })` -> `{ effective_context_window, effective_max_output_tokens, window_source }`，常量 `DEFAULT_CONTEXT_WINDOW = 256_000`、`DEFAULT_MAX_OUTPUT_TOKENS = 64_000`、`COMPACTION_THRESHOLD_RATIO = 0.8`。字段缺省/非法一律回退缺省，`window_source` 取 `configured` / `default`。
+- `model-identity.mjs` 重塑为唯一解析点：删除 `parseModelIdentity` 尾标剥离与窗口推导，导出 `resolveModelLimits({ context_window, max_output_tokens })` -> `{ effective_context_window, effective_max_output_tokens, window_source }`，常量 `DEFAULT_CONTEXT_WINDOW = 256_000`、`DEFAULT_MAX_OUTPUT_TOKENS = 64_000`、`COMPACTION_THRESHOLD_RATIO = 0.8`。字段缺省/非法一律回退缺省，`window_source` 取 `configured` / `default_256k`。
 - `runtime.modelConfigOf`（runtime.mjs:566-584）改读字段：`effective_context_window`、`compaction_threshold`、`window_source` 由 resolveModelLimits 推导；`max_output_tokens` 直接填入解析后的缺省值（运行时副本，遵守既有「不写回持久配置」约定）。模型名不再剥离，原样透传。
 - adapter 零改动：`openai-compatible.mjs:118` 继续读 `modelConfig.max_output_tokens ?? modelConfig.max_tokens`（现在恒有值）。gateway 的 `max_tokens` 事件字段随之从 null 变为真实值，属预期。
 - 测试锚点：modelConfigOf 读字段不读名字；两字段缺省时输出 256_000/64_000；`foo[bar]` 名字原样出现在请求。
