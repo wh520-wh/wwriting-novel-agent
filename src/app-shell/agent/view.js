@@ -514,7 +514,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   bindExternalLinks(conv);
 
   // ---- 对话 ----------------------------------------------------------------
-  function createMessageBubble(role, textValue, { markdown = false, truncated = false, interrupted = false } = {}) {
+  function createMessageBubble(role, textValue, { markdown = false, truncated = false, interrupted = false, narration = false } = {}) {
     const bubble = doc.createElement("div");
     bubble.className = `agent-message agent-message--${role}`;
     bubble.dataset.testid = `agent-${role}-message`;
@@ -527,6 +527,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       text.textContent = String(textValue ?? "");
     }
     bubble.append(text);
+    if (narration) bubble.classList.add("agent-message--narration");
     if (truncated) {
       // Task 4：max_tokens 截断提示。独立元素追加在文本区域之后，不修改正文本身。
       const mark = doc.createElement("div");
@@ -638,14 +639,18 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     if (rendered.messages === state.revisions.messages) return;
     for (const entry of state.conversation) {
       const eventKey = entry.event_key ?? null;
-      if (eventKey != null && messageNodes.has(eventKey)) continue; // 已渲染（重建去重）
+      if (eventKey != null && messageNodes.has(eventKey)) {
+        // 第十二轮 N2：已渲染气泡重同步 narration 淡化类（终态标记/重建后补齐）。
+        messageNodes.get(eventKey).classList.toggle("agent-message--narration", entry.narration === true);
+        continue; // 已渲染（重建去重）
+      }
       if (entry.role === "user") {
         reconcilePendingSubmission(entry);
         insertTimeline(createMessageBubble("user", entry.text), entry.seq, eventKey);
       } else if (typeof entry.text === "string" && entry.text.length > 0) {
         // 助手正文走 Markdown 渲染（与流式气泡同一口径，增量/终态一致）。
         insertTimeline(
-          createMessageBubble("assistant", entry.text, { markdown: true, truncated: entry.truncated === true, interrupted: entry.interrupted === true }),
+          createMessageBubble("assistant", entry.text, { markdown: true, truncated: entry.truncated === true, interrupted: entry.interrupted === true, narration: entry.narration === true }),
           entry.seq,
           eventKey
         );
@@ -851,7 +856,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   function reasoningDetailText(item) {
     if (item.availability === "unsupported") return "当前模型不支持查看";
     if (item.availability === "empty" || !(typeof item.text === "string" && item.text.length > 0)) {
-      return "本次没有可查看的思考内容";
+      return "没有可查看的思考内容（本次无输出或该模型不支持）";
     }
     return item.text;
   }

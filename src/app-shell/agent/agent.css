@@ -2141,3 +2141,8 @@
   padding: 6px 8px;
   border-left: 2px solid var(--line-2);
 }
+
+/* ---- 第十二轮 N2：叙述气泡淡化（Run 内非最终 assistant 消息） ---------------- */
+.agent-message--narration .agent-message-text {
+  color: color-mix(in srgb, var(--ink) 68%, transparent);
+}

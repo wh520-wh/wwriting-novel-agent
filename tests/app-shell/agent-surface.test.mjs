@@ -1705,7 +1705,21 @@ test("reasoning 详情兜底：available 全文 / unsupported / empty 文案（�
   };
   assert.match(await runScenario("available", "完整思考内容。", "完整思考内容。"), /完整思考内容。/u);
   assert.equal(await runScenario("unsupported", null, ""), "当前模型不支持查看");
-  assert.equal(await runScenario("empty", null, ""), "本次没有可查看的思考内容");
+  assert.equal(await runScenario("empty", null, ""), "没有可查看的思考内容（本次无输出或该模型不支持）");
+});
+
+test("N2: Run 终态后中间 assistant 气泡立即打 narration 类，最终一条不打", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applyEvent(ev("run_started", { workflow: "general", input_id: "in-1" }));
+  surface.applyEvent(ev("assistant_message_completed", { input_id: "in-1", text: "先读一下大纲" }));
+  surface.applyEvent(ev("assistant_message_completed", { input_id: "in-1", text: "写完了，本章交付" }));
+  let nodes = () => [...root.querySelectorAll('[data-testid="agent-assistant-message"]')];
+  assert.equal(nodes().length, 2, "两条助手消息已渲染");
+  surface.applyEvent(ev("run_completed", {}));
+  const finals = nodes();
+  assert.equal(finals[0].classList.contains("agent-message--narration"), true, "终态后中间叙述气泡立即淡化");
+  assert.equal(finals[1].classList.contains("agent-message--narration"), false, "最终交付气泡保持正常权重");
 });
 
 test("工作组 duration 运行中由工作组投影时钟驱动，waiting_user 暂停", async () => {

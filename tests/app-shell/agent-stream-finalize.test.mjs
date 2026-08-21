@@ -97,6 +97,18 @@ test("F1: 重建确定性——乱序重放与增量路径派生态一致，fina
   assert.equal(state.conversation[0].event_key, "finalize:3");
 });
 
+test("N2: Run 终态后非最终 assistant 消息标记 narration，最终一条不标记", () => {
+  const state = createState();
+  reduceEvent(state, ev("run_started", { input_id: "in-1" }, 1));
+  reduceEvent(state, ev("assistant_message_completed", { input_id: "in-1", text: "先读一下大纲" }, 2));
+  reduceEvent(state, ev("assistant_message_completed", { input_id: "in-1", text: "写完了，本章交付" }, 3));
+  reduceEvent(state, ev("run_completed", {}, 4));
+  const texts = state.conversation.filter((m) => m.role === "assistant");
+  assert.equal(texts.length, 2);
+  assert.equal(texts[0].narration, true, "先说的那句是叙述");
+  assert.notEqual(texts[1].narration, true, "最终交付不是叙述");
+});
+
 test("F5: 连接错误同 code 去重，非连接事件到达即清卡", () => {
   const state = createState();
   reduceEvent(state, ev("connection_error", { code: "event_stream_error", message: "第一次" }, 1));

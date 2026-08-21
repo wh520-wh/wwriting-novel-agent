@@ -61,6 +61,7 @@ export function createState() {
     decisions: new Map(),   // decision_id -> decision
     errors: [],             // run_failed 事实（新 Run 启动时清空）
     assistantStream: null,  // { runId, text } —— 增量正文累积（流式气泡），completed 后清空
+    runConversationStart: null, // 第十二轮 N2：当前 Run 的对话窗口起点（终态标记 narration 用）
     plan: null,             // 第九轮：顶层计划投影（plan_updated → { explanation, items }），供 plan-panel chip 消费
     // 第九轮：系统通知行投影（chapter_rolled_back / memory_file_restored → timeline）。
     systemNotices: [],      // [{ seq, type, payload }]
@@ -228,6 +229,33 @@ function finalizeAssistantStream(state, seq) {
   bump(state, ["messages"]);
 }
 
+// 第十二轮 N2：Run 终态时把本 Run 内「非最终一条」的 assistant 消息标记为
+// narration（历史淡化呈现）。重放同算法确定。
+// 窗口缺 run_started（尾页加载，规格 F11 同场景）时 runConversationStart 为
+// null——不淡化（无法确定窗口起点，宁可不标不可误标）。
+// 审核修订（N2）：实际标记发生时 bump messages——终态 case 自身只 bump
+// run/errors，若无此 bump 则 syncMessages 早退，已渲染气泡的淡化类要到下次
+// 消息变更/重建才应用，与「终态时打 narration 类」（spec N2）的即时语义不符
+//（终态时恰是作者阅读交付、回看叙述的窗口）。
+function markRunNarration(state) {
+  const start = state.runConversationStart;
+  if (start == null) return;
+  state.runConversationStart = null;
+  if (start >= state.conversation.length) return;
+  let lastAssistant = -1;
+  for (let i = start; i < state.conversation.length; i += 1) {
+    if (state.conversation[i].role === "assistant") lastAssistant = i;
+  }
+  let marked = false;
+  for (let i = start; i < state.conversation.length; i += 1) {
+    if (state.conversation[i].role === "assistant" && i !== lastAssistant) {
+      state.conversation[i].narration = true;
+      marked = true;
+    }
+  }
+  if (marked) bump(state, ["messages"]);
+}
+
 // 单条事件的派生应用：增量 fast path 与 rebuildDerivedState 共用同一实现。
 function applyEventToState(state, event) {
   const type = event.type;
@@ -381,6 +409,7 @@ function applyEventToState(state, event) {
       break;
     }
     case "run_started": {
+      state.runConversationStart = state.conversation.length;
       if (!state.session) {
         state.session = {
           schema_version: 1,
@@ -527,6 +556,8 @@ function applyEventToState(state, event) {
       });
       // F1：失败也是终态——先把流式正文定稿为 interrupted 气泡，再清空流槽。
       finalizeAssistantStream(state, seq);
+      // 第十二轮 N2：终态标记本 Run 内非最终 assistant 消息为 narration。
+      markRunNarration(state);
       const run = state.session?.active_run;
       if (run) {
         run.status = "failed";
@@ -555,6 +586,8 @@ function applyEventToState(state, event) {
     case "run_completed": {
       // F1：终态定稿——即使没收到 assistant_message_completed，流式正文也不残留。
       finalizeAssistantStream(state, seq);
+      // 第十二轮 N2：终态标记本 Run 内非最终 assistant 消息为 narration。
+      markRunNarration(state);
       const run = state.session?.active_run;
       if (run) {
         run.status = "completed";
@@ -567,6 +600,8 @@ function applyEventToState(state, event) {
     case "run_cancelled": {
       // F1：取消同样定稿残留正文（interrupted 标记，非静默删除）。
       finalizeAssistantStream(state, seq);
+      // 第十二轮 N2：终态标记本 Run 内非最终 assistant 消息为 narration。
+      markRunNarration(state);
       const run = state.session?.active_run;
       if (run) {
         run.status = "cancelled";
@@ -579,6 +614,8 @@ function applyEventToState(state, event) {
     case "run_interrupted": {
       // F1：中断即终态——把半截正文定稿为 interrupted 气泡。
       finalizeAssistantStream(state, seq);
+      // 第十二轮 N2：终态标记本 Run 内非最终 assistant 消息为 narration。
+      markRunNarration(state);
       const run = state.session?.active_run;
       if (run) {
         run.status = "interrupted";
@@ -784,6 +821,7 @@ function rebuildDerivedState(state) {
   state.decisions = new Map();
   state.errors = [];
   state.assistantStream = null;
+  state.runConversationStart = null; // 第十二轮 N2：重建由事件重放重建（run_started 重放时设回）
   // 第九轮：顶层计划投影同样由事件重放重建。
   state.plan = null;
   // Task 11：上下文用量/压缩投影同样由事件重放重建（确定性与增量路径一致）。

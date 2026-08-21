@@ -51,7 +51,7 @@ WWRITING.md 是当前工作区的长期项目记忆入口。开始长期小说�
 
 test("N1: STATIC_CORE 含过程叙述政策，且与「不只口头承诺」并存", () => {
   assert.match(STATIC_CORE, /过程叙述：开始新的计划步骤/);
-  assert.match(STATIC_CORE, /不只口头承诺/);
+  assert.match(STATIC_CORE, /能直接完成的工作使用工具完成，不只口头承诺。/);
   assert.match(STATIC_CORE, /不要复述工具结果原文/);
 });
 
