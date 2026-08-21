@@ -2900,10 +2900,11 @@ export function createAgentRuntime({
 
   // 会话列表 + 最近活跃（dashboard 数据源）。
   // Task 9：为每个会话附加 run_status 投影（左侧栏状态点 + busy 复位数据源）——
-  // 只对已物化会话读取其 journal 的 active_run：非终态（running/waiting_user 等）
-  // → "running"；failed → "failed"；其余（无 run / completed/cancelled/interrupted）
-  // → "idle"。未物化会话（注册表条目尚无 journal）恒为 "idle"。journal 读取失败
-  // 不阻塞列表（降级 idle）。dashboard 与 GET /api/agent/sessions 经同一方法透出。
+  // 只对已物化会话读取其 journal 的 active_run：非终态 → 报真实状态（running/
+  // waiting_user 等，第十二轮 E 起不再折叠为 running）；failed → "failed"；其余
+  // （无 run / completed/cancelled/interrupted）→ "idle"。未物化会话（注册表条目
+  // 尚无 journal）恒为 "idle"。journal 读取失败不阻塞列表（降级 idle）。dashboard
+  // 与 GET /api/agent/sessions 经同一方法透出。
   // 轮询成本：每次调用对每个已物化会话做一次 journal.getSession()——initialize 的
   // loaded 缓存避免磁盘重放（只在首次真正读取/重放），之后是内存 structuredClone
   // 当前投影；busy 期间前端每 5s 重拉一轮（session-sidebar.mjs），N 个会话的成本
@@ -2923,7 +2924,9 @@ export function createAgentRuntime({
           const session = await sessionState.journal.getSession();
           const run = session?.active_run ?? null;
           if (run) {
-            if (!TERMINAL_RUN_STATUSES.has(run.status)) runStatus = "running";
+            // 第十二轮 E：非终态报真实状态（waiting_user 等），不再折叠为 running——
+            // 侧边栏 busy 判定已同步改为非终态集，不依赖折叠副作用。
+            if (!TERMINAL_RUN_STATUSES.has(run.status)) runStatus = run.status;
             else if (run.status === "failed") runStatus = "failed";
           }
         } catch {

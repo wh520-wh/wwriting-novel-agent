@@ -15,7 +15,8 @@
 //   - 导出 createSessionRemovalResolver（会话移除后「切走 + 占位兜底」编排，依赖
 //     注入纯函数，app.js 接线归档/删除共用）；
 //   - busy 复位（Task 8 契约）：列表刷新时检查当前项目其他会话 run_status，
-//     有 running → setBusy(true)，全部非 running → setBusy(false)；
+//     有非终态（running/waiting_user 等，第十二轮 E 起按 BUSY_RUN_STATUSES）→
+//     setBusy(true)，全部非终态集外 → setBusy(false)；
 //   - 会话级代次守卫（防串场）：镜像 app.js 的 projectScope.capture 机制——
 //     commitSessionSwitch 捕获 { projectRoot, generation }，慢切换/慢刷新到达时若
 //     已切到别的项目/会话则丢弃后续动作。projectScope 守卫 dashboard 拉取（项目级），
@@ -28,14 +29,19 @@ const COLLAPSED_STORAGE_KEY = "wwriting:projects:collapsed";
 // 订阅），busy=true 时由该定时器兜底重拉会话列表，保证其他会话结束后发送键能复位。
 const BUSY_REFRESH_INTERVAL_MS = 5000;
 
-// 会话状态点 title 文案的权威口径（工作组文案与其对齐，见 work-items.mjs
-// groupStatusText 的 waiting_user 分支）；未知状态兜底「待命」。
+// 会话状态点 title 文案的权威口径；工作组文案区分 stopping/interrupting
+//（「正在停止/正在中断」，见 work-items.mjs groupStatusText），侧边栏为紧凑
+// 口径统一「停止中」（spec E 只要求补键，未规定文案）；未知状态兜底「待命」。
 const RUN_STATUS_LABELS = {
   running: "运行中",
+  waiting_user: "待命",
+  interrupting: "停止中",
+  stopping: "停止中",
   failed: "失败",
-  idle: "待命",
-  waiting_user: "待命"
+  idle: "待命"
 };
+// busy 判定的非终态集（第十二轮 E）：与后端串行门 hasNonTerminalRun 同口径。
+const BUSY_RUN_STATUSES = new Set(["running", "waiting_user", "interrupting", "stopping"]);
 
 export function createSessionSidebar({
   listEl,
@@ -605,7 +611,7 @@ export function createSessionSidebar({
     }
     const entry = sessionCache.get(root);
     const busy = entry
-      ? entry.sessions.some((s) => s.session_id !== entry.activeSessionId && s.run_status === "running")
+      ? entry.sessions.some((s) => s.session_id !== entry.activeSessionId && BUSY_RUN_STATUSES.has(s.run_status))
       : false;
     surface.setBusy?.(busy);
     if (busy) startBusyRefresh();

@@ -364,6 +364,9 @@ async function makeSurface({ apiOverrides = {}, callbacks = {}, useRealTransport
     onSessionsChanged: callbacks.onSessionsChanged ?? (() => {}),
     // Task 16（R5-12）：Run 终态回调透出（app.js 据此刷新 dashboard/会话列表）。
     onRunTerminal: callbacks.onRunTerminal ?? (() => {}),
+    // 第十二轮（审计 E）：run 状态变化（含 waiting_user 等非终态）回调透出
+    //（app.js 据此事件驱动侧边栏轻量刷新——读时失效模式）。
+    onRunStatusChanged: callbacks.onRunStatusChanged ?? (() => {}),
     // 第十一轮（审计 B）：plan 通知透出（app.js 接 planPanel.sync）。
     onPlanUpdated: callbacks.onPlanUpdated ?? (() => {}),
     // 第十一轮（审计 A）：composer 设置保存成功通知透出（app.js 接后台刷新）。
@@ -5270,4 +5273,21 @@ test("第十一轮 C：isAgentRunning 与后端 409 门禁同口径（仅 active
   assert.equal(surface.isAgentRunning(), false, "completed 必须为 false");
   surface.applySnapshot(snapshotOf(session({ session_id: "sess-c", status: "waiting_user", last_seq: 3, active_run: activeRun({ status: "waiting_user" }) }), []));
   assert.equal(surface.isAgentRunning(), false, "waiting_user 不算运行中（后端 409 只判 running）");
+});
+
+// ===========================================================================
+// 第十二轮 E：run 状态变化事件驱动侧边栏轻量刷新（run_status_changed → 钩子）
+// ===========================================================================
+
+test("第十二轮 E：run_status_changed 触发 onRunStatusChanged（事件驱动侧边栏刷新）", async () => {
+  const statuses = [];
+  const { surface } = await makeSurface({
+    callbacks: { onRunStatusChanged: (run) => statuses.push(run?.status ?? null) }
+  });
+  // 需先载入会话（active_run 存在）——钩子透出 state.session.active_run 投影
+  //（与既有 waiting_user 渲染测试同款 setup：openProject + 权威快照）。
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("run_status_changed", { status: "waiting_user" }));
+  assert.deepEqual(statuses, ["waiting_user"], "非终态状态变化即通知（E 刷新钩子）");
 });

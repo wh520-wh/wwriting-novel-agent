@@ -32,6 +32,9 @@ export function createAgentSurface({
   // Task 9：Run 终态事件（run_completed/failed/cancelled/interrupted）通知回调。
   // SSE 是 surface 的唯一消费者，app.js 需经此钩子在终态后重拉会话列表并复位 busy。
   onRunTerminal = () => {},
+  // 第十二轮 E：run 状态变化（含 waiting_user 等非终态）通知回调——app.js 据此
+  // 事件驱动侧边栏轻量刷新（读时失效模式，重拉会话列表 + 状态点更新；不重渲面板）。
+  onRunStatusChanged = () => {},
   // 第九轮：plan_updated 事件通知回调（plan-panel chip 消费）。
   onPlanUpdated = () => {},
   // 第十一轮（审计 A）：composer 三控件（模型/权限/思考强度）保存成功后通知--
@@ -207,6 +210,11 @@ export function createAgentSurface({
     reduceEvent(state, event);
     view.render(state, actions);
     if (event.type === "plan_updated") onPlanUpdated(state.plan);
+    // 第十二轮 E：run 状态变化（含 waiting_user 等非终态）事件驱动侧边栏轻量刷新
+    // ——读时失效模式（app.js 重拉会话列表，状态点随新 run_status 更新；不重渲面板）。
+    if (event.type === "run_status_changed" && event.payload?.status != null) {
+      onRunStatusChanged(state.session?.active_run);
+    }
     maybeRefreshAfterTerminal(event);
     clearEscapeLatch(event);
   }
