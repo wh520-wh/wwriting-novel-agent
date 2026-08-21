@@ -43,3 +43,4 @@ writing_style_skill: fast-readable
 - 详见：docs/superpowers/reports/2026-08-20-第十一轮一致性修复-acceptance-report.md
 - 第十二轮完成（2026-08-21）：过程可见性与过程美化（N1 里程碑叙述 / N2 排版收尾 / N3 美化 / N4 状态真实化 / F1-F16 修复包），全量回归 178/178，收口根治 Node v25 FileHandle GC 文件级失败
 - 详见：docs/memory/2026-08-21-process-visibility-audit.md（含修复记录，未修项：无）
+- 第十三轮完成（2026-08-22）：模型高级配置与模型信息统一（F1 高级预设项 256k/64k 缺省 / F2 窗口权威字段化 / F3 [1m] 尾标淘汰迁移 / F4 八成压缩阈值 / F5 缺省输出 64k / F6 显示单源「厂商 / 模型名」），全量回归 1921/1921。
