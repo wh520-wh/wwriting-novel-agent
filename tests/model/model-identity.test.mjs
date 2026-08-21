@@ -17,7 +17,12 @@ test("resolveModelLimits：显式字段优先，缺省 256k/64k，非法值回�
     compaction_threshold: 204_800,
     window_source: "default_256k"
   });
-  assert.equal(resolveModelLimits({ context_window: 0, max_output_tokens: -5 }).window_source, "default_256k");
+  assert.deepEqual(resolveModelLimits({ context_window: 0, max_output_tokens: -5 }), {
+    effective_context_window: 256_000,
+    effective_max_output_tokens: 64_000,
+    compaction_threshold: 204_800,
+    window_source: "default_256k"
+  });
 });
 
 test("压缩阈值 = 窗口八成（256k 档与旧值 204_800 恰好同值）", () => {
