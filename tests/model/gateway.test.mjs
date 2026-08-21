@@ -399,6 +399,33 @@ test("onRetry 回调携带正确字段", async () => {
   assert.ok(retryLog[0].error instanceof ProviderTransportError);
 });
 
+test("§4.3: complete 支持 per-call onRetry，maxAttempts 跟随 per-call retryMax", async () => {
+  const perCall = [];
+  const instance = [];
+  let calls = 0;
+  const adapter = {
+    async complete() {
+      calls += 1;
+      if (calls === 1) throw new ProviderTransportError("Rate limited", { status: 429 });
+      return { text: "ok", usage: {} };
+    }
+  };
+  const gateway = makeGateway(adapter, {
+    retryMax: 3,
+    onRetry(info) { instance.push(info); }
+  });
+  const result = await gateway.complete(BASE_REQUEST, {
+    retryMax: 2,
+    onRetry(info) { perCall.push(info); }
+  });
+  assert.equal(result.text, "ok");
+  assert.equal(perCall.length, 1, "per-call onRetry 收到本次重试");
+  assert.equal(perCall[0].attempt, 1);
+  assert.equal(perCall[0].maxAttempts, 2, "maxAttempts 跟随 per-call retryMax");
+  assert.equal(perCall[0].reason, "server-retryable");
+  assert.equal(instance.length, 0, "提供 per-call onRetry 时实例级 onRetry 不被调用");
+});
+
 test("onRecovered 在重试成功后通知（含 attempt 信息）", async () => {
   let recovered = null;
   let calls = 0;

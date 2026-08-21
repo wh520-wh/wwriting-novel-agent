@@ -62,7 +62,10 @@ export function createModelGateway({
 
   const responseCache = new Map();
 
-  async function complete(request, { signal = undefined, retryMax: requestRetryMax = retryMax } = {}) {
+  async function complete(request, { signal = undefined, retryMax: requestRetryMax = retryMax, onRetry: callOnRetry = null } = {}) {
+    // 第十二轮 §4.3：per-call onRetry（runtime 用它记 provider_retry 事件）；
+    // 未提供时回退实例级 onRetry（既有行为不变）。
+    const retryNotify = callOnRetry ?? onRetry;
     if (request == null || typeof request !== "object") {
       throw new TypeError("gateway.complete 需要 request 对象");
     }
@@ -281,7 +284,7 @@ export function createModelGateway({
             onActivity?.();
             retried = true;
             costTracker.recordRetry();
-            await retryWait(attempt, timeoutError, model, signal);
+            await retryWait(attempt, timeoutError, model, signal, retryNotify, requestRetryMax);
             continue;
           }
           recordFailed(timeoutError, { provider, model, stage, chapter });
@@ -297,7 +300,7 @@ export function createModelGateway({
           onActivity?.();
           retried = true;
           costTracker.recordRetry();
-          await retryWait(attempt, error, model, signal);
+          await retryWait(attempt, error, model, signal, retryNotify, requestRetryMax);
           continue;
         }
 
@@ -340,7 +343,7 @@ export function createModelGateway({
     );
   }
 
-  async function retryWait(attempt, error, model, signal) {
+  async function retryWait(attempt, error, model, signal, notify, notifyRetryMax) {
     const backoff = retryBaseDelayMs * Math.pow(2, attempt);
     const jitter = Math.random() * 1000;
     const baseDelay = Math.min(backoff + jitter, retryMaxDelayMs);
@@ -348,10 +351,10 @@ export function createModelGateway({
     const retryAfterMs = error?.retryAfterMs ?? null;
     const delay = retryAfterMs != null ? Math.max(retryAfterMs, baseDelay) : baseDelay;
     const reason = error?.reason ?? "unknown";
-    if (onRetry) {
-      onRetry({
+    if (notify) {
+      notify({
         attempt: attempt + 1,
-        maxAttempts: retryMax,
+        maxAttempts: notifyRetryMax,
         delay,
         error,
         reason,

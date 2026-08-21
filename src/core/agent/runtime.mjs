@@ -1788,7 +1788,17 @@ export function createAgentRuntime({
       let streamedReply = null;
       let reasoningResult = null;
       try {
-        reply = await state.modelGateway.complete(request, { signal: state.controller?.signal });
+        reply = await state.modelGateway.complete(request, {
+          signal: state.controller?.signal,
+          // 第十二轮 §4.3：网关重试即记 journal 事件（瞬态，不入 provider history）。
+          onRetry: (info) => {
+            void journal.append({
+              type: "provider_retry",
+              run_id: runId,
+              payload: { attempt: info.attempt ?? null, max_attempts: info.maxAttempts ?? null }
+            }).catch(() => {});
+          }
+        });
         const finalRawText = String(reply?.text ?? "");
         // 兼容只漏掉尾帧回调、但最终响应正文完整的 Gateway：仅当前缀严格一致时
         // 补入尾部；完全不触发 onToken 的非流式 Gateway 不制造伪增量。

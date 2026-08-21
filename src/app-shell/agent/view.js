@@ -1354,7 +1354,12 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     } else {
       // 非终态统一走 groupStatusText（单一文案源）：running/interrupting/stopping →
       // "工作中"；waiting_user → "待命"（与 session-sidebar RUN_STATUS_LABELS 口径一致）。
-      record.status.textContent = groupStatusText(group);
+      // §4.3：网关重试期间追加「重试 n/m」瞬态提示（下一次 model_turn_started /
+      // 状态变化即被投影清除）；终态分支不拼后缀——Run 已终结不再展示重试。
+      const retry = group.retryHint;
+      record.status.textContent = retry && retry.attempt != null
+        ? `${groupStatusText(group)} · 重试 ${retry.attempt}/${retry.max ?? "?"}`
+        : groupStatusText(group);
       record.duration.textContent = formatDuration(groupLiveElapsedMs(group));
     }
     ensureGroupClock(record, group);

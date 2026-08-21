@@ -643,3 +643,25 @@ test("第十二轮 F2：Run 终态清扫未闭合的 running 项（崩溃恢复�
   assert.equal(tool.label, toolLabel("read_file", "cancelled"));
   assert.deepEqual(openWorkItemIds(group), [], "终态组不得有 live 目标");
 });
+
+// ===========================================================================
+// 第十二轮 §4.3：provider_retry 投影为组 retryHint，model_turn_started 清除
+// ===========================================================================
+
+test("§4.3: provider_retry 投影为组 retryHint，model_turn_started 清除", () => {
+  const work = createWorkState();
+  reduceWorkEvent(work, ev("run_started", {}, 1));
+  reduceWorkEvent(work, ev("provider_retry", { attempt: 1, max_attempts: 2 }, 2));
+  assert.deepEqual(work.groups.get("run-1").retryHint, { attempt: 1, max: 2 });
+  reduceWorkEvent(work, ev("model_turn_started", { turn_id: "t1" }, 3));
+  assert.equal(work.groups.get("run-1").retryHint, null);
+});
+
+test("§4.3: run_status_changed 也清除 retryHint（状态变化清除提示）", () => {
+  const work = createWorkState();
+  reduceWorkEvent(work, ev("run_started", {}, 1));
+  reduceWorkEvent(work, ev("provider_retry", { attempt: 2, max_attempts: 5 }, 2));
+  assert.deepEqual(work.groups.get("run-1").retryHint, { attempt: 2, max: 5 });
+  reduceWorkEvent(work, ev("run_status_changed", { status: "waiting_user" }, 3));
+  assert.equal(work.groups.get("run-1").retryHint, null);
+});

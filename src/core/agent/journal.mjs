@@ -100,6 +100,7 @@ export const FIXED_EVENT_TYPES = Object.freeze([
   "context_compaction_cancelled",
   "context_compaction_noop",
   "context_volatile_degraded",
+  "provider_retry",
   "assistant_message_delta",
   "assistant_message_completed",
   "run_completed",
@@ -984,6 +985,10 @@ function reduceEvent(session, event, side) {
     case "context_volatile_degraded":
       // 第十一轮（压缩审计发现 1）：volatile 大工具输出降级事件——纯观察/遥测，
       // 不改变 projection 状态，pass-through（与其它 context passthrough 事件一致）。
+      break;
+
+    case "provider_retry":
+      // 第十二轮 §4.3：瞬态重试提示事件，无投影副作用（前端 work 投影直接消费）。
       break;
 
     case "history_compacted":
