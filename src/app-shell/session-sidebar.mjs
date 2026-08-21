@@ -41,6 +41,10 @@ const RUN_STATUS_LABELS = {
   idle: "待命"
 };
 // busy 判定的非终态集（第十二轮 E）：与后端串行门 hasNonTerminalRun 同口径。
+// 维护契约：新增/删改运行状态时需同步本集合与其余副本（settings-modal.js
+// taskInProgress、project-diagnostics.mjs buildRecoveryHint、project-routes
+// RUN_BUSY_STATUSES、前端 index.js AGENT_BUSY_STATUSES；后端 runtime
+// hasNonTerminalRun 为终态补集机制自动覆盖）。
 const BUSY_RUN_STATUSES = new Set(["running", "waiting_user", "interrupting", "stopping"]);
 
 export function createSessionSidebar({

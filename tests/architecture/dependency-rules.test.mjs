@@ -366,7 +366,10 @@ const SURFACE_SEAM_TESTS = new Set([
   // state-notices.test.mjs 直接测 agent/state.js 的 systemNotices 投影（纯 state
   // reducer，与 work-items 等投影测试同属 seam 意图——绕 index.js 触达内部投影
   // 逻辑，测试 agent-surface.test.mjs 经 fake api 覆盖不到的 reducer 细节）。
-  "tests/app-shell/state-notices.test.mjs"
+  "tests/app-shell/state-notices.test.mjs",
+  // agent-stream-finalize.test.mjs 直接测 agent/state.js 的流式正文终态定稿 reducer
+  //（Task 1 遗留登记，同一 seam 意图：绕 index.js 触达内部投影逻辑）。
+  "tests/app-shell/agent-stream-finalize.test.mjs"
 ]);
 
 test("AgentSurface 只能通过 src/app-shell/agent/index.js 对外暴露", () => {
