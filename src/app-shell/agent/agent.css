@@ -683,7 +683,8 @@
   margin-inline: auto;
 }
 
-/* 第十二轮 F4：waiting_user 等待指令提示（与停止按钮同排右对齐的同级弱化文案） */
+/* 第十二轮 F4：runHeader 内的等待指令弱化提示（waiting_user 时显示；有工作组记录时
+   stop 按钮会随 placeRunControls 移入工作组 summary，runHeader 常只留本提示） */
 .agent-run-hint {
   color: var(--agent-muted);
   font-size: 12.5px;
