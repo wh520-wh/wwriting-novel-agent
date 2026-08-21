@@ -96,3 +96,13 @@ test("F1: 重建确定性——乱序重放与增量路径派生态一致，fina
   assert.equal(state.conversation.length, 1, "重复重建不得重复插入 finalize 气泡");
   assert.equal(state.conversation[0].event_key, "finalize:3");
 });
+
+test("F5: 连接错误同 code 去重，非连接事件到达即清卡", () => {
+  const state = createState();
+  reduceEvent(state, ev("connection_error", { code: "event_stream_error", message: "第一次" }, 1));
+  reduceEvent(state, ev("connection_error", { code: "event_stream_error", message: "第二次" }, 2));
+  assert.equal(state.errors.length, 1, "同 code 只留一张可更新的卡");
+  assert.equal(state.errors[0].message, "第二次");
+  reduceEvent(state, ev("run_status_changed", { status: "running" }, 3));
+  assert.equal(state.errors.length, 0, "非连接事件到达（流恢复）即清卡（F5）");
+});

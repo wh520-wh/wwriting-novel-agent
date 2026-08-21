@@ -300,6 +300,8 @@ export function createAgentApi({
   }
 
   // SSE /api/project/events：断线后按指数退避重连（上限 maxDelayMs）。
+  // 第十二轮 F5：服务端 error 帧不再永久杀流——与网络/HTTP 错误同路径退避
+  // 重连，连续 5 次服务端错误才放弃（防永久故障下的无限重连风暴）。
   // 每次重连前调用 onReconnect 钩子（AgentSurface 用它按最新 seq 补齐快照）。
   // 退避等待与在途请求均可被 destroy() 中止（signal/abortController）。
   function connectEvents() {
@@ -308,28 +310,40 @@ export function createAgentApi({
     const myController = new AbortController();
     controller = myController;
     let attempt = 0;
+    let serverErrors = 0;
     const backoff = () => Math.min(baseDelayMs * 2 ** Math.max(0, attempt - 1), maxDelayMs);
     const run = async () => {
       while (!destroyed && !myController.signal.aborted) {
         const projectRoot = root();
         if (!projectRoot) return;
         try {
-          const shouldReconnect = await streamEvents({
+          const outcome = await streamEvents({
             projectRoot,
             afterSeq: getAfterSeq(),
             signal: myController.signal
           });
-          if (!shouldReconnect) return;
-          // 流被服务端关闭（重启/网络中断）→ 视作断线，退避重连
+          if (outcome === "server-error") {
+            // 第十二轮 F5：服务端 error 不再永久杀流——按断线同路径退避重连，
+            // 连续 5 次服务端错误才放弃（防永久故障下的无限重连风暴）。
+            serverErrors += 1;
+            if (serverErrors >= 5) return;
+          } else {
+            serverErrors = 0;
+          }
+          if (outcome === false) return;
           attempt += 1;
           await sleep(backoff(), myController.signal);
         } catch (error) {
           if (destroyed || myController.signal.aborted) return;
+          // 审核修订 P1-3：网络/HTTP 错误（fetch 抛错、非 200）与服务端 error
+          // 同路径退避重连，同样 5 次连续失败封顶——规格 F5「永久故障不无限
+          // 重连」对两类失效都生效（临时抖动一次成功即清零，不受影响）。
+          serverErrors += 1;
+          if (serverErrors >= 5) return;
           attempt += 1;
           await sleep(backoff(), myController.signal);
         }
         if (destroyed || myController.signal.aborted) return;
-        // 重连前补齐缺口，保证事件连续
         try {
           await onReconnect();
         } catch {
@@ -364,7 +378,8 @@ export function createAgentApi({
       while ((index = buffer.indexOf("\n\n")) >= 0) {
         const block = buffer.slice(0, index);
         buffer = buffer.slice(index + 2);
-        if (!dispatchBlock(block)) return false;
+        const result = dispatchBlock(block);
+        if (result !== true) return result;
       }
     }
     // R5-3：流结束冲刷——无参 decode() 处理最后一个 chunk 里不完整的 UTF-8
@@ -375,9 +390,13 @@ export function createAgentApi({
     while ((index = buffer.indexOf("\n\n")) >= 0) {
       const block = buffer.slice(0, index);
       buffer = buffer.slice(index + 2);
-      if (!dispatchBlock(block)) return false;
+      const result = dispatchBlock(block);
+      if (result !== true) return result;
     }
-    if (buffer.trim() && !dispatchBlock(buffer)) return false;
+    if (buffer.trim()) {
+      const result = dispatchBlock(buffer);
+      if (result !== true) return result;
+    }
     return true;
   }
 
@@ -399,7 +418,7 @@ export function createAgentApi({
             code: typeof event.code === "string" ? event.code : "event_stream_error",
             message: typeof event.message === "string" ? event.message : "事件流连接失败。"
           });
-          return false;
+          return "server-error";
         }
         onEvent(event);
       } catch {
