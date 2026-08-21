@@ -495,7 +495,9 @@ if (readerHistory && !readerHistory.__bound) {
         // 行为门禁与后端 409 同口径（非终态集），被拦时 toast 提示且不执行。
         if (agentSurface.isAgentRunning()) {
           showToast("写作进行中，暂停后恢复。");
-          return;
+          // 抛错而非早退：version-panel 在确认后 restore.disabled = true，
+          // 只有 rejection 走 catch 复位按钮 + 面板 notice，早退会让按钮卡死。
+          throw new Error("写作进行中，暂停后恢复。");
         }
         const result = await postJson("/api/chapters/rollback", { chapter_no: chapterNo, version });
         if (result?.ok) {
