@@ -370,8 +370,9 @@ export function createAgentSurface({
         snapshot = await t.fetchSnapshot(fetchOpts);
       } catch {
         // 载入失败：保留空会话，SSE 重连补齐；plan chip 同步清空（F7：快照失败
-        // 路径此前不通知，残留上一会话的任务计划）。
-        onPlanUpdated(null);
+        // 路径此前不通知，残留上一会话的任务计划）。scope 守卫：过期 rejection
+        // 不得清掉已切换会话的 chip。
+        if (isCurrentProjectScope(scope)) onPlanUpdated(null);
       }
     }
     if (!isCurrentProjectScope(scope)) return;
