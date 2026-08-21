@@ -171,7 +171,7 @@
 - **思考项**：`model_turn_started` 创建 `reasoning:<turn_id>`，运行中标签 `思考中`（最多两行、按自然片段替换、不推动对话滚动）；`reasoning_completed` 到达后标签变为 **`思考 N 秒`**（N = 该 turn 从 `model_turn_started` 到 `reasoning_completed` 的真实耗时，秒、四舍五入、最小 1；无时间戳可算时回退 `已完成思考`）。展开详情的文案按可用性三态：
   - `available`（模型支持且本轮有已确认安全的内容）→ 显示思考全文；
   - `unsupported`（模型明确不支持查看）→ `当前模型不支持查看`；
-  - `empty`（支持但本轮无内容）→ `本次没有可查看的思考内容`。
+  - `empty`（支持但本轮无内容）→ `没有可查看的思考内容（本次无输出或该模型不支持）`。
 - 每个模型轮次恰好一个 `已完成思考` 项，与工具动作严格按事件 seq 交替排列；两个模型轮次产生两个独立思考项。
 - reasoning 内容只经 `reasoning_delta` / `reasoning_completed` 进入 journal，**绝不写入下一轮模型上下文，也绝不混入 assistant 正文通道**。
 
