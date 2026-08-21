@@ -101,3 +101,5 @@ F1/F2/F3/F4/F5/F7 六条由本人读源码逐条坐实（文件:行号与断言�
 ### 收口新增：Node v25 FileHandle GC 根治（Sundry A）
 
 `journal-segments.mjs` 原在 `load()` 末尾 eager open 一个活动段写句柄常驻 `activeSegment.fd`；会话加载后若再无 append，该打开句柄随 store 被 GC 时被回收，Node v25 报 `A FileHandle object was closed during garbage collection`（未显式 close）。最小根因修复：load 不再常驻打开，句柄生命周期完全惰性（append 写入前按需重开、rotate 在 fd 为 null 时以 `r+` 重开做 fsync），无任何读取路径依赖预开句柄——行为不变、消除 GC 泄漏。`journal-recovery` + `project-agent` 两文件级 fail 消失（178/178 通过）。
+
+- 已知环境 flake：tests/agent/compaction.test.mjs 全量并行时偶发 ENOTEMPTY rmdir（teardown 竞态，单跑稳定，下轮可考虑 h.cleanup 容错）。

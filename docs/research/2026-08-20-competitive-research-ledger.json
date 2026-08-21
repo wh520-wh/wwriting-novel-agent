@@ -1,0 +1,127 @@
+{
+  "research_date": "2026-08-20",
+  "evidence": [
+    {
+      "id": "E1",
+      "competitor": "Claude Code / Claude Agent SDK",
+      "claim": "官方 agent-loop 文档把处理 AssistantMessage 定义为 progress updates：「handle AssistantMessage to see what Claude is doing each turn, including which tools it called」，即模型每轮自述是官方定义的进度更新通道。",
+      "source_url": "https://code.claude.com/docs/en/agent-sdk/agent-loop",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-20",
+      "evidence_locator": "Agent loop 页 AssistantMessage / Progress updates 段",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E2",
+      "competitor": "Claude Code / Claude Agent SDK",
+      "claim": "官方 streaming 文档：开启 includePartialMessages（TS）/ include_partial_messages（Py）后逐 token 流出 SDKPartialAssistantMessage，并明说该能力「useful for chat interfaces that need to show progress during multi-step agent tasks」。",
+      "source_url": "https://code.claude.com/docs/en/agent-sdk/streaming",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-20",
+      "evidence_locator": "Streaming 页 partial message streaming 段",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E3",
+      "competitor": "OpenAI Codex",
+      "claim": "官方 CLI features 文档（经 Web Archive 快照核对，live 站点本网络不可达）：「Watch Codex explain its plan before making a change, and approve or reject steps inline」与「Codex always surfaces a transcript of its actions」--以内联计划与动作转写（transcript）呈现过程，非模型即兴叙述。",
+      "source_url": "https://developers.openai.com/codex/cli/features",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-20",
+      "evidence_locator": "Codex CLI features 页 plan / transcript 段（Web Archive 快照）",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E4",
+      "competitor": "Manus",
+      "claim": "官方工程博客把 todo.md 描述为上下文工程机制而非 UI 进度：是「a deliberate mechanism to manipulate attention」，作用是把目标「reciting its objectives into the end of the context」防跑偏；全文无 UI 进度叙述内容。",
+      "source_url": "https://manus.im/blog/Context-Engineering-for-AI-Agents-Lessons-from-Building-Manus",
+      "source_type": "official_paper",
+      "accessed_on": "2026-08-20",
+      "evidence_locator": "Context Engineering for AI Agents 博文 todo.md 段",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E5",
+      "competitor": "WWriting（本地基线）",
+      "claim": "src/core/agent/prompt.mjs 只要求最终总结（:57「最终简洁说明实际完成的内容」），且 :49「能直接完成的工作使用工具完成，不只口头承诺」抑制说话；全文无任何过程叙述指示--叙述层 elicitation 缺失。",
+      "source_url": "https://github.com/wh520-wh/wwriting-novel-agent",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-20",
+      "evidence_locator": "src/core/agent/prompt.mjs:49-57",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E6",
+      "competitor": "WWriting（本地基线）",
+      "claim": "叙述通道端到端已存在：runtime.mjs:1734-1742 每个 Provider 轮次建独立 assistantWriter 发 assistant_message_delta/assistant_message_completed（带稳定 turn id）；state.js:304-339 把 delta 实时累积成流式气泡、completed 定稿入 conversation--模型若在工具调用间说话，前端今天即可逐字显示。",
+      "source_url": "https://github.com/wh520-wh/wwriting-novel-agent",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-20",
+      "evidence_locator": "src/core/agent/runtime.mjs:1734-1742; src/app-shell/agent/state.js:304-339",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E7",
+      "competitor": "WWriting（本地基线）",
+      "claim": "assistant 正文进入 provider history 并参与压缩摘要（runtime.mjs:896-925 的 assistant_text 字段），与注释明文的「reasoning 只经 reasoning_delta/reasoning_completed 进入 journal，绝不写入 provider history」形成对照--每轮叙述即每轮上下文增长。",
+      "source_url": "https://github.com/wh520-wh/wwriting-novel-agent",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-20",
+      "evidence_locator": "src/core/agent/runtime.mjs:1725-1742, 896-925",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E8",
+      "competitor": "NN/g（设计基线）",
+      "claim": "十大可用性启发式第 1 条对 visibility of system status 的定义：「The design should always keep users informed about what is going on」，并要求以合适的反馈在合理时限内送达。",
+      "source_url": "https://www.nngroup.com/articles/ten-usability-heuristics/",
+      "source_type": "official_paper",
+      "accessed_on": "2026-08-20",
+      "evidence_locator": "Ten Usability Heuristics 文章 Heuristic #1",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E9",
+      "competitor": "Cursor",
+      "claim": "agent overview 文档页不含任何进度显示形态术语（无 Thinking 状态、步骤流、任务摘要的描述）；仅间接提及 chat timeline 中的 checkpoint 与排队消息。该页证据表明进度叙述层没有行业统一范式可循。",
+      "source_url": "https://cursor.com/docs/agent/overview",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-20",
+      "evidence_locator": "Cursor agent overview 全页（负向证据）",
+      "classification": "fact",
+      "confidence": "medium"
+    }
+  ],
+  "recommendations": [
+    {
+      "id": "R1",
+      "priority": "P0",
+      "statement": "提示词层引入里程碑级过程叙述 elicitation：prompt.mjs 增加「计划步骤推进时用一两句话说明正在做什么与为什么」类指示，复用既有 assistant_message_delta 通道，零架构改动。",
+      "evidence_ids": ["E1", "E5", "E6"],
+      "acceptance_signal": "sim（或真实）Run 的 journal 事件序中断言：至少一个 tool_call_completed 之前存在非空 assistant_message_completed，且前端零改动时会话流渲染出与工作组条目交错的叙述气泡。"
+    },
+    {
+      "id": "R2",
+      "priority": "P1",
+      "statement": "定叙述显示政策并做 UI 接线/视觉验收：粒度锚定里程碑（平衡及时反馈与上下文成本），叙述气泡与工作组条目按事件 seq 交错，Run 结束后叙述保留/收起形态明确。",
+      "evidence_ids": ["E2", "E6", "E7", "E8"],
+      "acceptance_signal": "规格文档写明粒度与保留规则；Run 进行中叙述气泡与工作组条目按事件时间交错渲染，视觉验收截图通过（沿用第十轮视觉验收惯例）。"
+    },
+    {
+      "id": "R3",
+      "priority": "P2",
+      "statement": "零 token 合成状态行增强：从结构化事件派生更丰富的过程语言（含重试可见性「重试 n/m」，接 chat-logic-optimization-plan §4.3），不经过模型、不产生 provider history 增量。",
+      "evidence_ids": ["E3", "E7", "E8"],
+      "acceptance_signal": "重试进行中 UI 出现「重试 n/m」状态行，且该行纯前端事件合成：journal 无新事件类型、无上下文增长。"
+    }
+  ]
+}
