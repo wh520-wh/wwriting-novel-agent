@@ -110,13 +110,7 @@ const TOOL_RESULT_CANCELLATION_CODES = new Set(["tool_cancelled", "shell_cancell
 // 统一工具目录（Task 7）：不再按工作流切换——每一轮都提供相同的生产工具集：
 // 八个通用工具 + 六个深工具恒可用（Task 8：旧 blueprint 事务工具已整体删除，
 // 不再有注册表残留）。
-// ponytail: 临时名单，Task 6 替换为 ToolRuntime 注册表派生后删除。
-const PRODUCTION_TOOL_NAMES = Object.freeze([
-  "list_files", "search_files", "read_file", "write_file", "edit_file",
-  "shell", "read_skill", "count_text",
-  "update_plan", "append_chapter_segment", "commit_chapter",
-  "finalize_revision", "rollback_chapter", "update_memory"
-]);
+// Task 6：名单由 ToolRuntime 注册表派生（tools.toolNames()），不再维护独立常量。
 
 // 第九轮：派生记忆提取器退役。commit/finalize/rollback 结果附加固定记忆维护
 // 提醒（memory_checklist），记忆由模型自调用 update_memory 工具维护。
@@ -1006,9 +1000,11 @@ export function createAgentRuntime({
     await journal.appendSafeTranscript(record);
   }
 
-  // 按统一工具目录过滤定义（Task 7：通用工具 + 固定五个深工具，每轮相同）。
+  // 按统一工具目录过滤定义（Task 6：名单派生自 ToolRuntime 注册表——注册表即
+  // 生产工具集的唯一权威来源，每轮相同）。当前 definitions() 与 toolNames()
+  // 同源于同一注册表，Set 过滤是恒真校验；保留为防未来注册表与暴露集分叉的守卫。
   function allowedDefinitions(tools) {
-    const allowed = new Set(PRODUCTION_TOOL_NAMES);
+    const allowed = new Set(tools.toolNames());
     return tools
       .definitions()
       .filter((definition) => allowed.has(definition?.function?.name));
@@ -1878,7 +1874,8 @@ export function createAgentRuntime({
             run_id: runId,
             active_input_id: inputId,
             // Task 7：统一工具目录（每轮同一工具集），执行层独立强制授权
-            allowed_tool_names: [...PRODUCTION_TOOL_NAMES],
+            // Task 6：名单派生自注册表（同 allowedDefinitions 同一来源）
+            allowed_tool_names: tools.toolNames(),
             signal: state.controller?.signal
           });
           const toolRecord = {

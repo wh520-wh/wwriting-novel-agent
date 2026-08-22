@@ -139,6 +139,7 @@ async function setup(t, options = {}) {
     shellRuntime,
     projectLocks: options.projectLocks,
     secrets: options.secrets ?? [],
+    skills: options.runtime?.skills ?? {},
     ...(options.runtime ?? {})
   });
   const project = {
@@ -214,7 +215,7 @@ async function nextDecision(journal, count = 1) {
 // ---------------------------------------------------------------------------
 
 test("恰好注册八个 general 与六个 deep 工具", () => {
-  const tools = createToolRuntime({ journal: { append: async () => {} } });
+  const tools = createToolRuntime({ journal: { append: async () => {} }, skills: {} });
   const names = tools.definitions().map((def) => def.function.name);
   assert.deepEqual(names, [...GENERAL_NAMES, ...DEEP_NAMES]);
   assert.equal(names.length, 14, "工具总数应为 14（八个 general + 六个 deep，含 finalize_revision、rollback_chapter 与 update_memory）");
@@ -224,7 +225,7 @@ test("恰好注册八个 general 与六个 deep 工具", () => {
 });
 
 test("shell schema 只暴露 command/cwd/timeout_ms/purpose，模型不能提供风险字段", () => {
-  const tools = createToolRuntime({ journal: { append: async () => {} } });
+  const tools = createToolRuntime({ journal: { append: async () => {} }, skills: {} });
   const shell = tools.definitions().find((def) => def.function.name === "shell").function;
   assert.deepEqual(Object.keys(shell.parameters.properties), ["command", "cwd", "timeout_ms", "purpose"]);
   assert.equal(shell.parameters.additionalProperties, false);
@@ -241,7 +242,7 @@ test("shell schema 只暴露 command/cwd/timeout_ms/purpose，模型不能提供
 });
 
 test("deep 工具 schema 与计划一致", () => {
-  const tools = createToolRuntime({ journal: { append: async () => {} } });
+  const tools = createToolRuntime({ journal: { append: async () => {} }, skills: {} });
   const byName = new Map(tools.definitions().map((def) => [def.function.name, def.function]));
   const plan = byName.get("update_plan");
   assert.deepEqual(Object.keys(plan.parameters.properties), ["explanation", "items"]);
@@ -281,7 +282,7 @@ async function tempSkillService(t) {
 }
 
 test("read_skill schema 与 Task 12 冻结契约逐字一致", () => {
-  const tools = createToolRuntime({ journal: { append: async () => {} } });
+  const tools = createToolRuntime({ journal: { append: async () => {} }, skills: {} });
   const tool = tools.definitions().find((def) => def.function.name === "read_skill").function;
   assert.equal(tool.description, "读取已发现 Agent Skill 的 SKILL.md 或其安全资源。");
   assert.deepEqual(Object.keys(tool.parameters.properties), ["name", "resource"]);
@@ -387,7 +388,8 @@ test("read_skill 二进制 asset 返回元数据+绝对路径，不把二进制�
 });
 
 test("read_skill 未注入 skills service 时返回 工具不可用。", async (t) => {
-  // setup 缺省注入全局单例；这里显式注入空 service 模拟未接线
+  // Task 6 起 skills 为必传参数，setup 缺省注入空 stub（{}）；此处显式传
+  // 空 service 模拟未接线（read_skill 对 skills.read 非函数返回 not_wired）
   const h = await setup(t, { runtime: { skills: {} } });
   const result = await h.tools.execute(toolCall("read_skill", { name: "suspense-chapter-end" }), h.context);
   assert.equal(result.ok, false);
