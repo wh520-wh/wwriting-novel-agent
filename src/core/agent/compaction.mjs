@@ -30,16 +30,6 @@ import { estimateTokens } from "./prompt.mjs";
 import { COMPACTION_PAYLOAD_FIELDS } from "./context-checkpoints.mjs";
 import { defaultClock, defaultIdFactory, normalizeAt, codedError as compactionError } from "./agent-utils.mjs";
 
-export const COMPACTION_EVENT_TYPES = Object.freeze([
-  "context_compaction_started",
-  "context_compaction_running",
-  "context_compaction_cancel_requested",
-  "context_compaction_completed",
-  "context_compaction_failed",
-  "context_compaction_cancelled",
-  "context_compaction_noop"
-]);
-
 // 非终态压缩状态（load() 对账时用于判断"未完成 attempt"）。
 export const COMPACTION_NON_TERMINAL_STATES = Object.freeze(["started", "running", "cancelling"]);
 

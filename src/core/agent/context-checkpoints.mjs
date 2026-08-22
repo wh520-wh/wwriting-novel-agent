@@ -711,6 +711,10 @@ export function createContextCheckpointStore({ agentDir, clock = defaultClock, i
     discardCandidate,
     reconcileAfterCrash,
     retireForClear,
-    restoreFromClear
+    restoreFromClear,
+    // 读取正式 checkpoint 文件内容（checkpoints/context-<id>.json；Runtime 历史装配用）。
+    async readCheckpointFile(checkpointId) {
+      return JSON.parse(await fs.readFile(formalFilePath(root, checkpointId), "utf8"));
+    }
   };
 }

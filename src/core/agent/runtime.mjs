@@ -110,20 +110,13 @@ const TOOL_RESULT_CANCELLATION_CODES = new Set(["tool_cancelled", "shell_cancell
 // 统一工具目录（Task 7）：不再按工作流切换——每一轮都提供相同的生产工具集：
 // 八个通用工具 + 六个深工具恒可用（Task 8：旧 blueprint 事务工具已整体删除，
 // 不再有注册表残留）。
-const GENERAL_TOOL_NAMES = new Set([
-  "list_files",
-  "search_files",
-  "read_file",
-  "write_file",
-  "edit_file",
-  "shell",
-  "read_skill",
-  "count_text"
+// ponytail: 临时名单，Task 6 替换为 ToolRuntime 注册表派生后删除。
+const PRODUCTION_TOOL_NAMES = Object.freeze([
+  "list_files", "search_files", "read_file", "write_file", "edit_file",
+  "shell", "read_skill", "count_text",
+  "update_plan", "append_chapter_segment", "commit_chapter",
+  "finalize_revision", "rollback_chapter", "update_memory"
 ]);
-
-const DEEP_TOOL_NAMES = Object.freeze(["update_plan", "append_chapter_segment", "commit_chapter", "finalize_revision", "rollback_chapter", "update_memory"]);
-
-const PRODUCTION_TOOL_NAMES = Object.freeze([...GENERAL_TOOL_NAMES, ...DEEP_TOOL_NAMES]);
 
 // 第九轮：派生记忆提取器退役。commit/finalize/rollback 结果附加固定记忆维护
 // 提醒（memory_checklist），记忆由模型自调用 update_memory 工具维护。
@@ -149,9 +142,6 @@ const HISTORY_PAGE_LIMIT = 8000;
 // 轮次，受保护近期原文与旧 checkpoint 摘要不受影响；封顶后的最终估算仍由
 // buildCompactionSource 的窗口预检把关）。
 const COMPACTION_SOURCE_BUDGET_RATIO = 0.5;
-// 一轮 = 一条 user input 与其 assistant 正文（与 compaction-prompt.mjs 同义）。
-// Task 8：transcript 轮次重建的 tool output 阈值沿用 Task 7 默认。
-const CHECKPOINT_FILE_PREFIX = "context-";
 
 // 会话是否有非终态活动 Run（串行门 / 删除守卫 / run_status 投影共用同一判定；
 // 新增终态状态只需改 TERMINAL_RUN_STATUSES 一处）。
@@ -654,7 +644,7 @@ export function createAgentRuntime({
         });
     const pointer = await checkpointStore.readActive();
     if (pointer.checkpoint_id != null) {
-      const checkpoint = await readCheckpointFile(storageRoot, pointer.checkpoint_id).catch(() => null);
+      const checkpoint = await checkpointStore.readCheckpointFile(pointer.checkpoint_id).catch(() => null);
       if (checkpoint != null) {
         const delta = await journal.readTranscriptAfter({ afterSeq: checkpoint.source_transcript_seq?.end ?? 0 });
         return [...checkpointToMessages(checkpoint), ...transcriptToMessages([...filter(delta), ...volatileRecords])];
@@ -662,12 +652,6 @@ export function createAgentRuntime({
     }
     const tail = await journal.readTranscriptTail({ limit: HISTORY_PAGE_LIMIT });
     return transcriptToMessages([...filter(tail), ...volatileRecords]);
-  }
-
-  // 读取 active checkpoint 正式文件（checkpoints/context-<id>.json）。
-  async function readCheckpointFile(storageRoot, checkpointId) {
-    const target = path.join(storageRoot, "checkpoints", `${CHECKPOINT_FILE_PREFIX}${checkpointId}.json`);
-    return JSON.parse(await fs.readFile(target, "utf8"));
   }
 
   // 展开 active checkpoint：结构化摘要 → 独立 user 块（历史层），随后是 checkpoint
@@ -835,7 +819,7 @@ export function createAgentRuntime({
     const pointer = await checkpointStore.readActive();
     let oldCheckpoint = null;
     if (pointer.checkpoint_id != null) {
-      oldCheckpoint = await readCheckpointFile(storageRoot, pointer.checkpoint_id).catch(() => null);
+      oldCheckpoint = await checkpointStore.readCheckpointFile(pointer.checkpoint_id).catch(() => null);
     }
     const fromSeq = oldCheckpoint?.source_transcript_seq?.end ?? 0;
     const delta =
