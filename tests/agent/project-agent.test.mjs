@@ -1384,9 +1384,9 @@ test("Agent prompt 注入技能目录摘要，完整正文只在 read_skill 结�
       async (request) => {
         const system = (request.messages ?? []).find((message) => message.role === "system")?.content ?? "";
         assert.ok(system.includes("[Available Skills]"), "system 应包含技能目录块");
-        assert.ok(system.includes("- suspense-chapter-end: "), "目录块包含内置技能 name/description");
-        assert.ok(system.includes("每章结尾都要留下悬念钩子"), "目录块包含内置技能 description");
-        assert.ok(!system.includes("本章计划必须包含一个结尾悬念钩子"), "目录块不得注入正文 Instructions");
+        assert.ok(system.includes("- [修饰] suspense-chapter-end: "), "目录块包含内置技能 name/description");
+        assert.ok(system.includes("结尾悬念修饰"), "目录块包含内置技能 description");
+        assert.ok(!system.includes("本章结尾留下一个悬念钩子"), "目录块不得注入正文 Instructions");
         assert.ok(!system.includes("三连排比堆砌"), "目录块不得注入正文完整示例");
         return { reply: { text: "已读技能目录。" } };
       }
