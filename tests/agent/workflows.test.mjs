@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { UNIFIED_TASK_POLICY, assemblePrompt } from "../../src/core/agent/prompt.mjs";
-import { createToolRuntime } from "../../src/core/agent/tools.mjs";
+import { createToolRuntime } from "../../src/core/agent/tools/index.mjs";
 import { createProjectAgentHarness, eventsOfType, waitForIdle } from "../helpers/project-agent-harness.mjs";
 
 // 统一深工具目录（固定六件套，Task 7 契约 + Task C3 finalize_revision + C5 rollback_chapter）

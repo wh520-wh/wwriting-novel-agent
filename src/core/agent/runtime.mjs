@@ -36,7 +36,7 @@ import { randomUUID } from "node:crypto";
 
 import { buildProcessRestartedConvergence, createAgentJournal, persistentToolResult } from "./journal.mjs";
 import { createSessionRegistry } from "./session-registry.mjs";
-import { createToolRuntime } from "./tools.mjs";
+import { createToolRuntime } from "./tools/index.mjs";
 import { assemblePrompt, estimateTokens } from "./prompt.mjs";
 import {
   estimateRequestUsage,

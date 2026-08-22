@@ -53,8 +53,8 @@ import { ensureDir, pathExists, readJson, writeJsonAtomic } from "../fs-utils.mj
 import { createMutex } from "../async-utils.mjs";
 import { createJournalSegmentStore } from "./journal-segments.mjs";
 import { fail, defaultClock, defaultIdFactory, normalizeAt } from "./agent-utils.mjs";
-// 与 tools.mjs → journal.mjs 构成循环：两侧顶层不得读取对方导出（TDZ 风险），仅函数体内使用。
-import { MAX_TOOL_OUTPUT_CHARS, truncateOutput } from "./tools.mjs";
+// 与 tools/index.mjs → journal.mjs 构成循环：两侧顶层不得读取对方导出（TDZ 风险），仅函数体内使用。
+import { MAX_TOOL_OUTPUT_CHARS, truncateOutput } from "./tools/index.mjs";
 import {
   TERMINAL_RUN_STATUSES,
   COMPACTION_NON_TERMINAL_STATES,
@@ -63,8 +63,8 @@ import {
   createSideState,
   reduceEvent
 } from "./journal-handlers.mjs";
-// 外部既有 import 路径保持（第十五轮 Task 4：tests/tools.mjs/runtime.mjs 直连
-// ./journal.mjs 的具名导出，拆表后统一 re-export，调用方零改动）。
+// 外部既有 import 路径保持（第十五轮 Task 4：tests/tools/index.mjs 与
+// runtime.mjs 直连 ./journal.mjs 的具名导出，拆表后统一 re-export，调用方零改动）。
 export {
   FIXED_EVENT_TYPES,
   SESSION_STATUSES,

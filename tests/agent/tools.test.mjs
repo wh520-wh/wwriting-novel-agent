@@ -1,6 +1,7 @@
-// src/core/agent/tools.mjs（统一 ToolRuntime）的测试（统一 Agent 内核计划 Task 4）。
+// src/core/agent/tools/index.mjs（统一 ToolRuntime）的测试（统一 Agent 内核计划 Task 4；
+// 第十五轮 Task 5：注册体按域拆入 tools/definitions-*.mjs）。
 //
-// tests/agent/ 是允许测试内部 seam 的目录：本文件直接导入 tools.mjs 与 journal.mjs，
+// tests/agent/ 是允许测试内部 seam 的目录：本文件直接导入 tools/index.mjs 与 journal.mjs，
 // 覆盖计划 Task 4 Step 6–9 要求的全部不变量：
 //   - 恰好 14 个工具的 typed schema（八个 general + 六个 deep，Task 7 删除
 //     enter_workflow、Task 8 删除 commit_blueprint、Task 12 加 read_skill、
@@ -26,7 +27,7 @@ import path from "node:path";
 import test from "node:test";
 import { createAgentJournal } from "../../src/core/agent/journal.mjs";
 import { sha256 } from "../../src/core/fs-utils.mjs";
-import { createToolRuntime } from "../../src/core/agent/tools.mjs";
+import { createToolRuntime } from "../../src/core/agent/tools/index.mjs";
 import { createProjectLockRegistry } from "../../src/core/project-lock.mjs";
 import { EXTREME_COMMANDS } from "../fixtures/command-risk-corpus.mjs";
 import {
