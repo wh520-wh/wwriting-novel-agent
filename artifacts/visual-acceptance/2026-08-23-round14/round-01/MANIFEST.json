@@ -1,0 +1,255 @@
+{
+  "generated_at": "2026-08-22T16:04:48.387Z",
+  "viewport": {
+    "width": 1280,
+    "height": 800
+  },
+  "count": 49,
+  "shots": [
+    {
+      "name": "00-welcome-empty",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\00-welcome-empty.png",
+      "description": "空工作区：欢迎空态（无项目，含新建/打开入口与 composer）"
+    },
+    {
+      "name": "01-main-idle",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\01-main-idle.png",
+      "description": "主界面：rail（两项目 + 会话树）+ 完成对话 + composer"
+    },
+    {
+      "name": "02-rail-hover-new",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\02-rail-hover-new.png",
+      "description": "hover：新建小说按钮"
+    },
+    {
+      "name": "03-rail-hover-project",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\03-rail-hover-project.png",
+      "description": "hover：项目行（星海旅人）"
+    },
+    {
+      "name": "04-rail-hover-session",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\04-rail-hover-session.png",
+      "description": "hover：会话行"
+    },
+    {
+      "name": "05-rail-session-active",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\05-rail-session-active.png",
+      "description": "选中态：当前会话行 active"
+    },
+    {
+      "name": "06-rail-hover-session-menu",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\06-rail-hover-session-menu.png",
+      "description": "hover：会话行操作按钮（重命名/归档）"
+    },
+    {
+      "name": "07-topbar-hover",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\07-topbar-hover.png",
+      "description": "hover：顶栏按钮（隐私/夜间/面板）"
+    },
+    {
+      "name": "08-composer-focus",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\08-composer-focus.png",
+      "description": "聚焦态：composer 输入框（光标 + 占位符）"
+    },
+    {
+      "name": "09-composer-filled",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\09-composer-filled.png",
+      "description": "填写态：composer 已输入内容，发送按钮可用"
+    },
+    {
+      "name": "10-send-hover",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\10-send-hover.png",
+      "description": "hover：发送按钮（已填内容）"
+    },
+    {
+      "name": "11-slash-menu-open",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\11-slash-menu-open.png",
+      "description": "展开态：斜杠命令菜单（输入 / 后）"
+    },
+    {
+      "name": "12-privacy-on",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\12-privacy-on.png",
+      "description": "隐私模式开启：正文模糊"
+    },
+    {
+      "name": "13-dark-main",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\13-dark-main.png",
+      "description": "深色主题：主界面"
+    },
+    {
+      "name": "14-drawer-chapters",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\14-drawer-chapters.png",
+      "description": "抽屉·章节：3 章已完成 + 3 章待生成 + 导出工具条"
+    },
+    {
+      "name": "15-drawer-chapter-hover",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\15-drawer-chapter-hover.png",
+      "description": "hover：已完成章节行"
+    },
+    {
+      "name": "16-drawer-model",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\16-drawer-model.png",
+      "description": "抽屉·模型：模型配置（已配置 deepseek-v4-flash + 预算与权限）"
+    },
+    {
+      "name": "17-drawer-research",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\17-drawer-research.png",
+      "description": "抽屉·资料：3 条来源快照（含 1 条不可信）"
+    },
+    {
+      "name": "18-drawer-cost",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\18-drawer-cost.png",
+      "description": "抽屉·成本：成本视图（3.87 元 + 事件列表）"
+    },
+    {
+      "name": "19-drawer-memory",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\19-drawer-memory.png",
+      "description": "抽屉·记忆：故事摘要 + 工作日志 + 设定档案"
+    },
+    {
+      "name": "20-drawer-tab-hover",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\20-drawer-tab-hover.png",
+      "description": "hover：未选中 tab（章节）"
+    },
+    {
+      "name": "21-reader-open",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\21-reader-open.png",
+      "description": "阅读器：章节正文（衬线排版 + 工具条）"
+    },
+    {
+      "name": "22-reader-tools-hover",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\22-reader-tools-hover.png",
+      "description": "hover：阅读器工具按钮（字号/翻章/沉浸/历史）"
+    },
+    {
+      "name": "23-reader-immersive",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\23-reader-immersive.png",
+      "description": "沉浸模式：阅读器全宽"
+    },
+    {
+      "name": "24-settings-model",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\24-settings-model.png",
+      "description": "设置·模型设置：供应商列表（DeepSeek 已配置 + 密钥已保存）"
+    },
+    {
+      "name": "25-settings-nav-hover",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\25-settings-nav-hover.png",
+      "description": "hover：设置侧栏导航项（写作参数）"
+    },
+    {
+      "name": "26-settings-writing",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\26-settings-writing.png",
+      "description": "设置·写作参数：章节数/字数/输出风格"
+    },
+    {
+      "name": "27-settings-writing-focus",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\27-settings-writing-focus.png",
+      "description": "聚焦态：写作参数输入框（目标章节数）"
+    },
+    {
+      "name": "28-settings-skills",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\28-settings-skills.png",
+      "description": "设置·Agent 技能：技能目录"
+    },
+    {
+      "name": "29-settings-danger",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\29-settings-danger.png",
+      "description": "设置·项目管理：归档/文件夹/对话历史"
+    },
+    {
+      "name": "30-settings-save-hover",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\30-settings-save-hover.png",
+      "description": "hover：保存设置按钮"
+    },
+    {
+      "name": "31-create-modal-empty",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\31-create-modal-empty.png",
+      "description": "新建小说弹窗：空表单"
+    },
+    {
+      "name": "32-create-modal-filled",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\32-create-modal-filled.png",
+      "description": "新建小说弹窗：已填写"
+    },
+    {
+      "name": "33-shortcuts-modal",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\33-shortcuts-modal.png",
+      "description": "快捷键速查弹窗"
+    },
+    {
+      "name": "34-decision-card",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\34-decision-card.png",
+      "description": "权限决策卡：写文件等待确认（一次允许/本条输入允许/拒绝）"
+    },
+    {
+      "name": "35-error-card",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\35-error-card.png",
+      "description": "错误卡：run_failed 红色错误卡（含手动重试）"
+    },
+    {
+      "name": "36-dark-drawer",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\36-dark-drawer.png",
+      "description": "深色：抽屉·成本"
+    },
+    {
+      "name": "37-dark-reader",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\37-dark-reader.png",
+      "description": "深色：阅读器"
+    },
+    {
+      "name": "38-dark-settings",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\38-dark-settings.png",
+      "description": "深色：设置·写作参数"
+    },
+    {
+      "name": "39-dark-create-modal",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\39-dark-create-modal.png",
+      "description": "深色：新建小说弹窗"
+    },
+    {
+      "name": "40-plain-folder",
+      "file": "D:\\WWriting\\artifacts\\visual-acceptance\\2026-08-23-round14\\round-01\\40-plain-folder.png",
+      "description": "普通文件夹：无 project.yaml 打开并完成首条消息"
+    },
+    {
+      "name": "41-mockup-v4-normal",
+      "file": "41-mockup-v4-normal.png",
+      "description": "原型 v4 · 场景1：正常写作（3 段）"
+    },
+    {
+      "name": "41-mockup-v4-long20",
+      "file": "41-mockup-v4-long20.png",
+      "description": "原型 v4 · 场景2：一句话写 20 章"
+    },
+    {
+      "name": "41-mockup-v4-retryOk",
+      "file": "41-mockup-v4-retryOk.png",
+      "description": "原型 v4 · 场景3：网络波动重试后恢复"
+    },
+    {
+      "name": "41-mockup-v4-retryFail",
+      "file": "41-mockup-v4-retryFail.png",
+      "description": "原型 v4 · 场景4：重试 5 次仍失败"
+    },
+    {
+      "name": "41-mockup-v4-apiKey",
+      "file": "41-mockup-v4-apiKey.png",
+      "description": "原型 v4 · 场景5：API Key 错误"
+    },
+    {
+      "name": "42-mockup-v3.html",
+      "file": "42-mockup-v3.html.png",
+      "description": "原型 v3：对话样式预览"
+    },
+    {
+      "name": "43-mockup-polish-preview.html",
+      "file": "43-mockup-polish-preview.html.png",
+      "description": "原型 polish：对话打磨预览"
+    },
+    {
+      "name": "44-mockup-chat-style.html",
+      "file": "44-mockup-chat-style.html.png",
+      "description": "原型 chat-style：对话风格对照"
+    }
+  ]
+}
