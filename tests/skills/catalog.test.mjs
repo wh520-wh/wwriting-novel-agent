@@ -1,9 +1,11 @@
 // 四级技能 catalog 单测（计划 Task 9 + Task 10）。
 // 四层同名时 active 一定来自 project（项目 > 全局 > 随应用分发 > 内置）；
 // 只扫描每个 root 的直接子目录；同 root 重复 name 拒绝；默认 root 在 service 内解析。
-// Task 10：src/skills/<name>/SKILL.md 五个内置技能文件与旧 BUILTIN_SKILLS 内容等价
-// （BUILTIN_SKILLS 常量随 Task 12 删除，改用冻结快照保持等价断言），
-// catalog 以 src/skills 为 builtin root 时全部来自 source: "builtin"，且不向项目写入 skill.json。
+// Task 10：src/skills/<name>/SKILL.md 五个内置技能文件化；catalog 以 src/skills 为
+// builtin root 时全部来自 source: "builtin"，且不向项目写入 skill.json。
+// Task 6（F6）：三个基座内容完整重写（2.0.0），旧 BUILTIN_SKILLS 冻结快照删除——
+// 内容重写后与旧常量的等价断言失去意义，改由「内置基座分类与元数据（F6）」与
+// 共享 AI 红线契约测试守卫。
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { realpath as realpathAsync } from "node:fs/promises";
@@ -21,180 +23,43 @@ import { readSkillFile } from "../../src/core/skills/skill-file.mjs";
 // Task 10：内置技能文件化后的真实根目录（src/skills），与 service 默认 builtinRoot 一致。
 const BUILTIN_ROOT = path.resolve(import.meta.dirname, "..", "..", "src", "skills");
 
-// 旧 BUILTIN_SKILLS 常量（Task 12 已删除）的冻结快照：五个内置技能的
-// name/description/version/scope/priority/hooks（含正文等价断言需要的
-// append_prompt.content 与 check.prompt 原文）。
-const BUILTIN_SKILL_SNAPSHOT = Object.freeze({
-  "suspense-chapter-end": Object.freeze({
-    name: "suspense-chapter-end",
-    version: "1.0.0",
-    scope: "chapter",
-    priority: 50,
-    description: "每章结尾都要留下悬念钩子：震惊性话语、推翻认知的新事实或突然逼近的危险。",
-    hooks: Object.freeze([
-      Object.freeze({
-        stage: "planning",
-        action: "append_prompt",
-        content: "本章计划必须包含一个结尾悬念钩子。\n优先使用以下类型：一句令人震惊的话、一个推翻此前认知的新事实、或一个突然逼近的危险。"
-      }),
-      Object.freeze({
-        stage: "reviewing",
-        action: "check",
-        check: "suspense-ending",
-        prompt: "Check whether the final 500 visible characters contain a meaningful suspense hook."
-      })
-    ])
-  }),
-  "chapter-opening-hook": Object.freeze({
-    name: "chapter-opening-hook",
-    version: "1.0.0",
-    scope: "chapter",
-    priority: 40,
-    description: "每章开头必须用正在发生的事抓人：动作、冲突或悬念开场，不写天气和环境铺垫。",
-    hooks: Object.freeze([
-      Object.freeze({
-        stage: "planning",
-        action: "append_prompt",
-        content: "本章开头前两句话必须进入一个正在发生的事件（人物行动、冲突、悬念或意外）。\n禁止以天气、环境描写或背景说明开场。"
-      }),
-      Object.freeze({
-        stage: "reviewing",
-        action: "check",
-        check: "chapter-opening",
-        prompt: "检查正文开头约 150 个可见字符内是否有一个正在发生的动作、冲突或悬念。"
-      })
-    ])
-  }),
-  "avoid-ai-voice": Object.freeze({
-    name: "avoid-ai-voice",
-    version: "1.0.0",
-    scope: "chapter",
-    priority: 30,
-    description: "去除 AI 腔：不堆排比、不用模糊修饰词和总结式收尾，读起来像人写的。",
-    hooks: Object.freeze([
-      Object.freeze({
-        stage: "drafting",
-        action: "append_prompt",
-        content: [
-          "去除 AI 腔，这些写法一律不用：",
-          "1) 三连排比堆砌（如“他握住刀，握住恨，握住……”）；",
-          "2) 段尾用总结句收束情绪（如“她终于明白了……”）；",
-          "3) 模糊修饰词连发（仿佛、似乎、不禁、不由得、莫名、悄然、缓缓、微微、瞬间、顿时、一股莫名的、一种说不出的）；",
-          "4) 抒情长句连续不断，情绪改用具体动作和实物承载；",
-          "5) “如果说……那么……”式的议论句式。"
-        ].join("\n")
-      }),
-      Object.freeze({
-        stage: "reviewing",
-        action: "check",
-        check: "ai-voice",
-        prompt: "统计正文中模糊修饰词（仿佛/似乎/不禁/不由得/莫名/悄然/缓缓/微微/瞬间/顿时等）的出现密度，判断是否超标。"
-      })
-    ])
-  }),
-  "dialogue-not-summary": Object.freeze({
-    name: "dialogue-not-summary",
-    version: "1.0.0",
-    scope: "chapter",
-    priority: 40,
-    description: "对话推进剧情：人物各有声音、不重复已知信息；本章对话占比合理。",
-    hooks: Object.freeze([
-      Object.freeze({
-        stage: "drafting",
-        action: "append_prompt",
-        content: [
-          "对话规则：",
-          "1) 每段对话必须有目的：推进情节、暴露人设或制造冲突；",
-          "2) 禁止用对话复述读者已知的信息（“如你所知……”式）；",
-          "3) 人物各有口头禅和句式，不要所有人一个腔调；",
-          "4) 对话配动作与反应（表情、停顿、小动作），避免“他说道”“她答道”连发。"
-        ].join("\n")
-      }),
-      Object.freeze({
-        stage: "reviewing",
-        action: "check",
-        check: "dialogue-ratio",
-        prompt: "计算本章引号内对话占总可见字符的比例，对话过少或过多都要标记。"
-      })
-    ])
-  }),
-  "show-dont-tell": Object.freeze({
-    name: "show-dont-tell",
-    version: "1.0.0",
-    scope: "chapter",
-    priority: 50,
-    description: "展示而非陈述：用动作、反应和细节表现情绪与性格，不直接贴标签。",
-    hooks: Object.freeze([
-      Object.freeze({
-        stage: "drafting",
-        action: "append_prompt",
-        content: [
-          "展示而非陈述：不直接宣告情绪或性格（如“他很生气”“她是个善良的人”）。",
-          "改用具体动作、身体反应、环境细节和他人反应：",
-          "例：他摔上门，钥匙在锁孔里断成两截——而不是：他很生气。",
-          "例：她蹲下来把碎纸一片片捡起，摆回信封——而不是：她是个细心的人。"
-        ].join("\n")
-      }),
-      Object.freeze({
-        stage: "revising",
-        action: "append_prompt",
-        content: "修订时检查：正文中是否还有直接宣告情绪、性格或结论的句子？把它们改写成具体动作与细节。"
-      })
-    ])
-  })
+// 五个写作辅助内置技能名（内容以 src/skills/<name>/SKILL.md 文件为准；旧
+// BUILTIN_SKILLS 常量与冻结快照已在 Task 12/Task 6 删除，这里只留名字与 priority）。
+const BUILTIN_SKILL_NAMES = Object.freeze([
+  "suspense-chapter-end",
+  "chapter-opening-hook",
+  "avoid-ai-voice",
+  "dialogue-not-summary",
+  "show-dont-tell"
+]);
+// 五个写作辅助技能 frontmatter 保留的 priority（F6 不触碰这些文件，逐字守卫）。
+const BUILTIN_HOOK_PRIORITY = Object.freeze({
+  "suspense-chapter-end": 50,
+  "chapter-opening-hook": 40,
+  "avoid-ai-voice": 30,
+  "dialogue-not-summary": 40,
+  "show-dont-tell": 50
 });
-const BUILTIN_SKILL_NAMES = Object.keys(BUILTIN_SKILL_SNAPSHOT);
 
-// Task 8：三个内置写作风格技能（SPEC §6.4 正文；D2 起无保留名/只读保护）。
+// Task 8/F6：三个写作风格基座（F6 重写，2.0.0；D2 起无保留名/只读保护）。
 const WRITING_STYLE_SKILLS = Object.freeze(["balanced", "fast-readable", "psychological-literary"]);
 const ALL_BUILTIN_SKILL_NAMES = Object.freeze([...BUILTIN_SKILL_NAMES, ...WRITING_STYLE_SKILLS]);
 
-// Task 8：三个风格技能的 frontmatter 固定值（brief Step 2 verbatim）。
+// Task 8/F6：三个基座 frontmatter 固定值（F6 重写后 description/display_name 契约）。
 const STYLE_FRONTMATTER = Object.freeze({
   balanced: Object.freeze({
-    description: "在情节、人物、描写与可读性之间保持均衡；生成、续写、改写、润色或审核中文小说正文时使用。",
+    description: "事件推进与人物变化并重的标准网文节奏；每个场景必须推进局面，人物弧光是推进中的副产品。",
     display_name: "均衡"
   }),
   "fast-readable": Object.freeze({
-    description: "用清楚因果、直接冲突和易扫读段落写快节奏中文网文正文。",
+    description: "用清楚因果、直接冲突和易扫读段落写快节奏中文网文正文；信息进入快，冲突到达早。",
     display_name: "快节奏易读"
   }),
   "psychological-literary": Object.freeze({
-    description: "在大众网文可读性内加强人物动机、心理变化与潜台词，不写晦涩意识流。",
+    description: "在网文节奏内加强人物动机、误解与选择代价；心理刻画由现场触发、落回行动，不拖节奏不堆独白。",
     display_name: "心理文学"
   })
 });
-
-// 从 SPEC §6.4 提取三个代码块作为正文权威（truth source；归一化行尾后与
-// SKILL.md body 全等比对，保证「逐字采用」可被测试机械验证）。
-function extractSpecSkillBodies() {
-  const specPath = path.resolve(
-    import.meta.dirname, "..", "..", "docs", "superpowers", "specs",
-    "2026-08-07-workspace-chat-and-writing-style-spec.md"
-  );
-  const text = fs.readFileSync(specPath, "utf8");
-  const start = text.indexOf("### 6.4");
-  assert.ok(start >= 0, "SPEC 必须包含 §6.4 三个技能的完整提示词合同");
-  // §6.4 结束于下一个一级章节标题 "## 7."（§6.4 内正文的 "## 目标" 等都在
-  // markdown 代码块内，不能用普通 "## " 前缀截断）。
-  const end = text.indexOf("\n## 7.", start);
-  assert.ok(end > start, "SPEC §6.4 之后必须有下一章标题");
-  const section = text.slice(start, end);
-  const blocks = [...section.matchAll(/```markdown\n([\s\S]*?)```/gu)]
-    .map((match) => match[1].replace(/\r\n/gu, "\n"));
-  assert.equal(blocks.length, 3, "SPEC §6.4 应恰好包含三个 markdown 代码块");
-  return {
-    balanced: blocks[0],
-    "fast-readable": blocks[1],
-    "psychological-literary": blocks[2]
-  };
-}
-const SPEC_STYLE_BODIES = extractSpecSkillBodies();
-
-// 内容快照比较：折叠空白后按子串包含比对，容忍正文的分行/段落重组。
-function normalizeWhitespace(value) {
-  return String(value).replace(/\s+/gu, " ").trim();
-}
 
 function makeTemp(prefix = "wwr-catalog-") {
   return mkdtempSync(path.join(tmpdir(), prefix));
@@ -494,54 +359,15 @@ test("discoverSkills 直接调用与 service.catalog 行为一致", async (t) =>
 // Task 10：内置技能文件化（src/skills/<name>/SKILL.md）
 // ---------------------------------------------------------------------------
 
-test("五个内置技能文件存在，frontmatter 与旧 BUILTIN_SKILLS 快照等价且正文非空壳", async (t) => {
-  assert.equal(BUILTIN_SKILL_NAMES.length, 5, "内置技能应为五个");
-
-  for (const name of BUILTIN_SKILL_NAMES) {
-    const old = BUILTIN_SKILL_SNAPSHOT[name];
-    const skill = await readSkillFile(path.join(BUILTIN_ROOT, name), { source: "builtin" });
-
-    // name/description/version → 顶层 frontmatter，逐字等价。
-    assert.equal(skill.name, old.name, `${name} frontmatter name`);
-    assert.equal(skill.description, old.description, `${name} frontmatter description`);
-    assert.equal(skill.version, old.version, `${name} frontmatter version`);
-
-    // scope/priority → metadata.wwriting，逐字等价。
-    const wwriting = skill.metadata.wwriting;
-    assert.ok(wwriting, `${name} 必须声明 metadata.wwriting`);
-    assert.equal(wwriting.scope, old.scope, `${name} metadata.wwriting.scope`);
-    assert.equal(wwriting.priority, old.priority, `${name} metadata.wwriting.priority`);
-
-    // hooks → metadata.wwriting.hooks：stage/action/check 结构等价；
-    // append_prompt.content 与 check.prompt 移入正文（此处不要求重复保留）。
-    const projectHook = (hook) => ({ stage: hook.stage, action: hook.action, check: hook.check });
-    assert.deepEqual(
-      wwriting.hooks.map(projectHook),
-      old.hooks.map(projectHook),
-      `${name} metadata.wwriting.hooks 应与旧 hooks 结构等价`
-    );
-
-    // 正文必须携带全部 append_prompt 指令与 check prompt（不能只是空壳 frontmatter）。
-    const body = normalizeWhitespace(skill.body);
-    assert.ok(skill.body.startsWith("# "), `${name} 正文应以标题开头`);
-    for (const hook of old.hooks) {
-      if (hook.action === "append_prompt" && hook.content) {
-        assert.ok(
-          body.includes(normalizeWhitespace(hook.content)),
-          `${name} 正文 Instructions 应包含 append_prompt.content（stage=${hook.stage}）`
-        );
-      }
-      if (hook.action === "check" && hook.prompt) {
-        assert.ok(
-          body.includes(normalizeWhitespace(hook.prompt)),
-          `${name} 正文 Review checklist 应包含 check.prompt（check=${hook.check}）`
-        );
-        assert.ok(
-          skill.body.includes(hook.check),
-          `${name} 正文应保留 hook checker id ${hook.check}`
-        );
-      }
-    }
+test("内置基座分类与元数据（F6）", async () => {
+  const { active } = await discoverSkills({ builtinRoot: BUILTIN_ROOT });
+  const byName = new Map(active.map((s) => [s.name, s]));
+  for (const name of ["balanced", "fast-readable", "psychological-literary"]) {
+    const skill = byName.get(name);
+    assert.ok(skill, `${name} 在 catalog`);
+    assert.equal(skill.category, "writing-style", `${name} category`);
+    assert.equal(skill.display_name !== name, true, `${name} 有 display_name`);
+    assert.equal("readonly" in skill, false, `${name} 无 readonly 字段`);
   }
 });
 
@@ -565,7 +391,7 @@ test("catalog 以 src/skills 为 builtin root 时全部内置技能来自 source
     const skill = byName.get(name);
     assert.ok(skill, `catalog 应发现内置技能 ${name}`);
     assert.equal(skill.source, "builtin", `${name} 应来自 builtin 层`);
-    assert.equal(skill.metadata.wwriting.priority, BUILTIN_SKILL_SNAPSHOT[name].priority, `${name} priority 应保留`);
+    assert.equal(skill.metadata.wwriting.priority, BUILTIN_HOOK_PRIORITY[name], `${name} priority 应保留`);
   }
   for (const name of WRITING_STYLE_SKILLS) {
     const skill = byName.get(name);
@@ -604,39 +430,50 @@ test("新建项目不会生成 skills/*/skill.json：内置技能来自 src/skil
 });
 
 // ---------------------------------------------------------------------------
-// Task 8：三个内置写作风格技能（SPEC §6.4 正文逐字一致；
-// D2 起不做保留名/只读保护，普通优先级可覆盖）
+// F6：三个基座（writing-style）内容重写（version 2.0.0）：frontmatter 契约固定，
+// 「避免」段末尾共享 AI 红线六条逐字一致；D2 起不做保留名/只读保护。
 // ---------------------------------------------------------------------------
 
-test("三个内置写作风格：frontmatter 固定、正文与 SPEC §6.4 逐字一致", async () => {
+// 共享 AI 红线块（三个基座「避免」段末尾，逐字相同）。
+const SHARED_RED_LINES = Object.freeze([
+  "- 三连排比堆砌（如「他握住刀，握住恨，握住……」）。",
+  "- 段尾用总结句收束情绪（如「她终于明白了……」）。",
+  "- 模糊修饰词连发：仿佛、似乎、不禁、不由得、莫名、悄然、缓缓、微微、瞬间、顿时、一股莫名的、一种说不出的。",
+  "- 抒情长句连续不断，情绪改用具体动作和实物承载。",
+  "- 空转的环境与心理描写：每段必须有新的信息、动作或情绪推进，否则删掉。",
+  "- 文绉绉的书面腔：能用口语说清的就用口语说，不堆华丽辞藻与文言词。"
+]);
+
+test("三个基座（F6）：frontmatter 2.0.0 契约，避免段末尾共享红线六条逐字一致", async () => {
   for (const name of WRITING_STYLE_SKILLS) {
     const skill = await readSkillFile(path.join(BUILTIN_ROOT, name), { source: "builtin" });
 
-    // frontmatter 固定值（brief Step 2 verbatim）。
+    // frontmatter 固定值（Task 6 brief verbatim）。
     assert.equal(skill.name, name, `${name} frontmatter name`);
+    assert.equal(skill.version, "2.0.0", `${name} frontmatter version`);
     assert.equal(skill.description, STYLE_FRONTMATTER[name].description, `${name} frontmatter description`);
-    assert.equal(skill.version, "1.0.0", `${name} frontmatter version`);
     const wwriting = skill.metadata.wwriting;
     assert.ok(wwriting, `${name} 必须声明 metadata.wwriting`);
     assert.equal(wwriting.category, "writing-style", `${name} metadata.wwriting.category`);
     assert.equal(wwriting.display_name, STYLE_FRONTMATTER[name].display_name, `${name} metadata.wwriting.display_name`);
 
-    // 正文必须与 SPEC §6.4 代码块逐字一致（归一化行尾后全等）。
-    assert.equal(
-      skill.body.replace(/\r\n/gu, "\n"),
-      SPEC_STYLE_BODIES[name],
-      `${name} 正文必须逐字采用 SPEC §6.4 完整提示词合同`
-    );
-    // 边界条款不得删去：「只在小说正文时使用」与「普通聊天不使用小说文风」。
+    // 「只在小说正文时使用」边界必须保留。
     assert.ok(
       skill.body.includes("只在生成、续写、改写、润色或审核中文小说正文时使用本技能"),
       `${name} 必须保留「只在小说正文时使用」边界`
     );
-    assert.ok(skill.body.includes("## 交付前静默检查"), `${name} 必须保留交付前静默检查`);
+    // 共享 AI 红线六条逐字位于「避免」段末尾（正文最后一个清单块）。
+    const bullets = skill.body.split("\n").filter((line) => line.startsWith("- "));
+    assert.deepEqual(
+      bullets.slice(bullets.length - SHARED_RED_LINES.length),
+      [...SHARED_RED_LINES],
+      `${name} 「避免」段末尾必须是共享红线六条`
+    );
   }
   // 心理文学不得改写成纯文学/意识流：保留面向大众读者的明确边界。
-  assert.ok(SPEC_STYLE_BODIES["psychological-literary"].includes("不写大段意识流、晦涩哲思或纯文学仿作"));
-  assert.ok(SPEC_STYLE_BODIES["psychological-literary"].includes("普通聊天不使用小说文风"));
+  const psych = await readSkillFile(path.join(BUILTIN_ROOT, "psychological-literary"), { source: "builtin" });
+  assert.ok(psych.body.includes("不写大段意识流、晦涩哲思或纯文学仿作"));
+  assert.ok(psych.body.includes("普通聊天不使用小说文风"));
 });
 
 test("其他技能 DTO 字段不含 readonly/protected，display_name 回落 name", async (t) => {

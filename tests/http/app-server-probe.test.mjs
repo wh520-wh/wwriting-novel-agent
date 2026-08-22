@@ -354,7 +354,7 @@ test("资料搜索/抓取与技能 catalog/import/delete", async () => {
     assert.equal(detail.data.name, "balanced");
     assert.ok(detail.data.content.includes("# 均衡"), "详情应返回完整正文");
     assert.ok(detail.data.content.includes("只在生成、续写、改写、润色或审核中文小说正文时使用本技能"));
-    assert.ok(detail.data.content.includes("## 交付前静默检查"));
+    assert.ok(detail.data.content.includes("每个场景先答三问"), "详情应返回 F6 重写后的均衡正文");
     // D2：内置技能不做保护——导入名为 balanced 的技能不再 403，落 project 层后
     // 以 active 形态覆盖内置版（纯四层优先级）。
     const reservedDir = path.join(root, "balanced");
