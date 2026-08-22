@@ -2,7 +2,7 @@
 //（统一 Agent 内核计划 Task 7 Step 3；Task 17 cutover 后仅保留 v2 形态）。
 //
 // 从旧 src/core/app-server.mjs 按职责提取（只读参考，不改旧文件）：settings/update、
-// test-connection、model-switch、output-styles 与 skills catalog/import/delete 的
+// test-connection、model-switch 与 skills catalog/import/delete 的
 // handler 逻辑迁入本模块，保持既有非 Agent HTTP 契约（响应形状、错误码与 fields
 // 字段级标红语义）。Task 17 cutover 删除 v1 扁平端点（模型保存/选用/删除/清单/
 // 密钥）与 v1 存储写路径——模型保存/选用/删除改由 providers-routes（Task 10）承担。
@@ -12,12 +12,10 @@
 // provider-adapters.mjs 已删除，本模块不依赖旧文件。
 //
 // 导出共享 helper 给 project-routes.mjs（模型档案展示）。
-import os from "node:os";
 import { HttpError } from "../http-error.mjs";
 import { loadProject } from "../project-store.mjs";
 import { loadEffectiveWorkspaceConfig } from "../config-runtime.mjs";
 import { appendEvent } from "../event-log.mjs";
-import { loadOutputStyles } from "../output-style-loader.mjs";
 import { skillService } from "../skills/index.mjs";
 import { loadLocalSecrets, loadLocalSecretsSync } from "../local-secrets.mjs";
 import { ModelConfigValidationError, validateModelConfig } from "../model-config-validation.mjs";
@@ -502,22 +500,6 @@ export function createSettingsRoutes({
           throw new HttpError(499, "client_closed_request", "连接测试已取消");
         }
         throw new HttpError(400, "test_connection_failed", error?.message ?? String(error));
-      }
-    },
-
-    // 输出样式：只暴露 name/description/source，剥离 filePath 与大 body。
-    "GET /api/output-styles": async () => {
-      try {
-        const projectRoot = selectedRef.current ?? null;
-        const styles = await loadOutputStyles({ projectRoot, userHome: os.homedir() });
-        const lite = styles.map((s) => ({
-          name: s.name,
-          description: s.description ?? "",
-          source: s.source
-        }));
-        return { ok: true, styles: lite };
-      } catch (error) {
-        throw new HttpError(500, "output_styles_failed", error?.message ?? String(error));
       }
     },
 

@@ -10,7 +10,7 @@
 //     保持旧响应契约；
 //   - 既有非 Agent 契约抽查：projects/list、projects/open、projects/init、
 //     research/search（网络未开 → 403 network_not_allowed）、settings/update、
-//     settings/test-connection、skills/catalog、output-styles。
+//     settings/test-connection、skills/catalog。
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -173,7 +173,7 @@ test("GET /api/diagnostics：agent.snapshot 注入稳定 loader，旧契约保�
   assert.ok([400, 404].includes(missing.res.status), `未注册项目应 4xx，实际 ${missing.res.status}`);
 });
 
-test("既有契约抽查：projects/list、open、init、research、settings、skills、output-styles", async (t) => {
+test("既有契约抽查：projects/list、open、init、research、settings、skills", async (t) => {
   const s = await setupServer(t);
   await recordRecentProject(s.stateRoot, {
     projectRoot: s.h.projectRoot,
@@ -241,12 +241,6 @@ test("既有契约抽查：projects/list、open、init、research、settings、s
   assert.ok(skillCatalog.data.active.some((skill) => skill.name === "suspense-chapter-end"));
   assert.equal(skillCatalog.data.active[0]["enabled_in_" + "project"], undefined, "Task 13：catalog 不返回启停字段");
   assert.ok(Array.isArray(skillCatalog.data.migration_errors), "catalog 携带 migration_errors 数组");
-
-  // output-styles
-  const styles = await s.get("/api/output-styles");
-  assert.equal(styles.res.status, 200);
-  assert.equal(styles.data.ok, true);
-  assert.ok(Array.isArray(styles.data.styles));
 });
 
 test("settings/test-connection 新形态 { provider, model }：归一化候选进入 tester", async (t) => {

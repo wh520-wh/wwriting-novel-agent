@@ -405,12 +405,9 @@ test("资料搜索/抓取与技能 catalog/import/delete", async () => {
   }
 });
 
-test("output-styles 与静态资源服务", async () => {
+test("静态资源服务", async () => {
   const { server, port } = await setupServer();
   try {
-    const styles = await getJson(port, "/api/output-styles");
-    assert.equal(styles.res.status, 200);
-    assert.ok(Array.isArray(styles.data.styles));
     const html = await fetch(`http://127.0.0.1:${port}/`).then((res) => res.text());
     assert.ok(html.includes("WWriting"));
     const appJs = await fetch(`http://127.0.0.1:${port}/app.js`).then((res) => res.text());
