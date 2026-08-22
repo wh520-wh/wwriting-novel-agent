@@ -53,8 +53,9 @@ import { ensureDir, pathExists, readJson, writeJsonAtomic } from "../fs-utils.mj
 import { createMutex } from "../async-utils.mjs";
 import { createJournalSegmentStore } from "./journal-segments.mjs";
 import { fail, defaultClock, defaultIdFactory, normalizeAt } from "./agent-utils.mjs";
-// 与 tools/index.mjs → journal.mjs 构成循环：两侧顶层不得读取对方导出（TDZ 风险），仅函数体内使用。
-import { MAX_TOOL_OUTPUT_CHARS, truncateOutput } from "./tools/index.mjs";
+// 截断辅助来自 tools/runtime-helpers.mjs（Task 6 拆出）：journal 不再读取
+// tools/index.mjs 导出，两侧顶层互不读取对方导出的循环纪律保持。
+import { MAX_TOOL_OUTPUT_CHARS, truncateOutput } from "./tools/runtime-helpers.mjs";
 import {
   TERMINAL_RUN_STATUSES,
   COMPACTION_NON_TERMINAL_STATES,

@@ -22,7 +22,7 @@ const UNIFIED_DEEP_NAMES = ["append_chapter_segment", "commit_chapter", "update_
 // ---------------------------------------------------------------------------
 
 test("enter_workflow 已删除：不在注册表、不产生 workflow_changed", async (t) => {
-  const tools = createToolRuntime({ journal: { append: async () => {} } });
+  const tools = createToolRuntime({ journal: { append: async () => {} }, skills: {} });
   const names = tools.definitions().map((def) => def.function.name);
   assert.ok(!names.includes("enter_workflow"), "enter_workflow 工具必须从注册表删除");
   for (const deep of UNIFIED_DEEP_NAMES) {

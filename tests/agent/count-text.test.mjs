@@ -68,6 +68,7 @@ async function setup(t, options = {}) {
     projectOperations: {},
     journal,
     secrets: options.secrets ?? [],
+    skills: options.runtime?.skills ?? {},
     ...(options.runtime ?? {})
   });
   const project = {
@@ -123,7 +124,7 @@ function toolCall(name, args) {
 // ---------------------------------------------------------------------------
 
 test("count_text schema：path 必填，minimum/target 可选非负整数，不暴露风险字段", () => {
-  const tools = createToolRuntime({ journal: { append: async () => {} } });
+  const tools = createToolRuntime({ journal: { append: async () => {} }, skills: {} });
   const tool = tools.definitions().find((def) => def.function.name === "count_text").function;
   assert.match(tool.description, /统计工作区内 Markdown 或纯文本文件的客观字数/u, "描述必须保留客观字数语义");
   assert.match(tool.description, /minimum\/target 只计算差额/u, "描述必须保留差额语义");
@@ -144,7 +145,7 @@ test("count_text schema：path 必填，minimum/target 可选非负整数，不�
 });
 
 test("count_text 描述声明口径等价：effective_count 与 commit 记账 actual_words 同一口径", () => {
-  const tools = createToolRuntime({ journal: { append: async () => {} } });
+  const tools = createToolRuntime({ journal: { append: async () => {} }, skills: {} });
   const tool = tools.definitions().find((def) => def.function.name === "count_text").function;
   assert.match(tool.description, /effective_count/u, "描述必须提到 effective_count");
   assert.match(tool.description, /actual_words/u, "描述必须声明与 actual_words 同一口径");

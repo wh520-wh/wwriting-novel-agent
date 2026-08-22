@@ -20,7 +20,7 @@ test("四域注册并集 = 14 个生产工具", async (t) => {
   t.after(async () => await fs.rm(projectRoot, { recursive: true, force: true }));
   const journal = createAgentJournal({ projectRoot });
   await journal.load();
-  const runtime = createToolRuntime({ projectOperations: {}, journal });
+  const runtime = createToolRuntime({ projectOperations: {}, journal, skills: {} });
   const names = runtime.definitions().map((d) => d.function.name);
   // 此处只钉「并集 = 14」；暴露顺序由 tests/agent/tools.test.mjs 的
   // definitions() deepEqual 契约（GENERAL 8 前 DEEP 6 后）钉住，不在此重复。
