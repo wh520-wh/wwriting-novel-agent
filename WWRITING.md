@@ -1,6 +1,5 @@
 ---
 schema_version: 1
-writing_style_skill: fast-readable
 ---
 
 # WWriting 项目记忆
