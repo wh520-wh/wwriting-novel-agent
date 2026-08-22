@@ -25,10 +25,10 @@
 //
 // cancel() 复用同一 AbortSignal 链：cancel 先追加 context_compaction_cancel_requested
 // 进入 cancelling，abort 底层请求，等待 attempt 收尾后才追加 cancelled。
-import { randomUUID } from "node:crypto";
 import { COMPACTION_PROMPT, parseCompactionResponse, validateCompactionSummary } from "./compaction-prompt.mjs";
 import { estimateTokens } from "./prompt.mjs";
 import { COMPACTION_PAYLOAD_FIELDS } from "./context-checkpoints.mjs";
+import { defaultClock, defaultIdFactory, normalizeAt, codedError as compactionError } from "./agent-utils.mjs";
 
 export const COMPACTION_EVENT_TYPES = Object.freeze([
   "context_compaction_started",
@@ -57,26 +57,6 @@ export const COMPACTION_RESUME_BLOCKED_STATES = Object.freeze([
   ...COMPACTION_SEND_BLOCKED_STATES,
   "cancelled"
 ]);
-
-function defaultClock() {
-  return Date.now();
-}
-
-function defaultIdFactory() {
-  return randomUUID();
-}
-
-function normalizeAt(value) {
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) throw new Error(`非法时间值: ${String(value)}`);
-  return date.toISOString();
-}
-
-function compactionError(code, message) {
-  const error = new Error(message);
-  error.code = code;
-  return error;
-}
 
 // 瞬时传输错误（计划不变式 5）：network/timeout/429/5xx 允许自动重试一次；
 // 结构校验/候选丢失关键状态/持久化失败不自动重试。

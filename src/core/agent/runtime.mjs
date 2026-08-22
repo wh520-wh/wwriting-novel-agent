@@ -79,6 +79,7 @@ import {
 } from "../project-operations/chapter.mjs";
 import { migrateBaselineVersions } from "../project-operations/versions.mjs";
 import { detectLedgerDrift } from "../ledger-drift.mjs";
+import { codedError as fail, sleep } from "./agent-utils.mjs";
 
 // 第九轮：会话级缓存命中率累计（token 加权）。命中 token 不超过输入 token
 //（与 cost-tracker.mjs 的 clamp 一致）；非法/缺失 usage 不改变累计。
@@ -151,16 +152,6 @@ const COMPACTION_SOURCE_BUDGET_RATIO = 0.5;
 // 一轮 = 一条 user input 与其 assistant 正文（与 compaction-prompt.mjs 同义）。
 // Task 8：transcript 轮次重建的 tool output 阈值沿用 Task 7 默认。
 const CHECKPOINT_FILE_PREFIX = "context-";
-
-function fail(code, message) {
-  const error = new Error(message);
-  error.code = code;
-  return error;
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 // 会话是否有非终态活动 Run（串行门 / 删除守卫 / run_status 投影共用同一判定；
 // 新增终态状态只需改 TERMINAL_RUN_STATUSES 一处）。
