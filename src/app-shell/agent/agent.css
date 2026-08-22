@@ -46,12 +46,14 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  margin-inline: auto;
-  padding: 28px var(--content-gutter, 20px) 24px;
+  margin-inline: 0;
+  padding: 28px var(--content-gutter, 20px) clamp(42px, 7vh, 72px);
   display: flex;
   flex-direction: column;
   gap: 16px;
   box-sizing: border-box;
+  scroll-padding-block: 24px 72px;
+  scrollbar-gutter: stable;
 }
 
 /* 「回到最新」：位于滚动区与 composer 之间，始终不覆盖消息内容。 */
@@ -143,10 +145,10 @@
 .agent-composer-controls {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   margin-right: auto;
   min-width: 0;
-  padding-right: 6px;
+  padding-right: 10px;
 }
 
 .agent-composer-menu {
@@ -161,14 +163,19 @@
   align-items: center;
   gap: 5px;
   border: 0;
-  border-radius: var(--r-sm);
+  border-radius: 10px;
   background: transparent;
-  padding: 2px 8px;
+  padding: 3px 10px;
   font-family: inherit;
   font-size: 12px;
   color: var(--agent-muted);
   cursor: pointer;
   transition: color 120ms ease, background 120ms ease;
+}
+
+.agent-composer-menu + .agent-composer-menu {
+  border-left: 1px solid color-mix(in srgb, var(--agent-line) 72%, transparent);
+  padding-left: 6px;
 }
 
 .agent-composer-menu-value {
@@ -188,6 +195,7 @@
 .agent-composer-menu-trigger[aria-expanded="true"] {
   color: var(--agent-ink);
   background: var(--agent-panel-muted);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agent-line-strong) 72%, transparent);
 }
 
 .agent-composer-menu-trigger:focus-visible {
@@ -208,7 +216,7 @@
 
 .agent-composer-menu-chevron {
   flex: 0 0 auto;
-  opacity: 0.62;
+  opacity: 0.78;
   transform: rotate(-90deg);
   transition: transform 140ms ease;
 }
@@ -227,13 +235,16 @@
   max-width: min(360px, calc(100vw - 32px));
   max-height: min(320px, calc(100vh - 124px));
   overflow-y: auto;
-  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px;
+  margin-bottom: 2px;
   box-sizing: border-box;
   border: 1px solid var(--agent-line-strong);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--agent-panel-solid) 88%, transparent);
-  backdrop-filter: blur(20px) saturate(1.25);
-  box-shadow: 0 18px 44px -24px rgba(24, 32, 27, 0.48), 0 4px 12px -8px rgba(24, 32, 27, 0.25);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--agent-panel-solid) 96%, transparent);
+  box-shadow: 0 20px 48px -26px rgba(24, 32, 27, 0.48), 0 5px 14px -9px rgba(24, 32, 27, 0.24);
   transform-origin: bottom left;
   animation: agent-menu-materialize 160ms cubic-bezier(.2, .75, .25, 1) both;
 }
@@ -270,6 +281,10 @@
 .agent-composer-option:focus-visible {
   outline: 0;
   background: var(--agent-panel-muted);
+}
+
+.agent-composer-option:focus-visible {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agent-accent) 68%, transparent);
 }
 
 .agent-composer-option-copy {
@@ -380,7 +395,7 @@
   align-items: start;
   gap: 11px;
   border: 1px solid var(--agent-line);
-  border-radius: 8px;
+  border-radius: 12px;
   background: color-mix(in srgb, var(--agent-panel-solid) 38%, transparent);
   color: var(--agent-ink);
   font: inherit;
@@ -698,7 +713,7 @@
   border: 1px solid transparent;
   background: transparent;
   color: var(--agent-muted);
-  border-radius: 6px;
+  border-radius: 9px;
   cursor: pointer;
   font-size: 12.5px;
   font-weight: 600;
@@ -709,7 +724,7 @@
   border: 1px solid var(--agent-line-strong);
   background: var(--agent-panel-solid);
   color: var(--agent-ink);
-  border-radius: 6px;
+  border-radius: 9px;
   cursor: pointer;
   font-size: 12.5px;
   font-weight: 600;
@@ -724,10 +739,10 @@
   align-items: center;
   justify-content: center;
   gap: 5px;
-  border: 1px solid var(--agent-line-strong);
-  background: var(--agent-panel-solid);
-  color: var(--agent-ink);
-  border-radius: 6px;
+  border: 1px solid var(--red-line);
+  background: var(--red-soft);
+  color: var(--text-danger);
+  border-radius: 9px;
   cursor: pointer;
   font-size: 12.5px;
   font-weight: 600;
@@ -790,11 +805,58 @@
   list-style: none;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
+  width: 100%;
   max-width: var(--reading-column); /* Round10：阅读轴 token（容器仍全宽） */
-  padding: 4px 2px;          /* 打磨 B-5：无框后收紧 */
+  min-height: 32px;
+  margin-inline: 0;
+  padding: 6px 12px;          /* 摘要与子项共享同一阅读轴内边距 */
+  box-sizing: border-box;
   border-radius: var(--r);   /* hover 反馈的圆角（仅 hover 时可见背景） */
   user-select: none;
+}
+
+.agent-work-status-mark {
+  position: relative;
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--agent-state-running);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--agent-state-running) 12%, transparent);
+}
+
+.agent-work-status-mark[data-status="running"] {
+  animation: agent-status-pulse 1.8s ease-in-out infinite;
+}
+
+.agent-work-status-mark[data-status="waiting_user"] {
+  border-radius: 2px;
+  background: var(--agent-state-waiting);
+  box-shadow: none;
+}
+
+.agent-work-status-mark[data-status="completed"] {
+  background: var(--text-success);
+  box-shadow: none;
+}
+
+.agent-work-status-mark[data-status="failed"] {
+  background: var(--text-danger);
+  box-shadow: none;
+}
+
+.agent-work-status-mark[data-status="cancelled"],
+.agent-work-status-mark[data-status="interrupted"],
+.agent-work-status-mark[data-status="stopping"],
+.agent-work-status-mark[data-status="interrupting"] {
+  background: var(--agent-state-stopped);
+  box-shadow: none;
+}
+
+@keyframes agent-status-pulse {
+  0%, 100% { opacity: .65; transform: scale(.9); }
+  50% { opacity: 1; transform: scale(1); }
 }
 
 .agent-work-group > summary:hover {
@@ -813,6 +875,7 @@
   content: "";
   margin-left: auto;
   flex: 0 0 auto;
+  align-self: center;
   width: 7px;
   height: 7px;
   border-right: 1.5px solid var(--agent-muted);
@@ -848,20 +911,25 @@
   font-weight: var(--weight-regular);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+  letter-spacing: .01em;
 }
 
 .agent-work-items {
   display: flex;
   flex-direction: column;
   gap: 7px;
+  width: 100%;
   max-width: var(--reading-column); /* Round10：阅读轴 token（容器仍全宽） */
-  padding: 0 2px 8px;        /* 打磨 B-5：无框后收紧 */
+  margin-inline: 0;
+  padding: 0 12px 8px;        /* 与摘要右侧箭头共享同一列 */
+  box-sizing: border-box;
 }
 
 /* 统一子项行：label / icon / path / meta 一行内换行排列，detail 与计划独占一行。
    子项缩进 24px（左侧细时间线已随 Codex 改版移除）。 */
 .agent-work-item {
   position: relative;
+  min-height: 32px;
   padding: 5px 0 5px 24px;
   display: flex;
   flex-wrap: wrap;
@@ -894,6 +962,7 @@
   text-align: center;
   font-size: 11px;
   color: var(--agent-work-meta-fg);
+  line-height: 1;
 }
 
 .agent-work-item__icon[data-state="completed"] {
@@ -905,6 +974,7 @@
 }
 
 .agent-work-item__label {
+  min-width: 0;
   color: var(--agent-work-label-fg);
   font-weight: var(--weight-medium);
 }
@@ -925,7 +995,10 @@
   color: var(--agent-work-meta-fg);
   font-weight: var(--weight-regular);
   font-size: 12px;
+  font-family: var(--mono, ui-monospace, Consolas, monospace);
+  font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* ---- 工具工作项详情：整行点击展开（R1），div 详情区 + 行尾 caret ------------ */
@@ -969,17 +1042,20 @@
 }
 
 .agent-tool-details {
-  flex-basis: 100%; /* 独占一行：标签/path/meta 在上，详情在下 */
-  border-top: 1px solid var(--agent-line);
-  margin-top: 4px;
-  padding-top: 4px;
+  flex-basis: calc(100% - 24px); /* 独占一行，并与工具摘要保持明确层级 */
+  min-width: 0;
+  margin: 5px 0 2px 24px;
+  padding: 8px 10px 2px 14px;
+  border-left: 2px solid var(--agent-line-strong);
+  border-radius: 0 8px 8px 0;
+  background: color-mix(in srgb, var(--agent-panel-muted) 72%, transparent);
 }
 
 .agent-tool-fields {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 6px 0 8px;
+  padding: 0 0 8px;
 }
 
 .agent-tool-field {
@@ -988,6 +1064,7 @@
   gap: 8px;
   align-items: start;
   font-size: 12px;
+  min-width: 0;
 }
 
 .agent-tool-field strong {
@@ -1001,20 +1078,22 @@
   margin: 0;
   padding: 6px 8px;
   border-radius: 8px;
-  background: var(--code-bg);
+  background: color-mix(in srgb, var(--code-bg) 74%, var(--agent-panel-solid));
   font-family: var(--mono, ui-monospace, Consolas, monospace);
   font-size: 11.5px;
   line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  color: var(--text-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--agent-line);
+  min-width: 0;
 }
 
 .agent-tool-output {
   margin: 0 0 8px;
   padding: 8px 10px;
   border-radius: 8px;
-  background: var(--code-bg);
+  background: color-mix(in srgb, var(--code-bg) 74%, var(--agent-panel-solid));
   font-family: var(--mono, ui-monospace, Consolas, monospace);
   font-size: 11.5px;
   line-height: 1.5;
@@ -1022,7 +1101,8 @@
   overflow-wrap: anywhere;
   max-height: 320px;
   overflow-y: auto;
-  color: var(--text-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--agent-line);
 }
 
 /* ---- AICSS web-search：搜索状态特化渲染（web_search 专属，无 query 不激活）。
@@ -1118,6 +1198,10 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .agent-work-status-mark[data-status="running"] {
+    animation: none;
+  }
+
   .agent-reasoning-ticker.agent-ticker-swap { animation: none; }
 }
 
@@ -1627,11 +1711,15 @@
   max-width: calc(100% - 40px);
   max-height: 240px;
   overflow-y: auto;
-  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px;
+  margin-bottom: 2px;
   border: 1px solid var(--agent-line-strong);
-  border-radius: 8px;
+  border-radius: 12px;
   background: var(--agent-panel);
-  backdrop-filter: blur(18px) saturate(1.2);
+  backdrop-filter: none;
   box-shadow: var(--agent-shadow);
   transform-origin: bottom left;
   animation: agent-menu-materialize 160ms cubic-bezier(.2, .75, .25, 1) both;
@@ -1646,7 +1734,7 @@
   align-items: center;
   gap: 12px;
   padding: 7px 9px;
-  border-radius: 0;
+  border-radius: 9px;
   text-align: left;
 }
 
@@ -1677,7 +1765,7 @@
 }
 
 .agent-composer-input::placeholder {
-  color: var(--text-muted);
+  color: var(--text-secondary);
 }
 
 .agent-composer-input:focus {
@@ -1715,7 +1803,10 @@
 }
 
 .agent-send:disabled {
-  opacity: 0.4;
+  opacity: 1;
+  background: var(--agent-panel-muted);
+  color: var(--text-secondary);
+  border: 1px solid var(--agent-line-strong);
   cursor: default;
 }
 
@@ -2031,9 +2122,9 @@
   box-sizing: border-box;
   padding: 10px 12px;
   border: 1px solid var(--agent-line-strong);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--agent-panel-solid) 90%, transparent);
-  backdrop-filter: blur(18px) saturate(1.2);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--agent-panel-solid) 96%, transparent);
+  backdrop-filter: none;
   box-shadow: var(--agent-shadow);
   opacity: 0;
   transform: translate(-50%, 2px) scale(.98);

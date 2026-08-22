@@ -879,11 +879,14 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     details.dataset.groupId = group.id;
     details.open = group.expanded; // 投影给出展开默认值；用户可在 DOM 侧覆盖
     const summary = doc.createElement("summary");
+    const statusMark = doc.createElement("span");
+    statusMark.className = "agent-work-status-mark";
+    statusMark.setAttribute("aria-hidden", "true");
     const status = doc.createElement("span");
     status.className = "agent-work-status";
     const duration = doc.createElement("span");
     duration.className = "agent-work-duration";
-    summary.append(status, duration);
+    summary.append(statusMark, status, duration);
     const itemsEl = doc.createElement("div");
     itemsEl.className = "agent-work-items";
     details.append(summary, itemsEl);
@@ -892,6 +895,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       groupId: group.id,
       details,
       summary,
+      statusMark,
       status,
       duration,
       itemsEl,
@@ -932,13 +936,12 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     wrap.dataset.state = item.state;
     const label = doc.createElement("span");
     label.className = "agent-work-item__label";
-    wrap.append(label);
     const row = { wrap, label, kind: item.kind, itemId: item.id, prevState: null, lastPushedLen: 0 };
     if (item.kind === "tool") {
       const iconEl = doc.createElement("span");
       iconEl.className = "agent-work-item__icon";
       iconEl.setAttribute("aria-hidden", "true");
-      wrap.append(iconEl);
+      wrap.append(iconEl, label);
       row.icon = iconEl;
       const path = doc.createElement("span");
       path.className = "agent-tool-path";
@@ -957,6 +960,8 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       // 字段/输出在其中；无内容时整体隐藏（与旧 details 语义一致）。
       const details = doc.createElement("div");
       details.className = "agent-tool-details";
+      details.setAttribute("role", "group");
+      details.setAttribute("aria-label", "工具详情");
       const detail = doc.createElement("div");
       detail.className = "agent-tool-fields";
       const output = doc.createElement("pre");
@@ -1014,6 +1019,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
         }
       });
     } else if (item.kind === "reasoning") {
+      wrap.append(label);
       const tickerEl = doc.createElement("div");
       tickerEl.className = "agent-reasoning-ticker";
       wrap.append(tickerEl);
@@ -1058,6 +1064,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
         }
       });
     } else if (item.kind === "plan") {
+      wrap.append(label);
       label.classList.add("agent-plan__title");
       const countEl = doc.createElement("span");
       countEl.className = "agent-plan__count";
@@ -1367,6 +1374,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     // 与状态点 .session-status / 条目图标共用 --agent-state-*）。组对象每次投影
     // 都会重建，故在此随 group.status 同步，不能只在 createWorkGroup 设一次。
     record.status.dataset.status = group.status;
+    record.statusMark.dataset.status = group.status;
     // 展开默认值只在用户未手动切换时应用；完成后投影 expanded=false → 自动折叠。
     if (!record.userToggled && record.details.open !== group.expanded) {
       record.details.open = group.expanded;
