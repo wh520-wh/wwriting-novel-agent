@@ -593,3 +593,27 @@ test("seam：内置同名技能名（balanced）可导入 project scope 并可�
     await cleanup(projectRoot, userHome, sourceRoot);
   }
 });
+
+test("seam：内置同名技能名（balanced）可导入 global scope 并可删除", async () => {
+  const projectRoot = await makeTemp("wwr-proj-");
+  const userHome = await makeTemp("wwr-home-");
+  const sourceRoot = await makeTemp("wwr-src-");
+  try {
+    const sourceDir = path.join(sourceRoot, "balanced");
+    await fs.mkdir(sourceDir, { recursive: true });
+    await fs.writeFile(path.join(sourceDir, "SKILL.md"), SKILL_MD("balanced"), "utf8");
+
+    const service = createSkillService({ userHome, resourcesPath: await makeTemp(), builtinRoot: await makeTemp() });
+    const imported = await service.importSkill({ projectRoot, source: sourceDir, scope: "global" });
+    assert.equal(imported.name, "balanced", "同名技能正常导入 global scope");
+    assert.equal(imported.source, "global");
+    assert.equal(existsSync(path.join(userHome, ".wwriting", "skills", "balanced", "SKILL.md")), true, "同名技能落盘到用户全局技能根");
+
+    // 同名技能可删除（无保留名拦截）。
+    const removed = await service.removeSkill({ projectRoot, name: "balanced", scope: "global" });
+    assert.equal(removed.removed, true);
+    assert.equal(existsSync(path.join(userHome, ".wwriting", "skills", "balanced")), false, "删除后 global 层同名技能消失");
+  } finally {
+    await cleanup(projectRoot, userHome, sourceRoot);
+  }
+});
