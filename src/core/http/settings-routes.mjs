@@ -596,17 +596,14 @@ export function createSettingsRoutes({
     }
   }
 
-  // catalog DTO：active/shadowed 都返回 name/source/description/readonly/protected/
-  // display_name/category；shadowed 项额外携带 shadow_reason（reserved_builtin 由
-  // UI 用于区分「保留名称不可覆盖」与普通优先级覆盖）。绝不返回本地绝对 path 给
+  // catalog DTO：active/shadowed 都返回 name/source/description/display_name/
+  // category；shadowed 项额外携带 shadow_reason。绝不返回本地绝对 path 给
   // UI（冻结契约 §11 用户不得看到绝对内部存储路径）。
   function toCatalogEntry(skill) {
     const entry = {
       name: skill.name,
       source: skill.source,
       description: skill.description ?? "",
-      readonly: skill.readonly === true,
-      protected: skill.protected === true,
       display_name: skill.display_name ?? skill.name,
       category: skill.category ?? null
     };
@@ -616,14 +613,12 @@ export function createSettingsRoutes({
     return entry;
   }
 
-  // 技能领域错误 → HTTP：skill_exists=409、skill_not_found=404、skill_reserved=403，
-  // 其余 400。
+  // 技能领域错误 → HTTP：skill_exists=409、skill_not_found=404，其余 400。
   function mapSkillError(error) {
     if (error instanceof HttpError) return error;
     const status = error?.code === "skill_exists" ? 409
       : error?.code === "skill_not_found" ? 404
-        : error?.code === "skill_reserved" ? 403
-          : 400;
+        : 400;
     return new HttpError(status, error?.code ?? "BAD_REQUEST", error?.message ?? String(error));
   }
 }

@@ -19,10 +19,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathExists } from "../fs-utils.mjs";
-import { discoverSkills, PROTECTED_BUILTIN_SKILLS } from "./catalog.mjs";
+import { discoverSkills } from "./catalog.mjs";
 import { stageSkillSource } from "./importer.mjs";
 import { ensureMigrated, readMigrationMarker } from "./legacy-migration.mjs";
-import { assertSafeSkillDirName, readSkillFile, readSkillResource, skillError, skillNamesEqual } from "./skill-file.mjs";
+import { assertSafeSkillDirName, readSkillFile, readSkillResource, skillError } from "./skill-file.mjs";
 
 // 内置技能根目录 src/skills（Task 10 落地五个内置 SKILL.md；当前允许缺失）。
 const DEFAULT_BUILTIN_ROOT = path.resolve(import.meta.dirname, "..", "..", "skills");
@@ -56,9 +56,6 @@ export function createSkillService({ userHome = os.homedir(), resourcesPath = pr
       await fs.mkdir(targetRoot, { recursive: true });
       const staged = await stageSkillSource({ source, targetRoot });
       try {
-        // Task 8 Step 4：保留名称在 staged 名解析后、删除/替换目标前拒绝（try 内
-        // 保证 finally 清理 staging）。staging 落临时目录不算「写技能」。
-        assertMutableSkillName(staged.name);
         const targetDir = path.join(targetRoot, staged.name);
         const exists = await pathExists(targetDir);
         if (exists && !replace) throw skillError("skill_exists", `技能已存在: ${staged.name}`);
@@ -78,8 +75,6 @@ export function createSkillService({ userHome = os.homedir(), resourcesPath = pr
     async removeSkill({ projectRoot, name, scope = "project" }) {
       await ensureMigrated({ projectRoot, userHome });
       assertValidScope(scope);
-      // Task 8 Step 4：保留名称在拼目标路径前拒绝（不触碰磁盘）。
-      assertMutableSkillName(name);
       assertSafeSkillDirName(name);
       const targetDir = path.join(skillRootFor({ projectRoot, scope, userHome }), name);
       if (!(await pathExists(targetDir))) throw skillError("skill_not_found", `未发现技能: ${name}`);
@@ -110,16 +105,6 @@ function skillRootFor({ projectRoot, scope, userHome }) {
 function assertValidScope(scope) {
   if (scope !== "global" && scope !== "project") {
     throw skillError("skill_invalid_scope", `非法 scope: ${scope}`);
-  }
-}
-
-// Task 8 Step 4：保留名称不可修改（brief verbatim）。importSkill 在 staged 名解析后、
-// 删除/替换目标前调用；removeSkill 在拼目标路径前调用。
-// R5-11：Windows 下名称比较大小写归一——受保护内置名的大小写变体同样拒绝。
-function assertMutableSkillName(name) {
-  const reserved = [...PROTECTED_BUILTIN_SKILLS].some((reservedName) => skillNamesEqual(reservedName, name));
-  if (reserved) {
-    throw skillError("skill_reserved", `内置技能不可修改: ${name}`);
   }
 }
 
