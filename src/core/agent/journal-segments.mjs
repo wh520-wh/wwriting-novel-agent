@@ -33,6 +33,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { ensureDir, pathExists, writeFileAtomic } from "../fs-utils.mjs";
+import { fail, sleep } from "./agent-utils.mjs";
 
 export const SEGMENT_MAX_BYTES = 16 * 1024 * 1024;
 export const SEGMENT_MAX_RECORDS = 25_000;
@@ -46,14 +47,6 @@ function segmentName(id) {
 
 function indexName(id) {
   return `${String(id).padStart(8, "0")}.index.json`;
-}
-
-function fail(message) {
-  throw new Error(message);
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function defaultManifest(generationId) {

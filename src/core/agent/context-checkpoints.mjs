@@ -66,10 +66,10 @@
 //   journal.append(event): Promise<stampedEvent>                    —— 追加事件；
 //     尊重预写 event_id（与 journal.mjs stampEvent 的 base.event_id ?? idFactory() 一致）。
 import fs from "node:fs/promises";
-import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { ensureDir, pathExists, readJson, safeJoin, sha256, writeJsonAtomic } from "../fs-utils.mjs";
 import { validateCompactionSummary, validateSummaryShape } from "./compaction-prompt.mjs";
+import { fail, defaultClock, defaultIdFactory, normalizeAt, codedError as checkpointError } from "./agent-utils.mjs";
 
 export const ACTIVE_CONTEXT_FILENAME = "active-context.json";
 export const POINTER_SCHEMA_VERSION = 1;
@@ -124,30 +124,6 @@ export const COMMIT_STEPS = Object.freeze([
   "appendCompleted",
   "deleteMarker"
 ]);
-
-function fail(message) {
-  throw new Error(message);
-}
-
-function defaultClock() {
-  return Date.now();
-}
-
-function defaultIdFactory() {
-  return randomUUID();
-}
-
-function normalizeAt(value) {
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) fail(`非法时间值: ${String(value)}`);
-  return date.toISOString();
-}
-
-function checkpointError(code, message) {
-  const error = new Error(message);
-  error.code = code;
-  return error;
-}
 
 function normalizeCandidate(input) {
   if (input != null && typeof input === "object" && !Array.isArray(input) && "candidate" in input) {

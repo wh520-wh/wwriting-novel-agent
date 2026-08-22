@@ -47,12 +47,12 @@
 //
 // 深模块内部实现：生产调用方只能经 src/core/agent/index.mjs 使用；tests/agent/ 可以
 // 直接测试本模块内部 seam。
-import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { ensureDir, pathExists, readJson, writeJsonAtomic } from "../fs-utils.mjs";
 import { createMutex } from "../async-utils.mjs";
 import { createJournalSegmentStore } from "./journal-segments.mjs";
+import { fail, defaultClock, defaultIdFactory, normalizeAt } from "./agent-utils.mjs";
 
 // 计划固定的 44 个 journal 事件类型；未知类型一律拒绝。
 // Task 6：新输入生命周期只产生六类事件（input_queued/input_started/input_completed/
@@ -185,25 +185,6 @@ const RUN_STATUS_TO_SESSION = Object.freeze({
   cancelled: "idle",
   interrupted: "idle"
 });
-
-function fail(message) {
-  throw new Error(message);
-}
-
-function defaultClock() {
-  return Date.now();
-}
-
-function defaultIdFactory() {
-  return randomUUID();
-}
-
-// clock 允许返回毫秒时间戳或 ISO-8601 字符串；统一归一化为 ISO-8601。
-function normalizeAt(value) {
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) fail(`非法时间值: ${String(value)}`);
-  return date.toISOString();
-}
 
 function requireString(value, name) {
   if (typeof value !== "string" || value.length === 0) fail(`${name} 必须是非空字符串`);
