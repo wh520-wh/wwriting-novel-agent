@@ -194,6 +194,16 @@ function findElementByLabel(label) {
   return domRegistry.find((el) => el.getAttribute("aria-label") === label) ?? null;
 }
 
+// 深度查找子树中首个指定 class 的后代（DOM mock 无 querySelector）。
+function findDescendantByClassName(node, className) {
+  for (const child of node.children) {
+    if (child.className === className) return child;
+    const hit = findDescendantByClassName(child, className);
+    if (hit) return hit;
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Pure helper tests (existing)
 // ---------------------------------------------------------------------------
@@ -781,7 +791,7 @@ test("打开技能目录：调用 revealSkillDirectory(scope, projectRoot)，不
 });
 
 // ---------------------------------------------------------------------------
-// Task 8：「内置写作风格」无框只读分区
+// F2：内置写作风格技能——普通行（含「内置」来源标签），无只读分区
 // ---------------------------------------------------------------------------
 
 const STYLE_NAMES = new Set(["balanced", "fast-readable", "psychological-literary"]);
@@ -793,112 +803,67 @@ const STYLE_SKILLS_CATALOG = {
   active: [
     { name: "suspense-chapter-end", source: "builtin", description: "章节结尾悬念" },
     { name: "my-style", source: "global", description: "我的文风" },
-    { name: "balanced", source: "builtin", description: "在情节、人物、描写与可读性之间保持均衡；生成、续写、改写、润色或审核中文小说正文时使用。", readonly: true, protected: true, category: "writing-style", display_name: "均衡" },
-    { name: "fast-readable", source: "builtin", description: "用清楚因果、直接冲突和易扫读段落写快节奏中文网文正文。", readonly: true, protected: true, category: "writing-style", display_name: "快节奏易读" },
-    { name: "psychological-literary", source: "builtin", description: "在大众网文可读性内加强人物动机、心理变化与潜台词，不写晦涩意识流。", readonly: true, protected: true, category: "writing-style", display_name: "心理文学" }
+    { name: "balanced", source: "builtin", description: "在情节、人物、描写与可读性之间保持均衡；生成、续写、改写、润色或审核中文小说正文时使用。", category: "writing-style", display_name: "均衡" },
+    { name: "fast-readable", source: "builtin", description: "用清楚因果、直接冲突和易扫读段落写快节奏中文网文正文。", category: "writing-style", display_name: "快节奏易读" },
+    { name: "psychological-literary", source: "builtin", description: "在大众网文可读性内加强人物动机、心理变化与潜台词，不写晦涩意识流。", category: "writing-style", display_name: "心理文学" }
   ],
   shadowed: [
-    { name: "balanced", source: "project", description: "项目伪造版本", shadow_reason: "reserved_builtin" }
+    { name: "balanced", source: "project", description: "项目伪造版本", shadow_reason: "shadowed_by_project" }
   ],
   migration_errors: []
 };
 
-// catalog 桩 + 技能详情桩：/api/skills/:name 返回给定 content。
-function styleCatalogJsonImpl(detailContents = {}) {
-  return async (url) => {
-    if (url.startsWith("/api/skills/catalog")) return STYLE_SKILLS_CATALOG;
-    const match = /\/api\/skills\/([^/?]+)/u.exec(url);
-    if (match && detailContents[match[1]] !== undefined) {
-      return { ok: true, name: match[1], content: detailContents[match[1]] };
-    }
-    return { ok: true, default_model: null, models: [] };
-  };
-}
-
-test("「内置写作风格」分区：三个只读分隔行，无删除/编辑/启用控件，不进入普通技能列表", async () => {
+test("内置写作风格技能显示为普通行（含「内置」来源标签），无删除按钮", async () => {
   const modal = createSettingsModalForTest({
     getCurrentProjectRoot: () => "D:/novels/demo",
-    getJsonImpl: styleCatalogJsonImpl()
+    getJsonImpl: catalogJsonImpl(STYLE_SKILLS_CATALOG)
   });
   await modal.openSettingsModal("skills");
   await modal.waitForSkillsCatalog();
 
-  const styleRows = modal.getBuiltinStyleRowsForTest();
-  assert.equal(styleRows.length, 3, "应渲染三个内置写作风格行");
-  assert.deepEqual(
-    styleRows.map((r) => r.name).sort(),
-    ["balanced", "fast-readable", "psychological-literary"]
-  );
+  const styleRows = modal.getSkillsRowsForTest().filter((r) => STYLE_NAMES.has(r.name));
+  assert.equal(styleRows.length, 3, "三个内置写作风格都应进入普通技能列表");
   for (const row of styleRows) {
-    assert.equal(row.readonly, true, `${row.name} 行应标记只读`);
-    assert.equal(row.hasDelete, false, `${row.name} 行不得有删除按钮`);
+    assert.equal(row.source, "builtin", `${row.name} 来源应标记为 builtin`);
+    assert.equal(row.deletable, false, `${row.name} 行不得有删除按钮`);
   }
-  // 普通技能列表不得包含三个风格（避免重复展示）。
-  const regular = modal.getSkillsRowsForTest();
-  assert.ok(!regular.some((r) => STYLE_NAMES.has(r.name)), "风格技能不得出现在普通技能列表");
-  // 三个风格行均无删除按钮（只读，无编辑/启停/覆盖控件）。
-  assert.ok(styleRows.every((r) => !r.hasDelete), "风格行不得有任何删除按钮");
+  // 行上应有「内置」来源标签（SKILL_SOURCE_LABELS 映射）。
+  const list = findElementById("skills-list");
+  for (const name of STYLE_NAMES) {
+    const rowEl = list.children.find((el) => el.className === "spd-skill-row" && el.dataset.skillName === name);
+    assert.ok(rowEl, `${name} 应渲染为普通技能行`);
+    const src = findDescendantByClassName(rowEl, "spd-skill-source");
+    assert.ok(src, `${name} 行应渲染来源标签`);
+    assert.equal(src.textContent, "内置", `${name} 行来源标签应为「内置」`);
+  }
 });
 
-test("点击内置写作风格行：GET /api/skills/:name 并在设置详情区展开完整只读正文", async () => {
-  const detailCalls = [];
-  const content = "---\nname: balanced\ndescription: 均衡描述\n---\n\n# 均衡\n\n只在生成、续写、改写、润色或审核中文小说正文时使用本技能。\n\n## 写法\n\n- 心理描写落在具体刺激上。";
+test("shadowed 项显示通用优先级覆盖说明且不可删除", async () => {
   const modal = createSettingsModalForTest({
     getCurrentProjectRoot: () => "D:/novels/demo",
-    getJsonImpl: async (url) => {
-      if (url.startsWith("/api/skills/catalog")) return STYLE_SKILLS_CATALOG;
-      if (url.includes("/api/skills/balanced")) {
-        detailCalls.push(url);
-        return { ok: true, name: "balanced", content };
-      }
-      return { ok: true, default_model: null, models: [] };
-    }
-  });
-  await modal.openSettingsModal("skills");
-  await modal.waitForSkillsCatalog();
-
-  const row = modal.getBuiltinStyleRowsForTest().find((r) => r.name === "balanced");
-  assert.ok(row, "应渲染 balanced 只读行");
-  row.click();
-  await new Promise((resolve) => setTimeout(resolve, 0));
-
-  assert.equal(detailCalls.length, 1, "点击行应请求一次技能详情");
-  assert.ok(detailCalls[0].includes("/api/skills/balanced"), "详情请求应命中 /api/skills/balanced");
-  assert.ok(detailCalls[0].includes("projectRoot"), "详情请求应携带项目作用域");
-  const body = domRegistry.find((el) => el.className === "spd-skill-detail-body agent-markdown");
-  assert.ok(body, "详情区应渲染技能正文容器");
-  assert.ok(
-    body.innerHTML.includes("只在生成、续写、改写、润色或审核中文小说正文时使用本技能。"),
-    "详情应展示完整只读正文"
-  );
-  assert.ok(!body.innerHTML.includes("name: balanced"), "详情正文不应包含 frontmatter");
-});
-
-test("保留名称 shadowed 项显示专属说明且不可删除", async () => {
-  const modal = createSettingsModalForTest({
-    getCurrentProjectRoot: () => "D:/novels/demo",
-    getJsonImpl: styleCatalogJsonImpl()
+    getJsonImpl: catalogJsonImpl(STYLE_SKILLS_CATALOG)
   });
   await modal.openSettingsModal("skills");
   await modal.waitForSkillsCatalog();
 
   const shadowedRows = domRegistry.filter((el) => el.className === "spd-skill-row shadowed");
-  const reservedRow = shadowedRows.find((r) => r.dataset.skillName === "balanced");
-  assert.ok(reservedRow, "保留名称的项目同名项应出现在被覆盖区");
-  assert.equal(reservedRow.dataset.shadowReason, "reserved_builtin");
-  const shadowMain = reservedRow.children.find((c) => c.className === "spd-skill-main");
+  const shadowedRow = shadowedRows.find((r) => r.dataset.skillName === "balanced");
+  assert.ok(shadowedRow, "被覆盖副本应出现在被覆盖区");
+  assert.equal(shadowedRow.dataset.shadowReason, "shadowed_by_project");
+  const shadowMain = shadowedRow.children.find((c) => c.className === "spd-skill-main");
   const desc = shadowMain?.children.find((c) => c.className === "spd-skill-desc");
   assert.ok(desc, "shadowed 行应包含说明文本");
-  assert.ok(desc.textContent.includes("保留名称"), "保留名称 shadowed 应显示专属说明");
+  assert.ok(desc.textContent.includes("被更高优先级同名技能覆盖"), "shadowed 应显示通用优先级覆盖说明");
+  assert.ok(!desc.textContent.includes("保留名称"), "shadowed 不得再显示保留名称专有文案");
   assert.equal(
-    [...reservedRow.children].some((c) => c.className === "spd-skill-del"),
+    [...shadowedRow.children].some((c) => c.className === "spd-skill-del"),
     false,
     "shadowed 行不得有删除按钮"
   );
 });
 
 // ---------------------------------------------------------------------------
-// Task 12：设置技能分区无卡片行契约 + 内置风格只读展示（不破坏自定义技能管理）
+// Task 12：设置技能分区无卡片行契约 + 内置风格普通行（不破坏自定义技能管理）
 // ---------------------------------------------------------------------------
 
 test("技能分区 CSS 契约：无卡片行、详情可滚动、来源用 muted 短标签", async () => {
@@ -924,29 +889,31 @@ test("技能分区 CSS 契约：无卡片行、详情可滚动、来源用 muted
   assert.doesNotMatch(styles, /\.spd-skill-row\s*\{[^}]*background:\s*var\(--surface\)/u, "技能行不得是卡片底");
 });
 
-test("内置风格行只读展示：无 toggle/edit/delete 控件；自定义技能管理能力仍存在", async () => {
+test("内置技能普通行：无删除/编辑/启停控件；自定义技能管理能力仍存在", async () => {
   const modal = createSettingsModalForTest({
     getCurrentProjectRoot: () => "D:/novels/demo",
-    getJsonImpl: styleCatalogJsonImpl()
+    getJsonImpl: catalogJsonImpl(STYLE_SKILLS_CATALOG)
   });
   await modal.openSettingsModal("skills");
   await modal.waitForSkillsCatalog();
 
-  const styleRows = modal.getBuiltinStyleRowsForTest();
-  assert.equal(styleRows.length, 3);
-  for (const row of styleRows) {
-    assert.equal(row.hasDelete, false, `${row.name} 行不得有删除按钮`);
+  // F2：内置技能与项目技能一样走普通行渲染（来源标签区分），无独立只读分区。
+  const rows = modal.getSkillsRowsForTest();
+  const builtinRows = rows.filter((r) => r.source === "builtin");
+  assert.equal(builtinRows.length, 4, "四个内置技能（三个风格 + suspense-chapter-end）都应进入普通列表");
+  for (const row of builtinRows) {
+    assert.equal(row.deletable, false, `${row.name} 内置技能行不得有删除按钮`);
   }
-  // 只读行内部不得出现任何 toggle/edit/delete 类子控件。
-  // domRegistry 会累积多次渲染的元素（replaceChildren 不清理注册表），
-  // 因此只要求 ≥3 且逐个校验无子控件。
-  const readonlyEls = domRegistry.filter((el) => String(el.className).includes("spd-skill-row--readonly"));
-  assert.ok(readonlyEls.length >= 3, "应渲染至少三个只读风格行元素");
-  for (const rowEl of readonlyEls) {
+  // 内置行内部不得出现任何 toggle/edit/delete 类子控件（普通行只有名称/说明文本）。
+  const list = findElementById("skills-list");
+  const builtinEls = list.children.filter(
+    (el) => el.className === "spd-skill-row" && el.dataset.skillSource === "builtin"
+  );
+  for (const rowEl of builtinEls) {
     const hasChildControls = rowEl.children.some(
       (c) => c.tagName === "BUTTON" || /spd-skill-(?:del|edit)|toggle|switch/u.test(String(c.className ?? ""))
     );
-    assert.equal(hasChildControls, false, "内置风格行内不得出现任何 toggle/edit/delete 控件");
+    assert.equal(hasChildControls, false, "内置技能行内不得出现任何 toggle/edit/delete 控件");
   }
   // 自定义技能管理能力仍存在：添加/打开目录入口保留。
   assert.ok(domRegistry.some((el) => el.id === "skills-add"), "「添加技能」入口应保留");
