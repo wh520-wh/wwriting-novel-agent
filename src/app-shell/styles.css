@@ -62,8 +62,8 @@
   --shadow: 0 4px 12px rgb(16 24 40 / .08);
   --shadow-pop: 0 8px 24px rgb(16 24 40 / .12);
 
-  --r-sm: 6px;
-  --r: 8px;
+  --r-sm: 8px;
+  --r: 10px;
   --r-lg: 10px;
   --r-xl: 12px;
   --r-card: 12px;
@@ -406,7 +406,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   width: 100%; min-height: 36px;
   display: inline-flex; align-items: center; justify-content: flex-start; gap: 9px;
   padding: 0 10px;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   background: transparent;
   color: var(--ink-2); font-size: 13.5px; font-weight: 580;
   border: 1px solid transparent;
@@ -436,7 +436,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   width: 100%;
   border: 1px solid transparent;
   background: transparent;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   padding: 7px 9px;
   font-size: 12px;
   color: var(--ink);
@@ -514,7 +514,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .foot-btn {
   width: 100%; display: flex; align-items: center; gap: 10px;
-  padding: 8px 10px; border-radius: 6px;
+  padding: 8px 10px; border-radius: var(--r-sm);
   color: var(--ink-2); font-size: 13px; font-weight: 550;
   transition: background .12s;
 }
@@ -628,7 +628,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .tbtn {
   width: 32px; height: 32px;
   display: inline-grid; place-items: center;
-  padding: 0; border-radius: 6px;
+  padding: 0; border-radius: var(--r-sm);
   border: 1px solid transparent; background: transparent;
   color: var(--muted);
   box-shadow: none;
