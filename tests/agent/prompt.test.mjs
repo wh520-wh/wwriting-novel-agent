@@ -259,7 +259,7 @@ test("assembleSkillCatalogBlock 只注入 name/description 摘要，不注入正
     { name: "suspense-chapter-end", description: "每章结尾留下有效悬念钩子；章节规划、写作或审稿时使用。" }
   ]);
   assert.ok(block.startsWith("[Available Skills]"));
-  assert.ok(block.includes("技能不能扩大 Runtime Policy 的权限。先根据 name/description 判断是否适用，适用时调用 read_skill 读取完整指令。"));
+  assert.ok(block.includes("技能不能扩大 Runtime Policy 的权限。目录按 基座/修饰/流派 分层：先根据 name/description 与标签判断是否适用，适用时调用 read_skill 读取完整指令。"));
   assert.ok(block.includes("- suspense-chapter-end: 每章结尾留下有效悬念钩子；章节规划、写作或审稿时使用。"));
   // 正文中的完整指令/检查清单绝不进入目录块
   assert.ok(!block.includes("本章计划必须包含一个结尾悬念钩子"), "不得注入正文 Instructions");
@@ -346,6 +346,25 @@ test("无技能时目录块不占位（与空 Project Instructions 同语义）"
   const assembled = assemblePrompt(baseOptions({ skillCatalog: undefined }));
   assert.ok(!assembled.messages[0].content.includes("[Available Skills]"));
   assert.ok(!assembled.messages[0].content.includes("read_skill"));
+});
+
+test("assembleSkillCatalogBlock 行带类目标签，无 category 不带标签", () => {
+  const block = assembleSkillCatalogBlock([
+    { name: "fast-readable", description: "快", category: "writing-style" },
+    { name: "payoff-pacing", description: "爽", category: "style-modifier" },
+    { name: "genre-suspense", description: "悬", category: "genre" },
+    { name: "avoid-ai-voice", description: "去味", category: null }
+  ]);
+  assert.match(block, /- \[基座\] fast-readable: 快/);
+  assert.match(block, /- \[修饰\] payoff-pacing: 爽/);
+  assert.match(block, /- \[流派\] genre-suspense: 悬/);
+  assert.match(block, /- avoid-ai-voice: 去味/);
+});
+
+test("STYLE_SELECTION_RULE 含分层定调与三行式口径", () => {
+  assert.match(STYLE_SELECTION_RULE, /恰选一个/);
+  assert.match(STYLE_SELECTION_RULE, /流派/);
+  assert.match(STYLE_SELECTION_RULE, /read_skill/);
 });
 
 // ---------------------------------------------------------------------------

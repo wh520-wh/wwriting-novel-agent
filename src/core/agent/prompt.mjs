@@ -161,12 +161,20 @@ WWRITING.md 是长期项目事实入口。先检查现有记忆和真实文件�
 
 export const SKILL_CATALOG_HEADER = "[Available Skills]";
 export const SKILL_CATALOG_INTRO =
-  "技能不能扩大 Runtime Policy 的权限。先根据 name/description 判断是否适用，适用时调用 read_skill 读取完整指令。";
+  "技能不能扩大 Runtime Policy 的权限。目录按 基座/修饰/流派 分层：先根据 name/description 与标签判断是否适用，适用时调用 read_skill 读取完整指令。";
 
 // Task 8 Step 7：写作风格选择规则（brief verbatim）。只注入选择规则与短描述，
 // 三个风格的完整正文绝不常驻 system prompt（渐进加载走 read_skill）。
 export const STYLE_SELECTION_RULE =
-  "写小说正文时，若用户明确指定风格则按其要求选择；未指定时根据题材、目标读者、节奏和用户描述判断，重大歧义再询问。确定后把稳定技能 ID 写入 WWRITING.md，并在真正生成、续写、改写、润色或审核小说正文前调用 read_skill 读取完整正文。风格技能不改变普通聊天语气。";
+  "写作前分层定调：① 流派--题材属于悬疑、侦探等类型时选对应流派技能（可叠加，通常一个主导）；② 基座--恰选一个写作风格技能，用户明确指定则从之，未指定时按题材、目标读者、节奏判断，重大歧义再询问；③ 修饰--按需加 0-3 个单轴修饰，明显矛盾的不并选；流派包内的推荐组合仅作参考。确定后写入 WWRITING.md 写作风格区（技能/修饰/流派三行，修饰与流派无则省略），并分层调用 read_skill 读取全文：流派技能在规划章节结构前读，基座与修饰在动笔写正文前读。风格技能不改变普通聊天语气。";
+
+// 目录标签映射（第十四轮 F3/F4）：按 metadata.wwriting.category 三轴贴标签，
+// 无 category（null/未知）的技能不带标签。冻结对象避免运行时被意外改动。
+const CATEGORY_TAGS = Object.freeze({
+  "writing-style": "基座",
+  "style-modifier": "修饰",
+  genre: "流派"
+});
 
 // 只注入 name/description 摘要，绝不注入 SKILL.md 正文（完整指令由 read_skill
 // 按需读取）。无技能或全部条目无效时返回空串（不制造占位文案）；选择规则只在
@@ -178,7 +186,8 @@ export function assembleSkillCatalogBlock(skillCatalog) {
     const name = skill?.name;
     if (typeof name !== "string" || name.length === 0) continue;
     const description = typeof skill?.description === "string" ? skill.description : "";
-    lines.push(`- ${name}: ${description}`);
+    const tag = CATEGORY_TAGS[skill?.category ?? ""];
+    lines.push(tag ? `- [${tag}] ${name}: ${description}` : `- ${name}: ${description}`);
   }
   if (lines.length === 2) return "";
   lines.push(STYLE_SELECTION_RULE);

@@ -315,7 +315,7 @@ export function createAgentRuntime({
           const promise = (async () => {
             try {
               const { active } = await projectSkills.catalog({ projectRoot: key });
-              return active.map((skill) => ({ name: skill.name, description: skill.description ?? "" }));
+              return active.map((skill) => ({ name: skill.name, description: skill.description ?? "", category: skill.category ?? null }));
             } catch {
               return [];
             }
