@@ -78,8 +78,7 @@ const SKILL_READ_DELAY_MS = 5000;
 // 2250ms；OS reduced-motion 命中时注入的归一化样式为 agent-text-shimmer 1450ms）。
 const SHIMMER_PHASES_MS = [680, 920, 1160];
 const SHIMMER_BASE_PERIOD_MS = 1450;
-// 三个受保护的内置写作风格（PROTECTED_BUILTIN_SKILLS，src/core/skills/catalog.mjs）。
-// 设置页「Agent 技能」分区把它们渲染为 readonly 行，data-skill-name = 技能名 slug。
+// 内置写作风格三基座（F2 前端起并入普通行列表；旧「只读分区」场景见第十四轮前的验收存档）。
 const BUILTIN_STYLE_NAMES = ["balanced", "fast-readable", "psychological-literary"];
 const VIEWPORT_DEFAULT = { width: 1280, height: 800 };
 const VIEWPORT_NARROW = { width: 390, height: 844 };
