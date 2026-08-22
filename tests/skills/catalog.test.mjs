@@ -44,7 +44,9 @@ const BUILTIN_HOOK_PRIORITY = Object.freeze({
 const WRITING_STYLE_SKILLS = Object.freeze(["balanced", "fast-readable", "psychological-literary"]);
 // F7/F8：两个修饰类新技能（payoff-pacing、dialogue-driven）。
 const MODIFIER_SKILL_NAMES = Object.freeze(["payoff-pacing", "dialogue-driven"]);
-const ALL_BUILTIN_SKILL_NAMES = Object.freeze([...BUILTIN_SKILL_NAMES, ...MODIFIER_SKILL_NAMES, ...WRITING_STYLE_SKILLS]);
+// F9：两个流派包技能。
+const GENRE_SKILL_NAMES = Object.freeze(["genre-suspense", "genre-detective"]);
+const ALL_BUILTIN_SKILL_NAMES = Object.freeze([...BUILTIN_SKILL_NAMES, ...MODIFIER_SKILL_NAMES, ...WRITING_STYLE_SKILLS, ...GENRE_SKILL_NAMES]);
 
 // Task 8/F6：三个基座 frontmatter 固定值（F6 重写后 description/display_name 契约）。
 const STYLE_FRONTMATTER = Object.freeze({
@@ -540,5 +542,20 @@ test("修饰类技能四个（F7/F8）", async () => {
   const byName = new Map(active.map((s) => [s.name, s]));
   for (const name of ["payoff-pacing", "dialogue-driven", "suspense-chapter-end", "chapter-opening-hook"]) {
     assert.equal(byName.get(name)?.category, "style-modifier", `${name} category`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// F9：流派包两个（genre-suspense / genre-detective）：category = genre，
+// scope = story（规划章节结构前读取；对比修饰的 scope: chapter）。
+// ---------------------------------------------------------------------------
+
+test("流派包两个（F9）", async () => {
+  const { active } = await discoverSkills({ builtinRoot: BUILTIN_ROOT });
+  const byName = new Map(active.map((s) => [s.name, s]));
+  for (const name of ["genre-suspense", "genre-detective"]) {
+    const skill = byName.get(name);
+    assert.ok(skill, `${name} 在 catalog`);
+    assert.equal(skill.category, "genre", `${name} category`);
   }
 });
