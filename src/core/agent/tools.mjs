@@ -3,7 +3,7 @@
 // 对 Agent 提供唯一工具入口：
 //
 //   const tools = createToolRuntime({ projectOperations, journal, permissionPolicy, shellRuntime, secrets });
-//   tools.definitions(context);            // -> OpenAI 原生 function definitions（恰好 13 个工具）
+//   tools.definitions(context);            // -> OpenAI 原生 function definitions（14 个工具：8 通用 + 6 深）
 //   await tools.execute(toolCall, context); // 单次工具调用的 schema→权限→审计→执行→事件闭环
 //
 // 内部实现隐藏：schema 注册、权限判定（含硬能力拒绝与输入级临时授权）、journal 审计事件、
@@ -11,8 +11,8 @@
 //
 // 设计不变量（来自计划 Task 4 Step 3–8）：
 //   - 恰好注册八个 general 工具（list_files/search_files/read_file/write_file/edit_file/shell/
-//     read_skill/count_text）与五个 deep 工具（update_plan/append_chapter_segment/
-//     commit_chapter/finalize_revision/rollback_chapter）；不注册旧编排工具（start_ 前缀启停、queue_ 前缀排队、
+//     read_skill/count_text）与六个 deep 工具（update_plan/append_chapter_segment/
+//     commit_chapter/finalize_revision/rollback_chapter/update_memory）；不注册旧编排工具（start_ 前缀启停、queue_ 前缀排队、
 //     resolve_failure、export_book 等）或逐文件便利工具。read_skill（Task 12）是只读
 //     工具：只能按 active catalog name 解析，realpath containment/1MiB 上限/二进制
 //     asset 由 skills service（src/core/skills/index.mjs）执行。count_text（Task 9）是
@@ -58,6 +58,7 @@ import { createRedactor, createStreamingRedactor } from "../shell/redaction.mjs"
 import { skillService } from "../skills/index.mjs";
 import { analyzeTextCount } from "../word-count.mjs";
 import { normalizeMemoryUpdateArgs } from "../memory-extractor.mjs";
+import { PLAN_STATUSES } from "./journal.mjs";
 
 // ---------------------------------------------------------------------------
 // 常量
@@ -91,15 +92,12 @@ const MAX_SEARCH_MATCHES = 50; // search_files 命中上限
 const MAX_SEARCH_DEPTH = 12; // search_files 递归深度上限
 const SEARCH_SKIP_DIRS = new Set([".wwriting", "node_modules", ".git", "checkpoints", ".versions"]);
 
-const PLAN_STATUSES = Object.freeze(["pending", "in_progress", "completed"]);
-
 const SHELL_TIMEOUT_DEFAULT_MS = 120000;
 const SHELL_TIMEOUT_MIN_MS = 1000;
 const SHELL_TIMEOUT_MAX_MS = 1800000;
 
 const AGENT_DIR_REL = path.join(".wwriting", "agent");
 const CHECKPOINTS_DIR_REL = path.join("checkpoints");
-const CHAPTERS_DIR_REL = path.join("chapters"); // 已无单独路径保护引用（正式章节文件自 C1 起可直接编辑），保留以对齐 spec 中章节目录的命名/安全编辑语义
 const DRAFTS_DIR_REL = path.join("drafts");
 const CHAPTER_INDEX_REL = path.join("memory", "chapter_index.json");
 const VERSIONS_DIR_REL = path.join(".versions"); // 版本快照库（commit/finalize/rollback 维护）
@@ -801,7 +799,7 @@ export function createToolRuntime({
   }
 
   // -------------------------------------------------------------------------
-  // 工具注册表与八个 general + 五个 deep 工具
+  // 工具注册表与八个 general + 六个 deep 工具
   // -------------------------------------------------------------------------
 
   const TOOLS = new Map();
