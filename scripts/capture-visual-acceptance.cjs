@@ -1,5 +1,11 @@
 // scripts/capture-visual-acceptance.cjs —— 确定性视觉证据采集（Task 13 改写）。
 //
+// ⚠️ 过时警告（第十四轮，2026-08-22）：本脚本的场景集仍按「内置写作风格只读分区」
+// 旧 UI 断言（.spd-skill-row--readonly / #skills-detail-back），而第十四轮 F2 前端
+// 已删除该分区、builtin 技能并入普通行列表——本脚本现在运行必失败。在按新 UI 口径
+// 更新场景集之前，请勿用它做视觉验收（否则会误判回归）；视觉验证以
+// verify:app-clickability / verify:app-shell 为准。
+//
 // 职责：为独立多模态验收模型生成完整、自洽、可核对的视觉证据目录：
 //   MANIFEST.md / live-indicator-audit.json / multimodal-review-prompt.md +
 //   22 张指定命名的 PNG（conversation-completed ×4 视口、reasoning-running 三帧、
