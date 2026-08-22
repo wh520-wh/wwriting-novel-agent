@@ -693,6 +693,64 @@ test("流式：流结束没有 DONE 且没有 finish_reason → 截断错误", a
   );
 });
 
+test("流式：opencode 兼容端点干净 EOF → 正常完成并保留正文", async () => {
+  const adapter = makeAdapter({
+    fetchImpl: async () =>
+      streamResponse('data: {"choices":[{"delta":{"content":"来自代理的完整回复"}}]}')
+  });
+  const result = await adapter.complete({
+    messages: [{ role: "user", content: "hello" }],
+    modelConfig: {
+      base_url: "https://opencode.ai/zen/go/v1",
+      model_name: "deepseek-v4-flash",
+      stream: true
+    }
+  });
+  assert.equal(result.text, "来自代理的完整回复");
+  assert.equal(result.raw.stream_terminated_by_eof, true);
+});
+
+test("流式：显式 allow_stream_eof 允许自定义兼容端点干净 EOF", async () => {
+  const adapter = makeAdapter({
+    fetchImpl: async () =>
+      streamResponse('data: {"choices":[{"delta":{"content":"完整"}}]}')
+  });
+  const result = await adapter.complete({
+    messages: [{ role: "user", content: "hello" }],
+    modelConfig: { model_name: "m", stream: true, allow_stream_eof: true }
+  });
+  assert.equal(result.text, "完整");
+  assert.equal(result.raw.stream_terminated_by_eof, true);
+});
+
+test("流式：opencode 干净 EOF 下完整工具参数仍可执行，半截 JSON 仍拒绝", async () => {
+  const completeAdapter = makeAdapter({
+    fetchImpl: async () =>
+      streamResponse(
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"read_file","arguments":"{\\"path\\":\\"chapter.md\\"}"}}]}}]}'
+      )
+  });
+  const complete = await completeAdapter.complete({
+    messages: [{ role: "user", content: "read" }],
+    modelConfig: { base_url: "https://opencode.ai/zen/go/v1", model_name: "m", stream: true }
+  });
+  assert.equal(complete.toolCalls[0].arguments_complete, true);
+  assert.deepEqual(complete.toolCalls[0].input, { path: "chapter.md" });
+
+  const truncatedAdapter = makeAdapter({
+    fetchImpl: async () =>
+      streamResponse(
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-2","function":{"name":"read_file","arguments":"{\\"path\\":\\"chapter.md\\""}}]}}]}'
+      )
+  });
+  const truncated = await truncatedAdapter.complete({
+    messages: [{ role: "user", content: "read" }],
+    modelConfig: { base_url: "https://opencode.ai/zen/go/v1", model_name: "m", stream: true }
+  });
+  assert.equal(truncated.toolCalls[0].arguments_complete, false);
+  assert.equal(truncated.toolCalls[0].input, null);
+});
+
 test("流式：malformed 帧 + 无终止信号 → 截断错误", async () => {
   const adapter = makeAdapter({
     fetchImpl: async () => streamResponse("data: {bad}\n\ndata: {also bad}\n\n")

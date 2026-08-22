@@ -167,7 +167,12 @@ export class OpenAICompatibleAdapter {
     }
 
     if (stream) {
-      return readStream(response.body, metadata);
+      return readStream(response.body, metadata, {
+        // OpenCode 的兼容网关会在最后一个完整 JSON data 帧后直接关闭
+        // 连接，省略 OpenAI 的 [DONE]/finish_reason 收尾。仅对该端点（或
+        // 用户显式声明的兼容端点）放宽 EOF，默认仍保持截断保护。
+        allowCleanEof: modelConfig.allow_stream_eof === true || isOpenCodeEndpoint(baseUrl)
+      });
     }
     const responseText = await response.text();
     let raw = {};
@@ -265,7 +270,7 @@ function extractContent(content) {
 // 原生 function calling 增量累积、malformed 帧容忍。
 // ---------------------------------------------------------------------------
 
-async function readStream(responseBody, metadata) {
+async function readStream(responseBody, metadata, { allowCleanEof = false } = {}) {
   if (!responseBody || typeof responseBody.getReader !== "function") {
     throw new ProviderTransportError("OpenAI-compatible stream 缺少 ReadableStream body.", {
       reason: "network"
@@ -360,7 +365,8 @@ async function readStream(responseBody, metadata) {
       );
     }
   }
-  if (eventCount > 0 && !sawDone && !lastFinishReason) {
+  const streamTerminatedByEof = eventCount > 0 && !sawDone && !lastFinishReason;
+  if (streamTerminatedByEof && !allowCleanEof) {
     throw new ProviderTransportError(
       "Stream ended without DONE or finish_reason — possible truncation.",
       { reason: "network", body: JSON.stringify({ truncatedContentLength: text.length + reasoningText.length, events: eventCount }) }
@@ -370,14 +376,18 @@ async function readStream(responseBody, metadata) {
   return {
     text,
     reasoning: reasoningText,
-    toolCalls: finalizeStreamToolCalls(streamToolCalls, { sawDone, finishReason: lastFinishReason }),
+    toolCalls: finalizeStreamToolCalls(streamToolCalls, {
+      sawDone: sawDone || (streamTerminatedByEof && allowCleanEof),
+      finishReason: lastFinishReason
+    }),
     raw: {
       stream: true,
       event_count: eventCount,
       malformed_sse_frame_count: malformedSseFrameCount,
       // 末帧 finish_reason（如 "stop" / "length" / "tool_calls"）；无终止帧时为 null。
       // "length" 表示 max_tokens 截断——调用方据此标记 truncated，不能当作完整输出。
-      finish_reason: lastFinishReason ?? null
+      finish_reason: lastFinishReason ?? null,
+      ...(streamTerminatedByEof ? { stream_terminated_by_eof: true } : {})
     },
     usage: normalizeOpenAIUsage(usage ?? {}),
     cost: null
@@ -431,6 +441,14 @@ function extractStreamToken(event) {
 function extractReasoningStreamToken(event) {
   const delta = event.choices?.[0]?.delta ?? {};
   return delta.reasoning_content || "";
+}
+
+function isOpenCodeEndpoint(baseUrl) {
+  try {
+    return new URL(String(baseUrl)).hostname.toLowerCase() === "opencode.ai";
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
