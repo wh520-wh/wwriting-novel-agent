@@ -34,9 +34,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
-import { buildProcessRestartedConvergence, createAgentJournal } from "./journal.mjs";
+import { buildProcessRestartedConvergence, createAgentJournal, persistentToolResult } from "./journal.mjs";
 import { createSessionRegistry } from "./session-registry.mjs";
-import { createToolRuntime, truncateOutput, MAX_TOOL_OUTPUT_CHARS } from "./tools.mjs";
+import { createToolRuntime } from "./tools.mjs";
 import { assemblePrompt, estimateTokens } from "./prompt.mjs";
 import {
   estimateRequestUsage,
@@ -342,7 +342,9 @@ export function createAgentRuntime({
       idFactory,
       initialSessionId: sessionId,
       retireExtraFiles: (clearedDir) => checkpointStore.retireForClear(clearedDir),
-      restoreExtraFiles: (moved, clearedDir) => checkpointStore.restoreFromClear(moved, clearedDir)
+      restoreExtraFiles: (moved, clearedDir) => checkpointStore.restoreFromClear(moved, clearedDir),
+      // transcript 落盘脱敏（journal 工厂方法 appendSafeTranscript 消费）
+      redactText: (json) => redactor.redact(json)
     });
     const tools = createToolRuntime({
       projectOperations: state.projectOperations,
@@ -997,46 +999,11 @@ export function createAgentRuntime({
     };
   }
 
-  function redactTranscriptRecord(record) {
-    try {
-      return JSON.parse(redactor.redact(JSON.stringify(record)));
-    } catch {
-      return { role: record?.role ?? "note", content: "[REDACTED]" };
-    }
-  }
-
+  // 落盘脱敏与 transcript 写入归位 journal（第十五轮 Task 4）：appendSafeTranscript
+  // 已是 journal 工厂方法（脱敏实现由 createAgentJournal 的 redactText 注入），
+  // 此处保留薄委托，既有调用点（appendSafeTranscript(journal, record)）零改动。
   async function appendSafeTranscript(journal, record) {
-    await journal.appendTranscript(redactTranscriptRecord(record));
-  }
-
-  function persistentToolResult(name, toolResult) {
-    const persisted = structuredClone(toolResult);
-    if (persisted?.ok && persisted.result && name === "read_file") {
-      const content = String(persisted.result.content ?? "");
-      delete persisted.result.content;
-      persisted.result.content_length = content.length;
-    }
-    if (persisted?.ok && persisted.result && name === "read_skill" && typeof persisted.result.content === "string") {
-      // read_skill 正文不进持久 transcript（与 read_file 同口径：只留长度）；
-      // 二进制 asset 结果没有 content，原样保留元数据 + 绝对路径。
-      persisted.result.content_length = persisted.result.content.length;
-      delete persisted.result.content;
-    }
-    if (persisted?.ok && persisted.result && name === "shell") {
-      // R5-15：终态与 tool_output_delta 共用同一截断口径（工具侧已带元数据，
-      // 这里按同一 helper 重算，保证持久 transcript 与 audit 事件一致）。
-      // content_length 与 truncated 都基于同一拼接串，避免边界 off-by-one。
-      const stdout = String(persisted.result.stdout ?? "");
-      const stderr = String(persisted.result.stderr ?? "");
-      const combined = `${stdout}${stderr}`;
-      const { truncated } = truncateOutput(combined, MAX_TOOL_OUTPUT_CHARS);
-      persisted.result.content_length = combined.length;
-      persisted.result.truncated = truncated;
-    }
-    if (persisted?.ok && persisted.result && name === "search_files" && Array.isArray(persisted.result.matches)) {
-      persisted.result.matches = persisted.result.matches.map(({ excerpt: _excerpt, ...match }) => match);
-    }
-    return persisted;
+    await journal.appendSafeTranscript(record);
   }
 
   // 按统一工具目录过滤定义（Task 7：通用工具 + 固定五个深工具，每轮相同）。
