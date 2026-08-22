@@ -2,8 +2,8 @@
 //
 // 普通文件夹（无 project.yaml）+ 应用私有 stateRoot：不再创建旧项目、不再通过
 // reviewing 门禁提交章节。在 Electron 中逐个点击新界面的可见元素并断言 UI 状态：
-// 项目导航打开普通文件夹、顶部 drawer 入口（章节/模型/资料/成本）、设置页内置风格
-// 详情（只读、可展开正文）、composer 发送、运行中停止、失败后重试、主题/隐私开关、
+// 项目导航打开普通文件夹、顶部 drawer 入口（章节/模型/资料/成本）、设置弹窗（模型
+// 设置分区可操作；Agent 技能分区契约由 verify-app-shell.mjs 校验）、composer 发送、运行中停止、失败后重试、主题/隐私开关、
 // 新建弹窗与快捷键浮层。不得 import 已删除的 agent-engine/failure store/side-question。
 //
 // 点击机制：本会话不投递真实指针事件（sendInputEvent/CDP Input 均无 click），

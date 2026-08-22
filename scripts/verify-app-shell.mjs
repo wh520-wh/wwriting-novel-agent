@@ -4,7 +4,7 @@
 // reviewing 门禁提交章节；文件夹本身即可打开并聊天，应用私有历史只写 stateRoot。
 // 验证：
 //   - 页面结构：单一对话挂载点（AgentSurface）、顶部 drawer 四分区、设置页 Agent 技能
-//     分区与内置风格详情、composer/停止/重试入口、确定性工具；
+//     分区（F2：内置技能并入普通列表，无只读分区）、composer/停止/重试入口、确定性工具；
 //   - 静态契约：app.js 只 import agent/index.js（AgentSurface seam）、api-client 无旧
 //     chat helper、drawer-panels 直接调用导出 route、agent.css 1040px 主内容轴；
 //   - HTTP 公共行为：普通文件夹打开 + 第一条消息、dashboard hasProject:false 且保留
@@ -106,12 +106,13 @@ try {
   assert.ok(stylesCss.includes(".plan-chip"), "任务计划面板样式必须存在");
   assert.ok(agentCss.includes(".system-notice"), "系统通知行样式必须存在");
 
-  // 设置页技能分区 + 内置风格只读详情（Task 13：设置内置风格详情契约）
+  // 设置页技能分区（F2：内置写作风格并入普通列表，无只读分区/保留名文案）
   assert.match(settingsModalJs, /id:\s*"skills"/u, "settings-modal 应声明 Agent 技能 tab");
   assert.ok(settingsModalJs.includes("Agent 技能"), "设置页应渲染 Agent 技能 分区");
-  assert.ok(settingsModalJs.includes("内置写作风格"), "设置页应渲染 内置写作风格 分区");
-  assert.ok(settingsModalJs.includes("spd-skill-row--readonly"), "内置风格行应使用只读无框行样式");
-  assert.ok(settingsModalJs.includes("skills-detail-back"), "内置风格详情应有返回技能列表按钮");
+  assert.ok(settingsModalJs.includes('builtin: "内置"'), "内置来源标签应保留（SKILL_SOURCE_LABELS）");
+  assert.ok(settingsModalJs.includes("其他来源"), "内置/随应用分发技能应并入「其他来源」普通列表");
+  assert.ok(settingsModalJs.includes("被更高优先级同名技能覆盖，不生效。"), "shadowed 应显示通用优先级覆盖文案");
+  assert.doesNotMatch(settingsModalJs, /spd-skill-row--readonly|保留名称/u, "设置页不得残留内置只读分区与保留名文案");
 
   // AgentSurface composer / 停止 / 重试 入口（Task 13 可点击性契约的静态面）
   assert.ok(viewJs.includes('agent-composer-input"'), "view.js 应渲染 composer 输入框");
@@ -384,12 +385,12 @@ try {
     catalogBefore.active.some((skill) => skill.name === "avoid-ai-voice" && skill.source === "builtin"),
     "内置技能应出现在 active catalog"
   );
-  // 三个内置写作风格（只读、保留名）
+  // 三个内置写作风格（F2：无只读/保留名保护，纯四层优先级同名覆盖）
   for (const style of ["balanced", "fast-readable", "psychological-literary"]) {
     const skill = catalogBefore.active.find((item) => item.name === style);
     assert.ok(skill, `内置写作风格 ${style} 应出现在 catalog`);
-    assert.equal(skill.readonly, true, `${style} 应标记为只读`);
     assert.equal(skill.source, "builtin", `${style} 应来自内置`);
+    assert.ok(!("readonly" in skill) && !("protected" in skill), `${style} 不得携带 readonly/protected（保护名单已删除）`);
   }
   assert.ok(Array.isArray(catalogBefore.shadowed), "shadowed 应为数组");
   // 普通文件夹项目同名技能覆盖：放入 <projectRoot>\skills\<name>\SKILL.md 即被发现
