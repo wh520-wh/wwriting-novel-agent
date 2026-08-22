@@ -32,10 +32,9 @@ const BUILTIN_SKILL_NAMES = Object.freeze([
   "dialogue-not-summary",
   "show-dont-tell"
 ]);
-// 五个写作辅助技能 frontmatter 保留的 priority（F6 不触碰这些文件，逐字守卫）。
+// 仍保留 frontmatter priority 的三个手艺技能（F7/F8 两个钩子改修饰后不再携带
+// priority——新 frontmatter 只有 category/display_name/scope，删死 hooks）。
 const BUILTIN_HOOK_PRIORITY = Object.freeze({
-  "suspense-chapter-end": 50,
-  "chapter-opening-hook": 40,
   "avoid-ai-voice": 30,
   "dialogue-not-summary": 40,
   "show-dont-tell": 50
@@ -43,7 +42,9 @@ const BUILTIN_HOOK_PRIORITY = Object.freeze({
 
 // Task 8/F6：三个写作风格基座（F6 重写，2.0.0；D2 起无保留名/只读保护）。
 const WRITING_STYLE_SKILLS = Object.freeze(["balanced", "fast-readable", "psychological-literary"]);
-const ALL_BUILTIN_SKILL_NAMES = Object.freeze([...BUILTIN_SKILL_NAMES, ...WRITING_STYLE_SKILLS]);
+// F7/F8：两个修饰类新技能（payoff-pacing、dialogue-driven）。
+const MODIFIER_SKILL_NAMES = Object.freeze(["payoff-pacing", "dialogue-driven"]);
+const ALL_BUILTIN_SKILL_NAMES = Object.freeze([...BUILTIN_SKILL_NAMES, ...MODIFIER_SKILL_NAMES, ...WRITING_STYLE_SKILLS]);
 
 // Task 8/F6：三个基座 frontmatter 固定值（F6 重写后 description/display_name 契约）。
 const STYLE_FRONTMATTER = Object.freeze({
@@ -371,7 +372,7 @@ test("内置基座分类与元数据（F6）", async () => {
   }
 });
 
-test("catalog 以 src/skills 为 builtin root 时全部内置技能来自 source: builtin（五个写作辅助 + 三个写作风格）", async (t) => {
+test("catalog 以 src/skills 为 builtin root 时全部内置技能来自 source: builtin（五个写作辅助 + 两个修饰 + 三个写作风格）", async (t) => {
   const projectRoot = makeTemp();
   const userHome = makeTemp();
   const resourcesPath = makeTemp();
@@ -391,7 +392,9 @@ test("catalog 以 src/skills 为 builtin root 时全部内置技能来自 source
     const skill = byName.get(name);
     assert.ok(skill, `catalog 应发现内置技能 ${name}`);
     assert.equal(skill.source, "builtin", `${name} 应来自 builtin 层`);
-    assert.equal(skill.metadata.wwriting.priority, BUILTIN_HOOK_PRIORITY[name], `${name} priority 应保留`);
+  }
+  for (const [name, priority] of Object.entries(BUILTIN_HOOK_PRIORITY)) {
+    assert.equal(byName.get(name).metadata.wwriting.priority, priority, `${name} priority 应保留`);
   }
   for (const name of WRITING_STYLE_SKILLS) {
     const skill = byName.get(name);
@@ -525,4 +528,17 @@ test("D2：同名覆盖纯优先级，project 可覆盖 builtin 基座名", asyn
   assert.equal(activeNames.length, 1);
   assert.equal(activeNames[0].source, "project");
   assert.ok(shadowed.some((s) => s.name === "balanced" && s.source === "builtin"));
+});
+
+// ---------------------------------------------------------------------------
+// F7/F8：修饰类四个技能（两个新建 + 两个钩子改类）frontmatter 契约：
+// metadata.wwriting.category = style-modifier 且带 display_name/scope。
+// ---------------------------------------------------------------------------
+
+test("修饰类技能四个（F7/F8）", async () => {
+  const { active } = await discoverSkills({ builtinRoot: BUILTIN_ROOT });
+  const byName = new Map(active.map((s) => [s.name, s]));
+  for (const name of ["payoff-pacing", "dialogue-driven", "suspense-chapter-end", "chapter-opening-hook"]) {
+    assert.equal(byName.get(name)?.category, "style-modifier", `${name} category`);
+  }
 });
