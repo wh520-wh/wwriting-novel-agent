@@ -44,9 +44,6 @@ export async function createProjectAt(projectRoot, options = {}) {
     // 统一 Agent 内核计划 Rule 9：project.yaml 保存项目身份与配置；
     // .wwriting/agent/ 由 ProjectAgent 惰性创建，旧运行态文件不再创建。
     // Task 12：不再默认填充 enabled_skills（技能改为发现即生效，无启停集合）。
-    // Task 12：旧世界的持久字段从新项目默认值与运行时领域模型删除（旧项目已
-    // 存在的字段由保存器自然保留，但生产代码不读取、不驱动行为）。
-    output_style: options.output_style ?? "creative",
     archived_at: options.archived_at ?? null,
     tool_permissions: {
       network_allowed: options.network_allowed ?? false,
