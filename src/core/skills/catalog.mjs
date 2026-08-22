@@ -10,19 +10,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathExists } from "../fs-utils.mjs";
-import { readSkillFile, skillNamesEqual } from "./skill-file.mjs";
+import { readSkillFile } from "./skill-file.mjs";
 
 // 四层来源优先级（冻结契约 §2.5，verbatim）。
 export const SKILL_SOURCE_PRIORITY = Object.freeze({ builtin: 0, bundled: 1, global: 2, project: 3 });
-
-// Task 8：三个受保护的内置写作风格技能（保留名称，冻结契约 §2.5）。
-// 非 builtin 层的同名技能永远被 shadowed（reserved_builtin），绝不进入 active；
-// importSkill/removeSkill 对这三个名称一律写盘前拒绝（skill_reserved）。
-export const PROTECTED_BUILTIN_SKILLS = Object.freeze(new Set([
-  "balanced",
-  "fast-readable",
-  "psychological-literary"
-]));
 
 // 发现层（按优先级升序处理；后处理的层同名时覆盖前层，active 最终来自最高优先级）。
 // 全局路径固定 %USERPROFILE%\.wwriting\skills\<name>\SKILL.md，
@@ -70,15 +61,8 @@ export async function discoverSkills({ projectRoot, userHome, resourcesPath, bui
         errors.push({ dir: skillDir, error: error?.message ?? String(error) });
         continue;
       }
-      // Task 8 Step 3：保留名称的 shadowing 规则——非 builtin 层的同名技能永远
-      // shadowed（reserved_builtin），既不覆盖内置版本，也不进入 active（保留名称
-      // 不可由项目/全局/随应用分发层激活）。R5-11：Windows 下大小写变体同样 shadowed。
-      if (source !== "builtin" && [...PROTECTED_BUILTIN_SKILLS].some((reserved) => skillNamesEqual(reserved, skill.name))) {
-        shadowed.push(Object.freeze({ ...skill, shadow_reason: "reserved_builtin" }));
-        continue;
-      }
-      // 读出的内置条目（三个受保护写作风格）增加 readonly/protected/display_name；
-      // 其他技能为 false，显示名回落 name。
+      // 读出的条目补充 display_name（metadata.wwriting.display_name，缺省回落
+      // name）与 category（metadata.wwriting.category，缺省 null）。
       const enriched = enrichSkill(skill);
       const previous = active.get(enriched.name);
       if (previous) shadowed.push(previous);
@@ -93,18 +77,13 @@ export async function discoverSkills({ projectRoot, userHome, resourcesPath, bui
   });
 }
 
-// Task 8：catalog 层给每个技能对象补充只读/受保护/显示名/分类字段。
-// 受保护内置（PROTECTED_BUILTIN_SKILLS 且 source=builtin）→ readonly/protected 恒
-// true；display_name 来自 metadata.wwriting.display_name（缺省回落 name）；
-// category 来自 metadata.wwriting.category（缺省 null）。其余技能一律
-// readonly:false / protected:false / display_name=name。
+// catalog 层给每个技能对象补充 display_name 与 category：display_name 来自
+// metadata.wwriting.display_name（缺省回落 name）；category 来自
+// metadata.wwriting.category（缺省 null）。
 function enrichSkill(skill) {
   const wwriting = skill.metadata?.wwriting ?? null;
-  const isProtectedBuiltin = skill.source === "builtin" && PROTECTED_BUILTIN_SKILLS.has(skill.name);
   return Object.freeze({
     ...skill,
-    readonly: isProtectedBuiltin,
-    protected: isProtectedBuiltin,
     display_name: typeof wwriting?.display_name === "string" && wwriting.display_name ? wwriting.display_name : skill.name,
     category: typeof wwriting?.category === "string" ? wwriting.category : null
   });

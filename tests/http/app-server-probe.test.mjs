@@ -330,8 +330,8 @@ test("资料搜索/抓取与技能 catalog/import/delete", async () => {
     const probe = after.data.active.find((s) => s.name === "probe-style");
     assert.equal(probe.source, "project");
     assert.equal(probe.path, undefined, "Task 8：catalog DTO 不返回本地绝对 path 给 UI");
-    assert.equal(probe.readonly, false, "非内置技能 readonly 为 false");
-    assert.equal(probe.protected, false, "非内置技能 protected 为 false");
+    assert.equal("readonly" in probe, false, "catalog DTO 不再返回 readonly 字段");
+    assert.equal("protected" in probe, false, "catalog DTO 不再返回 protected 字段");
     assert.equal(probe.display_name, "probe-style", "无 display_name 时回落 name");
 
     // 删除：DELETE /api/skills/:name { scope }。
@@ -347,8 +347,7 @@ test("资料搜索/抓取与技能 catalog/import/delete", async () => {
     const removedAgain = await deleteJson(port, "/api/skills/probe-style", { scope: "project" });
     assert.equal(removedAgain.res.status, 404);
 
-    // Task 8：只读详情 API —— GET /api/skills/:name 返回完整 SKILL.md 正文；
-    // 保留名称不可导入/删除（skill_reserved → 403）。
+    // Task 8：只读详情 API —— GET /api/skills/:name 返回完整 SKILL.md 正文。
     const detail = await getJson(port, "/api/skills/balanced");
     assert.equal(detail.res.status, 200);
     assert.equal(detail.data.ok, true);
@@ -356,6 +355,8 @@ test("资料搜索/抓取与技能 catalog/import/delete", async () => {
     assert.ok(detail.data.content.includes("# 均衡"), "详情应返回完整正文");
     assert.ok(detail.data.content.includes("只在生成、续写、改写、润色或审核中文小说正文时使用本技能"));
     assert.ok(detail.data.content.includes("## 交付前静默检查"));
+    // D2：内置技能不做保护——导入名为 balanced 的技能不再 403，落 project 层后
+    // 以 active 形态覆盖内置版（纯四层优先级）。
     const reservedDir = path.join(root, "balanced");
     await fs.mkdir(reservedDir, { recursive: true });
     await fs.writeFile(
@@ -368,15 +369,14 @@ test("资料搜索/抓取与技能 catalog/import/delete", async () => {
       scope: "project",
       replace: true
     });
-    assert.equal(reservedImport.res.status, 403, "保留名称导入必须 403");
-    assert.equal(reservedImport.data.code, "skill_reserved");
+    assert.equal(reservedImport.res.status, 200, "同名内置名可导入 project scope");
+    assert.equal(reservedImport.data.skill, "balanced");
     const reservedDelete = await deleteJson(port, "/api/skills/balanced", { scope: "project" });
-    assert.equal(reservedDelete.res.status, 403, "保留名称删除必须 403");
-    assert.equal(reservedDelete.data.code, "skill_reserved");
+    assert.equal(reservedDelete.res.status, 200, "同名内置名可删除");
+    assert.equal(reservedDelete.data.removed, true);
 
-    // 保留名称的项目同名技能（直接落盘，模拟既有的用户目录）：catalog 必须把它
-    // 放进 shadowed 并携带 shadow_reason: "reserved_builtin"（设置页专属文案的数据
-    // 来源），且绝不进入 active。
+    // 同名项目技能落盘后：catalog 的 active 变为 project 版，内置版进入 shadowed
+    // （普通优先级 shadow，不携带保留名强制 shadow 的原因字段）。
     const reservedProjectDir = path.join(projectRoot, "skills", "balanced");
     await fs.mkdir(reservedProjectDir, { recursive: true });
     await fs.writeFile(
@@ -385,14 +385,14 @@ test("资料搜索/抓取与技能 catalog/import/delete", async () => {
       "utf8"
     );
     const withReserved = await getJson(port, "/api/skills/catalog");
-    const shadowedReserved = withReserved.data.shadowed.find(
-      (s) => s.name === "balanced" && s.source === "project"
-    );
-    assert.ok(shadowedReserved, "保留名称项目技能必须出现在 shadowed 列表");
-    assert.equal(shadowedReserved.shadow_reason, "reserved_builtin", "shadowed DTO 必须携带 reserved_builtin");
+    const activeBalanced = withReserved.data.active.find((s) => s.name === "balanced");
+    assert.equal(activeBalanced.source, "project", "project 层同名技能覆盖内置版进入 active");
+    const shadowedBuiltin = withReserved.data.shadowed.find((s) => s.name === "balanced" && s.source === "builtin");
+    assert.ok(shadowedBuiltin, "内置版被 project 覆盖后进入 shadowed");
+    assert.equal("shadow_reason" in shadowedBuiltin, false, "普通优先级 shadow 不携带保留名字段");
     assert.ok(
-      !withReserved.data.active.some((s) => s.name === "balanced" && s.source === "project"),
-      "保留名称项目技能绝不进入 active"
+      !withReserved.data.active.some((s) => s.name === "balanced" && s.source === "builtin"),
+      "内置版不再 active"
     );
   } finally {
     // closeAllConnections：强制断开应用服务器 fetch 留下的 keep-alive 连接，
