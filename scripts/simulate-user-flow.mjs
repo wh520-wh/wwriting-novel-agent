@@ -112,7 +112,6 @@ function record(stage, ok, detail, evidence = []) {
 
 const WWRITING_CONTENT = `---
 schema_version: 1
-writing_style_skill: fast-readable
 ---
 
 # WWriting 项目记忆
@@ -187,7 +186,6 @@ async function buildProperProject(workspaceRoot) {
     default_writer_model: "mock-writer",
     default_reviewer_model: "mock-reviewer",
     active_model: { provider: "mock", model_name: "mock-writer" },
-    output_style: "creative",
     archived_at: null,
     tool_permissions: {
       network_allowed: false,

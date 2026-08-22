@@ -18,14 +18,10 @@ export async function readProjectMemory(projectRoot) {
   const target = safeJoin(projectRoot, PROJECT_MEMORY_FILE);
   try {
     const content = await fs.readFile(target, "utf8");
-    return {
-      exists: true,
-      content,
-      styleSkill: parseFrontmatterStyleSkill(content)
-    };
+    return { exists: true, content };
   } catch (error) {
-    if (error?.code === "ENOENT") return { exists: false, content: "", styleSkill: null };
-    return { exists: false, content: "", styleSkill: null, unreadable: true };
+    if (error?.code === "ENOENT") return { exists: false, content: "" };
+    return { exists: false, content: "", unreadable: true };
   }
 }
 
@@ -132,9 +128,4 @@ function renderKnownFiles(files) {
   return Object.entries(files)
     .filter(([, value]) => typeof value === "string" && value.trim() !== "")
     .map(([label, value]) => `- ${label}：${value.trim()}`);
-}
-
-function parseFrontmatterStyleSkill(content) {
-  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/u.exec(content)?.[1] ?? "";
-  return /^writing_style_skill:\s*([^\s#]+)\s*$/mu.exec(frontmatter)?.[1] ?? null;
 }

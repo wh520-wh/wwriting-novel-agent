@@ -1,6 +1,6 @@
 // 项目记忆模块测试（任意工作区计划 Task 6）。
 //
-// 覆盖：缺失/空白/无 frontmatter/未知 schema 的容错读取、styleSkill 解析、
+// 覆盖：缺失/空白/无 frontmatter/未知 schema 的容错读取、
 // 初始模板不包含虚构事实、读函数零副作用（不创建 WWRITING.md）、不可读
 //（目录占位）时返回 unreadable 标记且不外抛原始错误（解析失败不能阻止 prompt）。
 import assert from "node:assert/strict";
@@ -28,7 +28,7 @@ async function tempRoot() {
 test("缺失 WWRITING.md 不阻止聊天且不自动创建", async () => {
   const root = await tempRoot();
   const memory = await readProjectMemory(root);
-  assert.deepEqual(memory, { exists: false, content: "", styleSkill: null });
+  assert.deepEqual(memory, { exists: false, content: "" });
   assert.equal(await pathExists(path.join(root, PROJECT_MEMORY_FILE)), false);
 });
 
@@ -38,15 +38,14 @@ test("空白 WWRITING.md 作为普通内容返回，不报错", async () => {
   const memory = await readProjectMemory(root);
   assert.equal(memory.exists, true);
   assert.equal(memory.content, "");
-  assert.equal(memory.styleSkill, null);
 });
 
-test("无 frontmatter 的普通 Markdown 原样返回，styleSkill 为 null", async () => {
+test("无 frontmatter 的普通 Markdown 原样返回", async () => {
   const root = await tempRoot();
   const content = "# WWriting 项目记忆\n\n## 当前进度\n\n- 已完成：第 1-5 章\n";
   await fs.writeFile(path.join(root, PROJECT_MEMORY_FILE), content, "utf8");
   const memory = await readProjectMemory(root);
-  assert.deepEqual(memory, { exists: true, content, styleSkill: null });
+  assert.deepEqual(memory, { exists: true, content });
 });
 
 test("未知 schema_version 仍作为普通 Markdown 返回，不硬失败", async () => {
@@ -55,7 +54,6 @@ test("未知 schema_version 仍作为普通 Markdown 返回，不硬失败", asy
   await fs.writeFile(path.join(root, PROJECT_MEMORY_FILE), content, "utf8");
   const memory = await readProjectMemory(root);
   assert.equal(memory.exists, true);
-  assert.equal(memory.styleSkill, null);
   assert.ok(memory.content.includes("- 项目：示例"));
 });
 
@@ -66,38 +64,7 @@ test("不可读 WWRITING.md（目录占位）返回 unreadable 标记，不外�
   await assert.doesNotReject(async () => {
     memory = await readProjectMemory(root);
   });
-  assert.deepEqual(memory, { exists: false, content: "", styleSkill: null, unreadable: true });
-});
-
-// ---------------------------------------------------------------------------
-// styleSkill frontmatter 解析
-// ---------------------------------------------------------------------------
-
-test("frontmatter 中的 writing_style_skill 被解析", async () => {
-  const root = await tempRoot();
-  const content = "---\nschema_version: 1\nwriting_style_skill: fast-readable\n---\n\n# WWriting 项目记忆\n";
-  await fs.writeFile(path.join(root, PROJECT_MEMORY_FILE), content, "utf8");
-  const memory = await readProjectMemory(root);
-  assert.equal(memory.exists, true);
-  assert.equal(memory.styleSkill, "fast-readable");
-});
-
-test("正文中的 writing_style_skill 行不被当作 frontmatter 技能", async () => {
-  const root = await tempRoot();
-  const content = "# WWriting 项目记忆\n\nwriting_style_skill: balanced\n";
-  await fs.writeFile(path.join(root, PROJECT_MEMORY_FILE), content, "utf8");
-  const memory = await readProjectMemory(root);
-  assert.equal(memory.styleSkill, null);
-});
-
-test("frontmatter 未闭合时按普通 Markdown 处理，styleSkill 为 null", async () => {
-  const root = await tempRoot();
-  const content = "---\nwriting_style_skill: balanced\n\n# 未闭合 frontmatter\n";
-  await fs.writeFile(path.join(root, PROJECT_MEMORY_FILE), content, "utf8");
-  const memory = await readProjectMemory(root);
-  assert.equal(memory.exists, true);
-  assert.equal(memory.styleSkill, null);
-  assert.ok(memory.content.includes("未闭合"));
+  assert.deepEqual(memory, { exists: false, content: "", unreadable: true });
 });
 
 // ---------------------------------------------------------------------------
