@@ -19,8 +19,7 @@ const SETTINGS_SECTIONS = [
 
 // 写作参数分区字段注册表（Task 22 审查 Minor 2）：renderWritingSection 渲染、
 // saveWritingSection 的 project_profile 提交、settingsDirty 的关闭保护三处共用
-// ——新增字段只改这一处。输出风格（outputStyle）形态不同（select + 独立提交键
-// + 默认值），不并入本表，三处按各自既有逻辑单独处理。
+// ——新增字段只改这一处。
 const WRITING_FIELDS = [
   { key: "targetChapters", projectKey: "target_chapters", label: "目标章节数（提高它可以继续已完成的小说）", type: "number" },
   { key: "minWords", projectKey: "min_words_per_chapter", label: "每章最低字数", type: "number" },
@@ -100,8 +99,8 @@ export function createSettingsModal(ctx, options = {}) {
   // 不会关闭新弹窗或覆盖新按钮文案。
   let saveSequence = 0;
   // 分区渲染代次（Task 16 B12）：每次分区渲染开始都会推进；异步续作
-  //（fetchOutputStyles / 技能 catalog / 任务门禁 / 技能详情）在 await 后校验代次，
-  // 慢分区（A）的续作不得覆写已切换到的新分区（B）内容。
+  //（技能 catalog / 任务门禁 / 技能详情）在 await 后校验代次，慢分区（A）的续作
+  // 不得覆写已切换到的新分区（B）内容。
   let sectionGeneration = 0;
   // 技能管理 scope（Task 13）：segmented control 的当前目录范围。
   let skillsScope = "global";
@@ -120,19 +119,6 @@ export function createSettingsModal(ctx, options = {}) {
   let dirtyConfirmRef = { layer: null };
   let removeDirtyConfirmDismissal = null;
   const settingsFields = {};
-
-  async function fetchOutputStyles() {
-    try {
-      const data = await getJsonImpl("/api/output-styles");
-      return Array.isArray(data.styles) ? data.styles : [];
-    } catch (error) {
-      console.warn("fetchOutputStyles failed:", error);
-      return [
-        { name: "creative", description: "创作模式", source: "bundled" },
-        { name: "review", description: "审稿模式", source: "bundled" }
-      ];
-    }
-  }
 
   // section 可选：Agent 斜杠命令可指定打开的分区；缺省打开「模型设置」（model 为首位）。
   async function openSettingsModal(section = "model") {
@@ -348,8 +334,6 @@ export function createSettingsModal(ctx, options = {}) {
   }
 
   async function renderWritingSection() {
-    // Task 16 B12：捕获发起时的分区代次；await 后校验，慢响应不得覆写新分区。
-    const generation = sectionGeneration;
     const dashboard = ctx.getDashboard();
     const project = dashboard?.project ?? {};
     ctx.refs.settingsDetail.replaceChildren();
@@ -366,7 +350,7 @@ export function createSettingsModal(ctx, options = {}) {
 
     const intro = document.createElement("p");
     intro.className = "spd-hint";
-    intro.textContent = "控制每章的篇幅、目标章节数和输出风格。";
+    intro.textContent = "控制每章的篇幅与目标章节数。";
     ctx.refs.settingsDetail.append(intro);
 
     for (const field of WRITING_FIELDS) {
@@ -375,39 +359,11 @@ export function createSettingsModal(ctx, options = {}) {
       });
     }
 
-    // 输出风格下拉（从模型区平移）
-    const currentOutputStyle = project.output_style ?? "creative";
-    const outputStyles = await fetchOutputStyles();
-    // Task 16 B12：等待期间用户已切到其他分区（或本分区已重渲）→ 丢弃慢响应，
-    // 不得把写作参数字段追加进新分区内容。
-    if (generation !== sectionGeneration) return;
-    const outputStyleField = document.createElement("div");
-    outputStyleField.className = "spd-field";
-    const outputStyleLabel = document.createElement("div");
-    outputStyleLabel.className = "spd-label";
-    const outputStyleSpan = document.createElement("span");
-    outputStyleSpan.textContent = "输出风格";
-    outputStyleLabel.append(outputStyleSpan);
-    const outputStyleSelect = document.createElement("select");
-    outputStyleSelect.className = "spd-input";
-    outputStyleSelect.id = "settings-output-style";
-    outputStyleSelect.setAttribute("aria-label", "输出风格");
-    for (const style of outputStyles) {
-      const opt = document.createElement("option");
-      opt.value = style.name;
-      opt.textContent = `${style.name} — ${style.description}`;
-      outputStyleSelect.append(opt);
-    }
-    outputStyleSelect.value = currentOutputStyle;
-    outputStyleField.append(outputStyleLabel, outputStyleSelect);
-    settingsFields.outputStyle = { field: outputStyleField, input: outputStyleSelect };
-
     ctx.refs.settingsDetail.append(
       settingsFields.targetChapters.field,
       settingsFields.minWords.field,
       settingsFields.targetWords.field,
-      settingsFields.maxWords.field,
-      settingsFields.outputStyle.field
+      settingsFields.maxWords.field
     );
   }
 
@@ -1414,8 +1370,6 @@ export function createSettingsModal(ctx, options = {}) {
       if (!input) continue;
       if (String(input.value ?? "").trim() !== String(project[field.projectKey] ?? "").trim()) return true;
     }
-    const styleInput = settingsFields.outputStyle?.input;
-    if (styleInput && String(styleInput.value ?? "") !== String(project.output_style ?? "creative")) return true;
     return false;
   }
 
@@ -1586,8 +1540,7 @@ export function createSettingsModal(ctx, options = {}) {
         projectProfile[field.projectKey] = settingsFields[field.key]?.input.value;
       }
       await postJsonImpl("/api/settings/update", {
-        project_profile: compactObject(projectProfile),
-        output_style: settingsFields.outputStyle?.input?.value ?? "creative"
+        project_profile: compactObject(projectProfile)
       });
       await ctx.loadDashboard();
     });

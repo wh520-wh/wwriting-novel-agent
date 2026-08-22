@@ -565,7 +565,6 @@ test("普通文件夹下写作参数分区显示说明且保存按钮禁用", as
   );
   assert.equal(saveButton.hidden, true, "普通文件夹下保存按钮应隐藏");
   assert.equal(saveStatus.textContent, "此分区无需保存", "footer 状态槽显示无需保存");
-  assert.equal(domRegistry.some((el) => el.id === "settings-output-style"), false, "不应渲染输出风格下拉");
 
   await modal.saveSettingsForTest();
   assert.equal(postCalls.some((c) => c.url === "/api/settings/update"), false, "保存不得向 /api/settings/update 发请求");
@@ -1465,50 +1464,6 @@ test("恢复 in-flight 期间切到其他分区：完成时不重渲当前分区
 // ---------------------------------------------------------------------------
 // Task 16：分区渲染代次守卫（B12）+ runSave 保存序号条件化收尾（B18）
 // ---------------------------------------------------------------------------
-
-test("B12：慢分区 A（写作参数）不得覆写快分区 B（技能）的渲染结果", async () => {
-  let releaseStyles;
-  const stylesGate = new Promise((resolve) => { releaseStyles = resolve; });
-  const modal = createSettingsModalForTest({
-    getDashboard: () => ({ hasProject: true, project: { target_chapters: 5 } }),
-    getCurrentProjectRoot: () => "D:/novels/demo",
-    getJsonImpl: async (url) => {
-      if (url === "/api/output-styles") return stylesGate;
-      if (url.startsWith("/api/skills/catalog")) {
-        return { ok: true, active: [], shadowed: [], migration_errors: [] };
-      }
-      return { ok: true, default_model: null, models: [] };
-    }
-  });
-  // 分区 A：写作参数——输出风格拉取（fetchOutputStyles）很慢
-  await modal.openSettingsModal("writing");
-  await tickAsync();
-  // 分区 B：技能——catalog 拉取立即完成
-  await modal.openSettingsModal("skills");
-  await modal.waitForSkillsCatalog();
-
-  const detail = modal.getSettingsDetailForTest();
-  assert.ok(
-    detail.children.some((el) => String(el.className).includes("spd-segmented")),
-    "技能分区内容应先渲染完成"
-  );
-
-  // A 的慢响应到达：不得把写作参数字段追加进技能分区
-  releaseStyles({ styles: [{ name: "creative", description: "创作模式", source: "bundled" }] });
-  await tickAsync();
-
-  assert.equal(
-    domRegistry.some((el) => el.id === "settings-output-style"),
-    false,
-    "A 的慢续作不得在技能分区创建输出风格字段"
-  );
-  const detailAfter = modal.getSettingsDetailForTest();
-  assert.ok(
-    detailAfter.children.some((el) => String(el.className).includes("spd-segmented")),
-    "技能分区内容保持"
-  );
-  assert.equal(detailAfter.children.some((el) => el.className === "spd-field"), false, "写作参数字段不得追加");
-});
 
 test("B18：连续两次保存——旧 save 的迟到失败不得恢复按钮/提示（save sequence 条件化收尾）", async () => {
   const saveButton = new MockElement("button");

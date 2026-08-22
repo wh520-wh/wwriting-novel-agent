@@ -362,7 +362,7 @@ test("assembleProjectMemoryBlock：空/缺失 memory 返回空串，不制造占
 
 test("assembleProjectMemoryBlock：有内容时带 [Project Memory: WWRITING.md] 头且不去除正文空白", () => {
   const content = "# WWriting 项目记忆\n\n- 项目：示例小说\n- 当前目标：完成第一卷初稿";
-  const block = assembleProjectMemoryBlock({ exists: true, content, styleSkill: null });
+  const block = assembleProjectMemoryBlock({ exists: true, content });
   assert.ok(block.startsWith("[Project Memory: WWRITING.md]\n"));
   assert.ok(block.includes("- 项目：示例小说"));
   assert.ok(block.includes("- 当前目标：完成第一卷初稿"));
@@ -378,8 +378,7 @@ test("Project Memory 是独立 prompt 层：Static Core -> Runtime Policy -> Pro
     projectInstructions: "AGENTS.md 正文：本项目文风冷峻克制。",
     projectMemory: {
       exists: true,
-      content: "# WWriting 项目记忆\n\n- 当前目标：完成第一章初稿",
-      styleSkill: null
+      content: "# WWriting 项目记忆\n\n- 当前目标：完成第一章初稿"
     },
     skillCatalog: [
       { name: "fast-readable", description: "快节奏易读。" },
