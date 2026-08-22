@@ -16,7 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createAgentJournal } from "../../src/core/agent/journal.mjs";
-import { createToolRuntime } from "../../src/core/agent/tools.mjs";
+import { createToolRuntime } from "../../src/core/agent/tools/index.mjs";
 
 const DEFAULT_PERMISSIONS = {
   network_allowed: false,
