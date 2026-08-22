@@ -2,7 +2,7 @@
 //
 // 覆盖：缺失/空白/无 frontmatter/未知 schema 的容错读取、
 // 初始模板不包含虚构事实、读函数零副作用（不创建 WWRITING.md）、不可读
-//（目录占位）时返回 unreadable 标记且不外抛原始错误（解析失败不能阻止 prompt）。
+//（目录占位）时返回 unreadable 标记且不外抛原始错误（读取失败不能阻止 prompt）。
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
