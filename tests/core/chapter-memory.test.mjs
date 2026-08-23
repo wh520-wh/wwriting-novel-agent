@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  buildContinuityBriefing,
   buildContinuityPromptContext,
   CHAPTER_MEMORY_SCHEMA_VERSION,
   ENDING_EXCERPT_CHARS,
@@ -12,6 +13,7 @@ import {
   OPENING_EXCERPT_CHARS,
   recordChapterMemory,
 } from "../../src/core/chapter-memory.mjs";
+import { saveContinuity } from "../../src/core/continuity-store.mjs";
 import { ensureDir } from "../../src/core/fs-utils.mjs";
 
 async function makeTmpProject() {
@@ -215,4 +217,47 @@ test("exported constants have expected values", () => {
   assert.equal(MAX_CONTEXT_CHAPTERS, 2);
   assert.equal(OPENING_EXCERPT_CHARS, 420);
   assert.equal(ENDING_EXCERPT_CHARS, 900);
+});
+
+// ---------------------------------------------------------------------------
+// 第十六轮 T1/T5：前情简报组装（read_continuity 工具的数据源）
+// ---------------------------------------------------------------------------
+
+test("buildContinuityBriefing: 空项目 = 第 1 章初始处境话术", async () => {
+  const root = await makeTmpProject();
+  const content = await buildContinuityBriefing(root, {});
+  assert.match(content, /第 1 章可以建立初始处境/u);
+});
+
+test("buildContinuityBriefing: 三块组装 + 伏笔按埋设章排序 top5", async () => {
+  const root = await makeTmpProject();
+  await recordChapterMemory(root, { chapterNo: 1, title: "开端", content: "a".repeat(2000), actualWords: 2000 });
+  const foreshadows = Array.from({ length: 7 }, (_, i) => ({
+    content: `伏笔${i + 1}`, planted_chapter: i + 1, expected_payoff_hint: "", status: "open", paid_chapter: null
+  }));
+  await saveContinuity(root, {
+    schema_version: 3,
+    facts: [{ entity: "主角", attribute: "佩剑", value: "断剑", chapter_no: 1, quote: "", conflict_with: null }],
+    timeline: [],
+    characters: [{ name: "主角", traits: ["冷静"], status: "在场", chapter_no: 1 }],
+    foreshadows
+  });
+  const content = await buildContinuityBriefing(root, {});
+  assert.match(content, /第 1 章：开端/u);
+  assert.match(content, /### 关键事实/u);
+  assert.match(content, /伏笔1/u);
+  assert.match(content, /伏笔5/u);
+  assert.doesNotMatch(content, /伏笔6/u);
+  assert.match(content, /距今 1 章未收/u);
+});
+
+test("buildContinuityBriefing: entity 命中与未命中", async () => {
+  const root = await makeTmpProject();
+  await saveContinuity(root, {
+    schema_version: 3,
+    facts: [{ entity: "主角", attribute: "佩剑", value: "断剑", chapter_no: 1, quote: "", conflict_with: null }],
+    timeline: [], characters: [], foreshadows: []
+  });
+  assert.match(await buildContinuityBriefing(root, { entity: "主角" }), /断剑/u);
+  assert.match(await buildContinuityBriefing(root, { entity: "路人" }), /未找到实体/u);
 });
