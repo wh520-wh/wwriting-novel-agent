@@ -29,6 +29,7 @@
 //     常量），避免本测试与 Task 9 的全库 rg 证明被字面量误伤。
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -580,6 +581,79 @@ test("旧持久字段在生产源码中 0 命中（无读取/写入/默认值）
     if (!rel.startsWith("src/")) continue;
     if (file.text.includes("blueprint_status")) {
       violations.push(`${rel} 命中已退役持久字段：blueprint_status`);
+    }
+  }
+  assert.equal(violations.length, 0, formatList(violations));
+});
+
+// ---------------------------------------------------------------------------
+// 规则 R1/R2/R3（Task 23，第十五轮）：文件规模红线 / 测试 glob 覆盖 / seam 禁令
+// ---------------------------------------------------------------------------
+
+const LINE_LIMIT = 1200;
+const LINE_LIMIT_EXCEPTIONS = new Map([
+  ["src/app-shell/settings-modal.js", "D6/D7：结构拆分留下轮，本轮仅范式迁移"]
+]);
+
+// R1 自建遍历器：只扫 src/、排除 vendor/ 与 .css——collectSourceFiles() 扫
+// src+tests+scripts 且不排除，不可复用。例外清单断言 size===1：红灯时扩清单
+// 等于放弃红线，正确动作是回对应 Task 收。
+function collectSrcFiles() {
+  const files = [];
+  const walk = (dir) => {
+    for (const entry of fsSync.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name !== "vendor") walk(p);
+      } else if (/\.(mjs|cjs|js)$/u.test(entry.name)) {
+        files.push(path.relative(ROOT, p).replaceAll("\\", "/"));
+      }
+    }
+  };
+  walk(path.join(ROOT, "src"));
+  return files;
+}
+
+test("R1: src 文件行数 ≤1200（例外显式登记且唯一）", () => {
+  const files = collectSrcFiles();
+  assert.ok(files.length >= 100, `R1 扫描命中过少（${files.length}），检查遍历是否退化`);
+  for (const file of files) {
+    const lines = fsSync.readFileSync(path.join(ROOT, file), "utf8").split("\n").length;
+    const limit = LINE_LIMIT_EXCEPTIONS.has(file) ? Infinity : LINE_LIMIT;
+    assert.ok(lines <= limit, `${file} ${lines} 行超红线`);
+  }
+  assert.equal(LINE_LIMIT_EXCEPTIONS.size, 1, "例外清单只能有一个");
+});
+
+test("R2: package.json test glob 覆盖全部含测试的目录", () => {
+  const pkg = JSON.parse(fsSync.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  const covered = new Set();
+  for (const m of pkg.scripts.test.matchAll(/tests\/([\w-]+)\//g)) covered.add(m[1]);
+  for (const entry of fsSync.readdirSync(path.join(ROOT, "tests"), { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const hasTests = fsSync
+      .readdirSync(path.join(ROOT, "tests", entry.name))
+      .some((f) => f.endsWith(".test.mjs"));
+    if (!hasTests) continue;
+    assert.ok(covered.has(entry.name), `tests/${entry.name} 有测试但不在 npm test glob`);
+  }
+});
+
+// R3：内部模块 seam 守卫。豁免口径与规则 A2（tests/agent/ 可测内部 seam）及
+// SURFACE_SEAM_TESTS（前端分区单测名单）一致——这些是"包内测试"语义，不是越 seam。
+const AGENT_INTERNAL_SEAM =
+  /agent\/(runtime|journal-handlers|history-assembly|run-lifecycle|session-manager|tools\/|view\/)/;
+
+test("R3: agent 内部模块不得被包外 import（seam 守卫）", () => {
+  const violations = [];
+  for (const [rel, file] of analyzed) {
+    if (rel.startsWith(AGENT_DIR) || rel.startsWith(SURFACE_DIR)) continue;
+    if (rel.startsWith("tests/agent/")) continue;
+    if (SURFACE_SEAM_TESTS.has(rel)) continue;
+    for (const { target } of file.imports) {
+      if (target && AGENT_INTERNAL_SEAM.test(target)) {
+        violations.push(`${rel} 越过公共 seam 直连内部模块: ${target}`);
+      }
     }
   }
   assert.equal(violations.length, 0, formatList(violations));
