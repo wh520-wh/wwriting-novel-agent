@@ -3229,3 +3229,24 @@ test("Task 10 优先切换清空旧输入 grant：D 的同类写文件必须重�
   assert.equal(await pathExists(path.join(h.projectRoot, "c.txt")), false, "被优先切换跳过的工具不得执行");
   assertActivityClosure(events);
 });
+
+// Task 10b 回归（P1）：run-pipeline 拆分后 shell 能力文本不得静默降级——ctx 若
+// 漏注入 shell，typeof 未绑定标识符恒 "undefined" → policy 恒 "- shell:
+// unavailable"。harness 恒注入 shell 桩（函数），此处钉正向态：policy 必须宣告
+// available（反向态 unavailable 无自然钉点：harness 无传 null 的开关，不新加
+// harness 选项；若未来引入 null 注入再补反向断言）。
+test("runtime policy 注入 shell 可用性文本（harness 桩 shell → available）", async (t) => {
+  const h = await openHarness(t, {
+    gatewayScript: [
+      async (request) => {
+        const system = (request.messages ?? []).find((message) => message.role === "system")?.content ?? "";
+        assert.ok(system.includes("shell: available"), "harness 注入 shell 桩时 policy 必须宣告 available");
+        return { reply: { text: "好的。" } };
+      }
+    ]
+  });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "你好", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  assert.equal(eventsOfType(events, "run_completed").length, 1);
+});
