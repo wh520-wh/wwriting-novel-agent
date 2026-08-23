@@ -10,7 +10,7 @@ import { motion } from "./motion-runtime.js";
 import { getJson, postJson, withProjectScope } from "./api-client.js";
 import { formatNumber, pathBaseName, pathEquals, translateStage } from "./utils.js";
 import { icon } from "./icons.js";
-import { focusTrap } from "./dom-kit.js";
+import { focusTrap, createToaster } from "./dom-kit.js";
 import { createDrawerPanels } from "./drawer-panels.js";
 import { createSettingsModal } from "./settings-modal.js";
 import { createModelSettingsPage } from "./model-settings-page.js";
@@ -86,6 +86,17 @@ const refs = {
 const desktop = window.wwritingDesktop;
 document.documentElement.dataset.desktopShell = desktop?.shell ?? "browser";
 document.documentElement.dataset.desktopPlatform = desktop?.platform ?? "browser";
+
+// Task 13（F6）：全局堆叠 toast 收编 dom-kit createToaster——type→角色/图标/
+// 时长与 leaving 消失动画保持 app.js 原行为零变化；项目切换清空（原
+// clearTransientState 直摸 toastStack children）改经 clearToast() 单源。
+const toaster = createToaster(() => refs.toastStack, {
+  className: "toast",
+  iconFor: (type) => icon(type === "error" ? "help" : "check", 15),
+  timeoutFor: (type) => (type === "error" ? 5200 : 3200),
+  leaveMs: 220
+});
+const showToast = toaster.showToast;
 
 let currentProjectRoot = null;
 let dashboardRequestId = 0;
@@ -609,9 +620,7 @@ async function loadDashboard(options = {}) {
 // AgentSurface 由 commitProjectSwitch 显式 openProject（重置其内部状态）。
 function clearTransientState() {
   dashboardRequestId += 1;
-  if (refs.toastStack) {
-    for (const toast of [...refs.toastStack.children]) toast.remove();
-  }
+  toaster.clearToast();
   if (refs.readerScrim?.classList.contains("show")) {
     refs.readerScrim.classList.remove("show");
     refs.readerScrim.setAttribute("inert", "");
@@ -1170,22 +1179,6 @@ function showActionError(error) {
   refs.projectOpenStatus.style.display = "block";
   refs.projectOpenStatus.textContent = error.message;
   showToast(error.message, "error");
-}
-
-function showToast(message, type = "info") {
-  if (!message || !refs.toastStack) return;
-  const toast = document.createElement("div");
-  toast.className = `toast ${type}`;
-  // Round10：error 是 alert（打断性），其余 status（stack 本身 aria-live=polite）。
-  toast.setAttribute("role", type === "error" ? "alert" : "status");
-  toast.append(icon(type === "error" ? "help" : "check", 15));
-  toast.append(document.createTextNode(message));
-  refs.toastStack.append(toast);
-  const remove = () => {
-    toast.classList.add("leaving");
-    window.setTimeout(() => toast.remove(), 220);
-  };
-  window.setTimeout(remove, type === "error" ? 5200 : 3200);
 }
 
 // 模块体执行完毕（所有 const/let 已离开 TDZ）后再启动。

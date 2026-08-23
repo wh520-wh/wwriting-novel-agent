@@ -1,7 +1,8 @@
 // src/app-shell/dom-kit.js —— 前端共享 DOM/form 构建层（第十五轮 F6）。
 // 唯一 hyperscript 入口（el）+ 自动保存表单绑定（bindAutosave）+ 行内错误提示
 //（showFieldError/clearFieldError/fieldError）+ 焦点陷阱（focusTrap）+ 确认弹层
-//（showConfirmLayer，Task 12 收编 settings-modal/app.js）；toast 在 Task 13 收编。
+//（showConfirmLayer，Task 12 收编 settings-modal/app.js）+ toast 单源
+//（createToaster，Task 13 收编 agent/view.js 与 app.js）。
 //
 // 依赖注入约定：el 的 doc 为文档引用（默认全局 document，真实 Electron 环境）——
 // node:test 下调用方必须注入测试 document/mock，与 model-settings-page 的
@@ -270,4 +271,99 @@ export function showConfirmLayer(options) {
 
   resultPromise.close = closeLayer;
   return resultPromise;
+}
+
+// toast 单源（Task 13，F6）：agent surface 自持单例 toast（撤回失败等）与 app
+// shell 全局堆叠 toast 共用同一份建节点/计时/移除逻辑。getRoot() 每次调用取
+// 容器（app.js 版传 () => refs.toastStack——null 时 showToast 静默返回，与
+// 原守卫一致；agent 版传 () => surface）。两调用点差异全走 options：
+//   single     true=单例复用容器内唯一节点（新消息刷新同节点与文本，角色固定
+//              status）；false=堆叠（每次追加新节点，type 决定角色/图标/时长）
+//   selector   single 模式查找既有节点的选择器（agent 版 data-testid）
+//   testId     single 模式创建节点的 data-testid（null 不设）
+//   className  节点 class；堆叠版按 `${className} ${type}` 拼接（type 配色）
+//   iconFor    (type) => 图标节点 | null（堆叠版注入；single 版无图标）
+//   timeoutFor (type) => 停留毫秒（single 版传 () => 3000）
+//   leaveMs    >0 时超时先加 leaving class、延迟 leaveMs 后移除（堆叠版消失
+//              动画；single 版直接移除）
+// scheduler 可注入计时（node:test 下可 mock）；doc 同 el 的注入约定。
+// clearToast()：single=清定时并移除唯一节点；堆叠=清空容器全部子节点（app.js
+// clearTransientState 的项目切换清空经此，无需再直接摸容器 children）。
+export function createToaster(getRoot, options = {}) {
+  const {
+    doc = globalThis.document,
+    scheduler = globalThis,
+    single = false,
+    selector = null,
+    testId = null,
+    className = "toast",
+    iconFor = null,
+    timeoutFor = null,
+    leaveMs = 0
+  } = options;
+
+  // ponytail: 堆叠模式 timer 仅跟踪最后一条的移除调度——其余条目的到期回调
+  // 在已移除（或已离开容器）的节点上执行是幂等空操作；勿在此「顺手」加堆叠
+  // 计时清理，那会重犯 P1（上一条调度被取消 → 永久滞留）。
+  let timer = null;
+  const clearTimer = () => {
+    if (timer != null) {
+      scheduler.clearTimeout?.(timer);
+      timer = null;
+    }
+  };
+
+  function showToast(message, type = "info") {
+    const root = getRoot();
+    if (!root) return;
+    if (!single && !message) return; // 堆叠版原守卫：空消息静默
+    // 只有单例模式需要清旧 timer（新消息刷新同一节点的移除调度）；堆叠模式每条
+    // toast 独立 setTimeout 互不干扰——清旧会取消上一条的移除，使其永久滞留。
+    if (single) clearTimer();
+    let node;
+    if (single) {
+      node = selector ? root.querySelector?.(selector) : null;
+      if (!node) {
+        node = doc.createElement("div");
+        node.className = className;
+        if (testId) node.dataset.testid = testId;
+        node.setAttribute("role", "status");
+        root.append(node);
+      }
+      node.textContent = message;
+    } else {
+      node = doc.createElement("div");
+      node.className = `${className} ${type}`.trim();
+      // Round10：error 是 alert（打断性），其余 status（stack 本身 aria-live=polite）。
+      node.setAttribute("role", type === "error" ? "alert" : "status");
+      const iconNode = iconFor?.(type);
+      if (iconNode) node.append(iconNode);
+      node.append(doc.createTextNode(message));
+      root.append(node);
+    }
+    const timeout = timeoutFor ? timeoutFor(type) : 3200;
+    timer = scheduler.setTimeout(() => {
+      timer = null;
+      if (leaveMs > 0) {
+        node.classList?.add("leaving");
+        scheduler.setTimeout(() => node.remove?.(), leaveMs);
+      } else {
+        node.remove?.();
+      }
+    }, timeout);
+  }
+
+  function clearToast() {
+    clearTimer();
+    const root = getRoot();
+    if (!root) return;
+    if (single) {
+      const node = selector ? root.querySelector?.(selector) : null;
+      node?.remove?.();
+    } else {
+      for (const child of [...root.children]) child.remove?.();
+    }
+  }
+
+  return { showToast, clearToast };
 }

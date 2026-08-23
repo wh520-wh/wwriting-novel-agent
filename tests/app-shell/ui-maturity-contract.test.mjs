@@ -77,7 +77,7 @@ test("round10 shell: narrow rail has an entry and drawer switches modal semantic
   assert.match(app, /function isDrawerModal\(\)/u);
   assert.match(app, /function openRail\(\)/u);
   assert.match(app, /function closeRail\(/u);
-  assert.match(app, /isDrawerModal\(\)\)\s+trapTab/u);
+  assert.match(app, /isDrawerModal\(\)\)\s+focusTrap\(refs\.drawer, event\)/u);
 });
 
 test("round10 html: layout styles are not embedded in markup", () => {
@@ -134,9 +134,10 @@ test("round10 overlays: toast clears the composer and cards are solid", () => {
   assert.match(css, /\.create-card\s*\{[^}]*background:\s*var\(--surface\)/u);
   assert.doesNotMatch(css, /\.create-card::before/u, "新建小说卡片去掉顶部装饰渐变");
   assert.match(css, /\.shortcuts-card\s*\{[^}]*background:\s*var\(--surface\)/u);
-  // showToast：error → role=alert，其余 role=status
-  const app = read("src/app-shell/app.js");
-  assert.match(app, /toast\.setAttribute\("role", type === "error" \? "alert" : "status"\)/u);
+  // showToast（Task 13 收编 dom-kit createToaster）：error → role=alert，其余
+  // role=status（契约随实现迁移至 dom-kit.js）
+  const domKit = read("src/app-shell/dom-kit.js");
+  assert.match(domKit, /setAttribute\("role", type === "error" \? "alert" : "status"\)/u);
 });
 
 test("round10 responsive: four product breakpoints and user preference fallbacks exist", () => {
