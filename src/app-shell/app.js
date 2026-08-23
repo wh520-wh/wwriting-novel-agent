@@ -1,11 +1,7 @@
 // WWriting · 统一 Agent 对话控制面（统一 Agent 内核计划 Task 9）。
 //
-// 页面组合根：创建 AgentSurface（src/app-shell/agent/index.js，唯一对话 seam）并
-// 传递项目变更/设置/章节回调；其余只保留导航、项目列表、设置、章节阅读与确定性
-// 工具（导出）。不再 import 或维护 thread renderer / composer / agent truth /
-// run presentation / write readiness / activity strip / suggestions / command
-// registry 的状态（Rule 4/5：UI 不做业务决策，Agent 状态由 AgentSurface 消费
-// snapshot/event）。
+// 页面组合根：创建 AgentSurface（唯一对话 seam）并接线导航/项目/设置/章节；
+// UI 不做业务决策（Rule 4/5），Agent 状态由 AgentSurface 消费 snapshot/event。
 import { motion } from "./motion-runtime.js";
 import { getJson, postJson, withProjectScope } from "./api-client.js";
 import { formatNumber, pathBaseName, pathEquals, translateStage } from "./utils.js";
@@ -22,8 +18,7 @@ import { createVersionPanel } from "./components/version-panel.js";
 import { createPlanPanel } from "./components/plan-panel.js";
 
 export async function bootApp(root = document) {
-  
-  // railRefs（Task 22：refs 分域——按前缀归类，消费点经分桶名引用）
+  // Task 22：refs 分域——rail/drawer/reader/settings 四桶，消费点经分桶名引用。
   const railRefs = {
     app: root.querySelector("#app"),
     rail: root.querySelector(".rail"),
@@ -51,7 +46,6 @@ export async function bootApp(root = document) {
     toastStack: root.querySelector("#toast-stack")
   };
 
-  // drawerRefs（Task 22：refs 分域——按前缀归类，消费点经分桶名引用）
   const drawerRefs = {
     drawerScrim: root.querySelector("#drawer-scrim"),
     drawer: root.querySelector("#drawer"),
@@ -60,7 +54,6 @@ export async function bootApp(root = document) {
     drawerBody: root.querySelector("#drawer-body"),
   };
 
-  // readerRefs（Task 22：refs 分域——按前缀归类，消费点经分桶名引用）
   const readerRefs = {
     readerScrim: root.querySelector("#reader-scrim"),
     readerTitle: root.querySelector("#reader-title"),
@@ -74,7 +67,6 @@ export async function bootApp(root = document) {
     readerWide: root.querySelector("#reader-wide"),
   };
 
-  // settingsRefs（Task 22：refs 分域——按前缀归类，消费点经分桶名引用）
   const settingsRefs = {
     settingsScrim: root.querySelector("#settings-scrim"),
     settingsDetail: root.querySelector("#settings-detail"),
@@ -102,9 +94,7 @@ export async function bootApp(root = document) {
   document.documentElement.dataset.desktopShell = desktop?.shell ?? "browser";
   document.documentElement.dataset.desktopPlatform = desktop?.platform ?? "browser";
   
-  // Task 13（F6）：全局堆叠 toast 收编 dom-kit createToaster——type→角色/图标/
-  // 时长与 leaving 消失动画保持 app.js 原行为零变化；项目切换清空（原
-  // clearTransientState 直摸 toastStack children）改经 clearToast() 单源。
+  // Task 13（F6）：toast 收编 dom-kit createToaster，行为零变化；清空经 clearToast() 单源。
   const toaster = createToaster(() => railRefs.toastStack, {
     className: "toast",
     iconFor: (type) => icon(type === "error" ? "help" : "check", 15),
@@ -135,11 +125,8 @@ export async function bootApp(root = document) {
     onOpenChapter: (chapterNo) => openReader(chapterNo),
     onCreateProject: () => openCreateModal(),
     onOpenProjectFolder: () => openFromFolder(),
-    // Task 9：会话列表刷新 → 左侧栏两级树（只重渲当前项目组 + busy 复位）。Task 3：
-    // draft 占位不进入会话列表（发送首条消息前左侧不显示新项），只经 activeSessionId
-    // 透出活跃指针；侧边栏渲染层按 status === "draft" 过滤兜底（双保险）。活跃会话
-    // id 由 sidebar 自持（sessionCache 的 activeSessionId），app.js 需要时经
-    // sessionSidebar.getSessions() 读取。
+    // Task 9：会话列表刷新 → 左侧栏两级树 + busy 复位；draft 占位不进入列表（Task 3），
+    // 活跃 id 由 sidebar 自持，app.js 经 sessionSidebar.getSessions() 读取。
     onSessionsChanged: (sessions, activeSessionId) => {
       sessionSidebar.handleSessionsChanged(currentProjectRoot, sessions, activeSessionId);
     },
