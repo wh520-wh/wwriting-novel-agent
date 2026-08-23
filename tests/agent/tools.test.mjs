@@ -261,6 +261,11 @@ test("deep 工具 schema 与计划一致", () => {
     ["chapter_no", "expected_draft_checksum", "project_id"],
     "Task 10：commit_chapter 不得再暴露 exception_decisions"
   );
+  assert.deepEqual(
+    Object.keys(byName.get("update_memory").parameters.properties).sort(),
+    ["chapter_no", "characters", "facts", "foreshadows", "project_id", "timeline"],
+    "第十六轮 T8：update_memory 开放 foreshadows"
+  );
 });
 
 // ---------------------------------------------------------------------------
