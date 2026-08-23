@@ -62,5 +62,11 @@ export function normalizeMemoryUpdateArgs(args) {
     status: String(item?.status ?? ""),
     chapter_no: Number(item?.chapter_no) || topChapterNo
   }), (c) => Boolean(c.name));
-  return { chapter_no: topChapterNo, facts, timeline, characters };
+  const foreshadows = normalizeArray(args?.foreshadows, (item) => ({
+    content: requiredString(item?.content),
+    status: item?.status === "paid" ? "paid" : "open",
+    expected_payoff_hint: String(item?.expected_payoff_hint ?? "").slice(0, 120),
+    chapter_no: Number(item?.chapter_no) || topChapterNo
+  }), (f) => Boolean(f.content));
+  return { chapter_no: topChapterNo, facts, timeline, characters, foreshadows };
 }

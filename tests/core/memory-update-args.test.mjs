@@ -41,3 +41,21 @@ test("time 字段归一化：非法 kind 回落 scene、confidence 只认 high",
   assert.equal(fallback.elapsed, null);
   assert.equal(fallback.confidence, "low");
 });
+
+test("foreshadows 归一化：open/paid、hint 截断、非法条目过滤、章号继承", () => {
+  const out = normalizeMemoryUpdateArgs({
+    chapter_no: 4,
+    foreshadows: [
+      { content: "怀表刻字", expected_payoff_hint: "x".repeat(200) },
+      { content: "旧伏笔", status: "paid" },
+      { content: "" },
+      { expected_payoff_hint: "没有内容" }
+    ]
+  });
+  assert.equal(out.foreshadows.length, 2);
+  assert.equal(out.foreshadows[0].status, "open");
+  assert.equal(out.foreshadows[0].chapter_no, 4);
+  assert.equal(out.foreshadows[0].expected_payoff_hint.length, 120);
+  assert.equal(out.foreshadows[1].status, "paid");
+  assert.equal(out.foreshadows[1].chapter_no, 4);
+});
