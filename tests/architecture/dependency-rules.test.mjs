@@ -376,7 +376,10 @@ const SURFACE_SEAM_TESTS = new Set([
   // Task 15 新增：view-timeline.test.mjs 直接测 view/timeline.mjs 分区（时间线契约
   // 与 F17 索引收口），同一 seam 意图——agent-surface.test.mjs 经 fake api 覆盖不到
   // 分区内部状态（timelineSeqs 生命周期）。
-  "tests/app-shell/view-timeline.test.mjs"
+  "tests/app-shell/view-timeline.test.mjs",
+  // Task 16 新增：view-work-group.test.mjs 直接测 view/work-group.mjs 分区的
+  // 模块级纯函数（时钟/时间线键/详情文案），同一 seam 意图——不经 index.js。
+  "tests/app-shell/view-work-group.test.mjs"
 ]);
 
 test("AgentSurface 只能通过 src/app-shell/agent/index.js 对外暴露", () => {
