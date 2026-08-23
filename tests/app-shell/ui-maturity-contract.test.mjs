@@ -77,7 +77,7 @@ test("round10 shell: narrow rail has an entry and drawer switches modal semantic
   assert.match(app, /function isDrawerModal\(\)/u);
   assert.match(app, /function openRail\(\)/u);
   assert.match(app, /function closeRail\(/u);
-  assert.match(app, /isDrawerModal\(\)\)\s+focusTrap\(refs\.drawer, event\)/u);
+  assert.match(app, /isDrawerModal\(\)\)\s+focusTrap\(drawerRefs\.drawer, event\)/u);
 });
 
 test("round10 html: layout styles are not embedded in markup", () => {
@@ -191,7 +191,7 @@ test("round10 narrow topbar: plan chip keeps progress but releases title width",
     css,
     /@media\s*\(max-width:\s*480px\)[\s\S]*\.topbar\s*\{[^}]*gap:\s*8px[^}]*padding-left:\s*10px/u
   );
-  assert.match(app, /insertBefore\(planPanel\.chip,\s*refs\.topbarMore/u);
+  assert.match(app, /insertBefore\(planPanel\.chip,\s*(?:railRefs\.)?topbarMore/u);
   assert.match(app, /function closeTopbarSecondary/u);
 });
 
