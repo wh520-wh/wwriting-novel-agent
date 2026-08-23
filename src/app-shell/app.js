@@ -10,6 +10,7 @@ import { motion } from "./motion-runtime.js";
 import { getJson, postJson, withProjectScope } from "./api-client.js";
 import { formatNumber, pathBaseName, pathEquals, translateStage } from "./utils.js";
 import { icon } from "./icons.js";
+import { focusTrap } from "./dom-kit.js";
 import { createDrawerPanels } from "./drawer-panels.js";
 import { createSettingsModal } from "./settings-modal.js";
 import { createModelSettingsPage } from "./model-settings-page.js";
@@ -538,11 +539,11 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     openShortcuts();
   }
-  if (refs.shortcutsScrim.classList.contains("show")) trapTab(refs.shortcutsScrim, event);
-  else if (refs.readerScrim.classList.contains("show")) trapTab(refs.readerScrim, event);
-  else if (refs.settingsScrim.classList.contains("show")) trapTab(refs.settingsScrim, event);
-  else if (refs.createScrim.classList.contains("show")) trapTab(refs.createScrim, event);
-  else if (refs.drawer.classList.contains("show") && isDrawerModal()) trapTab(refs.drawer, event);
+  if (refs.shortcutsScrim.classList.contains("show")) focusTrap(refs.shortcutsScrim, event);
+  else if (refs.readerScrim.classList.contains("show")) focusTrap(refs.readerScrim, event);
+  else if (refs.settingsScrim.classList.contains("show")) focusTrap(refs.settingsScrim, event);
+  else if (refs.createScrim.classList.contains("show")) focusTrap(refs.createScrim, event);
+  else if (refs.drawer.classList.contains("show") && isDrawerModal()) focusTrap(refs.drawer, event);
 });
 window.addEventListener("blur", () => { refs.app.dataset.away = "true"; });
 window.addEventListener("focus", () => { refs.app.dataset.away = "false"; });
@@ -1078,18 +1079,6 @@ function closeCreateModal() {
   });
 }
 
-function getFocusable(container) {
-  return [...container.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
-    .filter((el) => !el.disabled && el.offsetParent !== null);
-}
-function trapTab(container, event) {
-  if (event.key !== "Tab") return;
-  const f = getFocusable(container);
-  if (!f.length) { event.preventDefault(); return; }
-  const first = f[0], last = f[f.length - 1];
-  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-}
 function openOverlay(scrim, firstEl) {
   lastFocused = document.activeElement;
   scrim.removeAttribute("inert");
