@@ -5,6 +5,7 @@
 import { isEnvironmentVariableName } from "./utils.js";
 import { formatConnectionStatus } from "./settings-connection.mjs";
 import { icon } from "./icons.js";
+import { el as domEl, bindAutosave, fieldError, showFieldError, clearFieldError } from "./dom-kit.js";
 
 export function pickProvider(providers, id) {
   return providers.find((p) => p.id === id) ?? null;
@@ -62,54 +63,6 @@ function freshDraftRefs() {
   };
 }
 
-function showFieldError(refs, fieldKey, message) {
-  const span = refs?.errorRefs?.get(fieldKey);
-  if (span) span.textContent = message;
-}
-
-function clearFieldError(refs, fieldKey) {
-  showFieldError(refs, fieldKey, "");
-}
-
-// 失焦（change）自动保存（Task 20 draft-first）：空值/非法值不再静默丢弃——
-// 保留编辑态（输入值不动）并行内显示中文错误；合法值才提交保存。
-// commit 返回 { ok, error }（commitProviderPatch/commitModelPatch 形状），
-// 失败时行内回显错误（toast 由 commit 内部弹）。
-// Task 22（#11）：onEnter 开启时绑定 Enter——与失焦保存同一提交路径，使
-//「名称框回车保存」提示文案与真实行为一致（校验/行内错误行为完全相同）。
-// Task 22 审查（Important 1）：run() 内记 lastCommitted（提交前乐观置位，失败
-// 复位）——真实 DOM 在输入框被移除时派发挂起的 change（Enter 保存成功后
-// refresh 重建详情，被替换的输入框仍是焦点元素且带挂起 change），同值二次
-// 触发 run() 会重复 PATCH；同值跳过（含在途竞态与 Enter 连按）不丢新改动
-//（值变化后仍正常提交，失败后同值可重试）。
-function bindAutosave(input, { refs, fieldKey, validate = null, commit, onEnter = false }) {
-  let lastCommitted = null;
-  const run = async () => {
-    const value = input.value.trim();
-    if (value === lastCommitted) return;
-    const error = validate ? validate(value) : null;
-    if (error) {
-      showFieldError(refs, fieldKey, error);
-      return;
-    }
-    lastCommitted = value;
-    clearFieldError(refs, fieldKey);
-    const result = await commit(value);
-    if (result?.ok === false) {
-      lastCommitted = null; // 失败复位：同一值可重试
-      showFieldError(refs, fieldKey, result.error ?? "保存失败，请重试");
-    }
-  };
-  input.addEventListener("change", run);
-  if (onEnter) {
-    input.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter") return;
-      event.preventDefault();
-      void run();
-    });
-  }
-}
-
 const API_BASE = "/api/settings/providers";
 
 // 模块级纯函数：便于单测（页内 setDefaultModel 包装它做 res.ok 检查 + refresh + toast）。
@@ -123,6 +76,9 @@ export async function setDefaultModelImpl(fetchImpl, providerId, modelId) {
 
 export function createModelSettingsPage(ctx = {}) {
   const { fetchImpl = fetch, documentRef = document, onChanged = () => {}, showToast = () => {}, confirmImpl = globalThis.confirm } = ctx;
+  // Task 11（F6）：el 迁入 dom-kit 共享层；documentRef 为 ctx 注入（测试注 mock），
+  // 在此一行桥接，页面渲染调用点零改动。
+  const el = (tag, props, children) => domEl(tag, props, children, documentRef);
   let state = { providers: [], selected: null, default_model: null };
   // 当前渲染详情的草稿引用（renderDetail 每次重建；commitCurrentDraft 读取）。
   let activeDraftRefs = freshDraftRefs();
@@ -524,12 +480,6 @@ export function createModelSettingsPage(ctx = {}) {
     return { ok: true, provider, model };
   }
 
-  // 校验失败出口：行内回显中文错误并保留编辑态，返回 { ok: false } 中止后续动作。
-  function fieldError(refs, fieldKey, message) {
-    showFieldError(refs, fieldKey, message);
-    return { ok: false, error: message };
-  }
-
   // ---------------------------------------------------------------------------
   // v4（A4 实测记录）：模型分区 dirty 关闭保护——未失焦草稿 vs 保存态判定。
   //
@@ -565,22 +515,6 @@ export function createModelSettingsPage(ctx = {}) {
       }
     }
     return false;
-  }
-
-  function el(tag, props = {}, children = []) {
-    const node = documentRef.createElement(tag);
-    for (const [key, value] of Object.entries(props)) {
-      if (key === "text") node.textContent = value;
-      else if (key === "class") node.className = value;
-      else if (key === "value") node.value = value; // value 走 property 而非 setAttribute：保住用户已键入的值
-      else if (key === "disabled") node.disabled = Boolean(value); // 同 value 走 property：真 DOM 与测试 mock 均正确反映禁用态
-      else node.setAttribute(key, value);
-    }
-    for (const child of children) {
-      if (typeof child === "string") node.append(documentRef.createTextNode(child));
-      else if (child) node.append(child);
-    }
-    return node;
   }
 
   function renderList(container) {
