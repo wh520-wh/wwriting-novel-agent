@@ -1,6 +1,6 @@
 // Pure helpers for the model connection test feature.
 // Extracted into a separate module so they can be exercised in node:test
-// without pulling in DOM-bound code (gsap, settings-modal.js, etc.).
+// without pulling in DOM-bound code (settings-modal.js, etc.).
 
 // Translate a server `/api/settings/test-connection` payload into a single
 // user-facing status string. Pure: no DOM, no I/O.

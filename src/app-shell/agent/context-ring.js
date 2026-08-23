@@ -10,8 +10,8 @@
 // 可访问性：按钮 role=button + tabindex=0 + aria-expanded + aria-describedby；
 // 圆环用 SVG <circle> 的 stroke-dasharray 映射 ratio（不用 canvas）。
 // reduced-motion：判定方式与 motion-runtime.js 相同（matchMedia 缓存）；本模块
-// 不 import motion-runtime —— 其 gsap UMD 依赖全局 self，测试/SSR 环境没有该
-// 全局会直接抛错。命中 reduce 时圆环不加活性 class；popover 过渡由 CSS 媒体
+// 不 import motion-runtime —— 保持零依赖纯 DOM 模块（探测逻辑两处各 5 行，有意
+// 复制而非收编）。命中 reduce 时圆环不加活性 class；popover 过渡由 CSS 媒体
 // 查询降级为淡入或静态。
 const NS = "http://www.w3.org/2000/svg";
 const RING_RADIUS = 9;
