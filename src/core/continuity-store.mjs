@@ -1,7 +1,7 @@
 import { readJson, safeJoin, writeFileAtomic, writeJsonAtomic } from "./fs-utils.mjs";
 import { normalizeTimeField } from "./memory-extractor.mjs";
 
-export const CONTINUITY_SCHEMA_VERSION = 2;
+export const CONTINUITY_SCHEMA_VERSION = 3;
 export const MAX_FACTS_PER_ENTITY = 20;
 
 // 章号渲染兜底：chapter_no 为 null（如 chat 修订、模型漏填）时不再输出 "(第null章)"。
@@ -10,7 +10,7 @@ export function formatChapterRef(chapterNo) {
   return Number.isInteger(n) && n > 0 ? `第${n}章` : "未标章号";
 }
 
-const EMPTY = () => ({ schema_version: CONTINUITY_SCHEMA_VERSION, facts: [], timeline: [], characters: [] });
+const EMPTY = () => ({ schema_version: CONTINUITY_SCHEMA_VERSION, facts: [], timeline: [], characters: [], foreshadows: [] });
 
 function migrateTimelineNode(node) {
   const n = node && typeof node === "object" ? node : {};
@@ -28,7 +28,8 @@ export async function loadContinuity(projectRoot) {
     schema_version: CONTINUITY_SCHEMA_VERSION,
     facts: Array.isArray(data.facts) ? data.facts : [],
     timeline: (Array.isArray(data.timeline) ? data.timeline : []).map(migrateTimelineNode),
-    characters: Array.isArray(data.characters) ? data.characters : []
+    characters: Array.isArray(data.characters) ? data.characters : [],
+    foreshadows: Array.isArray(data.foreshadows) ? data.foreshadows : []
   };
 }
 
@@ -40,6 +41,7 @@ export async function saveContinuity(projectRoot, data) {
 
 export function mergeExtraction(base, extraction) {
   const next = { ...EMPTY(), ...structuredClone(base) };
+  next.schema_version = CONTINUITY_SCHEMA_VERSION;
   for (const fact of extraction.facts ?? []) {
     const same = next.facts.find((f) => f.entity === fact.entity && f.attribute === fact.attribute && f.value === fact.value);
     if (same) continue;
@@ -66,6 +68,25 @@ export function mergeExtraction(base, extraction) {
     } else {
       next.characters.push({ name: ch.name, traits: ch.traits ?? [], status: ch.status ?? "", chapter_no: ch.chapter_no ?? null });
     }
+  }
+  for (const fs of extraction.foreshadows ?? []) {
+    if (fs.status === "paid") {
+      const target = [...next.foreshadows].reverse().find((f) => f.status === "open" && f.content === fs.content);
+      if (target) {
+        target.status = "paid";
+        target.paid_chapter = fs.chapter_no ?? null;
+      }
+      continue;
+    }
+    const dup = next.foreshadows.find((f) => f.content === fs.content);
+    if (dup) continue;
+    next.foreshadows.push({
+      content: fs.content,
+      planted_chapter: fs.chapter_no ?? null,
+      expected_payoff_hint: fs.expected_payoff_hint ?? "",
+      status: "open",
+      paid_chapter: null
+    });
   }
   return next;
 }
@@ -104,6 +125,21 @@ export function renderContinuityMarkdown(data) {
   lines.push("", "## 角色");
   for (const c of data.characters) {
     lines.push(`- ${c.name}（${c.status || "状态未知"}）：${c.traits.join("、") || "无记录特征"}`);
+  }
+  lines.push("", "## 伏笔台账");
+  const foreshadows = Array.isArray(data.foreshadows) ? data.foreshadows : [];
+  const openOnes = foreshadows.filter((f) => f.status === "open")
+    .sort((a, b) => (a.planted_chapter ?? 0) - (b.planted_chapter ?? 0));
+  const paidOnes = foreshadows.filter((f) => f.status !== "open");
+  if (openOnes.length === 0 && paidOnes.length === 0) {
+    lines.push("- 无记录");
+  }
+  for (const f of openOnes) {
+    const hint = f.expected_payoff_hint ? `（回收提示：${f.expected_payoff_hint}）` : "";
+    lines.push(`- 【未收】${formatChapterRef(f.planted_chapter)}埋设：${f.content}${hint}`);
+  }
+  for (const f of paidOnes) {
+    lines.push(`- 【已收】${formatChapterRef(f.planted_chapter)}埋设 → ${formatChapterRef(f.paid_chapter)}回收：${f.content}`);
   }
   lines.push("");
   return lines.join("\n");
