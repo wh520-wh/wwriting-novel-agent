@@ -120,6 +120,43 @@ export function knowledgeToolDefinitions(h) {
         const result = await op({ projectRoot: context.projectRoot, chapterNo, extraction });
         return { ...(result ?? {}), chapter_no: chapterNo };
       }
+    },
+
+    read_continuity: {
+      interruptible: false,
+      description: "获取前情简报：近两章开头/落点摘录、相关设定精选（近 5 章事实/角色状态/时间线）与未回收伏笔（按埋设章排序）。动笔写任何章节之前必须先调用。传 entity 时返回该实体的完整事实档案；chapter_no 缺省为最新入账章节 + 1。",
+      schema: {
+        type: "object",
+        properties: {
+          chapter_no: { type: "integer", minimum: 1, description: "可选：当前目标章节号，缺省 = 最新入账章节 + 1" },
+          entity: { type: "string", description: "可选：按实体名查全量事实档案（与章节前情简报互斥）" }
+        },
+        additionalProperties: false
+      },
+      describeAction(args, context) {
+        return baseAction({
+          category: "read",
+          scope: "project",
+          targetClass: "project-root",
+          grantKey: "read:project:project-root",
+          title: "查询前情",
+          description: typeof args.entity === "string" && args.entity
+            ? redactor.redact(`实体：${args.entity}`)
+            : `第 ${args.chapter_no ?? "下一"} 章前情简报`,
+          targets: []
+        });
+      },
+      async run(args, context) {
+        const op = projectOperations?.readContinuityBriefing;
+        if (typeof op !== "function") {
+          throw toolError("not_wired", "工具不可用。", { rule: "not_wired", tool: "read_continuity" });
+        }
+        return op({
+          projectRoot: context.projectRoot,
+          chapterNo: Number.isInteger(args.chapter_no) ? args.chapter_no : null,
+          entity: typeof args.entity === "string" && args.entity.trim() !== "" ? args.entity.trim() : null
+        });
+      }
     }
   };
 }

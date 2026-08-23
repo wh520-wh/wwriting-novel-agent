@@ -43,6 +43,7 @@ import {
   updateMemoryFromExtraction,
   ProjectOperationError
 } from "../project-operations/chapter.mjs";
+import { readContinuityBriefing } from "../chapter-memory.mjs";
 import { codedError as fail } from "./agent-utils.mjs";
 // Task 8（F5b 第十五轮）：Run 收敛状态机（停止/优先切换/失败收束/循环推进与
 // 等待）拆到 run-lifecycle.mjs——经 createRunLifecycle(ctx) 以 getter 注入
@@ -149,7 +150,8 @@ export function createAgentRuntime({
         commitChapter: async (params, options) => withMemoryChecklist(await commitChapter(params, options)),
         finalizeChapter: async (params, options) => withMemoryChecklist(await finalizeChapter(params, options)),
         rollbackChapter: async (params, options) => withMemoryChecklist(await rollbackChapter(params, options)),
-        updateMemoryFromExtraction
+        updateMemoryFromExtraction,
+        readContinuityBriefing
       };
       state = {
         key,
