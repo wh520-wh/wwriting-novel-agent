@@ -21,6 +21,11 @@ import { createWorkState, reduceWorkEvent } from "./work-items.mjs";
 
 export const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
+// Task 14：连接类错误 code 单源——applyEventToState 入口清卡 filter 与
+// view.js isConnectionError 共用本集合，新增连接类 code 只改此处。
+// event_stream_fatal 当前无产出点，纯前瞻预留。
+export const CONNECTION_ERROR_CODES = new Set(["event_stream_error", "event_stream_fatal"]);
+
 // run_status_changed 的 session.status 镜像（与 journal.mjs RUN_STATUS_TO_SESSION 一致）。
 const RUN_STATUS_TO_SESSION = {
   running: "running",
@@ -259,7 +264,532 @@ function markRunNarration(state) {
   if (marked) bump(state, ["messages"]);
 }
 
+// ---------------------------------------------------------------------------
+// 事件 handler 表（Task 14：applyEventToState 的原 switch 拆表，行为零变化）
+// 键 = 事件类型（与核心 journal 事件名一一对应）；fall-through 复合 case 的
+// 多个类型共享同一 handler 函数（表键仍逐个登记，tests/app-shell/
+// state-handlers.test.mjs 逐键对账）。handler 签名统一
+// (state, payload, event, seq, key)：payload = event.payload ?? {}，seq/key 为
+// applyEventToState 归一化后的值；原地改 state，无返回值。未知事件类型无
+// handler，查表分发时跳过（等价原 switch 的 default: break）。
+// ---------------------------------------------------------------------------
+
+// --- 会话元数据 ---
+function handleSessionCreated(state, payload, event) {
+  state.sessionId = event.session_id ?? state.sessionId;
+}
+
+// --- 输入生命周期：队列与活动输入 ---
+function handleInputQueued(state, payload, event) {
+  // Task 11：queued 只出现在「接下来」区域，不提前渲染为正式对话气泡；
+  // input_started 才是用户文本进入对话/transcript 的唯一边界。
+  const inputId = payload.input_id ?? null;
+  const text = String(payload.text ?? "");
+  if (inputId != null) state.queuedTexts.set(inputId, text);
+  if (state.session && inputId != null) {
+    if (!Array.isArray(state.session.queued_inputs)) state.session.queued_inputs = [];
+    const queue = state.session.queued_inputs;
+    if (!queue.some((item) => item.id === inputId)) {
+      const item = { id: inputId, text, status: "queued", queued_at: payload.queued_at ?? event.at ?? null };
+      if (payload.kind === "compact") item.kind = "compact";
+      queue.push(item);
+    }
+  }
+  bump(state, ["queue"]);
+}
+
+function handleInputStarted(state, payload, event, seq, key) {
+  // 输入离开队列成为活动输入：此时才进入用户可见对话历史（文本取自
+  // input_queued 建立的 queuedTexts 索引；重建回放时同样由它取回）。
+  // 设计局限：正文只从已加载窗口（loadedEvents）的 input_queued 取回；若
+  // 该 input_queued 落在窗口之外（前置分页尚未加载的更早历史），started
+  // 事件到达时取不到文本，本分支不产生空气泡（text.length > 0 守卫）——
+  // 与「queued 只在窗口内可见」的投影口径一致，真实窗口内成对事件不受影响。
+  const inputId = payload.input_id ?? null;
+  const text = inputId != null ? (state.queuedTexts.get(inputId) ?? "") : "";
+  if (state.session && inputId != null) {
+    if (Array.isArray(state.session.queued_inputs)) {
+      state.session.queued_inputs = state.session.queued_inputs.filter((item) => item.id !== inputId);
+    }
+    // 匹配 priority 的 input_started 清除优先标记（SPEC 3.3：真正开始后恢复优先）
+    if (state.session.priority_input_id === inputId) state.session.priority_input_id = null;
+    const run = state.session.active_run;
+    if (run) run.active_input_id = inputId;
+  }
+  if (inputId != null) state.queuedTexts.delete(inputId);
+  if (text.length > 0) {
+    state.conversation.push({
+      role: "user",
+      text,
+      input_id: inputId,
+      seq,
+      event_key: key
+    });
+  }
+  bump(state, ["messages", "queue"]);
+}
+
+// input_completed / input_interrupted 复合共享块：活动输入的终态，只清空
+// active_input_id（Run 继续；queue 由 input_started 已移除）。
+// input_interrupted 是被优先输入截断，不等同于 Run 终结。
+function handleInputTerminal(state, payload) {
+  const run = state.session?.active_run;
+  const inputId = payload.input_id ?? null;
+  if (run && inputId != null && run.active_input_id === inputId) {
+    run.active_input_id = null;
+  }
+  bump(state, ["run"]);
+}
+
+// input_withdrawn / input_cancelled 复合共享块：撤回或由 Run 级取消终结的
+// 输入都从「接下来」移除，并清理优先标记。
+function handleInputWithdrawn(state, payload) {
+  const inputId = payload.input_id ?? null;
+  if (state.session && inputId != null) {
+    if (Array.isArray(state.session.queued_inputs)) {
+      state.session.queued_inputs = state.session.queued_inputs.filter((item) => item.id !== inputId);
+    }
+    if (state.session.priority_input_id === inputId) state.session.priority_input_id = null;
+  }
+  if (inputId != null) state.queuedTexts.delete(inputId);
+  bump(state, ["queue"]);
+}
+
+function handlePriorityInputRequested(state, payload) {
+  // 「立即」被接受：只设置 priority_input_id（不立即改写 active_input_id，
+  // 切换由安全点批次完成）。前端据此禁用其余「立即」并标出下一条目标。
+  const inputId = payload.input_id ?? null;
+  if (state.session && inputId != null) {
+    state.session.priority_input_id = inputId;
+  }
+  bump(state, ["queue"]);
+}
+
+// --- 对话正文：增量累积与定稿 ---
+function handleAssistantMessageDelta(state, payload, event) {
+  // 增量正文累积（按 run 维度单槽，不产生新 message 对象）：delta 到达即追加，
+  // 直到 assistant_message_completed 定稿。累积字段独立于服务端投影（快照会整体
+  // 替换 session.active_run），重连回放按 seq 去重追加，不与投影中的累积重复相加。
+  const delta = typeof payload.text === "string" ? payload.text : "";
+  if (delta.length === 0) return;
+  const runId = event.run_id ?? null;
+  if (!state.assistantStream || state.assistantStream.runId !== runId) {
+    state.assistantStream = { runId, text: "" };
+  }
+  state.assistantStream.text += delta;
+  bump(state, ["messages"]);
+}
+
+function handleAssistantMessageCompleted(state, payload, event, seq, key) {
+  // 终态对齐：completed 携带全文则以之为权威最终值，否则以 delta 累积值为准；
+  // 两者皆空（纯轮次标记）不产生气泡。
+  const accumulated = state.assistantStream?.text ?? "";
+  const finalText =
+    typeof payload.text === "string" && payload.text.length > 0
+      ? payload.text
+      : accumulated;
+  if (finalText.length > 0) {
+    state.conversation.push({
+      role: "assistant",
+      text: finalText,
+      input_id: payload.input_id ?? null,
+      seq,
+      event_key: key,
+      // Task 4：completed 携带 truncated 标记（核心按 finish_reason=length 判定），
+      // 投影到消息记录供 view 渲染截断提示；缺省视为完整输出。
+      truncated: payload.truncated === true
+    });
+    bump(state, ["messages"]);
+  }
+  state.assistantStream = null;
+}
+
+// --- Run 生命周期与运行中交互：状态迁移、中断、计划、模型回合、决策 ---
+function handleRunStarted(state, payload, event, seq) {
+  state.runConversationStart = state.conversation.length;
+  if (!state.session) {
+    state.session = {
+      schema_version: 1,
+      session_id: state.sessionId,
+      project_root: state.projectRoot,
+      status: "running",
+      active_run: null,
+      queued_inputs: [],
+      last_seq: 0,
+      updated_at: event.at ?? null
+    };
+  }
+  const existing = state.session.active_run;
+  if (existing && existing.id === event.run_id) {
+    // retry：恢复同一可恢复 Run（保留 started_at）
+    existing.status = "running";
+    state.session.status = "running";
+  } else {
+    state.session.active_run = {
+      id: event.run_id ?? null,
+      status: "running",
+      active_input_id: payload.input_id ?? null,
+      active_grants: [],
+      started_at: event.at ?? null
+    };
+    state.session.status = "running";
+  }
+  activateInput(state, payload.input_id ?? null);
+  state.errors = [];
+  // 新 Run（或重试恢复）从零累积正文增量：先定稿上一轮残留的流式正文
+  // （retry 不再静默删除半截输出）。
+  finalizeAssistantStream(state, seq);
+  bump(state, ["run", "queue", "decisions", "errors"]);
+}
+
+function handleRunStatusChanged(state, payload, event, seq) {
+  const run = state.session?.active_run;
+  if (!run) return;
+  run.status = payload.status ?? run.status;
+  // 与 journal 的 RUN_STATUS_TO_SESSION 一致：终态镜像为 idle，中间态原样。
+  state.session.status = RUN_STATUS_TO_SESSION[run.status] ?? "running";
+  if (TERMINAL_RUN_STATUSES.has(run.status)) run.active_input_id = null;
+  // F1：等待用户决策或终态时正文已停——定稿残留流式文本（终态防御：
+  // targetTerminal 分支允许 run_status_changed 携带终态 status，历史日志/
+  // 恢复重放若走此路径同样收敛，不违反「终态无残留流式」不变量）。
+  if (run.status === "waiting_user" || TERMINAL_RUN_STATUSES.has(run.status)) {
+    finalizeAssistantStream(state, seq);
+  }
+  // N2 对称：run_status_changed 终态兜底路径也标 narration（与 F1 定稿对称；
+  // waiting_user 非终态必须跳过——不要在这里对 waiting_user 调
+  // markRunNarration，等待用户不是 Run 结束）。
+  if (TERMINAL_RUN_STATUSES.has(run.status)) markRunNarration(state);
+  bump(state, ["run"]);
+}
+
+function handleInterruptRequested(state) {
+  const run = state.session?.active_run;
+  if (run) {
+    run.status = "interrupting";
+    state.session.status = "interrupting";
+    bump(state, ["run"]);
+  }
+}
+
+function handleInterruptSafePointReached(state) {
+  const run = state.session?.active_run;
+  if (run && run.status === "interrupting") {
+    run.status = "running";
+    state.session.status = "running";
+    bump(state, ["run"]);
+  }
+}
+
+function handlePlanUpdated(state, payload) {
+  // 第十二轮 F11：顶层 plan 投影（唯一源）不再依赖 active_run 在场（尾页窗口
+  // run_started 不在加载窗口时，chip 与组内 plan 三面口径一致）。旧的
+  // run.visible_plan 白名单镜像轨无渲染消费已删除（getVisiblePlan 无消费点，
+  // F11 审查收敛单轨；同源形状仍见核心 journal.mjs）。
+  if (Array.isArray(payload.items)) {
+    const planItems = structuredClone(payload.items);
+    state.plan = planItems.length === 0
+      ? null
+      : { explanation: typeof payload.explanation === "string" ? payload.explanation : null, items: planItems };
+    bump(state, ["plan"]);
+  }
+}
+
+function handleModelTurnStarted(state) {
+  // 未闭合 model turn 的追踪已由 thinking 计数迁移到 work 投影（Task 5）：
+  // legacy 开放 turn 由 reduceWorkEvent 在 work 组的 legacyOpenTurns 计数。
+  // 此处仅清槽、不定稿：turn 边界即新回合开始，残留 delta（若有）属于上一
+  // 回合，已由上一回合的终态/waiting_user 定稿或随后的 run_started 处理；
+  // 正常序列里本事件之前不会有未闭合 delta，故清空即可，不重复定稿。
+  state.assistantStream = null;
+  if (state.session?.active_run) state.session.active_run.assistant_text = null;
+  bump(state, ["run", "messages"]);
+}
+
+function handleModelTurnCompleted(state) {
+  // thinking 计数已删除；v1 legacy turn 的闭合由 reduceWorkEvent 处理。
+  bump(state, ["run"]);
+}
+
+function handleDecisionRequested(state, payload, event, seq) {
+  const decisionId = payload.decision_id ?? null;
+  if (decisionId == null) return;
+  state.decisions.set(decisionId, {
+    decision_id: decisionId,
+    activity_id: payload.activity_id ?? null,
+    input_id: payload.input_id ?? null,
+    run_id: event.run_id ?? null,
+    name: payload.name ?? null,
+    kind: payload.kind === "extreme" ? "extreme" : "normal",
+    title: payload.title ?? payload.name ?? "确认操作",
+    description: payload.description ?? null,
+    confirmation_text: payload.confirmation_text ?? null,
+    status: "pending",
+    choice: null,
+    seq
+  });
+  bump(state, ["decisions"]);
+}
+
+function handleDecisionResolved(state, payload) {
+  const decision = state.decisions.get(payload.decision_id ?? null);
+  if (!decision) return;
+  decision.status = "settled";
+  decision.choice = payload.choice ?? null;
+  bump(state, ["decisions"]);
+}
+
+// --- Run 终结与错误卡（connection_error 按原 switch 顺序机械保留在此组） ---
+function handleRunFailed(state, payload, event, seq) {
+  state.errors.push({
+    seq,
+    run_id: event.run_id ?? null,
+    message: typeof payload.error === "string" ? payload.error : "操作失败。",
+    code: payload.code ?? "model_error"
+  });
+  // F1：失败也是终态——先把流式正文定稿为 interrupted 气泡，再清空流槽。
+  finalizeAssistantStream(state, seq);
+  // 第十二轮 N2：终态标记本 Run 内非最终 assistant 消息为 narration。
+  markRunNarration(state);
+  const run = state.session?.active_run;
+  if (run) {
+    run.status = "failed";
+    run.active_input_id = null;
+    state.session.status = "idle";
+  }
+  bump(state, ["run", "errors"]);
+}
+
+function handleConnectionError(state, payload, event, seq) {
+  // 连续 error 帧不再叠加多张卡，同 code 只留一张可更新的卡（F5 清卡语义的
+  // 一半：去重；另一半=非连接事件到达即清，见 applyEventToState 入口过滤）。
+  const code = payload.code ?? "event_stream_error";
+  const err = {
+    seq,
+    run_id: null,
+    message: typeof payload.message === "string" ? payload.message : "事件流连接失败。",
+    code
+  };
+  const idx = state.errors.findIndex((e) => e.code === code);
+  if (idx >= 0) state.errors[idx] = err;
+  else state.errors.push(err);
+  bump(state, ["errors"]);
+}
+
+function handleRunCompleted(state, payload, event, seq) {
+  // F1：终态定稿——即使没收到 assistant_message_completed，流式正文也不残留。
+  finalizeAssistantStream(state, seq);
+  // 第十二轮 N2：终态标记本 Run 内非最终 assistant 消息为 narration。
+  markRunNarration(state);
+  const run = state.session?.active_run;
+  if (run) {
+    run.status = "completed";
+    run.active_input_id = null;
+    state.session.status = "idle";
+  }
+  bump(state, ["run"]);
+}
+
+function handleRunCancelled(state, payload, event, seq) {
+  // F1：取消同样定稿残留正文（interrupted 标记，非静默删除）。
+  finalizeAssistantStream(state, seq);
+  // 第十二轮 N2：终态标记本 Run 内非最终 assistant 消息为 narration。
+  markRunNarration(state);
+  const run = state.session?.active_run;
+  if (run) {
+    run.status = "cancelled";
+    run.active_input_id = null;
+    state.session.status = "idle";
+  }
+  bump(state, ["run"]);
+}
+
+function handleRunInterrupted(state, payload, event, seq) {
+  // F1：中断即终态——把半截正文定稿为 interrupted 气泡。
+  finalizeAssistantStream(state, seq);
+  // 第十二轮 N2：终态标记本 Run 内非最终 assistant 消息为 narration。
+  markRunNarration(state);
+  const run = state.session?.active_run;
+  if (run) {
+    run.status = "interrupted";
+    run.active_input_id = null;
+    state.session.status = "idle";
+  }
+  bump(state, ["run"]);
+}
+
+// ---- 上下文用量与压缩投影（Task 11 Step 3，镜像核心语义） --------------
+// context_usage_updated 只更新 contextUsage 并 bump context revision；
+// 7 个压缩事件更新 compaction 单槽投影并 upsert 对应 compaction_id 的状态行
+//（保留 seq 与 compaction_id；终态后状态行仍留在时间线，由 compactionRows 承载）。
+
+function handleContextUsageUpdated(state, payload) {
+  const usage = payload.usage;
+  if (usage !== null && typeof usage === "object" && !Array.isArray(usage)) {
+    state.contextUsage = structuredClone(usage);
+    bump(state, ["context"]);
+  }
+}
+
+function handleContextCompactionStarted(state, payload, event, seq, key) {
+  const compactionId = payload.compaction_id ?? null;
+  if (compactionId == null) return;
+  state.compaction = {
+    id: compactionId,
+    trigger: payload.trigger === "manual" ? "manual" : "automatic",
+    state: "started",
+    attempt: payload.attempt ?? 1,
+    source_checkpoint_id: payload.source_checkpoint_id ?? null,
+    checkpoint_id: payload.checkpoint_id ?? null,
+    pending_input_id: payload.pending_input_id ?? null,
+    error_code: null,
+    started_at: payload.started_at ?? event.at ?? null,
+    updated_at: event.at ?? null
+  };
+  upsertCompactionRow(state, compactionId, seq, key, "started", state.compaction);
+  bump(state, ["context"]);
+}
+
+// context_compaction_running / context_compaction_cancel_requested 复合共享块：
+// 按事件类型区分进入态（running/cancelling）。
+function handleContextCompactionRunning(state, payload, event, seq, key) {
+  const compactionId = payload.compaction_id ?? null;
+  if (compactionId == null) return;
+  const nextState = event.type === "context_compaction_running" ? "running" : "cancelling";
+  if (state.compaction && state.compaction.id === compactionId) {
+    state.compaction.state = nextState;
+    state.compaction.error_code = null;
+    state.compaction.updated_at = event.at ?? null;
+  } else {
+    // 防御：running/cancelling 前缺 started（如手工构造日志）——从 payload
+    // 补投影，避免投影形状缺失（与核心 journal reducer 行为一致）。
+    state.compaction = {
+      id: compactionId,
+      trigger: payload.trigger === "manual" ? "manual" : "automatic",
+      state: nextState,
+      attempt: payload.attempt ?? 1,
+      source_checkpoint_id: payload.source_checkpoint_id ?? null,
+      checkpoint_id: payload.checkpoint_id ?? null,
+      pending_input_id: payload.pending_input_id ?? null,
+      error_code: null,
+      started_at: payload.started_at ?? event.at ?? null,
+      updated_at: event.at ?? null
+    };
+  }
+  upsertCompactionRow(state, compactionId, seq, key, nextState, state.compaction);
+  bump(state, ["context"]);
+}
+
+function handleContextCompactionCompleted(state, payload, event, seq, key) {
+  const compactionId = payload.compaction_id ?? null;
+  if (compactionId == null) return;
+  const prev = state.compaction && state.compaction.id === compactionId ? state.compaction : null;
+  state.compaction = {
+    id: compactionId,
+    trigger: prev?.trigger ?? (payload.trigger === "manual" ? "manual" : "automatic"),
+    state: "completed",
+    attempt: payload.attempt ?? prev?.attempt ?? 1,
+    source_checkpoint_id: prev?.source_checkpoint_id ?? payload.source_checkpoint_id ?? null,
+    checkpoint_id: payload.checkpoint_id ?? null,
+    pending_input_id: prev?.pending_input_id ?? payload.pending_input_id ?? null,
+    error_code: null,
+    started_at: prev?.started_at ?? payload.started_at ?? event.at ?? null,
+    updated_at: event.at ?? null
+  };
+  upsertCompactionRow(state, compactionId, seq, key, "completed", state.compaction);
+  bump(state, ["context"]);
+}
+
+// context_compaction_failed / context_compaction_cancelled 复合共享块：
+// 按事件类型区分终态（failed/cancelled，error_code 透传）。
+function handleContextCompactionFailed(state, payload, event, seq, key) {
+  const compactionId = payload.compaction_id ?? null;
+  if (compactionId == null) return;
+  const prev = state.compaction && state.compaction.id === compactionId ? state.compaction : null;
+  const nextState = event.type === "context_compaction_failed" ? "failed" : "cancelled";
+  state.compaction = {
+    id: compactionId,
+    trigger: prev?.trigger ?? (payload.trigger === "manual" ? "manual" : "automatic"),
+    state: nextState,
+    attempt: payload.attempt ?? prev?.attempt ?? 1,
+    source_checkpoint_id: prev?.source_checkpoint_id ?? payload.source_checkpoint_id ?? null,
+    checkpoint_id: prev?.checkpoint_id ?? payload.checkpoint_id ?? null,
+    pending_input_id: prev?.pending_input_id ?? payload.pending_input_id ?? null,
+    error_code: payload.error_code ?? null,
+    started_at: prev?.started_at ?? payload.started_at ?? event.at ?? null,
+    updated_at: event.at ?? null
+  };
+  upsertCompactionRow(state, compactionId, seq, key, nextState, state.compaction);
+  bump(state, ["context"]);
+}
+
+function handleContextCompactionNoop(state, payload, event, seq, key) {
+  const compactionId = payload.compaction_id ?? null;
+  if (compactionId == null) return;
+  state.compaction = {
+    id: compactionId,
+    trigger: payload.trigger === "manual" ? "manual" : "automatic",
+    state: "noop",
+    attempt: payload.attempt ?? 1,
+    source_checkpoint_id: null,
+    checkpoint_id: null,
+    pending_input_id: null,
+    error_code: null,
+    started_at: event.at ?? null,
+    updated_at: event.at ?? null
+  };
+  upsertCompactionRow(state, compactionId, seq, key, "noop", state.compaction);
+  bump(state, ["context"]);
+}
+
+// chapter_rolled_back / memory_file_restored 复合共享块：系统通知行
+//（第九轮：→ timeline）。不进入派生 UI 状态的事件（许可/审计/领域类）。
+function handleSystemNotice(state, payload, event, seq) {
+  if (!Array.isArray(state.systemNotices)) state.systemNotices = [];
+  state.systemNotices.push({ seq, type: event.type, payload: structuredClone(payload) });
+  bump(state, ["notices"]);
+}
+
+// 事件类型 → handler 分发表（export 供 tests/app-shell/state-handlers.test.mjs
+// 对账：键数与 known 事件类型全集相等）。
+export const EVENT_HANDLERS = {
+  session_created: handleSessionCreated,
+  input_queued: handleInputQueued,
+  input_started: handleInputStarted,
+  input_completed: handleInputTerminal,
+  input_interrupted: handleInputTerminal,
+  input_withdrawn: handleInputWithdrawn,
+  input_cancelled: handleInputWithdrawn,
+  priority_input_requested: handlePriorityInputRequested,
+  assistant_message_delta: handleAssistantMessageDelta,
+  assistant_message_completed: handleAssistantMessageCompleted,
+  run_started: handleRunStarted,
+  run_status_changed: handleRunStatusChanged,
+  interrupt_requested: handleInterruptRequested,
+  interrupt_safe_point_reached: handleInterruptSafePointReached,
+  plan_updated: handlePlanUpdated,
+  model_turn_started: handleModelTurnStarted,
+  model_turn_completed: handleModelTurnCompleted,
+  decision_requested: handleDecisionRequested,
+  decision_resolved: handleDecisionResolved,
+  run_failed: handleRunFailed,
+  connection_error: handleConnectionError,
+  run_completed: handleRunCompleted,
+  run_cancelled: handleRunCancelled,
+  run_interrupted: handleRunInterrupted,
+  context_usage_updated: handleContextUsageUpdated,
+  context_compaction_started: handleContextCompactionStarted,
+  context_compaction_running: handleContextCompactionRunning,
+  context_compaction_cancel_requested: handleContextCompactionRunning,
+  context_compaction_completed: handleContextCompactionCompleted,
+  context_compaction_failed: handleContextCompactionFailed,
+  context_compaction_cancelled: handleContextCompactionFailed,
+  context_compaction_noop: handleContextCompactionNoop,
+  chapter_rolled_back: handleSystemNotice,
+  memory_file_restored: handleSystemNotice
+};
+
 // 单条事件的派生应用：增量 fast path 与 rebuildDerivedState 共用同一实现。
+// Task 14 表化：连接清卡前置 + 查表分发，行为与 switch 版本等价。
 function applyEventToState(state, event) {
   const type = event.type;
   const payload = event.payload ?? {};
@@ -274,487 +804,14 @@ function applyEventToState(state, event) {
   // 连接类卡生效（filter 不碰 run_failed 等操作失败卡，不受其长度干扰）；
   // rebuildDerivedState 重放时 errors 恒空（重建前重置），filter 空跑不 bump，
   // :786 兜底不变；无性能放大。
-  // 连接类 code 集合与 view.js isConnectionError 处同步，新增连接类 code 需两处
-  // 同改；event_stream_fatal 当前无产出点，纯前瞻预留。
+  // Task 14：连接类 code 单源 = CONNECTION_ERROR_CODES（本文件上方），
+  // view.js isConnectionError 消费同一集合，新增连接类 code 只改一处。
   if (type !== "connection_error") {
     const before = state.errors.length;
-    state.errors = state.errors.filter(
-      (e) => e.code !== "event_stream_error" && e.code !== "event_stream_fatal"
-    );
+    state.errors = state.errors.filter((e) => !CONNECTION_ERROR_CODES.has(e.code));
     if (state.errors.length < before) bump(state, ["errors"]);
   }
-  switch (type) {
-    case "session_created": {
-      state.sessionId = event.session_id ?? state.sessionId;
-      break;
-    }
-    case "input_queued": {
-      // Task 11：queued 只出现在「接下来」区域，不提前渲染为正式对话气泡；
-      // input_started 才是用户文本进入对话/transcript 的唯一边界。
-      const inputId = payload.input_id ?? null;
-      const text = String(payload.text ?? "");
-      if (inputId != null) state.queuedTexts.set(inputId, text);
-      if (state.session && inputId != null) {
-        if (!Array.isArray(state.session.queued_inputs)) state.session.queued_inputs = [];
-        const queue = state.session.queued_inputs;
-        if (!queue.some((item) => item.id === inputId)) {
-          const item = { id: inputId, text, status: "queued", queued_at: payload.queued_at ?? event.at ?? null };
-          if (payload.kind === "compact") item.kind = "compact";
-          queue.push(item);
-        }
-      }
-      bump(state, ["queue"]);
-      break;
-    }
-    case "input_started": {
-      // 输入离开队列成为活动输入：此时才进入用户可见对话历史（文本取自
-      // input_queued 建立的 queuedTexts 索引；重建回放时同样由它取回）。
-      // 设计局限：正文只从已加载窗口（loadedEvents）的 input_queued 取回；若
-      // 该 input_queued 落在窗口之外（前置分页尚未加载的更早历史），started
-      // 事件到达时取不到文本，本分支不产生空气泡（text.length > 0 守卫）——
-      // 与「queued 只在窗口内可见」的投影口径一致，真实窗口内成对事件不受影响。
-      const inputId = payload.input_id ?? null;
-      const text = inputId != null ? (state.queuedTexts.get(inputId) ?? "") : "";
-      if (state.session && inputId != null) {
-        if (Array.isArray(state.session.queued_inputs)) {
-          state.session.queued_inputs = state.session.queued_inputs.filter((item) => item.id !== inputId);
-        }
-        // 匹配 priority 的 input_started 清除优先标记（SPEC 3.3：真正开始后恢复优先）
-        if (state.session.priority_input_id === inputId) state.session.priority_input_id = null;
-        const run = state.session.active_run;
-        if (run) run.active_input_id = inputId;
-      }
-      if (inputId != null) state.queuedTexts.delete(inputId);
-      if (text.length > 0) {
-        state.conversation.push({
-          role: "user",
-          text,
-          input_id: inputId,
-          seq,
-          event_key: key
-        });
-      }
-      bump(state, ["messages", "queue"]);
-      break;
-    }
-    case "input_completed":
-    case "input_interrupted": {
-      // 活动输入的终态：只清空 active_input_id（Run 继续；queue 由 input_started
-      // 已移除）。input_interrupted 是被优先输入截断，不等同于 Run 终结。
-      const run = state.session?.active_run;
-      const inputId = payload.input_id ?? null;
-      if (run && inputId != null && run.active_input_id === inputId) {
-        run.active_input_id = null;
-      }
-      bump(state, ["run"]);
-      break;
-    }
-    case "input_withdrawn":
-    case "input_cancelled": {
-      // 撤回或由 Run 级取消终结的输入都从「接下来」移除，并清理优先标记。
-      const inputId = payload.input_id ?? null;
-      if (state.session && inputId != null) {
-        if (Array.isArray(state.session.queued_inputs)) {
-          state.session.queued_inputs = state.session.queued_inputs.filter((item) => item.id !== inputId);
-        }
-        if (state.session.priority_input_id === inputId) state.session.priority_input_id = null;
-      }
-      if (inputId != null) state.queuedTexts.delete(inputId);
-      bump(state, ["queue"]);
-      break;
-    }
-    case "priority_input_requested": {
-      // 「立即」被接受：只设置 priority_input_id（不立即改写 active_input_id，
-      // 切换由安全点批次完成）。前端据此禁用其余「立即」并标出下一条目标。
-      const inputId = payload.input_id ?? null;
-      if (state.session && inputId != null) {
-        state.session.priority_input_id = inputId;
-      }
-      bump(state, ["queue"]);
-      break;
-    }
-    case "assistant_message_delta": {
-      // 增量正文累积（按 run 维度单槽，不产生新 message 对象）：delta 到达即追加，
-      // 直到 assistant_message_completed 定稿。累积字段独立于服务端投影（快照会整体
-      // 替换 session.active_run），重连回放按 seq 去重追加，不与投影中的累积重复相加。
-      const delta = typeof payload.text === "string" ? payload.text : "";
-      if (delta.length === 0) break;
-      const runId = event.run_id ?? null;
-      if (!state.assistantStream || state.assistantStream.runId !== runId) {
-        state.assistantStream = { runId, text: "" };
-      }
-      state.assistantStream.text += delta;
-      bump(state, ["messages"]);
-      break;
-    }
-    case "assistant_message_completed": {
-      // 终态对齐：completed 携带全文则以之为权威最终值，否则以 delta 累积值为准；
-      // 两者皆空（纯轮次标记）不产生气泡。
-      const accumulated = state.assistantStream?.text ?? "";
-      const finalText =
-        typeof payload.text === "string" && payload.text.length > 0
-          ? payload.text
-          : accumulated;
-      if (finalText.length > 0) {
-        state.conversation.push({
-          role: "assistant",
-          text: finalText,
-          input_id: payload.input_id ?? null,
-          seq,
-          event_key: key,
-          // Task 4：completed 携带 truncated 标记（核心按 finish_reason=length 判定），
-          // 投影到消息记录供 view 渲染截断提示；缺省视为完整输出。
-          truncated: payload.truncated === true
-        });
-        bump(state, ["messages"]);
-      }
-      state.assistantStream = null;
-      break;
-    }
-    case "run_started": {
-      state.runConversationStart = state.conversation.length;
-      if (!state.session) {
-        state.session = {
-          schema_version: 1,
-          session_id: state.sessionId,
-          project_root: state.projectRoot,
-          status: "running",
-          active_run: null,
-          queued_inputs: [],
-          last_seq: 0,
-          updated_at: event.at ?? null
-        };
-      }
-      const existing = state.session.active_run;
-      if (existing && existing.id === event.run_id) {
-        // retry：恢复同一可恢复 Run（保留 started_at）
-        existing.status = "running";
-        state.session.status = "running";
-      } else {
-        state.session.active_run = {
-          id: event.run_id ?? null,
-          status: "running",
-          active_input_id: payload.input_id ?? null,
-          active_grants: [],
-          started_at: event.at ?? null
-        };
-        state.session.status = "running";
-      }
-      activateInput(state, payload.input_id ?? null);
-      state.errors = [];
-      // 新 Run（或重试恢复）从零累积正文增量：先定稿上一轮残留的流式正文
-      // （retry 不再静默删除半截输出）。
-      finalizeAssistantStream(state, seq);
-      bump(state, ["run", "queue", "decisions", "errors"]);
-      break;
-    }
-    case "run_status_changed": {
-      const run = state.session?.active_run;
-      if (!run) break;
-      run.status = payload.status ?? run.status;
-      // 与 journal 的 RUN_STATUS_TO_SESSION 一致：终态镜像为 idle，中间态原样。
-      state.session.status = RUN_STATUS_TO_SESSION[run.status] ?? "running";
-      if (TERMINAL_RUN_STATUSES.has(run.status)) run.active_input_id = null;
-      // F1：等待用户决策或终态时正文已停——定稿残留流式文本（终态防御：
-      // targetTerminal 分支允许 run_status_changed 携带终态 status，历史日志/
-      // 恢复重放若走此路径同样收敛，不违反「终态无残留流式」不变量）。
-      if (run.status === "waiting_user" || TERMINAL_RUN_STATUSES.has(run.status)) {
-        finalizeAssistantStream(state, seq);
-      }
-      // N2 对称：run_status_changed 终态兜底路径也标 narration（与 F1 定稿对称；
-      // waiting_user 非终态必须跳过——不要在这里对 waiting_user 调
-      // markRunNarration，等待用户不是 Run 结束）。
-      if (TERMINAL_RUN_STATUSES.has(run.status)) markRunNarration(state);
-      bump(state, ["run"]);
-      break;
-    }
-    case "interrupt_requested": {
-      const run = state.session?.active_run;
-      if (run) {
-        run.status = "interrupting";
-        state.session.status = "interrupting";
-        bump(state, ["run"]);
-      }
-      break;
-    }
-    case "interrupt_safe_point_reached": {
-      const run = state.session?.active_run;
-      if (run && run.status === "interrupting") {
-        run.status = "running";
-        state.session.status = "running";
-        bump(state, ["run"]);
-      }
-      break;
-    }
-    case "plan_updated": {
-      // 第十二轮 F11：顶层 plan 投影（唯一源）不再依赖 active_run 在场（尾页窗口
-      // run_started 不在加载窗口时，chip 与组内 plan 三面口径一致）。旧的
-      // run.visible_plan 白名单镜像轨无渲染消费已删除（getVisiblePlan 无消费点，
-      // F11 审查收敛单轨；同源形状仍见核心 journal.mjs）。
-      if (Array.isArray(payload.items)) {
-        const planItems = structuredClone(payload.items);
-        state.plan = planItems.length === 0
-          ? null
-          : { explanation: typeof payload.explanation === "string" ? payload.explanation : null, items: planItems };
-        bump(state, ["plan"]);
-      }
-      break;
-    }
-    case "model_turn_started": {
-      // 未闭合 model turn 的追踪已由 thinking 计数迁移到 work 投影（Task 5）：
-      // legacy 开放 turn 由 reduceWorkEvent 在 work 组的 legacyOpenTurns 计数。
-      // 此处仅清槽、不定稿：turn 边界即新回合开始，残留 delta（若有）属于上一
-      // 回合，已由上一回合的终态/waiting_user 定稿或随后的 run_started 处理；
-      // 正常序列里本事件之前不会有未闭合 delta，故清空即可，不重复定稿。
-      state.assistantStream = null;
-      if (state.session?.active_run) state.session.active_run.assistant_text = null;
-      bump(state, ["run", "messages"]);
-      break;
-    }
-    case "model_turn_completed": {
-      // thinking 计数已删除；v1 legacy turn 的闭合由 reduceWorkEvent 处理。
-      bump(state, ["run"]);
-      break;
-    }
-    case "decision_requested": {
-      const decisionId = payload.decision_id ?? null;
-      if (decisionId == null) break;
-      state.decisions.set(decisionId, {
-        decision_id: decisionId,
-        activity_id: payload.activity_id ?? null,
-        input_id: payload.input_id ?? null,
-        run_id: event.run_id ?? null,
-        name: payload.name ?? null,
-        kind: payload.kind === "extreme" ? "extreme" : "normal",
-        title: payload.title ?? payload.name ?? "确认操作",
-        description: payload.description ?? null,
-        confirmation_text: payload.confirmation_text ?? null,
-        status: "pending",
-        choice: null,
-        seq
-      });
-      bump(state, ["decisions"]);
-      break;
-    }
-    case "decision_resolved": {
-      const decision = state.decisions.get(payload.decision_id ?? null);
-      if (!decision) break;
-      decision.status = "settled";
-      decision.choice = payload.choice ?? null;
-      bump(state, ["decisions"]);
-      break;
-    }
-    case "run_failed": {
-      state.errors.push({
-        seq,
-        run_id: event.run_id ?? null,
-        message: typeof payload.error === "string" ? payload.error : "操作失败。",
-        code: payload.code ?? "model_error"
-      });
-      // F1：失败也是终态——先把流式正文定稿为 interrupted 气泡，再清空流槽。
-      finalizeAssistantStream(state, seq);
-      // 第十二轮 N2：终态标记本 Run 内非最终 assistant 消息为 narration。
-      markRunNarration(state);
-      const run = state.session?.active_run;
-      if (run) {
-        run.status = "failed";
-        run.active_input_id = null;
-        state.session.status = "idle";
-      }
-      bump(state, ["run", "errors"]);
-      break;
-    }
-    case "connection_error": {
-      // 连续 error 帧不再叠加多张卡，同 code 只留一张可更新的卡（F5 清卡语义的
-      // 一半：去重；另一半=非连接事件到达即清，见入口过滤）。
-      const code = payload.code ?? "event_stream_error";
-      const err = {
-        seq,
-        run_id: null,
-        message: typeof payload.message === "string" ? payload.message : "事件流连接失败。",
-        code
-      };
-      const idx = state.errors.findIndex((e) => e.code === code);
-      if (idx >= 0) state.errors[idx] = err;
-      else state.errors.push(err);
-      bump(state, ["errors"]);
-      break;
-    }
-    case "run_completed": {
-      // F1：终态定稿——即使没收到 assistant_message_completed，流式正文也不残留。
-      finalizeAssistantStream(state, seq);
-      // 第十二轮 N2：终态标记本 Run 内非最终 assistant 消息为 narration。
-      markRunNarration(state);
-      const run = state.session?.active_run;
-      if (run) {
-        run.status = "completed";
-        run.active_input_id = null;
-        state.session.status = "idle";
-      }
-      bump(state, ["run"]);
-      break;
-    }
-    case "run_cancelled": {
-      // F1：取消同样定稿残留正文（interrupted 标记，非静默删除）。
-      finalizeAssistantStream(state, seq);
-      // 第十二轮 N2：终态标记本 Run 内非最终 assistant 消息为 narration。
-      markRunNarration(state);
-      const run = state.session?.active_run;
-      if (run) {
-        run.status = "cancelled";
-        run.active_input_id = null;
-        state.session.status = "idle";
-      }
-      bump(state, ["run"]);
-      break;
-    }
-    case "run_interrupted": {
-      // F1：中断即终态——把半截正文定稿为 interrupted 气泡。
-      finalizeAssistantStream(state, seq);
-      // 第十二轮 N2：终态标记本 Run 内非最终 assistant 消息为 narration。
-      markRunNarration(state);
-      const run = state.session?.active_run;
-      if (run) {
-        run.status = "interrupted";
-        run.active_input_id = null;
-        state.session.status = "idle";
-      }
-      bump(state, ["run"]);
-      break;
-    }
-    // ---- 上下文用量与压缩投影（Task 11 Step 3，镜像核心语义） --------------
-    // context_usage_updated 只更新 contextUsage 并 bump context revision；
-    // 7 个压缩事件更新 compaction 单槽投影并 upsert 对应 compaction_id 的状态行
-    //（保留 seq 与 compaction_id；终态后状态行仍留在时间线，由 compactionRows 承载）。
-    case "context_usage_updated": {
-      const usage = payload.usage;
-      if (usage !== null && typeof usage === "object" && !Array.isArray(usage)) {
-        state.contextUsage = structuredClone(usage);
-        bump(state, ["context"]);
-      }
-      break;
-    }
-    case "context_compaction_started": {
-      const compactionId = payload.compaction_id ?? null;
-      if (compactionId == null) break;
-      state.compaction = {
-        id: compactionId,
-        trigger: payload.trigger === "manual" ? "manual" : "automatic",
-        state: "started",
-        attempt: payload.attempt ?? 1,
-        source_checkpoint_id: payload.source_checkpoint_id ?? null,
-        checkpoint_id: payload.checkpoint_id ?? null,
-        pending_input_id: payload.pending_input_id ?? null,
-        error_code: null,
-        started_at: payload.started_at ?? event.at ?? null,
-        updated_at: event.at ?? null
-      };
-      upsertCompactionRow(state, compactionId, seq, key, "started", state.compaction);
-      bump(state, ["context"]);
-      break;
-    }
-    case "context_compaction_running":
-    case "context_compaction_cancel_requested": {
-      const compactionId = payload.compaction_id ?? null;
-      if (compactionId == null) break;
-      const nextState = type === "context_compaction_running" ? "running" : "cancelling";
-      if (state.compaction && state.compaction.id === compactionId) {
-        state.compaction.state = nextState;
-        state.compaction.error_code = null;
-        state.compaction.updated_at = event.at ?? null;
-      } else {
-        // 防御：running/cancelling 前缺 started（如手工构造日志）——从 payload
-        // 补投影，避免投影形状缺失（与核心 journal reducer 行为一致）。
-        state.compaction = {
-          id: compactionId,
-          trigger: payload.trigger === "manual" ? "manual" : "automatic",
-          state: nextState,
-          attempt: payload.attempt ?? 1,
-          source_checkpoint_id: payload.source_checkpoint_id ?? null,
-          checkpoint_id: payload.checkpoint_id ?? null,
-          pending_input_id: payload.pending_input_id ?? null,
-          error_code: null,
-          started_at: payload.started_at ?? event.at ?? null,
-          updated_at: event.at ?? null
-        };
-      }
-      upsertCompactionRow(state, compactionId, seq, key, nextState, state.compaction);
-      bump(state, ["context"]);
-      break;
-    }
-    case "context_compaction_completed": {
-      const compactionId = payload.compaction_id ?? null;
-      if (compactionId == null) break;
-      const prev = state.compaction && state.compaction.id === compactionId ? state.compaction : null;
-      state.compaction = {
-        id: compactionId,
-        trigger: prev?.trigger ?? (payload.trigger === "manual" ? "manual" : "automatic"),
-        state: "completed",
-        attempt: payload.attempt ?? prev?.attempt ?? 1,
-        source_checkpoint_id: prev?.source_checkpoint_id ?? payload.source_checkpoint_id ?? null,
-        checkpoint_id: payload.checkpoint_id ?? null,
-        pending_input_id: prev?.pending_input_id ?? payload.pending_input_id ?? null,
-        error_code: null,
-        started_at: prev?.started_at ?? payload.started_at ?? event.at ?? null,
-        updated_at: event.at ?? null
-      };
-      upsertCompactionRow(state, compactionId, seq, key, "completed", state.compaction);
-      bump(state, ["context"]);
-      break;
-    }
-    case "context_compaction_failed":
-    case "context_compaction_cancelled": {
-      const compactionId = payload.compaction_id ?? null;
-      if (compactionId == null) break;
-      const prev = state.compaction && state.compaction.id === compactionId ? state.compaction : null;
-      const nextState = type === "context_compaction_failed" ? "failed" : "cancelled";
-      state.compaction = {
-        id: compactionId,
-        trigger: prev?.trigger ?? (payload.trigger === "manual" ? "manual" : "automatic"),
-        state: nextState,
-        attempt: payload.attempt ?? prev?.attempt ?? 1,
-        source_checkpoint_id: prev?.source_checkpoint_id ?? payload.source_checkpoint_id ?? null,
-        checkpoint_id: prev?.checkpoint_id ?? payload.checkpoint_id ?? null,
-        pending_input_id: prev?.pending_input_id ?? payload.pending_input_id ?? null,
-        error_code: payload.error_code ?? null,
-        started_at: prev?.started_at ?? payload.started_at ?? event.at ?? null,
-        updated_at: event.at ?? null
-      };
-      upsertCompactionRow(state, compactionId, seq, key, nextState, state.compaction);
-      bump(state, ["context"]);
-      break;
-    }
-    case "context_compaction_noop": {
-      const compactionId = payload.compaction_id ?? null;
-      if (compactionId == null) break;
-      state.compaction = {
-        id: compactionId,
-        trigger: payload.trigger === "manual" ? "manual" : "automatic",
-        state: "noop",
-        attempt: payload.attempt ?? 1,
-        source_checkpoint_id: null,
-        checkpoint_id: null,
-        pending_input_id: null,
-        error_code: null,
-        started_at: event.at ?? null,
-        updated_at: event.at ?? null
-      };
-      upsertCompactionRow(state, compactionId, seq, key, "noop", state.compaction);
-      bump(state, ["context"]);
-      break;
-    }
-    // 不进入派生 UI 状态的事件（许可/审计/领域类）
-    // 第九轮：系统通知行（chapter_rolled_back / memory_file_restored → timeline）。
-    case "chapter_rolled_back":
-    case "memory_file_restored": {
-      if (!Array.isArray(state.systemNotices)) state.systemNotices = [];
-      state.systemNotices.push({ seq, type, payload: structuredClone(payload) });
-      bump(state, ["notices"]);
-      break;
-    }
-    default:
-      break;
-  }
+  EVENT_HANDLERS[type]?.(state, payload, event, seq, key);
   // 每个 journal 事件先进入现有会话 reducer，再进入 work 投影（Task 5 Step 6）。
   // reduceWorkEvent 只读事件字段（run_id/seq/project_root/payload），不读 DOM。
   reduceWorkEvent(state.work, event);
