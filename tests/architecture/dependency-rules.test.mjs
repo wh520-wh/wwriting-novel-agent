@@ -369,7 +369,14 @@ const SURFACE_SEAM_TESTS = new Set([
   "tests/app-shell/state-notices.test.mjs",
   // agent-stream-finalize.test.mjs 直接测 agent/state.js 的流式正文终态定稿 reducer
   //（Task 1 遗留登记，同一 seam 意图：绕 index.js 触达内部投影逻辑）。
-  "tests/app-shell/agent-stream-finalize.test.mjs"
+  "tests/app-shell/agent-stream-finalize.test.mjs",
+  // Task 14 遗留登记（BASE 已红一轮）：state-handlers.test.mjs 直接测 agent/state.js
+  // 的 EVENT_HANDLERS 全集覆盖与连接类 code 单源（对账测试，绕 index.js 直连内部）。
+  "tests/app-shell/state-handlers.test.mjs",
+  // Task 15 新增：view-timeline.test.mjs 直接测 view/timeline.mjs 分区（时间线契约
+  // 与 F17 索引收口），同一 seam 意图——agent-surface.test.mjs 经 fake api 覆盖不到
+  // 分区内部状态（timelineSeqs 生命周期）。
+  "tests/app-shell/view-timeline.test.mjs"
 ]);
 
 test("AgentSurface 只能通过 src/app-shell/agent/index.js 对外暴露", () => {
