@@ -196,7 +196,7 @@ export async function bootApp(root = document) {
   });
   
   const settingsModal = createSettingsModal({
-    settingsRefs,
+    refs: settingsRefs,
     getDashboard: () => lastDashboard,
     getCurrentProjectRoot: () => currentProjectRoot,
     showToast,
@@ -226,7 +226,7 @@ export async function bootApp(root = document) {
   }
   
   const { renderDrawerBody } = createDrawerPanels({
-    drawerRefs,
+    refs: drawerRefs,
     getDrawerTab: () => drawerTab,
     getDashboard: () => lastDashboard,
     loadDashboard,
