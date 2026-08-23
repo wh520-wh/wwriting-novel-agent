@@ -103,7 +103,7 @@ test("loadContinuity: v1 节点惰性迁移为 v2", async () => {
     timeline: [{ chapter_no: 1, story_time: "十月", events: ["觉醒"] }]
   }), "utf8");
   const data = await loadContinuity(root);
-  assert.equal(data.schema_version, 2);
+  assert.equal(data.schema_version, 3);
   const t = data.timeline[0];
   assert.equal(t.story_time_raw, "十月");
   assert.equal(t.time.kind, "scene");
@@ -142,4 +142,59 @@ test("migrateTimelineNode: 透传的畸形 time 被规范化", () => {
   assert.equal(t.elapsed, null);
   assert.equal(t.anchor, null);
   assert.equal(t.confidence, "low");
+});
+
+// ---------------------------------------------------------------------------
+// 第十六轮 T3：foreshadows 伏笔台账（continuity v3）
+// ---------------------------------------------------------------------------
+
+test("foreshadows: open 去重追加、paid 精确匹配销账", () => {
+  const base = { schema_version: 3, facts: [], timeline: [], characters: [], foreshadows: [
+    { content: "怀表背面刻字", planted_chapter: 2, expected_payoff_hint: "身世揭晓", status: "open", paid_chapter: null }
+  ] };
+  const merged = mergeExtraction(base, { foreshadows: [
+    { content: "怀表背面刻字", chapter_no: 3, status: "open" },
+    { content: "管家左手疤痕", chapter_no: 3, status: "open", expected_payoff_hint: "凶手身份" },
+    { content: "怀表背面刻字", chapter_no: 7, status: "paid" }
+  ] });
+  assert.equal(merged.foreshadows.length, 2);
+  assert.equal(merged.schema_version, 3, "合并时版本号归一（v3）");
+  const watch = merged.foreshadows.find((f) => f.content === "怀表背面刻字");
+  assert.equal(watch.status, "paid");
+  assert.equal(watch.paid_chapter, 7);
+  assert.equal(watch.planted_chapter, 2);
+  const scar = merged.foreshadows.find((f) => f.content === "管家左手疤痕");
+  assert.equal(scar.status, "open");
+  assert.equal(scar.planted_chapter, 3);
+});
+
+test("foreshadows: 无字段旧文件兼容，渲染给「无记录」", () => {
+  const merged = mergeExtraction(
+    { schema_version: 2, facts: [], timeline: [], characters: [] },
+    { foreshadows: [{ content: "新伏笔", chapter_no: 1, status: "open" }] }
+  );
+  assert.equal(merged.foreshadows.length, 1);
+  const md = renderContinuityMarkdown({ schema_version: 3, facts: [], timeline: [], characters: [] });
+  assert.match(md, /## 伏笔台账/u);
+  assert.match(md, /无记录/u);
+});
+
+test("foreshadows: paid 无匹配 open 条目时静默忽略", () => {
+  const merged = mergeExtraction(
+    { schema_version: 3, facts: [], timeline: [], characters: [], foreshadows: [] },
+    { foreshadows: [{ content: "不存在的伏笔", chapter_no: 5, status: "paid" }] }
+  );
+  assert.equal(merged.foreshadows.length, 0);
+});
+
+test("foreshadows: 渲染分未收/已收两组", () => {
+  const md = renderContinuityMarkdown({ schema_version: 3, facts: [], timeline: [], characters: [], foreshadows: [
+    { content: "已收伏笔", planted_chapter: 1, expected_payoff_hint: "", status: "paid", paid_chapter: 4 },
+    { content: "未收伏笔", planted_chapter: 2, expected_payoff_hint: "后文揭晓", status: "open", paid_chapter: null }
+  ] });
+  const openIdx = md.indexOf("【未收】");
+  const paidIdx = md.indexOf("【已收】");
+  assert.ok(openIdx > 0 && paidIdx > 0, "两组都要渲染");
+  assert.ok(md.includes("【未收】第2章埋设：未收伏笔（回收提示：后文揭晓）"));
+  assert.ok(md.includes("【已收】第1章埋设 → 第4章回收：已收伏笔"));
 });
