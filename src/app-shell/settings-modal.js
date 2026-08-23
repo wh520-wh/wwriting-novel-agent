@@ -2,6 +2,7 @@ import { icon } from "./icons.js";
 import { compactObject } from "./utils.js";
 import { deleteJson, getJson, postJson, withProjectScope } from "./api-client.js";
 import { motion } from "./motion-runtime.js";
+import { FOCUSABLE_SELECTOR, el, focusTrap, showConfirmLayer } from "./dom-kit.js";
 
 // Re-export so consumers that already `import { ... } from "./settings-modal.js"`
 // continue to work. The pure helper itself lives in ./settings-connection.mjs
@@ -111,12 +112,11 @@ export function createSettingsModal(ctx, options = {}) {
   let removeAddMenuDismissal = null;
   // 对话历史分区（Task 13）：导出/清空按钮与活动 Run 门禁提示（重渲时更新引用）。
   let historyRefs = { exportBtn: null, clearBtn: null, hint: null };
-  // 清空确认层（settings 内最上层）的节点引用与文档级 Esc 监听。
-  let clearConfirmRef = { layer: null, ack: null, confirmBtn: null, error: null };
-  let removeClearConfirmDismissal = null;
-  // 放弃未保存修改确认层（Task 22 关闭保护）的节点引用与文档级 Esc 监听。
-  let dirtyConfirmRef = { layer: null };
-  let removeDirtyConfirmDismissal = null;
+  // 清空确认层（settings 内最上层）的 close 句柄（null=未开）；层构建与行为在
+  // dom-kit.showConfirmLayer（Task 12 收编）。
+  let clearConfirmRef = { close: null };
+  // 放弃未保存修改确认层（Task 22 关闭保护）的 close 句柄（同 showConfirmLayer）。
+  let dirtyConfirmRef = { close: null };
   const settingsFields = {};
 
   // section 可选：Agent 斜杠命令可指定打开的分区；缺省打开「模型设置」（model 为首位）。
@@ -133,48 +133,32 @@ export function createSettingsModal(ctx, options = {}) {
     focusFirstInModal();
   }
 
-  // 弹窗内可聚焦元素选择器（Task 22 审查 Minor 4）：focusFirstInModal 与
-  // bindModalTabTrap 共用同一选择器与过滤规则，避免两处口径分叉。
-  const MODAL_FOCUSABLE = "button, [href], input, select, textarea, [tabindex]:not([tabindex=\"-1\"])";
-
   // 弹窗内首个可聚焦元素（nav 分区按钮优先，任意顺序即第一个命中）。
-  // 与 bindModalTabTrap 同款过滤：隐藏（offsetParent null）/禁用元素不得接收焦点
-  // ——否则窄窗（@media ≤720px 隐藏 .sp-side）下首命中是隐藏 nav 按钮，
+  // 选择器与过滤规则与 focusTrap 共用 dom-kit 的 FOCUSABLE_SELECTOR（Task 22
+  // 审查 Minor 4：两处口径不分叉）；隐藏（offsetParent null）/禁用元素不得接收
+  // 焦点——否则窄窗（@media ≤720px 隐藏 .sp-side）下首命中是隐藏 nav 按钮，
   // focus() 静默无效，焦点停留在触发按钮（trap 失效场景）。
   function focusFirstInModal() {
-    const first = [...(ctx.refs.settingsScrim.querySelectorAll?.(MODAL_FOCUSABLE) ?? [])]
+    const first = [...(ctx.refs.settingsScrim.querySelectorAll?.(FOCUSABLE_SELECTOR) ?? [])]
       .find((el) => !el.disabled && el.offsetParent !== null);
     first?.focus?.();
   }
 
-  // Task 22 focus trap：Tab 在弹窗内循环（首末元素回绕）。挂在 scrim 的 bubble
-  // 阶段——嵌套层（添加菜单/清空确认/放弃确认）的 document capture 监听先于
-  // 本监听执行并 stopImmediatePropagation，故嵌套层打开时 Tab 不受弹窗级回绕
-  // 干扰；弹窗关闭（非 show）时不拦截，不触碰 AgentSurface 的键盘路由。
-  function bindModalTabTrap() {
+  // Task 22 focus trap（Task 12：行为收编 dom-kit focusTrap）：Tab 在弹窗内循环
+  //（首末元素回绕）。挂在 scrim 的 bubble 阶段——嵌套层（添加菜单/清空确认/放弃
+  // 确认）的 document capture 监听先于本监听执行并 stopImmediatePropagation，故
+  // 嵌套层打开时 Tab 不受弹窗级回绕干扰；弹窗关闭（非 show）时不拦截（守卫保留
+  // 在此，focusTrap 内部不管容器显隐态），不触碰 AgentSurface 的键盘路由。
+  function bindScrimTabTrap() {
     if (typeof ctx.refs.settingsScrim?.addEventListener !== "function") return null;
     const onKeydown = (event) => {
-      if (event?.key !== "Tab") return;
       if (!ctx.refs.settingsScrim.classList.contains("show")) return;
-      const focusables = [...(ctx.refs.settingsScrim.querySelectorAll?.(MODAL_FOCUSABLE) ?? [])]
-        .filter((el) => !el.disabled && el.offsetParent !== null);
-      if (focusables.length === 0) { event.preventDefault?.(); return; }
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault?.();
-        event.stopPropagation?.();
-        last.focus?.();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault?.();
-        event.stopPropagation?.();
-        first.focus?.();
-      }
+      focusTrap(ctx.refs.settingsScrim, event);
     };
     ctx.refs.settingsScrim.addEventListener("keydown", onKeydown);
     return () => ctx.refs.settingsScrim.removeEventListener?.("keydown", onKeydown);
   }
-  bindModalTabTrap();
+  bindScrimTabTrap();
 
   // Task 22 弹窗级 Escape：挂在 scrim 的 bubble 阶段。嵌套层的 document capture
   // 监听先于本监听执行（capture 先于 bubble）且 stopImmediatePropagation，故 Esc
@@ -708,132 +692,39 @@ export function createSettingsModal(ctx, options = {}) {
 
   // 清空确认层（Task 13）：settings 内最上层，覆盖整个弹窗。未勾选确认时确认
   // 按钮禁用，绝不发请求；ESC 只关本层（capture 监听阻断弹窗级 Esc 与 Run 停止）。
+  // Task 12：层构建/行为收编 dom-kit.showConfirmLayer（danger=ack 二次确认 + 错误
+  // 回显 + 失败保留层可重试）；close 句柄供弹窗关闭路径（performCloseSettingsModal）
+  // 主动清理。
   function openClearHistoryConfirm() {
-    if (clearConfirmRef.layer) return;
+    if (clearConfirmRef.close) return;
     // 确认层是当前最上层：先解除更低的添加菜单文档监听，ESC 只作用于确认层。
     removeAddMenuDismissal?.();
-
-    const layer = document.createElement("div");
-    layer.className = "spd-confirm-layer";
-    layer.id = "clear-history-confirm";
-    layer.hidden = false;
-    Object.assign(layer.style, {
-      position: "absolute",
-      inset: "0",
-      zIndex: "20",
-      background: "rgba(20, 18, 14, 0.45)",
-      display: "grid",
-      placeItems: "center",
-      padding: "28px"
+    const promise = showConfirmLayer({
+      doc: document,
+      host: ctx.refs.settingsScrim,
+      id: "clear-history",
+      title: "清空对话历史",
+      message: "此操作不可恢复，将删除本项目全部对话历史；不影响章节、总纲、设定与 WWRITING.md 等创作文件。如需保留可先导出对话历史。",
+      confirmLabel: "清空对话历史",
+      danger: true,
+      ackLabel: "我确认要清空对话历史",
+      onConfirm: async () => {
+        if (typeof ctx.clearAgentHistory !== "function") {
+          throw new Error("当前环境不支持清空对话历史。");
+        }
+        // surface.clearHistory 内部负责重置投影并重开当前项目（clear-reconnect）。
+        await ctx.clearAgentHistory({ confirm_irreversible: true });
+        ctx.showToast("对话历史已清空，创作文件未改动。", "success");
+      },
+      // 任何路径关闭层（取消/背景/Esc/成功/外部.close）都重置 open guard。
+      onClose: () => { clearConfirmRef = { close: null }; }
     });
-
-    const card = document.createElement("div");
-    card.className = "spd-confirm-card";
-    Object.assign(card.style, {
-      width: "min(430px, 100%)",
-      background: "var(--surface)",
-      border: "1px solid var(--line)",
-      borderRadius: "var(--r-xl)",
-      boxShadow: "var(--shadow-pop)",
-      padding: "22px 24px",
-      display: "grid",
-      gap: "14px"
-    });
-
-    const title = document.createElement("h4");
-    title.className = "spd-section";
-    title.style.margin = "0";
-    title.textContent = "清空对话历史";
-
-    const copy = document.createElement("p");
-    copy.className = "spd-confirm-copy spd-hint";
-    copy.style.margin = "0";
-    copy.textContent = "此操作不可恢复，将删除本项目全部对话历史；不影响章节、总纲、设定与 WWRITING.md 等创作文件。如需保留可先导出对话历史。";
-
-    const ackLabel = document.createElement("label");
-    ackLabel.style.display = "flex";
-    ackLabel.style.alignItems = "center";
-    ackLabel.style.gap = "8px";
-    ackLabel.style.fontSize = "13px";
-    const ack = document.createElement("input");
-    ack.type = "checkbox";
-    ack.id = "clear-history-ack";
-    ack.style.width = "16px";
-    ack.style.height = "16px";
-    const ackSpan = document.createElement("span");
-    ackSpan.textContent = "我确认要清空对话历史";
-    ackLabel.append(ack, ackSpan);
-
-    const error = document.createElement("div");
-    error.className = "spd-field-error";
-    error.id = "clear-history-error";
-    error.hidden = true;
-
-    const actions = document.createElement("div");
-    actions.style.display = "flex";
-    actions.style.justifyContent = "flex-end";
-    actions.style.gap = "10px";
-    const cancelBtn = actionButton("取消", () => closeClearHistoryConfirm());
-    cancelBtn.id = "clear-history-cancel";
-    const confirmBtn = actionButton("清空对话历史", () => void runClearHistory(confirmBtn));
-    confirmBtn.id = "clear-history-confirm-btn";
-    confirmBtn.disabled = true;
-    actions.append(cancelBtn, confirmBtn);
-
-    ack.addEventListener("change", () => {
-      confirmBtn.disabled = !ack.checked;
-    });
-
-    card.append(title, copy, ackLabel, error, actions);
-    layer.append(card);
-    ctx.refs.settingsScrim.append(layer);
-
-    clearConfirmRef = { layer, ack, confirmBtn, error };
-    removeClearConfirmDismissal = bindNestedLayerDismissal({
-      // 只有设置弹窗开着且确认层存在时才消费 Esc，避免影响其他层。
-      isOpen: () => clearConfirmRef.layer !== null && ctx.refs.settingsScrim.classList.contains("show"),
-      close: closeClearHistoryConfirm
-    });
-    // 点击确认层背景（卡片外部）关闭本层，不触碰弹窗级处理器。
-    layer.addEventListener("click", (event) => {
-      if (event?.target === layer) closeClearHistoryConfirm();
-    });
-    cancelBtn.focus();
+    clearConfirmRef = { close: promise.close };
   }
 
   function closeClearHistoryConfirm() {
-    removeClearConfirmDismissal?.();
-    removeClearConfirmDismissal = null;
-    if (!clearConfirmRef.layer) return;
-    clearConfirmRef.layer.replaceChildren();
-    clearConfirmRef.layer.hidden = true;
-    clearConfirmRef.layer = null;
-  }
-
-  function showClearHistoryError(message) {
-    if (!clearConfirmRef.error) return;
-    clearConfirmRef.error.textContent = message;
-    clearConfirmRef.error.hidden = false;
-  }
-
-  async function runClearHistory(confirmBtn) {
-    if (confirmBtn.disabled) return;
-    if (typeof ctx.clearAgentHistory !== "function") {
-      showClearHistoryError("当前环境不支持清空对话历史。");
-      return;
-    }
-    confirmBtn.disabled = true;
-    try {
-      // surface.clearHistory 内部负责重置投影并重开当前项目（clear-reconnect）。
-      await ctx.clearAgentHistory({ confirm_irreversible: true });
-      closeClearHistoryConfirm();
-      ctx.showToast("对话历史已清空，创作文件未改动。", "success");
-    } catch (error) {
-      // 请求期间确认层被关闭（ESC/取消）：丢弃迟到的失败反馈。
-      if (!clearConfirmRef.layer) return;
-      showClearHistoryError(error?.message ?? "清空对话历史失败。");
-      confirmBtn.disabled = !clearConfirmRef.ack?.checked;
-    }
+    clearConfirmRef.close?.();
+    clearConfirmRef = { close: null };
   }
 
   // -------------------------------------------------------------------------
@@ -1220,7 +1111,7 @@ export function createSettingsModal(ctx, options = {}) {
     // Task 22（#9）：关闭保护——写作参数有未保存修改时先弹确认层，绝不静默丢失。
     // 关闭路径统一经此守卫（app.js 的 X/取消/遮罩/Esc 与保存成功后的自动关闭
     // 都调用本函数）；保存成功时 dashboard 已刷新，dirty 判定自然为 false。
-    if (settingsDirty() && !dirtyConfirmRef.layer && ctx.refs.settingsScrim.classList.contains("show")) {
+    if (settingsDirty() && !dirtyConfirmRef.close && ctx.refs.settingsScrim.classList.contains("show")) {
       openDirtyCloseConfirm();
       return;
     }
@@ -1266,120 +1157,58 @@ export function createSettingsModal(ctx, options = {}) {
   }
 
   // 放弃未保存修改确认层（Task 22）：复用 spd-confirm-layer/spd-confirm-card
-  // 确认控件结构（与清空历史确认层同款），不调用 browser confirm。
+  // 确认控件结构（与清空历史确认层同款），不调用 browser confirm。Task 12：
+  // 层收编 dom-kit.showConfirmLayer（非 danger：无 ack/错误行），确认即执行关闭。
   function openDirtyCloseConfirm() {
-    if (dirtyConfirmRef.layer) return;
+    if (dirtyConfirmRef.close) return;
     removeAddMenuDismissal?.();
-
-    const layer = document.createElement("div");
-    layer.className = "spd-confirm-layer";
-    layer.id = "close-dirty-confirm";
-    layer.hidden = false;
-    Object.assign(layer.style, {
-      position: "absolute",
-      inset: "0",
+    const promise = showConfirmLayer({
+      doc: document,
+      host: ctx.refs.settingsScrim,
+      id: "close-dirty",
+      title: "放弃未保存的修改？",
+      message: "写作参数有未保存的修改，关闭后将丢失。",
+      confirmLabel: "不保存并关闭",
       zIndex: "21",
-      background: "rgba(20, 18, 14, 0.45)",
-      display: "grid",
-      placeItems: "center",
-      padding: "28px"
+      onConfirm: () => {
+        performCloseSettingsModal();
+      },
+      // 任何路径关闭层（取消/背景/Esc/成功/外部.close）都重置 open guard。
+      onClose: () => { dirtyConfirmRef = { close: null }; }
     });
-
-    const card = document.createElement("div");
-    card.className = "spd-confirm-card";
-    Object.assign(card.style, {
-      width: "min(430px, 100%)",
-      background: "var(--surface)",
-      border: "1px solid var(--line)",
-      borderRadius: "var(--r-xl)",
-      boxShadow: "var(--shadow-pop)",
-      padding: "22px 24px",
-      display: "grid",
-      gap: "14px"
-    });
-
-    const title = document.createElement("h4");
-    title.className = "spd-section";
-    title.style.margin = "0";
-    title.textContent = "放弃未保存的修改？";
-
-    const copy = document.createElement("p");
-    copy.className = "spd-confirm-copy spd-hint";
-    copy.style.margin = "0";
-    copy.textContent = "写作参数有未保存的修改，关闭后将丢失。";
-
-    const actions = document.createElement("div");
-    actions.style.display = "flex";
-    actions.style.justifyContent = "flex-end";
-    actions.style.gap = "10px";
-    const cancelBtn = actionButton("取消", () => closeDirtyCloseConfirm());
-    cancelBtn.id = "close-dirty-cancel";
-    const confirmBtn = actionButton("不保存并关闭", () => {
-      closeDirtyCloseConfirm();
-      performCloseSettingsModal();
-    });
-    confirmBtn.id = "close-dirty-confirm-btn";
-    actions.append(cancelBtn, confirmBtn);
-
-    card.append(title, copy, actions);
-    layer.append(card);
-    ctx.refs.settingsScrim.append(layer);
-
-    dirtyConfirmRef.layer = layer;
-    removeDirtyConfirmDismissal = bindNestedLayerDismissal({
-      isOpen: () => dirtyConfirmRef.layer !== null && ctx.refs.settingsScrim.classList.contains("show"),
-      close: closeDirtyCloseConfirm
-    });
-    // 点击确认层背景（卡片外部）关闭本层，不触碰弹窗级处理器。
-    layer.addEventListener("click", (event) => {
-      if (event?.target === layer) closeDirtyCloseConfirm();
-    });
-    cancelBtn.focus();
+    dirtyConfirmRef = { close: promise.close };
   }
 
   function closeDirtyCloseConfirm() {
-    removeDirtyConfirmDismissal?.();
-    removeDirtyConfirmDismissal = null;
-    if (!dirtyConfirmRef.layer) return;
-    dirtyConfirmRef.layer.replaceChildren();
-    dirtyConfirmRef.layer.hidden = true;
-    dirtyConfirmRef.layer = null;
+    dirtyConfirmRef.close?.();
+    dirtyConfirmRef = { close: null };
   }
 
 
   function settingField(labelText, type, { value = "", placeholder = "", options = null, min = null, max = null, step = null } = {}) {
-    const field = document.createElement("div");
-    field.className = "spd-field";
-    const label = document.createElement("div");
-    label.className = "spd-label";
-    const span = document.createElement("span");
-    span.textContent = labelText;
-    label.append(span);
-    field.append(label);
-    let input;
-    if (type === "select") {
-      input = document.createElement("select");
-      input.className = "spd-input";
-      input.replaceChildren(...(options ?? []).map((opt) => {
-        const option = document.createElement("option");
-        option.value = opt;
-        option.textContent = opt;
-        return option;
-      }));
-      input.value = value ?? "";
-    } else {
-      input = document.createElement("input");
-      input.className = "spd-input";
-      input.type = type;
-      input.value = value ?? "";
-      if (placeholder) input.placeholder = placeholder;
-      if (min !== null) input.min = min;
-      if (max !== null) input.max = max;
-      if (step !== null) input.step = step;
-    }
-    input.setAttribute("aria-label", labelText);
-    field.append(input);
-    return { field, input };
+    // Task 12：改用 dom-kit el() 构建（与 model-settings-page 同构）。行为与返回
+    // 形状 { field, input } 不变；写入字段的 class/value/type 语义与 createElement
+    // 直构一致（el 的 value/disabled 走 property，其余属性直映射 setAttribute）。
+    const input = type === "select"
+      ? el("select", { class: "spd-input", value: value ?? "", "aria-label": labelText },
+          (options ?? []).map((opt) => el("option", { value: opt, text: opt })))
+      : el("input", {
+          class: "spd-input",
+          type,
+          value: value ?? "",
+          ...(placeholder ? { placeholder } : null),
+          ...(min !== null ? { min } : null),
+          ...(max !== null ? { max } : null),
+          ...(step !== null ? { step } : null),
+          "aria-label": labelText
+        });
+    return {
+      field: el("div", { class: "spd-field" }, [
+        el("div", { class: "spd-label" }, [el("span", { text: labelText })]),
+        input
+      ]),
+      input
+    };
   }
 
   async function saveSettings() {
