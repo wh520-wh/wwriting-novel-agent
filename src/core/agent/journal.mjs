@@ -66,11 +66,14 @@ import {
 } from "./journal-handlers.mjs";
 // 外部既有 import 路径保持（第十五轮 Task 4：tests/tools/index.mjs 与
 // runtime.mjs 直连 ./journal.mjs 的具名导出，拆表后统一 re-export，调用方零改动）。
+// 第十五轮 F1 单源修复：TERMINAL_RUN_STATUSES 随 runtime/run-lifecycle 消费方
+// 一并经此 re-export，定义处唯一保留在 journal-handlers.mjs。
 export {
   FIXED_EVENT_TYPES,
   SESSION_STATUSES,
   RUN_STATUSES,
   PLAN_STATUSES,
+  TERMINAL_RUN_STATUSES,
   buildProcessRestartedConvergence
 } from "./journal-handlers.mjs";
 

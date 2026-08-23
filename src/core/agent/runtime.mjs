@@ -34,7 +34,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
-import { buildProcessRestartedConvergence, createAgentJournal, persistentToolResult } from "./journal.mjs";
+import { buildProcessRestartedConvergence, createAgentJournal, persistentToolResult, TERMINAL_RUN_STATUSES } from "./journal.mjs";
 import { createSessionRegistry } from "./session-registry.mjs";
 import { createToolRuntime } from "./tools/index.mjs";
 import { assemblePrompt, estimateTokens } from "./prompt.mjs";
@@ -91,7 +91,11 @@ import {
 } from "../project-operations/chapter.mjs";
 import { migrateBaselineVersions } from "../project-operations/versions.mjs";
 import { detectLedgerDrift } from "../ledger-drift.mjs";
-import { codedError as fail, sleep } from "./agent-utils.mjs";
+import { codedError as fail } from "./agent-utils.mjs";
+// Task 8（F5b 第十五轮）：Run 收敛状态机（停止/优先切换/失败收束/循环推进与
+// 等待）拆到 run-lifecycle.mjs——经 createRunLifecycle(ctx) 以 getter 注入
+// state/sessionState，runtime.mjs 恢复为编排内核。
+import { createRunLifecycle } from "./run-lifecycle.mjs";
 
 // 第九轮：会话级缓存命中率累计（token 加权）。命中 token 不超过输入 token
 //（与 cost-tracker.mjs 的 clamp 一致）；非法/缺失 usage 不改变累计。
@@ -112,8 +116,6 @@ export function cacheHitRateOf(stats) {
     : null;
 }
 
-const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
-
 // Task 3：取消/停止语义的工具失败不触发「跳过同一响应后续调用」——这些结果由
 // 停止/中断路径以 tool_cancelled 统一闭合（stop 与 requestPriority 并发测试钉住
 // 该顺序），只有真实领域失败才把未启动的后续调用闭合为 tool_skipped_after_failure。
@@ -131,11 +133,6 @@ const withMemoryChecklist = (result) => ({ ...(result ?? {}), memory_checklist: 
 
 const SOURCES = new Set(["chat", "maintenance"]);
 
-// 停止等待上限。语义说明（Task 6 规格审查 Minor）：stop 在 abort 信号发出后
-// 等待循环收敛（可中断工具被杀、循环追加终态批次），正常只需毫秒级；60s 上限只
-// 防御循环异常悬挂。长原子操作（不可中断提交）不受 abort 影响也会在毫秒级完成，
-// 不会接近该上限。（旧 promote 的 waitForRunResolved 已随 promote 删除，Task 26。）
-const IDLE_WAIT_TIMEOUT_MS = 60000;
 const ASSISTANT_DELTA_FLUSH_MS = 24;
 const ASSISTANT_DELTA_MAX_PENDING_CHARS = 2048;
 
@@ -395,6 +392,21 @@ export function createAgentRuntime({
       // 第九轮：会话级缓存命中率累计（token 加权，进程内；重启用例下归零 → 前端不显示）。
       cacheStats: { hitTokens: 0, inputTokens: 0 }
     };
+    // Task 8（F5b）：Run 收敛状态机（停止/优先切换/失败收束/循环推进与等待）拆到
+    // run-lifecycle.mjs——per-session 实例绑定本会话：getter 惰性读取 state 与
+    // sessionState（循环/等待期间 state.controller/loopPromise 等字段变化可见），
+    // runtime 内部函数经 ctx 注入原签名引用。仅本模块内部经 sessionState 消费，
+    // 不流出 runtime.mjs。
+    sessionState.lifecycle = createRunLifecycle({
+      getState: () => state,
+      getSessionState: () => sessionState,
+      appendSafeTranscript,
+      isCompactRunIdleInitiated,
+      resetController,
+      findInputMeta,
+      processCompact,
+      processInput
+    });
     state.sessions.set(sessionId, sessionState);
     sessionState.ready = (async () => {
       await journal.load();
@@ -821,190 +833,6 @@ export function createAgentRuntime({
     return journal.hasTerminalEvent(runId, inputId);
   }
 
-  function isAbort(error, state) {
-    if (state.controller?.signal.aborted) return true;
-    if (error?.name === "AbortError") return true;
-    if (error?.code === "model_aborted") return true;
-    return false;
-  }
-
-  // 中断/停止丢弃的模型工具调用以 cancelled 记录闭合 transcript：assistant
-  // tool_calls 消息之后必须有对应的 tool 结果，否则历史含畸形消息链（provider
-  // 会拒绝、retry 复用历史时同样受影响）。
-  async function closeDroppedToolCalls(state, sessionState, droppedCalls) {
-    if (!Array.isArray(droppedCalls) || droppedCalls.length === 0) return;
-    for (const toolCall of droppedCalls) {
-      const id = toolCall?.id ?? toolCall?.tool_call_id ?? null;
-      await appendSafeTranscript(sessionState.journal, {
-        role: "tool",
-        tool_call_id: id,
-        name: toolCall?.name ?? null,
-        content: JSON.stringify({
-          ok: false,
-          tool_call_id: id,
-          name: toolCall?.name ?? null,
-          error: { code: "tool_cancelled", message: "操作已停止。" },
-          message: "操作已停止。"
-        })
-      });
-    }
-  }
-
-  // Task 10：优先切换时跳过的工具调用以 tool_skipped_for_priority_input 闭合
-  // transcript（与 closeDroppedToolCalls 同构：只补 transcript，不产生 journal
-  // 活动、不启动工具）。assistant tool_calls 记录已先持久化，每个未开始的调用
-  // 追加同 id 的 result，保证 provider history 结构完整（SPEC 3.3 rule 4）。
-  async function closePrioritySkippedToolCalls(state, sessionState, skippedCalls) {
-    if (!Array.isArray(skippedCalls) || skippedCalls.length === 0) return;
-    for (const toolCall of skippedCalls) {
-      const id = toolCall?.id ?? toolCall?.tool_call_id ?? null;
-      await appendSafeTranscript(sessionState.journal, {
-        role: "tool",
-        tool_call_id: id,
-        name: toolCall?.name ?? null,
-        content: JSON.stringify({
-          ok: false,
-          tool_call_id: id,
-          name: toolCall?.name ?? null,
-          error: { code: "tool_skipped_for_priority_input", message: "Interrupted by the user" },
-          message: "Interrupted by the user"
-        })
-      });
-    }
-  }
-
-  // Task 3：同一响应中前一个工具失败后，未启动的后续调用以
-  // tool_skipped_after_failure 闭合 transcript——每个持久化 assistant tool call
-  // 恰好一个 tool result（不执行、不产生 journal 活动，只补 transcript 结果）。
-  // 返回追加的记录副本，调用方放入 volatileToolRecords，保证下一轮历史装配的
-  // 瞬态去重一致（assistant 记录的 tool_calls 与对应 tool 记录同源同集）。
-  async function closeSkippedToolCalls(sessionState, skippedCalls) {
-    const records = [];
-    if (!Array.isArray(skippedCalls) || skippedCalls.length === 0) return records;
-    for (const toolCall of skippedCalls) {
-      const id = toolCall?.id ?? toolCall?.tool_call_id ?? null;
-      const name = toolCall?.name ?? null;
-      const skippedResult = {
-        ok: false,
-        tool_call_id: id,
-        name,
-        error: {
-          code: "tool_skipped_after_failure",
-          message: "由于同一响应中的前一个工具调用失败，本次调用未执行。",
-          retryable: true
-        },
-        message: "由于同一响应中的前一个工具调用失败，本次调用未执行。"
-      };
-      const record = { role: "tool", tool_call_id: id, name, content: JSON.stringify(skippedResult) };
-      records.push(record);
-      await appendSafeTranscript(sessionState.journal, record);
-    }
-    return records;
-  }
-
-  // Task 10：优先安全点切换（SPEC 3.3）。在 session 项目互斥锁内重读 Journal 投影
-  // 做读-判-写（与 submit/requestPriority/withdraw/stop 同一把锁，并发胜者由持久
-  // 事件顺序决定）：
-  //   - 无 priority_input_id / 优先输入已不在队列 / Run 已终结 → 不切换（false）；
-  //   - stopping/interrupting 优先收敛（停止是硬逃生口，其收敛先于优先切换；
-  //     interrupting 中间态旧日志重放可到达，新 generation 不产生
-  //     interrupt_requested——Task 26 起旧 promote 已退役）；
-  //   - 旧输入未自然完成 → 原子追加 input_interrupted(A) + input_started(D)，同时
-  //     清除 A 的 grant（grant 绑定 active_input_id，不清理会泄漏给后续输入）；
-  //   - 旧输入已自然完成（如文本回复路径已写 input_completed，active_input_id 为
-  //     null）→ 只追加 input_started(D)，不伪造中断；
-  // 同一 appendBatch 内 input_interrupted 先清空 active_input_id，input_started
-  // 通过 reducer 的「活动输入必须已收敛」校验并清空 priority_input_id。不调用
-  // abortController()——当前模型请求使用原 signal 完成（SPEC 3.3 rule 2）。
-  // 返回 true 表示已切换到优先输入，调用方应停止当前输入的处理（回到 runLoop
-  // 重新读取状态与优先输入）。
-  async function switchToPriorityAtSafePoint(state, sessionState, runId, inputId) {
-    return state.mutex.run(async () => {
-      const session = await sessionState.journal.getSession();
-      const priorityId = session.priority_input_id;
-      if (priorityId == null) return false;
-      if (!session.queued_inputs.some((item) => item.id === priorityId)) return false;
-      const run = session.active_run;
-      if (!run || run.id !== runId || TERMINAL_RUN_STATUSES.has(run.status)) return false;
-      if (run.status === "stopping" || run.status === "interrupting") return false;
-      const batch = [];
-      // 旧输入 grant 清除（与完成路径同构：grant 绑定 active_input_id，输入被
-      // 优先打断后必须清除，否则后续输入沿用旧 grant 绕过确认）。
-      const grantsOfActive = run.active_grants.filter((grant) => grant.input_id === run.active_input_id);
-      for (const grant of grantsOfActive) {
-        batch.push({
-          type: "permission_grant_cleared",
-          run_id: runId,
-          payload: {
-            grant_id: grant.id,
-            input_id: grant.input_id,
-            grant_key: grant.grant_key,
-            reason: "input_interrupted"
-          }
-        });
-      }
-      if (run.active_input_id != null) {
-        batch.push({ type: "input_interrupted", run_id: runId, payload: { input_id: run.active_input_id } });
-      }
-      batch.push({ type: "input_started", run_id: runId, payload: { input_id: priorityId } });
-      await sessionState.journal.appendBatch(batch);
-      return true;
-    });
-  }
-
-  // 停止收敛：为每个未消费输入（活动 + 排队）追加 input_cancelled，清除全部
-  // grant，再 run_cancelled。幂等：Run 已终结时直接返回。在项目互斥锁内执行
-  // 读-判-写：并发 submit 要么先落盘（本批次把它一并取消），要么后落盘（属于
-  // 下一个 Run），杜绝输入滞留。
-  // 为什么保留 input_cancelled（Task 26 语义收窄）：新生命周期三种终态均不覆盖
-  //「输入因硬停止被丢弃」——input_interrupted 要求安全边界（模型/工具在途硬停止
-  // 不满足，且 reducer 只接受活动输入、排队输入无法用它终结）、input_withdrawn
-  // 仅限用户主动撤回；规格 3.3.9 保留停止为硬逃生口，verify 场景 5 钉住此契约。
-  async function cancelRunForStop(state, sessionState, reason) {
-    return state.mutex.run(async () => {
-      const session = await sessionState.journal.getSession();
-      const run = session.active_run;
-      if (!run || TERMINAL_RUN_STATUSES.has(run.status)) return;
-      const batch = [];
-      const inputIds = [];
-      if (run.active_input_id !== null) inputIds.push(run.active_input_id);
-      for (const item of session.queued_inputs) inputIds.push(item.id);
-      for (const inputId of inputIds) {
-        batch.push({ type: "input_cancelled", run_id: run.id, payload: { input_id: inputId } });
-      }
-      for (const grant of run.active_grants) {
-        batch.push({
-          type: "permission_grant_cleared",
-          run_id: run.id,
-          payload: { grant_id: grant.id, input_id: grant.input_id, grant_key: grant.grant_key, reason: "run_cancelled" }
-        });
-      }
-      batch.push({
-        type: "run_cancelled",
-        run_id: run.id,
-        payload: { reason: reason ?? "user_stop" }
-      });
-      await sessionState.journal.appendBatch(batch);
-    });
-  }
-
-  // 模型调用失败 → run_failed（可恢复）。保留该输入的 grant（输入未终结，
-  // retry 同一输入继续使用）；失败路径已闭合 model turn。
-  async function failRun(state, sessionState, runId, { error, inputId }) {
-    const session = await sessionState.journal.getSession();
-    const run = session.active_run;
-    if (!run || run.id !== runId || TERMINAL_RUN_STATUSES.has(run.status)) return;
-    await sessionState.journal.append({
-      type: "run_failed",
-      run_id: runId,
-      payload: {
-        error: typeof error?.message === "string" ? error.message : String(error),
-        code: error?.code ?? "model_error",
-        input_id: inputId ?? null
-      }
-    });
-  }
-
   // 从 journal 事件找回输入元数据（text + kind）。上限语义同 findInputText：
   // 只扫描最近 100k 条事件；超出上限视为找不到（返回 text: null）。
   // Task 3（第十五轮）：扫描逻辑迁入 journal.findInputMeta，此处薄委托。
@@ -1021,61 +849,6 @@ export function createAgentRuntime({
   // Task 3（第十五轮）：扫描逻辑迁入 journal.isIdleInitiatedRun，此处薄委托。
   async function isCompactRunIdleInitiated(state, sessionState, runId, compactInputId) {
     return sessionState.journal.isIdleInitiatedRun(runId, compactInputId);
-  }
-
-  // 压缩取消收敛（幂等，项目互斥锁内读-判-写）：
-  //   - 自动：input_cancelled(reason:"compaction_cancelled") + 排队输入一并取消 +
-  //     grant 清除 + run_cancelled（矩阵：Run cancelled、文本回 draft）；
-  //   - 手动 in-run：input_cancelled(compaction_cancelled) + 恢复 running；
-  //   - 手动空闲：input_cancelled(compaction_cancelled) + run_cancelled → idle。
-  // 返回 "converged" | "already_terminal" | "input_settled"。
-  // 为什么保留 input_cancelled（Task 26 语义收窄，同 stop 路径）：压缩取消是
-  // 运行级丢弃（活动 compact item + 排队输入一并终结），input_interrupted 需
-  // 安全边界且只接受活动输入、input_withdrawn 仅限主动撤回；UI 契约按
-  // input_cancelled(compaction_cancelled) 渲染「已取消」。
-  async function convergeCompactionCancelled(state, sessionState, compaction) {
-    return state.mutex.run(async () => {
-      const session = await sessionState.journal.getSession();
-      const run = session.active_run;
-      if (!run || TERMINAL_RUN_STATUSES.has(run.status)) return "already_terminal";
-      const inputId = compaction?.pending_input_id ?? null;
-      const inputLive =
-        inputId != null &&
-        (run.active_input_id === inputId || session.queued_inputs.some((item) => item.id === inputId));
-      if (!inputLive) return "input_settled";
-      const isManual = compaction?.trigger === "manual";
-      const idleInitiated = isManual ? await isCompactRunIdleInitiated(state, sessionState, run.id, inputId) : false;
-      const batch = [];
-      const inputIds = [];
-      if (run.active_input_id != null) inputIds.push(run.active_input_id);
-      for (const item of session.queued_inputs) inputIds.push(item.id);
-      for (const id of inputIds) {
-        batch.push({
-          type: "input_cancelled",
-          run_id: run.id,
-          payload: { input_id: id, reason: id === inputId ? "compaction_cancelled" : "compaction_run_cancelled" }
-        });
-      }
-      if (isManual && !idleInitiated) {
-        // 手动 in-run 取消：恢复 resume_run_status（running），队列继续消费
-        batch.push({
-          type: "run_status_changed",
-          run_id: run.id,
-          payload: { status: "running", reason: "compaction_cancelled", resume_run_status: "running" }
-        });
-      } else {
-        for (const grant of run.active_grants ?? []) {
-          batch.push({
-            type: "permission_grant_cleared",
-            run_id: run.id,
-            payload: { grant_id: grant.id, input_id: grant.input_id, grant_key: grant.grant_key, reason: "compaction_cancelled" }
-          });
-        }
-        batch.push({ type: "run_cancelled", run_id: run.id, payload: { reason: "compaction_cancelled" } });
-      }
-      if (batch.length > 0) await sessionState.journal.appendBatch(batch);
-      return "converged";
-    });
   }
 
   // 手动 /compact 处理（在安全点由 runLoop 调用，active_input_id 已是 compact
@@ -1188,7 +961,7 @@ export function createAgentRuntime({
       return "interrupted"; // 停止/立即路径负责收敛
     }
     const compactionProjection = (await sessionState.journal.getSession()).compaction;
-    await convergeCompactionCancelled(state, sessionState, compactionProjection);
+    await sessionState.lifecycle.convergeCompactionCancelled(compactionProjection);
     if (idleInitiated) return "compaction_blocked";
     // 手动 in-run 取消：input_cancelled + 恢复 resume_run_status，队列继续消费
     return "compaction_resumed";
@@ -1215,7 +988,7 @@ export function createAgentRuntime({
       if (!run || run.id !== runId) return "terminated";
       if (TERMINAL_RUN_STATUSES.has(run.status)) return "terminated";
       if (run.status === "stopping") {
-        await cancelRunForStop(state, sessionState, state.stopReason);
+        await sessionState.lifecycle.cancelRunForStop(state.stopReason);
         return "stopped";
       }
       if (run.status === "interrupting" || state.controller?.signal.aborted) {
@@ -1227,7 +1000,7 @@ export function createAgentRuntime({
       // Task 10：优先安全点（下一次模型请求前）。点击「立即」发生在工具结果已
       // 完成、下一次模型请求尚未发出之间时，不再发当前输入的下一次模型请求，
       // 直接切换：旧输入 input_interrupted + 优先输入 input_started（同一批次）。
-      if (await switchToPriorityAtSafePoint(state, sessionState, runId, inputId)) {
+      if (await sessionState.lifecycle.switchToPriorityAtSafePoint(runId, inputId)) {
         return "interrupted";
       }
 
@@ -1385,7 +1158,7 @@ export function createAgentRuntime({
           return "interrupted"; // 停止/立即路径负责收敛
         }
         const compactionProjection = (await journal.getSession()).compaction;
-        await convergeCompactionCancelled(state, sessionState, compactionProjection);
+        await sessionState.lifecycle.convergeCompactionCancelled(compactionProjection);
         return "compaction_blocked";
       }
       if (preflightCompact && alreadyAttempted) {
@@ -1403,7 +1176,7 @@ export function createAgentRuntime({
             });
             continue; // 重新装配（volatile 已摘要化）后再预检
           }
-          await failRun(state, sessionState, runId, {
+          await sessionState.lifecycle.failRun(runId, {
             error: Object.assign(new Error("上下文仍超过硬窗口上限，无法发送。"), { code: "context_window_exceeded" }),
             inputId
           });
@@ -1538,11 +1311,11 @@ export function createAgentRuntime({
         // 必须以 partial safe reasoning 先闭合 reasoning，再用 failed/cancelled
         // 闭合 turn；turn 闭合失败不再加重失败（journal 已不可用时由崩溃恢复兜底）。
         await closeTurn({
-          outcome: isAbort(error, state) ? "cancelled" : "failed",
+          outcome: sessionState.lifecycle.isAbort(error) ? "cancelled" : "failed",
           reasoningText: partialReasoning.safeText
         }).catch(() => {});
-        if (isAbort(error, state)) return "interrupted";
-        await failRun(state, sessionState, runId, { error, inputId });
+        if (sessionState.lifecycle.isAbort(error)) return "interrupted";
+        await sessionState.lifecycle.failRun(runId, { error, inputId });
         return "failed";
       }
       // 成功：先 reasoning_completed 闭合 reasoning，最后 model_turn_completed。
@@ -1569,17 +1342,17 @@ export function createAgentRuntime({
       const afterCall = await journal.getSession();
       const runAfterCall = afterCall.active_run;
       if (!runAfterCall || runAfterCall.id !== runId || TERMINAL_RUN_STATUSES.has(runAfterCall.status)) {
-        await closeDroppedToolCalls(state, sessionState, toolCalls);
+        await sessionState.lifecycle.closeDroppedToolCalls(toolCalls);
         return "terminated";
       }
       if (runAfterCall.status === "stopping") {
-        await closeDroppedToolCalls(state, sessionState, toolCalls);
-        await cancelRunForStop(state, sessionState, state.stopReason);
+        await sessionState.lifecycle.closeDroppedToolCalls(toolCalls);
+        await sessionState.lifecycle.cancelRunForStop(state.stopReason);
         return "stopped";
       }
       if (runAfterCall.status === "interrupting" || state.controller?.signal.aborted) {
         // 被打断的模型回复不再处理；安全点后读取最新输入（被提升的输入）
-        await closeDroppedToolCalls(state, sessionState, toolCalls);
+        await sessionState.lifecycle.closeDroppedToolCalls(toolCalls);
         await journal.append({ type: "interrupt_safe_point_reached", run_id: runId, payload: {} });
         resetController(state);
         return "interrupted";
@@ -1590,8 +1363,8 @@ export function createAgentRuntime({
       // 旧输入 input_interrupted + 优先输入 input_started（同一批次）；纯文本响应
       // 不在此切换：A 以 input_completed 自然完成，由 advanceOrComplete 优先激活
       // D（不伪造中断，SPEC 3.3 rule 6）。
-      if (toolCalls && (await switchToPriorityAtSafePoint(state, sessionState, runId, inputId))) {
-        await closePrioritySkippedToolCalls(state, sessionState, toolCalls);
+      if (toolCalls && (await sessionState.lifecycle.switchToPriorityAtSafePoint(runId, inputId))) {
+        await sessionState.lifecycle.closePrioritySkippedToolCalls(toolCalls);
         return "interrupted";
       }
 
@@ -1603,24 +1376,24 @@ export function createAgentRuntime({
           const beforeTool = await journal.getSession();
           const runBeforeTool = beforeTool.active_run;
           if (!runBeforeTool || runBeforeTool.id !== runId || TERMINAL_RUN_STATUSES.has(runBeforeTool.status)) {
-            await closeDroppedToolCalls(state, sessionState, toolCalls.slice(index));
+            await sessionState.lifecycle.closeDroppedToolCalls(toolCalls.slice(index));
             return "terminated";
           }
           if (runBeforeTool.status === "stopping") {
-            await closeDroppedToolCalls(state, sessionState, toolCalls.slice(index));
-            await cancelRunForStop(state, sessionState, state.stopReason);
+            await sessionState.lifecycle.closeDroppedToolCalls(toolCalls.slice(index));
+            await sessionState.lifecycle.cancelRunForStop(state.stopReason);
             return "stopped";
           }
           if (runBeforeTool.status === "interrupting" || state.controller?.signal.aborted) {
-            await closeDroppedToolCalls(state, sessionState, toolCalls.slice(index));
+            await sessionState.lifecycle.closeDroppedToolCalls(toolCalls.slice(index));
             await journal.append({ type: "interrupt_safe_point_reached", run_id: runId, payload: {} });
             resetController(state);
             return "interrupted";
           }
           // Task 10：优先安全点（每个工具开始前）。尚未启动的调用（含当前）全部
           // 以 tool_skipped_for_priority_input 闭合 transcript 后切换到优先输入。
-          if (await switchToPriorityAtSafePoint(state, sessionState, runId, inputId)) {
-            await closePrioritySkippedToolCalls(state, sessionState, toolCalls.slice(index));
+          if (await sessionState.lifecycle.switchToPriorityAtSafePoint(runId, inputId)) {
+            await sessionState.lifecycle.closePrioritySkippedToolCalls(toolCalls.slice(index));
             return "interrupted";
           }
           // R5-5：截断工具参数拒绝。模型在 max_tokens 截断/流异常结束时产生的
@@ -1650,7 +1423,7 @@ export function createAgentRuntime({
             };
             volatileToolRecords.push(truncatedRecord);
             await appendSafeTranscript(journal, truncatedRecord);
-            const skippedRecords = await closeSkippedToolCalls(sessionState, toolCalls.slice(index + 1));
+            const skippedRecords = await sessionState.lifecycle.closeSkippedToolCalls(toolCalls.slice(index + 1));
             for (const record of skippedRecords) volatileToolRecords.push(record);
             break;
           }
@@ -1680,15 +1453,15 @@ export function createAgentRuntime({
           // Task 10：优先安全点（每个工具结束后）。点击「立即」时已有工具正在
           // 执行：只等待当前工具完成（结果已完整入历史，D 的模型请求可见），
           // 同一轮剩余未启动调用跳过，随后切换——不 abort 在途工具。
-          if (await switchToPriorityAtSafePoint(state, sessionState, runId, inputId)) {
-            await closePrioritySkippedToolCalls(state, sessionState, toolCalls.slice(index + 1));
+          if (await sessionState.lifecycle.switchToPriorityAtSafePoint(runId, inputId)) {
+            await sessionState.lifecycle.closePrioritySkippedToolCalls(toolCalls.slice(index + 1));
             return "interrupted";
           }
           // Task 3：前一个工具失败（真实领域失败）后，同一响应剩余未启动的调用
           // 不再执行，以 tool_skipped_after_failure 唯一闭合 transcript；取消/
           // 停止语义仍交给停止/中断路径闭合（closeDroppedToolCalls）
           if (toolResult?.ok === false && !TOOL_RESULT_CANCELLATION_CODES.has(toolResult.error?.code)) {
-            const skippedRecords = await closeSkippedToolCalls(sessionState, toolCalls.slice(index + 1));
+            const skippedRecords = await sessionState.lifecycle.closeSkippedToolCalls(toolCalls.slice(index + 1));
             for (const record of skippedRecords) volatileToolRecords.push(record);
             break;
           }
@@ -1704,7 +1477,7 @@ export function createAgentRuntime({
       if (streamedReply?.rawText && streamedReply.safeText !== safeText) {
         const error = new Error("Provider token stream 与最终正文不一致。");
         error.code = "provider_stream_mismatch";
-        await failRun(state, sessionState, runId, { error, inputId });
+        await sessionState.lifecycle.failRun(runId, { error, inputId });
         return "failed";
       }
       await appendSafeTranscript(journal, { role: "assistant", content: text });
@@ -1751,223 +1524,6 @@ export function createAgentRuntime({
     }
   }
 
-  // 输入完成后的队列推进 / Run 终结：在项目互斥锁内完成读-判-写，杜绝与 submit
-  // 的竞态（submit 恰落在「队列判空」与「run_completed 落盘」之间时，新输入会
-  // 滞留跨 Run 边界）。返回 "advance" | "compact" | "completed" | "interrupting"
-  // | "stopping" | "terminal" | "gone"。
-  async function advanceOrComplete(state, sessionState, runId) {
-    return state.mutex.run(async () => {
-      const session = await sessionState.journal.getSession();
-      const run = session.active_run;
-      if (!run || run.id !== runId) return "gone";
-      if (TERMINAL_RUN_STATUSES.has(run.status)) return "terminal";
-      if (run.status === "stopping") return "stopping";
-      if (run.status === "interrupting" || state.controller?.signal.aborted) return "interrupting";
-      // Task 10：优先输入在途时优先激活（A 已以普通文本自然完成 → input_completed
-      // 已落盘、active_input_id 为 null，这里只追加 input_started(D)；D 从队列移除
-      // 后 B 补位，B/C 相对顺序不变；不伪造中断）。
-      if (
-        session.priority_input_id != null &&
-        session.queued_inputs.some((item) => item.id === session.priority_input_id)
-      ) {
-        await sessionState.journal.append({
-          type: "input_started",
-          run_id: runId,
-          payload: { input_id: session.priority_input_id }
-        });
-        return "advance";
-      }
-      if (session.queued_inputs.length > 0) {
-        const head = session.queued_inputs[0];
-        if (head.kind === "compact") {
-          // Task 8：/compact 在安全点被"消费"——激活但不给终态事件（失败时
-          // compact item 必须保持无终态可重试/可取消），由 processCompact 收尾。
-          // Task 26：/compact 队列项服从同一输入生命周期（规格 3.2），激活用
-          // input_started（到达此处时活动输入已收敛，active_input_id 为 null）；
-          // reason 作为附加信息保留（reducer 不校验额外 payload 字段）。此激活
-          // 路径与 isCompactRunIdleInitiated 的「Run 首个 input_started 判定」互为
-          // 依据：空闲发起的 /compact 其首条 input_started 就是 compact item。
-          await sessionState.journal.append({
-            type: "input_started",
-            run_id: runId,
-            payload: { input_id: head.id, reason: "compact_safe_point" }
-          });
-          return "compact";
-        }
-        // Task 9 新生命周期：激活下一个排队输入（input_started 只激活不终结；
-        // 该输入的终态由 processInput 完成路径追加 input_completed）。
-        await sessionState.journal.append({
-          type: "input_started",
-          run_id: runId,
-          payload: { input_id: session.queued_inputs[0].id }
-        });
-        return "advance";
-      }
-      await sessionState.journal.append({ type: "run_completed", run_id: runId, payload: {} });
-      return "completed";
-    });
-  }
-
-  // 外层循环：逐个消费输入；队列清空且满足完成条件后 Run 终结。
-  // compaction_blocked（自动压缩失败/取消、手动压缩失败/空闲取消）必须显式
-  // 处理：复位 controller 并停止循环——绝不继续循环、绝不调用 run_completed。
-  async function runLoop(state, sessionState, runId) {
-    while (true) {
-      const session = await sessionState.journal.getSession();
-      const run = session.active_run;
-      if (!run || run.id !== runId) return;
-      if (TERMINAL_RUN_STATUSES.has(run.status)) return;
-      if (run.status === "stopping") {
-        await cancelRunForStop(state, sessionState, state.stopReason);
-        return;
-      }
-      if (run.status === "interrupting" || state.controller?.signal.aborted) {
-        await sessionState.journal.append({ type: "interrupt_safe_point_reached", run_id: runId, payload: {} });
-        resetController(state);
-        continue;
-      }
-
-      const inputId = run.active_input_id;
-      if (inputId === null) {
-        // 无活动输入：互斥锁内激活队首或自然终结（兜底路径）
-        const fallback = await advanceOrComplete(state, sessionState, runId);
-        if (fallback === "advance" || fallback === "compact" || fallback === "interrupting" || fallback === "stopping") continue;
-        return;
-      }
-
-      const inputMeta = await findInputMeta(sessionState.journal, inputId);
-      if (inputMeta.text === null) {
-        // 恢复的日志中找不到该输入（陈旧记录）：消费跳过，避免卡死。Task 26：
-        // 用 input_interrupted 闭合（活动输入未完成即丢弃；它是新生命周期唯一
-        // 可终结活动输入的非完成事件，reducer 校验 active_input_id === inputId
-        // 恰好在当前分支成立），旧 input_consumed 退役。
-        await sessionState.journal.append({ type: "input_interrupted", run_id: runId, payload: { input_id: inputId } });
-        continue;
-      }
-
-      if (inputMeta.kind === "compact") {
-        const compactOutcome = await processCompact(state, sessionState, runId, inputId, inputMeta.text);
-        if (compactOutcome === "compacted" || compactOutcome === "compaction_resumed") {
-          const after = await advanceOrComplete(state, sessionState, runId);
-          if (after === "advance" || after === "compact" || after === "interrupting" || after === "stopping") continue;
-          return; // completed / terminal / gone
-        }
-        if (compactOutcome === "interrupted") continue;
-        // compaction_blocked（失败 → waiting_user；空闲取消 → run_cancelled）
-        resetController(state);
-        return;
-      }
-
-      const outcome = await processInput(state, sessionState, runId, inputId, inputMeta.text);
-      if (outcome === "stopped" || outcome === "failed" || outcome === "terminated" || outcome === "compaction_blocked") {
-        if (outcome === "compaction_blocked") resetController(state);
-        return;
-      }
-      if (outcome === "interrupted") continue; // 立即：重新读取状态与被提升的输入
-
-      // 输入完成：互斥锁内复查队列并推进/终结（阻断 submit 竞态滞留）；
-      // "compact" = 队首是 /compact 已被安全点激活，继续循环处理
-      const after = await advanceOrComplete(state, sessionState, runId);
-      if (after === "advance" || after === "compact" || after === "interrupting" || after === "stopping") continue;
-      return; // completed / terminal / gone
-    }
-  }
-
-  // 启动（或接续）当前 Run 的循环。同项目一次只有一个循环：已绑定的循环返回
-  // 原 Promise；旧循环收尾期间的新 Run 先等待旧循环结束再开始（避免双循环）。
-  // firstTurn 信号：本轮循环第一次模型轮次开始（model_turn_started 已落盘）时
-  // resolve；submit 创建 Run 后等待它，保证调用方拿到控制权时模型轮次已在飞行
-  // （「立即」在飞行期间到达，被打断的输入才有可打断的活动），循环结束也 resolve
-  // 以免停止先于首轮时悬挂等待者。
-  function startLoop(state, sessionState, runId) {
-    if (state.loopPromise && state.runId === runId) return state.loopPromise;
-    const previous = state.loopPromise;
-    let resolveFirstTurn;
-    const firstTurn = new Promise((resolve) => {
-      resolveFirstTurn = resolve;
-    });
-    state.runId = runId;
-    // Task 4：记录当前飞行循环属于哪个会话（clearHistory 按此判断是否可复位
-    // 项目级循环状态——清空其他会话历史不得破坏运行中会话的可中断性）。
-    state.loopSessionId = sessionState.sessionId;
-    state.controller = new AbortController();
-    state.stopReason = "user_stop";
-    state.firstTurn = { promise: firstTurn, resolve: resolveFirstTurn, resolved: false };
-    const promise = (async () => {
-      if (previous) {
-        try {
-          await previous;
-        } catch {
-          // 旧循环异常已在其自身兜底；只等待收尾
-        }
-      }
-      try {
-        await runLoop(state, sessionState, runId);
-      } catch (error) {
-        // 兜底：循环异常时把 Run 收敛为 failed，绝不悬挂项目
-        try {
-          const session = await sessionState.journal.getSession();
-          const run = session.active_run;
-          if (run && run.id === runId && !TERMINAL_RUN_STATUSES.has(run.status)) {
-            await failRun(state, sessionState, runId, {
-              error: { message: String(error?.message ?? error), code: "runtime_error" },
-              inputId: run.active_input_id
-            });
-          }
-        } catch {
-          // journal 已不可用：放弃
-        }
-      } finally {
-        state.firstTurn?.resolve();
-        if (state.loopPromise === promise) {
-          state.loopPromise = null;
-          state.runId = null;
-          state.loopSessionId = null;
-          state.controller = null;
-          state.firstTurn = null;
-          // Run 结束：清掉 skill catalog 记忆，下次 Run 重新发现（技能可能已变更）。
-          state.catalogCache = null;
-        }
-      }
-    })();
-    state.loopPromise = promise;
-    return promise;
-  }
-
-  // 等待循环开始第一次模型轮次（或循环结束），带超时兜底。
-  // 超时兜底必须显式 clearTimeout：Promise.race 不会取消落选方，遗留的 10s
-  // 定时器会让进程空转（Task 7 观测到的残留 handle，focused tests 无法退出）。
-  async function waitForFirstTurn(state) {
-    const signal = state.firstTurn;
-    if (!signal) return;
-    let timer = null;
-    const timeout = new Promise((resolve) => {
-      timer = setTimeout(() => {
-        if (!signal.resolved) {
-          signal.resolved = true;
-          signal.resolve();
-        }
-        resolve();
-      }, 10000);
-    });
-    await Promise.race([signal.promise, timeout]);
-    clearTimeout(timer);
-  }
-
-  // -------------------------------------------------------------------------
-  // 等待辅助（stop 与运行中循环的安全点衔接）
-  // -------------------------------------------------------------------------
-
-  async function waitForIdle(state, sessionState, { timeoutMs = IDLE_WAIT_TIMEOUT_MS } = {}) {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const session = await sessionState.journal.getSession();
-      if (session.status === "idle") return;
-      await sleep(10);
-    }
-    throw fail("stop_timeout", "等待 Run 停止超时。");
-  }
-
   // -------------------------------------------------------------------------
   // 公共接口
   // -------------------------------------------------------------------------
@@ -1996,7 +1552,7 @@ export function createAgentRuntime({
     const compactionBlocked =
       session.compaction != null && COMPACTION_RESUME_BLOCKED_STATES.includes(session.compaction.state);
     if (run && !TERMINAL_RUN_STATUSES.has(run.status) && !compactionBlocked) {
-      startLoop(state, sessionState, run.id);
+      sessionState.lifecycle.startLoop(run.id);
     }
     // session_id 返回注册表 id（外部书签）；status 为恢复后的会话状态。
     return { session_id: targetId, status: session.status };
@@ -2018,7 +1574,9 @@ export function createAgentRuntime({
     const kind = text === "/compact" ? "compact" : undefined;
     // 互斥锁内只做会话解析、串行门、读-判-写与循环启动；waitForFirstTurn 必须在
     // 锁外等待（循环的安全点路径 cancelRunForStop/advanceOrComplete 需要取同一把
-    // 锁，锁内等待会死锁）。
+    // 锁，锁内等待会死锁）。sessionState 提升到函数级：锁外
+    // lifecycle.waitForFirstTurn 需要持锁内物化的会话状态。
+    let sessionState = null;
     const created = await state.mutex.run(async () => {
       // 1) 会话解析：显式 sessionId → 校验存在；缺省 → 最近活跃；都没有 → 惰性
       //    创建新会话（registry.create + journal 首次 load 写 session_created）。
@@ -2040,7 +1598,7 @@ export function createAgentRuntime({
         const meta = await state.registry.create({ title: deriveSessionTitle(text) });
         targetId = meta.session_id;
       }
-      const sessionState = await ensureSessionState(state, targetId);
+      sessionState = await ensureSessionState(state, targetId);
       // 4) 恢复可恢复 Run（等价旧 submit → open() 的启动恢复）：非终态且未被压缩
       //    阻塞 → 接续执行（新输入在下方 FIFO 排队在其后）。串行门已保证没有
       //    其他会话的飞行循环，此处启动是安全的。
@@ -2049,7 +1607,7 @@ export function createAgentRuntime({
       const compactionBlocked =
         session.compaction != null && COMPACTION_SEND_BLOCKED_STATES.includes(session.compaction.state);
       if (run && !TERMINAL_RUN_STATUSES.has(run.status) && !compactionBlocked) {
-        startLoop(state, sessionState, run.id);
+        sessionState.lifecycle.startLoop(run.id);
       }
       // 5) 现有 FIFO / 新 Run 逻辑（作用于目标会话的 journal）
       const inputId = idFactory();
@@ -2075,7 +1633,7 @@ export function createAgentRuntime({
             payload: { input_id: inputId }
           }
         ]);
-        startLoop(state, sessionState, runId);
+        sessionState.lifecycle.startLoop(runId);
         result = { input_id: inputId, run_id: runId, queued: false, session_id: targetId };
       } else {
         // 运行中：FIFO 队列（/compact 不打断当前模型/工具，按普通消息排队）
@@ -2094,7 +1652,7 @@ export function createAgentRuntime({
     if (!created.queued) {
       // 等待第一个模型轮次开始（或循环已结束）：保证调用方拿到控制权时
       // 「立即」/「停止」有飞行中的活动可打断（输入落盘仍先于 resolve）
-      await waitForFirstTurn(state);
+      await sessionState.lifecycle.waitForFirstTurn();
     }
     return created;
   }
@@ -2254,11 +1812,11 @@ export function createAgentRuntime({
     }
     const { sessionState } = outcome;
     if (outcome.alreadyStopping) {
-      await waitForIdle(state, sessionState);
+      await sessionState.lifecycle.waitForIdle();
       return { session_id: sessionState.sessionId, run_id: outcome.run_id, cancelled: true };
     }
     abortController(state);
-    await waitForIdle(state, sessionState);
+    await sessionState.lifecycle.waitForIdle();
     await syncSessionRegistry(state, sessionState);
     return { session_id: sessionState.sessionId, run_id: outcome.run_id, cancelled: true };
   }
@@ -2306,7 +1864,7 @@ export function createAgentRuntime({
         payload: { input_id: inputId }
       });
       await syncSessionRegistry(state, sessionState);
-      startLoop(state, sessionState, runId);
+      sessionState.lifecycle.startLoop(runId);
       return { run_id: runId, input_id: inputId, retried: true };
     });
   }
@@ -2373,7 +1931,7 @@ export function createAgentRuntime({
           }
         }
       });
-      startLoop(state, sessionState, run.id);
+      sessionState.lifecycle.startLoop(run.id);
       await syncSessionRegistry(state, sessionState);
       return { status: "completed", compaction_id: compactionId, attempt: outcome.attempt };
     }
@@ -2393,7 +1951,7 @@ export function createAgentRuntime({
     }
     // cancelled（ESC 中断重试）：取消收敛（input_cancelled + run_cancelled / 恢复）
     const compactionNow = (await sessionState.journal.getSession()).compaction;
-    await convergeCompactionCancelled(state, sessionState, compactionNow);
+    await sessionState.lifecycle.convergeCompactionCancelled(compactionNow);
     await syncSessionRegistry(state, sessionState);
     return { status: "cancelled", compaction_id: compactionId };
   }
@@ -2430,7 +1988,7 @@ export function createAgentRuntime({
         checkpoint_id: outcome?.checkpoint_id ?? compactionNow?.checkpoint_id ?? null
       };
     }
-    await convergeCompactionCancelled(state, sessionState, compactionNow);
+    await sessionState.lifecycle.convergeCompactionCancelled(compactionNow);
     await syncSessionRegistry(state, sessionState);
     return { status: "cancelled", compaction_id: compactionId };
   }
