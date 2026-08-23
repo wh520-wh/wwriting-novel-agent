@@ -438,6 +438,8 @@ try {
 
   // 修订入账 mock：模型直接写正式章文件 + finalize_revision 入账 + 记忆三件套 → 自主结束
   const revGateway = createMockGateway([
+    // 第十六轮 D1：动笔前必查前情（政策规矩的模拟履行）
+    { reply: { toolCalls: [tool("read_continuity", {})] } },
     { reply: { toolCalls: [tool("write_file", { path: "chapters/001.md", content: LONG_PROSE_REVISED })] } },
     // 编辑正式章后必须 finalize_revision 重新入账（C1 新语义：正文可直编 + 入账）
     { reply: { toolCalls: [tool("finalize_revision", { project_id: revProject.project_id, chapter_no: 1 })] } },
@@ -476,6 +478,12 @@ try {
   const checkpointId = revEvents.find((e) => e.type === "checkpoint_linked")?.payload?.checkpoint_id ?? null;
   const revisedContent = await fs.readFile(revFinalPath, "utf8");
   const contentOk = revisedContent.includes("修订：第二日清晨");
+
+  // 第十六轮 T7：写章节前先查前情（read_continuity 先于 write_file）
+  const briefBefore = revToolCalls.indexOf("read_continuity") >= 0
+    && revToolCalls.indexOf("read_continuity") < revToolCalls.indexOf("write_file");
+  record("写章节前先查前情（read_continuity 先于 write_file）", briefBefore,
+    `工具序列=${revToolCalls.join("→")}`, [path.join(store.agentRootFor(revRoot), "sessions")]);
 
   // mock 模式：阶段级固定断言（real 模式下模型行为不确定，跳过阶段级断言）
   if (!USE_REAL_API) {
