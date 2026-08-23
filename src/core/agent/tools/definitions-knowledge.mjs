@@ -89,7 +89,7 @@ export function knowledgeToolDefinitions(h) {
 
     update_memory: {
       interruptible: false,
-      description: "把本章新增或被修正的客观设定（事实/时间线/角色）增量合并进设定档案（memory/continuity.json，系统校验章节存在后原子落盘并重渲染 continuity.md）。只交新增或修正项，系统去重并标记冲突；只收客观设定，不收主观评价；摘要与工作日志不归本工具管（请用 write_file/edit_file 更新 book_summary.md 与 WORKLOG.md）。",
+      description: "把本章新增或被修正的客观设定（事实/时间线/角色/伏笔）增量合并进设定档案（memory/continuity.json，系统校验章节存在后原子落盘并重渲染 continuity.md）。只交新增或修正项，系统去重并标记冲突；只收客观设定，不收主观评价；摘要与工作日志不归本工具管（请用 write_file/edit_file 更新 book_summary.md 与 WORKLOG.md）。伏笔记法：新埋伏笔只交 content 与可选 expected_payoff_hint；回收旧伏笔交原文 content + status=\"paid\"（content 必须与埋设时完全一致）。",
       schema: {
         type: "object",
         properties: {
@@ -97,7 +97,8 @@ export function knowledgeToolDefinitions(h) {
           chapter_no: { type: "integer", minimum: 1 },
           facts: { type: "array" },
           timeline: { type: "array" },
-          characters: { type: "array" }
+          characters: { type: "array" },
+          foreshadows: { type: "array", description: "本章伏笔变动：新埋 {content, expected_payoff_hint?}；回收 {content, status: \"paid\"}" }
         },
         required: ["project_id", "chapter_no"],
         additionalProperties: false

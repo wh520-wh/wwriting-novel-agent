@@ -141,7 +141,7 @@ export function chapterToolDefinitions(h) {
 
     commit_chapter: {
       interruptible: false, // 正式章节事务是原子提交，不可中断
-      description: "正式提交一章：真实字数记录、正式文件、章节索引、章节记忆与 checkpoint 一致更新（只保留存储安全约束，不做字数/标题/技能内容门禁）。结果中的 memory_checklist 是固定的记忆维护提醒：提交后必须依次 update_memory → 更新 book_summary.md → 更新 WORKLOG.md。actual_words 与 count_text 的 effective_count 为同一口径（中文字符 + 英文单词 + 数字记号）。",
+      description: "正式提交一章：真实字数记录、正式文件、章节索引、章节记忆与 checkpoint 一致更新（只保留存储安全约束，不做字数/标题/技能内容门禁）。结果中的 memory_checklist 是固定的记忆维护提醒：提交后必须依次 update_memory（含伏笔）→ 更新 book_summary.md → 更新 WORKLOG.md。actual_words 与 count_text 的 effective_count 为同一口径（中文字符 + 英文单词 + 数字记号）。",
       schema: {
         type: "object",
         properties: {
@@ -188,7 +188,7 @@ export function chapterToolDefinitions(h) {
     finalize_revision: {
       interruptible: false, // 确认修订是原子入账事务，不可中断
       description:
-        "确认正式章节文件的修订并重新入账：重算字数/校验和、更新章节索引/章节记忆/checkpoint，并记录修订事件。结果中的 memory_checklist 是固定的记忆维护提醒：入账后必须依次 update_memory → 更新 book_summary.md → 更新 WORKLOG.md。",
+        "确认正式章节文件的修订并重新入账：重算字数/校验和、更新章节索引/章节记忆/checkpoint，并记录修订事件。结果中的 memory_checklist 是固定的记忆维护提醒：入账后必须依次 update_memory（含伏笔）→ 更新 book_summary.md → 更新 WORKLOG.md。",
       schema: {
         type: "object",
         properties: {
@@ -236,7 +236,7 @@ export function chapterToolDefinitions(h) {
     rollback_chapter: {
       interruptible: false, // 回滚是原子写回 + 重新入账事务，不可中断
       description:
-        "把章节回滚到指定版本（缺省 = 上一版）：写回正式文件、重新入账、存档回滚版本；覆盖前当前内容自动存为回滚前存档（可再恢复）。结果中的 memory_checklist 是固定的记忆维护提醒：回滚后必须依次 update_memory → 更新 book_summary.md → 更新 WORKLOG.md。",
+        "把章节回滚到指定版本（缺省 = 上一版）：写回正式文件、重新入账、存档回滚版本；覆盖前当前内容自动存为回滚前存档（可再恢复）。结果中的 memory_checklist 是固定的记忆维护提醒：回滚后必须依次 update_memory（含伏笔）→ 更新 book_summary.md → 更新 WORKLOG.md。",
       schema: {
         type: "object",
         properties: {

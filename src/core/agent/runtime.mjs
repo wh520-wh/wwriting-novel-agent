@@ -86,7 +86,7 @@ export function cacheHitRateOf(stats) {
 
 // 第九轮：派生记忆提取器退役。commit/finalize/rollback 结果附加固定记忆维护
 // 提醒（memory_checklist），记忆由模型自调用 update_memory 工具维护。
-const MEMORY_CHECKLIST = "记忆维护：请依次 update_memory → 更新 book_summary.md → 更新 WORKLOG.md";
+const MEMORY_CHECKLIST = "记忆维护：请依次 update_memory（含新埋（open）与回收（paid）的伏笔） → 更新 book_summary.md → 更新 WORKLOG.md";
 const withMemoryChecklist = (result) => ({ ...(result ?? {}), memory_checklist: MEMORY_CHECKLIST });
 
 const SOURCES = new Set(["chat", "maintenance"]);
