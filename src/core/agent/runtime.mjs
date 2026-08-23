@@ -1,35 +1,14 @@
-// src/core/agent/runtime.mjs —— 唯一模型/工具循环、队列、中断、停止、重试（Task 6）。
+// src/core/agent/runtime.mjs —— 编排内核（第十五轮波A收口后）。
 //
 // 深模块内部实现：生产调用方只能经 src/core/agent/index.mjs 使用；tests/agent/ 可以
-// 测试本模块内部 seam。本文件是 ProjectAgent 的编排核心：
-//
-//   - 每个项目一个长期 AgentSession；项目空闲时 submit 创建新 AgentRun，运行中
-//     submit 进入同一 Session 的 FIFO 队列（Rule 1-2）。
-//   - 同一项目一次只执行一个 AgentRun（一个模型/工具循环）；不同项目互不共享锁，
-//     可以并行运行。
-//   - 模型循环：消费活动输入 → assemblePrompt（runtime policy / AGENTS.md /
-//     Available Skills 目录摘要 / agent task policy / dynamic context / history /
-//     currentInput）→ gateway.complete →
-//     工具调用逐个 tools.execute（权限/确认/decision 流程）→ 结果入 transcript →
-//     循环直到模型无工具调用且队列清空，Run 终结。
-//   - 立即（requestPriority，Task 9/10）：priority_input_requested 只标记
-//     priority_input_id，不 abort 在途模型请求/工具（SPEC 3.3 rule 2）；在安全点
-//     （模型响应后、每个工具前后、下次模型调用前）原子切换（input_interrupted +
-//     input_started，旧活动输入 grant 清除），同一 Run 继续消费优先输入；被打断
-//     输入不回队、不重跑；剩余输入保持顺序。旧 promote（interrupt_requested +
-//     input_promoted 立即打断）已退役（Task 26）。
-//   - 停止（stop）：写入 stopping 状态、abort 信号、等待当前原子操作，之后为每个
-//     未消费输入追加 input_cancelled、清除全部 grant 并 run_cancelled。
-//   - retry：继续同一 failed/interrupted Run（transcript 作历史、checkpoint 由
-//     project operations 守护），journal 以同 id 的 run_started 恢复。
-//   - 章节提交与记忆维护解耦（第九轮）：commit/finalize/rollback 结果附加固定
-//     memory_checklist 字符串提醒模型调用 update_memory 工具维护记忆。
-//   - 模型调用失败路径必须闭合 model turn（补 model_turn_completed），绝不留下
-//     dangling assistant 活动（journal 恢复会把它们标记为 interrupted）。
-//
-// 状态机：run_status_changed 流转 idle→running→(waiting_user↔running)→
-// completed/failed/cancelled/interrupted；interrupting/stopping 是中间态
-//（interrupt_requested/stopping 写入后、安全点到达前）。
+// 测试本模块内部 seam。本文件只做编排：组合根注入 → 项目/会话物化（sessionState
+// 组装 journal/tools/history/compaction/run-lifecycle/session-manager 域模块）→
+// Run 循环编排（队列/安全点/收敛接线）；域职责见各模块头注释（run-lifecycle：
+// 停止/优先切换/失败收束；session-manager：会话 CRUD；history-assembly：历史
+// 装配；compaction：压缩状态机与源材料构建）。
+// 承重不变式：模型调用失败必须闭合 model turn（补 model_turn_completed），绝不
+// 留下 dangling assistant 活动；事件真相与 crash 对账在 journal.mjs（各域模块
+// 不直接落盘）。
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -37,38 +16,29 @@ import { randomUUID } from "node:crypto";
 import { buildProcessRestartedConvergence, createAgentJournal, persistentToolResult, TERMINAL_RUN_STATUSES } from "./journal.mjs";
 import { createSessionRegistry } from "./session-registry.mjs";
 import { createToolRuntime } from "./tools/index.mjs";
-import { assemblePrompt, estimateTokens } from "./prompt.mjs";
+import { assemblePrompt } from "./prompt.mjs";
 import {
   estimateRequestUsage,
   observeProviderUsage,
   shouldCompact,
-  exceedsHardWindow,
-  OUTPUT_SAFETY_RESERVE
+  exceedsHardWindow
 } from "./context-window.mjs";
 import { createContextCheckpointStore } from "./context-checkpoints.mjs";
 import {
+  buildCompactionSource,
   createCompactionCoordinator,
   COMPACTION_NON_TERMINAL_STATES,
   COMPACTION_RESUME_BLOCKED_STATES,
   COMPACTION_SEND_BLOCKED_STATES
 } from "./compaction.mjs";
-import {
-  COMPACTION_PROMPT,
-  DEFAULT_MIN_PROTECTED_TURNS,
-  DEFAULT_TOOL_OUTPUT_THRESHOLD,
-  buildToolOutputSummary,
-  selectProtectedRecentTurns
-} from "./compaction-prompt.mjs";
-// Task 7（F5a）：历史装配层拆到 history-assembly.mjs——纯转换函数在此 import
-// 供 buildCompactionSource 使用；HISTORY_PAGE_LIMIT 以本模块为单一来源。
+// Task 7（F5a）：历史装配层拆到 history-assembly.mjs——HISTORY_PAGE_LIMIT 以
+// 本模块为单一来源；Task 10（F5d）buildCompactionSource 迁入 compaction.mjs 后，
+// 纯转换函数（buildTurnsFromTranscript/transcriptToMessages/collectOpenToolCalls/
+// summarizeLargeToolMessages）由该模块直接 import，此处不再转发。
 import {
   HISTORY_PAGE_LIMIT,
-  buildTurnsFromTranscript,
-  collectOpenToolCalls,
   createHistoryAssembly,
-  degradeVolatileToolRecords,
-  summarizeLargeToolMessages,
-  transcriptToMessages
+  degradeVolatileToolRecords
 } from "./history-assembly.mjs";
 import { loadProject, loadChapterIndex } from "../project-store.mjs";
 import { pathExists } from "../fs-utils.mjs";
@@ -139,12 +109,6 @@ const SOURCES = new Set(["chat", "maintenance"]);
 
 const ASSISTANT_DELTA_FLUSH_MS = 24;
 const ASSISTANT_DELTA_MAX_PENDING_CHARS = 2048;
-
-// Task 8/I1：压缩源材料预算——早期历史逐字内容（summarized_history）封顶为窗口的
-// 该比例，保证压缩请求自身能装进上下文窗口（预算只裁剪"已早于受保护窗口"的最旧
-// 轮次，受保护近期原文与旧 checkpoint 摘要不受影响；封顶后的最终估算仍由
-// buildCompactionSource 的窗口预检把关）。
-const COMPACTION_SOURCE_BUDGET_RATIO = 0.5;
 
 // Task 9（F5c 第十五轮）：会话标题派生、注册表同步、自动命名与删除守卫
 //（deriveSessionTitle/syncSessionRegistry/autoNameSessionIfDefault/
@@ -307,7 +271,8 @@ export function createAgentRuntime({
         buildCompactionSource({
           journal,
           checkpointStore,
-          storageRoot,
+          resolveWorkspaceConfig,
+          modelConfigOf,
           ...params,
           // 进程重启后的 retry 走协调器重建路径，entry.projectRoot 为空——
           // 闭包默认注入本项目根，供 buildCompactionSource 解析当前 modelConfig。
@@ -537,213 +502,6 @@ export function createAgentRuntime({
     };
   }
 
-  // Task 8：压缩源材料（coordinator 经 buildInput 注入调用）。读取 active
-  // checkpoint（若有）→ 重建 delta 轮次 → selectProtectedRecentTurns → 生成
-  // sourceMaterial / recent_messages / sourceState。无 checkpoint 且没有早于
-  // 受保护窗口的历史时返回 noop（不调用模型）。
-  async function buildCompactionSource({
-    journal,
-    checkpointStore,
-    storageRoot,
-    sourceCheckpointId = null,
-    trigger = "automatic",
-    modelConfig = null,
-    session = null,
-    projectRoot = null
-  } = {}) {
-    // 进程重启后的压缩 retry：协调器 entry 无内存 modelConfig——按 projectRoot
-    // 解析当前有效配置（modelConfigOf(resolveWorkspaceConfig)），保证候选校验的
-    // configured_model_id/model_name 与压缩请求的 modelConfig 始终可用。
-    let effectiveModelConfig = modelConfig;
-    if (effectiveModelConfig == null && typeof projectRoot === "string" && projectRoot.length > 0) {
-      try {
-        const project = await resolveWorkspaceConfig(projectRoot);
-        effectiveModelConfig = modelConfigOf(project);
-      } catch {
-        effectiveModelConfig = null;
-      }
-    }
-    const pointer = await checkpointStore.readActive();
-    let oldCheckpoint = null;
-    if (pointer.checkpoint_id != null) {
-      oldCheckpoint = await checkpointStore.readCheckpointFile(pointer.checkpoint_id).catch(() => null);
-    }
-    const fromSeq = oldCheckpoint?.source_transcript_seq?.end ?? 0;
-    const delta =
-      fromSeq > 0 ? await journal.readTranscriptAfter({ afterSeq: fromSeq }) : await journal.readTranscript();
-    const lastTailSeq = delta.at(-1)?.transcript_seq ?? fromSeq;
-    const turns = buildTurnsFromTranscript(delta);
-    const window =
-      Number.isFinite(effectiveModelConfig?.effective_context_window) && effectiveModelConfig.effective_context_window > 0
-        ? effectiveModelConfig.effective_context_window
-        : 256_000;
-    const targetTokens = Math.round(window * 0.25);
-    let { protected_turns, summarized_turns: allSummarizedTurns } = selectProtectedRecentTurns({ turns, targetTokens });
-    // 手动 /compact 是作者显式请求释放上下文。自动压缩仍保留最近 12 轮，
-    // 但手动命令不能因会话尚未达到 12 轮就永远 no-op：保留最低 2 轮，其余
-    // 已完成轮次交给同一摘要/checkpoint 链路。没有超过最低保留量时继续 noop。
-    if (trigger === "manual" && allSummarizedTurns.length === 0 && protected_turns.length > DEFAULT_MIN_PROTECTED_TURNS) {
-      ({ protected_turns, summarized_turns: allSummarizedTurns } = selectProtectedRecentTurns({
-        turns,
-        targetTokens,
-        maxProtectedTurns: DEFAULT_MIN_PROTECTED_TURNS
-      }));
-    }
-    // 没有任何旧轮次可纳入摘要时，默认 noop（刚完成压缩而没有新消息时，不得为
-    // 同一内容重复调用模型）。例外：被保护轮内存在已截断的大工具输出时仍要压缩——
-    // 上下文 90% 可能是「少数轮次 + 超大工具输出」撑起来的（轮数 ≤12 不触发驱逐，
-    // 但 recent_messages 摘要化能释放大量占用），不压缩会让下一次发送再次触发
-    // 同一 noop 判定，永久无法压缩。
-    const hasSummarizedToolOutput = (turns) =>
-      (turns ?? []).some((turn) => (turn?.tool_activities ?? []).some((activity) => activity?.summarized_output === true));
-    if (allSummarizedTurns.length === 0 && !hasSummarizedToolOutput(protected_turns)) {
-      return { noop: true, reason: "nothing_to_compact" };
-    }
-    // I1：预算封顶。summarized_history 是最早的轮次、逐字进入压缩请求——100k+ 轮次
-    // transcript 的首次压缩若原样拼接会让请求超过窗口（provider 拒绝 → Run 永久卡在
-    // waiting_user，retry 同源同结果）。按每轮估算（与 sourceMaterial 逐字投影同口径）
-    // 从最旧轮次开始裁剪，保留紧邻受保护窗口的最新被摘要轮次；拼接前裁剪还约束了
-    // JSON.stringify 的内存。
-    let summarized_turns = allSummarizedTurns;
-    const sourceBudgetTokens = Math.floor(window * COMPACTION_SOURCE_BUDGET_RATIO);
-    if (sourceBudgetTokens > 0 && summarized_turns.length > 0) {
-      const kept = [];
-      let used = 0;
-      for (let i = summarized_turns.length - 1; i >= 0; i -= 1) {
-        const inc = estimateTokens(
-          JSON.stringify({
-            user: summarized_turns[i].user_text,
-            assistant: summarized_turns[i].assistant_text,
-            tool_activities: summarized_turns[i].tool_activities ?? []
-          })
-        );
-        if (kept.length > 0 && used + inc > sourceBudgetTokens) break;
-        kept.push(summarized_turns[i]);
-        used += inc;
-      }
-      summarized_turns = kept.reverse();
-    }
-    // 压缩请求瘦身：模型只需要总结「早期历史」（summarized_history + 旧摘要），
-    // 不需要被保护轮全文——它们压缩后原样保留在 checkpoint.recent_messages 中，
-    // 模型下一轮自然可见。protected_recent_turns 只带轻量线索（轮次序号/用户输入
-    // 开头/工具活动名），避免 12 轮大正文 + 大工具输出把压缩请求本身撑爆窗口
-    // （source_exceeds_window → 无法压缩）。
-    const PROTECTED_PREVIEW_CHARS = 200;
-    const sourceMaterial = JSON.stringify(
-      {
-        old_summary: oldCheckpoint?.summary ?? null,
-        old_recent_messages: summarizeLargeToolMessages(oldCheckpoint?.recent_messages ?? []),
-        summarized_history: summarized_turns.map((turn) => ({
-          user: turn.user_text,
-          assistant: turn.assistant_text,
-          tool_activities: turn.tool_activities ?? []
-        })),
-        protected_recent_turns: protected_turns.map((turn) => ({
-          seq_start: Number.isInteger(turn.transcript_seq_start) ? turn.transcript_seq_start : null,
-          seq_end: Number.isInteger(turn.transcript_seq_end) ? turn.transcript_seq_end : null,
-          user: String(turn.user_text ?? "").slice(0, PROTECTED_PREVIEW_CHARS),
-          assistant: String(turn.assistant_text ?? "").slice(0, PROTECTED_PREVIEW_CHARS),
-          tool_activities: (turn.tool_activities ?? []).map((activity) => ({
-            name: activity?.name ?? null,
-            status: activity?.status ?? null,
-            summarized_output: activity?.summarized_output ?? false,
-            result_summary: activity?.summarized_output === true ? (activity?.result_summary ?? null) : null
-          }))
-        }))
-      },
-      null,
-      2
-    );
-    // 受保护轮内被摘要化（大输出 → 截断摘要）的活动索引：checkpoint 的
-    // recent_messages 必须用摘要化后的消息链重建，否则压缩后 active context 仍
-    // 保留大工具输出全文，「压缩完还是 90%」的根因。
-    const summarizedByCallId = new Map();
-    for (const turn of protected_turns) {
-      for (const activity of turn?.tool_activities ?? []) {
-        if (activity?.summarized_output === true && activity.tool_call_id != null) {
-          summarizedByCallId.set(activity.tool_call_id, activity);
-        }
-      }
-    }
-    // checkpoint 近期原文 = 受保护轮次范围内的原始消息链（复用线上消息转换，
-    // 保证 assistant tool_calls 以 { id, type, function } 形状进入后续请求）。
-    // 被摘要化的大输出替换为 { name, result_summary, journal_ref } 占位文本。
-    const minProtectedSeq = Math.min(
-      ...protected_turns.map((turn) => (Number.isInteger(turn.transcript_seq_start) ? turn.transcript_seq_start : Infinity))
-    );
-    const recentMessages = transcriptToMessages(
-      delta
-        .filter((record) => record.transcript_seq == null || record.transcript_seq >= minProtectedSeq)
-        .map((record) => {
-          if (record?.role !== "tool") return record;
-          const activity = summarizedByCallId.get(record.tool_call_id ?? null);
-          if (activity == null) return record;
-          const ref = activity.journal_ref != null ? `（完整内容见 Journal ${activity.journal_ref}）` : "";
-          return {
-            ...record,
-            content: `[工具输出已摘要] ${activity.name ?? "tool"}：${activity.result_summary ?? ""}${ref}`
-          };
-        })
-    );
-    const openToolCalls = collectOpenToolCalls(protected_turns, oldCheckpoint?.open_tool_calls ?? []);
-    const sourceState = {
-      source_checkpoint_id: pointer.checkpoint_id ?? null,
-      source_seq: { start: 1, end: Math.max(journal.lastSeq ?? 0, 1) },
-      source_transcript_seq: { start: 1, end: lastTailSeq },
-      configured_model_id: effectiveModelConfig?.configured_model_id ?? null,
-      provider_model_id: effectiveModelConfig?.model_name ?? null,
-      trigger,
-      effective_context_window: window,
-      target_tokens: targetTokens,
-      current_task: oldCheckpoint?.summary?.current_task ?? "",
-      user_confirmed_decisions: oldCheckpoint?.summary?.user_confirmed_decisions ?? [],
-      pending_steps: oldCheckpoint?.summary?.pending_steps ?? [],
-      open_tool_calls: openToolCalls,
-      reload_from_workspace: oldCheckpoint?.reload_from_workspace ?? []
-    };
-    const estimatedTokensBefore = estimateRequestUsage({
-      messages: [{ role: "user", content: sourceMaterial }, ...recentMessages],
-      tools: [],
-      effectiveContextWindow: window
-    }).used_tokens;
-    // I1 预检：压缩请求自身（固定指令 + sourceMaterial）必须能装进窗口。超限直接
-    // 拒绝（coordinator 按 compaction_source_exceeds_window 快速失败、不调用模型），
-    // 绝不把超窗请求发给 provider——provider 拒绝只会让 Run 永久卡在 waiting_user。
-    // 预算封顶已把常规超限消解掉，此检查是受保护近期原文/旧摘要超大时的兜底。
-    const compactionRequestEstimate = estimateRequestUsage({
-      messages: [
-        { role: "system", content: COMPACTION_PROMPT },
-        { role: "user", content: sourceMaterial }
-      ],
-      tools: [],
-      effectiveContextWindow: window
-    }).used_tokens;
-    if (compactionRequestEstimate + OUTPUT_SAFETY_RESERVE >= window) {
-      return {
-        noop: false,
-        too_large: true,
-        reason: "source_exceeds_window",
-        sourceMaterial,
-        sourceState,
-        recent_messages: recentMessages,
-        open_tool_calls: openToolCalls,
-        reload_from_workspace: sourceState.reload_from_workspace,
-        estimated_tokens_before: estimatedTokensBefore,
-        modelConfig: effectiveModelConfig
-      };
-    }
-    return {
-      sourceMaterial,
-      sourceState,
-      recent_messages: recentMessages,
-      open_tool_calls: openToolCalls,
-      reload_from_workspace: sourceState.reload_from_workspace,
-      estimated_tokens_before: estimatedTokensBefore,
-      modelConfig: effectiveModelConfig,
-      noop: false
-    };
-  }
-
   // 落盘脱敏与 transcript 写入归位 journal（第十五轮 Task 4）：appendSafeTranscript
   // 已是 journal 工厂方法（脱敏实现由 createAgentJournal 的 redactText 注入），
   // 此处保留薄委托，既有调用点（appendSafeTranscript(journal, record)）零改动。
@@ -833,11 +591,11 @@ export function createAgentRuntime({
     const built = await buildCompactionSource({
       journal: sessionState.journal,
       checkpointStore: sessionState.checkpointStore,
-      storageRoot: sessionState.storageRoot,
+      resolveWorkspaceConfig,
+      modelConfigOf,
       sourceCheckpointId: null,
       trigger: "manual",
       modelConfig,
-      session,
       projectRoot: state.key
     });
     if (built.noop) {
