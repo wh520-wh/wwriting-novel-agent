@@ -1,5 +1,7 @@
 # WWriting Novel Agent
 
+[English](README.en.md) | 简体中文
+
 **把长篇小说写作当作工程来管理的本地桌面智能体。**
 
 ---
