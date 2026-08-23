@@ -4,39 +4,18 @@
 
 ---
 
-## 🚀 重磅升级：统一 Agent 内核与对话控制面
+## 当前版本：v0.5.0
 
-> **v2 架构：一个 Agent 内核、一个项目会话、一个聊天控制面。** 本次升级用一次有边界的直接重构替换了历史形成的双 Agent 编排与多套对话 UI，项目看起来像围绕一个内核连贯设计出来的。
+> 自 v0.4.0 以来经历八轮迭代（多会话、模型配置重构、技能插件化、记忆体系、内核分区重构），完整变更见 [CHANGELOG.md](CHANGELOG.md)。以下架构描述仍以 v0.4.0 奠定的统一内核为基础，v0.5.0 在其上重构了 agent 内核、模型层与前端控制面的内部结构，对外接口与写作体验保持连贯。
 
-### 升级亮点
+### 架构概要
 
-- **单一后端内核（ProjectAgent）**：聊天循环、写作循环、章节队列、停止恢复全部合并为一个深 `ProjectAgent` 内核。对外只暴露一个公共接口（`src/core/agent/index.mjs`），内部使用统一 journal、PromptAssembler、ToolRuntime 与 WorkflowPolicy。旧的双 Agent 编排、TaskQueue、failure/retry 命令矩阵、事件总线全部删除（净删除约 4.1 万行旧代码）。
-- **单一前端控制面（AgentSurface）**：对话、工作组（工具/推理条目）、Visible Plan、排队队列、`立即`/`停止`、权限确认卡收敛为一个 `AgentSurface`（`src/app-shell/agent/index.js`）。旧的 thread renderer、composer 业务正则、准备写作卡、完成卡、顶部执行状态全部移除。
+- **单一后端内核（ProjectAgent）**：聊天循环、写作循环、章节队列、停止恢复全部合并为一个深 `ProjectAgent` 内核，对外只暴露一个公共接口（`src/core/agent/index.mjs`）。v0.5.0 将内核按职责拆分为 runtime / journal / tools / compaction 等域模块，各模块有行数与 seam 守卫。
+- **单一前端控制面（AgentSurface）**：对话、工作组（工具/推理条目）、Visible Plan、排队队列、`立即`/`停止`、权限确认卡收敛为一个 `AgentSurface`（`src/app-shell/agent/index.js`）。
 - **Journal 事件溯源（应用私有）**：Session、Run、队列、计划、决策、授权全部以事件形式记录在**应用私有工作区目录**（`<userData>/workspaces/<workspace-id>/agent/sessions/<session-id>/segments/events/`，每个会话独立事件流、可轮转），不写入创作文件夹；`session.json` 是可重建投影。崩溃重启从断点恢复，`立即` 在同一 Run 内提升消息，`停止` 干净收敛并清除临时授权。
 - **权限与安全不变量全量保留**：只读自动、普通副作用确认、`本条输入允许同类操作`（按输入粒度授权）、YOLO、extreme 精确确认文字、Shell 进程树停止、命令/输出流式脱敏——逐项通过前置验收语料。
 - **自研模型网关（ModelGateway）**：retry、超时、心跳、usage、成本记账与 OpenAI-compatible 原生 function calling 集中在干净的 model 层；provider adapter 不再包含任何写作业务身份或工具表。
-- **项目操作深模块**：章节写入经草稿存在、路径边界、原子写入、索引一致性与校验和等存储安全约束；字数统计（`count_text`）是模型可选的客观工具，不构成完成门禁。蓝图不再是强制三件套，`WWRITING.md` 是项目长期记忆入口。
 - **一次迁移、永久停写旧状态**：旧项目的 `agent_state.json`、`task_queue.json`、`chat_history.jsonl` 等只在首次打开时只读导入一次（整理进 `WWRITING.md` 与应用私有 settings），之后永不再写；原文件保留不删。旧单流/纯 flat 对话数据也在首次打开时确定性迁入"对话 1"（`sessions/<id>/`），立即可见、可继续。
-- **全量验证闭环**：1400+ 个单元/集成测试全绿、统一验收场景、四视口布局截图回归（1024/1440/1920 + 模型菜单）、真实 OpenAI-compatible 模型端到端短跑（工具选择/权限拒绝/章节提交/`立即`/`停止`/重试）全部通过。
-
-### 变更摘要（对比上一版）
-
-| 维度 | 旧架构 | 新架构 |
-|---|---|---|
-| 后端入口 | 双 Agent（agent-engine + chat-agent）+ TaskQueue | 唯一 `ProjectAgent` 接口 |
-| 前端入口 | thread-renderer + composer + activity-strip | 唯一 `AgentSurface` |
-| 状态真相源 | `agent_state.json` + 多套运行态文件 | 应用私有 journal（`<userData>/workspaces/<id>/agent/`） |
-| 权限模型 | 任务级 `taskId` 授权 | 输入级 `active_input_id` 授权 |
-| 实时事件 | chat_activity + run-events 双协议 | journal 事件流 + `/api/agent/snapshot` |
-| 模型层 | 业务逻辑混入 provider | 纯 transport 的 ModelGateway + capabilities |
-| 章节事务 | 分散在引擎内 | project operations 深模块（原子/可回滚） |
-| 恢复 | 失败命令 + retry 候选表 | `ProjectAgent.retry()` + journal 重建 |
-| 工作区 | 必须包含 `project.yaml` 才能打开 | 打开任意文件夹即可聊天 |
-
-### 升级方式
-
-- 已有项目：直接打开，首次打开自动完成一次性只读迁移（旧状态文件保留在磁盘但不再读写）。
-- 新工作区：任意可访问文件夹即可直接聊天，应用私有历史写入应用数据目录，不创建 `project.yaml`。
 
 ---
 
@@ -59,10 +38,13 @@ WWriting 不是"你描述、它代写"的生成器。它是一个桌面写作工
 - **同项目多对话**：左侧栏按项目展开会话列表（两级树），可新建、重命名、归档、恢复多条独立对话；同一项目串行执行（同时只跑一个 Run），保证章节、记忆等共享写面一致。
 - **确定性导出**："导出成书"直接走本地导出流程，不经过模型、不产生额外成本。
 - **成本与缓存报告**：记录 token、模型调用、成本估算和 provider 缓存字段，用多少一目了然。
-- **内置写作风格技能**：均衡、快节奏易读、心理文学三个只读内置风格，随应用分发、可查看但不可删除或修改；通过自然语言指定或由模型根据题材判断选择，选定后记录进 `WWRITING.md`。
+- **内置写作技能体系（插件化）**：随应用分发 12 个以 `SKILL.md` 组织的写作技能——基座风格（均衡、快节奏易读、心理文学、避免 AI 腔）、修饰层（爽感节奏、对白驱动）、流派包（悬疑、推理），以及专项（章首钩子、悬念章尾、对白而非叙述、展示而非讲述）；技能按目录分层覆盖（全局 / 项目 / 用户 / 内置四层优先级），同名技能由优先级裁决。选定后记录进 `WWRITING.md`。
+- **章节版本与恢复**：章节与记忆文件每次提交自动做版本快照（append-only，每文件 200 版上限），版本时间线面板可查看任一瞬间并恢复；章节写入带期望校验和，防止基于陈旧版本的覆盖。
+- **可见的上下文压缩**：上下文用满后压缩过程可见、可手动取消，压缩预算优先驱逐大工具输出；仪表盘实时显示上下文占用与缓存命中率。
+- **思考过程可见**：模型的推理过程与正文分离流式展示，思考项带真实耗时标签（"思考 N 秒"），完成后可整行折叠。
 - **受控网页搜索/抓取**：默认禁网；来源快照标记为"不可信资料"，不作为系统指令执行。
-- **OpenAI兼容格式模型接入**：内置 DeepSeek 官方、小米 MiMo 官方预设，粘贴 API Key 即可用；API Key 仅保存在本机。
-- **可验证的开发文化**：1400+ 个单元/集成测试 + 一键本地验收（`npm run verify:local`），连"按钮看得到但点不动"这类 UI 回归都有真实 Electron 点击防线。
+- **模型配置管理页**：供应商与模型两级管理（新增、启停、设默认、删除），支持从供应商拉取模型列表、行内连接测试；预设包含 DeepSeek 官方、小米 MiMo 官方，兼容任意 OpenAI 兼容网关；API Key 仅保存在本机。
+- **可验证的开发文化**：1953 个单元/集成测试全绿 + 一键本地验收（`npm run verify:local`），连"按钮看得到但点不动"这类 UI 回归都有真实 Electron 点击防线。
 
 ## 快速开始
 
@@ -99,7 +81,7 @@ npm run desktop:electron
 1. 启动桌面端，在左侧项目栏选择最近工作区，或点击"打开本地文件夹"选择任意目录。
 2. 打开后，中间就是唯一的对话面：在输入框用自然语言下指令（"继续写第 3 章""帮我检查人物设定"），模型会自主决定读取哪些文件、运行哪些命令、修改哪些内容；长期项目可以让模型先运行 `/init` 建立 `WWRITING.md` 项目记忆。
 3. 运行中再发送的消息进入队列（显示原文 + `排队`）；点击 `立即` 会打断当前轮并优先执行这条消息，不会创建第二个 Agent；`停止` 会取消当前 Run 并清除临时授权。
-4. 设置端配置：模型供应商、模型名、基础 URL、API Key、写作参数、权限档位、联网搜索；"Agent 技能"分区可查看三个内置写作风格。
+4. 设置端配置：模型供应商、模型名、基础 URL、API Key、写作参数、权限档位、联网搜索；"Agent 技能"分区查看与选择写作技能。
 5. 顶部"面板"按钮打开抽屉查看项目事实：章节目录与导出、模型配置、资料、成本。
 
 更完整的操作说明见 [docs/USER_GUIDE.zh-CN.md](docs/USER_GUIDE.zh-CN.md)。
@@ -149,6 +131,7 @@ AGENTS.md           # 可选：项目写作说明（普通权威文件，可由 
 
 ## 模型与联网配置
 
+- 供应商 / 模型两级管理：设置页内新增、启停、设默认、删除，支持从供应商拉取模型列表与行内连接测试。
 - 预设：DeepSeek 官方、小米 MiMo 官方、自定义（OpenAI-compatible）。
 - API Key 仅保存在本机，不写入创作文件夹；项目文件里只记录环境变量名。
 - 联网默认关闭；需要资料搜索/抓取时在设置端打开"允许联网"并配置搜索接口。
@@ -167,7 +150,7 @@ AGENTS.md           # 可选：项目写作说明（普通权威文件，可由 
 ## 验证命令
 
 ```powershell
-npm test                            # 1400+ 个单元/集成测试
+npm test                            # 1953 个单元/集成测试
 npm run verify:local                # 完整本地验收（含打包，较慢）
 npm run verify:app-shell            # GUI、项目打开、设置、技能、资料工具
 npm run verify:app-clickability     # 真实 Electron 窗口逐项点击关键按钮
@@ -183,8 +166,16 @@ npm run sim:user-flow             # 用户流程全链路模拟（普通文件�
 src/
 ├─ app-shell/          # 桌面 GUI 前端（AgentSurface 对话面 + 导航 + 设置 + 阅读器）
 ├─ assets/             # 应用图标
-├─ core/               # Agent journal/runtime、项目存储、模型网关、技能、研究工具
-└─ desktop/            # Electron 主进程和 preload
+├─ core/               # Agent journal/runtime/tools、项目存储、模型网关、技能、研究工具
+│  ├─ agent/           #   runtime / journal / compaction / 会话管理 / 工具注册
+│  ├─ model/           #   ModelGateway、能力与预设、OpenAI-compatible 适配
+│  ├─ skills/          #   技能目录与加载
+│  ├─ project-operations/ # 章节事务、记忆、成本
+│  ├─ workspaces/      #   工作区与私有存储
+│  └─ http/            #   HTTP 路由层
+├─ desktop/            # Electron 主进程和 preload
+├─ shared/             # 前后端共享模块（DeepSeek 识别、官方定价）
+└─ skills/             # 内置写作技能（SKILL.md 插件化）
 scripts/               # 验证、打包、预览脚本
 tests/                 # Node test 测试
 docs/                  # 使用教程与设计文档
@@ -192,12 +183,13 @@ docs/                  # 使用教程与设计文档
 
 ## 当前状态
 
-本地可运行、可验证的桌面写作智能体。任意文件夹聊天、项目记忆、内置写作风格、客观字数工具、技能、研究工具、模型适配、GUI、Electron 运行时和 Windows 打包链路均已具备验证脚本。
+本地可运行、可验证的桌面写作智能体（v0.5.0）。任意文件夹聊天、项目记忆、内置写作技能体系、客观字数工具、章节版本与恢复、可见的上下文压缩、供应商/模型两级配置、研究工具、GUI、Electron 运行时和 Windows 打包链路均已具备验证脚本。
 
-后续增强方向：故事圣经（角色/设定/伏笔管理）、技能生态（技能包导出/导入）、更多 provider 预设、正式代码签名与自动更新。
+后续增强方向：故事圣经（角色/设定/伏笔管理）、技能包导出/导入、更多 provider 预设、正式代码签名与自动更新。
 
 ## 更多文档
 
+- [更新日志](CHANGELOG.md)
 - [完整使用教程（中文）](docs/USER_GUIDE.zh-CN.md)
 - [写作 Agent 对话样式规格书](docs/design/写作Agent对话样式规格书.md)
 - [Agent 自主初始化与命令行工具规格书](docs/design/Agent自主初始化与命令行工具规格书.md)
