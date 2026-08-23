@@ -22,9 +22,13 @@
 // loadProviderStoreReadOnly 仅供纯读路径（app-dashboard 展示）使用：只认已
 // 持久化的 v2 清单，v1/未知/缺失按空清单处理，不触发任何写盘。
 import path from "node:path";
+import { existsSync } from "node:fs";
 import { loadProject, saveProject } from "./project-store.mjs";
 import { readJson } from "./fs-utils.mjs";
 import { loadProviderStore, normalizeProviderStore } from "./model-provider-store.mjs";
+// Task 21：migrateLegacyProjectOnOpen 自 http/project-routes.mjs 下沉（旧 project.yaml
+// 一次性只读导入 .wwriting 应用私有 settings，best-effort）。
+import { migrateLegacyProject } from "./workspaces/migration.mjs";
 
 const PROVIDER_STORE_FILE = "model-profiles.json";
 
@@ -91,4 +95,21 @@ export async function migrateProjectFile(projectRoot, { workspaceStore, secretsR
     }
   }
   return { changed };
+}
+
+// 计划 Task 11：旧 project.yaml 一次性只读迁移（best-effort，Task 21 自
+// http/project-routes.mjs 下沉）。只在实际存在 project.yaml 且尚未导入
+// （legacy_project_imported !== true）时调用；migrateLegacyProject 自身不抛错，
+// 这里再加一层兜底，保证打开任意目录永远成功（SPEC §9.1/§11：聊天资格从不依赖
+// 迁移成功）。新工作区不创建 project.yaml。workspaceStore 由路由壳注入。
+export async function migrateLegacyProjectOnOpen(projectRoot, { workspaceStore } = {}) {
+  if (!workspaceStore || typeof workspaceStore.saveSettings !== "function") return;
+  if (!existsSync(path.join(projectRoot, "project.yaml"))) return;
+  try {
+    const settings = await workspaceStore.loadSettings(projectRoot);
+    if (settings.legacy_project_imported) return;
+    await migrateLegacyProject({ projectRoot, workspaceStore });
+  } catch (error) {
+    console.warn("[project-model-migration] 旧项目迁移失败（不影响聊天）:", error?.message ?? error);
+  }
 }
