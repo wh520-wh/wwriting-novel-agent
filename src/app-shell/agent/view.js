@@ -22,7 +22,8 @@ import {
   getCompactionRows,
   compactionBlocksSend,
   getNeedsHistoryClear,
-  TERMINAL_RUN_STATUSES
+  TERMINAL_RUN_STATUSES,
+  CONNECTION_ERROR_CODES
 } from "./state.js";
 import { createContextRing } from "./context-ring.js";
 import { matchSlashCommands } from "./slash-commands.mjs";
@@ -1584,8 +1585,8 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       const title = doc.createElement("strong");
       title.className = "agent-error-title";
       // 第十二轮 F5：连接类错误标「连接中断」，与 Run 失败（操作失败）区分。
-      // 与 state.js 入口清卡处的连接类 code 集合同步，新增连接类 code 需两处同改。
-      const isConnectionError = error.code === "event_stream_error" || error.code === "event_stream_fatal";
+      // Task 14：连接类 code 单源 = state.js 的 CONNECTION_ERROR_CODES。
+      const isConnectionError = CONNECTION_ERROR_CODES.has(error.code);
       title.textContent = isConnectionError ? "连接中断" : "操作失败";
       const message = doc.createElement("p");
       message.className = "agent-error-message";
