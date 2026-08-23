@@ -17,7 +17,7 @@ import {
   selectProtectedRecentTurns,
   validateCompactionSummary
 } from "../../src/core/agent/compaction-prompt.mjs";
-import { createCompactionCoordinator } from "../../src/core/agent/compaction.mjs";
+import { buildCompactionSource, createCompactionCoordinator } from "../../src/core/agent/compaction.mjs";
 import { FIXED_EVENT_TYPES, createAgentJournal } from "../../src/core/agent/journal.mjs";
 
 // ---------------------------------------------------------------------------
@@ -1233,4 +1233,46 @@ test("自动门禁：大输入 + 极小历史 → noop（不调用模型）→ �
   assert.equal(failed.length, 1);
   assert.equal(failed[0].payload.code, "context_window_exceeded", "仍超硬窗口必须 failRun(context_window_exceeded)");
   assert.equal(eventsOfType(events, "input_cancelled").length, 0, "输入保持可恢复");
+});
+
+// Task 10（F5d）：buildCompactionSource 迁入 compaction.mjs 后的直接契约——空历史
+// → noop（不调用模型、resolveWorkspaceConfig/modelConfigOf 不被触达——modelConfig
+// 已显式传入时 projectRoot 解析路径不激活）。
+test("buildCompactionSource：空 transcript → noop，且显式 modelConfig 时 projectRoot 解析不激活", async () => {
+  let resolveTouched = false;
+  const journal = {
+    async readTranscript() {
+      return [];
+    },
+    async readTranscriptAfter() {
+      return [];
+    },
+    lastSeq: 0
+  };
+  const checkpointStore = {
+    async readActive() {
+      return { checkpoint_id: null };
+    },
+    async readCheckpointFile() {
+      throw new Error("无 checkpoint 时不应读 checkpoint 文件");
+    }
+  };
+  const built = await buildCompactionSource({
+    journal,
+    checkpointStore,
+    resolveWorkspaceConfig: async () => {
+      resolveTouched = true;
+      return {};
+    },
+    modelConfigOf: () => {
+      resolveTouched = true;
+      return {};
+    },
+    trigger: "automatic",
+    modelConfig: makeModelConfig(),
+    projectRoot: "/p"
+  });
+  assert.equal(built.noop, true);
+  assert.equal(built.reason, "nothing_to_compact");
+  assert.equal(resolveTouched, false, "显式 modelConfig 时不得经 projectRoot 回退解析");
 });
