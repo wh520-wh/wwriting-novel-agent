@@ -503,14 +503,14 @@ export function createToolRuntime({
   const registerAll = (defs) => {
     for (const [name, d] of Object.entries(defs)) register(name, d);
   };
-  // 注册顺序 = 原 tools.mjs 暴露顺序（GENERAL 8 前 DEEP 6 后，tests/agent/tools.test.mjs
-  // 的 definitions() 顺序断言是行为契约）：knowledge 域的 read_skill/count_text 属
-  // general（原文件位置在 update_plan 之前），update_memory 属 deep（原位置在
-  // rollback_chapter 之后），故该域拆两段注册。
+  // 注册顺序 = 原 tools.mjs 暴露顺序（GENERAL 9 前 DEEP 6 后，tests/agent/tools.test.mjs
+  // 的 definitions() 顺序断言是行为契约）：knowledge 域的 read_skill/count_text/
+  // read_continuity（第十六轮 T6）属 general（原文件位置在 update_plan 之前），
+  // update_memory 属 deep（原位置在 rollback_chapter 之后），故该域拆两段注册。
   const knowledgeDefs = knowledgeToolDefinitions(h);
   registerAll(fsToolDefinitions(h));
   registerAll(shellToolDefinitions(h));
-  registerAll({ read_skill: knowledgeDefs.read_skill, count_text: knowledgeDefs.count_text });
+  registerAll({ read_skill: knowledgeDefs.read_skill, count_text: knowledgeDefs.count_text, read_continuity: knowledgeDefs.read_continuity });
   registerAll(chapterToolDefinitions(h));
   registerAll({ update_memory: knowledgeDefs.update_memory });
 
