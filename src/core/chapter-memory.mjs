@@ -1,5 +1,5 @@
 import { readJson, safeJoin, writeJsonAtomic } from "./fs-utils.mjs";
-import { formatChapterRef } from "./continuity-store.mjs";
+import { formatChapterRef, loadContinuity } from "./continuity-store.mjs";
 
 export const CHAPTER_MEMORY_SCHEMA_VERSION = 1;
 export const MAX_CONTEXT_CHAPTERS = 2;
@@ -177,4 +177,75 @@ function clipEnd(text, maxChars) {
 
 function normalizeExcerpt(text) {
   return String(text ?? "").replace(/\s+/gu, " ").trim();
+}
+
+// ---------------------------------------------------------------------------
+// 前情简报（第十六轮 D2）：read_continuity 工具的组装体。三块全为既定预算
+//（近 2 章摘录 / 近 5 章精选 / 未回收伏笔 top N），空块自动省略。
+// ---------------------------------------------------------------------------
+
+const FORESHADOW_BRIEF_LIMIT = 5;
+
+export async function buildContinuityBriefing(projectRoot, options = {}) {
+  const continuity = await loadContinuity(projectRoot);
+  if (typeof options.entity === "string" && options.entity.trim() !== "") {
+    return buildEntityDossier(continuity, options.entity.trim());
+  }
+  const memory = await loadChapterMemory(projectRoot);
+  const chapterNo = Number.isInteger(options.chapterNo) && options.chapterNo > 0
+    ? options.chapterNo
+    : ((memory.chapters.at(-1)?.chapter_no) ?? 0) + 1;
+  const blocks = [
+    await buildContinuityPromptContext(projectRoot, chapterNo),
+    buildRelevantFacts(continuity, chapterNo),
+    buildForeshadowBrief(continuity, chapterNo)
+  ].filter((block) => typeof block === "string" && block.length > 0);
+  return blocks.join("\n\n");
+}
+
+function buildForeshadowBrief(continuity, chapterNo) {
+  const openOnes = (continuity?.foreshadows ?? [])
+    .filter((f) => f.status === "open")
+    .sort((a, b) => (a.planted_chapter ?? 0) - (b.planted_chapter ?? 0))
+    .slice(0, FORESHADOW_BRIEF_LIMIT);
+  if (openOnes.length === 0) return "";
+  const lines = ["## 未回收伏笔（按埋设章排序，越早越紧急）"];
+  for (const f of openOnes) {
+    const age = Number.isInteger(f.planted_chapter) && f.planted_chapter > 0
+      ? `，距今 ${chapterNo - f.planted_chapter} 章未收`
+      : "";
+    const hint = f.expected_payoff_hint ? `（回收提示：${f.expected_payoff_hint}）` : "";
+    lines.push(`- ${formatChapterRef(f.planted_chapter)}埋设${age}：${f.content}${hint}`);
+  }
+  return lines.join("\n");
+}
+
+function buildEntityDossier(continuity, entity) {
+  const facts = (continuity?.facts ?? []).filter((f) => f.entity === entity);
+  const character = (continuity?.characters ?? []).find((c) => c.name === entity) ?? null;
+  if (facts.length === 0 && !character) {
+    return `未找到实体「${entity}」的设定记录。`;
+  }
+  const lines = [`## 实体档案：${entity}`];
+  if (character) {
+    lines.push("", "### 角色状态",
+      `- ${character.name}（${character.status || "状态未知"}）：${(character.traits ?? []).join("、") || "无记录特征"}`);
+  }
+  if (facts.length > 0) {
+    lines.push("", "### 相关事实");
+    for (const f of facts) {
+      const conflict = f.conflict_with ? ` ⚠${f.conflict_with}` : "";
+      lines.push(`- ${f.attribute}: ${f.value} (${formatChapterRef(f.chapter_no)})${conflict}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+// read_continuity 工具的系统侧执行体（projectOperations 形态，runtime.mjs 装配）。
+export async function readContinuityBriefing({ projectRoot, chapterNo = null, entity = null }) {
+  const content = await buildContinuityBriefing(projectRoot, {
+    chapterNo: Number.isInteger(chapterNo) ? chapterNo : null,
+    entity: typeof entity === "string" ? entity : null
+  });
+  return { ok: true, content };
 }
