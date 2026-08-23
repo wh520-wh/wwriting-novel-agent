@@ -31,6 +31,7 @@ import { PERMISSION_TIERS } from "../permission-tiers.mjs";
 import { icon } from "../icons.js";
 import { taskIcon } from "../components/task-icons.mjs";
 import { createReasoningTicker } from "./reasoning-ticker.mjs";
+import { createToaster } from "../dom-kit.js";
 import {
   formatDuration,
   groupStatusText,
@@ -310,36 +311,17 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   let followLatest = true;     // 显式 follow 状态：仅用户接近底部时跟随（滚动锁，Task 7）
   let currentState = null;     // 最近一次 render 的 state（供异步帧回调读取）
   // ---- Task 11：surface 自持的短暂 toast（撤回失败等；不依赖 app.js 接线） ----
-  let toastTimer = null;
-
-  function showToast(message) {
-    if (toastTimer != null) {
-      scheduler.clearTimeout(toastTimer);
-      toastTimer = null;
-    }
-    let node = surface.querySelector('[data-testid="agent-toast"]');
-    if (!node) {
-      node = doc.createElement("div");
-      node.className = "agent-toast";
-      node.dataset.testid = "agent-toast";
-      node.setAttribute("role", "status");
-      surface.append(node);
-    }
-    node.textContent = message;
-    toastTimer = scheduler.setTimeout(() => {
-      node.remove();
-      toastTimer = null;
-    }, 3000);
-  }
-
-  function clearToast() {
-    if (toastTimer != null) {
-      scheduler.clearTimeout(toastTimer);
-      toastTimer = null;
-    }
-    const node = surface.querySelector('[data-testid="agent-toast"]');
-    if (node) node.remove();
-  }
+  // Task 13（F6）：收编 dom-kit createToaster 单源——单例复用 surface 内唯一
+  // 节点、固定 status 角色、3s 后移除；reset/destroy 的清理经 clearToast()。
+  const { showToast, clearToast } = createToaster(() => surface, {
+    doc,
+    scheduler,
+    single: true,
+    selector: '[data-testid="agent-toast"]',
+    className: "agent-toast",
+    testId: "agent-toast",
+    timeoutFor: () => 3000
+  });
   // ---- 增量正文流（Task 步骤7）：累积文本 → Markdown，rAF 合帧节流 ----
   let streamBubble = null;         // 流式 assistant 气泡（delta 期间的临时节点）
   let streamRenderPending = false; // 已有未决帧渲染
