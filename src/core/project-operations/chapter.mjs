@@ -922,6 +922,8 @@ export async function updateMemoryFromExtraction({ projectRoot, chapterNo, extra
   const baseFacts = continuity.facts.length;
   const baseTimeline = continuity.timeline.length;
   const baseCharacterNames = new Set(continuity.characters.map((c) => c.name));
+  const baseOpenForeshadows = continuity.foreshadows.filter((f) => f.status === "open").length;
+  const baseForeshadowTotal = continuity.foreshadows.length;
   const merged = mergeExtraction(continuity, extraction);
 
   // ---- 原子写入两文件 + 回滚（沿用既有备份/恢复机制）----
@@ -969,6 +971,9 @@ export async function updateMemoryFromExtraction({ projectRoot, chapterNo, extra
     facts_added: merged.facts.length - baseFacts,
     timeline_added: merged.timeline.length - baseTimeline,
     characters_added: merged.characters.filter((c) => !baseCharacterNames.has(c.name)).length,
+    foreshadows_opened: merged.foreshadows.length - baseForeshadowTotal,
+    foreshadows_paid: baseOpenForeshadows + (merged.foreshadows.length - baseForeshadowTotal)
+      - merged.foreshadows.filter((f) => f.status === "open").length,
     timeline_violations: timelineViolations
   };
 }

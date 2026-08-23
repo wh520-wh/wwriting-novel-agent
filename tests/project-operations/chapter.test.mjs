@@ -813,10 +813,18 @@ test("updateMemoryFromExtraction 原子更新 continuity，不写全书摘要，
     const result = await updateMemoryFromExtraction({
       projectRoot,
       chapterNo: 1,
-      extraction: extractionFixture()
+      extraction: {
+        ...extractionFixture(),
+        foreshadows: [
+          { content: "计数伏笔", status: "open" },
+          { content: "计数伏笔", status: "paid" }
+        ]
+      }
     });
     assert.equal(result.ok, true);
     assert.equal(result.facts_added, 1);
+    assert.equal(result.foreshadows_opened, 1);
+    assert.equal(result.foreshadows_paid, 1);
     assert.equal("summary_updated" in result, false, "新函数不写全书摘要");
 
     const continuity = await loadContinuity(projectRoot);
