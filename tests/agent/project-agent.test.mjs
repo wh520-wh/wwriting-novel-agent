@@ -1496,7 +1496,7 @@ test("第九轮：模型调 update_memory + 更新 book_summary/WORKLOG 后档�
   // 1. commit_chapter 结果携带固定 memory_checklist 提醒
   const commit = eventsOfType(events, "tool_call_completed").find((e) => e.payload?.name === "commit_chapter");
   assert.ok(commit, "commit_chapter 应完成");
-  assert.equal(commit.payload.memory_checklist, "记忆维护：请依次 update_memory → 更新 book_summary.md → 更新 WORKLOG.md");
+  assert.equal(commit.payload.memory_checklist, "记忆维护：请依次 update_memory（含新埋（open）与回收（paid）的伏笔） → 更新 book_summary.md → 更新 WORKLOG.md");
 
   // 2. update_memory 被调用并写入 continuity.json
   assert.equal(eventsOfType(events, "tool_call_completed").some((e) => e.payload?.name === "update_memory"), true, "update_memory 应被调用");

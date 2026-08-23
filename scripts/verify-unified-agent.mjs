@@ -1860,7 +1860,7 @@ step("场景 33 · 提交后记忆维护三件套");
     assert.ok(names.includes("update_memory"), "三件套必须含 update_memory");
     assert.equal(names.filter((n) => n === "write_file").length, 2, "摘要与日志各一次 write_file");
     const commit = completed.find((e) => e.payload?.name === "commit_chapter");
-    assert.equal(commit.payload.memory_checklist, "记忆维护：请依次 update_memory → 更新 book_summary.md → 更新 WORKLOG.md");
+    assert.equal(commit.payload.memory_checklist, "记忆维护：请依次 update_memory（含新埋（open）与回收（paid）的伏笔） → 更新 book_summary.md → 更新 WORKLOG.md");
     const continuity = JSON.parse(await fs.readFile(path.join(h.projectRoot, "memory", "continuity.json"), "utf8"));
     assert.ok(continuity.facts.some((f) => f.entity === "林晚" && f.attribute === "事件"));
     assert.ok((await fs.readFile(path.join(h.projectRoot, "book_summary.md"), "utf8")).includes("雨夜收到警告"));
