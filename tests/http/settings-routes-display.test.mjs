@@ -12,9 +12,9 @@ import path from "node:path";
 import {
   buildModelProfile,
   modelDisplayName,
-  providerDisplayName,
-  createSettingsRoutes
-} from "../../src/core/http/settings-routes.mjs";
+  providerDisplayName
+} from "../../src/core/settings-runtime.mjs";
+import { createSettingsRoutes } from "../../src/core/http/settings-routes.mjs";
 import { createRouter } from "../../src/core/http/router.mjs";
 import { createWorkspaceStore } from "../../src/core/workspaces/store.mjs";
 import { ensurePresetProviders } from "../../src/core/model-presets.mjs";

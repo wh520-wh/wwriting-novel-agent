@@ -11,144 +11,27 @@
 // root 注入。能力判定使用 Task 3 新建的 model/capabilities.mjs；旧的
 // provider-adapters.mjs 已删除，本模块不依赖旧文件。
 //
-// 导出共享 helper 给 project-routes.mjs（模型档案展示）。
+// Task 21（F10 第十五轮）：业务逻辑下沉域模块——模型档案展示（providerDisplayName/
+// modelDisplayName/modelEndpoint/buildModelProfile）、模型切换（switchModelByReference）
+// 迁入 settings-runtime.mjs，归档门禁（assertNotArchived）单源迁入 project-listing.mjs；
+// 本模块只留参数解构、错误映射与响应序列化。
 import { HttpError } from "../http-error.mjs";
 import { loadProject } from "../project-store.mjs";
 import { loadEffectiveWorkspaceConfig } from "../config-runtime.mjs";
 import { appendEvent } from "../event-log.mjs";
 import { skillService } from "../skills/index.mjs";
-import { loadLocalSecrets, loadLocalSecretsSync } from "../local-secrets.mjs";
+import { loadLocalSecrets } from "../local-secrets.mjs";
 import { ModelConfigValidationError, validateModelConfig } from "../model-config-validation.mjs";
 import {
   SettingsValidationError,
+  buildModelProfile,
   normalizeSettingsPatch,
   saveWorkspaceSettings,
+  switchModelByReference,
   updateProjectSettings
 } from "../settings-runtime.mjs";
-import { resolveModelCapabilities, writingRequiredCapabilitiesOk } from "../model/capabilities.mjs";
-import { resolveModelLimits } from "../model/model-identity.mjs";
-import { loadProviderStore } from "../model-provider-store.mjs";
-import { toRequestConfig } from "../model-reference.mjs";
+import { assertNotArchived } from "../project-listing.mjs";
 import { resolveActiveProjectRoot, resolveReadProjectRoot, resolveWriteProjectRoot } from "./router.mjs";
-
-// ---------------------------------------------------------------------------
-// 模型档案展示 helper（旧 app-server 语义保留；project-routes 复用）
-// ---------------------------------------------------------------------------
-
-export function providerDisplayName(activeModel = {}) {
-  const provider = activeModel?.provider ?? "openai-compatible";
-  const baseUrl = String(activeModel?.base_url ?? "").toLowerCase();
-  const envName = activeModel?.api_key_env ?? "";
-  // 用户声明的厂商显示名（provider_label）优先——这是「已配置」列表里模型身份
-  // 的权威来源（2026-08-11 新增，借鉴 WHnovel 自由 name 但结构化：展示名 =
-  // 厂商名 + 模型 ID）。未声明时才回落到按真实地址推断。
-  const declaredLabel = typeof activeModel?.provider_label === "string" ? activeModel.provider_label.trim() : "";
-  if (declaredLabel) {
-    return declaredLabel;
-  }
-  // 官方端点判定只看真实地址（包含匹配，兼容 /v1、端口与大小写变体），不凭
-  // model_name 前缀猜——第三方中转（如 opencode.ai）上挂 deepseek-/mimo- 名号的
-  // 模型不是官方，必须和官方条目在「已配置」列表里区分开（2026-08-11 修复）。
-  if (baseUrl.includes("api.deepseek.com") || envName === "DEEPSEEK_API_KEY") {
-    return "DeepSeek 官方";
-  }
-  if (baseUrl.includes("xiaomimimo.com") || envName === "XIAOMI_MIMO_API_KEY") {
-    return "小米 MiMo 官方";
-  }
-  // 自定义兼容端点：显示厂商名 + 主机，与官方条目可区分。
-  if (provider === "openai-compatible") {
-    const host = baseUrlHost(baseUrl);
-    return host ? `OpenAI 兼容 · ${host}` : provider;
-  }
-  return provider;
-}
-
-function baseUrlHost(baseUrl) {
-  try {
-    return new URL(baseUrl).host;
-  } catch {
-    return "";
-  }
-}
-
-export function modelDisplayName(activeModel = {}) {
-  const label = providerDisplayName(activeModel);
-  const modelName = activeModel?.model_name ?? "";
-  return modelName ? `${label} / ${modelName}` : label;
-}
-
-export function modelEndpoint(baseUrl) {
-  if (!baseUrl) {
-    return "";
-  }
-  try {
-    return new URL("chat/completions", String(baseUrl).endsWith("/") ? baseUrl : `${baseUrl}/`).toString();
-  } catch {
-    return "";
-  }
-}
-
-export function buildModelProfile(activeModel = {}, secretsRoot, options = {}) {
-  // Task 8：未配置模型 = active_model null（用户面不再以 mock 兜底）。
-  // 显式 provider/model_name 之外的形状（空对象/null）一律按未配置展示，
-  // 绝不出现 "Mock" 字样。
-  const isConfigured = Boolean(
-    activeModel &&
-    typeof activeModel === "object" &&
-    !Array.isArray(activeModel) &&
-    (activeModel.model_name || activeModel.provider)
-  );
-  if (!isConfigured) {
-    return {
-      provider: null,
-      provider_label: null,
-      model_name: null,
-      base_url: "",
-      endpoint: "",
-      api_key_env: null,
-      api_key_saved: false,
-      api_key_masked: "",
-      is_mock: false,
-      display: "未配置",
-      model_label: "未配置",
-      id: options.id ?? null,
-      saved_to: options.saved_to ?? "project.yaml",
-      capabilities: null,
-      pricing: null,
-      temperature: null,
-      context_window: null,
-      max_output_tokens: null
-    };
-  }
-  const provider = activeModel?.provider ?? "openai-compatible";
-  const modelName = activeModel?.model_name ?? null;
-  const apiKeyEnv = activeModel?.api_key_env ?? null;
-  const secretValue = apiKeyEnv ? loadLocalSecretsSync(secretsRoot)[apiKeyEnv] ?? process.env[apiKeyEnv] ?? "" : "";
-  const limits = resolveModelLimits(activeModel);
-  return {
-    provider,
-    provider_label: providerDisplayName(activeModel),
-    model_name: modelName,
-    base_url: activeModel?.base_url ?? "",
-    endpoint: provider === "openai-compatible" ? modelEndpoint(activeModel?.base_url) : "",
-    api_key_env: apiKeyEnv,
-    api_key_saved: Boolean(secretValue),
-    api_key_masked: secretValue ? `••••${secretValue.slice(-4)}` : "",
-    is_mock: provider === "mock",
-    display: modelDisplayName(activeModel),
-    model_label: modelDisplayName(activeModel),
-    id: options.id ?? modelName,
-    saved_to: options.saved_to ?? "project.yaml",
-    capabilities: resolveModelCapabilities(activeModel),
-    // 价格与温度一并带回：设置面板无项目时用全局默认模型渲染表单，
-    // 缺这两个字段会显示成空白（价格已保存却看不见）。
-    pricing: activeModel?.pricing ?? null,
-    temperature: activeModel?.temperature ?? null,
-    // 第十三轮（F6）：高级项参数可见，缺省口径与运行时同一解析函数。
-    context_window: limits.effective_context_window,
-    max_output_tokens: limits.effective_max_output_tokens
-  };
-}
 
 // 技能目录名（HTTP 层兜底校验：与 seam 的 assertSafeSkillDirName 语义一致，
 // 允许中文等任意非空单段名，拒绝路径分隔符与 . / .. 防穿越）。
@@ -190,71 +73,6 @@ export function createSettingsRoutes({
     stateRoot
   };
 
-  // 归档校验对普通目录（无 project.yaml）宽容：应用私有 settings 不保存归档状态，
-  // 归档只来自旧 project.yaml（有效配置合并后 archived_at 反映旧文件），普通目录
-  // 恒为未归档。返回读取到的有效配置/项目对象供调用方复用。
-  async function assertNotArchived(projectRoot) {
-    const project = await loadEffectiveWorkspaceConfig(projectRoot, { workspaceStore });
-    if (project.archived_at) {
-      throw new HttpError(400, "PROJECT_ARCHIVED", "项目已归档（只读）。请先解除归档再执行此操作。");
-    }
-    return project;
-  }
-
-  // Task 16：模型切换（引用形态）——校验 { provider_id, model_id } 在 v2 清单中
-  // 存在且供应商/模型均启用 + 写作能力 C 档，然后写项目引用到应用私有 settings。
-  // 响应为引用契约（active_model = 引用），不再返回旧 available_models/model_profile。
-  async function switchModelByReference({ body, projectRoot }) {
-    const providerId = String(body?.provider_id ?? "").trim();
-    const modelId = String(body?.model_id ?? "").trim();
-    if (!providerId || !modelId) {
-      throw new HttpError(400, "invalid_model_reference", "provider_id 与 model_id 均必填。");
-    }
-    const store = await loadProviderStore(secretsRoot);
-    const provider = store.providers.find((p) => p.id === providerId);
-    const model = provider?.models.find((m) => m.id === modelId);
-    if (!provider || !model) {
-      throw new HttpError(404, "model_profile_not_found", `未找到已配置模型：${providerId}/${modelId}`);
-    }
-    if (provider.status === "disabled") {
-      throw new HttpError(400, "provider_disabled", "该供应商已停用，无法切换。");
-    }
-    if (model.enabled === false) {
-      throw new HttpError(400, "model_disabled", "该模型已停用，无法切换。");
-    }
-    const literal = toRequestConfig(provider, model);
-    if (!writingRequiredCapabilitiesOk(literal)) {
-      throw new HttpError(400, "model_unsupported", "该模型不支持工具调用，无法用于小说写作。");
-    }
-    const reference = { provider_id: provider.id, model_id: model.id };
-    const before = await assertNotArchived(projectRoot);
-    const caps = resolveModelCapabilities(literal);
-    const conflicts = [];
-    if (caps.supportsTemperature === false && before.active_model?.temperature !== undefined) {
-      conflicts.push("该模型不支持温度设置，写作温度不会生效。");
-    }
-    // 任务 5 Step 5：统一走 saveWorkspaceSettings——成对携带 active_model（引用）
-    // 与 tool_permissions（保留当前有效权限）；运行时按 modelStoreLoader 解析。
-    await saveWorkspaceSettings(projectRoot, { workspaceStore, activeModel: reference, effectiveConfig: before });
-    const effective = await loadEffectiveWorkspaceConfig(projectRoot, {
-      workspaceStore,
-      modelStoreLoader: () => store
-    });
-    return {
-      ok: true,
-      projectRoot,
-      active_model: reference,
-      capabilities: caps,
-      conflicts,
-      project: {
-        project_id: effective.project_id ?? null,
-        active_model: effective.active_model,
-        tool_permissions: effective.tool_permissions ?? {}
-      },
-      effective_config: effective
-    };
-  }
-
   return {
     // 设置更新：非模型字段校验先于落盘（请求原子）；错误带 fields 供逐项标红。
     // 任务 5：写作用域解析不再要求 project.yaml（普通目录同样是合法工作区）；
@@ -274,7 +92,7 @@ export function createSettingsRoutes({
           workspace: ctx.workspace,
           stateRoot: ctx.stateRoot
         });
-        const before = await assertNotArchived(projectRoot);
+        const before = await assertNotArchived(projectRoot, { workspaceStore });
         const nonModelPatch = { ...body };
         delete nonModelPatch.projectRoot;
         delete nonModelPatch.expectedProjectRoot;
@@ -358,7 +176,7 @@ export function createSettingsRoutes({
           workspace: ctx.workspace,
           stateRoot: ctx.stateRoot
         });
-        return await switchModelByReference({ body, projectRoot });
+        return await switchModelByReference({ body, projectRoot, secretsRoot, workspaceStore });
       } catch (error) {
         throw error instanceof HttpError ? error : new HttpError(400, "model_switch_failed", error?.message ?? String(error));
       }
@@ -551,7 +369,7 @@ export function createSettingsRoutes({
         const scope = body?.scope === "global" ? "global" : "project";
         const replace = body?.replace === true;
         const projectRoot = scope === "project" ? await resolveActiveProjectRoot(ctx) : null;
-        if (scope === "project") await assertNotArchived(projectRoot);
+        if (scope === "project") await assertNotArchived(projectRoot, { workspaceStore });
         const imported = await skillServiceRef.importSkill({ projectRoot, source: sourcePath, scope, replace });
         return {
           ok: true,
@@ -570,7 +388,7 @@ export function createSettingsRoutes({
         const name = assertSkillNameParam(params.name);
         const scope = body?.scope === "global" ? "global" : "project";
         const projectRoot = scope === "project" ? await resolveActiveProjectRoot(ctx) : null;
-        if (scope === "project") await assertNotArchived(projectRoot);
+        if (scope === "project") await assertNotArchived(projectRoot, { workspaceStore });
         const removed = await skillServiceRef.removeSkill({ projectRoot, name, scope });
         return { ok: true, ...removed };
       } catch (error) {

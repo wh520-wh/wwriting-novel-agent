@@ -1,8 +1,14 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { isPermissionAllowed, resolveRuntimeConfig } from "./config-runtime.mjs";
+import { isPermissionAllowed, loadConfigLayers, resolveRuntimeConfig } from "./config-runtime.mjs";
 import { appendEvent } from "./event-log.mjs";
 import { ensureDir, pathExists, safeJoin, sha256, writeJsonAtomic } from "./fs-utils.mjs";
+import { loadProject } from "./project-store.mjs";
+// Task 21：runResearch 自 http/project-routes.mjs 下沉（网络外呼编排归本模块）。
+// 注：createResearchAdapter（research-adapters.mjs）反向 import 本模块的
+// ResearchToolError——该环两端都只在函数体内使用对方导出，模块顶层零求值，
+// ESM live bindings 下运行时安全；新增顶层求值引用前需重新评估。
+import { createResearchAdapter } from "./research-adapters.mjs";
 
 export class NetworkPermissionError extends Error {
   constructor(message = "Network tools are disabled for this project.") {
@@ -281,4 +287,25 @@ function decodeHtmlEntities(value) {
     .replace(/&gt;/giu, ">")
     .replace(/&quot;/giu, '"')
     .replace(/&#39;/giu, "'");
+}
+
+// Task 21：资料搜索/抓取编排（自 http/project-routes.mjs 下沉；projectRoot 由
+// 路由壳解析后注入）。错误映射（network_not_allowed → 403，其余领域错误 → 400、
+// code 保留）保留在路由壳，本函数只做领域编排。
+export async function runResearch(projectRoot, action, body) {
+  const project = await loadProject(projectRoot);
+  const config = await loadConfigLayers(projectRoot, project);
+  const adapter = createResearchAdapter(config.effective.research_config ?? {});
+  const effectiveProject = {
+    ...project,
+    effective_config: config.effective,
+    tool_permissions: config.effective.tool_permissions
+  };
+  return action === "search"
+    ? await searchWeb(projectRoot, effectiveProject, {
+        query: body.query,
+        limit: body.limit ?? 5,
+        stage: "research"
+      }, { adapter })
+    : await fetchWebPage(projectRoot, effectiveProject, { url: body.url, stage: "research" }, { adapter });
 }

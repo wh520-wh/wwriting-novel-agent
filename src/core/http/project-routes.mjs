@@ -9,12 +9,15 @@
 //
 // 本模块不创建 ModelClient、锁或 store；projectLocks 由 composition root 注入。
 //
-// 模块间职责（Task 7 评审记录）：模型档案展示 helper（buildModelProfile 等）归属
-// settings-routes（设置/模型职责），project-routes 跨模块 import 它们——这是有意的
-// 单向依赖（settings-routes 不回引 project-routes，无环）。selectedRef/ctx/
-// assertNotArchived 在 project-routes 与 settings-routes 各自持有同一注入的
-// selection 引用、重复少量样板：抽公共 helper 需要同时改两个模块的工厂签名，
-// 收益有限，Task 9 组合根落定时若出现第三处重复再统一抽取。
+// 模块间职责：模型档案展示 helper（buildModelProfile 等）Task 21 起统一位于
+// settings-runtime.mjs（域模块），本模块直接 import——单向下沉、不回路由层
+//（迁移前的路由层归属与 Task 7 评审演进见 git 历史）。
+//
+// Task 21（F10 第十五轮）：业务逻辑下沉域模块——buildProjectList 与归档门禁
+// assertNotArchived 迁入 project-listing.mjs，migrateLegacyProjectOnOpen 迁入
+// project-model-migration.mjs，runResearch 网络外呼编排迁入 research-tools.mjs；
+// 本模块只留参数解构、错误映射与响应序列化（runResearch 的错误映射保留在本模块
+// handleResearch）。
 //
 // Task 9 衔接点：
 //   - diagnostics handler 已按计划形状把 agent.snapshot() 结果传给稳定 diagnostics
@@ -25,36 +28,28 @@
 //     recovery 字段随 Task 9 的 app-dashboard 重写删除，不再进入新路由。
 import fs from "node:fs/promises";
 import path from "node:path";
-import { existsSync } from "node:fs";
 import { HttpError } from "../http-error.mjs";
 import { exportBook } from "../book-export.mjs";
 import {
   loadDashboardData,
   readChapterContent,
-  validateProjectRoot,
   validateWorkspaceRoot,
   canInitializeProjectRoot
 } from "../app-dashboard.mjs";
 import { forgetRecentProject, loadAppState, recordRecentProject, samePath } from "../app-state.mjs";
-import { workspaceIdForPath } from "../workspaces/store.mjs";
-import { loadConfigLayers } from "../config-runtime.mjs";
-import { createResearchAdapter } from "../research-adapters.mjs";
-import { fetchWebPage, searchWeb } from "../research-tools.mjs";
+import { runResearch } from "../research-tools.mjs";
 import { loadProject, createProjectAt } from "../project-store.mjs";
-import { migrateProjectFile } from "../project-model-migration.mjs";
-import { migrateLegacyProject } from "../workspaces/migration.mjs";
+import { migrateLegacyProjectOnOpen, migrateProjectFile } from "../project-model-migration.mjs";
 import { loadProjectDiagnostics } from "../project-diagnostics.mjs";
-import { isPathInside, safeJoin, writeFileAtomic } from "../fs-utils.mjs";
+import { safeJoin, writeFileAtomic } from "../fs-utils.mjs";
 import {
   resolveActiveProjectRoot,
   resolveActiveWriteProjectRoot,
   resolveReadProjectRoot
 } from "./router.mjs";
 import { getDefaultModel } from "../model-provider-store.mjs";
-import {
-  buildModelProfile,
-  modelDisplayName
-} from "./settings-routes.mjs";
+import { buildModelProfile, modelDisplayName } from "../settings-runtime.mjs";
+import { assertNotArchived, buildProjectList } from "../project-listing.mjs";
 import { listChapterVersions, readChapterVersion } from "../project-operations/versions.mjs";
 import { rollbackChapter } from "../project-operations/chapter.mjs";
 import { listMemoryVersions, readMemoryVersion } from "../project-operations/memory-versions.mjs";
@@ -108,30 +103,6 @@ export function createProjectRoutes({
     }
   }
 
-  // 计划 Task 11：旧 project.yaml 一次性只读迁移（best-effort）。
-  // 只在实际存在 project.yaml 且尚未导入（legacy_project_imported !== true）时调用；
-  // migrateLegacyProject 自身不抛错，这里再加一层兜底，保证打开任意目录永远成功
-  //（SPEC §9.1/§11：聊天资格从不依赖迁移成功）。新工作区不创建 project.yaml。
-  async function migrateLegacyProjectOnOpen(projectRoot) {
-    if (!workspaceStore || typeof workspaceStore.saveSettings !== "function") return;
-    if (!existsSync(path.join(projectRoot, "project.yaml"))) return;
-    try {
-      const settings = await workspaceStore.loadSettings(projectRoot);
-      if (settings.legacy_project_imported) return;
-      await migrateLegacyProject({ projectRoot, workspaceStore });
-    } catch (error) {
-      console.warn("[project-routes] 旧项目迁移失败（不影响聊天）:", error?.message ?? error);
-    }
-  }
-
-  async function assertNotArchived(projectRoot) {
-    const project = await loadProject(projectRoot);
-    if (project.archived_at) {
-      throw new HttpError(400, "PROJECT_ARCHIVED", "项目已归档（只读）。请先解除归档再执行此操作。");
-    }
-    return project;
-  }
-
   async function withProjectLock(projectRoot, operation) {
     if (!projectLocks) {
       return operation();
@@ -140,24 +111,13 @@ export function createProjectRoutes({
   }
 
   // 资料路由的旧错误契约：network_not_allowed → 403，其余领域错误 → 400（code 保留）。
-  async function runResearch(action, body) {
+  // Task 21：网络外呼编排（loadProject/loadConfigLayers/createResearchAdapter/
+  // searchWeb/fetchWebPage）下沉 research-tools.mjs 的 runResearch；本壳保留
+  // 项目根解析（参数解析）与错误映射，响应由 handler 直接透出。
+  async function handleResearch(action, body) {
     try {
       const projectRoot = await resolveActiveProjectRoot(ctx);
-      const project = await loadProject(projectRoot);
-      const config = await loadConfigLayers(projectRoot, project);
-      const adapter = createResearchAdapter(config.effective.research_config ?? {});
-      const effectiveProject = {
-        ...project,
-        effective_config: config.effective,
-        tool_permissions: config.effective.tool_permissions
-      };
-      return action === "search"
-        ? await searchWeb(projectRoot, effectiveProject, {
-            query: body.query,
-            limit: body.limit ?? 5,
-            stage: "research"
-          }, { adapter })
-        : await fetchWebPage(projectRoot, effectiveProject, { url: body.url, stage: "research" }, { adapter });
+      return await runResearch(projectRoot, action, body);
     } catch (error) {
       throw new HttpError(
         error?.code === "network_not_allowed" ? 403 : 400,
@@ -165,81 +125,6 @@ export function createProjectRoutes({
         error?.message ?? String(error)
       );
     }
-  }
-
-  async function buildProjectList() {
-    const currentSelected = selected();
-    const state = await loadAppState(stateRoot);
-    const candidates = [...state.recentProjects];
-    if (currentSelected && !candidates.some((item) => samePath(item.projectRoot, currentSelected))) {
-      candidates.push({ projectRoot: currentSelected });
-    }
-    const projects = [];
-    for (const item of candidates) {
-      const root = path.resolve(item.projectRoot);
-      if (projects.some((project) => samePath(project.projectRoot, root))) {
-        continue;
-      }
-      // 目录仍可访问才入列表（计划 Task 4：project.yaml 不再是列表资格条件）；
-      // 已删除/无权限目录不出现在列表里。
-      try {
-        await validateWorkspaceRoot(root);
-      } catch {
-        continue;
-      }
-      const workspaceSettings = workspaceStore ? await workspaceStore.loadSettings(root) : null;
-      if (existsSync(path.join(root, "project.yaml"))) {
-        // 旧项目：project.yaml 是元数据真相源（沿用既有契约）。
-        let title = item.title ?? path.basename(root);
-        let storySeed = item.story_seed ?? "";
-        let activeModel = null;
-        let archivedAt = null;
-        try {
-          const project = await loadProject(root);
-          title = project.title ?? title;
-          storySeed = project.story_seed ?? storySeed;
-          const config = await loadConfigLayers(root, project).catch(() => null);
-          activeModel = config?.effective?.active_model ?? project.active_model ?? null;
-          archivedAt = project.archived_at ?? null;
-        } catch (error) {
-          console.warn("[project-routes] Failed to load project metadata:", error.message);
-        }
-        projects.push({
-          projectRoot: root,
-          workspace_id: item.workspace_id ?? workspaceIdForPath(root),
-          title,
-          story_seed: storySeed,
-          active_model: activeModel,
-          model_label: activeModel ? modelDisplayName(activeModel) : "未配置",
-          archived_at: archivedAt,
-          external: !isPathInside(workspace, root),
-          legacy_project: true
-        });
-      } else {
-        // 普通目录：工作区设置（应用私有）是模型真相源（计划 Task 4 Step 4 形状）。
-        const activeModel = workspaceSettings?.active_model ?? null;
-        projects.push({
-          projectRoot: root,
-          workspace_id: item.workspace_id ?? workspaceIdForPath(root),
-          title: item.title || path.basename(root),
-          story_seed: item.story_seed || "",
-          active_model: activeModel,
-          model_label: activeModel ? modelDisplayName(activeModel) : "未配置",
-          archived_at: null,
-          external: !isPathInside(workspace, root),
-          legacy_project: false
-        });
-      }
-    }
-    const selectedInList = currentSelected && projects.some((project) => samePath(project.projectRoot, currentSelected))
-      ? currentSelected
-      : null;
-    return {
-      ok: true,
-      workspaceRoot: workspace,
-      selectedProjectRoot: selectedInList,
-      projects
-    };
   }
 
   // 忘记后回落到下一个可用目录：只检查目录可访问，不检查 project.yaml（计划 Task 4 Step 4）。
@@ -313,7 +198,7 @@ export function createProjectRoutes({
       }
     },
 
-    "GET /api/projects/list": async () => buildProjectList(),
+    "GET /api/projects/list": async () => buildProjectList({ workspace, stateRoot, workspaceStore, currentSelected: selected() }),
 
     // 打开任意可访问文件夹即成为工作区（计划 Task 4 Step 2）：不再要求 project.yaml。
     "POST /api/projects/open": async ({ body }) => {
@@ -321,7 +206,7 @@ export function createProjectRoutes({
         const projectRoot = await validateWorkspaceRoot(body.projectRoot ?? body.path ?? "");
         selectedRef.current = projectRoot;
         await rememberProject(projectRoot);
-        await migrateLegacyProjectOnOpen(projectRoot);
+        await migrateLegacyProjectOnOpen(projectRoot, { workspaceStore });
         // 任务 6：打开即迁移 project.yaml/私有 settings 快照→引用（mock 归零、匹配
         // 清单转引用；幂等——第二次打开已迁移完 → changed=false）。迁移失败不阻断打开；
         // migration_notice 仅本次响应透出（前端据此弹「旧配置已升级」toast）。
@@ -353,7 +238,7 @@ export function createProjectRoutes({
         await forgetRecentProject(stateRoot, target);
         const nextSelected = await resolveSelectedAfterForget(target);
         selectedRef.current = nextSelected;
-        const list = await buildProjectList();
+        const list = await buildProjectList({ workspace, stateRoot, workspaceStore, currentSelected: selected() });
         return {
           ok: true,
           workspaceRoot: workspace,
@@ -403,9 +288,9 @@ export function createProjectRoutes({
       }
     },
 
-    "POST /api/research/search": async ({ body }) => runResearch("search", body),
+    "POST /api/research/search": async ({ body }) => handleResearch("search", body),
 
-    "POST /api/research/fetch": async ({ body }) => runResearch("fetch", body),
+    "POST /api/research/fetch": async ({ body }) => handleResearch("fetch", body),
 
     "GET /api/chapters/read": async ({ query }) => {
       try {
@@ -424,7 +309,7 @@ export function createProjectRoutes({
     // Run、不追加模型 transcript、不注册 export_book 工具（计划 Rule 6/7）。
     "POST /api/projects/export-book": async ({ body }) => {
       const projectRoot = await resolveActiveWriteProjectRoot(ctx, body);
-      await assertNotArchived(projectRoot);
+      await assertNotArchived(projectRoot, { workspaceStore });
       const format = body?.format === "md" ? "md" : "txt";
       const result = await withProjectLock(projectRoot, () => exportBook(projectRoot, { format }));
       // book-export 的 words 是 countEffectiveWords 的有效字数（中文按字符计），
@@ -453,7 +338,7 @@ export function createProjectRoutes({
 
     "POST /api/chapters/rollback": async (handlerCtx) => {
       const projectRoot = await resolveActiveWriteProjectRoot(ctx, handlerCtx.body ?? {});
-      await assertNotArchived(projectRoot);
+      await assertNotArchived(projectRoot, { workspaceStore });
       const chapterNo = normalizePositiveInteger(handlerCtx.body?.chapter_no, null);
       if (chapterNo === null) throw new HttpError(400, "bad_args", "chapter_no 必须是正整数。");
       const { session } = await agent.snapshot({ projectRoot });
@@ -507,7 +392,7 @@ export function createProjectRoutes({
 
     "POST /api/memory/versions/restore": async (handlerCtx) => {
       const projectRoot = await resolveActiveWriteProjectRoot(ctx, handlerCtx.body ?? {});
-      await assertNotArchived(projectRoot);
+      await assertNotArchived(projectRoot, { workspaceStore });
       const file = handlerCtx.body?.file;
       const version = normalizePositiveInteger(handlerCtx.body?.version, null);
       if (file !== "worklog" && file !== "book_summary") throw new HttpError(400, "bad_args", "file 只允许 worklog|book_summary。");
