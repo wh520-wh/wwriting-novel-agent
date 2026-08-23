@@ -63,7 +63,7 @@ try {
   const opened = await postJson(`http://127.0.0.1:${port}/api/projects/open`, { projectRoot });
   assert.equal(opened.ok, true);
 
-  const [html, js, apiClientJs, drawerPanelsJs, agentIndexJs, agentCss, settingsModalJs, viewJs, stylesCss, dashboard] = await Promise.all([
+  const [html, js, apiClientJs, drawerPanelsJs, agentIndexJs, agentCss, settingsModalJs, viewJs, workGroupJs, stylesCss, dashboard] = await Promise.all([
     fetchText(`http://127.0.0.1:${port}/`),
     fetchText(`http://127.0.0.1:${port}/app.js`),
     fetchText(`http://127.0.0.1:${port}/api-client.js`),
@@ -72,6 +72,7 @@ try {
     fetchText(`http://127.0.0.1:${port}/agent/agent.css`),
     fetchText(`http://127.0.0.1:${port}/settings-modal.js`),
     fetchText(`http://127.0.0.1:${port}/agent/view.js`),
+    fetchText(`http://127.0.0.1:${port}/agent/view/work-group.mjs`),
     fetchText(`http://127.0.0.1:${port}/styles.css`),
     fetchJson(`http://127.0.0.1:${port}/api/dashboard`)
   ]);
@@ -114,11 +115,13 @@ try {
   assert.ok(settingsModalJs.includes("被更高优先级同名技能覆盖，不生效。"), "shadowed 应显示通用优先级覆盖文案");
   assert.doesNotMatch(settingsModalJs, /spd-skill-row--readonly|保留名称/u, "设置页不得残留内置只读分区与保留名文案");
 
-  // AgentSurface composer / 停止 / 重试 入口（Task 13 可点击性契约的静态面）
+  // AgentSurface composer / 停止 / 重试 入口（Task 13 可点击性契约的静态面）。
+  // 第十五轮（Task 16）：停止/重试按钮随工作组分区迁 view/work-group.mjs，
+  // 静态契约同步指向该分区。
   assert.ok(viewJs.includes('agent-composer-input"'), "view.js 应渲染 composer 输入框");
   assert.ok(viewJs.includes('agent-send"'), "view.js 应渲染发送按钮");
-  assert.ok(viewJs.includes('agent-stop"'), "view.js 应渲染停止按钮");
-  assert.ok(viewJs.includes('agent-retry"'), "view.js 应渲染重试按钮");
+  assert.ok(workGroupJs.includes('agent-stop"'), "work-group.mjs 应渲染停止按钮");
+  assert.ok(workGroupJs.includes('agent-retry"'), "work-group.mjs 应渲染重试按钮");
 
   // ---- 静态契约：AgentSurface 是唯一对话 seam ----
   assert.match(js, /import\s*\{[^}]*createAgentSurface[^}]*\}\s*from\s*["']\.\/agent\/index\.js["']/, "app.js 应 import AgentSurface seam");
@@ -367,12 +370,13 @@ try {
     assert.ok(reasoningRows.length >= 1, "每个模型轮次应产生一个思考项");
     assert.ok(reasoningRows.every((row) => /思考 \d+ 秒/u.test(row.textContent)), "思考项完成态标签应为 思考 N 秒");
   }
-  // 工作组静态契约：served view.js 渲染 details.agent-work-group 与两种空内容文案；
-  // served work-items.mjs 投影 思考 N 秒 终态标签（回退 已完成思考）与 工作中 组状态文案
+  // 工作组静态契约：served work-group.mjs 渲染 details.agent-work-group 与两种空
+  // 内容文案；served work-items.mjs 投影 思考 N 秒 终态标签（回退 已完成思考）与
+  // 工作中 组状态文案
   const workItemsJs = await fetchText(`http://127.0.0.1:${port}/agent/work-items.mjs`);
-  assert.ok(viewJs.includes("agent-work-group"), "view.js 应渲染 details.agent-work-group");
-  assert.ok(viewJs.includes("当前模型不支持查看"), "view.js 应输出 unsupported 空内容文案");
-  assert.ok(viewJs.includes("没有可查看的思考内容（本次无输出或该模型不支持）"), "view.js 应输出 empty 空内容文案");
+  assert.ok(workGroupJs.includes("agent-work-group"), "work-group.mjs 应渲染 details.agent-work-group");
+  assert.ok(workGroupJs.includes("当前模型不支持查看"), "work-group.mjs 应输出 unsupported 空内容文案");
+  assert.ok(workGroupJs.includes("没有可查看的思考内容（本次无输出或该模型不支持）"), "work-group.mjs 应输出 empty 空内容文案");
   assert.ok(/思考 \$\{[^}]+\} 秒/u.test(workItemsJs) || workItemsJs.includes("思考 1 秒"), "work-items.mjs 应输出 思考 N 秒 终态标签模板");
   assert.ok(workItemsJs.includes("已完成思考"), "work-items.mjs 应保留 已完成思考 回退文案");
   assert.ok(workItemsJs.includes("工作中"), "work-items.mjs 应输出工作组运行状态文案");
