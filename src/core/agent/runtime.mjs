@@ -96,6 +96,10 @@ import { codedError as fail } from "./agent-utils.mjs";
 // 等待）拆到 run-lifecycle.mjs——经 createRunLifecycle(ctx) 以 getter 注入
 // state/sessionState，runtime.mjs 恢复为编排内核。
 import { createRunLifecycle } from "./run-lifecycle.mjs";
+// Task 9（F5c 第十五轮）：会话 CRUD/registry 同步/标题派生/系统事件拆到
+// session-manager.mjs——ensureProject/resolveSessionState 经 ctx 注入函数引用，
+// 实例创建见 resolveSessionState 之后；导出符号的消费说明见下方标记块。
+import { createSessionManager, deriveSessionTitle, hasNonTerminalRun } from "./session-manager.mjs";
 
 // 第九轮：会话级缓存命中率累计（token 加权）。命中 token 不超过输入 token
 //（与 cost-tracker.mjs 的 clamp 一致）；非法/缺失 usage 不改变累计。
@@ -142,72 +146,11 @@ const ASSISTANT_DELTA_MAX_PENDING_CHARS = 2048;
 // buildCompactionSource 的窗口预检把关）。
 const COMPACTION_SOURCE_BUDGET_RATIO = 0.5;
 
-// 会话是否有非终态活动 Run（串行门 / 删除守卫 / run_status 投影共用同一判定；
-// 新增终态状态只需改 TERMINAL_RUN_STATUSES 一处）。
-function hasNonTerminalRun(session) {
-  const run = session?.active_run ?? null;
-  return run != null && !TERMINAL_RUN_STATUSES.has(run.status);
-}
-
-// 会话标题派生（Task 4）：首条消息摘要——trim 后折叠空白并截取前 20 字符，空则
-// "新对话"。与 session-registry 的 title 兜底口径一致（空白标题回落 "新对话"）。
-export function deriveSessionTitle(text) {
-  const trimmed = String(text ?? "").trim();
-  if (trimmed === "") return "新对话";
-  return trimmed.split(/\s+/u).join(" ").slice(0, 20);
-}
-
-// 注册表同步（Task 4 Global Constraints 的落地口径）：touch 刷新 updated_at
-//（sessions() 排序依据）。同步是派生元数据（journal 事件流才是真相源），失败只
-// 告警、绝不回滚已成功的 append。
-//
-// 与原计划"每会话 journal append 后同步"的微调（按实际代码调整，理由如下）：
-//   - 同步点收窄到「调用方可等待的用户动作」：submit/requestPriority/stop/retry/
-//     retryCompaction/cancelCompaction/clearHistory 与 open()。
-//     运行循环内部逐事件 append 不做同步——循环是 fire-and-forget（无人 await），
-//     同步会延长 append 的生命周期到"轮询已观察到 idle 之后"，与外部删除
-//     （测试清理 fs.rm、用户删项目目录）竞态：注册表写盘（临时文件 + rename）
-//     与目录遍历交错会产生孤儿临时文件 / 目录非空（Windows ENOTEMPTY）。
-//   - 由此 updated_at 在一次运行期间滞后到最近一次用户动作为止（排序依据的
-//     滞后窗口可接受，会话活跃顺序以用户动作时刻为准）。
-function syncSessionRegistry(state, sessionState) {
-  return (async () => {
-    try {
-      await state.registry.touch(sessionState.sessionId);
-    } catch (error) {
-      console.warn(`[agent] 注册表同步失败（尽力而为）: ${error?.message ?? String(error)}`);
-    }
-  })();
-}
-
-// 自动命名（Task 11 验收缺口修复）："+" 按钮流程是 createSession()（无 title →
-// "新对话"）→ submit(text, sessionId)——显式创建的会话不会经惰性创建路径的
-// create({ title: deriveSessionTitle(text) }) 命名。这里在输入成功入队后按消息摘要
-// 命名，与惰性创建路径对齐（首条消息前 20 字截断，见 deriveSessionTitle）。
-//
-// 语义约束：
-//   - 只改默认标题：用户已改名（title !== "新对话"）的会话绝不动；
-//   - best-effort（fire-and-forget + catch）：rename 失败只告警，绝不阻塞消息投递
-//     （命名是派生元数据，事件流才是真相；改名可稍后手工进行）；
-//   - 只在入队成功后调用（调用方保证 input_queued 已落盘），避免"重命名了却没
-//     消息"的不一致。
-async function autoNameSessionIfDefault(state, sessionId, text) {
-  try {
-    const meta = await state.registry.get(sessionId);
-    if (meta && meta.title === "新对话") {
-      await state.registry.rename(sessionId, deriveSessionTitle(text));
-    }
-  } catch (error) {
-    console.warn(`[agent] 自动命名失败（不影响消息投递）: ${error?.message ?? String(error)}`);
-  }
-}
-
-function requireSessionId(sessionId) {
-  if (typeof sessionId !== "string" || sessionId.length === 0) {
-    throw fail("invalid_session_id", "sessionId 必须是非空字符串。");
-  }
-  return sessionId;
-}
+// Task 9（F5c 第十五轮）：会话标题派生、注册表同步、自动命名与删除守卫
+//（deriveSessionTitle/syncSessionRegistry/autoNameSessionIfDefault/
+// hasNonTerminalRun/requireSessionId）已随会话 CRUD 拆到 session-manager.mjs——
+// runtime 经 sessionManager 实例调用（12 个同步点 + 1 个自动命名点），
+// deriveSessionTitle 由惰性创建路径（submit 隐式建会话）继续消费。
 
 // ---------------------------------------------------------------------------
 // 每项目状态：journal + ToolRuntime + 当前 Run 的循环控制
@@ -441,6 +384,13 @@ export function createAgentRuntime({
     if (id == null) return null;
     return await ensureSessionState(state, id);
   }
+
+  // Task 9（F5c 第十五轮）：会话 CRUD/registry 同步/标题派生/系统事件拆到
+  // session-manager.mjs——ensureProject/resolveSessionState 闭包引用经 ctx 注入，
+  // 实例与 ensureProject 等每项目基础设施并列创建（最早使用点 :1488 之前）；
+  // 内部 13 个同步/命名调用点（sessionManager.xxx）与公共 API 单行委托
+  // （index.mjs 转发链零改动）。函数设计注释随逻辑迁入新模块。
+  const sessionManager = createSessionManager({ ensureProject, resolveSessionState });
 
   // 会话 load 后的崩溃对账（等价旧 open() 的恢复序列，不含 startLoop——循环启动
   // 由调用方在串行门通过后决定）：checkpoint 对账 → 非终态压缩收敛。
@@ -1542,7 +1492,7 @@ export function createAgentRuntime({
     const sessionState = await ensureSessionState(state, targetId);
     // 注册表 updated_at 同步（幂等）：以用户动作时刻刷新会话活跃排序依据。
     // 同步失败只告警，派生元数据以事件流为准。
-    await syncSessionRegistry(state, sessionState);
+    await sessionManager.syncSessionRegistry(state, sessionState);
     // 恢复：只恢复有效非终态 Run（journal.load 已把 dangling assistant 活动标记
     // 为 interrupted；那些 Run 等待 retry，不自动恢复）。压缩处于阻塞状态
     //（started/running/cancelling/failed）时绝不自动启动循环——绝不让
@@ -1645,8 +1595,8 @@ export function createAgentRuntime({
       }
       // 注册表同步（调用方可等待的边界；updated_at 刷新）+ 自动命名：显式创建
       // （"新对话"默认标题）的会话按首条消息摘要命名
-      await syncSessionRegistry(state, sessionState);
-      await autoNameSessionIfDefault(state, targetId, text);
+      await sessionManager.syncSessionRegistry(state, sessionState);
+      await sessionManager.autoNameSessionIfDefault(state, targetId, text);
       return result;
     });
     if (!created.queued) {
@@ -1688,7 +1638,7 @@ export function createAgentRuntime({
         run_id: run?.id ?? null,
         payload: { input_id: inputId }
       });
-      await syncSessionRegistry(state, sessionState);
+      await sessionManager.syncSessionRegistry(state, sessionState);
       return {
         session_id: sessionState.sessionId,
         run_id: run?.id ?? null,
@@ -1723,7 +1673,7 @@ export function createAgentRuntime({
         run_id: run?.id ?? null,
         payload: { input_id: inputId }
       });
-      await syncSessionRegistry(state, sessionState);
+      await sessionManager.syncSessionRegistry(state, sessionState);
       return {
         session_id: sessionState.sessionId,
         run_id: run?.id ?? null,
@@ -1817,7 +1767,7 @@ export function createAgentRuntime({
     }
     abortController(state);
     await sessionState.lifecycle.waitForIdle();
-    await syncSessionRegistry(state, sessionState);
+    await sessionManager.syncSessionRegistry(state, sessionState);
     return { session_id: sessionState.sessionId, run_id: outcome.run_id, cancelled: true };
   }
 
@@ -1863,7 +1813,7 @@ export function createAgentRuntime({
         run_id: runId,
         payload: { input_id: inputId }
       });
-      await syncSessionRegistry(state, sessionState);
+      await sessionManager.syncSessionRegistry(state, sessionState);
       sessionState.lifecycle.startLoop(runId);
       return { run_id: runId, input_id: inputId, retried: true };
     });
@@ -1932,7 +1882,7 @@ export function createAgentRuntime({
         }
       });
       sessionState.lifecycle.startLoop(run.id);
-      await syncSessionRegistry(state, sessionState);
+      await sessionManager.syncSessionRegistry(state, sessionState);
       return { status: "completed", compaction_id: compactionId, attempt: outcome.attempt };
     }
     if (outcome.status === "failed") {
@@ -1946,13 +1896,13 @@ export function createAgentRuntime({
           payload: { status: "waiting_user", reason: "compaction_failed", error_code: outcome.error_code ?? null }
         });
       }
-      await syncSessionRegistry(state, sessionState);
+      await sessionManager.syncSessionRegistry(state, sessionState);
       return { status: "failed", compaction_id: compactionId, attempt: outcome.attempt, error_code: outcome.error_code };
     }
     // cancelled（ESC 中断重试）：取消收敛（input_cancelled + run_cancelled / 恢复）
     const compactionNow = (await sessionState.journal.getSession()).compaction;
     await sessionState.lifecycle.convergeCompactionCancelled(compactionNow);
-    await syncSessionRegistry(state, sessionState);
+    await sessionManager.syncSessionRegistry(state, sessionState);
     return { status: "cancelled", compaction_id: compactionId };
   }
 
@@ -1981,7 +1931,7 @@ export function createAgentRuntime({
     // 绝不把成功压缩收敛成 input_cancelled + run_cancelled（UI 不得显示"已取消"
     // 覆盖已切换的上下文）。
     if (outcome?.status === "completed" || outcome?.state === "completed") {
-      await syncSessionRegistry(state, sessionState);
+      await sessionManager.syncSessionRegistry(state, sessionState);
       return {
         status: "completed",
         compaction_id: compactionId,
@@ -1989,7 +1939,7 @@ export function createAgentRuntime({
       };
     }
     await sessionState.lifecycle.convergeCompactionCancelled(compactionNow);
-    await syncSessionRegistry(state, sessionState);
+    await sessionManager.syncSessionRegistry(state, sessionState);
     return { status: "cancelled", compaction_id: compactionId };
   }
 
@@ -2112,7 +2062,7 @@ export function createAgentRuntime({
       // 目标会话自身的校准只属于它，恒复位
       sessionState.contextCalibration = null;
       // 注册表同步（clearHistory 不经逐事件同步通道，这里显式 touch + lastSeq）
-      await syncSessionRegistry(state, sessionState);
+      await sessionManager.syncSessionRegistry(state, sessionState);
       return {
         session_id: result.session_id,
         status: result.status,
@@ -2124,125 +2074,40 @@ export function createAgentRuntime({
   }
 
   // -------------------------------------------------------------------------
-  // Task 4：多会话管理 API（全部委托 session-registry）
+  // Task 4：多会话管理 API（Task 9 F5c 第十五轮：全部委托 session-manager；
+  // 实例创建见 resolveSessionState 之后）
   // -------------------------------------------------------------------------
 
-  // 会话列表 + 最近活跃（dashboard 数据源）。
-  // Task 9：为每个会话附加 run_status 投影（左侧栏状态点 + busy 复位数据源）——
-  // 只对已物化会话读取其 journal 的 active_run：非终态 → 报真实状态（running/
-  // waiting_user 等，第十二轮 E 起不再折叠为 running）；failed → "failed"；其余
-  // （无 run / completed/cancelled/interrupted）→ "idle"。未物化会话（注册表条目
-  // 尚无 journal）恒为 "idle"。journal 读取失败不阻塞列表（降级 idle）。dashboard
-  // 与 GET /api/agent/sessions 经同一方法透出。
-  // 轮询成本：每次调用对每个已物化会话做一次 journal.getSession()——initialize 的
-  // loaded 缓存避免磁盘重放（只在首次真正读取/重放），之后是内存 structuredClone
-  // 当前投影；busy 期间前端每 5s 重拉一轮（session-sidebar.mjs），N 个会话的成本
-  // 为 N 次内存克隆 + 注册表读盘，量级可接受。
+  // 会话列表 + 最近活跃（dashboard 数据源，含 run_status 投影）。
   async function sessions({ projectRoot }) {
-    if (typeof projectRoot !== "string" || projectRoot.length === 0) {
-      throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
-    }
-    const state = ensureProject(projectRoot);
-    const list = await state.registry.list();
-    const active = await state.registry.getLastActive();
-    const withRunStatus = await Promise.all(list.map(async (meta) => {
-      let runStatus = "idle";
-      const sessionState = state.sessions.get(meta.session_id);
-      if (sessionState) {
-        try {
-          const session = await sessionState.journal.getSession();
-          const run = session?.active_run ?? null;
-          if (run) {
-            // 第十二轮 E：非终态报真实状态（waiting_user 等），不再折叠为 running——
-            // 侧边栏 busy 判定已同步改为非终态集，不依赖折叠副作用。
-            if (!TERMINAL_RUN_STATUSES.has(run.status)) runStatus = run.status;
-            else if (run.status === "failed") runStatus = "failed";
-          }
-        } catch {
-          // journal 读取失败不阻塞列表（保持 idle）
-        }
-      }
-      return { ...meta, run_status: runStatus };
-    }));
-    return { sessions: withRunStatus, active_session_id: active };
+    return sessionManager.sessions({ projectRoot });
   }
 
-  // 显式建会话（前端"+"按钮 / 对话 B 场景）。只写注册表条目；journal 在首次
-  // open/submit 时惰性物化（会话事件流的 session_created 那时才写入）。
+  // 显式建会话（前端"+"按钮 / 对话 B 场景）。
   async function newSession({ projectRoot, title }) {
-    if (typeof projectRoot !== "string" || projectRoot.length === 0) {
-      throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
-    }
-    const state = ensureProject(projectRoot);
-    return state.registry.create({ title });
+    return sessionManager.newSession({ projectRoot, title });
   }
 
   async function renameSession({ projectRoot, sessionId, title }) {
-    if (typeof projectRoot !== "string" || projectRoot.length === 0) {
-      throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
-    }
-    requireSessionId(sessionId);
-    const state = ensureProject(projectRoot);
-    return state.registry.rename(sessionId, title);
+    return sessionManager.renameSession({ projectRoot, sessionId, title });
   }
 
   async function archiveSession({ projectRoot, sessionId }) {
-    if (typeof projectRoot !== "string" || projectRoot.length === 0) {
-      throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
-    }
-    requireSessionId(sessionId);
-    const state = ensureProject(projectRoot);
-    return state.registry.archive(sessionId);
+    return sessionManager.archiveSession({ projectRoot, sessionId });
   }
 
   async function restoreSession({ projectRoot, sessionId }) {
-    if (typeof projectRoot !== "string" || projectRoot.length === 0) {
-      throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
-    }
-    requireSessionId(sessionId);
-    const state = ensureProject(projectRoot);
-    return state.registry.restore(sessionId);
+    return sessionManager.restoreSession({ projectRoot, sessionId });
   }
 
   // 永久删除（Task 10 设置页）：注册表元数据 + 会话数据目录一并移除。
-  // 守卫：会话运行中（非终态 run）拒绝删除，避免删除后残留飞行循环。
-  // 检查 + 删除在项目互斥锁内原子完成：与并发 submit 的读-判-写串行化，杜绝
-  // 「检查时未落 run → 删除 → submit 写已删会话」的窗口（submit 与会话解析、
-  // 串行门同锁）。
   async function deleteSession({ projectRoot, sessionId }) {
-    if (typeof projectRoot !== "string" || projectRoot.length === 0) {
-      throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
-    }
-    requireSessionId(sessionId);
-    const state = ensureProject(projectRoot);
-    return state.mutex.run(async () => {
-      const sessionState = state.sessions.get(sessionId);
-      if (sessionState) {
-        const session = await sessionState.journal.getSession();
-        if (hasNonTerminalRun(session)) {
-          throw fail("session_busy", "该会话正在运行，无法删除。");
-        }
-      }
-      await state.registry.removePermanently(sessionId);
-      state.sessions.delete(sessionId);
-      // 数据目录一并移除（永久删除 = 元数据 + 事件流）；目录不存在则忽略。
-      await fs.rm(path.join(state.agentRoot, "sessions", sessionId), { recursive: true, force: true }).catch(() => {});
-      return { deleted: true, session_id: sessionId };
-    });
+    return sessionManager.deleteSession({ projectRoot, sessionId });
   }
 
   // 第九轮：系统事件注入（UI 侧恢复操作在对话流中的可见性；run_id=null）。
-  // best-effort：项目无会话或 append 失败不抛错（调用方 catch 已包裹）。
   async function appendSystemEvent({ projectRoot, type, payload }) {
-    if (typeof projectRoot !== "string" || projectRoot.length === 0) {
-      throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
-    }
-    const state = ensureProject(projectRoot);
-    const sessionState = await resolveSessionState(state, null);
-    if (!sessionState) return { seq: null };
-    await sessionState.journal.load();
-    await sessionState.journal.append({ type, run_id: null, payload: payload ?? {} });
-    return { seq: null };
+    return sessionManager.appendSystemEvent({ projectRoot, type, payload });
   }
 
   return {

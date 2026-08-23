@@ -19,7 +19,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { createAgentJournal } from "../../src/core/agent/journal.mjs";
-import { deriveSessionTitle } from "../../src/core/agent/runtime.mjs";
+import { deriveSessionTitle } from "../../src/core/agent/session-manager.mjs";
 import {
   createMockModelGateway,
   createProjectAgentHarness,
