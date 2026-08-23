@@ -258,3 +258,4 @@
   2. R3（Task 23）豁免口径适配：计划原样会对 `tests/agent/*`（内部 seam 测试，规则 A2 既有授权）与 `SURFACE_SEAM_TESTS`（前端分区单测名单）误报；落地豁免二者（属「包内测试」语义），与既有规则 A/A2/B/E 一致。
   3. Task 22 运行时接线回修（292a55e）：`createSettingsModal`/`createDrawerPanels` 契约是 `ctx.refs`（工厂内直接读 `ctx.refs.settingsScrim`/`ctx.refs.drawerBody`），首版把分桶对象裸传，bootApp 抛「undefined 属性读」导致页面完全不可用；缺陷由 `verify:app-clickability` 捕获（motion ready 超时），回修为 `{ refs: settingsRefs }`/`{ refs: drawerRefs }`。**教训：app-shell 单测与静态验证都不执行 app.js 模块——入口化/分桶类改动必须过 clickability，且截图基线须在修复后采集。**
   4. 视觉基线结论：round-15/round-01（refs 修复后重采）vs round-14/round-01 逐图像素对比——26 张完全一致（0 差异），其余差异均为动效中间帧（抽屉 scrim 渐变的亚像素偏移）、动态内容（光标闪烁、`ui-capture-<时间戳>` 演示路径、设置页动态计数、mockup 自播放演示停在异帧）——无稳态像素回归。
+  5. Task 8 测试文件计划自相矛盾：文件清单列 `tests/agent/run-lifecycle.test.mjs`（新建），步骤却只有「跑既有测试」，执行依步骤未创建；2026-08-23 验收补齐薄单测（isAbort 三口径 + closeDroppedToolCalls 闭合形状）。
