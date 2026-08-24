@@ -64,7 +64,7 @@ export const SAFE_PUBLIC_ERROR_CODES = new Set([
   "compaction_failed_blocked",
   // Task 5 会话 CRUD：全部程序写死、不拼底层异常（project_busy/session_busy 的
   // 可读原因「另一个对话正在运行/该会话正在运行」必须能到达用户，与压缩领域
-  // 五个 code 同标准）。invalid_session_id/title 由路由层写死中文文案。
+  // 六个 code 同标准）。invalid_session_id/title 由路由层写死中文文案。
   "invalid_session_id",
   "invalid_session_title",
   "session_not_found",

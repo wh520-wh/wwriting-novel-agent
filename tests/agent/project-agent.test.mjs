@@ -2702,6 +2702,7 @@ test("压缩 failed 态 submit 诚实拒绝（whfind-bugs #5）", async (t) => {
     () => h.agent.submit({ projectRoot: h.projectRoot, text: "hello", source: "chat" }),
     (error) => {
       assert.equal(error.code, "compaction_failed_blocked");
+      assert.equal(error.message, "上下文压缩失败：请先重试或取消压缩，再发送新消息。");
       return true;
     }
   );
@@ -2710,6 +2711,38 @@ test("压缩 failed 态 submit 诚实拒绝（whfind-bugs #5）", async (t) => {
   assert.equal(h.gateway.calls.length, 13, "拒绝不得产生模型调用");
   const session = await readSession(h.agent, h.projectRoot);
   assert.equal(session.active_run.status, "waiting_user", "拒绝后会话保持 waiting_user 原状");
+});
+
+test("压缩 failed 态取消后 submit 恢复通路（whfind-bugs #5）：Run 已终态不拦，新 Run 真实消费", async (t) => {
+  const script = [];
+  for (let i = 0; i < 13; i += 1) script.push(() => ({ text: `回复 ${i}` }));
+  script.push(() => {
+    const error = new Error("压缩响应不是合法 JSON");
+    error.code = "compaction_json";
+    throw error;
+  });
+  script.push(() => ({ text: "取消后恢复的新消息回复。" }));
+  const h = await openHarness(t, { gatewayScript: script, gatewayDelayMs: 0 });
+  await seedTurns(h, 13);
+  await h.agent.submit({ projectRoot: h.projectRoot, text: AUTO_COMPACT_INPUT, source: "chat" });
+  await waitFor(h.agent, h.projectRoot, (session) => session.compaction?.state === "failed" && session.active_run?.status === "waiting_user", { describe: "压缩失败" });
+  const failedEvent = (await readEvents(h.agent, h.projectRoot)).find((event) => event.type === "context_compaction_failed");
+  // 取消压缩：Run 收敛终态（run_cancelled），failed 压缩投影保留（取消不改写失败投影）
+  await h.agent.cancelCompaction({ projectRoot: h.projectRoot, compactionId: failedEvent.payload.compaction_id });
+  await waitForIdle(h.agent, h.projectRoot);
+  assert.equal(eventsOfType(await readEvents(h.agent, h.projectRoot), "run_cancelled").length, 1);
+  // Run 已终态：T24 守卫（run 非终态 + failed）不拦——空闲分支新建 Run（startLoop
+  // 无条件），新输入有真实消费者，不再返回 queued:true 谎言、也不抛 compaction_failed_blocked。
+  // 小输入不触发预检压缩（已 attempted 门只针对同一 pending 输入），直接消费。
+  const result = await h.agent.submit({ projectRoot: h.projectRoot, text: "hello", source: "chat" });
+  assert.equal(result.queued, false, "取消后提交创建新 Run：立即消费而非排队");
+  assert.ok(result.input_id && result.run_id);
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  assert.equal(eventsOfType(events, "input_completed").filter((e) => e.payload.input_id === result.input_id).length, 1, "新输入被新 Run 真实消费并完成");
+  assert.equal(eventsOfType(events, "context_compaction_started").length, 1, "恢复的新输入不得再触发压缩（仅原失败的那一次）");
+  const session = await readSession(h.agent, h.projectRoot);
+  assert.equal(session.status, "idle");
 });
 
 test("自动压缩失败后取消：input_cancelled(compaction_cancelled) + run_cancelled，文本回 draft，会话 idle", async (t) => {
