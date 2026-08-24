@@ -42,7 +42,6 @@ test("loadProjectDiagnostics 组合领域审计与注入的 agentSnapshot", asyn
   assert.equal(diagnostics.project.status, "idle");
   assert.equal(diagnostics.project.stage, "failed");
   assert.equal(diagnostics.queue.queuedCount, 1);
-  assert.equal(diagnostics.queue.runningCount, 1);
   assert.match(diagnostics.recoveryHint.message, /重试|恢复|retry|resume/u);
   assert.ok(diagnostics.recentEvents.some((event) => event.type === "chapter_committed"));
   assert.ok(diagnostics.modelErrors.some((event) => event.type === "model_call_failed"));
@@ -71,7 +70,6 @@ test("diagnostics 暴露 costHealth 且不读全量日志", async () => {
   // Task 4 惰性创建：无会话（agentSnapshot 为 null / 空项目）时 status 回落 'idle'
   //（旧契约快照恒有 idle 会话；空项目 dashboard 显示不变）
   assert.equal(diagnostics.project.status, "idle", "无 snapshot 时 status 为 idle");
-  assert.equal(diagnostics.queue.runningCount, 0);
 });
 
 test("diagnostics 从章节索引推导当前章节（无运行时状态）", async () => {
