@@ -2684,6 +2684,34 @@ test("自动压缩失败：Run 进入 waiting_user（不悬挂/不自动重启�
   assert.equal(eventsOfType(afterRetry, "run_completed").length, 14);
 });
 
+test("压缩 failed 态 submit 诚实拒绝（whfind-bugs #5）", async (t) => {
+  const script = [];
+  for (let i = 0; i < 13; i += 1) script.push(() => ({ text: `回复 ${i}` }));
+  script.push(() => {
+    const error = new Error("压缩响应不是合法 JSON");
+    error.code = "compaction_json";
+    throw error;
+  });
+  const h = await openHarness(t, { gatewayScript: script, gatewayDelayMs: 0 });
+  await seedTurns(h, 13);
+  await h.agent.submit({ projectRoot: h.projectRoot, text: AUTO_COMPACT_INPUT, source: "chat" });
+  await waitFor(h.agent, h.projectRoot, (session) => session.compaction?.state === "failed" && session.active_run?.status === "waiting_user", { describe: "压缩失败" });
+  // 循环已因 compaction_blocked 退出且不会重启（submit 守卫跳过）：此时排队输入
+  // 没有消费者，返回 queued:true 是谎言——必须诚实拒绝，且拒绝不得产生副作用。
+  await assert.rejects(
+    () => h.agent.submit({ projectRoot: h.projectRoot, text: "hello", source: "chat" }),
+    (error) => {
+      assert.equal(error.code, "compaction_failed_blocked");
+      return true;
+    }
+  );
+  const events = await readEvents(h.agent, h.projectRoot);
+  assert.equal(eventsOfType(events, "input_queued").filter((e) => e.payload.text === "hello").length, 0, "拒绝不得排队输入");
+  assert.equal(h.gateway.calls.length, 13, "拒绝不得产生模型调用");
+  const session = await readSession(h.agent, h.projectRoot);
+  assert.equal(session.active_run.status, "waiting_user", "拒绝后会话保持 waiting_user 原状");
+});
+
 test("自动压缩失败后取消：input_cancelled(compaction_cancelled) + run_cancelled，文本回 draft，会话 idle", async (t) => {
   const script = [];
   for (let i = 0; i < 13; i += 1) script.push(() => ({ text: `回复 ${i}` }));
