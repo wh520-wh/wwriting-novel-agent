@@ -565,11 +565,13 @@ export function createAgentRuntime({
       const run = session.active_run;
       const compactionBlocked =
         session.compaction != null && COMPACTION_SEND_BLOCKED_STATES.includes(session.compaction.state);
-      // whfind-bugs #5：压缩 failed 态循环不会复活（下方守卫跳过重启），此时
-      // 排队输入没有消费者、返回 queued:true 是谎言——诚实拒绝。UI composer 在
-      // 这些状态本就禁用发送，只影响直连 API 客户端；running/cancelling 等活跃
-      // 态不拦（循环存活，压缩完成后继续消费队列）。
-      if (session.compaction?.state === "failed") {
+      // whfind-bugs #5：压缩 failed 态循环不会复活（下方守卫跳过重启），仅当
+      // Run 仍非终态（waiting_user）时排队输入没有消费者、返回 queued:true 是
+      // 谎言——诚实拒绝。Run 已终态（退出/取消后）时走下方空闲分支新建 Run
+      //（startLoop 无条件），有真实消费者，不拦。UI composer 在这些状态本就
+      // 禁用发送，只影响直连 API 客户端；running/cancelling 等活跃态不拦
+      // （循环存活，压缩完成后继续消费队列）。
+      if (run && !TERMINAL_RUN_STATUSES.has(run.status) && session.compaction?.state === "failed") {
         throw fail("compaction_failed_blocked", "上下文压缩失败：请先重试或取消压缩，再发送新消息。");
       }
       if (run && !TERMINAL_RUN_STATUSES.has(run.status) && !compactionBlocked) {
