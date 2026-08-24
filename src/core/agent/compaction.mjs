@@ -407,7 +407,7 @@ export function createCompactionCoordinator({
   async function loadEntry(compactionId) {
     const existing = compactions.get(compactionId);
     if (existing) return existing;
-    const events = await journal.read({ afterSeq: 0, limit: 100000 });
+    const { events } = await journal.readTail({ limit: 100000 });
     const startedEvents = events.filter(
       (event) => event?.type === "context_compaction_started" && event?.payload?.compaction_id === compactionId
     );
