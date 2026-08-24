@@ -748,12 +748,29 @@ test("Task 9 压缩领域错误码在白名单内：特定中文文案透传（M
       }
     });
     const server = await compactionHttpServer(t, agent);
-    const retry = await server.post("/api/agent/compaction/c-1/retry", { projectRoot: "D:ny" });
+    const retry = await server.post("/api/agent/compaction/c-1/retry", { projectRoot: "D:\\any" });
     assert.equal(retry.res.status, status, `${code} 状态码`);
     assert.equal(retry.data.ok, false);
     assert.equal(retry.data.code, code);
     assert.equal(retry.data.message, message, `${code} 特定文案必须透传（不得收敛为通用文案）`);
   }
+  // T24（whfind-bugs #5）第六个压缩域 code：compaction_failed_blocked 出自 submit
+  // 路径（runtime.mjs fail 固定文案），不在 agent-routes.mjs 的 COMPACTION_ERROR_MESSAGE
+  // 路由映射内（那五个只管 retry/cancel 动作）——错误原样经 errorToHttp 回落默认
+  // 500（与五兄弟同待遇，不扩 STATUS_409），白名单放行后 submit 侧文案逐字到达客户端。
+  const agent = compactionStubAgent({
+    submit: async () => {
+      const error = new Error("上下文压缩失败：请先重试或取消压缩，再发送新消息。");
+      error.code = "compaction_failed_blocked";
+      throw error;
+    }
+  });
+  const server = await compactionHttpServer(t, agent);
+  const input = await server.post("/api/agent/input", { projectRoot: "D:\\any\\folder", text: "你好" });
+  assert.equal(input.res.status, 500, "compaction_failed_blocked 状态码（无 STATUS_409，与五兄弟 submit 路径同待遇）");
+  assert.equal(input.data.ok, false);
+  assert.equal(input.data.code, "compaction_failed_blocked");
+  assert.equal(input.data.message, "上下文压缩失败：请先重试或取消压缩，再发送新消息。", "T24 文案必须透传（不得收敛为通用文案）");
 });
 
 test("Task 9 取消/重试不泄漏底层错误文本（统一脱敏契约）", async (t) => {
