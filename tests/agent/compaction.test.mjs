@@ -1198,6 +1198,75 @@ test("重启恢复：failed 崩溃窗口 cancel 可用 → input_cancelled(compa
   assert.equal((await readSession(h.agent, h.projectRoot)).status, "idle");
 });
 
+// whfind-bugs #3：手动 in-run 压缩取消只终结 compact item（活动输入），排队输入
+// 存活、Run 恢复 running——收敛矩阵「手动 → 恢复 running（队列继续消费）」。
+// 手工构造收敛现场：Run 首个激活输入是普通输入 A（isIdleInitiatedRun 判定为
+// in-run），compact item 成为活动输入时 B/C 仍在队列，用户 ESC 取消（cancelled
+// 已落盘、Run/input 收敛未落盘）。open() 崩溃对账把残留 running 收敛为
+// waiting_user（不追加 process_restarted 取消——cancelled 已是终态），随后
+// cancelCompaction 走 convergeCompactionCancelled 手动 in-run 分支。
+test("手动 in-run 压缩取消：只终结 compact item，排队输入 B/C 存活，Run 恢复 running（whfind-bugs #3）", async (t) => {
+  const h = await createProjectAgentHarness({ gatewayScript: [], gatewayDelayMs: 0 });
+  t.after(() => h.cleanup());
+  const meta = await h.agent.newSession({ projectRoot: h.projectRoot, title: "手动 in-run 取消" });
+  const journal = createAgentJournal({
+    projectRoot: h.projectRoot,
+    storageRoot: path.join(h.agentRoot, "sessions", meta.session_id),
+    initialSessionId: meta.session_id
+  });
+  await journal.load();
+  const runId = "run-inrun-1";
+  const compactionId = "comp-inrun-1";
+  const compactInputId = "compact-inrun-1";
+  const inputA = "in-A";
+  const inputB = "in-B";
+  const inputC = "in-C";
+  await journal.appendBatch([
+    { type: "input_queued", payload: { input_id: inputA, text: "普通输入 A", source: "chat" } },
+    { type: "run_started", run_id: runId, payload: { workflow: "general" } },
+    { type: "input_started", run_id: runId, payload: { input_id: inputA } },
+    { type: "input_completed", run_id: runId, payload: { input_id: inputA } },
+    { type: "input_queued", payload: { input_id: compactInputId, text: "/compact", kind: "compact", source: "chat" } },
+    { type: "input_started", run_id: runId, payload: { input_id: compactInputId } },
+    {
+      type: "context_compaction_started",
+      payload: {
+        compaction_id: compactionId,
+        trigger: "manual",
+        attempt: 1,
+        source_checkpoint_id: null,
+        checkpoint_id: "ck-inrun",
+        pending_input_id: compactInputId,
+        started_at: new Date().toISOString()
+      }
+    },
+    { type: "context_compaction_running", payload: { compaction_id: compactionId, trigger: "manual", attempt: 1 } },
+    { type: "input_queued", payload: { input_id: inputB, text: "排队消息 B", source: "chat" } },
+    { type: "input_queued", payload: { input_id: inputC, text: "排队消息 C", source: "chat" } },
+    {
+      type: "context_compaction_cancel_requested",
+      payload: { compaction_id: compactionId, trigger: "manual", cancel_reason: "user_esc" }
+    },
+    { type: "context_compaction_cancelled", payload: { compaction_id: compactionId, trigger: "manual", attempt: 1, cancel_reason: "user_esc" } }
+  ]);
+  const opened = await h.agent.open({ projectRoot: h.projectRoot });
+  assert.equal(opened.status, "waiting_user", "崩溃现场 open 后 Run 收敛 waiting_user（等待用户 retry/cancel）");
+  await h.agent.cancelCompaction({ projectRoot: h.projectRoot, compactionId });
+  const events = await readEvents(h.agent, h.projectRoot);
+  const cancelled = eventsOfType(events, "input_cancelled").map((event) => event.payload.input_id);
+  assert.deepEqual(cancelled, [compactInputId], "只有 compact item 被取消，B/C 存活（whfind-bugs #3）");
+  const resumed = eventsOfType(events, "run_status_changed").filter((event) => event.payload.reason === "compaction_cancelled").at(-1);
+  assert.equal(resumed?.payload.status, "running", "手动 in-run 取消恢复 resume_run_status(running)");
+  assert.equal(eventsOfType(events, "run_cancelled").length, 0, "in-run 取消不得取消整个 Run");
+  const session = await readSession(h.agent, h.projectRoot);
+  assert.deepEqual(
+    session.queued_inputs.map((item) => item.id),
+    [inputB, inputC],
+    "队列继续消费：B/C 仍在队列"
+  );
+  assert.equal(session.active_run.status, "running");
+});
+
 test("重启恢复：首屏只读 snapshot 也完成压缩对账，cancelled 后提交会继续执行", async (t) => {
   const h = await createProjectAgentHarness({ gatewayScript: crashWindowGatewayScript(), gatewayDelayMs: 0 });
   t.after(() => h.cleanup());

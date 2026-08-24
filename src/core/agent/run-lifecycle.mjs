@@ -222,10 +222,11 @@ export function createRunLifecycle(ctx) {
   //   - 手动 in-run：input_cancelled(compaction_cancelled) + 恢复 running；
   //   - 手动空闲：input_cancelled(compaction_cancelled) + run_cancelled → idle。
   // 返回 "converged" | "already_terminal" | "input_settled"。
-  // 为什么保留 input_cancelled（Task 26 语义收窄，同 stop 路径）：压缩取消是
-  // 运行级丢弃（活动 compact item + 排队输入一并终结），input_interrupted 需
-  // 安全边界且只接受活动输入、input_withdrawn 仅限主动撤回；UI 契约按
-  // input_cancelled(compaction_cancelled) 渲染「已取消」。
+  // 为什么保留 input_cancelled（Task 26 语义收窄，同 stop 路径）：压缩取消的
+  // 终结范围是——手动 in-run 只终结 compact item（排队输入存活，队列继续消费，
+  // whfind-bugs #3）；自动/空闲为运行级丢弃（活动 compact item + 排队输入一并
+  // 终结）。input_interrupted 需安全边界且只接受活动输入、input_withdrawn 仅限
+  // 主动撤回；UI 契约按 input_cancelled(compaction_cancelled) 渲染「已取消」。
   async function convergeCompactionCancelled(compaction) {
     return getState().mutex.run(async () => {
       const session = await getSessionState().journal.getSession();
@@ -241,7 +242,13 @@ export function createRunLifecycle(ctx) {
       const batch = [];
       const inputIds = [];
       if (run.active_input_id != null) inputIds.push(run.active_input_id);
-      for (const item of session.queued_inputs) inputIds.push(item.id);
+      const manualInRun = isManual && !idleInitiated;
+      // whfind-bugs #3：手动 in-run 取消只终结 compact item 本身（即活动输入），
+      // 排队输入存活——收敛矩阵写明「手动 → 恢复 running（队列继续消费）」。
+      // 自动/空闲路径维持运行级丢弃（run_cancelled → idle，队列随 Run 终结）。
+      if (!manualInRun) {
+        for (const item of session.queued_inputs) inputIds.push(item.id);
+      }
       for (const id of inputIds) {
         batch.push({
           type: "input_cancelled",
@@ -249,7 +256,7 @@ export function createRunLifecycle(ctx) {
           payload: { input_id: id, reason: id === inputId ? "compaction_cancelled" : "compaction_run_cancelled" }
         });
       }
-      if (isManual && !idleInitiated) {
+      if (manualInRun) {
         // 手动 in-run 取消：恢复 resume_run_status（running），队列继续消费
         batch.push({
           type: "run_status_changed",
