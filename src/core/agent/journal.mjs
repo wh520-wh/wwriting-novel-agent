@@ -1028,12 +1028,13 @@ export function createAgentJournal({
   // -------------------------------------------------------------------------
 
   // 该输入当前是否尚无终态事件（需要追加 input_completed）。逆序扫描最近
-  // 100k 条事件（原 runtime.mjs needsCompletionTerminal 主体逐字迁入）：
+  // 100k 条事件（原 runtime.mjs needsCompletionTerminal 主体逐字迁入；readTail
+  // 尾部窗口——whfind-bugs #1：read({afterSeq:0}) 是最旧窗口）：
   // 命中 input_consumed/cancelled/completed/interrupted/withdrawn 返回 false
   //（该输入已有终态事件）；命中 input_promoted/run_started/input_started 返回
   // true；超出上限视为需要收敛（保守方向）。
   async function hasTerminalEvent(runId, inputId) {
-    const events = await read({ afterSeq: 0, limit: 100000 });
+    const { events } = await readTail({ limit: 100000 });
     for (let i = events.length - 1; i >= 0; i -= 1) {
       const event = events[i];
       if (event.run_id !== runId || event.payload?.input_id !== inputId) continue;
@@ -1055,7 +1056,7 @@ export function createAgentJournal({
   //（原 runtime.mjs findInputMeta 主体逐字迁入）：命中 input_queued 且
   // input_id 匹配即返回；超出上限视为找不到（返回 text: null）。
   async function findInputMeta(inputId) {
-    const events = await read({ afterSeq: 0, limit: 100000 });
+    const { events } = await readTail({ limit: 100000 });
     for (let i = events.length - 1; i >= 0; i -= 1) {
       const event = events[i];
       if (event.type === "input_queued" && event.payload?.input_id === inputId) {
@@ -1075,7 +1076,7 @@ export function createAgentJournal({
   // input_started 判定（空闲发起 = Run 首个被激活输入就是 compact item）；legacy
   // 日志（retry 的 run_started 仍带 input_id）保留原判定分支。
   async function isIdleInitiatedRun(runId, compactInputId) {
-    const events = await read({ afterSeq: 0, limit: 100000 });
+    const { events } = await readTail({ limit: 100000 });
     for (const event of events) {
       if (event.type === "input_started" && event.run_id === runId) {
         return event.payload?.input_id === compactInputId;
@@ -1091,7 +1092,7 @@ export function createAgentJournal({
   // 从 journal 事件找回可恢复 Run 的未终结输入（run_failed 记录了 input_id；
   // 崩溃恢复的 run_interrupted 没有，则退回 run_started/input_promoted 的信息）。
   async function findTerminalInputId(runId) {
-    const events = await read({ afterSeq: 0, limit: 100000 });
+    const { events } = await readTail({ limit: 100000 });
     const runEvents = events.filter((event) => event.run_id === runId);
     for (let i = runEvents.length - 1; i >= 0; i -= 1) {
       const event = runEvents[i];
