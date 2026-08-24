@@ -25,14 +25,18 @@ test("第十一轮 F：同一项目不同大小写路径共享 entry（win32）/
   }
 });
 
-test("flushDirty：脏成本在 dashboard 读取前落盘（whfind-bugs #4）", async () => {
+test("flushDirty：脏成本在 dashboard 读取前落盘（whfind-bugs #4）", async (t) => {
   const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-gateway-flush-"));
+  t.after(() => fs.rm(projectRoot, { recursive: true, force: true }));
   const gateway = createAppModelGateway({
     resolveEffectiveConfig: async () => ({ active_model: null })
   });
   assert.equal(typeof gateway.flushDirty, "function");
-  // 造一个脏 tracker（calls 1 > lastWrittenCalls 0）后冲刷，cost.json 应立即落盘
   const entry = gateway.gatewayFor(projectRoot);
+  // 无新增调用（lastWrittenCalls 门槛）时不写盘：cost.json 不得出现
+  await gateway.flushDirty(projectRoot);
+  await assert.rejects(fs.readFile(path.join(projectRoot, "cost.json")), "无脏不写");
+  // 造脏 tracker（calls 1 > lastWrittenCalls 0）后冲刷，cost.json 应立即落盘
   entry.costTracker.record({
     stage: "test",
     usageReport: { provider: "test", model: "test-model", inputTokens: 10, outputTokens: 10 }

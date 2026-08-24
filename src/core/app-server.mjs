@@ -74,8 +74,10 @@ export function createAppShellServer({
       if (options.projectRoot) {
         try {
           await modelGateway.flushDirty(options.projectRoot);
-        } catch {
-          // 成本冲刷失败：dashboard 仍按现有路径渲染（cost.json 保持当前值）
+        } catch (error) {
+          // 冲刷失败只影响成本展示新鲜度，不阻断 dashboard 渲染；保留 warn 以便
+          // 与「写坏三天」区分（磁盘满等系统性问题可诊断）。
+          console.warn("[app-server] 冲刷成本报告失败：", error);
         }
       }
       return loadDashboardData(workspaceRootArg, {
@@ -235,7 +237,7 @@ export function createAppShellServer({
   });
 
   async function flushAllCostReports() {
-    // key 在 win32 已小写归一（见 gatewayFor）：大小写不敏感 FS 上仍写同一路径。
+    // key 在 win32 已小写归一（见 gatewayKeyFor）：大小写不敏感 FS 上仍写同一路径。
     for (const [projectRoot, entry] of modelGateway.entriesMap) {
       try {
         await writeCostReportIfDirty(entry, projectRoot);
