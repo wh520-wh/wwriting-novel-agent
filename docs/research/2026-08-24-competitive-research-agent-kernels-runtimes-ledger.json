@@ -1,0 +1,123 @@
+{
+  "research_date": "2026-08-24",
+  "evidence": [
+    {
+      "id": "E1",
+      "competitor": "Claude Agent SDK",
+      "claim": "官方文档描述 Agent SDK 提供：内置工具（读写编辑文件、运行命令、搜索网络）、agent loop、permissions（'Control which tools run automatically, which need approval'）、context management/sessions（'Maintain context across exchanges, resume or fork later'）、subagents、hooks（生命周期关键点运行自定义代码）、skills/commands/memory 自动从 .claude/ 目录加载、MCP 与打包 skills+agents+hooks+MCP 的 plugins；提供 Python 与 TypeScript 库。",
+      "source_url": "https://code.claude.com/docs/en/agent-sdk/overview",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "SDK capabilities 表与 vs Client SDK 对比",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E2",
+      "competitor": "OpenCode",
+      "claim": "README 自述'The open source AI coding agent'，MIT 许可，200.6k stars；内置权限分档 agent：'build - Default, full-access agent for development work' 与 'plan - Read-only agent for analysis and code exploration'（默认拒绝文件编辑、bash 前询问），并有 @general 子代理处理复杂搜索与多步任务；提供 beta 桌面应用。",
+      "source_url": "https://github.com/sst/opencode",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "README 内置 agents 小节与仓库侧栏",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E3",
+      "competitor": "Gemini CLI",
+      "claim": "README 列出'Conversation checkpointing to save and resume complex sessions'、MCP 支持（~/.gemini/settings.json 配置）、Custom Commands（'Create your own reusable commands'）、Custom Extensions、GEMINI.md 项目级上下文文件、headless 模式（-p --output-format json/stream-json）；认证三档（OAuth 60 req/min、1000 req/day 免费；API Key；Vertex AI）；Apache 2.0，106.6k stars。",
+      "source_url": "https://github.com/google-gemini/gemini-cli",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "README 特性列表与认证小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E4",
+      "competitor": "Cline",
+      "claim": "官方文档首页声明'Every action requires your explicit approval. You're always in control.'，支持 BYOK 与 ClinePass 计费，核心被复用为 CLI、Kanban、VS Code、JetBrains 多个应用形态并提供 SDK 与企业功能（SSO/可观测性）；Plan/Act 模式与 checkpoints 细节未在首页取证。",
+      "source_url": "https://docs.cline.bot/",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "文档首页概览",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E5",
+      "competitor": "Aider",
+      "claim": "README 描述：'Aider makes a map of your entire codebase' 帮助大型项目导航；'Aider automatically commits changes with sensible commit messages' 并可用熟悉的 git 工具 diff/管理/撤销 AI 改动；支持几乎任意 LLM 包括本地模型；自动 lint/test；语音输入；Apache-2.0，48.4k stars。",
+      "source_url": "https://github.com/Aider-AI/aider",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "README 功能列表",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E6",
+      "competitor": "LangGraph",
+      "claim": "README 自述'Low-level orchestration framework for building stateful agents'；durable execution 使 agent 'persist through failures' 并 'automatically resuming from exactly where they left off'；human-in-the-loop 可在任何执行时点检查并修改 agent 状态；分层短期工作记忆与跨会话长期记忆；MIT，40.3k stars。",
+      "source_url": "https://github.com/langchain-ai/langgraph",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "README capabilities 小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E7",
+      "competitor": "运行时生态横向",
+      "claim": "这是基于六个运行时取证的推断（inference）：权限分档、会话持久化/恢复、项目级记忆文件、自定义命令、子代理已在主流运行时成为标配；其中项目级记忆文件（GEMINI.md/.claude 记忆）与 WWriting 的 WWRITING.md 是同构设计，验证了该方向正确。",
+      "source_url": "https://code.claude.com/docs/en/agent-sdk/overview",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "跨 E1/E2/E3/E4 的综合推断",
+      "classification": "inference",
+      "confidence": "medium"
+    },
+    {
+      "id": "E8",
+      "competitor": "运行时生态横向",
+      "claim": "这是基于取证对比的推断（inference）：WWriting 的事件溯源式恢复粒度（每会话独立事件流、投影可重建）不弱于 Gemini checkpointing 与 LangGraph durable execution 的公开描述，而按输入粒度授权与极端操作精确确认文字在六个运行时中未见第二家，属结构性差异而非差距。",
+      "source_url": "https://github.com/google-gemini/gemini-cli",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "跨 E1/E3/E4/E6 的综合推断",
+      "classification": "inference",
+      "confidence": "medium"
+    }
+  ],
+  "recommendations": [
+    {
+      "id": "R1",
+      "priority": "P0",
+      "statement": "引入只读、独立上下文的审稿子代理：主 Run 在写后校验时派生，产出结构化意见（冲突/POV 越界/未兑现伏笔）回流主对话。",
+      "evidence_ids": ["E1", "E2", "E7"],
+      "acceptance_signal": "审稿以独立只读子代理执行，Journal 记录派生关系，产出含分类意见清单。"
+    },
+    {
+      "id": "R2",
+      "priority": "P1",
+      "statement": "支持项目内自定义斜杠命令（用户命令文件 + WWRITING.md 索引）。",
+      "evidence_ids": ["E1", "E3"],
+      "acceptance_signal": "用户可在项目内定义一个 /命令 并在输入框触发生效。"
+    },
+    {
+      "id": "R3",
+      "priority": "P1",
+      "statement": "实现会话 fork：从任意历史消息派生分支对话，原会话保持不动。",
+      "evidence_ids": ["E1"],
+      "acceptance_signal": "任一历史消息可'从这里分支'，新会话继承截至该点的上下文与文件状态索引。"
+    },
+    {
+      "id": "R4",
+      "priority": "P2",
+      "statement": "预研生命周期 hooks（章节提交前/工具调用前回调，如自动 count_text、格式检查）；MCP 生态接入与图编排改造列为明确 non-goal。",
+      "evidence_ids": ["E1", "E5"],
+      "acceptance_signal": "设计笔记定义至少两个钩子点与失败语义，并注明 MCP/图编排为 non-goal。"
+    }
+  ]
+}

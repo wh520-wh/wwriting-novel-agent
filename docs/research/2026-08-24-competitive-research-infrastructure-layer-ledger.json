@@ -1,0 +1,112 @@
+{
+  "research_date": "2026-08-24",
+  "evidence": [
+    {
+      "id": "E1",
+      "competitor": "LiteLLM",
+      "claim": "README 描述：统一接口调用 100+ LLM 供应商（OpenAI/Anthropic/Gemini/Bedrock/Azure/Vertex/vLLM 等）且 OpenAI 兼容可换供应商不改代码；Router 内置跨部署 retry/fallback；网关提供虚拟 Key、按项目/用户的多租户成本记账、guardrails、负载均衡、缓存与管理台；声称 8ms P95 延迟@1k RPS；57.1k stars，含企业版商业许可（SSO/SLA）。",
+      "source_url": "https://github.com/BerriAI/litellm",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "README 能力列表与侧栏统计",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E2",
+      "competitor": "Vercel AI SDK (streamText)",
+      "claim": "官方文档列出完整流 part 分类：生命周期（start/start-step/finish-step/finish/abort/error/raw）、文本（text-start/delta/end）、推理（reasoning-start/delta/end）、工具（tool-call/tool-result/tool-error/tool-output-denied/tool-approval-request/tool-approval-response）与工具参数增量流（tool-input-start/delta/end）；背压设计'streamText is using backpressure and only generates tokens as they are requested'；支持 smoothStream 等变换。",
+      "source_url": "https://ai-sdk.dev/docs/ai-sdk-core/stream-text",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "streamText 文档 Part Types 与 Behaviors 小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E3",
+      "competitor": "mem0",
+      "claim": "README（2026-04 更新）描述新记忆算法：'Single-pass ADD-only extraction -- one LLM call, no UPDATE/DELETE. Memories accumulate; nothing is overwritten.'，增加实体链接与时间推理；检索为多信号融合（'semantic, BM25 keyword, and entity matching scored in parallel and fused'）；平台版 LoCoMo 92.5 / LongMemEval 94.4（页面自注 OSS 用户应期望方向相似而非相同数值）；Apache 2.0，63.9k stars。",
+      "source_url": "https://github.com/mem0ai/mem0",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "README 算法与检索小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E4",
+      "competitor": "Claude Skills",
+      "claim": "官方文档规定：SKILL.md 为 YAML frontmatter + Markdown；发现层级为企业>个人>项目并按目录覆盖；渐进披露三层——技能描述常驻上下文且清单预算'scales at 1% of the model's context window'、超限先淘汰低频技能描述、正文仅调用时加载（'a skill's body loads only when it's used'）、引用文件按需读取；指引'Keep SKILL.md under 500 lines'；自定义命令已并入技能（commands 与 skills 同建 /命令，同名冲突技能胜出）；技能遵循跨工具的 Agent Skills 开放标准。",
+      "source_url": "https://code.claude.com/docs/en/skills",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "文档 Discovery/Progressive disclosure/Slash commands 小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E5",
+      "competitor": "Langfuse",
+      "claim": "README 描述：开源 LLM 工程平台，提供 trace 摄取（LLM 调用+检索+embedding+agent 动作）与调试、prompt 集中版本化与服务端/客户端缓存、评估（LLM-as-a-judge/代码评估器/用户反馈/人工标注）、数据集与 playground；可 Docker Compose 约 5 分钟自托管；'MIT licensed, except for the ee folders'；33.6k stars。",
+      "source_url": "https://github.com/langfuse/langfuse",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "README 功能与部署小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E6",
+      "competitor": "基础设施横向",
+      "claim": "这是基于五项取证的推断（inference）：WWriting 的四层技能目录覆盖与 Claude Skills 的企业>个人>项目优先级同构，缺的是清单预算/低频淘汰与'命令并入技能'的统一机制；ModelGateway 相对 LiteLLM 缺跨部署 fallback 与预算管理；这两点是差距最大且补齐成本最低的层面。",
+      "source_url": "https://code.claude.com/docs/en/skills",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "跨 E1/E4 的综合推断",
+      "classification": "inference",
+      "confidence": "medium"
+    },
+    {
+      "id": "E7",
+      "competitor": "基础设施横向",
+      "claim": "这是基于 mem0 取证与批 1 开源调研互证的推断（inference）：'记忆只追加不覆盖'（ADD-only/append-only）在记忆层产品与长篇写作方法两端独立收敛，是跨领域共识而非单一项目偏好。",
+      "source_url": "https://github.com/mem0ai/mem0",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "E3 与批 1 long-novel-writer Canon Ledger 的交叉推断",
+      "classification": "inference",
+      "confidence": "medium"
+    }
+  ],
+  "recommendations": [
+    {
+      "id": "R1",
+      "priority": "P0",
+      "statement": "技能清单渐进披露：描述常驻设上下文预算上限、超限淘汰低频技能，正文调用时加载、引用文件按需读取，SKILL.md 编写规范 <500 行。",
+      "evidence_ids": ["E4", "E6"],
+      "acceptance_signal": "技能清单加载有上限并有低频淘汰逻辑的测试；内置技能全部符合行数规范。"
+    },
+    {
+      "id": "R2",
+      "priority": "P1",
+      "statement": "网关补跨部署/跨供应商 fallback 路由与每工作区成本阈值提醒。",
+      "evidence_ids": ["E1"],
+      "acceptance_signal": "注入主端点故障的测试自动 fallback 并记入 Journal；成本阈值触发的仪表盘提示有验收用例。"
+    },
+    {
+      "id": "R3",
+      "priority": "P1",
+      "statement": "AgentSurface 流式条目通道化：与 part 分类学对齐，工具参数增量与审批请求/响应成为独立通道。",
+      "evidence_ids": ["E2"],
+      "acceptance_signal": "条目模型含正文/思考/工具输入增量/工具结果/审批事件五类通道且渲染各有归属。"
+    },
+    {
+      "id": "R4",
+      "priority": "P2",
+      "statement": "Journal 增加按 Run 聚合的本地 trace 视图（模型/工具/子 Run 的 token、成本、时长树）；云端 prompt 平台与 judge 服务为明确 non-goal。",
+      "evidence_ids": ["E5"],
+      "acceptance_signal": "仪表盘可按任一 Run 展开三层调用树并显示成本与耗时。"
+    }
+  ]
+}

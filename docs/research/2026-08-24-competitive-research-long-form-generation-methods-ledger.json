@@ -1,0 +1,123 @@
+{
+  "research_date": "2026-08-24",
+  "evidence": [
+    {
+      "id": "E1",
+      "competitor": "StoryWriter (arXiv 2506.16445)",
+      "claim": "摘要描述三模块多智能体框架：outline agent 生成含事件情节、角色与事件-事件关系的事件大纲；planning agent 扩展事件并决定每章写哪些事件以维持交织的叙事；writing agent 'dynamically compresses the story history based on the current event' 并生成与反思新情节；人工+自动评测显著优于基线（质量与长度），并产出约 6000 篇平均 8000 词的长故事数据集用于微调 Llama3.1-8B 与 GLM4-9B。",
+      "source_url": "https://arxiv.org/abs/2506.16445",
+      "source_type": "official_paper",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "arXiv 摘要页 Abstract",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E2",
+      "competitor": "DOME (arXiv 2412.13575)",
+      "claim": "摘要描述：动态分层大纲（DHO）将小说写作理论融入大纲规划并把规划与写作阶段融合，以适应生成过程中的不确定性；记忆增强模块（MEM）基于时间知识图谱存取生成内容以减少上下文冲突；并提出时间冲突分析器作为自动评测长篇上下文一致性的工具；实验显著提升流畅性、连贯性与整体质量。",
+      "source_url": "https://arxiv.org/abs/2412.13575",
+      "source_type": "official_paper",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "arXiv 摘要页 Abstract",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E3",
+      "competitor": "WriteHERE (arXiv 2503.08275)",
+      "claim": "摘要描述：基于递归任务分解与检索/推理/写作三类异构任务动态交织的长篇写作 agent 框架，去除对预定义工作流与固定思维模式的依赖；在小说写作与技术报告生成两类任务上'consistently outperforms state-of-the-art approaches across all automatic evaluation metrics'，代码与 prompt 已开源。",
+      "source_url": "https://arxiv.org/abs/2503.08275",
+      "source_type": "official_paper",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "arXiv 摘要页 Abstract",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E4",
+      "competitor": "Next-Chapter Prediction RL (arXiv 2503.22828)",
+      "claim": "摘要描述：学习在故事浓缩信息上推理并生成下一章详细计划（Next-Chapter Prediction 任务），以'Verified Rewards via Completion Likelihood Improvement'用无标注书籍语料作奖励信号；成对人工评测中经训练的推理所产章节在几乎所有指标上被偏好，科幻/奇幻类型增益最强。",
+      "source_url": "https://arxiv.org/abs/2503.22828",
+      "source_type": "official_paper",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "arXiv 摘要页 Abstract",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E5",
+      "competitor": "LongWriter / AgentWrite (THUDM)",
+      "claim": "官方仓库 README 描述：AgentWrite 为 plan.py→write.py 两段式超长输出数据管道；LongBench-Write 同时度量输出长度与质量（GPT-4o 作 judge）；LongWriter-Zero-32B（2025-06）以纯 RL 训练，声称大幅超过原 LongWriter 并在长文写作任务上超过 DeepSeek-R1、Qwen3 等百亿级以上模型；Apache-2.0，1.9k stars。",
+      "source_url": "https://github.com/THUDM/LongWriter",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "README 方法/模型/评测小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E6",
+      "competitor": "RecurrentGPT (arXiv 2305.13304)",
+      "claim": "官方仓库 README 描述：以自然语言替换 LSTM 的向量状态（细胞态/隐藏态/输入/输出）；每个时间步接收上一段正文与下一段计划，访问存盘且可语义检索的长期记忆（历史段落摘要），更新自然语言短期记忆，产出新段落与下一步计划；提供人机共写交互（多个续写方向可选可编辑）。",
+      "source_url": "https://github.com/aiwaves-cn/RecurrentGPT",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "README Method 与 Human Interaction 小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E7",
+      "competitor": "方法论横向",
+      "claim": "这是基于四篇论文摘要的推断（inference）：2024-2025 方法论收敛于'动态规划优于固定大纲'（DOME 融合规划与写作、WriteHERE 去预定义工作流、StoryWriter 专职规划 agent 动态分配章节事件）与'结构化状态记忆优于纯向量检索'（时间知识图谱、事件关系大纲、语言化 LSTM 状态）两个判断。",
+      "source_url": "https://arxiv.org/abs/2503.08275",
+      "source_type": "official_paper",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "跨 E1/E2/E3/E6 的综合推断",
+      "classification": "inference",
+      "confidence": "medium"
+    },
+    {
+      "id": "E8",
+      "competitor": "方法论横向",
+      "claim": "这是基于评测方式的推断（inference）：长篇生成评测正从人评/GPT-judge 转向自动化信号——时间冲突分析器（DOME）、无标注语料的完成似然奖励（2503.22828）、长度+质量双指标（LongBench-Write），产品侧可借鉴其'冲突类型清单'而非 judge 依赖。",
+      "source_url": "https://arxiv.org/abs/2412.13575",
+      "source_type": "official_paper",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "跨 E2/E4/E5 的综合推断",
+      "classification": "inference",
+      "confidence": "medium"
+    }
+  ],
+  "recommendations": [
+    {
+      "id": "R1",
+      "priority": "P0",
+      "statement": "把 Visible Plan 升级为可修订计划：模型可在写作中显式修订计划（新增/删除/重排），修订作为 Journal 事件记录且 UI 可回看。",
+      "evidence_ids": ["E1", "E2", "E3"],
+      "acceptance_signal": "一次写作 Run 中发生至少一次计划修订，且事件流与界面均可回看修订前后。"
+    },
+    {
+      "id": "R2",
+      "priority": "P1",
+      "statement": "上下文压缩增加与当前章节/事件的相关性优先级，替代纯预算驱逐。",
+      "evidence_ids": ["E1"],
+      "acceptance_signal": "压缩决策记录相关性依据，验收语料含'关键设定在压缩后仍被引用'断言。"
+    },
+    {
+      "id": "R3",
+      "priority": "P1",
+      "statement": "新增'写前下一章规划'技能模式：每章开写前先产出该章计划并落盘。",
+      "evidence_ids": ["E4", "E6"],
+      "acceptance_signal": "至少一个内置技能含写前规划步骤且产物落入项目文件。"
+    },
+    {
+      "id": "R4",
+      "priority": "P2",
+      "statement": "审稿模式加入轻量冲突检查清单（时间线/实体状态/承诺未兑现）；自训模型与 RL 管线为明确 non-goal。",
+      "evidence_ids": ["E2", "E5", "E8"],
+      "acceptance_signal": "审稿提示词包含三类冲突检查项并有对应验收用例；设计文档注明模型训练为 non-goal。"
+    }
+  ]
+}

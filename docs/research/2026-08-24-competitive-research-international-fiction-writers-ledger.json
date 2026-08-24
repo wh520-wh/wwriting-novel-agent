@@ -1,0 +1,185 @@
+{
+  "research_date": "2026-08-24",
+  "evidence": [
+    {
+      "id": "E1",
+      "competitor": "NovelCrafter",
+      "claim": "官方首页描述 Codex 为 'Story Bible & World Builder'，支持角色/地点/传说的组织与自动追踪，条目自动互链，且可跨系列多本书共享；支持邀请共同作者、审校者与写作小组团队。",
+      "source_url": "https://www.novelcrafter.com/",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "首页 Codex 与 Collaboration 板块",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E2",
+      "competitor": "NovelCrafter",
+      "claim": "官方首页声明可连接自选 AI 平台或在本机运行模型，列出 OpenAI (GPT-5)、Anthropic (Claude)、Google (Gemini)、Meta (Llama)、Mistral、OpenRouter（300+ 模型）以及本地选项 LM Studio 与 Ollama。",
+      "source_url": "https://www.novelcrafter.com/",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "首页 AI Connectivity 板块",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E3",
+      "competitor": "NovelCrafter",
+      "claim": "官方首页标示 'Plans starting from 4 USD/m' 与 21 天免费试用（无需信用卡）；/pricing 分层页多次抓取超时，细节未核实。",
+      "source_url": "https://www.novelcrafter.com/",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "首页定价横幅",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E4",
+      "competitor": "Sudowrite",
+      "claim": "官方首页列出 Story Bible 引导式工作流（想法→大纲→beat→成章）、Write/Describe/Expand/Rewrite/Feedback/Chat/Canvas/Brainstorm/Visualize 等工具、1000+ 插件市场，以及自研小说模型 Muse 1.5。",
+      "source_url": "https://www.sudowrite.com/",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "首页功能列表",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E5",
+      "competitor": "Sudowrite",
+      "claim": "官方定价页：Hobby & Student $10/月（225,000 credits/月）、Professional $22/月（页面显示 450,000/1,000,000 两档数字，月付/年付口径未标注）、Max $44/月（2,000,000 credits/月，未用额度滚存 12 个月）；年付至多 5 折；取消后保留项目访问权但 AI 功能需付费计划。",
+      "source_url": "https://www.sudowrite.com/pricing",
+      "source_type": "official_pricing",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "定价页三档卡片",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E6",
+      "competitor": "NovelAI",
+      "claim": "官方首页定价为 Tablet $10/月、Scroll $15/月、Opus $25/月，均含图像生成（1024x1024/28 steps 内不限量）与 Anlas 点数返赠；产品重心为 NovelAI Diffusion V5 图像模型与图像工具链，文本线以 Storyteller 入口呈现且首页着墨少。",
+      "source_url": "https://novelai.net/",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "首页订阅表与 Diffusion V5 板块",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E7",
+      "competitor": "RaptorWrite",
+      "claim": "开发方 Future Fiction Academy 官宣：RaptorWrite 基础版永久免费，AI 通过 OpenRouter 接入、用户自带 API Key，'No markup from us'，估算重度使用每月几美元；支持 Claude/Gemini/GPT 按任务选用。",
+      "source_url": "https://futurefictionacademy.com/raptorwrite-1-0-is-here-free-ai-writing-software-built-for-authors/",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "RaptorWrite 1.0 发布公告正文",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E8",
+      "competitor": "RaptorWrite",
+      "claim": "官宣描述核心功能：发送前可见上下文（'Before you send anything to the AI, you see exactly what it is going to see'）、Model Collections 按任务分组模型、Prompt Library 提示词库、拖拽式项目组织、Version Snapshots 版本回滚与对比。",
+      "source_url": "https://futurefictionacademy.com/raptorwrite-1-0-is-here-free-ai-writing-software-built-for-authors/",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "公告 Core features 列表",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E9",
+      "competitor": "RaptorWrite",
+      "claim": "官宣声明工作直接保存到云端（'Your work saves directly to the cloud'），任意浏览器可访问；产品无本地文件夹模式。",
+      "source_url": "https://futurefictionacademy.com/raptorwrite-1-0-is-here-free-ai-writing-software-built-for-authors/",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "公告 Cloud-based 段落",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E10",
+      "competitor": "Scrivener",
+      "claim": "官方概览页：活页夹结构、Corkboard 卡片板与 Outliner 大纲、Compile 编译导出至 Word/RTF/PDF/纯文本/Final Draft/Epub/Kindle（macOS 提及 Pandoc）、快照 Snapshot 与 Compare 对比、自动保存与开关工程时备份。",
+      "source_url": "https://www.literatureandlatte.com/scrivener/overview",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "overview 页各功能小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E11",
+      "competitor": "Scrivener",
+      "claim": "官方概览页注明各平台（macOS/Windows/iOS）许可证分别出售；页面未展示价格金额。",
+      "source_url": "https://www.literatureandlatte.com/scrivener/overview",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "overview 页版本要求与 BUY NOW 区",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E12",
+      "competitor": "市场结构",
+      "claim": "这是基于五家定价页的推断（inference）：国际 AI 小说写作市场按商业模式分为计量型（Sudowrite credits、NovelAI Anlas）与 BYO-key 工具型（NovelCrafter 席位订阅、RaptorWrite 免费+自带 Key），无一家同时做到免费工具、零计量、数据存本地文件夹。",
+      "source_url": "https://www.sudowrite.com/pricing",
+      "source_type": "official_pricing",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "跨 E3/E5/E6/E7 的综合推断",
+      "classification": "inference",
+      "confidence": "medium"
+    },
+    {
+      "id": "E13",
+      "competitor": "市场结构",
+      "claim": "这是基于五家官网功能表述的推断（inference）：均为作者逐步驱动的工具形态（引导流、按钮式生成、卡片板），没有一家提供 agent 式自主多步循环（自主读文件、排队输入、可见计划、断点恢复）这类工作流。",
+      "source_url": "https://www.novelcrafter.com/",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "跨 E1/E4/E6/E8 的综合推断",
+      "classification": "inference",
+      "confidence": "medium"
+    }
+  ],
+  "recommendations": [
+    {
+      "id": "R1",
+      "priority": "P0",
+      "statement": "制作与 5 家竞品的计费机制与数据归属对照表，把'自带 Key、零计量、数据在本地文件夹'变成可感知主张。",
+      "evidence_ids": ["E3", "E5", "E6", "E7", "E12"],
+      "acceptance_signal": "README 或落地页包含一张对照 NovelCrafter/Sudowrite/NovelAI/RaptorWrite 计费与数据位置的表格。"
+    },
+    {
+      "id": "R2",
+      "priority": "P1",
+      "statement": "在对话轮次 UI 中披露本轮注入的上下文来源（文件/记忆清单），融合进现有工作组条目。",
+      "evidence_ids": ["E8"],
+      "acceptance_signal": "任意一轮对话可展开查看该轮上下文来源文件列表。"
+    },
+    {
+      "id": "R3",
+      "priority": "P1",
+      "statement": "用 SKILL.md 插件体系装载素材型技能（起名器、脑洞/题材模板、场景描写素材），对标 Sudowrite Brainstorm 与插件生态的获客面。",
+      "evidence_ids": ["E4"],
+      "acceptance_signal": "内置技能目录新增 ≥3 个素材型技能且可在设置页启用。"
+    },
+    {
+      "id": "R4",
+      "priority": "P2",
+      "statement": "确定性导出扩展到 epub（不经模型），对标 Scrivener Compile 的格式覆盖。",
+      "evidence_ids": ["E10"],
+      "acceptance_signal": "导出菜单产出 .epub 且通过 epubcheck 校验。"
+    },
+    {
+      "id": "R5",
+      "priority": "P2",
+      "statement": "预研系列级设定共享（对标 Codex 跨书共享），输出设计笔记，不承诺实现；云端多人协作与订阅计量为明确 non-goal。",
+      "evidence_ids": ["E1", "E5"],
+      "acceptance_signal": "一份设计笔记说明系列共享设定如何映射到多工作区结构，并注明协作/计量为 non-goal。"
+    }
+  ]
+}

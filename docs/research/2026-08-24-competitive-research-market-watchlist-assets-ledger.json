@@ -1,0 +1,116 @@
+{
+  "research_date": "2026-08-24",
+  "evidence": [
+    {
+      "id": "E1",
+      "competitor": "Notion AI",
+      "claim": "官方产品页描述：AI blocks 改写与起草、Research Mode 生成深度报告、AI Meeting Notes 转写摘要、Enterprise Search（Beta）跨 Slack/GitHub/Google Drive 检索、Notion Agent 'Chat with Notion Agent to take on entire tasks'（可创建/编辑页面与数据库）、Custom Agents 定时/触发运行；Notion AI 内含于 Business/Enterprise 计划，Custom Agents 'Free to try, then $10 per 1,000 credits'，2026-05-04 起消耗 credits、额度耗尽 agent 暂停。",
+      "source_url": "https://www.notion.com/product/ai",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "产品页功能列表与 Custom Agents 计价说明",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E2",
+      "competitor": "Kimi (Moonshot AI)",
+      "claim": "官网描述：Kimi K3（2026-07）为 2.8T 参数、原生多模态、1M-token 上下文，面向'long-horizon coding, knowledge work, and deep reasoning'；产品线含 Agent、Agent Swarm、Multi-Agent、Parallel Agent、Hermes Agent 与 Kimi Claw；提供 macOS/Windows 桌面端与 Chrome 扩展；含 Document、Slides、Sheets、Deep Research 与建站功能。",
+      "source_url": "https://www.moonshot.ai/",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "首页模型与产品能力列表",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E3",
+      "competitor": "NotebookLM",
+      "claim": "Google 官方发布公告（2023-07-12）描述 NotebookLM 为'an AI-first notebook, grounded in your own documents'：功能为 Get a summary（加文档自动生成摘要+关键话题+建议问题）、Ask questions、Generate ideas（如起草视频脚本、预演投资人提问）；响应带引用与原文引语供核查；声明所收集数据不用于训练新模型；发布时仅支持 Google Docs 作为来源。",
+      "source_url": "https://blog.google/technology/ai/notebooklm-google-ai/",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "发布公告正文",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E4",
+      "competitor": "Sudowrite",
+      "claim": "官方首页列出 Plugins'1,000+ new ways to write'（含模拟读者、小说转剧本）、Brainstorm 生成名字/物品/标题并'learns from your thumbs up'偏好、Visualize 从角色卡与世界文档生成美术。",
+      "source_url": "https://www.sudowrite.com/",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "首页功能列表",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E5",
+      "competitor": "RaptorWrite",
+      "claim": "官宣描述 Prompt Library（保存提示词一键复用）与 Model Collections（按任务分组模型快速切换）；免费安装课程覆盖连接 API Key 教学，构成'免费工具+课程'分发漏斗。",
+      "source_url": "https://futurefictionacademy.com/raptorwrite-1-0-is-here-free-ai-writing-software-built-for-authors/",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "公告 Core features 与免费课程段落",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E6",
+      "competitor": "Long-Novel-GPT",
+      "claim": "README 描述附带社区/自定义作者风格 prompt（如天蚕土豆风格的大纲写作与草稿润色），用户可经 GitHub issue 提交 prompt；仓库无 License 显示。",
+      "source_url": "https://github.com/MaoXiaoYuZ/Long-Novel-GPT",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "README prompt 小节与仓库侧栏",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E7",
+      "competitor": "watchlist 横向",
+      "claim": "这是基于三家取证的推断（inference）：威胁排序为 Kimi（agent 产品线+1M 上下文+桌面端三要素齐备，最近）> Notion Agent（任务级 agent+跨应用搜索已上线，但 credits 计价与 workspace 锁定）> NotebookLM（检索综述型，与生成交付型写作不同赛道）；三家均无'本地文件夹+自带 Key+零计量+长篇垂直工作流'组合。",
+      "source_url": "https://www.moonshot.ai/",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "跨 E1/E2/E3 的综合推断",
+      "classification": "inference",
+      "confidence": "medium"
+    },
+    {
+      "id": "E8",
+      "competitor": "素材市场横向",
+      "claim": "这是基于三个参照取证的推断（inference）：写作素材市场收敛为三形态——生成器（Sudowrite Brainstorm 一键出候选）、模板/插件库（Sudowrite 1000+ Plugins、RaptorWrite Prompt Library）、风格 prompt 包（Long-Novel-GPT 作者风格包社区征集）；三者均可由 SKILL.md 体系无损承载，生成器型是获客效率最高的形态。",
+      "source_url": "https://www.sudowrite.com/",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "跨 E4/E5/E6 的综合推断",
+      "classification": "inference",
+      "confidence": "medium"
+    }
+  ],
+  "recommendations": [
+    {
+      "id": "R1",
+      "priority": "P0",
+      "statement": "README/官网增加'与通用 agent 的区别'watchlist 对照小节（本地 vs 云、零计量 vs credits、长篇垂直 vs 通用任务）。",
+      "evidence_ids": ["E1", "E2", "E3", "E7"],
+      "acceptance_signal": "README 出现 watchlist 对照小节且每个判断可回链到本报告证据。"
+    },
+    {
+      "id": "R2",
+      "priority": "P1",
+      "statement": "素材技能三件套：生成器型（起名/标题/脑洞）、模板型（题材/卷结构）、风格包型（作者风格），全部经 SKILL.md 体系分发。",
+      "evidence_ids": ["E4", "E5", "E6", "E8"],
+      "acceptance_signal": "新增至少 3 个素材型技能（含至少 1 个生成器型），可在设置页启用并被 WWRITING.md 记录。"
+    },
+    {
+      "id": "R3",
+      "priority": "P2",
+      "statement": "预研超大上下文模式开关（1M 级模型下'全设定注入'替代部分压缩），输出参数与成本估算设计笔记；跨应用搜索与音频概述为明确 non-goal。",
+      "evidence_ids": ["E2"],
+      "acceptance_signal": "设计笔记给出 1M 窗口下写前装配与压缩预算的两套参数与成本估算。"
+    }
+  ]
+}

@@ -1,0 +1,178 @@
+{
+  "research_date": "2026-08-24",
+  "evidence": [
+    {
+      "id": "E1",
+      "competitor": "AI_NovelGenerator",
+      "claim": "README 描述四步 GUI 流水线：生成设定（Novel_setting.txt 含世界观/角色/触发点与伏笔）→ 生成目录（Novel_directory.txt 章题+短提示）→ 生成章节草稿（读取设定与已定稿章节并'Use vector retrieval to recall relevant context for coherence'）→ 章节定稿（更新 global_summary.txt 与 character_state.txt 并更新向量库）；约 6.0k stars，AGPL-3.0，Python GUI。",
+      "source_url": "https://github.com/YILING0013/AI_NovelGenerator",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "README 功能与使用流程小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E2",
+      "competitor": "AI_NovelGenerator",
+      "claim": "README 描述状态追踪系统管理'Character development trajectory / Foreshadowing management'，语义检索引擎提供'Vector-based long-term context consistency'（可选本地向量库 vectorstore/），支持本地文档知识库引用，并含一致性审校步骤声称可检测'plot contradictions and logical conflicts'。",
+      "source_url": "https://github.com/YILING0013/AI_NovelGenerator",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "README 状态追踪与语义检索小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E3",
+      "competitor": "AI_NovelGenerator",
+      "claim": "README/配置说明支持多命名模型预设并按任务路由（架构、大纲、草稿、定稿章节、一致性审校各自可配不同模型），embedding 独立可配（text-embedding-3-small 或 Ollama nomic-embed-text，切换需清空向量库），支持 OpenAI、DeepSeek 云 API 与 Ollama 等 OpenAI 兼容本地接口。",
+      "source_url": "https://github.com/YILING0013/AI_NovelGenerator",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "README 模型配置小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E4",
+      "competitor": "AI_NovelGenerator",
+      "claim": "README 维护声明：2025/09/24 提及维护时间有限，2026/03/09 表示'该项目即将重构'，2026/03/25 更新重构主框架初步完成但功能未可用，计划一周内上传 dev 分支。",
+      "source_url": "https://github.com/YILING0013/AI_NovelGenerator",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "README 顶部维护公告",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E5",
+      "competitor": "Long-Novel-GPT",
+      "claim": "README 描述核心为 LLM+RAG agent：'大纲-章节-正文的自上而下扩写来一步步生成'，生成中检索相关段落与剧情摘要、编辑段落并保持剧情摘要同步；v2.2 支持查看 prompt、导入已有小说重写、挑选模型、创作时实时显示调用费用。",
+      "source_url": "https://github.com/MaoXiaoYuZ/Long-Novel-GPT",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "README 架构与版本说明",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E6",
+      "competitor": "Long-Novel-GPT",
+      "claim": "README 描述百万字策略：先 50 章×200 字（'50+线程并行'）再逐层扩至约 1k、2k 字（'50 * 2k = 100k (十万字)'）；默认 MAX_THREAD_NUM=5，在线 demo 限 5 线程需本地部署提速；2.1 版本'完全支持生成百万级别小说'并声称在用户监督下可达网文'达到签约门槛'质量。",
+      "source_url": "https://github.com/MaoXiaoYuZ/Long-Novel-GPT",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "README 生成策略与线程配置小节",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E7",
+      "competitor": "Long-Novel-GPT",
+      "claim": "仓库页面显示 1.2k stars、206 forks、58 commits；页面任何位置未显示 License；部署方式为 Docker 镜像 + .env 配置 API Key，本地 LLM 需以 OpenAI 兼容端点接入；附社区贡献的作者风格 prompt（如天蚕土豆风格）并经 GitHub issue 征集。",
+      "source_url": "https://github.com/MaoXiaoYuZ/Long-Novel-GPT",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "仓库侧栏与 README 部署/prompt 小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E8",
+      "competitor": "RecurrentGPT",
+      "claim": "README（ICLR 论文官方代码）描述机制：把 LSTM 的细胞态/隐藏态/输入/输出全部替换为自然语言；每个时间步接收上一段正文与下一段计划，注意力访问存盘且可语义检索的长期记忆（全部已生成段落摘要），更新自然语言短期记忆，产出新段落与下一步计划并追加摘要到长期记忆；GPL-3.0，约 1.0k stars。",
+      "source_url": "https://github.com/aiwaves-cn/RecurrentGPT",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "README Method 小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E9",
+      "competitor": "RecurrentGPT",
+      "claim": "README 描述人机共写交互：系统'provides a few possible options for the writer to continue the story'，作者可选择、编辑或自供计划；提供 CLI（recurrent.sh）与 gradio 本地 Web demo 及在线 demo。",
+      "source_url": "https://github.com/aiwaves-cn/RecurrentGPT",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "README Human Interaction 与 Demo 小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E10",
+      "competitor": "long-novel-writer",
+      "claim": "README 自述为'一个面向百万/千万字长篇的 AI 写作 SKILL，解决长篇小说后期走形的核心问题'，从 AI_NovelGenerator 项目用 Codex 提炼而来并优化记忆系统；作为 agent skill 安装于 OpenClaw（及兼容 agent）、Claude Code 或 Codex，用户一句'我想写一本小说'即进入引导流程（想法扩展→世界观→卷结构→章节生成→记忆更新）；85 stars、30 commits，页面未显示 License。",
+      "source_url": "https://github.com/jiaw-Zh/long-novel-writer",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "README 定位与安装使用小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E11",
+      "competitor": "long-novel-writer",
+      "claim": "README 描述核心机制：六层摘要 L0（全文）至 L5（全书）且'写定后冻结，不再被后续章节覆盖'；实体中心文件（角色/地点/物品/势力/力量体系），典型写前上下文 25k–40k token；Canon Ledger 五个 append-only 文件（facts.jsonl、promises.jsonl、progression.jsonl、rules.md、timeline.md）在保存前拦截硬冲突；POV known_by 字段追踪谁知道每个秘密；9 步固定写前流程；写后字数门禁+8 项语义校验（可由独立 subagent 执行以避免自我合理化）；超过 20 章未推进的副线自动提示；每 50 章或每卷收尾做记忆快照支持回滚与分支；网文/严肃文学双模式 prompt 分支。",
+      "source_url": "https://github.com/jiaw-Zh/long-novel-writer",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "README 核心机制小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E12",
+      "competitor": "LongWriter (THUDM)",
+      "claim": "README（ICLR 2025）描述 AgentWrite 为自动超长输出生成数据管道（先跑 plan.py 再跑 write.py）；发布 LongWriter-glm4-9b 与 llama3.1-8b（LongWriter-6k 数据 + LongAlign 训练）及 2025-06 纯 RL 训练的 LongWriter-Zero-32B，声称'beats LongWriter by a large margin, and even 100B+ models such as DeepSeek-R1, Qwen3 on long-form writing tasks'；评测含 LongBench-Write（质量+长度，GPT-4o 作 judge）与 LongWrite-Ruler；Apache-2.0，1.9k stars。",
+      "source_url": "https://github.com/THUDM/LongWriter",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "README 方法/模型/评测小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E13",
+      "competitor": "市场结构",
+      "claim": "这是基于五个仓库 README 的推断（inference）：开源写作 agent 已在'分层记忆+实体状态文件+写前装配+写后校验'上收敛为事实标准，但全部为流水线或技能形态，没有一家实现事件溯源、断点恢复或权限确认这类 agent 运行时能力，这些是 WWriting 内核的结构性差异。",
+      "source_url": "https://github.com/YILING0013/AI_NovelGenerator",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "跨 E1/E5/E8/E10/E11 的综合推断",
+      "classification": "inference",
+      "confidence": "medium"
+    }
+  ],
+  "recommendations": [
+    {
+      "id": "R1",
+      "priority": "P0",
+      "statement": "吸收 long-novel-writer 的 Canon Ledger（append-only facts/promises/progression/timeline）与 POV known_by 机制进 WWriting 技能层，写前装配、章节提交时追加。",
+      "evidence_ids": ["E11", "E2"],
+      "acceptance_signal": "内置或示例技能包含 append-only 设定账本与 POV 追踪字段，/init 会建立对应文件结构并被 WWRITING.md 索引。"
+    },
+    {
+      "id": "R2",
+      "priority": "P1",
+      "statement": "提供'薄草稿→逐层扩写'两段式可选技能（串行 Run 内以队列实现分层扩写），并以 count_text 校验扩写达标。",
+      "evidence_ids": ["E5", "E6"],
+      "acceptance_signal": "一个内置技能定义两段式流程且验收语料含字数区间断言。"
+    },
+    {
+      "id": "R3",
+      "priority": "P1",
+      "statement": "ModelGateway 增加'按任务路由模型'预设（写作/审校/压缩各自可指定默认模型）。",
+      "evidence_ids": ["E3"],
+      "acceptance_signal": "设置页可为三类任务分别配置默认模型并生效于对应调用路径。"
+    },
+    {
+      "id": "R4",
+      "priority": "P2",
+      "statement": "验收语料引入'长度+语义'双指标断言（以现有审稿模式替代 GPT-as-judge）；50 线程级并行生成为明确 non-goal。",
+      "evidence_ids": ["E12", "E6"],
+      "acceptance_signal": "验收语料新增同时断言字数区间与语义检查项的用例各一，且 README/设计文档注明并行生成为 non-goal。"
+    }
+  ]
+}

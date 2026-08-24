@@ -1,0 +1,138 @@
+{
+  "research_date": "2026-08-24",
+  "evidence": [
+    {
+      "id": "E1",
+      "competitor": "阅文·作家助手",
+      "claim": "官方页面声明覆盖 Android、iOS、鸿蒙和桌面端的全平台创作，功能串列为'大纲设定、全文检索、精准纠错、妙笔辅助查资料、语音优化、快捷词等码字功能'，并提供独立电脑版下载入口。",
+      "source_url": "https://www.yuewen.com/app/?type=appzj",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "页面功能列表与平台覆盖描述",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E2",
+      "competitor": "阅文·作家助手",
+      "claim": "官方页面声明'任何改动均生成历史版本，存稿云端存储'，可随时回看防止数据丢失。",
+      "source_url": "https://www.yuewen.com/app/?type=appzj",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "页面云端同步小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E3",
+      "competitor": "阅文·作家助手",
+      "claim": "官方页面声明提供书评/月票/推荐票/打赏的多平台读者互动汇总、数亿读者大数据的可视化读者画像、作品稿酬/打赏/订阅数据面板，并跳转 write.qq.com 作家专区写作后台。",
+      "source_url": "https://www.yuewen.com/app/?type=appzj",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "消息触达与数据统计小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E4",
+      "competitor": "阅文·作家助手",
+      "claim": "官方页面宣传语为'创作无限 安全有界'，定位为'专业强大、安全稳定的免费码字应用'与'百万作家交流拼字的专业网文社区'。",
+      "source_url": "https://www.yuewen.com/app/?type=appzj",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "页面顶部定位语",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E5",
+      "competitor": "WPS AI",
+      "claim": "WPS AI 官网列出 8 类办公写作模板（PPT 大纲/工作周报/工作汇报/心得体会/发言材料/会议提纲/新闻稿/小红书标题）、文档侧'继续写/缩写/润色/转换风格'四键、一键全文总结与文档问答；页面注明'网页版仅开放基础功能'，未展示价格。",
+      "source_url": "https://ai.wps.cn/",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "AI 模板与 AI 润色板块",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E6",
+      "competitor": "百度作家平台",
+      "claim": "官网页面标题自述为'百度作家平台-一站式AI小说创作与投稿平台'（fetch 直接确认）；其 AI 功能清单（续写/润色/扩写/智能连载/一键成文）仅见于搜索快照中的官网自述描述，页面正文为空，功能细节按 unverified 处理。",
+      "source_url": "https://zuojia.baidu.com/",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "页面 title 标签",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E7",
+      "competitor": "彩云小梦",
+      "claim": "官网 xiaomengai.com 存在（页面仅有标题'彩云小梦'），并在 App Store、应用宝、Microsoft Store 在架；其续写功能与会员权益细节仅见于商店/搜索快照，官网无正文，按 unverified 处理。",
+      "source_url": "https://www.xiaomengai.com/",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "页面标题与商店在架状态",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E8",
+      "competitor": "星火作家大神（讯飞）",
+      "claim": "官网 author.iflynote.com 域名存在但两次 TLS 连接失败无法取正文；讯飞星火主站搜索快照提及平台可'智能生成报告、演讲稿、论文、小说等不同风格内容'，面向小说作者的独立版本功能未能取证，按 unverified 处理。",
+      "source_url": "https://xinghuo.xfyun.cn/",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "主站能力描述（快照）",
+      "classification": "fact",
+      "confidence": "low"
+    },
+    {
+      "id": "E9",
+      "competitor": "市场结构",
+      "claim": "这是基于官网取证的推断（inference）：国内平台官方工具全部为云端应用并深度绑定自家平台体系（投稿后台、稿酬/订阅结算、读者互动数据），模型侧绑定自家大模型（阅文妙笔/文心/星火），无一家提供本地文件夹存储或自带任意 API Key 的模式。",
+      "source_url": "https://www.yuewen.com/app/?type=appzj",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "跨 E1/E3/E5/E6 的综合推断",
+      "classification": "inference",
+      "confidence": "medium"
+    },
+    {
+      "id": "E10",
+      "competitor": "市场结构",
+      "claim": "这是基于官网取证的推断（inference）：平台官方工具的 AI 均为按钮式辅助形态（查资料、续写、润色、一键成文），没有一家提供 agent 自主多步工作流、可见执行计划或断点恢复。",
+      "source_url": "https://www.yuewen.com/app/?type=appzj",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "跨 E1/E5/E6 的综合推断",
+      "classification": "inference",
+      "confidence": "medium"
+    }
+  ],
+  "recommendations": [
+    {
+      "id": "R1",
+      "priority": "P0",
+      "statement": "在 README/官网写明与平台官方工具的关系定位：不投稿、不计量、不碰稿酬，产出标准 Markdown 可手动发布到任何平台。",
+      "evidence_ids": ["E3", "E9"],
+      "acceptance_signal": "README 含一节与阅文作家助手/百度作家平台的定位差异说明（含数据归属对比）。"
+    },
+    {
+      "id": "R2",
+      "priority": "P1",
+      "statement": "对外表述中把本地版本快照与阅文'云端历史版本'对齐（全平台版本留存已是 table stakes，WWriting 用本地方式满足）。",
+      "evidence_ids": ["E1", "E2"],
+      "acceptance_signal": "README 功能列表出现与'历史版本留存'对齐的本地版本快照表述。"
+    },
+    {
+      "id": "R3",
+      "priority": "P2",
+      "statement": "研究国内合规话术对个人作者信任的价值，形成 WWriting 的本地性/隐私表述清单（应用私有目录、默认禁网、Key 本机保存）。",
+      "evidence_ids": ["E4"],
+      "acceptance_signal": "README 隐私小节包含三条以上可验证的本地性声明。"
+    }
+  ]
+}
