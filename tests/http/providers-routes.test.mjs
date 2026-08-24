@@ -255,3 +255,28 @@ test("PATCH 密钥契约：api_key 一律按明文、api_key_env 只存名称、
   assert.equal(rejectedData.code, "invalid_api_key_env");
   assert.equal(rejectedData.message, "请先填写 API 密钥环境变量名。");
 });
+
+test("PATCH 保存密钥后立即注入 process.env，无需重启（whfind-bugs #2）", async (t) => {
+  const { http } = await setup(t);
+  const envName = "WW_TEST_BUG2_KEY";
+  const created = await http.post("/api/settings/providers", {
+    name: "env 注入测试", base_url: "https://relay.example.com",
+    api_format: "openai-chat-completions", api_key_env: envName
+  });
+  const providerId = created.data.provider.id;
+  try {
+    const res = await fetch(`${http.base}/api/settings/providers/${providerId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ api_key: "sk-bug2-fix" })
+    });
+    const data = await res.json();
+    assert.equal(res.status, 200);
+    assert.equal(data.api_key_saved, true);
+    // 核心断言：PATCH 返回时 process.env 就必须就位（连接测试直读 secrets.json
+    // 通过、正式模型调用只查 process.env 失败 = 首次配置必须重启才能用）。
+    assert.equal(process.env[envName], "sk-bug2-fix");
+  } finally {
+    delete process.env[envName];
+  }
+});

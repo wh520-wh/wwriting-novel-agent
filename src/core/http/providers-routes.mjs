@@ -2,7 +2,7 @@
 // 供应商/模型两级 CRUD + 拉取模型中转。handler 约定见 router.mjs：
 // handler({ request, response, params, query, body }) → 对象即 200 JSON。
 import { HttpError } from "../http-error.mjs";
-import { loadLocalSecrets, saveLocalSecrets } from "../local-secrets.mjs";
+import { applyLocalSecretsToEnv, loadLocalSecrets, saveLocalSecrets } from "../local-secrets.mjs";
 import {
   upsertProvider, removeProvider, upsertModel, removeModel, setDefaultModel
 } from "../model-provider-store.mjs";
@@ -100,6 +100,10 @@ export function createProvidersRoutes({ secretsRoot }) {
         if (!API_KEY_ENV_NAME.test(envName)) throw new HttpError(400, "invalid_api_key_env", "API 密钥环境变量名只能包含字母、数字、下划线且不能以数字开头。");
         const secrets = await loadLocalSecrets(secretsRoot);
         await saveLocalSecrets(secretsRoot, { ...secrets, [envName]: transientKey });
+        // whfind-bugs #2：密钥写盘后立即注入运行中进程——否则连接测试（直读
+        // secrets.json）通过、正式模型调用（只查 process.env）失败，首次配置
+        // 流程必须重启才能用。
+        applyLocalSecretsToEnv({ [envName]: transientKey });
       }
       const merged = { ...current, ...payload, id: current.id };
       const { provider, store } = await upsertProvider(secretsRoot, merged);
