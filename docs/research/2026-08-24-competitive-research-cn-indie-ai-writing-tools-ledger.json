@@ -1,0 +1,185 @@
+{
+  "research_date": "2026-08-24",
+  "evidence": [
+    {
+      "id": "E1",
+      "competitor": "WWriting (baseline)",
+      "claim": "本地基线（v0.5.0 README）：Electron 桌面应用，打开任意文件夹即聊天；单一 ProjectAgent 内核（Visible Plan、队列、立即/停止、Journal 断点恢复）；WWRITING.md 项目记忆 + memory/ 摘要 + checkpoints/ 快照 + 章节版本快照（200 版上限）；自研 ModelGateway 兼容任意 OpenAI 兼容网关、API Key 仅存本机；内置 12 个 SKILL.md 写作技能（含避免 AI 腔）；无会员/点数，成本面板记录 token 与成本；章节为本地 Markdown，导出成书为不过模型的确定性本地流程；权限确认体系（逐输入授权、YOLO、极端操作精确确认）。",
+      "source_url": "https://github.com/wh520-wh/wwriting-novel-agent",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "README.md（仓库 v0.5.0，commit 48e9996）",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E2",
+      "competitor": "墨狐 AI",
+      "claim": "墨狐 AI 官方站（inkfox-ai.com，Nuxt SPA）分发的构建产物内嵌产品文案：自我定位为「专注为网络文学创作者提供提效工具的AI科技公司」，宣称六大核心功能；工作流为输入想法或点击「热门脑洞」→生成元素及脉络/故事大纲/章纲→添加章节分章续写→正文生成后自动给出多条续写方向（树状走向图，可编辑）；素材能力含人物/道具/武器/药材/鬼怪等起名与介绍、打斗/言情/惊险等场景描写、历史体系/人物事迹/案件传说等知识索引、热门脑洞灵感库；新用户登录即送无限字数免费体验，免费次数按日刷新；微信扫码登录；页脚署名深圳市云泥科技有限公司。",
+      "source_url": "https://www.inkfox-ai.com/_nuxt/CtfDnebj.js",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "首页与产品页文案内嵌于官方构建产物 /_nuxt/CtfDnebj.js、/_nuxt/hRiwG-aP.js、/_nuxt/Bx4dfqD6.js",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E3",
+      "competitor": "墨狐 AI",
+      "claim": "墨狐 AI 官方站构建产物内嵌《墨狐AI会员服务协议》：提供月卡、季卡、年卡三种会员；会员权益为「更多生成字数、解锁更多功能（如升级模型和定制模型）以及更快的服务响应」；费用标准「以平台公示为准」（静态资源不含具体价格数字，unverified）；支付支持微信/支付宝；会员费用支付后不可退还。同一来源含「下载全文」「下载成功」导出字符串、以及 deepSeekLogo 资源名与 deepseek 字样（界面含 DeepSeek 模型相关展示）。",
+      "source_url": "https://www.inkfox-ai.com/_nuxt/DLNACJqO.js",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "会员服务协议与 UI 文案内嵌于官方构建产物 /_nuxt/DLNACJqO.js",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E4",
+      "competitor": "笔灵 AI 写作",
+      "claim": "笔灵官网（ibiling.cn，ICP 主体上海简办网络科技有限公司）：定位「国内领先的AI写作助手」，覆盖小说+论文+PPT+办公多场景；小说功能成套：小说大纲、黄金开头（生成/仿写/润色）、AI 写全篇小说、续写/扩写/润色、小说拆书（「写得好不如仿得好」）、30s 一键预审核、一键降低小说 AI 痕迹；工作流为关键词→大纲（可增删改）→按大纲全篇生成→后处理（预审核→降 AI 味/降重）；素材侧有「精选小说资料，找词找句找素材，武侠/玄幻/都市等题材全覆盖」资料库、100+ 小说生成器、500+ 工具/1000+ 资料的导航站；页面未提及角色设定集/世界观记忆/跨章一致性管理，未提自带 API Key，未提桌面客户端。",
+      "source_url": "https://www.ibiling.cn",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "官网首页功能分区（小说工具、素材资料库、AI 全篇写作）",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E5",
+      "competitor": "笔灵 AI 写作",
+      "claim": "笔灵官方活动页（ibiling.cn/active/huodong，活动期 2026-08-13 至 2026-12-30）：主站终身会员 199 元（标注原价 497 元、限时立减 298），限时赠送小说终身会员（标价 199 元）与视频教程（标价 99 元）；主站会员与小说会员为各自标价的独立产品；「开通后赠送50万AI字数，字数使用完后，如需继续生成内容，需另行购买字数包」（字数包价格未标明）；支付后活动产品概不退款。",
+      "source_url": "https://ibiling.cn/active/huodong",
+      "source_type": "official_pricing",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "活动页会员档位与字数规则区块",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E6",
+      "competitor": "蛙蛙写作",
+      "claim": "蛙蛙写作官网（wawawriter.com）：定位网文长篇创作（总纲、章纲管理 + 人物标签管理以避免人物崩坏 + AI 润色/续写/补全，支持 30 万字长文）；短篇写作（2 万字内）；小说拆书（分析爆款规律）；小说转剧本、漫剧视频；AI 工具广场 + 创作者计划（用户可发布免费/付费提示词工具）；AI 工作流（可视化拖拽）；宣称 30 万创作者、「30秒生成8000字」；双端同步（PC 端与移动端，云同步）；官方声明「不会将作者在本平台上传或发布的任何内容用于AI训练或其他机器学习用途」。",
+      "source_url": "https://www.wawawriter.com",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "官网首页/产品页（长篇写作、工具广场、创作者计划分区）与页面 meta 描述",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E7",
+      "competitor": "蛙蛙写作",
+      "claim": "蛙蛙写作 App Store 页（开发者杭州引力智航科技有限公司）：描述「小说大纲、角色、正文、设定等30+作品数据自动拉取，AI生成内容始终贴合主线」；5000+ AI 工具/工作流、「10分钟生成万字小说」；小说→剧本→漫剧视频→在线投稿变现闭环。应用内购：1/3/7 日无限卡 ¥14.8/39/59、黄金会员包月 ¥49、铂金会员包月 ¥89、无限月卡 ¥213、无限季卡 ¥599、2000 蛙币 ¥20、10000+2000 蛙币 ¥100、20000+5000 蛙币 ¥200。版本史：v1.4.0（2026-07-07）「智能蛙（小说 Agent）」公测、AI 词库高亮去「AI 味」；v1.2.1（2026-05-26）「文宗」模型上线、AI 生成小说封面。评分 4.8/5（19 个评分）。兼容 iOS 14+/macOS 11+（Apple Silicon）。",
+      "source_url": "https://apps.apple.com/cn/app/%E8%9B%99%E8%9B%99%E5%86%99%E4%BD%9C/id6758374411",
+      "source_type": "marketplace_listing",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "App Store 页面「应用内购买项目」、版本更新记录、描述文案",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E8",
+      "competitor": "蛙蛙写作",
+      "claim": "微软应用商店存在「蛙蛙写作」Windows 客户端（商店页标题「蛙蛙写作 - Windows官方下载」，描述「辅助AI写文,帮助获取创意灵感,提供拆书、小说转剧本、视频生成等功能」，免费，Windows 10 版本 19041+），证实其 Windows 桌面端存在。",
+      "source_url": "https://apps.microsoft.com/detail/9p5plbp04kbs?hl=zh-CN&gl=CN",
+      "source_type": "marketplace_listing",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "Microsoft Store 应用详情页标题与描述",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E9",
+      "competitor": "岱宗写作",
+      "claim": "岱宗写作官网（daizongxiezuo.com）：自我定位「写作圈的 Cursor」「给长篇小说装上一个真正的 AI 小说大脑」；记忆方案为「故事圣经、滚动摘要和知识图谱」三层结构，宣称「持续维护人物关系、地点状态、剧情线和伏笔」「上下文压缩后依然千章不忘」；档案图谱：人物/地点/组织/事件随章节自动沉淀为关系网络（演示「23 个档案 · 21 条关系」）；支持「直接和小说里的角色对话」试剧情；模型侧「默认模型安装即用」，有自己模型资源的用户「也可以配置自定义模型」「连接本地工作流」；提供 Windows（exe）/macOS（dmg）/Android（APK）/iOS 客户端下载（托管于 sb-proxy.dznovel.top）；云端同步为会员权益之一；页面未提及模板素材库与导出细节。",
+      "source_url": "https://www.daizongxiezuo.com",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "官网首页「写作圈的 Cursor」徽章、记忆/档案图谱、模型自由、下载区块",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E10",
+      "competitor": "岱宗写作",
+      "claim": "岱宗写作价格页（daizongxiezuo.com/pricing.html）：两种付费模式——订阅制「写作计划」（含周期额度与创作权益，按周期刷新，适合稳定连载）与「按量付费」（购买额度按实际调用消耗，额度长期有效）；价格以「岱宗平台货币（🪙）」计，具体数字动态加载、静态页无数值（unverified）；「免费配置自定义模型」，支持填写「模型标识与密钥」，「在写作计划开放的权益范围内使用自己的模型，不被单一供应商绑定」；购买需登录并在客户端充值中心完成。",
+      "source_url": "https://www.daizongxiezuo.com/pricing.html",
+      "source_type": "official_pricing",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "价格页「写作计划 / 按量付费 / 免费配置自定义模型」区块",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E11",
+      "competitor": "讯飞智文",
+      "claim": "讯飞智文官网（zhiwen.xfyun.cn）meta 描述：「由科大讯飞推出的一键生成ppt/word产品。根据一句话、长文本、音视频等指令智能生成文档，同时支持在线编辑、美化、排版、导出、一键动效、自动生成演讲稿等功能」；页面提供「API调用」入口。产品为文档/PPT 生成器，页面无任何长篇小说写作功能。",
+      "source_url": "https://zhiwen.xfyun.cn",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "官网首页 meta description 与导航",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E12",
+      "competitor": "秘塔写作猫",
+      "claim": "秘塔写作猫官网（xiezuocat.com，主体上海秘塔网络科技）：meta 描述定位「新一代交互式中英文写作辅助平台，集智能文本纠错、改写润色、自动续写、智能配图为一体」；生成式人工智能服务备案号上海-MetaLLM-20231106（自研 MetaLLM）；产品形态为云端文档工作台（最近文件/我的文档列表、微信扫码登录，云端加密存储）；价格未在登录前展示（unverified）；2026-08-24 访问时主站显示「系统升级中」提示横幅。",
+      "source_url": "https://www.xiezuocat.com",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "官网首页 meta 描述、页脚备案信息、登录界面",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E13",
+      "competitor": "岱宗写作 / 岱宗文脉",
+      "claim": "Inference（推断）：岱宗写作官网（daizongxiezuo.com）的全部基础设施挂在 dznovel.top 域下（官方博客 docx.dznovel.top、联系邮箱 contact@dznovel.top、客户端下载 sb-proxy.dznovel.top），据此推断「岱宗写作」与搜索结果中的「岱宗文脉（dznovel.top）」为同一运营方；dznovel.top 主站在本网络环境下 TLS 证书过期无法直接核验，其是否为独立产品形态未验证。",
+      "source_url": "https://www.daizongxiezuo.com",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "官网页脚联系方式与下载链接域名",
+      "classification": "inference",
+      "confidence": "medium"
+    }
+  ],
+  "recommendations": [
+    {
+      "id": "R1",
+      "priority": "P0",
+      "statement": "用现有 SKILL.md 插件体系补齐网文供给侧 table stakes 最小集：「热门脑洞→大纲→章纲」模板技能 + 起名/设定生成技能，agent 对话中按需调用、产物落盘 drafts/，不引入硬编码功能与新抽象。",
+      "evidence_ids": ["E1", "E2", "E4", "E6", "E7"],
+      "acceptance_signal": "内置技能目录新增 ≥2 个网文供给侧技能；新会话仅用自然语言「给我一个玄幻热门脑洞并起 5 个角色名」即可完成且产物在工作区文件夹可见。"
+    },
+    {
+      "id": "R2",
+      "priority": "P0",
+      "statement": "差异化对比陈列：README/官网增加「数据归属与计费」对照小节（本地文件夹 vs 云端同步、无字数计量 vs 蛙币/字数包/平台币、自带 Key vs 会员权益），并验证竞品导出 txt 拖入空文件夹即可零配置继续写。",
+      "evidence_ids": ["E1", "E5", "E6", "E7", "E10", "E12"],
+      "acceptance_signal": "README 出现该对照小节；用一份竞品导出文本在空文件夹打开后 0 配置可发起第一条写作指令并通过手工验收记录。"
+    },
+    {
+      "id": "R3",
+      "priority": "P1",
+      "statement": "记忆可见性面板：把 WWRITING.md/memory/ 项目记忆做成作者可浏览的人物/地点/伏笔清单视图，把已存在于本地的记忆数据变成可感知产品面，对标岱宗档案图谱与蛙蛙「30+ 数据自动拉取」话术。",
+      "evidence_ids": ["E1", "E7", "E9"],
+      "acceptance_signal": "面板可列出从项目文件提取的人物与未回收伏笔条目；续写某一章时引用的清单条目可在会话中追溯。"
+    },
+    {
+      "id": "R4",
+      "priority": "P1",
+      "statement": "拆书技能：对本地 txt/epub 生成大纲与节奏分析并写入 drafts/ 供 /init 索引，补齐三家 direct 竞品均有的获客型功能。",
+      "evidence_ids": ["E4", "E6", "E7"],
+      "acceptance_signal": "对一个 ≥10 万字本地文本运行拆书技能，产出大纲 + 节奏标注文件且不修改原文件。"
+    },
+    {
+      "id": "R5",
+      "priority": "P2",
+      "statement": "导出预设与自有 Key 成本叙事：导出预设增加主流平台章节格式；成本面板按用户自填 Key 单价展示每章估算，把「无计量计费」变成数字对比。",
+      "evidence_ids": ["E1", "E5", "E7", "E10"],
+      "acceptance_signal": "导出预设列表 ≥2 种平台格式；成本面板对样例章节显示基于自填单价的金额估算。"
+    }
+  ]
+}

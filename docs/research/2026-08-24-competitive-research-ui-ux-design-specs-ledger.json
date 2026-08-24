@@ -1,0 +1,112 @@
+{
+  "research_date": "2026-08-24",
+  "evidence": [
+    {
+      "id": "E1",
+      "competitor": "shadcn/ui",
+      "claim": "官方文档 Button 页列出 variant 枚举 default/outline/ghost/destructive/secondary/link 与 size 枚举 default/xs/sm/lg/icon/icon-xs/icon-sm/icon-lg；建议用 rounded-full 实现圆角按钮；注记 Tailwind v4 将按钮 cursor 从 pointer 改为 default 并给出恢复 CSS；链接按钮建议用 buttonVariants 帮助函数配 <a> 标签。",
+      "source_url": "https://ui.shadcn.com/docs/components/button",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "Button 页 API Reference 与 Demo 注记",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E2",
+      "competitor": "Ant Design",
+      "claim": "官方 Button 文档给出数值 token：controlHeight 32 / controlHeightLG 40 / controlHeightSM 24；contentFontSize 14/16/14；paddingInline 15/7/15；borderRadius 6 / LG 8 / SM 4；lineWidth 1；fontWeight 400；iconGap 8；colorPrimary #1677ff、colorError #ff4d4f；禁用态 colorBgContainerDisabled rgba(0,0,0,0.04)、colorTextDisabled rgba(0,0,0,0.25)；opacityLoading 0.65；variant 枚举 outlined/dashed/solid/filled/text/link，shape 枚举 default/circle/round；规范语'there can be at most one primary button in a section'。",
+      "source_url": "https://ant.design/components/button",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "Button 页 API/Design Tokens 表",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E3",
+      "competitor": "VS Code",
+      "claim": "官方文档称命令面板快捷键（Ctrl+Shift+P）是'the most important key combination to know'；命令、文件（Ctrl+P）、文件内符号（Ctrl+Shift+O）、行号（Ctrl+G）、编辑历史（Ctrl+Tab）'all using the same interactive window'；输入 ? 列出可用命令；强调'VS Code is equally accessible from the keyboard'且从面板可触达全部功能。",
+      "source_url": "https://code.visualstudio.com/docs/getstarted/userinterface",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "Command Palette 小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E4",
+      "competitor": "GitHub",
+      "claim": "官方文档描述 PR 审查：Files changed 页可在 unified 与 split 视图间切换且偏好跨 PR 持久化；悬停行出现蓝色评论图标、支持多行拖选/Shift 选择与整文件评论；Suggestion 图标插入建议块（```suggestion 语法）可直接应用；评审中评论为 pending 'only visible to you' 直到提交；已看完文件可标记 Viewed 折叠并推进进度条；提交三态 Comment/Approve/Request changes；作者不能批准自己的 PR。",
+      "source_url": "https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/reviewing-changes-in-pull-requests/reviewing-proposed-changes-in-a-pull-request",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "Reviewing proposed changes 全文各小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E5",
+      "competitor": "Scrivener",
+      "claim": "官方概览页描述：活页夹（ring-binder）结构组织手稿/笔记/资料；Corkboard 每节一张虚拟索引卡且'when you move them, you're rearranging your manuscript at the same time'；Outliner 提供带元数据的大纲总览与拖拽重构；Compile 导出 Word/RTF/PDF/Final Draft/Epub/Kindle；快照 Snapshot + Compare 对比；持续自动保存与工程开关时备份。",
+      "source_url": "https://www.literatureandlatte.com/scrivener/overview",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "overview 页各功能小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E6",
+      "competitor": "RaptorWrite",
+      "claim": "官宣描述 Multi-Document View（大纲与手稿面板并排）、发送前上下文预览（'you see exactly what it is going to see'）、Prompt Library 提示词库、拖拽式项目组织、Version Snapshots 版本回滚与对比。",
+      "source_url": "https://futurefictionacademy.com/raptorwrite-1-0-is-here-free-ai-writing-software-built-for-authors/",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "公告 Core features 列表",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E7",
+      "competitor": "UI 规范横向",
+      "claim": "这是基于两家设计系统与四个产品取证的推断（inference）：桌面生产工具的界面规范可安全收敛为——控件三档高度（24/32/40）、圆角三档（4/6/8）、每视图至多一个主按钮、统一命令入口、双栏（结构树+主工作区）布局；该收敛可直接作为 WWriting 的 token 基线而无须再引入第三套设计系统。",
+      "source_url": "https://ant.design/components/button",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "跨 E2/E3/E5/E6 的综合推断",
+      "classification": "inference",
+      "confidence": "medium"
+    }
+  ],
+  "recommendations": [
+    {
+      "id": "R1",
+      "priority": "P0",
+      "statement": "建立 WWriting 设计 token 表（高度 24/32/40、圆角 4/6/8、间距 8、主色/危险色、禁用与 loading 态、变体×尺寸正交、每视图至多一个主按钮）并审计现有界面。",
+      "evidence_ids": ["E1", "E2", "E7"],
+      "acceptance_signal": "docs/design 出现 token 表，现有按钮全部可映射到该表且差异项有改造清单。"
+    },
+    {
+      "id": "R2",
+      "priority": "P1",
+      "statement": "审稿/修改建议以'原文→建议块'呈现并可采纳，采纳走既有校验和与版本快照。",
+      "evidence_ids": ["E4"],
+      "acceptance_signal": "至少一类审稿意见以建议块呈现，采纳后自动生成版本快照。"
+    },
+    {
+      "id": "R3",
+      "priority": "P1",
+      "statement": "统一命令面板聚合高频操作（会话/工作区切换、面板、技能、导出、Run 控制）。",
+      "evidence_ids": ["E3"],
+      "acceptance_signal": "一个入口覆盖至少 6 个高频操作且全键盘可达有验收用例。"
+    },
+    {
+      "id": "R4",
+      "priority": "P2",
+      "statement": "可选双栏布局（结构树+对话面，列宽可调），默认保持单对话面；三方合并工具与云端协作审查为明确 non-goal。",
+      "evidence_ids": ["E5", "E6"],
+      "acceptance_signal": "设置可切换双栏布局且切换后既有功能全部可用。"
+    }
+  ]
+}

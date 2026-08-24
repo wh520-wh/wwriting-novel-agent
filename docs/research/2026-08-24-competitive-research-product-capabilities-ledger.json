@@ -1,0 +1,123 @@
+{
+  "research_date": "2026-08-24",
+  "evidence": [
+    {
+      "id": "E1",
+      "competitor": "Claude Code 权限",
+      "claim": "官方 permissions 文档列出六档模式：default（每个工具首次使用时提示，别名 manual）、acceptEdits（自动接受文件编辑与 mkdir/touch/mv/cp 等常见文件系统命令）、plan（只读探索、不编辑源文件）、auto（后台安全检查下自动批准）、dontAsk（默认拒绝，除非已预先允许）、bypassPermissions（跳过提示，官方警告仅在隔离容器/VM 使用，可用 permissions.disableBypassPermissionsMode 禁用）。",
+      "source_url": "https://code.claude.com/docs/en/permissions",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "permissions 文档 Permission Modes 表",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E2",
+      "competitor": "Claude Code 权限",
+      "claim": "官方文档给出规则语法：Bash 规则支持通配（Bash(npm run build) 精确、Bash(npm *) 前缀、Bash(ls *) 词边界、复合命令按 &&/||/;/|/&/换行拆分各自匹配）；Edit/Read 用 gitignore 式路径（Edit(/src/**) 锚定、Edit(//tmp/scratch.txt) 绝对、Read(~/.zshrc) 家目录、Read(**/.env) 任意深度）；WebFetch 用 domain: 规则（domain:*.example.com 匹配任意深度子域不含裸域）；求值序为 deny→ask→allow 首配胜出且'rule specificity doesn't change the order'。",
+      "source_url": "https://code.claude.com/docs/en/permissions",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "permissions 文档 Rule syntax 小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E3",
+      "competitor": "Claude Code 设置",
+      "claim": "官方 settings 文档描述：permissions.allow/deny/ask 三数组，每条规则'names a tool and what it may do'；同一列表键在多文件出现时'combines the lists instead of picking one'（合并不覆盖）；'deny and ask rules apply right away'而 allow 规则需等待工作区信任；permissions.additionalDirectories 仅在信任后生效；示例规则含 Bash(npm run lint)、Bash(npm run test *)、Read(./.env)。",
+      "source_url": "https://code.claude.com/docs/en/settings",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "settings 文档 permissions 小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E4",
+      "competitor": "EPUBCheck",
+      "claim": "README 自述'EPUBCheck is the official conformance checker for EPUB publications'，由 DAISY Consortium 代表 W3C 维护；5.3.0 为生产版本，校验 EPUB 2 与 3 文件对 EPUB 3.3 W3C 规范的一致性；以独立 CLI 或 Java 库运行，含 Docker 用法；BSD-3-Clause，约 2.0k stars。",
+      "source_url": "https://github.com/w3c/epubcheck",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "README 项目描述与用法",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E5",
+      "competitor": "Scrivener",
+      "claim": "官方概览页描述 Compile 编译导出支持 Microsoft Word、RTF、OpenOffice、PDF、纯文本、Final Draft（剧本）、Epub 与 Kindle 格式（macOS 提及 MultiMarkdown/LaTeX/Pandoc）；快照 Snapshot 与 Compare；持续自动保存与工程开关时备份。",
+      "source_url": "https://www.literatureandlatte.com/scrivener/overview",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "overview 页 Compile 与 Snapshots 小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E6",
+      "competitor": "Campfire Writing",
+      "claim": "官网描述 18 个写作与世界构建模块（含 Word Processor、Worldbuilding Tools、Character Creator、Story Planning、Interactive Maps、Calendar Creator、Timeline Maker、Conlang Software）；免费账户有限使用，付费'as low as $0.50/month'且'lifetime purchases are also available'；出版面板要求上传 EPUB 文件且'no need to use Campfire's writing software tools'。",
+      "source_url": "https://www.campfirewriting.com/",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "首页模块列表与定价/出版小节",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E7",
+      "competitor": "NovelCrafter Codex",
+      "claim": "官方首页描述 Codex 为'Story Bible & World Builder'：组织角色、地点与传说并自动追踪进展，条目自动互链，可跨系列多本书共享。",
+      "source_url": "https://www.novelcrafter.com/",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "首页 Codex 板块",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E8",
+      "competitor": "能力专题横向",
+      "claim": "这是基于四方取证的推断（inference）：WWriting 权限四档与 Claude 六档对比，语义缺口为显式只读规划档（plan）与默认拒绝档（dontAsk），其中只读档是审稿子代理的天然运行容器；导出达标线为 EPUB 3.3 + epubcheck 校验 + Word/PDF，设定集公共子集为时间线与角色状态两类实体。",
+      "source_url": "https://code.claude.com/docs/en/permissions",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-24",
+      "evidence_locator": "跨 E1/E4/E5/E6/E7 的综合推断",
+      "classification": "inference",
+      "confidence": "medium"
+    }
+  ],
+  "recommendations": [
+    {
+      "id": "R1",
+      "priority": "P0",
+      "statement": "增加显式只读/审稿档会话模式：只读与检索可用，任何写操作被拒绝并记入 Journal，作为审稿子代理的运行容器。",
+      "evidence_ids": ["E1", "E8"],
+      "acceptance_signal": "只读档下注入写请求的测试中操作被拒绝并留痕，UI 明示当前档位。"
+    },
+    {
+      "id": "R2",
+      "priority": "P1",
+      "statement": "权限规则文件化：项目/全局 allow/ask/deny 列表 + 工具通配符语法，deny→ask→allow 求值序，多来源合并不覆盖。",
+      "evidence_ids": ["E2", "E3"],
+      "acceptance_signal": "规则文件加载生效，通配/合并/求值序各有单元测试。"
+    },
+    {
+      "id": "R3",
+      "priority": "P1",
+      "statement": "确定性导出补 EPUB 3.3 生成并以 epubcheck 校验 0 错误后落盘。",
+      "evidence_ids": ["E4", "E5"],
+      "acceptance_signal": "导出菜单产出 .epub 且验收脚本跑 epubcheck 通过。"
+    },
+    {
+      "id": "R4",
+      "priority": "P2",
+      "statement": "设定集轻量实体模型：技能模板生成 timeline.md 与 characters.md 并入 WWRITING.md 索引，写前装配、提交时追加；交互式地图与造语模块为明确 non-goal。",
+      "evidence_ids": ["E6", "E7"],
+      "acceptance_signal": "/init 或技能可建立两类文件，验收语料断言写前上下文包含它们。"
+    }
+  ]
+}
