@@ -28,9 +28,10 @@ export class HttpError extends Error {
 //     （与白名单内 run_not_found 拼 runId 同构），不拼异常；
 //   - model_disabled：固定文案「已停用的模型不能设为默认。」，与 model_unsupported
 //     同标准（设置页「设为默认」被拒时需向用户展示具体原因）。
-// 压缩领域五个 code（agent-routes.mjs 的 COMPACTION_ERROR_MESSAGE 固定文案）同样
-// 程序写死、不拼底层异常——白名单放行后特定文案才能到达用户（否则一律收敛为通用
-// 文案，用户看不到「压缩任务不存在」这类可读原因）。
+// 压缩领域六个 code（五个在 agent-routes.mjs 的 COMPACTION_ERROR_MESSAGE 固定文案，
+// compaction_failed_blocked 为 submit 路径 runtime 侧 fail 固定文案——T24 whfind-bugs
+// #5 追加）同样程序写死、不拼底层异常——白名单放行后特定文案才能到达用户（否则
+// 一律收敛为通用文案，用户看不到「压缩任务不存在」这类可读原因）。
 // 凡是 handler 用 error?.message 包底层的 code（如 project_open_failed 的兜底
 // catch）一律不收录，避免原始错误文本随白名单透传。
 export const SAFE_PUBLIC_ERROR_CODES = new Set([
@@ -58,6 +59,9 @@ export const SAFE_PUBLIC_ERROR_CODES = new Set([
   "compaction_not_retryable",
   "compaction_in_flight",
   "compaction_no_run",
+  // T24（whfind-bugs #5）：compaction_failed_blocked——压缩 failed 态 submit 诚实
+  // 拒绝，runtime.mjs 侧 fail 固定文案「请先重试或取消压缩」必须到达直连 API 客户端。
+  "compaction_failed_blocked",
   // Task 5 会话 CRUD：全部程序写死、不拼底层异常（project_busy/session_busy 的
   // 可读原因「另一个对话正在运行/该会话正在运行」必须能到达用户，与压缩领域
   // 五个 code 同标准）。invalid_session_id/title 由路由层写死中文文案。
