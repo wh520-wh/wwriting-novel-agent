@@ -167,14 +167,15 @@ function eventsOfType(events, type) {
 }
 
 // 轮询 journal 直到 predicate 命中（用于等待 execute 挂起后的 decision_requested 等）
-async function waitForEvents(journal, predicate, { timeoutMs = 5000 } = {}) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+async function waitForEvents(journal, predicate, { maxPolls = 500 } = {}) {
+  for (let i = 0; i < maxPolls; i += 1) {
     const events = await readEvents(journal);
     if (predicate(events)) return events;
     await sleep(10);
   }
-  throw new Error("waitForEvents 超时");
+  const events = await readEvents(journal);
+  assert.ok(predicate(events), `waitForEvents: ${maxPolls} 次轮询后断言仍不满足`);
+  return events;
 }
 
 // 活动闭环：每个 tool_call 与 decision 都必须收敛
