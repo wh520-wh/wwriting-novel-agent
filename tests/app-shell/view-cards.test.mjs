@@ -153,7 +153,9 @@ test("syncQueue: 排队行渲染、优先输入禁用全部「立即」、目标
   const rows = ctx.queueSlot.children.filter((c) => c.dataset.testid === "agent-queue-item");
   assert.equal(rows.length, 2);
   const badges = rows.map((r) => r.children.find((c) => c.className === "agent-queue-state")._text);
-  assert.deepEqual(badges.sort(), ["下一条", "排队"]);
+  // 顺序由 queued_inputs 保持（getQueuedInputs 原样透出）：rows[0]=q1、rows[1]=q2。
+  // 按行关联精确断言，不 sort——sort 会放过「总是第一行标下一条」的回归。
+  assert.deepEqual(badges, ["排队", "下一条"]);
   const promote = rows[0].query("agent-promote");
   assert.equal(promote.disabled, true, "优先输入在途时「立即」全部禁用");
 });
