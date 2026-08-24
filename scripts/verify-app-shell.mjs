@@ -63,7 +63,7 @@ try {
   const opened = await postJson(`http://127.0.0.1:${port}/api/projects/open`, { projectRoot });
   assert.equal(opened.ok, true);
 
-  const [html, js, apiClientJs, drawerPanelsJs, agentIndexJs, agentCss, settingsModalJs, viewJs, workGroupJs, stylesCss, dashboard] = await Promise.all([
+  const [html, js, apiClientJs, drawerPanelsJs, agentIndexJs, agentCss, settingsModalJs, settingsModalSkillsJs, viewJs, workGroupJs, stylesCss, dashboard] = await Promise.all([
     fetchText(`http://127.0.0.1:${port}/`),
     fetchText(`http://127.0.0.1:${port}/app.js`),
     fetchText(`http://127.0.0.1:${port}/api-client.js`),
@@ -71,6 +71,7 @@ try {
     fetchText(`http://127.0.0.1:${port}/agent/index.js`),
     fetchText(`http://127.0.0.1:${port}/agent/agent.css`),
     fetchText(`http://127.0.0.1:${port}/settings-modal.js`),
+    fetchText(`http://127.0.0.1:${port}/settings-modal-skills.js`),
     fetchText(`http://127.0.0.1:${port}/agent/view.js`),
     fetchText(`http://127.0.0.1:${port}/agent/view/work-group.mjs`),
     fetchText(`http://127.0.0.1:${port}/styles.css`),
@@ -110,10 +111,10 @@ try {
   // 设置页技能分区（F2：内置写作风格并入普通列表，无只读分区/保留名文案）
   assert.match(settingsModalJs, /id:\s*"skills"/u, "settings-modal 应声明 Agent 技能 tab");
   assert.ok(settingsModalJs.includes("Agent 技能"), "设置页应渲染 Agent 技能 分区");
-  assert.ok(settingsModalJs.includes('builtin: "内置"'), "内置来源标签应保留（SKILL_SOURCE_LABELS）");
-  assert.ok(settingsModalJs.includes("其他来源"), "内置/随应用分发技能应并入「其他来源」普通列表");
-  assert.ok(settingsModalJs.includes("被更高优先级同名技能覆盖，不生效。"), "shadowed 应显示通用优先级覆盖文案");
-  assert.doesNotMatch(settingsModalJs, /spd-skill-row--readonly|保留名称/u, "设置页不得残留内置只读分区与保留名文案");
+  assert.ok(settingsModalSkillsJs.includes('builtin: "内置"'), "内置来源标签应保留（SKILL_SOURCE_LABELS）");
+  assert.ok(settingsModalSkillsJs.includes("其他来源"), "内置/随应用分发技能应并入「其他来源」普通列表");
+  assert.ok(settingsModalSkillsJs.includes("被更高优先级同名技能覆盖，不生效。"), "shadowed 应显示通用优先级覆盖文案");
+  assert.doesNotMatch(settingsModalSkillsJs, /spd-skill-row--readonly|保留名称/u, "设置页不得残留内置只读分区与保留名文案");
 
   // AgentSurface composer / 停止 / 重试 入口（Task 13 可点击性契约的静态面）。
   // 第十五轮（Task 16）：停止/重试按钮随工作组分区迁 view/work-group.mjs，
