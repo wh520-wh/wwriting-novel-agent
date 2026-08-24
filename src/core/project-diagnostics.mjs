@@ -65,12 +65,7 @@ function summarizeSession(session, run) {
   const runActive = Boolean(run);
   return {
     total: queuedInputs.length + (runActive ? 1 : 0),
-    runningCount: runActive ? 1 : 0,
     queuedCount: queuedInputs.length,
-    interruptedCount: run?.status === "interrupted" ? 1 : 0,
-    cancelledCount: run?.status === "cancelled" ? 1 : 0,
-    blockedCount: 0,
-    completedCount: 0,
     recentTasks: queuedInputs.slice(-10).reverse()
   };
 }
@@ -90,7 +85,7 @@ function buildRecoveryHint(session, run) {
   if (runStatus === "cancelled") {
     return { action: "resume", message: "项目已停止。可以恢复项目，软件会创建恢复任务。" };
   }
-  if (status === "running" || status === "waiting_user" || status === "interrupting" || status === "stopping") {
+  if (status === "running" || status === "interrupting" || status === "stopping") {
     return { action: "wait-or-stop", message: "项目正在运行。等待完成，或先停止当前任务。" };
   }
   return { action: "none", message: "当前没有需要处理的恢复动作。" };
