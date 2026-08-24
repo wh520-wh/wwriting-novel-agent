@@ -407,6 +407,13 @@ function createFakeJournal() {
       let out = recorded.filter((event) => event.seq > afterSeq);
       if (limit != null) out = out.slice(0, limit);
       return out;
+    },
+    // 与真实 journal.readTail 同形状：{ events, gaps }，升序取最后 limit 条
+    //（loadEntry 现在走尾部窗口——whfind-bugs #1 兄弟调用点）。
+    async readTail({ limit } = {}) {
+      let out = [...recorded];
+      if (limit != null) out = out.slice(-limit);
+      return { events: out, gaps: [] };
     }
   };
 }
