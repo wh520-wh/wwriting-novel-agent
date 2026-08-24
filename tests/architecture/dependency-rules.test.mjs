@@ -380,7 +380,11 @@ const SURFACE_SEAM_TESTS = new Set([
   "tests/app-shell/view-timeline.test.mjs",
   // Task 16 新增：view-work-group.test.mjs 直接测 view/work-group.mjs 分区的
   // 模块级纯函数（时钟/时间线键/详情文案），同一 seam 意图——不经 index.js。
-  "tests/app-shell/view-work-group.test.mjs"
+  "tests/app-shell/view-work-group.test.mjs",
+  // 第十六轮 T15 新增：view-cards.test.mjs 直接测 view/cards.mjs 分区（决策/
+  // 错误/排队卡片行为），同一 seam 意图——agent-surface.test.mjs 经 fake api
+  // 覆盖不到分区内部（卡片生命周期与优先输入禁用语义）。
+  "tests/app-shell/view-cards.test.mjs"
 ]);
 
 test("AgentSurface 只能通过 src/app-shell/agent/index.js 对外暴露", () => {
