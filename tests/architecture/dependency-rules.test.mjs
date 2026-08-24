@@ -591,13 +591,11 @@ test("旧持久字段在生产源码中 0 命中（无读取/写入/默认值）
 // ---------------------------------------------------------------------------
 
 const LINE_LIMIT = 1200;
-const LINE_LIMIT_EXCEPTIONS = new Map([
-  ["src/app-shell/settings-modal.js", "D6/D7：结构拆分留下轮，本轮仅范式迁移"]
-]);
+// 第十六轮 T10：settings-modal 拆分落线，例外清零。红线从此绝对——红灯时
+// 正确动作是拆文件，不是恢复例外清单。
 
 // R1 自建遍历器：只扫 src/、排除 vendor/ 与 .css——collectSourceFiles() 扫
-// src+tests+scripts 且不排除，不可复用。例外清单断言 size===1：红灯时扩清单
-// 等于放弃红线，正确动作是回对应 Task 收。
+// src+tests+scripts 且不排除，不可复用。
 function collectSrcFiles() {
   const files = [];
   const walk = (dir) => {
@@ -614,15 +612,13 @@ function collectSrcFiles() {
   return files;
 }
 
-test("R1: src 文件行数 ≤1200（例外显式登记且唯一）", () => {
+test("R1: src 文件行数 ≤1200（零例外）", () => {
   const files = collectSrcFiles();
   assert.ok(files.length >= 100, `R1 扫描命中过少（${files.length}），检查遍历是否退化`);
   for (const file of files) {
     const lines = fsSync.readFileSync(path.join(ROOT, file), "utf8").split("\n").length;
-    const limit = LINE_LIMIT_EXCEPTIONS.has(file) ? Infinity : LINE_LIMIT;
-    assert.ok(lines <= limit, `${file} ${lines} 行超红线`);
+    assert.ok(lines <= LINE_LIMIT, `${file} ${lines} 行超红线`);
   }
-  assert.equal(LINE_LIMIT_EXCEPTIONS.size, 1, "例外清单只能有一个");
 });
 
 test("R2: package.json test glob 覆盖全部含测试的目录", () => {
