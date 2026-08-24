@@ -64,7 +64,21 @@ export function createAppShellServer({
   // Agent journal 存储根；各模块不得自行拼 stateRoot/workspaces 路径。
   const workspaceStore = createWorkspaceStore({ stateRoot: appStateRoot });
   const dashboardLoader = testLoadDashboardData
-    ?? ((workspaceRootArg, options = {}) => loadDashboardData(workspaceRootArg, {
+    ?? (async (workspaceRootArg, options = {}) => {
+      // whfind-bugs #4：dashboard 读取前冲刷该项目脏成本——「idle 写回」承诺的
+      // 最小落地。projectRoot 由路由层显式传入（无项目时为 null，loadDashboardData
+      // 短路不读 cost.json，无需冲刷）；与 gateway entry key 同一口径（win32 小写
+      // 归一，见 gatewayKeyFor）。冲刷失败只影响成本展示新鲜度，不阻断 dashboard
+      // 渲染——与 loadDashboardData 内部可选工作的失败风格一致（迁移 .catch 归零、
+      // sessions 失败 → []）。
+      if (options.projectRoot) {
+        try {
+          await modelGateway.flushDirty(options.projectRoot);
+        } catch {
+          // 成本冲刷失败：dashboard 仍按现有路径渲染（cost.json 保持当前值）
+        }
+      }
+      return loadDashboardData(workspaceRootArg, {
       ...options,
       skillService: skills ?? undefined,
       // Task 6：把 ProjectAgent 注入 dashboard 组装，loadDashboardData 内部把
@@ -77,7 +91,8 @@ export function createAppShellServer({
       // Task 6（模型迁移）：dashboard 读路径触发快照→引用迁移 + migration_notice
       // 透出；loadDashboardData 只有注入 secretsRoot 才产生迁移写盘。
       secretsRoot: localSecretsRoot
-    }));
+    });
+  });
   const connectionTester = testModelConnection ?? runModelConnectionTest ?? null;
   applyLocalSecretsToEnv(loadLocalSecretsSync(localSecretsRoot));
 
@@ -253,12 +268,17 @@ async function effectiveWorkspaceConfigFor(projectRoot, { workspaceStore, secret
 export function createAppModelGateway({ resolveEffectiveConfig }) {
   const entries = new Map(); // projectRoot -> { gateway, costTracker, lastWrittenCalls }
 
-  function gatewayFor(projectRoot) {
-    // 第十一轮（审计 F）：Windows 文件系统大小写不敏感，同一项目以不同大小写
-    // 路径打开时原样 resolve 做 key 会分裂出两个 entry / 两条 CostTracker，
-    // per-project 成本累计被拆分。POSIX 大小写敏感，不得归一。
+  // 第十一轮（审计 F）：Windows 文件系统大小写不敏感，同一项目以不同大小写
+  // 路径打开时原样 resolve 做 key 会分裂出两个 entry / 两条 CostTracker，
+  // per-project 成本累计被拆分。POSIX 大小写敏感，不得归一。gatewayFor 与
+  // flushDirty 共用同一口径（第十六轮 T23 抽取供两处共用）。
+  function gatewayKeyFor(projectRoot) {
     const resolved = path.resolve(projectRoot);
-    const key = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  }
+
+  function gatewayFor(projectRoot) {
+    const key = gatewayKeyFor(projectRoot);
     let entry = entries.get(key);
     if (!entry) {
       // 首用时从项目 cost.json 恢复跨 Run 累计值。
@@ -301,9 +321,18 @@ export function createAppModelGateway({ resolveEffectiveConfig }) {
     return entry;
   }
 
+  // whfind-bugs #4：dashboard 读取前冲刷该项目脏成本——「idle 写回」承诺的最小
+  // 落地（idle 时 UI 必刷 dashboard；lastWrittenCalls 脏跟踪保证无新增不写盘）。
+  // key 计算与 gatewayFor 同一口径（win32 小写归一，见 gatewayKeyFor）。
+  async function flushDirty(projectRoot) {
+    const entry = entries.get(gatewayKeyFor(projectRoot));
+    if (entry) await writeCostReportIfDirty(entry, projectRoot);
+  }
+
   return {
     gatewayFor,
-    entriesMap: entries
+    entriesMap: entries,
+    flushDirty
   };
 }
 

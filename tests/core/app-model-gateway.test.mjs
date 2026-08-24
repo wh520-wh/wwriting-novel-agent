@@ -3,6 +3,9 @@
 // 路径必须命中同一 entry（CostTracker 不分裂）；POSIX 大小写敏感不得归一。
 import assert from "node:assert/strict";
 import test from "node:test";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 import { createAppModelGateway } from "../../src/core/app-server.mjs";
 
@@ -20,4 +23,21 @@ test("第十一轮 F：同一项目不同大小写路径共享 entry（win32）/
   } else {
     assert.equal(gateway.entriesMap.size, 2, "POSIX 上不同路径保持独立 entry");
   }
+});
+
+test("flushDirty：脏成本在 dashboard 读取前落盘（whfind-bugs #4）", async () => {
+  const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-gateway-flush-"));
+  const gateway = createAppModelGateway({
+    resolveEffectiveConfig: async () => ({ active_model: null })
+  });
+  assert.equal(typeof gateway.flushDirty, "function");
+  // 造一个脏 tracker（calls 1 > lastWrittenCalls 0）后冲刷，cost.json 应立即落盘
+  const entry = gateway.gatewayFor(projectRoot);
+  entry.costTracker.record({
+    stage: "test",
+    usageReport: { provider: "test", model: "test-model", inputTokens: 10, outputTokens: 10 }
+  });
+  await gateway.flushDirty(projectRoot);
+  const report = JSON.parse(await fs.readFile(path.join(projectRoot, "cost.json"), "utf8"));
+  assert.ok(report.calls >= 1, "cost.json 已写回");
 });
