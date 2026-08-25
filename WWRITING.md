@@ -29,7 +29,7 @@ schema_version: 1
 - 章节索引：memory/chapter_index.json（系统维护，不可直接编辑）
 - 章节记忆：memory/chapter_memory.json（系统维护，不可直接编辑）
 - 检查点：checkpoints/（系统维护，不可直接编辑）
-- 章节版本库：.versions/chapters/（系统维护，append-only，每章 200 版上限）
+- 章节版本库：.versions/chapters/（系统维护，append-only，完整保留不裁剪）
 - 记忆文件版本库：.versions/memory/（系统维护，append-only，每文件 200 版上限）
 - 项目配置：project.yaml（系统维护，不可直接编辑）
 
