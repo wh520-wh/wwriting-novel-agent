@@ -24,8 +24,10 @@ const SETTINGS_SECTIONS = [
 const WRITING_FIELDS = [
   { key: "targetChapters", projectKey: "target_chapters", label: "目标章节数（提高它可以继续已完成的小说）", type: "number" },
   { key: "minWords", projectKey: "min_words_per_chapter", label: "每章最低字数", type: "number" },
-  { key: "targetWords", projectKey: "target_words_per_chapter", label: "每章目标字数", type: "number" },
-  { key: "maxWords", projectKey: "max_words_per_chapter", label: "每章字数上限（留空 = 不限，按 target × 1.5 估算）", type: "number" }
+  { key: "targetWords", projectKey: "target_words_per_chapter", label: "每章目标字数", type: "number" }
+  // 每章字数上限（max_words_per_chapter）已删除：全库无消费者、DTO 不回显、
+  // 标签承诺的「按 target × 1.5 估算」从未实现（2026-08-25 bug-hunt round2 #2）。
+  // 若要恢复：先把它接入章节门禁/提示链，再回填本表单与服务端清空语义。
 ];
 
 // 「已归档对话」归档时间展示格式（Task 10）：模块级单例避免每次渲染新建
@@ -344,8 +346,7 @@ export function createSettingsModal(ctx, options = {}) {
     ctx.refs.settingsDetail.append(
       settingsFields.targetChapters.field,
       settingsFields.minWords.field,
-      settingsFields.targetWords.field,
-      settingsFields.maxWords.field
+      settingsFields.targetWords.field
     );
   }
 
