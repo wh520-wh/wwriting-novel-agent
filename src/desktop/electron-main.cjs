@@ -245,8 +245,9 @@ async function waitForServer(targetPort) {
         return;
       }
     } catch {
-      await new Promise((resolve) => setTimeout(resolve, 120));
+      // 服务器尚未可达：与非 ok 响应同走下方统一退避（非 ok 不退避会热循环 8 秒）。
     }
+    await new Promise((resolve) => setTimeout(resolve, 120));
   }
   throw new Error("App shell server did not become ready.");
 }
