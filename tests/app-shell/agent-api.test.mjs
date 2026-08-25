@@ -465,7 +465,9 @@ test("F5: 混合序列——服务端 error 成功后清零、网络错误共享
   while (connects < 8 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(connects, 8, "服务端 error 成功后清零，再加 5 次网络错误共享封顶，共 8 次即停");
-  assert.equal(errors.length, 2, "只有前两次服务端 error 帧上报；网络抛错不走上报路径");
+  // 网络抛错不逐次上报；放弃重连时补一次终态上报（2026-08-25 bug-hunt round2 #1）。
+  assert.equal(errors.length, 3, "两次服务端 error 帧上报 + 网络错误放弃重连时一次终态上报");
+  assert.deepEqual(errors[2], { code: "event_stream_error", message: "连接已断开，实时更新已停止。" });
 });
 
 // ---------------------------------------------------------------------------

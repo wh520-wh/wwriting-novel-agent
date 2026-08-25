@@ -346,7 +346,13 @@ export function createAgentApi({
           // 同路径退避重连，同样 5 次连续失败封顶——规格 F5「永久故障不无限
           // 重连」对两类失效都生效（临时抖动一次成功即清零，不受影响）。
           serverErrors += 1;
-          if (serverErrors >= 5) return;
+          if (serverErrors >= 5) {
+            // 网络级失败不逐次上报（P1-3 契约，与逐帧上报的服务端 error 不同）；
+            // 但放弃重连时必须补一次终态上报，否则流永久死亡而 UI 无任何提示
+            //（2026-08-25 bug-hunt round2 #1）。
+            onStreamError({ code: "event_stream_error", message: "连接已断开，实时更新已停止。" });
+            return;
+          }
           attempt += 1;
           await sleep(backoff(), myController.signal);
         }
