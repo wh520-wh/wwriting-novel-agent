@@ -319,8 +319,17 @@ export function createDrawerPanels(ctx) {
     ctx.refs.drawerBody.replaceChildren(panel);
   }
 
-  // 记忆卡正文渲染：只展示、不改磁盘内容；去除文档第一个 H1（与卡头重复），
-  // 剥离后为空则显示紧凑空态文案。
+// 记忆分区内容读取失败不静默残旧：失败信息渲染进对应卡片（重开抽屉/切回分区即重试）。
+async function fetchMemoryContent(file) {
+  try {
+    return (await getJson(`/api/memory/files/content?file=${file}`))?.content;
+  } catch (error) {
+    return `读取失败：${error?.message ?? "请稍后重试"}`;
+  }
+}
+
+// 记忆卡正文渲染：只展示、不改磁盘内容；去除文档第一个 H1（与卡头重复），
+// 剥离后为空则显示紧凑空态文案。
   function renderMemoryContent(target, content, emptyText) {
     const lines = String(content ?? "").replace(/^\uFEFF/u, "").split(/\r?\n/u);
     if (/^#\s+\S/u.test(lines[0] ?? "")) lines.shift();
@@ -388,8 +397,7 @@ export function createDrawerPanels(ctx) {
       card.append(head);
       const content = document.createElement("div");
       content.className = "memory-card-content agent-markdown";
-      const data2 = await getJson(`/api/memory/files/content?file=${block.file}`);
-      renderMemoryContent(content, data2?.content, block.emptyText);
+      renderMemoryContent(content, await fetchMemoryContent(block.file), block.emptyText);
       card.append(content);
       body.append(card);
     }
@@ -403,8 +411,7 @@ export function createDrawerPanels(ctx) {
     continuityCard.append(cHead);
     const cContent = document.createElement("div");
     cContent.className = "memory-card-content agent-markdown";
-    const cData = await getJson("/api/memory/files/content?file=continuity");
-    renderMemoryContent(cContent, cData?.content, "暂无设定档案");
+    renderMemoryContent(cContent, await fetchMemoryContent("continuity"), "暂无设定档案");
     continuityCard.append(cContent);
     body.append(continuityCard);
     ctx.refs.drawerBody.replaceChildren(body);

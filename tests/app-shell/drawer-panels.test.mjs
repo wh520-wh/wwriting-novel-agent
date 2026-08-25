@@ -254,6 +254,31 @@ test("round10 drawer memory：安全 Markdown 渲染——script 转义、链接
   }
 });
 
+test("drawer memory：单个文件读取失败渲染失败信息，其余卡片照常渲染", async () => {
+  const h = makeHarness({
+    data: dashboard(),
+    memoryContent: { book_summary: "摘要正文", worklog: "日志正文", continuity: "设定正文" }
+  });
+  const harnessFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes("file=worklog")) throw new Error("网络中断");
+    return harnessFetch(url);
+  };
+  try {
+    h.ctx.getDrawerTab = () => "memory";
+    await h.panels.renderDrawerBody();
+    const cards = h.drawerBody.querySelectorAll(".memory-card");
+    assert.equal(cards.length, 3, "三张卡都渲染（中途失败不再静默中断整面）");
+    const texts = [...cards].map((c) => c.querySelector(".memory-card-content").innerHTML);
+    assert.ok(texts[0].includes("摘要正文"), "失败前的卡片不受影响");
+    assert.ok(texts[1].includes("读取失败"), "失败卡片回显读取失败信息");
+    assert.ok(texts[2].includes("设定正文"), "失败后的卡片继续渲染");
+  } finally {
+    globalThis.document = realDoc;
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("round10 drawer memory：外部链接点击交给 openExternalUrl，不默认导航", async () => {
   const h = makeHarness({
     data: dashboard(),
