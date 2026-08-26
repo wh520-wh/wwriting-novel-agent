@@ -4,6 +4,17 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>WWriting · 小说智能体</title>
+    <script>
+      // 首帧主题预设：样式应用前同步落 data-theme，夜间用户直接暗色首绘不闪白。
+      // 判定口径与 theme-privacy.js initThemeMode 一致（存储优先，跟随系统兜底）。
+      try {
+        var storedTheme = localStorage.getItem("ww:theme");
+        document.documentElement.dataset.theme =
+          storedTheme === "dark" || (storedTheme !== "light" && matchMedia("(prefers-color-scheme: dark)").matches)
+            ? "dark"
+            : "light";
+      } catch { /* localStorage 不可用则按系统偏好由 theme-privacy.js 再落一次 */ }
+    </script>
     <link rel="stylesheet" href="./styles.css" />
     <link rel="stylesheet" href="./agent/agent.css" />
   </head>
@@ -29,7 +40,14 @@
         <div class="rail-scroll">
           <div class="rail-group-label"><span>我的小说</span><span class="count" id="project-count">0</span></div>
           <div class="rail-filter"><input id="project-filter" type="search" placeholder="搜索我的小说…" aria-label="搜索我的小说" spellcheck="false" /></div>
-          <div id="project-list"></div>
+          <div id="project-list">
+            <!-- 启动骨架屏：项目/会话数据到达前的占位（session-sidebar 首渲整体 replaceChildren 自动清除）。 -->
+            <div class="boot-skeleton" aria-hidden="true">
+              <div class="skel-row"><span class="skeleton skel-dot"></span><span class="skeleton skel-line"></span></div>
+              <div class="skel-row"><span class="skeleton skel-dot"></span><span class="skeleton skel-line skel-line-narrow"></span></div>
+              <div class="skel-row"><span class="skeleton skel-dot"></span><span class="skeleton skel-line skel-line-short"></span></div>
+            </div>
+          </div>
           <p id="project-open-status" class="project-open-status"></p>
         </div>
         <div class="rail-foot">

@@ -206,3 +206,24 @@ test("冻结布局约束：用户消息靠右，ticker 固定两行，详情 320
   );
   assert.match(agentCssSource, /\.agent-reasoning-detail\s*\{[^}]*max-height:\s*320px[^}]*overflow-y:\s*auto/u, "详情 max-height:320px 内部滚动");
 });
+
+test("启动体验：首帧主题预设与项目列表骨架占位", () => {
+  // 主题在样式生效前内联落 data-theme（夜间用户暗色首绘不闪白），
+  // 判定口径与 theme-privacy.js 一致：存储优先、跟随系统兜底。
+  assert.match(
+    indexSource,
+    /<head>[\s\S]*?document\.documentElement\.dataset\.theme[\s\S]*?<\/head>/u,
+    "index.html 应在 head 内联预设 data-theme"
+  );
+  assert.match(indexSource, /localStorage\.getItem\("ww:theme"\)/u, "主题预设应读同一存储键 ww:theme");
+  assert.match(indexSource, /prefers-color-scheme: dark/u, "无存储时跟随系统偏好");
+  // 骨架屏复用 .skeleton shimmer，静态占位于 #project-list 内，
+  // 数据到达后由 session-sidebar 首渲整体 replaceChildren 清除。
+  assert.match(indexSource, /id="project-list">[\s\S]*class="boot-skeleton"[\s\S]*aria-hidden="true"/u, "项目列表应有启动骨架占位");
+  assert.match(cssSource, /\.boot-skeleton\s*\{[^}]*display:\s*grid/u, "styles.css 应定义启动骨架布局");
+  assert.match(
+    cssSource,
+    /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?\.boot-skeleton \.skeleton \{ animation: none/u,
+    "reduced-motion 下骨架应退化为静态色块"
+  );
+});

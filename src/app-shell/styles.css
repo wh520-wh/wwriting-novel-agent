@@ -1703,6 +1703,16 @@ input.spd-input[type="number"] { max-width: 160px; }
   user-select: none;
 }
 
+/* 启动骨架屏：左栏项目/会话列表数据到达前的占位（比例对齐 .proj 行，
+   数据到达后由 session-sidebar 首渲整体替换清除，无需 JS 参与）。 */
+.boot-skeleton { display: grid; gap: 6px; padding: 10px 10px 2px; }
+
+.skel-row { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 7px 28px 7px 0; }
+.skel-dot { width: 18px; height: 18px; flex: 0 0 auto; }
+.skel-line { height: 13px; flex: 1 1 auto; }
+.skel-line-narrow { flex-basis: 62%; }
+.skel-line-short { flex-basis: 80%; }
+
 
 /* toast —— Round10：移到顶栏下方右上角，不再遮挡 Composer */
 .toast-stack {
@@ -2308,6 +2318,9 @@ input.spd-input[type="number"] { max-width: 160px; }
   .toast { animation: none; opacity: 1; transform: none; }
 
   .app { animation: none; }
+
+  /* 启动骨架屏退化为静态色块（无 shimmer） */
+  .boot-skeleton .skeleton { animation: none; background: var(--surface-3); }
 
   *, *::before, *::after { transition-duration: 0s !important; }
 }
