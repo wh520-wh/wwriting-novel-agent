@@ -32,6 +32,12 @@ assert.ok(main.includes("app-server.mjs"));
 assert.ok(main.includes("contextIsolation: true"));
 assert.ok(main.includes("nodeIntegration: false"));
 assert.ok(main.includes("WWRITING_ELECTRON_SMOKE"));
+// 启动体验契约：窗口先行隐藏创建（ready-to-show 才显示），首屏加载与服务就绪
+// 探测并行，服务组装失败销毁窗口并弹错误框。
+assert.ok(main.includes("ready-to-show"), "主窗口应 ready-to-show 再显示，避免空白帧");
+assert.ok(/Promise\.all\(\[\s*window\.loadURL/u.test(main.replace(/\s+/g, " ")),
+  "loadURL 与 waitForServer 应并行");
+assert.ok(main.includes("dialog.showErrorBox"), "启动失败应有系统错误框兜底");
 assert.ok(preload.includes("contextBridge"));
 
 console.log(

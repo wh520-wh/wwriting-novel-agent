@@ -141,60 +141,75 @@ if (!gotSingleInstanceLock) {
       return true;
     });
 
-    const { createAppShellServer } = await import(pathToFileURL(path.join(rootDir, "src", "core", "app-server.mjs")).href);
-    server = createAppShellServer({
-      workspaceRoot: process.env.WORKSPACE_ROOT || rootDir,
-      selectedProjectRoot: process.env.PROJECT_ROOT || null,
-      staticRoot: path.join(rootDir, "src", "app-shell"),
-      secretsRoot: app.getPath("userData"),
-      port
-    });
-    port = await listenWithFallback(server, port, "127.0.0.1");
+    // 启动体验（对齐 VS Code/Linear 等桌面应用惯例）：主窗口在服务端组装前就
+    // 隐藏创建，Chromium 进程预热与后端初始化并行；首帧可绘（ready-to-show）才
+    // 显示，背景色取窗口主题材料色，不出现白闪。服务组装失败时销毁空窗并弹系统
+    // 错误框退出，不留永久空白窗口。
+    let window = null;
+    try {
+      if (!smokeMode) {
+        const isDark = nativeTheme.shouldUseDarkColors;
+        window = new BrowserWindow({
+          width: 1320,
+          height: 860,
+          minWidth: 980,
+          minHeight: 680,
+          show: false,
+          backgroundColor: windowColors(isDark).background,
+          autoHideMenuBar: true,
+          ...desktopWindowChrome(process.platform, isDark),
+          webPreferences: {
+            preload: path.join(__dirname, "electron-preload.cjs"),
+            contextIsolation: true,
+            nodeIntegration: false
+          }
+        });
+        window.once("ready-to-show", () => window.show());
 
-    await waitForServer(port);
-    if (smokeMode) {
-      const result = JSON.stringify({
-        ok: true,
-        desktopShell: "electron",
-        loaded: `http://127.0.0.1:${port}`
+        ipcMain.handle("wwriting:set-title-bar-theme", (_event, dark) => {
+          const overlay = desktopWindowChrome(process.platform, dark).titleBarOverlay;
+          if (overlay) window.setTitleBarOverlay(overlay);
+          window.setBackgroundColor(windowColors(dark).background);
+        });
+      }
+
+      const { createAppShellServer } = await import(pathToFileURL(path.join(rootDir, "src", "core", "app-server.mjs")).href);
+      server = createAppShellServer({
+        workspaceRoot: process.env.WORKSPACE_ROOT || rootDir,
+        selectedProjectRoot: process.env.PROJECT_ROOT || null,
+        staticRoot: path.join(rootDir, "src", "app-shell"),
+        secretsRoot: app.getPath("userData"),
+        port
       });
-      process.stdout.write(`${result}\n`, () => {
-        if (server) {
-          server.close();
-          server = null;
-        }
-        app.exit(0);
-      });
-      return;
+      port = await listenWithFallback(server, port, "127.0.0.1");
+
+      if (smokeMode) {
+        const result = JSON.stringify({
+          ok: true,
+          desktopShell: "electron",
+          loaded: `http://127.0.0.1:${port}`
+        });
+        process.stdout.write(`${result}\n`, () => {
+          if (server) {
+            server.close();
+            server = null;
+          }
+          app.exit(0);
+        });
+        return;
+      }
+
+      // 后端就绪探测与首屏加载并行：dashboard 冷启动不再串行挡住页面渲染；
+      // ready-to-show 触发显示，两者谁先完成都不让用户多等。
+      await Promise.all([
+        window.loadURL(`http://127.0.0.1:${port}`),
+        waitForServer(port)
+      ]);
+    } catch (error) {
+      window?.destroy();
+      dialog.showErrorBox("WWriting 启动失败", String(error?.stack ?? error));
+      app.exit(1);
     }
-
-    const isDark = nativeTheme.shouldUseDarkColors;
-    const backgroundColor = windowColors(isDark).background;
-    const window = new BrowserWindow({
-      width: 1320,
-      height: 860,
-      minWidth: 980,
-      minHeight: 680,
-      show: true,
-      backgroundColor,
-      autoHideMenuBar: true,
-      ...desktopWindowChrome(process.platform, isDark),
-      webPreferences: {
-        preload: path.join(__dirname, "electron-preload.cjs"),
-        contextIsolation: true,
-        nodeIntegration: false
-      }
-    });
-
-    ipcMain.handle("wwriting:set-title-bar-theme", (_event, dark) => {
-      const overlay = desktopWindowChrome(process.platform, dark).titleBarOverlay;
-      if (overlay) {
-        window.setTitleBarOverlay(overlay);
-      }
-      window.setBackgroundColor(windowColors(dark).background);
-    });
-
-    await window.loadURL(`http://127.0.0.1:${port}`);
   });
 }
 
