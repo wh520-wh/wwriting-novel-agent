@@ -4,7 +4,7 @@ English | [简体中文](README.md)
 
 **A local-first desktop agent that manages long-form novel writing like an engineering project.**
 
-## Current release: v0.5.0
+## Current release: v0.5.1
 
 > Eight iterations since v0.4.0 (multi-session, model config rework, plugin-based skills, memory system, kernel partition refactor); full changelog in [CHANGELOG.md](CHANGELOG.md). The architecture below builds on the unified kernel established in v0.4.0; v0.5.0 reworked the internals of the agent kernel, model layer, and front-end controls without changing the public interface.
 
