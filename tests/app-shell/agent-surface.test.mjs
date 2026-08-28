@@ -4310,7 +4310,7 @@ test("Task 11 CSS：popover 过渡、压缩行、主题 token 与 reduced-motion
   );
   assert.match(css, /\.agent-context-ring\s*\{[^}]*cursor:\s*pointer/u, "圆环按钮样式存在");
   assert.match(css, /\.agent-compaction-row\s*\{/u, "压缩行样式存在");
-  assert.match(css, /\.agent-compaction-btn\s*\{/u, "压缩行动作按钮样式存在");
+  assert.match(css, /\.agent-compaction-actions \.btn:hover\s*\{/u, "压缩行动作按钮样式存在");
   // reduced-motion：popover 过渡关闭
   assert.match(
     css,

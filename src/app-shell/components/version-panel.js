@@ -35,7 +35,7 @@ export function createVersionPanel({ doc = document } = {}) {
       // Round10：恢复 = 真实 button；agentRunning 时真正 disabled。
       const restore = doc.createElement("button");
       restore.type = "button";
-      restore.className = "version-restore";
+      restore.className = "btn btn--sm";
       restore.dataset.restoreButton = String(v.version);
       restore.textContent = "恢复此版";
       if (callbacks.agentRunning) {

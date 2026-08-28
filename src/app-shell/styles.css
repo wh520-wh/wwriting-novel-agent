@@ -723,7 +723,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   color: var(--ink-2);
 }
 
-.memory-card-head .chrow-history {
+.memory-card-head .btn {
   margin-left: auto;
 }
 
@@ -923,27 +923,6 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .ch-state.completed { color: var(--green); border-color: var(--green-line); background: var(--green-soft); }
 
-.chrow-history {
-  flex: 0 0 auto;
-  min-width: 44px;
-  height: 26px;
-  padding: 0 8px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  background: var(--surface-2);
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-  transition: background 100ms ease, border-color 100ms ease, color 100ms ease;
-}
-
-.chrow-history:hover {
-  background: var(--hover);
-  border-color: var(--line-hover);
-  color: var(--ink);
-}
-
 .ch-go { color: var(--muted); }
 
 .chrow.completed:hover .ch-go { color: var(--accent); }
@@ -969,13 +948,34 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .dfield small { font-size: 12px; color: var(--text-muted); }
 
-.save-btn {
-  width: 100%; min-height: 38px; border-radius: var(--r); margin-top: 4px;
-  background: var(--btn-gradient); color: var(--btn-ink); font-weight: 650; font-size: 13px;
+/* ============================================================
+   按钮基元（round17 §3.3）：结构唯一份；皮肤走变体 + 上下文覆盖。
+   尺寸两档：默认 36px（--control-default）/ .btn--sm 28px。
+   ============================================================ */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: var(--control-default); padding: 0 14px;
+  border: 1px solid var(--line); border-radius: var(--r);
+  background: var(--surface); color: var(--ink-2);
+  font: inherit; font-size: var(--font-sm); font-weight: var(--weight-semibold);
+  white-space: nowrap; cursor: pointer;
+  box-shadow: var(--shadow-xs);
+  transition: background .12s, border-color .12s, color .12s;
+}
+.btn:hover:not(:disabled) { background: var(--hover); border-color: var(--line-hover); color: var(--ink); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn--primary {
+  padding: 0 20px;
+  background: var(--btn-gradient); border-color: transparent; color: var(--btn-ink);
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.13);
 }
+.btn--primary:hover:not(:disabled) { background: var(--btn-gradient); filter: brightness(1.13); }
+.btn--sm { height: 28px; padding: 0 10px; font-size: var(--font-xs); }
+.btn--danger { color: var(--red); border-color: var(--red-line, var(--line)); }
+.btn--danger:hover:not(:disabled) { background: var(--red-soft); border-color: var(--red); color: var(--red); }
 
-.save-btn:hover { filter: brightness(1.13); }
+/* 创建弹窗主按钮保持通栏（原 .save-btn 的布局职责） */
+#create-submit { width: 100%; }
 
 
 .evt { display: grid; grid-template-columns: auto minmax(0,1fr) auto; gap: 9px; align-items: baseline; padding: 7px 0; border-bottom: 1px solid var(--line-3); }
@@ -1212,23 +1212,6 @@ input.spd-input[type="number"] { max-width: 160px; }
   color: var(--text-muted);
 }
 
-.spd-cancel { height: 38px; padding: 0 16px; border-radius: var(--r); border: 1px solid var(--line); background: var(--surface); font-size: 13px; font-weight: 600; color: var(--ink-2); white-space: nowrap; }
-
-.spd-cancel:hover { background: var(--hover); }
-
-/* 设置弹窗内二级动作按钮（项目管理分区的归档/打开文件夹）——与 .spd-cancel 同一组件语言 */
-.sp-btn {
-  height: 36px; padding: 0 14px; border-radius: var(--r);
-  border: 1px solid var(--line); background: var(--surface);
-  font: inherit; font-size: 12.5px; font-weight: 600; color: var(--ink-2);
-  box-shadow: var(--shadow-xs); cursor: pointer; white-space: nowrap;
-  transition: background .12s, border-color .12s, color .12s;
-}
-
-.sp-btn:hover:not(:disabled) { background: var(--hover); border-color: var(--line-hover); color: var(--ink); }
-
-.sp-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
 /* Task 10 · 设置页「已归档对话」分类：行 = 标题 + 归档时间 + 恢复/永久删除。
    行卡片同 .spd-skill-row 组件语言；危险按钮沿用 --red/--red-soft 先例。 */
 .spd-archived-list { display: grid; gap: 6px; margin-top: 10px; }
@@ -1242,17 +1225,10 @@ input.spd-input[type="number"] { max-width: 160px; }
 .spd-archived-title { font-size: 13px; font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .spd-archived-when { margin-top: 2px; font-size: 12px; color: var(--text-muted); }
 .spd-archived-actions { display: flex; gap: 8px; flex: 0 0 auto; }
-.spd-archived-actions .sp-btn { height: 30px; padding: 0 10px; font-size: 12px; }
 /* 两个按钮都有焦点环：通用 accent 规则与 danger 的 red 规则同为 (0,3,0) 特异性，
    red 规则后定义生效——删除按钮的焦点环是 red，不被通用 accent 规则压掉。 */
-.spd-archived-actions .sp-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
-.spd-archived-actions .sp-btn-danger:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--red); }
-.sp-btn-danger { display: inline-flex; align-items: center; gap: 6px; color: var(--red); border-color: var(--red-line, var(--line)); }
-.sp-btn-danger:hover:not(:disabled) { background: var(--red-soft); border-color: var(--red); color: var(--red); }
-
-.spd-save { height: 38px; padding: 0 20px; border-radius: var(--r); background: var(--btn-gradient); color: var(--btn-ink); font-size: 13px; font-weight: 650; box-shadow: inset 0 1px 0 rgba(255,255,255,0.13); white-space: nowrap; }
-
-.spd-save:hover { filter: brightness(1.13); }
+.spd-archived-actions .btn:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
+.spd-archived-actions .btn--danger:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--red); }
 
 
 /* toggle switch */
@@ -2650,32 +2626,6 @@ input.spd-input[type="number"] { max-width: 160px; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.version-restore {
-  flex: 0 0 auto;
-  height: 26px;
-  padding: 0 8px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  background: var(--surface-2);
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: background 100ms ease, border-color 100ms ease, color 100ms ease;
-}
-
-.version-restore:hover:not(:disabled) {
-  background: var(--hover);
-  border-color: var(--line-hover);
-  color: var(--ink);
-}
-
-.version-restore:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 
 .version-preview {

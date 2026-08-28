@@ -141,7 +141,7 @@ export function createDrawerPanels(ctx) {
       // 第九轮：章节行「历史」按钮（抽屉 §3.3）。
       const historyBtn = document.createElement("button");
       historyBtn.type = "button";
-      historyBtn.className = "chrow-history";
+      historyBtn.className = "btn btn--sm";
       historyBtn.textContent = "历史";
       let versionPanel = null;
       let versionPanelOpening = null;
@@ -200,7 +200,7 @@ export function createDrawerPanels(ctx) {
     const modelUnconfigured = !profile || !profile.model_name;
     const model = dpanel("模型配置", modelUnconfigured ? "未配置" : (profile.display ?? "未配置"));
     const open = document.createElement("button");
-    open.className = "save-btn";
+    open.className = "btn btn--primary";
     open.type = "button";
     open.textContent = "打开模型设置";
     open.addEventListener("click", () => ctx.openSettingsModal());
@@ -365,7 +365,7 @@ async function fetchMemoryContent(file) {
       head.append(title);
       const history = document.createElement("button");
       history.type = "button";
-      history.className = "chrow-history";
+      history.className = "btn btn--sm";
       history.textContent = "历史";
       let versionPanel = null;
       let versionPanelOpening = null;

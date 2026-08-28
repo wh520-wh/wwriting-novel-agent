@@ -207,9 +207,9 @@ export function showConfirmLayer(options) {
 
   const actions = doc.createElement("div");
   Object.assign(actions.style, { display: "flex", justifyContent: "flex-end", gap: "10px" });
-  const cancelBtn = el("button", { type: "button", class: "sp-btn", text: cancelLabel }, [], doc);
+  const cancelBtn = el("button", { type: "button", class: "btn", text: cancelLabel }, [], doc);
   cancelBtn.id = `${id}-cancel`; // id 走实例属性：node:test mock 按 el.id 查找
-  const confirmBtn = el("button", { type: "button", class: "sp-btn", disabled: danger, text: confirmLabel }, [], doc);
+  const confirmBtn = el("button", { type: "button", class: "btn", disabled: danger, text: confirmLabel }, [], doc);
   confirmBtn.id = `${id}-confirm-btn`;
   actions.append(cancelBtn, confirmBtn);
 
