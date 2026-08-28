@@ -208,24 +208,6 @@
 
 :root[data-theme="dark"] ::selection { background: rgba(143, 176, 143, 0.3); }
 
-/* 作品封面用项目主题色渐变，深色模式下文字仍保持白色 */
-:root[data-theme="dark"] .workbench-cover,
-:root[data-theme="dark"] .session-cover--trail { color: #fff; }
-
-
-/* 深色模式下 5 个硬编码项目主题的 wash/line 换暗色变体：
-   大面积光晕背景与边框不再刺眼；封面渐变（accent/ink）保持主题色（书封面视觉）。 */
-:root[data-theme="dark"][data-project-theme="tide"] { --project-wash: #1b2827; --project-line: #2c4543; }
-
-:root[data-theme="dark"][data-project-theme="ink"] { --project-wash: #262331; --project-line: #3b3550; }
-
-:root[data-theme="dark"][data-project-theme="verdant"] { --project-wash: #1e2a22; --project-line: #2e4435; }
-
-:root[data-theme="dark"][data-project-theme="ember"] { --project-wash: #2e241a; --project-line: #4d3a24; }
-
-:root[data-theme="dark"][data-project-theme="violet"] { --project-wash: #2a2030; --project-line: #3f2f4a; }
-
-
 * { box-sizing: border-box; }
 
 html, body { height: 100%; margin: 0; }
@@ -273,7 +255,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .mono { font-family: var(--mono); font-feature-settings: "tnum" 1; font-variant-numeric: tabular-nums; }
 
-.stat .v, .kv dd, .spd-input, .pill, .step-meta { font-variant-numeric: tabular-nums; }
+.stat .v, .kv dd, .spd-input, .pill { font-variant-numeric: tabular-nums; }
 
 
 /* Codex-style focus ring —— accent 只用于链接、focus、当前计划项 marker 和 testing */
@@ -604,10 +586,6 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .topbar-title-row h1 {
   font-size: 14px; line-height: 1.35; font-weight: 650; letter-spacing: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-
-.topbar-sub {
-  display: none;
 }
 
 .topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: 0 1 auto; flex-wrap: nowrap; justify-content: flex-end; min-width: 0; }
@@ -991,8 +969,6 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .dfield small { font-size: 12px; color: var(--text-muted); }
 
-.provider-pick.on { border-color: var(--ink); background: var(--surface); box-shadow: inset 0 0 0 1px var(--ink); }
-
 .save-btn {
   width: 100%; min-height: 38px; border-radius: var(--r); margin-top: 4px;
   background: var(--btn-gradient); color: var(--btn-ink); font-weight: 650; font-size: 13px;
@@ -1117,8 +1093,6 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.2);
 }
 
-.sp-av.lg { width: 34px; height: 34px; border-radius: var(--r); font-size: 13px; }
-
 .sp-name { min-width: 0; font-size: 13px; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* right pane */
@@ -1147,14 +1121,6 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .spd-label > span:first-child { color: var(--text-primary); }
 
 .spd-key input:focus, .spd-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-ring); }
-
-.spd-test {
-  height: 40px; padding: 0 18px; border-radius: var(--r); border: 1px solid var(--line); background: var(--surface);
-  font-size: 13px; font-weight: 600; color: var(--ink-2); box-shadow: var(--shadow-xs); flex: 0 0 auto;
-  transition: background .12s;
-}
-
-.spd-test:hover { background: var(--hover); }
 
 .spd-input {
   width: 100%; height: 40px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface);
@@ -1212,37 +1178,6 @@ input.spd-input[type="number"] { max-width: 160px; }
 .spd-field-error[hidden] { display: none; }
 
 
-.spd-test-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 4px 0 6px;
-}
-
-.spd-test-connection {
-  height: 36px;
-  padding: 0 16px;
-  border-radius: var(--r);
-  border: 1px solid var(--line);
-  background: var(--surface);
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--ink-2);
-  box-shadow: var(--shadow-xs);
-  transition: background .12s, border-color .12s, color .12s;
-}
-
-.spd-test-connection:hover:not(:disabled) {
-  background: var(--hover);
-  border-color: var(--line);
-}
-
-.spd-test-connection:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-
 .spd-connection-status {
   margin-top: 0;
   margin-bottom: 14px;
@@ -1269,12 +1204,6 @@ input.spd-input[type="number"] { max-width: 160px; }
 .spd-connection-status[data-state="idle"] {
   color: var(--muted);
 }
-
-.spd-mbtn.icon { padding: 0; width: 32px; justify-content: center; }
-
-.mg-chev.closed { transform: rotate(-90deg); }
-
-.cap { width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center; }
 
 .icon-btn.sm { width: 28px; height: 28px; }
 

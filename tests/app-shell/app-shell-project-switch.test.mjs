@@ -75,13 +75,12 @@ class MockElement {
 
 function makeRefs() {
   const title = new MockElement("h1"); title.id = "project-title";
-  const sub = new MockElement("div"); sub.id = "topbar-sub";
   const thread = new MockElement("div"); thread.id = "thread";
   const threadStatus = new MockElement("div"); threadStatus.id = "thread-status";
   threadStatus.textContent = "announce-loaded";
   const toastStack = new MockElement("div"); toastStack.id = "toast-stack";
   toastStack.children = [];
-  return { title, sub, thread, threadStatus, toastStack };
+  return { title, thread, threadStatus, toastStack };
 }
 
 // ---- the gate factory (this is the shape extracted from app.js) ----

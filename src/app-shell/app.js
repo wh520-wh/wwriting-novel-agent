@@ -35,7 +35,6 @@ export async function bootApp(root = document) {
     openFolder: root.querySelector("#open-folder"),
     openSettings: root.querySelector("#open-settings"),
     title: root.querySelector("#project-title"),
-    topbarSub: root.querySelector("#topbar-sub"),
     themeToggle: root.querySelector("#theme-toggle"),
     themeLabel: root.querySelector("#theme-label"),
     openDrawer: root.querySelector("#open-drawer"),
@@ -732,7 +731,6 @@ export async function bootApp(root = document) {
     if (!data.hasProject) {
       currentProjectRoot = null;
       railRefs.title.textContent = "开始创作";
-      railRefs.topbarSub.textContent = "新建或打开一部小说，开始你的创作。";
       sessionSidebar.syncBusy(); // 无项目：busy 复位
       refreshDrawerIfOpen();
       return;
@@ -749,15 +747,8 @@ export async function bootApp(root = document) {
     // 状态点与 busy 复位依据）；懒加载缓存以最新 dashboard 为准。
     sessionSidebar.seedSessions(data.projectRoot, data.sessions ?? [], data.active_session_id ?? null);
   
-    const summary = data.summary;
     const project = data.project;
-    const modelProfile = data.model_profile ?? {};
     railRefs.title.textContent = project.title ?? "未命名小说";
-    const progressCopy = `已写 ${summary.completedChapters}/${summary.targetChapters} 章`;
-    // Task 8：未配置模型 = 无 model_name（is_mock 语义已废弃，用户面不再有 mock）。
-    railRefs.topbarSub.textContent = !modelProfile || !modelProfile.model_name
-      ? `模型未配置 · 请在设置里选一个 · ${progressCopy}`
-      : progressCopy;
   
     refreshDrawerIfOpen();
   }
@@ -772,7 +763,6 @@ export async function bootApp(root = document) {
   
   function renderError(error) {
     railRefs.title.textContent = "读取失败";
-    railRefs.topbarSub.textContent = error.message;
     railRefs.projectOpenStatus.style.display = "block";
     railRefs.projectOpenStatus.textContent = error.message;
   }
