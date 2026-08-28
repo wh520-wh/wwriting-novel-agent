@@ -328,7 +328,7 @@ test("章节历史按钮连续点击只创建一个面板并复用同一次加�
   try {
     await h.panels.renderDrawerBody();
     const row = h.drawerBody.querySelector(".chrow");
-    const history = row.querySelector(".btn--sm");
+    const history = row.querySelector('[data-testid="chapter-history-btn"]');
     assert.equal(row.tagName, "div", "章节行不得嵌套交互按钮");
     assert.equal(row.getAttribute("role"), "button");
     history.dispatch("click");
