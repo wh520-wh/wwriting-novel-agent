@@ -390,7 +390,7 @@ export function createSettingsModal(ctx, options = {}) {
     archiveLabel.append(archiveSpan);
     const archiveBtn = document.createElement("button");
     archiveBtn.type = "button";
-    archiveBtn.className = "sp-btn";
+    archiveBtn.className = "btn";
     archiveBtn.id = isArchived ? "settings-unarchive-trigger" : "settings-archive-trigger";
     archiveBtn.textContent = isArchived ? "解除归档" : "归档此项目";
     archiveBtn.addEventListener("click", () => {
@@ -434,7 +434,7 @@ export function createSettingsModal(ctx, options = {}) {
     folderLabel.append(folderSpan);
     const folderBtn = document.createElement("button");
     folderBtn.type = "button";
-    folderBtn.className = "sp-btn";
+    folderBtn.className = "btn";
     folderBtn.id = "settings-open-folder";
     folderBtn.textContent = "打开项目文件夹";
     folderBtn.addEventListener("click", () => {
@@ -549,15 +549,15 @@ export function createSettingsModal(ctx, options = {}) {
     const actions = document.createElement("div");
     actions.className = "spd-archived-actions";
 
-    const restore = actionButton("恢复", () => { void restoreArchivedSession(session, restore); });
+    const restore = actionButton("恢复", () => { void restoreArchivedSession(session, restore); }, "btn--sm");
     restore.id = `archived-restore-${session.session_id}`;
     restore.setAttribute("aria-label", `恢复对话 ${session.title ?? "新对话"}`);
     actions.append(restore);
 
-    // 危险操作按钮：复用 .sp-btn 组件语言 + .sp-btn-danger 红系样式。
+    // 危险操作按钮：复用 .btn 组件语言 + .btn--danger 红系样式。
     const del = document.createElement("button");
     del.type = "button";
-    del.className = "sp-btn sp-btn-danger";
+    del.className = "btn btn--sm btn--danger";
     del.id = `archived-delete-${session.session_id}`;
     del.setAttribute("aria-label", `永久删除对话 ${session.title ?? "新对话"}`);
     del.title = "永久删除对话";
@@ -632,11 +632,11 @@ export function createSettingsModal(ctx, options = {}) {
     return ARCHIVED_TIME_FORMAT.format(date);
   }
 
-  // 设置详情内的二级动作按钮（与 .sp-btn 同一组件语言）。
-  function actionButton(text, onClick) {
+  // 设置详情内的二级动作按钮（与 .btn 同一组件语言）。
+  function actionButton(text, onClick, extraClass = "") {
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = "sp-btn";
+    btn.className = `btn${extraClass ? ` ${extraClass}` : ""}`;
     btn.textContent = text;
     btn.addEventListener("click", onClick);
     return btn;

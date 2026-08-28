@@ -720,15 +720,19 @@
   transition: background 100ms ease, color 100ms ease, opacity 100ms ease, transform 80ms ease;
 }
 
-.agent-decision-actions button {
-  border: 1px solid var(--agent-line-strong);
+/* agent 面板按钮皮肤：结构继承 .btn/.btn--sm（styles.css），此处只覆盖配色（round17 §3.3） */
+.agent-decision-actions .btn,
+.agent-compaction-actions .btn {
+  border-radius: var(--r-sm);
+  border-color: var(--agent-line-strong);
   background: var(--agent-panel-solid);
   color: var(--agent-ink);
-  border-radius: 9px;
-  cursor: pointer;
-  font-size: 12.5px;
-  font-weight: 600;
-  transition: background 100ms ease, border-color 100ms ease, opacity 100ms ease, transform 80ms ease;
+}
+
+.agent-compaction-actions .btn:hover {
+  border-color: transparent;
+  background: var(--agent-accent-soft);
+  color: var(--agent-accent);
 }
 
 .agent-stop-btn {
@@ -1418,13 +1422,7 @@
   gap: 8px;
 }
 
-.agent-decision-actions button {
-  min-width: 64px;
-  height: 30px;
-  padding: 0 12px;
-}
-
-.agent-decision-actions button:hover:not(:disabled) {
+.agent-decision-actions .btn:hover:not(:disabled) {
   background: var(--accent-soft);
   border-color: var(--accent-line);
 }
@@ -1444,9 +1442,8 @@
 }
 
 /* Round10：普通决策主次动作——一个推荐主操作（中性实心）、一个次操作（描边）、
-   一个空间分离的 deny（margin-left:auto 推右，red text）。变体选择器带
-   .agent-decision-actions 前缀（0,2,0），高于基础规则 .agent-decision-actions
-   button（0,1,1），且声明在后，稳定覆盖。 */
+   一个空间分离的 deny（margin-left:auto 推右，red text）。变体选择器与面板底色
+   规则 .agent-decision-actions .btn 同特异性（0,2,0），声明在后，稳定覆盖。 */
 .agent-decision-actions .agent-decision-primary {
   background: var(--btn-gradient);
   border-color: transparent;
@@ -1523,41 +1520,15 @@
   margin-top: 2px;
 }
 
-.agent-error-action,
-.agent-error-copy {
-  height: 30px;
-  padding: 0 12px;
-  border-radius: 6px;
-  font-size: 12.5px;
-  font-weight: 600;
-  transition: background 100ms ease, border-color 100ms ease, color 100ms ease;
-}
-
-.agent-error-action {
-  min-width: 64px;
-  border: 1px solid var(--agent-line-strong);
-  background: var(--agent-panel-solid);
-  color: var(--agent-ink);
-}
-
-.agent-error-action--primary {
-  background: var(--btn-gradient);
-  border-color: transparent;
-  color: var(--btn-ink);
-}
-
-.agent-error-action--primary:hover:not(:disabled) {
-  filter: brightness(1.13);
-}
-
-.agent-error-copy {
+.agent-error-actions .btn { border-radius: var(--r-sm); }
+.agent-error-actions .btn--primary { min-width: 64px; }
+.agent-error-actions .btn:not(.btn--primary) {
   min-width: 56px;
-  border: 1px solid var(--line);
   background: transparent;
+  border-color: var(--line);
   color: var(--text-secondary);
 }
-
-.agent-error-copy:hover:not(:disabled) {
+.agent-error-actions .btn:not(.btn--primary):hover:not(:disabled) {
   color: var(--ink);
   border-color: var(--line-hover);
 }
@@ -2214,26 +2185,6 @@
   display: flex;
   gap: 6px;
   margin-left: auto;
-}
-
-.agent-compaction-btn {
-  min-width: 54px;
-  height: 26px;
-  padding: 0 10px;
-  border: 1px solid var(--agent-line-strong);
-  border-radius: 6px;
-  background: var(--agent-panel-solid);
-  color: var(--agent-ink);
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 100ms ease, border-color 100ms ease, opacity 100ms ease;
-}
-
-.agent-compaction-btn:hover {
-  border-color: transparent;
-  background: var(--agent-accent-soft);
-  color: var(--agent-accent);
 }
 
 /* ---- 第九轮：系统通知行（chapter_rolled_back / memory_file_restored）------- */

@@ -411,7 +411,7 @@ export function createTimelineView(ctx) {
     if (buttons.includes("retry")) {
       const retry = doc.createElement("button");
       retry.type = "button";
-      retry.className = "agent-compaction-btn";
+      retry.className = "btn btn--sm";
       retry.dataset.testid = "agent-compaction-retry";
       retry.textContent = "重试";
       retry.addEventListener("click", () => runCompactionAction(
@@ -424,7 +424,7 @@ export function createTimelineView(ctx) {
     if (buttons.includes("cancel")) {
       const cancel = doc.createElement("button");
       cancel.type = "button";
-      cancel.className = "agent-compaction-btn";
+      cancel.className = "btn btn--sm";
       cancel.dataset.testid = "agent-compaction-cancel";
       cancel.textContent = "取消";
       cancel.addEventListener("click", () => runCompactionAction(

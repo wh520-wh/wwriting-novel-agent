@@ -54,7 +54,7 @@ export function createCardsView(ctx) {
       input.setAttribute("aria-label", "输入确认文字");
       const execute = doc.createElement("button");
       execute.type = "button";
-      execute.className = "agent-decision-execute";
+      execute.className = "btn btn--sm agent-decision-execute";
       execute.dataset.testid = "agent-decision-execute";
       execute.textContent = "执行";
       execute.disabled = true; // 精确文字输入前不可执行
@@ -67,7 +67,7 @@ export function createCardsView(ctx) {
       });
       const deny = doc.createElement("button");
       deny.type = "button";
-      deny.className = "agent-decision-deny";
+      deny.className = "btn btn--sm agent-decision-deny";
       deny.dataset.testid = "agent-decision-deny";
       deny.textContent = "拒绝";
       deny.addEventListener("click", () => ctx.actions.decide?.(decision.decision_id, "deny"));
@@ -82,11 +82,11 @@ export function createCardsView(ctx) {
       for (const [choice, label] of choices) {
         const button = doc.createElement("button");
         button.type = "button";
-        button.className = choice === "allow"
+        button.className = `btn btn--sm ${choice === "allow"
           ? "agent-decision-primary"
           : choice === "allow_input"
             ? "agent-decision-secondary"
-            : "agent-decision-deny";
+            : "agent-decision-deny"}`;
         button.dataset.choice = choice;
         button.dataset.testid = "agent-decision-choice";
         button.textContent = label;
@@ -158,7 +158,7 @@ export function createCardsView(ctx) {
         // 主恢复动作 = 打开模型设置；重试仍只保留在 failed run header，不建第二条路径。
         const openSettings = doc.createElement("button");
         openSettings.type = "button";
-        openSettings.className = "agent-error-action agent-error-action--primary";
+        openSettings.className = "btn btn--sm btn--primary";
         openSettings.dataset.testid = "agent-error-settings";
         openSettings.textContent = "打开模型设置";
         openSettings.addEventListener("click", () => ctx.actions.openModelSettings?.());
@@ -166,7 +166,7 @@ export function createCardsView(ctx) {
       }
       const copy = doc.createElement("button");
       copy.type = "button";
-      copy.className = "agent-error-copy";
+      copy.className = "btn btn--sm";
       copy.dataset.testid = "agent-error-copy";
       copy.textContent = "复制";
       // 复制技术详情；clipboard 缺失/同步异常/rejection 都显示「复制失败」，
