@@ -93,7 +93,7 @@ test("设置弹窗不暴露旧架构和专家配置入口", () => {
 });
 
 test("样式基线：隐私模式、reduced-motion 与窗口拖拽安全区", () => {
-  assert.ok(cssSource.includes('[data-privacy="on"] .peek'), "隐私模式样式应保留");
+  assert.doesNotMatch(cssSource, /data-privacy/u, "隐私模式已随 round17 删除，不得残留");
   assert.ok(cssSource.includes("prefers-reduced-motion"), "reduced-motion 应保留");
   assert.ok(cssSource.includes("--window-control-space"), "Electron 窗口控制空间变量应保留");
   assert.ok(cssSource.includes("--rail"), "rail 变量应保留");

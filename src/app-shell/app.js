@@ -36,8 +36,6 @@ export async function bootApp(root = document) {
     openSettings: root.querySelector("#open-settings"),
     title: root.querySelector("#project-title"),
     topbarSub: root.querySelector("#topbar-sub"),
-    privacyToggle: root.querySelector("#privacy-toggle"),
-    privacyLabel: root.querySelector("#privacy-label"),
     themeToggle: root.querySelector("#theme-toggle"),
     themeLabel: root.querySelector("#theme-label"),
     openDrawer: root.querySelector("#open-drawer"),
@@ -104,7 +102,7 @@ export async function bootApp(root = document) {
   });
   const showToast = toaster.showToast;
   // 主题/隐私拆至 theme-privacy.js（第十六轮 T9）；setup 内部完成初始化。
-  const { setThemeMode, setPrivacyMode } = setupThemePrivacy({ railRefs, showToast });
+  const { setThemeMode } = setupThemePrivacy({ railRefs, showToast });
   
   let currentProjectRoot = null;
   let dashboardRequestId = 0;
@@ -529,10 +527,6 @@ export async function bootApp(root = document) {
   }
   
   document.addEventListener("keydown", (event) => {
-    if ((event.ctrlKey || event.metaKey) && event.key === ".") {
-      event.preventDefault();
-      setPrivacyMode(railRefs.app.dataset.privacy !== "on");
-    }
     if (readerRefs.readerScrim.classList.contains("show")) {
       if (event.key === "ArrowLeft") { event.preventDefault(); openAdjacentChapter(-1); return; }
       if (event.key === "ArrowRight") { event.preventDefault(); openAdjacentChapter(1); return; }
@@ -561,9 +555,6 @@ export async function bootApp(root = document) {
     else if (settingsRefs.createScrim.classList.contains("show")) focusTrap(settingsRefs.createScrim, event);
     else if (drawerRefs.drawer.classList.contains("show") && isDrawerModal()) focusTrap(drawerRefs.drawer, event);
   });
-  window.addEventListener("blur", () => { railRefs.app.dataset.away = "true"; });
-  window.addEventListener("focus", () => { railRefs.app.dataset.away = "false"; });
-  railRefs.privacyToggle.addEventListener("click", () => setPrivacyMode(railRefs.app.dataset.privacy !== "on"));
   
   async function loadAll() {
     await Promise.all([loadProjectList(), loadDashboard()]);

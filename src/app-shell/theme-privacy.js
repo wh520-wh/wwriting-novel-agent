@@ -1,5 +1,5 @@
-// src/app-shell/theme-privacy.js —— 主题（日间/夜间）与隐私模式（第十六轮 T9
-// 从 app.js 拆出，行为不变）。deps：{ railRefs, showToast }。
+// src/app-shell/theme-privacy.js —— 主题（日间/夜间，第十六轮 T9 从 app.js 拆出）。
+// deps：{ railRefs, showToast }。（隐私模式已随 round17 整体删除。）
 export function setupThemePrivacy({ railRefs, showToast }) {
   function initThemeMode() {
     let stored = null;
@@ -37,36 +37,6 @@ export function setupThemePrivacy({ railRefs, showToast }) {
     }
   }
   
-  function initPrivacyMode() {
-    let stored = "off";
-    try {
-      stored = window.localStorage.getItem("ww:privacy") ?? "off";
-    } catch {
-      stored = "off";
-    }
-    applyPrivacyState(stored === "on");
-  }
-  
-  function setPrivacyMode(on) {
-    applyPrivacyState(on);
-    try {
-      window.localStorage.setItem("ww:privacy", on ? "on" : "off");
-      if (on && window.localStorage.getItem("ww:privacy:hinted") !== "1") {
-        window.localStorage.setItem("ww:privacy:hinted", "1");
-        showToast("隐私模式已开启：正文已模糊，鼠标悬停可临时查看。", "info");
-      }
-    } catch {
-      // localStorage 不可用时忽略持久化。
-    }
-  }
-  
-  function applyPrivacyState(on) {
-    railRefs.app.dataset.privacy = on ? "on" : "off";
-    railRefs.privacyToggle.setAttribute("aria-pressed", on ? "true" : "false");
-    railRefs.privacyToggle.classList.toggle("active", on);
-    railRefs.privacyLabel.textContent = on ? "隐私 · 开" : "隐私";
-  }
   initThemeMode();
-  initPrivacyMode();
-  return { setThemeMode, setPrivacyMode };
+  return { setThemeMode };
 }

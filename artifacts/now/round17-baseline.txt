@@ -1,0 +1,13 @@
+== round17 baseline 2026-08-29 ==
+-- font-size px literals:
+182
+-- font-weight digit literals:
+77
+-- border-radius px literals:
+59
+-- var(--font-) refs:
+src/app-shell/agent/agent.css:8
+src/app-shell/styles.css:0
+-- var(--weight-) refs:
+src/app-shell/styles.css:6
+src/app-shell/agent/agent.css:23

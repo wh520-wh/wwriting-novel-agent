@@ -1815,17 +1815,6 @@ input.spd-input[type="number"] { max-width: 160px; }
   .topbar-more { display: grid; }
 }
 
-
-
-/* ===== 隐私模式：模糊正文，悬停解除、失焦加强 ===== */
-.peek { transition: filter .2s ease; }
-
-[data-privacy="on"] .peek { filter: blur(6px); }
-
-[data-privacy="on"] .peek:hover { filter: none; }
-
-[data-privacy="on"][data-away="true"] .peek { filter: blur(10px); }
-
 .tbtn.active, .tbtn.on { color: var(--ink); border-color: transparent; background: var(--surface-3); }
 
 .proj-row {

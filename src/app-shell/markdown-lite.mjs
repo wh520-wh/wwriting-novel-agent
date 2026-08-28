@@ -7,8 +7,8 @@
 // 链接交给系统默认浏览器：view.js 对 [data-external-link] 事件委托 + preventDefault，
 // Electron 走 preload 的 openExternalUrl（main 二次校验），普通浏览器回退 window.open。
 // 保留行为（不另走第二个 parser，全部落在 marked 单解析器内）：
-//   - 稿/prose fenced block → manuscript-block block extension（含 peek class，
-//     隐私模式 [data-privacy="on"] .peek 必须能模糊对话里的正文）；
+//   - 稿/prose fenced block → manuscript-block block extension（round17 已随隐私
+//     模式删除 peek class）；
 //   - countProseWords() 字数标；cleanAssistantContent() 工具调用泄漏清洗。
 // 流式未闭合 fence：稿块按纯文本段落回退（延续旧渲染器行为）；普通围栏按 GFM
 // 语义渲染为进行中的代码块。
@@ -116,7 +116,7 @@ marked.use({ extensions: [{ name: "manuscriptFence", level: "block", start(src) 
 // 稿/prose fenced block（marked block extension，单解析器路径）
 // ---------------------------------------------------------------------------
 // tokenizer 在核心 fences 之前被调用：闭合围栏产出 manuscript token（渲染为
-// 衬线文稿块 + peek + 字数标）；未闭合（流式进行中）产出同样 type 但 closed=false
+// 衬线文稿块 + 字数标）；未闭合（流式进行中）产出同样 type 但 closed=false
 // 的 token，渲染为纯文本段落回退——旧渲染器对未闭合围栏的既有行为。
 
 const PROSE_FENCE_RE = /^```(稿|prose)[ \t]*(?:\r?\n)/;
@@ -155,7 +155,7 @@ function manuscriptFenceRender(token) {
     .filter(Boolean)
     .map((p) => `<p>${escapeHtml(p).replace(/\n/g, "<br>")}</p>`)
     .join("");
-  return `<div class="manuscript-block peek">${paras}<span class="manuscript-words">${countProseWords(token.body)} 字</span></div>`;
+  return `<div class="manuscript-block">${paras}<span class="manuscript-words">${countProseWords(token.body)} 字</span></div>`;
 }
 
 export function renderMarkdown(source, { refs = null } = {}) {
