@@ -975,7 +975,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .btn--danger:hover:not(:disabled) { background: var(--red-soft); border-color: var(--red); color: var(--red); }
 
 /* 创建弹窗主按钮保持通栏（原 .save-btn 的布局职责） */
-#create-submit { width: 100%; }
+#create-submit { width: 100%; margin-top: 4px; }
 
 
 .evt { display: grid; grid-template-columns: auto minmax(0,1fr) auto; gap: 9px; align-items: baseline; padding: 7px 0; border-bottom: 1px solid var(--line-3); }

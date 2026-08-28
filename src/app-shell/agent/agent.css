@@ -729,6 +729,9 @@
   color: var(--agent-ink);
 }
 
+.agent-decision-actions .btn { min-width: 64px; }
+.agent-compaction-actions .btn { min-width: 54px; }
+
 .agent-compaction-actions .btn:hover {
   border-color: transparent;
   background: var(--agent-accent-soft);
@@ -1529,6 +1532,7 @@
   color: var(--text-secondary);
 }
 .agent-error-actions .btn:not(.btn--primary):hover:not(:disabled) {
+  background: transparent;
   color: var(--ink);
   border-color: var(--line-hover);
 }

@@ -142,6 +142,7 @@ export function createDrawerPanels(ctx) {
       const historyBtn = document.createElement("button");
       historyBtn.type = "button";
       historyBtn.className = "btn btn--sm";
+      historyBtn.dataset.testid = "chapter-history-btn";
       historyBtn.textContent = "历史";
       let versionPanel = null;
       let versionPanelOpening = null;
