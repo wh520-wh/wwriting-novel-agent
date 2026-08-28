@@ -181,7 +181,7 @@ test("round10 narrow topbar: plan chip keeps progress but releases title width",
   assert.match(css, /\.plan-chip-label\s*\{[^}]*display:\s*inline-flex[^}]*gap:\s*4px/u);
   assert.match(
     source,
-    /id="topbar-secondary"[\s\S]*id="open-drawer"[^>]*role="menuitem"[\s\S]*id="privacy-toggle"/u
+    /id="topbar-secondary"[\s\S]*id="open-drawer"[^>]*role="menuitem"[\s\S]*id="theme-toggle"/u
   );
   assert.match(
     css,

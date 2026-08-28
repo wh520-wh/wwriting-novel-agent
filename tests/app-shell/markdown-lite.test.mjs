@@ -118,8 +118,8 @@ test("流式未闭合普通围栏：不抛错，按 GFM 渲染为进行中的代
 // 保留行为：稿/prose fenced block（marked block extension，单解析器路径）
 // ---------------------------------------------------------------------------
 
-test("稿块：衬线容器 + peek + 字数标（稿 与 prose 别名等价）", () => {
-  const expected = `<div class="manuscript-block peek"><p>夜雨敲窗。</p><p>他点了灯。</p><span class="manuscript-words">10 字</span></div>`;
+test("稿块：衬线容器 + 字数标（稿 与 prose 别名等价）", () => {
+  const expected = `<div class="manuscript-block"><p>夜雨敲窗。</p><p>他点了灯。</p><span class="manuscript-words">10 字</span></div>`;
   assert.equal(renderMarkdown("```稿\n夜雨敲窗。\n\n他点了灯。\n```"), expected);
   assert.equal(renderMarkdown("```prose\n夜雨敲窗。\n\n他点了灯。\n```"), expected);
 });

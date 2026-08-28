@@ -121,7 +121,7 @@ export function createDrawerPanels(ctx) {
     n.className = "ch-n mono";
     n.textContent = String(chapter.chapter_no).padStart(2, "0");
     const name = document.createElement("span");
-    name.className = "ch-name peek";
+    name.className = "ch-name";
     name.textContent = chapter.title || (done ? "已定稿章节" : translateStage(chapter.status ?? "queued"));
     row.append(n, name);
     if (done) {
@@ -290,7 +290,7 @@ export function createDrawerPanels(ctx) {
         et.className = "et";
         et.textContent = translateSourceKind(source.kind);
         const em = document.createElement("span");
-        em.className = "em peek";
+        em.className = "em";
         em.textContent = source.title ?? source.file;
         const ex = document.createElement("span");
         // Round10：untrusted 来源 = amber badge + 文本（不只靠颜色）。
