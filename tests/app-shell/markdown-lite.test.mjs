@@ -3,7 +3,7 @@
 // 覆盖 GFM 特性（表格、task list、链接、删除线、嵌套列表、引用、标题、fenced
 // code、流式未闭合 fence）与安全断言（<script> 显示为文本；javascript:/data:/file:
 // href 不出现；图片不发起远程加载）。
-// 保留行为：稿/prose fenced block（manuscript-block + peek + 字数标）、
+// 保留行为：稿/prose fenced block（manuscript-block + 字数标）、
 // countProseWords()、cleanAssistantContent()。
 import assert from "node:assert/strict";
 import test from "node:test";
