@@ -995,6 +995,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 @keyframes btn-spin { to { transform: rotate(1turn); } }
 .create-status { margin: 8px 0 0; font-size: var(--font-sm); line-height: 1.5; color: var(--text-muted); }
 .create-status.error { color: var(--red); }
+.create-status:empty { display: none; }
 
 
 .evt { display: grid; grid-template-columns: auto minmax(0,1fr) auto; gap: 9px; align-items: baseline; padding: 7px 0; border-bottom: 1px solid var(--line-3); }
@@ -1595,8 +1596,6 @@ input.spd-input[type="number"] { max-width: 160px; }
 
 /* animations */
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
-
-@keyframes spin { to { transform: rotate(360deg); } }
 
 @keyframes rise { from { transform: translateY(7px); } to { transform: none; } }
 
