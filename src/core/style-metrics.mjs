@@ -115,12 +115,9 @@ function analyzeParallel(visible) {
 export function analyzeStyleMetrics(source) {
   const visible = stripMarkdownForCount(source);
   const { effective_count } = analyzeTextCount(source);
-  const hedging = analyzeHedging(visible, effective_count);
   return {
     effective_count,
-    // 顶层镜像 hedging.per_1000（fixture P0 验收信号 good.per_1000 ≤ bad.hedging.per_1000/2 直接读顶层）。
-    per_1000: hedging.per_1000,
-    hedging,
+    hedging: analyzeHedging(visible, effective_count),
     sentences: analyzeSentences(visible),
     parallel: analyzeParallel(visible)
   };
