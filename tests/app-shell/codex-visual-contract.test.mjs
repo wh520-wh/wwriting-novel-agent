@@ -4,7 +4,7 @@
 //   - agent.css 无 raw hex（颜色一律 var(--token)）；hex 只允许在 styles.css
 //     :root 与 [data-theme="dark"] 两个 primitive 块；
 //   - 对话与 composer 共享 --content-column: 1040px；
-//   - Task 2+：运行区无横杠、工作项无左侧竖线、--r-card: 12px；
+//   - Task 2+：运行区无横杠、工作项无左侧竖线、--r-lg: 12px（round17 §3.4 并档）；
 //   - Task 3+：工作组无框直出；Task 4+：状态小条与压缩条；
 //   - Task 5+：composer 卡片化、顶栏发丝下边框、项目行圆角。
 import assert from "node:assert/strict";
@@ -54,8 +54,8 @@ test("Codex 基线：运行区无横杠、工作项无左侧竖线", () => {
   assert.ok(!/\.agent-work-item::before/u.test(css), "工作项左侧竖线必须移除");
 });
 
-test("Codex 基线：styles.css 提供 --r-card 12px", () => {
-  assert.match(read("src/app-shell/styles.css"), /--r-card:\s*12px/u);
+test("Codex 基线：styles.css 提供 --r-lg 12px", () => {
+  assert.match(read("src/app-shell/styles.css"), /--r-lg:\s*12px/u);
 });
 
 test("Codex 基线：工作组无框直出", () => {
@@ -85,7 +85,7 @@ test("Codex 基线：composer 为白底细边框圆角卡片带轻阴影", () =>
   const css = read("src/app-shell/agent/agent.css");
   const shell = cssBlock(css, ".agent-composer-shell");
   assert.match(shell, /border:\s*1px solid var\(--agent-line\)/u);
-  assert.match(shell, /border-radius:\s*var\(--r-card\)/u);
+  assert.match(shell, /border-radius:\s*var\(--r-lg\)/u);
   assert.match(shell, /box-shadow:\s*var\(--shadow-sm\)/u);
 });
 
@@ -125,12 +125,12 @@ test("AICSS 基线：live shimmer 用 aicss 三档渐变与 2.25s 曲线", () =>
   assert.match(css, /@keyframes agent-label-shine/u);
 });
 
-test("AICSS 基线：composer 扫描边框只绑提交在途，选项圆角 7px", () => {
+test("AICSS 基线：composer 扫描边框只绑提交在途，选项圆角 --r-sm（round17 §3.4）", () => {
   const css = read("src/app-shell/agent/agent.css");
   assert.match(cssBlock(css, ".agent-composer-shell[data-busy]::after"), /conic-gradient/u);
   assert.match(css, /@keyframes agent-pi-border-spin/u);
   assert.ok(!css.includes(".agent-composer-shell:focus-within::after"), "扫描边框不得绑 focus-within");
-  assert.match(cssBlock(css, ".agent-composer-option"), /border-radius:\s*7px/u);
+  assert.match(cssBlock(css, ".agent-composer-option"), /border-radius:\s*var\(--r-sm\)/u);
 });
 
 test("Round10 契约：Composer 稳定三行、send 固定 34px、历史损坏提示样式在 CSS", () => {
@@ -146,9 +146,9 @@ test("Round10 契约：Composer 稳定三行、send 固定 34px、历史损坏�
     );
   }
   // send 固定 34px（尺寸声明在第二个块；第一个块是通用 flex 基线）
-  assert.match(css, /\.agent-send\s*\{[^}]*\}\s*\.agent-send\s*\{[^}]*width:\s*34px[^}]*height:\s*34px[^}]*border-radius:\s*7px/u, "send 固定 34px");
+  assert.match(css, /\.agent-send\s*\{[^}]*\}\s*\.agent-send\s*\{[^}]*width:\s*34px[^}]*height:\s*34px[^}]*border-radius:\s*var\(--r-sm\)/u, "send 固定 34px");
   // 历史损坏提示不再用 JS 内联样式
-  assert.match(cssBlock(css, ".agent-history-clear-hint"), /font-size:\s*12px/u, "history 提示样式在 CSS");
+  assert.match(cssBlock(css, ".agent-history-clear-hint"), /font-size:\s*var\(--font-xs\)/u, "history 提示样式在 CSS");
   const view = read("src/app-shell/agent/view.js");
   assert.doesNotMatch(view, /Object\.assign\(historyClearHint\.style/u, "不得用 JS 内联样式写 history 提示");
 });

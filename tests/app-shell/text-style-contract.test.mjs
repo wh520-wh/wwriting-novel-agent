@@ -252,11 +252,11 @@ test(".agent-markdown h1/h2 使用 heading primary；H1–H6 字号/行高/字�
 test("任务计划标题与唯一 in_progress 项 semibold，completed regular + 步骤删除线", () => {
   const title = extractDecls(extractBlock(agentCssSource, ".agent-plan__title"));
   assert.equal(title["font-weight"], "var(--weight-semibold)");
-  assert.equal(title["font-size"], "13px");
+  assert.equal(title["font-size"], "var(--font-sm)");
 
   const base = extractDecls(extractBlock(agentCssSource, ".agent-plan-item"));
   assert.equal(base["font-weight"], "var(--weight-regular)");
-  assert.equal(base["font-size"], "13px");
+  assert.equal(base["font-size"], "var(--font-sm)");
   assert.equal(base["line-height"], "1.5");
 
   const inProgress = extractDecls(extractBlock(agentCssSource, '.agent-plan-item[data-status="in_progress"]'));
@@ -431,11 +431,12 @@ test("圆角不超过 12px：radius token 全部 ≤12px，无 13–98px 圆角"
     const offenders = [...src.matchAll(/border-radius:\s*(1[3-9]|2[0-9]|[3-8][0-9]|9[0-8])px/gu)].map((m) => m[0]);
     assert.equal(offenders.length, 0, `${file} 不得出现 13–98px 圆角：${offenders.join(", ")}`);
   }
-  for (const token of ["--r", "--r-sm", "--r-lg", "--r-xl", "--r-card"]) {
+  for (const token of ["--r", "--r-sm", "--r-lg"]) {
     const value = rootTokens[token] ?? "";
     assert.match(value, /^\d+px$/u, `${token} 应为 px 值（当前 ${value}）`);
     assert.ok(parseInt(value, 10) <= 12, `${token} 应 ≤12px（当前 ${value}）`);
   }
+  assert.equal(rootTokens["--r-pill"] ?? "", "999px", "--r-pill 胶囊档（round17 §3.4）");
 });
 
 // ===========================================================================
