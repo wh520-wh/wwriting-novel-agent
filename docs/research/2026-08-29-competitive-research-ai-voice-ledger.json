@@ -1,0 +1,193 @@
+{
+  "research_date": "2026-08-29",
+  "evidence": [
+    {
+      "id": "E1",
+      "competitor": "GPTZero",
+      "claim": "GPTZero's official blog states that, as of autumn 2023, it no longer uses perplexity and burstiness for AI detection because it migrated to a deep-learning based architecture; the statistical approach remains one of seven indicators in the upgraded model.",
+      "source_url": "https://gptzero.me/news/perplexity-and-burstiness-what-is-it/",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-29",
+      "evidence_locator": "Perplexity and Burstiness blog post, update paragraph and section 'What is Perplexity and Burstiness'",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E2",
+      "competitor": "GPTZero",
+      "claim": "GPTZero support documentation explains that perplexity measures how likely an AI model would have chosen the same words; a perplexity above 85 is more likely from a human source. Burstiness measures how much perplexity varies over the document, with greater burstiness tending to indicate human writing.",
+      "source_url": "https://support.gptzero.me/articles/9585228410-how-do-i-interpret-burstiness-or-perplexity",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-29",
+      "evidence_locator": "'How do I interpret burstiness or perplexity?' support article",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E3",
+      "competitor": "Originality.ai",
+      "claim": "Originality.ai's official meta-analysis cites multiple third-party studies and claims Originality.ai is the most accurate AI text detector, with reported accuracy ranging from 83% to 100% across different academic benchmarks and high sensitivity to AI-polished human text.",
+      "source_url": "https://originality.ai/blog/ai-detection-studies-round-up",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-29",
+      "evidence_locator": "'AI Detection Accuracy Studies — Meta-Analysis of 16 Studies'",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E4",
+      "competitor": "Copyleaks",
+      "claim": "Copyleaks' official blog lists detection signals as perplexity, burstiness, repetitive phrasing, and lack of personal style, and states its AI detector identifies content from ChatGPT, Gemini, and Claude with over 99% accuracy in English.",
+      "source_url": "https://copyleaks.com/blog/how-does-ai-detection-work",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-29",
+      "evidence_locator": "'How Do AI Detectors Work?' blog, Key Takeaways and section 2",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E5",
+      "competitor": "Copyleaks",
+      "claim": "Copyleaks states that its model is trained to detect human-generated text rather than AI-generated text, and that detecting AI text directly tends to give lower accuracy and increases false positives; the official claimed false-positive rate for human content is 0.2%.",
+      "source_url": "https://copyleaks.com/blog/how-does-ai-detection-work",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-29",
+      "evidence_locator": "'How Do AI Detectors Work?' blog, section 4",
+      "classification": "fact",
+      "confidence": "medium"
+    },
+    {
+      "id": "E6",
+      "competitor": "Turnitin",
+      "claim": "Turnitin's official AI writing detection release notes state that scores below 20% are no longer surfaced to avoid false positives; since August 2025 the report also flags text that may have been modified by AI bypasser tools.",
+      "source_url": "https://guides.turnitin.com/hc/en-us/articles/28294949544717-AI-writing-detection-model",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-29",
+      "evidence_locator": "'AI writing detection model' release notes, August 2025 and July 2024 entries",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E7",
+      "competitor": "Turnitin",
+      "claim": "Turnitin's official blog defines AI bypassers as tools that rewrite AI-generated text to appear more human by masking signs such as overly structured grammar, repetitive phrasing, or unnatural tone.",
+      "source_url": "https://www.turnitin.com/blog/what-are-ai-bypassers-why-should-educators-care",
+      "source_type": "official_docs",
+      "accessed_on": "2026-08-29",
+      "evidence_locator": "'What are AI bypassers? Why should educators care?' blog post",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E8",
+      "competitor": "Undetectable.ai",
+      "claim": "Undetectable.ai's FAQ states that its humanizer rewrites sections likely to be flagged by varying sentence structure, enriching vocabulary, and adjusting tone so the result reads as naturally human.",
+      "source_url": "https://undetectable.ai/",
+      "source_type": "official_product",
+      "accessed_on": "2026-08-29",
+      "evidence_locator": "Homepage FAQ section",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E9",
+      "competitor": "Academic research (Liang et al.)",
+      "claim": "Liang et al. (Patterns, 2023) found that seven widely used GPT detectors incorrectly labeled 61.3% of non-native English TOEFL essays as AI-generated on average, while native US student essays were near-perfectly classified as human; enhancing vocabulary in non-native essays reduced misclassification by 49.7 percentage points.",
+      "source_url": "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC10382961/",
+      "source_type": "official_paper",
+      "accessed_on": "2026-08-29",
+      "evidence_locator": "'GPT detectors are biased against non-native English writers', section 'GPT detectors exhibit bias against non-native English authors'",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E10",
+      "competitor": "Academic research (DetectGPT)",
+      "claim": "Mitchell et al. (ICML 2023) propose DetectGPT, a zero-shot detector that measures perturbation discrepancy: minor rewrites of model-generated text tend to have lower log-probability under the source model than the original, while human-written text may have higher or lower log-probability.",
+      "source_url": "https://arxiv.org/pdf/2301.11305.pdf",
+      "source_type": "official_paper",
+      "accessed_on": "2026-08-29",
+      "evidence_locator": "'DetectGPT: Zero-Shot Machine-Generated Text Detection using Probability Curvature', Abstract and Section 4",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E11",
+      "competitor": "Academic research (Kirchenbauer et al.)",
+      "claim": "Kirchenbauer et al. (ICML 2023) propose a watermark for LLMs that selects a pseudo-random set of 'green' tokens and softly promotes their use during sampling; detection uses a z-test and can identify synthetic text from short spans with low false-positive rates.",
+      "source_url": "https://arxiv.org/pdf/2301.10226.pdf",
+      "source_type": "official_paper",
+      "accessed_on": "2026-08-29",
+      "evidence_locator": "'A Watermark for Large Language Models', Abstract and Section 3",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E12",
+      "competitor": "Academic research (Xu et al.)",
+      "claim": "Xu et al. (arXiv 2023) show that training-based ChatGPT detectors overfit to 'irrelevant features' such as text length and prompt style; they introduce HC-Alignment, the similarity between ChatGPT outputs and human texts, and find that prompts producing text closer to human writing yield better detector generalization.",
+      "source_url": "https://arxiv.org/pdf/2310.01307.pdf",
+      "source_type": "official_paper",
+      "accessed_on": "2026-08-29",
+      "evidence_locator": "'On the Generalization of Training-Based ChatGPT Detection Methods', Sections 4.1-4.3",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E13",
+      "competitor": "Academic research (Georgiou)",
+      "claim": "Georgiou (MDPI, 2026) reports that university professors rank hallucinated facts, nonexistent sources, and the absence of language errors as the strongest signals of AI-generated academic text, while repetitive phrasing and formulaic structure receive lower diagnostic weight.",
+      "source_url": "https://www.mdpi.com/3042-8130/2/1/2",
+      "source_type": "official_paper",
+      "accessed_on": "2026-08-29",
+      "evidence_locator": "'Key Features to Distinguish Between Human- and AI-Generated Texts: Perspectives from University Professors', Results and Discussion",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E14",
+      "competitor": "WWriting Novel Agent",
+      "claim": "WWriting ships a built-in 'avoid-ai-voice' skill that targets Chinese novel writing by forbidding triple parallelism, summary endings at paragraph ends, chains of fuzzy modifiers, continuous lyrical sentences, and 'if...then...' commentary patterns.",
+      "source_url": "https://github.com/wh520-wh/wwriting-novel-agent/blob/main/src/skills/avoid-ai-voice/SKILL.md",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-29",
+      "evidence_locator": "src/skills/avoid-ai-voice/SKILL.md",
+      "classification": "fact",
+      "confidence": "high"
+    },
+    {
+      "id": "E15",
+      "competitor": "WWriting Novel Agent",
+      "claim": "WWriting's README states the application distributes 12 built-in writing skills as SKILL.md plugins and records the selected skill ID in WWRITING.md; skills are read before generation/revision/review and do not alter casual chat tone.",
+      "source_url": "https://github.com/wh520-wh/wwriting-novel-agent/blob/main/README.md",
+      "source_type": "source_code",
+      "accessed_on": "2026-08-29",
+      "evidence_locator": "README.md, section '功能亮点' and '内置写作技能体系（插件化）'",
+      "classification": "fact",
+      "confidence": "high"
+    }
+  ],
+  "recommendations": [
+    {
+      "id": "R1",
+      "priority": "P0",
+      "statement": "把 'avoid-ai-voice' 从静态禁用列表升级为可度量的风格目标：在技能中明确给出每千字模糊修饰词上限、句长变异系数区间、排比密度阈值，并在审校阶段用客观工具统计这些指标而不是让模型自评。",
+      "evidence_ids": ["E2", "E4", "E9", "E13", "E14"],
+      "acceptance_signal": "对 10 段已知 AI 生成的样本文本运行审校，模糊修饰词密度下降 50% 以上，句长标准差提升至人类样本文本的 ±20% 范围内，且工具统计结果与模型自评不一致率低于 10%。"
+    },
+    {
+      "id": "R2",
+      "priority": "P1",
+      "statement": "在审校流程中加入事实/来源自检清单：要求模型对正文中的具体数据、引用、人名事件进行可验证性声明，并在无法验证时标记为待人工确认，而不是直接润色成流畅文本。",
+      "evidence_ids": ["E13", "E7", "E6"],
+      "acceptance_signal": "在 20 个含虚构引用或事实的测试用例中，审校流程至少标记出 80% 的不可验证项，且不误删真实可验证的内容。"
+    },
+    {
+      "id": "R3",
+      "priority": "P2",
+      "statement": "评估接入第三方 AI 检测 API 作为可选审校参考的可行性，但只用于局部风险扫描和反馈，不作为章节提交的通过/失败门禁；优先支持用户自主选择检测器并本地保存结果快照。",
+      "evidence_ids": ["E1", "E3", "E5", "E9", "E10"],
+      "acceptance_signal": "在不修改现有提交门禁的前提下，完成对 Originality.ai、GPTZero 或 Copyleaks API 的集成原型，用户可手动触发扫描并查看高亮风险句；对比实验显示同一文本在不同检测器间得分差异超过 30 分时界面给出不一致警示。"
+    }
+  ]
+}
