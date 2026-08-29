@@ -168,7 +168,7 @@ export function showConfirmLayer(options) {
     width: "min(430px, 100%)",
     background: "var(--surface)",
     border: "1px solid var(--line)",
-    borderRadius: "var(--r-xl)",
+    borderRadius: "var(--r-lg)",
     boxShadow: "var(--shadow-pop)",
     padding: "22px 24px",
     display: "grid",
