@@ -80,7 +80,7 @@ export function cacheHitRateOf(stats) {
 // Task 3：取消/停止语义的工具失败不触发「跳过同一响应后续调用」——这些结果由
 
 // 统一工具目录（Task 7）：不再按工作流切换——每一轮都提供相同的生产工具集：
-// 九个通用工具 + 六个深工具恒可用（Task 8：旧 blueprint 事务工具已整体删除，
+// 十个通用工具 + 六个深工具恒可用（Task 8：旧 blueprint 事务工具已整体删除，
 // 不再有注册表残留）。
 // Task 6：名单由 ToolRuntime 注册表派生（tools.toolNames()），不再维护独立常量。
 
