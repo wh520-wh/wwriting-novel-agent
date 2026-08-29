@@ -357,8 +357,8 @@ export async function readWorkspaceTextFile(args, context) {
 // ---------------------------------------------------------------------------
 // count_text 执行体（Task 9 Step 4）。只读客观统计：工作区内 .md/.txt，
 // minimum/target 只计算差额，不判定通过或失败（冻结契约 §2.2）。
-// 路径安全与 read_file 同模式：resolveFilesystemPath 解析真实路径后
-// isPathInside 做包含性检查；ENOENT 折叠为 { path, exists: false }。
+// 路径安全与 ENOENT 折叠委托给上方 readWorkspaceTextFile
+//（count_text 与 style_stats 共用，round17 第二部分 T3）。
 // ---------------------------------------------------------------------------
 
 export async function executeCountText(args, context) {
