@@ -626,6 +626,16 @@ test("AICSS 思考 N 秒：完成标签取 turn 真实耗时，四舍五入最�
   assert.equal(work3.groups.get("run-1").items.get("reasoning:t3").label, "已完成思考");
 });
 
+test("零思考轮标签「未思考」：无任何 reasoning_delta 的轮次不显示思考耗时", () => {
+  const work = reduceAll([
+    ev("run_started", {}, 1),
+    ev("model_turn_started", { turn_id: "t1" }, 2, { at: "2026-08-06T00:00:00.000Z" }),
+    ev("reasoning_completed", { turn_id: "t1", text: "", availability: "empty" }, 3, { at: "2026-08-06T00:00:03.000Z" })
+  ]);
+  const item = groupOf(work).items.get("reasoning:t1");
+  assert.equal(item.label, "未思考", "零思考不是「内容丢失」，不得显示思考耗时");
+});
+
 // ===========================================================================
 // 第十二轮 F2：Run 终态清扫未闭合的 running 项（崩溃恢复路径）
 // ===========================================================================

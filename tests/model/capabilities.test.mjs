@@ -26,12 +26,12 @@ test("resolveModelCapabilities: deepseek-v4-pro 标记 supportsThinking 且不�
   assert.equal(caps.supportsStreaming, true);
 });
 
-test("resolveModelCapabilities: deepseek-v4-flash 默认非思考，不支持 temperature(官方按 thinking 处理)，需 auto tool_choice", () => {
+test("resolveModelCapabilities: deepseek-v4-flash 为思考模型（2026-08 官方口径），不支持 temperature，需 auto tool_choice", () => {
   const caps = resolveModelCapabilities({
     base_url: "https://api.deepseek.com/v1",
     model_name: "deepseek-v4-flash"
   });
-  assert.equal(caps.supportsThinking, false);
+  assert.equal(caps.supportsThinking, true);
   assert.equal(caps.requiresAutoToolChoice, true);
   assert.equal(caps.supportsTemperature, false);
   assert.equal(caps.supportsTopP, false);
@@ -152,25 +152,20 @@ test("resolveModelCapabilities 对缺省 modelConfig 回落默认", () => {
   assert.deepEqual(caps, DEFAULT_CAPABILITIES);
 });
 
-test("resolveModelCapabilities: DeepSeek thinking 模型声明 reasoningEffortLevels 低/中/高", () => {
+test("resolveModelCapabilities: DeepSeek thinking 模型声明官方档位 low/high/max", () => {
   const caps = resolveModelCapabilities({
     base_url: "https://api.deepseek.com/v1",
     model_name: "deepseek-v4-pro"
   });
-  assert.deepEqual(caps.reasoningEffortLevels, ["low", "medium", "high"]);
+  assert.deepEqual(caps.reasoningEffortLevels, ["low", "high", "max"]);
   const reasoner = resolveModelCapabilities({
     base_url: "https://api.deepseek.com/v1",
     model_name: "deepseek-reasoner"
   });
-  assert.deepEqual(reasoner.reasoningEffortLevels, ["low", "medium", "high"]);
+  assert.deepEqual(reasoner.reasoningEffortLevels, ["low", "high", "max"]);
 });
 
-test("resolveModelCapabilities: v4-flash 与非 DeepSeek 模型不声明 reasoningEffortLevels", () => {
-  const flash = resolveModelCapabilities({
-    base_url: "https://api.deepseek.com/v1",
-    model_name: "deepseek-v4-flash"
-  });
-  assert.equal("reasoningEffortLevels" in flash, false);
+test("resolveModelCapabilities: 非 DeepSeek 模型不声明 reasoningEffortLevels", () => {
   const mimo = resolveModelCapabilities({
     base_url: "https://api.mimo.example.test/v1",
     model_name: "mimo-v2.5"
@@ -204,12 +199,14 @@ test("契约：已验证返回 reasoning 的 DeepSeek thinking 模型标记 supp
   }
 });
 
-test("契约：未验证模型（v4-flash/未知）保持 unknown，不因无返回记录判定不支持", () => {
-  const flash = resolveModelCapabilities({
-    base_url: "https://api.deepseek.com/v1",
-    model_name: "deepseek-v4-flash"
-  });
-  assert.equal(flash.reasoningContent, "unknown");
+test("契约：请求层钉死思考后，DeepSeek v4 全系（含 flash）标记 reasoningContent supported", () => {
+  for (const modelName of ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-reasoner"]) {
+    const caps = resolveModelCapabilities({
+      base_url: "https://api.deepseek.com/v1",
+      model_name: modelName
+    });
+    assert.equal(caps.reasoningContent, "supported", `${modelName} 应标记 supported`);
+  }
   const mimo = resolveModelCapabilities({
     base_url: "https://api.mimo.example.test/v1",
     model_name: "mimo-v2.5"

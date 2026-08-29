@@ -12,8 +12,10 @@
 //   - 增量落盘失败不能把已成功的模型调用误报为失败（completed 仍携带权威全文）；
 //   - push() 返回累积 rawText；finish() 返回 { rawText, safeText }。
 //
-// §2.1 纪律：onToken 只接收公开正文、onReasoningToken 只接收 reasoning，两者不得
-// 互相兜底。reasoning 只存在 journal reasoning 事件，绝不写入 provider history。
+// §2.1 纪律（2026-08-30 修订）：onToken 只接收公开正文、onReasoningToken 只接收
+// reasoning，两者不得互相兜底。reasoning 落 journal reasoning 事件，并经 assistant
+// transcript 记录（reasoning 字段）回传 provider history——官方 thinking_mode
+// reasoning_content 回传契约（带 tools 的请求强制，缺失 400）。
 import { createStreamingRedactor } from "../shell/redaction.mjs";
 
 // reasoning 可用性三态（冻结契约 §2.3）：只看 capability 与本轮已确认安全的内容。

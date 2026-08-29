@@ -44,6 +44,16 @@ test("transcriptToMessages: 三类记录转为干净的 OpenAI 消息形状", ()
   ]);
 });
 
+test("transcriptToMessages: 思考回传契约——assistant 记录 reasoning 映射 reasoning_content，无 reasoning 不带该字段", () => {
+  const messages = transcriptToMessages([
+    { role: "user", content: "hi" },
+    { role: "assistant", content: null, reasoning: "先查文件再回答", tool_calls: [{ id: "c1", name: "t", arguments: {} }] },
+    { role: "assistant", content: "最终回复" }
+  ]);
+  assert.equal(messages[1].reasoning_content, "先查文件再回答", "带思考的轮次必须原样回传（官方 thinking_mode 契约）");
+  assert.equal("reasoning_content" in messages[2], false, "无思考轮次不携带该字段");
+});
+
 // ---------------------------------------------------------------------------
 // buildTurnsFromTranscript
 // ---------------------------------------------------------------------------

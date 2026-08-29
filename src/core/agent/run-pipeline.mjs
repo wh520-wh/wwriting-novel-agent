@@ -484,9 +484,10 @@ async function processInput(state, sessionState, runId, inputId, inputText) {
     // 永不写 transcript；retry 去重由 ensureUserMessageInTranscript 保证）。
     await ensureUserMessageInTranscript(journal, inputId, inputText);
     // 每个 Provider 轮次拥有稳定 turn id（v2 事件契约 §2.3）与独立 writer 对：
-    // onToken 只接收公开正文、onReasoningToken 只接收 reasoning，两者不得互相
-    // 兜底（§2.1）；reasoning 只经 reasoning_delta/reasoning_completed 进入
-    // journal，绝不写入 provider history。
+    // onToken 只接收公开正文、onReasoningToken 只接收 reasoning，两者不得
+    // 互相兜底（§2.1）；reasoning 经 reasoning_delta/reasoning_completed 进入
+    // journal，并随 assistant transcript 记录回传 provider history（官方
+    // thinking_mode 回传契约，见 history-assembly 的 reasoning_content）。
     const modelCaps = resolveModelCapabilities(modelConfig);
     const turnId = idFactory();
     const assistantWriter = createJournalDeltaWriter({
@@ -624,6 +625,9 @@ async function processInput(state, sessionState, runId, inputId, inputText) {
       const assistantToolRecord = {
         role: "assistant",
         content: null,
+        // 思考回传契约：本轮思考随 assistant 记录持久化，历史装配层据此在后续
+        // 请求里回传 reasoning_content（官方 thinking_mode 契约，工具轮强制）。
+        ...(reasoningResult.safeText ? { reasoning: reasoningResult.safeText } : {}),
         tool_calls: toolCalls.map((tc) => ({
           id: tc?.id ?? null,
           name: tc?.name ?? null,
@@ -775,7 +779,12 @@ async function processInput(state, sessionState, runId, inputId, inputText) {
       await sessionState.lifecycle.failRun(runId, { error, inputId });
       return "failed";
     }
-    await appendSafeTranscript(journal, { role: "assistant", content: text });
+    await appendSafeTranscript(journal, {
+      role: "assistant",
+      content: text,
+      // 思考回传契约：同工具轮——本轮思考随记录持久化供后续请求回传。
+      ...(reasoningResult.safeText ? { reasoning: reasoningResult.safeText } : {})
+    });
     await journal.append({
       type: "assistant_message_completed",
       run_id: runId,

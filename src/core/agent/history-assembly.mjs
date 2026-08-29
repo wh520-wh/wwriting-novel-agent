@@ -39,6 +39,12 @@ export function transcriptToMessages(records) {
       messages.push({ role: "user", content: String(record.content ?? "") });
     } else if (record?.role === "assistant") {
       const message = { role: "assistant", content: record.content ?? null };
+      // DeepSeek thinking-mode 回传契约（官方 thinking_mode 文档）：带过思考的
+      // assistant 轮次必须把 reasoning_content 原样回传（请求带 tools 时强制，
+      // 缺失会被 400 拒绝）；其他 OpenAI-compatible 提供方忽略该未知字段。
+      if (typeof record.reasoning === "string" && record.reasoning.length > 0) {
+        message.reasoning_content = record.reasoning;
+      }
       if (Array.isArray(record.tool_calls) && record.tool_calls.length > 0) {
         message.tool_calls = record.tool_calls.map((tc) => {
           const rawArguments = tc?.arguments;
