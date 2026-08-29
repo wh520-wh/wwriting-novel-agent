@@ -80,6 +80,7 @@ import {
   requirePositiveIntArg,
   parseToolArguments,
   executeCountText,
+  readWorkspaceTextFile,
   PROTECTED_DENIAL_MESSAGES
 } from "./runtime-helpers.mjs";
 
@@ -495,6 +496,7 @@ export function createToolRuntime({
     fileProtectedCheck,
     appendEvent,
     executeCountText,
+    readWorkspaceTextFile,
     truncateOutput,
     MAX_TOOL_OUTPUT_CHARS,
     MAX_TOOL_RESULT_CHARS,

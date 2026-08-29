@@ -2,16 +2,19 @@
 //
 // 承接原 tools.mjs 的 read_skill / count_text / update_memory 注册体（机械平移，
 // 逻辑不动）。依赖经 h 注入（baseAction/fileAction/deepAction/redactor/toolError/
-// requireStringArg/requirePositiveIntArg/executeCountText/projectOperations/skills）；
-// normalizeMemoryUpdateArgs 是共享纯函数（src/core/memory-extractor.mjs，同时被
-// continuity-store 消费），按模块级依赖直接 import，不进 h。
+// requireStringArg/requirePositiveIntArg/executeCountText/readWorkspaceTextFile/
+// projectOperations/skills）；normalizeMemoryUpdateArgs 是共享纯函数
+//（src/core/memory-extractor.mjs，同时被 continuity-store 消费），按模块级依赖直接
+// import，不进 h。analyzeStyleMetrics 同理（src/core/style-metrics.mjs，round17
+// 第二部分 T3：style_stats 是唯一消费方）。
 import path from "node:path";
 import { normalizeMemoryUpdateArgs } from "../../memory-extractor.mjs";
+import { analyzeStyleMetrics } from "../../style-metrics.mjs";
 
 export function knowledgeToolDefinitions(h) {
   const {
     baseAction, fileAction, deepAction, redactor, toolError,
-    requireStringArg, requirePositiveIntArg, executeCountText,
+    requireStringArg, requirePositiveIntArg, executeCountText, readWorkspaceTextFile,
     projectOperations, skills
   } = h;
   return {
@@ -84,6 +87,38 @@ export function knowledgeToolDefinitions(h) {
       },
       async run(args, context) {
         return executeCountText(args, context);
+      }
+    },
+
+    style_stats: {
+      interruptible: false,
+      description:
+        "客观风格指标统计（模糊修饰词密度/句长变异系数/三连排比候选）。参考值不是门禁，不拦截提交；" +
+        "阈值为 v1 启发值，配合 avoid-ai-voice 技能的改写反馈环使用。",
+      schema: {
+        type: "object",
+        properties: {
+          path: { type: "string", minLength: 1, description: "文件路径（相对项目根或绝对路径），仅限工作区内 .md/.txt 文件" }
+        },
+        required: ["path"],
+        additionalProperties: false
+      },
+      describeAction(args, context) {
+        const target = path.resolve(context.projectRoot, args.path ?? ".");
+        return fileAction({
+          tool: "style_stats",
+          args,
+          context,
+          targetPath: target,
+          category: "read",
+          title: "统计风格指标",
+          description: "统计风格指标"
+        });
+      },
+      async run(args, context) {
+        const { relative, source } = await readWorkspaceTextFile(args, context);
+        if (source === null) return { path: relative, exists: false };
+        return { path: relative, exists: true, ...analyzeStyleMetrics(source) };
       }
     },
 
