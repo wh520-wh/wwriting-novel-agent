@@ -62,7 +62,7 @@
   --shadow: 0 4px 12px rgb(16 24 40 / .08);
   --shadow-pop: 0 8px 24px rgb(16 24 40 / .12);
   --ink-shadow: 24, 32, 27;   /* 阴影基色，rgba(var(--ink-shadow), α) 用 */
-  --ink-scrim: 28, 26, 22;    /* 遮罩基色 */
+  --ink-scrim: 28, 26, 22;    /* 遮罩基色，rgba(var(--ink-scrim), α) 用 */
 
   --r-sm: 8px;
   --r: 10px;
