@@ -32,6 +32,8 @@ test("已知坏样本：词表计数、per_1000 与 words 直方图逐词对账"
   assert.deepEqual(m.sentences, { count: 2, mean_length: 29, cv: null, floor: SENTENCE_CV_FLOOR, below_floor: false });
   // 各短句二字窗口互不相同 → 0 排比命中。
   assert.deepEqual(m.parallel, { count: 0, hits: [] });
+  // 顶层冻结契约恰为四键。
+  assert.deepEqual(Object.keys(m), ["effective_count", "hedging", "sentences", "parallel"]);
 });
 
 test("同样本改写后密度下降 ≥50%（调研 P0 验收信号的 fixture 镜像）", () => {
@@ -83,5 +85,5 @@ test("frontmatter 与代码块被剥离不计", () => {
   const m = analyzeStyleMetrics("---\ntitle: 仿佛\n---\n正文干干净净。\n\n```text\n仿佛 似乎 缓缓\n```\n\n收束一句。");
   assert.equal(m.hedging.total, 0);
   assert.equal(m.effective_count, 10);
-  assert.deepEqual(HEDGING_WORDS.length, 15);
+  assert.equal(HEDGING_WORDS.length, 15);
 });

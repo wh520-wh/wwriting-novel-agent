@@ -7,7 +7,8 @@
 // 反推「人类区间」后校准（调研 Next Validation）；朴素切句不处理英文缩写省略号
 // 歧义，对话引号内标点会把对白切碎（中文小说语境可接受）；排比只抓「二字 CJK
 // 前缀连开」型（含一字主语前置），漏后缀式排比与变长首语重复，升级路径是词级
-// n-gram 相似度。
+// n-gram 相似度；排比检测最坏 O(短句²)（简并同前缀输入），升级路径：run 达到
+// 剩余短句数即 break。
 import { stripMarkdownForCount, analyzeTextCount } from "./word-count.mjs";
 
 export const HEDGING_CAP_PER_1000 = 5.0;
@@ -65,6 +66,7 @@ function analyzeSentences(visible) {
   const count = sentences.length;
   const mean = count > 0 ? lengths.reduce((a, b) => a + b, 0) / count : 0;
   // 句数 < 3 或全空句（mean=0）时 cv 不判定——分母为 0 不是数据。
+  // cv 用总体方差（除以 n，fixture ③ 钉死口径）。
   const cv = count >= 3 && mean > 0
     ? round(Math.sqrt(lengths.reduce((a, b) => a + (b - mean) ** 2, 0) / count) / mean, 2)
     : null;
