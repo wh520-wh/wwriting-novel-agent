@@ -30,4 +30,4 @@ metadata:
 
 ## 审校反馈环
 
-改稿/审校时：`style_stats(path)` → 对 `over: true` 的维度与 `parallel.hits` 逐句改写 → 复测至达标。
+改稿/审校时：`style_stats(path)` → 对 `hedging.over`、`sentences.below_floor` 为 true 的项与 `parallel.hits` 逐句改写 → 复测至达标。
