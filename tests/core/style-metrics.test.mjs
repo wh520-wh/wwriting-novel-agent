@@ -40,7 +40,7 @@ test("同样本改写后密度下降 ≥50%（调研 P0 验收信号的 fixture 
   assert.equal(good.hedging.total, 0);
   assert.equal(good.hedging.per_1000, 0);
   assert.equal(good.hedging.over, false);
-  assert.ok(bad.per_1000 !== undefined && good.per_1000 <= bad.hedging.per_1000 / 2);
+  assert.ok(bad.hedging.per_1000 > 0 && good.hedging.per_1000 <= bad.hedging.per_1000 / 2);
 });
 
 test("句长变异：均匀句长 cv<0.4 触发 below_floor，长短交错不触发", () => {
