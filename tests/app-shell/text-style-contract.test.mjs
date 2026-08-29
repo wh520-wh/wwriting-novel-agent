@@ -437,6 +437,8 @@ test("圆角不超过 12px：radius token 全部 ≤12px，无 13–98px 圆角"
     assert.ok(parseInt(value, 10) <= 12, `${token} 应 ≤12px（当前 ${value}）`);
   }
   assert.equal(rootTokens["--r-pill"] ?? "", "999px", "--r-pill 胶囊档（round17 §3.4）");
+  assert.equal(rootTokens["--ink-shadow"] ?? "", "24, 32, 27", "--ink-shadow 三元组（round17 §3.2）");
+  assert.equal(rootTokens["--ink-scrim"] ?? "", "28, 26, 22", "--ink-scrim 三元组（round17 §3.2）");
 });
 
 // ===========================================================================
