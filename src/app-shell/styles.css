@@ -192,7 +192,7 @@
 
   --scrollbar-thumb: #414943;
   --scrollbar-thumb-hover: #58635c;
-  --focus-ring: rgba(143, 176, 143, 0.2);
+  --focus-ring: color-mix(in srgb, var(--accent) 20%, transparent);
 
   /* 方向相反的半透明叠色（暗色下反转） */
   --spine-line: rgba(255, 255, 255, 0.08);
