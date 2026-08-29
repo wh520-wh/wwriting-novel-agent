@@ -4,20 +4,21 @@
 // 对 Agent 提供唯一工具入口：
 //
 //   const tools = createToolRuntime({ projectOperations, journal, permissionPolicy, shellRuntime, skills, secrets });
-//   tools.definitions(context);            // -> OpenAI 原生 function definitions（15 个工具：9 通用 + 6 深）
+//   tools.definitions(context);            // -> OpenAI 原生 function definitions（16 个工具：10 通用 + 6 深）
 //   await tools.execute(toolCall, context); // 单次工具调用的 schema→权限→审计→执行→事件闭环
 //
 // 内部实现隐藏：schema 注册、权限判定（含硬能力拒绝与输入级临时授权）、journal 审计事件、
 // 可中断/原子工具分类、脱敏与受保护路径。
 //
 // 设计不变量（来自计划 Task 4 Step 3–8）：
-//   - 恰好注册九个 general 工具（list_files/search_files/read_file/write_file/edit_file/shell/
-//     read_skill/count_text/read_continuity）与六个 deep 工具（update_plan/append_chapter_segment/
+//   - 恰好注册十个 general 工具（list_files/search_files/read_file/write_file/edit_file/shell/
+//     read_skill/count_text/style_stats/read_continuity）与六个 deep 工具（update_plan/append_chapter_segment/
 //     commit_chapter/finalize_revision/rollback_chapter/update_memory）；不注册旧编排工具（start_ 前缀启停、queue_ 前缀排队、
 //     resolve_failure、export_book 等）或逐文件便利工具。read_skill（Task 12）是只读
 //     工具：只能按 active catalog name 解析，realpath containment/1MiB 上限/二进制
 //     asset 由 skills service（src/core/skills/index.mjs）执行。count_text（Task 9）是
 //     只读客观字数工具：工作区内 .md/.txt，minimum/target 只计算差额不判定通过或失败。
+//     style_stats（round17）是只读客观风格指标工具：参考值不是门禁，不拦截提交。
 //     Task 7：工作流切换工具已删除；Task 8：旧 blueprint 事务工具注册连同
 //     blueprint.mjs 一并删除。
 //   - 每个工具 schema 必须产生系统构建的归一化 ToolAction 后才进入权限评估；模型只能提供
@@ -463,7 +464,7 @@ export function createToolRuntime({
   }
 
   // -------------------------------------------------------------------------
-  // 工具注册表与九个 general + 六个 deep 工具
+  // 工具注册表与十个 general + 六个 deep 工具
   // -------------------------------------------------------------------------
 
   const TOOLS = new Map();
@@ -505,14 +506,15 @@ export function createToolRuntime({
   const registerAll = (defs) => {
     for (const [name, d] of Object.entries(defs)) register(name, d);
   };
-  // 注册顺序 = 原 tools.mjs 暴露顺序（GENERAL 9 前 DEEP 6 后，tests/agent/tools.test.mjs
+  // 注册顺序 = 原 tools.mjs 暴露顺序（GENERAL 10 前 DEEP 6 后，tests/agent/tools.test.mjs
   // 的 definitions() 顺序断言是行为契约）：knowledge 域的 read_skill/count_text
-  // （原文件位置在 update_plan 之前）与 read_continuity（第十六轮 T6 新增）属
-  // general，update_memory 属 deep（原位置在 rollback_chapter 之后），故该域拆两段注册。
+  // （原文件位置在 update_plan 之前）与 read_continuity（第十六轮 T6 新增）、
+  // style_stats（round17，紧跟 count_text）属 general，update_memory 属 deep
+  // （原位置在 rollback_chapter 之后），故该域拆两段注册。
   const knowledgeDefs = knowledgeToolDefinitions(h);
   registerAll(fsToolDefinitions(h));
   registerAll(shellToolDefinitions(h));
-  registerAll({ read_skill: knowledgeDefs.read_skill, count_text: knowledgeDefs.count_text, read_continuity: knowledgeDefs.read_continuity });
+  registerAll({ read_skill: knowledgeDefs.read_skill, count_text: knowledgeDefs.count_text, style_stats: knowledgeDefs.style_stats, read_continuity: knowledgeDefs.read_continuity });
   registerAll(chapterToolDefinitions(h));
   registerAll({ update_memory: knowledgeDefs.update_memory });
 
