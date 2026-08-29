@@ -14,6 +14,9 @@
 
 import { resolveModelCapabilities } from "./capabilities.mjs";
 
+// 项目思考档位 → 官方 reasoning_effort（low/high/max；medium 官方向上映射为 high）。
+const DEEPSEEK_EFFORT_BY_SETTING = { low: "low", medium: "high", high: "high" };
+
 export class ProviderConfigurationError extends Error {
   constructor(message) {
     super(message);
@@ -116,11 +119,16 @@ export class OpenAICompatibleAdapter {
       ...(caps.supportsTemperature ? optionalNumber("temperature", modelConfig.temperature) : {}),
       ...(caps.supportsTopP ? optionalNumber("top_p", modelConfig.top_p) : {}),
       ...optionalNumber("max_tokens", modelConfig.max_output_tokens ?? modelConfig.max_tokens),
-      // 思考强度真实映射：仅当模型 capability 声明了 reasoningEffortLevels 且项目
-      // 配置了非 auto 档位时发送 reasoning_effort；auto/缺省/未验证模型完全不携带。
-      ...(Array.isArray(caps.reasoningEffortLevels) &&
-          caps.reasoningEffortLevels.includes(modelConfig.reasoning_effort)
-        ? { reasoning_effort: modelConfig.reasoning_effort }
+      // DeepSeek 思考模式显式钉死（仿 dsh-llm-deepseek，官方 thinking_mode 契约）：
+      // 声明 reasoningEffortLevels 的模型一律携带 thinking:{type:"enabled"} 与
+      // reasoning_effort——绝不赌服务端默认（2026-08 实测默认值按时间窗漂移，
+      // 思考内容时有时无）。项目档位映射：low→low、medium/high→high（官方对
+      // medium 向上映射）、auto/缺省→high（官方缺省档）。
+      ...(Array.isArray(caps.reasoningEffortLevels)
+        ? {
+            thinking: { type: "enabled" },
+            reasoning_effort: DEEPSEEK_EFFORT_BY_SETTING[modelConfig.reasoning_effort] ?? "high"
+          }
         : {}),
       ...(tools ? { tools, tool_choice: request.toolChoice ?? "auto" } : {}),
       ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),

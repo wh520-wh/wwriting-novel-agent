@@ -111,6 +111,9 @@ export function toolLabel(tool, state) {
 // 无时间戳可算（或时钟倒挂）时回退「已完成思考」。
 export function reasoningLabel(item) {
   if (!item || item.state !== "completed") return "思考中";
+  // 零思考轮如实标注：官方思考为按请求非确定输出（2026-08 实测存在整段时间窗
+  // 不输出），空文本不是「内容丢失」——显示「思考 N 秒」会误导用户点开找内容。
+  if (item.text === "") return "未思考";
   // thinking_ms 为 null（未算出/无时间戳）视为无效 → 回退；显式 0 是合法真实耗时 → 显示最小 1 秒
   if (item?.thinking_ms == null) return "已完成思考";
   const ms = Number(item?.thinking_ms);
@@ -376,10 +379,12 @@ export function reduceWorkEvent(work, event) {
           // 超过 24h 视为时钟异常丢弃，回退「已完成思考」文案。
           if (Number.isFinite(ms) && ms >= 0 && ms <= 86_400_000) item.thinking_ms = ms;
         }
-        item.label = reasoningLabel(item);
         item.terminal_seq = seq; // Task 10：终态事件 seq 落位（start 位置不变）
         if (typeof payload.text === "string") item.text = payload.text;
         if (typeof payload.availability === "string") item.availability = payload.availability;
+        // label 最后算：completed 文本是权威全文（journal 契约必带），零思考判定
+        //（reasoningLabel 的「未思考」）必须读它，不能读增量累计的中间值。
+        item.label = reasoningLabel(item);
       }
       break;
     }

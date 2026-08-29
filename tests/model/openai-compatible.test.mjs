@@ -420,6 +420,38 @@ test("deepseek-v4-flash 不注入 temperature/top_p（官方按 thinking 处理�
   assert.equal(calls[0].body.top_p, undefined);
 });
 
+test("DeepSeek 思考模式显式钉死：v4 请求携带 thinking:enabled + reasoning_effort（auto→high，medium→high，low→low）", async () => {
+  const calls = [];
+  const adapter = makeAdapter({
+    baseUrl: "https://api.deepseek.com/v1",
+    fetchImpl: async (url, init) => {
+      calls.push(JSON.parse(init.body));
+      return jsonResponse({ choices: [{ message: { content: "ok" } }] });
+    }
+  });
+  const base = { base_url: "https://api.deepseek.com/v1", model_name: "deepseek-v4-flash" };
+  await adapter.complete({ messages: [{ role: "user", content: "hi" }], modelConfig: { ...base } });
+  await adapter.complete({ messages: [{ role: "user", content: "hi" }], modelConfig: { ...base, reasoning_effort: "low" } });
+  await adapter.complete({ messages: [{ role: "user", content: "hi" }], modelConfig: { ...base, reasoning_effort: "medium" } });
+  assert.deepEqual(calls[0].thinking, { type: "enabled" });
+  assert.equal(calls[0].reasoning_effort, "high", "auto/缺省映射官方缺省档 high");
+  assert.equal(calls[1].reasoning_effort, "low");
+  assert.equal(calls[2].reasoning_effort, "high", "medium 官方向上映射为 high");
+});
+
+test("非思考模型（未声明 reasoningEffortLevels）不携带 thinking/reasoning_effort", async () => {
+  let captured = null;
+  const adapter = makeAdapter({
+    fetchImpl: async (url, init) => {
+      captured = JSON.parse(init.body);
+      return jsonResponse({ choices: [{ message: { content: "ok" } }] });
+    }
+  });
+  await adapter.complete({ messages: [{ role: "user", content: "hi" }], modelConfig: { model_name: "plain-model" } });
+  assert.equal("thinking" in captured, false);
+  assert.equal("reasoning_effort" in captured, false);
+});
+
 test("非 thinking 模型正常注入 temperature/top_p", async () => {
   const calls = [];
   const adapter = makeAdapter({
@@ -1117,7 +1149,7 @@ test("DeepSeek thinking 模型配置 low 档位时请求体携带 reasoning_effo
   assert.equal(captured.body.reasoning_effort, "low");
 });
 
-test("auto 档位不发送 reasoning_effort", async () => {
+test("auto 档位映射官方缺省档：仍发送 reasoning_effort=high + thinking:enabled（钉死思考，不赌服务端默认）", async () => {
   let captured = null;
   const adapter = makeAdapter({
     fetchImpl: async (url, init) => {
@@ -1133,7 +1165,8 @@ test("auto 档位不发送 reasoning_effort", async () => {
       reasoning_effort: "auto"
     }
   });
-  assert.equal("reasoning_effort" in captured.body, false);
+  assert.deepEqual(captured.body.thinking, { type: "enabled" });
+  assert.equal(captured.body.reasoning_effort, "high");
 });
 
 test("未验证模型（MiMo/未知）即使配置档位也绝不发送 reasoning_effort", async () => {

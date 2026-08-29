@@ -39,33 +39,29 @@ export function registerProviderCapabilityResolver(matcher, resolver) {
 
 function resolveDeepSeekCapabilities(modelConfig) {
   const modelName = String(modelConfig.model_name ?? "").toLowerCase();
-  // 原 isReasonerModel 判据 1:1 搬移：v4-pro / deepseek-reasoner / reasoner 系为
-  // thinking 模型；v4-flash 默认 non-thinking（官方文档 2026-07），不判为 reasoner。
+  // v4 全系（含 flash）与 reasoner 系均为思考模型（官方文档 2026-08：思考模式
+  // 默认打开、v4-flash 与 v4-pro 一致、档位 low/high/max）。旧判据「flash 默认
+  // non-thinking」出自 2026-07 文档，8 月起已过时；且实测服务端默认值按时间窗
+  // 漂移（思考内容时有时无），请求层因此显式钉死（见 openai-compatible 请求构造）。
   const supportsThinking = (
-    (modelName.includes("deepseek-v4") && !modelName.includes("-flash")) ||
+    modelName.includes("deepseek-v4") ||
     modelName.includes("deepseek-reasoner") ||
     modelName.includes("reasoner")
   );
-  // 实测：官方 API 当前把 deepseek-v4-flash 当 thinking 模型处理，强制 tool_choice
-  // 会返回 400 "Thinking mode does not support this tool_choice"，故对官方 v4-flash
-  // 也走 auto（模型仍会返回 tool_calls）。
-  const isDeepSeekV4Flash = modelName.includes("deepseek-v4-flash");
   return {
     supportsThinking,
-    requiresAutoToolChoice: supportsThinking || isDeepSeekV4Flash,
-    // v4-flash 官方按 thinking 处理，采样参数同样不支持，一并排除（防 temperature 400）
-    supportsTemperature: !supportsThinking && !isDeepSeekV4Flash,
-    supportsTopP: !supportsThinking && !isDeepSeekV4Flash,
+    // thinking 模型不支持强制 tool_choice（400 "Thinking mode does not support
+    // this tool_choice"），一律 auto（模型仍会返回 tool_calls）。
+    requiresAutoToolChoice: supportsThinking,
+    supportsTemperature: !supportsThinking,
+    supportsTopP: !supportsThinking,
     supportsJsonOutput: true,
     supportsTools: true,
     supportsStreaming: true,
-    // 已验证会返回 reasoning 的 DeepSeek thinking 模型设为 supported（三态之一，
-    // 供 UI 可见性判断）；v4-flash 等未验证模型保持默认 unknown——不能因单次
-    // 空响应永久判定不支持。supportsThinking 仍只负责采样参数与 reasoning effort。
+    // 官方思考模型请求层钉死后必然返回 reasoning（三态之一，供 UI 可见性判断）。
     ...(supportsThinking ? { reasoningContent: "supported" } : {}),
-    // 已验证的 DeepSeek thinking 模型支持低/中/高三档思考强度（reasoning_effort）；
-    // 其余模型（含 v4-flash、MiMo 与未验证模型）缺省此字段，请求体绝不携带该参数。
-    ...(supportsThinking ? { reasoningEffortLevels: ["low", "medium", "high"] } : {})
+    // 官方思考强度档位（2026-08-13 更新日志）：low / high / max。
+    ...(supportsThinking ? { reasoningEffortLevels: ["low", "high", "max"] } : {})
   };
 }
 
