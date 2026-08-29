@@ -2032,8 +2032,8 @@
 
 .agent-context-ring {
   position: relative;
-  width: 28px;  /* R5：调大（24 → 28） */
-  height: 28px; /* R5：调大（24 → 28） */
+  width: 32px;  /* round17 §5 单点回退：28 → 32 适配 --font-xs 百分比（原 R5：24 → 28） */
+  height: 32px; /* round17 §5 单点回退：28 → 32 适配 --font-xs 百分比（原 R5：24 → 28） */
   display: grid;
   place-items: center;
   padding: 0;
