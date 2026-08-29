@@ -980,6 +980,22 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 /* 创建弹窗主按钮保持通栏（原 .save-btn 的布局职责） */
 #create-submit { width: 100%; margin-top: 4px; }
 
+/* 创建项目反馈（round17 §3.5）：元素与 JS 早已存在，此处补样式兑现承诺。
+   校验错误只经 .create-status 展示（无 toast 兜底），error 态必须可见。
+   spinner 可见性由 JS 写 hidden 属性控制：display 收在 :not([hidden]) 门内；
+   reduced-motion 降级须用同一门内选择器，否则 (0,1,0) 压不过此处的 animation。 */
+.btn-spinner { display: none; }
+.btn-spinner:not([hidden]) {
+  display: inline-block;
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid color-mix(in srgb, currentColor 35%, transparent);
+  border-top-color: currentColor;
+  animation: btn-spin .7s linear infinite;
+}
+@keyframes btn-spin { to { transform: rotate(1turn); } }
+.create-status { margin: 8px 0 0; font-size: var(--font-sm); line-height: 1.5; color: var(--text-muted); }
+.create-status.error { color: var(--red); }
+
 
 .evt { display: grid; grid-template-columns: auto minmax(0,1fr) auto; gap: 9px; align-items: baseline; padding: 7px 0; border-bottom: 1px solid var(--line-3); }
 
@@ -2210,6 +2226,8 @@ input.spd-input[type="number"] { max-width: 160px; }
   .toast { animation: none; opacity: 1; transform: none; }
 
   .app { animation: none; }
+
+  .btn-spinner:not([hidden]) { animation: none; }
 
   /* 启动骨架屏退化为静态色块（无 shimmer） */
   .boot-skeleton .skeleton { animation: none; background: var(--surface-3); }
