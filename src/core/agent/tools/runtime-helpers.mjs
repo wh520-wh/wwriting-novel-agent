@@ -333,17 +333,16 @@ export function parseToolArguments(raw) {
 }
 
 // ---------------------------------------------------------------------------
-// count_text 执行体（Task 9 Step 4）。只读客观统计：工作区内 .md/.txt，
-// minimum/target 只计算差额，不判定通过或失败（冻结契约 §2.2）。
-// 路径安全与 read_file 同模式：resolveFilesystemPath 解析真实路径后
-// isPathInside 做包含性检查；ENOENT 折叠为 { path, exists: false }。
+// 工作区 .md/.txt 只读读取（count_text 与 style_stats 共用，round17 第二部分 T3）。
+// 路径安全与 read_file 同模式：resolveFilesystemPath 解析真实路径后 isPathInside
+// 做包含性检查；ENOENT 折叠为 source=null，由调用方决定返回形态。本函数不做统计。
 // ---------------------------------------------------------------------------
 
-export async function executeCountText(args, context) {
+export async function readWorkspaceTextFile(args, context) {
   const relative = requireStringArg(args, "path", "path");
   const target = await resolveFilesystemPath(path.resolve(context.projectRoot, relative));
   if (!isPathInside(context.projectRoot, target)) {
-    throw toolError("path_outside_workspace", "只能统计当前工作区内的文件。", { path: relative });
+    throw toolError("path_outside_workspace", "只能读取当前工作区内的文件。", { path: relative });
   }
   if (![".md", ".txt"].includes(path.extname(target).toLowerCase())) {
     throw toolError("unsupported_text_file", "只支持 Markdown 或纯文本文件。", { path: relative });
@@ -352,6 +351,18 @@ export async function executeCountText(args, context) {
     if (error?.code === "ENOENT") return null;
     throw error;
   });
+  return { relative, source };
+}
+
+// ---------------------------------------------------------------------------
+// count_text 执行体（Task 9 Step 4）。只读客观统计：工作区内 .md/.txt，
+// minimum/target 只计算差额，不判定通过或失败（冻结契约 §2.2）。
+// 路径安全与 read_file 同模式：resolveFilesystemPath 解析真实路径后
+// isPathInside 做包含性检查；ENOENT 折叠为 { path, exists: false }。
+// ---------------------------------------------------------------------------
+
+export async function executeCountText(args, context) {
+  const { relative, source } = await readWorkspaceTextFile(args, context);
   if (source === null) return { path: relative, exists: false };
   const counts = analyzeTextCount(source);
   const minimum = Number.isInteger(args.minimum) ? args.minimum : null;
