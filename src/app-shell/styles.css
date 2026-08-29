@@ -784,7 +784,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .cost-row-value.muted { color: var(--muted); font-style: italic; }
 
-/* Round10：成本主金额——总览中唯一的大字号金额（20px/650/tabular） */
+/* Round10：成本主金额——总览中唯一的大字号金额（--font-xl/--weight-semibold/tabular） */
 .cost-row-value.cost-total {
   font-size: var(--font-xl);
   font-weight: var(--weight-semibold);

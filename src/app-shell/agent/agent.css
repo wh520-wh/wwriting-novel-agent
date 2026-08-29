@@ -1855,10 +1855,6 @@
     padding: 0;
   }
 
-  .agent-empty-title {
-    font-size: var(--font-2xl);
-  }
-
   .agent-empty-actions {
     grid-template-columns: 1fr;
     margin-top: 26px;
@@ -2077,7 +2073,7 @@
   inset: 0;
   display: grid;
   place-items: center;
-  font-size: var(--font-xs); /* R5：随圆环微调（8 → 9） */
+  font-size: var(--font-xs); /* round17：并入 --font-xs（原 9px） */
   font-weight: var(--weight-bold);
   line-height: 1;
   font-variant-numeric: tabular-nums;
