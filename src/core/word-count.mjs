@@ -19,8 +19,8 @@ export function stripMarkdownForCount(source) {
     .replace(/[*_>#|{}~]/gu, " ");
 }
 
-export function analyzeTextCount(source) {
-  const visible = stripMarkdownForCount(source);
+// 对已剥离 Markdown 的文本计数（style-metrics 复用，避免对全文二次 strip）。
+export function countVisible(visible) {
   const cjk = visible.match(/\p{Script=Han}/gu) ?? [];
   const withoutCjk = visible.replace(/\p{Script=Han}/gu, " ");
   const latin = withoutCjk.match(/[A-Za-z]+(?:'[A-Za-z]+)?/gu) ?? [];
@@ -35,6 +35,10 @@ export function analyzeTextCount(source) {
     non_whitespace_characters: nonWhitespace.length,
     effective_count: cjk.length + latin.length + numbers.length
   };
+}
+
+export function analyzeTextCount(source) {
+  return countVisible(stripMarkdownForCount(source));
 }
 
 export function countEffectiveWords(source) {

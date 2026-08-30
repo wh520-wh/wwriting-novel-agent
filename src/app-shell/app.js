@@ -16,7 +16,7 @@ import { createSessionSidebar, createSessionRemovalResolver } from "./session-si
 import { createAgentSurface } from "./agent/index.js";
 import { createVersionPanel } from "./components/version-panel.js";
 import { createPlanPanel } from "./components/plan-panel.js";
-import { setupThemePrivacy } from "./theme-privacy.js";
+import { setupThemePrivacy } from "./theme.js";
 
 export async function bootApp(root = document) {
   // Task 22：refs 分域——rail/drawer/reader/settings 四桶，消费点经分桶名引用。
@@ -100,8 +100,8 @@ export async function bootApp(root = document) {
     leaveMs: 220
   });
   const showToast = toaster.showToast;
-  // 主题/隐私拆至 theme-privacy.js（第十六轮 T9）；setup 内部完成初始化。
-  const { setThemeMode } = setupThemePrivacy({ railRefs, showToast });
+  // 主题拆至 theme.js（第十六轮 T9 拆出，round17 审查更名）；setup 内部完成初始化。
+  const { setThemeMode } = setupThemePrivacy({ railRefs });
   
   let currentProjectRoot = null;
   let dashboardRequestId = 0;

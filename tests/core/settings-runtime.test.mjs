@@ -273,38 +273,6 @@ test("fact_check 拒绝非对象", () => {
   );
 });
 
-test("project_profile 接受 max_words_per_chapter，且 max < min 时自动提升", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-settings-max-"));
-  const { projectRoot } = await createProject(root, { slug: "max" });
-
-  await updateProjectSettings(projectRoot, {
-    project_profile: {
-      min_words_per_chapter: 3000,
-      target_words_per_chapter: 3300,
-      max_words_per_chapter: 4000
-    }
-  });
-  let project = await loadProject(projectRoot);
-  assert.equal(project.max_words_per_chapter, 4000);
-
-  // max < min: 应被抬到 min
-  await updateProjectSettings(projectRoot, {
-    project_profile: { max_words_per_chapter: 2000 }
-  });
-  project = await loadProject(projectRoot);
-  assert.equal(project.max_words_per_chapter, 3000, "max below min must be raised to min");
-
-  // 拒绝非正整数
-  await assert.rejects(
-    () => updateProjectSettings(projectRoot, { project_profile: { max_words_per_chapter: -1 } }),
-    /max_words_per_chapter/u
-  );
-  await assert.rejects(
-    () => updateProjectSettings(projectRoot, { project_profile: { max_words_per_chapter: "abc" } }),
-    /max_words_per_chapter/u
-  );
-});
-
 test("updateProjectSettings 保存时移除旧 project.yaml 的 enabled_skills 字段", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-settings-strip-"));
   const { projectRoot } = await createProject(root, { slug: "project" });

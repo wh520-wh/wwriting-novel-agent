@@ -52,13 +52,6 @@ app.whenReady().then(async () => {
   await win.loadURL(`http://127.0.0.1:${port}`);
   await delay(1400);
 
-  if (process.env.SHOT_PRIVACY === "1") {
-    try {
-      await win.webContents.executeJavaScript(`document.querySelector('#privacy-toggle')?.click(); true;`);
-    } catch {}
-    await delay(400);
-  }
-
   const shots = [];
   const views = (process.env.SHOT_VIEWS || "project,dashboard,settings,run,skills,research").split(",").map((v) => v.trim()).filter(Boolean);
   for (const view of views) {

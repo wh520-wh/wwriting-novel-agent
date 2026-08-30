@@ -1221,22 +1221,10 @@ step("场景 26 · reasoning 原文持久化且正文无泄漏");
 // ---------------------------------------------------------------------------
 step("场景 27 · 章节工具后普通问答");
 {
-  // 统一工具目录（生产注册的完整集合；执行流里出现集合外工具即视为模式切换残留）
-  const UNIFIED_TOOL_NAMES = new Set([
-    "list_files",
-    "search_files",
-    "read_file",
-    "write_file",
-    "edit_file",
-    "shell",
-    "read_skill",
-    "count_text",
-    "update_plan",
-    "append_chapter_segment",
-    "commit_chapter",
-    "finalize_revision",
-    "rollback_chapter"
-  ]);
+  // 统一工具目录：名单从生产注册表派生（经 agent 公共 seam，Task 6 原则），
+  // 不手抄副本；执行流里出现注册表外工具即视为模式切换残留。
+  const { productionToolNames } = await import("../src/core/agent/index.mjs");
+  const UNIFIED_TOOL_NAMES = new Set(productionToolNames());
   const script = [];
   const h = await createProjectAgentHarness({
     project: { min_words_per_chapter: 10, target_words_per_chapter: 20 },

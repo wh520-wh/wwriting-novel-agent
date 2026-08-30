@@ -1,5 +1,5 @@
 // tests/agent/tools-registry.test.mjs —— Task 5（第十五轮 F4）：tools 四域注册拆分对账。
-// 钉住「四域注册并集 = 16 个生产工具」：拆分后任何域的注册脱落/误注册都会使本测试红。
+// 钉住「四域注册并集 = 生产注册全集」：拆分后任何域的注册脱落/误注册都会使本测试红。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -15,7 +15,7 @@ const EXPECTED = new Set([
   "finalize_revision", "rollback_chapter", "update_memory"
 ]);
 
-test("四域注册并集 = 16 个生产工具", async (t) => {
+test("四域注册并集 = 生产注册全集", async (t) => {
   const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-tools-registry-"));
   t.after(async () => await fs.rm(projectRoot, { recursive: true, force: true }));
   const journal = createAgentJournal({ projectRoot });

@@ -468,3 +468,25 @@ test("Codex 基线：Assistant 正文 regular；对话画布非纯白冷调，�
   assert.equal(resolveVar("--agent-heading-fg"), "#202522", "标题应为深色 primary");
   assert.notEqual(resolveVar("--agent-heading-fg"), resolveVar("--accent"), "标题不得染 accent");
 });
+
+// ===========================================================================
+// 11) 按钮基元契约（round17 §3.3/§3.5 + simplify 审查补）：三档基元存在、
+//     spinner 显示门收在 :not([hidden]) 内、创建校验错误以 --red 呈现。
+//     这三处只靠人工视觉保护时，回归（如误删显示门）不会让 CI 变红。
+// ===========================================================================
+test("按钮基元三档存在；spinner 显示门收在 :not([hidden]) 内；校验错误用 --red 着色", () => {
+  const btn = extractDecls(extractBlock(stylesSource, ".btn"));
+  assert.equal(btn.height, "var(--control-default)", ".btn 默认档应引用 --control-default");
+  assert.equal(btn["white-space"], "nowrap", ".btn 文字不得压缩换行");
+  const sm = extractDecls(extractBlock(stylesSource, ".btn--sm"));
+  assert.equal(sm.height, "28px", ".btn--sm 紧凑档 28px");
+  const primary = extractDecls(extractBlock(stylesSource, ".btn--primary"));
+  assert.equal(primary.background, "var(--btn-gradient)", ".btn--primary 应引用按钮渐变 token");
+
+  const spinnerGate = allRules(stylesSource).find((r) => r.selector === ".btn-spinner:not([hidden])");
+  assert.ok(spinnerGate, "spinner 可见性必须收在 :not([hidden]) 门内");
+  assert.notEqual(extractDecls(spinnerGate.decls).display, "none", ":not([hidden]) 门内不得再 display:none");
+
+  const statusError = extractDecls(extractBlock(stylesSource, ".create-status.error"));
+  assert.equal(statusError.color, "var(--red)", "创建校验错误必须以 --red 呈现（无 toast 兜底）");
+});

@@ -6,14 +6,14 @@
     <title>WWriting · 小说智能体</title>
     <script>
       // 首帧主题预设：样式应用前同步落 data-theme，夜间用户直接暗色首绘不闪白。
-      // 判定口径与 theme-privacy.js initThemeMode 一致（存储优先，跟随系统兜底）。
+      // 主题判定的单点在本脚本（theme.js 只采用 data-theme，不再维护第二套口径）。
       try {
         var storedTheme = localStorage.getItem("ww:theme");
         document.documentElement.dataset.theme =
           storedTheme === "dark" || (storedTheme !== "light" && matchMedia("(prefers-color-scheme: dark)").matches)
             ? "dark"
             : "light";
-      } catch { /* localStorage 不可用则按系统偏好由 theme-privacy.js 再落一次 */ }
+      } catch { /* localStorage 不可用则按系统偏好；theme.js 兜底重算口径与此一致 */ }
     </script>
     <link rel="stylesheet" href="./styles.css" />
     <link rel="stylesheet" href="./agent/agent.css" />
@@ -81,7 +81,7 @@
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h.01M12 12h.01M19 12h.01"/></svg>
             </button>
             <div class="topbar-secondary" id="topbar-secondary" role="menu">
-              <button class="tbtn drawer-toggle" id="open-drawer" type="button" role="menuitem" title="项目面板：章节 / 资料 / 成本" aria-label="项目面板">
+              <button class="tbtn btn drawer-toggle" id="open-drawer" type="button" role="menuitem" title="项目面板：章节 / 资料 / 成本" aria-label="项目面板">
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h11a2 2 0 0 1 2 2v14H7a2 2 0 0 1-2-2zM5 17.5h13"/></svg>
                 <span>面板</span>
               </button>

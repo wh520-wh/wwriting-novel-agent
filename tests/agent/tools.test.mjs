@@ -3,7 +3,7 @@
 //
 // tests/agent/ 是允许测试内部 seam 的目录：本文件直接导入 tools/index.mjs 与 journal.mjs，
 // 覆盖计划 Task 4 Step 6–9 要求的全部不变量：
-//   - 恰好 16 个工具的 typed schema（十个 general + 六个 deep，Task 7 删除
+//   - 全量 typed schema（general+deep 名单为单点真值，Task 7 删除
 //     enter_workflow、Task 8 删除 commit_blueprint、Task 12 加 read_skill、
 //     Task 9 加 count_text、第十六轮加 read_continuity、round17 加 style_stats）；
 //     模型不能提供/覆盖 risk/scope/extreme/grant_key
@@ -215,11 +215,11 @@ async function nextDecision(journal, count = 1) {
 // Step 4/5：注册表与 typed schema、系统拥有的风险
 // ---------------------------------------------------------------------------
 
-test("恰好注册十个 general 与六个 deep 工具", () => {
+test("注册集恰为 GENERAL+DEEP 全集（无注册脱落）", () => {
   const tools = createToolRuntime({ journal: { append: async () => {} }, skills: {} });
   const names = tools.definitions().map((def) => def.function.name);
+  // deepEqual 已钉死集合与基数；不再写人肉数字断言（加工具只改两处名单）。
   assert.deepEqual(names, [...GENERAL_NAMES, ...DEEP_NAMES]);
-  assert.equal(names.length, 16, "工具总数应为 16（十个 general + 六个 deep，含 finalize_revision、rollback_chapter、update_memory、read_continuity 与 style_stats）");
   for (const banned of BANNED_NAMES) {
     assert.ok(!names.includes(banned), `不得注册 ${banned}`);
   }

@@ -84,9 +84,9 @@ export function createContextRing({
 
   const svg = doc.createElementNS(NS, "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
-  // round17 §5 单点回退：与 .agent-context-ring 28 → 32 连带（圆环随按钮放大）
-  svg.setAttribute("width", "32");
-  svg.setAttribute("height", "32");
+  // 尺寸单点在 .agent-context-ring 的 CSS（32px）；SVG 撑满盒子即可，不写第二份常量
+  svg.setAttribute("width", "100%");
+  svg.setAttribute("height", "100%");
   svg.setAttribute("aria-hidden", "true");
   svg.setAttribute("focusable", "false");
 

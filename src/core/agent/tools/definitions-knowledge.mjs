@@ -94,7 +94,8 @@ export function knowledgeToolDefinitions(h) {
       interruptible: false,
       description:
         "客观风格指标统计（模糊修饰词密度/句长变异系数/三连排比候选）。参考值不是门禁，不拦截提交；" +
-        "阈值为 v1 启发值，配合 avoid-ai-voice 技能的改写反馈环使用。",
+        "阈值为 v1 启发值，配合 avoid-ai-voice 技能的改写反馈环使用。" +
+        "注意小样本失真：effective_count 低于 300 字时密度/CV 仅供参考，勿据此改写。",
       schema: {
         type: "object",
         properties: {

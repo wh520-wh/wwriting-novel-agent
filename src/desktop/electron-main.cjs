@@ -148,6 +148,16 @@ if (!gotSingleInstanceLock) {
     let window = null;
     try {
       if (!smokeMode) {
+        // 主题真值源归一：应用内主题（renderer 的 ww:theme）经下方 IPC 回写
+        // nativeTheme.themeSource 并落盘；冷启动先恢复上次值，窗口底色按应用
+        // 主题取色，而不是只看 OS 偏好（存储暗色 + 系统浅色的用户不再首帧闪白）。
+        const themeMarkerPath = path.join(app.getPath("userData"), "last-theme");
+        try {
+          const lastTheme = fs.readFileSync(themeMarkerPath, "utf8").trim();
+          if (lastTheme === "dark" || lastTheme === "light") nativeTheme.themeSource = lastTheme;
+        } catch {
+          // 无记录（首次启动）则跟随系统偏好。
+        }
         const isDark = nativeTheme.shouldUseDarkColors;
         window = new BrowserWindow({
           width: 1320,
@@ -170,6 +180,12 @@ if (!gotSingleInstanceLock) {
           const overlay = desktopWindowChrome(process.platform, dark).titleBarOverlay;
           if (overlay) window.setTitleBarOverlay(overlay);
           window.setBackgroundColor(windowColors(dark).background);
+          nativeTheme.themeSource = dark ? "dark" : "light";
+          try {
+            fs.writeFileSync(themeMarkerPath, dark ? "dark" : "light");
+          } catch {
+            // 持久化失败不影响本次主题应用。
+          }
         });
       }
 

@@ -7,9 +7,8 @@
 // 反推「人类区间」后校准（调研 Next Validation）；朴素切句不处理英文缩写省略号
 // 歧义，对话引号内标点会把对白切碎（中文小说语境可接受）；排比只抓「二字 CJK
 // 前缀连开」型（含一字主语前置），漏后缀式排比与变长首语重复，升级路径是词级
-// n-gram 相似度；排比检测最坏 O(短句²)（简并同前缀输入），升级路径：run 达到
-// 剩余短句数即 break。
-import { stripMarkdownForCount, analyzeTextCount } from "./word-count.mjs";
+// n-gram 相似度。
+import { stripMarkdownForCount, countVisible } from "./word-count.mjs";
 
 export const HEDGING_CAP_PER_1000 = 5.0;
 export const SENTENCE_CV_FLOOR = 0.4;
@@ -26,7 +25,8 @@ const SENTENCE_SPLIT = /[^。！？!?…；;]+[。！？!?…；;]*/gu;
 const CLAUSE_SPLIT = /[，,、;；:：]+/u;
 
 const round = (n, d) => Math.round(n * 10 ** d) / 10 ** d;
-const isHan = (ch) => /\p{Script=Han}/u.test(ch);
+const HAN_RE = /\p{Script=Han}/u;
+const isHan = (ch) => HAN_RE.test(ch);
 
 function countOccurrences(haystack, needle) {
   let count = 0;
@@ -60,9 +60,8 @@ function analyzeHedging(visible, effectiveCount) {
   };
 }
 
-function analyzeSentences(visible) {
-  const sentences = splitSentences(visible);
-  const lengths = sentences.map((s) => analyzeTextCount(s).effective_count);
+function analyzeSentences(sentences) {
+  const lengths = sentences.map((s) => countVisible(s).effective_count);
   const count = sentences.length;
   const mean = count > 0 ? lengths.reduce((a, b) => a + b, 0) / count : 0;
   // 句数 < 3 或全空句（mean=0）时 cv 不判定——分母为 0 不是数据。
@@ -81,31 +80,30 @@ function analyzeSentences(visible) {
 
 // 三连排比候选：句内切短句，取每短句下标 0/1 处的二字 CJK 窗口（下标 1 容纳
 // 「他握住刀」式一字主语），同一窗口连开 ≥3 个短句即命中，只列举不判定。
+// ponytail: 流式 run-length DP，O(短句数)；与逐起点向前扫等价（同长并列时
+// 最早结束者即最早开始者，平局裁决一致）。
 function detectParallelInSentence(sentence) {
   const clauses = sentence.split(CLAUSE_SPLIT).map((c) => c.trim()).filter(Boolean);
   if (clauses.length < 3) return null;
-  const windows = clauses.map((c) => {
-    const set = new Set();
-    for (const start of [0, 1]) {
-      const pair = c.slice(start, start + 2);
-      if (pair.length === 2 && isHan(pair[0]) && isHan(pair[1])) set.add(pair);
-    }
-    return set;
-  });
   let best = null;
-  for (let i = 0; i < clauses.length - 2; i++) {
-    for (const candidate of windows[i]) {
-      let run = 1;
-      while (i + run < clauses.length && windows[i + run].has(candidate)) run += 1;
-      if (run >= 3 && (best === null || run > best.repeat)) best = { prefix: candidate, repeat: run };
+  let prev = null; // candidate -> 止于前一短句的连排长度
+  for (const clause of clauses) {
+    const cur = new Map();
+    for (const start of [0, 1]) {
+      const pair = clause.slice(start, start + 2);
+      if (pair.length !== 2 || !isHan(pair[0]) || !isHan(pair[1]) || cur.has(pair)) continue;
+      const run = (prev?.get(pair) ?? 0) + 1;
+      cur.set(pair, run);
+      if (run >= 3 && (best === null || run > best.repeat)) best = { prefix: pair, repeat: run };
     }
+    prev = cur;
   }
   return best;
 }
 
-function analyzeParallel(visible) {
+function analyzeParallel(sentences) {
   const hits = [];
-  for (const sentence of splitSentences(visible)) {
+  for (const sentence of sentences) {
     const hit = detectParallelInSentence(sentence);
     if (hit) {
       hits.push({ ...hit, excerpt: sentence.length > 40 ? `${sentence.slice(0, 40)}…` : sentence });
@@ -116,11 +114,12 @@ function analyzeParallel(visible) {
 
 export function analyzeStyleMetrics(source) {
   const visible = stripMarkdownForCount(source);
-  const { effective_count } = analyzeTextCount(source);
+  const { effective_count } = countVisible(visible);
+  const sentences = splitSentences(visible);
   return {
     effective_count,
     hedging: analyzeHedging(visible, effective_count),
-    sentences: analyzeSentences(visible),
-    parallel: analyzeParallel(visible)
+    sentences: analyzeSentences(sentences),
+    parallel: analyzeParallel(sentences)
   };
 }
