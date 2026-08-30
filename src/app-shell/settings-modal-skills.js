@@ -135,7 +135,7 @@ export function createSkillsSection({
     addWrap.className = "spd-addmenu";
     const addBtn = document.createElement("button");
     addBtn.type = "button";
-    addBtn.className = "small-button";
+    addBtn.className = "btn btn--sm";
     addBtn.id = "skills-add";
     addBtn.textContent = "添加技能";
     addBtn.setAttribute("aria-haspopup", "menu");

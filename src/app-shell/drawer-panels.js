@@ -68,7 +68,7 @@ export function createDrawerPanels(ctx) {
     toolbar.className = "export-toolbar";
     const exportBtn = document.createElement("button");
     exportBtn.type = "button";
-    exportBtn.className = "small-button export-btn";
+    exportBtn.className = "btn btn--sm export-btn";
     exportBtn.textContent = "导出成书";
     exportBtn.addEventListener("click", () => {
       void exportBook(data, exportBtn);
@@ -77,7 +77,7 @@ export function createDrawerPanels(ctx) {
     if (window.wwritingDesktop?.revealPath) {
       const revealBtn = document.createElement("button");
       revealBtn.type = "button";
-      revealBtn.className = "small-button export-reveal-btn";
+      revealBtn.className = "btn btn--sm export-reveal-btn";
       revealBtn.textContent = "打开导出文件夹";
       revealBtn.addEventListener("click", () => {
         const root = data.projectRoot ?? data.project?.projectRoot;
@@ -272,12 +272,12 @@ export function createDrawerPanels(ctx) {
     const q = document.createElement("input");
     q.type = "text"; q.placeholder = "搜索关键词"; q.className = "research-input";
     const sBtn = document.createElement("button");
-    sBtn.type = "button"; sBtn.className = "small-button"; sBtn.textContent = "搜索";
+    sBtn.type = "button"; sBtn.className = "btn btn--sm"; sBtn.textContent = "搜索";
     sBtn.addEventListener("click", () => runResearch("search", { query: q.value.trim(), limit: 5 }, sBtn));
     const u = document.createElement("input");
     u.type = "url"; u.placeholder = "https://example.com"; u.className = "research-input";
     const fBtn = document.createElement("button");
-    fBtn.type = "button"; fBtn.className = "small-button"; fBtn.textContent = "抓取";
+    fBtn.type = "button"; fBtn.className = "btn btn--sm"; fBtn.textContent = "抓取";
     fBtn.addEventListener("click", () => runResearch("fetch", { url: u.value.trim() }, fBtn));
     form.append(researchRow(q, sBtn), researchRow(u, fBtn));
     research.body.append(form);

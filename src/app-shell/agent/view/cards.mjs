@@ -166,7 +166,7 @@ export function createCardsView(ctx) {
       }
       const copy = doc.createElement("button");
       copy.type = "button";
-      copy.className = "btn btn--sm";
+      copy.className = "btn btn--sm btn--ghost";
       copy.dataset.testid = "agent-error-copy";
       copy.textContent = "复制";
       // 复制技术详情；clipboard 缺失/同步异常/rejection 都显示「复制失败」，
@@ -230,7 +230,7 @@ export function createCardsView(ctx) {
       }
       const promote = doc.createElement("button");
       promote.type = "button";
-      promote.className = "agent-promote";
+      promote.className = "agent-promote btn btn--sm btn--ghost";
       promote.dataset.testid = "agent-promote";
       promote.textContent = "立即";
       promote.disabled = promoteDisabled;
@@ -253,7 +253,7 @@ export function createCardsView(ctx) {
       });
       const withdraw = doc.createElement("button");
       withdraw.type = "button";
-      withdraw.className = "agent-withdraw";
+      withdraw.className = "agent-withdraw btn btn--sm btn--ghost";
       withdraw.dataset.testid = "agent-withdraw";
       withdraw.textContent = "取消";
       withdraw.addEventListener("click", () => withdrawQueuedInput(item.id));

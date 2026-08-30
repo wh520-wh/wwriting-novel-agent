@@ -706,20 +706,6 @@
   font-weight: var(--weight-medium);
 }
 
-.agent-stop-btn,
-.agent-retry-btn,
-.agent-promote,
-.agent-withdraw {
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--agent-muted);
-  border-radius: var(--r-sm);
-  cursor: pointer;
-  font-size: var(--font-sm);
-  font-weight: var(--weight-semibold);
-  transition: background 100ms ease, color 100ms ease, opacity 100ms ease, transform 80ms ease;
-}
-
 /* agent 面板按钮皮肤：结构继承 .btn/.btn--sm（styles.css），此处只覆盖配色（round17 §3.3） */
 .agent-decision-actions .btn,
 .agent-compaction-actions .btn {
@@ -738,22 +724,16 @@
   color: var(--agent-accent);
 }
 
+/* 四件套挂 .btn.btn--sm.btn--ghost 基元（透明底/无边框/无阴影），此处只留尺寸与配色差异 */
 .agent-stop-btn {
   height: 32px;              /* Round10：固定 32px 紧凑次按钮 */
   min-width: 64px;
   padding: 0 10px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
   gap: 5px;
-  border: 1px solid var(--red-line);
-  background: var(--red-soft);
-  color: var(--text-danger);
   border-radius: var(--r-sm);
-  cursor: pointer;
-  font-size: var(--font-sm);
-  font-weight: var(--weight-semibold);
-  transition: background 100ms ease, border-color 100ms ease, color 100ms ease, opacity 100ms ease, transform 80ms ease;
+  background: var(--red-soft);
+  border-color: var(--red-line);
+  color: var(--text-danger);
 }
 
 .agent-stop-btn svg {
@@ -1525,14 +1505,12 @@
 
 .agent-error-actions .btn { border-radius: var(--r-sm); }
 .agent-error-actions .btn--primary { min-width: 64px; }
-.agent-error-actions .btn:not(.btn--primary) {
+.agent-error-actions .btn--ghost {
   min-width: 56px;
-  background: transparent;
   border-color: var(--line);
   color: var(--text-secondary);
 }
-.agent-error-actions .btn:not(.btn--primary):hover:not(:disabled) {
-  background: transparent;
+.agent-error-actions .btn--ghost:hover:not(:disabled) {
   color: var(--ink);
   border-color: var(--line-hover);
 }
@@ -1609,17 +1587,9 @@
   color: var(--agent-accent);
 }
 
-.agent-promote {
-  min-width: 56px;
-  height: 28px;
-  padding: 0 10px;
-  flex: 0 0 auto;
-}
-
+.agent-promote,
 .agent-withdraw {
   min-width: 56px;
-  height: 28px;
-  padding: 0 10px;
   flex: 0 0 auto;
 }
 

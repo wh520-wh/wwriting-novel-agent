@@ -153,9 +153,14 @@ test("次级操作融入背景，消息层级不依赖成排胶囊按钮", () =>
     "用户消息文字应引用全局 ink primitive，不硬编码色值"
   );
   assert.match(
+    cssSource,
+    /\.btn--ghost\s*\{[^}]*background:\s*transparent;[^}]*border-color:\s*transparent;/u,
+    "停止、重试、立即和撤回共用 .btn--ghost 基元：无常驻外框的行内操作（round17 审查归并四件套私有基座）"
+  );
+  assert.doesNotMatch(
     agentCssSource,
-    /\.agent-stop-btn,[\s\S]*?\.agent-retry-btn,[\s\S]*?\.agent-promote,[\s\S]*?\.agent-withdraw\s*\{[^}]*background:\s*transparent;/u,
-    "停止、重试、立即和撤回应是无常驻外框的行内操作（Task 11 加入撤回后选择器列表扩展）"
+    /\.agent-stop-btn,[\s\S]*?\.agent-withdraw\s*\{/u,
+    "agent.css 不得再保留四件套私有按钮基座（皮肤只留尺寸/配色差异）"
   );
   assert.match(
     agentCssSource,
@@ -209,7 +214,7 @@ test("冻结布局约束：用户消息靠右，ticker 固定两行，详情 320
 
 test("启动体验：首帧主题预设与项目列表骨架占位", () => {
   // 主题在样式生效前内联落 data-theme（夜间用户暗色首绘不闪白），
-  // 判定口径与 theme-privacy.js 一致：存储优先、跟随系统兜底。
+  // 判定单点在 index.html 内联脚本（theme.js 只采用 data-theme）：存储优先、跟随系统兜底。
   assert.match(
     indexSource,
     /<head>[\s\S]*?document\.documentElement\.dataset\.theme[\s\S]*?<\/head>/u,

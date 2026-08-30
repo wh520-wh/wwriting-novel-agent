@@ -177,16 +177,16 @@ test("drawer-panels 成本展示统一走 formatYuan，无 formatMoney", async (
 test("章节导出操作使用文字按钮，不得复用固定宽度的图标按钮", () => {
   assert.match(
     drawerPanelsSource,
-    /exportBtn\.className\s*=\s*["']small-button export-btn["']/u,
-    "导出成书应使用可容纳文字的按钮样式"
+    /exportBtn\.className\s*=\s*["']btn btn--sm export-btn["']/u,
+    "导出成书应使用可容纳文字的按钮基元"
   );
   assert.match(
     drawerPanelsSource,
-    /revealBtn\.className\s*=\s*["']small-button export-reveal-btn["']/u,
-    "打开导出文件夹应使用可容纳文字的按钮样式"
+    /revealBtn\.className\s*=\s*["']btn btn--sm export-reveal-btn["']/u,
+    "打开导出文件夹应使用可容纳文字的按钮基元"
   );
   assert.match(stylesSource, /\.export-toolbar\s*\{[^}]*display:\s*flex/u, "导出工具栏应保持稳定的横向布局");
-  assert.match(stylesSource, /\.export-toolbar\s+\.small-button\s*\{[^}]*white-space:\s*nowrap/u, "导出按钮文字不得被压缩换行");
+  assert.match(stylesSource, /\.export-toolbar\s+\.btn\s*\{[^}]*flex:\s*0\s+0\s+auto/u, "导出按钮不得被工具栏压缩");
 });
 
 test("settings-modal.js re-exports the pure connection helper", () => {

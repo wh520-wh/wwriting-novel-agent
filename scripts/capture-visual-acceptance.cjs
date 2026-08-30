@@ -1690,10 +1690,10 @@ async function main() {
     label: "chapters-tab-vp",
     expect: () => read(win, "document.querySelector('.dtab[data-dtab=\"chapters\"]').classList.contains('on')")
   });
-  // 点击章节历史按钮（chrow-history）打开版本面板
-  const chrowHistoryExists = await read(win, "Boolean(document.querySelector('.chrow-history'))");
+  // 点击章节历史按钮（data-testid=chapter-history-btn）打开版本面板
+  const chrowHistoryExists = await read(win, "Boolean(document.querySelector('[data-testid=\"chapter-history-btn\"]'))");
   if (chrowHistoryExists) {
-    await clickAndReadRetry(win, ".chrow-history", {
+    await clickAndReadRetry(win, '[data-testid="chapter-history-btn"]', {
       label: "chapter-history-vp",
       expect: () => read(win, "Boolean(document.querySelector('[data-version-panel]'))")
     });
@@ -2420,7 +2420,7 @@ async function runRound7({ mainRepo, roundDir, theme }) {
       label: "drawer-model-tab",
       expect: () => read(win, "document.querySelector('.dtab[data-dtab=\"model\"]').classList.contains('on')")
     });
-    await clickAndReadRetry(win, "#drawer-body .save-btn", {
+    await clickAndReadRetry(win, "#drawer-body .btn.btn--primary", {
       label: "open-model-settings",
       settleMs: 300,
       expect: () => read(win, "document.getElementById('settings-scrim').classList.contains('show') && Boolean(document.querySelector('#settings-detail [data-provider-list]'))")

@@ -123,7 +123,7 @@ export function createWorkGroupView(ctx) {
     if (isRunActive(run)) {
       const stop = doc.createElement("button");
       stop.type = "button";
-      stop.className = "agent-stop-btn";
+      stop.className = "agent-stop-btn btn btn--sm btn--ghost";
       stop.dataset.testid = "agent-stop";
       // Round10：停止 = 「图标 + 文字」紧凑次按钮；可访问名明确为「停止当前任务」。
       stop.setAttribute("aria-label", "停止当前任务");
@@ -158,7 +158,7 @@ export function createWorkGroupView(ctx) {
     } else if (run.status === "failed" || run.status === "interrupted") {
       const retry = doc.createElement("button");
       retry.type = "button";
-      retry.className = "agent-retry-btn";
+      retry.className = "agent-retry-btn btn btn--sm btn--ghost";
       retry.dataset.testid = "agent-retry";
       retry.textContent = "重试";
       // 防连点：点击即禁用；请求失败才恢复（成功路径由 run_started 重建头部，

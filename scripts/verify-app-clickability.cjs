@@ -360,16 +360,6 @@ async function main() {
     settleMs: 150,
     expect: () => read(win, "document.documentElement.dataset.theme === 'light'")
   }));
-  clicks.push(await clickAndRead(win, "#privacy-toggle", {
-    label: "privacy-toggle",
-    settleMs: 150,
-    expect: () => read(win, "document.getElementById('app').dataset.privacy === 'on'")
-  }));
-  clicks.push(await clickAndRead(win, "#privacy-toggle", {
-    label: "privacy-toggle-back",
-    settleMs: 150,
-    expect: () => read(win, "document.getElementById('app').dataset.privacy === 'off'")
-  }));
 
   // ⑧ AgentSurface composer：发送普通消息 → 用户消息出现、Run 完成
   gateway.setSteps([{ type: "reply", text: "你好，我在这里。普通文件夹也可以直接聊天。" }]);

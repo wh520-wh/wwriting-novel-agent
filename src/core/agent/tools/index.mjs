@@ -4,7 +4,7 @@
 // 对 Agent 提供唯一工具入口：
 //
 //   const tools = createToolRuntime({ projectOperations, journal, permissionPolicy, shellRuntime, skills, secrets });
-//   tools.definitions(context);            // -> OpenAI 原生 function definitions（16 个工具：10 通用 + 6 深）
+//   tools.definitions(context);            // -> OpenAI 原生 function definitions（全量工具，基数由测试钉住）
 //   await tools.execute(toolCall, context); // 单次工具调用的 schema→权限→审计→执行→事件闭环
 //
 // 内部实现隐藏：schema 注册、权限判定（含硬能力拒绝与输入级临时授权）、journal 审计事件、

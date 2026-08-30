@@ -1013,14 +1013,8 @@ async function main() {
   // 清理 composer
   await setInputValue('[data-testid="agent-composer-input"]', "");
 
-  // ============ 隐私 / 深色 ============
-  await scene("12-privacy-on", "隐私模式开启：正文模糊", async () => {
-    await clickEl("#privacy-toggle", { label: "隐私开关", settleMs: 500 });
-    await waitUntil("document.querySelector('#app').dataset.privacy === 'on'", "隐私模式开启", 5000);
-  });
-  await clickEl("#privacy-toggle", { label: "隐私开关（还原）", settleMs: 400 });
-  await waitUntil("document.querySelector('#app').dataset.privacy === 'off'", "隐私模式还原", 5000);
-
+  // ============ 深色 ============
+  // （原 12-privacy-on 场景随隐私模式删除而移除，编号留空避免场景顺延改名）
   await scene("13-dark-main", "深色主题：主界面", async () => {
     await setTheme("dark");
   });

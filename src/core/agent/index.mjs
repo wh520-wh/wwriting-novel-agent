@@ -32,6 +32,14 @@
 //   // retryCompaction/cancelCompaction/snapshot/exportHistory/clearHistory）均可选传
 //   // sessionId。
 import { createAgentRuntime } from "./runtime.mjs";
+import { createToolRuntime } from "./tools/index.mjs";
+
+// Task 6：工具名单由注册表派生，注册表是生产工具集的唯一权威来源（不加工具时
+// 无需维护独立名单）。公共 seam 只暴露名单（验证脚本/测试据此对账），不暴露
+// ToolRuntime 本体；实例化仅用于触发注册，journal/skills 用桩即可。
+export function productionToolNames() {
+  return createToolRuntime({ journal: { append: async () => {} }, skills: {} }).toolNames();
+}
 
 export function createProjectAgent(dependencies = {}) {
   const runtime = createAgentRuntime(dependencies);

@@ -2486,8 +2486,10 @@ test("agent.css 保留内容列 token、向上菜单与工作组/动效布局", 
     /\.agent-plan-item\s*\{[^}]*grid-template-columns:\s*18px\s+minmax\(0,\s*1fr\)/u,
     "plan 行应为稳定 grid 轨道"
   );
-  // 按钮尺寸不随状态抖动（立即/撤回共用固定最小宽度）
-  assert.match(css, /\.agent-stop-btn\s*,\s*\.agent-retry-btn\s*,\s*\.agent-promote[\s\S]*\.agent-withdraw[\s\S]*min-width/u, "控制按钮应有固定最小宽度");
+  // 按钮尺寸不随状态抖动（四件套各留固定最小宽度；皮肤走 .btn--ghost 基元）
+  assert.match(css, /\.agent-stop-btn\s*\{[^}]*min-width:\s*64px/u, "停止按钮应有固定最小宽度");
+  assert.match(css, /\.agent-retry-btn\s*\{[^}]*min-width:\s*64px/u, "重试按钮应有固定最小宽度");
+  assert.match(css, /\.agent-promote,[\s\S]*?\.agent-withdraw\s*\{[^}]*min-width:\s*56px/u, "立即/撤回应有固定最小宽度");
   // 窄视口无重叠
   assert.match(css, /@media\s*\(max-width:\s*560px\)[\s\S]*\.agent-queue-item\s*\{/u, "窄视口应调整排队布局避免重叠");
   assert.match(

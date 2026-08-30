@@ -751,11 +751,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
   padding: 2px 0 8px;
 }
 
-.export-toolbar .small-button {
-  flex: 0 0 auto;
-  min-height: 30px;
-  white-space: nowrap;
-}
+.export-toolbar .btn { flex: 0 0 auto; }
 
 
 /* Cost panel — 3-section layout */
@@ -977,8 +973,16 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .btn--danger { color: var(--red); border-color: var(--red-line, var(--line)); }
 .btn--danger:hover:not(:disabled) { background: var(--red-soft); border-color: var(--red); color: var(--red); }
 
+/* 幽灵变体（round17 审查）：透明底/无边框/无阴影，吸收 agent 四件套私有基座；
+   具体配色与 hover 由上下文类覆盖 */
+.btn--ghost { background: transparent; border-color: transparent; color: var(--muted); box-shadow: none; }
+.btn--ghost:hover:not(:disabled) { background: transparent; color: var(--ink); border-color: var(--line-hover); }
+
 /* 创建弹窗主按钮保持通栏（原 .save-btn 的布局职责） */
 #create-submit { width: 100%; margin-top: 4px; }
+
+/* 抽屉面板主按钮同走通栏（原 .save-btn 的布局职责，round17 审查补） */
+.dpanel-body .btn--primary { width: 100%; }
 
 /* 创建项目反馈（round17 §3.5）：元素与 JS 早已存在，此处补样式兑现承诺。
    校验错误只经 .create-status 展示（无 toast 兜底），error 态必须可见。
@@ -2047,88 +2051,24 @@ input.spd-input[type="number"] { max-width: 160px; }
 
 
 
-/* 故障卡 */
-.failure-card {
-  margin: 12px 0;
-  border: 1px solid var(--amber-soft);
-  border-left: 3px solid var(--amber);
-  background: var(--amber-soft);
-  border-radius: var(--r);
-  padding: 14px 16px;
-}
-
-.failure-card.kind-budget-exhausted,
-.failure-card.kind-provider-error {
-  border-left-color: var(--red);
-  background: var(--red-soft);
-  border-color: var(--red-soft);
-}
-
-.failure-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-bottom: 8px;
-}
-
-.failure-actions button {
-  border: 1px solid var(--line);
-  background: var(--surface);
-  padding: 6px 12px;
-  border-radius: var(--r-sm);
-  font-size: var(--font-sm);
-  cursor: pointer;
-}
-
-.failure-actions button:hover:not(:disabled) {
-  background: var(--hover);
-}
-
-.failure-actions button.destructive {
-  border-color: var(--red);
-  color: var(--red);
-}
-
-.failure-actions button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.failure-resolved {
-  color: var(--muted);
-  font-size: var(--font-xs);
-  margin: 6px 0;
-}
-
-
 /* 主列内容容器（Topbar + AgentSurface）。右侧 quick rail 已删除（Task 12）。 */
 .main-inner { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 
 /* 顶部「面板」按钮：quick rail 删除后，章节/资料/成本经 drawer 到达。
-   带文字标签的次级操作，窄屏退化为纯图标按钮。 */
+   皮肤走 .btn 基元（index.html 挂 btn 类），此处只留差异：
+   32px 高度、r-sm 圆角、压平 .tbtn 的 32px 定宽、图标色与窄屏纯图标退化。 */
 .topbar-actions .drawer-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
   width: auto;
   min-width: 0;
   height: 32px;
   padding: 0 11px;
   border-radius: var(--r-sm);
-  border: 1px solid var(--line);
-  background: var(--surface);
-  color: var(--ink-2);
-  font-size: var(--font-sm);
-  font-weight: var(--weight-semibold);
-  white-space: nowrap;
-  transition: background 100ms ease, color 100ms ease;
 }
-.topbar-actions .drawer-toggle:hover { background: var(--hover); color: var(--ink); }
 .topbar-actions .drawer-toggle span { display: inline; }
 .topbar-actions .drawer-toggle svg { display: block; color: var(--muted); }
 @media (max-width: 560px) {
   .topbar-actions .drawer-toggle span { display: none; }
-  .topbar-actions .drawer-toggle { width: 32px; padding: 0; justify-content: center; }
+  .topbar-actions .drawer-toggle { width: 32px; padding: 0; }
 }
 
 
@@ -2180,7 +2120,7 @@ input.spd-input[type="number"] { max-width: 160px; }
 
 .research-form .research-input { min-width: 0; font: inherit; font-size: var(--font-sm); padding: 6px 9px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); color: var(--ink); }
 
-.research-form .small-button { flex: 0 0 auto; height: 36px; }
+.research-form .btn { flex: 0 0 auto; }
 
 /* Round10：来源状态短 badge；untrusted = amber（不只靠颜色） */
 .source-badge {
@@ -2235,13 +2175,6 @@ input.spd-input[type="number"] { max-width: 160px; }
 }
 .proj-empty { padding: 14px 12px; font-size: var(--font-sm); color: var(--muted); line-height: 1.6; }
 .dpanel-empty { padding: 14px 12px; font-size: var(--font-sm); color: var(--muted); }
-.small-button {
-  font: inherit; font-size: var(--font-xs); font-weight: var(--weight-medium); cursor: pointer;
-  padding: 6px 12px; border-radius: var(--r-sm); border: 1px solid var(--line);
-  background: var(--surface-2); color: var(--ink-2); transition: border-color .2s ease, color .2s ease;
-}
-.small-button:hover { border-color: var(--accent-line); color: var(--accent); }
-.small-button.promote { background: var(--accent); color: var(--btn-ink); border-color: var(--accent); }
 .spd-toggle { display: flex; align-items: center; justify-content: space-between; }
 .toast.error { background: var(--red); color: var(--btn-ink); }
 .toast.error svg { color: var(--btn-ink); }
