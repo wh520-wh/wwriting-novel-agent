@@ -105,5 +105,8 @@ T0a → T0b → `npm test` 复跑（数字来源兼健康检查；若红，先�
 
 - T0a：0f9307b（392 文件：391 删除 + .gitignore）。
 - T0b：f515966（AGENTS.md +20 / README 双语 1953→1986 / WWRITING.md +11）。
-- `npm test`：**1986 pass / 0 fail**（2026-09-05，exit 0，93s）——README 现值与实跑一致。
-- （T1/T2/T3 完成后回填提交号与自检结果。）
+- `npm test`：**1986 pass / 0 fail**（2026-09-05，exit 0，93s）——README 现值与实跑一致；全部文档改动（含 WWRITING.md 删除）提交后复跑 **1986/1986**（79s），最终提交状态全绿。
+- T1：8a4cbce（AGENTS.md 承接 + project-progress.md 新建 + 仓库根 WWRITING.md 删除 + spec 入库；欠账清单 #9 makeEvent 经 grep 终核确认已消解，直接关闭）。
+- T2：beeb212（README 双语基线注；数字 1986 与实跑一致不改写）。
+- T3：AGENTS.md 体积红线条目口径化 + 样式体积追踪线（提交号见 git log，随本节回填提交）。
+- 自检：§5 验收清单逐项核对；`git diff --stat dcf4faf..HEAD` 确认零 `src/`/`tests/`/`scripts/` 改动。
