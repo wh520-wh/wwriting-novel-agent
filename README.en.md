@@ -8,6 +8,8 @@ English | [简体中文](README.md)
 
 > Eight iterations since v0.4.0 (multi-session, model config rework, plugin-based skills, memory system, kernel partition refactor); full changelog in [CHANGELOG.md](CHANGELOG.md). The architecture below builds on the unified kernel established in v0.4.0; v0.5.0 reworked the internals of the agent kernel, model layer, and front-end controls without changing the public interface.
 
+> Statistics baseline (test counts etc.): recorded 2026-09-05｜source: `npm test` run (1986/1986, exit 0).
+
 ### Architecture
 
 - **Single backend kernel (ProjectAgent)**: chat loop, writing loop, chapter queue, and stop/resume all live in one deep `ProjectAgent` kernel exposed through a single public interface (`src/core/agent/index.mjs`). v0.5.0 split the kernel into domain modules (runtime / journal / tools / compaction), each guarded by line-count and seam rules.
