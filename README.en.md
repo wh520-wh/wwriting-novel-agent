@@ -44,7 +44,7 @@ WWriting is not a "describe it and it writes it" generator. It is a desktop writ
 - **Visible reasoning**: the model's reasoning streams separately from the body text; thought items show real elapsed time ("thought for N s") and fold up when done.
 - **Controlled web research**: offline by default; fetched sources are snapshotted as untrusted material, never executed as instructions.
 - **Model config page**: two-level provider/model management (add, enable/disable, set default, delete), model-list pull from providers, inline connection test; presets include official DeepSeek and Xiaomi MiMo, and any OpenAI-compatible gateway works; API keys stay on your machine.
-- **Verification culture**: 1953 unit/integration tests all green, plus a one-command local acceptance suite (`npm run verify:local`); even UI regressions like "button visible but unclickable" are caught by a real Electron click-through harness.
+- **Verification culture**: 1986 unit/integration tests all green, plus a one-command local acceptance suite (`npm run verify:local`); even UI regressions like "button visible but unclickable" are caught by a real Electron click-through harness.
 
 ## Quick Start
 
@@ -133,7 +133,7 @@ AGENTS.md           # optional: project writing instructions (ordinary authorita
 ## Verification Commands
 
 ```powershell
-npm test                            # 1953 unit/integration tests
+npm test                            # 1986 unit/integration tests
 npm run verify:local                # full local acceptance (includes packaging; slow)
 npm run verify:app-shell            # GUI, folder open, settings, skills, research tools
 npm run verify:app-clickability     # real Electron window, clicks every critical button
