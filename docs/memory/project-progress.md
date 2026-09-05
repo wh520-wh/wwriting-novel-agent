@@ -1,48 +1,13 @@
----
-schema_version: 1
----
+# 项目进度与欠账清单
 
-# WWriting 项目记忆
+记录于：2026-09-05｜状态：当前有效｜承接：原仓库根 `WWRITING.md`「当前进度」逐字迁移（第九至十六轮）；第十七轮为 round18 回填；欠账清单为 2026-09-05 合并。
+> 各轮数字均为当时值；当前基线见下节。本文件由 AGENTS.md「开工必读」指向，是轮次记录的唯一滚动入口。
 
-## 项目定位
+## 当前基线（记录于 2026-09-05）
 
-- 项目：WWriting Novel Agent（写作 Agent 应用）
-- 当前目标：持续迭代 Agent 核心能力与 UI 体验
-
-## 当前有效要求
-
-- 章节篇幅由用户配置（min_words_per_chapter / target_words_per_chapter）
-- 写作流程：草稿 → 门禁检查 → 提交 → 入账（finalize_revision）→ 记忆维护三件套
-- 记忆三件套纪律：提交/入账/回滚后必须依次完成 update_memory → 更新 book_summary.md → 更新 WORKLOG.md
-- 断点恢复纪律：恢复上下文时先读 WORKLOG.md，从上次进行处继续
-
-## 工程收敛规则（给后续模型）
-
-- **先删后拆**：只有存在至少两个独立调用方、独立状态边界或独立验收目标时才拆模块；单一调用链的薄包装、转发层和“未来可能复用”的接口直接删除。拆分后每个模块必须有单一职责、短入口和最小公开面。
-- **体积红线是认知红线**：单文件超过 1200 行或约 50 KiB 时，先停止加功能，优先删除重复逻辑、合并状态和下沉纯函数；不得为了过线制造无意义文件。每次拆分都要说明调用边界和删除量。
-- **测试只锁行为**：新增测试必须对应用户可见行为、数据安全不变量或曾经复现的回归；禁止仅为提高覆盖率、记录任务编号或复制实现细节而新增薄测试。重复断言合并，历史过程说明写文档，不写测试。
-- **产品优先级**：默认顺序是“稳定打开工作区 → 发消息 → 稳定写入章节 → 可恢复 → 可验证交付”。新功能若不能改善这条主路径，必须先证明不会增加主路径复杂度；否则延后。
-- **过程产物不入库**：截图、跑批输出、临时报告和本地验收产物写入 `artifacts/` 或 `.local/`，默认不纳入 Git；只有能作为长期产品规格、用户文档或可复现夹具的材料才提交。
-- **文档必须时间标注**：凡是会变化的数字、状态、架构结论、验收结果，都在同一条记录前加 `记录于 YYYY-MM-DD`，并使用 `状态：当前有效|历史记录|待复核`。历史轮次不得伪装成当前状态。
-- **文档数字来源**：测试数、文件数、版本号和验收结果必须来自对应命令或发布脚本；README 只写当前值，轮次记录写当时值。若无法自动生成，提交前必须用命令复核并同步所有语言版本。
-- **给便宜模型的输出格式**：先列“删什么 / 为什么 / 影响”，再改代码；每轮只处理一个收敛目标；改动后运行最小相关测试，并报告实际命令、结果和未处理项。禁止顺手扩 scope。
-
-## 写作风格
-
-- 技能：fast-readable（快节奏易读风格）
-
-## 权威文件
-
-- 正文：正文/（章节文件，系统保护）
-- 故事摘要：book_summary.md（项目根目录，AI 自由维护）
-- 工作日志：WORKLOG.md（项目根目录，AI 自由维护）
-- 设定档案：memory/continuity.json | memory/continuity.md（仅 update_memory 工具更新）
-- 章节索引：memory/chapter_index.json（系统维护，不可直接编辑）
-- 章节记忆：memory/chapter_memory.json（系统维护，不可直接编辑）
-- 检查点：checkpoints/（系统维护，不可直接编辑）
-- 章节版本库：.versions/chapters/（系统维护，append-only，完整保留不裁剪）
-- 记忆文件版本库：.versions/memory/（系统维护，append-only，每文件 200 版上限）
-- 项目配置：project.yaml（系统维护，不可直接编辑）
+- 测试数：1986/1986（依据：`npm test` 实跑，exit 0，93s）
+- 样式体积现状：`src/app-shell/styles.css` 2613 行、`src/app-shell/agent/agent.css` 2171 行（依据：`wc -l`）
+- 后端内核现状：`journal.mjs` 1183 行、`runtime.mjs` 1150 行（依据：`wc -l`，均 ≤1200 红线内）
 
 ## 当前进度
 
@@ -74,4 +39,31 @@ schema_version: 1
   - **过程记录**：提交/守卫注释 T10-T13/T15-T18 为执行期编号，与计划编号差 2-3 位（T8/T9 拆分落为 T11/T12 等），文件头双编号口径保持原样；verify-app-shell 静态契约 SKILL_SOURCE_LABELS 断言未随波B 迁移指向旧文件 → T14.1 修复（改指向 settings-modal-skills.js）；T24 守卫初版纯状态检查被质量审查抓出死路（failed→cancel→submit 永久锁死）→ 收窄为「run 非终态 + failed」才拒（3ee1cd2）；规格 D2 原文「chapter_index 派生」实测订正为「chapter_memory 派生」（chapter-memory.mjs:195-197）。
   - **规模**：79 文件 +1,396/-1,269（净 +127，测试增量为主，不含竞争研究产物）。
   - **详见**：规格与执行记录 `docs/design/2026-08-24-round16-continuity-wiring-spec.md`（8 条预登记偏差全部回填 + 执行期新发现）、`docs/adr/0007-continuity-supply-via-tool-pull.md`、bug 报告 `docs/memory/2026-08-24-bug-hunt-report.md`、视觉基线 `artifacts/visual-acceptance/2026-08-24-round16/round-01/`。
-  - **遗留下轮**：完读率回放（十七轮开场，共用 chapter_memory 底座）；防呆提醒视 sim 冒烟观察决定；真实 API 模式 sim:user-flow 复跑（需 DEEPSEEK_API_KEY）；whfind-bugs #6（段尾 64KB 撕裂行）#7（run_log UTF-8 块边界）与脱敏名单次要面（runtime 级可变 secrets 容器）；T22 活体路径与 retry-after-cancel 覆盖；session-sidebar.mjs 维护契约注释订正（buildRecoveryHint 已与新语义分歧）；T11 makeEvent 事件工厂合并（若仍遗留）。
+- 第十七轮完成（2026-08-28 至 08-30，2026-09-05 回填）：**UI 一致性收敛 + 去 AI 腔可度量升级**（双线；规格 `docs/design/2026-08-28-round17-spec.md`；规模口径：窗口提交 43 个，其中带 round17 标记 30 个，另含 v0.5.1 发布提交与 2401ba8/dcf4faf 等无标记尾部提交；记录于 2026-09-05｜依据：git log）。
+  - **第一部分 UI 一致性收敛**（app-shell）：隐私模式整体删除（入口/状态/peek/data-away 全链路；对齐决议：承诺与实现长期不符，修复价值低于维护成本故废弃）；暗色硬编码色收敛（新增 `--ink-shadow`/`--ink-scrim` 三元组 token 共 9 处替换、亮色 `::selection` 改 accent 派生、`.sw-dot` 恒白刻意保留并注释）；按钮基元 `.btn`/`.btn--primary`/`.btn--sm`（6+ 套平行实现全量改名不留别名，36/28px 两档，agent.css 重复定义合并）；设计 token 归并（字阶严格 7 档零新增、字重 4 档、圆角 token 去重 3 档+胶囊）；死代码清理（topbar-sub 隐藏元素、`.sp-av`、`.sp-item`/`.sp-name`、孤儿 spin keyframes；补创建弹窗 spinner 与 create-status 校验错误可见）；上下文圆环 28→32 单点回退（4eed87d）。
+  - **第二部分 去 AI 腔可度量升级**（core/skills）：`style-metrics.mjs` 纯函数模块（修饰词密度/句长 CV/三连排比候选，O(n²) 上限注释与顶层契约冻结四键）；`readWorkspaceTextFile` 共享读取器；`style_stats` 只读工具注册（工具不变量 15→16，注册顺序契约保持；ADR 0008：只读工具、不建程序化门禁）；`avoid-ai-voice` v2.0.0（量化阈值 + style_stats 审校反馈环，质量审查后补 below_floor 维度指令）。
+  - **尾部修复**：DeepSeek v4 思考模式钉死 + 思考回传契约 + 零思考轮「未思考」标签（2401ba8）；六维度审查修复（复用/简化/效率/层次/可用，安全零发现，dcf4faf）；runtime.mjs 悬空注释残句删除（2ae01d8）。
+  - **配套**：ADR 0008；竞品调研 `docs/research/2026-08-29-competitive-research-ai-voice.md`；输入证据 46 张截图当时入库（5dcde30），2026-09-05 按「过程产物不入库」规则移出 Git（0f9307b），本地保留。
+  - **验收门禁**：门禁 1 全量 1982 pass / 0 fail（2026-08-29，round17 规格执行记录）；门禁 4 反馈环 10 样本 10/10 达标（修饰词密度前均值 82.81/千字 → 后 0；CV 0.37 → 0.51；排比候选 2 → 0；逐段数据 `artifacts/now/round17-acceptance/manual-verification.md`）；最终全量以「当前基线」1986/1986 为准（2026-09-05 实跑）。
+
+## 当前欠账清单（2026-09-05 合并 r16+r17，只记不排）
+
+| # | 事项 | 来源 | 状态与去向 |
+|---|------|------|-----------|
+| 1 | 完读率回放（共用 chapter_memory 底座） | r16 | r17 未认领，悬空；待分级表排优先级 |
+| 2 | 防呆提醒（视 sim 冒烟观察决定） | r16 | 观察项；r17 sim mock 22/22 无新触发，保持观察 |
+| 3 | 真实 API 模式 sim:user-flow 复跑 | r16 | 阻塞：需 DEEPSEEK_API_KEY |
+| 4 | whfind-bugs #6（段尾 64KB 撕裂行） | r16 | 数据安全，未修 |
+| 5 | whfind-bugs #7（run_log UTF-8 块边界） | r16 | 数据安全，未修 |
+| 6 | 脱敏名单次要面（runtime 级可变 secrets 容器） | r16 | 未修 |
+| 7 | T22 活体路径与 retry-after-cancel 覆盖 | r16 | 测试覆盖债，归测试治理清单（r19） |
+| 8 | session-sidebar.mjs 维护契约注释订正（buildRecoveryHint 语义分歧） | r16 | 候选 r20 顺带 |
+| 9 | T11 makeEvent 事件工厂合并 | r16 | 已消解（2026-09-05 grep `src/` 无 makeEvent 定义） |
+| 10 | 人类语料基线校准（20-30 段真人 vs AI 盲测反推人类区间，校准两阈值常量） | r17 | 未启动 |
+| 11 | P1 事实/来源可验证性自检清单（审校流程） | r17 | 未启动 |
+| 12 | P2 第三方检测 API 集成可行性评估（仅局部风险扫描，非门禁） | r17 | 未启动 |
+| 13 | UI 指标展示（前提：指标经实机验证有区分度） | r17 | 未启动 |
+| 14 | UI 第二批：动效单轨化（motion-runtime.js 与 CSS transition 双轨，motion-runtime 现存）+ 间距 token 化（27 个像素值） | r17 §2.2 | 未启动 |
+| 15 | CHANGELOG 与版本号 | r17 | 常设流程项，归属 ship 流程（登记归属，非欠账） |
+
+> 排序原则：优先级不在本清单内定，由产品功能分级表（主路径/恢复能力/验证能力/增强功能，r19 交付）裁决。
