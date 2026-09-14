@@ -1,0 +1,16 @@
+{
+  "session": { "session_id": "ui-repro", "status": "idle", "last_seq": 11 },
+  "events": [
+    { "seq": 1, "session_id": "ui-repro", "run_id": null, "type": "session_created", "payload": {} },
+    { "seq": 2, "session_id": "ui-repro", "run_id": "run-1", "type": "input_queued", "payload": { "input_id": "in-1", "text": "继续" } },
+    { "seq": 3, "session_id": "ui-repro", "run_id": "run-1", "type": "run_started", "payload": { "input_id": "in-1", "workflow": "general" } },
+    { "seq": 4, "session_id": "ui-repro", "run_id": "run-1", "type": "model_turn_started", "payload": { "turn_id": "turn-1", "input_id": "in-1", "reasoning_capability": "supported" } },
+    { "seq": 5, "session_id": "ui-repro", "run_id": "run-1", "type": "reasoning_completed", "payload": { "turn_id": "turn-1", "input_id": "in-1", "text": "", "availability": "empty" } },
+    { "seq": 6, "session_id": "ui-repro", "run_id": "run-1", "type": "model_turn_completed", "payload": { "turn_id": "turn-1", "input_id": "in-1", "outcome": "completed" } },
+    { "seq": 7, "session_id": "ui-repro", "run_id": "run-1", "type": "tool_call_started", "payload": { "tool_call_id": "tc-1", "activity_id": "act-1", "name": "shell", "args": { "command": "npm test" } } },
+    { "seq": 8, "session_id": "ui-repro", "run_id": "run-1", "type": "tool_call_completed", "payload": { "tool_call_id": "tc-1", "activity_id": "act-1", "name": "shell", "exit_code": 0, "duration_ms": 12 } },
+    { "seq": 9, "session_id": "ui-repro", "run_id": "run-1", "type": "assistant_message_completed", "payload": { "input_id": "in-1", "text": "这是默认可见的最终答案。" } },
+    { "seq": 10, "session_id": "ui-repro", "run_id": "run-1", "type": "input_consumed", "payload": { "input_id": "in-1" } },
+    { "seq": 11, "session_id": "ui-repro", "run_id": "run-1", "type": "run_completed", "payload": {} }
+  ]
+}

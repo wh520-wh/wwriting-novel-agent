@@ -1,0 +1,448 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { loadConfigLayers, loadEffectiveWorkspaceConfig } from "./config-runtime.mjs";
+import { readEvents } from "./event-log.mjs";
+import { isPathInside, pathExists, readJson, safeJoin } from "./fs-utils.mjs";
+import { loadProject } from "./project-store.mjs";
+import { loadProviderStoreReadOnly, migrateProjectFile } from "./project-model-migration.mjs";
+import { inspectChapterArtifact } from "./chapter-artifact.mjs";
+import { skillService } from "./skills/index.mjs";
+
+// 项目仪表盘（统一 Agent 内核计划 Task 9 重写）。
+// 只返回项目/章节/成本/设置/技能/资料等静态与领域事实；不再读取旧运行态文件，
+// 不再返回旧审查报告、故障卡、recent tool events 或运行进度推断（运行状态由
+// AgentSurface 消费 ProjectAgent snapshot；dashboard 不推测 Agent 是否繁忙）。
+// Task 12：技能列表改读新 catalog；Task 13：DTO 移除启停集合字段（发现即生效）。
+//（发现即生效，无启停集合）。
+// Task 6：可选注入 options.agent，把 agent.sessions(projectRoot) 的会话列表并入
+// 响应（前端左侧栏渲染对话列表）；未注入或调用失败 → 空列表，不阻塞 dashboard。
+// Task 6（模型迁移）：可选注入 options.secretsRoot（与 workspaceStore 成对）时，
+// 读路径触发 project.yaml/私有 settings 快照→引用迁移，并透出 migration_notice
+//（本次请求实际发生迁移才为 true）；注入 secretsRoot 时同时用 modelStoreLoader
+// 把引用解析为完整配置，保证 active_model 展示字段在迁移后不退化。
+export async function loadDashboardData(workspaceRoot, options = {}) {
+  const workspace = path.resolve(workspaceRoot);
+  const projectRoot = options.projectRoot
+    ? normalizeProjectRoot(workspace, options.projectRoot, { allowExternal: options.allowExternalProjectRoot === true })
+    : options.disableProjectFallback === true
+      ? null
+      : await findLatestProjectRoot(workspace);
+
+  if (!projectRoot) {
+    return {
+      ok: true,
+      hasProject: false,
+      workspaceRoot: workspace,
+      project: null,
+      sessions: [],
+      active_session_id: null,
+      // 任务 6：无项目时没有可迁移的配置，恒为 false（字段稳定供前端读取）。
+      migration_notice: false
+    };
+  }
+
+  // 任务 6：dashboard 读路径同样触发快照→引用迁移（幂等；mock 归零、匹配清单转引用、
+  // 其余保持字面）。仅在应用组合根注入 workspaceStore + secretsRoot 时生效——
+  // loadDashboardData 是读路径模块，未注入 secretsRoot 的测试/轻量调用不产生任何
+  // 写盘。迁移先行：本响应与后续响应读到的是引用形态，配合下方 modelStoreLoader
+  // 解析为完整配置，active_model 展示字段不退化。结果透出 migration_notice——本次
+  // 请求实际发生迁移才为 true（前端据此弹「旧配置已升级」toast，仅本次响应）。
+  let migrationNotice = false;
+  if (projectRoot && typeof options.workspaceStore?.loadSettings === "function" && options.secretsRoot) {
+    migrationNotice = (await migrateProjectFile(projectRoot, {
+      workspaceStore: options.workspaceStore,
+      secretsRoot: options.secretsRoot
+    }).catch(() => ({ changed: false }))).changed;
+  }
+
+  // 普通文件夹（无 project.yaml）也是合法工作区（SPEC §2.1）：应用私有 history
+  // 在 stateRoot，文件夹本身即可立即聊天。返回 hasProject:false 的最小工作区形状，
+  // 绝不把 ENOENT/内部错误暴露给用户（SPEC §11）。
+  if (!(await pathExists(safeJoin(projectRoot, "project.yaml")))) {
+    const sessionData = await readSessions(projectRoot, options.agent);
+    return {
+      ok: true,
+      hasProject: false,
+      workspaceRoot: workspace,
+      projectRoot,
+      project: null,
+      sessions: sessionData.sessions,
+      active_session_id: sessionData.active_session_id,
+      migration_notice: migrationNotice
+    };
+  }
+
+  const [project, chapterIndex, events, cost, sessionData] = await Promise.all([
+    loadProject(projectRoot),
+    readJson(safeJoin(projectRoot, "memory", "chapter_index.json"), { chapters: [] }),
+    readEvents(projectRoot, { limit: 80 }),
+    readJson(safeJoin(projectRoot, "cost.json"), null),
+    readSessions(projectRoot, options.agent)
+  ]);
+  const config = await loadConfigLayers(projectRoot, project);
+  // 读路径必须与写路径同源（Task 1）：settings-routes 把权限档/模型/推理强度写入应用
+  // 私有 workspace settings，agent runtime 以 loadEffectiveWorkspaceConfig 为权威；
+  // dashboard 若只读 config 层（project.yaml + config/*.json），YOLO 等档位重开后
+  // 会回落到默认 confirm。注入 workspaceStore 时用同一权威覆盖 effective 字段；
+  // 该权威同样覆盖 project.yaml 里可能领先于 local/policy 层的 budget_config /
+  // research_config——agent runtime 也不读 config/*.json 层。
+  let effectiveWs = null;
+  if (typeof options.workspaceStore?.loadSettings === "function") {
+    effectiveWs = await loadEffectiveWorkspaceConfig(projectRoot, {
+      workspaceStore: options.workspaceStore,
+      // 任务 6：迁移后 active_model 为引用形态，注入 modelStoreLoader 解析为完整
+      // 配置（provider/model_name/base_url），保证 dashboard 展示字段在迁移后不退化。
+      // 与组合根运行时同一解析源，但走只读加载——dashboard 是读路径，不触发
+      // model-profiles.json 的 v1→v2 写回（v1 读写路径已在 Task 17 cutover 删除，
+      // 该文件由 v2 store 独占）。
+      ...(options.secretsRoot
+        ? { modelStoreLoader: () => loadProviderStoreReadOnly(options.secretsRoot) }
+        : {})
+    });
+    // 覆盖 active_model / tool_permissions 等字段（workspace settings 优先，与
+    // settings-routes 合并顺序一致）；config.layers 仍由 loadConfigLayers 提供。
+    config.effective = { ...config.effective, ...effectiveWs };
+  }
+  const effectiveProject = {
+    ...project,
+    effective_config: config.effective
+  };
+  // skills service：注入优先（测试传临时 root 的 service），缺省全局单例。
+  const skills = options.skillService ?? skillService;
+  const [skillsData, sources] = await Promise.all([readSkills(projectRoot, skills), readSources(projectRoot)]);
+
+  const indexedChapters = chapterIndex.chapters ?? [];
+  const chapters = await Promise.all(
+    indexedChapters.map(async (chapter) => ({
+      ...chapter,
+      artifact: await inspectChapterArtifact({
+        projectRoot,
+        chapter: chapter.chapter_no,
+        indexEntry: chapter
+      })
+    }))
+  );
+  const totalWords = chapters.reduce((sum, chapter) => sum + Number(chapter.actual_words ?? 0), 0);
+  const completedChapters = chapters.filter((chapter) => chapter.artifact.state === "committed").length;
+  const targetChapters = Number(project.target_chapters ?? chapters.length ?? 0);
+  const progressPercent = targetChapters > 0 ? Math.round((completedChapters / targetChapters) * 100) : 0;
+
+  return {
+    ok: true,
+    hasProject: true,
+    workspaceRoot: workspace,
+    projectRoot,
+    migration_notice: migrationNotice,
+    project: {
+      project_id: project.project_id,
+      title: project.title,
+      story_seed: project.story_seed,
+      output_format: project.output_format,
+      target_chapters: targetChapters,
+      min_words_per_chapter: project.min_words_per_chapter,
+      target_words_per_chapter: project.target_words_per_chapter,
+      run_mode: project.run_mode,
+      active_model: config.effective.active_model,
+      // 与 config.effective 同源（drawer-panels 消费 effective.tool_permissions 优先，
+      // 再回退 project.tool_permissions）：注入 workspaceStore 时用 workspace 真相源，
+      // 保证 DTO 内部一致。
+      tool_permissions: effectiveWs?.tool_permissions ?? project.tool_permissions ?? {},
+      archived_at: project.archived_at ?? null,
+      budget_config: config.effective.budget_config,
+      research_config: config.effective.research_config
+    },
+    summary: {
+      completedChapters,
+      targetChapters,
+      progressPercent,
+      totalWords,
+      totalTokens: cost?.totalTokens ?? 0,
+      estimatedCost: cost?.estimatedCost ?? 0,
+      costAvailable: cost?.costAvailable ?? false
+    },
+    chapters,
+    events,
+    cost,
+    config: {
+      effective: config.effective,
+      layers: config.layers
+    },
+    skills: skillsData,
+    sources,
+    // Task 6：会话列表 + 最近活跃会话（前端左侧栏渲染对话列表）。
+    sessions: sessionData.sessions,
+    active_session_id: sessionData.active_session_id
+  };
+}
+
+// Task 6：把 agent.sessions(projectRoot) 并入 dashboard。agent 由组合根可选注入；
+// 未注入或调用失败 → 空列表，绝不阻塞 dashboard（与 skills 缺省语义一致）。
+// 品牌新项目由 agent 侧返回 { sessions: [], active_session_id: null }（惰性）。
+// 降级可诊断：sessions 抛错时 console.warn 落一行（projectRoot + 错误信息）。
+async function readSessions(projectRoot, agent) {
+  if (typeof agent?.sessions !== "function") {
+    return { sessions: [], active_session_id: null };
+  }
+  try {
+    const result = await agent.sessions({ projectRoot });
+    return {
+      sessions: Array.isArray(result?.sessions) ? result.sessions : [],
+      active_session_id: result?.active_session_id ?? null
+    };
+  } catch (error) {
+    console.warn(`[app-dashboard] 会话列表加载失败，降级为空列表（${projectRoot}）: ${error?.message ?? String(error)}`);
+    return { sessions: [], active_session_id: null };
+  }
+}
+
+export async function readChapterContent(projectRoot, chapterNo) {
+  const root = path.resolve(projectRoot);
+  const targetNo = Number(chapterNo);
+  if (!Number.isInteger(targetNo) || targetNo < 1) {
+    throw new Error("章节号无效。");
+  }
+  const chapterIndex = await readJson(safeJoin(root, "memory", "chapter_index.json"), { chapters: [] });
+  const chapter = (chapterIndex.chapters ?? []).find((item) => Number(item.chapter_no) === targetNo);
+  if (!chapter) {
+    throw new Error(`未找到第 ${targetNo} 章。`);
+  }
+  const finalPath = resolveInsideRoot(root, chapter.final_path);
+  const draftPath = resolveInsideRoot(root, chapter.draft_path);
+  let sourcePath = null;
+  let isDraft = false;
+  if (finalPath && (await pathExists(finalPath))) {
+    sourcePath = finalPath;
+  } else if (draftPath && (await pathExists(draftPath))) {
+    sourcePath = draftPath;
+    isDraft = true;
+  }
+  if (!sourcePath) {
+    throw new Error(`第 ${targetNo} 章正文文件尚未写入。`);
+  }
+  const raw = await fs.readFile(sourcePath, "utf8");
+  return {
+    ok: true,
+    chapter_no: targetNo,
+    title: chapter.title ?? `第${String(targetNo).padStart(3, "0")}章`,
+    status: chapter.status ?? "queued",
+    actual_words: Number(chapter.actual_words ?? 0),
+    format: sourcePath.endsWith(".txt") ? "txt" : "md",
+    is_draft: isDraft,
+    content: stripChapterMarkup(raw)
+  };
+}
+
+function resolveInsideRoot(root, candidate) {
+  if (typeof candidate !== "string" || candidate.trim().length === 0) {
+    return null;
+  }
+  const resolved = path.isAbsolute(candidate) ? path.resolve(candidate) : path.resolve(root, candidate);
+  return isPathInside(root, resolved) ? resolved : null;
+}
+
+function stripChapterMarkup(raw) {
+  return String(raw)
+    .replace(/<!--\s*segment:[^>]*-->/gu, "")
+    .replace(/^#\s+Chapter\s+\d+\s*$/imu, "")
+    .replace(/^#\s+第.*章.*$/imu, "")
+    .replace(/\r\n/gu, "\n")
+    .replace(/\n{3,}/gu, "\n\n")
+    .trim();
+}
+
+// 工作区资格（计划 Task 4）：文件夹 = 工作区 = 项目。只要求目录存在且可访问，
+// Git、project.yaml、.wwriting/、WWRITING.md 都不是聊天资格条件（SPEC §2.1）。
+// 错误必须是可行动中文文案（用户看不到 ENOENT/路径/堆栈）。
+export async function validateWorkspaceRoot(projectRoot) {
+  if (typeof projectRoot !== "string" || projectRoot.trim() === "") {
+    throw new Error("请选择一个工作文件夹。");
+  }
+  const target = path.resolve(projectRoot);
+  let stat;
+  try {
+    stat = await fs.stat(target);
+    await fs.access(target);
+  } catch {
+    throw new Error("工作文件夹不存在或无法访问，请检查后重试。");
+  }
+  if (!stat.isDirectory()) throw new Error("选择的路径不是文件夹。");
+  return target;
+}
+
+// 旧结构化领域内部兼容：仅当目录里确实有 project.yaml 时才用于旧领域操作，
+// 不再参与聊天资格判断（POST /api/projects/open 改走 validateWorkspaceRoot）。
+export async function validateProjectRoot(projectRoot) {
+  const target = path.resolve(projectRoot);
+  const projectFile = safeJoin(target, "project.yaml");
+  if (!(await pathExists(projectFile))) {
+    throw new Error(`不是有效的 WWriting 项目文件夹：${target}`);
+  }
+  await loadProject(target);
+  return target;
+}
+
+// B1 reveal-path 白名单（桌面 IPC 安全边界）：只接受「验证后的项目根」或
+// 「从项目根派生的目录」（= 根自身或其任意后代）。从目标路径向上逐层尝试
+// validateProjectRoot，第一个通过验证的祖先即为项目根，目标必须是该根或其
+// 下路径；任意非项目路径、空串与非字符串一律拒绝。由代码保证存储不变量
+// （SPEC §2.1-8），不依赖渲染进程自证。
+export async function resolveRevealTarget(targetPath) {
+  if (typeof targetPath !== "string" || targetPath.trim().length === 0) {
+    throw new Error("路径不在已验证的 WWriting 项目内");
+  }
+  const resolved = path.resolve(targetPath);
+  let candidate = resolved;
+  for (;;) {
+    try {
+      await validateProjectRoot(candidate);
+      return resolved;
+    } catch {
+      // 当前层不是项目根，继续向上找最近的项目根祖先。
+    }
+    const parent = path.dirname(candidate);
+    if (parent === candidate) {
+      break;
+    }
+    candidate = parent;
+  }
+  throw new Error("路径不在已验证的 WWriting 项目内");
+}
+
+export async function canInitializeProjectRoot(projectRoot) {
+  if (typeof projectRoot !== "string" || projectRoot.trim().length === 0) {
+    throw new Error("请输入要初始化的文件夹路径。");
+  }
+  const target = path.resolve(projectRoot);
+  await fs.mkdir(target, { recursive: true });
+  const projectFile = safeJoin(target, "project.yaml");
+  if (await pathExists(projectFile)) {
+    throw new Error(`该文件夹已经包含 project.yaml：${target}`);
+  }
+  const entries = await fs.readdir(target);
+  if (entries.length > 0) {
+    throw new Error("为避免误写入，请选择空文件夹，或先打开已有 WWriting 项目。");
+  }
+  return target;
+}
+
+export async function findLatestProjectRoot(workspaceRoot) {
+  const candidates = await findProjectRoots(path.resolve(workspaceRoot));
+  if (candidates.length === 0) {
+    return null;
+  }
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return candidates[0].projectRoot;
+}
+
+export async function findProjectRoots(workspaceRoot, options = {}) {
+  const maxDepth = options.maxDepth ?? 4;
+  const roots = [];
+  await visit(path.resolve(workspaceRoot), 0);
+  return roots;
+
+  async function visit(dirPath, depth) {
+    if (depth > maxDepth) {
+      return;
+    }
+    let entries;
+    try {
+      entries = await fs.readdir(dirPath, { withFileTypes: true });
+    } catch {
+      // 目录不存在或无权限，跳过
+      return;
+    }
+    const projectFile = path.join(dirPath, "project.yaml");
+    if (await pathExists(projectFile)) {
+      const stat = await fs.stat(projectFile);
+      roots.push({ projectRoot: dirPath, mtimeMs: stat.mtimeMs });
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || shouldSkipDir(entry.name)) {
+        continue;
+      }
+      await visit(path.join(dirPath, entry.name), depth + 1);
+    }
+  }
+}
+
+async function readSkills(projectRoot, skills) {
+  try {
+    const { active, migration_errors } = await skills.catalog({ projectRoot });
+    return {
+      error: null,
+      migration_errors,
+      items: active.map((skill) => ({
+        name: skill.name,
+        version: skill.version,
+        type: skill.metadata?.wwriting?.type ?? null,
+        scope: skill.metadata?.wwriting?.scope ?? "chapter",
+        // Task 13：无启停集合、无 per-project 启用集；目录里的技能都是 active，
+        // DTO 不再返回启停字段。
+        source_type: skill.source,
+        priority: skill.metadata?.wwriting?.priority ?? 100,
+        description: skill.description ?? "",
+        hooks: (skill.metadata?.wwriting?.hooks ?? []).map((hook) => ({
+          stage: hook.stage,
+          action: hook.action,
+          priority: hook.priority ?? skill.metadata?.wwriting?.priority ?? 100
+        }))
+      }))
+    };
+  } catch (error) {
+    return {
+      error: error.message,
+      items: []
+    };
+  }
+}
+
+async function readSources(projectRoot) {
+  const sourceDir = safeJoin(projectRoot, "sources");
+  if (!(await pathExists(sourceDir))) {
+    return {
+      count: 0,
+      promptInjectionWarnings: 0,
+      latest: []
+    };
+  }
+  const files = await fs.readdir(sourceDir);
+  const snapshots = [];
+  for (const file of files) {
+    if (!file.endsWith(".json")) {
+      continue;
+    }
+    const snapshot = await readJson(safeJoin(sourceDir, file), null);
+    if (!snapshot) {
+      continue;
+    }
+    snapshots.push({
+      file,
+      captured_at: snapshot.captured_at,
+      kind: snapshot.kind,
+      title: snapshot.title ?? snapshot.query ?? snapshot.url ?? file,
+      url: snapshot.url ?? null,
+      untrusted: snapshot.untrusted === true,
+      warnings: snapshot.warnings ?? []
+    });
+  }
+  snapshots.sort((a, b) => String(b.captured_at ?? "").localeCompare(String(a.captured_at ?? "")));
+  return {
+    count: snapshots.length,
+    promptInjectionWarnings: snapshots.reduce((sum, snapshot) => sum + snapshot.warnings.length, 0),
+    latest: snapshots.slice(0, 6)
+  };
+}
+
+function normalizeProjectRoot(rootPath, targetPath, { allowExternal = false } = {}) {
+  const root = path.resolve(rootPath);
+  const target = path.resolve(targetPath);
+  if (!allowExternal && !isPathInside(root, target)) {
+    throw new Error(`仪表盘项目路径逃出工作区：${target}`);
+  }
+  return target;
+}
+
+function shouldSkipDir(name) {
+  return ["node_modules", ".git"].includes(name);
+}

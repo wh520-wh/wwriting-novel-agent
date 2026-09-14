@@ -1,0 +1,995 @@
+import { icon } from "./icons.js";
+import { compactObject } from "./utils.js";
+import { deleteJson, getJson, postJson, withProjectScope } from "./api-client.js";
+import { motion } from "./motion-runtime.js";
+import { FOCUSABLE_SELECTOR, el, focusTrap, showConfirmLayer } from "./dom-kit.js";
+import { createSkillsSection } from "./settings-modal-skills.js";
+
+// Re-export so consumers that already `import { ... } from "./settings-modal.js"`
+// continue to work. The pure helper itself lives in ./settings-connection.mjs
+// so it can be tested without DOM-bound modules. Task 17 cutover：模型区块已整体
+// 删除，模型连接提交 helper 不再 re-export（新设置页自行调用 test-connection）。
+export { formatConnectionStatus } from "./settings-connection.mjs";
+
+const SETTINGS_SECTIONS = [
+  { id: "model", label: "模型设置", icon: "settings", ready: true },
+  { id: "writing", label: "写作参数", icon: "compose", ready: true },
+  { id: "skills", label: "Agent 技能", icon: "skill", ready: true },
+  { id: "danger", label: "项目管理", icon: "folder", ready: true }
+];
+
+// 写作参数分区字段注册表（Task 22 审查 Minor 2）：renderWritingSection 渲染、
+// saveWritingSection 的 project_profile 提交、settingsDirty 的关闭保护三处共用
+// ——新增字段只改这一处。
+const WRITING_FIELDS = [
+  { key: "targetChapters", projectKey: "target_chapters", label: "目标章节数（提高它可以继续已完成的小说）", type: "number" },
+  { key: "minWords", projectKey: "min_words_per_chapter", label: "每章最低字数", type: "number" },
+  { key: "targetWords", projectKey: "target_words_per_chapter", label: "每章目标字数", type: "number" }
+  // 每章字数上限（max_words_per_chapter）已删除：全库无消费者、DTO 不回显、
+  // 标签承诺的「按 target × 1.5 估算」从未实现（2026-08-25 bug-hunt round2 #2）。
+  // 若要恢复：先把它接入章节门禁/提示链，再回填本表单与服务端清空语义。
+];
+
+// 「已归档对话」归档时间展示格式（Task 10）：模块级单例避免每次渲染新建
+// Intl.DateTimeFormat；hour12:false 显式锁定 24 小时制，避免个别环境 zh-CN 默认
+// 12 小时制。
+const ARCHIVED_TIME_FORMAT = new Intl.DateTimeFormat("zh-CN", {
+  year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", hour12: false
+});
+
+// 通用嵌套层 Esc 关闭（Task 13）：Esc 用 capture 监听先于 app.js 的弹窗级 Esc，
+// stopImmediatePropagation 阻断后者（避免一次 Esc 同时关掉嵌套层与弹窗，也阻断
+// AgentSurface 的 Run 停止路由）。返回解除监听的函数。
+function bindNestedLayerDismissal({ isOpen, close, doc = document } = {}) {
+  if (typeof doc === "undefined" || typeof doc.addEventListener !== "function") return null;
+  const onDocKeydown = (event) => {
+    if (event?.key !== "Escape" || !isOpen()) return;
+    close();
+    event.stopImmediatePropagation?.();
+    event.preventDefault?.();
+  };
+  doc.addEventListener("keydown", onDocKeydown, true);
+  return () => doc.removeEventListener("keydown", onDocKeydown, true);
+}
+
+// 添加技能菜单（.spd-addmenu）的关闭行为：点击菜单外部或按 Esc 只关菜单，不关整个
+// 设置弹窗。Esc 走 bindNestedLayerDismissal 的 capture 监听（先于 app.js 的弹窗级
+// Esc，stopImmediatePropagation 阻断后者）。返回解除监听的函数。
+function bindAddMenuDismissal(addWrap, syncAddMenuAria) {
+  if (typeof document === "undefined" || typeof document.addEventListener !== "function") return null;
+  const close = () => {
+    if (!addWrap.classList.contains("open")) return;
+    addWrap.classList.remove("open");
+    syncAddMenuAria();
+  };
+  const onDocClick = (event) => {
+    if (!addWrap.classList.contains("open")) return;
+    const target = event?.target ?? null;
+    if (target && typeof addWrap.contains === "function" && addWrap.contains(target)) return;
+    close();
+  };
+  document.addEventListener("click", onDocClick);
+  const unbindEsc = bindNestedLayerDismissal({
+    isOpen: () => addWrap.classList.contains("open"),
+    close
+  });
+  return () => {
+    document.removeEventListener("click", onDocClick);
+    unbindEsc?.();
+  };
+}
+
+
+export function createSettingsModal(ctx, options = {}) {
+  // ctx provides: refs, getDashboard, getCurrentProjectRoot, showToast, loadDashboard,
+  //   getLastFocused, setLastFocused
+  const {
+    getJsonImpl = getJson,
+    postJsonImpl = postJson,
+    deleteJsonImpl = deleteJson,
+    // 清除历史/删除/覆盖技能的确认函数（可注入以便测试；默认原生 confirm，桌面场景无需新 UI）。
+    confirmImpl = (message) => {
+      if (typeof window !== "undefined" && typeof window.confirm === "function") {
+        return window.confirm(message);
+      }
+      return true;
+    }
+  } = options;
+
+  let settingsSection = "model";
+  // 保存序号：runSave 的「已保存」关闭定时器带序号，连续保存时旧定时器失效，
+  // 不会关闭新弹窗或覆盖新按钮文案。
+  let saveSequence = 0;
+  // 分区渲染代次（Task 16 B12）：每次分区渲染开始都会推进；异步续作
+  //（技能 catalog / 任务门禁 / 技能详情）在 await 后校验代次，慢分区（A）的续作
+  // 不得覆写已切换到的新分区（B）内容。
+  let sectionGeneration = 0;
+  // 技能管理 scope（Task 13）：segmented control 的当前目录范围。
+  let skillsScope = "global";
+  // 技能分区内的节点引用（scope 切换 / 导入删除后局部重渲染，不重建整个分区）。
+  const skillsRefs = { list: null, errors: null, globalBtn: null, projectBtn: null, addWrap: null };
+  // 添加技能菜单的文档级关闭监听；重渲/换分区前先解除旧监听避免泄漏。
+  let removeAddMenuDismissal = null;
+  // 对话历史分区（Task 13）：导出/清空按钮与活动 Run 门禁提示（重渲时更新引用）。
+  let historyRefs = { exportBtn: null, clearBtn: null, hint: null };
+  // 清空确认层（settings 内最上层）的 close 句柄（null=未开）；层构建与行为在
+  // dom-kit.showConfirmLayer（Task 12 收编）。
+  let clearConfirmRef = { close: null };
+  // 放弃未保存修改确认层（Task 22 关闭保护）的 close 句柄（同 showConfirmLayer）。
+  let dirtyConfirmRef = { close: null };
+  const settingsFields = {};
+
+  // section 可选：Agent 斜杠命令可指定打开的分区；缺省打开「模型设置」（model 为首位）。
+  async function openSettingsModal(section = "model") {
+    settingsSection = SETTINGS_SECTIONS.some((s) => s.id === section) ? section : SETTINGS_SECTIONS[0].id;
+    renderSectionNav();
+    renderSectionBody();
+    ctx.setLastFocused(document.activeElement);
+    ctx.refs.settingsScrim.removeAttribute("inert");
+    ctx.refs.settingsScrim.classList.add("show");
+    motion.openModal(ctx.refs.settingsScrim, document.querySelector("#settings-modal"));
+    // Task 22（§6.5 键盘焦点顺序）：打开后焦点移入弹窗内首个可聚焦元素——
+    // 否则焦点停留在触发按钮（scrim 外），Tab 可逃出弹窗，focus trap 失效。
+    focusFirstInModal();
+  }
+
+  // 弹窗内首个可聚焦元素（nav 分区按钮优先，任意顺序即第一个命中）。
+  // 选择器与过滤规则与 focusTrap 共用 dom-kit 的 FOCUSABLE_SELECTOR（Task 22
+  // 审查 Minor 4：两处口径不分叉）；隐藏（offsetParent null）/禁用元素不得接收
+  // 焦点——否则窄窗（@media ≤720px 隐藏 .sp-side）下首命中是隐藏 nav 按钮，
+  // focus() 静默无效，焦点停留在触发按钮（trap 失效场景）。
+  function focusFirstInModal() {
+    const first = [...(ctx.refs.settingsScrim.querySelectorAll?.(FOCUSABLE_SELECTOR) ?? [])]
+      .find((el) => !el.disabled && el.offsetParent !== null);
+    first?.focus?.();
+  }
+
+  // Task 22 focus trap（Task 12：行为收编 dom-kit focusTrap）：Tab 在弹窗内循环
+  //（首末元素回绕）。挂在 scrim 的 bubble 阶段——嵌套层（添加菜单/清空确认/放弃
+  // 确认）的 document capture 监听先于本监听执行并 stopImmediatePropagation，故
+  // 嵌套层打开时 Tab 不受弹窗级回绕干扰；弹窗关闭（非 show）时不拦截（守卫保留
+  // 在此，focusTrap 内部不管容器显隐态），不触碰 AgentSurface 的键盘路由。
+  function bindScrimTabTrap() {
+    if (typeof ctx.refs.settingsScrim?.addEventListener !== "function") return null;
+    const onKeydown = (event) => {
+      if (!ctx.refs.settingsScrim.classList.contains("show")) return;
+      focusTrap(ctx.refs.settingsScrim, event);
+    };
+    ctx.refs.settingsScrim.addEventListener("keydown", onKeydown);
+    return () => ctx.refs.settingsScrim.removeEventListener?.("keydown", onKeydown);
+  }
+  bindScrimTabTrap();
+
+  // Task 22 弹窗级 Escape：挂在 scrim 的 bubble 阶段。嵌套层的 document capture
+  // 监听先于本监听执行（capture 先于 bubble）且 stopImmediatePropagation，故 Esc
+  // 仍只作用于最上层（先关添加菜单/确认层）；本监听处理「弹窗自身」的 Esc——
+  // dirty 时先走确认层（closeSettingsModal 内守卫），clean 时直接关闭，并阻断
+  // 全局路由（app.js）与 AgentSurface 的 Run 停止。
+  function bindModalScrimDismissal() {
+    if (typeof ctx.refs.settingsScrim?.addEventListener !== "function") return null;
+    const onKeydown = (event) => {
+      if (event?.key !== "Escape") return;
+      if (!ctx.refs.settingsScrim.classList.contains("show")) return;
+      closeSettingsModal();
+      event.stopPropagation?.();
+      event.preventDefault?.();
+    };
+    ctx.refs.settingsScrim.addEventListener("keydown", onKeydown);
+    return () => ctx.refs.settingsScrim.removeEventListener?.("keydown", onKeydown);
+  }
+  bindModalScrimDismissal();
+
+  function setSettingsSection(next) {
+    if (!SETTINGS_SECTIONS.some((s) => s.id === next)) return;
+    if (next === settingsSection) return;
+    settingsSection = next;
+    renderSectionNav();
+    renderSectionBody();
+  }
+
+  function renderSectionNav() {
+    const nav = document.getElementById("settings-section-nav");
+    if (!nav) return;
+    nav.replaceChildren(...SETTINGS_SECTIONS.map((section) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `sp-section-item${section.id === settingsSection ? " on" : ""}`;
+      button.dataset.section = section.id;
+      button.setAttribute("aria-current", section.id === settingsSection ? "true" : "false");
+      button.setAttribute("aria-label", section.label);
+      const ic = document.createElement("span");
+      ic.className = "sp-section-ic";
+      ic.append(icon(section.icon, 14));
+      const label = document.createElement("span");
+      label.textContent = section.label;
+      button.append(ic, label);
+      if (!section.ready) {
+        const badge = document.createElement("span");
+        badge.className = "sp-section-soon";
+        badge.textContent = section.milestone ?? "稍后";
+        button.append(badge);
+      }
+      button.addEventListener("click", () => setSettingsSection(section.id));
+      return button;
+    }));
+    // Sync the data-section on the side container so CSS can hide provider list
+    // for non-model sections.
+    const side = nav.closest(".sp-side");
+    if (side) side.dataset.section = settingsSection;
+  }
+
+  // Round10：footer 状态槽——即时生效分区显示状态文字，不再把「无需保存」伪装成
+  // 禁用主按钮；真实保存动作（runSave）仍只管理 settingsSave 按钮的 disabled/文案。
+  // saveInFlight 标记：保存在途时切分区再回来，不得把「保存中...」按钮重新启用。
+  let saveInFlight = false;
+
+  function setFooterMode({ save = false, status = "" } = {}) {
+    ctx.refs.settingsSave.hidden = !save;
+    ctx.refs.settingsSave.disabled = !save || saveInFlight;
+    ctx.refs.settingsSaveStatus.hidden = save || status === "";
+    ctx.refs.settingsSaveStatus.textContent = save ? "" : status;
+  }
+
+  function renderSectionBody() {
+    // Task 16 B12：分区切换/重渲推进代次——在途的旧分区异步续作一律丢弃。
+    sectionGeneration += 1;
+    if (settingsSection === "model") {
+      // 模型分区：与 writing/skills/danger 同形态——renderSectionBody 构建本分区 DOM，
+      // 把供应商列表/详情容器被注入的 modelSettings（model-settings-page）作为渲染目标。
+      // 无整页宿主、无 restore 钩子：更换分区时 replaceChildren 直接覆盖模型 DOM，
+      // 下次进入 model 分区重建（模型页不持有弹窗内外任何剩余引用）。
+      const detail = ctx.refs.settingsDetail;
+      detail.replaceChildren();
+      const section = document.createElement("div");
+      section.className = "model-section";
+      const h2 = document.createElement("h2");
+      h2.textContent = "模型设置";
+      const lead = document.createElement("p");
+      lead.className = "model-section-lead";
+      lead.textContent = "管理自定义模型供应商，配置后可在聊天时选择使用。";
+      const body = document.createElement("div");
+      body.className = "model-settings-body";
+      const list = document.createElement("aside");
+      list.setAttribute("data-provider-list", "");
+      const det = document.createElement("section");
+      det.setAttribute("data-provider-detail", "");
+      body.append(list, det);
+      section.append(h2, lead, body);
+      detail.append(section);
+      if (typeof ctx.modelSettings?.attach === "function") {
+        ctx.modelSettings.attach({ list, detail: det });
+      }
+      setFooterMode({ status: "更改即时生效" });
+      if (typeof ctx.modelSettings?.open === "function") {
+        void ctx.modelSettings.open();
+      }
+      return;
+    }
+    if (settingsSection === "writing") {
+      if (ctx.getDashboard()?.hasProject === true) {
+        void renderWritingSection();
+        setFooterMode({ save: true });
+      } else {
+        // 普通文件夹没有 project.yaml，写作参数无可读写对象：只显示说明，
+        // footer 显示「此分区无需保存」，避免出现无法生效的保存按钮。
+        renderLegacyOnlySection("compose", "写作参数", "写作参数仅旧版小说项目可用。");
+        setFooterMode({ status: "此分区无需保存" });
+      }
+      return;
+    }
+    if (settingsSection === "skills") {
+      // 技能动作各自即时生效，不依赖底部保存按钮。
+      void renderSkillsSection();
+      setFooterMode({ status: "更改即时生效" });
+      return;
+    }
+    if (settingsSection === "danger") {
+      if (ctx.getDashboard()?.hasProject === true) {
+        renderDangerSection();
+        setFooterMode({ status: "更改即时生效" });
+      } else {
+        renderLegacyOnlySection("bolt", "项目管理", "项目管理仅旧版小说项目可用。");
+        setFooterMode({ status: "此分区无需保存" });
+      }
+      return;
+    }
+  }
+
+  // 旧版小说项目专属分区（写作参数/项目管理）在普通文件夹（hasProject:false）
+  // 下无可操作内容：渲染头部 + 简短 muted 说明。与 renderSectionBody 的
+  // setFooterMode({ status: "此分区无需保存" }) 配合，确保不会出现「点了保存却
+  // 落空」的死角入口。
+  function renderLegacyOnlySection(iconName, title, note) {
+    ctx.refs.settingsDetail.replaceChildren();
+    const head = document.createElement("header");
+    head.className = "spd-head";
+    const ic = document.createElement("span");
+    ic.className = "spd-av lg";
+    ic.append(icon(iconName, 16));
+    const h3 = document.createElement("h3");
+    h3.textContent = title;
+    head.append(ic, h3);
+    ctx.refs.settingsDetail.append(head);
+    const noteEl = document.createElement("p");
+    noteEl.className = "spd-hint";
+    noteEl.textContent = note;
+    ctx.refs.settingsDetail.append(noteEl);
+  }
+
+  async function renderWritingSection() {
+    const dashboard = ctx.getDashboard();
+    const project = dashboard?.project ?? {};
+    ctx.refs.settingsDetail.replaceChildren();
+
+    const head = document.createElement("header");
+    head.className = "spd-head";
+    const ic = document.createElement("span");
+    ic.className = "spd-av lg";
+    ic.append(icon("compose", 16));
+    const h3 = document.createElement("h3");
+    h3.textContent = "写作参数";
+    head.append(ic, h3);
+    ctx.refs.settingsDetail.append(head);
+
+    const intro = document.createElement("p");
+    intro.className = "spd-hint";
+    intro.textContent = "控制每章的篇幅与目标章节数。";
+    ctx.refs.settingsDetail.append(intro);
+
+    for (const field of WRITING_FIELDS) {
+      settingsFields[field.key] = settingField(field.label, field.type, {
+        value: project[field.projectKey] ?? ""
+      });
+    }
+
+    ctx.refs.settingsDetail.append(
+      settingsFields.targetChapters.field,
+      settingsFields.minWords.field,
+      settingsFields.targetWords.field
+    );
+  }
+
+  function renderDangerSection() {
+    // Task 16 B12：refreshArchivedSessions 会直接重渲本分区（不经 renderSectionBody），
+    // 这里同样推进代次，在途的旧分区异步续作一律丢弃。
+    sectionGeneration += 1;
+    const dashboard = ctx.getDashboard();
+    const project = dashboard?.project ?? {};
+    const projectRoot = ctx.getCurrentProjectRoot();
+    const isArchived = Boolean(project.archived_at);
+    ctx.refs.settingsDetail.replaceChildren();
+
+    const head = document.createElement("header");
+    head.className = "spd-head";
+    const ic = document.createElement("span");
+    ic.className = "spd-av lg";
+    ic.append(icon("bolt", 16));
+    const h3 = document.createElement("h3");
+    h3.textContent = "项目管理";
+    head.append(ic, h3);
+    ctx.refs.settingsDetail.append(head);
+
+    const intro = document.createElement("p");
+    intro.className = "spd-hint";
+    intro.textContent = "管理当前项目的归档状态和本地文件夹。";
+    ctx.refs.settingsDetail.append(intro);
+
+    // 归档/解除归档
+    const archiveHeading = document.createElement("h4");
+    archiveHeading.className = "spd-section";
+    archiveHeading.textContent = "项目归档";
+    ctx.refs.settingsDetail.append(archiveHeading);
+
+    const archiveField = document.createElement("div");
+    archiveField.className = "spd-field spd-toggle";
+    const archiveLabel = document.createElement("div");
+    archiveLabel.className = "spd-label";
+    const archiveSpan = document.createElement("span");
+    archiveSpan.textContent = isArchived ? "项目已归档" : "项目状态：活跃";
+    archiveLabel.append(archiveSpan);
+    const archiveBtn = document.createElement("button");
+    archiveBtn.type = "button";
+    archiveBtn.className = "btn";
+    archiveBtn.id = isArchived ? "settings-unarchive-trigger" : "settings-archive-trigger";
+    archiveBtn.textContent = isArchived ? "解除归档" : "归档此项目";
+    archiveBtn.addEventListener("click", () => {
+      // 归档是确定性设置变更（Rule 6：不为确定性功能创建 Agent 工具/对话路径）
+      archiveBtn.disabled = true;
+      void postJson("/api/settings/update", {
+        projectRoot: ctx.getCurrentProjectRoot?.(),
+        archived_at: isArchived ? null : new Date().toISOString()
+      })
+        .then(async () => {
+          closeSettingsModal();
+          ctx.showToast(isArchived ? "已解除归档。" : "项目已归档，只读。", "success");
+          await ctx.loadDashboard?.();
+        })
+        .catch((error) => {
+          ctx.showToast(error?.message ?? "归档操作失败。", "error");
+          archiveBtn.disabled = false;
+        });
+    });
+    archiveField.append(archiveLabel, archiveBtn);
+    settingsFields.archiveButton = { field: archiveField, input: archiveBtn };
+    ctx.refs.settingsDetail.append(archiveField);
+
+    const archiveHint = document.createElement("div");
+    archiveHint.className = "spd-hint";
+    archiveHint.textContent = "归档后项目只读。";
+    ctx.refs.settingsDetail.append(archiveHint);
+
+    // 打开项目文件夹
+    const folderHeading = document.createElement("h4");
+    folderHeading.className = "spd-section";
+    folderHeading.textContent = "项目文件夹";
+    ctx.refs.settingsDetail.append(folderHeading);
+
+    const folderField = document.createElement("div");
+    folderField.className = "spd-field spd-toggle";
+    const folderLabel = document.createElement("div");
+    folderLabel.className = "spd-label";
+    const folderSpan = document.createElement("span");
+    folderSpan.textContent = projectRoot ?? "未选择项目";
+    folderLabel.append(folderSpan);
+    const folderBtn = document.createElement("button");
+    folderBtn.type = "button";
+    folderBtn.className = "btn";
+    folderBtn.id = "settings-open-folder";
+    folderBtn.textContent = "打开项目文件夹";
+    folderBtn.addEventListener("click", () => {
+      if (!projectRoot) {
+        ctx.showToast("请先新建或打开一部小说。", "info");
+        return;
+      }
+      const reveal = window.wwritingDesktop?.revealPath;
+      if (typeof reveal === "function") {
+        void reveal(projectRoot).catch(() => ctx.showToast("打开项目文件夹失败。", "error"));
+        return;
+      }
+      ctx.showToast("当前环境不支持打开文件夹。", "info");
+    });
+    folderField.append(folderLabel, folderBtn);
+    settingsFields.folderButton = { field: folderField, input: folderBtn };
+    ctx.refs.settingsDetail.append(folderField);
+
+    // 对话历史（Task 13）：导出可选、清空二次确认、活动 Run 门禁。对话历史保存在
+    // 项目状态目录，与创作文件分离——清空不触碰章节、总纲、设定与 WWRITING.md。
+    const historyHeading = document.createElement("h4");
+    historyHeading.className = "spd-section";
+    historyHeading.textContent = "对话历史";
+    ctx.refs.settingsDetail.append(historyHeading);
+
+    const historyIntro = document.createElement("p");
+    historyIntro.className = "spd-hint";
+    historyIntro.textContent = "导出或清空本项目与 Agent 的对话记录；不影响任何创作文件。";
+    ctx.refs.settingsDetail.append(historyIntro);
+
+    const historyField = document.createElement("div");
+    historyField.className = "spd-field spd-toggle";
+    const historyLabel = document.createElement("div");
+    historyLabel.className = "spd-label";
+    const historySpan = document.createElement("span");
+    historySpan.textContent = "对话历史保存在项目状态目录。";
+    historyLabel.append(historySpan);
+    const historyBtns = document.createElement("div");
+    historyBtns.style.display = "flex";
+    historyBtns.style.gap = "8px";
+    const exportButton = actionButton("导出对话历史", () => void exportHistoryFlow(exportButton));
+    exportButton.id = "export-history-trigger";
+    const clearButton = actionButton("清空对话历史", () => openClearHistoryConfirm());
+    clearButton.id = "clear-history-trigger";
+    historyBtns.append(exportButton, clearButton);
+    historyField.append(historyLabel, historyBtns);
+    ctx.refs.settingsDetail.append(historyField);
+
+    // 活动 Run 门禁提示：任务进行中清空按钮禁用，先停止任务。
+    const runHint = document.createElement("div");
+    runHint.className = "spd-hint";
+    runHint.id = "clear-history-run-hint";
+    runHint.textContent = "任务进行中，请先停止任务后再清空对话历史。";
+    runHint.hidden = true;
+    ctx.refs.settingsDetail.append(runHint);
+
+    historyRefs = { exportBtn: exportButton, clearBtn: clearButton, hint: runHint };
+    // 活动 Run 判定是异步快照检查：渲染后更新按钮禁用态与提示可见性。
+    void refreshHistoryRunGate();
+
+    // 「已归档对话」分类（Task 10）：仅在存在归档会话时渲染（与技能分区
+    // 「被覆盖」等条件渲染先例同款）；分类内按归档时间倒序。
+    renderArchivedSessionsBlock(ctx.refs.settingsDetail);
+  }
+
+  // 「已归档对话」分类（Task 10）：列出 archived_at != null 的会话（标题 + 归档
+  // 时间 + 恢复/永久删除）。数据源 = dashboard.sessions（含归档会话，与设置页
+  // 其他分区同一数据 seam）；无归档会话时整个分类不渲染。
+  function renderArchivedSessionsBlock(detail) {
+    const archived = archivedSessions();
+    if (archived.length === 0) return;
+
+    const heading = document.createElement("h4");
+    heading.className = "spd-section";
+    heading.textContent = "已归档对话";
+    detail.append(heading);
+
+    const intro = document.createElement("p");
+    intro.className = "spd-hint";
+    intro.textContent = "归档的对话不参与新对话，可在此恢复或永久删除。";
+    detail.append(intro);
+
+    const list = document.createElement("div");
+    list.className = "spd-archived-list";
+    list.id = "archived-sessions-list";
+    for (const session of archived) list.append(buildArchivedSessionRow(session));
+    detail.append(list);
+  }
+
+  // 归档会话快照：dashboard.sessions 中 archived_at 非空者，按归档时间倒序。
+  function archivedSessions() {
+    return (ctx.getDashboard()?.sessions ?? [])
+      .filter((session) => session.archived_at != null)
+      .sort((a, b) => String(b.archived_at).localeCompare(String(a.archived_at)));
+  }
+
+  function buildArchivedSessionRow(session) {
+    const row = document.createElement("div");
+    row.className = "spd-archived-row";
+    row.dataset.sessionId = session.session_id;
+
+    const main = document.createElement("div");
+    main.className = "spd-archived-main";
+    const title = document.createElement("div");
+    title.className = "spd-archived-title";
+    title.textContent = session.title ?? "新对话";
+    const when = document.createElement("div");
+    when.className = "spd-archived-when";
+    when.textContent = `归档于 ${formatArchivedTime(session.archived_at)}`;
+    main.append(title, when);
+
+    const actions = document.createElement("div");
+    actions.className = "spd-archived-actions";
+
+    const restore = actionButton("恢复", () => { void restoreArchivedSession(session, restore); }, "btn--sm");
+    restore.id = `archived-restore-${session.session_id}`;
+    restore.setAttribute("aria-label", `恢复对话 ${session.title ?? "新对话"}`);
+    actions.append(restore);
+
+    // 危险操作按钮：复用 .btn 组件语言 + .btn--danger 红系样式。
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "btn btn--sm btn--danger";
+    del.id = `archived-delete-${session.session_id}`;
+    del.setAttribute("aria-label", `永久删除对话 ${session.title ?? "新对话"}`);
+    del.title = "永久删除对话";
+    del.append(icon("trash", 14), "永久删除");
+    del.addEventListener("click", () => { void deleteArchivedSession(session, del); });
+    actions.append(del);
+
+    row.append(main, actions);
+    return row;
+  }
+
+  // in-flight 按钮禁用对齐 exportHistoryFlow 先例：请求期间 disabled=true 防双击
+  // 双调，finally 复位（成功后重渲的按钮是全新节点，对旧节点复位无副作用）。
+  async function restoreArchivedSession(session, btn) {
+    if (btn) btn.disabled = true;
+    try {
+      if (typeof ctx.restoreSession !== "function") {
+        ctx.showToast("当前环境不支持恢复对话。", "info");
+        return;
+      }
+      const label = session.title ?? "新对话";
+      await ctx.restoreSession(session.session_id);
+      ctx.showToast(`已恢复对话 ${label}`, "success");
+      await refreshArchivedSessions();
+    } catch (error) {
+      ctx.showToast(error?.message ?? "恢复对话失败。", "error");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function deleteArchivedSession(session, btn) {
+    if (btn) btn.disabled = true;
+    try {
+      const label = session.title ?? "新对话";
+      // 永久删除是危险操作：先二次确认，取消则不发起任何请求。
+      if (!confirmImpl("永久删除后不可恢复，该对话的全部历史将被移除。确认？")) return;
+      if (typeof ctx.deleteSession !== "function") {
+        ctx.showToast("当前环境不支持删除对话。", "info");
+        return;
+      }
+      // ctx.deleteSession 由 app.js 注入 deleteSessionAndResolveActive：删的是当前
+      // 活跃会话时切到最近活跃会话（归档会话正常不会是活跃会话，但 active_session_id
+      // 可能残留指向它，走它最安全）。surface 内部已刷新侧边栏，这里重拉 dashboard
+      // 供本分区重渲。
+      await ctx.deleteSession(session.session_id);
+      ctx.showToast(`已永久删除对话 ${label}`, "success");
+      await refreshArchivedSessions();
+    } catch (error) {
+      ctx.showToast(error?.message ?? "删除对话失败。", "error");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  // 恢复/永久删除成功后刷新分区：重拉 dashboard（更新 sessions 快照）再整区重渲，
+  // 归档会话消失/解除归档后列表与条件渲染自然回到最新状态。
+  // 竞态守卫：请求 in-flight 期间用户可能切到其他分区（甚至正在填 API Key）或关闭
+  // 弹窗——数据已由 loadDashboard 缓存，跳过重渲即可，用户切回 danger 分区时
+  // renderSectionBody 会用最新 dashboard 渲染，不丢任何表单输入。
+  async function refreshArchivedSessions() {
+    await ctx.loadDashboard?.();
+    if (settingsSection !== "danger" || !ctx.refs.settingsScrim.classList.contains("show")) return;
+    renderDangerSection();
+  }
+
+  function formatArchivedTime(value) {
+    if (!value) return "";
+    const date = new Date(value);
+    // 非 ISO 字符串会得到 Invalid Date，format 抛 RangeError：兜底为空串。
+    if (Number.isNaN(date.getTime())) return "";
+    return ARCHIVED_TIME_FORMAT.format(date);
+  }
+
+  // 设置详情内的二级动作按钮（与 .btn 同一组件语言）。
+  function actionButton(text, onClick, extraClass = "") {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `btn${extraClass ? ` ${extraClass}` : ""}`;
+    btn.textContent = text;
+    btn.addEventListener("click", onClick);
+    return btn;
+  }
+
+  // 活动 Run / 排队输入进行中：清空按钮禁用并显示「先停止任务」提示。
+  async function refreshHistoryRunGate() {
+    // Task 16 B12：await 后校验分区代次——慢快照返回时若已切到其他分区/重渲，
+    // 不把旧结果写进新渲染的按钮（historyRefs 已指向新节点）。
+    const generation = sectionGeneration;
+    const busy = await taskInProgress();
+    if (generation !== sectionGeneration) return;
+    if (!historyRefs.clearBtn) return;
+    historyRefs.clearBtn.disabled = busy;
+    if (historyRefs.hint) historyRefs.hint.hidden = !busy;
+  }
+
+  // 导出对话历史（可选动作，不是清空的前置条件）：surface 返回 NDJSON 原文，
+  // 这里触发下载并提示；失败只提示，不影响后续清空。
+  async function exportHistoryFlow(btn) {
+    if (typeof ctx.exportAgentHistory !== "function") {
+      ctx.showToast("当前环境不支持导出对话历史。", "info");
+      return;
+    }
+    if (btn) btn.disabled = true;
+    try {
+      const result = await ctx.exportAgentHistory();
+      const text = result?.text;
+      if (typeof text !== "string" || text.length === 0) throw new Error("导出结果为空。");
+      downloadHistoryText(text, historyExportFilename());
+      ctx.showToast("对话历史已导出。", "success");
+    } catch (error) {
+      ctx.showToast(error?.message ?? "导出对话历史失败。", "error");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  function historyExportFilename() {
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    return `对话历史-${ts}.ndjson`;
+  }
+
+  function downloadHistoryText(text, filename) {
+    const blob = new Blob([text], { type: "application/x-ndjson" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  // 清空确认层（Task 13）：settings 内最上层，覆盖整个弹窗。未勾选确认时确认
+  // 按钮禁用，绝不发请求；ESC 只关本层（capture 监听阻断弹窗级 Esc 与 Run 停止）。
+  // Task 12：层构建/行为收编 dom-kit.showConfirmLayer（danger=ack 二次确认 + 错误
+  // 回显 + 失败保留层可重试）；close 句柄供弹窗关闭路径（performCloseSettingsModal）
+  // 主动清理。
+  function openClearHistoryConfirm() {
+    if (clearConfirmRef.close) return;
+    // 确认层是当前最上层：先解除更低的添加菜单文档监听，ESC 只作用于确认层。
+    removeAddMenuDismissal?.();
+    const promise = showConfirmLayer({
+      doc: document,
+      host: ctx.refs.settingsScrim,
+      id: "clear-history",
+      title: "清空对话历史",
+      message: "此操作不可恢复，将删除本项目全部对话历史；不影响章节、总纲、设定与 WWRITING.md 等创作文件。如需保留可先导出对话历史。",
+      confirmLabel: "清空对话历史",
+      danger: true,
+      ackLabel: "我确认要清空对话历史",
+      onConfirm: async () => {
+        if (typeof ctx.clearAgentHistory !== "function") {
+          throw new Error("当前环境不支持清空对话历史。");
+        }
+        // surface.clearHistory 内部负责重置投影并重开当前项目（clear-reconnect）。
+        await ctx.clearAgentHistory({ confirm_irreversible: true });
+        ctx.showToast("对话历史已清空，创作文件未改动。", "success");
+      },
+      // 任何路径关闭层（取消/背景/Esc/成功/外部.close）都重置 open guard。
+      onClose: () => { clearConfirmRef = { close: null }; }
+    });
+    clearConfirmRef = { close: promise.close };
+  }
+
+  function closeClearHistoryConfirm() {
+    clearConfirmRef.close?.();
+    clearConfirmRef = { close: null };
+  }
+
+  // -------------------------------------------------------------------------
+  // 「Agent 技能」分区 -- 实现拆至 settings-modal-skills.js（第十六轮 T8）。
+  // -------------------------------------------------------------------------
+  const skillsScopeState = {
+    get: () => skillsScope,
+    set: (value) => { skillsScope = value; }
+  };
+  const removeAddMenuDismissalState = {
+    get: () => removeAddMenuDismissal,
+    set: (value) => { removeAddMenuDismissal = value; }
+  };
+  const skillsSection = createSkillsSection({
+    ctx,
+    getJsonImpl,
+    withProjectScope,
+    confirmImpl,
+    deleteJsonImpl,
+    postJsonImpl,
+    skillsRefs,
+    sectionState: {
+      get: () => sectionGeneration,
+      bump: () => { sectionGeneration += 1; }
+    },
+    skillsScopeState,
+    bindAddMenuDismissal,
+    removeAddMenuDismissalState
+  });
+  const { renderSkillsSection, fetchSkillsCatalog, renderSkillsCatalogBody, renderSkillsList } = skillsSection;
+
+  function closeSettingsModal() {
+    // Task 22（#9）：关闭保护——写作参数有未保存修改时先弹确认层，绝不静默丢失。
+    // 关闭路径统一经此守卫（app.js 的 X/取消/遮罩/Esc 与保存成功后的自动关闭
+    // 都调用本函数）；保存成功时 dashboard 已刷新，dirty 判定自然为 false。
+    if (settingsDirty() && !dirtyConfirmRef.close && ctx.refs.settingsScrim.classList.contains("show")) {
+      openDirtyCloseConfirm();
+      return;
+    }
+    performCloseSettingsModal();
+  }
+
+  // 真正关闭（确认放弃/无未保存修改时）：清空确认层 + 关闭动画 + 恢复原焦点。
+  function performCloseSettingsModal() {
+    // 清空确认层随设置弹窗一起关闭（X/关闭/遮罩/Esc 任一路径都先关嵌套层）。
+    closeClearHistoryConfirm();
+    closeDirtyCloseConfirm();
+    ctx.refs.settingsScrim.dataset.closing = "true";
+    ctx.refs.settingsScrim.classList.remove("show");
+    ctx.refs.settingsScrim.setAttribute("inert", "");
+    motion.closeModal(ctx.refs.settingsScrim, document.querySelector("#settings-modal"), {
+      onComplete: () => {
+        delete ctx.refs.settingsScrim.dataset.closing;
+        const lastFocused = ctx.getLastFocused();
+        if (lastFocused && lastFocused.isConnected) lastFocused.focus();
+        ctx.setLastFocused(null);
+      }
+    });
+  }
+
+  // Task 22：分区是否有未保存修改。写作分区认表单值；模型分区（v4/A4）委派给
+  // modelSettings.isDirty 判定「未失焦草稿 + 保存在途/失败」——两分区都只在各自
+  // 仍为当前分区且弹窗开着时判定（分区切换 replaceChildren 会重建/丢弃草稿）。
+  // 其余分区动作即时生效，无可挂起表单值，不判 dirty。
+  function settingsDirty() {
+    if (settingsSection === "model") {
+      return typeof ctx.modelSettings?.isDirty === "function" && ctx.modelSettings.isDirty();
+    }
+    if (settingsSection !== "writing") return false;
+    const dashboard = ctx.getDashboard();
+    if (dashboard?.hasProject !== true) return false;
+    const project = dashboard.project ?? {};
+    for (const field of WRITING_FIELDS) {
+      const input = settingsFields[field.key]?.input;
+      if (!input) continue;
+      if (String(input.value ?? "").trim() !== String(project[field.projectKey] ?? "").trim()) return true;
+    }
+    return false;
+  }
+
+  // 放弃未保存修改确认层（Task 22）：复用 spd-confirm-layer/spd-confirm-card
+  // 确认控件结构（与清空历史确认层同款），不调用 browser confirm。Task 12：
+  // 层收编 dom-kit.showConfirmLayer（非 danger：无 ack/错误行），确认即执行关闭。
+  function openDirtyCloseConfirm() {
+    if (dirtyConfirmRef.close) return;
+    removeAddMenuDismissal?.();
+    const promise = showConfirmLayer({
+      doc: document,
+      host: ctx.refs.settingsScrim,
+      id: "close-dirty",
+      title: "放弃未保存的修改？",
+      message: "写作参数有未保存的修改，关闭后将丢失。",
+      confirmLabel: "不保存并关闭",
+      zIndex: "21",
+      onConfirm: () => {
+        performCloseSettingsModal();
+      },
+      // 任何路径关闭层（取消/背景/Esc/成功/外部.close）都重置 open guard。
+      onClose: () => { dirtyConfirmRef = { close: null }; }
+    });
+    dirtyConfirmRef = { close: promise.close };
+  }
+
+  function closeDirtyCloseConfirm() {
+    dirtyConfirmRef.close?.();
+    dirtyConfirmRef = { close: null };
+  }
+
+
+  function settingField(labelText, type, { value = "", placeholder = "", options = null, min = null, max = null, step = null } = {}) {
+    // Task 12：改用 dom-kit el() 构建（与 model-settings-page 同构）。行为与返回
+    // 形状 { field, input } 不变；写入字段的 class/value/type 语义与 createElement
+    // 直构一致（el 的 value/disabled 走 property，其余属性直映射 setAttribute）。
+    const input = type === "select"
+      ? el("select", { class: "spd-input", value: value ?? "", "aria-label": labelText },
+          (options ?? []).map((opt) => el("option", { value: opt, text: opt })))
+      : el("input", {
+          class: "spd-input",
+          type,
+          value: value ?? "",
+          ...(placeholder ? { placeholder } : null),
+          ...(min !== null ? { min } : null),
+          ...(max !== null ? { max } : null),
+          ...(step !== null ? { step } : null),
+          "aria-label": labelText
+        });
+    return {
+      field: el("div", { class: "spd-field" }, [
+        el("div", { class: "spd-label" }, [el("span", { text: labelText })]),
+        input
+      ]),
+      input
+    };
+  }
+
+  async function saveSettings() {
+    if (settingsSection === "model") {
+      // 模型动作各自即时生效，不依赖底部保存按钮（footer 显示「更改即时生效」状态槽）。
+      return;
+    }
+    if (settingsSection === "writing") {
+      await saveWritingSection();
+      return;
+    }
+    if (settingsSection === "danger") {
+      // 项目管理动作各自即时生效，不依赖底部保存按钮。
+      return;
+    }
+    if (settingsSection === "skills") {
+      // 技能导入/删除/打开目录各自即时生效，不依赖底部保存按钮。
+      return;
+    }
+  }
+
+  // 任务进行中判定：agent snapshot 显示 active Run（非终态）或排队输入非空。
+  // 快照拉取失败（如项目从未打开）按「不在进行中」处理——危险分区清空按钮据此
+  // 门禁（Task 13），只读判定不写任何状态。
+  async function taskInProgress() {
+    const currentProjectRoot = ctx.getCurrentProjectRoot?.();
+    if (!currentProjectRoot) return false;
+    try {
+      const data = await getJsonImpl(`/api/agent/snapshot?projectRoot=${encodeURIComponent(currentProjectRoot)}&afterSeq=0&limit=1`);
+      const session = data?.session ?? null;
+      if (!session) return false;
+      if (Array.isArray(session.queued_inputs) && session.queued_inputs.length > 0) return true;
+      const run = session.active_run;
+      if (!run) return false;
+      return ["running", "waiting_user", "interrupting", "stopping"].includes(run.status);
+    } catch {
+      return false;
+    }
+  }
+
+  async function saveWritingSection() {
+    const currentProjectRoot = ctx.getCurrentProjectRoot();
+    if (!currentProjectRoot || ctx.getDashboard()?.hasProject !== true) {
+      ctx.showToast("请先新建或打开一部小说，再保存写作参数。", "info");
+      return;
+    }
+    await runSave(async () => {
+      const projectProfile = {};
+      for (const field of WRITING_FIELDS) {
+        projectProfile[field.projectKey] = settingsFields[field.key]?.input.value;
+      }
+      await postJsonImpl("/api/settings/update", {
+        project_profile: compactObject(projectProfile)
+      });
+      await ctx.loadDashboard();
+    });
+  }
+
+  async function runSave(fn) {
+    const seq = ++saveSequence;
+    saveInFlight = true;
+    ctx.refs.settingsSave.disabled = true;
+    const originalText = ctx.refs.settingsSave.textContent;
+    ctx.refs.settingsSave.textContent = "保存中...";
+    try {
+      await fn();
+      // 成功不弹 Toast：先显示「已保存」，短暂停留（700ms）后再关闭弹窗，
+      // 保证用户能看到保存反馈。关闭定时器带保存序号，连续保存时旧定时器直接失效。
+      if (seq !== saveSequence) return; // Task 16 B18：旧 save 不得接管按钮（新 save 在途）
+      ctx.refs.settingsSave.textContent = "已保存";
+      window.setTimeout(() => {
+        if (seq !== saveSequence) return;
+        closeSettingsModal();
+        ctx.refs.settingsSave.textContent = originalText;
+      }, 700);
+    } catch (error) {
+      // Task 16 B18：只有仍是最新 save 才收尾——旧 save 的迟到失败不弹 toast、
+      // 不覆盖新 save 的「保存中.../已保存」文案。
+      if (seq !== saveSequence) return;
+      ctx.showToast(error.message, "error");
+      // 恢复为规范标签而非 originalText：上一次保存的「已保存」可能尚未到恢复定时器，
+      // 失败后不得沿用「已保存」误导用户。
+      ctx.refs.settingsSave.textContent = "保存设置";
+    } finally {
+      // Task 16 B18：条件化收尾——只有仍是最新 save 才恢复按钮；旧 finally 不得
+      // 在更新 save 仍在途时重新启用按钮（覆盖新 save 的禁用态）。
+      if (seq === saveSequence) {
+        ctx.refs.settingsSave.disabled = false;
+        saveInFlight = false;
+      }
+    }
+  }
+
+  return {
+    openSettingsModal, closeSettingsModal, saveSettings,
+    // 仅供测试：读取当前分区。
+    currentSettingsSection: () => settingsSection,
+    // 仅供测试：直接触发保存（等价于点「保存设置」）。
+    saveSettingsForTest() {
+      return saveSettings();
+    },
+    // 仅供测试：当前技能管理 scope（"global" | "project"）。
+    getSkillsScope() {
+      return skillsScopeState.get();
+    },
+    // 仅供测试：切换技能管理 scope 并重渲列表。
+    setSkillsScopeForTest(scope) {
+      skillsScopeState.set(scope === "project" ? "project" : "global");
+      skillsRefs.globalBtn?.classList.toggle("on", skillsScopeState.get() === "global");
+      skillsRefs.projectBtn?.classList.toggle("on", skillsScopeState.get() === "project");
+      renderSkillsList();
+    },
+    // 仅供测试：读取技能列表（name/source/deletable/删除按钮）。
+    getSkillsRowsForTest() {
+      if (!skillsRefs.list) return [];
+      return [...skillsRefs.list.children]
+        .filter((el) => el.className === "spd-skill-row")
+        .map((row) => ({
+          name: row.dataset.skillName ?? "",
+          source: row.dataset.skillSource ?? "",
+          deletable: [...row.children].some((c) => c.className === "spd-skill-del"),
+          del: [...row.children].find((c) => c.className === "spd-skill-del") ?? null
+        }));
+    },
+    // 仅供测试：等待技能 catalog 拉取完成（fetchSkillsCatalog 是异步的）。
+    async waitForSkillsCatalog() {
+      await renderSkillsCatalogBody();
+    },
+    // 仅供测试：读取当前 settings detail 区挂载的子元素（判断分区切换竞态下
+    // 内容是否被意外重渲；domRegistry 会累积历史元素，不能用它断言当前挂载）。
+    getSettingsDetailForTest() {
+      return ctx.refs.settingsDetail;
+    }
+  };
+}

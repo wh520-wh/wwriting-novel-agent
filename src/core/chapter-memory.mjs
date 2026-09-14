@@ -1,0 +1,251 @@
+import { readJson, safeJoin, writeJsonAtomic } from "./fs-utils.mjs";
+import { formatChapterRef, loadContinuity } from "./continuity-store.mjs";
+
+export const CHAPTER_MEMORY_SCHEMA_VERSION = 1;
+export const MAX_CONTEXT_CHAPTERS = 2;
+export const OPENING_EXCERPT_CHARS = 420;
+export const ENDING_EXCERPT_CHARS = 900;
+
+export async function loadChapterMemory(projectRoot) {
+  const memory = await readJson(safeJoin(projectRoot, "memory", "chapter_memory.json"), {
+    schema_version: CHAPTER_MEMORY_SCHEMA_VERSION,
+    chapters: []
+  });
+  return normalizeMemory(memory);
+}
+
+export async function recordChapterMemory(projectRoot, chapter) {
+  const memory = await loadChapterMemory(projectRoot);
+  const chapterNo = Number(chapter.chapterNo);
+  if (!Number.isInteger(chapterNo) || chapterNo < 1) {
+    throw new Error("chapterNo must be a positive integer.");
+  }
+  const clean = cleanChapterText(chapter.content);
+  const entry = {
+    chapter_no: chapterNo,
+    title: chapter.title ?? `第${String(chapterNo).padStart(3, "0")}章`,
+    actual_words: Number(chapter.actualWords ?? 0),
+    checksum: chapter.checksum ?? null,
+    opening_excerpt: clipStart(clean, OPENING_EXCERPT_CHARS),
+    ending_excerpt: clipEnd(clean, ENDING_EXCERPT_CHARS)
+  };
+  const chapters = [
+    ...memory.chapters.filter((item) => item.chapter_no !== chapterNo),
+    entry
+  ].sort((a, b) => a.chapter_no - b.chapter_no);
+  const next = {
+    schema_version: CHAPTER_MEMORY_SCHEMA_VERSION,
+    chapters
+  };
+  await writeJsonAtomic(safeJoin(projectRoot, "memory", "chapter_memory.json"), next);
+  return next;
+}
+
+export async function buildContinuityPromptContext(projectRoot, currentChapterNo) {
+  const memory = await loadChapterMemory(projectRoot);
+  const activeChapterNo = Number(currentChapterNo);
+  const previous = memory.chapters
+    .filter((chapter) => chapter.chapter_no < activeChapterNo)
+    .slice(-MAX_CONTEXT_CHAPTERS);
+  const lines = [
+    "recent_completed_chapters:",
+    `- 当前目标章节：第 ${activeChapterNo} 章。`
+  ];
+  if (previous.length === 0) {
+    lines.push("- 第 1 章可以建立初始处境一次；后续章节必须承接已有场景和因果。");
+    return lines.join("\n");
+  }
+  lines.push("- 继续上一章留下的动作、后果、线索或情绪压力，不要把本章写成新的第一章。");
+  for (const chapter of previous) {
+    lines.push(`\n### 第 ${chapter.chapter_no} 章：${chapter.title}`);
+    lines.push(`字数：${chapter.actual_words}`);
+    lines.push(`开头摘录：${chapter.opening_excerpt}`);
+    lines.push(`上一章落点：${chapter.ending_excerpt}`);
+  }
+  return lines.join("\n");
+}
+
+// 检索式记忆注入：只取最近 N 章的 facts + 角色状态 + 近期 timeline，
+// 避免全量 continuity.md 随章节增长膨胀挤占上下文。模型需要更多细节时调 read_continuity。
+export function buildRelevantFacts(continuity, currentChapterNo, options = {}) {
+  const recentWindow = options.recentWindow ?? 5;
+  const maxFacts = options.maxFacts ?? 40;
+  const maxCharacters = options.maxCharacters ?? 12;
+  const maxTimeline = options.maxTimeline ?? 8;
+  const chapterNo = Number(currentChapterNo);
+  const lowerBound = chapterNo - recentWindow;
+
+  const recentFacts = (continuity?.facts ?? [])
+    .filter((f) => {
+      const fNo = Number(f.chapter_no);
+      return fNo >= lowerBound && fNo < chapterNo;
+    })
+    .sort((a, b) => Number(a.chapter_no) - Number(b.chapter_no));
+
+  let selected = recentFacts;
+  if (selected.length < maxFacts) {
+    const older = (continuity?.facts ?? [])
+      .filter((f) => Number(f.chapter_no) < lowerBound)
+      .sort((a, b) => Number(b.chapter_no) - Number(a.chapter_no));
+    selected = [...selected, ...older].slice(0, maxFacts);
+  } else {
+    selected = recentFacts.slice(-maxFacts);
+  }
+
+  const characters = (continuity?.characters ?? []).slice(0, maxCharacters);
+  const recentTimeline = (continuity?.timeline ?? [])
+    .filter((t) => Number(t.chapter_no) >= lowerBound)
+    .slice(-maxTimeline);
+
+  if (selected.length === 0 && characters.length === 0 && recentTimeline.length === 0) {
+    return "";
+  }
+
+  const lines = ["## 相关设定（精选近期，更多可用 read_continuity 工具按实体查）"];
+
+  if (selected.length > 0) {
+    lines.push("", "### 关键事实");
+    const byEntity = new Map();
+    for (const f of selected) {
+      if (!byEntity.has(f.entity)) byEntity.set(f.entity, []);
+      byEntity.get(f.entity).push(f);
+    }
+    for (const [entity, facts] of byEntity) {
+      lines.push(`- ${entity}:`);
+      for (const f of facts) {
+        const conflict = f.conflict_with ? ` ⚠${f.conflict_with}` : "";
+        lines.push(`  - ${f.attribute}: ${f.value} (${formatChapterRef(f.chapter_no)})${conflict}`);
+      }
+    }
+  }
+
+  if (characters.length > 0) {
+    lines.push("", "### 角色状态");
+    for (const c of characters) {
+      lines.push(`- ${c.name}（${c.status || "状态未知"}）：${(c.traits ?? []).join("、") || "无记录特征"}`);
+    }
+  }
+
+  if (recentTimeline.length > 0) {
+    lines.push("", "### 近期时间线");
+    for (const t of recentTimeline) {
+      const when = t.story_time_raw || "";
+      lines.push(`- ${formatChapterRef(t.chapter_no)}${when ? ` [${when}]` : ""}: ${(t.events ?? []).join("；")}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function normalizeMemory(memory) {
+  const chapters = Array.isArray(memory?.chapters)
+    ? memory.chapters
+        .map((chapter) => ({
+          chapter_no: Number(chapter.chapter_no),
+          title: String(chapter.title ?? ""),
+          actual_words: Number(chapter.actual_words ?? 0),
+          checksum: chapter.checksum ?? null,
+          opening_excerpt: String(chapter.opening_excerpt ?? ""),
+          ending_excerpt: String(chapter.ending_excerpt ?? "")
+        }))
+        .filter((chapter) => Number.isInteger(chapter.chapter_no) && chapter.chapter_no > 0)
+        .sort((a, b) => a.chapter_no - b.chapter_no)
+    : [];
+  return {
+    schema_version: CHAPTER_MEMORY_SCHEMA_VERSION,
+    chapters
+  };
+}
+
+function cleanChapterText(content) {
+  return String(content ?? "")
+    .replace(/<!--[\s\S]*?-->/gu, " ")
+    .replace(/^#\s+Chapter\s+\d+\s*$/gimu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function clipStart(text, maxChars) {
+  const source = normalizeExcerpt(text);
+  return source.length > maxChars ? `${source.slice(0, maxChars)}…` : source;
+}
+
+function clipEnd(text, maxChars) {
+  const source = normalizeExcerpt(text);
+  return source.length > maxChars ? `…${source.slice(-maxChars)}` : source;
+}
+
+function normalizeExcerpt(text) {
+  return String(text ?? "").replace(/\s+/gu, " ").trim();
+}
+
+// ---------------------------------------------------------------------------
+// 前情简报（第十六轮 D2）：read_continuity 工具的组装体。三块全为既定预算
+//（近 2 章摘录 / 近 5 章精选 / 未回收伏笔 top N），空块自动省略。
+// ---------------------------------------------------------------------------
+
+const FORESHADOW_BRIEF_LIMIT = 5;
+
+export async function buildContinuityBriefing(projectRoot, options = {}) {
+  const continuity = await loadContinuity(projectRoot);
+  if (typeof options.entity === "string" && options.entity.trim() !== "") {
+    return buildEntityDossier(continuity, options.entity.trim());
+  }
+  const memory = await loadChapterMemory(projectRoot);
+  const chapterNo = Number.isInteger(options.chapterNo) && options.chapterNo > 0
+    ? options.chapterNo
+    : ((memory.chapters.at(-1)?.chapter_no) ?? 0) + 1;
+  const blocks = [
+    await buildContinuityPromptContext(projectRoot, chapterNo),
+    buildRelevantFacts(continuity, chapterNo),
+    buildForeshadowBrief(continuity, chapterNo)
+  ].filter((block) => typeof block === "string" && block.length > 0);
+  return blocks.join("\n\n");
+}
+
+function buildForeshadowBrief(continuity, chapterNo) {
+  const openOnes = (continuity?.foreshadows ?? [])
+    .filter((f) => f.status === "open")
+    .sort((a, b) => (a.planted_chapter ?? 0) - (b.planted_chapter ?? 0))
+    .slice(0, FORESHADOW_BRIEF_LIMIT);
+  if (openOnes.length === 0) return "";
+  const lines = ["## 未回收伏笔（按埋设章排序，越早越紧急）"];
+  for (const f of openOnes) {
+    const age = Number.isInteger(f.planted_chapter) && f.planted_chapter > 0
+      ? `，距今 ${chapterNo - f.planted_chapter} 章未收`
+      : "";
+    const hint = f.expected_payoff_hint ? `（回收提示：${f.expected_payoff_hint}）` : "";
+    lines.push(`- ${formatChapterRef(f.planted_chapter)}埋设${age}：${f.content}${hint}`);
+  }
+  return lines.join("\n");
+}
+
+function buildEntityDossier(continuity, entity) {
+  const facts = (continuity?.facts ?? []).filter((f) => f.entity === entity);
+  const character = (continuity?.characters ?? []).find((c) => c.name === entity) ?? null;
+  if (facts.length === 0 && !character) {
+    return `未找到实体「${entity}」的设定记录。`;
+  }
+  const lines = [`## 实体档案：${entity}`];
+  if (character) {
+    lines.push("", "### 角色状态",
+      `- ${character.name}（${character.status || "状态未知"}）：${(character.traits ?? []).join("、") || "无记录特征"}`);
+  }
+  if (facts.length > 0) {
+    lines.push("", "### 相关事实");
+    for (const f of facts) {
+      const conflict = f.conflict_with ? ` ⚠${f.conflict_with}` : "";
+      lines.push(`- ${f.attribute}: ${f.value} (${formatChapterRef(f.chapter_no)})${conflict}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+// read_continuity 工具的系统侧执行体（projectOperations 形态，runtime.mjs 装配）。
+export async function readContinuityBriefing({ projectRoot, chapterNo = null, entity = null }) {
+  const content = await buildContinuityBriefing(projectRoot, {
+    chapterNo: Number.isInteger(chapterNo) ? chapterNo : null,
+    entity: typeof entity === "string" ? entity : null
+  });
+  return { ok: true, content };
+}

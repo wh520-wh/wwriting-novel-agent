@@ -1,0 +1,80 @@
+{
+  "name": "wwriting-novel-agent",
+  "version": "0.5.1",
+  "description": "Desktop long-form novel writing agent with durable local files and verification.",
+  "author": "WWriting",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wh520-wh/wwriting-novel-agent.git"
+  },
+  "homepage": "https://github.com/wh520-wh/wwriting-novel-agent#readme",
+  "bugs": {
+    "url": "https://github.com/wh520-wh/wwriting-novel-agent/issues"
+  },
+  "private": true,
+  "type": "module",
+  "main": "src/desktop/electron-main.cjs",
+  "scripts": {
+    "app:shell": "node scripts/serve-app-shell.mjs",
+    "assets:icon": "node scripts/generate-app-icon.mjs",
+    "desktop:electron": "electron src/desktop/electron-main.cjs",
+    "package:dir": "electron-builder --dir --win",
+    "package:installer": "node scripts/package-installer.mjs",
+    "test": "node --test tests/app-shell/*.test.mjs tests/agent/*.test.mjs tests/model/*.test.mjs tests/shell/*.test.mjs tests/project-operations/*.test.mjs tests/http/*.test.mjs tests/skills/*.test.mjs tests/architecture/*.test.mjs tests/acceptance/*.test.mjs tests/core/*.test.mjs tests/desktop/*.test.mjs",
+    "verify:unified-agent": "node scripts/verify-unified-agent.mjs",
+    "verify:local": "node scripts/verify-local-all.mjs",
+    "verify:desktop-shell": "node scripts/verify-desktop-shell.mjs",
+    "verify:electron-runtime": "node scripts/verify-electron-runtime.mjs",
+    "verify:app-clickability": "electron scripts/verify-app-clickability.cjs",
+    "verify:packaged-dir": "node scripts/verify-packaged-dir.mjs",
+    "verify:installer": "node scripts/verify-installer-artifact.mjs",
+    "verify:provider-online": "node scripts/verify-provider-online.mjs",
+    "verify:research-online": "node scripts/verify-research-online.mjs",
+    "verify:app-shell": "node scripts/verify-app-shell.mjs",
+    "audit:cost": "node scripts/audit-cost.mjs",
+    "sim:user-flow": "node scripts/simulate-user-flow.mjs"
+  },
+  "build": {
+    "appId": "local.wwriting.novelagent",
+    "productName": "WWriting Novel Agent",
+    "asar": true,
+    "directories": {
+      "output": "dist-desktop"
+    },
+    "files": [
+      "package.json",
+      "src/**/*"
+    ],
+    "icon": "src/assets/app-icon.ico",
+    "win": {
+      "icon": "src/assets/app-icon.ico",
+      "signAndEditExecutable": true,
+      "target": [
+        "dir",
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "artifactName": "${productName}-${version}-Setup.${ext}"
+    }
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "devDependencies": {
+    "electron": "^42.3.0",
+    "electron-builder": "^26.8.1"
+  },
+  "dependencies": {
+    "ignore": "^5.3.2",
+    "marked": "^18.0.9",
+    "yaml": "^2.9.0",
+    "yauzl": "^3.4.0"
+  }
+}

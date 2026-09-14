@@ -1,0 +1,7 @@
+{
+  "name": "a2-time-conflict",
+  "draft": "刘康是在深夜坠楼的，那时工地探照灯还亮着，几乎没有人看见。",
+  "continuity_facts": [],
+  "timeline": [{ "chapter_no": 1, "story_time": "午间", "events": ["刘康坠楼身亡"] }],
+  "expect": "conflict"
+}

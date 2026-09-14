@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WWriting · 小说智能体</title>
+    <script>
+      // 首帧主题预设：样式应用前同步落 data-theme，夜间用户直接暗色首绘不闪白。
+      // 主题判定的单点在本脚本（theme.js 只采用 data-theme，不再维护第二套口径）。
+      try {
+        var storedTheme = localStorage.getItem("ww:theme");
+        document.documentElement.dataset.theme =
+          storedTheme === "dark" || (storedTheme !== "light" && matchMedia("(prefers-color-scheme: dark)").matches)
+            ? "dark"
+            : "light";
+      } catch { /* localStorage 不可用则按系统偏好；theme.js 兜底重算口径与此一致 */ }
+    </script>
+    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./agent/agent.css" />
+  </head>
+  <body>
+    <div class="app" id="app">
+      <!-- ============ 左栏 · 项目 ============ -->
+      <aside class="rail">
+        <div class="rail-top">
+          <div class="brand-mark">W</div>
+          <div class="brand-text">
+            <strong>WWriting</strong>
+            <span>小说智能体</span>
+          </div>
+          <button class="icon-btn" id="refresh" title="刷新" aria-label="刷新">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 12a8.5 8.5 0 1 1-2.4-5.9"/><path d="M20.5 4v4.5H16"/></svg>
+          </button>
+        </div>
+        <div class="rail-new">
+          <button class="new-btn" id="new-novel">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>新建小说
+          </button>
+        </div>
+        <div class="rail-scroll">
+          <div class="rail-group-label"><span>我的小说</span><span class="count" id="project-count">0</span></div>
+          <div class="rail-filter"><input id="project-filter" type="search" placeholder="搜索我的小说…" aria-label="搜索我的小说" spellcheck="false" /></div>
+          <div id="project-list">
+            <!-- 启动骨架屏：项目/会话数据到达前的占位（session-sidebar 首渲整体 replaceChildren 自动清除）。 -->
+            <div class="boot-skeleton" aria-hidden="true">
+              <div class="skel-row"><span class="skeleton skel-dot"></span><span class="skeleton skel-line"></span></div>
+              <div class="skel-row"><span class="skeleton skel-dot"></span><span class="skeleton skel-line skel-line-narrow"></span></div>
+              <div class="skel-row"><span class="skeleton skel-dot"></span><span class="skeleton skel-line skel-line-short"></span></div>
+            </div>
+          </div>
+          <p id="project-open-status" class="project-open-status"></p>
+        </div>
+        <div class="rail-foot">
+          <button class="foot-btn" id="open-folder">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h6l2 2h10v9a2 2 0 0 1-2 2H3z"/></svg>打开本地文件夹
+          </button>
+          <button class="foot-btn" id="open-settings">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5h9M17 6.5h3M4 12h3M11 12h9M4 17.5h7M15 17.5h5"/></svg>设置
+          </button>
+          <div class="foot-user">
+            <div class="foot-avatar">作</div>
+            <div class="who"><strong>本地作者</strong><span>离线 · 文件保存在本机</span></div>
+          </div>
+        </div>
+      </aside>
+      <div class="rail-scrim" id="rail-scrim" hidden></div>
+      <!-- ============ 主列 ============ -->
+      <div class="main">
+        <div class="main-inner">
+        <header class="topbar">
+          <button class="icon-btn rail-toggle" id="rail-toggle" type="button" title="打开导航" aria-label="打开导航" aria-expanded="false">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+          </button>
+          <div class="topbar-id">
+            <div class="topbar-title-row">
+              <h1 id="project-title">开始创作</h1>
+            </div>
+          </div>
+          <div class="topbar-actions">
+            <button class="tbtn topbar-more" id="topbar-more" type="button" title="更多操作" aria-label="更多操作" aria-haspopup="menu" aria-expanded="false">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h.01M12 12h.01M19 12h.01"/></svg>
+            </button>
+            <div class="topbar-secondary" id="topbar-secondary" role="menu">
+              <button class="tbtn btn drawer-toggle" id="open-drawer" type="button" role="menuitem" title="项目面板：章节 / 资料 / 成本" aria-label="项目面板">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h11a2 2 0 0 1 2 2v14H7a2 2 0 0 1-2-2zM5 17.5h13"/></svg>
+                <span>面板</span>
+              </button>
+              <button class="tbtn" id="theme-toggle" role="menuitem" title="深色模式：夜间写作更护眼" aria-pressed="false">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13.5A8.5 8.5 0 0 1 10.5 4 7.5 7.5 0 1 0 20 13.5z"/></svg>
+                <span id="theme-label">夜间</span>
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <!-- 唯一对话挂载点：AgentSurface（对话 + 当前 Run + 排队 + composer） -->
+        <div class="main-agent" id="agent-surface"></div>
+        </div>
+
+        <div class="scrim" id="drawer-scrim"></div>
+        <aside class="drawer" id="drawer" aria-labelledby="drawer-title" aria-hidden="true" inert>
+          <div class="drawer-head">
+            <h3 id="drawer-title">项目面板</h3>
+            <button class="icon-btn" id="drawer-close" aria-label="关闭"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+          </div>
+          <div class="drawer-tabs" id="drawer-tabs" role="tablist">
+            <button class="dtab on" data-dtab="chapters" type="button" role="tab" aria-selected="true">章节</button>
+            <button class="dtab" data-dtab="model" type="button" role="tab" aria-selected="false">模型</button>
+            <button class="dtab" data-dtab="research" type="button" role="tab" aria-selected="false">资料</button>
+            <button class="dtab" data-dtab="cost" type="button" role="tab" aria-selected="false">成本</button>
+            <button class="dtab" data-dtab="memory" type="button" role="tab" aria-selected="false">记忆</button>
+          </div>
+          <div class="drawer-body" id="drawer-body"></div>
+        </aside>
+      </div>
+
+      <!-- 章节阅读器 -->
+      <div class="reader-scrim" id="reader-scrim" inert>
+        <div class="reader" id="reader" role="dialog" aria-modal="true" aria-labelledby="reader-title">
+          <div class="reader-head">
+            <div class="reader-title-block">
+              <h2 id="reader-title">章节</h2>
+              <div class="sub" id="reader-meta"></div>
+            </div>
+            <div class="reader-tools">
+              <div class="reader-font-stepper" role="group" aria-label="正文字号">
+                <button class="icon-btn" id="reader-font-minus" aria-label="缩小字号" title="缩小字号">A-</button>
+                <button class="icon-btn" id="reader-font-plus" aria-label="放大字号" title="放大字号">A+</button>
+              </div>
+              <button class="icon-btn" id="reader-prev" aria-label="上一章" title="上一章（←）">‹</button>
+              <button class="icon-btn" id="reader-next" aria-label="下一章" title="下一章（→）">›</button>
+              <button class="icon-btn reader-tool-text" id="reader-wide" aria-label="沉浸模式" aria-pressed="false" title="沉浸模式">沉浸</button>
+              <button class="icon-btn reader-tool-text" id="reader-history" aria-label="历史版本" title="历史版本">历史</button>
+            </div>
+            <button class="icon-btn" id="reader-close" aria-label="关闭"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+          </div>
+          <div class="reader-body" id="reader-body"></div>
+        </div>
+      </div>
+
+      <!-- 设置弹窗 -->
+      <div class="settings-scrim" id="settings-scrim" inert>
+        <div class="settings-modal" id="settings-modal" role="dialog" aria-modal="true" aria-label="设置">
+          <aside class="sp-side">
+            <nav class="sp-section-nav" id="settings-section-nav" aria-label="设置分区"></nav>
+          </aside>
+          <section class="sp-detail">
+            <div class="sp-detail-scroll" id="settings-detail"></div>
+            <footer class="spd-foot">
+              <p class="settings-save-status" id="settings-save-status" role="status" hidden></p>
+              <button class="btn" id="settings-cancel">关闭</button>
+              <button class="btn btn--primary" id="settings-save">保存设置</button>
+            </footer>
+          </section>
+          <button class="settings-x icon-btn" id="settings-x" aria-label="关闭"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+        </div>
+      </div>
+
+      <!-- 新建/初始化项目弹窗 -->
+      <div class="settings-scrim" id="create-scrim" inert>
+        <div class="create-card" id="create-card" role="dialog" aria-modal="true" aria-labelledby="create-heading">
+          <p class="eyebrow">新的小说</p>
+          <h2 id="create-heading">开始一部新小说</h2>
+          <p class="lead">告诉我故事的种子，应用会规划、起草、审稿、定稿，并把每一章保存为本地文件。</p>
+          <label class="dfield"><span>小说名</span><input id="create-title" type="text" placeholder="未命名小说" /></label>
+          <label class="dfield"><span>故事设定 · 一句话或主体大纲</span><textarea id="create-seed" rows="3" placeholder="例如：一个钟表匠在午夜发现时间可以倒流，而代价是别人的记忆。"></textarea></label>
+          <div class="create-grid">
+            <label class="dfield"><span>章节数</span><input id="create-chapters" type="number" min="1" value="100" /></label>
+            <label class="dfield"><span>每章最低字数</span><input id="create-min-words" type="number" min="1" value="3000" /></label>
+          </div>
+          <label class="dfield"><span>保存到本地文件夹（需空文件夹）</span>
+            <div class="path-row">
+              <input id="create-path" type="text" placeholder="D:\\写作项目\\我的小说" spellcheck="false" class="path-input" />
+              <button class="btn" id="create-browse" type="button">选择…</button>
+            </div>
+          </label>
+          <button class="btn btn--primary" id="create-submit" type="button"><span class="btn-spinner" hidden></span><span class="btn-label">开始创作</span></button>
+          <p id="create-status" class="create-status"></p>
+          <button class="settings-x icon-btn" id="create-x" aria-label="关闭"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+        </div>
+      </div>
+
+      <!-- 快捷键速查 -->
+      <div class="settings-scrim" id="shortcuts-scrim" inert>
+        <div class="shortcuts-card" id="shortcuts-card" role="dialog" aria-modal="true" aria-label="快捷键速查">
+          <h2>快捷键</h2>
+          <dl class="shortcuts-list">
+            <dt>Enter</dt><dd>发送指令</dd>
+            <dt>Shift + Enter</dt><dd>换行</dd>
+            <dt>← / →</dt><dd>阅读器内翻章</dd>
+            <dt>Esc</dt><dd>关闭弹窗 / 抽屉</dd>
+            <dt>?</dt><dd>打开本速查</dd>
+          </dl>
+          <button class="settings-x icon-btn" id="shortcuts-x" aria-label="关闭"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+        </div>
+      </div>
+
+      <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+    </div>
+    <script type="importmap">{"imports":{"marked":"/vendor/marked.esm.js"}}</script>
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>

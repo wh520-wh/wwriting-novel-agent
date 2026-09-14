@@ -1,0 +1,807 @@
+import { describe, it, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import { renderCostPanel } from '../../src/app-shell/components/cost-panel.js';
+import { formatYuan } from '../../src/app-shell/utils.js';
+
+// ---------------------------------------------------------------------------
+// Minimal DOM mock (no JSDOM) — same shape as activity-strip-render.test.mjs
+// ---------------------------------------------------------------------------
+
+class MockElement {
+  constructor(tag) {
+    this.tagName = tag;
+    this.className = '';
+    this.textContent = '';
+    this.hidden = false;
+    /** @type {MockElement[]} */
+    this.children = [];
+    this.style = {};
+    /** @type {Map<string, Function[]>} */
+    this._listeners = new Map();
+    this.dataset = {};
+    this.classList = {
+      _classes: new Set(),
+      toggle(cls, force) {
+        if (force === undefined) {
+          if (this._classes.has(cls)) { this._classes.delete(cls); return false; }
+          this._classes.add(cls); return true;
+        }
+        if (force) this._classes.add(cls); else this._classes.delete(cls);
+        return force;
+      },
+      has(cls) { return this._classes.has(cls); },
+      toString() { return [...this._classes].join(' '); }
+    };
+    this._syncClassName();
+  }
+
+  _syncClassName() {
+    const self = this;
+    Object.defineProperty(this, 'className', {
+      get() { return [...self.classList._classes].join(' '); },
+      set(v) {
+        self.classList._classes.clear();
+        for (const c of String(v).split(/\s+/)) { if (c) self.classList._classes.add(c); }
+      },
+      enumerable: true,
+      configurable: true
+    });
+  }
+
+  appendChild(child) {
+    this.children.push(child);
+    return child;
+  }
+
+  replaceChildren(...nodes) {
+    this.children.length = 0;
+    for (const n of nodes) this.children.push(n);
+  }
+
+  addEventListener(type, handler) {
+    if (!this._listeners.has(type)) this._listeners.set(type, []);
+    this._listeners.get(type).push(handler);
+  }
+
+  setAttribute(name, value) {
+    if (!this._attrs) this._attrs = {};
+    this._attrs[name] = value;
+  }
+
+  getAttribute(name) {
+    return this._attrs?.[name] ?? null;
+  }
+}
+
+const _realDoc = globalThis.document;
+
+before(() => {
+  globalThis.document = { createElement(tag) { return new MockElement(tag); } };
+});
+
+after(() => {
+  globalThis.document = _realDoc;
+});
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function html(root) {
+  function walk(node) {
+    if (!node) return '';
+    if (typeof node !== 'object') return String(node);
+    if (Array.isArray(node)) return node.map(walk).join('');
+    if (node.tagName === undefined) return '';
+    const style = node.style && Object.keys(node.style).length
+      ? ` style="${Object.entries(node.style).map(([k,v]) => `${k}:${v}`).join(';')}"`
+      : '';
+    const data = node.dataset && Object.keys(node.dataset).length
+      ? ` data-${Object.entries(node.dataset).map(([k,v]) => `${k}="${v}"`).join(' ')}`
+      : '';
+    const cls = node.className ? ` class="${node.className}"` : '';
+    return `<${node.tagName.toLowerCase()}${cls}${data}${style}>${walk(node.children)}${walk(node.textContent || '')}</${node.tagName.toLowerCase()}>`;
+  }
+  return walk(root);
+}
+
+function flat(root) {
+  return html(root);
+}
+
+function findAll(root, predicate) {
+  const out = [];
+  function walk(node) {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    if (predicate(node)) out.push(node);
+    (node.children ?? []).forEach(walk);
+  }
+  walk(root);
+  return out;
+}
+
+function findByClass(root, className) {
+  return findAll(root, (n) => (n.className ?? '').split(/\s+/).includes(className));
+}
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+function makeCost(overrides = {}) {
+  return {
+    calls: 9,
+    inputTokens: 7701,
+    outputTokens: 2925,
+    totalTokens: 10626,
+    cachedTokens: 0,
+    estimatedCost: 0,
+    pricedCalls: 0,
+    unpricedCalls: 9,
+    costAvailable: false,
+    retries: 0,
+    byProvider: {
+      mock: {
+        calls: 9,
+        inputTokens: 7701,
+        outputTokens: 2925,
+        totalTokens: 10626,
+        cachedTokens: 0,
+        estimatedCost: 0
+      }
+    },
+    byModel: {},
+    byStage: {},
+    byChapter: {
+      1: { calls: 3, estimatedCost: 0 },
+      2: { calls: 3, estimatedCost: 0 },
+      3: { calls: 3, estimatedCost: 0 }
+    },
+    recentHitRates: [],
+    cacheSavedCost: 0,
+    ...overrides
+  };
+}
+
+function makeSummary(overrides = {}) {
+  return {
+    modelCalls: 9,
+    maxModelCalls: null,
+    totalTokens: 10626,
+    estimatedCost: 0,
+    costAvailable: false,
+    completedChapters: 3,
+    targetChapters: 5,
+    totalWords: 1234,
+    ...overrides
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe('renderCostPanel — 3-section layout', () => {
+
+  it('1. renders 总览/缓存健康/章节成本 three sections', () => {
+    const root = renderCostPanel({ cost: makeCost(), summary: makeSummary(), events: [] });
+    const text = flat(root);
+    assert.match(text, /总览/);
+    assert.match(text, /缓存健康/);
+    assert.match(text, /章节成本/);
+  });
+
+  it('2. shows "未配置价格" when costAvailable is false (honest display)', () => {
+    const root = renderCostPanel({ cost: makeCost({ costAvailable: false }), summary: makeSummary({ costAvailable: false }), events: [] });
+    const text = flat(root);
+    assert.match(text, /未配置价格/);
+  });
+
+  it('3. shows formatted cost when costAvailable is true', () => {
+    const root = renderCostPanel({
+      cost: makeCost({ costAvailable: true, estimatedCost: 0.18 }),
+      summary: makeSummary({ costAvailable: true, estimatedCost: 0.18 }),
+      events: []
+    });
+    const text = flat(root);
+    assert.ok(/0\.18/.test(text) || /\$0\.18/.test(text), 'should include the cost value');
+    assert.equal(/未配置价格/.test(text), false, 'should NOT show 未配置价格 when cost is available');
+  });
+
+  it('4. lists chapters ascending by chapter number', () => {
+    const root = renderCostPanel({
+      cost: makeCost({
+        byChapter: {
+          3: { calls: 1, estimatedCost: 0.05 },
+          1: { calls: 1, estimatedCost: 0.02 },
+          2: { calls: 1, estimatedCost: 0.03 }
+        },
+        costAvailable: true,
+        estimatedCost: 0.10
+      }),
+      summary: makeSummary({ costAvailable: true, estimatedCost: 0.10 }),
+      events: []
+    });
+    const text = flat(root);
+    const idx1 = text.indexOf('第 1 章');
+    const idx2 = text.indexOf('第 2 章');
+    const idx3 = text.indexOf('第 3 章');
+    assert.ok(idx1 > 0 && idx2 > idx1 && idx3 > idx2, `expected chapters in order 1,2,3; got idx1=${idx1} idx2=${idx2} idx3=${idx3}`);
+  });
+
+  it('5. shows 0.0% hit rate (not empty string) when recentHitRates is all zeros', () => {
+    const root = renderCostPanel({
+      cost: makeCost({ recentHitRates: [0, 0, 0], cacheSavedCost: 0 }),
+      summary: makeSummary(),
+      events: []
+    });
+    const text = flat(root);
+    assert.match(text, /0\.0%/);
+  });
+
+  it('6. shows mean of recentHitRates as percent', () => {
+    const root = renderCostPanel({
+      cost: makeCost({
+        recentHitRates: [0.1, 0.2, 0.3, 0.4],
+        cacheSavedCost: 0
+      }),
+      summary: makeSummary(),
+      events: []
+    });
+    const text = flat(root);
+    // mean = 0.25 = 25.0%
+    assert.match(text, /25\.0%/);
+  });
+
+  it('7. hides cache savings row when costAvailable is false', () => {
+    const root = renderCostPanel({
+      cost: makeCost({ cacheSavedCost: 0, costAvailable: false }),
+      summary: makeSummary(),
+      events: []
+    });
+    const text = flat(root);
+    assert.equal(/缓存节省/.test(text), false, 'should NOT show 缓存节省 when costAvailable is false');
+  });
+
+  it('7b. hides cache savings row when costAvailable is true but saved is 0', () => {
+    const root = renderCostPanel({
+      cost: makeCost({ cacheSavedCost: 0, costAvailable: true }),
+      summary: makeSummary({ costAvailable: true }),
+      events: []
+    });
+    const text = flat(root);
+    assert.equal(/缓存节省/.test(text), false, 'should NOT show 缓存节省 when saved is 0');
+  });
+
+  it('7c. shows cache savings when costAvailable is true and saved > 0', () => {
+    const root = renderCostPanel({
+      cost: makeCost({ cacheSavedCost: 0.6, costAvailable: true }),
+      summary: makeSummary({ costAvailable: true }),
+      events: []
+    });
+    const text = flat(root);
+    assert.match(text, /缓存节省/);
+    assert.match(text, /0\.60\s*元/);
+  });
+
+  it('8. shows formatted cacheSavedCost when non-zero', () => {
+    const root = renderCostPanel({
+      cost: makeCost({ cacheSavedCost: 0.18, costAvailable: true }),
+      summary: makeSummary({ costAvailable: true }),
+      events: []
+    });
+    const text = flat(root);
+    assert.match(text, /0\.18\s*元/);
+  });
+
+  it('9. 不展示已无生产写入口的补写轮次', () => {
+    const root = renderCostPanel({
+      cost: makeCost({ refillCalls: 4 }),
+      summary: makeSummary(),
+      events: []
+    });
+    const text = flat(root);
+    assert.doesNotMatch(text, /补写轮次/);
+  });
+
+  it('10. renders 20 sparkline blocks', () => {
+    const root = renderCostPanel({
+      cost: makeCost({ recentHitRates: [0.5, 0.6, 0.7] }),
+      summary: makeSummary(),
+      events: []
+    });
+    const sparks = findByClass(root, 'cost-spark');
+    assert.equal(sparks.length, 20, `expected 20 spark blocks, got ${sparks.length}`);
+    const sparklineEl = findByClass(root, 'cost-sparkline')[0];
+    assert.equal(sparklineEl.getAttribute("role"), "img");
+    assert.ok(sparklineEl.getAttribute("aria-label").includes("命中率"));
+  });
+
+  it('11. fills missing sparkline slots with zero height', () => {
+    const root = renderCostPanel({
+      cost: makeCost({ recentHitRates: [0.5] }),
+      summary: makeSummary(),
+      events: []
+    });
+    const sparks = findByClass(root, 'cost-spark');
+    assert.equal(sparks.length, 20);
+    const heights = sparks.map((s) => s.style.height);
+    // First spark = 0.5*100 = 50%, rest = 0%
+    assert.equal(heights[0], '50%');
+    assert.equal(heights[1], '0%');
+    assert.equal(heights[19], '0%');
+  });
+
+  it('12. each sparkline block has height set as percent', () => {
+    const root = renderCostPanel({
+      cost: makeCost({ recentHitRates: [0.2, 0.4] }),
+      summary: makeSummary(),
+      events: []
+    });
+    const sparks = findByClass(root, 'cost-spark');
+    for (const s of sparks) {
+      assert.ok(s.style.height, 'spark should have a height set');
+      assert.match(s.style.height, /%$/, 'spark height should end with %');
+    }
+  });
+
+  it('13. shows total token count with thousands separator', () => {
+    const root = renderCostPanel({
+      cost: makeCost({ totalTokens: 1234567 }),
+      summary: makeSummary({ totalTokens: 1234567 }),
+      events: []
+    });
+    const text = flat(root);
+    assert.match(text, /1[,，  ]234[,，  ]567|1,234,567/);
+  });
+
+  it('14. shows total calls count', () => {
+    const root = renderCostPanel({
+      cost: makeCost({ calls: 42 }),
+      summary: makeSummary({ modelCalls: 42 }),
+      events: []
+    });
+    const text = flat(root);
+    assert.match(text, /总调用/);
+    assert.match(text, /42/);
+  });
+
+  it('22. shows token-weighted 累计命中率 percentage', () => {
+    const root = renderCostPanel({
+      cost: makeCost({ cacheHitTokens: 400000, hitRateInputTokens: 1000000, recentHitRates: [0.5] }),
+      summary: makeSummary(),
+      events: []
+    });
+    const text = flat(root);
+    assert.match(text, /累计命中率/);
+    assert.match(text, /40\.0%/);
+    // token 加权 ≠ per-call 平均：最近 20 次行仍是 50.0%
+    assert.match(text, /50\.0%/);
+  });
+
+  it('23. shows 暂无数据 placeholder when no cache data', () => {
+    const root = renderCostPanel({
+      cost: makeCost(),
+      summary: makeSummary(),
+      events: []
+    });
+    const text = flat(root);
+    assert.match(text, /累计命中率/);
+    assert.match(text, /暂无数据/);
+  });
+
+  it('24. does not fabricate nonzero 累计命中率 when summary lacks cache fields', () => {
+    const root = renderCostPanel({
+      cost: {},
+      summary: makeSummary(),
+      events: []
+    });
+    const text = flat(root);
+    assert.match(text, /累计命中率/);
+    assert.match(text, /暂无数据/);
+    assert.equal(/累计命中率[^%]*[1-9]\.[0-9]%/.test(text), false, 'should NOT show a fabricated percentage');
+  });
+});
+
+describe('renderCostPanel — warning badge', () => {
+
+  it('15. renders warning badge when lastEvent.type === "chapter_cost_warning"', () => {
+    const lastEvent = {
+      type: 'chapter_cost_warning',
+      chapter_no: 3,
+      message: '第 3 章 token 消耗已超过前几章平均值的 2 倍',
+      data: { chapter_total_tokens: 9000, average_other_chapters: 3500 }
+    };
+    const root = renderCostPanel({
+      cost: makeCost({
+        byChapter: {
+          1: { calls: 3, estimatedCost: 0.02 },
+          2: { calls: 3, estimatedCost: 0.03 },
+          3: { calls: 3, estimatedCost: 0.10 }
+        },
+        costAvailable: true,
+        estimatedCost: 0.15
+      }),
+      summary: makeSummary({ costAvailable: true, estimatedCost: 0.15 }),
+      events: [lastEvent],
+      lastEvent
+    });
+    const text = flat(root);
+    assert.match(text, /cost-warning|cost-warn|⚠|预警/);
+    const bannerEl = findByClass(root, 'cost-warning-banner')[0];
+    assert.equal(bannerEl.getAttribute("role"), "status");
+  });
+
+  it('16. no warning badge when no chapter_cost_warning event', () => {
+    const root = renderCostPanel({
+      cost: makeCost(),
+      summary: makeSummary(),
+      events: [{ type: 'project_run_started' }]
+    });
+    const warnings = findByClass(root, 'cost-warning');
+    assert.equal(warnings.length, 0);
+  });
+
+  it('17. derives lastEvent from events array if not provided', () => {
+    const events = [
+      { type: 'project_run_started' },
+      { type: 'chapter_cost_warning', chapter_no: 5, message: 'over 2x', data: {} }
+    ];
+    const root = renderCostPanel({
+      cost: makeCost(),
+      summary: makeSummary(),
+      events
+    });
+    const text = flat(root);
+    assert.match(text, /预警|⚠|cost-warning/);
+  });
+
+  it('18. warning badge targets the affected chapter row', () => {
+    const lastEvent = { type: 'chapter_cost_warning', chapter_no: 2, message: 'over 2x', data: {} };
+    const root = renderCostPanel({
+      cost: makeCost({
+        byChapter: {
+          1: { calls: 1, estimatedCost: 0.01 },
+          2: { calls: 1, estimatedCost: 0.05 },
+          3: { calls: 1, estimatedCost: 0.02 }
+        },
+        costAvailable: true
+      }),
+      summary: makeSummary({ costAvailable: true }),
+      events: [lastEvent],
+      lastEvent
+    });
+    const warnings = findByClass(root, 'cost-warning');
+    assert.ok(warnings.length >= 1);
+    // Find chapter row for 第 2 章
+    const chapterRows = findByClass(root, 'cost-chapter-row');
+    const targetRow = chapterRows.find((r) => /第 2 章/.test(flat(r)));
+    assert.ok(targetRow, 'chapter 2 row should exist');
+  });
+});
+
+describe('renderCostPanel — defensive defaults', () => {
+
+  it('19. handles null cost gracefully', () => {
+    const root = renderCostPanel({ cost: null, summary: null, events: [] });
+    const text = flat(root);
+    assert.match(text, /总览/);
+    assert.match(text, /缓存健康/);
+    assert.match(text, /章节成本/);
+  });
+
+  it('20. handles missing byChapter gracefully', () => {
+    const root = renderCostPanel({
+      cost: { calls: 0, totalTokens: 0, recentHitRates: [], cacheSavedCost: 0, costAvailable: false },
+      summary: null,
+      events: []
+    });
+    const text = flat(root);
+    assert.match(text, /总览/);
+    assert.match(text, /暂无章节/);
+  });
+
+  it('21. shows "未配置价格" per-chapter when costAvailable is false but chapter has calls', () => {
+    const root = renderCostPanel({
+      cost: makeCost({
+        costAvailable: false,
+        byChapter: { 1: { calls: 3, estimatedCost: 0 } }
+      }),
+      summary: makeSummary({ costAvailable: false }),
+      events: []
+    });
+    const text = flat(root);
+    assert.match(text, /未配置价格/);
+  });
+});
+
+describe('renderCostPanel — DeepSeek 低命中率诊断提示（D2）', () => {
+
+  const DEEPSEEK_MODEL = { base_url: "https://api.deepseek.com", model_name: "deepseek-chat" };
+  const HINT_COPY = /缓存命中率偏低，可能近期改动了规则\/风格\/技能配置，或章节间间隔过久/;
+  // 低命中率样本：写作路径 12 次调用、累计命中率 20%
+  const lowHitCost = () => makeCost({
+    calls: 12,
+    byStage: { chat: { calls: 0 } },
+    cacheHitTokens: 200000,
+    hitRateInputTokens: 1000000
+  });
+
+  it('25. DeepSeek 模式 + 写作路径 ≥10 次 + 累计命中率 <30% 时显示一行小字（文案按计划原文）', () => {
+    const root = renderCostPanel({
+      cost: lowHitCost(),
+      summary: makeSummary(),
+      events: [],
+      modelConfig: DEEPSEEK_MODEL
+    });
+    const text = flat(root);
+    assert.match(text, HINT_COPY);
+    const hints = findByClass(root, 'cost-hint');
+    assert.equal(hints.length, 1, '应恰好一行提示');
+    // 提示在「缓存健康」section 内
+    const sections = findAll(root, (n) => n.dataset?.costSection === '缓存健康');
+    assert.equal(sections.length, 1);
+    assert.match(flat(sections[0]), HINT_COPY);
+  });
+
+  it('26. 写作路径调用数 <10（门限内）不显示提示', () => {
+    const root = renderCostPanel({
+      cost: makeCost({
+        calls: 9,
+        byStage: { chat: { calls: 0 } },
+        cacheHitTokens: 200000,
+        hitRateInputTokens: 1000000
+      }),
+      summary: makeSummary(),
+      events: [],
+      modelConfig: DEEPSEEK_MODEL
+    });
+    const text = flat(root);
+    assert.equal(/缓存命中率偏低/.test(text), false, '调用数不足门限不应提示');
+  });
+
+  it('27. 累计命中率 ≥30% 不显示提示', () => {
+    const root = renderCostPanel({
+      cost: makeCost({
+        calls: 12,
+        byStage: { chat: { calls: 0 } },
+        cacheHitTokens: 400000,
+        hitRateInputTokens: 1000000
+      }),
+      summary: makeSummary(),
+      events: [],
+      modelConfig: DEEPSEEK_MODEL
+    });
+    const text = flat(root);
+    assert.equal(/缓存命中率偏低/.test(text), false, '命中率 40% 不应提示');
+  });
+
+  it('28. 非 DeepSeek 模式不显示提示（即使命中率低且调用数达标）', () => {
+    const root = renderCostPanel({
+      cost: lowHitCost(),
+      summary: makeSummary(),
+      events: [],
+      modelConfig: { base_url: "https://api.openai.com/v1", model_name: "gpt-4o" }
+    });
+    const text = flat(root);
+    assert.equal(/缓存命中率偏低/.test(text), false, '非 DeepSeek 不应提示');
+    const hints = findByClass(root, 'cost-hint');
+    assert.equal(hints.length, 0);
+  });
+
+  it('29. 未传入模型配置（旧调用方）不显示提示', () => {
+    const root = renderCostPanel({
+      cost: lowHitCost(),
+      summary: makeSummary(),
+      events: []
+    });
+    const text = flat(root);
+    assert.equal(/缓存命中率偏低/.test(text), false);
+  });
+
+  it('30. chat 调用排除：总调用含大量 chat 时写作路径调用数按 总调用 - chat 计算', () => {
+    // 总调用 39（chat 30 + 写作 9）：写作路径 9 <10，即使累计命中率低也不提示
+    const root = renderCostPanel({
+      cost: makeCost({
+        calls: 39,
+        byStage: { chat: { calls: 30 } },
+        cacheHitTokens: 200000,
+        hitRateInputTokens: 1000000
+      }),
+      summary: makeSummary(),
+      events: [],
+      modelConfig: DEEPSEEK_MODEL
+    });
+    const text = flat(root);
+    assert.equal(/缓存命中率偏低/.test(text), false, 'chat 调用不应计入写作路径门限');
+    // 反向：写作路径 12 次 + chat 若干，命中率低 → 仍提示（chat 不计入命中率分母，由 L2 口径保证）
+    const root2 = renderCostPanel({
+      cost: makeCost({
+        calls: 32,
+        byStage: { chat: { calls: 20 } },
+        cacheHitTokens: 200000,
+        hitRateInputTokens: 1000000
+      }),
+      summary: makeSummary(),
+      events: [],
+      modelConfig: DEEPSEEK_MODEL
+    });
+    assert.match(flat(root2), HINT_COPY);
+  });
+
+  it('31. 无命中率数据（hitRateInputTokens 为 0）不显示提示', () => {
+    const root = renderCostPanel({
+      cost: makeCost({ calls: 12, byStage: { chat: { calls: 0 } }, cacheHitTokens: 0, hitRateInputTokens: 0 }),
+      summary: makeSummary(),
+      events: [],
+      modelConfig: DEEPSEEK_MODEL
+    });
+    const text = flat(root);
+    assert.equal(/缓存命中率偏低/.test(text), false, '无数据不应把 0 当真实命中率误报');
+  });
+
+  it('32. 低命中率只报告可观测现象，不依赖已删除的缓存键报告归因', () => {
+    const root = renderCostPanel({
+      cost: lowHitCost(),
+      summary: makeSummary(),
+      events: [],
+      modelConfig: DEEPSEEK_MODEL
+    });
+    const text = flat(root);
+    assert.match(text, HINT_COPY, '基础文案应保持计划原文');
+    assert.doesNotMatch(text, /检测到规则\/风格\/技能配置有改动/);
+    assert.equal(findByClass(root, 'cost-hint').length, 1, '归因仍是一行小字');
+  });
+
+  it('33. 额外旧参数不会改变低命中率提示', () => {
+    const root = renderCostPanel({
+      cost: lowHitCost(),
+      summary: makeSummary(),
+      events: [],
+      modelConfig: DEEPSEEK_MODEL,
+      cacheSummary: { stableChangedReason: "first_call" }
+    });
+    const text = flat(root);
+    assert.match(text, HINT_COPY);
+    assert.equal(/检测到规则\/风格\/技能配置有改动/.test(text), false);
+  });
+
+  // MiMo 适配（2026-07-31）：isCacheDiscountedMode 统一判据 —— MiMo 官方端点与 Token Plan 端点同享 D2 提示
+
+  const MIMO_MODEL = { base_url: "https://api.xiaomimimo.com/v1", model_name: "mimo-v2.5-pro" };
+
+  it('34. MiMo 官方 API 端点 + 写作路径 ≥10 次 + 累计命中率 <30% 时显示提示（文案与 DeepSeek 相同）', () => {
+    const root = renderCostPanel({
+      cost: lowHitCost(),
+      summary: makeSummary(),
+      events: [],
+      modelConfig: MIMO_MODEL
+    });
+    const text = flat(root);
+    assert.match(text, HINT_COPY);
+    assert.equal(findByClass(root, 'cost-hint').length, 1, '应恰好一行提示');
+  });
+
+  it('35. MiMo Token Plan 订阅端点同样显示提示', () => {
+    const root = renderCostPanel({
+      cost: lowHitCost(),
+      summary: makeSummary(),
+      events: [],
+      modelConfig: { base_url: "https://token-plan-cn.xiaomimimo.com/v1", model_name: "mimo-v2.5" }
+    });
+    assert.match(flat(root), HINT_COPY);
+  });
+
+  it('36. MiMo 模式同样不依赖缓存键报告归因', () => {
+    const root = renderCostPanel({
+      cost: lowHitCost(),
+      summary: makeSummary(),
+      events: [],
+      modelConfig: MIMO_MODEL,
+      cacheSummary: { stableChangedReason: "stable_hash_changed" }
+    });
+    const text = flat(root);
+    assert.match(text, HINT_COPY);
+    assert.doesNotMatch(text, /检测到规则\/风格\/技能配置有改动/);
+  });
+
+  it('37. MiMo 模型走第三方端点（非官方）不显示提示（保守口径与 DeepSeek 一致）', () => {
+    const root = renderCostPanel({
+      cost: lowHitCost(),
+      summary: makeSummary(),
+      events: [],
+      modelConfig: { base_url: "https://api.novita.ai/openai", model_name: "xiaomimimo/mimo-v2.5" }
+    });
+    const text = flat(root);
+    assert.equal(/缓存命中率偏低/.test(text), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 21（spec 4.3 #4）：成本统一人民币「元」，保留两位小数（N.NN 元）。
+// 覆盖总成本 / 章节成本 / 缓存节省 / 0 值；不得出现 $ / ¥ / 缺两位小数。
+// ---------------------------------------------------------------------------
+
+describe('renderCostPanel — 成本格式（Task 21：人民币「元」两位小数）', () => {
+
+  function overviewOf(root) {
+    return findAll(root, (n) => n.dataset?.costSection === '总览')[0];
+  }
+
+  function cacheSectionOf(root) {
+    return findAll(root, (n) => n.dataset?.costSection === '缓存健康')[0];
+  }
+
+  it('A1. 总成本 1.2 → "1.20 元"，整面板无 $ / ¥', () => {
+    const root = renderCostPanel({
+      cost: makeCost({ costAvailable: true, estimatedCost: 1.2 }),
+      summary: makeSummary({ costAvailable: true, estimatedCost: 1.2 }),
+      events: []
+    });
+    assert.match(flat(overviewOf(root)), /1\.20\s*元/);
+    assert.doesNotMatch(flat(root), /\$|¥|￥/u, '任何成本显示不得出现外币符号');
+  });
+
+  it('A2. 总成本 0 值 → "0.00 元"（两位小数不缺位）', () => {
+    const root = renderCostPanel({
+      cost: makeCost({ costAvailable: true, estimatedCost: 0 }),
+      summary: makeSummary({ costAvailable: true, estimatedCost: 0 }),
+      events: []
+    });
+    assert.match(flat(overviewOf(root)), /0\.00\s*元/);
+    assert.doesNotMatch(flat(overviewOf(root)), /\d\.\d\s*元/u, '两位小数不得缺位（如 1.2 元 / 0.0 元）');
+  });
+
+  it('A3. 章节成本 1.2 → "1.20 元"', () => {
+    const root = renderCostPanel({
+      cost: makeCost({
+        costAvailable: true,
+        byChapter: { 3: { calls: 4, estimatedCost: 1.2 } }
+      }),
+      summary: makeSummary({ costAvailable: true }),
+      events: []
+    });
+    const chapterRow = findByClass(root, 'cost-chapter-row')[0];
+    assert.ok(chapterRow, '应有章节成本行');
+    assert.match(flat(chapterRow), /1\.20\s*元/);
+    assert.doesNotMatch(flat(chapterRow), /\$|¥|￥/u);
+  });
+
+  it('A4. 章节 0 调用 → "0.00 元"（0 值统一两位小数）', () => {
+    const root = renderCostPanel({
+      cost: makeCost({
+        costAvailable: true,
+        byChapter: { 1: { calls: 0, estimatedCost: 0 } }
+      }),
+      summary: makeSummary({ costAvailable: true }),
+      events: []
+    });
+    const chapterRow = findByClass(root, 'cost-chapter-row')[0];
+    assert.ok(chapterRow, '应有章节成本行');
+    assert.match(flat(chapterRow), /0\.00\s*元/);
+  });
+
+  it('A5. 缓存节省 1.2 → "1.20 元"', () => {
+    const root = renderCostPanel({
+      cost: makeCost({ cacheSavedCost: 1.2, costAvailable: true }),
+      summary: makeSummary({ costAvailable: true }),
+      events: []
+    });
+    assert.match(flat(cacheSectionOf(root)), /缓存节省/);
+    assert.match(flat(cacheSectionOf(root)), /1\.20\s*元/);
+  });
+
+  it('A6. formatYuan 单一出口：两位小数 + 元；NaN/Infinity 兜底 0.00 元；负数保留符号', () => {
+    assert.equal(formatYuan(1.2), '1.20 元');
+    assert.equal(formatYuan(0), '0.00 元');
+    assert.equal(formatYuan('3.456'), '3.46 元');
+    assert.equal(formatYuan(undefined), '0.00 元');
+    assert.equal(formatYuan(null), '0.00 元');
+    assert.equal(formatYuan(NaN), '0.00 元', 'NaN 不得泄漏为 NaN 元');
+    assert.equal(formatYuan(Infinity), '0.00 元', 'Infinity 不得泄漏');
+    assert.equal(formatYuan(-1.2), '-1.20 元', '负数保留符号展示，便于发现数据异常');
+    assert.equal(formatYuan(1.2).includes('$'), false);
+    assert.equal(formatYuan(1.2).includes('¥'), false);
+  });
+});
