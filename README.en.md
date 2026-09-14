@@ -17,6 +17,8 @@ The agent actually reads and writes your files · Every step is verifiable · Yo
 
 **English** · [简体中文](README.md)
 
+[Quick start](#quick-start) · [Core capabilities](#core-capabilities) · [Workspace](#what-a-workspace-looks-like) · [Development & verification](#development--verification) · [Roadmap](#roadmap) · [Contributing](#contributing)
+
 <img src="docs/images/hero.png" width="880" alt="WWriting main interface">
 
 </div>
@@ -185,10 +187,14 @@ For security issues, report privately per [SECURITY.md](SECURITY.md) instead of 
 
 ## More documentation
 
-- [Changelog](CHANGELOG.md)
-- [Full user guide (Chinese)](docs/USER_GUIDE.zh-CN.md)
-- [Architecture decision records](docs/adr/)
-- [中文 README](README.md)
+| Document | What's inside |
+| --- | --- |
+| [Changelog](CHANGELOG.md) | Per-release changes and fixes |
+| [Full user guide](docs/USER_GUIDE.zh-CN.md) | Step-by-step desktop walkthrough: workspaces, chat, permissions, export |
+| [Architecture decision records](docs/adr/) | 8 ADRs recording each key design trade-off and why it was made |
+| [Contributing guide](CONTRIBUTING.md) | Requirements, dev commands, commit conventions, PR flow |
+| [Security policy](SECURITY.md) | How to report vulnerabilities, plus this project's security boundaries and non-issues |
+| [中文 README](README.md) | Chinese documentation |
 
 ## License
 

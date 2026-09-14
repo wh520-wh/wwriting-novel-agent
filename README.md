@@ -17,6 +17,8 @@
 
 [English](README.en.md) · **简体中文**
 
+[快速开始](#快速开始) · [核心能力](#核心能力) · [工作区](#工作区长什么样) · [开发与验证](#开发与验证) · [路线图](#路线图) · [贡献](#贡献)
+
 <img src="docs/images/hero.png" width="880" alt="WWriting 主界面">
 
 </div>
@@ -185,10 +187,14 @@ docs/adr/                 # 架构决策记录
 
 ## 更多文档
 
-- [更新日志](CHANGELOG.md)
-- [完整使用教程（中文）](docs/USER_GUIDE.zh-CN.md)
-- [架构决策记录](docs/adr/)
-- [English README](README.en.md)
+| 文档 | 内容 |
+| --- | --- |
+| [更新日志](CHANGELOG.md) | 每个版本的变更明细与修复项 |
+| [完整使用教程](docs/USER_GUIDE.zh-CN.md) | 桌面端逐步操作说明：工作区、对话、权限、导出 |
+| [架构决策记录](docs/adr/) | 8 份 ADR，逐条记录关键设计取舍与取舍理由 |
+| [贡献指南](CONTRIBUTING.md) | 环境要求、开发命令、提交规范、PR 流程 |
+| [安全策略](SECURITY.md) | 漏洞披露渠道，以及本项目的安全边界与非漏洞清单 |
+| [English README](README.en.md) | 英文版说明 |
 
 ## 许可
 
