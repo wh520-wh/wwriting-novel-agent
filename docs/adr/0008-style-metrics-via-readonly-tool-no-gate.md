@@ -4,7 +4,7 @@
 
 ## 背景
 
-竞品调研（`docs/research/2026-08-29-competitive-research-ai-voice.md`）P0 指出：`avoid-ai-voice`
+对同类写作工具的调研 P0 指出：`avoid-ai-voice`
 技能是静态禁用清单，模型自评「有没有 AI 腔」不可靠，缺客观验收信号。而 round14（Task 10）
 已**有意删除**确定性技能钩子运行时（`src/core/skills/index.mjs:15`：`stage: reviewing` 只是
 惰性元数据），`commit_chapter` 工具描述明写「不做字数/标题/技能内容门禁」——「运行时零分支」
