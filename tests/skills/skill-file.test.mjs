@@ -4,7 +4,7 @@
 // 绝对资源路径、../ 穿越、资源 realpath 逃逸、超 512KiB 的 SKILL.md。
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -65,22 +65,32 @@ async function expectRejected(promise, code) {
 // realpath 逃逸路径。relPath 决定链接位置：逃逸枚举测试放在 references/ 之下，逃逸
 // 读取测试放在技能目录顶层（避免枚举阶段拦截，单独测 readSkillResource 的 containment）。
 function tryCreateEscapeLink(skillDir, outsideRoot, relPath) {
+  const linkPath = path.join(skillDir, relPath);
   const fileTarget = path.join(outsideRoot, "outside-secret.txt");
   writeFileSync(fileTarget, "secret", "utf8");
-  try {
-    symlinkSync(fileTarget, path.join(skillDir, relPath));
-    return relPath;
-  } catch (error) {
-    if (error?.code !== "EPERM" && error?.code !== "EACCES") throw error;
-  }
+  if (tryCreateLink(fileTarget, linkPath)) return relPath;
+
   const dirTarget = path.join(outsideRoot, "outside-dir");
   mkdirSync(dirTarget, { recursive: true });
+  if (tryCreateLink(dirTarget, linkPath, "junction")) return relPath;
+  return null;
+}
+
+// 创建链接后必须回查是否真的落地：受限环境（无 SeCreateSymbolicLinkPrivilege、
+// 或沙箱拦截）里 symlinkSync 可能既不抛错也不创建链接。只判断异常会把"静默失败"
+// 当成成功，让调用方拿着一个不存在的路径继续跑，测试就变成了另一种失败而非跳过。
+function tryCreateLink(target, linkPath, type) {
   try {
-    symlinkSync(dirTarget, path.join(skillDir, relPath), "junction");
-    return relPath;
+    if (type) symlinkSync(target, linkPath, type);
+    else symlinkSync(target, linkPath);
   } catch (error) {
-    if (error?.code === "EPERM" || error?.code === "EACCES") return null;
+    if (error?.code === "EPERM" || error?.code === "EACCES") return false;
     throw error;
+  }
+  try {
+    return lstatSync(linkPath).isSymbolicLink();
+  } catch {
+    return false;
   }
 }
 

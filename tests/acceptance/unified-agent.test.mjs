@@ -748,8 +748,12 @@ test("不同项目可并行运行", async (t) => {
     gatewayScript: [{ reply: { text: "项目二答复。" } }],
     gatewayDelayMs: 400
   });
-  await h1.agent.submit({ projectRoot: h1.projectRoot, text: "项目一任务", source: "chat" });
-  await h2.agent.submit({ projectRoot: h2.projectRoot, text: "项目二任务", source: "chat" });
+  // 两个项目必须同时提交：串行 await 会让第二个 run 的启动整体后移，
+  // 满载时足以让第一轮在第二轮进入 gateway 前就结束，重叠断言随之偶发失败。
+  await Promise.all([
+    h1.agent.submit({ projectRoot: h1.projectRoot, text: "项目一任务", source: "chat" }),
+    h2.agent.submit({ projectRoot: h2.projectRoot, text: "项目二任务", source: "chat" })
+  ]);
   await Promise.all([
     waitForIdle(h1.agent, h1.projectRoot),
     waitForIdle(h2.agent, h2.projectRoot)
@@ -1034,7 +1038,13 @@ test("Shell 增量输出、cwd/退出码/耗时、进程树停止与 secret 脱�
   const completed = eventsOfType(events1, "tool_call_completed").filter((event) => event.payload.name === "shell");
   assert.equal(completed.length, 1);
   assert.equal(completed[0].payload.exit_code, 0, "shell 完成事件应报告退出码");
-  assert.equal(path.resolve(completed[0].payload.cwd), h1.projectRoot, "shell 完成事件应报告 cwd");
+  // 用 path.relative 比空串而不是直接比字符串：Windows 路径大小写不敏感，
+  // 实现侧报的是磁盘真实大小写，而 projectRoot 来自 os.tmpdir() 的环境变量写法。
+  assert.equal(
+    path.relative(h1.projectRoot, path.resolve(completed[0].payload.cwd)),
+    "",
+    "shell 完成事件应报告 cwd"
+  );
   assert.ok(completed[0].payload.duration_ms >= 0, "shell 完成事件应报告耗时");
   assertActivityClosure(events1);
 
