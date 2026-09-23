@@ -216,7 +216,17 @@ export function createAppShellServer({
   router.add("POST", "/api/shutdown", async () => ({ ok: true, message: "shutting down" }));
 
   const server = http.createServer(async (request, response) => {
-    const url = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
+    // C2（2026-09-23 审计）：本地单机服务只认 127.0.0.1 / localhost 的 Host，
+    // 拒绝 DNS rebinding（Host: attacker.com）与跨站直打。合法来源（Electron
+    // 渲染进程、本机 fetch）Host 恒为 127.0.0.1:<port>。
+    const boundPort = server.address()?.port ?? port;
+    const host = String(request.headers.host ?? "");
+    if (host !== `127.0.0.1:${boundPort}` && host !== `localhost:${boundPort}`) {
+      response.writeHead(403, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      response.end(JSON.stringify({ ok: false, code: "HOST_REJECTED", message: "请求来源被拒绝。" }));
+      return;
+    }
+    const url = new URL(request.url ?? "/", `http://127.0.0.1:${boundPort}`);
     if (url.pathname === "/") {
       // 任务 6：打开应用首页先完成启动自动恢复路径的快照→引用迁移（见 selection
       // 恢复块注释）。迁移后再渲染首屏。
