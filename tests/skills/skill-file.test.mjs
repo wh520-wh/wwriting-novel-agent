@@ -84,14 +84,24 @@ function tryCreateLink(target, linkPath, type) {
     if (type) symlinkSync(target, linkPath, type);
     else symlinkSync(target, linkPath);
   } catch (error) {
-    if (error?.code === "EPERM" || error?.code === "EACCES") return false;
+    // EEXIST：上一种链接方式已占住路径（见下方清理逻辑失败时），按不可用处理
+    if (error?.code === "EPERM" || error?.code === "EACCES" || error?.code === "EEXIST") return false;
     throw error;
   }
   try {
-    return lstatSync(linkPath).isSymbolicLink();
+    if (lstatSync(linkPath).isSymbolicLink()) return true;
   } catch {
     return false;
   }
+  // 部分沙箱/受限环境的 symlinkSync 既不抛错也不建链接，而是退化成一个 0 字节普通
+  // 文件。必须清掉这个占位物，否则下一次 symlinkSync（junction 回退）以 EEXIST 抛出，
+  // 本该 skip 的测试变成失败。
+  try {
+    rmSync(linkPath, { force: true });
+  } catch {
+    return false;
+  }
+  return false;
 }
 
 test("合法技能返回冻结的 {name, description, body, dir, source, metadata, resources}", async (t) => {
