@@ -1006,7 +1006,12 @@ test("shell 适配解析 cwd/超时钳制/风险与 scope；项目外写命令�
   await h.tools.resolveDecision({ decisionId: decision.payload.decision_id, choice: "allow" });
   const result = await pending;
   assert.equal(result.ok, true);
-  assert.equal(h.shellCalls[0].cwd, path.resolve(path.join(h.dir, "outside")));
+  // path.relative 比空串：Windows 路径大小写不敏感，h.dir 来自 os.tmpdir() 的环境
+  // 变量写法，而工具层报的 cwd 是磁盘真实大小写，直接比字符串会在 npm 下误判。
+  assert.equal(
+    path.relative(path.resolve(path.join(h.dir, "outside")), h.shellCalls[0].cwd),
+    ""
+  );
   // 超时钳制：缺省 120000，超界钳到 [1000, 1800000]
   await h.tools.execute(toolCall("shell", { command: "git status", purpose: "查看" }), h.context);
   assert.equal(h.shellCalls[1].timeoutMs, 120000);
@@ -1191,12 +1196,18 @@ test("shell 小输出：delta 与 final 的截断字段为未截断口径（R5-1
 
 test("停止（abort）中止 shell、作废待决决策且不泄漏未脱敏输出", async (t) => {
   const controller = new AbortController();
+  // 必须等 shell 真正进入执行体再 abort：execute 在 abort 预检查前有若干 await
+  // （currentSession 等），固定 sleep 在满载时会让 abort 落在工具启动之前，
+  // 那时代码诚实地是"启动前已取消"（tool_cancelled），本测试就测不到运行中停止。
+  let markStarted;
+  const shellStarted = new Promise((resolve) => { markStarted = resolve; });
   const h = await setup(t, {
     secrets: ["hunter2"],
     signal: controller.signal,
     shellRuntime: async ({ signal, onOutput }) => {
       // git status 是只读命令（自动执行）；输出里带密钥，随后等待停止
       onOutput?.({ stream: "stdout", text: "secret= hunter2" });
+      markStarted();
       await new Promise((resolve) => {
         signal?.addEventListener("abort", () => resolve());
       });
@@ -1210,7 +1221,7 @@ test("停止（abort）中止 shell、作废待决决策且不泄漏未脱敏输
     }
   });
   const pending = h.tools.execute(toolCall("shell", { command: "git status", purpose: "长驻" }), h.context);
-  await sleep(30);
+  await shellStarted;
   controller.abort("用户停止");
   const result = await pending;
   assert.equal(result.ok, false);
