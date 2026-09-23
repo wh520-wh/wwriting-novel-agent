@@ -281,6 +281,40 @@ test("POST /api/memory/versions/restore：恢复后文件内容与对话事件",
   );
 });
 
+// C3（2026-09-24 审计）：恢复覆盖前必须把当前未入版本库的内容存为 pre_restore，
+// 否则两次快照之间的编辑被恢复不可逆抹掉（对齐章节侧 pre_rollback 语义）。
+test("POST /api/memory/versions/restore：覆盖前当前内容存档为 pre_restore", async (t) => {
+  const s = await setupServer(t);
+  const { h } = s;
+  await h.agent.newSession({ projectRoot: h.projectRoot, title: "pre-restore-test" });
+  await h.agent.open({ projectRoot: h.projectRoot });
+
+  // v1 快照后，用户又手动改了 book_summary（未入版本库的修改）
+  await snapshotMemoryFile({ projectRoot: h.projectRoot, file: "book_summary", content: "v1 内容", source: "test" });
+  const targetPath = path.join(h.projectRoot, "book_summary.md");
+  await fs.writeFile(targetPath, "快照后的手工修改", "utf8");
+
+  // 恢复到 v1
+  const res = await fetch(`${s.base}/api/memory/versions/restore`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ projectRoot: h.projectRoot, file: "book_summary", version: 1 })
+  });
+  assert.equal(res.status, 200);
+
+  // 恢复本身仍然生效：目标文件被覆盖为 v1
+  assert.equal(await fs.readFile(targetPath, "utf8"), "v1 内容");
+
+  // 版本列表应出现 pre_restore 版本，内容 = 被覆盖前的手工修改
+  const listRes = await fetch(`${s.base}/api/memory/versions?projectRoot=${encodeURIComponent(h.projectRoot)}&file=book_summary`);
+  const { versions } = await listRes.json();
+  const pre = versions.find((v) => v.source === "pre_restore");
+  assert.ok(pre, "恢复前应产生 pre_restore 存档版本");
+  const preRes = await fetch(`${s.base}/api/memory/versions/content?projectRoot=${encodeURIComponent(h.projectRoot)}&file=book_summary&version=${pre.version}`);
+  const preData = await preRes.json();
+  assert.equal(preData.content, "快照后的手工修改");
+});
+
 test("POST /api/memory/versions/restore：运行中 → 409 agent_running", async (t) => {
   const s = await setupServer(t, {
     gatewayScript: [async () => { await new Promise((r) => setTimeout(r, 2000)); return { text: "慢答复" }; }],
