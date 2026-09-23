@@ -13,6 +13,13 @@ npm-debug.log*
 .uat_runs/
 debug/
 
+# AI 编码工具与编辑器本地状态（不推送）
+.zcode/
+.codegraph/
+.vs/
+.idea/
+.workbuddy/
+
 # 本地保留、不推送（用户要求）
 CLAUDE.md
 docs/superpowers/
