@@ -180,3 +180,39 @@ test("hasNonTerminalRun：与 TERMINAL_RUN_STATUSES 同口径（终态补集）"
   assert.equal(hasNonTerminalRun({ active_run: { status: "completed" } }), false);
   assert.equal(hasNonTerminalRun({ active_run: { status: "cancelled" } }), false);
 });
+
+// C1（2026-09-23 审计）：sessionId 直达 fs.rm(path.join(agentRoot, "sessions", id))，
+// 含路径分隔符/.. 的 id 可穿越删除任意目录。requireSessionId 必须在入口拒绝。
+test("deleteSession 守卫：sessionId 含路径分隔符或 .. 拒绝（invalid_session_id）", async (t) => {
+  const { state, manager } = await makeHarness(t);
+  // 诱饵目录必须落在 sessionId "../victim-dir" 真正能 fs.rm 到的位置：
+  // path.join(agentRoot, "sessions", "../victim-dir") 归一化后 = <agentRoot>/victim-dir，
+  // 而不是 <agentRoot>/../victim-dir。放在别处会让下面的存活断言永远不成立。
+  const victim = path.join(state.agentRoot, "victim-dir");
+  await fs.mkdir(victim, { recursive: true });
+  await fs.writeFile(path.join(victim, "keep.txt"), "keep");
+
+  const bad = ["../victim-dir", "..\\victim-dir", "..", "a/b", "a\\b", "x\u0000y"];
+  for (const sessionId of bad) {
+    await assert.rejects(
+      manager.deleteSession({ projectRoot: "/p", sessionId }),
+      (error) => error.code === "invalid_session_id"
+    );
+  }
+  // 诱饵目录必须原样存在
+  assert.equal(await fs.readFile(path.join(victim, "keep.txt"), "utf8"), "keep");
+});
+
+test("renameSession/archiveSession/restoreSession 同样拒绝穿越 id", async (t) => {
+  const { manager } = await makeHarness(t);
+  // 与 deleteSession 同一批非法形状：三个入口逐个过，任一形状漏掉都会暴露
+  const bad = ["../evil", "..\\evil", "..", "a/b", "a\\b", "x\u0000y"];
+  for (const op of [manager.renameSession, manager.archiveSession, manager.restoreSession]) {
+    for (const sessionId of bad) {
+      await assert.rejects(
+        op({ projectRoot: "/p", sessionId, title: "t" }),
+        (error) => error.code === "invalid_session_id"
+      );
+    }
+  }
+});

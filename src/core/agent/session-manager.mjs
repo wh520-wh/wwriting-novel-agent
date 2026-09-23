@@ -85,6 +85,11 @@ function requireSessionId(sessionId) {
   if (typeof sessionId !== "string" || sessionId.length === 0) {
     throw fail("invalid_session_id", "sessionId 必须是非空字符串。");
   }
+  // C1（2026-09-23 审计）：sessionId 直达 fs.rm / 注册表路径拼接，含分隔符或 ..
+  // 的 id 可穿越到 agentRoot 外；与 settings-routes 的技能目录名守卫同口径。
+  if (/[\\/]|\.\./u.test(sessionId) || sessionId === "." || sessionId === ".." || sessionId.includes("\0")) {
+    throw fail("invalid_session_id", "sessionId 不能包含路径分隔符或 ..。");
+  }
   return sessionId;
 }
 
