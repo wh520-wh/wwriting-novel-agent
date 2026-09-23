@@ -52,7 +52,7 @@ import { buildModelProfile, modelDisplayName } from "../settings-runtime.mjs";
 import { assertNotArchived, buildProjectList } from "../project-listing.mjs";
 import { listChapterVersions, readChapterVersion } from "../project-operations/versions.mjs";
 import { rollbackChapter } from "../project-operations/chapter.mjs";
-import { listMemoryVersions, readMemoryVersion } from "../project-operations/memory-versions.mjs";
+import { listMemoryVersions, readMemoryVersion, snapshotMemoryFile } from "../project-operations/memory-versions.mjs";
 
 function normalizePositiveInteger(value, fallback) {
   const number = Number(value);
@@ -403,6 +403,13 @@ export function createProjectRoutes({
       }
       const { content } = await readMemoryVersion({ projectRoot, file, version });
       const target = file === "worklog" ? safeJoin(projectRoot, "WORKLOG.md") : safeJoin(projectRoot, "book_summary.md");
+      // C3（2026-09-24 审计）：覆盖前把当前内容存档为 pre_restore（对齐章节侧
+      // pre_rollback「宁可不覆盖也不丢内容」语义）。快照失败即抛——恢复不执行。
+      // 内容相同则不存档，避免重复恢复同一版本时产生 no-op 版本。
+      const currentContent = await fs.readFile(target, "utf8").catch(() => null);
+      if (currentContent != null && currentContent !== content) {
+        await snapshotMemoryFile({ projectRoot, file, content: currentContent, source: "pre_restore" });
+      }
       await withProjectLock(projectRoot, () => writeFileAtomic(target, content));
       try {
         await agent.appendSystemEvent({
