@@ -1097,7 +1097,7 @@ async function buildCrashWindowJournal(h, { compactionState, inputText = "压缩
     batch.push({ type: "context_compaction_cancelled", payload: { compaction_id: compactionId, trigger: "automatic", attempt: 1, cancel_reason: "user_esc" } });
   }
   await journal.appendBatch(batch);
-  return { journal, inputId, runId, compactionId };
+  return { journal, inputId, runId, compactionId, sessionId: meta.session_id };
 }
 
 function crashWindowGatewayScript() {
@@ -1177,6 +1177,58 @@ test("重启恢复：failed 崩溃窗口（failed 已落盘、收敛未落盘）
   assert.equal(eventsOfType(afterRetry, "run_completed").length, 1, "重试后输入继续并完成 Run");
   assert.equal(eventsOfType(afterRetry, "context_compaction_completed").length, 1);
   assert.equal((await readSession(h.agent, h.projectRoot)).active_run.status, "completed");
+});
+
+// C4（2026-09-24 审计复审）：压缩重试的串行门与它守卫的状态校验必须在同一临界区。
+// 会话 A 运行中对会话 B 的可重试压缩调 retryCompaction 必须拒绝——否则 B 的
+// startLoop 覆写项目级 controller，用户 stop A 实际 abort B。
+test("串行门：其他会话运行中 retryCompaction → project_busy，且 B 的压缩状态零变化", async (t) => {
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const h = await createProjectAgentHarness({
+    gatewayScript: [
+      // 会话 A 的正常模型轮次：卡住 → A 保持 running（非终态）
+      async () => {
+        await gate;
+        return { text: "A 完成。" };
+      },
+      // 若串行门被绕过，压缩重试会走到这里（bug 路径可观测：压缩真的推进）
+      (request) =>
+        request.metadata?.stage === "context_compaction"
+          ? { text: JSON.stringify(validSummary()) }
+          : { text: "正常回复。" }
+    ],
+    gatewayDelayMs: 0
+  });
+  t.after(() => h.cleanup());
+
+  // 会话 B：failed 压缩 + waiting_user 的 Run（本可直接重试的现场）
+  const { compactionId, sessionId } = await buildCrashWindowJournal(h, { compactionState: "failed", seedTranscript: true });
+
+  // 会话 A：慢任务运行中
+  await h.agent.newSession({ projectRoot: h.projectRoot, title: "A" });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "慢任务", source: "chat" });
+  await waitFor(h.agent, h.projectRoot, (session) => session.active_run?.status === "running");
+
+  const bBefore = await h.agent.snapshot({ projectRoot: h.projectRoot, sessionId, afterSeq: 0, limit: 100000 });
+  assert.equal(bBefore.session.compaction.state, "failed", "前置：B 的压缩处于可重试的 failed");
+  try {
+    await assert.rejects(
+      () => h.agent.retryCompaction({ projectRoot: h.projectRoot, compactionId, sessionId }),
+      (error) => error?.code === "project_busy"
+    );
+    // 零副作用：被拒的压缩重试不得追加事件、不得推进 attempt、不改压缩状态
+    const bAfter = await h.agent.snapshot({ projectRoot: h.projectRoot, sessionId, afterSeq: 0, limit: 100000 });
+    assert.equal(bAfter.events.length, bBefore.events.length, "被拒的 retryCompaction 不得向 B 追加事件");
+    assert.equal(bAfter.session.compaction.state, "failed", "B 的压缩仍为 failed");
+    assert.equal(bAfter.session.compaction.attempt, bBefore.session.compaction.attempt, "attempt 不得推进");
+  } finally {
+    // 无论断言成败都放行 A 的模型调用，避免悬空循环拖到 cleanup 之后
+    release();
+  }
+  await waitFor(h.agent, h.projectRoot, (session) => session.status === "idle", { describe: "A 回到 idle" });
 });
 
 test("重启恢复：failed 崩溃窗口 cancel 可用 → input_cancelled(compaction_cancelled) + run_cancelled → idle", async (t) => {

@@ -197,6 +197,65 @@ test("串行门：A 完成（终态）后 B 可提交", async (t) => {
   await waitForIdle(h.agent, h.projectRoot);
 });
 
+// C4（2026-09-24 审计）：retry 不得绕过 submit 的串行门——会话 A 运行中对会话 B
+// 的 failed Run retry 必须拒绝。否则 B 的 startLoop 无条件覆写项目级 controller
+//（run-lifecycle.mjs startLoop），A 的安全点读到 B 的 signal：用户点「停止 A」
+// 实际 abort 的是 B。
+test("串行门：其他会话运行中 retry 另一会话 failed Run → project_busy", async (t) => {
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const h = await createProjectAgentHarness({
+    gatewayScript: [
+      // 会话 B 先提交：模型报错 → Run failed（可 retry 的终态）
+      async () => {
+        throw new Error("boom");
+      },
+      // 会话 A 后提交：卡在模型调用内（gate 未放行）→ Run 保持 running
+      async () => {
+        await gate;
+        return { text: "A 完成。" };
+      }
+    ],
+    gatewayDelayMs: 0
+  });
+  t.after(() => h.cleanup());
+  const rootA = h.projectRoot;
+
+  // 会话 B：一条消息 → 模型报错 → failed
+  const b = await h.agent.newSession({ projectRoot: rootA, title: "B" });
+  await h.agent.submit({ projectRoot: rootA, text: "触发失败", source: "chat", sessionId: b.session_id });
+  await waitForIdle(h.agent, rootA);
+  const bFailed = await h.agent.snapshot({ projectRoot: rootA, sessionId: b.session_id, afterSeq: 0, limit: 100000 });
+  const failedRunId = bFailed.session.active_run?.id;
+  assert.ok(failedRunId, "B 会话应有 failed Run");
+  assert.equal(bFailed.session.active_run.status, "failed");
+
+  // 会话 A：慢任务运行中（模型调用被 gate 卡住 → 非终态）
+  await h.agent.newSession({ projectRoot: rootA, title: "A" });
+  await h.agent.submit({ projectRoot: rootA, text: "慢任务", source: "chat" });
+  await waitFor(h.agent, rootA, (session) => session.active_run?.status === "running");
+
+  try {
+    // retry B 的 failed Run → 必须被串行门拒绝（bug 下直达 startLoop，抢占
+    // 项目级 controller）
+    await assert.rejects(
+      () => h.agent.retry({ projectRoot: rootA, runId: failedRunId, sessionId: b.session_id }),
+      (error) => error?.code === "project_busy"
+    );
+    // 零副作用：被拒的 retry 不得向 B 追加事件、不得改变 B 的 Run 状态
+    const bAfter = await h.agent.snapshot({ projectRoot: rootA, sessionId: b.session_id, afterSeq: 0, limit: 100000 });
+    assert.equal(bAfter.events.length, bFailed.events.length, "被拒 retry 不得向 B 追加事件");
+    assert.equal(bAfter.session.active_run.status, "failed", "B 的 Run 仍为 failed");
+  } finally {
+    // 无论断言成败都放行 A 的模型调用，避免悬空循环拖到 cleanup 之后
+    release();
+  }
+  // 收尾：A 完成并回到 idle
+  await waitFor(h.agent, rootA, (session) => session.status === "idle", { describe: "A 回到 idle" });
+});
+
 test("clearHistory 其他会话不清运行中会话的循环状态（无双重模型调用）", async (t) => {
   let release;
   const gate = new Promise((resolve) => {

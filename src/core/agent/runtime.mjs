@@ -333,6 +333,22 @@ export function createAgentRuntime({
     return await ensureSessionState(state, id);
   }
 
+  // 项目串行门（C4 第二十轮审计收敛）：目标会话之外若有任一会话存在非终态 run
+  // → project_busy。submit 原内联 blockers 逻辑提取而来，retry/retryCompaction
+  // 复用同一判定——否则另一会话运行中的 retry 会直达 startLoop，后者无条件覆写
+  // 项目级 controller（run-lifecycle startLoop），用户 stop A 实际 abort B。
+  // excludeSessionId == null 时所有已物化会话都算"其他会话"（惰性创建路径）。
+  async function assertNoOtherSessionRunning(state, excludeSessionId) {
+    const blockers = await Promise.all(
+      [...state.sessions]
+        .filter(([sid]) => excludeSessionId == null || sid !== excludeSessionId)
+        .map(async ([, other]) => other.journal.getSession())
+    );
+    if (blockers.some(hasNonTerminalRun)) {
+      throw fail("project_busy", "另一个对话正在运行，请稍候。");
+    }
+  }
+
   // Task 9（F5c 第十五轮）：会话 CRUD/registry 同步/标题派生/系统事件拆到
   // session-manager.mjs——ensureProject/resolveSessionState 闭包引用经 ctx 注入，
   // 实例与 ensureProject 等每项目基础设施并列创建（最早使用点 :1488 之前）；
@@ -542,14 +558,7 @@ export function createAgentRuntime({
       //    惰性创建路径（targetId == null）下，所有已物化会话都算"其他会话"；
       //    目标会话尚未物化、不可能有 run。门禁在创建/恢复之前执行，被拒的提交
       //    不产生任何会话副作用。同会话运行中走下方 FIFO 队列（行为不变）。
-      const blockers = await Promise.all(
-        [...state.sessions]
-          .filter(([sid]) => targetId == null || sid !== targetId)
-          .map(async ([, other]) => other.journal.getSession())
-      );
-      if (blockers.some(hasNonTerminalRun)) {
-        throw fail("project_busy", "另一个对话正在运行，请稍候。");
-      }
+      await assertNoOtherSessionRunning(state, targetId);
       // 3) 惰性创建（缺省且无会话）
       if (targetId == null) {
         const meta = await state.registry.create({ title: deriveSessionTitle(text) });
@@ -813,6 +822,9 @@ export function createAgentRuntime({
       if (run.status !== "failed" && run.status !== "interrupted") {
         throw fail("run_not_recoverable", `只有 failed/interrupted 的 Run 可以重试，当前为 ${run.status}。`);
       }
+      // C4（2026-09-24 审计）：retry 复用 submit 串行门——另一会话运行中时不得
+      // 启动循环，否则项目级 controller 被本会话抢占（startLoop 无条件覆写）。
+      await assertNoOtherSessionRunning(state, sessionState.sessionId);
       let inputId = await findTerminalInputId(sessionState.journal, runId);
       if (inputId === null) {
         // 兜底：以 transcript 最近一条用户消息重建输入（崩溃现场无 input 记录）
@@ -847,21 +859,30 @@ export function createAgentRuntime({
     const state = ensureProject(projectRoot);
     const sessionState = await resolveSessionState(state, sessionId);
     if (!sessionState) throw fail("compaction_not_found", `compaction ${compactionId} 不存在。`);
-    const session = await sessionState.journal.getSession();
-    const compaction = session.compaction;
-    if (!compaction || compaction.id !== compactionId) {
-      throw fail("compaction_not_found", `compaction ${compactionId} 不存在。`);
-    }
-    if (compaction.state === "completed" || compaction.state === "noop") {
-      throw fail("compaction_not_retryable", `压缩已${compaction.state === "completed" ? "完成" : "无需压缩"}，无法重试。`);
-    }
-    if (compaction.state === "started" || compaction.state === "running" || compaction.state === "cancelling") {
-      throw fail("compaction_in_flight", "压缩正在进行中，无法重试。");
-    }
-    const run = session.active_run;
-    if (!run || TERMINAL_RUN_STATUSES.has(run.status)) {
-      throw fail("compaction_no_run", "当前没有可继续压缩的 Run。");
-    }
+    // C4（2026-09-24 审计复审）：串行门必须与它守卫的 compaction 状态校验同处一个
+    // 临界区（与 retry 对齐）——否则「门通过 → 另一会话 submit 启动循环 → 本处再
+    // startLoop」在检查与生效之间复现项目级 controller 覆写。coordinator.retry
+    //（含秒级模型调用）刻意留在锁外：临界区只做读-判，不阻塞 stop / 压缩取消的
+    // 取锁路径；重试期间本会话 Run 仍非终态，其他会话的 submit 仍被同一道门挡住。
+    const { compaction, run } = await state.mutex.run(async () => {
+      await assertNoOtherSessionRunning(state, sessionState.sessionId);
+      const session = await sessionState.journal.getSession();
+      const compaction = session.compaction;
+      if (!compaction || compaction.id !== compactionId) {
+        throw fail("compaction_not_found", `compaction ${compactionId} 不存在。`);
+      }
+      if (compaction.state === "completed" || compaction.state === "noop") {
+        throw fail("compaction_not_retryable", `压缩已${compaction.state === "completed" ? "完成" : "无需压缩"}，无法重试。`);
+      }
+      if (compaction.state === "started" || compaction.state === "running" || compaction.state === "cancelling") {
+        throw fail("compaction_in_flight", "压缩正在进行中，无法重试。");
+      }
+      const run = session.active_run;
+      if (!run || TERMINAL_RUN_STATUSES.has(run.status)) {
+        throw fail("compaction_no_run", "当前没有可继续压缩的 Run。");
+      }
+      return { compaction, run };
+    });
     const outcome = await sessionState.compactionCoordinator.retry({
       compactionId,
       signal: state.controller?.signal
