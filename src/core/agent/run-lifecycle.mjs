@@ -7,7 +7,7 @@
 //     等待函数运行期间 state 字段会变（controller 被 resetController 替换、
 //     loopPromise/runId/firstTurn 流转），必须每次读取当前值；
 //   - 对 runtime.mjs 内部函数的调用（appendSafeTranscript /
-//     isCompactRunIdleInitiated / resetController / findInputMeta / processCompact
+//     isCompactRunIdleInitiated / resetController / processCompact
 //     / processInput）经 ctx 注入函数引用；
 //   - 模块级常量（TERMINAL_RUN_STATUSES / IDLE_WAIT_TIMEOUT_MS）与
 //     agent-utils 工具（sleep / codedError as fail）本模块直接持有。
@@ -367,7 +367,7 @@ export function createRunLifecycle(ctx) {
         return;
       }
 
-      const inputMeta = await ctx.findInputMeta(getSessionState().journal, inputId);
+      const inputMeta = await getSessionState().journal.findInputMeta(inputId);
       if (inputMeta.text === null) {
         // 恢复的日志中找不到该输入（陈旧记录）：消费跳过，避免卡死。Task 26：
         // 用 input_interrupted 闭合（活动输入未完成即丢弃；它是新生命周期唯一

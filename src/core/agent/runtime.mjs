@@ -4,8 +4,8 @@
 // 测试本模块内部 seam。本文件只做编排：组合根注入 → 项目/会话物化（sessionState
 // 组装 journal/tools/history/compaction/run-lifecycle/session-manager 域模块）→
 // Run 循环编排（队列/安全点/收敛接线）；域职责见各模块头注释（run-lifecycle：
-// 停止/优先切换/失败收束；session-manager：会话 CRUD；history-assembly：历史
-// 装配；compaction：压缩状态机与源材料构建）。
+// 停止/优先切换/失败收束；run-control：Run 命令面；session-manager：会话 CRUD；
+// history-assembly：历史装配；compaction：压缩状态机与源材料构建）。
 // 承重不变式：模型调用失败必须闭合 model turn（补 model_turn_completed），绝不
 // 留下 dangling assistant 活动；事件真相与 crash 对账在 journal.mjs（各域模块
 // 不直接落盘）。
@@ -20,8 +20,7 @@ import {
   buildCompactionSource,
   createCompactionCoordinator,
   COMPACTION_NON_TERMINAL_STATES,
-  COMPACTION_RESUME_BLOCKED_STATES,
-  COMPACTION_SEND_BLOCKED_STATES
+  COMPACTION_RESUME_BLOCKED_STATES
 } from "./compaction.mjs";
 // Task 7（F5a）：历史装配层拆到 history-assembly.mjs——HISTORY_PAGE_LIMIT 以
 // 本模块为单一来源；相关纯转换函数（buildTurnsFromTranscript/transcriptToMessages/
@@ -56,7 +55,11 @@ import { createRunPipeline } from "./run-pipeline.mjs";
 // Task 9（F5c 第十五轮）：会话 CRUD/registry 同步/标题派生/系统事件拆到
 // session-manager.mjs——ensureProject/resolveSessionState 经 ctx 注入函数引用，
 // 实例创建见 resolveSessionState 之后；导出符号的消费说明见下方标记块。
-import { createSessionManager, deriveSessionTitle, hasNonTerminalRun } from "./session-manager.mjs";
+import { createSessionManager, hasNonTerminalRun } from "./session-manager.mjs";
+// Task 18（F6 第二十轮）：Run 命令面（submit/requestPriority/withdrawInput/decide/
+// stop/retry/retryCompaction/cancelCompaction 及其独占辅助）拆到 run-control.mjs
+// ——经 createRunControl(ctx) 注入 runtime 内部函数引用；见下方标记块。
+import { createRunControl } from "./run-control.mjs";
 
 // 第九轮：会话级缓存命中率累计（token 加权）。命中 token 不超过输入 token
 //（与 cost-tracker.mjs 的 clamp 一致）；非法/缺失 usage 不改变累计。
@@ -87,13 +90,12 @@ export function cacheHitRateOf(stats) {
 const MEMORY_CHECKLIST = "记忆维护：请依次 update_memory（含新埋（open）与回收（paid）的伏笔） → 更新 book_summary.md → 更新 WORKLOG.md";
 const withMemoryChecklist = (result) => ({ ...(result ?? {}), memory_checklist: MEMORY_CHECKLIST });
 
-const SOURCES = new Set(["chat", "maintenance"]);
-
 // Task 9（F5c 第十五轮）：会话标题派生、注册表同步、自动命名与删除守卫
 //（deriveSessionTitle/syncSessionRegistry/autoNameSessionIfDefault/
 // hasNonTerminalRun/requireSessionId）已随会话 CRUD 拆到 session-manager.mjs——
-// runtime 经 sessionManager 实例调用（12 个同步点 + 1 个自动命名点），
-// deriveSessionTitle 由惰性创建路径（submit 隐式建会话）继续消费。
+// runtime 经 sessionManager 实例调用（12 个同步点 + 1 个自动命名点）。
+// Task 18（第二十轮）：deriveSessionTitle 的惰性创建消费点（submit）随 run 命令面
+// 迁入 run-control.mjs。
 
 // ---------------------------------------------------------------------------
 // 每项目状态：journal + ToolRuntime + 当前 Run 的循环控制
@@ -137,10 +139,8 @@ export function createAgentRuntime({
 
   function ensureProject(projectRoot) {
     const resolved = path.resolve(projectRoot);
-    // win32 大小写不敏感 FS：Map 键归一小写，否则 D:\Foo 与 D:\foo 分裂成两个 state
-    //（两把锁/两个 journal 写同一物理目录；审计 Downgraded #1，口径对齐 project-lock.mjs:38）。
-    // 只归一「键」：resolved 仍按调用方书写大小写流向 state.key/prompt/工具 cwd/journal
-    // 的 project_root（win32 下同一物理目录），不把全小写路径写进用户可见事件。
+    // win32 大小写不敏感 FS：Map 键归一小写（否则 D:\Foo/D:\foo 分裂成两个 state：两把锁/两个 journal 写同一物理目录；审计 Downgraded #1，
+    // 口径对齐 project-lock.mjs:38）。只归一「键」——resolved 仍按调用方书写大小写流向 state.key/prompt/工具 cwd/journal 的 project_root，不把全小写路径写进用户可见事件。
     const key = process.platform === "win32" ? resolved.toLowerCase() : resolved;
     let state = projects.get(key);
     if (!state) {
@@ -299,7 +299,6 @@ export function createAgentRuntime({
       appendSafeTranscript: runPipeline.appendSafeTranscript,
       isCompactRunIdleInitiated: runPipeline.isCompactRunIdleInitiated,
       resetController,
-      findInputMeta,
       processCompact: runPipeline.processCompact,
       processInput: runPipeline.processInput
     });
@@ -338,27 +337,13 @@ export function createAgentRuntime({
     return await ensureSessionState(state, id);
   }
 
-  // 项目串行门（C4 第二十轮审计收敛）：目标会话之外若有任一会话存在非终态 run
-  // → project_busy。submit 原内联 blockers 逻辑提取而来，retry/retryCompaction
-  // 复用同一判定——否则另一会话运行中的 retry 会直达 startLoop，后者无条件覆写
-  // 项目级 controller（run-lifecycle startLoop），用户 stop A 实际 abort B。
-  // excludeSessionId == null 时所有已物化会话都算"其他会话"（惰性创建路径）。
-  async function assertNoOtherSessionRunning(state, excludeSessionId) {
-    const blockers = await Promise.all(
-      [...state.sessions]
-        .filter(([sid]) => excludeSessionId == null || sid !== excludeSessionId)
-        .map(async ([, other]) => other.journal.getSession())
-    );
-    if (blockers.some(hasNonTerminalRun)) {
-      throw fail("project_busy", "另一个对话正在运行，请稍候。");
-    }
-  }
-
   // Task 9（F5c 第十五轮）：会话 CRUD/registry 同步/标题派生/系统事件拆到
   // session-manager.mjs——ensureProject/resolveSessionState 闭包引用经 ctx 注入，
-  // 实例与 ensureProject 等每项目基础设施并列创建（最早使用点 :1488 之前）；
+  // 实例与 ensureProject 等每项目基础设施并列创建；
   // 内部 13 个同步/命名调用点（sessionManager.xxx）与公共 API 单行委托
   // （index.mjs 转发链零改动）。函数设计注释随逻辑迁入新模块。
+  // Task 18：项目串行门 assertNoOtherSessionRunning 随 run 命令面迁入
+  // run-control.mjs（其唯一三个消费方 submit/retry/retryCompaction 同迁）。
   const sessionManager = createSessionManager({ ensureProject, resolveSessionState });
 
   // 会话 load 后的崩溃对账（等价旧 open() 的恢复序列，不含 startLoop——循环启动
@@ -406,14 +391,6 @@ export function createAgentRuntime({
       for (const recoveryEvent of buildProcessRestartedConvergence(recoveryRun)) {
         await sessionState.journal.append(recoveryEvent);
       }
-    }
-  }
-
-  function abortController(state) {
-    try {
-      state.controller?.abort();
-    } catch {
-      // 已终止的 controller 忽略
     }
   }
 
@@ -495,12 +472,18 @@ export function createAgentRuntime({
     shell
   });
 
-  // 从 journal 事件找回输入元数据（text + kind）。上限语义同 findInputText：
-  // 只扫描最近 100k 条事件；超出上限视为找不到（返回 text: null）。
-  // Task 3（第十五轮）：扫描逻辑迁入 journal.findInputMeta，此处薄委托。
-  async function findInputMeta(journal, inputId) {
-    return journal.findInputMeta(inputId);
-  }
+  // Task 18（F6 第二十轮）：Run 命令面（提交/优先/撤回/决策/停止/重试/压缩重试/
+  // 压缩取消）拆到 run-control.mjs——经 ctx 注入 runtime 内部闭包引用。ctx 的 6 个
+  // 键与迁出前各方法自由引用的捕获变量一一对应（见 run-control.mjs 头注释），
+  // 故迁出后语义逐字不变。实例创建置于 sessionManager/runPipeline 之后。
+  const runControl = createRunControl({
+    ensureProject,
+    resolveSessionId,
+    ensureSessionState,
+    resolveSessionState,
+    sessionManager,
+    idFactory
+  });
 
   // -------------------------------------------------------------------------
   // 公共接口
@@ -534,455 +517,6 @@ export function createAgentRuntime({
     }
     // session_id 返回注册表 id（外部书签）；status 为恢复后的会话状态。
     return { session_id: targetId, status: session.status };
-  }
-
-  async function submit({ projectRoot, text, source = "chat", sessionId = null }) {
-    if (typeof projectRoot !== "string" || projectRoot.length === 0) {
-      throw fail("invalid_project_root", "projectRoot 必须是非空路径。");
-    }
-    if (typeof text !== "string" || text.trim().length === 0) {
-      throw fail("empty_input", "text 必须是非空字符串。");
-    }
-    if (!SOURCES.has(source)) {
-      throw fail("invalid_source", `source 只允许 ${[...SOURCES].join("/")}，仅用于审计来源。`);
-    }
-    const state = ensureProject(projectRoot);
-    // Task 8：只把精确的 text === "/compact" 识别为 kind:"compact"；"/compact now"
-    // 等其余文本都是普通输入。
-    const kind = text === "/compact" ? "compact" : undefined;
-    // 互斥锁内只做会话解析、串行门、读-判-写与循环启动；waitForFirstTurn 必须在
-    // 锁外等待（循环的安全点路径 cancelRunForStop/advanceOrComplete 需要取同一把
-    // 锁，锁内等待会死锁）。sessionState 提升到函数级：锁外
-    // lifecycle.waitForFirstTurn 需要持锁内物化的会话状态。
-    let sessionState = null;
-    const created = await state.mutex.run(async () => {
-      // 1) 会话解析：显式 sessionId → 校验存在；缺省 → 最近活跃；都没有 → 惰性
-      //    创建新会话（registry.create + journal 首次 load 写 session_created）。
-      let targetId = await resolveSessionId(state, sessionId);
-      // 2) 串行门：目标会话之外若有任一会话存在非终态 run → project_busy。
-      //    惰性创建路径（targetId == null）下，所有已物化会话都算"其他会话"；
-      //    目标会话尚未物化、不可能有 run。门禁在创建/恢复之前执行，被拒的提交
-      //    不产生任何会话副作用。同会话运行中走下方 FIFO 队列（行为不变）。
-      await assertNoOtherSessionRunning(state, targetId);
-      // 3) 惰性创建（缺省且无会话）
-      if (targetId == null) {
-        const meta = await state.registry.create({ title: deriveSessionTitle(text) });
-        targetId = meta.session_id;
-      }
-      sessionState = await ensureSessionState(state, targetId);
-      // 4) 恢复可恢复 Run（等价旧 submit → open() 的启动恢复）：非终态且未被压缩
-      //    阻塞 → 接续执行（新输入在下方 FIFO 排队在其后）。串行门已保证没有
-      //    其他会话的飞行循环，此处启动是安全的。
-      const session = await sessionState.journal.getSession();
-      const run = session.active_run;
-      const compactionBlocked =
-        session.compaction != null && COMPACTION_SEND_BLOCKED_STATES.includes(session.compaction.state);
-      // whfind-bugs #5：压缩 failed 态循环不会复活（下方守卫跳过重启），仅当
-      // Run 仍非终态（waiting_user）时排队输入没有消费者、返回 queued:true 是
-      // 谎言——诚实拒绝。Run 已终态（退出/取消后）时走下方空闲分支新建 Run
-      //（startLoop 无条件），有真实消费者，不拦。UI composer 在这些状态本就
-      // 禁用发送，只影响直连 API 客户端；running/cancelling 等活跃态不拦
-      // （循环存活，压缩完成后继续消费队列）。
-      if (run && !TERMINAL_RUN_STATUSES.has(run.status) && session.compaction?.state === "failed") {
-        throw fail("compaction_failed_blocked", "上下文压缩失败：请先重试或取消压缩，再发送新消息。");
-      }
-      if (run && !TERMINAL_RUN_STATUSES.has(run.status) && !compactionBlocked) {
-        sessionState.lifecycle.startLoop(run.id);
-      }
-      // 5) 现有 FIFO / 新 Run 逻辑（作用于目标会话的 journal）
-      const inputId = idFactory();
-      let result;
-      if (!run || TERMINAL_RUN_STATUSES.has(run.status)) {
-        // 空闲：创建新 Run。同一批次原子写入 run_started + input_queued +
-        // input_started（Task 9 新生命周期：run_started 不再携带 input_id，由
-        // input_started 激活；三者同批保证「每条输入一个终态」与队列/活动投影一致）。
-        const runId = idFactory();
-        await sessionState.journal.appendBatch([
-          {
-            type: "run_started",
-            run_id: runId,
-            payload: {}
-          },
-          {
-            type: "input_queued",
-            payload: { input_id: inputId, text, source, ...(kind === undefined ? {} : { kind }) }
-          },
-          {
-            type: "input_started",
-            run_id: runId,
-            payload: { input_id: inputId }
-          }
-        ]);
-        sessionState.lifecycle.startLoop(runId);
-        result = { input_id: inputId, run_id: runId, queued: false, session_id: targetId };
-      } else {
-        // 运行中：FIFO 队列（/compact 不打断当前模型/工具，按普通消息排队）
-        await sessionState.journal.append({
-          type: "input_queued",
-          payload: { input_id: inputId, text, source, ...(kind === undefined ? {} : { kind }) }
-        });
-        result = { input_id: inputId, run_id: run.id, queued: true, session_id: targetId };
-      }
-      // 注册表同步（调用方可等待的边界；updated_at 刷新）+ 自动命名：显式创建
-      // （"新对话"默认标题）的会话按首条消息摘要命名
-      await sessionManager.syncSessionRegistry(state, sessionState);
-      await sessionManager.autoNameSessionIfDefault(state, targetId, text);
-      return result;
-    });
-    if (!created.queued) {
-      // 等待第一个模型轮次开始（或循环已结束）：保证调用方拿到控制权时
-      // 「立即」/「停止」有飞行中的活动可打断（输入落盘仍先于 resolve）
-      await sessionState.lifecycle.waitForFirstTurn();
-    }
-    return created;
-  }
-
-  // 请求优先（Task 9，SPEC 3.3 rule 10）：同一 session 项目互斥锁内做
-  // getSession -> validate -> appendBatch。只接受排队输入且当前无优先请求：
-  //   - 非排队输入 → input_not_queued（reducer 还有第二道守卫）；
-  //   - 已有优先输入在途 → priority_pending（在途输入撤回或开始后才可再请求）。
-  // 本任务只追加 priority_input_requested（priority_input_id 投影 + 前端按钮态）；
-  // 安全点切换逻辑（打断活动输入、优先消费）由 Task 10 实现。
-  // Task 26：旧 promote 方法（interrupt_requested + input_promoted 立即打断、被打断
-  // 输入回队重跑）已整体退役——前端「立即」= requestPriority，规格 3.3 明确「不取消
-  // 当前模型请求、A 不回队不重跑」，一条用户动作一条权威路径。
-  async function requestPriority({ projectRoot, inputId, sessionId = null }) {
-    if (typeof inputId !== "string" || inputId.length === 0) {
-      throw fail("invalid_input_id", "inputId 必须是非空字符串。");
-    }
-    const state = ensureProject(projectRoot);
-    const sessionState = await resolveSessionState(state, sessionId);
-    if (!sessionState) throw fail("input_not_queued", "该输入不在排队队列中。");
-    await sessionState.journal.load();
-    return state.mutex.run(async () => {
-      const session = await sessionState.journal.getSession();
-      const run = session.active_run;
-      if (!session.queued_inputs.some((item) => item.id === inputId)) {
-        throw fail("input_not_queued", "该输入不在排队队列中。");
-      }
-      if (session.priority_input_id != null) {
-        throw fail("priority_pending", "已有优先输入在途，请等待当前优先输入开始或撤回。");
-      }
-      await sessionState.journal.append({
-        type: "priority_input_requested",
-        run_id: run?.id ?? null,
-        payload: { input_id: inputId }
-      });
-      await sessionManager.syncSessionRegistry(state, sessionState);
-      return {
-        session_id: sessionState.sessionId,
-        run_id: run?.id ?? null,
-        input_id: inputId,
-        priority_pending: true
-      };
-    });
-  }
-
-  // 撤回排队输入（Task 9，SPEC 3.2）：同一 session 项目互斥锁内读-判-写。只接受
-  // 排队输入——活动输入只能 completed/interrupted（不产生"撤销"语义）；input_started
-  // 已落盘的输入同样拒绝（撤回先于开始才生效）。追加 input_withdrawn（invisible
-  // journal 事件：投影移除排队项、清空匹配的 priority_input_id），返回事件中的
-  // 原始文本（draft_text）供 UI 恢复输入框。
-  async function withdrawInput({ projectRoot, inputId, sessionId = null }) {
-    if (typeof inputId !== "string" || inputId.length === 0) {
-      throw fail("invalid_input_id", "inputId 必须是非空字符串。");
-    }
-    const state = ensureProject(projectRoot);
-    const sessionState = await resolveSessionState(state, sessionId);
-    if (!sessionState) throw fail("input_not_queued", "该输入不在排队队列中。");
-    await sessionState.journal.load();
-    return state.mutex.run(async () => {
-      const session = await sessionState.journal.getSession();
-      const run = session.active_run;
-      const item = session.queued_inputs.find((queued) => queued.id === inputId);
-      if (!item) {
-        throw fail("input_not_queued", "该输入不在排队队列中。");
-      }
-      await sessionState.journal.append({
-        type: "input_withdrawn",
-        run_id: run?.id ?? null,
-        payload: { input_id: inputId }
-      });
-      await sessionManager.syncSessionRegistry(state, sessionState);
-      return {
-        session_id: sessionState.sessionId,
-        run_id: run?.id ?? null,
-        input_id: inputId,
-        withdrawn: true,
-        draft_text: typeof item.text === "string" ? item.text : ""
-      };
-    });
-  }
-
-  async function decide({ projectRoot, decisionId, choice, sessionId = null }) {
-    if (typeof decisionId !== "string" || decisionId.length === 0) {
-      throw fail("invalid_decision_id", "decisionId 必须是非空字符串。");
-    }
-    if (typeof choice !== "string" || choice.length === 0) {
-      throw fail("invalid_choice", "choice 必须是非空字符串。");
-    }
-    const state = ensureProject(projectRoot);
-    const sessionState = await resolveSessionState(state, sessionId);
-    if (!sessionState) throw fail("decision_not_found", "决策不存在或已过期。");
-    await sessionState.journal.load();
-    return sessionState.tools.resolveDecision({ decisionId, choice, confirmationText: choice });
-  }
-
-  // 停止（Task 9）：runId 可选。显式 runId 时在项目互斥锁内重读并精确匹配活动
-  // Run（不匹配/无活动 Run → run_not_found，HTTP 层不再用快照预校验——消除 B15
-  // TOCTOU：调用顺序由持久事件顺序唯一决定）；缺省 runId 保留旧语义（停止当前
-  // 会话的活动 Run，无 Run 时安全无操作）。
-  async function stop({ projectRoot, runId = null, reason = "user_stop", sessionId = null }) {
-    if (runId != null && (typeof runId !== "string" || runId.length === 0)) {
-      throw fail("invalid_run_id", "runId 必须是非空字符串。");
-    }
-    const state = ensureProject(projectRoot);
-    // 会话解析 + 读-判-写放进项目互斥锁，与 requestPriority 的临界区串行化：调用
-    // 顺序决定胜负——stop 先落盘时其 input_cancelled 把优先输入移出队列，后到的
-    // requestPriority 以 input_not_queued 拒绝（新测试「stop 与 requestPriority
-    // 并发」钉住同一竞态）；requestPriority 先落盘时 stop 的取消批次清空匹配的
-    // priority_input_id（reducer 的 input_cancelled 分支），不留卡死指针。
-    const outcome = await state.mutex.run(async () => {
-      const sessionState = await resolveSessionState(state, sessionId);
-      if (!sessionState) {
-        // 没有会话：显式 runId 必须报 not_found；缺省 = 旧语义安全无操作
-        if (runId != null) throw fail("run_not_found", `Run ${runId} 不是当前会话的活动 Run。`);
-        return { run_id: null, cancelled: false, sessionState: null };
-      }
-      await sessionState.journal.load();
-      const session = await sessionState.journal.getSession();
-      const run = session.active_run;
-      if (!run || TERMINAL_RUN_STATUSES.has(run.status)) {
-        if (runId != null) throw fail("run_not_found", `Run ${runId} 不是当前会话的活动 Run。`);
-        return { run_id: null, cancelled: false, sessionState }; // 没有可停止的 Run：无操作
-      }
-      if (runId != null && run.id !== runId) {
-        throw fail("run_not_found", `Run ${runId} 不是当前会话的活动 Run。`);
-      }
-      if (run.status === "stopping") {
-        return { run_id: run.id, cancelled: true, sessionState, alreadyStopping: true };
-      }
-      try {
-        await sessionState.journal.append({
-          type: "run_status_changed",
-          run_id: run.id,
-          payload: { status: "stopping", reason }
-        });
-      } catch (error) {
-        // 竞态：Run 恰在此时终结，停止自然失效（reducer 拒绝终结状态上的
-        // run_status_changed）；真实 journal 错误由外层 .catch abort + 上抛。
-        const message = error?.message ?? "";
-        if (message.includes("需要活动 Run") || message.includes("必须携带 retry") || message.includes("不能再次进入")) {
-          if (runId != null) throw fail("run_not_found", `Run ${runId} 不是当前会话的活动 Run。`);
-          return { run_id: run.id, cancelled: false, sessionState };
-        }
-        throw error;
-      }
-      state.stopReason = reason;
-      return { run_id: run.id, cancelled: true, sessionState };
-    }).catch((error) => {
-      // mutex.run 内已对可识别竞态返回；这里的 reject 是真实 journal 错误
-      abortController(state);
-      throw error;
-    });
-    // 锁外：abort + 等待收敛（循环的安全点路径 cancelRunForStop 需要取同一把锁，
-    // 锁内等待会死锁）
-    if (!outcome.cancelled) {
-      return { session_id: outcome.sessionState?.sessionId ?? null, run_id: outcome.run_id ?? null, cancelled: false };
-    }
-    const { sessionState } = outcome;
-    if (outcome.alreadyStopping) {
-      await sessionState.lifecycle.waitForIdle();
-      return { session_id: sessionState.sessionId, run_id: outcome.run_id, cancelled: true };
-    }
-    abortController(state);
-    await sessionState.lifecycle.waitForIdle();
-    await sessionManager.syncSessionRegistry(state, sessionState);
-    return { session_id: sessionState.sessionId, run_id: outcome.run_id, cancelled: true };
-  }
-
-  // 从 journal 事件找回可恢复 Run 的未终结输入（run_failed 记录了 input_id；
-  // 崩溃恢复的 run_interrupted 没有，则退回 run_started/input_promoted 的信息）。
-  // Task 3（第十五轮）：扫描逻辑迁入 journal.findTerminalInputId，此处薄委托。
-  async function findTerminalInputId(journal, runId) {
-    return journal.findTerminalInputId(runId);
-  }
-
-  async function retry({ projectRoot, runId, sessionId = null }) {
-    if (typeof runId !== "string" || runId.length === 0) {
-      throw fail("invalid_run_id", "runId 必须是非空字符串。");
-    }
-    const state = ensureProject(projectRoot);
-    const sessionState = await resolveSessionState(state, sessionId);
-    if (!sessionState) throw fail("run_not_found", "没有可恢复的 Run。");
-    await sessionState.journal.load();
-    return state.mutex.run(async () => {
-      const session = await sessionState.journal.getSession();
-      const run = session.active_run;
-      if (!run) throw fail("run_not_found", "没有可恢复的 Run。");
-      if (run.id !== runId) throw fail("run_not_found", `Run ${runId} 不是当前会话的 Run。`);
-      if (!TERMINAL_RUN_STATUSES.has(run.status)) {
-        throw fail("run_not_recoverable", `Run 处于 ${run.status}，无需重试。`);
-      }
-      if (run.status !== "failed" && run.status !== "interrupted") {
-        throw fail("run_not_recoverable", `只有 failed/interrupted 的 Run 可以重试，当前为 ${run.status}。`);
-      }
-      // C4（2026-09-24 审计）：retry 复用 submit 串行门——另一会话运行中时不得
-      // 启动循环，否则项目级 controller 被本会话抢占（startLoop 无条件覆写）。
-      await assertNoOtherSessionRunning(state, sessionState.sessionId);
-      let inputId = await findTerminalInputId(sessionState.journal, runId);
-      if (inputId === null) {
-        // 兜底：以 transcript 最近一条用户消息重建输入（崩溃现场无 input 记录）
-        const records = await sessionState.journal.readTranscript();
-        const lastUser = [...records].reverse().find((record) => record?.role === "user");
-        inputId = idFactory();
-        await sessionState.journal.append({
-          type: "input_queued",
-          payload: { input_id: inputId, text: String(lastUser?.content ?? "继续执行") }
-        });
-      }
-      await sessionState.journal.append({
-        type: "run_started",
-        run_id: runId,
-        payload: { input_id: inputId }
-      });
-      await sessionManager.syncSessionRegistry(state, sessionState);
-      sessionState.lifecycle.startLoop(runId);
-      return { run_id: runId, input_id: inputId, retried: true };
-    });
-  }
-
-  // 压缩重试（Task 8 Step 7）：继续同一 compaction_id 的新 attempt。只允许
-  // failed/cancelled（取消后 pending input 仍在时）状态；成功后原输入只继续一次
-  //（输入写回 transcript 前的收敛由 runLoop/processInput 处理，绝不让旧
-  // processInput 自动再次执行）。ESC/按钮/HTTP 与 cancelCompaction 复用同一
-  // AbortSignal 链。
-  async function retryCompaction({ projectRoot, compactionId, sessionId = null }) {
-    if (typeof compactionId !== "string" || compactionId.length === 0) {
-      throw fail("invalid_compaction_id", "compactionId 必须是非空字符串。");
-    }
-    const state = ensureProject(projectRoot);
-    const sessionState = await resolveSessionState(state, sessionId);
-    if (!sessionState) throw fail("compaction_not_found", `compaction ${compactionId} 不存在。`);
-    // C4（2026-09-24 审计复审）：串行门必须与它守卫的 compaction 状态校验同处一个
-    // 临界区（与 retry 对齐）——否则「门通过 → 另一会话 submit 启动循环 → 本处再
-    // startLoop」在检查与生效之间复现项目级 controller 覆写。coordinator.retry
-    //（含秒级模型调用）刻意留在锁外：临界区只做读-判，不阻塞 stop / 压缩取消的
-    // 取锁路径；重试期间本会话 Run 仍非终态，其他会话的 submit 仍被同一道门挡住。
-    const { compaction, run } = await state.mutex.run(async () => {
-      await assertNoOtherSessionRunning(state, sessionState.sessionId);
-      const session = await sessionState.journal.getSession();
-      const compaction = session.compaction;
-      if (!compaction || compaction.id !== compactionId) {
-        throw fail("compaction_not_found", `compaction ${compactionId} 不存在。`);
-      }
-      if (compaction.state === "completed" || compaction.state === "noop") {
-        throw fail("compaction_not_retryable", `压缩已${compaction.state === "completed" ? "完成" : "无需压缩"}，无法重试。`);
-      }
-      if (compaction.state === "started" || compaction.state === "running" || compaction.state === "cancelling") {
-        throw fail("compaction_in_flight", "压缩正在进行中，无法重试。");
-      }
-      const run = session.active_run;
-      if (!run || TERMINAL_RUN_STATUSES.has(run.status)) {
-        throw fail("compaction_no_run", "当前没有可继续压缩的 Run。");
-      }
-      return { compaction, run };
-    });
-    const outcome = await sessionState.compactionCoordinator.retry({
-      compactionId,
-      signal: state.controller?.signal
-    });
-    if (outcome.status === "completed" || outcome.status === "noop") {
-      // 恢复 Run 为 running 并重启循环。手动 /compact 的 retry 成功后 compact
-      // item 已达成目的（input_completed 收敛，绝不重复启动第二次压缩）；自动压缩
-      // 的 retry 成功后原 pending input 由 processInput 继续（压缩成功后预检低于
-      // 硬窗口直接发送；仍超阈值因已尝试不再重复压缩）。retry 重建源后无可压缩
-      // 历史（noop）视为等价成功——输入照常继续，由 processInput 重新预检。
-      await state.mutex.run(async () => {
-        const s = await sessionState.journal.getSession();
-        const r = s.active_run;
-        if (r && r.id === run.id && !TERMINAL_RUN_STATUSES.has(r.status) && r.status !== "running") {
-          await sessionState.journal.append({
-            type: "run_status_changed",
-            run_id: run.id,
-            payload: { status: "running", reason: "compaction_retried" }
-          });
-        }
-        if (compaction.trigger === "manual") {
-          const s2 = await sessionState.journal.getSession();
-          const r2 = s2.active_run;
-          if (r2 && r2.id === run.id && !TERMINAL_RUN_STATUSES.has(r2.status)) {
-            // compact item 是活动输入（失败后保持 active、无终态）；Task 26 以
-            // input_completed 收敛（旧 input_consumed 退役），守卫同 processCompact。
-            if (r2.active_input_id !== compaction.pending_input_id) return;
-            await sessionState.journal.append({
-              type: "input_completed",
-              run_id: run.id,
-              payload: { input_id: compaction.pending_input_id }
-            });
-          }
-        }
-      });
-      sessionState.lifecycle.startLoop(run.id);
-      await sessionManager.syncSessionRegistry(state, sessionState);
-      return { status: "completed", compaction_id: compactionId, attempt: outcome.attempt };
-    }
-    if (outcome.status === "failed") {
-      // 仍失败：Run 保持 waiting_user，发送门禁保持禁用（熔断后只等用户再次 retry/cancel）
-      const s = await sessionState.journal.getSession();
-      const r = s.active_run;
-      if (r && r.id === run.id && !TERMINAL_RUN_STATUSES.has(r.status) && r.status !== "waiting_user") {
-        await sessionState.journal.append({
-          type: "run_status_changed",
-          run_id: run.id,
-          payload: { status: "waiting_user", reason: "compaction_failed", error_code: outcome.error_code ?? null }
-        });
-      }
-      await sessionManager.syncSessionRegistry(state, sessionState);
-      return { status: "failed", compaction_id: compactionId, attempt: outcome.attempt, error_code: outcome.error_code };
-    }
-    // cancelled（ESC 中断重试）：取消收敛（input_cancelled + run_cancelled / 恢复）
-    const compactionNow = (await sessionState.journal.getSession()).compaction;
-    await sessionState.lifecycle.convergeCompactionCancelled(compactionNow);
-    await sessionManager.syncSessionRegistry(state, sessionState);
-    return { status: "cancelled", compaction_id: compactionId };
-  }
-
-  // 压缩取消（Task 8 Step 7）：ESC、按钮与 HTTP 取消都调用本方法，复用当前
-  // project state 的 AbortController（不创建第二套进程终止协议）。running 时
-  // 先进入 cancelling（cancel_requested），底层确认终止后追加 cancelled，随后
-  // 按触发来源收敛 Run/input（自动 → input_cancelled + run_cancelled，文本回
-  // draft；手动 → input_cancelled + 恢复 resume_run_status 或 idle）。
-  async function cancelCompaction({ projectRoot, compactionId, sessionId = null }) {
-    if (typeof compactionId !== "string" || compactionId.length === 0) {
-      throw fail("invalid_compaction_id", "compactionId 必须是非空字符串。");
-    }
-    const state = ensureProject(projectRoot);
-    const sessionState = await resolveSessionState(state, sessionId);
-    if (!sessionState) throw fail("compaction_not_found", `compaction ${compactionId} 不存在。`);
-    await sessionState.journal.load();
-    const session = await sessionState.journal.getSession();
-    const compaction = session.compaction;
-    if (!compaction || compaction.id !== compactionId) {
-      throw fail("compaction_not_found", `compaction ${compactionId} 不存在。`);
-    }
-    const outcome = await sessionState.compactionCoordinator.cancel({ compactionId });
-    const compactionNow = (await sessionState.journal.getSession()).compaction;
-    // I5：取消请求与提交竞态——coordinator 报告实际终态（或会话投影已是 completed）
-    // 时，压缩确实成功（指针已切换、completed 已落盘），原输入由 runLoop 继续，
-    // 绝不把成功压缩收敛成 input_cancelled + run_cancelled（UI 不得显示"已取消"
-    // 覆盖已切换的上下文）。
-    if (outcome?.status === "completed" || outcome?.state === "completed") {
-      await sessionManager.syncSessionRegistry(state, sessionState);
-      return {
-        status: "completed",
-        compaction_id: compactionId,
-        checkpoint_id: outcome?.checkpoint_id ?? compactionNow?.checkpoint_id ?? null
-      };
-    }
-    await sessionState.lifecycle.convergeCompactionCancelled(compactionNow);
-    await sessionManager.syncSessionRegistry(state, sessionState);
-    return { status: "cancelled", compaction_id: compactionId };
   }
 
   // 项目级忙判（审计交叉印证 2026-09-23）：覆盖全部已物化会话，且在项目互斥锁内
@@ -1133,62 +667,36 @@ export function createAgentRuntime({
   }
 
   // -------------------------------------------------------------------------
-  // Task 4：多会话管理 API（Task 9 F5c 第十五轮：全部委托 session-manager；
-  // 实例创建见 resolveSessionState 之后）
+  // 对外组合：数据面与项目/会话物化（本模块）+ Run 命令面（run-control.mjs）
+  // + 多会话管理 API（session-manager.mjs）。三方均无 this 依赖，直接引用等价于
+  // 逐方法转发（Task 9/Task 18）。
   // -------------------------------------------------------------------------
-
-  // 会话列表 + 最近活跃（dashboard 数据源，含 run_status 投影）。
-  async function sessions({ projectRoot }) {
-    return sessionManager.sessions({ projectRoot });
-  }
-
-  // 显式建会话（前端"+"按钮 / 对话 B 场景）。
-  async function newSession({ projectRoot, title }) {
-    return sessionManager.newSession({ projectRoot, title });
-  }
-
-  async function renameSession({ projectRoot, sessionId, title }) {
-    return sessionManager.renameSession({ projectRoot, sessionId, title });
-  }
-
-  async function archiveSession({ projectRoot, sessionId }) {
-    return sessionManager.archiveSession({ projectRoot, sessionId });
-  }
-
-  async function restoreSession({ projectRoot, sessionId }) {
-    return sessionManager.restoreSession({ projectRoot, sessionId });
-  }
-
-  // 永久删除（Task 10 设置页）：注册表元数据 + 会话数据目录一并移除。
-  async function deleteSession({ projectRoot, sessionId }) {
-    return sessionManager.deleteSession({ projectRoot, sessionId });
-  }
-
-  // 第九轮：系统事件注入（UI 侧恢复操作在对话流中的可见性；run_id=null）。
-  async function appendSystemEvent({ projectRoot, type, payload }) {
-    return sessionManager.appendSystemEvent({ projectRoot, type, payload });
-  }
 
   return {
     open,
-    submit,
-    requestPriority,
-    withdrawInput,
-    decide,
-    stop,
-    retry,
-    retryCompaction,
-    cancelCompaction,
+    // Run 命令面（Task 18）：8 个方法由 run-control.mjs 提供，签名/错误 code 不变。
+    submit: runControl.submit,
+    requestPriority: runControl.requestPriority,
+    withdrawInput: runControl.withdrawInput,
+    decide: runControl.decide,
+    stop: runControl.stop,
+    retry: runControl.retry,
+    retryCompaction: runControl.retryCompaction,
+    cancelCompaction: runControl.cancelCompaction,
     snapshot,
     projectBusy,
     exportHistory,
     clearHistory,
-    sessions,
-    newSession,
-    renameSession,
-    archiveSession,
-    restoreSession,
-    deleteSession,
-    appendSystemEvent
+    // 会话列表 + 最近活跃（dashboard 数据源，含 run_status 投影）。
+    sessions: sessionManager.sessions,
+    // 显式建会话（前端"+"按钮 / 对话 B 场景）。
+    newSession: sessionManager.newSession,
+    renameSession: sessionManager.renameSession,
+    archiveSession: sessionManager.archiveSession,
+    restoreSession: sessionManager.restoreSession,
+    // 永久删除（Task 10 设置页）：注册表元数据 + 会话数据目录一并移除。
+    deleteSession: sessionManager.deleteSession,
+    // 第九轮：系统事件注入（UI 侧恢复操作在对话流中的可见性；run_id=null）。
+    appendSystemEvent: sessionManager.appendSystemEvent
   };
 }
