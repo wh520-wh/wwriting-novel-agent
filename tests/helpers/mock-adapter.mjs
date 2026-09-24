@@ -1,11 +1,13 @@
-// src/core/model/mock.mjs
+// tests/helpers/mock-adapter.mjs
+//
+// 2026-09-24 迁出 src/：测试专用 adapter 不入发布包（审计清理）。
 //
 // gateway 层测试 adapter（统一 Agent 内核计划 Task 3）。
 //
 // 本文件是 ModelGateway 的 mock adapter：与 openai-compatible.mjs 同形状的
-// complete(request, { signal }) 接口，供 tests/model/gateway.test.mjs 与后续
-// Task 6 的 runtime 集成使用（harness 的 createMockModelGateway 是 runtime
-// 层面的整网关 mock，与本 adapter 不同层，本文件可独立复用）。
+// complete(request, { signal }) 接口，当前消费方为 tests/model/gateway.test.mjs
+// 与 scripts/measure-auxiliary-share.mjs（runtime 层集成改用 harness 的
+// createMockModelGateway——整网关 mock，与本 adapter 不同层，本文件可独立复用）。
 //
 // 能力：脚本化响应（文本 / 工具调用 / 错误 / 自定义函数）、usage 注入、
 // 调用记录、可选延迟与外部取消。不含任何业务身份文本或工具定义表。

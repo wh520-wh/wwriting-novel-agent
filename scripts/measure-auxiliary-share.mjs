@@ -9,7 +9,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createProjectRoot, tool, waitForIdle } from "../tests/helpers/project-agent-harness.mjs";
-import { createMockAdapter } from "../src/core/model/mock.mjs";
+import { createMockAdapter } from "../tests/helpers/mock-adapter.mjs";
 
 const RECORD_PATH = path.resolve(import.meta.dirname, "../debug/measure-auxiliary-share.json");
 

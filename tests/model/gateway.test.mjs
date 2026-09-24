@@ -2,12 +2,12 @@
 //
 // 从旧 tests/model-client-retry.test.mjs、tests/model-gateway.test.mjs 与
 // tests/auxiliary-response-cache.test.mjs 迁移 retry/timeout/heartbeat/usage/
-// cost/cache 可观察行为。mock adapter（src/core/model/mock.mjs）是 gateway
+// cost/cache 可观察行为。mock adapter（tests/helpers/mock-adapter.mjs）是 gateway
 // 层的测试 adapter，与 harness 的 runtime 层整网关 mock 不同层。
 import assert from "node:assert/strict";
 import test from "node:test";
 import { CostTracker } from "../../src/core/cost-tracker.mjs";
-import { createMockAdapter, toolCall } from "../../src/core/model/mock.mjs";
+import { createMockAdapter, toolCall } from "../helpers/mock-adapter.mjs";
 import { createModelGateway } from "../../src/core/model/gateway.mjs";
 import {
   ProviderTransportError,
