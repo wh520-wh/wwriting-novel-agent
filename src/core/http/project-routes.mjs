@@ -62,13 +62,14 @@ function normalizePositiveInteger(value, fallback) {
   return number;
 }
 
-// 第十二轮 F9：恢复类操作（rollback / memory restore）的 409 门禁从 running 扩
-// 为非终态集（与串行门 hasNonTerminalRun 同口径——waiting_user/stopping 期间不再
-// 放行并发写）。维护义务：新增/删改运行状态时需同步本集合与其余副本（runtime
-// hasNonTerminalRun 为终态补集机制自动覆盖，settings-modal.js、
-// project-diagnostics.mjs、session-sidebar BUSY_RUN_STATUSES、
-// 前端 index.js AGENT_BUSY_STATUSES）。
-const RUN_BUSY_STATUSES = new Set(["running", "waiting_user", "interrupting", "stopping"]);
+// 第十二轮 F9：恢复类操作（rollback / memory restore）的 409 门禁从 running 扩为
+// 非终态集。Task 5（第二十轮审计交叉印证）：门禁判定不再由本模块用
+// snapshot 的单会话投影 + 本地状态集表达（缺省只解析最近活跃会话，非活跃会话
+// 运行中时漏判），改用 agent.projectBusy——覆盖全部已物化会话、复用 runtime 的
+// 终态补集判定（hasNonTerminalRun）并在项目互斥锁内与 submit/retry 原子。本模块
+// 由此移除本地状态集副本（维护义务同步面缩小到前端 BUSY_RUN_STATUSES 等展示用途
+// 集合：settings-modal.js、project-diagnostics.mjs、session-sidebar
+// BUSY_RUN_STATUSES、前端 index.js AGENT_BUSY_STATUSES）。
 
 export function createProjectRoutes({
   workspace,
@@ -341,8 +342,8 @@ export function createProjectRoutes({
       await assertNotArchived(projectRoot, { workspaceStore });
       const chapterNo = normalizePositiveInteger(handlerCtx.body?.chapter_no, null);
       if (chapterNo === null) throw new HttpError(400, "bad_args", "chapter_no 必须是正整数。");
-      const { session } = await agent.snapshot({ projectRoot });
-      if (RUN_BUSY_STATUSES.has(session?.active_run?.status ?? "idle")) {
+      // 原实现：agent.snapshot 缺省单会话投影，漏非活跃会话（审计交叉印证）。
+      if (await agent.projectBusy({ projectRoot })) {
         throw new HttpError(409, "agent_running", "写作进行中，暂停后恢复。");
       }
       const project = await loadProject(projectRoot);
@@ -397,8 +398,8 @@ export function createProjectRoutes({
       const version = normalizePositiveInteger(handlerCtx.body?.version, null);
       if (file !== "worklog" && file !== "book_summary") throw new HttpError(400, "bad_args", "file 只允许 worklog|book_summary。");
       if (version === null) throw new HttpError(400, "bad_args", "version 必须是正整数。");
-      const { session } = await agent.snapshot({ projectRoot });
-      if (RUN_BUSY_STATUSES.has(session?.active_run?.status ?? "idle")) {
+      // 原实现：agent.snapshot 缺省单会话投影，漏非活跃会话（审计交叉印证）。
+      if (await agent.projectBusy({ projectRoot })) {
         throw new HttpError(409, "agent_running", "写作进行中，暂停后恢复。");
       }
       const { content } = await readMemoryVersion({ projectRoot, file, version });

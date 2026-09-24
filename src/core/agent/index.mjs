@@ -18,6 +18,9 @@
 //   await agent.retryCompaction({ projectRoot, compactionId });
 //   await agent.cancelCompaction({ projectRoot, compactionId });
 //   await agent.snapshot({ projectRoot, afterSeq, limit }); // -> { session, events }
+//   await agent.projectBusy({ projectRoot });               // -> boolean：项目内任一已物化
+//                                                          //    会话有非终态 run（rollback/
+//                                                          //    memory restore 忙门）
 //   // Task 5：尾部分页（tail/beforeSeq）、历史导出与不可逆清空
 //   for await (const line of agent.exportHistory({ projectRoot })); // -> { stream, record }
 //   await agent.clearHistory({ projectRoot, confirmIrreversible }); // -> { session_id, status, ... }
@@ -54,6 +57,8 @@ export function createProjectAgent(dependencies = {}) {
     retryCompaction: (params) => runtime.retryCompaction(params),
     cancelCompaction: (params) => runtime.cancelCompaction(params),
     snapshot: (params) => runtime.snapshot(params),
+    // 项目级忙判（Task 5 第二十轮）：全部已物化会话的任一非终态 run。
+    projectBusy: (params) => runtime.projectBusy(params),
     exportHistory: (params) => runtime.exportHistory(params),
     clearHistory: (params) => runtime.clearHistory(params),
     sessions: (params) => runtime.sessions(params),

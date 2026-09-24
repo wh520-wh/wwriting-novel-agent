@@ -621,7 +621,8 @@ export function createAgentSurface({
   // 409、串行门 hasNonTerminalRun 同口径（waiting_user/stopping 期间不再放行并发写）。
   // 维护义务：新增/删改运行状态时需同步本集合与其余副本（runtime hasNonTerminalRun
   // 为终态补集机制自动覆盖，settings-modal.js、project-diagnostics.mjs、
-  // project-routes RUN_BUSY_STATUSES、session-sidebar BUSY_RUN_STATUSES）。
+  // session-sidebar BUSY_RUN_STATUSES；后端 rollback/restore 忙门已改为
+  // agent.projectBusy 全会话判定）。
   const AGENT_BUSY_STATUSES = new Set(["running", "waiting_user", "interrupting", "stopping"]);
   function isAgentRunning() {
     return AGENT_BUSY_STATUSES.has(state.session?.active_run?.status ?? "idle");

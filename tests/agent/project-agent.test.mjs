@@ -3311,3 +3311,47 @@ test("runtime policy 注入 shell 可用性文本（harness 桩 shell → availa
   const events = await readEvents(h.agent, h.projectRoot);
   assert.equal(eventsOfType(events, "run_completed").length, 1);
 });
+
+// ---------------------------------------------------------------------------
+// Task 5（第二十轮审计交叉印证）：projectBusy —— 项目级全会话忙判
+// ---------------------------------------------------------------------------
+
+// 审计交叉印证（2026-09-23）：snapshot 缺省只看最近活跃会话，非活跃会话运行中
+// 时 rollback/restore 忙判漏判。projectBusy 必须覆盖全部已物化会话。
+test("projectBusy：非活跃会话运行中 → true（snapshot 单会话投影的补全）", async (t) => {
+  // 慢轮闸门：模型调用保持挂起直到显式放行——不依赖任何时长窗口（慢盘/慢 CI 无 flake）
+  let releaseModel;
+  const heldTurn = new Promise((resolve) => { releaseModel = resolve; });
+  const h = await createProjectAgentHarness({
+    gatewayScript: [async () => { await heldTurn; return { text: "慢" }; }],
+    gatewayDelayMs: 0
+  });
+  t.after(() => h.cleanup());
+  const root = h.projectRoot;
+  const a = await h.agent.newSession({ projectRoot: root, title: "A" });
+  await h.agent.submit({ projectRoot: root, sessionId: a.session_id, text: "慢任务", source: "chat" });
+  await waitFor(h.agent, root, (s) => s.active_run?.status === "running");
+
+  // 新建会话 B 即成为最近活跃（B 可见且 last_active 指向 B——snapshot 缺省会解析到 B）
+  const b = await h.agent.newSession({ projectRoot: root, title: "B" });
+
+  // projectBusy 必须看到 A 在跑
+  assert.equal(await h.agent.projectBusy({ projectRoot: root }), true);
+  // 对照：snapshot 缺省解析最近活跃（B，空闲）——这正是原忙门的盲区
+  const { session } = await h.agent.snapshot({ projectRoot: root });
+  assert.equal(session?.session_id, b.session_id, "前置校验：snapshot 缺省解析到 B");
+  assert.ok(session?.active_run == null || session.active_run.status !== "running",
+    "前置校验：snapshot 缺省确实看不到 A（否则本测试没测到盲区）");
+  // 收尾：放行慢轮并等 A 收敛 idle，避免 harness 清理与在途循环竞态
+  releaseModel();
+  await waitForIdle(h.agent, root);
+});
+
+test("projectBusy：全部空闲 → false", async (t) => {
+  const h = await createProjectAgentHarness();
+  t.after(() => h.cleanup());
+  const a = await h.agent.newSession({ projectRoot: h.projectRoot, title: "A" });
+  await h.agent.submit({ projectRoot: h.projectRoot, sessionId: a.session_id, text: "hi", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  assert.equal(await h.agent.projectBusy({ projectRoot: h.projectRoot }), false);
+});

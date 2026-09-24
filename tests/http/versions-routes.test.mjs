@@ -11,7 +11,7 @@ import os from "node:os";
 import test from "node:test";
 import { createRouter } from "../../src/core/http/router.mjs";
 import { startHttpServer } from "../helpers/http-test.mjs";
-import { createProjectAgentHarness, waitForIdle } from "../helpers/project-agent-harness.mjs";
+import { createProjectAgentHarness, waitFor, waitForIdle } from "../helpers/project-agent-harness.mjs";
 import { createProjectRoutes } from "../../src/core/http/project-routes.mjs";
 import { createAgentRoutes } from "../../src/core/http/agent-routes.mjs";
 import { snapshotChapter } from "../../src/core/project-operations/versions.mjs";
@@ -401,4 +401,77 @@ test("POST /api/chapters/rollback：version=abc → 400 bad_args", async (t) => 
   });
   assert.equal(res.status, 400);
   assert.equal((await res.json()).code, "bad_args");
+});
+
+// ---------------------------------------------------------------------------
+// Task 5（第二十轮审计交叉印证）：忙门必须覆盖「非活跃会话」
+// ---------------------------------------------------------------------------
+
+// 缺陷：原忙判走 agent.snapshot({projectRoot}) 的缺省单会话投影（getLastActive），
+// 非活跃会话运行中时它解析到的是空闲的最近活跃会话 → rollback / memory restore 放行，
+// 与在途 Run 并发写同一项目文件（真有版本时会真的执行破坏性回滚/覆盖）。
+// 修复：改走 agent.projectBusy（全部已物化会话 + 项目互斥锁内判定）。
+// 本用例是这条**用户可见行为改变**的唯一失败测试：把 project-routes 两处忙判回退
+// 成旧写法（snapshot + RUN_BUSY_STATUSES）即变红——旧写法看到空闲的 B，会真的回滚。
+test("POST rollback / memory restore：非活跃会话运行中 → 409 agent_running（全会话忙门）", async (t) => {
+  // 慢轮闸门：模型调用保持挂起直到显式放行——不依赖任何时长窗口（慢盘/慢 CI 无 flake）
+  let releaseModel;
+  const heldTurn = new Promise((resolve) => { releaseModel = resolve; });
+  const s = await setupServer(t, {
+    gatewayScript: [async () => { await heldTurn; return { text: "慢答复" }; }],
+    gatewayDelayMs: 0
+  });
+  const { h } = s;
+  await h.agent.open({ projectRoot: h.projectRoot });
+  // 会话 A：提交慢任务 → 进入 running（此刻 A 是最近活跃）
+  const a = await h.agent.newSession({ projectRoot: h.projectRoot, title: "A" });
+  await h.agent.submit({ projectRoot: h.projectRoot, sessionId: a.session_id, text: "慢任务", source: "chat" });
+  await waitFor(h.agent, h.projectRoot, (session) => session.active_run?.status === "running", {
+    describe: "会话 A 进入 running"
+  });
+  // 会话 B：新建即成为最近活跃（空闲）——旧忙判缺省解析到 B，正是盲区
+  const b = await h.agent.newSession({ projectRoot: h.projectRoot, title: "B" });
+  const { session } = await h.agent.snapshot({ projectRoot: h.projectRoot });
+  assert.equal(session?.session_id, b.session_id, "前置：snapshot 缺省解析到空闲的 B（旧忙判的盲区）");
+  assert.notEqual(session?.active_run?.status, "running", "前置：B 没有在途 Run");
+  // 被回滚/恢复的目标：真实存在的章节版本与记忆版本（不 mock agent，走真实路由 + 真实域模块）
+  await seedTwoVersions(h, 1);
+  const finalDir = path.join(h.projectRoot, "chapters");
+  await fs.mkdir(finalDir, { recursive: true });
+  await fs.writeFile(path.join(finalDir, "001.md"), "第一章 v2 内容", "utf8");
+  const indexPath = path.join(h.projectRoot, "memory", "chapter_index.json");
+  const index = JSON.parse(await fs.readFile(indexPath, "utf8"));
+  index.chapters = [{ chapter_no: 1, status: "completed", final_path: "chapters/001.md" }];
+  await fs.writeFile(indexPath, JSON.stringify(index, null, 2), "utf8");
+  await snapshotMemoryFile({ projectRoot: h.projectRoot, file: "worklog", content: "worklog v1", source: "test" });
+
+  try {
+    const rollbackRes = await fetch(`${s.base}/api/chapters/rollback`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectRoot: h.projectRoot, chapter_no: 1, version: 1 })
+    });
+    assert.equal(rollbackRes.status, 409, "非活跃会话 A 运行中：回滚必须被忙门拦下");
+    const rollbackBody = await rollbackRes.json();
+    assert.equal(rollbackBody.code, "agent_running");
+    // handler 文案「写作进行中，暂停后恢复。」经 sendError 统一脱敏到达传输层
+    //（agent_running 不在 SAFE_PUBLIC_ERROR_CODES 白名单，http-error.mjs:47-90）——
+    // 前端按 code 分支展示自己的 toast（app-shell/app.js:511、version-panel.js:110）。
+    // 此处钉住传输层实际值：code 是契约，文案不随 code 透传。
+    assert.equal(rollbackBody.message, "操作未完成，请重试；若问题持续，请打开诊断信息。");
+
+    const restoreRes = await fetch(`${s.base}/api/memory/versions/restore`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectRoot: h.projectRoot, file: "worklog", version: 1 })
+    });
+    assert.equal(restoreRes.status, 409, "非活跃会话 A 运行中：记忆恢复必须被忙门拦下");
+    const restoreBody = await restoreRes.json();
+    assert.equal(restoreBody.code, "agent_running");
+    assert.equal(restoreBody.message, "操作未完成，请重试；若问题持续，请打开诊断信息。");
+  } finally {
+    releaseModel();
+  }
+  // 收尾：放行慢轮后等 A 收敛 idle，避免 server/harness 清理与在途循环竞态
+  await waitForIdle(h.agent, h.projectRoot);
 });
