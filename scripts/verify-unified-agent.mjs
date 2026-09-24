@@ -997,6 +997,40 @@ step("场景 24 · 活动合并与私有推理排除");
       node._parent = null;
     }
     remove() { if (this._parent) this._parent.removeChild(this); }
+    // 标准 DOM 成员（Task 21）：work-group.mjs 直接调用 insertBefore /
+    // lastElementChild / nextSibling / parentNode / isConnected（Electron/Chromium
+    // 恒存在），此前桩缺失导致场景 24 崩在渲染层（TypeError）。以下实现只补
+    // 真实 DOM 已有且语义一致的成员。注意：桩的 children 等价真实 DOM 的
+    // childNodes（createTextNode 的文本节点也入列），故元素级成员须跳过无
+    // tagName 的节点。
+    get parentNode() { return this._parent; }
+    // isConnected：真实 DOM 中「能沿 parentNode 链到达文档」为 true。桩无 document，
+    // 以「已挂入某父节点」为准——未挂载/已 remove 的节点为 false（与真实 DOM 一致），
+    // 挂在 root 之下的节点为 true（root 等价宿主文档根）。
+    get isConnected() { return this._parent !== null; }
+    get firstChild() { return this.children[0] ?? null; }
+    get lastElementChild() {
+      for (let i = this.children.length - 1; i >= 0; i -= 1) {
+        if (this.children[i].tagName) return this.children[i];
+      }
+      return null;
+    }
+    get nextSibling() {
+      if (!this._parent) return null;
+      const index = this._parent.children.indexOf(this);
+      return index >= 0 ? this._parent.children[index + 1] ?? null : null;
+    }
+    insertBefore(node, ref) {
+      // 真实 DOM 语义：已在树中的节点是「移动」而非复制；ref == null 等效 append。
+      if (node._parent) node._parent.removeChild(node);
+      const index = ref == null ? -1 : this.children.indexOf(ref);
+      if (index < 0) this.children.push(node);
+      else this.children.splice(index, 0, node);
+      node._parent = this;
+      return node;
+    }
+    removeAttribute(name) { delete this._attrs[name]; }
+    focus() { /* 真实 DOM 中不可聚焦元素调用 focus() 即为 no-op，故留空实现 */ }
     // matchesSelector / querySelector / querySelectorAll —— ported from
     // verify-app-shell.mjs MockElement（Task 19 / Task 25）；view.js syncNotices
     // 调用 messages.querySelectorAll("[data-notice-type]")，需要选择器支持。
