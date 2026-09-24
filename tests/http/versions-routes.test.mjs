@@ -315,6 +315,77 @@ test("POST /api/memory/versions/restore：覆盖前当前内容存档为 pre_res
   assert.equal(preData.content, "快照后的手工修改");
 });
 
+// C3（2026-09-24 审计）：读取当前内容时**仅**「目标不存在」(ENOENT) 免存档。
+// 目标初次不存在（用户删了 book_summary.md）→ 恢复仍应成功并创建文件。
+test("POST /api/memory/versions/restore：目标不存在（ENOENT）→ 免存档且恢复成功", async (t) => {
+  const s = await setupServer(t);
+  const { h } = s;
+  await h.agent.newSession({ projectRoot: h.projectRoot, title: "restore-enoent" });
+  await h.agent.open({ projectRoot: h.projectRoot });
+  await snapshotMemoryFile({ projectRoot: h.projectRoot, file: "book_summary", content: "v1 内容", source: "test" });
+  // 目标文件不存在：恢复走 ENOENT 免存档分支
+  const targetPath = path.join(h.projectRoot, "book_summary.md");
+  await fs.rm(targetPath, { force: true });
+
+  const res = await fetch(`${s.base}/api/memory/versions/restore`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ projectRoot: h.projectRoot, file: "book_summary", version: 1 })
+  });
+  assert.equal(res.status, 200);
+  // 恢复生效：目标文件被创建为 v1 内容
+  assert.equal(await fs.readFile(targetPath, "utf8"), "v1 内容");
+  // 目标本不存在 → 无内容可存档，不应产生 pre_restore 版本
+  const listRes = await fetch(`${s.base}/api/memory/versions?projectRoot=${encodeURIComponent(h.projectRoot)}&file=book_summary`);
+  const { versions } = await listRes.json();
+  assert.equal(versions.some((v) => v.source === "pre_restore"), false);
+});
+
+// C3（2026-09-24 审计）：目标**存在但读取失败**（非 ENOENT）时必须上抛中止恢复，
+// 不得吞错跳过存档继续覆盖。旧实现 `.catch(() => null)` 会把读错吞成 null，跳过
+// pre_restore 继续走到 writeFileAtomic。
+//
+// 可移植性实测（win32 / Node 22.22.2，见报告）：让 target 是目录构造「存在但不可读」：
+//   - 新代码：读发生在写之前，抛 EISDIR + syscall "read"（读错误）；
+//   - 旧代码：读错被吞 → 走到 writeFileAtomic 的 rename 覆盖目录 → 抛 EPERM + syscall
+//     "rename"（写错误，POSIX 上为 EISDIR + syscall "rename"）。
+// 故断言 `syscall === "read"` 在 win32 与 POSIX 上都能区分新旧实现——锁定「读失败即
+// 在写入前中止」，这正是 fail-closed 语义唯一可机检的差异（两种实现最终都不覆盖目标，
+// 因为覆盖本身也会失败）。
+test("POST /api/memory/versions/restore：目标存在但读取失败（EISDIR）→ 上抛中止，不覆盖", async () => {
+  const h = await createProjectAgentHarness({});
+  try {
+    await h.agent.open({ projectRoot: h.projectRoot });
+    await snapshotMemoryFile({ projectRoot: h.projectRoot, file: "book_summary", content: "v1 内容", source: "test" });
+    // 用目录顶替 book_summary.md：目标存在，但 readFile 会失败（非 ENOENT）
+    const targetPath = path.join(h.projectRoot, "book_summary.md");
+    await fs.rm(targetPath, { force: true });
+    await fs.mkdir(targetPath, { recursive: true });
+    await fs.writeFile(path.join(targetPath, "marker.txt"), "目录内容仍在", "utf8");
+
+    const routes = createProjectRoutes({
+      workspace: h.workspaceRoot,
+      stateRoot: h.stateRoot,
+      agent: h.agent,
+      selection: { current: h.projectRoot }
+    });
+    await assert.rejects(
+      () => routes["POST /api/memory/versions/restore"]({ body: { projectRoot: h.projectRoot, file: "book_summary", version: 1 } }),
+      (error) => {
+        // 错误必须来自「读取现存目标」这一步——证明读错上抛、恢复在写入前中止。
+        assert.equal(error.syscall, "read", "读失败应在写入前中止（错误应来自 read 而非 write 的 rename）");
+        assert.equal(error.code, "EISDIR");
+        return true;
+      }
+    );
+    // 目标未被覆盖：仍是目录且内容原样保留（未写文件、未产生 pre_restore）
+    assert.equal((await fs.stat(targetPath)).isDirectory(), true);
+    assert.equal(await fs.readFile(path.join(targetPath, "marker.txt"), "utf8"), "目录内容仍在");
+  } finally {
+    await h.cleanup();
+  }
+});
+
 test("POST /api/memory/versions/restore：运行中 → 409 agent_running", async (t) => {
   const s = await setupServer(t, {
     gatewayScript: [async () => { await new Promise((r) => setTimeout(r, 2000)); return { text: "慢答复" }; }],
