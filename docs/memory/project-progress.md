@@ -3,11 +3,15 @@
 记录于：2026-09-05｜状态：当前有效｜承接：原仓库根 `WWRITING.md`「当前进度」逐字迁移（第九至十六轮）；第十七轮为 round18 回填；欠账清单为 2026-09-05 合并。
 > 各轮数字均为当时值；当前基线见下节。本文件由 AGENTS.md「开工必读」指向，是轮次记录的唯一滚动入口。
 
-## 当前基线（记录于 2026-09-05）
+## 当前基线（记录于 2026-09-24｜状态：当前有效｜依据：`npm test` 与 `wc -l`/`wc -c` 实跑，HEAD `e708b36`）
 
-- 测试数：1986/1986（依据：`npm test` 实跑，exit 0，93s）
-- 样式体积现状：`src/app-shell/styles.css` 2613 行、`src/app-shell/agent/agent.css` 2171 行（依据：`wc -l`）
-- 后端内核现状：`journal.mjs` 1183 行、`runtime.mjs` 1150 行（依据：`wc -l`，均 ≤1200 红线内）
+- 测试数：1992/1992（依据：`npm test` 实跑，exit 0，321s；前值 1986/1986 记录于 2026-09-05）
+- 逻辑源码红线现状：全库 126 个 `.js/.mjs` **0 越线**（口径：≤1200 行且 ≤51200 字节，字节按 LF 归一）；行维度由架构测试 R1 机器强制，**字节维度自本轮起同样机器强制**（`tests/architecture/dependency-rules.test.mjs`）
+- 逼近红线的文件（LF 归一字节 / 余量）：`src/app-shell/app.js` 48607B / 余 2593B、`src/core/agent/journal.mjs` 47577B / 余 3623B、`src/core/agent/journal-handlers.mjs` 50355B / 余 845B、`src/app-shell/model-settings-page.js` 50859B / 余 341B（依据：`wc -l` + `Buffer.byteLength(text.replace(/\r\n/g,"\n"))`）
+- 本轮拆分出的新模块：`src/core/agent/run-control.mjs`（519 行 / 28899B）、`src/core/agent/journal-recovery.mjs`（162 / 8857B）、`src/core/agent/journal-queries.mjs`（123 / 6046B）、`src/app-shell/app-reader-view.js`（116 / 5214B）
+- 样式体积现状：`src/app-shell/styles.css` 2613 行 / 83213B、`src/app-shell/agent/agent.css` 2171 行 / 57756B（依据：`wc -l`/`wc -c`，记录于 2026-09-24；**行数与 2026-09-05 登记值相同，即样式自第十七轮以来未再增长**）
+- 依赖面：`dependencies` 3 个（`marked` / `yaml` / `yauzl`；本轮删除零引用的 `ignore`）
+- 本地验收线：`npm run verify:unified-agent` 36/36 场景、exit 0（本轮修好了此前在场景 24 崩溃的遗留缺陷）
 
 ## 当前进度
 
@@ -46,7 +50,19 @@
   - **配套**：ADR 0008；竞品调研 `docs/research/2026-08-29-competitive-research-ai-voice.md`；输入证据 46 张截图当时入库（5dcde30），2026-09-05 按「过程产物不入库」规则移出 Git（0f9307b），本地保留。
   - **验收门禁**：门禁 1 全量 1982 pass / 0 fail（2026-08-29，round17 规格执行记录）；门禁 4 反馈环 10 样本 10/10 达标（修饰词密度前均值 82.81/千字 → 后 0；CV 0.37 → 0.51；排比候选 2 → 0；逐段数据 `artifacts/now/round17-acceptance/manual-verification.md`）；最终全量以「当前基线」1986/1986 为准（2026-09-05 实跑）。
 
+- 第十八至十九轮（round18/round19）记录补记（2026-09-24，依据：git log）：这两轮以文档与工程治理为主——项目记忆并入 `AGENTS.md` 并删除仓库根 `WWRITING.md`（`8a4cbce`）、README 双语统计基线注（`beeb212`）、R1 口径订正为逻辑源码 + 样式体积追踪线（`1110762`）、六条治理约束入库（`f515966`）、过程产物移出 Git（`0f9307b`）。其**端到端收尾改动（README 双语重写、`.github/` 模板、CONTRIBUTING/SECURITY/LICENSE、`docs/images/` 素材、三处 Windows/满载测试稳定性修复）在 round20 开工前才落盘**，拆为 5 个 commit（`5c899c6`、`d95b5f9`、`2b9e939`、`f83f4c9`、`1711223`），随后才切出 round20 分支。
+- 第二十轮完成（2026-09-24，round20）：**审计修复与收敛清理 + 体积红线收口**（27 提交，fast-forward 合入 master `e708b36`；计划与执行账本 `docs/superpowers/plans/2026-09-24-round20-audit-fixes-and-cleanup.md` 与被忽略的 `.superpowers/sdd/2026-09-24-round20-audit-fixes-and-cleanup/progress.md`；依据 `artifacts/audit-2026-09-23-full-stack.md` 修订版）。
+  - **阶段一 缺陷修复（Task 1-5）**：C1 `requireSessionId` 拒绝含 `/\`、`..`、NUL 的 sessionId（此前 `DELETE /api/agent/sessions/..%2F..%2F<目标>` 可递归删除任意目录）；C3 记忆版本恢复覆盖前补 `pre_restore` 快照（此前两次快照之间的编辑被不可逆抹掉），并把读取失败收窄为**仅 ENOENT 免存档、其余上抛**（恢复 fail-closed）；C2 本地 HTTP 校验 `Host` 头拒绝 DNS rebinding（403 `HOST_REJECTED`）；C4 `retry`/`retryCompaction` 复用项目串行门（此前会话 A 运行中可对 B 的 failed Run retry，导致「停止 A」实际 abort B）；新增公共 API `agent.projectBusy({projectRoot})` 收窄 rollback/restore 忙门（此前 `snapshot` 缺省只解析最近活跃单会话，漏判非活跃会话）。
+  - **阶段二 顺手加固（Task 6-8）**：win32 `ensureProject` Map 键小写归一（消除大小写变体双 state/双锁写同一物理 journal）；`run_log.jsonl` 纳入 `write_file`/`edit_file` 写保护名单（审计账本此前可被 Agent 改写）；删除 `settings-modal.js` 的死 re-export。
+  - **阶段三 过度工程清理（Task 9-17）**：测试 adapter 迁出 `src/`（`mock.mjs` 115 行此前会被 `files: src/**/*` 打进发布包）；删除生产零调用模块与死函数/死导出（`chapter-presentation.mjs`、`utils.js` 三函数、`readChapterDraft`/`rethrowIfCancelled`/`COMMIT_STEPS`）；`cost-tracker` 深拷贝改 `structuredClone`；`session-registry` 复用 `agent-utils` 的 `codedError`；`api-client` 三函数抽 `request` 共核（逐键等价，拒绝改变请求形状）；`cost-panel` 的 `el` 收敛为 `dom-kit` 薄适配；删除零引用依赖 `ignore`（依赖 4→3）。
+  - **阶段四 红线收口（Task 18-22，执行期追加）**：触发事实——`AGENTS.md` 红线是「≤1200 行**或**约 50KiB」，行维度早有机器强制、**字节维度无任何强制**，导致三个文件基线即越线长期无人发现。收口结果：`runtime.mjs` 1194 行/65060B → **702 行/37523B**（拆出 `run-control.mjs`）；`journal.mjs` 1183/60409B → **925/47577B**（去重两个恢复批次构建器的逐字重复段 + 拆出 `journal-recovery.mjs`/`journal-queries.mjs`）；`app.js` 1111/52580B → **1020/48607B**（等价合并 + 折出 `app-reader-view.js`）。同时**修好长期红的验收线** `npm run verify:unified-agent`（根因是脚本内最小 DOM 桩缺 `insertBefore`/`parentNode`/`nextSibling`/`isConnected`，非生产缺陷；补桩后 36/36 场景绿），并给架构测试 R1 加上 **51200 字节断言（LF 归一口径）** 与前缀式 seam 名单（`journal` 覆盖全部 journal* 模块）。
+  - **验收门禁**：`npm test` 1992/1992 pass / 0 fail（合并后复跑）；`npm run verify:unified-agent` 36/36、exit 0；测试数 1996→1992 的 −7 经逐文件 `git grep -c` 核对，全部来自计划内有意删除（Task 10 删 `chapter-presentation.test.mjs` 3 例 + 静态断言 1 例；Task 11 删 3 个 `hashKey` 死代码用例），其余 121 个测试文件计数完全相同，无静默覆盖丢失。
+  - **规模**：整分支 49 文件 +1967/−1277（其中阶段一/二按 TDD 要求强制新增失败测试约 400 行，故「净删」口径对 `tests/` 不适用）；仅 `src/` 26 文件 +1182/−1263（净 −81 行）。
+  - **过程记录（重要，给后续模型）**：①**计划自带的逐字测试有 2 处是无法失败的断言**——Task 1 的诱饵目录建在 `fs.rm` 真实落点之外、Task 6 的大小写变体在 `C:\` 上恒等于原路径（永远 skip）；②**实现子代理 3 次拒绝照抄计划代码**且理由成立——`api-client` 改写会给 POST/DELETE 新增 `cache` 指令并把「错误字段键恒存在」改成「可缺失」、`app.js` 的 `/[\\/]+$/g` 会放宽路径语义、`session-registry` 的 import 路径是笔误；③**终审抓到修复波自己引入的 Critical 回归**——抽取 `adjacentChapterNo` 后调用点又取了一次 `.chapter_no`，导致阅读器「上一章/下一章」失效，而全仓无测试覆盖该路径（已修 + 补可证伪导航用例）；④**裁决先例确立**：当计划的逐字代码与「测试必须能被证伪／不得为覆盖率加薄测试」冲突时，以全局约束为准，并在实现报告中标注偏离了哪一行、为什么（用户 2026-09-24 确认）。
+  - **遗留（本轮未做，已登记）**：见下节新增欠账。
+
 ## 当前欠账清单（2026-09-05 合并 r16+r17，只记不排）
+
 
 | # | 事项 | 来源 | 状态与去向 |
 |---|------|------|-----------|
@@ -67,3 +83,22 @@
 | 15 | CHANGELOG 与版本号 | r17 | 常设流程项，归属 ship 流程（登记归属，非欠账） |
 
 > 排序原则：优先级不在本清单内定，由产品功能分级表（主路径/恢复能力/验证能力/增强功能，r19 交付）裁决。
+
+## 第二十轮（round20）新增欠账（记录于 2026-09-24｜状态：当前有效｜共 12 项，只记不排）
+
+| # | 事项 | 类型 | 状态与去向 |
+|---|------|------|-----------|
+| 20-1 | `docs/design/multi-session-architecture.md` §4 与末尾索引仍引用已退役符号（`migrateProjectData` / `legacy-import.mjs` / `journal-session-migration.mjs` / `runLegacyImport`；已核实 `src/` 零命中） | 文档陈旧 | 该文档标「状态：当前有效」，属伪事实；下一轮以「加已退役标注」方式订正（符号已删、迁移语义留历史说明） |
+| 20-2 | R3 seam 扫描器只认字面量 import；`scripts/benchmark-agent-journal.mjs:161/:270` 用计算式动态 import 直连 `journal.mjs`/`journal-segments.mjs`，落在盲区 | 守卫盲区 | 本轮按「不得缩名单绕过」未扩扫描器；扩扫描器会真红（该脚本确为包外直连），需连同 `path.join` 拼接与 `tests/agent/` 豁免口径一并设计 |
+| 20-3 | 贴近字节红线的文件：`journal-handlers.mjs` 余 845B、`model-settings-page.js` 余 341B | 体积债 | 下一批字节收口对象（口径：≤51200B，LF 归一；R1 已机器强制，破线即红） |
+| 20-4 | 新增导航用例未在 `finally` 恢复 `globalThis.document`，向同文件后续测试泄漏全局 DOM 桩 | 测试卫生 | 本轮已记为 Minor（658/658 全绿，无实际连带失败）；下一轮按同仓既有 `try/finally` 恢复惯例订正 |
+| 20-5 | `pre_restore` 去重口径与章节侧不一致（用「≠即将写入内容」而非比最新 checksum），常见场景会存一份与最新版本字节相同的冗余版，挤占 200 版上限 | 一致性 | 本轮为计划逐字口径，未改；属低频优化，非正确性问题 |
+| 20-6 | `project_busy`/`session_busy` 已进 `SAFE_PUBLIC_ERROR_CODES` 白名单，而同样「程序写死、不拼底层异常」的 `agent_running` 未进，导致版本回滚/恢复的 409 对直连客户端只显示通用脱敏文案 | 一致性 | 既有行为，需独立评估后决定是否扩白名单 |
+| 20-7 | `run_log.jsonl` 保护面不完整：`isProtectedShellCwd` 未纳入（shell 仍可 `echo >`）、`samePath` 不 `realpath`（符号链接可绕）、非 win32 不折叠大小写 | 安全边界 | 属「write_file/edit_file 面」保护而非完整承诺；需独立一轮评估是否扩到 shell 与 realpath |
+| 20-8 | `dist-desktop/win-unpacked/…/app.asar` 与 `.codegraph/codegraph.db` 仍含本轮已删符号名 | 构建产物 | 均为 gitignore 的构建/缓存产物，重新打包即消失，无需处理 |
+| 20-9 | `docs/superpowers/specs/2026-07-18-composer-draft-design.md` 状态为「待实现」，且把本轮已删除的 `hashKey` 当作可复用现存算法 | 后续踩空点 | 按该规格实施时会踩空（`hashKey` 已随 Task 11 删除）；建议在下一次触及 composer-draft 前先订正规格 |
+| 20-10 | `src/app-shell/utils.js` 的 `ensureTrailingSlash` 在 `src/`/`tests/`/`scripts/` 内无导入方 | 死代码候选 | 本轮 Task 11 范围外（其同名函数在 `openai-compatible.mjs` 是本地函数，非同一导出）；归入后续审计项 |
+| 20-11 | 环境有 14 个 `extraneous` npm 顶层包（`npm uninstall` 残留），`node_modules` 与锁文件不完全一致 | 环境 | 下一轮开工前 `npm ci` 收敛，避免后续验收被误导 |
+| 20-12 | `styles.css` / `agent.css` 的**量化目标值仍未定**（`AGENTS.md` 记载「由第二十轮审计轮测定后回填，不得臆造阈值」） | 规则待决 | 本轮只登记现状（2613 行/83213B、2171 行/57756B，与 2026-09-05 相同即未再增长），**未定阈值**；需专项测定后回填 `AGENTS.md` |
+
+> 另：原欠账清单第 8 项（`session-sidebar.mjs` 维护契约注释订正 / `buildRecoveryHint` 语义分歧）在本轮 Task 5 被**部分**订正——该注释已补「rollback/restore 忙门已改为经 `agent.projectBusy` 消费 `hasNonTerminalRun`」口径；`buildRecoveryHint` 的语义分歧本身未验证是否已消解，暂不关闭。
