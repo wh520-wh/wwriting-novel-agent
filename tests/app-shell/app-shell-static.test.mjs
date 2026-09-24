@@ -189,22 +189,6 @@ test("章节导出操作使用文字按钮，不得复用固定宽度的图标�
   assert.match(stylesSource, /\.export-toolbar\s+\.btn\s*\{[^}]*flex:\s*0\s+0\s+auto/u, "导出按钮不得被工具栏压缩");
 });
 
-test("settings-modal.js re-exports the pure connection helper", () => {
-  const settingsModalPath = path.join(here, "..", "..", "src", "app-shell", "settings-modal.js");
-  return fs.readFile(settingsModalPath, "utf8").then((settingsModalSource) => {
-    assert.match(
-      settingsModalSource,
-      /export\s*\{[^}]*formatConnectionStatus[^}]*\}\s*from\s*["']\.\/settings-connection\.mjs["']/,
-      "settings-modal.js should re-export formatConnectionStatus from ./settings-connection.mjs"
-    );
-    assert.doesNotMatch(
-      settingsModalSource,
-      /export\s*\{[^}]*submitModelConnectionTest[^}]*\}\s*from\s*["']\.\/settings-connection\.mjs["']/u,
-      "Task 17 cutover：submitModelConnectionTest 不再 re-export（随模型区块删除）"
-    );
-  });
-});
-
 test("chapter-presentation.mjs 保留（稳定领域展示模块）", () => {
   assert.match(
     chapterPresentationSource,

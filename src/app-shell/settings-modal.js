@@ -5,12 +5,6 @@ import { motion } from "./motion-runtime.js";
 import { FOCUSABLE_SELECTOR, el, focusTrap, showConfirmLayer } from "./dom-kit.js";
 import { createSkillsSection } from "./settings-modal-skills.js";
 
-// Re-export so consumers that already `import { ... } from "./settings-modal.js"`
-// continue to work. The pure helper itself lives in ./settings-connection.mjs
-// so it can be tested without DOM-bound modules. Task 17 cutover：模型区块已整体
-// 删除，模型连接提交 helper 不再 re-export（新设置页自行调用 test-connection）。
-export { formatConnectionStatus } from "./settings-connection.mjs";
-
 const SETTINGS_SECTIONS = [
   { id: "model", label: "模型设置", icon: "settings", ready: true },
   { id: "writing", label: "写作参数", icon: "compose", ready: true },
