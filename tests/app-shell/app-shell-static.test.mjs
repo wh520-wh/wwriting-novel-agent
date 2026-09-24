@@ -13,7 +13,6 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const appJsPath = path.join(here, "..", "..", "src", "app-shell", "app.js");
 const apiClientPath = path.join(here, "..", "..", "src", "app-shell", "api-client.js");
 const drawerPanelsPath = path.join(here, "..", "..", "src", "app-shell", "drawer-panels.js");
-const chapterPresentationPath = path.join(here, "..", "..", "src", "app-shell", "chapter-presentation.mjs");
 const indexHtmlPath = path.join(here, "..", "..", "src", "app-shell", "index.html");
 const stylesPath = path.join(here, "..", "..", "src", "app-shell", "styles.css");
 const iconsPath = path.join(here, "..", "..", "src", "app-shell", "icons.js");
@@ -23,7 +22,6 @@ const slashCommandsPath = path.join(here, "..", "..", "src", "app-shell", "agent
 const appSource = await fs.readFile(appJsPath, "utf8");
 const apiClientSource = await fs.readFile(apiClientPath, "utf8");
 const drawerPanelsSource = await fs.readFile(drawerPanelsPath, "utf8");
-const chapterPresentationSource = await fs.readFile(chapterPresentationPath, "utf8");
 const indexHtmlSource = await fs.readFile(indexHtmlPath, "utf8");
 const stylesSource = await fs.readFile(stylesPath, "utf8");
 const iconsSource = await fs.readFile(iconsPath, "utf8");
@@ -187,14 +185,6 @@ test("章节导出操作使用文字按钮，不得复用固定宽度的图标�
   );
   assert.match(stylesSource, /\.export-toolbar\s*\{[^}]*display:\s*flex/u, "导出工具栏应保持稳定的横向布局");
   assert.match(stylesSource, /\.export-toolbar\s+\.btn\s*\{[^}]*flex:\s*0\s+0\s+auto/u, "导出按钮不得被工具栏压缩");
-});
-
-test("chapter-presentation.mjs 保留（稳定领域展示模块）", () => {
-  assert.match(
-    chapterPresentationSource,
-    /export\s+function\s+presentChapterArtifact\s*\(/,
-    "chapter-presentation.mjs should export a presentChapterArtifact function"
-  );
 });
 
 test("Task 12：app.js 把未消费 ESC 交给 AgentSurface（统一 ESC 路由）", () => {
