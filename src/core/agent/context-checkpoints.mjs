@@ -115,16 +115,6 @@ const COMPACTION_NON_TERMINAL = new Set([
   "context_compaction_cancel_requested"
 ]);
 
-// 候选→提交时序每一步（故障注入 fault 名）。
-export const COMMIT_STEPS = Object.freeze([
-  "writeFinalCheckpoint",
-  "readBackVerify",
-  "writeMarker",
-  "replacePointer",
-  "appendCompleted",
-  "deleteMarker"
-]);
-
 function normalizeCandidate(input) {
   if (input != null && typeof input === "object" && !Array.isArray(input) && "candidate" in input) {
     return input.candidate;

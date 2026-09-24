@@ -19,9 +19,3 @@ export function throwIfAborted(signal) {
     throw new ProjectCancelledError(signal.reason ?? "cancelled");
   }
 }
-
-export function rethrowIfCancelled(error, signal) {
-  if (isCancellationError(error, signal)) {
-    throw new ProjectCancelledError(signal?.reason ?? error?.message ?? "cancelled");
-  }
-}

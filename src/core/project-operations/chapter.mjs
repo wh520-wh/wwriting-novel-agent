@@ -150,14 +150,6 @@ export function chapterFinalPath(projectRoot, chapterNo, outputFormat) {
   return safeJoin(projectRoot, "chapters", chapterFileName(chapterNo, outputFormat));
 }
 
-export async function readChapterDraft(projectRoot, project, chapterNo) {
-  const draftPath = chapterDraftPath(projectRoot, chapterNo, project.output_format);
-  if (!(await pathExists(draftPath))) {
-    return "";
-  }
-  return fs.readFile(draftPath, "utf8");
-}
-
 // ---------------------------------------------------------------------------
 // 非正文内容启发式检测：防止模型把工具调用报错、内心独白、prompt 字段名写入章节。
 // 检测对象是应当为小说正文的 content；误伤率应极低（snake_case 工具名与中文小说
