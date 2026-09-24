@@ -9,7 +9,9 @@ import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const projectionFiles = ["journal.mjs", "compaction.mjs"];
+// 第二十轮 Task 19：四条投影查询迁入 journal-queries.mjs，扫描代码随文件移动——
+// 名单必须同步，否则「不得回退头部窗口」守卫会漏掉迁移后的扫描代码，不变量静默失效。
+const projectionFiles = ["journal.mjs", "compaction.mjs", "journal-queries.mjs"];
 
 test("投影查询不得使用 afterSeq:0 头部窗口（whfind-bugs #1 守卫）", () => {
   for (const file of projectionFiles) {

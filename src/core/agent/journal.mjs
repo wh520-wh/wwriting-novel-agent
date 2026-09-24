@@ -58,12 +58,20 @@ import { fail, defaultClock, defaultIdFactory, normalizeAt } from "./agent-utils
 import { MAX_TOOL_OUTPUT_CHARS, truncateOutput } from "./tools/runtime-helpers.mjs";
 import {
   TERMINAL_RUN_STATUSES,
-  COMPACTION_NON_TERMINAL_STATES,
   EVENT_SCHEMA_VERSION,
   createEmptySession,
   createSideState,
   reduceEvent
 } from "./journal-handlers.mjs";
+// 第二十轮 Task 19：恢复纯函数与投影查询拆出独立模块（journal.mjs 字节红线），
+// 在此接线——journal 对象的键名与签名零变化（外部导入路径与调用方不动）。
+import {
+  hasPendingCompactionRecovery,
+  detectDangling,
+  buildDanglingRecoveryBatch,
+  buildPriorityRecoveryBatch
+} from "./journal-recovery.mjs";
+import { createJournalQueries } from "./journal-queries.mjs";
 // 外部既有 import 路径保持（第十五轮 Task 4：tests/tools/index.mjs 与
 // runtime.mjs 直连 ./journal.mjs 的具名导出，拆表后统一 re-export，调用方零改动）。
 // 第十五轮 F1 单源修复：TERMINAL_RUN_STATUSES 随 runtime/run-lifecycle 消费方
@@ -77,26 +85,6 @@ export {
   buildProcessRestartedConvergence
 } from "./journal-handlers.mjs";
 
-
-// 压缩恢复尚未完成（Run 处于压缩收敛安全点，无 dangling assistant 活动）：
-//   - 非终态压缩（started/running/cancelling）：压缩调用在途；
-//   - 终态 failed/cancelled 但仍有 pending_input_id：崩溃窗口——failed/cancelled
-//     事件已落盘而 Run/input 收敛（waiting_user / input_cancelled + run_cancelled）
-//     尚未追加。这两种情况下 Run 都只可能在发送前预检安全点，不存在未闭合
-//     model turn/tool call，保守中断不适用；收敛交给 runtime 的 open()。
-function hasPendingCompactionRecovery(session) {
-  const compaction = session?.compaction;
-  if (compaction == null) return false;
-  if (COMPACTION_NON_TERMINAL_STATES.has(compaction.state)) return true;
-  if ((compaction.state === "failed" || compaction.state === "cancelled") && compaction.pending_input_id != null) {
-    // 第十二轮 F3（审核修订 P1-2）：崩溃窗口 = failed/cancelled 已落盘而 Run/input
-    // 收敛未落盘，窗口未收敛的判据是 run 仍 running。open() 把 run 收敛为
-    // waiting_user / interrupted 后，恢复链必须重新可用——否则每个 load 重放都跳过
-    // 锚定保守中断与 priority 恢复（永真锚定：前端项永久 running，detectDangling 永真）。
-    if (session.active_run?.status === "running") return true;
-  }
-  return false;
-}
 
 // 进程内异步互斥锁：同一 journal 实例的所有操作（load/append/appendBatch/read/
 // transcript）串行执行；不同实例各自持有独立锁，互不共享。
@@ -385,137 +373,6 @@ export function createAgentJournal({
     if (batch.length > 0) await appendBatchLocked(batch);
   }
 
-  // dangling assistant 恢复批次：清空不可恢复 grant、闭合遗留 decision、标记
-  // run_interrupted（全量重放检测到 dangling 与锚定重放保守中断共用）。
-  function buildDanglingRecoveryBatch() {
-    const run = state.session.active_run;
-    if (!run) return [];
-    const recoveryBatch = [];
-    // 第十二轮 F2：恢复批次必须闭合孤儿活动，否则前端项永久 running、
-    // detectDangling 永真（每次 load 重复追补）。与 buildPriorityRecoveryBatch
-    // 同形状（state.openToolCalls 值是 { seq, activity_id, name }）。
-    for (const [toolCallId, meta] of state.openToolCalls) {
-      recoveryBatch.push({
-        type: "tool_call_failed",
-        run_id: run.id,
-        payload: {
-          tool_call_id: toolCallId,
-          activity_id: meta.activity_id ?? null,           // 规格 F2：前端按此匹配工具行
-          name: meta.name ?? "unknown",                    // 规格 F2：前端 label 依据
-          message: "进程崩溃恢复：该工具调用未完成（已按失败闭合）", // 规格 F2：可见文案
-          error: { code: "recovered_dangling_orphan" }
-        }
-      });
-    }
-    for (const [turnId] of state.openModelTurns) {
-      // 地雷防御（第十二轮顺手修补，review 遗留）：reducer 对 model_turn_completed
-      // 的 input_id 是 requireString（见上），active_input_id 为 null（理论退化——
-      // 现代 producer 下开放 turn 必有归属输入，仅 input_interrupted 后崩溃的
-      // 遗留日志可构造）时不能填 null/undefined（dry-run 拒绝、整个 load 抛错）；
-      // 跳过闭合让 run_interrupted 收敛即可。残余 open turn 的归宿分路径：锚定
-      // 路径被清扫（下次 load 以锚点投影 + 空 side 开始，残余不复存在）；全量
-      // 重放路径残余会被完整重建，但 run 已遭终结（interrupted），detectDangling
-      // 对终态 Run 短路，恢复链不再触发——无害。
-      // 与 priority 侧策略互通（review Minor-3，改一侧必须知会另一侧）：那边给
-      // input_id 回退（active_input_id ?? priorityId，见 buildPriorityRecoveryBatch）
-      // 故补闭合而非跳过——两侧都只为防 requireString 抛错，一侧留残余、一侧给回退。
-      if (run.active_input_id == null) continue;
-      recoveryBatch.push({
-        type: "model_turn_completed",
-        run_id: run.id,
-        payload: { turn_id: turnId, input_id: run.active_input_id, outcome: "failed" }
-      });
-    }
-    for (const grant of run.active_grants ?? []) {
-      recoveryBatch.push({
-        type: "permission_grant_cleared",
-        run_id: run.id,
-        payload: { input_id: grant.input_id, grant_key: grant.grant_key, grant_id: grant.id }
-      });
-    }
-    for (const decisionId of state.openDecisions.keys()) {
-      recoveryBatch.push({
-        type: "decision_resolved",
-        run_id: run.id,
-        payload: { decision_id: decisionId, choice: "cancelled", reason: "recovery_dangling_decision" }
-      });
-    }
-    recoveryBatch.push({
-      type: "run_interrupted",
-      run_id: run.id,
-      payload: { reason: "recovery_dangling_assistant_activity" }
-    });
-    return recoveryBatch;
-  }
-
-  // Task 6：优先输入恢复批次（SPEC 3.3 rule 10）。priority_input_id pending 且
-  // 全量重放（side 状态完整、无真实飞行操作）时用一个 appendBatch 收敛：
-  //   1. 先闭合孤儿 model turn / tool call 为恢复错误（tool_call_failed /
-  //      model_turn_completed(failed)），不重放已完成副作用；
-  //   2. 清除不可恢复 grant、闭合遗留 decision（与 dangling 恢复一致）；
-  //   3. 若旧输入仍活动，追加 input_interrupted(reason:"recovered_priority")；
-  //   4. 追加 input_started(priorityId)（匹配 priority 时 reducer 自动清空
-  //      priority_input_id）。
-  // 队列相对顺序不变：只移除被 started 的优先输入，其余排队项原位保留。
-  // 返回空数组表示无需恢复（无 Run/已终结/priority 已落地/优先输入已活动等）。
-  function buildPriorityRecoveryBatch() {
-    const run = state.session.active_run;
-    if (!run || TERMINAL_RUN_STATUSES.has(run.status)) return [];
-    const priorityId = state.session.priority_input_id;
-    if (priorityId == null) return [];
-    if (run.active_input_id === priorityId) return []; // 已是活动输入，无需收敛
-    if (!state.session.queued_inputs.some((item) => item.id === priorityId)) return [];
-    const batch = [];
-    // 第十二轮 F2：与 buildDanglingRecoveryBatch 同形补 activity_id/name/message
-    //（state.openToolCalls 值是 { seq, activity_id, name }）。
-    for (const [toolCallId, meta] of state.openToolCalls) {
-      batch.push({
-        type: "tool_call_failed",
-        run_id: run.id,
-        payload: {
-          tool_call_id: toolCallId,
-          activity_id: meta.activity_id ?? null,
-          name: meta.name ?? "unknown",
-          message: "进程崩溃恢复：该工具调用未完成（已按失败闭合）",
-          error: { code: "recovered_priority_orphan" }
-        }
-      });
-    }
-    for (const [turnId] of state.openModelTurns) {
-      // 与 buildDanglingRecoveryBatch 的「跳过闭合」互通（review Minor-3）：本侧
-      // 总有 input_id 回退（active_input_id ?? priorityId）故补闭合而非跳过；两者
-      // 都是防 reducer requireString 抛错，改一侧必须知会另一侧。
-      batch.push({
-        type: "model_turn_completed",
-        run_id: run.id,
-        payload: { turn_id: turnId, input_id: run.active_input_id ?? priorityId, outcome: "failed" }
-      });
-    }
-    for (const grant of run.active_grants ?? []) {
-      batch.push({
-        type: "permission_grant_cleared",
-        run_id: run.id,
-        payload: { input_id: grant.input_id, grant_key: grant.grant_key, grant_id: grant.id }
-      });
-    }
-    for (const decisionId of state.openDecisions.keys()) {
-      batch.push({
-        type: "decision_resolved",
-        run_id: run.id,
-        payload: { decision_id: decisionId, choice: "cancelled", reason: "recovery_dangling_decision" }
-      });
-    }
-    if (run.active_input_id != null) {
-      batch.push({
-        type: "input_interrupted",
-        run_id: run.id,
-        payload: { input_id: run.active_input_id, reason: "recovered_priority" }
-      });
-    }
-    batch.push({ type: "input_started", run_id: run.id, payload: { input_id: priorityId } });
-    return batch;
-  }
-
   // 必须在 mutex 内调用。首次 load：创建存储布局 → 按恢复策略建立 projection →
   // 追加恢复事件 → 写出第一份 session.json。
   async function initialize() {
@@ -567,7 +424,7 @@ export function createAgentJournal({
         state.session.priority_input_id != null &&
         !anchored &&
         !hasPendingCompactionRecovery(state.session)
-          ? buildPriorityRecoveryBatch()
+          ? buildPriorityRecoveryBatch(state)
           : [];
       if (priorityBatch.length > 0) {
         await appendBatchLocked(priorityBatch);
@@ -580,17 +437,18 @@ export function createAgentJournal({
         // 把 Run 收敛为 waiting_user（绝不自动调用普通模型）。覆盖压缩在途
         //（非终态）与 failed/cancelled 事件已落盘但 Run/input 收敛未落盘的崩溃窗口。
         if (!hasPendingCompactionRecovery(state.session)) {
-          await appendBatchLocked(buildDanglingRecoveryBatch());
+          await appendBatchLocked(buildDanglingRecoveryBatch(state));
         }
       } else if (dangling && !hasPendingCompactionRecovery(state.session)) {
         // 第十二轮 F3：与上面锚定分支同口径——压缩恢复尚未完成的 Run 不在此
         // 收敛（全量重放路径同样由 runtime 的 open() 按收敛矩阵处理）。防御口径：
         // 现代 producer 的 failed/cancelled 窗口只可能处于发送前预检安全点，不存在
-        // 未闭合 model turn/tool call（断言见 hasPendingCompactionRecovery :142-147）；
+        // 未闭合 model turn/tool call（断言见 journal-recovery.mjs 的
+        // hasPendingCompactionRecovery）；
         // 本守卫仅为手搓/遗留日志兜底——若窗口内真的残留孤儿，闭合会让 run 先于
         // open() 收敛被中断（F3 重放用例断言「窗口内不闭合孤儿」即此口径）。open()
         // 把 run 收敛为 waiting_user 后恢复链重开，下一次 load 正常闭合。
-        await appendBatchLocked(buildDanglingRecoveryBatch());
+        await appendBatchLocked(buildDanglingRecoveryBatch(state));
       }
     }
     await writeSessionJson();
@@ -639,17 +497,6 @@ export function createAgentJournal({
 
   function cloneState(current) {
     return { session: structuredClone(current.session), ...cloneSide(current) };
-  }
-
-  // dangling assistant 活动：非终结 Run 上存在未闭合 model turn（v2 按 turn_id、
-  // v1 按 legacy 栈）或 tool call。
-  function detectDangling(current) {
-    const run = current.session.active_run;
-    if (!run || TERMINAL_RUN_STATUSES.has(run.status)) return null;
-    if (current.openModelTurns.size > 0 || current.legacyOpenTurns.length > 0 || current.openToolCalls.size > 0) {
-      return run;
-    }
-    return null;
   }
 
   // 尽力而为的投影写入：session.json 可重建（事件日志才是真相源），写入失败
@@ -1023,116 +870,11 @@ export function createAgentJournal({
   }
 
   // -------------------------------------------------------------------------
-  // Task 3（第十五轮）：投影查询方法（F2）。四条全量扫描查询从 runtime.mjs
-  // 逐字迁入——只在停止/重试/压缩边界触发（非每 token 热路径），不做投影索引。
+  // Task 3（第十五轮）：投影查询方法（F2）。第二十轮 Task 19 拆入
+  // journal-queries.mjs——四条只读查询统一依赖 readTail 尾部窗口（whfind-bugs #1），
+  // 经工厂注入 readTail 后装配进 journal 对象（键名与签名零变化）。
   // -------------------------------------------------------------------------
-
-  // 该输入当前是否尚无终态事件（需要追加 input_completed）。逆序扫描最近
-  // 100k 条事件（原 runtime.mjs needsCompletionTerminal 主体逐字迁入；readTail
-  // 尾部窗口——whfind-bugs #1：read({afterSeq:0}) 是最旧窗口）：
-  // 命中 input_consumed/cancelled/completed/interrupted/withdrawn 返回 false
-  //（该输入已有终态事件）；命中 input_promoted/run_started/input_started 返回
-  // true；超出上限视为需要收敛（保守方向）。
-  async function hasTerminalEvent(runId, inputId) {
-    const { events } = await readTail({ limit: 100000 });
-    for (let i = events.length - 1; i >= 0; i -= 1) {
-      const event = events[i];
-      if (event.run_id !== runId || event.payload?.input_id !== inputId) continue;
-      if (
-        event.type === "input_consumed" ||
-        event.type === "input_cancelled" ||
-        event.type === "input_completed" ||
-        event.type === "input_interrupted" ||
-        event.type === "input_withdrawn"
-      ) {
-        return false; // 该输入已有终态事件（legacy consumed 或任意新终态）
-      }
-      if (event.type === "input_promoted" || event.type === "run_started" || event.type === "input_started") return true;
-    }
-    return true;
-  }
-
-  // 从 journal 事件找回输入元数据（text + kind）。逆序扫描最近 100k 条事件
-  //（原 runtime.mjs findInputMeta 主体逐字迁入）：命中 input_queued 且
-  // input_id 匹配即返回；超出上限视为找不到（返回 text: null）。
-  async function findInputMeta(inputId) {
-    const { events } = await readTail({ limit: 100000 });
-    for (let i = events.length - 1; i >= 0; i -= 1) {
-      const event = events[i];
-      if (event.type === "input_queued" && event.payload?.input_id === inputId) {
-        return {
-          text: typeof event.payload.text === "string" ? event.payload.text : null,
-          kind: event.payload.kind === "compact" ? "compact" : null
-        };
-      }
-    }
-    return { text: null, kind: null };
-  }
-
-  // 该 Run 是否为 /compact 输入而创建（空闲发起）还是运行中排队（in-run）。
-  // 决定手动压缩失败/取消后的收敛：in-run 恢复 resume_run_status("running")，
-  // 空闲发起则 run_cancelled → idle。
-  // Task 9：新生命周期下 run_started 不再携带 input_id，改为以该 Run 的第一条
-  // input_started 判定（空闲发起 = Run 首个被激活输入就是 compact item）；legacy
-  // 日志（retry 的 run_started 仍带 input_id）保留原判定分支。
-  async function isIdleInitiatedRun(runId, compactInputId) {
-    const { events } = await readTail({ limit: 100000 });
-    for (const event of events) {
-      if (event.type === "input_started" && event.run_id === runId) {
-        return event.payload?.input_id === compactInputId;
-      }
-    }
-    for (const event of events) {
-      if (event.type !== "run_started" || event.run_id !== runId) continue;
-      return event.payload?.input_id === compactInputId;
-    }
-    return true;
-  }
-
-  // 从 journal 事件找回可恢复 Run 的未终结输入（run_failed 记录了 input_id；
-  // 崩溃恢复的 run_interrupted 没有，则退回 run_started/input_promoted 的信息）。
-  async function findTerminalInputId(runId) {
-    const { events } = await readTail({ limit: 100000 });
-    const runEvents = events.filter((event) => event.run_id === runId);
-    for (let i = runEvents.length - 1; i >= 0; i -= 1) {
-      const event = runEvents[i];
-      if (event.type === "run_failed" || event.type === "run_interrupted") {
-        if (typeof event.payload?.input_id === "string" && event.payload.input_id.length > 0) {
-          return event.payload.input_id;
-        }
-        break;
-      }
-      if (event.type === "input_promoted" && typeof event.payload?.input_id === "string") {
-        return event.payload.input_id;
-      }
-      if (event.type === "input_started" && typeof event.payload?.input_id === "string") {
-        return event.payload.input_id;
-      }
-      if (event.type === "run_started" && typeof event.payload?.input_id === "string") {
-        return event.payload.input_id;
-      }
-    }
-    // 兜底：崩溃现场尚未终结的 input（事件里存在 input_queued 且无终态事件）。
-    // Task 9：终态集合同时接纳新生命周期事件（input_completed/input_interrupted/
-    // input_withdrawn）与 legacy（input_consumed/input_cancelled）。
-    const terminal = new Set(
-      runEvents
-        .filter((event) =>
-          [
-            "input_consumed",
-            "input_cancelled",
-            "input_completed",
-            "input_interrupted",
-            "input_withdrawn"
-          ].includes(event.type)
-        )
-        .map((event) => event.payload?.input_id)
-    );
-    const openInputs = runEvents
-      .filter((event) => event.type === "input_queued" && !terminal.has(event.payload?.input_id))
-      .map((event) => event.payload?.input_id);
-    return openInputs.length > 0 ? openInputs[openInputs.length - 1] : null;
-  }
+  const queries = createJournalQueries({ readTail });
 
   const journal = {
     load,
@@ -1145,10 +887,10 @@ export function createAgentJournal({
     readBefore,
     readAfter,
     getSession,
-    hasTerminalEvent,
-    findInputMeta,
-    isIdleInitiatedRun,
-    findTerminalInputId,
+    hasTerminalEvent: queries.hasTerminalEvent,
+    findInputMeta: queries.findInputMeta,
+    isIdleInitiatedRun: queries.isIdleInitiatedRun,
+    findTerminalInputId: queries.findTerminalInputId,
     appendTranscript,
     appendSafeTranscript,
     readTranscript,
