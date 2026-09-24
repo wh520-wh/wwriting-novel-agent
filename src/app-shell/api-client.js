@@ -10,52 +10,50 @@ export function withProjectScope(pathname, projectRoot) {
   return `${url.pathname}${url.search}`;
 }
 
-export async function getJson(url, { signal } = {}) {
-  const response = await fetch(url, { cache: "no-store", signal });
+// 三函数共核。options 原样透传给 fetch（method/headers/body/signal/cache 的差异由调用方
+// 声明，故 getJson 的 cache: "no-store" 只出现在 getJson——post/delete 原本不设，不得外溢）。
+// attachActionFields 仅供 postJson：错误恒挂 fields/action（值可为 undefined），与原实现
+// 的无条件赋值逐字等价；不改成条件赋值，避免改变键存在性。
+async function request(url, options, attachActionFields) {
+  const response = await fetch(url, options);
   const data = await readResponseJson(response);
   if (!response.ok || data.ok === false) {
     const error = new Error(data.message ?? "请求失败");
     error.code = data.code;
     error.status = response.status;
+    if (attachActionFields) {
+      error.fields = data.fields;
+      error.action = data.action;
+    }
     throw error;
   }
   return data;
+}
+
+export async function getJson(url, { signal } = {}) {
+  return request(url, { cache: "no-store", signal });
 }
 
 export async function postJson(url, body, { signal } = {}) {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-    signal
-  });
-  const data = await readResponseJson(response);
-  if (!response.ok || data.ok === false) {
-    const error = new Error(data.message ?? "请求失败");
-    error.code = data.code;
-    error.status = response.status;
-    error.fields = data.fields;
-    error.action = data.action;
-    throw error;
-  }
-  return data;
+  return request(
+    url,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal
+    },
+    true
+  );
 }
 
 export async function deleteJson(url, body, { signal } = {}) {
-  const response = await fetch(url, {
+  return request(url, {
     method: "DELETE",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body ?? {}),
     signal
   });
-  const data = await readResponseJson(response);
-  if (!response.ok || data.ok === false) {
-    const error = new Error(data.message ?? "请求失败");
-    error.code = data.code;
-    error.status = response.status;
-    throw error;
-  }
-  return data;
 }
 
 export async function readResponseJson(response) {
