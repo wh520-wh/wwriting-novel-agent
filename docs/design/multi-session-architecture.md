@@ -1,6 +1,6 @@
 # 多会话架构与并行升级路径
 
-> 状态：已实施（Task 2–10 落地，本仓库当前行为为「同项目内多对话串行」）。本文记录会话注册表、会话分片存储、单流迁移、惰性创建与串行门的设计，并明确标注「所有对话可独立并行工作」的后续升级路径。
+> 记录于：2026-09-24｜状态：当前有效（Task 2–10 落地，本仓库当前行为为「同项目内多对话串行」）｜依据：src/core/agent/ 现行模块归属核对——submit / 串行门 → `run-control.mjs`，sessions() / deriveSessionTitle → `session-manager.mjs`，startLoop → `run-lifecycle.mjs`（Task 18 拆分）。本文记录会话注册表、会话分片存储、单流迁移、惰性创建与串行门的设计，并明确标注「所有对话可独立并行工作」的后续升级路径。
 > 范围：后端 `src/core/agent/` 的会话数据模型与 Runtime 串行门、前端 `src/app-shell/` 的传输层、AgentSurface 多会话管理、左侧栏两级树与设置「已归档对话」；以及移除串行门所需的会话级文件锁与每会话独立 run 循环。
 
 ## 1. 已确认目标
@@ -13,8 +13,8 @@
 ## 2. 会话注册表（`sessions/index.json`）
 
 - 实现：`src/core/agent/session-registry.mjs`。注册表是会话元数据真相源，位于应用私有 agentRoot 的 `sessions/index.json`（workspace 存储根下，不落项目目录）。
-- 条目字段：`session_id` / `title` / `created_at` / `updated_at` / `archived_at`；`title` 缺省为「新对话」，惰性创建路径以首条消息摘要命名（`deriveSessionTitle`，`src/core/agent/runtime.mjs`）。
-- `sessions()` 列表附加 `run_status` 投影（`runtime.mjs` 的 `sessions()`）：只对已物化会话读取其 journal 的 `active_run`——非终态 → `running`，`failed` → `failed`，其余 → `idle`。该投影是左侧栏状态点与前端 busy 复位的唯一数据源。
+- 条目字段：`session_id` / `title` / `created_at` / `updated_at` / `archived_at`；`title` 缺省为「新对话」，惰性创建路径以首条消息摘要命名（`deriveSessionTitle`，`src/core/agent/session-manager.mjs`）。
+- `sessions()` 列表附加 `run_status` 投影（`session-manager.mjs` 的 `sessions()`）：只对已物化会话读取其 journal 的 `active_run`——非终态 → `running`，`failed` → `failed`，其余 → `idle`。该投影是左侧栏状态点与前端 busy 复位的唯一数据源。
 - 会话 CRUD（newSession/renameSession/archiveSession/restoreSession/deleteSession）全部委托注册表，经 HTTP 路由（`src/core/http/agent-routes.mjs`）与前端传输层（`src/app-shell/agent/api.js`）透出。
 
 ## 3. 会话分片存储（`sessions/<id>/segments/events/`）
@@ -35,12 +35,12 @@
 ## 5. 惰性创建
 
 - 设计动机：品牌新项目不产生空会话；会话条目与 journal 只在第一次有真实消息时物化。
-- `submit` 无 `sessionId` 时的解析链（`runtime.mjs` `submit`）：显式 id 校验存在 → 缺省取最近活跃 → 都没有则 `registry.create({ title: deriveSessionTitle(text) })` 并 `session_created` 写入 journal。
+- `submit` 无 `sessionId` 时的解析链（`run-control.mjs` `submit`）：显式 id 校验存在 → 缺省取最近活跃 → 都没有则 `registry.create({ title: deriveSessionTitle(text) })` 并 `session_created` 写入 journal。
 - 前端「+」新建走 draft 占位（`src/app-shell/agent/index.js` 的 `newSessionPlaceholder` / `submitWithDraft`）：提交时先 `createSession` 落盘替换占位，再投递输入——占位是本地未落盘状态，后端不认识 draft id。
 
 ## 6. 串行门（project_busy）
 
-- 后端：`runtime.mjs` `submit` 在项目互斥锁内检查——目标会话之外若有任一已物化会话存在非终态 `active_run`，立即 `throw fail("project_busy", ...)`，且零副作用（被拒提交不新建会话、不改任何事件流）。同会话提交不受影响，仍走 FIFO 队列。
+- 后端：`run-control.mjs` `submit` 在项目互斥锁内检查——目标会话之外若有任一已物化会话存在非终态 `active_run`，立即 `throw fail("project_busy", ...)`，且零副作用（被拒提交不新建会话、不改任何事件流）。同会话提交不受影响，仍走 FIFO 队列。
 - 前端：
   - submit 收到 `project_busy`（HTTP 409）时自动 `setBusy(true)`（`agent/index.js`）；
   - 侧边栏 `session-sidebar.mjs` 的 `syncBusy` 用 `run_status` 投影推导：当前项目「其他会话」存在 `running` → busy；`view.js` `syncComposer` 据此禁用发送键并改占位文案为「另一个对话正在运行」（输入框不锁，草稿可继续编辑）。
@@ -48,7 +48,7 @@
 
 ## 7. 为什么当前串行（正确性前提，非性能取舍）
 
-- 同一项目的所有会话共享一个 run 循环骨架与**项目级**运行状态：`state.runId` / `state.controller`（AbortController）/ `state.loopPromise`（`runtime.mjs` `startLoop` 的簿记字段都挂在 `state` 上），以及项目互斥锁 `state.mutex`、压缩收敛、checkpoint、项目记忆与章节事务。
+- 同一项目的所有会话共享一个 run 循环骨架与**项目级**运行状态：`state.runId` / `state.controller`（AbortController）/ `state.loopPromise`（`run-lifecycle.mjs` `startLoop` 的簿记字段都挂在 `state` 上），以及项目互斥锁 `state.mutex`、压缩收敛、checkpoint、项目记忆与章节事务。
 - 若两个会话的循环并发推进，两套模型轮次会并发写同一项目级状态与项目文件（记忆、章节草稿/正式文件、checkpoint），而当前没有会话级隔离的锁来仲裁这些写——「同项目同一时刻最多一个 Run」用最少的机制把并发面收掉，保证项目级不变量不被破坏。
 - 前端侧对应：其他会话运行中禁用发送键（busy），把「并发输入」也在入口拦掉。
 
@@ -56,7 +56,7 @@
 
 > ⚠️ **明确标注：后续升级——所有对话可独立并行工作。** 本文档当前状态下产品的真实行为是「同项目串行」（第 6、7 节）；以下为计划中的升级路径，**尚未实施**，不是现状描述。
 
-- 移除 `project_busy` 串行门：`runtime.mjs` `submit` 的互斥锁内门禁检查、HTTP 409 透出、前端 `setBusy` / `composerBusy` / 侧边栏 busy 周期刷新全部删除（会话状态点与活跃高亮保留）。
+- 移除 `project_busy` 串行门：`run-control.mjs` `submit` 的互斥锁内门禁检查、HTTP 409 透出、前端 `setBusy` / `composerBusy` / 侧边栏 busy 周期刷新全部删除（会话状态点与活跃高亮保留）。
 - 引入会话级文件锁：以 `sessions/<id>/` 下的锁文件（或锁目录）仲裁同一会话内的队列/压缩/checkpoint，替代「项目互斥锁内启动循环」的全局串行前提；项目级锁只保留注册表写与迁移。
 - 每会话独立 run 循环：`runId` / `controller` / `loopPromise` 从项目级 `state` 移到会话级 `sessionState`，`startLoop` 不再要求「全项目无其他飞行循环」；stop/cancel/retry/压缩收敛全部按会话寻址。
 - 需要重新审计的共享面（并行后才暴露）：上下文预算与压缩收敛、checkpoint 对账、项目记忆写入、章节事务与正式文件落盘——这些要么下沉为会话级互斥，要么串行化到项目级事务边界，不能两个 Run 同时写。
@@ -75,8 +75,8 @@
 | 会话分片 journal | `src/core/agent/journal.mjs`、`journal-segments.mjs` |
 | 单流迁移 | `src/core/agent/journal-session-migration.mjs`、`runtime.mjs` `migrateProjectData` |
 | legacy 只读导入 | `src/core/agent/legacy-import.mjs` `runLegacyImport` |
-| 惰性创建 / 串行门 | `src/core/agent/runtime.mjs` `submit` |
-| run_status 投影 | `src/core/agent/runtime.mjs` `sessions()` |
+| 惰性创建 / 串行门 | `src/core/agent/run-control.mjs` `submit` |
+| run_status 投影 | `src/core/agent/session-manager.mjs` `sessions()` |
 | 会话 HTTP CRUD | `src/core/http/agent-routes.mjs` |
 | 前端传输层 | `src/app-shell/agent/api.js` |
 | AgentSurface 多会话 | `src/app-shell/agent/index.js`（switchSession/submitWithDraft/setBusy） |
