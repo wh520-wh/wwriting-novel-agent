@@ -53,6 +53,11 @@ class MockElement {
     return child;
   }
 
+  // dom-kit el 用标准 append 追加子节点（本地 el 原用 appendChild）；补齐桩的 DOM API。
+  append(...nodes) {
+    for (const n of nodes) this.children.push(n);
+  }
+
   replaceChildren(...nodes) {
     this.children.length = 0;
     for (const n of nodes) this.children.push(n);

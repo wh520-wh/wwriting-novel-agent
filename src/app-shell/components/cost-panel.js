@@ -6,6 +6,7 @@
 
 import { formatNumber, formatYuan } from "../utils.js";
 import { isCacheDiscountedMode } from "../../shared/deepseek-detection.mjs";
+import { el as elDom } from "../dom-kit.js";
 
 const SPARKLINE_LENGTH = 20;
 const SPARK_GAP = 1; // px
@@ -18,25 +19,18 @@ const LOW_HIT_RATE_HINT = "缓存命中率偏低，可能近期改动了规则/�
 const LOW_HIT_RATE_THRESHOLD = 0.3; // 累计命中率 <30% 触发
 const MIN_WRITING_PATH_CALLS = 10; // 写作路径调用数门限，避免冷启动/样本过少误报
 
+// 审计清理（Task 16）：本地 el 与 dom-kit el 重复，收敛为薄适配（rest children → 数组）。
+// dom-kit el 不认识 className/dataset/style/attrs 键（会误走 setAttribute），先做翻译：
+//   className → class（property）、attrs 摊平进 props（走 setAttribute 兜底）、
+//   dataset/style 同为对象型 props，在节点建好后逐项赋 property。
 function el(tag, props = {}, ...children) {
-  const node = document.createElement(tag);
-  if (props.className) node.className = props.className;
-  if (props.text != null) node.textContent = props.text;
-  if (props.dataset) {
-    for (const [k, v] of Object.entries(props.dataset)) node.dataset[k] = v;
-  }
-  if (props.style) {
-    for (const [k, v] of Object.entries(props.style)) node.style[k] = v;
-  }
-  if (props.attrs) {
-    for (const [k, v] of Object.entries(props.attrs)) {
-      if (v != null) node.setAttribute(k, String(v));
-    }
-  }
-  for (const c of children.flat()) {
-    if (c == null || c === false) continue;
-    node.appendChild(typeof c === "object" ? c : document.createTextNode(String(c)));
-  }
+  const { className, dataset, style, attrs, ...rest } = props ?? {};
+  const translated = { ...rest };
+  if (className != null) translated.class = className;
+  if (attrs) Object.assign(translated, attrs);
+  const node = elDom(tag, translated, children.flat(Infinity));
+  if (dataset) for (const [k, v] of Object.entries(dataset)) node.dataset[k] = v;
+  if (style) for (const [k, v] of Object.entries(style)) node.style[k] = v;
   return node;
 }
 
