@@ -407,7 +407,14 @@ export function createProjectRoutes({
       // C3（2026-09-24 审计）：覆盖前把当前内容存档为 pre_restore（对齐章节侧
       // pre_rollback「宁可不覆盖也不丢内容」语义）。快照失败即抛——恢复不执行。
       // 内容相同则不存档，避免重复恢复同一版本时产生 no-op 版本。
-      const currentContent = await fs.readFile(target, "utf8").catch(() => null);
+      // 读取当前内容：仅「目标不存在」(ENOENT) 视为无需存档而免读；EACCES/EISDIR/
+      // EPERM 等其余读错一律上抛——上抛即中止本次恢复、不写目标文件（fail-closed，
+      // 对齐章节侧 rollbackChapter 的无 catch 直读）。若把这些读错吞成 null，就会
+      // 跳过存档继续覆盖，正是 C3 要堵的「不可逆丢内容」在错误分支上的复现。
+      const currentContent = await fs.readFile(target, "utf8").catch((error) => {
+        if (error?.code === "ENOENT") return null;
+        throw error;
+      });
       if (currentContent != null && currentContent !== content) {
         await snapshotMemoryFile({ projectRoot, file, content: currentContent, source: "pre_restore" });
       }
