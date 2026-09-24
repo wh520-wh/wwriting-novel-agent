@@ -4,12 +4,13 @@
 // UI 不做业务决策（Rule 4/5），Agent 状态由 AgentSurface 消费 snapshot/event。
 import { motion } from "./motion-runtime.js";
 import { getJson, postJson, withProjectScope } from "./api-client.js";
-import { formatNumber, pathBaseName, pathEquals, translateStage } from "./utils.js";
+import { pathBaseName, pathEquals } from "./utils.js";
 import { icon } from "./icons.js";
 import { focusTrap, createToaster } from "./dom-kit.js";
 import { createDrawerPanels } from "./drawer-panels.js";
 import { createSettingsModal } from "./settings-modal.js";
 import { createModelSettingsPage } from "./model-settings-page.js";
+import { createReaderView } from "./app-reader-view.js";
 import { handleDashboardMigrationNotice } from "./settings-connection.mjs";
 import { createProjectScope } from "./project-scope.mjs";
 import { createSessionSidebar, createSessionRemovalResolver } from "./session-sidebar.mjs";
@@ -494,8 +495,8 @@ export async function bootApp(root = document) {
   settingsRefs.shortcutsX.addEventListener("click", () => closeShortcuts());
   bindScrimClose(settingsRefs.shortcutsScrim, closeShortcuts);
   
-  readerRefs.readerFontMinus.addEventListener("click", () => nudgeReaderFont(-1));
-  readerRefs.readerFontPlus.addEventListener("click", () => nudgeReaderFont(1));
+  readerRefs.readerFontMinus.addEventListener("click", () => readerView.nudgeFont(-1));
+  readerRefs.readerFontPlus.addEventListener("click", () => readerView.nudgeFont(1));
   readerRefs.readerPrev.addEventListener("click", () => openAdjacentChapter(-1));
   readerRefs.readerNext.addEventListener("click", () => openAdjacentChapter(1));
   readerRefs.readerWide.addEventListener("click", () => {
@@ -907,56 +908,18 @@ export async function bootApp(root = document) {
     settingsRefs.createStatus.className = `create-status${kind ? ` ${kind}` : ""}`;
   }
   
-  // 阅读器字号四档（行高随档位），持久化 localStorage。
-  // Round10：默认档 = 17px/1.95（正文神圣基线），全档整数像素（去掉 15.5px 非整档）。
-  const READER_FONT_STEPS = [
-    { size: 14, lh: 1.9 },
-    { size: 17, lh: 1.95 },
-    { size: 19, lh: 2.0 },
-    { size: 21, lh: 2.0 }
-  ];
-  let readerFontIndex = 1;
-  try {
-    const stored = window.localStorage.getItem("ww:reader:fontsize");
-    // 首次使用无存储值（null）：保持默认档，不能 Number(null)→0 落到最小档。
-    if (stored != null) {
-      const value = Number(stored);
-      if (Number.isInteger(value) && value >= 0 && value < READER_FONT_STEPS.length) readerFontIndex = value;
-    }
-  } catch { /* localStorage 不可用则用默认档 */ }
-  
-  function applyReaderFont() {
-    const step = READER_FONT_STEPS[readerFontIndex];
-    readerRefs.readerBody.style.fontSize = `${step.size}px`;
-    readerRefs.readerBody.style.lineHeight = String(step.lh);
-    readerRefs.readerFontMinus.disabled = readerFontIndex === 0;
-    readerRefs.readerFontPlus.disabled = readerFontIndex === READER_FONT_STEPS.length - 1;
-  }
-  
-  function nudgeReaderFont(delta) {
-    readerFontIndex = Math.max(0, Math.min(READER_FONT_STEPS.length - 1, readerFontIndex + delta));
-    try { window.localStorage.setItem("ww:reader:fontsize", String(readerFontIndex)); } catch { /* 忽略 */ }
-    applyReaderFont();
-  }
-  
-  function readableChapters() {
-    return [...(lastDashboard?.chapters ?? [])]
-      .filter((c) => Number(c.actual_words ?? 0) > 0)
-      .sort((a, b) => a.chapter_no - b.chapter_no);
-  }
-  
-  function updateReaderNav() {
-    const list = readableChapters();
-    const idx = list.findIndex((c) => c.chapter_no === readerChapterNo);
-    readerRefs.readerPrev.disabled = idx <= 0;
-    readerRefs.readerNext.disabled = idx < 0 || idx >= list.length - 1;
-  }
+  // 阅读器展示层（字号四档/正文渲染/章节导航启停）第二十轮 Task 20 下沉到
+  // app-reader-view.js，为 50 KiB 字节红线腾余量；此处只构造一次并注入 refs 与
+  // 两个状态读取器（详见该模块头注释的调用边界）。
+  const readerView = createReaderView({
+    refs: readerRefs,
+    getChapterNo: () => readerChapterNo,
+    getChapters: () => lastDashboard?.chapters
+  });
   
   function openAdjacentChapter(delta) {
-    const list = readableChapters();
-    const idx = list.findIndex((c) => c.chapter_no === readerChapterNo);
-    const next = list[idx + delta];
-    if (next) void openReader(next.chapter_no);
+    const next = readerView.adjacentChapterNo(delta);
+    if (next != null) void openReader(next.chapter_no);
   }
   
   async function openReader(chapterNo) {
@@ -964,41 +927,20 @@ export async function bootApp(root = document) {
     // 新章（readerChapterNo 已推进）或新项目（scope 已切换）。
     const token = projectScope.capture();
     readerChapterNo = chapterNo;
-    readerRefs.readerTitle.textContent = `第 ${chapterNo} 章`;
-    readerRefs.readerMeta.textContent = "正在读取本章正文...";
-    readerRefs.readerBody.replaceChildren(readerEmpty("读取中..."));
+    readerView.renderLoading(chapterNo);
     openOverlay(readerRefs.readerScrim, readerRefs.readerClose);
-    applyReaderFont();
-    updateReaderNav();
+    readerView.applyFont();
+    readerView.updateNav();
     try {
       const data = await getJson(`/api/chapters/read?chapter=${encodeURIComponent(chapterNo)}`);
       if (!projectScope.isCurrent(token)) return;
       if (readerChapterNo !== chapterNo) return;
-      readerRefs.readerTitle.textContent = data.title ?? `第 ${chapterNo} 章`;
-      readerRefs.readerMeta.textContent = `${data.is_draft ? "草稿" : "正式章节"} · ${translateStage(data.status)} · ${formatNumber(data.actual_words)} 字`;
-      const paragraphs = String(data.content ?? "").split(/\n{2,}/u).map((block) => block.trim()).filter(Boolean);
-      if (paragraphs.length === 0) {
-        readerRefs.readerBody.replaceChildren(readerEmpty("本章正文为空。"));
-        return;
-      }
-      readerRefs.readerBody.replaceChildren(...paragraphs.map((text) => {
-        const p = document.createElement("p");
-        p.textContent = text;
-        return p;
-      }));
-      readerRefs.readerBody.scrollTop = 0;
+      readerView.renderChapter(data, chapterNo);
     } catch (error) {
       if (!projectScope.isCurrent(token)) return;
       if (readerChapterNo !== chapterNo) return;
-      readerRefs.readerBody.replaceChildren(readerEmpty(error.message));
-      readerRefs.readerMeta.textContent = "读取失败";
+      readerView.renderError(error.message);
     }
-  }
-  
-  function readerEmpty(text) {
-    const p = make("p", "reader-empty");
-    p.textContent = text;
-    return p;
   }
   
   function closeReader() {
