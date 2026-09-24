@@ -86,7 +86,7 @@ WWriting **不是**「你描述、它代写」的生成器。
 
 ### 方式一：安装包（推荐）
 
-从 [Releases](https://github.com/wh520-wh/wwriting-novel-agent/releases) 下载 `WWriting.Novel.Agent-0.5.1-Setup.exe`，安装即用，无需 Node 环境。
+从 [Releases](https://github.com/wh520-wh/wwriting-novel-agent/releases) 下载 `WWriting.Novel.Agent-0.5.2-Setup.exe`，安装即用，无需 Node 环境。
 
 ### 方式二：从源码运行
 
