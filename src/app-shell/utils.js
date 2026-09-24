@@ -17,11 +17,6 @@ export function formatYuan(value) {
   return `${n.toFixed(2)} 元`;
 }
 
-export function formatTime(value) {
-  if (!value) return "-";
-  return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(value));
-}
-
 export function pathEquals(a, b) {
   return String(a ?? "").toLowerCase() === String(b ?? "").toLowerCase();
 }
@@ -61,40 +56,4 @@ export function translateStage(stage) {
 
 export function translateSourceKind(kind) {
   return { search: "搜索", fetch: "抓取", page: "网页", source: "资料" }[kind] ?? "资料";
-}
-
-export function translateEventType(type) {
-  return {
-    project_created: "项目创建",
-    project_run_started: "运行开始",
-    project_run_finished: "运行结束",
-    project_run_failed: "运行失败",
-    project_run_skipped: "运行跳过",
-    project_started: "开始运行",
-    project_completed: "项目完成",
-    project_blocked: "项目阻塞",
-    checkpoint_written: "检查点",
-    model_call_started: "模型调用开始",
-    model_call_completed: "模型调用完成",
-    model_usage_recorded: "用量记录",
-    chapter_queued: "章节排队",
-    stage_started: "阶段开始",
-    chapter_finalized: "章节定稿",
-    chapter_completed: "章节完成",
-    tool_call_rejected: "工具调用拒绝",
-    skill_configuration_changed: "技能配置",
-    project_settings_updated: "设置更新",
-    web_search_completed: "搜索完成",
-    web_fetch_completed: "抓取完成",
-    user_instruction_received: "用户指令"
-  }[type] ?? type;
-}
-
-export function hashKey(projectRoot) {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < projectRoot.length; i++) {
-    h ^= projectRoot.charCodeAt(i);
-    h = (h * 0x01000193) >>> 0;
-  }
-  return h.toString(16).padStart(8, "0") + projectRoot.length.toString(16).padStart(4, "0");
 }
