@@ -136,12 +136,17 @@ export function createAgentRuntime({
   const projects = new Map(); // projectRoot -> project state
 
   function ensureProject(projectRoot) {
-    const key = path.resolve(projectRoot);
+    const resolved = path.resolve(projectRoot);
+    // win32 大小写不敏感 FS：Map 键归一小写，否则 D:\Foo 与 D:\foo 分裂成两个 state
+    //（两把锁/两个 journal 写同一物理目录；审计 Downgraded #1，口径对齐 project-lock.mjs:38）。
+    // 只归一「键」：resolved 仍按调用方书写大小写流向 state.key/prompt/工具 cwd/journal
+    // 的 project_root（win32 下同一物理目录），不把全小写路径写进用户可见事件。
+    const key = process.platform === "win32" ? resolved.toLowerCase() : resolved;
     let state = projects.get(key);
     if (!state) {
       // Task 4：agentRoot 即应用的私有 agent storage root；每会话的 journal/
       // checkpoint 落在 <agentRoot>/sessions/<id>/ 下（ensureSessionState）。
-      const agentRoot = agentStorageRootFor(key);
+      const agentRoot = agentStorageRootFor(resolved);
       const projectOperations = {
         inspectChapterContext,
         appendChapterSegment,
@@ -152,13 +157,13 @@ export function createAgentRuntime({
         readContinuityBriefing
       };
       state = {
-        key,
+        key: resolved,
         agentRoot,
         // Task 4：会话注册表（<agentRoot>/sessions/index.json）+ 每会话运行状态
         registry: createSessionRegistry({ root: agentRoot }),
         sessions: new Map(), // sessionId -> sessionState（ensureSessionState 惰性物化）
         projectOperations,
-        modelGateway: resolveGateway(key),
+        modelGateway: resolveGateway(resolved),
         skills: projectSkills,
         // 当前 Run 的循环控制（一次一个模型/工具循环）。Task 4 串行门保证整个
         // 项目同时至多一个非终态 Run，因此循环控制保持项目级即可；loopSessionId
@@ -181,7 +186,7 @@ export function createAgentRuntime({
           }
           const promise = (async () => {
             try {
-              const { active } = await projectSkills.catalog({ projectRoot: key });
+              const { active } = await projectSkills.catalog({ projectRoot: resolved });
               return active.map((skill) => ({ name: skill.name, description: skill.description ?? "", category: skill.category ?? null }));
             } catch {
               return [];
