@@ -770,19 +770,27 @@ test("通用写工具拒绝直接写受保护路径", async (t) => {
     ["draft 中间点文件名", "drafts/2.修订.draft.txt"],
     ["version archive", ".versions/chapters/001/v1.md"],
     ["memory archive", "memory/chapter_memory.json"],
-    ["project config", "project.yaml"]
+    ["project config", "project.yaml"],
+    ["run_log 审计账本", "run_log.jsonl"]
   ];
   for (const [label, rel] of protectedTargets) {
     const result = await h.tools.execute(toolCall("write_file", { path: rel, content: MARKER }), h.context);
     assert.equal(result.ok, false, `write_file 应拒绝 ${label}`);
     assert.ok(typeof result.message === "string" && result.message.length > 0, "拒绝消息必须有内容");
   }
-  // memory/ 与 project.yaml 拒绝消息按 rule 提供明确指引（非泛化『当前权限不允许修改文件』）
-  for (const label of ["memory archive", "project config"]) {
+  // memory/、project.yaml 与 run_log.jsonl 拒绝消息按 rule 提供明确指引（非泛化『当前权限不允许修改文件』）
+  for (const label of ["memory archive", "project config", "run_log 审计账本"]) {
     const [entryLabel, rel] = protectedTargets.find(([l]) => l === label);
     const result = await h.tools.execute(toolCall("write_file", { path: rel, content: MARKER }), h.context);
     assert.ok(result.message.includes("系统文件，只读"), `${entryLabel} 拒绝消息必须声明系统文件只读`);
   }
+  // run_log.jsonl 锁死 rule id 与逐字文案：PROTECTED_RULES.run_log 或
+  // PROTECTED_DENIAL_MESSAGES.run_log 任缺一项，文案即回退泛化、technical.rule 变 undefined
+  const runLogResult = await h.tools.execute(toolCall("write_file", { path: "run_log.jsonl", content: MARKER }), h.context);
+  assert.equal(runLogResult.message, "审计账本为系统文件，只读。");
+  const runLogFailed = eventsOfType(await readEvents(h.journal), "tool_call_failed")
+    .filter((event) => String(event.payload.technical?.path ?? "").endsWith("run_log.jsonl"));
+  assert.equal(runLogFailed.at(-1)?.payload.technical.rule, "run_log", "run_log.jsonl 拒绝必须归属 rule=run_log");
   const draftResult = await h.tools.execute(toolCall("write_file", { path: "drafts/001.draft.md", content: MARKER }), h.context);
   assert.ok(draftResult.message.includes("append_chapter_segment"), "草稿拒绝消息必须提示合法通道 append_chapter_segment");
   // events 落在 segments/events；拒绝写入不得产生脏行（每行仍是合法 JSON）
@@ -806,6 +814,14 @@ test("通用写工具拒绝直接写受保护路径", async (t) => {
   await h.tools.resolveDecision({ decisionId: okDecision.payload.decision_id, choice: "allow" });
   const ok = await pendingOk;
   assert.equal(ok.ok, true);
+  // 负面用例：run_log 规则只认项目根确切路径——子目录同名文件不得被误伤
+  await fs.mkdir(path.join(h.projectRoot, "sub"), { recursive: true });
+  const nestedPending = h.tools.execute(toolCall("write_file", { path: "sub/run_log.jsonl", content: "n" }), h.context);
+  const nestedDecision = await nextDecision(h.journal, 2);
+  await h.tools.resolveDecision({ decisionId: nestedDecision.payload.decision_id, choice: "allow" });
+  const nested = await nestedPending;
+  assert.equal(nested.ok, true, "子目录同名文件不得被 run_log 规则误伤");
+  assert.equal(await fs.readFile(path.join(h.projectRoot, "sub", "run_log.jsonl"), "utf8"), "n");
   assertClosure(await readEvents(h.journal));
 });
 

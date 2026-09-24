@@ -1,6 +1,6 @@
 # WWriting 项目级工作约束
 
-记录于：2026-09-05｜状态：当前有效｜适用范围：本仓库开发、文档维护与项目记忆。
+记录于：2026-09-24｜状态：当前有效｜适用范围：本仓库开发、文档维护与项目记忆。
 
 > 原仓库根 `WWRITING.md`（项目记忆）自 2026-09-05 起并入本文件与 `docs/memory/project-progress.md` 后删除。应用在用户写作工作区创建的同名 `WWRITING.md`（`src/core/project-memory.mjs` 的 `PROJECT_MEMORY_FILE`）是产品行为，与被删的仓库根文件无关，不受影响。
 
@@ -53,6 +53,7 @@
   - 章节版本库：.versions/chapters/（系统维护，append-only，完整保留不裁剪）
   - 记忆文件版本库：.versions/memory/（系统维护，append-only，每文件 200 版上限）
   - 项目配置：project.yaml（系统维护，不可直接编辑）
+  - 审计账本：run_log.jsonl（项目根目录，系统维护，不可直接编辑）
 
 ## 文档时间与数字规则
 

@@ -60,7 +60,8 @@ const PROTECTED_RULES = Object.freeze({
   draft_files: "draft_files", // 草稿目录 drafts/（正文只能经 append_chapter_segment 写入）
   version_files: "version_files", // .versions/ 版本快照库（commit/finalize/rollback 维护）
   memory_files: "memory_files", // memory/ 记忆档案（章节记忆/索引/摘要/连续性，系统维护）
-  project_config: "project_config" // project.yaml 项目配置（设置面板维护）
+  project_config: "project_config", // project.yaml 项目配置（设置面板维护）
+  run_log: "run_log" // run_log.jsonl 审计账本（章节提交/入账/回滚维护，只读）
 });
 // 受保护路径拒绝的合法通道指引（第八轮模块 C）：message 一句话、rule 进 technical
 export const PROTECTED_DENIAL_MESSAGES = Object.freeze({
@@ -70,7 +71,8 @@ export const PROTECTED_DENIAL_MESSAGES = Object.freeze({
   draft_files: "草稿只能经 append_chapter_segment 写入。",
   version_files: "版本档案为系统文件，只读。",
   memory_files: "记忆档案为系统文件，只读；设定档案请用 update_memory 工具更新。",
-  project_config: "项目配置文件为系统文件，只读。"
+  project_config: "项目配置文件为系统文件，只读。",
+  run_log: "审计账本为系统文件，只读。"
 });
 // 大小写不敏感路径相等（win32 文件系统大小写不敏感；POSIX 保持敏感）
 function samePath(a, b) {
@@ -252,6 +254,11 @@ function isProtectedWritePath(projectRoot, targetPath) {
   }
   if (samePath(target, path.join(root, "project.yaml"))) {
     return { rule: PROTECTED_RULES.project_config, path: target };
+  }
+  // run_log.jsonl（项目根）审计账本：只由 chapter 提交/入账/回滚事务追加，
+  // write_file/edit_file 直写会篡改历史账本。精确路径比较，不误伤子目录同名文件。
+  if (samePath(target, path.join(root, "run_log.jsonl"))) {
+    return { rule: PROTECTED_RULES.run_log, path: target };
   }
   return null;
 }
