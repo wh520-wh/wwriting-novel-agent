@@ -1303,3 +1303,96 @@ test("Task 10 工具在途点立即：只等待当前工具完成（结果入历
   });
   assert.equal(skipped.length, 2, "同一轮剩余未启动调用以 tool_skipped_for_priority_input 闭合");
 });
+
+// ---------------------------------------------------------------------------
+// win32 projectRoot 键归一（审计 Downgraded #1，2026-09-23）
+//
+// win32 文件系统大小写不敏感：D:\Foo 与 D:\foo 是同一物理目录，但 path.resolve()
+// 保留书写大小写 → projects Map 分裂出两个 state（两把项目锁、两个 journal 实例、
+// 各自独立的在内存 sessions Map），却写同一物理 journal 目录。归一先例：
+// project-lock.mjs:38 / workspaces/store.mjs:18 / app-server.mjs:289。
+//
+// 本测试构造真实大小写变体（不落成「无可变字符 → skip」的空测试）：
+//   1. 优先翻转盘符大小写（C: → c:）；
+//   2. 无盘符时翻转路径中第一个不含分隔符的 ASCII 字母；
+//   3. 构造后先用探针文件证明两串指向同一物理目录（读通 + ino 相等），证不出才 skip。
+// 断言取「内存态」可观测量：sessions() 的 run_status 投影读的是同一 state 的
+// state.sessions（已物化 sessionState）——注册表自身每次从磁盘 index.json 重读，
+// 双 state 下会话列表照样可见（且 harness 的 agentStorageRootFor 经 workspaceIdForPath
+// 归一，两 state 落同一物理目录），只有 run_status 会错报 idle。这是该缺陷的可证伪面。
+// ---------------------------------------------------------------------------
+
+// 构造与 target 仅大小写不同、且在 win32 上指向同一物理目录的路径串。
+function caseVariantOf(target) {
+  if (/^[A-Za-z]:/u.test(target)) return target.charAt(0).toLowerCase() + target.slice(1);
+  for (let i = 0; i < target.length; i += 1) {
+    const ch = target.charAt(i);
+    if (ch === "\\" || ch === "/" || ch === ":") continue;
+    if (/[A-Za-z]/u.test(ch)) {
+      const flipped = ch === ch.toLowerCase() ? ch.toUpperCase() : ch.toLowerCase();
+      return target.slice(0, i) + flipped + target.slice(i + 1);
+    }
+  }
+  return null;
+}
+
+// 证明 a/b 两个路径串指向同一物理目录：经 a 写探针文件、经 b 读回；ino 非 0 时并要求相等。
+async function samePhysicalDir(a, b) {
+  const name = `.wwr-case-probe-${process.pid}.txt`;
+  const probe = path.join(a, name);
+  try {
+    await fs.writeFile(probe, "probe");
+    if ((await fs.readFile(path.join(b, name), "utf8")) !== "probe") return false;
+    const [statA, statB] = await Promise.all([fs.stat(probe), fs.stat(path.join(b, name))]);
+    return statA.ino === 0 || statA.ino === statB.ino;
+  } catch {
+    return false;
+  } finally {
+    await fs.rm(probe, { force: true }).catch(() => {});
+  }
+}
+
+test("win32：大小写变体 projectRoot 归一到同一项目实例（双 state/双锁回归）", { skip: process.platform !== "win32" }, async (t) => {
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const h = await createProjectAgentHarness({
+    gatewayScript: [
+      async () => {
+        await gate;
+        return { text: "A 完成。" };
+      }
+    ],
+    gatewayDelayMs: 0
+  });
+  t.after(() => h.cleanup());
+  const root = h.projectRoot;
+
+  const variant = caseVariantOf(root);
+  if (variant === null || variant === root) return t.skip("临时目录路径无大小写可变字符");
+  if (!(await samePhysicalDir(root, variant))) return t.skip(`无法构造同一物理目录的大小写变体: ${variant}`);
+
+  // root 路径建会话并让 Run 保持非终态（模型调用被 gate 挡住）
+  const a = await h.agent.submit({ projectRoot: root, text: "A 任务", source: "chat" });
+  await waitFor(h.agent, root, (_session, snap) => eventsOfType(snap.events, "model_turn_started").length >= 1);
+
+  try {
+    const viaVariant = await h.agent.sessions({ projectRoot: variant });
+    assert.ok(
+      viaVariant.sessions.some((session) => session.session_id === a.session_id),
+      "大小写变体应命中同一项目状态（同一注册表）"
+    );
+    assert.equal(viaVariant.active_session_id, a.session_id, "变体路径的最近活跃指针指向同一会话");
+    // 有牙断言：run_status 由「同一 state 的已物化 sessionState」投影。键分裂时变体
+    // state 的 sessions Map 为空 → journal 未物化 → 错报 idle（bug 可观测面）。
+    assert.equal(
+      viaVariant.sessions.find((session) => session.session_id === a.session_id).run_status,
+      "running",
+      "变体路径必须命中同一项目 state（否则双 state → 双锁 → 同一 journal 目录双写）"
+    );
+  } finally {
+    release();
+  }
+  await waitForIdle(h.agent, root);
+});
