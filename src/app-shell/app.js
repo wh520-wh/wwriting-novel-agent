@@ -18,10 +18,29 @@ import { createVersionPanel } from "./components/version-panel.js";
 import { createPlanPanel } from "./components/plan-panel.js";
 import { setupThemePrivacy } from "./theme.js";
 
+const make = (tag, cls) => Object.assign(document.createElement(tag), { className: cls });
+
+const CREATE_MODAL_COPY = {
+  new: {
+    heading: "开始一部新小说",
+    lead: "告诉我故事的种子，应用会规划、起草、审稿、定稿，并把每一章保存为本地文件。",
+    submit: "创建并打开"
+  },
+  preview: {
+    heading: "手动填写本地文件夹",
+    lead: "当前环境不能打开系统文件夹选择器，请手动输入一个空文件夹路径来创建新小说。",
+    submit: "初始化文件夹"
+  },
+  "init-folder": {
+    heading: "初始化这个文件夹",
+    lead: "这个文件夹还不是 WWriting 项目。确认后会在其中创建小说配置和章节目录。",
+    submit: "初始化并打开"
+  }
+};
+
 export async function bootApp(root = document) {
   // Task 22：refs 分域——rail/drawer/reader/settings 四桶，消费点经分桶名引用。
   const railRefs = {
-    app: root.querySelector("#app"),
     rail: root.querySelector(".rail"),
     railToggle: root.querySelector("#rail-toggle"),
     railScrim: root.querySelector("#rail-scrim"),
@@ -459,15 +478,11 @@ export async function bootApp(root = document) {
   
   if (!readerRefs.readerClose.title) readerRefs.readerClose.title = "关闭";
   readerRefs.readerClose.addEventListener("click", closeReader);
-  readerRefs.readerScrim.addEventListener("click", (event) => {
-    if (event.target === readerRefs.readerScrim) closeReader();
-  });
+  bindScrimClose(readerRefs.readerScrim, closeReader);
   if (!settingsRefs.settingsX.title) settingsRefs.settingsX.title = "关闭设置";
   settingsRefs.settingsX.addEventListener("click", closeSettingsModal);
   settingsRefs.settingsCancel.addEventListener("click", closeSettingsModal);
-  settingsRefs.settingsScrim.addEventListener("click", (event) => {
-    if (event.target === settingsRefs.settingsScrim) closeSettingsModal();
-  });
+  bindScrimClose(settingsRefs.settingsScrim, closeSettingsModal);
   settingsRefs.settingsSave.addEventListener("click", () => saveSettings());
   if (!settingsRefs.createX.title) settingsRefs.createX.title = "关闭";
   settingsRefs.createX.addEventListener("click", closeCreateModal);
@@ -477,9 +492,7 @@ export async function bootApp(root = document) {
   
   if (!settingsRefs.shortcutsX.title) settingsRefs.shortcutsX.title = "关闭";
   settingsRefs.shortcutsX.addEventListener("click", () => closeShortcuts());
-  settingsRefs.shortcutsScrim.addEventListener("click", (event) => {
-    if (event.target === settingsRefs.shortcutsScrim) closeShortcuts();
-  });
+  bindScrimClose(settingsRefs.shortcutsScrim, closeShortcuts);
   
   readerRefs.readerFontMinus.addEventListener("click", () => nudgeReaderFont(-1));
   readerRefs.readerFontPlus.addEventListener("click", () => nudgeReaderFont(1));
@@ -671,29 +684,22 @@ export async function bootApp(root = document) {
   //（由 session-sidebar 的 decorateRow 绑定）；切换项目唯一入口 = 点击其他项目的
   // 会话行（session-sidebar 委托 openProjectAndSession）。
   function renderProjectNav(project) {
-    const row = document.createElement("div");
-    row.className = "proj-row";
-    const button = document.createElement("button");
+    const row = make("div", "proj-row");
+    const button = make("button", "proj");
     button.type = "button";
-    button.className = "proj";
     button.title = project.title ?? "未命名小说";
-    const projectIcon = document.createElement("span");
-    projectIcon.className = "proj-icon";
+    const projectIcon = make("span", "proj-icon");
     projectIcon.setAttribute("aria-hidden", "true");
     projectIcon.append(icon("folder", 16));
-    const main = document.createElement("span");
-    main.className = "proj-main";
-    const title = document.createElement("span");
-    title.className = "proj-title";
+    const main = make("span", "proj-main");
+    const title = make("span", "proj-title");
     title.textContent = project.title ?? "未命名小说";
     main.append(title);
     button.append(projectIcon, main);
-    const menu = document.createElement("div");
-    menu.className = "proj-menu";
+    const menu = make("div", "proj-menu");
     // R4：新对话加号移入项目行（垃圾桶左侧）
-    const add = document.createElement("button");
+    const add = make("button", "proj-add");
     add.type = "button";
-    add.className = "proj-add";
     add.replaceChildren(icon("plus", 14));
     add.setAttribute("aria-label", `在 ${project.title ?? "未命名小说"} 新建对话`);
     add.title = "新对话";
@@ -704,9 +710,8 @@ export async function bootApp(root = document) {
       }
       agentSurface.newSessionPlaceholder();
     });
-    const remove = document.createElement("button");
+    const remove = make("button", "proj-remove");
     remove.type = "button";
-    remove.className = "proj-remove";
     remove.replaceChildren(icon("trash", 14));
     remove.setAttribute("aria-label", `从列表移除 ${project.title ?? "未命名小说"}`);
     remove.title = "从列表移除";
@@ -720,8 +725,7 @@ export async function bootApp(root = document) {
   }
   
   function renderProjectEmpty(text) {
-    const empty = document.createElement("div");
-    empty.className = "proj-empty";
+    const empty = make("div", "proj-empty");
     empty.textContent = text;
     return empty;
   }
@@ -784,33 +788,12 @@ export async function bootApp(root = document) {
     }
   }
   
-  async function openProject(projectRoot) {
-    if (!projectRoot) return;
-    railRefs.projectOpenStatus.style.display = "block";
-    railRefs.projectOpenStatus.textContent = "正在打开...";
-    try {
-      await postJson("/api/projects/open", { projectRoot });
-      commitProjectSwitch(projectRoot);
-      railRefs.projectOpenStatus.style.display = "none";
-      railRefs.projectOpenStatus.textContent = "";
-      await loadAll();
-    } catch (error) {
-      railRefs.projectOpenStatus.style.display = "none";
-      if (error.code === "project_open_failed" && error.message.includes("不是有效的 WWriting 项目文件夹")) {
-        openCreateModal(projectRoot, { mode: "init-folder" });
-        showToast("该文件夹不是项目，可初始化为新小说。", "info");
-      } else {
-        showActionError(error);
-      }
-    }
-  }
-  
   // Task 2：跨项目会话切换的委托入口（点击其他项目会话行 / 其行内「+」新建）。
-  // 镜像 openProject 骨架，但可带 sessionId 直达目标会话；已选中项目 + 未指定会话
-  // 时为 no-op（同一项目内的会话切换不经过这里）。
-  async function openProjectAndSession(projectRoot, sessionId = null) {
+  // 可带 sessionId 直达目标会话；已选中项目 + 未指定会话时为 no-op。force 供 openProject
+  //（文件夹选择器强制重开）复用：跳过该守卫，且失败时保留原错误态文案（沿用旧实现）。
+  async function openProjectAndSession(projectRoot, sessionId = null, { force = false } = {}) {
     if (!projectRoot) return;
-    if (pathEquals(projectRoot, currentProjectRoot) && sessionId == null) return; // 已选中项目 + 不指定会话：no-op
+    if (!force && pathEquals(projectRoot, currentProjectRoot) && sessionId == null) return; // 已选中项目 + 不指定会话：no-op
     railRefs.projectOpenStatus.style.display = "block";
     railRefs.projectOpenStatus.textContent = "正在打开...";
     try {
@@ -821,7 +804,7 @@ export async function bootApp(root = document) {
       await loadAll();
     } catch (error) {
       railRefs.projectOpenStatus.style.display = "none";
-      railRefs.projectOpenStatus.textContent = "";
+      if (!force) railRefs.projectOpenStatus.textContent = "";
       if (error.code === "project_open_failed" && error.message.includes("不是有效的 WWriting 项目文件夹")) {
         openCreateModal(projectRoot, { mode: "init-folder" });
         showToast("该文件夹不是项目，可初始化为新小说。", "info");
@@ -829,6 +812,10 @@ export async function bootApp(root = document) {
         showActionError(error);
       }
     }
+  }
+  
+  function openProject(projectRoot) {
+    return openProjectAndSession(projectRoot, null, { force: true });
   }
   
   async function openFromFolder() {
@@ -856,7 +843,7 @@ export async function bootApp(root = document) {
   }
   
   function normalizeProjectPath(raw) {
-    return raw?.trim()?.replace(/[\s]+$/g, "").replace(/\/$/g, "").replace(/\\$/g, "") ?? "";
+    return raw?.trim()?.replace(/\/$/g, "").replace(/\\$/g, "") ?? "";
   }
   
   function resetCreateForm() {
@@ -866,10 +853,7 @@ export async function bootApp(root = document) {
     settingsRefs.createMinWords.value = "3000";
     settingsRefs.createPath.value = "";
     setCreateStatus("", "");
-    const spinner = settingsRefs.createSubmit.querySelector(".btn-spinner");
-    const label = settingsRefs.createSubmit.querySelector(".btn-label");
-    if (spinner) spinner.hidden = true;
-    if (label) label.hidden = false;
+    setCreateSubmitLoading(false);
   }
   
   function setCreateSubmitLoading(loading) {
@@ -1012,8 +996,7 @@ export async function bootApp(root = document) {
   }
   
   function readerEmpty(text) {
-    const p = document.createElement("p");
-    p.className = "reader-empty";
+    const p = make("p", "reader-empty");
     p.textContent = text;
     return p;
   }
@@ -1023,27 +1006,7 @@ export async function bootApp(root = document) {
   }
   
   function renderCreateModalCopy() {
-    const copy = {
-      new: {
-        heading: "开始一部新小说",
-        lead: "告诉我故事的种子，应用会规划、起草、审稿、定稿，并把每一章保存为本地文件。",
-        submit: "创建并打开"
-      },
-      preview: {
-        heading: "手动填写本地文件夹",
-        lead: "当前环境不能打开系统文件夹选择器，请手动输入一个空文件夹路径来创建新小说。",
-        submit: "初始化文件夹"
-      },
-      "init-folder": {
-        heading: "初始化这个文件夹",
-        lead: "这个文件夹还不是 WWriting 项目。确认后会在其中创建小说配置和章节目录。",
-        submit: "初始化并打开"
-      }
-    }[createModalMode] ?? {
-      heading: "开始一部新小说",
-      lead: "告诉我故事的种子，应用会规划、起草、审稿、定稿，并把每一章保存为本地文件。",
-      submit: "创建并打开"
-    };
+    const copy = CREATE_MODAL_COPY[createModalMode] ?? CREATE_MODAL_COPY.new;
     if (settingsRefs.createHeading) settingsRefs.createHeading.textContent = copy.heading;
     if (settingsRefs.createLead) settingsRefs.createLead.textContent = copy.lead;
     const submitLabel = settingsRefs.createSubmit?.querySelector(".btn-label");
@@ -1085,6 +1048,10 @@ export async function bootApp(root = document) {
     scrim.setAttribute("inert", "");
     if (lastFocused && lastFocused.isConnected) lastFocused.focus();
     lastFocused = null;
+  }
+  // 遮罩点击关闭：仅当点击落在遮罩自身（内容冒泡不关闭）。
+  function bindScrimClose(scrim, close) {
+    scrim.addEventListener("click", (e) => { if (e.target === scrim) close(); });
   }
   
   function openShortcuts() { openOverlay(settingsRefs.shortcutsScrim, settingsRefs.shortcutsX); }
