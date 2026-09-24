@@ -1,6 +1,6 @@
 {
   "name": "wwriting-novel-agent",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Desktop long-form novel writing agent with durable local files and verification.",
   "author": "WWriting",
   "license": "MIT",
