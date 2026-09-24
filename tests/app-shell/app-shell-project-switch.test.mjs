@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 
 import { createProjectScope } from "../../src/app-shell/project-scope.mjs";
 import { withProjectScope } from "../../src/app-shell/api-client.js";
+import { createReaderView } from "../../src/app-shell/app-reader-view.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const appJsPath = path.join(here, "..", "..", "src", "app-shell", "app.js");
@@ -347,6 +348,101 @@ test("B7: app.js 在 openReader 中实现 await 后 scope/no 校验（静态契�
   assert.match(appSource, /const\s+token\s*=\s*projectScope\.capture\s*\(\s*\)/u, "openReader 应捕获项目 scope token");
   assert.match(appSource, /projectScope\.isCurrent\s*\(\s*token\s*\)/u, "await 后必须校验项目 scope");
   assert.match(appSource, /readerChapterNo\s*!==\s*chapterNo/u, "await 后必须比对 readerChapterNo（慢旧章节不覆盖新章）");
+});
+
+// ---- 阅读器章节导航（终审回归用例）：openAdjacentChapter 必须把相邻章号传给 openReader ----
+// 回归缺陷：app-reader-view.js 的 adjacentChapterNo(delta) 返回的**已经是章号**
+// （number，无相邻章为 null），而 app.js 调用点写成 openReader(next.chapter_no) →
+// next.chapter_no 恒 undefined → openReader(undefined) → 标题「第 undefined 章」+
+// GET /api/chapters/read?chapter=undefined 失败 → renderError，且 updateNav 的
+// findIndex 恒 -1 → 上一章/下一章双禁用。
+//
+// app.js 是页面组合根（不可 import，全仓无先例），此处取出 app.js 中
+// openAdjacentChapter 的**生产原文**在测试内执行（被测代码即生产代码，非复刻），
+// 相邻章号由真实 createReaderView 提供，openReader 用记录桩替换——断言可证伪：
+// 把调用点退回 next.chapter_no，本用例立即变红。
+function extractOpenAdjacentChapter(source) {
+  const matched = source.match(/function\s+openAdjacentChapter\s*\(\s*delta\s*\)\s*\{[\s\S]*?\n\s*\}/u);
+  assert.ok(matched, "app.js 应定义 openAdjacentChapter(delta)");
+  return matched[0];
+}
+
+test("阅读器导航：点上一章/下一章把相邻章号（number）传给 openReader，而非 undefined", async () => {
+  const appSource = await fs.readFile(appJsPath, "utf8");
+  globalThis.document = { createElement: (tag) => new MockElement(tag) };
+
+  const refs = {
+    readerTitle: new MockElement("h2"),
+    readerMeta: new MockElement("div"),
+    readerBody: new MockElement("div"),
+    readerFontMinus: new MockElement("button"),
+    readerFontPlus: new MockElement("button"),
+    readerPrev: new MockElement("button"),
+    readerNext: new MockElement("button")
+  };
+
+  // 用户当前停在第 1 章；第 3 章是空章（actual_words = 0），不参与导航。
+  let readerChapterNo = 1;
+  const chapters = [
+    { chapter_no: 1, actual_words: 1200 },
+    { chapter_no: 2, actual_words: 1300 },
+    { chapter_no: 3, actual_words: 0 }
+  ];
+  const readerView = createReaderView({
+    refs,
+    getChapterNo: () => readerChapterNo,
+    getChapters: () => chapters
+  });
+
+  // helper 契约：返回值就是章号 number（无相邻章为 null）——这正是调用点不得再取
+  // .chapter_no 的依据。
+  assert.equal(readerView.adjacentChapterNo(1), 2, "第 1 章的下一章应是章号 2");
+  assert.equal(typeof readerView.adjacentChapterNo(1), "number", "adjacentChapterNo 返回章号 number");
+  assert.equal(readerView.adjacentChapterNo(-1), null, "第 1 章没有上一章");
+
+  const requested = [];
+  const openReader = (chapterNo) => {
+    // 镜像 app.js openReader 的状态推进：记下章号 + 刷新导航启停（renderLoading/
+    // applyFont/请求守卫与本用例无关，不参与）。
+    requested.push(chapterNo);
+    readerChapterNo = chapterNo;
+    readerView.updateNav();
+  };
+  const openAdjacentChapter = new Function(
+    "readerView",
+    "openReader",
+    `${extractOpenAdjacentChapter(appSource)}\nreturn openAdjacentChapter;`
+  )(readerView, openReader);
+
+  // 点「下一章」：第 1 章 → 第 2 章
+  openAdjacentChapter(1);
+  assert.equal(requested.length, 1, "点下一章应触发一次 openReader");
+  assert.equal(typeof requested[0], "number", "传进 openReader 的值必须是章号 number");
+  assert.equal(requested[0], 2, "openReader 必须收到相邻章号 2（不是 undefined）");
+  assert.equal(
+    `/api/chapters/read?chapter=${encodeURIComponent(requested[0])}`,
+    "/api/chapters/read?chapter=2",
+    "请求 URL 必须是相邻章号，而不是 ?chapter=undefined"
+  );
+  assert.equal(refs.readerPrev.disabled, false, "第 2 章应可点上一章");
+  assert.equal(refs.readerNext.disabled, true, "末章（空章不计）应禁用下一章");
+
+  // 点「上一章」：第 2 章 → 第 1 章
+  openAdjacentChapter(-1);
+  assert.equal(requested[1], 1, "openReader 必须收到相邻章号 1");
+  assert.equal(refs.readerPrev.disabled, true, "第 1 章应禁用上一章");
+  assert.equal(refs.readerNext.disabled, false, "第 1 章应可点下一章");
+
+  // 边界：已在第 1 章再点上一章 → helper 返回 null，不得触发请求
+  openAdjacentChapter(-1);
+  assert.equal(requested.length, 2, "无相邻章时不得触发 openReader");
+
+  // 静态兜底：调用点不得对「已是章号」的返回值再取 .chapter_no。
+  assert.doesNotMatch(
+    appSource,
+    /openReader\s*\(\s*next\.chapter_no\s*\)/u,
+    "openAdjacentChapter 不得写 openReader(next.chapter_no)（adjacentChapterNo 已返回章号）"
+  );
 });
 
 test("R5-12：app.js 终态钩子统一刷新 dashboard 与会话列表；后台刷新失败只 toast（静态契约）", async () => {

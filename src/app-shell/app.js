@@ -919,7 +919,7 @@ export async function bootApp(root = document) {
   
   function openAdjacentChapter(delta) {
     const next = readerView.adjacentChapterNo(delta);
-    if (next != null) void openReader(next.chapter_no);
+    if (next != null) void openReader(next);
   }
   
   async function openReader(chapterNo) {
