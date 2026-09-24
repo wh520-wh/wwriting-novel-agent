@@ -598,6 +598,20 @@ const LINE_LIMIT = 1200;
 // 第十六轮 T10：settings-modal 拆分落线，例外清零。红线从此绝对——红灯时
 // 正确动作是拆文件，不是恢复例外清单。
 
+// 第二十轮 Task 22：AGENTS.md 登记的体积红线口径是「单文件 >1200 行**或**约 50 KiB」。
+// 行维度自第十五轮起即由本 R1 机器强制，字节维度此前无任何强制——本轮修复的三个文件
+//（runtime.mjs / journal.mjs / app.js）在基线上就已越 50 KiB 而长期无人发现，正是缺这条
+// 断言的直接后果。此处把字节维度并入同一条断言（一次遍历同时校验行与字节），让已登记的
+// 不变量双向可验证：红灯时的正确动作仍是拆文件，不是放宽阈值或缩名单。
+//   红线：50 KiB = 51200 B。
+//
+// 字节口径必须是 LF 归一（先把 `\r\n` 归一为 `\n`，再计 Buffer.byteLength）：本仓库无
+// `.gitattributes` 且 `core.autocrlf=true`，同一 blob 在不同 checkout 上可能落成 LF 或 CRLF。
+// 若按工作树裸字节断言，就会在零代码改动下误报——app.js 本机为 LF 51159 B（余量仅 41 B），
+// 在全新 Windows clone 上检出为 CRLF 即约 52237 B 破线。LF 归一后的字节数与检出换行风格
+// 无关，且与行维度（split("\n")）同口径。
+const BYTE_LIMIT = 51200;
+
 // R1 自建遍历器：只扫 src/、排除 vendor/ 与 .css——collectSourceFiles() 扫
 // src+tests+scripts 且不排除，不可复用。
 function collectSrcFiles() {
@@ -616,13 +630,19 @@ function collectSrcFiles() {
   return files;
 }
 
-test("R1: src 文件行数 ≤1200（零例外）", () => {
+test("R1: src 文件 ≤1200 行且 ≤50KiB（LF 归一，零例外）", () => {
   const files = collectSrcFiles();
   assert.ok(files.length >= 100, `R1 扫描命中过少（${files.length}），检查遍历是否退化`);
+  const violations = [];
   for (const file of files) {
-    const lines = fsSync.readFileSync(path.join(ROOT, file), "utf8").split("\n").length;
-    assert.ok(lines <= LINE_LIMIT, `${file} ${lines} 行超红线`);
+    const text = fsSync.readFileSync(path.join(ROOT, file), "utf8");
+    const lines = text.split("\n").length;
+    // LF 归一口径见上方 BYTE_LIMIT 注释：与检出换行风格无关。
+    const bytes = Buffer.byteLength(text.replace(/\r\n/g, "\n"));
+    if (lines > LINE_LIMIT) violations.push(`${file} ${lines} 行 > ${LINE_LIMIT} 行红线`);
+    if (bytes > BYTE_LIMIT) violations.push(`${file} ${bytes} B > ${BYTE_LIMIT} B（50 KiB）红线`);
   }
+  assert.equal(violations.length, 0, formatList(violations));
 });
 
 test("R2: package.json test glob 覆盖全部含测试的目录", () => {
@@ -641,8 +661,15 @@ test("R2: package.json test glob 覆盖全部含测试的目录", () => {
 
 // R3：内部模块 seam 守卫。豁免口径与规则 A2（tests/agent/ 可测内部 seam）及
 // SURFACE_SEAM_TESTS（前端分区单测名单）一致——这些是"包内测试"语义，不是越 seam。
+//
+// 第二十轮 Task 22 补录：runtime 拆分出的 run-pipeline.mjs / run-control.mjs、
+// journal 拆分出的 journal-recovery.mjs / journal-queries.mjs / journal-segments.mjs
+// 都是本轮新出现的内部模块，此前名单里只登记了 journal-handlers，未覆盖它们。
+// journal 一律写**前缀式 `journal`**（不枚举 `journal-handlers|journal-recovery|...`）：
+// 该前缀同时覆盖 journal.mjs 与全部 journal-* 兄弟模块，下次再拆 journal 系列时名单
+// 无需再动——避免枚举名单在下一次拆分时再次腐烂（本任务要防的正是这类静默漏登记）。
 const AGENT_INTERNAL_SEAM =
-  /agent\/(runtime|journal-handlers|history-assembly|run-lifecycle|session-manager|tools\/|view\/)/;
+  /agent\/(runtime|run-control|run-pipeline|journal|history-assembly|run-lifecycle|session-manager|tools\/|view\/)/;
 
 test("R3: agent 内部模块不得被包外 import（seam 守卫）", () => {
   const violations = [];
