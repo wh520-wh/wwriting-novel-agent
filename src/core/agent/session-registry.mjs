@@ -11,6 +11,9 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { readJson, writeJsonAtomic } from "../fs-utils.mjs";
 import { createMutex } from "../async-utils.mjs";
+// 领域错误统一带 code（不 import runtime 的 fail；HTTP 层按 code 映射状态码，
+// message 仅作人类可读原因——code 是契约，message 不是，调用方不得按文案匹配）。
+import { codedError } from "./agent-utils.mjs";
 
 // ISO-8601 字符串字典序即时间序；返回 updated_at 倒序的比较器（缺失值垫底）。
 function compareByUpdatedAtDesc(a, b) {
@@ -19,14 +22,6 @@ function compareByUpdatedAtDesc(a, b) {
   if (aTime < bTime) return 1;
   if (aTime > bTime) return -1;
   return 0;
-}
-
-// 领域错误统一带 code（不 import runtime 的 fail；HTTP 层按 code 映射状态码，
-// message 仅作人类可读原因——code 是契约，message 不是，调用方不得按文案匹配）。
-function codedError(code, message) {
-  const error = new Error(message);
-  error.code = code;
-  return error;
 }
 
 export function createSessionRegistry({ root }) {
