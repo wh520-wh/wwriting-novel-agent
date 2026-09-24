@@ -980,6 +980,23 @@ export function createAgentRuntime({
     return { status: "cancelled", compaction_id: compactionId };
   }
 
+  // 项目级忙判（审计交叉印证 2026-09-23）：覆盖全部已物化会话，且在项目互斥锁内
+  // 判定（与 submit/retry 的 run 启动原子）。供 rollback / memory restore 等破坏性
+  // 项目操作做忙门——snapshot 缺省只解析最近活跃单会话，会漏掉非活跃会话。
+  // 锁序：本函数取 state.mutex 后只调 journal.getSession()（取 journal 自身锁），
+  // 与 submit/assertNoOtherSessionRunning 同序（state.mutex → journal.mutex），
+  // 无反向持锁路径，不成环。
+  async function projectBusy({ projectRoot }) {
+    const state = ensureProject(projectRoot);
+    return state.mutex.run(async () => {
+      for (const [, other] of state.sessions) {
+        const session = await other.journal.getSession();
+        if (hasNonTerminalRun(session)) return true;
+      }
+      return false;
+    });
+  }
+
   // 快照：{ session, events, gaps, has_more } 是 AgentSurface 的唯一实时数据源。
   // Task 5 双向分页：
   //   tail === true      → journal.readTail({ limit })（首次展示：尾部最新一页）
@@ -1158,6 +1175,7 @@ export function createAgentRuntime({
     retryCompaction,
     cancelCompaction,
     snapshot,
+    projectBusy,
     exportHistory,
     clearHistory,
     sessions,
