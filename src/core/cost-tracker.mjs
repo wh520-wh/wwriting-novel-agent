@@ -124,7 +124,7 @@ export class CostTracker {
   }
 
   getSummary() {
-    return JSON.parse(JSON.stringify(this.summary));
+    return structuredClone(this.summary);
   }
 
   async writeProjectReport(projectRoot) {
