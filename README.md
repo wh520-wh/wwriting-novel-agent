@@ -12,7 +12,7 @@
 [![Release](https://img.shields.io/github/v/release/wh520-wh/wwriting-novel-agent?color=green)](https://github.com/wh520-wh/wwriting-novel-agent/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey)](#快速开始)
 [![Node](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](package.json)
-[![Tests](https://img.shields.io/badge/tests-1986%20passing-success)](#开发与验证)
+[![Tests](https://img.shields.io/badge/tests-1992%20passing-success)](#开发与验证)
 [![Stars](https://img.shields.io/github/stars/wh520-wh/wwriting-novel-agent?style=social)](https://github.com/wh520-wh/wwriting-novel-agent/stargazers)
 
 [English](README.en.md) · **简体中文**
@@ -50,7 +50,7 @@ WWriting **不是**「你描述、它代写」的生成器。
 | **数据** | 上传第三方云端 | 全部留在本机，应用私有历史不进入你的创作文件夹 |
 | **权限** | 全有或全无 | 只读自动 / 副作用确认 / 本条输入授权 / YOLO / 极端操作精确确认文字 |
 | **版本** | 无 | 章节与记忆自动快照，时间线面板可查看并恢复任意版本 |
-| **可验证性** | 靠感觉 | 1986 个测试 + 完整本地验收链路 |
+| **可验证性** | 靠感觉 | 1992 个测试 + 完整本地验收链路 |
 
 ## 核心能力
 
@@ -136,7 +136,7 @@ SETTING.md     # 可选：世界观与设定
 这个项目把「可验证」当成产品的一部分，而不是口号：
 
 ```powershell
-npm test                        # 1986 个单元/集成测试
+npm test                        # 1992 个单元/集成测试
 npm run verify:local            # 完整本地验收（含打包，较慢）
 npm run verify:app-shell        # GUI、项目打开、设置、技能、资料工具
 npm run verify:app-clickability # 真实 Electron 窗口逐项点击关键按钮
@@ -148,7 +148,7 @@ npm run sim:user-flow           # 用户流程全链路模拟
 
 连「按钮看得到但点不动」这类 UI 回归都有真实 Electron 点击防线。
 
-> 统计基线：记录于 2026-09-14｜状态：当前有效｜依据：`npm test` 实跑（1986/1986，exit 0，连续两轮）。
+> 统计基线：记录于 2026-09-24｜状态：当前有效｜依据：`npm test` 实跑（1992/1992，exit 0，HEAD e708b36）。
 
 ## 目录结构
 
