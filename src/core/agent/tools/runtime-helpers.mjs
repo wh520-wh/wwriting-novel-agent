@@ -360,7 +360,9 @@ export function parseToolArguments(raw) {
 export async function readWorkspaceTextFile(args, context) {
   const relative = requireStringArg(args, "path", "path");
   const target = await resolveFilesystemPath(path.resolve(context.projectRoot, relative));
-  if (!isPathInside(context.projectRoot, target)) {
+  // 包含性比较以解析后的真实项目根为基准（第二十一轮 Task 2）：项目根是目录链接时，
+  // 用未解析的根比较会把项目内合法文件判成「工作区外」而拒绝（fail-closed 误伤）。
+  if (!isPathInside(projectRootForChecks(context), target)) {
     throw toolError("path_outside_workspace", "只能读取当前工作区内的文件。", { path: relative });
   }
   if (![".md", ".txt"].includes(path.extname(target).toLowerCase())) {
