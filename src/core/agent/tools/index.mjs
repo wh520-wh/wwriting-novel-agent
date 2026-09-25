@@ -667,12 +667,24 @@ export function createToolRuntime({
     // 目标路径归一化：在动作分类、受保护路径检查和实际执行前统一解析真实路径，避免
     // junction/symlink 把项目外目标伪装成项目内。以真实项目根为基准；只覆盖带路径参数
     // 的通用工具，shell 的 cwd 同样必须用真实路径参与 scope 与实际进程启动。
-    if (["list_files", "search_files", "read_file", "write_file", "edit_file"].includes(name)) {
-      args.path = await resolveFilesystemPath(path.resolve(context.resolved_project_root, args.path ?? "."));
-      context = { ...context, resolved_target_path: args.path };
-    } else if (name === "shell" && args.cwd) {
-      args.cwd = await resolveFilesystemPath(path.resolve(context.resolved_project_root, args.cwd));
-      context = { ...context, resolved_target_path: args.cwd };
+    // 目标解析失败同样是 fail-closed：args.path 非字符串（parseToolArguments 不校验字段
+    // 类型）与 EACCES 类非 ENOENT 错误都会在这里抛，必须收成工具失败，不让异常逃出 execute。
+    try {
+      if (["list_files", "search_files", "read_file", "write_file", "edit_file"].includes(name)) {
+        args.path = await resolveFilesystemPath(path.resolve(context.resolved_project_root, args.path ?? "."));
+        context = { ...context, resolved_target_path: args.path };
+      } else if (name === "shell" && args.cwd) {
+        args.cwd = await resolveFilesystemPath(path.resolve(context.resolved_project_root, args.cwd));
+        context = { ...context, resolved_target_path: args.cwd };
+      }
+    } catch {
+      await appendStarted({ tool_call_id: toolCallId, activity_id: activityId, name, args }, runId);
+      return failTool({
+        toolCallId, activityId, name, runId,
+        code: "path_resolution_failed",
+        message: "无法确认目标位置，请检查文件路径后重试。",
+        failedPayload: { technical: { rule: "target_path_unresolved" } }
+      });
     }
 
     const definition = TOOLS.get(name);

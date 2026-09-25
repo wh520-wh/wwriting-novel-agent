@@ -70,3 +70,23 @@ test("项目根不存在：write_file 拒绝为 path_resolution_failed、journal
   // 活动闭环：失败事件必须对应已开始的工具调用
   assert.ok(events.some((event) => event.type === "tool_call_started" && event.payload.tool_call_id === "missing-root"));
 });
+
+test("目标路径非字符串：write_file 返回 target_path_unresolved，不抛不悬挂且不写入", async (t) => {
+  const { tools, journal, context, projectRoot } = await setup(t);
+
+  // parseToolArguments 只校验参数是 JSON 对象，不校验字段类型：模型给数字 path 是可达输入。
+  const result = await tools.execute(
+    { id: "bad-target", name: "write_file", arguments: { path: 123, content: "x" } },
+    context
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "path_resolution_failed");
+  const events = await journal.read({ afterSeq: 0 });
+  assert.ok(events.some((event) => event.type === "tool_call_started" && event.payload.tool_call_id === "bad-target"));
+  const failure = events.find((event) => event.type === "tool_call_failed" && event.payload.tool_call_id === "bad-target");
+  assert.equal(failure?.payload.technical?.rule, "target_path_unresolved");
+  // 绝无写入：工具体不得被执行
+  assert.equal(await fs.stat(path.join(projectRoot, "123")).then(() => true, () => false), false);
+  assert.equal(events.some((event) => event.type === "tool_call_completed" && event.payload.tool_call_id === "bad-target"), false);
+});
