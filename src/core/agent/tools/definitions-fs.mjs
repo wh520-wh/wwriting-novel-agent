@@ -8,6 +8,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathExists, sha256, writeFileAtomic } from "../../fs-utils.mjs";
+// 第二十一轮 Task 2：safe_edit 内容判定必须以解析后的真实项目根为基准。
+import { projectRootForChecks } from "./runtime-helpers.mjs";
 
 const MAX_SEARCH_FILE_BYTES = 1024 * 1024; // search_files 内容搜索跳过的文件大小上限（字节）
 const MAX_SEARCH_MATCHES = 50; // search_files 命中上限
@@ -196,7 +198,7 @@ export function fsToolDefinitions(h) {
           title: "写入文件",
           description: redactor.redact(String(args.path))
         });
-        action.safe_edit_target = isSafeEditContentPath(context.projectRoot, target);
+        action.safe_edit_target = isSafeEditContentPath(projectRootForChecks(context), target);
         return action;
       },
       protectedCheck: fileProtectedCheck,
@@ -247,7 +249,7 @@ export function fsToolDefinitions(h) {
           title: "编辑文件",
           description: redactor.redact(String(args.path))
         });
-        action.safe_edit_target = isSafeEditContentPath(context.projectRoot, target);
+        action.safe_edit_target = isSafeEditContentPath(projectRootForChecks(context), target);
         return action;
       },
       protectedCheck: fileProtectedCheck,

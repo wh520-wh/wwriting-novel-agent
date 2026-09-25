@@ -6,6 +6,8 @@
 // 直接 import shell/risk.mjs；超时上下限是本域私有常量，留在此模块。
 import path from "node:path";
 import { classifyShellCommand, resolveProjectScope } from "../../shell/risk.mjs";
+// 第二十一轮 Task 2：shell 的 scope/受保护 cwd 比较都以解析后的真实项目根为基准。
+import { projectRootForChecks } from "./runtime-helpers.mjs";
 
 const SHELL_TIMEOUT_DEFAULT_MS = 120000;
 const SHELL_TIMEOUT_MIN_MS = 1000;
@@ -33,9 +35,10 @@ export function shellToolDefinitions(h) {
         additionalProperties: false
       },
       describeAction(args, context) {
+        const root = projectRootForChecks(context);
         const resolvedCwd = path.resolve(context.projectRoot, args.cwd ?? ".");
-        const classified = classifyShellCommand({ command: args.command, cwd: resolvedCwd, projectRoot: context.projectRoot });
-        const { targetClass } = resolveProjectScope(context.projectRoot, resolvedCwd);
+        const classified = classifyShellCommand({ command: args.command, cwd: resolvedCwd, projectRoot: root });
+        const { targetClass } = resolveProjectScope(root, resolvedCwd);
         const action = baseAction({
           category: classified.category,
           scope: classified.scope,
@@ -52,7 +55,7 @@ export function shellToolDefinitions(h) {
       },
       protectedCheck(args, context) {
         const resolvedCwd = path.resolve(context.projectRoot, args.cwd ?? ".");
-        return isProtectedShellCwd(context.projectRoot, resolvedCwd);
+        return isProtectedShellCwd(projectRootForChecks(context), resolvedCwd);
       },
       async run(args, context, call) {
         if (typeof shellRuntime !== "function") {

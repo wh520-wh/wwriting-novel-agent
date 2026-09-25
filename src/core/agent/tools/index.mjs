@@ -74,6 +74,7 @@ import {
   redactJsonValue,
   auditToolResult,
   defaultPermissionPolicy,
+  projectRootForChecks,
   isProtectedShellCwd,
   fileProtectedCheck,
   isSafeEditContentPath,
@@ -107,9 +108,14 @@ function baseAction({ category, scope, targetClass, grantKey, title, description
   };
 }
 
-// 文件类工具（read/write）的 action：scope/targetClass 由目标路径决定
+// 文件类工具（read/write）的 action：scope/targetClass 由目标路径决定。
+// 第二十一轮 Task 2：根取解析后的真实项目根；目标优先取 execute 归一化块写入的
+// context.resolved_target_path（真实路径），未写入时才回退调用方传入的 targetPath。
 function fileAction({ tool, args, context, targetPath, category, title, description }) {
-  const { scope, targetClass, resolvedPath } = resolveProjectScope(context.projectRoot, targetPath);
+  const { scope, targetClass, resolvedPath } = resolveProjectScope(
+    projectRootForChecks(context),
+    context.resolved_target_path ?? targetPath
+  );
   return baseAction({
     category,
     scope,
@@ -665,17 +671,21 @@ export function createToolRuntime({
     }
 
     // 目标路径归一化：在动作分类、受保护路径检查和实际执行前统一解析真实路径，避免
-    // junction/symlink 把项目外目标伪装成项目内。以真实项目根为基准；只覆盖带路径参数
-    // 的通用工具，shell 的 cwd 同样必须用真实路径参与 scope 与实际进程启动。
+    // junction/symlink 把项目外目标伪装成项目内。以解析后的真实项目根为基准；除 shell 外
+    // 的通用文件工具把归一化结果写回 args.path（动作分类与实际执行的唯一目标），
+    // count_text / style_stats 的 args.path 必须保持原始参数（返回结果的 path 字段是
+    // 冻结契约），只把真实位置放进 context.resolved_target_path 供动作分类。
+    // shell 的 cwd 无条件归一化：不传 cwd 时默认目标就是真实项目根，否则默认 cwd
+    // 仍会落在未解析的根上被判项目外。
     // 目标解析失败同样是 fail-closed：args.path 非字符串（parseToolArguments 不校验字段
     // 类型）与 EACCES 类非 ENOENT 错误都会在这里抛，必须收成工具失败，不让异常逃出 execute。
     try {
-      if (["list_files", "search_files", "read_file", "write_file", "edit_file"].includes(name)) {
-        args.path = await resolveFilesystemPath(path.resolve(context.resolved_project_root, args.path ?? "."));
-        context = { ...context, resolved_target_path: args.path };
-      } else if (name === "shell" && args.cwd) {
-        args.cwd = await resolveFilesystemPath(path.resolve(context.resolved_project_root, args.cwd));
-        context = { ...context, resolved_target_path: args.cwd };
+      const root = projectRootForChecks(context);
+      if (["list_files", "search_files", "read_file", "write_file", "edit_file", "count_text", "style_stats"].includes(name)) {
+        context.resolved_target_path = await resolveFilesystemPath(path.resolve(root, args.path ?? "."));
+        if (!["count_text", "style_stats"].includes(name)) args.path = context.resolved_target_path;
+      } else if (name === "shell") {
+        args.cwd = await resolveFilesystemPath(path.resolve(root, args.cwd ?? "."));
       }
     } catch {
       await appendStarted({ tool_call_id: toolCallId, activity_id: activityId, name, args }, runId);
