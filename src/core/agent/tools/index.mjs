@@ -52,6 +52,7 @@
 // deep 工具执行体：projectOperations（Task 5 创建）是注入依赖；本任务中未接线时抛
 // 「工具不可用。」（technical.not_wired），schema/权限/审计/安全点逻辑必须完整。
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { resolveFilesystemPath } from "../../fs-utils.mjs";
 import { resolveProjectScope } from "../../shell/risk.mjs";
@@ -637,23 +638,42 @@ export function createToolRuntime({
       return toolFailureResult({ tool_call_id: toolCallId, name, code: error.code ?? "bad_args", message: error.message });
     }
 
-    // 在动作分类、受保护路径检查和实际执行前统一解析真实路径，避免 junction/
-    // symlink 把项目外目标伪装成项目内。只覆盖带路径参数的通用工具；shell 的
-    // cwd 同样必须用真实路径参与 scope 与实际进程启动。
-    if (context.projectRoot) {
-      if (["list_files", "search_files", "read_file", "write_file", "edit_file"].includes(name)) {
-        args.path = await resolveFilesystemPath(path.resolve(context.projectRoot, args.path ?? "."));
-      } else if (name === "shell" && args.cwd) {
-        args.cwd = await resolveFilesystemPath(path.resolve(context.projectRoot, args.cwd));
-      }
-    }
-
     // 活动 Run 是工具事件的载体；没有 Run 时工具不可用（Task 6 编排保证不会发生）
     const session = await currentSession().catch(() => null);
     if (!session?.active_run) {
       return toolFailureResult({ tool_call_id: toolCallId, name, code: "no_active_run", message: "工具不可用。" });
     }
     const inputId = context.active_input_id ?? session.active_run.active_input_id ?? null;
+
+    // 第二十一轮 Task 1：解析一次真实项目根（junction/symlink 归一后的物理位置）写入
+    // 该次调用的上下文副本——只改局部变量，不写回调用方对象。fs.stat 不可省：
+    // resolveFilesystemPath 对 ENOENT/ENOTDIR 会回退到最近存在的父目录，不能单独证明
+    // 项目根存在。解析失败即拒绝该次调用（fail-closed），错误先经 appendStarted 再
+    // failTool，保持活动闭环，且不向模型/用户暴露 Node 原始错误。
+    try {
+      const stat = await fs.stat(context.projectRoot);
+      if (!stat.isDirectory()) throw new Error("project root is not a directory");
+      context = { ...context, resolved_project_root: await resolveFilesystemPath(context.projectRoot) };
+    } catch {
+      await appendStarted({ tool_call_id: toolCallId, activity_id: activityId, name, args }, runId);
+      return failTool({
+        toolCallId, activityId, name, runId,
+        code: "path_resolution_failed",
+        message: "无法确认项目位置，请检查工作区文件夹后重试。",
+        failedPayload: { technical: { rule: "project_root_unresolved" } }
+      });
+    }
+
+    // 目标路径归一化：在动作分类、受保护路径检查和实际执行前统一解析真实路径，避免
+    // junction/symlink 把项目外目标伪装成项目内。以真实项目根为基准；只覆盖带路径参数
+    // 的通用工具，shell 的 cwd 同样必须用真实路径参与 scope 与实际进程启动。
+    if (["list_files", "search_files", "read_file", "write_file", "edit_file"].includes(name)) {
+      args.path = await resolveFilesystemPath(path.resolve(context.resolved_project_root, args.path ?? "."));
+      context = { ...context, resolved_target_path: args.path };
+    } else if (name === "shell" && args.cwd) {
+      args.cwd = await resolveFilesystemPath(path.resolve(context.resolved_project_root, args.cwd));
+      context = { ...context, resolved_target_path: args.cwd };
+    }
 
     const definition = TOOLS.get(name);
     const allowedToolNames = Array.isArray(context.allowed_tool_names)
