@@ -279,9 +279,21 @@ export function isProtectedShellCwd(projectRoot, cwd) {
   return null;
 }
 
+// 以根为基准的比较点统一取值口径（第二十一轮 Task 1）：只认工具上下文里的
+// `resolved_project_root`（execute 侧解析一次后写入的调用私有副本）。键缺失即抛错，
+// 不退回未解析的根——把「忘了填」变成显式失败，而不是静默按旧基准放行（fail-closed）。
+export function projectRootForChecks(context) {
+  const resolved = context.resolved_project_root;
+  if (typeof resolved !== "string" || resolved.length === 0) {
+    throw toolError("path_resolution_failed", "无法确认项目位置，已拒绝本次操作。", { rule: "project_root_unresolved" });
+  }
+  return resolved;
+}
+
 // 文件类写工具共用的受保护路径预检（write_file / edit_file）
 export function fileProtectedCheck(args, context) {
-  return isProtectedWritePath(context.projectRoot, path.resolve(context.projectRoot, args.path));
+  const root = projectRootForChecks(context);
+  return isProtectedWritePath(root, path.resolve(root, args.path));
 }
 
 export function isSafeEditContentPath(projectRoot, targetPath) {
