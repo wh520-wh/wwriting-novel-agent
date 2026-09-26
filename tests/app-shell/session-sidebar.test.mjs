@@ -236,7 +236,7 @@ function makeTimerRecorder() {
 // 夹具：真实 DOM 元素由桩 document 创建，注入假依赖
 // ---------------------------------------------------------------------------
 
-function makeFixture({ projects = [], selectedProjectRoot = null, currentProjectRoot = null, sessionData = {}, initialStorage = {}, timers = null, fetchSessionsOverride = null, openProjectAndSession = null, onArchiveSession = null } = {}) {
+function makeFixture({ projects = [], selectedProjectRoot = null, currentProjectRoot = null, sessionData = {}, initialStorage = {}, timers = null, fetchSessionsOverride = null, openProjectAndSession = null, onArchiveSession = null, activeSessionId: initialActiveSessionId = null } = {}) {
   const doc = makeDocument();
   const listEl = doc.createElement("div");
   const countEl = doc.createElement("span");
@@ -251,6 +251,9 @@ function makeFixture({ projects = [], selectedProjectRoot = null, currentProject
   const timerRecorder = timers ?? makeTimerRecorder();
   // 跨项目会话切换的委托记录（app.js 侧注入 openProjectAndSession）
   const delegated = openProjectAndSession ?? (async (root, sid) => openProjectCalls.push([root, sid]));
+  // D2：应用级唯一活跃 id（模拟 app.js 持有；setActiveSessionId 推进，等价于
+  // onSessionsChanged 回调 / startNewSessionPlaceholder 的写入）
+  let appActiveSessionId = initialActiveSessionId;
   const sidebar = createSessionSidebar({
     listEl,
     countEl,
@@ -258,6 +261,7 @@ function makeFixture({ projects = [], selectedProjectRoot = null, currentProject
     scrollEl,
     getProjectListData: () => ({ projects, selectedProjectRoot }),
     getCurrentProjectRoot: () => currentProjectRoot,
+    getActiveSessionId: () => appActiveSessionId,
     fetchSessions: fetchSessionsOverride ?? (async (root) => {
       fetchCalls.push(root);
       return sessionData[root] ?? { sessions: [], active_session_id: null };
@@ -280,7 +284,7 @@ function makeFixture({ projects = [], selectedProjectRoot = null, currentProject
     onArchiveSession,
     doc
   });
-  return { sidebar, listEl, countEl, filterEl, scrollEl, storage, surface, fetchCalls, openProjectCalls, doc, timers: timerRecorder };
+  return { sidebar, listEl, countEl, filterEl, scrollEl, storage, surface, fetchCalls, openProjectCalls, doc, timers: timerRecorder, setActiveSessionId: (id) => { appActiveSessionId = id; } };
 }
 
 function allDescendants(el) {
@@ -311,10 +315,11 @@ test("渲染当前项目会话列表：标题正确、s1 活跃、状态点按 r
     selectedProjectRoot: P,
     currentProjectRoot: P
   });
+  f.setActiveSessionId("s1"); // D2：高亮来自应用级活跃 id
   f.sidebar.seedSessions(P, [
     { session_id: "s1", title: "对话一", run_status: "idle" },
     { session_id: "s2", title: "对话二", run_status: "running" }
-  ], "s1");
+  ]);
   f.sidebar.render();
 
   const groups = groupsOf(f.listEl);
@@ -349,7 +354,7 @@ test("点击箭头折叠/展开：会话行消失/恢复，折叠状态写 local
     selectedProjectRoot: P,
     currentProjectRoot: P
   });
-  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }]);
   f.sidebar.render();
   assert.equal(rowsOf(f.listEl).length, 1);
 
@@ -385,7 +390,7 @@ test("点击项目行 .proj 按钮 → 折叠/展开会话列表，不再触发�
     currentProjectRoot: P1,
     initialStorage: { [COLLAPSED_KEY]: JSON.stringify({ [P2]: true }) } // 预折叠 P2（localStorage 恢复路径）
   });
-  f.sidebar.seedSessions(P1, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.seedSessions(P1, [{ session_id: "s1", title: "对话一", run_status: "idle" }]);
   f.sidebar.render();
   assert.equal(groupsOf(f.listEl).length, 1, "P2 折叠时不渲染会话组");
 
@@ -413,7 +418,7 @@ test("点击会话 → surface.switchSession + 切换后 refreshSessions", async
   f.sidebar.seedSessions(P, [
     { session_id: "s1", title: "对话一", run_status: "idle" },
     { session_id: "s2", title: "对话二", run_status: "idle" }
-  ], "s1");
+  ]);
   f.sidebar.render();
 
   const rows = rowsOf(f.listEl);
@@ -423,7 +428,7 @@ test("点击会话 → surface.switchSession + 切换后 refreshSessions", async
   assert.ok(f.surface.calls.refreshSessions.length >= 1, "切换后刷新列表（活跃高亮 + busy 复位）");
 });
 
-test("点击其他项目的会话行 → 委托 openProjectAndSession(ownerRoot, sessionId)", async () => {
+test("点击其他项目的会话行 → 委托 openProjectAndSession(ownerRoot, sessionId)；活跃高亮全文档唯一", async () => {
   const P1 = "D:/projects/p1";
   const P2 = "D:/projects/p2";
   const f = makeFixture({
@@ -435,10 +440,17 @@ test("点击其他项目的会话行 → 委托 openProjectAndSession(ownerRoot,
     currentProjectRoot: P1,
     sessionData: { [P2]: { sessions: [{ session_id: "s2", title: "对话二", run_status: "idle" }], active_session_id: "s2" } }
   });
-  f.sidebar.seedSessions(P1, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.setActiveSessionId("s1");
+  f.sidebar.seedSessions(P1, [{ session_id: "s1", title: "对话一", run_status: "idle" }]);
   f.sidebar.render();
   await f.sidebar.switchSession("s2", P2);
   assert.deepEqual(f.openProjectCalls, [[P2, "s2"]], "跨项目会话切换走 openProjectAndSession");
+  // D2：P2 的 active_session_id 只在跨项目切换到达目标项目后才可能成为全局活跃；
+  // 切换发起时整个文档只允许一个 .session-row.active（P1 的 s1）。
+  await flush();
+  const activeRows = rowsOf(f.listEl).filter((r) => r.classList.contains("active"));
+  assert.equal(activeRows.length, 1, "两个项目同时渲染时只有一行活跃");
+  assert.equal(activeRows[0].dataset.sessionId, "s1");
 });
 
 test("会话操作：归档 → surface.archiveSession + toast", async () => {
@@ -448,7 +460,7 @@ test("会话操作：归档 → surface.archiveSession + toast", async () => {
     selectedProjectRoot: P,
     currentProjectRoot: P
   });
-  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }]);
   f.sidebar.render();
 
   const row = rowsOf(f.listEl)[0];
@@ -471,7 +483,7 @@ test("Task 23：点击重命名 → 标题区域替换为预填 input 并 focus/
     selectedProjectRoot: P,
     currentProjectRoot: P
   });
-  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }]);
   f.sidebar.render();
 
   const row = rowsOf(f.listEl)[0];
@@ -509,7 +521,7 @@ test("Task 23：IME 组合输入守卫——组合期间 Enter/Escape（isCompos
     selectedProjectRoot: P,
     currentProjectRoot: P
   });
-  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }]);
   f.sidebar.render();
 
   const row = rowsOf(f.listEl)[0];
@@ -535,7 +547,7 @@ test("Task 23：Enter trim 后调用一次 renameSession（在途重复 Enter �
     selectedProjectRoot: P,
     currentProjectRoot: P
   });
-  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }]);
   f.sidebar.render();
 
   const row = rowsOf(f.listEl)[0];
@@ -551,7 +563,7 @@ test("Task 23：Enter trim 后调用一次 renameSession（在途重复 Enter �
 
   // 提交成功后 surface 刷新列表（sessionAction → refreshSessions → onSessionsChanged
   // → handleSessionsChanged → rerenderGroup 整组重渲）：编辑器销毁、标题更新
-  f.sidebar.handleSessionsChanged(P, [{ session_id: "s1", title: "新标题", run_status: "idle" }], "s1");
+  f.sidebar.handleSessionsChanged(P, [{ session_id: "s1", title: "新标题", run_status: "idle" }]);
   const rowAfter = rowsOf(f.listEl)[0];
   assert.equal(rowAfter.children[1].textContent, "新标题", "刷新后标题更新");
   assert.ok(
@@ -567,7 +579,7 @@ test("Task 23：Escape 取消编辑并恢复原标题，不调用 renameSession"
     selectedProjectRoot: P,
     currentProjectRoot: P
   });
-  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }]);
   f.sidebar.render();
 
   const row = rowsOf(f.listEl)[0];
@@ -589,7 +601,7 @@ test("Task 23：空白标题阻止提交并显示错误 toast，编辑态与用�
     selectedProjectRoot: P,
     currentProjectRoot: P
   });
-  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }]);
   f.sidebar.render();
 
   const row = rowsOf(f.listEl)[0];
@@ -616,7 +628,7 @@ test("Task 23：renameSession 失败 → 错误 toast，编辑态与用户文字
     f.surface.calls.renameSession.push([id, title]); // 记录调用后失败（替换实现仍记账）
     throw new Error("重命名失败");
   };
-  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }]);
   f.sidebar.render();
 
   const row = rowsOf(f.listEl)[0];
@@ -642,7 +654,7 @@ test("Task 23：失焦按明确规则取消编辑（恢复原标题、不提交�
     selectedProjectRoot: P,
     currentProjectRoot: P
   });
-  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }]);
   f.sidebar.render();
 
   const row = rowsOf(f.listEl)[0];
@@ -671,7 +683,7 @@ test("Task 23：提交在途时 Escape/失焦不动作——生命周期由提�
       releaseRename = resolve;
     });
   };
-  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }]);
   f.sidebar.render();
 
   const row = rowsOf(f.listEl)[0];
@@ -692,7 +704,7 @@ test("Task 23：提交在途时 Escape/失焦不动作——生命周期由提�
   // 提交成功 → surface 刷新重渲 → 编辑器销毁、标题更新
   releaseRename({ session_id: "s1", title: "新标题" });
   await flush();
-  f.sidebar.handleSessionsChanged(P, [{ session_id: "s1", title: "新标题", run_status: "idle" }], "s1");
+  f.sidebar.handleSessionsChanged(P, [{ session_id: "s1", title: "新标题", run_status: "idle" }]);
   const rowAfter = rowsOf(f.listEl)[0];
   assert.equal(rowAfter.children[1].textContent, "新标题", "成功刷新后标题更新");
   assert.ok(
@@ -715,7 +727,7 @@ test("Task 23：失败后重试成功——失败保留编辑态，二次 Enter 
     if (shouldFail) throw new Error("重命名失败");
     return { session_id: id, title };
   };
-  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }]);
   f.sidebar.render();
 
   const row = rowsOf(f.listEl)[0];
@@ -735,7 +747,7 @@ test("Task 23：失败后重试成功——失败保留编辑态，二次 Enter 
   await flush();
   assert.deepEqual(f.surface.calls.renameSession, [["s1", "新名字"], ["s1", "新名字"]], "重试再次提交");
   assert.ok(f.surface.toasts.some(([m]) => m.includes("新名字")), "成功 toast");
-  f.sidebar.handleSessionsChanged(P, [{ session_id: "s1", title: "新名字", run_status: "idle" }], "s1");
+  f.sidebar.handleSessionsChanged(P, [{ session_id: "s1", title: "新名字", run_status: "idle" }]);
   const rowAfter = rowsOf(f.listEl)[0];
   assert.equal(rowAfter.children[1].textContent, "新名字", "刷新后标题更新");
   assert.ok(
@@ -757,7 +769,7 @@ test("Task 5：归档委托注入的 onArchiveSession（app.js 归档切走编�
     currentProjectRoot: P,
     onArchiveSession: async (session) => { onArchiveCalls.push(session.session_id); }
   });
-  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.seedSessions(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }]);
   f.sidebar.render();
 
   const row = rowsOf(f.listEl)[0];
@@ -779,22 +791,23 @@ test("Task 5：移除后解析——无其他可用会话进占位（占位分�
   // 重拉列表并等待落盘（模拟 surface.refreshSessions → handleSessionsChanged 同步
   // 更新缓存），被移除会话的 archived_at 才会进入缓存 → usable=0 → 占位可达。
   // 若解析器跳过 await refreshSessions 直接读缓存，仍拿到操作前快照（s1 未归档），
-  // usable 恒 ≥ 1，占位分支不可达、本断言失败。
+  // usable 恒 ≥ 1，占位分支不可达、本断言失败。D2：活跃 id 从 getActiveSessionId 读。
   const calls = [];
   let cache = {
-    sessions: [{ session_id: "s1", title: "对话一", run_status: "idle", archived_at: null }],
-    activeSessionId: "s1"
+    sessions: [{ session_id: "s1", title: "对话一", run_status: "idle", archived_at: null }]
   };
+  let appActiveSessionId = "s1";
   const resolve = createSessionRemovalResolver({
     getSessions: () => cache,
+    getActiveSessionId: () => appActiveSessionId,
     switchSession: async (id) => { calls.push(["switchSession", id]); },
     refreshSessions: async () => {
       calls.push(["refreshSessions"]);
       // 模拟切走后以新代次重拉的权威列表：s1 已归档 → 无未归档会话、活跃指针 null
       cache = {
-        sessions: [{ session_id: "s1", title: "对话一", run_status: "idle", archived_at: "2026-08-10" }],
-        activeSessionId: null
+        sessions: [{ session_id: "s1", title: "对话一", run_status: "idle", archived_at: "2026-08-10" }]
       };
+      appActiveSessionId = null;
     },
     newSessionPlaceholder: () => { calls.push(["newSessionPlaceholder"]); return "draft-x"; }
   });
@@ -812,12 +825,13 @@ test("Task 5：移除后解析——仍有其他可用会话不进占位；移�
     sessions: [
       { session_id: "s1", title: "对话一", run_status: "idle", archived_at: null },
       { session_id: "s2", title: "对话二", run_status: "idle", archived_at: null }
-    ],
-    activeSessionId: "s1"
+    ]
   };
+  let appActiveSessionId = "s1";
   const calls = [];
   const resolve = createSessionRemovalResolver({
     getSessions: () => cache,
+    getActiveSessionId: () => appActiveSessionId,
     switchSession: async (id) => { calls.push(["switchSession", id]); },
     refreshSessions: async () => {
       calls.push(["refreshSessions"]);
@@ -825,9 +839,9 @@ test("Task 5：移除后解析——仍有其他可用会话不进占位；移�
         sessions: [
           { session_id: "s1", title: "对话一", run_status: "idle", archived_at: "2026-08-10" },
           { session_id: "s2", title: "对话二", run_status: "idle", archived_at: null }
-        ],
-        activeSessionId: "s2"
+        ]
       };
+      appActiveSessionId = "s2";
     },
     newSessionPlaceholder: () => { calls.push(["newSessionPlaceholder"]); return "draft-x"; }
   });
@@ -842,9 +856,9 @@ test("Task 5：移除后解析——仍有其他可用会话不进占位；移�
   const calls2 = [];
   const resolve2 = createSessionRemovalResolver({
     getSessions: () => ({
-      sessions: [{ session_id: "s1", title: "对话一", run_status: "idle", archived_at: null }],
-      activeSessionId: "s1"
+      sessions: [{ session_id: "s1", title: "对话一", run_status: "idle", archived_at: null }]
     }),
+    getActiveSessionId: () => "s1",
     switchSession: async (id) => { calls2.push(["switchSession", id]); },
     refreshSessions: async () => { calls2.push(["refreshSessions"]); },
     newSessionPlaceholder: () => { calls2.push(["newSessionPlaceholder"]); }
@@ -872,7 +886,8 @@ test("展开未缓存项目懒调 sessions 并渲染；缓存命中不重复拉"
     },
     initialStorage: { [COLLAPSED_KEY]: JSON.stringify({ [P2]: true }) }
   });
-  f.sidebar.seedSessions(P1, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.setActiveSessionId("s1");
+  f.sidebar.seedSessions(P1, [{ session_id: "s1", title: "对话一", run_status: "idle" }]);
   f.sidebar.render();
   assert.deepEqual(f.fetchCalls, [], "折叠中的项目不拉取");
 
@@ -888,6 +903,11 @@ test("展开未缓存项目懒调 sessions 并渲染；缓存命中不重复拉"
   assert.equal(rowsP2.length, 1);
   assert.equal(rowsP2[0].children[1].textContent, "另一对话");
   assert.equal(rowsP2[0].children[0].dataset.status, "failed", "懒加载数据含 run_status");
+
+  // D2：P2 懒拉数据里的 active_session_id 不产生第二处高亮（活跃 id 全应用唯一）
+  const activeRows = rowsOf(f.listEl).filter((r) => r.classList.contains("active"));
+  assert.equal(activeRows.length, 1, "两个项目同时渲染时只有一行活跃");
+  assert.equal(activeRows[0].dataset.sessionId, "s1");
 
   // 缓存：整表重渲不重复拉
   f.sidebar.render();
@@ -905,56 +925,94 @@ test("busy 复位：其他会话 running → setBusy(true)；全部非 running �
     selectedProjectRoot: P,
     currentProjectRoot: P
   });
+  f.setActiveSessionId("s1"); // D2：「当前会话」由应用级活跃 id 判定
   f.sidebar.seedSessions(P, [
     { session_id: "s1", title: "对话一", run_status: "idle" },
     { session_id: "s2", title: "对话二", run_status: "running" }
-  ], "s1");
+  ]);
   assert.deepEqual(f.surface.calls.setBusy, [true], "其他会话运行中 → busy(true)");
 
   // 终态后刷新（surface.refreshSessions → onSessionsChanged → handleSessionsChanged）
   f.sidebar.handleSessionsChanged(P, [
     { session_id: "s1", title: "对话一", run_status: "idle" },
     { session_id: "s2", title: "对话二", run_status: "idle" }
-  ], "s1");
+  ]);
   assert.deepEqual(f.surface.calls.setBusy, [true, false], "全部非 running → busy(false) 复位");
 
   // 当前会话运行中不阻塞发送键（同会话 submit 走 FIFO 队列）
   f.sidebar.handleSessionsChanged(P, [
     { session_id: "s1", title: "对话一", run_status: "running" }
-  ], "s1");
+  ]);
   assert.deepEqual(f.surface.calls.setBusy, [true, false, false], "当前会话运行不置忙");
 });
 
 // ---------------------------------------------------------------------------
-// 6) draft 占位过滤（渲染层排除，双保险）
+// 6) draft 草稿行（D3/D2 round22）：当前项目 + 应用级活跃 id 为 draft- 前缀 →
+//    本地占位行立刻可见（不依赖网络）；缓存里的 stale draft 项仍被过滤
 // ---------------------------------------------------------------------------
 
-test("draft 占位不渲染：缓存中的 draft 项被过滤，列表只含真实会话；仅占位时显示空态", async () => {
+test("D3 草稿行：点「+」后当前项目立刻有 .session-draft 行，发送首条消息后消失、正式行出现", () => {
   const P = "D:/projects/p1";
   const f = makeFixture({
     projects: [{ projectRoot: P, title: "小说一" }],
     selectedProjectRoot: P,
     currentProjectRoot: P
   });
-  f.sidebar.handleSessionsChanged(P, [
-    { session_id: "draft-x", title: "新对话", status: "draft" },
-    { session_id: "s1", title: "对话一", run_status: "idle" }
-  ], "draft-x");
+  // 点「+」（app.js startNewSessionPlaceholder）：surface 生成 draft id → 应用级
+  // 活跃 id 立即指向草稿 → 以当前缓存定向重渲（尚无真实会话）
+  f.sidebar.handleSessionsChanged(P, []);
+  f.setActiveSessionId("draft-x");
   f.sidebar.render();
 
   const rows = rowsOf(f.listEl);
-  assert.equal(rows.length, 1, "draft 占位不渲染，列表只含真实会话");
-  assert.equal(rows[0].dataset.sessionId, "s1", "真实会话正常渲染");
-  assert.ok(!rows.some((r) => r.dataset.sessionId === "draft-x"), "渲染出的会话行列表不含 draft 行");
+  assert.equal(rows.length, 1, "草稿行立刻可见（500ms 反馈不依赖网络）");
+  assert.equal(rows[0].classList.contains("session-draft"), true, "草稿行带 session-draft 类");
+  assert.equal(rows[0].children[1].textContent, "新对话", "文案「新对话」");
+  assert.equal(rows[0].getAttribute("aria-disabled"), "true", "草稿行 aria-disabled");
+  assert.equal(rows[0].getAttribute("tabindex"), "-1", "草稿行不入 Tab 序");
 
-  // 只有占位（新项目点「+」，尚无真实会话）：显示空态而非幽灵项
-  f.sidebar.handleSessionsChanged(P, [
-    { session_id: "draft-x", title: "新对话", status: "draft" }
-  ], "draft-x");
+  // 发送首条消息：createSession 落盘 → refreshSessions → 正式行出现，草稿行消失
+  f.sidebar.handleSessionsChanged(P, [{ session_id: "s1", title: "对话一", run_status: "idle" }]);
+  f.setActiveSessionId("s1");
   f.sidebar.render();
-  const empty = f.listEl.querySelector(".session-empty");
-  assert.ok(empty, "仅占位时显示空态行");
-  assert.match(empty.textContent, /还没有对话/u);
+  const rowsAfter = rowsOf(f.listEl);
+  assert.equal(rowsAfter.length, 1, "草稿行被真实会话替换");
+  assert.equal(rowsAfter[0].dataset.sessionId, "s1");
+  assert.ok(!rowsAfter[0].classList.contains("session-draft"), "不再有草稿行");
+  assert.equal(rowsAfter[0].classList.contains("active"), true, "正式会话行获得唯一高亮");
+});
+
+test("D3 草稿行只属当前项目：旧项目不渲染草稿；缓存里的 stale draft 项仍被过滤", () => {
+  const P1 = "D:/projects/p1";
+  const P2 = "D:/projects/p2";
+  const f = makeFixture({
+    projects: [
+      { projectRoot: P1, title: "小说一" },
+      { projectRoot: P2, title: "小说二" }
+    ],
+    selectedProjectRoot: P1,
+    currentProjectRoot: P1,
+    sessionData: { [P2]: { sessions: [{ session_id: "x1", title: "另一对话", run_status: "idle" }], active_session_id: "x1" } }
+  });
+  // P2 缓存里混入 stale draft 项（跨项目旧数据）
+  f.sidebar.seedSessions(P2, [
+    { session_id: "draft-stale", title: "新对话", status: "draft" },
+    { session_id: "x1", title: "另一对话", run_status: "idle" }
+  ]);
+  // 当前项目 P1 处于草稿占位
+  f.sidebar.seedSessions(P1, []);
+  f.setActiveSessionId("draft-x");
+  f.sidebar.render();
+
+  const groups = groupsOf(f.listEl);
+  const g1 = groups.find((g) => g.dataset.projectRoot === P1);
+  const g2 = groups.find((g) => g.dataset.projectRoot === P2);
+  const rowsP1 = (g1?.children ?? []).filter((c) => c.classList.contains("session-row"));
+  const rowsP2 = (g2?.children ?? []).filter((c) => c.classList.contains("session-row"));
+  assert.equal(rowsP1.length, 1, "当前项目渲染一行草稿占位");
+  assert.ok(rowsP1[0].classList.contains("session-draft"), "草稿行属于当前项目组");
+  assert.equal(rowsP2.length, 1, "旧项目不渲染草稿行，stale draft 项被过滤（双保险）");
+  assert.equal(rowsP2[0].dataset.sessionId, "x1", "旧项目只渲染真实会话");
 });
 
 // ---------------------------------------------------------------------------
@@ -972,7 +1030,7 @@ test("busy 周期刷新：运行中启动定时器，tick 重拉，终态后复�
   f.sidebar.seedSessions(P, [
     { session_id: "s1", title: "对话一", run_status: "idle" },
     { session_id: "s2", title: "对话二", run_status: "running" }
-  ], "s1");
+  ]);
   assert.deepEqual(f.surface.calls.setBusy, [true], "其他会话运行中 → busy(true)");
   assert.equal(f.timers.activeIds().length, 1, "busy=true 时启动周期刷新定时器");
 
@@ -988,7 +1046,7 @@ test("busy 周期刷新：运行中启动定时器，tick 重拉，终态后复�
   f.sidebar.handleSessionsChanged(P, [
     { session_id: "s1", title: "对话一", run_status: "idle" },
     { session_id: "s2", title: "对话二", run_status: "idle" }
-  ], "s1");
+  ]);
   assert.deepEqual(f.surface.calls.setBusy, [true, false], "全部非 running → busy(false) 复位");
   assert.equal(f.timers.activeIds().length, 0, "busy 复位后定时器清除");
 });
@@ -1011,7 +1069,7 @@ test("busy 周期刷新：在途刷新跳过重叠 tick；invalidateProject 清�
   f.sidebar.seedSessions(P, [
     { session_id: "s1", title: "对话一", run_status: "idle" },
     { session_id: "s2", title: "对话二", run_status: "running" }
-  ], "s1");
+  ]);
   const timerId = f.timers.activeIds()[0];
   assert.ok(timerId, "busy=true 定时器启动");
 
@@ -1086,7 +1144,7 @@ test("并发去重：同一项目快速展开两次只发一个拉取请求", as
       return { sessions: [{ session_id: "x1", title: "另一对话", run_status: "idle" }], active_session_id: "x1" };
     }
   });
-  f.sidebar.seedSessions(P1, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.seedSessions(P1, [{ session_id: "s1", title: "对话一", run_status: "idle" }]);
   f.sidebar.render();
 
   chevronOf(f.listEl.children[2]).dispatch("click", {}); // 第一次展开：拉取在途
@@ -1122,7 +1180,7 @@ test("懒拉失败降级：reject → 失败行，点击重试 / 再次展开可
       return { sessions: [{ session_id: "x1", title: "另一对话", run_status: "idle" }], active_session_id: "x1" };
     }
   });
-  f.sidebar.seedSessions(P1, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.seedSessions(P1, [{ session_id: "s1", title: "对话一", run_status: "idle" }]);
   f.sidebar.render();
   chevronOf(f.listEl.children[2]).dispatch("click", {}); // 展开 → 懒拉
   await flush();
@@ -1160,7 +1218,7 @@ test("防串场：慢切换在途切走 → 迟到回调丢弃（不刷新错误
   f.sidebar.seedSessions(P, [
     { session_id: "s1", title: "对话一", run_status: "idle" },
     { session_id: "s2", title: "对话二", run_status: "idle" }
-  ], "s1");
+  ]);
   // 慢切换：switchSession 返回可控 pending
   f.surface.switchSession = (id) => {
     switches.push(id);
@@ -1194,7 +1252,7 @@ test("会话行键盘可达：Enter/Space 触发 switchSession，子按钮 keydo
   f.sidebar.seedSessions(P, [
     { session_id: "s1", title: "对话一", run_status: "idle" },
     { session_id: "s2", title: "对话二", run_status: "idle" }
-  ], "s1");
+  ]);
   f.sidebar.render();
   const rows = rowsOf(f.listEl);
   assert.equal(rows[1].getAttribute("role"), "button", "会话行 role=button");
@@ -1230,13 +1288,13 @@ test("切走 draft 占位：draft 不进缓存，leavingDraft 恒 false，模块
     currentProjectRoot: P
   });
   // Task 3 生产形状：占位期间 surface 只透出真实会话列表 + draft id 活跃指针
-  //（draft 永不进缓存 sessions）。故 leavingDraft（按 activeSessionId 匹配缓存中
-  // 的 draft 项）恒为 false，模块续作必然 surface.refreshSessions() 一次——与
-  // agent/index.js 的 prevDraft 收尾（switchSession 内部刷新）构成两次幂等刷新，
-  // 结果一致、无副作用。leavingDraft 分支按任务要求保留作防御，不删除。
+  //（draft 永不进缓存 sessions）。D2 后 leavingDraft 按应用级活跃 id 是否为 draft-
+  // 前缀判定——点真实会话时全局活跃 id 为 null，leavingDraft 恒为 false，模块续作
+  // 必然 surface.refreshSessions() 一次——与 agent/index.js 的 prevDraft 收尾
+  //（switchSession 内部刷新）构成两次幂等刷新，结果一致、无副作用。分支保留作防御。
   f.sidebar.handleSessionsChanged(P, [
     { session_id: "s1", title: "对话一", run_status: "idle" }
-  ], "draft-x");
+  ]);
   f.sidebar.render();
   rowsOf(f.listEl)[0].dispatch("click", {}); // 点真实会话 s1
   await flush();
@@ -1262,7 +1320,7 @@ test("Task 16 B13：移除项目后清空缓存/DOM 引用/折叠记录；迟到
     sessionData: { [P2]: { sessions: [{ session_id: "x1", title: "另一对话", run_status: "idle" }], active_session_id: "x1" } },
     initialStorage: { [COLLAPSED_KEY]: JSON.stringify({ [P2]: true }) }
   });
-  f.sidebar.seedSessions(P1, [{ session_id: "s1", title: "对话一", run_status: "idle" }], "s1");
+  f.sidebar.seedSessions(P1, [{ session_id: "s1", title: "对话一", run_status: "idle" }]);
   f.sidebar.render();
 
   // 展开 P2 → 懒拉缓存 + DOM 组引用
@@ -1293,8 +1351,8 @@ test("Task 16 B13：移除项目后清空缓存/DOM 引用/折叠记录；迟到
   assert.equal(groupsOf(f.listEl).some((g) => g.dataset.projectRoot === P2), false, "P2 组不再挂载");
 
   // 迟到的 seed / 会话变更不再响应（removed 守卫）：不重建缓存
-  f.sidebar.seedSessions(P2, [{ session_id: "x1", title: "另一对话", run_status: "idle" }], "x1");
-  f.sidebar.handleSessionsChanged(P2, [{ session_id: "x1", title: "另一对话", run_status: "idle" }], "x1");
+  f.sidebar.seedSessions(P2, [{ session_id: "x1", title: "另一对话", run_status: "idle" }]);
+  f.sidebar.handleSessionsChanged(P2, [{ session_id: "x1", title: "另一对话", run_status: "idle" }]);
   assert.equal(f.sidebar.getSessions(P2), null, "移除后迟到事件不重建缓存");
 
   // 项目重新出现在列表（重新打开同一文件夹）：render 解除移除标记，缓存恢复可用
@@ -1304,7 +1362,7 @@ test("Task 16 B13：移除项目后清空缓存/DOM 引用/折叠记录；迟到
   );
   f.sidebar.render();
   assert.equal(f.sidebar.getProjectStateForTest(P2).removed, false, "重新出现后移除标记解除");
-  f.sidebar.seedSessions(P2, [{ session_id: "x1", title: "另一对话", run_status: "idle" }], "x1");
+  f.sidebar.seedSessions(P2, [{ session_id: "x1", title: "另一对话", run_status: "idle" }]);
   assert.ok(f.sidebar.getSessions(P2), "重新出现后可再次缓存");
 });
 
@@ -1318,7 +1376,7 @@ test("Task 16 B13：移除当前项目停止 busy 周期刷新并复位发送键
   f.sidebar.seedSessions(P1, [
     { session_id: "s1", title: "对话一", run_status: "idle" },
     { session_id: "s2", title: "对话二", run_status: "running" }
-  ], "s1");
+  ]);
   assert.deepEqual(f.surface.calls.setBusy, [true], "其他会话运行中 → busy(true)");
   assert.equal(f.timers.activeIds().length, 1, "busy 周期刷新定时器运行中");
 
@@ -1342,7 +1400,7 @@ test("第十二轮 E：waiting_user 会话显示「待命」且计入 busy", () 
   f.sidebar.seedSessions(P, [
     { session_id: "s1", title: "对话一", run_status: "idle" },
     { session_id: "s2", title: "对话二", run_status: "waiting_user" }
-  ], "s1");
+  ]);
   assert.deepEqual(f.surface.calls.setBusy, [true], "waiting_user 计入 busy（非终态集）");
 
   f.sidebar.render();
@@ -1364,7 +1422,7 @@ test("第十二轮 F9：interrupting/stopping 会话显示「停止中」且计�
   f.sidebar.seedSessions(P, [
     { session_id: "s1", title: "对话一", run_status: "interrupting" },
     { session_id: "s2", title: "对话二", run_status: "stopping" }
-  ], "s1");
+  ]);
   assert.deepEqual(f.surface.calls.setBusy, [true], "interrupting/stopping 计入 busy（非终态集）");
   f.sidebar.render();
   const rows = rowsOf(f.listEl);
