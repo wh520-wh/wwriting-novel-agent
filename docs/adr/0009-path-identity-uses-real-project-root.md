@@ -11,10 +11,12 @@
 | 比较点 | 失效方向 |
 |--------|----------|
 | `runtime-helpers.mjs:228` 受保护路径（8 条规则） | fail-open：`memory/`、`.versions/`、`run_log.jsonl`、`project.yaml`、`checkpoints/`、`.wwriting/`、章节索引、草稿的直写保护整体失效 |
-| `runtime-helpers.mjs:287` `safe_edit=false` 内容保护 | fail-open：章节/设定/记忆路径不再被识别 |
-| `runtime-helpers.mjs:271` shell cwd 信号 | fail-open：可在日志/检查点目录内运行命令 |
-| `runtime-helpers.mjs:351` 工作区文本读取 | **fail-closed**：项目内合法文件被误判「工作区外」而拒绝 |
+| `runtime-helpers.mjs:299` `safe_edit=false` 内容保护 | fail-open：章节/设定/记忆路径不再被识别 |
+| `runtime-helpers.mjs:270` shell cwd 信号 | fail-open：可在日志/检查点目录内运行命令 |
+| `runtime-helpers.mjs:360` 工作区文本读取 | **fail-closed**：项目内合法文件被误判「工作区外」而拒绝 |
 | `risk.mjs:79` scope 判定 | 项目内写入被判「项目外」，正常写作每次弹确认 |
+
+> 记录于：2026-09-25｜上表 `file:line` 锚点已按第二十一轮落地后（`676c7ff`）的实际位置订正（`228` 未变；`287`→`299`、`271`→`270`、`351`→`360`；`risk.mjs:79` 指向 `src/core/shell/risk.mjs` 的 `resolveProjectScope`，未变）。本 ADR 为本轮新建，不适用「历史件只定性不订正」。
 
 第四条与第五条是**这个缺陷不是有意保守**的证据：同一处不对称同时产生了「该保护没保护」和「该放行没放行」两种症状。
 
