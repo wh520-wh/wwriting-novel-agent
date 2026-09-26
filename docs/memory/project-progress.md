@@ -90,11 +90,11 @@
 |---|------|------|-----------|
 | 20-1 | `docs/design/multi-session-architecture.md` §4 与末尾索引仍引用已退役符号（`migrateProjectData` / `legacy-import.mjs` / `journal-session-migration.mjs` / `runLegacyImport`；已核实 `src/` 零命中） | 文档陈旧 | 该文档标「状态：当前有效」，属伪事实；下一轮以「加已退役标注」方式订正（符号已删、迁移语义留历史说明） |
 | 20-2 | R3 seam 扫描器只认字面量 import；`scripts/benchmark-agent-journal.mjs:161/:270` 用计算式动态 import 直连 `journal.mjs`/`journal-segments.mjs`，落在盲区 | 守卫盲区 | 本轮按「不得缩名单绕过」未扩扫描器；扩扫描器会真红（该脚本确为包外直连），需连同 `path.join` 拼接与 `tests/agent/` 豁免口径一并设计 |
-| 20-3 | 贴近字节红线的文件：`journal-handlers.mjs` 余 845B、`model-settings-page.js` 余 341B | 体积债 | 下一批字节收口对象（口径：≤51200B，LF 归一；R1 已机器强制，破线即红） |
+| 20-3 | 贴近字节红线的文件：`journal-handlers.mjs` 余 845B（LF 归一实算，正确） | 体积债 | 下一批字节收口对象（口径：≤51200B，LF 归一；R1 已机器强制，破线即红）。**2026-09-25 订正**：原记 `model-settings-page.js` 余 341B（50859B）属 **CRLF 误测**——该值恰等于 LF 值 49921B 加上该文件行数 938（把 `\r` 计入了）；LF 归一实算为 938 行 / 49921B、余 1279B，**不属紧迫对象** |
 | 20-4 | 新增导航用例未在 `finally` 恢复 `globalThis.document`，向同文件后续测试泄漏全局 DOM 桩 | 测试卫生 | 本轮已记为 Minor（658/658 全绿，无实际连带失败）；下一轮按同仓既有 `try/finally` 恢复惯例订正 |
 | 20-5 | `pre_restore` 去重口径与章节侧不一致（用「≠即将写入内容」而非比最新 checksum），常见场景会存一份与最新版本字节相同的冗余版，挤占 200 版上限 | 一致性 | 本轮为计划逐字口径，未改；属低频优化，非正确性问题 |
 | 20-6 | `project_busy`/`session_busy` 已进 `SAFE_PUBLIC_ERROR_CODES` 白名单，而同样「程序写死、不拼底层异常」的 `agent_running` 未进，导致版本回滚/恢复的 409 对直连客户端只显示通用脱敏文案 | 一致性 | 既有行为，需独立评估后决定是否扩白名单 |
-| 20-7 | `run_log.jsonl` 保护面不完整：`isProtectedShellCwd` 未纳入（shell 仍可 `echo >`）、`samePath` 不 `realpath`（符号链接可绕）、非 win32 不折叠大小写 | 安全边界 | 属「write_file/edit_file 面」保护而非完整承诺；需独立一轮评估是否扩到 shell 与 realpath |
+| 20-7 | `run_log.jsonl` 保护面不完整：`isProtectedShellCwd` 未纳入（shell 仍可 `echo >`）、`samePath` 不 `realpath`（符号链接可绕）、非 win32 不折叠大小写 | 安全边界 | **2026-09-25 部分关闭**：复核把「realpath 缺失」的范围扩大为「**以根为基准的全部比较点**都未解析根」（受保护路径 8 条规则 / `safe_edit=false` 内容保护 / shell cwd / 工作区文本读取 / scope 判定），经访谈确认为缺陷、**已由第二十一轮按 ADR 0009 修复并验收（提交 `c38df05`/`83512aa`/`cca9124`）**；余项拆出——shell 写目标承诺 → 21-4，大小写口径与两份 `samePath` → 21-1 |
 | 20-8 | `dist-desktop/win-unpacked/…/app.asar` 与 `.codegraph/codegraph.db` 仍含本轮已删符号名 | 构建产物 | 均为 gitignore 的构建/缓存产物，重新打包即消失，无需处理 |
 | 20-9 | `docs/superpowers/specs/2026-07-18-composer-draft-design.md` 状态为「待实现」，且把本轮已删除的 `hashKey` 当作可复用现存算法 | 后续踩空点 | 按该规格实施时会踩空（`hashKey` 已随 Task 11 删除）；建议在下一次触及 composer-draft 前先订正规格 |
 | 20-10 | `src/app-shell/utils.js` 的 `ensureTrailingSlash` 在 `src/`/`tests/`/`scripts/` 内无导入方 | 死代码候选 | 本轮 Task 11 范围外（其同名函数在 `openai-compatible.mjs` 是本地函数，非同一导出）；归入后续审计项 |
@@ -102,3 +102,21 @@
 | 20-12 | `styles.css` / `agent.css` 的**量化目标值仍未定**（`AGENTS.md` 记载「由第二十轮审计轮测定后回填，不得臆造阈值」） | 规则待决 | 本轮只登记现状（2613 行/83213B、2171 行/57756B，与 2026-09-05 相同即未再增长），**未定阈值**；需专项测定后回填 `AGENTS.md` |
 
 > 另：原欠账清单第 8 项（`session-sidebar.mjs` 维护契约注释订正 / `buildRecoveryHint` 语义分歧）在本轮 Task 5 被**部分**订正——该注释已补「rollback/restore 忙门已改为经 `agent.projectBusy` 消费 `hasNonTerminalRun`」口径；`buildRecoveryHint` 的语义分歧本身未验证是否已消解，暂不关闭。
+
+## 第二十一轮（round21）登记项（记录于 2026-09-25｜状态：待实现，只记不排）
+
+来源：2026-09-25 只读健壮性抽查复核 + 同日访谈（4 轮 15 问）。本轮范围＝路径身份统一（规格 `docs/design/2026-09-25-round21-path-identity-spec.md`，ADR 0009）；下列为本轮**明确不做**但已定性的余项。
+
+**执行结果（记录于：2026-09-25｜状态：当前有效）**：本轮范围（工具层路径身份统一，ADR 0009）**已实现并验收**。实现提交 `c38df05`（根解析与失败闭环）、`83512aa`（目标路径解析异常收口）、`cca9124`（5 处比较点全部切到真实根）；新增 `tests/agent/path-identity.test.mjs`（8 用例，含 5 个 win32-only junction 用例）；未触碰任何 `journal*` 模块；`src/**/*.{js,mjs}` 无新增越线文件。四条门禁本轮实测：`npm test` **2000/2000（exit 0）**、`npm run verify:unified-agent` **36/36（exit 0）**、`npm run verify:desktop-shell` **exit 0**、`npm run verify:app-shell` **exit 1（既有失败，见 21-7，经用户裁定接受并登记）**。下表 21-1…21-7 为本轮明确不做、已定性的余项。
+
+| # | 事项 | 类型 | 状态与去向 |
+|---|------|------|-----------|
+| 21-1 | 路径比较的大小写口径未定；`samePath` 有两份实现（`runtime-helpers.mjs:78` 私有、`app-state.mjs:120` 导出）；macOS 默认大小写不敏感，`.versions/` 变体仍可绕 | 安全边界 | 产品只发 Windows，现实触发面低；需先定各平台折叠口径再动，避免改比较语义牵动既有断言（20-7 余项） |
+| 21-2 | 项目身份层未归一：`validateWorkspaceRoot`（`app-dashboard.mjs:256`）只 `path.resolve`、前端 `normalizeProjectPath`（`app.js:846`）只去尾斜杠、最近项目与选中态比较用不解析的 `samePath` | 可用性 | 同一物理项目经不同路径打开会出现「项目未选中」；修法会改动界面显示的路径，属可见变化，需单独决策 |
+| 21-3 | journal 缺口台账损坏即静默丢（`journal-segments.mjs:128`/`:138`，gaps 唯一来源 `journal.mjs:384`）：段文件仍在磁盘，缺口却从 API 与恢复逻辑同时消失 | 数据完整性 | 口径已定格（ADR 0010：manifest 是派生数据，从段文件按 seq 断层重算，generation 归属可由 `historyDir` 目录名还原）；实现待排 |
+| 21-4 | shell 写面未纳入受保护路径承诺：`echo > run_log.jsonl` 仍可改审计账本 | 安全边界 | 20-7 余项；扩面需解析命令行，误伤合法命令的风险与工作量都更大，需独立评估 |
+| 21-5 | `journal-segments.mjs:188-189` 隔离坏段时两次 `rename` 静默吞错：Windows 上改名失败则段文件留在原名、却已移出内存列表且 gap 照记，下次 load 重扫会**再记一条 gap** | 一致性 | 方向保守（多报缺口，不丢数据）；本轮复核新发现 |
+| 21-6 | `versions.mjs:22` 经 `readJson` 裸 `JSON.parse`，坏 manifest 直接抛错，缺「仅按 `v{n}.md` 列目录」的降级兜底；`versions.mjs:29` 两步写、崩溃孤儿版被下次覆盖的后果是**时间线少一版**（正文不受影响） | 恢复语义 | 抽查第 4 项的收窄结论；其中「无上限」属 `AGENTS.md` 既定规格，不作为缺陷 |
+| 21-7 | `npm run verify:app-shell` 既有失败：`scripts/verify-app-shell.mjs:372` 断言「思考项完成态标签应为 思考 N 秒」不成立 | 验收门禁 | 2026-09-25 于 round21 执行期发现；已在 round21 之前的提交 `65bcf1e` 上以 Node 22 / Node 25 独立复现同一断言，与本轮改动无关（断言由 `069ffa0` 引入）。需独立一轮定位：是投影回退出「已完成思考」回退文案，还是夹具未产出耗时 |
+
+> 排序原则同前：优先级不在本清单内定。
