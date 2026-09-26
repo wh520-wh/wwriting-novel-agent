@@ -52,7 +52,8 @@ async function setup(t, options = {}) {
 }
 
 // 项目根 + 指向它的 junction 链接（target 在前、链接路径在后；Windows junction
-// 不需要管理员特权）。requireJunction 用于 junction 组用例的 Windows skip。
+// 不需要管理员特权）。junction 组用例一律以 { skip: process.platform !== "win32" }
+// 在非 Windows 跳过；此处不做任何前置探测。
 async function setupJunction(t, options = {}) {
   const base = await setup(t, options);
   const linkRoot = path.join(base.workspaceRoot, "novel-link");
@@ -65,19 +66,44 @@ async function stubShellRuntime({ cwd }) {
   return { exitCode: 0, cwd, signal: null, durationMs: 0, stdout: "", stderr: "" };
 }
 
-// 轮询 journal 直到出现该 tool call 的 decision_requested（旧比较逻辑下项目内
-// 写入会被误判项目外而请求确认）；超时返回 null，绝不留悬挂 promise。
-async function pollDecision(journal, toolCallId, { maxPolls = 50 } = {}) {
-  for (let i = 0; i < maxPolls; i += 1) {
+// 有界等待（第二十一轮终审 F1）：轮询 journal 直到该 tool call 出现 decision_requested，
+// 或 pending 已 settle，二者任一即返回；到界仍都不达则 assert.fail 报红并给出可读信息。
+// 契约要点：任何路径都在有限时间内收敛，绝不留下永不 settle 的 await——测试工程若回归成
+// 「决策已注册但 decision_requested 没落盘」，这里会报「既不收敛也未请求决策」而不是挂死。
+async function awaitSettledOrDecision(pending, journal, toolCallId, { boundMs = 2000, pollMs = 10 } = {}) {
+  let settled = null;
+  // 先挂接终态（onFulfilled/onRejected 双通道），既避免未处理拒绝，也让到界前若已收敛能被取到。
+  pending.then(
+    (value) => { settled = { settled: true, value }; },
+    (error) => { settled = { settled: true, error }; }
+  );
+  const deadline = Date.now() + boundMs;
+  for (;;) {
     const events = await journal.read({ afterSeq: 0 });
-    const found = events.find(
+    const decision = events.find(
       (event) => event.type === "decision_requested" && event.payload.tool_call_id === toolCallId
     );
-    if (found) return found;
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    if (decision) return { decision };
+    if (settled) return settled;
+    if (Date.now() >= deadline) {
+      assert.fail(`工具调用 ${toolCallId} 在 ${boundMs}ms 内既不收敛也未请求决策（疑似回归）`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
-  return null;
 }
+
+// 契约锁（F1 的可证伪回归锁）：永不 settle 的 promise + 空 journal + 很短的界，
+// 辅助函数必须在界内以断言失败收敛（抛错），而不是一直挂着。若有人把它改回无界等待，
+// 这条测试会挂死/不报错，从而暴露——它断言的是「抛错」本身，不是恒真。
+test("awaitSettledOrDecision：使永不 settle 的 promise 在短界内以断言失败收敛", async () => {
+  const neverSettles = new Promise(() => {});
+  const emptyJournal = { read: async () => [] };
+
+  await assert.rejects(
+    () => awaitSettledOrDecision(neverSettles, emptyJournal, "never-settles", { boundMs: 60, pollMs: 10 }),
+    /既不收敛也未请求决策/
+  );
+});
 
 test("上下文缺 resolved_project_root：受保护路径判定抛 path_resolution_failed（fail-closed）", async (t) => {
   const { projectRoot } = await setup(t);
@@ -220,8 +246,8 @@ test("junction 项目根下 shell 显式 cwd 落在受保护目录按保护规�
 });
 
 // 反向用例：auto_edit + junction 根的项目内写入必须直接成功，不得请求确认。
-// 旧比较逻辑会误判项目外 → 这里轮询到 decision 后拒绝收尾（不留悬挂 promise），
-// 再由断言失败暴露回归。
+// 旧比较逻辑会误判项目外 → 有界等待到 decision 后 deny 收尾（绝不留悬挂 await），
+// 再由断言失败暴露回归；正确实现下是「没有决策」且 pending 正常收敛。
 test("junction 项目根下项目内章节写入不被误判为项目外（auto_edit）", { skip: process.platform !== "win32" }, async (t) => {
   const { tools, journal, context, projectRoot: realRoot, linkRoot } = await setupJunction(t, {
     tool_permissions: { auto_edit: true }
@@ -232,9 +258,10 @@ test("junction 项目根下项目内章节写入不被误判为项目外（auto_
     { id, name: "write_file", arguments: { path: "chapters/001.md", content: "第一章" } },
     { ...context, projectRoot: linkRoot }
   );
-  const decision = await pollDecision(journal, id);
-  if (decision) {
-    await tools.resolveDecision({ decisionId: decision.payload.decision_id, choice: "deny" });
+  const outcome = await awaitSettledOrDecision(pending, journal, id);
+  if (outcome.decision) {
+    // 旧比较逻辑下的回归形态：先 deny 收尾让 pending 收敛，再由下面「必须直接执行」的断言报红。
+    await tools.resolveDecision({ decisionId: outcome.decision.payload.decision_id, choice: "deny" });
   }
   const result = await pending;
   const events = await journal.read({ afterSeq: 0 });
