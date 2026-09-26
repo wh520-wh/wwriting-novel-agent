@@ -46,8 +46,13 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  margin-inline: 0;
+  /* D15：与 .agent-composer 同为 min(100%, --content-column) 轴居中——宽视口下
+     正文列与 composer 列同框，右缘对齐（差 0px）才成立。 */
+  margin-inline: auto;
   padding: 28px var(--content-gutter, 20px) clamp(42px, 7vh, 72px);
+  /* D15：scrollbar-gutter: stable 在行尾单向占 8px（styles.css 滚动条宽 8px）——
+     行尾内边距等量回扣，正文列右缘与 composer 外壳右缘对齐（差 0px）。 */
+  padding-inline-end: calc(var(--content-gutter, 20px) - 8px);
   display: flex;
   flex-direction: column;
   gap: 16px;
