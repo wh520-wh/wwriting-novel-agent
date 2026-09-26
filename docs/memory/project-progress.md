@@ -90,7 +90,7 @@
 |---|------|------|-----------|
 | 20-1 | `docs/design/multi-session-architecture.md` §4 与末尾索引仍引用已退役符号（`migrateProjectData` / `legacy-import.mjs` / `journal-session-migration.mjs` / `runLegacyImport`；已核实 `src/` 零命中） | 文档陈旧 | 该文档标「状态：当前有效」，属伪事实；下一轮以「加已退役标注」方式订正（符号已删、迁移语义留历史说明） |
 | 20-2 | R3 seam 扫描器只认字面量 import；`scripts/benchmark-agent-journal.mjs:161/:270` 用计算式动态 import 直连 `journal.mjs`/`journal-segments.mjs`，落在盲区 | 守卫盲区 | 本轮按「不得缩名单绕过」未扩扫描器；扩扫描器会真红（该脚本确为包外直连），需连同 `path.join` 拼接与 `tests/agent/` 豁免口径一并设计 |
-| 20-3 | 贴近字节红线的文件：`journal-handlers.mjs` 余 845B（LF 归一实算，正确） | 体积债 | 下一批字节收口对象（口径：≤51200B，LF 归一；R1 已机器强制，破线即红）。**2026-09-25 订正**：原记 `model-settings-page.js` 余 341B（50859B）属 **CRLF 误测**——该值恰等于 LF 值 49921B 加上该文件行数 938（把 `\r` 计入了）；LF 归一实算为 938 行 / 49921B、余 1279B，**不属紧迫对象** |
+| 20-3 | 贴近字节红线的文件：`journal-handlers.mjs` 余 845B、`model-settings-page.js` 余 341B | 体积债 | 下一批字节收口对象（口径：≤51200B，LF 归一；R1 已机器强制，破线即红）。**2026-09-25 订正**：原记 `model-settings-page.js` 余 341B（50859B）属 **CRLF 误测**——该值恰等于 LF 值 49921B 加上该文件行数 938（把 `\r` 计入了）；LF 归一实算为 938 行 / 49921B、余 1279B，**不属紧迫对象** |
 | 20-4 | 新增导航用例未在 `finally` 恢复 `globalThis.document`，向同文件后续测试泄漏全局 DOM 桩 | 测试卫生 | 本轮已记为 Minor（658/658 全绿，无实际连带失败）；下一轮按同仓既有 `try/finally` 恢复惯例订正 |
 | 20-5 | `pre_restore` 去重口径与章节侧不一致（用「≠即将写入内容」而非比最新 checksum），常见场景会存一份与最新版本字节相同的冗余版，挤占 200 版上限 | 一致性 | 本轮为计划逐字口径，未改；属低频优化，非正确性问题 |
 | 20-6 | `project_busy`/`session_busy` 已进 `SAFE_PUBLIC_ERROR_CODES` 白名单，而同样「程序写死、不拼底层异常」的 `agent_running` 未进，导致版本回滚/恢复的 409 对直连客户端只显示通用脱敏文案 | 一致性 | 既有行为，需独立评估后决定是否扩白名单 |
@@ -103,9 +103,9 @@
 
 > 另：原欠账清单第 8 项（`session-sidebar.mjs` 维护契约注释订正 / `buildRecoveryHint` 语义分歧）在本轮 Task 5 被**部分**订正——该注释已补「rollback/restore 忙门已改为经 `agent.projectBusy` 消费 `hasNonTerminalRun`」口径；`buildRecoveryHint` 的语义分歧本身未验证是否已消解，暂不关闭。
 
-## 第二十一轮（round21）登记项（记录于 2026-09-25｜状态：待实现，只记不排）
+## 第二十一轮（round21）登记项（记录于 2026-09-25｜状态：当前有效）
 
-来源：2026-09-25 只读健壮性抽查复核 + 同日访谈（4 轮 15 问）。本轮范围＝路径身份统一（规格 `docs/design/2026-09-25-round21-path-identity-spec.md`，ADR 0009）；下列为本轮**明确不做**但已定性的余项。
+来源：2026-09-25 只读健壮性抽查复核 + 同日访谈（4 轮 15 问）。本轮范围＝路径身份统一（规格 `docs/design/2026-09-25-round21-path-identity-spec.md`，ADR 0009）；下列为本轮**明确不做**但已定性的余项，只记不排。
 
 **执行结果（记录于：2026-09-25｜状态：当前有效）**：本轮范围（工具层路径身份统一，ADR 0009）**已实现并验收**。实现提交 `c38df05`（根解析与失败闭环）、`83512aa`（目标路径解析异常收口）、`cca9124`（5 处比较点全部切到真实根）；新增 `tests/agent/path-identity.test.mjs`（8 用例，含 5 个 win32-only junction 用例）；未触碰任何 `journal*` 模块；`src/**/*.{js,mjs}` 无新增越线文件。四条门禁本轮实测：`npm test` **2000/2000（exit 0）**、`npm run verify:unified-agent` **36/36（exit 0）**、`npm run verify:desktop-shell` **exit 0**、`npm run verify:app-shell` **exit 1（既有失败，见 21-7，经用户裁定接受并登记）**。下表 21-1…21-7 为本轮明确不做、已定性的余项。
 
