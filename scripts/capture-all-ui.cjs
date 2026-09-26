@@ -800,9 +800,19 @@ async function scene(name, description, driver) {
   }
 }
 
+// D16（round22）：等 <html data-app-state>；error 时立即带出可见错误。
+async function waitAppReady(timeoutMs = 15000) {
+  await waitUntil("['ready','error'].includes(document.documentElement.dataset.appState)", "app-state ready/error", timeoutMs);
+  const state = await read("document.documentElement.dataset.appState");
+  if (state === "error") {
+    const detail = await read("document.querySelector('#project-open-status')?.textContent ?? ''");
+    throw new Error(`App failed to initialize (data-app-state=error): ${detail}`);
+  }
+}
+
 async function boot(url, { waitProjectTitle = null, composer = true } = {}) {
   await win.loadURL(url);
-  await waitUntil("Boolean(window.__wwritingMotionReady)", "motion runtime 初始化", 15000);
+  await waitAppReady();
   if (waitProjectTitle) {
     await waitUntil(
       `document.querySelector('#project-title')?.textContent.includes(${JSON.stringify(waitProjectTitle)})`,

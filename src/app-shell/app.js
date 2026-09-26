@@ -40,6 +40,10 @@ const CREATE_MODAL_COPY = {
 };
 
 export async function bootApp(root = document) {
+  // D16（round22）：就绪信号唯一化——<html data-app-state> 三态 loading/ready/error。
+  // ready 仅在 loadAll() 成功 resolve 后置位；任一初次加载失败置 error（脚本据此
+  // 立即报错而不是超时）。__wwritingMotionReady 已删除，不再有第二个就绪信号。
+  root.documentElement.dataset.appState = "loading";
   // Task 22：refs 分域——rail/drawer/reader/settings 四桶，消费点经分桶名引用。
   const railRefs = {
     rail: root.querySelector(".rail"),
@@ -578,7 +582,14 @@ export async function bootApp(root = document) {
   });
   
   async function loadAll() {
-    await Promise.all([loadProjectList(), loadDashboard()]);
+    // D16：初次加载两路都返回成功布尔——后台刷新仍照旧吞错并 toast，不受影响。
+    const results = await Promise.all([loadProjectList(), loadDashboard()]);
+    if (results.every((ok) => ok === true)) {
+      document.documentElement.dataset.appState = "ready";
+    } else {
+      // 失败路径已保留各自的可见错误（renderError / 空列表错误行），这里只翻状态。
+      document.documentElement.dataset.appState = "error";
+    }
   }
   
   async function loadProjectList() {
@@ -586,9 +597,11 @@ export async function bootApp(root = document) {
       const data = await getJson("/api/projects/list");
       projectListData = data;
       renderProjectListFiltered();
+      return true;
     } catch (error) {
       projectListData = null;
       railRefs.projectList.replaceChildren(renderProjectEmpty(error.message));
+      return false;
     }
   }
   
@@ -624,13 +637,15 @@ export async function bootApp(root = document) {
       // 终态刷新把顶栏/抽屉替换成「读取失败」；旧 scope 数据由上面的守卫丢弃。
       if (options?.background === true) {
         showToast(error?.message ?? "刷新失败。", "error");
-        return;
+        return false;
       }
       // Task 9：dashboard 失败时当前项目会话组降级为可重试失败行
       //（否则「加载中…」永不消失）。
       sessionSidebar.markSessionsFailed(activeProjectRoot);
       renderError(error);
+      return false;
     }
+    return true;
   }
   
   // Switch Cleanup Matrix：每次切换项目/无项目时重置项目级临时 UI 状态。
@@ -1045,7 +1060,6 @@ export async function bootApp(root = document) {
   }
   
   motion.setupMotion();
-  window.__wwritingMotionReady = true;
   
   await loadAll();
 
