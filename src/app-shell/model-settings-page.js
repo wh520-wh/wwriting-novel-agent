@@ -7,6 +7,16 @@ import { formatConnectionStatus } from "./settings-connection.mjs";
 import { icon } from "./icons.js";
 import { el as domEl, bindAutosave, fieldError, showFieldError, clearFieldError } from "./dom-kit.js";
 import { renderModelRows } from "./model-rows.mjs";
+import { VENDOR_LOGOS } from "./vendor-logos.js";
+
+const CATALOG_API = "/api/settings/provider-catalog";
+
+// 目录协议显示名（只读行与候选池共用）。
+const FORMAT_LABELS = {
+  "openai-chat-completions": "OpenAI Chat Completions",
+  "anthropic-messages": "Anthropic Messages",
+  "openai-responses": "OpenAI Responses"
+};
 
 export function pickProvider(providers, id) {
   return providers.find((p) => p.id === id) ?? null;
@@ -41,13 +51,10 @@ export function translateTechnicalError(error) {
   return raw;
 }
 
-// 密钥状态文案（Task 20 #3）：只显示「已配置」状态，绝不回显密钥明文；
-// 环境变量名不是密钥，可随状态展示帮助识别。
+// 密钥状态文案（Task 20 #3；round22 D8：ENV 变体删除）——只区分「已配置/未配置」，
+// 绝不回显密钥明文。
 function keyStatusText(provider) {
-  if (provider.api_key_saved) {
-    return provider.api_key_env ? `已配置（${provider.api_key_env}）` : "已配置";
-  }
-  return provider.api_key_env ? `已填环境变量名（${provider.api_key_env}）` : "未配置";
+  return provider.api_key_saved ? "已配置" : "未配置";
 }
 
 // 单次渲染的草稿引用：test/pull 的 commitCurrentDraft 从这里读当前表单值
@@ -58,7 +65,6 @@ function freshDraftRefs() {
     nameInput: null,
     baseUrlInput: null,
     keyInput: null,
-    envToggle: null,
     modelInputs: new Map(), // modelId → name input
     errorRefs: new Map() // fieldKey → 错误行 span
   };
@@ -80,6 +86,26 @@ export function createModelSettingsPage(ctx = {}) {
   // Task 11（F6）：el 迁入 dom-kit 共享层；documentRef 为 ctx 注入（测试注 mock），
   // 在此一行桥接，页面渲染调用点零改动。
   const el = (tag, props, children) => domEl(tag, props, children, documentRef);
+// D23：厂商 logo 渲染——填充字形（fill:currentColor; stroke:none），不得走 icon()
+// 的描边路径；无 logo 的厂商用大写首字母中性标（同规格圆角方块）。
+function vendorLogoEl(logoKey, name) {
+  // 固定尺寸容器：真实 logo（填充字形）与大写首字母中性标同规格圆角方块。
+  const box = el("span", { class: "vendor-logo" });
+  const path = logoKey ? VENDOR_LOGOS[logoKey] : null;
+  if (path) {
+    const svg = documentRef.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "currentColor");
+    const p = documentRef.createElementNS("http://www.w3.org/2000/svg", "path");
+    p.setAttribute("d", path);
+    svg.append(p);
+    box.append(svg);
+    return box;
+  }
+  box.append(el("span", { class: "vendor-logo-fallback", text: String(name ?? "?").charAt(0).toUpperCase() }));
+  return box;
+}
+
   let state = { providers: [], selected: null, default_model: null };
   // 当前渲染详情的草稿引用（renderDetail 每次重建；commitCurrentDraft 读取）。
   let activeDraftRefs = freshDraftRefs();
@@ -93,6 +119,35 @@ export function createModelSettingsPage(ctx = {}) {
   // 当前渲染详情的容器引用（renderDetail 记录；renderCandidateList/testConnection 的
   // 挂载节点查找改经此容器，规避 commit 重渲染后旧节点脱 DOM）。
   let currentDetail = null;
+  // D11（round22）：草稿按 providerId / "new"（添加供应商表单）记在实例闭包——
+  // 切分区/切供应商不丢未提交内容；密钥只在内存，performCloseSettingsModal 经
+  // clearDrafts() 清空（不落 localStorage）。
+  const drafts = new Map();
+  // D7：内置厂商目录（GET /api/settings/provider-catalog）——open 时取一次；
+  // 目录厂商只读判定（D9）与「添加模型」候选池都从这里来。
+  let catalogItems = [];
+  let catalogLoaded = null;
+  async function ensureCatalog() {
+    if (!catalogLoaded) {
+      catalogLoaded = fetchImpl(CATALOG_API)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => { catalogItems = Array.isArray(data?.catalog?.items) ? data.catalog.items : []; })
+        .catch(() => { catalogItems = []; });
+    }
+    await catalogLoaded;
+    return catalogItems;
+  }
+  // D9：目录厂商判定——base_url + api_format 与目录条目一致（seeded 与经候选池
+  // 添加的厂商都命中）；自建服务（任意手填 URL）不命中，连接字段可编辑。
+  function catalogVendorOf(provider) {
+    if (!provider) return null;
+    const base = String(provider.base_url ?? "").replace(/\/+$/u, "");
+    return catalogItems.find((item) => String(item.api?.baseUrl ?? "").replace(/\/+$/u, "") === base && item.api?.type === provider.api_format) ?? null;
+  }
+  // D11：弹窗关闭后清空全部内存草稿（含密钥）。
+  function clearDrafts() {
+    drafts.clear();
+  }
 
   function attach(targets) {
     attachedTargets = targets ?? null; // 传入 null 即解除
@@ -102,6 +157,8 @@ export function createModelSettingsPage(ctx = {}) {
   // 避免 Task 13-15 挂到本页后遇到未处理拒绝（页面停在旧状态而非空着报错）。
   async function refresh() {
     try {
+      // D7：目录取一次（失败静默为空——候选池与只读判定降级，不阻塞主流程）
+      await ensureCatalog();
       const res = await fetchImpl(`${API_BASE}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -350,7 +407,8 @@ export function createModelSettingsPage(ctx = {}) {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          provider: { base_url: targetProvider.base_url, api_key_env: targetProvider.api_key_env },
+          // D5：api_format 随候选透传——Anthropic/Responses 供应商不能退回 OpenAI 探测
+          provider: { base_url: targetProvider.base_url, api_format: targetProvider.api_format, api_key_env: targetProvider.api_key_env },
           model: { model_name: targetModel.model_name }
         })
       });
@@ -370,35 +428,28 @@ export function createModelSettingsPage(ctx = {}) {
     return { ok, data };
   }
 
-  // 添加供应商（Task 15 计划缺口补全）：POST 创建（Task 10 契约：创建忽略 api_key），
-  // 若表单给了明文密钥再 PATCH 落盘（PATCH 才把密钥写入对应 env bucket）。
-  async function addProvider({ name = "", base_url = "", api_format = "openai-chat-completions", api_key_env = "", api_key = "" } = {}) {
+  // 添加供应商（round22 D8/D10）：POST 只带名称/Base URL/协议——密钥存储名由
+  // 服务端按供应商编号生成；若表单给了明文密钥，创建成功后再 PATCH { api_key }
+  // 落盘。失败时保留草稿与密钥（不清表单），可重试。
+  async function addProvider({ name = "", base_url = "", api_format = "openai-chat-completions", api_key = "" } = {}) {
     const trimmed = {
       name: name.trim(),
       baseUrl: base_url.trim(),
-      envName: api_key_env.trim(),
       apiKey: String(api_key).trim()
     };
-    if (!trimmed.name || !trimmed.baseUrl || !trimmed.envName) {
-      showToast("名称、Base URL 与密钥环境变量名为必填项", "error");
+    if (!trimmed.name || !trimmed.baseUrl) {
+      showToast("名称与 Base URL 为必填项", "error");
       return false;
     }
     if (!/^https?:\/\/.+/u.test(trimmed.baseUrl)) {
       showToast("Base URL 需以 http:// 或 https:// 开头", "error");
       return false;
     }
-    // 与 PATCH 路由的 API_KEY_ENV_NAME 同款校验：POST 不校验 env 名（normalizeProvider
-    // 仅要求非空），非法名会越过创建、到 PATCH 落密钥时才 400——创建成功的供应商
-    // 留下无密钥的半成品。这里前置拦截，避免「POST 成功 + PATCH 失败」的中间态。
-    if (!isEnvironmentVariableName(trimmed.envName)) {
-      showToast("API 密钥环境变量名只能包含字母、数字、下划线且不能以数字开头。", "error");
-      return false;
-    }
     try {
       const res = await fetchImpl(`${API_BASE}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: trimmed.name, base_url: trimmed.baseUrl, api_format, api_key_env: trimmed.envName })
+        body: JSON.stringify({ name: trimmed.name, base_url: trimmed.baseUrl, api_format })
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.message ?? `HTTP ${res.status}`);
@@ -411,6 +462,7 @@ export function createModelSettingsPage(ctx = {}) {
         const keyData = await keyRes.json().catch(() => null);
         if (!keyRes.ok) throw new Error(keyData?.message ?? `HTTP ${keyRes.status}`);
       }
+      drafts.delete("new");
       await refresh();
       onChanged();
       showToast("供应商已添加", "success");
@@ -440,29 +492,29 @@ export function createModelSettingsPage(ctx = {}) {
     if (!baseUrl) return fieldError(refs, "base_url", "Base URL 不能为空");
     if (!/^https?:\/\/.+/u.test(baseUrl)) return fieldError(refs, "base_url", "Base URL 需以 http:// 或 https:// 开头");
     const keyValue = refs.keyInput.value.trim();
-    const envMode = refs.envToggle.checked === true;
-    if (envMode && keyValue && !isEnvironmentVariableName(keyValue)) {
-      return fieldError(refs, "api_key", "API 密钥环境变量名只能包含字母、数字、下划线且不能以数字开头。");
-    }
     for (const [mid, input] of refs.modelInputs) {
       if (!input.value.trim()) return fieldError(refs, `model_name:${mid}`, "模型名称不能为空");
     }
 
     // 2) 提交脏字段：provider 字段合并为一次 PATCH；模型逐个提交。
     // 与权威值逐字段比较，仅保存实际变化（避免无谓 PATCH）。
-    // 密钥/环境变量名与直连 change 处理器同语义：非空即提交（密钥不可读无法
-    // 比较）、成功后清空输入——不设「未变化跳过」分支，避免两入口行为分叉。
+    // 密钥与直连 change 处理器同语义：非空即提交（D8：一律按明文密钥
+    // { api_key }，ENV 模式已删除）、成功后清空输入——不设「未变化跳过」分支。
     let provider = baseProvider ?? {};
     let model = fallbackModel ?? baseProvider?.models.find((m) => m.id === modelId) ?? null;
     const providerPatch = {};
     if (name !== String(provider.name ?? "").trim()) providerPatch.name = name;
     if (baseUrl !== String(provider.base_url ?? "").trim()) providerPatch.base_url = baseUrl;
-    if (keyValue) providerPatch[envMode ? "api_key_env" : "api_key"] = keyValue;
+    if (keyValue) providerPatch.api_key = keyValue;
     if (Object.keys(providerPatch).length > 0) {
       const result = await commitProviderPatch(providerId, providerPatch);
       if (result?.ok === false) return { ok: false, error: result.error ?? "保存失败，请重试" };
-      provider = result.provider ?? { ...provider, name, base_url: baseUrl, ...(envMode && keyValue ? { api_key_env: keyValue } : {}) };
-      if (keyValue) refs.keyInput.value = ""; // 密钥/环境变量名不回显
+      provider = result.provider ?? { ...provider, name, base_url: baseUrl };
+      if (keyValue) {
+        refs.keyInput.value = ""; // 密钥不回显
+        const draft = drafts.get(providerId);
+        if (draft) draft.api_key = ""; // 内存草稿中的密钥一并清空
+      }
     }
     for (const [mid, input] of refs.modelInputs) {
       const value = input.value.trim();
@@ -502,6 +554,10 @@ export function createModelSettingsPage(ctx = {}) {
   // （placeholder 提示+「已配置」状态标签）；其「已保存」在输入框内的表征即空串，
   // 故判脏 = 存在未失焦的非空已键入值（envToggle 单独拨动不落盘、不构成脏）。
   function isDirty() {
+    // D11：「添加供应商」表单纳入 dirty——任一字段有未提交内容即判脏
+    //（密钥不回显，非空即未提交）。drafts 只在内存。
+    const newDraft = drafts.get("new");
+    if (newDraft && [newDraft.name, newDraft.base_url, newDraft.api_key, newDraft.manualModelId].some((v) => String(v ?? "").trim() !== "")) return true;
     if (!activeDraftRefs) return false;
     const refs = activeDraftRefs;
     const provider = state.selected;
@@ -522,8 +578,10 @@ export function createModelSettingsPage(ctx = {}) {
     container.replaceChildren();
     container.append(el("h3", { text: "我的供应商" }));
     for (const provider of state.providers) {
+      const vendor = catalogVendorOf(provider);
       const item = el("div", { class: `provider-item ${provider.id === state.selected?.id ? "selected" : ""}`, "data-provider-id": provider.id }, [
-        el("span", { text: provider.name }),
+        vendorLogoEl(vendor?.logoKey ?? null, provider.name),
+        el("span", { class: "provider-item-name", text: provider.name }),
         el("span", { class: `status-dot ${provider.status === "enabled" ? "on" : "off"}` })
       ]);
       item.addEventListener("click", () => {
@@ -534,57 +592,110 @@ export function createModelSettingsPage(ctx = {}) {
       });
       container.append(item);
     }
-    // 「+ 添加供应商」：Task 15 启用，点击在列表底部展开内联表单（默认收起）。
+    // D7/D10：「+ 添加供应商」= 可搜索目录候选池（不默认十家全铺）+「中转站 /
+    // 自建服务」手填表单。目录候选一经点选即 POST 进入已添加列表（连接字段随后
+    // 只读，D9）；自建服务走三字段表单（D8：无密钥存储名）。
     const addProviderButton = el("button", { class: "add-provider", type: "button", text: "+ 添加供应商" });
     const form = el("div", { class: "add-provider-form", "data-add-provider-form": "true" });
     form.hidden = true;
-    // 表单字段：名称（必填）/ Base URL（必填，http(s)）/ API 接口协议（仅
-    // openai-chat-completions 可选）/ 密钥环境变量名（必填——后端契约：明文密钥
-    // 只能写入已有 env bucket，POST 创建又不落密钥，故 env 名必须随创建提交）/
-    // API 密钥（可选，直接粘贴，创建成功后 PATCH 落盘）。
-    const nameInput = el("input", { class: "provider-form-name", "data-field": "new-name", placeholder: "供应商名称（必填）" });
-    const baseUrlInput = el("input", { class: "provider-form-base-url", "data-field": "new-base_url", placeholder: "https://api.example.com/v1（必填）" });
+
+    // —— 目录候选池：搜索后才展开结果（默认不铺开）——
+    const searchInput = el("input", { class: "catalog-search", "data-field": "catalog-search", placeholder: "搜索厂商目录…" });
+    const catalogResults = el("div", { class: "catalog-results", "data-catalog-results": "true" });
+    const addedKeys = () => new Set(state.providers.map((p) => `${String(p.base_url ?? "").replace(/\/+$/u, "")}|${p.api_format}`));
+    const renderCatalogResults = () => {
+      const query = searchInput.value.trim().toLowerCase();
+      if (!query) {
+        catalogResults.replaceChildren();
+        catalogResults.hidden = true; // 不铺开：空搜索无结果区
+        return;
+      }
+      const added = addedKeys();
+      const hits = catalogItems.filter((item) => {
+        const label = item.nameMap?.["zh-CN"] ?? item.id;
+        if (added.has(`${String(item.api?.baseUrl ?? "").replace(/\/+$/u, "")}|${item.api?.type}`)) return false;
+        return label.toLowerCase().includes(query) || String(item.id).toLowerCase().includes(query);
+      });
+      catalogResults.replaceChildren();
+      catalogResults.hidden = false;
+      if (hits.length === 0) {
+        catalogResults.append(el("p", { class: "catalog-empty", text: "目录中没有匹配的厂商，可用下方自建服务接入" }));
+        return;
+      }
+      for (const item of hits) {
+        const label = item.nameMap?.["zh-CN"] ?? item.id;
+        const row = el("button", { type: "button", class: "catalog-row", "data-catalog-id": item.id }, [
+          vendorLogoEl(item.logoKey ?? null, label),
+          el("span", { text: label }),
+          el("span", { class: "catalog-row-format", text: FORMAT_LABELS[item.api?.type] ?? "" })
+        ]);
+        row.addEventListener("click", async () => {
+          // 明确点选 = 进入已添加列表（POST 三字段，密钥随后在详情里补）
+          const ok = await addProvider({ name: label, base_url: item.api?.baseUrl, api_format: item.api?.type });
+          if (ok) {
+            form.hidden = true;
+            searchInput.value = "";
+            catalogResults.replaceChildren();
+            catalogResults.hidden = true;
+          }
+        });
+        catalogResults.append(row);
+      }
+    };
+    searchInput.addEventListener("input", renderCatalogResults);
+    catalogResults.hidden = true;
+
+    // —— 中转站 / 自建服务：三字段手填（D8：名称 + Base URL + 协议，密钥可选）——
+    const manualToggle = el("button", { type: "button", class: "catalog-manual-toggle", text: "中转站 / 自建服务…" });
+    const manualForm = el("div", { class: "provider-manual-form" });
+    manualForm.hidden = true;
+    const newDraft = () => drafts.get("new") ?? {};
+    const track = (input, field) => input.addEventListener("input", () => {
+      drafts.set("new", { ...(drafts.get("new") ?? {}), [field]: input.value });
+    });
+    const nameInput = el("input", { class: "provider-form-name", "data-field": "new-name", value: newDraft().name ?? "", placeholder: "供应商名称（必填）" });
+    const baseUrlInput = el("input", { class: "provider-form-base-url", "data-field": "new-base_url", value: newDraft().base_url ?? "", placeholder: "https://api.example.com/v1（必填）" });
     const formatSelect = el("select", { "data-field": "new-api_format" });
-    for (const [value, label, disabled] of [
-      ["openai-chat-completions", "OpenAI Chat Completions", false],
-      ["anthropic-messages", "Anthropic Messages", true],
-      ["openai-responses", "OpenAI Responses API", true],
-      ["gemini-generate-content", "Gemini Native generateContent", true]
-    ]) {
-      const option = el("option", { value, text: label });
-      if (disabled) option.disabled = true;
-      formatSelect.append(option);
+    for (const [value, label] of Object.entries(FORMAT_LABELS)) {
+      formatSelect.append(el("option", { value, text: label }));
     }
-    formatSelect.value = "openai-chat-completions";
-    const envInput = el("input", { class: "provider-form-env", "data-field": "new-api_key_env", placeholder: "密钥环境变量名，如 MY_API_KEY（必填）" });
-    const keyInput = el("input", { type: "password", class: "provider-form-key", "data-field": "new-api_key", placeholder: "API 密钥（可选，直接粘贴）" });
+    formatSelect.value = newDraft().api_format ?? "openai-chat-completions";
+    const keyInput = el("input", { type: "password", class: "provider-form-key", "data-field": "new-api_key", value: newDraft().api_key ?? "", placeholder: "API 密钥（可选，直接粘贴）" });
+    track(nameInput, "name");
+    track(baseUrlInput, "base_url");
+    formatSelect.addEventListener("change", () => {
+      drafts.set("new", { ...(drafts.get("new") ?? {}), api_format: formatSelect.value });
+    });
+    track(keyInput, "api_key");
     const submitButton = el("button", { type: "button", class: "provider-form-submit", text: "添加" });
     submitButton.addEventListener("click", async () => {
       const ok = await addProvider({
         name: nameInput.value,
         base_url: baseUrlInput.value,
         api_format: formatSelect.value,
-        api_key_env: envInput.value,
         api_key: keyInput.value
       });
+      // D11：失败时保留草稿和密钥，不清表单；成功 addProvider 内部已清 "new" 草稿
       if (ok) {
         form.hidden = true;
+        manualForm.hidden = true;
         nameInput.value = "";
         baseUrlInput.value = "";
-        envInput.value = "";
         keyInput.value = "";
       }
     });
     const cancelButton = el("button", { type: "button", class: "provider-form-cancel", text: "取消" });
     cancelButton.addEventListener("click", () => { form.hidden = true; });
-    form.append(
+    manualForm.append(
       el("label", { text: "名称" }), nameInput,
       el("label", { text: "Base URL" }), baseUrlInput,
       el("label", { text: "API 接口协议" }), formatSelect,
-      el("label", { text: "密钥环境变量名" }), envInput,
       el("label", { text: "API 密钥" }), keyInput,
       submitButton, cancelButton
     );
+    manualToggle.addEventListener("click", () => { manualForm.hidden = !manualForm.hidden; });
+
+    form.append(searchInput, catalogResults, manualToggle, manualForm);
     addProviderButton.addEventListener("click", () => { form.hidden = !form.hidden; });
     container.append(addProviderButton, form);
   }
@@ -597,9 +708,17 @@ export function createModelSettingsPage(ctx = {}) {
     activeDraftRefs = freshDraftRefs();
     if (!provider) { container.append(el("p", { text: "还没有供应商，先添加一个。" })); return; }
     activeDraftRefs.providerId = provider.id;
+    // D11：草稿回填——切走再回来时未提交值仍在（切走前已由 input 监听写入 drafts）。
+    const draft = drafts.get(provider.id) ?? {};
+    // D9：目录厂商判定——连接字段只读（带锁），只有密钥可编辑。
+    const catalogVendor = catalogVendorOf(provider);
 
     // 供应商名：可编辑输入，失焦（change）自动保存；空值行内中文错误不静默丢弃。
-    const nameInput = el("input", { value: provider.name, class: "provider-name", "data-field": "name" });
+    const nameInput = el("input", { value: draft.name ?? provider.name, class: "provider-name", "data-field": "name" });
+    // D11：输入即时同步内存草稿（切供应商/切分区前不必依赖失焦）。
+    nameInput.addEventListener("input", () => {
+      drafts.set(provider.id, { ...(drafts.get(provider.id) ?? {}), name: nameInput.value });
+    });
     activeDraftRefs.nameInput = nameInput;
     bindAutosave(nameInput, {
       refs: activeDraftRefs,
@@ -636,77 +755,75 @@ export function createModelSettingsPage(ctx = {}) {
       deleteButton
     ]));
 
-    container.append(el("label", { text: "Base URL" }));
-    const baseUrlInput = el("input", { value: provider.base_url, "data-field": "base_url" });
-    activeDraftRefs.baseUrlInput = baseUrlInput;
-    bindAutosave(baseUrlInput, {
-      refs: activeDraftRefs,
-      fieldKey: "base_url",
-      validate: (value) => {
-        if (!value) return "Base URL 不能为空";
-        if (!/^https?:\/\/.+/u.test(value)) return "Base URL 需以 http:// 或 https:// 开头";
-        return null;
-      },
-      commit: (value) => commitProviderPatch(provider.id, { base_url: value })
-    });
-    const baseUrlError = el("span", { class: "spd-field-error", "data-field-error": "base_url" });
-    activeDraftRefs.errorRefs.set("base_url", baseUrlError);
-    container.append(baseUrlInput, baseUrlError);
+    // D9：连接信息区——目录厂商只读（Base URL 与协议带锁展示），自建服务可编辑。
+    if (catalogVendor) {
+      const baseUrlRow = el("div", { class: "provider-readonly-row", "data-field": "base_url" }, [
+        el("span", { class: "provider-readonly-value", text: provider.base_url })
+      ]);
+      const formatRow = el("div", { class: "provider-readonly-row", "data-field": "api_format" }, [
+        el("span", { class: "provider-readonly-value", text: FORMAT_LABELS[provider.api_format] ?? provider.api_format })
+      ]);
+      const lock = (row) => {
+        row.prepend(icon("lock", 14, "provider-readonly-lock", documentRef));
+        row.setAttribute("data-readonly", "true");
+        row.title = "目录厂商的连接信息不可修改";
+      };
+      lock(baseUrlRow);
+      lock(formatRow);
+      container.append(
+        el("div", { class: "dfield" }, [el("span", { text: "Base URL" }), baseUrlRow]),
+        el("div", { class: "dfield" }, [el("span", { text: "API 接口协议" }), formatRow])
+      );
+    } else {
+      const baseUrlInput = el("input", { value: draft.base_url ?? provider.base_url, "data-field": "base_url" });
+      baseUrlInput.addEventListener("input", () => {
+        drafts.set(provider.id, { ...(drafts.get(provider.id) ?? {}), base_url: baseUrlInput.value });
+      });
+      activeDraftRefs.baseUrlInput = baseUrlInput;
+      bindAutosave(baseUrlInput, {
+        refs: activeDraftRefs,
+        fieldKey: "base_url",
+        validate: (value) => {
+          if (!value) return "Base URL 不能为空";
+          if (!/^https?:\/\/.+/u.test(value)) return "Base URL 需以 http:// 或 https:// 开头";
+          return null;
+        },
+        commit: (value) => commitProviderPatch(provider.id, { base_url: value })
+      });
+      const baseUrlError = el("span", { class: "spd-field-error", "data-field-error": "base_url" });
+      activeDraftRefs.errorRefs.set("base_url", baseUrlError);
+      container.append(
+        el("div", { class: "dfield" }, [el("span", { text: "Base URL" }), baseUrlInput, baseUrlError])
+      );
 
-    container.append(el("label", { text: "API 接口协议" }));
-    const formatSelect = el("select", { "data-field": "api_format" });
-    for (const [value, label, disabled] of [
-      ["openai-chat-completions", "OpenAI Chat Completions", false],
-      ["anthropic-messages", "Anthropic Messages", true],
-      ["openai-responses", "OpenAI Responses API", true],
-      ["gemini-generate-content", "Gemini Native generateContent", true]
-    ]) {
-      const option = el("option", { value, text: label });
-      if (disabled) option.disabled = true;
-      formatSelect.append(option);
-    }
-    formatSelect.value = provider.api_format;
-    // 当前只支持 openai-chat-completions 落盘：值非法时回退到当前值并提示，
-    // 不发无效 PATCH（其余选项渲染为 disabled 占位，此处是第二道防线）。
-    formatSelect.addEventListener("change", () => {
-      if (formatSelect.value !== "openai-chat-completions") {
-        formatSelect.value = provider.api_format;
-        showToast("当前仅支持 OpenAI Chat Completions 协议", "error");
-        return;
+      // D5：三协议可选（gemini 死选项已删）；自建服务可切换协议并即时保存。
+      const formatSelect = el("select", { "data-field": "api_format" });
+      for (const [value, label] of Object.entries(FORMAT_LABELS)) {
+        formatSelect.append(el("option", { value, text: label }));
       }
-      saveProviderPatch(provider.id, { api_format: formatSelect.value });
-    });
-    container.append(formatSelect);
+      formatSelect.value = provider.api_format;
+      formatSelect.addEventListener("change", () => {
+        saveProviderPatch(provider.id, { api_format: formatSelect.value });
+      });
+      container.append(
+        el("div", { class: "dfield" }, [el("span", { text: "API 接口协议" }), formatSelect])
+      );
+    }
 
-    container.append(el("label", { text: "API 密钥" }));
-    // Task 20 #3/#14：输入框不回显密钥；「使用环境变量名」checkbox 默认关闭，
-    // 关闭时一律按明文密钥提交 { api_key: value }（即使形如 MY_API_KEY），
-    // 打开后才按环境变量名提交 { api_key_env: value }——语义由开关决定，不猜形状。
-    const keyInput = el("input", { type: "password", value: "", "data-field": "api_key", placeholder: "粘贴 API 密钥（默认按明文保存）" });
+    container.append(
+      el("div", { class: "dfield" }, [el("span", { text: "API 密钥" })])
+    );
+    // Task 20 #3/#14；round22 D8：输入框不回显密钥，「使用环境变量名」开关删除，
+    // 一律按明文密钥提交 { api_key: value }。密钥只在内存草稿（切走不丢），保存
+    // 成功后清空，关闭弹窗随 clearDrafts() 丢弃。
+    const keyInput = el("input", { type: "password", value: draft.api_key ?? "", "data-field": "api_key", placeholder: "粘贴 API 密钥" });
     activeDraftRefs.keyInput = keyInput;
-    const envToggle = el("input", { type: "checkbox", class: "api-key-env-toggle", "data-field": "api_key_env_toggle" });
-    envToggle.checked = false;
-    activeDraftRefs.envToggle = envToggle;
-    envToggle.addEventListener("change", () => {
-      clearFieldError(activeDraftRefs, "api_key");
-      keyInput.placeholder = envToggle.checked ? "环境变量名，如 MY_API_KEY" : "粘贴 API 密钥（默认按明文保存）";
+    keyInput.addEventListener("input", () => {
+      drafts.set(provider.id, { ...(drafts.get(provider.id) ?? {}), api_key: keyInput.value });
     });
     keyInput.addEventListener("change", async () => {
       const value = keyInput.value.trim();
       if (!value) { clearFieldError(activeDraftRefs, "api_key"); return; }
-      if (envToggle.checked) {
-        if (!isEnvironmentVariableName(value)) {
-          showFieldError(activeDraftRefs, "api_key", "API 密钥环境变量名只能包含字母、数字、下划线且不能以数字开头。");
-          return;
-        }
-        const result = await commitProviderPatch(provider.id, { api_key_env: value });
-        if (result?.ok === false) {
-          showFieldError(activeDraftRefs, "api_key", result.error ?? "保存失败，请重试");
-          return;
-        }
-        keyInput.value = ""; // 不回显密钥/环境变量名，状态由「已配置」标签呈现
-        return;
-      }
       // 明文密钥：保存成功后才清空回显，失败保留已键入值。
       const result = await commitProviderPatch(provider.id, { api_key: value });
       if (result?.ok === false) {
@@ -714,6 +831,8 @@ export function createModelSettingsPage(ctx = {}) {
         return;
       }
       keyInput.value = "";
+      const d = drafts.get(provider.id);
+      if (d) d.api_key = "";
     });
     // Round10：eye 用现有图标体系（eye/eyeOff 切换），按钮固定贴在输入框右侧热区。
     const eye = el("button", { type: "button", class: "api-key-eye", title: "显示/隐藏密钥", "aria-label": "显示/隐藏密钥" });
@@ -726,20 +845,35 @@ export function createModelSettingsPage(ctx = {}) {
       eye.setAttribute("aria-pressed", showing ? "false" : "true");
     });
     const keyField = el("div", { class: "api-key-field" }, [keyInput, eye]);
-    const envLabel = el("label", { class: "api-key-env-label" }, [envToggle, el("span", { text: "使用环境变量名" })]);
     const keyStatus = el("span", { class: "api-key-status", "data-api-key-status": "true", text: keyStatusText(provider) });
     const keyError = el("span", { class: "spd-field-error", "data-field-error": "api_key" });
     activeDraftRefs.errorRefs.set("api_key", keyError);
-    container.append(keyField, envLabel, keyStatus, keyError);
+    container.append(keyField, keyStatus, keyError);
+    // D13：模型区灰底撑满详情面板，空态（无模型）在区内居中——容器由本页建，
+    // 内容由 model-rows 渲染；空态只给「添加模型」一个动作（D10，见 model-rows）。
+    const modelArea = el("div", { class: `model-area${(provider.models ?? []).length === 0 ? " is-empty" : ""}` });
+    container.append(modelArea);
     // 模型区渲染：已拆至 model-rows.mjs（round22 D22/R1——字节余量不足以承载本轮
     // B 链改动；唯一调用方在此，state 与网络回调仍由本模块持有，经 deps 注入）。
-    renderModelRows(container, provider, {
+    // D10：catalogCandidates 供「添加模型」候选池（目录中本厂商协议匹配的候选），
+    // addModel(id) 只在明确选择/提交非空 ID 时 POST。
+    renderModelRows(modelArea, provider, {
       el, icon, documentRef,
       draftRefs: activeDraftRefs,
       advancedOpenModels,
       isDefaultModel, commitModelPatch, saveModelPatch, setDefaultModel,
-      removeModelWithConfirm, testConnection, pullModels, addModel
+      removeModelWithConfirm, testConnection, pullModels, addModel,
+      catalogCandidates: catalogCandidatesFor(provider)
     });
+  }
+
+  // D10：「添加模型」候选池——目录里与本厂商同协议的条目的 candidateModelIds
+  //（去除已添加的 model_name）。目录不匹配（自建服务）→ 空列表，仅手填。
+  function catalogCandidatesFor(provider) {
+    const vendor = catalogVendorOf(provider);
+    if (!vendor) return [];
+    const existing = new Set((provider.models ?? []).map((m) => m.model_name));
+    return (vendor.candidateModelIds ?? []).filter((id) => !existing.has(id));
   }
 
   // 拉取候选展开：把候选名渲染进模型区的可折叠容器并展开（行内「添加」按钮逐个
@@ -785,6 +919,9 @@ export function createModelSettingsPage(ctx = {}) {
     close() {},
     refresh,
     attach,
+    clearDrafts,
+    isCatalogVendor: (provider) => Boolean(catalogVendorOf(provider)),
+    catalogReady: ensureCatalog,
     getState: () => state,
     renderList,
     renderDetail,
