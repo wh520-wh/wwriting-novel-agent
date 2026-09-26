@@ -78,32 +78,34 @@ export function createProvidersRoutes({ secretsRoot }) {
     // 留有一个惰性孤儿值，无损坏（反向顺序更糟：upsert 先落盘后密钥写入失败，
     // 会留下一个指向缺失密钥的供应商）。
     // Task 20 #14 密钥契约：字段名即语义，后端不猜字符串形状——
-    //   { api_key: value } 一律按明文密钥写入 api_key_env 对应 bucket；
+    //   { api_key: value } 一律按明文密钥写入密钥桶；
     //   { api_key_env: value } 只更新环境变量名，不写 secrets。
+    // D8（round22）：产品里不再有「密钥存储名」概念——「用户未填 env 名」的 400
+    // 路径删除；桶名 = 显式 env > 既有 env > 供应商编号（自动桶），密钥写盘时把
+    // 字段同步成实际桶名（旧空 env 记录借此回填）。解析出的桶名非法时仍拒绝写盘
+    //（saveLocalSecrets 会静默丢弃非法环境变量名，不能让密钥静默丢失）。
     // 响应只携带 api_key_saved: boolean（密钥保存状态），绝不回显明文。
     "PATCH /api/settings/providers/:id": wrap(async ({ params, body }) => {
       const current = await providerOf(params.id);
       const payload = { ...(body ?? {}) };
       const transientKey = typeof payload.api_key === "string" ? payload.api_key.trim() : "";
       delete payload.api_key;
-      // api_key_env 字段更新：写前校验名称形状（saveLocalSecrets 会静默丢弃非法
-      // 环境变量名，这里先拦截，避免「看似成功实则未落盘」）。
-      const envNamePatch = typeof payload.api_key_env === "string" ? payload.api_key_env.trim() : null;
-      if (envNamePatch !== null && !API_KEY_ENV_NAME.test(envNamePatch)) {
-        throw new HttpError(400, "invalid_api_key_env", "API 密钥环境变量名只能包含字母、数字、下划线且不能以数字开头。");
-      }
-      // 校验与合并同一口径：trim 后的值落盘（避免校验过了、原始值带空白落盘）。
-      if (envNamePatch !== null) payload.api_key_env = envNamePatch;
+      const envNamePatch = typeof payload.api_key_env === "string" ? payload.api_key_env.trim() : "";
+      delete payload.api_key_env;
+      if (envNamePatch) payload.api_key_env = envNamePatch;
       if (transientKey) {
-        const envName = envNamePatch ?? String(current.api_key_env ?? "").trim();
-        if (!envName) throw new HttpError(400, "invalid_api_key_env", "请先填写 API 密钥环境变量名。");
-        if (!API_KEY_ENV_NAME.test(envName)) throw new HttpError(400, "invalid_api_key_env", "API 密钥环境变量名只能包含字母、数字、下划线且不能以数字开头。");
+        const envName = envNamePatch || String(current.api_key_env ?? "").trim() || current.id;
+        if (!API_KEY_ENV_NAME.test(envName)) {
+          throw new HttpError(400, "invalid_api_key_env", "API 密钥环境变量名只能包含字母、数字、下划线且不能以数字开头。");
+        }
         const secrets = await loadLocalSecrets(secretsRoot);
         await saveLocalSecrets(secretsRoot, { ...secrets, [envName]: transientKey });
         // whfind-bugs #2：密钥写盘后立即注入运行中进程——否则连接测试（直读
         // secrets.json）通过、正式模型调用（只查 process.env）失败，首次配置
         // 流程必须重启才能用。
         applyLocalSecretsToEnv({ [envName]: transientKey });
+        // D8：桶名落字段——新供应商自动桶 / 旧空 env 记录回填都经这里同步。
+        if (!payload.api_key_env) payload.api_key_env = envName;
       }
       const merged = { ...current, ...payload, id: current.id };
       const { provider, store } = await upsertProvider(secretsRoot, merged);
