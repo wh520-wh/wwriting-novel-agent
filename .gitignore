@@ -22,8 +22,12 @@ debug/
 .workbuddy/
 
 # 本地保留、不推送（用户要求）
+# CLAUDE.md / AGENTS.md 是 AI 协作说明文件，docs/agents/ 是 AI 技能配置；
+# 按用户 2026-09-26 要求一律不入库（AI 痕迹不公开）。
 CLAUDE.md
+AGENTS.md
 docs/superpowers/
+docs/agents/
 
 # 本地研究资料，不推送（用户要求）
 docs/research/2026-07-31-codewhale-deepseek-cache-ledger.json
