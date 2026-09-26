@@ -1,4 +1,12 @@
 // src/core/model-presets.mjs
+//
+// D7（round22）：内置厂商目录（./model/vendor-catalog.json）是身份与连接信息的
+// 唯一来源。原两条硬编码预设降级为目录里 seeded:true 的两条；候选模型 ID 只存在
+// 于目录一份（本文件的种子/迁移定义均从目录派生，不留两份硬编码候选列表）。
+// 播种语义（D7）：新安装只播种 seeded 条目的供应商、models 为空列表——候选模型
+// 不再自动入列，模型列表从空态开始；v1 旧清单迁移仍按目录派生的预设定义匹配与
+// 补全（迁移只加不减，已落盘模型原样保留）。
+import vendorCatalog from "./model/vendor-catalog.json" with { type: "json" };
 import { OFFICIAL_PRICING } from "../shared/official-pricing.mjs";
 import { loadProviderStore, saveProviderStore, withStoreLock } from "./model-provider-store.mjs";
 
@@ -9,24 +17,24 @@ function presetModel(modelName) {
     : { model_name: modelName, enabled: true };
 }
 
-export const MODEL_PRESETS = [
-  {
-    id: "deepseek",
-    name: "DeepSeek 官方",
-    base_url: "https://api.deepseek.com",
-    api_format: "openai-chat-completions",
-    api_key_env: "DEEPSEEK_API_KEY",
-    models: [presetModel("deepseek-v4-pro"), presetModel("deepseek-v4-flash")]
-  },
-  {
-    id: "mimo",
-    name: "小米 MiMo 官方",
-    base_url: "https://api.xiaomimimo.com/v1",
-    api_format: "openai-chat-completions",
-    api_key_env: "XIAOMI_MIMO_API_KEY",
-    models: [presetModel("mimo-v2.5-pro"), presetModel("mimo-v2.5")]
-  }
-];
+// 候选目录 → 预设定义（仅 seeded 条目）。models 从目录候选与官方价目表的交集
+// 派生——与旧硬编码预设的模型集合逐条一致（deepseek：v4-pro/v4-flash；mimo：
+// v2.5-pro/v2.5），v1 迁移的匹配/补全/价格行为不变。
+export const MODEL_PRESETS = vendorCatalog.items
+  .filter((item) => item.seeded === true)
+  .map((item) => ({
+    id: item.id,
+    name: item.nameMap["zh-CN"],
+    base_url: item.api.baseUrl,
+    api_format: item.api.type,
+    api_key_env: item.apiKeyEnv ?? item.id,
+    models: item.candidateModelIds.filter((model) => OFFICIAL_PRICING[model]).map(presetModel)
+  }));
+
+// 目录只读出口（GET /api/settings/provider-catalog 返回原样 JSON，不含密钥）。
+export function vendorCatalogData() {
+  return vendorCatalog;
+}
 
 // 种子规则：清单中无该预设 id 且「从未种过」才写入（删除不复活）——
 // seeded_preset_ids 记录已种过的预设 id，用户删除后不重新种。
@@ -49,6 +57,8 @@ export async function ensurePresetProviders(root, { load = loadProviderStore, sa
     );
     if (missing.length === 0) return { store, seeded: 0, changed: false };
     const providers = [
+      // D7：播种只写供应商身份（models 空列表）——候选模型不自动入列，新用户
+      // 的模型列表从空态开始（审美立场第 3 条：默认不等于全量）。
       ...missing.map((preset) => ({
         id: preset.id,
         name: preset.name,
@@ -59,13 +69,7 @@ export async function ensurePresetProviders(root, { load = loadProviderStore, sa
         api_key_env: preset.api_key_env,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
-        models: preset.models.map((m) => ({
-          id: `m_${preset.id}_${m.model_name}`,
-          model_name: m.model_name,
-          enabled: true,
-          context_window: /\[1m\]$/iu.test(m.model_name) ? 1000000 : 256000,
-          ...(m.pricing ? { pricing: { ...m.pricing } } : {})
-        }))
+        models: []
       })),
       ...store.providers
     ];

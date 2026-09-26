@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "revision": 1,
+  "note": "内置厂商目录（round22 D7）：身份与连接信息的唯一来源，只作候选池，不自动成为 store 数据。candidateModelIds 是可搜索候选，不是可用性承诺；Base URL 与 api.type 于 2026-09-26 经公开资料核对（xAI /v1/responses、OpenRouter 与智谱/Kimi/MiniMax 的 Anthropic 兼容端点均有官方文档）。apiKeyEnv 仅两条 seeded 条目携带：沿用旧预设的密钥存储名，保证既有用户无缝迁移。",
+  "items": [
+    {
+      "id": "deepseek",
+      "nameMap": { "zh-CN": "DeepSeek 官方" },
+      "group": "常用",
+      "api": { "type": "openai-chat-completions", "baseUrl": "https://api.deepseek.com" },
+      "candidateModelIds": ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v3.2-exp"],
+      "logoKey": "deepseek",
+      "apiKeyEnv": "DEEPSEEK_API_KEY",
+      "seeded": true
+    },
+    {
+      "id": "mimo",
+      "nameMap": { "zh-CN": "小米 MiMo 官方" },
+      "group": "常用",
+      "api": { "type": "openai-chat-completions", "baseUrl": "https://api.xiaomimimo.com/v1" },
+      "candidateModelIds": ["mimo-v2.5-pro", "mimo-v2.5"],
+      "logoKey": "xiaomi",
+      "apiKeyEnv": "XIAOMI_MIMO_API_KEY",
+      "seeded": true
+    },
+    {
+      "id": "zhipu",
+      "nameMap": { "zh-CN": "智谱 GLM" },
+      "group": "常用",
+      "api": { "type": "anthropic-messages", "baseUrl": "https://open.bigmodel.cn/api/anthropic" },
+      "candidateModelIds": ["glm-4.6", "glm-4.5-air", "glm-4.5-flash"],
+      "logoKey": null,
+      "seeded": false
+    },
+    {
+      "id": "kimi",
+      "nameMap": { "zh-CN": "Kimi" },
+      "group": "常用",
+      "api": { "type": "anthropic-messages", "baseUrl": "https://api.moonshot.cn/anthropic" },
+      "candidateModelIds": ["kimi-k2-turbo-preview", "kimi-k2-0905-preview"],
+      "logoKey": "moonshotai",
+      "seeded": false
+    },
+    {
+      "id": "minimax",
+      "nameMap": { "zh-CN": "MiniMax" },
+      "group": "全部厂商",
+      "api": { "type": "anthropic-messages", "baseUrl": "https://api.minimaxi.com/anthropic" },
+      "candidateModelIds": ["MiniMax-M2", "abab7-chat-preview"],
+      "logoKey": "minimax",
+      "seeded": false
+    },
+    {
+      "id": "qwen",
+      "nameMap": { "zh-CN": "通义千问" },
+      "group": "全部厂商",
+      "api": { "type": "openai-chat-completions", "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1" },
+      "candidateModelIds": ["qwen3-max", "qwen3-coder-plus"],
+      "logoKey": "qwen",
+      "seeded": false
+    },
+    {
+      "id": "openai",
+      "nameMap": { "zh-CN": "OpenAI" },
+      "group": "全部厂商",
+      "api": { "type": "openai-responses", "baseUrl": "https://api.openai.com/v1" },
+      "candidateModelIds": ["gpt-5.1", "gpt-5.1-mini"],
+      "logoKey": null,
+      "seeded": false
+    },
+    {
+      "id": "anthropic",
+      "nameMap": { "zh-CN": "Anthropic" },
+      "group": "全部厂商",
+      "api": { "type": "anthropic-messages", "baseUrl": "https://api.anthropic.com" },
+      "candidateModelIds": ["claude-sonnet-4-6", "claude-haiku-4-6"],
+      "logoKey": "anthropic",
+      "seeded": false
+    },
+    {
+      "id": "xai",
+      "nameMap": { "zh-CN": "xAI" },
+      "group": "全部厂商",
+      "api": { "type": "openai-responses", "baseUrl": "https://api.x.ai/v1" },
+      "candidateModelIds": ["grok-4", "grok-4-fast"],
+      "logoKey": null,
+      "seeded": false
+    },
+    {
+      "id": "openrouter",
+      "nameMap": { "zh-CN": "OpenRouter" },
+      "group": "全部厂商",
+      "api": { "type": "anthropic-messages", "baseUrl": "https://openrouter.ai/api" },
+      "candidateModelIds": ["anthropic/claude-sonnet-4.6", "deepseek/deepseek-v4"],
+      "logoKey": "openrouter",
+      "seeded": false
+    }
+  ]
+}

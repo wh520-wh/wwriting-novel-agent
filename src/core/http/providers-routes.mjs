@@ -6,7 +6,7 @@ import { applyLocalSecretsToEnv, loadLocalSecrets, saveLocalSecrets } from "../l
 import {
   upsertProvider, removeProvider, upsertModel, removeModel, setDefaultModel
 } from "../model-provider-store.mjs";
-import { ensurePresetProviders } from "../model-presets.mjs";
+import { ensurePresetProviders, vendorCatalogData } from "../model-presets.mjs";
 import { writingRequiredCapabilitiesOk } from "../model/capabilities.mjs";
 
 // 与 src/core/local-secrets.mjs 的 ENV_NAME 保持一致：saveLocalSecrets 会经
@@ -51,6 +51,11 @@ export function createProvidersRoutes({ secretsRoot }) {
   };
 
   return {
+    // D7（round22）：只读厂商目录——身份与连接信息唯一来源（vendor-catalog.json），
+    // 供设置页「添加供应商」候选池取用（浏览器不能直接 import 核心目录文件）。
+    // 静态数据，不含任何密钥。
+    "GET /api/settings/provider-catalog": async () => ({ ok: true, catalog: vendorCatalogData() }),
+
     // 前端契约：GET 返回扁平 store（providers / default_model 顶层字段），
     // 突变端点（POST/PATCH/remove）返回嵌套 store 字段。
     // Task 20 #3：每个 provider 附带 api_key_saved（本地 secrets 是否已存密钥），
