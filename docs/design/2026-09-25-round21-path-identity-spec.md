@@ -89,7 +89,7 @@ function projectRootForChecks(context) {
 
 1. `npm test` 全量 —— 基线 1992/1992（2026-09-24 实跑值；本轮只加不减）
 2. `npm run verify:unified-agent` —— 36/36
-3. `npm run verify:app-shell` —— exit 0
+3. `npm run verify:app-shell` —— exit 0（门禁 3 本轮为既有失败，见下方「偏离记录」与欠账 21-7）
 4. `npm run verify:desktop-shell` —— exit 0
 
 完成判据（三条硬判据）：
@@ -116,6 +116,8 @@ function projectRootForChecks(context) {
 | `runtime-helpers.mjs:78` 与 `app-state.mjs:120` 两份 `samePath` | 受大小写口径影响 | 不修 → 登记 21-1 |
 | `journal-segments.mjs:188-189` 隔离时静默吞 rename 错（会重复记 gap） | 无关（隔离路径） | 不修 → 登记 21-5 |
 
+> 记录于：2026-09-25｜状态：待复核。round21 终审指出本表部分条目疑为误判（`app-server.mjs:414` 疑属 app-shell 静态资源包含性、与项目根无关；`chapter-artifact.mjs:32` 疑为两侧同源派生）。21-2 以本表为工单前须逐条复核。
+
 ## 非目标
 
 缺口台账重算（ADR 0010，实现排后）、项目身份层、大小写口径与两份 `samePath` 合一、shell 写目标承诺扩大、版本快照兜底、忙门与项目锁合并、体积腾挪（除完成判据第 3 条外不主动拆文件）、任何 UI 改动、真实 API 复跑、发布与打包。
@@ -130,3 +132,4 @@ function projectRootForChecks(context) {
 | 计划 Task 2 Step 2：确认 junction 保护主表在旧比较逻辑下变红 | 该表在 Task 2 实现前**已绿**（受保护路径的取值口径属 Task 1 交付物）；本任务真红灯来自另 4 处：只读工具 fail-closed、shell cwd 保护 fail-open、auto_edit 误确认、`safe_edit_target` 误判 | 完成判据 1（新测试在旧代码下变红）由 Task 1 满足；主表在本任务中充当防回归护栏 | 2026-09-25 |
 | 计划 Task 1 Step 3：「从 `index.mjs`、`definitions-fs.mjs`、`definitions-shell.mjs` 三个文件导入」`projectRootForChecks` | Task 1 只在本文件定义导出 + 由 `fileProtectedCheck` 消费；三个文件的实际 import 延到 Task 2 有真实消费点时再加 | Task 1 加 import 就是无用 import（死代码）；该句描述的是整轮结束时的状态 | 2026-09-25 |
 | 规格「验收门禁与完成判据」门禁 3：`npm run verify:app-shell` exit 0 | 本轮实测 exit 1，失败在 `scripts/verify-app-shell.mjs:372`（「思考项完成态标签应为 思考 N 秒」）；在 round21 之前的提交 `65bcf1e` 上以 Node 22 与 Node 25 独立复现同一断言，判定为**既有失败、与本轮改动无关**（断言由 `069ffa0` 引入） | 用户 2026-09-25 裁定：接受现状并登记为欠账 21-7，不在本轮修——修它属 app-shell 投影改动，与规格「非目标」中的「任何 UI 改动」冲突。另三条门禁本轮实测全绿：`npm test` 2000/2000、`verify:unified-agent` 36/36、`verify:desktop-shell` exit 0 | 2026-09-25 |
+| 规格「用户可见变化」只列三条 | 实际在 `CHANGELOG.md` 增记第 4 条 | 根不可解析（被删除、卸载，或不是目录）时，所有工具由各式报错/挂起变为统一的 `path_resolution_failed`，属用户可见行为变化，不记即为遗漏 | 2026-09-25 |
