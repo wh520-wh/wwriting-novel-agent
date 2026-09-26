@@ -54,6 +54,9 @@ export function createSessionSidebar({
   scrollEl = null,
   getProjectListData,
   getCurrentProjectRoot,
+  // D2（round22）：应用级唯一活跃会话 id（app.js 持有）——高亮/busy/占位判定的唯一
+  // 活跃来源；项目缓存不再存 per-project activeSessionId（消除第二状态源）。
+  getActiveSessionId = () => null,
   fetchSessions,
   renderProjectRow,
   surface,
@@ -69,7 +72,9 @@ export function createSessionSidebar({
   doc = globalThis.document
 }) {
   const collapsedByRoot = loadCollapsed();
-  const sessionCache = new Map(); // projectRoot -> { sessions, activeSessionId }
+  // D2：缓存只存会话列表（projectRoot -> { sessions }）——活跃 id 全应用唯一，
+  // 由 getActiveSessionId() 提供，不在项目缓存里存第二份。
+  const sessionCache = new Map();
   const pendingFetches = new Map(); // projectRoot -> Promise（并发展开去重）
   const failedRoots = new Set(); // 懒拉取/dashboard seed 失败的项目（显示失败行，可重试）
   const groupEls = new Map(); // projectRoot -> .session-group 元素（定向重渲）
@@ -277,12 +282,20 @@ export function createSessionSidebar({
 
   function buildSessionGroupChildren(root) {
     const parts = [];
+    // D3：草稿占位行是本地内存态（不进缓存、不发给后端）——只对当前项目且全局
+    // 活跃 id 以 draft- 开头时渲染，旧项目绝不渲染草稿。
+    const globalActiveId = getActiveSessionId();
+    const draftActive = root === getCurrentProjectRoot() &&
+      typeof globalActiveId === "string" && globalActiveId.startsWith("draft-");
+    if (draftActive) {
+      parts.push(renderSessionRow({ session_id: globalActiveId, status: "draft" }, root));
+    }
     const entry = sessionCache.get(root);
     if (entry) {
-      // Task 3 双保险：draft 占位绝不渲染（surface 已不投递，此过滤兜底跨项目 stale 缓存）
+      // 双保险：缓存里的 draft 项（跨项目 stale 数据）仍不渲染
       const visible = entry.sessions.filter((session) => session.status !== "draft" && !session.archived_at);
-      for (const session of visible) parts.push(renderSessionRow(session, entry.activeSessionId, root));
-      if (visible.length === 0) parts.push(emptyRow("还没有对话"));
+      for (const session of visible) parts.push(renderSessionRow(session, root));
+      if (visible.length === 0 && !draftActive) parts.push(emptyRow("还没有对话"));
     } else if (failedRoots.has(root)) {
       // dashboard seed 失败与懒拉失败共用降级行（可点击重试）。
       parts.push(renderFailedRow(root));
@@ -345,9 +358,11 @@ export function createSessionSidebar({
   }
 
   // ---- 会话行 ----
-  function renderSessionRow(session, activeSessionId, ownerRoot) {
+  // D2：高亮只对当前项目且 id 等于应用级活跃 id 的正式行生效（草稿行永不高亮）。
+  function renderSessionRow(session, ownerRoot) {
     const isDraft = session.status === "draft";
-    const isActive = !isDraft && session.session_id === activeSessionId;
+    const isActive = !isDraft && ownerRoot === getCurrentProjectRoot() &&
+      session.session_id === getActiveSessionId();
     const row = doc.createElement("div");
     row.className = `session-row${isActive ? " active" : ""}${isDraft ? " session-draft" : ""}`;
     row.dataset.sessionId = session.session_id;
@@ -426,15 +441,11 @@ export function createSessionSidebar({
     }
     // 切走 draft 占位：surface 在 switchSession 内部已刷新一次列表（agent/index.js
     // 的切走收尾 prevDraft 分支），这里跳过续作刷新避免双刷；其余切换仍需 app 侧
-    // 刷新（Task 8 契约：surface 不自动拉）。活跃指针取自会话缓存（与渲染同源）。
-    // Task 3 后 draft 永不进入缓存（handleSessionsChanged 过滤 draft 项），
-    // leavingDraft 恒为 false——保留该分支作防御（若未来 draft 重新入缓存，切走
-    // 时不双刷）。
-    const leavingEntry = sessionCache.get(token.projectRoot);
-    const leavingDraft = leavingEntry?.activeSessionId != null &&
-      leavingEntry.sessions.some(
-        (s) => s.session_id === leavingEntry.activeSessionId && s.status === "draft"
-      );
+    // 刷新（Task 8 契约：surface 不自动拉）。活跃指针取自应用级 getter（D2：
+    // 与渲染同源）；缓存永存 draft 项，此处仅作切走占位时的防御。
+    const globalActiveId = getActiveSessionId();
+    const leavingDraft = token.projectRoot === getCurrentProjectRoot() &&
+      typeof globalActiveId === "string" && globalActiveId.startsWith("draft-");
     return Promise.resolve(surface.switchSession(sessionId)).then(() => {
       // 防串场：慢切换/慢刷新在途期间用户已切到别的项目/会话 → 丢弃后续动作
       //（列表活跃高亮 + busy 复位由下一次刷新承担）。
@@ -562,8 +573,7 @@ export function createSessionSidebar({
       // 不得重建已移除项目的缓存。
       if (removedRoots.has(projectRoot)) return null;
       const entry = {
-        sessions: Array.isArray(data?.sessions) ? data.sessions : [],
-        activeSessionId: data?.active_session_id ?? null
+        sessions: Array.isArray(data?.sessions) ? data.sessions : []
       };
       sessionCache.set(projectRoot, entry);
       return entry;
@@ -575,15 +585,14 @@ export function createSessionSidebar({
   }
 
   // ---- 数据入口 ----
-  // dashboard 数据（当前项目会话 + 最近活跃）：seed 后定向补渲当前组 + busy 复位。
-  // 空值语义与 handleSessionsChanged 一致：activeSessionId 为空 → 缓存清空活跃指针
-  //（无会话时绝不残留上一项目的旧会话 id——syncBusy 的"其他会话"判定依赖它）。
-  function seedSessions(projectRoot, sessions, activeSessionId) {
+  // dashboard 数据（当前项目会话列表）：seed 后定向补渲当前组 + busy 复位。
+  // D2：活跃 id 不入缓存（应用级 getter 是唯一活跃来源）；busy 的"其他会话"判定
+  // 依赖全局活跃 id，无会话时也不存在残留指针问题。
+  function seedSessions(projectRoot, sessions) {
     if (!projectRoot) return;
     if (removedRoots.has(projectRoot)) return; // Task 16（B13）：已移除项目不重建缓存
     sessionCache.set(projectRoot, {
-      sessions: Array.isArray(sessions) ? sessions : [],
-      activeSessionId: activeSessionId ?? null
+      sessions: Array.isArray(sessions) ? sessions : []
     });
     failedRoots.delete(projectRoot); // dashboard seed 成功：清理失败标记（与缓存覆盖一致）
     rerenderGroup(projectRoot);
@@ -591,12 +600,11 @@ export function createSessionSidebar({
   }
 
   // surface.onSessionsChanged → app.js 转发：只重渲当前项目组（保滚动）+ busy 复位。
-  function handleSessionsChanged(projectRoot, sessions, activeSessionId) {
+  function handleSessionsChanged(projectRoot, sessions) {
     if (!projectRoot) return;
     if (removedRoots.has(projectRoot)) return; // Task 16（B13）：已移除项目不重建缓存
     sessionCache.set(projectRoot, {
-      sessions: Array.isArray(sessions) ? sessions : [],
-      activeSessionId: activeSessionId ?? null
+      sessions: Array.isArray(sessions) ? sessions : []
     });
     rerenderGroup(projectRoot);
     syncBusy();
@@ -615,7 +623,7 @@ export function createSessionSidebar({
     }
     const entry = sessionCache.get(root);
     const busy = entry
-      ? entry.sessions.some((s) => s.session_id !== entry.activeSessionId && BUSY_RUN_STATUSES.has(s.run_status))
+      ? entry.sessions.some((s) => s.session_id !== getActiveSessionId() && BUSY_RUN_STATUSES.has(s.run_status))
       : false;
     surface.setBusy?.(busy);
     if (busy) startBusyRefresh();
@@ -707,16 +715,18 @@ export function createSessionSidebar({
 // Task 5：会话被移除（归档/删除）后的「切走 + 占位兜底」编排（依赖注入纯函数工厂，
 // app.js 接线：getSessions/switchSession 绑定 session-sidebar 缓存与会话切换，
 // refreshSessions/newSessionPlaceholder 绑定 agentSurface）。独立导出以便行为级测试
-// 直接断言（含占位分支可达性）。
+// 直接断言（含占位分支可达性）。D2：当前活跃 id 从 getActiveSessionId 读取
+//（应用级唯一活跃来源），不再读会话缓存。
 export function createSessionRemovalResolver({
   getSessions,
+  getActiveSessionId,
   switchSession,
   refreshSessions,
   newSessionPlaceholder
 }) {
   return async function resolveActiveAfterSessionRemoval(sessionId) {
     // 操作对象不再是当前活跃指针（操作方触发的刷新已反映新活跃）→ 无需切走。
-    if (getSessions()?.activeSessionId !== sessionId) return;
+    if (getActiveSessionId?.() !== sessionId) return;
     await switchSession(null);
     // 切走推进会话代次（surface.switchSession 递增 sessionGeneration）：操作方
     //（surface.sessionAction）在切走前发起的旧列表刷新已被代次守卫丢弃
