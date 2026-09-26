@@ -368,6 +368,18 @@ async function read(win, expression) {
   }
 }
 
+// D16（round22）：等 <html data-app-state>；error 时立即带出可见错误。
+async function waitAppReady(win, timeoutMs = 10000) {
+  await waitUntil(win, "['ready','error'].includes(document.documentElement.dataset.appState)", "app-state ready/error", timeoutMs);
+  const state = await win.webContents.executeJavaScript("document.documentElement.dataset.appState");
+  if (state === "error") {
+    const detail = await win.webContents.executeJavaScript(
+      "document.querySelector('#project-open-status')?.textContent ?? ''"
+    );
+    throw new Error(`App failed to initialize (data-app-state=error): ${detail}`);
+  }
+}
+
 async function waitUntil(win, expression, describe, timeoutMs = 8000) {
   const start = Date.now();
   let lastError = null;
@@ -1353,7 +1365,7 @@ async function main() {
 
   async function bootToProject(titleText) {
     await win.loadURL(`http://127.0.0.1:${boundPort}`);
-    await waitUntil(win, "Boolean(window.__wwritingMotionReady)", "motion runtime 初始化", 10000);
+    await waitAppReady(win, 10000);
     await waitUntil(win, "document.querySelector('#project-title')?.textContent.includes('" + titleText + "')", "dashboard 加载项目", 10000);
     await waitUntil(win, "document.querySelector('[data-testid=\"agent-composer-input\"]') !== null", "AgentSurface composer 挂载", 10000);
     await waitUntil(win, "Boolean(document.querySelector('[data-testid=\"agent-conversation\"]'))", "对话容器挂载", 8000);
@@ -2335,7 +2347,7 @@ async function runRound7({ mainRepo, roundDir, theme }) {
   });
 
   await win.loadURL(`http://127.0.0.1:${boundPort}`);
-  await waitUntil(win, "Boolean(window.__wwritingMotionReady)", "motion runtime must initialize", 10000);
+  await waitAppReady(win, 10000);
   await waitUntil(win, "document.querySelector('#project-title')?.textContent.includes('视觉验收样例小说')", "dashboard must load project", 10000);
   await waitUntil(win, "document.querySelector('[data-testid=\"agent-composer-input\"]') !== null", "AgentSurface composer must mount", 10000);
   await waitUntil(win, "Boolean(document.querySelector('[data-testid=\"agent-conversation\"]'))", "conversation must mount", 8000);
@@ -2373,7 +2385,7 @@ async function runRound7({ mainRepo, roundDir, theme }) {
   // ---- 重载页面：会话列表刷新只在 submit/切会话等事件触发，重载走 openProject →
   // refreshSessions 让会话行渲染；队列/优先状态在服务端 snapshot 中保留。----
   await win.loadURL(`http://127.0.0.1:${boundPort}`);
-  await waitUntil(win, "Boolean(window.__wwritingMotionReady)", "motion runtime after reload", 10000);
+  await waitAppReady(win, 10000);
   await waitUntil(win, "document.querySelector('#project-title')?.textContent.includes('视觉验收样例小说')", "dashboard after reload", 10000);
   await waitUntil(win, "document.querySelectorAll('.agent-queue-item').length === 3", "queue rows after reload", 15000);
   await waitUntil(win, "Boolean(document.querySelector('.session-op-compose'))", "session row after reload", 10000);
