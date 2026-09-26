@@ -1,5 +1,6 @@
 .demo_runs/
 artifacts/
+.scratch/
 .electron-builder-cache/
 dist-desktop/
 node_modules/

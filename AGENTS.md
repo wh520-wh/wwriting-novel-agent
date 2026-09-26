@@ -7,6 +7,7 @@
 ## 开工必读
 
 - 工程收敛规则见下文「工程收敛规则」节，先读它再分析、修改或制定计划；不要只读本摘要就开始改代码。
+- **减少过度工程化（2026-09-26 用户明确要求，本节最要紧的一条）**：默认答案是「不做」。新增抽象层、新依赖、新配置项、新文件、新开关、新接口，都必须先拿出证据回答「不这么做会具体坏掉什么」；答不出来就**删掉这个方案**，而不是降级成 TODO、注释或「未来可能复用」的预留位。能复用现有的 helper / 函数 / 模式就不要新建；能一行解决就不要写成模块；能给一个可运行的最小实现就不要先铺三层抽象。这条与下文「工程收敛规则」的**先删后拆**、**测试只锁行为**、**产品优先级**是同一原则的入口摘要，细则以该节为准；两者冲突时以本条为准——宁可不做，不做大的。
 - 项目进度、各轮验收数字与当前欠账清单在 `docs/memory/project-progress.md`；轮次详情见 `docs/design/` 与 `docs/memory/` 对应文件。
 - 每轮只处理一个收敛目标，优先复用和删除已证实冗余的代码。拆分应减少共享状态和阅读负担，不能只按文件大小搬代码；保留恢复、权限和数据安全行为。
 - 测试保护可观察行为与安全不变量。删除或合并测试前，确认仍有检查覆盖原有失败场景；不得为减少测试数量而牺牲回归防线。
@@ -95,3 +96,19 @@ Rules:
 Not lazy about: understanding the problem (read it fully and trace the real flow before picking a rung, a small diff you don't understand is just laziness dressed up as efficiency), input validation at trust boundaries, error handling that prevents data loss, security, accessibility, the calibration real hardware needs (the platform is never the spec ideal, a clock drifts, a sensor reads off), anything explicitly requested. Lazy code without its check is unfinished: non-trivial logic leaves ONE runnable check behind, the smallest thing that fails if the logic breaks (an assert-based demo/self-check or one small test file; no frameworks, no fixtures). Trivial one-liners need no test.
 
 (Yes, this file also applies to agents working on the ponytail repo itself. Especially to them.)
+
+## Agent skills
+
+记录于：2026-09-26｜状态：当前有效｜依据：setup-matt-pocock-skills 首次配置
+
+### Issue tracker
+
+issue 与 spec 以 markdown 文件存放在仓库内 `.scratch/<feature>/` 下（本地追踪，不用 GitHub Issues）。详见 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+沿用默认五个角色，逐字作为 issue 文件里的 `Status:` 行取值：`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`。详见 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+单上下文（single-context）：根目录 `CONTEXT.md` + `docs/adr/`，无 `CONTEXT-MAP.md`。详见 `docs/agents/domain.md`。
