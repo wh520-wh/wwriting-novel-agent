@@ -107,7 +107,7 @@
 
 来源：2026-09-25 只读健壮性抽查复核 + 同日访谈（4 轮 15 问）。本轮范围＝路径身份统一（规格 `docs/design/2026-09-25-round21-path-identity-spec.md`，ADR 0009）；下列为本轮**明确不做**但已定性的余项，只记不排。
 
-**执行结果（记录于：2026-09-25｜状态：当前有效）**：本轮范围（工具层路径身份统一，ADR 0009）**已实现并验收**。实现提交 `c38df05`（根解析与失败闭环）、`83512aa`（目标路径解析异常收口）、`cca9124`（5 处比较点全部切到真实根）；新增 `tests/agent/path-identity.test.mjs`（8 用例，含 5 个 win32-only junction 用例）；未触碰任何 `journal*` 模块；`src/**/*.{js,mjs}` 无新增越线文件。四条门禁本轮实测：`npm test` **2000/2000（exit 0）**、`npm run verify:unified-agent` **36/36（exit 0）**、`npm run verify:desktop-shell` **exit 0**、`npm run verify:app-shell` **exit 1（既有失败，见 21-7，经用户裁定接受并登记）**。下表 21-1…21-7 为本轮明确不做、已定性的余项。
+**执行结果（记录于：2026-09-25｜状态：当前有效）**：本轮范围（工具层路径身份统一，ADR 0009）**已实现并验收**。实现提交 `c38df05`（根解析与失败闭环）、`83512aa`（目标路径解析异常收口）、`cca9124`（5 处比较点全部切到真实根）；新增 `tests/agent/path-identity.test.mjs`（9 用例，含 5 个 win32-only junction 用例）；未触碰任何 `journal*` 模块；`src/**/*.{js,mjs}` 无新增越线文件。四条门禁本轮实测：`npm test` **2001/2001（exit 0）**、`npm run verify:unified-agent` **36/36（exit 0）**、`npm run verify:desktop-shell` **exit 0**、`npm run verify:app-shell` **exit 1（既有失败，见 21-7，经用户裁定接受并登记）**。下表 21-1…21-8 为本轮明确不做、已定性的余项。
 
 | # | 事项 | 类型 | 状态与去向 |
 |---|------|------|-----------|
