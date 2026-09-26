@@ -167,7 +167,11 @@ export function createProvidersRoutes({ secretsRoot }) {
       return { ok: true, store };
     }),
 
-    // 拉取模型中转：外呼厂商 GET /models，返回候选模型名列表（不落盘）。
+    // 拉取模型中转：外呼厂商模型列表端点，返回候选模型名列表（不落盘）。
+    // D10（round22）：按协议分发——OpenAI Chat/Responses 用 Bearer GET /models；
+    // Anthropic Messages 用 x-api-key + anthropic-version GET /v1/models；两者
+    // 的响应同形（{ data: [{ id }] }），沿用同一结果归一。不支持模型列表的
+    // 中转站显示真实错误，不把候选写盘。
     "POST /api/settings/providers/:id/pull-models": wrap(async ({ params }) => {
       const provider = await providerOf(params.id);
       const secrets = await loadLocalSecrets(secretsRoot);
@@ -175,14 +179,23 @@ export function createProvidersRoutes({ secretsRoot }) {
       if (!apiKey) {
         throw new HttpError(400, "missing_api_key", "请先填写 API 密钥，再拉取模型。");
       }
+      const isAnthropic = provider.api_format === "anthropic-messages";
       let payload;
       try {
         // base_url 只要求非空字符串，scheme-less 值会在此抛 TypeError，须放进 try
         // 以映射为 pull_failed（而不是 400 invalid_provider）。
-        const url = new URL("models", `${provider.base_url.replace(/\/+$/u, "")}/`);
-        const res = await fetch(url, {
-          headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" }
-        });
+        const trimmed = provider.base_url.replace(/\/+$/u, "");
+        let url = `${trimmed}/models`;
+        if (isAnthropic) {
+          // 与 messages 端点同款拼接：路径已以 /v1 结尾不重复追加
+          let pathname = "";
+          try { pathname = new URL(trimmed).pathname.replace(/\/+$/u, ""); } catch { /* 非法 URL 交由下方 fetch 失败 */ }
+          url = `${trimmed}${pathname.endsWith("/v1") ? "/models" : "/v1/models"}`;
+        }
+        const headers = isAnthropic
+          ? { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" }
+          : { authorization: `Bearer ${apiKey}`, "content-type": "application/json" };
+        const res = await fetch(url, { headers });
         if (!res.ok) {
           throw new HttpError(400, "pull_failed", `模型服务返回 ${res.status}：${(await res.text()).slice(0, 200)}`);
         }

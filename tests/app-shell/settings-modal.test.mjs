@@ -475,9 +475,13 @@ test("model 分区 dirty：isDirty 为 true 时关闭先弹确认层（复用 op
   assert.ok(layer, "应出现「放弃未保存修改」确认层");
   assert.equal(layer.hidden, false, "确认层应可见");
   const copy = domRegistry.find((el) => String(el.className).includes("spd-confirm-copy"));
-  assert.match(copy.textContent, /未保存的修改/u, "确认文案应说明未保存修改会丢失");
+  // D12（round22）：模型分区确认层用专属文案与按钮（关闭设置？/未提交的内容会丢失）
+  assert.match(copy.textContent, /模型设置里未提交的内容会丢失/u, "模型分区确认文案应为 D12 专属文案");
+  // 标题为 h4.spd-section（dom-kit showConfirmLayer 结构）
+  const titleEl = domRegistry.find((el) => String(el.className).includes("spd-section") && String(el.textContent).includes("关闭设置？"));
+  assert.ok(titleEl, "模型分区确认标题应为「关闭设置？」");
 
-  // 取消：确认层关闭，弹窗保持打开
+  // 取消（「继续编辑」）：确认层关闭，弹窗保持打开
   findElementById("close-dirty-cancel")._fire("click");
   assert.equal(findElementById("close-dirty-confirm").hidden, true, "取消后确认层关闭");
   assert.equal(scrim.classList.contains("show"), true, "取消后弹窗保持打开");

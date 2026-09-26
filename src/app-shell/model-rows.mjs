@@ -32,13 +32,23 @@ function presetSelect({ el, field, presetsK, value, defaultK, onChange }) {
 // 模型区渲染（从 renderDetail 拆出：Task 15 的拉取/测试连接接线落在这里）。
 // 结构：标题行「模型列表 + 拉取模型」→ 可折叠候选容器（默认收起，pullModels
 // 成功自动展开，逐条「添加」）→ 各模型行（改名 / 启停 / 测试连接 / 设默认 / 删除）。
+// D10（round22）：空态（无模型）只给「添加模型」一个动作；「添加模型」打开可
+// 搜索目录候选 + 手填 ID 输入，只有明确选择/提交非空 ID 时才 POST（addModel(id)）。
 export function renderModelRows(container, provider, deps) {
   const {
     el, icon, documentRef,
     draftRefs, advancedOpenModels,
     isDefaultModel, commitModelPatch, saveModelPatch, setDefaultModel,
-    removeModelWithConfirm, testConnection, pullModels, addModel
+    removeModelWithConfirm, testConnection, pullModels, addModel,
+    catalogCandidates = () => []
   } = deps;
+
+  const isEmpty = (provider.models ?? []).length === 0;
+  if (isEmpty) {
+    // D10：新供应商空态——仅「添加模型」按钮（不写解释段落、不铺拉取入口）。
+    container.append(buildAddModelControl());
+    return;
+  }
 
   container.append(el("h4", { text: "模型列表" }));
   const pullButton = el("button", { type: "button", class: "pull-models", text: "拉取模型" });
@@ -155,10 +165,55 @@ export function renderModelRows(container, provider, deps) {
       resultSlot
     ]));
   }
-  // 「+ 添加模型」：Task 14 启用（Task 15 的拉取/行内编辑接手后仍保留此兜底入口）。
-  const addModelButton = el("button", { type: "button", class: "add-model", text: "+ 添加模型" });
-  addModelButton.addEventListener("click", () => {
-    addModel(provider.id);
-  });
-  container.append(addModelButton);
+  // 「+ 添加模型」（D10）：打开可搜索候选池 + 手填 ID 输入；点选候选或提交
+  // 非空手填 ID 才调 addModel(provider.id, id) POST。
+  container.append(buildAddModelControl());
+
+  // 添加模型控件：按钮 + 折叠面板（候选搜索 + 手填输入）。候选来自目录中与本
+  // 厂商同协议的条目（deps.catalogCandidates），已入列的候选被上游过滤。
+  function buildAddModelControl() {
+    const wrap = el("div", { class: "add-model-control", "data-add-model-control": "true" });
+    const addButton = el("button", { type: "button", class: "add-model", text: "+ 添加模型" });
+    const panel = el("div", { class: "add-model-panel" });
+    panel.hidden = true;
+    addButton.addEventListener("click", () => { panel.hidden = !panel.hidden; });
+
+    const search = el("input", { class: "add-model-search", "data-field": "add-model-search", placeholder: "搜索目录候选，或直接在下方手填模型 ID" });
+    const hits = el("div", { class: "add-model-hits", "data-add-model-hits": "true" });
+    const manualInput = el("input", { class: "add-model-manual", "data-field": "add-model-manual", placeholder: "手填模型 ID，如 deepseek-v4-pro" });
+    const submit = el("button", { type: "button", class: "add-model-submit", text: "添加模型" });
+
+    const renderHits = () => {
+      const query = search.value.trim().toLowerCase();
+      const list = catalogCandidates().filter((id) => !query || String(id).toLowerCase().includes(query));
+      hits.replaceChildren();
+      hits.hidden = list.length === 0;
+      for (const id of list) {
+        const row = el("button", { type: "button", class: "add-model-candidate", "data-candidate-model": id }, [
+          el("span", { text: id }),
+          el("span", { class: "add-model-candidate-add", text: "添加" })
+        ]);
+        row.addEventListener("click", async () => {
+          // 明确选择候选 = 立即入列
+          const ok = await addModel(provider.id, id);
+          if (ok) panel.hidden = true;
+        });
+        hits.append(row);
+      }
+    };
+    search.addEventListener("input", renderHits);
+    submit.addEventListener("click", async () => {
+      const id = manualInput.value.trim();
+      if (!id) return; // 空手填不 POST
+      const ok = await addModel(provider.id, id);
+      if (ok) {
+        manualInput.value = "";
+        panel.hidden = true;
+      }
+    });
+
+    panel.append(search, hits, manualInput, submit);
+    wrap.append(addButton, panel);
+    return wrap;
+  }
 }
