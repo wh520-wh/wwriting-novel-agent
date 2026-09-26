@@ -43,8 +43,9 @@ export function createProvidersRoutes({ secretsRoot }) {
   };
   // 行为保留（first-principles：能力门禁不随重构丢失）：保存/设默认的模型
   // 必须支持工具调用，否则写作引擎跑不动，保存时直接拒绝。
+  // D5（round22）：能力判定带 api_format 协议维度。
   const assertWritingCapable = (provider, modelName) => {
-    if (!writingRequiredCapabilitiesOk({ provider: "openai-compatible", model_name: modelName, base_url: provider.base_url })) {
+    if (!writingRequiredCapabilitiesOk({ provider: "openai-compatible", api_format: provider.api_format, model_name: modelName, base_url: provider.base_url })) {
       throw new HttpError(400, "model_unsupported", "该模型不支持工具调用，无法用于小说写作。");
     }
   };
