@@ -28,7 +28,8 @@ import { createProvidersRoutes } from "./http/providers-routes.mjs";
 import { createProjectAgent } from "./agent/index.mjs";
 import { createWorkspaceStore } from "./workspaces/store.mjs";
 import { createModelGateway } from "./model/gateway.mjs";
-import { OpenAICompatibleAdapter, ProviderConfigurationError } from "./model/openai-compatible.mjs";
+import { ProviderConfigurationError } from "./model/openai-compatible.mjs";
+import { createProtocolAdapter } from "./model/gateway.mjs";
 import { runShellCommand } from "./shell/runtime.mjs";
 import { CostTracker } from "./cost-tracker.mjs";
 import { isPathInside, safeJoin } from "./fs-utils.mjs";
@@ -319,7 +320,10 @@ export function createAppModelGateway({ resolveEffectiveConfig }) {
           if (!active || active.provider !== "openai-compatible") {
             throw new ProviderConfigurationError("未配置模型：请先在模型设置中选择模型。");
           }
-          const adapter = new OpenAICompatibleAdapter({
+          // D5：按 api_format 分发三协议（openai-chat-completions / anthropic-messages
+          // / openai-responses）；provider 领域类型恒为 openai-compatible，分发只看协议。
+          const adapter = createProtocolAdapter({
+            api_format: active.api_format,
             baseUrl: active.base_url,
             apiKeyEnv: active.api_key_env
           });

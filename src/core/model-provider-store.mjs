@@ -7,7 +7,9 @@ import { MODEL_PRESETS as PRESET_DEFINITIONS } from "./model-presets.mjs";
 
 const PROVIDERS_FILE = "model-profiles.json";
 export const SCHEMA_VERSION = 2;
-export const ALLOWED_API_FORMATS = new Set(["openai-chat-completions"]);
+// D5（round22）：三协议 allow-list——anthropic-messages / openai-responses 为
+// 本轮新增；gemini-generate-content 死选项已删除，不再出现在任何白名单。
+export const ALLOWED_API_FORMATS = new Set(["openai-chat-completions", "anthropic-messages", "openai-responses"]);
 
 // Task 19（spec 4.3 #12）：store 级单一 mutex 串行化「读-判-迁移-写」整条路径。
 // loadProviderStore 的 v1→v2 迁移也走同一把锁（见 loadProviderStoreUnlocked），

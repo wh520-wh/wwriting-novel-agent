@@ -139,17 +139,26 @@ test("timeout_ms/total_deadline_ms：负数/非整数/零/非数字拒绝并报�
   }
 });
 
-test("api_format 默认 openai-chat-completions，白名单外拒绝", () => {
+test("api_format 默认 openai-chat-completions，白名单外拒绝（round22 D5 起三协议可用）", () => {
   const config = validateModelConfig({
     provider: "openai-compatible", model_name: "deepseek-v4-pro",
     base_url: "https://api.deepseek.com", api_key_env: "DEEPSEEK_API_KEY"
   });
   assert.equal(config.api_format, "openai-chat-completions");
+  // D5：三协议在白名单内
+  for (const format of ["anthropic-messages", "openai-responses"]) {
+    const accepted = validateModelConfig({
+      provider: "openai-compatible", model_name: "x", base_url: "https://x.test",
+      api_key_env: "X", api_format: format
+    });
+    assert.equal(accepted.api_format, format);
+  }
+  // 无实现的协议（如 gemini 死选项）仍拒绝
   assert.throws(
     () => validateModelConfig({
       provider: "openai-compatible", model_name: "x", base_url: "https://x.test",
-      api_key_env: "X", api_format: "anthropic-messages"
+      api_key_env: "X", api_format: "gemini-generate-content"
     }),
-    (error) => error instanceof ModelConfigValidationError && error.fields.api_format === "本轮仅支持 OpenAI Chat Completions 协议"
+    (error) => error instanceof ModelConfigValidationError && /仅支持/u.test(error.fields.api_format)
   );
 });

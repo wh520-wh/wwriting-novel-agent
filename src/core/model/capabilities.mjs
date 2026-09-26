@@ -65,11 +65,47 @@ function resolveDeepSeekCapabilities(modelConfig) {
   };
 }
 
-// DeepSeek 的 resolver 在模块加载时自动注册一次（matcher 对 base_url 做 lowercase
-// 归一化，与泛化前 isDeepSeek 门控语义等价），调用方无需手动注册。
+// D6（round22）：DeepSeek resolver 只服务 OpenAI Chat Completions 形状——thinking
+// 钉死、reasoning_effort 等 thinking 注入都是 chat-completions 请求体字段，不得
+// 泄到其他协议端点（Anthropic/Responses 端点注入 DeepSeek thinking 会被拒）。
 registerProviderCapabilityResolver(
-  (modelConfig) => String(modelConfig.base_url ?? "").toLowerCase().includes("api.deepseek.com"),
+  (modelConfig) =>
+    String(modelConfig.api_format ?? "openai-chat-completions") === "openai-chat-completions" &&
+    String(modelConfig.base_url ?? "").toLowerCase().includes("api.deepseek.com"),
   resolveDeepSeekCapabilities
+);
+
+// D6：Anthropic Messages 协议口径。工具/流式原生支持；thinking 块存在但本应用
+// 未经验证不开启（不注入 thinking budget），reasoning 三态记 unknown；JSON mode
+// 无 chat-completions 的 response_format 等价物（json_object 不注入）。
+registerProviderCapabilityResolver(
+  (modelConfig) => modelConfig.api_format === "anthropic-messages",
+  () => ({
+    supportsThinking: false,
+    reasoningContent: "unknown",
+    requiresAutoToolChoice: false,
+    supportsTemperature: true,
+    supportsTopP: true,
+    supportsJsonOutput: false,
+    supportsTools: true,
+    supportsStreaming: true
+  })
+);
+
+// D6：OpenAI Responses 协议口径。工具/流式原生支持；reasoning 输出经
+// reasoning summary/text 增量透出，是否返回取决于模型与请求参数（未验证 → unknown）。
+registerProviderCapabilityResolver(
+  (modelConfig) => modelConfig.api_format === "openai-responses",
+  () => ({
+    supportsThinking: false,
+    reasoningContent: "unknown",
+    requiresAutoToolChoice: false,
+    supportsTemperature: true,
+    supportsTopP: true,
+    supportsJsonOutput: false,
+    supportsTools: true,
+    supportsStreaming: true
+  })
 );
 
 // 模型能力判定：遍历已注册 resolver，未匹配任何供应商时回落默认全能力开放。

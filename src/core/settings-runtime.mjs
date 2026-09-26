@@ -528,7 +528,7 @@ export function buildModelProfile(activeModel = {}, secretsRoot, options = {}) {
     provider_label: providerDisplayName(activeModel),
     model_name: modelName,
     base_url: activeModel?.base_url ?? "",
-    endpoint: provider === "openai-compatible" ? modelEndpoint(activeModel?.base_url) : "",
+    endpoint: provider === "openai-compatible" ? modelEndpoint(activeModel?.base_url, activeModel?.api_format) : "",
     api_key_env: apiKeyEnv,
     api_key_saved: Boolean(secretValue),
     api_key_masked: secretValue ? `••••${secretValue.slice(-4)}` : "",

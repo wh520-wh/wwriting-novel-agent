@@ -208,6 +208,9 @@ export function createSettingsRoutes({
           ? {
               provider: "openai-compatible",
               base_url: body.provider.base_url,
+              // D5（round22）：api_format 必须随候选透传——否则连接测试会把
+              // Anthropic/Responses 供应商静默退回 OpenAI 形状探测。
+              api_format: body.provider.api_format,
               api_key_env: body.provider.api_key_env,
               model_name: body.model.model_name,
               api_key: body.api_key
@@ -251,6 +254,7 @@ export function createSettingsRoutes({
           provider: validated.provider,
           model_name: validated.model_name,
           base_url: validated.base_url,
+          api_format: validated.api_format,
           api_key_env: validated.api_key_env
         };
 

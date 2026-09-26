@@ -98,7 +98,7 @@ test("seeded_preset_ids 归一化只保留合法字符串并去重", async (t) =
 test("非法 api_format 拒绝保存", async (t) => {
   const root = await tempRoot(t);
   await assert.rejects(
-    () => upsertProvider(root, { name: "X", base_url: "https://x.test", api_format: "anthropic-messages", api_key_env: "X" }),
+    () => upsertProvider(root, { name: "X", base_url: "https://x.test", api_format: "gemini-generate-content", api_key_env: "X" }),  // round22 D5：anthropic 已入白名单，改用无实现的 gemini 死选项
     /api_format/u
   );
 });
