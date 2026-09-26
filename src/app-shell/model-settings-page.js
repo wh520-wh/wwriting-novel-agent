@@ -606,7 +606,7 @@ export function createModelSettingsPage(ctx = {}) {
       validate: (value) => (value ? null : "供应商名称不能为空"),
       commit: (value) => commitProviderPatch(provider.id, { name: value })
     });
-    const nameError = el("span", { class: "field-error", "data-field-error": "name" });
+    const nameError = el("span", { class: "spd-field-error", "data-field-error": "name" });
     activeDraftRefs.errorRefs.set("name", nameError);
     // 状态切换：文案即动作（enabled →「禁用」，disabled →「启用」），
     // 点击保存相反状态，refresh 重渲染后文案随新状态翻转。
@@ -627,7 +627,13 @@ export function createModelSettingsPage(ctx = {}) {
     deleteButton.addEventListener("click", () => {
       removeProviderWithConfirm(provider.id);
     });
-    container.append(el("div", { class: "provider-detail-head" }, [nameInput, nameError, statusToggle, deleteButton]));
+    // D15：供应商名包进 .dfield（input 100% 列宽），与右侧状态/删除按钮同排；
+    // 行内错误随 dfield 第二行贴在输入框下。
+    container.append(el("div", { class: "provider-detail-head" }, [
+      el("div", { class: "dfield" }, [nameInput, nameError]),
+      statusToggle,
+      deleteButton
+    ]));
 
     container.append(el("label", { text: "Base URL" }));
     const baseUrlInput = el("input", { value: provider.base_url, "data-field": "base_url" });
@@ -642,7 +648,7 @@ export function createModelSettingsPage(ctx = {}) {
       },
       commit: (value) => commitProviderPatch(provider.id, { base_url: value })
     });
-    const baseUrlError = el("span", { class: "field-error", "data-field-error": "base_url" });
+    const baseUrlError = el("span", { class: "spd-field-error", "data-field-error": "base_url" });
     activeDraftRefs.errorRefs.set("base_url", baseUrlError);
     container.append(baseUrlInput, baseUrlError);
 
@@ -721,7 +727,7 @@ export function createModelSettingsPage(ctx = {}) {
     const keyField = el("div", { class: "api-key-field" }, [keyInput, eye]);
     const envLabel = el("label", { class: "api-key-env-label" }, [envToggle, el("span", { text: "使用环境变量名" })]);
     const keyStatus = el("span", { class: "api-key-status", "data-api-key-status": "true", text: keyStatusText(provider) });
-    const keyError = el("span", { class: "field-error", "data-field-error": "api_key" });
+    const keyError = el("span", { class: "spd-field-error", "data-field-error": "api_key" });
     activeDraftRefs.errorRefs.set("api_key", keyError);
     container.append(keyField, envLabel, keyStatus, keyError);
     renderModelRows(container, provider);
@@ -760,7 +766,7 @@ export function createModelSettingsPage(ctx = {}) {
         // 绑定 Enter 与失焦保存同一提交路径。
         onEnter: true
       });
-      const nameError = el("span", { class: "field-error", "data-field-error": `model_name:${model.id}` });
+      const nameError = el("span", { class: "spd-field-error", "data-field-error": `model_name:${model.id}` });
       activeDraftRefs.errorRefs.set(`model_name:${model.id}`, nameError);
       // 启停开关：文案即动作，点击保存相反状态，refresh 后文案随新状态翻转。
       const toggle = el("button", {
