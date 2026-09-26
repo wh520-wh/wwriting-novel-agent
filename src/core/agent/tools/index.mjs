@@ -843,8 +843,10 @@ export function createToolRuntime({
           absoluteMs: toolAbsoluteMs,
           parentSignal: context.signal
         });
+      // D4：锁键用解析后的真实根——junction/symlink 下与 HTTP 操作按物理路径取锁
+      // 互斥；未解析根仅作无解析上下文调用方（既有测试/脚本）的兜底。
       const outcome = projectLocks && action.category !== "read"
-        ? await projectLocks.runExclusive(context.projectRoot, runWithDeadline)
+        ? await projectLocks.runExclusive(context.resolved_project_root ?? context.projectRoot, runWithDeadline)
         : await runWithDeadline();
       if (outcome.kind === "timeout") {
         timeoutKind = outcome.timeoutKind;

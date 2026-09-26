@@ -63,6 +63,16 @@ test("app.js gates the dashboard load on projectScope.isCurrent", () => {
   assert.match(appSource, /withProjectScope\s*\(/);
 });
 
+// D1（round22）：普通文件夹（hasProject:false 但有 projectRoot）同样接线——首次
+// openProject 判定必须用独立的 openedProjectRoot，且普通文件夹分支不得再借
+// hasProject 置空项目根。
+test("app.js 普通文件夹按 projectRoot 接线，首次 openProject 用独立接线根判定", () => {
+  assert.match(appSource, /openedProjectRoot/u, "应存在独立的首次接线根记录");
+  assert.match(appSource, /openedProjectRoot\s*!==\s*data\.projectRoot/u, "首次接线判定用 openedProjectRoot 比较");
+  assert.match(appSource, /if\s*\(!data\.projectRoot\)/u, "renderDashboard 无根分支只看 projectRoot");
+  assert.match(appSource, /data\.project\?\.title\s*\?\?\s*data\.name/u, "顶栏标题回落到后端目录名");
+});
+
 test("app.js 通过 AgentSurface 唯一对话 seam 接线", () => {
   assert.match(
     appSource,

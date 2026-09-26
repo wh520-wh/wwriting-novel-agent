@@ -124,6 +124,9 @@ export async function bootApp(root = document) {
   const { setThemeMode } = setupThemePrivacy({ railRefs });
   
   let currentProjectRoot = null;
+  // D1：上次已完成/进行中 openProject 接线的根——首次接线判定专用，不得借用
+  // currentProjectRoot（普通文件夹首开时先赋值会把它误判成已接线）。
+  let openedProjectRoot = null;
   let dashboardRequestId = 0;
   let drawerTab = "chapters";
   let lastDashboard = null;
@@ -600,7 +603,7 @@ export async function bootApp(root = document) {
       const data = await getJson(dashboardUrl);
       if (requestId !== dashboardRequestId) return;
       if (!projectScope.isCurrent(token)) return;
-      if (!activeProjectRoot && data.hasProject && data.projectRoot) {
+      if (!activeProjectRoot && data.projectRoot) {
         projectScope.activate(data.projectRoot);
         token = projectScope.capture(data.projectRoot);
       }
@@ -640,6 +643,9 @@ export async function bootApp(root = document) {
   function commitProjectSwitch(projectRoot, activeSessionId = null) {
     projectScope.activate(projectRoot);
     currentProjectRoot = projectRoot;
+    // D1：commit 路径已显式 openProject，同步记录接线根——dashboard 响应回来后
+    // openedProjectRoot 比较命中，不会重复 open。
+    openedProjectRoot = projectRoot;
     clearTransientState();
     // Task 9：会话级代次推进——在途会话切换的续作一律丢弃；openProject 完成后拉一次
     // 会话列表（Task 8 契约：surface 不自动拉）更新活跃高亮 + busy 复位。
@@ -733,28 +739,34 @@ export async function bootApp(root = document) {
   
   function renderDashboard(data) {
     lastDashboard = data;
-    if (!data.hasProject) {
+    // D1：「有没有打开项目根」与「有没有 project.yaml」是两个判断。普通文件夹
+    //（hasProject:false 但有 projectRoot）同样接线会话与 composer；只有真正没有
+    // 打开的根才显示「开始创作」。hasProject 仅用于需要 project.yaml 的功能。
+    if (!data.projectRoot) {
       currentProjectRoot = null;
       railRefs.title.textContent = "开始创作";
       sessionSidebar.syncBusy(); // 无项目：busy 复位
       refreshDrawerIfOpen();
       return;
     }
-  
-    const firstLoad = currentProjectRoot !== data.projectRoot;
+
+    // D1 硬不变量：首次接线判定用 openedProjectRoot，且必须在赋值 currentProjectRoot
+    // 之前比较——否则普通文件夹首开时 firstLoad 恒为 false，composer 与 SSE 永不接线。
+    const firstLoad = openedProjectRoot !== data.projectRoot;
     if (firstLoad) {
+      openedProjectRoot = data.projectRoot;
       // 切换/首次打开项目：把 AgentSurface 指向该项目（内部重连 SSE）。
-      currentProjectRoot = data.projectRoot;
       agentSurface.openProject(data.projectRoot);
     }
-  
+    currentProjectRoot = data.projectRoot;
+
     // Task 9：dashboard 会话数据 seed 当前项目（两级树当前项目组数据源，含 run_status
     // 状态点与 busy 复位依据）；懒加载缓存以最新 dashboard 为准。
     sessionSidebar.seedSessions(data.projectRoot, data.sessions ?? [], data.active_session_id ?? null);
-  
-    const project = data.project;
-    railRefs.title.textContent = project.title ?? "未命名小说";
-  
+
+    // D1：顶栏项目名——正式项目用标题，普通文件夹用后端补的目录名。
+    railRefs.title.textContent = data.project?.title ?? data.name ?? "未命名小说";
+
     refreshDrawerIfOpen();
   }
   
