@@ -26,8 +26,25 @@ test("GET providers 返回预设并含模型", async (t) => {
   const ids = data.providers.map((p) => p.id);
   assert.deepEqual(ids.sort(), ["deepseek", "mimo"]);
   const deepseek = data.providers.find((p) => p.id === "deepseek");
-  assert.deepEqual(deepseek.models.map((m) => m.model_name), ["deepseek-v4-pro", "deepseek-v4-flash"]);
+  // D7：播种只写供应商身份，模型列表为空态（候选不自动入列）
+  assert.deepEqual(deepseek.models, []);
   assert.equal(data.default_model, null);
+});
+
+test("GET provider-catalog 返回目录 JSON（只读、不含密钥、协议在三协议白名单内）", async (t) => {
+  const { http } = await setup(t);
+  const { res, data } = await http.get("/api/settings/provider-catalog");
+  assert.equal(res.status, 200);
+  assert.equal(data.ok, true);
+  const catalog = data.catalog;
+  assert.equal(catalog.schemaVersion, 1);
+  assert.ok(Array.isArray(catalog.items) && catalog.items.length >= 10, "目录含全部候选厂商");
+  const deepseek = catalog.items.find((item) => item.id === "deepseek");
+  assert.equal(deepseek.seeded, true, "原预设两条标 seeded");
+  const seeded = catalog.items.filter((item) => item.seeded).map((item) => item.id);
+  assert.deepEqual(seeded.sort(), ["deepseek", "mimo"]);
+  // 目录是身份与连接信息的唯一来源，不得携带任何密钥
+  assert.equal(JSON.stringify(catalog).includes("sk-"), false);
 });
 
 test("新建供应商 + 加模型 + 设默认 + 删除", async (t) => {
@@ -94,8 +111,9 @@ test("providers model-remove：不存在供应商 404、不存在模型 404、�
 
 test("非法 api_format 保存被拒", async (t) => {
   const { http } = await setup(t);
+  // round22 D5：anthropic-messages / openai-responses 已入白名单，非法用例改用无实现的 gemini 死选项
   const res = await http.post("/api/settings/providers", {
-    name: "X", base_url: "https://x.test", api_format: "anthropic-messages", api_key_env: "X"
+    name: "X", base_url: "https://x.test", api_format: "gemini-generate-content", api_key_env: "X"
   });
   assert.equal(res.res.status, 400);
 });

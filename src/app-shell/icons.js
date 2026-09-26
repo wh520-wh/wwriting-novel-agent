@@ -17,7 +17,9 @@ export const ICON_PATHS = {
   copy: "M9 9h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V10a1 1 0 0 1 1-1z M6 15H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1",
   trash: "M5 7h14 M9 7V4h6v3 M8 10v7 M12 10v7 M16 10v7 M7 7l1 14h8l1-14",
   plus: "M12 5v14M5 12h14",
-  stop: "M7 7h10v10H7z"
+  stop: "M7 7h10v10H7z",
+  // D9（round22）：目录厂商只读连接行的锁标（24 viewBox、stroke 1.7、round 同规格）。
+  lock: "M7 11h10a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1z M9 11V8a3 3 0 0 1 6 0v3"
 };
 
 export function icon(name, size = 16, cls, doc = globalThis.document) {
