@@ -486,13 +486,19 @@ function vendorLogoEl(logoKey, name) {
       return { ok: true, provider: baseProvider, model };
     }
 
-    // 1) 校验全部表单值（不通过即中止，错误行内回显）
-    const name = refs.nameInput.value.trim();
+    // 1) 校验全部表单值（不通过即中止，错误行内回显）。
+    // D9：目录厂商（只读）不渲染 Base URL/密钥输入框（refs.baseUrlInput/keyInput
+    // 为 null）——连接字段以保存值参与校验与 diff，绝不抛空引用（2026-09-27 修复：
+    // 冲刷/测试连接/拉取模型在这类供应商上 TypeError → 关闭流程静默崩溃 → 弹窗
+    // 关不上）。
+    const savedName = String(baseProvider?.name ?? "").trim();
+    const savedBaseUrl = String(baseProvider?.base_url ?? "").trim();
+    const name = refs.nameInput ? refs.nameInput.value.trim() : savedName;
     if (!name) return fieldError(refs, "name", "供应商名称不能为空");
-    const baseUrl = refs.baseUrlInput.value.trim();
+    const baseUrl = refs.baseUrlInput ? refs.baseUrlInput.value.trim() : savedBaseUrl;
     if (!baseUrl) return fieldError(refs, "base_url", "Base URL 不能为空");
     if (!/^https?:\/\/.+/u.test(baseUrl)) return fieldError(refs, "base_url", "Base URL 需以 http:// 或 https:// 开头");
-    const keyValue = refs.keyInput.value.trim();
+    const keyValue = refs.keyInput ? refs.keyInput.value.trim() : "";
     for (const [mid, input] of refs.modelInputs) {
       if (!input.value.trim()) return fieldError(refs, `model_name:${mid}`, "模型名称不能为空");
     }
