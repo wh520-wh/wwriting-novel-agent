@@ -37,11 +37,12 @@ const MAX_CAPTURE_CHARS = 1024 * 1024;
 //     窗口用 GBK 解码器整体解码（非流式即可），其后 chunk 用 GBK 流式。
 //   - 锁定后 decode(chunk) 走对应 `TextDecoder(label, { stream: true })` 流式。
 //   - flush()：仍在 sniff 则对整个 buffer 做一次窗口决定并输出；已锁定则调用锁定
-//     解码器的 flush()（UTF-8 丢弃尾部不完整多字节；GBK 排空残余）。
+//     解码器的 flush()（UTF-8 尾部不完整多字节替换为 U+FFFD；GBK 排空残余）。
 //
 // 已知边界（文档化）：同一个流内先输出 UTF-8 后来又输出 GBK 时无法自动识别——
-// 首个窗口一旦被判定为 UTF-8 便锁定，其后 GBK 字节会按 UTF-8 误解码。真实 Windows
-// cmd 输出整体统一为 GBK，是本实现覆盖的目标场景，此边界可接受。
+// 首个窗口一旦被判定为 UTF-8 便锁定，其后 GBK 字节会按 UTF-8 误解码（替换符），
+// 绝不抛错。真实 Windows cmd 输出整体统一为 GBK，是本实现覆盖的目标场景，此
+// 边界可接受。
 //
 // 每个 runShellCommand 调用为 stdout/stderr 各建一个实例——模块级单例会把
 // 跨命令/跨流的解码状态互相污染（对抗审查结论），禁止使用。
@@ -58,7 +59,10 @@ export function createOutputDecoder() {
     try {
       const text = new TextDecoder("utf-8", { fatal: true }).decode(windowBytes);
       mode = "utf8";
-      utf8 = new TextDecoder("utf-8", { fatal: true });
+      // 锁定后的流式解码器必须非 fatal：fatal 解码器对非法字节直接抛 TypeError，
+      // 会沿 capture 抛穿 child.stdout 的 data 处理器变成主进程 Uncaught Exception
+      // （2026-09-28 用户实测崩溃弹窗）。非法字节按下方文档化边界替换 U+FFFD。
+      utf8 = new TextDecoder("utf-8");
       return text;
     } catch {
       mode = "gbk";
@@ -98,11 +102,7 @@ export function createOutputDecoder() {
         return out;
       }
       if (mode === "utf8") {
-        try {
-          return utf8.decode();
-        } catch {
-          return ""; // 丢弃未完成的尾随多字节
-        }
+        return utf8.decode(); // 非 fatal：不完整尾随多字节替换为 U+FFFD
       }
       return gbk.decode(); // GBK 排空残余
     }

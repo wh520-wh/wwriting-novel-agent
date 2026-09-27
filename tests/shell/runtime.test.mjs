@@ -269,9 +269,27 @@ test("createOutputDecoder：GBK/UTF-8 碰撞——单个合法 UTF-8 的 GBK 对
   assert.equal(out, "一第", "整窗回退为 GBK：D2 BB = 一（不得为 `һ`），B5 DA = 第");
 });
 
-// 文档化边界（不当作通过用例）：同一流内先 UTF-8 后 GBK 无法自动识别。首个窗口
-// 一旦含换行且为合法 UTF-8 即锁定 utf8，其后 GBK 字节会按 UTF-8 误解码。真实
-// Windows cmd 输出整体统一为 GBK，属本实现覆盖的目标场景；混合编码流需调用方自行处理。
+// 文档化边界（不当作正确解码用例）：同一流内先 UTF-8 后 GBK 无法自动识别。首个
+// 窗口一旦含换行且为合法 UTF-8 即锁定 utf8，其后 GBK 字节按 UTF-8 误解码（替换
+// 符）。真实 Windows cmd 输出整体统一为 GBK，属本实现覆盖的目标场景；混合编码流
+// 需调用方自行处理。
+
+// 回归（2026-09-28 用户截图主进程崩溃）：锁定 utf8 后的流式解码器绝不能是 fatal——
+// 首行合法 UTF-8（如纯 ASCII）后跟 GBK/二进制字节时，fatal 解码器把 TypeError 沿
+// capture 抛穿 child.stdout 的 data 处理器，在 Electron 主进程弹 Uncaught Exception
+// 并杀死应用。非 fatal 下按文档化边界替换 U+FFFD。
+test("createOutputDecoder：首行 ASCII 锁定 utf8 后遇到非法字节不得抛错（主进程崩溃回归）", () => {
+  const decoder = createOutputDecoder();
+  assert.equal(decoder.decode(Buffer.from("hello world\n", "utf8")), "hello world\n", "首行 ASCII 合法 UTF-8，锁定 utf8");
+  const gbkBytes = Buffer.from([0xD6, 0xD0, 0xCE, 0xC4]); // GBK「中文」，非合法 UTF-8
+  let out;
+  try {
+    out = decoder.decode(gbkBytes) + decoder.flush();
+  } catch (error) {
+    assert.fail(`锁定后解码不得抛错（曾炸穿主进程）：${error.message}`);
+  }
+  assert.ok(out.includes("\uFFFD"), "非法字节按文档化边界替换为 U+FFFD，不得抛错或吞字节");
+});
 
 test("GBK 字节流输出被正确解码（Windows cmd 场景）：UTF-8 输出不受影响", { skip: process.platform !== "win32" }, async (t) => {
   const command = 'node -e "process.stdout.write(Buffer.from([0xB5,0xDA,0xD2,0xBB,0xD5,0xC2]))"';
