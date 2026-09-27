@@ -189,13 +189,7 @@ function vendorLogoEl(logoKey, name) {
       return { ok: true, error: null, provider: data?.provider ?? null };
     } catch (error) {
       const message = translateTechnicalError(error);
-      // 无环境变量名的供应商直接粘贴明文密钥会命中后端 invalid_api_key_env（400）：
-      // 此时给出更明确的引导，其余错误保留通用文案。
-      if (error?.message?.includes("请先填写 API 密钥环境变量名")) {
-        showToast("请先填写 API 密钥环境变量名（开启「使用环境变量名」后填写如 MY_KEY 并保存），再粘贴密钥。", "error");
-      } else {
-        showToast(`保存失败：${message}`, "error");
-      }
+      showToast(`保存失败：${message}`, "error");
       return { ok: false, error: message, provider: null };
     }
   }
@@ -296,20 +290,25 @@ function vendorLogoEl(logoKey, name) {
     }
   }
 
-  // 添加模型：POST .../models 建一个可编辑默认名的新模型，创建后 refresh + toast。
-  // 模型名留空/拉取由 Task 15 的行内编辑接手，此处先给最小可改的落点。
-  async function addModel(providerId) {
+  // 添加模型（D10）：必须携带明确的非空模型 ID（目录候选点选或手填提交），
+  // 只有明确选择/提交才 POST——不再有 new-model 占位写法。
+  async function addModel(providerId, modelId) {
+    const id = String(modelId ?? "").trim();
+    if (!id) {
+      showToast("请先填写模型 ID", "error");
+      return false;
+    }
     try {
       const res = await fetchImpl(`${API_BASE}/${providerId}/models`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ model_name: "new-model", enabled: true })
+        body: JSON.stringify({ model_name: id, enabled: true })
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.message ?? `HTTP ${res.status}`);
       await refresh();
       onChanged();
-      showToast("已添加模型，可在名称框直接改名后回车保存", "success");
+      showToast(`已添加模型 ${id}`, "success");
       return true;
     } catch (error) {
       showToast(`添加模型失败：${translateTechnicalError(error)}`, "error");
@@ -423,7 +422,7 @@ function vendorLogoEl(logoKey, name) {
       targetSlot.append(el("span", { class: `connection-result ${ok ? "ok" : "error"}`, text: `${ok ? "✓ " : "✗ "}${message}` }));
     }
     if (!ok && (data?.code === "configuration_missing" || data?.code === "missing_api_key")) {
-      showToast("请先配置 API 密钥（开启「使用环境变量名」填写环境变量名，或直接粘贴明文密钥保存），再测试连接。", "error");
+      showToast("请先配置 API 密钥，再测试连接。", "error");
     }
     return { ok, data };
   }

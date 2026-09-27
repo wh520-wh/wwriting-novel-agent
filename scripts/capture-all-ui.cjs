@@ -1187,7 +1187,8 @@ async function main() {
       body: JSON.stringify({ projectRoot: fixture.plainFolder })
     });
     if (registered.status !== 200) throw new Error(`普通文件夹注册失败: ${registered.status}`);
-    await boot(base, { waitProjectTitle: "开始创作" });
+    // D1（round22）：普通文件夹顶栏显示文件夹名（不再显示「开始创作」）
+    await boot(base, { waitProjectTitle: "plain-folder" });
     await waitUntil("document.querySelector('#project-list')?.children.length > 0", "项目列表渲染", 10000);
     gateway.controller.setScripts([[{ type: "reply", text: "你好，我可以在普通文件夹里协助你写作。没有 project.yaml 也能直接开始——先告诉我你想写什么。" }]]);
     await scene("40-plain-folder", "普通文件夹：无 project.yaml 打开并完成首条消息", async () => {
