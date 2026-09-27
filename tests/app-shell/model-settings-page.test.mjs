@@ -1167,6 +1167,51 @@ test("isDirty：未渲染详情（无 activeDraftRefs）安全返回 false", asy
 });
 
 // ---------------------------------------------------------------------------
+// 2026-09-27 冲刷语义：模型分区关闭/切分区前经 flushPendingEdits 把未失焦编辑
+// 直接提交（改了什么就生效什么）；「添加供应商」半成品返回 confirm 走确认层（D11）。
+// ---------------------------------------------------------------------------
+
+test("flushPendingEdits：未失焦编辑提交后返回 ok 且不再判脏；空模型名返回 blocked；添加供应商半成品返回 confirm", async () => {
+  // PATCH 写回夹具（保存后 refresh 重拉返回新值），记录请求体断言提交内容。
+  const providersData = { providers: JSON.parse(JSON.stringify(providers)), default_model: null };
+  const patches = [];
+  const fetchImpl = async (url, options = {}) => {
+    if (options?.method === "PATCH") {
+      const body = JSON.parse(options.body);
+      patches.push({ url, body });
+      Object.assign(providersData.providers[0].models.find((m) => m.id === "m1"), body);
+    }
+    return { ok: true, json: async () => providersData };
+  };
+  const page = makePage({ fetchImpl });
+  const { list, detail } = attachTargets(page);
+  await page.open();
+
+  // (a) 未失焦改动模型名 → 冲刷直接 PATCH 并返回 "ok"（点关闭也能存上）
+  const m1Row = descendants(detail).find((el) => el.className === "model-row" && el.getAttribute?.("data-model-id") === "m1");
+  const modelNameInput = descendants(m1Row).find((el) => el.getAttribute?.("data-field") === "model_name");
+  modelNameInput.value = "deepseek-v4-pro-x";
+  assert.equal(await page.flushPendingEdits(), "ok", "有未失焦编辑时冲刷应提交成功");
+  assert.deepEqual(patches.map((p) => p.body), [{ model_name: "deepseek-v4-pro-x" }], "冲刷应把未失焦改动按 PATCH 提交");
+  assert.equal(page.isDirty(), false, "冲刷成功（refresh 重渲）后不再判脏");
+
+  // (b) 模型名清空（校验不过）→ blocked，调用方回退确认层
+  const freshRow = descendants(detail).find((el) => el.className === "model-row" && el.getAttribute?.("data-model-id") === "m1");
+  const freshInput = descendants(freshRow).find((el) => el.getAttribute?.("data-field") === "model_name");
+  freshInput.value = "";
+  assert.equal(await page.flushPendingEdits(), "blocked", "校验失败（空模型名）应返回 blocked");
+  assert.equal(patches.length, 1, "校验失败不应发出 PATCH");
+
+  // (c)「添加供应商」半成品草稿 → confirm（创建动作不自动提交，D11）
+  freshInput.value = "deepseek-v4-pro-x"; // 还原 (b) 留下的空名，排除校验干扰
+  const newNameInput = descendants(list).find((el) => el.getAttribute?.("data-field") === "new-name");
+  assert.ok(newNameInput, "列表容器应渲染添加供应商表单");
+  newNameInput.value = "半成品供应商";
+  newNameInput._fire("input");
+  assert.equal(await page.flushPendingEdits(), "confirm", "添加供应商半成品应返回 confirm 交确认层");
+});
+
+// ---------------------------------------------------------------------------
 // 第十三轮（F1）：模型行高级折叠项——上下文/最大输出两个预设下拉，change 即存，
 // 保存（commitModelPatch → refresh 整块重渲）后保持展开且回读落库值。
 // ---------------------------------------------------------------------------

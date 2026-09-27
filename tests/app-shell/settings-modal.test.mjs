@@ -228,15 +228,17 @@ test("connection success with latency formats the status string", () => {
 // 无整页宿主、无 restore 逻辑。
 // ---------------------------------------------------------------------------
 
-// modelSettings fake：记录 attach/open 调用（inject 供 modal 渲染 model 分区时调用）。
-// isDirty 默认返回 false（clean），测试可覆写为固定值或断言调用。
-function modelSettingsFake({ isDirty = () => false } = {}) {
-  const calls = { attach: [], open: 0, isDirty: 0 };
+// modelSettings fake：记录 attach/open/isDirty/flushPendingEdits 调用（inject 供
+// modal 渲染 model 分区时调用）。isDirty 默认 false（clean）；flushOutcome 可覆写
+// 冲刷结果（"ok"/"blocked"/"confirm"/"pending"），默认 "ok"。
+function modelSettingsFake({ isDirty = () => false, flushOutcome = "ok" } = {}) {
+  const calls = { attach: [], open: 0, isDirty: 0, flush: 0 };
   return {
     calls,
     attach: (targets) => { calls.attach.push(targets); },
     open: () => { calls.open += 1; },
-    isDirty: () => { calls.isDirty += 1; return isDirty(); }
+    isDirty: () => { calls.isDirty += 1; return isDirty(); },
+    flushPendingEdits: () => { calls.flush += 1; return Promise.resolve(flushOutcome); }
   };
 }
 
@@ -313,10 +315,10 @@ test("openSettingsModal()（无参）缺省打开 model 分区并注入渲染目
     "应渲染 [data-provider-detail]"
   );
 
-  // Round10：model 分区动作即时生效 → footer 显示状态文字，保存按钮隐藏
+  // 2026-09-27：model 分区 footer 留空——保存按钮与状态槽都隐藏
   assert.equal(saveButton.hidden, true, "model 分区保存按钮应隐藏");
-  assert.equal(saveStatus.hidden, false, "状态槽应可见");
-  assert.equal(saveStatus.textContent, "更改即时生效");
+  assert.equal(saveStatus.hidden, true, "状态槽应隐藏");
+  assert.equal(saveStatus.textContent, "");
 
   // modelSettings.attach 收到注入的 list/detail 目标
   assert.equal(fake.calls.attach.length, 1, "modelSettings.attach 应被调用一次");
@@ -328,7 +330,7 @@ test("openSettingsModal()（无参）缺省打开 model 分区并注入渲染目
   assert.equal(fake.calls.open, 1, "modelSettings.open 应被调用一次");
 });
 
-test("round10 footer: immediate sections show status text instead of a disabled primary button", async () => {
+test("round10 footer: model 分区保存按钮隐藏，状态槽留空（2026-09-27 去掉「更改即时生效」文案）", async () => {
   installSectionNav();
   const settingsSave = new MockElement("button");
   const settingsSaveStatus = new MockElement("p");
@@ -337,8 +339,8 @@ test("round10 footer: immediate sections show status text instead of a disabled 
   });
   await modal.openSettingsModal("model");
   assert.equal(settingsSave.hidden, true);
-  assert.equal(settingsSaveStatus.hidden, false);
-  assert.equal(settingsSaveStatus.textContent, "更改即时生效");
+  assert.equal(settingsSaveStatus.hidden, true);
+  assert.equal(settingsSaveStatus.textContent, "");
 });
 
 test("round10 footer: 保存在途切分区再回来，按钮保持禁用与「保存中...」", async () => {
@@ -450,7 +452,7 @@ test("closeSettingsModal 后无 restore 行为：模型 DOM 随 replaceChildren 
 
   // 关闭（clean：model 分区无可挂起表单）应直接关闭，无 restore 钩子。
   const detailAfterClose = modal.getSettingsDetailForTest();
-  modal.closeSettingsModal();
+  await modal.closeSettingsModal();
   assert.equal(scrim.classList.contains("show"), false, "model 分区 clean 关闭应直接生效");
 
   // 再次进入 model：attach 重建（无已脱离目标残留 restore）。
@@ -459,25 +461,39 @@ test("closeSettingsModal 后无 restore 行为：模型 DOM 随 replaceChildren 
   assert.equal(fake.calls.open, 2, "再次进入 model 应重新 open");
 });
 
-test("model 分区 dirty：isDirty 为 true 时关闭先弹确认层（复用 openDirtyCloseConfirm）", async () => {
+test("model 分区 dirty：关闭先冲刷未失焦编辑，成功即直接关闭（不再弹确认层）", async () => {
   const scrim = new MockElement("div");
-  const fake = modelSettingsFake({ isDirty: () => true });
+  const fake = modelSettingsFake({ isDirty: () => true, flushOutcome: "ok" });
   const modal = createSettingsModalForTest({
     refs: { settingsScrim: scrim },
     modelSettings: fake
   });
   await modal.openSettingsModal("model"); // 缺省分区 = model，open() 被调用
 
-  modal.closeSettingsModal();
-  assert.equal(fake.calls.isDirty >= 1, true, "model 分区关闭时应调用 modelSettings.isDirty()");
-  assert.equal(scrim.classList.contains("show"), true, "model 分区 dirty 时关闭不应直接生效");
+  await modal.closeSettingsModal();
+  assert.equal(fake.calls.flush, 1, "model 分区关闭应先调用 flushPendingEdits 冲刷");
+  assert.equal(findElementById("close-dirty-confirm"), null, "冲刷成功不应弹确认层");
+  assert.equal(scrim.classList.contains("show"), false, "冲刷成功后直接关闭");
+});
+
+test("model 分区冲刷失败：回退确认层（D12 文案），确认丢弃后才关闭", async () => {
+  const scrim = new MockElement("div");
+  const fake = modelSettingsFake({ isDirty: () => true, flushOutcome: "blocked" });
+  const modal = createSettingsModalForTest({
+    refs: { settingsScrim: scrim },
+    modelSettings: fake
+  });
+  await modal.openSettingsModal("model");
+
+  await modal.closeSettingsModal();
+  assert.equal(fake.calls.flush, 1, "关闭应先尝试冲刷");
+  assert.equal(scrim.classList.contains("show"), true, "冲刷失败时关闭不应直接生效");
   const layer = findElementById("close-dirty-confirm");
-  assert.ok(layer, "应出现「放弃未保存修改」确认层");
+  assert.ok(layer, "冲刷失败应回退「放弃未保存修改」确认层");
   assert.equal(layer.hidden, false, "确认层应可见");
   const copy = domRegistry.find((el) => String(el.className).includes("spd-confirm-copy"));
   // D12（round22）：模型分区确认层用专属文案与按钮（关闭设置？/未提交的内容会丢失）
   assert.match(copy.textContent, /模型设置里未提交的内容会丢失/u, "模型分区确认文案应为 D12 专属文案");
-  // 标题为 h4.spd-section（dom-kit showConfirmLayer 结构）
   const titleEl = domRegistry.find((el) => String(el.className).includes("spd-section") && String(el.textContent).includes("关闭设置？"));
   assert.ok(titleEl, "模型分区确认标题应为「关闭设置？」");
 
@@ -487,12 +503,12 @@ test("model 分区 dirty：isDirty 为 true 时关闭先弹确认层（复用 op
   assert.equal(scrim.classList.contains("show"), true, "取消后弹窗保持打开");
 
   // 再次关闭：确认放弃后真正关闭
-  modal.closeSettingsModal();
+  await modal.closeSettingsModal();
   findElementById("close-dirty-confirm-btn")._fire("click");
   assert.equal(scrim.classList.contains("show"), false, "模型 dirty 确认放弃后弹窗关闭");
 });
 
-test("model 分区 clean：isDirty 为 false 时关闭直接生效，不弹确认层", async () => {
+test("model 分区 clean：关闭直接生效，不弹确认层", async () => {
   const scrim = new MockElement("div");
   const fake = modelSettingsFake({ isDirty: () => false });
   const modal = createSettingsModalForTest({
@@ -501,8 +517,8 @@ test("model 分区 clean：isDirty 为 false 时关闭直接生效，不弹确�
   });
   await modal.openSettingsModal("model");
 
-  modal.closeSettingsModal();
-  assert.equal(fake.calls.isDirty >= 1, true, "model 分区关闭时应调用 modelSettings.isDirty()");
+  await modal.closeSettingsModal();
+  assert.equal(fake.calls.flush, 1, "model 分区关闭仍走冲刷（clean 时零提交）");
   assert.equal(findElementById("close-dirty-confirm"), null, "clean 关闭不应出现确认层");
   assert.equal(scrim.classList.contains("show"), false, "model 分区 clean 关闭应直接生效");
 });

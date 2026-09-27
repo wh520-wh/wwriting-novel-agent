@@ -158,8 +158,8 @@ export function createSettingsModal(ctx, options = {}) {
   // Task 22 弹窗级 Escape：挂在 scrim 的 bubble 阶段。嵌套层的 document capture
   // 监听先于本监听执行（capture 先于 bubble）且 stopImmediatePropagation，故 Esc
   // 仍只作用于最上层（先关添加菜单/确认层）；本监听处理「弹窗自身」的 Esc——
-  // dirty 时先走确认层（closeSettingsModal 内守卫），clean 时直接关闭，并阻断
-  // 全局路由（app.js）与 AgentSurface 的 Run 停止。
+  // 统一经 closeSettingsModal 守卫（模型分区先冲刷未失焦编辑，其余分区 dirty 时
+  // 先弹确认层），并阻断全局路由（app.js）与 AgentSurface 的 Run 停止。
   function bindModalScrimDismissal() {
     if (typeof ctx.refs.settingsScrim?.addEventListener !== "function") return null;
     const onKeydown = (event) => {
@@ -174,21 +174,41 @@ export function createSettingsModal(ctx, options = {}) {
   }
   bindModalScrimDismissal();
 
-  function setSettingsSection(next) {
-    if (!SETTINGS_SECTIONS.some((s) => s.id === next)) return;
-    if (next === settingsSection) return;
-    // D12（round22）：切分区路径同样覆盖未提交草稿——当前分区有未提交内容时
-    // 先确认，确认丢弃（模型分区顺带清内存草稿）后才切换。
-    if (settingsDirty() && !dirtyConfirmRef.close && ctx.refs.settingsScrim.classList.contains("show")) {
-      openDirtyCloseConfirm(settingsSection, () => {
-        if (settingsSection === "model") ctx.modelSettings?.clearDrafts?.();
-        setSettingsSection(next);
-      });
-      return;
-    }
+  const switchSection = (next) => {
     settingsSection = next;
     renderSectionNav();
     renderSectionBody();
+  };
+
+  async function setSettingsSection(next) {
+    if (!SETTINGS_SECTIONS.some((s) => s.id === next)) return;
+    if (next === settingsSection) return;
+    // 切分区路径同样先处理未提交草稿（D12 round22 + 2026-09-27 冲刷语义）：
+    // 模型分区先冲刷未失焦编辑（改了什么就生效什么），冲刷失败/「添加供应商」
+    // 半成品回退确认层——确认丢弃（顺带清内存草稿）后经 switchSection 直接切换，
+    // 不重入冲刷；其余分区维持原确认语义。
+    if (ctx.refs.settingsScrim.classList.contains("show")) {
+      if (settingsSection === "model" && typeof ctx.modelSettings?.flushPendingEdits === "function") {
+        const outcome = await ctx.modelSettings.flushPendingEdits();
+        if (outcome === "pending") return;
+        if (outcome !== "ok") {
+          if (!dirtyConfirmRef.close) {
+            openDirtyCloseConfirm(settingsSection, () => {
+              if (settingsSection === "model") ctx.modelSettings?.clearDrafts?.();
+              switchSection(next);
+            });
+          }
+          return;
+        }
+      } else if (settingsDirty() && !dirtyConfirmRef.close) {
+        openDirtyCloseConfirm(settingsSection, () => {
+          if (settingsSection === "model") ctx.modelSettings?.clearDrafts?.();
+          switchSection(next);
+        });
+        return;
+      }
+    }
+    switchSection(next);
   }
 
   function renderSectionNav() {
@@ -263,7 +283,9 @@ export function createSettingsModal(ctx, options = {}) {
       if (typeof ctx.modelSettings?.attach === "function") {
         ctx.modelSettings.attach({ list, detail: det });
       }
-      setFooterMode({ status: "更改即时生效" });
+      // footer 留空（2026-09-27 用户拍板去掉「更改即时生效」）：模型分区无总保存
+      // 按钮，动作各自即时生效，无需文案说明。
+      setFooterMode();
       if (typeof ctx.modelSettings?.open === "function") {
         void ctx.modelSettings.open();
       }
@@ -759,13 +781,24 @@ export function createSettingsModal(ctx, options = {}) {
   });
   const { renderSkillsSection, fetchSkillsCatalog, renderSkillsCatalogBody, renderSkillsList } = skillsSection;
 
-  function closeSettingsModal() {
-    // Task 22（#9）：关闭保护——写作参数有未保存修改时先弹确认层，绝不静默丢失。
+  async function closeSettingsModal() {
     // 关闭路径统一经此守卫（app.js 的 X/取消/遮罩/Esc 与保存成功后的自动关闭
-    // 都调用本函数）；保存成功时 dashboard 已刷新，dirty 判定自然为 false。
-    if (settingsDirty() && !dirtyConfirmRef.close && ctx.refs.settingsScrim.classList.contains("show")) {
-      openDirtyCloseConfirm(settingsSection, performCloseSettingsModal);
-      return;
+    // 都调用本函数）。模型分区（2026-09-27 用户拍板）：未失焦编辑先冲刷提交——
+    // 改了什么就生效什么，不再弹「未提交的内容会丢失」；冲刷失败（校验/网络）
+    // 或存在「添加供应商」半成品草稿（D11 创建动作不自动提交）才回退确认层。
+    // 其余分区维持 Task 22（#9）确认语义，绝不静默丢失。
+    if (ctx.refs.settingsScrim.classList.contains("show")) {
+      if (settingsSection === "model" && typeof ctx.modelSettings?.flushPendingEdits === "function") {
+        const outcome = await ctx.modelSettings.flushPendingEdits();
+        if (outcome === "pending") return;
+        if (outcome !== "ok") {
+          if (!dirtyConfirmRef.close) openDirtyCloseConfirm(settingsSection, performCloseSettingsModal);
+          return;
+        }
+      } else if (settingsDirty() && !dirtyConfirmRef.close) {
+        openDirtyCloseConfirm(settingsSection, performCloseSettingsModal);
+        return;
+      }
     }
     performCloseSettingsModal();
   }
@@ -794,6 +827,8 @@ export function createSettingsModal(ctx, options = {}) {
   // modelSettings.isDirty 判定「未失焦草稿 + 保存在途/失败」——两分区都只在各自
   // 仍为当前分区且弹窗开着时判定（分区切换 replaceChildren 会重建/丢弃草稿）。
   // 其余分区动作即时生效，无可挂起表单值，不判 dirty。
+  // 2026-09-27：模型分区关闭/切分区主路径改为 flushPendingEdits 冲刷提交，
+  // 本函数的模型分支仅作无 flush 注入形态（旧宿主/测试 fake）的回退判定。
   function settingsDirty() {
     if (settingsSection === "model") {
       return typeof ctx.modelSettings?.isDirty === "function" && ctx.modelSettings.isDirty();
@@ -874,7 +909,7 @@ export function createSettingsModal(ctx, options = {}) {
 
   async function saveSettings() {
     if (settingsSection === "model") {
-      // 模型动作各自即时生效，不依赖底部保存按钮（footer 显示「更改即时生效」状态槽）。
+      // 模型动作各自即时生效，不依赖底部保存按钮（footer 留空，2026-09-27 起不再显示「更改即时生效」文案）。
       return;
     }
     if (settingsSection === "writing") {
