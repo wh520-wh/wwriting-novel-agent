@@ -74,7 +74,7 @@ const API_BASE = "/api/settings/providers";
 
 // 模块级纯函数：便于单测（页内 setDefaultModel 包装它做 res.ok 检查 + refresh + toast）。
 export async function setDefaultModelImpl(fetchImpl, providerId, modelId) {
-  return fetchImpl(`${API_BASE}/${providerId}/models/${modelId}/default`, {
+  return fetchImpl(`${API_BASE}/${providerId}/models/${encodeURIComponent(modelId)}/default`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: "{}"
@@ -201,7 +201,9 @@ function vendorLogoEl(logoKey, name) {
 
   async function commitModelPatch(providerId, modelId, patch) {
     try {
-      const res = await fetchImpl(`${API_BASE}/${providerId}/models/${modelId}`, {
+      // model id 存在旧迁移形态（deepseek-v4-flash@https://…，含斜杠冒号），必须
+      // 编码进路径——裸拼会多出路径段致路由 404 → 保存失败（2026-09-27 实测根因）。
+      const res = await fetchImpl(`${API_BASE}/${providerId}/models/${encodeURIComponent(modelId)}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(patch)
@@ -274,7 +276,7 @@ function vendorLogoEl(logoKey, name) {
     const ok = confirmImpl("删除后引用它的项目将自动改用默认模型，此操作不可撤销");
     if (!ok) return false;
     try {
-      const res = await fetchImpl(`${API_BASE}/${providerId}/models/${modelId}/remove`, {
+      const res = await fetchImpl(`${API_BASE}/${providerId}/models/${encodeURIComponent(modelId)}/remove`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: "{}"

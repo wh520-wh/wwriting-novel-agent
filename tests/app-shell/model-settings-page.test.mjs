@@ -1282,3 +1282,35 @@ test("高级展开项：存量非预设值显示为「当前」项，不静默�
   const optionTexts = descendants(contextSelect).filter((el) => el.tagName === "OPTION").map((el) => el.textContent);
   assert.ok(optionTexts.includes("当前 192k"), "非预设值以「当前」项呈现");
 });
+
+// ---------------------------------------------------------------------------
+// 2026-09-27：旧迁移形态 model id（deepseek-v4-flash@https://…，含斜杠冒号）裸拼
+// 进 URL 路径会多出段 → 路由 404 → 设置页保存/设默认/删除全部失败。三类操作必须
+// 对 modelId 做 encodeURIComponent（provider id 为 pv_*/目录 id，不含特殊字符）。
+// ---------------------------------------------------------------------------
+
+test("模型路径参数编码：斜杠 model id 的保存/设默认/删除 URL 必须编码", async () => {
+  const calls = [];
+  const page = makePage({
+    confirmImpl: async () => true,
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url, method: options.method ?? "GET" });
+      return { ok: true, json: async () => ({ providers, default_model: null }) };
+    }
+  });
+  const slashedId = "deepseek-v4-flash@https://api.deepseek.com/v1";
+  const encoded = encodeURIComponent(slashedId);
+  await page.saveModelPatch("deepseek", slashedId, { model_name: "renamed" });
+  await page.setDefaultModel("deepseek", slashedId);
+  await page.removeModelWithConfirm("deepseek", slashedId);
+  const modelCalls = calls.filter((c) => c.url.includes("/models/"));
+  assert.ok(modelCalls.length >= 3, "三类模型操作都应发出请求");
+  for (const call of modelCalls) {
+    assert.ok(call.url.includes(encoded), `URL 必须编码斜杠 id：${call.url}`);
+  }
+  assert.equal(
+    calls.some((c) => c.url.includes("/models/deepseek-v4-flash@https")),
+    false,
+    "不得裸拼旧迁移 id（路由按段匹配会 404）"
+  );
+});

@@ -319,3 +319,27 @@ test("PATCH 保存密钥后立即注入 process.env，无需重启（whfind-bugs
     delete process.env[envName];
   }
 });
+
+test("PATCH models/:modelId：旧迁移形态 id（含斜杠冒号）编码后可达，裸拼 404（2026-09-27 保存失败根因）", async (t) => {
+  const { http, secretsRoot } = await setup(t);
+  const slashedId = "deepseek-v4-flash@https://api.deepseek.com/v1";
+  await saveProviderStore(secretsRoot, {
+    schema_version: 2, default_model: null,
+    providers: [{ id: "deepseek", name: "DeepSeek 官方", type: "custom", status: "enabled",
+      base_url: "https://api.deepseek.test", api_format: "openai-chat-completions",
+      api_key_env: "DEEPSEEK_API_KEY",
+      models: [{ id: slashedId, model_name: "deepseek-v4-flash", enabled: true }],
+      created_at: "2026-01-01", updated_at: "2026-01-01" }]
+  });
+
+  // 修复前前端行为：id 裸拼进路径 → 路径多出段 → 路由不匹配 → 404（非白名单 code
+  // 收敛为通用文案「操作未完成…」，用户无从行动）。
+  const raw = await http.patch(`/api/settings/providers/deepseek/models/${slashedId}`, { model_name: "renamed" });
+  assert.equal(raw.res.status, 404);
+
+  // 修复后：encodeURIComponent 单段可达，:modelId 解码回原 id 命中存储。
+  const encoded = await http.patch(`/api/settings/providers/deepseek/models/${encodeURIComponent(slashedId)}`, { model_name: "renamed" });
+  assert.equal(encoded.res.status, 200);
+  assert.equal(encoded.data.model.id, slashedId, "解码后的 id 必须命中存储记录");
+  assert.equal(encoded.data.model.model_name, "renamed");
+});
