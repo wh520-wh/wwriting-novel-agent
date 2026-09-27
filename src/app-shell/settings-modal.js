@@ -190,7 +190,6 @@ export function createSettingsModal(ctx, options = {}) {
     if (ctx.refs.settingsScrim.classList.contains("show")) {
       if (settingsSection === "model" && typeof ctx.modelSettings?.flushPendingEdits === "function") {
         const outcome = await ctx.modelSettings.flushPendingEdits();
-        if (outcome === "pending") return;
         if (outcome !== "ok") {
           if (!dirtyConfirmRef.close) {
             openDirtyCloseConfirm(settingsSection, () => {
@@ -790,7 +789,6 @@ export function createSettingsModal(ctx, options = {}) {
     if (ctx.refs.settingsScrim.classList.contains("show")) {
       if (settingsSection === "model" && typeof ctx.modelSettings?.flushPendingEdits === "function") {
         const outcome = await ctx.modelSettings.flushPendingEdits();
-        if (outcome === "pending") return;
         if (outcome !== "ok") {
           if (!dirtyConfirmRef.close) openDirtyCloseConfirm(settingsSection, performCloseSettingsModal);
           return;

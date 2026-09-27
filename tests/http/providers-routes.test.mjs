@@ -91,9 +91,12 @@ test("providers model-remove：不存在供应商 404、不存在模型 404、�
 
   // 不存在供应商 → 404 provider_not_found（Task 11 预守卫：store 的 removeModel 对
   // 不存在供应商抛 bare 错误会被 wrap 原样上抛落 500，预守卫把它锁成 404）。
+  // message 断言（2026-09-28）：该 code 在 SAFE_PUBLIC_ERROR_CODES 白名单内，
+  // 固定文案「供应商不存在」必须透传给用户，不得收敛为通用文案。
   const ghost = await http.post("/api/settings/providers/pv_no_such/models/mv_whatever/remove", {});
   assert.equal(ghost.res.status, 404);
   assert.equal(ghost.data.code, "provider_not_found");
+  assert.equal(ghost.data.message, "供应商不存在");
 
   // 供应商存在但模型不存在 → 404 model_not_found
   const missing = await http.post(`/api/settings/providers/${providerId}/models/mv_no_such/remove`, {});

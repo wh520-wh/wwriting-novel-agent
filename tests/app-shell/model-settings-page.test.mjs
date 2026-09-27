@@ -1213,6 +1213,39 @@ test("flushPendingEdits：未失焦编辑提交后返回 ok 且不再判脏；�
   assert.equal(await page.flushPendingEdits(), "confirm", "添加供应商半成品应返回 confirm 交确认层");
 });
 
+// 回归（2026-09-28 用户要求根修 Esc 死按）：冲刷在途时再次调用不得返回 "pending"
+// 丢弃调用方意图——旧实现第二次 Esc 在保存进行中静默无效果。新契约：排队等在途
+// 冲刷落地后按剩余草稿分类，且不得因排队而重复 PATCH。
+test("flushPendingEdits：冲刷在途时再次调用排队等待并返回最终结果，不重复 PATCH", async () => {
+  const providersData = { providers: JSON.parse(JSON.stringify(providers)), default_model: null };
+  let releaseFirstPatch;
+  const gate = new Promise((resolve) => { releaseFirstPatch = resolve; });
+  const patches = [];
+  const fetchImpl = async (url, options = {}) => {
+    if (options?.method === "PATCH") {
+      const body = JSON.parse(options.body);
+      patches.push(body);
+      if (patches.length === 1) await gate; // 第一次 PATCH 挂起，制造在途冲刷
+      Object.assign(providersData.providers[0].models.find((m) => m.id === "m1"), body);
+    }
+    return { ok: true, json: async () => providersData };
+  };
+  const page = makePage({ fetchImpl });
+  const { detail } = attachTargets(page);
+  await page.open();
+
+  const m1Row = descendants(detail).find((el) => el.className === "model-row" && el.getAttribute?.("data-model-id") === "m1");
+  const modelNameInput = descendants(m1Row).find((el) => el.getAttribute?.("data-field") === "model_name");
+  modelNameInput.value = "deepseek-v4-pro-x";
+
+  const first = page.flushPendingEdits(); // 冲刷 #1：PATCH 挂起，在途
+  const second = page.flushPendingEdits(); // 冲刷 #2：在途时调用——意图必须保留
+  releaseFirstPatch();
+  assert.equal(await first, "ok");
+  assert.equal(await second, "ok", "在途时再次冲刷必须排队返回最终结果，不得丢弃");
+  assert.deepEqual(patches, [{ model_name: "deepseek-v4-pro-x" }], "排队冲刷不得重复 PATCH（差异已被第一次消费）");
+});
+
 // ---------------------------------------------------------------------------
 // 第十三轮（F1）：模型行高级折叠项——上下文/最大输出两个预设下拉，change 即存，
 // 保存（commitModelPatch → refresh 整块重渲）后保持展开且回读落库值。

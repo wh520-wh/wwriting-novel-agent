@@ -28,6 +28,9 @@ export class HttpError extends Error {
 //     （与白名单内 run_not_found 拼 runId 同构），不拼异常；
 //   - model_disabled：固定文案「已停用的模型不能设为默认。」，与 model_unsupported
 //     同标准（设置页「设为默认」被拒时需向用户展示具体原因）。
+//   - provider_not_found：两个抛出点（providers-routes PATCH/DELETE 预守卫）均为
+//     固定文案「供应商不存在」，不拼异常（2026-09-28：对已失效供应商做保存/删除
+//     时，用户必须看到可读原因而非通用文案）。
 // 压缩领域六个 code（五个在 agent-routes.mjs 的 COMPACTION_ERROR_MESSAGE 固定文案，
 // compaction_failed_blocked 为 submit 路径 runtime 侧 fail 固定文案——T24 whfind-bugs
 // #5 追加）同样程序写死、不拼底层异常——白名单放行后特定文案才能到达用户（否则
@@ -45,6 +48,7 @@ export const SAFE_PUBLIC_ERROR_CODES = new Set([
   "model_unsupported",
   "model_disabled",
   "model_profile_not_found",
+  "provider_not_found",
   // Task 20：invalid_api_key_env 两个文案均为程序写死、不拼底层异常（同
   // model_disabled 标准）。设置页密钥保存被拒时用户必须看到具体原因——「请先填写
   // API 密钥环境变量名。」是粘贴明文密钥时的唯一可读引导（前端据此弹指引 toast，
