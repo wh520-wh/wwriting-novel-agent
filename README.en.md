@@ -138,7 +138,6 @@ This project treats verifiability as part of the product, not a slogan:
 ```powershell
 npm test                        # 1,992 unit/integration tests
 npm run verify:local            # full local acceptance (includes packaging; slow)
-npm run verify:app-shell        # GUI, project open, settings, skills, research tools
 npm run verify:app-clickability # real Electron window clicking every key button
 npm run verify:desktop-shell    # Electron security switches, menus, packaging config
 npm run verify:provider-online  # real OpenAI-compatible provider acceptance

@@ -4,7 +4,7 @@
 // 旧 UI 断言（.spd-skill-row--readonly / #skills-detail-back），而第十四轮 F2 前端
 // 已删除该分区、builtin 技能并入普通行列表——本脚本现在运行必失败。在按新 UI 口径
 // 更新场景集之前，请勿用它做视觉验收（否则会误判回归）；视觉验证以
-// verify:app-clickability / verify:app-shell 为准。
+// verify:app-clickability 为准（verify:app-shell 已于 round22 按用户裁决退役）。
 //
 // 职责：为独立多模态验收模型生成完整、自洽、可核对的视觉证据目录：
 //   MANIFEST.md / live-indicator-audit.json / multimodal-review-prompt.md +
@@ -2584,7 +2584,7 @@ async function runRound7({ mainRepo, roundDir, theme }) {
       })()`);
       await sleep(250);
     } else {
-      console.log(`  [note] ${vp.width}x${vp.height}：rail 按响应式设计隐藏，rename editor 属桌面宽度特性，跳过截图（DOM/行为断言由 verify-app-shell 与 session-sidebar 测试覆盖）`);
+      console.log(`  [note] ${vp.width}x${vp.height}：rail 按响应式设计隐藏，rename editor 属桌面宽度特性，跳过截图（DOM/行为断言由 session-sidebar 测试覆盖）`);
       result.notes.push("renameEditor skipped: rail hidden below 880px by responsive design");
     }
 
