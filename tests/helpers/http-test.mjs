@@ -63,6 +63,15 @@ export async function startHttpServer(t, { router, routeModules = [], afterClose
       const data = await res.json().catch(() => null);
       return { res, data };
     },
+    async patch(route, body = {}, headers = {}) {
+      const res = await fetch(`${base}${route}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", ...headers },
+        body: typeof body === "string" ? body : JSON.stringify(body)
+      });
+      const data = await res.json().catch(() => null);
+      return { res, data };
+    },
     async get(route) {
       const res = await fetch(`${base}${route}`);
       const data = await res.json().catch(() => null);
