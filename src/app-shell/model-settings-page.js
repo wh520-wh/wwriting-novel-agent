@@ -581,16 +581,14 @@ function vendorLogoEl(logoKey, name) {
     return false;
   }
 
-  // 关闭/切分区前的冲刷（2026-09-27 用户拍板：模型分区改了什么就生效什么，不再
-  // 弹「未提交的内容会丢失」）：未失焦编辑与残留密钥草稿直接提交。返回
-  // "ok"（无可冲刷或已提交成功）｜"pending"（已有一次冲刷在途，调用方忽略本次）
-  // ｜"blocked"（提交失败，行内错误/toast 已提示，调用方回退确认层）｜
-  // "confirm"（存在「添加供应商」半成品草稿——创建动作不自动提交，D11）。
-  let flushInFlight = false;
-  async function flushPendingEdits() {
-    if (flushInFlight) return "pending";
-    flushInFlight = true;
-    try {
+  // 关闭/切分区前的冲刷（2026-09-27 用户拍板：改了什么就生效什么）：未失焦编辑
+  // 与残留密钥草稿直接提交。返回 "ok"｜"blocked"（提交失败，行内错误已提示，
+  // 调用方回退确认层）｜"confirm"（「添加供应商」半成品，创建不自动提交，D11）。
+  // 在途时排队等待并按剩余草稿分类，不丢弃调用（2026-09-28 根修 Esc 死按）。
+  let flushInFlight = null;
+  function flushPendingEdits() {
+    const run = (async () => {
+      if (flushInFlight) await flushInFlight.catch(() => {});
       // 1) 当前详情表单的未失焦编辑（名称/Base URL/密钥/模型名）：复用
       // commitCurrentDraft 的校验与逐字段提交，无差异时零 PATCH。
       if (activeDraftRefs && state.selected) {
@@ -610,9 +608,11 @@ function vendorLogoEl(logoKey, name) {
       const newDraft = drafts.get("new");
       if (newDraft && [newDraft.name, newDraft.base_url, newDraft.api_key, newDraft.manualModelId].some((v) => String(v ?? "").trim() !== "")) return "confirm";
       return "ok";
-    } finally {
-      flushInFlight = false;
-    }
+    })();
+    flushInFlight = run;
+    const settle = () => { if (flushInFlight === run) flushInFlight = null; };
+    run.then(settle, settle); // 派生 promise 恒 resolve，调用方照常收 run 的结果
+    return run;
   }
 
   function renderList(container) {

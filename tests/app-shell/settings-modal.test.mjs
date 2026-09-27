@@ -230,7 +230,8 @@ test("connection success with latency formats the status string", () => {
 
 // modelSettings fake：记录 attach/open/isDirty/flushPendingEdits 调用（inject 供
 // modal 渲染 model 分区时调用）。isDirty 默认 false（clean）；flushOutcome 可覆写
-// 冲刷结果（"ok"/"blocked"/"confirm"/"pending"），默认 "ok"。
+// 冲刷结果（"ok"/"blocked"/"confirm"——"pending" 已废除，在途冲刷现在排队等待，
+// 2026-09-28），默认 "ok"。
 function modelSettingsFake({ isDirty = () => false, flushOutcome = "ok" } = {}) {
   const calls = { attach: [], open: 0, isDirty: 0, flush: 0 };
   return {
