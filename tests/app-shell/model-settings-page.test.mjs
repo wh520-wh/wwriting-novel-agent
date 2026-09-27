@@ -71,6 +71,8 @@ class MockElement {
   getAttribute(name) { return this.attributes.has(name) ? this.attributes.get(name) : null; }
   append(...nodes) { this.children.push(...nodes); }
   appendChild(child) { this.children.push(child); return child; }
+  // 真实 DOM 同名方法：目录厂商只读连接字段经 row.prepend(lock) 挂锁图标
+  prepend(node) { this.children.unshift(node); }
   replaceChildren(...nodes) { this.children.length = 0; this.children.push(...nodes); }
   addEventListener(type, handler) {
     if (!this._listeners.has(type)) this._listeners.set(type, []);
@@ -1313,4 +1315,48 @@ test("模型路径参数编码：斜杠 model id 的保存/设默认/删除 URL 
     false,
     "不得裸拼旧迁移 id（路由按段匹配会 404）"
   );
+});
+
+// ---------------------------------------------------------------------------
+// 2026-09-27：目录厂商（只读连接字段，无输入框）下的冲刷/测试连接——修复前
+// commitCurrentDraft 读 refs.baseUrlInput.value 抛 TypeError → flushPendingEdits
+// 拒绝 → closeSettingsModal 静默崩溃 → 模型设置弹窗永远关不上。
+// ---------------------------------------------------------------------------
+
+test("目录厂商只读态：flushPendingEdits 提交模型名成功，连接字段以保存值参与不再崩", async () => {
+  const providersData = { providers: JSON.parse(JSON.stringify(providers)), default_model: null };
+  providersData.providers[0].base_url = "https://api.deepseek.com"; // 命中目录 → 连接字段只读
+  const patches = [];
+  const fetchImpl = async (url, options = {}) => {
+    if (url.includes("provider-catalog")) {
+      return { ok: true, json: async () => ({ ok: true, catalog: { items: [{ id: "deepseek", api: { baseUrl: "https://api.deepseek.com", type: "openai-chat-completions" } }] } }) };
+    }
+    if (options?.method === "PATCH") {
+      const body = JSON.parse(options.body);
+      patches.push({ url, body });
+      Object.assign(providersData.providers[0].models.find((m) => m.id === "m1"), body);
+    }
+    return { ok: true, json: async () => providersData };
+  };
+  const page = makePage({ fetchImpl });
+  const { detail } = attachTargets(page);
+  await page.open();
+
+  // 只读渲染生效：连接字段是锁定展示行，无 Base URL/密钥输入框
+  assert.ok(
+    descendants(detail).some((el) => el.getAttribute?.("data-readonly") === "true"),
+    "目录厂商应渲染只读连接字段"
+  );
+
+  // 未失焦改模型名 → 冲刷：修复前抛 TypeError（refs.baseUrlInput 为 null）
+  const m1Row = descendants(detail).find((el) => el.className === "model-row" && el.getAttribute?.("data-model-id") === "m1");
+  const modelNameInput = descendants(m1Row).find((el) => el.getAttribute?.("data-field") === "model_name");
+  modelNameInput.value = "deepseek-flash";
+  const outcome = await Promise.race([
+    page.flushPendingEdits(),
+    new Promise((resolve, reject) => setTimeout(() => reject(new Error("flush 8s 未返回")), 8000))
+  ]);
+  assert.equal(outcome, "ok", "目录厂商下冲刷必须成功返回 ok");
+  assert.deepEqual(patches.map((p) => p.body), [{ model_name: "deepseek-flash" }], "只提交模型名 PATCH");
+  assert.equal(page.isDirty(), false, "冲刷后不再判脏");
 });
