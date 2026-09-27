@@ -24,6 +24,35 @@ import { codedError as fail, sleep } from "./agent-utils.mjs";
 
 const IDLE_WAIT_TIMEOUT_MS = 60000;
 
+// 模型调用失败的可读原因（2026-09-27 用户拍板：发送时才判定有效性没问题，但判定
+// 结果必须可读——上游 401/额度/模型名错误此前落成英文技术串（run_failed 直出
+// error.message）或通用兜底文案，用户无从行动）。分类口径与
+// model-connection-test.mjs 的 classifyError 对齐：同一上游错误在「测试连接」与
+// 正式运行必须给出一致原因。只认传输层错误形状（ProviderTransportError 的
+// name/reason/status），其余错误返回 null 由调用方原样透传，不扩大脱敏面；
+// 文案为程序写死固定串，不拼接上游响应体（脱敏约束同 agent-routes SSE data 行）。
+const MODEL_CALL_NETWORK_CODES = new Set([
+  "ENOTFOUND", "ECONNREFUSED", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "ECONNRESET", "ETIMEDOUT"
+]);
+
+export function describeModelCallError(error) {
+  if (error?.name !== "ProviderTransportError") return null;
+  if (error.reason === "user-abort") return null;
+  if (error.reason === "timeout") return "模型服务器响应超时，请稍后重试";
+  const causeCode = error.cause?.code;
+  if (error.reason === "network" || (typeof causeCode === "string" && MODEL_CALL_NETWORK_CODES.has(causeCode))) {
+    return "无法连接模型服务，请检查网络与接口地址后重试";
+  }
+  const status = typeof error.status === "number" ? error.status : null;
+  if (status === 401 || status === 403) return "模型服务拒绝访问：API Key 无效或无权限，请检查该供应商的密钥";
+  if (status === 402) return "模型服务返回额度/计费错误，请检查套餐余额或更换模型";
+  if (status === 404) return "模型名称不存在或与该账号不匹配，请检查模型 ID 后重试";
+  if (status === 429) return "请求过于频繁或额度已用尽，请稍后重试或检查套餐额度";
+  if (status != null && status >= 500) return `模型服务暂时异常（HTTP ${status}），请稍后重试`;
+  if (status != null && status >= 400) return `模型服务拒绝请求（HTTP ${status}），请检查模型名称与该服务是否匹配`;
+  return null;
+}
+
 export function createRunLifecycle(ctx) {
   const { getState, getSessionState } = ctx;
 
@@ -209,7 +238,9 @@ export function createRunLifecycle(ctx) {
       type: "run_failed",
       run_id: runId,
       payload: {
-        error: typeof error?.message === "string" ? error.message : String(error),
+        // 模型调用失败（传输层错误形状）给可读中文原因；其余错误维持原样
+        // error.message（compaction/journal 等领域错误的 message 即诊断）。
+        error: describeModelCallError(error) ?? (typeof error?.message === "string" ? error.message : String(error)),
         code: error?.code ?? "model_error",
         input_id: inputId ?? null
       }
