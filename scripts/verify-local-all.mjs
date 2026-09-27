@@ -4,7 +4,6 @@ import { spawn } from "node:child_process";
 const steps = [
   ["npm", ["test"]],
   ["npm", ["run", "verify:unified-agent"]],
-  ["npm", ["run", "verify:app-shell"]],
   ["npm", ["run", "verify:desktop-shell"]],
   ["npm", ["run", "verify:electron-runtime"]],
   ["npm", ["run", "verify:app-clickability"]],

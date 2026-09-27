@@ -6,7 +6,7 @@ import { applyLocalSecretsToEnv, loadLocalSecrets, saveLocalSecrets } from "../l
 import {
   upsertProvider, removeProvider, upsertModel, removeModel, setDefaultModel
 } from "../model-provider-store.mjs";
-import { ensurePresetProviders } from "../model-presets.mjs";
+import { ensurePresetProviders, vendorCatalogData } from "../model-presets.mjs";
 import { writingRequiredCapabilitiesOk } from "../model/capabilities.mjs";
 
 // 与 src/core/local-secrets.mjs 的 ENV_NAME 保持一致：saveLocalSecrets 会经
@@ -43,13 +43,19 @@ export function createProvidersRoutes({ secretsRoot }) {
   };
   // 行为保留（first-principles：能力门禁不随重构丢失）：保存/设默认的模型
   // 必须支持工具调用，否则写作引擎跑不动，保存时直接拒绝。
+  // D5（round22）：能力判定带 api_format 协议维度。
   const assertWritingCapable = (provider, modelName) => {
-    if (!writingRequiredCapabilitiesOk({ provider: "openai-compatible", model_name: modelName, base_url: provider.base_url })) {
+    if (!writingRequiredCapabilitiesOk({ provider: "openai-compatible", api_format: provider.api_format, model_name: modelName, base_url: provider.base_url })) {
       throw new HttpError(400, "model_unsupported", "该模型不支持工具调用，无法用于小说写作。");
     }
   };
 
   return {
+    // D7（round22）：只读厂商目录——身份与连接信息唯一来源（vendor-catalog.json），
+    // 供设置页「添加供应商」候选池取用（浏览器不能直接 import 核心目录文件）。
+    // 静态数据，不含任何密钥。
+    "GET /api/settings/provider-catalog": async () => ({ ok: true, catalog: vendorCatalogData() }),
+
     // 前端契约：GET 返回扁平 store（providers / default_model 顶层字段），
     // 突变端点（POST/PATCH/remove）返回嵌套 store 字段。
     // Task 20 #3：每个 provider 附带 api_key_saved（本地 secrets 是否已存密钥），
@@ -78,32 +84,34 @@ export function createProvidersRoutes({ secretsRoot }) {
     // 留有一个惰性孤儿值，无损坏（反向顺序更糟：upsert 先落盘后密钥写入失败，
     // 会留下一个指向缺失密钥的供应商）。
     // Task 20 #14 密钥契约：字段名即语义，后端不猜字符串形状——
-    //   { api_key: value } 一律按明文密钥写入 api_key_env 对应 bucket；
+    //   { api_key: value } 一律按明文密钥写入密钥桶；
     //   { api_key_env: value } 只更新环境变量名，不写 secrets。
+    // D8（round22）：产品里不再有「密钥存储名」概念——「用户未填 env 名」的 400
+    // 路径删除；桶名 = 显式 env > 既有 env > 供应商编号（自动桶），密钥写盘时把
+    // 字段同步成实际桶名（旧空 env 记录借此回填）。解析出的桶名非法时仍拒绝写盘
+    //（saveLocalSecrets 会静默丢弃非法环境变量名，不能让密钥静默丢失）。
     // 响应只携带 api_key_saved: boolean（密钥保存状态），绝不回显明文。
     "PATCH /api/settings/providers/:id": wrap(async ({ params, body }) => {
       const current = await providerOf(params.id);
       const payload = { ...(body ?? {}) };
       const transientKey = typeof payload.api_key === "string" ? payload.api_key.trim() : "";
       delete payload.api_key;
-      // api_key_env 字段更新：写前校验名称形状（saveLocalSecrets 会静默丢弃非法
-      // 环境变量名，这里先拦截，避免「看似成功实则未落盘」）。
-      const envNamePatch = typeof payload.api_key_env === "string" ? payload.api_key_env.trim() : null;
-      if (envNamePatch !== null && !API_KEY_ENV_NAME.test(envNamePatch)) {
-        throw new HttpError(400, "invalid_api_key_env", "API 密钥环境变量名只能包含字母、数字、下划线且不能以数字开头。");
-      }
-      // 校验与合并同一口径：trim 后的值落盘（避免校验过了、原始值带空白落盘）。
-      if (envNamePatch !== null) payload.api_key_env = envNamePatch;
+      const envNamePatch = typeof payload.api_key_env === "string" ? payload.api_key_env.trim() : "";
+      delete payload.api_key_env;
+      if (envNamePatch) payload.api_key_env = envNamePatch;
       if (transientKey) {
-        const envName = envNamePatch ?? String(current.api_key_env ?? "").trim();
-        if (!envName) throw new HttpError(400, "invalid_api_key_env", "请先填写 API 密钥环境变量名。");
-        if (!API_KEY_ENV_NAME.test(envName)) throw new HttpError(400, "invalid_api_key_env", "API 密钥环境变量名只能包含字母、数字、下划线且不能以数字开头。");
+        const envName = envNamePatch || String(current.api_key_env ?? "").trim() || current.id;
+        if (!API_KEY_ENV_NAME.test(envName)) {
+          throw new HttpError(400, "invalid_api_key_env", "API 密钥环境变量名只能包含字母、数字、下划线且不能以数字开头。");
+        }
         const secrets = await loadLocalSecrets(secretsRoot);
         await saveLocalSecrets(secretsRoot, { ...secrets, [envName]: transientKey });
         // whfind-bugs #2：密钥写盘后立即注入运行中进程——否则连接测试（直读
         // secrets.json）通过、正式模型调用（只查 process.env）失败，首次配置
         // 流程必须重启才能用。
         applyLocalSecretsToEnv({ [envName]: transientKey });
+        // D8：桶名落字段——新供应商自动桶 / 旧空 env 记录回填都经这里同步。
+        if (!payload.api_key_env) payload.api_key_env = envName;
       }
       const merged = { ...current, ...payload, id: current.id };
       const { provider, store } = await upsertProvider(secretsRoot, merged);
@@ -159,7 +167,11 @@ export function createProvidersRoutes({ secretsRoot }) {
       return { ok: true, store };
     }),
 
-    // 拉取模型中转：外呼厂商 GET /models，返回候选模型名列表（不落盘）。
+    // 拉取模型中转：外呼厂商模型列表端点，返回候选模型名列表（不落盘）。
+    // D10（round22）：按协议分发——OpenAI Chat/Responses 用 Bearer GET /models；
+    // Anthropic Messages 用 x-api-key + anthropic-version GET /v1/models；两者
+    // 的响应同形（{ data: [{ id }] }），沿用同一结果归一。不支持模型列表的
+    // 中转站显示真实错误，不把候选写盘。
     "POST /api/settings/providers/:id/pull-models": wrap(async ({ params }) => {
       const provider = await providerOf(params.id);
       const secrets = await loadLocalSecrets(secretsRoot);
@@ -167,14 +179,23 @@ export function createProvidersRoutes({ secretsRoot }) {
       if (!apiKey) {
         throw new HttpError(400, "missing_api_key", "请先填写 API 密钥，再拉取模型。");
       }
+      const isAnthropic = provider.api_format === "anthropic-messages";
       let payload;
       try {
         // base_url 只要求非空字符串，scheme-less 值会在此抛 TypeError，须放进 try
         // 以映射为 pull_failed（而不是 400 invalid_provider）。
-        const url = new URL("models", `${provider.base_url.replace(/\/+$/u, "")}/`);
-        const res = await fetch(url, {
-          headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" }
-        });
+        const trimmed = provider.base_url.replace(/\/+$/u, "");
+        let url = `${trimmed}/models`;
+        if (isAnthropic) {
+          // 与 messages 端点同款拼接：路径已以 /v1 结尾不重复追加
+          let pathname = "";
+          try { pathname = new URL(trimmed).pathname.replace(/\/+$/u, ""); } catch { /* 非法 URL 交由下方 fetch 失败 */ }
+          url = `${trimmed}${pathname.endsWith("/v1") ? "/models" : "/v1/models"}`;
+        }
+        const headers = isAnthropic
+          ? { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" }
+          : { authorization: `Bearer ${apiKey}`, "content-type": "application/json" };
+        const res = await fetch(url, { headers });
         if (!res.ok) {
           throw new HttpError(400, "pull_failed", `模型服务返回 ${res.status}：${(await res.text()).slice(0, 200)}`);
         }

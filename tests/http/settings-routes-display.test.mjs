@@ -147,6 +147,17 @@ async function setupSettingsServer(t) {
   const selection = { current: null };
   const workspaceStore = createWorkspaceStore({ stateRoot });
   await ensurePresetProviders(secretsRoot);
+  // D7（round22）后种子不带模型；本夹具的 model-switch 用例需要预设模型作切换
+  // 目标，这里直接落一个（保持 D7 前夹具语义）。
+  {
+    const { loadProviderStore, saveProviderStore } = await import("../../src/core/model-provider-store.mjs");
+    const store = await loadProviderStore(secretsRoot);
+    const ds = store.providers.find((p) => p.id === "deepseek");
+    if (ds && ds.models.length === 0) {
+      ds.models = [{ id: "m_deepseek_deepseek-v4-pro", model_name: "deepseek-v4-pro", enabled: true }];
+      await saveProviderStore(secretsRoot, store);
+    }
+  }
   const router = createRouter();
   const settingsRoutes = createSettingsRoutes({
     workspace,

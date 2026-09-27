@@ -65,6 +65,9 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
       hasProject: false,
       workspaceRoot: workspace,
       projectRoot,
+      // D1：顶栏项目名由后端给出（与 buildProjectList 的 path.basename 口径一致），
+      // 前端不自行派生（尾分隔符 / UNC / 盘根边界只处理这一处）。
+      name: path.basename(projectRoot),
       project: null,
       sessions: sessionData.sessions,
       active_session_id: sessionData.active_session_id,

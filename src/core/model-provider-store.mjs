@@ -7,7 +7,9 @@ import { MODEL_PRESETS as PRESET_DEFINITIONS } from "./model-presets.mjs";
 
 const PROVIDERS_FILE = "model-profiles.json";
 export const SCHEMA_VERSION = 2;
-export const ALLOWED_API_FORMATS = new Set(["openai-chat-completions"]);
+// D5（round22）：三协议 allow-list——anthropic-messages / openai-responses 为
+// 本轮新增；gemini-generate-content 死选项已删除，不再出现在任何白名单。
+export const ALLOWED_API_FORMATS = new Set(["openai-chat-completions", "anthropic-messages", "openai-responses"]);
 
 // Task 19（spec 4.3 #12）：store 级单一 mutex 串行化「读-判-迁移-写」整条路径。
 // loadProviderStore 的 v1→v2 迁移也走同一把锁（见 loadProviderStoreUnlocked），
@@ -213,6 +215,10 @@ export async function upsertProvider(root, input) {
       // 字段级更新：未显式携带 models 时保留既有模型，避免整包替换把模型清空
       provider.models = existing.models;
     }
+    // D8（round22）：新供应商无密钥存储名时按编号生成——pv_<hex> 天然满足
+    // ENV 名形状，不新增命名规则。仅写路径：读路径 normalizeProvider 不动，
+    // 旧空 env 记录仍读作「未配置密钥」；既有供应商的非空 env 原样保留。
+    if (!existing && !provider.api_key_env) provider.api_key_env = provider.id;
     const others = store.providers.filter((p) => p.id !== provider.id);
     if (others.some((p) => p.name === provider.name)) {
       throw new Error("duplicate_provider_name: 供应商名称已存在");

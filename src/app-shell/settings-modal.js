@@ -177,6 +177,15 @@ export function createSettingsModal(ctx, options = {}) {
   function setSettingsSection(next) {
     if (!SETTINGS_SECTIONS.some((s) => s.id === next)) return;
     if (next === settingsSection) return;
+    // D12（round22）：切分区路径同样覆盖未提交草稿——当前分区有未提交内容时
+    // 先确认，确认丢弃（模型分区顺带清内存草稿）后才切换。
+    if (settingsDirty() && !dirtyConfirmRef.close && ctx.refs.settingsScrim.classList.contains("show")) {
+      openDirtyCloseConfirm(settingsSection, () => {
+        if (settingsSection === "model") ctx.modelSettings?.clearDrafts?.();
+        setSettingsSection(next);
+      });
+      return;
+    }
     settingsSection = next;
     renderSectionNav();
     renderSectionBody();
@@ -755,14 +764,16 @@ export function createSettingsModal(ctx, options = {}) {
     // 关闭路径统一经此守卫（app.js 的 X/取消/遮罩/Esc 与保存成功后的自动关闭
     // 都调用本函数）；保存成功时 dashboard 已刷新，dirty 判定自然为 false。
     if (settingsDirty() && !dirtyConfirmRef.close && ctx.refs.settingsScrim.classList.contains("show")) {
-      openDirtyCloseConfirm();
+      openDirtyCloseConfirm(settingsSection, performCloseSettingsModal);
       return;
     }
     performCloseSettingsModal();
   }
 
   // 真正关闭（确认放弃/无未保存修改时）：清空确认层 + 关闭动画 + 恢复原焦点。
+  // D11：关闭即丢弃模型分区的内存草稿（含未保存密钥）。
   function performCloseSettingsModal() {
+    ctx.modelSettings?.clearDrafts?.();
     // 清空确认层随设置弹窗一起关闭（X/关闭/遮罩/Esc 任一路径都先关嵌套层）。
     closeClearHistoryConfirm();
     closeDirtyCloseConfirm();
@@ -802,19 +813,26 @@ export function createSettingsModal(ctx, options = {}) {
   // 放弃未保存修改确认层（Task 22）：复用 spd-confirm-layer/spd-confirm-card
   // 确认控件结构（与清空历史确认层同款），不调用 browser confirm。Task 12：
   // 层收编 dom-kit.showConfirmLayer（非 danger：无 ack/错误行），确认即执行关闭。
-  function openDirtyCloseConfirm() {
+  // D12（round22）：确认层按分区给文案——模型区标题「关闭设置？」、正文
+  // 「模型设置里未提交的内容会丢失。」、按钮「继续编辑」/「关闭」；写作参数
+  // 沿用既有「不保存并关闭」语义。onConfirm 由调用方给出（关闭 / 切分区）。
+  function openDirtyCloseConfirm(section, onDiscard) {
     if (dirtyConfirmRef.close) return;
     removeAddMenuDismissal?.();
+    const copy = section === "model"
+      ? { title: "关闭设置？", message: "模型设置里未提交的内容会丢失。", confirmLabel: "关闭", cancelLabel: "继续编辑" }
+      : { title: "放弃未保存的修改？", message: "写作参数有未保存的修改，关闭后将丢失。", confirmLabel: "不保存并关闭", cancelLabel: "取消" };
     const promise = showConfirmLayer({
       doc: document,
       host: ctx.refs.settingsScrim,
       id: "close-dirty",
-      title: "放弃未保存的修改？",
-      message: "写作参数有未保存的修改，关闭后将丢失。",
-      confirmLabel: "不保存并关闭",
+      title: copy.title,
+      message: copy.message,
+      confirmLabel: copy.confirmLabel,
+      cancelLabel: copy.cancelLabel,
       zIndex: "21",
       onConfirm: () => {
-        performCloseSettingsModal();
+        onDiscard?.();
       },
       // 任何路径关闭层（取消/背景/Esc/成功/外部.close）都重置 open guard。
       onClose: () => { dirtyConfirmRef = { close: null }; }

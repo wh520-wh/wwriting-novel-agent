@@ -40,6 +40,8 @@ const CREATE_MODAL_COPY = {
 };
 
 export async function bootApp(root = document) {
+  // D16：就绪信号唯一化——<html data-app-state> loading/ready/error（loadAll 后置位）。
+  root.documentElement.dataset.appState = "loading";
   // Task 22：refs 分域——rail/drawer/reader/settings 四桶，消费点经分桶名引用。
   const railRefs = {
     rail: root.querySelector(".rail"),
@@ -124,6 +126,10 @@ export async function bootApp(root = document) {
   const { setThemeMode } = setupThemePrivacy({ railRefs });
   
   let currentProjectRoot = null;
+  // D1：首次 openProject 接线判定专用根（不得借用 currentProjectRoot 承担该语义）。
+  let openedProjectRoot = null;
+  // D2：应用级唯一活跃会话 id（surface 回调/草稿占位写入；切项目即清空待回调）。
+  let activeSessionId = null;
   let dashboardRequestId = 0;
   let drawerTab = "chapters";
   let lastDashboard = null;
@@ -145,10 +151,10 @@ export async function bootApp(root = document) {
     onOpenChapter: (chapterNo) => openReader(chapterNo),
     onCreateProject: () => openCreateModal(),
     onOpenProjectFolder: () => openFromFolder(),
-    // Task 9：会话列表刷新 → 左侧栏两级树 + busy 复位；draft 占位不进入列表（Task 3），
-    // 活跃 id 由 sidebar 自持，app.js 经 sessionSidebar.getSessions() 读取。
-    onSessionsChanged: (sessions, activeSessionId) => {
-      sessionSidebar.handleSessionsChanged(currentProjectRoot, sessions, activeSessionId);
+    // Task 9：会话列表刷新 → 左侧栏两级树 + busy 复位（D2：唯一活跃来源在此）。
+    onSessionsChanged: (sessions, sid) => {
+      activeSessionId = sid ?? null;
+      sessionSidebar.handleSessionsChanged(currentProjectRoot, sessions);
     },
     // Task 9：SSE run 终态 → 重拉会话列表并复位 busy。app.js 不消费 SSE（surface 是
     // 唯一消费者），这里经 surface 的 onRunTerminal 钩子转发；busy 复位由
@@ -194,6 +200,7 @@ export async function bootApp(root = document) {
     scrollEl: railRefs.railScroll,
     getProjectListData: () => projectListData,
     getCurrentProjectRoot: () => currentProjectRoot,
+    getActiveSessionId: () => activeSessionId,
     fetchSessions: async (projectRoot) => getJson(withProjectScope("/api/agent/sessions", projectRoot)),
     renderProjectRow: (project) => renderProjectNav(project),
     surface: agentSurface,
@@ -570,7 +577,9 @@ export async function bootApp(root = document) {
   });
   
   async function loadAll() {
-    await Promise.all([loadProjectList(), loadDashboard()]);
+    // D16：初次加载返回成功布尔（后台刷新仍吞错 toast）；全成才 ready。
+    const results = await Promise.all([loadProjectList(), loadDashboard()]);
+    document.documentElement.dataset.appState = results.every((ok) => ok === true) ? "ready" : "error";
   }
   
   async function loadProjectList() {
@@ -578,9 +587,11 @@ export async function bootApp(root = document) {
       const data = await getJson("/api/projects/list");
       projectListData = data;
       renderProjectListFiltered();
+      return true;
     } catch (error) {
       projectListData = null;
       railRefs.projectList.replaceChildren(renderProjectEmpty(error.message));
+      return false;
     }
   }
   
@@ -600,7 +611,7 @@ export async function bootApp(root = document) {
       const data = await getJson(dashboardUrl);
       if (requestId !== dashboardRequestId) return;
       if (!projectScope.isCurrent(token)) return;
-      if (!activeProjectRoot && data.hasProject && data.projectRoot) {
+      if (!activeProjectRoot && data.projectRoot) {
         projectScope.activate(data.projectRoot);
         token = projectScope.capture(data.projectRoot);
       }
@@ -616,13 +627,15 @@ export async function bootApp(root = document) {
       // 终态刷新把顶栏/抽屉替换成「读取失败」；旧 scope 数据由上面的守卫丢弃。
       if (options?.background === true) {
         showToast(error?.message ?? "刷新失败。", "error");
-        return;
+        return false;
       }
       // Task 9：dashboard 失败时当前项目会话组降级为可重试失败行
       //（否则「加载中…」永不消失）。
       sessionSidebar.markSessionsFailed(activeProjectRoot);
       renderError(error);
+      return false;
     }
+    return true;
   }
   
   // Switch Cleanup Matrix：每次切换项目/无项目时重置项目级临时 UI 状态。
@@ -637,14 +650,16 @@ export async function bootApp(root = document) {
     readerChapterNo = null;
   }
   
-  function commitProjectSwitch(projectRoot, activeSessionId = null) {
+  function commitProjectSwitch(projectRoot, initialSessionId = null) {
     projectScope.activate(projectRoot);
     currentProjectRoot = projectRoot;
+    openedProjectRoot = projectRoot; // D1：commit 已显式 openProject，记录接线根避免重复 open
+    activeSessionId = null; // D2：切项目先清活跃 id，待新项目回调再高亮
     clearTransientState();
     // Task 9：会话级代次推进——在途会话切换的续作一律丢弃；openProject 完成后拉一次
     // 会话列表（Task 8 契约：surface 不自动拉）更新活跃高亮 + busy 复位。
     sessionSidebar.invalidateProject();
-    Promise.resolve(agentSurface.openProject(projectRoot, activeSessionId)).then(() => {
+    Promise.resolve(agentSurface.openProject(projectRoot, initialSessionId)).then(() => {
       agentSurface.refreshSessions();
     });
   }
@@ -656,10 +671,21 @@ export async function bootApp(root = document) {
   // 占位（细节见 session-sidebar.mjs createSessionRemovalResolver）。
   const resolveActiveAfterSessionRemoval = createSessionRemovalResolver({
     getSessions: () => sessionSidebar.getSessions(currentProjectRoot),
+    getActiveSessionId: () => activeSessionId,
     switchSession: (sessionId) => sessionSidebar.switchSession(sessionId),
     refreshSessions: () => agentSurface.refreshSessions(),
-    newSessionPlaceholder: () => agentSurface.newSessionPlaceholder()
+    newSessionPlaceholder: () => startNewSessionPlaceholder()
   });
+
+  // D3：新建对话统一入口——草稿 id 即写应用级活跃 id 并定向重渲当前组（500ms
+  // 反馈不等网络）；surface 异步 refreshSessions 后续仍用真实列表更新。
+  function startNewSessionPlaceholder() {
+    const draftId = agentSurface.newSessionPlaceholder();
+    if (typeof draftId === "string" && draftId) activeSessionId = draftId;
+    const cached = sessionSidebar.getSessions(currentProjectRoot);
+    sessionSidebar.handleSessionsChanged(currentProjectRoot, cached?.sessions ?? []);
+    return draftId;
+  }
   
   // Task 8 契约：删除会话后若删的是当前活跃会话 → 切到该项目的最近活跃会话
   //（surface.switchSession(null) 由后端 last-active 解析），无其他会话则进入占位新对话。
@@ -709,7 +735,7 @@ export async function bootApp(root = document) {
       if (!pathEquals(project.projectRoot, currentProjectRoot)) {
         await openProjectAndSession(project.projectRoot); // 全流程切项目（POST + commit + loadAll）
       }
-      agentSurface.newSessionPlaceholder();
+      startNewSessionPlaceholder();
     });
     const remove = make("button", "proj-remove");
     remove.type = "button";
@@ -733,28 +759,30 @@ export async function bootApp(root = document) {
   
   function renderDashboard(data) {
     lastDashboard = data;
-    if (!data.hasProject) {
+    // D1：有根即接线（hasProject:false 的普通文件夹同样是已打开工作区）。
+    if (!data.projectRoot) {
       currentProjectRoot = null;
       railRefs.title.textContent = "开始创作";
       sessionSidebar.syncBusy(); // 无项目：busy 复位
       refreshDrawerIfOpen();
       return;
     }
-  
-    const firstLoad = currentProjectRoot !== data.projectRoot;
+
+    // D1 硬不变量：先比较 openedProjectRoot 再赋值——否则普通文件夹首开被误判已接线。
+    const firstLoad = openedProjectRoot !== data.projectRoot;
     if (firstLoad) {
+      openedProjectRoot = data.projectRoot;
       // 切换/首次打开项目：把 AgentSurface 指向该项目（内部重连 SSE）。
-      currentProjectRoot = data.projectRoot;
       agentSurface.openProject(data.projectRoot);
     }
-  
-    // Task 9：dashboard 会话数据 seed 当前项目（两级树当前项目组数据源，含 run_status
-    // 状态点与 busy 复位依据）；懒加载缓存以最新 dashboard 为准。
-    sessionSidebar.seedSessions(data.projectRoot, data.sessions ?? [], data.active_session_id ?? null);
-  
-    const project = data.project;
-    railRefs.title.textContent = project.title ?? "未命名小说";
-  
+    currentProjectRoot = data.projectRoot;
+
+    // Task 9：dashboard 会话数据 seed 当前项目（D2：活跃 id 不入缓存）。
+    sessionSidebar.seedSessions(data.projectRoot, data.sessions ?? []);
+
+    // D1：顶栏项目名——正式项目用标题，普通文件夹用后端补的目录名。
+    railRefs.title.textContent = data.project?.title ?? data.name ?? "未命名小说";
+
     refreshDrawerIfOpen();
   }
   
@@ -1011,7 +1039,6 @@ export async function bootApp(root = document) {
   }
   
   motion.setupMotion();
-  window.__wwritingMotionReady = true;
   
   await loadAll();
 

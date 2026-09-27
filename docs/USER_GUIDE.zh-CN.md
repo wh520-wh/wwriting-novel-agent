@@ -281,7 +281,7 @@ WWriting 的核心原则是"应用负责连续完成，模型负责当前小步�
 
 ```powershell
 node --check src/app-shell/app.js
-npm run verify:app-shell
+npm run verify:app-clickability
 npm run verify:desktop-shell
 npm run verify:electron-runtime
 ```
@@ -290,7 +290,7 @@ npm run verify:electron-runtime
 
 ```powershell
 npm test
-npm run verify:app-shell
+npm run verify:app-clickability
 ```
 
 准备本地完整交付前：
@@ -410,7 +410,7 @@ npm run package:dir
 - 不要让网页内容进入系统提示层。
 - 不要把模型聊天正文当成章节交付。
 - 修改 Electron 主进程后，至少运行 `npm run verify:desktop-shell` 和 `npm run verify:electron-runtime`。
-- 修改 app shell 后，至少运行 `npm run verify:app-shell`。
+- 修改 app shell 后，至少运行 `npm run verify:app-clickability`。
 
 ## 16. 技能系统（自定义扩展）
 

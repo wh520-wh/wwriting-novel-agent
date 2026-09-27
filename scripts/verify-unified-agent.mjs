@@ -1032,7 +1032,7 @@ step("场景 24 · 活动合并与私有推理排除");
     removeAttribute(name) { delete this._attrs[name]; }
     focus() { /* 真实 DOM 中不可聚焦元素调用 focus() 即为 no-op，故留空实现 */ }
     // matchesSelector / querySelector / querySelectorAll —— ported from
-    // verify-app-shell.mjs MockElement（Task 19 / Task 25）；view.js syncNotices
+    // 已退役的 verify-app-shell.mjs 的 MockElement（Task 19 / Task 25 历史移植）；view.js syncNotices
     // 调用 messages.querySelectorAll("[data-notice-type]")，需要选择器支持。
     matchesSelector(selector) {
       if (selector.startsWith("[")) {

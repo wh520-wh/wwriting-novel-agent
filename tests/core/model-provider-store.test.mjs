@@ -33,6 +33,17 @@ test("upsertProvider 落盘并生成不可变 id", async (t) => {
   const reloaded = await loadProviderStore(root);
   assert.equal(reloaded.providers[0].id, provider.id);
   assert.equal(reloaded.providers[0].name, "我的中转");
+
+  // D8：新供应商无密钥存储名时按编号生成；显式 env 的既有供应商原样保留
+  const auto = await upsertProvider(root, {
+    name: "自动桶", base_url: "https://auto.example.com", api_format: "openai-chat-completions"
+  });
+  assert.equal(auto.provider.api_key_env, auto.provider.id, "新供应商 api_key_env 应自动等于供应商编号");
+  const kept = await upsertProvider(root, {
+    id: provider.id, name: "我的中转", base_url: "https://relay.example.com",
+    api_format: "openai-chat-completions", api_key_env: "MY_RELAY_KEY"
+  });
+  assert.equal(kept.provider.api_key_env, "MY_RELAY_KEY", "显式 env 的既有供应商不得被改写");
 });
 
 test("同 id 重存 = 更新，不新增条目", async (t) => {
@@ -87,7 +98,7 @@ test("seeded_preset_ids 归一化只保留合法字符串并去重", async (t) =
 test("非法 api_format 拒绝保存", async (t) => {
   const root = await tempRoot(t);
   await assert.rejects(
-    () => upsertProvider(root, { name: "X", base_url: "https://x.test", api_format: "anthropic-messages", api_key_env: "X" }),
+    () => upsertProvider(root, { name: "X", base_url: "https://x.test", api_format: "gemini-generate-content", api_key_env: "X" }),  // round22 D5：anthropic 已入白名单，改用无实现的 gemini 死选项
     /api_format/u
   );
 });

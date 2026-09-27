@@ -349,28 +349,26 @@ test("renderDetail 交互接线：改名 / Base URL 校验 / 启停 / 协议回�
   await tickAsync();
   assert.deepEqual(lastPatch(), { url: "/api/settings/providers/deepseek", body: { status: "disabled" } });
 
-  // 协议：非 openai-chat-completions 回退当前值并提示，不保存
+  // 协议（round22 D5/D8）：三协议可选、change 即保存，无「回退当前值」路径
   const formatSelect = els.find((el) => el.getAttribute?.("data-field") === "api_format");
+  assert.ok(formatSelect, "自建服务详情应渲染协议选择");
   formatSelect.value = "anthropic-messages";
   formatSelect._fire("change");
   await tickAsync();
-  assert.equal(formatSelect.value, "openai-chat-completions", "非法协议应回退到当前值");
-  assert.ok(toasts.some((t) => /协议/u.test(t.message)), "应提示当前仅支持 OpenAI Chat Completions");
-  formatSelect.value = "openai-chat-completions";
+  assert.deepEqual(lastPatch(), { url: "/api/settings/providers/deepseek", body: { api_format: "anthropic-messages" } });
+  formatSelect.value = "openai-responses";
   formatSelect._fire("change");
   await tickAsync();
-  assert.deepEqual(lastPatch(), { url: "/api/settings/providers/deepseek", body: { api_format: "openai-chat-completions" } });
+  assert.deepEqual(lastPatch(), { url: "/api/settings/providers/deepseek", body: { api_format: "openai-responses" } });
 
-  // 密钥（Task 20 #14）：默认关闭「使用环境变量名」→ 一律按明文密钥提交，
-  // 不猜字符串形状；打开开关后才按环境变量名提交
+  // 密钥（round22 D8）：一律按明文提交 { api_key }，「使用环境变量名」开关已删除
   const keyInput = els.find((el) => el.getAttribute?.("data-field") === "api_key");
-  const envToggle = els.find((el) => el.getAttribute?.("data-field") === "api_key_env_toggle");
   const keyErrorEl = els.find((el) => el.getAttribute?.("data-field-error") === "api_key");
   const keyStatusEl = els.find((el) => el.getAttribute?.("data-api-key-status") === "true");
-  assert.ok(envToggle, "应渲染「使用环境变量名」开关");
-  assert.equal(envToggle.checked, false, "开关默认关闭（关闭时一律按明文）");
+  const envToggle = els.find((el) => el.getAttribute?.("data-field") === "api_key_env_toggle");
+  assert.equal(envToggle, undefined, "「使用环境变量名」开关应已删除");
   assert.ok(keyStatusEl, "应渲染密钥状态标签");
-  assert.ok(keyStatusEl.textContent.includes("已填环境变量名"), "已填环境变量名但未存密钥应显示中间状态");
+  assert.ok(keyStatusEl.textContent.includes("已配置") === false, "未存密钥时不应显示已配置");
 
   keyInput.value = "sk-abc123";
   keyInput._fire("change");
@@ -378,29 +376,11 @@ test("renderDetail 交互接线：改名 / Base URL 校验 / 启停 / 协议回�
   assert.deepEqual(lastPatch(), { url: "/api/settings/providers/deepseek", body: { api_key: "sk-abc123" } });
   assert.equal(keyInput.value, "", "明文密钥保存成功后应清空回显");
 
-  // 形如环境变量名的明文：开关关闭仍按明文提交（后端不猜字符串形状）
+  // 形如环境变量名的明文：仍按明文提交（后端不猜字符串形状）
   keyInput.value = "MY_API_KEY";
   keyInput._fire("change");
   await tickAsync();
   assert.deepEqual(lastPatch(), { url: "/api/settings/providers/deepseek", body: { api_key: "MY_API_KEY" } });
-
-  // 打开开关后才按环境变量名提交
-  envToggle.checked = true;
-  envToggle._fire("change");
-  keyInput.value = "MY_API_KEY";
-  keyInput._fire("change");
-  await tickAsync();
-  assert.deepEqual(lastPatch(), { url: "/api/settings/providers/deepseek", body: { api_key_env: "MY_API_KEY" } });
-  assert.equal(keyInput.value, "", "环境变量名保存成功后同样清空回显");
-
-  // 开关打开 + 非法环境变量名：行内中文错误，不发请求，保留编辑态
-  const patchesBeforeInvalidEnv = patches.length;
-  keyInput.value = "1BAD";
-  keyInput._fire("change");
-  await tickAsync();
-  assert.equal(patches.length, patchesBeforeInvalidEnv, "非法环境变量名不应发起保存");
-  assert.equal(keyErrorEl.textContent, "API 密钥环境变量名只能包含字母、数字、下划线且不能以数字开头。", "非法环境变量名应显示中文错误");
-  assert.equal(keyInput.value, "1BAD", "非法输入保留编辑态");
 
   // 模型名空值：不发请求 + 行内中文错误 + 保留编辑态（Task 20 #5）
   const m1Row = els.find((el) => el.className === "model-row" && el.getAttribute?.("data-model-id") === "m1");
@@ -416,14 +396,14 @@ test("renderDetail 交互接线：改名 / Base URL 校验 / 启停 / 协议回�
   assert.equal(modelNameInput.value, "   ", "空模型名保留编辑态");
 });
 
-test("明文密钥保存失败：保留输入回显并提示先填环境变量名", async () => {
+test("明文密钥保存失败：保留输入回显并显示通用失败文案", async () => {
   const toasts = [];
   const page = makePage({
     fetchImpl: async (url, options = {}) => {
       const body = options.body ? JSON.parse(options.body) : null;
       if (options?.method === "PATCH" && body?.api_key) {
-        // 模拟后端对无 api_key_env bucket 的明文密钥 PATCH 返回 400
-        return { ok: false, status: 400, json: async () => ({ message: "请先填写 API 密钥环境变量名。" }) };
+        // 模拟后端写盘失败（401/网络等），密钥不落盘
+        return { ok: false, status: 500, json: async () => ({ message: "服务暂不可用。" }) };
       }
       return { ok: true, json: async () => ({ providers, default_model: null }) };
     },
@@ -439,12 +419,8 @@ test("明文密钥保存失败：保留输入回显并提示先填环境变量�
   keyInput._fire("change");
   await tickAsync();
   assert.equal(keyInput.value, "sk-abc123", "保存失败不应清空回显，避免丢失已键入的密钥");
-  assert.equal(keyErrorEl.textContent, "请先填写 API 密钥环境变量名。", "失败原因应行内回显中文错误");
-  assert.ok(
-    toasts.some((t) => t.message.includes("先填写 API 密钥环境变量名") && t.kind === "error"),
-    "应给出「先填写环境变量名」的明确引导"
-  );
-  assert.ok(toasts.every((t) => !t.message.startsWith("保存失败：")), "该场景不应再出现通用失败文案");
+  assert.equal(keyErrorEl.textContent, "服务暂不可用。", "失败原因应行内回显中文错误");
+  assert.ok(toasts.some((t) => t.message.startsWith("保存失败：") && t.kind === "error"), "应出现通用失败 toast");
 });
 
 // ---------------------------------------------------------------------------
@@ -788,7 +764,8 @@ test("测试连接：请求体形态、行内结果与缺密钥提示", async ()
   const pro = await page._handlers.testConnection(providers[0], providers[0].models[0], slot);
   assert.equal(pro.ok, true);
   assert.deepEqual(bodies[0], {
-    provider: { base_url: "https://api.deepseek.com/v1", api_key_env: "DEEPSEEK_API_KEY" },
+    // D5：api_format 随候选透传
+    provider: { base_url: "https://api.deepseek.com/v1", api_format: "openai-chat-completions", api_key_env: "DEEPSEEK_API_KEY" },
     model: { model_name: "deepseek-v4-pro" }
   });
   let resultEl = descendants(slot).find((el) => String(el.className).includes("connection-result"));
@@ -807,7 +784,7 @@ test("测试连接：请求体形态、行内结果与缺密钥提示", async ()
   assert.ok(toasts.some((t) => t.message.includes("API 密钥")), "缺密钥（configuration_missing）应提示补密钥");
 });
 
-test("添加供应商：POST 创建 + 有密钥时 PATCH 落盘 + 表单开关", async () => {
+test("添加供应商：三字段 POST 创建（服务端生成密钥存储名）+ 有密钥时 PATCH 落盘 + 表单开关", async () => {
   const calls = [];
   const toasts = [];
   let providersState = [...providers];
@@ -819,7 +796,7 @@ test("添加供应商：POST 创建 + 有密钥时 PATCH 落盘 + 表单开关",
         calls.push({ url, method, body });
         const provider = {
           id: "newp", name: body.name, base_url: body.base_url, api_format: body.api_format,
-          api_key_env: body.api_key_env, status: "enabled", models: []
+          api_key_env: body.api_key_env ?? "newp", status: "enabled", models: []
         };
         providersState = [provider, ...providersState];
         return { ok: true, json: async () => ({ ok: true, provider, store: { providers: providersState } }) };
@@ -834,26 +811,25 @@ test("添加供应商：POST 创建 + 有密钥时 PATCH 落盘 + 表单开关",
   });
   await page.open();
 
-  // 必填缺失 / Base URL 非 http(s) / 密钥环境变量名非法：校验不过不发请求
-  assert.equal(await page._handlers.addProvider({ name: "", base_url: "https://x.test", api_key_env: "K" }), false);
-  assert.equal(await page._handlers.addProvider({ name: "X", base_url: "ftp://x.test", api_key_env: "K" }), false);
-  assert.equal(await page._handlers.addProvider({ name: "X", base_url: "https://x.test", api_key_env: "1BAD" }), false);
-  assert.equal(await page._handlers.addProvider({ name: "X", base_url: "https://x.test", api_key_env: "BAD NAME" }), false);
+  // D8：必填只有名称 + Base URL；密钥环境变量名概念已删除，非法 env 名不再是校验项
+  assert.equal(await page._handlers.addProvider({ name: "", base_url: "https://x.test" }), false);
+  assert.equal(await page._handlers.addProvider({ name: "X", base_url: "ftp://x.test" }), false);
   assert.equal(calls.length, 0, "校验失败不应发请求");
 
   const ok = await page._handlers.addProvider({
-    name: "新供应商", base_url: "https://new.example.com/v1", api_key_env: "NEW_KEY", api_key: "sk-new"
+    name: "新供应商", base_url: "https://new.example.com/v1", api_key: "sk-new"
   });
   assert.equal(ok, true);
+  // D8：POST 只带三字段——密钥存储名由服务端按编号生成（测试桩以 id 兜底）
   assert.deepEqual(calls[0], {
     url: "/api/settings/providers", method: "POST",
-    body: { name: "新供应商", base_url: "https://new.example.com/v1", api_format: "openai-chat-completions", api_key_env: "NEW_KEY" }
+    body: { name: "新供应商", base_url: "https://new.example.com/v1", api_format: "openai-chat-completions" }
   });
   assert.deepEqual(calls[1], { url: "/api/settings/providers/newp", method: "PATCH", body: { api_key: "sk-new" } });
   assert.equal(page.getState().providers[0].id, "newp", "refresh 后新供应商应出现在列表首位");
   assert.ok(toasts.some((t) => t.message === "供应商已添加"), "成功应提示供应商已添加");
 
-  // 表单交互：按钮可用 → 点击展开内联表单 → 取消收起
+  // 表单交互：按钮可用 → 点击展开内联表单（含目录搜索 + 自建服务子表单）→ 取消收起
   const list = new MockElement("div");
   page.renderList(list);
   const addBtn = descendants(list).find((el) => el.className === "add-provider");
@@ -862,6 +838,8 @@ test("添加供应商：POST 创建 + 有密钥时 PATCH 落盘 + 表单开关",
   const form = descendants(list).find((el) => el.getAttribute?.("data-add-provider-form") === "true");
   assert.ok(form, "列表应渲染内联添加表单");
   assert.equal(form.hidden, false, "点击后应展开内联表单");
+  assert.ok(descendants(list).some((el) => el.className === "catalog-search"), "应渲染目录搜索框（D7：候选不默认铺开）");
+  assert.ok(descendants(list).some((el) => el.className === "catalog-manual-toggle"), "应渲染「中转站 / 自建服务」入口");
   const cancel = descendants(list).find((el) => el.className === "provider-form-cancel");
   assert.ok(cancel, "表单应有取消按钮");
   cancel.click();
@@ -966,7 +944,7 @@ test("test/pull 先提交并验证当前表单值（#8）：未失焦输入也�
     { model_name: "deepseek-v4-pro-new" }
   ], "test 前应依次提交未保存的 provider 与 model 草稿");
   assert.deepEqual(testBodies[0], {
-    provider: { base_url: "https://new.example.com/v2", api_key_env: "DEEPSEEK_API_KEY" },
+    provider: { base_url: "https://new.example.com/v2", api_format: "openai-chat-completions", api_key_env: "DEEPSEEK_API_KEY" },
     model: { model_name: "deepseek-v4-pro-new" }
   }, "测试请求必须使用提交后的权威值而非陈旧保存值");
 
@@ -1087,7 +1065,7 @@ test("测试连接：commit 重渲染后结果写入新渲染的 resultSlot（Cr
 
   assert.deepEqual(patches.map((p) => p.body), [{ base_url: "https://new.example.com/v2" }], "test 前应先提交草稿");
   assert.deepEqual(testBodies[0], {
-    provider: { base_url: "https://new.example.com/v2", api_key_env: "DEEPSEEK_API_KEY" },
+    provider: { base_url: "https://new.example.com/v2", api_format: "openai-chat-completions", api_key_env: "DEEPSEEK_API_KEY" },
     model: { model_name: "deepseek-v4-pro" }
   }, "测试请求应使用提交后的权威值");
   // commit 触发 refresh 重渲染：结果必须写入新渲染的 slot（用户可见），旧 slot 不接收

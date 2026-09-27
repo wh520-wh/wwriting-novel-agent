@@ -13,9 +13,11 @@ async function tempRoot(t) {
   return root;
 }
 
-test("预设目录含 deepseek/mimo 固定 id 与官方模型", () => {
+test("预设目录含 deepseek/mimo 固定 id 与官方模型（从目录 seeded 条目派生）", () => {
   const ids = MODEL_PRESETS.map((p) => p.id);
   assert.deepEqual(ids, ["deepseek", "mimo"]);
+  // D7：预设定义从目录 seeded 条目派生，模型 = 候选 ∩ 官方价目表（供 v1 迁移
+  // 匹配/补全/价格用，语义与旧硬编码一致）
   const deepseek = MODEL_PRESETS.find((p) => p.id === "deepseek");
   assert.deepEqual(deepseek.models.map((m) => m.model_name), ["deepseek-v4-pro", "deepseek-v4-flash"]);
   assert.equal(deepseek.base_url, "https://api.deepseek.com");
@@ -26,14 +28,14 @@ test("预设目录含 deepseek/mimo 固定 id 与官方模型", () => {
   assert.equal(mimo.api_key_env, "XIAOMI_MIMO_API_KEY");
 });
 
-test("空清单种子写入两个预设；模型带官方价", async (t) => {
+test("空清单种子写入两个预设供应商，模型列表为空态（D7：候选不自动入列）", async (t) => {
   const root = await tempRoot(t);
   const { store, seeded } = await ensurePresetProviders(root);
   assert.equal(seeded, 2);
   assert.deepEqual(store.providers.map((p) => p.id).sort(), ["deepseek", "mimo"]);
   const deepseek = store.providers.find((p) => p.id === "deepseek");
-  const pro = deepseek.models.find((m) => m.model_name === "deepseek-v4-pro");
-  assert.deepEqual(pro.pricing, { input_per_million: 3.0, output_per_million: 6.0, cache_hit_per_million: 0.025, currency: "CNY" });
+  assert.deepEqual(deepseek.models, [], "播种不写模型——模型列表从空态开始");
+  assert.equal(deepseek.api_key_env, "DEEPSEEK_API_KEY", "密钥存储名沿用目录 seeded 条目");
 });
 
 test("已存在清单且无预设 id 时补种；重复调用幂等", async (t) => {

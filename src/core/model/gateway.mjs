@@ -26,7 +26,9 @@ import { CostTracker } from "../cost-tracker.mjs";
 import { normalizeUsageReport } from "../usage-report.mjs";
 import { sha256 } from "../fs-utils.mjs";
 import { isCancellationError } from "../cancellation.mjs";
-import { ProviderTransportError } from "./openai-compatible.mjs";
+import { ProviderConfigurationError, ProviderTransportError, OpenAICompatibleAdapter } from "./openai-compatible.mjs";
+import { AnthropicMessagesAdapter } from "./anthropic-messages.mjs";
+import { OpenAIResponsesAdapter } from "./openai-responses.mjs";
 import { resolveModelCapabilities } from "./capabilities.mjs";
 
 const DEFAULT_RESPONSE_CACHE_SIZE = 256;
@@ -452,6 +454,24 @@ export function createModelGateway({
 // ---------------------------------------------------------------------------
 // 纯辅助（无状态）
 // ---------------------------------------------------------------------------
+
+// D5（round22）：按 api_format 分发协议适配器的唯一选择函数——app-server 的
+// 分发点与 model-connection-test 复用这里，不复制分发 switch。provider 领域
+// 类型恒为 openai-compatible；协议由 api_format 决定。未知格式抛配置错误
+//（allow-list 已在 store/validation 收口，此处是最后一道防线）。
+export function createProtocolAdapter({ api_format, baseUrl, apiKey, apiKeyEnv, fetchImpl } = {}) {
+  const format = String(api_format ?? "openai-chat-completions");
+  if (format === "anthropic-messages") {
+    return new AnthropicMessagesAdapter({ baseUrl, apiKey, apiKeyEnv, fetchImpl });
+  }
+  if (format === "openai-responses") {
+    return new OpenAIResponsesAdapter({ baseUrl, apiKey, apiKeyEnv, fetchImpl });
+  }
+  if (format === "openai-chat-completions") {
+    return new OpenAICompatibleAdapter({ baseUrl, apiKey, apiKeyEnv, fetchImpl });
+  }
+  throw new ProviderConfigurationError(`不支持的模型接口协议: ${format}`);
+}
 
 // 归一化 toolCalls 为 runtime 消费的规范形状 { id, name, arguments }（与
 // harness 冻结的 tool() 形状一致）。adapter 可能返回 { id, tool, input }
