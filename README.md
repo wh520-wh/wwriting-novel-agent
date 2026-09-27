@@ -138,8 +138,7 @@ SETTING.md     # 可选：世界观与设定
 ```powershell
 npm test                        # 1992 个单元/集成测试
 npm run verify:local            # 完整本地验收（含打包，较慢）
-npm run verify:app-shell        # GUI、项目打开、设置、技能、资料工具
-npm run verify:app-clickability # 真实 Electron 窗口逐项点击关键按钮
+npm run verify:app-clickability # 真实 Electron 窗口逐项点击关键按钮（界面外壳门禁）
 npm run verify:desktop-shell    # Electron 安全开关、中文菜单、打包配置
 npm run verify:provider-online  # 真实 OpenAI-compatible provider 在线验收
 npm run verify:research-online  # 真实网页抓取与可配置搜索接口验收

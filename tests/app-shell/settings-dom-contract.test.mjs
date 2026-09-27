@@ -80,9 +80,10 @@ test("styles.css：整页规则退役，.model-section 与弹窗复用规则保�
   // 行首锚定：前面还有 .model-section 作用域的单列覆盖规则，非锚定首匹配会抓错块。
   const bodyRule = /^\.model-settings-body\s*\{[^}]*\}/mu.exec(css)?.[0] ?? "";
   assert.ok(bodyRule, "styles.css 应仍含 .model-settings-body 规则");
-  assert.match(bodyRule, /grid-template-columns\s*:\s*280px\s+minmax\(0,\s*1fr\)/u, ".model-settings-body 应保留两列 grid（280px + 1fr）");
+  // round22 D13：两栏 300px + minmax(340px,1fr)，面板实宽下限 340px
+  assert.match(bodyRule, /grid-template-columns\s*:\s*300px\s+minmax\(340px,\s*1fr\)/u, ".model-settings-body 应保留两列 grid（300px + minmax(340px,1fr)）");
 
-  // 4. "@media (max-width: 880px)" 的单列折叠规则保留
-  assert.match(css, /@media\s*\(\s*max-width\s*:\s*880px\s*\)/u, "styles.css 应保留 @media (max-width: 880px) 折叠块");
-  assert.match(css, /@media[^{]*max-width\s*:\s*880px[^{]*\{[^{]*\.model-settings-body[^{]*\{[^}]*grid-template-columns\s*:\s*(?:minmax\(0\s*,\s*1fr\)|1fr)/u, "窄窗下 .model-settings-body 应折叠单列");
+  // 4. "@media (max-width: 1180px)" 的单列折叠规则保留（round22 D13：视口不足 1180px 降单栏）
+  assert.match(css, /@media\s*\(\s*max-width\s*:\s*1180px\s*\)/u, "styles.css 应保留 @media (max-width: 1180px) 折叠块");
+  assert.match(css, /@media[^{]*max-width\s*:\s*1180px[^{]*\{[^{]*\.model-settings-body[^{]*\{[^}]*grid-template-columns\s*:\s*(?:minmax\(0\s*,\s*1fr\)|1fr)/u, "窄窗下 .model-settings-body 应折叠单列");
 });

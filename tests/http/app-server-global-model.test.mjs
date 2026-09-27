@@ -116,6 +116,16 @@ async function post(port, pathname, body) {
   return { status: response.status, json: await response.json() };
 }
 
+// D7（round22）：种子只写供应商身份、模型列表为空态——需要模型做切换候选的
+// 用例先经模型 CRUD 端点显式入列，再取用（不再假设预设自带模型）。
+async function seedPresetModel(port, providerId = "deepseek", modelName = "deepseek-v4-pro") {
+  const { status } = await post(port, `/api/settings/providers/${providerId}/models`, {
+    model_name: modelName, enabled: true
+  });
+  assert.equal(status, 200, `给预设供应商 ${providerId} 添加模型 ${modelName} 应成功`);
+  return { providerId, modelName };
+}
+
 // 从 GET /api/settings/providers 取预设供应商的第 index 个模型（Task 16 同款引用）。
 async function fetchPresetModel(port, providerId = "deepseek", modelIndex = 0) {
   const res = await fetch(`http://127.0.0.1:${port}/api/settings/providers`);
@@ -248,6 +258,7 @@ test("新建项目不指定模型时沿用全局默认模型（v2 引用）", as
   const { root, server, port } = await setupProjectlessServer();
   try {
     // 设 deepseek 预设为全局默认
+    await seedPresetModel(port, "deepseek", "deepseek-v4-pro");
     const ds = await fetchPresetModel(port, "deepseek");
     const defaultRef = await setDefaultViaEndpoint(port, ds.providerId, ds.modelId);
     assert.deepEqual(defaultRef, { provider_id: ds.providerId, model_id: ds.modelId });
@@ -278,7 +289,9 @@ test("建项目后随时换模型：切换后项目用清单里的另一个模�
   const { root, server, port } = await setupProjectlessServer();
   try {
     // 全局默认 = mimo（后设），deepseek 留作切换目标
+    await seedPresetModel(port, "deepseek", "deepseek-v4-pro");
     const ds = await fetchPresetModel(port, "deepseek");
+    await seedPresetModel(port, "mimo", "mimo-v2.5");
     const mimo = await fetchPresetModel(port, "mimo");
     await setDefaultViaEndpoint(port, mimo.providerId, mimo.modelId);
 
@@ -322,7 +335,9 @@ test("切换模型保留温度配置：v2 清单条目与解析配置 temperatur
   const { root, secretsRoot, server, port } = await setupProjectlessServer();
   try {
     // 配两个模型：deepseek-chat 带 temperature 0.7；mimo 设全局默认
+    await seedPresetModel(port, "deepseek", "deepseek-v4-pro");
     const ds = await fetchPresetModel(port, "deepseek");
+    await seedPresetModel(port, "mimo", "mimo-v2.5");
     const mimo = await fetchPresetModel(port, "mimo");
     const patchRes = await fetch(
       `http://127.0.0.1:${port}/api/settings/providers/${encodeURIComponent(ds.providerId)}/models/${encodeURIComponent(ds.modelId)}`,
@@ -475,6 +490,7 @@ test("切换模型：项目未配置温度时 conflicts 为空数组", async () 
 test("普通目录使用应用私有 active_model，不创建 project.yaml", async () => {
   const { root, projectRoot, stateRoot, server, port } = await setupPlainWorkspace();
   try {
+    await seedPresetModel(port, "deepseek", "deepseek-v4-pro");
     const ds = await fetchPresetModel(port, "deepseek");
     const switched = await post(port, "/api/settings/model-switch", {
       projectRoot,
@@ -497,6 +513,7 @@ test("普通目录使用应用私有 active_model，不创建 project.yaml", asy
 test("普通目录模型切换后 project.yaml 不存在，设置只落应用私有 settings", async () => {
   const { root, projectRoot, stateRoot, server, port } = await setupPlainWorkspace();
   try {
+    await seedPresetModel(port, "deepseek", "deepseek-v4-pro");
     const ds = await fetchPresetModel(port, "deepseek");
     const switched = await post(port, "/api/settings/model-switch", {
       projectRoot,
@@ -522,7 +539,9 @@ test("普通目录模型切换后 project.yaml 不存在，设置只落应用私
 test("model-switch 引用形态：写项目引用，响应去掉旧清单字段", async () => {
   const { root, projectRoot, stateRoot, server, port } = await setupPlainWorkspace();
   try {
-    // 触发预设种子（deepseek/mimo 两级清单落盘 v2 store）
+    // 触发预设种子（deepseek/mimo 两级清单落盘 v2 store）；D7 起种子不带模型，
+    // 切换候选先显式入列
+    await seedPresetModel(port, "deepseek", "deepseek-v4-pro");
     const listRes = await fetch(`http://127.0.0.1:${port}/api/settings/providers`);
     const listJson = await listRes.json();
     const deepseek = listJson.providers.find((p) => p.id === "deepseek");
@@ -551,6 +570,8 @@ test("model-switch 引用形态：写项目引用，响应去掉旧清单字段"
 test("model-switch 引用形态：悬空引用 404、停用模型 400", async () => {
   const { root, projectRoot, server, port } = await setupPlainWorkspace();
   try {
+    // D7 起种子不带模型：先显式入列再取 id
+    await seedPresetModel(port, "deepseek", "deepseek-v4-pro");
     const listRes = await fetch(`http://127.0.0.1:${port}/api/settings/providers`);
     const listJson = await listRes.json();
     const deepseek = listJson.providers.find((p) => p.id === "deepseek");

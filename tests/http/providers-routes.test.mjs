@@ -9,6 +9,7 @@ import { createRouter } from "../../src/core/http/router.mjs";
 import { startHttpServer, listenOnFetchSafePort, closeServer } from "../helpers/http-test.mjs";
 import { createProvidersRoutes } from "../../src/core/http/providers-routes.mjs";
 import { saveLocalSecrets } from "../../src/core/local-secrets.mjs";
+import { saveProviderStore } from "../../src/core/model-provider-store.mjs";
 
 async function setup(t) {
   const secretsRoot = await mkdtemp(path.join(tmpdir(), "providers-"));
@@ -25,19 +26,38 @@ test("GET providers 返回预设并含模型", async (t) => {
   const ids = data.providers.map((p) => p.id);
   assert.deepEqual(ids.sort(), ["deepseek", "mimo"]);
   const deepseek = data.providers.find((p) => p.id === "deepseek");
-  assert.deepEqual(deepseek.models.map((m) => m.model_name), ["deepseek-v4-pro", "deepseek-v4-flash"]);
+  // D7：播种只写供应商身份，模型列表为空态（候选不自动入列）
+  assert.deepEqual(deepseek.models, []);
   assert.equal(data.default_model, null);
+});
+
+test("GET provider-catalog 返回目录 JSON（只读、不含密钥、协议在三协议白名单内）", async (t) => {
+  const { http } = await setup(t);
+  const { res, data } = await http.get("/api/settings/provider-catalog");
+  assert.equal(res.status, 200);
+  assert.equal(data.ok, true);
+  const catalog = data.catalog;
+  assert.equal(catalog.schemaVersion, 1);
+  assert.ok(Array.isArray(catalog.items) && catalog.items.length >= 10, "目录含全部候选厂商");
+  const deepseek = catalog.items.find((item) => item.id === "deepseek");
+  assert.equal(deepseek.seeded, true, "原预设两条标 seeded");
+  const seeded = catalog.items.filter((item) => item.seeded).map((item) => item.id);
+  assert.deepEqual(seeded.sort(), ["deepseek", "mimo"]);
+  // 目录是身份与连接信息的唯一来源，不得携带任何密钥
+  assert.equal(JSON.stringify(catalog).includes("sk-"), false);
 });
 
 test("新建供应商 + 加模型 + 设默认 + 删除", async (t) => {
   const { http } = await setup(t);
+  // D8：POST 只带名称/Base URL/协议——服务端自动生成密钥存储名 = 供应商编号
   const created = await http.post("/api/settings/providers", {
     name: "我的中转", base_url: "https://relay.example.com",
-    api_format: "openai-chat-completions", api_key_env: "MY_KEY"
+    api_format: "openai-chat-completions"
   });
   assert.equal(created.res.status, 200);
   const providerId = created.data.provider.id;
   assert.match(providerId, /^pv_/u);
+  assert.equal(created.data.provider.api_key_env, providerId, "新供应商密钥存储名应自动等于供应商编号");
 
   const added = await http.post(`/api/settings/providers/${providerId}/models`, { model_name: "gpt-4o[1m]" });
   assert.equal(added.res.status, 200);
@@ -49,7 +69,7 @@ test("新建供应商 + 加模型 + 设默认 + 删除", async (t) => {
 
   const dup = await http.post("/api/settings/providers", {
     name: "我的中转", base_url: "https://other.example.com",
-    api_format: "openai-chat-completions", api_key_env: "K2"
+    api_format: "openai-chat-completions"
   });
   assert.equal(dup.res.status, 400);
   assert.equal(dup.data.code, "duplicate_provider_name");
@@ -91,8 +111,9 @@ test("providers model-remove：不存在供应商 404、不存在模型 404、�
 
 test("非法 api_format 保存被拒", async (t) => {
   const { http } = await setup(t);
+  // round22 D5：anthropic-messages / openai-responses 已入白名单，非法用例改用无实现的 gemini 死选项
   const res = await http.post("/api/settings/providers", {
-    name: "X", base_url: "https://x.test", api_format: "anthropic-messages", api_key_env: "X"
+    name: "X", base_url: "https://x.test", api_format: "gemini-generate-content", api_key_env: "X"
   });
   assert.equal(res.res.status, 400);
 });
@@ -230,30 +251,48 @@ test("PATCH 密钥契约：api_key 一律按明文、api_key_env 只存名称、
   assert.equal(secrets.RENAMED_KEY, "MY_API_KEY", "MY_API_KEY 应作为明文密钥存进现有 bucket");
   assert.equal(JSON.stringify(keyData).includes("MY_API_KEY"), false, "响应不得回显密钥");
 
-  // 3) 非法 api_key_env 形状 → 400 invalid_api_key_env（写前校验，避免静默不落盘）
-  const bad = await fetch(`${http.base}/api/settings/providers/${providerId}`, {
+  // 3) 内部既有非法 env 名的记录：写密钥仍拒绝（saveLocalSecrets 会静默丢弃非法
+  //    环境变量名——防御路径保留，不能静默丢密钥）。UI 已无 env 名输入，此记录
+  //    只能来自内部/损坏数据，经直接落盘构造。
+  const corruptedRoot = secretsRoot;
+  await saveProviderStore(corruptedRoot, {
+    schema_version: 2, default_model: null,
+    providers: [{ id: "pv_corrupt", name: "损坏记录", type: "custom", status: "enabled",
+      base_url: "https://corrupt.example.com", api_format: "openai-chat-completions",
+      api_key_env: "1BAD", models: [], created_at: "2026-01-01", updated_at: "2026-01-01" }]
+  });
+  const bad = await fetch(`${http.base}/api/settings/providers/pv_corrupt`, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ api_key_env: "1BAD" })
+    body: JSON.stringify({ api_key: "sk-x" })
   });
   const badData = await bad.json();
   assert.equal(bad.status, 400);
   assert.equal(badData.code, "invalid_api_key_env");
 
-  // 4) 无环境变量名的供应商直接粘贴明文密钥 → 400 invalid_api_key_env
-  const noEnv = await http.post("/api/settings/providers", {
-    name: "无环境名", base_url: "https://noenv.example.com",
-    api_format: "openai-chat-completions"
+  // 4) D8：旧空 env 记录（历史数据）PATCH {api_key} → 以供应商编号为桶写盘并回填字段
+  await saveProviderStore(corruptedRoot, {
+    schema_version: 2, default_model: null,
+    providers: [{ id: "pv_legacy", name: "旧记录", type: "custom", status: "enabled",
+      base_url: "https://legacy.example.com", api_format: "openai-chat-completions",
+      api_key_env: "", models: [], created_at: "2026-01-01", updated_at: "2026-01-01" }]
   });
-  const rejected = await fetch(`${http.base}/api/settings/providers/${noEnv.data.provider.id}`, {
+  const legacy = await fetch(`${http.base}/api/settings/providers/pv_legacy`, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ api_key: "sk-x" })
+    body: JSON.stringify({ api_key: "test-secret" })
   });
-  const rejectedData = await rejected.json();
-  assert.equal(rejected.status, 400);
-  assert.equal(rejectedData.code, "invalid_api_key_env");
-  assert.equal(rejectedData.message, "请先填写 API 密钥环境变量名。");
+  const legacyData = await legacy.json();
+  assert.equal(legacy.status, 200);
+  assert.equal(legacyData.api_key_saved, true);
+  assert.equal(legacyData.provider.api_key_env, "pv_legacy", "旧空 env 记录应回填供应商编号为存储名");
+  secrets = JSON.parse(await readFile(path.join(secretsRoot, "secrets.json"), "utf8"));
+  assert.equal(secrets.pv_legacy, "test-secret", "secrets.json 应以供应商编号为键");
+  // 读路径：GET 显示已配置；store JSON 不含明文
+  const after = await http.get("/api/settings/providers");
+  const legacyAfter = after.data.providers.find((p) => p.id === "pv_legacy");
+  assert.equal(legacyAfter.api_key_saved, true);
+  assert.equal(JSON.stringify(after.data).includes("test-secret"), false, "store 响应不得含明文");
 });
 
 test("PATCH 保存密钥后立即注入 process.env，无需重启（whfind-bugs #2）", async (t) => {

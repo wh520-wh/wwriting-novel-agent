@@ -248,10 +248,17 @@ test("loadDashboardData 对普通文件夹（无 project.yaml）返回 hasProjec
   await fs.writeFile(path.join(projectRoot, "notes.txt"), "普通资料：写作参考笔记。\n", "utf8");
 
   // 显式打开普通文件夹（projectRoot 存在但无 project.yaml）：走新分支，不能 ENOENT
-  const data = await loadDashboardData(root, { projectRoot });
+  const agent = {
+    sessions: async () => ({ sessions: [{ id: "s1", title: "随记" }], active_session_id: "s1" })
+  };
+  const data = await loadDashboardData(root, { projectRoot, agent });
   assert.equal(data.ok, true);
   assert.equal(data.hasProject, false);
   assert.equal(data.projectRoot, projectRoot, "应保留已打开普通文件夹的 projectRoot");
+  // D1：普通文件夹也是已打开工作区——后端补目录名，会话列表非空时原样透传
+  assert.equal(data.name, "普通文件夹");
+  assert.deepEqual(data.sessions, [{ id: "s1", title: "随记" }]);
+  assert.equal(data.active_session_id, "s1");
   assert.equal(data.project, null);
   assert.equal(data.code, undefined, "不得返回错误码");
   assert.ok(!JSON.stringify(data).includes("ENOENT"), "不得泄露 ENOENT");

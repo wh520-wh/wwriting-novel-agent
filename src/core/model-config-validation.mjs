@@ -1,6 +1,7 @@
 import { normalizePricing } from "./model-pricing.mjs";
 
-const ALLOWED_API_FORMATS = new Set(["openai-chat-completions"]);
+// D5（round22）：与 model-provider-store 的白名单同源三协议。
+const ALLOWED_API_FORMATS = new Set(["openai-chat-completions", "anthropic-messages", "openai-responses"]);
 
 export class ModelConfigValidationError extends Error {
   constructor(fields) {
@@ -63,7 +64,7 @@ export function validateModelConfig(input) {
     fields.api_key_env = "API Key 环境变量名格式无效";
   }
   if (!ALLOWED_API_FORMATS.has(config.api_format)) {
-    fields.api_format = "本轮仅支持 OpenAI Chat Completions 协议";
+    fields.api_format = "仅支持 OpenAI Chat Completions、Anthropic Messages 或 OpenAI Responses 协议";
   }
   if (input?.pricing !== undefined && input.pricing !== null && !config.pricing) {
     fields.pricing = "价格必须是正数：每百万 token 的输入价和输出价必填，缓存命中价可选。";

@@ -3,7 +3,7 @@
 // 普通文件夹（无 project.yaml）+ 应用私有 stateRoot：不再创建旧项目、不再通过
 // reviewing 门禁提交章节。在 Electron 中逐个点击新界面的可见元素并断言 UI 状态：
 // 项目导航打开普通文件夹、顶部 drawer 入口（章节/模型/资料/成本）、设置弹窗（模型
-// 设置分区可操作；Agent 技能分区契约由 verify-app-shell.mjs 校验）、composer 发送、运行中停止、失败后重试、主题/隐私开关、
+// 设置分区可操作、composer 发送、运行中停止、失败后重试、主题/隐私开关、就绪信号、
 // 新建弹窗与快捷键浮层。不得 import 已删除的 agent-engine/failure store/side-question。
 //
 // 点击机制：本会话不投递真实指针事件（sendInputEvent/CDP Input 均无 click），
@@ -156,12 +156,13 @@ async function main() {
   });
 
   await win.loadURL(`http://127.0.0.1:${boundPort}`);
-  await waitUntil(win, "Boolean(window.__wwritingMotionReady)", "motion runtime must initialize", 10000);
+  await waitAppReady(win, 10000);
   // 普通文件夹出现在项目列表（basename 即标题）。Task 25（R3/B1 契约）：.proj 主体
   // 点击只折叠/展开，切换项目唯一入口 = 点击会话行或项目行「+ 新建对话」
   //（openProjectAndSession，无会话项目即由此打开）。这里按当前 UI 流程点击
-  // 「+」按钮打开普通文件夹。
-  await waitUntil(win, "document.querySelector('#project-list')?.children.length > 0", "project list must render the plain folder", 10000);
+  // 「+」按钮打开普通文件夹。D17：等真正的项目行（骨架屏自带 .skel-row，
+  // children.length 会把骨架行误当就绪）。
+  await waitUntil(win, "Boolean(document.querySelector('#project-list .proj-row'))", "project list must render the plain folder", 10000);
   const rowClicked = await win.webContents.executeJavaScript(`(() => {
     const row = [...document.querySelectorAll('.proj-row')].find((el) => el.textContent.includes('普通文件夹'));
     if (!row) return false;
@@ -181,13 +182,34 @@ async function main() {
   await waitUntil(win, "document.querySelector('[data-testid=\"agent-composer-input\"]') !== null && !document.querySelector('[data-testid=\"agent-composer-input\"]').disabled", "AgentSurface composer must enable after opening the plain folder", 10000);
   await waitUntil(win, "document.querySelector('[data-testid=\"agent-surface\"]') !== null", "AgentSurface must mount", 10000);
 
+  // D17（round22）：点「+」后 500ms 内必须出现草稿行（D3 可证伪反馈，不等网络），
+  // 顶栏显示文件夹名（D1），草稿行不参与高亮（D2：全局唯一活跃）。
+  {
+    const draftAppeared = await win.webContents.executeJavaScript(
+      "Boolean(document.querySelector('.session-row.session-draft'))"
+    );
+    assert.equal(draftAppeared, true, "点「+」后应立即出现「新对话」草稿行");
+    const titleOk = await read(win, "document.querySelector('#project-title')?.textContent?.includes('普通文件夹')");
+    assert.equal(titleOk, true, "顶栏应显示普通文件夹名");
+    const activeCount = await read(win, "document.querySelectorAll('.session-row.active').length");
+    assert.equal(activeCount, 0, "草稿行不产生活跃高亮");
+
+    // 发送首条消息：草稿行消失、正式会话行出现且全文档唯一高亮
+    gateway.setSteps([{ type: "reply", text: "你好，我在这里。普通文件夹也可以直接聊天。" }]);
+    await sendComposerText(win, "你好，请确认你能收到消息");
+    await waitUntil(win, "Boolean(document.querySelector('.session-row:not(.session-draft)'))", "first message must materialize a real session row", 10000);
+    await waitUntil(win, "document.querySelectorAll('.session-row.session-draft').length === 0", "draft row must disappear after first message", 10000);
+    const activeAfter = await read(win, "document.querySelectorAll('.session-row.active').length");
+    assert.equal(activeAfter, 1, "正式会话行应获得全文档唯一高亮");
+  }
+
   const clicks = [];
 
   // ① 项目导航：刷新（普通文件夹仍在列表）
   clicks.push(await clickAndRead(win, "#refresh", {
     label: "refresh",
     settleMs: 300,
-    expect: () => read(win, "Boolean(document.querySelector('#project-list')?.children.length > 0)")
+    expect: () => read(win, "Boolean(document.querySelector('#project-list .proj-row'))")
   }));
 
   // ② 顶部 drawer 入口（Task 12 删除右侧 quick rail 后唯一入口）：章节 tab 打开
@@ -326,7 +348,8 @@ async function main() {
   assert.ok(settingsOperable.providers.length >= 1, `供应商列表应渲染: ${JSON.stringify(settingsOperable)}`);
   assert.ok(settingsOperable.modelRows >= 1, "模型行应渲染");
   assert.equal(settingsOperable.modelNameInput, "deepseek-v4-pro", "模型名称输入框应渲染完整模型名");
-  assert.equal(settingsOperable.keyStatus, "已配置（WWRITING_ROUND7_FAKE_KEY）", `密钥状态应只显示 已配置 + env 名: ${JSON.stringify(settingsOperable)}`);
+  // D8（round22）：密钥状态只区分已配置/未配置，不再展示存储名
+  assert.equal(settingsOperable.keyStatus, "已配置", `密钥状态应只显示已配置: ${JSON.stringify(settingsOperable)}`);
   assert.equal(settingsOperable.bodyHasFakeKey, false, "密钥明文不得出现在模型设置页 DOM");
   assert.equal(settingsOperable.testButton, true, "测试连接按钮应存在（设置页可操作）");
   // A3/A5：模型设置已并入设置弹窗，关闭走弹窗 X（#settings-x）；关闭后 scrim 无 show
@@ -587,6 +610,19 @@ function cleanup(exitCode) {
 
 async function overlayVisible(win, scrimId) {
   return read(win, `document.getElementById('${scrimId}').classList.contains('show')`);
+}
+
+// D16（round22）：等 <html data-app-state> 就绪信号——ready/error 都算「初始化已
+// 结束」；error 时立即带出页面可见错误，绝不只靠超时。
+async function waitAppReady(win, timeoutMs = 10000) {
+  await waitUntil(win, "['ready','error'].includes(document.documentElement.dataset.appState)", "app-state ready/error", timeoutMs);
+  const state = await win.webContents.executeJavaScript("document.documentElement.dataset.appState");
+  if (state === "error") {
+    const detail = await win.webContents.executeJavaScript(
+      "document.querySelector('#project-open-status')?.textContent ?? document.querySelector('#project-list')?.textContent?.slice(0, 200) ?? ''"
+    );
+    throw new Error(`App failed to initialize (data-app-state=error): ${detail}`);
+  }
 }
 
 async function waitUntil(win, expression, describe, timeoutMs = 5000) {

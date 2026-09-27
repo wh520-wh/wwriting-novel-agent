@@ -7,8 +7,7 @@ import {
   ModelConfigValidationError,
   validateModelConfig,
 } from "./model-config-validation.mjs";
-import { createModelGateway } from "./model/gateway.mjs";
-import { OpenAICompatibleAdapter } from "./model/openai-compatible.mjs";
+import { createModelGateway, createProtocolAdapter } from "./model/gateway.mjs";
 
 // 探测常量（Task 7）：思考型模型（如 deepseek-reasoner）把 token 额度全花在
 // reasoning_content 上、正文 content 为空，且思考期可能 >10s 无首 token——
@@ -128,7 +127,8 @@ export async function testModelConnection({
   }
 }
 
-// 最小连接请求：经 ModelGateway 走新 OpenAI-compatible adapter（Task 9）。
+// 最小连接请求：经 ModelGateway 走协议分发 adapter（Task 9；round22 D5 起按
+// config.api_format 分发三协议，与 app-server 复用同一 createProtocolAdapter）。
 // gateway 只做单次调用（retryMax 0）——探测自身的 runWithRetry 负责重试，
 // 避免双重退避；per-attempt 超时按探测 timeoutMs（默认 30s）配置。
 export async function completeOpenAICompatibleProbe({
@@ -141,7 +141,8 @@ export async function completeOpenAICompatibleProbe({
 }) {
   // 名字原样发送（ADR 0004：尾标机制已淘汰，无需剥离）。
   const gateway = createModelGateway({
-    adapter: new OpenAICompatibleAdapter({
+    adapter: createProtocolAdapter({
+      api_format: config.api_format,
       baseUrl: config.base_url,
       apiKey,
       apiKeyEnv: config.api_key_env,
@@ -159,6 +160,7 @@ export async function completeOpenAICompatibleProbe({
       modelConfig: {
         model_name: config.model_name,
         base_url: config.base_url,
+        api_format: config.api_format,
         api_key: apiKey,
         api_key_env: config.api_key_env,
         max_tokens: maxTokens,

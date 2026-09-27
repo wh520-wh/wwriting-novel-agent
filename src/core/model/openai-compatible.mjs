@@ -460,10 +460,11 @@ function isOpenCodeEndpoint(baseUrl) {
 }
 
 // ---------------------------------------------------------------------------
-// 基础工具
+// 基础工具（round22 D5：三协议适配器共用，导出供 anthropic-messages /
+// openai-responses 复用——错误分类、鉴权解析、端点拼接口径保持单一来源）
 // ---------------------------------------------------------------------------
 
-function resolveApiKey({ explicit, envName }) {
+export function resolveApiKey({ explicit, envName }) {
   if (explicit) {
     return explicit;
   }
@@ -477,19 +478,19 @@ function resolveApiKey({ explicit, envName }) {
   return value;
 }
 
-function resolveEndpoint(baseUrl, endpoint) {
-  return new URL(endpoint.replace(/^\/+/u, ""), ensureTrailingSlash(baseUrl)).toString();
+export function ensureTrailingSlash(value) {
+  return String(value).endsWith("/") ? String(value) : `${value}/`;
 }
 
-function ensureTrailingSlash(value) {
-  return String(value).endsWith("/") ? String(value) : `${value}/`;
+function resolveEndpoint(baseUrl, endpoint) {
+  return new URL(endpoint.replace(/^\/+/u, ""), ensureTrailingSlash(baseUrl)).toString();
 }
 
 function optionalNumber(key, value) {
   return Number.isFinite(value) ? { [key]: value } : {};
 }
 
-function inferReason(details) {
+export function inferReason(details) {
   // 只有 429/502/503/504 是可重试的服务器错误
   if (details.status === 429 || details.status === 502 || details.status === 503 || details.status === 504) {
     return "server-retryable";
@@ -507,7 +508,7 @@ function inferReason(details) {
  * Supports both decimal seconds and HTTP-date format.
  * Returns null if the header is missing or unparseable.
  */
-function parseRetryAfter(headers) {
+export function parseRetryAfter(headers) {
   if (!headers || typeof headers.get !== "function") {
     return null;
   }
@@ -527,7 +528,7 @@ function parseRetryAfter(headers) {
   return null;
 }
 
-function normalizeOpenAIUsage(usage) {
+export function normalizeOpenAIUsage(usage) {
   return {
     ...usage,
     cached_tokens: usage.cached_tokens ?? usage.prompt_tokens_details?.cached_tokens,

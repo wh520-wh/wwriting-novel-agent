@@ -191,7 +191,8 @@ export function showConfirmLayer(options) {
   let errEl = null;
   if (danger) {
     ackLabelEl = doc.createElement("label");
-    Object.assign(ackLabelEl.style, { display: "flex", alignItems: "center", gap: "8px", fontSize: "13px" });
+    // D14：字号取全局字阶 token（--font-sm = 13px），不写 inline 像素字级。
+    Object.assign(ackLabelEl.style, { display: "flex", alignItems: "center", gap: "8px", fontSize: "var(--font-sm, 13px)" });
     ack = doc.createElement("input");
     ack.type = "checkbox";
     ack.id = `${id}-ack`;

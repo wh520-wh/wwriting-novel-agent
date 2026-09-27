@@ -800,9 +800,19 @@ async function scene(name, description, driver) {
   }
 }
 
+// D16（round22）：等 <html data-app-state>；error 时立即带出可见错误。
+async function waitAppReady(timeoutMs = 15000) {
+  await waitUntil("['ready','error'].includes(document.documentElement.dataset.appState)", "app-state ready/error", timeoutMs);
+  const state = await read("document.documentElement.dataset.appState");
+  if (state === "error") {
+    const detail = await read("document.querySelector('#project-open-status')?.textContent ?? ''");
+    throw new Error(`App failed to initialize (data-app-state=error): ${detail}`);
+  }
+}
+
 async function boot(url, { waitProjectTitle = null, composer = true } = {}) {
   await win.loadURL(url);
-  await waitUntil("Boolean(window.__wwritingMotionReady)", "motion runtime 初始化", 15000);
+  await waitAppReady();
   if (waitProjectTitle) {
     await waitUntil(
       `document.querySelector('#project-title')?.textContent.includes(${JSON.stringify(waitProjectTitle)})`,
@@ -1177,7 +1187,8 @@ async function main() {
       body: JSON.stringify({ projectRoot: fixture.plainFolder })
     });
     if (registered.status !== 200) throw new Error(`普通文件夹注册失败: ${registered.status}`);
-    await boot(base, { waitProjectTitle: "开始创作" });
+    // D1（round22）：普通文件夹顶栏显示文件夹名（不再显示「开始创作」）
+    await boot(base, { waitProjectTitle: "plain-folder" });
     await waitUntil("document.querySelector('#project-list')?.children.length > 0", "项目列表渲染", 10000);
     gateway.controller.setScripts([[{ type: "reply", text: "你好，我可以在普通文件夹里协助你写作。没有 project.yaml 也能直接开始——先告诉我你想写什么。" }]]);
     await scene("40-plain-folder", "普通文件夹：无 project.yaml 打开并完成首条消息", async () => {

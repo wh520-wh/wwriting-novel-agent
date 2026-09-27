@@ -748,6 +748,40 @@ test("Agent 写工具与 HTTP 操作共用同一个项目锁", async (t) => {
   assert.equal(await fs.readFile(path.join(h.projectRoot, "locked.txt"), "utf8"), "serialized");
 });
 
+// D4（round22）：锁键必须是解析后的真实根——HTTP 侧按物理路径持锁时，经 junction
+// 打开的同一项目上的写工具必须等待，而不是按未解析路径另取一把锁并行执行。
+test("经 junction 打开的项目写工具与真实根 HTTP 操作互斥（锁键用解析根）", { skip: process.platform !== "win32" }, async (t) => {
+  const projectLocks = createProjectLockRegistry();
+  const h = await setup(t, { permissions: { auto_edit: true }, projectLocks });
+  const linkPath = path.join(h.dir, "root-link");
+  await fs.symlink(h.projectRoot, linkPath, "junction");
+
+  let releaseHttpOperation;
+  const httpOperationStarted = new Promise((resolve) => {
+    void projectLocks.runExclusive(h.projectRoot, async () => {
+      resolve();
+      await new Promise((release) => { releaseHttpOperation = release; });
+    });
+  });
+  await httpOperationStarted;
+
+  let settled = false;
+  const write = h.tools.execute(
+    toolCall("write_file", { path: "locked.txt", content: "serialized" }),
+    { ...h.context, projectRoot: linkPath }
+  ).then((result) => {
+    settled = true;
+    return result;
+  });
+  await sleep(30);
+  assert.equal(settled, false, "真实根持锁期间，junction 路径的写入必须等待同一把锁");
+
+  releaseHttpOperation();
+  const result = await write;
+  assert.equal(result.ok, true);
+  assert.equal(await fs.readFile(path.join(h.projectRoot, "locked.txt"), "utf8"), "serialized");
+});
+
 // ---------------------------------------------------------------------------
 // 受保护路径（Step 7）
 // ---------------------------------------------------------------------------

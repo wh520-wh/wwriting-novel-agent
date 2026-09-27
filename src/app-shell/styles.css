@@ -1105,9 +1105,12 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .sp-detail-scroll {
   min-height: 0; overflow: auto;
+  /* D15：滚动条稳定预留 8px + 行尾内边距等量回扣（26→18）——列表内容变长/短时
+     详情列宽不跳 8px，无滚动条时的内容宽度与补偿前一致。 */
+  scrollbar-gutter: stable;
   /* P1-3 修复：底部留出足够安全间距（12px→28px），列表滚到底时最后一行
      与固定操作栏之间有可见空隙，不被 .spd-foot 遮挡。 */
-  padding: 22px 26px 28px;
+  padding: 22px 18px 28px 26px;
 }
 
 .spd-head { display: flex; align-items: center; gap: 12px; padding-right: 36px; padding-bottom: 18px; border-bottom: 1px solid var(--line-2); margin-bottom: 20px; }
@@ -1166,6 +1169,8 @@ input.spd-input[type="number"] { max-width: 160px; }
 
 .spd-hint .mono { color: var(--text-muted); }
 
+
+.spd-field-error:empty { display: none; }
 
 .spd-field-error {
   margin-top: -12px;
@@ -1304,20 +1309,26 @@ input.spd-input[type="number"] { max-width: 160px; }
 
 /* 弹窗作用域：模型分区强制单列（供应商列表在上、详情在下），
    解决 1280 视口下详情列 326px < 360px 的检查点失败。 */
-.model-section .model-settings-body { grid-template-columns: minmax(0, 1fr); }
-
 .model-section-lead { font-size: var(--font-sm); color: var(--muted); margin: 0 0 4px; }
 
 .model-settings-body {
-  display: grid; grid-template-columns: 280px minmax(0, 1fr);
+  /* D13：分区导航 256px + 弹窗 1000px 下，两栏实宽 300 + 20 + ~380 ≥ 340 下限；
+     视口不足 1180px 降单栏（下方断点，实测 1000px 视口单栏零横向溢出）。 */
+  display: grid; grid-template-columns: 300px minmax(340px, 1fr);
   gap: 20px; min-height: 0; align-items: start;
 }
 
-/* left pane：供应商列表 */
+/* left pane：供应商列表。D13：不做灰底卡片——只有几行却配满高卡片，会变成一整块
+   空灰；列表直接坐在分区背景上。 */
 .model-settings-body aside {
   display: grid; gap: 4px; align-content: start;
-  background: var(--surface-2); border: 1px solid var(--line);
-  border-radius: var(--r-lg); padding: 12px 10px;
+}
+
+/* D15：供应商名走 .dfield 的 100% 列宽（名称+行内错误占第 1 列，状态/删除按钮
+   依次排在右侧）——输入框宽度等于其列宽，不再退回默认 size。 */
+.provider-detail-head {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px; align-items: start;
 }
 
 .model-settings-body aside h3 { font-size: var(--font-sm); font-weight: var(--weight-semibold); color: var(--ink-2); padding: 4px 8px 8px; }
@@ -1330,6 +1341,11 @@ input.spd-input[type="number"] { max-width: 160px; }
 }
 
 .provider-item:hover { background: var(--hover); }
+
+.provider-item .provider-item-name {
+  min-width: 0; flex: 1;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 
 .provider-item.selected { background: var(--surface); border-color: var(--line); box-shadow: var(--shadow-xs); }
 
@@ -1344,6 +1360,91 @@ input.spd-input[type="number"] { max-width: 160px; }
 }
 
 .add-provider:hover:not(:disabled) { border-color: var(--accent-line); color: var(--accent); }
+
+/* ---- round22 D7/D9/D10/D13：目录候选池、只读连接行、模型区灰底 ---- */
+
+/* 厂商 logo（D23）：填充字形容器；无 logo 的厂商用大写首字母中性标 */
+.vendor-logo {
+  width: 24px; height: 24px; border-radius: var(--r-sm);
+  display: inline-grid; place-items: center; flex: 0 0 auto;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink-2);
+}
+.vendor-logo svg { display: block; width: 15px; height: 15px; fill: currentColor; stroke: none; }
+.vendor-logo-fallback {
+  display: inline-grid; place-items: center; width: 100%; height: 100%;
+  font-size: var(--font-xs); font-weight: var(--weight-bold); color: var(--muted);
+}
+
+/* 目录候选池（D7）：搜索后才展开结果，默认不铺开 */
+.catalog-search {
+  width: 100%; min-height: 36px; border: 1px solid var(--line); border-radius: var(--r);
+  background: var(--surface); padding: 8px 11px; font-size: var(--font-sm); outline: none;
+}
+.catalog-results { display: grid; gap: 2px; margin-top: 4px; }
+.catalog-empty { font-size: var(--font-xs); color: var(--muted); margin: 4px 0; }
+.catalog-row {
+  display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 8px; align-items: center;
+  padding: 6px 8px; border: 1px solid transparent; border-radius: var(--r);
+  background: transparent; cursor: pointer; text-align: left; font-size: var(--font-sm);
+}
+.catalog-row:hover { background: var(--hover); }
+.catalog-row .vendor-logo { width: 20px; height: 20px; }
+.catalog-row .vendor-logo svg { width: 13px; height: 13px; }
+.catalog-row-format { font-size: var(--font-xs); color: var(--muted); white-space: nowrap; }
+.catalog-manual-toggle {
+  margin-top: 8px; width: 100%; height: 32px; border: 0; background: transparent;
+  color: var(--ink-2); font-size: var(--font-sm); cursor: pointer; text-align: left;
+}
+.catalog-manual-toggle:hover { color: var(--accent); }
+.provider-manual-form { display: grid; gap: 6px; margin-top: 6px; }
+.provider-manual-form label { font-size: var(--font-xs); color: var(--muted); margin-top: 4px; }
+
+/* 目录厂商只读连接行（D9）：Base URL 与协议带锁，不可编辑 */
+.provider-readonly-row {
+  display: flex; align-items: center; gap: 6px;
+  min-height: 36px; padding: 0 10px; border: 1px solid var(--line);
+  border-radius: var(--r); background: var(--surface-2);
+  font-size: var(--font-sm); color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+.provider-readonly-row .provider-readonly-lock { flex: 0 0 auto; color: var(--muted); }
+.provider-readonly-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 添加模型控件（D10）：候选搜索 + 手填 ID，明确选择/提交才 POST */
+.add-model-control { display: grid; gap: 8px; }
+.add-model-panel {
+  display: grid; gap: 6px; padding: 8px;
+  border: 1px solid var(--line); border-radius: var(--r);
+  background: var(--surface);
+}
+.add-model-search, .add-model-manual {
+  width: 100%; min-height: 36px; border: 1px solid var(--line); border-radius: var(--r);
+  background: var(--surface); padding: 8px 11px; font-size: var(--font-sm); outline: none;
+}
+.add-model-hits { display: grid; gap: 2px; max-height: 180px; overflow: auto; }
+.add-model-candidate {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 6px 8px; border: 0; border-radius: var(--r);
+  background: transparent; cursor: pointer; font-size: var(--font-sm); color: var(--ink-2);
+  text-align: left;
+}
+.add-model-candidate:hover { background: var(--hover); }
+.add-model-candidate-add { color: var(--accent); font-weight: var(--weight-semibold); }
+.add-model-submit {
+  height: 36px; border-radius: var(--r); border: 1px solid var(--line);
+  background: var(--surface); color: var(--ink-2); font-size: var(--font-sm); cursor: pointer;
+}
+.add-model-submit:hover { border-color: var(--accent-line); color: var(--accent); }
+
+/* 模型区（D13）：灰底撑满详情面板剩余高度；空态在区内居中（只读作
+   「留给模型的位置」，不写解释段落） */
+.model-area {
+  display: grid; gap: 10px; align-content: start;
+  background: var(--surface-2); border-radius: var(--r-lg);
+  padding: 12px; min-height: 120px;
+}
+.model-area.is-empty { align-content: center; justify-items: center; }
+.model-area.is-empty .add-model { min-width: 160px; }
 
 /* right pane：供应商详情（骨架，Task 13-15 接管交互）。
    Task 22：隐式列显式化为 minmax(0,1fr)——单列 auto 轨道按 max-content 撑宽
@@ -1457,8 +1558,9 @@ input.spd-input[type="number"] { max-width: 160px; }
 /* 行内输入框可收缩：长文本截断（内部滚动）而非撑破父容器。 */
 .model-row input { min-width: 0; }
 
-/* Task 22：窄窗模型设置页折叠单列（280px 侧栏 + 详情双列放不下）。 */
-@media (max-width: 880px) {
+/* D13：模型设置弹窗宽 1000px 固定，旧 880px 视口断点永不触发两栏拥挤；
+   视口不足 1180px 时降单栏（实测 1000px 视口单栏成立、零横向溢出）。 */
+@media (max-width: 1180px) {
   .model-settings-body { grid-template-columns: minmax(0, 1fr); }
 }
 
@@ -1853,8 +1955,10 @@ input.spd-input[type="number"] { max-width: 160px; }
 }
 
 .session-group {
-  margin: 2px 0 4px 10px;
-  padding-left: 10px;
+  /* D15：连接线落在折叠箭头中心 x=18（inset 8px + 半宽 10px）——margin 18px 让
+     border-left 恰在 18；会话行左缘 18+1+12=31 起，为竖条与状态点留出间隙。 */
+  margin: 2px 0 4px 18px;
+  padding-left: 12px;
   border-left: 1px solid var(--line);
 }
 
@@ -1865,7 +1969,9 @@ input.spd-input[type="number"] { max-width: 160px; }
   align-items: center;
   gap: 4px;
   min-height: 32px;
-  padding: 6px 30px 6px 2px;
+  /* D15：左内边距 8px——选中竖条（行左缘 0-3px）与状态点（8px 起）间隙 5px ≥4px，
+     不再重叠；不靠 z-index 遮盖。 */
+  padding: 6px 30px 6px 8px;
   border-radius: var(--r-sm);
   cursor: pointer;
   color: var(--ink-2);
