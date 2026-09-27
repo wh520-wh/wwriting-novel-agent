@@ -117,7 +117,27 @@
 | 21-4 | shell 写面未纳入受保护路径承诺：`echo > run_log.jsonl` 仍可改审计账本 | 安全边界 | 20-7 余项；扩面需解析命令行，误伤合法命令的风险与工作量都更大，需独立评估 |
 | 21-5 | `journal-segments.mjs:188-189` 隔离坏段时两次 `rename` 静默吞错：Windows 上改名失败则段文件留在原名、却已移出内存列表且 gap 照记，下次 load 重扫会**再记一条 gap** | 一致性 | 方向保守（多报缺口，不丢数据）；本轮复核新发现 |
 | 21-6 | `versions.mjs:22` 经 `readJson` 裸 `JSON.parse`，坏 manifest 直接抛错，缺「仅按 `v{n}.md` 列目录」的降级兜底；`versions.mjs:29` 两步写、崩溃孤儿版被下次覆盖的后果是**时间线少一版**（正文不受影响） | 恢复语义 | 抽查第 4 项的收窄结论；其中「无上限」属 `AGENTS.md` 既定规格，不作为缺陷 |
-| 21-7 | `npm run verify:app-shell` 既有失败：`scripts/verify-app-shell.mjs:372` 断言「思考项完成态标签应为 思考 N 秒」不成立 | 验收门禁 | 2026-09-25 于 round21 执行期发现；已在 round21 之前的提交 `65bcf1e` 上以 Node 22 / Node 25 独立复现同一断言，与本轮改动无关（断言由 `069ffa0` 引入）。需独立一轮定位：是投影回退出「已完成思考」回退文案，还是夹具未产出耗时 |
+| 21-7 | `npm run verify:app-shell` 既有失败：`scripts/verify-app-shell.mjs:372` 断言「思考项完成态标签应为 思考 N 秒」不成立 | 验收门禁 | **2026-09-27 更新（round22）：旧检查器已按用户裁决删除（D19），该欠账随之关闭——148 条断言四类交接见 round22 Task 10 提交说明；下表原始记录保留为历史。** 2026-09-25 于 round21 执行期发现；已在 round21 之前的提交 `65bcf1e` 上以 Node 22 / Node 25 独立复现同一断言，与本轮改动无关（断言由 `069ffa0` 引入）。需独立一轮定位：是投影回退出「已完成思考」回退文案，还是夹具未产出耗时 |
 | 21-8 | 受保护路径的**规则侧**未 realpath：`isProtectedWritePath` / `isProtectedShellCwd`（`runtime-helpers.mjs`）用 `path.join(root, rel)` 纯字符串拼规则路径，只对 `root` 做了 realpath。若受保护目录自身是目录链接（例如把 `.versions/`、`drafts/` 用 `mklink /J` 重定向到另一块盘——这正是本产品用户使用 junction 的典型动机），目标已解析到链接外、规则路径仍指向链接点，包含性比较落空，该子树直写保护退化为「项目外→确认」，在 `yolo:true` 下等同全开 | 安全边界 | 2026-09-25 round21 终审发现。**非本轮引入**（改动前目标侧一直在 realpath，同样如此），也**不违反 ADR 0009 的决定 1**（决定只承诺「以真实项目根为基准」，未承诺规则侧解析）。同属「一侧解析、一侧不解析」的不对称，只是下沉一层；与 `tools.test.mjs:702`「项目内链接指向项目外走项目外确认」的有意取舍相邻。修法（对规则根懒解析后再比较）会改变既有保护语义与每次调用的系统调用数，需独立一轮评估 |
 
 > 排序原则同前：优先级不在本清单内定。
+
+## 第二十二轮（round22）完成记录（记录于：2026-09-27｜状态：当前有效）
+
+**范围**：SPEC `docs/design/2026-09-26-round22-ui-ux-and-model-config-spec.md` 的 A/B/C 三条缺陷链 + D1-D23 交互原型落地 + 截图圆点/竖条修复 + 旧检查器退役。分支 `codex/round22-ui-model-config`（自 `adad63a` 切出，独立工作树 `D:\WWriting-round22`），12 个任务全部完成、逐任务提交。
+
+**用户可见变化**（与 SPEC「本轮可见变化」表一致）：普通文件夹顶栏显示文件夹名并可接线会话（D1）；点「+」立即出现「新对话」草稿行（D3）；活跃会话高亮全应用唯一（D2）；模型设置为列表+面板两栏、窄屏降单栏（D13）；新增厂商目录与「添加供应商」候选池（D7）；密钥存储名概念从产品移除（D8）；目录厂商连接字段只读带锁（D9）；模型只能经「添加模型」（可搜索候选/手填 ID）入列（D10）；三协议可选（OpenAI Chat Completions / Anthropic Messages / OpenAI Responses，D5）；模型分区专属脏确认文案（D12）；composer 与正文列右缘对齐、树线对齐箭头中心、竖条与状态点不再重叠（D15）。
+
+**验收证据（记录于 2026-09-27，均为实跑）**：
+- `npm test`：**2016/2016（exit 0）**（前值 2001/2001，round21）
+- `npm run verify:unified-agent`：exit 0；`npm run verify:desktop-shell`：exit 0
+- `npm run verify:app-clickability`：**19/19 期望通过（exit 0）**，含新增 D17 断言（草稿行 500ms、首条消息真实行、全文档唯一高亮）
+- 几何探针（`artifacts/round22/geom-probe.cjs`，真实 Electron，1440/1180/1000/390 四视口）：无横向溢出、圆点与竖条间隙 **8px（≥4）**、树线对箭头中心 **0.5px（≤1）**、composer 右缘差 **0px**
+- 模型设置流程探针（`artifacts/round22/model-flow-probe.cjs`）：目录搜索→点选入列→只读连接行带锁→空态仅「添加模型」→手填 ID 入列，截图 `artifacts/round22/model-flow/`（5 张）；全量 UI 采集 `artifacts/round22/full-ui/`（48 张，MANIFEST.json）
+- 原型注解区字符串未移植进产品（`rg` 复核，仅代码注释存留说明）；从产品界面剔除的解释性字符串：「使用环境变量名」开关及其全部文案、密钥存储名输入与「已填环境变量名（…）」状态变体、new-model 占位提示——保留的提示均为「删掉会做错」类（已配置/未配置、必填校验、模型 ID 必填、连接结果行）
+
+**D23 状态：未完成（7/10 真实 logo）**：7 家取自 Simple Icons（CC0，来源与日期见 `src/app-shell/vendor-logos.js` 头注）；OpenAI / xAI / 智谱三家 Simple Icons 实测 404，且其官方品牌资产需事先书面许可、本轮无法合法确认，按 D23 降级规则用大写首字母中性标。后续需用户取得授权后补齐。
+
+**退役与新增**：`scripts/verify-app-shell.mjs` 已删（148 断言四类交接表见 Task 10 提交 `chore: retire brittle app shell verifier`）；21-7 欠账随之关闭。新增文件：`src/core/model/anthropic-messages.mjs`、`src/core/model/openai-responses.mjs`、`src/core/model/vendor-catalog.json`、`src/app-shell/vendor-logos.js`、`src/app-shell/model-rows.mjs`、`tests/model/protocol-adapters.test.mjs`。R1 红线：全库 0 越线（`app.js` 本轮压缩至 50236B，余 964B）。
+
+**欠账与限制**（只记不排）：① D23 缺口三家 logo（见上）；② 候选模型 ID 为目录候选示意，未逐家实测可用性（连接测试与真实 Agent 调用按协议闭环，但未经真实厂商密钥端到端验证——如实标注，不冒称）；③ `verify:provider-online` / `verify:research-online` 本轮未跑（需真实密钥/外网，不在门禁四条内）。
