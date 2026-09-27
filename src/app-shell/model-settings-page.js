@@ -573,6 +573,40 @@ function vendorLogoEl(logoKey, name) {
     return false;
   }
 
+  // 关闭/切分区前的冲刷（2026-09-27 用户拍板：模型分区改了什么就生效什么，不再
+  // 弹「未提交的内容会丢失」）：未失焦编辑与残留密钥草稿直接提交。返回
+  // "ok"（无可冲刷或已提交成功）｜"pending"（已有一次冲刷在途，调用方忽略本次）
+  // ｜"blocked"（提交失败，行内错误/toast 已提示，调用方回退确认层）｜
+  // "confirm"（存在「添加供应商」半成品草稿——创建动作不自动提交，D11）。
+  let flushInFlight = false;
+  async function flushPendingEdits() {
+    if (flushInFlight) return "pending";
+    flushInFlight = true;
+    try {
+      // 1) 当前详情表单的未失焦编辑（名称/Base URL/密钥/模型名）：复用
+      // commitCurrentDraft 的校验与逐字段提交，无差异时零 PATCH。
+      if (activeDraftRefs && state.selected) {
+        const committed = await commitCurrentDraft({ providerId: state.selected.id, provider: state.selected });
+        if (!committed.ok) return "blocked";
+      }
+      // 2) 切走供应商时未失焦提交、残留在 drafts 里的密钥（isDirty 不覆盖，原先
+      // 关闭即静默丢弃）——一并提交；空草稿条目顺手清掉。
+      for (const [pid, draft] of drafts) {
+        if (pid === "new") continue;
+        const apiKey = String(draft?.api_key ?? "").trim();
+        if (!apiKey) { drafts.delete(pid); continue; }
+        const ok = await saveProviderPatch(pid, { api_key: apiKey });
+        if (!ok) return "blocked";
+        drafts.delete(pid);
+      }
+      const newDraft = drafts.get("new");
+      if (newDraft && [newDraft.name, newDraft.base_url, newDraft.api_key, newDraft.manualModelId].some((v) => String(v ?? "").trim() !== "")) return "confirm";
+      return "ok";
+    } finally {
+      flushInFlight = false;
+    }
+  }
+
   function renderList(container) {
     container.replaceChildren();
     container.append(el("h3", { text: "我的供应商" }));
@@ -936,6 +970,7 @@ function vendorLogoEl(logoKey, name) {
     addProvider,
     commitCurrentDraft,
     isDirty,
-    _handlers: { saveProviderPatch, saveModelPatch, refresh, removeProviderWithConfirm, setDefaultModel, removeModelWithConfirm, addModel, pullModels, addPulledModel, testConnection, addProvider, commitCurrentDraft, isDirty }
+    flushPendingEdits,
+    _handlers: { saveProviderPatch, saveModelPatch, refresh, removeProviderWithConfirm, setDefaultModel, removeModelWithConfirm, addModel, pullModels, addPulledModel, testConnection, addProvider, commitCurrentDraft, isDirty, flushPendingEdits }
   };
 }
