@@ -692,7 +692,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 /* 统一的 pill/标签基元：drawer 面板头、状态徽标共用（颜色变体只改 border/ink） */
 .pill {
-  display: inline-flex; align-items: center;
+  display: inline-flex; align-items: center; white-space: nowrap;
   padding: 1px 8px; border-radius: var(--r-pill);
   font-size: var(--font-xs); line-height: 1.5; font-weight: var(--weight-medium);
   color: var(--text-muted); background: var(--surface-2); border: 1px solid var(--line);
@@ -853,7 +853,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .cost-chapter-row.cost-chapter-warn { background: var(--amber-soft); padding-left: 6px; border-radius: var(--r-sm); border-bottom-color: var(--amber-line); }
 
 .cost-warning {
-  display: inline-flex; align-items: center; gap: 4px;
+  display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
   padding: 1px 7px; border-radius: var(--r-pill);
   background: var(--red-soft); color: var(--red); font-size: var(--font-xs); font-weight: var(--weight-semibold);
   border: 1px solid var(--red);
@@ -1083,6 +1083,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .sp-section-item .sp-section-soon {
   margin-left: auto; font-size: var(--font-xs); font-weight: var(--weight-medium); letter-spacing: 0;
   color: var(--text-muted); background: var(--rail-2); border-radius: var(--r-pill); padding: 2px 7px;
+  white-space: nowrap;
 }
 
 .sp-stub {
@@ -2569,7 +2570,10 @@ input.spd-input[type="number"] { max-width: 160px; }
 
 .plan-item.active .plan-item-icon { color: var(--accent); animation: plan-pulse 1.2s ease-in-out infinite; }
 
-.plan-item-status { margin-left: auto; font-size: var(--font-xs); color: var(--muted); }
+/* 短状态词防竖排（2026-09-28 用户报告：长标题挤压下状态词逐字竖排，有横有竖
+   不统一）：CJK 徽标 min-content 只有单字宽，flex 收缩会压成竖排——与 .ch-state
+   同一约定，挤压量由 .plan-item-step（min-width:0 + ellipsis）吸收。 */
+.plan-item-status { margin-left: auto; font-size: var(--font-xs); color: var(--muted); white-space: nowrap; }
 
 @keyframes plan-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 
