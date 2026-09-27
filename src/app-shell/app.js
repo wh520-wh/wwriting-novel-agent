@@ -40,9 +40,7 @@ const CREATE_MODAL_COPY = {
 };
 
 export async function bootApp(root = document) {
-  // D16（round22）：就绪信号唯一化——<html data-app-state> 三态 loading/ready/error。
-  // ready 仅在 loadAll() 成功 resolve 后置位；任一初次加载失败置 error（脚本据此
-  // 立即报错而不是超时）。__wwritingMotionReady 已删除，不再有第二个就绪信号。
+  // D16：就绪信号唯一化——<html data-app-state> loading/ready/error（loadAll 后置位）。
   root.documentElement.dataset.appState = "loading";
   // Task 22：refs 分域——rail/drawer/reader/settings 四桶，消费点经分桶名引用。
   const railRefs = {
@@ -128,11 +126,9 @@ export async function bootApp(root = document) {
   const { setThemeMode } = setupThemePrivacy({ railRefs });
   
   let currentProjectRoot = null;
-  // D1：上次已完成/进行中 openProject 接线的根——首次接线判定专用，不得借用
-  // currentProjectRoot（普通文件夹首开时先赋值会把它误判成已接线）。
+  // D1：首次 openProject 接线判定专用根（不得借用 currentProjectRoot 承担该语义）。
   let openedProjectRoot = null;
-  // D2：应用级唯一活跃会话 id——surface 回调（onSessionsChanged）维护，草稿占位
-  // 由 startNewSessionPlaceholder 直接写入；项目切换开始时清空，待新项目回调再赋值。
+  // D2：应用级唯一活跃会话 id（surface 回调/草稿占位写入；切项目即清空待回调）。
   let activeSessionId = null;
   let dashboardRequestId = 0;
   let drawerTab = "chapters";
@@ -155,8 +151,7 @@ export async function bootApp(root = document) {
     onOpenChapter: (chapterNo) => openReader(chapterNo),
     onCreateProject: () => openCreateModal(),
     onOpenProjectFolder: () => openFromFolder(),
-    // Task 9：会话列表刷新 → 左侧栏两级树 + busy 复位。D2：应用级 activeSessionId
-    // 是全应用唯一活跃来源，sidebar 高亮/busy/草稿占位都经 getActiveSessionId 读取。
+    // Task 9：会话列表刷新 → 左侧栏两级树 + busy 复位（D2：唯一活跃来源在此）。
     onSessionsChanged: (sessions, sid) => {
       activeSessionId = sid ?? null;
       sessionSidebar.handleSessionsChanged(currentProjectRoot, sessions);
@@ -582,14 +577,9 @@ export async function bootApp(root = document) {
   });
   
   async function loadAll() {
-    // D16：初次加载两路都返回成功布尔——后台刷新仍照旧吞错并 toast，不受影响。
+    // D16：初次加载返回成功布尔（后台刷新仍吞错 toast）；全成才 ready。
     const results = await Promise.all([loadProjectList(), loadDashboard()]);
-    if (results.every((ok) => ok === true)) {
-      document.documentElement.dataset.appState = "ready";
-    } else {
-      // 失败路径已保留各自的可见错误（renderError / 空列表错误行），这里只翻状态。
-      document.documentElement.dataset.appState = "error";
-    }
+    document.documentElement.dataset.appState = results.every((ok) => ok === true) ? "ready" : "error";
   }
   
   async function loadProjectList() {
@@ -663,13 +653,8 @@ export async function bootApp(root = document) {
   function commitProjectSwitch(projectRoot, initialSessionId = null) {
     projectScope.activate(projectRoot);
     currentProjectRoot = projectRoot;
-    // D1：commit 路径已显式 openProject，同步记录接线根——dashboard 响应回来后
-    // openedProjectRoot 比较命中，不会重复 open。
-    openedProjectRoot = projectRoot;
-    // D2：跨项目切换开始时清空应用级活跃 id——旧项目的高亮立即失效，待新项目的
-    // onSessionsChanged 回调给出 id 后再高亮（initialSessionId 只供 surface
-    // openProject 定位，不直接作全局活跃）。
-    activeSessionId = null;
+    openedProjectRoot = projectRoot; // D1：commit 已显式 openProject，记录接线根避免重复 open
+    activeSessionId = null; // D2：切项目先清活跃 id，待新项目回调再高亮
     clearTransientState();
     // Task 9：会话级代次推进——在途会话切换的续作一律丢弃；openProject 完成后拉一次
     // 会话列表（Task 8 契约：surface 不自动拉）更新活跃高亮 + busy 复位。
@@ -692,10 +677,8 @@ export async function bootApp(root = document) {
     newSessionPlaceholder: () => startNewSessionPlaceholder()
   });
 
-  // D3：新建对话的统一入口（项目行加号、归档后无会话兜底都走这里）——surface 生成
-  // 草稿 id 后立即写入应用级活跃 id，并以 sidebar 当前缓存定向重渲当前组，保证
-  // 500ms 内可见的草稿行反馈不等网络；surface 异步 refreshSessions() 随后仍会
-  // 用真实列表更新（草稿 id 只在内存，不发给后端）。
+  // D3：新建对话统一入口——草稿 id 即写应用级活跃 id 并定向重渲当前组（500ms
+  // 反馈不等网络）；surface 异步 refreshSessions 后续仍用真实列表更新。
   function startNewSessionPlaceholder() {
     const draftId = agentSurface.newSessionPlaceholder();
     if (typeof draftId === "string" && draftId) activeSessionId = draftId;
@@ -776,9 +759,7 @@ export async function bootApp(root = document) {
   
   function renderDashboard(data) {
     lastDashboard = data;
-    // D1：「有没有打开项目根」与「有没有 project.yaml」是两个判断。普通文件夹
-    //（hasProject:false 但有 projectRoot）同样接线会话与 composer；只有真正没有
-    // 打开的根才显示「开始创作」。hasProject 仅用于需要 project.yaml 的功能。
+    // D1：有根即接线（hasProject:false 的普通文件夹同样是已打开工作区）。
     if (!data.projectRoot) {
       currentProjectRoot = null;
       railRefs.title.textContent = "开始创作";
@@ -787,8 +768,7 @@ export async function bootApp(root = document) {
       return;
     }
 
-    // D1 硬不变量：首次接线判定用 openedProjectRoot，且必须在赋值 currentProjectRoot
-    // 之前比较——否则普通文件夹首开时 firstLoad 恒为 false，composer 与 SSE 永不接线。
+    // D1 硬不变量：先比较 openedProjectRoot 再赋值——否则普通文件夹首开被误判已接线。
     const firstLoad = openedProjectRoot !== data.projectRoot;
     if (firstLoad) {
       openedProjectRoot = data.projectRoot;
@@ -797,8 +777,7 @@ export async function bootApp(root = document) {
     }
     currentProjectRoot = data.projectRoot;
 
-    // Task 9：dashboard 会话数据 seed 当前项目（两级树当前项目组数据源，含 run_status
-    // 状态点与 busy 复位依据）；懒加载缓存以最新 dashboard 为准。D2：活跃 id 不入缓存。
+    // Task 9：dashboard 会话数据 seed 当前项目（D2：活跃 id 不入缓存）。
     sessionSidebar.seedSessions(data.projectRoot, data.sessions ?? []);
 
     // D1：顶栏项目名——正式项目用标题，普通文件夹用后端补的目录名。

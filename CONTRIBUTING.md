@@ -26,11 +26,13 @@ npm test
 
 测试使用 Node 内置的 `node --test`，没有外部测试框架。新增测试必须对应用户可见行为、数据安全不变量或曾经复现的回归，不要为提高覆盖率而添加。
 
+记录于：2026-09-26｜状态：当前有效｜依据：项目作者明确要求。项目由非技术背景作者通过 vibecoding 推进，贡献时先说明作者能看到的变化。额度与时间有限：优先复用和删除冗余，只做必要的有效测试与验收；相关检查通过后，不为流程形式重复全量门禁或增设抽象、配置和报告。
+
 仓库另有一批验收脚本，按需运行：
 
 ```bash
 npm run verify:unified-agent   # Agent 主链路
-npm run verify:app-shell       # 界面外壳
+npm run verify:app-clickability # 界面外壳（真实 Electron 点击）
 npm run verify:local           # 本地全量验收
 ```
 

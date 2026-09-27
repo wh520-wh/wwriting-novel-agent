@@ -267,6 +267,8 @@ test("settings/test-connection 新形态 { provider, model }：归一化候选�
     provider: "openai-compatible",
     model_name: "test-model",
     base_url: "https://api.example.test/v1",
+    // D5：候选归一化携带 api_format
+    api_format: "openai-chat-completions",
     api_key_env: "SOME_KEY"
   });
   assert.equal(probe.data.provider, "openai-compatible");

@@ -393,7 +393,9 @@ test("streaming/terminal 命中同一 .agent-markdown typography；无 .is-strea
 test("模型设置布局：model-row 响应式 grid/minmax + min-width:0，窄窗折叠，popover 有边界", () => {
   // .model-settings-body 双列 grid 的详情列必须可收缩（minmax(0,1fr)）。
   const body = extractDecls(extractBlock(stylesSource, ".model-settings-body"));
-  assert.match(body["grid-template-columns"] ?? "", /minmax\(0,\s*1fr\)/u, ".model-settings-body 详情列应为 minmax(0,1fr)");
+  // round22 D13：详情列 minmax(340px,1fr)——上限 1fr 仍可收缩，340px 下限由
+  // 弹窗实宽核算保证；视口不足 1180px 折单栏（本文件下方窄窗断言）。
+  assert.match(body["grid-template-columns"] ?? "", /minmax\(340px,\s*1fr\)/u, ".model-settings-body 详情列应为 minmax(340px,1fr)");
 
   // 详情 section 的隐式列必须显式可收缩：否则单列 auto 轨道按 max-content 撑宽。
   const section = extractDecls(extractBlock(stylesSource, ".model-settings-body section"));

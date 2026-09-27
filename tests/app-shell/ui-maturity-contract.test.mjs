@@ -118,11 +118,15 @@ test("round10 settings: footer status slot and model rows are three-layer", () =
   assert.match(modalSource, /function setFooterMode/u);
   assert.doesNotMatch(modalSource, /settingsSave\.textContent = "无需保存"/u, "不得再把状态伪装成禁用主按钮");
   const pageSource = read("src/app-shell/model-settings-page.js");
-  assert.match(pageSource, /class: "model-row-main"/u);
-  assert.match(pageSource, /class: "model-row-actions"/u);
-  assert.match(pageSource, /icon\("trash"/u);
+  const rowsSource = read("src/app-shell/model-rows.mjs");
+  // round22 Task 5：模型行 DOM 结构随拆分移至 model-rows.mjs
+  assert.match(rowsSource, /class: "model-row-main"/u);
+  assert.match(rowsSource, /class: "model-row-actions"/u);
+  // round22 Task 5：模型行渲染拆至 model-rows.mjs——删除图标断言随拆分迁移
+  assert.match(rowsSource, /icon\("trash"/u);
   assert.match(pageSource, /icon\("eye"/u);
   assert.doesNotMatch(pageSource, /🗑|👁/u, "结构图标走 icon 体系，不用 emoji");
+  assert.doesNotMatch(rowsSource, /🗑|👁/u, "结构图标走 icon 体系，不用 emoji（model-rows）");
 });
 
 test("round10 overlays: toast clears the composer and cards are solid", () => {
