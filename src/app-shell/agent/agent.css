@@ -885,6 +885,7 @@
   font-weight: var(--weight-semibold); /* Round10：状态标题 13px/650 */
   font-size: var(--font-sm);
   line-height: 1.4;
+  white-space: nowrap; /* 短状态词防竖排（同 styles.css .ch-state 约定，2026-09-28） */
 }
 
 /* 第十二轮 N3：组状态行 per-state 语义色（同色同义，与状态点/条目图标共用 --agent-state-*）。
@@ -1222,6 +1223,7 @@
   font-size: var(--font-xs);
   font-family: var(--mono, ui-monospace, Consolas, monospace);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap; /* 「2/5」防斜杠后折行竖排（同 .agent-work-status 约定） */
 }
 
 .agent-plan-list {
