@@ -1,6 +1,7 @@
 # 多会话架构与并行升级路径
+> 状态：历史记录（2026-09-28 起并入 `docs/design/统一行为规格书.md` 第三部分 §22–§31）。本文件不再作为行为契约维护。
 
-> 记录于：2026-09-24｜状态：当前有效（Task 2–10 落地，本仓库当前行为为「同项目内多对话串行」）｜依据：src/core/agent/ 现行模块归属核对——submit / 串行门 → `run-control.mjs`，sessions() / deriveSessionTitle → `session-manager.mjs`，startLoop → `run-lifecycle.mjs`（Task 18 拆分）。本文记录会话注册表、会话分片存储、单流迁移、惰性创建与串行门的设计，并明确标注「所有对话可独立并行工作」的后续升级路径。
+> 记录于：2026-09-24｜状态：已并入（见上）。原记录：当前有效（Task 2–10 落地，本仓库当前行为为「同项目内多对话串行」）｜依据：src/core/agent/ 现行模块归属核对——submit / 串行门 → `run-control.mjs`，sessions() / deriveSessionTitle → `session-manager.mjs`，startLoop → `run-lifecycle.mjs`（Task 18 拆分）。本文记录会话注册表、会话分片存储、单流迁移、惰性创建与串行门的设计，并明确标注「所有对话可独立并行工作」的后续升级路径。
 > 范围：后端 `src/core/agent/` 的会话数据模型与 Runtime 串行门、前端 `src/app-shell/` 的传输层、AgentSurface 多会话管理、左侧栏两级树与设置「已归档对话」；以及移除串行门所需的会话级文件锁与每会话独立 run 循环。
 
 ## 1. 已确认目标
