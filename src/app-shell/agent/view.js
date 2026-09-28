@@ -232,6 +232,10 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   // 时按文本移除，失败气泡不再永久残留。
   const failedSubmissions = [];
   //（流式气泡/前置分页锚点等时间线私有状态已随分区迁 view/timeline.mjs。）
+  // 契约：一个 view 实例只服务一个 state 实例；换 state（重建/切换会话）必须 reset()。
+  // rendered.* 修订号与 state.revisions.* 分属两侧（工作组另有 record.rev ↔ group.rev），
+  // 跨 state 实例比较会静默早退——审计已复现：已完成 Run 上残留「等待你的指令」提示
+  // 与停止按钮。
   const rendered = {
     messages: -1, run: -1, queue: -1, decisions: -1, errors: -1,
     runId: null, runStatus: null, context: -1, notices: -1

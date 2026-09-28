@@ -50,15 +50,18 @@ export function orderedWorkItems(group) {
   return [...group.items.values()].sort((a, b) => a.sortSeq - b.sortSeq || a.firstSeq - b.firstSeq);
 }
 
-export function openWorkItemIds(group) {
+// ordered 可选：调用方已算过一次排序时传入复用（视图每帧每组只排一次）；缺省自算，
+// 既有调用方与测试无需改动。
+export function openWorkItemIds(group, ordered = orderedWorkItems(group)) {
   // 停止始终静态（计划 Task 6 Step 7 rule 5）：waiting_user 与终态之外的 stopping
   // 也压制 live item——停止窗口内 running 标签不得继续闪烁。
   if (["waiting_user", "completed", "failed", "cancelled", "interrupted", "stopping", "interrupting"].includes(group.status)) return [];
-  return orderedWorkItems(group).filter((item) => item.state === "running").map((item) => item.id);
+  return ordered.filter((item) => item.state === "running").map((item) => item.id);
 }
 
-export function visibleLiveTargets(group, { expanded }) {
-  const open = openWorkItemIds(group);
+// items 可选：同上，缺省仍走 orderedWorkItems(group)。
+export function visibleLiveTargets(group, { expanded, items }) {
+  const open = openWorkItemIds(group, items);
   if (open.length === 0) return [];
   return expanded ? open : [`group:${group.id}`];
 }
@@ -265,7 +268,10 @@ function ensureGroup(work, runId, seq) {
       legacyOpenTurns: 0,
       // 第九轮：首个 run_started 的 seq（组 firstSeq 锚点迁移的依据；无 run_started
       // 的组为 null，不迁移）。
-      runStartedSeq: null
+      runStartedSeq: null,
+      // 投影修订号：可能改变该组渲染结果的事件递增它（见 reduceWorkEvent 顶部），
+      // 视图用 (record.rev !== group.rev) 跳过未变组。
+      rev: 0
     };
     work.groups.set(runId, group);
   }
@@ -305,12 +311,52 @@ function appendToolOutput(item, text) {
   }
 }
 
+// 惰性事件：不改变工作投影的事件类型白名单（本模块私有）。非白名单事件递增所属组
+// 的 rev，视图据此跳过未变组。取向：这是「惰性」而不是「脏」名单——漏一个事件类型
+// 只会让该组多走一次更新（浪费），绝不会让 UI 停在旧状态；新增事件类型默认视为
+// 会标脏。以下均为无对应投影分支的事件。
+const WORK_INERT_EVENTS = new Set([
+  "assistant_message_delta",
+  "assistant_message_completed",
+  "decision_requested",
+  "decision_resolved",
+  "input_queued",
+  "input_completed",
+  "input_interrupted",
+  "input_withdrawn",
+  "input_cancelled",
+  "priority_input_requested",
+  "context_compaction_started",
+  "context_compaction_running",
+  "context_compaction_cancel_requested",
+  "context_compaction_completed",
+  "context_compaction_failed",
+  "context_compaction_cancelled",
+  "context_compaction_noop",
+  "context_usage_updated",
+  "chapter_rolled_back",
+  "memory_file_restored",
+  "session_created",
+  "permission_grant_created",
+  "permission_grant_cleared",
+  "checkpoint_linked",
+  "history_compacted"
+]);
+
 export function reduceWorkEvent(work, event) {
   if (!event || typeof event !== "object" || event.run_id == null) return;
   const runId = event.run_id;
   const payload = event.payload ?? {};
   const rawSeq = Number(event.seq);
   const seq = Number.isFinite(rawSeq) ? rawSeq : null;
+
+  // 标脏（单点，不在各 case 里手工 touch，避免漏标）：非惰性事件递增所属组的 rev。
+  // 只标脏已存在的组——惰性/首个事件不在这里造组；本事件首次造组由 ensureGroup 的
+  // rev=0 与视图侧新记录的 rev=-1 处理。
+  if (!WORK_INERT_EVENTS.has(event.type)) {
+    const existing = work.groups.get(runId);
+    if (existing) existing.rev += 1;
+  }
 
   switch (event.type) {
     case "model_turn_started": {

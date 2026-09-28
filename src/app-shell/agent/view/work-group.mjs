@@ -246,7 +246,10 @@ export function createWorkGroupView(ctx) {
       userToggled: false,    // 用户手动折叠后，投影的 expanded 不再覆盖
       durationTimer: null,
       groupSeq: group.firstSeq,
-      groupKey: workGroupKey(group)
+      groupKey: workGroupKey(group),
+      // 已渲染的投影修订号：-1 保证新记录必渲染；只在 (record.rev !== group.rev)
+      // 时重走该组（见 syncWork 门控）。
+      rev: -1
     };
     // toggle 事件只负责立即重应用动效（按当前展开态），不再用它判定「用户手动切换」：
     // Chromium 会在 <details open> 插入文档时异步补发一个 toggle 事件（实测 trusted），
@@ -683,8 +686,9 @@ export function createWorkGroupView(ctx) {
   }
 
   // 动效 class 只能由 visibleLiveTargets() 决定，显式切换（不只在创建节点时添加）。
-  function applyLiveTargets(record, group) {
-    const liveTargets = new Set(visibleLiveTargets(group, { expanded: record.details.open }));
+  // items 可选：updateWorkGroup 传入已算好的投影序复用；toggle 回调不传，走缺省自算。
+  function applyLiveTargets(record, group, items) {
+    const liveTargets = new Set(visibleLiveTargets(group, { expanded: record.details.open, items }));
     record.status.classList.toggle("agent-live-text", liveTargets.has(`group:${group.id}`));
     for (const [itemId, row] of record.rows) {
       row.label.classList.toggle("agent-live-text", liveTargets.has(itemId));
@@ -742,6 +746,7 @@ export function createWorkGroupView(ctx) {
     }
     ensureGroupClock(record, group);
 
+    // 排序只算一次：子项行序、裁剪、动效目标（applyLiveTargets）共用这份投影序。
     const ordered = orderedWorkItems(group);
     const seen = new Set();
     let changed = false;
@@ -782,7 +787,7 @@ export function createWorkGroupView(ctx) {
         ref = row.wrap;
       }
     }
-    applyLiveTargets(record, group);
+    applyLiveTargets(record, group, ordered);
     return changed;
   }
 
@@ -790,7 +795,7 @@ export function createWorkGroupView(ctx) {
     const seen = new Set();
     let changed = false;
     for (const group of state.work.groups.values()) {
-      if (orderedWorkItems(group).length === 0) continue; // 纯 run 标记的空组不渲染
+      if (group.items.size === 0) continue; // 纯 run 标记的空组不渲染（免排序判空）
       seen.add(group.id);
       let record = workGroups.get(group.id);
       if (!record) {
@@ -806,7 +811,14 @@ export function createWorkGroupView(ctx) {
         timeline.insertTimeline(record.details, group.firstSeq, record.groupKey);
         changed = true;
       }
-      if (updateWorkGroup(record, group)) changed = true;
+      // 增量门控：投影给每个非惰性事件递增该组 rev，未变组跳过全量更新（首帧新
+      // 记录 rev=-1 必渲染）。裁剪（trimWorkGroupRows）、终态清扫、行序对齐都在
+      // updateWorkGroup 内——它们依赖「会改变该组的事件都递增 rev」，终态/新增行
+      // 事件均非惰性，故不受门控影响。
+      if (record.rev !== group.rev) {
+        record.rev = group.rev;
+        if (updateWorkGroup(record, group)) changed = true;
+      }
     }
     for (const [id, record] of workGroups) {
       if (!seen.has(id)) {
