@@ -12,7 +12,7 @@
 [![Release](https://img.shields.io/github/v/release/wh520-wh/wwriting-novel-agent?color=green)](https://github.com/wh520-wh/wwriting-novel-agent/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey)](#快速开始)
 [![Node](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](package.json)
-[![Tests](https://img.shields.io/badge/tests-1992%20passing-success)](#开发与验证)
+[![Tests](https://img.shields.io/badge/tests-2039%20passing-success)](#开发与验证)
 [![Stars](https://img.shields.io/github/stars/wh520-wh/wwriting-novel-agent?style=social)](https://github.com/wh520-wh/wwriting-novel-agent/stargazers)
 
 [English](README.en.md) · **简体中文**
@@ -136,7 +136,7 @@ SETTING.md     # 可选：世界观与设定
 这个项目把「可验证」当成产品的一部分，而不是口号：
 
 ```powershell
-npm test                        # 1992 个单元/集成测试
+npm test                        # 2039 个单元/集成测试
 npm run verify:local            # 完整本地验收（含打包，较慢）
 npm run verify:app-clickability # 真实 Electron 窗口逐项点击关键按钮（界面外壳门禁）
 npm run verify:desktop-shell    # Electron 安全开关、中文菜单、打包配置
@@ -147,7 +147,7 @@ npm run sim:user-flow           # 用户流程全链路模拟
 
 连「按钮看得到但点不动」这类 UI 回归都有真实 Electron 点击防线。
 
-> 统计基线：记录于 2026-09-24｜状态：当前有效｜依据：`npm test` 实跑（1992/1992，exit 0，HEAD e708b36）。
+> 统计基线：记录于 2026-09-28｜状态：当前有效｜依据：`npm test` 实跑（2039/2039，exit 0，HEAD 0c84603）。
 
 ## 目录结构
 
@@ -191,6 +191,7 @@ docs/adr/                 # 架构决策记录
 | [更新日志](CHANGELOG.md) | 每个版本的变更明细与修复项 |
 | [完整使用教程](docs/USER_GUIDE.zh-CN.md) | 桌面端逐步操作说明：工作区、对话、权限、导出 |
 | [架构决策记录](docs/adr/) | 8 份 ADR，逐条记录关键设计取舍与取舍理由 |
+| [统一行为规格书](docs/design/统一行为规格书.md) | 对话面 / Agent 内核 / 多会话的唯一现行行为契约（行为改动只改它） |
 | [贡献指南](CONTRIBUTING.md) | 环境要求、开发命令、提交规范、PR 流程 |
 | [安全策略](SECURITY.md) | 漏洞披露渠道，以及本项目的安全边界与非漏洞清单 |
 | [English README](README.en.md) | 英文版说明 |

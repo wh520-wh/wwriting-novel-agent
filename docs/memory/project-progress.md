@@ -141,3 +141,22 @@
 **退役与新增**：`scripts/verify-app-shell.mjs` 已删（148 断言四类交接表见 Task 10 提交 `chore: retire brittle app shell verifier`）；21-7 欠账随之关闭。新增文件：`src/core/model/anthropic-messages.mjs`、`src/core/model/openai-responses.mjs`、`src/core/model/vendor-catalog.json`、`src/app-shell/vendor-logos.js`、`src/app-shell/model-rows.mjs`、`tests/model/protocol-adapters.test.mjs`。R1 红线：全库 0 越线（`app.js` 本轮压缩至 50236B，余 964B）。
 
 **欠账与限制**（只记不排）：① D23 缺口三家 logo（见上）；② 候选模型 ID 为目录候选示意，未逐家实测可用性（连接测试与真实 Agent 调用按协议闭环，但未经真实厂商密钥端到端验证——如实标注，不冒称）；③ `verify:provider-online` / `verify:research-online` 本轮未跑（需真实密钥/外网，不在门禁四条内）。
+
+## 第二十三轮（round23）完成记录（记录于：2026-09-28｜状态：当前有效）
+
+**范围**：无预设 SPEC——用户指令「从 AI 对话里的过程性反馈这个模块大量找 bug，先不修复」→ 全模块审计（源码通读 + 真实 Electron 探针实测，拒绝只靠读代码下结论）→ `to-tickets` 开 8 张工单 → 子 agent 逐单实现 → 双轴 code-review → 顺带把四份规格对齐现行代码并**合并为单一契约文件**。工单与探针产物在 `.scratch/process-feedback-fixes/issues/`、`.local/probe/`（均不入库）。
+
+**提交链**：`4ff3f16`（工单01 行上限）→ `c4fe12e`（05 下拉点击）→ `5945565`（06 搜索行样式）→ `e2439ca`（04 工具标签）→ `72db92b`（03 计划整表替换）→ `9dda235`（02 增量渲染）→ `d7017d2`（评审跟进）→ `bfed23f`（规格对齐）→ `0c84603`（规格合并）。
+
+**用户可见变化**：① 工作组恢复规格验收契约「单组 ≤ 20 行」（`711f368` 丢失的 MAX_ROWS=20 + trimmedIds）：一次 Run 几十次工具调用不再无限堆高过程列表；只裁最早终态行，运行/等待行永不丢，被裁项不复活，快照单帧收敛。② 长会话生成更跟手：过程反馈按组修订号增量渲染（`WORK_INERT_EVENTS` 惰性白名单，漏列只浪费不失效），实测 40 run × 75 工具（投影 3040 项）单事件成本 6041→42 次 stringify、12.4ms→4.3ms；正文/思考增量事件（约每 24ms 一条）不再触发整段历史重走。③ 计划口径统一：模型删掉的步骤立即从工作组计划行消失（原按 id 合并保留 → 与 chip 出现 2/4 vs 1/2 两个进度），description 省略即清空。④ 7 个注册工具补中文标签（入账章节/回滚章节/统计字数/统计文风/读取前情/读取技能/更新设定——此前界面直接显示 `finalize_revision` 等内部名）。⑤ 计划下拉内部点击不再收起面板（可选中复制）。⑥ 计划行不参与 20 行裁剪（评审发现的回归，负向验证）。⑦ CJK 状态词竖排与本段同窗口的早期修复：主进程解码崩溃（ff6af01）、Esc 冲刷死按 + 供应商不存在文案（fdd4fc8）、8 处竖排（3dcc935/1f6aa5c）。
+
+**规格维护模式变更（本round最重要的一条）**：三份现行规格（样式规格书、/init 规格书、multi-session-architecture）合并为唯一契约文件 `docs/design/统一行为规格书.md`（§1–§11 对话面编号不变，内核 §12–§21，多会话 §22–§31）；卷首维护规则=行为改动只改它一处+对照物模型（与代码冲突以代码+测试为准回改）；三份旧文件降级历史并放墓碑；`docs/design/README.md` 建索引；AGENTS.md（本地）加唯一入口指针。合并前先做了 20 处对齐修订（bfed23f：状态横幅已废、组状态文案、立即=优先调度、input 事件集、任务计划 chip、/compact、空态文案、模型菜单 max-height、重连口径、journal 分段布局等）。
+
+**验收证据（记录于 2026-09-28，均为实跑）**：
+- `npm test` 全量 **2039/2039（exit 0）**（前值 2016/2016，round22；本轮 +23 用例）
+- Electron 探针（`.local/probe/run-probe2/5/6.cjs`）：门控正确性（惰性事件 0 重走、脏组 42 次 stringify、新工具行即时出现且标签正确）+ 20 行上限（DOM 3040→800 行）
+- 计划一致性脚本（`plan-probe.mjs`）：groupRow=chip=2、removedStepStillInGroupRow=false
+- 双轴 code-review（Standards/Spec 子代理并行）：Spec 轴发现计划行裁剪回归（已修+负向验证）；Standards 轴 3 条文档/测试问题（已处理）
+- R1 红线：全库 0 越线；`work-group.mjs` 872 行/43089B、`work-items.mjs` 665 行/32995B、`state.js` 950 行/44071B（LF 归一）
+
+**欠账与限制（只记不排）**：① 工单 07 跨轮计划生命周期（needs-info：新输入后旧 chip 清空/保留/标上一轮，等口径裁决，对应统一书 §4.2）；② 工单 08 `search_files` 标签口径（needs-info：规格要「搜索「查询词」」vs 测试断言「query 不进标签」）；③ 四项明确不做并记录理由：失败文案行内+详情双显（碰字段顺序验收契约）、rev 跨 state 实例比较（生产路径必 reset，已契约化注释）、`activityToRun`/`turnToRun` 不回收、stopping 期间停止按钮可点（后端幂等）；④ web_search 特化分支当前不可达（注册表无此工具），来源行样式为规格预置（+363B）；⑤ round22 遗留 D23 三家 logo 不变。

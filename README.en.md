@@ -12,7 +12,7 @@ The agent actually reads and writes your files · Every step is verifiable · Yo
 [![Release](https://img.shields.io/github/v/release/wh520-wh/wwriting-novel-agent?color=green)](https://github.com/wh520-wh/wwriting-novel-agent/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey)](#quick-start)
 [![Node](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](package.json)
-[![Tests](https://img.shields.io/badge/tests-1992%20passing-success)](#development--verification)
+[![Tests](https://img.shields.io/badge/tests-2039%20passing-success)](#development--verification)
 [![Stars](https://img.shields.io/github/stars/wh520-wh/wwriting-novel-agent?style=social)](https://github.com/wh520-wh/wwriting-novel-agent/stargazers)
 
 **English** · [简体中文](README.md)
@@ -50,7 +50,7 @@ You can watch what the agent is doing at any moment. Interrupt it and it resumes
 | **Data** | Uploaded to a third-party cloud | Stays entirely on your machine; app-private history never enters your writing folder |
 | **Permissions** | All or nothing | Read-only auto / confirm side effects / per-input grants / YOLO / exact confirmation text for extreme actions |
 | **Versions** | None | Automatic snapshots of chapters and memory, with a timeline panel to view and restore any version |
-| **Verifiability** | Vibes | 1,992 tests plus a full local acceptance suite |
+| **Verifiability** | Vibes | 2,039 tests plus a full local acceptance suite |
 
 ## Core capabilities
 
@@ -136,7 +136,7 @@ SETTING.md     # Optional: world and settings
 This project treats verifiability as part of the product, not a slogan:
 
 ```powershell
-npm test                        # 1,992 unit/integration tests
+npm test                        # 2,039 unit/integration tests
 npm run verify:local            # full local acceptance (includes packaging; slow)
 npm run verify:app-clickability # real Electron window clicking every key button
 npm run verify:desktop-shell    # Electron security switches, menus, packaging config
@@ -147,7 +147,7 @@ npm run sim:user-flow           # end-to-end user-flow simulation
 
 Even UI regressions like "button visible but unclickable" are caught by a real Electron click-through harness.
 
-> Statistics baseline: recorded 2026-09-24 | status: current | source: `npm test` run (1992/1992, exit 0, HEAD e708b36).
+> Statistics baseline: recorded 2026-09-28 | status: current | source: `npm test` run (2039/2039, exit 0, HEAD 0c84603).
 
 ## Repository layout
 
@@ -191,6 +191,7 @@ For security issues, report privately per [SECURITY.md](SECURITY.md) instead of 
 | [Changelog](CHANGELOG.md) | Per-release changes and fixes |
 | [Full user guide](docs/USER_GUIDE.zh-CN.md) | Step-by-step desktop walkthrough: workspaces, chat, permissions, export |
 | [Architecture decision records](docs/adr/) | 8 ADRs recording each key design trade-off and why it was made |
+| [Unified behavior spec](docs/design/统一行为规格书.md) | The single current behavior contract for the chat surface, agent kernel, and multi-session (behavior changes only touch this file) |
 | [Contributing guide](CONTRIBUTING.md) | Requirements, dev commands, commit conventions, PR flow |
 | [Security policy](SECURITY.md) | How to report vulnerabilities, plus this project's security boundaries and non-issues |
 | [中文 README](README.md) | Chinese documentation |
