@@ -51,6 +51,12 @@ const WORK_OUTPUT_TRUNCATED_MARK = "（输出过长已截断）\n";
 // 工具详情字段固定顺序（验收契约，沿用旧活动行的顺序）。
 const FIELD_ORDER = ["参数", "命令", "目录", "退出码", "耗时", "错误"];
 const TOOL_STATE_ICONS = { running: "•", completed: "✓", failed: "✗", cancelled: "已停止", waiting: "•" };
+// 单组子项行上限（规格 §4.3 与 §9.2「最多保留 20 行」验收契约，不得放宽）。
+// 按「每组」而非全局计：全局裁剪会把更早 Run 的组清空，而 syncWork 跳过无子项
+// 的组——组状态行（Run 结束后必须保留）随之消失。
+const MAX_WORK_ROWS = 20;
+// 只有终态行可被裁剪；running/waiting 永不裁剪（允许全部运行中时临时超限）。
+const TERMINAL_ITEM_STATES = new Set(["completed", "failed", "cancelled"]);
 // 计时只在真实文档内运行：脱离文档（测试 mock / 未挂载）的节点不保留 1s/800ms
 // 重复计时器，避免泄漏；details 挂载后计时正常工作。
 const DURATION_ACTIVE_STATUSES = new Set(["running", "interrupting", "stopping"]);
@@ -236,6 +242,7 @@ export function createWorkGroupView(ctx) {
       duration,
       itemsEl,
       rows: new Map(),       // itemId -> row
+      trimmedIds: new Set(), // 已按 20 行上限裁剪的 item id（不再重建、不参与重排）
       userToggled: false,    // 用户手动折叠后，投影的 expanded 不再覆盖
       durationTimer: null,
       groupSeq: group.firstSeq,
@@ -684,6 +691,28 @@ export function createWorkGroupView(ctx) {
     }
   }
 
+  // 20 行上限裁剪：一帧内收敛到上限（快照一次性载入多条终态项时不能只裁一行，
+  // 否则没有后续渲染来补裁）。ordered 由调用方算一次、游标单次推进——按投影序
+  // 从最早处裁终态行，不做每轮重排。running/waiting 永不裁剪；找不到可裁行即
+  // 跳出，允许临时超限。被裁项记入 trimmedIds，后续事件不重建（重排也跳过）。
+  function trimWorkGroupRows(record, ordered) {
+    if (record.rows.size <= MAX_WORK_ROWS) return false;
+    let trimmed = false;
+    let cursor = 0;
+    while (record.rows.size > MAX_WORK_ROWS && cursor < ordered.length) {
+      const item = ordered[cursor];
+      cursor += 1;
+      const row = record.rows.get(item.id);
+      if (!row || !TERMINAL_ITEM_STATES.has(item.state)) continue;
+      row.ticker?.finish?.();
+      row.wrap.remove();
+      record.rows.delete(item.id);
+      record.trimmedIds.add(item.id);
+      trimmed = true;
+    }
+    return trimmed;
+  }
+
   function updateWorkGroup(record, group) {
     // N3：状态语义色——组状态行 dataset.status 驱动 per-state 颜色（同色同义，
     // 与状态点 .session-status / 条目图标共用 --agent-state-*）。组对象每次投影
@@ -718,6 +747,7 @@ export function createWorkGroupView(ctx) {
     let changed = false;
     for (const item of ordered) {
       seen.add(item.id);
+      if (record.trimmedIds.has(item.id)) continue; // 已裁剪项不再重建
       let row = record.rows.get(item.id);
       if (!row) {
         row = buildWorkItemRow(record, item);
@@ -734,6 +764,7 @@ export function createWorkGroupView(ctx) {
         changed = true;
       }
     }
+    if (trimWorkGroupRows(record, ordered)) changed = true;
     // 第十二轮 F6：行序对齐投影序（orderedWorkItems）。仅在有增删（changed）时
     // 执行，避免每帧搬移 DOM；insertBefore 已在位时不产生搬移。
     // ponytail: 门控只认成员增删——plan_updated 改既有行 sortSeq 不触发重排，
