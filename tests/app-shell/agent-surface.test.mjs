@@ -5495,3 +5495,78 @@ test("第十二轮 F8：跨会话同通知数切换，B 的通知行必须渲染
   ]));
   assert.ok(root.querySelector('[data-notice-type="memory_file_restored"]'), "B 会话通知行必须渲染（F8）");
 });
+
+// ===========================================================================
+// 过程反馈修复 01：工作组单组「最多 20 行」上限（规格 §4.3 / §9.2 验收契约）
+// ===========================================================================
+
+async function makeCappedGroup(surface) {
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+}
+
+test("上限：25 次工具调用后单组子项 ≤20 行，裁掉最早的终态行，最新行保留", async () => {
+  const { root, surface } = await makeSurface();
+  await makeCappedGroup(surface);
+  for (let i = 1; i <= 25; i += 1) {
+    surface.applyEvent(toolStarted(`cap-${i}`, "shell", { command: `echo ${i}` }));
+    surface.applyEvent(ev("tool_call_completed", {
+      tool_call_id: `tc-cap-${i}`, activity_id: `cap-${i}`, name: "shell", exit_code: 0
+    }));
+  }
+  const itemsEl = root.querySelector(".agent-work-items");
+  const rows = itemsEl.querySelectorAll(".agent-work-item");
+  assert.equal(rows.length, 20, "单组子项行数不超过 20（规格 §4.3）");
+  assert.ok(root.querySelector(".agent-work-group"), "组状态行必须保留（不因裁剪消失）");
+  assert.equal(root.querySelector('[data-item-id="tool:cap-1"]'), null, "最早的终态行已被裁掉");
+  assert.equal(rows[0].dataset.itemId, "tool:cap-6", "裁剪从最早端开始，保留最新的 20 行");
+  assert.ok(root.querySelector('[data-item-id="tool:cap-25"]'), "最新完成的行仍在 DOM");
+});
+
+test("上限：25 个工具全部未完成（running）时不裁剪，行数保持 25", async () => {
+  const { root, surface } = await makeSurface();
+  await makeCappedGroup(surface);
+  for (let i = 1; i <= 25; i += 1) {
+    surface.applyEvent(toolStarted(`run-${i}`, "shell", { command: `sleep ${i}` }));
+  }
+  const rows = root.querySelector(".agent-work-items").querySelectorAll(".agent-work-item");
+  assert.equal(rows.length, 25, "全部运行中允许临时超限，不裁剪任何行");
+  assert.ok(root.querySelector('[data-item-id="tool:run-1"]'), "最早的 running 行永不丢弃");
+});
+
+test("上限：被裁剪项在后续事件（输出增量/重复完成）后不复活", async () => {
+  const { root, surface } = await makeSurface();
+  await makeCappedGroup(surface);
+  for (let i = 1; i <= 25; i += 1) {
+    surface.applyEvent(toolStarted(`cap-${i}`, "shell", { command: `echo ${i}` }));
+    surface.applyEvent(ev("tool_call_completed", {
+      tool_call_id: `tc-cap-${i}`, activity_id: `cap-${i}`, name: "shell", exit_code: 0
+    }));
+  }
+  surface.applyEvent(outputDelta("cap-1", "迟到的输出\n"));
+  surface.applyEvent(ev("tool_call_completed", {
+    tool_call_id: "tc-cap-1", activity_id: "cap-1", name: "shell", exit_code: 0
+  }));
+  const rows = root.querySelector(".agent-work-items").querySelectorAll(".agent-work-item");
+  assert.ok(rows.length <= 20, "被裁剪项收到后续事件后仍不超上限");
+  assert.equal(root.querySelector('[data-item-id="tool:cap-1"]'), null, "被裁剪的行不得重建");
+});
+
+test("上限：单次快照载入 25 条已终态工具时，一帧内收敛到 ≤20 行（不依赖后续事件）", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  const events = [];
+  for (let i = 1; i <= 25; i += 1) {
+    events.push(toolStarted(`snap-${i}`, "shell", { command: `echo ${i}` }));
+    events.push(ev("tool_call_completed", {
+      tool_call_id: `tc-snap-${i}`, activity_id: `snap-${i}`, name: "shell", exit_code: 0
+    }));
+  }
+  // 只走一次 applySnapshot（reduce + render 各一次），之后不再发任何事件：
+  // 快照路径下没有后续渲染来补裁，必须当帧就收敛。
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() }), events));
+  const rows = root.querySelector(".agent-work-items").querySelectorAll(".agent-work-item");
+  assert.equal(rows.length, 20, "单次渲染即收敛到上限");
+  assert.equal(rows[0].dataset.itemId, "tool:snap-6", "裁掉最早的 5 条终态行，保留最新 20 行");
+  assert.equal(root.querySelector('[data-item-id="tool:snap-1"]'), null, "最早的终态行不在 DOM");
+});
