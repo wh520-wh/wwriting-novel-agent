@@ -795,3 +795,68 @@ test("工具标签补齐：7 个注册工具三态文案；未知/空名兜底�
   assert.equal(toolLabel("whatever", "running"), "正在调用 whatever");
   assert.equal(toolLabel(undefined, "running"), "正在调用 ");
 });
+
+// ===========================================================================
+// 2026-09-28（工单 02）：工作组投影修订号契约——视图据 rev 跳过未变组；
+// 漏标即视图停在旧状态，所以「会改渲染的事件」必须逐一递增（agent-surface
+// 全量断言是同一契约的 DOM 兜底）。惰性事件漏列只多走一次更新，不失效。
+// ===========================================================================
+
+test("投影修订号：会改变渲染的 15 类事件使所属组 rev 增大", () => {
+  const cases = [
+    ["model_turn_started", { turn_id: "turn-1", input_id: "in-1" }],
+    ["reasoning_delta", { turn_id: "turn-1", text: "片段" }],
+    ["reasoning_completed", { turn_id: "turn-1", text: "完整思考" }],
+    ["model_turn_completed", { turn_id: "turn-1" }],
+    ["tool_call_started", { activity_id: "a-1", name: "read_file", args: { path: "chapter.md" } }],
+    ["tool_output_delta", { activity_id: "a-1", text: "输出" }],
+    ["tool_call_completed", { activity_id: "a-1", exit_code: 0, duration_ms: 3 }],
+    ["tool_call_failed", { activity_id: "a-1", error: "tool_error", message: "失败" }],
+    ["input_started", { input_id: "in-1" }],
+    ["plan_updated", { items: [{ id: "t1", step: "步骤", status: "in_progress" }] }],
+    ["run_status_changed", { status: "waiting_user" }],
+    ["interrupt_requested", {}],
+    ["interrupt_safe_point_reached", {}],
+    ["provider_retry", { attempt: 1, max_attempts: 3 }],
+    ["run_completed", {}]
+  ];
+  for (const [type, payload] of cases) {
+    const work = createWorkState();
+    reduceWorkEvent(work, ev("run_started", { workflow: "general", input_id: "in-1" }, 1));
+    reduceWorkEvent(work, ev("model_turn_started", { turn_id: "turn-1", input_id: "in-1" }, 2));
+    reduceWorkEvent(work, ev("tool_call_started", { activity_id: "a-1", name: "read_file", args: { path: "chapter.md" } }, 3));
+    const group = groupOf(work);
+    const before = group.rev;
+    reduceWorkEvent(work, ev(type, payload, 4));
+    assert.equal(group.rev, before + 1, `${type} 必须递增组 rev（漏标 = 视图停在旧状态）`);
+  }
+});
+
+test("投影修订号：惰性事件不改变 rev", () => {
+  const inertSamples = [
+    ["assistant_message_delta", { input_id: "in-1", text: "正文" }],
+    ["decision_requested", { decision_id: "d-1", kind: "approval" }],
+    ["context_usage_updated", { used_tokens: 100 }],
+    ["chapter_rolled_back", { chapter_no: 1, to_version: 2 }]
+  ];
+  for (const [type, payload] of inertSamples) {
+    const work = createWorkState();
+    reduceWorkEvent(work, ev("run_started", { workflow: "general", input_id: "in-1" }, 1));
+    reduceWorkEvent(work, ev("tool_call_started", { activity_id: "a-1", name: "read_file", args: {} }, 2));
+    const group = groupOf(work);
+    const before = group.rev;
+    reduceWorkEvent(work, ev(type, payload, 3));
+    assert.equal(group.rev, before, `${type} 是惰性事件，不得标脏`);
+  }
+});
+
+test("投影修订号：只标脏事件所属 Run 的组，跨组互不干扰", () => {
+  const work = createWorkState();
+  reduceWorkEvent(work, ev("run_started", { workflow: "general", input_id: "in-1" }, 1));
+  reduceWorkEvent(work, ev("run_started", { workflow: "general", input_id: "in-2" }, 2, { run_id: "run-2" }));
+  const run1 = work.groups.get("run-1");
+  const run1Before = run1.rev;
+  reduceWorkEvent(work, ev("tool_call_started", { activity_id: "b-1", name: "shell", args: { command: "ls" } }, 3, { run_id: "run-2" }));
+  assert.equal(run1.rev, run1Before, "run-2 的事件不得标脏 run-1");
+  assert.equal(work.groups.get("run-2").rev, 1, "事件只递增自己的组");
+});
