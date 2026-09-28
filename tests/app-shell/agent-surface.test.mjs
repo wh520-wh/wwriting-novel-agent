@@ -5570,3 +5570,38 @@ test("上限：单次快照载入 25 条已终态工具时，一帧内收敛到 
   assert.equal(rows[0].dataset.itemId, "tool:snap-6", "裁掉最早的 5 条终态行，保留最新 20 行");
   assert.equal(root.querySelector('[data-item-id="tool:snap-1"]'), null, "最早的终态行不在 DOM");
 });
+
+test("上限：计划行不参与裁剪（Run 结束后仍可回看的任务计划）", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\novel");
+  surface.applyEvent(ev("run_started", { input_id: "in-1" }));
+  // 计划先到、随后 25 次工具调用完成：计划行 sortSeq 停在最前、state 恒为
+  // completed（静态子项），若纳入裁剪候选会被最先裁掉且 trimmedIds 阻止重建。
+  surface.applyEvent(ev("plan_updated", {
+    explanation: "第三章计划",
+    items: [{ id: "t1", step: "通读草稿", status: "completed" }]
+  }));
+  for (let i = 1; i <= 25; i += 1) {
+    surface.applyEvent(toolStarted(`p-${i}`, "shell", { command: `echo ${i}` }));
+    surface.applyEvent(ev("tool_call_completed", {
+      tool_call_id: `tc-p-${i}`, activity_id: `p-${i}`, name: "shell", exit_code: 0
+    }));
+  }
+  const planRow = root.querySelector('[data-kind="plan"]');
+  assert.ok(planRow, "计划行必须还在（不因行数上限消失）");
+  assert.equal(planRow.querySelector(".agent-plan__count").textContent, "1/1", "计划进度与最后一次整表一致");
+  const rows = root.querySelector(".agent-work-items").querySelectorAll(".agent-work-item");
+  // 计划行占用 20 行额度中的一行，且不作为裁剪候选：实际保留 19 个工具行 + 计划行。
+  assert.equal(rows.length, 20, "总行数仍收敛到 20（计划行占额、不可裁）");
+  assert.equal(rows.filter((el) => el.dataset.kind === "tool").length, 19, "工具行让出计划行占用的额度");
+  // 后续 plan_updated 仍能更新计划行（未被 trimmedIds 排除）
+  surface.applyEvent(ev("plan_updated", {
+    explanation: "第三章计划",
+    items: [{ id: "t1", step: "通读草稿", status: "completed" }, { id: "t2", step: "补结尾", status: "in_progress" }]
+  }));
+  assert.equal(
+    root.querySelector('[data-kind="plan"]').querySelector(".agent-plan__count").textContent,
+    "1/2",
+    "计划行在裁剪之后仍随 plan_updated 更新"
+  );
+});

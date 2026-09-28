@@ -9,7 +9,7 @@
 - 逻辑源码红线现状：全库 126 个 `.js/.mjs` **0 越线**（口径：≤1200 行且 ≤51200 字节，字节按 LF 归一）；行维度由架构测试 R1 机器强制，**字节维度自本轮起同样机器强制**（`tests/architecture/dependency-rules.test.mjs`）
 - 逼近红线的文件（LF 归一字节 / 余量）：`src/app-shell/app.js` 48607B / 余 2593B、`src/core/agent/journal.mjs` 47577B / 余 3623B、`src/core/agent/journal-handlers.mjs` 50355B / 余 845B、`src/app-shell/model-settings-page.js` 50859B / 余 341B（依据：`wc -l` + `Buffer.byteLength(text.replace(/\r\n/g,"\n"))`）
 - 本轮拆分出的新模块：`src/core/agent/run-control.mjs`（519 行 / 28899B）、`src/core/agent/journal-recovery.mjs`（162 / 8857B）、`src/core/agent/journal-queries.mjs`（123 / 6046B）、`src/app-shell/app-reader-view.js`（116 / 5214B）
-- 样式体积现状：`src/app-shell/styles.css` 2613 行 / 83213B、`src/app-shell/agent/agent.css` 2171 行 / 57756B（依据：`wc -l`/`wc -c`，记录于 2026-09-24；**行数与 2026-09-05 登记值相同，即样式自第十七轮以来未再增长**）
+- 样式体积现状：`src/app-shell/styles.css` 2724 行 / 89372B、`src/app-shell/agent/agent.css` 2193 行 / 58757B（依据：LF 归一字节（去 CR 后按 UTF-8 计数），记录于 2026-09-28；较 2026-09-24 登记值净增来自 round21/22 与本轮 web_search 来源行预置样式 363B，原「样式自第十七轮以来未再增长」一句已失效）
 - 依赖面：`dependencies` 3 个（`marked` / `yaml` / `yauzl`；本轮删除零引用的 `ignore`）
 - 本地验收线：`npm run verify:unified-agent` 36/36 场景、exit 0（本轮修好了此前在场景 24 崩溃的遗留缺陷）
 

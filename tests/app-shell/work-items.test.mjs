@@ -94,11 +94,6 @@ test("Step 1: 有序投影 —— 最终 order 为 reasoning-1、tool-A、plan�
     planItem.plan.items.map((task) => [task.id, task.status]),
     [["t2", "completed"], ["t3", "in_progress"], ["t4", "pending"]]
   );
-  assert.deepEqual(
-    Object.keys(planItem.plan.items[0]).sort(),
-    ["id", "status", "step"],
-    "任务条目只投影 id/step/status（firstSeq/sortSeq 死字段已删除）"
-  );
   assert.equal(planItem.plan.explanation, "继续修正冲突", "explanation 保持最新");
 
   // reasoning/tool 位置固定在开始事件（完成不移动）

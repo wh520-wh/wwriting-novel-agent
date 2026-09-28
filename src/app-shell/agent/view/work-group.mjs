@@ -699,6 +699,9 @@ export function createWorkGroupView(ctx) {
   // 否则没有后续渲染来补裁）。ordered 由调用方算一次、游标单次推进——按投影序
   // 从最早处裁终态行，不做每轮重排。running/waiting 永不裁剪；找不到可裁行即
   // 跳出，允许临时超限。被裁项记入 trimmedIds，后续事件不重建（重排也跳过）。
+  // 计划行不参与裁剪：它是 §1/§4.2 要求「Run 结束后保留供回看」的静态子项，
+  // 且 state 恒为 completed、sortSeq 只在 plan_updated 前移——一旦被裁就永久
+  // 消失（trimmedIds 阻止重建），chip 与工作组行会给出两个不同的进度。
   function trimWorkGroupRows(record, ordered) {
     if (record.rows.size <= MAX_WORK_ROWS) return false;
     let trimmed = false;
@@ -707,7 +710,7 @@ export function createWorkGroupView(ctx) {
       const item = ordered[cursor];
       cursor += 1;
       const row = record.rows.get(item.id);
-      if (!row || !TERMINAL_ITEM_STATES.has(item.state)) continue;
+      if (!row || item.kind === "plan" || !TERMINAL_ITEM_STATES.has(item.state)) continue;
       row.ticker?.finish?.();
       row.wrap.remove();
       record.rows.delete(item.id);
