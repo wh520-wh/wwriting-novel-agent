@@ -1,6 +1,6 @@
 # Agent 自主初始化与命令行工具规格书
 
-状态：已实施（统一 Agent 内核 Task 1–11 落地）  
+状态：已实施（统一 Agent 内核 Task 1–11 落地；2026-09-28 按现行代码复核修订——「立即」已改为优先调度、思考内容已可展示、journal 已分段存储）  
 日期：2026-08-06  
 关联：`docs/design/写作Agent对话样式规格书.md`（AgentSurface 对话面约束）
 
@@ -25,7 +25,7 @@ WWriting 已把写作控制面收敛为**单一 Agent 内核 + 单一对话面**
 
 ## 3. 权限生命周期（active_input_id）
 
-- 同一时刻只有一个活动输入（`active_input_id`）；排队输入按 FIFO 排列，`立即` 提升时切换 `active_input_id`，**不创建第二个项目 Agent**。
+- 同一时刻只有一个活动输入（`active_input_id`）；排队输入按 FIFO 排列，`立即` 请求优先调度：同一 run id 内在安全点切换 `active_input_id`，不打断正在执行的轮次（Task 11 起 abort 式 promote 退役），**不创建第二个项目 Agent**。
 - 同类授权（allow_input）只对当前这条排队输入生效：Run 结束、输入被消费/取消或切换项目后，临时授权自动失效。
 - 跨 Run 成本由 `cost.json` / CostTracker 按项目累计，与临时授权无关。
 
@@ -40,20 +40,20 @@ WWriting 已把写作控制面收敛为**单一 Agent 内核 + 单一对话面**
 ## 5. stop 与立即
 
 - `停止` 取消当前 Run 并清除临时授权；停止中显示 `正在停止`，终态 `已停止`；进行中的文件写入保持完整。
-- `立即` 打断当前轮并提升一条排队消息为活动输入（同一 run id 内切换 `active_input_id`），不创建第二个项目 Agent。
-- 暂停/恢复成功不弹 Toast；停止按钮点击即禁用防连点，仅停止失败或 Run 恢复后重新可用。
+- `立即` 请求优先调度一条排队消息为下一条活动输入（同一 run id 内在安全点切换 `active_input_id`），不打断正在执行的轮次；已有优先在途时后端返回 409 `priority_pending`。不创建第二个项目 Agent。
+- 停止成功不弹 Toast；停止/重试按钮点击即禁用防连点，仅请求失败或 Run 恢复后重新可用。
 
 ## 6. 工具与事件协议
 
 - 工具事件统一状态：运行中、完成、失败、取消（取消类错误码 `tool_cancelled` / `shell_cancelled` 收敛为 `已停止` 标记）。
 - Shell 默认运行目录为当前项目；支持增量输出、停止与明确的结束状态；输出按片段进入当前轮，不等待命令结束。
 - 可能包含密钥的参数在持久化日志中脱敏；错误码、命令、退出码只在活动行折叠详情中出现，主文案只说用户可理解的事实。
-- 私有推理字段（reasoning / chain-of-thought）不作为产品功能：界面只展示"思考中"状态与可验证的活动/结果。
+- 私有推理字段（chain-of-thought / private_reasoning 等链式字段）不进入产品；模型思考经 `reasoning_delta`/`reasoning_completed` 进入 journal，界面以「思考 N 秒」项展示已确认安全的内容（契约见《写作Agent对话样式规格书》§4.9）。
 
 ## 7. 数据与恢复
 
-- Session/Run/queue/plan/decision 的真相源是**应用私有 Agent journal**（`<userData>/workspaces/<workspace-id>/agent/events.jsonl`，`session.json` 为可重建投影）；应用私有历史不进入创作目录。
-- provider 消息连续性由 `transcript.jsonl` 承担；模型循环、workflow、stop/立即 由 ProjectAgent（`src/core/agent/`，`createProjectAgent` seam）编排。
+- Session/Run/queue/plan/decision 的真相源是**应用私有 Agent journal**：`<userData>/workspaces/<workspace-id>/agent/` 下 `segments/events/`、`segments/transcript/` 分段 JSONL（事件 JSONL 是真相源），`session.json` 为可重建投影，`journal-manifest.json` 为可删重建的派生清单；应用私有历史不进入创作目录。（记录于 2026-09-28：单一 events.jsonl 已由分段存储取代，依据 `journal-segments.mjs`）
+- provider 消息连续性由 `segments/transcript/` 分段存储承担；模型循环、workflow、stop/立即 由 ProjectAgent（`src/core/agent/`，`createProjectAgent` seam）编排。
 - 旧项目首次打开时执行一次性只读 legacy 导入（幂等，`migration.json` 标记）；新工作区不再产生 `project.yaml`、`agent_state.json`、`task_queue.json`、`failures.jsonl`、`chat_history.jsonl`。
 - 不同工作区各自持有独立 journal 实例与队列，互不共享锁，可以并行运行（跨工作区并行）。
 
@@ -69,4 +69,4 @@ WWriting 已把写作控制面收敛为**单一 Agent 内核 + 单一对话面**
 - 普通确认、input 级同类授权与授权清理；YOLO 跳过普通确认但不跳过 extreme；fresh 精确文字确认不可复用、不可由模型代填。
 - Shell cwd/超时/增量输出/进程树停止/1 MiB 独立流尾；密钥与 journal 详情脱敏。
 - 同一 activity 合并、私有推理不渲染；`/init` 保留用户原文并使用同一个 Agent 循环。
-- 跨工作区并行；stop 取消当前 Run 并清除临时授权；`立即` 保持同一 run id。
+- 跨工作区并行；stop 取消当前 Run 并清除临时授权；`立即` 优先调度保持同一 run id。
