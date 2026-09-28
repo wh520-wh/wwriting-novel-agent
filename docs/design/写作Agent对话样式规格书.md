@@ -105,7 +105,7 @@
 | edit_file | `修改文件 <相对路径>` / `修改文件` |
 | shell | `运行命令` |
 | update_plan | `更新任务计划` |
-| enter_workflow | `切换工作流` |
+| enter_workflow | `切换工作流`（当前未注册：注册表见 src/core/agent/tools/index.mjs） |
 | append_chapter_segment | `写入章节内容` |
 | commit_chapter | `提交章节` |
 | read_skill | `读取技能` |
@@ -115,7 +115,7 @@
 | update_memory | `更新设定` |
 | finalize_revision | `入账章节` |
 | rollback_chapter | `回滚章节` |
-| commit_blueprint | `提交蓝图` |
+| commit_blueprint | `提交蓝图`（当前未注册：同上） |
 | 其他 | `工具 <name>` / `调用工具中` |
 | web_search | 搜索状态渲染（查询 shimmer 头 + 来源逐个转圈变勾） |
 
@@ -164,7 +164,7 @@
 - 一个 Run 的思考、工具调用、任务计划按发生顺序合并为一个**工作组**，插入对话时间流：`<details class="agent-work-group">`，`<summary>` 内为状态文案 + 耗时，正文为有序子项（`agent-work-item`）。工作组无框直出（无描边、无圆角包裹、无底色，直接展示在页面背景上；样式见 §7），不在组外加卡片容器。
 - 工作组按组首事件 seq 插入时间线，未确认送达的用户消息（无 seq）固定靠后，工作组绝不出现在其上。
 - summary 与明细内容轴与正文对齐（720px），容器保持全宽维持时间流节奏。
-- 子项 id 与种类：`reasoning:<turn_id>` / `tool:<activity_id>` / `plan:<run_id>`；排序规则：reasoning/tool 以开始事件 seq 排序，完成事件不移动位置；plan 首次出现位置固定，每次 `plan_updated` 内容更新并移动到最新位置（同一任务 id 绝不重复添加）。
+- 子项 id 与种类：`reasoning:<turn_id>` / `tool:<activity_id>` / `plan:<run_id>`；排序规则：reasoning/tool 以开始事件 seq 排序，完成事件不移动位置；plan 首次出现位置固定，每次 `plan_updated` 内容更新并移动到最新位置（同一任务 id 绝不重复添加）。（记录于 2026-09-28）计划**任务表**为整表替换：以最后一次 `plan_updated` 的 items 为准，被省略的步骤立即消失、顺序取该表顺序——与工具契约「全量替换整表」及核心 `journal-handlers` 投影一致（依据：round23 工单 03，提交 72db92b）。
 - 状态文案与展开默认值（投影给出，用户可在 DOM 侧覆盖）：
 
 | 组状态 | summary 文案 | 默认展开 |
