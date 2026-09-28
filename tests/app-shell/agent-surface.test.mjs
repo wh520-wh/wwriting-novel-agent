@@ -1256,7 +1256,7 @@ test("计划子项显示全部任务（不再折叠裁剪），in_progress 项�
   assert.equal(items[2].dataset.status, "in_progress");
 });
 
-test("plan_updated 更新通过同一 DOM key 移动节点，不创建第二张卡", async () => {
+test("plan_updated 整表替换：不创建第二张卡，省略的任务从计划行消失", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
@@ -1269,7 +1269,7 @@ test("plan_updated 更新通过同一 DOM key 移动节点，不创建第二张�
   }));
   const group = root.querySelector(".agent-work-group");
   assert.equal(group.querySelectorAll('[data-kind="plan"]').length, 1, "第一版计划只有一张卡");
-  // 第二次更新：同 id 任务更新状态并移动到最新位置，不新增卡
+  // 第二次更新：整表替换（省略 t1 = 删除），同 id 任务更新状态，不新增卡
   surface.applyEvent(ev("plan_updated", {
     items: [
       { id: "t2", step: "任务二", status: "completed" },
@@ -1279,9 +1279,9 @@ test("plan_updated 更新通过同一 DOM key 移动节点，不创建第二张�
   assert.equal(group.querySelectorAll('[data-kind="plan"]').length, 1, "计划更新不创建第二张卡");
   const planRow = group.querySelector('[data-kind="plan"]');
   const tasks = [...planRow.querySelectorAll(".agent-plan-item")];
-  assert.deepEqual(tasks.map((el) => el.dataset.planId), ["t1", "t2", "t3"], "历史任务保留，新任务追加");
-  assert.deepEqual(tasks.map((el) => el.dataset.status), ["completed", "completed", "pending"]);
-  assert.equal(planRow.querySelector(".agent-plan__count").textContent, "2/3");
+  assert.deepEqual(tasks.map((el) => el.dataset.planId), ["t2", "t3"], "省略的 t1 消失，顺序 = 本次整表顺序");
+  assert.deepEqual(tasks.map((el) => el.dataset.status), ["completed", "pending"]);
+  assert.equal(planRow.querySelector(".agent-plan__count").textContent, "1/2", "计数按最后一次整表");
 });
 
 test("计划任务带 description 时展示补充说明", async () => {

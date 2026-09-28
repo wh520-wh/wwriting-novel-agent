@@ -3,7 +3,7 @@
 // 覆盖：
 //   - Step 1: turn-1 started -> plan 1/3 -> tool A -> plan 2/3 -> turn-2，
 //     最终 order 为 reasoning-1、tool-A、plan；plan 只有一个、sortSeq 等于
-//     第二次更新时间、内容仍包含全部任务。
+//     第二次更新时间、任务表按最后一次更新整表替换。
 //   - Step 3: 工具标签四态；折叠摘要用项目相对路径，无法确定时不伪造。
 //   - Step 4: 工作组展开默认值与终态耗时文案。
 //   - Step 5: 动效唯一性八条断言（brief 逐条 verbatim）。
@@ -46,7 +46,7 @@ function groupOf(work) {
   return work.groups.get("run-1");
 }
 
-test("Step 1: 有序投影 —— 最终 order 为 reasoning-1、tool-A、plan；plan 单一项、sortSeq=第二次更新时间、内容仍包含全部任务", () => {
+test("Step 1: 有序投影 —— 最终 order 为 reasoning-1、tool-A、plan；plan 单一项、sortSeq=第二次更新时间、任务表整表替换", () => {
   const work = reduceAll([
     ev("run_started", { workflow: "general", input_id: "in-1" }, 1),
     ev("model_turn_started", { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }, 2),
@@ -84,14 +84,20 @@ test("Step 1: 有序投影 —— 最终 order 为 reasoning-1、tool-A、plan�
   const planItem = planItems[0];
   assert.equal(planItem.firstSeq, 3, "plan firstSeq 保持首次出现位置");
   assert.equal(planItem.sortSeq, 5, "plan sortSeq 等于第二次更新时间");
-  // 内容仍包含全部任务：跨两次 plan_updated 按 task id 合并、绝不重复添加
+  // 整表替换（工具契约「全量替换整表」）：第二次更新省略 t1 → t1 从计划行消失，
+  // 顺序 = 本次 payload.items 的顺序（t2、t3、t4）。
   assert.deepEqual(
     planItem.plan.items.map((task) => task.id),
-    ["t1", "t2", "t3", "t4"]
+    ["t2", "t3", "t4"]
   );
   assert.deepEqual(
     planItem.plan.items.map((task) => [task.id, task.status]),
-    [["t1", "completed"], ["t2", "completed"], ["t3", "in_progress"], ["t4", "pending"]]
+    [["t2", "completed"], ["t3", "in_progress"], ["t4", "pending"]]
+  );
+  assert.deepEqual(
+    Object.keys(planItem.plan.items[0]).sort(),
+    ["id", "status", "step"],
+    "任务条目只投影 id/step/status（firstSeq/sortSeq 死字段已删除）"
   );
   assert.equal(planItem.plan.explanation, "继续修正冲突", "explanation 保持最新");
 
@@ -102,6 +108,28 @@ test("Step 1: 有序投影 —— 最终 order 为 reasoning-1、tool-A、plan�
   const tool = items.find((item) => item.id === "tool:a");
   assert.equal(tool.firstSeq, 4);
   assert.equal(tool.sortSeq, 4);
+});
+
+test("plan_updated 整表替换：同一 step id 省略 description 即清空", () => {
+  const work = reduceAll([
+    ev("run_started", { workflow: "general", input_id: "in-1" }, 1),
+    ev("plan_updated", {
+      explanation: "第一版",
+      items: [{ id: "t1", step: "检查已有章节", status: "in_progress", description: "先读索引" }]
+    }, 2),
+    ev("plan_updated", {
+      explanation: "第二版",
+      items: [
+        { id: "t1", step: "检查已有章节", status: "completed" },
+        { id: "t2", step: "提交结果", status: "pending", description: "写工作日志" }
+      ]
+    }, 3)
+  ]);
+  const plan = groupOf(work).items.get("plan:run-1").plan;
+  assert.deepEqual(plan.items, [
+    { id: "t1", step: "检查已有章节", status: "completed" },
+    { id: "t2", step: "提交结果", status: "pending", description: "写工作日志" }
+  ], "t1 的 description 省略即清空；本次带上的 description 保留");
 });
 
 test("Step 5: 动效唯一性 —— openWorkItemIds / visibleLiveTargets 八条断言", () => {

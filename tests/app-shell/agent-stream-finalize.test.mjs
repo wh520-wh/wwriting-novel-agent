@@ -187,3 +187,31 @@ test("第十二轮 F11：无 active_run 时 plan_updated 也投影顶层 plan", 
   reduceEvent(state, ev("plan_updated", { explanation: "", items: [] }, 2));
   assert.equal(state.plan, null, "空 items 后顶层 plan 收敛为 null");
 });
+
+test("计划整表替换：工作组计划行与顶层 plan 完全一致（数量、顺序、id、status、description）", () => {
+  const state = createState();
+  reduceEvent(state, ev("run_started", { workflow: "general", input_id: "in-1" }, 1));
+  reduceEvent(state, ev("plan_updated", {
+    explanation: "第一版",
+    items: [
+      { id: "t1", step: "核对已有章节", status: "completed", description: "先读索引" },
+      { id: "t2", step: "修正冲突", status: "in_progress" },
+      { id: "t3", step: "验证修改", status: "pending" }
+    ]
+  }, 2));
+  // 第二次整表替换：省略 t1、新增 t4（模型靠省略表达删除）
+  reduceEvent(state, ev("plan_updated", {
+    explanation: "第二版",
+    items: [
+      { id: "t2", step: "修正冲突", status: "completed" },
+      { id: "t3", step: "验证修改", status: "completed" },
+      { id: "t4", step: "提交结果", status: "pending", description: "写工作日志" }
+    ]
+  }, 3));
+
+  const rowPlan = state.work.groups.get("run-1").items.get("plan:run-1").plan;
+  const project = (plan) => ({ explanation: plan.explanation, items: plan.items.map((task) => [task.id, task.step, task.status, task.description]) });
+  assert.deepEqual(project(rowPlan), project(state.plan), "工作组计划行与顶栏 chip 同源同表");
+  assert.deepEqual(rowPlan.items.map((task) => task.id), ["t2", "t3", "t4"], "省略的 t1 两处同时消失，顺序 = 本次整表顺序");
+  assert.equal(rowPlan.items.length, state.plan.items.length, "数量一致（修复 2/4 与 1/2 分歧）");
+});
