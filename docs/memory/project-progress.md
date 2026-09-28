@@ -159,4 +159,4 @@
 - 双轴 code-review（Standards/Spec 子代理并行）：Spec 轴发现计划行裁剪回归（已修+负向验证）；Standards 轴 3 条文档/测试问题（已处理）
 - R1 红线：全库 0 越线；`work-group.mjs` 872 行/43089B、`work-items.mjs` 665 行/32995B、`state.js` 950 行/44071B（LF 归一）
 
-**欠账与限制（只记不排）**：① 工单 07 跨轮计划生命周期（needs-info：新输入后旧 chip 清空/保留/标上一轮，等口径裁决，对应统一书 §4.2）；② 工单 08 `search_files` 标签口径（needs-info：规格要「搜索「查询词」」vs 测试断言「query 不进标签」）；③ 四项明确不做并记录理由：失败文案行内+详情双显（碰字段顺序验收契约）、rev 跨 state 实例比较（生产路径必 reset，已契约化注释）、`activityToRun`/`turnToRun` 不回收、stopping 期间停止按钮可点（后端幂等）；④ web_search 特化分支当前不可达（注册表无此工具），来源行样式为规格预置（+363B）；⑤ round22 遗留 D23 三家 logo 不变。
+**欠账与限制（只记不排）**：① 工单 07 **已裁决并实现**（2026-09-28 口径 A：新 Run 清空 chip，沿用 F7/F11 口径；`state.js`+`index.js`+2 用例，统一书 §4.2 已定稿）；② 工单 08 **已裁决**（口径 B：维持「query 不进标签」，统一书 §4.3 已注记，无代码改动）；③ 四项明确不做并记录理由：失败文案行内+详情双显（碰字段顺序验收契约）、rev 跨 state 实例比较（生产路径必 reset，已契约化注释）、`activityToRun`/`turnToRun` 不回收、stopping 期间停止按钮可点（后端幂等）；④ web_search 特化分支当前不可达（注册表无此工具），来源行样式为规格预置（+363B）；⑤ round22 遗留 D23 三家 logo 不变。

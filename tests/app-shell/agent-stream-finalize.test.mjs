@@ -215,3 +215,22 @@ test("计划整表替换：工作组计划行与顶层 plan 完全一致（数�
   assert.deepEqual(rowPlan.items.map((task) => task.id), ["t2", "t3", "t4"], "省略的 t1 两处同时消失，顺序 = 本次整表顺序");
   assert.equal(rowPlan.items.length, state.plan.items.length, "数量一致（修复 2/4 与 1/2 分歧）");
 });
+
+test("工单 07 裁决（口径 A）：新 Run 清空上一轮计划，retry（同 id）保留", () => {
+  const state = createState();
+  reduceEvent(state, ev("run_started", { input_id: "in-1" }, 1));
+  reduceEvent(state, ev("plan_updated", { explanation: "第一轮", items: [{ id: "t1", step: "读", status: "in_progress" }] }, 2));
+  assert.ok(state.plan, "本轮计划在 chip 上");
+  reduceEvent(state, ev("run_completed", {}, 3));
+  assert.ok(state.plan, "Run 结束后计划保留供回看");
+  // 新 Run（不同 run_id）：清空上一轮计划，chip 隐藏到本轮 plan_updated
+  reduceEvent(state, ev("run_started", { input_id: "in-2" }, 4, { run_id: "run-2" }));
+  assert.equal(state.plan, null, "新 Run 开始即清空上一轮计划（工单 07 口径 A）");
+  reduceEvent(state, ev("plan_updated", { explanation: "第二轮", items: [{ id: "u1", step: "写", status: "pending" }] }, 5, { run_id: "run-2" }));
+  assert.ok(state.plan && state.plan.explanation === "第二轮", "本轮 plan_updated 到达再显示");
+  // retry：同 run_id 的 run_started 沿用同一任务，计划保留
+  reduceEvent(state, ev("run_failed", { error: "失败", code: "provider_error" }, 6, { run_id: "run-2" }));
+  assert.ok(state.plan, "失败终态后计划仍保留供回看");
+  reduceEvent(state, ev("run_started", { input_id: "in-2" }, 7, { run_id: "run-2" }));
+  assert.ok(state.plan, "retry（同 id）不清空计划");
+});

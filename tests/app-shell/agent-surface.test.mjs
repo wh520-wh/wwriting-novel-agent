@@ -5339,6 +5339,20 @@ test("第十一轮 B：切到无 plan 的会话，applySnapshot 以 null 通知 
   assert.equal(planCalls.at(-1), null, "无 plan 会话的快照必须以 null 通知（顶栏 chip 清空，不残留）");
 });
 
+test("工单 07 裁决（口径 A）：新 Run 的 run_started 以 null 通知 chip，清空上一轮计划", async () => {
+  const plans = [];
+  const { surface } = await makeSurface({ callbacks: { onPlanUpdated: (plan) => plans.push(plan) } });
+  await surface.openProject("D:\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() }), [
+    ev("run_started", { input_id: "in-1" }),
+    ev("plan_updated", { explanation: "第一轮", items: [{ id: "t1", step: "读", status: "in_progress" }] })
+  ]));
+  assert.ok(plans.at(-1), "本轮计划已通知 chip");
+  surface.applyEvent(ev("run_started", { input_id: "in-2" }, { run_id: "run-2" }));
+  assert.equal(plans.at(-1), null, "新 Run 开始即以 null 通知（chip 清空，不残留上一轮计划）");
+  surface.applyEvent(ev("plan_updated", { explanation: "第二轮", items: [{ id: "t2", step: "写", status: "pending" }] }, { run_id: "run-2" }));
+  assert.ok(plans.at(-1), "本轮 plan_updated 到达再通知");
+});
 test("第十一轮 A：composer 设置保存成功后通知 onDashboardRefresh（失败不通知）", async () => {
   const refreshes = [];
   const ok = await makeSurface({
