@@ -1129,6 +1129,21 @@
   color: var(--text-secondary);
 }
 
+/* AICSS 规格预置：web_search 未注册（src/core/agent/tools/index.mjs 无此工具）前不可达。 */
+.agent-search-site-title,
+.agent-search-site-url {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-search-site-url,
+.agent-search-sep {
+  color: var(--agent-work-meta-fg);
+  font-family: var(--mono);
+}
+
 .agent-search-bullet {
   display: inline-grid;
   place-items: center;
