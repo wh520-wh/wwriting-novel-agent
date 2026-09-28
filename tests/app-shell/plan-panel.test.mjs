@@ -226,3 +226,45 @@ test("AICSS 计划：条目图标为三态 SVG；计数变化触发滚动动画�
     "计数变化应触发滚动动画类"
   );
 });
+
+test("下拉内部点击不切换开关：点步骤行后仍展开", () => {
+  const { doc } = makeFakeDoc();
+  const panel = createPlanPanel({ doc });
+  panel.sync(ITEMS);
+  panel.chip.fire("click");
+  assert.equal(panel.dropdown.hidden, false);
+
+  // 下拉内的行：closest(".plan-dropdown") 命中（下拉是 chip 的子节点）
+  const row = panel.dropdown.children[0];
+  panel.chip.fire("click", { target: { closest: (sel) => (sel === ".plan-dropdown" ? row : null) } });
+  assert.equal(panel.dropdown.hidden, false, "下拉内部点击不应收起面板");
+  assert.equal(panel.chip.getAttribute("aria-expanded"), "true");
+});
+
+test("chip 本体点击仍切换开关；target 缺 closest 也不抛错", () => {
+  const { doc } = makeFakeDoc();
+  const panel = createPlanPanel({ doc });
+  panel.sync(ITEMS);
+
+  panel.chip.fire("click", { target: { closest: () => null } });
+  assert.equal(panel.dropdown.hidden, false, "chip 本体点击应展开");
+
+  panel.chip.fire("click", { target: panel.chip }); // 目标即 chip：桩元素没有 closest 方法
+  assert.equal(panel.dropdown.hidden, true, "chip 本体再次点击应收起");
+
+  panel.chip.fire("click", { target: undefined }); // 防御路径：缺 target 不抛错
+  assert.equal(panel.dropdown.hidden, false);
+  assert.equal(panel.chip.getAttribute("aria-expanded"), "true");
+});
+
+test("外部点击仍关闭（handleOutsideClick 语义不变）", () => {
+  const { doc } = makeFakeDoc();
+  const panel = createPlanPanel({ doc });
+  panel.sync(ITEMS);
+  panel.chip.fire("click");
+  assert.equal(panel.dropdown.hidden, false);
+
+  panel.handleOutsideClick({ target: { closest: () => null } });
+  assert.equal(panel.dropdown.hidden, true);
+  assert.equal(panel.chip.getAttribute("aria-expanded"), "false");
+});
