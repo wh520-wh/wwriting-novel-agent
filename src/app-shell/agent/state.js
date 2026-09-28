@@ -70,7 +70,7 @@ export function createState() {
     plan: null,             // 第九轮：顶层计划投影（plan_updated → { explanation, items }），供 plan-panel chip 消费
     // 第九轮：系统通知行投影（chapter_rolled_back / memory_file_restored → timeline）。
     systemNotices: [],      // [{ seq, type, payload }]
-    revisions: { messages: 0, run: 0, queue: 0, decisions: 0, errors: 0, context: 0, notices: 0, plan: 0 }
+    revisions: { messages: 0, run: 0, queue: 0, decisions: 0, errors: 0, context: 0, notices: 0 }
   };
 }
 
@@ -490,7 +490,7 @@ function handlePlanUpdated(state, payload) {
     state.plan = planItems.length === 0
       ? null
       : { explanation: typeof payload.explanation === "string" ? payload.explanation : null, items: planItems };
-    bump(state, ["plan"]);
+    // 无 revisions.plan：chip 同步由 index.js 按 plan_updated 事件直连 onPlanUpdated。
   }
 }
 
@@ -885,7 +885,7 @@ function rebuildDerivedState(state) {
   // 第九轮：系统通知行同样由事件重放重建。
   state.systemNotices = [];
   for (const event of events) applyEventToState(state, event);
-  bump(state, ["messages", "run", "queue", "decisions", "errors", "context", "notices", "plan"]);
+  bump(state, ["messages", "run", "queue", "decisions", "errors", "context", "notices"]);
 }
 
 // 新 Run（或恢复的 Run）认领活动输入：从队列移除（镜像 journal activateInput）。

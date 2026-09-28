@@ -305,29 +305,6 @@ function appendToolOutput(item, text) {
   }
 }
 
-// 计划任务按 id 合并（计划 §0.2"绝不重复添加" + Task 5 Step 1"内容仍包含全部任务"）：
-// 同一 task id 更新内容并移动到列表最新位置；不在本次更新中的历史任务保留。
-function mergePlanTasks(stored, incoming, seq) {
-  const byId = new Map(stored.map((task) => [task.id, task]));
-  for (const incomingTask of incoming) {
-    if (incomingTask == null || typeof incomingTask.id !== "string") continue;
-    const existing = byId.get(incomingTask.id);
-    if (existing) {
-      existing.step = incomingTask.step;
-      existing.status = incomingTask.status;
-      if (incomingTask.description !== undefined) existing.description = incomingTask.description;
-      existing.sortSeq = seq;
-      stored.splice(stored.indexOf(existing), 1);
-      stored.push(existing);
-    } else {
-      const task = { id: incomingTask.id, step: incomingTask.step, status: incomingTask.status, firstSeq: seq, sortSeq: seq };
-      if (incomingTask.description !== undefined) task.description = incomingTask.description;
-      stored.push(task);
-      byId.set(task.id, task);
-    }
-  }
-}
-
 export function reduceWorkEvent(work, event) {
   if (!event || typeof event !== "object" || event.run_id == null) return;
   const runId = event.run_id;
@@ -529,7 +506,16 @@ export function reduceWorkEvent(work, event) {
         item.sortSeq = seq; // 计划移动到最新位置
       }
       if (typeof payload.explanation === "string") item.plan.explanation = payload.explanation;
-      mergePlanTasks(item.plan.items, payload.items, seq);
+      // 计划任务整表替换（工具契约「全量替换整表」，模型靠省略表达删除；与核心
+      // journal-handlers 的归一化同形）：按本次 payload.items 的顺序整表重建——
+      // 被省略的步骤立即消失；description 仅在是字符串时带上（省略即清空）。
+      item.plan.items = payload.items
+        .filter((task) => task != null && typeof task.id === "string")
+        .map((task) => {
+          const entry = { id: task.id, step: task.step, status: task.status };
+          if (typeof task.description === "string") entry.description = task.description;
+          return entry;
+        });
       group.sortSeq = seq;
       break;
     }
