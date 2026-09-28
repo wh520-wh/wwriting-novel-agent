@@ -2345,6 +2345,7 @@ input.spd-input[type="number"] { max-width: 160px; }
   font-size: var(--font-xs); font-weight: var(--weight-semibold); letter-spacing: 0;
   color: var(--text-muted); background: transparent;
   border-radius: 0; padding: 0;
+  white-space: nowrap; /* 来源徽标防挤压竖排（同 .ch-state 约定，2026-09-28） */
 }
 .spd-skill-desc {
   margin-top: 2px; font-size: var(--font-xs); line-height: 1.5;
