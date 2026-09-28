@@ -107,6 +107,9 @@ export function createPlanPanel({ doc = document }) {
 
   chip.addEventListener("click", (event) => {
     event.stopPropagation();
+    // 下拉挂在 chip 内部，内部点击（选中/复制步骤行文本）会冒泡到这里，不得切换开关。
+    // closest 走可选调用：调用方（含测试桩）可能缺 target 或目标没有 closest。
+    if (event?.target?.closest?.(".plan-dropdown")) return;
     setOpen(!open);
   });
 
