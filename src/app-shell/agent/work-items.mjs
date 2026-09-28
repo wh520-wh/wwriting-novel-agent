@@ -84,9 +84,19 @@ const TOOL_BASE_LABELS = {
   shell: "运行命令",
   list_files: "查看文件列表",
   search_files: "搜索文件",
+  // 2026-09-28 补齐 7 个注册工具（knowledge/chapter 域）：count_text 统计客观字数、
+  // style_stats 客观风格指标、read_continuity 返回前情简报、update_memory 合并进设定档案、
+  // finalize_revision 是「入账」事务、rollback_chapter 回滚版本。
+  read_skill: "读取技能",
+  count_text: "统计字数",
+  style_stats: "统计文风",
+  read_continuity: "读取前情",
+  update_memory: "更新设定",
   update_plan: "更新任务计划",
   append_chapter_segment: "写入章节内容",
   commit_chapter: "提交章节",
+  finalize_revision: "入账章节",
+  rollback_chapter: "回滚章节",
   web_search: "搜索"
 };
 

@@ -746,3 +746,24 @@ test("F15: thinking_ms 超 24h 时钟前跳被丢弃", () => {
   reduceWorkEvent(work, ev("reasoning_completed", { turn_id: "t", text: "x" }, 2, { at: "2026-08-28T00:00:01Z" }));
   assert.equal(work.groups.get("run-1").items.get("reasoning:t").thinking_ms, null);
 });
+
+// 2026-09-28：注册表 7 个工具补齐中文短标签，过程反馈不再暴露内部英文工具名。
+test("工具标签补齐：7 个注册工具三态文案；未知/空名兜底不变", () => {
+  const cases = [
+    ["read_skill", "读取技能"],
+    ["count_text", "统计字数"],
+    ["style_stats", "统计文风"],
+    ["read_continuity", "读取前情"],
+    ["update_memory", "更新设定"],
+    ["finalize_revision", "入账章节"],
+    ["rollback_chapter", "回滚章节"]
+  ];
+  for (const [tool, base] of cases) {
+    assert.equal(toolLabel(tool, "running"), `正在${base}`, `${tool} running`);
+    assert.equal(toolLabel(tool, "completed"), `已${base}`, `${tool} completed`);
+    assert.equal(toolLabel(tool, "failed"), `${base}失败`, `${tool} failed`);
+  }
+  // 兜底行为不变：未注册/空名不得拼出 undefined
+  assert.equal(toolLabel("whatever", "running"), "正在调用 whatever");
+  assert.equal(toolLabel(undefined, "running"), "正在调用 ");
+});

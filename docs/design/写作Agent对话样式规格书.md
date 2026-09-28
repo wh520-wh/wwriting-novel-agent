@@ -108,9 +108,18 @@
 | enter_workflow | `切换工作流` |
 | append_chapter_segment | `写入章节内容` |
 | commit_chapter | `提交章节` |
+| read_skill | `读取技能` |
+| count_text | `统计字数` |
+| style_stats | `统计文风` |
+| read_continuity | `读取前情` |
+| update_memory | `更新设定` |
+| finalize_revision | `入账章节` |
+| rollback_chapter | `回滚章节` |
 | commit_blueprint | `提交蓝图` |
 | 其他 | `工具 <name>` / `调用工具中` |
 | web_search | 搜索状态渲染（查询 shimmer 头 + 来源逐个转圈变勾） |
+
+- （记录于 2026-09-28）上表补齐注册表内 7 个工具：清单来自 src/core/agent/tools/definitions-knowledge.mjs 与 definitions-chapter.mjs；标签文案由 src/app-shell/agent/work-items.mjs 的 TOOL_BASE_LABELS 提供。
 
 - 标记：运行中 `•` / 完成 `✓` / 失败 `✗` / 已停止（取消类错误码 tool_cancelled、shell_cancelled）`已停止`。
 - 点击行头展开折叠详情，字段顺序固定：**参数 → 命令 → 目录 → 退出码 → 耗时 → 错误**；输出区保留最后 64 KiB，截断前置 `（输出过长已截断）`。
