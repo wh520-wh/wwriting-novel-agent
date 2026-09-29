@@ -8,7 +8,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createEventRenderer, createRenderer, displayWidth, formatCacheHit, formatThinkingSeconds, formatUsage, padDisplayEnd, PROSE_INDENT, proseRowWidth, terminalStatusText, thinkingPreviewLines, thinkingPreviewWidth, userRows } from '../../src/terminal/renderer.mjs';
+import { clipToWidth, createEventRenderer, createRenderer, displayWidth, formatCacheHit, formatThinkingSeconds, formatUsage, padDisplayEnd, PROSE_INDENT, proseRowWidth, terminalStatusText, thinkingPreviewLines, thinkingPreviewWidth, userRows } from '../../src/terminal/renderer.mjs';
 import { screenText } from '../helpers/screen.mjs';
 import { VERSION, versionLine } from '../../src/version.mjs';
 import { createRunController } from '../../src/agent/run-controller.mjs';
@@ -958,6 +958,16 @@ test('thinkingPreviewLines：换行分支漏出的超宽长行在出口截到终
   assert.ok(displayWidth(lines[0]) <= 79, `实时行 ${displayWidth(lines[0])} 列，会把首格留进 scrollback`);
   // 放得下的行一个字都不动
   assert.equal(thinkingPreviewLines(['主角为什么不肯离开'], { columns: 80 })[0], '思考中 · 主角为什么不肯离开');
+});
+
+test('clipToWidth：按显示宽度截断，宽字符与代理对绝不劈半（复核补测）', () => {
+  // 这些宽度算术是 6/7 两条修复的地基,直接钉死:恰好整行、奇数宽挤不下双列字、
+  // 代理对(𠀋 U+2000B,宽度表 0x20000–0x3fffd)整体保留。
+  assert.equal(clipToWidth('雨'.repeat(45), 70), '雨'.repeat(35), '恰好 70 列整行');
+  assert.equal(displayWidth(clipToWidth('雨'.repeat(45), 71)), 70, '第 36 个字放不下(72 > 71),整字让出');
+  assert.equal(clipToWidth('𠀋'.repeat(5), 5), '𠀋'.repeat(2), '代理对整体保留,绝不留半个高代理位');
+  assert.equal(clipToWidth('短短一行', 70), '短短一行', '放得下一个字都不动');
+  assert.equal(clipToWidth('任意', 0), '', '宽度非法时给空串,绝不吐原文');
 });
 
 test('printThinkingPreview：只在攒满一整行时才重绘（流式逐字到达不会把 readline 按住反复重排）', () => {
