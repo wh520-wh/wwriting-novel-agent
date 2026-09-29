@@ -308,7 +308,10 @@ export function createFileTools({ projectRoot, signal = null, permissions = null
         occurrences,
       });
     }
-    const next = replaceAll ? original.split(oldText).join(newText) : original.replace(oldText, newText);
+    // split/join 是字面量替换；String.replace 的替换串会把 $$/$&/$`/$' 当替换模式解释，
+    // 单处与全替换就会落盘成两种内容（project-memory 的 R10 同因）。走到这里 occurrences ≥ 1，
+    // 且非全替换时 occurrences === 1，split/join 与「只换一处」逐字等价。
+    const next = original.split(oldText).join(newText);
     throwIfAborted();
     const counted = countText({ text: next });
     await atomicWrite(abs, next);
