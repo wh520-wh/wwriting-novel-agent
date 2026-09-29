@@ -27,6 +27,8 @@ import { createEffortState } from './model/effort.mjs';
 import { createEventRenderer, createRenderer } from './terminal/renderer.mjs';
 import { printReplay } from './terminal/replay.mjs';
 import { createInputReader, isInteractiveTerminal, readOneLine } from './terminal/input.mjs';
+// 让位持有计数：嵌套让位（向导期间来确认卡）只在最外层动终端，键不会被两个读取者同时消费。
+import { createInputYielder } from './terminal/input-yield.mjs';
 // sessionRowLabel 在命令层只有一处定义：/sessions 与 `/resume` 的挑选列表共用它——
 // 时间、状态、轮数三栏因此不会在「查看」与「挑选」两处各说一套。
 // DECISION_CHOICES 是普通确认三个选项的唯一来源：选择器的 items 就从它长出来（铁律 11）。
@@ -130,14 +132,9 @@ export async function main(
   // suspend() 挂在 try **内部**是刻意的：它自己也可能抛（终端已关 / 流被锁），
   // 放在 try 外面就会跳过 finally 的 resume。选择器 ask() 在拿不到 TTY 时返回 null，
   // 不会静默替用户做选择。
-  async function withInputSuspended(task) {
-    try {
-      input.suspend();
-      return await task();
-    } finally {
-      input.resume();
-    }
-  }
+  // 嵌套（向导让位期间来一张确认卡）由持有计数兜住：只有最外层动终端，否则内层的
+  // resume 会真建第二个 readline，同一份按键被两个读取者消费（缺陷猎捕报告 4）。
+  const { withInputSuspended } = createInputYielder({ input });
 
   let pickingDecision = false; // 重入保护：同一时刻只开一个选择器，一条待确认只答一次
   const onDecision = decisionSelector.canAsk

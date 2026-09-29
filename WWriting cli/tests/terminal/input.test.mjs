@@ -9,6 +9,7 @@ import * as inputModule from '../../src/terminal/input.mjs';
 import {
   createInputReader, detectMinTTY, isInteractiveTerminal, readOneLine,
 } from '../../src/terminal/input.mjs';
+import { createInputYielder } from '../../src/terminal/input-yield.mjs';
 import { createRenderer } from '../../src/terminal/renderer.mjs';
 import { screenText } from '../helpers/screen.mjs';
 
@@ -386,6 +387,56 @@ test('setLive 收到与屏幕上相同的一份时不重绘（思考预览会推
   assert.equal(stdout.chunks.length, writes, '同一份内容不产生任何写出');
 
   reader.stop();
+});
+
+test('让位持有计数：嵌套让位只在最外层动终端（缺陷猎捕报告 4）', async () => {
+  const calls = [];
+  const fakeInput = {
+    suspend: () => calls.push('suspend'),
+    resume: () => calls.push('resume'),
+  };
+  const { withInputSuspended } = createInputYielder({ input: fakeInput });
+  const order = [];
+  const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+  // /model 向导让位期间，权限确认卡又到达一次：嵌套的 withInputSuspended。
+  await withInputSuspended(async () => {
+    order.push('outer-begin');
+    const inner = withInputSuspended(async () => {
+      order.push('inner-begin');
+      await tick();
+      order.push('inner-end');
+    });
+    await tick();
+    await inner;
+    order.push('outer-end');
+  });
+
+  // 内层既不 suspend（幂等无所谓）也不 resume（resume 不幂等——会真建第二个 readline）。
+  assert.deepEqual(calls, ['suspend', 'resume']);
+  assert.deepEqual(order, ['outer-begin', 'inner-begin', 'inner-end', 'outer-end']);
+});
+
+test('让位持有计数：内层抛错也不多还、不早还终端', async () => {
+  const calls = [];
+  const fakeInput = {
+    suspend: () => calls.push('suspend'),
+    resume: () => calls.push('resume'),
+  };
+  const { withInputSuspended } = createInputYielder({ input: fakeInput });
+  const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+  await withInputSuspended(async () => {
+    await assert.rejects(
+      () => withInputSuspended(async () => {
+        await tick();
+        throw new Error('内层失败');
+      }),
+      /内层失败/,
+    );
+    assert.deepEqual(calls, ['suspend'], '内层失败时不许把终端还给常驻输入');
+  });
+  assert.deepEqual(calls, ['suspend', 'resume']);
 });
 
 test('非交互（管道）：不画任何框线，也不多写换行', async () => {
