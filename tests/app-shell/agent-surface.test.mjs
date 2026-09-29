@@ -5342,7 +5342,7 @@ test("第十一轮 B：切到无 plan 的会话，applySnapshot 以 null 通知 
 test("工单 07 裁决（口径 A）：新 Run 的 run_started 以 null 通知 chip，清空上一轮计划", async () => {
   const plans = [];
   const { surface } = await makeSurface({ callbacks: { onPlanUpdated: (plan) => plans.push(plan) } });
-  await surface.openProject("D:\novel");
+  await surface.openProject("D:\\novel");
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() }), [
     ev("run_started", { input_id: "in-1" }),
     ev("plan_updated", { explanation: "第一轮", items: [{ id: "t1", step: "读", status: "in_progress" }] })
@@ -5353,6 +5353,7 @@ test("工单 07 裁决（口径 A）：新 Run 的 run_started 以 null 通知 c
   surface.applyEvent(ev("plan_updated", { explanation: "第二轮", items: [{ id: "t2", step: "写", status: "pending" }] }, { run_id: "run-2" }));
   assert.ok(plans.at(-1), "本轮 plan_updated 到达再通知");
 });
+
 test("第十一轮 A：composer 设置保存成功后通知 onDashboardRefresh（失败不通知）", async () => {
   const refreshes = [];
   const ok = await makeSurface({

@@ -216,10 +216,12 @@ export function createAgentSurface({
     if (!event || typeof event !== "object") return;
     reduceEvent(state, event);
     view.render(state, actions);
-    if (event.type === "plan_updated") onPlanUpdated(state.plan);
-    // 工单 07 裁决（口径 A）：新 Run 清空上一轮计划后必须通知 chip，否则顶栏
-    // 在本轮 plan_updated 到达前一直挂旧计划；retry（同 id）计划保留，通知同值无害。
-    if (event.type === "run_started") onPlanUpdated(state.plan);
+    // 工单 07 裁决（口径 A，2026-09-28）：新 Run 开始会清空 state.plan，必须同样
+    // 同步 chip，否则本轮 plan_updated 到达前顶栏一直挂上一轮计划。retry（同 id）
+    // 计划未变（state.plan 仍非空）→ 跳过：plan-panel.sync 对非空计划整表重渲。
+    if (event.type === "plan_updated" || (event.type === "run_started" && state.plan === null)) {
+      onPlanUpdated(state.plan);
+    }
     // 第十二轮 E：run 状态变化（含 waiting_user 等非终态）事件驱动侧边栏轻量刷新
     // ——读时失效模式（app.js 重拉会话列表，状态点随新 run_status 更新；不重渲面板）。
     if (event.type === "run_status_changed" && event.payload?.status != null) {
