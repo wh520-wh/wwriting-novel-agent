@@ -1159,6 +1159,27 @@ test('这一轮没有思考时 lastReasoning 是 null（不是空数组）', () 
   assert.equal(bridge.lastReasoning(), null);
 });
 
+test('上一轮没思考时不得重放更早那一轮的思考（猎捕报告 9）', () => {
+  // 跑 1 有思考 → /effort none → 跑 2 无思考 → /reasoning：回退到跑 1 的思考
+  // 会让用户把它当成刚才那份回答的推理——正是比不回答更糟的假事实。
+  const stdout = makeStdout({ tty: false });
+  const renderer = createRenderer({ stdout, env: { NO_COLOR: '1' } });
+  const bridge = createEventRenderer({ renderer });
+
+  bridge.handleEvent({ type: 'run_started', at: '2026-09-29T00:00:00.000Z', data: { text: 'a' } });
+  bridge.handleEvent({
+    type: 'reasoning_completed', at: '2026-09-29T00:00:05.000Z',
+    data: { text: '第一轮的思考', started_at: '2026-09-29T00:00:00.000Z', chars: 6 },
+  });
+  bridge.handleEvent({ type: 'run_completed', at: '2026-09-29T00:00:06.000Z', data: { text: '一。' } });
+  assert.deepEqual(bridge.lastReasoning(), [{ text: '第一轮的思考', durationMs: 5000 }]);
+
+  // 第二轮：没有任何思考行
+  bridge.handleEvent({ type: 'run_started', at: '2026-09-29T00:01:00.000Z', data: { text: 'b' } });
+  bridge.handleEvent({ type: 'run_completed', at: '2026-09-29T00:01:05.000Z', data: { text: '二。' } });
+  assert.equal(bridge.lastReasoning(), null, '上一轮没思考就答没有，不回退到更早那一轮');
+});
+
 test('printReasoning 灰显直出全文，不做 Markdown', () => {
   const stdout = makeStdout({ tty: false });
   const renderer = createRenderer({ stdout, env: { NO_COLOR: '1' } });

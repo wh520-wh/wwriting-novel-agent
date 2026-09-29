@@ -1107,7 +1107,10 @@ export function createEventRenderer({ renderer, label = activityLabel, onDecisio
   // 「刚跑完就 /reasoning」是最常见的路径，那一刻 currentRunReasoning 还没被下一轮换掉。
   function lastReasoning() {
     if (runInFlight) return lastRunReasoning;
-    return currentRunReasoning.length > 0 ? currentRunReasoning : lastRunReasoning;
+    // 上一轮没思考就答没有（缺陷猎捕报告 9）：回退到 lastRunReasoning 会把更早那一轮的
+    // 思考重放出来——/effort none 或换到不回 reasoning_content 的端点之后，用户会把
+    // 第一次跑的思考当成刚才那份回答的推理。回退成 null，命令层走 empty 态。
+    return currentRunReasoning.length > 0 ? currentRunReasoning : null;
   }
 
   return { handleEvent, wrapEventStoreFactory, lastReasoning };
