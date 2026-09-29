@@ -1,0 +1,5 @@
+# 首发平台是 Windows：批处理与 PowerShell 脚本必须以 CRLF 检出。
+# .bat 用 LF 结尾时 cmd 对个别结构的解析会出错；这里只钉这两个扩展名，
+# 不做整树 renormalize（避免一次性刷出大量无关的行尾改动）。
+*.bat text eol=crlf
+*.ps1 text eol=crlf
