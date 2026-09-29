@@ -51,6 +51,32 @@ export function createSessionManager({
     return path.join(workspaceStore.directoryFor(projectRoot, 'locks'), sessionId);
   }
 
+  // 会话 ID 的入口校验（宽松口径：只禁危险字符，不强制 UUID 形状）。
+  // ID 会原样进 path.join 的尾部，而 sessions 与 locks 是同级兄弟目录：含分隔符或「..」的
+  // ID 会把锁路径归一化成会话目录本身，锁抢占按 mtime 判 stale 后会把整个会话目录改名搬走
+  // （缺陷猎捕报告第 2 条）。正常来源（randomUUID、list() 回填、选择器）不会命中任何禁令；
+  // 控制字符一并禁掉，错误文案才不会把转义序列写进终端。
+  function assertUsableSessionId(sessionId) {
+    if (typeof sessionId !== 'string' || sessionId === '') {
+      throw new Error('会话 ID 不能为空。');
+    }
+    if (sessionId.length > 128) {
+      throw new Error(`会话 ID 过长（${sessionId.length} 字符，上限 128）。`);
+    }
+    for (let i = 0; i < sessionId.length; i += 1) {
+      const ch = sessionId[i];
+      if (sessionId.charCodeAt(i) < 32 || sessionId.charCodeAt(i) === 127) {
+        throw new Error(`会话 ID 含有不允许的控制字符（码位 ${sessionId.charCodeAt(i)}）。`);
+      }
+      if (ch === '/' || ch === '\\' || ch === ':') {
+        throw new Error(`会话 ID 含有不允许的字符：「${ch}」。`);
+      }
+    }
+    if (sessionId.includes('..')) {
+      throw new Error('会话 ID 不能包含「..」。');
+    }
+  }
+
   async function hasEventLog(sessionDir) {
     try {
       await stat(path.join(sessionDir, 'events.jsonl'));
@@ -214,9 +240,7 @@ export function createSessionManager({
   }
 
   async function openById(projectRoot, sessionId) {
-    if (typeof sessionId !== 'string' || sessionId === '') {
-      throw new Error('会话 ID 不能为空。');
-    }
+    assertUsableSessionId(sessionId);
     await workspaceStore.ensure(projectRoot);
     const sessionDir = sessionDirFor(projectRoot, sessionId);
     if (!(await hasEventLog(sessionDir))) {
