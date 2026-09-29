@@ -81,6 +81,34 @@ test('create 新建会话：目录布局、写锁与初始投影', async () => {
   assert.equal(existsSync(lockDir), false);
 });
 
+test('openById 拒绝路径式会话 ID：报错且会话目录原封不动（缺陷猎捕报告 2）', async () => {
+  // 含 .. 或分隔符的 ID 会让锁路径 path.join 归一化成会话目录本身：
+  // mkdir 撞 EEXIST → 按 mtime 判 stale → rename 把整个会话目录（events.jsonl + state.json）搬走。
+  // 校验必须在任何文件系统访问之前。倒填目录 mtime 越过 30 s 的 stale 阈值，让锁抢占真会发生。
+  const root = await makeTempRoot('wwwriting-mgr-badid-');
+  const projectRoot = path.join(root, 'novel');
+  const manager = makeManager(root);
+  const session = await manager.create(projectRoot, { title: '长夜灯' });
+  await session.close();
+  const sessionsDir = path.join(root, 'WWriting', 'workspaces', workspaceIdForPath(projectRoot), 'sessions');
+  const sessionDir = path.join(sessionsDir, session.sessionId);
+  const past = new Date(Date.now() - 3_600_000);
+  await fs.utimes(sessionDir, past, past);
+  const before = await fs.readdir(sessionsDir);
+
+  for (const bad of ['../sessions/id-1', '..', 'a/b', 'a\\b', 'id\x01', `x${'y'.repeat(130)}`]) {
+    await assert.rejects(() => manager.openById(projectRoot, bad), (error) => {
+      assert.match(error.message, /会话 ID/);
+      return true;
+    });
+  }
+
+  assert.deepEqual(await fs.readdir(sessionsDir), before);
+  const reopened = await manager.openById(projectRoot, session.sessionId);
+  assert.equal(reopened.sessionId, session.sessionId);
+  await reopened.close();
+});
+
 test('openById 打开已有会话；会话不存在或 ID 非法报中文错误', async () => {
   const root = await makeTempRoot('wwriting-mgr-openbyid-');
   const projectRoot = path.join(root, 'novel');
