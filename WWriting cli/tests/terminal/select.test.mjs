@@ -177,3 +177,29 @@ test('ask：非交互或没有选项时不假装能选，直接返回 null', asy
   const interactive = createSelector({ stdin: makeFakeStdin(), stdout: makeSink(), env: {} });
   assert.equal(await interactive.ask({ items: [] }), null);
 });
+
+test('redrawBlock 用上一块的高度上移：块高摆动时不再吃掉菜单上方一行（猎捕报告 10）', async () => {
+  // 15 项 / 窗口 10：块高随「上面还有 N 项」「下面还有 M 项」的出现消失在 12↔13 间摆动。
+  // 块尾锚在光标处、动的是顶边——上移量必须等于**上一块**的高度；用新块高度，
+  // 块变高时多吃上方一行，块变矮时残留块顶一行。
+  const stdout = makeSink();
+  const stdin = makeFakeStdin();
+  const selector = createSelector({ stdin, stdout, env: { NO_COLOR: '1' } });
+  const items = Array.from({ length: 15 }, (_, i) => ({ id: `i${i}`, label: `第 ${i} 项` }));
+  const heightAt = (selected) => menuLines({ items, selected, maxRows: 10 }).length;
+
+  const pending = selector.ask({ items, hint: null });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const expected = [];
+  for (let selected = 0; selected < 14; selected += 1) {
+    expected.push(heightAt(selected)); // 从 selected 移到 selected+1：上移量 = 当前块高
+    press(stdin, 'down');
+  }
+  const duringMoves = stdout.text(); // 回车前截取：排除收尾 collapse 的那次 cursorUp
+  press(stdin, 'return');
+  await pending;
+
+  const ups = [...duringMoves.matchAll(/\x1b\[(\d+)A/g)].map((match) => Number(match[1]));
+  assert.deepEqual(ups, expected, `每次重绘的上移量必须等于上一块高度：${JSON.stringify(ups)}`);
+});
