@@ -710,6 +710,28 @@ test('history_applied 用调用方传入的 historyMeta：截断数如实透传'
   assert.deepEqual(applied.data, { kept_turns: 1, truncated_turns: 7, chars: 8 });
 });
 
+test('history 整段被截没（messages 空但 truncatedTurns > 0）仍要发 history_applied（猎捕报告 8）', async () => {
+  // 最新一轮输入本身超预算时 buildHistoryMessages 返回空数组、truncatedTurns = N：
+  // 模型以零上下文开工，「省略了 N 轮」恰恰是这一轮唯一要说的事实，不发就是一轮静默失忆。
+  const { projectRoot, store, permissions, model } = await setup({
+    prefix: 'wwriting-loop-history-emptied-',
+    script: [{ deltas: ['从头写。'] }],
+  });
+  const loop = makeLoop({ model, store, permissions });
+
+  const result = await loop.run({
+    projectRoot, sessionId: 'sess-1', inputId: 'in-9', text: '写第一章',
+    history: [], historyMeta: { keptTurns: 0, truncatedTurns: 5, chars: 0 },
+  });
+
+  assert.equal(result.status, 'completed');
+  const applied = (await readEvents(store)).find((event) => event.type === 'history_applied');
+  assert.ok(applied, '整段历史被截没时必须发 history_applied，否则用户看到的是正常回答');
+  assert.deepEqual(applied.data, { kept_turns: 0, truncated_turns: 5, chars: 0 });
+  // 模型仍然以零上下文开工（截断是既定语义，这里只修「如实呈现」）。
+  assert.deepEqual(model.calls[0].messages.map((message) => message.role), ['system', 'user']);
+});
+
 test('超长历史：截断后送模型的 messages 在预算内，且 truncated_turns > 0', async () => {
   const { projectRoot, store, permissions, model } = await setup({
     prefix: 'wwriting-loop-history-budget-',

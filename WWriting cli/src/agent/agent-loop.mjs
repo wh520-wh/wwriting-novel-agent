@@ -274,7 +274,11 @@ export function createAgentLoop({
     }
     // 缺省为空数组 → messages 与既有行为逐字一致（本条是兼容约束，不是优化）。
     const priorMessages = Array.isArray(history) ? history : [];
-    const historyData = priorMessages.length > 0 ? historyMetaOf(priorMessages, historyMeta) : null;
+    // 「有没有前情可说」看的是历史本身，不是留下来的条数（缺陷猎捕报告 8）：
+    // 最新一轮输入自己超预算时 buildHistoryMessages 返回空数组但 truncatedTurns > 0，
+    // 模型以零上下文开工——「省略了 N 轮」恰恰是这一轮唯一要说的事实。
+    const hasHistoryStory = priorMessages.length > 0 || (historyMeta?.truncatedTurns ?? 0) > 0;
+    const historyData = hasHistoryStory ? historyMetaOf(priorMessages, historyMeta) : null;
     const runId = `run_${String(idFactory())}`;
     const startedAt = new Date(clock()).toISOString();
 
