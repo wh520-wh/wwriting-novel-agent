@@ -510,3 +510,44 @@ test('suspend/resume 承接半行草稿：光标停在行中时回到原位（�
   reader.stop();
   stdin.end();
 });
+
+test('长输入折行后，擦除按物理行数上移，不把输入行留一半在屏上（缺陷猎捕报告 5）', async () => {
+  const stdin = makeFakeTTY();
+  const stdout = makeSink({ tty: true });
+  const reader = createInputReader({ stdin, stdout, env: {}, onSubmit: () => {} });
+  reader.start();
+  await tick();
+
+  // 提示符 2 列 + 80 列汉字 = 82 列 → 在 80 列终端折成 2 格物理行
+  stdin.write('汉'.repeat(40));
+  await tick();
+
+  const before = stdout.chunks.length;
+  reader.composer.takeArea(); // 渲染器写 scrollback 前让位：这里触发 eraseArea
+  const seq = stdout.chunks.slice(before).join('');
+  // 擦除要上移「实时行 0 + 输入物理行 2」= 2 格；旧实现写死 1，\x1b[0J 从块中间开抹，
+  // 重复的输入行与游离框线会永久留在屏幕上。
+  assert.match(seq, /\r\x1b\[2A\x1b\[0J/, `擦除序列应为上移 2 格，实际：${JSON.stringify(seq)}`);
+
+  reader.stop();
+  stdin.end();
+});
+
+test('未折行的短输入，擦除仍上移 1 格（回归：折行修复不得影响常规路径）', async () => {
+  const stdin = makeFakeTTY();
+  const stdout = makeSink({ tty: true });
+  const reader = createInputReader({ stdin, stdout, env: {}, onSubmit: () => {} });
+  reader.start();
+  await tick();
+
+  stdin.write('写第一章');
+  await tick();
+
+  const before = stdout.chunks.length;
+  reader.composer.takeArea();
+  const seq = stdout.chunks.slice(before).join('');
+  assert.match(seq, /\r\x1b\[1A\x1b\[0J/, `擦除序列应为上移 1 格，实际：${JSON.stringify(seq)}`);
+
+  reader.stop();
+  stdin.end();
+});

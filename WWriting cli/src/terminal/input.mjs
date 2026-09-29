@@ -196,10 +196,22 @@ export function createInputReader({
     return lines;
   }
 
+  // 光标停在输入行折行后的第几格物理行上（1 基）。与 cursorColumn 同一套显示宽度算术
+  // 与迟滞语义：used 落在整行边界上时光标还留在上一格。
+  function inputCursorRow() {
+    const columns = Number.isFinite(stdout.columns) && stdout.columns > 0 ? Math.floor(stdout.columns) : 80;
+    const line = typeof rl?.line === 'string' ? rl.line : '';
+    const cursor = Number.isInteger(rl?.cursor) ? Math.min(Math.max(0, rl.cursor), line.length) : line.length;
+    const used = plainPromptWidth() + displayWidth(line.slice(0, cursor));
+    return Math.floor(Math.max(0, used - 1) / columns) + 1;
+  }
+
   // 擦掉整个输入区（含实时行），光标停在输入区原来的第一行——之后要么写 scrollback，要么重画输入区。
   function eraseArea() {
     if (!areaDrawn || rl === null) return;
-    writeOut(`\r\x1b[${1 + liveLineCount(liveText)}A\x1b[0J`);
+    // 上移 = 实时行数 + 光标所在的输入物理行号。写死 1 在长行折行后少上移 k−1 格，
+    // `\x1b[0J` 会从输入块中间开抹，留下重复的输入行与游离框线（缺陷猎捕报告 5）。
+    writeOut(`\r\x1b[${liveLineCount(liveText) + inputCursorRow()}A\x1b[0J`);
     areaDrawn = false;
   }
 
