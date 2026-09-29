@@ -177,10 +177,17 @@ export function createInputReader({
   }
 
   // 补画下框线。readline 每次重绘都会用 clearScreenDown 把下面擦掉，所以每次重绘之后都要补一次。
-  // `\r\n` 落到输入行下面那一格（画框时已经把它挤出来了，所以不会再滚屏），写完退回输入行。
+  // 输入行折行时 readline 重绘完光标停在**逻辑位置**（可能在第 1 格物理行）——先下移到
+  // 输入行的最后一格物理行再画线，否则框线压在正文第 2 格上把字盖掉（复核新发现，
+  // 与猎捕报告 5 同族：报告只点名了擦除侧，补线侧同一假设）。down === 0（光标在最后一格，
+  // 绝大多数敲字路径）保持既有字节序列逐字不变。
   function paintBelowPrompt() {
     if (!areaDrawn || rl === null) return;
-    writeOut(`\r\n${rule()}\r\x1b[1A\x1b[${cursorColumn()}G`);
+    const { totalRows, cursorRow } = inputLayout();
+    const down = Math.max(0, totalRows - cursorRow);
+    writeOut(down > 0
+      ? `\r\x1b[${down}B\r\n${rule()}\r\x1b[${down + 1}A\x1b[${cursorColumn()}G`
+      : `\r\n${rule()}\r\x1b[1A\x1b[${cursorColumn()}G`);
   }
 
   // 实时区占几行。多数时候是 1（`思考中` 这种一行状态），思考预览会是 2 行。
@@ -196,14 +203,19 @@ export function createInputReader({
     return lines;
   }
 
-  // 光标停在输入行折行后的第几格物理行上（1 基）。与 cursorColumn 同一套显示宽度算术
-  // 与迟滞语义：used 落在整行边界上时光标还留在上一格。
-  function inputCursorRow() {
+  // 输入行折行后的几何：与 cursorColumn 同一套显示宽度算术与迟滞语义（used 落在整行
+  // 边界上时光标还留在上一格）。totalRows 是整行占用的物理行数，cursorRow 是光标所在
+  // 的物理行号（1 基）。擦除（上移到块顶）与补下框线（下移到块底）共用这一份。
+  function inputLayout() {
     const columns = Number.isFinite(stdout.columns) && stdout.columns > 0 ? Math.floor(stdout.columns) : 80;
     const line = typeof rl?.line === 'string' ? rl.line : '';
     const cursor = Number.isInteger(rl?.cursor) ? Math.min(Math.max(0, rl.cursor), line.length) : line.length;
-    const used = plainPromptWidth() + displayWidth(line.slice(0, cursor));
-    return Math.floor(Math.max(0, used - 1) / columns) + 1;
+    const usedTotal = plainPromptWidth() + displayWidth(line);
+    const usedToCursor = plainPromptWidth() + displayWidth(line.slice(0, cursor));
+    return {
+      totalRows: Math.floor(Math.max(0, usedTotal - 1) / columns) + 1,
+      cursorRow: Math.floor(Math.max(0, usedToCursor - 1) / columns) + 1,
+    };
   }
 
   // 擦掉整个输入区（含实时行），光标停在输入区原来的第一行——之后要么写 scrollback，要么重画输入区。
@@ -211,7 +223,7 @@ export function createInputReader({
     if (!areaDrawn || rl === null) return;
     // 上移 = 实时行数 + 光标所在的输入物理行号。写死 1 在长行折行后少上移 k−1 格，
     // `\x1b[0J` 会从输入块中间开抹，留下重复的输入行与游离框线（缺陷猎捕报告 5）。
-    writeOut(`\r\x1b[${liveLineCount(liveText) + inputCursorRow()}A\x1b[0J`);
+    writeOut(`\r\x1b[${liveLineCount(liveText) + inputLayout().cursorRow}A\x1b[0J`);
     areaDrawn = false;
   }
 

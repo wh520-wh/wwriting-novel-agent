@@ -551,3 +551,30 @@ test('未折行的短输入，擦除仍上移 1 格（回归：折行修复不�
   reader.stop();
   stdin.end();
 });
+
+test('折行输入且光标在行中时，下框线画在最后一格物理行之下，不压住正文（复核新发现）', async () => {
+  // 输入折成 2 格物理行、光标在第 1 格（Ctrl+A 回行首）时，readline 重绘后光标停在
+  // 第 1 格——paintBelowPrompt 若直接「\r\n 画线」，框线会画在正文第 2 格上，把字盖掉。
+  // 与猎捕报告 5 同族（擦除侧修了，补线侧当时不在报告范围内）。
+  const stdin = makeFakeTTY();
+  const stdout = makeSink({ tty: true });
+  const reader = createInputReader({ stdin, stdout, env: {}, onSubmit: () => {} });
+  reader.start();
+  await tick();
+
+  stdin.write('汉'.repeat(40)); // 82 列 → 2 格物理行
+  await tick();
+  stdin.write('\x01'); // Ctrl+A：光标回行首（第 1 格物理行）
+  await tick();
+
+  const before = stdout.chunks.length;
+  reader.composer.setLive('思考中'); // 触发重画 → readline 重绘 → 补下框线
+  const seq = stdout.chunks.slice(before).join('');
+
+  // 补线前先下移 1 格到输入行的最后一格物理行；回程上移 2 格（而非写死 1 格）回到光标行。
+  assert.match(seq, /\r\x1b\[1B\r\n/, `补线前应先下移 1 格，实际：${JSON.stringify(seq)}`);
+  assert.match(seq, /\r\x1b\[2A\x1b\[\d+G/, `补线后应上移 2 格回到光标行，实际：${JSON.stringify(seq)}`);
+
+  reader.stop();
+  stdin.end();
+});
