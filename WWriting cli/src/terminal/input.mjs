@@ -122,7 +122,8 @@ export async function readOneLine({
 // 返回 { start, stop, suspend, resume, composer }。
 //   start({ initialText }) 返回 { interactive, reason }；initialText 会像用户亲手敲的一样
 //   填进输入框并提交（位置参数那条路用它，屏幕上因此也是同一个框）。
-//   suspend/resume 用来把终端临时交给交互式命令（`/model` 向导），用完原样接回来。
+//   suspend/resume 用来把终端临时交给交互式命令（`/model` 向导、权限确认卡），用完原样接回来；
+//   suspend 时已键入的半行草稿会被带走，resume 时连光标位置一起写回输入框（不提交）。
 export function createInputReader({
   stdin,
   stdout,
@@ -143,6 +144,11 @@ export function createInputReader({
   // 输入区此刻画在屏幕上吗？框上方那一行的实时状态是什么？
   let areaDrawn = false;
   let liveText = null;
+  // suspend 前带走的半行草稿（缺陷猎捕报告 3）。suspend 会真的关掉 readline：
+  // 已键入的半行既不在缓冲也不在历史里，不显式承接就是无声销毁——屏幕上和缓冲里双双消失。
+  // 恢复时原样写回（含光标位置）。带控制字符的半行不接（会被 readline 当按键解释，比如
+  // \t 触发补全）；那种输入本来就进不了正常草稿，宁可不接也不能替用户按错键。
+  let draftBackup = null;
 
   const promptText = () => prompt ?? promptFor({ stdout, env });
   const rule = () => paintText(ruleLine({ columns: stdout.columns }), 'info', useColor);
@@ -319,7 +325,18 @@ export function createInputReader({
       if (typeof initialText === 'string' && initialText !== '') {
         rl.write(initialText);
         rl.write(null, { name: 'return' });
+      } else if (draftBackup !== null) {
+        // suspend 前的半行草稿：原样写回，光标也回到原位（不提交，等用户自己按回车）。
+        const draft = draftBackup;
+        draftBackup = null;
+        rl.write(draft.line);
+        if (draft.cursor < draft.line.length) {
+          rl.cursor = draft.cursor;
+          refreshLine();
+        }
       }
+    } else {
+      draftBackup = null; // 非交互接回：这半行没有去处，别让它迟到地出现在下一次 start 里。
     }
     return { interactive, reason: null };
   }
@@ -332,6 +349,17 @@ export function createInputReader({
     if (rl === null) return;
     eraseArea();
     const current = rl;
+    // 关掉之前把半行草稿带走（缺陷猎捕报告 3）：resume 时 start() 会把它写回输入框。
+    const line = typeof current.line === 'string' ? current.line : '';
+    const restorable = line !== '' && !/[\u0000-\u001f\u007f]/.test(line);
+    draftBackup = restorable
+      ? {
+        line,
+        cursor: Number.isInteger(current.cursor)
+          ? Math.min(Math.max(0, current.cursor), line.length)
+          : line.length,
+      }
+      : null;
     rl = null;
     interactive = false;
     liveText = null;

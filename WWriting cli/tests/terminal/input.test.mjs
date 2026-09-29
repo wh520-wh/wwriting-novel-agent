@@ -404,3 +404,58 @@ test('非交互（管道）：不画任何框线，也不多写换行', async ()
 
   reader.stop();
 });
+
+test('suspend/resume 承接半行草稿：光标在行尾时原样接回（缺陷猎捕报告 3）', async () => {
+  const stdin = makeFakeTTY();
+  const stdout = makeSink({ tty: true });
+  const submitted = [];
+  const reader = createInputReader({ stdin, stdout, env: {}, onSubmit: (text) => submitted.push(text) });
+  reader.start();
+  await tick();
+
+  stdin.write('我正在写');
+  await tick();
+  // 权限确认卡到达：让位（草稿此刻必须被带走，而不是随 readline 一起销毁）
+  reader.suspend();
+  reader.resume();
+  await tick();
+
+  // 恢复后继续敲剩下的半句、回车：提交的必须是完整一行
+  stdin.write('到一半');
+  await tick();
+  stdin.write('\r');
+  await tick();
+
+  assert.deepEqual(submitted, ['我正在写到一半']);
+  assert.match(stdout.text(), /我正在写/, '恢复后的屏幕上要能看到接回来的草稿');
+  reader.stop();
+  stdin.end();
+});
+
+test('suspend/resume 承接半行草稿：光标停在行中时回到原位（缺陷猎捕报告 3）', async () => {
+  const stdin = makeFakeTTY();
+  const stdout = makeSink({ tty: true });
+  const submitted = [];
+  const reader = createInputReader({ stdin, stdout, env: {}, onSubmit: (text) => submitted.push(text) });
+  reader.start();
+  await tick();
+
+  stdin.write('我正在写');
+  await tick();
+  stdin.write('\x1b[D\x1b[D'); // 光标左移两格：停在「正」与「在」之间
+  await tick();
+
+  reader.suspend();
+  reader.resume();
+  await tick();
+
+  stdin.write('到一半');
+  await tick();
+  stdin.write('\r');
+  await tick();
+
+  // 草稿与光标位置一起恢复：新字插在中间，而不是被挤到行尾
+  assert.deepEqual(submitted, ['我正到一半在写']);
+  reader.stop();
+  stdin.end();
+});
