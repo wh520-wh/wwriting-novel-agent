@@ -206,6 +206,28 @@ function wrapCut(text, width) {
   return cut > 0 ? cut : 0;
 }
 
+// 把一行截到不超过 width 显示列（超出直接丢弃）。与 wrapCut 的分工：wrapCut 服务正文
+// 排版（要避开标记字符、放不下返回 0），这里只服务实时区——活动行的 label 直接拼模型的
+// 原始参数（长路径 / 长搜索词），思考预览的换行分支也可能漏出长行；超宽实时行被终端
+// 软折行多占一格物理行，而擦除按 `\n` 数行，首格就永久留进 scrollback（缺陷猎捕报告 6、7）。
+// input.mjs 的契约：调用方（渲染器）负责把每一行都截到终端宽度以内。
+export function clipToWidth(text, width) {
+  const limit = Number.isFinite(width) && width > 0 ? Math.floor(width) : 0;
+  if (limit < 1) return '';
+  let used = 0;
+  let at = 0;
+  const line = String(text ?? '');
+  for (let i = 0; i < line.length; i += 1) {
+    const code = line.codePointAt(i);
+    if (code > 0xffff) i += 1;
+    const cols = isWideCode(code) ? 2 : 1;
+    if (used + cols > limit) break;
+    used += cols;
+    at = i + 1;
+  }
+  return line.slice(0, at);
+}
+
 // 从待发正文里切出「能落盘的完整行」→ { rows, rest }。
 // rows 已经剥掉行尾换行；rest 是还不够一行的尾巴，留给下一片。
 export function takeProseRows(text, { width } = {}) {
@@ -394,10 +416,16 @@ export function thinkingPreviewWidth(columns) {
 
 // 已完成的思考行 → 实时区那几行。rows 按时间顺序，只有末尾 THINKING_PREVIEW_LINES 行可见。
 export function thinkingPreviewLines(rows, { columns } = {}) {
-  if (thinkingPreviewWidth(columns) === 0) return [THINKING_LABEL];
+  const body = thinkingPreviewWidth(columns);
+  if (body === 0) return [THINKING_LABEL];
   const shown = (Array.isArray(rows) ? rows : []).slice(-THINKING_PREVIEW_LINES);
   if (shown.length === 0) return [THINKING_LABEL];
-  return shown.map((row, index) => (index === 0 ? `${THINKING_PREFIX}${row}` : `${THINKING_INDENT}${row}`));
+  // 出口再截一次宽（缺陷猎捕报告 6）：takeProseRows 的换行分支不切宽，一条完整的
+  // 逻辑行可能比预览宽度更长，前缀一加就超出终端宽度。预览是临时的，截断不丢正文。
+  return shown.map((row, index) => {
+    const clipped = clipToWidth(row, body);
+    return index === 0 ? `${THINKING_PREFIX}${clipped}` : `${THINKING_INDENT}${clipped}`;
+  });
 }
 
 // NO_COLOR 的判定：只要环境里出现了这个变量就按关闭颜色处理（宁可不上色，也不要污染管道输出）。
@@ -500,7 +528,10 @@ export function createRenderer({
   // 动态行不会清掉「上一行活动行」的记忆——否则同一件工具在同一轮里反复失败时，
   // 那十几行就没有一行是相邻的，合并无从谈起。
   function drawLive(text, tone = 'info') {
-    const body = paint(text, tone);
+    // 宽度闸门（缺陷猎捕报告 7）：实时区一行都不许超宽，按行截断保持行数语义；
+    // 完成后落 scrollback 的那一行不经过这里，仍是全文。
+    const clipped = String(text ?? '').split('\n').map((line) => clipToWidth(line, (stdout.columns || 80) - 1)).join('\n');
+    const body = paint(clipped, tone);
     const kept = lastActivity;
     if (usingComposer()) {
       liveOpen = true;

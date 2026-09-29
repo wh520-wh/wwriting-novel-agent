@@ -424,6 +424,23 @@ test('没有 composer（管道 / 非交互）时保持顺序直写，行为不�
   assert.ok(stdout.text().endsWith('已完成\n'));
 });
 
+test('活动行宽度闸门：超宽 label 的实时行被截到终端宽度以内（猎捕报告 7）', () => {
+  const composer = makeFakeComposer('写第二章');
+  const { renderer, stdout } = makeRenderer({ tty: true, composer, columns: 80 });
+  // 模型给的原始参数直接拼进 label：嵌套目录 + 长中文标题在 80 列终端必然超宽。
+  const longLabel = `读取文件 D:\\Novels\\嵌套目录\\再嵌套\\最终章\\${'雨'.repeat(30)}.md`;
+  renderer.printActivity({ state: 'running', label: longLabel });
+
+  const live = composer.live.replace(/\x1b\[[0-9;]*m/g, '');
+  for (const row of live.split('\n')) {
+    assert.ok(displayWidth(row) <= 79, `实时行 ${displayWidth(row)} 列，软折行会把首格留进 scrollback`);
+  }
+
+  // 完成行落 scrollback 的仍是全文（scrollback 自然折行无害，截断只发生在实时区）。
+  renderer.printActivity({ state: 'done', label: longLabel });
+  assert.ok(stdout.text().includes(longLabel), '终态活动行不许丢字');
+});
+
 test('composer 未激活（非交互输入）时退回顺序直写，不碰行缓冲', () => {
   const composer = makeFakeComposer('写第二章');
   composer.isActive = () => false;
@@ -930,6 +947,17 @@ test('thinkingPreviewLines：终端太窄就退回只有状态行，绝不把正
   assert.deepEqual(thinkingPreviewLines(['短'], { columns: 29 }), ['思考中'], '再短的话也不预览');
   assert.equal(thinkingPreviewLines(['短'], { columns: 30 })[0], '思考中 · 短');
   assert.equal(thinkingPreviewWidth(80), 80 - 9 - 1, '末尾留 1 列，避免触发终端自动折行');
+});
+
+test('thinkingPreviewLines：换行分支漏出的超宽长行在出口截到终端宽度以内（猎捕报告 6）', () => {
+  // takeProseRows 的换行分支不切宽：一条 ≥72 显示列的完整逻辑行加上 9 列前缀
+  // 就是 81 列的实时行，终端软折行多占一格物理行，擦除按 `\n` 数行——残留。
+  const longRow = '雨'.repeat(40); // 80 显示列 > 预览宽 70
+  const lines = thinkingPreviewLines([longRow], { columns: 80 });
+  assert.equal(lines.length, 1);
+  assert.ok(displayWidth(lines[0]) <= 79, `实时行 ${displayWidth(lines[0])} 列，会把首格留进 scrollback`);
+  // 放得下的行一个字都不动
+  assert.equal(thinkingPreviewLines(['主角为什么不肯离开'], { columns: 80 })[0], '思考中 · 主角为什么不肯离开');
 });
 
 test('printThinkingPreview：只在攒满一整行时才重绘（流式逐字到达不会把 readline 按住反复重排）', () => {
