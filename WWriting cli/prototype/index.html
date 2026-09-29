@@ -1,0 +1,998 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="WWriting 命令行写作 Agent 的交互原型">
+<title>WWriting · 星坠之城</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #171a19;
+    --surface: #202423;
+    --surface-raised: #292e2c;
+    --line: #363c39;
+    --line-strong: #4a534e;
+    --text: #e9ede9;
+    --muted: #a5aea8;
+    --quiet: #78837d;
+    --accent: #b8d4c1;
+    --warning: #e3b781;
+    --danger: #e29a94;
+    --ui: "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+    --serif: "Noto Serif CJK SC", "Songti SC", "STSong", "SimSun", serif;
+    --mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; min-height: 100%; }
+  body { background: var(--bg); color: var(--text); font: 13px/1.6 var(--ui); }
+  button, textarea, input { font: inherit; }
+  button { color: inherit; cursor: pointer; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button:active:not(:disabled) { transform: translateY(1px); }
+  button:focus-visible, textarea:focus-visible, input:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 3px;
+  }
+  ::selection { background: #a6c8b755; }
+  .app { display: flex; flex-direction: column; width: min(1440px, 100%); height: 100dvh; margin: auto; position: relative; }
+  .topbar { height: 56px; flex: none; display: flex; align-items: center; gap: 14px; padding: 0 34px; border-bottom: 1px solid var(--line); }
+  .brand { font: 700 17px/1 var(--serif); color: var(--text); }
+  .top-separator { height: 17px; border-left: 1px solid var(--line-strong); }
+  .top-project { color: var(--muted); font-size: 12px; }
+  .top-right { display: flex; align-items: center; gap: 14px; margin-left: auto; }
+  .prototype-note { color: var(--quiet); font-size: 11px; }
+  .icon-button { width: 30px; height: 30px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 20px; }
+  .icon-button:hover { background: var(--surface-raised); color: var(--text); }
+
+  .screen { flex: 1; min-height: 0; overflow: auto; scrollbar-color: #4a534e transparent; scrollbar-width: thin; }
+  .thread { width: min(1010px, 100%); min-height: 100%; margin: 0 auto; padding: 0 30px 60px; }
+  .intro { max-width: 750px; padding: 56px 0 30px; }
+  .intro-top { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; }
+  .intro-label { margin: 0 0 9px; color: var(--quiet); font-size: 11px; }
+  .intro h1 { margin: 0; font-size: 30px; font-weight: 600; line-height: 1.35; letter-spacing: 0; }
+  .intro-sub { margin: 8px 0 0; color: var(--muted); font-size: 13px; }
+  .chapter-count { flex: none; text-align: right; color: var(--text); font: 400 26px/1.1 var(--mono); font-variant-numeric: tabular-nums; }
+  .chapter-count span { color: var(--quiet); font-size: 12px; }
+  .intro-rule { height: 1px; margin: 29px 0 0; background: var(--line); }
+  .action-list { max-width: 750px; display: grid; grid-template-columns: 1fr 1fr; column-gap: 32px; margin-top: 14px; }
+  .action-item { display: flex; align-items: center; width: 100%; min-height: 45px; padding: 0 1px; border: 0; border-bottom: 1px solid #303633; background: transparent; text-align: left; color: var(--muted); transition: color .16s, padding .16s; }
+  .action-item:first-child { color: var(--text); font-weight: 600; }
+  .action-item:hover:not(:disabled) { color: var(--text); padding-left: 7px; }
+  .action-item .item-arrow { margin-left: auto; color: var(--quiet); font: 17px/1 var(--mono); }
+  .action-item:hover .item-arrow { color: var(--accent); }
+
+  .turn { max-width: 750px; margin-top: 34px; animation: enter .2s ease-out both; }
+  .user-message { display: flex; justify-content: flex-end; margin-bottom: 21px; }
+  .user-message span { max-width: min(700px, calc(100% - 32px)); padding: 9px 13px; border-radius: 7px; background: #313734; color: var(--text); line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .work { max-width: 720px; margin: 0 0 22px; }
+  .work > summary { display: flex; align-items: center; gap: 9px; min-height: 26px; width: fit-content; max-width: 100%; list-style: none; cursor: pointer; color: var(--muted); font-size: 12px; }
+  .work > summary::-webkit-details-marker, .activity > summary::-webkit-details-marker { display: none; }
+  .work > summary:hover, .activity > summary:hover { color: var(--text); }
+  .work-toggle { color: var(--quiet); font: 12px/1 var(--mono); transition: transform .18s; }
+  .work[open] .work-toggle { transform: rotate(90deg); }
+  .work-title { white-space: nowrap; }
+  .work-count { color: var(--quiet); font: 11px/1 var(--mono); }
+  .work-body { margin: 9px 0 0 18px; padding-left: 15px; border-left: 1px solid var(--line); }
+  .activity { position: relative; max-width: 690px; margin: 0 0 1px; }
+  .activity > summary { display: grid; grid-template-columns: 80px minmax(0, 1fr) auto 12px; align-items: baseline; gap: 8px; min-height: 32px; padding: 5px 2px; list-style: none; cursor: pointer; color: var(--muted); }
+  .activity-label { color: var(--text); white-space: nowrap; }
+  .activity-target { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font: 11px/1.6 var(--mono); }
+  .activity-tail { color: var(--quiet); white-space: nowrap; font: 11px/1.5 var(--mono); }
+  .activity-caret { color: var(--quiet); font: 11px/1.5 var(--mono); }
+  .activity[open] .activity-caret { transform: rotate(90deg); }
+  .activity.running .activity-label { color: var(--accent); }
+  .activity.running::before { content: ""; position: absolute; top: 12px; left: -16px; width: 1px; height: 13px; background: var(--accent); animation: breathe 1.2s ease-in-out infinite; }
+  .activity.failed .activity-label { color: var(--danger); }
+  .activity.stopped .activity-label { color: var(--quiet); }
+  .activity-detail { padding: 0 0 9px 89px; color: var(--muted); font-size: 11px; }
+  .detail-row { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 10px; margin: 3px 0; }
+  .detail-key { color: var(--quiet); }
+  .detail-value { overflow-wrap: anywhere; }
+  .detail-value strong { color: var(--text); }
+  .detail-file { padding: 4px 0; font-family: var(--mono); overflow-wrap: anywhere; }
+  .detail-file + .detail-file { border-top: 1px solid #303633; }
+  .detail-file small { display: block; color: var(--quiet); font: 11px/1.7 var(--ui); }
+  .draft-peek { max-width: 660px; margin: 11px 0 18px; padding: 6px 0 6px 16px; border-left: 2px solid #7c9182; color: #cdd5cc; font: 13px/2 var(--serif); }
+  .draft-peek p { margin: 0; }
+  .draft-peek small { display: block; margin-top: 7px; color: var(--quiet); font: 11px/1.4 var(--ui); }
+  .assistant-message { max-width: 720px; color: var(--text); font: 15px/2 var(--serif); overflow-wrap: anywhere; }
+  .assistant-message p { margin: 0 0 10px; }
+  .assistant-message p:last-child { margin-bottom: 0; }
+  .assistant-message strong { font-weight: 700; }
+  .assistant-message code, .command-output code { padding: 1px 3px; border-radius: 3px; color: #c8d9cd; background: #29322c; font: 11px/1.5 var(--mono); overflow-wrap: anywhere; }
+  .terminal-line { margin-top: 15px; color: var(--quiet); font-size: 11px; }
+  .terminal-line.failed, .terminal-line.interrupted { color: var(--danger); }
+
+  .permission { max-width: 660px; margin: 16px 0 18px; padding: 16px 17px 14px; border: 1px solid #80694f; border-radius: 6px; background: #282725; animation: enter .18s ease-out both; }
+  .permission.extreme { border-color: #8e5c57; background: #2b2423; }
+  .permission-title { margin-bottom: 8px; color: var(--warning); font-size: 13px; font-weight: 600; }
+  .permission.extreme .permission-title { color: var(--danger); }
+  .permission-body { color: #d5d8d1; font-size: 12px; line-height: 1.85; overflow-wrap: anywhere; }
+  .permission-body .path { color: var(--text); font-family: var(--mono); }
+  .permission-body code { color: var(--text); font-family: var(--mono); }
+  .confirm-text { display: inline-block; margin-top: 6px; color: var(--danger); font: 12px/1.6 var(--mono); }
+  .permission-actions { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-top: 14px; }
+  .text-button { min-height: 30px; padding: 4px 9px; border: 1px solid var(--line-strong); border-radius: 5px; background: transparent; color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .text-button:hover:not(:disabled) { background: #343a36; color: var(--text); }
+  .text-button.primary { border-color: #d6ddd4; background: #d6ddd4; color: #1c2420; font-weight: 600; }
+  .text-button.primary:hover:not(:disabled) { background: #eff2ed; }
+  .text-button.danger { border-color: var(--danger); background: #8d4643; color: #fff0ee; }
+  .text-button.danger:hover:not(:disabled) { background: #ab5752; }
+  .confirm-input { width: min(270px, 100%); min-height: 32px; padding: 5px 8px; border: 1px solid var(--line-strong); border-radius: 5px; background: #1d201e; color: var(--text); outline: none; }
+  .confirm-input::placeholder { color: var(--quiet); }
+  .confirm-input:focus { border-color: var(--danger); }
+
+  .command-output { max-width: 720px; margin: 28px 0; animation: enter .2s ease-out both; }
+  .command-output h2 { margin: 0 0 12px; font-size: 14px; font-weight: 600; }
+  .command-content { color: var(--muted); font-size: 12px; line-height: 1.85; }
+  .command-row { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 12px; padding: 4px 0; }
+  .command-row span:first-child { color: var(--text); }
+  .command-row span:last-child { overflow-wrap: anywhere; }
+  .command-foot { margin: 10px 0 0; color: var(--quiet); }
+  .skill-list { display: grid; grid-template-columns: 1fr 1fr; column-gap: 26px; }
+  .skill-list div { padding: 3px 0; }
+  .skill-list code { margin-right: 8px; }
+  .progress-track { width: min(280px, 100%); height: 2px; margin: 11px 0; background: var(--line); }
+  .progress-track i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+
+  .plan-panel { position: absolute; z-index: 5; top: 72px; right: max(24px, calc((100% - 1320px) / 2)); width: 250px; max-width: calc(100% - 24px); border: 1px solid var(--line-strong); border-radius: 6px; background: #252a28; box-shadow: 0 12px 32px #10131088; }
+  .plan-head { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 38px; padding: 7px 12px; border: 0; background: transparent; text-align: left; color: var(--text); font-size: 12px; }
+  .plan-head:hover { background: #303633; }
+  .plan-count { margin-left: auto; color: var(--quiet); font: 11px/1 var(--mono); }
+  .plan-caret { color: var(--quiet); font: 11px/1 var(--mono); }
+  .plan-items { padding: 0 12px 8px; }
+  .plan-item { display: grid; grid-template-columns: 16px 1fr; gap: 5px; padding: 5px 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+  .plan-item.done { color: var(--quiet); text-decoration: line-through; }
+  .plan-item.doing { color: var(--text); }
+  .plan-marker { font: 11px/1.5 var(--mono); text-decoration: none; }
+  .plan-more { padding: 0 12px 10px; color: var(--quiet); font-size: 11px; }
+
+  .dock { flex: none; border-top: 1px solid var(--line); background: var(--bg); }
+  .dock-inner { width: min(1010px, 100%); margin: 0 auto; padding: 12px 30px 18px; }
+  .queue { max-width: 750px; padding: 0 0 10px; }
+  .queue-item { display: flex; align-items: center; gap: 10px; padding: 5px 0; color: var(--muted); font-size: 12px; }
+  .queue-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .queue-state { margin-left: auto; color: var(--quiet); font-size: 11px; }
+  .queue-now { padding: 1px 4px; border: 0; background: transparent; color: var(--text); font-size: 11px; }
+  .queue-now:hover { text-decoration: underline; }
+  .live { display: flex; align-items: center; gap: 8px; max-width: 750px; min-height: 30px; margin-bottom: 6px; color: var(--muted); font-size: 12px; }
+  .live.running .live-label { color: var(--text); }
+  .live.wait .live-label { color: var(--warning); }
+  .live.stop .live-label { color: var(--quiet); }
+  .live-hint { color: var(--quiet); font-size: 11px; }
+  .stop-button { margin-left: auto; padding: 2px 6px; border: 0; background: transparent; color: var(--muted); font-size: 11px; }
+  .stop-button:hover:not(:disabled) { color: var(--danger); }
+  .composer { position: relative; max-width: 750px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); box-shadow: 0 8px 25px #0e110e36; transition: border-color .16s; }
+  .composer:focus-within { border-color: #91ad98; }
+  .composer textarea { display: block; width: 100%; height: 72px; resize: none; padding: 13px 14px 3px; border: 0; outline: none; background: transparent; color: var(--text); line-height: 1.6; }
+  .composer textarea::placeholder { color: var(--quiet); opacity: 1; }
+  .composer-bar { display: flex; align-items: center; gap: 4px; padding: 0 8px 7px; }
+  .bar-button { padding: 5px 6px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font-size: 11px; }
+  .bar-button:hover { background: var(--surface-raised); color: var(--text); }
+  .bar-button.yolo { color: var(--warning); }
+  .bar-static { padding: 5px 6px; color: var(--quiet); font-size: 11px; }
+  .send-button { width: 29px; height: 29px; margin-left: auto; border: 0; border-radius: 5px; background: #dce5dc; color: #1d2720; font: 21px/1 var(--mono); }
+  .send-button:hover { background: #f2f5f0; }
+  .menu { position: absolute; z-index: 8; left: 0; bottom: calc(100% + 8px); width: min(430px, 100%); max-height: min(380px, 50dvh); overflow: auto; padding: 5px; border: 1px solid var(--line-strong); border-radius: 7px; background: #292e2b; box-shadow: 0 12px 30px #0b100dc7; animation: enter .14s ease-out both; }
+  .menu-item { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 9px; width: 100%; padding: 7px 8px; border: 0; border-radius: 4px; background: transparent; text-align: left; color: var(--muted); font-size: 12px; }
+  .menu-item:hover, .menu-item.selected { background: #3a413c; color: var(--text); }
+  .menu-item span:first-child { font-family: var(--mono); color: var(--text); }
+  .menu-item span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .overlay { position: absolute; z-index: 10; inset: 0; display: grid; place-items: center; padding: 20px; background: #090d0bcc; }
+  .dialog { width: min(420px, 100%); padding: 20px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface-raised); box-shadow: 0 18px 60px #05080599; }
+  .dialog h2 { margin: 0 0 9px; font-size: 15px; }
+  .dialog p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.8; }
+  .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+  @keyframes enter { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes breathe { 50% { opacity: .25; } }
+  @media (max-width: 760px) {
+    .topbar { padding: 0 20px; }
+    .thread, .dock-inner { padding-left: 20px; padding-right: 20px; }
+    .plan-panel { right: 12px; width: min(250px, calc(100% - 24px)); }
+  }
+  @media (max-width: 560px) {
+    .topbar { height: 50px; padding: 0 16px; }
+    .prototype-note { display: none; }
+    .thread { padding: 0 16px 30px; }
+    .intro { padding-top: 34px; }
+    .intro h1 { font-size: 26px; }
+    .chapter-count { font-size: 20px; }
+    .action-list { grid-template-columns: 1fr; }
+    .action-item { min-height: 43px; }
+    .turn { margin-top: 26px; }
+    .activity > summary { grid-template-columns: 65px minmax(0, 1fr) auto 10px; gap: 5px; }
+    .activity-detail { padding-left: 70px; }
+    .activity-tail { max-width: 80px; overflow: hidden; text-overflow: ellipsis; }
+    .plan-panel { top: auto; bottom: 175px; }
+    .app:has(.permission) .plan-panel { display: none; }
+    .dock-inner { padding: 8px 12px 10px; }
+    .queue-item { display: grid; grid-template-columns: 1fr auto auto; }
+    .queue-text { grid-column: 1 / -1; }
+    .queue-state { margin-left: 0; }
+    .command-row { grid-template-columns: 104px minmax(0, 1fr); }
+    .skill-list { grid-template-columns: 1fr; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+  }
+  @media (prefers-reduced-transparency: reduce) {
+    .overlay { background: #090d0b; }
+  }
+  @media (prefers-contrast: more) {
+    :root { --muted: #c7d0c8; --quiet: #aeb9af; --line: #69756b; --line-strong: #9ca99d; }
+    .composer, .permission, .plan-panel, .dialog { box-shadow: none; }
+  }
+
+  /* The manuscript is the visual anchor; controls stay quiet until needed. */
+  :root {
+    color-scheme: light;
+    --bg: #f5f7f4;
+    --surface: #ffffff;
+    --surface-raised: #edf1eb;
+    --line: #dce2da;
+    --line-strong: #b8c3b8;
+    --text: #1b2720;
+    --muted: #536258;
+    --quiet: #66776c;
+    --accent: #255640;
+    --warning: #935b20;
+    --danger: #a83e39;
+  }
+  body { background: #e9eeea; color: var(--text); font-size: 13px; }
+  .app { background: var(--bg); box-shadow: 0 0 0 1px #dce2da; }
+  .topbar { height: 60px; padding-inline: 35px; background: #fff; border-top: 3px solid #255640; border-bottom-color: var(--line); }
+  .brand { color: #1d3327; font-size: 18px; }
+  .top-separator { border-color: #c3cfc5; }
+  .top-project { color: #5b6e60; font-size: 13px; }
+  .prototype-note { color: #75847a; }
+  .icon-button { color: #586d5d; }
+  .icon-button:hover { background: #edf1eb; color: #183f29; }
+  .demo-return { display: inline-flex; align-items: center; gap: 7px; min-height: 30px; padding: 4px 8px; border: 0; border-radius: 4px; background: transparent; color: #315a3f; font-size: 12px; }
+  .demo-return:hover:not(:disabled) { background: #eaf0e8; }
+  .thread { width: min(1080px, 100%); padding-inline: 35px; }
+  .intro { max-width: 900px; padding: 41px 0 10px; }
+  .intro-top { align-items: flex-end; }
+  .intro-label { margin: 0 0 18px; color: #55715e; font-size: 12px; font-weight: 600; }
+  .intro-label span { padding: 0 7px; color: #8ca092; }
+  .intro h1 { font-family: var(--ui); font-size: clamp(36px, 4vw, 48px); font-weight: 700; line-height: 1.25; color: #18281d; }
+  .intro-sub { margin-top: 13px; color: #5a6d60; font-size: 13px; }
+  .intro-divider { padding: 0 7px; color: #9aaba0; }
+  .chapter-count { display: flex; align-items: baseline; gap: 3px; color: #244f38; font-size: 17px; }
+  .chapter-count strong { font-size: 40px; font-weight: 500; }
+  .chapter-count span { color: #73867a; font-size: 16px; }
+  .chapter-count small { margin-left: 7px; font: 12px/1 var(--ui); color: #73867a; }
+  .excerpt { max-width: 745px; margin: 36px 0 20px; padding: 21px 28px 23px; border-left: 3px solid #295640; background: #e9eee7; }
+  .excerpt-meta { display: flex; gap: 16px; color: #295640; font-size: 11px; font-weight: 600; }
+  .excerpt-meta span { color: #728074; font-weight: 400; }
+  .excerpt p { max-width: 35em; margin: 12px 0 0; color: #2d3830; font: 16px/1.95 var(--serif); }
+  .featured-demo { display: flex; align-items: center; gap: 17px; width: min(745px, 100%); min-height: 78px; padding: 15px 21px; border: 1px solid #1d3928; border-radius: 6px; background: #1d3928; color: #f6f8f3; text-align: left; transition: background .18s, transform .18s; }
+  .featured-demo:hover:not(:disabled) { background: #2a523a; transform: translateY(-2px); }
+  .demo-play { display: grid; place-items: center; flex: none; width: 38px; height: 38px; border: 1px solid #83a48b; border-radius: 50%; color: #e8f2e7; font-size: 12px; padding-left: 2px; }
+  .featured-demo strong { display: block; font-size: 15px; font-weight: 600; }
+  .featured-demo small { display: block; margin-top: 3px; color: #bed0bd; font-size: 11px; line-height: 1.5; }
+  .demo-go { margin-left: auto; color: #c9decb; font-size: 19px; }
+  .intro-rule { width: min(745px, 100%); margin: 29px 0 0; background: var(--line); }
+  .action-list { max-width: 745px; grid-template-columns: 1fr 1fr; column-gap: 26px; margin: 3px 0 28px; }
+  .action-heading { grid-column: 1 / -1; padding: 10px 0 4px; color: #75837a; font-size: 11px; }
+  .action-item { min-height: 43px; border-color: #d9e0d8; color: #314338; font-size: 12px; }
+  .action-item:first-of-type { color: #314338; font-weight: 400; }
+  .action-item:hover:not(:disabled) { color: #16462c; }
+  .action-item .item-arrow, .action-item:hover .item-arrow { color: #688570; }
+  .turn { max-width: 780px; margin-top: 32px; }
+  .user-message span { background: #e7ede7; color: #24352a; border: 1px solid #dce5db; }
+  .work > summary { color: #53665a; }
+  .work > summary:hover, .activity > summary:hover { color: #1b3425; }
+  .work-toggle, .work-count { color: #738679; }
+  .work-body { border-color: #d1ded2; }
+  .activity > summary { color: #5c6d61; }
+  .activity-label { color: #25382b; }
+  .activity-target, .activity-tail, .activity-caret { color: #6e8072; }
+  .activity.running .activity-label { color: #255640; }
+  .activity.failed .activity-label { color: var(--danger); }
+  .detail-file + .detail-file { border-color: #dfe5dd; }
+  .draft-peek { border-color: #53755c; color: #26382c; }
+  .draft-peek.streaming p::after { content: ""; display: inline-block; width: 7px; height: 15px; margin-left: 3px; vertical-align: -3px; background: #255640; animation: breathe .8s steps(1) infinite; }
+  .assistant-message { color: #1e2d22; font-size: 16px; }
+  .result-label { margin: 4px 0 6px; color: #52765b; font: 600 11px/1.5 var(--ui); }
+  .assistant-message h2 { margin: 0 0 14px; color: #182b1e; font: 700 26px/1.45 var(--ui); }
+  .assistant-message .result-lede { margin: 0 0 17px; color: #3b4b3d; font: 14px/1.85 var(--ui); }
+  .assistant-message blockquote { max-width: 650px; margin: 0 0 20px; padding: 2px 0 3px 19px; border-left: 2px solid #71967a; color: #28392e; font: 15px/2.05 var(--serif); }
+  .result-meta { display: flex; flex-wrap: wrap; gap: 10px 22px; max-width: 700px; padding: 12px 0; border-top: 1px solid #d5ded3; color: #5a6d5e; font: 11px/1.7 var(--ui); }
+  .result-meta span:first-child { font-family: var(--mono); overflow-wrap: anywhere; }
+  .result-meta strong { color: #255640; }
+  .assistant-message code, .command-output code { color: #255640; background: #e6eee5; }
+  .terminal-line { color: #728076; }
+  .permission { border-color: #d3ae7f; background: #fff9f0; box-shadow: 0 12px 28px #43311614; }
+  .permission.extreme { border-color: #c4807d; background: #fff5f3; }
+  .permission-body { color: #4d463d; }
+  .permission-body .path, .permission-body code { color: #242e26; }
+  .text-button { border-color: #bdc9be; color: #304436; }
+  .text-button:hover:not(:disabled) { background: #e9efe9; color: #1d3223; }
+  .text-button.primary { border-color: #255640; background: #255640; color: #fff; }
+  .text-button.primary:hover:not(:disabled) { background: #34694d; }
+  .text-button.danger { border-color: #a83e39; background: #a83e39; color: #fff; }
+  .confirm-input { background: #fff; color: #213126; }
+  .command-content { color: #526157; }
+  .command-row span:first-child { color: #24372a; }
+  .progress-track { background: #d7e2d7; }
+  .plan-panel { border-color: #d5dfd5; background: #fff; box-shadow: 0 14px 28px #3149361f; }
+  .plan-head { color: #213429; }
+  .plan-head:hover { background: #edf2eb; }
+  .plan-count, .plan-caret, .plan-more { color: #718275; }
+  .plan-item { color: #647469; }
+  .plan-item.done { color: #8c9a8e; }
+  .plan-item.doing { color: #255640; }
+  .dock { border-color: #dbe3da; background: #f5f7f4; box-shadow: 0 -8px 28px #e1e9df90; }
+  .dock-inner { width: min(1080px, 100%); padding-inline: 35px; }
+  .live { color: #53675a; }
+  .live.running .live-label { color: #244e37; }
+  .live.wait .live-label { color: #935b20; }
+  .stop-button { color: #617568; }
+  .composer { max-width: 780px; border-color: #bdcbbd; background: #fff; box-shadow: 0 9px 23px #4b624b12; }
+  .composer:focus-within { border-color: #255640; box-shadow: 0 0 0 3px #25564017; }
+  .composer.demo-typing { border-color: #255640; }
+  .composer textarea { color: #1e2f24; }
+  .composer textarea::placeholder { color: #738378; }
+  .bar-button { color: #526458; }
+  .bar-button:hover { background: #ecf2eb; color: #1e3425; }
+  .bar-static { color: #778a7a; }
+  .send-button { background: #255640; color: #fff; }
+  .send-button:hover { background: #357451; }
+  .menu { border-color: #cbd8ca; background: #fff; box-shadow: 0 12px 30px #2a42291f; }
+  .menu-item { color: #566b5a; }
+  .menu-item:hover, .menu-item.selected { background: #eaf0e7; color: #213e28; }
+  .menu-item span:first-child { color: #254b32; }
+  .overlay { background: #17231a99; }
+  .dialog { border-color: #cbd8c9; background: #fff; box-shadow: 0 18px 60px #10231436; }
+  .dialog p { color: #536558; }
+  @media (max-width: 760px) {
+    .thread, .dock-inner { padding-inline: 20px; }
+  }
+  @media (max-width: 560px) {
+    .topbar { height: 55px; padding-inline: 16px; }
+    .thread { padding-inline: 16px; }
+    .intro { padding-top: 29px; }
+    .intro h1 { font-size: 34px; }
+    .demo-return { padding-inline: 5px; }
+    .intro-label { margin-bottom: 12px; }
+    .chapter-count strong { font-size: 30px; }
+    .chapter-count small { display: none; }
+    .excerpt { margin-top: 26px; padding: 15px 17px; }
+    .excerpt p { font-size: 13px; line-height: 1.85; }
+    .featured-demo { min-height: 75px; padding: 13px 15px; gap: 12px; }
+    .featured-demo small { max-width: 22em; }
+    .demo-play { width: 32px; height: 32px; }
+    .action-list { grid-template-columns: 1fr 1fr; column-gap: 12px; }
+    .action-item { min-height: 47px; font-size: 11px; }
+    .action-item .item-arrow { display: none; }
+    .plan-panel { position: static; flex: none; width: auto; max-width: none; margin: 0 12px 6px; box-shadow: none; }
+    .plan-panel:not(.expanded) .plan-items, .plan-panel:not(.expanded) .plan-more { display: none; }
+    .dock-inner { padding-inline: 12px; }
+    .assistant-message h2 { font-size: 22px; }
+    .assistant-message blockquote { font-size: 13px; }
+  }
+  @media (prefers-contrast: more) {
+    :root { --muted: #344a3b; --quiet: #405844; --line: #899e8b; --line-strong: #6c876e; }
+  }
+
+  /* CLI surface: restrained terminal colors and a single transcript column. */
+  :root {
+    color-scheme: dark;
+    --bg: #171717; --surface: #202020; --surface-raised: #2a2a2a;
+    --line: #343434; --line-strong: #696969;
+    --text: #e8e8e8; --muted: #a8a8a8; --quiet: #7e7e7e;
+    --accent: #d77757; --warning: #e6b96e; --danger: #ec8889;
+    --mono: "Cascadia Mono", "JetBrains Mono", Consolas, "Microsoft YaHei UI", monospace;
+  }
+  body, .app { background: var(--bg); color: var(--text); box-shadow: none; font: 13px/1.65 var(--mono); }
+  button, textarea, input { font-family: var(--mono); }
+  .app { width: 100%; }
+  .topbar { height: 43px; padding: 0 22px; border: 0; border-bottom: 1px solid #303030; background: var(--bg); }
+  .brand { color: var(--accent); font: 700 14px/1 var(--mono); }
+  .top-separator { border-color: #454545; height: 15px; }
+  .top-project { color: #b8b8b8; font: 12px/1 var(--mono); }
+  .prototype-note { color: #757575; font-size: 11px; }
+  .demo-return { color: #a9a9a9; font-size: 11px; border-radius: 0; }
+  .demo-return:hover:not(:disabled) { background: #292929; color: var(--text); }
+  .screen { scrollbar-color: #515151 transparent; }
+  .thread, .dock-inner { width: min(950px, 100%); padding-inline: 28px; }
+  .thread { padding-bottom: 35px; }
+  .intro { max-width: 840px; padding: 29px 0 12px; }
+  .cli-logo { color: var(--accent); font-size: 21px; font-weight: 700; line-height: 1.3; }
+  .cli-logo span { margin-left: 13px; color: #969696; font-size: 12px; font-weight: 400; }
+  .cli-facts { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 2px 14px; max-width: 760px; margin: 16px 0 18px; color: #c9c9c9; font-size: 12px; line-height: 1.85; }
+  .cli-facts > span:nth-child(odd) { color: #888; }
+  .cli-facts code { color: #a9c4d1; font: inherit; overflow-wrap: anywhere; }
+  .cli-divider { height: 1px; max-width: 760px; background: #383838; }
+  .intro .action-heading { padding: 19px 0 7px; color: #8d8d8d; font-size: 11px; }
+  .featured-demo { display: grid; grid-template-columns: 30px minmax(0, 1fr); align-items: center; gap: 8px; width: min(760px, 100%); min-height: 54px; padding: 7px 2px; border: 0; border-bottom: 1px solid #45403d; border-radius: 0; background: transparent; color: #f2f2f2; text-align: left; box-shadow: none; transition: background .15s; }
+  .featured-demo:hover:not(:disabled) { background: #22201f; transform: none; }
+  .featured-demo strong { color: #ededed; font-size: 13px; font-weight: 600; }
+  .featured-demo small { color: #9b9b9b; font-size: 11px; }
+  .demo-num, .demo-go { color: var(--accent); font: 12px/1 var(--mono); }
+  .demo-go { display: none; }
+  .action-list { display: block; max-width: 760px; margin: 3px 0 0; }
+  .action-item, .action-item:first-of-type { display: grid; grid-template-columns: 30px 75px minmax(0, 1fr); gap: 8px; align-items: center; min-height: 33px; padding: 1px 2px; border: 0; border-radius: 0; background: transparent; color: #bcbcbc; font: 12px/1.5 var(--mono); text-align: left; transition: background .15s; }
+  .action-item:hover:not(:disabled) { padding-left: 2px; background: #222; color: #fff; }
+  .action-index { color: #777; }
+  .action-cmd { color: #d4d4d4; }
+  .action-desc { color: #929292; }
+  .action-item .item-arrow, .action-item:hover .item-arrow { display: none; }
+  .turn { max-width: 820px; margin-top: 24px; }
+  .user-message { position: relative; display: block; margin: 0 0 19px; padding-left: 25px; }
+  .user-message::before { content: "❯"; position: absolute; top: 0; left: 2px; color: var(--accent); font-size: 14px; }
+  .user-message span { display: block; width: fit-content; max-width: 100%; padding: 0; border: 0; border-radius: 0; background: transparent; color: #ededed; font: 12.5px/1.7 var(--mono); }
+  .work { max-width: 790px; margin: 0 0 16px 25px; }
+  .work > summary { min-height: 25px; gap: 7px; color: #a6a6a6; font-size: 12px; }
+  .work > summary:hover, .activity > summary:hover { color: #f0f0f0; }
+  .work-toggle { color: #a0a0a0; }
+  .work-count { color: #777; }
+  .work-body { margin: 5px 0 0 5px; padding-left: 15px; border-left: 1px solid #3a3a3a; }
+  .activity { max-width: 760px; }
+  .activity > summary { grid-template-columns: 78px minmax(0, 1fr) auto 12px; gap: 9px; min-height: 28px; padding: 3px 0; color: #a9a9a9; font-size: 11.5px; }
+  .activity-label { color: #d6d6d6; }
+  .activity-target, .activity-tail, .activity-caret { color: #888; font: 11px/1.5 var(--mono); }
+  .activity.running .activity-label { color: var(--accent); }
+  .activity.running::before { top: 9px; background: var(--accent); }
+  .detail-file + .detail-file { border-color: #343434; }
+  .activity-detail { color: #a0a0a0; }
+  .draft-peek { max-width: 700px; margin: 10px 0 14px; padding: 7px 0 7px 12px; border-color: #6f6761; background: transparent; color: #d8d4cf; font: 13px/1.95 var(--serif); }
+  .draft-peek.streaming p::after { background: var(--accent); }
+  .assistant-message { max-width: 760px; margin-left: 25px; color: #e4e4e4; font: 13px/1.9 var(--mono); }
+  .assistant-message p { margin-bottom: 5px; }
+  .assistant-message strong { color: #fff; }
+  .assistant-message code, .command-output code { padding: 0; background: transparent; color: #9cc2cf; font: inherit; }
+  .assistant-message blockquote { margin: 13px 0 0; padding: 4px 0 4px 13px; border-color: #545454; color: #c8c8c8; font: 13px/1.95 var(--serif); }
+  .terminal-line { margin: 10px 0 0 25px; color: #777; font-size: 11px; }
+  .permission { max-width: 700px; margin: 11px 0 15px; padding: 7px 0 8px 14px; border: 0; border-left: 2px solid #a67c55; border-radius: 0; background: transparent; box-shadow: none; }
+  .permission.extreme { border-color: #c47373; background: transparent; }
+  .permission-title { color: #e9bd80; font-size: 12px; }
+  .permission.extreme .permission-title { color: #ef9e9d; }
+  .permission-body { color: #c8c4c0; font-size: 11.5px; }
+  .permission-body .path, .permission-body code { color: #e8e8e8; }
+  .confirm-text { color: #f0a5a2; }
+  .permission-actions { gap: 6px; margin-top: 10px; }
+  .permission:not(.extreme) .permission-actions { display: grid; justify-items: start; gap: 1px; }
+  .permission:not(.extreme) .permission-actions .text-button { border: 0; }
+  .permission:not(.extreme) .permission-actions .text-button:hover:not(:disabled) { text-decoration: underline; }
+  /* 这里原先给三个选项加了 `1 / 2 / 3` 数字前缀，已删（铁律 11）：
+     真正实现里是方向键选择，数字前缀会教出「打数字作答」这个用不上的习惯。 */
+  .text-button { min-height: 26px; padding: 3px 2px; border: 0; border-bottom: 1px solid #616161; border-radius: 0; background: transparent; color: #c9c9c9; font-size: 11px; }
+  .text-button:hover:not(:disabled) { background: transparent; border-color: #d4d4d4; color: #fff; }
+  .text-button.primary { border-color: var(--accent); background: transparent; color: #e7a487; }
+  .text-button.primary:hover:not(:disabled) { background: transparent; color: #ffd1b9; }
+  .text-button.danger { border-color: #bd7777; background: transparent; color: #f2a0a0; }
+  .text-button.danger:hover:not(:disabled) { border-color: #f2a0a0; background: transparent; color: #ffd0cf; }
+  .confirm-input { border: 0; border-bottom: 1px solid #777; border-radius: 0; background: transparent; color: #f5f5f5; }
+  .command-output { max-width: 780px; margin: 22px 0 22px 25px; }
+  .command-output h2 { color: #e3e3e3; font: 600 13px/1.5 var(--mono); }
+  .command-content { color: #a8a8a8; }
+  .command-row { grid-template-columns: 135px minmax(0, 1fr); }
+  .command-row span:first-child { color: #c8c8c8; }
+  .progress-track { background: #3a3a3a; }
+  .plan-panel { top: 58px; right: max(20px, calc((100% - 1240px) / 2)); width: 255px; border: 0; border-left: 1px solid #4a4a4a; border-radius: 0; background: #171717; box-shadow: none; }
+  .plan-head { color: #ddd; }
+  .plan-head:hover { background: #303030; }
+  .plan-count, .plan-caret, .plan-more, .plan-item { color: #999; }
+  .plan-item.done { color: #777; }
+  .plan-item.doing { color: #e1ad91; }
+  .dock { border-top: 1px solid #343434; background: #171717; box-shadow: none; }
+  .dock-inner { padding-block: 7px 12px; }
+  .live { margin-bottom: 3px; color: #aaa; }
+  .live.running .live-label { color: var(--accent); }
+  .live.wait .live-label { color: #e6b96e; }
+  .stop-button { color: #aaa; }
+  .composer { max-width: 820px; border: 1px solid #696969; border-radius: 0; background: #171717; box-shadow: none; }
+  .composer:focus-within, .composer.demo-typing { border-color: #c99175; box-shadow: none; }
+  .composer-entry { display: flex; align-items: flex-start; min-height: 66px; }
+  .prompt-glyph { flex: none; width: 31px; padding: 8px 0 0 12px; color: var(--accent); font-size: 17px; line-height: 1.5; }
+  .composer textarea { flex: 1; width: auto; min-width: 0; height: 65px; padding: 10px 2px 6px; background: transparent; color: #ededed; font: 12.5px/1.6 var(--mono); }
+  .composer textarea::placeholder { color: #8a8a8a; }
+  .send-button { flex: none; align-self: flex-end; width: 31px; height: 31px; margin: 0 7px 8px 3px; border-radius: 0; background: transparent; color: #a8a8a8; font-size: 17px; }
+  .send-button:hover { background: #373737; color: #fff; }
+  .composer-bar { gap: 3px; margin: 0 8px; padding: 4px 0 5px; border-top: 1px solid #303030; }
+  .bar-button, .bar-static, .bar-sep { padding: 2px 5px; border-radius: 0; color: #8f8f8f; font: 10.5px/1.5 var(--mono); }
+  .bar-button:hover { background: #2c2c2c; color: #eee; }
+  .bar-button.yolo { color: #e9bd80; }
+  .menu { border-color: #626262; border-radius: 0; background: #262626; box-shadow: 0 12px 30px #000b; }
+  .menu-item { border-radius: 0; color: #aaa; }
+  .menu-item:hover, .menu-item.selected { background: #3b332f; color: #fff; }
+  .menu-item span:first-child { color: #e2b196; }
+  .overlay { background: #000b; }
+  .dialog { border-color: #6a6a6a; border-radius: 0; background: #252525; box-shadow: 0 20px 60px #000a; }
+  .dialog p { color: #bbb; }
+  @media (max-width: 760px) {
+    .thread, .dock-inner { padding-inline: 18px; }
+    .plan-panel { right: 10px; }
+  }
+  @media (max-width: 560px) {
+    .topbar { height: 42px; padding-inline: 12px; }
+    .prototype-note { display: none; }
+    .thread { padding-inline: 13px; }
+    .intro { padding: 22px 0 8px; }
+    .cli-logo { font-size: 18px; }
+    .cli-logo span { display: block; margin: 1px 0 0; font-size: 11px; }
+    .cli-facts { grid-template-columns: 48px minmax(0, 1fr); gap: 2px 8px; font-size: 11px; }
+    .featured-demo { min-height: 63px; padding-inline: 2px; grid-template-columns: 25px minmax(0, 1fr); }
+    .featured-demo strong { font-size: 12px; }
+    .featured-demo small { max-width: none; font-size: 10px; }
+    .action-item { grid-template-columns: 25px 64px minmax(0, 1fr); gap: 5px; min-height: 35px; padding-inline: 2px; font-size: 11px; }
+    .action-item:hover:not(:disabled) { padding-left: 2px; }
+    .action-item .item-arrow { display: none; }
+    .work, .assistant-message, .terminal-line { margin-left: 19px; }
+    .activity > summary { grid-template-columns: 67px minmax(0, 1fr) auto 10px; gap: 4px; }
+    .activity-detail { padding-left: 68px; }
+    .user-message { padding-left: 19px; }
+    .plan-panel { position: static; flex: none; width: auto; max-width: none; margin: 0 10px 5px; box-shadow: none; }
+    .plan-panel:not(.expanded) .plan-items, .plan-panel:not(.expanded) .plan-more { display: none; }
+    .dock-inner { padding-inline: 10px; }
+    .command-row { grid-template-columns: 90px minmax(0, 1fr); }
+  }
+  @media (prefers-contrast: more) {
+    :root { --muted: #c7c7c7; --quiet: #b2b2b2; --line: #888; --line-strong: #aaa; }
+  }
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <header class="topbar">
+    <span class="brand">WWriting</span><span class="top-separator" aria-hidden="true"></span>
+    <span class="top-project">星坠之城</span>
+    <span class="top-right"><span class="prototype-note">交互原型</span><button class="demo-return" id="homeBtn" title="查看演示场景">↺ <span>演示</span></button></span>
+  </header>
+  <main class="screen" id="screen"><div class="thread" id="thread"></div></main>
+  <aside class="plan-panel" id="planPanel" hidden>
+    <button class="plan-head" id="planHead" aria-expanded="false" aria-controls="planItems"><span>任务计划</span><span class="plan-count" id="planCount">0/0</span><span class="plan-caret" id="planCaret">▾</span></button>
+    <div class="plan-items" id="planItems"></div><div class="plan-more" id="planMore" hidden></div>
+  </aside>
+  <footer class="dock">
+    <div class="dock-inner">
+      <div class="queue" id="queue" hidden></div>
+      <div class="live" id="live" hidden><span class="live-label" id="liveLabel">思考中</span><span class="live-hint" id="liveHint"></span><button class="stop-button" id="stopBtn">停止</button></div>
+      <div class="composer" id="composer">
+        <div class="menu" id="menu" hidden></div>
+        <div class="composer-entry"><span class="prompt-glyph" aria-hidden="true">❯</span><textarea id="input" rows="3" placeholder="输入消息" aria-label="输入消息" spellcheck="false"></textarea><button class="send-button" id="sendBtn" aria-label="发送" title="发送">↵</button></div>
+        <div class="composer-bar"><button class="bar-button" id="modelBtn" title="查看模型">deepseek-v3.2</button><span class="bar-sep">·</span><button class="bar-button" id="modeBtn" title="切换权限模式">普通模式</button><span class="bar-sep">·</span><span class="bar-static">Shift+Tab 切换</span></div>
+      </div>
+    </div>
+  </footer>
+  <div class="overlay" id="overlay" hidden><div class="dialog" role="dialog" aria-modal="true" aria-labelledby="yoloTitle"><h2 id="yoloTitle">开启 YOLO</h2><p>YOLO 会自动执行写入和控制操作。确认开启？<br>极端危险操作仍需单独确认。</p><div class="dialog-actions"><button class="text-button" id="yoloCancel">取消</button><button class="text-button primary" id="yoloOk">确认开启</button></div></div></div>
+</div>
+<script>
+'use strict';
+const $ = (selector, root = document) => root.querySelector(selector);
+const make = (tag, className, html) => {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (html != null) node.innerHTML = html;
+  return node;
+};
+const esc = value => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
+const screen = $('#screen'), thread = $('#thread'), input = $('#input');
+const live = $('#live'), liveLabel = $('#liveLabel'), liveHint = $('#liveHint'), stopBtn = $('#stopBtn');
+const queueEl = $('#queue'), menuEl = $('#menu'), planEl = $('#planPanel'), overlay = $('#overlay');
+const S = { busy: false, stopped: false, stopKind: 'stop', yolo: false, sameAuth: false,
+  plan: null, lastPlan: null, planOpen: false, menu: null, menuIndex: 0,
+  history: [], historyIndex: 0, queue: [], promoted: null, permissionDone: null, current: null };
+let timers = new Set(), stick = true, sceneButtons = [];
+screen.addEventListener('scroll', () => { stick = screen.scrollHeight - screen.scrollTop - screen.clientHeight < 60; });
+function append(node, parent = thread) { parent.appendChild(node); if (stick) screen.scrollTop = screen.scrollHeight; return node; }
+function sleep(ms) {
+  return new Promise(resolve => {
+    const item = { id: null, resolve };
+    item.id = setTimeout(() => { timers.delete(item); resolve(); }, ms);
+    timers.add(item);
+  });
+}
+function cancelSleeps() { for (const item of timers) { clearTimeout(item.id); item.resolve(); } timers.clear(); }
+function checkStopped() { if (S.stopped) throw { stopped: true }; }
+function setLive(state, label) {
+  live.hidden = false; live.className = 'live ' + state; liveLabel.textContent = label;
+  liveHint.textContent = ''; stopBtn.disabled = false;
+}
+function hideLive() { live.hidden = true; }
+function setScenes(enabled) { sceneButtons.forEach(button => { button.disabled = !enabled; }); $('#homeBtn').disabled = !enabled; }
+
+const slash = [
+  ['/init', '建立项目记忆'], ['/skills', '查看写作技能'], ['/model', '查看模型'],
+  ['/cost', '成本统计'], ['/plan', '回看任务计划'], ['/compact', '压缩上下文'],
+  ['/export', '导出成书'], ['/yolo', '切换权限模式'], ['/stop', '停止当前运行'],
+  ['/clear', '清屏'], ['/help', '查看命令']
+];
+const files = ['WWRITING.md', 'OUTLINE.md', 'SETTING.md', '正文/第01章-雨夜来客.md',
+  '正文/第02章-旧照片.md', 'drafts/第3章-长街灯火-提纲.md', 'memory/章节摘要.md'];
+function closeMenu() { S.menu = null; menuEl.hidden = true; }
+function showMenu(type) { S.menu = type; S.menuIndex = 0; renderMenu(); }
+function menuItems() {
+  const all = S.menu === 'slash' ? slash : files.map(file => ['@' + file, '引用文件']);
+  const query = input.value.slice(1).toLowerCase();
+  return all.filter(item => item[0].slice(1).toLowerCase().includes(query));
+}
+function renderMenu() {
+  if (!S.menu) return;
+  const items = menuItems();
+  if (!items.length) { closeMenu(); return; }
+  S.menuIndex = Math.min(S.menuIndex, items.length - 1);
+  menuEl.innerHTML = '';
+  items.forEach((item, index) => {
+    const button = make('button', 'menu-item' + (index === S.menuIndex ? ' selected' : ''), '<span>' + esc(item[0]) + '</span><span>' + esc(item[1]) + '</span>');
+    button.type = 'button'; button.addEventListener('click', () => pickMenu(index));
+    menuEl.appendChild(button);
+  });
+  menuEl.hidden = false;
+}
+function pickMenu(index = S.menuIndex) {
+  const item = menuItems()[index]; if (!item) return;
+  input.value = item[0] + ' '; closeMenu(); input.focus();
+}
+input.addEventListener('input', () => {
+  if (S.menu && !input.value.startsWith(S.menu === 'slash' ? '/' : '@')) closeMenu();
+  else if (S.menu) renderMenu();
+  else if (input.value === '/') showMenu('slash');
+  else if (input.value === '@') showMenu('file');
+});
+
+function renderPlan() {
+  if (!S.plan) { planEl.hidden = true; return; }
+  const done = S.plan.filter(item => item.state === 'done').length;
+  $('#planCount').textContent = done + '/' + S.plan.length;
+  $('#planHead').setAttribute('aria-expanded', String(S.planOpen));
+  $('#planCaret').textContent = S.planOpen ? '▴' : '▾';
+  planEl.classList.toggle('expanded', S.planOpen);
+  let visible = S.plan;
+  if (!S.planOpen) {
+    const active = S.plan.findIndex(item => item.state === 'doing');
+    const start = active < 0 ? 0 : Math.max(0, Math.min(active - 1, S.plan.length - 3));
+    visible = S.plan.slice(start, start + 3);
+  }
+  $('#planItems').innerHTML = visible.map(item => '<div class="plan-item ' + item.state + '"><span class="plan-marker">' + ({ done: '✓', doing: '›', pending: '·' })[item.state] + '</span><span>' + esc(item.text) + '</span></div>').join('');
+  const hidden = S.plan.length - visible.length;
+  $('#planMore').hidden = !hidden; $('#planMore').textContent = hidden ? '展开查看全部' : '';
+  planEl.hidden = false;
+}
+function setPlan(items) { S.plan = items.map(text => ({ text, state: 'pending' })); S.lastPlan = S.plan; S.planOpen = false; renderPlan(); }
+function step(index, state) { if (S.plan?.[index]) { S.plan[index].state = state; renderPlan(); } }
+$('#planHead').addEventListener('click', () => { S.planOpen = !S.planOpen; renderPlan(); });
+
+function startTurn(text) {
+  S.busy = true; S.stopped = false; S.stopKind = 'stop'; S.sameAuth = false;
+  planEl.hidden = true; setScenes(false);
+  thread.querySelectorAll('.opening-only').forEach(node => node.remove());
+  const article = append(make('article', 'turn'));
+  append(make('div', 'user-message', '<span>' + esc(text) + '</span>'), article);
+  const work = make('details', 'work', '<summary><span class="work-toggle">›</span><span class="work-title">工作中</span><span class="work-count"></span></summary><div class="work-body"></div>');
+  work.open = true; append(work, article);
+  const turn = { article, work, body: $('.work-body', work), start: performance.now(), waited: 0, waitStart: 0, readRow: null, count: 0 };
+  S.current = turn; setLive('running', '思考中'); return turn;
+}
+function workCount(turn) { $('.work-count', turn.work).textContent = turn.count ? turn.count + ' 项' : ''; }
+function startActivity(turn, label, target = '') {
+  let row;
+  if (label === '读取文件' && turn.readRow && turn.body.lastElementChild === turn.readRow) {
+    row = turn.readRow;
+    row.dataset.files = String(Number(row.dataset.files) + 1);
+    $('.activity-target', row).textContent = row.dataset.files + ' 个文件';
+    $('.activity-tail', row).textContent = '';
+    row.classList.add('running'); row.classList.remove('done');
+  } else {
+    const isRead = label === '读取文件';
+    row = make('details', 'activity running', '<summary><span class="activity-label">' + esc(isRead ? '读取资料' : label) + '</span><span class="activity-target">' + esc(isRead ? '1 个文件' : target) + '</span><span class="activity-tail"></span><span class="activity-caret">›</span></summary><div class="activity-detail"></div>');
+    if (isRead) { row.dataset.files = '1'; turn.readRow = row; }
+    else turn.readRow = null;
+    append(row, turn.body); turn.count++; workCount(turn);
+  }
+  if (label === '读取文件') append(make('div', 'detail-file', esc(target)), $('.activity-detail', row));
+  return row;
+}
+function detail(row, rows) {
+  const body = $('.activity-detail', row);
+  rows.forEach(([key, value]) => append(make('div', 'detail-row', '<span class="detail-key">' + esc(key) + '</span><span class="detail-value">' + value + '</span>'), body));
+}
+function finishActivity(row, state = 'done', tail = '') {
+  row.classList.remove('running', 'done', 'failed', 'stopped'); row.classList.add(state);
+  $('.activity-tail', row).textContent = row.dataset.files ? '' : tail;
+}
+async function activity(turn, label, target = '', options = {}) {
+  const row = startActivity(turn, label, target);
+  if (options.details) detail(row, options.details);
+  await sleep(options.delay ?? 550); checkStopped();
+  finishActivity(row, options.state || 'done', options.tail || ''); return row;
+}
+async function think(ms = 700) { await sleep(ms); checkStopped(); }
+async function streamDraft(turn, content) {
+  const peek = append(make('div', 'draft-peek streaming', '<p></p><small>草稿片段</small>'), turn.body);
+  for (let i = 1; i <= 8; i++) {
+    $('p', peek).textContent = content.slice(0, Math.round(content.length * i / 8));
+    if (stick) screen.scrollTop = screen.scrollHeight;
+    await sleep(170); checkStopped();
+  }
+  peek.classList.remove('streaming');
+}
+function assistant(turn, html) { append(make('div', 'assistant-message', html), turn.article); }
+function endTurn(turn, state = 'completed') {
+  if (turn.waitStart) { turn.waited += performance.now() - turn.waitStart; turn.waitStart = 0; }
+  const seconds = Math.max(1, Math.ceil((performance.now() - turn.start - turn.waited) / 1000));
+  const title = state === 'completed' ? '工作了 ' + seconds + ' 秒' : state === 'interrupted' ? '已中断' : '已停止';
+  $('.work-title', turn.work).textContent = title;
+  turn.work.open = state !== 'completed';
+  append(make('div', 'terminal-line ' + state, state === 'completed' ? '已完成' : state === 'interrupted' ? '已中断' : '已停止'), turn.article);
+  hideLive(); S.busy = false; S.sameAuth = false; S.current = null; setScenes(true);
+  const next = S.promoted || S.queue.shift(); S.promoted = null; renderQueue();
+  if (next) setTimeout(() => { if (!S.busy) handleInput(next.text); }, 220);
+}
+function aborted(turn) {
+  turn.body.querySelectorAll('.activity.running').forEach(row => finishActivity(row, 'stopped', '已停止'));
+  endTurn(turn, S.stopKind === 'interrupt' ? 'interrupted' : 'stopped');
+}
+function requestStop(kind = 'stop') {
+  if (!S.busy || S.stopped) return;
+  S.stopKind = kind; S.stopped = true; S.sameAuth = false;
+  setLive('stop', kind === 'interrupt' ? '正在打断' : '正在停止'); stopBtn.disabled = true;
+  cancelSleeps(); if (S.permissionDone) S.permissionDone('stop');
+}
+stopBtn.addEventListener('click', () => requestStop());
+
+function askPermission(turn, options) {
+  return new Promise(resolve => {
+    turn.waitStart = performance.now();
+    const card = make('section', 'permission' + (options.extreme ? ' extreme' : ''));
+    card.innerHTML = '<div class="permission-title">' + esc(options.title) + '</div><div class="permission-body">' + options.body + '</div>';
+    const actions = append(make('div', 'permission-actions'), card);
+    let settled = false;
+    const done = choice => {
+      if (settled) return;
+      settled = true; S.permissionDone = null;
+      turn.waited += performance.now() - turn.waitStart; turn.waitStart = 0;
+      card.remove(); if (!S.stopped) setLive('running', '运行中'); resolve(choice);
+    };
+    S.permissionDone = done;
+    if (options.extreme) {
+      const field = append(make('input', 'confirm-input'), actions);
+      field.placeholder = '输入上方确认文字'; field.setAttribute('aria-label', '精确确认文字');
+      const execute = append(make('button', 'text-button danger', '执行删除'), actions); execute.disabled = true;
+      append(make('button', 'text-button', '取消'), actions).addEventListener('click', () => done('deny'));
+      field.addEventListener('input', () => { execute.disabled = field.value !== options.confirmText; });
+      execute.addEventListener('click', () => done('allow'));
+      setTimeout(() => field.focus(), 50);
+    } else {
+      append(make('button', 'text-button primary', '一次允许'), actions).addEventListener('click', () => done('allow'));
+      append(make('button', 'text-button', '本条输入允许同类操作'), actions).addEventListener('click', () => { S.sameAuth = true; done('same'); });
+      append(make('button', 'text-button', '拒绝'), actions).addEventListener('click', () => done('deny'));
+    }
+    append(card, turn.body); setLive('wait', '等待确认');
+  });
+}
+
+function renderQueue() {
+  queueEl.innerHTML = '';
+  S.queue.forEach(item => {
+    const row = append(make('div', 'queue-item', '<span class="queue-text">' + esc(item.text) + '</span><span class="queue-state">排队</span>'), queueEl);
+    append(make('button', 'queue-now', '立即'), row).addEventListener('click', () => {
+      S.queue = S.queue.filter(entry => entry !== item); S.promoted = item; renderQueue(); requestStop('interrupt');
+    });
+  });
+  queueEl.hidden = !S.queue.length;
+}
+function enqueue(text) { S.queue.push({ text }); renderQueue(); }
+
+const draft = '雨停之后，长街的灯笼一盏一盏亮起来。林晚抱着那本空白相册，在第七盏灯下停住。守夜人的摊位还空着，铜铃却响了一声。她数到第三声，街尾传来木屐声。黑暗里有人说：“这一次，换我问你一个问题。”';
+async function runChapter(queueDemo = false) {
+  const turn = startTurn('继续写第 3 章。按提纲来，快节奏一点，全文至少 2000 字。');
+  try {
+    if (queueDemo) setTimeout(() => { if (S.current === turn) enqueue('先改第三章结尾'); }, 2100);
+    await think(650);
+    setPlan(['重读记忆与前情', '起草第 3 章', '统计字数并补写', '提交章节']);
+    await activity(turn, '更新计划', '4 步', { delay: 280 }); step(0, 'doing');
+    await activity(turn, '读取文件', 'WWRITING.md', { details: [['发现', '目标 2,000 字；本轮采用快节奏风格']] });
+    await activity(turn, '读取文件', 'drafts/第3章-长街灯火-提纲.md', { details: [['发现', '3 个场景；铜铃与守夜人两条线索']] });
+    await activity(turn, '读取文件', '正文/第02章-旧照片.md', { details: [['发现', '接续空白相册的线索']] });
+    step(0, 'done'); step(1, 'doing');
+    if (!S.yolo) {
+      const choice = await askPermission(turn, { title: '写入章节', body: '将新建 <span class="path">正文/第03章-长街灯火.md</span>。' });
+      checkStopped();
+      if (choice === 'deny') { assistant(turn, '<p>未写入章节。</p>'); endTurn(turn, 'stopped'); return; }
+    }
+    const writing = startActivity(turn, '写入章节', '第03章-长街灯火.md');
+    detail(writing, [['位置', '正文/第03章-长街灯火.md'], ['内容', '场景 1–2，1,382 字']]);
+    await streamDraft(turn, draft); checkStopped(); finishActivity(writing, 'done', '1,382 字'); step(1, 'done'); step(2, 'doing');
+    await activity(turn, '统计字数', '1,382 / 2,000 字', { details: [['工具', 'count_text'], ['结果', '尚差 618 字，继续补写']] });
+    if (!S.yolo && !S.sameAuth) {
+      const choice = await askPermission(turn, { title: '继续写入', body: '将向 <span class="path">第03章-长街灯火.md</span> 追加章尾场景。' });
+      checkStopped();
+      if (choice === 'deny') { assistant(turn, '<p>补写已取消。当前 1,382 字仍保存在章节文件中。</p>'); endTurn(turn, 'stopped'); return; }
+    }
+    await activity(turn, '补写场景', '第03章-长街灯火.md', { tail: '+665 字' });
+    await activity(turn, '统计字数', '2,047 / 2,000 字', { details: [['工具', 'count_text'], ['结果', '已达到目标']] });
+    step(2, 'done'); step(3, 'doing');
+    await activity(turn, '提交章节', '第03章-长街灯火.md', { tail: '快照 v4', details: [['版本', 'v4，可恢复'], ['校验', '内容已核对']] });
+    await activity(turn, '更新记忆', 'WWRITING.md', { tail: '进度 +1 章' }); step(3, 'done');
+    assistant(turn,
+      '<p>第 3 章已写入 <code>正文/第03章-长街灯火.md</code>。</p>' +
+      '<p><strong>2,047 字</strong>，已达到 2,000 字目标。快照 v4 已保存。</p>' +
+      '<blockquote>雨停之后，长街的灯笼一盏一盏亮起来。她数到第三声，街尾传来木屐声。<br>“这一次，换我问你一个问题。”</blockquote>');
+    endTurn(turn);
+  } catch (error) { if (error?.stopped) aborted(turn); else throw error; }
+}
+async function runInit() {
+  const turn = startTurn('/init');
+  try {
+    await think(550);
+    await activity(turn, '查看目录', '星坠之城', { tail: '14 个文件' });
+    await activity(turn, '读取文件', 'OUTLINE.md', { details: [['发现', '三卷十二章大纲']] });
+    await activity(turn, '读取文件', '正文/第01章-雨夜来客.md', { details: [['发现', '已写章节 2 篇']] });
+    if (!S.yolo) {
+      const choice = await askPermission(turn, { title: '建立项目记忆', body: '将新建 <span class="path">WWRITING.md</span>，记录现有要求和文件索引。' });
+      checkStopped();
+      if (choice === 'deny') { assistant(turn, '<p>未建立项目记忆。</p>'); endTurn(turn, 'stopped'); return; }
+    }
+    await activity(turn, '写入文件', 'WWRITING.md', { tail: '已新建', details: [['内容', '当前要求、写作风格、权威文件索引']] });
+    assistant(turn, '<p>已建立 <code>WWRITING.md</code>。现有大纲和章节只读取，未改动。</p>'); endTurn(turn);
+  } catch (error) { if (error?.stopped) aborted(turn); else throw error; }
+}
+async function runExtreme() {
+  const turn = startTurn('清空 drafts 目录里的所有文件');
+  try {
+    await think(580);
+    const confirmText = '确认删除 drafts ' + Math.floor(1000 + Math.random() * 9000);
+    const choice = await askPermission(turn, { extreme: true, title: '删除 7 个文件',
+      body: '目标：<code>drafts/</code> 下的 7 个文件。此操作不可由 YOLO 放行。<br>请输入本次确认文字：<br><span class="confirm-text">' + confirmText + '</span>', confirmText });
+    checkStopped();
+    if (choice === 'deny') { assistant(turn, '<p>已取消。drafts/ 未改动。</p>'); endTurn(turn, 'stopped'); return; }
+    await activity(turn, '删除文件', 'drafts/ 下 7 个文件', { tail: '已删除', details: [['范围', '仅 drafts/；章节正文未改动']] });
+    assistant(turn, '<p>drafts/ 已清空。章节正文未改动。</p>'); endTurn(turn);
+  } catch (error) { if (error?.stopped) aborted(turn); else throw error; }
+}
+async function runRevise() {
+  const turn = startTurn('先改第三章结尾');
+  try {
+    await think(550);
+    if (!S.yolo) {
+      const choice = await askPermission(turn, { title: '修改章节', body: '将改写 <span class="path">第03章-长街灯火.md</span> 的结尾。原版本可恢复。' });
+      checkStopped();
+      if (choice === 'deny') { assistant(turn, '<p>未改动章节。</p>'); endTurn(turn, 'stopped'); return; }
+    }
+    await activity(turn, '修改章节', '第03章-长街灯火.md', { tail: '尾段已改' });
+    await activity(turn, '统计字数', '2,031 / 2,000 字', { details: [['工具', 'count_text']] });
+    await activity(turn, '提交章节', '第03章-长街灯火.md', { tail: '快照 v5' });
+    assistant(turn, '<p>第三章结尾已改，收在铜铃第三声。全文 <strong>2,031 字</strong>，快照 v5 已保存。</p>'); endTurn(turn);
+  } catch (error) { if (error?.stopped) aborted(turn); else throw error; }
+}
+
+function output(title, content) { return append(make('section', 'command-output', '<h2>' + esc(title) + '</h2><div class="command-content">' + content + '</div>')); }
+function commandHelp() { output('命令', slash.map(item => '<div class="command-row"><span><code>' + esc(item[0]) + '</code></span><span>' + esc(item[1]) + '</span></div>').join('')); }
+function commandSkills() {
+  const skills = [['balanced', '均衡叙事'], ['fast-readable', '快节奏易读'], ['psychological-literary', '心理文学'], ['avoid-ai-flavor', '避免 AI 腔'], ['shuang-rhythm', '爽感节奏'], ['dialogue-driven', '对白驱动'], ['suspense', '悬疑'], ['mystery', '推理'], ['chapter-hook', '章首钩子'], ['cliffhanger-ending', '悬念章尾'], ['show-not-tell', '展示而非讲述'], ['dialogue-not-narration', '对白而非叙述']];
+  output('写作技能', '<div class="skill-list">' + skills.map(item => '<div><code>' + esc(item[0]) + '</code>' + esc(item[1]) + '</div>').join('') + '</div>');
+}
+function commandCost() { output('成本统计', '<div class="command-row"><span>本会话</span><span>演示数据 · $0.29 · ↑6.2k ↓14.8k token</span></div><div class="command-row"><span>项目累计</span><span>演示数据 · $4.87</span></div>'); }
+function commandModel() {
+  const block = output('模型', '<div class="command-row"><span>当前</span><span>deepseek-v3.2 · DeepSeek 官方</span></div><button class="text-button" id="testModel">测试连接</button><span id="modelResult" class="command-foot"></span>');
+  $('#testModel', block).addEventListener('click', async () => { $('#modelResult', block).textContent = ' 测试中'; await sleep(650); $('#modelResult', block).textContent = ' 演示连接正常'; });
+}
+function commandExport() {
+  const block = output('导出成书', '<div class="command-row"><span>范围</span><span>正文/ 第 01–03 章</span></div><button class="text-button primary" id="exportBtn">开始导出</button><span id="exportResult" class="command-foot"></span>');
+  $('#exportBtn', block).addEventListener('click', async () => { $('#exportBtn', block).disabled = true; $('#exportResult', block).textContent = ' 合并中'; await sleep(850); $('#exportResult', block).textContent = ' 已导出 dist/星坠之城.docx（演示）'; });
+}
+function commandCompact() {
+  const block = output('压缩上下文', '<div id="compactLabel">压缩中</div><div class="progress-track"><i id="compactBar"></i></div><button class="text-button" id="compactCancel">取消</button>');
+  let value = 0;
+  const timer = setInterval(() => { value += 10; $('#compactBar', block).style.width = value + '%'; if (value >= 100) { clearInterval(timer); $('#compactLabel', block).textContent = '已压缩'; $('#compactCancel', block).disabled = true; } }, 100);
+  $('#compactCancel', block).addEventListener('click', () => { clearInterval(timer); $('#compactLabel', block).textContent = '已取消'; $('#compactCancel', block).disabled = true; });
+}
+function commandPlan() { if (S.lastPlan) { S.plan = S.lastPlan; S.planOpen = true; renderPlan(); } else output('任务计划', '暂无任务计划。'); }
+function openYolo() {
+  if (S.yolo) { S.yolo = false; $('#modeBtn').textContent = '普通模式'; $('#modeBtn').classList.remove('yolo'); return; }
+  overlay.hidden = false; $('#yoloCancel').focus();
+}
+$('#yoloCancel').addEventListener('click', () => { overlay.hidden = true; input.focus(); });
+$('#yoloOk').addEventListener('click', () => { overlay.hidden = true; S.yolo = true; $('#modeBtn').textContent = 'YOLO'; $('#modeBtn').classList.add('yolo'); input.focus(); });
+$('#modeBtn').addEventListener('click', openYolo);
+$('#modelBtn').addEventListener('click', commandModel);
+function clearScreen() { thread.innerHTML = ''; planEl.hidden = true; sceneButtons = []; intro(); screen.scrollTop = 0; stick = true; }
+$('#homeBtn').addEventListener('click', () => { if (!S.busy) clearScreen(); });
+
+function handleInput(raw) {
+  const text = raw.trim(); if (!text) return;
+  if (S.busy) { enqueue(text); return; }
+  if (text.startsWith('/')) {
+    const command = text.split(/\s+/)[0];
+    switch (command) {
+      case '/init': return runInit();
+      case '/skills': return commandSkills();
+      case '/model': return commandModel();
+      case '/cost': return commandCost();
+      case '/plan': return commandPlan();
+      case '/compact': return commandCompact();
+      case '/export': return commandExport();
+      case '/yolo': return openYolo();
+      case '/clear': return clearScreen();
+      case '/help': return commandHelp();
+      case '/stop': return output('停止', '当前没有运行中的任务。');
+      default: return output('未知命令', '输入 /help 查看命令。');
+    }
+  }
+  if (/先改第三章结尾|改写.*结尾/.test(text)) return runRevise();
+  if (/清空|删除 drafts/.test(text)) return runExtreme();
+  if (/第\s*3\s*章|第三章/.test(text)) return runChapter();
+  const turn = startTurn(text);
+  (async () => { try { await think(600); assistant(turn, '<p>当前原型未连接模型，无法处理这条输入。</p>'); endTurn(turn); } catch (error) { if (error?.stopped) aborted(turn); else throw error; } })();
+}
+function sendInput() {
+  if (demoTyping) return;
+  const text = input.value.trim(); if (!text) return;
+  closeMenu(); S.history.push(text); S.historyIndex = S.history.length;
+  input.value = ''; handleInput(text); input.focus();
+}
+$('#sendBtn').addEventListener('click', sendInput);
+input.addEventListener('keydown', event => {
+  if (S.menu) {
+    const items = menuItems();
+    if (event.key === 'ArrowDown') { event.preventDefault(); S.menuIndex = (S.menuIndex + 1) % items.length; renderMenu(); return; }
+    if (event.key === 'ArrowUp') { event.preventDefault(); S.menuIndex = (S.menuIndex - 1 + items.length) % items.length; renderMenu(); return; }
+    if (event.key === 'Enter' || event.key === 'Tab') { event.preventDefault(); pickMenu(); return; }
+    if (event.key === 'Escape') { event.preventDefault(); closeMenu(); return; }
+  }
+  if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendInput(); return; }
+  if (event.key === 'ArrowUp' && !input.value && S.history.length) { event.preventDefault(); S.historyIndex = Math.max(0, S.historyIndex - 1); input.value = S.history[S.historyIndex]; return; }
+  if (event.key === 'ArrowDown' && S.historyIndex < S.history.length) { event.preventDefault(); S.historyIndex++; input.value = S.history[S.historyIndex] || ''; }
+});
+document.addEventListener('keydown', event => {
+  if (event.defaultPrevented) return;
+  if (event.ctrlKey && event.key.toLowerCase() === 'c' && S.busy) { event.preventDefault(); requestStop(); }
+  if (event.ctrlKey && event.key.toLowerCase() === 'l') { event.preventDefault(); if (!S.busy) clearScreen(); }
+  if (event.key === 'Tab' && event.shiftKey && document.activeElement === input && !S.menu) { event.preventDefault(); openYolo(); }
+  if (event.key === 'Escape' && !overlay.hidden) { overlay.hidden = true; input.focus(); }
+});
+document.addEventListener('click', event => { if (!menuEl.hidden && !$('#composer').contains(event.target)) closeMenu(); });
+
+function intro() {
+  append(make('section', 'intro opening-only',
+    '<div class="cli-logo">星坠之城 <span>长篇写作工作区</span></div>' +
+    '<div class="cli-facts"><span>工作区</span><code>D:\\Novels\\星坠之城</code>' +
+    '<span>章节</span><span>已完成 2 / 12 · 下一章「长街灯火」</span>' +
+    '<span>记忆</span><span>WWRITING.md 待建立</span>' +
+    '<span>恢复</span><span>上次会话已恢复</span></div>' +
+    '<div class="cli-divider"></div>' +
+    '<div class="action-heading">演示场景</div>' +
+    '<button class="featured-demo" id="fullDemo"><span class="demo-num">01</span><span><strong>完整演示 · 写第 3 章</strong><small>读取资料 · 写入确认 · 流式草稿 · 字数校验 · 提交</small></span></button>'));
+  $('#fullDemo').addEventListener('click', playFullDemo);
+  sceneButtons.push($('#fullDemo'));
+  const actions = append(make('nav', 'action-list opening-only', ''), thread);
+  const scenes = [
+    ['/init', '建立项目记忆', runInit], ['改稿', '第三章结尾', runRevise],
+    ['队列', '排队与立即', () => runChapter(true)], ['权限', '极端操作确认', runExtreme],
+    ['/skills', '查看写作技能', commandSkills]
+  ];
+  scenes.forEach(([command, label, action], index) => {
+    const button = append(make('button', 'action-item', '<span class="action-index">' + String(index + 2).padStart(2, '0') + '</span><span class="action-cmd">' + esc(command) + '</span><span class="action-desc">' + esc(label) + '</span><span class="item-arrow">↵</span>'), actions);
+    button.addEventListener('click', () => { if (!S.busy) action(); }); sceneButtons.push(button);
+  });
+}
+let demoTyping = false;
+async function playFullDemo() {
+  if (S.busy || demoTyping) return;
+  if (input.value.trim() || matchMedia('(prefers-reduced-motion: reduce)').matches) { runChapter(); return; }
+  demoTyping = true; setScenes(false); input.readOnly = true;
+  $('#sendBtn').disabled = true;
+  $('#composer').classList.add('demo-typing'); input.focus({ preventScroll: true });
+  const prompt = '继续写第 3 章。按提纲来，快节奏一点，全文至少 2000 字。';
+  for (const char of prompt) { input.value += char; await sleep(20); }
+  await sleep(260);
+  input.value = ''; input.readOnly = false; demoTyping = false;
+  $('#sendBtn').disabled = false;
+  $('#composer').classList.remove('demo-typing'); runChapter();
+}
+intro(); input.focus({ preventScroll: true }); screen.scrollTop = 0;
+const query = new URLSearchParams(location.search);
+if (query.get('yolo') === '1') { S.yolo = true; $('#modeBtn').textContent = 'YOLO'; $('#modeBtn').classList.add('yolo'); }
+if (query.has('auto')) setTimeout(() => {
+  const scene = query.get('auto');
+  if (scene === 'chapter') runChapter();
+  else if (scene === 'init') runInit();
+  else if (scene === 'extreme') runExtreme();
+  else if (scene === 'revise') runRevise();
+}, 500);
+</script>
+</body>
+</html>

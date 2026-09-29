@@ -1,0 +1,347 @@
+// 事件日志测试：seq 单调递增、同批连续、JSONL 每行可独立解析、
+// state.json 损坏时可从日志重建、不完整尾行被截断并记录恢复事件。
+// 全部使用 os.tmpdir() 下的临时目录与真实文件系统，零 mock。
+import test, { after } from 'node:test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import os from 'node:os';
+import fs from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { createEventStore } from '../../src/session/event-store.mjs';
+
+// 临时目录登记：测试结束时统一删除。
+const tempRoots = [];
+after(async () => {
+  await Promise.all(tempRoots.map((dir) => fs.rm(dir, { recursive: true, force: true })));
+});
+
+async function makeTempRoot(prefix) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  tempRoots.push(dir);
+  return dir;
+}
+
+const FIXED_MS = 1758900000000;
+// 时钟每次调用前进 1 秒：at 单调且互不相同。
+function makeClock() {
+  let now = FIXED_MS;
+  return () => (now += 1000);
+}
+// 确定性 ID 工厂：ev-1、ev-2……
+function makeIdFactory(prefix = 'ev') {
+  let n = 0;
+  return () => `${prefix}-${++n}`;
+}
+
+function makeStore(sessionDir) {
+  return createEventStore({ sessionDir, clock: makeClock(), idFactory: makeIdFactory() });
+}
+
+function iso(ms) {
+  return new Date(ms).toISOString();
+}
+
+test('append 首个事件：形状完整、seq 从 1 起、JSONL 与 state.json 落盘', async () => {
+  const root = await makeTempRoot('wwriting-evt-first-');
+  const dir = path.join(root, 'sess-1');
+  const store = makeStore(dir);
+
+  const event = await store.append({ type: 'session_created', session_id: 'sess-1', data: { title: '长夜灯' } });
+  assert.deepEqual(event, {
+    schema_version: 1,
+    seq: 1,
+    event_id: 'ev-1',
+    at: iso(FIXED_MS + 1000),
+    type: 'session_created',
+    session_id: 'sess-1',
+    run_id: null,
+    data: { title: '长夜灯' },
+  });
+
+  // JSONL 落盘且以换行结尾。
+  const raw = await fs.readFile(path.join(dir, 'events.jsonl'), 'utf8');
+  assert.equal(raw.endsWith('\n'), true);
+  assert.deepEqual(JSON.parse(raw.trimEnd()), event);
+
+  // state.json 缓存同步写入。
+  const state = JSON.parse(await fs.readFile(path.join(dir, 'state.json'), 'utf8'));
+  assert.equal(state.session_id, 'sess-1');
+  assert.equal(state.status, 'idle');
+  assert.equal(state.last_seq, 1);
+  assert.equal(state.updated_at, iso(FIXED_MS + 1000));
+});
+
+test('seq 单调递增，at 与 event_id 来自注入的时钟与 ID 工厂', async () => {
+  const root = await makeTempRoot('wwriting-evt-seq-');
+  const store = makeStore(path.join(root, 'sess-1'));
+
+  const e1 = await store.append({ type: 'a', session_id: 'sess-1', data: {} });
+  const e2 = await store.append({ type: 'b', session_id: 'sess-1', data: {} });
+  const e3 = await store.append({ type: 'c', session_id: 'sess-1', data: {} });
+
+  assert.deepEqual([e1.seq, e2.seq, e3.seq], [1, 2, 3]);
+  assert.deepEqual([e1.event_id, e2.event_id, e3.event_id], ['ev-1', 'ev-2', 'ev-3']);
+  assert.deepEqual([e1.at, e2.at, e3.at], [iso(FIXED_MS + 1000), iso(FIXED_MS + 2000), iso(FIXED_MS + 3000)]);
+  assert.deepEqual([e1.schema_version, e2.schema_version, e3.schema_version], [1, 1, 1]);
+});
+
+test('appendBatch：同批事件 seq 连续，跨批继续递增', async () => {
+  const root = await makeTempRoot('wwriting-evt-batch-');
+  const store = makeStore(path.join(root, 'sess-1'));
+
+  const batch1 = await store.appendBatch([
+    { type: 'run_started', session_id: 'sess-1', run_id: 'run-1', data: { input_id: 'in-1' } },
+    { type: 'model_delta', session_id: 'sess-1', run_id: 'run-1', data: { text: '夜色' } },
+    { type: 'model_delta', session_id: 'sess-1', run_id: 'run-1', data: { text: '渐深' } },
+  ]);
+  assert.deepEqual(batch1.map((e) => e.seq), [1, 2, 3]);
+
+  const batch2 = await store.appendBatch([{ type: 'run_completed', session_id: 'sess-1', run_id: 'run-1' }]);
+  assert.deepEqual(batch2.map((e) => e.seq), [4]);
+  assert.equal(batch2[0].run_id, 'run-1');
+
+  // 批内 seq 连续是日志不变量：重建投影与逐行读取结论一致。
+  const { events } = await store.readAll();
+  assert.deepEqual(events.map((e) => e.seq), [1, 2, 3, 4]);
+});
+
+test('JSONL 每行可独立解析', async () => {
+  const root = await makeTempRoot('wwriting-evt-lines-');
+  const dir = path.join(root, 'sess-1');
+  const store = makeStore(dir);
+  await store.append({ type: 'session_created', session_id: 'sess-1', data: {} });
+  await store.append({ type: 'input_submitted', session_id: 'sess-1', data: { input_id: 'in-1', text: '第一章' } });
+  await store.appendBatch([
+    { type: 'run_started', session_id: 'sess-1', run_id: 'run-1', data: { input_id: 'in-1' } },
+    { type: 'run_completed', session_id: 'sess-1', run_id: 'run-1', data: {} },
+  ]);
+
+  const raw = await fs.readFile(path.join(dir, 'events.jsonl'), 'utf8');
+  const lines = raw.split('\n').filter((line) => line !== '');
+  assert.equal(lines.length, 4);
+  // 逐行独立解析：任何一行都不依赖其他行。
+  const parsed = lines.map((line) => JSON.parse(line));
+  assert.deepEqual(parsed.map((e) => e.seq), [1, 2, 3, 4]);
+  for (const event of parsed) {
+    assert.equal(event.schema_version, 1);
+    assert.equal(typeof event.type, 'string');
+    assert.equal(typeof event.at, 'string');
+    assert.equal(typeof event.session_id, 'string');
+  }
+});
+
+test('readAll 返回全部事件，tail 返回最后 n 个事件', async () => {
+  const root = await makeTempRoot('wwriting-evt-tailfn-');
+  const store = makeStore(path.join(root, 'sess-1'));
+  for (const type of ['a', 'b', 'c', 'd']) {
+    await store.append({ type, session_id: 'sess-1', data: {} });
+  }
+
+  const { events, truncatedTail } = await store.readAll();
+  assert.deepEqual(events.map((e) => e.type), ['a', 'b', 'c', 'd']);
+  assert.equal(truncatedTail, false);
+
+  assert.deepEqual((await store.tail(2)).map((e) => e.seq), [3, 4]);
+  assert.deepEqual(await store.tail(0), []);
+  assert.deepEqual((await store.tail(99)).map((e) => e.seq), [1, 2, 3, 4]);
+  await assert.rejects(store.tail(-1), /[\u4e00-\u9fff]/);
+});
+
+test('state.json 损坏：rebuildProjection 从日志重建，repair 把缓存写回', async () => {
+  const root = await makeTempRoot('wwriting-evt-corrupt-');
+  const dir = path.join(root, 'sess-1');
+  const statePath = path.join(dir, 'state.json');
+  const store = makeStore(dir);
+  await store.append({ type: 'session_created', session_id: 'sess-1', data: {} });
+  await store.append({ type: 'input_submitted', session_id: 'sess-1', data: { input_id: 'in-1', text: '第一章' } });
+  await store.append({ type: 'run_started', session_id: 'sess-1', run_id: 'run-1', data: { input_id: 'in-1' } });
+
+  // 缓存损坏不影响日志真相：新实例只看日志就能重建投影。
+  await fs.writeFile(statePath, '这不是 JSON{{{', 'utf8');
+  const fresh = makeStore(dir);
+  const { projection } = await fresh.rebuildProjection();
+  assert.equal(projection.session_id, 'sess-1');
+  assert.equal(projection.status, 'active');
+  assert.equal(projection.active_run_id, 'run-1');
+  assert.equal(projection.active_input_id, 'in-1');
+  assert.equal(projection.last_seq, 3);
+
+  // repair 把重建结果原子写回 state.json。
+  await fresh.repair();
+  const state = JSON.parse(await fs.readFile(statePath, 'utf8'));
+  assert.equal(state.status, 'active');
+  assert.equal(state.last_seq, 3);
+});
+
+test('state.json 缺失：rebuildProjection 正常，repair 重写缓存', async () => {
+  const root = await makeTempRoot('wwriting-evt-nostate-');
+  const dir = path.join(root, 'sess-1');
+  const statePath = path.join(dir, 'state.json');
+  const store = makeStore(dir);
+  await store.append({ type: 'session_created', session_id: 'sess-1', data: { title: '潮汐' } });
+  await store.append({ type: 'input_submitted', session_id: 'sess-1', data: { input_id: 'in-1', text: '序章' } });
+
+  await fs.rm(statePath, { force: true });
+  const fresh = makeStore(dir);
+  const { projection } = await fresh.rebuildProjection();
+  assert.equal(projection.title, '潮汐');
+  assert.equal(projection.active_input.text, '序章');
+  assert.equal(existsSync(statePath), false);
+
+  await fresh.repair();
+  assert.equal(existsSync(statePath), true);
+  const state = JSON.parse(await fs.readFile(statePath, 'utf8'));
+  assert.equal(state.last_seq, 2);
+});
+
+test('不完整尾行被截断并记录恢复事件，后续 seq 接续', async () => {
+  const root = await makeTempRoot('wwriting-evt-tail-');
+  const dir = path.join(root, 'sess-1');
+  const eventsPath = path.join(dir, 'events.jsonl');
+  const store = makeStore(dir);
+  await store.append({ type: 'session_created', session_id: 'sess-1', data: {} });
+  await store.append({ type: 'input_submitted', session_id: 'sess-1', data: { input_id: 'in-1', text: '第一章' } });
+
+  // 模拟进程在写入下一行途中崩溃：日志留下一行不完整的半行。
+  const partial = '{"schema_version":1,"seq":3,"type":"input_subm';
+  await fs.appendFile(eventsPath, partial, 'utf8');
+
+  // 只读视角：半行不是事件，truncatedTail 为真。
+  const fresh = makeStore(dir);
+  const rebuilt = await fresh.rebuildProjection();
+  const readOnly = await fresh.readAll();
+  assert.equal(readOnly.events.length, 2);
+  assert.equal(readOnly.truncatedTail, true);
+  assert.equal(rebuilt.truncatedTail, true);
+  assert.equal(rebuilt.projection.last_seq, 2);
+
+  // 写模式修复：截断半行并追加恢复事件。
+  const repairResult = await fresh.repair();
+  assert.equal(repairResult.truncatedTail, true);
+  const after = await fresh.readAll();
+  assert.equal(after.events.length, 3);
+  assert.equal(after.events[2].type, 'log_tail_truncated');
+  assert.equal(after.events[2].seq, 3);
+  assert.deepEqual(after.events[2].data, { removed_bytes: partial.length });
+  assert.equal(after.truncatedTail, false);
+
+  // 半行消失，文件重新以换行结尾。
+  const raw = await fs.readFile(eventsPath, 'utf8');
+  assert.equal(raw.endsWith('\n'), true);
+  assert.equal(raw.includes('"seq":3,"type":"input_subm\n'), false);
+  assert.equal(raw.split('\n').filter((line) => line !== '').length, 3);
+
+  // 后续追加从 seq 4 接续，投影同步。
+  const next = await fresh.append({ type: 'input_submitted', data: { input_id: 'in-2', text: '第二章' } });
+  assert.equal(next.seq, 4);
+  assert.equal((await fresh.currentProjection()).last_seq, 4);
+});
+
+test('完全未写完的首个事件（日志只有半行）：截断后不留下孤立恢复事件', async () => {
+  const root = await makeTempRoot('wwriting-evt-tail-first-');
+  const dir = path.join(root, 'sess-1');
+  const eventsPath = path.join(dir, 'events.jsonl');
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(eventsPath, '{"schema_version":1,"seq":1,"type":"sess', 'utf8');
+
+  const store = makeStore(dir);
+  const repairResult = await store.repair();
+  assert.equal(repairResult.truncatedTail, true);
+  const { events } = await store.readAll();
+  assert.equal(events.length, 0);
+  // 空日志上追加首个事件从 seq 1 开始。
+  const first = await store.append({ type: 'session_created', session_id: 'sess-1', data: {} });
+  assert.equal(first.seq, 1);
+});
+
+test('seq 不连续或中间行损坏：readAll 报中文错误', async () => {
+  const root = await makeTempRoot('wwriting-evt-broken-');
+
+  function eventLine(seq, type) {
+    return JSON.stringify({
+      schema_version: 1,
+      seq,
+      event_id: `ev-${seq}`,
+      at: iso(FIXED_MS + seq * 1000),
+      type,
+      session_id: 'sess-1',
+      run_id: null,
+      data: {},
+    });
+  }
+
+  // seq 跳号。
+  const gapDir = path.join(root, 'gap');
+  await fs.mkdir(gapDir, { recursive: true });
+  await fs.writeFile(
+    path.join(gapDir, 'events.jsonl'),
+    `${eventLine(1, 'session_created')}\n${eventLine(3, 'input_submitted')}\n`,
+    'utf8',
+  );
+  await assert.rejects(
+    makeStore(gapDir).readAll(),
+    (error) => {
+      assert.match(error.message, /[\u4e00-\u9fff]/);
+      assert.match(error.message, /seq/);
+      return true;
+    },
+  );
+
+  // 中间行损坏。
+  const corruptDir = path.join(root, 'corrupt');
+  await fs.mkdir(corruptDir, { recursive: true });
+  await fs.writeFile(
+    path.join(corruptDir, 'events.jsonl'),
+    `${eventLine(1, 'session_created')}\n{"broken\n`,
+    'utf8',
+  );
+  await assert.rejects(
+    makeStore(corruptDir).readAll(),
+    (error) => {
+      assert.match(error.message, /[\u4e00-\u9fff]/);
+      assert.match(error.message, /第 2 行/);
+      return true;
+    },
+  );
+});
+
+test('事件形状校验：非法输入报中文错误', async () => {
+  const root = await makeTempRoot('wwriting-evt-shape-');
+  const store = makeStore(path.join(root, 'sess-1'));
+
+  await assert.rejects(store.append({ type: '', session_id: 'sess-1' }), /[\u4e00-\u9fff]/);
+  await assert.rejects(store.append({ type: '   ', session_id: 'sess-1' }), /[\u4e00-\u9fff]/);
+  await assert.rejects(store.append({ type: 'x', session_id: 'sess-1', data: [1, 2] }), /[\u4e00-\u9fff]/);
+  await assert.rejects(store.append({ type: 'x', session_id: 'sess-1', data: 'nope' }), /[\u4e00-\u9fff]/);
+  await assert.rejects(store.append({ type: 'x', session_id: 'sess-1', run_id: 42 }), /[\u4e00-\u9fff]/);
+  await assert.rejects(store.append({ type: 'x', session_id: 'sess-1', run_id: '' }), /[\u4e00-\u9fff]/);
+  // 空日志且未提供 session_id：无法确定归属，报中文错误。
+  await assert.rejects(store.append({ type: 'x' }), /[\u4e00-\u9fff]/);
+  await assert.rejects(store.append('不是对象'), /[\u4e00-\u9fff]/);
+  await assert.rejects(store.appendBatch('不是数组'), /[\u4e00-\u9fff]/);
+});
+
+test('run_id 显式保留，data 缺省为空对象，session_id 可从日志继承', async () => {
+  const root = await makeTempRoot('wwriting-evt-fields-');
+  const store = makeStore(path.join(root, 'sess-1'));
+
+  const first = await store.append({ type: 'session_created', session_id: 'sess-1', data: {} });
+  assert.equal(first.run_id, null);
+
+  const withRun = await store.append({ type: 'run_started', session_id: 'sess-1', run_id: 'run-9' });
+  assert.equal(withRun.run_id, 'run-9');
+  assert.deepEqual(withRun.data, {});
+
+  // 后续事件不写 session_id 时从日志继承。
+  const inherited = await store.append({ type: 'run_completed', run_id: 'run-9', data: {} });
+  assert.equal(inherited.session_id, 'sess-1');
+});
+
+test('append 与 appendBatch 后无临时文件残留，tail 拒绝非整数参数', async () => {
+  const root = await makeTempRoot('wwriting-evt-tmp-');
+  const dir = path.join(root, 'sess-1');
+  const store = makeStore(dir);
+  await store.append({ type: 'session_created', session_id: 'sess-1', data: {} });
+  await store.appendBatch([{ type: 'a', session_id: 'sess-1', data: {} }]);
+  assert.equal(existsSync(path.join(dir, 'state.json.tmp')), false);
+});

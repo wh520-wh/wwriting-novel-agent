@@ -1,0 +1,6 @@
+.superpowers/
+docs/superpowers/
+.local/
+node_modules/
+.workbuddy/
+find-bugs-report.md
