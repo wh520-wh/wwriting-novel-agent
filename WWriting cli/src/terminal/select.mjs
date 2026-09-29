@@ -81,6 +81,10 @@ export function menuAction(key, { selected = 0, count = 0 } = {}) {
 //   引导页只在可交互时启动，所以这条路径不会静默替用户做选择。
 export function createSelector({ stdin, stdout, env = process.env, color } = {}) {
   const useColor = resolveColor({ color, env, stdout });
+  // 屏幕上此刻这块菜单的高度（0 = 没画着）。重绘的上移量必须用它：块尾锚在光标处、
+  // 动的是顶边，用**新块**高度上移时，块高在两次重绘之间变大就会多吃上方一行、
+  // 变矮就会残留块顶一行（缺陷猎捕报告 10）。
+  let onScreenHeight = 0;
   const canAsk = Boolean(
     stdin
     && typeof stdin.on === 'function'
@@ -111,6 +115,7 @@ export function createSelector({ stdin, stdout, env = process.env, color } = {})
     // 之后每次重绘都「上移整块高度 → 逐行抹掉重写」，块尾始终停在新行的行首。
     stdout.write(ERASE_LINE);
     writeBlock(block);
+    onScreenHeight = block.length;
 
     const wasRaw = stdin.isRaw === true;
     // 流是否已经在流动：菜单要 resume() 才能收到按键，但结束之后必须还回去——
@@ -179,8 +184,11 @@ export function createSelector({ stdin, stdout, env = process.env, color } = {})
   }
 
   function redrawBlock(lines) {
-    stdout.write(cursorUp(lines.length));
-    writeBlock(lines);
+    if (onScreenHeight > 0) stdout.write(cursorUp(onScreenHeight));
+    // 逐行先抹再写：新行比旧行短时，行尾残留也会被清掉。
+    for (const line of lines) stdout.write(`${ERASE_LINE}${line}\n`);
+    if (lines.length < onScreenHeight) stdout.write(ERASE_BELOW); // 新块变矮：块尾下方不再有旧块
+    onScreenHeight = lines.length;
   }
 
   // 收尾：把整块换成一行（或整块抹掉），块尾留在新行行首。
@@ -189,6 +197,7 @@ export function createSelector({ stdin, stdout, env = process.env, color } = {})
     stdout.write(ERASE_LINE);
     if (summaryLine !== null && summaryLine !== undefined) stdout.write(`${summaryLine}\n`);
     stdout.write(ERASE_BELOW);
+    onScreenHeight = 0; // 块已不在屏幕上
   }
 
   return { ask, canAsk };
