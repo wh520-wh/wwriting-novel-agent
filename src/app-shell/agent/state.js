@@ -433,10 +433,9 @@ function handleRunStarted(state, payload, event, seq) {
       started_at: event.at ?? null
     };
     state.session.status = "running";
-    // 工单 07 裁决（口径 A，2026-09-28）：新 Run 开始即清空上一轮计划——chip 的
-    // 「保留供回看」到下一个 Run 为止，否则本轮执行期间顶栏挂的是旧任务的进度。
-    // 只清 chip 数据源 state.plan；工作组内的计划行是历史投影，不动。retry（同
-    // id）沿用同一任务，计划保留。chip 的隐藏由 index.js 在 run_started 时通知。
+    // 工单 07 裁决（口径 A，2026-09-28）：新 Run 开始即清空 chip 数据源（「保留供
+    // 回看」只到下一个 Run 为止）；工作组内的计划行是历史投影，不动。retry（同 id）
+    // 走上面的分支，计划保留。chip 同步见 index.js。
     state.plan = null;
   }
   activateInput(state, payload.input_id ?? null);
