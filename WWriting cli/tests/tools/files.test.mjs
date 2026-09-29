@@ -307,6 +307,24 @@ test('editFile：替换唯一片段，未命中与多处命中分别报错，rep
   );
 });
 
+test('editFile：替换串里的 $&/$$ 等序列按字面落盘，不得解释为替换模式', async () => {
+  // String.prototype.replace 的替换串会把 $$/$&/$`/$' 解释成替换模式（split/join 不会），
+  // 同一个 newText 曾因 replaceAll 开关落盘成两种内容（缺陷猎捕报告第 1 条）。
+  const { projectRoot } = await makeLayout('ww-files-edit-pattern-');
+  const tools = createFileTools({ projectRoot, permissions: allowWrites() });
+  await tools.writeFile({ path: 'chapters/ch01.md', content: '开头\n旧句子\n结尾\n' });
+
+  await tools.editFile({ path: 'chapters/ch01.md', oldText: '旧句子', newText: '新$&句子' });
+  assert.equal(await fs.readFile(path.join(projectRoot, 'chapters/ch01.md'), 'utf8'), '开头\n新$&句子\n结尾\n');
+
+  await tools.editFile({ path: 'chapters/ch01.md', oldText: '新$&句子', newText: '$$2000' });
+  assert.equal(await fs.readFile(path.join(projectRoot, 'chapters/ch01.md'), 'utf8'), '开头\n$$2000\n结尾\n');
+
+  // 替换串里出现被替换的原文也要能正常落盘（split/join 语义下这是合法的一步替换）。
+  await tools.editFile({ path: 'chapters/ch01.md', oldText: '$$2000', newText: '$$2000元' });
+  assert.equal(await fs.readFile(path.join(projectRoot, 'chapters/ch01.md'), 'utf8'), '开头\n$$2000元\n结尾\n');
+});
+
 test('countText：文件工具直接暴露本地字数统计', async () => {
   const { projectRoot } = await makeLayout('ww-files-count-');
   const tools = createFileTools({ projectRoot, permissions: allowWrites() });
