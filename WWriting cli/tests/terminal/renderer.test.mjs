@@ -8,7 +8,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { clipToWidth, createEventRenderer, createRenderer, displayWidth, formatCacheHit, formatThinkingSeconds, formatUsage, padDisplayEnd, PROSE_INDENT, proseRowWidth, terminalStatusText, thinkingPreviewLines, thinkingPreviewWidth, userRows } from '../../src/terminal/renderer.mjs';
+import { createEventRenderer, createRenderer, formatCacheHit, formatThinkingSeconds, formatUsage, PROSE_INDENT, terminalStatusText, thinkingPreviewLines, thinkingPreviewWidth, userRows } from '../../src/terminal/renderer.mjs';
+import { clipToWidth, displayWidth, padDisplayEnd, proseRowWidth } from '../../src/terminal/metrics.mjs';
 import { screenText } from '../helpers/screen.mjs';
 import { VERSION, versionLine } from '../../src/version.mjs';
 import { createRunController } from '../../src/agent/run-controller.mjs';

@@ -6,7 +6,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  BANNER_FILL, BANNER_ROWS, BANNER_TEXT, bannerLines, bannerWidth, contentWidth, pickBannerScale,
+  BANNER_FILL, BANNER_ROWS, BANNER_TEXT, bannerLines, bannerWidth, pickBannerScale,
 } from '../../src/terminal/banner.mjs';
 import { createRenderer } from '../../src/terminal/renderer.mjs';
 
@@ -49,14 +49,8 @@ test('大字：按终端宽度挑档位，放不下就不给', () => {
   assert.equal(pickBannerScale(20), 0);
 });
 
-test('内容列宽：按终端宽度内缩，宽终端为大字放宽但不铺满', () => {
-  assert.equal(contentWidth(80), 76, '80 列终端：去掉 2 格缩进与 2 格右边距');
-  assert.equal(contentWidth(120), 86, '宽终端为大字放宽到 86');
-  assert.equal(contentWidth(120), contentWidth(90), '够放大字的区间里宽度一致，不随终端乱飘');
-  assert.equal(contentWidth(200), 86, '再宽也不铺满整个终端');
-  assert.equal(contentWidth(50), 46, '终端更窄时以终端为准');
-  assert.equal(contentWidth(undefined), 76, '拿不到列数就按 80 算');
-});
+// 内容列宽（contentWidth）的用例已随实现迁往 tests/terminal/metrics.test.mjs——
+// 它不再是字形文件的概念，大字退场后横线与阅读列回归设计上限（metrics.mjs 头注）。
 
 test('面板：大字在身份行之上，横线跟着大字放宽；NO_COLOR 下不上色', () => {
   const chunks = [];

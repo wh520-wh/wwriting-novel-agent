@@ -12,7 +12,7 @@ import { loadModelConfig, looksLikeApiKey, maskApiKey, sanitizeInput, saveDeepSe
 import { EFFORT_LEVELS, parseEffortArg, unsupportedEffortReason } from '../model/effort.mjs';
 import { fact } from '../fact.mjs';
 import { versionLine } from '../version.mjs';
-import { padDisplayEnd } from './renderer.mjs';
+import { padDisplayEnd } from './metrics.mjs';
 
 // /model 的三行配置：左列按显示宽度对齐，值和启动头部面板同一种读法。
 const CONFIG_COLUMN = 10;

@@ -5,7 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
-import { displayWidth } from '../../src/terminal/renderer.mjs';
+import { displayWidth } from '../../src/terminal/metrics.mjs';
 import { screenText } from '../helpers/screen.mjs';
 
 import {
