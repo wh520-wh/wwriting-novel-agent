@@ -410,6 +410,53 @@ test('setLive 收到与屏幕上相同的一份时不重绘（思考预览会推
   reader.stop();
 });
 
+test('超宽实时行：擦除按实测物理行数上移，不把折出来的行留在屏上（报告 5/7 残留族）', async () => {
+  // 输入层不再信任调用方「每行都不超宽」的约定：超宽行会被终端自动折行，
+  // 只按 \n 数行会少算物理行数，\x1b[0J 从块中间开抹就留下一截擦不掉的实时区。
+  // 这条保证现在属于输入层自己（实测「剥色后显示宽度 ÷ 列数」）——
+  // 就算调用方漏截宽，最多难看，不会再残留。
+  const stdin = makeFakeTTY();
+  const stdout = makeSink({ tty: true });
+  const reader = createInputReader({ stdin, stdout, env: { NO_COLOR: '1' }, onSubmit: () => {} });
+  reader.start();
+  await tick();
+  const screen = () => screenText(stdout.text(), { cols: 80, rows: 40 });
+
+  // 一行 200 列（80 列终端折成 3 格物理行），没有换行符——旧实现按 1 行算
+  reader.composer.setLive('超'.repeat(100));
+  await tick();
+
+  const before = stdout.chunks.length;
+  reader.composer.takeArea();
+  const seq = stdout.chunks.slice(before).join('');
+  assert.match(seq, /\r\x1b\[4A\x1b\[0J/, `擦除应上移「实时 3 行 + 光标行 1」= 4 格，实际：${JSON.stringify(seq)}`);
+  assert.doesNotMatch(screen(), /超超超/, '实时区折出来的任何一行都不该残留在画面上');
+
+  reader.stop();
+  stdin.end();
+});
+
+test('超宽实时行带颜色码：量测剥掉 SGR 再算宽度，颜色码不占列', async () => {
+  // 渲染器传给 composer 的是上色后的文本：SGR 码本身不占列，
+  // 实测必须先剥色再量显示宽度，否则颜色码会被当成可见字符多算行数。
+  const stdin = makeFakeTTY();
+  const stdout = makeSink({ tty: true });
+  const reader = createInputReader({ stdin, stdout, env: {}, onSubmit: () => {} });
+  reader.start();
+  await tick();
+
+  reader.composer.setLive(`\x1b[2m${'超'.repeat(100)}\x1b[0m`);
+  await tick();
+
+  const before = stdout.chunks.length;
+  reader.composer.takeArea();
+  const seq = stdout.chunks.slice(before).join('');
+  assert.match(seq, /\r\x1b\[4A\x1b\[0J/, `剥色后同样应上移 4 格，实际：${JSON.stringify(seq)}`);
+
+  reader.stop();
+  stdin.end();
+});
+
 test('让位持有计数：嵌套让位只在最外层动终端（缺陷猎捕报告 4）', async () => {
   const calls = [];
   const fakeInput = {
