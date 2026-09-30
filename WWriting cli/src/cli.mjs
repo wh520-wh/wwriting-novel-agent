@@ -29,11 +29,13 @@ import { printReplay } from './terminal/replay.mjs';
 import { createInputReader, isInteractiveTerminal, readOneLine } from './terminal/input.mjs';
 // 让位持有计数：嵌套让位（向导期间来确认卡）只在最外层动终端，键不会被两个读取者同时消费。
 import { createInputYielder } from './terminal/input-yield.mjs';
-// sessionRowLabel 在命令层只有一处定义：/sessions 与 `/resume` 的挑选列表共用它——
-// 时间、状态、轮数三栏因此不会在「查看」与「挑选」两处各说一套。
-// DECISION_CHOICES 是普通确认三个选项的唯一来源：选择器的 items 就从它长出来（铁律 11）。
-import { DECISION_CHOICES, HELP_COMMANDS, createCommandHandler, sessionRowLabel } from './terminal/commands.mjs';
-import { createSelector, MENU_CURSOR } from './terminal/select.mjs';
+// 确认的作答语义（选项表 / 翻译 / 确认卡）只有一份：decisions.mjs（铁律 4 / 铁律 11）；
+// /resume 挑选列表的行标签与 /sessions 共用 sessionRowLabel（住在 commands.mjs，
+// 经 pickers.mjs 的 sessionPickerItems 消费）。
+import { HELP_COMMANDS, createCommandHandler } from './terminal/commands.mjs';
+import { createDecisionCard } from './terminal/decisions.mjs';
+import { createMenuPicker, sessionPickerItems } from './terminal/pickers.mjs';
+import { createSelector } from './terminal/select.mjs';
 import { STEP_HINT, createOnboarding } from './terminal/onboarding.mjs';
 
 const EXIT_OK = 0;
@@ -130,6 +132,10 @@ export async function main(
   // resume 会真建第二个 readline，同一份按键被两个读取者消费（缺陷猎捕报告 4）。
   const { withInputSuspended } = createInputYielder({ input });
 
+  // 让位下的选择器会话：让位、ask、恢复与取消归一都收在 pickers.mjs，这里是它唯一的实例。
+  // 每个调用方只声明自己的取消语义（菜单不动草稿 / 挑选静默取消 / 确认卡按拒绝读）。
+  const pick = createMenuPicker({ selector: decisionSelector, withInputSuspended });
+
   async function chooseCommand() {
     try {
       // 活跃轮可能随时弹出权限选择器；此时复用静态帮助，避免两个菜单抢键。
@@ -137,59 +143,28 @@ export async function main(
         await handler.handle('/help');
         return;
       }
-      const picked = await withInputSuspended(() => decisionSelector.ask({
+      const picked = await pick({
         title: '命令',
         items: HELP_COMMANDS.map(([id, description]) => ({ id, label: id, description })),
         summary: null,
         hint: '↑/↓ 选择 · 回车确认 · Esc 取消',
-      }));
+      });
       if (picked) input.replaceDraft(`${picked.item.id} `);
     } catch (error) {
       renderer.printStatus('读取失败', { final: true, tone: 'error', detail: fact(error) });
     }
   }
 
-  let pickingDecision = false; // 重入保护：同一时刻只开一个选择器，一条待确认只答一次
+  // 普通权限确认卡：pending → 选择器作答 → decide()。作答翻译、deny 读法、重入保护与
+  // 两条事实（确认已失效 / 确认失败）都住在 decisions.mjs；这里只注入这台终端的通道。
+  // canAsk 为假的终端传 null：事件桥退回「按文字答」的提示卡，既有路径一个字节不变
+  // （非 TTY / 管道的验收用例就是打 `1` 作答的）。
   const onDecision = decisionSelector.canAsk
-    ? async (pending) => {
-      if (pickingDecision) return;
-      pickingDecision = true;
-      try {
-        // items 的形状是 `[{ id, label }]`（select.mjs 的契约），id 直接就是权限层的 choice。
-        const items = DECISION_CHOICES.map(({ choice, label }) => ({ id: choice, label }));
-        const picked = await withInputSuspended(() => decisionSelector.ask({
-          // title 传 null：卡片那一行（`需要确认：<什么>`）刚刚已经写进 scrollback，
-          // 再让选择器打同一句话就是同一行显示两遍。卡片是**记录**，选择器那块是临时的。
-          title: null,
-          items,
-          // Ctrl+C 也列上：选择器把 Ctrl+C 当取消（select.mjs 的 menuAction），而选择器在场时
-          // readline 已经关掉，Ctrl+C 到不了本轮的打断处理器。**这是有意为之的语义变化**：
-          // 选择器里的 Ctrl+C 从此表示「拒绝这一次操作」而非「打断整轮」——拒绝是安全的一侧，
-          // 这一轮照常继续。
-          hint: '↑/↓ 选择 · 回车确认 · Esc/Ctrl+C 拒绝',
-          // summary 用默认（`❯ <选项>`）：**答了什么必须留在屏上**。
-          // 这原本是「用户打 1 / 打允许」那条用户行留下的记录；选择器把它抹掉就没有记录了，
-          // 而这是权限决定——事后要能看出当时选的是哪一项。
-          // cancelSummary 也留一行：Esc 在这里**等于拒绝**（下面按 deny 读），
-          // 那是一次真实的决定，不该和「什么都没发生」长得一样。
-          cancelSummary: `${MENU_CURSOR} ${items.find(({ id }) => id === 'deny').label}`,
-        }));
-        // 选择器返回 null = 用户按了 Esc（或终端给不出选择器）：按**拒绝**读。
-        // 「没答」必须落在安全的一侧（不给权限），绝不能当成「允许」。
-        const choice = picked === null || picked === undefined ? 'deny' : picked.item.id;
-        try {
-          await controller.decide({ decisionId: pending.decision_id, choice, text: null });
-        } catch (error) {
-          // 与命令层 answerDecision 同一句事实：这条确认已被别处作废（Run 结束 / 输入切换），如实说，不抛。
-          renderer.printStatus('确认已失效', { final: true, tone: 'warn', detail: fact(error) });
-        }
-      } catch (error) {
-        // 选择器自己抛：收敛成一条事实，绝不让它变成未处理拒绝（Node 默认终止进程）。
-        renderer.printStatus('确认失败', { final: true, tone: 'warn', detail: fact(error) });
-      } finally {
-        pickingDecision = false;
-      }
-    }
+    ? createDecisionCard({
+      pick,
+      decide: ({ decisionId, choice, text }) => controller.decide({ decisionId, choice, text }),
+      notify: (text, options) => renderer.printStatus(text, { final: true, ...options }),
+    })
     : null;
 
   const bridge = createEventRenderer({ renderer, onDecision });
@@ -447,22 +422,10 @@ export async function main(
       // 于是"会话列表读不出来"就伪装成了"用户自己取消"，用户敲完 /resume 一个字都看不到。
       const sessions = await sessionManager.list(projectRoot);
       const currentId = controller?.snapshot?.().session_id ?? null;
-      // 裸启动现在会**先建一个空会话**（P23），用户立刻退出就留下一个 0 轮的壳。
-      // 这种壳不进挑选列表——否则用久了列表里全是「0 轮」的噪音，真正有内容的会话反而难找。
-      // 它仍然在 /sessions 里可见（那条命令是「查看」，不是「挑选」），也仍然能用 --resume <ID> 打开，
-      // 所以这不是丢数据，只是不把噪音推到用户面前。
-      const items = sessions
-        .filter((session) => (session.session_id === currentId || (session.turns ?? 0) > 0))
-        .map((session) => ({
-          id: session.session_id,
-          // 与 /sessions 同一套信息：ID + 时间 + 状态 + 轮数（共用 sessionRowLabel，
-          // 两处各拼一遍已经分叉过一次）。「（当前）」是挑选列表才有的语境，这一侧追加。
-          label: `${sessionRowLabel(session, { includeId: false })}${session.session_id === currentId ? '  （当前）' : ''}`,
-          description: session.session_id,
-        }));
+      // 0 轮空壳的过滤与「（当前）」标注都在 sessionPickerItems（可单测）。
+      const items = sessionPickerItems(sessions, currentId);
       if (items.length === 0) return null;
-      // 选择器每次 ask 的参数都是自带的一份，实例本身没有跨次状态，复用同一个不会串味。
-      const picked = await withInputSuspended(() => decisionSelector.ask({
+      const picked = await pick({
         title: '选择一个会话',
         items,
         hint: '↑/↓ 选择 · 回车切换 · Esc 取消',
@@ -470,8 +433,8 @@ export async function main(
         // 用默认 summary 会多打一行 `❯ <label>`，与紧接着的终态行重复（铁律 3）。
         summary: null,
         cancelSummary: null,
-      }));
-      return picked === null || picked === undefined ? null : picked.item.id;
+      });
+      return picked === null ? null : picked.item.id;
     },
     // 退出清理属于生命周期，只在这个回调里收尾：/quit 已经保证 stop() → close() 在前。
     quit: () => {
