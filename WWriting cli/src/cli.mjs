@@ -32,9 +32,8 @@ import { createInputYielder } from './terminal/input-yield.mjs';
 // sessionRowLabel 在命令层只有一处定义：/sessions 与 `/resume` 的挑选列表共用它——
 // 时间、状态、轮数三栏因此不会在「查看」与「挑选」两处各说一套。
 // DECISION_CHOICES 是普通确认三个选项的唯一来源：选择器的 items 就从它长出来（铁律 11）。
-import { DECISION_CHOICES, createCommandHandler, sessionRowLabel } from './terminal/commands.mjs';
+import { DECISION_CHOICES, HELP_COMMANDS, createCommandHandler, sessionRowLabel } from './terminal/commands.mjs';
 import { createSelector, MENU_CURSOR } from './terminal/select.mjs';
-import { BANNER_TEXT, bannerLines, pickBannerScale } from './terminal/banner.mjs';
 import { STEP_HINT, createOnboarding } from './terminal/onboarding.mjs';
 
 const EXIT_OK = 0;
@@ -54,14 +53,8 @@ function startupLabel(parsed) {
 
 const NOT_INTERACTIVE_FACT = '需要在一个可交互的终端里运行，请在 Windows Terminal 或 PowerShell 中直接启动 wwriting。';
 
-// 大字标识放得下哪一档（放不下返回 0，就不给）。面板留 2 格缩进，再由 pickBannerScale 留右边距。
-function bannerScaleFor(stdout) {
-  const columns = typeof stdout?.columns === 'number' ? stdout.columns : 80;
-  return pickBannerScale(columns);
-}
-
 // 头部面板的两句固定文案：副标题说明这是什么，提示行说明第一屏能做什么。
-const PANEL_SUBTITLE = '长篇写作智能体（命令行版）';
+const PANEL_SUBTITLE = '长篇写作智能体';
 const PANEL_HINT = '直接输入开始写作 · /help 查看命令 · Ctrl+C 停止当前轮';
 
 // 命令主入口。io 至少包含 { stdin, stdout, stderr, env, cwd }，注入后可在无 TTY 环境测试。
@@ -110,8 +103,9 @@ export async function main(
     stdout: io.stdout,
     stderr: io.stderr,
     env: io.env,
+    commands: HELP_COMMANDS.map(([name]) => name),
     // 不 await：controller.submit() 会等到本轮 + 队列 drain 结束，await 会把输入框堵死（D15）。
-    onSubmit: (text) => { void handler.handle(text); },
+    onSubmit: (text) => { void (text.trim() === '/' ? chooseCommand() : handler.handle(text)); },
     onControl: (name) => { void handler.handleControl(name); },
   });
 
@@ -135,6 +129,25 @@ export async function main(
   // 嵌套（向导让位期间来一张确认卡）由持有计数兜住：只有最外层动终端，否则内层的
   // resume 会真建第二个 readline，同一份按键被两个读取者消费（缺陷猎捕报告 4）。
   const { withInputSuspended } = createInputYielder({ input });
+
+  async function chooseCommand() {
+    try {
+      // 活跃轮可能随时弹出权限选择器；此时复用静态帮助，避免两个菜单抢键。
+      if (controller.snapshot().active_run_id !== null) {
+        await handler.handle('/help');
+        return;
+      }
+      const picked = await withInputSuspended(() => decisionSelector.ask({
+        title: '命令',
+        items: HELP_COMMANDS.map(([id, description]) => ({ id, label: id, description })),
+        summary: null,
+        hint: '↑/↓ 选择 · 回车确认 · Esc 取消',
+      }));
+      if (picked) input.replaceDraft(`${picked.item.id} `);
+    } catch (error) {
+      renderer.printStatus('读取失败', { final: true, tone: 'error', detail: fact(error) });
+    }
+  }
 
   let pickingDecision = false; // 重入保护：同一时刻只开一个选择器，一条待确认只答一次
   const onDecision = decisionSelector.canAsk
@@ -444,7 +457,8 @@ export async function main(
           id: session.session_id,
           // 与 /sessions 同一套信息：ID + 时间 + 状态 + 轮数（共用 sessionRowLabel，
           // 两处各拼一遍已经分叉过一次）。「（当前）」是挑选列表才有的语境，这一侧追加。
-          label: `${sessionRowLabel(session)}${session.session_id === currentId ? '  （当前）' : ''}`,
+          label: `${sessionRowLabel(session, { includeId: false })}${session.session_id === currentId ? '  （当前）' : ''}`,
+          description: session.session_id,
         }));
       if (items.length === 0) return null;
       // 选择器每次 ask 的参数都是自带的一份，实例本身没有跨次状态，复用同一个不会串味。
@@ -484,12 +498,9 @@ export async function main(
   // 头部面板：启动的第一屏，也是最后一屏静态信息——再往下就是对话本身。
   // 放在 input.start() 之前：此时还没有常驻 readline，面板按顺序直写，不必和行缓冲打交道。
   if (interactive) {
-    // 大字标识：放得下才放，宽终端放大一档（终端比大字还窄时干脆不给——挤成两截比没有更难看）。
-    const bannerScale = bannerScaleFor(io.stdout);
     renderer.printIntro({
       title: versionLine(),
       subtitle: PANEL_SUBTITLE,
-      banner: bannerScale > 0 ? bannerLines(BANNER_TEXT, { scale: bannerScale }) : null,
       rows: await panelRows(),
       hint: PANEL_HINT,
       // 紧跟其后的输入框自带一条上框线，两条线贴在一起只会显得屏幕发虚。

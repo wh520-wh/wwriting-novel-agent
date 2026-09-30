@@ -5,6 +5,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
+import { displayWidth } from '../../src/terminal/renderer.mjs';
+import { screenText } from '../helpers/screen.mjs';
 
 import {
   MENU_CURSOR,
@@ -80,6 +82,30 @@ test('menuLines：窗口外的项用「还有 N 项」提示，不静默截断',
   const lines = menuLines({ items: Array.from({ length: 8 }, (_, i) => ({ id: `i${i}`, label: `第 ${i} 项` })), selected: 7, maxRows: 3 });
   assert.ok(lines.some((line) => line.includes('上面还有')), '上方被折叠要有提示');
   assert.ok(lines.some((line) => line.includes('第 7 项')), '光标项必须在可见范围内');
+});
+
+test('窄窗口菜单不软折行，选中项仍可查看描述；NO_COLOR 选择不依赖颜色', () => {
+  const lines = menuLines({ columns: 40, selected: 0, title: '会话', hint: '↑/↓ 选择 · 回车确认 · Esc 取消',
+    items: [{ id: 'a', label: '昨天的会话', description: '80a922de-22c1-43fa-95d6-001dc8807677' },
+      { id: 'b', label: '长'.repeat(40) }] });
+  assert.ok(lines.every((line) => displayWidth(line) < 40));
+  assert.ok(lines.some((line) => line.includes('80a922de-22c1-43fa-95d6-001dc8807677')));
+  assert.ok(lines.some((line) => line.startsWith('❯ ')));
+});
+
+test('描述从两行收成一行时，重绘与 Esc 取消不留下菜单残影', async () => {
+  const stdin = makeFakeStdin();
+  const stdout = makeSink();
+  stdout.columns = 40;
+  const pending = createSelector({ stdin, stdout, env: { NO_COLOR: '1' } }).ask({ title: '选择模型',
+    items: [{ id: 'a', label: '第一项', description: '说明'.repeat(25) }, { id: 'b', label: '第二项' }] });
+  press(stdin, 'down');
+  const screen = screenText(stdout.text(), { cols: 40 });
+  assert.ok(screen.includes('❯ 第二项'));
+  assert.equal(screen.includes('说明'), false);
+  press(stdin, 'escape');
+  await pending;
+  assert.equal(screenText(stdout.text(), { cols: 40 }), '');
 });
 
 test('menuAction：↑/↓ 与 k/j 移动、回车确认、Esc 与 Ctrl+C 取消、数字直选', () => {

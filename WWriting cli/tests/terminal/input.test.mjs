@@ -45,6 +45,27 @@ function tick() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
+test('Tab 补全命令仍留在唯一输入框内，替换草稿不触发发送', async () => {
+  const stdin = makeFakeTTY();
+  const stdout = makeSink({ tty: true });
+  const submitted = [];
+  const reader = createInputReader({ stdin, stdout, env: {}, commands: ['/model', '/resume'],
+    onSubmit: (text) => submitted.push(text) });
+  reader.start();
+  try {
+    stdin.write('/mo\t');
+    await tick();
+    assert.ok(screenText(stdout.text()).includes('❯ /model'));
+    reader.replaceDraft('/resume ');
+    assert.deepEqual(submitted, []);
+    stdin.write('\r');
+    await tick();
+    assert.deepEqual(submitted, ['/resume ']);
+  } finally {
+    reader.stop();
+  }
+});
+
 test('detectMinTTY 只认 MinTTY 特征，Windows Terminal / 普通终端不算', () => {
   assert.equal(detectMinTTY({ TERM_PROGRAM: 'mintty' }), true);
   assert.equal(detectMinTTY({ MSYSTEM: 'MINGW64', TERM: 'xterm-256color' }), true);
