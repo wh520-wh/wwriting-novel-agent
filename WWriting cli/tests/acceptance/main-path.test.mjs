@@ -337,6 +337,33 @@ async function scenario(respond, paths = null) {
   return { appDataRoot, workspace, model };
 }
 
+test('斜杠菜单用方向键选择，只补全草稿；Esc 返回输入框且不触发模型请求', { timeout: 15000 }, async () => {
+  const { appDataRoot, workspace, model } = await scenario(() => textTurn('不应调用'));
+  const run = makeIo({ appDataRoot, cwd: workspace });
+  const completion = main(['--cwd', workspace], run.io);
+  try {
+    await waitFor(() => run.stdout.text().includes('开始新会话'));
+    run.stdin.write('/\r');
+    await waitFor(() => run.stdout.text().includes('建立或更新项目记忆'));
+    run.stdin.write('\x1b[B'.repeat(8));
+    run.stdin.write('\r');
+    await waitFor(() => screenText(run.stdout.text(), { cols: 80, rows: 60 }).includes('❯ /help'));
+    assert.equal(model.requests.length, 0, '选择命令不等于执行命令');
+    run.stdin.write('\r');
+    await waitFor(() => run.stdout.text().includes('可用命令'));
+    run.stdin.write('/\r');
+    await waitFor(() => screenText(run.stdout.text(), { cols: 80, rows: 60 }).includes('↑/↓ 选择'));
+    run.stdin.write('\x1b');
+    await waitFor(() => !screenText(run.stdout.text(), { cols: 80, rows: 60 }).includes('↑/↓ 选择'));
+    assert.equal(model.requests.length, 0);
+    await quit(run.io, run.stdin, completion, run.stdout);
+  } finally {
+    run.stdin.end();
+    await completion;
+    await model.close();
+  }
+});
+
 test('主路径：打开目录 → 消息 → 模型调用 write_file → 确认 → 落盘 → session 完成', { timeout: 30000 }, async () => {
   // 冒烟脚本会指定路径并检查这里的产物，所以主路径这一条走 mainPathPaths。
   const { appDataRoot, workspace, model } = await scenario(

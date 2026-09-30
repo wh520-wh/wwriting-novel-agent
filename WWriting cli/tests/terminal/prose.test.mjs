@@ -53,6 +53,38 @@ test('takeProseRows：一次能吃下多少行就吃多少（写出次数与行�
   assert.equal(rest, '尾');
 });
 
+test('长逻辑行即使带换行也按阅读宽度切开，正文和多行用户消息不丢字', () => {
+  const source = '长街的灯次第亮起。'.repeat(20);
+  const { rows, rest } = takeProseRows(`${source}\n尾`, { width: 36 });
+  assert.ok(rows.every((row) => displayWidth(row) <= 36));
+  assert.equal(rows.join(''), source);
+  assert.equal(rest, '尾');
+});
+
+test('中文折行不让句末标点孤立在行首，也不让开引号挂在行尾', () => {
+  for (const source of ['雨从傍晚落到深夜。沈舟走进书店。', '他说：“明天见。”她点了点头。']) {
+    const { rows } = takeProseRows(`${source}\n`, { width: 16 });
+    assert.equal(rows.join(''), source);
+    assert.ok(rows.every((row) => displayWidth(row) <= 16));
+    assert.ok(rows.slice(1).every((row) => !/^[，。！？、；：”’]/.test(row)));
+    assert.ok(rows.every((row) => !/[“‘]$/.test(row)));
+  }
+});
+
+test('宽终端正文保持阅读列，窄终端中文行不超出屏幕', () => {
+  for (const columns of [20, 40, 80, 120, 200]) {
+    const stdout = makeStdout({ tty: true });
+    stdout.columns = columns;
+    const renderer = createRenderer({ stdout, env: { NO_COLOR: '1' } });
+    const source = '灯'.repeat(150);
+    renderer.printAssistant(`${source}\n`);
+    renderer.close();
+    const rows = stdout.text().trimEnd().split('\n');
+    assert.ok(rows.every((row) => displayWidth(row) < columns && displayWidth(row) <= 88));
+    assert.equal(rows.map((row) => row.slice(2)).join(''), source);
+  }
+});
+
 // —— 轻量 Markdown ——
 
 test('renderProseRow：标题去井号、强调加粗、行内代码压暗', () => {

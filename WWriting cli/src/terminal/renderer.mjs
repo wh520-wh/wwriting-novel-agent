@@ -1,21 +1,5 @@
-// Inline 终端渲染：不切 alternate screen、不做桌面式悬浮面板。
-//
-// 两条通道，泾渭分明：
-//   scrollback —— 已完成的内容（用户行、正文、已完成/失败的活动行、排队行、确认提示、终态状态行）；
-//   动态行     —— 只有「此刻正在发生的事」（运行状态、运行中的活动行），就地重绘，Run 结束才换行留下终态。
-//
-// 光标行归 composer 所有（composer = 输入层的 readline 行缓冲）。只要用户的输入框还在屏幕上，
-// 渲染器在写出任何字节之前都必须先让 composer 让出那一行、写完再原样画回去——否则 `\r\x1b[K`
-// 会把用户已经键入、还没回车的内容擦掉。composer 由输入层注入；没有它（管道 / 非交互）时
-// 退化为顺序直写，此时没有行缓冲可覆盖。
-//
-// 颜色与光标码是两回事：NO_COLOR（no-color.org）只管颜色，paint() 之外的光标控制码
-// （`\r\x1b[K` 抹行、`\x1b[A`/`\x1b[B` 上下移）在任何模式下都照常输出。
-//
-// 流式正文按「完整行」落盘：攒到真实换行、或显示宽度攒满一整行（按终端宽度算）才写。
-// 于是屏幕上看到的折行与终端自然折行完全一致，段落中间不会凭空多出换行；写出次数也与行数同量级
-// （旧实现按 64 字一批切，既会在句子中间断行，又写得更频繁），并且不需要节流定时器。
-// 技术字段（错误码、命令、退出码）不在这里出现——只进显式详情，铁律 3。
+// Inline 渲染：完成内容进 scrollback，当前状态就地重绘，不切 alternate screen。
+// 写出前让 composer 让位，写完恢复草稿；NO_COLOR 只关闭颜色，不关闭光标控制。
 import { contentWidth } from './banner.mjs';
 // 事件里读出的事实（终态形态、耗时口径）与历史投影共用同一份定义，见 src/agent/event-facts.mjs 的说明。
 import { eventMillis, reasoningDurationMs, terminalOfEvent } from '../agent/event-facts.mjs';
@@ -27,23 +11,23 @@ const STYLE = Object.freeze({
   reset: `${ESC}0m`,
   bold: `${ESC}1m`,
   dim: `${ESC}2m`,
-  cyan: `${ESC}36m`,
-  green: `${ESC}32m`,
-  red: `${ESC}31m`,
-  yellow: `${ESC}33m`,
-  // 用户行的背景色带（P17）。256 色的 236 是很暗的中性灰：
-  // 够把「这一行是我说的」从长对话里扫出来，又不会抢正文的注意力。
-  // 用 48;5;236 而不是 40/47 这类基本色：基本色的实际颜色由各终端主题决定，
-  // 亮色主题下 47 会变成刺眼的白底。
+  accent: `${ESC}38;5;173m`,
+  green: `${ESC}38;5;108m`,
+  red: `${ESC}38;5;174m`,
+  yellow: `${ESC}38;5;179m`,
+  muted: `${ESC}38;5;246m`,
+  rule: `${ESC}38;5;242m`,
+  user: `${ESC}38;5;253m`,
   bgUserBand: `${ESC}48;5;236m`,
 });
 
 // 色调 → ANSI 颜色（SGR）。NO_COLOR 时 paint 直接返回原文。
 // strong 是「加粗不加色」，用在面板标题上：即使没有颜色也依然是标题。
 const TONE = Object.freeze({
-  info: STYLE.dim,
+  info: STYLE.muted,
+  rule: STYLE.rule,
   strong: STYLE.bold,
-  accent: STYLE.cyan,
+  accent: STYLE.accent,
   success: STYLE.green,
   warn: STYLE.yellow,
   error: STYLE.red,
@@ -57,13 +41,7 @@ export const USER_MARK = '❯';
 // 于是「哪几行属于同一条用户消息」靠缩进就能看出来（grokbuild 的同款做法）。
 const USER_MARK_WIDTH = 2;
 
-// 一条用户消息 → 若干**已补白到 width 显示列**的行（不含任何 ANSI）。
-//
-// 为什么要自己切行而不是交给终端折行：终端折行只会给「写进去的那些字符」上色，
-// 第二视觉行因此露白，色带就断了。补白到内容列宽之后，每个视觉行都是一条完整的带子。
-//
-// 宽度一律走 displayWidth / padDisplayEnd：CJK 占两列，按字符数补白会补少。
-// （`█` 是**窄**字符这个既有教训就记在 tests/helpers/screen.mjs 的顶部注释里。）
+// 每个视觉行补满内容列宽，避免长用户消息的背景色带在折行后断开。
 export function userRows(text, { width = 76 } = {}) {
   const limit = Number.isFinite(width) && width > USER_MARK_WIDTH
     ? Math.floor(width)
@@ -76,8 +54,7 @@ export function userRows(text, { width = 76 } = {}) {
   return lines.map((row, index) => `${index === 0 ? `${USER_MARK} ` : '  '}${padDisplayEnd(row, bodyWidth)}`);
 }
 
-// 显示宽度：CJK / 全角字符占 2 列。**只用于面板的列对齐**——
-// 动态行的清除不依赖它（那里用 `\r\x1b[K` 整行抹掉，宽度算错也不留残字）。
+// CJK / 全角字符占两列，供排版与光标定位共用。
 export function displayWidth(text) {
   const source = String(text);
   let width = 0;
@@ -126,9 +103,7 @@ export function paintText(text, tone = 'info', useColor = false) {
 const CONTENT_INDENT = 2;
 const CONTENT_WIDTH_MAX = 78;
 
-// 输入区框线：一条横线。缩进 2 格是为了让「线的起点」与「提示符后面正文的起点」对齐——
-// `❯ ` 本身占两列，落在左侧的空白里当标记。
-// 宽度走 contentWidth：宽终端会放大字，线也跟着放宽，屏幕上所有横线始终同宽。
+// 横线与提示符后的正文起点、阅读列宽对齐。
 export function ruleLine({ columns, indent = CONTENT_INDENT } = {}) {
   const width = contentWidth(columns, { indent, fallback: CONTENT_WIDTH_MAX });
   return `${' '.repeat(Math.max(0, indent))}${'─'.repeat(width)}`;
@@ -138,16 +113,7 @@ export function ruleLine({ columns, indent = CONTENT_INDENT } = {}) {
 const ACTIVITY_MARK = Object.freeze({ running: '•', done: '✓', failed: '✗', stopped: '−' });
 const ACTIVITY_TONE = Object.freeze({ running: 'info', done: 'success', failed: 'error', stopped: 'warn' });
 
-// 模型正文的行首标记。
-//
-// 为什么正文需要一个标记：屏幕上三类行原先是「用户行有 ❯、工具行有 •✓✗−、正文什么都没有」——
-// 正文只靠 2 格缩进与左边缘区分，段落一多就与工具行的续行、与用户行读起来都一样。
-// 加上这一个标记之后，**每一类行都有各自的标点**，扫一眼就知道这句是谁说的：
-//     用户   ❯ 文本        （accent + 底色带）
-//     正文   ▌ 文本        （首行带标记，续行 2 格缩进对齐）
-//     工具   ✓ 读取文件 …   （按状态取 •✓✗−）
-// 选 `▌`（左半块）的理由：它比 `❯` 窄、比 `·` 显眼，不与任何一个既有标记同形，
-// 在 Windows Terminal / conhost 的等宽字体里都按窄字符渲染（与 `█` 同一族，本项目已经在用）。
+// 段首标记与续行缩进等宽，不增加署名或头像。
 const PROSE_MARK = '▌';
 const PROSE_LEAD = `${PROSE_MARK} `;
 
@@ -168,22 +134,18 @@ const TOOL_LABELS = Object.freeze({
   run_command: '运行命令',
 });
 
-// —— 正文（Agent 输出）的落盘与轻量 Markdown ——
-//
-// 正文只有「完整的一行」才能落盘：composer 永远占着最后一行，中间塞半行就再也画不回提示符。
-// 所以攒到**真实换行**或**显示宽度攒满一整行**再写。按终端自己的折行位置切，屏幕上看到的
-// 折行就与终端自然折行的结果完全一致——不会像旧实现那样在句子中间（64 字一批）凭空多出换行。
-// 顺带把写出次数压到「每行一次」，并且不再需要节流定时器：没有定时器就没有空转的事件循环。
+// 正文按完整行写出；不足一行的分片留在缓冲，收尾时才强制写出。
 export const PROSE_INDENT = CONTENT_INDENT;
 
-// 一行能放多少显示列。留 1 列右边距：正好占满一行会触发终端的自动换行，
-// 我们再补一个 `\n` 就会多顶出一行空行来。
+// 宽终端仍使用阅读列，不把中文长段落拉满屏幕。
 export function proseRowWidth(columns) {
-  return Math.max(20, (columns || 80) - PROSE_INDENT - 1);
+  return contentWidth(columns, { indent: PROSE_INDENT, fallback: CONTENT_WIDTH_MAX });
 }
 
-// 会被「劈成两半就露馅」的标记字符：切行时避开它们。
+// 不把 Markdown 标记拆开，也不把中文收尾标点孤立在下一行。
 const MARKER_CHARS = new Set(['*', '_', '`']);
+const LINE_START_PUNCTUATION = '，。！？、；：）》」』】〕〉”’';
+const LINE_END_PUNCTUATION = '（《「『【〔〈“‘';
 const FENCE = /^\s*```/;
 
 // 一个能放下的显示宽度内，能切多少字符；放不下一整行时返回 0（继续攒）。
@@ -199,18 +161,15 @@ function wrapCut(text, width) {
     at = i + 1;
   }
   if (at === 0 || at >= text.length) return 0; // 一行都放不下 / 还没攒满一行
-  // 行尾若是标记字符，把整串标记让到下一行：半对 `**` 留在行尾、下一行开头再来一半，
-  // 屏幕上就会漏出 `**`（per-row 的轻量 Markdown 没法跨行配对）。
   let cut = at;
+  while (cut > 1 && (LINE_START_PUNCTUATION.includes(text[cut]) || LINE_END_PUNCTUATION.includes(text[cut - 1]))) {
+    cut -= text.codePointAt(cut - 2) > 0xffff ? 2 : 1;
+  }
   while (cut > 0 && MARKER_CHARS.has(text[cut - 1])) cut -= 1;
   return cut > 0 ? cut : 0;
 }
 
-// 把一行截到不超过 width 显示列（超出直接丢弃）。与 wrapCut 的分工：wrapCut 服务正文
-// 排版（要避开标记字符、放不下返回 0），这里只服务实时区——活动行的 label 直接拼模型的
-// 原始参数（长路径 / 长搜索词），思考预览的换行分支也可能漏出长行；超宽实时行被终端
-// 软折行多占一格物理行，而擦除按 `\n` 数行，首格就永久留进 scrollback（缺陷猎捕报告 6、7）。
-// input.mjs 的契约：调用方（渲染器）负责把每一行都截到终端宽度以内。
+// 实时区不能软折行，否则按行擦除会把旧内容留在 scrollback。
 export function clipToWidth(text, width) {
   const limit = Number.isFinite(width) && width > 0 ? Math.floor(width) : 0;
   if (limit < 1) return '';
@@ -238,30 +197,23 @@ export function takeProseRows(text, { width } = {}) {
   let rest = String(text ?? '');
   for (;;) {
     const newline = rest.indexOf('\n');
+    const cut = wrapCut(newline >= 0 ? rest.slice(0, newline) : rest, limit);
+    if (cut > 0) {
+      rows.push(rest.slice(0, cut));
+      rest = rest.slice(cut);
+      continue;
+    }
     if (newline >= 0) {
       rows.push(rest.slice(0, newline));
       rest = rest.slice(newline + 1);
       continue;
     }
-    const cut = wrapCut(rest, limit);
-    if (cut === 0) break;
-    rows.push(rest.slice(0, cut));
-    rest = rest.slice(cut);
+    break;
   }
   return { rows, rest };
 }
 
-// 逐行的轻量 Markdown。只做模型输出里最常见、且终端里确实更好读的四件事：
-//   `# 标题` → 去掉井号并加粗（标题在终端里没有字号，加粗是唯一能表达层级的手段）
-//   `**强调**` → 加粗（单星与下划线不动：与列表项、变量名下划线混淆的风险更大）
-//   `` `行内代码` `` → 压暗
-//   ``` 围栏代码块 → 整块缩进 + 压暗（围栏行本身不显示）
-// 护栏：NO_COLOR 下只是「去掉标记」，绝不改文字——同一份输入在任何模式下得到同一串可见字符，
-// 所以这条变换可以放心断言（测试比的是剥掉颜色码之后的文本）。
-//
-// lead=PROSE_LEAD 时这一行是**段落的第一行**，行首换成模型标记（宽度与默认缩进相同，
-// 所以首行的正文与续行仍然对齐成一列）。代码行不换：它已经靠缩进 + 压暗自成一类，
-// 再顶一个 `▌` 只会让「标记 = 有人在说话」这条读法失效。
+// 轻量 Markdown：标题与强调加粗，代码压暗。NO_COLOR 只去掉标记，保留文字。
 export function renderProseRow(row, { code = false, color = false, indent = PROSE_INDENT, lead = null } = {}) {
   const pad = ' '.repeat(Math.max(0, indent));
   const source = String(row ?? '');
@@ -285,11 +237,7 @@ export function activityLabel(tool, target = null) {
   return typeof target === 'string' && target !== '' ? `${label} ${target}` : label;
 }
 
-// 工具结果 → 一行「得到了什么」。
-//
-// 实现在 `src/tools/tool-summary.mjs`：这段纯逻辑有两个消费者（这里的活动行与 Agent 的
-// 历史投影），而 agent 层不能反向依赖终端层，所以它住在共享位置，两边 import 同一份。
-// 这里只做转发，不复制任何判断——复制就会出现「活动行说 3210 字、回放说 0 字」这种分歧。
+// 与历史投影共用工具结果摘要。
 export { summarizeToolResult };
 
 function formatTokens(value) {
@@ -373,31 +321,13 @@ export function terminalStatusText({ terminal, interruptReason = null, failCode 
   return { text: '未正常结束', tone: 'warn' };
 }
 
-// 思考耗时的呈现口径，与 formatDuration **刻意不同**。
-//
-// formatDuration 的口径是「只报慢到值得说的那一档」（< 2 秒返回 null）——那适用于工具行，
-// 毫秒级的工具上挂一个「0.02 秒」只是噪音。思考不适用：上游对话样式规格书:176 要求
-// N = 秒、四舍五入、最小 1，而「思考强度到底生效没有」正是用户盯着这个数字看的
-// （D10 的关键问题）。思考 0.4 秒也得如实说「思考 1 秒」，报 0 秒等于说它没思考。
-//
-// 算不出耗时（没有 started_at、时间戳坏掉）时回退上游 :176 文案表里的 `已完成思考`，
-// 绝不猜一个数字出来。
+// 思考耗时四舍五入，最小 1 秒；没有可信耗时时只报已完成。
 export function formatThinkingSeconds(ms) {
   if (!Number.isFinite(ms) || ms <= 0) return '已完成思考';
   return `思考 ${Math.max(1, Math.round(ms / 1000))} 秒`;
 }
 
-// —— 思考预览：思考正文在**当前轮**的可见形态 ——
-//
-// 分工：思考正文照旧全文落盘（P19）、照旧由 `/reasoning` 重放；这里只多一件「此刻正在想什么」
-// 的实时呈现。它住在输入框上方那块实时区里（与 `思考中` 同一格），**从不落进 scrollback**——
-// 一旦让它滚进滚动区，max 档几万字符会把正文整段冲走（ADR-0012 否决的正是那一种）。
-//
-// 只在**完整行**上重绘：与正文同一个道理（见 flushProse 的注释），流式逐字到达时
-// 每个字都重绘一次会把 readline 按住反复重排。攒满一行才画，于是重绘频率与「行」同量级，
-// 也不需要任何节流定时器（本项目不为显示引入空转的事件循环）。
-//
-// 行数固定为 2：一行状态 + 一行思考读起来太像正文被截断，三行以上又会把输入框顶得太远。
+// 思考预览仅占实时区最近两行，全文落盘并通过 /reasoning 查看。
 const THINKING_PREVIEW_LINES = 2;
 export const THINKING_LABEL = '思考中';
 // 前缀 `思考中 · ` 与续行缩进等宽，两行的正文因此左对齐成一列（CJK 按显示宽度算）。
@@ -414,7 +344,7 @@ export function thinkingPreviewWidth(columns) {
   return body >= THINKING_MIN_BODY ? body : 0;
 }
 
-// 已完成的思考行 → 实时区那几行。rows 按时间顺序，只有末尾 THINKING_PREVIEW_LINES 行可见。
+// 思考实时区仅保留最后两行。
 export function thinkingPreviewLines(rows, { columns } = {}) {
   const body = thinkingPreviewWidth(columns);
   if (body === 0) return [THINKING_LABEL];
@@ -601,15 +531,7 @@ export function createRenderer({
     proseOpen = opened; // write() 刚把它清掉了，这里按本批最后一行的实际情形写回
   }
 
-  // 头部面板：启动时的一次性信息块（大字标识 + 应用标识 + 事实网格 + 一句怎么用）。
-  // 落进 scrollback，不参与动态行重绘，也不受 Run 生命周期影响——它回答的是
-  // 「我在哪个版本、在哪个目录、接着哪个会话、用哪个模型」，第一屏就能看全。
-  //
-  // 参数：{ title, subtitle, rows, hint, banner, indent, bottomBorder }
-  //   rows 是 [标签, 值] 数组；标签按显示宽度对齐（CJK 占 2 列），值原样输出。
-  //   banner 是大字标识（banner.mjs 的 bannerLines()）：紧跟在它下面才是身份行，与参考图同构。
-  //   bottomBorder=false 时不画收尾那条线——紧跟着的输入框自带一条上框线，
-  //   两条线贴在一起只会显得屏幕发虚（启动面板就是这么用的）。
+  // 启动信息按内容列折行，完整保留路径与会话 ID，续行对齐值列。
   function printIntro({
     title = '', subtitle = null, rows = [], hint = null, banner = null, indent = 2, bottomBorder = true,
   } = {}) {
@@ -628,18 +550,30 @@ export function createRenderer({
     // 大字用主色（与环境里其它强调同源）：一行一个 escape，五行而已。
     for (const row of bannerRows) lines.push(paint(row, 'accent'));
     if (title !== '') {
-      const head = subtitle ? `${paint(title, 'strong')}  ${paint(subtitle, 'info')}` : paint(title, 'strong');
-      lines.push(head, paint('─'.repeat(width), 'info'));
+      if (subtitle && displayWidth(`${title}  ${subtitle}`) <= width) {
+        lines.push(`${paint(title, 'strong')}  ${paint(subtitle, 'info')}`);
+      } else {
+        lines.push(...takeProseRows(`${title}\n`, { width }).rows.map((row) => paint(row, 'strong')));
+        if (subtitle) lines.push(...takeProseRows(`${subtitle}\n`, { width }).rows.map((row) => paint(row, 'info')));
+      }
+      lines.push(paint('─'.repeat(width), 'rule'));
     }
     if (rows.length > 0) {
       const keys = rows.map(([key]) => String(key));
-      const column = Math.max(...keys.map((key) => displayWidth(key))) + 3;
+      const column = Math.min(Math.max(...keys.map((key) => displayWidth(key))) + 3, Math.max(0, width - 8));
       for (const [key, value] of rows) {
-        lines.push(`${paint(padDisplayEnd(key, column), 'info')}${value ?? ''}`);
+        const prefix = column >= displayWidth(key) ? padDisplayEnd(key, column) : '';
+        if (prefix === '') lines.push(...takeProseRows(`${key}\n`, { width }).rows.map((row) => paint(row, 'info')));
+        const values = takeProseRows(`${value ?? ''}\n`, { width: Math.max(1, width - displayWidth(prefix)) }).rows;
+        for (let index = 0; index < values.length; index += 1) {
+          lines.push(`${index === 0 ? paint(prefix, 'info') : ' '.repeat(displayWidth(prefix))}${values[index]}`);
+        }
       }
-      if (bottomBorder) lines.push(paint('─'.repeat(width), 'info'));
+      if (bottomBorder) lines.push(paint('─'.repeat(width), 'rule'));
     }
-    if (typeof hint === 'string' && hint !== '') lines.push(paint(hint, 'info'));
+    if (typeof hint === 'string' && hint !== '') {
+      lines.push(...takeProseRows(`${hint}\n`, { width }).rows.map((row) => paint(row, 'info')));
+    }
     if (lines.length === 0) return;
     flushProse({ force: true });
     openBlock();
@@ -647,14 +581,7 @@ export function createRenderer({
     closeBlock();
   }
 
-  // 用户行：TTY 下当前输入由 readline 回显，这个方法服务于管道输入、argv 首条消息与屏幕重演。
-  //
-  // 「气泡」的终端翻译是**底色**而不是框线（P17）：本模块的既有约定是不画框线
-  // （见上面「输入区框线由输入层画」那条注释——框线贴着输入框会出现两条线），
-  // 而底色不与它冲突。grokbuild 用色带替代框正是同一动机。
-  //
-  // NO_COLOR 下退回上线前的形态（一行 `❯ 文本`，无底色、无补白）：
-  // 没有带子就不需要为了带子补白，管道输出因此保持干净。
+  // 用户记录使用中性底色和高对比正文；NO_COLOR 不输出颜色或补白。
   function printUser(text) {
     flushProse({ force: true });
     // 内容列宽 = 正文行宽 + 缩进：用户行与正文行因此在屏幕上同宽，所有块对齐成一列。
@@ -662,7 +589,7 @@ export function createRenderer({
     const rows = userRows(text, { width });
     openBlock();
     if (useColor) {
-      write(`${rows.map((row) => `${STYLE.bgUserBand}${STYLE.cyan}${row}${STYLE.reset}`).join('\n')}\n`);
+      write(`${rows.map((row) => `${STYLE.bgUserBand}${STYLE.user}${row}${STYLE.reset}`).join('\n')}\n`);
     } else {
       write(`${rows.map((row) => row.replace(/\s+$/, '')).join('\n')}\n`);
     }
@@ -677,14 +604,7 @@ export function createRenderer({
     flushProse();
   }
 
-  // 思考正文的实时预览：**只贴在那块实时区上**，从不进 scrollback（见 THINKING_LABEL 处的说明）。
-  //
-  // 每次 delta 都调，函数自己决定要不要重绘：只有「攒满一整行」才动屏幕。
-  // 三道闸门合起来把重绘压到与「行数」同量级——
-  //   ① 不完整的尾巴继续攒（thinkingPending）；
-  //   ② 拼出来的那两三行与上次一模一样就直接返回；
-  //   ③ 没有输入区时**根本不预览**：管道里没有可以原地重画的一块，
-  //      顺序直写只会把半句思考一行行塞进输出流，那正是 ADR-0012 否决的刷屏。
+  // 完整行变化时才重绘预览；没有 composer 时不输出临时思考片段。
   function printThinkingPreview(delta) {
     if (closed || typeof delta !== 'string' || delta === '') return;
     if (!usingComposer()) return;
@@ -761,7 +681,7 @@ export function createRenderer({
     const signature = `${tone}|${line}`;
     if (signature === lastActivity) return;
     openBlock();
-    write(`${paint(line, tone)}\n`);
+    write(`${paint(mark, tone)} ${paint(`${label}${note}`, state === 'done' ? 'info' : tone)}\n`);
     lastActivity = signature;
     closeBlock();
   }
@@ -773,14 +693,14 @@ export function createRenderer({
     if (closed) return;
     const fact = typeof detail === 'string' && detail !== '' ? `${text}：${detail}` : text;
     // note 是行尾的补充量（如本轮 tokens），与「：一条事实」分开，免得事实被数字挤到看不清。
-    const body = typeof note === 'string' && note !== '' ? `${fact} · ${note}` : fact;
     flushProse({ force: true });
     if (!final) {
       drawLive(text, tone);
       return;
     }
     openBlock();
-    write(`${paint(body, tone)}\n`);
+    const suffix = typeof note === 'string' && note !== '' ? ` · ${note}` : '';
+    write(`${paint(fact, tone)}${suffix === '' ? '' : paint(suffix, 'info')}\n`);
     closeBlock();
   }
 
@@ -871,13 +791,9 @@ export function createEventRenderer({ renderer, label = activityLabel, onDecisio
   const pickerMode = typeof onDecision === 'function';
   // 排过队的输入：input_id → 原文。它们真正开跑时要补一行用户行（见 run_started）。
   const queuedInputs = new Map();
-  // 上一个活动开始的时刻。事件自带 at（事件存储落盘时打的），所以耗时不必让上游多给字段。
+  // 工具耗时使用事件时间戳，不依赖刷新时刻。
   let activityStartedAt = null;
-  // 本次进程内的思考正文（P21：/reasoning 重放**上一轮**）。
-  //
-  // 只存在内存里，不做跨重启记忆——grokbuild 的 ctrl+e 展开状态同样「跨重启不记忆」。
-  // 重启之后思考正文仍在 events.jsonl 里（P19 全文落盘），只是 /reasoning 看不到它；
-  // 屏幕上则通过 Task 14 的重演看到「思考 N 秒」那一行。
+  // /reasoning 只重放本进程已完成轮次；全文仍存于事件日志。
   let currentRunReasoning = [];
   let lastRunReasoning = null;
   // 是否有一轮正在跑。run_started 置真、三条终态事件（run_completed / interrupted / failed）归假。
@@ -890,13 +806,7 @@ export function createEventRenderer({ renderer, label = activityLabel, onDecisio
     const data = event.data ?? {};
     switch (event.type) {
       case 'run_started': {
-        // 排过队的那条输入真正开跑时，把它作为用户行落进 scrollback。
-        // 否则屏幕上只留一条「排队」记录，后面冒出来的输出属于谁完全看不出来
-        // （队列是按 FIFO 消费的，可能就是更早的那一条）。用户当场敲的那一条不用补：
-        // readline 已经回显过它了。
-        //
-        // 正常情况下 `input_started` 已经先一步补过这一行（见下），这里只是兜底：
-        // 万一某条路径没发 input_started，也不能让输出失去归属。
+        // 排队输入开始后补上用户行；input_started 已补过时不会重复。
         const queuedText = typeof data.input_id === 'string' ? queuedInputs.get(data.input_id) : null;
         if (typeof queuedText === 'string') {
           queuedInputs.delete(data.input_id);
@@ -925,9 +835,7 @@ export function createEventRenderer({ renderer, label = activityLabel, onDecisio
         break;
       }
       case 'history_applied': {
-        // 「这一轮带了多少前情」是客观事实，必须让人看见（与铁律 6 同源的思路：
-        // 决定写作行为的数字不能只有模型知道）。但只在**真的省略了东西**时才占一行——
-        // 每轮都写「已载入 3 轮」会在屏幕上堆成噪音，而用户并不需要知道这件事在正常运转。
+        // 只有实际省略前情时才说明，正常载入不增加噪音。
         const kept = Number.isFinite(data.kept_turns) ? data.kept_turns : 0;
         const dropped = Number.isFinite(data.truncated_turns) ? data.truncated_turns : 0;
         if (dropped > 0) {
@@ -942,15 +850,7 @@ export function createEventRenderer({ renderer, label = activityLabel, onDecisio
         break;
       }
       case 'memory_applied': {
-        // Q13：注入的记忆消息**完全不画**，截断时例外。
-        //
-        // 为什么正常载入不占行：这与 history_applied 只在真省略了东西时才说话是同一条判断——
-        // 每轮都写「已载入记忆」会在屏幕上堆成噪音，而用户并不需要知道这件事在正常运转。
-        // 启动面板的「记忆」一行（cli.mjs 的 memoryRow）已经回答过「有没有」这个问题（D6）。
-        //
-        // 截断是例外，因为它改变了模型看到的世界：它以为「持久事实」那一节是空的，
-        // 实际只是被截掉了。这类事实必须让人看见（铁律 6 同源）。
-        // 承载面沿用既有三件套：主文案守住 2–6 字，数字进 detail，final 落 scrollback。
+        // 记忆只在读取失败或截断时提示，数字与原因放在 detail。
         if (data.state === 'unreadable') {
           // 主文案 5 字，事实进 detail（铁律 3）。final: true 是这条的全部意义（R2）：
           // 「这一轮模型没有记忆」是已经确定的结果，必须落进 scrollback，
@@ -1021,15 +921,7 @@ export function createEventRenderer({ renderer, label = activityLabel, onDecisio
         }
         break;
       case 'decision_pending': {
-        // 确认卡自己就是当前状态，不再另起一行实时状态：
-        // 用户此时会在这个输入框里作答，屏幕上多一行「等待确认」只会在他回车之后
-        // 变成一行对不上的残影（提示符已经下移，那一行不再属于当前轮）。
-        //
-        // 能开选择器时（组合根注入了 onDecision）卡片只留 `需要确认：<what>` 一行，
-        // 三个选项与按键提示由选择器自己显示；否则退回「按文字答」的提示卡（非 TTY / 管道）。
-        // 极端确认一概不走选择器——它要的是抄写当次确认文字（铁律 4），卡片一个字都不改。
-        //
-        // 屏幕此刻是静止的（上面那条注释：确认卡没有实时状态行），所以选择器可以直接接管终端。
+        // 确认提示承载状态，普通确认交给选择器；极端确认始终要求精确文字。
         renderer.printDecision(data, { picker: pickerMode });
         if (pickerMode && data.level !== 'extreme') {
           // 同步调用（Promise.resolve(fn()) 先执行 fn）：让选择器在本次 append 返回之前就接管终端。

@@ -47,7 +47,7 @@ export function modelIntent(args) {
   return { kind: 'model', value: clean };
 }
 
-const HELP_COMMANDS = Object.freeze([
+export const HELP_COMMANDS = Object.freeze([
   ['/init', '建立或更新项目记忆 WWRITING.md'],
   ['/model', '设置模型与 API Key'],
   ['/effort', '思考强度：/effort none|low|high|max|自动'],
@@ -107,10 +107,10 @@ function formatTime(iso) {
 // 挑选列表只认 `archived`、其余一律退化成「N 轮」，于是同一批会话在 /sessions 里说「已中断」、
 // 在挑选列表里说不出来，而挑选时恰恰需要「哪个是我昨天那个、它还活不活」。
 // 「哪个是当前会话」这种**调用侧的语境**留给调用方自己追加，不进这里。
-export function sessionRowLabel(session) {
+export function sessionRowLabel(session, { includeId = true } = {}) {
   const status = SESSION_STATUS[session?.status] ?? session?.status ?? '';
   const turns = Number.isFinite(session?.turns) ? `${session.turns} 轮` : '';
-  return [session?.session_id, formatTime(session?.updated_at), status, turns]
+  return [includeId ? session?.session_id : '', formatTime(session?.updated_at), status, turns]
     .filter((part) => part !== '' && part !== undefined)
     .join('  ');
 }

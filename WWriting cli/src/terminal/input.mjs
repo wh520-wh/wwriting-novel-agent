@@ -66,7 +66,7 @@ export function isInteractiveTerminal({ stdin, stdout, env = process.env } = {})
 
 // 输入区框线的一条（上框线 / 下框线都用它）。
 export function ruleTextFor({ stdout, env = process.env, color } = {}) {
-  return paintText(ruleLine({ columns: stdout?.columns }), 'info', resolveColor({ color, env, stdout }));
+  return paintText(ruleLine({ columns: stdout?.columns }), 'rule', resolveColor({ color, env, stdout }));
 }
 
 // 读一行：给「一次问一个问题」的流程用（首次引导问 API Key、手输模型名）。
@@ -132,6 +132,7 @@ export function createInputReader({
   onSubmit = null,
   onControl = null,
   prompt = null,
+  commands = [],
 } = {}) {
   const noticeTarget = stderr ?? stdout;
   // 颜色判据与渲染器共用同一份（NO_COLOR 一律不上色），算一次就够。
@@ -151,7 +152,7 @@ export function createInputReader({
   let draftBackup = null;
 
   const promptText = () => prompt ?? promptFor({ stdout, env });
-  const rule = () => paintText(ruleLine({ columns: stdout.columns }), 'info', useColor);
+  const rule = () => paintText(ruleLine({ columns: stdout.columns }), 'rule', useColor);
 
   // 提示符的**纯文本**宽度。带色提示符里那些 `\x1b[36m` 在终端上不占列，但按字符数算会占 9 格——
   // 用它算光标列，typed 的字就会凭空右移一大截（踩过一次）。
@@ -305,6 +306,7 @@ export function createInputReader({
       output: stdout,
       terminal: interactive,
       prompt: interactive ? promptText() : undefined,
+      completer: (line) => [commands.filter((name) => name.startsWith(line)), line],
     });
     attachAreaHooks(rl);
 
@@ -412,5 +414,12 @@ export function createInputReader({
     closing = false;
   }
 
-  return { start, stop, suspend, resume, composer };
+  function replaceDraft(text) {
+    if (rl === null || !interactive) return;
+    rl.line = String(text);
+    rl.cursor = rl.line.length;
+    refreshLine();
+  }
+
+  return { start, stop, suspend, resume, composer, replaceDraft };
 }

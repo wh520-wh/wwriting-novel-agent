@@ -11,7 +11,7 @@
 // 纯逻辑与终端 I/O 分开：menuLines / menuAction 是纯函数（可单测），createSelector 只负责读写终端。
 import readline from 'node:readline';
 
-import { paintText, resolveColor } from './renderer.mjs';
+import { clipToWidth, displayWidth, padDisplayEnd, paintText, resolveColor, takeProseRows } from './renderer.mjs';
 
 // 光标行标记（与 grokbuild 一致）。
 export const MENU_CURSOR = '❯';
@@ -35,19 +35,33 @@ export function menuWindow(count, selected, maxRows) {
 
 // 菜单块 → 若干行文本。title 一行、items 各一行、hint 一行（可选），中间可能插入滚动提示。
 // color=false（NO_COLOR）时只剩 `❯` 标记；选择本身不依赖颜色。
-export function menuLines({ title = null, items = [], selected = 0, hint = null, color = false, maxRows = 10 }) {
+export function menuLines({ title = null, items = [], selected = 0, hint = null, color = false, maxRows = 10, columns = 80 }) {
   const lines = [];
-  if (title !== null) lines.push(paintText(title, 'accent', color));
+  const width = Math.max(4, (columns || 80) - 1);
+  const fit = (text) => displayWidth(text) <= width ? text : `${clipToWidth(text, width - 1)}…`;
+  const labelWidth = Math.min(14, Math.max(...items.map((item) => displayWidth(item.label)), 0) + 2);
+  if (title !== null) lines.push(paintText(fit(title), 'strong', color));
   const { start, end } = menuWindow(items.length, selected, maxRows);
-  if (start > 0) lines.push(paintText(`  … 上面还有 ${start} 项`, 'info', color));
+  if (start > 0) lines.push(paintText(fit(`  … 上面还有 ${start} 项`), 'info', color));
   for (let index = start; index < end; index += 1) {
     const marked = index === selected;
     const prefix = marked ? MENU_CURSOR : MENU_UNSELECTED;
-    const text = `${prefix} ${items[index].label}`;
-    lines.push(marked ? paintText(text, 'accent', color) : text);
+    const { label, description } = items[index];
+    const text = `${prefix} ${label}`;
+    const detail = typeof description === 'string' && description !== '' ? description : null;
+    if (detail !== null && displayWidth(`${prefix} ${padDisplayEnd(label, labelWidth)}${detail}`) <= width) {
+      const head = `${prefix} ${padDisplayEnd(label, labelWidth)}`;
+      lines.push(`${marked ? paintText(head, 'accent', color) : head}${paintText(detail, 'info', color)}`);
+    } else {
+      lines.push(marked ? paintText(fit(text), 'accent', color) : fit(text));
+      if (marked && detail !== null) {
+        const rows = takeProseRows(`${detail}\n`, { width: Math.max(1, width - 2) }).rows;
+        lines.push(...rows.slice(0, 2).map((row, i) => paintText(`  ${i === 1 && rows.length > 2 ? clipToWidth(row, width - 3) + '…' : row}`, 'info', color)));
+      }
+    }
   }
-  if (end < items.length) lines.push(paintText(`  … 下面还有 ${items.length - end} 项`, 'info', color));
-  if (hint !== null) lines.push(paintText(`  ${hint}`, 'info', color));
+  if (end < items.length) lines.push(paintText(fit(`  … 下面还有 ${items.length - end} 项`), 'info', color));
+  if (hint !== null) lines.push(paintText(fit(`  ${hint}`), 'info', color));
   return lines;
 }
 
@@ -108,7 +122,8 @@ export function createSelector({ stdin, stdout, env = process.env, color } = {})
     if (!canAsk) return null;
 
     let selected = Math.min(Math.max(0, initialIndex), items.length - 1);
-    const build = () => menuLines({ title, items, selected, hint, color: useColor, maxRows });
+    const build = () => menuLines({ title, items, selected, hint, color: useColor,
+      maxRows: Math.max(1, Math.min(maxRows, (stdout.rows || 24) - 7)), columns: stdout.columns });
     let block = build();
 
     // 让出当前行（可能残留一个空提示行），再把菜单块写出来；

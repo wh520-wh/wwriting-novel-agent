@@ -104,7 +104,7 @@ export function contentWidth(columns, { indent = 2, fallback = 78 } = {}) {
   const scale = pickBannerScale(cols);
   const bannerCols = scale === 0 ? 0 : bannerWidth(BANNER_TEXT, { scale });
   const room = cols - indent - 2;
-  return Math.max(24, Math.min(room, Math.max(fallback, bannerCols)));
+  return Math.max(1, Math.min(room, Math.max(fallback, bannerCols)));
 }
 
 export const BANNER_FILL = FILL;

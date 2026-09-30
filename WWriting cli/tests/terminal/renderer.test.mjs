@@ -100,6 +100,21 @@ function makeRenderer({ tty = false, color, env = {}, composer = null, columns =
 
 // —— 静态输出进 scrollback ——
 
+test('窄窗口首屏对齐且完整保留工作区路径与会话 ID', () => {
+  const { renderer, stdout } = makeRenderer({ columns: 40 });
+  const folder = 'D:\\小说\\长街灯火\\设定与资料\\第一卷';
+  const session = '开始新会话 · 80a922de-22c1-43fa-95d6-001dc8807677';
+  renderer.printIntro({ title: versionLine(), subtitle: '长篇写作智能体',
+    rows: [['工作区', folder], ['会话', session]], bottomBorder: false });
+  renderer.close();
+  const rows = stdout.text().trimEnd().split('\n');
+  assert.ok(rows.every((row) => displayWidth(row) < 40));
+  const rowOf = (label) => rows.findIndex((row) => row.includes(label));
+  const values = (start, end) => rows.slice(start, end).map((row) => row.replace(/^  (?:工作区|会话) +|^ +/, '')).join('');
+  assert.equal(values(rowOf('工作区'), rowOf('会话')), folder);
+  assert.equal(values(rowOf('会话'), rows.length), session);
+});
+
 test('头部面板：标识、事实网格与提示一次落进 scrollback，列按显示宽度对齐', () => {
   const { renderer, stdout } = makeRenderer();
 
@@ -350,7 +365,7 @@ test('有颜色时状态行用 \\r\\x1b[K 重绘，用户行带上颜色', () =>
 
   const text = stdout.text();
   assert.ok(text.includes('\r\x1b[K'), '动态行用 ANSI 清除');
-  assert.match(text, /\x1b\[3\dm/, '用户行/状态行带颜色码');
+  assert.match(text, /\x1b\[38;5;\d+m/, '用户行/状态行带颜色码');
 });
 
 test('NO_COLOR 时不上色：光标控制码照旧，颜色码一个都不出现', () => {
@@ -1204,7 +1219,7 @@ test('printReasoning 有颜色时整段压暗', () => {
   const renderer = createRenderer({ stdout, color: true, env: {} });
   renderer.printReasoning('想了一会儿');
   renderer.close();
-  assert.match(stdout.text(), /\x1b\[2m/, 'muted 是「这一段不是正文」的硬信号');
+  assert.match(stdout.text(), /\x1b\[38;5;246m/, '思考使用可读的辅助文字色');
 });
 
 test('printReasoning 空文本一个字节都不写', () => {
@@ -1322,7 +1337,7 @@ test('色带每一行等宽，且左边界与正文的缩进列对齐', () => {
   // 等宽这条必须断在**原始字节**上：补白就是行尾空格，而 screenText 会把每行行尾空格剥掉
   // （tests/helpers/screen.mjs:126），拿还原后的画面量「等宽」只会量到 58/10 ——
   // 尾行短是 screenText 的剥空格，不是色带断了。
-  const rows = [...stdout.text().matchAll(/\x1b\[48;5;236m\x1b\[36m([^\n]*?)\x1b\[0m/g)].map((match) => match[1]);
+  const rows = [...stdout.text().matchAll(/\x1b\[48;5;236m\x1b\[38;5;253m([^\n]*?)\x1b\[0m/g)].map((match) => match[1]);
   assert.ok(rows.length > 1, '长消息确实折成了多个视觉行');
   const widths = new Set(rows.map((row) => displayWidth(row)));
   assert.equal(widths.size, 1, `色带每个视觉行必须等宽，实际得到 ${[...widths].join('/')}`);
