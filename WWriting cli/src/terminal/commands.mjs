@@ -13,6 +13,9 @@ import { EFFORT_LEVELS, parseEffortArg, unsupportedEffortReason } from '../model
 import { fact } from '../fact.mjs';
 import { versionLine } from '../version.mjs';
 import { padDisplayEnd } from './metrics.mjs';
+// 确认的作答语义（选项表 / 文本翻译 / 「确认已失效」那句事实）只有一份：decisions.mjs。
+// 这里的文字作答与确认卡的方向键作答共用同一张翻译表。
+import { choiceFor, reportStaleDecision } from './decisions.mjs';
 
 // /model 的三行配置：左列按显示宽度对齐，值和启动头部面板同一种读法。
 const CONFIG_COLUMN = 10;
@@ -115,47 +118,8 @@ export function sessionRowLabel(session, { includeId = true } = {}) {
     .join('  ');
 }
 
-// 普通确认的三个选项：**唯一的事实来源**（铁律 11）。
-// 选择器的 items 与下面的文本映射都从这一份长出来，于是标签与选项不会各说一套。
-// 顺序就是选择器里的顺序：一次允许 / 本条输入允许同类操作 / 拒绝（铁律 4 的三个普通选项）。
-export const DECISION_CHOICES = Object.freeze([
-  Object.freeze({ choice: 'once', label: '一次允许' }),
-  Object.freeze({ choice: 'input', label: '本条输入允许同类操作' }),
-  Object.freeze({ choice: 'deny', label: '拒绝' }),
-]);
-
-// 文本作答的映射，由 DECISION_CHOICES 长出来（标签 → choice），再补两处同义词与三个数字别名：
-//   · `允许` 是最短的自然说法，也是**卡片提示里用的那个词**（renderer 里那行纯文字提示）；
-//   · `deny` 是英文习惯；
-//   · 数字 1/2/3 是**不对外宣传的历史别名**——卡片与选择器提示里一律不出现数字（铁律 11），
-//     保留它只为不弄坏既有的「按文本作答」路径（非 TTY / 管道 / 验收用例就是打 1 作答的）。
-// 用 Object.create(null)：查表时不会从 Object.prototype 上捡到 `constructor` 这类键。
-const DECISION_WORDS = (() => {
-  const table = Object.create(null);
-  for (const { choice, label } of DECISION_CHOICES) table[label] = choice;
-  table['允许'] = 'once';
-  table['deny'] = 'deny';
-  table['1'] = 'once';
-  table['2'] = 'input';
-  table['3'] = 'deny';
-  return Object.freeze(table);
-})();
-
-// 把「待确认」上的一次输入翻译成权限层的选择。
-//   write   ：一次允许 / 本条输入允许同类操作 / 拒绝（或 `允许`/`deny`；数字 1/2/3 是隐藏别名）
-//   extreme ：必须完全等于当次确认文字，或明确拒绝（YOLO 与模型都不得代填，铁律 4）。
-//             它是有意为之的抄写关卡，不受铁律 11 约束，这里也不动。
-function choiceFor(decision, text) {
-  if (decision.level === 'extreme') {
-    if (typeof decision.confirmation_text === 'string' && text === decision.confirmation_text) {
-      return { choice: 'confirm', text };
-    }
-    if (text === '拒绝' || text === 'deny' || text === '2') return { choice: 'deny', text: null };
-    return null;
-  }
-  const choice = DECISION_WORDS[text];
-  return choice === undefined ? null : { choice, text: null };
-}
+// 普通确认的三个选项（DECISION_CHOICES）、文本作答映射与 choiceFor 翻译
+// 都住在 decisions.mjs——选择器路径与文字路径共用同一份，这里只做消费方。
 
 // createCommandHandler({ getController, renderer, listSessions, resumeSession, pickSession, quit, echoUser, model })
 //   getController () => run controller：/resume 会换掉控制器实例，所以这里取的是「当前那个」。
@@ -220,7 +184,8 @@ export function createCommandHandler({
     try {
       await getController().decide({ decisionId: decision.decision_id, choice: choice.choice, text: choice.text });
     } catch (error) {
-      reply('确认已失效', { tone: 'warn', detail: fact(error) });
+      // 与确认卡的方向键作答同一句事实（reportStaleDecision）：这条确认已被别处作废，如实说，不抛。
+      reportStaleDecision(reply, error);
     }
     return true;
   }

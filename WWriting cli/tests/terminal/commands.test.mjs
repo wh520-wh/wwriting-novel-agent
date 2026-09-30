@@ -8,7 +8,9 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { DECISION_CHOICES, createCommandHandler, modelIntent, parseSlashCommand } from '../../src/terminal/commands.mjs';
+import { createCommandHandler, modelIntent, parseSlashCommand } from '../../src/terminal/commands.mjs';
+// DECISION_CHOICES 与文字翻译住在 decisions.mjs（选择器路径与文字路径共用一份）。
+import { DECISION_CHOICES } from '../../src/terminal/decisions.mjs';
 import { DEFAULT_BASE_URL, loadModelConfig, maskApiKey } from '../../src/model/config.mjs';
 import { versionLine } from '../../src/version.mjs';
 
