@@ -96,16 +96,8 @@ export function pickBannerScale(columns, text = BANNER_TEXT) {
   return [...BANNER_SCALES].reverse().find(fits) ?? 0;
 }
 
-// 内容列宽（横线的长度，不含缩进）。
-// 宽终端会放大字，横线就得跟着放宽——否则大字从线上探出去，看着像没对齐；
-// 窄终端仍是默认宽度。上限永远是终端宽度减缩进与右边距。
-export function contentWidth(columns, { indent = 2, fallback = 78 } = {}) {
-  const cols = typeof columns === 'number' && columns > 0 ? columns : 80;
-  const scale = pickBannerScale(cols);
-  const bannerCols = scale === 0 ? 0 : bannerWidth(BANNER_TEXT, { scale });
-  const room = cols - indent - 2;
-  return Math.max(1, Math.min(room, Math.max(fallback, bannerCols)));
-}
+// 内容列宽（contentWidth）已迁往 src/terminal/metrics.mjs：宽度口径归度量模块，
+// 字形文件不再决定横线与阅读列有多宽（大字退场后那层「跟着大字放宽」的耦合随之解除）。
 
 export const BANNER_FILL = FILL;
 export const BANNER_BLANK = BLANK;

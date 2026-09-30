@@ -32,8 +32,9 @@
 import readline from 'node:readline';
 
 import {
-  USER_MARK, displayWidth, paintText, resolveColor, ruleLine,
+  USER_MARK, paintText, resolveColor,
 } from './renderer.mjs';
+import { displayWidth, resolveColumns, ruleLine } from './metrics.mjs';
 
 // 提示符与用户行标记是同一个字符（renderer 的 USER_MARK），屏幕上「❯ 开头」永远是用户说的。
 // 有颜色时用它上色：提示符是这条对话面上最需要一眼认出的东西。
@@ -170,7 +171,7 @@ export function createInputReader({
   // 光标此刻应该在输入行的第几列（1 基）。readline 重绘之后要把光标放回去，而它只管「输入行」
   // 这一格——下面那条线是我们加的，回到哪一列得我们自己算（按显示宽度，CJK 占 2 列）。
   function cursorColumn() {
-    const columns = Number.isFinite(stdout.columns) && stdout.columns > 0 ? Math.floor(stdout.columns) : 80;
+    const columns = resolveColumns(stdout.columns);
     const line = typeof rl?.line === 'string' ? rl.line : '';
     const cursor = Number.isInteger(rl?.cursor) ? Math.min(Math.max(0, rl.cursor), line.length) : line.length;
     const used = plainPromptWidth() + displayWidth(line.slice(0, cursor));
@@ -208,7 +209,7 @@ export function createInputReader({
   // 边界上时光标还留在上一格）。totalRows 是整行占用的物理行数，cursorRow 是光标所在
   // 的物理行号（1 基）。擦除（上移到块顶）与补下框线（下移到块底）共用这一份。
   function inputLayout() {
-    const columns = Number.isFinite(stdout.columns) && stdout.columns > 0 ? Math.floor(stdout.columns) : 80;
+    const columns = resolveColumns(stdout.columns);
     const line = typeof rl?.line === 'string' ? rl.line : '';
     const cursor = Number.isInteger(rl?.cursor) ? Math.min(Math.max(0, rl.cursor), line.length) : line.length;
     const usedTotal = plainPromptWidth() + displayWidth(line);

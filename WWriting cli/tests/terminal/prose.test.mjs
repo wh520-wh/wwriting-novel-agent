@@ -6,8 +6,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  createRenderer, displayWidth, renderProseRow, takeProseRows,
+  createRenderer, renderProseRow,
 } from '../../src/terminal/renderer.mjs';
+import { displayWidth, takeProseRows } from '../../src/terminal/metrics.mjs';
 
 function makeStdout({ tty = false } = {}) {
   const chunks = [];

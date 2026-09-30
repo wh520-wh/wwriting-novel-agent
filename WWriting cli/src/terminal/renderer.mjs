@@ -1,6 +1,11 @@
 // Inline 渲染：完成内容进 scrollback，当前状态就地重绘，不切 alternate screen。
 // 写出前让 composer 让位，写完恢复草稿；NO_COLOR 只关闭颜色，不关闭光标控制。
-import { contentWidth } from './banner.mjs';
+// 度量与排版是全库唯一的宽度口径（src/terminal/metrics.mjs）：渲染器消费它，
+// 不再自己持有任何一份宽度判定。
+import {
+  clipToWidth, contentWidth, displayWidth, padDisplayEnd, proseRowWidth, resolveColumns, takeProseRows,
+  CONTENT_INDENT, CONTENT_WIDTH_MAX,
+} from './metrics.mjs';
 // 事件里读出的事实（终态形态、耗时口径）与历史投影共用同一份定义，见 src/agent/event-facts.mjs 的说明。
 import { eventMillis, reasoningDurationMs, terminalOfEvent } from '../agent/event-facts.mjs';
 // 工具结果摘要与 agent 历史投影共用同一份实现（见 src/tools/tool-summary.mjs 的说明）。
@@ -54,40 +59,6 @@ export function userRows(text, { width = 76 } = {}) {
   return lines.map((row, index) => `${index === 0 ? `${USER_MARK} ` : '  '}${padDisplayEnd(row, bodyWidth)}`);
 }
 
-// CJK / 全角字符占两列，供排版与光标定位共用。
-export function displayWidth(text) {
-  const source = String(text);
-  let width = 0;
-  // 用下标循环而不是 for...of：字符串迭代器每轮都会分配一个单字符字符串，
-  // 而这个函数在流式正文里是「每个字都要调一次」的热路径。
-  for (let i = 0; i < source.length; i += 1) {
-    const code = source.codePointAt(i);
-    if (code > 0xffff) i += 1; // 代理对：高位已经算了宽度，跳过低位
-    width += isWideCode(code) ? 2 : 1;
-  }
-  return width;
-}
-
-// 占两列的字符（CJK、全角标点、emoji 之外的 CJK 扩展区）。抽出来给 displayWidth 与 wrapCut 共用。
-function isWideCode(code) {
-  return (code >= 0x1100 && code <= 0x115f)
-    || code === 0x2329 || code === 0x232a
-    || (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f)
-    || (code >= 0xac00 && code <= 0xd7a3)
-    || (code >= 0xf900 && code <= 0xfaff)
-    || (code >= 0xfe30 && code <= 0xfe6f)
-    || (code >= 0xff00 && code <= 0xff60)
-    || (code >= 0xffe0 && code <= 0xffe6)
-    || (code >= 0x20000 && code <= 0x3fffd);
-}
-
-// 按显示宽度补空格（CJK 标签对齐用；宽度不够就原样返回，不加不加截断）。
-export function padDisplayEnd(text, width) {
-  const text_ = String(text);
-  const gap = width - displayWidth(text_);
-  return gap > 0 ? `${text_}${' '.repeat(gap)}` : text_;
-}
-
 // 光标控制码：抹掉整行并把光标放回行首。
 // （上移/下移由输入层负责——输入区是它的，框有几行只有它知道。）
 const ERASE_LINE = '\r\x1b[K';
@@ -97,16 +68,6 @@ const ERASE_LINE = '\r\x1b[K';
 export function paintText(text, tone = 'info', useColor = false) {
   const style = TONE[tone] ?? '';
   return useColor ? `${style}${text}${STYLE.reset}` : text;
-}
-
-// 内容列：头部面板与输入区框线共用同一份缩进与宽度，屏幕上所有横线才会对齐成一列。
-const CONTENT_INDENT = 2;
-const CONTENT_WIDTH_MAX = 78;
-
-// 横线与提示符后的正文起点、阅读列宽对齐。
-export function ruleLine({ columns, indent = CONTENT_INDENT } = {}) {
-  const width = contentWidth(columns, { indent, fallback: CONTENT_WIDTH_MAX });
-  return `${' '.repeat(Math.max(0, indent))}${'─'.repeat(width)}`;
 }
 
 // 活动行标记：运行中 • / 完成 ✓ / 失败 ✗ / 已停止 −（对齐设计规格书 §4.3）。
@@ -137,83 +98,8 @@ const TOOL_LABELS = Object.freeze({
 // 正文按完整行写出；不足一行的分片留在缓冲，收尾时才强制写出。
 export const PROSE_INDENT = CONTENT_INDENT;
 
-// 宽终端仍使用阅读列，不把中文长段落拉满屏幕。
-export function proseRowWidth(columns) {
-  return contentWidth(columns, { indent: PROSE_INDENT, fallback: CONTENT_WIDTH_MAX });
-}
-
-// 不把 Markdown 标记拆开，也不把中文收尾标点孤立在下一行。
-const MARKER_CHARS = new Set(['*', '_', '`']);
-const LINE_START_PUNCTUATION = '，。！？、；：）》」』】〕〉”’';
-const LINE_END_PUNCTUATION = '（《「『【〔〈“‘';
-const FENCE = /^\s*```/;
-
-// 一个能放下的显示宽度内，能切多少字符；放不下一整行时返回 0（继续攒）。
-function wrapCut(text, width) {
-  let used = 0;
-  let at = 0;
-  for (let i = 0; i < text.length; i += 1) {
-    const code = text.codePointAt(i);
-    if (code > 0xffff) i += 1;
-    const cols = isWideCode(code) ? 2 : 1;
-    if (used + cols > width) break;
-    used += cols;
-    at = i + 1;
-  }
-  if (at === 0 || at >= text.length) return 0; // 一行都放不下 / 还没攒满一行
-  let cut = at;
-  while (cut > 1 && (LINE_START_PUNCTUATION.includes(text[cut]) || LINE_END_PUNCTUATION.includes(text[cut - 1]))) {
-    cut -= text.codePointAt(cut - 2) > 0xffff ? 2 : 1;
-  }
-  while (cut > 0 && MARKER_CHARS.has(text[cut - 1])) cut -= 1;
-  return cut > 0 ? cut : 0;
-}
-
-// 实时区不能软折行，否则按行擦除会把旧内容留在 scrollback。
-export function clipToWidth(text, width) {
-  const limit = Number.isFinite(width) && width > 0 ? Math.floor(width) : 0;
-  if (limit < 1) return '';
-  let used = 0;
-  let at = 0;
-  const line = String(text ?? '');
-  for (let i = 0; i < line.length; i += 1) {
-    const code = line.codePointAt(i);
-    if (code > 0xffff) i += 1;
-    const cols = isWideCode(code) ? 2 : 1;
-    if (used + cols > limit) break;
-    used += cols;
-    at = i + 1;
-  }
-  return line.slice(0, at);
-}
-
-// 从待发正文里切出「能落盘的完整行」→ { rows, rest }。
-// rows 已经剥掉行尾换行；rest 是还不够一行的尾巴，留给下一片。
-export function takeProseRows(text, { width } = {}) {
-  // 不为宽度设下限：真实调用点走 proseRowWidth（那里已经兜到 20 列），
-  // 这里保持「给多少就是多少」，好让切行规则可以被小宽度直接测出来。
-  const limit = Number.isFinite(width) && width > 0 ? Math.floor(width) : 80;
-  const rows = [];
-  let rest = String(text ?? '');
-  for (;;) {
-    const newline = rest.indexOf('\n');
-    const cut = wrapCut(newline >= 0 ? rest.slice(0, newline) : rest, limit);
-    if (cut > 0) {
-      rows.push(rest.slice(0, cut));
-      rest = rest.slice(cut);
-      continue;
-    }
-    if (newline >= 0) {
-      rows.push(rest.slice(0, newline));
-      rest = rest.slice(newline + 1);
-      continue;
-    }
-    break;
-  }
-  return { rows, rest };
-}
-
 // 轻量 Markdown：标题与强调加粗，代码压暗。NO_COLOR 只去掉标记，保留文字。
+const FENCE = /^\s*```/;
 export function renderProseRow(row, { code = false, color = false, indent = PROSE_INDENT, lead = null } = {}) {
   const pad = ' '.repeat(Math.max(0, indent));
   const source = String(row ?? '');
@@ -339,7 +225,7 @@ const THINKING_MIN_BODY = 20;
 
 // 预览正文一行能放多少显示列；0 表示这个宽度下不做预览。
 export function thinkingPreviewWidth(columns) {
-  const cols = Number.isFinite(columns) && columns > 0 ? Math.floor(columns) : 80;
+  const cols = resolveColumns(columns);
   const body = cols - displayWidth(THINKING_PREFIX) - 1; // 末尾留 1 列，避免触发终端自动折行
   return body >= THINKING_MIN_BODY ? body : 0;
 }
@@ -460,7 +346,7 @@ export function createRenderer({
   function drawLive(text, tone = 'info') {
     // 宽度闸门（缺陷猎捕报告 7）：实时区一行都不许超宽，按行截断保持行数语义；
     // 完成后落 scrollback 的那一行不经过这里，仍是全文。
-    const clipped = String(text ?? '').split('\n').map((line) => clipToWidth(line, (stdout.columns || 80) - 1)).join('\n');
+    const clipped = String(text ?? '').split('\n').map((line) => clipToWidth(line, resolveColumns(stdout.columns) - 1)).join('\n');
     const body = paint(clipped, tone);
     const kept = lastActivity;
     if (usingComposer()) {
@@ -544,7 +430,7 @@ export function createRenderer({
     const bannerCols = bannerRows.reduce((max, row) => Math.max(max, displayWidth(row)), 0);
     const width = Math.max(
       contentWidth(stdout.columns, { indent, fallback: CONTENT_WIDTH_MAX }),
-      Math.min(bannerCols, (stdout.columns || 80) - indent - 2),
+      Math.min(bannerCols, resolveColumns(stdout.columns) - indent - 2),
     );
     const lines = [];
     // 大字用主色（与环境里其它强调同源）：一行一个 escape，五行而已。

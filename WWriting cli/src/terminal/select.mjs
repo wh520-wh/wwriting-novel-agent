@@ -11,7 +11,8 @@
 // 纯逻辑与终端 I/O 分开：menuLines / menuAction 是纯函数（可单测），createSelector 只负责读写终端。
 import readline from 'node:readline';
 
-import { clipToWidth, displayWidth, padDisplayEnd, paintText, resolveColor, takeProseRows } from './renderer.mjs';
+import { paintText, resolveColor } from './renderer.mjs';
+import { clipToWidth, displayWidth, padDisplayEnd, resolveColumns, takeProseRows } from './metrics.mjs';
 
 // 光标行标记（与 grokbuild 一致）。
 export const MENU_CURSOR = '❯';
@@ -37,7 +38,7 @@ export function menuWindow(count, selected, maxRows) {
 // color=false（NO_COLOR）时只剩 `❯` 标记；选择本身不依赖颜色。
 export function menuLines({ title = null, items = [], selected = 0, hint = null, color = false, maxRows = 10, columns = 80 }) {
   const lines = [];
-  const width = Math.max(4, (columns || 80) - 1);
+  const width = Math.max(4, resolveColumns(columns) - 1);
   const fit = (text) => displayWidth(text) <= width ? text : `${clipToWidth(text, width - 1)}…`;
   const labelWidth = Math.min(14, Math.max(...items.map((item) => displayWidth(item.label)), 0) + 2);
   if (title !== null) lines.push(paintText(fit(title), 'strong', color));

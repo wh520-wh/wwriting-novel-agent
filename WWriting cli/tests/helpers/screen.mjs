@@ -5,10 +5,10 @@
 // 证明不了「屏幕上现在长这样」。断在画面上，才是在断用户真正看到的东西。
 //
 // 只实现用得到的那些控制序列：光标上下左右移、列定位、清行、清屏、SGR（颜色，直接丢弃）。
-// 宽度直接用渲染器那一份 displayWidth——它才是「什么算占两列」的唯一口径。
+// 宽度直接用度量模块那一份 displayWidth——它才是「什么算占两列」的唯一口径。
 // 自己写一份宽度表的话，很容易把 U+2588 `█`（块元素，终端里是**窄**的）算成宽字符，
 // 于是方块字横幅被还原成两倍宽、整幅画面对不上（踩过一次）。
-import { displayWidth } from '../../src/terminal/renderer.mjs';
+import { displayWidth } from '../../src/terminal/metrics.mjs';
 
 const ESC = '\u001b';
 
