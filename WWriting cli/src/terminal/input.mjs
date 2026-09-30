@@ -40,6 +40,9 @@ import { displayWidth, resolveColumns, ruleLine } from './metrics.mjs';
 // 有颜色时用它上色：提示符是这条对话面上最需要一眼认出的东西。
 const PLAIN_PROMPT = `${USER_MARK} `;
 const MINTTY_ADVICE = '检测到 MinTTY 终端，请使用 Windows Terminal 或 winpty。';
+// SGR 序列是本代码库唯一的颜色通道（paintText 家族）：量宽度前剥掉它，颜色码才不会被
+// 当成可见字符占列（提示符宽度、实时区行数两处共用）。
+const ANSI_SGR = /\u001b\[[0-9;]*[A-Za-z]/g;
 
 // 提示符（带色版）。颜色判据与渲染器共用 resolveColor，NO_COLOR 下一律纯文本。
 export function promptFor({ stdout, env = process.env, color } = {}) {
@@ -157,8 +160,7 @@ export function createInputReader({
 
   // 提示符的**纯文本**宽度。带色提示符里那些 `\x1b[36m` 在终端上不占列，但按字符数算会占 9 格——
   // 用它算光标列，typed 的字就会凭空右移一大截（踩过一次）。
-  const ANSI = /\u001b\[[0-9;]*[A-Za-z]/g;
-  const plainPromptWidth = () => displayWidth((prompt ?? PLAIN_PROMPT).replace(ANSI, ''));
+  const plainPromptWidth = () => displayWidth((prompt ?? PLAIN_PROMPT).replace(ANSI_SGR, ''));
 
   function writeOut(text) {
     if (text !== '') stdout.write(text);
@@ -192,17 +194,22 @@ export function createInputReader({
       : `\r\n${rule()}\r\x1b[1A\x1b[${cursorColumn()}G`);
   }
 
-  // 实时区占几行。多数时候是 1（`思考中` 这种一行状态），思考预览会是 2 行。
-  // 必须按**行数**算而不是写死 1：擦除时上移的格数取决于它，算少了框线就会残留在屏幕上。
-  // 调用方（渲染器）负责把每一行都截到终端宽度以内——这里按 `\n` 数行，
-  // 靠终端自动折行撑出来的行不在计数之内。
-  function liveLineCount(text) {
+  // 实时区占几**物理行**。多数时候是 1（`思考中` 这种一行状态），思考预览是 2 行；
+  // 超宽的行会被终端自动折行，所以这里按「剥掉颜色码后的显示宽度 ÷ 可用列数」逐行实测，
+  // 不再信任调用方「每行都不超宽」的约定——只按 `\n` 数行的话，调用方漏截宽就会少算，
+  // 擦除少上移，`\x1b[0J` 从块中间开抹，实时区折出来的行永久残留（报告 5/7 的残留族）。
+  // 量测收进输入层之后：调用方漏截宽最多难看（终端自己折行），不再留下擦不干净的块。
+  // （渲染器 drawLive 仍按行截宽——那是为了避开「正好占满末列」的待换行卡顿，
+  // 与这里的擦除正确性是两道独立的闸。）
+  function liveRows(text) {
     if (text === null) return 0;
-    let lines = 1;
-    for (let i = 0; i < text.length; i += 1) {
-      if (text[i] === '\n') lines += 1;
+    const columns = resolveColumns(stdout.columns);
+    let rows = 0;
+    for (const line of String(text).split('\n')) {
+      const width = displayWidth(line.replace(ANSI_SGR, ''));
+      rows += Math.max(1, Math.ceil(width / columns));
     }
-    return lines;
+    return rows;
   }
 
   // 输入行折行后的几何：与 cursorColumn 同一套显示宽度算术与迟滞语义（used 落在整行
@@ -223,9 +230,9 @@ export function createInputReader({
   // 擦掉整个输入区（含实时行），光标停在输入区原来的第一行——之后要么写 scrollback，要么重画输入区。
   function eraseArea() {
     if (!areaDrawn || rl === null) return;
-    // 上移 = 实时行数 + 光标所在的输入物理行号。写死 1 在长行折行后少上移 k−1 格，
+    // 上移 = 实时区物理行数（实测）+ 光标所在的输入物理行号。写死 1 在长行折行后少上移 k−1 格，
     // `\x1b[0J` 会从输入块中间开抹，留下重复的输入行与游离框线（缺陷猎捕报告 5）。
-    writeOut(`\r\x1b[${liveLineCount(liveText) + inputLayout().cursorRow}A\x1b[0J`);
+    writeOut(`\r\x1b[${liveRows(liveText) + inputLayout().cursorRow}A\x1b[0J`);
     areaDrawn = false;
   }
 

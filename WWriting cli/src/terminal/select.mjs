@@ -13,6 +13,7 @@ import readline from 'node:readline';
 
 import { paintText, resolveColor } from './renderer.mjs';
 import { clipToWidth, displayWidth, padDisplayEnd, resolveColumns, takeProseRows } from './metrics.mjs';
+import { createBlockLedger } from './block-ledger.mjs';
 
 // 光标行标记（与 grokbuild 一致）。
 export const MENU_CURSOR = '❯';
@@ -22,10 +23,8 @@ export const MENU_UNSELECTED = ' ';
 export const DEFAULT_HINT = '↑/↓ 选择 · 回车确认 · Esc 跳过';
 
 const ERASE_LINE = '\r\x1b[K';
-const ERASE_BELOW = '\x1b[J';
 const HIDE_CURSOR = '\x1b[?25l';
 const SHOW_CURSOR = '\x1b[?25h';
-const cursorUp = (lines) => `\x1b[${lines}A`;
 
 // 可见窗口：光标始终在窗口内（照 grokbuild 的 scroll_offset）。
 export function menuWindow(count, selected, maxRows) {
@@ -96,10 +95,9 @@ export function menuAction(key, { selected = 0, count = 0 } = {}) {
 //   引导页只在可交互时启动，所以这条路径不会静默替用户做选择。
 export function createSelector({ stdin, stdout, env = process.env, color } = {}) {
   const useColor = resolveColor({ color, env, stdout });
-  // 屏幕上此刻这块菜单的高度（0 = 没画着）。重绘的上移量必须用它：块尾锚在光标处、
-  // 动的是顶边，用**新块**高度上移时，块高在两次重绘之间变大就会多吃上方一行、
-  // 变矮就会残留块顶一行（缺陷猎捕报告 10）。
-  let onScreenHeight = 0;
+  // 屏幕块记账：「这块此刻在屏上占几行、擦除上移几格」收在 block-ledger 里
+  // （缺陷猎捕报告 10 的机制有了唯一住址），选择器只负责画什么。
+  const ledger = createBlockLedger({ write: (text) => stdout.write(text) });
   const canAsk = Boolean(
     stdin
     && typeof stdin.on === 'function'
@@ -130,8 +128,7 @@ export function createSelector({ stdin, stdout, env = process.env, color } = {})
     // 让出当前行（可能残留一个空提示行），再把菜单块写出来；
     // 之后每次重绘都「上移整块高度 → 逐行抹掉重写」，块尾始终停在新行的行首。
     stdout.write(ERASE_LINE);
-    writeBlock(block);
-    onScreenHeight = block.length;
+    ledger.writeBlock(block);
 
     const wasRaw = stdin.isRaw === true;
     // 流是否已经在流动：菜单要 resume() 才能收到按键，但结束之后必须还回去——
@@ -143,7 +140,7 @@ export function createSelector({ stdin, stdout, env = process.env, color } = {})
       stdin.setRawMode(true);
     } catch {
       // 极少数终端不支持 raw：那就退回非交互，不假装能选。
-      collapse(block.length, null);
+      ledger.collapse(null);
       return null;
     }
     stdin.resume();
@@ -161,7 +158,7 @@ export function createSelector({ stdin, stdout, env = process.env, color } = {})
         }
         if (!wasFlowing && typeof stdin.pause === 'function') stdin.pause();
         stdout.write(SHOW_CURSOR);
-        collapse(block.length, summaryLine);
+        ledger.collapse(summaryLine);
         resolve(result);
       };
 
@@ -172,7 +169,7 @@ export function createSelector({ stdin, stdout, env = process.env, color } = {})
           if (action.selected !== selected) {
             selected = action.selected;
             block = build();
-            redrawBlock(block);
+            ledger.redraw(block);
           }
           return;
         }
@@ -184,7 +181,7 @@ export function createSelector({ stdin, stdout, env = process.env, color } = {})
         if (action.type === 'select' && index !== selected) {
           selected = index;
           block = build();
-          redrawBlock(block);
+          ledger.redraw(block);
         }
         const item = items[index];
         // summary 可以是 null——那表示「整块抹掉」，确认行由调用方自己打（引导页就是这么用的）。
@@ -195,26 +192,8 @@ export function createSelector({ stdin, stdout, env = process.env, color } = {})
     });
   }
 
-  function writeBlock(lines) {
-    for (const line of lines) stdout.write(`${line}\n`);
-  }
-
-  function redrawBlock(lines) {
-    if (onScreenHeight > 0) stdout.write(cursorUp(onScreenHeight));
-    // 逐行先抹再写：新行比旧行短时，行尾残留也会被清掉。
-    for (const line of lines) stdout.write(`${ERASE_LINE}${line}\n`);
-    if (lines.length < onScreenHeight) stdout.write(ERASE_BELOW); // 新块变矮：块尾下方不再有旧块
-    onScreenHeight = lines.length;
-  }
-
-  // 收尾：把整块换成一行（或整块抹掉），块尾留在新行行首。
-  function collapse(height, summaryLine) {
-    stdout.write(cursorUp(height));
-    stdout.write(ERASE_LINE);
-    if (summaryLine !== null && summaryLine !== undefined) stdout.write(`${summaryLine}\n`);
-    stdout.write(ERASE_BELOW);
-    onScreenHeight = 0; // 块已不在屏幕上
-  }
+  // 块的写出 / 重绘 / 收尾机制（上移量、逐行先抹再写、变矮补 ERASE_BELOW、高度归零）
+  // 都在 block-ledger 里；选择器这里不再手写一遍。
 
   return { ask, canAsk };
 }
