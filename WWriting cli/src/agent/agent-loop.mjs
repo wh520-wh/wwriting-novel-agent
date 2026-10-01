@@ -427,12 +427,17 @@ export function createAgentLoop({
         kept_turns: Number.isInteger(meta.keptTurns) ? meta.keptTurns : history.filter((m) => m?.role === 'user').length,
         truncated_turns: Number.isInteger(meta.truncatedTurns) ? meta.truncatedTurns : 0,
         chars: Number.isInteger(meta.chars) ? meta.chars : estimateChars(history),
+        // 会话压缩的两个补充事实：摘要多少字、多少轮被摘要覆盖（屏幕的「已载入前情」要说）。
+        digest_chars: Number.isFinite(meta.digestChars) ? meta.digestChars : 0,
+        covered_turns: Number.isFinite(meta.coveredTurns) ? meta.coveredTurns : 0,
       };
     }
     return {
       kept_turns: history.reduce((count, message) => (message?.role === 'user' ? count + 1 : count), 0),
       truncated_turns: 0,
       chars: estimateChars(history),
+      digest_chars: 0,
+      covered_turns: 0,
     };
   }
 

@@ -1394,3 +1394,71 @@ test('章节提交与回滚：版本落在应用私有区，回滚要确认，�
     await controller.close();
   }
 });
+
+// —— 会话压缩（/compact）——
+
+test('compact：摘要落事件；之后的轮以「[会话摘要] + 未覆盖轮次」开工', async () => {
+  const root = await makeTempRoot('wwriting-ctrl-compact-');
+  const projectRoot = path.join(root, 'novel');
+  await fs.mkdir(projectRoot, { recursive: true });
+  const COMPACTION_SYSTEM_PROMPT = (await import('../../src/agent/compact.mjs')).COMPACTION_SYSTEM_PROMPT;
+  // 按「请求的形状」分发：压缩请求（系统提示打头）回摘要正文；普通轮回可见正文并留档。
+  const normalRequests = [];
+  const modelClient = {
+    async streamChat({ messages, onDelta }) {
+      if (messages[0]?.content === COMPACTION_SYSTEM_PROMPT) {
+        onDelta('暗号是菠萝。');
+        return { text: '暗号是菠萝。', toolCalls: [], usage: null };
+      }
+      normalRequests.push(structuredClone(messages));
+      onDelta('记住了。');
+      return { text: '记住了。', toolCalls: [], usage: null };
+    },
+  };
+  const { controller } = await makeRealLoopController({ root, projectRoot, modelClient });
+
+  try {
+    await controller.submit({ text: '记住暗号是菠萝' });
+    const result = await controller.compact();
+    assert.deepEqual(result, { status: 'ok', chars: 6, turns: 1 });
+
+    // 摘要事件在日志里，带覆盖范围（through_seq = 当时最后一条事件的 seq）。
+    const events = await controllerEvents(controller);
+    const digests = events.filter((event) => event.type === 'digest_compacted');
+    assert.equal(digests.length, 1);
+    assert.equal(digests[0].data.digest, '暗号是菠萝。');
+    // through_seq = 压缩时刻的最后一条事件 seq；摘要事件自己排在其后（+1），
+    // 之后新轮的 run_started 一定 > through_seq，覆盖判定才成立。
+    assert.equal(digests[0].data.through_seq, events.at(-1).seq - 1);
+    assert.equal(digests[0].data.covered_turns, 1);
+
+    // 摘要之后的下一轮：模型看到 [会话摘要]，看不到被覆盖轮次的原文。
+    await controller.submit({ text: '暗号是什么？' });
+    const lastMessages = normalRequests.at(-1);
+    assert.ok(lastMessages, '模型收到过普通轮请求');
+    const flat = lastMessages.map((message) => message.content).join('\n');
+    assert.match(flat, /\[会话摘要\]/);
+    assert.match(flat, /暗号是菠萝。/);
+    assert.equal(flat.includes('记住暗号是菠萝'), false, '被摘要覆盖的轮次原文不再进上下文');
+  } finally {
+    await controller.close();
+  }
+});
+
+test('compact：空闲检查与空会话如实回答', async () => {
+  const root = await makeTempRoot('wwriting-ctrl-compact-empty-');
+  const projectRoot = path.join(root, 'novel');
+  await fs.mkdir(projectRoot, { recursive: true });
+  let asked = 0;
+  const modelClient = { async streamChat() { asked += 1; return { text: 'x', toolCalls: [], usage: null }; } };
+  const { controller } = await makeRealLoopController({ root, projectRoot, modelClient });
+  try {
+    const empty = await controller.compact();
+    assert.deepEqual(empty, { status: 'empty' });
+    assert.equal(asked, 0, '没有可压缩的对话就不该惊动模型');
+  } finally {
+    await controller.close();
+  }
+  // 未打开会话（close 之后）压缩要给出中文事实，不是裸 TypeError。
+  await assert.rejects(() => controller.compact(), /打开会话/);
+});

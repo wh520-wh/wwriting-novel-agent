@@ -5,8 +5,10 @@ import assert from 'node:assert/strict';
 
 import {
   DEFAULT_HISTORY_BUDGET_CHARS,
+  buildDigestMessage,
   buildHistoryMessages,
   estimateChars,
+  latestDigest,
   projectTurns,
 } from '../../src/agent/history.mjs';
 
@@ -315,3 +317,71 @@ test('思考事件被投影**整个忽略**：既不进 Turn，也不进 message
   const joined = buildHistoryMessages(turns).messages.map((m) => m.content).join('\n');
   assert.equal(joined.includes('我在想'), false);
 });
+
+// —— 会话压缩（/compact）：摘要注入与覆盖判定 ——
+
+test('buildDigestMessage：标记与文本只有一处拼法', () => {
+  const message = buildDigestMessage('主角已拿到钥匙');
+  assert.equal(message.role, 'user');
+  assert.match(message.content, /^\[会话摘要\]\n主角已拿到钥匙$/);
+});
+
+test('latestDigest 取最后一条；畸形与空摘要跳过；没有时为 null', () => {
+  const first = { type: 'digest_compacted', data: { digest: '第一份', through_seq: 5 } };
+  const second = { type: 'digest_compacted', data: { digest: '第二份', through_seq: 12 } };
+  assert.equal(latestDigest([]), null);
+  assert.equal(latestDigest([{ type: 'run_started', data: {} }]), null);
+  assert.equal(latestDigest([{ type: 'digest_compacted', data: { digest: '', through_seq: 3 } }]), null);
+  assert.equal(latestDigest([{ type: 'digest_compacted', data: { digest: 'x' } }]).throughSeq, 0);
+  assert.equal(latestDigest([first, second]).text, '第二份');
+  assert.equal(latestDigest([first, second]).throughSeq, 12);
+});
+
+test('projectTurns 给每轮带 startSeq（压缩按它判覆盖）', () => {
+  const events = [
+    { type: 'run_started', seq: 3, run_id: 'run_1', data: { input_id: 'in_1', text: '写第一章' } },
+    { type: 'run_completed', seq: 4, run_id: 'run_1', data: { text: '写好了', rounds: 0, usage: null } },
+  ];
+  const [turn] = projectTurns(events);
+  assert.equal(turn.startSeq, 3);
+});
+
+test('buildHistoryMessages：摘要插在最前、计入预算，无轮次时摘要独占', () => {
+  const digest = buildDigestMessage('前情：主角已拿到钥匙');
+  const turns = projectTurns([
+    ...turn({ inputId: 'in_1', text: '写第一章', body: '第一章好了。' }),
+    ...turn({ inputId: 'in_2', text: '写第二章', body: '第二章好了。' }),
+  ]);
+  const withDigest = buildHistoryMessages(turns, { budgetChars: DEFAULT_HISTORY_BUDGET_CHARS, digest });
+  assert.equal(withDigest.messages[0].content.startsWith('[会话摘要]'), true);
+  assert.equal(withDigest.keptTurns, 2);
+  assert.equal(withDigest.usedChars, estimateChars([digest]) + estimateChars(withDigest.messages.slice(1)));
+
+  // 预算被摘要吃掉一大半：room 连最新一轮的**用户输入**都放不下时（原则②不触发），
+  // 轮次一个都不装，摘要独占——「同一本账」意味着摘要真的在挤占轮次的空间。
+  const tight = buildHistoryMessages(turns, { budgetChars: estimateChars([digest]) + 3, digest });
+  assert.equal(tight.keptTurns, 0);
+  assert.deepEqual(tight.messages, [digest]);
+
+  // room 还装得下用户输入时，最新一轮按原则②部分保留（既有语义不因摘要改变）。
+  const partial = buildHistoryMessages(turns, { budgetChars: estimateChars([digest]) + 5, digest });
+  assert.equal(partial.keptTurns, 1);
+
+  // 没有轮次时摘要独占上下文（压缩后立刻新开会话轮的形状）。
+  const digestOnly = buildHistoryMessages([], { digest });
+  assert.deepEqual(digestOnly.messages, [digest]);
+});
+
+function turn({ inputId, text, body }) {
+  const runId = `run_${inputId}`;
+  return [
+    { type: 'run_started', seq: nextSeq(), run_id: runId, data: { input_id: inputId, text } },
+    { type: 'model_delta', seq: nextSeq(), run_id: runId, data: { text: body } },
+    { type: 'run_completed', seq: nextSeq(), run_id: runId, data: { text: body, rounds: 0, usage: null } },
+  ];
+}
+let digestSeqCounter = 100;
+function nextSeq() {
+  digestSeqCounter += 1;
+  return digestSeqCounter;
+}

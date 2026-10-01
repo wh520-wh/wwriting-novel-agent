@@ -54,6 +54,8 @@ export function projectTurns(events) {
         current = {
           inputId: typeof data.input_id === 'string' ? data.input_id : null,
           runId: typeof event.run_id === 'string' ? event.run_id : null,
+          // 轮的起点 seq：会话压缩（/compact）按它判断「哪些轮已被摘要覆盖」。
+          startSeq: event.seq,
           userText: typeof data.text === 'string' ? data.text : '',
           assistantText: '',
           tools: [],
@@ -184,11 +186,19 @@ export function estimateChars(messages) {
 //   ② 单轮超预算时**保留该轮、只截 assistant 正文的尾部** —— 丢掉最新上下文比丢半段正文更糟；
 //   ③ 被丢掉的更早轮次如实计入 `truncatedTurns`，供渲染层说明「省略了多少」；
 //   ④ 预算连一轮都放不下时返回空数组（不是 null），调用方无需分支。
-export function buildHistoryMessages(turns, { budgetChars = DEFAULT_HISTORY_BUDGET_CHARS } = {}) {
+//
+// digest（可选）：/compact 产出的会话摘要消息。它插在**最前**、计入预算——
+// 「摘要 + 未覆盖轮次」合计不得超预算，与「轮次」同一本账（否则预算名存实亡）。
+// 摘要本身永不截断：它是被刻意压缩过的产物，再截就二次失真；超预算时宁可不放轮次。
+export function buildHistoryMessages(turns, { budgetChars = DEFAULT_HISTORY_BUDGET_CHARS, digest = null } = {}) {
   const list = Array.isArray(turns) ? turns : [];
   const budget = Number.isFinite(budgetChars) && budgetChars > 0 ? Math.floor(budgetChars) : DEFAULT_HISTORY_BUDGET_CHARS;
+  const digestMessage = digest !== null && typeof digest.content === 'string' && digest.content !== '' ? digest : null;
+  const digestCost = digestMessage === null ? 0 : estimateChars([digestMessage]);
+  const room = Math.max(0, budget - digestCost);
   if (list.length === 0) {
-    return { messages: [], truncatedTurns: 0, usedChars: 0, keptTurns: 0 };
+    const messages = digestMessage === null ? [] : [digestMessage];
+    return { messages, truncatedTurns: 0, usedChars: digestCost, keptTurns: 0 };
   }
 
   const kept = [];
@@ -197,7 +207,7 @@ export function buildHistoryMessages(turns, { budgetChars = DEFAULT_HISTORY_BUDG
   for (let i = list.length - 1; i >= 0; i -= 1) {
     const messages = turnMessages(list[i]);
     const cost = estimateChars(messages);
-    if (used + cost <= budget) {
+    if (used + cost <= room) {
       kept.unshift(...messages);
       used += cost;
       continue;
@@ -205,7 +215,7 @@ export function buildHistoryMessages(turns, { budgetChars = DEFAULT_HISTORY_BUDG
     // 放不下：如果这还是最新的一轮（kept 为空），按原则 ② 部分保留；
     // 否则停止收集，剩下的更早轮次全部计入 truncatedTurns。
     if (kept.length === 0) {
-      const trimmed = trimNewest(messages, budget);
+      const trimmed = trimNewest(messages, room);
       if (trimmed !== null) {
         kept.unshift(...trimmed.messages);
         used += trimmed.usedChars;
@@ -217,7 +227,8 @@ export function buildHistoryMessages(turns, { budgetChars = DEFAULT_HISTORY_BUDG
   const keptTurns = kept.length === 0 ? 0 : countKeptTurns(kept);
   // truncatedTurns 按「被丢掉的轮数」计：总轮数减去实际保留下来的轮数。
   const truncatedTurns = Math.max(0, list.length - keptTurns);
-  return { messages: kept, truncatedTurns, usedChars: used, keptTurns };
+  const messages = digestMessage === null ? kept : [digestMessage, ...kept];
+  return { messages, truncatedTurns, usedChars: used + digestCost, keptTurns };
 }
 
 // 最新一轮超预算时的部分保留：保用户输入（永不截），把 assistant 正文按剩余预算截尾。
@@ -248,4 +259,31 @@ function countKeptTurns(messages) {
     if (message && message.role === 'user') count += 1;
   }
   return count;
+}
+
+// —— 会话压缩（/compact）——
+//
+// 摘要是「已往对话的替代品」：它以一条合成 user 消息的身份插在项目记忆之后、
+// 未覆盖轮次之前（与记忆同一位置语义，ADR-0008 的前缀缓存理由同样适用——
+// 摘要只在下次 /compact 时才变，其余每轮字节恒定，缓存照常命中）。
+
+export const DIGEST_MARKER = '[会话摘要]';
+
+// 摘要文本 → 注入消息。调用方不自己拼：标记与格式只有这一处定义。
+export function buildDigestMessage(text) {
+  return { role: 'user', content: `${DIGEST_MARKER}\n${text}` };
+}
+
+// 日志里最近一次压缩的摘要（没有则 null）。digest_compacted 走事件存储的 default 分支，
+// 不进投影——它只在装配历史时按需扫一遍，不值得为它常驻状态。
+export function latestDigest(events) {
+  let digest = null;
+  for (const event of events) {
+    if (event === null || typeof event !== 'object' || event.type !== 'digest_compacted') continue;
+    const data = event.data ?? {};
+    if (typeof data.digest === 'string' && data.digest !== '') {
+      digest = { text: data.digest, throughSeq: Number.isInteger(data.through_seq) ? data.through_seq : 0 };
+    }
+  }
+  return digest;
 }

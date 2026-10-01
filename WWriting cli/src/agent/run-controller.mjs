@@ -11,8 +11,9 @@ import { randomUUID } from 'node:crypto';
 
 import { createAgentLoop } from './agent-loop.mjs';
 import {
-  DEFAULT_HISTORY_BUDGET_CHARS, buildHistoryMessages, projectTurns,
+  DEFAULT_HISTORY_BUDGET_CHARS, buildDigestMessage, buildHistoryMessages, latestDigest, projectTurns,
 } from './history.mjs';
+import { runCompaction } from './compact.mjs';
 import {
   PROJECT_MEMORY_BUDGET_CHARS, buildMemoryInjection, memoryHashFor, readProjectMemory,
 } from './project-memory.mjs';
@@ -216,20 +217,34 @@ export function createRunController({
   //
   // 失败一律降级为无历史并返回一条中文事实（日志损坏、I/O 错误）：失忆好过开不了工。
   // 回放历史这件事不值得让整轮失败——这与 history.mjs 忽略孤立事件是同一个判断。
+  //
+  // 会话压缩（/compact）介入的唯一点：digest 覆盖的轮次（startSeq ≤ through_seq）不再进
+  // messages，由摘要消息替代。摘要与剩余轮次合用同一个预算（historyBudget）——
+  // 「记忆多少」的口径仍然是这一个数，不因压缩出现第二个预算。
   async function loadHistory(currentInputId) {
     try {
       const { events } = await session.eventStore.readAll();
       const turns = projectTurns(events);
+      const digest = latestDigest(events);
       // 排除当前轮：run_started 在循环内部才追加，正常读不到本轮；但「立即」重跑同一条输入时
       // 日志里可能已有它自己的上一轮（或崩溃残留），那会把「这一轮说过的话」当成上下文喂回去。
-      const prior = turns.filter((turn) => !(typeof currentInputId === 'string' && turn.inputId === currentInputId));
-      const built = buildHistoryMessages(prior, { budgetChars: historyBudget });
+      const withoutCurrent = turns.filter((turn) => !(typeof currentInputId === 'string' && turn.inputId === currentInputId));
+      const prior = digest === null
+        ? withoutCurrent
+        : withoutCurrent.filter((turn) => Number.isFinite(turn.startSeq) && turn.startSeq > digest.throughSeq);
+      const coveredTurns = withoutCurrent.length - prior.length;
+      const built = buildHistoryMessages(prior, {
+        budgetChars: historyBudget,
+        digest: digest === null ? null : buildDigestMessage(digest.text),
+      });
       return {
         history: built.messages,
         historyMeta: {
           keptTurns: built.keptTurns,
           truncatedTurns: built.truncatedTurns,
           chars: built.usedChars,
+          digestChars: digest === null ? 0 : digest.text.length,
+          coveredTurns,
         },
         notice: null,
       };
@@ -549,5 +564,40 @@ export function createRunController({
     return events;
   }
 
-  return { open, submit, stop, requestPriority, decide, snapshot, isBusy, activeRunId, readEvents, close, permissions: perm };
+  // 会话压缩（/compact）：把已往对话收敛成一份摘要事件，之后的每轮以
+  // 「[会话摘要] + 未覆盖轮次」开工（见 loadHistory）。
+  //
+  // 三条边界（比实现重要）：
+  //   ① 只在**空闲**时可压缩：忙碌时抛错——压缩读的是「当时的事实」，
+  //      与在跑的轮并发会产生「摘要缺了正在说的这一轮」的假账。
+  //   ② 压缩看的是**全部**未覆盖轮次（含超出预算会被丢的那些）：预算在这里不设限，
+  //      这正是压缩存在的意义——丢掉的轮子在丢之前被收进摘要。
+  //   ③ 只做**手动**压缩：自动压缩牵扯安全点与触发时机，CLI 先不背这份复杂度
+  //      （与上游的差异已记录在案：不必事事对齐）。摘要只经 digest_compacted
+  //      一条事件进日志，绝不伪装成对话轮次。
+  async function compact() {
+    const handle = requireOpen('压缩会话');
+    if (isBusy()) throw new Error('正在运行，等这一轮结束再压缩。');
+    const { events } = await handle.eventStore.readAll();
+    const turns = projectTurns(events);
+    const digest = latestDigest(events);
+    const uncovered = digest === null
+      ? turns
+      : turns.filter((turn) => Number.isFinite(turn.startSeq) && turn.startSeq > digest.throughSeq);
+    if (uncovered.length === 0) return { status: 'empty' };
+    // 已有摘要作为对话的第一条一起送压：新摘要吸收旧摘要，层层滚动向前。
+    const transcript = buildHistoryMessages(uncovered, {
+      budgetChars: Number.MAX_SAFE_INTEGER,
+      digest: digest === null ? null : buildDigestMessage(digest.text),
+    }).messages;
+    const text = await runCompaction({ modelClient, messages: transcript });
+    const throughSeq = handle.projection.last_seq;
+    await serializeWrite(() => handle.append({
+      type: 'digest_compacted',
+      data: { digest: text, through_seq: throughSeq, chars: text.length, covered_turns: uncovered.length },
+    }));
+    return { status: 'ok', chars: text.length, turns: uncovered.length };
+  }
+
+  return { open, submit, stop, requestPriority, decide, snapshot, isBusy, activeRunId, readEvents, compact, close, permissions: perm };
 }

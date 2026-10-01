@@ -58,6 +58,7 @@ export const HELP_COMMANDS = Object.freeze([
   ['/effort', '思考强度：/effort none|low|high|max|自动'],
   ['/reasoning', '查看上一轮的思考全文'],
   ['/plan', '查看当前任务计划'],
+  ['/compact', '把已往对话收敛成摘要，释放上下文'],
   ['/sessions', '查看会话列表'],
   ['/skills', '查看已发现的技能'],
   ['/resume', '切换会话：/resume <会话 ID>'],
@@ -531,6 +532,27 @@ export function createCommandHandler({
     if (typeof renderer.printPlan === 'function') renderer.printPlan(plan.items);
   }
 
+  // /compact：手动压缩（CLI 有意不做自动压缩——触发时机与安全点的复杂度不值得）。
+  // 只在空闲时可用：与在跑的轮并发会造出「摘要缺了正在说的这轮」的假账（控制器再拦一次）。
+  async function runCompactCommand() {
+    const controller = getController();
+    if (controller.isBusy()) {
+      reply('运行中', { tone: 'warn', detail: '等这一轮结束再压缩。' });
+      return;
+    }
+    renderer.printStatus('压缩中');
+    try {
+      const result = await controller.compact();
+      if (result.status === 'empty') {
+        reply('还没有可压缩的对话');
+        return;
+      }
+      reply('已压缩', { tone: 'success', detail: `${result.turns} 轮收敛成 ${result.chars} 字摘要` });
+    } catch (error) {
+      reply('压缩失败', { tone: 'error', detail: fact(error) });
+    }
+  }
+
   async function runResumeCommand(args) {
     if (typeof resumeSession !== 'function') {
       reply('暂不支持切换会话。', { tone: 'warn' });
@@ -662,6 +684,9 @@ export function createCommandHandler({
         return 'handled';
       case 'plan':
         await runPlanCommand();
+        return 'handled';
+      case 'compact':
+        await runCompactCommand();
         return 'handled';
       case 'sessions':
         await runSessionsCommand();

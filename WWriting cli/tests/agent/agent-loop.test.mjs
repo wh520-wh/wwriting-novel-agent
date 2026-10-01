@@ -690,6 +690,8 @@ test('注入 2 轮历史：顺序为 [system, h1, h2, 当前输入]，history_ap
     kept_turns: 2,
     truncated_turns: 0,
     chars: 22, // 四条 content 的字面长度之和：4+7+4+7
+    digest_chars: 0,
+    covered_turns: 0,
   });
 });
 
@@ -707,8 +709,11 @@ test('history_applied 用调用方传入的 historyMeta：截断数如实透传'
   });
 
   const applied = (await readEvents(store)).find((event) => event.type === 'history_applied');
-  // 三个字段原样透传，不让循环自己再算一遍——两处各算一次就会出现「屏幕说 1 轮、模型收到 3 轮」。
-  assert.deepEqual(applied.data, { kept_turns: 1, truncated_turns: 7, chars: 8 });
+  // 字段原样透传，不让循环自己再算一遍——两处各算一次就会出现「屏幕说 1 轮、模型收到 3 轮」。
+  assert.deepEqual(applied.data, {
+    kept_turns: 1, truncated_turns: 7, chars: 8,
+    digest_chars: 0, covered_turns: 0,
+  });
 });
 
 test('history 整段被截没（messages 空但 truncatedTurns > 0）仍要发 history_applied（猎捕报告 8）', async () => {
@@ -728,7 +733,10 @@ test('history 整段被截没（messages 空但 truncatedTurns > 0）仍要发 h
   assert.equal(result.status, 'completed');
   const applied = (await readEvents(store)).find((event) => event.type === 'history_applied');
   assert.ok(applied, '整段历史被截没时必须发 history_applied，否则用户看到的是正常回答');
-  assert.deepEqual(applied.data, { kept_turns: 0, truncated_turns: 5, chars: 0 });
+  assert.deepEqual(applied.data, {
+    kept_turns: 0, truncated_turns: 5, chars: 0,
+    digest_chars: 0, covered_turns: 0,
+  });
   // 模型仍然以零上下文开工（截断是既定语义，这里只修「如实呈现」）。
   assert.deepEqual(model.calls[0].messages.map((message) => message.role), ['system', 'user']);
 });
