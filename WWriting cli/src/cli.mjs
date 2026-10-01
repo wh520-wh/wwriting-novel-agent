@@ -138,8 +138,9 @@ export async function main(
 
   async function chooseCommand() {
     try {
-      // 活跃轮可能随时弹出权限选择器；此时复用静态帮助，避免两个菜单抢键。
-      if (controller.snapshot().active_run_id !== null) {
+      // 控制器忙（跑轮或消化队列）时可能随时弹出权限选择器；此时复用静态帮助，避免两个菜单抢键。
+      // 忙碌口径收在控制器里（isBusy，含 drain 占位窗口），这里不再从投影自己猜。
+      if (controller.isBusy()) {
         await handler.handle('/help');
         return;
       }

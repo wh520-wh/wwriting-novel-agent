@@ -627,14 +627,11 @@ export function createCommandHandler({
       await shutdown();
       return { action: 'quit' };
     }
-    let active = null;
-    try {
-      active = getController().snapshot().active_run_id ?? null;
-    } catch {
-      active = null;
-    }
-    if (active !== null) {
-      getController().stop();
+    // D14：有活动轮先停，空闲才退。activeRunId 未打开会话也返回 null（不抛），
+    // 所以这里不再需要 try/catch——控制器还没开（如启动早期按 Ctrl+C）照常走退出。
+    const current = getController();
+    if (current !== null && current.activeRunId() !== null) {
+      current.stop();
       return { action: 'stopped' };
     }
     await shutdown();

@@ -57,6 +57,7 @@ function makeController({
 } = {}) {
   const calls = { submit: [], stop: [], close: 0, decide: [], order: [], priority: [] };
   const controller = {
+    activeRunId: () => null,
     snapshot: () => ({
       status: 'idle',
       active_run_id: calls.order.includes('active') ? 'run-1' : null,
@@ -790,7 +791,7 @@ test('确认已被作废时给一条中文事实，不抛出', async () => {
 
 test('Ctrl+C：有活动轮时只停当前轮，不退出', async () => {
   const { controller, calls } = makeController();
-  controller.snapshot = () => ({ active_run_id: 'run-1' });
+  controller.activeRunId = () => 'run-1';
   const quit = [];
   const handler = makeHandler({ controller, renderer: makeRenderer(), quit: () => { quit.push(true); } });
 
