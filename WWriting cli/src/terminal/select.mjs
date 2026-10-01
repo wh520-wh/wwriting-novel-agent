@@ -11,7 +11,7 @@
 // 纯逻辑与终端 I/O 分开：menuLines / menuAction 是纯函数（可单测），createSelector 只负责读写终端。
 import readline from 'node:readline';
 
-import { paintText, resolveColor } from './renderer.mjs';
+import { paintText, resolveColor } from './style.mjs';
 import { clipToWidth, displayWidth, padDisplayEnd, resolveColumns, takeProseRows } from './metrics.mjs';
 import { createBlockLedger } from './block-ledger.mjs';
 

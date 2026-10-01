@@ -7,7 +7,7 @@
 //
 // 调用时机很讲究（见 cli.mjs 的装配处）：在启动面板之后、常驻 readline 建立之前。
 // 此时屏幕上还没有输入框，重演的内容按顺序直写，不必和行缓冲打交道。
-import { formatThinkingSeconds, terminalStatusText } from './renderer.mjs';
+import { formatThinkingSeconds, terminalStatusText } from './style.mjs';
 
 export function printReplay({ renderer, items = [], omittedTurns = 0, plan = null } = {}) {
   if (!renderer) throw new Error('屏幕重演需要可用的渲染器。');

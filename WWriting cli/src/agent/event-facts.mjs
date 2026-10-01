@@ -2,7 +2,7 @@
 //
 // 为什么单独一个模块：这两件事各有两个消费者，且分处两层——
 //   · **终态形态**（事件 → completed / interrupted / failed + 原因 + 错误码）：事件的
-//     **落盘侧**（history.mjs 的 projectTurns）与**上屏侧**（terminal/renderer.mjs 的事件桥）
+//     **落盘侧**（history.mjs 的 projectTurns）与**上屏侧**（terminal/event-bridge.mjs）
 //     都要把它翻成同一个形状，再交给 terminalStatusText 出文案；
 //   · **思考耗时**（两个时间戳 → 毫秒）：当场路径（事件桥）与重启后的重演（replay.mjs）都要算。
 // 各写一份的代价不是「多几行」，而是**会分叉**：重演出来的历史于是比用户当时看到的更不准，

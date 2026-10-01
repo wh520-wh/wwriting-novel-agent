@@ -23,7 +23,7 @@
 //
 // 纯函数、无 I/O、不碰 ANSI：文案与排版归 src/terminal/replay.mjs，取舍归这里。
 // 因此 status 项**只带判据**（terminal / interruptReason / failCode），不带文案——
-// 文案由终端层调 renderer.mjs 的 terminalStatusText 得出，事件桥与重演因此说的是同一句话（R5）。
+// 文案由终端层调 terminal/style.mjs 的 terminalStatusText 得出，事件桥与重演因此说的是同一句话（R5）。
 // 思考耗时（P20：事件时间戳差，不用本地计时器）也只有一份定义，与事件桥共用——
 // 理由见 event-facts.mjs 的开头：同一个「思考 N 秒」不该有两条算法，否则当场与重演会各报一个数。
 import { reasoningDurationMs } from './event-facts.mjs';
@@ -79,7 +79,7 @@ function turnItems(turn, reasoning) {
   if (typeof turn.assistantText === 'string' && turn.assistantText !== '') {
     items.push({ kind: 'prose', text: turn.assistantText });
   }
-  // 只带判据、不带文案（R5）：terminalStatusText 只有 renderer.mjs 那一份定义，
+  // 只带判据、不带文案（R5）：terminalStatusText 只有 terminal/style.mjs 那一份定义，
   // 事件桥与重演因此不可能各说一套。
   items.push({
     kind: 'status',

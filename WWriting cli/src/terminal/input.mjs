@@ -33,7 +33,7 @@ import readline from 'node:readline';
 
 import {
   USER_MARK, paintText, resolveColor,
-} from './renderer.mjs';
+} from './style.mjs';
 import { displayWidth, resolveColumns, ruleLine } from './metrics.mjs';
 
 // 提示符与用户行标记是同一个字符（renderer 的 USER_MARK），屏幕上「❯ 开头」永远是用户说的。
