@@ -26,7 +26,8 @@ import { createChapterService } from './tools/chapters.mjs';
 import { createDeepSeekClient } from './model/deepseek-client.mjs';
 import { loadModelConfig, maskApiKey, readModelState } from './model/config.mjs';
 import { createEffortState } from './model/effort.mjs';
-import { createEventRenderer, createRenderer } from './terminal/renderer.mjs';
+import { createRenderer } from './terminal/renderer.mjs';
+import { createEventRenderer } from './terminal/event-bridge.mjs';
 import { printReplay } from './terminal/replay.mjs';
 import { createInputReader, isInteractiveTerminal, readOneLine } from './terminal/input.mjs';
 // 让位持有计数：嵌套让位（向导期间来确认卡）只在最外层动终端，键不会被两个读取者同时消费。
