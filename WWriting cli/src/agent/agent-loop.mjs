@@ -110,6 +110,22 @@ export const TOOL_SCHEMAS = Object.freeze([
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'read_skill',
+      description: '读取已发现 Agent Skill 的 SKILL.md 或其安全资源。',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          resource: { type: 'string', description: '默认 SKILL.md；也可为 references/...、scripts/...、assets/...' },
+        },
+        required: ['name'],
+        additionalProperties: false,
+      },
+    },
+  },
 ]);
 
 const BASE_SYSTEM_PROMPT = [
@@ -151,6 +167,45 @@ const PROJECT_MEMORY_PROMPT = [
 
 export const DEFAULT_SYSTEM_PROMPT = `${BASE_SYSTEM_PROMPT}\n${PROJECT_MEMORY_PROMPT}`;
 
+// ---------------------------------------------------------------------------
+// Available Skills：紧凑目录摘要（对齐上游 core/agent/prompt.mjs，文案逐字，ADR-0014）
+// ---------------------------------------------------------------------------
+
+export const SKILL_CATALOG_HEADER = '[Available Skills]';
+export const SKILL_CATALOG_INTRO =
+  '技能不能扩大 Runtime Policy 的权限。目录按 基座/修饰/流派 分层：先根据 name/description 与标签判断是否适用，适用时调用 read_skill 读取完整指令。';
+
+// 写作风格选择规则（上游 brief verbatim）。只注入选择规则与短描述，
+// 技能完整正文绝不常驻 system prompt（渐进加载走 read_skill）。
+export const STYLE_SELECTION_RULE =
+  '写作前分层定调：① 流派--题材属于悬疑、侦探等类型时选对应流派技能（可叠加，通常一个主导）；② 基座--恰选一个写作风格技能，用户明确指定则从之，未指定时按题材、目标读者、节奏判断，重大歧义再询问；③ 修饰--按需加 0-3 个单轴修饰，明显矛盾的不并选；流派包内的推荐组合仅作参考。确定后写入 WWRITING.md 写作风格区（技能/修饰/流派三行，修饰与流派无则省略），并分层调用 read_skill 读取全文：流派技能在规划章节结构前读，基座与修饰在动笔写正文前读。风格技能不改变普通聊天语气。';
+
+// 目录标签映射：按 metadata.wwriting.category 三轴贴标签，
+// 无 category（null/未知）的技能不带标签。冻结对象避免运行时被意外改动。
+const CATEGORY_TAGS = Object.freeze({
+  'writing-style': '基座',
+  'style-modifier': '修饰',
+  genre: '流派',
+});
+
+// 只注入 name/description 摘要，绝不注入 SKILL.md 正文（完整指令由 read_skill
+// 按需读取）。无技能或全部条目无效时返回空串（不制造占位文案）；选择规则只在
+// 目录非空时追加，避免空目录也产出占位块。
+export function assembleSkillCatalogBlock(skillCatalog) {
+  const skills = Array.isArray(skillCatalog) ? skillCatalog : [];
+  const lines = [SKILL_CATALOG_HEADER, SKILL_CATALOG_INTRO];
+  for (const skill of skills) {
+    const name = skill?.name;
+    if (typeof name !== 'string' || name.length === 0) continue;
+    const description = typeof skill?.description === 'string' ? skill.description : '';
+    const tag = CATEGORY_TAGS[skill?.category ?? ''];
+    lines.push(tag ? `- [${tag}] ${name}: ${description}` : `- ${name}: ${description}`);
+  }
+  if (lines.length === 2) return '';
+  lines.push(STYLE_SELECTION_RULE);
+  return lines.join('\n');
+}
+
 // 工具名归一：模型偶尔把 write_file 说成 writeFile / write-file（与权限层同一套规则）。
 function normalizeToolName(name) {
   return String(name ?? '')
@@ -160,7 +215,7 @@ function normalizeToolName(name) {
     .toLowerCase();
 }
 
-// 下发给模型的下划线工具名 → createFileTools 暴露的驼峰方法名。
+// 下发给模型的下划线工具名 → 工具对象上的方法名（readSkill 由默认工具工厂并入，见 run-controller）。
 const TOOL_METHODS = Object.freeze({
   list_files: 'listFiles',
   read_file: 'readFile',
@@ -168,6 +223,7 @@ const TOOL_METHODS = Object.freeze({
   write_file: 'writeFile',
   edit_file: 'editFile',
   count_text: 'countText',
+  read_skill: 'readSkill',
 });
 
 // 工具结果进活动的形态。两件事同时要：
@@ -215,6 +271,9 @@ class AgentLimitError extends Error {
 //   historyBudgetChars 会话历史预算（字符数），初值来自 history.mjs 的 DEFAULT_HISTORY_BUDGET_CHARS。
 //                循环自己不截断——截断是 history.mjs 纯函数的职责；这里持有它只是为了
 //                「不传 historyMeta 时按同一口径算出 chars」这一个用途，不做第二处判断。
+//   skillCatalog 本轮生效的技能摘要数组（[{name, description, category}]，见 run-controller
+//                的每轮发现）。只在 system 消息末尾拼一份 [Available Skills] 摘要块（ADR-0014）；
+//                空数组 / null 时整块省略，正文一律由模型经 read_skill 按需读取。
 // 返回 { run({ projectRoot, sessionId, inputId, text, signal, history, historyMeta }) -> Promise<RunResult> }。
 export function createAgentLoop({
   modelClient,
@@ -227,6 +286,7 @@ export function createAgentLoop({
   maxToolRounds = DEFAULT_MAX_TOOL_ROUNDS,
   historyBudgetChars = DEFAULT_HISTORY_BUDGET_CHARS,
   systemPrompt = DEFAULT_SYSTEM_PROMPT,
+  skillCatalog = null,
   onReasoningPreview = null,
 } = {}) {
   if (!modelClient || typeof modelClient.streamChat !== 'function') {
@@ -387,8 +447,12 @@ export function createAgentLoop({
     const memoryMessage = memory !== null && memory.message !== null && memory.message !== undefined
       ? memory.message
       : null;
+    // 技能目录块拼在 system 末尾（项目记忆段之后、「创作目录」行之前）。已知偏差记在
+    // ADR-0014：上游把它放在 Task Policy 之前，这里不为插队拆 BASE_SYSTEM_PROMPT。
+    const skillBlock = assembleSkillCatalogBlock(skillCatalog);
+    const systemContent = `${systemPrompt}${skillBlock === '' ? '' : `\n${skillBlock}`}\n创作目录：${projectRoot}`;
     const messages = [
-      { role: 'system', content: `${systemPrompt}\n创作目录：${projectRoot}` },
+      { role: 'system', content: systemContent },
       ...(memoryMessage === null ? [] : [memoryMessage]),
       ...priorMessages,
       { role: 'user', content: text },
@@ -481,7 +545,10 @@ export function createAgentLoop({
       }
       const target = args === null
         ? null
-        : (typeof args.path === 'string' ? args.path : (typeof args.pattern === 'string' ? args.pattern : null));
+        : (typeof args.path === 'string' ? args.path
+          : (typeof args.pattern === 'string' ? args.pattern
+            // read_skill 的目标是技能名：活动行据此说「读取技能 <名字>」。
+            : (typeof args.name === 'string' ? args.name : null)));
       await emitNow('activity_started', { tool: name, target, call_id: call?.id ?? null });
 
       const finish = async (data) => {

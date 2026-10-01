@@ -87,6 +87,7 @@ const TOOL_LABELS = Object.freeze({
   write_file: '写入文件',
   edit_file: '修改文件',
   count_text: '统计字数',
+  read_skill: '读取技能',
   delete_file: '删除文件',
   delete_dir: '删除目录',
   clear_session: '清空会话',

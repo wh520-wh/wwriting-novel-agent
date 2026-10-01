@@ -8,8 +8,9 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createRunController } from '../../src/agent/run-controller.mjs';
+import { createRunController, createDefaultToolsFactory } from '../../src/agent/run-controller.mjs';
 import { DEFAULT_HISTORY_BUDGET_CHARS } from '../../src/agent/history.mjs';
+import { createSkillService } from '../../src/skills/index.mjs';
 import { createSessionManager } from '../../src/session/session-manager.mjs';
 import { createEventStore } from '../../src/session/event-store.mjs';
 import { createWorkspaceStore } from '../../src/storage/workspace-store.mjs';
@@ -1254,4 +1255,80 @@ test('isBusy / activeRunId：未打开会话也能安全读（不许抛）', () 
   });
   assert.equal(controller.isBusy(), false);
   assert.equal(controller.activeRunId(), null);
+});
+
+// —— 技能接线（ADR-0014：清单每轮发现一次、失败返空不阻塞；readSkill 并入默认工具工厂）——
+
+test('startRun 把生效技能清单传给循环工厂，一轮只发现一次', async () => {
+  const root = await makeTempRoot('wwriting-ctrl-skillcat-');
+  const projectRoot = path.join(root, 'novel');
+  const seen = [];
+  const catalogCalls = [];
+  const skillService = {
+    catalog: async () => {
+      catalogCalls.push(true);
+      return { active: [{ name: 'demo', description: '测试技能', category: 'genre' }], shadowed: [], errors: [] };
+    },
+  };
+  const { controller } = await makeController({
+    root,
+    projectRoot,
+    agentLoopFactory: (options) => {
+      seen.push(options);
+      return { run: async () => ({ status: 'completed' }) };
+    },
+    extra: { skillService },
+  });
+
+  try {
+    await controller.submit({ text: '写第一章' });
+    assert.equal(seen.length, 1);
+    assert.deepEqual(seen[0].skillCatalog.map((skill) => skill.name), ['demo']);
+    assert.equal(catalogCalls.length, 1, '每轮只发现一次');
+  } finally {
+    await controller.close();
+  }
+});
+
+test('技能服务抛错时清单降级为空数组，本轮照常进行', async () => {
+  const root = await makeTempRoot('wwriting-ctrl-skillerr-');
+  const projectRoot = path.join(root, 'novel');
+  const seen = [];
+  const skillService = { catalog: async () => { throw new Error('磁盘坏了'); } };
+  const { controller } = await makeController({
+    root,
+    projectRoot,
+    agentLoopFactory: (options) => {
+      seen.push(options);
+      return { run: async () => ({ status: 'completed' }) };
+    },
+    extra: { skillService },
+  });
+
+  try {
+    const submitted = await controller.submit({ text: '写第一章' });
+    assert.equal(submitted.result.status, 'completed');
+    assert.deepEqual(seen[0].skillCatalog, []);
+  } finally {
+    await controller.close();
+  }
+});
+
+test('默认工具工厂把 readSkill 并入文件工具，按注入的服务与当轮 projectRoot 解析', async () => {
+  const project = await makeTempRoot('wwriting-ctrl-skilltools-');
+  const skillDir = path.join(project, 'skills', 'demo');
+  await fs.mkdir(skillDir, { recursive: true });
+  await fs.writeFile(path.join(skillDir, 'SKILL.md'), '---\nname: demo\ndescription: d\n---\n\n技能正文\n', 'utf8');
+  const skillService = createSkillService({
+    userHome: path.join(project, 'home'),
+    builtinRoot: path.join(project, 'builtin'),
+  });
+  const tools = createDefaultToolsFactory(skillService)({ projectRoot: project, signal: null, permissions: null });
+
+  assert.equal(typeof tools.listFiles, 'function', '文件工具还在');
+  assert.equal(typeof tools.writeFile, 'function', '文件工具还在');
+
+  const result = await tools.readSkill({ name: 'demo' });
+  assert.match(result.content, /技能正文/);
+  await assert.rejects(tools.readSkill({ name: 'absent' }), { code: 'skill_not_found' });
 });
