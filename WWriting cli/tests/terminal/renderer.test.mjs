@@ -1418,3 +1418,33 @@ test('事件桥：渲染器没有 printPlan 能力时安静跳过，不崩', () 
   bridge.handleEvent({ type: 'plan_updated', at: '2026-10-01T00:00:00.000Z', data: { items: [{ summary: 'x' }] } });
   // 走到这里没抛就是通过。
 });
+
+test('history_applied 带会话压缩事实：摘要覆盖与省略各说各的', () => {
+  const stdout = makeStdout({ tty: true });
+  const renderer = createRenderer({ stdout, env: { NO_COLOR: '1' } });
+  const bridge = createEventRenderer({ renderer });
+  bridge.handleEvent({
+    type: 'history_applied', at: '2026-10-01T00:00:00.000Z',
+    data: { kept_turns: 2, truncated_turns: 0, chars: 500, digest_chars: 120, covered_turns: 4 },
+  });
+  renderer.close();
+  const detail = screenText(stdout.text());
+  assert.ok(detail.includes('已载入前情'), '有摘要就要说，哪怕没省略轮次');
+  assert.ok(detail.includes('2 轮'));
+  assert.ok(detail.includes('摘要覆盖 4 轮'));
+  assert.ok(detail.includes('含会话摘要'));
+});
+
+test('history_applied 无摘要不提摘要（老文案逐字不变）', () => {
+  const stdout = makeStdout({ tty: true });
+  const renderer = createRenderer({ stdout, env: { NO_COLOR: '1' } });
+  const bridge = createEventRenderer({ renderer });
+  bridge.handleEvent({
+    type: 'history_applied', at: '2026-10-01T00:00:00.000Z',
+    data: { kept_turns: 1, truncated_turns: 1, chars: 500 },
+  });
+  renderer.close();
+  const shown = screenText(stdout.text());
+  assert.ok(shown.includes('1 轮 · 省略更早 1 轮'));
+  assert.equal(shown.includes('摘要'), false);
+});

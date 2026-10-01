@@ -758,16 +758,23 @@ export function createEventRenderer({ renderer, label = activityLabel, onDecisio
         break;
       }
       case 'history_applied': {
-        // 只有实际省略前情时才说明，正常载入不增加噪音。
+        // 只有实际省略前情（或带会话摘要）时才说明，正常载入不增加噪音。
         const kept = Number.isFinite(data.kept_turns) ? data.kept_turns : 0;
         const dropped = Number.isFinite(data.truncated_turns) ? data.truncated_turns : 0;
-        if (dropped > 0) {
+        const covered = Number.isFinite(data.covered_turns) ? data.covered_turns : 0;
+        const digestChars = Number.isFinite(data.digest_chars) ? data.digest_chars : 0;
+        if (dropped > 0 || digestChars > 0) {
           // final: true —— 这是落进 scrollback 的一条事实，不是会被重绘抹掉的动态行。
           // 动态行只属于「此刻正在发生的事」，而「这一轮记得多少」是已经确定的结果。
           renderer.printStatus('已载入前情', {
             final: true,
             tone: 'info',
-            detail: `${kept} 轮 · 省略更早 ${dropped} 轮`,
+            detail: joinNotes([
+              kept > 0 ? `${kept} 轮` : null,
+              covered > 0 ? `摘要覆盖 ${covered} 轮` : null,
+              dropped > 0 ? `省略更早 ${dropped} 轮` : null,
+              digestChars > 0 ? `含会话摘要` : null,
+            ]),
           });
         }
         break;

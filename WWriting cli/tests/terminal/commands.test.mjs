@@ -1317,3 +1317,72 @@ test('/plan 有计划时把当前整表交给渲染器，不多说一个字', as
   assert.deepEqual(plans, [items]);
   assert.equal(pick(renderer.calls, 'status').length, 0, '有内容可画时不再补一条状态行');
 });
+
+// —— /compact：手动压缩的四个出口 ——
+
+function makeCompactController({ result = { status: 'ok', chars: 120, turns: 3 }, throws = null, busy = false } = {}) {
+  const calls = { compact: 0 };
+  return {
+    calls,
+    controller: {
+      activeRunId: () => null,
+      isBusy: () => busy,
+      snapshot: () => ({ session_id: 's-1' }),
+      compact: async () => {
+        calls.compact += 1;
+        if (throws !== null) throw throws;
+        return result;
+      },
+      permissions: { pending: () => [] },
+    },
+  };
+}
+
+test('/compact 忙碌时拒绝并说明，不发起压缩', async () => {
+  const renderer = makeRenderer();
+  const { controller, calls } = makeCompactController({ busy: true });
+  const handler = makeHandler({ renderer, controller });
+
+  await handler.handle('/compact');
+
+  assert.equal(calls.compact, 0);
+  const status = pick(renderer.calls, 'status').at(-1);
+  assert.equal(status[1], '运行中');
+  assert.equal(status[2].tone, 'warn');
+});
+
+test('/compact 没有可压缩的对话时如实说', async () => {
+  const renderer = makeRenderer();
+  const { controller } = makeCompactController({ result: { status: 'empty' } });
+  const handler = makeHandler({ renderer, controller });
+
+  await handler.handle('/compact');
+
+  const status = pick(renderer.calls, 'status').at(-1);
+  assert.equal(status[1], '还没有可压缩的对话');
+});
+
+test('/compact 成功：先压缩中后已压缩，带上轮数与摘要字数', async () => {
+  const renderer = makeRenderer();
+  const { controller } = makeCompactController({ result: { status: 'ok', chars: 120, turns: 3 } });
+  const handler = makeHandler({ renderer, controller });
+
+  await handler.handle('/compact');
+
+  const statuses = pick(renderer.calls, 'status');
+  assert.deepEqual(statuses[0], ['status', '压缩中', {}]);
+  assert.equal(statuses.at(-1)[1], '已压缩');
+  assert.equal(statuses.at(-1)[2].detail, '3 轮收敛成 120 字摘要');
+});
+
+test('/compact 失败：压缩失败 + 一条事实，不静默', async () => {
+  const renderer = makeRenderer();
+  const { controller } = makeCompactController({ throws: new Error('模型没有返回摘要，会话保持原样。') });
+  const handler = makeHandler({ renderer, controller });
+
+  await handler.handle('/compact');
+
+  const status = pick(renderer.calls, 'status').at(-1);
+  assert.equal(status[1], '压缩失败');
+  assert.match(status[2].detail, /没有返回摘要/);
+});

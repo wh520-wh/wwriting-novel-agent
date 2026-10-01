@@ -19,6 +19,9 @@
 | [0010](./0010-bare-launch-starts-a-new-session.md) | 裸启动开一个全新会话，「接着上次」由 `-c` 显式表达 |
 | [0011](./0011-screen-replay-shares-the-model-memory-budget.md) | 屏幕重演与模型记忆共用同一份预算 |
 | [0012](./0012-reasoning-is-journaled-but-never-sent-back.md) | 思考正文全量落盘、只经命令查看、绝不回喂模型 |
+| [0013](./0013-skill-discovery-three-roots-project-overrides-builtin.md) | 技能发现裁剪为三根：内置 / 全局 / 项目，项目可覆盖内置 |
+| [0014](./0014-skill-catalog-summary-in-system-message-progressive-read-skill.md) | 技能目录块只注入摘要进 system 消息，正文经 read_skill 渐进读取 |
+| [0015](./0015-compact-manual-only-no-auto-compaction.md) | `/compact` 只做手动触发，CLI 不做自动压缩 |
 
 > 0006–0008 是 `WWRITING.md` 项目记忆的设计决策（铁律 7）。并发写语义已随 Q12 拍板（最后写者赢，
 > 防线是确认卡显示变更）；`/init` 更新契约经 2026-09-28 对抗性审查收敛为
