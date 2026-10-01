@@ -318,5 +318,43 @@ export function createFileTools({ projectRoot, signal = null, permissions = null
     return { path: displayPath(abs), charsNoSpace: counted.charsNoSpace, replacements: occurrences };
   }
 
-  return { listFiles, readFile, searchFiles, writeFile, editFile, countText };
+  // 追加正文（append_chapter_segment 的落盘）：读旧文 → 拼接 → 原子写入。
+  // append 也不能留半文件（铁律 5 同源）：不用 fs.appendFile——半截追加崩溃后
+  // 既不完整也没有临时文件可回退，拼全再原子换名与整篇写入走同一条路。
+  async function appendFile({ path: target, content } = {}) {
+    throwIfAborted();
+    if (typeof content !== 'string' || content === '') {
+      throw new FileToolError('追加的内容必须是文本且不能为空。', 'TOOL_CONTENT_INVALID', {
+        received: typeof content,
+      });
+    }
+    const abs = await resolveSafePath(target);
+    await authorizeWrite('append_chapter_segment', target);
+    const stat = await statOrNull(abs);
+    assertNotDirectory(stat, abs);
+    const original = stat === null ? '' : await readTextFile(abs);
+    const next = original + content;
+    throwIfAborted();
+    const counted = countText({ text: next });
+    await atomicWrite(abs, next);
+    return { path: displayPath(abs), charsNoSpace: counted.charsNoSpace };
+  }
+
+  // 章节回滚的落盘：授权标签是「回滚章节」（确认卡要让人知道在确认什么），
+  // 原子写入与 write_file 走同一条路。内容由章节服务提供（版本快照），这里只管安全落盘。
+  async function restoreFile({ path: target, content } = {}) {
+    throwIfAborted();
+    if (typeof content !== 'string') {
+      throw new FileToolError('回滚的内容必须是文本。', 'TOOL_CONTENT_INVALID', { received: typeof content });
+    }
+    const abs = await resolveSafePath(target);
+    await authorizeWrite('rollback_chapter', target);
+    const stat = await statOrNull(abs);
+    assertNotDirectory(stat, abs);
+    const counted = countText({ text: content });
+    await atomicWrite(abs, content);
+    return { path: displayPath(abs), charsNoSpace: counted.charsNoSpace };
+  }
+
+  return { listFiles, readFile, searchFiles, writeFile, editFile, appendFile, restoreFile, countText };
 }

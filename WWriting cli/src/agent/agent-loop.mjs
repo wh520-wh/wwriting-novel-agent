@@ -155,6 +155,77 @@ export const TOOL_SCHEMAS = Object.freeze([
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'append_chapter_segment',
+      description: '向创作目录里的一个文件追加一段正文（需要用户确认）；章节分次写作时用它续写，不要整篇覆盖。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '相对创作目录的文件路径。' },
+          content: { type: 'string', description: '要追加的正文片段。' },
+        },
+        required: ['path', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'commit_chapter',
+      description: '提交一章的当前内容为版本快照，并记入前情账本（自动放行）。一章定稿时提交；回滚恢复的是最近一次提交。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '相对创作目录的章节文件路径。' },
+          summary: { type: 'string', description: '一句话剧情摘要（前情账本用），可省略。' },
+        },
+        required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'rollback_chapter',
+      description: '把一章恢复到最近一次提交的内容（需要用户确认）；回滚前的当前内容会先自动存档，永远可再回滚。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '相对创作目录的章节文件路径。' },
+        },
+        required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_continuity',
+      description: '读取前情账本：已提交章节的顺序清单与剧情摘要，续写前回顾用。',
+      parameters: {
+        type: 'object',
+        properties: {
+          budgetChars: { type: 'number', description: '最多读多少字，缺省 4000。' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'style_stats',
+      description: '统计一个文件的文风形态：字数、段落、句子节奏、对话占比。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '相对创作目录的文件路径。' },
+        },
+        required: ['path'],
+      },
+    },
+  },
 ]);
 
 const BASE_SYSTEM_PROMPT = [
@@ -162,6 +233,8 @@ const BASE_SYSTEM_PROMPT = [
   '规则：只使用给定的工具读写文件；读取自动放行，写入与修改需要用户确认；',
   '篇幅一律先用 count_text 统计再判断，绝不凭自己的估计报字数；',
   '多步任务先用 update_plan 列出步骤并随进度整表更新；',
+  '长篇写作：章节正文用 append_chapter_segment 分段续写，一章定稿用 commit_chapter 提交',
+  '（回滚恢复的是最近一次提交），续写新章前用 read_continuity 回顾前情；',
   '删除、项目外访问等极端操作不在你的能力范围内，不要尝试。',
 ].join('');
 
@@ -257,6 +330,11 @@ const TOOL_METHODS = Object.freeze({
   count_text: 'countText',
   read_skill: 'readSkill',
   update_plan: 'updatePlan',
+  append_chapter_segment: 'appendFile',
+  commit_chapter: 'commitChapter',
+  rollback_chapter: 'rollbackChapter',
+  read_continuity: 'readContinuity',
+  style_stats: 'styleStats',
 });
 
 // 工具结果进活动的形态。两件事同时要：

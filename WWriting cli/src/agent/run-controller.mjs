@@ -19,6 +19,8 @@ import {
 import { createFileTools } from '../tools/files.mjs';
 import { createPermissionState } from '../tools/permissions.mjs';
 import { updatePlan } from '../tools/plan.mjs';
+import { ChapterToolError, createChapterService } from '../tools/chapters.mjs';
+import { styleStats } from '../tools/style-stats.mjs';
 import { createSkillService } from '../skills/index.mjs';
 
 // createRunController({ sessionManager, agentLoopFactory, projectRoot, sessionId, permissions, toolsFactory, modelClient, clock, idFactory, historyBudgetChars, onNotice, onReasoningPreview })
@@ -33,19 +35,65 @@ import { createSkillService } from '../skills/index.mjs';
 //                日志里仍然只有轮末那一条 reasoning_completed（P18）。
 // 返回 { open, submit, stop, requestPriority, decide, snapshot, readEvents, close, permissions }。
 
-// 默认工具工厂：文件工具之外并入 readSkill（read_skill 的实现）。
-// 权限口径与文件读取一致——读操作不经过确认（铁律 4「只读自动」）；分类兜底在
-// permissions.mjs 的 READ_TOOLS 里（read_skill 已列入），即使将来有人把它接进权限桥，
-// 它也只会被归为只读，绝不会做成确认卡。
-export function createDefaultToolsFactory(skillService) {
-  return (options) => ({
-    ...createFileTools(options),
-    readSkill: (args) => skillService.read({
+// 默认工具工厂：文件工具之外并入 readSkill（read_skill 的实现）、updatePlan（任务计划）
+// 与章节服务四件（commit/rollback/continuity/style_stats）。
+// 权限口径：读与「只写应用私有存储」的操作自动放行（铁律 4「只读自动」；分类兜底在
+// permissions.mjs 的 READ_TOOLS/WRITE_TOOLS——append_chapter_segment 与 rollback_chapter
+// 会改写创作文件，走 write 级确认；未知工具收紧为极端，绝不默认放行）。
+export function createDefaultToolsFactory(skillService, chapterService = null) {
+  return (options) => {
+    const files = createFileTools(options);
+    const tools = {
+      ...files,
+      readSkill: (args) => skillService.read({
+        projectRoot: options.projectRoot,
+        name: args?.name,
+        resource: typeof args?.resource === 'string' && args.resource !== '' ? args.resource : 'SKILL.md',
+      }),
+      // update_plan 是纯函数工具：校验归一在这里，事件落盘（plan_updated）在循环里——
+      // 工具不持有事件存储，循环按它的返回值发声（分层：tools 不 import agent）。
+      updatePlan,
+    };
+    if (chapterService === null) return tools;
+
+    // 提交：读当前内容（自动）→ 存版本 + 记前情（私有存储，自动）。
+    // 文件不存在 / 读不出时 readFile 的中文事实原样抛出，模型能自己调整。
+    tools.commitChapter = async (args) => {
+      const { text } = await files.readFile({ path: args?.path });
+      return chapterService.commit({
+        projectRoot: options.projectRoot,
+        path: args?.path,
+        text,
+        summary: typeof args?.summary === 'string' ? args.summary : null,
+      });
+    };
+    // 回滚三段：读当前 → prepareRollback（存安全快照 + 取提交内容，私有）→ restoreFile
+    // （创作目录写入，write 级确认，确认卡说的是「回滚章节」而不是「写入文件」）。
+    // 顺序是刻意的：确认发生在写入前一个字节都不会动；确认拒绝只多一份私有快照，前情不受污染。
+    tools.rollbackChapter = async (args) => {
+      const target = await chapterService.prepareRollback({
+        projectRoot: options.projectRoot,
+        path: args?.path,
+        currentText: (await files.readFile({ path: args?.path })).text,
+      });
+      if (target === null) {
+        throw new ChapterToolError('这一章还没有提交过，没有可回滚的版本。', 'CHAPTER_NO_VERSION', {
+          path: args?.path ?? null,
+        });
+      }
+      const restored = await files.restoreFile({ path: args?.path, content: target.text });
+      return { path: restored.path, restoredSeq: target.seq, charsNoSpace: restored.charsNoSpace };
+    };
+    tools.readContinuity = (args) => chapterService.readContinuity({
       projectRoot: options.projectRoot,
-      name: args?.name,
-      resource: typeof args?.resource === 'string' && args.resource !== '' ? args.resource : 'SKILL.md',
-    }),
-  });
+      budgetChars: args?.budgetChars,
+    });
+    tools.styleStats = async (args) => {
+      const { text } = await files.readFile({ path: args?.path });
+      return styleStats({ text });
+    };
+    return tools;
+  };
 }
 
 export function createRunController({
@@ -56,6 +104,8 @@ export function createRunController({
   permissions = null,
   // 技能服务缺省用真实实现（内置根 = 仓库 src/skills）；测试注入临时根。
   skillService = createSkillService(),
+  // 章节服务缺省用真实实现（应用私有区 = %APPDATA%/WWriting/...）；测试注入临时 appDataRoot。
+  chapterService = createChapterService(),
   toolsFactory = null,
   modelClient = null,
   clock = Date.now,
@@ -72,7 +122,7 @@ export function createRunController({
   if (typeof projectRoot !== 'string' || projectRoot.trim() === '') {
     throw new Error('运行控制器需要创作目录，请用 --cwd 指定。');
   }
-  const resolvedToolsFactory = toolsFactory ?? createDefaultToolsFactory(skillService);
+  const resolvedToolsFactory = toolsFactory ?? createDefaultToolsFactory(skillService, chapterService);
   const perm = permissions ?? createPermissionState({ clock, idFactory });
   // 非法预算退回默认（与 history.mjs 同一口径）：截断规则只有一处，这里只是转发。
   const historyBudget = Number.isFinite(historyBudgetChars) && historyBudgetChars > 0

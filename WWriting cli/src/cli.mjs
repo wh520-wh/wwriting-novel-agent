@@ -22,6 +22,7 @@ import { buildReplay } from './agent/replay.mjs';
 import { DEFAULT_HISTORY_BUDGET_CHARS } from './agent/history.mjs';
 import { readProjectMemory } from './agent/project-memory.mjs';
 import { createSkillService } from './skills/index.mjs';
+import { createChapterService } from './tools/chapters.mjs';
 import { createDeepSeekClient } from './model/deepseek-client.mjs';
 import { loadModelConfig, maskApiKey, readModelState } from './model/config.mjs';
 import { createEffortState } from './model/effort.mjs';
@@ -184,6 +185,11 @@ export async function main(
   // 服务本身无状态（每次调用重新发现），两处共享不会互相污染。
   const skillService = createSkillService();
 
+  // 章节服务：版本快照与前情账本的应用私有存储（铁律 8），控制器里的
+  // commit_chapter / rollback_chapter / read_continuity 工具都用它。
+  // appDataRoot 与 workspaceStore 同源（APPDATA），同一创作目录映射到同一个私有区。
+  const chapterService = createChapterService({ appDataRoot: resolveAppDataRoot(io.env) });
+
   // 思考强度的会话内状态（P16：跟会话走，不持久化）。
   // 每次判定都现读配置：用户可能正是在这个会话里用 /model 换的模型。
   const effortState = createEffortState({
@@ -268,6 +274,7 @@ export async function main(
       sessionId,
       modelClient,
       skillService,
+      chapterService,
       // 显式给预算：不靠「构造函数默认值与组合根默认值是同一个常量」这种巧合。
       historyBudgetChars,
       // 控制器只负责「发生了什么」，怎么显示归组合根决定（agent 层不碰 stdout）。

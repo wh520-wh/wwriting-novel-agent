@@ -425,3 +425,60 @@ test('写入门控：输入切换后待确认作废，写入被拒且不落盘',
   await assert.rejects(() => writing, (error) => error.code === 'TOOL_WRITE_DENIED');
   assert.deepEqual(await listNames(path.join(projectRoot, 'chapters')), []);
 });
+
+// —— append_chapter_segment 与 rollback_chapter 的落盘 ——
+
+test('appendFile 追加到已有文件：拼接后原子落盘，字数按拼接后的全文算', async () => {
+  const { projectRoot } = await makeLayout('wwriting-files-append-');
+  await fs.writeFile(path.join(projectRoot, 'chapters', 'ch01.md'), '第一段。', 'utf8');
+  const tools = createFileTools({ projectRoot, permissions: allowWrites('in-1') });
+
+  const out = await tools.appendFile({ path: 'chapters/ch01.md', content: '第二段。' });
+
+  assert.equal(await fs.readFile(path.join(projectRoot, 'chapters', 'ch01.md'), 'utf8'), '第一段。第二段。');
+  assert.equal(out.charsNoSpace, 8);
+});
+
+test('appendFile 对不存在的文件等同首次写入', async () => {
+  const { projectRoot } = await makeLayout('wwriting-files-append-new-');
+  const tools = createFileTools({ projectRoot, permissions: allowWrites('in-1') });
+  const out = await tools.appendFile({ path: 'chapters/new.md', content: '开篇。' });
+  assert.equal(await fs.readFile(path.join(projectRoot, 'chapters', 'new.md'), 'utf8'), '开篇。');
+  assert.equal(out.charsNoSpace, 3);
+});
+
+test('appendFile 空内容拒绝、目录拒绝、未经确认一个字节都不写', async () => {
+  const { projectRoot } = await makeLayout('wwriting-files-append-guard-');
+  const tools = createFileTools({ projectRoot, permissions: allowWrites('in-1') });
+  await assert.rejects(() => tools.appendFile({ path: 'chapters/a.md', content: '' }), (error) => error.code === 'TOOL_CONTENT_INVALID');
+  await assert.rejects(() => tools.appendFile({ path: 'chapters', content: 'x' }), (error) => error.code === 'TOOL_TARGET_IS_DIRECTORY');
+
+  // 权限拒绝路径：拒绝后文件保持原样。
+  await fs.writeFile(path.join(projectRoot, 'chapters', 'keep.md'), '原样', 'utf8');
+  const permissions = createPermissionState({ yolo: false });
+  permissions.beginInput({ inputId: 'in-1' });
+  const gated = createFileTools({ projectRoot, permissions });
+  const writing = gated.appendFile({ path: 'chapters/keep.md', content: '追加' });
+  const pending = await waitForPending(permissions);
+  await permissions.decide({ decisionId: pending[0].decision_id, choice: 'deny' });
+  await assert.rejects(() => writing, (error) => error.code === 'TOOL_WRITE_DENIED');
+  assert.equal(await fs.readFile(path.join(projectRoot, 'chapters', 'keep.md'), 'utf8'), '原样');
+});
+
+test('restoreFile 授权标签是「回滚章节」：确认卡说的是回滚，不是写入文件', async () => {
+  const { projectRoot } = await makeLayout('wwriting-files-restore-');
+  await fs.writeFile(path.join(projectRoot, 'chapters', 'ch01.md'), '旧版本', 'utf8');
+  const permissions = createPermissionState({ yolo: false });
+  permissions.beginInput({ inputId: 'in-1' });
+  const tools = createFileTools({ projectRoot, permissions });
+
+  const restoring = tools.restoreFile({ path: 'chapters/ch01.md', content: '提交过的内容' });
+  const pending = await waitForPending(permissions);
+  // 确认卡按工具名取标签：用户必须知道自己在确认一次回滚（而不是又一次普通写入）。
+  assert.equal(pending[0].tool, 'rollback_chapter');
+  await permissions.decide({ decisionId: pending[0].decision_id, choice: 'once' });
+  const out = await restoring;
+
+  assert.equal(await fs.readFile(path.join(projectRoot, 'chapters', 'ch01.md'), 'utf8'), '提交过的内容');
+  assert.equal(out.charsNoSpace, 6);
+});
