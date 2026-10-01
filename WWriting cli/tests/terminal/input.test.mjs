@@ -646,3 +646,37 @@ test('折行输入且光标在行中时，下框线画在最后一格物理行�
   reader.stop();
   stdin.end();
 });
+
+test('折行粘贴后光标回行首再补字：旧帧不残留，下框线紧贴最后一行（真机 ConPTY 缺陷回归）', async () => {
+  // readline 的「行尾追加」快速路径会把整段粘贴直接回显到屏幕（不经过 _refreshLine），
+  // 真实光标随折行下沉而行模型不知情；Ctrl+A 把模型光标拉回行首后，下一次重绘从块中
+  // 起画——旧物理行残留在上方、下框线漂移。真机 ConPTY 抓包定位，修复 = 重绘前按真实
+  // 光标行锚定块顶。本用例在假 TTY 上走同一条 readline 代码路径钉住最终画面。
+  const stdin = makeFakeTTY();
+  const stdout = makeSink({ tty: true });
+  const reader = createInputReader({ stdin, stdout, env: {}, onSubmit: () => {} });
+  reader.start();
+  await tick();
+
+  stdin.write('啊'.repeat(118)); // 提示符 2 列 + 236 列 = 238 → 80 列下折 3 格物理行
+  await tick();
+  stdin.write('\x01'); // Ctrl+A：光标回行首
+  await tick();
+  stdin.write('xyz'); // 行首插入：整行再重画一次
+  await tick();
+
+  const lines = screenText(stdout.text(), { cols: 80, rows: 40 }).split('\n');
+  const promptLines = lines.filter((line) => line.includes('❯'));
+  assert.equal(promptLines.length, 1, `屏幕上只能有一帧输入行，实际 ${promptLines.length} 帧：\n${lines.join('\n')}`);
+  assert.ok(promptLines[0].startsWith('❯ xyz'), `行首插入的 xyz 应出现在输入行首，实际：${JSON.stringify(promptLines[0])}`);
+
+  // 下框线必须紧贴最后一个非空行（中间不得隔着残留行或空行）
+  const linesTrimmed = lines.map((line) => line.trim());
+  const lastRuleIndex = linesTrimmed.reduce((found, line, index) => (/^─+$/.test(line) ? index : found), -1);
+  assert.ok(lastRuleIndex > 0, '屏幕上应有下框线');
+  const aboveRule = lines[lastRuleIndex - 1].trim();
+  assert.ok(aboveRule !== '', `下框线的上一行应为输入内容，实际为空行：\n${lines.join('\n')}`);
+
+  reader.stop();
+  stdin.end();
+});
