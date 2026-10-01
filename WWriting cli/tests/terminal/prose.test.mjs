@@ -5,9 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {
-  createRenderer, renderProseRow,
-} from '../../src/terminal/renderer.mjs';
+import { createRenderer } from '../../src/terminal/renderer.mjs';
 import { displayWidth, takeProseRows } from '../../src/terminal/metrics.mjs';
 
 function makeStdout({ tty = false } = {}) {
@@ -86,27 +84,32 @@ test('宽终端正文保持阅读列，窄终端中文行不超出屏幕', () =>
   }
 });
 
-// —— 轻量 Markdown ——
+// —— Markdown（细粒度契约在 markdown.test.mjs，这里只做管线级抽查）——
 
-test('renderProseRow：标题去井号、强调加粗、行内代码压暗', () => {
-  assert.equal(renderProseRow('# 第一章', { color: false }), '  第一章');
-  assert.equal(renderProseRow('**加粗**与`代码`', { color: false }), '  加粗与代码');
-  assert.ok(renderProseRow('**加粗**', { color: true }).includes('\x1b[1m'), '上色时强调用加粗');
-  assert.ok(renderProseRow('`代码`', { color: true }).includes('\x1b[2m'), '行内代码压暗');
-  assert.equal(renderProseRow('# 标题', { color: true }), `  \x1b[1m标题\x1b[0m`, '标题整行加粗');
-  assert.equal(renderProseRow('code();', { code: true, color: false }), '    code();', '代码块比正文再进 2 格');
-  assert.equal(renderProseRow('**甲**`乙`', { color: false }).trim(), '甲乙', 'NO_COLOR 下只是去掉标记，文字一个不差');
-  assert.equal(renderProseRow('普通一行'), '  普通一行', '不含标记的行只加内容列缩进');
+test('行内样式：强调加粗、行内代码压暗；NO_COLOR 下只去标记、文字一个不差', () => {
+  const colored = makeStdout({ tty: true });
+  const rich = createRenderer({ stdout: colored, color: true });
+  rich.printAssistant('**加粗**与`代码`\n');
+  rich.close();
+  assert.ok(colored.text().includes('\x1b[1m加粗\x1b[0m'), '上色时强调用加粗');
+  assert.ok(colored.text().includes('\x1b[2m代码\x1b[0m'), '行内代码压暗');
+
+  const plain = makeStdout({ tty: true });
+  const quiet = createRenderer({ stdout: plain, env: { NO_COLOR: '1' } });
+  quiet.printAssistant('**加粗**与`代码`\n');
+  quiet.close();
+  assert.equal(plain.text().trim(), '▌ 加粗与代码', 'NO_COLOR 下只是去掉标记，文字一个不差');
 });
 
-test('renderProseRow：段首换成模型标记 ▌，正文起点不变；代码行不吃这个标记', () => {
-  // 标记占两列，与默认缩进等宽——所以首行的正文与续行仍然对齐成一列（屏幕上是一块整齐的正文）。
-  assert.equal(renderProseRow('正文', { lead: '▌ ' }), '▌ 正文');
-  assert.equal(displayWidth(renderProseRow('正文', { lead: '▌ ' }).match(/^\S+ /)[0]), 2, '标记占两列');
-  assert.equal(renderProseRow('# 标题', { color: true, lead: '▌ ' }), `▌ \x1b[1m标题\x1b[0m`, '标题同样带标记');
-  assert.equal(renderProseRow('空行不吃标记', { lead: '▌ ' }).startsWith('▌ '), true);
-  assert.equal(renderProseRow('   ', { lead: '▌ ' }), '', '空行连标记一起省掉（不留尾随空格）');
-  assert.equal(renderProseRow('code();', { code: true, lead: '▌ ' }), '    code();', '代码行只认缩进');
+test('段首标记只给段落：标题与列表有自己的形态，不吃模型标记', () => {
+  const stdout = makeStdout({ tty: true });
+  const renderer = createRenderer({ stdout, env: { NO_COLOR: '1' } });
+  renderer.printAssistant('正文一。\n\n# 第一章\n\n- 列表项\n');
+  renderer.close();
+  const lines = stdout.text().split('\n');
+  assert.ok(lines.includes('▌ 正文一。'), '段落首行带标记');
+  assert.ok(lines.includes('  第一章'), '标题去井号、只缩进（自带强调，不再顶标记）');
+  assert.ok(lines.includes('  - 列表项'), '列表项有自己的项目符号');
 });
 
 // —— 落地效果（真实渲染器）——
@@ -120,9 +123,9 @@ test('围栏代码块：围栏行不显示，块内缩进更深；块外回到�
 
   const text = stdout.text();
   assert.ok(!text.includes('```'), '围栏行本身不显示');
-  assert.ok(text.includes('▌ 片段\n'), '标题去掉井号、带模型标记，正文起点落在内容列');
+  assert.ok(text.includes('  片段\n'), '标题去掉井号（自带强调，不顶模型标记）');
   assert.ok(text.includes('    const a = 1;\n'), '代码行缩进更深');
-  assert.ok(text.includes('  正文\n'), '围栏关掉之后回到正文的缩进');
+  assert.ok(text.includes('▌ 正文\n'), '围栏关掉之后是新的一段，带模型标记');
 });
 
 test('长段落一次落盘成多行，每行都不超过行宽（与终端自然折行一致）', () => {
