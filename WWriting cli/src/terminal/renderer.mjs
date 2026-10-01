@@ -6,6 +6,8 @@ import {
   clipToWidth, contentWidth, displayWidth, padDisplayEnd, proseRowWidth, resolveColumns, takeProseRows,
   CONTENT_INDENT, CONTENT_WIDTH_MAX,
 } from './metrics.mjs';
+// 正文 Markdown：GFM 子集语义的增量渲染（表格/列表/引用/标题/行内样式），见该模块头部说明。
+import { createMarkdownWriter } from './markdown.mjs';
 // 事件里读出的事实（终态形态、耗时口径）与历史投影共用同一份定义，见 src/agent/event-facts.mjs 的说明。
 import { eventMillis, reasoningDurationMs, terminalOfEvent } from '../agent/event-facts.mjs';
 // 工具结果摘要与 agent 历史投影共用同一份实现（见 src/tools/tool-summary.mjs 的说明）。
@@ -16,6 +18,9 @@ const STYLE = Object.freeze({
   reset: `${ESC}0m`,
   bold: `${ESC}1m`,
   dim: `${ESC}2m`,
+  italic: `${ESC}3m`,
+  underline: `${ESC}4m`,
+  strike: `${ESC}9m`,
   accent: `${ESC}38;5;173m`,
   green: `${ESC}38;5;108m`,
   red: `${ESC}38;5;174m`,
@@ -36,6 +41,11 @@ const TONE = Object.freeze({
   success: STYLE.green,
   warn: STYLE.yellow,
   error: STYLE.red,
+  // Markdown 的标签（markdown.mjs 的语义名 → 这里的样式）：
+  italic: STYLE.italic,
+  dim: STYLE.dim,
+  strike: STYLE.strike,
+  h1: `${STYLE.bold}${STYLE.underline}`,
 });
 
 // 用户行标记：与输入提示符是同一个字符，视觉上「这一行是我说的」。
@@ -106,27 +116,19 @@ const TOOL_LABELS = Object.freeze({
   run_command: '运行命令',
 });
 
-// 正文按完整行写出；不足一行的分片留在缓冲，收尾时才强制写出。
+// 正文按完整行写出；不足一行的分片由 markdown writer 攒着，收尾时才强制写出。
 export const PROSE_INDENT = CONTENT_INDENT;
 
-// 轻量 Markdown：标题与强调加粗，代码压暗。NO_COLOR 只去掉标记，保留文字。
-const FENCE = /^\s*```/;
-export function renderProseRow(row, { code = false, color = false, indent = PROSE_INDENT, lead = null } = {}) {
-  const pad = ' '.repeat(Math.max(0, indent));
-  const source = String(row ?? '');
-  // 空行不留缩进：段间的空行就是空行，不该带一串尾随空格（复制正文时尤其碍眼）。
-  if (source.trim() === '') return '';
-  // 代码块再往里让 2 格：只靠压暗不够，缩进才是「这一段不是正文」的硬信号。
-  if (code) return `${' '.repeat(Math.max(0, indent) + 2)}${paintText(source, 'info', color)}`;
-  const head = lead === null ? pad : lead;
-  const heading = /^ {0,3}(#{1,6})\s+(.*)$/.exec(source);
-  const body = heading === null ? source : heading[2];
-  const styled = body
-    .replace(/\*\*([^*]+)\*\*/g, (whole, inner) => (color ? `\x1b[1m${inner}${STYLE.reset}` : inner))
-    .replace(/`([^`]+)`/g, (whole, inner) => (color ? `\x1b[2m${inner}${STYLE.reset}` : inner));
-  if (heading !== null) return `${head}${color ? `${STYLE.bold}${styled}${STYLE.reset}` : styled}`;
-  return `${head}${styled}`;
-}
+// Markdown 的语义色名 → 渲染器的样式色调。markdown.mjs 不认识 ANSI，
+// 这一张表是两边的唯一边界；NO_COLOR 由 paintText 统一兜底（只去标记，不去文字）。
+const MARKDOWN_TONE = Object.freeze({
+  bold: 'strong',
+  em: 'italic',
+  code: 'dim',
+  strike: 'strike',
+  h1: 'h1',
+  rule: 'rule',
+});
 
 // 活动行标签：有目标就带上目标，未知工具退回「工具 <name>」，不要静默吞掉信息。
 export function activityLabel(tool, target = null) {
@@ -289,14 +291,14 @@ export function createRenderer({
   const usingComposer = () => hook !== null && (typeof hook.isActive !== 'function' || hook.isActive());
 
   let liveOpen = false; // 有一行「当前动态状态」还没被收尾
-  let pending = '';
-  // 正文当前是否在围栏代码块里（逐行的轻量 Markdown 用）。
-  let inCode = false;
-  // 「上一行写出去的是正文」。段落的第一行才带模型标记——连续的行是同一段，
-  // 每行都顶一个 `▌` 会把屏幕糊成一片竖线；空行或任何别的输出都会另起一段。
-  // 与 lastActivity 同一个套路：状态挂在 write() 上，谁写出别的行谁就把它清掉。
-  let proseOpen = false;
   let closed = false;
+  // 正文渲染器（Markdown 增量）：半行、表格候选行由它攒着，能定的立刻吐出来。
+  // 段首标记（▌）与续行缩进等宽，缩进/折行全在 markdown.mjs 里做，渲染器只负责写出。
+  const md = createMarkdownWriter({
+    columns: () => stdout.columns,
+    leadMark: PROSE_LEAD,
+    paint: (text, tone) => paint(text, MARKDOWN_TONE[tone] ?? tone),
+  });
   // 上一行落进 scrollback 的活动行（用来合并连续重复的那一行）。任何别的输出都会把它清掉。
   let lastActivity = null;
   // 思考预览：thinkingDone 是已经攒满的完整行（只留末尾几行），thinkingPending 是还不够一行的尾巴，
@@ -310,7 +312,6 @@ export function createRenderer({
   function write(text) {
     if (text === '') return;
     lastActivity = null;
-    proseOpen = false;
     stdout.write(text);
   }
 
@@ -386,46 +387,18 @@ export function createRenderer({
     lastActivity = kept;
   }
 
-
   // 把待发正文里「已经完整的行」落盘。
   //   force=false（流式途中）：只落完整行，半行继续攒——绝不为了「早点显示」在句子中间断行。
   //   force=true（要写别的行了 / Run 结束 / 关闭）：半行也得吐出去，否则顺序会倒置。
   // 一次 flush 里的所有行合并成一次写出：写出次数与「行数」同量级，而不是与「分片数」同量级。
   function flushProse({ force = false } = {}) {
-    if (pending === '') return;
-    const width = proseRowWidth(stdout.columns);
-    // 快速通道：连一行都还没攒够、也没有换行时直接返回。
-    // 每个字的显示宽度至少占 1 列，所以「字符数 < 行宽」必然攒不满一行——
-    // 于是每次 delta 到达都不必扫一遍显示宽度（流式逐字到达时这一条最省）。
-    if (!force && pending.length < width && !pending.includes('\n')) return;
-    const { rows, rest } = takeProseRows(pending, { width });
-    pending = rest;
-    const ready = force && pending !== '' ? [...rows, pending] : rows;
-    if (force) pending = '';
-    if (ready.length === 0) return;
-
-    const lines = [];
-    // 本批第一行是不是「段首」由进批时的 proseOpen 决定，之后由本批自己的行决定：
-    // 空行收段（下一行重新带标记），围栏行不算正文行、也不打断这一段。
-    let opened = proseOpen;
-    for (const row of ready) {
-      // 围栏行本身不显示，只切换「这段是代码」——代码块因此只剩缩进与压暗两件事。
-      if (FENCE.test(row)) {
-        inCode = !inCode;
-        continue;
-      }
-      const blank = row.trim() === '';
-      lines.push(renderProseRow(row, {
-        code: inCode, color: useColor, lead: !opened && !blank && !inCode ? PROSE_LEAD : null,
-      }));
-      opened = !blank;
-    }
-    if (lines.length === 0) return; // 这一批全是围栏行：不写，也就不用为了空写而重绘一次
-
+    // 正文渲染全在 markdown writer 里：它自己攒半行与表格候选行、自己做折行与
+    // 段首标记。渲染器只把「可以写出去的行」落盘——写出次数与行数同量级。
+    const lines = force ? md.flush() : md.push('');
+    if (lines.length === 0) return;
     openBlock();
     write(`${lines.join('\n')}\n`);
     closeBlock();
-    proseOpen = opened; // write() 刚把它清掉了，这里按本批最后一行的实际情形写回
   }
 
   // 启动信息按内容列折行，完整保留路径与会话 ID，续行对齐值列。
@@ -497,8 +470,11 @@ export function createRenderer({
   // 而不是「每 60 毫秒把半句话切下来」。没有定时器，也就没有空转的事件循环。
   function printAssistant(text) {
     if (closed || typeof text !== 'string' || text === '') return;
-    pending += text;
-    flushProse();
+    const lines = md.push(text);
+    if (lines.length === 0) return;
+    openBlock();
+    write(`${lines.join('\n')}\n`);
+    closeBlock();
   }
 
   // 完整行变化时才重绘预览；没有 composer 时不输出临时思考片段。

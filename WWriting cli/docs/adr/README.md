@@ -22,6 +22,7 @@
 | [0013](./0013-skill-discovery-three-roots-project-overrides-builtin.md) | 技能发现裁剪为三根：内置 / 全局 / 项目，项目可覆盖内置 |
 | [0014](./0014-skill-catalog-summary-in-system-message-progressive-read-skill.md) | 技能目录块只注入摘要进 system 消息，正文经 read_skill 渐进读取 |
 | [0015](./0015-compact-manual-only-no-auto-compaction.md) | `/compact` 只做手动触发，CLI 不做自动压缩 |
+| [0016](./0016-markdown-incremental-block-parser-no-marked.md) | 正文 Markdown 用自写的增量块级解析，不引 marked |
 
 > 0006–0008 是 `WWRITING.md` 项目记忆的设计决策（铁律 7）。并发写语义已随 Q12 拍板（最后写者赢，
 > 防线是确认卡显示变更）；`/init` 更新契约经 2026-09-28 对抗性审查收敛为
