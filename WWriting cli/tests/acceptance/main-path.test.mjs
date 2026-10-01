@@ -489,7 +489,14 @@ test('思考可见：正在想的几句贴在实时区，跑完只留「思考 N
 
 test('重启后 -c：跨真实进程读回同一个会话与历史', { timeout: 90000 }, async () => {
   const { appDataRoot, workspace } = await ownPaths('wwriting-accept-');
-  const model = await startFakeModel(() => textTurn('好的。'));
+  // 第二轮必须等一个**只属于它**的字符串：`-c` 启动时屏幕重演会把上一轮的「已完成」
+  // 原样画回来，若等「已完成」驱动会在第二轮开跑前就把 /quit 发出去（技能目录发现
+  // 让 run_started 晚了几毫秒，这个竞态从偶发变成了必现）。假模型按输入区分回复。
+  const model = await startFakeModel(({ messages }) => {
+    const last = [...messages].reverse().find((message) => message?.role === 'user');
+    const reply = typeof last?.content === 'string' && last.content.includes('写第二章') ? '第二章好了。' : '好的。';
+    return textTurn(reply);
+  });
   await writeConfig(appDataRoot, model.baseUrl);
 
   try {
@@ -523,7 +530,7 @@ test('重启后 -c：跨真实进程读回同一个会话与历史', { timeout: 
       argv: ['--cwd', workspace, '-c'],
       lines: [
         { await: '继续最近会话', text: '写第二章\r' },
-        { await: '已完成', text: '/quit\r' },
+        { await: '第二章好了。', text: '/quit\r' },
       ],
     });
     assert.equal(second.exitCode, 0, `进程 B 应正常退出；stdout=${second.stdout} stderr=${second.stderr}`);

@@ -299,3 +299,14 @@ test('每次极端确认的确认文字都不同，不能靠记住上一句蒙�
   state.decide({ decisionId: state.pending()[0].decision_id, choice: 'confirm', text: secondText });
   assert.equal((await second).allowed, true);
 });
+
+test('read_skill 归类为只读：自动放行，绝不做成确认卡（T3）', async () => {
+  const projectRoot = path.join('sep', 'project');
+  assert.equal(classifyOperation({ tool: 'read_skill', target: null, projectRoot }), 'read');
+  assert.equal(classifyOperation({ tool: 'read_skill', target: 'genre-suspense', projectRoot }), 'read');
+  // 与文件读取同一口径：名字只是显示目标，不做路径判定。
+  const state = createPermissionState({});
+  const decision = await state.request({ inputId: 'in-1', tool: 'read_skill', target: 'genre-suspense', projectRoot });
+  assert.deepEqual(decision, { allowed: true, level: 'read', decisionId: null, choice: null, reason: 'auto' });
+  assert.deepEqual(state.pending(), []);
+});

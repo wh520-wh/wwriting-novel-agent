@@ -18,7 +18,7 @@ export class PermissionError extends Error {
   }
 }
 
-export const READ_TOOLS = Object.freeze(['list_files', 'read_file', 'search_files', 'count_text']);
+export const READ_TOOLS = Object.freeze(['list_files', 'read_file', 'search_files', 'count_text', 'read_skill']);
 export const WRITE_TOOLS = Object.freeze(['write_file', 'edit_file']);
 export const EXTREME_TOOLS = Object.freeze([
   'delete_file',

@@ -1124,3 +1124,126 @@ test('被停止的轮：已经收到的思考正文仍然落盘（那是真实�
   const kinds = events.map((event) => event.type);
   assert.ok(kinds.indexOf('reasoning_completed') < kinds.indexOf('run_interrupted'));
 });
+
+// —— 技能目录块与 read_skill（ADR-0014）——
+
+test('有技能时 system 消息在项目记忆段之后拼目录块，位于「创作目录」之前', async () => {
+  const { projectRoot, store, permissions, model } = await setup({
+    prefix: 'wwriting-loop-skill-',
+    script: [{ deltas: ['好。'] }],
+  });
+  const loop = makeLoop({
+    model,
+    store,
+    permissions,
+    options: {
+      skillCatalog: [
+        { name: 'genre-suspense', description: '悬疑流派公约', category: 'genre' },
+        { name: 'show-dont-tell', description: '展示而非陈述', category: null },
+      ],
+    },
+  });
+
+  await loop.run({ projectRoot, sessionId: 'sess-1', inputId: 'in-1', text: '写第一章' });
+
+  const system = model.calls[0].messages[0];
+  assert.equal(system.role, 'system');
+  assert.ok(system.content.includes('[Available Skills]'));
+  assert.ok(system.content.includes('- [流派] genre-suspense: 悬疑流派公约'), '有分类带标签');
+  assert.ok(system.content.includes('- show-dont-tell: 展示而非陈述'), '无分类不带标签');
+  assert.ok(system.content.includes('写作前分层定调'), '选型规则随目录注入');
+  assert.ok(!system.content.includes('# 悬疑'), '正文绝不常驻');
+  const memoryAt = system.content.indexOf('项目记忆');
+  const skillsAt = system.content.indexOf('[Available Skills]');
+  const cwdAt = system.content.indexOf('创作目录：');
+  assert.ok(memoryAt !== -1 && skillsAt > memoryAt && cwdAt > skillsAt, '层序应为 项目记忆 → 技能目录 → 创作目录');
+});
+
+test('无技能（null 或空数组）时目录块整块省略，system 与旧行为逐字一致', async () => {
+  const runWith = async (skillCatalog) => {
+    const { projectRoot, store, permissions, model } = await setup({
+      prefix: 'wwriting-loop-noskill-',
+      script: [{ deltas: ['好。'] }],
+    });
+    const loop = makeLoop({ model, store, permissions, options: { skillCatalog } });
+    await loop.run({ projectRoot, sessionId: 'sess-1', inputId: 'in-1', text: '写第一章' });
+    // 两次装配的临时目录不同，把路径归一后再比（其余部分必须逐字一致）。
+    return model.calls[0].messages[0].content.replaceAll(projectRoot, '创作目录');
+  };
+
+  const without = await runWith(null);
+  const empty = await runWith([]);
+
+  assert.equal(without, empty);
+  assert.ok(!without.includes('[Available Skills]'), '空清单不造占位块');
+});
+
+test('read_skill 进下发工具清单，描述与参数照上游', async () => {
+  const { projectRoot, store, permissions, model } = await setup({
+    prefix: 'wwriting-loop-skilltool-',
+    script: [{ deltas: ['好。'] }],
+  });
+  const loop = makeLoop({ model, store, permissions });
+
+  await loop.run({ projectRoot, sessionId: 'sess-1', inputId: 'in-1', text: '写第一章' });
+
+  const schema = model.calls[0].tools.find((tool) => tool.function.name === 'read_skill');
+  assert.ok(schema, 'read_skill 必须在下发的工具声明里');
+  assert.equal(schema.function.description, '读取已发现 Agent Skill 的 SKILL.md 或其安全资源。');
+  assert.deepEqual(schema.function.parameters.required, ['name']);
+  assert.equal(schema.function.parameters.additionalProperties, false);
+  assert.equal(
+    schema.function.parameters.properties.resource.description,
+    '默认 SKILL.md；也可为 references/...、scripts/...、assets/...',
+  );
+});
+
+test('read_skill 往返：拿到技能正文进工具结果，未知名拿到可理解错误且不拖垮本轮', async () => {
+  const { projectRoot, store, permissions, model } = await setup({
+    prefix: 'wwriting-loop-skillrt-',
+    script: [
+      { toolCalls: [{ id: 'c1', name: 'read_skill', arguments: JSON.stringify({ name: 'genre-suspense' }) }] },
+      { toolCalls: [{ id: 'c2', name: 'read_skill', arguments: JSON.stringify({ name: 'nope' }) }] },
+      { deltas: ['完成。'] },
+    ],
+  });
+  const tools = {
+    readSkill: async ({ name }) => {
+      if (name === 'nope') {
+        const error = new Error('未发现技能: nope');
+        error.code = 'skill_not_found';
+        throw error;
+      }
+      return { name, resource: 'SKILL.md', content: '技能正文', bytes: 4 };
+    },
+  };
+  const loop = createAgentLoop({
+    modelClient: model,
+    tools,
+    eventStore: store,
+    permissions,
+    clock: makeClock(),
+    idFactory: makeIdFactory('run'),
+  });
+
+  const result = await loop.run({ projectRoot, sessionId: 'sess-1', inputId: 'in-1', text: '写第一章' });
+
+  assert.equal(result.status, 'completed', '工具失败不是 Run 失败');
+  const thirdRound = model.calls[2].messages;
+  const toolMessages = thirdRound.filter((message) => message.role === 'tool');
+  assert.equal(toolMessages.length, 2);
+  const ok = JSON.parse(toolMessages[0].content);
+  assert.equal(ok.content, '技能正文');
+  assert.equal(ok.name, 'genre-suspense');
+  const bad = JSON.parse(toolMessages[1].content);
+  assert.equal(bad.code, 'skill_not_found');
+  assert.equal(bad.error, '未发现技能: nope');
+
+  const events = await readEvents(store);
+  const started = events.filter((event) => event.type === 'activity_started' && event.data.tool === 'read_skill');
+  assert.deepEqual(started.map((event) => event.data.target), ['genre-suspense', 'nope'], '活动行目标带技能名');
+  const finished = events.filter((event) => event.type === 'activity_finished' && event.data.tool === 'read_skill');
+  assert.equal(finished[0].data.ok, true);
+  assert.equal(finished[1].data.ok, false);
+  assert.equal(finished[1].data.code, 'skill_not_found');
+});

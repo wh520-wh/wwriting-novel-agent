@@ -18,6 +18,7 @@ import {
 } from './project-memory.mjs';
 import { createFileTools } from '../tools/files.mjs';
 import { createPermissionState } from '../tools/permissions.mjs';
+import { createSkillService } from '../skills/index.mjs';
 
 // createRunController({ sessionManager, agentLoopFactory, projectRoot, sessionId, permissions, toolsFactory, modelClient, clock, idFactory, historyBudgetChars, onNotice, onReasoningPreview })
 //   sessionManager   Task 3 的 createSessionManager（open 时取会话写锁）；
@@ -30,13 +31,31 @@ import { createPermissionState } from '../tools/permissions.mjs';
 //                同样是回调而不是渲染器引用，理由与 onNotice 一样；它**不落盘**，
 //                日志里仍然只有轮末那一条 reasoning_completed（P18）。
 // 返回 { open, submit, stop, requestPriority, decide, snapshot, readEvents, close, permissions }。
+
+// 默认工具工厂：文件工具之外并入 readSkill（read_skill 的实现）。
+// 权限口径与文件读取一致——读操作不经过确认（铁律 4「只读自动」）；分类兜底在
+// permissions.mjs 的 READ_TOOLS 里（read_skill 已列入），即使将来有人把它接进权限桥，
+// 它也只会被归为只读，绝不会做成确认卡。
+export function createDefaultToolsFactory(skillService) {
+  return (options) => ({
+    ...createFileTools(options),
+    readSkill: (args) => skillService.read({
+      projectRoot: options.projectRoot,
+      name: args?.name,
+      resource: typeof args?.resource === 'string' && args.resource !== '' ? args.resource : 'SKILL.md',
+    }),
+  });
+}
+
 export function createRunController({
   sessionManager,
   agentLoopFactory = (options) => createAgentLoop(options),
   projectRoot,
   sessionId = null,
   permissions = null,
-  toolsFactory = (options) => createFileTools(options),
+  // 技能服务缺省用真实实现（内置根 = 仓库 src/skills）；测试注入临时根。
+  skillService = createSkillService(),
+  toolsFactory = null,
   modelClient = null,
   clock = Date.now,
   idFactory = randomUUID,
@@ -52,6 +71,7 @@ export function createRunController({
   if (typeof projectRoot !== 'string' || projectRoot.trim() === '') {
     throw new Error('运行控制器需要创作目录，请用 --cwd 指定。');
   }
+  const resolvedToolsFactory = toolsFactory ?? createDefaultToolsFactory(skillService);
   const perm = permissions ?? createPermissionState({ clock, idFactory });
   // 非法预算退回默认（与 history.mjs 同一口径）：截断规则只有一处，这里只是转发。
   const historyBudget = Number.isFinite(historyBudgetChars) && historyBudgetChars > 0
@@ -209,6 +229,18 @@ export function createRunController({
     return { memory: { ...built }, memoryCached: false };
   }
 
+  // 技能清单：每轮开跑时发现一次（与历史、记忆并发取）。只取 active 列表的
+  // name/description/category 摘要喂给循环拼目录块；任何失败都降级成空数组——
+  // 技能坏了最多是「这一轮没有技能可看」，绝不能拦住写作本身。
+  async function loadSkillCatalog() {
+    try {
+      const { active } = await skillService.catalog({ projectRoot });
+      return active;
+    } catch {
+      return [];
+    }
+  }
+
   // 把一条输入从队列里摘掉（按 input_id）。这是投影层正常路径之外的兜底：
   // 正常情况下 run_started 折叠时就会摘，但那一轮若没能把事件写下去，队列项会滞留成「僵尸头」，
   // 挡在所有后来的输入前面。摘除是幂等的（不在队列里就是空操作），也绝不执行任何东西。
@@ -261,13 +293,14 @@ export function createRunController({
       // 历史必须在构造循环之前装配好（它是本轮的输入，不是循环的内部状态）。
       // 两者读的是**不同文件**（events.jsonl / WWRITING.md），彼此没有数据依赖，
       // 所以并发取，不必让用户干等两次磁盘往返。各自的降级策略互不影响。
-      const [{ history, historyMeta, notice: noticeResult }, { memory, memoryCached }] = await Promise.all([
-        loadHistory(inputId),
-        loadMemory(),
-      ]);
+      // 技能清单同批并发取：每轮只发现一次（上游按 runId 缓存的同语义），失败返空数组
+      // 不阻塞——技能坏了写作照常（ADR-0014）。
+      const [{ history, historyMeta, notice: noticeResult }, { memory, memoryCached }, skillCatalog] =
+        await Promise.all([loadHistory(inputId), loadMemory(), loadSkillCatalog()]);
       const loop = agentLoopFactory({
         modelClient,
-        toolsFactory,
+        toolsFactory: resolvedToolsFactory,
+        skillCatalog,
         // 循环的落盘也走同一条尾链：一轮里会连续追加很多事件，
         // 与排队输入的 append 撞车就会抢同一个 state.json.tmp。
         eventStore: serializedEventStore(session.eventStore),
