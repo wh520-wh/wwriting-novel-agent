@@ -15,6 +15,7 @@ import { createSessionManager } from '../../src/session/session-manager.mjs';
 import { createEventStore } from '../../src/session/event-store.mjs';
 import { createWorkspaceStore } from '../../src/storage/workspace-store.mjs';
 import { createPermissionState } from '../../src/tools/permissions.mjs';
+import { createChapterService } from '../../src/tools/chapters.mjs';
 
 const tempRoots = [];
 after(async () => {
@@ -1331,4 +1332,65 @@ test('默认工具工厂把 readSkill 并入文件工具，按注入的服务与
   const result = await tools.readSkill({ name: 'demo' });
   assert.match(result.content, /技能正文/);
   await assert.rejects(tools.readSkill({ name: 'absent' }), { code: 'skill_not_found' });
+});
+
+// —— 章节工具（commit / rollback）走真实循环 + 真实权限 + 真实私有存储 ——
+
+test('章节提交与回滚：版本落在应用私有区，回滚要确认，恢复逐字一致', async () => {
+  const root = await makeTempRoot('wwriting-ctrl-chapters-');
+  const projectRoot = path.join(root, 'novel');
+  await fs.mkdir(projectRoot, { recursive: true });
+  const chapterPath = path.join(projectRoot, '第一章.md');
+  await fs.writeFile(chapterPath, '初稿内容。', 'utf8');
+
+  // 脚本化模型：**每次模型请求消费一个脚本项**（工具轮之后必须再给一轮纯正文，
+  // 循环见到无工具调用才收敛；否则同一 submit 里第二把工具的确认会等在半路）。
+  const script = [
+    { tool: { name: 'commit_chapter', args: { path: '第一章.md', summary: '开篇' } } },
+    { text: '提交好了。' },
+    { tool: { name: 'rollback_chapter', args: { path: '第一章.md' } } },
+    { text: '处理完了。' },
+  ];
+  let round = 0;
+  const modelClient = {
+    async streamChat({ onDelta, onToolCall }) {
+      const step = script[round];
+      round += 1;
+      if (step.tool) onToolCall({ id: `c${round}`, name: step.tool.name, arguments: JSON.stringify(step.tool.args) });
+      else onDelta(step.text);
+      return { text: step.tool ? '' : step.text, toolCalls: step.tool ? [{}] : [], usage: null };
+    },
+  };
+  const permissions = createPermissionState({ clock: makeClock(), idFactory: makeIdFactory('dec') });
+  const { controller } = await makeRealLoopController({
+    root, projectRoot, modelClient, permissions,
+    extra: { chapterService: createChapterService({ appDataRoot: root, clock: makeClock() }) },
+  });
+
+  try {
+    // 第一轮：提交（自动放行，不需要确认）。
+    const first = await controller.submit({ text: '提交这一章' });
+    assert.equal(first.result.status, 'completed');
+    assert.equal(await fs.readFile(chapterPath, 'utf8'), '初稿内容。', '提交不改创作文件');
+    // 版本在应用私有区（workspace 私有目录），不在创作目录里（铁律 8）。
+    const versionDirs = await fs.readdir(path.join(root, 'WWriting', 'workspaces'));
+    const versionFile = path.join(root, 'WWriting', 'workspaces', versionDirs[0], 'chapters', 'versions', '第一章.md', '0001.txt');
+    assert.equal(await fs.readFile(versionFile, 'utf8'), '初稿内容。');
+    const committed = (await controllerEvents(controller)).find((event) => event.type === 'activity_finished' && event.data.tool === 'commit_chapter');
+    assert.equal(committed.data.ok, true);
+    assert.match(committed.data.result, /"charsNoSpace":5/);
+
+    // 改坏稿，第二轮回滚：write 级确认——确认卡说的是「回滚章节」。
+    await fs.writeFile(chapterPath, '改坏的稿子。', 'utf8');
+    const submitting = controller.submit({ text: '回滚这一章' });
+    await waitFor(() => permissions.pending().length > 0);
+    const pending = permissions.pending()[0];
+    assert.equal(pending.tool, 'rollback_chapter');
+    await controller.decide({ decisionId: pending.decision_id, choice: 'once' });
+    const second = await submitting;
+    assert.equal(second.result.status, 'completed');
+    assert.equal(await fs.readFile(chapterPath, 'utf8'), '初稿内容。', '回滚恢复的是最近一次提交');
+  } finally {
+    await controller.close();
+  }
 });

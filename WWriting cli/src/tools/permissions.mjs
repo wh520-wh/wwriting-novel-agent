@@ -26,8 +26,18 @@ export const READ_TOOLS = Object.freeze([
   'read_skill',
   // update_plan 只写应用私有的计划状态（事件日志），不碰创作目录——与读取同级，自动放行。
   'update_plan',
+  // 章节提交只写应用私有的版本库与前情账本，不改创作文件——同样自动放行（回滚才会动文件，在 write 侧）。
+  'commit_chapter',
+  'read_continuity',
+  'style_stats',
 ]);
-export const WRITE_TOOLS = Object.freeze(['write_file', 'edit_file']);
+export const WRITE_TOOLS = Object.freeze([
+  'write_file',
+  'edit_file',
+  // 追加正文与回滚章节都会改写创作目录里的文件——与写入同级，需要确认。
+  'append_chapter_segment',
+  'rollback_chapter',
+]);
 export const EXTREME_TOOLS = Object.freeze([
   'delete_file',
   'delete_dir',
