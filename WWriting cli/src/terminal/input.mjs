@@ -254,14 +254,54 @@ export function createInputReader({
     else rl.prompt(true);
   }
 
-  // 给 readline 挂上「重绘之后补下框线」。
+  // 给 readline 挂上「重绘之前锚定块顶、重绘之后补下框线」。
   // 用私有方法是为了不漏时机：敲字、粘贴、外部调用都会经过它，而 clearScreenDown 就发生在里面。
-  // 拿不到这个入口时（非 TTY / 老版本）只是退化成「下框线在重绘后消失」，不影响输入本身。
+  //
+  // 锚定（真机 ConPTY 抓包定位的缺陷，与报告 5/10 同族）：readline 的整行重绘从「光标所在的
+  // 物理行」起笔、且从不向上回看。输入行不折行时光标就在块首，这个假设天然成立；输入行一折行，
+  // 重绘便从块中起画——旧物理行留在原处（旧帧残留）、下框线跟着锚点漂移。所以每次重绘前先
+  // 把光标移回输入块首行并清屏到底，readline 的假设重新成立，残留无从产生。
+  //
+  // 但「光标所在行」**不能**用 rl.cursor 推算：行尾追加（粘贴、连续打字）走 readline 的
+  // 快速路径——文本直接回显到屏幕、真实光标随折行下沉，却完全不经过 _refreshLine，
+  // 行模型不知道屏幕已经变了（真机实测：165 字符粘贴后 rl.cursor=0，屏幕光标在第 3 行）。
+  // 所以单独跟踪**真实光标**对应的行内位置 realCursor：经过 _writeToOutput 的纯文本写入
+  // （快速路径回显）按追加推进，refresh 重画后与 rl.cursor 对齐。锚定按真实位置算行，
+  // 模型与屏幕分叉多少都能锚回块顶。
+  // 拿不到 _refreshLine 这个入口时（非 TTY / 老版本）退化成既有行为，不影响输入本身。
   function attachAreaHooks(instance) {
     if (typeof instance._refreshLine !== 'function') return;
     const refresh = instance._refreshLine.bind(instance);
+    let realCursor = 0;      // 真实光标在行内的逻辑位置（与屏幕上的物理行一一对应）
+    let inRefresh = false;   // refresh() 自己的写入不算回显（提示符可能也是纯文本）
+    if (typeof instance._writeToOutput === 'function') {
+      const writeOutput = instance._writeToOutput.bind(instance);
+      instance._writeToOutput = (string_) => {
+        writeOutput(string_);
+        if (!inRefresh && typeof string_ === 'string' && !string_.includes('\u001b') && rl !== null) {
+          const lineLength = typeof rl.line === 'string' ? rl.line.length : 0;
+          realCursor = Math.min(lineLength, realCursor + string_.length);
+        }
+      };
+    }
     instance._refreshLine = () => {
-      refresh();
+      if (areaDrawn && rl !== null) {
+        // 真实光标可能因行变短而越过行尾：先钳回。按它算出所在物理行，上移到输入块首行；
+        // 实时行与上框线在更上方，不能清到；清屏到底只覆盖输入行、下框线与更下方。
+        const line = typeof rl.line === 'string' ? rl.line : '';
+        realCursor = Math.max(0, Math.min(realCursor, line.length));
+        const columns = resolveColumns(stdout.columns);
+        const anchorRow = Math.floor(Math.max(0, plainPromptWidth() + displayWidth(line.slice(0, realCursor)) - 1) / columns) + 1;
+        writeOut(anchorRow > 1 ? `\r\x1b[${anchorRow - 1}A\x1b[0J` : '\r\x1b[0J');
+      }
+      inRefresh = true;
+      try {
+        refresh();
+      } finally {
+        inRefresh = false;
+      }
+      // refresh 重画并按行模型把光标放回 rl.cursor：真实位置自此与模型一致。
+      if (areaDrawn && rl !== null && Number.isInteger(rl.cursor)) realCursor = rl.cursor;
       paintBelowPrompt();
     };
   }
