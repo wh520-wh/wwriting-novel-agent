@@ -73,7 +73,8 @@ const LINE_START_PUNCTUATION = '，。！？、；：）》」』】〕〉”’
 const LINE_END_PUNCTUATION = '（《「『【〔〈“‘';
 
 // 一个能放下的显示宽度内，能切多少字符；放不下一整行时返回 0（继续攒）。
-function wrapCut(text, width) {
+// 导出给 markdown.mjs「先上色后折行」用：折行决策仍走这唯一一份标点/标记避让规则。
+export function wrapCut(text, width) {
   let used = 0;
   let at = 0;
   for (let i = 0; i < text.length; i += 1) {
