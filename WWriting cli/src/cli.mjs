@@ -22,7 +22,7 @@ import { buildReplay } from './agent/replay.mjs';
 import { DEFAULT_HISTORY_BUDGET_CHARS } from './agent/history.mjs';
 import { readProjectMemory } from './agent/project-memory.mjs';
 import { createDeepSeekClient } from './model/deepseek-client.mjs';
-import { loadModelConfig, looksLikeApiKey, maskApiKey } from './model/config.mjs';
+import { loadModelConfig, maskApiKey, readModelState } from './model/config.mjs';
 import { createEffortState } from './model/effort.mjs';
 import { createEventRenderer, createRenderer } from './terminal/renderer.mjs';
 import { printReplay } from './terminal/replay.mjs';
@@ -229,22 +229,20 @@ export async function main(
     return createDeepSeekClient({ config }).listModels();
   }
 
-  // 读一次模型配置状态。三件事都要它决定：
-  //   configExists=false → 从没配置过，进对话面前先走一次引导；
-  //   config          → 头部面板里的「模型」一行；
-  //   error           → 配置存在但读不出来（权限 / 路径），面板里如实说一条事实。
-  // 配置缺失或损坏都不阻断启动：/model 是首版唯一的配置入口，断了它用户就没路可走。
+  // 读一次模型配置状态。四态归类（ready / empty / invalid / unreadable，含损坏与挽救）
+  // 在 model 层的 readModelState 里，与 /model 展示、引导 readState 共用同一份读法；
+  // 这里只补本进程需要的那一件事：configExists 决定要不要走引导。
+  //   invalid（JSON 损坏）当作「还没配好」——引导能把它覆盖修好；
+  //   unreadable（权限、路径不对，如私有目录整个不可用）引导也救不了，不引导，
+  //   只把事实带进面板，绝不让用户卡在一个点不动的菜单上。
   async function readConfigState() {
-    try {
-      const config = await loadModelConfig({ configPath, env: io.env });
-      return { configExists: config.configExists, config, error: null };
-    } catch (error) {
-      // 分两种情况：JSON 坏了（MODEL_CONFIG_INVALID）引导能把它覆盖修好，所以当作「还没配好」；
-      // 读不出来（权限、路径不对，如私有目录整个不可用）引导也救不了，只把事实带进面板，
-      // 绝不让用户卡在一个点不动的菜单上。
-      const repairable = error?.code === 'MODEL_CONFIG_INVALID';
-      return { configExists: !repairable, config: null, error };
-    }
+    const state = await readModelState({ configPath, env: io.env });
+    return {
+      ...state,
+      configExists: state.state === 'invalid'
+        ? false
+        : state.state === 'unreadable' ? true : state.config.configExists,
+    };
   }
   let configState = await readConfigState();
 
@@ -321,12 +319,16 @@ export async function main(
   // —— 头部面板的内容 ——
   // 面板只负责排版，事实在这里现取：任何一行都不写死，也不猜。
   function modelRow() {
-    if (configState.error !== null) return '配置不可用 · 请检查应用数据目录的读取权限';
+    // 四态归类来自 model 层的 readModelState（与 /model 展示、引导共用）。
+    if (configState.state === 'unreadable') return '配置不可用 · 请检查应用数据目录的读取权限';
+    // JSON 损坏与「读不出来」是两回事：损坏时引导与 /model 都能修，指路要指对——
+    // 旧版把损坏也说成「配置不可用 · 检查读取权限」，用户照着查权限只会白忙一场。
+    if (configState.state === 'invalid') return '配置已损坏 · 输入 /model 重新设置';
     const config = configState.config;
-    if (config === null || !config.configured) return '未配置 · 输入 /model 跟着走一遍就好';
+    if (configState.state === 'empty') return '未配置 · 输入 /model 跟着走一遍就好';
     // 模型名那一格放着 API Key（真实发生过）：这一行必须点名，否则用户只会看到后面那句
     // 把他引向 Key 的「API Key 无效」，然后一路查下去。
-    if (looksLikeApiKey(config.model)) return '模型设置已损坏 · 输入 /model 重新设置';
+    if (configState.corruptModel) return '模型设置已损坏 · 输入 /model 重新设置';
     const key = config.apiKeySource === 'env'
       ? `${maskApiKey(config.apiKey)}（来自环境变量）`
       : maskApiKey(config.apiKey);

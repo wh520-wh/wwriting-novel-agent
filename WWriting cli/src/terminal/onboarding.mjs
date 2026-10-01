@@ -14,7 +14,7 @@
 //
 // 输入通道自带：选择器用原始按键（readline 已让开），文本用临时的 readline（readOneLine）。
 // 首次引导跑在对话面的 readline 建立之前，`/model` 则先 suspend 再跑，两者都不会互相抢键。
-import { DEFAULT_BASE_URL, loadModelConfig, looksLikeApiKey, maskApiKey, sanitizeInput, saveDeepSeekConfig } from '../model/config.mjs';
+import { DEFAULT_BASE_URL, loadModelConfig, readModelState, looksLikeApiKey, maskApiKey, sanitizeInput, saveDeepSeekConfig, verifyAndSaveApiKey } from '../model/config.mjs';
 import { fact } from '../fact.mjs';
 
 // 厂商清单：目前只开发 DeepSeek 一个（首版只接官方端点）。
@@ -37,14 +37,6 @@ export const STEP_KEY = '① 填入 API Key';
 export const STEP_MODEL = '② 选择要用的模型';
 export const STEP_HINT = '↑/↓ 选择 · 回车确认 · Esc 跳过这步';
 const SELECT_HINT = '↑/↓ 选择 · 回车确认 · Esc 不改动';
-
-// 从一个「模型名」里把 API Key 捞出来：`keysk-fd72…` 这种被粘错位置的值里，Key 是完整的。
-// 真实事故留下的配置就长这样，捞回来比让人重新去平台复制一次友好得多。
-export function salvageKeyFromModel(model) {
-  if (typeof model !== 'string') return null;
-  const match = /(sk-[A-Za-z0-9_-]{16,})/i.exec(model);
-  return match === null ? null : match[1];
-}
 
 // createOnboarding({
 //   renderer, select, readLine, configPath,
@@ -85,32 +77,22 @@ export function createOnboarding({
   const warn = (text) => renderer.printStatus(text, { final: true, tone: 'warn' });
 
   // 现在是什么。读不出来（含损坏）按「还没配好」算：向导本来就是来修它的。
+  // 四态归类与「损坏 + 挽救」的判定都在 model 层的 readModelState 里，
+  // 与头部面板、/model 展示共用同一份读法——这里只做「归到向导自己的形状」。
   async function readState() {
-    try {
-      const config = await load({ configPath, env });
-      const rawModel = typeof config.model === 'string' ? config.model : null;
-      // 模型名那一格放着 API Key（真实事故留下的配置）：当成「没设模型」，
-      // 同时把里面的 Key 捞出来——那多半就是用户当初想设的那个 Key，
-      // 捞回来就直接省掉一次「请重新粘贴」。
-      const corrupt = rawModel !== null && looksLikeApiKey(rawModel);
-      return {
-        hasKey: config.configured === true,
-        model: corrupt ? null : rawModel,
-        corruptModel: corrupt,
-        salvagedKey: corrupt ? salvageKeyFromModel(rawModel) : null,
-        apiKey: typeof config.apiKey === 'string' ? config.apiKey : null,
-        baseUrl: typeof config.baseUrl === 'string' ? config.baseUrl : DEFAULT_BASE_URL,
-      };
-    } catch {
-      return {
-        hasKey: false,
-        model: null,
-        corruptModel: false,
-        salvagedKey: null,
-        apiKey: null,
-        baseUrl: DEFAULT_BASE_URL,
-      };
+    const state = await readModelState({ configPath, env, load });
+    if (state.config === null) {
+      return { hasKey: false, model: null, corruptModel: false, salvagedKey: null, apiKey: null, baseUrl: DEFAULT_BASE_URL };
     }
+    const config = state.config;
+    return {
+      hasKey: config.configured === true,
+      model: state.corruptModel ? null : config.model,
+      corruptModel: state.corruptModel,
+      salvagedKey: state.salvagedKey,
+      apiKey: config.apiKey,
+      baseUrl: config.baseUrl,
+    };
   }
 
   // 用户敲了斜杠命令：这里正开着交互流程，命令先放一放——但要说清怎么出去，
@@ -160,24 +142,24 @@ export function createOnboarding({
         continue;
       }
 
-      // 先验证再保存。把还在输入的 Key 直接存下去，用户要到下一次发消息才知道它是错的，
+      // 先验证再保存的纪律住在 model 层的 verifyAndSaveApiKey（/model key 与挽救路径共用）。
+      // 把还在输入的 Key 直接存下去，用户要到下一次发消息才知道它是错的，
       // 那时屏幕上出现的是一句「API Key 无效」——他只会怀疑自己抄错了 Key。
-      const verdict = typeof verifyKey === 'function'
-        ? await verifyKey(key)
-        : { status: 'unknown', models: [], reason: '本机无法验证' };
-      if (verdict.status === 'invalid') {
-        warn(`这个 Key 被拒绝了：${verdict.reason}`);
+      const step = await verifyAndSaveApiKey({ apiKey: key, configPath, probeKey: verifyKey, save });
+      if (step.outcome === 'rejected') {
+        warn(`这个 Key 被拒绝了：${step.verdict.reason}`);
         result('重新粘贴一次，或直接回车跳过。');
         continue;
       }
-      if (!(await saveQuietly({ apiKey: key }, '保存 API Key 失败，请稍后再试。'))) {
+      if (step.outcome === 'failed') {
+        warn(fact(step.error, '保存 API Key 失败，请稍后再试。'));
         return { state: 'cancelled', models: [] };
       }
-      if (verdict.status === 'ok') {
-        result(`API Key 有效 · ${verdict.models.length} 个可用模型`);
-        return { state: 'saved', models: verdict.models };
+      if (step.verdict.status === 'ok') {
+        result(`API Key 有效 · ${step.verdict.models.length} 个可用模型`);
+        return { state: 'saved', models: step.verdict.models };
       }
-      result(`API Key 已保存（暂时没能验证：${verdict.reason}）`);
+      result(`API Key 已保存（暂时没能验证：${step.verdict.reason}）`);
       return { state: 'saved', models: [] };
     }
   }
@@ -278,16 +260,16 @@ export function createOnboarding({
     // 注意不能只在「本来没有 Key」时才试：真实那份配置里 api_key 那一格是别的垃圾值，
     // `configured` 为真，可它根本不能用。
     if (before.salvagedKey !== null) {
-      const verdict = typeof verifyKey === 'function'
-        ? await verifyKey(before.salvagedKey)
-        : { status: 'unknown', models: [], reason: '本机无法验证' };
-      if (verdict.status === 'invalid') {
+      const step = await verifyAndSaveApiKey({ apiKey: before.salvagedKey, configPath, probeKey: verifyKey, save });
+      if (step.outcome === 'rejected') {
         // 捞出来的那个也不好使：当作没配好，正常问一次。
         hasKey = false;
-      } else if (await saveQuietly({ apiKey: before.salvagedKey }, '找回的 API Key 没能存下来。')) {
+      } else if (step.outcome === 'saved') {
         result(`已找回 API Key：${maskApiKey(before.salvagedKey)}`);
         hasKey = true;
-        models = verdict.models;
+        models = step.verdict.models;
+      } else {
+        warn(fact(step.error, '找回的 API Key 没能存下来。'));
       }
     }
 

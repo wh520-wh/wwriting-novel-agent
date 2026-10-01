@@ -17,7 +17,10 @@ import {
   maskApiKey,
   normalizeBaseUrl,
   pickString,
+  readModelState,
+  salvageKeyFromModel,
   sanitizeInput,
+  verifyAndSaveApiKey,
 } from '../../src/model/config.mjs';
 
 // 临时目录登记：测试结束时统一删除。
@@ -449,4 +452,157 @@ test('保存配置时 model_capabilities 原样保留，不被白名单洗掉', 
   const raw = JSON.parse(await fs.readFile(configPath, 'utf8'));
   assert.deepEqual(raw.model_capabilities, { 'glm-5.3': { reasoning_effort_levels: ['max'] } },
     'saveDeepSeekConfig 只写 CONFIG_FIELDS 里的字段——漏了这个字段就会把用户的声明静默删掉');
+});
+
+// —— readModelState：读配置 → 归一份状态（四态 + 损坏与挽救） ——
+// 过去面板（modelRow）、/model 展示、引导 readState 各判一遍，文案当场分叉过；
+// 收口后判定只有这一处，三个消费方共用同一份读法。
+
+test('readModelState：文件不存在 → empty，无损坏', async () => {
+  const tempRoot = await makeTempRoot('wwriting-model-state-missing-');
+  const configPath = path.join(tempRoot, 'WWriting', 'config.json');
+
+  const state = await readModelState({ configPath, env: {} });
+
+  assert.equal(state.state, 'empty');
+  assert.equal(state.config.configExists, false);
+  assert.equal(state.corruptModel, false);
+  assert.equal(state.salvagedKey, null);
+  assert.equal(state.error, null);
+});
+
+test('readModelState：配好 key → ready', async () => {
+  const tempRoot = await makeTempRoot('wwriting-model-state-ready-');
+  const configPath = path.join(tempRoot, 'WWriting', 'config.json');
+  await writeConfig(configPath, JSON.stringify({ api_key: FILE_KEY, model: 'deepseek-chat' }));
+
+  const state = await readModelState({ configPath, env: {} });
+
+  assert.equal(state.state, 'ready');
+  assert.equal(state.config.configured, true);
+  assert.equal(state.corruptModel, false);
+});
+
+test('readModelState：模型名那格是 API Key（真实事故的形状）→ 标记损坏并捞出 Key', async () => {
+  const tempRoot = await makeTempRoot('wwriting-model-state-corrupt-');
+  const configPath = path.join(tempRoot, 'WWriting', 'config.json');
+  // saveDeepSeekConfig 会拒收这种形状，所以按手工写坏文件的方式构造：
+  // 粘 Key 时少打一个空格，整串落进了 model 那格（真实事故的形状）。
+  await writeConfig(configPath, JSON.stringify({ api_key: 'not-a-real-key-value', model: 'keysk-stuck0000000000KEY' }));
+
+  const state = await readModelState({ configPath, env: {} });
+
+  assert.equal(state.state, 'ready', 'api_key 那格有值就算配过（哪怕它不能用）');
+  assert.equal(state.corruptModel, true);
+  assert.equal(state.salvagedKey, 'sk-stuck0000000000KEY');
+});
+
+test('readModelState：没配 key 但模型名那格是 API Key → empty + 损坏（挽救照样给）', async () => {
+  const tempRoot = await makeTempRoot('wwriting-model-state-corrupt-empty-');
+  const configPath = path.join(tempRoot, 'WWriting', 'config.json');
+  await writeConfig(configPath, JSON.stringify({ model: 'keysk-stuck0000000000KEY' }));
+
+  const state = await readModelState({ configPath, env: {} });
+
+  assert.equal(state.state, 'empty');
+  assert.equal(state.corruptModel, true);
+  assert.equal(state.salvagedKey, 'sk-stuck0000000000KEY');
+});
+
+test('readModelState：JSON 损坏 → invalid（重设即修），config 为 null', async () => {
+  const tempRoot = await makeTempRoot('wwriting-model-state-invalid-');
+  const configPath = path.join(tempRoot, 'WWriting', 'config.json');
+  await writeConfig(configPath, '{not-json');
+
+  const state = await readModelState({ configPath, env: {} });
+
+  assert.equal(state.state, 'invalid');
+  assert.equal(state.config, null);
+  assert.equal(state.error instanceof ModelConfigError && state.error.code, 'MODEL_CONFIG_INVALID');
+  assert.equal(state.salvagedKey, null, '读都读不出来，没东西可捞');
+});
+
+test('readModelState：读不出来（权限 / 路径）→ unreadable', async () => {
+  const tempRoot = await makeTempRoot('wwriting-model-state-unreadable-');
+  // 把目录当文件读：非 ENOENT 的失败，归为 unreadable。
+  const configPath = path.join(tempRoot, 'WWriting', 'config.json');
+  await fs.mkdir(configPath, { recursive: true });
+
+  const state = await readModelState({ configPath, env: {} });
+
+  assert.equal(state.state, 'unreadable');
+  assert.equal(state.config, null);
+});
+
+test('verifyAndSaveApiKey：验证通过才保存，verdict 原样带回', async () => {
+  const tempRoot = await makeTempRoot('wwriting-model-vs-');
+  const configPath = path.join(tempRoot, 'WWriting', 'config.json');
+  const saved = [];
+  const probe = (apiKey) => {
+    assert.equal(apiKey, ENV_KEY);
+    return { status: 'ok', models: ['deepseek-chat'], reason: null };
+  };
+
+  const result = await verifyAndSaveApiKey({
+    apiKey: ENV_KEY,
+    configPath,
+    probeKey: probe,
+    save: (patch) => { saved.push(patch); return Promise.resolve(); },
+  });
+
+  assert.equal(result.outcome, 'saved');
+  assert.deepEqual(result.verdict.models, ['deepseek-chat']);
+  assert.deepEqual(saved, [{ configPath, apiKey: ENV_KEY }]);
+});
+
+test('verifyAndSaveApiKey：被端点拒绝就不落盘', async () => {
+  const tempRoot = await makeTempRoot('wwriting-model-vs-reject-');
+  const configPath = path.join(tempRoot, 'WWriting', 'config.json');
+  const saved = [];
+  const probe = () => ({ status: 'invalid', models: [], reason: 'Key 无效' });
+
+  const result = await verifyAndSaveApiKey({
+    apiKey: ENV_KEY,
+    configPath,
+    probeKey: probe,
+    save: (patch) => { saved.push(patch); return Promise.resolve(); },
+  });
+
+  assert.equal(result.outcome, 'rejected');
+  assert.equal(result.verdict.status, 'invalid');
+  assert.deepEqual(saved, []);
+});
+
+test('verifyAndSaveApiKey：保存失败把原错误带回（由调用方渲染事实）', async () => {
+  const tempRoot = await makeTempRoot('wwriting-model-vs-fail-');
+  const configPath = path.join(tempRoot, 'WWriting', 'config.json');
+  const boom = new ModelConfigError('无法写入模型配置文件。', 'MODEL_CONFIG_WRITE_FAILED');
+
+  const result = await verifyAndSaveApiKey({
+    apiKey: ENV_KEY,
+    configPath,
+    probeKey: () => ({ status: 'ok', models: [], reason: null }),
+    save: () => Promise.reject(boom),
+  });
+
+  assert.equal(result.outcome, 'failed');
+  assert.equal(result.error, boom);
+});
+
+test('verifyAndSaveApiKey：没有 probeKey 也能存（unknown，与引导的兜底同型）', async () => {
+  const tempRoot = await makeTempRoot('wwriting-model-vs-noprobe-');
+  const configPath = path.join(tempRoot, 'WWriting', 'config.json');
+
+  const result = await verifyAndSaveApiKey({ apiKey: ENV_KEY, configPath });
+
+  assert.equal(result.outcome, 'saved');
+  assert.equal(result.verdict.status, 'unknown');
+  const config = await loadModelConfig({ configPath, env: {} });
+  assert.equal(config.apiKey, ENV_KEY);
+});
+
+test('salvageKeyFromModel：从粘错位置的值里捞出完整的 Key（与 looksLikeApiKey 同居一处）', () => {
+  assert.equal(salvageKeyFromModel('keysk-abcdef12345678901234'), 'sk-abcdef12345678901234');
+  assert.equal(salvageKeyFromModel('deepseek-chat'), null);
+  assert.equal(salvageKeyFromModel(null), null);
 });

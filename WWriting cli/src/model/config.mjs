@@ -40,6 +40,15 @@ export function looksLikeApiKey(value) {
   return typeof value === 'string' && /sk-[A-Za-z0-9_-]{16,}/i.test(value);
 }
 
+// 从一个「模型名」里把 API Key 捞出来：`keysk-fd72…` 这种被粘错位置的值里，Key 是完整的。
+// 真实事故留下的配置就长这样，捞回来比让人重新去平台复制一次友好得多。
+// 与 looksLikeApiKey 同居一处：两把尺子量的是同一种形状，分开放就一定会漂。
+export function salvageKeyFromModel(model) {
+  if (typeof model !== 'string') return null;
+  const match = /(sk-[A-Za-z0-9_-]{16,})/i.exec(model);
+  return match === null ? null : match[1];
+}
+
 // 模型配置错误：code 用于程序判断，message 是简体中文人话（绝不含 key）。
 export class ModelConfigError extends Error {
   constructor(message, code, details = {}) {
@@ -186,6 +195,41 @@ export async function loadModelConfig({ configPath, env = process.env } = {}) {
   };
 }
 
+// 读一次配置并归成**一份状态**：面板（modelRow）、/model 展示、引导 readState 过去各判一遍，
+// 「配置损坏怎么说」已经当场分叉过——判定只有这一处，三个消费方共用同一份读法。
+//
+// 四态：
+//   ready       配了 key，可用。model 那格仍可能是被写坏的——corruptModel 单独说，不并进状态。
+//   empty       文件读到了，但还没有可用的 key（含从没配置过）。
+//   invalid     JSON 损坏——重设一次就能修好（引导能覆盖它），不该与「读不出来」混为一谈。
+//   unreadable  读不出来（权限 / 路径）——引导也救不了，只能如实报一条事实。
+//
+// 损坏与挽救：model 那格里是 API Key（真实事故的形状）时 corruptModel=true，
+// salvagedKey 是从那格里捞出来的完整 Key——引导拿它免一次「请重新粘贴」。
+// 损坏不影响 state：api_key 那格有值就算配过（哪怕它不能用），这是 loadModelConfig 的原语义。
+// load 是注入点（命令层把 model.load 转交进来，测试也走这条缝），形状必须与 loadModelConfig 一致。
+export async function readModelState({ configPath, env = process.env, load = loadModelConfig } = {}) {
+  try {
+    const config = await load({ configPath, env });
+    const corruptModel = looksLikeApiKey(config.model);
+    return {
+      state: config.configured ? 'ready' : 'empty',
+      config,
+      corruptModel,
+      salvagedKey: corruptModel ? salvageKeyFromModel(config.model) : null,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      state: error?.code === 'MODEL_CONFIG_INVALID' ? 'invalid' : 'unreadable',
+      config: null,
+      corruptModel: false,
+      salvagedKey: null,
+      error,
+    };
+  }
+}
+
 // 保存 DeepSeek 配置：只写白名单字段，保留已有的 provider / base_url；
 // 先写同目录临时文件再 rename（Windows 上 rename 可覆盖同名文件），不依赖 POSIX mode。
 //
@@ -239,4 +283,25 @@ export async function saveDeepSeekConfig({ configPath, apiKey, model } = {}) {
       errorCode: error && error.code,
     });
   }
+}
+
+// 「验证并保存一把 Key」的唯一入口。/model key（命令层）与向导的问 Key 步骤、
+// 挽救回来的 Key 过去各写一遍「先验证再保存」——顺序是纪律：先落盘的话，用户要到
+// 下一次发消息才知道 Key 是错的，那时屏幕上的只有一句「API Key 无效」。
+// 纪律只有一处定义，三处调用；**渲染归调用方**（卡片文案与向导语本来就该长得不一样）。
+//   outcome: 'saved'    已保存（verdict.status: 'ok' | 'unknown'）
+//            'rejected' 端点拒绝了这把 Key，**没有落盘**（verdict 原样带回）
+//            'failed'   保存动作本身失败（error 原样带回，由调用方渲染事实）
+// 没有 probeKey 时按 unknown 继续（与引导的兜底同型）：存下再说，好过存不进去。
+export async function verifyAndSaveApiKey({ apiKey, configPath, probeKey = null, save = saveDeepSeekConfig } = {}) {
+  const verdict = typeof probeKey === 'function'
+    ? await probeKey(apiKey)
+    : { status: 'unknown', models: [], reason: '本机无法验证' };
+  if (verdict.status === 'invalid') return { outcome: 'rejected', verdict };
+  try {
+    await save({ configPath, apiKey });
+  } catch (error) {
+    return { outcome: 'failed', error };
+  }
+  return { outcome: 'saved', verdict };
 }

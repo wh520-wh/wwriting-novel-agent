@@ -1183,3 +1183,25 @@ test('/help 的命令表里有 /reasoning', async () => {
   await handler.handle('/help');
   assert.match(text(), /\/reasoning/);
 });
+
+test('/model 无交互回显：模型名那格是 API Key 时只给脱敏串（Key 不上屏）', async () => {
+  const renderer = makeRenderer();
+  const handler = createCommandHandler({
+    getController: () => ({ submit: async () => ({ status: 'completed' }) }),
+    renderer,
+    model: {
+      configPath: '/tmp/c.json',
+      load: async () => ({
+        configured: true, model: 'keysk-stuck0000000000KEY', baseUrl: 'https://api.deepseek.com',
+        apiKey: 'sk-file0000000000KEY', apiKeySource: 'file',
+      }),
+      mask: (key) => `${key.slice(0, 3)}****${key.slice(-4)}`,
+    },
+  });
+
+  await handler.handle('/model');
+
+  const dump = JSON.stringify(renderer.calls);
+  assert.ok(dump.includes('模型名那一行看起来是 API Key'), '要点名这一格写坏了');
+  assert.ok(!dump.includes('stuck0000000000KEY'), '那一格里的 Key 不得明文上屏');
+});
