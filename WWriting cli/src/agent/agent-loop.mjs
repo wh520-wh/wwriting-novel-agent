@@ -684,8 +684,9 @@ export function createAgentLoop({
         const result = await fn(args);
         await finish({ ok: true, ...resultPreview(result) });
         // update_plan 的可见产物是计划表本身：紧跟在活动行之后落一条 plan_updated
-        // （整表替换）。空表不落——Run 开始时投影已把上一轮清掉，空表无事可做。
-        if (name === 'update_plan' && Array.isArray(result?.plan) && result.plan.length > 0) {
+        // （整表替换）。**空表也落**——那是模型显式在说「没有计划了」，把它静默吞掉
+        // 等于让工具对模型撒谎（评审指出的 no-op 陷阱）。
+        if (name === 'update_plan' && Array.isArray(result?.plan)) {
           await emitNow('plan_updated', { items: result.plan });
         }
         return JSON.stringify(result ?? {});

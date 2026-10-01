@@ -1413,8 +1413,10 @@ test('表格按框线排版；任务计划以 chip 常驻实时区（§4.2 / §4
     assert.ok(shown.includes('│ 林晚 │   邮差   │    8 │'), `居中与右对齐各就各位：${shown}`);
     // 计划：滚动区的全表也在（回看用）。
     assert.ok(shown.includes('任务计划 1/2'), `计划进度：${shown}`);
-    // 实时区 chip：原始流里出现过「任务计划 1/2 · 写第三章」。
+    // 实时区 chip：原始流里出现过「任务计划 1/2 · 写第三章」；且进度行至少出现两次
+    // （滚动区全表 + 实时区面板/chip 各一份）——持久渲染不是只画一次就完。
     assert.ok(run.stdout.includes('任务计划 1/2 · 写第三章'), `chip 曾画在实时区：${run.stdout}`);
+    assert.ok(run.stdout.split('任务计划 1/2').length - 1 >= 2, `计划至少画两处：${run.stdout}`);
   } finally {
     await model.close();
   }

@@ -1327,7 +1327,7 @@ test('NO_COLOR 下一个 ANSI 字节都不输出，且不留行尾补白', () =>
 
 test('色带每一行等宽，且左边界与正文的缩进列对齐', () => {
   // **不要**断言「色带宽度 == 正文宽度」：那是个假前提（审查抓出来的）。
-  // renderProseRow（renderer.mjs:196-210）只加左缩进、**从不右补白**，
+  // 正文渲染（markdown.mjs）只加左缩进、**从不右补白**，
   // 所以正文行的显示宽度随内容长短变化，而色带行是补白到固定宽度的。
   // 两者真正必须一致的是**左边界**（都从第 2 列起）与**色带自身的等宽**。
   const stdout = makeStdout({ tty: true, columns: 60 });
@@ -1426,11 +1426,25 @@ test('事件桥：plan_updated 把整表交给 printPlan 画出来', () => {
   assert.ok(screenText(stdout.text()).includes('▶ 写第四章'));
 });
 
-test('事件桥：渲染器没有 printPlan 能力时安静跳过，不崩', () => {
+test('事件桥：渲染器缺能力在装配期炸出来并列出缺什么（不静默降级）', () => {
   const minimal = { printStatus: () => {}, printUser: () => {}, printActivity: () => {} };
-  const bridge = createEventRenderer({ renderer: minimal });
+  assert.throws(
+    () => createEventRenderer({ renderer: minimal }),
+    /缺少能力.*printPlan.*setLivePlan/,
+    '契约缺失必须在装配点暴露',
+  );
+  // 残缺替身要显式声明 partial——「我知道我给的是残缺渲染器」；喂到的事件它自己得接得住。
+  const usable = { ...minimal, printPlan: () => {}, setLivePlan: () => {}, resetThinkingPreview: () => {} };
+  const bridge = createEventRenderer({ renderer: usable, partial: true });
   bridge.handleEvent({ type: 'plan_updated', at: '2026-10-01T00:00:00.000Z', data: { items: [{ summary: 'x' }] } });
-  // 走到这里没抛就是通过。
+});
+
+test('事件桥：composer 缺 setLive 在渲染器装配期炸出来', () => {
+  const stdout = makeStdout({ tty: true });
+  assert.throws(
+    () => createRenderer({ stdout, composer: { takeArea() {}, giveArea() {} } }),
+    /composer 缺少能力：setLive/,
+  );
 });
 
 // —— 实时区任务面板（运行中展开 / 空闲 chip / 新 Run 清空） ——
@@ -1499,6 +1513,73 @@ test('实时区计划面板：多步超窗口时收进「… 还有 N 步」，�
   assert.ok(panel.includes('正在做的一步'), '当前步骤必须在面板里');
   assert.ok(panel.split('\n').length <= 7, '面板有行数上限');
   renderer.close();
+});
+
+test('事件桥 resetSessionState：切会话后旧计划的终态事件不再回流实时区', () => {
+  const composer = makeFakeComposer();
+  const { renderer } = makeRenderer({ tty: true, env: { NO_COLOR: '1' }, composer });
+  const bridge = createEventRenderer({ renderer });
+
+  feed(bridge, 'run_started', { input_id: 'i-1', text: 'A 会话的任务' });
+  feed(bridge, 'plan_updated', { items: [{ summary: 'A 的步骤', status: 'in_progress' }] });
+  feed(bridge, 'run_completed', {});
+  assert.ok(composer.live.includes('A 的步骤'), 'A 的 chip 在');
+
+  // 组合根切会话：清桥内状态 → 播种新会话（无计划）。
+  bridge.resetSessionState();
+  renderer.setLivePlan(null);
+  assert.equal(composer.live, null, 'B 会话没有计划，实时区干净');
+
+  // A 会话停止旧轮产生的迟到终态（run_interrupted 在 close 之后才到）：不得把 A 的计划挂回来。
+  feed(bridge, 'run_interrupted', { reason: 'stopped' });
+  assert.equal(composer.live, null, `旧计划不得回流：${composer.live}`);
+  renderer.close();
+});
+
+test('面板持久性：写 scrollback（让位/画回）之后面板重新挂上', () => {
+  const composer = makeFakeComposer();
+  const { renderer } = makeRenderer({ tty: true, env: { NO_COLOR: '1' }, composer });
+  renderer.setLivePlan([{ summary: '写第三章', status: 'in_progress' }], { active: true });
+  assert.ok(composer.live.includes('▶ 写第三章'));
+
+  renderer.printUser('用户插了一句话'); // 一次完整的让位 → 写 scrollback → 画回
+  assert.ok(composer.live !== null && composer.live.includes('▶ 写第三章'),
+    `写完 scrollback 面板必须重挂：${composer.live}`);
+  renderer.close();
+});
+
+test('面板窗口：进行中项排在窗口之外时也要可见（两侧给省略行）', () => {
+  const composer = makeFakeComposer();
+  const { renderer } = makeRenderer({ tty: true, env: { NO_COLOR: '1' }, composer });
+  const items = [];
+  for (let i = 1; i <= 6; i += 1) items.push({ summary: `待办 ${i}`, status: 'pending' });
+  items.push({ summary: '★ 正在进行的一步', status: 'in_progress' });
+  renderer.setLivePlan(items, { active: true });
+  const panel = composer.live;
+  assert.ok(panel.includes('★ 正在进行的一步'), `进行中项必须在场：${panel}`);
+  assert.ok(panel.includes('… 前面还有'), `被裁掉的头部要有交代：${panel}`);
+  renderer.close();
+});
+
+test('空计划（整表替换）：实时区收起，/plan 回到「暂无」口径', () => {
+  const composer = makeFakeComposer();
+  const { renderer } = makeRenderer({ tty: true, env: { NO_COLOR: '1' }, composer });
+  renderer.setLivePlan([{ summary: '写第三章', status: 'in_progress' }], { active: true });
+  assert.ok(composer.live.includes('任务计划'), '先有面板');
+  renderer.setLivePlan([]);
+  assert.equal(composer.live, null, '空表 = 显式清空');
+  renderer.close();
+});
+
+test('窄终端：截断带省略号，不把半截步骤名当完整名', () => {
+  const composer = makeFakeComposer();
+  const stdout = makeStdout({ tty: true });
+  stdout.columns = 24;
+  const renderer = createRenderer({ stdout, env: { NO_COLOR: '1' }, composer });
+  renderer.setLivePlan([{ summary: '核对第三章时间线与人物动机是否前后一致', status: 'in_progress' }], { active: false });
+  renderer.close();
+  assert.ok(composer.live.includes('…'), `截断要可见：${composer.live}`);
+  assert.ok(composer.live.includes('核对'), '截断前的内容仍在');
 });
 
 test('没有 composer（管道）时不合成面板：面板不写进直写流', () => {
