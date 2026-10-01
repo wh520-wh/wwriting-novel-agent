@@ -317,6 +317,11 @@ export async function main(
     // 先开新的：新会话打不开时旧会话原样可用，不做「先关后开」的半途状态。
     const next = await openController(sessionId);
     controller = next;
+    // 实时区的计划面板跟着换会话：读新会话投影里的当前计划（§4.2 chip 的数据源只有投影一处）。
+    if (typeof renderer.setLivePlan === 'function') {
+      const plan = next.snapshot()?.plan;
+      renderer.setLivePlan(Array.isArray(plan?.items) ? plan.items : null, { active: false });
+    }
     if (current !== null) {
       current.stop(); // D18：先停当前轮
       await current.close(); // 再释放旧会话的写锁
@@ -508,8 +513,8 @@ export async function main(
       // 预算与模型记忆是**同一份**（P25）：屏幕上重演的与模型记得的对得上，
       // 绝不会出现「模型记得、屏幕看不到」（P26）。用的就是喂给控制器的那个变量——
       // 不是「另一处也填了同一个默认常量」，那样只是今天恰好相等。
-      const { items, omittedTurns } = buildReplay(events, { budgetChars: historyBudgetChars });
-      printReplay({ renderer, items, omittedTurns });
+      const { items, omittedTurns, plan } = buildReplay(events, { budgetChars: historyBudgetChars });
+      printReplay({ renderer, items, omittedTurns, plan });
     } catch (error) {
       renderer.printStatus('对话未能重演', { final: true, tone: 'warn', detail: fact(error, '本次从空白屏幕开始') });
     }
@@ -519,6 +524,13 @@ export async function main(
   // initialText（首条位置参数）会像用户亲手敲的一样填进输入框并提交——屏幕上因此
   // 也是同一个框、同一行用户行，而不是另打一行「❯ 写第一章」。
   const started = input.start({ initialText: parsed.prompt });
+
+  // 实时区的计划 chip（§4.2：Run 结束保留供回看）：数据源是当前会话投影，
+  // 与 /resume 切会话同一条路径。必须放在输入区起来之后——此刻输入层才开始认 setLive。
+  if (typeof renderer.setLivePlan === 'function') {
+    const plan = controller.snapshot()?.plan;
+    renderer.setLivePlan(Array.isArray(plan?.items) ? plan.items : null, { active: false });
+  }
 
   if (!started.interactive) {
     // 先同步停掉输入监听，再释放其它资源：否则管道里已经排好的行会在 await 的间隙
