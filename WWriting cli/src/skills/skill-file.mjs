@@ -11,6 +11,8 @@ import { isPathInside, pathExists } from './fs-utils.mjs';
 
 // SKILL.md 文件大小上限（冻结契约 §2.5：超 512KiB 拒绝）。
 export const MAX_SKILL_FILE_BYTES = 512 * 1024;
+// 单次读取非 SKILL.md 文本资源的大小上限（与 read_skill 的 1MiB 对齐）。
+export const MAX_SKILL_RESOURCE_BYTES = 1024 * 1024;
 // 资源枚举只包括这三个子目录。
 export const SKILL_RESOURCE_DIRS = Object.freeze(['scripts', 'references', 'assets']);
 
@@ -40,6 +42,46 @@ export async function readSkillFile(skillDir, { source }) {
   const skillReal = await fs.realpath(skillDir);
   const resources = await enumerateResources(skillDir, skillReal);
   return deepFreeze({ ...data, body, dir: skillDir, source, resources });
+}
+
+// 按需读取技能目录内的资源（SKILL.md 或 scripts/references/assets 下文件）。
+// 执行 realpath containment（真实路径必须仍在技能 realpath 内）与大小校验。
+// 二进制 asset（前 8KiB 含 NUL 字节）返回元数据 + 绝对路径，不把二进制内容
+// 塞进模型上下文（read_skill 冻结契约）。
+export async function readSkillResource(skill, resource = 'SKILL.md') {
+  assertSafeResource(resource);
+  const skillDir = path.resolve(skill.dir);
+  const skillReal = await fs.realpath(skillDir);
+  const absPath = path.resolve(skillDir, resource);
+  let realAbs;
+  try {
+    realAbs = await fs.realpath(absPath);
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') {
+      throw skillError('skill_resource_not_found', `资源不存在: ${resource}`);
+    }
+    throw error;
+  }
+  if (!isPathInside(skillReal, realAbs)) {
+    throw skillError('skill_resource_unsafe', `资源真实路径逃逸技能目录: ${resource}`);
+  }
+  const stat = await fs.stat(realAbs);
+  // 目录/非普通文件（EISDIR 场景）：不裸抛 fs 错误，映射为技能错误。
+  if (!stat.isFile()) {
+    throw skillError('skill_resource_not_found', `资源不是文件: ${resource}`);
+  }
+  const limit = resource === 'SKILL.md' ? MAX_SKILL_FILE_BYTES : MAX_SKILL_RESOURCE_BYTES;
+  if (stat.size > limit) {
+    throw skillError('skill_resource_too_large', `资源超过 ${limit} 字节: ${resource}`);
+  }
+  if (stat.size === 0) {
+    return Object.freeze({ name: skill.name, resource, content: '', path: realAbs, bytes: 0 });
+  }
+  const buffer = await fs.readFile(realAbs);
+  if (looksBinary(buffer)) {
+    return Object.freeze({ name: skill.name, resource, binary: true, path: realAbs, bytes: stat.size });
+  }
+  return Object.freeze({ name: skill.name, resource, content: buffer.toString('utf8'), path: realAbs, bytes: stat.size });
 }
 
 // 技能名比较（上游 R5-11）：Windows 文件系统大小写不敏感，名称比较统一大小写归一
@@ -143,6 +185,30 @@ async function walkResourceDir(absDir, relPrefix, resources, skillReal) {
     if (stat.isFile()) {
       resources.push(Object.freeze({ rel, abs: realAbs, bytes: stat.size }));
     }
+  }
+}
+
+// 二进制探测：前 8KiB 中出现 NUL 字节即视为二进制（与 git 的启发式一致）。
+// 纯文本 UTF-8 文件不含 NUL，误判率极低。
+function looksBinary(buffer) {
+  const probe = buffer.subarray(0, Math.min(buffer.length, 8192));
+  return probe.includes(0);
+}
+
+// 拒绝绝对路径、盘符路径与任何 `..` 段（Windows 也拒绝反斜杠书写）。
+function assertSafeResource(resource) {
+  if (typeof resource !== 'string' || resource.length === 0) {
+    throw skillError('skill_resource_unsafe', '资源路径不能为空');
+  }
+  if (path.isAbsolute(resource) || /^[A-Za-z]:/u.test(resource)) {
+    throw skillError('skill_resource_unsafe', `资源路径不能是绝对路径: ${resource}`);
+  }
+  const segments = resource.split(/[\\/]/u);
+  if (segments.includes('..')) {
+    throw skillError('skill_resource_unsafe', `资源路径不能包含 ../ 穿越: ${resource}`);
+  }
+  if (segments.includes('')) {
+    throw skillError('skill_resource_unsafe', `资源路径格式非法: ${resource}`);
   }
 }
 
