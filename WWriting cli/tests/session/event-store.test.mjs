@@ -345,3 +345,47 @@ test('append 与 appendBatch 后无临时文件残留，tail 拒绝非整数参�
   await store.appendBatch([{ type: 'a', session_id: 'sess-1', data: {} }]);
   assert.equal(existsSync(path.join(dir, 'state.json.tmp')), false);
 });
+
+test('plan_updated 落进投影；run_started 清空上一轮计划（口径 A），终态不清', async () => {
+  const root = await makeTempRoot('wwriting-evt-plan-');
+  const store = makeStore(path.join(root, 'sess-1'));
+  await store.append({ type: 'session_created', session_id: 'sess-1', data: {} });
+
+  await store.append({ type: 'run_started', run_id: 'run-1', data: { input_id: 'i-1', text: '改这三章' } });
+  const items = [{ summary: '改第二章', status: 'completed' }, { summary: '改第三章', status: 'in_progress' }];
+  await store.append({ type: 'plan_updated', run_id: 'run-1', data: { items } });
+  await store.append({ type: 'run_completed', run_id: 'run-1', data: { text: '改完了', rounds: 1, usage: null } });
+
+  let state = await store.currentProjection();
+  // Run 结束后保留：scrollback 与 /plan 的回看依据。
+  assert.deepEqual(state.plan, { run_id: 'run-1', items });
+
+  // 新一轮开始：上一轮计划随之作废。
+  await store.append({ type: 'run_started', run_id: 'run-2', data: { input_id: 'i-2', text: '继续' } });
+  state = await store.currentProjection();
+  assert.equal(state.plan, null);
+
+  // 本轮没有计划就一直是没有；畸形数据（非数组）不更新、不抛。
+  await store.append({ type: 'plan_updated', run_id: 'run-2', data: { items: '坏的' } });
+  state = await store.currentProjection();
+  assert.equal(state.plan, null);
+
+  // 重启后从日志重建的投影与内存一致（readAll → foldEvents 同一套 applyEvent）。
+  const rebuilt = await store.rebuildProjection();
+  assert.equal(rebuilt.projection.plan, null);
+});
+
+test('plan_updated 后崩溃重建：state.json 损坏时从日志如实恢复计划', async () => {
+  const root = await makeTempRoot('wwriting-evt-plan-rebuild-');
+  const dir = path.join(root, 'sess-1');
+  const store = makeStore(dir);
+  await store.append({ type: 'session_created', session_id: 'sess-1', data: {} });
+  await store.append({ type: 'run_started', run_id: 'run-1', data: {} });
+  const items = [{ summary: '写第四章', status: 'in_progress' }];
+  await store.append({ type: 'plan_updated', run_id: 'run-1', data: { items } });
+
+  // state.json 直接清空（模拟损坏）：重建以 events.jsonl 为准。
+  await fs.writeFile(path.join(dir, 'state.json'), '', 'utf8');
+  const rebuilt = await store.rebuildProjection();
+  assert.deepEqual(rebuilt.projection.plan, { run_id: 'run-1', items });
+});

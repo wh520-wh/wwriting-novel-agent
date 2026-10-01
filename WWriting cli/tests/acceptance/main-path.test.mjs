@@ -345,8 +345,8 @@ test('斜杠菜单用方向键选择，只补全草稿；Esc 返回输入框且�
     await waitFor(() => run.stdout.text().includes('开始新会话'));
     run.stdin.write('/\r');
     await waitFor(() => run.stdout.text().includes('建立或更新项目记忆'));
-    // ↓×9：菜单按 HELP_COMMANDS 顺序排，/skills 入表后 /help 在第 10 项（索引 9）。
-    run.stdin.write('\x1b[B'.repeat(9));
+    // ↓×10：菜单按 HELP_COMMANDS 顺序排，/plan 入表后 /help 在第 11 项（索引 10）。
+    run.stdin.write('\x1b[B'.repeat(10));
     run.stdin.write('\r');
     await waitFor(() => screenText(run.stdout.text(), { cols: 80, rows: 60 }).includes('❯ /help'));
     assert.equal(model.requests.length, 0, '选择命令不等于执行命令');

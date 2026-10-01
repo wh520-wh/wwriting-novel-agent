@@ -23,6 +23,10 @@ const blankProjection = () => ({
   created_at: null,
   updated_at: null,
   last_seq: 0,
+  // 当前任务计划（上一条 plan_updated 的整表，含 status）。null = 没有（Run 开始时清空，
+  // 对齐上游统一行为规格书 §4.2 生命周期口径 A「新 Run 的 run_started 清空上一轮计划」；
+  // Run 结束不清——scrollback 与 /plan 都要能回看）。
+  plan: null,
 });
 
 function newFoldState() {
@@ -81,6 +85,9 @@ function applyEvent(state, event) {
     case 'run_started': {
       projection.status = 'active';
       projection.active_run_id = event.run_id;
+      // 新一轮开始：上一轮的任务计划随之作废（口径 A）。本轮没有计划就一直是 null，
+      // /plan 与重演据此如实说「暂无」，绝不拿上一轮的旧计划冒充当前状态。
+      projection.plan = null;
       const inputId = typeof data.input_id === 'string' ? data.input_id : null;
       if (inputId !== null) {
         const from = queueIndexOf(projection, inputId);
@@ -88,6 +95,13 @@ function applyEvent(state, event) {
         projection.active_input_id = inputId;
         projection.active_input = { input_id: inputId, text: state.inputs.get(inputId)?.text ?? null };
       }
+      break;
+    }
+    case 'plan_updated': {
+      // 整表替换：以本次 items 为准。畸形数据（非数组）不更新，只推进 seq。
+      projection.plan = Array.isArray(data.items)
+        ? { run_id: event.run_id ?? null, items: data.items }
+        : projection.plan;
       break;
     }
     case 'run_completed':

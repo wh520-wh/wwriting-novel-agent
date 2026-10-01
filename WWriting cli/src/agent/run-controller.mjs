@@ -18,6 +18,7 @@ import {
 } from './project-memory.mjs';
 import { createFileTools } from '../tools/files.mjs';
 import { createPermissionState } from '../tools/permissions.mjs';
+import { updatePlan } from '../tools/plan.mjs';
 import { createSkillService } from '../skills/index.mjs';
 
 // createRunController({ sessionManager, agentLoopFactory, projectRoot, sessionId, permissions, toolsFactory, modelClient, clock, idFactory, historyBudgetChars, onNotice, onReasoningPreview })

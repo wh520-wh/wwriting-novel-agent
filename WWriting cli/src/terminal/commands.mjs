@@ -57,6 +57,7 @@ export const HELP_COMMANDS = Object.freeze([
   ['/model', '设置模型与 API Key'],
   ['/effort', '思考强度：/effort none|low|high|max|自动'],
   ['/reasoning', '查看上一轮的思考全文'],
+  ['/plan', '查看当前任务计划'],
   ['/sessions', '查看会话列表'],
   ['/skills', '查看已发现的技能'],
   ['/resume', '切换会话：/resume <会话 ID>'],
@@ -517,6 +518,19 @@ export function createCommandHandler({
     }
   }
 
+  // /plan：任务计划的按需回看（P10「折叠态即回看态」在终端的第二入口——
+  // Run 当场那份已随 plan_updated 落进 scrollback，这里看的是**当前**一份，
+  // 重启后 / 下一轮开始后仍可问「刚才那轮计划到哪了」）。
+  async function runPlanCommand() {
+    const snapshot = getController().snapshot();
+    const plan = snapshot?.plan ?? null;
+    if (plan === null || !Array.isArray(plan.items) || plan.items.length === 0) {
+      reply('暂无计划', { tone: 'info', detail: '多步任务进行时，这里会显示当前计划。' });
+      return;
+    }
+    if (typeof renderer.printPlan === 'function') renderer.printPlan(plan.items);
+  }
+
   async function runResumeCommand(args) {
     if (typeof resumeSession !== 'function') {
       reply('暂不支持切换会话。', { tone: 'warn' });
@@ -645,6 +659,9 @@ export function createCommandHandler({
         return 'handled';
       case 'reasoning':
         await runReasoningCommand();
+        return 'handled';
+      case 'plan':
+        await runPlanCommand();
         return 'handled';
       case 'sessions':
         await runSessionsCommand();

@@ -9,7 +9,7 @@
 // 此时屏幕上还没有输入框，重演的内容按顺序直写，不必和行缓冲打交道。
 import { formatThinkingSeconds, terminalStatusText } from './renderer.mjs';
 
-export function printReplay({ renderer, items = [], omittedTurns = 0 } = {}) {
+export function printReplay({ renderer, items = [], omittedTurns = 0, plan = null } = {}) {
   if (!renderer) throw new Error('屏幕重演需要可用的渲染器。');
   const list = Array.isArray(items) ? items : [];
   const omitted = Number.isFinite(omittedTurns) && omittedTurns > 0 ? Math.floor(omittedTurns) : 0;
@@ -52,6 +52,12 @@ export function printReplay({ renderer, items = [], omittedTurns = 0 } = {}) {
         // 而「重演历史」这件事不值得让启动失败（与 history.mjs 忽略孤立事件同一条判断）。
         break;
     }
+  }
+  // 当前计划附在重演末尾：用户找回的是「我们写到哪了」，最后一份计划正是答案的骨架。
+  // 计划画在轮次之后——它是**当前状态**，不是历史轮的一部分；渲染器没有这个能力时
+  // （测试替身 / 自定义渲染器）安静跳过（与事件桥同一条防御）。
+  if (Array.isArray(plan) && plan.length > 0 && typeof renderer.printPlan === 'function') {
+    renderer.printPlan(plan);
   }
   // printAssistant 是攒行落盘的，最后一批可能还留在缓冲区里。
   // clearLive 会把它冲掉（顺带收掉任何未闭合的动态行——重演路径上本来不该有）。
