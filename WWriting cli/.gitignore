@@ -4,3 +4,4 @@ docs/superpowers/
 node_modules/
 .workbuddy/
 find-bugs-report.md
+.scratch/
