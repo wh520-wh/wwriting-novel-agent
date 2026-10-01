@@ -8,7 +8,7 @@
 //     null 会被当成显式置空而抛错，所以绝不把 load 的结果展开回传）。
 //   - 文案：命令回复也是一行式结果（printStatus 终态），错误只呈现一条用户可理解的事实，
 //     错误码与技术细节不进主文案。
-import { loadModelConfig, looksLikeApiKey, maskApiKey, sanitizeInput, saveDeepSeekConfig } from '../model/config.mjs';
+import { loadModelConfig, looksLikeApiKey, readModelState, verifyAndSaveApiKey, maskApiKey, sanitizeInput, saveDeepSeekConfig } from '../model/config.mjs';
 import { EFFORT_LEVELS, parseEffortArg, unsupportedEffortReason } from '../model/effort.mjs';
 import { fact } from '../fact.mjs';
 import { versionLine } from '../version.mjs';
@@ -248,23 +248,22 @@ export function createCommandHandler({
       reply('API Key 不能为空。', { tone: 'warn' });
       return;
     }
-    const verdict = probeKey === null ? { status: 'unknown', reason: '本机无法验证' } : await probeKey(key);
-    if (verdict.status === 'invalid') {
+    // 先验证再保存的纪律住在 model 层的 verifyAndSaveApiKey（向导与挽救路径共用）。
+    const step = await verifyAndSaveApiKey({ apiKey: key, configPath, probeKey, save: saveConfig });
+    if (step.outcome === 'rejected') {
       reply('这个 Key 被拒绝了', {
         tone: 'error',
         detail: '没有保存。核对后再试一次：/model key <你的 Key>',
       });
       return;
     }
-    try {
-      await saveConfig({ configPath, apiKey: key });
-    } catch (error) {
-      reply('保存失败', { tone: 'error', detail: fact(error) });
+    if (step.outcome === 'failed') {
+      reply('保存失败', { tone: 'error', detail: fact(step.error) });
       return;
     }
-    const tail = verdict.status === 'ok'
-      ? `已验证，可用模型 ${verdict.models.length} 个`
-      : `暂时无法验证（${verdict.reason}）`;
+    const tail = step.verdict.status === 'ok'
+      ? `已验证，可用模型 ${step.verdict.models.length} 个`
+      : `暂时无法验证（${step.verdict.reason}）`;
     reply('密钥已更新', { tone: 'success', detail: `${maskKey(key)} · ${tail}` });
   }
 
@@ -409,24 +408,25 @@ export function createCommandHandler({
   }
 
   async function showModelConfig() {
-    let config;
-    try {
-      config = await loadConfig({ configPath, env });
-    } catch (error) {
-      // 文件损坏不能当成「没配置」——那会让用户以为自己的 key 丢了。
-      if (error?.code === 'MODEL_CONFIG_INVALID') {
-        reply('配置已损坏', { tone: 'error', detail: '请用 /model 重新设置。' });
-        return;
-      }
-      reply('读取失败', { tone: 'error', detail: fact(error) });
+    // 状态归类（四态 + 损坏标记）来自 model 层的 readModelState，与头部面板、引导共用同一份读法。
+    const state = await readModelState({ configPath, env, load: loadConfig });
+    if (state.state === 'invalid') {
+      reply('配置已损坏', { tone: 'error', detail: '请用 /model 重新设置。' });
       return;
     }
-    if (!config.configured) {
+    if (state.state === 'unreadable') {
+      reply('读取失败', { tone: 'error', detail: fact(state.error) });
+      return;
+    }
+    const config = state.config;
+    if (state.state === 'empty') {
       reply('尚未配置模型', { tone: 'warn', detail: '输入 /model 跟着走一遍就好。' });
       return;
     }
     // 一行一项、左列对齐（与启动头部面板同一套观感），扫一眼就知道现在用的是哪套配置。
-    reply(row('模型', config.model ?? '未设置'));
+    // 模型名那格被写坏时，那格里是 Key（真实事故的形状）：只给脱敏串——
+    // 旧版在这里把整串 Key 打进了终端，恰恰违反本模块「Key 不上屏」的硬约束。
+    reply(row('模型', state.corruptModel ? maskKey(config.model) : (config.model ?? '未设置')));
     reply(row('端点', config.baseUrl));
     reply(row('API Key', maskKey(config.apiKey)));
     // 思考强度与模型是绑在一起的（切模型会重置档位），所以这两件事本来就该一起看（P15）。
@@ -440,7 +440,7 @@ export function createCommandHandler({
     reply('改模型 / 换 Key：输入 /model', { tone: 'info' });
     // 已经写坏的那种（模型名位置上放着 API Key）要点名说清，否则用户只会看到后面那句
     // 让人越走越远的「API Key 无效」。
-    if (looksLikeApiKey(config.model)) {
+    if (state.corruptModel) {
       reply('模型名那一行看起来是 API Key', { tone: 'warn', detail: '输入 /model 重新设置，会帮你清掉' });
     }
   }
