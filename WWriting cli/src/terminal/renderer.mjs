@@ -78,6 +78,10 @@ const ACTIVITY_TONE = Object.freeze({ running: 'info', done: 'success', failed: 
 const PROSE_MARK = '▌';
 const PROSE_LEAD = `${PROSE_MARK} `;
 
+// 计划表的三态标记（对齐上游 §4.2：completed 实心勾 / in_progress 箭头圆 / pending 空圆）。
+const PLAN_MARK = Object.freeze({ completed: '✓', in_progress: '▶', pending: '○' });
+const PLAN_TONE = Object.freeze({ completed: 'success', in_progress: 'accent', pending: 'info' });
+
 // 工具 → 人话标签（设计规格书 §4.3；count_text 是本项目特有的客观字数工具；
 // 极端工具按权限层的用词给中文，确认提示才不会出现「工具 delete_file」这种机器话）。
 const TOOL_LABELS = Object.freeze({
@@ -88,6 +92,7 @@ const TOOL_LABELS = Object.freeze({
   edit_file: '修改文件',
   count_text: '统计字数',
   read_skill: '读取技能',
+  update_plan: '更新计划',
   delete_file: '删除文件',
   delete_dir: '删除目录',
   clear_session: '清空会话',
@@ -551,6 +556,31 @@ export function createRenderer({
     closeBlock();
   }
 
+  // 计划表：update_plan 的可见产物。每次整表替换都把最新状态落进 scrollback——
+  // 终端的 scrollback 就是「折叠态即回看态」（P10 的终端等价物：历史版本一直在上面，
+  // 最新一份在最后）。/plan 与重演也调它，三处因此长一个样。
+  function printPlan(items) {
+    if (closed || !Array.isArray(items) || items.length === 0) return;
+    flushProse({ force: true });
+    const width = proseRowWidth(stdout.columns);
+    const done = items.reduce((count, item) => (item?.status === 'completed' ? count + 1 : count), 0);
+    openBlock();
+    write(`${paint('任务计划', 'strong')} ${paint(`${done}/${items.length}`, 'info')}\n`);
+    for (const item of items) {
+      const status = PLAN_MARK[item?.status] ? item.status : 'pending';
+      const summary = typeof item?.summary === 'string' ? item.summary : '';
+      // 长步骤按正文列宽折行，续行对齐到标记后的正文列（与用户行续行同一个做法）。
+      const { rows, rest } = takeProseRows(`${summary}\n`, { width: Math.max(1, width - 4) });
+      const all = rest === '' ? rows : [...rows, rest];
+      const lines = all.length === 0 ? [''] : all;
+      for (let index = 0; index < lines.length; index += 1) {
+        const head = index === 0 ? `  ${paint(PLAN_MARK[status], PLAN_TONE[status])} ` : '    ';
+        write(`${head}${paint(lines[index], PLAN_TONE[status])}\n`);
+      }
+    }
+    closeBlock();
+  }
+
   // 活动行：运行中的是当前动态行（会被下一次重绘覆盖）；终态行落进 scrollback，一条活动只留一行。
   // detail 是这一行的补充事实：失败时是原因，成功时是「得到了什么」（字数 / 行数）加耗时。
   // 连续两行完全相同（同一个工具、同一个目标、同一个结果）只留第一行：
@@ -649,6 +679,7 @@ export function createRenderer({
     printUser,
     printAssistant,
     printReasoning,
+    printPlan,
     printThinkingPreview,
     resetThinkingPreview,
     printActivity,
@@ -772,6 +803,11 @@ export function createEventRenderer({ renderer, label = activityLabel, onDecisio
       }
       case 'model_delta':
         if (typeof data.text === 'string') renderer.printAssistant(data.text);
+        break;
+      case 'plan_updated':
+        // update_plan 落的最新整表。渲染器没有这个能力时（测试替身 / 自定义渲染器）
+        // 安静跳过，不让事件桥崩掉（与 /reasoning 的 printReasoning 同一条防御）。
+        if (typeof renderer.printPlan === 'function') renderer.printPlan(data.items);
         break;
       case 'activity_started':
         activityStartedAt = eventMillis(event.at);

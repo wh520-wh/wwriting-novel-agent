@@ -14,6 +14,7 @@ import { createAgentLoop } from '../../src/agent/agent-loop.mjs';
 import { DEFAULT_HISTORY_BUDGET_CHARS, buildHistoryMessages } from '../../src/agent/history.mjs';
 import { createFileTools } from '../../src/tools/files.mjs';
 import { createPermissionState } from '../../src/tools/permissions.mjs';
+import { updatePlan } from '../../src/tools/plan.mjs';
 import { createEventStore } from '../../src/session/event-store.mjs';
 
 const tempRoots = [];
@@ -1246,4 +1247,53 @@ test('read_skill 往返：拿到技能正文进工具结果，未知名拿到可
   assert.equal(finished[0].data.ok, true);
   assert.equal(finished[1].data.ok, false);
   assert.equal(finished[1].data.code, 'skill_not_found');
+});
+
+// update_plan：活动行照常（started/finished + 结果摘要），紧随其后落一条 plan_updated
+// 携带整表；空表不落；工具校验失败不是 Run 失败（错误作为工具结果回传）。
+test('update_plan 工具：活动行之后落 plan_updated 整表，空表不落', async () => {
+  const { projectRoot, store, permissions, model } = await setup({ prefix: 'wwriting-loop-plan-', script: [
+    { toolCalls: [{ id: 'c1', name: 'update_plan', arguments: JSON.stringify({ steps: [
+      { summary: '通读前两章', status: 'completed' },
+      { summary: '写第三章', status: 'in_progress' },
+      { summary: '检查衔接', status: 'pending' },
+    ] }) }] },
+    { toolCalls: [{ id: 'c2', name: 'update_plan', arguments: JSON.stringify({ steps: [] }) }] },
+    { toolCalls: [{ id: 'c3', name: 'update_plan', arguments: JSON.stringify({ steps: [{ summary: '', status: 'x' }] }) }] },
+    { deltas: ['按计划推进。'] },
+  ] });
+  const loop = createAgentLoop({
+    modelClient: model,
+    tools: { updatePlan },
+    eventStore: store,
+    permissions,
+    clock: makeClock(),
+    idFactory: makeIdFactory('run'),
+  });
+
+  const result = await loop.run({ projectRoot, sessionId: 'sess-1', inputId: 'in-1', text: '改这三章' });
+  assert.equal(result.status, 'completed');
+
+  const events = await readEvents(store);
+  const plans = events.filter((event) => event.type === 'plan_updated');
+  // 两次合法调用（1 次 3 步、1 次空表）只有非空那次落 plan_updated；第三次校验失败只落 activity_finished。
+  assert.equal(plans.length, 1);
+  assert.equal(plans[0].run_id, result.runId);
+  assert.equal(plans[0].data.items.length, 3);
+  assert.equal(plans[0].data.items[1].summary, '写第三章');
+
+  // 顺序：plan_updated 紧跟在对应 activity_finished 之后（计划表画在活动行后面）。
+  const types = events.map((event) => event.type);
+  const firstFinish = types.indexOf('activity_finished');
+  assert.equal(types[firstFinish + 1], 'plan_updated');
+
+  // 活动行摘要说得出进度；校验失败那次的错误回传给了模型。
+  const finished = events.filter((event) => event.type === 'activity_finished' && event.data.tool === 'update_plan');
+  assert.equal(finished.length, 3);
+  assert.match(finished[0].data.result, /"plan":\[/);
+  assert.equal(finished[2].data.ok, false);
+  assert.equal(finished[2].data.code, 'TOOL_PLAN_STEP_INVALID');
+  const lastRound = model.calls.at(-1).messages;
+  const badTool = lastRound.filter((message) => message.role === 'tool').pop();
+  assert.match(JSON.parse(badTool.content).error, /步骤缺少说明/);
 });

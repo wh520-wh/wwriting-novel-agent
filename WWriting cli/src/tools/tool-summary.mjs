@@ -29,7 +29,9 @@ export function summarizeToolResult(data = {}) {
       parsed = null;
     }
     if (parsed !== null && typeof parsed === 'object') {
-      // 顺序有意为之：字数最有用（铁律 6 要按它决定接着写还是收尾），排在最前。
+      // 顺序有意为之：字数最有用（铁律 6 要按它决定接着写还是收尾），排在最前；
+      // 但「有比字数更独特的事实的工具」先说那个事实。
+      if (Array.isArray(parsed.plan)) return `计划 ${parsed.done ?? 0}/${parsed.total ?? '?'}`;
       if (Number.isFinite(parsed.charsNoSpace)) return `${parsed.charsNoSpace} 字`;
       if (typeof parsed.text === 'string') return `${parsed.text.split('\n').length} 行`;
       if (Array.isArray(parsed.matches)) return `${parsed.matches.length} 处`;

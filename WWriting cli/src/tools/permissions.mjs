@@ -18,7 +18,15 @@ export class PermissionError extends Error {
   }
 }
 
-export const READ_TOOLS = Object.freeze(['list_files', 'read_file', 'search_files', 'count_text', 'read_skill']);
+export const READ_TOOLS = Object.freeze([
+  'list_files',
+  'read_file',
+  'search_files',
+  'count_text',
+  'read_skill',
+  // update_plan 只写应用私有的计划状态（事件日志），不碰创作目录——与读取同级，自动放行。
+  'update_plan',
+]);
 export const WRITE_TOOLS = Object.freeze(['write_file', 'edit_file']);
 export const EXTREME_TOOLS = Object.freeze([
   'delete_file',

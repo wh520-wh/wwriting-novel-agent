@@ -50,6 +50,21 @@ function reasoningByRun(events) {
   return byRun;
 }
 
+// 当前任务计划：与事件投影同一套口径（run_started 清空、plan_updated 整表替换），
+// 扫完日志剩下的一份就是「最新计划」。重演因此与 /plan 说同一句话——
+// 不可能出现「/plan 说有计划、重演说没有」的分歧（与 R5 同一条要求）。
+function lastPlan(events) {
+  let plan = null;
+  for (const event of events) {
+    if (event === null || typeof event !== 'object') continue;
+    if (event.type === 'run_started') plan = null;
+    else if (event.type === 'plan_updated') {
+      plan = Array.isArray(event.data?.items) && event.data.items.length > 0 ? event.data.items : null;
+    }
+  }
+  return plan;
+}
+
 // 一轮 → 若干重演项。顺序就是当时发生的顺序：
 // 用户说话 → 模型思考（可能多段，多轮工具调用时每段一项）→ 正文 → 收尾状态。
 //
@@ -94,5 +109,8 @@ export function buildReplay(events, { budgetChars = DEFAULT_HISTORY_BUDGET_CHARS
     const reasoning = turn.runId === null ? [] : (byRun.get(turn.runId) ?? []);
     items.push(...turnItems(turn, reasoning));
   }
-  return { items, omittedTurns: built.truncatedTurns, keptTurns };
+  // 当前计划附在重演末尾：用户找回的是「我们写到哪了」，最后一份计划正是答案的骨架。
+  // 计划属于被重演轮次之外的**当前状态**（滚动条前面就能看到历史正文），不占轮次预算。
+  const plan = lastPlan(list);
+  return { items, omittedTurns: built.truncatedTurns, keptTurns, plan };
 }

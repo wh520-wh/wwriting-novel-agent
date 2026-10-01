@@ -1368,3 +1368,53 @@ test('色带左边界与正文左边界同列（屏幕上所有块对齐成一�
   assert.equal(userLine.indexOf('用户说的话'), 2);
   assert.equal(proseLine.indexOf('模型的正文'), 2);
 });
+
+// —— 任务计划表（update_plan 的可见产物） ——
+
+test('printPlan：标题带进度，三态标记各就各位，长步骤折行对齐', () => {
+  const { renderer, stdout } = makeRenderer({ columns: 100 });
+  renderer.printPlan([
+    { summary: '通读前两章，确认时间线没有矛盾', status: 'completed' },
+    { summary: '写第三章' + '，这一步的说明很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长', status: 'in_progress' },
+    { summary: '检查衔接', status: 'pending' },
+  ]);
+  renderer.close();
+  const text = screenText(stdout.text());
+  const rows = text.split('\n');
+  assert.match(rows[0], /^任务计划 1\/3$/);
+  assert.match(rows[1], /^  ✓ 通读前两章，确认时间线没有矛盾$/);
+  assert.match(rows[2], /^  ▶ 写第三章/);
+  assert.ok(rows.length > 4, '长步骤要折行而不是挤成一行');
+  assert.match(rows[3], /^ {4}/, '折行续行对齐到正文列');
+  const pendingRow = rows.find((row) => row.includes('检查衔接'));
+  assert.match(pendingRow, /^  ○ 检查衔接$/);
+});
+
+test('printPlan 空表与非法输入一个字节都不写', () => {
+  const { renderer, stdout } = makeRenderer();
+  renderer.printPlan([]);
+  renderer.printPlan(null);
+  renderer.printPlan('坏的');
+  renderer.close();
+  assert.equal(stdout.text(), '');
+});
+
+test('事件桥：plan_updated 把整表交给 printPlan 画出来', () => {
+  const stdout = makeStdout({ tty: true });
+  const renderer = createRenderer({ stdout, env: { NO_COLOR: '1' } });
+  const bridge = createEventRenderer({ renderer });
+  bridge.handleEvent({
+    type: 'plan_updated', at: '2026-10-01T00:00:00.000Z',
+    data: { items: [{ summary: '写第四章', status: 'in_progress' }] },
+  });
+  renderer.close();
+  assert.ok(screenText(stdout.text()).includes('任务计划 0/1'));
+  assert.ok(screenText(stdout.text()).includes('▶ 写第四章'));
+});
+
+test('事件桥：渲染器没有 printPlan 能力时安静跳过，不崩', () => {
+  const minimal = { printStatus: () => {}, printUser: () => {}, printActivity: () => {} };
+  const bridge = createEventRenderer({ renderer: minimal });
+  bridge.handleEvent({ type: 'plan_updated', at: '2026-10-01T00:00:00.000Z', data: { items: [{ summary: 'x' }] } });
+  // 走到这里没抛就是通过。
+});

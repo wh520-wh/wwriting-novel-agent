@@ -86,3 +86,31 @@ test('不认识的项类型被忽略，不抛（日志可能来自更早的版�
 test('printReplay 在没有 renderer 时抛出来：装配错了就该炸，不该静默什么都不画', () => {
   assert.throws(() => printReplay({ items: [] }), /渲染器/);
 });
+
+test('重演末尾附上当前计划（printPlan 同一份排版）', () => {
+  const stdout = makeStdout();
+  const renderer = createRenderer({ stdout, env: { NO_COLOR: '1' } });
+  printReplay({
+    renderer,
+    items: [
+      { kind: 'user', text: '改这三章' },
+      { kind: 'status', terminal: 'completed', interruptReason: null, failCode: null },
+    ],
+    plan: [
+      { summary: '改第二章', status: 'completed' },
+      { summary: '改第三章', status: 'in_progress' },
+    ],
+  });
+  renderer.close();
+  const shown = screenText(stdout.text());
+  assert.ok(shown.includes('❯ 改这三章'));
+  assert.ok(shown.includes('任务计划 1/2'), '计划标题要出现');
+  assert.ok(shown.includes('▶ 改第三章'));
+  // 计划在轮次之后：找回状态时「最后一份计划」就是答案的骨架。
+  assert.ok(shown.indexOf('任务计划') > shown.indexOf('已完成'));
+});
+
+test('没有计划时重演不多画任何东西', () => {
+  const shown = replay([{ kind: 'user', text: '继续' }]);
+  assert.equal(shown.includes('任务计划'), false);
+});

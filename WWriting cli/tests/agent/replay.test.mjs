@@ -305,3 +305,36 @@ test('P26 的已知残余缺口：工具摘要进了模型上下文但不重演�
   // 这条用例的意义是**把缺口钉在测试里**：谁哪天想声称「P26 完全成立」，会先撞红这一条。
   // P26 的适用范围因此要限定为「对话内容」，工具摘要这层残余如实记在 ADR-0011。
 });
+
+test('当前计划：与投影同一口径——run_started 清空、plan_updated 整表替换', () => {
+  reset();
+  const events = [
+    ...turn({ inputId: 'in_1', text: '改这三章', body: '改完了。' }),
+    ev('plan_updated', { items: [{ summary: '改第二章', status: 'completed' }] }, { run_id: 'run_in_1' }),
+    // 第二轮把计划更新成两步（整表替换，第一版的单步表消失）。
+    ...turn({ inputId: 'in_2', text: '再检查一遍', body: '查完了。' }),
+    ev('plan_updated', {
+      items: [{ summary: '改第二章', status: 'completed' }, { summary: '检查衔接', status: 'in_progress' }],
+    }, { run_id: 'run_in_2' }),
+  ];
+  const { plan } = buildReplay(events);
+  assert.deepEqual(plan, [
+    { summary: '改第二章', status: 'completed' },
+    { summary: '检查衔接', status: 'in_progress' },
+  ]);
+});
+
+test('没有计划、或最后一段被新 Run 清空时，plan 为 null（绝不拿旧计划冒充当前）', () => {
+  reset();
+  const { plan: none } = buildReplay(turn({ inputId: 'in_1', text: 'hi', body: '好。' }));
+  assert.equal(none, null);
+
+  reset();
+  const stale = [
+    ...turn({ inputId: 'in_1', text: '改这三章', body: '改完了。' }),
+    ev('plan_updated', { items: [{ summary: '改第二章' }] }, { run_id: 'run_in_1' }),
+    // 后面又开了一轮、但没立计划：旧计划不得冒充当前状态（口径 A）。
+    ...turn({ inputId: 'in_2', text: '接着聊', body: '好。' }),
+  ];
+  assert.equal(buildReplay(stale).plan, null);
+});

@@ -126,12 +126,42 @@ export const TOOL_SCHEMAS = Object.freeze([
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'update_plan',
+      description: '更新任务计划（整表替换）：给出本轮全部步骤与各自进度，供用户查看。多步任务先建计划，随进度更新。',
+      parameters: {
+        type: 'object',
+        properties: {
+          steps: {
+            type: 'array',
+            description: '全部步骤的完整列表，按执行顺序；每次调用都整表替换。',
+            items: {
+              type: 'object',
+              properties: {
+                summary: { type: 'string', description: '这一步要做什么。' },
+                status: {
+                  type: 'string',
+                  enum: ['pending', 'in_progress', 'completed'],
+                  description: '缺省 pending。',
+                },
+              },
+              required: ['summary'],
+            },
+          },
+        },
+        required: ['steps'],
+      },
+    },
+  },
 ]);
 
 const BASE_SYSTEM_PROMPT = [
   '你是 WWriting 的写作 Agent，在用户的创作目录里工作，全部回答使用简体中文。',
   '规则：只使用给定的工具读写文件；读取自动放行，写入与修改需要用户确认；',
   '篇幅一律先用 count_text 统计再判断，绝不凭自己的估计报字数；',
+  '多步任务先用 update_plan 列出步骤并随进度整表更新；',
   '删除、项目外访问等极端操作不在你的能力范围内，不要尝试。',
 ].join('');
 
@@ -226,6 +256,7 @@ const TOOL_METHODS = Object.freeze({
   edit_file: 'editFile',
   count_text: 'countText',
   read_skill: 'readSkill',
+  update_plan: 'updatePlan',
 });
 
 // 工具结果进活动的形态。两件事同时要：
@@ -569,6 +600,11 @@ export function createAgentLoop({
       try {
         const result = await fn(args);
         await finish({ ok: true, ...resultPreview(result) });
+        // update_plan 的可见产物是计划表本身：紧跟在活动行之后落一条 plan_updated
+        // （整表替换）。空表不落——Run 开始时投影已把上一轮清掉，空表无事可做。
+        if (name === 'update_plan' && Array.isArray(result?.plan) && result.plan.length > 0) {
+          await emitNow('plan_updated', { items: result.plan });
+        }
         return JSON.stringify(result ?? {});
       } catch (error) {
         if (isAbortError(error, signal)) {

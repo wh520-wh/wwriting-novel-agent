@@ -54,11 +54,12 @@ function makeController({
   queue = [],
   priorityResult = null,
   priorityThrows = null,
+  snapshotOverride = null,
 } = {}) {
   const calls = { submit: [], stop: [], close: 0, decide: [], order: [], priority: [] };
   const controller = {
     activeRunId: () => null,
-    snapshot: () => ({
+    snapshot: () => (snapshotOverride !== null ? snapshotOverride : {
       status: 'idle',
       active_run_id: calls.order.includes('active') ? 'run-1' : null,
       active_input_id: null,
@@ -1288,4 +1289,31 @@ test('/skills 未注入取值口时如实说暂不支持', async () => {
   const status = pick(renderer.calls, 'status').at(-1);
   assert.equal(status[1], '暂不支持查看技能。');
   assert.equal(status[2].tone, 'warn');
+});
+
+// —— /plan：任务计划的按需回看 ——
+
+test('/plan 没有计划时如实说暂无，不抛', async () => {
+  const renderer = makeRenderer();
+  const { controller } = makeController();
+  const handler = makeHandler({ renderer, controller });
+
+  const action = await handler.handle('/plan');
+
+  assert.equal(action.action, 'handled');
+  const status = pick(renderer.calls, 'status').at(-1);
+  assert.equal(status[1], '暂无计划');
+});
+
+test('/plan 有计划时把当前整表交给渲染器，不多说一个字', async () => {
+  const plans = [];
+  const renderer = { ...makeRenderer(), printPlan: (items) => plans.push(items) };
+  const items = [{ summary: '写第四章', status: 'in_progress' }];
+  const { controller } = makeController({ snapshotOverride: { plan: { run_id: 'run-1', items } } });
+  const handler = makeHandler({ renderer, controller });
+
+  await handler.handle('/plan');
+
+  assert.deepEqual(plans, [items]);
+  assert.equal(pick(renderer.calls, 'status').length, 0, '有内容可画时不再补一条状态行');
 });
