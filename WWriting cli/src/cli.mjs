@@ -317,15 +317,15 @@ export async function main(
     // 先开新的：新会话打不开时旧会话原样可用，不做「先关后开」的半途状态。
     const next = await openController(sessionId);
     controller = next;
-    // 实时区的计划面板跟着换会话：读新会话投影里的当前计划（§4.2 chip 的数据源只有投影一处）。
-    if (typeof renderer.setLivePlan === 'function') {
-      const plan = next.snapshot()?.plan;
-      renderer.setLivePlan(Array.isArray(plan?.items) ? plan.items : null, { active: false });
-    }
     if (current !== null) {
       current.stop(); // D18：先停当前轮
-      await current.close(); // 再释放旧会话的写锁
+      await current.close(); // 再释放旧会话的写锁——旧轮的终态事件在这里全部处理完
     }
+    // 旧轮终态处理完**之后**才清桥内状态（lastPlan / 排队输入 / 思考缓存都绑定在旧会话上），
+    // 然后播种新会话的计划——顺序反过来，旧计划就会在切换后重新挂回实时区（评审 P0）。
+    bridge.resetSessionState();
+    const plan = next.snapshot()?.plan;
+    renderer.setLivePlan(Array.isArray(plan?.items) ? plan.items : null, { active: false });
   }
 
   // 退出信号：/quit 与 Ctrl+C 空闲退出都只 resolve 这一个 promise，主流程在那之后收尾。
@@ -527,10 +527,8 @@ export async function main(
 
   // 实时区的计划 chip（§4.2：Run 结束保留供回看）：数据源是当前会话投影，
   // 与 /resume 切会话同一条路径。必须放在输入区起来之后——此刻输入层才开始认 setLive。
-  if (typeof renderer.setLivePlan === 'function') {
-    const plan = controller.snapshot()?.plan;
-    renderer.setLivePlan(Array.isArray(plan?.items) ? plan.items : null, { active: false });
-  }
+  const startupPlan = controller.snapshot()?.plan;
+  renderer.setLivePlan(Array.isArray(startupPlan?.items) ? startupPlan.items : null, { active: false });
 
   if (!started.interactive) {
     // 先同步停掉输入监听，再释放其它资源：否则管道里已经排好的行会在 await 的间隙

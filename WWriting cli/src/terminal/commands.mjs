@@ -529,7 +529,7 @@ export function createCommandHandler({
       reply('暂无计划', { tone: 'info', detail: '多步任务进行时，这里会显示当前计划。' });
       return;
     }
-    if (typeof renderer.printPlan === 'function') renderer.printPlan(plan.items);
+    renderer.printPlan(plan.items);
   }
 
   // /compact：手动压缩（CLI 有意不做自动压缩——触发时机与安全点的复杂度不值得）。

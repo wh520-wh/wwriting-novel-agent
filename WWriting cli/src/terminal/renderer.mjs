@@ -277,8 +277,8 @@ export function resolveColor({ color, env, stdout }) {
 //   composer 可选：{ isActive?(), takeArea(), giveArea(), setLive(text) }，由 createInputReader 提供。
 //     isActive() 为真时屏幕上有一个输入框；takeArea/giveArea 必须成对出现。
 // 返回 { printIntro, printUser, printAssistant, printReasoning, printPlan, setLivePlan,
-//        printThinkingPreview, resetThinkingPreview, printActivity, printStatus, printQueue,
-//        printDecision, clearLive, close }。
+//        resetMarkdown, printThinkingPreview, resetThinkingPreview, printActivity, printStatus,
+//        printQueue, printDecision, clearLive, close }。
 export function createRenderer({
   stdout,
   color,
@@ -291,11 +291,14 @@ export function createRenderer({
   const useColor = resolveColor({ color, env, stdout });
   // 输入区的所有权在输入层：它自己算好框有几行、下框线画在哪。渲染器只负责
   // 「让位 / 写完 / 要回来」，因此不必知道 ROW_UP 该上移几格。
-  const hook = composer
-    && typeof composer.takeArea === 'function'
-    && typeof composer.giveArea === 'function'
-    ? composer
-    : null;
+  // 契约在装配点校验：给了 composer 就必须给全三个方法——缺 setLive 的残缺 composer
+  // 会在第一 条动态行到达时才炸出裸 TypeError，那已经是运行中段，排查成本高得多。
+  let hook = null;
+  if (composer !== null && composer !== undefined) {
+    const missing = ['takeArea', 'giveArea', 'setLive'].filter((name) => typeof composer[name] !== 'function');
+    if (missing.length > 0) throw new Error(`渲染器的 composer 缺少能力：${missing.join('、')}。`);
+    hook = composer;
+  }
   const usingComposer = () => hook !== null && (typeof hook.isActive !== 'function' || hook.isActive());
 
   let liveOpen = false; // 有一行「当前动态状态」还没被收尾
@@ -411,12 +414,23 @@ export function createRenderer({
 
   // 实时区合成：动态行在上、任务面板在下（与 CC 的 spinner 区同构：当前动作是标题，
   // 计划是结构，都贴着输入框）。没有 composer（管道）时不合成——多行面板在直写流里擦不干净。
+  // 合成内容去重后才交给输入层：输入层每次 setLive 都会整块重画，没变化就不打扰。
   function refreshLive() {
     if (!usingComposer()) return;
     const lines = [];
     if (liveBody !== null) lines.push(...liveBody.split('\n'));
     if (livePlan !== null) lines.push(...planPanelLines());
-    hook.setLive(lines.length === 0 ? null : lines.join('\n'));
+    const next = lines.length === 0 ? null : lines.join('\n');
+    if (next === lastLiveSet) return;
+    lastLiveSet = next;
+    hook.setLive(next);
+  }
+
+  // 截宽并带省略号：截断的事实要看得出来——静默截断会让人把半截步骤名当成完整步骤名。
+  function clipMarked(text, width) {
+    const source = String(text ?? '');
+    if (displayWidth(source) <= width) return source;
+    return `${clipToWidth(source, Math.max(1, width - 1))}…`;
   }
 
   // 计划面板：运行中展开（标题 + 条目窗口），空闲收成一行 chip（§4.2 的顶栏 chip 形态）。
@@ -431,7 +445,7 @@ export function createRenderer({
       const current = items.find((item) => item?.status === 'in_progress');
       const tail = current && typeof current.summary === 'string' ? ` · ${current.summary}` : '';
       const room = Math.max(0, width - displayWidth(headPlain));
-      return [`${paint('任务计划', 'strong')} ${paint(`${done}/${items.length}`, 'info')}${paint(clipToWidth(tail, room), 'info')}`];
+      return [`${paint('任务计划', 'strong')} ${paint(`${done}/${items.length}`, 'info')}${paint(clipMarked(tail, room), 'info')}`];
     }
     const lines = [`${paint('任务计划', 'strong')} ${paint(`${done}/${items.length}`, 'info')}`];
     const open = items.filter((item) => item?.status !== 'completed');
@@ -442,9 +456,23 @@ export function createRenderer({
     const collapsed = items.length - open.length;
     if (collapsed > 1) lines.push(`  ${paint('✓', 'success')} ${paint(`已完成 ${collapsed} 步`, 'done')}`);
     const room = Math.max(1, LIVE_PLAN_MAX_ITEMS - (lines.length - 1));
-    const shown = open.slice(0, Math.max(1, room - (open.length > room ? 1 : 0)));
+    // 窗口的铁律：**进行中的步骤必须在场**——它排在第 room 个开外时窗口整体后移，
+    // 两侧被裁掉的步骤各给一行省略说明（静默裁掉「正在做什么」比少看几行严重得多）。
+    const ipIndex = open.findIndex((item) => item?.status === 'in_progress');
+    let start = 0;
+    if (ipIndex >= room) start = ipIndex - room + 1;
+    let size = room;
+    if (start > 0) size -= 1; // 头部省略行占一位
+    if (start + size < open.length) size -= 1; // 尾部省略行占一位
+    size = Math.max(1, size);
+    // 省略行占位可能把窗口推得盖不住进行中项：以它为准重推窗口起点（它是窗口最后一项）。
+    if (ipIndex >= 0 && (ipIndex < start || ipIndex >= start + size)) {
+      start = Math.max(0, Math.min(ipIndex - size + 1, open.length - size));
+    }
+    const shown = open.slice(start, start + size);
+    if (start > 0) lines.push(`  ${paint(`… 前面还有 ${start} 步`, 'info')}`);
     for (const item of shown) lines.push(planItemLine(item, width));
-    const hidden = open.length - shown.length;
+    const hidden = open.length - start - shown.length;
     if (hidden > 0) lines.push(`  ${paint(`… 还有 ${hidden} 步`, 'info')}`);
     return lines;
   }
@@ -452,8 +480,9 @@ export function createRenderer({
   function planItemLine(item, width) {
     const status = PLAN_MARK[item?.status] ? item.status : 'pending';
     const summary = typeof item?.summary === 'string' ? item.summary : '';
-    // 先按纯文本截宽再上色：色彩转义不占列，但截宽函数数的是字符。
-    const plain = clipToWidth(summary, Math.max(1, width - 4));
+    // 先按纯文本截宽再上色：色彩转义不占列，但截宽函数数的是字符。截断带省略号——
+    // 静默截断会让人把半截步骤名当成完整步骤名。
+    const plain = clipMarked(summary, Math.max(1, width - 4));
     return `  ${paint(PLAN_MARK[status], PLAN_TONE[status])} ${paint(plain, PLAN_TEXT_TONE[status] ?? PLAN_TONE[status])}`;
   }
 
@@ -467,6 +496,12 @@ export function createRenderer({
     livePlan = next;
     planActive = nextActive;
     refreshLive();
+  }
+
+  // 丢弃未完成的 Markdown 块状态（Run / 会话边界调用）：上一轮的半截围栏、表格候选行
+  // 绝不允许泄漏进下一轮——那会把新正文整段当代码渲染（评审发现的跨轮状态泄漏）。
+  function resetMarkdown() {
+    md.reset();
   }
 
 
@@ -655,6 +690,7 @@ export function createRenderer({
     const note = typeof detail === 'string' && detail !== '' ? ` · ${detail}` : '';
     const line = `${mark} ${label}${note}`;
     flushProse({ force: true });
+    resetMarkdown(); // 工具行 = 消息边界：上一条消息里没闭合的围栏到此为止
     if (state === 'running') {
       drawLive(line, tone);
       return;
@@ -745,6 +781,7 @@ export function createRenderer({
     printReasoning,
     printPlan,
     setLivePlan,
+    resetMarkdown,
     printThinkingPreview,
     resetThinkingPreview,
     printActivity,
@@ -768,8 +805,22 @@ export function createRenderer({
 //   把终端让给方向键选择器并把结果交回控制器——但它属于组合根（要 suspend/resume 常驻 readline、
 //   要摸 io.stdin/stdout），所以这一层只转交事件，绝不认识选择器。
 //   缺省 null = 当前终端给不出选择器：卡片退回「按文字答」的提示，既有路径一个字节不变。
-export function createEventRenderer({ renderer, label = activityLabel, onDecision = null } = {}) {
+// 事件桥对渲染器的**契约**。装配点一次性校验——缺能力在装配时炸出来并列出缺什么，
+// 绝不在事件到达时静默跳过（那会让 §4.2 的常驻面板无声消失，还没人知道为什么）。
+// 测试替身确实是残缺渲染器时，显式传 { partial: true } 声明「我知道我在干什么」。
+const RENDERER_CONTRACT = Object.freeze([
+  'printUser', 'printAssistant', 'printStatus', 'printActivity', 'printQueue',
+  'printDecision', 'printPlan', 'setLivePlan', 'resetThinkingPreview',
+]);
+
+export function createEventRenderer({ renderer, label = activityLabel, onDecision = null, partial = false } = {}) {
   if (!renderer) throw new Error('事件桥需要可用的渲染器。');
+  if (partial !== true) {
+    const missing = RENDERER_CONTRACT.filter((name) => typeof renderer[name] !== 'function');
+    if (missing.length > 0) {
+      throw new Error(`事件桥的渲染器缺少能力：${missing.join('、')}。残缺替身请显式传 { partial: true }。`);
+    }
+  }
   // 有交互入口 = 会用选择器。卡片据此少印一行提示（选项由选择器自己显示）。
   const pickerMode = typeof onDecision === 'function';
   // 排过队的输入：input_id → 原文。它们真正开跑时要补一行用户行（见 run_started）。
@@ -785,6 +836,18 @@ export function createEventRenderer({ renderer, label = activityLabel, onDecisio
   // 它只服务 lastReasoning：**正在跑的那一轮不算「上一轮」**——见 run_started 处的注释，
   // 那是本函数的契约，之前只有注释没有代码兑现它。
   let runInFlight = false;
+
+  // 会话边界（/resume 切换）由组合根调用：清掉绑定在**上一个会话**上的桥内状态。
+  // 否则旧会话的终态事件（比如停止旧轮的 run_interrupted）会把旧计划重新挂进
+  // 新会话的实时区——规格 §4.2 注记原文：「残留上一会话计划即缺陷」。
+  function resetSessionState() {
+    queuedInputs.clear();
+    lastPlan = null;
+    currentRunReasoning = [];
+    lastRunReasoning = null;
+    runInFlight = false;
+    activityStartedAt = null;
+  }
 
   function handleEvent(event) {
     if (!event || typeof event.type !== 'string') return;
@@ -806,9 +869,11 @@ export function createEventRenderer({ renderer, label = activityLabel, onDecisio
         // 思考预览另起一段：上一轮被打断时留下的半段（还挂在 thinkingPreviewOn 上）
         // 绝不能接着算进这一轮，否则新用户的思考会从旧思考的尾巴后面长出来。
         renderer.resetThinkingPreview();
-        // 新 Run 清空上一轮计划（口径 A）：事件投影已清，实时区的面板同步收起。
+        // 新 Run 清空上一轮计划（口径 A）：事件投影已清，实时区的面板同步收起；
+        // Markdown 的块状态（半截围栏/表格候选）也一并作废——它们属于上一轮。
         lastPlan = null;
-        if (typeof renderer.setLivePlan === 'function') renderer.setLivePlan(null);
+        renderer.setLivePlan(null);
+        renderer.resetMarkdown();
         renderer.printStatus('思考中');
         break;
       }
@@ -883,12 +948,15 @@ export function createEventRenderer({ renderer, label = activityLabel, onDecisio
         break;
       case 'plan_updated':
         // update_plan 落的最新整表：滚动区留一份全表（回看），实时区挂最新一份面板。
-        // 渲染器没有这个能力时（测试替身 / 自定义渲染器）安静跳过，不让事件桥崩掉
-        // （与 /reasoning 的 printReasoning 同一条防御）。
-        if (typeof renderer.printPlan === 'function') renderer.printPlan(data.items);
+        // **空表也是表**（整表替换语义）：模型显式清空计划时，实时区同步收起——
+        // 把它当 no-op 静默吞掉，模型的「没有计划了」就成了撒谎。
+        if (Array.isArray(data.items) && data.items.length > 0) renderer.printPlan(data.items);
         if (Array.isArray(data.items) && data.items.length > 0) {
           lastPlan = data.items;
-          if (typeof renderer.setLivePlan === 'function') renderer.setLivePlan(data.items, { active: runInFlight });
+          renderer.setLivePlan(data.items, { active: runInFlight });
+        } else {
+          lastPlan = null;
+          renderer.setLivePlan(null);
         }
         break;
       case 'activity_started':
@@ -967,7 +1035,7 @@ export function createEventRenderer({ renderer, label = activityLabel, onDecisio
         });
         // Run 结束保留计划（§4.2）：面板收成一行 chip，继续挂在实时区供回看；
         // 真正清空要等下一轮 run_started（口径 A）。
-        if (typeof renderer.setLivePlan === 'function') renderer.setLivePlan(lastPlan, { active: false });
+        renderer.setLivePlan(lastPlan, { active: false });
         break;
       }
       default:
@@ -1013,5 +1081,5 @@ export function createEventRenderer({ renderer, label = activityLabel, onDecisio
     return currentRunReasoning.length > 0 ? currentRunReasoning : null;
   }
 
-  return { handleEvent, wrapEventStoreFactory, lastReasoning };
+  return { handleEvent, wrapEventStoreFactory, lastReasoning, resetSessionState };
 }

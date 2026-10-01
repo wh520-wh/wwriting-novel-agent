@@ -1259,7 +1259,7 @@ test('read_skill 往返：拿到技能正文进工具结果，未知名拿到可
 
 // update_plan：活动行照常（started/finished + 结果摘要），紧随其后落一条 plan_updated
 // 携带整表；空表不落；工具校验失败不是 Run 失败（错误作为工具结果回传）。
-test('update_plan 工具：活动行之后落 plan_updated 整表，空表不落', async () => {
+test('update_plan 工具：活动行之后落 plan_updated 整表；空表也落（模型显式清空）', async () => {
   const { projectRoot, store, permissions, model } = await setup({ prefix: 'wwriting-loop-plan-', script: [
     { toolCalls: [{ id: 'c1', name: 'update_plan', arguments: JSON.stringify({ steps: [
       { summary: '通读前两章', status: 'completed' },
@@ -1284,11 +1284,13 @@ test('update_plan 工具：活动行之后落 plan_updated 整表，空表不落
 
   const events = await readEvents(store);
   const plans = events.filter((event) => event.type === 'plan_updated');
-  // 两次合法调用（1 次 3 步、1 次空表）只有非空那次落 plan_updated；第三次校验失败只落 activity_finished。
-  assert.equal(plans.length, 1);
+  // 两次合法调用都落 plan_updated（整表替换：空表 = 模型显式清空，绝不能静默 no-op）；
+  // 第三次校验失败只落 activity_finished。
+  assert.equal(plans.length, 2);
   assert.equal(plans[0].run_id, result.runId);
   assert.equal(plans[0].data.items.length, 3);
   assert.equal(plans[0].data.items[1].summary, '写第三章');
+  assert.deepEqual(plans[1].data.items, [], '空表照常落事件');
 
   // 顺序：plan_updated 紧跟在对应 activity_finished 之后（计划表画在活动行后面）。
   const types = events.map((event) => event.type);
