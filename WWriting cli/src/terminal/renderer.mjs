@@ -46,6 +46,9 @@ const TONE = Object.freeze({
   dim: STYLE.dim,
   strike: STYLE.strike,
   h1: `${STYLE.bold}${STYLE.underline}`,
+  // 计划条目：完成 = 压暗 + 删除线（§4.2「实心勾 + 步骤删除线」）；进行中 = 强调色 + 加粗。
+  done: `${STYLE.dim}${STYLE.strike}`,
+  active: `${STYLE.accent}${STYLE.bold}`,
 });
 
 // 用户行标记：与输入提示符是同一个字符，视觉上「这一行是我说的」。
@@ -88,9 +91,14 @@ const ACTIVITY_TONE = Object.freeze({ running: 'info', done: 'success', failed: 
 const PROSE_MARK = '▌';
 const PROSE_LEAD = `${PROSE_MARK} `;
 
-// 计划表的三态标记（对齐上游 §4.2：completed 实心勾 / in_progress 箭头圆 / pending 空圆）。
-const PLAN_MARK = Object.freeze({ completed: '✓', in_progress: '▶', pending: '○' });
+// 计划表的三态标记（对齐上游 §4.2：completed 实心勾 / in_progress 箭头圆 / pending 虚线圆）。
+// 这是「同一概念一处定义」的终端版：滚动区全表、实时区面板、/plan 回看三处共用。
+const PLAN_MARK = Object.freeze({ completed: '✓', in_progress: '▶', pending: '◌' });
 const PLAN_TONE = Object.freeze({ completed: 'success', in_progress: 'accent', pending: 'info' });
+// 条目文字的形态：完成 = 压暗 + 删除线（§4.2「步骤删除线」），进行中 = 强调色 + 加粗。
+const PLAN_TEXT_TONE = Object.freeze({ completed: 'done', in_progress: 'active', pending: null });
+// 实时区面板最多几条条目（不含标题行）；超出的收进一行「… 还有 N 步」。
+const LIVE_PLAN_MAX_ITEMS = 5;
 
 // 工具 → 人话标签（设计规格书 §4.3；count_text 是本项目特有的客观字数工具；
 // 极端工具按权限层的用词给中文，确认提示才不会出现「工具 delete_file」这种机器话）。
@@ -268,9 +276,9 @@ export function resolveColor({ color, env, stdout }) {
 // createRenderer({ stdout, color, env, composer })
 //   composer 可选：{ isActive?(), takeArea(), giveArea(), setLive(text) }，由 createInputReader 提供。
 //     isActive() 为真时屏幕上有一个输入框；takeArea/giveArea 必须成对出现。
-// 返回 { printIntro, printUser, printAssistant, printReasoning, printThinkingPreview,
-//        resetThinkingPreview, printActivity, printStatus, printQueue, printDecision,
-//        clearLive, close }。
+// 返回 { printIntro, printUser, printAssistant, printReasoning, printPlan, setLivePlan,
+//        printThinkingPreview, resetThinkingPreview, printActivity, printStatus, printQueue,
+//        printDecision, clearLive, close }。
 export function createRenderer({
   stdout,
   color,
@@ -292,6 +300,12 @@ export function createRenderer({
 
   let liveOpen = false; // 有一行「当前动态状态」还没被收尾
   let closed = false;
+  // 实时区里的任务面板：当前计划（null = 没有，不占行）与是否在跑（运行中展开面板，
+  // 空闲收成一行 chip）。对齐 §4.2 的顶栏常驻 chip：Run 结束保留供回看，新 Run 才清。
+  let livePlan = null;
+  let planActive = false;
+  let liveBody = null; // 当前动态行（活动行 / 思考预览）的已上色文本；与计划面板合成实时区
+  let lastLiveSet; // 上一次交给 setLive 的合成文本（去重；让位之后置回 undefined）
   // 正文渲染器（Markdown 增量）：半行、表格候选行由它攒着，能定的立刻吐出来。
   // 段首标记（▌）与续行缩进等宽，缩进/折行全在 markdown.mjs 里做，渲染器只负责写出。
   const md = createMarkdownWriter({
@@ -336,6 +350,8 @@ export function createRenderer({
         tookArea = true;
       }
       liveOpen = false; // 让位时输入区连同上方的实时行一起没了，那件事已经过去了
+      liveBody = null; // 实时区被物理擦掉：动态行不再算数，等下一次 drawLive 重新挂
+      lastLiveSet = undefined; // 输入层那侧的 live 也一并没了，去重记录跟着作废
       return;
     }
     if (liveOpen) {
@@ -349,6 +365,9 @@ export function createRenderer({
     if (!tookArea) return;
     tookArea = false;
     hook.giveArea();
+    // 写回之后再挂上剩下的实时内容：动态行归零了（openBlock 已清），但计划面板要常在——
+    // 「运行中面板 / 空闲 chip」的持久性靠这一步，而不是只在 setLivePlan 那一刻出现。
+    if (liveBody !== null || livePlan !== null) refreshLive();
   }
 
   // 动态行：此刻正在发生的事。有输入区时它贴在框的上方（输入层负责重画），
@@ -364,7 +383,8 @@ export function createRenderer({
     if (usingComposer()) {
       liveOpen = true;
       lastActivity = kept;
-      hook.setLive(body);
+      liveBody = body;
+      refreshLive();
       return;
     }
     if (liveOpen) write(ERASE_LINE);
@@ -374,18 +394,81 @@ export function createRenderer({
   }
 
   // 收掉动态行（Run 结束、确认答复等），保证不留下半行。
+  // 注意：任务面板不属于「动态行」——动态行没了它还在（Run 结束保留 chip 供回看，§4.2）。
   function endLive() {
     if (!liveOpen) return;
     liveOpen = false;
     const kept = lastActivity;
     if (usingComposer()) {
-      hook.setLive(null);
+      liveBody = null;
+      refreshLive();
       lastActivity = kept;
       return;
     }
     write(ERASE_LINE);
     lastActivity = kept;
   }
+
+  // 实时区合成：动态行在上、任务面板在下（与 CC 的 spinner 区同构：当前动作是标题，
+  // 计划是结构，都贴着输入框）。没有 composer（管道）时不合成——多行面板在直写流里擦不干净。
+  function refreshLive() {
+    if (!usingComposer()) return;
+    const lines = [];
+    if (liveBody !== null) lines.push(...liveBody.split('\n'));
+    if (livePlan !== null) lines.push(...planPanelLines());
+    hook.setLive(lines.length === 0 ? null : lines.join('\n'));
+  }
+
+  // 计划面板：运行中展开（标题 + 条目窗口），空闲收成一行 chip（§4.2 的顶栏 chip 形态）。
+  // 三态标记与条目形态与滚动区全表同源（PLAN_MARK / PLAN_TONE / PLAN_TEXT_TONE）。
+  function planPanelLines() {
+    const items = livePlan;
+    const width = proseRowWidth(stdout.columns);
+    const done = items.reduce((count, item) => (item?.status === 'completed' ? count + 1 : count), 0);
+    if (!planActive) {
+      // 空闲 chip：`任务计划 2/5 · 当前步骤`。补语单独截宽，标题与计数永远完整。
+      const headPlain = `任务计划 ${done}/${items.length}`;
+      const current = items.find((item) => item?.status === 'in_progress');
+      const tail = current && typeof current.summary === 'string' ? ` · ${current.summary}` : '';
+      const room = Math.max(0, width - displayWidth(headPlain));
+      return [`${paint('任务计划', 'strong')} ${paint(`${done}/${items.length}`, 'info')}${paint(clipToWidth(tail, room), 'info')}`];
+    }
+    const lines = [`${paint('任务计划', 'strong')} ${paint(`${done}/${items.length}`, 'info')}`];
+    const open = items.filter((item) => item?.status !== 'completed');
+    if (open.length === 0) {
+      lines.push(`  ${paint('✓', 'success')} ${paint('全部完成', 'done')}`);
+      return lines;
+    }
+    const collapsed = items.length - open.length;
+    if (collapsed > 1) lines.push(`  ${paint('✓', 'success')} ${paint(`已完成 ${collapsed} 步`, 'done')}`);
+    const room = Math.max(1, LIVE_PLAN_MAX_ITEMS - (lines.length - 1));
+    const shown = open.slice(0, Math.max(1, room - (open.length > room ? 1 : 0)));
+    for (const item of shown) lines.push(planItemLine(item, width));
+    const hidden = open.length - shown.length;
+    if (hidden > 0) lines.push(`  ${paint(`… 还有 ${hidden} 步`, 'info')}`);
+    return lines;
+  }
+
+  function planItemLine(item, width) {
+    const status = PLAN_MARK[item?.status] ? item.status : 'pending';
+    const summary = typeof item?.summary === 'string' ? item.summary : '';
+    // 先按纯文本截宽再上色：色彩转义不占列，但截宽函数数的是字符。
+    const plain = clipToWidth(summary, Math.max(1, width - 4));
+    return `  ${paint(PLAN_MARK[status], PLAN_TONE[status])} ${paint(plain, PLAN_TEXT_TONE[status] ?? PLAN_TONE[status])}`;
+  }
+
+  // 任务计划进实时区（事件桥与组合根调用）：items=null 清空（新 Run 开始），
+  // active 控制「运行中展开面板」还是「收成一行 chip」——Run 结束保留 chip 供回看。
+  function setLivePlan(items, { active = false } = {}) {
+    if (closed) return;
+    const next = Array.isArray(items) && items.length > 0 ? items : null;
+    const nextActive = next !== null && active === true;
+    if (next === livePlan && nextActive === planActive) return; // 幂等：没有变化就不动实时区
+    livePlan = next;
+    planActive = nextActive;
+    refreshLive();
+  }
+
 
   // 把待发正文里「已经完整的行」落盘。
   //   force=false（流式途中）：只落完整行，半行继续攒——绝不为了「早点显示」在句子中间断行。
@@ -556,7 +639,7 @@ export function createRenderer({
       const lines = all.length === 0 ? [''] : all;
       for (let index = 0; index < lines.length; index += 1) {
         const head = index === 0 ? `  ${paint(PLAN_MARK[status], PLAN_TONE[status])} ` : '    ';
-        write(`${head}${paint(lines[index], PLAN_TONE[status])}\n`);
+        write(`${head}${paint(lines[index], PLAN_TEXT_TONE[status] ?? PLAN_TONE[status])}\n`);
       }
     }
     closeBlock();
@@ -661,6 +744,7 @@ export function createRenderer({
     printAssistant,
     printReasoning,
     printPlan,
+    setLivePlan,
     printThinkingPreview,
     resetThinkingPreview,
     printActivity,
@@ -690,6 +774,8 @@ export function createEventRenderer({ renderer, label = activityLabel, onDecisio
   const pickerMode = typeof onDecision === 'function';
   // 排过队的输入：input_id → 原文。它们真正开跑时要补一行用户行（见 run_started）。
   const queuedInputs = new Map();
+  // 最近一份计划（plan_updated 的整表）：Run 结束时用它把实时区收成 chip 保留供回看（§4.2）。
+  let lastPlan = null;
   // 工具耗时使用事件时间戳，不依赖刷新时刻。
   let activityStartedAt = null;
   // /reasoning 只重放本进程已完成轮次；全文仍存于事件日志。
@@ -720,6 +806,9 @@ export function createEventRenderer({ renderer, label = activityLabel, onDecisio
         // 思考预览另起一段：上一轮被打断时留下的半段（还挂在 thinkingPreviewOn 上）
         // 绝不能接着算进这一轮，否则新用户的思考会从旧思考的尾巴后面长出来。
         renderer.resetThinkingPreview();
+        // 新 Run 清空上一轮计划（口径 A）：事件投影已清，实时区的面板同步收起。
+        lastPlan = null;
+        if (typeof renderer.setLivePlan === 'function') renderer.setLivePlan(null);
         renderer.printStatus('思考中');
         break;
       }
@@ -793,9 +882,14 @@ export function createEventRenderer({ renderer, label = activityLabel, onDecisio
         if (typeof data.text === 'string') renderer.printAssistant(data.text);
         break;
       case 'plan_updated':
-        // update_plan 落的最新整表。渲染器没有这个能力时（测试替身 / 自定义渲染器）
-        // 安静跳过，不让事件桥崩掉（与 /reasoning 的 printReasoning 同一条防御）。
+        // update_plan 落的最新整表：滚动区留一份全表（回看），实时区挂最新一份面板。
+        // 渲染器没有这个能力时（测试替身 / 自定义渲染器）安静跳过，不让事件桥崩掉
+        // （与 /reasoning 的 printReasoning 同一条防御）。
         if (typeof renderer.printPlan === 'function') renderer.printPlan(data.items);
+        if (Array.isArray(data.items) && data.items.length > 0) {
+          lastPlan = data.items;
+          if (typeof renderer.setLivePlan === 'function') renderer.setLivePlan(data.items, { active: runInFlight });
+        }
         break;
       case 'activity_started':
         activityStartedAt = eventMillis(event.at);
@@ -871,6 +965,9 @@ export function createEventRenderer({ renderer, label = activityLabel, onDecisio
           note: joinNotes([formatUsage(data.usage), formatCacheHit(data.usage)]),
           detail,
         });
+        // Run 结束保留计划（§4.2）：面板收成一行 chip，继续挂在实时区供回看；
+        // 真正清空要等下一轮 run_started（口径 A）。
+        if (typeof renderer.setLivePlan === 'function') renderer.setLivePlan(lastPlan, { active: false });
         break;
       }
       default:

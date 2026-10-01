@@ -1378,3 +1378,44 @@ test('裸启动是全新会话：屏幕上不重演任何历史（P23）', { tim
     await model.close();
   }
 });
+
+// Markdown 渲染与任务计划面板的端到端验收（§4.10 / §4.2）：假模型先 update_plan
+// （只读自动放行，无确认），再回一段带表格的正文。断言分两处：
+//   - 最终屏幕（scrollback）：表格按框线排版、单元格对齐；
+//   - 原始输出流：计划 chip「任务计划 1/2 · 写第三章」——它画在实时区，退出时会随
+//     输入区一起被清掉，最终屏幕上看不到，但「曾经画出来过」必须成立。
+test('表格按框线排版；任务计划以 chip 常驻实时区（§4.2 / §4.10）', { timeout: 90000 }, async () => {
+  const { appDataRoot, workspace } = await ownPaths('wwriting-accept-md-plan-');
+  const model = await startFakeModel(({ messages }) => (messages.some((message) => message.role === 'tool')
+    ? textTurn('| 人物 | 身份 | 字数 |\n|:-----|:----:|-----:|\n| 沈舟 | 书店老板 | 1200 |\n| 林晚 | 邮差 | 8 |\n\n先记下这两个人。\n')
+    : toolTurn({ name: 'update_plan', args: { steps: [
+      { summary: '通读前两章', status: 'completed' },
+      { summary: '写第三章', status: 'in_progress' },
+    ] } })));
+  await writeConfig(appDataRoot, model.baseUrl);
+
+  try {
+    const run = await runCliProcess({
+      mode: 'main',
+      appDataRoot,
+      cwd: workspace,
+      argv: ['--cwd', workspace, '按计划改这三章'],
+      lines: [{ await: '已完成', text: '/quit\r' }],
+    });
+    assert.equal(run.exitCode, 0, `应正常退出；stdout=${run.stdout} stderr=${run.stderr}`);
+    assert.ok(run.result, `应打印一行 JSON 结果；stdout=${run.stdout}`);
+    const shown = run.result.screen;
+
+    // 表格：框线 + 居中/右对齐（表头与两行数据）。
+    assert.ok(shown.includes('┌'), `表格上框线应在屏幕上：${shown}`);
+    assert.ok(shown.includes('│ 人物 │   身份   │ 字数 │'), `表头按列宽与对齐补齐：${shown}`);
+    assert.ok(shown.includes('│ 沈舟 │ 书店老板 │ 1200 │'), `数据行对齐：${shown}`);
+    assert.ok(shown.includes('│ 林晚 │   邮差   │    8 │'), `居中与右对齐各就各位：${shown}`);
+    // 计划：滚动区的全表也在（回看用）。
+    assert.ok(shown.includes('任务计划 1/2'), `计划进度：${shown}`);
+    // 实时区 chip：原始流里出现过「任务计划 1/2 · 写第三章」。
+    assert.ok(run.stdout.includes('任务计划 1/2 · 写第三章'), `chip 曾画在实时区：${run.stdout}`);
+  } finally {
+    await model.close();
+  }
+});

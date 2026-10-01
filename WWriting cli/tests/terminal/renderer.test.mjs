@@ -1387,7 +1387,21 @@ test('printPlan：标题带进度，三态标记各就各位，长步骤折行�
   assert.ok(rows.length > 4, '长步骤要折行而不是挤成一行');
   assert.match(rows[3], /^ {4}/, '折行续行对齐到正文列');
   const pendingRow = rows.find((row) => row.includes('检查衔接'));
-  assert.match(pendingRow, /^  ○ 检查衔接$/);
+  assert.match(pendingRow, /^  ◌ 检查衔接$/, 'pending 是虚线圆（§4.2）');
+});
+
+test('printPlan：完成项压暗加删除线、进行中加粗（§4.2 的条目形态）', () => {
+  const { renderer, stdout } = makeRenderer({ columns: 100, color: true });
+  renderer.printPlan([
+    { summary: '通读前两章', status: 'completed' },
+    { summary: '写第三章', status: 'in_progress' },
+    { summary: '检查衔接', status: 'pending' },
+  ]);
+  renderer.close();
+  const text = stdout.text();
+  assert.ok(text.includes('\x1b[2m\x1b[9m通读前两章'), '完成 = 压暗 + 删除线');
+  assert.ok(text.includes('\x1b[38;5;173m\x1b[1m写第三章'), '进行中 = 强调色 + 加粗');
+  assert.ok(text.includes('\x1b[38;5;246m检查衔接'), '未开始 = 常规压暗');
 });
 
 test('printPlan 空表与非法输入一个字节都不写', () => {
@@ -1417,6 +1431,86 @@ test('事件桥：渲染器没有 printPlan 能力时安静跳过，不崩', () 
   const bridge = createEventRenderer({ renderer: minimal });
   bridge.handleEvent({ type: 'plan_updated', at: '2026-10-01T00:00:00.000Z', data: { items: [{ summary: 'x' }] } });
   // 走到这里没抛就是通过。
+});
+
+// —— 实时区任务面板（运行中展开 / 空闲 chip / 新 Run 清空） ——
+
+test('实时区计划面板：运行中展开条目；Run 结束收成一行 chip 保留；新 Run 清空', () => {
+  const composer = makeFakeComposer();
+  const { renderer } = makeRenderer({ tty: true, env: { NO_COLOR: '1' }, composer });
+  const bridge = createEventRenderer({ renderer });
+
+  feed(bridge, 'run_started', { input_id: 'i-1', text: '改这三章' });
+  feed(bridge, 'plan_updated', {
+    items: [
+      { summary: '通读前两章', status: 'completed' },
+      { summary: '核对时间线', status: 'completed' },
+      { summary: '写第三章', status: 'in_progress' },
+      { summary: '检查衔接', status: 'pending' },
+    ],
+  });
+  const panel = composer.live;
+  assert.ok(panel.includes('任务计划 2/4'), '面板标题带进度');
+  assert.ok(panel.includes('已完成 2 步'), '完成项收成一行汇总（不逐条占行）');
+  assert.ok(panel.includes('▶ 写第三章'), '进行中项在面板里');
+  assert.ok(panel.includes('◌ 检查衔接'), '未开始项在面板里');
+
+  feed(bridge, 'run_completed', {});
+  const chip = composer.live;
+  assert.equal(chip.split('\n').length, 1, 'Run 结束收成一行 chip');
+  assert.ok(chip.includes('任务计划 2/4'), 'chip 保留供回看（§4.2）');
+  assert.ok(chip.includes('写第三章'), 'chip 带上当前步骤，一眼看到进度');
+
+  feed(bridge, 'run_started', { input_id: 'i-2', text: '继续' });
+  assert.equal(composer.live.includes('任务计划'), false, '新 Run 清空上一轮计划（口径 A）');
+  assert.ok(composer.live.includes('思考中'), '新 Run 的实时行照常是「思考中」');
+  renderer.close();
+});
+
+test('实时区计划面板：动态行在上、面板在下；完成全部时收一句「全部完成」', () => {
+  const composer = makeFakeComposer();
+  const { renderer } = makeRenderer({ tty: true, env: { NO_COLOR: '1' }, composer });
+  const bridge = createEventRenderer({ renderer });
+
+  feed(bridge, 'run_started', { input_id: 'i-1', text: '改这三章' });
+  feed(bridge, 'plan_updated', { items: [{ summary: '写第三章', status: 'in_progress' }] });
+  feed(bridge, 'activity_started', { tool: 'read_file', target: '第一章.md' });
+  const live = composer.live.split('\n');
+  assert.ok(live[0].includes('读取文件 第一章.md'), '动态行在上');
+  assert.ok(live[1].includes('任务计划 0/1'), '面板在下');
+
+  feed(bridge, 'plan_updated', { items: [{ summary: '写第三章', status: 'completed' }] });
+  assert.ok(composer.live.includes('全部完成'), '全部完成时收一句');
+  renderer.close();
+});
+
+test('实时区计划面板：多步超窗口时收进「… 还有 N 步」，已完成的收成一行汇总', () => {
+  const composer = makeFakeComposer();
+  const { renderer } = makeRenderer({ tty: true, env: { NO_COLOR: '1' }, composer });
+  const bridge = createEventRenderer({ renderer });
+
+  feed(bridge, 'run_started', { input_id: 'i-1', text: '长计划' });
+  const items = [];
+  for (let i = 1; i <= 12; i += 1) items.push({ summary: `第 ${i} 步`, status: 'completed' });
+  items.push({ summary: '正在做的一步', status: 'in_progress' });
+  feed(bridge, 'plan_updated', { items });
+  const panel = composer.live;
+  assert.ok(panel.includes('已完成 12 步'), '完成项汇总成一行');
+  assert.ok(panel.includes('正在做的一步'), '当前步骤必须在面板里');
+  assert.ok(panel.split('\n').length <= 7, '面板有行数上限');
+  renderer.close();
+});
+
+test('没有 composer（管道）时不合成面板：面板不写进直写流', () => {
+  const stdout = makeStdout({ tty: true });
+  const renderer = createRenderer({ stdout, env: { NO_COLOR: '1' } });
+  const bridge = createEventRenderer({ renderer });
+  feed(bridge, 'run_started', { input_id: 'i-1', text: '写' });
+  feed(bridge, 'plan_updated', { items: [{ summary: '写第三章', status: 'in_progress' }] });
+  renderer.close();
+  const text = screenText(stdout.text());
+  assert.ok(text.includes('任务计划 0/1'), '滚动区全表照常');
+  assert.equal(text.includes('▶ 写第三章\n任务计划'), false);
 });
 
 test('history_applied 带会话压缩事实：摘要覆盖与省略各说各的', () => {
