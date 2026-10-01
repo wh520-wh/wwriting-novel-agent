@@ -83,9 +83,12 @@ test('同样的内容得到同样的哈希，差一个字符就不同', () => {
 test('骨架照抄上游的六小节结构，且不预填任何内容', () => {
   assert.ok(PROJECT_MEMORY_SKELETON.startsWith('---\nschema_version: 1\n---\n'));
   assert.ok(PROJECT_MEMORY_SKELETON.includes('# WWriting 项目记忆'));
-  for (const section of ['## 项目定位', '## 当前有效要求', '## 权威文件', '## 当前进度', '## 持久事实', '## 待确认']) {
+  // 写作风格区（T4）：技能分区选型结果的落点（技能/修饰/流派三行），空区留给模型填。
+  for (const section of ['## 项目定位', '## 写作风格', '## 当前有效要求', '## 权威文件', '## 当前进度', '## 持久事实', '## 待确认']) {
     assert.ok(PROJECT_MEMORY_SKELETON.includes(section), `缺小节 ${section}`);
   }
+  const styleAt = PROJECT_MEMORY_SKELETON.indexOf('## 写作风格');
+  assert.ok(styleAt > PROJECT_MEMORY_SKELETON.indexOf('## 项目定位') && styleAt < PROJECT_MEMORY_SKELETON.indexOf('## 当前有效要求'), '风格区属于「这部作品是什么」，紧跟项目定位');
   // R13：这两行**不是**逐字来自上游。上游 renderInitialProjectMemory 只在 title / positioning
   // 非空时才输出 `- 项目：<值>`，两值为空时那两行变成 ""，再被 project-memory.mjs:54 的
   // .filter() 折叠掉——上游的空骨架里根本没有它们。本项目刻意保留空行：

@@ -182,11 +182,13 @@ export const STYLE_SELECTION_RULE =
 
 // 目录标签映射：按 metadata.wwriting.category 三轴贴标签，
 // 无 category（null/未知）的技能不带标签。冻结对象避免运行时被意外改动。
-const CATEGORY_TAGS = Object.freeze({
+// 导出给 /skills 命令复用——提示词与命令行说的是同一套标签。
+export const SKILL_CATEGORY_TAGS = Object.freeze({
   'writing-style': '基座',
   'style-modifier': '修饰',
   genre: '流派',
 });
+const CATEGORY_TAGS = SKILL_CATEGORY_TAGS;
 
 // 只注入 name/description 摘要，绝不注入 SKILL.md 正文（完整指令由 read_skill
 // 按需读取）。无技能或全部条目无效时返回空串（不制造占位文案）；选择规则只在

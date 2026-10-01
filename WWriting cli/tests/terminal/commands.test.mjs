@@ -1205,3 +1205,87 @@ test('/model 无交互回显：模型名那格是 API Key 时只给脱敏串（K
   assert.ok(dump.includes('模型名那一行看起来是 API Key'), '要点名这一格写坏了');
   assert.ok(!dump.includes('stuck0000000000KEY'), '那一格里的 Key 不得明文上屏');
 });
+
+// —— /skills：技能清单只读列出（T4；来源标签照桌面版，零选择交互）——
+
+test('/skills：无技能时给空态与可执行的指引', async () => {
+  const renderer = makeRenderer();
+  const handler = makeHandler({ renderer, skills: { list: async () => ({ active: [], shadowed: [], errors: [] }) } });
+
+  await handler.handle('/skills');
+
+  const status = pick(renderer.calls, 'status').at(-1);
+  assert.equal(status[1], '未发现技能。');
+  assert.match(String(status[2]?.detail ?? ''), /skills/);
+});
+
+test('/skills：生效技能一行一个，分类带标签、来源与描述齐全', async () => {
+  const renderer = makeRenderer();
+  const handler = makeHandler({
+    renderer,
+    skills: {
+      list: async () => ({
+        active: [
+          { name: 'genre-suspense', description: '悬疑流派公约', category: 'genre', source: 'builtin' },
+          { name: 'my-style', description: '自建风格', category: null, source: 'project' },
+          { name: 'shared', description: '全局版', category: 'writing-style', source: 'global' },
+        ],
+        shadowed: [],
+        errors: [],
+      }),
+    },
+  });
+
+  await handler.handle('/skills');
+
+  const lines = pick(renderer.calls, 'status').map(([, line]) => String(line));
+  assert.ok(lines.some((line) => line === '生效 3'));
+  assert.ok(lines.some((line) => line === '- [流派] genre-suspense（内置）：悬疑流派公约'));
+  assert.ok(lines.some((line) => line === '- my-style（项目）：自建风格'), '无分类不带标签');
+  assert.ok(lines.some((line) => line === '- [基座] shared（全局）：全局版'));
+});
+
+test('/skills：被覆盖与解析失败各自成组，覆盖文案照桌面版', async () => {
+  const renderer = makeRenderer();
+  const handler = makeHandler({
+    renderer,
+    skills: {
+      list: async () => ({
+        active: [{ name: 'demo', description: '生效包', category: null, source: 'project' }],
+        shadowed: [{ name: 'show-dont-tell', description: '旧包', category: null, source: 'builtin' }],
+        errors: [{ dir: '/tmp/x/bad-skill', error: 'SKILL.md frontmatter 解析失败: 意外结束' }],
+      }),
+    },
+  });
+
+  await handler.handle('/skills');
+
+  const lines = pick(renderer.calls, 'status').map(([, line]) => String(line));
+  assert.ok(lines.some((line) => line === '生效 1'));
+  assert.ok(lines.some((line) => line === '被覆盖 1'));
+  assert.ok(lines.some((line) => line === 'show-dont-tell（内置）：被更高优先级同名技能覆盖，不生效。'));
+  assert.ok(lines.some((line) => line === '解析失败 1'));
+  assert.ok(lines.some((line) => line === 'bad-skill：SKILL.md frontmatter 解析失败: 意外结束'));
+});
+
+test('/skills：清单读不出来时报一条错误事实，不静默', async () => {
+  const renderer = makeRenderer();
+  const handler = makeHandler({ renderer, skills: { list: async () => { throw new Error('磁盘坏了'); } } });
+
+  await handler.handle('/skills');
+
+  const status = pick(renderer.calls, 'status').at(-1);
+  assert.equal(status[1], '读取失败');
+  assert.equal(status[2].tone, 'error');
+});
+
+test('/skills 未注入取值口时如实说暂不支持', async () => {
+  const renderer = makeRenderer();
+  const handler = makeHandler({ renderer });
+
+  await handler.handle('/skills');
+
+  const status = pick(renderer.calls, 'status').at(-1);
+  assert.equal(status[1], '暂不支持查看技能。');
+  assert.equal(status[2].tone, 'warn');
+});

@@ -13,6 +13,8 @@ import { EFFORT_LEVELS, parseEffortArg, unsupportedEffortReason } from '../model
 import { fact } from '../fact.mjs';
 import { versionLine } from '../version.mjs';
 import { padDisplayEnd } from './metrics.mjs';
+// 技能目录的标签映射只有一份：agent-loop（提示词层）是权威，/skills 的列法照抄它。
+import { SKILL_CATEGORY_TAGS } from '../agent/agent-loop.mjs';
 // 确认的作答语义（选项表 / 文本翻译 / 「确认已失效」那句事实）只有一份：decisions.mjs。
 // 这里的文字作答与确认卡的方向键作答共用同一张翻译表。
 import { choiceFor, reportStaleDecision } from './decisions.mjs';
@@ -56,6 +58,7 @@ export const HELP_COMMANDS = Object.freeze([
   ['/effort', '思考强度：/effort none|low|high|max|自动'],
   ['/reasoning', '查看上一轮的思考全文'],
   ['/sessions', '查看会话列表'],
+  ['/skills', '查看已发现的技能'],
   ['/resume', '切换会话：/resume <会话 ID>'],
   ['/now', '提升队首输入，打断当前这一轮'],
   ['/stop', '停止当前这一轮'],
@@ -151,6 +154,7 @@ export function createCommandHandler({
   model = {},
   effort = null,
   getReasoning = null,
+  skills = null,
 } = {}) {
   if (typeof getController !== 'function') throw new Error('命令层需要 getController 才能触达同一个 run controller。');
   if (!renderer) throw new Error('命令层需要可用的渲染器。');
@@ -166,6 +170,7 @@ export function createCommandHandler({
   const effortState = effort !== null && typeof effort.set === 'function' ? effort : null;
   const readReasoning = typeof getReasoning === 'function' ? getReasoning : null;
   const chooseSession = typeof pickSession === 'function' ? pickSession : null;
+  const listSkills = skills !== null && typeof skills.list === 'function' ? skills.list : null;
 
   function reply(text, options = {}) {
     renderer.printStatus(text, { final: true, ...options });
@@ -466,6 +471,52 @@ export function createCommandHandler({
     }
   }
 
+  // /skills：技能清单只读列出。纯信息输出，没有任何选择交互（铁律 1/11）；
+  // 技能怎么装/删 = 往目录里放/删文件夹（ADR-0013，v1 不做导入/删除命令）。
+  // 来源标签照桌面版：项目 / 全局 / 随应用分发 / 内置。
+  const SKILL_SOURCE_LABELS = Object.freeze({ project: '项目', global: '全局', bundled: '随应用分发', builtin: '内置' });
+  async function runSkillsCommand() {
+    if (listSkills === null) {
+      reply('暂不支持查看技能。', { tone: 'warn' });
+      return;
+    }
+    let catalog;
+    try {
+      catalog = await listSkills();
+    } catch (error) {
+      reply('读取失败', { tone: 'error', detail: fact(error) });
+      return;
+    }
+    const active = Array.isArray(catalog?.active) ? catalog.active : [];
+    const shadowed = Array.isArray(catalog?.shadowed) ? catalog.shadowed : [];
+    const errors = Array.isArray(catalog?.errors) ? catalog.errors : [];
+    if (active.length === 0 && shadowed.length === 0 && errors.length === 0) {
+      reply('未发现技能。', { detail: '把技能文件夹放进 ~/.wwriting/skills 或项目 skills/ 目录即生效。' });
+      return;
+    }
+    if (active.length > 0) {
+      reply(`生效 ${active.length}`);
+      for (const skill of active) {
+        const tag = SKILL_CATEGORY_TAGS[skill?.category ?? ''];
+        const label = tag ? `- [${tag}] ${skill.name}` : `- ${skill.name}`;
+        reply(`${label}（${SKILL_SOURCE_LABELS[skill?.source] ?? skill?.source ?? '未知'}）：${typeof skill?.description === 'string' ? skill.description : ''}`);
+      }
+    }
+    if (shadowed.length > 0) {
+      reply(`被覆盖 ${shadowed.length}`);
+      for (const skill of shadowed) {
+        reply(`${skill?.name}（${SKILL_SOURCE_LABELS[skill?.source] ?? skill?.source ?? '未知'}）：被更高优先级同名技能覆盖，不生效。`);
+      }
+    }
+    if (errors.length > 0) {
+      reply(`解析失败 ${errors.length}`);
+      for (const item of errors) {
+        const name = String(item?.dir ?? '').split(/[\\/]/u).pop();
+        reply(`${name}：${item?.error ?? '解析失败'}`);
+      }
+    }
+  }
+
   async function runResumeCommand(args) {
     if (typeof resumeSession !== 'function') {
       reply('暂不支持切换会话。', { tone: 'warn' });
@@ -597,6 +648,9 @@ export function createCommandHandler({
         return 'handled';
       case 'sessions':
         await runSessionsCommand();
+        return 'handled';
+      case 'skills':
+        await runSkillsCommand();
         return 'handled';
       case 'resume':
         await runResumeCommand(parsed.args);
