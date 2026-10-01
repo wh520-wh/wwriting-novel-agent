@@ -5,6 +5,9 @@
 import {
   clipToWidth, displayWidth, padDisplayEnd, resolveColumns, takeProseRows,
 } from './metrics.mjs';
+// 工具 → 人话标签的表住在 tools/tool-catalog.mjs（与 schema/方法名同一处定义，
+// 新增工具只改一处）；这里只保留「标签 → 活动行文案」的拼装。
+import { TOOL_LABELS } from '../tools/tool-catalog.mjs';
 
 const ESC = '\x1b[';
 export const STYLE = Object.freeze({
@@ -71,30 +74,6 @@ export function paintText(text, tone = 'info', useColor = false) {
   const style = TONE[tone] ?? '';
   return useColor ? `${style}${text}${STYLE.reset}` : text;
 }
-
-// 工具 → 人话标签（设计规格书 §4.3；count_text 是本项目特有的客观字数工具；
-// 极端工具按权限层的用词给中文，确认提示才不会出现「工具 delete_file」这种机器话）。
-const TOOL_LABELS = Object.freeze({
-  list_files: '查看文件列表',
-  read_file: '读取文件',
-  search_files: '搜索文件',
-  write_file: '写入文件',
-  edit_file: '修改文件',
-  count_text: '统计字数',
-  read_skill: '读取技能',
-  update_plan: '更新计划',
-  append_chapter_segment: '写入章节内容',
-  commit_chapter: '提交章节',
-  rollback_chapter: '回滚章节',
-  read_continuity: '读取前情',
-  style_stats: '统计文风',
-  delete_file: '删除文件',
-  delete_dir: '删除目录',
-  clear_session: '清空会话',
-  clear_history: '清空历史',
-  reset_session: '重置会话',
-  run_command: '运行命令',
-});
 
 // 活动行标签：有目标就带上目标，未知工具退回「工具 <name>」，不要静默吞掉信息。
 export function activityLabel(tool, target = null) {
