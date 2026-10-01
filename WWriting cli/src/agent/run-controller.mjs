@@ -437,6 +437,22 @@ export function createRunController({
     return structuredClone(session.projection);
   }
 
+  // 「忙不忙」的**唯一口径**。忙碌 = drain 在跑（含轮与轮之间的间隙：下一条随时开跑）或
+  // 当前有活跃轮。它比「投影里 active_run_id 非空」宽：占位（draining=true）先于 run_started
+  // 落盘，收敛晚于 run_completed——拿投影自己猜的调用方会在这些窗口里得出相反的答案。
+  // 未打开会话返回 false 而不是抛：这只读判断没有理由要求先开工。
+  function isBusy() {
+    return draining || active !== null;
+  }
+
+  // 投影里的活跃轮 ID（D14「有活动轮先停」用的口径：真在跑的那一轮，轮间隙不算）。
+  // 未打开会话返回 null 而不是抛——想停一个不存在的轮本来就是空操作，不是错误。
+  function activeRunId() {
+    if (!session) return null;
+    const runId = session.projection.active_run_id;
+    return typeof runId === 'string' && runId !== '' ? runId : null;
+  }
+
   // 只读取本会话的事件日志。**不取锁、不写盘、不走写入尾链**：
   // 与 loadHistory 读的是同一个 `session.eventStore`（不是 serializedEventStore 那个包装），
   // 因为 readAll 是纯只读，与写入并发是安全的；用包装版反而会排在「正在跑的轮」的写之后互相等待。
@@ -449,5 +465,5 @@ export function createRunController({
     return events;
   }
 
-  return { open, submit, stop, requestPriority, decide, snapshot, readEvents, close, permissions: perm };
+  return { open, submit, stop, requestPriority, decide, snapshot, isBusy, activeRunId, readEvents, close, permissions: perm };
 }

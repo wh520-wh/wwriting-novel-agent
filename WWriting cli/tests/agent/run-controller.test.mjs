@@ -1193,3 +1193,65 @@ test('一轮抛错后补发 run_interrupted 收敛未闭合的 run（不留下�
   }
 });
 
+
+// —— 忙碌口径：isBusy / activeRunId ——
+// 「忙不忙」过去由调用方各自从 snapshot().active_run_id 猜（cli 的菜单让位、命令层的
+// Ctrl+C），与控制器内部 drain 占位用的判据不是同一份。收口后：口径只有控制器里有。
+
+test('isBusy / activeRunId：跑轮中忙、收敛后空闲', async () => {
+  const root = await makeTempRoot('wwriting-ctrl-busy-');
+  const projectRoot = path.join(root, 'novel');
+  const loop = makeLoopFactory({ script: ['hold'] });
+  const { controller } = await makeController({ root, projectRoot, agentLoopFactory: loop.factory });
+
+  // 开跑前：不忙、无活跃轮。
+  assert.equal(controller.isBusy(), false);
+  assert.equal(controller.activeRunId(), null);
+
+  const pending = controller.submit({ text: '第一轮' });
+  await waitFor(() => controller.activeRunId() !== null, { label: 'run_started 落盘' });
+  assert.equal(controller.isBusy(), true);
+  assert.equal(controller.activeRunId(), 'run-1');
+
+  loop.release(0);
+  await pending;
+  await waitFor(() => controller.isBusy() === false, { label: 'drain 收敛' });
+  assert.equal(controller.activeRunId(), null);
+  await controller.close();
+});
+
+test('isBusy：drain 在跑（哪怕轮与轮的间隙）就算忙，队列挂着一动不动不算', async () => {
+  const root = await makeTempRoot('wwriting-ctrl-busy-queue-');
+  const projectRoot = path.join(root, 'novel');
+  const loop = makeLoopFactory({ script: ['hold'] });
+  const { controller } = await makeController({ root, projectRoot, agentLoopFactory: loop.factory });
+
+  const first = controller.submit({ text: '第一轮' });
+  await waitFor(() => controller.activeRunId() !== null, { label: '第一轮开跑' });
+  controller.submit({ text: '第二轮' });
+  // drain 占位期间：忙。
+  assert.equal(controller.isBusy(), true);
+
+  // 停掉当前轮：drain 收敛，队列还挂着第二条，但「忙」已经结束——
+  // 下一次 submit 或 立即 才会重新开跑，此刻没有任何会弹权限卡的东西在飞。
+  controller.stop();
+  await first;
+  await waitFor(() => controller.isBusy() === false, { label: 'drain 收敛' });
+  assert.equal(controller.activeRunId(), null);
+  assert.ok(controller.snapshot().queue.length > 0, '队列应原样保留');
+  assert.equal(controller.isBusy(), false);
+  await controller.close();
+});
+
+test('isBusy / activeRunId：未打开会话也能安全读（不许抛）', () => {
+  // 未打开路径不触盘，管理器用临时目录占位即可。
+  const manager = makeManager(os.tmpdir());
+  const controller = createRunController({
+    sessionManager: manager,
+    projectRoot: 'unused',
+    clock: makeClock(),
+    idFactory: makeIdFactory('run'),
+  });
+  assert.equal(controller.isBusy(), false);
+  assert.equal(controller.activeRunId(), null);
+});
