@@ -386,6 +386,9 @@ export function assemblePrompt({
   // AGENTS.md 不存在时 Project Instructions 为空、WWRITING.md 缺失时 Project
   // Memory 为空、无技能时目录块为空：不制造占位文案（直接跳过空层）
   const ledgerDriftText = buildLedgerDriftNote(runtime?.ledgerDrift);
+  // 记忆三件套传感器注记（run 收尾检出，见 run-lifecycle.senseMemoryMaintenanceLag）：
+  // 只告知"没跟上"，不改变三件套的自主维护性质。
+  const memoryLagText = buildMemoryLagNote(runtime?.memoryMaintenanceLag);
   const systemContent = [
     staticCoreText,
     runtimePolicyText,
@@ -393,7 +396,8 @@ export function assemblePrompt({
     projectMemoryText,
     skillCatalogText,
     taskPolicyText,
-    ledgerDriftText
+    ledgerDriftText,
+    memoryLagText
   ]
     .filter((text) => text.length > 0)
     .join("\n\n");
@@ -430,4 +434,11 @@ export function assemblePrompt({
     tools: Array.isArray(tools) && tools.length > 0 ? tools : undefined,
     toolChoice: "auto"
   };
+}
+
+// 记忆三件套传感器注记（run 收尾检出，只读不拦截）：文件没跟上最后一次章节
+// 生效时告知模型，维护义务本身仍是模型自主行为（第九轮决策不变）。
+function buildMemoryLagNote(lag) {
+  if (!lag || !Array.isArray(lag.files) || lag.files.length === 0) return "";
+  return `[Memory Maintenance] 最后一次章节生效（${lag.at}）后，记忆三件套中的 ${lag.files.join("、")} 没有更新。请先完成 update_memory 并补齐这两个文件的对应记录，再继续其他工作。`;
 }

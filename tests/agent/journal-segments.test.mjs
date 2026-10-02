@@ -693,3 +693,42 @@ test("回归·索引滞后且有 offsets 缺口时 load 校正真实尾部并续
     "append 应从真实尾部（seq 13）续接，不报缺口"
   );
 });
+
+test("restoreGeneration 目标非空时拒绝改写 manifest：源目录保留，不猜测销毁数据", async (t) => {
+  const root = await makeRoot(t, "restore-nonempty-target");
+  const eventsRoot = path.join(root, "events");
+  const manifestPath = path.join(root, "journal-manifest.json");
+  const store = createJournalSegmentStore({
+    root: eventsRoot,
+    streamName: "events",
+    manifestPath,
+    maxSegmentRecords: 4,
+    maxSegmentBytes: 512,
+    indexStride: 2
+  });
+  await store.load();
+  await store.append(events(1, 3));
+  const oldGenerationId = store.manifest.generation_id;
+  const historyDir = path.join(root, "cleared-history", "ts");
+  await store.startGeneration({ historyDir, reason: "user_clear", oldGenerationId });
+
+  // 目标非空：轮转后原位目录里已有新数据（模拟 rename 失败前已发生真实写入），
+  // 移回旧目录会覆盖它。
+  await store.append(events(1, 1));
+
+  await assert.rejects(
+    store.restoreGeneration({ fromDir: historyDir, generationId: oldGenerationId }),
+    /非空/u
+  );
+  // manifest 不被改写成"已恢复"：generation_id 仍是新 id，旧记录不被移除
+  const manifestOnDisk = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+  assert.notEqual(manifestOnDisk.generation_id, oldGenerationId);
+  assert.ok(
+    (manifestOnDisk.generations ?? []).some((g) => g.generation_id === oldGenerationId && g.stream === "events"),
+    "旧 generation 记录必须保留（数据仍在源目录）"
+  );
+  // 源目录保留供人工恢复；store 对新 generation 仍可追加
+  assert.equal(await pathExists(path.join(historyDir, `${oldGenerationId}-events`)), true);
+  await store.append(events(2, 3));
+  assert.equal((await store.readTail({ limit: 10 })).events.length, 3);
+});

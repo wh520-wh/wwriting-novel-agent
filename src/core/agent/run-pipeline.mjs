@@ -324,12 +324,20 @@ async function processInput(state, sessionState, runId, inputId, inputText) {
       console.warn(
         `[agent] 账本漂移检测失败（尽力而为）: ${driftError?.message ?? String(driftError)}`
       );
+      // 检测失败 ≠ 检测通过：注入哨兵条目，prompt 注记明确告知"没检测成"
+      //（buildLedgerDriftNote 分支渲染），不让模型把空结果当成"确认一致"。
+      ledgerDrift = [{ issue: "drift_check_unavailable", message: driftError?.message ?? String(driftError) }];
     }
     // Task 6：每个模型轮重新读取 WWRITING.md（新对话、上下文压缩后的下一轮、
     // 模型切换、retry 和应用重启都会重新读取）。readProjectMemory 容错：缺失
     // 返回空、不可读返回 unreadable 标记，绝不阻止 prompt、不把全文永久缓存到
     // ensureProject() state。
     const projectMemory = await readProjectMemory(state.key);
+    // 记忆三件套传感器的待注入注记：读出即清除（注入一次；下次章节生效后
+    // 传感器在 Run 收尾重新评估）。注入失败/轮次中断时信号丢失是可接受上限——
+    // 下一次 commit 循环会重新检出。
+    const memoryMaintenanceLag = state.memoryMaintenanceLag;
+    state.memoryMaintenanceLag = null;
     const request = assemblePrompt({
       runtime: {
         absoluteProjectRoot: state.key,
@@ -343,7 +351,8 @@ async function processInput(state, sessionState, runId, inputId, inputText) {
         status: run.status,
         interruptRequested: run.status === "interrupting",
         budget: {},
-        ledgerDrift
+        ledgerDrift,
+        memoryMaintenanceLag
       },
       projectInstructions: await readProjectInstructions(state.key),
       projectMemory,

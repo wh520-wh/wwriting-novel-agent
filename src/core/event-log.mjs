@@ -28,29 +28,50 @@ export async function readEvents(projectRoot, options = {}) {
     return [];
   }
 
-  let skipped_lines = 0;
+  let skipped_tail = 0;   // 文件末尾未终结行：写入中断的容忍场景
+  let skipped_middle = 0; // 中间行损坏：真实数据丢失，必须落审计事件
 
-  // Helper to safely parse a JSON line
-  function tryParse(line) {
+  // isTail：该行是否为文件末尾的未终结行（无换行结尾时的最后一行）。
+  function tryParse(line, isTail = false) {
     try {
       return JSON.parse(line);
     } catch {
-      skipped_lines++;
+      if (isTail) skipped_tail++;
+      else skipped_middle++;
       return null;
+    }
+  }
+
+  // 损坏上报：中间行 skipped>0 时把事件落进 run_log.jsonl 自身（审计可发现）。
+  // 只上报、不修复；追加失败不影响读取。
+  async function reportCorruption() {
+    if (skipped_middle === 0) return;
+    try {
+      await appendEvent(projectRoot, {
+        type: "event_log_corruption",
+        severity: "warning",
+        message: `run_log.jsonl 中间行损坏 ${skipped_middle} 行（非尾部写入中断），读取时已跳过`,
+        data: { skipped_middle, skipped_tail }
+      });
+    } catch {
+      // 审计文件自身不可写时静默（console.warn 仍在下方保留）
     }
   }
 
   // No limit = full read (backward compatible)
   if (!options.limit) {
-    const lines = (await fs.readFile(logPath, "utf8")).split(/\r?\n/u).filter(Boolean);
+    const content = await fs.readFile(logPath, "utf8");
+    const lines = content.split(/\r?\n/u).filter(Boolean);
+    const endsWithNewline = content.endsWith("\n");
     const events = [];
-    for (const line of lines) {
-      const parsed = tryParse(line);
+    for (let i = 0; i < lines.length; i++) {
+      const parsed = tryParse(lines[i], !endsWithNewline && i === lines.length - 1);
       if (parsed !== null) events.push(parsed);
     }
-    if (skipped_lines > 0) {
-      console.warn(`[event-log] readEvents: skipped ${skipped_lines} malformed line(s) in ${logPath}`);
+    if (skipped_tail + skipped_middle > 0) {
+      console.warn(`[event-log] readEvents: skipped ${skipped_tail + skipped_middle} malformed line(s) in ${logPath}`);
     }
+    await reportCorruption();
     return events;
   }
 
@@ -65,6 +86,8 @@ export async function readEvents(projectRoot, options = {}) {
     const lines = [];
     let position = fileSize;
     let remainder = "";
+    let tailHasNewline = null; // 文件是否以换行结尾（首块覆盖文件尾，读入时判定）
+    let firstChunk = true;
 
     while (lines.length < options.limit && position > 0) {
       const readSize = Math.min(CHUNK_SIZE, position);
@@ -72,6 +95,11 @@ export async function readEvents(projectRoot, options = {}) {
       const buffer = Buffer.alloc(readSize);
       await handle.read(buffer, 0, readSize, position);
       const chunk = buffer.toString("utf8");
+      if (firstChunk) {
+        // 首块从文件末尾读起：其结尾即文件结尾（\n 单字节，不受多字节截断影响）
+        tailHasNewline = chunk.endsWith("\n");
+        firstChunk = false;
+      }
       const combined = chunk + remainder;
       const parts = combined.split(/\r?\n/u);
       remainder = parts.shift();
@@ -87,14 +115,16 @@ export async function readEvents(projectRoot, options = {}) {
     }
 
     const events = [];
-    for (const line of lines) {
-      const parsed = tryParse(line);
+    for (let i = 0; i < lines.length; i++) {
+      // lines 的最后一个元素恒为文件末行（或其末段）：无换行结尾时按尾行容忍
+      const parsed = tryParse(lines[i], !tailHasNewline && i === lines.length - 1);
       if (parsed !== null) events.push(parsed);
     }
 
-    if (skipped_lines > 0) {
-      console.warn(`[event-log] readEvents: skipped ${skipped_lines} malformed line(s) in ${logPath}`);
+    if (skipped_tail + skipped_middle > 0) {
+      console.warn(`[event-log] readEvents: skipped ${skipped_tail + skipped_middle} malformed line(s) in ${logPath}`);
     }
+    await reportCorruption();
 
     return events;
   } finally {

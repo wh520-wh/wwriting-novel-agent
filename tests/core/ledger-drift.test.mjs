@@ -57,3 +57,16 @@ test("buildLedgerDriftNote：无漂移返回空串；有漂移渲染可行动提
   assert.ok(note.includes("第 3 章") && note.includes("第 5 章"), "提示必须列出章节号");
   assert.ok(note.includes("finalize_revision"), "提示必须给出可行动通道");
 });
+
+test("buildLedgerDriftNote：检测失败哨兵渲染「不可用」注记，不误报章节列表", () => {
+  const note = buildLedgerDriftNote([{ issue: "drift_check_unavailable", message: "索引损坏" }]);
+  assert.ok(note.includes("不可用"), "必须告知本次没检测成，防止空结果被当成确认一致");
+  assert.ok(!note.includes("第 "), "哨兵条目不得渲染成章节列表");
+  // 真实漂移与哨兵并存：两条注记都在
+  const both = buildLedgerDriftNote([
+    { chapter_no: 2, issue: "checksum_mismatch" },
+    { issue: "drift_check_unavailable" }
+  ]);
+  assert.ok(both.includes("第 2 章"), "真实漂移照常列出");
+  assert.ok(both.includes("不可用"), "检测不可用照常告知");
+});

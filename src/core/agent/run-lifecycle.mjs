@@ -21,6 +21,9 @@
 // 项目覆盖而读错状态。
 import { TERMINAL_RUN_STATUSES } from "./journal.mjs";
 import { codedError as fail, sleep } from "./agent-utils.mjs";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { appendEvent } from "../event-log.mjs";
 
 const IDLE_WAIT_TIMEOUT_MS = 60000;
 
@@ -314,6 +317,52 @@ export function createRunLifecycle(ctx) {
   // 条件后 advanceOrComplete 追加 run_completed。
   // -------------------------------------------------------------------------
 
+  // 记忆三件套传感器（只读不拦截，第九轮"模型自主维护"决策不变）：Run 收尾时
+  // 比对最后一次章节生效（commit_chapter / finalize_revision / rollback_chapter
+  // 工具完成事件）时间与 WORKLOG.md / book_summary.md 的 mtime——没跟上就落
+  // run_log 审计事件并把注记挂到 state.memoryMaintenanceLag（下一轮 prompt
+  // 注入一次即清除）。任何失败只告警，绝不影响 Run 收尾。
+  // ponytail: 只扫 journal 尾部 500 条找章节生效事件；超过 500 条未提交即跳过
+  // 本轮检测（下一次 commit 会重新进入尾部窗口），不为此做全量扫描。
+  const CHAPTER_MUTATION_TOOLS = new Set(["commit_chapter", "finalize_revision", "rollback_chapter"]);
+  async function senseMemoryMaintenanceLag() {
+    try {
+      const { events } = await getSessionState().journal.readTail({ limit: 500 });
+      let lastMutationAt = null;
+      for (let i = events.length - 1; i >= 0; i--) {
+        const event = events[i];
+        if (event?.type === "tool_call_completed" && CHAPTER_MUTATION_TOOLS.has(event.payload?.name)) {
+          lastMutationAt = event.at ?? null;
+          break;
+        }
+      }
+      if (!lastMutationAt) return;
+      const commitTime = Date.parse(lastMutationAt);
+      if (!Number.isFinite(commitTime)) return;
+      const lagging = [];
+      for (const file of ["WORKLOG.md", "book_summary.md"]) {
+        let mtimeMs = null;
+        try {
+          mtimeMs = (await fs.stat(path.join(getState().key, file))).mtimeMs;
+        } catch {
+          mtimeMs = null; // 文件缺失 = 没维护
+        }
+        if (mtimeMs === null || mtimeMs < commitTime) lagging.push(file);
+      }
+      if (lagging.length === 0) return;
+      const lag = { at: lastMutationAt, files: lagging };
+      await appendEvent(getState().key, {
+        type: "memory_maintenance_lag",
+        severity: "warning",
+        message: `章节记忆三件套未跟上最后一次章节生效（${lastMutationAt}）：${lagging.join("、")}`,
+        data: lag
+      });
+      getState().memoryMaintenanceLag = lag;
+    } catch (error) {
+      console.warn(`[agent] 记忆三件套传感器失败（尽力而为）: ${error?.message ?? String(error)}`);
+    }
+  }
+
   // 输入完成后的队列推进 / Run 终结：在项目互斥锁内完成读-判-写，杜绝与 submit
   // 的竞态（submit 恰落在「队列判空」与「run_completed 落盘」之间时，新输入会
   // 滞留跨 Run 边界）。返回 "advance" | "compact" | "completed" | "interrupting"
@@ -367,6 +416,7 @@ export function createRunLifecycle(ctx) {
         return "advance";
       }
       await getSessionState().journal.append({ type: "run_completed", run_id: runId, payload: {} });
+      await senseMemoryMaintenanceLag();
       return "completed";
     });
   }

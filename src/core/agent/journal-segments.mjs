@@ -881,6 +881,7 @@ export function createJournalSegmentStore({
   // segments 目录移回原位置，移除本流在 manifest 中的轮转记录并恢复旧
   // generation_id（双流共享 manifest，两次 restore 写同一 oldId，幂等），重置
   // store 内存状态并重新加载。未实际轮转过的流调用它只做 manifest 对齐 + 重载。
+  // 目标目录非空（移回会覆盖未知数据）时抛错：不改 manifest、不重载。
   // 返回 { restored, generation_id }。
   async function restoreGeneration({ fromDir, generationId = null } = {}) {
     await loadIfNeeded();
@@ -888,13 +889,16 @@ export function createJournalSegmentStore({
     const oldId = generationId ?? current.generation_id;
     const dirName = `${oldId}-${streamName}`;
     const source = path.join(fromDir, dirName);
-    if (await pathExists(source)) {
+    const closeActiveFd = async () => {
       if (activeSegment?.fd) {
         await activeSegment.fd.sync().catch(() => {});
         await activeSegment.fd.close().catch(() => {});
         activeSegment.fd = null;
       }
+    };
+    if (await pathExists(source)) {
       if (!(await pathExists(resolvedRoot))) {
+        await closeActiveFd();
         await fs.rename(source, resolvedRoot);
       } else {
         // 两种可能：目标目录从未真正移动（rename 失败前 ensureDir 只创建了空目录），
@@ -902,11 +906,17 @@ export function createJournalSegmentStore({
         // 绝不覆盖可能存在的真实数据。
         const rootEntries = await fs.readdir(resolvedRoot).catch(() => []);
         if (rootEntries.length === 0) {
+          await closeActiveFd();
           await fs.rm(resolvedRoot, { recursive: true, force: true });
           await fs.rename(source, resolvedRoot);
         } else {
-          // 异常现场（目标非空）：保留源目录不删，仅告警——不猜测销毁数据。
+          // 异常现场（目标非空）：保留源目录不删，不猜测销毁数据。
+          // 抛错拒绝继续——若落空继续，下方 updateManifest 会把 manifest 改成
+          // "已恢复旧 generation"，而实际目录里是新数据：恢复说谎比恢复失败更
+          // 危险。不动 fd/内存状态（store 对新 generation 仍可用）；调用方
+          // （journal 清空回滚）本就 .catch 兜底，源目录保留供人工恢复。
           console.warn(`[journal-segments] restoreGeneration 无法移回 ${source}：目标 ${resolvedRoot} 非空`);
+          throw new Error(`restoreGeneration: 目标 ${resolvedRoot} 非空，已保留源目录 ${source}，拒绝改写 manifest`);
         }
       }
     }

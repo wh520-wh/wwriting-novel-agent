@@ -43,7 +43,18 @@ export async function readChapterVersion({ projectRoot, chapterNo, version }) {
   const meta = versions.find((v) => v.version === version);
   if (!meta) throw domainError("version_not_found", `第 ${chapterNo} 章不存在版本 ${version}。`);
   const filePath = path.join(chapterVersionsDir(projectRoot, chapterNo), `v${version}.md`);
-  return { version, content: await fs.readFile(filePath, "utf8"), checksum: meta.checksum };
+  const content = await fs.readFile(filePath, "utf8");
+  const checksum = sha256(content);
+  // 读回验证：.versions 是恢复的最后防线，文件被直接改动/损坏时拒绝把未验证
+  // 内容当历史版本返回（错误先例：chapter.mjs 的 draft_checksum_mismatch）。
+  // 旧 manifest 缺 checksum 时跳过验证（无法核对≠损坏）。
+  if (typeof meta.checksum === "string" && meta.checksum.length > 0 && checksum !== meta.checksum) {
+    throw domainError(
+      "version_checksum_mismatch",
+      `第 ${chapterNo} 章版本 ${version} 的内容与清单校验和不一致，版本文件可能被直接改动。`
+    );
+  }
+  return { version, content, checksum };
 }
 
 // 设计 D3 迁移最小单元：该章无任何版本时把当前内容存为 v1（baseline），幂等。
