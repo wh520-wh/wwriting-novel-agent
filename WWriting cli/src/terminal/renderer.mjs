@@ -12,8 +12,8 @@ import { createMarkdownWriter } from './markdown.mjs';
 // 分工：style.mjs 管「长什么样」，本文件管「把行写到 stdout」（让位/画回/实时区合成），
 // 事件 → 渲染的翻译在 event-bridge.mjs——三种生命周期不再挤在一个文件里。
 import {
-  STYLE, THINKING_PREVIEW_LINES, activityLabel, paintText, resolveColor,
-  thinkingPreviewLines, thinkingPreviewWidth, userRows,
+  STYLE, THINKING_PREVIEW_LINES, activityLabel, paintText, planPanelLines, planTableLines,
+  resolveColor, thinkingPreviewLines, thinkingPreviewWidth, userRows,
 } from './style.mjs';
 
 // 光标控制码：抹掉整行并把光标放回行首。
@@ -27,15 +27,6 @@ const ACTIVITY_TONE = Object.freeze({ running: 'info', done: 'success', failed: 
 // 段首标记与续行缩进等宽，不增加署名或头像。
 const PROSE_MARK = '▌';
 const PROSE_LEAD = `${PROSE_MARK} `;
-
-// 计划表的三态标记（对齐上游 §4.2：completed 实心勾 / in_progress 箭头圆 / pending 虚线圆）。
-// 这是「同一概念一处定义」的终端版：滚动区全表、实时区面板、/plan 回看三处共用。
-const PLAN_MARK = Object.freeze({ completed: '✓', in_progress: '▶', pending: '◌' });
-const PLAN_TONE = Object.freeze({ completed: 'success', in_progress: 'accent', pending: 'info' });
-// 条目文字的形态：完成 = 压暗 + 删除线（§4.2「步骤删除线」），进行中 = 强调色 + 加粗。
-const PLAN_TEXT_TONE = Object.freeze({ completed: 'done', in_progress: 'active', pending: null });
-// 实时区面板最多几条条目（不含标题行）；超出的收进一行「… 还有 N 步」。
-const LIVE_PLAN_MAX_ITEMS = 5;
 
 // 正文按完整行写出；不足一行的分片由 markdown writer 攒着，收尾时才强制写出。
 export const PROSE_INDENT = CONTENT_INDENT;
@@ -197,71 +188,17 @@ export function createRenderer({
     if (!usingComposer()) return;
     const lines = [];
     if (liveBody !== null) lines.push(...liveBody.split('\n'));
-    if (livePlan !== null) lines.push(...planPanelLines());
+    if (livePlan !== null) lines.push(...planPanel());
     const next = lines.length === 0 ? null : lines.join('\n');
     if (next === lastLiveSet) return;
     lastLiveSet = next;
     hook.setLive(next);
   }
 
-  // 截宽并带省略号：截断的事实要看得出来——静默截断会让人把半截步骤名当成完整步骤名。
-  function clipMarked(text, width) {
-    const source = String(text ?? '');
-    if (displayWidth(source) <= width) return source;
-    return `${clipToWidth(source, Math.max(1, width - 1))}…`;
-  }
-
-  // 计划面板：运行中展开（标题 + 条目窗口），空闲收成一行 chip（§4.2 的顶栏 chip 形态）。
-  // 三态标记与条目形态与滚动区全表同源（PLAN_MARK / PLAN_TONE / PLAN_TEXT_TONE）。
-  function planPanelLines() {
-    const items = livePlan;
-    const width = proseRowWidth(stdout.columns);
-    const done = items.reduce((count, item) => (item?.status === 'completed' ? count + 1 : count), 0);
-    if (!planActive) {
-      // 空闲 chip：`任务计划 2/5 · 当前步骤`。补语单独截宽，标题与计数永远完整。
-      const headPlain = `任务计划 ${done}/${items.length}`;
-      const current = items.find((item) => item?.status === 'in_progress');
-      const tail = current && typeof current.summary === 'string' ? ` · ${current.summary}` : '';
-      const room = Math.max(0, width - displayWidth(headPlain));
-      return [`${paint('任务计划', 'strong')} ${paint(`${done}/${items.length}`, 'info')}${paint(clipMarked(tail, room), 'info')}`];
-    }
-    const lines = [`${paint('任务计划', 'strong')} ${paint(`${done}/${items.length}`, 'info')}`];
-    const open = items.filter((item) => item?.status !== 'completed');
-    if (open.length === 0) {
-      lines.push(`  ${paint('✓', 'success')} ${paint('全部完成', 'done')}`);
-      return lines;
-    }
-    const collapsed = items.length - open.length;
-    if (collapsed > 1) lines.push(`  ${paint('✓', 'success')} ${paint(`已完成 ${collapsed} 步`, 'done')}`);
-    const room = Math.max(1, LIVE_PLAN_MAX_ITEMS - (lines.length - 1));
-    // 窗口的铁律：**进行中的步骤必须在场**——它排在第 room 个开外时窗口整体后移，
-    // 两侧被裁掉的步骤各给一行省略说明（静默裁掉「正在做什么」比少看几行严重得多）。
-    const ipIndex = open.findIndex((item) => item?.status === 'in_progress');
-    let start = 0;
-    if (ipIndex >= room) start = ipIndex - room + 1;
-    let size = room;
-    if (start > 0) size -= 1; // 头部省略行占一位
-    if (start + size < open.length) size -= 1; // 尾部省略行占一位
-    size = Math.max(1, size);
-    // 省略行占位可能把窗口推得盖不住进行中项：以它为准重推窗口起点（它是窗口最后一项）。
-    if (ipIndex >= 0 && (ipIndex < start || ipIndex >= start + size)) {
-      start = Math.max(0, Math.min(ipIndex - size + 1, open.length - size));
-    }
-    const shown = open.slice(start, start + size);
-    if (start > 0) lines.push(`  ${paint(`… 前面还有 ${start} 步`, 'info')}`);
-    for (const item of shown) lines.push(planItemLine(item, width));
-    const hidden = open.length - start - shown.length;
-    if (hidden > 0) lines.push(`  ${paint(`… 还有 ${hidden} 步`, 'info')}`);
-    return lines;
-  }
-
-  function planItemLine(item, width) {
-    const status = PLAN_MARK[item?.status] ? item.status : 'pending';
-    const summary = typeof item?.summary === 'string' ? item.summary : '';
-    // 先按纯文本截宽再上色：色彩转义不占列，但截宽函数数的是字符。截断带省略号——
-    // 静默截断会让人把半截步骤名当成完整步骤名。
-    const plain = clipMarked(summary, Math.max(1, width - 4));
-    return `  ${paint(PLAN_MARK[status], PLAN_TONE[status])} ${paint(plain, PLAN_TEXT_TONE[status] ?? PLAN_TONE[status])}`;
+  // 计划面板与全表的文案/判据都在 style.mjs（计划文案唯一来源；ADR-0017 的两种形态不变），
+  // 这里只喂当前状态与画笔。
+  function planPanel() {
+    return planPanelLines(livePlan, { active: planActive, width: proseRowWidth(stdout.columns) }, paint);
   }
 
   // 任务计划进实时区（事件桥与组合根调用）：items=null 清空（新 Run 开始），
@@ -435,26 +372,12 @@ export function createRenderer({
 
   // 计划表：update_plan 的可见产物。每次整表替换都把最新状态落进 scrollback——
   // 终端的 scrollback 就是「折叠态即回看态」（P10 的终端等价物：历史版本一直在上面，
-  // 最新一份在最后）。/plan 与重演也调它，三处因此长一个样。
+  // 最新一份在最后）。/plan 与重演也调它，三处因此长一个样——文案唯一来源在 style.mjs。
   function printPlan(items) {
     if (closed || !Array.isArray(items) || items.length === 0) return;
     flushProse({ force: true });
-    const width = proseRowWidth(stdout.columns);
-    const done = items.reduce((count, item) => (item?.status === 'completed' ? count + 1 : count), 0);
     openBlock();
-    write(`${paint('任务计划', 'strong')} ${paint(`${done}/${items.length}`, 'info')}\n`);
-    for (const item of items) {
-      const status = PLAN_MARK[item?.status] ? item.status : 'pending';
-      const summary = typeof item?.summary === 'string' ? item.summary : '';
-      // 长步骤按正文列宽折行，续行对齐到标记后的正文列（与用户行续行同一个做法）。
-      const { rows, rest } = takeProseRows(`${summary}\n`, { width: Math.max(1, width - 4) });
-      const all = rest === '' ? rows : [...rows, rest];
-      const lines = all.length === 0 ? [''] : all;
-      for (let index = 0; index < lines.length; index += 1) {
-        const head = index === 0 ? `  ${paint(PLAN_MARK[status], PLAN_TONE[status])} ` : '    ';
-        write(`${head}${paint(lines[index], PLAN_TEXT_TONE[status] ?? PLAN_TONE[status])}\n`);
-      }
-    }
+    write(`${planTableLines(items, proseRowWidth(stdout.columns), paint).join('\n')}\n`);
     closeBlock();
   }
 

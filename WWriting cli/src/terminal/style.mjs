@@ -199,6 +199,105 @@ export function thinkingPreviewLines(rows, { columns } = {}) {
   });
 }
 
+// —— 任务计划文案（§4.2）：滚动区全表与实时区面板共用的唯一来源 ——
+//
+// 两种**形态**（ADR-0017）留在消费者手里：全表逐条折行落 scrollback（/plan、重演同路），
+// 面板单行截宽挂实时区（运行中展开、空闲收 chip）。形态可以不同，**文案与判据只能有一份**：
+// 三态标记、进度标题、done 计数、状态归一都长在这一处，消费者不再各自 reduce。
+// paint 由调用方注入（跟随 NO_COLOR、测试可换替身），本层保持不碰 stdout。
+// 前置条件：items 是非空数组（空表是「清空」语义，由调用方拦下，轮不到这里）。
+
+const PLAN_MARK = Object.freeze({ completed: '✓', in_progress: '▶', pending: '◌' });
+const PLAN_TONE = Object.freeze({ completed: 'success', in_progress: 'accent', pending: 'info' });
+// 条目文字的形态：完成 = 压暗 + 删除线（§4.2「步骤删除线」），进行中 = 强调色 + 加粗。
+const PLAN_TEXT_TONE = Object.freeze({ completed: 'done', in_progress: 'active', pending: null });
+// 实时区面板最多几条条目（不含标题行）；超出的收进一行「… 还有 N 步」。
+const LIVE_PLAN_MAX_ITEMS = 5;
+
+function planDone(items) {
+  return items.reduce((count, item) => (item?.status === 'completed' ? count + 1 : count), 0);
+}
+
+// 截宽并带省略号：截断的事实要看得出来——静默截断会让人把半截步骤名当成完整步骤名。
+function clipMarked(text, width) {
+  const source = String(text ?? '');
+  if (displayWidth(source) <= width) return source;
+  return `${clipToWidth(source, Math.max(1, width - 1))}…`;
+}
+
+// 进度标题：`任务计划 2/5`。标题与计数永远完整；要加补语（chip 的当前步骤）由调用方截宽。
+function planHead(items, paint) {
+  return `${paint('任务计划', 'strong')} ${paint(`${planDone(items)}/${items.length}`, 'info')}`;
+}
+
+// 面板条目行：单行截宽（放不下带省略号），两个空格缩进对齐标题之后。
+function planItemLine(item, width, paint) {
+  const status = PLAN_MARK[item?.status] ? item.status : 'pending';
+  const summary = typeof item?.summary === 'string' ? item.summary : '';
+  // 先按纯文本截宽再上色：色彩转义不占列，但截宽函数数的是字符。截断带省略号——
+  // 静默截断会让人把半截步骤名当成完整步骤名。
+  const plain = clipMarked(summary, Math.max(1, width - 4));
+  return `  ${paint(PLAN_MARK[status], PLAN_TONE[status])} ${paint(plain, PLAN_TEXT_TONE[status] ?? PLAN_TONE[status])}`;
+}
+
+// 滚动区全表：标题 + 全部条目，长步骤折行、续行对齐到标记后的正文列（与用户行续行同一个做法）。
+// 返回的行不带换行符，由调用方 join 后落盘。
+export function planTableLines(items, width, paint) {
+  const lines = [planHead(items, paint)];
+  for (const item of items) {
+    const status = PLAN_MARK[item?.status] ? item.status : 'pending';
+    const summary = typeof item?.summary === 'string' ? item.summary : '';
+    const { rows, rest } = takeProseRows(`${summary}\n`, { width: Math.max(1, width - 4) });
+    const all = rest === '' ? rows : [...rows, rest];
+    const itemLines = all.length === 0 ? [''] : all;
+    for (let index = 0; index < itemLines.length; index += 1) {
+      const head = index === 0 ? `  ${paint(PLAN_MARK[status], PLAN_TONE[status])} ` : '    ';
+      lines.push(`${head}${paint(itemLines[index], PLAN_TEXT_TONE[status] ?? PLAN_TONE[status])}`);
+    }
+  }
+  return lines;
+}
+
+// 实时区面板：运行中展开（标题 + 条目窗口），空闲收成一行 chip（§4.2 的顶栏 chip 形态）。
+export function planPanelLines(items, { active = false, width } = {}, paint) {
+  if (!active) {
+    // 空闲 chip：`任务计划 2/5 · 当前步骤`。补语单独截宽，标题与计数永远完整。
+    const headPlain = `任务计划 ${planDone(items)}/${items.length}`;
+    const current = items.find((item) => item?.status === 'in_progress');
+    const tail = current && typeof current.summary === 'string' ? ` · ${current.summary}` : '';
+    const room = Math.max(0, width - displayWidth(headPlain));
+    return [`${planHead(items, paint)}${paint(clipMarked(tail, room), 'info')}`];
+  }
+  const lines = [planHead(items, paint)];
+  const open = items.filter((item) => item?.status !== 'completed');
+  if (open.length === 0) {
+    lines.push(`  ${paint('✓', 'success')} ${paint('全部完成', 'done')}`);
+    return lines;
+  }
+  const collapsed = items.length - open.length;
+  if (collapsed > 1) lines.push(`  ${paint('✓', 'success')} ${paint(`已完成 ${collapsed} 步`, 'done')}`);
+  const room = Math.max(1, LIVE_PLAN_MAX_ITEMS - (lines.length - 1));
+  // 窗口的铁律：**进行中的步骤必须在场**——它排在第 room 个开外时窗口整体后移，
+  // 两侧被裁掉的步骤各给一行省略说明（静默裁掉「正在做什么」比少看几行严重得多）。
+  const ipIndex = open.findIndex((item) => item?.status === 'in_progress');
+  let start = 0;
+  if (ipIndex >= room) start = ipIndex - room + 1;
+  let size = room;
+  if (start > 0) size -= 1; // 头部省略行占一位
+  if (start + size < open.length) size -= 1; // 尾部省略行占一位
+  size = Math.max(1, size);
+  // 省略行占位可能把窗口推得盖不住进行中项：以它为准重推窗口起点（它是窗口最后一项）。
+  if (ipIndex >= 0 && (ipIndex < start || ipIndex >= start + size)) {
+    start = Math.max(0, Math.min(ipIndex - size + 1, open.length - size));
+  }
+  const shown = open.slice(start, start + size);
+  if (start > 0) lines.push(`  ${paint(`… 前面还有 ${start} 步`, 'info')}`);
+  for (const item of shown) lines.push(planItemLine(item, width, paint));
+  const hidden = open.length - start - shown.length;
+  if (hidden > 0) lines.push(`  ${paint(`… 还有 ${hidden} 步`, 'info')}`);
+  return lines;
+}
+
 // NO_COLOR 的判定：只要环境里出现了这个变量就按关闭颜色处理（宁可不上色，也不要污染管道输出）。
 // color 显式传入时也压不过 NO_COLOR——要求是不输出颜色码，不是尽量不输出。
 export function resolveColor({ color, env, stdout }) {
