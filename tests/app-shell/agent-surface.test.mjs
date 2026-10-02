@@ -419,6 +419,27 @@ test("首次快照以服务端 session 为准，早期事件不能把终态回�
   assert.equal(authoritative.active_run.status, "completed");
 });
 
+test("维护级降级随快照渲染提示行：非空显示、null 收起（§19 可观察性契约）", async () => {
+  const { root, surface } = await makeSurface();
+  surface.applySnapshot({
+    ...snapshotOf(session({ status: "idle", last_seq: 1, active_run: null })),
+    projection_write_error: { at: "2026-10-02T00:00:00.000Z", message: "EPM: 磁盘满", code: null },
+    baseline_migration_error: null
+  });
+  const slot = root.querySelector('[data-testid="agent-maintenance"]');
+  assert.ok(slot, "提示行容器恒存在");
+  assert.match(slot.textContent, /会话快照写入失败/u, "投影写失败必须对用户可见");
+  assert.ok(!slot.textContent.includes("基线迁移"), "null 字段不得渲染提示");
+
+  surface.applySnapshot({
+    ...snapshotOf(session({ status: "idle", last_seq: 2, active_run: null })),
+    projection_write_error: null,
+    baseline_migration_error: { at: "2026-10-02T00:00:01.000Z", message: "ENOTDIR" }
+  });
+  assert.match(slot.textContent, /章节版本基线迁移失败/u, "自愈后投影提示收起、基线失败显示");
+  assert.ok(!slot.textContent.includes("会话快照写入失败"), "null 字段提示不再残留");
+});
+
 test("首次打开：openProject 以 tail 语义拉取尾部 200 条并渲染，不再分页补齐全量", async () => {
   const opts = [];
   const finalSession = session({

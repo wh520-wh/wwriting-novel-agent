@@ -124,13 +124,16 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   const runSection = doc.createElement("div");
   runSection.className = "agent-run";
   runSection.dataset.testid = "agent-run";
+  // 维护级降级提示槽（快照携带的 projection_write_error / baseline_migration_error）。
+  const maintenanceSlot = doc.createElement("div");
+  maintenanceSlot.dataset.testid = "agent-maintenance";
   const runHeader = doc.createElement("div");
   runHeader.className = "agent-run-header";
   const decisionsSlot = doc.createElement("div");
   decisionsSlot.className = "agent-decisions";
   const errorsSlot = doc.createElement("div");
   errorsSlot.className = "agent-errors";
-  runSection.append(runHeader, decisionsSlot, errorsSlot);
+  runSection.append(maintenanceSlot, runHeader, decisionsSlot, errorsSlot);
 
   const queueSlot = doc.createElement("div");
   queueSlot.className = "agent-queue";
@@ -291,6 +294,8 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     runHeader.replaceChildren();
     decisionsSlot.replaceChildren();
     errorsSlot.replaceChildren();
+    maintenanceSlot.replaceChildren();
+    maintenanceSignature = "";
     queueSlot.replaceChildren();
     currentState = null;
     for (const card of decisionCards.values()) card.remove();
@@ -391,6 +396,31 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     contextRing.setActive(active);
   }
 
+  // ---- 维护级降级提示（快照携带的 projection_write_error / baseline_migration_error）--
+  // 降级不阻断使用（事件日志/正文仍是真相源），但必须可见；样式复用 system-notice，
+  // 不新增 CSS（agent.css 已超线）。按内容签名去重，仅在变化时重建 DOM。
+  let maintenanceSignature = "";
+  function syncMaintenance(state) {
+    const notices = [];
+    if (state.projectionWriteError) {
+      notices.push(`会话快照写入失败（对话记录仍安全，下次打开此会话需完整重建）：${state.projectionWriteError.message ?? ""}`);
+    }
+    if (state.baselineMigrationError) {
+      notices.push(`章节版本基线迁移失败（新章节可能未受版本库保护）：${state.baselineMigrationError.message ?? ""}`);
+    }
+    const signature = notices.join("\n");
+    if (signature === maintenanceSignature) return;
+    maintenanceSignature = signature;
+    maintenanceSlot.replaceChildren();
+    for (const text of notices) {
+      const row = doc.createElement("div");
+      row.className = "system-notice";
+      row.setAttribute("role", "status");
+      row.textContent = text;
+      maintenanceSlot.append(row);
+    }
+  }
+
   // ---- 第九轮：系统通知行（chapter_rolled_back / memory_file_restored） ------
   // 通知行插入对话时间线，按 seq 排序；重渲染先移除旧行再追加（去重）。
   function syncNotices(state) {
@@ -418,6 +448,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     workgroup.syncRun(state);
     workgroup.syncWork(state);
     syncNotices(state);
+    syncMaintenance(state);
     cards.syncDecisions(state);
     cards.syncErrors(state);
     timeline.syncGaps(state);

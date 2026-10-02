@@ -156,3 +156,26 @@ test("migrateProjectFile：引用形态不触发写入", async (t) => {
   assert.equal(writes, 0, "引用形态不触发写入");
   assert.deepEqual(project.active_model, { provider_id: "deepseek", model_id: "m1" });
 });
+
+test("loadProviderStoreReadOnly：JSON 损坏按空清单返回且必须告警", async () => {
+  const { writeFile, mkdtemp, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const root = await mkdtemp(path.join(tmpdir(), "ww-mig-"));
+  try {
+    await writeFile(path.join(root, "model-profiles.json"), "{broken", "utf8");
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warnings.push(args.join(" "));
+    try {
+      const { loadProviderStoreReadOnly } = await import("../../src/core/project-model-migration.mjs");
+      const result = await loadProviderStoreReadOnly(root);
+      assert.deepEqual(result, { providers: [] });
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.equal(warnings.length, 1, "JSON 损坏必须产生可见告警（不能静默置空）");
+    assert.ok(warnings[0].includes("model-profiles.json"), "告警应指明损坏文件");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

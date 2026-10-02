@@ -298,13 +298,20 @@ async function processInput(state, sessionState, runId, inputId, inputText) {
     // 设计 D3 版本库基线迁移（模块 C）：每轮模型请求装配前，对索引 completed 且
     // 正式文件存在的章节幂等种 baseline（只写 .versions/）。失败只记录维护级
     // 警告（如索引损坏），绝不阻塞本轮 run，也绝不触碰正文/索引/校验和。
+    // 持续失败意味着这些章节没有版本保护：错误记入项目内存状态并随快照下发
+    // （前端提示行可见），成功迁移即清除；控制台警告保留（每轮重试会重写）。
     try {
       const index = await loadChapterIndex(state.key);
       await migrateBaselineVersions({ projectRoot: state.key, chapters: index.chapters ?? [] });
+      state.baselineMigrationError = null;
     } catch (migrationError) {
       console.warn(
         `[agent] 章节版本基线迁移失败（尽力而为）: ${migrationError?.message ?? String(migrationError)}`
       );
+      state.baselineMigrationError = {
+        at: new Date().toISOString(),
+        message: migrationError?.message ?? String(migrationError)
+      };
     }
     // 账本一致性检测（模块 C，设计 D1）：每轮 prompt 装配前检测"正式文件与索引
     // 校验和/存在性不一致"。漏调 finalize_revision 时，这里在后续轮次发现并注入
