@@ -166,7 +166,7 @@
 **范围**：用户点名的三处「降级方向对但不可见」灰色地带，全部走已有通道，无新模块/新依赖/新 CSS。
 
 - **journal 投影写失败**（原 `projection_write_error` 可观察字段零消费方）：agent snapshot 响应新增 `projection_write_error`（`src/core/agent/runtime.mjs`）；前端 `state.js` reduceSnapshot 镜像、`view.js` 在 runSection 顶部渲染提示行（复用 `system-notice` 样式，agent.css 零新增）。
-- **章节版本基线迁移失败**（原仅 console.warn）：run-pipeline 把最近一次结果记入项目内存态 `state.baselineMigrationError`（成功自愈即清除，每轮模型请求重试，重启后失败会自然重现故不持久化），经同一 snapshot 字段 `baseline_migration_error` 下发、同一提示行渲染。
+- **章节版本基线迁移失败**（原仅 console.warn）：run-pipeline 把最近一次结果记入项目内存态 `state.baselineMigrationError`（成功自愈即清除，每轮模型请求重试，重启后失败自然重现故不持久化），经同一 snapshot 字段 `baseline_migration_error` 下发、同一提示行渲染。
 - **供应商清单 JSON 损坏静默置空**：两条读路径都补 console 告警——写路径 `model-provider-store.mjs` `readRawStore`（SyntaxError 原本连 warn 都没有，且下次保存会用空清单覆盖原文件）、只读路径 `project-model-migration.mjs` `loadProviderStoreReadOnly`（SyntaxError 原被显式排除在告警外）；降级语义本身不变。
 
 **规格**：统一行为规格书 §19 新增「维护级降级必须可观察」条款。
@@ -176,3 +176,21 @@
 - 相关回归：project-agent 91/91、agent-surface 203/203、model-provider-store + model-project-migration 34/34、architecture R1 + journal-recovery + diagnostics 112/112。全量 `npm test` 本轮未跑（改动面小且已过定向回归）。
 
 **欠账与限制（只记不排）**：工作区另有五个文件与本任务无关的未提交改动（`utils.js` 删 `ensureTrailingSlash`、`journal-queries.mjs` `isIdleInitiatedRun` 单遍扫描重构、`run-pipeline.mjs` 删 `needsCompletionTerminal` 薄委托、`agent-routes.mjs` title 校验重构、`model-provider-store.mjs` id 工厂去导出），本轮修复叠加其上，提交时需一并处理。
+
+## 五项最小维护可见性/完整性修复（记录于：2026-10-02｜状态：当前有效）
+
+**范围**：用户点名的五个灰色地带最小修复（几行级、不建新子系统），主题=「检测失败≠检测通过、恢复不许说谎、没做要可见」。
+
+1. **drift 检测失败哨兵**：`detectLedgerDrift` 失败时 run-pipeline 注入 `{issue:"drift_check_unavailable"}` 哨兵（原先是空数组=模型无从区分"没漂移"和"没检测成"）；`buildLedgerDriftNote` 加分支渲染"检测不可用"注记。
+2. **三件套传感器（不拦截）**：`run-lifecycle.mjs` 新增 `senseMemoryMaintenanceLag`——Run 收尾（`run_completed` 落盘后、项目互斥锁内）扫 journal 尾部 500 条找最后一次章节生效工具事件（commit_chapter/finalize_revision/rollback_chapter），比对 `WORKLOG.md`/`book_summary.md` mtime；没跟上 → run_log.jsonl 落 `memory_maintenance_lag` 审计事件 + `state.memoryMaintenanceLag`（下轮 prompt 注入 `[Memory Maintenance]` 注记一次即清除；条件仍在则下次 Run 收尾重新检出）。模型自主维护性质不变。
+3. **readChapterVersion 读回验证**：manifest checksum 与实际内容不符抛 `version_checksum_mismatch`（先例 draft_checksum_mismatch）；旧 manifest 缺 checksum 跳过验证。回滚路径因此拒绝恢复被直接改动的版本文件。
+4. **event-log 尾行/中间行区分**：`readEvents` 全量与尾读两条路径都区分——文件末尾未终结行（写入中断）容忍；中间行损坏落 `event_log_corruption` 审计事件（追加失败不影响读取）。尾读首块判定文件是否以换行结尾。
+5. **restoreGeneration 拒绝说谎**：目标目录非空时抛错——原先落空继续 updateManifest 会把 manifest 改成"已恢复旧 generation"而目录里是新数据。fd 关闭时机随之下沉到真正移回的分支（异常分支不动 store 内存状态，新 generation 仍可追加）。
+
+**测试（新增 5 个）**：ledger-drift 哨兵注记、versions 读回校验、event-log 中间行落事件+尾行容忍（全量+尾读双路径）、journal-segments restoreGeneration 拒绝、project-agent 三件套传感器端到端（commit 后不维护 → run_log 事件 + 下轮 system prompt 含注记）。
+
+**验收证据（记录于 2026-10-02，均为实跑）**：
+- ledger-drift + event-log + versions：23/23；journal-segments：18/18；project-agent + prompt + journal-recovery：226/226；project-routes + architecture R1 + diagnostics + dashboard：40/40；acceptance unified-agent：29/29。
+- 全量 `npm test` 未跑（定向回归覆盖全部触碰模块）。
+
+**已知上限（只记不排）**：① 传感器只扫尾部 500 条事件，最后一次章节生效早于该窗口时本轮跳过检测（下次 commit 重新入窗）；② run_log 有中间行损坏时每次读取都会追加一条 corruption 事件（审计文件自身不可写时静默、console 告警保留）；③ 三件套注记在工作区内每次 Run 至多注入一次，模型持续忽略时依赖每次 Run 收尾的 run_log 事件累积可见性。

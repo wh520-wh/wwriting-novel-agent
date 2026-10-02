@@ -177,6 +177,8 @@ export function createAgentRuntime({
         // 章节版本基线迁移的最近一次结果（run-pipeline 维护，成功清除；仅内存——
         // 每轮模型请求都会重试迁移，重启后失败会自然重现）。快照下发给前端提示行。
         baselineMigrationError: null,
+        // 记忆三件套传感器待注入注记（run 收尾检出，下轮 prompt 注入一次即清除）。
+        memoryMaintenanceLag: null,
         mutex: createMutex(),
         // Prompt 的 Available Skills 目录摘要：只取 name/description，绝不注入正文
         // （完整指令由 read_skill 按需读取）。catalog 失败不阻塞 agent（沿用兜底语义）。

@@ -3420,3 +3420,46 @@ test("projectBusy：全部空闲 → false", async (t) => {
   await waitForIdle(h.agent, h.projectRoot);
   assert.equal(await h.agent.projectBusy({ projectRoot: h.projectRoot }), false);
 });
+
+// ---------------------------------------------------------------------------
+// 记忆三件套传感器（只读不拦截）：Run 收尾比对章节生效事件与 WORKLOG/book_summary
+// mtime，没跟上 → run_log 落审计事件 + 下轮 prompt 注记；模型自主维护性质不变。
+// ---------------------------------------------------------------------------
+
+test("三件套传感器：commit 后未维护 → run_log 落 memory_maintenance_lag，下轮 prompt 注入注记", async (t) => {
+  const h = await openHarness(t, {
+    project: { min_words_per_chapter: 50, target_words_per_chapter: 80 },
+    gatewayScript: [
+      async () => ({
+        toolCalls: [
+          tool("append_chapter_segment", {
+            project_id: h.project.project_id ?? null,
+            chapter_no: 1,
+            segment_no: 1,
+            content: CHAPTER_CONTENT
+          })
+        ]
+      }),
+      async () => ({
+        toolCalls: [tool("commit_chapter", { project_id: h.project.project_id ?? null, chapter_no: 1 })]
+      }),
+      { reply: { text: "第一章已完成提交。" } },
+      { reply: { text: "收到。" } }
+    ]
+  });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "正式写第一章", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+
+  // 夹具预置的 WORKLOG.md / book_summary.md 未被更新 → 传感器在 Run 收尾检出
+  const runLog = await fs.readFile(path.join(h.projectRoot, "run_log.jsonl"), "utf8");
+  assert.ok(runLog.includes("memory_maintenance_lag"), "Run 收尾必须落审计事件");
+
+  // 下一轮 prompt 注入注记（注记列出未更新文件，但不拦截、不改变权限）
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "继续", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const lastCall = h.gateway.calls.at(-1);
+  const systemContent = lastCall.request.messages.find((m) => m.role === "system")?.content ?? "";
+  assert.match(systemContent, /\[Memory Maintenance\]/u, "下轮 prompt 必须携带三件套注记");
+  assert.match(systemContent, /WORKLOG\.md/u);
+  assert.match(systemContent, /book_summary\.md/u);
+});

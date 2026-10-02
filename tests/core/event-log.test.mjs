@@ -163,3 +163,33 @@ test("readEvents with limit on empty file returns empty array", async () => {
   const events = await readEvents(root, { limit: 5 });
   assert.deepEqual(events, []);
 });
+
+test("readEvents：中间行损坏落审计事件（event_log_corruption），读取仍返回完好行", async () => {
+  const root = await makeProject();
+  await appendEvent(root, { type: "alpha", message: "first" });
+  await fs.appendFile(path.join(root, "run_log.jsonl"), "{broken-middle\n", "utf8");
+  await appendEvent(root, { type: "beta", message: "second" });
+
+  const first = await readEvents(root);
+  assert.deepEqual(first.map((e) => e.type), ["alpha", "beta"], "损坏行跳过，完好行照常返回");
+  // 损坏事件在读后追加，落入文件供下次读取/审计发现
+  const second = await readEvents(root);
+  const corruption = second.find((e) => e.type === "event_log_corruption");
+  assert.ok(corruption, "中间行损坏必须落审计事件");
+  assert.equal(corruption.severity, "warning");
+  assert.equal(corruption.data.skipped_middle, 1);
+});
+
+test("readEvents：尾部未终结行（写入中断）容忍，不落损坏事件", async () => {
+  const root = await makeProject();
+  await appendEvent(root, { type: "alpha", message: "first" });
+  // 无换行结尾的残行：模拟 append 中途崩溃
+  await fs.appendFile(path.join(root, "run_log.jsonl"), '{"type":"torn","mess', "utf8");
+
+  const full = await readEvents(root);
+  assert.equal(full.length, 1, "全量读：尾行残缺容忍");
+  const tail = await readEvents(root, { limit: 10 });
+  assert.equal(tail.length, 1, "尾读：尾行残缺容忍");
+  const again = await readEvents(root);
+  assert.ok(!again.some((e) => e.type === "event_log_corruption"), "尾行中断不落损坏事件");
+});

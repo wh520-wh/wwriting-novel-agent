@@ -83,3 +83,19 @@ test("migrateBaselineVersions：completed 章节全部种 v1，drafting 跳过�
   assert.equal((await listChapterVersions({ projectRoot, chapterNo: 1 })).length, 1);
   assert.equal((await listChapterVersions({ projectRoot, chapterNo: 1 }))[0].source, "baseline");
 });
+
+test("readChapterVersion 读回验证：内容被直接改动时拒绝返回，完好时返回实际 checksum", async (t) => {
+  const { projectRoot } = await setup(t);
+  await snapshotChapter({ projectRoot, chapterNo: 1, content: "原样正文", source: "baseline" });
+  const versionPath = path.join(projectRoot, ".versions", "chapters", "001", "v1.md");
+  // 完好：读回成功，checksum 与 manifest 一致
+  const intact = await readChapterVersion({ projectRoot, chapterNo: 1, version: 1 });
+  assert.equal(intact.content, "原样正文");
+  assert.equal(intact.checksum, (await listChapterVersions({ projectRoot, chapterNo: 1 }))[0].checksum);
+  // 篡改版本文件（绕过系统直接编辑 .versions）→ 拒绝读取
+  await fs.writeFile(versionPath, "被直接改过的历史版本", "utf8");
+  await assert.rejects(
+    readChapterVersion({ projectRoot, chapterNo: 1, version: 1 }),
+    (error) => error.code === "version_checksum_mismatch"
+  );
+});
