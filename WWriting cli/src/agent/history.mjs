@@ -287,3 +287,31 @@ export function latestDigest(events) {
   }
   return digest;
 }
+
+// /retry 的可重试判定（统一行为规格书 §4.1 的 CLI 口径）：**只看最近一条终态**——
+// run_failed 一律可重试；run_interrupted 里用户主动停止（user_stop）不可重试（停止语义干净），
+// 其余原因（进程退出、崩溃恢复、无终态收敛）都是「没跑完」，可以重发。
+// 最近终态是已完成、或根本没有轮次 → null（命令层据此说「没有可重试的失败轮次。」）。
+//
+// 原文取自轮次里的 run_started 文本——它与该输入提交事件里的原文逐字一致
+// （run_started 的 text 就来自 input_submitted），不必再扫一遍提交事件。
+// input_id 或原文缺失（畸形残留）同样不可重试：没有可复用的东西就绝不编造。
+export function findRetryableTurn(events) {
+  const turns = projectTurns(events);
+  if (turns.length === 0) return null;
+  const last = turns[turns.length - 1];
+  // open 轮是未收敛的崩溃残留：恢复逻辑会先把它收敛成 interrupted，这里不猜。
+  if (last.terminal === 'open') return null;
+  const retryable = last.terminal === 'failed'
+    || (last.terminal === 'interrupted' && last.interruptReason !== 'user_stop');
+  if (!retryable) return null;
+  if (typeof last.inputId !== 'string' || last.inputId === '') return null;
+  if (typeof last.userText !== 'string' || last.userText === '') return null;
+  return {
+    inputId: last.inputId,
+    runId: last.runId,
+    text: last.userText,
+    terminal: last.terminal,
+    interruptReason: last.interruptReason,
+  };
+}

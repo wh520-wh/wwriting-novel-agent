@@ -47,7 +47,7 @@ const MARKDOWN_TONE = Object.freeze({
 //     isActive() 为真时屏幕上有一个输入框；takeArea/giveArea 必须成对出现。
 // 返回 { printIntro, printUser, printAssistant, printReasoning, printPlan, setLivePlan,
 //        resetMarkdown, printThinkingPreview, resetThinkingPreview, printActivity, printStatus,
-//        printQueue, printDecision, clearLive, close }。
+//        setLiveQueue, printDecision, clearLive, close }。
 export function createRenderer({
   stdout,
   color,
@@ -77,6 +77,12 @@ export function createRenderer({
   let livePlan = null;
   let planActive = false;
   let liveBody = null; // 当前动态行（活动行 / 思考预览）的已上色文本；与计划面板合成实时区
+  // 排队清单：与动态行、计划面板一起合成实时区，开跑/撤回时整表替换，那一行自然消失——
+  // 排队输入不再往滚动历史写一行「排队」，历史里因此没有残影、同一原文不会出现两份记录。
+  // 管道（没有 composer）时没有实时区可挂：新加入的条目退回直写一行（唯一的可见交代），
+  // queueWritten 按 input_id 去重，重复同步不会写第二遍。
+  let liveQueue = [];
+  const queueWritten = new Set();
   let lastLiveSet; // 上一次交给 setLive 的合成文本（去重；让位之后置回 undefined）
   // 正文渲染器（Markdown 增量）：半行、表格候选行由它攒着，能定的立刻吐出来。
   // 段首标记（▌）与续行缩进等宽，缩进/折行全在 markdown.mjs 里做，渲染器只负责写出。
@@ -181,18 +187,27 @@ export function createRenderer({
     lastActivity = kept;
   }
 
-  // 实时区合成：动态行在上、任务面板在下（与 CC 的 spinner 区同构：当前动作是标题，
+  // 实时区合成：动态行在上、排队行居中、任务面板在下（与 CC 的 spinner 区同构：当前动作是标题，
   // 计划是结构，都贴着输入框）。没有 composer（管道）时不合成——多行面板在直写流里擦不干净。
   // 合成内容去重后才交给输入层：输入层每次 setLive 都会整块重画，没变化就不打扰。
   function refreshLive() {
     if (!usingComposer()) return;
     const lines = [];
     if (liveBody !== null) lines.push(...liveBody.split('\n'));
+    if (liveQueue.length > 0) lines.push(...liveQueue.map((item) => paint(queueLine(item.text), 'info')));
     if (livePlan !== null) lines.push(...planPanel());
     const next = lines.length === 0 ? null : lines.join('\n');
     if (next === lastLiveSet) return;
     lastLiveSet = next;
     hook.setLive(next);
+  }
+
+  // 排队行文案：原文 + 排队。实时区与管道路共用同一份（同一件事在两条路上说同一句话）；
+  // 实时区一行都不许超宽（与 drawLive 同一道宽度闸门）——原文按「扣掉徽标后的余量」截。
+  const QUEUE_SUFFIX = '   排队';
+  function queueLine(text) {
+    const room = Math.max(1, resolveColumns(stdout.columns) - 1 - displayWidth(QUEUE_SUFFIX));
+    return `${clipToWidth(String(text), room)}${QUEUE_SUFFIX}`;
   }
 
   // 计划面板与全表的文案/判据都在 style.mjs（计划文案唯一来源；ADR-0017 的两种形态不变），
@@ -422,12 +437,29 @@ export function createRenderer({
     closeBlock();
   }
 
-  // 排队行：原文 + 排队。说明这条输入已进 FIFO，不会另起一个 Agent。
-  function printQueue(text) {
-    flushProse({ force: true });
-    openBlock();
-    write(`${paint(`${text}   排队`, 'info')}\n`);
-    closeBlock();
+  // 排队清单进实时区（事件桥每次变更调一次，整表替换）：
+  //   composer 在：与动态行、计划面板合成显示（多条按 FIFO 各占一行）；开跑或撤回后
+  //     整表里没有它，实时区那一行自然消失——滚动历史里不再留「排队」残影。
+  //   没有 composer（管道 / 非 TTY）：新加入的条目各直写一行「原文   排队」，
+  //     那是那条路上唯一的可见交代；已写过的 input_id 不重写（重复同步是常态）。
+  function setLiveQueue(items) {
+    if (closed) return;
+    const list = (Array.isArray(items) ? items : []).filter(
+      (item) => item !== null && typeof item === 'object' && typeof item.text === 'string' && item.text !== '',
+    );
+    if (usingComposer()) {
+      liveQueue = list;
+      refreshLive();
+      return;
+    }
+    for (const item of list) {
+      if (typeof item.input_id === 'string' && queueWritten.has(item.input_id)) continue;
+      if (typeof item.input_id === 'string') queueWritten.add(item.input_id);
+      flushProse({ force: true });
+      openBlock();
+      write(`${paint(queueLine(item.text), 'info')}\n`);
+      closeBlock();
+    }
   }
 
   // 确认提示：普通确认给三个选项，极端确认必须展示当次确认文字原文（铁律 4）。
@@ -487,7 +519,7 @@ export function createRenderer({
     resetThinkingPreview,
     printActivity,
     printStatus,
-    printQueue,
+    setLiveQueue,
     printDecision,
     clearLive,
     close,

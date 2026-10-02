@@ -21,6 +21,7 @@ import { createFileTools } from '../tools/files.mjs';
 import { createPermissionState } from '../tools/permissions.mjs';
 import { updatePlan } from '../tools/plan.mjs';
 import { ChapterToolError, createChapterService } from '../tools/chapters.mjs';
+import { createMemoryService } from '../tools/memory.mjs';
 import { styleStats } from '../tools/style-stats.mjs';
 import { createSkillService } from '../skills/index.mjs';
 
@@ -41,7 +42,13 @@ import { createSkillService } from '../skills/index.mjs';
 // 权限口径：读与「只写应用私有存储」的操作自动放行（铁律 4「只读自动」；分类兜底在
 // permissions.mjs 的 READ_TOOLS/WRITE_TOOLS——append_chapter_segment 与 rollback_chapter
 // 会改写创作文件，走 write 级确认；未知工具收紧为极端，绝不默认放行）。
+// 提交/入账/回滚成功结果附的固定提醒行（内容写死，不随状态变化）。上游 memory_checklist
+// 的 CLI 两件化：book_summary.md / WORKLOG.md 不引入，其职能由 WWRITING.md 承担（偏差记录）。
+const MEMORY_MAINTENANCE_REMINDER = '记忆维护：请依次 update_memory → 更新 WWRITING.md';
+
 export function createDefaultToolsFactory(skillService, chapterService = null) {
+  // 设定档案服务住在创作目录 memory/ 下（不依赖注入根），整厂共用一个实例。
+  const memoryService = createMemoryService();
   return (options) => {
     const files = createFileTools(options);
     const tools = {
@@ -61,14 +68,27 @@ export function createDefaultToolsFactory(skillService, chapterService = null) {
     // 文件不存在 / 读不出时 readFile 的中文事实原样抛出，模型能自己调整。
     tools.commitChapter = async (args) => {
       const { text } = await files.readFile({ path: args?.path });
-      return chapterService.commit({
+      const committed = await chapterService.commit({
         projectRoot: options.projectRoot,
         path: args?.path,
         text,
         summary: typeof args?.summary === 'string' ? args.summary : null,
       });
+      return { ...committed, memory_checklist: MEMORY_MAINTENANCE_REMINDER };
     };
-    // 回滚三段：读当前 → prepareRollback（存安全快照 + 取提交内容，私有）→ restoreFile
+    // 修订入账：读当前内容（自动）→ 存版本 + 记 revision（私有存储，自动）。
+    // 文件不存在 / 读不出时 readFile 的中文事实原样抛出，模型能自己调整。
+    tools.finalizeRevision = async (args) => {
+      const { text } = await files.readFile({ path: args?.path });
+      const finalized = await chapterService.finalizeRevision({
+        projectRoot: options.projectRoot,
+        path: args?.path,
+        text,
+        summary: typeof args?.summary === 'string' ? args.summary : null,
+      });
+      return { ...finalized, memory_checklist: MEMORY_MAINTENANCE_REMINDER };
+    };
+    // 回滚三段：读当前 → prepareRollback（存安全快照 + 取生效版本内容，私有）→ restoreFile
     // （创作目录写入，write 级确认，确认卡说的是「回滚章节」而不是「写入文件」）。
     // 顺序是刻意的：确认发生在写入前一个字节都不会动；确认拒绝只多一份私有快照，前情不受污染。
     tools.rollbackChapter = async (args) => {
@@ -83,11 +103,20 @@ export function createDefaultToolsFactory(skillService, chapterService = null) {
         });
       }
       const restored = await files.restoreFile({ path: args?.path, content: target.text });
-      return { path: restored.path, restoredSeq: target.seq, charsNoSpace: restored.charsNoSpace };
+      return { path: restored.path, restoredSeq: target.seq, charsNoSpace: restored.charsNoSpace, memory_checklist: MEMORY_MAINTENANCE_REMINDER };
     };
     tools.readContinuity = (args) => chapterService.readContinuity({
       projectRoot: options.projectRoot,
       budgetChars: args?.budgetChars,
+    });
+    // 更新设定：设定档案的唯一合法写通道（memory/ 对通用文件工具只读）。
+    // 校验、合并、原子落盘都在服务里；这里只做参数转发。写级确认——确认卡说「更新设定」。
+    tools.updateMemory = (args) => memoryService.update({
+      projectRoot: options.projectRoot,
+      path: args?.path,
+      facts: Array.isArray(args?.facts) ? args.facts : [],
+      timeline: Array.isArray(args?.timeline) ? args.timeline : [],
+      characters: Array.isArray(args?.characters) ? args.characters : [],
     });
     tools.styleStats = async (args) => {
       const { text } = await files.readFile({ path: args?.path });
@@ -347,7 +376,9 @@ export function createRunController({
   }
 
   // 起一轮：每轮一个 AbortController，工具由循环自己带权限桥构造。
-  async function startRun(inputId, text) {
+  // retryOfRunId：/retry 时带上被接续那轮的 run id（只进 run_started 的 retry_of 字段，
+  // 供日志与重演说明「这是同一件事的继续」；run_id 本身每轮新生成）。
+  async function startRun(inputId, text, retryOfRunId = null) {
     const controller = new AbortController();
     active = { inputId, controller };
     try {
@@ -380,6 +411,7 @@ export function createRunController({
         text,
         signal: controller.signal,
         onReasoningPreview,
+        retryOfRunId,
       });
       if (notice !== null && noticeResult !== null) notice(noticeResult, { inputId });
       return await loop.run({
@@ -392,6 +424,7 @@ export function createRunController({
         historyMeta,
         memory,
         memoryCached,
+        retryOfRunId,
       });
     } catch (error) {
       // 循环原则上只会 resolve 出终态，不会抛（终态事件已做成尽力送达）。
@@ -421,7 +454,7 @@ export function createRunController({
   //   ① 一条输入**最多跑一次**（attempted 集合）——杜绝把一次故障放大成无限重试；
   //   ② 一条输入抛错**不中断整条队列**——否则「队首坏了」会被当成「整队不跑了」，
   //      排在后面的用户输入会在下一次 submit 时被静默烧掉（比僵死更糟：那是无声的数据丢失）。
-  async function drain(inputId, text) {
+  async function drain(inputId, text, retryOfRunId = null) {
     draining = true;
     stopped = false;
     let result = null;
@@ -430,9 +463,9 @@ export function createRunController({
     if (typeof inputId === 'string') attempted.add(inputId);
 
     // 跑一条：抛错就退役它、记下错误、返回 null 让循环继续下一条。
-    async function attempt(id, body) {
+    async function attempt(id, body, retryOf = null) {
       try {
-        return await startRun(id, body);
+        return await startRun(id, body, retryOf);
       } catch (error) {
         if (firstError === null) firstError = error;
         return null; // startRun 内部已把这条输入从队列退役，这里只负责继续推进。
@@ -440,7 +473,7 @@ export function createRunController({
     }
 
     try {
-      result = await attempt(inputId, text);
+      result = await attempt(inputId, text, retryOfRunId);
       // 会话被关闭（如 /quit）时同样收敛：队列交给下一次打开时的恢复逻辑处理。
       while (!stopped && session) {
         const next = session.projection.queue[0];
@@ -490,6 +523,44 @@ export function createRunController({
     drainTask = running;
     try {
       return { inputId: plan.inputId, queued: plan.queued, result: await running };
+    } finally {
+      if (drainTask === running) drainTask = null;
+    }
+  }
+
+  // 重试（/retry）：用原输入的 input_id 与原文重跑最近失败（或非用户停止中断）的那一轮。
+  //
+  // 判定不在控制器：可重试轮的寻找是纯函数（history.mjs 的 findRetryableTurn），
+  // 命令层先判、先回显原文，再把 { inputId, text, runId } 交到这里执行。
+  // 控制器只把「能不能安全起跑」再拦一遍：忙碌、还有排队输入、参数残缺都拒绝——
+  // 排队非空时重试会像普通输入一样排到队尾去，那不是用户想说的「重试刚才那次」。
+  //
+  // input_id 复用是刻意的：loadHistory 的「排除当前输入」因此把失败尝试整体排除出上下文；
+  // run_id 不复用（思考重放按 run_id 归堆），原 id 记进 run_started 的 retry_of（规格偏差已记录）。
+  async function retry({ inputId, text, runId: retryOfRunId = null } = {}) {
+    const handle = requireOpen('重试上一轮');
+    if (typeof inputId !== 'string' || inputId === '' || typeof text !== 'string' || text === '') {
+      throw new Error('重试需要原输入的 ID 与原文。');
+    }
+    if (isBusy()) throw new Error('正在运行，等这一轮结束再重试。');
+    if (handle.projection.queue.length > 0) {
+      throw new Error('队列里还有输入，先让它们跑完再重试。');
+    }
+    const plan = await serializeWrite(async () => {
+      if (draining) throw new Error('正在运行，等这一轮结束再重试。');
+      stopped = false;
+      const submitted = await handle.submit({ text, inputId });
+      if (submitted.queued) {
+        throw new Error('队列里还有输入，先让它们跑完再重试。');
+      }
+      draining = true;
+      return { inputId, text };
+    });
+    // 复用原 input_id 重跑同一件事；失败尝试的历史天然不进这一轮的上下文。
+    const running = drain(plan.inputId, plan.text, retryOfRunId);
+    drainTask = running;
+    try {
+      return { inputId: plan.inputId, queued: false, result: await running };
     } finally {
       if (drainTask === running) drainTask = null;
     }
@@ -599,5 +670,5 @@ export function createRunController({
     return { status: 'ok', chars: text.length, turns: uncovered.length };
   }
 
-  return { open, submit, stop, requestPriority, decide, snapshot, isBusy, activeRunId, readEvents, compact, close, permissions: perm };
+  return { open, submit, retry, stop, requestPriority, decide, snapshot, isBusy, activeRunId, readEvents, compact, close, permissions: perm };
 }

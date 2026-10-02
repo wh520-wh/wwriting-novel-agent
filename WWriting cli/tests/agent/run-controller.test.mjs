@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { createRunController, createDefaultToolsFactory } from '../../src/agent/run-controller.mjs';
-import { DEFAULT_HISTORY_BUDGET_CHARS } from '../../src/agent/history.mjs';
+import { DEFAULT_HISTORY_BUDGET_CHARS, findRetryableTurn } from '../../src/agent/history.mjs';
 import { createSkillService } from '../../src/skills/index.mjs';
 import { createSessionManager } from '../../src/session/session-manager.mjs';
 import { createEventStore } from '../../src/session/event-store.mjs';
@@ -1336,7 +1336,7 @@ test('默认工具工厂把 readSkill 并入文件工具，按注入的服务与
 
 // —— 章节工具（commit / rollback）走真实循环 + 真实权限 + 真实私有存储 ——
 
-test('章节提交与回滚：版本落在应用私有区，回滚要确认，恢复逐字一致', async () => {
+test('章节提交、修订入账与回滚：版本落在应用私有区，回滚要确认，恢复最近生效版本', async () => {
   const root = await makeTempRoot('wwriting-ctrl-chapters-');
   const projectRoot = path.join(root, 'novel');
   await fs.mkdir(projectRoot, { recursive: true });
@@ -1348,6 +1348,8 @@ test('章节提交与回滚：版本落在应用私有区，回滚要确认，�
   const script = [
     { tool: { name: 'commit_chapter', args: { path: '第一章.md', summary: '开篇' } } },
     { text: '提交好了。' },
+    { tool: { name: 'finalize_revision', args: { path: '第一章.md' } } },
+    { text: '入账好了。' },
     { tool: { name: 'rollback_chapter', args: { path: '第一章.md' } } },
     { text: '处理完了。' },
   ];
@@ -1380,16 +1382,29 @@ test('章节提交与回滚：版本落在应用私有区，回滚要确认，�
     assert.equal(committed.data.ok, true);
     assert.match(committed.data.result, /"charsNoSpace":5/);
 
-    // 改坏稿，第二轮回滚：write 级确认——确认卡说的是「回滚章节」。
-    await fs.writeFile(chapterPath, '改坏的稿子。', 'utf8');
+    // 改稿后修订入账：与提交同级自动放行，revision 快照落私有区。
+    await fs.writeFile(chapterPath, '修订后的内容。', 'utf8');
+    const revised = await controller.submit({ text: '入账这一章的修订' });
+    assert.equal(revised.result.status, 'completed');
+    const revisionFile = path.join(root, 'WWriting', 'workspaces', versionDirs[0], 'chapters', 'versions', '第一章.md', '0002.txt');
+    assert.equal(await fs.readFile(revisionFile, 'utf8'), '修订后的内容。');
+
+    // 第三轮回滚：write 级确认——确认卡说的是「回滚章节」。
     const submitting = controller.submit({ text: '回滚这一章' });
     await waitFor(() => permissions.pending().length > 0);
     const pending = permissions.pending()[0];
     assert.equal(pending.tool, 'rollback_chapter');
     await controller.decide({ decisionId: pending.decision_id, choice: 'once' });
-    const second = await submitting;
-    assert.equal(second.result.status, 'completed');
-    assert.equal(await fs.readFile(chapterPath, 'utf8'), '初稿内容。', '回滚恢复的是最近一次提交');
+    const third = await submitting;
+    assert.equal(third.result.status, 'completed');
+    assert.equal(await fs.readFile(chapterPath, 'utf8'), '修订后的内容。', '回滚恢复的是最近一次生效版本（修订版）');
+
+    // 三个章节工具的成功结果都附固定提醒行（内容写死，不随状态变化）。
+    const events = await controllerEvents(controller);
+    for (const toolName of ['commit_chapter', 'finalize_revision', 'rollback_chapter']) {
+      const finished = events.find((event) => event.type === 'activity_finished' && event.data.tool === toolName && event.data.ok === true);
+      assert.match(finished.data.result, /记忆维护：请依次 update_memory → 更新 WWRITING\.md/, `${toolName} 结果缺提醒行`);
+    }
   } finally {
     await controller.close();
   }
@@ -1461,4 +1476,97 @@ test('compact：空闲检查与空会话如实回答', async () => {
   }
   // 未打开会话（close 之后）压缩要给出中文事实，不是裸 TypeError。
   await assert.rejects(() => controller.compact(), /打开会话/);
+});
+
+// —— /retry：Run 级重试 ——
+
+test('retry：复用原 input_id 与原文重跑失败轮，失败尝试不进上下文，run_started 记 retry_of', async () => {
+  const root = await makeTempRoot('wwriting-ctrl-retry-');
+  const projectRoot = path.join(root, 'novel');
+  let failFirst = true;
+  const requests = [];
+  const modelClient = {
+    async streamChat({ messages }) {
+      requests.push(messages.map((message) => message.content).join('\n'));
+      if (failFirst) {
+        failFirst = false;
+        throw Object.assign(new Error('模拟连接中断'), { code: 'ECONNRESET' });
+      }
+      return { text: '重试后写好了。', toolCalls: [], usage: null };
+    },
+  };
+  const { controller } = await makeRealLoopController({ root, projectRoot, modelClient });
+
+  try {
+    const failed = await controller.submit({ text: '帮我写第三章' });
+    assert.equal(failed.result.status, 'failed');
+
+    const events = await controller.readEvents();
+    const retryable = findRetryableTurn(events);
+    assert.equal(retryable.inputId, failed.inputId);
+    assert.equal(retryable.runId, failed.result.runId);
+
+    const retried = await controller.retry(retryable);
+    assert.equal(retried.result.status, 'completed');
+    assert.equal(retried.inputId, failed.inputId, '复用原输入 ID，不新建会话轮次');
+
+    // 失败尝试不进重试轮的上下文：请求里「帮我写第三章」只出现一次（当轮自己）。
+    const retryRequest = requests[requests.length - 1];
+    assert.equal(retryRequest.split('帮我写第三章').length - 1, 1);
+
+    // run_started 带 retry_of 指向原 run；run_id 本身是新的（思考重放按 run_id 归堆）。
+    const allEvents = await controllerEvents(controller);
+    const starts = allEvents.filter((event) => event.type === 'run_started');
+    assert.equal(starts.length, 2);
+    assert.equal(starts[1].data.retry_of, starts[0].run_id);
+    assert.notEqual(starts[1].run_id, starts[0].run_id);
+  } finally {
+    await controller.close();
+  }
+});
+
+test('retry：运行中拒绝；停止后队列非空也拒绝（重试不插队）', async () => {
+  const root = await makeTempRoot('wwriting-ctrl-retry-busy-');
+  const projectRoot = path.join(root, 'novel');
+  let release = null;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const modelClient = {
+    async streamChat({ signal }) {
+      // 挂住的模型请求：只在信号中止时以 AbortError 收场（与真实客户端的取消语义一致）。
+      return new Promise((resolve, reject) => {
+        const onAbort = () => reject(Object.assign(new Error('已停止本轮。'), { name: 'AbortError', code: 'RUN_ABORTED' }));
+        if (signal && signal.aborted) return onAbort();
+        signal.addEventListener('abort', onAbort);
+        gate.then(() => resolve({ text: '慢慢写好了。', toolCalls: [], usage: null }));
+      });
+    },
+  };
+  const { controller } = await makeRealLoopController({ root, projectRoot, modelClient });
+
+  try {
+    const submitting = controller.submit({ text: '第一轮' });
+    await waitFor(() => controller.isBusy());
+    const busySnapshot = controller.snapshot();
+
+    // 运行中：拒绝。
+    await assert.rejects(
+      () => controller.retry({ inputId: busySnapshot.active_input_id ?? 'in-x', text: '第一轮' }),
+      /正在运行/,
+    );
+
+    // 排队一条输入再停止：A 中断、B 留在队列，drain 收敛。
+    await controller.submit({ text: '排队的那条' });
+    controller.stop();
+    await submitting;
+
+    assert.equal(controller.isBusy(), false);
+    assert.equal(controller.snapshot().queue.length, 1, '排队输入按语义保留');
+    await assert.rejects(
+      () => controller.retry({ inputId: 'in-x', text: '第一轮' }),
+      /队列里还有输入/,
+    );
+  } finally {
+    release();
+    await controller.close();
+  }
 });

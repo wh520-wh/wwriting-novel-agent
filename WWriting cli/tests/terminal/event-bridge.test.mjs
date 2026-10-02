@@ -656,3 +656,46 @@ test('history_applied 无摘要不提摘要（老文案逐字不变）', () => {
   assert.ok(shown.includes('1 轮 · 省略更早 1 轮'));
   assert.equal(shown.includes('摘要'), false);
 });
+
+// —— 排队行进实时区：装配缝上的契约（渲染器的画法在 renderer.test.mjs） ——
+
+test('排队全生命周期（composer）：排队行只在实时区，开跑换成用户行，滚动历史零残影', () => {
+  const composer = makeFakeComposer();
+  const { renderer, stdout } = makeRenderer({ tty: true, env: { NO_COLOR: '1' }, composer });
+  const bridge = createEventRenderer({ renderer });
+
+  feed(bridge, 'run_started', { input_id: 'i-1', text: '写第一章' });
+  feed(bridge, 'input_queued', { input_id: 'i-2', text: '写第二章' });
+  assert.ok(composer.live.includes('写第二章   排队'), '排队行挂在实时区');
+  assert.equal(stdout.text().includes('排队'), false, '滚动历史里没有排队残影');
+
+  // 轮到它：实时区那一行消失，滚动历史出现一条用户行——同一原文只有一份记录。
+  feed(bridge, 'input_started', { input_id: 'i-2', text: '写第二章' });
+  assert.equal(composer.live, null, '实时区的排队行随开跑消失');
+  assert.equal(stdout.text().match(/写第二章/g).length, 1, '只在用户行里出现一次');
+
+  // 补一条并撤回：实时区消失，「排队已取消」终态事实保留。
+  feed(bridge, 'input_queued', { input_id: 'i-3', text: '写第三章' });
+  assert.ok(composer.live.includes('写第三章   排队'));
+  feed(bridge, 'input_withdrawn', { input_id: 'i-3' });
+  assert.equal(composer.live, null, '撤回后实时区不再挂着它');
+  const text = stdout.text();
+  assert.ok(text.includes('排队已取消'), '撤回应给出可见交代');
+
+  renderer.close();
+});
+
+test('排队行与未收尾的动态行共存：dispatcher 不互相覆盖', () => {
+  const composer = makeFakeComposer();
+  const { renderer } = makeRenderer({ tty: true, env: { NO_COLOR: '1' }, composer });
+  const bridge = createEventRenderer({ renderer });
+
+  feed(bridge, 'run_started', { input_id: 'i-1', text: '写第一章' });
+  feed(bridge, 'input_queued', { input_id: 'i-2', text: '排队的那条' });
+  const live = composer.live;
+  assert.ok(live.includes('思考中'), '动态行仍在');
+  assert.ok(live.includes('排队的那条   排队'), '排队行在');
+  assert.ok(live.indexOf('思考中') < live.indexOf('排队的那条'), '动态行在上、排队行在下');
+
+  renderer.close();
+});

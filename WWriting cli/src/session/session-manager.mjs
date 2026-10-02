@@ -126,20 +126,25 @@ export function createSessionManager({
         return handle.projection;
       },
       // 提交新输入：空闲（无运行、无活跃输入、队列空）时成为活跃输入；忙碌时按 FIFO 排队。
-      async submit({ text } = {}) {
+      // inputId 可选（/retry 用）：复用原输入的 ID 重跑同一件事——历史装配的
+      // 「排除当前输入」因此天然把失败尝试整体排除出上下文，不需要任何特判。
+      async submit({ text, inputId } = {}) {
         if (typeof text !== 'string' || text.trim() === '') {
           throw new Error('输入内容不能为空。');
         }
-        const inputId = String(idFactory());
+        const id = inputId === undefined || inputId === null ? String(idFactory()) : inputId;
+        if (typeof id !== 'string' || id === '') {
+          throw new Error('输入 ID 必须是非空字符串。');
+        }
         const current = await store.currentProjection();
         const busy = current.active_run_id !== null
           || current.active_input_id !== null
           || current.queue.length > 0;
         await store.append(busy
-          ? { type: 'input_queued', data: { input_id: inputId, text } }
-          : { type: 'input_submitted', data: { input_id: inputId, text } });
+          ? { type: 'input_queued', data: { input_id: id, text } }
+          : { type: 'input_submitted', data: { input_id: id, text } });
         handle.projection = await store.currentProjection();
-        return { input_id: inputId, queued: busy };
+        return { input_id: id, queued: busy };
       },
       // 显式排队：始终追加到队尾。
       async enqueue({ text } = {}) {

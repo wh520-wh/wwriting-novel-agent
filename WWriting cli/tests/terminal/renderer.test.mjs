@@ -85,7 +85,8 @@ test('用户行、正文、活动行、状态行、排队行、确认提示都�
   renderer.printUser('写第一章');
   renderer.printAssistant('第一章 长街灯火');
   renderer.printActivity({ state: 'done', label: '读取文件 大纲.md' });
-  renderer.printQueue('把第二章也写了');
+  // 管道 / 非 TTY：没有实时区可挂，排队行仍要一处可见交代（setLiveQueue 的直写退路）。
+  renderer.setLiveQueue([{ input_id: 'q-1', text: '把第二章也写了' }]);
   renderer.printDecision({
     decision_id: 'dec-1',
     level: 'write',
@@ -292,7 +293,7 @@ test('NO_COLOR 时不上色：光标控制码照旧，颜色码一个都不出�
   renderer.printActivity({ state: 'failed', label: '写入文件' });
   renderer.printStatus('思考中');
   renderer.printStatus('操作失败', { final: true, tone: 'error', detail: '无法写入文件。' });
-  renderer.printQueue('排队文本');
+  renderer.setLiveQueue([{ input_id: 'q-1', text: '排队文本' }]);
   renderer.printDecision({ decision_id: 'd', level: 'extreme', tool: 'delete_file', target: 'x', confirmation_text: '确认删除 abc123' });
   renderer.close();
 
@@ -761,4 +762,88 @@ test('没有 composer（管道）时不合成面板：面板不写进直写流',
   const text = screenText(stdout.text());
   assert.ok(text.includes('任务计划 0/1'), '滚动区全表照常');
   assert.equal(text.includes('▶ 写第三章\n任务计划'), false);
+});
+
+// —— 排队行进实时区：开跑后不留「排队」残影 ——
+
+test('setLiveQueue（composer）：排队行贴在实时区，与动态行合成；一条都不进 scrollback', () => {
+  const composer = makeFakeComposer('写第二章');
+  const { renderer, stdout } = makeRenderer({ tty: true, composer });
+
+  renderer.printStatus('思考中');
+  renderer.setLiveQueue([
+    { input_id: 'q-1', text: '把第二章也写了' },
+    { input_id: 'q-2', text: '再补一段结尾' },
+  ]);
+
+  const live = composer.live.replace(/\x1b\[[0-9;]*m/g, '');
+  assert.deepEqual(live.split('\n'), [
+    '思考中',
+    '把第二章也写了   排队',
+    '再补一段结尾   排队',
+  ], '多条排队按 FIFO 各占一行，动态行在上');
+  assert.equal(stdout.text().includes('排队'), false, '实时区不是 scrollback：历史里没有残影');
+});
+
+test('setLiveQueue（composer）：轮到开跑的行消失、其余保留；撤空后实时区不留空壳', () => {
+  const composer = makeFakeComposer();
+  const { renderer, stdout } = makeRenderer({ tty: true, composer });
+
+  renderer.setLiveQueue([
+    { input_id: 'q-1', text: '第一条排队' },
+    { input_id: 'q-2', text: '第二条排队' },
+  ]);
+  // 轮到 q-1：整表替换为剩下的那条——开跑的实时区行自然消失。
+  renderer.setLiveQueue([{ input_id: 'q-2', text: '第二条排队' }]);
+  let live = composer.live.replace(/\x1b\[[0-9;]*m/g, '');
+  assert.equal(live.includes('第一条排队'), false, '开跑的行消失');
+  assert.ok(live.includes('第二条排队   排队'), '其余保留');
+
+  renderer.setLiveQueue([]);
+  assert.equal(composer.live, null, '撤空后实时区不留空壳');
+  assert.equal(stdout.text().includes('排队'), false, '全程零 scrollback 残影');
+});
+
+test('setLiveQueue：与计划面板合成的顺序是 动态行 → 排队行 → 计划面板', () => {
+  const composer = makeFakeComposer();
+  const { renderer } = makeRenderer({ tty: true, composer });
+
+  renderer.setLivePlan([{ summary: '写第三章', status: 'in_progress' }], { active: true });
+  renderer.printStatus('思考中');
+  renderer.setLiveQueue([{ input_id: 'q-1', text: '插队的事' }]);
+
+  const live = composer.live.replace(/\x1b\[[0-9;]*m/g, '');
+  const rows = live.split('\n');
+  const at = (needle) => rows.findIndex((row) => row.includes(needle));
+  assert.ok(at('思考中') !== -1 && at('插队的事') !== -1 && at('写第三章') !== -1, live);
+  assert.ok(at('思考中') < at('插队的事'), '动态行在排队行之上');
+  assert.ok(at('插队的事') < at('写第三章'), '排队行在计划面板之上');
+});
+
+test('setLiveQueue：超宽原文在实时区被截到终端宽度以内', () => {
+  const composer = makeFakeComposer();
+  const { renderer } = makeRenderer({ tty: true, composer, columns: 40 });
+
+  renderer.setLiveQueue([{ input_id: 'q-1', text: `把这一章${'雨'.repeat(60)}写完` }]);
+  const live = composer.live.replace(/\x1b\[[0-9;]*m/g, '');
+  for (const row of live.split('\n')) {
+    assert.ok(displayWidth(row) <= 39, `实时行 ${displayWidth(row)} 列，软折行会把首格留进 scrollback`);
+  }
+  assert.ok(live.includes('排队'), '截断的是原文，徽标仍在');
+});
+
+test('setLiveQueue（管道）：新加入的条目直写一行，重复同步不重写', () => {
+  const { renderer, stdout } = makeRenderer();
+
+  renderer.setLiveQueue([
+    { input_id: 'q-1', text: '第一条排队' },
+    { input_id: 'q-2', text: '第二条排队' },
+  ]);
+  // 整表替换重复同步（如开跑时同步剩余列表）：已经写过的不再写第二遍。
+  renderer.setLiveQueue([{ input_id: 'q-2', text: '第二条排队' }]);
+  renderer.close();
+
+  const text = stdout.text();
+  assert.equal(text.match(/第一条排队   排队/g).length, 1);
+  assert.equal(text.match(/第二条排队   排队/g).length, 1);
 });

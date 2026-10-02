@@ -28,6 +28,8 @@ export const READ_TOOLS = Object.freeze([
   'update_plan',
   // 章节提交只写应用私有的版本库与前情账本，不改创作文件——同样自动放行（回滚才会动文件，在 write 侧）。
   'commit_chapter',
+  // 修订入账（finalize_revision）与提交同级：一样只写应用私有存储，创作文件不动。
+  'finalize_revision',
   'read_continuity',
   'style_stats',
 ]);
@@ -37,6 +39,8 @@ export const WRITE_TOOLS = Object.freeze([
   // 追加正文与回滚章节都会改写创作目录里的文件——与写入同级，需要确认。
   'append_chapter_segment',
   'rollback_chapter',
+  // update_memory 落盘设定档案（创作目录 memory/ 下）——写级确认，确认卡说「更新设定」。
+  'update_memory',
 ]);
 export const EXTREME_TOOLS = Object.freeze([
   'delete_file',
