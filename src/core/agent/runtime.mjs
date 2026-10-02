@@ -174,6 +174,9 @@ export function createAgentRuntime({
         loopPromise: null,
         firstTurn: null,
         stopReason: "user_stop",
+        // 章节版本基线迁移的最近一次结果（run-pipeline 维护，成功清除；仅内存——
+        // 每轮模型请求都会重试迁移，重启后失败会自然重现）。快照下发给前端提示行。
+        baselineMigrationError: null,
         mutex: createMutex(),
         // Prompt 的 Available Skills 目录摘要：只取 name/description，绝不注入正文
         // （完整指令由 read_skill 按需读取）。catalog 失败不阻塞 agent（沿用兜底语义）。
@@ -547,8 +550,16 @@ export function createAgentRuntime({
     const state = ensureProject(projectRoot);
     const sessionState = await resolveSessionState(state, sessionId);
     if (!sessionState) {
-      // 无会话：空快照（惰性创建——不产生会话条目）
-      return { session: null, events: [], gaps: [], has_more: false };
+      // 无会话：空快照（惰性创建——不产生会话条目）。维护级错误随快照下发：
+      // 基线迁移是项目级状态，无会话时同样成立。
+      return {
+        session: null,
+        events: [],
+        gaps: [],
+        has_more: false,
+        projection_write_error: null,
+        baseline_migration_error: state.baselineMigrationError ?? null
+      };
     }
     await sessionState.journal.load();
     const session = await sessionState.journal.getSession();
@@ -570,7 +581,17 @@ export function createAgentRuntime({
     } else {
       has_more = events.length > 0 ? events.at(-1).seq < lastSeq : lastSeq > afterSeq;
     }
-    return { session, events, gaps: page.gaps, has_more };
+    // 维护级降级随快照下发（前端提示行消费）：projection_write_error 是 journal
+    // 的可观察字段（session.json 写入失败，事件日志不受影响）；baseline_migration_error
+    // 由 run-pipeline 每轮模型请求维护（最近一次章节版本基线迁移的结果，成功即清除）。
+    return {
+      session,
+      events,
+      gaps: page.gaps,
+      has_more,
+      projection_write_error: sessionState.journal.projection_write_error ?? null,
+      baseline_migration_error: state.baselineMigrationError ?? null
+    };
   }
 
   // 历史导出（NDJSON 异步流）：只读动作，不追加 Journal 事件；由 journal 层顺序

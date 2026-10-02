@@ -160,3 +160,19 @@
 - R1 红线：全库 0 越线；`work-group.mjs` 872 行/43089B、`work-items.mjs` 665 行/32995B、`state.js` 950 行/44071B（LF 归一）
 
 **欠账与限制（只记不排）**：① 工单 07 **已裁决并实现**（2026-09-28 口径 A：新 Run 清空 chip，沿用 F7/F11 口径；`state.js`+`index.js`+2 用例，统一书 §4.2 已定稿）；② 工单 08 **已裁决**（口径 B：维持「query 不进标签」，统一书 §4.3 已注记，无代码改动）；③ 四项明确不做并记录理由：失败文案行内+详情双显（碰字段顺序验收契约）、rev 跨 state 实例比较（生产路径必 reset，已契约化注释）、`activityToRun`/`turnToRun` 不回收、stopping 期间停止按钮可点（后端幂等）；④ web_search 特化分支当前不可达（注册表无此工具），来源行样式为规格预置（+363B）；⑤ round22 遗留 D23 三家 logo 不变。
+
+## 降级可见性修复（记录于：2026-10-02｜状态：当前有效）
+
+**范围**：用户点名的三处「降级方向对但不可见」灰色地带，全部走已有通道，无新模块/新依赖/新 CSS。
+
+- **journal 投影写失败**（原 `projection_write_error` 可观察字段零消费方）：agent snapshot 响应新增 `projection_write_error`（`src/core/agent/runtime.mjs`）；前端 `state.js` reduceSnapshot 镜像、`view.js` 在 runSection 顶部渲染提示行（复用 `system-notice` 样式，agent.css 零新增）。
+- **章节版本基线迁移失败**（原仅 console.warn）：run-pipeline 把最近一次结果记入项目内存态 `state.baselineMigrationError`（成功自愈即清除，每轮模型请求重试，重启后失败会自然重现故不持久化），经同一 snapshot 字段 `baseline_migration_error` 下发、同一提示行渲染。
+- **供应商清单 JSON 损坏静默置空**：两条读路径都补 console 告警——写路径 `model-provider-store.mjs` `readRawStore`（SyntaxError 原本连 warn 都没有，且下次保存会用空清单覆盖原文件）、只读路径 `project-model-migration.mjs` `loadProviderStoreReadOnly`（SyntaxError 原被显式排除在告警外）；降级语义本身不变。
+
+**规格**：统一行为规格书 §19 新增「维护级降级必须可观察」条款。
+
+**验收证据（记录于 2026-10-02，均为实跑）**：
+- 新增 3 个测试：`project-agent.test.mjs` 端到端快照契约（破坏 .versions 与 session.json → 两字段非空、Run 仍完成）、`model-provider-store.test.mjs` 扩展（损坏 → 空清单 + 告警）、`model-project-migration.test.mjs`（只读路径损坏告警）、`agent-surface.test.mjs`（提示行非空显示/null 收起）——共 4 个。
+- 相关回归：project-agent 91/91、agent-surface 203/203、model-provider-store + model-project-migration 34/34、architecture R1 + journal-recovery + diagnostics 112/112。全量 `npm test` 本轮未跑（改动面小且已过定向回归）。
+
+**欠账与限制（只记不排）**：工作区另有五个文件与本任务无关的未提交改动（`utils.js` 删 `ensureTrailingSlash`、`journal-queries.mjs` `isIdleInitiatedRun` 单遍扫描重构、`run-pipeline.mjs` 删 `needsCompletionTerminal` 薄委托、`agent-routes.mjs` title 校验重构、`model-provider-store.mjs` id 工厂去导出），本轮修复叠加其上，提交时需一并处理。

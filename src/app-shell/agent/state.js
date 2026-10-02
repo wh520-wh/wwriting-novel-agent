@@ -10,6 +10,8 @@
 //     随后按 event_key 去重并入 loadedEvents 并做一次全集重建；同会话新快照（断线
 //     补齐）同样 merge 去重后重建。前置页（session 为 null，beforeSeq 语义）只 merge
 //     events 并重建，不清空当前消息。page 的 gaps 投影为 history_gap 条目。
+//     维护级降级（projection_write_error / baseline_migration_error）随每个快照
+//     下发，镜像到 state 顶层供 view 渲染提示行。
 //   - reduceEvent(state, event)：单条增量事件（SSE 推送）。seq 严格递增时走增量
 //     fast path（逐事件派生）；任何 seq < lastSeq 的乱序事件（前置页补齐、SSE 重排）
 //     触发按 (seq, event_key) 排序的已加载全集重建。lastSeq 只是 SSE 增量游标，
@@ -70,6 +72,9 @@ export function createState() {
     plan: null,             // 第九轮：顶层计划投影（plan_updated → { explanation, items }），供 plan-panel chip 消费
     // 第九轮：系统通知行投影（chapter_rolled_back / memory_file_restored → timeline）。
     systemNotices: [],      // [{ seq, type, payload }]
+    // 维护级降级镜像（快照携带，view 渲染提示行；null=当前无降级）。
+    projectionWriteError: null,     // session.json 写入失败（事件日志不受影响）
+    baselineMigrationError: null,   // 章节版本基线迁移最近一次失败（项目级）
     revisions: { messages: 0, run: 0, queue: 0, decisions: 0, errors: 0, context: 0, notices: 0 }
   };
 }
@@ -129,9 +134,16 @@ export function reduceSnapshot(state, snapshot) {
   }
   // page 元数据在 resetState（新 session 分支）之后应用，避免被重置：
   // has_more 决定是否还有更早历史（滚动到顶可继续前置分页）；gaps 投影为
-  // history_gap（不伪造消息内容）。
+  // history_gap（不伪造消息内容）。维护级降级同样在此镜像（服务端快照为权威：
+  // 每个快照都携带当前值，恢复成功后字段回到 null）。
   if (has_more !== undefined) state.hasEarlier = has_more === true;
   if (Array.isArray(gaps)) mergeGaps(state, gaps);
+  if (snapshot.projection_write_error !== undefined) {
+    state.projectionWriteError = snapshot.projection_write_error ?? null;
+  }
+  if (snapshot.baseline_migration_error !== undefined) {
+    state.baselineMigrationError = snapshot.baseline_migration_error ?? null;
+  }
   return sessionChanged;
 }
 

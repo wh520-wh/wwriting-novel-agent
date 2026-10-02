@@ -40,9 +40,10 @@ export async function loadProviderStoreReadOnly(secretsRoot) {
     if (!raw || typeof raw !== "object" || raw.schema_version !== 2) return { providers: [] };
     return normalizeProviderStore(raw) ?? { providers: [] };
   } catch (error) {
-    // 真实 IO 失败（权限拒绝等）要与"尚无 v2 清单"可区分：缺失由 readJson 兜底，
-    // JSON 语法错误按空清单静默；其余错误告警后仍按空清单返回。
-    if (error?.code !== "ENOENT" && !(error instanceof SyntaxError)) {
+    // 真实 IO 失败（权限拒绝等）与 JSON 语法错误都要与"尚无 v2 清单"可区分：
+    // 缺失（ENOENT 防御性兜底）静默，其余一律告警后按空清单返回——否则用户
+    // 配置过的清单会无声变空。
+    if (error?.code !== "ENOENT") {
       console.warn(`[project-model-migration] 读取 ${PROVIDER_STORE_FILE} 失败，按空清单处理:`, error?.message ?? error);
     }
     return { providers: [] };

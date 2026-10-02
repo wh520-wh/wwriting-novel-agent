@@ -1444,6 +1444,71 @@ test("章节提交一致更新正式文件、索引、记忆与 checkpoint", asy
 });
 
 // ---------------------------------------------------------------------------
+// 维护级降级可见性：投影写失败 / 章节版本基线迁移失败随快照下发（前端提示行
+// 消费）。降级方向不变（尽力而为、不阻塞 Run），但必须可观察——此前
+// projection_write_error 只有 journal 层测试覆盖，快照运输层零消费方。
+// ---------------------------------------------------------------------------
+
+test("维护级降级随快照可见：正常路径两字段为 null，投影写失败与基线迁移失败非空", async (t) => {
+  const h = await openHarness(t, {
+    project: { min_words_per_chapter: 50, target_words_per_chapter: 80 },
+    gatewayScript: [
+      async () => ({
+        toolCalls: [
+          tool("append_chapter_segment", {
+            project_id: h.project.project_id ?? null,
+            chapter_no: 1,
+            segment_no: 1,
+            content: CHAPTER_CONTENT
+          })
+        ]
+      }),
+      async () => ({
+        toolCalls: [tool("commit_chapter", { project_id: h.project.project_id ?? null, chapter_no: 1 })]
+      }),
+      { reply: { text: "第一章已完成提交。" } },
+      { reply: { text: "收到。" } }
+    ]
+  });
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "正式写第一章", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+
+  // 正常路径：契约字段恒存在且为 null。
+  let snap = await h.agent.snapshot({ projectRoot: h.projectRoot });
+  assert.equal(snap.projection_write_error, null);
+  assert.equal(snap.baseline_migration_error, null);
+
+  // 破坏 .versions（基线迁移只写它）与 session.json（投影写入目标）：
+  // 下一轮模型请求装配触发基线迁移失败，事件追加触发投影写失败；
+  // 两者都不阻塞 Run（尽力而为语义）。
+  await fs.rm(path.join(h.projectRoot, ".versions"), { recursive: true, force: true });
+  await fs.writeFile(path.join(h.projectRoot, ".versions"), "not a directory", "utf8");
+  const session = await readSession(h.agent, h.projectRoot);
+  const sessionJsonPath = path.join(
+    h.agentRoot, "sessions", session.session_id, "session.json"
+  );
+  await fs.rm(sessionJsonPath, { force: true });
+  await fs.mkdir(sessionJsonPath);
+
+  await h.agent.submit({ projectRoot: h.projectRoot, text: "继续", source: "chat" });
+  await waitForIdle(h.agent, h.projectRoot);
+  const events = await readEvents(h.agent, h.projectRoot);
+  assert.ok(eventsOfType(events, "run_completed").length >= 2, "降级不得阻塞 Run 完成");
+
+  snap = await h.agent.snapshot({ projectRoot: h.projectRoot });
+  assert.ok(snap.projection_write_error, "投影写失败应随快照可见");
+  assert.ok(
+    typeof snap.projection_write_error.message === "string" && snap.projection_write_error.message.length > 0,
+    "投影写失败应携带可读 message"
+  );
+  assert.ok(snap.baseline_migration_error, "基线迁移失败应随快照可见");
+  assert.ok(
+    typeof snap.baseline_migration_error.message === "string" && snap.baseline_migration_error.message.length > 0,
+    "基线迁移失败应携带可读 message"
+  );
+});
+
+// ---------------------------------------------------------------------------
 // 第九轮：模型调 update_memory + 更新 book_summary/WORKLOG 后档案与两文件落盘，
 // commit 结果含固定 memory_checklist 提醒（§2.3/§1.4）。
 // ---------------------------------------------------------------------------

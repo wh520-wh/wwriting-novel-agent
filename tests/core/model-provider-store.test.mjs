@@ -79,12 +79,21 @@ test("provider mock 拒绝入清单", async (t) => {
   );
 });
 
-test("损坏清单当空清单重建", async (t) => {
+test("损坏清单当空清单重建，且必须告警（静默置空会让用户配置无声丢失）", async (t) => {
   const root = await tempRoot(t);
   const { writeFile } = await import("node:fs/promises");
   await writeFile(path.join(root, "model-profiles.json"), "{broken", "utf8");
-  const store = await loadProviderStore(root);
-  assert.deepEqual(store.providers, []);
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(" "));
+  try {
+    const store = await loadProviderStore(root);
+    assert.deepEqual(store.providers, []);
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.equal(warnings.length, 1, "JSON 损坏必须产生可见告警");
+  assert.ok(warnings[0].includes("model-profiles.json"), "告警应指明损坏文件");
 });
 
 test("seeded_preset_ids 归一化只保留合法字符串并去重", async (t) => {

@@ -176,8 +176,14 @@ async function readRawStore(root) {
     raw = await readJson(storePath(root), null);
   } catch (error) {
     // readJson 仅对「文件缺失」返回 fallback；JSON 损坏时 JSON.parse 抛
-    // SyntaxError，按空清单重建（真实 IO 错误仍继续抛出）。
-    if (error instanceof SyntaxError) return emptyStore();
+    // SyntaxError，按空清单重建（真实 IO 错误仍继续抛出）。损坏必须告警：
+    // 用户配置过的清单会静默变空，且下一次保存会用空清单覆盖该文件。
+    if (error instanceof SyntaxError) {
+      console.warn(
+        `[model-provider-store] ${storePath(root)} JSON 损坏，按空清单处理；在设置中保存任何变更前可手工修复该文件。`
+      );
+      return emptyStore();
+    }
     throw error;
   }
   return raw ?? emptyStore();
