@@ -385,3 +385,74 @@ function nextSeq() {
   digestSeqCounter += 1;
   return digestSeqCounter;
 }
+
+// —— /retry 的可重试判定（统一行为规格书 §4.1 的 CLI 判定函数）——
+
+import { findRetryableTurn } from '../../src/agent/history.mjs';
+
+test('findRetryableTurn：最近一轮失败 → 可重试，带回原输入与原 run', () => {
+  seq = 0;
+  const events = [
+    { type: 'run_started', seq: 1, run_id: 'run_a', data: { input_id: 'in-1', text: '帮我写第三章' } },
+    { type: 'run_failed', seq: 2, run_id: 'run_a', data: { message: '连接中断', code: 'ECONNRESET' } },
+  ];
+  const found = findRetryableTurn(events);
+  assert.deepEqual(found, {
+    inputId: 'in-1',
+    runId: 'run_a',
+    text: '帮我写第三章',
+    terminal: 'failed',
+    interruptReason: null,
+  });
+});
+
+test('findRetryableTurn：崩溃恢复产生的「已中断」（process_exited）可重试', () => {
+  seq = 0;
+  const events = [
+    { type: 'run_started', seq: 1, run_id: 'run_a', data: { input_id: 'in-1', text: '继续写' } },
+    { type: 'run_interrupted', seq: 2, run_id: 'run_a', data: { reason: 'process_exited' } },
+  ];
+  assert.equal(findRetryableTurn(events).terminal, 'interrupted');
+  assert.equal(findRetryableTurn(events).interruptReason, 'process_exited');
+});
+
+test('findRetryableTurn：用户主动停止的轮次不可重试（停止语义不被破坏）', () => {
+  seq = 0;
+  const events = [
+    { type: 'run_started', seq: 1, run_id: 'run_a', data: { input_id: 'in-1', text: '写吧' } },
+    { type: 'run_interrupted', seq: 2, run_id: 'run_a', data: { reason: 'user_stop' } },
+  ];
+  assert.equal(findRetryableTurn(events), null);
+});
+
+test('findRetryableTurn：最近终态是已完成 → 没有可重试的失败轮次', () => {
+  seq = 0;
+  const events = [
+    { type: 'run_started', seq: 1, run_id: 'run_a', data: { input_id: 'in-1', text: '失败过' } },
+    { type: 'run_failed', seq: 2, run_id: 'run_a', data: { message: 'x', code: 'X' } },
+    { type: 'run_started', seq: 3, run_id: 'run_b', data: { input_id: 'in-2', text: '成功了' } },
+    { type: 'run_completed', seq: 4, run_id: 'run_b', data: { text: '好', rounds: 0, usage: null } },
+  ];
+  assert.equal(findRetryableTurn(events), null, '只看最近终态，不回溯更早的失败');
+});
+
+test('findRetryableTurn：没有轮次、未收敛残留、缺输入 ID 或原文 → 都不可重试', () => {
+  assert.equal(findRetryableTurn([]), null);
+  seq = 0;
+  const open = [
+    { type: 'run_started', seq: 1, run_id: 'run_a', data: { input_id: 'in-1', text: '没跑完' } },
+  ];
+  assert.equal(findRetryableTurn(open), null, 'open 轮由恢复逻辑收敛，这里不猜');
+  seq = 0;
+  const noInput = [
+    { type: 'run_started', seq: 1, run_id: 'run_a', data: { text: '没有输入 ID' } },
+    { type: 'run_failed', seq: 2, run_id: 'run_a', data: { message: 'x', code: 'X' } },
+  ];
+  assert.equal(findRetryableTurn(noInput), null);
+  seq = 0;
+  const noText = [
+    { type: 'run_started', seq: 1, run_id: 'run_a', data: { input_id: 'in-1' } },
+    { type: 'run_failed', seq: 2, run_id: 'run_a', data: { message: 'x', code: 'X' } },
+  ];
+  assert.equal(findRetryableTurn(noText), null);
+});

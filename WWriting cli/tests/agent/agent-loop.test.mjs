@@ -880,6 +880,9 @@ test('system prompt 写明记忆职责、Q8 分工，并带上骨架原文', asy
     // Q8：与 AGENTS.md 的分工必须写在 prompt 里（草案定了「写清楚即可，不做运行时防御」，
     // 但没说写在哪——落点就是这里）。
     'AGENTS.md 是**规则**', '这部作品的当前状态', '绝不把规则抄进 WWRITING.md',
+    // 记忆维护纪律两行（上游三件套的 CLI 两件化）：指路合法通道 + 提交后的固定顺序。
+    'memory/ 记忆档案只读；设定档案请用 update_memory 工具更新',
+    '提交/入账/回滚后必须依次：update_memory → 更新 WWRITING.md，两件缺一不得声称完成',
   ]) {
     assert.ok(system.includes(needle), `system prompt 缺：${needle}`);
   }

@@ -15,6 +15,9 @@ import { versionLine } from '../version.mjs';
 import { padDisplayEnd } from './metrics.mjs';
 // 技能目录的标签映射只有一份：agent-loop（提示词层）是权威，/skills 的列法照抄它。
 import { SKILL_CATEGORY_TAGS } from '../agent/agent-loop.mjs';
+// /retry 的可重试判定与历史投影共用同一份纯函数（history.mjs）：命令层先判、先回显原文，
+// 控制器只负责「能不能安全起跑」的再拦截。
+import { findRetryableTurn } from '../agent/history.mjs';
 // 确认的作答语义（选项表 / 文本翻译 / 「确认已失效」那句事实）只有一份：decisions.mjs。
 // 这里的文字作答与确认卡的方向键作答共用同一张翻译表。
 import { choiceFor, reportStaleDecision } from './decisions.mjs';
@@ -64,6 +67,7 @@ export const HELP_COMMANDS = Object.freeze([
   ['/resume', '切换会话：/resume <会话 ID>'],
   ['/now', '提升队首输入，打断当前这一轮'],
   ['/stop', '停止当前这一轮'],
+  ['/retry', '重跑最近一次失败或中断的轮次'],
   ['/help', '显示本帮助'],
   ['/quit', '退出'],
 ]);
@@ -626,6 +630,44 @@ export function createCommandHandler({
     }
   }
 
+  // /retry：把最近一次失败（或非用户停止的中断）的轮次用原输入重跑。
+  //
+  // 原文在这里回显成用户行：/retry 不是那条输入本身，readline 没有回显它的机会，
+  // 不补这一行屏幕上就只剩输出凭空开始，看不出是同一件事的继续。
+  // 成功起跑后不再多话：思考中/终态行自己会接上（铁律 3：成功不弹 Toast）。
+  // 失败/中断的终态行不加「可 /retry」提示（铁律 2：状态只在当前轮；发现靠 / 菜单）。
+  async function runRetryCommand() {
+    const controller = getController();
+    if (controller.isBusy()) {
+      reply('运行中', { tone: 'warn', detail: '等这一轮结束再重试。' });
+      return;
+    }
+    const snapshot = controller.snapshot();
+    if (Array.isArray(snapshot.queue) && snapshot.queue.length > 0) {
+      reply('队列里还有输入', { tone: 'warn', detail: '先让它们跑完再重试。' });
+      return;
+    }
+    let retryable = null;
+    try {
+      retryable = findRetryableTurn(await controller.readEvents());
+    } catch (error) {
+      // 读不出 ≠ 没有：读日志失败必须如实说读失败，绝不冒充「没有可重试的失败轮次。」
+      //（铁律 3 同源：检测失败不代表检测通过，也不代表检测结果为否）。
+      reply('无法重试', { tone: 'error', detail: fact(error) });
+      return;
+    }
+    if (retryable === null) {
+      reply('没有可重试的失败轮次。');
+      return;
+    }
+    renderer.printUser(retryable.text);
+    try {
+      await controller.retry(retryable);
+    } catch (error) {
+      reply('重试失败', { tone: 'error', detail: fact(error) });
+    }
+  }
+
   // 退出顺序固定：先停当前轮，再释放会话写锁（close 不 abort 正在跑的轮，D18）。
   async function shutdown() {
     const controller = getController();
@@ -699,6 +741,9 @@ export function createCommandHandler({
         return 'handled';
       case 'stop':
         runStopCommand();
+        return 'handled';
+      case 'retry':
+        await runRetryCommand();
         return 'handled';
       case 'now':
         await runNowCommand();

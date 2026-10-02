@@ -482,3 +482,107 @@ test('restoreFile 授权标签是「回滚章节」：确认卡说的是回滚�
   assert.equal(await fs.readFile(path.join(projectRoot, 'chapters', 'ch01.md'), 'utf8'), '提交过的内容');
   assert.equal(out.charsNoSpace, 6);
 });
+
+// —— memory/ 目录级保护（设定档案只有 update_memory 一条写通道）——
+
+const MEMORY_DENIAL = '记忆档案为系统文件，只读；设定档案请用 update_memory 工具更新。';
+
+test('memory/ 只读：四类写工具命中一律拒绝并指路 update_memory，确认卡不出现', async () => {
+  const { projectRoot } = await makeLayout('wwriting-files-memory-');
+  const permissions = createPermissionState({ yolo: true });
+  permissions.beginInput({ inputId: 'in-1' });
+  const tools = createFileTools({ projectRoot, permissions });
+
+  const attempts = [
+    () => tools.writeFile({ path: 'memory/continuity.json', content: '{}' }),
+    () => tools.editFile({ path: 'memory/continuity.md', oldText: '旧', newText: '新' }),
+    () => tools.appendFile({ path: 'memory/continuity.md', content: '追加' }),
+    () => tools.restoreFile({ path: 'memory/continuity.json', content: '回滚' }),
+  ];
+  for (const attempt of attempts) {
+    await assert.rejects(attempt, (error) => {
+      assert.equal(error.code, 'TOOL_PROTECTED_DIR');
+      assert.equal(error.message, MEMORY_DENIAL);
+      return true;
+    });
+  }
+  // 保护在授权之前：连待确认都不产生（普通确认卡不出现）。
+  assert.deepEqual(permissions.pending(), []);
+  assert.deepEqual(await listNames(path.join(projectRoot, 'chapters')), [], '零写入');
+});
+
+test('memory/ 保护与越界判定互不绕过', async () => {
+  const { projectRoot, outsideRoot } = await makeLayout('wwriting-files-memory-edge-');
+  const permissions = createPermissionState({ yolo: true });
+  permissions.beginInput({ inputId: 'in-1' });
+  const tools = createFileTools({ projectRoot, permissions });
+
+  // 越界优先：路径解析在先，项目外就是项目外，不管路径长什么样。
+  await assert.rejects(
+    () => tools.writeFile({ path: '../outside/memory/x.md', content: 'x' }),
+    (error) => error.code === 'TOOL_PATH_OUTSIDE_PROJECT',
+  );
+  // 中段 .. 落回 memory/ 内：仍是保护拒绝，不是普通写入。
+  await assert.rejects(
+    () => tools.writeFile({ path: 'chapters/../memory/continuity.json', content: 'x' }),
+    (error) => error.code === 'TOOL_PROTECTED_DIR',
+  );
+  // memory/ 目录本身也不可当写入目标（含将来 delete_dir 的落点）。
+  await assert.rejects(
+    () => tools.writeFile({ path: 'memory', content: 'x' }),
+    (error) => error.code === 'TOOL_PROTECTED_DIR',
+  );
+  // 同形前缀不是保护对象：memoryx/ 是普通文件区。
+  await fs.mkdir(path.join(projectRoot, 'memoryx'), { recursive: true });
+  await tools.writeFile({ path: 'memoryx/01.md', content: '普通区' });
+  assert.deepEqual(await listNames(outsideRoot), ['secret.md']);
+});
+
+test('memory/ 读取放行：读文件、列表、搜索都照常', async () => {
+  const { projectRoot } = await makeLayout('wwriting-files-memory-read-');
+  await fs.mkdir(path.join(projectRoot, 'memory'), { recursive: true });
+  await fs.writeFile(path.join(projectRoot, 'memory', 'continuity.json'), '{"facts": []}', 'utf8');
+  await fs.mkdir(path.join(projectRoot, 'memory', 'sub'), { recursive: true });
+  await fs.writeFile(path.join(projectRoot, 'memory', 'sub', 'note.md'), '设定笔记在此', 'utf8');
+  const tools = createFileTools({ projectRoot, permissions: allowWrites() });
+
+  const file = await tools.readFile({ path: 'memory/continuity.json' });
+  assert.equal(file.text, '{"facts": []}');
+  const listing = await tools.listFiles({ path: 'memory', recursive: true });
+  assert.deepEqual(listing.entries.map((entry) => entry.path).sort(), ['memory/continuity.json', 'memory/sub/', 'memory/sub/note.md']);
+  const found = await tools.searchFiles({ pattern: '设定笔记', path: 'memory' });
+  assert.equal(found.matches.length, 1);
+  assert.equal(found.matches[0].path, 'memory/sub/note.md');
+});
+
+test('memory/ 保护按真实路径生效：项目内的目录别名（junction/symlink）绕不过去', async () => {
+  const { projectRoot } = await makeLayout('wwriting-files-memory-alias-');
+  await fs.mkdir(path.join(projectRoot, 'memory'), { recursive: true });
+  const alias = path.join(projectRoot, 'mem');
+  try {
+    await fs.symlink(path.join(projectRoot, 'memory'), alias, process.platform === 'win32' ? 'junction' : 'dir');
+  } catch (error) {
+    // 平台不支持创建别名（权限 / 文件系统限制）：这条件测不了，如实跳过而不是假装通过。
+    if (['EPERM', 'EACCES', 'ENOTSUP', 'EINVAL'].includes(error?.code)) return;
+    throw error;
+  }
+  const permissions = createPermissionState({ yolo: true });
+  permissions.beginInput({ inputId: 'in-1' });
+  const tools = createFileTools({ projectRoot, permissions });
+
+  // 经别名写入 = 写进 memory/：拒绝且指路合法通道，确认卡不出现。
+  await assert.rejects(
+    () => tools.writeFile({ path: 'mem/continuity.json', content: '{}' }),
+    (error) => {
+      assert.equal(error.code, 'TOOL_PROTECTED_DIR');
+      assert.equal(error.message, MEMORY_DENIAL);
+      return true;
+    },
+  );
+  await assert.rejects(() => fs.stat(path.join(projectRoot, 'memory', 'continuity.json')));
+  assert.deepEqual(permissions.pending(), []);
+  // 经别名读取仍放行（别名不是写通道，读取从来不受保护限制）。
+  await fs.writeFile(path.join(projectRoot, 'memory', 'continuity.json'), '{"facts": []}', 'utf8');
+  const read = await tools.readFile({ path: 'mem/continuity.json' });
+  assert.equal(read.text, '{"facts": []}');
+});

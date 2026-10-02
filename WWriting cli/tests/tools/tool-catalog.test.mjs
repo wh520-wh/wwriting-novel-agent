@@ -16,8 +16,8 @@ test('TOOL_SCHEMAS 顺序稳定且每个条目都是合法的 function 声明', 
     TOOL_SCHEMAS.map((schema) => schema.function.name),
     [
       'list_files', 'read_file', 'search_files', 'write_file', 'edit_file', 'count_text',
-      'read_skill', 'update_plan', 'append_chapter_segment', 'commit_chapter', 'rollback_chapter',
-      'read_continuity', 'style_stats',
+      'read_skill', 'update_plan', 'append_chapter_segment', 'commit_chapter', 'finalize_revision',
+      'rollback_chapter', 'update_memory', 'read_continuity', 'style_stats',
     ],
   );
   for (const schema of TOOL_SCHEMAS) {
@@ -56,6 +56,7 @@ test('TOOL_METHODS 与默认工具工厂的方法名一一对应（目录 ↔ �
     const skillService = { read: async () => ({}) };
     const chapterService = {
       commit: async () => ({}),
+      finalizeRevision: async () => ({}),
       prepareRollback: async () => null,
       readContinuity: () => ({}),
     };
@@ -63,6 +64,8 @@ test('TOOL_METHODS 与默认工具工厂的方法名一一对应（目录 ↔ �
     for (const [name, method] of Object.entries(TOOL_METHODS)) {
       assert.equal(typeof tools[method], 'function', `${name} 声明的方法 ${method} 在默认工具工厂上不存在`);
     }
+    // update_memory 不依赖注入服务：工厂本身就装上了（设定档案是它的唯一合法写通道）。
+    assert.equal(typeof tools.updateMemory, 'function', 'updateMemory 必须装配');
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

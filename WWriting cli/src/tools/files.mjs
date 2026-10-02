@@ -19,6 +19,17 @@ export class FileToolError extends Error {
   }
 }
 
+// memory/ 目录级保护（上游 PROTECTED_RULES 的目录级口径）：设定档案只有
+// update_memory 一条写通道。判定与拒绝文案全局只有这一份；任何落盘类工具
+// （含将来的删除类——它们今天还没有执行路径）都必须先过这道门。
+// 保护在请求授权**之前**生效：普通确认卡不该出现，指路合法通道才是用户要的事实。
+export const MEMORY_DIR_DENIAL_MESSAGE = '记忆档案为系统文件，只读；设定档案请用 update_memory 工具更新。';
+export function isMemoryDirTarget(projectRoot, target) {
+  if (typeof target !== 'string' || target.trim() === '') return false;
+  const root = path.resolve(projectRoot);
+  return isInside(path.join(root, 'memory'), path.resolve(root, target));
+}
+
 // 取消：name 用 AbortError 兼容调用方的取消判断，code 保留本模块的语义。
 function abortError() {
   const error = new FileToolError('操作已取消，文件保持原样。', 'TOOL_ABORTED', { aborted: true });
@@ -46,6 +57,11 @@ export function createFileTools({ projectRoot, signal = null, permissions = null
   // 写入与修改必须先过权限层（铁律 4）：门在任何写盘动作之前，未授权就一个字节都不写。
   // fail-closed：没注入 permissions 视同未授权——「谁忘了调就未确认直接落盘」正是要堵的洞。
   async function authorizeWrite(tool, target) {
+    // memory/ 保护是硬边界，排在权限层之前：确认卡不出现，直接指路 update_memory。
+    // 判定按真实路径再验一次：项目内的目录别名（junction / symlink 指向 memory/）绕不过去。
+    if (await isProtectedWriteTarget(target)) {
+      throw new FileToolError(MEMORY_DIR_DENIAL_MESSAGE, 'TOOL_PROTECTED_DIR', { tool, target });
+    }
     if (!permissions || typeof permissions.request !== 'function') {
       throw new FileToolError('未获得写入授权，请先确认。', 'TOOL_WRITE_UNAUTHORIZED', { tool, target });
     }
@@ -70,6 +86,21 @@ export function createFileTools({ projectRoot, signal = null, permissions = null
     return rootRealPromise;
   }
 
+  // memory/ 保护的完整判定：先比字面路径，再按**真实路径**比一次——项目内的目录别名
+  // （junction / symlink 指向 memory/）不能绕过保护，与 resolveSafePath 的越界判定同一纪律。
+  // memory/ 还不存在时没有真实路径可比（也不存在指向它的别名），字面判定已经覆盖。
+  async function isProtectedWriteTarget(target) {
+    if (isMemoryDirTarget(rootResolved, target)) return true;
+    let memoryReal;
+    try {
+      memoryReal = await fsImpl.realpath(path.join(rootResolved, 'memory'));
+    } catch {
+      return false;
+    }
+    const targetReal = await realpathExisting(path.resolve(rootResolved, target));
+    return isInside(memoryReal, targetReal);
+  }
+
   // 真实路径：目标还不存在时（新建文件）逐级向上找到最近的已存在祖先。
   async function realpathExisting(target) {
     let current = target;
@@ -88,8 +119,7 @@ export function createFileTools({ projectRoot, signal = null, permissions = null
   }
 
   // 所有工具共用的入口：相对化 → 越界判定 → 真实路径判定。
-  async function resolveSafePath(target) {
-    if (typeof target !== 'string' || target.trim() === '') {
+  async function resolveSafePath(target) {    if (typeof target !== 'string' || target.trim() === '') {
       throw new FileToolError('文件路径不能为空。', 'TOOL_PATH_INVALID', { target });
     }
     const requested = target.trim();

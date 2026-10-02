@@ -30,8 +30,11 @@ const BASE_SYSTEM_PROMPT = [
   '规则：只使用给定的工具读写文件；读取自动放行，写入与修改需要用户确认；',
   '篇幅一律先用 count_text 统计再判断，绝不凭自己的估计报字数；',
   '多步任务先用 update_plan 列出步骤并随进度整表更新；',
-  '长篇写作：章节正文用 append_chapter_segment 分段续写，一章定稿用 commit_chapter 提交',
-  '（回滚恢复的是最近一次提交），续写新章前用 read_continuity 回顾前情；',
+  '长篇写作：章节正文用 append_chapter_segment 分段续写，一章定稿用 commit_chapter 提交，',
+  '定稿后再改动就用 finalize_revision 重新入账，回滚恢复的是最近一次生效版本，',
+  '续写新章前用 read_continuity 回顾前情；',
+  'memory/ 记忆档案只读；设定档案请用 update_memory 工具更新；',
+  '提交/入账/回滚后必须依次：update_memory → 更新 WWRITING.md，两件缺一不得声称完成；',
   '删除、项目外访问等极端操作不在你的能力范围内，不要尝试。',
 ].join('');
 
@@ -223,7 +226,7 @@ export function createAgentLoop({
 
   async function run({
     projectRoot, sessionId, inputId, text, signal = null, history = [], historyMeta = null,
-    memory = null, memoryCached = false,
+    memory = null, memoryCached = false, retryOfRunId = null,
   } = {}) {
     if (typeof text !== 'string' || text.trim() === '') {
       throw new Error('这一轮没有可执行的输入。');
@@ -237,6 +240,9 @@ export function createAgentLoop({
     const historyData = hasHistoryStory ? historyMetaOf(priorMessages, historyMeta) : null;
     const runId = `run_${String(idFactory())}`;
     const startedAt = new Date(clock()).toISOString();
+    // 重试轮（/retry）记录它接续的是哪一次 run。**run_id 每轮新生成，不复用原 id**：
+    // 思考重放按 run_id 归堆（agent/replay.mjs），复用会让失败尝试的思考并进重试轮；
+    // 「同一 run 恢复」的语义由 retry_of + 复用 input_id 承载（规格偏差，已记录在案）。
 
     // —— 事件写入：delta 是同步回调，落盘是异步的；用一条串行的写入链保证顺序不乱 ——
     let writeChain = Promise.resolve();
@@ -488,6 +494,7 @@ export function createAgentLoop({
         text,
         project_root: projectRoot ?? null,
         started_at: startedAt,
+        ...(typeof retryOfRunId === 'string' && retryOfRunId !== '' ? { retry_of: retryOfRunId } : {}),
       });
       // 只在真的有历史时发：没有历史就没有这件事可说，凭空发一条「载入 0 轮」是噪音。
       if (historyData !== null) {

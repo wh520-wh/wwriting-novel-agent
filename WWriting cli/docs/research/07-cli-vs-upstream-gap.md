@@ -107,3 +107,25 @@ CLI 目前 = 通用 read/write/edit + count_text + read_skill。「章节即文�
 3. **C2 自动压缩**（长篇上下文的真正出路）
 4. **B2 shell**、**A2 重试**、**C1+C3 分片 journal + 注册表**、**A3 /now 裁决**、其余小件
 5. **C4 多供应商**：等产品决策
+
+## 五、2026-10-02 回填（B1 收尾 + A2 落地后的状态与偏差定稿）
+
+- **A1 任务计划：已完成**（ADR-0017：实时区面板/chip + 滚动区全表并存；f98d83a）。
+- **B1 写作领域工具集：7/7 齐**。本轮补齐 `finalize_revision`（入账章节）与 `update_memory`（更新设定），规格见
+  `docs/design/2026-10-02-章节收尾与Run重试-规格.md`：
+  - 适配偏差：无章节索引/校验和体系（`expected_checksum` 不做），章节引用以相对路径替代 `chapter_no`；
+    门禁只校验章节文件存在（轻量门禁 Q29）；时间线冲突检测（`checkTimeline`）未搬，`timeline_violations` 恒空
+    （空 ≠ 检测通过，与「检测失败≠检测通过」同源）；三件套的 CLI 两件化为 update_memory → 更新 WWRITING.md
+    （`book_summary.md` / `WORKLOG.md` 不引入）。
+  - 回滚目标扩为「最近一次生效版本」（提交或入账），安全网快照仍不作回滚目标；
+    `read_continuity` 每章一行取最新生效版本，字段 `commits` 正名为 `chapters`。
+  - `memory/` 目录级保护落地：通用写入/修改/追加/回滚工具命中即拒绝并指路 update_memory；
+    **别名路径（junction/symlink）按真实路径判定**，绕不过去；读取照常放行。
+  - 存储照上游：`memory/continuity.json` + `continuity.md`（I4 md≡json 打印件）；与桌面版同路径，
+    桌面版留下的 `foreshadows` 原样保留并照实渲染；设定档案永不注入提示词。
+- **A2 Run 级重试：已完成**（`/retry`）。**偏差定稿**：run_id **不复用**（思考重放按 run_id 归堆，
+  复用会把失败尝试的思考并进重试轮）；「同一 run 恢复」由 `run_started.data.retry_of` + 复用原
+  `input_id` 承载；判据为最近一条 `run_failed` 或非用户停止的 `run_interrupted`，已完成/用户停止
+  不可重试；运行中与队列非空都拒绝（排到队尾不是「重试刚才那次」的语义）。
+- **C2 自动压缩：已裁决不追**——ADR-0015 定手动 `/compact`。
+- A3（/now 语义裁决）、B2（shell）、B3（成本）、A4（会话改名 / web_search）、C1+C3、C4 仍未动。

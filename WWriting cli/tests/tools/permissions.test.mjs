@@ -28,6 +28,10 @@ test('classifyOperation：读取类工具是 read，写入类工具是 write', (
   assert.equal(classifyOperation({ tool: 'count_text', projectRoot }), 'read');
   assert.equal(classifyOperation({ tool: 'write_file', target: 'chapters/ch01.md', projectRoot }), 'write');
   assert.equal(classifyOperation({ tool: 'edit_file', target: 'chapters/ch01.md', projectRoot }), 'write');
+  // 深工具的分级：入账只写私有存储与提交同级（read），更新设定落盘创作目录（write）。
+  assert.equal(classifyOperation({ tool: 'commit_chapter', target: 'ch01.md', projectRoot }), 'read');
+  assert.equal(classifyOperation({ tool: 'finalize_revision', target: 'ch01.md', projectRoot }), 'read');
+  assert.equal(classifyOperation({ tool: 'update_memory', target: 'ch01.md', projectRoot }), 'write');
 });
 
 test('classifyOperation：删除与清空会话数据是 extreme', () => {

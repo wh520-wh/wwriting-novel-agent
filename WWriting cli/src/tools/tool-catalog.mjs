@@ -145,7 +145,7 @@ const TOOLS = Object.freeze({
   commit_chapter: {
     label: '提交章节',
     method: 'commitChapter',
-    description: '提交一章的当前内容为版本快照，并记入前情账本（自动放行）。一章定稿时提交；回滚恢复的是最近一次提交。',
+    description: '提交一章的当前内容为版本快照，并记入前情账本（自动放行）。一章定稿时提交；之后再用通用修改工具改动，改完要用 finalize_revision 重新入账。',
     parameters: {
       type: 'object',
       properties: {
@@ -155,14 +155,97 @@ const TOOLS = Object.freeze({
       required: ['path'],
     },
   },
-  rollback_chapter: {
-    label: '回滚章节',
-    method: 'rollbackChapter',
-    description: '把一章恢复到最近一次提交的内容（需要用户确认）；回滚前的当前内容会先自动存档，永远可再回滚。',
+  finalize_revision: {
+    label: '入账章节',
+    method: 'finalizeRevision',
+    description: '把已提交章节的当前内容重新入账：存为新版本快照并更新前情口径（自动放行）。用通用修改工具改完已提交章节后必须调用它，修订才算入账。',
     parameters: {
       type: 'object',
       properties: {
         path: { type: 'string', description: '相对创作目录的章节文件路径。' },
+        summary: { type: 'string', description: '一句话剧情摘要（前情账本用），可省略；不给就沿用上一次的。' },
+      },
+      required: ['path'],
+    },
+  },
+  rollback_chapter: {
+    label: '回滚章节',
+    method: 'rollbackChapter',
+    description: '把一章恢复到最近一次生效版本的内容（提交或入账的版本；需要用户确认）；回滚前的当前内容会先自动存档，永远可再回滚。',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '相对创作目录的章节文件路径。' },
+      },
+      required: ['path'],
+    },
+  },
+  update_memory: {
+    label: '更新设定',
+    method: 'updateMemory',
+    description: '更新设定档案（memory/ 下的结构化事实、时间线与角色状态）：系统校验、合并、落盘并重渲染打印件，重复提交安全。提交、入账或回滚章节后用它维护本章设定，只交本章新增或修正的条目。',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '本次更新针对的章节文件路径（相对创作目录）。' },
+        facts: {
+          type: 'array',
+          description: '本章新增或修正的客观设定；不要全量重发已记录的条目。',
+          items: {
+            type: 'object',
+            properties: {
+              entity: { type: 'string', description: '实体名（人物、地点、物品、组织等）。' },
+              attribute: { type: 'string', description: '属性名。' },
+              value: { type: 'string', description: '属性值。' },
+              path: { type: 'string', description: '该条目所属章节路径，缺省继承顶层 path。' },
+              quote: { type: 'string', description: '原文短引，不超过 80 字。' },
+            },
+            required: ['entity', 'attribute', 'value'],
+          },
+        },
+        timeline: {
+          type: 'array',
+          description: '本章的时间线节点（故事内时间与事件）。',
+          items: {
+            type: 'object',
+            properties: {
+              path: { type: 'string', description: '该节点所属章节路径，缺省继承顶层 path。' },
+              story_time_raw: { type: 'string', description: '故事内时间的原话。' },
+              events: { type: 'array', items: { type: 'string' }, description: '本章发生的事件，最多 10 条。' },
+              time: {
+                type: 'object',
+                description: '时间的结构化标注，可省略。',
+                properties: {
+                  kind: { type: 'string', enum: ['scene', 'flashback', 'parallel', 'dream'], description: '缺省 scene。' },
+                  elapsed: { type: 'string', description: '距上一节点的时间跨度，如 +3d；未知则不填。' },
+                  anchor: {
+                    type: 'object',
+                    properties: {
+                      type: { type: 'string', enum: ['date', 'age', 'named'] },
+                      raw: { type: 'string' },
+                      subject: { type: 'string', description: 'age 锚点的人物。' },
+                    },
+                  },
+                  confidence: { type: 'string', enum: ['high', 'low'], description: '缺省 low。' },
+                },
+              },
+            },
+          },
+        },
+        characters: {
+          type: 'array',
+          description: '本章有新特征或状态变化的角色。',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string', description: '角色名。' },
+              traits: { type: 'array', items: { type: 'string' }, description: '新观察到的特征，最多 10 条。' },
+              status: { type: 'string', description: '本章结束时的状态。' },
+              path: { type: 'string', description: '该角色所属章节路径，缺省继承顶层 path。' },
+            },
+            required: ['name'],
+          },
+        },
       },
       required: ['path'],
     },

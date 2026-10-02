@@ -33,7 +33,7 @@ export function summarizeToolResult(data = {}) {
       // 但「有比字数更独特的事实的工具」先说那个事实。
       if (Array.isArray(parsed.plan)) return `计划 ${parsed.done ?? 0}/${parsed.total ?? '?'}`;
       // read_continuity：说「装进前情的有几章」（截断与否是另一条事实，不挤在这一行）。
-      if (Number.isFinite(parsed.commits)) return `${parsed.entries ?? parsed.commits} 章`;
+      if (Number.isFinite(parsed.chapters)) return `${parsed.entries ?? parsed.chapters} 章`;
       // rollback_chapter：恢复到第几版（字数它也有，但版本号才是回滚独有的信息）。
       if (Number.isFinite(parsed.restoredSeq)) return `回到版本 ${parsed.restoredSeq}`;
       // style_stats：对话占比是它独有的量（字数 count_text 已经给过了）。

@@ -34,7 +34,7 @@ function makeRenderer() {
     printAssistant: (text) => calls.push(['assistant', text]),
     printActivity: (entry) => calls.push(['activity', entry]),
     printStatus: (text, options = {}) => calls.push(['status', text, options]),
-    printQueue: (text) => calls.push(['queue', text]),
+    setLiveQueue: (items) => calls.push(['liveQueue', items]),
     printDecision: (decision) => calls.push(['decision', decision]),
     clearLive: () => calls.push(['clearLive']),
     close: () => calls.push(['close']),
@@ -1385,4 +1385,140 @@ test('/compact 失败：压缩失败 + 一条事实，不静默', async () => {
   const status = pick(renderer.calls, 'status').at(-1);
   assert.equal(status[1], '压缩失败');
   assert.match(status[2].detail, /没有返回摘要/);
+});
+
+// —— /retry：Run 级重试的命令面 ——
+
+function makeRetryController({
+  busy = false,
+  queue = [],
+  events = [],
+  retryThrows = null,
+  readEventsThrows = null,
+} = {}) {
+  const calls = { retry: [] };
+  return {
+    calls,
+    controller: {
+      activeRunId: () => null,
+      isBusy: () => busy,
+      snapshot: () => ({ session_id: 's-1', queue }),
+      readEvents: async () => {
+        if (readEventsThrows !== null) throw readEventsThrows;
+        return events;
+      },
+      retry: async (retryable) => {
+        calls.retry.push(retryable);
+        if (retryThrows !== null) throw retryThrows;
+        return { inputId: retryable.inputId, queued: false, result: { status: 'completed' } };
+      },
+      permissions: { pending: () => [] },
+    },
+  };
+}
+
+// 一段「最近一轮失败」的事件日志（findRetryableTurn 应命中它）。
+const FAILED_TURN_EVENTS = [
+  { type: 'run_started', seq: 1, run_id: 'run_a', data: { input_id: 'in-1', text: '帮我写第三章' } },
+  { type: 'run_failed', seq: 2, run_id: 'run_a', data: { message: '连接中断', code: 'ECONNRESET' } },
+];
+
+test('/retry：找到失败轮 → 回显原文并用原输入重跑，成功后不多话', async () => {
+  const renderer = makeRenderer();
+  const { controller, calls } = makeRetryController({ events: FAILED_TURN_EVENTS });
+  const handler = makeHandler({ renderer, controller });
+
+  await handler.handle('/retry');
+
+  assert.deepEqual(calls.retry, [{
+    inputId: 'in-1',
+    runId: 'run_a',
+    text: '帮我写第三章',
+    terminal: 'failed',
+    interruptReason: null,
+  }]);
+  // 原文回显成用户行：屏幕上它是同一件事的继续。
+  assert.deepEqual(pick(renderer.calls, 'user'), [['user', '帮我写第三章']]);
+  // 成功起跑后不再多话：终态行自己会接上（铁律 3）。
+  assert.deepEqual(pick(renderer.calls, 'status'), []);
+});
+
+test('/retry：没有可重试的失败轮次 → 一行事实', async () => {
+  const renderer = makeRenderer();
+  const { controller, calls } = makeRetryController({ events: [] });
+  const handler = makeHandler({ renderer, controller });
+
+  await handler.handle('/retry');
+
+  assert.equal(calls.retry.length, 0);
+  const status = pick(renderer.calls, 'status').at(-1);
+  assert.equal(status[1], '没有可重试的失败轮次。');
+});
+
+test('/retry：运行中与队列非空都拒绝，且日志读取被跳过', async () => {
+  const busyRenderer = makeRenderer();
+  const busy = makeRetryController({ busy: true, events: FAILED_TURN_EVENTS });
+  const busyHandler = makeHandler({ renderer: busyRenderer, controller: busy.controller });
+  await busyHandler.handle('/retry');
+  assert.equal(busy.calls.retry.length, 0);
+  const busyStatus = pick(busyRenderer.calls, 'status').at(-1);
+  assert.equal(busyStatus[1], '运行中');
+
+  const queuedRenderer = makeRenderer();
+  const queued = makeRetryController({ queue: [{ input_id: 'in-2', text: '排着的' }], events: FAILED_TURN_EVENTS });
+  const queuedHandler = makeHandler({ renderer: queuedRenderer, controller: queued.controller });
+  await queuedHandler.handle('/retry');
+  assert.equal(queued.calls.retry.length, 0);
+  const queuedStatus = pick(queuedRenderer.calls, 'status').at(-1);
+  assert.equal(queuedStatus[1], '队列里还有输入');
+});
+
+test('/retry：用户主动停止的最近轮次不可重试', async () => {
+  const renderer = makeRenderer();
+  const events = [
+    { type: 'run_started', seq: 1, run_id: 'run_a', data: { input_id: 'in-1', text: '写吧' } },
+    { type: 'run_interrupted', seq: 2, run_id: 'run_a', data: { reason: 'user_stop' } },
+  ];
+  const { controller, calls } = makeRetryController({ events });
+  const handler = makeHandler({ renderer, controller });
+
+  await handler.handle('/retry');
+
+  assert.equal(calls.retry.length, 0);
+  const status = pick(renderer.calls, 'status').at(-1);
+  assert.equal(status[1], '没有可重试的失败轮次。');
+});
+
+test('/retry：重跑失败 → 错误说成人话', async () => {
+  const renderer = makeRenderer();
+  const { controller } = makeRetryController({ events: FAILED_TURN_EVENTS, retryThrows: new Error('会话写入失败') });
+  const handler = makeHandler({ renderer, controller });
+
+  await handler.handle('/retry');
+
+  const status = pick(renderer.calls, 'status').at(-1);
+  assert.equal(status[1], '重试失败');
+  assert.equal(status[2].tone, 'error');
+});
+
+test('/retry：日志读不出来 → 如实说读失败，绝不冒充「没有可重试的轮次」', async () => {
+  const renderer = makeRenderer();
+  const { controller, calls } = makeRetryController({ readEventsThrows: new Error('日志损坏') });
+  const handler = makeHandler({ renderer, controller });
+
+  await handler.handle('/retry');
+
+  assert.equal(calls.retry.length, 0);
+  const status = pick(renderer.calls, 'status').map((call) => call[1]).join('\n');
+  assert.match(status, /无法重试/, '读失败有一条独立的事实');
+  assert.equal(status.includes('没有可重试的失败轮次。'), false, '读不出 ≠ 没有');
+});
+
+test('/retry 进帮助菜单', () => {
+  const renderer = makeRenderer();
+  const handler = makeHandler({ renderer, controller: makeRetryController().controller });
+  return handler.handle('/help').then(() => {
+    const helpText = pick(renderer.calls, 'status').map((call) => call[1]).join('\n');
+    assert.match(helpText, /\/retry\s+重跑最近一次失败或中断的轮次/);
+  });
 });

@@ -23,7 +23,7 @@ import { eventMillis, reasoningDurationMs, terminalOfEvent } from '../agent/even
 import { summarizeToolResult } from '../tools/tool-summary.mjs';
 
 const RENDERER_CONTRACT = Object.freeze([
-  'printUser', 'printAssistant', 'printStatus', 'printActivity', 'printQueue',
+  'printUser', 'printAssistant', 'printStatus', 'printActivity', 'setLiveQueue',
   'printDecision', 'printPlan', 'setLivePlan', 'resetThinkingPreview',
 ]);
 
@@ -37,7 +37,9 @@ export function createEventRenderer({ renderer, label = activityLabel, onDecisio
   }
   // 有交互入口 = 会用选择器。卡片据此少印一行提示（选项由选择器自己显示）。
   const pickerMode = typeof onDecision === 'function';
-  // 排过队的输入：input_id → 原文。它们真正开跑时要补一行用户行（见 run_started）。
+  // 排过队、还没开跑的输入：input_id → 原文（Map 插入序 = FIFO 序）。
+  // 它是实时区排队清单的**唯一持有者**：每次变更整表同步给渲染器
+  // （setLiveQueue），开跑/撤回后整表里没有它，实时区那一行自然消失。
   const queuedInputs = new Map();
   // 最近一份计划（plan_updated 的整表）：Run 结束时用它把实时区收成 chip 保留供回看（§4.2）。
   let lastPlan = null;
@@ -56,6 +58,7 @@ export function createEventRenderer({ renderer, label = activityLabel, onDecisio
   // 新会话的实时区——规格 §4.2 注记原文：「残留上一会话计划即缺陷」。
   function resetSessionState() {
     queuedInputs.clear();
+    renderer.setLiveQueue([]);
     lastPlan = null;
     currentRunReasoning = [];
     lastRunReasoning = null;
@@ -63,16 +66,23 @@ export function createEventRenderer({ renderer, label = activityLabel, onDecisio
     activityStartedAt = null;
   }
 
+  // 排队清单 → 实时区（整表替换）。桥是清单的唯一持有者，渲染器只管画。
+  function syncLiveQueue() {
+    renderer.setLiveQueue([...queuedInputs.entries()].map(([input_id, text]) => ({ input_id, text })));
+  }
+
   function handleEvent(event) {
     if (!event || typeof event.type !== 'string') return;
     const data = event.data ?? {};
     switch (event.type) {
       case 'run_started': {
-        // 排队输入开始后补上用户行；input_started 已补过时不会重复。
+        // 排队输入开跑时补上用户行（input_started 已补过时不会重复）。
+        // 实时区那一行同步消失：整表里已经没有它，滚动历史里只留这一条用户行。
         const queuedText = typeof data.input_id === 'string' ? queuedInputs.get(data.input_id) : null;
         if (typeof queuedText === 'string') {
           queuedInputs.delete(data.input_id);
           renderer.printUser(queuedText);
+          syncLiveQueue();
         }
         // 新一轮开始：上一轮的思考到此为止，成为 /reasoning 的重放对象。
         // 正在跑的这一轮不算「上一轮」——它还没结束，重放半截思考会误导人。
@@ -92,13 +102,14 @@ export function createEventRenderer({ renderer, label = activityLabel, onDecisio
         break;
       }
       case 'input_started': {
-        // 队列里的一条输入真正开跑：把排队时的记录换成正常的用户行。
-        // 这一刻起它的输出有主了，屏幕上不该再留一个「排队」的残影。
+        // 队列里的一条输入真正开跑：实时区的排队行由整表替换自然消失，
+        // 滚动历史补一条用户行——这一刻起它的输出有主了，屏幕上不再留「排队」的残影。
         const startedText = typeof data.input_id === 'string' && typeof data.text === 'string'
           ? data.text
           : (typeof data.input_id === 'string' ? queuedInputs.get(data.input_id) : null);
         if (typeof data.input_id === 'string') queuedInputs.delete(data.input_id);
         if (typeof startedText === 'string' && startedText !== '') renderer.printUser(startedText);
+        syncLiveQueue();
         break;
       }
       case 'history_applied': {
@@ -192,20 +203,21 @@ export function createEventRenderer({ renderer, label = activityLabel, onDecisio
         if (typeof data.input_id === 'string' && typeof data.text === 'string') {
           queuedInputs.set(data.input_id, data.text);
         }
-        if (typeof data.text === 'string') renderer.printQueue(data.text);
+        syncLiveQueue();
         break;
       case 'input_withdrawn':
-        // 撤回的排队输入永远不会开跑：别让它以后误补一行用户行。
+        // 撤回的排队输入永远不会开跑：实时区那一行随整表替换消失，
+        // 用户行绝不会以后误补（它已不在清单里）。
         //
-        // 但它必须**在屏幕上有个交代**：排队时已经写过一行 `排队`，若这里只是悄悄把它从
-        // 追踪表里删掉，那一行就会永远挂在屏幕上，用户以为它还在等，实际已经被丢掉了
-        // （一种无声的丢数据）。所以给一条终态事实，把那一条的归属说清楚。
+        // 但它必须**在屏幕上有个交代**：「排队已取消」终态行保留——那是已发生的交互事实，
+        // 不是残影。若只是悄悄从清单删掉，用户以为它还在等，实际已经没了（无声丢数据）。
         if (typeof data.input_id === 'string') {
           if (queuedInputs.has(data.input_id)) {
             renderer.printStatus('排队已取消', { final: true, tone: 'warn', detail: '这条输入不会执行' });
           }
           queuedInputs.delete(data.input_id);
         }
+        syncLiveQueue();
         break;
       case 'decision_pending': {
         // 确认提示承载状态，普通确认交给选择器；极端确认始终要求精确文字。
