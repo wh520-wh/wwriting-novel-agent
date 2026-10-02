@@ -25,10 +25,6 @@ export function pathBaseName(value) {
   return String(value ?? "").replace(/[\\/]+$/u, "").split(/[\\/]/u).pop();
 }
 
-export function ensureTrailingSlash(value) {
-  return String(value).endsWith("/") ? String(value) : `${value}/`;
-}
-
 export function isEnvironmentVariableName(value) {
   return /^[A-Za-z_][A-Za-z0-9_]*$/u.test(value);
 }

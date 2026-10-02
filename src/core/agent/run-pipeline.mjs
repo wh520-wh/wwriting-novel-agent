@@ -123,13 +123,6 @@ async function ensureUserMessageInTranscript(journal, inputId, inputText) {
 //     同时就是该输入的终态事件，完成时不再追加；input_promoted/run_started
 //     （retry）激活的输入完成时需要收敛。新 generation 不再产生这些旧事件，
 //     本分支只服务历史 journal 重放。
-// 返回当前输入完成时是否需要追加 input_completed。上限语义同 findInputText：
-// 只扫描最近 100k 条事件，超出视为需要收敛（保守方向）。
-// Task 3（第十五轮）：扫描逻辑迁入 journal.hasTerminalEvent，此处薄委托。
-async function needsCompletionTerminal(journal, runId, inputId) {
-  return journal.hasTerminalEvent(runId, inputId);
-}
-
 // 该 Run 是否为 /compact 输入而创建（空闲发起）还是运行中排队（in-run）。
 // 决定手动压缩失败/取消后的收敛：in-run 恢复 resume_run_status("running")，
 // 空闲发起则 run_cancelled → idle。
@@ -811,7 +804,7 @@ async function processInput(state, sessionState, runId, inputId, inputText) {
       const grantsOfInput =
         runNow.active_grants?.filter((grant) => grant.input_id === inputId) ?? [];
       const completionBatch = [];
-      if (await needsCompletionTerminal(journal, runId, inputId)) {
+      if (await journal.hasTerminalEvent(runId, inputId)) {
         completionBatch.push({ type: "input_completed", run_id: runId, payload: { input_id: inputId } });
       }
       for (const grant of grantsOfInput) {

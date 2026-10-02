@@ -341,10 +341,7 @@ export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPoll
     // 新建会话（前端"+"按钮）：title 可选（缺省 = "新对话"），只写注册表条目。
     "POST /api/agent/sessions": async ({ body }) => {
       const projectRoot = await resolveScope(body);
-      const title = body?.title;
-      if (title !== undefined && (typeof title !== "string" || title.trim().length === 0)) {
-        throw new HttpError(400, "invalid_session_title", "title 必须是非空字符串。");
-      }
+      const title = body?.title === undefined ? undefined : requireTitle(body);
       const session = await agent.newSession({ projectRoot, title });
       return { ok: true, session };
     },
