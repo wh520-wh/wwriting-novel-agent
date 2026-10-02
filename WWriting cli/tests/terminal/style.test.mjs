@@ -1,13 +1,17 @@
-// 调色与纯格式层（style.mjs）的单测：用量 / 缓存 / 思考耗时 / 终态文案 / 思考预览宽度 / 用户行折行。
-// 这一层的函数不碰 stdout——测它们不需要渲染器，也不需要事件桥。
+// 调色与纯格式层（style.mjs）的单测：用量 / 缓存 / 思考耗时 / 终态文案 / 思考预览宽度 / 用户行折行 /
+// 任务计划文案。这一层的函数不碰 stdout——测它们不需要渲染器，也不需要事件桥；
+// paint 直接用本层的 paintText（无色 = 纯文本断言，有色 = 钉住 §4.2 的条目形态）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  formatCacheHit, formatThinkingSeconds, formatUsage, terminalStatusText,
-  thinkingPreviewLines, thinkingPreviewWidth, userRows,
+  formatCacheHit, formatThinkingSeconds, formatUsage, paintText, planPanelLines, planTableLines,
+  terminalStatusText, thinkingPreviewLines, thinkingPreviewWidth, userRows,
 } from '../../src/terminal/style.mjs';
 import { clipToWidth, displayWidth, padDisplayEnd } from '../../src/terminal/metrics.mjs';
+
+const plain = (text, tone) => paintText(text, tone, false);
+const colored = (text, tone) => paintText(text, tone, true);
 
 test('formatUsage 在思考 tokens 存在时追加「（思考 800）」', () => {
   assert.equal(formatUsage({ totalTokens: 1200 }), '1.2k tokens');
@@ -137,4 +141,69 @@ test('空文本也给出恰好一行（色带不会凭空消失）', () => {
   const rows = userRows('', { width: 10 });
   assert.equal(rows.length, 1);
   assert.equal(displayWidth(rows[0]), 10);
+});
+
+// —— 任务计划文案（全表与面板的唯一来源）——
+
+test('planTableLines：标题 + 三态标记各就各位，长步骤折行续行对齐正文列', () => {
+  const lines = planTableLines([
+    { summary: '通读前两章', status: 'completed' },
+    { summary: `写第三章${'，这一步的说明很长'.repeat(6)}`, status: 'in_progress' },
+    { summary: '检查衔接', status: 'pending' },
+  ], 30, plain);
+  assert.equal(lines[0], '任务计划 1/3');
+  assert.equal(lines[1], '  ✓ 通读前两章');
+  assert.ok(lines[2].startsWith('  ▶ 写第三章'), `首行带标记与步骤开头：${JSON.stringify(lines[2])}`);
+  assert.ok(lines.slice(3).some((line) => /^ {4}\S/.test(line)), '折行续行对齐正文列');
+  assert.equal(lines.at(-1), '  ◌ 检查衔接');
+  for (const line of lines) assert.ok(!line.includes('\n'), '行内不带换行符，join 归调用方');
+});
+
+test('planTableLines：缺状态归一为 pending，空步骤也占一行（条目数不撒谎）', () => {
+  const lines = planTableLines([{ summary: '' }, { summary: '写', status: '未知状态' }], 30, plain);
+  assert.equal(lines[0], '任务计划 0/2');
+  assert.equal(lines[1], '  ◌ ');
+  assert.equal(lines[2], '  ◌ 写');
+});
+
+test('planTableLines：条目形态钉住 §4.2——完成压暗+删除线，进行中强调色+加粗', () => {
+  const lines = planTableLines([
+    { summary: '通读前两章', status: 'completed' },
+    { summary: '写第三章', status: 'in_progress' },
+  ], 30, colored);
+  assert.ok(lines[1].includes('\x1b[2m\x1b[9m通读前两章'), `完成 = 压暗 + 删除线：${JSON.stringify(lines[1])}`);
+  assert.ok(lines[2].includes('\x1b[38;5;173m\x1b[1m写第三章'), `进行中 = 强调色 + 加粗：${JSON.stringify(lines[2])}`);
+});
+
+test('planPanelLines chip：一行带当前步骤；补语超宽截断带省略号，标题与计数完整', () => {
+  const chip = planPanelLines(
+    [{ summary: '核对第三章时间线与人物动机是否前后一致', status: 'in_progress' }],
+    { active: false, width: 24 },
+    plain,
+  );
+  assert.equal(chip.length, 1);
+  assert.ok(chip[0].startsWith('任务计划 0/1'), `标题与计数完整：${chip[0]}`);
+  assert.ok(chip[0].includes('…'), '截断要可见');
+  assert.ok(displayWidth(chip[0]) <= 24, `chip 不超宽：${displayWidth(chip[0])}`);
+});
+
+test('planPanelLines 运行中：窗口保进行中项，两侧给省略行；全部完成收一句', () => {
+  const items = [];
+  for (let i = 1; i <= 6; i += 1) items.push({ summary: `待办 ${i}`, status: 'pending' });
+  items.push({ summary: '★ 正在进行的一步', status: 'in_progress' });
+  const panel = planPanelLines(items, { active: true, width: 40 }, plain);
+  assert.equal(panel[0], '任务计划 0/7');
+  assert.ok(panel.includes('  … 前面还有 4 步'), `被裁掉的头部要有交代：${panel.join(' | ')}`);
+  assert.ok(panel.some((line) => line.includes('★ 正在进行的一步')), '进行中项必须在场');
+
+  const done = planPanelLines([{ summary: '收尾', status: 'completed' }], { active: true, width: 40 }, plain);
+  assert.deepEqual(done, ['任务计划 1/1', '  ✓ 全部完成']);
+
+  const mixed = planPanelLines(
+    [...Array.from({ length: 12 }, () => ({ summary: '完', status: 'completed' })), { summary: '正在做', status: 'in_progress' }],
+    { active: true, width: 40 },
+    plain,
+  );
+  assert.ok(mixed.some((line) => line === '  ✓ 已完成 12 步'), '完成项收一行汇总');
+  assert.ok(mixed.some((line) => line.includes('正在做')), '当前步骤在面板里');
 });
