@@ -17,8 +17,8 @@ export const ALLOWED_API_FORMATS = new Set(["openai-chat-completions", "anthropi
 // v2，迁移只发生一次。
 const mutex = createMutex();
 
-export function newProviderId() { return `pv_${randomUUID().replace(/-/gu, "").slice(0, 16)}`; }
-export function newModelId() { return `m_${randomUUID().replace(/-/gu, "").slice(0, 16)}`; }
+function newProviderId() { return `pv_${randomUUID().replace(/-/gu, "").slice(0, 16)}`; }
+function newModelId() { return `m_${randomUUID().replace(/-/gu, "").slice(0, 16)}`; }
 
 // Task 19：迁移专用确定性 ID。v1→v2 迁移产出的 provider/model id 从规范化
 // identity 派生（provider: 去尾斜杠 + 小写的 base_url；model: 同一 base_url +

@@ -62,16 +62,18 @@ export function createJournalQueries({ readTail }) {
   // 日志（retry 的 run_started 仍带 input_id）保留原判定分支。
   async function isIdleInitiatedRun(runId, compactInputId) {
     const { events } = await readTail({ limit: 100000 });
+    let legacyInputId;
+    let hasLegacyRun = false;
     for (const event of events) {
       if (event.type === "input_started" && event.run_id === runId) {
         return event.payload?.input_id === compactInputId;
       }
+      if (!hasLegacyRun && event.type === "run_started" && event.run_id === runId) {
+        legacyInputId = event.payload?.input_id;
+        hasLegacyRun = true;
+      }
     }
-    for (const event of events) {
-      if (event.type !== "run_started" || event.run_id !== runId) continue;
-      return event.payload?.input_id === compactInputId;
-    }
-    return true;
+    return hasLegacyRun ? legacyInputId === compactInputId : true;
   }
 
   // 从 journal 事件找回可恢复 Run 的未终结输入（run_failed 记录了 input_id；
