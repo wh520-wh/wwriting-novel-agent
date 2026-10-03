@@ -314,8 +314,15 @@ export function createProjectRoutes({
       const format = body?.format === "md" ? "md" : "txt";
       const result = await withProjectLock(projectRoot, () => exportBook(projectRoot, { format }));
       // book-export 的 words 是 countEffectiveWords 的有效字数（中文按字符计），
-      // 对外契约字段名为 characters。
-      return { ok: true, path: result.path, chapters: result.chapters, characters: result.words };
+      // 对外契约字段名为 characters。2026-10-03 补强：透传缺章清单——索引 completed
+      // 但正式文件缺失的章节此前被静默跳过，作者无法判断成书是否完整。
+      return {
+        ok: true,
+        path: result.path,
+        chapters: result.chapters,
+        characters: result.words,
+        skipped: Array.isArray(result.skipped) ? result.skipped : []
+      };
     },
 
     // ---- 第九轮：章节版本时间线与恢复（UI 侧）----
@@ -342,15 +349,18 @@ export function createProjectRoutes({
       await assertNotArchived(projectRoot, { workspaceStore });
       const chapterNo = normalizePositiveInteger(handlerCtx.body?.chapter_no, null);
       if (chapterNo === null) throw new HttpError(400, "bad_args", "chapter_no 必须是正整数。");
-      // 原实现：agent.snapshot 缺省单会话投影，漏非活跃会话（审计交叉印证）。
-      if (await agent.projectBusy({ projectRoot })) {
-        throw new HttpError(409, "agent_running", "写作进行中，暂停后恢复。");
-      }
-      const project = await loadProject(projectRoot);
-      const version = handlerCtx.body?.version == null ? null : normalizePositiveInteger(handlerCtx.body.version, null);
-      if (handlerCtx.body?.version != null && version === null) throw new HttpError(400, "bad_args", "version 必须是正整数。");
-      const result = await withProjectLock(projectRoot, () =>
-        rollbackChapter({ projectRoot, projectId: project.project_id, chapterNo, version }));
+      // 2026-10-03 补强：busy 检查与回滚执行收进同一把项目写锁（原检查在锁外，
+      // 与恢复路由同款竞态窗口）。行为保持「忙时拒绝」。
+      const result = await withProjectLock(projectRoot, async () => {
+        // 原实现：agent.snapshot 缺省单会话投影，漏非活跃会话（审计交叉印证）。
+        if (await agent.projectBusy({ projectRoot })) {
+          throw new HttpError(409, "agent_running", "写作进行中，暂停后恢复。");
+        }
+        const project = await loadProject(projectRoot);
+        const version = handlerCtx.body?.version == null ? null : normalizePositiveInteger(handlerCtx.body.version, null);
+        if (handlerCtx.body?.version != null && version === null) throw new HttpError(400, "bad_args", "version 必须是正整数。");
+        return rollbackChapter({ projectRoot, projectId: project.project_id, chapterNo, version });
+      });
       try {
         await agent.appendSystemEvent({
           projectRoot,
@@ -398,12 +408,6 @@ export function createProjectRoutes({
       const version = normalizePositiveInteger(handlerCtx.body?.version, null);
       if (file !== "worklog" && file !== "book_summary") throw new HttpError(400, "bad_args", "file 只允许 worklog|book_summary。");
       if (version === null) throw new HttpError(400, "bad_args", "version 必须是正整数。");
-      // 原实现：agent.snapshot 缺省单会话投影，漏非活跃会话（审计交叉印证）。
-      if (await agent.projectBusy({ projectRoot })) {
-        throw new HttpError(409, "agent_running", "写作进行中，暂停后恢复。");
-      }
-      const { content } = await readMemoryVersion({ projectRoot, file, version });
-      const target = file === "worklog" ? safeJoin(projectRoot, "WORKLOG.md") : safeJoin(projectRoot, "book_summary.md");
       // C3（2026-09-24 审计）：覆盖前把当前内容存档为 pre_restore（对齐章节侧
       // pre_rollback「宁可不覆盖也不丢内容」语义）。快照失败即抛——恢复不执行。
       // 内容相同则不存档，避免重复恢复同一版本时产生 no-op 版本。
@@ -411,14 +415,25 @@ export function createProjectRoutes({
       // EPERM 等其余读错一律上抛——上抛即中止本次恢复、不写目标文件（fail-closed，
       // 对齐章节侧 rollbackChapter 的无 catch 直读）。若把这些读错吞成 null，就会
       // 跳过存档继续覆盖，正是 C3 要堵的「不可逆丢内容」在错误分支上的复现。
-      const currentContent = await fs.readFile(target, "utf8").catch((error) => {
-        if (error?.code === "ENOENT") return null;
-        throw error;
+      // 2026-10-03 补强：busy 检查、「读当前内容 → 安全快照 → 覆盖」整体收进
+      // 同一把项目写锁。先前检查在锁外，检查通过到写回之间新 Run 可启动并写入
+      // 目标——新内容被覆盖且不进安全快照（竞态窗口已复现）。Agent 的工具写入
+      // 与恢复共用此锁，互斥后窗口消除；busy 在锁内复查，行为仍是「忙时拒绝」。
+      await withProjectLock(projectRoot, async () => {
+        if (await agent.projectBusy({ projectRoot })) {
+          throw new HttpError(409, "agent_running", "写作进行中，暂停后恢复。");
+        }
+        const { content } = await readMemoryVersion({ projectRoot, file, version });
+        const target = file === "worklog" ? safeJoin(projectRoot, "WORKLOG.md") : safeJoin(projectRoot, "book_summary.md");
+        const currentContent = await fs.readFile(target, "utf8").catch((error) => {
+          if (error?.code === "ENOENT") return null;
+          throw error;
+        });
+        if (currentContent != null && currentContent !== content) {
+          await snapshotMemoryFile({ projectRoot, file, content: currentContent, source: "pre_restore" });
+        }
+        await writeFileAtomic(target, content);
       });
-      if (currentContent != null && currentContent !== content) {
-        await snapshotMemoryFile({ projectRoot, file, content: currentContent, source: "pre_restore" });
-      }
-      await withProjectLock(projectRoot, () => writeFileAtomic(target, content));
       try {
         await agent.appendSystemEvent({
           projectRoot,

@@ -139,6 +139,10 @@ export function createRunControl(ctx) {
             payload: { input_id: inputId }
           }
         ]);
+        // 预算计数（2026-10-03）：新 Run = 全新预算。计数挂项目级 state，不清零
+        // 会把上一个 Run 的用量带进来（Run C 第一轮即达限，已复现推演）；与 retry
+        // 的清零对齐，「Run 内累计」语义才成立。
+        state.budgetModelCalls = 0;
         sessionState.lifecycle.startLoop(runId);
         result = { input_id: inputId, run_id: runId, queued: false, session_id: targetId };
       } else {
@@ -367,6 +371,9 @@ export function createRunControl(ctx) {
         run_id: runId,
         payload: { input_id: inputId }
       });
+      // 预算重试语义（2026-10-03 访谈拍板）：重试 = 重新给预算，计数从零开始，
+      // 不要求调大配置才能重试。
+      state.budgetModelCalls = 0;
       await sessionManager.syncSessionRegistry(state, sessionState);
       sessionState.lifecycle.startLoop(runId);
       return { run_id: runId, input_id: inputId, retried: true };

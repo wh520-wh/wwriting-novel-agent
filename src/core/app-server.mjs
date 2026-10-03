@@ -32,7 +32,7 @@ import { ProviderConfigurationError } from "./model/openai-compatible.mjs";
 import { createProtocolAdapter } from "./model/gateway.mjs";
 import { runShellCommand } from "./shell/runtime.mjs";
 import { CostTracker } from "./cost-tracker.mjs";
-import { isPathInside, safeJoin } from "./fs-utils.mjs";
+import { isPathInside, physicalPathKey, safeJoin } from "./fs-utils.mjs";
 import { applyLocalSecretsToEnv, defaultSecretsRoot, loadLocalSecretsSync } from "./local-secrets.mjs";
 import { loadEffectiveWorkspaceConfig } from "./config-runtime.mjs";
 import { loadProviderStore } from "./model-provider-store.mjs";
@@ -204,7 +204,7 @@ export function createAppShellServer({
       workspaceStore,
       ...(skills ? { skills } : {})
     }),
-    createProvidersRoutes({ secretsRoot: localSecretsRoot })
+    createProvidersRoutes({ secretsRoot: localSecretsRoot, secretSink: secrets })
   ];
   for (const module of routeModules) {
     for (const [pattern, handler] of Object.entries(module)) {
@@ -284,10 +284,10 @@ export function createAppModelGateway({ resolveEffectiveConfig }) {
   // 第十一轮（审计 F）：Windows 文件系统大小写不敏感，同一项目以不同大小写
   // 路径打开时原样 resolve 做 key 会分裂出两个 entry / 两条 CostTracker，
   // per-project 成本累计被拆分。POSIX 大小写敏感，不得归一。gatewayFor 与
-  // flushDirty 共用同一口径（第十六轮 T23 抽取供两处共用）。
+  // flushDirty 共用同一口径（第十六轮 T23 抽取供两处共用）。2026-10-03：再解析
+  // junction/symlink（fs-utils.physicalPathKey）——别名路径不再分裂成本记账。
   function gatewayKeyFor(projectRoot) {
-    const resolved = path.resolve(projectRoot);
-    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+    return physicalPathKey(projectRoot);
   }
 
   function gatewayFor(projectRoot) {

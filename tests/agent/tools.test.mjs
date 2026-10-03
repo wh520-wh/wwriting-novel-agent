@@ -2023,3 +2023,59 @@ test("read_continuity: 无参走简报 op；projectOperations 未接线时 not_w
   const unwired = knowledgeToolDefinitions({ ...baseH, projectOperations: {} });
   await assert.rejects(() => unwired.read_continuity.run({}, { projectRoot: "/tmp/x" }), /工具不可用/u);
 });
+
+// ---------------------------------------------------------------------------
+// 受保护路径 2026-10-03 补强：规则侧真实路径身份（junction 写穿修复）+
+// shell 命令文本受保护目标扫描（宁可误报）
+// ---------------------------------------------------------------------------
+
+test("受保护目录本身是 junction 时写工具仍拒绝（真实路径身份一致）", async (t) => {
+  const h = await setup(t, { permissions: { yolo: true } });
+  const archive = await fs.mkdtemp(path.join(os.tmpdir(), "ww-protected-archive-"));
+  t.after(() => fs.rm(archive, { recursive: true, force: true }));
+  await fs.symlink(archive, path.join(h.projectRoot, ".versions"), "junction");
+  const MARKER = "JUNCTION_BYPASS_MARKER_4d21";
+  const result = await h.tools.execute(
+    toolCall("write_file", { path: ".versions/chapters/001/v1.md", content: MARKER }),
+    h.context
+  );
+  assert.equal(result.ok, false, "junction 化的 .versions 不得被通用写工具写穿");
+  assert.equal(
+    String(result.message ?? "").includes("版本档案") || String(result.error?.message ?? "").includes("版本档案"),
+    true,
+    "拒绝原因应指向版本档案只读"
+  );
+  const written = await fs.readFile(path.join(archive, "chapters", "001", "v1.md"), "utf8").catch(() => null);
+  assert.equal(written, null, "被拒内容不得落盘到链接外真实位置");
+});
+
+test("shell 命令文本含受保护目标时硬拒绝（先于权限评估，YOLO 不绕过）", async (t) => {
+  const h = await setup(t, { permissions: { yolo: true } });
+  const result = await h.tools.execute(
+    toolCall("shell", { command: "Set-Content run_log.jsonl changed", purpose: "测试" }),
+    h.context
+  );
+  assert.equal(result.ok, false, "审计账本不得经 shell 改写");
+  assert.match(String(result.message ?? ""), /审计账本/, "拒绝文案指向 run_log 保护规则");
+});
+
+test("shell 命令不含受保护目标时行为不变（YOLO 下普通命令仍可执行）", async (t) => {
+  const h = await setup(t, { permissions: { yolo: true }, shellRuntime: async () => ({ stdout: "ok", stderr: "" }) });
+  const result = await h.tools.execute(toolCall("shell", { command: "echo hello", purpose: "测试" }), h.context);
+  assert.equal(result.ok, true, "无关命令不受文本扫描影响");
+});
+
+test("受保护目录是 junction 时 shell cwd 检查仍命中（目标侧同解析）", async (t) => {
+  const h = await setup(t, { permissions: { yolo: true } });
+  const archive = await fs.mkdtemp(path.join(os.tmpdir(), "ww-cwd-archive-"));
+  t.after(() => fs.rm(archive, { recursive: true, force: true }));
+  // checkpoints 本身是 junction：cwd 直接写为 junction 路径时也必须命中保护
+  await fs.rm(path.join(h.projectRoot, "checkpoints"), { recursive: true, force: true });
+  await fs.symlink(archive, path.join(h.projectRoot, "checkpoints"), "junction");
+  const result = await h.tools.execute(
+    toolCall("shell", { command: "echo hi", cwd: "checkpoints", purpose: "测试" }),
+    h.context
+  );
+  assert.equal(result.ok, false, "junction 化的受保护目录作为 cwd 不得放行");
+  assert.match(String(result.message ?? ""), /checkpoint/, "拒绝文案指向 checkpoint 保护规则");
+});

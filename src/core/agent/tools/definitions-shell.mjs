@@ -7,7 +7,7 @@
 import path from "node:path";
 import { classifyShellCommand, resolveProjectScope } from "../../shell/risk.mjs";
 // 第二十一轮 Task 2：shell 的 scope/受保护 cwd 比较都以解析后的真实项目根为基准。
-import { projectRootForChecks } from "./runtime-helpers.mjs";
+import { isProtectedShellCommand, projectRootForChecks } from "./runtime-helpers.mjs";
 
 const SHELL_TIMEOUT_DEFAULT_MS = 120000;
 const SHELL_TIMEOUT_MIN_MS = 1000;
@@ -55,6 +55,10 @@ export function shellToolDefinitions(h) {
       },
       protectedCheck(args, context) {
         const resolvedCwd = path.resolve(context.projectRoot, args.cwd ?? ".");
+        // 命令文本扫描（2026-10-03）：文本出现受保护目标即拒绝，先于权限评估，
+        // YOLO/自动编辑不绕过（审计账本等经 shell 被改写的通道已复现）。
+        const commandDenial = isProtectedShellCommand(args.command);
+        if (commandDenial) return commandDenial;
         return isProtectedShellCwd(projectRootForChecks(context), resolvedCwd);
       },
       async run(args, context, call) {

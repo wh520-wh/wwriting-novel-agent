@@ -228,14 +228,71 @@ export function createDrawerPanels(ctx) {
     nodes.push(open);
     model.body.append(...nodes);
 
-    const budget = dpanel("预算与权限");
+    // 预算与权限（2026-10-03）：预算可编辑（开关默认关 + 模型调用上限），
+    // 数据源为 project.budget_config（原 summary.maxModelCalls/modelCalls 字段
+    // 在 dashboard 里不存在，显示恒为 "∞ / 0" 的假数据已移除）。
+    const budgetConfig = data.project?.budget_config ?? {};
+    const budgetOn = budgetConfig.enabled === true;
+    const budgetLimit = Number.isInteger(budgetConfig.max_model_calls) && budgetConfig.max_model_calls > 0
+      ? budgetConfig.max_model_calls
+      : null;
+    const budget = dpanel("预算与权限", budgetOn ? "已启用" : "未启用");
     const kv = document.createElement("dl");
     kv.className = "kv";
-    appendKv(kv, "模型调用", `${formatNumber(summary.modelCalls)} / ${summary.maxModelCalls ?? "∞"}`);
+    appendKv(kv, "模型调用上限", budgetOn ? (budgetLimit == null ? "不限" : `${formatNumber(budgetLimit)} 次`) : "未启用");
     appendKv(kv, "估算成本", summary.costAvailable ? formatYuan(summary.estimatedCost) : "未配置价格");
     appendKv(kv, "缓存", cacheSummaryText(data));
     appendKv(kv, "联网权限", permissions.network_allowed ? "已开启" : "关闭", permissions.network_allowed ? "accent" : "");
     budget.body.append(kv);
+
+    const budgetEdit = document.createElement("div");
+    budgetEdit.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px;";
+    const budgetToggle = document.createElement("label");
+    budgetToggle.style.cssText = "display:flex;gap:4px;align-items:center;";
+    const budgetCheck = document.createElement("input");
+    budgetCheck.type = "checkbox";
+    budgetCheck.checked = budgetOn;
+    budgetToggle.append(budgetCheck, document.createTextNode(" 启用预算"));
+    const budgetLimitInput = document.createElement("input");
+    budgetLimitInput.type = "number";
+    budgetLimitInput.min = "1";
+    budgetLimitInput.step = "1";
+    budgetLimitInput.placeholder = "模型调用次数上限";
+    budgetLimitInput.style.cssText = "width:11em;";
+    budgetLimitInput.value = budgetLimit == null ? "" : String(budgetLimit);
+    const budgetSave = document.createElement("button");
+    budgetSave.className = "btn";
+    budgetSave.type = "button";
+    budgetSave.textContent = "保存预算";
+    budgetSave.addEventListener("click", async () => {
+      const projectRoot = data.projectRoot ?? data.project?.projectRoot;
+      if (!projectRoot) return;
+      const raw = budgetLimitInput.value.trim();
+      budgetSave.disabled = true;
+      try {
+        const result = await postJson("/api/settings/update", {
+          projectRoot,
+          budget_config: {
+            enabled: budgetCheck.checked,
+            max_model_calls: raw === "" ? null : Number(raw)
+          }
+        });
+        ctx.showToast(budgetCheck.checked ? "预算已启用，下一轮模型请求起生效。" : "预算已关闭。", "success");
+        const saved = result?.project?.budget_config ?? {};
+        const savedLimit = Number.isInteger(saved.max_model_calls) && saved.max_model_calls > 0 ? saved.max_model_calls : null;
+        budget.panel.querySelector("dd").textContent = saved.enabled === true
+          ? (savedLimit == null ? "不限" : `${formatNumber(savedLimit)} 次`)
+          : "未启用";
+        const pill = budget.panel.querySelector(".pill");
+        if (pill) pill.textContent = saved.enabled === true ? "已启用" : "未启用";
+      } catch (error) {
+        ctx.showToast(error?.message ?? "预算保存失败。", "error");
+      } finally {
+        budgetSave.disabled = false;
+      }
+    });
+    budgetEdit.append(budgetToggle, budgetLimitInput, budgetSave);
+    budget.body.append(budgetEdit);
     ctx.refs.drawerBody.replaceChildren(model.panel, budget.panel);
   }
 
@@ -426,7 +483,14 @@ async function fetchMemoryContent(file) {
     if (btn) btn.disabled = true;
     try {
       const result = await postJson("/api/projects/export-book", { projectRoot, format: "txt" });
-      ctx.showToast(`已导出：${result.path}（${formatNumber(result.characters)} 字）`, "success");
+      // 缺章显式警示（2026-10-03）：索引 completed 但文件缺失的章节此前被静默跳过，
+      // 作者无法判断成书是否完整——缺章时用 warning 级提示，与完整导出可区分。
+      const missing = Array.isArray(result.skipped) ? result.skipped : [];
+      if (missing.length > 0) {
+        ctx.showToast(`导出不完整：缺第 ${missing.join("、")} 章的正文文件，已导出其余 ${result.chapters} 章（${formatNumber(result.characters)} 字）。文件：${result.path}`, "warning");
+      } else {
+        ctx.showToast(`已导出：${result.path}（${formatNumber(result.characters)} 字）`, "success");
+      }
     } catch (error) {
       ctx.showToast(error?.message ?? "导出失败。", "error");
     } finally {

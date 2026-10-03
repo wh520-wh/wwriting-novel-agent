@@ -28,6 +28,7 @@ import {
 // compaction.mjs（Task 10），Run 输入流水线迁出后（Task 10b）此处不再转发。
 import { createHistoryAssembly } from "./history-assembly.mjs";
 import { loadProject } from "../project-store.mjs";
+import { physicalPathKey } from "../fs-utils.mjs";
 import { createMutex } from "../async-utils.mjs";
 import { createRedactor } from "../shell/redaction.mjs";
 import { resolveModelLimits } from "../model/model-identity.mjs";
@@ -139,9 +140,12 @@ export function createAgentRuntime({
 
   function ensureProject(projectRoot) {
     const resolved = path.resolve(projectRoot);
-    // win32 大小写不敏感 FS：Map 键归一小写（否则 D:\Foo/D:\foo 分裂成两个 state：两把锁/两个 journal 写同一物理目录；审计 Downgraded #1，
-    // 口径对齐 project-lock.mjs:38）。只归一「键」——resolved 仍按调用方书写大小写流向 state.key/prompt/工具 cwd/journal 的 project_root，不把全小写路径写进用户可见事件。
-    const key = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+    // Map 键用物理路径（2026-10-03，ADR 0009）：resolve+小写之外再解析 junction/
+    // symlink——同一项目经别名打开不再分裂出两个 state（两把锁/两个 journal 写同
+    // 一物理目录；口径与 project-lock/workspace store 统一为 fs-utils.physicalPathKey）。
+    // 只归一「键」——resolved 仍按调用方书写大小写流向 state.key/prompt/工具 cwd/
+    // journal 的 project_root，不把全小写路径写进用户可见事件。
+    const key = physicalPathKey(resolved);
     let state = projects.get(key);
     if (!state) {
       // Task 4：agentRoot 即应用的私有 agent storage root；每会话的 journal/
@@ -179,6 +183,9 @@ export function createAgentRuntime({
         baselineMigrationError: null,
         // 记忆三件套传感器待注入注记（run 收尾检出，下轮 prompt 注入一次即清除）。
         memoryMaintenanceLag: null,
+        // 预算计数（2026-10-03）：Run 内累计的模型调用数；新 Run（submit/retry）
+        // 清零，见 run-control.mjs。
+        budgetModelCalls: 0,
         mutex: createMutex(),
         // Prompt 的 Available Skills 目录摘要：只取 name/description，绝不注入正文
         // （完整指令由 read_skill 按需读取）。catalog 失败不阻塞 agent（沿用兜底语义）。

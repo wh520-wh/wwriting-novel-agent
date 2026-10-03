@@ -126,6 +126,23 @@ test("POST /api/projects/export-book：合并有序已提交章节到 TXT，无�
   assert.equal(session?.active_run ?? null, null, "导出后仍无活动 Run");
 });
 
+test("POST /api/projects/export-book：缺章时响应携带 skipped 清单（不静默报完整）", async (t) => {
+  const s = await setupServer(t);
+  s.selection.current = s.h.projectRoot;
+  await createCommittedChapter(s.h.projectRoot, 1, "第一", "甲正文。");
+  await createCommittedChapter(s.h.projectRoot, 2, "第二", "乙正文。");
+  // 模拟第二章正文文件丢失（索引仍 completed）
+  const index = JSON.parse(await fs.readFile(path.join(s.h.projectRoot, "memory", "chapter_index.json"), "utf8"));
+  const second = (index.chapters ?? []).find((c) => Number(c.chapter_no) === 2);
+  await fs.unlink(second.final_path); // final_path 是绝对路径
+
+  const { res, data } = await s.post("/api/projects/export-book", { projectRoot: s.h.projectRoot, format: "txt" });
+  assert.equal(res.status, 200);
+  assert.equal(data.ok, true, "导出照常生成（Q5=A：不拒绝）");
+  assert.equal(data.chapters, 1, "实际只导出 1 章");
+  assert.deepEqual(data.skipped, [2], "缺章清单必须透传给前端");
+});
+
 test("POST /api/projects/export-book：空项目（无会话）不 500", async (t) => {
   // 惰性创建回归钉：空项目（从未发消息、无 agent 会话）导出必须 200，
   // 不因 agent 侧空会话快照而 500（路由不读 agent 会话，直接导出空书籍）。

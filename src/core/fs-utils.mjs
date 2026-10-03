@@ -1,9 +1,28 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import path from "node:path";
 
 export function sha256(value) {
   return `sha256:${createHash("sha256").update(String(value)).digest("hex")}`;
+}
+
+// 物理路径键（2026-10-03，落实 ADR 0009「path identity uses real project root」）：
+// workspace ID、项目锁、Runtime 项目 Map、gateway/成本记账等「同一物理项目的
+// 身份」统一用真实路径（解析 junction/symlink 后按磁盘真实大小写）——同一项目经
+// 别名打开不再分裂身份。路径不存在时（如测试夹具未创建）无链接可绕，回退 resolve。
+// 同步接口：既有调用方（workspaceIdForPath、normalizeProjectKey 等纯函数）零改动。
+// ponytail: 挂起的网络盘（NAS/映射盘）上 realpathSync 会同步阻塞事件循环；这是
+// 「同步纯函数签名 + 物理身份」二选一的已知取舍——项目锁/身份键必须是同步纯函数，
+// 异步解析需要改全部调用方签名。项目在网络盘上时锁与身份键的每次取用可能卡顿。
+export function physicalPathKey(projectRoot) {
+  let resolved = path.resolve(String(projectRoot ?? ""));
+  try {
+    resolved = realpathSync(resolved);
+  } catch {
+    // 不存在/不可达：保持 resolve 结果
+  }
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
 export async function ensureDir(dirPath) {

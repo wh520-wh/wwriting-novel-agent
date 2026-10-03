@@ -295,6 +295,25 @@ async function processInput(state, sessionState, runId, inputId, inputText) {
     // ---- 装配模型请求 ----
     const project = await resolveWorkspaceConfig(state.key);
     const modelConfig = modelConfigOf(project);
+    // ---- 预算执行（2026-10-03 访谈拍板）----
+    // 默认关闭；开启且配置了 max_model_calls 时，每次模型请求前检查 Run 内累计
+    // 调用数，达到上限以失败结束（错误码 budget_exhausted，中文原因可读；可重试，
+    // retry 清零计数见 run-control.retry）。压缩的模型调用是维护操作，不在此计数
+    // 口径内；进程重启后计数从零重计（内存态，不因重启收紧或放宽持久限额）。
+    const budgetConfig = project?.budget_config;
+    const budgetLimit =
+      budgetConfig?.enabled === true && Number.isInteger(budgetConfig?.max_model_calls) && budgetConfig.max_model_calls > 0
+        ? budgetConfig.max_model_calls
+        : null;
+    if (budgetLimit !== null) {
+      state.budgetModelCalls ??= 0;
+      if (state.budgetModelCalls >= budgetLimit) {
+        const error = new Error(`已达到模型调用上限（${budgetLimit} 次）。可重试；重试将重新计数。`);
+        error.code = "budget_exhausted";
+        await sessionState.lifecycle.failRun(runId, { error, inputId });
+        return "failed";
+      }
+    }
     // 设计 D3 版本库基线迁移（模块 C）：每轮模型请求装配前，对索引 completed 且
     // 正式文件存在的章节幂等种 baseline（只写 .versions/）。失败只记录维护级
     // 警告（如索引损坏），绝不阻塞本轮 run，也绝不触碰正文/索引/校验和。
@@ -350,7 +369,7 @@ async function processInput(state, sessionState, runId, inputId, inputText) {
         runId,
         status: run.status,
         interruptRequested: run.status === "interrupting",
-        budget: {},
+        budget: budgetLimit !== null ? { max_model_calls: budgetLimit, model_calls_used: state.budgetModelCalls } : {},
         ledgerDrift,
         memoryMaintenanceLag
       },
@@ -625,6 +644,8 @@ async function processInput(state, sessionState, runId, inputId, inputText) {
     }
     // 成功：先 reasoning_completed 闭合 reasoning，最后 model_turn_completed。
     await closeTurn({ outcome: "completed", reasoningText: reasoningResult.safeText });
+    // 预算计数：仅在成功完成一次模型请求后累计（失败轮次不占额度）。
+    if (budgetLimit !== null) state.budgetModelCalls += 1;
 
     // 调用期间可能已到达停止/立即安全点。先落 assistant tool_calls 记录（若本
     // 轮是工具轮），再检查安全点——被打断的回复在中断路径用 cancelled 工具记录
