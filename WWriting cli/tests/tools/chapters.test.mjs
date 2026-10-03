@@ -48,7 +48,9 @@ test('prepareRollback 返回最近一次生效版本内容，并把当前内容�
   await service.commit({ projectRoot, path: '01.md', text: '已提交的版本', summary: null });
   const target = await service.prepareRollback({ projectRoot, path: '01.md', currentText: '写坏了的当前稿' });
 
-  assert.deepEqual(target, { seq: 1, text: '已提交的版本' });
+  assert.equal(target.seq, 1);
+  assert.equal(target.text, '已提交的版本');
+  assert.ok(typeof target.checksum === 'string' && target.checksum.length === 64, '返回值携带账本指纹');
   // 安全快照真实存在（下一次回滚的保险），但不进前情账本的提交计数。
   const continuity = await service.readContinuity({ projectRoot });
   assert.equal(continuity.chapters, 1);
@@ -187,4 +189,36 @@ test('畸形输入各自有一条中文事实，不抛裸错误', async () => {
     assert.equal(error.code, 'CHAPTER_PATH_INVALID');
     return true;
   });
+});
+
+test('生效版本文件被外部改动后，回滚准备拒绝返回被改内容', async () => {
+  const { service, projectRoot } = await makeService('wwriting-ch-tamper-');
+  await service.commit({ projectRoot, path: 'chapters/01.md', text: '原来的章节' });
+  const versionDir = path.join(service.rootFor(projectRoot), 'versions', 'chapters', '01.md');
+  await fs.writeFile(path.join(versionDir, '0001.txt'), '被外部改坏的历史', 'utf8');
+  await assert.rejects(
+    service.prepareRollback({ projectRoot, path: 'chapters/01.md', currentText: '当前内容' }),
+    (error) => error instanceof ChapterToolError && error.code === 'CHAPTER_VERSION_CHECKSUM_MISMATCH',
+  );
+});
+
+test('旧账本条目缺 checksum 时跳过核对，返回值如实携带 checksum: null', async () => {
+  const { service, projectRoot } = await makeService('wwriting-ch-legacy-');
+  await service.commit({ projectRoot, path: 'chapters/01.md', text: '旧格式的章节' });
+  // 模拟旧版本账本：去掉 checksum 字段
+  const ledgerPath = path.join(service.rootFor(projectRoot), 'ledger.jsonl');
+  const raw = await fs.readFile(ledgerPath, 'utf8');
+  const rewritten = raw
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const entry = JSON.parse(line);
+      delete entry.checksum;
+      return JSON.stringify(entry);
+    })
+    .join('\n');
+  await fs.writeFile(ledgerPath, rewritten + '\n', 'utf8');
+  const target = await service.prepareRollback({ projectRoot, path: 'chapters/01.md', currentText: '当前内容' });
+  assert.equal(target.text, '旧格式的章节');
+  assert.equal(target.checksum, null);
 });

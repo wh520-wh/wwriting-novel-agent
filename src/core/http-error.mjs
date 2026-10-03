@@ -77,7 +77,11 @@ export const SAFE_PUBLIC_ERROR_CODES = new Set([
   // ProviderConfigurationError（model/openai-compatible.mjs）：message 程序写死
   // 中文（如「不支持的模型接口协议: xxx」只拼用户配置的协议名，不拼底层异常），
   // 运行/连接路径拒绝不可用配置时原因必须送达用户而非通用兜底。
-  "provider_configuration_error"
+  "provider_configuration_error",
+  // 2026-10-03：version_checksum_mismatch——版本库读回校验失败（章节侧与记忆侧
+  // 共用）。message 为程序写死中文（「…内容与清单校验和不一致，版本文件可能被
+  // 直接改动。」），不拼底层异常；这是「版本文件被外部改动」时用户唯一可读原因。
+  "version_checksum_mismatch"
 ]);
 
 export function publicErrorMessage(error) {

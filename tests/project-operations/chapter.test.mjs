@@ -1158,3 +1158,22 @@ test("rollbackChapter：无历史版本/版本不存在/回滚到当前版 拒�
     (error) => error.code === "no_versions"
   );
 });
+
+test("回滚到回收前版本后，update_memory 的 open 提交能把已回收伏笔重新打开", async () => {
+  const { projectRoot, project } = await makeProject();
+  const args = { projectRoot, projectId: project.project_id, chapterNo: 1 };
+  await appendChapterSegment({ ...args, segmentNo: 1, content: "林深在老宅找到一封无名的信，寄信人仍是谜。" });
+  const committed = await commitChapter(args);
+  await updateMemoryFromExtraction({ projectRoot, chapterNo: 1, extraction: { foreshadows: [{ content: "寄信人的身份", chapter_no: 1, status: "open" }] } });
+  // v2：揭晓并回收伏笔
+  await fs.writeFile(committed.path, "林深打开信，看见父亲的署名。寄信人的身份已经明了。");
+  await finalizeChapter(args);
+  await updateMemoryFromExtraction({ projectRoot, chapterNo: 1, extraction: { foreshadows: [{ content: "寄信人的身份", chapter_no: 2, status: "paid" }] } });
+  // 回滚到 v1（寄信人身份未揭晓），模型随后维护设定：重新声明 open
+  await rollbackChapter({ ...args, version: 1 });
+  await updateMemoryFromExtraction({ projectRoot, chapterNo: 1, extraction: { foreshadows: [{ content: "寄信人的身份", chapter_no: 1, status: "open" }] } });
+  const memory = await loadContinuity(projectRoot);
+  assert.equal(memory.foreshadows[0].status, "open", "回滚后伏笔状态应能修正为未收，与回滚后正文一致");
+  assert.equal(memory.foreshadows[0].paid_chapter, null);
+  assert.ok((await fs.readFile(committed.path, "utf8")).includes("仍是谜"), "正文已回滚到未揭晓版本");
+});

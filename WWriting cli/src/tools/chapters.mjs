@@ -10,10 +10,18 @@
 // 默认工具工厂（run-controller）——回滚 = 先读当前（自动）→ prepareRollback（私有写，自动）
 // → restoreFile（创作目录写入，需确认）三段组装，任何一段失败都不会留下「账本说了谎」的状态。
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import fsp from 'node:fs/promises';
 
 import { countText } from './count-text.mjs';
 import { resolveAppDataRoot, workspaceIdForPath } from '../storage/workspace-store.mjs';
+
+// 版本内容指纹：生效版本入账时记录，回滚准备时读回核对——版本文件被外部改动
+// 时拒绝当历史正文返回。旧账本条目缺 checksum 时跳过核对（无法核对≠损坏），
+// 但绝不假称已校验。
+function textChecksum(text) {
+  return createHash('sha256').update(text, 'utf8').digest('hex');
+}
 
 // 服务错误：message 是一条中文事实，code 供调用方判断（铁律 3）。
 export class ChapterToolError extends Error {
@@ -124,6 +132,7 @@ export function createChapterService({ appDataRoot = resolveAppDataRoot(), fs = 
       seq,
       chars: counted.charsNoSpace,
       summary: note,
+      checksum: textChecksum(text),
     });
     return { path: relPath, seq, charsNoSpace: counted.charsNoSpace };
   }
@@ -211,8 +220,22 @@ export function createChapterService({ appDataRoot = resolveAppDataRoot(), fs = 
 
     try {
       const text = await fs.readFile(versionPath(projectRoot, relPath, lastEffective.seq), 'utf8');
-      return { seq: lastEffective.seq, text };
+      // 读回验证（2026-10-03 补强，对齐桌面端章节/记忆版本做法）：版本文件被外部
+      // 改动时拒绝当历史正文返回。旧账本条目缺 checksum 时无法核对，如实跳过——
+      // 返回值携带 checksum: null，调用方可见「这条未经校验」。
+      if (
+        typeof lastEffective.checksum === 'string' &&
+        lastEffective.checksum.length > 0 &&
+        textChecksum(text) !== lastEffective.checksum
+      ) {
+        throw new ChapterToolError('生效版本的内容与账本校验和不一致，版本文件可能被直接改动。', 'CHAPTER_VERSION_CHECKSUM_MISMATCH', {
+          path: relPath,
+          seq: lastEffective.seq,
+        });
+      }
+      return { seq: lastEffective.seq, text, checksum: lastEffective.checksum ?? null };
     } catch (error) {
+      if (error instanceof ChapterToolError) throw error;
       throw new ChapterToolError('生效版本读不出来，无法回滚。', 'CHAPTER_VERSION_UNREADABLE', {
         path: relPath,
         seq: lastEffective.seq,

@@ -732,3 +732,90 @@ test("restoreGeneration 目标非空时拒绝改写 manifest：源目录保留�
   await store.append(events(2, 3));
   assert.equal((await store.readTail({ limit: 10 })).events.length, 3);
 });
+
+test("恢复 4：manifest 损坏重建后缺口台账从健康段 seq 断层恢复（ADR 0010 派生）", async (t) => {
+  const root = await makeRoot(t, "recovery-gap-ledger");
+  const storeRoot = path.join(root, "events");
+  const store = makeStore(storeRoot);
+  await store.load();
+  await store.append(events(1, 12)); // 3 个 segment：1-4 / 5-8 / 9-12
+
+  // 注入坏段并隔离（与恢复 3 同路径）→ manifest 记录 gap [5,8]
+  const middle = path.join(storeRoot, "00000002.jsonl");
+  const lines = (await fs.readFile(middle, "utf8")).split("\n");
+  lines.splice(1, 0, "{broken json");
+  await fs.writeFile(middle, lines.join("\n"), "utf8");
+  await fs.rm(path.join(storeRoot, "00000002.index.json"), { force: true });
+  const damaged = makeStore(storeRoot);
+  await damaged.load();
+  const before = await damaged.readTail({ limit: 10 });
+  assert.deepEqual(before.gaps, [{ start_seq: 5, end_seq: 8, reason: "segment_corrupt" }]);
+
+  // manifest 损坏：重新 load 会重建默认清单，gaps 不得归零——
+  // 健康段 seq 断层（4→9）必须重新派生出缺口 [5,8]
+  const manifestPath = path.join(root, "journal-manifest.json");
+  await fs.writeFile(manifestPath, "{broken manifest", "utf8");
+  const reopened = makeStore(storeRoot);
+  await reopened.load();
+  const after = await reopened.readTail({ limit: 10 });
+  assert.deepEqual(after.gaps, [{ start_seq: 5, end_seq: 8, reason: "segment_corrupt" }], "缺口台账必须从健康段断层重建");
+  assert.deepEqual(after.events.map((e) => e.seq), [1, 2, 3, 4, 9, 10, 11, 12]);
+  // manifest 自愈：重建后的清单重新携带缺口记录
+  const healed = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+  assert.ok((healed.gaps ?? []).some((g) => g.start_seq === 5 && g.end_seq === 8), "派生缺口写回 manifest");
+});
+
+test("恢复 5：双流共享 manifest 各自有缺口时不跨流融合（events 缺口不被 transcript 抹掉）", async (t) => {
+  const root = await makeRoot(t, "recovery-cross-stream");
+  const manifestPath = path.join(root, "journal-manifest.json");
+  const eventsStore = makeStore(path.join(root, "events"));
+  await eventsStore.load();
+  await eventsStore.append(events(1, 12)); // 段：1-4 / 5-8 / 9-12
+  // events 中段损坏隔离 → events 缺口 [5,8]
+  const middle = path.join(root, "events", "00000002.jsonl");
+  const lines = (await fs.readFile(middle, "utf8")).split("\n");
+  lines.splice(1, 0, "{broken json");
+  await fs.writeFile(middle, lines.join("\n"), "utf8");
+  await fs.rm(path.join(root, "events", "00000002.index.json"), { force: true });
+  const eDamaged = makeStore(path.join(root, "events"));
+  await eDamaged.load();
+  assert.deepEqual((await eDamaged.readTail({ limit: 10 })).gaps, [{ start_seq: 5, end_seq: 8, reason: "segment_corrupt" }]);
+
+  // transcript 流同目录 manifest，也有自己的缺口 [5,8]（两流 seq 空间独立、数值相同纯属常见）
+  const transcriptStore = makeStore(path.join(root, "transcript"), { streamName: "transcript" });
+  await transcriptStore.load();
+  // 12 条 3 段：坏中间段（尾段缺口无法从断层派生——4b 的已知边界，见 4b 注释）
+  const transcriptEvents = events(1, 12).map((e) => ({ ...e, transcript_seq: e.seq }));
+  await transcriptStore.append(transcriptEvents); // 段：1-4 / 5-8 / 9-12
+  const tMiddle = path.join(root, "transcript", "00000002.jsonl");
+  const tLines = (await fs.readFile(tMiddle, "utf8")).split("\n");
+  tLines.splice(1, 0, "{broken json");
+  await fs.writeFile(tMiddle, tLines.join("\n"), "utf8");
+  await fs.rm(path.join(root, "transcript", "00000002.index.json"), { force: true });
+  const tDamaged = makeStore(path.join(root, "transcript"), { streamName: "transcript" });
+  await tDamaged.load();
+  // transcript 坏段即最后一段：gap 按 parsedCount 取保守下界 [5,5]（buildGapRange 语义）
+  assert.deepEqual((await tDamaged.readTail({ limit: 10 })).gaps, [{ start_seq: 5, end_seq: 8, reason: "segment_corrupt" }]);
+
+  // manifest 损坏：两流各自从本流断层重建，互不融合、互不吞并
+  await fs.writeFile(manifestPath, "{broken manifest", "utf8");
+  const eReopened = makeStore(path.join(root, "events"));
+  await eReopened.load();
+  assert.deepEqual(
+    (await eReopened.readTail({ limit: 10 })).gaps,
+    [{ start_seq: 5, end_seq: 8, reason: "segment_corrupt" }],
+    "events 缺口必须从本流断层恢复，不得被 transcript 记录融合抹掉"
+  );
+  const tReopened = makeStore(path.join(root, "transcript"), { streamName: "transcript" });
+  await tReopened.load();
+  assert.deepEqual(
+    (await tReopened.readTail({ limit: 10 })).gaps,
+    [{ start_seq: 5, end_seq: 8, reason: "segment_corrupt" }],
+    "transcript 缺口同样恢复且带本流标签"
+  );
+  // 双流缺口在 manifest 中各自保留——两流缺口区间与标签完全相同，跨流融合会
+  // 把它们并成一条（S1 回归形态）
+  const healed = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+  const gapsFive = (healed.gaps ?? []).filter((g) => g.start_seq === 5 && g.end_seq === 8);
+  assert.equal(gapsFive.length, 2, "两流的同区间缺口各自独立记账，不跨流融合");
+});

@@ -21,7 +21,11 @@ import { loadAppState, samePath } from "../app-state.mjs";
 import { validateProjectRoot, validateWorkspaceRoot } from "../app-dashboard.mjs";
 import { isPathInside } from "../fs-utils.mjs";
 
-const MAX_BODY_BYTES = 200_000;
+// 请求体字节上限（2026-10-03 起按字节数判定；此前按解码后字符数，中文请求体
+// 实际上限比名义宽松 3 倍）。取值覆盖 Agent 上下文硬窗口（约 22.4 万字符）的
+// 最坏 UTF-8 字节量（24 万汉字 ≈ 72 万字节）加 JSON 信封余量——作者粘贴长素材
+// 是主路径场景，上限不得低于 Agent 自己声明可消化的输入规模。
+const MAX_BODY_BYTES = 1_000_000;
 
 // ---------------------------------------------------------------------------
 // 统一错误适配：错误 code → HTTP 状态码映射表。
@@ -109,13 +113,19 @@ export function errorToHttp(error) {
 // ---------------------------------------------------------------------------
 
 export async function readJsonBody(request) {
-  let source = "";
+  // 中文跨块防线：按字节累计、整包完成后一次解码。若逐块 toString，一个多字节
+  // 字符可能横跨两块，解码成替换字符——JSON 仍合法，正文被静默改字不报错。
+  const chunks = [];
+  let totalBytes = 0;
   for await (const chunk of request) {
-    source += chunk.toString("utf8");
-    if (source.length > MAX_BODY_BYTES) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    chunks.push(buffer);
+    totalBytes += buffer.length;
+    if (totalBytes > MAX_BODY_BYTES) {
       throw new HttpError(413, "PAYLOAD_TOO_LARGE", "请求体过大");
     }
   }
+  const source = Buffer.concat(chunks).toString("utf8");
   if (source.trim() === "") return {};
   try {
     return JSON.parse(source);

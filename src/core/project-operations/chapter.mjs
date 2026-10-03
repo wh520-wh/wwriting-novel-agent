@@ -42,7 +42,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { throwIfAborted } from "../cancellation.mjs";
-import { appendEvent } from "../event-log.mjs";
+import { appendEvent, readEvents } from "../event-log.mjs";
 import {
   ensureDir,
   pathExists,
@@ -360,18 +360,61 @@ export async function commitChapter({ projectRoot, projectId, chapterNo, expecte
   const finalExists = await pathExists(finalPath);
   const draftExists = await pathExists(draftPath);
 
-  // 幂等：正式文件与 completed 索引都在 → 纯重复提交，零写入。
+  // 幂等：正式文件与 completed 索引都在 → 重复提交。但写序是
+  // 「正式文件 → 章节索引 → checkpoint → chapter_completed 审计」——进程在写完
+  // 索引、写 checkpoint 前退出时，重试不能只凭索引就声称提交完整：先核查该次
+  // 提交的必要证据，缺项幂等补齐（checkpoint 补写、审计补记并标注 recovered），
+  // 再返回成功（2026-10-03 补强，中断后重试已复现缺证据路径）。
   if (existing?.status === "completed" && finalExists) {
     const content = await fs.readFile(finalPath, "utf8");
+    const checksum = sha256(content);
+    const actualWords = countEffectiveWords(content);
+    const priorAudit = (await readEvents(projectRoot)).findLast(
+      (event) =>
+        event?.type === "chapter_completed" &&
+        Number(event?.chapter_no) === chapterNo &&
+        event?.data?.checksum === checksum
+    );
+    const checkpointId = priorAudit?.data?.checkpoint_id ?? randomUUID();
+    const repairCheckpointPath = safeJoin(projectRoot, "checkpoints", `${checkpointId}.json`);
+    const repairs = [];
+    if (!(await pathExists(repairCheckpointPath))) {
+      await writeJsonAtomic(repairCheckpointPath, buildCheckpoint({
+        project,
+        chapterNo,
+        checkpointId,
+        artifact: { chapter_no: chapterNo, final_path: finalPath, checksum, duplicate: true }
+      }));
+      repairs.push("checkpoint");
+    }
+    if (!priorAudit) {
+      await appendEvent(projectRoot, {
+        type: "chapter_completed",
+        project_id: project.project_id,
+        chapter_no: chapterNo,
+        stage: "completed",
+        message: `第 ${chapterNo} 章已提交`,
+        data: {
+          path: finalPath,
+          actual_words: actualWords,
+          checksum,
+          checkpoint_id: checkpointId,
+          recovered: true,
+          repaired_on_retry: true
+        }
+      });
+      repairs.push("audit");
+    }
     return {
       ok: true,
       duplicate: true,
-      repairing: false,
+      repairing: repairs.length > 0,
+      repaired: repairs,
       chapter_no: chapterNo,
       path: finalPath,
-      actual_words: countEffectiveWords(content),
-      checksum: sha256(content),
-      checkpoint_id: null
+      actual_words: actualWords,
+      checksum,
+      checkpoint_id: repairs.length > 0 ? checkpointId : null
     };
   }
 
@@ -964,8 +1007,17 @@ export async function updateMemoryFromExtraction({ projectRoot, chapterNo, extra
     timeline_added: merged.timeline.length - baseTimeline,
     characters_added: merged.characters.filter((c) => !baseCharacterNames.has(c.name)).length,
     foreshadows_opened: merged.foreshadows.length - baseForeshadowTotal,
-    foreshadows_paid: baseOpenForeshadows + (merged.foreshadows.length - baseForeshadowTotal)
-      - merged.foreshadows.filter((f) => f.status === "open").length,
+    // paid 统计（2026-10-03 修正）：open 提交可以把已回收条目重新置为未收
+    //（回滚后修正前情），公式可能算出负数——按 0 钳制，重开条数单列 reopened。
+    foreshadows_paid: Math.max(
+      0,
+      baseOpenForeshadows + (merged.foreshadows.length - baseForeshadowTotal)
+        - merged.foreshadows.filter((f) => f.status === "open").length
+    ),
+    foreshadows_reopened: Math.max(
+      0,
+      (baseForeshadowTotal - baseOpenForeshadows) - merged.foreshadows.filter((f) => f.status !== "open").length
+    ),
     timeline_violations: timelineViolations
   };
 }

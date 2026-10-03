@@ -78,8 +78,18 @@ export function mergeExtraction(base, extraction) {
       }
       continue;
     }
+    // 非 paid 提交：同内容已存在时——已未收为重复埋设，跳过；已回收则重新置为
+    // 未收（2026-10-03 补强：回滚章节后，这是模型用 update_memory 让前情与回滚后
+    // 正文保持一致的唯一合法路径；原先一律跳过，已回收伏笔永远无法重开）。
+    // 埋设章号与回收提示保留原值，不被重开提交覆盖。
     const dup = next.foreshadows.find((f) => f.content === fs.content);
-    if (dup) continue;
+    if (dup) {
+      if (dup.status !== "open") {
+        dup.status = "open";
+        dup.paid_chapter = null;
+      }
+      continue;
+    }
     next.foreshadows.push({
       content: fs.content,
       planted_chapter: fs.chapter_no ?? null,

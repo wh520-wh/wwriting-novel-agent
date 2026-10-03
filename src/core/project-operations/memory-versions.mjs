@@ -60,14 +60,17 @@ export async function snapshotMemoryFile({ projectRoot, file, content, source })
   }
   const nextVersion = (versions.at(-1)?.version ?? 0) + 1;
   const entry = { version: nextVersion, timestamp: new Date().toISOString(), source, checksum: bareSha256(content) };
-  versions = [...versions, entry];
-  // 200 上限：删最老版本文件并裁剪 manifest。
-  while (versions.length > MEMORY_VERSION_CAP) {
-    const dropped = versions.shift();
+  const appended = [...versions, entry];
+  const overflow = Math.max(appended.length - MEMORY_VERSION_CAP, 0);
+  const nextVersions = overflow > 0 ? appended.slice(overflow) : appended;
+  // 写序（2026-10-03 补强）：先写新版本文件与裁剪后的清单，两者都成功后才清理
+  // 被裁旧版。先前「先 unlink 最老版再写新内容」的顺序在写入失败时会让旧 manifest
+  // 引用已删除的文件——安全快照失败本应保住全部既有历史。
+  await writeFileAtomic(safeJoin(dir, `v${nextVersion}.md`), content);
+  await writeJsonAtomic(manifestPath(projectRoot, file), { file, versions: nextVersions });
+  for (const dropped of appended.slice(0, overflow)) {
     await fs.unlink(safeJoin(dir, `v${dropped.version}.md`)).catch(() => {});
   }
-  await writeFileAtomic(safeJoin(dir, `v${nextVersion}.md`), content);
-  await writeJsonAtomic(manifestPath(projectRoot, file), { file, versions });
   return { version: nextVersion };
 }
 
@@ -77,5 +80,14 @@ export async function readMemoryVersion({ projectRoot, file, version }) {
   const entry = manifest.versions.find((v) => v.version === Number(version));
   if (!entry) throw domainError("version_not_found", `记忆文件 ${file} 不存在版本 ${version}。`);
   const content = await fs.readFile(safeJoin(versionDir(projectRoot, file), `v${entry.version}.md`), "utf8");
+  // 读回验证（对齐章节侧 readChapterVersion）：.versions 是恢复的最后防线，
+  // 文件被直接改动/损坏时拒绝把未验证内容当历史版本返回。旧 manifest 缺
+  // checksum 时跳过验证（无法核对≠损坏），但返回值如实携带原清单 checksum。
+  if (typeof entry.checksum === "string" && entry.checksum.length > 0 && bareSha256(content) !== entry.checksum) {
+    throw domainError(
+      "version_checksum_mismatch",
+      `记忆文件 ${file} 版本 ${version} 的内容与清单校验和不一致，版本文件可能被直接改动。`
+    );
+  }
   return { file, version: entry.version, content, checksum: entry.checksum };
 }

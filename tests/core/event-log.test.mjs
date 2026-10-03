@@ -193,3 +193,13 @@ test("readEvents：尾部未终结行（写入中断）容忍，不落损坏事�
   const again = await readEvents(root);
   assert.ok(!again.some((e) => e.type === "event_log_corruption"), "尾行中断不落损坏事件");
 });
+
+test("readEvents 尾读：中文字段跨 64KiB 读取块逐字无损", async () => {
+  const root = await makeProject();
+  const message = "汉".repeat(25000);
+  await appendEvent(root, { type: "utf8_block", message });
+  // 全量读（整文件解码）本就无损；这里锁定尾读路径按字节切行后同样无损。
+  const tail = await readEvents(root, { limit: 1 });
+  assert.equal(tail.length, 1);
+  assert.equal(tail[0].message, message, "尾读不得把跨块中文拆成替换字符");
+});
