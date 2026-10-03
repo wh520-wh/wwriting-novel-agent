@@ -5,7 +5,7 @@
 
 ## 当前基线（记录于 2026-09-24｜状态：当前有效｜依据：`npm test` 与 `wc -l`/`wc -c` 实跑，HEAD `e708b36`）
 
-- 测试数：1992/1992（依据：`npm test` 实跑，exit 0，321s；前值 1986/1986 记录于 2026-09-05）
+- 测试数：1992/1992（依据：`npm test` 实跑，exit 0，321s；前值 1986/1986 记录于 2026-09-05）→ **滚动更新：2081/2081**（记录于 2026-10-03｜依据：`npm test` 实跑 exit 0，127.9s，`.local/logic-review/full-test-final.log`；中间值 2016/2016 见 round22、2039/2039 见 round23）
 - 逻辑源码红线现状：全库 126 个 `.js/.mjs` **0 越线**（口径：≤1200 行且 ≤51200 字节，字节按 LF 归一）；行维度由架构测试 R1 机器强制，**字节维度自本轮起同样机器强制**（`tests/architecture/dependency-rules.test.mjs`）
 - 逼近红线的文件（LF 归一字节 / 余量）：`src/app-shell/app.js` 48607B / 余 2593B、`src/core/agent/journal.mjs` 47577B / 余 3623B、`src/core/agent/journal-handlers.mjs` 50355B / 余 845B、`src/app-shell/model-settings-page.js` 50859B / 余 341B（依据：`wc -l` + `Buffer.byteLength(text.replace(/\r\n/g,"\n"))`）
 - 本轮拆分出的新模块：`src/core/agent/run-control.mjs`（519 行 / 28899B）、`src/core/agent/journal-recovery.mjs`（162 / 8857B）、`src/core/agent/journal-queries.mjs`（123 / 6046B）、`src/app-shell/app-reader-view.js`（116 / 5214B）
@@ -194,3 +194,36 @@
 - 全量 `npm test` 未跑（定向回归覆盖全部触碰模块）。
 
 **已知上限（只记不排）**：① 传感器只扫尾部 500 条事件，最后一次章节生效早于该窗口时本轮跳过检测（下次 commit 重新入窗）；② run_log 有中间行损坏时每次读取都会追加一条 corruption 事件（审计文件自身不可写时静默、console 告警保留）；③ 三件套注记在工作区内每次 Run 至多注入一次，模型持续忽略时依赖每次 Run 收尾的 run_log 事件累积可见性。
+
+## 实现逻辑补强十三组修复 + v0.5.3 发布（记录于：2026-10-03｜状态：当前有效）
+
+**范围**：以 `.local/logic-review/2026-10-03-实现逻辑补强分析.md` 的 16 个探针为输入（全部实机复现、逐项源码核查），经同日访谈拍板 Q1–Q7 后形成 SPEC `.scratch/logic-review-fixes/spec.md`（分析、探针、SPEC 均不入库）。主题是一类「系统说谎」缺陷：既有承诺没有兑现——中文静默损坏、版本库兜底名不副实、预算配置是摆设、受保护面可绕过。范围仅限根项目（Agent 内核与工作区）；同一发布窗口内 CLI 子项目的工作（章节收尾与 Run 重试等）由 `WWriting cli/docs/` 下各自规格记录，不在此登记。
+
+**提交链**：`c181dce`（数据与一致性补强：中文跨块无损/恢复临界区/读回校验/快照写序/提交中断补齐/伏笔重开/journal 缺口派生与锚点修复）→ `89fd733`（执行控制与身份贯通：预算开关/受保护路径/密钥即时脱敏/物理路径身份/导出缺章警示）→ `c0051d9`（统一书新增 §33 补强行为契约节，修订 reasoning 回传/legacy-import/§32 陈旧表述）→ `8aa1cdc`（v0.5.3：版本号、CHANGELOG、README 双语下载名同步）。规模：75 文件 +3481/−214（依据：`git diff --shortstat 3bc6220..8aa1cdc`）。
+
+**用户可见变化**：
+1. **中文跨块无损**：HTTP 请求体按字节累计、按字节判上限（1MB，约 22 万汉字）后整包解码；审计日志尾读按字节定位完整换行再解码。任意网络/读取分块下逐字不差（此前一个汉字横跨 64KB 块边界被解码成替换符，JSON 仍合法故无任何报错）。
+2. **恢复临界区**：记忆恢复「读当前 → pre_restore 快照 → 覆盖」整体进同一把项目写锁（busy 检查移入锁内，对外仍 409），章节回滚同样收进临界区——恢复窗口内的新写入不再被静默覆盖。
+3. **历史读回校验**：记忆版本与 CLI 章节账本读回时核对 checksum/内容指纹，不一致抛专用错误；旧记录缺字段跳过校验（无法核对≠损坏），且不在返回值里假称已校验。
+4. **版本快照写序**：到达 200 版上限时改为先原子写新版本、再写裁剪后清单、最后尽力清理旧文件；任何失败路径下既有历史全部保留（此前先删最老一版，写入失败即永久丢失）。
+5. **提交中断幂等补齐**：重复提交分支返回成功前核查 checkpoint 与 chapter_completed 审计事件，缺项按当前内容幂等补齐，补记在审计事件里可区分。
+6. **伏笔重开**（Q1=A 只修工具能力）：提交 open 伏笔时若存在同内容已回收条目，置回未收并清回收章号（保留埋设章号与提示）；回滚后的设定维护仍由模型自主执行，不建自动回退系统。
+7. **预算执行**（Q2/Q3/Q7）：设置抽屉新增默认关闭的预算开关与模型调用数上限编辑 UI；开启后每次模型请求前累计检查，达到上限以失败结束（专用错误码、中文写明次数），重试清零重新计数；`max_cost`/`max_total_tokens` 保留可存但不执行（注释标示「暂未生效」）。
+8. **受保护路径统一真实身份**（Q4=A）：写保护规则与被检目标两侧同解析 junction/symlink（版本目录本身被换成目录链接时不再写穿）；shell 命令文本含受保护路径标识即硬拒绝，优先级高于权限模式（YOLO 不绕过；读取改用读工具，接受误报）。
+9. **密钥即时脱敏**：保存/轮换密钥同步刷新运行中 Runtime 的脱敏名单（改共享最新值，一次性与流式共用）——运行中新增的密钥不再以明文进入持久日志。
+10. **缺章导出**（Q5=A）：导出响应携带缺章清单，前端在成功提示外给 warning 级「导出不完整：缺第 X 章」；导出拒绝语义不变。
+11. **journal 缺口台账派生重建**（按 ADR 0010）：用健康段序号断层、隔离段与代际历史重建缺口元数据，清单文件损坏不再导致缺口消失；不新增第二真相源。
+12. **项目身份贯通**（按 ADR 0009）：workspace 身份、锁键、busy 判定统一真实物理路径，旧 workspace ID 下的数据提供兼容查找/迁移，界面保留原选路径展示。
+13. **journal 锚点重放**：修正锚点增量重放与降级重放两处「声明后循环内重新赋值」的变量错误，长历史恢复不再整体退回全量扫描。
+
+**过程记录**：9 轮子代理交叉审查（A–J 各组 + journal 专项）发现并修复 4 个严重问题（预算跨 Run 计数泄漏、shell cwd junction 方向性回归、HTTP 请求体上限误收窄、journal 跨流 gap 融合）与若干一般/建议项；锚点回归测试经回归副本验证具备区分度。探针脚本 `.local/logic-review/probes.mjs` 本体断言「全部复现」，验证侧以反转断言与新契约场景执行，未改探针口径。
+
+**验收证据（记录于 2026-10-03；数字来源：SPEC 执行记录与会话内实跑日志）**：
+- 根目录全量 `npm test` **2081/2081（exit 0）**，127.9s（依据：`.local/logic-review/full-test-final.log`，2026-10-03 19:46 实跑；前值 2050，净增 31 个回归测试）。
+- 审计探针 **16/16 符合期望**（13 缺陷场景不复现 + 3 新契约场景生效）。
+- CLI 侧相关测试绿；4 个预存输入行为失败不在本轮范围（需 Windows Terminal/ConPTY 实机验收）。
+- 统一行为规格书 §33 落地（`c0051d9`），本轮全部行为契约改动同步写进契约。
+
+**发布（v0.5.3）**：版本号、CHANGELOG（含此前挂「未发布」的两条路径身份修复）、README 双语下载名（`WWriting Novel Agent-0.5.3-Setup.exe`）已提交并推送（`8aa1cdc` 在 origin/master）。安装器本机构建一度失败并已解决：electron-builder 26.8.1 解压 winCodeSign 时 `7za` 建不了 darwin 符号链接（账户无符号链接特权，报「客户端没有所需的特权」，4 次重试后 EXIT=1）——app-builder 的缓存命中只检查 `<缓存>/winCodeSign/winCodeSign-2.6.0/` 目录**是否存在**（不做完整性校验），把一份完整 winCodeSign 载荷（rcedit-x64.exe + win signtool）补进 `.electron-builder-cache/winCodeSign/` 即跳过下载解压；默认缓存（`%LOCALAPPDATA%\electron-builder\Cache\winCodeSign\`）本就含可命中载荷，故只有设了 `ELECTRON_BUILDER_CACHE` 的 `package:installer` 受影响。产物 `dist-desktop/WWriting Novel Agent-0.5.3-Setup.exe`（101,972,222 字节，构建日志 `.local/logic-review/build-installer-3.log`），`npm run verify:installer` 通过；打包后 exe 元数据正确（ProductName=WWriting Novel Agent、FileVersion=0.5.3）。本机无代码签名证书，产物 `NotSigned`（安装时会有未知发布者提示）。GitHub Release v0.5.3 **尚未创建**（既往形态：release + 单个 `WWriting.Novel.Agent-X.Y.Z-Setup.exe` 资产）。
+
+**欠账与限制（只记不排）**：① 设定档案的自动回退系统（事实/角色特征的失效与替换契约）明确不做；② `max_cost`/`max_total_tokens` 只存不执行；③ 记忆三件套传感器增强（continuity 维度、重启信号重建）不做；④ 长项目每轮重读章节的性能优化先测真实规模；⑤ CLI 四个输入行为测试失败待实机 ConPTY 验收；⑥ 完整 shell 命令解析器、新沙箱、第二套预算配置、第二套缺口真相源、内容质量门禁均明确不做；⑦ 验证边界：未做收费模型调用、断电持久性、安装器的实机安装验收（本轮只到构建与产物校验）；⑧ 打包环境未治本——winCodeSign 的根因是账户缺符号链接特权（可开 Windows 开发者模式，或管理员身份解压一次），当前用缓存补齐绕过，换机器或清缓存后需重做该步。
