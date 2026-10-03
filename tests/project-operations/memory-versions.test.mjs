@@ -48,3 +48,35 @@ test("超过 200 版删最老（只保留最近 MEMORY_VERSION_CAP 版）", asyn
   assert.equal(list.versions.at(-1).version, MEMORY_VERSION_CAP + 10, "版本号不复用");
   await assert.rejects(fs.stat(path.join(root, ".versions", "memory", "worklog", "v1.md")), /ENOENT/);
 });
+
+test("新版本写失败时全部旧版本完整保留（先写后删）", async () => {
+  const root = await makeRoot();
+  const dir = path.join(root, ".versions", "memory", "worklog");
+  await fs.mkdir(dir, { recursive: true });
+  const versions = Array.from({ length: MEMORY_VERSION_CAP }, (_, i) => ({
+    version: i + 1,
+    timestamp: new Date().toISOString(),
+    source: "commit",
+    checksum: "fixture"
+  }));
+  await fs.writeFile(path.join(dir, "manifest.json"), JSON.stringify({ file: "worklog", versions }));
+  for (const v of versions) await fs.writeFile(path.join(dir, `v${v.version}.md`), `旧版本${v.version}`);
+  // v201 位置是目录：新版本文件的原子写必然失败
+  await fs.mkdir(path.join(dir, "v201.md"));
+  await assert.rejects(snapshotMemoryFile({ projectRoot: root, file: "worklog", content: "新版本", source: "commit" }));
+  const manifest = JSON.parse(await fs.readFile(path.join(dir, "manifest.json"), "utf8"));
+  assert.equal(manifest.versions.length, MEMORY_VERSION_CAP);
+  for (const v of versions) {
+    await fs.access(path.join(dir, `v${v.version}.md`)); // 旧版一个都不能少
+  }
+});
+
+test("版本文件被直接改动后读回拒绝（checksum 不匹配）", async () => {
+  const root = await makeRoot();
+  await snapshotMemoryFile({ projectRoot: root, file: "worklog", content: "真实工作日志", source: "commit" });
+  await fs.writeFile(path.join(root, ".versions", "memory", "worklog", "v1.md"), "被外部改动的历史");
+  await assert.rejects(
+    readMemoryVersion({ projectRoot: root, file: "worklog", version: 1 }),
+    (e) => e.code === "version_checksum_mismatch"
+  );
+});

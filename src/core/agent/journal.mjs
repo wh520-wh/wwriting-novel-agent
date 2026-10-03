@@ -268,7 +268,10 @@ export function createAgentJournal({
     if (anchor && (await isAnchorValid(anchor))) {
       try {
         const { events } = await eventsStore.readAfter({ afterSeq: anchor.last_seq, limit: null });
-        const session = normalizeSessionDefaults(structuredClone(anchor.projection));
+        // let 而非 const（2026-10-03 修复）：循环内重新赋值，const 会让任何尾事件
+        // 触发 TypeError、被下方 catch 吞掉后整体退回全量重放——锚点增量优化从未
+        // 真正生效（302 事件日志实测全段读取 3→5）。
+        let session = normalizeSessionDefaults(structuredClone(anchor.projection));
         const side = createSideState();
         for (const event of events) {
           session = reduceEvent(session, event, side);
@@ -305,7 +308,9 @@ export function createAgentJournal({
       reason: gap?.reason ?? null
     }));
     if (anchor && !anchor.projection.needs_history_clear && (await isAnchorValid(anchor))) {
-      const session = normalizeSessionDefaults(structuredClone(anchor.projection));
+      // let 而非 const（2026-10-03 修复，同 buildState）：const 重赋值抛 TypeError
+      // 被吞，健康尾部事件永远无法重放（只保留锚点投影）。
+      let session = normalizeSessionDefaults(structuredClone(anchor.projection));
       session.history_degraded = true;
       session.history_gaps = gapRecords;
       try {

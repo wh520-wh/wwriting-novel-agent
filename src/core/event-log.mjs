@@ -85,7 +85,7 @@ export async function readEvents(projectRoot, options = {}) {
   try {
     const lines = [];
     let position = fileSize;
-    let remainder = "";
+    let remainder = Buffer.alloc(0);
     let tailHasNewline = null; // 文件是否以换行结尾（首块覆盖文件尾，读入时判定）
     let firstChunk = true;
 
@@ -94,24 +94,33 @@ export async function readEvents(projectRoot, options = {}) {
       position -= readSize;
       const buffer = Buffer.alloc(readSize);
       await handle.read(buffer, 0, readSize, position);
-      const chunk = buffer.toString("utf8");
       if (firstChunk) {
         // 首块从文件末尾读起：其结尾即文件结尾（\n 单字节，不受多字节截断影响）
-        tailHasNewline = chunk.endsWith("\n");
+        tailHasNewline = buffer[buffer.length - 1] === 0x0a;
         firstChunk = false;
       }
-      const combined = chunk + remainder;
-      const parts = combined.split(/\r?\n/u);
-      remainder = parts.shift();
-      for (let i = parts.length - 1; i >= 0 && lines.length < options.limit; i--) {
-        if (parts[i].trim()) {
-          lines.unshift(parts[i]);
-        }
+      // 中文跨块防线：块保持字节形态拼接，只在换行字节边界切出完整行后再解码。
+      // 若先 toString 再切，一个多字节字符可能横跨两块，解码成替换字符——
+      // JSON 仍合法，字段被静默改字（审计证据失真）。
+      const combined = Buffer.concat([buffer, remainder]);
+      const firstNewline = combined.indexOf(0x0a);
+      if (firstNewline === -1) {
+        remainder = combined;
+        continue;
+      }
+      remainder = combined.subarray(0, firstNewline);
+      let end = combined.length;
+      while (lines.length < options.limit && end > firstNewline) {
+        const start = combined.lastIndexOf(0x0a, end - 1); // 恒 >= firstNewline
+        const line = combined.toString("utf8", start + 1, end).replace(/\r$/u, "");
+        end = start;
+        if (line.trim()) lines.unshift(line);
       }
     }
 
-    if (lines.length < options.limit && remainder.trim()) {
-      lines.unshift(remainder);
+    if (lines.length < options.limit && remainder.length > 0) {
+      const firstLine = remainder.toString("utf8").replace(/\r$/u, "");
+      if (firstLine.trim()) lines.unshift(firstLine);
     }
 
     const events = [];

@@ -198,3 +198,28 @@ test("foreshadows: 渲染分未收/已收两组", () => {
   assert.ok(md.includes("【未收】第2章埋设：未收伏笔（回收提示：后文揭晓）"));
   assert.ok(md.includes("【已收】第1章埋设 → 第4章回收：已收伏笔"));
 });
+
+test("open 提交遇同内容已回收伏笔时重新置为未收，遇未收伏笔时跳过", () => {
+  const base = {
+    schema_version: 3,
+    facts: [],
+    timeline: [],
+    characters: [],
+    foreshadows: [
+      { content: "寄信人的身份", planted_chapter: 1, expected_payoff_hint: "", status: "paid", paid_chapter: 2 }
+    ]
+  };
+  const reopened = mergeExtraction(base, {
+    foreshadows: [{ content: "寄信人的身份", chapter_no: 1, status: "open" }]
+  });
+  assert.equal(reopened.foreshadows[0].status, "open", "已回收伏笔可被 open 提交重新打开");
+  assert.equal(reopened.foreshadows[0].paid_chapter, null, "重开时清除回收章号");
+  assert.equal(reopened.foreshadows[0].planted_chapter, 1, "埋设章号保留");
+
+  const skipped = mergeExtraction(
+    { ...base, foreshadows: [{ content: "寄信人的身份", planted_chapter: 1, expected_payoff_hint: "", status: "open", paid_chapter: null }] },
+    { foreshadows: [{ content: "寄信人的身份", chapter_no: 3, status: "open" }] }
+  );
+  assert.equal(skipped.foreshadows.length, 1, "同内容未收伏笔的重复 open 提交仍跳过");
+  assert.equal(skipped.foreshadows[0].planted_chapter, 1);
+});

@@ -196,6 +196,24 @@ export function createJournalSegmentStore({
     return gap;
   }
 
+  // 缺口区间并集（重叠/相邻融合；同区间 reason 取先出现者）。load 的断层推导与
+  // manifest 已记账的 gaps 合并时使用，避免重叠区间产生重复缺口条目。
+  function mergeGapRecords(records) {
+    const sorted = [...(records ?? [])]
+      .filter((g) => Number.isFinite(g?.start_seq) && Number.isFinite(g?.end_seq))
+      .sort((a, b) => a.start_seq - b.start_seq);
+    const merged = [];
+    for (const gap of sorted) {
+      const last = merged.at(-1);
+      if (last && gap.start_seq <= last.end_seq + 1) {
+        last.end_seq = Math.max(last.end_seq, gap.end_seq);
+      } else {
+        merged.push({ start_seq: gap.start_seq, end_seq: gap.end_seq, reason: gap.reason, stream: gap.stream });
+      }
+    }
+    return merged;
+  }
+
   function buildIndex(segment, { sealed }) {
     return {
       schema_version: 1,
@@ -499,6 +517,41 @@ export function createJournalSegmentStore({
       activeSegment = null;
     }
     lastSeq = segments.length > 0 ? segments.at(-1).endSeq : 0;
+    // 4b. 缺口台账重建（2026-10-03，落实 ADR 0010「gap ledger is derived」）：
+    // gaps 此前只存于 manifest——坏段被隔离成 .corrupt 后 manifest 再损坏，重建的
+    // 默认清单 gaps 归零，健康历史 [1,2,5,6] 会被误读为完整（已复现）。健康段之间的
+    // seq 断层可派生缺口：被隔离段的全部 seq 都不在健康历史内。推导与 manifest 中
+    // **本流**已记录的 gaps 做区间并集（manifest 为 events/transcript 两流共享，
+    // 两流 seq 空间独立，跨流数值相邻毫无语义——不分区会把另一流的缺口吞进来、
+    // 把本流缺口抹掉，已探针复现），其余流的记录原样保留，再写回 manifest 自愈。
+    // 已知边界：断层只存在于健康段**之间**——首段/尾段被隔离时健康段序列不再
+    // 跨越该范围，这部分缺口仍依赖 manifest（损坏时同样丢失），注释如实陈述。
+    // 两端元数据不全的相邻段（background 模式下未扫描的 deferred 段）不推导。
+    {
+      const derived = [];
+      for (let i = 1; i < segments.length; i++) {
+        const prevEnd = segments[i - 1].endSeq;
+        const nextStart = segments[i].startSeq;
+        if (Number.isFinite(prevEnd) && Number.isFinite(nextStart) && nextStart > prevEnd + 1) {
+          derived.push({ start_seq: prevEnd + 1, end_seq: nextStart - 1, reason: "segment_corrupt", stream: streamName });
+        }
+      }
+      if (derived.length > 0) {
+        const otherStreamGaps = (manifest.gaps ?? []).filter((g) => g.stream !== streamName);
+        const ownGaps = mergeGapRecords([...(manifest.gaps ?? []).filter((g) => g.stream === streamName), ...derived]);
+        const merged = [...otherStreamGaps, ...ownGaps];
+        gaps = ownGaps;
+        const unchanged =
+          merged.length === (manifest.gaps ?? []).length &&
+          merged.every((g, i) => {
+            const prior = (manifest.gaps ?? [])[i];
+            return prior && prior.start_seq === g.start_seq && prior.end_seq === g.end_seq && prior.stream === g.stream && prior.reason === g.reason;
+          });
+        if (!unchanged) {
+          await updateManifest(() => ({ gaps: merged }));
+        }
+      }
+    }
     // 5. 刷新 manifest 的 last seqs（派生数据，可能落后于 append）
     await updateManifest((current) =>
       streamName === "events" ? { last_event_seq: lastSeq } : { last_transcript_seq: lastSeq }
