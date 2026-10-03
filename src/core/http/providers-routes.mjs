@@ -13,7 +13,7 @@ import { writingRequiredCapabilitiesOk } from "../model/capabilities.mjs";
 // normalizeSecrets 静默丢弃非法环境变量名，写前先校验，避免密钥静默不落盘。
 const API_KEY_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 
-export function createProvidersRoutes({ secretsRoot }) {
+export function createProvidersRoutes({ secretsRoot, secretSink = null }) {
   const storeList = async () => {
     const { store } = await ensurePresetProviders(secretsRoot);
     return store;
@@ -110,6 +110,13 @@ export function createProvidersRoutes({ secretsRoot }) {
         // secrets.json）通过、正式模型调用（只查 process.env）失败，首次配置
         // 流程必须重启才能用。
         applyLocalSecretsToEnv({ [envName]: transientKey });
+        // 2026-10-03 补强：同步运行中 Runtime 的脱敏名单。secretSink 是组合根
+        // 传入的共享数组（app-server 的 secrets 容器，createRedactor 按引用消费），
+        // push 即对一次性与流式脱敏生效——否则保存后回显该值的内容会以明文进入
+        // 持久 journal。轮换时旧值留在名单无害（值本身已换）。
+        if (Array.isArray(secretSink) && !secretSink.includes(transientKey)) {
+          secretSink.push(transientKey);
+        }
         // D8：桶名落字段——新供应商自动桶 / 旧空 env 记录回填都经这里同步。
         if (!payload.api_key_env) payload.api_key_env = envName;
       }

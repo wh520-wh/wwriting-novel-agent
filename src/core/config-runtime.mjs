@@ -180,8 +180,11 @@ export function normalizeConfigLayer(layer = {}, options = {}) {
     config.tool_permissions ??= {};
     config.tool_permissions.test_allowed = source.test_allowed;
   }
-  if (source.max_model_calls !== undefined || source.max_revision_rounds_per_chapter !== undefined) {
+  // 顶层 enabled 是 budget_config.enabled 的平铺形式（settings patch → project.yaml）。
+  // 若未来某配置层的顶层 enabled 另有语义，需收窄此条件——当前各配置文件无顶层 enabled。
+  if (source.enabled !== undefined || source.max_model_calls !== undefined || source.max_revision_rounds_per_chapter !== undefined) {
     config.budget_config ??= {};
+    copyIfDefined(config.budget_config, source, "enabled");
     copyIfDefined(config.budget_config, source, "max_model_calls");
     copyIfDefined(config.budget_config, source, "max_revision_rounds_per_chapter");
   }

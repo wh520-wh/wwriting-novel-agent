@@ -260,8 +260,14 @@ function normalizeBudgetConfig(config) {
     throw new SettingsValidationError("invalid_budget_config", "budget_config must be an object.");
   }
   const normalized = {};
+  // 预算执行总开关（2026-10-03 访谈拍板）：默认关闭；开启且配置了限额时才在
+  // Run 内执行检查。max_cost / max_total_tokens 可保存但暂未生效（暂无执行口径）。
+  if (config.enabled !== undefined) {
+    normalized.enabled = config.enabled === true;
+  }
   copyOptionalPositiveInteger(normalized, config, "max_model_calls");
   copyOptionalPositiveInteger(normalized, config, "max_revision_rounds_per_chapter");
+  // max_cost / max_total_tokens：保存通道保留，执行通道暂未接线（见上）。
   copyOptionalPositiveNumber(normalized, config, "max_cost");
   copyOptionalPositiveInteger(normalized, config, "max_total_tokens");
   return normalized;

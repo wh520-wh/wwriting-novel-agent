@@ -2285,6 +2285,8 @@ input.spd-input[type="number"] { max-width: 160px; }
 .spd-toggle { display: flex; align-items: center; justify-content: space-between; }
 .toast.error { background: var(--red); color: var(--btn-ink); }
 .toast.error svg { color: var(--btn-ink); }
+.toast.warning { background: var(--amber); color: var(--btn-ink); }
+.toast.warning svg { color: var(--btn-ink); }
 .spd-hint.error { color: var(--red); }
 .spd-hint.success { color: var(--green); }
 .spd-section { margin: 18px 0 4px; font-size: var(--font-md); line-height: 1.4; font-weight: var(--weight-semibold); color: var(--text-primary); letter-spacing: 0; }

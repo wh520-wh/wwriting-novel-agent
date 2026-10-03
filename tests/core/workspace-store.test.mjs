@@ -145,3 +145,76 @@ test("settings 白名单严格校验：非布尔权限归 false，非对象模�
   });
   assert.equal(next.legacy_project_imported, false);
 });
+
+test("junction 别名与真实路径得到同一 workspace ID；旧 ID 数据一次性迁移保持可见", async () => {
+  const stateRoot = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-store-alias-"));
+  const projectRoot = path.join(stateRoot, "novel");
+  await fs.mkdir(projectRoot, { recursive: true });
+  const alias = path.join(stateRoot, "novel-alias");
+  await fs.symlink(projectRoot, alias, "junction");
+  try {
+    const store = createWorkspaceStore({ stateRoot });
+    // 模拟旧口径遗留：一个旧 ID 目录，workspace.json 指向同一物理项目
+    const legacyId = "ws_" + "0".repeat(32);
+    const legacyDir = path.join(stateRoot, "workspaces", legacyId);
+    await fs.mkdir(legacyDir, { recursive: true });
+    await fs.writeFile(
+      path.join(legacyDir, "workspace.json"),
+      JSON.stringify({ schema_version: 1, workspace_id: legacyId, project_root: projectRoot, created_at: "2026-01-01", last_opened_at: "2026-01-01" })
+    );
+    await fs.writeFile(
+      path.join(legacyDir, "settings.json"),
+      JSON.stringify({ schema_version: 1, active_model: null, tool_permissions: { read_only: true, auto_edit: false, network_allowed: false, yolo: false }, legacy_project_imported: true })
+    );
+
+    // 真实路径首次 ensure：新 ID 无数据 → 旧 ID 目录迁移过来，历史设置保持可见
+    const real = await store.ensure(projectRoot);
+    assert.notEqual(real.workspace_id, legacyId);
+    assert.equal(
+      await fs.access(legacyDir).then(() => true, () => false),
+      false,
+      "旧 ID 目录应被一次性迁移（原路径不复存在）"
+    );
+    const migrated = await store.loadSettings(projectRoot);
+    assert.equal(migrated.tool_permissions.read_only, true, "迁移后的旧设置仍可读");
+
+    // 别名路径打开：ID 必须一致（不再分裂）
+    const viaAlias = await store.ensure(alias);
+    assert.equal(viaAlias.workspace_id, real.workspace_id, "别名路径与真实路径同 ID");
+  } finally {
+    await fs.rm(stateRoot, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+test("新 ID 目录已存在（agent 会话先建）时不尝试迁移：旧目录保留、ensure 正常完成", async () => {
+  const stateRoot = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-store-occupied-"));
+  const projectRoot = path.join(stateRoot, "novel");
+  await fs.mkdir(projectRoot, { recursive: true });
+  try {
+    const store = createWorkspaceStore({ stateRoot });
+    const target = await store.ensure(projectRoot); // 先写 workspace.json，拿到新 ID
+    const newDir = path.join(stateRoot, "workspaces", target.workspace_id);
+    // 模拟 agent 会话先占用新 ID 目录 + workspace.json 尚未存在（审查 S1 时序）
+    await fs.rm(path.join(newDir, "workspace.json"));
+    await fs.mkdir(path.join(newDir, "agent", "sessions"), { recursive: true });
+    // 旧 ID 目录带历史数据
+    const legacyId = "ws_" + "f".repeat(32);
+    const legacyDir = path.join(stateRoot, "workspaces", legacyId);
+    await fs.mkdir(legacyDir, { recursive: true });
+    await fs.writeFile(
+      path.join(legacyDir, "workspace.json"),
+      JSON.stringify({ schema_version: 1, workspace_id: legacyId, project_root: projectRoot, created_at: "2026-01-01", last_opened_at: "2026-01-01" })
+    );
+    // 再次 ensure：目标目录已存在 → 不迁移、旧目录保留、无异常
+    const again = await store.ensure(projectRoot);
+    assert.equal(again.workspace_id, target.workspace_id);
+    assert.equal(
+      await fs.access(legacyDir).then(() => true, () => false),
+      true,
+      "无法 rename 时旧目录必须原样保留（数据不丢）"
+    );
+    assert.equal(await fs.access(path.join(newDir, "workspace.json")).then(() => true, () => false), true);
+  } finally {
+    await fs.rm(stateRoot, { recursive: true, force: true }).catch(() => {});
+  }
+});

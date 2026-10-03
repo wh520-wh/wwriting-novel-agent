@@ -10,6 +10,7 @@
 // 权限策略（Step 6）、受保护路径（Step 7，含 win32 大小写不敏感）、参数校验、
 // count_text 执行体（Task 9 Step 4）。函数体与注释自 index.mjs 机械平移。
 import fs from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import { isPathInside, resolveFilesystemPath } from "../../fs-utils.mjs";
 import { analyzeTextCount } from "../../word-count.mjs";
@@ -230,51 +231,108 @@ function isProtectedWritePath(projectRoot, targetPath) {
   const target = path.resolve(targetPath);
   // 路径包含性比较经 fs-utils.isPathInside（win32 大小写不敏感）判定，大小写变体
   //（.wwriting/AGENT/…、Chapters/001.md、memory/Chapter_Index.json）不能绕过。
-  if (isPathInside(path.join(root, AGENT_DIR_REL), target)) {
+  // 2026-10-03 补强（ADR 0009）：规则侧与目标侧使用同一真实路径身份——目标侧在
+  // execute 时已解析为真实位置（args.path = resolved_target_path），规则侧若仍拼
+  // 未解析路径，受保护目录本身是 junction/symlink 时包含性比较落空（写穿已复现）。
+  // 目录/文件不存在时无链接可绕，realpath 失败保持拼接路径。
+  if (isPathInside(realPathOrSelf(path.join(root, AGENT_DIR_REL)), target)) {
     return { rule: PROTECTED_RULES.agent_journal, path: target };
   }
-  if (isPathInside(path.join(root, CHECKPOINTS_DIR_REL), target)) {
+  if (isPathInside(realPathOrSelf(path.join(root, CHECKPOINTS_DIR_REL)), target)) {
     return { rule: PROTECTED_RULES.project_checkpoints, path: target };
   }
-  if (samePath(target, path.join(root, CHAPTER_INDEX_REL))) {
+  if (samePath(target, realPathOrSelf(path.join(root, CHAPTER_INDEX_REL)))) {
     return { rule: PROTECTED_RULES.chapter_index, path: target };
   }
   // 草稿目录 drafts/：正文草稿只能经 append_chapter_segment（project operations 原子写）
   // 按 segment 顺序与安全点写入；write_file/edit_file 直写会绕过段落顺序与草稿校验。
-  if (isPathInside(path.join(root, DRAFTS_DIR_REL), target)) {
+  if (isPathInside(realPathOrSelf(path.join(root, DRAFTS_DIR_REL)), target)) {
     return { rule: PROTECTED_RULES.draft_files, path: target };
   }
   // 版本快照库 .versions/：系统归档，只读（由版本工具维护）
-  if (isPathInside(path.join(root, VERSIONS_DIR_REL), target)) {
+  if (isPathInside(realPathOrSelf(path.join(root, VERSIONS_DIR_REL)), target)) {
     return { rule: PROTECTED_RULES.version_files, path: target };
   }
   // memory/ 记忆档案与 project.yaml：设计 D5 矩阵声明只读，工具层强制执行
-  if (isPathInside(path.join(root, "memory"), target)) {
+  if (isPathInside(realPathOrSelf(path.join(root, "memory")), target)) {
     return { rule: PROTECTED_RULES.memory_files, path: target };
   }
-  if (samePath(target, path.join(root, "project.yaml"))) {
+  if (samePath(target, realPathOrSelf(path.join(root, "project.yaml")))) {
     return { rule: PROTECTED_RULES.project_config, path: target };
   }
   // run_log.jsonl（项目根）审计账本：只由 chapter 提交/入账/回滚事务追加，
   // write_file/edit_file 直写会篡改历史账本。精确路径比较，不误伤子目录同名文件。
-  if (samePath(target, path.join(root, "run_log.jsonl"))) {
+  if (samePath(target, realPathOrSelf(path.join(root, "run_log.jsonl")))) {
     return { rule: PROTECTED_RULES.run_log, path: target };
   }
   return null;
 }
 
-// shell 的静态受保护信号只有 cwd：不得在 journal / checkpoints 目录内运行命令。
-// 有意不把 drafts/ 纳入 cwd 保护：cwd 是粗粒度信号，`cd drafts && ls` / `cat drafts/…`
-// 属于合法读取，阻止 cwd 会误伤；shell 对草稿的写入仍受权限层（write/delete 类别确认、
-// extreme 判定）约束，而 write_file/edit_file 走上面的精确路径检查。
+// shell 的静态受保护信号：cwd 在 journal / checkpoints 目录内，或命令文本出现
+// 受保护目标的名字（isProtectedShellCommand，2026-10-03 访谈拍板：宁可误报）。
+// 有意不把 drafts/ 纳入 cwd 保护：cwd 是粗粒度信号，`cd drafts && ls` 属于合法
+// 读取场景的入口；drafts 的写入防护由命令文本扫描承担（文本中出现 drafts/ 即拒，
+// `cat drafts/…` 这类读取会被一并拦下，改用 read_file 即可——误报已接受）。
 export function isProtectedShellCwd(projectRoot, cwd) {
   const root = path.resolve(projectRoot);
-  const target = path.resolve(cwd);
-  if (isPathInside(path.join(root, AGENT_DIR_REL), target)) {
+  // 目标侧同样解析（2026-10-03 审查修正）：规则侧 realPath 后，cwd 若仍用未解析
+  // 拼接路径，受保护目录本身是 junction 时字符串比较落空——比修复前（两侧都不
+  // 解析、靠相等命中）更宽松，方向性回归。cwd 不存在时 spawn 本会失败，回退无害。
+  const target = realPathOrSelf(path.resolve(cwd));
+  if (isPathInside(realPathOrSelf(path.join(root, AGENT_DIR_REL)), target)) {
     return { rule: PROTECTED_RULES.agent_journal, path: target };
   }
-  if (isPathInside(path.join(root, CHECKPOINTS_DIR_REL), target)) {
+  if (isPathInside(realPathOrSelf(path.join(root, CHECKPOINTS_DIR_REL)), target)) {
     return { rule: PROTECTED_RULES.project_checkpoints, path: target };
+  }
+  return null;
+}
+
+// 规则侧的真实路径身份（ADR 0009）：受保护目录本身是 junction/symlink 时把规则
+// 根解析到真实位置，与已解析的目标侧比较。不存在时无链接可绕，回退拼接路径。
+// 同步接口（isProtectedWritePath/isProtectedShellCwd 是纯函数）用 realpathSync。
+// catch-all 安全性：写路径的目标侧在 execute 前经 resolveFilesystemPath 解析，
+// 同一组件的 EACCES/EPERM 会先在目标侧抛出（fail-closed），realpathSync 与
+// fs.realpath 底层 errno 一致，不存在「目标解析成功而规则侧失败」的可达路径；
+// 剩余 ENOENT/ENOTDIR 回退无链接可绕。fs-utils.resolveFilesystemPath 只回退
+// ENOENT/ENOTDIR，与此处口径的差异即上述推理。
+function realPathOrSelf(candidate) {
+  try {
+    return realpathSync(candidate);
+  } catch {
+    return candidate;
+  }
+}
+
+// shell 命令文本的受保护目标标识。子串匹配、大小写不敏感（win32 路径不区分
+// 大小写；误报已被接受——如 cat 读取被拒，改用 read_file）。漏报边界：引号拆分
+//（echo x > mem"o"ry/x）、无分隔符变体（copy x memory）可绕过——这是防御纵深，
+// 不是完整命令解析（拍板不自造解析器）。WORKLOG.md / book_summary.md 的合法
+// 更新通道是 update_memory 工具，shell 直写同样属于绕过。
+const PROTECTED_SHELL_TOKENS = [
+  { token: "run_log.jsonl", rule: PROTECTED_RULES.run_log },
+  { token: "chapter_index.json", rule: PROTECTED_RULES.chapter_index },
+  { token: "chapter_memory.json", rule: PROTECTED_RULES.memory_files },
+  { token: "continuity.json", rule: PROTECTED_RULES.memory_files },
+  { token: "continuity.md", rule: PROTECTED_RULES.memory_files },
+  { token: "book_summary.md", rule: PROTECTED_RULES.memory_files },
+  { token: "worklog.md", rule: PROTECTED_RULES.memory_files },
+  { token: "project.yaml", rule: PROTECTED_RULES.project_config },
+  { token: "checkpoints", rule: PROTECTED_RULES.project_checkpoints },
+  { token: ".versions", rule: PROTECTED_RULES.version_files },
+  { token: ".wwriting", rule: PROTECTED_RULES.agent_journal },
+  { token: "drafts/", rule: PROTECTED_RULES.draft_files },
+  { token: "drafts\\", rule: PROTECTED_RULES.draft_files },
+  { token: "memory/", rule: PROTECTED_RULES.memory_files },
+  { token: "memory\\", rule: PROTECTED_RULES.memory_files }
+];
+
+export function isProtectedShellCommand(command) {
+  const text = String(command ?? "").toLowerCase();
+  for (const { token, rule } of PROTECTED_SHELL_TOKENS) {
+    if (text.includes(token)) {
+      return { rule, path: token };
+    }
   }
   return null;
 }

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -76,3 +77,31 @@ test("project lock removes tail entries once tasks settle (registry 完成后无
   assert.equal(removals[0], removals[1], "同一项目的 key 归一化一致");
 });
 
+
+test("junction 别名与真实路径共用同一把锁（物理路径身份，ADR 0009）", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wwriting-lock-junction-"));
+  await fs.rm(root, { recursive: true, force: true });
+  await fs.mkdir(root, { recursive: true });
+  const projectRoot = path.join(root, "novel");
+  await fs.mkdir(projectRoot, { recursive: true });
+  const alias = path.join(root, "novel-alias");
+  await fs.symlink(projectRoot, alias, "junction");
+  try {
+    const locks = createProjectLockRegistry();
+    let active = 0;
+    let maxActive = 0;
+    const operation = async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      active -= 1;
+    };
+    await Promise.all([
+      locks.runExclusive(projectRoot, operation),
+      locks.runExclusive(alias, operation)
+    ]);
+    assert.equal(maxActive, 1, "同一物理项目不得并发持锁");
+  } finally {
+    await fs.rm(root, { recursive: true, force: true }).catch(() => {});
+  }
+});

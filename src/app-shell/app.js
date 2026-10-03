@@ -118,7 +118,8 @@ export async function bootApp(root = document) {
   const toaster = createToaster(() => railRefs.toastStack, {
     className: "toast",
     iconFor: (type) => icon(type === "error" ? "help" : "check", 15),
-    timeoutFor: (type) => (type === "error" ? 5200 : 3200),
+    // warning（如导出缺章警示）与 error 同寿命：警示需要阅读时间，3.2s 不够。
+    timeoutFor: (type) => (type === "error" || type === "warning" ? 5200 : 3200),
     leaveMs: 220
   });
   const showToast = toaster.showToast;

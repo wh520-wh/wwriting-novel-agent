@@ -51,17 +51,18 @@ export function redactChatData(value) {
     .replace(TOKEN_SHAPE, "[REDACTED]");
 }
 
-// 一次性脱敏器：模式脱敏 + 调用方显式提供的 secrets 字面量（每个出现都替换）。
-// secrets 通常来自项目配置/运行时注入（如 harness 的 dependencies.secrets）。
+// 一次性脱敏器：模式脱敏 + 调用方提供的 secrets 字面量（每个出现都替换）。
+// secrets 数组按引用共享（2026-10-03 补强）：不在构造时复制——运行中新增密钥
+//（组合根的容器 push）即时生效，一次性与流式脱敏共享同一份最新名单。
 export function createRedactor({ secrets = [] } = {}) {
-  const list = (Array.isArray(secrets) ? secrets : []).filter(
-    (secret) => typeof secret === "string" && secret.length > 0
-  );
+  const source = Array.isArray(secrets) ? secrets : [];
   return {
     redact(value) {
       let out = redactChatData(value);
-      for (const secret of list) {
-        if (out.includes(secret)) out = out.split(secret).join("[REDACTED]");
+      for (const secret of source) {
+        if (typeof secret === "string" && secret.length > 0 && out.includes(secret)) {
+          out = out.split(secret).join("[REDACTED]");
+        }
       }
       return out;
     }
@@ -119,10 +120,12 @@ function lastMatch(pattern, text) {
 //   state.overflow_chars  —— 累计超出 carry 窗口、按普通文本处理的字符数
 export function createStreamingRedactor({ secrets = [], carryLimit = STREAMING_CARRY_LIMIT } = {}) {
   const oneShot = createRedactor({ secrets });
-  const list = (Array.isArray(secrets) ? secrets : []).filter(
-    (secret) => typeof secret === "string" && secret.length > 0
-  );
-  const maxSecretLen = list.reduce((max, secret) => Math.max(max, secret.length), 0);
+  // 名单活取（2026-10-03）：与一次性脱敏共享同一份最新名单——运行中新增的更长
+  // 密钥也参与 carry 窗口延伸判定（构造时固化会让新密钥的前缀在窗口边界泄漏）。
+  const currentList = () =>
+    (Array.isArray(secrets) ? secrets : []).filter(
+      (secret) => typeof secret === "string" && secret.length > 0
+    );
   let carry = "";
   let overflowChars = 0;
   const state = {
@@ -149,6 +152,8 @@ export function createStreamingRedactor({ secrets = [], carryLimit = STREAMING_C
         return oneShot.redact(work.slice(0, dropLen));
       }
       carry = "";
+      const list = currentList();
+      const maxSecretLen = list.reduce((max, secret) => Math.max(max, secret.length), 0);
       const safeLen = computeSafeEmitLength(work, { secrets: list, maxSecretLen });
       carry = work.slice(safeLen);
       return oneShot.redact(work.slice(0, safeLen));

@@ -447,3 +447,87 @@ test("第十三轮 F6：抽屉模型面板显示「上下文 · 最大输出」�
     globalThis.fetch = realFetch;
   }
 });
+
+test("导出缺章警示：响应带 skipped 时 warning toast 含缺章清单与路径，完整导出走 success", async () => {
+  const posts = [];
+  const toasts = [];
+  const realWindow = globalThis.window;
+  globalThis.window = { wwritingDesktop: null };
+  const doc = makeDoc();
+  globalThis.document = doc;
+  const drawerBody = doc.createElement("div");
+  const ctx = {
+    refs: { drawerBody },
+    getDrawerTab: () => "chapters",
+    getDashboard: () => dashboard(),
+    openReader: () => {},
+    openSettingsModal: () => {},
+    showToast: (message, type) => toasts.push({ message, type }),
+    showActionError: () => {},
+    loadDashboard: async () => {},
+    closeDrawer: () => {}
+  };
+  const panels = createDrawerPanels(ctx);
+  globalThis.fetch = async (url, options) => {
+    const body = JSON.parse(options?.body ?? "{}");
+    posts.push({ url: String(url), body });
+    return {
+      ok: true,
+      text: async () => JSON.stringify({ ok: true, path: "D:/novel/exports/book.txt", chapters: 1, characters: 100, skipped: [2] })
+    };
+  };
+  try {
+    await panels.renderDrawerBody();
+    const btn = drawerBody.querySelector(".export-btn");
+    assert.ok(btn, "章节面板应渲染导出按钮");
+    btn._listeners.get("click").forEach((fn) => fn());
+    await new Promise((r) => setTimeout(r, 0));
+    assert.deepEqual(posts, [{ url: "/api/projects/export-book", body: { projectRoot: "D:/novel", format: "txt" } }]);
+    assert.equal(toasts.length, 1);
+    assert.equal(toasts[0].type, "warning", "缺章导出必须是 warning 级（与完整导出可区分）");
+    assert.match(toasts[0].message, /导出不完整/);
+    assert.match(toasts[0].message, /缺第 2 章/);
+    assert.match(toasts[0].message, /book\.txt/, "警示文案携带导出路径");
+  } finally {
+    globalThis.window = realWindow;
+    globalThis.document = realDoc;
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("导出完整时维持 success toast（不显示缺章警示）", async () => {
+  const toasts = [];
+  const realWindow = globalThis.window;
+  globalThis.window = { wwritingDesktop: null };
+  const doc = makeDoc();
+  globalThis.document = doc;
+  const drawerBody = doc.createElement("div");
+  const ctx = {
+    refs: { drawerBody },
+    getDrawerTab: () => "chapters",
+    getDashboard: () => dashboard(),
+    openReader: () => {},
+    openSettingsModal: () => {},
+    showToast: (message, type) => toasts.push({ message, type }),
+    showActionError: () => {},
+    loadDashboard: async () => {},
+    closeDrawer: () => {}
+  };
+  const panels = createDrawerPanels(ctx);
+  globalThis.fetch = async () => ({
+    ok: true,
+    text: async () => JSON.stringify({ ok: true, path: "D:/novel/exports/book.txt", chapters: 2, characters: 200, skipped: [] })
+  });
+  try {
+    await panels.renderDrawerBody();
+    const btn = drawerBody.querySelector(".export-btn");
+    btn._listeners.get("click").forEach((fn) => fn());
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(toasts.length, 1);
+    assert.equal(toasts[0].type, "success");
+    assert.match(toasts[0].message, /已导出/);
+  } finally {
+    globalThis.document = realDoc;
+    globalThis.fetch = realFetch;
+  }
+});

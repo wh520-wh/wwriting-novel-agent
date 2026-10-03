@@ -149,3 +149,17 @@ test("carry 有界：超窗口部分按普通文本处理并记录 overflow", ()
 test("默认 carry 上限为 STREAMING_CARRY_LIMIT", () => {
   assert.equal(STREAMING_CARRY_LIMIT, 8192);
 });
+
+test("流式脱敏共享活名单：构造后 push 的新密钥即时参与窗口延伸与替换", () => {
+  const sink = ["seed-secret"];
+  const streaming = createStreamingRedactor({ secrets: sink });
+  const first = streaming.push(`值 ${"x".repeat(30)} seed-secret 尾部`);
+  const combined = first + streaming.flush();
+  assert.ok(combined.includes("[REDACTED]"), "既有名单照常脱敏");
+  // 构造后再 push 更长的新密钥：一次性与流式都应立即生效
+  sink.push("later_added_longer_secret_value");
+  const out = createRedactor({ secrets: sink }).redact("回显 later_added_longer_secret_value 结束");
+  assert.ok(!out.includes("later_added_longer_secret_value"), "新增密钥经一次性脱敏立即替换");
+  const streamed = streaming.push(`回显 ${"y".repeat(30)} later_added_longer_secret_value 结束`);
+  assert.ok(!`${streamed}${streaming.flush()}`.includes("later_added_longer_secret_value"), "流式路径同样立即替换");
+});
