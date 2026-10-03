@@ -3,6 +3,7 @@
 > 日期：2026-10-01 ｜ 依据：`D:/WWriting/docs/design/统一行为规格书.md`（现行契约，含三部分）+
 > 两份历史规格书 + CLI 源码逐项核实（grep 验证，非臆断）。
 > 用途：回答「下一步做什么」——这是选题清单，不是验收单。
+> 状态：**历史记录**（记录于 2026-10-03 复核）｜下列「完全缺失」结论已过时：任务计划与写作领域工具（update_plan / append_chapter_segment / commit_chapter / finalize_revision / rollback_chapter / update_memory 等）现均已实现并有测试覆盖（`WWriting cli/tests/tools/`、`tests/agent/`）；本文件保留 2026-10-01 盘点时的当时值，不再更新。
 
 ## 结论
 
